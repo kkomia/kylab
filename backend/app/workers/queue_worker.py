@@ -64,15 +64,39 @@ class TaskWorker:
         self._max_backoff = max_backoff
         self._current_task_id: str | None = None
         self._thread: asyncio.Task[None] | None = None
+        #: 租约已易主的标志。见 ``_mark_lease_lost`` 的说明：它必须活在 worker 级，
+        #: 不能只在心跳循环里的局部变量上。
+        self._lease_lost = asyncio.Event()
 
     @property
     def owner(self) -> str:
         return self._owner
 
+    def _mark_lease_lost(self, task_id: str, stopping: asyncio.Event | None = None) -> None:
+        """记下"租约已不属于自己"，让消费与心跳两个循环都收工。
+
+        **为什么信号必须落在 worker 自己身上**：``run_forever(stop=...)`` 允许调用方
+        传入自己的事件对象（应用生命周期就是这么用的），那种情况下"置位 stopping"
+        只是在别人的事件上打标记；而"是否丢过租约"这件事是 worker 的性质，不该随
+        某个函数的局部变量消失。两个循环各自读同一个标志，谁先发现都能叫停对方。
+
+        ``stopping`` 有值时顺手一并置位：``TaskGroup`` 要等**所有**子任务返回才结束，
+        只让消费循环退出的话，``run_forever`` 还得再等一个心跳周期。
+        """
+        if not self._lease_lost.is_set():
+            logger.warning("任务 %s 的租约已被回收，本 worker 停止领取新任务", task_id)
+        self._lease_lost.set()
+        if stopping is not None:
+            stopping.set()
+
     # ------------------------------------------------------------------ 主循环
 
     async def run_once(self) -> bool:
         """处理一个任务；没有可领任务返回 False（便于测试与优雅退出）。"""
+        if self._lease_lost.is_set():
+            # 已经丢过租约：不再领新活。手上那份的收尾由 run_forever 负责
+            return False
+
         task = self._stores.meta.claim_task(owner=self._owner, lease_seconds=self._lease_seconds)
         if task is None:
             return False
@@ -86,9 +110,16 @@ class TaskWorker:
             if self._stores.meta.finish_task(task.id, TaskState.SUCCEEDED, owner=self._owner):
                 logger.info("任务 %s 完成", task.id)
             else:
-                # 租约已经不在自己手上：这一份的成败不归我写，等新主人按自己的节奏收尾
-                logger.warning("任务 %s 的租约已易主，放弃写入成功状态", task.id)
+                # 租约已经不在自己手上：这一份的成败不归我写，等新主人按自己的节奏收尾。
+                #
+                # 这里**必须**记成"租约丢失"而不是只打一条日志：任务跑得比一个心跳周期
+                # 还快时（摄入是本地线程，几十毫秒就能完事），心跳循环还没轮到看一眼，
+                # ``_current_task_id`` 就已经被清空，它永远发现不了租约易主。
+                # 实测这条路径会让"租约被抢后停手"变成时序抽奖：慢机器上心跳先到就过，
+                # 快机器上必然不停手。信号的兜底点就在这里。
+                self._mark_lease_lost(task.id)
         return True
+
 
     async def run_forever(self, *, stop: asyncio.Event | None = None) -> None:
         """持续消费，直到 ``stop`` 被置位、租约被抢走，或者自己被取消。
@@ -110,7 +141,7 @@ class TaskWorker:
             await self._drain_thread()
 
     async def _consume_loop(self, stopping: asyncio.Event) -> None:
-        while not stopping.is_set():
+        while not stopping.is_set() and not self._lease_lost.is_set():
             try:
                 worked = await self.run_once()
             except Exception:
@@ -166,6 +197,8 @@ class TaskWorker:
         while not stopping.is_set():
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stopping.wait(), timeout=interval)
+            if self._lease_lost.is_set():
+                return  # 已经在别处判定丢失，别再给一个不属于自己的任务续租
             task_id = self._current_task_id
             if task_id is None:
                 continue  # 空闲，没有需要保住的租约
@@ -177,8 +210,7 @@ class TaskWorker:
                 logger.exception("续租失败，本轮跳过（租约过期后由回收机制兜底）")
                 continue
             if not still_mine:
-                logger.warning("任务 %s 的租约已被回收，本 worker 停止领取新任务", task_id)
-                stopping.set()
+                self._mark_lease_lost(task_id, stopping)
                 return
 
     def _handle(self, task: TaskRecord) -> None:

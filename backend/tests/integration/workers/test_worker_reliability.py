@@ -104,6 +104,42 @@ async def test_long_task_keeps_renewing_its_lease(bundle: StoreBundle, ingest: I
 
 
 @pytest.mark.asyncio
+async def test_lease_loss_is_noticed_even_when_the_task_finishes_first(
+    bundle: StoreBundle, ingest: IngestService, kb, monkeypatch, db_file: Path
+) -> None:
+    """任务跑得比心跳还快时，也必须发现租约被抢。
+
+    这是上面那条用例的"快机器"分支，也是它长期偶发失败的原因：摄入是本地线程，
+    几十毫秒就能跑完。若它在下一个心跳 tick 之前结束，``_execute_with_heartbeat``
+    的 ``finally`` 已经把 ``_current_task_id`` 清成 ``None``，心跳循环再也看不到
+    租约易主——worker 于是继续领新任务，**停手完全变成时序抽奖**。
+
+    （在本机 Python 3.12 上这条曾稳定失败十轮：机器足够快，永远走这条分支。）
+    兜底点在 ``run_once`` 里 ``finish_task`` 返回 False 的那一刻：租约不在自己手上，
+    它就在那里把丢失标志立起来，两个循环都能看见。
+    """
+    outcome = ingest.submit(knowledge_base_id="kb_1", filename="a.md", content=CONTENT.encode())
+    task = _enqueue(bundle, outcome.document.id, "task_fast")
+
+    # 心跳周期放大到"这条任务几乎不可能被 tick 撞上"的程度：
+    # 只要停手依赖心跳，本用例必然超时——这正是在锁定上面那个竞态
+    worker = TaskWorker(bundle, ingest, owner="w-fast", lease_seconds=30)
+
+    async def instant_execute(record: TaskRecord) -> None:
+        # 模拟"摄入瞬间完成"：不启动线程，直接给任务写终态
+        worker._stores.meta.finish_task(record.id, TaskState.SUCCEEDED, owner=worker.owner)
+
+    monkeypatch.setattr(worker, "_execute_with_heartbeat", instant_execute)
+
+    # 先把租约判给别人，再让 worker 跑：finish_task 必然以 owner 不符而失败
+    _steal_lease(db_file, task.id, "someone-else")
+
+    await asyncio.wait_for(worker.run_once(), timeout=5)
+
+    assert worker._lease_lost.is_set(), "任务先跑完时，租约丢失也必须被记下来"
+
+
+@pytest.mark.asyncio
 async def test_lease_loss_stops_the_worker_without_stealing_the_outcome(
     bundle: StoreBundle, ingest: IngestService, kb, monkeypatch, db_file: Path
 ) -> None:

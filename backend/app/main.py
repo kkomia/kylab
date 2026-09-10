@@ -48,6 +48,11 @@ async def _run_worker(worker: TaskWorker, stop: asyncio.Event) -> None:
     ``TaskWorker.run_forever`` 自己保证（取消后仍等手上那份文档写完），
     所以这里对 ``CancelledError`` 只做原样上抛——吞掉它 asyncio 会误以为
     任务正常结束，取消语义就丢了。
+
+    **只把 ``stop`` 交给 run_forever，不额外传租约事件**：租约被回收时 worker
+    自己就会停手（``run_once`` 拒绝再领任务、两个循环都检查 ``_lease_lost``），
+    这里再插一手只会让"谁负责退出"变成两处判断。
+    关停时 ``asyncio.gather`` 会等它收完手，语义不变。
     """
     try:
         await worker.run_forever(stop=stop)
