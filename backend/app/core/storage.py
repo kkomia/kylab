@@ -1,4 +1,4 @@
-"""存储装配（组合根，M1 收尾）。
+"""存储装配（组合根）。
 
 **这里（以及测试）是唯一允许 import `sqlite_impl` 的地方。**
 `services/` 只依赖 `storage/base.py` 的接口，具体实现由本模块在启动时装配注入——
@@ -8,12 +8,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 from app.core.config import Settings, get_settings
-from app.storage.base import FullTextStore, MetaStore, ObjectStore, VectorStore
+from app.storage.base import StoreBundle
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
@@ -21,7 +20,7 @@ from app.storage.sqlite_impl.migrations import apply_migrations
 from app.storage.sqlite_impl.object_store import LocalObjectStore
 from app.storage.sqlite_impl.vector_store import SqliteVectorStore
 
-__all__ = ["STORAGE_SUBDIRS", "Stores", "build_stores", "get_stores", "reset_stores"]
+__all__ = ["STORAGE_SUBDIRS", "build_stores", "get_stores", "reset_stores"]
 
 ORIGINALS_DIR = "originals"
 MARKDOWN_DIR = "markdown"
@@ -29,21 +28,13 @@ IMAGES_DIR = "images"
 STORAGE_SUBDIRS = (ORIGINALS_DIR, MARKDOWN_DIR, IMAGES_DIR)
 
 
-@dataclass(frozen=True, slots=True)
-class Stores:
-    """四个仓储的装配结果。类型标注一律是接口，不是实现。"""
-
-    meta: MetaStore
-    vectors: VectorStore
-    fulltext: FullTextStore
-    objects: ObjectStore
-    database: Database
-
-
-def build_stores(settings: Settings | None = None) -> Stores:
+def build_stores(settings: Settings | None = None) -> StoreBundle:
     """按配置建库、迁移、准备目录，并装配四个仓储。
 
     幂等：迁移只应用缺失的版本，目录已存在则跳过，可安全地在每次启动时调用。
+
+    返回 :class:`StoreBundle`（字段类型全为接口）。具体的 ``Database`` 句柄刻意不外泄——
+    一旦交出去，调用方就会顺手拿它写 SQL，Repository 抽象就白做了。
     """
     resolved = settings or get_settings()
     data_dir = Path(resolved.data_dir)
@@ -60,17 +51,16 @@ def build_stores(settings: Settings | None = None) -> Stores:
     for subdir in STORAGE_SUBDIRS:
         (data_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-    return Stores(
+    return StoreBundle(
         meta=SqliteMetaStore(database),
         vectors=SqliteVectorStore(database),
         fulltext=SqliteFullTextStore(database, slow_query_ms=resolved.slow_query_ms),
         objects=object_store,
-        database=database,
     )
 
 
 @lru_cache
-def get_stores() -> Stores:
+def get_stores() -> StoreBundle:
     """进程级单例，供依赖注入使用（与 ``get_settings`` 同构）。"""
     return build_stores()
 

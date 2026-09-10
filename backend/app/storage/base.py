@@ -43,6 +43,7 @@ __all__ = [
     "ParseResultRecord",
     "SearchHit",
     "StorageError",
+    "StoreBundle",
     "TaskRecord",
     "TrashRecord",
     "VectorDimensionMismatch",
@@ -50,6 +51,20 @@ __all__ = [
     "VectorStore",
     "WebhookRecord",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class StoreBundle:
+    """四个仓储的聚合视图（由组合根填充）。
+
+    ``services/`` 依赖这个类型就能拿到全部存储能力，而**不必 import 任何具体实现**——
+    字段类型全是接口，组合根 `app/core/storage.py` 负责把实现塞进来。
+    """
+
+    meta: MetaStore
+    vectors: VectorStore
+    fulltext: FullTextStore
+    objects: ObjectStore
 
 
 class StorageError(Exception):
@@ -62,6 +77,34 @@ class VectorDimensionMismatch(StorageError):
     架构 §6.4：维度相同不等于向量空间兼容，**维度不同更是绝对不能混写**——
     静默写入只会让检索结果悄悄错掉，所以这里必须硬失败。
     """
+
+
+# --------------------------------------------------------------------- 对象存储的
+# 逻辑布局与寻址规则放在接口层：services 需要按同样的规约生成 Key，
+# 但**不能**去 import 具体实现（那会踩到工程规范 §3.3 的 L2 规则）。
+
+ORIGINALS = "originals"
+MARKDOWN = "markdown"
+IMAGES = "images"
+
+SAFE_KEY_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+)
+"""存储 Key 与回收站 ID 允许的字符：它们会拼进文件路径，必须白名单化。"""
+
+
+def content_key(kind: str, content_hash: str, suffix: str = "") -> str:
+    """按内容 hash 生成存储 Key，例如 ``content_key(ORIGINALS, sha, ".pdf")``。
+
+    两级散列目录（``originals/ab/abcdef…pdf``）避免单目录堆几万文件；
+    相同内容天然同路径，重复上传不会产生第二份。
+    """
+    if not content_hash:
+        raise ValueError("content_hash 不能为空")
+    digest = "".join(char for char in content_hash if char in SAFE_KEY_CHARS)
+    if not digest:
+        raise ValueError(f"content_hash 不含可用字符：{content_hash!r}")
+    return f"{kind}/{digest[:2]}/{digest}{suffix}"
 
 
 # --------------------------------------------------------------------------- 记录（值对象）

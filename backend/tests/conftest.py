@@ -12,7 +12,7 @@ import pytest
 from app.core.config import get_settings
 from app.core.storage import reset_stores
 from app.models.enums import DataSourceKind, DocumentStage
-from app.storage.base import DocumentRecord, KnowledgeBaseRecord
+from app.storage.base import DocumentRecord, KnowledgeBaseRecord, StoreBundle
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
@@ -72,6 +72,17 @@ def fulltext_store(database: Database) -> SqliteFullTextStore:
 def object_store(tmp_path) -> LocalObjectStore:
     """对象存储根目录用临时目录，绝不写进仓库的 data/。"""
     return LocalObjectStore(tmp_path / "data")
+
+
+@pytest.fixture
+def bundle(database: Database, object_store: LocalObjectStore) -> StoreBundle:
+    """四个仓储的装配（与组合根同构，但不碰磁盘上的开发库）。"""
+    return StoreBundle(
+        meta=SqliteMetaStore(database),
+        vectors=SqliteVectorStore(database),
+        fulltext=SqliteFullTextStore(database),
+        objects=object_store,
+    )
 
 
 @pytest.fixture

@@ -17,24 +17,26 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from app.storage.base import ObjectStore
+from app.storage.base import (
+    IMAGES,
+    MARKDOWN,
+    ORIGINALS,
+    SAFE_KEY_CHARS,
+    ObjectStore,
+    content_key,
+)
 
-ORIGINALS = "originals"
-MARKDOWN = "markdown"
-IMAGES = "images"
 TRASH = ".trash"
+"""回收站目录名：属于本地文件系统的实现细节，故留在本模块。"""
 
-_SAFE_SEGMENT = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
-
-
-def content_key(kind: str, content_hash: str, suffix: str = "") -> str:
-    """按内容 hash 生成存储 Key，例如 ``content_key("originals", sha, ".pdf")``。"""
-    if not content_hash:
-        raise ValueError("content_hash 不能为空")
-    digest = "".join(ch for ch in content_hash if ch in _SAFE_SEGMENT)
-    if not digest:
-        raise ValueError(f"content_hash 不含可用字符：{content_hash!r}")
-    return f"{kind}/{digest[:2]}/{digest}{suffix}"
+__all__ = [
+    "IMAGES",
+    "MARKDOWN",
+    "ORIGINALS",
+    "TRASH",
+    "LocalObjectStore",
+    "content_key",
+]
 
 
 class LocalObjectStore(ObjectStore):
@@ -65,7 +67,7 @@ class LocalObjectStore(ObjectStore):
 
     def move_to_trash(self, path: str, *, trash_id: str) -> str:
         """把原文挪进回收站目录（架构 §6.2：原文保留 7 天冷备）。"""
-        if not trash_id or any(ch not in _SAFE_SEGMENT for ch in trash_id):
+        if not trash_id or any(char not in SAFE_KEY_CHARS for char in trash_id):
             raise ValueError(f"非法回收站 ID：{trash_id!r}")
         source = self._resolve(path)
         if not source.is_file():

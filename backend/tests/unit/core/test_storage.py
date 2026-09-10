@@ -21,12 +21,11 @@ def settings(tmp_path) -> Settings:
 
 
 def test_build_stores_creates_database_and_directories(settings: Settings) -> None:
-    stores = build_stores(settings)
+    build_stores(settings)
 
     assert settings.db_path.is_file()
     for subdir in STORAGE_SUBDIRS:
         assert (Path(settings.data_dir) / subdir).is_dir()
-    assert stores.database.path == str(settings.db_path)
 
 
 def test_build_stores_applies_migrations(settings: Settings) -> None:
@@ -41,10 +40,10 @@ def test_build_stores_applies_migrations(settings: Settings) -> None:
 
 def test_build_stores_is_idempotent(settings: Settings) -> None:
     """每次启动都会调用，必须能重复执行而不出错、不重复迁移。"""
-    first = build_stores(settings)
-    second = build_stores(settings)
+    build_stores(settings)
+    build_stores(settings)
 
-    assert first.database.path == second.database.path
+    assert settings.db_path.is_file()
     connection = sqlite3.connect(settings.db_path)
     try:
         applied = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]

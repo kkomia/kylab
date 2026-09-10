@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     embedding_base_url: str = "https://api.siliconflow.cn/v1"
     embedding_api_key: str | None = None
     embedding_model: str | None = None
+    embedding_dim: int = 256
+    """默认值对应开发兜底实现；换成真实模型时必须改成其真实维度（如 bge-m3 为 1024）。"""
+    embedding_batch_size: int = 32
 
     @property
     def cors_origin_list(self) -> list[str]:

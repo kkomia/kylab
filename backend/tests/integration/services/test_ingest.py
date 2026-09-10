@@ -1,0 +1,315 @@
+"""摄入流水线的集成测试（M2 主链路）。
+
+覆盖架构 §4 的端到端承诺：上传 → 探测 → 解析 → 切分 → 向量化 → indexed，
+以及去重、失败定位、断点续跑与模型锁定。
+"""
+
+import pytest
+
+from app.models.enums import DocumentStage
+from app.parsers.plain_text import PlainTextParser
+from app.services.chunking import ChunkingConfig
+from app.services.embedding.base import EmbeddingError
+from app.services.embedding.deterministic import DeterministicEmbedder
+from app.services.ingest import IngestError, IngestService
+from app.services.knowledge_base import KnowledgeBaseService
+from app.services.parser_router import ParserRouter
+from app.storage.base import StoreBundle
+
+DIM = 32
+MARKDOWN = (
+    "# 知识库设计\n\n"
+    "向量检索与全文检索混合召回。\n\n"
+    "## 切分策略\n\n"
+    "固定长度与语义切块两种模式。\n"
+)
+
+
+@pytest.fixture
+def embedder() -> DeterministicEmbedder:
+    return DeterministicEmbedder(dim=DIM)
+
+
+@pytest.fixture
+def kb_service(bundle: StoreBundle, embedder: DeterministicEmbedder) -> KnowledgeBaseService:
+    return KnowledgeBaseService(bundle, embedder=embedder)
+
+
+@pytest.fixture
+def ingest_service(bundle: StoreBundle, embedder: DeterministicEmbedder) -> IngestService:
+    return IngestService(
+        bundle,
+        router=ParserRouter([PlainTextParser()]),
+        embedder=embedder,
+        chunk_config=ChunkingConfig(size=64, overlap=8),
+    )
+
+
+@pytest.fixture
+def kb(bundle: StoreBundle, kb_service: KnowledgeBaseService):
+    return kb_service.create(kb_id="kb_1", name="默认库")
+
+
+# --------------------------------------------------------------------- 知识库
+
+
+def test_create_knowledge_base_freezes_model_and_dim(kb) -> None:
+    """架构 §6.4：模型与维度随库冻结，作为后续写入的校验依据。"""
+    assert kb.embedding_model_id == "dev/deterministic-hash"
+    assert kb.embedding_dim == DIM
+
+
+def test_kb_service_raises_for_missing_kb(kb_service: KnowledgeBaseService) -> None:
+    from app.core.exceptions import NotFoundError
+
+    with pytest.raises(NotFoundError):
+        kb_service.get("kb_none")
+
+
+# --------------------------------------------------------------------- 主链路
+
+
+def test_ingest_reaches_indexed(bundle: StoreBundle, ingest_service: IngestService, kb) -> None:
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="kb.md",
+                                    content=MARKDOWN.encode())
+    assert outcome.document.stage is DocumentStage.UPLOADED
+
+    result = ingest_service.ingest(outcome.document.id)
+
+    assert result.document.stage is DocumentStage.INDEXED
+    assert result.document.error is None
+    assert result.chunk_count > 0
+
+
+def test_ingest_writes_markdown_artifact(bundle: StoreBundle, ingest_service: IngestService,
+                                         kb) -> None:
+    """架构 §4.3：所有格式统一产出 Markdown，原文另留一份。"""
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="kb.md",
+                                    content=MARKDOWN.encode())
+    ingest_service.ingest(outcome.document.id)
+
+    parsed = bundle.meta.get_parse_result(outcome.document.id)
+    assert parsed is not None
+    assert parsed.parser_name == "PlainTextParser"
+    assert bundle.objects.read(parsed.markdown_path).decode() == MARKDOWN
+    assert parsed.probe_meta["kind"] == "text"
+    assert "route_reason" in parsed.probe_meta  # 路由理由要能被界面解释
+
+
+def test_ingest_makes_document_searchable_by_fulltext(bundle: StoreBundle,
+                                                      ingest_service: IngestService, kb) -> None:
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="kb.md",
+                                    content=MARKDOWN.encode())
+    ingest_service.ingest(outcome.document.id)
+
+    hits = bundle.fulltext.search(query="混合召回", top_k=5, kb_id="kb_1")
+    assert hits
+    assert hits[0].document_id == outcome.document.id
+
+
+def test_ingest_writes_vectors(bundle: StoreBundle, ingest_service: IngestService, kb) -> None:
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="kb.md",
+                                    content=MARKDOWN.encode())
+    result = ingest_service.ingest(outcome.document.id)
+
+    assert bundle.vectors.declared_dim("kb_1") == DIM
+    query = [0.0] * DIM
+    query[0] = 1.0
+    matches = bundle.vectors.search("kb_1", query_vector=query, top_k=result.chunk_count)
+    assert len(matches) == result.chunk_count
+
+
+def test_original_file_is_kept(bundle: StoreBundle, ingest_service: IngestService, kb) -> None:
+    """架构 §4.3：原文在文件系统保留一份（下载可给原件）。"""
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="kb.md",
+                                    content=MARKDOWN.encode())
+    path = bundle.meta.get_setting(f"document.{outcome.document.id}.original_path")
+
+    assert path is not None and path.startswith("originals/")
+    assert bundle.objects.read(path) == MARKDOWN.encode()
+
+
+def test_probe_meta_records_coverage_and_suffix(bundle: StoreBundle,
+                                                ingest_service: IngestService, kb) -> None:
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="kb.md",
+                                    content=MARKDOWN.encode())
+    ingest_service.ingest(outcome.document.id)
+
+    meta = bundle.meta.get_parse_result(outcome.document.id).probe_meta
+    assert meta["text_coverage"] == pytest.approx(1.0)
+    assert meta["suffix"] == ".md"
+
+
+# --------------------------------------------------------------------- 去重
+
+
+def test_duplicate_upload_is_detected(ingest_service: IngestService, kb) -> None:
+    """架构 §6.3：上传命中相同 hash 时提醒"检测到相同文件"，只保留一份。"""
+    first = ingest_service.submit(knowledge_base_id="kb_1", filename="a.md",
+                                 content=MARKDOWN.encode())
+    second = ingest_service.submit(knowledge_base_id="kb_1", filename="a-copy.md",
+                                  content=MARKDOWN.encode())
+
+    assert second.is_duplicate is True
+    assert second.document.id == first.document.id
+
+
+def test_same_content_in_different_kb_is_not_duplicate(
+    bundle: StoreBundle, ingest_service: IngestService, kb_service: KnowledgeBaseService, kb
+) -> None:
+    kb_service.create(kb_id="kb_2", name="第二库")
+    first = ingest_service.submit(knowledge_base_id="kb_1", filename="a.md",
+                                 content=MARKDOWN.encode())
+    second = ingest_service.submit(knowledge_base_id="kb_2", filename="a.md",
+                                  content=MARKDOWN.encode())
+
+    assert second.is_duplicate is False
+    assert second.document.id != first.document.id
+
+
+# --------------------------------------------------------------------- 失败与续跑
+
+
+def test_empty_file_fails_with_stage_recorded(ingest_service: IngestService, kb) -> None:
+    """失败要落到文档记录上：界面才能显示卡在哪一步、为什么（架构 §12）。"""
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="empty.md", content=b"")
+
+    with pytest.raises(IngestError) as excinfo:
+        ingest_service.ingest(outcome.document.id)
+
+    assert excinfo.value.stage == "parsing"
+    document = ingest_service._stores.meta.get_document(outcome.document.id)
+    assert document.stage is DocumentStage.FAILED
+    assert "内容为空" in (document.error or "")
+
+
+def test_unsupported_binary_is_rejected(ingest_service: IngestService, kb) -> None:
+    outcome = ingest_service.submit(
+        knowledge_base_id="kb_1",
+        filename="scan.pdf",
+        content=b"\x89PNG\r\n\x1a\n\x00\x00",
+        mime_type="application/pdf",
+    )
+
+    with pytest.raises(IngestError, match="暂不支持"):
+        ingest_service.ingest(outcome.document.id)
+
+
+def test_resume_after_failure_skips_completed_steps(bundle: StoreBundle,
+                                                    ingest_service: IngestService,
+                                                    kb_service: KnowledgeBaseService, kb) -> None:
+    """断点续跑：解析已完成就不该再调一次解析器（云解析是要花钱的）。"""
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="kb.md",
+                                    content=MARKDOWN.encode())
+    document_id = outcome.document.id
+
+    # 手工推进到 parsed，模拟"解析已完成、切分前失败"
+    ingest_service._probe_and_parse(
+        bundle.meta.get_document(document_id)
+    )
+    bundle.meta.update_document_stage(document_id, DocumentStage.FAILED, error="模拟切分失败")
+
+    # 用一个"一旦被调用就失败"的路由器，证明它没被调用
+    class _ExplodingParser(PlainTextParser):
+        name = "ExplodingParser"
+
+        def parse(self, **_kwargs):  # type: ignore[override]
+            raise AssertionError("解析器不该在续跑时被再次调用")
+
+    resumed = IngestService(
+        bundle,
+        router=ParserRouter([_ExplodingParser()]),
+        embedder=DeterministicEmbedder(dim=DIM),
+        chunk_config=ChunkingConfig(size=64, overlap=8),
+    )
+    result = resumed.ingest(document_id)
+
+    assert result.document.stage is DocumentStage.INDEXED
+
+
+def test_resume_without_artifact_reports_parsing_stage(bundle: StoreBundle,
+                                                       ingest_service: IngestService, kb) -> None:
+    """状态说解析完了、产物却不在：不能假装能续跑，要报在 parsing 阶段。"""
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="kb.md",
+                                    content=MARKDOWN.encode())
+    bundle.meta.update_document_stage(outcome.document.id, DocumentStage.PARSED)
+
+    with pytest.raises(IngestError) as excinfo:
+        ingest_service.ingest(outcome.document.id)
+
+    assert excinfo.value.stage == "parsing"
+    assert "找不到解析产物" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------- 模型锁定
+
+
+def test_model_change_is_allowed_before_any_vector_exists(
+    bundle: StoreBundle, ingest_service: IngestService, kb
+) -> None:
+    """库内还没有向量时允许更正配置，不必逼用户重建库。"""
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="kb.md",
+                                    content=MARKDOWN.encode())
+
+    switched = IngestService(
+        bundle,
+        router=ParserRouter([PlainTextParser()]),
+        embedder=DeterministicEmbedder(dim=64),
+        chunk_config=ChunkingConfig(size=64, overlap=8),
+    )
+    result = switched.ingest(outcome.document.id)
+
+    assert result.document.stage is DocumentStage.INDEXED
+    assert bundle.meta.get_knowledge_base("kb_1").embedding_dim == 64  # type: ignore[union-attr]
+
+
+def test_model_change_is_refused_once_vectors_exist(bundle: StoreBundle,
+                                                    ingest_service: IngestService, kb) -> None:
+    """架构 §6.4：库内已有向量化文件就不允许换模型——混用会让检索静默失效。"""
+    first = ingest_service.submit(knowledge_base_id="kb_1", filename="kb.md",
+                                  content=MARKDOWN.encode())
+    ingest_service.ingest(first.document.id)
+
+    second = ingest_service.submit(knowledge_base_id="kb_1", filename="another.md",
+                                   content="另一个文件的内容。".encode())
+    switched = IngestService(
+        bundle,
+        router=ParserRouter([PlainTextParser()]),
+        embedder=DeterministicEmbedder(dim=64),
+        chunk_config=ChunkingConfig(size=64, overlap=8),
+    )
+
+    # 配置错误直接抛 EmbeddingError：重试无意义，也不该把文档标成 failed
+    with pytest.raises(EmbeddingError, match="不允许改用"):
+        switched.ingest(second.document.id)
+
+    assert bundle.meta.get_document(second.document.id).stage is DocumentStage.UPLOADED
+
+
+def test_missing_kb_is_reported(bundle: StoreBundle, embedder: DeterministicEmbedder) -> None:
+    from app.core.exceptions import NotFoundError
+
+    service = IngestService(bundle, router=ParserRouter([PlainTextParser()]), embedder=embedder)
+    with pytest.raises(NotFoundError):
+        service.submit(knowledge_base_id="kb_none", filename="a.md", content=b"x")
+
+
+def test_embedding_error_stage_is_reported(bundle: StoreBundle, kb) -> None:
+    """embedding 端点挂了：失败要归到 embedding 阶段，而不是含混地算作解析失败。"""
+    from app.services.embedding.base import EmbeddingProvider
+
+    class _BrokenEmbedder(EmbeddingProvider):
+        model_id = "dev/deterministic-hash"  # 与库内一致，绕过模型锁
+        dim = DIM
+
+        def embed(self, texts):
+            raise EmbeddingError("端点不可达")
+
+    service = IngestService(
+        bundle, router=ParserRouter([PlainTextParser()]), embedder=_BrokenEmbedder()
+    )
+    outcome = service.submit(knowledge_base_id="kb_1", filename="kb.md", content=MARKDOWN.encode())
+
+    with pytest.raises(IngestError) as excinfo:
+        service.ingest(outcome.document.id)
+    assert excinfo.value.stage == "embedding"

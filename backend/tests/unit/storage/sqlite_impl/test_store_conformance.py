@@ -33,10 +33,10 @@ def test_no_abstract_methods_left(implementation: type, interface: type) -> None
 
 def test_choose_implementation_by_interface_not_by_class() -> None:
     """组合根里应当只出现接口类型；实现类名不该泄漏到 services 层。"""
-    from app.core.storage import Stores
+    from app.storage.base import StoreBundle
 
-    annotations = Stores.__annotations__
+    annotations = StoreBundle.__annotations__
     assert annotations["meta"] is not None
     assert all(
         "sqlite_impl" not in str(annotation) for annotation in annotations.values()
-    ), "Stores 的字段类型不应是具体实现"
+    ), "StoreBundle 的字段类型不应是具体实现"
