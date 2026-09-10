@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
@@ -94,11 +95,14 @@ class ChatService:
         runtime: RuntimeConfigService,
         *,
         chat_factory=None,  # type: ignore[no-untyped-def]
+        usage_recorder=None,  # type: ignore[no-untyped-def]
     ) -> None:
         self._retrieval = retrieval
         self._runtime = runtime
         # 工厂可注入：测试里换成假模型，避免真打网络
         self._chat_factory = chat_factory or (lambda config: OpenAICompatChat(config))
+        # 用量回调（G7）。可选：缺席时完全不记，功能照常
+        self._usage_recorder = usage_recorder
 
     # ------------------------------------------------------------------ 对外
 
@@ -156,7 +160,37 @@ class ChatService:
             history=history,
             system_prompt=system_prompt or self._runtime.get("chat.system_prompt"),
         )
-        return ChatTurn(answer=chat.complete(messages), sources=sources)
+        started = time.monotonic()
+        text = chat.complete(messages)
+        self._record_usage(chat, started, items=1)
+        return ChatTurn(answer=text, sources=sources)
+
+    def _record_usage(self, chat, started: float, *, items: int) -> None:  # type: ignore[no-untyped-def]
+        """把这一次调用的用量交给回调（G7）。
+
+        **读的是 provider 上的 ``last_usage`` 而不是改 ``complete`` 的返回值**：
+        用量是可选的，而 ``complete`` 的调用方大多只想要文本。
+
+        回调缺席时什么都不做——用量统计是可选的旁路，不该成为 ChatService 的
+        必需依赖（否则所有既有测试与用例都得跟着造一个）。
+        """
+        if self._usage_recorder is None:
+            return
+        config = self._runtime.llm()
+        try:
+            self._usage_recorder(
+                kind="chat",
+                provider=config.base_url,
+                model_id=config.model_id,
+                usage=getattr(chat, "last_usage", None),
+                items=items,
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+        except Exception:
+            # **旁路出问题绝不能反过来打断主路**：用户已经拿到（并且已经付过费的）
+            # 回答，因为统计埋点炸了而把回答吞掉是本末倒置。
+            # ``UsageService.record`` 内部也吞一层，但回调可能被换成别的实现
+            logger.exception("对话用量记录失败（不影响本次回答）")
 
     def answer_stream(
         self,

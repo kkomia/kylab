@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   formatAge,
   formatBytes,
+  formatCount,
   formatDate,
   formatRelativeTime,
   formatScore,
@@ -108,5 +109,30 @@ describe('summarizeDocuments', () => {
 
   it('没有任何文档时返回空表，由调用方决定显示占位符', () => {
     expect(summarizeDocuments([])).toEqual({})
+  })
+})
+
+describe('formatCount', () => {
+  it('给大数加千分位', () => {
+    // 用量动辄六位数，不分位读不出量级——而"这个月是不是烧太快了"
+    // 正是看这组数字时要回答的问题
+    expect(formatCount(1234567)).toBe('1,234,567')
+    expect(formatCount(1000)).toBe('1,000')
+  })
+
+  it('小数取整', () => {
+    expect(formatCount(999.6)).toBe('1,000')
+  })
+
+  it('零与小数照常显示', () => {
+    expect(formatCount(0)).toBe('0')
+    expect(formatCount(42)).toBe('42')
+  })
+
+  it('拿不到值时给占位符而不是 NaN', () => {
+    expect(formatCount(null)).toBe('—')
+    expect(formatCount(undefined)).toBe('—')
+    expect(formatCount(Number.NaN)).toBe('—')
+    expect(formatCount(Number.POSITIVE_INFINITY)).toBe('—')
   })
 })

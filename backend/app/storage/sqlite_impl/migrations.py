@@ -342,12 +342,73 @@ _MIGRATION_005 = Migration(
     ),
 )
 
+_MIGRATION_006 = Migration(
+    version=6,
+    description="用量统计：按次记录模型调用的 token 与耗时（调研报告 G7）",
+    statements=(
+        # 一行 = 一次模型调用。
+        #
+        # **为什么单独建表而不是加在 tasks 上**：用量与任务是两件事——
+        # 一次对话问答没有后台任务（它是同步请求），却照样消耗 token；
+        # 而一个摄入任务可能调用多次模型（每个分片一次）。硬塞进 tasks
+        # 会让"某次调用"和"某个任务"混成一个概念，统计口径就说不清了。
+        """
+        CREATE TABLE usage_events (
+            id                TEXT PRIMARY KEY,
+            kind              TEXT NOT NULL,
+            provider          TEXT NOT NULL DEFAULT '',
+            model_id          TEXT NOT NULL DEFAULT '',
+            prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            items             INTEGER NOT NULL DEFAULT 0,
+            duration_ms       INTEGER NOT NULL DEFAULT 0,
+            reported          INTEGER NOT NULL DEFAULT 0,
+            created_at        TEXT NOT NULL
+        )
+        """,
+        # 驾驶舱按时间窗口聚合，走这个索引
+        "CREATE INDEX idx_usage_events_created ON usage_events(created_at)",
+    ),
+)
+
+_MIGRATION_007 = Migration(
+    version=7,
+    description="用量事件记录数字来源（实测 / 估算 / 未上报）",
+    statements=(
+        # 三态而不是布尔：原先只有 reported 两态，把"我们自己按字符数估的"
+        # 和"供应商真报的"混成了一类——向量化接口根本不返回 usage，
+        # 那一列数字全是估算，却显示成实测。**假精度比没数字更糟**：
+        # 用户会拿它去做成本判断。
+        #
+        # 默认值取 'reported'：迁移前写入的行都来自对话调用（真有 usage），
+        # 这样历史数据的口径不会因为这次迁移而改变。
+        "ALTER TABLE usage_events ADD COLUMN source TEXT NOT NULL DEFAULT 'reported'",
+    ),
+)
+
+_MIGRATION_008 = Migration(
+    version=8,
+    description="修正历史用量记录的数字来源标注",
+    statements=(
+        # 007 把迁移前的行一律标成 'reported'（实测），但那批行里有向量化调用——
+        # 而向量化接口**根本不返回 usage**，那些数字是旧代码按字符数估的。
+        #
+        # 标错方向的代价不对称：把实测标成估算只是保守，把估算标成实测
+        # 会让用户拿一个假精度的数字去做成本判断。
+        # 所以这里按用途把它改回 'estimated'。
+        "UPDATE usage_events SET source = 'estimated' WHERE kind IN ('embedding', 'rerank')",
+    ),
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
     _MIGRATION_003,
     _MIGRATION_004,
     _MIGRATION_005,
+    _MIGRATION_006,
+    _MIGRATION_007,
+    _MIGRATION_008,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

@@ -328,6 +328,45 @@ class ChatMessageRecord:
 
 
 @dataclass(slots=True)
+class UsageEventRecord:
+    """一次模型调用的用量（调研报告 G7）。
+
+    ``reported`` 记录"供应商到底报没报用量"：OpenAI 兼容协议里 ``usage`` 是可选的，
+    很多自建网关不回。**必须与"真的用了 0 token"区分开**——
+    否则统计页会把"没报"画成"没用"，那是在撒谎。
+    """
+
+    id: str
+    kind: str
+    """``chat`` / ``embedding`` / ``rerank``。"""
+    provider: str = ""
+    model_id: str = ""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    items: int = 0
+    """这一批处理了几条（向量化按条数，对话为 1）。供应商不报 token 时，
+    条数是唯一还能反映"干了多少活"的量。"""
+    duration_ms: int = 0
+    source: str = "none"
+    """这个数字哪来的：``reported``（供应商实测）/ ``estimated``（我们估算）/
+    ``none``（供应商没报，也没得估）。
+
+    **三态而不是布尔**：把"自己按字符数估的"和"供应商真报的"混成一类，
+    会让统计页显示一个假精度——用户拿它做成本判断就偏了。
+    """
+    created_at: datetime | None = None
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+    @property
+    def reported(self) -> bool:
+        """是否实测（供应商真的报了）。"""
+        return self.source == "reported"
+
+
+@dataclass(slots=True)
 class ModelProviderRecord:
     """模型供应商：一个 base_url + 一把凭据（调研报告 G1）。
 
@@ -652,6 +691,28 @@ class MetaStore(ABC):
     @abstractmethod
     def list_messages(self, conversation_id: str) -> list[ChatMessageRecord]:
         """按写入顺序返回——顺序就是对话顺序，所以按 created_at 排序。"""
+        ...
+
+    # ---- 用量（调研报告 G7）----
+    @abstractmethod
+    def record_usage(self, record: UsageEventRecord) -> UsageEventRecord: ...
+
+    @abstractmethod
+    def list_usage(self, *, since: datetime | None = None) -> list[UsageEventRecord]:
+        """取某时间点之后的全部用量事件（驾驶舱窗口聚合用）。
+
+        **不做 SQL 聚合**：驾驶舱的口径（按本地日历日分桶、按用途分类）
+        属于业务判断，放在服务层更清楚，也便于单测。本地部署的数据量
+        （一天几百行）全读回来聚合完全够用。
+        """
+        ...
+
+    @abstractmethod
+    def purge_usage_before(self, before: datetime) -> int:
+        """清掉某时间点之前的用量。返回删了几行。
+
+        用量数据只用于看趋势，留太久没有价值；与幂等键同一套保留期思路。
+        """
         ...
 
     @abstractmethod

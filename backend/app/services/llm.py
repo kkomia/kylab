@@ -69,8 +69,43 @@ class LLMConfig:
         return bool(self.api_key and self.model_id)
 
 
+@dataclass(frozen=True, slots=True)
+class LLMUsage:
+    """一次调用的 token 用量（G7 用量统计）。
+
+    **供应商不一定会回这个字段**：OpenAI 兼容协议里 ``usage`` 是可选的，
+    流式响应更是通常没有。所以各字段允许为 0，界面要能区分
+    "真的用了 0 token" 与 "这家没报"——前者不可能，后者是常态。
+    """
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    estimated: bool = False
+    """这份数字是不是我们自己估的。
+
+    **必须能区分"实测"与"估算"**：向量化接口（OpenAI 兼容的 ``/embeddings``）
+    通常根本不返回 usage，我们只能按字符数估。把它当成实测数字展示，
+    等于让用户拿一个假精度去做成本判断——那是比不给数字更糟的事。
+    """
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+    @property
+    def is_reported(self) -> bool:
+        """供应商是否真的报了用量（全 0 视为没报；自己估的不算报）。"""
+        return not self.estimated and self.total_tokens > 0
+
+
 class OpenAICompatChat:
     """``POST {base_url}/chat/completions``，OpenAI 兼容。"""
+
+    #: 上一次 ``complete`` 的 token 用量；供应商没回 ``usage`` 时为 ``None``。
+    #:
+    #: 用属性而不是改 ``complete`` 的返回值：它的调用方大多只想要文本，
+    #: 为了顺手统计用量去改签名会波及每一处调用（G7 只需要在这里记一下）。
+    last_usage: LLMUsage | None = None
 
     def __init__(
         self,
@@ -94,6 +129,10 @@ class OpenAICompatChat:
                 json={**self._payload(messages), "stream": False},
             )
         body = self._decode(response)
+        # 记下这一轮的 token 用量，供调用方取（见 ``last_usage``）。
+        # 放在这里而不是让 complete 换返回值：那会改掉所有调用方的签名，
+        # 而绝大多数调用方并不关心用量。
+        self.last_usage = _usage_of(body)
         return _content_of(body)
 
     def stream(self, messages: Sequence[ChatMessage]) -> Iterator[str]:
@@ -163,6 +202,24 @@ class _ReusedClient:
         return self._client
 
     def __exit__(self, *_: object) -> None:
+        return None
+
+
+def _usage_of(body: dict) -> LLMUsage | None:
+    """从响应体里取 token 用量；没有就返回 ``None``。
+
+    **不因为缺字段而报错**：usage 在 OpenAI 兼容协议里是可选的，
+    自建网关与部分国产服务都不回。为了统计把整次对话搞失败是本末倒置。
+    """
+    usage = body.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    try:
+        return LLMUsage(
+            prompt_tokens=int(usage.get("prompt_tokens") or 0),
+            completion_tokens=int(usage.get("completion_tokens") or 0),
+        )
+    except (TypeError, ValueError):
         return None
 
 

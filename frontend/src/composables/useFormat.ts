@@ -51,6 +51,17 @@ export function formatBytes(bytes: number | null | undefined): string {
 }
 
 /** 相似度分数：融合分数是相对值（后端按 top 归一化），统一三位小数。 */
+/**
+ * 千分位计数。
+ *
+ * 用量动辄六位数（几十万 token），不分位根本读不出量级——
+ * 而"这个月是不是烧太快了"正是看这组数字时要回答的问题。
+ */
+export function formatCount(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return '—'
+  return Math.round(value).toLocaleString('zh-CN')
+}
+
 export function formatScore(score: number | null | undefined): string {
   if (score === null || score === undefined) return '—'
   return score.toFixed(3)

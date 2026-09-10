@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import logging
 import os
+import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -30,12 +32,14 @@ from app.services.embedding.base import EmbeddingProvider
 from app.services.idempotency import IdempotencyService
 from app.services.ingest import IngestService
 from app.services.knowledge_base import KnowledgeBaseService
+from app.services.llm import LLMUsage
 from app.services.model_registry import ModelRegistryService
 from app.services.parser_router import ParserRouter
 from app.services.retrieval import RetrievalService, build_reranker
 from app.services.retrieval.rerank import RerankProvider
 from app.services.runtime_config import RuntimeConfigService
 from app.services.stats import StatsService
+from app.services.usage import UsageService
 from app.storage.base import StoreBundle
 from app.workers.queue_worker import TaskWorker
 
@@ -66,6 +70,8 @@ class Services:
     """切块人工干预：改正文并重新向量化、禁用、删除（调研报告 G3）。"""
     models: ModelRegistryService
     """模型注册器：供应商 → 模型目录 → 按用途绑定（调研报告 G1）。"""
+    usage: UsageService
+    """用量统计：按次记 token 与调用量（调研报告 G7）。"""
     conversations: ConversationService
     """对话留存：会话与消息的读写（§11.2）。"""
     embedder: EmbeddingProvider
@@ -79,10 +85,34 @@ class _RuntimeEmbedder(EmbeddingProvider):
     为什么要有这一层：用户在设置页改完模型应当**立刻生效**，而不是重启进程。
     所以这里不缓存实例，每次 ``embed``/``embed_query`` 都按当前配置现建一个——
     建对象本身是廉价的（真正昂贵的是 HTTP 调用）。
+
+    **用量记在这一层是刻意的**（G7）：向量化的调用点很多（摄入的每个分片、
+    每次检索的 query），逐个去记必然漏。包在 provider 外面就有唯一入口。
+    向量化接口通常**不返回 usage**，所以这里的 token 是按字符数估的——
+    因此 ``reported=False``，界面上会明确标注"这是估算"。
     """
 
-    def __init__(self, runtime: RuntimeConfigService) -> None:
+    def __init__(self, runtime: RuntimeConfigService, usage_recorder=None) -> None:  # type: ignore[no-untyped-def]
         self._runtime = runtime
+        self._usage_recorder = usage_recorder
+
+    def _record(self, texts: Sequence[str], started: float) -> None:
+        if self._usage_recorder is None:
+            return
+        snapshot = self._runtime.embedding()
+        # 中文里 1 token ≈ 1.5 个字符（各家分词不同，这是保守估计）。
+        # 明确标成"未上报"，界面据此说明数字是估算的
+        estimated = sum(max(1, len(text)) for text in texts) // 2
+        self._usage_recorder(
+            kind="embedding",
+            provider=snapshot.base_url,
+            model_id=snapshot.model_id,
+            # estimated=True：这是我们按字符数估的，不是接口报的。
+            # 不标记的话统计页会把估算当实测展示（假精度比没数字更糟）
+            usage=LLMUsage(prompt_tokens=estimated, estimated=True),
+            items=len(texts),
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
 
     @property
     def current(self) -> EmbeddingProvider:
@@ -101,10 +131,22 @@ class _RuntimeEmbedder(EmbeddingProvider):
         return self.current.is_development
 
     def embed(self, texts):  # type: ignore[no-untyped-def]
-        return self.current.embed(texts)
+        started = time.monotonic()
+        vectors = self.current.embed(texts)
+        self._record(texts, started)
+        return vectors
 
     def embed_query(self, text: str) -> list[float]:
-        return self.current.embed_query(text)
+        """查询向量化。
+
+        **单列一个方法而不是复用 embed**：向量化接口对"文档"与"查询"常常用不同的
+        前缀/指令（bge、e5 这类模型很常见），走错一边会**静默降低召回**。
+        用量上按一条算。
+        """
+        started = time.monotonic()
+        vector = self.current.embed_query(text)
+        self._record([text], started)
+        return vector
 
 
 class _RuntimeReranker(RerankProvider):
@@ -133,7 +175,13 @@ def build_services(
     # 未绑定时才回退到设置页那套字段（叠加层，见 services/model_registry.py）
     registry = ModelRegistryService(bundle)
     runtime = RuntimeConfigService(bundle, resolved, registry=registry)
-    embedder = _RuntimeEmbedder(runtime)
+    # 用量服务要**先建**：下面的 embedder 回调闭包引用了它
+    usage = UsageService(bundle)
+
+    def _record_embed_usage(**kwargs: object) -> None:
+        usage.record(**kwargs)  # type: ignore[arg-type]
+
+    embedder = _RuntimeEmbedder(runtime, _record_embed_usage)
     reranker = _RuntimeReranker(runtime)
     retrieval = RetrievalService(bundle, embedder=embedder, reranker=reranker)
     ingest = IngestService(
@@ -144,6 +192,11 @@ def build_services(
     )
 
     idempotency = IdempotencyService(bundle)
+
+    # 对话的 token 用量通过回调记（G7）：ChatService 不该依赖统计服务，
+    # 那会让"记不记账"变成它的必需前提
+    def _record_chat_usage(**kwargs: object) -> None:
+        usage.record(**kwargs)  # type: ignore[arg-type]
 
     def _maintain() -> None:
         """空闲维护：把"会悄悄长大的表"收一收。
@@ -157,6 +210,7 @@ def build_services(
         removed_keys = idempotency.purge_expired()
         if removed_keys:
             logger.info("清理过期幂等键 %d 条", removed_keys)
+        usage.purge_expired()
         purged = bundle.meta.purge_expired_trash()
         if purged:
             logger.info("清理过期回收站条目 %d 条", len(purged))
@@ -166,13 +220,14 @@ def build_services(
         documents=DocumentService(bundle),
         ingest=ingest,
         retrieval=retrieval,
-        chat=ChatService(retrieval, runtime),
+        chat=ChatService(retrieval, runtime, usage_recorder=_record_chat_usage),
         stats=StatsService(bundle),
         runtime=runtime,
         api_keys=ApiKeyService(bundle),
         idempotency=idempotency,
         chunks=ChunkService(bundle, embedder=embedder),
         models=registry,
+        usage=usage,
         conversations=ConversationService(bundle),
         embedder=embedder,
         reranker=reranker,

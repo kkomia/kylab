@@ -43,6 +43,7 @@ from app.storage.base import (
     RegisteredModelRecord,
     TaskRecord,
     TrashRecord,
+    UsageEventRecord,
     WebhookRecord,
 )
 from app.storage.sqlite_impl.connection import Database
@@ -842,6 +843,64 @@ class SqliteMetaStore(MetaStore):
             conn.execute(
                 "DELETE FROM idempotency_keys WHERE key = ? AND response IS NULL", (key,)
             )
+
+    # ------------------------------------------------------------------ 用量
+
+    @staticmethod
+    def _usage_from_row(row: sqlite3.Row) -> UsageEventRecord:
+        return UsageEventRecord(
+            id=row["id"],
+            kind=row["kind"],
+            provider=row["provider"],
+            model_id=row["model_id"],
+            prompt_tokens=row["prompt_tokens"],
+            completion_tokens=row["completion_tokens"],
+            items=row["items"],
+            duration_ms=row["duration_ms"],
+            source=row["source"],
+            created_at=_load(row["created_at"]),
+        )
+
+    def record_usage(self, record: UsageEventRecord) -> UsageEventRecord:
+        record.created_at = record.created_at or _now()
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO usage_events"
+                " (id, kind, provider, model_id, prompt_tokens, completion_tokens,"
+                "  items, duration_ms, source, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record.id,
+                    record.kind,
+                    record.provider,
+                    record.model_id,
+                    record.prompt_tokens,
+                    record.completion_tokens,
+                    record.items,
+                    record.duration_ms,
+                    record.source,
+                    _dump(record.created_at),
+                ),
+            )
+        return record
+
+    def list_usage(self, *, since: datetime | None = None) -> list[UsageEventRecord]:
+        sql = "SELECT * FROM usage_events"
+        params: tuple[object, ...] = ()
+        if since is not None:
+            sql += " WHERE created_at >= ?"
+            params = (_dump(since),)
+        sql += " ORDER BY created_at"
+        with self._db.read() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._usage_from_row(row) for row in rows]
+
+    def purge_usage_before(self, before: datetime) -> int:
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                "DELETE FROM usage_events WHERE created_at < ?", (_dump(before),)
+            )
+        return int(cursor.rowcount or 0)
 
     # ------------------------------------------------------------------ 模型注册器
 

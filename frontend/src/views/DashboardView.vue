@@ -13,7 +13,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 
-import { getDashboard, type ActivityPoint, type Dashboard } from '@/api/stats'
+import { getDashboard, getUsage, type ActivityPoint, type Dashboard, type Usage } from '@/api/stats'
 import ActivityHeatmap from '@/components/charts/ActivityHeatmap.vue'
 import EChart from '@/components/charts/EChart.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -21,7 +21,7 @@ import EmptyState from '@/components/ui/EmptyState.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
-import { formatBytes, formatRelativeTime } from '@/composables/useFormat'
+import { formatBytes, formatCount, formatRelativeTime } from '@/composables/useFormat'
 
 /**
  * 观察窗口天数：90 天（约 14 周）。
@@ -61,6 +61,15 @@ const MAX_CELL = 14
 const data = ref<Dashboard | null>(null)
 const loading = ref(true)
 const error = ref('')
+/** 模型用量（G7）。与驾驶舱分开取：它是另一张表，慢一点不该挡主页渲染。 */
+const usage = ref<Usage | null>(null)
+const usageDays = 30
+
+/** 按用途画个相对的条形——一眼看出"钱花在哪一类调用上"。 */
+function barWidth(calls: number): number {
+  const top = Math.max(...(usage.value?.by_kind ?? []).map((item) => item.calls), 1)
+  return Math.max(2, Math.round((calls / top) * 100))
+}
 /** 趋势图看哪个维度：文档 / 切块 / 任务，三选一。 */
 const metric = ref<'documents' | 'chunks' | 'tasks'>('documents')
 
@@ -81,6 +90,16 @@ async function load(): Promise<void> {
     error.value = cause instanceof Error ? cause.message : '统计加载失败'
   } finally {
     loading.value = false
+  }
+  // 用量单独取、单独失败：它来自另一张表，取不到不该让整个驾驶舱报错
+  void loadUsage()
+}
+
+async function loadUsage(): Promise<void> {
+  try {
+    usage.value = await getUsage(usageDays)
+  } catch {
+    usage.value = null
   }
 }
 
@@ -284,6 +303,72 @@ const stageOption = computed(() => {
         </div>
       </div>
 
+      <!-- 三、模型用量（G7）。**刻意不算钱**：单价随供应商/版本/缓存/折扣不断变，
+           内置价目表必然过期，而过期的价钱比不给更糟——用户会照着它做决定 -->
+      <h2 class="group-title">模型用量</h2>
+      <div class="panel card-block">
+        <div class="block-head">
+          <span class="block-title">近 {{ usageDays }} 天</span>
+          <span class="block-hint"> 向量化接口通常不返回用量，那部分按字符数估算 </span>
+        </div>
+
+        <dl class="usage-figures">
+          <div class="usage-figure">
+            <dt>调用次数</dt>
+            <dd class="tabular">{{ formatCount(usage?.total.calls ?? 0) }}</dd>
+          </div>
+          <div class="usage-figure">
+            <dt>输入 token</dt>
+            <dd class="tabular">{{ formatCount(usage?.total.prompt_tokens ?? 0) }}</dd>
+          </div>
+          <div class="usage-figure">
+            <dt>输出 token</dt>
+            <dd class="tabular">{{ formatCount(usage?.total.completion_tokens ?? 0) }}</dd>
+          </div>
+          <div class="usage-figure">
+            <dt>处理条数</dt>
+            <dd class="tabular">{{ formatCount(usage?.total.items ?? 0) }}</dd>
+          </div>
+        </dl>
+
+        <p v-if="!usage || usage.total.calls === 0" class="usage-empty">
+          还没有用量记录。提问或上传文档之后这里会有数据。
+        </p>
+
+        <template v-else>
+          <!-- 三态分开说：不区分的话会把"没报"画成"没用"、把"估算"画成"实测" -->
+          <p v-if="usage.estimated_tokens > 0" class="usage-note">
+            其中约 {{ formatCount(usage.estimated_tokens) }} token 是按字符数估算的（{{
+              usage.estimated_calls
+            }}
+            次向量化调用，接口不返回用量）。这部分只用于看趋势，别拿它精确对账。
+          </p>
+          <p v-if="usage.unreported_calls > 0" class="usage-note">
+            另有 {{ usage.unreported_calls }} 次调用供应商没有返回用量，
+            它们只计入「调用次数」与「处理条数」，token 数字不含它们。
+          </p>
+
+          <ul class="usage-list">
+            <li v-for="item in usage.by_kind" :key="item.kind" class="usage-row">
+              <span class="usage-name">{{ item.label }}</span>
+              <span class="usage-bar">
+                <span class="usage-bar-fill" :style="{ width: `${barWidth(item.calls)}%` }" />
+              </span>
+              <span class="usage-figures-inline tabular">
+                {{ formatCount(item.calls) }} 次 · 输入 {{ formatCount(item.prompt_tokens) }} · 输出
+                {{ formatCount(item.completion_tokens) }}
+              </span>
+            </li>
+          </ul>
+
+          <p class="usage-note">
+            按模型：{{
+              usage.by_model.map((m) => `${m.model}（${formatCount(m.calls)} 次）`).join('、')
+            }}
+          </p>
+        </template>
+      </div>
+
       <!-- 四、各库规模 -->
       <h2 class="group-title">知识库规模</h2>
       <EmptyState
@@ -325,6 +410,85 @@ const stageOption = computed(() => {
 </template>
 
 <style scoped>
+/* 用量四格：与顶部大数区分开——那里是"内容有多少"，这里是"用了多少"，
+   所以数字小一号、不加注解，视觉上是二级信息 */
+.usage-figures {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+}
+
+.usage-figure {
+  min-width: 0;
+}
+
+.usage-figure dt {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.usage-figure dd {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-section-size);
+  color: var(--text-primary);
+}
+
+.usage-empty,
+.usage-note {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-micro-size);
+  line-height: 1.7;
+  color: var(--text-tertiary);
+}
+
+.usage-list {
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.usage-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+
+.usage-row + .usage-row {
+  border-top: 1px solid var(--border-hairline);
+}
+
+.usage-name {
+  flex: 0 0 80px;
+  font-size: var(--text-meta-size);
+  color: var(--text-primary);
+}
+
+/* 相对条形：一眼看出"用量集中在哪一类调用上"。
+   宽度是相对最大值算的，所以只有横向比较的意义——这正是它要表达的 */
+.usage-bar {
+  flex: 0 0 140px;
+  height: 6px;
+  background: var(--bg-subtle);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.usage-bar-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+}
+
+.usage-figures-inline {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
 .error-line {
   margin: 0 0 var(--space-4);
   color: var(--status-danger);

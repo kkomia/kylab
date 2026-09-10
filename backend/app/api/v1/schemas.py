@@ -552,6 +552,62 @@ class SlotBindIn(BaseModel):
     model_pk: str | None = None
 
 
+class UsageBucketOut(BaseModel):
+    """一档用量。``day`` / ``kind`` / ``model`` 三选一出，其余留空。"""
+
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    items: int = 0
+    unreported: int = 0
+    """这一档里有多少次调用**供应商没报用量**。"""
+    estimated: int = 0
+    """这一档里有多少次调用是**我们自己估算**的（向量化接口通常不返回用量）。"""
+
+
+class UsageDayOut(UsageBucketOut):
+    day: str
+
+
+class UsageKindOut(UsageBucketOut):
+    kind: str
+    label: str
+
+
+class UsageModelOut(UsageBucketOut):
+    model: str
+
+
+class UsageTotalsOut(UsageBucketOut):
+    pass
+
+
+class UsageOut(BaseModel):
+    """模型用量汇总（G7）。
+
+    **刻意不含费用**：单价随供应商与版本变化，内置价目表必然过期，
+    而过期的价钱比不给更糟。只给客观的 token 与调用量，让用户自己换算。
+    """
+
+    days: int
+    total: UsageTotalsOut
+    by_day: list[UsageDayOut] = Field(default_factory=list)
+    by_kind: list[UsageKindOut] = Field(default_factory=list)
+    by_model: list[UsageModelOut] = Field(default_factory=list)
+    reported_calls: int = 0
+    """实测调用数（供应商真的回了 usage）。"""
+    estimated_calls: int = 0
+    """估算调用数（我们按字符数估的，主要是向量化）。"""
+    unreported_calls: int = 0
+    """既没实测也没得估的调用数。"""
+    estimated_tokens: int = 0
+    """估算出来的 token 总数（已包含在 total 里）。
+
+    **界面必须把这块单独说清**——假精度比没数字更糟：用户会拿估算值
+    去做成本判断，而它可能偏离好几倍。
+    """
+
+
 class RegistryOut(BaseModel):
     """注册器总览：界面一次拿全，免得开设置页要打四个请求。"""
 
