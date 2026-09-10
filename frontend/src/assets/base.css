@@ -1,0 +1,77 @@
+/**
+ * 全局基座：重置、字体、排版与结构 Token。
+ * 视觉细节见《前端设计规范 v0.1》§2（主题）、§4（字体排版）、§5（布局骨架）。
+ * 铁律：颜色只引用主题变量，禁止硬编码色值（工程规范 §4.3）。
+ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-canvas);
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  font-size: 14px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 600;
+}
+
+h1 {
+  font-size: 24px;
+}
+
+h2 {
+  font-size: 18px;
+}
+
+h3 {
+  font-size: 16px;
+}
+
+a {
+  color: var(--status-info);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+code,
+pre {
+  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+}
+
+:root {
+  /* 结构 Token：圆角克制（控件 6px、面板 8px），见 §7 */
+  --radius-control: 6px;
+  --radius-panel: 8px;
+  --sidebar-width: 240px;
+  --content-reading-width: 720px;
+  --row-height: 40px;
+}

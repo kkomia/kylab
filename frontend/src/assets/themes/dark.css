@@ -1,0 +1,29 @@
+/**
+ * 深色主题 Token（《前端设计规范 v0.1》§2.2、§2.3、§2.4）。
+ * 深色不用纯白文字直撞，正文取 #e8e8e6 做柔化（§2.4）。
+ */
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* 背景层级 */
+  --bg-canvas: #1a1a1a;
+  --bg-surface: #232323;
+  --bg-hover: #2c2c2c;
+  --bg-active: #33332e;
+
+  /* 文字层级 */
+  --text-primary: #e8e8e6;
+  --text-secondary: #9b9b97;
+  --text-tertiary: #6b6b67;
+
+  /* 分割线 */
+  --border: #333330;
+  --border-strong: #45453f;
+
+  /* 语义色：仅用于状态传达 */
+  --status-success: #529e72;
+  --status-warning: #e8873a;
+  --status-danger: #e16259;
+  --status-info: #529cca;
+}

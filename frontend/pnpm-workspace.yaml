@@ -1,0 +1,10 @@
+# pnpm 配置入口（pnpm 10+ 起，原先写在 package.json 的 pnpm 字段不再被读取）。
+#
+# pnpm 默认拦截依赖的构建脚本；以下两个必须放行，否则依赖装不全：
+# - esbuild：postinstall 安装平台二进制，vite/vitest 依赖它；
+# - vue-demi：postinstall 按 vue 版本切换入口，pinia 依赖它。
+#
+# 变更方式：pnpm approve-builds（结果即写回本文件）。
+allowBuilds:
+  esbuild: true
+  vue-demi: true
