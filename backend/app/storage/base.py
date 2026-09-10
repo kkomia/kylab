@@ -55,7 +55,7 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True)
 class StoreBundle:
-    """四个仓储的聚合视图（由组合根填充）。
+    """五个仓储的聚合视图（由组合根填充）。
 
     ``services/`` 依赖这个类型就能拿到全部存储能力，而**不必 import 任何具体实现**——
     字段类型全是接口，组合根 `app/core/storage.py` 负责把实现塞进来。
@@ -65,6 +65,8 @@ class StoreBundle:
     vectors: VectorStore
     fulltext: FullTextStore
     objects: ObjectStore
+    tabular: TabularStore
+    """表格结构化副本（DuckDB）。只有 CSV/Excel 会用，其余文档不碰它。"""
 
 
 class StorageError(Exception):
@@ -930,3 +932,53 @@ class ObjectStore(ABC):
 
     @abstractmethod
     def delete(self, path: str) -> None: ...
+
+
+class TabularStore(ABC):
+    """表格结构化副本（M2 / T2.11；DuckDB 实现）。
+
+    **为什么单独一个仓储、而不是又一张 SQLite 表**：它回答的是
+    "某份 CSV 的第 3 行第 2 列是什么"这类**按行列定位**的问题。
+    DuckDB 是列式分析库，按列读、按行扫都比 SQLite 合适；
+    而且它与主库物理分离，"分析型查询拖慢主库"从结构上就不会发生。
+
+    **表名约定为 ``document_id``**（一份文档一张表）：删文档时连带清理很直接，
+    也不会出现两份文档的表结构冲突。
+    """
+
+    @abstractmethod
+    def write_table(
+        self, *, table: str, columns: Sequence[str], rows: Sequence[Sequence[str]]
+    ) -> int:
+        """写入（覆盖）一张表，返回写入行数。
+
+        **覆盖而不是追加**：同一份文档重新摄入应当得到干净的副本。
+        追加会让行数翻倍，而用户看到"这份表有两倍的行"时，
+        很难联想到是自己点了一次重跑。
+        """
+        ...
+
+    @abstractmethod
+    def table_exists(self, table: str) -> bool: ...
+
+    @abstractmethod
+    def drop_table(self, table: str) -> None:
+        """删表（删文档时调用）。表不存在不报错——那是幂等。"""
+        ...
+
+    @abstractmethod
+    def columns(self, table: str) -> list[str]: ...
+
+    @abstractmethod
+    def row_count(self, table: str) -> int: ...
+
+    @abstractmethod
+    def read_rows(
+        self, table: str, *, limit: int = 50, offset: int = 0
+    ) -> list[list[str]]:
+        """按行列读一段，**按写入顺序返回**。
+
+        DuckDB 不保证无 ``ORDER BY`` 时的行序，而"第 3 行"是用户能对照原文的说法，
+        所以实现里另外记行号并据此排序。
+        """
+        ...

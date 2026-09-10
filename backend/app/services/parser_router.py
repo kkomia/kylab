@@ -19,6 +19,7 @@ from app.parsers.base import ParseError, ParserProvider, ProbeResult
 from app.parsers.mineru_cloud import MinerUCloudParser
 from app.parsers.paddleocr_api import PaddleOCRApiParser
 from app.parsers.plain_text import PlainTextParser
+from app.parsers.tabular import TabularParser
 from app.services.runtime_config import RuntimeConfigService
 
 __all__ = ["ParserRouter", "RoutingDecision", "build_parsers"]
@@ -27,12 +28,15 @@ __all__ = ["ParserRouter", "RoutingDecision", "build_parsers"]
 def build_parsers(runtime: RuntimeConfigService) -> list[ParserProvider]:
     """按当前运行期配置构造解析器清单，**顺序即优先级**。
 
-    顺序理由：纯文本直通最便宜，先给它；MinerU 版面还原更强，让它做扫描件的第一选择；
-    PaddleOCR 是备选通道（架构 §4.1「云端失败可降级备选节点」）。
+    顺序理由：**表格解析器必须排在纯文本直通之前**——两者都认 ``.csv``，
+    而纯文本直通会把 CSV 原文当 Markdown（列名只在第一行出现一次，
+    切块后大部分行的列名就不在同一块里了）。其余顺序：纯文本直通最便宜；
+    MinerU 版面还原更强，做扫描件的第一选择；PaddleOCR 是备选通道（架构 §4.1）。
     两个云端解析器都会在 ``supports()`` 里排除纯文本类文件，所以顺序不会误伤本地直读。
     未配置 token 时它们的 ``supports()`` 恒为 False —— 没凭据也能跑通整条链路。
     """
     return [
+        TabularParser(),
         PlainTextParser(),
         MinerUCloudParser(runtime.mineru()),
         PaddleOCRApiParser(runtime.paddleocr()),

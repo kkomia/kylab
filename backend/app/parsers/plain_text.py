@@ -16,6 +16,7 @@ from app.parsers.probe import (
     TEXT_EXTENSIONS,
     suffix_of,
 )
+from app.services.tabular import TABULAR_EXTENSIONS
 
 _ENCODINGS = ("utf-8-sig", "utf-8", "gb18030")
 """解码阶梯：先 UTF-8（含 BOM），再中文环境最常见的 GB18030，最后兜底不丢数据。"""
@@ -35,6 +36,10 @@ class PlainTextParser(ParserProvider):
         那样它就会被纯文本直通接走，切出来的是原始 PDF 字节流（真踩过）。
         文本型 PDF 该由版面解析器处理——覆盖率高只说明"不需要 OCR"，不等于"能当 txt 读"。
         """
+        # 表格类由 TabularParser 接走：它会把列名渲染进每一行，
+        # 而纯文本直通做不到（列名只在第一行出现一次）。这里显式让路。
+        if suffix_of(filename) in TABULAR_EXTENSIONS:
+            return False
         if suffix_of(filename) in TEXT_EXTENSIONS:
             return True
         # 后缀不认识时，才允许拿 MIME 与探测结论兜底，且必须不是二进制容器

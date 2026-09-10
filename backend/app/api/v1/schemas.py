@@ -633,6 +633,20 @@ class SyncResultOut(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class TableRowsOut(BaseModel):
+    """表格文档的结构化副本（M2 / T2.11）。
+
+    ``rows`` 是**字符串矩阵**而不是对象数组：表格副本刻意不做类型推断
+    （``007`` 变成 ``7`` 是数据损失），所以返回时也保持原样。
+    """
+
+    document_id: str
+    columns: list[str] = Field(default_factory=list)
+    rows: list[list[str]] = Field(default_factory=list)
+    total: int = 0
+    """该表总行数，与 ``rows`` 长度无关（``rows`` 会被 limit 截断）。"""
+
+
 class ImpactOut(BaseModel):
     """删除会波及什么（M6 / T6.3）。
 

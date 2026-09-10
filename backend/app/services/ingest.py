@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from dataclasses import dataclass
 from urllib.parse import quote
@@ -26,6 +27,7 @@ from app.pipeline.state_machine import InvalidTransition, assert_transition
 from app.services.chunking import ChunkingConfig, chunk_markdown
 from app.services.embedding.base import EmbeddingError, EmbeddingProvider
 from app.services.parser_router import ParserRouter
+from app.services.tabular import TABULAR_EXTENSIONS, parse_tabular
 from app.storage.base import (
     MARKDOWN,
     ORIGINALS,
@@ -35,6 +37,8 @@ from app.storage.base import (
     StoreBundle,
     content_key,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "IngestError",
@@ -210,7 +214,30 @@ class IngestService:
             )
         )
         self._advance(document, DocumentStage.PARSED)
+        self._store_tabular_copy(document, original)
         return result
+
+    def _store_tabular_copy(self, document: DocumentRecord, original: bytes) -> None:
+        """表格文档：另写一份结构化副本进 DuckDB（T2.11 双写）。
+
+        **失败只记日志、不影响摄入**：结构化副本是**旁路**——
+        检索用的行文本已经由 ``TabularParser`` 产出并向量化，
+        副本写不进去只是"不能精确查询"，不该让整份文档摄入失败。
+        （这与"解析失败必须报错"不同：那是主链路，这是附加品。）
+
+        判断"是不是表格"用后缀而不是"解析器是谁"：解析器的选择是路由结果，
+        而这里要的是文件类型这个客观事实。
+        """
+        if _suffix_of(document.name) not in TABULAR_EXTENSIONS:
+            return
+        try:
+            parsed = parse_tabular(filename=document.name, content=original)
+            rows = self._stores.tabular.write_table(
+                table=document.id, columns=parsed.columns, rows=parsed.rows
+            )
+            logger.info("文档 %s 写入结构化副本 %d 行", document.name, rows)
+        except Exception:
+            logger.exception("文档 %s 的结构化副本写入失败（不影响摄入）", document.name)
 
     def _reuse_parse_result(self, document: DocumentRecord) -> None:
         """断点续跑：已有解析产物就直接用，不重复调用解析引擎（可能是收费的云服务）。"""

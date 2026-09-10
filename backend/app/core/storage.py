@@ -13,6 +13,7 @@ from pathlib import Path
 
 from app.core.config import Settings, get_settings
 from app.storage.base import StoreBundle
+from app.storage.duckdb_impl.tabular_store import DuckDbTabularStore
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
@@ -29,7 +30,7 @@ STORAGE_SUBDIRS = (ORIGINALS_DIR, MARKDOWN_DIR, IMAGES_DIR)
 
 
 def build_stores(settings: Settings | None = None) -> StoreBundle:
-    """按配置建库、迁移、准备目录，并装配四个仓储。
+    """按配置建库、迁移、准备目录，并装配五个仓储。
 
     幂等：迁移只应用缺失的版本，目录已存在则跳过，可安全地在每次启动时调用。
 
@@ -56,6 +57,9 @@ def build_stores(settings: Settings | None = None) -> StoreBundle:
         vectors=SqliteVectorStore(database),
         fulltext=SqliteFullTextStore(database, slow_query_ms=resolved.slow_query_ms),
         objects=object_store,
+        # 表格副本单独一个 DuckDB 文件：列式库适合按行列定位的查询，
+        # 而且与主库物理分离，不会出现"扫一份大表把 API 拖慢"
+        tabular=DuckDbTabularStore(data_dir / "tabular.duckdb"),
     )
 
 

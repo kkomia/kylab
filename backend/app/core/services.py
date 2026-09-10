@@ -42,6 +42,7 @@ from app.services.retrieval.rerank import RerankProvider
 from app.services.runtime_config import RuntimeConfigService
 from app.services.sources import SourceService
 from app.services.stats import StatsService
+from app.services.tabular import TabularService
 from app.services.usage import UsageService
 from app.services.users import UserService
 from app.storage.base import StoreBundle
@@ -84,6 +85,8 @@ class Services:
     """数据源：HTML / RSS 的登记与拉取（M6 / T6.1–T6.3）。"""
     observability: ObservabilityService
     """运行态判据：任务是否卡住、是否长时间没被领取（M7 / T7.4）。"""
+    tabular: TabularService
+    """表格结构化副本：读写 CSV/Excel 的行列（M2 / T2.11）。"""
     conversations: ConversationService
     """对话留存：会话与消息的读写（§11.2）。"""
     embedder: EmbeddingProvider
@@ -249,6 +252,7 @@ def build_services(
         usage=usage,
         users=UserService(bundle),
         lifecycle=LifecycleService(bundle),
+        tabular=TabularService(bundle),
         sources=sources_service,
         observability=ObservabilityService(
             bundle, worker_lease_seconds=resolved.worker_lease_seconds

@@ -188,7 +188,16 @@ class LifecycleService:
         else:
             logger.warning("文档 %s 没有记录原文路径，不记回收站", document_id)
 
-        # 3) 删元数据（级联带走任务与子文件）
+        # 3) 删结构化副本（表格文档才有的旁路数据）。
+        #    **要显式删**：DuckDB 里的表不属于元数据级联的范围，
+        #    留着会攒下一堆再也访问不到的表——而它们还占着磁盘。
+        #    表不存在时 drop 是幂等的，所以不必先判断类型。
+        try:
+            self._stores.tabular.drop_table(document_id)
+        except Exception:
+            logger.exception("删除文档 %s 的结构化副本失败", document_id)
+
+        # 4) 删元数据（级联带走任务与子文件）
         self._stores.meta.delete_document(document_id)
         logger.info("文档 %s 已删除（切块 %d 个）", document.name, len(chunk_ids))
         return record
@@ -217,6 +226,12 @@ class LifecycleService:
         if chunk_ids:
             self._stores.vectors.delete_vectors(document.knowledge_base_id, chunk_ids=chunk_ids)
             self._stores.fulltext.delete_chunks(chunk_ids)
+
+        # 结构化副本（表格文档）也在这里清：知识库级删除逐文档走这个方法
+        try:
+            self._stores.tabular.drop_table(document_id)
+        except Exception:
+            logger.exception("清理文档 %s 的结构化副本失败", document_id)
 
         original_path = self._stores.meta.get_setting(f"document.{document_id}.original_path")
         if original_path and self._stores.objects.exists(original_path):

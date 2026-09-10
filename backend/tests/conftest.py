@@ -17,6 +17,7 @@ from app.core.storage import reset_stores
 from app.models.enums import DataSourceKind, DocumentStage
 from app.services.runtime_config import RuntimeConfigService
 from app.storage.base import DocumentRecord, KnowledgeBaseRecord, StoreBundle
+from app.storage.duckdb_impl.tabular_store import DuckDbTabularStore
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
@@ -93,13 +94,24 @@ def object_store(tmp_path) -> LocalObjectStore:
 
 
 @pytest.fixture
-def bundle(database: Database, object_store: LocalObjectStore) -> StoreBundle:
-    """四个仓储的装配（与组合根同构，但不碰磁盘上的开发库）。"""
+def tabular_store(tmp_path) -> DuckDbTabularStore:
+    """表格副本库用临时文件，绝不写进仓库的 data/。"""
+    return DuckDbTabularStore(tmp_path / "tabular.duckdb")
+
+
+@pytest.fixture
+def bundle(
+    database: Database,
+    object_store: LocalObjectStore,
+    tabular_store: DuckDbTabularStore,
+) -> StoreBundle:
+    """五个仓储的装配（与组合根同构，但不碰磁盘上的开发库）。"""
     return StoreBundle(
         meta=SqliteMetaStore(database),
         vectors=SqliteVectorStore(database),
         fulltext=SqliteFullTextStore(database),
         objects=object_store,
+        tabular=tabular_store,
     )
 
 
