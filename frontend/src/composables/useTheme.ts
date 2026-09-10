@@ -1,5 +1,5 @@
 /**
- * 主题切换（《前端设计规范 v0.2》§2、§8）。
+ * 主题切换（《前端设计规范 v0.3》§2、§8）。
  *
  * 约定：
  * - 主题落在 `document.documentElement.dataset.theme`，与 index.html 的首屏脚本共用 localStorage 键；

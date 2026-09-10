@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * 太阳 / 浅色主题图标。
- * 内联 SVG、1.5px 描边、currentColor（《前端设计规范 v0.2》§3）。
+ * 内联 SVG、1.5px 描边、currentColor（《前端设计规范 v0.3》§3）。
  */
 </script>
 
