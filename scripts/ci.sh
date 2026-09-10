@@ -1,6 +1,9 @@
 #!/usr/bin/env sh
 # CI 门禁（本地复现 CI 用）：规范检查 + 后端测试 + 前端测试
+#
 # 用法：sh scripts/ci.sh
+#
+# 跨平台注意：解释器名不写死（Windows 没有 python3），见 lint.sh 中的探测逻辑。
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)

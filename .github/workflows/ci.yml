@@ -43,6 +43,22 @@ jobs:
       - name: 分层纪律与测试位置
         run: python3 scripts/check_layering.py
 
+  scripts:
+    name: 门禁脚本自检
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 上面两个 job 只验证代码，不验证 scripts/*.sh 本身。
+      # .sh 的完整行为验证在本机 Git Bash 做过（含 Windows 无 python3 的坑），
+      # 这里做语法自检，防止脚本被改坏后 CI 仍全绿。
+      - name: Shell 脚本语法检查
+        run: |
+          sh -n scripts/lint.sh
+          sh -n scripts/ci.sh
+          sh -n scripts/dev-backend.sh
+          sh -n scripts/dev-frontend.sh
+
   frontend:
     name: 前端（eslint + vitest + 规范扫描）
     runs-on: ubuntu-latest

@@ -1,11 +1,30 @@
 #!/usr/bin/env sh
-# 代码规范检查（提交前跑一遍）：ruff + emoji 扫描 + 分层纪律 + eslint
+# 代码规范检查（提交前跑一遍）：ruff + emoji 扫描 + 分层纪律 + eslint/prettier
+#
 # 用法：sh scripts/lint.sh
+#
+# 跨平台注意：解释器名不能写死。Linux/macOS 是 python3，Windows 只有 python，
+# 且 Windows 应用商店的 python3 别名会在 PATH 上"存在但不可执行"，因此逐个探测能否真正运行。
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-PY=${PYTHON:-python3}
 fail=0
+
+pick_python() {
+    for candidate in "${PYTHON:-}" python3 python py; do
+        [ -n "$candidate" ] || continue
+        if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys' >/dev/null 2>&1; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if ! PY=$(pick_python); then
+    echo "未找到可用的 Python 解释器（可用 PYTHON 环境变量指定）" >&2
+    exit 2
+fi
 
 step() {
     label=$1
