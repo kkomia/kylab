@@ -28,7 +28,9 @@ from app.models.enums import (
 )
 from app.storage.base import (
     ApiKeyRecord,
+    ChatMessageRecord,
     ChunkRecord,
+    ConversationRecord,
     DataSourceRecord,
     DocumentPartRecord,
     DocumentRecord,
@@ -790,6 +792,127 @@ class SqliteMetaStore(MetaStore):
             conn.execute(
                 "DELETE FROM idempotency_keys WHERE key = ? AND response IS NULL", (key,)
             )
+
+    # ------------------------------------------------------------------ 对话留存
+
+    @staticmethod
+    def _conversation_from_row(row: sqlite3.Row) -> ConversationRecord:
+        return ConversationRecord(
+            id=row["id"],
+            title=row["title"],
+            kb_ids=tuple(json.loads(row["kb_ids"])),
+            created_at=_load(row["created_at"]),
+            updated_at=_load(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _message_from_row(row: sqlite3.Row) -> ChatMessageRecord:
+        return ChatMessageRecord(
+            id=row["id"],
+            conversation_id=row["conversation_id"],
+            role=row["role"],
+            content=row["content"],
+            sources=tuple(json.loads(row["sources"])),
+            created_at=_load(row["created_at"]),
+        )
+
+    def create_conversation(self, record: ConversationRecord) -> ConversationRecord:
+        now = _now()
+        record.created_at = record.created_at or now
+        record.updated_at = record.updated_at or now
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO conversations (id, title, kb_ids, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (
+                    record.id,
+                    record.title,
+                    _json(list(record.kb_ids)),
+                    _dump(record.created_at),
+                    _dump(record.updated_at),
+                ),
+            )
+        return record
+
+    def get_conversation(self, conversation_id: str) -> ConversationRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
+            ).fetchone()
+        return self._conversation_from_row(row) if row else None
+
+    def list_conversations(self, *, limit: int | None = None) -> list[ConversationRecord]:
+        sql = "SELECT * FROM conversations ORDER BY updated_at DESC"
+        params: tuple[object, ...] = ()
+        if limit is not None:
+            sql += " LIMIT ?"
+            params = (limit,)
+        with self._db.read() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._conversation_from_row(row) for row in rows]
+
+    def rename_conversation(self, conversation_id: str, title: str) -> None:
+        # 改名不推 updated_at：否则用户整理一遍标题列表，会话按"最近更新"的排序
+        # 会全乱——他想按对话发生的时间找，不是按自己改标题的时间
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE conversations SET title = ? WHERE id = ?", (title, conversation_id)
+            )
+
+    def touch_conversation(self, conversation_id: str) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE conversations SET updated_at = ? WHERE id = ?",
+                (_dump(_now()), conversation_id),
+            )
+
+    def delete_conversation(self, conversation_id: str) -> None:
+        """删会话及其消息。
+
+        显式删消息而不是只靠外键级联：本项目的连接**没有开 `PRAGMA foreign_keys=ON`**，
+        级联不会生效。只删会话会留下一堆孤儿消息，而且它们会一直被
+        ``list_messages`` 之外的地方查到（例如按会话聚合的统计）。
+        """
+        with self._db.session() as conn:
+            conn.execute(
+                "DELETE FROM chat_messages WHERE conversation_id = ?", (conversation_id,)
+            )
+            conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+
+    def append_message(self, record: ChatMessageRecord) -> ChatMessageRecord:
+        record.created_at = record.created_at or _now()
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO chat_messages"
+                " (id, conversation_id, role, content, sources, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    record.id,
+                    record.conversation_id,
+                    record.role,
+                    record.content,
+                    _json([dict(item) for item in record.sources]),
+                    _dump(record.created_at),
+                ),
+            )
+        return record
+
+    def list_messages(self, conversation_id: str) -> list[ChatMessageRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM chat_messages WHERE conversation_id = ?"
+                " ORDER BY created_at, rowid",
+                (conversation_id,),
+            ).fetchall()
+        return [self._message_from_row(row) for row in rows]
+
+    def count_messages(self, conversation_id: str) -> int:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM chat_messages WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+        return int(row["n"])
 
     def create_webhook(self, record: WebhookRecord) -> WebhookRecord:
         with self._db.session() as conn:

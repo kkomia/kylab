@@ -13,6 +13,7 @@
  *    就是让它闭嘴——不给这个按钮，他只能刷新页面，连已经看到的部分都丢。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import {
   DEFAULT_SYSTEM_PROMPT,
@@ -21,6 +22,7 @@ import {
   type ChatHistoryMessage,
   type ChatSource,
 } from '@/api/chat'
+import { getConversation } from '@/api/conversations'
 import { getSettings, updateSettings } from '@/api/settings'
 import IconChat from '@/components/icons/IconChat.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -30,6 +32,7 @@ import EmptyState from '@/components/ui/EmptyState.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import { renderAnswerMarkdown } from '@/composables/useMarkdown'
 import { useToast } from '@/composables/useToast'
+import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 /** 会话里带入模型的历史轮数上限：无边界地带上全部历史，提示词会先被自己挤爆。 */
@@ -45,6 +48,9 @@ interface Message {
 }
 
 const store = useKnowledgeBaseStore()
+const conversations = useConversationStore()
+const route = useRoute()
+const router = useRouter()
 const { notifyError, notifySuccess, notifyWarning } = useToast()
 
 const selected = ref<string[]>([])
@@ -56,9 +62,20 @@ const stream = ref<{ abort: () => void } | null>(null)
 /** 组件是否已卸载：句柄到手时若人已经走了，这条流要立刻掐掉。 */
 let unmounted = false
 const streamHost = ref<HTMLElement | null>(null)
+/** 正在回放哪一次历史对话（空 = 新对话）。 */
+const loadingHistory = ref(false)
+
+/**
+ * 当前会话 id。**以路径为唯一来源**，不做本地副本：
+ * 侧栏点、前进/后退、直接打开链接三种入口都会改路径，
+ * 自己再存一份 state 就得在三个地方同步，迟早不一致。
+ */
+const conversationId = computed(() => String(route.params.conversationId ?? ''))
 
 /** 没选库时的问题没有可依据的原文，与后端的 kb_ids 必填是同一条约束。 */
-const canSend = computed(() => selected.value.length > 0 && query.value.trim().length > 0)
+const canSend = computed(
+  () => selected.value.length > 0 && query.value.trim().length > 0 && !loadingHistory.value,
+)
 
 const selectedNames = computed(() =>
   store.items.filter((item) => selected.value.includes(item.id)).map((item) => item.name),
@@ -69,7 +86,50 @@ onMounted(async () => {
   // 默认全选：打开这一页的人多半就是要问遍手上的资料，让他先做一轮取消勾选是白费功夫
   selected.value = store.items.map((item) => item.id)
   void loadPrompt()
+  await loadConversation()
 })
+
+/**
+ * 切换会话时重新装载。
+ *
+ * **必须 watch 而不是只靠 onMounted**：`/chat` 与 `/chat/:id` 用的是同一个组件，
+ * Vue 会复用实例、不会重新挂载——只写在 onMounted 里，从列表点另一条会话时
+ * 界面不会有任何变化（这是路由参数类页面最经典的坑）。
+ */
+watch(conversationId, () => {
+  void loadConversation()
+})
+
+/** 把库里的历史读进界面。 */
+async function loadConversation(): Promise<void> {
+  const id = conversationId.value
+  if (!id) {
+    messages.value = []
+    return
+  }
+  loadingHistory.value = true
+  try {
+    const detail = await getConversation(id)
+    messages.value = detail.messages.map((item) => ({
+      role: item.role === 'user' ? 'user' : 'assistant',
+      text: item.content,
+      sources: item.sources,
+      error: '',
+      streaming: false,
+    }))
+    // 会话建立时用的哪些库：回放时应当沿用，否则多轮上下文会指向上一次没查的库
+    if (detail.kb_ids.length) {
+      selected.value = detail.kb_ids.filter((kbId) => store.items.some((item) => item.id === kbId))
+    }
+    stick.value = true
+    void scrollToBottom()
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '会话加载失败')
+    messages.value = []
+  } finally {
+    loadingHistory.value = false
+  }
+}
 
 // 清单可能是 App.vue 稍后加载完的；勾选态要在它到位后补上，否则一进来就是"没选库"
 watch(
@@ -116,6 +176,22 @@ async function send(): Promise<void> {
   // 先算历史：这条提问还没进 messages，不能把自己也算成上下文
   const context = history.value
 
+  // 新对话：第一句话落下去之前先建会话，拿到 id 再提问。
+  // 反过来（先问再建）会丢掉这一轮的落库——后端要靠 conversation_id 才知道往哪写。
+  let target = conversationId.value
+  if (!target) {
+    try {
+      const created = await conversations.create(selected.value)
+      target = created.id
+      // 用 replace 而不是 push：用户按"新对话"只是想换个会话，
+      // 在历史里留一条空的 /chat 没有任何意义，返回时会看到一片空白
+      await router.replace(`/chat/${target}`)
+    } catch (cause) {
+      notifyError(cause instanceof Error ? cause.message : '无法新建对话')
+      return
+    }
+  }
+
   messages.value = [
     ...messages.value,
     { role: 'user', text, sources: [], error: '', streaming: false },
@@ -140,7 +216,9 @@ async function send(): Promise<void> {
     // 这一步在响应头到达时就返回，之后正文全走 handlers：
     // 「停止」按钮因此从第一个字开始就是活的
     const handle = await chatStream(
-      { query: text, kb_ids: selected.value, history: context },
+      // 带上 conversation_id 之后，历史由后端从库里取——所以 context 传不传都一样，
+      // 留着是为了"没会话"那条路径（此处不会走到，但接口本身支持无状态调用）
+      { query: text, kb_ids: selected.value, history: context, conversation_id: target },
       {
         onSources: (items) => patch({ sources: items }),
         onDelta: (delta) => patch({ text: (messages.value[index]?.text ?? '') + delta }),
@@ -173,6 +251,9 @@ async function send(): Promise<void> {
 function finish(): void {
   sending.value = false
   stream.value = null
+  // 一轮结束后刷新侧栏那一条：标题（首轮才有）与消息数都变了。
+  // 只刷这一条而不是整表，避免把用户刚建的其他会话顺序打乱
+  if (conversationId.value) void conversations.refreshOne(conversationId.value)
 }
 
 /** 用户点了「停止」：已经流出来的部分留着，它仍然是有用的。 */

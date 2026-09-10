@@ -12,9 +12,7 @@ import {
 
 /** 读根节点上实际生效的系数——这是"真的改了字号"的唯一判据。 */
 function appliedFactor(): number {
-  return Number.parseFloat(
-    document.documentElement.style.getPropertyValue('--font-scale'),
-  )
+  return Number.parseFloat(document.documentElement.style.getPropertyValue('--font-scale'))
 }
 
 describe('useFontScale', () => {

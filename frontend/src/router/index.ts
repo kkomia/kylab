@@ -33,6 +33,14 @@ const router = createRouter({
       meta: { title: '对话' },
     },
     {
+      // 历史会话用**路径**而不是查询参数：侧栏点进去要能前进/后退，
+      // 也要能直接收藏某一次对话。/chat/:id 让这两件事都成立。
+      path: '/chat/:conversationId',
+      name: 'conversation',
+      component: () => import('@/views/ChatView.vue'),
+      meta: { title: '对话' },
+    },
+    {
       path: '/kb/:kbId',
       name: 'knowledge-base',
       component: () => import('@/views/KnowledgeBaseView.vue'),

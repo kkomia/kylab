@@ -310,6 +310,10 @@ class ChatRequestIn(BaseModel):
     kb_ids: list[str] = Field(min_length=1)
     top_k: int | None = Field(default=None, gt=0, le=20, description="留空用设置里的条数")
     history: list[ChatHistoryIn] = Field(default_factory=list)
+    conversation_id: str | None = Field(
+        default=None,
+        description="指定则把这一轮存进该会话，并以库里的历史为准（忽略上方的 history）",
+    )
 
 
 class ChatSourceOut(BaseModel):
@@ -371,3 +375,46 @@ class ApiKeyIssuedOut(ApiKeyOut):
 
 class ApiKeyListOut(BaseModel):
     items: list[ApiKeyOut]
+
+
+# --------------------------------------------------------------------- 对话留存
+
+
+class ConversationCreateIn(BaseModel):
+    title: str = Field(default="", max_length=64)
+    kb_ids: list[str] = Field(default_factory=list)
+
+
+class ConversationRenameIn(BaseModel):
+    title: str = Field(min_length=1, max_length=64)
+
+
+class ConversationOut(BaseModel):
+    """会话摘要。列表用它，所以带上 ``message_count`` 让界面能写"6 条消息"。"""
+
+    model_config = _RECORD_CONFIG
+
+    id: str
+    title: str
+    kb_ids: list[str] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    message_count: int = 0
+
+
+class ConversationListOut(BaseModel):
+    items: list[ConversationOut]
+
+
+class ChatMessageOut(BaseModel):
+    model_config = _RECORD_CONFIG
+
+    id: str
+    role: str
+    content: str
+    sources: list[ChatSourceOut] = Field(default_factory=list)
+    created_at: datetime | None = None
+
+
+class ConversationDetailOut(ConversationOut):
+    messages: list[ChatMessageOut] = Field(default_factory=list)

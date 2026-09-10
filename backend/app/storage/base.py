@@ -295,6 +295,36 @@ class IdempotencyRecord:
 
 
 @dataclass(slots=True)
+class ConversationRecord:
+    """一次对话（会话）。
+
+    ``title`` 由首轮提问生成——让用户自己起名字的对话工具，最后满屏都是"新对话"。
+    """
+
+    id: str
+    title: str = ""
+    kb_ids: Sequence[str] = field(default_factory=tuple)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class ChatMessageRecord:
+    """会话里的一条消息。
+
+    ``sources`` 是**引用快照**（当轮命中的原文出处），不是每轮重新检索的结果：
+    历史回答当时依据的是哪几段，事后回看必须还是那几段，否则引用编号就对不上了。
+    """
+
+    id: str
+    conversation_id: str
+    role: str
+    content: str
+    sources: Sequence[dict[str, object]] = field(default_factory=tuple)
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
 class SearchHit:
     """检索命中。``score`` 的含义随来源不同（向量距离 / BM25 / RRF 融合分）。"""
 
@@ -532,6 +562,44 @@ class MetaStore(ABC):
         业务执行中途失败时用：键留着但 ``response`` 为空，客户端重试只会拿到
         "正在处理中"——而实际上什么都没在处理了。
         """
+        ...
+
+    # ---- 对话留存（架构 §3 的对话层；M6 后续）----
+    @abstractmethod
+    def create_conversation(self, record: ConversationRecord) -> ConversationRecord: ...
+
+    @abstractmethod
+    def get_conversation(self, conversation_id: str) -> ConversationRecord | None: ...
+
+    @abstractmethod
+    def list_conversations(self, *, limit: int | None = None) -> list[ConversationRecord]:
+        """按最近更新倒序。"""
+        ...
+
+    @abstractmethod
+    def rename_conversation(self, conversation_id: str, title: str) -> None: ...
+
+    @abstractmethod
+    def touch_conversation(self, conversation_id: str) -> None:
+        """把 ``updated_at`` 推到现在（追加消息后调用）。"""
+        ...
+
+    @abstractmethod
+    def delete_conversation(self, conversation_id: str) -> None:
+        """删除会话**及其全部消息**（外键级联）。"""
+        ...
+
+    @abstractmethod
+    def append_message(self, record: ChatMessageRecord) -> ChatMessageRecord: ...
+
+    @abstractmethod
+    def list_messages(self, conversation_id: str) -> list[ChatMessageRecord]:
+        """按写入顺序返回——顺序就是对话顺序，所以按 created_at 排序。"""
+        ...
+
+    @abstractmethod
+    def count_messages(self, conversation_id: str) -> int:
+        """会话里的消息条数（列表页显示"几轮"，不必把消息全读出来数）。"""
         ...
 
     # ---- 回收站 ----

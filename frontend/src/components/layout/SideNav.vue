@@ -11,7 +11,7 @@
  * 检索没有独立入口：它是"在某个库里查东西"，收在知识库详情页里；
  * 跨库问答则收在「对话」页——那里的问题是"这些库里怎么说"，不是"哪个块最像"。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { fetchHealth } from '@/api/health'
@@ -25,11 +25,13 @@ import IconSun from '@/components/icons/IconSun.vue'
 import IconTasks from '@/components/icons/IconTasks.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
 import { useTheme } from '@/composables/useTheme'
+import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 const { theme, toggleTheme } = useTheme()
 const route = useRoute()
 const store = useKnowledgeBaseStore()
+const conversations = useConversationStore()
 
 /** 服务状态双编码：图标 + 文字（§8 必须项），不靠颜色单独表意。 */
 type ServiceState = 'checking' | 'online' | 'offline'
@@ -52,6 +54,7 @@ onMounted(async () => {
   void checkService()
   if (store.items.length === 0) await store.load()
   void store.loadSummaries()
+  void conversations.load()
 })
 
 defineExpose({ checkService })
@@ -66,6 +69,12 @@ const NAV_ITEMS = [
 function isActive(to: string, exact: boolean): boolean {
   return exact ? route.path === to : route.path.startsWith(to)
 }
+
+/** 当前会话 id：从路径里取，用来高亮列表里那一条。 */
+const activeConversationId = computed(() => {
+  const matched = /^\/chat\/([^/]+)$/.exec(route.path)
+  return matched ? matched[1] : ''
+})
 
 /** 设置从页面收进弹窗：它是动作，做完就走（《界面信息架构草案》§1）。 */
 const settingsOpen = ref(false)
@@ -92,13 +101,33 @@ const settingsOpen = ref(false)
     </nav>
 
     <!--
-      侧栏下半部分原本是「最近文档」列表，现在换成一句指路：
-      用户在这一栏里真正缺的不是"我最近传了什么"，而是"这里能拿知识库干什么"。
-      列表还占着最显眼的位置，却只重复了知识库卡片页已有的信息。
+      侧栏下半部分：**会话列表**。
+      这块位置最早是「最近文档」，后来换成一句指路的占位——因为用户在这一栏里真正
+      需要的不是"我最近传了什么"，而是"我最近问过什么"。对话留存做完之后，它终于有东西可放。
     -->
     <div class="side-section">
-      <p class="section-label">对话</p>
-      <p class="side-note">在上面「对话」里向知识库提问，回答会带原文引用。</p>
+      <div class="section-head">
+        <p class="section-label">对话</p>
+        <RouterLink class="section-action" to="/chat" title="开始新对话">新对话</RouterLink>
+      </div>
+
+      <p v-if="conversations.error" class="side-note">{{ conversations.error }}</p>
+      <p v-else-if="conversations.items.length === 0" class="side-note">
+        还没有对话。在上面「对话」里提问，这里会留下记录。
+      </p>
+      <ul v-else class="conv-list">
+        <li v-for="item in conversations.items" :key="item.id">
+          <RouterLink
+            class="conv-item"
+            :class="{ 'conv-item-active': item.id === activeConversationId }"
+            :to="`/chat/${item.id}`"
+            :title="item.title || '未命名对话'"
+          >
+            <span class="conv-title">{{ item.title || '未命名对话' }}</span>
+            <span class="conv-meta tabular">{{ item.message_count }} 条</span>
+          </RouterLink>
+        </li>
+      </ul>
     </div>
 
     <div class="sidebar-foot">
@@ -220,8 +249,8 @@ const settingsOpen = ref(false)
   border-radius: 1px;
 }
 
-/* 侧栏下半部分：一句关于「对话」的指路。flex:1 占住剩余高度，
-   底部的主题/设置始终贴在窗口底部，不随说明文字的长短上下浮动 */
+/* 侧栏下半部分：会话列表。flex:1 占住剩余高度，
+   底部的主题/设置始终贴在窗口底部，不随列表长短上下浮动 */
 .side-section {
   flex: 1;
   min-height: 0;
@@ -230,14 +259,78 @@ const settingsOpen = ref(false)
   border-top: 1px solid var(--border-hairline);
 }
 
+/* 分区标签与"新对话"同一行：后者是个动作，贴着它所属的那一段放，
+   比另起一行更容易被理解为"在这一段里新建" */
+.section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0 var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.section-action {
+  flex: 0 0 auto;
+  font-size: var(--text-micro-size);
+  color: var(--accent-text);
+}
+
+.section-action:hover {
+  text-decoration: underline;
+}
+
 /* 分区标签：侧栏宽一点以后，光靠留白已经分不开"导航"与下面这段。
    小号 + 加宽字距 + 弱色——它只是一个"这里是另一段"的路标，不该跟可点项抢注意力。 */
 .section-label {
-  margin: 0 0 var(--space-2);
-  padding: 0 var(--space-2);
+  margin: 0;
   font-size: var(--text-micro-size);
   font-weight: 500;
   letter-spacing: 0.06em;
+  color: var(--text-tertiary);
+}
+
+.conv-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.conv-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  text-decoration: none;
+  border-radius: var(--radius-control);
+}
+
+.conv-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 选中态与主导航用同一套语言：浅品牌底 + 品牌色文字 */
+.conv-item-active {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+/* 标题占满剩余宽度并省略：会话标题来自首轮提问，长度不可控 */
+.conv-title {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-meta {
+  flex: 0 0 auto;
+  font-size: var(--text-micro-size);
   color: var(--text-tertiary);
 }
 

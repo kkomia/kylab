@@ -245,7 +245,44 @@ _MIGRATION_002 = Migration(
     ),
 )
 
-MIGRATIONS: tuple[Migration, ...] = (_MIGRATION_001, _MIGRATION_002)
+_MIGRATION_003 = Migration(
+    version=3,
+    description="对话留存：conversations 与 chat_messages",
+    statements=(
+        # 会话。title 取首轮提问的前若干字——用户回看时要能认出"这是哪一次"，
+        # 而让人自己起名字的对话工具，最后满屏都是"新对话"。
+        """
+        CREATE TABLE conversations (
+            id          TEXT PRIMARY KEY,
+            title       TEXT NOT NULL DEFAULT '',
+            kb_ids      TEXT NOT NULL DEFAULT '[]',
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        )
+        """,
+        # 消息。**与会话分两张表**，而不是像 RAGFlow 那样把整段历史塞进一个 JSON 列：
+        # 后者写一次要重写全量，且没法按时间查单条。分开之后"续写一轮"是一次 INSERT，
+        # 代价与会话长度无关。
+        #
+        # sources 存**引用快照**（JSON），不是每轮重新检索：历史回答当时依据的是哪几段，
+        # 事后回看必须还是那几段——重查会得到不同结果，引用编号就对不上了。
+        """
+        CREATE TABLE chat_messages (
+            id              TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+            role            TEXT NOT NULL,
+            content         TEXT NOT NULL,
+            sources         TEXT NOT NULL DEFAULT '[]',
+            created_at      TEXT NOT NULL
+        )
+        """,
+        # 列表按最近更新倒序、取消息按会话聚合，都走这个索引
+        "CREATE INDEX idx_chat_messages_conversation"
+        " ON chat_messages(conversation_id, created_at)",
+    ),
+)
+
+MIGRATIONS: tuple[Migration, ...] = (_MIGRATION_001, _MIGRATION_002, _MIGRATION_003)
 """全部迁移，按 version 升序。只增不改。"""
 
 _MIGRATIONS_TABLE = """

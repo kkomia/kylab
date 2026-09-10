@@ -36,6 +36,13 @@ export interface ChatPayload {
   /** 留空则由后端取设置里的「带入资料的条数」。 */
   top_k?: number
   history?: ChatHistoryMessage[]
+  /**
+   * 指定会话：后端会把这一轮存进去，并**以库里的历史为准**（忽略上面的 history）。
+   *
+   * 两条路径都留着是有意的——界面上的对话带上它（于是能回看），
+   * 而脚本与 MCP 不带上它（无状态、不留垃圾会话）。
+   */
+  conversation_id?: string
 }
 
 /** 服务端事件（后端 api/v1/chat.py 的事件形状）。 */
