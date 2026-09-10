@@ -29,7 +29,7 @@ export default tseslint.config(
       },
     },
     rules: {
-      // 本项目硬性禁令（《前端设计规范 v0.1》§3、§8）
+      // 本项目硬性禁令（《前端设计规范 v0.2》§3、§8）
       'kylab/no-emoji': 'error',
     },
   },

@@ -87,7 +87,7 @@ kylab/
 |----------|----------|
 | [Architecture v0.2](docs/架构设计-v0.2.md) | Positioning, architecture, ingestion pipeline, retrieval, storage choice, MVP scope |
 | [Engineering spec v0.2](docs/项目工程规范-v0.2.md) | Layout, naming, layering discipline, testing, commits and branches |
-| [Frontend design spec v0.1](docs/前端设计规范-v0.1.md) | Notion-style grayscale system, light/dark theme tokens, no-emoji and inline SVG rules |
+| [Frontend design spec v0.2](docs/前端设计规范-v0.2.md) | Notion-style grayscale system, light/dark theme tokens, no-emoji and inline SVG rules, card-vs-list by item count |
 | [Development plan v0.1](docs/开发计划-v0.1.md) | Milestones M0–M7, task breakdown, quality gates, risk register |
 
 > Documents are written in Chinese; the English README is a summary only.
