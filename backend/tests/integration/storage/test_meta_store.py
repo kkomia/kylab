@@ -29,6 +29,7 @@ from app.storage.base import (
     TrashRecord,
     WebhookRecord,
 )
+from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
 
 
@@ -309,11 +310,77 @@ def test_heartbeat_requires_lease_owner(store: SqliteMetaStore) -> None:
 def test_finish_task_releases_lease(store: SqliteMetaStore) -> None:
     store.enqueue_task(_task("t1"))
     store.claim_task(owner="worker-1", lease_seconds=60)
-    store.finish_task("t1", TaskState.SUCCEEDED)
+    assert store.finish_task("t1", TaskState.SUCCEEDED, owner="worker-1") is True
 
     finished = store.list_tasks(TaskState.SUCCEEDED)[0]
     assert finished.lease_owner is None
     assert finished.lease_expires_at is None
+
+
+@pytest.fixture
+def reassign_lease(database: Database):
+    """把租约判给另一个消费者。
+
+    ``heartbeat_task`` 做不到这件事：它要求 ``lease_owner = owner``，只能在
+    "自己还持有租约"时续期。要制造"被回收后重领"，只能直接改这一行。
+    """
+
+    def _reassign(task_id: str, owner: str) -> None:
+        conn = database.connect()
+        try:
+            conn.execute("UPDATE tasks SET lease_owner = ? WHERE id = ?", (owner, task_id))
+        finally:
+            conn.close()
+
+    return _reassign
+
+
+def test_finish_task_refuses_when_lease_moved_on(store: SqliteMetaStore,
+                                                 reassign_lease) -> None:
+    """租约易主后原消费者写不了终态。
+
+    否则会出现最恶心的一类 bug：新消费者正在跑，旧消费者拿着过期结果回来把状态改成
+    "成功"或"失败"，用户看到的状态与文档实际状态完全对不上。
+    """
+    store.enqueue_task(_task("t1"))
+    store.claim_task(owner="worker-1", lease_seconds=60)
+    reassign_lease("t1", "worker-2")
+
+    assert store.finish_task("t1", TaskState.SUCCEEDED, owner="worker-1") is False
+
+    still_running = store.list_tasks(TaskState.RUNNING)[0]
+    assert still_running.lease_owner == "worker-2", "新主人的租约不该被旧消费者清掉"
+
+
+def test_reschedule_task_returns_task_to_queue(store: SqliteMetaStore) -> None:
+    """指数退避的落地：任务回到 PENDING、释放租约、记录失败原因。"""
+    store.enqueue_task(_task("t1"))
+    store.claim_task(owner="worker-1", lease_seconds=60)
+
+    retry_at = utc_now() + timedelta(seconds=4)
+    assert store.reschedule_task("t1", owner="worker-1", next_run_at=retry_at, error="boom") is True
+
+    requeued = store.list_tasks(TaskState.PENDING)[0]
+    assert requeued.lease_owner is None
+    assert requeued.lease_expires_at is None
+    assert requeued.error == "boom"
+    assert requeued.next_run_at is not None
+    # 未到时间不给领，到了才能领——退避真的生效
+    assert store.claim_task(owner="worker-2", lease_seconds=60) is None
+
+
+def test_reschedule_task_refuses_when_lease_moved_on(store: SqliteMetaStore,
+                                                     reassign_lease) -> None:
+    """同理：旧消费者不能把任务拽回队列，否则它会和新消费者同时被调度。"""
+    store.enqueue_task(_task("t1"))
+    store.claim_task(owner="worker-1", lease_seconds=60)
+    reassign_lease("t1", "worker-2")
+
+    retry_at = utc_now() + timedelta(seconds=4)
+    assert store.reschedule_task(
+        "t1", owner="worker-1", next_run_at=retry_at, error="boom"
+    ) is False
+    assert store.list_tasks(TaskState.PENDING) == [], "不该被拽回队列"
 
 
 def test_reclaim_requeues_expired_task_with_budget_left(store: SqliteMetaStore) -> None:

@@ -517,17 +517,21 @@ class SqliteMetaStore(MetaStore):
             )
         return cursor.rowcount == 1
 
-    def finish_task(self, task_id: str, state: TaskState, *, error: str | None = None) -> None:
+    def finish_task(
+        self, task_id: str, state: TaskState, *, owner: str, error: str | None = None
+    ) -> bool:
+        """落终态。条件更新 ``lease_owner = owner``：租约被回收后原消费者写不进来。"""
         with self._db.session() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 UPDATE tasks
                    SET state = ?, error = ?, lease_owner = NULL, lease_expires_at = NULL,
                        updated_at = ?
-                 WHERE id = ?
+                 WHERE id = ? AND lease_owner = ?
                 """,
-                (state.value, error, _dump(_now()), task_id),
+                (state.value, error, _dump(_now()), task_id, owner),
             )
+        return cursor.rowcount == 1
 
     def reclaim_expired_tasks(self, *, now: datetime | None = None) -> int:
         """回收超时任务：还有重试额度就回到 PENDING（断点续跑），否则判失败。"""
@@ -553,6 +557,33 @@ class SqliteMetaStore(MetaStore):
                 (TaskState.PENDING.value, moment, TaskState.RUNNING.value, moment),
             ).rowcount
         return int(exhausted + requeued)
+
+    def reschedule_task(
+        self, task_id: str, *, owner: str, next_run_at: datetime, error: str | None
+    ) -> bool:
+        """退回待执行并设定下次可领时间，同时释放租约（指数退避的落地）。
+
+        同样按 ``owner`` 条件更新：租约被回收后原消费者不能再把任务拽回队列，
+        否则会把新消费者刚领走的任务改回 PENDING，造成同一份文档被两个人同时处理。
+        """
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE tasks
+                   SET state = ?, next_run_at = ?, error = ?, lease_owner = NULL,
+                       lease_expires_at = NULL, updated_at = ?
+                 WHERE id = ? AND lease_owner = ?
+                """,
+                (
+                    TaskState.PENDING.value,
+                    _dump(next_run_at),
+                    error,
+                    _dump(_now()),
+                    task_id,
+                    owner,
+                ),
+            )
+        return cursor.rowcount == 1
 
     def list_tasks(self, state: TaskState | None = None) -> list[TaskRecord]:
         with self._db.read() as conn:

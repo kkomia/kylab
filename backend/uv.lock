@@ -594,6 +594,7 @@ dependencies = [
     { name = "jieba" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "python-multipart" },
     { name = "sqlite-vec" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -638,6 +639,7 @@ requires-dist = [
     { name = "pymupdf", marker = "extra == 'parsers'", specifier = ">=1.24" },
     { name = "pypdf", marker = "extra == 'parsers'", specifier = ">=5.1" },
     { name = "python-docx", marker = "extra == 'parsers'", specifier = ">=1.1" },
+    { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "sqlite-vec", specifier = ">=0.1.6" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]

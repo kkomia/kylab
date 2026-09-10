@@ -1,5 +1,7 @@
 """FastAPI 入口（工程规范 §3.1）。"""
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -10,14 +12,49 @@ from app.api.v1.router import api_router
 from app.core.config import API_VERSION, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
-from app.core.storage import build_stores
+from app.core.services import get_services
+from app.workers.queue_worker import TaskWorker
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    """启动时把存储准备好：建库、跑迁移、备齐目录（幂等，可重复调用）。"""
-    build_stores()
-    yield
+    """启动：备好存储（建库/迁移/目录）并按配置拉起内嵌任务消费者。"""
+    settings = get_settings()
+    services = get_services()
+
+    stop = asyncio.Event()
+    worker_task: asyncio.Task[None] | None = None
+    if settings.run_worker:
+        worker_task = asyncio.create_task(_run_worker(services.worker, stop))
+        logger.info("内嵌任务消费者已启动：%s", services.worker.owner)
+    else:
+        logger.warning("KYLAB_RUN_WORKER=false：未启动任务消费者，上传的文档不会被处理")
+
+    try:
+        yield
+    finally:
+        stop.set()
+        if worker_task is not None:
+            await asyncio.gather(worker_task, return_exceptions=True)
+
+
+async def _run_worker(worker: TaskWorker, stop: asyncio.Event) -> None:
+    """跑消费循环。
+
+    关停时 ``stop`` 置位只是"别再领新任务"；真正让卡在
+    ``await asyncio.to_thread(...)`` 上的循环动起来的是取消。收尾语义由
+    ``TaskWorker.run_forever`` 自己保证（取消后仍等手上那份文档写完），
+    所以这里对 ``CancelledError`` 只做原样上抛——吞掉它 asyncio 会误以为
+    任务正常结束，取消语义就丢了。
+    """
+    try:
+        await worker.run_forever(stop=stop)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("任务消费者异常退出")
 
 
 def create_app() -> FastAPI:

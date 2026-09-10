@@ -7,9 +7,12 @@
 不加包的话 pytest 会因 basename 冲突而报 "import file mismatch"。
 """
 
+from pathlib import Path
+
 import pytest
 
 from app.core.config import get_settings
+from app.core.services import reset_services
 from app.core.storage import reset_stores
 from app.models.enums import DataSourceKind, DocumentStage
 from app.storage.base import DocumentRecord, KnowledgeBaseRecord, StoreBundle
@@ -30,13 +33,17 @@ def isolated_data_dir(tmp_path, monkeypatch):
 
     起因：`build_stores()` 默认用 ``./data``，一旦某个测试忘了指临时目录，
     就会在 `backend/data/` 建出 kylab.db 与三个子目录（被 .gitignore 挡住所以不易发现，
-    但会污染本地状态、干扰后续手工验证）。这里统一把 ``KYLAB_DATA_DIR`` 指到 tmp 目录，
-    并清掉配置与装配的缓存。
+    但会污染本地状态、干扰后续手工验证）。
+
+    同时关掉内嵌任务消费者：测试要手动驱动 worker，才能对时序下断言。
     """
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("KYLAB_RUN_WORKER", "false")
     get_settings.cache_clear()
+    reset_services()
     reset_stores()
     yield
+    reset_services()
     reset_stores()
     get_settings.cache_clear()
 
@@ -51,6 +58,16 @@ def database(tmp_path) -> Database:
     finally:
         conn.close()
     return db
+
+
+@pytest.fixture
+def db_file(database: Database) -> Path:
+    """数据库文件的真实路径。
+
+    给"必须绕过仓储接口"的测试用：例如模拟另一个进程抢走任务租约——
+    仓储接口都带 owner 校验，正因如此它没法自己制造出"租约易主"这个状态。
+    """
+    return Path(database.path)
 
 
 @pytest.fixture

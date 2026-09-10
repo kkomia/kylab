@@ -406,8 +406,29 @@ class MetaStore(ABC):
 
     @abstractmethod
     def finish_task(
-        self, task_id: str, state: TaskState, *, error: str | None = None
-    ) -> None: ...
+        self,
+        task_id: str,
+        state: TaskState,
+        *,
+        owner: str,
+        error: str | None = None,
+    ) -> bool:
+        """落终态，返回是否写成功。
+
+        必须带 ``owner`` 做条件更新：租约被回收后，原消费者仍然可能跑完并回来写终态，
+        无条件覆盖会把**新消费者正在跑的任务**改成成功，或者凭空清掉它的租约。
+        返回 False 表示"这份任务已经不是你的了"，调用方应记日志而不是当成功。
+        """
+
+    @abstractmethod
+    def reschedule_task(
+        self, task_id: str, *, owner: str, next_run_at: datetime, error: str | None
+    ) -> bool:
+        """把任务退回待执行并设定下次可领时间，返回是否写成功（同 ``finish_task``）。
+
+        指数退避靠它实现：``finish_task`` 只能落终态，而重试要求任务**回到队列**，
+        同时释放租约、记录本次失败原因。
+        """
 
     @abstractmethod
     def reclaim_expired_tasks(self, *, now: datetime | None = None) -> int: ...

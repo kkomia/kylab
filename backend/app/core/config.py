@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     slow_query_ms: int = 500
     """超过该耗时的检索留一条 WARNING（架构 §12 可观测性）。"""
 
+    run_worker: bool = True
+    """应用启动时是否内嵌任务消费者。测试里关掉它，改为手动驱动，避免时序不确定。"""
+    worker_lease_seconds: int = 60
+    """任务租约时长：worker 执行期间按 1/3 周期续租，崩溃后由超时回收兜底。"""
+
     @property
     def db_path(self) -> Path:
         """SQLite 主库文件（元数据 + 向量 + 全文同库，架构 §8.1）。"""
