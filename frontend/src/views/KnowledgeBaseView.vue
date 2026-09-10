@@ -30,6 +30,7 @@ import IconTrash from '@/components/icons/IconTrash.vue'
 import IconSearch from '@/components/icons/IconSearch.vue'
 import IconUpload from '@/components/icons/IconUpload.vue'
 import KbSearchPanel from '@/components/search/KbSearchPanel.vue'
+import SourcePanel from '@/components/knowledge/SourcePanel.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppModal from '@/components/ui/AppModal.vue'
@@ -341,6 +342,9 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
     </template>
 
     <!-- 检索是这个库的动作，不是另一个页面：在这里开，范围天然就是当前库 -->
+    <!-- 数据源（M6）：与文档列表同页——它们都是"这个库里有什么"的来源 -->
+    <SourcePanel v-if="knowledgeBase" :kb-id="kbId" @changed="refresh" />
+
     <KbSearchPanel
       v-if="knowledgeBase"
       v-model:open="searchOpen"
