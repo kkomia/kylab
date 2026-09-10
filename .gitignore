@@ -42,3 +42,6 @@ playwright-report/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# ---- 前端构建/类型检查产物 ----
+*.tsbuildinfo
