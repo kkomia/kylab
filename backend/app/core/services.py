@@ -32,6 +32,7 @@ from app.services.embedding.base import EmbeddingProvider
 from app.services.idempotency import IdempotencyService
 from app.services.ingest import IngestService
 from app.services.knowledge_base import KnowledgeBaseService
+from app.services.lifecycle import LifecycleService
 from app.services.llm import LLMUsage
 from app.services.model_registry import ModelRegistryService
 from app.services.parser_router import ParserRouter
@@ -75,6 +76,8 @@ class Services:
     """用量统计：按次记 token 与调用量（调研报告 G7）。"""
     users: UserService
     """使用者名册：记录"是谁传的"，不参与鉴权（调研报告 G6）。"""
+    lifecycle: LifecycleService
+    """数据生命周期：影响清单、级联删除、回收站（M6 / T6.3、T6.4）。"""
     conversations: ConversationService
     """对话留存：会话与消息的读写（§11.2）。"""
     embedder: EmbeddingProvider
@@ -214,9 +217,11 @@ def build_services(
         if removed_keys:
             logger.info("清理过期幂等键 %d 条", removed_keys)
         usage.purge_expired()
-        purged = bundle.meta.purge_expired_trash()
-        if purged:
-            logger.info("清理过期回收站条目 %d 条", len(purged))
+        # 走 lifecycle 而不是直接调存储层：它会**连磁盘上的原文一起删**。
+        # 只删数据库行会把对象存储变成只增不减的垃圾场，
+        # 而用户以为"7 天后就清掉了"
+        lifecycle = LifecycleService(bundle)
+        lifecycle.purge_expired_trash()
 
     return Services(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder),
@@ -232,6 +237,7 @@ def build_services(
         models=registry,
         usage=usage,
         users=UserService(bundle),
+        lifecycle=LifecycleService(bundle),
         conversations=ConversationService(bundle),
         embedder=embedder,
         reranker=reranker,

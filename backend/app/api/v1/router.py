@@ -16,6 +16,7 @@ from app.api.v1 import (
     documents,
     health,
     knowledge_bases,
+    lifecycle,
     model_registry,
     search,
     settings,
@@ -41,3 +42,4 @@ api_router.include_router(conversations.router)
 api_router.include_router(chunks.router)
 api_router.include_router(model_registry.router)
 api_router.include_router(users.router)
+api_router.include_router(lifecycle.router)

@@ -810,6 +810,24 @@ class MetaStore(ABC):
     @abstractmethod
     def purge_expired_trash(self, *, now: datetime | None = None) -> list[TrashRecord]: ...
 
+    @abstractmethod
+    def set_trash_expiry(self, trash_id: str, expires_at: datetime) -> None:
+        """改一条回收站记录的到期时间。
+
+        正常路径用不到它；测试要靠它模拟"7 天过去了"，
+        比在用例里写裸 SQL 干净得多（也免得表结构一变就崩）。
+        """
+        ...
+
+    @abstractmethod
+    def delete_trash(self, trash_id: str) -> None:
+        """删掉一条回收站记录（对象已由调用方处理）。
+
+        与 ``purge_expired_trash`` 分开：那个按到期时间批量清，
+        这个是"用户主动说这条不要了"，只删一条、不看时间。
+        """
+        ...
+
     # ---- 设置 ----
     @abstractmethod
     def get_setting(self, key: str) -> str | None: ...

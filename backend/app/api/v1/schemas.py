@@ -557,6 +557,40 @@ class SlotBindIn(BaseModel):
     model_pk: str | None = None
 
 
+class ImpactOut(BaseModel):
+    """删除会波及什么（M6 / T6.3）。
+
+    **数字要具体**：说"这会删除该知识库及其内容"没人会有感觉；
+    说"3 份文档、412 个切块"才会让人停一下。这是二次确认能有意义的前提。
+    """
+
+    kind: str
+    id: str
+    name: str
+    documents: int = 0
+    chunks: int = 0
+    parts: int = 0
+    size_bytes: int = 0
+    running_tasks: int = 0
+    document_names: list[str] = Field(default_factory=list)
+    restorable: bool = True
+    """能否从回收站恢复。知识库级删除不可恢复，界面据此显示不同的警示强度。"""
+
+
+class TrashEntryOut(BaseModel):
+    model_config = _RECORD_CONFIG
+
+    id: str
+    document_id: str
+    kind: str
+    expires_at: datetime
+    created_at: datetime | None = None
+
+
+class TrashListOut(BaseModel):
+    items: list[TrashEntryOut] = Field(default_factory=list)
+
+
 class UserCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=32)
     note: str = Field(default="", max_length=64)

@@ -116,6 +116,63 @@ export function updateChunk(
 }
 
 /** 禁用/恢复。用 PUT 语义：重复设置同一个状态不会累积副作用。 */
+/** 删除会波及什么（M6 / T6.3）。**先看清单再动手**，否则二次确认没有意义。 */
+export interface ImpactReport {
+  kind: string
+  id: string
+  name: string
+  documents: number
+  chunks: number
+  parts: number
+  size_bytes: number
+  running_tasks: number
+  document_names: string[]
+  /** 能否从回收站恢复。知识库级删除不可恢复，界面据此换警示文案。 */
+  restorable: boolean
+}
+
+export function getDocumentImpact(documentId: string): Promise<ImpactReport> {
+  return request(`/documents/${documentId}/impact`)
+}
+
+/**
+ * 删除文档。
+ *
+ * 返回回收站条目：原文进了回收站、7 天内可恢复，而切块与向量已立即清除。
+ * 所以删除后**立刻搜不到**，这一点要在界面上说清。
+ */
+export function deleteDocument(documentId: string): Promise<{
+  id: string
+  document_id: string
+  expires_at: string
+}> {
+  return request(`/documents/${documentId}`, { method: 'DELETE' })
+}
+
+/** 回收站条目。 */
+export interface TrashEntry {
+  id: string
+  document_id: string
+  kind: string
+  expires_at: string
+  created_at: string | null
+}
+
+export function listTrash(): Promise<{ items: TrashEntry[] }> {
+  return request('/trash')
+}
+
+/** 恢复：**需要重新摄入**才有检索能力，所以后端返回 202 与任务 id。 */
+export function restoreFromTrash(
+  trashId: string,
+): Promise<{ document_id: string; task_id: string }> {
+  return request(`/trash/${trashId}/restore`, { method: 'POST' })
+}
+
+export function dropTrash(trashId: string): Promise<void> {
+  return request(`/trash/${trashId}`, { method: 'DELETE' })
+}
+
 export function setChunkDisabled(
   documentId: string,
   ordinal: number,

@@ -66,14 +66,24 @@ class LocalObjectStore(ObjectStore):
         return self._resolve(path).is_file()
 
     def move_to_trash(self, path: str, *, trash_id: str) -> str:
-        """把原文挪进回收站目录（架构 §6.2：原文保留 7 天冷备）。"""
+        """把原文挪进回收站目录（架构 §6.2：原文保留 7 天冷备）。
+
+        **目标路径必须 ``resolve()`` 之后再交给 _relative**：``self._root`` 可能是
+        相对路径（实测 dev 的配置就是 ``data``），于是 ``_root / TRASH / ...``
+        也是相对的，而 ``_relative`` 拿它去比 ``_root.resolve()``（绝对）——
+        一个是 ``data\\.trash\\...``、一个是 ``E:\\...\\data``，
+        ``relative_to`` 直接抛 ValueError。
+
+        这条路径从 M1 写好起就没人调用过（接口层一直没有删除端点），
+        所以这个 bug 一直没被发现——直到回收站第一次真的被用上。
+        """
         if not trash_id or any(char not in SAFE_KEY_CHARS for char in trash_id):
             raise ValueError(f"非法回收站 ID：{trash_id!r}")
         source = self._resolve(path)
         if not source.is_file():
             raise FileNotFoundError(path)
 
-        target = self._root / TRASH / trash_id / source.name
+        target = (self._root / TRASH / trash_id / source.name).resolve()
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source), str(target))
         return self._relative(target)

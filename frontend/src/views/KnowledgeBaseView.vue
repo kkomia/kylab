@@ -12,9 +12,12 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import {
+  deleteDocument,
+  getDocumentImpact,
   listDocumentParts,
   listDocuments,
   reprocessDocument,
+  type ImpactReport,
   uploadDocument,
   type DocumentPart,
   type DocumentSummary,
@@ -23,11 +26,13 @@ import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconFile from '@/components/icons/IconFile.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
+import IconTrash from '@/components/icons/IconTrash.vue'
 import IconSearch from '@/components/icons/IconSearch.vue'
 import IconUpload from '@/components/icons/IconUpload.vue'
 import KbSearchPanel from '@/components/search/KbSearchPanel.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import AppButton from '@/components/ui/AppButton.vue'
+import AppModal from '@/components/ui/AppModal.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
@@ -54,6 +59,53 @@ const ACTIVE_STAGES = new Set([
 const route = useRoute()
 const store = useKnowledgeBaseStore()
 const { notifyError, notifySuccess, notifyWarning } = useToast()
+
+/**
+ * 删除确认（M6 / T6.4）。
+ *
+ * 三段状态：目标 → 影响清单 → 提交。**清单要在确认之前拿到**——
+ * 否则那个弹窗只是个"你确定吗"的摆设，而用户根本不知道自己会失去什么。
+ */
+const deleteOpen = ref(false)
+const deleteTarget = ref<DocumentSummary | null>(null)
+const impact = ref<ImpactReport | null>(null)
+const deleting = ref(false)
+
+/** 从行内菜单点删除：先开弹窗（带上目标），再去取影响清单。 */
+function onDeleteClick(close: () => void, document: DocumentSummary): void {
+  close()
+  deleteTarget.value = document
+  impact.value = null
+  deleteOpen.value = true
+  void loadImpact(document.id)
+}
+
+async function loadImpact(documentId: string): Promise<void> {
+  try {
+    impact.value = await getDocumentImpact(documentId)
+  } catch {
+    // 拿不到清单不阻断删除：弹窗会停在"正在统计影响…"，
+    // 用户仍能取消——总比卡住不给动好
+    impact.value = null
+  }
+}
+
+async function confirmDelete(): Promise<void> {
+  const target = deleteTarget.value
+  if (!target || deleting.value) return
+  deleting.value = true
+  try {
+    await deleteDocument(target.id)
+    deleteOpen.value = false
+    notifySuccess('已删除，原文在回收站保留 7 天')
+    await refresh()
+    void store.loadSummaries()
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '删除失败')
+  } finally {
+    deleting.value = false
+  }
+}
 
 const kbId = computed(() => String(route.params.kbId ?? ''))
 const knowledgeBase = computed(() => store.byId(kbId.value))
@@ -263,6 +315,11 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                 <button type="button" @click="onReprocessClick(close, document)">
                   <IconRefresh :size="14" /> 重新摄入
                 </button>
+                <!-- 删除（M6 / T6.4）。**先进回收站**：删错是常事，
+                     而原文一旦没了就只能重新上传 -->
+                <button class="menu-danger" type="button" @click="onDeleteClick(close, document)">
+                  <IconTrash :size="14" /> 删除
+                </button>
               </RowMenu>
             </div>
 
@@ -290,10 +347,89 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       :kb-id="kbId"
       :kb-name="knowledgeBase.name"
     />
+    <!--
+      删除确认（M6 / T6.4）。**先给人看影响清单再动手**：
+      "删除该文档"没人会有感觉，"3 份文档、412 个切块"才会让人停一下。
+      这是《界面信息架构草案》§2"破坏性动作必须二次确认"的落点。
+    -->
+    <AppModal v-model:open="deleteOpen" title="删除文档">
+      <p class="delete-lead">确定删除「{{ deleteTarget?.name }}」？</p>
+
+      <p v-if="!impact" class="delete-note">正在统计影响…</p>
+      <dl v-else class="delete-impact">
+        <div>
+          <dt>切块</dt>
+          <dd class="tabular">{{ impact.chunks }}</dd>
+        </div>
+        <div>
+          <dt>占用的空间</dt>
+          <dd class="tabular">{{ formatBytes(impact.size_bytes) }}</dd>
+        </div>
+        <div>
+          <dt>进行中的任务</dt>
+          <dd class="tabular">{{ impact.running_tasks }}</dd>
+        </div>
+      </dl>
+
+      <p class="delete-note">
+        {{
+          impact?.restorable
+            ? '原文会移入回收站保留 7 天，期间可以恢复。切块与向量会立即清除——删除后立刻搜不到。'
+            : '此操作不可恢复。'
+        }}
+      </p>
+
+      <template #footer>
+        <AppButton @click="deleteOpen = false">取消</AppButton>
+        <AppButton variant="danger" :disabled="deleting" @click="confirmDelete">
+          {{ deleting ? '删除中…' : '删除' }}
+        </AppButton>
+      </template>
+    </AppModal>
   </PageShell>
 </template>
 
 <style scoped>
+/* 菜单里的删除：红色文字表示破坏性，但**不填充红底**——
+   填充会让它在下拉里最显眼，而它恰恰是最不该被顺手点到的那个 */
+.menu-danger {
+  color: var(--status-danger);
+}
+
+.delete-lead {
+  margin: 0 0 var(--space-3);
+  color: var(--text-primary);
+}
+
+/* 影响清单：三项并排，数字比标签显眼——用户扫的是"会失去多少" */
+.delete-impact {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-panel);
+}
+
+.delete-impact dt {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.delete-impact dd {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-section-size);
+  color: var(--text-primary);
+}
+
+.delete-note {
+  margin: 0;
+  font-size: var(--text-meta-size);
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
 .error-line {
   margin: 0 0 var(--space-4);
   color: var(--status-danger);

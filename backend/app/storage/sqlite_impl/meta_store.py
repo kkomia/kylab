@@ -1299,6 +1299,17 @@ class SqliteMetaStore(MetaStore):
             for row in rows
         ]
 
+    def set_trash_expiry(self, trash_id: str, expires_at: datetime) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE trash SET expires_at = ? WHERE id = ?",
+                (_dump(expires_at), trash_id),
+            )
+
+    def delete_trash(self, trash_id: str) -> None:
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM trash WHERE id = ?", (trash_id,))
+
     def purge_expired_trash(self, *, now: datetime | None = None) -> list[TrashRecord]:
         """到期清理：先取出待删清单（供调用方删文件），再在**同一事务**里删记录。"""
         moment = _dump(now or _now())
