@@ -1,41 +1,37 @@
 /**
- * 深色主题 Token（《前端设计规范 v0.3》§2.2、§2.3、§2.4）。
- * 深色不用纯白文字直撞，正文取 #e8e8e6 做柔化（§2.4）。
+ * 深色主题 Token（《前端设计规范》§2）。
+ *
+ * 与浅色同构：`--bg-canvas` 比 `--bg-surface` 更深，内容区仍然是"亮起来的那一层"，
+ * 这样两套主题下层级方向一致（深色下不是简单反相）。正文取 #e6e6e3 做柔化，不用纯白直撞。
  */
 
 [data-theme='dark'] {
   color-scheme: dark;
 
-  /* 背景层级 */
-  --bg-canvas: #1a1a1a;
-  --bg-surface: #232323;
-  --bg-hover: #2c2c2c;
-  --bg-active: #33332e;
+  --bg-canvas: #1b1b1a;
+  --bg-surface: #232322;
+  --bg-subtle: #262625;
+  --bg-hover: #2c2c2a;
+  --bg-active: #35352f;
 
-  /* 文字层级 */
-  --text-primary: #e8e8e6;
-  --text-secondary: #9b9b97;
-  --text-tertiary: #6b6b67;
+  --text-primary: #e6e6e3;
+  --text-secondary: #a0a09a;
+  --text-tertiary: #74746e;
 
-  /* 分割线 */
-  --border: #333330;
-  --border-strong: #45453f;
+  --border-hairline: #2e2e2c;
+  --border: #383836;
+  --border-strong: #4a4a46;
 
-  /* 语义色：仅用于状态传达 */
-  --status-success: #529e72;
-  --status-warning: #e8873a;
-  --status-danger: #e16259;
-  --status-info: #529cca;
+  --status-success: #5aa377;
+  --status-warning: #d9873c;
+  --status-danger: #d96a5f;
+  --status-info: #5b9dc4;
+  --danger-soft: #372524;
 
-  /* 危险操作的浅底：深色下用低透明度红叠加，避免亮红铺底刺眼 */
-  --danger-soft: #3a2624;
-
-  /* 主按钮：深色下近白实心（§2.2） */
-  --button-primary-bg: #e8e8e6;
+  --button-primary-bg: #e6e6e3;
   --button-primary-bg-hover: #ffffff;
-  --button-primary-text: #1a1a1a;
+  --button-primary-text: #1b1b1a;
 
-  /* 弹层阴影与遮罩：深色下阴影几乎不可见，遮罩加深来撑层级 */
   --shadow-popover: 0 4px 14px rgb(0 0 0 / 45%);
   --overlay-scrim: rgb(0 0 0 / 55%);
 }

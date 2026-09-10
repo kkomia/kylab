@@ -71,8 +71,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
 }
 
@@ -84,7 +84,7 @@ onBeforeUnmount(() => {
 
 .modal-close {
   display: inline-flex;
-  padding: 4px;
+  padding: var(--space-1);
   color: var(--text-secondary);
   border-radius: var(--radius-control);
 }
@@ -95,14 +95,14 @@ onBeforeUnmount(() => {
 }
 
 .modal-body {
-  padding: 16px;
+  padding: var(--space-4);
 }
 
 .modal-foot {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 16px;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border);
 }
 </style>

@@ -51,7 +51,7 @@ function modelSummary(): string {
             <span class="setting-hint">Web 控制台通过 /api/v1 访问本机服务</span>
           </div>
           <div class="setting-control">
-            <StatusTag v-if="health" tone="success" :label="`在线 · v${health.version}`" />
+            <StatusTag v-if="health" tone="success" :label="`在线 v${health.version}`" />
             <StatusTag v-else tone="danger" :label="healthError || '检测中'" />
           </div>
         </li>
@@ -131,17 +131,17 @@ function modelSummary(): string {
 
 <style scoped>
 .page {
-  max-width: var(--content-reading-width);
+  max-width: var(--measure);
   margin: 0 auto;
-  padding: 32px 24px 64px;
+  padding: var(--space-8) var(--page-gutter) var(--space-16);
 }
 
 .page-body {
-  margin-top: 20px;
+  margin-top: var(--space-6);
 }
 
 .group-title {
-  margin: 24px 0 8px;
+  margin: var(--space-8) 0 var(--space-2);
   font-size: 16px;
 }
 
@@ -159,9 +159,9 @@ function modelSummary(): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  padding: 12px 0;
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-6);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-hairline);
 }
 
 .setting-main {
@@ -176,7 +176,7 @@ function modelSummary(): string {
 }
 
 .setting-hint {
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--text-secondary);
 }
 

@@ -66,7 +66,7 @@ function close(): void {
   top: calc(100% + 4px);
   z-index: 10;
   min-width: 160px;
-  padding: 4px;
+  padding: var(--space-1);
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
@@ -76,7 +76,7 @@ function close(): void {
 .menu-list :deep(button) {
   display: block;
   width: 100%;
-  padding: 6px 10px;
+  padding: 6px var(--space-3);
   text-align: left;
   border-radius: var(--radius-control);
 }

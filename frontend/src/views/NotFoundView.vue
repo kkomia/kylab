@@ -20,12 +20,12 @@ import PageHeader from '@/components/ui/PageHeader.vue'
 
 <style scoped>
 .page {
-  max-width: var(--content-reading-width);
+  max-width: var(--measure);
   margin: 0 auto;
-  padding: 32px 24px 64px;
+  padding: var(--space-8) var(--page-gutter) var(--space-16);
 }
 
 .page-body {
-  margin-top: 20px;
+  margin-top: var(--space-6);
 }
 </style>

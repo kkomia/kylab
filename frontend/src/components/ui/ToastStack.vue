@@ -49,7 +49,7 @@ const items = computed(() => toasts.value.map((toast) => ({ ...toast, icon: ICON
 .toast {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   min-width: 260px;
   max-width: 520px;
   padding: 8px 12px;

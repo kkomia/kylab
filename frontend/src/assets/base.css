@@ -1,7 +1,11 @@
 /**
  * 全局基座：重置、字体、排版与结构 Token。
- * 视觉细节见《前端设计规范 v0.3》§2（主题）、§4（字体排版）、§5（布局骨架）。
- * 铁律：颜色只引用主题变量，禁止硬编码色值（工程规范 §4.3）。
+ * 视觉细节见《前端设计规范》§2（主题）、§4（字体排版）、§5（布局骨架）。
+ *
+ * 两条铁律：
+ * 1. 颜色只引用主题变量，禁止硬编码色值（工程规范 §4.3）；
+ * 2. 间距只用 --space-* 阶梯，禁止随手写 7px / 13px 这类数字——
+ *    节奏一旦失控，"克制"就退化成了"没对齐"。
  */
 
 *,
@@ -20,10 +24,19 @@ body {
   margin: 0;
   background: var(--bg-canvas);
   color: var(--text-primary);
-  font-family: 'Inter', system-ui, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    'PingFang SC',
+    'Microsoft YaHei',
+    'Source Han Sans SC',
+    'Noto Sans SC',
+    sans-serif;
   font-size: 14px;
-  line-height: 1.7;
+  line-height: 1.65;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizelegibility;
 }
 
 h1,
@@ -31,18 +44,20 @@ h2,
 h3 {
   margin: 0;
   font-weight: 600;
+  line-height: 1.35;
 }
 
 h1 {
-  font-size: 24px;
+  font-size: 26px;
+  letter-spacing: -0.01em;
 }
 
 h2 {
-  font-size: 18px;
+  font-size: 17px;
 }
 
 h3 {
-  font-size: 16px;
+  font-size: 15px;
 }
 
 a {
@@ -68,10 +83,34 @@ pre {
 }
 
 :root {
-  /* 结构 Token：圆角克制（控件 6px、面板 8px），见 §7 */
-  --radius-control: 6px;
-  --radius-panel: 8px;
-  --sidebar-width: 240px;
-  --content-reading-width: 720px;
-  --row-height: 40px;
+  /* 圆角：全局收到两档，控件 4px、浮层 6px（§7） */
+  --radius-control: 4px;
+  --radius-panel: 6px;
+
+  /* 间距阶梯：所有 padding/margin 只能用这些值（§4） */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* 阅读类内容限宽；列表可全宽 */
+  --measure: 66ch;
+
+  /* 布局骨架 */
+  --sidebar-width: 232px;
+  --page-gutter: var(--space-8);
+
+  /* 列表行高：文档清单 44px，紧凑行 32px */
+  --row-height: 44px;
+  --row-height-compact: 32px;
+}
+
+/* 数字一律等宽：分数、条数、页码要能沿一条竖轴对齐（§4） */
+.tabular {
+  font-variant-numeric: tabular-nums;
 }

@@ -175,8 +175,8 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       :title="knowledgeBase?.name ?? '知识库'"
       :description="
         knowledgeBase
-          ? `${knowledgeBase.embedding_model_id} · ${knowledgeBase.embedding_dim} 维 · 切分 ${knowledgeBase.chunk_size} / 重叠 ${knowledgeBase.chunk_overlap}`
-          : '正在加载知识库信息'
+          ? `${knowledgeBase.embedding_model_id} / ${knowledgeBase.embedding_dim} 维 / 切分 ${knowledgeBase.chunk_size}、重叠 ${knowledgeBase.chunk_overlap}`
+          : undefined
       "
     >
       <template #actions>
@@ -202,7 +202,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       <EmptyState
         v-else-if="documents.length === 0"
         title="这个知识库里还没有文档"
-        hint="支持 PDF、Office、Markdown、纯文本与图片；扫描件会走 OCR 渠道。单文件上限 200MB。"
+        hint="支持 PDF、Office、Markdown、纯文本与图片，扫描件走 OCR 渠道；单文件上限 200MB。"
       >
         <AppButton variant="primary" @click="fileInput?.click()">
           <template #icon><IconUpload /></template>
@@ -210,78 +210,89 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
         </AppButton>
       </EmptyState>
 
-      <ul v-else class="doc-rows">
-        <li v-for="document in documents" :key="document.id" class="doc-row-group">
-          <div class="doc-row">
-            <button
-              v-if="document.is_split"
-              class="expander"
-              type="button"
-              :aria-label="expanded[document.id] ? '收起子文件' : '展开子文件'"
-              :aria-expanded="Boolean(expanded[document.id])"
-              @click="toggleParts(document)"
-            >
-              <IconChevronDown v-if="expanded[document.id]" />
-              <IconChevronRight v-else />
-            </button>
-            <span v-else class="expander-placeholder" />
+      <template v-else>
+        <!-- 列头：让右侧那串数字有名字，不必靠猜 -->
+        <div class="list-head" aria-hidden="true">
+          <span class="head-file">文件</span>
+          <span class="head-number">切块</span>
+          <span class="head-size">大小</span>
+          <span class="head-time">更新时间</span>
+          <span class="head-menu" />
+        </div>
 
-            <IconFile class="row-icon" />
-
-            <RouterLink class="row-name" :to="`/documents/${document.id}`">
-              {{ document.name }}
-            </RouterLink>
-
-            <StatusTag
-              class="row-status"
-              :label="stageOf(document).label"
-              :tone="stageOf(document).tone"
-              :title="document.error ?? undefined"
-            />
-
-            <span class="row-meta">
-              {{ document.chunk_count }} 块 · {{ formatBytes(document.size_bytes) }}
-            </span>
-            <span class="row-time">{{ formatRelativeTime(document.updated_at) }}</span>
-
-            <RowMenu v-slot="{ close }" class="row-menu">
-              <button type="button" @click="onReprocessClick(close, document)">
-                <IconRefresh :size="14" /> 重新摄入
+        <ul class="doc-rows">
+          <li v-for="document in documents" :key="document.id" class="doc-row-group">
+            <div class="doc-row">
+              <button
+                v-if="document.is_split"
+                class="expander"
+                type="button"
+                :aria-label="expanded[document.id] ? '收起子文件' : '展开子文件'"
+                :aria-expanded="Boolean(expanded[document.id])"
+                @click="toggleParts(document)"
+              >
+                <IconChevronDown v-if="expanded[document.id]" />
+                <IconChevronRight v-else />
               </button>
-            </RowMenu>
-          </div>
+              <span v-else class="expander-placeholder" />
 
-          <p v-if="document.error" class="row-error">{{ document.error }}</p>
+              <IconFile class="row-icon" />
 
-          <ul v-if="expanded[document.id]?.length" class="part-rows">
-            <li v-for="part in expanded[document.id]" :key="part.id" class="part-row">
-              <span class="part-name">分片 P{{ part.part_index + 1 }}</span>
-              <span class="part-pages"> 第 {{ part.page_start }}–{{ part.page_end }} 页 </span>
-              <StatusTag
-                :label="documentStageView(part.stage).label"
-                :tone="documentStageView(part.stage).tone"
-              />
-            </li>
-          </ul>
-        </li>
-      </ul>
+              <span class="row-main">
+                <RouterLink class="row-name" :to="`/documents/${document.id}`">
+                  {{ document.name }}
+                </RouterLink>
+                <StatusTag
+                  :label="stageOf(document).label"
+                  :tone="stageOf(document).tone"
+                  :running="ACTIVE_STAGES.has(document.stage)"
+                  :title="document.error ?? undefined"
+                />
+              </span>
+
+              <span class="row-number">{{ document.chunk_count }}</span>
+              <span class="row-size">{{ formatBytes(document.size_bytes) }}</span>
+              <span class="row-time">{{ formatRelativeTime(document.updated_at) }}</span>
+
+              <RowMenu v-slot="{ close }" class="row-menu">
+                <button type="button" @click="onReprocessClick(close, document)">
+                  <IconRefresh :size="14" /> 重新摄入
+                </button>
+              </RowMenu>
+            </div>
+
+            <p v-if="document.error" class="row-error">{{ document.error }}</p>
+
+            <ul v-if="expanded[document.id]?.length" class="part-rows">
+              <li v-for="part in expanded[document.id]" :key="part.id" class="part-row">
+                <span class="part-name">分片 P{{ part.part_index + 1 }}</span>
+                <span class="part-pages">第 {{ part.page_start }}–{{ part.page_end }} 页</span>
+                <StatusTag
+                  :label="documentStageView(part.stage).label"
+                  :tone="documentStageView(part.stage).tone"
+                />
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </template>
     </section>
   </article>
 </template>
 
 <style scoped>
 .page {
-  max-width: 1100px;
+  max-width: 1040px;
   margin: 0 auto;
-  padding: 32px 24px 64px;
+  padding: var(--space-8) var(--page-gutter) var(--space-16);
 }
 
 .page-body {
-  margin-top: 20px;
+  margin-top: var(--space-6);
 }
 
 .error-line {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-4);
   color: var(--status-danger);
 }
 
@@ -294,6 +305,45 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   white-space: nowrap;
 }
 
+/* 列头与行共用同一套列宽，数字才会真的排在一条竖轴上 */
+.list-head,
+.doc-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.list-head {
+  height: var(--row-height-compact);
+  padding-right: var(--space-8);
+  font-size: 12px;
+  color: var(--text-tertiary);
+  border-bottom: 1px solid var(--border);
+}
+
+.head-file {
+  flex: 1;
+}
+
+.head-number {
+  flex: 0 0 56px;
+  text-align: right;
+}
+
+.head-size {
+  flex: 0 0 72px;
+  text-align: right;
+}
+
+.head-time {
+  flex: 0 0 96px;
+  text-align: right;
+}
+
+.head-menu {
+  flex: 0 0 24px;
+}
+
 .doc-rows {
   margin: 0;
   padding: 0;
@@ -301,11 +351,9 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 }
 
 .doc-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: var(--row-height);
-  border-bottom: 1px solid var(--border);
+  min-height: var(--row-height);
+  padding-right: var(--space-2);
+  border-bottom: 1px solid var(--border-hairline);
 }
 
 .doc-row:hover {
@@ -315,11 +363,11 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 .expander,
 .expander-placeholder {
   display: inline-flex;
+  flex: 0 0 20px;
   align-items: center;
   justify-content: center;
   width: 20px;
   height: 20px;
-  flex: 0 0 20px;
   color: var(--text-tertiary);
   border-radius: var(--radius-control);
 }
@@ -334,56 +382,67 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   color: var(--text-tertiary);
 }
 
-.row-name {
+/* 文件名与状态同处一列：状态跟着文件走，而不是飘在右边的孤立列 */
+.row-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   flex: 1;
   min-width: 0;
+}
+
+.row-name {
   overflow: hidden;
   color: var(--text-primary);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.row-status {
-  flex: 0 0 auto;
-  width: 84px;
-}
-
-.row-meta,
-.row-time {
-  flex: 0 0 auto;
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-}
-
-.row-time {
-  width: 88px;
+/* 数字列：等宽 + 右对齐，沿一条竖轴排下来 */
+.row-number {
+  flex: 0 0 56px;
   text-align: right;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.row-size {
+  flex: 0 0 72px;
+  text-align: right;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+}
+
+.row-time {
+  flex: 0 0 96px;
+  text-align: right;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
 }
 
 .row-menu {
-  flex: 0 0 auto;
+  flex: 0 0 24px;
 }
 
 .row-error {
   margin: 0;
-  padding: 0 0 8px 62px;
-  font-size: 12px;
+  padding: 0 0 var(--space-2) 52px;
+  font-size: 12.5px;
   color: var(--status-danger);
 }
 
 /* 子文件树：缩进一级（§6） */
 .part-rows {
   margin: 0;
-  padding: 0 0 4px 62px;
+  padding: 0 0 var(--space-2) 52px;
   list-style: none;
 }
 
 .part-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 32px;
+  gap: var(--space-3);
+  height: var(--row-height-compact);
   font-size: 13px;
   color: var(--text-secondary);
 }
@@ -393,6 +452,6 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 }
 
 .part-pages {
-  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
 }
 </style>

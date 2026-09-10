@@ -51,7 +51,7 @@ withDefaults(
 <style scoped>
 .field {
   width: 100%;
-  padding: 6px 10px;
+  padding: 6px var(--space-3);
   font: inherit;
   color: var(--text-primary);
   background: var(--bg-surface);

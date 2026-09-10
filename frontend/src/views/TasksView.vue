@@ -122,6 +122,7 @@ function attemptText(task: TaskSummary): string {
             class="row-status"
             :label="taskStateView(task.state).label"
             :tone="taskStateView(task.state).tone"
+            :running="task.state === 'running'"
           />
           <span class="row-attempts">{{ attemptText(task) }}</span>
           <span class="row-time">{{ formatDate(task.updated_at) }}</span>
@@ -133,18 +134,23 @@ function attemptText(task: TaskSummary): string {
 
 <style scoped>
 .page {
-  max-width: 1100px;
+  max-width: 1000px;
   margin: 0 auto;
-  padding: 32px 24px 64px;
+  padding: var(--space-8) var(--page-gutter) var(--space-16);
 }
 
 .page-body {
-  margin-top: 20px;
+  margin-top: var(--space-6);
 }
 
 .error-line {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-4);
   color: var(--status-danger);
+}
+
+.auto-refresh {
+  font-size: 12.5px;
+  color: var(--text-tertiary);
 }
 
 .task-rows {
@@ -156,9 +162,9 @@ function attemptText(task: TaskSummary): string {
 .task-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: var(--row-height);
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-3);
+  min-height: var(--row-height);
+  border-bottom: 1px solid var(--border-hairline);
 }
 
 .task-row:hover {
@@ -171,9 +177,9 @@ function attemptText(task: TaskSummary): string {
 }
 
 .row-kind {
-  flex: 0 0 64px;
-  font-size: 13px;
-  color: var(--text-secondary);
+  flex: 0 0 56px;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
 }
 
 .row-name {
@@ -186,24 +192,23 @@ function attemptText(task: TaskSummary): string {
 }
 
 .row-status {
-  flex: 0 0 auto;
-  width: 84px;
+  flex: 0 0 84px;
 }
 
 .row-attempts,
 .row-time {
   flex: 0 0 auto;
-  font-size: 12px;
-  color: var(--text-secondary);
+  font-size: 12.5px;
+  color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
 
 .row-attempts {
-  width: 112px;
+  width: 108px;
 }
 
 .row-time {
-  width: 128px;
+  width: 124px;
   text-align: right;
 }
 </style>

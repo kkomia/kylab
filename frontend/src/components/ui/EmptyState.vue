@@ -1,30 +1,15 @@
 <script setup lang="ts">
 /**
- * 空状态（《前端设计规范 v0.3》§7）：
- * 线稿 SVG（48px）+ 一句灰字 + 一个主操作按钮；不用彩色插画、不用 emoji。
+ * 空状态（《前端设计规范》§7）：一句标题 + 一句指路 + 一个操作。
  *
- * 线条直接画在这里而不是复用 16px 图标：图标放大到 48px 会显得笔画过细、比例失衡。
+ * 不放装饰性插画：空页面上最该被看见的是"下一步做什么"，
+ * 一张 48px 的线稿图只会把注意力从操作按钮上引开。
  */
 withDefaults(defineProps<{ title: string; hint?: string }>(), { hint: '' })
 </script>
 
 <template>
   <div class="empty">
-    <svg
-      class="empty-art"
-      width="48"
-      height="48"
-      viewBox="0 0 48 48"
-      fill="none"
-      stroke="currentColor"
-      stroke-width="1.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M10 16.5 24 8l14 8.5v15L24 40l-14-8.5z" />
-      <path d="M10 16.5 24 25l14-8.5M24 25v15" />
-    </svg>
     <p class="empty-title">{{ title }}</p>
     <p v-if="hint" class="empty-hint">{{ hint }}</p>
     <div v-if="$slots.default" class="empty-action">
@@ -37,30 +22,24 @@ withDefaults(defineProps<{ title: string; hint?: string }>(), { hint: '' })
 .empty {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 48px 24px;
-  text-align: center;
-  color: var(--text-tertiary);
-}
-
-.empty-art {
-  color: var(--border-strong);
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-12) 0;
 }
 
 .empty-title {
   margin: 0;
   font-size: 15px;
-  color: var(--text-secondary);
+  font-weight: 600;
 }
 
 .empty-hint {
   margin: 0;
-  font-size: 13px;
-  max-width: 420px;
+  max-width: var(--measure);
+  color: var(--text-secondary);
 }
 
 .empty-action {
-  margin-top: 8px;
+  margin-top: var(--space-3);
 }
 </style>

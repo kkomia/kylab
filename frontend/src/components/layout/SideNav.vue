@@ -93,7 +93,6 @@ function isActive(to: string, exact: boolean): boolean {
     </nav>
 
     <div class="kb-section">
-      <p class="section-label">知识库</p>
       <p v-if="kbError" class="kb-error">{{ kbError }}</p>
       <p v-else-if="knowledgeBases.length === 0" class="kb-empty">还没有知识库</p>
       <ul v-else class="kb-list">
@@ -153,50 +152,60 @@ function isActive(to: string, exact: boolean): boolean {
   width: var(--sidebar-width);
   flex: 0 0 var(--sidebar-width);
   background: var(--bg-canvas);
-  border-right: 1px solid var(--border);
+  border-right: 1px solid var(--border-hairline);
   overflow: hidden;
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 16px;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-4) var(--space-3);
   color: var(--text-primary);
 }
 
 .brand-name {
   font-weight: 600;
+  letter-spacing: -0.005em;
 }
 
 .nav {
   display: flex;
   flex-direction: column;
-  padding: 0 8px 8px;
+  gap: 1px;
+  padding: 0 var(--space-2) var(--space-2);
 }
 
 .nav-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  color: var(--text-primary);
+  gap: var(--space-2);
+  padding: 5px var(--space-2);
+  font-size: 13.5px;
+  color: var(--text-secondary);
   text-decoration: none;
   border-radius: var(--radius-control);
 }
 
 .nav-item:hover {
   background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .nav-icon {
-  color: var(--text-secondary);
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
 }
 
 /* 选中项：--bg-active + 左侧 2px 指示条（§5） */
 .nav-item-active {
   position: relative;
+  color: var(--text-primary);
   background: var(--bg-active);
+}
+
+.nav-item-active .nav-icon {
+  color: var(--text-secondary);
 }
 
 .nav-item-active::before {
@@ -212,15 +221,9 @@ function isActive(to: string, exact: boolean): boolean {
 .kb-section {
   flex: 1;
   min-height: 0;
-  padding: 8px;
+  padding: var(--space-2);
   overflow-y: auto;
-  border-top: 1px solid var(--border);
-}
-
-.section-label {
-  margin: 8px 10px 4px;
-  font-size: 12px;
-  color: var(--text-tertiary);
+  border-top: 1px solid var(--border-hairline);
 }
 
 .kb-list {
@@ -231,8 +234,9 @@ function isActive(to: string, exact: boolean): boolean {
 
 .kb-item {
   display: block;
-  padding: 5px 10px;
+  padding: 5px var(--space-2);
   overflow: hidden;
+  font-size: 13.5px;
   color: var(--text-secondary);
   text-decoration: none;
   text-overflow: ellipsis;
@@ -246,14 +250,14 @@ function isActive(to: string, exact: boolean): boolean {
 }
 
 .kb-item-active {
-  background: var(--bg-active);
   color: var(--text-primary);
+  background: var(--bg-active);
 }
 
 .kb-empty,
 .kb-error {
-  margin: 4px 10px;
-  font-size: 13px;
+  margin: var(--space-2);
+  font-size: 12.5px;
   color: var(--text-tertiary);
 }
 
@@ -262,16 +266,17 @@ function isActive(to: string, exact: boolean): boolean {
 }
 
 .sidebar-foot {
-  padding: 12px 16px;
-  border-top: 1px solid var(--border);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--border-hairline);
 }
 
 .theme-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
-  padding: 6px 8px;
+  padding: 5px var(--space-2);
+  font-size: 13.5px;
   color: var(--text-secondary);
   border-radius: var(--radius-control);
 }
@@ -285,14 +290,20 @@ function isActive(to: string, exact: boolean): boolean {
   display: flex;
   align-items: flex-start;
   gap: 6px;
-  margin: 8px 0 0;
+  margin: var(--space-2) 0 0;
   font-size: 12px;
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
+}
+
+.service-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .service-icon {
   display: inline-flex;
   margin-top: 3px;
+  flex: 0 0 auto;
 }
 
 /* 语义色只用于状态传达（§2.3） */

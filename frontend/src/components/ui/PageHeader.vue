@@ -1,7 +1,9 @@
 <script setup lang="ts">
 /**
- * 页头（《前端设计规范 v0.3》§5）：页标题 + 次要操作，下方 1px 分割线。
- * 内容区统一用它，避免每个页面各写一遍标题样式。
+ * 页头（《前端设计规范》§5）：页标题 + 次要操作，下方 1px hairline。
+ *
+ * 标题之外**默认不加描述句**：每个页面都挂一句解释性灰字，是"模板感"最常见的来源之一。
+ * 确实需要交代上下文时，把话放到内容区第一段，或做成可展开的帮助入口。
  */
 defineProps<{ title: string; description?: string }>()
 </script>
@@ -21,28 +23,27 @@ defineProps<{ title: string; description?: string }>()
 <style scoped>
 .page-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-hairline);
 }
 
 .page-title {
   margin: 0;
-  font-size: 24px;
-  font-weight: 600;
 }
 
 .page-description {
-  margin: 4px 0 0;
+  margin: var(--space-1) 0 0;
+  font-size: 13px;
   color: var(--text-secondary);
 }
 
 .page-head-actions {
   display: flex;
-  align-items: center;
-  gap: 8px;
   flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
 }
 </style>

@@ -1,13 +1,13 @@
 <script setup lang="ts">
 /**
- * 概览页：知识库清单（《前端设计规范 v0.3》§6）。
+ * 概览页：知识库清单（《前端设计规范》§6）。
  *
- * 形态按 §5.1 选：知识库是"容器型"对象，条目 ≤12 时用卡片网格（一屏内做"进哪一个"的
- * 决策），超过 12 个自动切列表——不把卡片挤成越来越窄的格子。
+ * 形态是**排版行**，不是卡片：卡片靠容器切分信息，行靠留白与字号分级切分。
+ * 左端的姓名牌给每行一个扫视锚点，不必逐字读；
+ * 右侧把"最近更新"排成一条竖轴——对齐的数字本身比任何装饰都更像在说"这是一份清单"。
  */
 import { computed, ref } from 'vue'
 
-import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
@@ -26,7 +26,6 @@ const createOpen = ref(false)
 const draftName = ref('')
 const creating = ref(false)
 
-/** 清单由 App 外壳统一加载（侧栏也要用），这里只加一个手动重试入口。 */
 const hasItems = computed(() => store.items.length > 0)
 
 async function submitCreate(): Promise<void> {
@@ -47,14 +46,16 @@ async function submitCreate(): Promise<void> {
     creating.value = false
   }
 }
+
+/** 姓名牌取名称首字：中文取第一个字，英文取首字母大写。 */
+function initial(name: string): string {
+  return name.trim().slice(0, 1).toUpperCase()
+}
 </script>
 
 <template>
   <article class="page">
-    <PageHeader
-      title="概览"
-      description="本服务只返回检索结果原文，不做任何 LLM 预处理；注入防护由调用方负责。"
-    >
+    <PageHeader title="知识库">
       <template #actions>
         <AppButton variant="primary" @click="createOpen = true">
           <template #icon><IconPlus /></template>
@@ -66,12 +67,12 @@ async function submitCreate(): Promise<void> {
     <section class="page-body">
       <p v-if="store.error" class="error-line">{{ store.error }}</p>
 
-      <SkeletonBlock v-if="store.loading && !hasItems" variant="card" :rows="3" />
+      <SkeletonBlock v-if="store.loading && !hasItems" variant="list" :rows="3" />
 
       <EmptyState
         v-else-if="!hasItems"
         title="还没有知识库"
-        hint="知识库是最外层的容器：一个知识库对应一套 embedding 模型与一组切分参数。"
+        hint="知识库是最外层的容器，每个库对应一套 embedding 模型与一组切分参数。"
       >
         <AppButton variant="primary" @click="createOpen = true">
           <template #icon><IconPlus /></template>
@@ -79,23 +80,20 @@ async function submitCreate(): Promise<void> {
         </AppButton>
       </EmptyState>
 
-      <div v-else-if="store.useCardGrid" class="card-grid">
-        <RouterLink v-for="kb in store.items" :key="kb.id" class="card" :to="`/kb/${kb.id}`">
-          <span class="card-title">{{ kb.name }}</span>
-          <span class="card-meta"> {{ kb.embedding_model_id }} · {{ kb.embedding_dim }} 维 </span>
-          <span class="card-meta">
-            切分 {{ kb.chunk_size }} / 重叠 {{ kb.chunk_overlap }} ·
-            {{ formatRelativeTime(kb.created_at) }}
-          </span>
-        </RouterLink>
-      </div>
-
-      <ul v-else class="kb-rows">
-        <li v-for="kb in store.items" :key="kb.id" class="kb-row">
-          <IconLibrary class="row-icon" />
-          <RouterLink class="row-name" :to="`/kb/${kb.id}`">{{ kb.name }}</RouterLink>
-          <span class="row-meta">{{ kb.embedding_model_id }} · {{ kb.embedding_dim }} 维</span>
-          <span class="row-time">{{ formatRelativeTime(kb.created_at) }}</span>
+      <ul v-else class="kb-list">
+        <li v-for="kb in store.items" :key="kb.id" class="kb-item">
+          <RouterLink class="kb-link" :to="`/kb/${kb.id}`">
+            <span class="kb-mark" aria-hidden="true">{{ initial(kb.name) }}</span>
+            <span class="kb-main">
+              <span class="kb-name">{{ kb.name }}</span>
+              <span class="kb-meta">
+                {{ kb.embedding_model_id }}
+                <span class="kb-sep">/</span>
+                {{ kb.embedding_dim }} 维
+              </span>
+            </span>
+            <span class="kb-time tabular">{{ formatRelativeTime(kb.created_at) }}</span>
+          </RouterLink>
         </li>
       </ul>
     </section>
@@ -109,7 +107,7 @@ async function submitCreate(): Promise<void> {
         @keyup.enter="submitCreate"
       />
       <p class="field-hint">
-        embedding 模型与切分参数用服务端默认值；库内已有向量后再改模型会被拒绝（架构 §6.4）。
+        模型与切分参数用服务端默认值。库内已有向量后再改模型会被拒绝，详见架构 §6.4。
       </p>
       <template #footer>
         <AppButton @click="createOpen = false">取消</AppButton>
@@ -123,105 +121,108 @@ async function submitCreate(): Promise<void> {
 
 <style scoped>
 .page {
-  max-width: 960px;
+  max-width: 880px;
   margin: 0 auto;
-  padding: 32px 24px 64px;
+  padding: var(--space-8) var(--page-gutter) var(--space-16);
 }
 
 .page-body {
-  margin-top: 20px;
+  margin-top: var(--space-6);
 }
 
 .error-line {
-  margin: 0 0 12px;
+  margin: 0 0 var(--space-4);
   color: var(--status-danger);
 }
 
-/* 卡片：1px 边框 + 8px 圆角、无阴影；hover 只把边框转强（§7） */
-.card-grid {
-  display: grid;
-  gap: 12px;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-}
-
-.card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-height: 88px;
-  padding: 14px;
-  color: inherit;
-  text-decoration: none;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
-}
-
-.card:hover {
-  border-color: var(--border-strong);
-  text-decoration: none;
-}
-
-.card-title {
-  font-size: 16px;
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.card-meta {
-  font-size: 12px;
-  color: var(--text-secondary);
-}
-
-/* 列表形态：行高 40px、行底 1px 细线、无竖线（§7） */
-.kb-rows {
+.kb-list {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.kb-row {
+/* 行：靠留白分级，不靠容器包围 */
+.kb-item + .kb-item {
+  border-top: 1px solid var(--border-hairline);
+}
+
+.kb-link {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: var(--row-height);
-  border-bottom: 1px solid var(--border);
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-3);
+  margin: 0 calc(-1 * var(--space-3));
+  color: inherit;
+  text-decoration: none;
+  border-radius: var(--radius-control);
 }
 
-.row-icon {
-  flex: 0 0 auto;
-  color: var(--text-tertiary);
+.kb-link:hover {
+  background: var(--bg-hover);
+  text-decoration: none;
 }
 
-.row-name {
-  flex: 1;
+/* 姓名牌：给每行一个扫视锚点 */
+.kb-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-control);
+}
+
+.kb-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
+  flex: 1;
+}
+
+.kb-name {
   overflow: hidden;
-  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.row-meta,
-.row-time {
+.kb-meta {
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kb-sep {
+  padding: 0 2px;
+  color: var(--border-strong);
+}
+
+.kb-time {
   flex: 0 0 auto;
-  font-size: 12px;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
+  font-size: 12.5px;
+  color: var(--text-tertiary);
 }
 
 .field-label {
   display: block;
-  margin-bottom: 6px;
+  margin-bottom: var(--space-2);
   font-size: 13px;
   color: var(--text-secondary);
 }
 
 .field-hint {
-  margin: 8px 0 0;
-  font-size: 12px;
+  margin: var(--space-3) 0 0;
+  font-size: 12.5px;
   color: var(--text-tertiary);
 }
 </style>

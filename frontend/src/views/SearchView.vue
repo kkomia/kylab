@@ -17,7 +17,6 @@ import AppInput from '@/components/ui/AppInput.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import PageHeader from '@/components/ui/PageHeader.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
-import StatusTag from '@/components/ui/StatusTag.vue'
 import { formatScore } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
@@ -49,7 +48,7 @@ onMounted(async () => {
 
 const latest = computed(() => turns.value[turns.value.length - 1] ?? null)
 
-/** 命中 ≤12 用卡片，超过切紧凑列表（§6 检索调试台）。 */
+/** 命中条数多时把正文收成三行摘要：一屏只放得下两条的检索结果没法比较 */
 const useHitCards = computed(() => (latest.value?.response?.hits.length ?? 0) <= 12)
 
 const embeddingIsDevelopment = computed(
@@ -98,6 +97,13 @@ async function runSearch(): Promise<void> {
 
 function channelLabel(channel: string): string {
   return channel === 'vector' ? '向量' : channel === 'fulltext' ? 'BM25' : channel
+}
+
+function modeLabel(value: string): string {
+  if (value === 'hybrid') return '混合检索'
+  if (value === 'vector') return '仅向量'
+  if (value === 'fulltext') return '仅 BM25'
+  return value
 }
 
 /** 命中条目用 chunk_id 作 key：同一文档可能有多个块命中。 */
@@ -202,16 +208,14 @@ function hitKey(hit: SearchHit): string {
 
           <template v-else-if="latest.response">
             <div class="hit-summary">
-              <StatusTag
-                tone="info"
-                :label="`${latest.response.hits.length} 条命中 · 模式 ${latest.response.mode}`"
-              />
-              <StatusTag v-if="latest.response.reranked" tone="success" label="已 rerank" />
-              <StatusTag
-                v-if="latest.response.filtered_out > 0"
-                tone="warning"
-                :label="`元数据过滤掉 ${latest.response.filtered_out} 条`"
-              />
+              <span class="summary-main">
+                {{ latest.response.hits.length }} 条命中<span class="summary-sep">·</span
+                >{{ modeLabel(latest.response.mode) }}
+              </span>
+              <span v-if="latest.response.reranked" class="summary-note">已 rerank</span>
+              <span v-if="latest.response.filtered_out > 0" class="summary-note summary-warn">
+                元数据过滤掉 {{ latest.response.filtered_out }} 条
+              </span>
             </div>
 
             <p v-if="embeddingIsDevelopment" class="dev-warning">
@@ -221,9 +225,10 @@ function hitKey(hit: SearchHit): string {
             </p>
 
             <ul v-if="latest.response.stats.length" class="channel-stats">
-              <li v-for="stat in latest.response.stats" :key="stat.channel">
-                {{ channelLabel(stat.channel) }}：{{ stat.count }} 条 ·
-                {{ stat.elapsed_ms.toFixed(1) }} ms
+              <li v-for="stat in latest.response.stats" :key="stat.channel" class="channel-stat">
+                <span class="stat-name">{{ channelLabel(stat.channel) }}</span>
+                <span class="stat-count">{{ stat.count }}</span>
+                <span class="stat-ms">{{ stat.elapsed_ms.toFixed(1) }} ms</span>
               </li>
             </ul>
 
@@ -233,35 +238,37 @@ function hitKey(hit: SearchHit): string {
               hint="换关键词、放宽模式到混合检索，或确认文档已经处理到「已索引」。"
             />
 
-            <div v-else-if="useHitCards" class="hit-cards">
-              <article v-for="hit in latest.response.hits" :key="hitKey(hit)" class="hit-card">
-                <header class="hit-head">
-                  <span class="hit-title">{{ hit.document_name ?? hit.document_id }}</span>
-                  <span class="hit-score">{{ formatScore(hit.score) }}</span>
-                </header>
-                <p class="hit-text">{{ hit.text }}</p>
-                <footer class="hit-foot">
-                  <span v-if="hit.heading_path" class="hit-heading">{{ hit.heading_path }}</span>
-                  <span v-if="hit.page !== null" class="hit-page">第 {{ hit.page }} 页</span>
-                  <span class="hit-channels">
-                    <span v-for="channel in hit.channels" :key="channel" class="channel-chip">
-                      {{ channelLabel(channel) }} #{{ hit.ranks[channel] ?? '—' }}
+            <!-- 命中：引文块 + 右对齐分数轴。分数是这个页面的产物，不该缩成小徽标 -->
+            <ol v-else class="hit-list">
+              <li v-for="hit in latest.response.hits" :key="hitKey(hit)" class="hit">
+                <div class="hit-head">
+                  <span class="hit-source">
+                    <RouterLink class="hit-title" :to="`/documents/${hit.document_id}`">
+                      {{ hit.document_name ?? hit.document_id }}
+                    </RouterLink>
+                    <span v-if="hit.heading_path" class="hit-heading">
+                      {{ hit.heading_path }}
                     </span>
+                    <span v-if="hit.page !== null" class="hit-page">第 {{ hit.page }} 页</span>
+                  </span>
+                  <span class="hit-score" :title="`融合分数 ${formatScore(hit.score)}`">
+                    {{ formatScore(hit.score) }}
+                  </span>
+                </div>
+
+                <p v-if="useHitCards" class="hit-text">{{ hit.text }}</p>
+                <p v-else class="hit-text hit-text-clamped">{{ hit.text }}</p>
+
+                <div class="hit-channels">
+                  <span v-for="channel in hit.channels" :key="channel" class="channel">
+                    {{ channelLabel(channel) }} 第 {{ hit.ranks[channel] ?? '—' }} 位
                   </span>
                   <span v-if="hit.image_ids.length" class="hit-images">
-                    <IconImage :size="14" />{{ hit.image_ids.length }}
+                    <IconImage :size="13" />{{ hit.image_ids.length }} 张图
                   </span>
-                </footer>
-              </article>
-            </div>
-
-            <ul v-else class="hit-rows">
-              <li v-for="hit in latest.response.hits" :key="hitKey(hit)" class="hit-row">
-                <span class="row-name">{{ hit.document_name ?? hit.document_id }}</span>
-                <span class="row-text">{{ hit.text }}</span>
-                <span class="row-score">{{ formatScore(hit.score) }}</span>
+                </div>
               </li>
-            </ul>
+            </ol>
           </template>
         </div>
       </section>
@@ -271,17 +278,19 @@ function hitKey(hit: SearchHit): string {
 
 <style scoped>
 .page {
+  display: flex;
+  flex-direction: column;
   height: 100%;
-  padding: 32px 24px 24px;
+  padding: var(--space-8) var(--page-gutter) var(--space-6);
 }
 
-/* 双栏：左查询流 / 右命中面板（§6） */
+/* 双栏：左查询流 / 右命中面板（§6）。左栏窄而定宽，右栏承接阅读 */
 .console {
   display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 0;
-  height: calc(100% - 88px);
-  margin-top: 20px;
+  flex: 1;
+  min-height: 0;
+  grid-template-columns: 288px 1fr;
+  margin-top: var(--space-6);
 }
 
 .pane {
@@ -289,38 +298,35 @@ function hitKey(hit: SearchHit): string {
 }
 
 .pane-query {
-  border-right: 1px solid var(--border);
+  padding-right: var(--space-6);
+  border-right: 1px solid var(--border-hairline);
 }
 
-.pane-body {
-  padding: 16px;
-}
-
-.pane-query .pane-body {
-  padding-left: 0;
+.pane-hits .pane-body {
+  padding-left: var(--space-6);
 }
 
 .field {
   display: block;
-  margin-bottom: 14px;
+  margin-bottom: var(--space-4);
 }
 
 .field-row {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 .field-label {
   display: block;
-  margin-bottom: 6px;
-  font-size: 13px;
+  margin-bottom: var(--space-2);
+  font-size: 12.5px;
   color: var(--text-secondary);
 }
 
 .select {
   width: 100%;
   height: 32px;
-  padding: 0 8px;
+  padding: 0 var(--space-2);
   font: inherit;
   color: var(--text-primary);
   background: var(--bg-surface);
@@ -331,23 +337,23 @@ function hitKey(hit: SearchHit): string {
 .kb-picker {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 .kb-option,
 .checkbox-field {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   font-size: 13px;
 }
 
 .checkbox-field {
-  margin-top: 18px;
+  margin-top: var(--space-5);
 }
 
 .advanced {
-  margin-bottom: 14px;
+  margin-bottom: var(--space-4);
   font-size: 13px;
   color: var(--text-secondary);
 }
@@ -357,7 +363,7 @@ function hitKey(hit: SearchHit): string {
 }
 
 .section-label {
-  margin: 18px 0 6px;
+  margin: var(--space-5) 0 var(--space-2);
   font-size: 12px;
   color: var(--text-tertiary);
 }
@@ -386,146 +392,165 @@ function hitKey(hit: SearchHit): string {
   color: var(--status-danger);
 }
 
+/* 结果概览：一行文字，不用徽标堆叠 */
 .hit-summary {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 12px;
+  align-items: baseline;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
-/* 兜底 embedder 提示：语义色 + 明确文案，不能只靠颜色（§8） */
+.summary-main {
+  color: var(--text-primary);
+}
+
+.summary-sep {
+  padding: 0 var(--space-1);
+  color: var(--border-strong);
+}
+
+.summary-note {
+  font-size: 12.5px;
+  color: var(--text-tertiary);
+}
+
+.summary-warn {
+  color: var(--status-warning);
+}
+
+/* 兜底 embedder 提示：左侧语义色竖条 + 明确文案，不靠颜色单独表意（§8） */
 .dev-warning {
-  margin: 0 0 16px;
-  padding: 10px 12px;
+  margin: 0 0 var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  max-width: var(--measure);
   font-size: 13px;
   color: var(--text-primary);
-  background: var(--bg-hover);
+  background: var(--bg-subtle);
   border-left: 2px solid var(--status-warning);
 }
 
+/* 通道耗时：名称左、数字右，沿同一竖轴 */
 .channel-stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
-  margin: 0 0 16px;
+  gap: var(--space-5);
+  margin: 0 0 var(--space-5);
   padding: 0;
-  font-size: 12px;
-  color: var(--text-secondary);
+  font-size: 12.5px;
   list-style: none;
+}
+
+.channel-stat {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.stat-name {
+  color: var(--text-secondary);
+}
+
+.stat-count,
+.stat-ms {
+  color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
 
-/* 命中卡片：1px 边框、8px 圆角、无阴影（§7） */
-.hit-cards {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+/* 命中列表：引文块之间只留呼吸与一条 hairline */
+.hit-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.hit-card {
-  padding: 12px 14px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
+.hit + .hit {
+  border-top: 1px solid var(--border-hairline);
 }
 
-.hit-card:hover {
-  border-color: var(--border-strong);
+.hit {
+  padding: var(--space-4) 0;
 }
 
 .hit-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 12px;
+  gap: var(--space-4);
+}
+
+.hit-source {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-width: 0;
 }
 
 .hit-title {
+  font-size: 14.5px;
   font-weight: 600;
-}
-
-.hit-score {
-  font-size: 13px;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-}
-
-.hit-text {
-  margin: 6px 0 8px;
-  font-size: 13px;
-  line-height: 1.7;
   color: var(--text-primary);
-  white-space: pre-wrap;
 }
 
-.hit-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--text-secondary);
+.hit-heading,
+.hit-page {
+  font-size: 12.5px;
+  color: var(--text-tertiary);
 }
 
 .hit-heading {
   overflow: hidden;
-  max-width: 320px;
+  max-width: 40ch;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.channel-chip {
-  padding: 1px 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
+/* 分数是这个页面的产物：等宽、右对齐、可扫视 */
+.hit-score {
+  flex: 0 0 auto;
+  font-size: 13px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.hit-text {
+  margin: var(--space-2) 0 0;
+  max-width: var(--measure);
+  color: var(--text-primary);
+  white-space: pre-wrap;
+}
+
+/* 命中过多时收紧为摘要：三行封顶，避免一屏只放得下两条 */
+.hit-text-clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.hit-channels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-top: var(--space-2);
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.channel {
+  font-variant-numeric: tabular-nums;
 }
 
 .hit-images {
   display: inline-flex;
   align-items: center;
   gap: 3px;
-  color: var(--text-tertiary);
 }
 
-/* 超过 12 条命中的紧凑列表 */
-.hit-rows {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.hit-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: var(--row-height);
-  border-bottom: 1px solid var(--border);
-}
-
-.row-name {
-  flex: 0 0 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.row-text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-size: 13px;
-  color: var(--text-secondary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.row-score {
-  flex: 0 0 auto;
-  color: var(--text-secondary);
-  font-variant-numeric: tabular-nums;
-}
-
-/* 窄屏：双栏退化为单栏（§8 卡片网格窄屏单列同理） */
+/* 窄屏：双栏退化为单栏（§8） */
 @media (max-width: 900px) {
   .console {
     grid-template-columns: 1fr;
@@ -533,8 +558,14 @@ function hitKey(hit: SearchHit): string {
   }
 
   .pane-query {
+    padding-right: 0;
+    padding-bottom: var(--space-5);
     border-right: none;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  .pane-hits .pane-body {
+    padding-left: 0;
   }
 }
 </style>

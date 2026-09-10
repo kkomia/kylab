@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
- * 骨架屏（《前端设计规范 v0.3》§7）：`--bg-hover` 色块呼吸，不用 spinner 转圈。
+ * 骨架屏（《前端设计规范》§7）：`--bg-hover` 色块呼吸，不用 spinner 转圈。
  *
- * 卡片网格必须用与卡片同尺寸的骨架，否则加载完会跳版。
+ * 尺寸必须与真实内容一致（行高、列宽都照抄列表），否则加载完成时会跳版。
  */
 withDefaults(defineProps<{ variant?: 'card' | 'list' | 'text'; rows?: number }>(), {
   variant: 'text',
@@ -45,29 +45,29 @@ withDefaults(defineProps<{ variant?: 'card' | 'list' | 'text'; rows?: number }>(
   }
 
   50% {
-    opacity: 0.55;
+    opacity: 0.5;
   }
 }
 
 .skeleton-grid {
   display: grid;
-  gap: 12px;
+  gap: var(--space-3);
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
 }
 
 .skeleton-card {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-3);
   height: 88px;
-  padding: 14px;
-  border: 1px solid var(--border);
+  padding: var(--space-4);
+  border: 1px solid var(--border-hairline);
   border-radius: var(--radius-panel);
 }
 
 .block-title {
   width: 60%;
-  height: 16px;
+  height: 15px;
 }
 
 .block-meta {
@@ -83,30 +83,30 @@ withDefaults(defineProps<{ variant?: 'card' | 'list' | 'text'; rows?: number }>(
 .skeleton-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-4);
   height: var(--row-height);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-hairline);
 }
 
 .block-icon {
-  width: 16px;
-  height: 16px;
+  width: 36px;
+  height: 36px;
 }
 
 .block-line {
   flex: 1;
-  height: 12px;
+  height: 13px;
 }
 
 .block-time {
-  width: 72px;
+  width: 88px;
   height: 12px;
 }
 
 .skeleton-text {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .block-text {
