@@ -156,6 +156,11 @@ class TaskWorker:
         这里**不抛异常**：租约被抢说明另一个消费者在跑同一份任务，而摄入是按已有产物
         续跑的（幂等），让它写完比写一半时硬拽回来更安全。终态写入另有 ``owner``
         条件更新兜底，不会被这次过期的执行结果覆盖。
+
+        **续租失败也不许把消费者带走**：这个循环跑在 ``TaskGroup`` 里，
+        异常会一路冒到 ``run_forever``，结果是"存储抖动一次 → 消费者整个死掉"，
+        而手上那份摄入还在线程里继续跑。偶发失败只记日志；
+        真的连不上库时租约自然过期，由 ``reclaim_expired_tasks`` 兜底回收。
         """
         interval = max(self._lease_seconds / 3, 0.1)
         while not stopping.is_set():
@@ -164,9 +169,14 @@ class TaskWorker:
             task_id = self._current_task_id
             if task_id is None:
                 continue  # 空闲，没有需要保住的租约
-            if not self._stores.meta.heartbeat_task(
-                task_id, owner=self._owner, lease_seconds=self._lease_seconds
-            ):
+            try:
+                still_mine = self._stores.meta.heartbeat_task(
+                    task_id, owner=self._owner, lease_seconds=self._lease_seconds
+                )
+            except Exception:
+                logger.exception("续租失败，本轮跳过（租约过期后由回收机制兜底）")
+                continue
+            if not still_mine:
                 logger.warning("任务 %s 的租约已被回收，本 worker 停止领取新任务", task_id)
                 stopping.set()
                 return

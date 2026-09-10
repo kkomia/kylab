@@ -180,6 +180,52 @@ async def test_loop_survives_an_unexpected_exception(bundle: StoreBundle,
     assert calls["n"] >= 2, "异常之后循环应当继续跑"
     assert task.exception() is None
 
+@pytest.mark.asyncio
+async def test_heartbeat_failure_does_not_kill_the_worker(bundle: StoreBundle,
+                                                          ingest: IngestService, kb,
+                                                          monkeypatch) -> None:
+    """续租时的一次存储抖动不能带走消费者。
+
+    续租循环在 TaskGroup 里，异常会一路冒到 ``run_forever``——那就成了
+    "数据库抖一下 → 消费者整个停摆，而手上那份摄入还在线程里默默跑"。
+    这里让摄入慢过续租周期，保证抖动发生在任务执行期间：消费者必须活到任务完成。
+    """
+    outcome = ingest.submit(knowledge_base_id="kb_1", filename="a.md", content=CONTENT.encode())
+    _enqueue(bundle, outcome.document.id, "task_flaky_beat")
+
+    worker = TaskWorker(bundle, ingest, owner="w-flaky-beat", lease_seconds=0.3)
+    original_handle = worker._handle
+
+    def slow_handle(task: TaskRecord) -> None:
+        time.sleep(0.35)  # 慢过续租周期，让抖动落在执行期间
+        original_handle(task)
+
+    monkeypatch.setattr(worker, "_handle", slow_handle)
+
+    real_heartbeat = bundle.meta.heartbeat_task
+    calls = {"n": 0}
+
+    def flaky_heartbeat(task_id: str, *, owner: str, lease_seconds: int) -> bool:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("模拟存储抖动")
+        return real_heartbeat(task_id, owner=owner, lease_seconds=lease_seconds)
+
+    monkeypatch.setattr(bundle.meta, "heartbeat_task", flaky_heartbeat)
+
+    stop = asyncio.Event()
+    runner = asyncio.create_task(worker.run_forever(stop=stop))
+    deadline = time.monotonic() + 5
+    while not bundle.meta.list_tasks(TaskState.SUCCEEDED):
+        assert time.monotonic() < deadline, "续租抖动之后消费者没能把任务跑完"
+        await asyncio.sleep(0.02)
+    stop.set()
+    await asyncio.wait_for(runner, timeout=5)
+
+    assert calls["n"] >= 2, "抖动之后续租应当继续"
+    assert runner.exception() is None
+
+
 # --------------------------------------------------------------------- 应用生命周期
 
 
