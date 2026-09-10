@@ -31,6 +31,10 @@ class DocumentService:
             raise NotFoundError(f"知识库不存在：{kb_id}")
         return self._stores.meta.list_documents(kb_id)
 
+    def chunk_counts(self, document_ids: list[str]) -> dict[str, int]:
+        """批量取切块数。列表页用它，避免每个文档查一次库。"""
+        return self._stores.meta.count_chunks_by_documents(document_ids)
+
     def get(self, document_id: str) -> DocumentRecord:
         record = self._stores.meta.get_document(document_id)
         if record is None:
@@ -78,10 +82,10 @@ class DocumentService:
         return self._stores.meta.list_tasks(state)
 
     def get_task(self, task_id: str) -> TaskRecord:
-        for task in self._stores.meta.list_tasks():
-            if task.id == task_id:
-                return task
-        raise NotFoundError(f"任务不存在：{task_id}")
+        task = self._stores.meta.get_task(task_id)
+        if task is None:
+            raise NotFoundError(f"任务不存在：{task_id}")
+        return task
 
     def _find_active_task(self, document_id: str, kind: TaskKind) -> TaskRecord | None:
         for state in ACTIVE_TASK_STATES:

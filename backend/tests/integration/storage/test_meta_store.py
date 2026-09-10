@@ -191,6 +191,28 @@ def test_replace_chunks_stores_order_and_image_anchors(store: SqliteMetaStore, k
     assert store.count_kb_chunks("kb_1") == 2
 
 
+def test_count_chunks_by_documents_batches_and_fills_zero(store: SqliteMetaStore, kb,
+                                                          document) -> None:
+    """文档列表页要显示每个文档有多少块：一条查询拿全，且去重、缺的补 0。"""
+    store.replace_chunks("doc_1", [_chunk("c1", 0), _chunk("c2", 1)])
+    store.create_document(
+        DocumentRecord(
+            id="doc_2",
+            knowledge_base_id="kb_1",
+            name="空的.md",
+            source_kind=DataSourceKind.UPLOAD,
+            content_hash="hash-2",
+            stage=DocumentStage.UPLOADED,
+            size_bytes=8,
+        )
+    )
+
+    counts = store.count_chunks_by_documents(["doc_1", "doc_2", "doc_1", "doc_missing"])
+
+    assert counts == {"doc_1": 2, "doc_2": 0, "doc_missing": 0}
+    assert store.count_chunks_by_documents([]) == {}
+
+
 def test_replace_chunks_removes_previous_version(store: SqliteMetaStore, kb, document) -> None:
     """增量更新语义：整体替换而非叠加。"""
     store.replace_chunks("doc_1", [_chunk("c1", 0), _chunk("c2", 1)])

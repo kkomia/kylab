@@ -83,11 +83,9 @@ async def list_documents(
     kb_id: str, services: Services = Depends(get_services)
 ) -> DocumentList:
     records = services.documents.list_documents(kb_id)
+    counts = services.documents.chunk_counts([record.id for record in records])
     return DocumentList(
-        items=[
-            _to_out(record, chunk_count=services.documents.chunk_count(record.id))
-            for record in records
-        ]
+        items=[_to_out(record, chunk_count=counts.get(record.id, 0)) for record in records]
     )
 
 

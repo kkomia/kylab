@@ -347,6 +347,25 @@ class SqliteMetaStore(MetaStore):
             ).fetchone()
         return int(row["n"])
 
+    def count_chunks_by_documents(self, document_ids: Sequence[str]) -> dict[str, int]:
+        """一次查完多个文档的切块数。
+
+        文档列表页要显示每个文档"有多少块"，逐个 ``count_chunks`` 就是 N+1：
+        1000 个文档 = 1000 次查询。这里用一条 ``GROUP BY`` 拿全，缺的补 0。
+        """
+        wanted = list(dict.fromkeys(document_ids))  # 去重但保序
+        if not wanted:
+            return {}
+        placeholders = ",".join("?" * len(wanted))
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT document_id, COUNT(*) AS n FROM chunks "  # noqa: S608
+                f"WHERE document_id IN ({placeholders}) GROUP BY document_id",
+                tuple(wanted),
+            ).fetchall()
+        counted = {str(row["document_id"]): int(row["n"]) for row in rows}
+        return {document_id: counted.get(document_id, 0) for document_id in wanted}
+
     # ------------------------------------------------------------------ 图片
 
     def add_images(self, records: Sequence[ImageRecord]) -> None:
@@ -594,6 +613,11 @@ class SqliteMetaStore(MetaStore):
                     "SELECT * FROM tasks WHERE state = ? ORDER BY created_at", (state.value,)
                 ).fetchall()
         return [self._task_from_row(row) for row in rows]
+
+    def get_task(self, task_id: str) -> TaskRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        return self._task_from_row(row) if row else None
 
     # ------------------------------------------------------------------ 数据源 / 凭据 / webhook
 

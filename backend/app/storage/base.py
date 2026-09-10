@@ -380,6 +380,14 @@ class MetaStore(ABC):
     @abstractmethod
     def count_chunks(self, document_id: str) -> int: ...
 
+    @abstractmethod
+    def count_chunks_by_documents(self, document_ids: Sequence[str]) -> dict[str, int]:
+        """批量查切块数：文档列表页要显示每个文档有多少块。
+
+        逐个 ``count_chunks`` 会变成 N+1（1000 个文档 = 1000 次查询），
+        所以接口层直接要求批量。缺席的文档 ID 在返回里补 0。
+        """
+
     # ---- 图片 ----
     @abstractmethod
     def add_images(self, records: Sequence[ImageRecord]) -> None: ...
@@ -435,6 +443,10 @@ class MetaStore(ABC):
 
     @abstractmethod
     def list_tasks(self, state: TaskState | None = None) -> list[TaskRecord]: ...
+
+    @abstractmethod
+    def get_task(self, task_id: str) -> TaskRecord | None:
+        """按主键取单个任务：不要为了找一条而拉全表。"""
 
     # ---- 数据源 / 凭据 / webhook ----
     @abstractmethod

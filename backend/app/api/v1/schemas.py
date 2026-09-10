@@ -139,6 +139,8 @@ class SearchRequest(BaseModel):
 
 
 class SearchHitOut(BaseModel):
+    model_config = _RECORD_CONFIG
+
     chunk_id: str
     document_id: str
     document_name: str | None = None
@@ -155,6 +157,8 @@ class SearchHitOut(BaseModel):
 
 
 class ChannelStatOut(BaseModel):
+    model_config = _RECORD_CONFIG
+
     channel: str
     count: int
     elapsed_ms: float

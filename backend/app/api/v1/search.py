@@ -47,30 +47,10 @@ async def search(
     )
 
     return SearchResponse(
-        hits=[
-            SearchHitOut(
-                chunk_id=hit.chunk_id,
-                document_id=hit.document_id,
-                document_name=hit.document_name,
-                knowledge_base_id=hit.knowledge_base_id,
-                text=hit.text,
-                score=hit.score,
-                page=hit.page,
-                heading_path=hit.heading_path,
-                image_ids=list(hit.image_ids),
-                channels=list(hit.channels),
-                ranks=dict(hit.ranks),
-                raw_scores=dict(hit.raw_scores),
-                rerank_score=hit.rerank_score,
-            )
-            for hit in response.hits
-        ],
+        hits=[SearchHitOut.model_validate(hit) for hit in response.hits],
         mode=response.mode,
         reranked=response.reranked,
         filtered_out=response.filtered_out,
-        stats=[
-            ChannelStatOut(channel=stat.channel, count=stat.count, elapsed_ms=stat.elapsed_ms)
-            for stat in response.stats
-        ],
+        stats=[ChannelStatOut.model_validate(stat) for stat in response.stats],
         embedding_is_development=services.embedder.is_development,
     )
