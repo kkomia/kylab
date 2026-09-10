@@ -9,7 +9,6 @@ import httpx
 import pytest
 import respx
 
-from app.core.config import Settings
 from app.services.retrieval.rerank import (
     NoopReranker,
     OpenAICompatReranker,
@@ -136,25 +135,18 @@ def test_injected_client_is_used() -> None:
 # --------------------------------------------------------------------- 工厂
 
 
-def _settings(**kwargs) -> Settings:
-    params = {"rerank_api_key": None, "rerank_model": None}
-    params.update(kwargs)
-    return Settings(_env_file=None, **params)  # type: ignore[arg-type]
+def test_factory_returns_noop_without_credentials(runtime) -> None:
+    assert isinstance(build_reranker(runtime), NoopReranker)
 
 
-def test_factory_returns_noop_without_credentials() -> None:
-    assert isinstance(build_reranker(_settings()), NoopReranker)
-
-
-def test_factory_returns_real_reranker_when_configured() -> None:
-    reranker = build_reranker(_settings(rerank_api_key="k", rerank_model="bge-reranker"))
+def test_factory_returns_real_reranker_when_configured(runtime) -> None:
+    runtime.set({"rerank.api_key": "k", "rerank.model_id": "bge-reranker"})
+    reranker = build_reranker(runtime)
     assert isinstance(reranker, OpenAICompatReranker)
     assert reranker.enabled is True
 
 
-@pytest.mark.parametrize(
-    ("api_key", "model"), [(None, "m"), ("k", None), ("", "m")]
-)
-def test_factory_needs_both_credentials(api_key: str | None, model: str | None) -> None:
-    assert isinstance(build_reranker(_settings(rerank_api_key=api_key, rerank_model=model)),
-                      NoopReranker)
+@pytest.mark.parametrize(("api_key", "model"), [("", "m"), ("k", "")])
+def test_factory_needs_both_credentials(runtime, api_key: str, model: str) -> None:
+    runtime.set({"rerank.api_key": api_key, "rerank.model_id": model})
+    assert isinstance(build_reranker(runtime), NoopReranker)

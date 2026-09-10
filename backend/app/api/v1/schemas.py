@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -84,6 +84,28 @@ class DocumentPartOut(BaseModel):
 
 class DocumentPartList(BaseModel):
     items: list[DocumentPartOut]
+
+
+class ChunkOut(BaseModel):
+    """切块（文档详情页的正文预览）。
+
+    与 `SearchHitOut` 是两件事：命中带分数与通道，切块只描述"文档被切成了什么"。
+    """
+
+    model_config = _RECORD_CONFIG
+
+    chunk_id: str
+    document_id: str
+    ordinal: int
+    text: str
+    heading_path: str | None = None
+    page: int | None = None
+    image_ids: list[str] = Field(default_factory=list)
+
+
+class ChunkList(BaseModel):
+    items: list[ChunkOut]
+    total: int = Field(description="该文档的切块总数，与 items 长度无关（items 可能被 limit 截断）")
 
 
 class UploadAccepted(BaseModel):
@@ -172,3 +194,143 @@ class SearchResponse(BaseModel):
     stats: list[ChannelStatOut] = Field(default_factory=list)
     embedding_is_development: bool = False
     """当前 embedding 是否为开发兜底实现：界面据此提示"检索质量不代表真实效果"。"""
+
+
+# --------------------------------------------------------------------- 设置
+
+
+class SettingFieldOut(BaseModel):
+    """一个配置项。密钥只给掩码，``configured`` 说明是否已填。"""
+
+    key: str
+    label: str
+    type: str
+    value: str
+    configured: bool
+
+
+class SettingGroupOut(BaseModel):
+    key: str
+    label: str
+    fields: list[SettingFieldOut]
+
+
+class SettingsViewOut(BaseModel):
+    """设置页要的全部信息：分组字段 + 当前实际生效的模型与模式。"""
+
+    groups: list[SettingGroupOut]
+    embedding_model_id: str
+    embedding_dim: int
+    embedding_is_development: bool
+    rerank_enabled: bool
+
+
+class SettingValueIn(BaseModel):
+    key: str
+    value: str = ""
+
+
+class SettingsPatchIn(BaseModel):
+    values: list[SettingValueIn]
+
+
+class SettingsPatchOut(BaseModel):
+    updated: int
+    rejected: list[str] = Field(default_factory=list)
+    """被拒绝的键：拼错键名时报出来，而不是静默"保存成功"。"""
+
+
+class TestConnectionOut(BaseModel):
+    ok: bool
+    detail: str
+
+
+# --------------------------------------------------------------------- 统计
+
+
+class ActivityPointOut(BaseModel):
+    """一天的活跃度。"""
+
+    model_config = _RECORD_CONFIG
+
+    day: date
+    documents: int
+    chunks: int
+    tasks: int
+
+
+class KbStatOut(BaseModel):
+    # 嵌套模型也要 from_attributes：外层配了不代表内层能从 dataclass 读
+    model_config = _RECORD_CONFIG
+
+    id: str
+    name: str
+    embedding_model_id: str
+    embedding_dim: int
+    documents: int
+    chunks: int
+    last_activity: datetime | None = None
+
+
+class DashboardOut(BaseModel):
+    """驾驶舱要的全部数字。"""
+
+    model_config = _RECORD_CONFIG
+
+    generated_at: datetime
+    window_days: int
+    total_knowledge_bases: int
+    total_documents: int
+    total_chunks: int
+    indexed_documents: int
+    failed_documents: int
+    running_tasks: int
+    failed_tasks: int
+    storage_bytes: int
+    recent_documents: int
+    activity: list[ActivityPointOut] = Field(default_factory=list)
+    by_stage: dict[str, int] = Field(default_factory=dict)
+    by_suffix: dict[str, int] = Field(default_factory=dict)
+    by_source_kind: dict[str, int] = Field(default_factory=dict)
+    knowledge_bases: list[KbStatOut] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------- 对话
+
+
+class ChatHistoryIn(BaseModel):
+    """历史消息：只带 role 与 content，不落库（会话持久化不在本轮范围）。"""
+
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str
+
+
+class ChatRequestIn(BaseModel):
+    query: str = Field(min_length=1)
+    kb_ids: list[str] = Field(min_length=1)
+    top_k: int | None = Field(default=None, gt=0, le=20, description="留空用设置里的条数")
+    history: list[ChatHistoryIn] = Field(default_factory=list)
+
+
+class ChatSourceOut(BaseModel):
+    """回答引用的原文出处。带 preview，界面点开就能看到依据。"""
+
+    model_config = _RECORD_CONFIG
+
+    index: int
+    chunk_id: str
+    document_id: str
+    document_name: str
+    heading_path: str | None = None
+    page: int | None = None
+    score: float = 0.0
+    preview: str = ""
+
+
+class ChatTurnOut(BaseModel):
+    answer: str
+    sources: list[ChatSourceOut] = Field(default_factory=list)
+
+
+class ChatResponseOut(ChatTurnOut):
+    """一次性问答的响应（与流式共用同一套 source 结构）。"""

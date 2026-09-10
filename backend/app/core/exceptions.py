@@ -45,6 +45,18 @@ class InvalidRequestError(KylabError):
     message = "请求参数不合法"
 
 
+class UpstreamError(KylabError):
+    """外部依赖出错（解析节点、embedding、对话模型）。
+
+    单列一类是因为**处置方式不同**：它几乎总是"凭据不对 / 额度用尽 / 服务抖动"，
+    用户看到文案就知道该去设置页还是该重试；混进 500 里就只剩一句"服务内部错误"。
+    """
+
+    code = "upstream_error"
+    http_status = status.HTTP_502_BAD_GATEWAY
+    message = "外部服务调用失败"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """把领域异常注册为统一的 JSON 错误响应。"""
 

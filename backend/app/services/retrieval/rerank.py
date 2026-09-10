@@ -12,7 +12,7 @@ from collections.abc import Sequence
 
 import httpx
 
-from app.core.config import Settings
+from app.services.runtime_config import RuntimeConfigService
 
 logger = logging.getLogger(__name__)
 
@@ -121,12 +121,16 @@ class OpenAICompatReranker(RerankProvider):
         return sorted(ranked, key=lambda pair: (-pair[1], pair[0]))
 
 
-def build_reranker(settings: Settings) -> RerankProvider:
-    """配了就启用，没配就干净跳过（架构 §5）。"""
-    if settings.rerank_api_key and settings.rerank_model:
+def build_reranker(runtime: RuntimeConfigService) -> RerankProvider:
+    """配了就启用，没配就干净跳过（架构 §5）。
+
+    与 embedder 同理：每次调用重新读运行期配置，设置页改完立刻生效。
+    """
+    config = runtime.rerank()
+    if config.is_configured:
         return OpenAICompatReranker(
-            base_url=settings.rerank_base_url,
-            api_key=settings.rerank_api_key,
-            model_id=settings.rerank_model,
+            base_url=config.base_url,
+            api_key=config.api_key,
+            model_id=config.model_id,
         )
     return NoopReranker()

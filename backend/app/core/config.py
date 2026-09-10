@@ -61,6 +61,16 @@ class Settings(BaseSettings):
     rerank_api_key: str | None = None
     rerank_model: str | None = None
 
+    # 对话模型（M6 快速检索问答；与 embedding 是两个不同的模型）
+    # 这些同样只是**引导默认值**，实际以设置页写入 app_settings 的为准
+    llm_base_url: str = "https://api.siliconflow.cn/v1"
+    llm_api_key: str | None = None
+    llm_model: str | None = None
+    llm_temperature: float = 0.3
+    llm_max_tokens: int = 1024
+    llm_enable_thinking: bool = False
+    """推理模型（Qwen3.5 等）的思考开关：开着会把 max_tokens 吃光、正文为空（实测）。"""
+
     @property
     def cors_origin_list(self) -> list[str]:
         """把逗号分隔的 CORS 白名单拆成列表。"""

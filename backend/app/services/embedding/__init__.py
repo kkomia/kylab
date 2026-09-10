@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import logging
 
-from app.core.config import Settings
 from app.services.embedding.base import EmbeddingError, EmbeddingProvider, l2_normalize
 from app.services.embedding.deterministic import DeterministicEmbedder
 from app.services.embedding.openai_compat import OpenAICompatEmbedder
+from app.services.runtime_config import RuntimeConfigService
 
 logger = logging.getLogger(__name__)
 
@@ -35,22 +35,25 @@ __all__ = [
 ]
 
 
-def build_embedder(settings: Settings) -> EmbeddingProvider:
-    """按配置选实现：配了 key 与模型就用真实端点，否则退回开发兜底并**明确告警**。"""
-    if settings.embedding_api_key and settings.embedding_model:
+def build_embedder(runtime: RuntimeConfigService) -> EmbeddingProvider:
+    """按**运行期配置**选实现：配了 key 与模型就用真实端点，否则退回开发兜底并明确告警。
+
+    每次调用都重新读配置，因此用户在设置页改完模型立刻生效，不必重启进程。
+    """
+    config = runtime.embedding()
+    if config.is_configured:
         return OpenAICompatEmbedder(
-            base_url=settings.embedding_base_url,
-            api_key=settings.embedding_api_key,
-            model_id=settings.embedding_model,
-            dim=settings.embedding_dim,
-            max_batch=settings.embedding_batch_size,
+            base_url=config.base_url,
+            api_key=config.api_key,
+            model_id=config.model_id,
+            dim=config.dim,
+            max_batch=config.batch_size,
         )
 
     logger.warning(
-        "未配置 KYLAB_EMBEDDING_API_KEY / KYLAB_EMBEDDING_MODEL，"
-        "改用开发用确定性嵌入（%s，%d 维）：向量召回只反映词面重合，不代表真实语义，"
-        "全文检索不受影响。",
+        "未配置 embedding API Key 或模型（设置页可填），改用开发用确定性嵌入"
+        "（%s，%d 维）：向量召回只反映词面重合，不代表真实语义，全文检索不受影响。",
         DEV_MODEL_ID,
-        settings.embedding_dim,
+        config.dim or 256,
     )
-    return DeterministicEmbedder(dim=settings.embedding_dim)
+    return DeterministicEmbedder(dim=config.dim or 256)

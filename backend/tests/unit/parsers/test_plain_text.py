@@ -30,8 +30,22 @@ def test_supports_text_by_mime(parser: PlainTextParser) -> None:
     assert parser.supports(filename="a", mime_type="text/plain", probe=_text_probe()) is True
 
 
-def test_supports_probed_text_without_extension(parser: PlainTextParser) -> None:
-    assert parser.supports(filename="payload", mime_type=None, probe=_text_probe()) is True
+def test_does_not_support_extensionless_binary_container(parser: PlainTextParser) -> None:
+    """没有后缀但探测结论是"扫描件"时不能接：二进制容器不该被当文本读。"""
+    scanned = ProbeResult(kind=ProbeKind.SCANNED, text_coverage=0.0)
+    assert parser.supports(filename="payload", mime_type=None, probe=scanned) is False
+
+
+def test_never_supports_binary_containers_even_when_text_like(
+    parser: PlainTextParser,
+) -> None:
+    """PDF 的头是 ASCII，文本层覆盖率也可能很高——但它是容器格式，不能直读。
+
+    这正是踩过的坑：PDF 被纯文本直通接走，切出来的块是原始 PDF 字节流。
+    """
+    probe = ProbeResult(kind=ProbeKind.TEXT, text_coverage=1.0)
+    for name in ("doc.pdf", "report.docx", "sheet.xlsx", "scan.png"):
+        assert parser.supports(filename=name, mime_type=None, probe=probe) is False
 
 
 def test_does_not_support_scanned_content(parser: PlainTextParser) -> None:

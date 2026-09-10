@@ -9,8 +9,13 @@ Markdown 产物，让"上传 → 解析 → 切分 → 向量化 → 可检索"�
 
 from __future__ import annotations
 
-from app.parsers.base import ParseError, ParseResult, ParserProvider, ProbeKind, ProbeResult
-from app.parsers.probe import MARKDOWN_EXTENSIONS, TEXT_EXTENSIONS, suffix_of
+from app.parsers.base import ParseError, ParseResult, ParserProvider, ProbeResult
+from app.parsers.probe import (
+    BINARY_EXTENSIONS,
+    MARKDOWN_EXTENSIONS,
+    TEXT_EXTENSIONS,
+    suffix_of,
+)
 
 _ENCODINGS = ("utf-8-sig", "utf-8", "gb18030")
 """解码阶梯：先 UTF-8（含 BOM），再中文环境最常见的 GB18030，最后兜底不丢数据。"""
@@ -24,11 +29,18 @@ class PlainTextParser(ParserProvider):
     name = "PlainTextParser"
 
     def supports(self, *, filename: str, mime_type: str | None, probe: ProbeResult) -> bool:
+        """只认真正的文本文件。
+
+        **不接受 ``probe.kind == TEXT`` 这类通配条件**：PDF 的文本层覆盖率也可能很高，
+        那样它就会被纯文本直通接走，切出来的是原始 PDF 字节流（真踩过）。
+        文本型 PDF 该由版面解析器处理——覆盖率高只说明"不需要 OCR"，不等于"能当 txt 读"。
+        """
         if suffix_of(filename) in TEXT_EXTENSIONS:
             return True
-        if (mime_type or "").startswith("text/"):
-            return True
-        return probe.kind == ProbeKind.TEXT
+        # 后缀不认识时，才允许拿 MIME 与探测结论兜底，且必须不是二进制容器
+        if suffix_of(filename) in BINARY_EXTENSIONS:
+            return False
+        return (mime_type or "").startswith("text/")
 
     def parse(
         self,

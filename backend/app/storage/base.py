@@ -367,7 +367,12 @@ class MetaStore(ABC):
     def replace_chunks(self, document_id: str, chunks: Sequence[ChunkRecord]) -> None: ...
 
     @abstractmethod
-    def iter_chunks(self, document_id: str) -> Iterable[ChunkRecord]: ...
+    def iter_chunks(self, document_id: str, *, limit: int | None = None) -> Iterable[ChunkRecord]:
+        """按 ``ordinal`` 升序取文档的切块。
+
+        ``limit`` 用于"只看前几块"的预览场景（文档详情页）：不设上限时，
+        一个上万块的文档会把整份正文读进内存，而这只是为了显示开头几段。
+        """
 
     @abstractmethod
     def get_chunks(self, chunk_ids: Sequence[str]) -> list[ChunkRecord]:

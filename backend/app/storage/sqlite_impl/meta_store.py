@@ -288,11 +288,15 @@ class SqliteMetaStore(MetaStore):
                 ],
             )
 
-    def iter_chunks(self, document_id: str) -> Iterable[ChunkRecord]:
+    def iter_chunks(self, document_id: str, *, limit: int | None = None) -> Iterable[ChunkRecord]:
+        # LIMIT 直接下推到 SQL：预览只要前几块，没必要把整份正文读出来再切
+        sql = "SELECT * FROM chunks WHERE document_id = ? ORDER BY ordinal"
+        params: list[object] = [document_id]
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(0, limit))
         with self._db.read() as conn:
-            rows = conn.execute(
-                "SELECT * FROM chunks WHERE document_id = ? ORDER BY ordinal", (document_id,)
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
             images = self._images_by_chunk(conn, [row["chunk_id"] for row in rows])
         return [
             ChunkRecord(

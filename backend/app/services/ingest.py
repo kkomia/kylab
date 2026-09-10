@@ -35,7 +35,7 @@ from app.storage.base import (
     content_key,
 )
 
-__all__ = ["IngestError", "IngestOutcome", "IngestService"]
+__all__ = ["IngestError", "IngestOutcome", "IngestService", "normalize_filename"]
 
 
 class IngestError(Exception):
@@ -85,6 +85,7 @@ class IngestService:
     ) -> IngestOutcome:
         """登记一份上传：按内容 hash 去重 → 存原文 → 建文档记录（``uploaded``）。"""
         kb = self._require_kb(knowledge_base_id)
+        filename = normalize_filename(filename)
         digest = hashlib.sha256(content).hexdigest()
 
         existing = self._stores.meta.get_document_by_hash(kb.id, digest)
@@ -321,3 +322,24 @@ def _before(current: DocumentStage, target: DocumentStage) -> bool:
 
 def _suffix_of(filename: str) -> str:
     return suffix_of(filename)
+
+
+def normalize_filename(filename: str) -> str:
+    """还原 multipart 头里被按 latin-1 解出来的 UTF-8 文件名。
+
+    HTTP 的 ``Content-Disposition`` 头只允许 latin-1，浏览器会把 UTF-8 文件名的
+    原始字节直接塞进去。Starlette 按 latin-1 解码这些字节，于是中文名在控制台上
+    整片变成乱码，而文件本身没问题（具体样貌见 tests/unit/services/
+    test_filename_normalization.py，此处不写进注释：那段乱码里含 U+201E 等字符，
+    会被本仓库自己的 emoji 扫描当成违规字符）。
+
+    修法是把这段字符串按 latin-1 编回字节、再按 UTF-8 解一次。**只在能成功还原时采用**
+    （`strict`），否则原样返回：纯 ASCII 名或本来就不是这个成因的名字不该被改坏。
+    """
+    if not filename or filename.isascii():
+        return filename
+    try:
+        recovered = filename.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return filename
+    return recovered or filename

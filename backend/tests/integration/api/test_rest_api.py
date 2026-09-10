@@ -136,6 +136,39 @@ def test_upload_rejects_oversized_file(client: TestClient, kb_id: str, monkeypat
     assert response.status_code == 413
 
 
+def test_upload_keeps_chinese_filename_readable(client: TestClient, kb_id: str) -> None:
+    """中文文件名必须原样存下来。
+
+    浏览器把 UTF-8 文件名的**原始字节**塞进只允许 latin-1 的 Content-Disposition 头，
+    服务端若照 latin-1 解就会得到乱码。这里手工构造那种报文体，
+    确保文件名在"入库"这一步已经被还原成可读中文。
+    """
+    boundary = "----kylabtest"
+    filename_bytes = "架构设计.md".encode()
+    body = b"".join(
+        [
+            f"--{boundary}\r\n".encode(),
+            b'Content-Disposition: form-data; name="file"; filename="',
+            filename_bytes,
+            b'"\r\n',
+            b"Content-Type: text/markdown\r\n\r\n",
+            MARKDOWN.encode(),
+            f"\r\n--{boundary}--\r\n".encode(),
+        ]
+    )
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents",
+        content=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+
+    assert response.status_code == 202
+    assert response.json()["document"]["name"] == "架构设计.md"
+    listed = client.get(f"/api/v1/knowledge-bases/{kb_id}/documents").json()["items"]
+    assert [item["name"] for item in listed] == ["架构设计.md"]
+
+
 # --------------------------------------------------------------------- 列表与详情
 
 
@@ -162,6 +195,53 @@ def test_parts_endpoint_returns_empty_for_unsplit_document(client: TestClient,
     response = client.get(f"/api/v1/documents/{document_id}/parts")
     assert response.status_code == 200
     assert response.json()["items"] == []
+
+
+def test_chunks_endpoint_returns_ingested_text(client: TestClient, kb_id: str) -> None:
+    """文档详情页的正文预览：接口得给出真实切块，而不是让前端编内容。"""
+    document_id = _upload(client, kb_id).json()["document"]["id"]
+    _drain_worker()
+
+    body = client.get(f"/api/v1/documents/{document_id}/chunks").json()
+    assert body["total"] == len(body["items"]) > 0
+    assert body["items"][0]["ordinal"] == 0
+    # 标题会进 heading_path，正文块里是段落文本
+    assert "向量检索" in body["items"][0]["text"]
+    assert body["items"][0]["document_id"] == document_id
+
+
+def test_chunks_endpoint_respects_limit_and_reports_total(client: TestClient,
+                                                          kb_id: str) -> None:
+    """limit 只截断 items，total 必须仍是全量：否则界面会把预览说成全文。"""
+    # 每段都超过半块（512），保证切分器不会把它们并进同一个块
+    paragraph = "这一段用来撑出独立的切块。" * 30
+    long_markdown = "\n\n".join(f"## 第 {i} 节\n\n{paragraph}" for i in range(12))
+    upload = _upload(client, kb_id, name="long.md", content=long_markdown)
+    document_id = upload.json()["document"]["id"]
+    _drain_worker()
+
+    full = client.get(f"/api/v1/documents/{document_id}/chunks").json()
+    limited = client.get(f"/api/v1/documents/{document_id}/chunks?limit=2").json()
+
+    assert full["total"] > 2
+    assert len(limited["items"]) == 2
+    assert limited["total"] == full["total"]
+
+
+def test_chunks_endpoint_rejects_bad_limit_and_unknown_document(client: TestClient,
+                                                                kb_id: str) -> None:
+    document_id = _upload(client, kb_id).json()["document"]["id"]
+
+    assert client.get(f"/api/v1/documents/{document_id}/chunks?limit=0").status_code == 422
+    # 文档不存在要给 404，而不是空列表：空列表会让调用方以为"只是还没切块"
+    assert client.get("/api/v1/documents/doc_none/chunks").status_code == 404
+
+
+def test_chunks_endpoint_is_empty_before_ingest(client: TestClient, kb_id: str) -> None:
+    document_id = _upload(client, kb_id, name="pending.md").json()["document"]["id"]
+
+    body = client.get(f"/api/v1/documents/{document_id}/chunks").json()
+    assert body == {"items": [], "total": 0}
 
 
 def test_reprocess_is_accepted(client: TestClient, kb_id: str) -> None:

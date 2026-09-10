@@ -15,6 +15,7 @@ from app.core.config import get_settings
 from app.core.services import reset_services
 from app.core.storage import reset_stores
 from app.models.enums import DataSourceKind, DocumentStage
+from app.services.runtime_config import RuntimeConfigService
 from app.storage.base import DocumentRecord, KnowledgeBaseRecord, StoreBundle
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
@@ -100,6 +101,16 @@ def bundle(database: Database, object_store: LocalObjectStore) -> StoreBundle:
         fulltext=SqliteFullTextStore(database),
         objects=object_store,
     )
+
+
+@pytest.fixture
+def runtime(bundle: StoreBundle) -> RuntimeConfigService:
+    """运行期配置（凭据与模型）读写器。
+
+    不传 Settings（``.env`` 引导值）——单测要的是"只有代码默认值"这个干净起点，
+    需要测引导优先级时再显式构造带 Settings 的实例。
+    """
+    return RuntimeConfigService(bundle)
 
 
 @pytest.fixture

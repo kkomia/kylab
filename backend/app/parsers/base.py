@@ -78,6 +78,8 @@ class ParserProvider(ABC):
 
     实现类命名规则 ``<引擎><节点>Parser``（工程规范 §3.2），例如
     ``PlainTextParser`` / ``MinerUCloudParser`` / ``PaddleOCRApiParser``。
+    ``name`` 是**决策与落库用的标识**，必须与类名一致——它会写进
+    ``parse_results.parser_name``，界面上显示"这个文件是谁解析的"，也用于问题定位。
     """
 
     name: str = "unnamed"

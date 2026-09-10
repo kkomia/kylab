@@ -9,6 +9,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 
 from app.api.v1.schemas import (
+    ChunkList,
+    ChunkOut,
     DocumentList,
     DocumentOut,
     DocumentPartList,
@@ -22,6 +24,9 @@ router = APIRouter(tags=["documents"])
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 """单文件上限 200MB：与 MinerU 云端解析的单文件上限对齐（架构 §15），
 超限要在入口挡住，而不是等跑到云端才失败。"""
+
+MAX_CHUNK_PREVIEW = 200
+"""单次最多返回多少块：详情页只预览开头几段，但接口不能没有上限。"""
 
 
 def _to_out(record, *, chunk_count: int = 0) -> DocumentOut:
@@ -107,6 +112,28 @@ async def list_document_parts(
 ) -> DocumentPartList:
     parts = services.documents.list_parts(document_id)
     return DocumentPartList(items=[DocumentPartOut.model_validate(part) for part in parts])
+
+
+@router.get(
+    "/documents/{document_id}/chunks",
+    response_model=ChunkList,
+    summary="切块列表（文档详情页的正文预览）",
+)
+async def list_document_chunks(
+    document_id: str,
+    limit: int = Query(default=20, ge=1, le=MAX_CHUNK_PREVIEW, description="最多返回多少块"),
+    services: Services = Depends(get_services),
+) -> ChunkList:
+    """按 ``ordinal`` 升序返回切块。
+
+    同时给出 ``total``：前端要能说清"这是前 5 块，共 137 块"，
+    否则用户会把预览当成全文。
+    """
+    chunks = services.documents.list_chunks(document_id, limit=limit)
+    return ChunkList(
+        items=[ChunkOut.model_validate(chunk) for chunk in chunks],
+        total=services.documents.chunk_count(document_id),
+    )
 
 
 @router.post(

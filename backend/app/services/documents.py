@@ -10,7 +10,13 @@ import uuid
 
 from app.core.exceptions import ConflictError, NotFoundError
 from app.models.enums import DocumentStage, TaskKind, TaskState
-from app.storage.base import DocumentPartRecord, DocumentRecord, StoreBundle, TaskRecord
+from app.storage.base import (
+    ChunkRecord,
+    DocumentPartRecord,
+    DocumentRecord,
+    StoreBundle,
+    TaskRecord,
+)
 
 __all__ = ["DocumentService"]
 
@@ -48,6 +54,15 @@ class DocumentService:
 
     def chunk_count(self, document_id: str) -> int:
         return self._stores.meta.count_chunks(document_id)
+
+    def list_chunks(self, document_id: str, *, limit: int | None = None) -> list[ChunkRecord]:
+        """按序取切块（文档详情页的正文预览用）。
+
+        先确认文档存在：否则"文档不存在"和"文档还没切块"都返回空列表，
+        调用方分不清是地址写错了还是流水线还没跑到，只能靠猜。
+        """
+        self.get(document_id)
+        return list(self._stores.meta.iter_chunks(document_id, limit=limit))
 
     # ------------------------------------------------------------------ 任务
 
