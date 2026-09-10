@@ -1,4 +1,4 @@
-# 启动后端开发服务（FastAPI + 热重载）
+﻿# 启动后端开发服务（FastAPI + 热重载）
 # 用法：pwsh scripts/dev-backend.ps1
 $ErrorActionPreference = 'Stop'
 

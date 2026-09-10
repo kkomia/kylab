@@ -1,4 +1,4 @@
-# 启动前端开发服务（Vite）
+﻿# 启动前端开发服务（Vite）
 # 用法：pwsh scripts/dev-frontend.ps1
 $ErrorActionPreference = 'Stop'
 

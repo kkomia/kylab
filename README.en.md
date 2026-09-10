@@ -54,13 +54,17 @@ pnpm dev                          # http://127.0.0.1:5173, /api proxied to port 
 ### Helper scripts
 
 ```powershell
-pwsh scripts/dev-backend.ps1      # backend dev server
-pwsh scripts/dev-frontend.ps1     # frontend dev server
-pwsh scripts/lint.ps1             # convention checks (run before committing)
-pwsh scripts/ci.ps1               # CI gate (convention checks + both test suites)
+powershell -ExecutionPolicy Bypass -File scripts\dev-backend.ps1     # backend dev server
+powershell -ExecutionPolicy Bypass -File scripts\dev-frontend.ps1    # frontend dev server
+powershell -ExecutionPolicy Bypass -File scripts\lint.ps1            # convention checks (before committing)
+powershell -ExecutionPolicy Bypass -File scripts\ci.ps1              # CI gate (conventions + both test suites)
 ```
 
+With PowerShell 7 installed, `pwsh -File scripts\lint.ps1` is equivalent.
 Use the identically named `.sh` variants on Linux / macOS.
+
+> Scripts support both Windows PowerShell 5.1 and PowerShell 7. `.ps1` files must be saved as
+> **UTF-8 with BOM**, otherwise 5.1 decodes them as GBK and mangles non-ASCII output.
 
 ## Repository layout
 

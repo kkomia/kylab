@@ -49,13 +49,16 @@ pnpm dev                          # http://127.0.0.1:5173，/api 自动代理到
 ### 一键脚本
 
 ```powershell
-pwsh scripts/dev-backend.ps1      # 后端开发服务
-pwsh scripts/dev-frontend.ps1     # 前端开发服务
-pwsh scripts/lint.ps1             # 规范检查（提交前跑）
-pwsh scripts/ci.ps1               # CI 门禁（规范检查 + 前后端测试）
+powershell -ExecutionPolicy Bypass -File scripts\dev-backend.ps1     # 后端开发服务
+powershell -ExecutionPolicy Bypass -File scripts\dev-frontend.ps1    # 前端开发服务
+powershell -ExecutionPolicy Bypass -File scripts\lint.ps1            # 规范检查（提交前跑）
+powershell -ExecutionPolicy Bypass -File scripts\ci.ps1              # CI 门禁（规范检查 + 前后端测试）
 ```
 
-Linux / macOS 用同名 `.sh`。
+装了 PowerShell 7 的话，`pwsh -File scripts\lint.ps1` 等价；Linux / macOS 用同名 `.sh`。
+
+> 脚本兼容 Windows PowerShell 5.1 与 PowerShell 7；`.ps1` 必须以 **UTF-8 with BOM** 保存，
+> 否则 5.1 会按 GBK 解码导致中文输出乱码。
 
 ## 仓库结构
 

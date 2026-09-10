@@ -1,28 +1,46 @@
-# 代码规范检查（提交前跑一遍）：ruff + emoji 扫描 + 分层纪律 + eslint
-# 用法：pwsh scripts/lint.ps1
+﻿# 代码规范检查（提交前跑一遍）：ruff + emoji 扫描 + 分层纪律 + eslint/prettier
+#
+# 用法：powershell -ExecutionPolicy Bypass -File scripts\lint.ps1
+#      （装了 PowerShell 7 也可用 pwsh -File scripts\lint.ps1）
+#
+# 两条平台约束，改动本文件前务必先读：
+#
+# 1. 本文件必须保存为 UTF-8 with BOM —— Windows PowerShell 5.1 会把无 BOM 的 .ps1 按 GBK 解码，
+#    中文输出直接变乱码。
+# 2. 调用外部命令时**不要重定向输出流**（不要写 2>&1，也不要在外层用 *> 收集本脚本输出）。
+#    PS 5.1 会把原生命令的 stderr 包装成 ErrorRecord，而 pnpm 的 pnpm.ps1 包装器一旦处于重定向下
+#    就会以 NativeCommandError 中断并以 1 退出——于是 eslint 明明通过、门禁却报红。
+#    这里只读取 $LASTEXITCODE，输出直接透传到控制台。
 $root = Split-Path -Parent $PSScriptRoot
 $script:failures = 0
 
 function Invoke-Step {
-    param([string]$Label, [scriptblock]$Action)
+    param([string]$Label, [string]$Command, [string[]]$Arguments)
+
     Write-Host "==> $Label" -ForegroundColor Cyan
-    & $Action
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "!! $Label 失败" -ForegroundColor Red
+
+    & $Command @Arguments
+    $code = $LASTEXITCODE
+
+    if ($code -ne 0) {
+        Write-Host "!! $Label 失败（exit $code）" -ForegroundColor Red
         $script:failures++
+    }
+    else {
+        Write-Host '    OK' -ForegroundColor DarkGray
     }
 }
 
-Invoke-Step 'ruff' { uv run --project "$root/backend" ruff check "$root/backend/app" "$root/backend/tests" }
-Invoke-Step 'emoji 扫描（后端）' { python "$root/scripts/scan_emoji.py" "$root/backend/app" }
-Invoke-Step '分层纪律与测试位置' { python "$root/scripts/check_layering.py" "$root" }
+Invoke-Step 'ruff' 'uv' @('run', '--directory', "$root/backend", 'ruff', 'check', 'app/', 'tests/')
+Invoke-Step 'emoji 扫描（后端）' 'python' @("$root/scripts/scan_emoji.py", "$root/backend/app")
+Invoke-Step '分层纪律与测试位置' 'python' @("$root/scripts/check_layering.py", $root)
 
 if (Test-Path "$root/frontend/package.json") {
     if (-not (Test-Path "$root/frontend/node_modules")) {
-        Invoke-Step 'pnpm install' { pnpm --dir "$root/frontend" install }
+        Invoke-Step 'pnpm install' 'pnpm' @('--dir', "$root/frontend", 'install')
     }
-    Invoke-Step 'eslint + prettier' { pnpm --dir "$root/frontend" lint }
-    Invoke-Step 'emoji 扫描（前端）' { python "$root/scripts/scan_emoji.py" "$root/frontend/src" }
+    Invoke-Step 'eslint + prettier' 'pnpm' @('--dir', "$root/frontend", 'lint')
+    Invoke-Step 'emoji 扫描（前端）' 'python' @("$root/scripts/scan_emoji.py", "$root/frontend/src")
 }
 
 if ($script:failures -gt 0) {
