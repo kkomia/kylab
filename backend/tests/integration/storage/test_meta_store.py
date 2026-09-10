@@ -456,3 +456,35 @@ def test_deleting_document_cascades_to_parts_chunks_and_images(store: SqliteMeta
     assert store.count_chunks("doc_1") == 0
     assert store.list_document_parts("doc_1") == []
     assert store.list_images("doc_1") == []
+
+
+def test_deleting_knowledge_base_removes_everything_inside(store: SqliteMetaStore, kb,
+                                                           document) -> None:
+    """架构 §6.2 级联删除在库一级同样成立。"""
+    store.replace_chunks("doc_1", [_chunk("c1", 0)])
+    store.delete_knowledge_base("kb_1")
+
+    assert store.list_knowledge_bases() == []
+    assert store.list_documents("kb_1") == []
+    assert store.count_kb_chunks("kb_1") == 0
+
+
+# --------------------------------------------------------------------- 空输入与未命中路径
+
+
+def test_empty_inputs_are_no_ops(store: SqliteMetaStore, document) -> None:
+    """批量写入收到空列表时应直接返回，不产生空事务。"""
+    store.create_document_parts([])
+    store.add_images([])
+    assert store.list_document_parts("doc_1") == []
+    assert store.list_images("doc_1") == []
+
+
+def test_iter_chunks_on_document_without_chunks_returns_empty(store: SqliteMetaStore,
+                                                              document) -> None:
+    assert list(store.iter_chunks("doc_1")) == []
+
+
+def test_get_parse_result_returns_none_when_absent(store: SqliteMetaStore, document) -> None:
+    assert store.get_parse_result("doc_1") is None
+    assert store.get_parse_result("doc_not_exist") is None
