@@ -29,6 +29,7 @@ import {
 } from '@/api/settings'
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
+import ModelRegistryPanel from '@/components/settings/ModelRegistryPanel.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
@@ -40,11 +41,16 @@ import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 const open = defineModel<boolean>('open', { required: true })
 
-type SectionKey = 'models' | 'llm' | 'services' | 'storage' | 'appearance' | 'system'
+type SectionKey = 'registry' | 'models' | 'llm' | 'services' | 'storage' | 'appearance' | 'system'
 
 const SECTIONS: { key: SectionKey; label: string; hint: string }[] = [
-  { key: 'models', label: '模型配置', hint: '向量化与重排' },
-  { key: 'llm', label: '对话模型', hint: 'LLM 与提示词' },
+  // **「模型」放在最前**：现在它是配置模型的**主路径**（供应商 → 模型 → 用途），
+  // 下面那两组是回退用的精细字段。先主路径、再回退项，顺序才符合用户的心智
+  { key: 'registry', label: '模型', hint: '供应商与用途分配' },
+  // 保留原有两组作为回退：没在「模型」里绑定的用途，仍然按这里的字段走。
+  // 命名上加「（精细）」以免用户以为要两处都填
+  { key: 'models', label: '向量化（精细）', hint: '未绑定时生效' },
+  { key: 'llm', label: '对话模型（精细）', hint: '未绑定时生效' },
   { key: 'services', label: '服务配置', hint: '云端解析节点' },
   { key: 'storage', label: '存储配置', hint: '元数据与向量' },
   { key: 'appearance', label: '外观', hint: '字号与显示' },
@@ -54,7 +60,8 @@ const SECTIONS: { key: SectionKey; label: string; hint: string }[] = [
 const store = useKnowledgeBaseStore()
 const { notifySuccess, notifyError } = useToast()
 
-const section = ref<SectionKey>('models')
+/** 打开设置落在「模型」——它是配置模型的主路径（供应商 → 模型 → 用途）。 */
+const section = ref<SectionKey>('registry')
 const health = ref<HealthResponse | null>(null)
 const healthError = ref('')
 const config = ref<SettingsView | null>(null)
@@ -256,8 +263,13 @@ async function runTest(target: string): Promise<void> {
       <div class="settings-body">
         <p v-if="loadError" class="error-line">{{ loadError }}</p>
 
-        <!-- 模型配置 -->
-        <template v-if="section === 'models'">
+        <!-- 模型（G1）：供应商 → 模型 → 用途。这是配置模型的**主路径** -->
+        <template v-if="section === 'registry'">
+          <ModelRegistryPanel />
+        </template>
+
+        <!-- 向量化与重排的精细字段：未在「模型」里绑定对应用途时生效 -->
+        <template v-else-if="section === 'models'">
           <template v-if="editing?.key === 'embedding' || editing?.key === 'rerank'">
             <h3 class="section-title">编辑 {{ editing.label }}</h3>
             <div class="edit-form">

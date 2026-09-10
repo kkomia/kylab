@@ -439,3 +439,124 @@ class ChunkToggleIn(BaseModel):
     """禁用 / 恢复一个块。"""
 
     disabled: bool
+
+
+# --------------------------------------------------------------------- 模型注册器（G1）
+
+
+class ProviderCreateIn(BaseModel):
+    """新建供应商。"""
+
+    kind: str = Field(description="llm / embedding / rerank / parser")
+    name: str = Field(min_length=1, max_length=64)
+    base_url: str = Field(default="", max_length=512)
+    api_key: str = Field(default="", max_length=512)
+    enabled: bool = True
+
+
+class ProviderUpdateIn(BaseModel):
+    """改供应商。
+
+    **字段全部可选，且 ``api_key`` 用 ``str | None``**：``None`` 表示"没改"，
+    空串表示"清空"。设置页把密钥掩码显示成占位符，用户不动它时前端回传的是掩码；
+    若把掩码当新值写库，密钥就被毁了——所以"没改"必须能与"清空"区分开。
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    base_url: str | None = Field(default=None, max_length=512)
+    api_key: str | None = Field(default=None, max_length=512)
+    enabled: bool | None = None
+
+
+class ProviderOut(BaseModel):
+    model_config = _RECORD_CONFIG
+
+    id: str
+    kind: str
+    name: str
+    base_url: str
+    enabled: bool
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    api_key_configured: bool = False
+    """**只回"配没配"，绝不回密钥本身**（与设置页同一纪律）。"""
+    api_key_hint: str = ""
+    """掩码后的尾巴，够用户认出"是哪一把"，不足以还原。"""
+    model_count: int = 0
+
+
+class ProviderListOut(BaseModel):
+    items: list[ProviderOut]
+
+
+class ModelRegisterIn(BaseModel):
+    """登记一个模型。"""
+
+    provider_id: str
+    model_id: str = Field(min_length=1, max_length=128)
+    label: str = Field(default="", max_length=64)
+    dim: int | None = Field(default=None, gt=0)
+    capabilities: list[str] = Field(default_factory=list)
+    options: dict[str, object] = Field(default_factory=dict)
+
+
+class ModelUpdateIn(BaseModel):
+    model_id: str | None = Field(default=None, min_length=1, max_length=128)
+    label: str | None = Field(default=None, max_length=64)
+    dim: int | None = Field(default=None, gt=0)
+    capabilities: list[str] | None = None
+    options: dict[str, object] | None = None
+
+
+class ModelOut(BaseModel):
+    model_config = _RECORD_CONFIG
+
+    id: str
+    provider_id: str
+    provider_name: str = ""
+    provider_kind: str = ""
+    model_id: str
+    label: str = ""
+    dim: int | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    options: dict[str, object] = Field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    bound_slots: list[str] = Field(default_factory=list)
+    """这个模型被哪些用途绑定了——界面上要能一眼看出"它正被用着"。"""
+
+
+class ModelListOut(BaseModel):
+    items: list[ModelOut]
+
+
+class SlotOut(BaseModel):
+    """一个用途（任务槽位）的当前状态。"""
+
+    slot: str
+    label: str
+    capability: str
+    bound_model_pk: str | None = None
+    bound_model_label: str = ""
+    provider_name: str = ""
+    configured: bool = False
+    """最终是否可用于该用途（注册表绑定了，或设置页那套字段填过）。"""
+    source: str = "none"
+    """``registry`` / ``settings`` / ``none``——说清当前生效的是哪一套，
+    否则用户会疑惑"我在设置页填了为什么还提示要绑定"。"""
+
+
+class SlotBindIn(BaseModel):
+    """绑定用途到模型；``model_pk`` 为 ``None`` 表示解绑（回退到设置页配置）。"""
+
+    model_pk: str | None = None
+
+
+class RegistryOut(BaseModel):
+    """注册器总览：界面一次拿全，免得开设置页要打四个请求。"""
+
+    providers: list[ProviderOut] = Field(default_factory=list)
+    models: list[ModelOut] = Field(default_factory=list)
+    slots: list[SlotOut] = Field(default_factory=list)
+    provider_kinds: dict[str, str] = Field(default_factory=dict)
+    capabilities: dict[str, str] = Field(default_factory=dict)

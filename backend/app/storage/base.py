@@ -328,6 +328,46 @@ class ChatMessageRecord:
 
 
 @dataclass(slots=True)
+class ModelProviderRecord:
+    """模型供应商：一个 base_url + 一把凭据（调研报告 G1）。
+
+    **为什么不复用 ``app_settings`` 里的 ``embedding.base_url`` 那套**：
+    那套的口径是"全局各一套凭据"，换模型就得覆盖旧凭据；而成熟产品（6/6）
+    都是"供应商可注册多条、模型可注册多个"——同一个 base_url 下往往同时要用
+    好几个模型（便宜的做向量化、贵的做对话）。两者不是同一件事。
+    """
+
+    id: str
+    kind: str
+    """``llm`` / ``embedding`` / ``rerank`` / ``parser``：这家供应商提供哪类服务。"""
+    name: str
+    base_url: str = ""
+    api_key: str = ""
+    enabled: bool = True
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class RegisteredModelRecord:
+    """模型目录里的一条（G1）。
+
+    ``capabilities`` 用集合存（落库为 JSON 数组）：一个模型能做什么随供应商与版本而变，
+    用固定布尔列会僵化——每加一种能力就要改表。
+    """
+
+    id: str
+    provider_id: str
+    model_id: str
+    label: str = ""
+    dim: int | None = None
+    capabilities: Sequence[str] = field(default_factory=tuple)
+    options: dict[str, object] = field(default_factory=dict)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
 class SearchHit:
     """检索命中。``score`` 的含义随来源不同（向量距离 / BM25 / RRF 融合分）。"""
 
@@ -619,6 +659,45 @@ class MetaStore(ABC):
         """会话里的消息条数（列表页显示"几轮"，不必把消息全读出来数）。"""
         ...
 
+    # ---- 模型注册器（调研报告 G1）----
+    @abstractmethod
+    def create_model_provider(self, record: ModelProviderRecord) -> ModelProviderRecord: ...
+
+    @abstractmethod
+    def get_model_provider(self, provider_id: str) -> ModelProviderRecord | None: ...
+
+    @abstractmethod
+    def list_model_providers(self) -> list[ModelProviderRecord]: ...
+
+    @abstractmethod
+    def update_model_provider(self, record: ModelProviderRecord) -> None: ...
+
+    @abstractmethod
+    def delete_model_provider(self, provider_id: str) -> None:
+        """删供应商要**连同它下面的模型**一起删。
+
+        外键级联在本项目不生效（连接没开 ``PRAGMA foreign_keys``），
+        所以存储层显式清理——只删供应商会留下指向不存在供应商的孤儿模型。
+        """
+        ...
+
+    @abstractmethod
+    def create_registered_model(self, record: RegisteredModelRecord) -> RegisteredModelRecord: ...
+
+    @abstractmethod
+    def get_registered_model(self, model_pk: str) -> RegisteredModelRecord | None: ...
+
+    @abstractmethod
+    def list_registered_models(self, provider_id: str | None = None) -> list[RegisteredModelRecord]:
+        """按供应商过滤（留空表示全部）。"""
+        ...
+
+    @abstractmethod
+    def update_registered_model(self, record: RegisteredModelRecord) -> None: ...
+
+    @abstractmethod
+    def delete_registered_model(self, model_pk: str) -> None: ...
+
     # ---- 回收站 ----
     @abstractmethod
     def add_to_trash(self, record: TrashRecord) -> None: ...
@@ -635,6 +714,17 @@ class MetaStore(ABC):
 
     @abstractmethod
     def set_setting(self, key: str, value: str) -> None: ...
+
+    @abstractmethod
+    def delete_setting(self, key: str) -> None:
+        """删掉一个设置项。
+
+        **与"设为空串"不是一回事**：空串仍是一个显式值，会参与
+        "是否已配置"的判断；而删除意味着"回到没有这个设置的状态"。
+        槽位解绑（G1）依赖这个区别——解绑后应当回退到 ``.env``/设置页那套，
+        而不是被一个空值挡住。
+        """
+        ...
 
 
 class VectorStore(ABC):

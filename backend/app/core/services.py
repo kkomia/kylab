@@ -30,6 +30,7 @@ from app.services.embedding.base import EmbeddingProvider
 from app.services.idempotency import IdempotencyService
 from app.services.ingest import IngestService
 from app.services.knowledge_base import KnowledgeBaseService
+from app.services.model_registry import ModelRegistryService
 from app.services.parser_router import ParserRouter
 from app.services.retrieval import RetrievalService, build_reranker
 from app.services.retrieval.rerank import RerankProvider
@@ -63,6 +64,8 @@ class Services:
     """幂等键：上传类接口防重试造成重复入库（架构 §3.2）。"""
     chunks: ChunkService
     """切块人工干预：改正文并重新向量化、禁用、删除（调研报告 G3）。"""
+    models: ModelRegistryService
+    """模型注册器：供应商 → 模型目录 → 按用途绑定（调研报告 G1）。"""
     conversations: ConversationService
     """对话留存：会话与消息的读写（§11.2）。"""
     embedder: EmbeddingProvider
@@ -126,7 +129,10 @@ def build_services(
     resolved = settings or get_settings()
     bundle = stores or build_stores(resolved)
 
-    runtime = RuntimeConfigService(bundle, resolved)
+    # 注册器先建、再交给 runtime：runtime 的快照要**优先取注册表里绑定的模型**，
+    # 未绑定时才回退到设置页那套字段（叠加层，见 services/model_registry.py）
+    registry = ModelRegistryService(bundle)
+    runtime = RuntimeConfigService(bundle, resolved, registry=registry)
     embedder = _RuntimeEmbedder(runtime)
     reranker = _RuntimeReranker(runtime)
     retrieval = RetrievalService(bundle, embedder=embedder, reranker=reranker)
@@ -166,6 +172,7 @@ def build_services(
         api_keys=ApiKeyService(bundle),
         idempotency=idempotency,
         chunks=ChunkService(bundle, embedder=embedder),
+        models=registry,
         conversations=ConversationService(bundle),
         embedder=embedder,
         reranker=reranker,

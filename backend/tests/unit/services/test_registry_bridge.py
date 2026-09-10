@@ -1,0 +1,204 @@
+"""注册器与配置层的叠加关系（G1）。
+
+镜像同构：``runtime_config.py`` 的 ``_bound`` 桥接 + 各快照方法 → 本文件。
+
+**这是 G1 里最要紧的一组用例**：注册器是**叠加**层而不是替换层。
+- 没绑定 → 完全照旧走 ``.env`` / 设置页（升级不打断已有部署）；
+- 绑定了 → 以注册表为准（同一个供应商下要用多个模型、换模型不覆盖旧凭据）。
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from app.services.model_registry import ModelRegistryService
+from app.services.runtime_config import RuntimeConfigService
+
+
+@pytest.fixture
+def registry(bundle) -> ModelRegistryService:  # type: ignore[no-untyped-def]
+    return ModelRegistryService(bundle)
+
+
+@pytest.fixture
+def runtime(bundle, registry) -> RuntimeConfigService:  # type: ignore[no-untyped-def]
+    return RuntimeConfigService(bundle, None, registry=registry)
+
+
+def _bind_chat(registry: ModelRegistryService, *, model_id="bound-chat-model", **provider):  # type: ignore[no-untyped-def]
+    base = {"kind": "llm", "name": "注册表供应商", "base_url": "https://registry.example.com"}
+    base.update(provider)
+    owner = registry.create_provider(**base)
+    model = registry.register_model(
+        provider_id=owner.id, model_id=model_id, capabilities=["chat"]
+    )
+    registry.bind("chat", model.id)
+    return owner, model
+
+
+# --------------------------------------------------------------------- 回退
+
+
+def test_without_a_registry_everything_falls_back(bundle) -> None:  # type: ignore[no-untyped-def]
+    """注册器缺席时行为与从前完全一致——既有部署与既有测试都不受影响。"""
+    runtime = RuntimeConfigService(bundle, None)  # 不传 registry
+    bundle.meta.set_setting("llm.model_id", "from-settings")
+    bundle.meta.set_setting("llm.api_key", "sk-settings")
+
+    snapshot = runtime.llm()
+
+    assert snapshot.model_id == "from-settings"
+    assert snapshot.api_key == "sk-settings"
+
+
+def test_unbound_slot_uses_the_settings_page(bundle, runtime) -> None:  # type: ignore[no-untyped-def]
+    """**没绑定就走设置页那套。** 这是叠加层的核心，升级不能打断已有部署。"""
+    bundle.meta.set_setting("llm.model_id", "from-settings")
+    bundle.meta.set_setting("llm.api_key", "sk-settings")
+
+    snapshot = runtime.llm()
+
+    assert snapshot.model_id == "from-settings"
+    assert snapshot.api_key == "sk-settings"
+
+
+# --------------------------------------------------------------------- 覆盖
+
+
+def test_bound_slot_overrides_the_settings_page(bundle, runtime, registry) -> None:  # type: ignore[no-untyped-def]
+    bundle.meta.set_setting("llm.model_id", "from-settings")
+    bundle.meta.set_setting("llm.api_key", "sk-settings")
+    _bind_chat(registry, api_key="sk-registry")
+
+    snapshot = runtime.llm()
+
+    assert snapshot.model_id == "bound-chat-model"
+    assert snapshot.api_key == "sk-registry"
+    assert snapshot.base_url == "https://registry.example.com"
+
+
+def test_embedding_binding_drives_model_and_dim(bundle, runtime, registry) -> None:  # type: ignore[no-untyped-def]
+    """**dim 以注册表登记的为准**：它是模型属性，登记一次就不该让用户在两处各填一遍、
+    然后两边不一致（维度不一致会让向量空间对不上，检索结果会静默变差）。"""
+    bundle.meta.set_setting("embedding.dim", "768")
+    owner = registry.create_provider(
+        kind="embedding", name="向量家", base_url="https://emb.example.com", api_key="sk-emb"
+    )
+    model = registry.register_model(
+        provider_id=owner.id, model_id="bge-m3", dim=1024, capabilities=["embedding"]
+    )
+    registry.bind("embedding", model.id)
+
+    snapshot = runtime.embedding()
+
+    assert snapshot.model_id == "bge-m3"
+    assert snapshot.dim == 1024, "绑定了模型却仍用设置页的 768，两边就漂了"
+    assert snapshot.api_key == "sk-emb"
+
+
+def test_embedding_falls_back_to_settings_dim_when_not_registered(
+    bundle, runtime, registry
+) -> None:  # type: ignore[no-untyped-def]
+    """注册表没登记 dim 时用设置页的值——总比 0 强。"""
+    bundle.meta.set_setting("embedding.dim", "768")
+    owner = registry.create_provider(kind="embedding", name="向量家")
+    model = registry.register_model(
+        provider_id=owner.id, model_id="no-dim-model", capabilities=["embedding"]
+    )
+    registry.bind("embedding", model.id)
+
+    assert runtime.embedding().dim == 768
+
+
+def test_rerank_binding_overrides(bundle, runtime, registry) -> None:  # type: ignore[no-untyped-def]
+    bundle.meta.set_setting("rerank.model_id", "from-settings")
+    owner = registry.create_provider(
+        kind="rerank", name="重排家", base_url="https://rerank.example.com", api_key="sk-rr"
+    )
+    model = registry.register_model(
+        provider_id=owner.id, model_id="bge-reranker", capabilities=["rerank"]
+    )
+    registry.bind("rerank", model.id)
+
+    snapshot = runtime.rerank()
+
+    assert snapshot.model_id == "bge-reranker"
+    assert snapshot.api_key == "sk-rr"
+
+
+# --------------------------------------------------------------------- 采样参数
+
+
+def test_sampling_parameters_stay_on_the_settings_page(bundle, runtime, registry) -> None:  # type: ignore[no-untyped-def]
+    """**采样参数始终来自设置页**，不随模型走。
+
+    它们是"这次怎么问"而不是"用哪家模型"——换个模型通常不想重新调一遍
+    temperature。模型的身份（base_url / key / model_id）才由注册表决定。
+    """
+    bundle.meta.set_setting("llm.temperature", "0.7")
+    bundle.meta.set_setting("llm.max_tokens", "2048")
+    _bind_chat(registry)
+
+    snapshot = runtime.llm()
+
+    assert snapshot.temperature == pytest.approx(0.7)
+    assert snapshot.max_tokens == 2048
+
+
+def test_model_options_can_override_sampling(bundle, runtime, registry) -> None:  # type: ignore[no-untyped-def]
+    """但模型自带默认值可以覆盖：不同模型对采样参数的最优区间不同，
+    推理模型通常要更低的 temperature。"""
+    bundle.meta.set_setting("llm.temperature", "0.7")
+    owner = registry.create_provider(kind="llm", name="推理家", base_url="https://r.example.com")
+    model = registry.register_model(
+        provider_id=owner.id,
+        model_id="reasoner",
+        capabilities=["chat"],
+        options={"temperature": 0.1, "max_tokens": 4096, "enable_thinking": True},
+    )
+    registry.bind("chat", model.id)
+
+    snapshot = runtime.llm()
+
+    assert snapshot.temperature == pytest.approx(0.1)
+    assert snapshot.max_tokens == 4096
+    assert snapshot.enable_thinking is True
+
+
+def test_unparseable_option_does_not_break_the_chat(bundle, runtime, registry) -> None:  # type: ignore[no-untyped-def]
+    """登记时把 max_tokens 填成非数字是人之常情，不该让整次对话失败。"""
+    bundle.meta.set_setting("llm.max_tokens", "1024")
+    owner = registry.create_provider(kind="llm", name="手滑家", base_url="https://x.example.com")
+    model = registry.register_model(
+        provider_id=owner.id,
+        model_id="typo-model",
+        capabilities=["chat"],
+        options={"max_tokens": "一千"},
+    )
+    registry.bind("chat", model.id)
+
+    assert runtime.llm().max_tokens == 1024
+
+
+# --------------------------------------------------------------------- 换模型
+
+
+def test_switching_models_does_not_lose_the_previous_credentials(
+    bundle, runtime, registry
+) -> None:  # type: ignore[no-untyped-def]
+    """**这正是做注册器的动机之一**：想临时切到另一家对比效果，
+    回来时不必重新填一遍 key。两家的凭据同时留在库里。"""
+    first, first_model = _bind_chat(registry, name="甲家", api_key="sk-first", model_id="model-a")
+    second, second_model = _bind_chat(
+        registry, name="乙家", api_key="sk-second", model_id="model-b"
+    )
+
+    # 切到乙家
+    registry.bind("chat", second_model.id)
+    assert runtime.llm().api_key == "sk-second"
+
+    # 切回甲家：凭据还在，不用重填
+    registry.bind("chat", first_model.id)
+    assert runtime.llm().api_key == "sk-first"
+    assert registry.get_provider(first.id).api_key == "sk-first"
+    assert registry.get_provider(second.id).api_key == "sk-second"

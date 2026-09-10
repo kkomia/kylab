@@ -38,7 +38,9 @@ from app.storage.base import (
     ImageRecord,
     KnowledgeBaseRecord,
     MetaStore,
+    ModelProviderRecord,
     ParseResultRecord,
+    RegisteredModelRecord,
     TaskRecord,
     TrashRecord,
     WebhookRecord,
@@ -841,6 +843,165 @@ class SqliteMetaStore(MetaStore):
                 "DELETE FROM idempotency_keys WHERE key = ? AND response IS NULL", (key,)
             )
 
+    # ------------------------------------------------------------------ 模型注册器
+
+    @staticmethod
+    def _provider_from_row(row: sqlite3.Row) -> ModelProviderRecord:
+        return ModelProviderRecord(
+            id=row["id"],
+            kind=row["kind"],
+            name=row["name"],
+            base_url=row["base_url"],
+            api_key=row["api_key"],
+            enabled=bool(row["enabled"]),
+            created_at=_load(row["created_at"]),
+            updated_at=_load(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _model_from_row(row: sqlite3.Row) -> RegisteredModelRecord:
+        return RegisteredModelRecord(
+            id=row["id"],
+            provider_id=row["provider_id"],
+            model_id=row["model_id"],
+            label=row["label"],
+            dim=row["dim"],
+            capabilities=tuple(json.loads(row["capabilities"])),
+            options=json.loads(row["options"]),
+            created_at=_load(row["created_at"]),
+            updated_at=_load(row["updated_at"]),
+        )
+
+    def create_model_provider(self, record: ModelProviderRecord) -> ModelProviderRecord:
+        now = _now()
+        record.created_at = record.created_at or now
+        record.updated_at = record.updated_at or now
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO model_providers"
+                " (id, kind, name, base_url, api_key, enabled, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record.id,
+                    record.kind,
+                    record.name,
+                    record.base_url,
+                    record.api_key,
+                    int(record.enabled),
+                    _dump(record.created_at),
+                    _dump(record.updated_at),
+                ),
+            )
+        return record
+
+    def get_model_provider(self, provider_id: str) -> ModelProviderRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM model_providers WHERE id = ?", (provider_id,)
+            ).fetchone()
+        return self._provider_from_row(row) if row else None
+
+    def list_model_providers(self) -> list[ModelProviderRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM model_providers ORDER BY created_at, id"
+            ).fetchall()
+        return [self._provider_from_row(row) for row in rows]
+
+    def update_model_provider(self, record: ModelProviderRecord) -> None:
+        record.updated_at = _now()
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE model_providers SET kind = ?, name = ?, base_url = ?,"
+                " api_key = ?, enabled = ?, updated_at = ? WHERE id = ?",
+                (
+                    record.kind,
+                    record.name,
+                    record.base_url,
+                    record.api_key,
+                    int(record.enabled),
+                    _dump(record.updated_at),
+                    record.id,
+                ),
+            )
+
+    def delete_model_provider(self, provider_id: str) -> None:
+        # 显式删子行：本项目的连接没开 PRAGMA foreign_keys，级联不生效。
+        # 只删供应商会留下指向不存在供应商的孤儿模型，而它还会出现在模型下拉里。
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM model_registry WHERE provider_id = ?", (provider_id,))
+            conn.execute("DELETE FROM model_providers WHERE id = ?", (provider_id,))
+
+    def create_registered_model(self, record: RegisteredModelRecord) -> RegisteredModelRecord:
+        now = _now()
+        record.created_at = record.created_at or now
+        record.updated_at = record.updated_at or now
+        try:
+            with self._db.session() as conn:
+                conn.execute(
+                    "INSERT INTO model_registry"
+                    " (id, provider_id, model_id, label, dim, capabilities, options,"
+                    "  created_at, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        record.id,
+                        record.provider_id,
+                        record.model_id,
+                        record.label,
+                        record.dim,
+                        _json(list(record.capabilities)),
+                        _json(record.options),
+                        _dump(record.created_at),
+                        _dump(record.updated_at),
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError(
+                f"该供应商下已经登记过模型 {record.model_id}"
+            ) from exc
+        return record
+
+    def get_registered_model(self, model_pk: str) -> RegisteredModelRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM model_registry WHERE id = ?", (model_pk,)
+            ).fetchone()
+        return self._model_from_row(row) if row else None
+
+    def list_registered_models(
+        self, provider_id: str | None = None
+    ) -> list[RegisteredModelRecord]:
+        sql = "SELECT * FROM model_registry"
+        params: tuple[object, ...] = ()
+        if provider_id is not None:
+            sql += " WHERE provider_id = ?"
+            params = (provider_id,)
+        sql += " ORDER BY created_at, id"
+        with self._db.read() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._model_from_row(row) for row in rows]
+
+    def update_registered_model(self, record: RegisteredModelRecord) -> None:
+        record.updated_at = _now()
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE model_registry SET model_id = ?, label = ?, dim = ?,"
+                " capabilities = ?, options = ?, updated_at = ? WHERE id = ?",
+                (
+                    record.model_id,
+                    record.label,
+                    record.dim,
+                    _json(list(record.capabilities)),
+                    _json(record.options),
+                    _dump(record.updated_at),
+                    record.id,
+                ),
+            )
+
+    def delete_registered_model(self, model_pk: str) -> None:
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM model_registry WHERE id = ?", (model_pk,))
+
     # ------------------------------------------------------------------ 对话留存
 
     @staticmethod
@@ -1057,6 +1218,10 @@ class SqliteMetaStore(MetaStore):
                 """,
                 (key, value, _dump(_now())),
             )
+
+    def delete_setting(self, key: str) -> None:
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
 
     # ------------------------------------------------------------------ 行映射
 

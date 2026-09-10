@@ -295,11 +295,59 @@ _MIGRATION_004 = Migration(
     ),
 )
 
+_MIGRATION_005 = Migration(
+    version=5,
+    description="模型注册器：供应商与模型目录（调研报告 G1）",
+    statements=(
+        # 供应商：一个 base_url + 一把凭据。
+        #
+        # **为什么不复用 app_settings 里那套 embedding.base_url 之类**：
+        # 那套的模型是"全局各一套凭据"，换个模型就得把旧凭据覆盖掉；
+        # 而成熟产品（6/6）都是"供应商可注册多条、模型可注册多个"——
+        # 同一个 base_url 下往往要用好几个模型（便宜的做检索、贵的做对话）。
+        # 两者不是同一件事，硬塞进 key-value 只会得到一个难用的设置页。
+        """
+        CREATE TABLE model_providers (
+            id          TEXT PRIMARY KEY,
+            kind        TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            base_url    TEXT NOT NULL DEFAULT '',
+            api_key     TEXT NOT NULL DEFAULT '',
+            enabled     INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        )
+        """,
+        # 模型目录：挂在某个供应商下，带能力标记。
+        #
+        # `capabilities` 用 JSON 数组存（如 ["chat","embedding"]）：
+        # 一个模型能做什么，随供应商与版本而变，用固定的布尔列会僵化
+        # （每加一种能力就要改表）。
+        """
+        CREATE TABLE model_registry (
+            id           TEXT PRIMARY KEY,
+            provider_id  TEXT NOT NULL REFERENCES model_providers(id) ON DELETE CASCADE,
+            model_id     TEXT NOT NULL,
+            label        TEXT NOT NULL DEFAULT '',
+            dim          INTEGER,
+            capabilities TEXT NOT NULL DEFAULT '[]',
+            options      TEXT NOT NULL DEFAULT '{}',
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL
+        )
+        """,
+        # 同一供应商下不允许重复登记同一个 model_id
+        "CREATE UNIQUE INDEX idx_model_registry_provider_model"
+        " ON model_registry(provider_id, model_id)",
+    ),
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
     _MIGRATION_003,
     _MIGRATION_004,
+    _MIGRATION_005,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

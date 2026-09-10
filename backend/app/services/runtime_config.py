@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -182,9 +183,18 @@ class RerankSettings:
 class RuntimeConfigService:
     """读写运行期配置，并把配置解析成各模块直接可用的快照。"""
 
-    def __init__(self, stores: StoreBundle, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        stores: StoreBundle,
+        settings: Settings | None = None,
+        *,
+        registry: object | None = None,
+    ) -> None:
         self._stores = stores
         self._settings = settings
+        self._registry = registry
+        """模型注册器（G1）。**可选**：没有它时全部走 .env / 设置页那套，
+        所以既有部署与既有测试不受影响——注册器是叠加层，不是替换。"""
 
     # ------------------------------------------------------------------ 读写
 
@@ -243,9 +253,42 @@ class RuntimeConfigService:
             groups.append({"key": group_key, "label": spec["label"], "fields": fields})
         return {"groups": groups}
 
+    # ------------------------------------------------------------------ 注册器桥接
+
+    def _bound(self, slot: str) -> tuple[object, object] | None:
+        """取某用途在注册器里绑定的（供应商, 模型）；未绑定或注册器缺席返回 ``None``。
+
+        **用鸭子类型而不是导入 ModelRegistryService**：两者会互相引用
+        （注册器要用 get_setting，配置要用 resolve），真导入就成环。
+        这里的契约很小（只要一个 ``resolve``），不值得为它引入依赖注入框架。
+        """
+        registry = self._registry
+        if registry is None:
+            return None
+        resolver = getattr(registry, "resolve", None)
+        if resolver is None:
+            return None
+        return resolver(slot)  # type: ignore[no-any-return]
+
     # ------------------------------------------------------------------ 快照
 
     def embedding(self) -> EmbeddingSettings:
+        """向量化配置快照。
+
+        **优先取模型注册器里绑定到「向量化」的那个模型**（G1），没绑定则回退到
+        设置页那套字段。``dim`` 以注册表登记的为准——它是模型属性，
+        登记一次就不该再让用户在两处各填一遍、然后两边不一致。
+        """
+        bound = self._bound("embedding")
+        if bound is not None:
+            provider, model = bound
+            return EmbeddingSettings(
+                base_url=provider.base_url,
+                api_key=provider.api_key,
+                model_id=model.model_id,
+                dim=model.dim or self.get_int("embedding.dim"),
+                batch_size=self.get_int("embedding.batch_size") or 32,
+            )
         return EmbeddingSettings(
             base_url=self.get("embedding.base_url"),
             api_key=self.get("embedding.api_key"),
@@ -255,6 +298,14 @@ class RuntimeConfigService:
         )
 
     def rerank(self) -> RerankSettings:
+        bound = self._bound("rerank")
+        if bound is not None:
+            provider, model = bound
+            return RerankSettings(
+                base_url=provider.base_url,
+                api_key=provider.api_key,
+                model_id=model.model_id,
+            )
         return RerankSettings(
             base_url=self.get("rerank.base_url"),
             api_key=self.get("rerank.api_key"),
@@ -276,13 +327,46 @@ class RuntimeConfigService:
         )
 
     def llm(self) -> LLMConfig:
+        """对话模型快照。
+
+        采样参数（temperature / max_tokens / thinking）**始终来自设置页**，
+        不放进注册表：它们是"这次怎么问"而不是"用哪家模型"，换个模型通常也不想
+        重新调一遍。模型的身份（base_url / key / model_id）才由注册表决定。
+        """
+        bound = self._bound("chat")
+        temperature = _as_float(self.get("llm.temperature"), 0.3)
+        max_tokens = self.get_int("llm.max_tokens") or 1024
+        thinking = self.get("llm.enable_thinking").lower() in ("1", "true", "yes", "on")
+
+        if bound is not None:
+            provider, model = bound
+            options = model.options or {}
+            # 模型自带的默认值可以覆盖设置页：不同模型对采样参数的最优区间不同，
+            # 例如推理模型通常要更低的 temperature
+            if "temperature" in options:
+                temperature = _as_float(str(options["temperature"]), temperature)
+            if "max_tokens" in options:
+                # 登记时可能填了非数字；解析不了就沿用手上的值，不要让整次对话失败
+                with contextlib.suppress(TypeError, ValueError):
+                    max_tokens = int(options["max_tokens"])  # type: ignore[arg-type]
+            if "enable_thinking" in options:
+                thinking = bool(options["enable_thinking"])
+            return LLMConfig(
+                base_url=provider.base_url,
+                api_key=provider.api_key,
+                model_id=model.model_id,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                enable_thinking=thinking,
+            )
+
         return LLMConfig(
             base_url=self.get("llm.base_url"),
             api_key=self.get("llm.api_key"),
             model_id=self.get("llm.model_id"),
-            temperature=_as_float(self.get("llm.temperature"), 0.3),
-            max_tokens=self.get_int("llm.max_tokens") or 1024,
-            enable_thinking=self.get("llm.enable_thinking").lower() in ("1", "true", "yes", "on"),
+            temperature=temperature,
+            max_tokens=max_tokens,
+            enable_thinking=thinking,
         )
 
     # ------------------------------------------------------------------ 引导值
