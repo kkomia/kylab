@@ -80,7 +80,8 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]        # 测试允许 assert
+# 测试允许 assert，也允许用假凭据/假密钥做夹具（不涉及真实入库）
+"tests/**" = ["S101", "S105", "S106", "S107"]
 "app/core/config.py" = ["S105", "S106"]  # 配置项默认值为空，非真实凭据
 
 [tool.ruff.lint.isort]

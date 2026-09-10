@@ -55,6 +55,20 @@ class Database:
         return conn
 
     @contextmanager
+    def read(self) -> Iterator[sqlite3.Connection]:
+        """只读场景的连接上下文：**用完必定关闭**。
+
+        注意别用 ``with self.connect() as conn:`` —— 那是 sqlite3 的**事务**上下文管理器，
+        退出时只提交/回滚，**不关闭连接**，读路径会持续泄漏文件句柄
+        （Windows 上还会锁住 .db 文件，导致删库失败）。
+        """
+        conn = self.connect()
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    @contextmanager
     def session(self) -> Iterator[sqlite3.Connection]:
         """在显式事务中执行一段操作；异常则回滚。
 
