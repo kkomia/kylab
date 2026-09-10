@@ -591,8 +591,10 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "jieba" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "sqlite-vec" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -608,10 +610,8 @@ parsers = [
     { name = "pypdf" },
     { name = "python-docx" },
 ]
-storage = [
+tabular = [
     { name = "duckdb" },
-    { name = "jieba" },
-    { name = "sqlite-vec" },
 ]
 
 [package.dev-dependencies]
@@ -625,10 +625,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "duckdb", marker = "extra == 'storage'", specifier = ">=1.1" },
+    { name = "duckdb", marker = "extra == 'tabular'", specifier = ">=1.1" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "jieba", marker = "extra == 'storage'", specifier = ">=0.42" },
+    { name = "jieba", specifier = ">=0.42" },
     { name = "markdown-it-py", marker = "extra == 'parsers'", specifier = ">=3.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=1.13" },
     { name = "openpyxl", marker = "extra == 'parsers'", specifier = ">=3.1" },
@@ -638,10 +638,10 @@ requires-dist = [
     { name = "pymupdf", marker = "extra == 'parsers'", specifier = ">=1.24" },
     { name = "pypdf", marker = "extra == 'parsers'", specifier = ">=5.1" },
     { name = "python-docx", marker = "extra == 'parsers'", specifier = ">=1.1" },
-    { name = "sqlite-vec", marker = "extra == 'storage'", specifier = ">=0.1.6" },
+    { name = "sqlite-vec", specifier = ">=0.1.6" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
-provides-extras = ["parsers", "storage", "mcp"]
+provides-extras = ["tabular", "parsers", "mcp"]
 
 [package.metadata.requires-dev]
 dev = [

@@ -10,10 +10,17 @@ dependencies = [
     "pydantic>=2.9",
     "pydantic-settings>=2.6",
     "httpx>=0.27",
+    # 存储与检索是核心能力（M1 起），不再放进 extras
+    "sqlite-vec>=0.1.6",
+    "jieba>=0.42",
 ]
 
-# 按里程碑分层引入的重依赖（M0 只装基础依赖，保证 CI 快且稳）
+# 按里程碑分层引入的重依赖
 [project.optional-dependencies]
+# 表格结构化副本（架构 §5.2，MVP 缓做，仅先保留写入路径）
+tabular = [
+    "duckdb>=1.1",
+]
 # 解析插件层（M2 起启用）
 parsers = [
     "pypdf>=5.1",
@@ -22,12 +29,6 @@ parsers = [
     "openpyxl>=3.1",
     "pandas>=2.2",
     "markdown-it-py>=3.0",
-]
-# 存储与检索层（M1 起启用）
-storage = [
-    "sqlite-vec>=0.1.6",
-    "jieba>=0.42",
-    "duckdb>=1.1",
 ]
 # MCP 接入层（M4 起启用）
 mcp = [

@@ -12,8 +12,11 @@ import pytest
 from app.models.enums import DataSourceKind, DocumentStage
 from app.storage.base import DocumentRecord, KnowledgeBaseRecord
 from app.storage.sqlite_impl.connection import Database
+from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
 from app.storage.sqlite_impl.migrations import apply_migrations
+from app.storage.sqlite_impl.object_store import LocalObjectStore
+from app.storage.sqlite_impl.vector_store import SqliteVectorStore
 
 DEFAULT_MODEL_ID = "BAAI/bge-m3"
 DEFAULT_DIM = 1024
@@ -34,6 +37,22 @@ def database(tmp_path) -> Database:
 @pytest.fixture
 def store(database: Database) -> SqliteMetaStore:
     return SqliteMetaStore(database)
+
+
+@pytest.fixture
+def vector_store(database: Database) -> SqliteVectorStore:
+    return SqliteVectorStore(database)
+
+
+@pytest.fixture
+def fulltext_store(database: Database) -> SqliteFullTextStore:
+    return SqliteFullTextStore(database)
+
+
+@pytest.fixture
+def object_store(tmp_path) -> LocalObjectStore:
+    """对象存储根目录用临时目录，绝不写进仓库的 data/。"""
+    return LocalObjectStore(tmp_path / "data")
 
 
 @pytest.fixture

@@ -15,8 +15,9 @@ uv run uvicorn app.main:app --reload
 打开 http://127.0.0.1:8000/api/v1/docs 查看 OpenAPI 文档；
 `GET /api/v1/health` 为存活探针。
 
-> M1/M2/M4 起再按需安装重依赖：`uv sync --extra storage --extra parsers --extra mcp`。
-> M0 只装基础依赖，保证 CI 快且稳。
+> 依赖分层：`sqlite-vec`（向量）与 `jieba`（中文分词）自 M1 起是**核心依赖**，`uv sync` 即可；
+> 其余按里程碑装 extras：`parsers`（M2 解析插件）、`tabular`（duckdb，表格副本，缓做）、`mcp`（M4）。
+> 例：`uv sync --extra parsers --extra mcp`。
 
 ## 常用命令
 

@@ -14,12 +14,23 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import sqlite_vec
+
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 IN_MEMORY = ":memory:"
 
 
-def _is_memory(path: str) -> bool:
-    return path == IN_MEMORY or path.startswith("file::memory:")
+def _load_extensions(conn: sqlite3.Connection) -> None:
+    """加载 sqlite-vec。
+
+    向量检索是核心能力，扩展加载失败就该立刻暴露，而不是等到检索时才报
+    "no such module: vec0"。加载完立即关掉扩展加载开关，缩小攻击面。
+    """
+    conn.enable_load_extension(True)
+    try:
+        sqlite_vec.load(conn)
+    finally:
+        conn.enable_load_extension(False)
 
 
 class Database:
@@ -34,21 +45,32 @@ class Database:
     ) -> None:
         self._path = str(path)
         self._busy_timeout_ms = busy_timeout_ms
-        if not _is_memory(self._path):
+        # 以 file: 开头的连接串必须显式开启 uri 模式，否则 SQLite 会把整串当文件名，
+        # 于是 "file::memory:?cache=shared" 这种写法会去创建一个怪名字的文件而不是内存库。
+        self._is_uri = self._path.startswith("file:")
+        if not self._is_memory() and not self._is_uri:
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+
+    def _is_memory(self) -> bool:
+        return self._path == IN_MEMORY or (self._is_uri and ":memory:" in self._path)
 
     @property
     def path(self) -> str:
         return self._path
 
+    @property
+    def is_memory(self) -> bool:
+        return self._is_memory()
+
     def connect(self) -> sqlite3.Connection:
         """新建连接并设定 PRAGMA。"""
-        conn = sqlite3.connect(self._path, isolation_level=None)
+        conn = sqlite3.connect(self._path, isolation_level=None, uri=self._is_uri)
         conn.row_factory = sqlite3.Row
+        _load_extensions(conn)
         # PRAGMA 不接受绑定参数，只能拼字符串；这里先 int() 强制转型，杜绝注入面。
         conn.execute(f"PRAGMA busy_timeout = {int(self._busy_timeout_ms)}")
         conn.execute("PRAGMA foreign_keys = ON")
-        if not _is_memory(self._path):
+        if not self._is_memory():
             # 内存库不支持 WAL，设了也只会静默退回 memory 日志模式
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")

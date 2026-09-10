@@ -42,12 +42,26 @@ __all__ = [
     "ObjectStore",
     "ParseResultRecord",
     "SearchHit",
+    "StorageError",
     "TaskRecord",
     "TrashRecord",
+    "VectorDimensionMismatch",
     "VectorMatch",
     "VectorStore",
     "WebhookRecord",
 ]
+
+
+class StorageError(Exception):
+    """存储层错误基类：让 services 不必 import 具体实现就能捕获。"""
+
+
+class VectorDimensionMismatch(StorageError):
+    """向量维度与既有分区不一致。
+
+    架构 §6.4：维度相同不等于向量空间兼容，**维度不同更是绝对不能混写**——
+    静默写入只会让检索结果悄悄错掉，所以这里必须硬失败。
+    """
 
 
 # --------------------------------------------------------------------------- 记录（值对象）
