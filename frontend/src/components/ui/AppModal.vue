@@ -60,11 +60,11 @@ onBeforeUnmount(() => {
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  box-shadow: 0 4px 12px rgb(0 0 0 / 12%);
+  box-shadow: var(--shadow-popover);
 }
 
 .modal::backdrop {
-  background: rgb(0 0 0 / 32%);
+  background: var(--overlay-scrim);
 }
 
 .modal-head {

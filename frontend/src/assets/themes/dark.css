@@ -34,4 +34,8 @@
   --button-primary-bg: #e8e8e6;
   --button-primary-bg-hover: #ffffff;
   --button-primary-text: #1a1a1a;
+
+  /* 弹层阴影与遮罩：深色下阴影几乎不可见，遮罩加深来撑层级 */
+  --shadow-popover: 0 4px 14px rgb(0 0 0 / 45%);
+  --overlay-scrim: rgb(0 0 0 / 55%);
 }

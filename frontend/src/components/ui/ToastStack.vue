@@ -57,7 +57,7 @@ const items = computed(() => toasts.value.map((toast) => ({ ...toast, icon: ICON
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
-  box-shadow: 0 4px 12px rgb(0 0 0 / 12%);
+  box-shadow: var(--shadow-popover);
 }
 
 .toast-success .toast-icon {
