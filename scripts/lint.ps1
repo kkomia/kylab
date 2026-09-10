@@ -34,6 +34,14 @@ function Invoke-Step {
 Invoke-Step 'ruff' 'uv' @('run', '--directory', "$root/backend", 'ruff', 'check', 'app/', 'tests/')
 Invoke-Step 'emoji 扫描（后端）' 'python' @("$root/scripts/scan_emoji.py", "$root/backend/app")
 Invoke-Step '分层纪律与测试位置' 'python' @("$root/scripts/check_layering.py", $root)
+# 同步《API 接口规范》的端点清单（T4.9）：同上，让文档不可能旧
+# 同 lint.sh：这一步要 import app（含 duckdb），必须用 venv 解释器
+$venvPy = "$root/backend/.venv/Scripts/python.exe"
+if (Test-Path $venvPy) {
+    Invoke-Step '同步 API 接口规范' $venvPy @("$root/scripts/gen_api_spec.py")
+} else {
+    Write-Host '==> 同步 API 接口规范（跳过：找不到 venv 解释器）' -ForegroundColor DarkGray
+}
 
 if (Test-Path "$root/frontend/package.json") {
     if (-not (Test-Path "$root/frontend/node_modules")) {

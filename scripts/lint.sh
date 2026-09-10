@@ -39,6 +39,19 @@ step() {
 step "ruff" sh -c "cd '$ROOT/backend' && uv run ruff check app/ tests/"
 step "emoji 扫描（后端）" "$PY" "$ROOT/scripts/scan_emoji.py" "$ROOT/backend/app"
 step "分层纪律与测试位置" "$PY" "$ROOT/scripts/check_layering.py" "$ROOT"
+# 同步《API 接口规范》的端点清单：它是从真实 OpenAPI 生成的，
+# 跑这一步之后文档里的清单必然与代码一致（T4.9）
+# 这一步要 import app（进而 import duckdb），所以**必须用 venv 的解释器**：
+# lint.sh 顶部的 $PY 是通用探测（Windows 上常落到系统 python），
+# 那个环境里没有项目依赖。找不到 venv 时跳过而不是报失败——
+# 生成文档不该成为门禁里最脆的一环，而 pytest 那条已经会核对文档一致性。
+VENV_PY="$ROOT/backend/.venv/Scripts/python.exe"
+[ -x "$VENV_PY" ] || VENV_PY="$ROOT/backend/.venv/bin/python"
+if [ -x "$VENV_PY" ]; then
+    step "同步 API 接口规范" "$VENV_PY" "$ROOT/scripts/gen_api_spec.py"
+else
+    echo "==> 同步 API 接口规范（跳过：找不到 venv 解释器）"
+fi
 
 if [ -f "$ROOT/frontend/package.json" ]; then
     step "eslint + prettier" pnpm --dir "$ROOT/frontend" lint
