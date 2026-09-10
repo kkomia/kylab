@@ -1,0 +1,79 @@
+# kylab CI 门禁（Gitee Go）
+#
+# **这是本项目真正的 CI**：仓库托管在 Gitee，而 `.github/workflows/ci.yml`
+# 在 Gitee 上永远不会执行——门禁一直靠本地手工跑 `scripts/ci.ps1` / `ci.sh`
+# （《开发计划 v0.1》§8 待决事项 D3，2026-09-11 由用户选定走 Gitee Go）。
+#
+# 与本地门禁的关系：**内容等价**，都调用同一批脚本（`scripts/lint.sh` 与
+# `scripts/ci.sh`）。这样"本机绿 / CI 红"的分叉不会出现——两边跑同一份代码。
+#
+# **未在 Gitee 上实跑过**：接入后第一次触发才能确认执行器镜像的实际情况。
+# 若某一步失败，先看"执行器里有没有那个工具"，而不是怀疑门禁内容——
+# 门禁内容在本地是绿的（`scripts/ci.ps1` 退出码 0，2026-09-11，876+93 测试）。
+#
+# 依赖的三个工具及其安装方式（写在这里免得下次再猜）：
+#   node    执行器自带（build@nodejs 指定版本）
+#   pnpm    `npm install -g pnpm@10`——**不用 corepack enable**：
+#           它要写 node 的安装目录，容器里常因权限失败
+#   uv      `pip install uv`——`scripts/lint.sh` 里写的是 `uv run ruff`，
+#           所以 uv 是**必需**的，不是可选优化
+version: '1.0'
+name: kylab-ci
+displayName: kylab CI
+
+triggers:
+  trigger: auto
+  push:
+    branches:
+      prefix:
+        - main
+        - develop
+        - 'feat/'
+        - 'fix/'
+  pr:
+    branches:
+      prefix:
+        - main
+        - develop
+
+stages:
+  # 规范检查 → 后端 → 前端 → 生产构建，串行。
+  # **不拆并行阶段**：单人开发，构建时间不是瓶颈，而串行能让失败点更清楚
+  # （前面红了后面就不必跑）。
+  - name: stage-kylab-gate
+    displayName: 门禁（规范 + 后端 + 前端）
+    strategy: naturally
+    trigger: auto
+    executor: []
+    steps:
+      - step: build@nodejs
+        name: build_gate
+        displayName: 规范检查 + 后端测试 + 前端测试 + 生产构建
+        nodeVersion: 22
+        commands:
+          - '# ---- 工具准备 ----'
+          - python3 --version || python --version
+          - node --version
+          - npm install -g pnpm@10
+          - pnpm --version
+          - python3 -m pip install --quiet uv || python -m pip install --quiet uv
+          - uv --version
+          - ''
+          - '# ---- 后端依赖（ruff 与 pytest 都在这里）----'
+          - cd backend && uv sync && cd ..
+          - ''
+          - '# ---- 前端依赖 ----'
+          - pnpm --dir frontend install --frozen-lockfile
+          - ''
+          - '# ---- 规范检查：ruff / emoji×2 / 分层 / eslint+prettier / vue-tsc ----'
+          - sh scripts/lint.sh
+          - ''
+          - '# ---- 后端测试 + 前端测试 + 前端生产构建 ----'
+          - sh scripts/ci.sh
+        caches:
+          - ~/.npm
+          - ~/.cache/pip
+          - ~/.cache/uv
+        notify: []
+        strategy:
+          retry: '0'

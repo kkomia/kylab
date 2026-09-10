@@ -70,7 +70,8 @@ kylab/
 ├── tests/e2e/             跨端 E2E（Playwright）
 ├── scripts/               开发/部署脚本与规范检查
 ├── deploy/                Docker Compose 等部署产物
-└── .github/workflows/     CI（承载方式待定，见开发计划 §8 D3）
+├── .workflow/            **CI（Gitee Go，默认承载）**
+└── .github/workflows/     CI（GitHub 版，保留备将来镜像）
 ```
 
 **铁律**：任何文件都有唯一归属目录，不允许在仓库根目录散落临时文件。
@@ -81,10 +82,17 @@ kylab/
 |------|------|
 | [架构设计 v0.2](docs/架构设计-v0.2.md) | 产品定位、总体架构、摄入流水线、检索、存储选型、MVP 范围 |
 | [项目工程规范 v0.3](docs/项目工程规范-v0.3.md) | 目录、命名、分层纪律、测试规范、提交与分支 |
-| [前端设计规范 v0.3](docs/前端设计规范-v0.3.md) | Notion 风灰阶体系、黑白双主题 Token、禁 emoji 与内联 SVG、形态随数据量（卡片/列表） |
+| [前端设计规范 v0.4](docs/前端设计规范-v0.4.md) | Notion 风灰阶体系、黑白双主题 Token（含实测对比度）、禁 emoji 与内联 SVG、形态随数据量、界面信息架构判定、破坏性动作确认口径 |
 | [开发计划 v0.1](docs/开发计划-v0.1.md) | M0–M7 里程碑、任务分解、质量门禁、风险登记 |
 
 ## 工程质量门禁
+
+**CI 在 Gitee Go**（`.workflow/kylab-ci.yml`）。它与本地命令
+`scripts/ci.ps1` / `scripts/ci.sh` **调用同一批脚本**，
+所以不存在"本地绿、CI 红"的分叉。
+
+> 门禁也可以随时在本地完整复跑——这是刻意的：CI 挂了不该阻塞开发，
+> 而"能在本地跑出与 CI 一样的结论"是这类项目最实用的一条性质。
 
 每次提交与 CI 都跑同一套检查（内容见 `scripts/lint.*` 与 `scripts/ci.*`）：
 
