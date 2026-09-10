@@ -31,6 +31,9 @@ function doc(knowledgeBaseId: string, updatedAt: string | null): documentsApi.Do
     is_split: false,
     error: null,
     chunk_count: 3,
+    // G6：归属标注。未指定使用者时为 null / 空串
+    uploaded_by: null,
+    uploaded_by_name: '',
     created_at: updatedAt,
     updated_at: updatedAt,
   }

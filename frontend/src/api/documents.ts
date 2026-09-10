@@ -33,6 +33,10 @@ export interface DocumentSummary {
   is_split: boolean
   error: string | null
   chunk_count: number
+  /** 上传者 id（G6）。null = 未记录（系统摄入或名册启用前的老数据）。 */
+  uploaded_by: string | null
+  /** 上传者名字，由后端解析好——前端拿 id 还得再查一次名册。 */
+  uploaded_by_name: string
   created_at: string | null
   updated_at: string | null
 }

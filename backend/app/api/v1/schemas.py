@@ -63,6 +63,11 @@ class DocumentOut(BaseModel):
     is_split: bool = False
     error: str | None = None
     chunk_count: int = 0
+    uploaded_by: str | None = None
+    """上传者的使用者 id（G6）。``None`` = 未记录，界面显示"未记录"而不是编一个名字。"""
+    uploaded_by_name: str = ""
+    """解析后的名字。**由后端解析**：前端拿 id 还得再查一次名册，
+    列表里就会有 N 次多余请求。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -550,6 +555,28 @@ class SlotBindIn(BaseModel):
     """绑定用途到模型；``model_pk`` 为 ``None`` 表示解绑（回退到设置页配置）。"""
 
     model_pk: str | None = None
+
+
+class UserCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=32)
+    note: str = Field(default="", max_length=64)
+
+
+class UserOut(BaseModel):
+    model_config = _RECORD_CONFIG
+
+    id: str
+    name: str
+    note: str = ""
+    created_at: datetime | None = None
+    document_count: int = 0
+    """这个人传过多少文档——删他之前要能说清"会影响什么"。"""
+
+
+class UserListOut(BaseModel):
+    items: list[UserOut]
+    header: str = ""
+    """前端应当把操作者放在哪个请求头里。由后端给出，免得两边各写一份会漂。"""
 
 
 class UsageBucketOut(BaseModel):

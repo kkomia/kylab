@@ -58,14 +58,26 @@ MAX_CHUNK_PREVIEW = 200
 """单次最多返回多少块：详情页只预览开头几段，但接口不能没有上限。"""
 
 
-def _to_out(record, *, chunk_count: int = 0) -> DocumentOut:
+def _to_out(record, *, chunk_count: int = 0, uploader: str = "") -> DocumentOut:
     """记录 → 响应模型。用 ``model_validate`` 而不是手抄字段：
 
     协议层不该 import ``app.storage`` 的记录类型（工程规范 §3.3 L1），
     字段名对不上时 pydantic 会直接报错，不用等到线上发现"某个字段忘了同步"。
     """
     out = DocumentOut.model_validate(record)
-    return out.model_copy(update={"chunk_count": chunk_count})
+    return out.model_copy(update={"chunk_count": chunk_count, "uploaded_by_name": uploader})
+
+
+def _uploader_names(services: Services, records) -> dict[str, str]:  # type: ignore[no-untyped-def]
+    """把一批文档的 ``uploaded_by`` 一次解析成名字（G6）。
+
+    **批量解析而不是逐条查**：文档列表一页几十条，逐条查就是 N+1；
+    而名册本身很小，整个读出来更划算。
+    """
+    wanted = {record.uploaded_by for record in records if record.uploaded_by}
+    if not wanted:
+        return {}
+    return {item.id: item.name for item in services.users.list() if item.id in wanted}
 
 
 @router.post(
@@ -82,6 +94,15 @@ async def upload_document(
         default=None,
         alias="Idempotency-Key",
         description="可选。带上它则同一键的重试不会产生第二份文档（架构 §3.2）",
+    ),
+    operator_token: str | None = Header(
+        default=None,
+        alias="X-Kylab-Operator",
+        description=(
+            "可选。使用者名册里的 id（形如 user_xxx），记录是谁传的（G6）。"
+            "不参与鉴权。**用 id 而不是名字**：HTTP 头只能是 ASCII，"
+            "而名字可能是中文（实测浏览器与 curl 都会报编码错）"
+        ),
     ),
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),
@@ -100,6 +121,9 @@ async def upload_document(
     而收益只是把已有的保护换一种表达。所以：**提供则生效，不提供仍受 hash 去重保护**。
     """
     check_kb_scope(services, caller, [kb_id])
+    # 归属标注（G6）：前端从名册里选一个人放进请求头。
+    # **不参与鉴权**——伪造一个名字只会让归属记错，不会获得任何权限
+    operator = services.users.resolve_operator(operator_token)
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(
@@ -130,6 +154,8 @@ async def upload_document(
             content=content,
             mime_type=file.content_type,
             start=start,
+            uploaded_by=operator.id if operator else None,
+            uploader_name=operator.name if operator else "",
         )
     except Exception:
         # 业务没跑成：把键放掉，让客户端能真正重试。
@@ -157,6 +183,8 @@ def _do_upload(
     content: bytes,
     mime_type: str | None,
     start: bool,
+    uploaded_by: str | None = None,
+    uploader_name: str = "",
 ) -> UploadAccepted:
     """真正的入库动作。抽出来是为了让幂等层的"占键 → 执行 → 挂响应"读起来是直的。"""
     outcome = services.ingest.submit(
@@ -164,17 +192,22 @@ def _do_upload(
         filename=filename,
         content=content,
         mime_type=mime_type,
+        uploaded_by=uploaded_by,
     )
     if not start or outcome.is_duplicate:
         return UploadAccepted(
-            document=_to_out(outcome.document, chunk_count=outcome.chunk_count),
+            document=_to_out(
+                outcome.document,
+                chunk_count=outcome.chunk_count,
+                uploader=uploader_name,
+            ),
             is_duplicate=outcome.is_duplicate,
             task_id=None,
         )
 
     task = services.documents.enqueue_ingest(outcome.document.id)
     return UploadAccepted(
-        document=_to_out(outcome.document),
+        document=_to_out(outcome.document, uploader=uploader_name),
         is_duplicate=False,
         task_id=task.id,
     )
@@ -193,8 +226,16 @@ async def list_documents(
     check_kb_scope(services, caller, [kb_id])
     records = services.documents.list_documents(kb_id)
     counts = services.documents.chunk_counts([record.id for record in records])
+    names = _uploader_names(services, records)
     return DocumentList(
-        items=[_to_out(record, chunk_count=counts.get(record.id, 0)) for record in records]
+        items=[
+            _to_out(
+                record,
+                chunk_count=counts.get(record.id, 0),
+                uploader=names.get(record.uploaded_by or "", ""),
+            )
+            for record in records
+        ]
     )
 
 
@@ -220,7 +261,11 @@ async def get_document(
 ) -> DocumentOut:
     _guard_document(services, caller, document_id)
     record = services.documents.get(document_id)
-    return _to_out(record, chunk_count=services.documents.chunk_count(document_id))
+    return _to_out(
+        record,
+        chunk_count=services.documents.chunk_count(document_id),
+        uploader=_uploader_names(services, [record]).get(record.uploaded_by or "", ""),
+    )
 
 
 @router.get(
@@ -277,7 +322,11 @@ async def reprocess_document(
     document = services.documents.get(document_id)
     task = services.documents.enqueue_ingest(document_id, force=True)
     return UploadAccepted(
-        document=_to_out(document, chunk_count=services.documents.chunk_count(document_id)),
+        document=_to_out(
+            document,
+            chunk_count=services.documents.chunk_count(document_id),
+            uploader=_uploader_names(services, [document]).get(document.uploaded_by or "", ""),
+        ),
         is_duplicate=False,
         task_id=task.id,
     )

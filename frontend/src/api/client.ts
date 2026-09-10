@@ -4,6 +4,7 @@
  */
 
 import { consoleToken } from '@/composables/useConsoleToken'
+import { operatorHeaders } from '@/composables/useOperator'
 
 export const API_BASE = '/api/v1'
 
@@ -21,7 +22,12 @@ export interface ApiErrorBody {
  */
 function authHeaders(): Record<string, string> {
   const token = consoleToken()
-  return token ? { Authorization: `Bearer ${token}` } : {}
+  // 操作者归属（G6）随**每个**请求带：它要出现在所有写操作上（上传、建库、删块……），
+  // 逐个接口加字段既啰嗦又容易漏。值必须是 id——HTTP 头只能是 ASCII，
+  // 而使用者名字可能是中文（实测会抛 UnicodeEncodeError）
+  const headers: Record<string, string> = { ...operatorHeaders() }
+  if (token) headers.Authorization = `Bearer ${token}`
+  return headers
 }
 
 /** 把响应翻成结果或抛出带后端文案的错误（错误信封见后端 core/exceptions.py）。 */

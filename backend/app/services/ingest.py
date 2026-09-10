@@ -89,8 +89,13 @@ class IngestService:
         content: bytes,
         mime_type: str | None = None,
         document_id: str | None = None,
+        uploaded_by: str | None = None,
     ) -> IngestOutcome:
-        """登记一份上传：按内容 hash 去重 → 存原文 → 建文档记录（``uploaded``）。"""
+        """登记一份上传：按内容 hash 去重 → 存原文 → 建文档记录（``uploaded``）。
+
+        ``uploaded_by`` 是使用者名册里的 id（G6）。**只是归属标注**，
+        不参与鉴权——凭据是三档 API 身份那套，两者刻意分开。
+        """
         kb = self._require_kb(knowledge_base_id)
         filename = normalize_filename(filename)
         digest = hashlib.sha256(content).hexdigest()
@@ -116,6 +121,7 @@ class IngestService:
                 stage=DocumentStage.UPLOADED,
                 size_bytes=len(content),
                 mime_type=mime_type,
+                uploaded_by=uploaded_by,
             )
         )
         self._stores.meta.set_setting(f"document.{document.id}.original_path", stored_path)

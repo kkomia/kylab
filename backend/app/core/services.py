@@ -40,6 +40,7 @@ from app.services.retrieval.rerank import RerankProvider
 from app.services.runtime_config import RuntimeConfigService
 from app.services.stats import StatsService
 from app.services.usage import UsageService
+from app.services.users import UserService
 from app.storage.base import StoreBundle
 from app.workers.queue_worker import TaskWorker
 
@@ -72,6 +73,8 @@ class Services:
     """模型注册器：供应商 → 模型目录 → 按用途绑定（调研报告 G1）。"""
     usage: UsageService
     """用量统计：按次记 token 与调用量（调研报告 G7）。"""
+    users: UserService
+    """使用者名册：记录"是谁传的"，不参与鉴权（调研报告 G6）。"""
     conversations: ConversationService
     """对话留存：会话与消息的读写（§11.2）。"""
     embedder: EmbeddingProvider
@@ -228,6 +231,7 @@ def build_services(
         chunks=ChunkService(bundle, embedder=embedder),
         models=registry,
         usage=usage,
+        users=UserService(bundle),
         conversations=ConversationService(bundle),
         embedder=embedder,
         reranker=reranker,

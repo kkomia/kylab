@@ -145,6 +145,9 @@ class DocumentRecord:
     page_count: int | None = None
     is_split: bool = False
     error: str | None = None
+    uploaded_by: str | None = None
+    """上传者的使用者 id（G6）。``None`` = 系统摄入或名册启用前的老数据，
+    界面据此显示"未记录"，而不是编一个名字出来。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -324,6 +327,21 @@ class ChatMessageRecord:
     role: str
     content: str
     sources: Sequence[dict[str, object]] = field(default_factory=tuple)
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class UserRecord:
+    """使用者（调研报告 G6）。
+
+    **不是账号，是名册**：没有密码、没有角色。用途只有一个——
+    让"这份文档是谁传的""这个库是谁建的"有据可查。
+    凭据体系另有其人（三档 API 身份，见 §11.4）。
+    """
+
+    id: str
+    name: str
+    note: str = ""
     created_at: datetime | None = None
 
 
@@ -691,6 +709,29 @@ class MetaStore(ABC):
     @abstractmethod
     def list_messages(self, conversation_id: str) -> list[ChatMessageRecord]:
         """按写入顺序返回——顺序就是对话顺序，所以按 created_at 排序。"""
+        ...
+
+    # ---- 使用者名册（调研报告 G6）----
+    @abstractmethod
+    def create_user(self, record: UserRecord) -> UserRecord: ...
+
+    @abstractmethod
+    def get_user(self, user_id: str) -> UserRecord | None: ...
+
+    @abstractmethod
+    def find_user_by_name(self, name: str) -> UserRecord | None:
+        """按名字找——请求头里带的是名字（人记不住 id，也不该去记）。"""
+        ...
+
+    @abstractmethod
+    def list_users(self) -> list[UserRecord]: ...
+
+    @abstractmethod
+    def delete_user(self, user_id: str) -> None: ...
+
+    @abstractmethod
+    def count_documents_by_user(self, user_id: str) -> int:
+        """某人传过多少文档。删使用者前要能告诉他"会影响什么"。"""
         ...
 
     # ---- 用量（调研报告 G7）----

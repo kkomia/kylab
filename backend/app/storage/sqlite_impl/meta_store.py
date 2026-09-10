@@ -44,6 +44,7 @@ from app.storage.base import (
     TaskRecord,
     TrashRecord,
     UsageEventRecord,
+    UserRecord,
     WebhookRecord,
 )
 from app.storage.sqlite_impl.connection import Database
@@ -146,8 +147,8 @@ class SqliteMetaStore(MetaStore):
                 """
                 INSERT INTO documents
                     (id, knowledge_base_id, name, source_kind, content_hash, stage, size_bytes,
-                     mime_type, page_count, is_split, error, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     mime_type, page_count, is_split, error, uploaded_by, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -161,6 +162,7 @@ class SqliteMetaStore(MetaStore):
                     record.page_count,
                     int(record.is_split),
                     record.error,
+                    record.uploaded_by,
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
@@ -844,6 +846,63 @@ class SqliteMetaStore(MetaStore):
                 "DELETE FROM idempotency_keys WHERE key = ? AND response IS NULL", (key,)
             )
 
+    # ------------------------------------------------------------------ 使用者名册
+
+    @staticmethod
+    def _user_from_row(row: sqlite3.Row) -> UserRecord:
+        return UserRecord(
+            id=row["id"],
+            name=row["name"],
+            note=row["note"],
+            created_at=_load(row["created_at"]),
+        )
+
+    def create_user(self, record: UserRecord) -> UserRecord:
+        record.created_at = record.created_at or _now()
+        try:
+            with self._db.session() as conn:
+                conn.execute(
+                    "INSERT INTO users (id, name, note, created_at) VALUES (?, ?, ?, ?)",
+                    (record.id, record.name, record.note, _dump(record.created_at)),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError(f"已经有叫「{record.name}」的使用者了") from exc
+        return record
+
+    def get_user(self, user_id: str) -> UserRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return self._user_from_row(row) if row else None
+
+    def find_user_by_name(self, name: str) -> UserRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute("SELECT * FROM users WHERE name = ?", (name,)).fetchone()
+        return self._user_from_row(row) if row else None
+
+    def list_users(self) -> list[UserRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute("SELECT * FROM users ORDER BY created_at, id").fetchall()
+        return [self._user_from_row(row) for row in rows]
+
+    def delete_user(self, user_id: str) -> None:
+        """删使用者，但**保留他传过的文档**。
+
+        文档已经进了知识库、已经向量化、可能已被引用——把使用者删掉就顺手
+        删掉他的文档，那是数据丢失而不是权限撤销。归属置空，界面显示"未记录"。
+        """
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE documents SET uploaded_by = NULL WHERE uploaded_by = ?", (user_id,)
+            )
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+    def count_documents_by_user(self, user_id: str) -> int:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM documents WHERE uploaded_by = ?", (user_id,)
+            ).fetchone()
+        return int(row["n"])
+
     # ------------------------------------------------------------------ 用量
 
     @staticmethod
@@ -1332,6 +1391,7 @@ class SqliteMetaStore(MetaStore):
             page_count=row["page_count"],
             is_split=bool(row["is_split"]),
             error=row["error"],
+            uploaded_by=row["uploaded_by"],
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
         )

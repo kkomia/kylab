@@ -400,6 +400,35 @@ _MIGRATION_008 = Migration(
     ),
 )
 
+_MIGRATION_009 = Migration(
+    version=9,
+    description="轻量多用户：使用者名册与文档归属（调研报告 G6）",
+    statements=(
+        # 使用者名册。
+        #
+        # **刻意不做账号体系**：没有密码、没有邮箱、没有角色。使用场景是
+        # "局域网内几个人共用一台机器"，他们需要的是**知道是谁传的**，
+        # 而不是登录与权限——后者会带来组织架构、邀请、配额、审计一整套复杂度，
+        # 远超本项目要解决的问题（架构 §1 的定位）。
+        #
+        # 凭据仍然只有三档身份（控制台令牌 / 读写密钥 / 只读密钥，见 §11.4），
+        # 名册只是**归属标注**，不是鉴权主体。
+        """
+        CREATE TABLE users (
+            id         TEXT PRIMARY KEY,
+            name       TEXT NOT NULL,
+            note       TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+        """,
+        # 同名不允许：名册的意义就是"能分辨是谁"，重名会让它失去意义
+        "CREATE UNIQUE INDEX idx_users_name ON users(name)",
+        # 文档的归属。NULL = 系统摄入（比如目录扫描）或名册启用前的老数据，
+        # 界面据此显示"未记录"而不是编一个名字出来。
+        "ALTER TABLE documents ADD COLUMN uploaded_by TEXT",
+    ),
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
@@ -409,6 +438,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_006,
     _MIGRATION_007,
     _MIGRATION_008,
+    _MIGRATION_009,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

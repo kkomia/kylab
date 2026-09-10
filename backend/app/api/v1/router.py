@@ -21,6 +21,7 @@ from app.api.v1 import (
     settings,
     stats,
     tasks,
+    users,
 )
 
 api_router = APIRouter()
@@ -39,3 +40,4 @@ api_router.include_router(api_keys.router)
 api_router.include_router(conversations.router)
 api_router.include_router(chunks.router)
 api_router.include_router(model_registry.router)
+api_router.include_router(users.router)

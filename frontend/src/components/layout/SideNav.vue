@@ -25,6 +25,7 @@ import IconSun from '@/components/icons/IconSun.vue'
 import IconTasks from '@/components/icons/IconTasks.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
 import { useTheme } from '@/composables/useTheme'
+import { loadRoster, operator, operatorId, roster, setOperator } from '@/composables/useOperator'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
@@ -55,6 +56,8 @@ onMounted(async () => {
   if (store.items.length === 0) await store.load()
   void store.loadSummaries()
   void conversations.load()
+  // 名册是可选功能：拿不到就不显示选择器，不报错
+  void loadRoster()
 })
 
 defineExpose({ checkService })
@@ -69,6 +72,9 @@ const NAV_ITEMS = [
 function isActive(to: string, exact: boolean): boolean {
   return exact ? route.path === to : route.path.startsWith(to)
 }
+
+/** 当前使用者（G6）。空 = 名册里没选人，上传归到"未记录"。 */
+const operatorName = computed(() => operator.value?.name ?? '')
 
 /** 当前会话 id：从路径里取，用来高亮列表里那一条。 */
 const activeConversationId = computed(() => {
@@ -131,6 +137,26 @@ const settingsOpen = ref(false)
     </div>
 
     <div class="sidebar-foot">
+      <!--
+        当前使用者（G6）。**放在页脚而不是页头**：它是"我的身份"这类静态信息，
+        不是每页都要操作的东西；页脚与主题/设置同级，符合"这里是环境设置"的语感。
+        名册没配人时不占位——名册是可选的，空着比显示一个空下拉干净。
+      -->
+      <div v-if="roster.length || operatorName" class="identity">
+        <label class="identity-label" for="kylab-operator">当前使用者</label>
+        <select
+          id="kylab-operator"
+          class="identity-select"
+          :value="operatorId"
+          @change="setOperator(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">未指定（上传不记归属）</option>
+          <option v-for="person in roster" :key="person.id" :value="person.id">
+            {{ person.name }}
+          </option>
+        </select>
+      </div>
+
       <button class="foot-action" type="button" @click="settingsOpen = true">
         <IconSettings />
         <span>设置</span>
@@ -339,6 +365,32 @@ const settingsOpen = ref(false)
   font-size: var(--text-micro-size);
   line-height: 1.6;
   color: var(--text-tertiary);
+}
+
+/* 使用者选择：与页脚其他项同宽，但标签在上、下拉在下——
+   一个 select 直接顶着"设置"按钮会让人以为它也是可点即走的动作 */
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: 0 var(--space-2) var(--space-2);
+}
+
+.identity-label {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.identity-select {
+  width: 100%;
+  min-height: var(--hit-target);
+  padding: 0 var(--space-2);
+  font-family: inherit;
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-control);
 }
 
 .sidebar-foot {

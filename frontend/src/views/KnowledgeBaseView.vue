@@ -34,6 +34,7 @@ import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { documentStageView } from '@/components/ui/status'
 import { formatBytes, formatRelativeTime } from '@/composables/useFormat'
+import { roster } from '@/composables/useOperator'
 import { useToast } from '@/composables/useToast'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
@@ -247,6 +248,11 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                   :running="ACTIVE_STAGES.has(document.stage)"
                   :title="document.error ?? undefined"
                 />
+                <!-- 谁传的（G6）。没记到时显示"未记录"而不是留空——
+                     留空会让人以为是界面没渲染出来 -->
+                <span v-if="roster.length" class="row-uploader">
+                  {{ document.uploaded_by_name || '未记录' }}
+                </span>
               </span>
 
               <span class="row-number">{{ document.chunk_count }}</span>
@@ -411,6 +417,14 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   flex: 0 0 72px;
   text-align: right;
   font-size: var(--text-meta-size);
+  color: var(--text-tertiary);
+}
+
+/* 上传者（G6）：比时间弱一档。它是"谁"，属于旁注，
+   不该与文件名抢注意力 */
+.row-uploader {
+  flex: 0 0 auto;
+  font-size: var(--text-micro-size);
   color: var(--text-tertiary);
 }
 
