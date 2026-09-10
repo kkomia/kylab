@@ -1,0 +1,100 @@
+[project]
+name = "kylab-backend"
+version = "0.0.1"
+description = "KYLAB 知识库后端服务：FastAPI + MCP Server（架构设计 v0.2 §2.1）"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "httpx>=0.27",
+]
+
+# 按里程碑分层引入的重依赖（M0 只装基础依赖，保证 CI 快且稳）
+[project.optional-dependencies]
+# 解析插件层（M2 起启用）
+parsers = [
+    "pypdf>=5.1",
+    "pymupdf>=1.24",
+    "python-docx>=1.1",
+    "openpyxl>=3.1",
+    "pandas>=2.2",
+    "markdown-it-py>=3.0",
+]
+# 存储与检索层（M1 起启用）
+storage = [
+    "sqlite-vec>=0.1.6",
+    "jieba>=0.42",
+    "duckdb>=1.1",
+]
+# MCP 接入层（M4 起启用）
+mcp = [
+    "mcp>=1.13",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=6.0",
+    "respx>=0.22",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+# ---------------------------------------------------------------- ruff
+# 工程规范 §6：后端 lint 用 ruff
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["app", "tests"]
+extend-exclude = ["data", "tests/fixtures"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff 自有规则
+    "ASYNC",# flake8-async
+    "S",    # flake8-bandit（凭据与常见安全问题）
+]
+ignore = [
+    # 本仓库注释与文档字符串以中文为主，全角标点是有意为之，不按"易混淆字符"告警
+    "RUF001",  # 字符串中的歧义字符
+    "RUF002",  # 文档字符串中的歧义字符
+    "RUF003",  # 注释中的歧义字符
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]        # 测试允许 assert
+"app/core/config.py" = ["S105", "S106"]  # 配置项默认值为空，非真实凭据
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+# ---------------------------------------------------------------- pytest
+# 工程规范 §5.2：本地与 CI 用 `pytest tests/ -m "not bench and not cloud"`
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+markers = [
+    "cloud: 需要真实云端解析/embedding API（默认跳过，避免消耗免费额度）",
+    "bench: 性能与容量基准（手动触发，发布前执行）",
+]
