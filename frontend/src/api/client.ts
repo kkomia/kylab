@@ -10,13 +10,8 @@ export interface ApiErrorBody {
   message: string
 }
 
-/** 带统一错误处理的 JSON 请求。 */
-export async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
-    ...init,
-  })
-
+/** 把响应翻成结果或抛出带后端文案的错误（错误信封见后端 core/exceptions.py）。 */
+async function unwrap<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let detail = `请求失败（HTTP ${response.status}）`
     try {
@@ -27,6 +22,29 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error(detail)
   }
-
+  if (response.status === 204) return undefined as T
   return (await response.json()) as T
+}
+
+/** 带统一错误处理的 JSON 请求。 */
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  return unwrap<T>(
+    await fetch(`${API_BASE}${path}`, {
+      headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      ...init,
+    }),
+  )
+}
+
+/**
+ * 上传文件。
+ *
+ * 单独一个函数而不是复用 ``request``：上传必须让浏览器自己带
+ * ``multipart/form-data; boundary=...``，手写 Content-Type 会把 boundary 弄丢，
+ * 后端直接解析失败。
+ */
+export async function upload<T>(path: string, file: File): Promise<T> {
+  const form = new FormData()
+  form.append('file', file)
+  return unwrap<T>(await fetch(`${API_BASE}${path}`, { method: 'POST', body: form }))
 }

@@ -26,4 +26,12 @@
   --status-warning: #d9730d;
   --status-danger: #d44c47;
   --status-info: #337ea9;
+
+  /* 危险操作的浅底（hover 用），由语义红派生而非另配色相 */
+  --danger-soft: #fbeceb;
+
+  /* 主按钮：浅色下灰黑实心（§7） */
+  --button-primary-bg: #37352f;
+  --button-primary-bg-hover: #2b2925;
+  --button-primary-text: #ffffff;
 }

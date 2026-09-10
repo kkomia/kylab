@@ -26,4 +26,12 @@
   --status-warning: #e8873a;
   --status-danger: #e16259;
   --status-info: #529cca;
+
+  /* 危险操作的浅底：深色下用低透明度红叠加，避免亮红铺底刺眼 */
+  --danger-soft: #3a2624;
+
+  /* 主按钮：深色下近白实心（§2.2） */
+  --button-primary-bg: #e8e8e6;
+  --button-primary-bg-hover: #ffffff;
+  --button-primary-text: #1a1a1a;
 }
