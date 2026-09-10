@@ -322,7 +322,7 @@ function statsOf(kbId: string) {
 .kb-mark {
   width: 36px;
   height: 36px;
-  font-size: 15px;
+  font-size: var(--text-section-size);
 }
 
 .kb-mark-sm {
@@ -341,7 +341,7 @@ function statsOf(kbId: string) {
 
 .kb-name {
   overflow: hidden;
-  font-size: 15px;
+  font-size: var(--text-section-size);
   font-weight: 500;
   letter-spacing: -0.005em;
   color: var(--text-primary);
@@ -373,7 +373,7 @@ function statsOf(kbId: string) {
 }
 
 .stat-value {
-  font-size: 18px;
+  font-size: var(--text-figure-size);
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--text-primary);

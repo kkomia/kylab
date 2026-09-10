@@ -147,7 +147,7 @@ onBeforeUnmount(() => {
 /* 弹层标题与内容区小标题同级：都是 15px，不再各写一个字号 */
 .modal-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-section-size);
   font-weight: 600;
   letter-spacing: -0.005em;
 }

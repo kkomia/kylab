@@ -19,9 +19,11 @@ import { computed, onMounted, ref, watch } from 'vue'
 
 import { fetchHealth, type HealthResponse } from '@/api/health'
 import {
+  getAuthStatus,
   getSettings,
   testConnection,
   updateSettings,
+  type AuthStatus,
   type SettingGroup,
   type SettingsView,
 } from '@/api/settings'
@@ -32,17 +34,20 @@ import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { useToast } from '@/composables/useToast'
+import { useConsoleToken } from '@/composables/useConsoleToken'
+import { useFontScale } from '@/composables/useFontScale'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 const open = defineModel<boolean>('open', { required: true })
 
-type SectionKey = 'models' | 'llm' | 'services' | 'storage' | 'system'
+type SectionKey = 'models' | 'llm' | 'services' | 'storage' | 'appearance' | 'system'
 
 const SECTIONS: { key: SectionKey; label: string; hint: string }[] = [
   { key: 'models', label: '模型配置', hint: '向量化与重排' },
   { key: 'llm', label: '对话模型', hint: 'LLM 与提示词' },
   { key: 'services', label: '服务配置', hint: '云端解析节点' },
   { key: 'storage', label: '存储配置', hint: '元数据与向量' },
+  { key: 'appearance', label: '外观', hint: '字号与显示' },
   { key: 'system', label: '系统与安全', hint: '版本与鉴权' },
 ]
 
@@ -54,6 +59,45 @@ const health = ref<HealthResponse | null>(null)
 const healthError = ref('')
 const config = ref<SettingsView | null>(null)
 const loadError = ref('')
+/** 后端鉴权状态。这个端点本身不鉴权，所以拿不到也不该让设置页报错。 */
+const authStatus = ref<AuthStatus | null>(null)
+/** 令牌输入框的草稿（保存前不落到存储里）。 */
+const tokenDraft = ref('')
+
+// 字号是本地偏好，不进后端：直接读 composable，不做 save 流程
+const { scale: fontScale, options: fontOptions, setFontScale } = useFontScale()
+const { token: consoleToken, setConsoleToken, clearConsoleToken } = useConsoleToken()
+const currentScaleHint = computed(
+  () => fontOptions.find((item) => item.name === fontScale.value)?.hint ?? '',
+)
+
+/**
+ * 保存控制台令牌并**立刻复验**。
+ *
+ * 不复验的话，用户粘错一个字符只会看到"已保存"，然后在别处收到一堆 401——
+ * 那时他已经不记得自己刚改过什么了。这里存完马上打一次需要鉴权的端点，
+ * 失败就当场说清并**把错误的令牌撤掉**，免得它一直污染后续请求。
+ */
+async function saveToken(): Promise<void> {
+  const candidate = tokenDraft.value.trim()
+  if (!candidate) return
+  setConsoleToken(candidate)
+  try {
+    await getSettings()
+    tokenDraft.value = ''
+    notifySuccess('控制台令牌已保存并验证通过')
+    await refresh()
+  } catch (error) {
+    clearConsoleToken()
+    notifyError(`令牌未通过验证，已撤销：${error instanceof Error ? error.message : '校验失败'}`)
+  }
+}
+
+function forgetToken(): void {
+  clearConsoleToken()
+  tokenDraft.value = ''
+  notifySuccess('已清除本机保存的控制台令牌')
+}
 
 /** 正在编辑的分组（null = 仍在浏览态）。 */
 const editing = ref<SettingGroup | null>(null)
@@ -77,6 +121,12 @@ async function refresh(): Promise<void> {
     healthError.value = ''
   } catch (error) {
     healthError.value = error instanceof Error ? error.message : '后端不可达'
+  }
+  // 鉴权状态：这个端点本身不鉴权，所以拿不到也不该让整个设置页报错
+  try {
+    authStatus.value = await getAuthStatus()
+  } catch {
+    authStatus.value = null
   }
   try {
     config.value = await getSettings()
@@ -539,7 +589,41 @@ async function runTest(target: string): Promise<void> {
           </div>
         </template>
 
-        <!-- 系统与安全（只读） -->
+        <!-- 外观（本地偏好，不进后端） -->
+        <template v-else-if="section === 'appearance'">
+          <h3 class="section-title">外观</h3>
+          <p class="section-note">字号只影响这一台机器的浏览器，存在本地，不写进知识库配置。</p>
+
+          <div class="row row-static">
+            <div class="row-main">
+              <span class="row-label">正文字号</span>
+              <span class="row-value">{{ currentScaleHint }}</span>
+            </div>
+          </div>
+
+          <div class="scale-picker" role="group" aria-label="正文字号">
+            <button
+              v-for="item in fontOptions"
+              :key="item.name"
+              class="scale-option"
+              :class="{ 'scale-option-active': fontScale === item.name }"
+              type="button"
+              :aria-pressed="fontScale === item.name"
+              @click="setFontScale(item.name)"
+            >
+              <span class="scale-label">{{ item.label }}</span>
+              <span class="scale-size tabular">{{ item.bodySize }}px</span>
+            </button>
+          </div>
+
+          <p class="row-note">
+            小字号占满了界面外壳（侧栏、标签、元信息），正文反倒不突出——
+            所以这一版把整条字阶抬了一档，并允许你按屏幕距离微调。 最小档的辅助文字仍是
+            12px，再小就会影响辨认。
+          </p>
+        </template>
+
+        <!-- 系统与安全 -->
         <template v-else>
           <h3 class="section-title">系统与安全</h3>
           <div class="row row-static">
@@ -558,13 +642,58 @@ async function runTest(target: string): Promise<void> {
           <div class="row row-static">
             <div class="row-main">
               <span class="row-label">访问鉴权</span>
-              <span class="row-value">当前无鉴权，只应在本机使用</span>
+              <span class="row-value">
+                {{
+                  authStatus?.auth_enabled
+                    ? '已启用：/api/v1 需要凭据'
+                    : '未启用：仅本机使用，任何能访问端口的人都能读写'
+                }}
+              </span>
             </div>
-            <StatusTag tone="warning" label="未启用" />
+            <StatusTag
+              :tone="authStatus?.auth_enabled ? 'success' : 'warning'"
+              :label="authStatus?.auth_enabled ? '已启用' : '未启用'"
+            />
           </div>
+
+          <!-- 凭据输入：**这是控制台在启用鉴权后的唯一入口**。
+               没有它，打开鉴权等于把控制台锁死——每个页面都报「缺少凭据」，
+               而用户没有任何地方可以填。 -->
+          <div class="row row-static">
+            <div class="row-main">
+              <span class="row-label">控制台令牌</span>
+              <span class="row-value">
+                {{
+                  consoleToken
+                    ? '已保存（只存在这台机器的浏览器里）'
+                    : '未填写。后端启用鉴权后，控制台需要它才能读写'
+                }}
+              </span>
+            </div>
+            <StatusTag
+              :tone="consoleToken ? 'success' : 'neutral'"
+              :label="consoleToken ? '已配置' : '未填写'"
+            />
+          </div>
+
+          <div class="token-row">
+            <AppInput
+              id="console-token"
+              v-model="tokenDraft"
+              type="password"
+              placeholder="粘贴控制台令牌（kylab_console_…）"
+              @keyup.enter="saveToken"
+            />
+            <AppButton variant="primary" :disabled="!tokenDraft.trim()" @click="saveToken">
+              保存
+            </AppButton>
+            <AppButton v-if="consoleToken" @click="forgetToken">清除</AppButton>
+          </div>
+
           <p class="row-note">
-            投入局域网之前必须先补 API Key 鉴权与签名
-            URL，否则任何能访问端口的人都能读写全部知识库。
+            令牌由后端签发：首次部署时设置 KYLAB_CONSOLE_TOKEN，或调用 POST
+            /api/v1/auth/console-token 初始化一条。它只保存在这台机器的浏览器里，
+            不写进知识库配置。原文与图片下载走带过期时间的签名 URL，不产生永久直链。
           </p>
         </template>
       </div>
@@ -590,6 +719,60 @@ async function runTest(target: string): Promise<void> {
   gap: var(--space-1);
   padding-right: var(--space-4);
   border-right: 1px solid var(--border-hairline);
+}
+
+/* 字号档位：四个并排的按钮。
+   每一档都把实际 px 写在下面——"大 / 更大"这种词单独放着没法让人判断合不合适，
+   给出数字才可选。 */
+.scale-picker {
+  display: grid;
+  gap: var(--space-2);
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  margin-top: var(--space-3);
+}
+
+.scale-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-pair);
+  padding: var(--space-3);
+  text-align: left;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+}
+
+.scale-option:hover {
+  background: var(--bg-hover);
+}
+
+.scale-option-active {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.scale-label {
+  font-size: var(--text-body-size);
+}
+
+.scale-size {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+/* 令牌输入：输入框吃掉剩余宽度，两个按钮靠右。
+   输入框自带 min-width，所以这里要 min-width:0 允许它收缩。 */
+.token-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.token-row :deep(.field) {
+  flex: 1;
+  min-width: 0;
 }
 
 /* 主标题 + 副标题要读成一个整体，用成对间距令牌（base.css §间距） */
@@ -632,7 +815,7 @@ async function runTest(target: string): Promise<void> {
 
 .section-title {
   margin: 0 0 var(--space-2);
-  font-size: 15px;
+  font-size: var(--text-section-size);
   font-weight: 600;
   letter-spacing: -0.005em;
 }

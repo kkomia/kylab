@@ -553,7 +553,7 @@ function hitKey(hit: SearchHit): string {
 }
 
 .hit-title {
-  font-size: 15px;
+  font-size: var(--text-section-size);
   font-weight: 500;
   color: var(--text-primary);
 }

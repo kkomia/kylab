@@ -29,7 +29,7 @@ withDefaults(defineProps<{ title: string; hint?: string }>(), { hint: '' })
 
 .empty-title {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--text-section-size);
   font-weight: 600;
 }
 

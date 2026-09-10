@@ -513,7 +513,7 @@ async function savePrompt(): Promise<void> {
 .ask-text {
   margin: 0;
   max-width: var(--measure);
-  font-size: 15px;
+  font-size: var(--text-section-size);
   color: var(--text-primary);
 }
 
@@ -541,7 +541,7 @@ async function savePrompt(): Promise<void> {
 /* Markdown 是 v-html 注入的，作用域属性加不到它身上，只能 :deep 透进去 */
 .reply-text :deep(.md-h) {
   margin: var(--space-4) 0 var(--space-2);
-  font-size: 15px;
+  font-size: var(--text-section-size);
   color: var(--text-primary);
 }
 

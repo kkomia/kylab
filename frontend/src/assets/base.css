@@ -33,7 +33,7 @@ body {
     'Source Han Sans SC',
     'Noto Sans SC',
     sans-serif;
-  font-size: 14px;
+  font-size: var(--text-body-size);
   line-height: 1.65;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizelegibility;
@@ -56,20 +56,20 @@ h3 {
 
 /* 页标题：整个界面唯一的重音 */
 h1 {
-  font-size: 28px;
+  font-size: var(--text-page-title-size);
   font-weight: 600;
   letter-spacing: -0.018em;
 }
 
 /* 内容小标题：只比正文大一点，靠上方的留白分区 */
 h2 {
-  font-size: 15px;
+  font-size: var(--text-section-size);
   font-weight: 600;
   letter-spacing: -0.005em;
 }
 
 h3 {
-  font-size: 13.5px;
+  font-size: var(--text-body-size);
   font-weight: 600;
   color: var(--text-secondary);
 }
@@ -143,10 +143,25 @@ pre {
      前者放行、后者照报。**除成对文本外不要用它。** */
   --space-pair: 2px;
 
-  /* 字阶：跨越组件复用，页面里不要再手写 12.5px / 13.5px 这类数字 */
-  --text-body-size: 14px;
-  --text-meta-size: 13px;
-  --text-micro-size: 12px;
+  /* 字阶：跨越组件复用，页面里不要再手写 12.5px / 13.5px 这类数字。
+     定稿值来自一条实际反馈「web 字体偏小」：查下来不是基线低（正文 14px 与同类
+     产品一致），而是**分布**——meta 用了 43 处、micro 35 处，body 只有 4 处，
+     小字号占满了界面外壳。所以整条阶梯抬一档，让正文真正成为"正文"。
+
+     **可调层**：所有档位都乘 `--font-scale`（由 composables/useFontScale.ts 写在
+     根节点上，用户可在设置 → 外观里切）。用乘法而不是给每档写死两套值：
+     后者改一处要同步五个地方，迟早漂。
+
+     上限有硬约束：`--text-micro-size` 在最小档（0.933）下仍为 **12px**——
+     低于 12px 的中文在常规显示器上已经影响辨认，字号可调不该能调到不可读。 */
+  --font-scale: 1;
+  --text-page-title-size: calc(28px * var(--font-scale));
+  --text-section-size: calc(16px * var(--font-scale));
+  --text-body-size: calc(15px * var(--font-scale));
+  --text-meta-size: calc(14px * var(--font-scale));
+  --text-micro-size: calc(13px * var(--font-scale));
+  /* 大数字（驾驶舱结论区、卡片上的统计值）：比正文明显大一档，但不到标题级 */
+  --text-figure-size: calc(19px * var(--font-scale));
 
   /* 阅读类内容限宽（文档正文、命中引文用） */
   --measure: 66ch;

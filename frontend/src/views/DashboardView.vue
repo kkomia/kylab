@@ -372,7 +372,7 @@ const stageOption = computed(() => {
 }
 
 .figure-value {
-  font-size: 28px;
+  font-size: var(--text-page-title-size);
   font-weight: 600;
   line-height: 1.15;
   letter-spacing: -0.015em;
@@ -386,7 +386,7 @@ const stageOption = computed(() => {
 
 .group-title {
   margin: var(--space-8) 0 var(--space-3);
-  font-size: 15px;
+  font-size: var(--text-section-size);
   font-weight: 600;
   letter-spacing: -0.005em;
 }

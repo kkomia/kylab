@@ -9,9 +9,15 @@ import { onMounted } from 'vue'
 
 import SideNav from '@/components/layout/SideNav.vue'
 import ToastStack from '@/components/ui/ToastStack.vue'
+import { initFontScale } from '@/composables/useFontScale'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 const store = useKnowledgeBaseStore()
+
+// index.html 的首屏脚本已经设过 --font-scale；这里只是把 composable 的状态
+// 与那个值对齐，好让设置页的选择器高亮在正确的档位上。不调用的话，
+// 页面按存储的档位渲染，而选择器停在默认档——两处对不上。
+initFontScale()
 
 onMounted(() => {
   void store.load()

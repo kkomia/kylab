@@ -13,7 +13,7 @@ withDefaults(
     disabled?: boolean
     id?: string
     /** 数字输入用原生 number：浏览器的步进与移动端数字键盘都归它管。 */
-    type?: 'text' | 'number'
+    type?: 'text' | 'number' | 'password'
   }>(),
   // 可选属性显式给 undefined 默认值：Vue 语义上一样，但能让 lint 配置看清"这是刻意的可选"
   {

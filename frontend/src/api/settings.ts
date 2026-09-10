@@ -53,3 +53,19 @@ export function updateSettings(
 export function testConnection(target: string): Promise<TestConnectionResult> {
   return request(`/settings/test/${target}`, { method: 'POST' })
 }
+
+export interface AuthStatus {
+  /** 为真表示还没有控制台令牌，可以调 POST /auth/console-token 初始化。 */
+  needs_token: boolean
+  auth_enabled: boolean
+}
+
+/**
+ * 鉴权状态。
+ *
+ * 这个端点**不需要凭据**（前端要靠它判断该显示登录还是首次设置），
+ * 所以它只回两个布尔值，不透露任何可用信息。
+ */
+export function getAuthStatus(): Promise<AuthStatus> {
+  return request('/auth/status')
+}

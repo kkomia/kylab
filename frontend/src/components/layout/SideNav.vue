@@ -181,7 +181,7 @@ const settingsOpen = ref(false)
   gap: var(--space-2);
   min-height: 36px;
   padding: 0 var(--space-2);
-  font-size: 13.5px;
+  font-size: var(--text-body-size);
   color: var(--text-secondary);
   text-decoration: none;
   border-radius: var(--radius-control);
@@ -260,7 +260,7 @@ const settingsOpen = ref(false)
   width: 100%;
   min-height: 32px;
   padding: 0 var(--space-2);
-  font-size: 13.5px;
+  font-size: var(--text-body-size);
   color: var(--text-secondary);
   border-radius: var(--radius-control);
 }
