@@ -179,6 +179,9 @@ class ChunkRecord:
     heading_path: str | None = None
     page: int | None = None
     image_ids: Sequence[str] = field(default_factory=tuple)
+    disabled: bool = False
+    """人工禁用（§G3）。被禁用的块**不再参与检索**，但仍留在库里——
+    表格切碎、公式拆开这类"切得不好"的块，用户往往想留着待改，而不是直接删掉。"""
 
 
 @dataclass(slots=True)
@@ -441,6 +444,20 @@ class MetaStore(ABC):
         逐个 ``count_chunks`` 会变成 N+1（1000 个文档 = 1000 次查询），
         所以接口层直接要求批量。缺席的文档 ID 在返回里补 0。
         """
+
+    # ---- 切块人工干预（§G3）----
+    @abstractmethod
+    def update_chunk(self, record: ChunkRecord) -> None:
+        """就地更新一个块（正文、标题路径、页码）。**不改 chunk_id**。"""
+        ...
+
+    @abstractmethod
+    def set_chunk_disabled(self, chunk_id: str, *, disabled: bool) -> None: ...
+
+    @abstractmethod
+    def delete_chunk(self, chunk_id: str) -> None:
+        """删除单个块（含图片关联）。全文索引与向量由调用方一并清理。"""
+        ...
 
     # ---- 图片 ----
     @abstractmethod

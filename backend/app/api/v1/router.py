@@ -11,6 +11,7 @@ from app.api.v1 import (
     api_keys,
     auth,
     chat,
+    chunks,
     conversations,
     documents,
     health,
@@ -35,3 +36,4 @@ api_router.include_router(stats.router)
 api_router.include_router(tasks.router)
 api_router.include_router(api_keys.router)
 api_router.include_router(conversations.router)
+api_router.include_router(chunks.router)

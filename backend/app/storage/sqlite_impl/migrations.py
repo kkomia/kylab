@@ -282,7 +282,25 @@ _MIGRATION_003 = Migration(
     ),
 )
 
-MIGRATIONS: tuple[Migration, ...] = (_MIGRATION_001, _MIGRATION_002, _MIGRATION_003)
+_MIGRATION_004 = Migration(
+    version=4,
+    description="切块人工干预：chunks 增加 disabled 标记",
+    statements=(
+        # 「禁用」与「删除」是两件事，所以要多一列：
+        # - **禁用**：这块不该再被检索到，但用户还想留着、可能随时改回来
+        #   （表格被切碎、公式被拆开时，删掉就找不回来了）
+        # - **删除**：这块是垃圾（乱码、页眉页脚），留着占地方
+        # 只给删除的话，用户面对一个"可能只是切得不好"的块只能二选一：忍着或毁掉。
+        "ALTER TABLE chunks ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0",
+    ),
+)
+
+MIGRATIONS: tuple[Migration, ...] = (
+    _MIGRATION_001,
+    _MIGRATION_002,
+    _MIGRATION_003,
+    _MIGRATION_004,
+)
 """全部迁移，按 version 升序。只增不改。"""
 
 _MIGRATIONS_TABLE = """

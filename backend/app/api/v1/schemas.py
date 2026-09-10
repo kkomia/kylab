@@ -101,6 +101,8 @@ class ChunkOut(BaseModel):
     heading_path: str | None = None
     page: int | None = None
     image_ids: list[str] = Field(default_factory=list)
+    disabled: bool = False
+    """被禁用的块不再参与检索，但仍留在库里（§G3）。"""
 
 
 class ChunkList(BaseModel):
@@ -418,3 +420,22 @@ class ChatMessageOut(BaseModel):
 
 class ConversationDetailOut(ConversationOut):
     messages: list[ChatMessageOut] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------- 切块干预（G3）
+
+
+class ChunkUpdateIn(BaseModel):
+    """改块的正文。
+
+    只允许改文本：标题路径与页码来自解析器的版面分析，用户在这一页没有可对照的
+    依据去"修正"它们，开放了只会制造不一致。要改那些应当重新解析。
+    """
+
+    text: str = Field(min_length=1)
+
+
+class ChunkToggleIn(BaseModel):
+    """禁用 / 恢复一个块。"""
+
+    disabled: bool

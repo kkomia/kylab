@@ -183,6 +183,13 @@ class RetrievalService:
                 filtered_out += 1
                 continue
 
+            if chunk.disabled:
+                # 用户手动禁用的块（§G3）。**在检索侧过滤而不是删向量**：
+                # 恢复时零成本，也不必重新 embedding。
+                # 计入 filtered_out，让界面能解释"结果为什么变少了"。
+                filtered_out += 1
+                continue
+
             document = documents.get(chunk.document_id)
             if not _passes_filters(document, request.filters):
                 filtered_out += 1

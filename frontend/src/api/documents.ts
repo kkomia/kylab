@@ -54,6 +54,8 @@ export interface DocumentChunk {
   heading_path: string | null
   page: number | null
   image_ids: string[]
+  /** 被禁用的块不再参与检索，但仍在库里（§G3）。 */
+  disabled: boolean
 }
 
 export interface ChunkList {
@@ -83,6 +85,46 @@ export function listDocumentParts(documentId: string): Promise<{ items: Document
 /** 切块正文（文档详情页的预览）。limit 只截断 items，total 始终是全量。 */
 export function listDocumentChunks(documentId: string, limit = 5): Promise<ChunkList> {
   return request(`/documents/${documentId}/chunks?limit=${limit}`)
+}
+
+/**
+ * 切块的人工干预（调研报告 G3）——改正文、禁用、删除。
+ *
+ * **刻意用 `(documentId, ordinal)` 而不是 `chunk_id` 寻址**：chunk_id 形如
+ * `doc_xxx#00000`，里面的 `#` 是 URL 的片段分隔符。直接拼进路径会被截断，
+ * 而截断后的路径恰好落到 `/documents/{id}` 上，后端报的是"文档不存在"——
+ * 一个与真正原因毫不相干的错误（实测踩到，后端也留了用例把这个坑钉住）。
+ * 文档 ID 与序号都是 URL 安全的。
+ */
+function chunkPath(documentId: string, ordinal: number): string {
+  return `/documents/${documentId}/chunks/by-ordinal/${ordinal}`
+}
+
+export function updateChunk(
+  documentId: string,
+  ordinal: number,
+  text: string,
+): Promise<DocumentChunk> {
+  return request(chunkPath(documentId, ordinal), {
+    method: 'PATCH',
+    body: JSON.stringify({ text }),
+  })
+}
+
+/** 禁用/恢复。用 PUT 语义：重复设置同一个状态不会累积副作用。 */
+export function setChunkDisabled(
+  documentId: string,
+  ordinal: number,
+  disabled: boolean,
+): Promise<DocumentChunk> {
+  return request(`${chunkPath(documentId, ordinal)}/disabled`, {
+    method: 'PUT',
+    body: JSON.stringify({ disabled }),
+  })
+}
+
+export function deleteChunk(documentId: string, ordinal: number): Promise<void> {
+  return request(chunkPath(documentId, ordinal), { method: 'DELETE' })
 }
 
 export function uploadDocument(kbId: string, file: File): Promise<UploadAccepted> {

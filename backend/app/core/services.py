@@ -22,6 +22,7 @@ from app.core.config import Settings, get_settings
 from app.core.storage import build_stores
 from app.services.api_key import ApiKeyService
 from app.services.chat import ChatService
+from app.services.chunk import ChunkService
 from app.services.conversation import ConversationService
 from app.services.documents import DocumentService
 from app.services.embedding import build_embedder
@@ -60,6 +61,8 @@ class Services:
     """API Key 的发放、校验与作用域判定（架构 §3.2）。"""
     idempotency: IdempotencyService
     """幂等键：上传类接口防重试造成重复入库（架构 §3.2）。"""
+    chunks: ChunkService
+    """切块人工干预：改正文并重新向量化、禁用、删除（调研报告 G3）。"""
     conversations: ConversationService
     """对话留存：会话与消息的读写（§11.2）。"""
     embedder: EmbeddingProvider
@@ -162,6 +165,7 @@ def build_services(
         runtime=runtime,
         api_keys=ApiKeyService(bundle),
         idempotency=idempotency,
+        chunks=ChunkService(bundle, embedder=embedder),
         conversations=ConversationService(bundle),
         embedder=embedder,
         reranker=reranker,

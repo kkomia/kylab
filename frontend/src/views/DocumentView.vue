@@ -13,10 +13,13 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import {
+  deleteChunk,
   downloadDocument,
   getDocument,
   getDocumentPreview,
   listDocumentChunks,
+  setChunkDisabled,
+  updateChunk,
   type DocumentPreview,
   type DownloadFormat,
   type DocumentChunk,
@@ -25,6 +28,7 @@ import {
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import PageShell from '@/components/ui/PageShell.vue'
+import RowMenu from '@/components/ui/RowMenu.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { documentStageView } from '@/components/ui/status'
@@ -46,7 +50,7 @@ const VIEW_TABS = [
 ]
 
 const route = useRoute()
-const { notifyError } = useToast()
+const { notifyError, notifySuccess } = useToast()
 
 const documentId = computed(() => String(route.params.documentId ?? ''))
 const document = ref<DocumentSummary | null>(null)
@@ -120,6 +124,82 @@ async function loadReadingView(): Promise<void> {
   } finally {
     previewLoading.value = false
   }
+}
+
+// ------------------------------------------------------------------ 切块干预（G3）
+
+/** 正在编辑的块 id（空 = 没有在编辑）。 */
+const editing = ref('')
+const draft = ref('')
+const savingChunk = ref(false)
+
+function cancelEdit(): void {
+  editing.value = ''
+  draft.value = ''
+}
+
+/**
+ * 保存正文改动。
+ *
+ * 后端会**重新向量化**这一块，所以这里不能乐观更新——必须用返回的记录
+ * 替换本地那条，否则界面显示的文本与检索依据的向量可能不一致。
+ */
+async function saveChunk(chunk: DocumentChunk): Promise<void> {
+  const text = draft.value.trim()
+  if (!text || savingChunk.value) return
+  savingChunk.value = true
+  try {
+    const updated = await updateChunk(documentId.value, chunk.ordinal, text)
+    replaceChunk(updated)
+    cancelEdit()
+    notifySuccess('切块已更新，检索会按新内容生效')
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '保存失败')
+  } finally {
+    savingChunk.value = false
+  }
+}
+
+/** 禁用 / 恢复。改动只影响检索，所以就地更新标记即可。 */
+async function toggleChunk(chunk: DocumentChunk): Promise<void> {
+  try {
+    const updated = await setChunkDisabled(documentId.value, chunk.ordinal, !chunk.disabled)
+    replaceChunk(updated)
+    notifySuccess(updated.disabled ? '已禁用，该块不再参与检索' : '已恢复参与检索')
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '操作失败')
+  }
+}
+
+/**
+ * 删除一个块。
+ *
+ * **要二次确认**：这是破坏性动作，而且用户很可能只是想"禁用"。
+ * 用原生 `confirm` 而不是自建弹窗——这里没有需要填写的字段，
+ * 为一个"是/否"引一整套弹窗状态不值得。
+ */
+async function removeChunk(chunk: DocumentChunk): Promise<void> {
+  const confirmed = window.confirm(
+    `确定删除第 ${chunk.ordinal + 1} 块？\n\n` +
+      '它会从检索索引与向量库中一并移除，无法恢复。\n' +
+      '如果只是想让它在检索时暂时不出现，用「禁用」更好——禁用可以随时恢复。',
+  )
+  if (!confirmed) return
+  try {
+    await deleteChunk(documentId.value, chunk.ordinal)
+    // 服务端删完会重排序号，所以整段重拉，不能只从本地列表里摘掉那一条
+    await loadPreview()
+    if (document.value) {
+      document.value = { ...document.value, chunk_count: chunkTotal.value }
+    }
+    notifySuccess('切块已删除')
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '删除失败')
+  }
+}
+
+function replaceChunk(updated: DocumentChunk): void {
+  chunks.value = chunks.value.map((item) => (item.chunk_id === updated.chunk_id ? updated : item))
 }
 
 /** "这是前 5 块，共 137 块"——不说清的话，用户会把预览当成全文。 */
@@ -281,8 +361,13 @@ const stage = computed(() =>
         <template v-else-if="chunks.length">
           <p class="preview-note">{{ previewNote }}</p>
           <ol class="preview">
-            <li v-for="chunk in chunks" :key="chunk.chunk_id" class="preview-block">
-              <p class="preview-head">
+            <li
+              v-for="chunk in chunks"
+              :key="chunk.chunk_id"
+              class="preview-block"
+              :class="{ 'preview-block-disabled': chunk.disabled }"
+            >
+              <div class="preview-head">
                 <span class="tabular">第 {{ chunk.ordinal + 1 }} 块</span>
                 <template v-if="chunk.heading_path"
                   ><span class="sep">·</span>{{ chunk.heading_path }}</template
@@ -290,8 +375,50 @@ const stage = computed(() =>
                 <template v-if="chunk.page !== null"
                   ><span class="sep">·</span>第 {{ chunk.page }} 页</template
                 >
-              </p>
-              <pre class="preview-text">{{ chunk.text }}</pre>
+                <StatusTag v-if="chunk.disabled" tone="warning" label="已禁用" />
+
+                <!-- 行内操作：解析器一定会出错，所以"用户能自己修"是质量的最后兜底。
+                     三个动作语义分开——禁用是"先藏起来"（可恢复），删除是"这是垃圾"。 -->
+                <RowMenu class="chunk-menu" label="切块操作">
+                  <template #default="{ close }">
+                    <button
+                      class="menu-item"
+                      type="button"
+                      @click="((editing = chunk.chunk_id), (draft = chunk.text), close())"
+                    >
+                      编辑正文
+                    </button>
+                    <button class="menu-item" type="button" @click="(toggleChunk(chunk), close())">
+                      {{ chunk.disabled ? '恢复参与检索' : '禁用（不参与检索）' }}
+                    </button>
+                    <button
+                      class="menu-item menu-item-danger"
+                      type="button"
+                      @click="(removeChunk(chunk), close())"
+                    >
+                      删除
+                    </button>
+                  </template>
+                </RowMenu>
+              </div>
+
+              <!-- 编辑态：显式保存。改正文要重新向量化，是有代价的操作，
+                   不该边打字边存 -->
+              <div v-if="editing === chunk.chunk_id" class="chunk-editor">
+                <textarea v-model="draft" class="chunk-textarea" rows="6" />
+                <div class="chunk-actions">
+                  <span class="chunk-hint"> 保存后会重新向量化这一块，检索随即按新内容生效。 </span>
+                  <AppButton :disabled="savingChunk" @click="cancelEdit">取消</AppButton>
+                  <AppButton
+                    variant="primary"
+                    :disabled="savingChunk || !draft.trim()"
+                    @click="saveChunk(chunk)"
+                  >
+                    {{ savingChunk ? '保存中…' : '保存' }}
+                  </AppButton>
+                </div>
+              </div>
+              <pre v-else class="preview-text">{{ chunk.text }}</pre>
             </li>
           </ol>
         </template>
@@ -524,5 +651,68 @@ const stage = computed(() =>
   color: var(--text-primary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* 抬头一行：块号在左，操作菜单推到最右。
+   菜单常驻可见（不是 hover 才出现）——触屏与新用户都要能直接看到入口。 */
+.preview-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.chunk-menu {
+  margin-left: auto;
+}
+
+/* 已禁用的块：整块降透明度 + 左边一条警示竖线。
+   **仍然完整可读**——用户要能看清禁掉的是什么，才能决定要不要恢复。 */
+.preview-block-disabled {
+  background: var(--bg-subtle);
+  border-left: 2px solid var(--status-warning);
+}
+
+.preview-block-disabled .preview-text {
+  color: var(--text-secondary);
+}
+
+/* 编辑态：输入框吃掉整块宽度，按钮靠右 */
+.chunk-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.chunk-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: var(--space-3);
+  font-family: inherit;
+  font-size: var(--text-meta-size);
+  line-height: 1.7;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  resize: vertical;
+}
+
+.chunk-textarea:focus-visible {
+  border-color: var(--accent);
+}
+
+.chunk-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* 说清"保存会重新向量化"：这是三个动作里唯一有实际代价的，
+   用户该在点之前知道 */
+.chunk-hint {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
 }
 </style>

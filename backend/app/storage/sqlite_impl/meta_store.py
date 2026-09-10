@@ -314,6 +314,7 @@ class SqliteMetaStore(MetaStore):
                 heading_path=row["heading_path"],
                 page=row["page"],
                 image_ids=tuple(images.get(row["chunk_id"], ())),
+                disabled=bool(row["disabled"]),
             )
             for row in rows
         ]
@@ -344,6 +345,7 @@ class SqliteMetaStore(MetaStore):
                 heading_path=row["heading_path"],
                 page=row["page"],
                 image_ids=tuple(images.get(row["chunk_id"], ())),
+                disabled=bool(row["disabled"]),
             )
             for row in rows
         ]
@@ -354,6 +356,52 @@ class SqliteMetaStore(MetaStore):
                 "SELECT COUNT(*) AS n FROM chunks WHERE document_id = ?", (document_id,)
             ).fetchone()
         return int(row["n"])
+
+    # ------------------------------------------------------------------ 切块人工干预
+
+    def update_chunk(self, record: ChunkRecord) -> None:
+        """就地更新一个块。
+
+        **不改 chunk_id**：它是向量表与全文索引的主键，改了就得三处联动重建；
+        而"用户改了一段文字"这件事本身不改变这块在文档里的身份。
+
+        ``ordinal`` 要一起更新：删块之后的重排全靠它。原先漏了这一列，
+        于是"重排"变成空操作——删掉中间一块后界面仍显示第 1、2、4 块，
+        用户以为丢了数据（测试抓到）。
+        """
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE chunks SET text = ?, content_hash = ?, heading_path = ?,"
+                " page = ?, disabled = ?, ordinal = ? WHERE chunk_id = ?",
+                (
+                    record.text,
+                    record.content_hash,
+                    record.heading_path,
+                    record.page,
+                    int(record.disabled),
+                    record.ordinal,
+                    record.chunk_id,
+                ),
+            )
+
+    def set_chunk_disabled(self, chunk_id: str, *, disabled: bool) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE chunks SET disabled = ? WHERE chunk_id = ?",
+                (int(disabled), chunk_id),
+            )
+
+    def delete_chunk(self, chunk_id: str) -> None:
+        """删除单个块及其图片关联。
+
+        只删元数据：**全文索引与向量必须由调用方一并清理**——
+        它们分属不同仓储（FTS 表、向量分区），在这里跨仓储删除会破坏分层纪律
+        （services/ 之下不该出现跨存储的编排）。所以这个方法的契约是
+        "调用方负责连带清理"，由 ``services/chunk.py`` 统一编排。
+        """
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM chunk_images WHERE chunk_id = ?", (chunk_id,))
+            conn.execute("DELETE FROM chunks WHERE chunk_id = ?", (chunk_id,))
 
     def count_chunks_by_documents(self, document_ids: Sequence[str]) -> dict[str, int]:
         """一次查完多个文档的切块数。
