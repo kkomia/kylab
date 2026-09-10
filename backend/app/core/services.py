@@ -35,6 +35,7 @@ from app.services.knowledge_base import KnowledgeBaseService
 from app.services.lifecycle import LifecycleService
 from app.services.llm import LLMUsage
 from app.services.model_registry import ModelRegistryService
+from app.services.observability import ObservabilityService
 from app.services.parser_router import ParserRouter
 from app.services.retrieval import RetrievalService, build_reranker
 from app.services.retrieval.rerank import RerankProvider
@@ -81,6 +82,8 @@ class Services:
     """数据生命周期：影响清单、级联删除、回收站（M6 / T6.3、T6.4）。"""
     sources: SourceService
     """数据源：HTML / RSS 的登记与拉取（M6 / T6.1–T6.3）。"""
+    observability: ObservabilityService
+    """运行态判据：任务是否卡住、是否长时间没被领取（M7 / T7.4）。"""
     conversations: ConversationService
     """对话留存：会话与消息的读写（§11.2）。"""
     embedder: EmbeddingProvider
@@ -247,6 +250,9 @@ def build_services(
         users=UserService(bundle),
         lifecycle=LifecycleService(bundle),
         sources=sources_service,
+        observability=ObservabilityService(
+            bundle, worker_lease_seconds=resolved.worker_lease_seconds
+        ),
         conversations=ConversationService(bundle),
         embedder=embedder,
         reranker=reranker,

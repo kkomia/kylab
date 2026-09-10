@@ -1,0 +1,71 @@
+# kylab 一键起（M7 / T7.1）。
+#
+# **未在本机验证过**：开发机没有 docker（计划里的风险 R9）。
+# 这份文件是按 Compose 规范写的，但"干净机器一键起"这条验收只能在有 docker
+# 的机器上跑。所以它**不声称已验证**——那正是 R9 要解决的事。
+# 本地开发仍然走 venv + 脚本那条路线（见 docs/部署与运行-v0.1.md）。
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# 起来之后：
+#   界面   http://localhost:8080
+#   API    http://localhost:8080/api/v1/health
+name: kylab
+
+services:
+  backend:
+    build:
+      context: ../backend
+    image: kylab-backend:${KYLAB_VERSION:-0.1.0}
+    restart: unless-stopped
+    environment:
+      # 数据都落在挂载卷里，容器重建不丢
+      KYLAB_DATA_DIR: /data
+      # 局域网多人共用时建议打开鉴权，并设一个控制台令牌。
+      # **留空则不开鉴权**——单机自用不必多一道登录。
+      KYLAB_AUTH_ENABLED: ${KYLAB_AUTH_ENABLED:-false}
+      KYLAB_CONSOLE_TOKEN: ${KYLAB_CONSOLE_TOKEN:-}
+      # 签名下载链接用；不设则后端**拒绝签发**（而不是发一条无效链接）
+      KYLAB_URL_SIGNING_SECRET: ${KYLAB_URL_SIGNING_SECRET:-}
+      # 允许的来源。走 nginx 同源反代时用不到，直连后端时需要
+      KYLAB_CORS_ORIGINS: ${KYLAB_CORS_ORIGINS:-http://localhost:8080}
+      # 内嵌消费线程：**单容器部署要留着它**，否则上传后没人处理队列
+      KYLAB_RUN_WORKER: ${KYLAB_RUN_WORKER:-true}
+    volumes:
+      - kylab-data:/data
+    # 不直接对外暴露 8000：统一从 nginx 进，避免绕过反代后
+    # 出现"一半请求带 X-Forwarded-*、一半不带"的排查噩梦。
+    # 需要直连调试时取消下面两行的注释
+    # ports:
+    #   - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=4).status==200 else 1)",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  frontend:
+    build:
+      context: ../frontend
+    image: kylab-frontend:${KYLAB_VERSION:-0.1.0}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        # 等后端健康再起 nginx：否则首屏会先看到一个 502，
+        # 用户以为部署失败
+        condition: service_healthy
+    ports:
+      - "${KYLAB_HTTP_PORT:-8080}:80"
+
+volumes:
+  kylab-data:
+    # 具名卷由 docker 管理，位置随平台而变。
+    # 要固定到某个路径（比如挂到 NAS）就换成 bind mount：
+    #   driver_opts: { type: none, device: /srv/kylab, o: bind }

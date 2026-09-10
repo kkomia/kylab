@@ -140,10 +140,41 @@ class TaskOut(BaseModel):
     lease_expires_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    health: str = "idle"
+    """``running`` / ``stalled`` / ``overdue`` / ``idle`` / ``done``（M7 / T7.4）。
+
+    **由后端判定而不是前端猜**：它要比较租约到期时间与当前时刻，
+    还要知道租约时长，那些只有后端有。前端只负责按这个值上色。
+    """
+    health_label: str = ""
+    health_detail: str = ""
 
 
 class TaskList(BaseModel):
     items: list[TaskOut]
+    """任务列表。每项都带 ``health``，界面据此标出"可能卡住"。"""
+
+
+class TaskHealthOut(BaseModel):
+    task_id: str
+    status: str
+    label: str
+    detail: str = ""
+
+
+class HealthOverviewOut(BaseModel):
+    """运行态总览（T7.4）。"""
+
+    total: int = 0
+    running: int = 0
+    queued: int = 0
+    stalled: int = 0
+    overdue: int = 0
+    problems: list[TaskHealthOut] = Field(default_factory=list)
+    """需要用户注意的任务（卡住 / 长时间未执行），最多 20 条。"""
+    worker_enabled: bool = True
+    """内嵌消费线程是否开着。**关掉时任务不会自己跑**——
+    这是"任务一直排队"最常见的原因，界面必须能解释它。"""
 
 
 # --------------------------------------------------------------------- 检索
