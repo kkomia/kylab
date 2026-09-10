@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatBytes, formatDate, formatRelativeTime, formatScore } from '@/composables/useFormat'
+import {
+  formatAge,
+  formatBytes,
+  formatDate,
+  formatRelativeTime,
+  formatScore,
+  summarizeDocuments,
+} from '@/composables/useFormat'
 
 describe('formatBytes', () => {
   it('按 1024 进制换算，保留一位小数', () => {
@@ -55,5 +62,51 @@ describe('formatScore', () => {
 
   it('缺值给占位符', () => {
     expect(formatScore(null)).toBe('—')
+  })
+})
+
+describe('formatAge', () => {
+  const now = new Date('2026-09-10T12:00:00').getTime()
+
+  it('一分钟内按秒计，且能区分先后', () => {
+    // 会话历史里"刚刚 / 刚刚"分不出顺序，所以要精确到秒
+    expect(formatAge(now - 8_000, now)).toBe('8 秒前')
+    expect(formatAge(now - 59_000, now)).toBe('59 秒前')
+  })
+
+  it('超过一分钟按分钟计', () => {
+    expect(formatAge(now - 60_000, now)).toBe('1 分钟前')
+    expect(formatAge(now - 25 * 60_000, now)).toBe('25 分钟前')
+  })
+
+  it('时钟偏差导致的未来时间不会显示成负数', () => {
+    expect(formatAge(now + 5_000, now)).toBe('0 秒前')
+  })
+})
+
+describe('summarizeDocuments', () => {
+  it('按知识库分组统计条数与最近更新时间', () => {
+    const stats = summarizeDocuments([
+      { knowledge_base_id: 'kb-1', updated_at: '2026-09-01T09:00:00' },
+      { knowledge_base_id: 'kb-1', updated_at: '2026-09-08T09:00:00' },
+      { knowledge_base_id: 'kb-2', updated_at: '2026-09-05T09:00:00' },
+    ])
+
+    expect(stats['kb-1']).toEqual({ count: 2, updatedAt: '2026-09-08T09:00:00' })
+    expect(stats['kb-2']).toEqual({ count: 1, updatedAt: '2026-09-05T09:00:00' })
+  })
+
+  it('更新时间缺失的文档仍计入条数', () => {
+    // 没跑完的文档也是文档：少算会让"文档数"这一列骗人
+    const stats = summarizeDocuments([
+      { knowledge_base_id: 'kb-1', updated_at: null },
+      { knowledge_base_id: 'kb-1', updated_at: '2026-09-08T09:00:00' },
+    ])
+
+    expect(stats['kb-1']).toEqual({ count: 2, updatedAt: '2026-09-08T09:00:00' })
+  })
+
+  it('没有任何文档时返回空表，由调用方决定显示占位符', () => {
+    expect(summarizeDocuments([])).toEqual({})
   })
 })

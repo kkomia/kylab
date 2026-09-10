@@ -55,3 +55,40 @@ export function formatScore(score: number | null | undefined): string {
   if (score === null || score === undefined) return '—'
   return score.toFixed(3)
 }
+
+/**
+ * 会话内的短时间：几十秒前的那次检索要能显示"秒"，
+ * 否则几次查询全是"刚刚"，分不出先后。分钟级以上的展示交给 formatRelativeTime。
+ */
+export function formatAge(at: number, now: number = Date.now()): string {
+  const seconds = Math.max(0, Math.round((now - at) / 1000))
+  if (seconds < 60) return `${seconds} 秒前`
+  return `${Math.floor(seconds / 60)} 分钟前`
+}
+
+/** 每个知识库的文档数与最近更新时间。 */
+export interface DocStats {
+  count: number
+  updatedAt: string | null
+}
+
+/**
+ * 把文档行按知识库聚合成两列数字（文档数、最近更新）。
+ *
+ * 规则只写一份：概览页与侧栏都要这两列，两处各写一遍口径就会漂。
+ * `updated_at` 是不可解析的字符串时不会抛错——比较只是字符串序，
+ * 后端给的是 ISO 时间，字符串序即时间序。
+ */
+export function summarizeDocuments(
+  documents: readonly { knowledge_base_id: string; updated_at: string | null }[],
+): Record<string, DocStats> {
+  const result: Record<string, DocStats> = {}
+  for (const row of documents) {
+    const entry = (result[row.knowledge_base_id] ??= { count: 0, updatedAt: null })
+    entry.count += 1
+    if (row.updated_at && (!entry.updatedAt || row.updated_at > entry.updatedAt)) {
+      entry.updatedAt = row.updated_at
+    }
+  }
+  return result
+}

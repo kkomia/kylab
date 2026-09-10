@@ -2,7 +2,10 @@
  * 深色主题 Token（《前端设计规范》§2）。
  *
  * 与浅色同构：`--bg-canvas` 比 `--bg-surface` 更深，内容区仍然是"亮起来的那一层"，
- * 这样两套主题下层级方向一致（深色下不是简单反相）。正文取 #e6e6e3 做柔化，不用纯白直撞。
+ * 这样两套主题下层级方向一致（深色下不是简单反相）。正文取 #e8e8e5 做柔化，不用纯白直撞。
+ *
+ * 深色下"把字调暗"是最容易犯的错：三级灰一旦压到 3:1 上下，在暗底上比浅色更难认。
+ * 取值同样按对比度算（正文 4.5:1、控件边框 3:1），与浅色一一对应。
  */
 
 [data-theme='dark'] {
@@ -12,26 +15,67 @@
   --bg-surface: #232322;
   --bg-subtle: #262625;
   --bg-hover: #2c2c2a;
-  --bg-active: #35352f;
+  /* 与浅色主题同一个约束：设置弹窗左菜单选中项里有 12px 三级灰副标题，
+     选中底色必须给它留够对比度。#35352f 时只有 4.19:1，收敛到 #2f2f2a 得 4.71:1。 */
+  --bg-active: #2f2f2a;
 
-  --text-primary: #e6e6e3;
-  --text-secondary: #a0a09a;
-  --text-tertiary: #74746e;
+  --text-primary: #e8e8e5;
+  --text-secondary: #a6a69f;
+  /* 三级灰必须按**最亮的那个底**算，而不是画布：侧栏与内容区底色不同，
+     按画布算会在内容区差一点点掉到 4.5 以下。而且侧栏选中项还有一层半透明叠色，
+     实测原值 #8f8f88 压在选中项上只有 4.13:1，因此整体提亮一档留出余量。 */
+  --text-tertiary: #9a9a93;
 
   --border-hairline: #2e2e2c;
   --border: #383836;
-  --border-strong: #4a4a46;
+  --border-strong: #6f6f69;
 
-  --status-success: #5aa377;
+  --separator: var(--text-tertiary);
+
+  /* 语义色：深色下反而要提亮，否则在自己那层浅红底上读不出来。
+     但提亮有上限：#5aa377 落在深绿胶囊底上只有 4.44:1，正好差一点。 */
+  --status-success: #63b183;
   --status-warning: #d9873c;
-  --status-danger: #d96a5f;
+  --status-danger: #e07a6f;
   --status-info: #5b9dc4;
   --danger-soft: #372524;
 
-  --button-primary-bg: #e6e6e3;
-  --button-primary-bg-hover: #ffffff;
-  --button-primary-text: #1b1b1a;
+  /* 状态胶囊的底：深色下用"提亮的一层"而不是加深，与整体层级方向保持一致 */
+  --status-success-soft: #24322a;
+  --status-warning-soft: #35291c;
+  --status-danger-soft: #392523;
+  --status-info-soft: #22313a;
+  --status-neutral-soft: #2b2b29;
+  --bg-header: #1f1f1e;
+
+  --button-primary-bg: #5560c4;
+  --button-primary-bg-hover: #616ccf;
+  --button-primary-text: #ffffff;
+
+  /* 按钮禁用态：同浅色主题，用实色代替 `opacity`（半透明会把白字一起洗淡，
+     实测禁用态仅 2.59:1）。深色下取"比表面略亮"的一层灰，字用次亮灰 = 5.5:1。 */
+  --button-disabled-bg: #2f2f2d;
+  --button-disabled-text: #9a9a93;
+  --button-disabled-border: #454542;
 
   --shadow-popover: 0 4px 14px rgb(0 0 0 / 45%);
   --overlay-scrim: rgb(0 0 0 / 55%);
+
+  /* 品牌色：深色下**提亮而不是压深**（与整体层级方向一致）。
+     #8f9bff 在深表面上是 6.22:1，比浅色主题那种"刚好过线"舒服得多。
+     注意按钮底色是另一回事：白字压在提亮的 indigo 上只有 3.79:1，
+     所以 --button-primary-bg 用更深的 #5560c4（5.45:1）——**当文字的色和当底的色不是同一个值**。 */
+  --accent: #8f9bff;
+  --accent-hover: #a3adff;
+  --accent-text: #9aa5ff;
+  --accent-soft: #262a44;
+  --accent-selected: #2d3252;
+  --accent-2: #5fbdcc;
+  --accent-2-soft: #1e3238;
+
+  /* 活跃度色阶：深色下空值那一档要**比画布亮**才看得见 */
+  --heat-0: #2a2a28;
+  --heat-1: #3a4170;
+  --heat-2: #5b67b8;
+  --heat-3: #8f9bff;
 }

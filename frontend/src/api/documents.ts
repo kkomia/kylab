@@ -46,6 +46,22 @@ export interface DocumentPart {
   error: string | null
 }
 
+export interface DocumentChunk {
+  chunk_id: string
+  document_id: string
+  ordinal: number
+  text: string
+  heading_path: string | null
+  page: number | null
+  image_ids: string[]
+}
+
+export interface ChunkList {
+  items: DocumentChunk[]
+  /** 该文档的切块总数；`items` 可能被 limit 截断，界面必须能说清"这是前 N 块"。 */
+  total: number
+}
+
 export interface UploadAccepted {
   document: DocumentSummary
   is_duplicate: boolean
@@ -62,6 +78,11 @@ export function getDocument(documentId: string): Promise<DocumentSummary> {
 
 export function listDocumentParts(documentId: string): Promise<{ items: DocumentPart[] }> {
   return request(`/documents/${documentId}/parts`)
+}
+
+/** 切块正文（文档详情页的预览）。limit 只截断 items，total 始终是全量。 */
+export function listDocumentChunks(documentId: string, limit = 5): Promise<ChunkList> {
+  return request(`/documents/${documentId}/chunks?limit=${limit}`)
 }
 
 export function uploadDocument(kbId: string, file: File): Promise<UploadAccepted> {

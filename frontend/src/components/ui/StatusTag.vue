@@ -42,36 +42,59 @@ const icon = computed(() => (props.running ? RUNNING_ICON : ICONS[props.tone]))
 </template>
 
 <style scoped>
+/**
+ * 状态胶囊：底色 + 语义色文字 + 图标。
+ *
+ * 之前是"图标 + 灰字"，在整行都是灰字的列表里几乎扫不出来——状态是用户扫列表时
+ * 第一个要找的东西，它必须有一个形状。底色用极低饱和的一层，只负责把这一小块
+ * 从白底上托起来；颜色信息仍然由**文字**承担（§8：状态必须双编码，不靠颜色单独表意）。
+ */
 .status {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 12.5px;
+  gap: var(--space-1);
+  height: 22px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-micro-size);
   white-space: nowrap;
-  color: var(--text-secondary);
+  border-radius: 999px;
 }
 
 .status-icon {
   flex: 0 0 auto;
 }
 
-.status-success .status-icon {
+.status-neutral {
+  color: var(--text-secondary);
+  background: var(--status-neutral-soft);
+}
+
+.status-success {
   color: var(--status-success);
+  background: var(--status-success-soft);
 }
 
-.status-warning .status-icon {
+.status-warning {
   color: var(--status-warning);
+  background: var(--status-warning-soft);
 }
 
-.status-danger .status-icon {
+.status-danger {
   color: var(--status-danger);
+  background: var(--status-danger-soft);
 }
 
-.status-info .status-icon {
+.status-info {
   color: var(--status-info);
+  background: var(--status-info-soft);
 }
 
-/* 进行中：呼吸提示"它在动"，而不是静止的图标 */
+/* 进行中：不加底色，改用呼吸的圆点——它表示"还在动"，底色反而显得像已完成 */
+.status-running {
+  color: var(--text-secondary);
+  background: transparent;
+}
+
 .status-running .status-icon {
   color: var(--status-info);
   animation: pulse 1.6s ease-in-out infinite;

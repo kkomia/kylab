@@ -37,12 +37,12 @@ const items = computed(() => toasts.value.map((toast) => ({ ...toast, icon: ICON
 <style scoped>
 .toasts {
   position: fixed;
-  top: 12px;
+  top: var(--space-3);
   left: 50%;
   z-index: 100;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
   transform: translateX(-50%);
 }
 
@@ -52,8 +52,8 @@ const items = computed(() => toasts.value.map((toast) => ({ ...toast, icon: ICON
   gap: var(--space-2);
   min-width: 260px;
   max-width: 520px;
-  padding: 8px 12px;
-  font-size: 13px;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-meta-size);
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
@@ -86,7 +86,10 @@ const items = computed(() => toasts.value.map((toast) => ({ ...toast, icon: ICON
 
 .toast-close {
   display: inline-flex;
-  padding: 2px;
+  align-items: center;
+  justify-content: center;
+  width: var(--hit-target);
+  height: var(--hit-target);
   color: var(--text-tertiary);
   border-radius: var(--radius-control);
 }

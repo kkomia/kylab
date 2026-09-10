@@ -13,7 +13,7 @@ import IconFile from '@/components/icons/IconFile.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
-import PageHeader from '@/components/ui/PageHeader.vue'
+import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { taskKindLabel, taskStateView } from '@/components/ui/status'
@@ -73,84 +73,113 @@ function documentName(task: TaskSummary): string {
   return documents.value[task.document_id] ?? task.document_id
 }
 
-/** 进度：用"第几次尝试 / 上限"表达，比假进度条诚实（架构 §12）。 */
+/**
+ * 尝试次数：**成功也照实显示"1 / 5"**，不再换成"一次通过"。
+ *
+ * 原来成功行写"一次通过"、其余写"第 N / M 次尝试"，同一列出现两种句式，
+ * 列头叫「尝试」却读不出它到底是次数还是结论（评审点了这条）。
+ * 统一成次数之后，这一列只有一个含义：这条任务被跑了几次、上限几次——
+ * "一次就过"从 1 / 5 本身就能看出来，不必再翻译一遍。
+ */
 function attemptText(task: TaskSummary): string {
-  if (task.state === 'succeeded') return '一次通过'
-  return `第 ${task.attempts} / ${task.max_attempts} 次尝试`
+  return `${task.attempts} / ${task.max_attempts}`
 }
 </script>
 
 <template>
-  <article class="page">
-    <PageHeader
-      title="任务中心"
-      description="摄入流水线的每一步都会在这里留下记录；失败任务按指数退避自动重试。"
-    >
-      <template #actions>
-        <StatusTag v-if="running" tone="info" label="有任务在跑，自动刷新中" />
-        <AppButton @click="refresh">
-          <template #icon><IconRefresh /></template>
-          刷新
-        </AppButton>
-      </template>
-    </PageHeader>
+  <PageShell title="任务中心">
+    <template #actions>
+      <StatusTag v-if="running" tone="info" label="有任务在跑，自动刷新中" />
+      <AppButton @click="refresh">
+        <template #icon><IconRefresh /></template>
+        刷新
+      </AppButton>
+    </template>
 
-    <section class="page-body">
-      <p v-if="error" class="error-line">{{ error }}</p>
-      <SkeletonBlock v-if="loading" variant="list" :rows="5" />
+    <p v-if="error" class="error-line">{{ error }}</p>
+    <SkeletonBlock v-if="loading" variant="list" :rows="5" />
 
-      <EmptyState
-        v-else-if="tasks.length === 0"
-        title="还没有任务"
-        hint="上传文档后会在这里看到探测、解析、切分、向量化各步骤的进展。"
-      />
+    <EmptyState
+      v-else-if="tasks.length === 0"
+      title="还没有任务"
+      hint="上传文档后会在这里看到探测、解析、切分、向量化各步骤的进展。"
+    />
 
-      <ul v-else class="task-rows">
-        <li v-for="task in tasks" :key="task.id" class="task-row">
-          <IconFile class="row-icon" />
-          <span class="row-kind">{{ taskKindLabel(task.kind) }}</span>
-          <RouterLink
-            v-if="task.document_id"
-            class="row-name"
-            :to="`/documents/${task.document_id}`"
-          >
-            {{ documentName(task) }}
-          </RouterLink>
-          <span v-else class="row-name">{{ documentName(task) }}</span>
+    <template v-else>
+      <div class="panel">
+        <div class="panel-head list-head" aria-hidden="true">
+          <span class="head-task">任务</span>
+          <span class="head-status">状态</span>
+          <span class="head-attempts">尝试次数</span>
+          <span class="head-time">更新时间</span>
+        </div>
 
-          <StatusTag
-            class="row-status"
-            :label="taskStateView(task.state).label"
-            :tone="taskStateView(task.state).tone"
-            :running="task.state === 'running'"
-          />
-          <span class="row-attempts">{{ attemptText(task) }}</span>
-          <span class="row-time">{{ formatDate(task.updated_at) }}</span>
-        </li>
-      </ul>
-    </section>
-  </article>
+        <ul class="task-rows">
+          <li v-for="task in tasks" :key="task.id" class="task-row panel-row">
+            <IconFile class="row-icon" />
+            <span class="row-kind">{{ taskKindLabel(task.kind) }}</span>
+            <RouterLink
+              v-if="task.document_id"
+              class="row-name"
+              :to="`/documents/${task.document_id}`"
+            >
+              {{ documentName(task) }}
+            </RouterLink>
+            <span v-else class="row-name row-name-plain">{{ documentName(task) }}</span>
+
+            <StatusTag
+              class="row-status"
+              :label="taskStateView(task.state).label"
+              :tone="taskStateView(task.state).tone"
+              :running="task.state === 'running'"
+            />
+            <span class="row-attempts">{{ attemptText(task) }}</span>
+            <span class="row-time">{{ formatDate(task.updated_at) }}</span>
+          </li>
+        </ul>
+      </div>
+    </template>
+  </PageShell>
 </template>
 
 <style scoped>
-.page {
-  max-width: 1000px;
-  margin: 0 auto;
-  padding: var(--space-8) var(--page-gutter) var(--space-16);
-}
-
-.page-body {
-  margin-top: var(--space-6);
-}
-
 .error-line {
   margin: 0 0 var(--space-4);
   color: var(--status-danger);
 }
 
-.auto-refresh {
-  font-size: 12.5px;
-  color: var(--text-tertiary);
+/* 列头与行共用同一套列宽，数字才会真的排在一条竖轴上 */
+.list-head,
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* 表头区：底色来自 .panel-head，这里只管列宽与对齐 */
+.list-head {
+  padding: 0 var(--space-4);
+}
+
+/* 与任务名起点对齐：行内是图标 16px + gap，列头自己让出来 */
+.head-task {
+  flex: 1;
+  padding-left: calc(16px + var(--space-3));
+}
+
+.head-status,
+.row-status {
+  flex: 0 0 96px;
+}
+
+.head-attempts {
+  flex: 0 0 108px;
+  text-align: right;
+}
+
+.head-time {
+  flex: 0 0 120px;
+  text-align: right;
 }
 
 .task-rows {
@@ -160,15 +189,7 @@ function attemptText(task: TaskSummary): string {
 }
 
 .task-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  min-height: var(--row-height);
-  border-bottom: 1px solid var(--border-hairline);
-}
-
-.task-row:hover {
-  background: var(--bg-hover);
+  padding: 0 var(--space-4);
 }
 
 .row-icon {
@@ -178,11 +199,16 @@ function attemptText(task: TaskSummary): string {
 
 .row-kind {
   flex: 0 0 56px;
-  font-size: 12.5px;
+  font-size: var(--text-meta-size);
   color: var(--text-tertiary);
 }
 
-.row-name {
+/* 同样要压住 `.task-row { align-items }`，否则 align-self 不生效 */
+.task-row .row-name {
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
+  min-height: var(--hit-target);
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -191,24 +217,24 @@ function attemptText(task: TaskSummary): string {
   white-space: nowrap;
 }
 
-.row-status {
-  flex: 0 0 84px;
+.row-name-plain {
+  color: var(--text-secondary);
 }
 
 .row-attempts,
 .row-time {
-  flex: 0 0 auto;
-  font-size: 12.5px;
+  font-size: var(--text-meta-size);
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
 
 .row-attempts {
-  width: 108px;
+  flex: 0 0 108px;
+  text-align: right;
 }
 
 .row-time {
-  width: 124px;
+  flex: 0 0 124px;
   text-align: right;
 }
 </style>

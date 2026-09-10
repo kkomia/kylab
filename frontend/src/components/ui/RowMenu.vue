@@ -42,8 +42,8 @@ function close(): void {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: var(--hit-target);
+  height: var(--hit-target);
   color: var(--text-tertiary);
   border-radius: var(--radius-control);
   cursor: pointer;
@@ -63,7 +63,7 @@ function close(): void {
 .menu-list {
   position: absolute;
   right: 0;
-  top: calc(100% + 4px);
+  top: calc(100% + var(--space-1));
   z-index: 10;
   min-width: 160px;
   padding: var(--space-1);
@@ -76,7 +76,8 @@ function close(): void {
 .menu-list :deep(button) {
   display: block;
   width: 100%;
-  padding: 6px var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-meta-size);
   text-align: left;
   border-radius: var(--radius-control);
 }

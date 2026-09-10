@@ -39,29 +39,43 @@ body {
   text-rendering: optimizelegibility;
 }
 
+/**
+ * 字阶：四级，靠**字号**分工，不靠字重堆砌。
+ *
+ * 上一轮的问题是所有标题都是 600——标题、小标题、正文名一切皆粗体，
+ * 粗体就不再是重音，"文档优先"也就无从体现。这里只在页标题与小标题上用力，
+ * 正文与所有数字回到 400/500，让层级由字号和留白说话。
+ */
 h1,
 h2,
 h3 {
   margin: 0;
-  font-weight: 600;
-  line-height: 1.35;
+  color: var(--text-primary);
+  line-height: 1.3;
 }
 
+/* 页标题：整个界面唯一的重音 */
 h1 {
-  font-size: 26px;
-  letter-spacing: -0.01em;
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.018em;
 }
 
+/* 内容小标题：只比正文大一点，靠上方的留白分区 */
 h2 {
-  font-size: 17px;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
 }
 
 h3 {
-  font-size: 15px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
 }
 
 a {
-  color: var(--status-info);
+  color: var(--accent-text);
   text-decoration: none;
 }
 
@@ -70,11 +84,26 @@ a:hover {
 }
 
 button {
+  padding: 0;
   font: inherit;
   color: inherit;
   background: none;
   border: none;
   cursor: pointer;
+}
+
+/* 原生 checkbox / radio 自带 3px 外边距（UA 样式），同样要归零 */
+input[type='checkbox'],
+input[type='radio'] {
+  margin: 0;
+}
+
+/* 键盘可达性：鼠标点击不出现焦点环，键盘导航必须有。
+   焦点环用品牌色——它是"你现在在这里"，值得被看见 */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-control);
 }
 
 code,
@@ -83,11 +112,17 @@ pre {
 }
 
 :root {
-  /* 圆角：全局收到两档，控件 4px、浮层 6px（§7） */
-  --radius-control: 4px;
-  --radius-panel: 6px;
+  /* 圆角：四档，按"控件 < 行 < 面板 < 弹层"递进。
+     上一轮收到 4/6 两档，结果整屏全是直角——列表、面板、弹层没有一处是圆的，
+     硬得像个终端。圆角在这里不是装饰，是用来表达层级与"可点"的。 */
+  --radius-control: 6px;
+  --radius-row: 8px;
+  --radius-panel: 10px;
+  --radius-overlay: 12px;
 
-  /* 间距阶梯：所有 padding/margin 只能用这些值（§4） */
+  /* 间距阶梯：所有 padding/margin 只能用这些值（§4）。
+     网格之外的尺寸只允许一类：结构常量（图标 16/20/24、行高、列宽）——
+     它们跟布局对齐有关，不属于"节奏"。 */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
@@ -98,19 +133,130 @@ pre {
   --space-12: 48px;
   --space-16: 64px;
 
-  /* 阅读类内容限宽；列表可全宽 */
+  /* 成对间距：**唯一允许脱离 4px 阶梯的间距值**。
+     用途很窄——"主标题 + 副标题""大数字 + 小标签"这种必须读成**一个整体**的两行，
+     4px 会把它们拆成两条独立信息，而 0 又会让它们糊在一起。
+
+     为什么单独给个令牌而不是就地写 2px：写死数字时，审计只能把它归为"偏离阶梯"，
+     要么被噪音淹没、要么被无差别过滤掉（那样"写错的"也一起放过了）。
+     有了令牌，审计就能区分"用了 --space-pair 的刻意紧贴"与"手写的 2px"，
+     前者放行、后者照报。**除成对文本外不要用它。** */
+  --space-pair: 2px;
+
+  /* 字阶：跨越组件复用，页面里不要再手写 12.5px / 13.5px 这类数字 */
+  --text-body-size: 14px;
+  --text-meta-size: 13px;
+  --text-micro-size: 12px;
+
+  /* 阅读类内容限宽（文档正文、命中引文用） */
   --measure: 66ch;
 
-  /* 布局骨架 */
-  --sidebar-width: 232px;
-  --page-gutter: var(--space-8);
+  /* 布局骨架：页面统一左对齐铺满内容区，不再居中留大片空白 */
+  --sidebar-width: clamp(248px, 18vw, 320px);
+  /* 页面留白也跟着视口走一点：窗口越大，越不该是"内容贴边" */
+  --page-gutter: clamp(20px, 2.4vw, 40px);
+  --page-pad-top: var(--space-6);
 
   /* 列表行高：文档清单 44px，紧凑行 32px */
   --row-height: 44px;
   --row-height-compact: 32px;
+
+  /* 最小可点尺寸：低于这个数的操作控件在触屏上点不中 */
+  --hit-target: 24px;
+
+  /* 悬浮层：静态内容不用阴影，只有真正浮起来的才用 */
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 4%);
 }
 
 /* 数字一律等宽：分数、条数、页码要能沿一条竖轴对齐（§4） */
 .tabular {
   font-variant-numeric: tabular-nums;
+}
+
+/**
+ * 元信息与微标签：三级灰 + 小一号字号。
+ *
+ * 三级灰在浅色下是 4.9:1、深色 4.7:1，都过了 AA——这是规范 §2.4 的硬要求，
+ * 不是审美偏好。层级由字号承担，所以元信息比正文小 1px，而不是更浅一档。
+ */
+.text-meta {
+  font-size: var(--text-meta-size);
+  color: var(--text-tertiary);
+}
+
+.text-micro {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+/**
+ * 纯文本分隔符。
+ *
+ * 上一轮用 `--border-strong` 给分隔符着色，结果是 1.56:1——那已经近乎隐形了，
+ * 分隔符承载"这两项并列"的信息，属于内容，必须用可读的前景色。
+ */
+.sep {
+  color: var(--separator);
+  padding: 0 var(--space-1);
+}
+
+/**
+ * 页面外壳：统一"左对齐铺满 + 紧凑内边距"，取代各页各写一套 max-width + margin auto。
+ *
+ * 上一轮的 .page 是 `max-width: 880~1040px; margin: 0 auto`，内容区宽起来以后
+ * 两侧留出大片空白，六个页面全是"居中一条"。控制台不是文章页，工具型界面
+ * 该把宽度用在信息上：主列表铺满，只有真正的阅读内容（文档正文、命中引文）才限宽。
+ */
+.page-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  padding: var(--page-pad-top) var(--page-gutter) var(--space-12);
+}
+
+.page-shell-body {
+  margin-top: var(--space-5);
+}
+
+/* 只有阅读型页面用它把正文拦到 --measure */
+.page-shell-narrow .page-shell-body {
+  max-width: var(--measure);
+}
+
+/**
+ * 列表面板与它的表头区（三处清单共用：知识库 / 文档 / 任务）。
+ *
+ * 为什么单独抽出来：这三个列表此前各写一套"面板 + 表头"，列宽和行高稍有出入就不齐；
+ * 更要紧的是表头此前只是一行灰字浮在面板上方——参考图里表头是**面板内部的一层底色**，
+ * 它把"这是表头、下面是数据"这件事说清楚了，也让整块面板不再是"白底上一片灰字"。
+ *
+ * 用法：容器加 `.panel`，表头行加 `.panel-head`，数据行加 `.panel-row`。
+ */
+.panel {
+  overflow: hidden;
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-panel);
+}
+
+.panel-head {
+  height: 36px;
+  font-size: var(--text-micro-size);
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.panel-row {
+  min-height: var(--row-height);
+  border-radius: var(--radius-row);
+}
+
+.panel-row + .panel-row {
+  border-top: 1px solid var(--border-hairline);
+}
+
+.panel-row:hover {
+  background: var(--bg-surface);
 }

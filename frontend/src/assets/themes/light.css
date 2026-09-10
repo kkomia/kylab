@@ -4,6 +4,10 @@
  * 定调：**文档优先**。底色是干净冷调的纸白，不是暖米白——
  * 暖米白 + 衬线标题 + 陶土色强调是当下生成式设计最扎堆的一套，撞脸比个性更显廉价。
  * 颜色一律灰阶，只有状态传达才用语义色，且都压过明度，避免抢走正文的注意力。
+ *
+ * 灰阶不是挑好看的，是按对比度算出来的（规范 §2.4 明文要求 4.5:1）：
+ * 三级灰也得能读——元信息与表头一旦掉到 3:1 上下，用户就得眯眼，那不是克制是欠费。
+ * 所以层级不再只靠明度拉开，还配合字号（见 base.css 的 .text-meta / .text-micro）。
  */
 
 [data-theme='light'] {
@@ -14,31 +18,91 @@
   --bg-surface: #ffffff;
   --bg-subtle: #f5f5f4;
   --bg-hover: #f2f2f1;
-  --bg-active: #e9e9e7;
+  /* 选中态底色比 hover 再深一档。**不能更深**：设置弹窗左菜单的选中项里
+     有一行三级灰副标题（12px），底色越深它越读不出来——#e9e9e7 时实测只有 4.22:1，
+     收敛到 #e4e4e1 才有 4.71:1 的余量。 */
+  --bg-active: #e4e4e1;
 
-  /* 文字：墨色灰阶，靠明度分级不加彩色 */
-  --text-primary: #2f2f2c;
-  --text-secondary: #6b6b66;
-  --text-tertiary: #9a9a95;
+  /* 文字：墨色灰阶。
+     三级灰不是"越浅越好"的装饰变量，它是**最浅但仍必须合格**的一级：它要同时压在
+     纸白、画布、表头底色、以及侧栏选中态的半透明叠色上。原先的 #6e6e68 在选中底色上
+     实测只有 4.03:1，所以整体压深一档——这样下面几个底色怎么叠都还有余量。 */
+  --text-primary: #2b2b28;
+  --text-secondary: #5f5f5a;
+  --text-tertiary: #5f5f59;
 
-  /* 分割线：hairline 默认几乎看不见，只在真正划分区域时用 border */
+  /* 分割线：hairline 只做分区不争注意力；控件边框要 3:1 才看得见（§2.4） */
   --border-hairline: #ededec;
   --border: #e3e3e0;
-  --border-strong: #cfcfcb;
+  --border-strong: #8f8f89;
 
-  /* 语义色：只用于状态传达，明度压低 */
-  --status-success: #3f7a58;
-  --status-warning: #b96a10;
-  --status-danger: #c0483f;
+  /* 纯文本分隔符（`/`、`·`）：它承载"两项并列"这条信息，必须可读 */
+  --separator: var(--text-tertiary);
+
+  /* 语义色：只用于状态传达（这轮提纯：原来压得太灰，看不出是"绿/琥珀/红"）。
+     明度仍按对比度定——警告色压到 #b96a10 时白底只有 4.09:1，作为文字不合格；
+     成功色还要照顾自己那层浅绿胶囊底。 */
+  --status-success: #2d7a4c;
+  --status-warning: #a45c0b;
+  --status-danger: #b8433b;
   --status-info: #2f6f96;
   --danger-soft: #fbeeec;
 
-  /* 主按钮：墨色实心，不用品牌色铺底 */
-  --button-primary-bg: #2f2f2c;
-  --button-primary-bg-hover: #1f1f1d;
+  /* 状态胶囊的底：极低饱和的一层色，让"状态"在整行灰字里能被一眼扫到。
+     底色故意做得很浅——它只负责把这一小块从白底上"托"起来，颜色信息仍由文字承担。 */
+  --status-success-soft: #ebf5ef;
+  --status-warning-soft: #fbf0e0;
+  --status-danger-soft: #fbeae8;
+  --status-info-soft: #e8f0f6;
+  --status-neutral-soft: #f0f0ee;
+  /* 表头 / 分区条的底：比 canvas 再深一点，用来区分"这是表头不是数据行" */
+  --bg-header: #f4f4f2;
+
+  /* 主按钮：品牌色实心。
+     从"墨色实心"换成 accent 是刻意的：全站只有这一个实心按钮，
+     它是页面上唯一的"该点这里"，用品牌色比用第 5 种灰更清楚地传达这件事。 */
+  --button-primary-bg: #5e6ad2;
+  --button-primary-bg-hover: #4f5ac7;
   --button-primary-text: #ffffff;
+
+  /* 按钮禁用态：**不再用 `opacity: 0.5`**。
+     半透明会把前景和背景一起推向对方，白字压在 50% 透明的 indigo 上实测只有 2.02:1
+     ——比"看不清"更糟的是它看起来像没渲染出来。改成实色：灰底 + 足够深的灰字，
+     并保留 1px 边框，让"这是个暂时不能点的控件"仍然成立。
+     字形故意比 --text-tertiary 再深一档：用三级灰正好卡在 4.50，边界值经不起任何取整。 */
+  --button-disabled-bg: #f0f0ee;
+  --button-disabled-text: var(--text-tertiary);
+  --button-disabled-border: #d8d8d4;
 
   /* 弹层：需要层级时才用阴影，静态内容一律不用 */
   --shadow-popover: 0 4px 12px rgb(0 0 0 / 10%);
   --overlay-scrim: rgb(0 0 0 / 28%);
+
+  /* ---------------------------------------------------------------- 品牌色
+     两套色系（调研来源见 docs/风格调教-草案.md §3.9）：
+     主色 indigo 负责"动作与数据"，副色 青蓝 只在需要区分第二组数据时出现。
+
+     取值不是挑好看的，是算出来的：
+     - `--accent` #5e6ad2 白底 4.70:1 —— 按钮底、图表主色、色阶最深一档；
+     - `--accent-text` #4f5ac7 白底 5.80:1 —— 当**文字**用的那一档（链接、彩色数字），
+       比 --accent 深一档才留出余量；
+     - `--accent-soft` 用于选中底、彩色胶囊，把 accent 稀释到几乎无色。 */
+  --accent: #5e6ad2;
+  --accent-hover: #4f5ac7;
+  --accent-text: #4f5ac7;
+  --accent-soft: #eceefb;
+  --accent-selected: #e3e6f9;
+  /* 副色：青蓝。只在"第二组数据"上出现（图表第二条序列、次级强调） */
+  --accent-2: #1f7a8c;
+  --accent-2-soft: #e6f2f5;
+
+  /* 活跃度色阶：四档显式色值，从"没有活动"到"最忙"。
+     为什么不写成 color-mix()：canvas 不认这个函数，得在图表层解析它——
+     解析过一次但结果不可靠，不如主题里直接把四档给死，谁都看得懂。
+     空值那一档是**可见的浅灰**，不是透明：没有活动的日子也要占一个方块，
+     整块图形才是连续的一片（这也是 Kimi 那张图的读法）。 */
+  --heat-0: #eeeff1;
+  --heat-1: #c3c9f0;
+  --heat-2: #8b95e4;
+  --heat-3: #5e6ad2;
 }

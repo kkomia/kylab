@@ -49,9 +49,12 @@ withDefaults(
 </template>
 
 <style scoped>
+/* 单行 32px 高，与按钮、下拉框同高：一排控件不在一条基线上是最容易被看出来的破绽。
+   内边距只用阶梯值（--space-2），高度靠 min-height 定，不再出现 6px 这种随手数。 */
 .field {
   width: 100%;
-  padding: 6px var(--space-3);
+  min-height: 32px;
+  padding: var(--space-2) var(--space-3);
   font: inherit;
   color: var(--text-primary);
   background: var(--bg-surface);

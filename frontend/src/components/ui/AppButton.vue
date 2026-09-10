@@ -31,7 +31,7 @@ withDefaults(
 .button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--space-2);
   border-radius: var(--radius-control);
   white-space: nowrap;
   transition:
@@ -39,20 +39,34 @@ withDefaults(
     border-color 120ms ease;
 }
 
+/* 禁用态用**实色**，不用 `opacity`。
+   半透明会把白字一起洗淡：主按钮禁用态原本是 50% 透明的白字压 indigo，
+   按 color/background 计算是 4.70 的"合格"，但按渲染后的真实像素只有 **2.02:1**
+   ——禁用态最需要"读得清它写着什么"，恰恰最不该靠透明度表达。
+   保留 1px 边框，"这是个暂时不能点的控件"这层意思仍然成立。 */
 .button:disabled {
-  opacity: 0.5;
+  color: var(--button-disabled-text);
+  background: var(--button-disabled-bg);
+  border: 1px solid var(--button-disabled-border);
   cursor: not-allowed;
+}
+
+/* 禁用态要压过各变体的底色，所以放在变体规则之后 */
+.button-primary:disabled,
+.button-danger:disabled {
+  color: var(--button-disabled-text);
+  background: var(--button-disabled-bg);
 }
 
 .button-sm {
   height: 28px;
-  padding: 0 10px;
-  font-size: 13px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-meta-size);
 }
 
 .button-md {
   height: 32px;
-  padding: 0 12px;
+  padding: 0 var(--space-3);
 }
 
 /* 主按钮：灰黑实心；深色主题下由变量自动变成近白（§2.2） */

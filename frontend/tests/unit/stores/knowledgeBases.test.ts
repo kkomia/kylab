@@ -1,6 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import * as documentsApi from '@/api/documents'
 import * as api from '@/api/knowledgeBases'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
@@ -14,6 +15,24 @@ function kb(id: string, name: string): api.KnowledgeBase {
     chunk_size: 512,
     chunk_overlap: 64,
     created_at: '2026-09-10T00:00:00Z',
+  }
+}
+
+function doc(knowledgeBaseId: string, updatedAt: string | null): documentsApi.DocumentSummary {
+  return {
+    id: `doc_${Math.random().toString(36).slice(2, 8)}`,
+    knowledge_base_id: knowledgeBaseId,
+    name: 'a.md',
+    source_kind: 'upload',
+    stage: 'indexed',
+    size_bytes: 100,
+    mime_type: 'text/markdown',
+    page_count: null,
+    is_split: false,
+    error: null,
+    chunk_count: 3,
+    created_at: updatedAt,
+    updated_at: updatedAt,
   }
 }
 
@@ -55,16 +74,46 @@ describe('useKnowledgeBaseStore', () => {
     expect(store.items.map((item) => item.id)).toEqual(['kb_9'])
   })
 
-  it('§5.1：超过 12 条要切列表形态', async () => {
+  it('汇总文档数与最近更新，供侧栏与概览页共用', async () => {
     vi.spyOn(api, 'listKnowledgeBases').mockResolvedValue({
-      items: Array.from({ length: 12 }, (_, index) => kb(`kb_${index}`, `库${index}`)),
+      items: [kb('kb_1', '手册'), kb('kb_2', '归档')],
     })
+    vi.spyOn(documentsApi, 'listDocuments').mockImplementation(async (kbId: string) => ({
+      items:
+        kbId === 'kb_1'
+          ? [doc('kb_1', '2026-09-01T09:00:00'), doc('kb_1', '2026-09-08T09:00:00')]
+          : [],
+    }))
+
     const store = useKnowledgeBaseStore()
     await store.load()
-    expect(store.useCardGrid).toBe(true)
+    await store.loadSummaries()
 
-    store.items = [...store.items, kb('kb_13', '第十三个')]
-    expect(store.useCardGrid).toBe(false)
+    expect(store.summaries['kb_1']).toEqual({ count: 2, updatedAt: '2026-09-08T09:00:00' })
+    // 空库不进汇总表：界面据此显示占位符，而不是一个容易误读的 0
+    expect(store.summaries['kb_2']).toBeUndefined()
+  })
+
+  it('汇总失败时留空表，不抛给界面', async () => {
+    vi.spyOn(api, 'listKnowledgeBases').mockResolvedValue({ items: [kb('kb_1', '手册')] })
+    vi.spyOn(documentsApi, 'listDocuments').mockRejectedValue(new Error('后端不可达'))
+
+    const store = useKnowledgeBaseStore()
+    await store.load()
+    await store.loadSummaries()
+
+    expect(store.summaries).toEqual({})
+  })
+
+  it('forget 同时清掉该库的汇总数据', async () => {
+    const store = useKnowledgeBaseStore()
+    store.items = [kb('kb_1', '手册')]
+    store.summaries = { kb_1: { count: 2, updatedAt: null } }
+
+    store.forget('kb_1')
+
+    expect(store.items).toEqual([])
+    expect(store.summaries).toEqual({})
   })
 
   it('byId 找不到时返回 undefined，不抛异常', () => {

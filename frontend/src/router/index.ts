@@ -2,7 +2,14 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 /**
  * 路由路径统一 kebab-case，页面归属 views/（工程规范 §4.1 / §4.2）。
- * 懒加载：首屏只需要概览页，检索调试台与设置页按需拉取。
+ * 懒加载：首屏只需要驾驶舱，其余按需拉取。
+ *
+ * 页面收敛到五个（《界面信息架构草案》§1：不新增全局页面，除非它自己是一份清单）：
+ * 概览=驾驶舱、知识库=卡片清单、对话=问答记录、文档详情=阅读、任务中心=流水线清单。
+ * 检索是"在某个库里查东西"，收在知识库详情页；对话是"跨库问答"，
+ * 它的结果本身就是一份带引用的记录，放得进一个页面。
+ * 设置是动作，收在弹窗里。
+ * 旧地址 `/search`、`/settings` 保留成重定向，免得旧书签变 404。
  */
 const router = createRouter({
   history: createWebHistory(),
@@ -10,8 +17,20 @@ const router = createRouter({
     {
       path: '/',
       name: 'home',
-      component: () => import('@/views/HomeView.vue'),
+      component: () => import('@/views/DashboardView.vue'),
       meta: { title: '概览' },
+    },
+    {
+      path: '/knowledge-bases',
+      name: 'knowledge-bases',
+      component: () => import('@/views/KnowledgeBasesView.vue'),
+      meta: { title: '知识库' },
+    },
+    {
+      path: '/chat',
+      name: 'chat',
+      component: () => import('@/views/ChatView.vue'),
+      meta: { title: '对话' },
     },
     {
       path: '/kb/:kbId',
@@ -33,15 +52,11 @@ const router = createRouter({
     },
     {
       path: '/search',
-      name: 'search',
-      component: () => import('@/views/SearchView.vue'),
-      meta: { title: '检索调试台' },
+      redirect: { name: 'knowledge-bases' },
     },
     {
       path: '/settings',
-      name: 'settings',
-      component: () => import('@/views/SettingsView.vue'),
-      meta: { title: '设置' },
+      redirect: { name: 'home' },
     },
     {
       path: '/:pathMatch(.*)*',

@@ -23,11 +23,13 @@ import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconFile from '@/components/icons/IconFile.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
+import IconSearch from '@/components/icons/IconSearch.vue'
 import IconUpload from '@/components/icons/IconUpload.vue'
+import KbSearchPanel from '@/components/search/KbSearchPanel.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
-import PageHeader from '@/components/ui/PageHeader.vue'
+import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { documentStageView } from '@/components/ui/status'
@@ -59,6 +61,7 @@ const documents = ref<DocumentSummary[]>([])
 const loading = ref(false)
 const error = ref('')
 const uploading = ref(false)
+const searchOpen = ref(false)
 const expanded = ref<Record<string, DocumentPart[] | undefined>>({})
 const fileInput = ref<HTMLInputElement | null>(null)
 
@@ -170,49 +173,45 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 </script>
 
 <template>
-  <article class="page">
-    <PageHeader
-      :title="knowledgeBase?.name ?? '知识库'"
-      :description="
-        knowledgeBase
-          ? `${knowledgeBase.embedding_model_id} / ${knowledgeBase.embedding_dim} 维 / 切分 ${knowledgeBase.chunk_size}、重叠 ${knowledgeBase.chunk_overlap}`
-          : undefined
-      "
+  <PageShell :title="knowledgeBase?.name ?? '知识库'">
+    <template v-if="knowledgeBase" #description>
+      {{ documents.length }} 篇文档<span class="sep">·</span>{{ knowledgeBase.embedding_model_id
+      }}<span class="sep">·</span>{{ knowledgeBase.embedding_dim }} 维<span class="sep">·</span>切分
+      {{ knowledgeBase.chunk_size }}<span class="sep">/</span>重叠
+      {{ knowledgeBase.chunk_overlap }}
+    </template>
+
+    <template #actions>
+      <input ref="fileInput" class="visually-hidden" type="file" multiple @change="onFilesPicked" />
+      <AppButton :disabled="documents.length === 0" @click="searchOpen = true">
+        <template #icon><IconSearch /></template>
+        在此库检索
+      </AppButton>
+      <AppButton variant="primary" :disabled="uploading" @click="fileInput?.click()">
+        <template #icon><IconUpload /></template>
+        {{ uploading ? '上传中…' : '上传文档' }}
+      </AppButton>
+    </template>
+
+    <p v-if="error" class="error-line">{{ error }}</p>
+
+    <SkeletonBlock v-if="loading && documents.length === 0" variant="list" :rows="4" />
+
+    <EmptyState
+      v-else-if="documents.length === 0"
+      title="这个知识库里还没有文档"
+      hint="支持 PDF、Office、Markdown、纯文本与图片，扫描件走 OCR 渠道；单文件上限 200MB。"
     >
-      <template #actions>
-        <input
-          ref="fileInput"
-          class="visually-hidden"
-          type="file"
-          multiple
-          @change="onFilesPicked"
-        />
-        <AppButton variant="primary" :disabled="uploading" @click="fileInput?.click()">
-          <template #icon><IconUpload /></template>
-          {{ uploading ? '上传中…' : '上传文档' }}
-        </AppButton>
-      </template>
-    </PageHeader>
+      <AppButton variant="primary" @click="fileInput?.click()">
+        <template #icon><IconUpload /></template>
+        上传文档
+      </AppButton>
+    </EmptyState>
 
-    <section class="page-body">
-      <p v-if="error" class="error-line">{{ error }}</p>
-
-      <SkeletonBlock v-if="loading && documents.length === 0" variant="list" :rows="4" />
-
-      <EmptyState
-        v-else-if="documents.length === 0"
-        title="这个知识库里还没有文档"
-        hint="支持 PDF、Office、Markdown、纯文本与图片，扫描件走 OCR 渠道；单文件上限 200MB。"
-      >
-        <AppButton variant="primary" @click="fileInput?.click()">
-          <template #icon><IconUpload /></template>
-          上传文档
-        </AppButton>
-      </EmptyState>
-
-      <template v-else>
-        <!-- 列头：让右侧那串数字有名字，不必靠猜 -->
-        <div class="list-head" aria-hidden="true">
+    <template v-else>
+      <!-- 列头：让右侧那串数字有名字，不必靠猜 -->
+      <div class="panel">
+        <div class="panel-head list-head" aria-hidden="true">
           <span class="head-file">文件</span>
           <span class="head-number">切块</span>
           <span class="head-size">大小</span>
@@ -222,7 +221,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 
         <ul class="doc-rows">
           <li v-for="document in documents" :key="document.id" class="doc-row-group">
-            <div class="doc-row">
+            <div class="doc-row panel-row">
               <button
                 v-if="document.is_split"
                 class="expander"
@@ -275,22 +274,20 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
             </ul>
           </li>
         </ul>
-      </template>
-    </section>
-  </article>
+      </div>
+    </template>
+
+    <!-- 检索是这个库的动作，不是另一个页面：在这里开，范围天然就是当前库 -->
+    <KbSearchPanel
+      v-if="knowledgeBase"
+      v-model:open="searchOpen"
+      :kb-id="kbId"
+      :kb-name="knowledgeBase.name"
+    />
+  </PageShell>
 </template>
 
 <style scoped>
-.page {
-  max-width: 1040px;
-  margin: 0 auto;
-  padding: var(--space-8) var(--page-gutter) var(--space-16);
-}
-
-.page-body {
-  margin-top: var(--space-6);
-}
-
 .error-line {
   margin: 0 0 var(--space-4);
   color: var(--status-danger);
@@ -313,16 +310,15 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   gap: var(--space-3);
 }
 
+/* 表头区：底色来自 .panel-head，这里只管列宽与对齐 */
 .list-head {
-  height: var(--row-height-compact);
-  padding-right: var(--space-8);
-  font-size: 12px;
-  color: var(--text-tertiary);
-  border-bottom: 1px solid var(--border);
+  padding: 0 var(--space-4);
 }
 
+/* 与文件名起点对齐：命中区 24px + gap（列头没有展开器，自己让出来） */
 .head-file {
   flex: 1;
+  padding-left: calc(var(--hit-target) + var(--space-3));
 }
 
 .head-number {
@@ -350,24 +346,23 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   list-style: none;
 }
 
+.doc-row-group + .doc-row-group {
+  border-top: 1px solid var(--border-hairline);
+}
+
 .doc-row {
-  min-height: var(--row-height);
-  padding-right: var(--space-2);
-  border-bottom: 1px solid var(--border-hairline);
+  padding: 0 var(--space-4);
 }
 
-.doc-row:hover {
-  background: var(--bg-hover);
-}
-
+/* 展开器给足 24px 命中区：20px 在触屏上点不中 */
 .expander,
 .expander-placeholder {
   display: inline-flex;
-  flex: 0 0 20px;
+  flex: 0 0 var(--hit-target);
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
+  width: var(--hit-target);
+  height: var(--hit-target);
   color: var(--text-tertiary);
   border-radius: var(--radius-control);
 }
@@ -391,7 +386,13 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   min-width: 0;
 }
 
-.row-name {
+/* 链接撑满整行高度：文字本身只有 23px 高，做成整行可点才够得着。
+   必须写在 .row-main 之下：`.row-main { align-items }` 会覆盖单独一条 `.row-name` 的 align-self。 */
+.row-main .row-name {
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
+  min-height: var(--hit-target);
   overflow: hidden;
   color: var(--text-primary);
   text-overflow: ellipsis;
@@ -402,21 +403,21 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 .row-number {
   flex: 0 0 56px;
   text-align: right;
-  font-size: 13px;
+  font-size: var(--text-meta-size);
   color: var(--text-secondary);
 }
 
 .row-size {
   flex: 0 0 72px;
   text-align: right;
-  font-size: 12.5px;
+  font-size: var(--text-meta-size);
   color: var(--text-tertiary);
 }
 
 .row-time {
   flex: 0 0 96px;
   text-align: right;
-  font-size: 12.5px;
+  font-size: var(--text-meta-size);
   color: var(--text-tertiary);
 }
 
@@ -426,15 +427,15 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 
 .row-error {
   margin: 0;
-  padding: 0 0 var(--space-2) 52px;
-  font-size: 12.5px;
+  padding: 0 var(--space-3) var(--space-2) var(--space-12);
+  font-size: var(--text-meta-size);
   color: var(--status-danger);
 }
 
 /* 子文件树：缩进一级（§6） */
 .part-rows {
   margin: 0;
-  padding: 0 0 var(--space-2) 52px;
+  padding: 0 var(--space-3) var(--space-2) var(--space-12);
   list-style: none;
 }
 
@@ -443,7 +444,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   align-items: center;
   gap: var(--space-3);
   height: var(--row-height-compact);
-  font-size: 13px;
+  font-size: var(--text-meta-size);
   color: var(--text-secondary);
 }
 

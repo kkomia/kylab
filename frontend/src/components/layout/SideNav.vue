@@ -1,40 +1,35 @@
 <script setup lang="ts">
 /**
- * 导航侧栏（《前端设计规范 v0.3》§5）。
+ * 导航侧栏（《前端设计规范》§5）。
  *
- * 结构：产品名 → 导航（概览 / 检索 / 任务 / 设置）→ 知识库列表 → 底部主题切换与服务状态。
+ * 结构：产品名 → 导航（概览 / 知识库 / 对话 / 任务中心）→ 对话说明 → 底部主题切换与服务状态。
  *
- * 侧栏自己管两件事：知识库导航列表、后端连通性。都是"全局状态"，
- * 放在这里而不是各页面各查一遍——同一次操作后出现两处不一致是最常见的界面 bug。
+ * 知识库清单取自 store：侧栏与概览页是同一份数据，
+ * 各查一遍就会出现"新建之后这边有、那边没有"这类不同步。
+ * 侧栏自己只管后端连通性。
+ *
+ * 检索没有独立入口：它是"在某个库里查东西"，收在知识库详情页里；
+ * 跨库问答则收在「对话」页——那里的问题是"这些库里怎么说"，不是"哪个块最像"。
  */
 import { onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { fetchHealth } from '@/api/health'
-import { listKnowledgeBases, type KnowledgeBase } from '@/api/knowledgeBases'
+import IconChat from '@/components/icons/IconChat.vue'
+import IconDashboard from '@/components/icons/IconDashboard.vue'
 import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconLogo from '@/components/icons/IconLogo.vue'
 import IconMoon from '@/components/icons/IconMoon.vue'
-import IconSearch from '@/components/icons/IconSearch.vue'
 import IconSettings from '@/components/icons/IconSettings.vue'
 import IconSun from '@/components/icons/IconSun.vue'
 import IconTasks from '@/components/icons/IconTasks.vue'
+import SettingsModal from '@/components/settings/SettingsModal.vue'
 import { useTheme } from '@/composables/useTheme'
+import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 const { theme, toggleTheme } = useTheme()
 const route = useRoute()
-
-const knowledgeBases = ref<KnowledgeBase[]>([])
-const kbError = ref('')
-
-async function refreshKnowledgeBases(): Promise<void> {
-  try {
-    knowledgeBases.value = (await listKnowledgeBases()).items
-    kbError.value = ''
-  } catch (error) {
-    kbError.value = error instanceof Error ? error.message : '知识库列表加载失败'
-  }
-}
+const store = useKnowledgeBaseStore()
 
 /** 服务状态双编码：图标 + 文字（§8 必须项），不靠颜色单独表意。 */
 type ServiceState = 'checking' | 'online' | 'offline'
@@ -45,31 +40,35 @@ async function checkService(): Promise<void> {
   try {
     const health = await fetchHealth()
     serviceState.value = 'online'
-    serviceDetail.value = `后端在线 · v${health.version} · ${health.api_version}`
+    // 只留版本号：接口版本在这一行里没有决策价值，设置页有专门两项
+    serviceDetail.value = `后端在线 · v${health.version}`
   } catch (error) {
     serviceState.value = 'offline'
     serviceDetail.value = error instanceof Error ? error.message : '后端不可达'
   }
 }
 
-onMounted(() => {
-  void refreshKnowledgeBases()
+onMounted(async () => {
   void checkService()
+  if (store.items.length === 0) await store.load()
+  void store.loadSummaries()
 })
 
-/** 新建/删除知识库后由页面调用，避免侧栏与页面各存一份列表。 */
-defineExpose({ refreshKnowledgeBases, checkService })
+defineExpose({ checkService })
 
 const NAV_ITEMS = [
-  { to: '/', label: '概览', icon: IconLibrary, exact: true },
-  { to: '/search', label: '检索调试台', icon: IconSearch, exact: false },
+  { to: '/', label: '概览', icon: IconDashboard, exact: true },
+  { to: '/knowledge-bases', label: '知识库', icon: IconLibrary, exact: false },
+  { to: '/chat', label: '对话', icon: IconChat, exact: false },
   { to: '/tasks', label: '任务中心', icon: IconTasks, exact: false },
-  { to: '/settings', label: '设置', icon: IconSettings, exact: false },
 ] as const
 
 function isActive(to: string, exact: boolean): boolean {
   return exact ? route.path === to : route.path.startsWith(to)
 }
+
+/** 设置从页面收进弹窗：它是动作，做完就走（《界面信息架构草案》§1）。 */
+const settingsOpen = ref(false)
 </script>
 
 <template>
@@ -92,26 +91,24 @@ function isActive(to: string, exact: boolean): boolean {
       </RouterLink>
     </nav>
 
-    <div class="kb-section">
-      <p v-if="kbError" class="kb-error">{{ kbError }}</p>
-      <p v-else-if="knowledgeBases.length === 0" class="kb-empty">还没有知识库</p>
-      <ul v-else class="kb-list">
-        <li v-for="kb in knowledgeBases" :key="kb.id">
-          <RouterLink
-            class="kb-item"
-            :class="{ 'kb-item-active': route.path.startsWith(`/kb/${kb.id}`) }"
-            :to="`/kb/${kb.id}`"
-            :title="kb.name"
-          >
-            {{ kb.name }}
-          </RouterLink>
-        </li>
-      </ul>
+    <!--
+      侧栏下半部分原本是「最近文档」列表，现在换成一句指路：
+      用户在这一栏里真正缺的不是"我最近传了什么"，而是"这里能拿知识库干什么"。
+      列表还占着最显眼的位置，却只重复了知识库卡片页已有的信息。
+    -->
+    <div class="side-section">
+      <p class="section-label">对话</p>
+      <p class="side-note">在上面「对话」里向知识库提问，回答会带原文引用。</p>
     </div>
 
     <div class="sidebar-foot">
+      <button class="foot-action" type="button" @click="settingsOpen = true">
+        <IconSettings />
+        <span>设置</span>
+      </button>
+
       <button
-        class="theme-toggle"
+        class="foot-action"
         type="button"
         :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'"
         @click="toggleTheme"
@@ -142,6 +139,8 @@ function isActive(to: string, exact: boolean): boolean {
         <span class="service-text">{{ serviceDetail }}</span>
       </p>
     </div>
+
+    <SettingsModal v-model:open="settingsOpen" />
   </aside>
 </template>
 
@@ -172,15 +171,16 @@ function isActive(to: string, exact: boolean): boolean {
 .nav {
   display: flex;
   flex-direction: column;
-  gap: 1px;
   padding: 0 var(--space-2) var(--space-2);
 }
 
+/* 行高 36px = 8 + 20 + 8，落在 4px 阶梯上；侧栏项与知识库项字号统一 13.5px */
 .nav-item {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: 5px var(--space-2);
+  min-height: 36px;
+  padding: 0 var(--space-2);
   font-size: 13.5px;
   color: var(--text-secondary);
   text-decoration: none;
@@ -197,72 +197,55 @@ function isActive(to: string, exact: boolean): boolean {
   color: var(--text-tertiary);
 }
 
-/* 选中项：--bg-active + 左侧 2px 指示条（§5） */
+/* 选中项：浅品牌色底 + 左侧 2px 品牌色指示条（§5）。
+   全站唯一用品牌色的地方就在这里与主按钮、图表——它们是"当前在哪 / 该点哪里" */
 .nav-item-active {
   position: relative;
-  color: var(--text-primary);
-  background: var(--bg-active);
+  color: var(--accent-text);
+  background: var(--accent-soft);
 }
 
 .nav-item-active .nav-icon {
-  color: var(--text-secondary);
+  color: var(--accent);
 }
 
 .nav-item-active::before {
   content: '';
   position: absolute;
   left: 0;
-  top: 6px;
-  bottom: 6px;
+  top: var(--space-2);
+  bottom: var(--space-2);
   width: 2px;
-  background: var(--text-secondary);
+  background: var(--accent);
+  border-radius: 1px;
 }
 
-.kb-section {
+/* 侧栏下半部分：一句关于「对话」的指路。flex:1 占住剩余高度，
+   底部的主题/设置始终贴在窗口底部，不随说明文字的长短上下浮动 */
+.side-section {
   flex: 1;
   min-height: 0;
-  padding: var(--space-2);
+  padding: var(--space-3) var(--space-2) var(--space-2);
   overflow-y: auto;
   border-top: 1px solid var(--border-hairline);
 }
 
-.kb-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.kb-item {
-  display: block;
-  padding: 5px var(--space-2);
-  overflow: hidden;
-  font-size: 13.5px;
-  color: var(--text-secondary);
-  text-decoration: none;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  border-radius: var(--radius-control);
-}
-
-.kb-item:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.kb-item-active {
-  color: var(--text-primary);
-  background: var(--bg-active);
-}
-
-.kb-empty,
-.kb-error {
-  margin: var(--space-2);
-  font-size: 12.5px;
+/* 分区标签：侧栏宽一点以后，光靠留白已经分不开"导航"与下面这段。
+   小号 + 加宽字距 + 弱色——它只是一个"这里是另一段"的路标，不该跟可点项抢注意力。 */
+.section-label {
+  margin: 0 0 var(--space-2);
+  padding: 0 var(--space-2);
+  font-size: var(--text-micro-size);
+  font-weight: 500;
+  letter-spacing: 0.06em;
   color: var(--text-tertiary);
 }
 
-.kb-error {
-  color: var(--status-danger);
+.side-note {
+  margin: var(--space-2);
+  font-size: var(--text-micro-size);
+  line-height: 1.6;
+  color: var(--text-tertiary);
 }
 
 .sidebar-foot {
@@ -270,18 +253,19 @@ function isActive(to: string, exact: boolean): boolean {
   border-top: 1px solid var(--border-hairline);
 }
 
-.theme-toggle {
+.foot-action {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  padding: 5px var(--space-2);
+  min-height: 32px;
+  padding: 0 var(--space-2);
   font-size: 13.5px;
   color: var(--text-secondary);
   border-radius: var(--radius-control);
 }
 
-.theme-toggle:hover {
+.foot-action:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
@@ -289,9 +273,9 @@ function isActive(to: string, exact: boolean): boolean {
 .service {
   display: flex;
   align-items: flex-start;
-  gap: 6px;
+  gap: var(--space-2);
   margin: var(--space-2) 0 0;
-  font-size: 12px;
+  font-size: var(--text-micro-size);
   color: var(--text-tertiary);
 }
 
@@ -302,7 +286,7 @@ function isActive(to: string, exact: boolean): boolean {
 
 .service-icon {
   display: inline-flex;
-  margin-top: 3px;
+  margin-top: var(--space-1);
   flex: 0 0 auto;
 }
 
