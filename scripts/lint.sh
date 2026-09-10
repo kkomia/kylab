@@ -42,6 +42,7 @@ step "分层纪律与测试位置" "$PY" "$ROOT/scripts/check_layering.py" "$ROO
 
 if [ -f "$ROOT/frontend/package.json" ]; then
     step "eslint + prettier" pnpm --dir "$ROOT/frontend" lint
+    step "类型检查（vue-tsc）" pnpm --dir "$ROOT/frontend" typecheck
     step "emoji 扫描（前端）" "$PY" "$ROOT/scripts/scan_emoji.py" "$ROOT/frontend/src"
 fi
 

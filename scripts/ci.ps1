@@ -43,6 +43,7 @@ Invoke-Step '后端测试' 'uv' @(
 
 if (Test-Path "$root/frontend/package.json") {
     Invoke-Step '前端测试' 'pnpm' @('--dir', "$root/frontend", 'test')
+    Invoke-Step '前端生产构建' 'pnpm' @('--dir', "$root/frontend", 'build')
 }
 
 if ($script:failures -gt 0) {

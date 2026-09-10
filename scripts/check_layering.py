@@ -1,7 +1,9 @@
-"""规范自动核查：分层纪律与测试位置。
+"""仓库结构性规范自动核查：分层纪律、测试位置、脚本编码。
 
-对应《项目工程规范 v0.3》§3.3（分层纪律）、§5.1（测试存放铁律）。
-这些约束靠人工 review 容易漏，故做成机械检查接入 CI。
+对应《项目工程规范 v0.3》§3.3（分层纪律）、§5.1（测试存放铁律）与 §6（脚本约定）。
+这些约束靠人工 review 容易漏，故做成机械检查接入 CI：
+``L1`` 协议层越界、``L2`` 业务层直连数据库/SQL、``L3`` 解析器互引、``T1`` 测试位置、
+``S1`` .ps1 缺少 UTF-8 BOM、``PARSE`` 语法错误。
 
 用法：python scripts/check_layering.py [仓库根目录，默认当前目录]
 退出码：0 = 通过；1 = 发现违规。
@@ -160,6 +162,31 @@ def check_test_placement(path: Path, root: Path) -> list[Violation]:
     return []
 
 
+def check_ps1_bom(root: Path) -> list[Violation]:
+    """S1：``scripts/*.ps1`` 必须带 UTF-8 BOM。
+
+    Windows PowerShell 5.1 会把无 BOM 的 .ps1 当 GBK 解码，中文字符串直接变乱码、
+    脚本以 ParserError 崩掉——门禁脚本自己就是受害者。编辑器/工具改写文件时极易丢掉 BOM，
+    故用机械检查兜住，而不是靠人记得。
+    """
+    violations: list[Violation] = []
+    scripts_dir = root / "scripts"
+    if not scripts_dir.exists():
+        return violations
+    for path in sorted(scripts_dir.rglob("*.ps1")):
+        if not path.read_bytes().startswith(b"\xef\xbb\xbf"):
+            violations.append(
+                Violation(
+                    "S1",
+                    path.relative_to(root),
+                    1,
+                    "缺少 UTF-8 BOM，PowerShell 5.1 会按 GBK 解码导致中文乱码与解析失败；"
+                    "请以 UTF-8 with BOM 重新保存",
+                )
+            )
+    return violations
+
+
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     backend_app = root / "backend" / "app"
@@ -188,13 +215,15 @@ def main() -> int:
             if path.is_file():
                 violations.extend(check_test_placement(path, root))
 
+    violations.extend(check_ps1_bom(root))
+
     for violation in violations:
         print(violation)
 
     if violations:
-        print(f"\n共发现 {len(violations)} 处分层/存放违规，违反《项目工程规范》§3.3 / §5.1。")
+        print(f"\n共发现 {len(violations)} 处结构性违规，违反《项目工程规范》§3.3 / §5.1 与脚本编码约定。")
         return 1
-    print("分层纪律与测试位置检查通过。")
+    print("分层纪律、测试位置与脚本编码检查通过。")
     return 0
 
 

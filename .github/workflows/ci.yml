@@ -85,9 +85,17 @@ jobs:
         working-directory: frontend
         run: pnpm lint
 
+      - name: 类型检查（vue-tsc）
+        working-directory: frontend
+        run: pnpm typecheck
+
       - name: vitest
         working-directory: frontend
         run: pnpm test
+
+      - name: 生产构建
+        working-directory: frontend
+        run: pnpm build
 
       - name: emoji 扫描（前端）
         run: python3 scripts/scan_emoji.py frontend/src

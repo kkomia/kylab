@@ -25,6 +25,7 @@ step "后端测试" sh -c "cd '$ROOT/backend' && uv run pytest tests/ -m 'not be
 
 if [ -f "$ROOT/frontend/package.json" ]; then
     step "前端测试" pnpm --dir "$ROOT/frontend" test
+    step "前端生产构建" pnpm --dir "$ROOT/frontend" build
 fi
 
 if [ "$fail" -ne 0 ]; then
