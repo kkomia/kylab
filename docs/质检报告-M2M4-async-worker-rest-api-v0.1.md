@@ -3,25 +3,25 @@
 - 范围：`6399ead..523944a`（M2 任务消费者、M4 知识库/文档/检索/任务端点）
 - 日期：2026-09-10
 - 依据规范：项目工程规范 v0.3 / 前端设计规范 v0.3 / 架构设计 v0.2
-- 结论：**有条件通过**（无 P0；1 项 P1 待修，见下表 Q2）
+- 结论：**通过**（无 P0；两项 P1 已于 `cc955bf` 修复并补测试）
 
 ## 问题清单
 
-| 级别 | 位置（文件:行） | 规则 | 问题描述 | 修复建议 |
-|------|----------------|------|----------|----------|
-| P1 | `backend/app/api/v1/search.py:49-76` | 分层纪律（协议层只做适配） | 逐字段手抄 `SearchHitOut` / `ChannelStatOut`，与本次修掉的 `documents.py` 是同一类漏点：`SearchHit` 加字段时响应会静默丢字段 | 与 `DocumentOut` 一致，给 `SearchHitOut` / `ChannelStatOut` 加 `from_attributes=True`，改用 `model_validate(hit)` |
-| P1 | `backend/app/services/documents.py:81-84` | 架构承诺 / 性能 | `get_task()` 拉全表再在 Python 里线性查找；`list_documents` 里每个文档一次 `count_chunks`，属于 N+1 | 给 `MetaStore` 加 `count_chunks_by_documents(ids)` 一次查完；`get_task` 走 SQL 主键查询 |
-| P2 | `backend/app/api/v1/documents.py:48-50` | 安全 / 资源占用 | 上传先 `await file.read()` 全量读进内存再判大小，200MB 上限意味着单请求峰值 200MB；且超限时已经读完 | 改为分块读并累计字节数，超过上限立即 413 中断 |
-| P2 | `backend/app/api/v1/search.py:28-34` | 分层纪律 | 手工把 `MetadataFilterIn` 逐字段翻译成 `MetadataFilter`，可改为同一套 `model_validate` 思路 | 让 `MetadataFilter` 自己接受 schema，或给 schema 加 `to_service()` |
-| P2 | `backend/app/core/services.py:56` | 组合根完整性 | 解析器清单硬编码 `[PlainTextParser()]`，与"逐文件动态路由"这一核心差异化能力的接线还差云端解析器 | 保持现状可接受（M6 接 MinerU/PaddleOCR 时在此追加），但要在计划书里标注为未完成项 |
-| P3 | 提交 `523944a` | 提交信息准确性 | 提交信息里提到的"协议层不再手抄响应字段"实际落在上一个提交 `807d185`（当时改动已 stage） | 无需重写历史，此处记录以免日后追溯困惑 |
+| 级别 | 位置（文件:行） | 规则 | 问题描述 | 修复建议 | 状态 |
+|------|----------------|------|----------|----------|------|
+| P1 | `backend/app/api/v1/search.py:49-76` | 分层纪律（协议层只做适配） | 逐字段手抄 `SearchHitOut` / `ChannelStatOut`，与本次修掉的 `documents.py` 是同一类漏点：`SearchHit` 加字段时响应会静默丢字段 | 给 `SearchHitOut` / `ChannelStatOut` 加 `from_attributes=True`，改用 `model_validate(hit)` | 已修（cc955bf） |
+| P1 | `backend/app/services/documents.py:81-84` | 架构承诺 / 性能 | `get_task()` 拉全表再在 Python 里线性查找；`list_documents` 里每个文档一次 `count_chunks`，属于 N+1 | 给 `MetaStore` 加 `count_chunks_by_documents(ids)` 一次查完；`get_task` 走 SQL 主键查询 | 已修（cc955bf） |
+| P2 | `backend/app/api/v1/documents.py:48-50` | 安全 / 资源占用 | 上传先 `await file.read()` 全量读进内存再判大小，200MB 上限意味着单请求峰值 200MB；且超限时已经读完 | 改为分块读并累计字节数，超过上限立即 413 中断 | 待修（转 M5 前置） |
+| P2 | `backend/app/api/v1/search.py:28-34` | 分层纪律 | 手工把 `MetadataFilterIn` 逐字段翻译成 `MetadataFilter` | 让 `MetadataFilter` 接受 schema，或给 schema 加 `to_service()` | 待修 |
+| P2 | `backend/app/core/services.py:56` | 组合根完整性 | 解析器清单硬编码 `[PlainTextParser()]`，与"逐文件动态路由"这一核心差异化能力的接线还差云端解析器 | M6 接 MinerU/PaddleOCR 时在此追加；计划书已标注为未完成项 | 接受现状 |
+| P3 | 提交 `523944a` | 提交信息准确性 | 提交信息里提到的"协议层不再手抄响应字段"实际落在上一个提交 `807d185`（当时改动已 stage） | 无需重写历史，此处记录以免日后追溯困惑 | 不处理 |
 
 ## 自动化检查结果
 
 - ruff：通过（`app/` + `tests/` 全绿）
 - emoji 扫描：通过（后端、前端均 0 处）
 - 分层纪律与测试位置：通过（L1 曾在开发期命中 `app/api/v1/documents.py` import `app.storage.base`，已改为 `from_attributes` 校验后消除）
-- pytest：422 通过 / 0 失败（`not bench and not cloud`），`app/` 覆盖率 **100%**
+- pytest：423 通过 / 0 失败（`not bench and not cloud`），`app/` 覆盖率 **100%**
 - eslint + prettier：通过
 - vue-tsc 类型检查：通过
 - vitest：4 通过 / 0 失败
@@ -74,4 +74,4 @@
 
 ## 结论
 
-无 P0 阻塞项；P1 两项（`search.py` 手抄字段、`DocumentService` N+1 查询）限期修复，均不影响当前功能正确性。**有条件通过**，允许继续推进 M5 前端页面；上述 P1/P2 与安全组未完成项一并转入下一轮修复清单。
+无 P0 阻塞项；两项 P1 已修复并补测试（提交 `cc955bf`）。**通过**，允许推进 M5 前端页面；P2 两项与安全组未完成项一并转入下一轮修复清单。
