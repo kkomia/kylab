@@ -1,0 +1,44 @@
+# ---- 密钥与本地配置（工程规范 §6：任何 token/API key 禁止提交）----
+.env
+.env.*
+!.env.example
+
+# ---- 运行期数据（SQLite、上传原文、Markdown 产物、图片）----
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+.trash/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# ---- Node / 前端 ----
+node_modules/
+frontend/dist/
+.vite/
+*.log
+
+# ---- E2E 产物 ----
+test-results/
+playwright-report/
+
+# ---- 编辑器与系统 ----
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

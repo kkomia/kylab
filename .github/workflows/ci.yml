@@ -1,0 +1,77 @@
+# KYLAB CI 门禁
+#
+# 注意：本仓库当前托管在 Gitee（gitee.com/kkomia/kylab）。
+# 若继续留在 Gitee，本文件不会执行，需改用 Gitee Go 或自建 runner；
+# 门禁内容与 scripts/lint.*、scripts/ci.* 保持一致，便于两种承载方式等价迁移。
+# 决策项见《开发计划 v0.1》§8 D3。
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  backend:
+    name: 后端（ruff + pytest + 规范扫描）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: 安装依赖
+        working-directory: backend
+        run: uv sync
+
+      - name: ruff
+        working-directory: backend
+        run: uv run ruff check app/ tests/
+
+      - name: pytest（跳过 bench 与 cloud）
+        working-directory: backend
+        run: uv run pytest tests/ -m "not bench and not cloud" --cov=app --cov-report=term-missing
+
+      - name: emoji 扫描（后端）
+        run: python3 scripts/scan_emoji.py backend/app
+
+      - name: 分层纪律与测试位置
+        run: python3 scripts/check_layering.py
+
+  frontend:
+    name: 前端（eslint + vitest + 规范扫描）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: 安装依赖
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: eslint + prettier
+        working-directory: frontend
+        run: pnpm lint
+
+      - name: vitest
+        working-directory: frontend
+        run: pnpm test
+
+      - name: emoji 扫描（前端）
+        run: python3 scripts/scan_emoji.py frontend/src
