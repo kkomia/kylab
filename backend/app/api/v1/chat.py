@@ -23,8 +23,10 @@ from collections.abc import Iterator
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
+from app.api.auth import check_kb_scope, require_read
 from app.api.v1.schemas import ChatRequestIn, ChatResponseOut, ChatSourceOut
 from app.core.services import Services, get_services
+from app.services.api_key import Caller
 from app.services.chat import ChatService
 from app.services.llm import ChatError, ChatMessage
 
@@ -46,8 +48,12 @@ SSE_HEADERS = {
     response_class=StreamingResponse,
 )
 async def chat_stream(
-    payload: ChatRequestIn, services: Services = Depends(get_services)
+    payload: ChatRequestIn,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
 ) -> StreamingResponse:
+    # 对话会读到库内原文，所以同样受密钥的库范围约束
+    check_kb_scope(services, caller, payload.kb_ids)
     return StreamingResponse(
         _events(services.chat, payload),
         media_type="text/event-stream",
@@ -57,9 +63,12 @@ async def chat_stream(
 
 @router.post("/chat", response_model=ChatResponseOut, summary="快速检索问答（一次性）")
 async def chat_once(
-    payload: ChatRequestIn, services: Services = Depends(get_services)
+    payload: ChatRequestIn,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
 ) -> ChatResponseOut:
     """非流式版本：给脚本、MCP 与自动化测试用，逻辑与流式完全相同。"""
+    check_kb_scope(services, caller, payload.kb_ids)
     sources = services.chat.retrieve_sources(
         query=payload.query,
         kb_ids=payload.kb_ids,

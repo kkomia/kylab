@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
+from app.api.auth import require_read
 from app.api.v1.schemas import TaskList, TaskOut
 from app.core.services import Services, get_services
 from app.models.enums import TaskState
+from app.services.api_key import Caller
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -19,6 +21,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 async def list_tasks(
     state: TaskState | None = Query(default=None, description="按状态过滤"),
     services: Services = Depends(get_services),
+    _: Caller = Depends(require_read),
 ) -> TaskList:
     return TaskList(
         items=[TaskOut.model_validate(task) for task in services.documents.list_tasks(state)]

@@ -672,8 +672,9 @@ class SqliteMetaStore(MetaStore):
             conn.execute(
                 """
                 INSERT INTO api_keys
-                    (id, name, key_hash, permission, knowledge_base_ids, created_at, last_used_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (id, name, key_hash, permission, knowledge_base_ids, key_prefix,
+                     created_at, last_used_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -681,26 +682,46 @@ class SqliteMetaStore(MetaStore):
                     record.key_hash,
                     record.permission.value,
                     _json(list(record.knowledge_base_ids)),
+                    record.key_prefix,
                     _dump(record.created_at),
                     _dump(record.last_used_at),
                 ),
             )
         return record
 
-    def get_api_key_by_hash(self, key_hash: str) -> ApiKeyRecord | None:
-        with self._db.read() as conn:
-            row = conn.execute("SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,)).fetchone()
-        if not row:
-            return None
+    @staticmethod
+    def _api_key_from_row(row: sqlite3.Row) -> ApiKeyRecord:
         return ApiKeyRecord(
             id=row["id"],
             name=row["name"],
             key_hash=row["key_hash"],
             permission=ApiKeyPermission(row["permission"]),
             knowledge_base_ids=tuple(json.loads(row["knowledge_base_ids"])),
+            key_prefix=row["key_prefix"],
             created_at=_load(row["created_at"]),
             last_used_at=_load(row["last_used_at"]),
         )
+
+    def get_api_key_by_hash(self, key_hash: str) -> ApiKeyRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute("SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,)).fetchone()
+        return self._api_key_from_row(row) if row else None
+
+    def list_api_keys(self) -> list[ApiKeyRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
+        return [self._api_key_from_row(row) for row in rows]
+
+    def delete_api_key(self, key_id: str) -> None:
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM api_keys WHERE id = ?", (key_id,))
+
+    def touch_api_key(self, key_id: str, *, used_at: datetime | None = None) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+                (_dump(used_at or _now()), key_id),
+            )
 
     def create_webhook(self, record: WebhookRecord) -> WebhookRecord:
         with self._db.session() as conn:

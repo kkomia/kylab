@@ -39,6 +39,24 @@ class Settings(BaseSettings):
     worker_lease_seconds: int = 60
     """任务租约时长：worker 执行期间按 1/3 周期续租，崩溃后由超时回收兜底。"""
 
+    # 鉴权（M4 T4.4；《架构设计 v0.2》§3.2）
+    auth_enabled: bool = False
+    """是否强制校验凭据。
+
+    **默认关闭**：本机单人开发时每次请求都带令牌纯属折磨；而默认开启会让升级后
+    所有既有客户端立刻 401，是最难排查的一类故障。
+
+    但"关着"不等于不设防——``api/auth.py::auth_enabled()`` 还有第二个条件：
+    一旦配置了控制台令牌、或库里存在任何 API Key，鉴权立即自动生效。
+    能配出凭据就说明用户要鉴权，不该再要求他去翻一个开关。
+    """
+    console_token: str | None = None
+    """Web 控制台令牌（管理员身份）。
+
+    为什么要单独一把：控制台要能打开设置页，而设置页里就是 embedding / LLM 的密钥。
+    外部 API Key 绝不该能读设置——那等于把凭据发给每一个集成方。
+    """
+
     @property
     def db_path(self) -> Path:
         """SQLite 主库文件（元数据 + 向量 + 全文同库，架构 §8.1）。"""

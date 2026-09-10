@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
+from app.api.auth import require_read
 from app.api.v1.schemas import DashboardOut
 from app.core.services import Services, get_services
+from app.services.api_key import Caller
 from app.services.stats import DEFAULT_WINDOW_DAYS
 
 router = APIRouter(tags=["stats"])
@@ -26,6 +28,7 @@ async def dashboard(
         description="活跃度观察窗口（天）",
     ),
     services: Services = Depends(get_services),
+    _: Caller = Depends(require_read),
 ) -> DashboardOut:
     stats = services.stats.dashboard(window_days=window_days)
     return DashboardOut.model_validate(stats)

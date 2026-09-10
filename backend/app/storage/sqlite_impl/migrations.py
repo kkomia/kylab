@@ -234,7 +234,18 @@ _MIGRATION_001 = Migration(
     ),
 )
 
-MIGRATIONS: tuple[Migration, ...] = (_MIGRATION_001,)
+_MIGRATION_002 = Migration(
+    version=2,
+    description="api_keys 增加展示用前缀列（列表里分辨哪把是哪把）",
+    statements=(
+        # 为什么存前缀而不是明文：明文绝不落库，但列表里总得让用户看出来
+        # "这把是上周发给 Grafana 的那把"。key_prefix 取明文去掉固定前缀后的前 6 位，
+        # 来自 32 字节高熵随机串——剩下的熵还够 250 位，**不构成可利用的泄露面**。
+        "ALTER TABLE api_keys ADD COLUMN key_prefix TEXT NOT NULL DEFAULT ''",
+    ),
+)
+
+MIGRATIONS: tuple[Migration, ...] = (_MIGRATION_001, _MIGRATION_002)
 """全部迁移，按 version 升序。只增不改。"""
 
 _MIGRATIONS_TABLE = """

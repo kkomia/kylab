@@ -57,6 +57,38 @@ class UpstreamError(KylabError):
     message = "外部服务调用失败"
 
 
+class UnauthorizedError(KylabError):
+    """未提供凭据或凭据无效。
+
+    与 ``ForbiddenError`` 分开：401 表示"你是谁我不知道"（该去拿凭据），
+    403 表示"我知道你是谁，但你不能碰这个"（凭据没错，是授权范围不够）。
+    这两句给用户的下一步动作完全不同，混成一个状态码就说不清了。
+    """
+
+    code = "unauthorized"
+    http_status = status.HTTP_401_UNAUTHORIZED
+    message = "缺少或无效的凭据"
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(message)
+        # RFC 7235：401 必须带 WWW-Authenticate，否则客户端不知道该用哪种方案
+        self.headers = {"WWW-Authenticate": 'Bearer realm="kylab"'}
+
+
+class ForbiddenError(KylabError):
+    """凭据有效，但授权范围不够（权限不足或越界访问其他知识库）。"""
+
+    code = "forbidden"
+    http_status = status.HTTP_403_FORBIDDEN
+    message = "凭据权限不足"
+
+    def __init__(
+        self, message: str | None = None, *, headers: dict[str, str] | None = None
+    ) -> None:
+        super().__init__(message)
+        self.headers = headers or {}
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """把领域异常注册为统一的 JSON 错误响应。"""
 
@@ -65,4 +97,5 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.http_status,
             content={"code": exc.code, "message": exc.detail},
+            headers=getattr(exc, "headers", None),
         )

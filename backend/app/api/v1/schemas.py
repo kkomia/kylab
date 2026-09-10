@@ -10,7 +10,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models.enums import DataSourceKind, DocumentStage, TaskKind, TaskState
+from app.models.enums import ApiKeyPermission, DataSourceKind, DocumentStage, TaskKind, TaskState
 
 _RECORD_CONFIG = ConfigDict(from_attributes=True)
 """记录类响应模型直接由服务/存储的记录对象构建。
@@ -334,3 +334,40 @@ class ChatTurnOut(BaseModel):
 
 class ChatResponseOut(ChatTurnOut):
     """一次性问答的响应（与流式共用同一套 source 结构）。"""
+
+
+# --------------------------------------------------------------------- API Key
+
+
+class ApiKeyCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    permission: ApiKeyPermission = ApiKeyPermission.READONLY
+    """默认只读：**默认值要取最保守的那个**。给外部集成发一把能删库的钥匙，
+    不应该是因为"没填那个字段"。"""
+    knowledge_base_ids: list[str] = Field(default_factory=list)
+    """空列表表示不限制范围（可访问全部知识库），见 services/api_key.py 的说明。"""
+
+
+class ApiKeyOut(BaseModel):
+    """列表展示用。**绝不回显 key_hash 或明文**——只有创建响应里有明文。"""
+
+    model_config = _RECORD_CONFIG
+
+    id: str
+    name: str
+    permission: ApiKeyPermission
+    knowledge_base_ids: list[str] = Field(default_factory=list)
+    created_at: datetime | None = None
+    last_used_at: datetime | None = None
+    prefix: str = ""
+    """展示用前缀（``kylab_sk_ab12…``），让用户能分辨"哪把是哪把"。"""
+
+
+class ApiKeyIssuedOut(ApiKeyOut):
+    """创建响应：``token`` 是明文**唯一一次**出现的地方。"""
+
+    token: str
+
+
+class ApiKeyListOut(BaseModel):
+    items: list[ApiKeyOut]

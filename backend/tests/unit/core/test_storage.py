@@ -12,7 +12,7 @@ from app.core.config import Settings
 from app.core.storage import STORAGE_SUBDIRS, build_stores, get_stores, reset_stores
 from app.models.enums import DataSourceKind, DocumentStage
 from app.storage.base import DocumentRecord, KnowledgeBaseRecord
-from app.storage.sqlite_impl.migrations import current_version
+from app.storage.sqlite_impl.migrations import MIGRATIONS, current_version
 
 
 @pytest.fixture
@@ -49,7 +49,9 @@ def test_build_stores_is_idempotent(settings: Settings) -> None:
         applied = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
     finally:
         connection.close()
-    assert applied == 1  # 只有一个迁移版本，没有被重复应用
+    # 与"全部迁移数"比，而不是硬编码一个数字：后者每加一个迁移就得改这里，
+    # 而它要验的是"没有被重复应用"（踩过）
+    assert applied == len(MIGRATIONS)
 
 
 def test_stores_are_functionally_wired(settings: Settings) -> None:

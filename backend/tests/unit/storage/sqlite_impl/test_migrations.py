@@ -71,11 +71,16 @@ def test_failed_migration_rolls_back_and_can_be_retried(conn: sqlite3.Connection
     tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master")}
     assert "half_created" not in tables
 
-    # 修好之后仍可正常应用
-    assert apply_migrations(conn) == [1]
+    # 修好之后仍可正常应用。
+    # 断言写成"全部迁移的版本号"而不是硬编码 [1]：后者每加一个迁移就会挂，
+    # 而它想验的其实是"失败后可重试"，不是"一共有几个迁移"（踩过）。
+    assert apply_migrations(conn) == [migration.version for migration in MIGRATIONS]
 
 
 def test_migrations_are_ordered_and_unique() -> None:
     versions = [migration.version for migration in MIGRATIONS]
     assert versions == sorted(versions)
     assert len(versions) == len(set(versions))
+    # 版本号必须从 1 开始连续：apply_migrations 按 version 顺序执行，
+    # 跳号意味着有人插了一个中间版本却没标号，老库升级会静默漏掉它
+    assert versions == list(range(1, len(versions) + 1))

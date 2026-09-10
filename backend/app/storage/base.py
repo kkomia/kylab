@@ -248,6 +248,11 @@ class ApiKeyRecord:
     key_hash: str
     permission: ApiKeyPermission
     knowledge_base_ids: Sequence[str] = field(default_factory=tuple)
+    key_prefix: str = ""
+    """明文的前若干位，**仅用于界面分辨"哪把是哪把"**。
+
+    明文本身永不落库；这一段来自高熵随机串，不足以定位任何密钥（见 migrations 002）。
+    """
     created_at: datetime | None = None
     last_used_at: datetime | None = None
 
@@ -465,6 +470,17 @@ class MetaStore(ABC):
 
     @abstractmethod
     def get_api_key_by_hash(self, key_hash: str) -> ApiKeyRecord | None: ...
+
+    @abstractmethod
+    def list_api_keys(self) -> list[ApiKeyRecord]: ...
+
+    @abstractmethod
+    def delete_api_key(self, key_id: str) -> None: ...
+
+    @abstractmethod
+    def touch_api_key(self, key_id: str, *, used_at: datetime | None = None) -> None:
+        """记录一次使用时间（只更新 ``last_used_at``，不动权限与范围）。"""
+        ...
 
     @abstractmethod
     def create_webhook(self, record: WebhookRecord) -> WebhookRecord: ...

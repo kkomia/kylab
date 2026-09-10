@@ -19,6 +19,7 @@ from functools import lru_cache
 
 from app.core.config import Settings, get_settings
 from app.core.storage import build_stores
+from app.services.api_key import ApiKeyService
 from app.services.chat import ChatService
 from app.services.documents import DocumentService
 from app.services.embedding import build_embedder
@@ -50,6 +51,8 @@ class Services:
     """驾驶舱统计：把散在几张表里的数字聚合成仪表盘要的形状。"""
     runtime: RuntimeConfigService
     """运行期配置（凭据与模型）：设置页读写它，各 provider 每次调用现取快照。"""
+    api_keys: ApiKeyService
+    """API Key 的发放、校验与作用域判定（架构 §3.2）。"""
     embedder: EmbeddingProvider
     reranker: RerankProvider
     worker: TaskWorker
@@ -130,6 +133,7 @@ def build_services(
         chat=ChatService(retrieval, runtime),
         stats=StatsService(bundle),
         runtime=runtime,
+        api_keys=ApiKeyService(bundle),
         embedder=embedder,
         reranker=reranker,
         worker=TaskWorker(

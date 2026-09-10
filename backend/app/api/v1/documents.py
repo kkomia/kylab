@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 
+from app.api.auth import check_kb_scope, require_read, require_write
 from app.api.v1.schemas import (
     ChunkList,
     ChunkOut,
@@ -18,6 +19,7 @@ from app.api.v1.schemas import (
     UploadAccepted,
 )
 from app.core.services import Services, get_services
+from app.services.api_key import Caller
 
 router = APIRouter(tags=["documents"])
 
@@ -50,7 +52,9 @@ async def upload_document(
     file: UploadFile = File(...),
     start: bool = Query(default=True, description="是否立即入队摄入；false 表示仅登记"),
     services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
 ) -> UploadAccepted:
+    check_kb_scope(services, caller, [kb_id])
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(
@@ -85,8 +89,11 @@ async def upload_document(
     summary="知识库下的文档列表",
 )
 async def list_documents(
-    kb_id: str, services: Services = Depends(get_services)
+    kb_id: str,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
 ) -> DocumentList:
+    check_kb_scope(services, caller, [kb_id])
     records = services.documents.list_documents(kb_id)
     counts = services.documents.chunk_counts([record.id for record in records])
     return DocumentList(
@@ -94,10 +101,27 @@ async def list_documents(
     )
 
 
+def _guard_document(services: Services, caller: Caller, document_id: str) -> None:
+    """按文档归属的知识库做范围判定。
+
+    这几个端点只拿到 ``document_id``，而密钥范围是绑在知识库上的，
+    所以必须先把文档读出来、取出它属于哪个库再判。
+
+    注意**先取文档再判范围**的顺序：反过来（先判后取）在文档不存在时
+    会给出 403 而不是 404，等于告诉调用方"这个 id 在本机上存在但你无权看"——
+    越权探测者最想要的就是这种区分。
+    """
+    record = services.documents.get(document_id)
+    check_kb_scope(services, caller, [record.knowledge_base_id])
+
+
 @router.get("/documents/{document_id}", response_model=DocumentOut, summary="文档详情")
 async def get_document(
-    document_id: str, services: Services = Depends(get_services)
+    document_id: str,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
 ) -> DocumentOut:
+    _guard_document(services, caller, document_id)
     record = services.documents.get(document_id)
     return _to_out(record, chunk_count=services.documents.chunk_count(document_id))
 
@@ -108,8 +132,11 @@ async def get_document(
     summary="子文件树（大文件切分）",
 )
 async def list_document_parts(
-    document_id: str, services: Services = Depends(get_services)
+    document_id: str,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
 ) -> DocumentPartList:
+    _guard_document(services, caller, document_id)
     parts = services.documents.list_parts(document_id)
     return DocumentPartList(items=[DocumentPartOut.model_validate(part) for part in parts])
 
@@ -123,12 +150,14 @@ async def list_document_chunks(
     document_id: str,
     limit: int = Query(default=20, ge=1, le=MAX_CHUNK_PREVIEW, description="最多返回多少块"),
     services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
 ) -> ChunkList:
     """按 ``ordinal`` 升序返回切块。
 
     同时给出 ``total``：前端要能说清"这是前 5 块，共 137 块"，
     否则用户会把预览当成全文。
     """
+    _guard_document(services, caller, document_id)
     chunks = services.documents.list_chunks(document_id, limit=limit)
     return ChunkList(
         items=[ChunkOut.model_validate(chunk) for chunk in chunks],
@@ -143,8 +172,11 @@ async def list_document_chunks(
     summary="重新摄入（失败重跑）",
 )
 async def reprocess_document(
-    document_id: str, services: Services = Depends(get_services)
+    document_id: str,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
 ) -> UploadAccepted:
+    _guard_document(services, caller, document_id)
     document = services.documents.get(document_id)
     task = services.documents.enqueue_ingest(document_id, force=True)
     return UploadAccepted(

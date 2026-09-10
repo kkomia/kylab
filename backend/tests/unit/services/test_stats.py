@@ -8,7 +8,7 @@
 from datetime import UTC, datetime, timedelta
 
 from app.models.enums import DataSourceKind, DocumentStage, TaskKind, TaskState
-from app.services.stats import StatsService
+from app.services.stats import StatsService, local_day
 from app.storage.base import DocumentRecord, KnowledgeBaseRecord, TaskRecord
 
 
@@ -86,6 +86,32 @@ def test_activity_window_excludes_older_documents(store, bundle) -> None:
 
     assert sum(point.documents for point in stats.activity) == 1
     assert stats.recent_documents == 1  # 窗口外的既不入图也不入"近期"
+
+
+def test_activity_buckets_by_local_day_not_utc_day() -> None:
+    """归日必须按**本地**日历日，否则刚上传的文档会被算到昨天。
+
+    这条是实测踩出来的：凌晨（本地日期与 UTC 日期不同）跑测试时，
+    「今天入库」恒为 0——窗口用 ``date.today()``（本地），而分桶用
+    ``stamp.date()``（时间按 UTC 存）。两者在 UTC+8 每天有 8 小时不重合。
+
+    断言直接打在 ``local_day`` 上而不是整条 dashboard 上：这样它在任何时区、
+    任何时刻都稳定，不必靠"恰好在某个钟点跑"才复现。
+    """
+    # UTC 的 23:30 —— 在东八区已经是第二天
+    stamp = datetime(2026, 9, 10, 23, 30, tzinfo=UTC)
+
+    assert local_day(stamp) == stamp.astimezone().date()
+    if stamp.astimezone().utcoffset() != timedelta(0):
+        assert local_day(stamp) != stamp.date(), "还在按 UTC 归日，跨零点这段会算错"
+
+
+def test_local_day_treats_naive_timestamps_as_utc() -> None:
+    """存储层写的是 naive UTC，折算时不能再当成本地时间（会多算一个时差）。"""
+    naive = datetime(2026, 9, 10, 23, 30)
+    aware = datetime(2026, 9, 10, 23, 30, tzinfo=UTC)
+
+    assert local_day(naive) == local_day(aware)
 
 
 def test_knowledge_base_rows_carry_scale_and_last_activity(store, bundle) -> None:

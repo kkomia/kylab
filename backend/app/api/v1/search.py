@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from app.api.auth import require_read
 from app.api.v1.schemas import (
     ChannelStatOut,
     SearchHitOut,
@@ -15,6 +16,7 @@ from app.api.v1.schemas import (
     SearchResponse,
 )
 from app.core.services import Services, get_services
+from app.services.api_key import Caller
 from app.services.retrieval import MetadataFilter, RetrievalQuery
 
 router = APIRouter(tags=["search"])
@@ -22,8 +24,13 @@ router = APIRouter(tags=["search"])
 
 @router.post("/search", response_model=SearchResponse, summary="混合检索")
 async def search(
-    payload: SearchRequest, services: Services = Depends(get_services)
+    payload: SearchRequest,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
 ) -> SearchResponse:
+    # 请求体里指明了库，所以这里做带范围的判定：只读密钥不能查它没被授权的库
+    services.api_keys.check_access(caller, kb_ids=payload.kb_ids)
+
     filters = None
     if payload.filters is not None:
         filters = MetadataFilter(

@@ -19,11 +19,17 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from app.storage.base import KnowledgeBaseRecord, StoreBundle
 
-__all__ = ["ActivityPoint", "DashboardStats", "KbStatRow", "StatsService"]
+__all__ = [
+    "ActivityPoint",
+    "DashboardStats",
+    "KbStatRow",
+    "StatsService",
+    "local_day",
+]
 
 #: 活跃度的默认观察窗口（天）：约四个月的日历热力图
 DEFAULT_WINDOW_DAYS = 120
@@ -137,6 +143,22 @@ def _kb_row(
     )
 
 
+def local_day(stamp: datetime) -> date:
+    """把时间戳折算成**本地日历日**。
+
+    为什么不能直接用 ``stamp.date()``：时间戳是按 UTC 存的，而用户在界面上看的
+    「今天」是本地的今天。两者在 UTC+8 有 8 小时不重合——实测在这段窗口里，
+    刚上传的文档会被归到昨天，仪表盘显示「近 N 天入库 0」而库里明明有今天的新文档。
+    这个 bug 只在本地日期与 UTC 日期不同的那几个小时里出现，所以白天开发时看不到。
+
+    实现上先把 naive 时间当作 UTC（存储层就是这么写的），再转本地时区取日期。
+    用固定偏移而不是 tzlocal，是因为本机与部署机都在同一台/同一时区。
+    """
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return stamp.astimezone().date()
+
+
 def _build_activity(
     documents: list,
     chunk_counts: dict[str, int],
@@ -154,7 +176,7 @@ def _build_activity(
     for doc in documents:
         if doc.created_at is None:
             continue
-        day = doc.created_at.date()
+        day = local_day(doc.created_at)
         if day < since:
             continue
         documents_by_day[day] += 1
@@ -165,7 +187,7 @@ def _build_activity(
         stamp = task.updated_at or task.created_at
         if stamp is None:
             continue
-        day = stamp.date()
+        day = local_day(stamp)
         if day < since:
             continue
         tasks_by_day[day] += 1

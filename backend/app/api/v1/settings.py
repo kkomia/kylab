@@ -15,6 +15,7 @@ from __future__ import annotations
 import httpx
 from fastapi import APIRouter, Depends
 
+from app.api.auth import require_console
 from app.api.v1.schemas import (
     SettingsPatchIn,
     SettingsPatchOut,
@@ -22,6 +23,7 @@ from app.api.v1.schemas import (
     TestConnectionOut,
 )
 from app.core.services import Services, get_services
+from app.services.api_key import Caller
 from app.services.runtime_config import SECRET_KEYS
 
 router = APIRouter(tags=["settings"])
@@ -31,7 +33,10 @@ _TEST_TIMEOUT_SECONDS = 30.0
 
 
 @router.get("/settings", response_model=SettingsViewOut, summary="运行期配置（密钥打码）")
-async def read_settings(services: Services = Depends(get_services)) -> SettingsViewOut:
+async def read_settings(
+    services: Services = Depends(get_services),
+    _: Caller = Depends(require_console),
+) -> SettingsViewOut:
     view = services.runtime.describe()
     return SettingsViewOut.model_validate(
         {
@@ -46,7 +51,9 @@ async def read_settings(services: Services = Depends(get_services)) -> SettingsV
 
 @router.patch("/settings", response_model=SettingsPatchOut, summary="更新运行期配置")
 async def update_settings(
-    payload: SettingsPatchIn, services: Services = Depends(get_services)
+    payload: SettingsPatchIn,
+    services: Services = Depends(get_services),
+    _: Caller = Depends(require_console),
 ) -> SettingsPatchOut:
     values = {item.key: item.value for item in payload.values}
     unknown = [key for key in values if key not in _KNOWN_KEYS]
@@ -64,7 +71,9 @@ async def update_settings(
     summary="连通性测试（embedding / mineru / paddleocr）",
 )
 async def test_connection(
-    target: str, services: Services = Depends(get_services)
+    target: str,
+    services: Services = Depends(get_services),
+    _: Caller = Depends(require_console),
 ) -> TestConnectionOut:
     if target == "embedding":
         return _test_embedding(services)
