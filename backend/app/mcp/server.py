@@ -1,0 +1,212 @@
+"""MCP 服务：stdio 与 Streamable HTTP 两种传输（T4.8）。
+
+架构 §5 要求 MCP 以两种方式暴露同一批工具：
+
+- **stdio**：本地客户端（Claude Desktop、Cursor 这类）把本进程当子进程拉起；
+- **Streamable HTTP**：局域网内其他机器通过 HTTP 连过来。
+
+两者的差别只在"消息怎么走"，工具集与实现**完全共用** ``tools.call_tool``。
+这是把工具实现抽出去的唯一理由：写在某个入口里就得复制两份，而两份迟早会漂。
+
+**SDK 版本注意**：本模块按 **mcp 2.x** 的 ``MCPServer`` 写。
+1.x 里这个类叫 ``FastMCP``；官方迁移指南给的选项是
+"改用 ``MCPServer``，或把依赖钉在 ``mcp<2``"。这里选前者——用新 API 比锁老版本活得久。
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+
+from app.mcp.tools import TOOL_NAMES, call_tool
+
+__all__ = ["build_server", "main", "serve_http", "serve_stdio"]
+
+logger = logging.getLogger(__name__)
+
+#: 每个工具接受的参数名。**用来丢掉 schema 之外的参数**：
+#: 服务层对未知关键字会直接 TypeError，而模型偶尔会多带一个字段——
+#: 为此让整个工具失败不值得。
+_PARAMS: dict[str, tuple[str, ...]] = {
+    "list_knowledge_bases": (),
+    "create_knowledge_base": ("name", "description"),
+    "upload_document": ("knowledge_base_id", "filename", "content_base64"),
+    "add_data_source": ("knowledge_base_id", "kind", "url", "name"),
+    "search": ("query", "knowledge_base_ids", "top_k"),
+    "get_document_status": ("document_id",),
+    "delete_document": ("document_id",),
+}
+
+
+def build_server():  # type: ignore[no-untyped-def]
+    """组装 MCP server，把七个工具挂上去。
+
+    延迟 import：``mcp`` 在可选 extra 里。顶层 import 会让没装 extra 的用户
+    连主服务都起不来——而 MCP 是**可选能力**，不该成为主链路的硬依赖。
+    """
+    import json
+
+    from mcp.server.mcpserver import MCPServer
+
+    from app.core.services import get_services
+    from app.mcp.tools import tool_definitions
+
+    server = MCPServer(
+        name="kylab",
+        version="0.1.0",
+        instructions=(
+            "kylab 知识库。核心能力是检索原文：search 返回带出处的原文片段，"
+            "不是生成的回答。先 list_knowledge_bases 确认有哪些库，再按库检索"
+            "——库里没有的东西检索不出来。"
+        ),
+    )
+
+    # 描述从 tool_definitions 读，不在这里另写一份：那份清单已经是唯一真相，
+    # 两处各写一份迟早会漂（一个加了参数另一个没加），
+    # 而漂了之后**客户端看到的与实现不一致**，比没有描述更糟。
+    specs = {item["name"]: item for item in tool_definitions()}
+
+    def make_handler(tool_name: str):  # type: ignore[no-untyped-def]
+        schema = specs[tool_name]["inputSchema"]
+        properties: dict[str, dict] = schema.get("properties", {})
+        required = set(schema.get("required", ()))
+        accepted = set(_PARAMS[tool_name])
+
+        async def handler(**kwargs: object) -> str:
+            payload = {key: value for key, value in kwargs.items() if key in accepted}
+            # 同步的服务层调用扔到线程池：MCP 的请求处理跑在事件循环里，
+            # 而检索与入库都是阻塞的，直接在循环里调会把整个服务卡住
+            result = await asyncio.to_thread(call_tool, get_services(), tool_name, payload)
+            return json.dumps(result, ensure_ascii=False, indent=2, default=str)
+
+        handler.__name__ = tool_name
+        # **签名必须是真的**：SDK 从函数签名推导工具的参数 schema，
+        # 只写 ``**kwargs`` 会让它推导出一个名为 kwargs 的必填字段——
+        # 实测报 "1 validation error for ...Arguments / kwargs Field required"，
+        # 工具根本调不动。所以按 schema 现造一个签名装上去。
+        handler.__signature__ = _signature_from(properties, required)  # type: ignore[attr-defined]
+        handler.__annotations__ = {
+            key: _annotation_for(spec) for key, spec in properties.items()
+        }
+        handler.__annotations__["return"] = str
+        return handler
+
+    for name in TOOL_NAMES:
+        server.add_tool(
+            make_handler(name),
+            name=name,
+            description=specs[name]["description"],
+            # 关掉结构化输出：本项目的工具返回的是给模型读的 JSON 文本，
+            # 让它再包一层会把可读性弄差（而且模型并不需要那层 schema）
+            structured_output=False,
+        )
+        logger.debug("已注册 MCP 工具 %s", name)
+
+    return server
+
+
+async def serve_stdio() -> None:
+    """stdio 传输：被客户端当子进程拉起时用这条。"""
+    await build_server().run_stdio_async()
+
+
+async def serve_http(host: str, port: int) -> None:
+    """Streamable HTTP 传输：局域网内其他机器连过来时用这条。
+
+    **默认只监听 127.0.0.1**：MCP 能读写知识库（含删除）。
+    在没有鉴权的情况下暴露到局域网，等于把库交给所有人。
+    要让别的机器连，得显式传 ``--host 0.0.0.0``——
+    那时请同时打开后端鉴权（``KYLAB_AUTH_ENABLED``）。
+    """
+    await build_server().run_streamable_http_async(host=host, port=port)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="kylab-mcp",
+        description="kylab 的 MCP 服务（架构 §5：stdio 与 Streamable HTTP 两种传输）",
+    )
+    parser.add_argument(
+        "--transport",
+        choices=("stdio", "http"),
+        default="stdio",
+        help="stdio 给本地客户端；http 给局域网内其他机器",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="http 模式监听地址")
+    parser.add_argument("--port", type=int, default=8765, help="http 模式监听端口")
+    parser.add_argument(
+        "--list-tools", action="store_true", help="只打印工具清单，不启动服务"
+    )
+    args = parser.parse_args(argv)
+
+    if args.list_tools:
+        # 便于排障的开关：用户能确认"装上了、工具认得出来"，不必先去配客户端
+        for name in TOOL_NAMES:
+            print(name)
+        return 0
+
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s | %(message)s")
+
+    if args.transport == "stdio":
+        asyncio.run(serve_stdio())
+    else:
+        logger.info("MCP HTTP 服务监听 %s:%d", args.host, args.port)
+        asyncio.run(serve_http(args.host, args.port))
+    return 0
+
+
+def _annotation_for(spec: dict) -> type:
+    """JSON Schema 类型 → Python 注解。
+
+    只覆盖本项目实际用到的几种。**认不出的一律给 ``str``**：
+    注解错了只是类型提示不准，而缺注解会让 SDK 推不出参数——
+    后者会让工具直接不可用。
+    """
+    kind = spec.get("type")
+    if kind == "integer":
+        return int
+    if kind == "number":
+        return float
+    if kind == "boolean":
+        return bool
+    if kind == "array":
+        return list
+    if kind == "object":
+        return dict
+    return str
+
+
+def _signature_from(properties: dict, required: set[str]):  # type: ignore[no-untyped-def]
+    """按工具 schema 现造一个函数签名。
+
+    ``required`` 里的参数无默认值；其余给 ``None`` 默认值，
+    这样 MCP 客户端不传也能过——本项目所有工具都自己做了
+    "缺参数报明确错误"的处理，比让 SDK 抛校验错更可读
+    （``缺少参数：filename`` 比 ``Field required`` 有用得多）。
+    """
+    import inspect
+
+    parameters = []
+    for key, spec in properties.items():
+        annotation = _annotation_for(spec)
+        if key in required:
+            parameters.append(
+                inspect.Parameter(
+                    key, inspect.Parameter.KEYWORD_ONLY, annotation=annotation
+                )
+            )
+        else:
+            parameters.append(
+                inspect.Parameter(
+                    key,
+                    inspect.Parameter.KEYWORD_ONLY,
+                    default=None,
+                    annotation=annotation | None,  # type: ignore[operator]
+                )
+            )
+    return inspect.Signature(parameters, return_annotation=str)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

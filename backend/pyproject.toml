@@ -34,7 +34,10 @@ parsers = [
 ]
 # MCP 接入层（M4 起启用）
 mcp = [
-    "mcp>=1.13",
+    # **必须是 2.x**：本模块用的是 ``MCPServer``（1.x 里叫 ``FastMCP``，
+    # 且没有 ``add_tool``）。官方迁移指南说明 "要么改用 MCPServer、
+    # 要么把依赖钉在 mcp<2"，这里选前者。
+    "mcp>=2",
 ]
 
 [dependency-groups]
