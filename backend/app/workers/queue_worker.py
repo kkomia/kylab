@@ -40,7 +40,10 @@ HANDLED_KINDS = frozenset(
         TaskKind.EMBED,
     }
 )
-"""当前已接线的任务类型。删除与数据源拉取分别在 M6 接。"""
+"""摄入链路的任务类型：都靠 ``document_id`` 跑同一个 ``ingest``。"""
+
+DOCUMENT_KINDS = HANDLED_KINDS
+"""需要 ``document_id`` 的那几种。与数据源拉取区分开——后者没有文档。"""
 
 
 class TaskWorker:
@@ -58,6 +61,7 @@ class TaskWorker:
         max_backoff: float = DEFAULT_MAX_BACKOFF,
         maintain: Callable[[], None] | None = None,
         maintain_interval: float = DEFAULT_MAINTAIN_INTERVAL,
+        sync_source: Callable[[str], object] | None = None,
     ) -> None:
         if lease_seconds <= 0:
             raise ValueError("租约时长必须为正")
@@ -76,6 +80,9 @@ class TaskWorker:
         #: 传 None 表示不做维护——测试与只跑单任务的场景用得上。
         self._maintain = maintain
         self._maintain_interval = maintain_interval
+        # 数据源拉取的执行体（M6 / T6.1）。可选：没有它时 FETCH_SOURCE 任务会
+        # 明确失败，而不是被静默丢掉——静默丢掉会让"拉取一直没反应"极难排查
+        self._sync_source = sync_source
         self._last_maintain = 0.0
         self._current_task_id: str | None = None
         self._thread: asyncio.Task[None] | None = None
@@ -248,11 +255,27 @@ class TaskWorker:
                 return
 
     def _handle(self, task: TaskRecord) -> None:
-        if task.kind not in HANDLED_KINDS:
+        if task.kind is TaskKind.FETCH_SOURCE:
+            self._handle_source(task)
+            return
+        if task.kind not in DOCUMENT_KINDS:
             raise NotImplementedError(f"任务类型尚未接线：{task.kind.value}")
         if not task.document_id:
             raise ValueError(f"任务 {task.id} 缺少 document_id")
         self._ingest.ingest(task.document_id)
+
+    def _handle_source(self, task: TaskRecord) -> None:
+        """拉取一个数据源（M6 / T6.1）。
+
+        **它没有 document_id**，所以不能走上面那条路——这也是当初把
+        "数据源动作"单列成一个任务类型的原因（见 TaskKind 的注释）。
+        """
+        if self._sync_source is None:
+            raise NotImplementedError("数据源拉取尚未接线")
+        source_id = str(task.payload.get("source_id") or "")
+        if not source_id:
+            raise ValueError(f"任务 {task.id} 缺少 source_id")
+        self._sync_source(source_id)
 
     # ------------------------------------------------------------------ 重试策略
 

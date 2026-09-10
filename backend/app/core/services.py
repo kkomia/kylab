@@ -39,6 +39,7 @@ from app.services.parser_router import ParserRouter
 from app.services.retrieval import RetrievalService, build_reranker
 from app.services.retrieval.rerank import RerankProvider
 from app.services.runtime_config import RuntimeConfigService
+from app.services.sources import SourceService
 from app.services.stats import StatsService
 from app.services.usage import UsageService
 from app.services.users import UserService
@@ -78,6 +79,8 @@ class Services:
     """使用者名册：记录"是谁传的"，不参与鉴权（调研报告 G6）。"""
     lifecycle: LifecycleService
     """数据生命周期：影响清单、级联删除、回收站（M6 / T6.3、T6.4）。"""
+    sources: SourceService
+    """数据源：HTML / RSS 的登记与拉取（M6 / T6.1–T6.3）。"""
     conversations: ConversationService
     """对话留存：会话与消息的读写（§11.2）。"""
     embedder: EmbeddingProvider
@@ -197,6 +200,11 @@ def build_services(
         embedder=embedder,
     )
 
+    documents_service = DocumentService(bundle)
+    # 数据源要往摄入队列里塞任务，所以依赖 DocumentService（入队）与
+    # IngestService（登记）两者——它们分工不同，见 services/sources.py
+    sources_service = SourceService(bundle, ingest, documents_service)
+
     idempotency = IdempotencyService(bundle)
 
     # 对话的 token 用量通过回调记（G7）：ChatService 不该依赖统计服务，
@@ -225,7 +233,7 @@ def build_services(
 
     return Services(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder),
-        documents=DocumentService(bundle),
+        documents=documents_service,
         ingest=ingest,
         retrieval=retrieval,
         chat=ChatService(retrieval, runtime, usage_recorder=_record_chat_usage),
@@ -238,6 +246,7 @@ def build_services(
         usage=usage,
         users=UserService(bundle),
         lifecycle=LifecycleService(bundle),
+        sources=sources_service,
         conversations=ConversationService(bundle),
         embedder=embedder,
         reranker=reranker,
@@ -247,6 +256,8 @@ def build_services(
             owner=f"worker-{os.getpid()}",
             lease_seconds=resolved.worker_lease_seconds,
             maintain=_maintain,
+            # 数据源拉取没有 document_id，走 worker 里的独立分支（见 _handle_source）
+            sync_source=sources_service.sync_now,
         ),
     )
 

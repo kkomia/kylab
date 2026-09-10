@@ -39,9 +39,16 @@ PARSER_SHARED = {"base", "probe", "__init__"}
 SOURCE_ROOTS = ("backend/app", "frontend/src")
 TEST_FILE_RE = re.compile(r"^(test_.*\.py|.*_test\.py|.*\.test\.ts|.*\.spec\.ts)$")
 
-# SQL 语句起始关键字：业务层源码中的这类字符串字面量视为直接写 SQL
+# SQL 语句起始关键字：业务层源码中的这类字符串字面量视为直接写 SQL。
+#
+# **要求关键字后面还有内容**（``\s+\S``），不能只匹配一个孤零零的词：
+# 单个词是 HTML 标签名或枚举值的可能性更大——实测 `"select"`（HTML 的
+# <select> 下拉框）与 `"delete"`（任务类型）都被误报成"业务层写 SQL"。
+# 真正的 SQL 一定带列名或表名（`select *`、`delete from ...`），
+# 所以多要求一个词就能把误报挡掉，而不会放过真正的违规。
 SQL_START_RE = re.compile(
-    r"(?i)^\s*(select|insert|update|delete|create|drop|alter|pragma|attach|replace\s+into)\b"
+    r"(?i)^\s*(select|insert|update|delete|create|drop|alter|pragma|attach"
+    r"|replace\s+into)\s+\S"
 )
 
 

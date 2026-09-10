@@ -13,6 +13,7 @@ from app.api.v1 import (
     chat,
     chunks,
     conversations,
+    data_sources,
     documents,
     health,
     knowledge_bases,
@@ -43,3 +44,4 @@ api_router.include_router(chunks.router)
 api_router.include_router(model_registry.router)
 api_router.include_router(users.router)
 api_router.include_router(lifecycle.router)
+api_router.include_router(data_sources.router)

@@ -557,6 +557,51 @@ class SlotBindIn(BaseModel):
     model_pk: str | None = None
 
 
+class DataSourceCreateIn(BaseModel):
+    """登记一个数据源（M6 / T6.1）。"""
+
+    kind: str = Field(description="html 或 rss")
+    name: str = Field(default="", max_length=64)
+    url: str = Field(min_length=1, max_length=1024)
+    max_items: int | None = Field(default=None, gt=0, le=500)
+
+
+class DataSourceOut(BaseModel):
+    model_config = _RECORD_CONFIG
+
+    id: str
+    knowledge_base_id: str
+    kind: str
+    name: str
+    url: str
+    max_items: int | None = None
+    enabled: bool = True
+    etag: str | None = None
+    last_pulled_at: datetime | None = None
+
+
+class DataSourceListOut(BaseModel):
+    items: list[DataSourceOut] = Field(default_factory=list)
+
+
+class SyncResultOut(BaseModel):
+    """一次拉取的结果。
+
+    ``duplicates`` 与 ``created`` 分开报：用户看到"取回 20 条但新入库 0 条"
+    时该立刻明白"这个源没更新"，而不是以为抓取失败了。
+    """
+
+    task_id: str | None = None
+    """入队模式返回的任务 id；同步模式为 None。"""
+    source_id: str = ""
+    fetched: int = 0
+    created: int = 0
+    duplicates: int = 0
+    not_modified: bool = False
+    """服务端回了 304：源没有任何变化。"""
+    errors: list[str] = Field(default_factory=list)
+
+
 class ImpactOut(BaseModel):
     """删除会波及什么（M6 / T6.3）。
 

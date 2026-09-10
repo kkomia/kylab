@@ -682,6 +682,49 @@ class SqliteMetaStore(MetaStore):
 
     # ------------------------------------------------------------------ 数据源 / 凭据 / webhook
 
+    @staticmethod
+    def _data_source_from_row(row: sqlite3.Row) -> DataSourceRecord:
+        return DataSourceRecord(
+            id=row["id"],
+            knowledge_base_id=row["knowledge_base_id"],
+            kind=DataSourceKind(row["kind"]),
+            name=row["name"],
+            config=json.loads(row["config"]),
+            etag=row["etag"],
+            last_pulled_at=_load(row["last_pulled_at"]),
+            enabled=bool(row["enabled"]),
+        )
+
+    def get_data_source(self, source_id: str) -> DataSourceRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM data_sources WHERE id = ?", (source_id,)
+            ).fetchone()
+        return self._data_source_from_row(row) if row else None
+
+    def list_all_data_sources(self) -> list[DataSourceRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute("SELECT * FROM data_sources ORDER BY id").fetchall()
+        return [self._data_source_from_row(row) for row in rows]
+
+    def update_data_source(self, record: DataSourceRecord) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE data_sources SET name = ?, config = ?, enabled = ? WHERE id = ?",
+                (record.name, _json(record.config), int(record.enabled), record.id),
+            )
+
+    def delete_data_source(self, source_id: str) -> None:
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM data_sources WHERE id = ?", (source_id,))
+
+    def mark_data_source_pulled(self, source_id: str, *, etag: str | None) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE data_sources SET etag = ?, last_pulled_at = ? WHERE id = ?",
+                (etag, _dump(_now()), source_id),
+            )
+
     def create_data_source(self, record: DataSourceRecord) -> DataSourceRecord:
         with self._db.session() as conn:
             conn.execute(

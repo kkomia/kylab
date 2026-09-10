@@ -624,6 +624,33 @@ class MetaStore(ABC):
     def list_data_sources(self, kb_id: str) -> list[DataSourceRecord]: ...
 
     @abstractmethod
+    def get_data_source(self, source_id: str) -> DataSourceRecord | None: ...
+
+    @abstractmethod
+    def list_all_data_sources(self) -> list[DataSourceRecord]:
+        """全部数据源（不分库）。
+
+        定时拉取要遍历所有启用的源，按库找就得先把库读出来再逐个查——
+        那是不必要的 N+1。
+        """
+        ...
+
+    @abstractmethod
+    def update_data_source(self, record: DataSourceRecord) -> None: ...
+
+    @abstractmethod
+    def delete_data_source(self, source_id: str) -> None: ...
+
+    @abstractmethod
+    def mark_data_source_pulled(self, source_id: str, *, etag: str | None) -> None:
+        """记下这次拉取的时间与 ETag。
+
+        **ETag 是增量拉取的关键**：下次带上 ``If-None-Match``，没变就返回 304，
+        连正文都不用下载。省的不只是流量——解析与向量化才是大头。
+        """
+        ...
+
+    @abstractmethod
     def create_api_key(self, record: ApiKeyRecord) -> ApiKeyRecord: ...
 
     @abstractmethod
