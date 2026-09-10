@@ -57,6 +57,13 @@ class Settings(BaseSettings):
     外部 API Key 绝不该能读设置——那等于把凭据发给每一个集成方。
     """
 
+    url_signing_secret: str | None = None
+    """下载签名 URL 的密钥（留空则退回控制台令牌）。
+
+    浏览器里 ``<img>`` 与下载链接带不了 Authorization 头，所以"有权访问"这件事
+    要编码进 URL 本身——这就是签名 URL 的全部理由。
+    """
+
     @property
     def db_path(self) -> Path:
         """SQLite 主库文件（元数据 + 向量 + 全文同库，架构 §8.1）。"""

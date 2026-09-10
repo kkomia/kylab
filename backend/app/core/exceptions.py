@@ -45,6 +45,18 @@ class InvalidRequestError(KylabError):
     message = "请求参数不合法"
 
 
+class UnsupportedContentError(KylabError):
+    """请求的东西现在拿不到（还没解析完、格式不支持）。
+
+    与 ``NotFoundError`` 分开：文件在、只是"还没到时候"，或者参数不受支持——
+    回 404 会让调用方以为文档不见了，进而去重新上传。
+    """
+
+    code = "unsupported_content"
+    http_status = status.HTTP_409_CONFLICT
+    message = "该内容当前不可用"
+
+
 class UpstreamError(KylabError):
     """外部依赖出错（解析节点、embedding、对话模型）。
 

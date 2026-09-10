@@ -19,8 +19,15 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import Response
+from pydantic import BaseModel
 
-from app.api.auth import check_kb_scope, require_read, require_write
+from app.api.auth import (
+    check_kb_scope,
+    require_read,
+    require_write,
+    signing_secret,
+)
 from app.api.v1.schemas import (
     ChunkList,
     ChunkOut,
@@ -30,9 +37,14 @@ from app.api.v1.schemas import (
     DocumentPartOut,
     UploadAccepted,
 )
+from app.core.config import Settings, get_settings
+from app.core.exceptions import UnauthorizedError
 from app.core.services import Services, get_services
+from app.core.signing import SigningError, verify_resource
 from app.services.api_key import Caller
+from app.services.documents import signature_resource
 from app.services.idempotency import fingerprint
+from app.services.ingest import content_disposition, normalize_filename
 
 logger = logging.getLogger(__name__)
 
@@ -268,4 +280,97 @@ async def reprocess_document(
         document=_to_out(document, chunk_count=services.documents.chunk_count(document_id)),
         is_duplicate=False,
         task_id=task.id,
+    )
+
+
+# --------------------------------------------------------------------- 下载（T4.5）
+
+
+class DownloadUrlOut(BaseModel):
+    """一条下载链接。**相对路径**：对外域名只有部署时才知道。"""
+
+    url: str
+    expires_at: int
+    format: str
+
+
+@router.get(
+    "/documents/{document_id}/download-url",
+    response_model=DownloadUrlOut,
+    summary="签发下载链接（带过期时间）",
+)
+def document_download_url(
+    document_id: str,
+    fmt: str = Query(
+        default="original",
+        alias="format",
+        pattern="^(original|markdown)$",
+        description="original=原文件（默认），markdown=解析产物",
+    ),
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
+) -> DownloadUrlOut:
+    """签发一条短期下载链接。
+
+    **需要鉴权**：拿链接要带凭据，链接本身则可以在浏览器里直接打开（无需头）。
+    这正是签名 URL 想解决的矛盾——``<img>`` 与下载按钮带不了 Authorization 头。
+    """
+    _guard_document(services, caller, document_id)
+
+    secret = signing_secret(get_settings(), services)
+    if not secret:
+        # 没有签名密钥 = 系统处于无鉴权状态。此时**拒绝签发**，而不是发一条
+        # 永远有效的链接：那等于把"无鉴权"这个状态固化成永久凭据。
+        raise UnauthorizedError(
+            "尚未配置下载签名密钥：请在设置里设置控制台令牌，或配置 KYLAB_URL_SIGNING_SECRET"
+        )
+
+    url, expires_at = services.documents.download_url(
+        document_id, fmt=fmt, secret=secret
+    )
+    return DownloadUrlOut(url=url, expires_at=expires_at, format=fmt)
+
+
+@router.get(
+    "/documents/{document_id}/content",
+    summary="按签名下载（浏览器可直接打开）",
+    response_class=Response,
+    responses={
+        200: {"content": {"application/octet-stream": {}}, "description": "文件内容"}
+    },
+)
+def download_document_content(
+    document_id: str,
+    fmt: str = Query(default="original", alias="format", pattern="^(original|markdown)$"),
+    expires: int = Query(..., description="签发时给出的到期时间戳"),
+    signature: str = Query(..., description="签发时给出的签名"),
+    services: Services = Depends(get_services),
+    settings: Settings = Depends(get_settings),
+) -> Response:
+    """签名下载端点。
+
+    **刻意不挂 ``require_read`` 依赖**：这个 URL 要能直接在浏览器里打开
+    （图片标签、下载按钮都带不了自定义头）。它的授权凭据是 URL 里的签名，
+    而签名已经绑定了"哪个文档、哪种格式、什么时候过期"——比一个长期令牌更窄。
+
+    用 ``Response`` 而不是 ``FileResponse``：内容是从对象存储读进内存的字节，
+    没有磁盘路径可给。``FileResponse`` 只接受路径，传 BytesIO 会在
+    ``os.stat`` 上抛 TypeError（实测踩到）。
+    """
+    secret = signing_secret(settings, services)
+    if not secret:
+        raise UnauthorizedError("尚未配置下载签名密钥，无法校验下载链接")
+
+    try:
+        verify_resource(signature_resource(document_id, fmt), signature, expires, secret)
+    except SigningError as exc:
+        # 401：链接无效或过期，正确动作是重新签发一条
+        raise UnauthorizedError(f"下载链接无效：{exc}") from exc
+
+    content = services.documents.content(document_id, fmt=fmt)
+    filename = normalize_filename(content.filename)
+    return Response(
+        content=content.data,
+        media_type=content.media_type,
+        headers={"Content-Disposition": content_disposition(filename)},
     )

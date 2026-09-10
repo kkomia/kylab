@@ -6,14 +6,17 @@
  * 它本来就是给检索用的原料，不是渲染好的文档。让人看见真实产物，
  * 比做一层漂亮的假渲染诚实——用户要判断"这个文件解析得对不对"，就得看到切出来的东西。
  *
- * 原文下载仍走签名 URL（架构 §6.5、开发计划 T4.5，排在 M7），所以那对按钮现在不做。
+ * 原文下载走签名 URL（架构 §6.5、开发计划 T4.5）：链接由后端签发、带过期时间，
+ * 所以页面上不出现任何永久直链——两个下载按钮每次都现取一条新链接。
  */
 import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import {
+  downloadDocument,
   getDocument,
   listDocumentChunks,
+  type DownloadFormat,
   type DocumentChunk,
   type DocumentSummary,
 } from '@/api/documents'
@@ -24,11 +27,13 @@ import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { documentStageView } from '@/components/ui/status'
 import { formatBytes, formatDate } from '@/composables/useFormat'
+import { useToast } from '@/composables/useToast'
 
 /** 预览最多拉几块：再多就该去库内检索面板，而不是在这一页翻。 */
 const PREVIEW_LIMIT = 5
 
 const route = useRoute()
+const { notifyError } = useToast()
 
 const documentId = computed(() => String(route.params.documentId ?? ''))
 const document = ref<DocumentSummary | null>(null)
@@ -37,6 +42,32 @@ const chunkTotal = ref(0)
 const previewError = ref('')
 const loading = ref(true)
 const error = ref('')
+const downloading = ref<DownloadFormat | null>(null)
+
+/**
+ * 下载原文或解析产物。
+ *
+ * 两个按钮而不是一个下拉：这是**两个不同的东西**（原文件 vs 我们加工的 Markdown），
+ * 而用户在这一页想知道的主要就是"解析成了什么"——把它藏进二级菜单等于藏起了答案。
+ *
+ * 成功**不弹提示**：浏览器自己会显示下载进度与完成，再弹一条只是噪音。
+ * 失败必须说清原因——链接要经鉴权签发，最常见的是没配签名密钥或会话过期，
+ * 静默失败会让用户以为按钮坏了。
+ *
+ * ``downloading`` 挡的是"取链接"那段空档：按钮已经响应了点击，但真正开始下载
+ * 要等接口回来，这期间再点会重复签发（并多弹一次错误）。
+ */
+async function download(format: DownloadFormat): Promise<void> {
+  if (downloading.value) return
+  downloading.value = format
+  try {
+    await downloadDocument(documentId.value, format)
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '下载失败')
+  } finally {
+    downloading.value = null
+  }
+}
 
 onMounted(async () => {
   try {
@@ -88,6 +119,16 @@ const stage = computed(() =>
     </template>
 
     <template #actions>
+      <AppButton v-if="document" :disabled="downloading !== null" @click="download('original')">
+        {{ downloading === 'original' ? '准备中…' : '下载原文件' }}
+      </AppButton>
+      <AppButton
+        v-if="document && document.chunk_count > 0"
+        :disabled="downloading !== null"
+        @click="download('markdown')"
+      >
+        {{ downloading === 'markdown' ? '准备中…' : '下载 Markdown' }}
+      </AppButton>
       <RouterLink v-if="document" :to="`/kb/${document.knowledge_base_id}`">
         <AppButton>回列表重跑</AppButton>
       </RouterLink>
@@ -132,7 +173,7 @@ const stage = computed(() =>
         还没有切块产物：文档尚未处理完成，或处理失败。回到列表页可以重新摄入。
       </p>
       <p v-else class="muted">
-        原文下载走签名 URL 接口，排在 M7；在那之前，这一页用真实切块验证解析结果，
+        需要原文或解析产物就用右上角的下载按钮（链接由后端签发、短期有效）。
         检索效果请回到本文档所属知识库，用「在此库检索」复核。
       </p>
 

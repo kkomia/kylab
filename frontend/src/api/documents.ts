@@ -92,3 +92,46 @@ export function uploadDocument(kbId: string, file: File): Promise<UploadAccepted
 export function reprocessDocument(documentId: string): Promise<UploadAccepted> {
   return request(`/documents/${documentId}/reprocess`, { method: 'POST' })
 }
+
+/** 下载格式：原文件（默认）或解析产物 Markdown。 */
+export type DownloadFormat = 'original' | 'markdown'
+
+export interface DownloadUrl {
+  /** **相对路径**：对外域名只有部署时才知道，后端不猜。 */
+  url: string
+  /** Unix 秒。到期后这条链接就失效，要重新签发。 */
+  expires_at: number
+  format: DownloadFormat
+}
+
+/**
+ * 取一条短期下载链接。
+ *
+ * 为什么不直接拼 `/documents/{id}/content`：那个地址需要签名才放行（无永久直链），
+ * 而签名只有后端签得出来。
+ */
+export function getDownloadUrl(
+  documentId: string,
+  format: DownloadFormat = 'original',
+): Promise<DownloadUrl> {
+  return request(`/documents/${documentId}/download-url?format=${format}`)
+}
+
+/**
+ * 触发浏览器下载。
+ *
+ * 走一个临时 `<a download>` 而不是 `window.open`：前者不会留下一个可能被拦的弹窗，
+ * 也不会把 URL 顶到地址栏（里面带着签名）。用完立即移除，避免在 DOM 里留下痕迹。
+ */
+export async function downloadDocument(
+  documentId: string,
+  format: DownloadFormat = 'original',
+): Promise<void> {
+  const { url } = await getDownloadUrl(documentId, format)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.rel = 'noopener'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+}

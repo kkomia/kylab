@@ -192,3 +192,16 @@ def console_token(settings: Settings, services: Services) -> str | None:
 def bootstrap_allowed(settings: Settings, services: Services) -> bool:
     """是否允许初始化控制台令牌（仅当两个来源都还没有值时）。"""
     return console_token(settings, services) is None
+
+
+def signing_secret(settings: Settings, services: Services) -> str | None:
+    """下载签名用的密钥。
+
+    优先级：专用密钥 → 控制台令牌。**都没有时返回 None，表示不允许签发**——
+    那时系统处于"无鉴权"状态，与其发一条永远有效的链接，不如让调用方走需要鉴权的
+    常规接口（API 层据此要求带上凭据）。
+
+    为什么不"随机生成一个并持久化"：那样每次换机器/重建容器都会让库里的密钥变，
+    而自托管场景里迁移与重建很常见；用配置里的值，链接的有效期只由 TTL 决定。
+    """
+    return settings.url_signing_secret or console_token(settings, services)
