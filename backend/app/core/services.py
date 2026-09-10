@@ -13,6 +13,7 @@ API 层通过依赖注入拿到服务，自己不 new 任何东西。
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from functools import lru_cache
@@ -24,6 +25,7 @@ from app.services.chat import ChatService
 from app.services.documents import DocumentService
 from app.services.embedding import build_embedder
 from app.services.embedding.base import EmbeddingProvider
+from app.services.idempotency import IdempotencyService
 from app.services.ingest import IngestService
 from app.services.knowledge_base import KnowledgeBaseService
 from app.services.parser_router import ParserRouter
@@ -35,6 +37,8 @@ from app.storage.base import StoreBundle
 from app.workers.queue_worker import TaskWorker
 
 __all__ = ["Services", "build_services", "get_services", "reset_services"]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +57,8 @@ class Services:
     """运行期配置（凭据与模型）：设置页读写它，各 provider 每次调用现取快照。"""
     api_keys: ApiKeyService
     """API Key 的发放、校验与作用域判定（架构 §3.2）。"""
+    idempotency: IdempotencyService
+    """幂等键：上传类接口防重试造成重复入库（架构 §3.2）。"""
     embedder: EmbeddingProvider
     reranker: RerankProvider
     worker: TaskWorker
@@ -125,6 +131,24 @@ def build_services(
         embedder=embedder,
     )
 
+    idempotency = IdempotencyService(bundle)
+
+    def _maintain() -> None:
+        """空闲维护：把"会悄悄长大的表"收一收。
+
+        两件事都是**本来就没有调用者**的承诺——``purge_expired_idempotency_keys`` 与
+        ``purge_expired_trash`` 写在存储层很久了，但从没人调，于是"保留 7 天"
+        和"键不会无限增长"实际上都没发生。挂在 worker 的空闲分支上让它真的跑起来。
+
+        顺序无所谓，但都吞异常：清理失败不该影响消费（worker 那边还会再兜一层）。
+        """
+        removed_keys = idempotency.purge_expired()
+        if removed_keys:
+            logger.info("清理过期幂等键 %d 条", removed_keys)
+        purged = bundle.meta.purge_expired_trash()
+        if purged:
+            logger.info("清理过期回收站条目 %d 条", len(purged))
+
     return Services(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder),
         documents=DocumentService(bundle),
@@ -134,6 +158,7 @@ def build_services(
         stats=StatsService(bundle),
         runtime=runtime,
         api_keys=ApiKeyService(bundle),
+        idempotency=idempotency,
         embedder=embedder,
         reranker=reranker,
         worker=TaskWorker(
@@ -141,6 +166,7 @@ def build_services(
             ingest,
             owner=f"worker-{os.getpid()}",
             lease_seconds=resolved.worker_lease_seconds,
+            maintain=_maintain,
         ),
     )
 

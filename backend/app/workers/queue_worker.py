@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from app.core.exceptions import NotFoundError
@@ -27,6 +29,8 @@ DEFAULT_LEASE_SECONDS = 60
 DEFAULT_POLL_INTERVAL = 0.5
 DEFAULT_BASE_BACKOFF = 2.0
 DEFAULT_MAX_BACKOFF = 60.0
+DEFAULT_MAINTAIN_INTERVAL = 3600.0
+"""空闲维护间隔（秒）。一小时一次：清理是"防表无限长大"，不必更勤。"""
 
 HANDLED_KINDS = frozenset(
     {
@@ -52,6 +56,8 @@ class TaskWorker:
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         base_backoff: float = DEFAULT_BASE_BACKOFF,
         max_backoff: float = DEFAULT_MAX_BACKOFF,
+        maintain: Callable[[], None] | None = None,
+        maintain_interval: float = DEFAULT_MAINTAIN_INTERVAL,
     ) -> None:
         if lease_seconds <= 0:
             raise ValueError("租约时长必须为正")
@@ -62,6 +68,15 @@ class TaskWorker:
         self._poll_interval = poll_interval
         self._base_backoff = base_backoff
         self._max_backoff = max_backoff
+        #: 空闲时的维护动作（清过期幂等键、清过期回收站）。
+        #:
+        #: 为什么挂在 worker 上而不是单起一个定时任务：worker 本来就常驻、本来就在
+        #: 轮询，顺手做一次的成本接近零；而多一个后台任务就多一处生命周期要管
+        #: （启动、关停、异常隔离），为一个"每天跑一次"的清理不值得。
+        #: 传 None 表示不做维护——测试与只跑单任务的场景用得上。
+        self._maintain = maintain
+        self._maintain_interval = maintain_interval
+        self._last_maintain = 0.0
         self._current_task_id: str | None = None
         self._thread: asyncio.Task[None] | None = None
         #: 租约已易主的标志。见 ``_mark_lease_lost`` 的说明：它必须活在 worker 级，
@@ -150,8 +165,27 @@ class TaskWorker:
                 logger.exception("worker 循环出现未预期异常，继续运行")
                 worked = False
             if not worked:
+                self._run_maintenance()
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stopping.wait(), timeout=self._poll_interval)
+
+    def _run_maintenance(self) -> None:
+        """空闲时按间隔跑一次维护。
+
+        **只在拿到"没活可干"这一支里调用**：维护要写库，和摄入抢同一个 SQLite
+        没有意义；而且失败必须被吞掉——一次清理失败不该带走消费者，
+        这正是这个项目在续租路径上已经踩过的教训。
+        """
+        if self._maintain is None:
+            return
+        now = time.monotonic()
+        if now - self._last_maintain < self._maintain_interval:
+            return
+        self._last_maintain = now
+        try:
+            self._maintain()
+        except Exception:
+            logger.warning("空闲维护失败，跳过本轮", exc_info=True)
 
     # ------------------------------------------------------------------ 单任务执行
 

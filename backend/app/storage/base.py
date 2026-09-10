@@ -281,6 +281,20 @@ class TrashRecord:
 
 
 @dataclass(slots=True)
+class IdempotencyRecord:
+    """一次带幂等键的请求。
+
+    ``response`` 为空表示"已经占住这个键，但业务还没跑完"——重放时据此回 409
+    而不是让人以为没收到。见 ``services/idempotency.py``。
+    """
+
+    key: str
+    request_hash: str
+    response: dict[str, object] | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
 class SearchHit:
     """检索命中。``score`` 的含义随来源不同（向量距离 / BM25 / RRF 融合分）。"""
 
@@ -487,6 +501,38 @@ class MetaStore(ABC):
 
     @abstractmethod
     def list_webhooks(self) -> list[WebhookRecord]: ...
+
+    # ---- 幂等键（架构 §3.2：上传类接口带幂等键，防重试造成重复入库）----
+    @abstractmethod
+    def create_idempotency_key(self, record: IdempotencyRecord) -> IdempotencyRecord:
+        """占住一个幂等键。**键已存在时必须抛 ConflictError**，让调用方据此走重放。"""
+        ...
+
+    @abstractmethod
+    def get_idempotency_key(self, key: str) -> IdempotencyRecord | None: ...
+
+    @abstractmethod
+    def save_idempotent_response(self, key: str, response: dict[str, object]) -> None:
+        """把首次执行的结果挂到键上，后续重放直接回它。"""
+        ...
+
+    @abstractmethod
+    def purge_expired_idempotency_keys(self, *, before: datetime) -> int:
+        """清掉 ``created_at < before`` 的键，返回删除条数。
+
+        没有这一步，幂等键表会随每次上传无限增长。客户端重试窗口是分钟级，
+        所以保留一天就远远够用。
+        """
+        ...
+
+    @abstractmethod
+    def release_idempotency_key(self, key: str) -> None:
+        """放掉一个还没产生结果的键。
+
+        业务执行中途失败时用：键留着但 ``response`` 为空，客户端重试只会拿到
+        "正在处理中"——而实际上什么都没在处理了。
+        """
+        ...
 
     # ---- 回收站 ----
     @abstractmethod

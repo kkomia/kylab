@@ -17,6 +17,7 @@ import sqlite3
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 
+from app.core.exceptions import ConflictError
 from app.models.enums import (
     ApiKeyPermission,
     DataSourceKind,
@@ -31,6 +32,7 @@ from app.storage.base import (
     DataSourceRecord,
     DocumentPartRecord,
     DocumentRecord,
+    IdempotencyRecord,
     ImageRecord,
     KnowledgeBaseRecord,
     MetaStore,
@@ -721,6 +723,72 @@ class SqliteMetaStore(MetaStore):
             conn.execute(
                 "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
                 (_dump(used_at or _now()), key_id),
+            )
+
+    # ------------------------------------------------------------------ 幂等键
+
+    def create_idempotency_key(self, record: IdempotencyRecord) -> IdempotencyRecord:
+        """占住一个幂等键。
+
+        用一个原子 INSERT 来"抢锁"：并发下只有一个会成功，另一个拿到唯一约束冲突。
+        这比自己先 SELECT 再 INSERT 可靠——后者在两次调用之间有一个窗口，
+        两个并发请求会同时看到"不存在"。
+        """
+        record.created_at = record.created_at or _now()
+        try:
+            with self._db.session() as conn:
+                conn.execute(
+                    "INSERT INTO idempotency_keys (key, request_hash, response, created_at)"
+                    " VALUES (?, ?, ?, ?)",
+                    # response 写真正的 SQL NULL，不写 _json(None) 得到的字符串 "null"：
+                    # 后者让"还没挂响应"这件事在 SQL 侧没法用 IS NULL 判定，
+                    # 而释放键与"进行中"判定都要靠它（实测踩到：释放成了空操作）
+                    (
+                        record.key,
+                        record.request_hash,
+                        _json(record.response) if record.response is not None else None,
+                        _dump(record.created_at),
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ConflictError(f"幂等键已被占用：{record.key}") from exc
+        return record
+
+    def get_idempotency_key(self, key: str) -> IdempotencyRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM idempotency_keys WHERE key = ?", (key,)
+            ).fetchone()
+        if not row:
+            return None
+        raw = row["response"]
+        return IdempotencyRecord(
+            key=row["key"],
+            request_hash=row["request_hash"],
+            response=json.loads(raw) if raw else None,
+            created_at=_load(row["created_at"]),
+        )
+
+    def save_idempotent_response(self, key: str, response: dict[str, object]) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE idempotency_keys SET response = ? WHERE key = ?",
+                (_json(response), key),
+            )
+
+    def purge_expired_idempotency_keys(self, *, before: datetime) -> int:
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                "DELETE FROM idempotency_keys WHERE created_at < ?", (_dump(before),)
+            )
+        return cursor.rowcount or 0
+
+    def release_idempotency_key(self, key: str) -> None:
+        # 只删"还没挂上响应"的那种：已经成功过的键不能因为一次重放异常被放掉，
+        # 那会让同一个键再被用来跑一遍业务。
+        with self._db.session() as conn:
+            conn.execute(
+                "DELETE FROM idempotency_keys WHERE key = ? AND response IS NULL", (key,)
             )
 
     def create_webhook(self, record: WebhookRecord) -> WebhookRecord:

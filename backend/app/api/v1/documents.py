@@ -6,7 +6,19 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+import hashlib
+import logging
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 
 from app.api.auth import check_kb_scope, require_read, require_write
 from app.api.v1.schemas import (
@@ -20,6 +32,9 @@ from app.api.v1.schemas import (
 )
 from app.core.services import Services, get_services
 from app.services.api_key import Caller
+from app.services.idempotency import fingerprint
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["documents"])
 
@@ -51,9 +66,27 @@ async def upload_document(
     kb_id: str,
     file: UploadFile = File(...),
     start: bool = Query(default=True, description="是否立即入队摄入；false 表示仅登记"),
+    idempotency_key: str | None = Header(
+        default=None,
+        alias="Idempotency-Key",
+        description="可选。带上它则同一键的重试不会产生第二份文档（架构 §3.2）",
+    ),
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),
 ) -> UploadAccepted:
+    """上传文档。
+
+    **幂等键是可选的，而不是强制的**——这里与架构 §3.2 的字面要求有一处偏差，
+    理由是我们已经有一条更强的兜底：内容 hash 去重。同一份文件重复上传，
+    ``ingest.submit`` 会认出来并回 ``is_duplicate=True``，本来就不会入库两次。
+
+    幂等键补的是 hash 覆盖不到的那一段：**同一个键配不同内容**时的判定，
+    以及"客户端连自己上次传没传成功都不知道"的场景（回放上次的响应，
+    而不是让它重新走一遍去重）。
+
+    做成强制会立刻打断既有前端与所有集成方（401 之后又来一次全员 400），
+    而收益只是把已有的保护换一种表达。所以：**提供则生效，不提供仍受 hash 去重保护**。
+    """
     check_kb_scope(services, caller, [kb_id])
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
@@ -62,11 +95,63 @@ async def upload_document(
             detail=f"文件超过 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 上限",
         )
 
+    filename = file.filename or "未命名"
+
+    # 幂等键的处理必须在读文件之后：指纹要覆盖内容，否则"同一个键换文件"
+    # 会被当成重放，直接回上次的 document_id——那是最坏的一种错（用户以为传了新的）
+    request_hash = (
+        fingerprint(kb_id, filename, start, hashlib.sha256(content).hexdigest())
+        if idempotency_key
+        else ""
+    )
+    if idempotency_key:
+        claim = services.idempotency.begin(idempotency_key, request_hash)
+        if claim.is_replay:
+            logger.info("幂等键 %s 命中重放，不再重复入库", idempotency_key)
+            return UploadAccepted.model_validate(claim.replay)
+
+    try:
+        response = _do_upload(
+            services,
+            kb_id=kb_id,
+            filename=filename,
+            content=content,
+            mime_type=file.content_type,
+            start=start,
+        )
+    except Exception:
+        # 业务没跑成：把键放掉，让客户端能真正重试。
+        # 不放的话键留着而 response 为空，重试永远拿到"正在处理中"——
+        # 比直接报错更糟，因为它看起来像"再等等就好"。
+        if idempotency_key:
+            services.idempotency.release(idempotency_key)
+        raise
+
+    if idempotency_key:
+        # mode="json" 是必须的：`model_dump()` 会留下 datetime 对象，而幂等响应要落库
+        # 成 JSON——实测这里会抛 "Object of type datetime is not JSON serializable"，
+        # 而**抛出点在上传成功之后**，于是"文件已入库但接口 500"，客户端重试又被
+        # 幂等层拦成 409。一个序列化细节能把成功路径变成不可重试的失败。
+        services.idempotency.complete(idempotency_key, response.model_dump(mode="json"))
+
+    return response
+
+
+def _do_upload(
+    services: Services,
+    *,
+    kb_id: str,
+    filename: str,
+    content: bytes,
+    mime_type: str | None,
+    start: bool,
+) -> UploadAccepted:
+    """真正的入库动作。抽出来是为了让幂等层的"占键 → 执行 → 挂响应"读起来是直的。"""
     outcome = services.ingest.submit(
         knowledge_base_id=kb_id,
-        filename=file.filename or "未命名",
+        filename=filename,
         content=content,
-        mime_type=file.content_type,
+        mime_type=mime_type,
     )
     if not start or outcome.is_duplicate:
         return UploadAccepted(
