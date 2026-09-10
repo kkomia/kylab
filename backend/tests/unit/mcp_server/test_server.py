@@ -12,8 +12,8 @@ import ast
 import inspect
 from pathlib import Path
 
-from app.mcp.server import build_server
-from app.mcp.tools import TOOL_NAMES
+from app.mcp_server.server import build_server
+from app.mcp_server.tools import TOOL_NAMES
 
 SERVER_PATH = Path(inspect.getfile(build_server))
 

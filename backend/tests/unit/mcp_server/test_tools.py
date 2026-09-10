@@ -20,7 +20,13 @@ import pytest
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.core.services import Services
-from app.mcp.tools import MAX_TOP_K, MAX_UPLOAD_BYTES, TOOL_NAMES, call_tool, tool_definitions
+from app.mcp_server.tools import (
+    MAX_TOP_K,
+    MAX_UPLOAD_BYTES,
+    TOOL_NAMES,
+    call_tool,
+    tool_definitions,
+)
 
 
 @pytest.fixture

@@ -19,7 +19,7 @@ import argparse
 import asyncio
 import logging
 
-from app.mcp.tools import TOOL_NAMES, call_tool
+from app.mcp_server.tools import TOOL_NAMES, call_tool
 
 __all__ = ["build_server", "main", "serve_http", "serve_stdio"]
 
@@ -50,7 +50,7 @@ def build_server():  # type: ignore[no-untyped-def]
     from mcp.server.mcpserver import MCPServer
 
     from app.core.services import get_services
-    from app.mcp.tools import tool_definitions
+    from app.mcp_server.tools import tool_definitions
 
     server = MCPServer(
         name="kylab",
