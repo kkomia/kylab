@@ -200,6 +200,16 @@ def test_replace_chunks_removes_previous_version(store: SqliteMetaStore, kb, doc
     assert store.count_kb_chunks("kb_1") == 1
 
 
+def test_get_chunks_batch_returns_requested_ids(store: SqliteMetaStore, kb, document) -> None:
+    """检索时向量只给得出 chunk_id，正文得靠批量回表取。"""
+    store.replace_chunks("doc_1", [_chunk("c1", 0), _chunk("c2", 1), _chunk("c3", 2)])
+
+    chunks = store.get_chunks(["c1", "c3"])
+    assert {chunk.chunk_id for chunk in chunks} == {"c1", "c3"}
+    assert store.get_chunks([]) == []
+    assert store.get_chunks(["missing"]) == []
+
+
 def test_replace_chunks_with_empty_list_clears(store: SqliteMetaStore, kb, document) -> None:
     store.replace_chunks("doc_1", [_chunk("c1", 0)])
     store.replace_chunks("doc_1", [])

@@ -16,12 +16,13 @@ const EMOJI_RE =
   // eslint-disable-next-line no-misleading-character-class
   /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{2190}-\u{21FF}]/u
 
-// 文本排版合法字符白名单（引号、破折号、省略号、箭头等），不误报
+// 文本排版合法字符白名单（引号、破折号、省略号、箭头、数学符号等），不误报
 const WHITELIST = new Set([
   '\u201C',
   '\u201D',
   '\u2018',
   '\u2019',
+  '\u2016', // ‖ 范数符号：技术文档里合法，与 emoji 无关
   '\u2014',
   '\u2013',
   '\u2026',

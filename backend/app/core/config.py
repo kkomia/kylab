@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     """默认值对应开发兜底实现；换成真实模型时必须改成其真实维度（如 bge-m3 为 1024）。"""
     embedding_batch_size: int = 32
 
+    # Rerank（M3 启用；不配置则跳过重排，架构 §5）
+    rerank_base_url: str = "https://api.siliconflow.cn/v1"
+    rerank_api_key: str | None = None
+    rerank_model: str | None = None
+
     @property
     def cors_origin_list(self) -> list[str]:
         """把逗号分隔的 CORS 白名单拆成列表。"""

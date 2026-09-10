@@ -370,6 +370,14 @@ class MetaStore(ABC):
     def iter_chunks(self, document_id: str) -> Iterable[ChunkRecord]: ...
 
     @abstractmethod
+    def get_chunks(self, chunk_ids: Sequence[str]) -> list[ChunkRecord]:
+        """按 ID 批量取回 chunk。
+
+        检索时向量只给得出 chunk_id，正文/页码/图片锚点都得回表取——
+        逐个查会变成 N 次查询，所以接口层就要求批量。
+        """
+
+    @abstractmethod
     def count_chunks(self, document_id: str) -> int: ...
 
     # ---- 图片 ----

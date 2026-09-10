@@ -310,6 +310,36 @@ class SqliteMetaStore(MetaStore):
             for row in rows
         ]
 
+    def get_chunks(self, chunk_ids: Sequence[str]) -> list[ChunkRecord]:
+        """按 ID 批量取回。检索时向量只给得出 chunk_id，正文与图片锚点得回表取；
+        逐个查会退化成 N 次查询，所以接口层就要求批量。"""
+        if not chunk_ids:
+            return []
+        placeholders = ",".join("?" * len(chunk_ids))
+
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM chunks "  # noqa: S608
+                f"WHERE chunk_id IN ({placeholders})",
+                list(chunk_ids),
+            ).fetchall()
+            images = self._images_by_chunk(conn, [row["chunk_id"] for row in rows])
+        return [
+            ChunkRecord(
+                chunk_id=row["chunk_id"],
+                document_id=row["document_id"],
+                knowledge_base_id=row["knowledge_base_id"],
+                part_id=row["part_id"],
+                ordinal=row["ordinal"],
+                text=row["text"],
+                content_hash=row["content_hash"],
+                heading_path=row["heading_path"],
+                page=row["page"],
+                image_ids=tuple(images.get(row["chunk_id"], ())),
+            )
+            for row in rows
+        ]
+
     def count_chunks(self, document_id: str) -> int:
         with self._db.read() as conn:
             row = conn.execute(
