@@ -283,7 +283,7 @@ async def reprocess_document(
     )
 
 
-# --------------------------------------------------------------------- 下载（T4.5）
+# --------------------------------------------------------------------- 下载与阅读（T4.5 / G2）
 
 
 class DownloadUrlOut(BaseModel):
@@ -292,6 +292,64 @@ class DownloadUrlOut(BaseModel):
     url: str
     expires_at: int
     format: str
+
+
+class PreviewOut(BaseModel):
+    """「阅读」视角的内容。
+
+    文本类直接内联返回（Markdown / 纯文本），非文本类只回一条签名 URL 让浏览器自己渲染
+    （PDF、图片）。**不把二进制塞进 JSON**：那要 base64，体积涨三分之一，
+    而且浏览器拿到 base64 还得再解回来才能渲染。
+    """
+
+    kind: str
+    """``markdown`` / ``pdf`` / ``image`` / ``binary``。"""
+    filename: str
+    text: str | None = None
+    url: str | None = None
+    expires_at: int | None = None
+
+
+@router.get(
+    "/documents/{document_id}/preview",
+    response_model=PreviewOut,
+    summary="阅读视角（Markdown 内联 / PDF 与图片给签名链接）",
+)
+def preview_document(
+    document_id: str,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
+) -> PreviewOut:
+    """文档的「阅读」视角。
+
+    与「切块预览」是两个视角、刻意并存：切块回答"解析成了什么"（调试用，
+    等宽文本带块号），阅读回答"原文长什么样"（日常用，渲染件）。
+    """
+    _guard_document(services, caller, document_id)
+
+    content = services.documents.reading_view(document_id)
+
+    if content.kind == "markdown":
+        return PreviewOut(
+            kind="markdown",
+            filename=content.filename,
+            text=content.data.decode("utf-8", errors="replace"),
+        )
+
+    if content.kind in ("pdf", "image"):
+        secret = signing_secret(get_settings(), services)
+        if not secret:
+            # 没有签名密钥时发不了链接（同 download-url 的说明）。但这里**不报错**：
+            # 回一个 binary 让前端退化成"只能下载"，比整个阅读面板报红字好
+            return PreviewOut(kind="binary", filename=content.filename)
+        url, expires_at = services.documents.download_url(
+            document_id, fmt="original", secret=secret
+        )
+        return PreviewOut(
+            kind=content.kind, filename=content.filename, url=url, expires_at=expires_at
+        )
+
+    return PreviewOut(kind="binary", filename=content.filename)
 
 
 @router.get(

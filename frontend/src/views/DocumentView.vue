@@ -15,7 +15,9 @@ import { useRoute } from 'vue-router'
 import {
   downloadDocument,
   getDocument,
+  getDocumentPreview,
   listDocumentChunks,
+  type DocumentPreview,
   type DownloadFormat,
   type DocumentChunk,
   type DocumentSummary,
@@ -26,11 +28,22 @@ import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { documentStageView } from '@/components/ui/status'
+import { cleanInlineLatex } from '@/composables/useLatex'
+import { renderAnswerMarkdown } from '@/composables/useMarkdown'
 import { formatBytes, formatDate } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
 
 /** 预览最多拉几块：再多就该去库内检索面板，而不是在这一页翻。 */
 const PREVIEW_LIMIT = 5
+
+/**
+ * 两个视角。默认「阅读」——
+ * 用户打开一份文档，第一动作是"看它是什么"，而不是"看它被切成了几块"。
+ */
+const VIEW_TABS = [
+  { key: 'read' as const, label: '阅读', hint: '原文渲染，日常看这个' },
+  { key: 'chunks' as const, label: '切块', hint: '解析产物，等宽带块号，调解析用' },
+]
 
 const route = useRoute()
 const { notifyError } = useToast()
@@ -43,6 +56,11 @@ const previewError = ref('')
 const loading = ref(true)
 const error = ref('')
 const downloading = ref<DownloadFormat | null>(null)
+const view = ref<'read' | 'chunks'>('read')
+const preview = ref<DocumentPreview | null>(null)
+const previewLoading = ref(false)
+
+const activeTabHint = computed(() => VIEW_TABS.find((tab) => tab.key === view.value)?.hint ?? '')
 
 /**
  * 下载原文或解析产物。
@@ -77,10 +95,10 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-  await loadPreview()
+  await Promise.all([loadPreview(), loadReadingView()])
 })
 
-/** 预览是补充信息：拿不到不影响状态与元信息。 */
+/** 切块预览是补充信息：拿不到不影响状态与元信息。 */
 async function loadPreview(): Promise<void> {
   try {
     const body = await listDocumentChunks(documentId.value, PREVIEW_LIMIT)
@@ -91,12 +109,35 @@ async function loadPreview(): Promise<void> {
   }
 }
 
+/** 阅读视角。失败**不写进 previewError**——那是切块视角的报错位，
+    两个视角的失败原因不同，混在一起会让用户看到"切块加载失败"却在看阅读页。 */
+async function loadReadingView(): Promise<void> {
+  previewLoading.value = true
+  try {
+    preview.value = await getDocumentPreview(documentId.value)
+  } catch {
+    preview.value = null
+  } finally {
+    previewLoading.value = false
+  }
+}
+
 /** "这是前 5 块，共 137 块"——不说清的话，用户会把预览当成全文。 */
 const previewNote = computed(() =>
   chunkTotal.value > chunks.value.length
     ? `该文档共 ${chunkTotal.value} 块，这里只显示前 ${chunks.value.length} 块。`
     : `该文档共 ${chunkTotal.value} 块，已全部显示。`,
 )
+
+/**
+ * 阅读视角的正文。
+ *
+ * 先清 LaTeX 再交给 Markdown 渲染器：云端解析器把 PDF 里的上标原样输出成
+ * `$^{[1]}$`，实测真实的医学语料里 **26% 的 chunk 含行内 LaTeX**。
+ * **顺序不能反**——清理要去掉排版花括号，先过 Markdown 渲染会让 `**` 之类的规则
+ * 先把公式内部动一遍。
+ */
+const readerHtml = computed(() => renderAnswerMarkdown(cleanInlineLatex(preview.value?.text ?? '')))
 
 const stage = computed(() =>
   document.value
@@ -169,17 +210,74 @@ const stage = computed(() =>
 
       <p v-if="document.error" class="error-line">{{ document.error }}</p>
 
-      <p v-if="document.chunk_count === 0" class="muted">
-        还没有切块产物：文档尚未处理完成，或处理失败。回到列表页可以重新摄入。
-      </p>
-      <p v-else class="muted">
-        需要原文或解析产物就用右上角的下载按钮（链接由后端签发、短期有效）。
-        检索效果请回到本文档所属知识库，用「在此库检索」复核。
-      </p>
+      <!--
+        两个视角刻意并存：
+        - 阅读：原文长什么样（渲染件，日常用）
+        - 切块：解析成了什么（等宽文本带块号，调试用）
+        成熟产品（RAGFlow / MaxKB / Open WebUI）都有前者；我们原先只有后者——
+        「只看切块」适合调试期，但进入日常使用后，用户第一动作是"确认原文长什么样"。
+      -->
+      <div class="view-tabs" role="tablist" aria-label="查看方式">
+        <button
+          v-for="tab in VIEW_TABS"
+          :key="tab.key"
+          class="view-tab"
+          :class="{ 'view-tab-active': view === tab.key }"
+          type="button"
+          role="tab"
+          :aria-selected="view === tab.key"
+          @click="view = tab.key"
+        >
+          {{ tab.label }}
+        </button>
+        <span class="view-tabs-hint">{{ activeTabHint }}</span>
+      </div>
 
-      <template v-if="document.chunk_count > 0">
-        <h2 class="preview-title">切块预览</h2>
-        <p v-if="previewError" class="muted">{{ previewError }}</p>
+      <!-- 阅读视角 -->
+      <template v-if="view === 'read'">
+        <p v-if="previewLoading" class="muted">正在加载原文…</p>
+        <p v-else-if="previewError" class="muted">{{ previewError }}</p>
+        <template v-else-if="preview">
+          <p v-if="preview.kind === 'binary'" class="muted">
+            「{{ preview.filename }}」暂不支持在线预览（Office 等格式先只提供下载），
+            请用右上角的下载按钮。
+          </p>
+
+          <!-- Markdown / 纯文本：直接渲染。复用对话页那套渲染器，
+               它先整体转义再白名单还原标记，所以文档里带 HTML 也不会被注入 -->
+          <!-- eslint-disable vue/no-v-html -->
+          <div v-else-if="preview.kind === 'markdown'" class="reader" v-html="readerHtml" />
+          <!-- eslint-enable vue/no-v-html -->
+
+          <!-- PDF：交给浏览器原生渲染器。不引 PDF.js 是刻意的——
+               原生查看器自带翻页、缩放、搜索、文本选择，还没有体积成本；
+               等需要"跳到引用页并高亮"时再引库（那是 G2 的后半） -->
+          <!-- `:key` 绑到 url：签名链接会过期（默认 10 分钟），重新取到新链接时
+               要让 iframe **重建**而不是沿用旧 src——否则长时间停留后翻页会去请求
+               一条已过期的链接 -->
+          <iframe
+            v-else-if="preview.kind === 'pdf'"
+            :key="preview.url ?? ''"
+            class="reader-frame"
+            :src="preview.url ?? ''"
+            :title="preview.filename"
+          />
+
+          <img
+            v-else-if="preview.kind === 'image'"
+            class="reader-image"
+            :src="preview.url ?? ''"
+            :alt="preview.filename"
+          />
+        </template>
+      </template>
+
+      <!-- 切块视角 -->
+      <template v-else>
+        <p v-if="document.chunk_count === 0" class="muted">
+          还没有切块产物：文档尚未处理完成，或处理失败。回到列表页可以重新摄入。
+        </p>
+        <p v-else-if="previewError" class="muted">{{ previewError }}</p>
         <template v-else-if="chunks.length">
           <p class="preview-note">{{ previewNote }}</p>
           <ol class="preview">
@@ -203,6 +301,123 @@ const stage = computed(() =>
 </template>
 
 <style scoped>
+/* 视角切换：两个标签贴在一起，用底边表示选中。
+   不用大按钮——它们是"同一份内容的两种看法"，不是两个动作，
+   做得像按钮会让人以为点了会跳走。 */
+.view-tabs {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-4);
+  margin-top: var(--space-5);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.view-tab {
+  padding: var(--space-2) 0;
+  font-size: var(--text-body-size);
+  color: var(--text-secondary);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.view-tab:hover {
+  color: var(--text-primary);
+}
+
+.view-tab-active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+
+/* 右侧一句"这个视角是干什么的"：两个视角的差别（渲染件 vs 解析产物）
+   不解释一下，用户不知道为什么会有两个 */
+.view-tabs-hint {
+  margin-left: auto;
+  padding-bottom: var(--space-2);
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+/* 阅读区：限宽到 --measure（66ch），与文档详情页"阅读内容限宽"的口径一致 */
+.reader {
+  max-width: var(--measure);
+  margin-top: var(--space-5);
+  color: var(--text-primary);
+}
+
+/* 三级标题的字号阶梯。
+   **间距随层级递减**（上下留白比字号更能表达"归属关系"）：
+   h2 隔开大段、h3 隔开小节、h4 只是段前提示。
+   字号用乘法而不是再定义一套令牌：标题是内容的一部分，
+   应当跟着用户选的字号一起缩放。 */
+.reader :deep(.md-h) {
+  margin: var(--space-6) 0 var(--space-2);
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.reader :deep(.md-h2) {
+  font-size: calc(var(--text-section-size) * 1.25);
+}
+
+.reader :deep(.md-h3) {
+  font-size: calc(var(--text-section-size) * 1.08);
+}
+
+.reader :deep(.md-h4) {
+  font-size: var(--text-section-size);
+}
+
+/* 首个标题不留上边距：紧贴页头时那一大块空白看着像内容没加载出来 */
+.reader :deep(.md-h:first-child) {
+  margin-top: 0;
+}
+
+.reader :deep(.md-p) {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.reader :deep(.md-p + .md-p) {
+  margin-top: var(--space-3);
+}
+
+.reader :deep(.md-ul) {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+}
+
+.reader :deep(.md-ul li + li) {
+  margin-top: var(--space-1);
+}
+
+.reader :deep(code) {
+  padding: 0 var(--space-1);
+  font-size: var(--text-meta-size);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-control);
+}
+
+/* PDF：给足高度。原生查看器在这个高度下能显示整页并自带翻页 */
+.reader-frame {
+  width: 100%;
+  height: 70vh;
+  margin-top: var(--space-5);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-panel);
+  background: var(--bg-subtle);
+}
+
+/* 图片：**不放大**。放大到容器宽度会让小图糊掉，原尺寸更诚实 */
+.reader-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin-top: var(--space-5);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-panel);
+}
+
 .breadcrumb-link {
   display: inline-flex;
   align-items: center;

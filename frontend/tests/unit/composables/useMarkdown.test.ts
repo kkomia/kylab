@@ -37,8 +37,18 @@ describe('renderAnswerMarkdown', () => {
     expect(html).toBe('<ul class="md-ul"><li>甲</li></ul><p class="md-p">总结：可行。</p>')
   })
 
-  it('标题渲染成小标题', () => {
-    expect(renderAnswerMarkdown('## 结论')).toBe('<h4 class="md-h">结论</h4>')
+  it('标题保留原始层级', () => {
+    // 层级要留着：阅读视角里一份长文档全靠它区分结构。
+    // 原先一律渲染成 h4，于是 119 块的长文从头到尾同一个字号。
+    // h1 留给页面标题（文档名已在页头），所以从 `#` 起映射到 h2
+    expect(renderAnswerMarkdown('# 一级')).toBe('<h2 class="md-h md-h2">一级</h2>')
+    expect(renderAnswerMarkdown('## 二级')).toBe('<h3 class="md-h md-h3">二级</h3>')
+    expect(renderAnswerMarkdown('### 三级')).toBe('<h4 class="md-h md-h4">三级</h4>')
+  })
+
+  it('更深的层级并到 h4（实际语料里极罕见）', () => {
+    expect(renderAnswerMarkdown('##### 五级')).toBe('<h4 class="md-h md-h4">五级</h4>')
+    expect(renderAnswerMarkdown('###### 六级')).toBe('<h4 class="md-h md-h4">六级</h4>')
   })
 
   it('转义 HTML：模型吐出的尖括号不能变成标签', () => {

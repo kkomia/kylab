@@ -96,6 +96,29 @@ export function reprocessDocument(documentId: string): Promise<UploadAccepted> {
 /** 下载格式：原文件（默认）或解析产物 Markdown。 */
 export type DownloadFormat = 'original' | 'markdown'
 
+/** 阅读视角的内容形态。 */
+export type PreviewKind = 'markdown' | 'pdf' | 'image' | 'binary'
+
+export interface DocumentPreview {
+  kind: PreviewKind
+  filename: string
+  /** 文本类内联返回（Markdown / 纯文本）。 */
+  text: string | null
+  /** 非文本类给一条签名链接，交给浏览器自己渲染。 */
+  url: string | null
+  expires_at: number | null
+}
+
+/**
+ * 取「阅读」视角。
+ *
+ * 与切块预览是两个视角：切块回答"解析成了什么"（调试用，等宽带块号），
+ * 这个回答"原文长什么样"（日常用，渲染件）。
+ */
+export function getDocumentPreview(documentId: string): Promise<DocumentPreview> {
+  return request(`/documents/${documentId}/preview`)
+}
+
 export interface DownloadUrl {
   /** **相对路径**：对外域名只有部署时才知道，后端不猜。 */
   url: string

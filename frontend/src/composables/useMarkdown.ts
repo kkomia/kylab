@@ -12,7 +12,7 @@
 
 /** 允许渲染的块级形态。 */
 type Block =
-  | { kind: 'heading'; text: string }
+  | { kind: 'heading'; level: number; text: string }
   | { kind: 'list'; items: string[] }
   | { kind: 'paragraph'; lines: string[] }
 
@@ -52,11 +52,16 @@ function splitBlocks(text: string): Block[] {
   for (const raw of text.split('\n')) {
     const line = raw.trimEnd()
     const bullet = /^\s*[-*+]\s+(.*)$/.exec(line)
-    const heading = /^\s*#{1,6}\s+(.*)$/.exec(line)
+    const heading = /^\s*(#{1,6})\s+(.*)$/.exec(line)
 
     if (heading) {
       flush()
-      blocks.push({ kind: 'heading', text: heading[1] })
+      // **保留原始层级**：原先一律渲染成 h4，于是一份 119 块的长文档
+      // 从头到尾是同一个字号，完全看不出结构——那正是"阅读视角"最该提供的东西。
+      // 夹到 2–4 级：h1 留给页面标题（文档名已经在页头了），
+      // 而解析器输出的 h5/h6 在实际语料里极罕见，统一并到 4 级即可
+      const level = Math.min(4, Math.max(2, heading[1].length + 1))
+      blocks.push({ kind: 'heading', level, text: heading[2] })
       continue
     }
     if (bullet) {
@@ -84,7 +89,10 @@ function splitBlocks(text: string): Block[] {
 }
 
 function renderBlock(block: Block): string {
-  if (block.kind === 'heading') return `<h4 class="md-h">${inline(block.text)}</h4>`
+  if (block.kind === 'heading') {
+    // 同时给 h 标签与类名：h 标签让浏览器/辅助技术知道层级，类名让样式能一致地管
+    return `<h${block.level} class="md-h md-h${block.level}">${inline(block.text)}</h${block.level}>`
+  }
   if (block.kind === 'list') {
     const items = block.items.map((item) => `<li>${inline(item)}</li>`).join('')
     return `<ul class="md-ul">${items}</ul>`

@@ -33,6 +33,44 @@ class DocumentContent:
     data: bytes
     filename: str
     media_type: str
+    kind: str = "binary"
+    """怎么展示它：``markdown`` / ``pdf`` / ``image`` / ``binary``。
+
+    判定放在**服务层**而不是前端：前端不该为了"该不该渲染"去猜文件后缀；
+    而且下载与预览两条路径必须给出同一答案——同一次请求能渲染、下载却变二进制会很怪。
+    """
+
+
+#: 可以在浏览器里直接渲染的图片格式
+_IMAGE_SUFFIXES = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif"}
+)
+
+
+def content_kind(filename: str, *, has_markdown: bool = False) -> str:
+    """这份内容该怎么展示。
+
+    **有解析产物就优先当 markdown**：那是流水线归一化后的文本，
+    是检索真正依据的东西——用户要核对"解析对不对"，看它比看原始版式更直接。
+    PDF 只有在没有产物时才回落到"原始 PDF 预览"。
+    """
+    if has_markdown:
+        return "markdown"
+    suffix = _suffix(filename)
+    if suffix == ".pdf":
+        return "pdf"
+    if suffix in _IMAGE_SUFFIXES:
+        return "image"
+    if suffix in {".md", ".markdown", ".txt", ".text", ".csv", ".json", ".log"}:
+        # 纯文本类即使没走完整流水线也可以直接按文本读
+        return "markdown"
+    return "binary"
+
+
+def _suffix(name: str) -> str:
+    lowered = name.lower()
+    dot = lowered.rfind(".")
+    return lowered[dot:] if dot > 0 else ""
 
 
 def signature_resource(document_id: str, fmt: str) -> str:
@@ -104,9 +142,9 @@ class DocumentService:
             raise UnsupportedContentError(f"不支持的下载格式：{fmt}")
 
         document = self.get(document_id)
+        parsed = self._stores.meta.get_parse_result(document_id)
 
         if fmt == "markdown":
-            parsed = self._stores.meta.get_parse_result(document_id)
             if parsed is None:
                 # 还没解析完。这不是"文件不存在"，要说清是"还没到时候"
                 raise UnsupportedContentError(
@@ -117,6 +155,7 @@ class DocumentService:
                 data=data,
                 filename=f"{_stem(document.name)}.md",
                 media_type="text/markdown; charset=utf-8",
+                kind="markdown",
             )
 
         path = self._stores.meta.get_setting(f"document.{document_id}.original_path")
@@ -126,7 +165,22 @@ class DocumentService:
             data=self._stores.objects.read(path),
             filename=document.name,
             media_type=document.mime_type or "application/octet-stream",
+            # 有解析产物时，原文也按 markdown 展示会给前端"读归一化文本"的
+            # 一致体验；没有产物才回落到 PDF/图片预览
+            kind=content_kind(document.name, has_markdown=parsed is not None),
         )
+
+    def reading_view(self, document_id: str) -> DocumentContent:
+        """「阅读」视角的内容：优先给解析产物，其次给原始版式。
+
+        与 ``content`` 的区别是**它自己挑**而不是等调用方指定 format：
+        用户点"阅读"时不该先决定"我要看原文还是看 Markdown"——
+        那是我们的实现细节，不该成为他的选择题。
+        """
+        parsed = self._stores.meta.get_parse_result(document_id)
+        if parsed is not None:
+            return self.content(document_id, fmt="markdown")
+        return self.content(document_id, fmt="original")
 
     def download_url(
         self, document_id: str, *, fmt: str, secret: str, ttl_seconds: int = DEFAULT_TTL_SECONDS
