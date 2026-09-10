@@ -251,10 +251,14 @@ def _now() -> str:
 
 
 def current_version(conn: sqlite3.Connection) -> int:
-    """当前 schema 版本；未初始化返回 0。"""
+    """当前 schema 版本；未初始化返回 0。
+
+    用位置索引取值而不是 ``row["v"]``：本函数对**任意** sqlite3 连接都该可用，
+    不能要求调用方先设好 ``row_factory``。
+    """
     conn.execute(_MIGRATIONS_TABLE)
-    row = conn.execute("SELECT COALESCE(MAX(version), 0) AS v FROM schema_migrations").fetchone()
-    return int(row["v"])
+    row = conn.execute("SELECT COALESCE(MAX(version), 0) FROM schema_migrations").fetchone()
+    return int(row[0])
 
 
 def apply_migrations(
@@ -265,7 +269,7 @@ def apply_migrations(
     幂等：已应用的版本会被跳过，因此可以放心地在每次启动时调用。
     """
     conn.execute(_MIGRATIONS_TABLE)
-    applied = {int(row["version"]) for row in conn.execute("SELECT version FROM schema_migrations")}
+    applied = {int(row[0]) for row in conn.execute("SELECT version FROM schema_migrations")}
 
     pending = [m for m in (migrations or MIGRATIONS) if m.version not in applied]
     just_applied: list[int] = []

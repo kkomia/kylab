@@ -1,0 +1,42 @@
+"""另外三个仓储的接口一致性测试（M1 T1.7）。
+
+镜像同构：``app/storage/sqlite_impl/{vector,fulltext,object}_store.py``
+→ ``tests/unit/storage/sqlite_impl/test_store_conformance.py``。
+
+行为验证在 ``tests/integration/storage/``，这里只守"接口是否被完整实现"。
+新增接口方法时这里会立刻变红，提醒实现方补齐。
+"""
+
+import pytest
+
+from app.storage.base import FullTextStore, ObjectStore, VectorStore
+from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
+from app.storage.sqlite_impl.object_store import LocalObjectStore
+from app.storage.sqlite_impl.vector_store import SqliteVectorStore
+
+IMPLEMENTATIONS = (
+    (SqliteVectorStore, VectorStore),
+    (SqliteFullTextStore, FullTextStore),
+    (LocalObjectStore, ObjectStore),
+)
+
+
+@pytest.mark.parametrize(("implementation", "interface"), IMPLEMENTATIONS)
+def test_implements_its_interface(implementation: type, interface: type) -> None:
+    assert issubclass(implementation, interface)
+
+
+@pytest.mark.parametrize(("implementation", "interface"), IMPLEMENTATIONS)
+def test_no_abstract_methods_left(implementation: type, interface: type) -> None:
+    assert implementation.__abstractmethods__ == frozenset()
+
+
+def test_choose_implementation_by_interface_not_by_class() -> None:
+    """组合根里应当只出现接口类型；实现类名不该泄漏到 services 层。"""
+    from app.core.storage import Stores
+
+    annotations = Stores.__annotations__
+    assert annotations["meta"] is not None
+    assert all(
+        "sqlite_impl" not in str(annotation) for annotation in annotations.values()
+    ), "Stores 的字段类型不应是具体实现"

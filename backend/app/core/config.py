@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     data_dir: Path = Path("./data")
     cors_origins: str = "http://127.0.0.1:5173"
+    slow_query_ms: int = 500
+    """超过该耗时的检索留一条 WARNING（架构 §12 可观测性）。"""
+
+    @property
+    def db_path(self) -> Path:
+        """SQLite 主库文件（元数据 + 向量 + 全文同库，架构 §8.1）。"""
+        return self.data_dir / "kylab.db"
 
     # 云端解析节点（M2 启用）
     mineru_token: str | None = None

@@ -9,6 +9,8 @@
 
 import pytest
 
+from app.core.config import get_settings
+from app.core.storage import reset_stores
 from app.models.enums import DataSourceKind, DocumentStage
 from app.storage.base import DocumentRecord, KnowledgeBaseRecord
 from app.storage.sqlite_impl.connection import Database
@@ -20,6 +22,23 @@ from app.storage.sqlite_impl.vector_store import SqliteVectorStore
 
 DEFAULT_MODEL_ID = "BAAI/bge-m3"
 DEFAULT_DIM = 1024
+
+
+@pytest.fixture(autouse=True)
+def isolated_data_dir(tmp_path, monkeypatch):
+    """全局兜底：任何测试都不许把运行期数据写进仓库。
+
+    起因：`build_stores()` 默认用 ``./data``，一旦某个测试忘了指临时目录，
+    就会在 `backend/data/` 建出 kylab.db 与三个子目录（被 .gitignore 挡住所以不易发现，
+    但会污染本地状态、干扰后续手工验证）。这里统一把 ``KYLAB_DATA_DIR`` 指到 tmp 目录，
+    并清掉配置与装配的缓存。
+    """
+    monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
+    get_settings.cache_clear()
+    reset_stores()
+    yield
+    reset_stores()
+    get_settings.cache_clear()
 
 
 @pytest.fixture
