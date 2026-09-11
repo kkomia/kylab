@@ -149,7 +149,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **79** 条端点。
+共 **82** 条端点。
 
 ### `api-keys`
 
@@ -281,6 +281,14 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/settings` | 运行期配置（密钥打码） |
 | `PATCH` | `/api/v1/settings` | 更新运行期配置 |
 | `POST` | `/api/v1/settings/test/{target}` | 连通性测试（embedding / mineru / paddleocr） |
+
+### `shares`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/knowledge-bases/{kb_id}/shares` | 库的分享列表 |
+| `PUT` | `/api/v1/knowledge-bases/{kb_id}/shares` | 分享/调整档位（按登录名） |
+| `DELETE` | `/api/v1/knowledge-bases/{kb_id}/shares/{user_id}` | 收回分享 |
 
 ### `stats`
 

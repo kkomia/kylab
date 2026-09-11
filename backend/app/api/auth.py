@@ -174,13 +174,22 @@ WriteDep = Annotated[Caller, Depends(require_write)]
 ConsoleDep = Annotated[Caller, Depends(require_console)]
 
 
-def check_kb_scope(services: Services, caller: Caller, kb_ids: list[str] | None) -> None:
+def check_kb_scope(
+    services: Services,
+    caller: Caller,
+    kb_ids: list[str] | None,
+    *,
+    need: ApiKeyPermission = READ,
+) -> None:
     """带库范围的作用域判定。
 
     不做成依赖，是因为它需要**已解析的请求体或路径参数**，而依赖拿不到；
     硬要拿就得把 body 模型也声明成依赖，签名会重复一遍。
+
+    ``need``：写端点必须传 ``WRITE``——成员拿到的分享可能是只读档，
+    只按"看得见"判定会让只读分享变成可写（回归测试钉在 test_visibility_api）。
     """
-    services.api_keys.check_access(caller, kb_ids=kb_ids)
+    services.api_keys.check_access(caller, need=need, kb_ids=kb_ids)
 
 
 #: 控制台令牌在 app_settings 里的键。存在库里而不是只读 .env，

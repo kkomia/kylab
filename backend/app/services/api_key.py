@@ -27,7 +27,7 @@ from dataclasses import dataclass
 
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.core.security import display_prefix, generate_token, hash_token
-from app.models.enums import ApiKeyPermission
+from app.models.enums import ApiKeyPermission, SharePermission
 from app.storage.base import ApiKeyRecord, StoreBundle, UserRecord
 
 __all__ = ["READ", "WRITE", "ApiKeyService", "Caller", "IssuedApiKey"]
@@ -154,14 +154,25 @@ class ApiKeyService:
             return  # 控制台令牌与管理员会话不受库范围限制
 
         if caller.user is not None:
-            # 登录成员（v10）：范围 = 自己拥有的库（被分享的库在 ShareService 并入）。
-            # 成员不是 API Key，没有 permission 档位——读与写都按归属判定
+            # 登录成员（v10）：范围 = 自己拥有的库 + 被分享的库。
+            # 成员不是 API Key，没有 permission 档位——写操作要求"拥有"或"write 档分享"
             if kb_ids is None:
                 return
-            visible = set(self._owned_kb_ids(caller.user.id))
+            owned, shares = self._member_scope(caller.user.id)
+            visible = owned | shares.keys()
             outside = [kb_id for kb_id in kb_ids if kb_id not in visible]
             if outside:
                 raise ForbiddenError("你没有访问这些知识库的权限：" + "、".join(outside))
+            if need is WRITE:
+                readonly = [
+                    kb_id
+                    for kb_id in kb_ids
+                    if kb_id not in owned and shares.get(kb_id) is SharePermission.READ
+                ]
+                if readonly:
+                    raise ForbiddenError(
+                        "这些知识库只以只读方式分享给你：" + "、".join(readonly)
+                    )
             return
 
         permission = caller.permission
@@ -192,11 +203,21 @@ class ApiKeyService:
         if caller.is_console:
             return None
         if caller.user is not None:
-            # 成员：只看到自己的库。**不能回 None**——那是不受限的意思，
+            # 成员：自己的库 + 被分享的库。**不能回 None**——那是不受限的意思，
             # 与 check_access 的成员分支必须一致，两处矛盾就是越权洞
-            return self._owned_kb_ids(caller.user.id)
+            owned, shares = self._member_scope(caller.user.id)
+            return sorted(owned | shares.keys())
         scope = caller.knowledge_base_ids
         return list(scope) if scope else None
+
+    def _member_scope(self, user_id: str) -> tuple[set[str], dict[str, SharePermission]]:
+        """成员的可见范围：自己拥有的库 id 集合 + 被分享的库（kb_id → 档位）。"""
+        owned = set(self._owned_kb_ids(user_id))
+        shares = {
+            share.kb_id: share.permission
+            for share in self._stores.meta.list_shares_for_user(user_id)
+        }
+        return owned, shares
 
     def _owned_kb_ids(self, user_id: str) -> list[str]:
         return [

@@ -273,3 +273,96 @@ def test_admin_session_sees_conversations_from_other_channels(two_users) -> None
         ).status_code
         == 200
     )
+
+
+# --------------------------------------------------------------------- 分享（v10）
+
+
+def test_share_read_then_write_then_revoke(two_users) -> None:  # type: ignore[no-untyped-def]
+    """完整的分享生命周期：授读 → 成员能看不能写 → 升档 → 能写 → 收回 → 回到不可见。"""
+    client, admin, member = two_users
+    kb = client.post(
+        "/api/v1/knowledge-bases", json={"name": "家庭相册"}, headers=_as(admin["token"])
+    ).json()
+    client.post(
+        f"/api/v1/knowledge-bases/{kb['id']}/documents",
+        files={"file": ("相册.md", b"# photos", "text/markdown")},
+        headers=_as(admin["token"]),
+    )
+    member_h = _as(member["token"])
+
+    # 授读：成员列表里出现这个库，详情能看，上传被挡
+    granted = client.put(
+        f"/api/v1/knowledge-bases/{kb['id']}/shares",
+        json={"username": "member", "permission": "read"},
+        headers=_as(admin["token"]),
+    )
+    assert granted.status_code == 200, granted.text
+    assert granted.json()["username"] == "member"
+
+    listing = client.get("/api/v1/knowledge-bases", headers=member_h).json()["items"]
+    names = [item["name"] for item in listing]
+    assert names == ["家庭相册"]
+    assert client.get(f"/api/v1/knowledge-bases/{kb['id']}", headers=member_h).status_code == 200
+    assert (
+        client.post(
+            f"/api/v1/knowledge-bases/{kb['id']}/documents",
+            files={"file": ("偷传.md", b"# x", "text/markdown")},
+            headers=member_h,
+        ).status_code
+        == 403
+    )
+
+    # 升档为写：成员可以上传了（上传是异步摄入，受理回 202）
+    client.put(
+        f"/api/v1/knowledge-bases/{kb['id']}/shares",
+        json={"username": "member", "permission": "write"},
+        headers=_as(admin["token"]),
+    )
+    assert (
+        client.post(
+            f"/api/v1/knowledge-bases/{kb['id']}/documents",
+            files={"file": ("成员补充.md", b"# ok", "text/markdown")},
+            headers=member_h,
+        ).status_code
+        == 202
+    )
+
+    # 收回：回到不可见
+    shares = client.get(f"/api/v1/knowledge-bases/{kb['id']}/shares", headers=_as(admin["token"]))
+    target = shares.json()["items"][0]["user_id"]
+    assert (
+        client.delete(
+            f"/api/v1/knowledge-bases/{kb['id']}/shares/{target}", headers=_as(admin["token"])
+        ).status_code
+        == 204
+    )
+    assert client.get("/api/v1/knowledge-bases", headers=member_h).json()["items"] == []
+
+
+def test_member_cannot_manage_shares_of_shared_kb(two_users) -> None:  # type: ignore[no-untyped-def]
+    """被分享者（write 档）不能把库再授给别人：权限扩散止于 owner。"""
+    client, admin, member = two_users
+    kb = client.post(
+        "/api/v1/knowledge-bases", json={"name": "共享库"}, headers=_as(admin["token"])
+    ).json()
+    client.put(
+        f"/api/v1/knowledge-bases/{kb['id']}/shares",
+        json={"username": "member", "permission": "write"},
+        headers=_as(admin["token"]),
+    )
+
+    assert (
+        client.put(
+            f"/api/v1/knowledge-bases/{kb['id']}/shares",
+            json={"username": "admin", "permission": "read"},
+            headers=_as(member["token"]),
+        ).status_code
+        == 403
+    )
+    assert (
+        client.get(
+            f"/api/v1/knowledge-bases/{kb['id']}/shares", headers=_as(member["token"])
+        ).status_code
+        == 403
+    )

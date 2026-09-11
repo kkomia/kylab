@@ -23,6 +23,8 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from app.api.auth import (
+    READ,
+    WRITE,
     check_kb_scope,
     require_read,
     require_write,
@@ -41,6 +43,7 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import UnauthorizedError
 from app.core.services import Services, get_services
 from app.core.signing import SigningError, verify_resource
+from app.models.enums import ApiKeyPermission
 from app.services.api_key import Caller
 from app.services.documents import signature_resource
 from app.services.idempotency import fingerprint
@@ -120,7 +123,7 @@ async def upload_document(
     做成强制会立刻打断既有前端与所有集成方（401 之后又来一次全员 400），
     而收益只是把已有的保护换一种表达。所以：**提供则生效，不提供仍受 hash 去重保护**。
     """
-    check_kb_scope(services, caller, [kb_id])
+    check_kb_scope(services, caller, [kb_id], need=WRITE)
     # 归属标注（G6）：前端从名册里选一个人放进请求头。
     # **不参与鉴权**——伪造一个名字只会让归属记错，不会获得任何权限
     operator = services.users.resolve_operator(operator_token)
@@ -239,7 +242,9 @@ async def list_documents(
     )
 
 
-def _guard_document(services: Services, caller: Caller, document_id: str) -> None:
+def _guard_document(
+    services: Services, caller: Caller, document_id: str, *, need: ApiKeyPermission = READ
+) -> None:
     """按文档归属的知识库做范围判定。
 
     这几个端点只拿到 ``document_id``，而密钥范围是绑在知识库上的，
@@ -250,7 +255,7 @@ def _guard_document(services: Services, caller: Caller, document_id: str) -> Non
     越权探测者最想要的就是这种区分。
     """
     record = services.documents.get(document_id)
-    check_kb_scope(services, caller, [record.knowledge_base_id])
+    check_kb_scope(services, caller, [record.knowledge_base_id], need=need)
 
 
 @router.get("/documents/{document_id}", response_model=DocumentOut, summary="文档详情")
@@ -318,7 +323,7 @@ async def reprocess_document(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),
 ) -> UploadAccepted:
-    _guard_document(services, caller, document_id)
+    _guard_document(services, caller, document_id, need=WRITE)
     document = services.documents.get(document_id)
     task = services.documents.enqueue_ingest(document_id, force=True)
     return UploadAccepted(

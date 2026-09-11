@@ -17,7 +17,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, status
 
-from app.api.auth import check_kb_scope, require_read, require_write
+from app.api.auth import WRITE, check_kb_scope, require_read, require_write
 from app.api.v1.schemas import (
     DataSourceCreateIn,
     DataSourceListOut,
@@ -77,7 +77,7 @@ def create_data_source(
     **登记不等于拉取**：刚登记完不会立刻有文档，要么等定时任务，
     要么显式点一次"拉取"。界面上要说清这一点，否则用户会以为登记完就有了。
     """
-    check_kb_scope(services, caller, [kb_id])
+    check_kb_scope(services, caller, [kb_id], need=WRITE)
     from app.models.enums import DataSourceKind
 
     record = services.sources.create(
@@ -102,7 +102,7 @@ def toggle_data_source(
     enabled: bool = Query(description="是否启用"),
 ) -> DataSourceOut:
     record = services.sources.get(source_id)
-    check_kb_scope(services, caller, [record.knowledge_base_id])
+    check_kb_scope(services, caller, [record.knowledge_base_id], need=WRITE)
     return _out(services, services.sources.set_enabled(source_id, enabled=enabled))
 
 
@@ -120,7 +120,7 @@ def delete_data_source(
     停掉订阅不等于要撤销已经收集的资料。
     """
     record = services.sources.get(source_id)
-    check_kb_scope(services, caller, [record.knowledge_base_id])
+    check_kb_scope(services, caller, [record.knowledge_base_id], need=WRITE)
     services.sources.delete(source_id)
 
 
@@ -141,7 +141,7 @@ def sync_data_source(
     返回"取回几条、新入库几条、重复几条、失败几条"。
     """
     record = services.sources.get(source_id)
-    check_kb_scope(services, caller, [record.knowledge_base_id])
+    check_kb_scope(services, caller, [record.knowledge_base_id], need=WRITE)
     if not wait:
         task_id = services.sources.sync_async(source_id)
         return SyncResultOut(task_id=task_id)

@@ -23,16 +23,19 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
-from app.api.auth import check_kb_scope, require_read, require_write
+from app.api.auth import READ, WRITE, check_kb_scope, require_read, require_write
 from app.api.v1.schemas import ChunkOut, ChunkToggleIn, ChunkUpdateIn
 from app.core.exceptions import NotFoundError
 from app.core.services import Services, get_services
+from app.models.enums import ApiKeyPermission
 from app.services.api_key import Caller
 
 router = APIRouter(tags=["chunks"])
 
 
-def _guard_by_chunk(services: Services, caller: Caller, chunk_id: str) -> None:
+def _guard_by_chunk(
+    services: Services, caller: Caller, chunk_id: str, *, need: ApiKeyPermission = READ
+) -> None:
     """按块所属的知识库做范围判定。
 
     与文档端点同一个理由：密钥范围绑在知识库上，而这里只拿到 chunk_id，
@@ -40,11 +43,16 @@ def _guard_by_chunk(services: Services, caller: Caller, chunk_id: str) -> None:
     回 403 而不是 404，等于告诉越权探测者"这个 id 存在但你无权看"。
     """
     record = services.chunks.get(chunk_id)
-    check_kb_scope(services, caller, [record.knowledge_base_id])
+    check_kb_scope(services, caller, [record.knowledge_base_id], need=need)
 
 
 def _guard_by_ordinal(
-    services: Services, caller: Caller, document_id: str, ordinal: int
+    services: Services,
+    caller: Caller,
+    document_id: str,
+    ordinal: int,
+    *,
+    need: ApiKeyPermission = READ,
 ) -> str:
     """按（文档, 序号）定位并判范围，返回 chunk_id。
 
@@ -52,7 +60,7 @@ def _guard_by_ordinal(
     两者不能在同一个响应里混起来。
     """
     document = services.documents.get(document_id)
-    check_kb_scope(services, caller, [document.knowledge_base_id])
+    check_kb_scope(services, caller, [document.knowledge_base_id], need=need)
     for record in services.documents.list_chunks(document_id):
         if record.ordinal == ordinal:
             return record.chunk_id
@@ -84,7 +92,7 @@ def update_chunk(
     三个动作里**唯一有副作用代价**的：要再调一次向量模型。
     所以界面上它应当是显式保存，而不是边打字边存。
     """
-    _guard_by_chunk(services, caller, chunk_id)
+    _guard_by_chunk(services, caller, chunk_id, need=WRITE)
     return ChunkOut.model_validate(services.chunks.update_text(chunk_id, payload.text))
 
 
@@ -102,7 +110,7 @@ def toggle_chunk(
     用 ``PUT`` 而不是 ``POST``：这是幂等的状态设置——重复禁用同一个块结果一样，
     不会累积副作用。
     """
-    _guard_by_chunk(services, caller, chunk_id)
+    _guard_by_chunk(services, caller, chunk_id, need=WRITE)
     return ChunkOut.model_validate(
         services.chunks.set_disabled(chunk_id, disabled=payload.disabled)
     )
@@ -118,7 +126,7 @@ def delete_chunk(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
 ) -> None:
-    _guard_by_chunk(services, caller, chunk_id)
+    _guard_by_chunk(services, caller, chunk_id, need=WRITE)
     services.chunks.delete(chunk_id)
 
 
@@ -152,7 +160,7 @@ def update_chunk_by_ordinal(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
 ) -> ChunkOut:
-    chunk_id = _guard_by_ordinal(services, caller, document_id, ordinal)
+    chunk_id = _guard_by_ordinal(services, caller, document_id, ordinal, need=WRITE)
     return ChunkOut.model_validate(services.chunks.update_text(chunk_id, payload.text))
 
 
@@ -168,7 +176,7 @@ def toggle_chunk_by_ordinal(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
 ) -> ChunkOut:
-    chunk_id = _guard_by_ordinal(services, caller, document_id, ordinal)
+    chunk_id = _guard_by_ordinal(services, caller, document_id, ordinal, need=WRITE)
     return ChunkOut.model_validate(
         services.chunks.set_disabled(chunk_id, disabled=payload.disabled)
     )
@@ -185,6 +193,6 @@ def delete_chunk_by_ordinal(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
 ) -> None:
-    chunk_id = _guard_by_ordinal(services, caller, document_id, ordinal)
+    chunk_id = _guard_by_ordinal(services, caller, document_id, ordinal, need=WRITE)
     services.chunks.delete(chunk_id)
 

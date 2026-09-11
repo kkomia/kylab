@@ -21,6 +21,7 @@ from app.api.v1 import (
     model_registry,
     search,
     settings,
+    shares,
     stats,
     tabular,
     tasks,
@@ -47,5 +48,6 @@ api_router.include_router(model_registry.router)
 api_router.include_router(users.router)
 api_router.include_router(lifecycle.router)
 api_router.include_router(data_sources.router)
+api_router.include_router(shares.router)
 api_router.include_router(tabular.router)
 api_router.include_router(webhooks.router)

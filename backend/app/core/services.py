@@ -41,6 +41,7 @@ from app.services.parser_router import ParserRouter
 from app.services.retrieval import RetrievalService, build_reranker
 from app.services.retrieval.rerank import RerankProvider
 from app.services.runtime_config import RuntimeConfigService
+from app.services.share import ShareService
 from app.services.sources import SourceService
 from app.services.stats import StatsService
 from app.services.tabular import TabularService
@@ -83,6 +84,8 @@ class Services:
     """使用者名册：记录"是谁传的"，不参与鉴权（调研报告 G6）。"""
     auth: AuthService
     """账号引导、登录与会话校验（v10：名册升级为账号体系）。"""
+    shares: ShareService
+    """知识库分享：owner 把库授给其他成员，读/写两档（v10）。"""
     lifecycle: LifecycleService
     """数据生命周期：影响清单、级联删除、回收站（M6 / T6.3、T6.4）。"""
     sources: SourceService
@@ -262,6 +265,7 @@ def build_services(
         usage=usage,
         users=UserService(bundle),
         auth=AuthService(bundle),
+        shares=ShareService(bundle),
         lifecycle=LifecycleService(bundle, notifier=webhooks.emit),
         tabular=TabularService(bundle),
         sources=sources_service,

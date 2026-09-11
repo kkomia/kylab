@@ -21,12 +21,32 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
-from app.api.auth import check_kb_scope, require_read, require_write
+from app.api.auth import READ, WRITE, check_kb_scope, require_read, require_write
 from app.api.v1.schemas import ImpactOut, TrashEntryOut, TrashListOut
+from app.core.exceptions import ForbiddenError
 from app.core.services import Services, get_services
+from app.models.enums import ApiKeyPermission
 from app.services.api_key import Caller
 
 router = APIRouter(tags=["lifecycle"])
+
+
+def _guard_document(
+    services: Services, caller: Caller, document_id: str, *, need: ApiKeyPermission = READ
+) -> None:
+    """先取文档再判范围（顺序不能反，反了 404 会变成 403，等于泄露"这个 id 存在"）。"""
+    document = services.documents.get(document_id)
+    check_kb_scope(services, caller, [document.knowledge_base_id], need=need)
+
+
+def _require_admin_for_trash(caller: Caller) -> None:
+    """回收站对成员关闭（v1 的刻意简化）。
+
+    回收站里是**所有人**删掉的文档（含别人的），按库过滤会让"恢复"的语义
+    变复杂（恢复回哪个库、还算不算你的）。它是运维职能，先只给管理员。
+    """
+    if caller.user is not None and not caller.is_console:
+        raise ForbiddenError("回收站需要管理员身份")
 
 
 def _impact_out(report) -> ImpactOut:  # type: ignore[no-untyped-def]
@@ -42,12 +62,6 @@ def _impact_out(report) -> ImpactOut:  # type: ignore[no-untyped-def]
         document_names=list(report.document_names),
         restorable=report.restorable,
     )
-
-
-def _guard_document(services: Services, caller: Caller, document_id: str) -> None:
-    """先取文档再判范围（顺序不能反，反了 404 会变成 403，等于泄露"这个 id 存在"）。"""
-    document = services.documents.get(document_id)
-    check_kb_scope(services, caller, [document.knowledge_base_id])
 
 
 # --------------------------------------------------------------------- 影响清单
@@ -99,7 +113,7 @@ def delete_document(
     **返回** ``200`` 而不是 ``204``：正文里给出回收站条目 id 与到期时间，
     界面据此提示"7 天内可从回收站恢复"——这正是用户最需要知道的一句话。
     """
-    _guard_document(services, caller, document_id)
+    _guard_document(services, caller, document_id, need=WRITE)
     entry = services.lifecycle.delete_document(document_id)
     return TrashEntryOut.model_validate(entry)
 
@@ -119,7 +133,7 @@ def delete_knowledge_base(
     **返回影响清单**：界面拿它拼"已删除 3 份文档、412 个切块"的回执。
     比只回 204 有用——用户删完会想知道"到底删掉了多少"。
     """
-    check_kb_scope(services, caller, [kb_id])
+    check_kb_scope(services, caller, [kb_id], need=WRITE)
     return _impact_out(services.lifecycle.delete_knowledge_base(kb_id))
 
 
@@ -129,8 +143,9 @@ def delete_knowledge_base(
 @router.get("/trash", response_model=TrashListOut, summary="回收站")
 def list_trash(
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_read)],
+    caller: Annotated[Caller, Depends(require_read)],
 ) -> TrashListOut:
+    _require_admin_for_trash(caller)
     return TrashListOut(
         items=[TrashEntryOut.model_validate(item) for item in services.lifecycle.list_trash()]
     )
@@ -144,7 +159,7 @@ def list_trash(
 def restore_from_trash(
     trash_id: str,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_write)],
+    caller: Annotated[Caller, Depends(require_write)],
 ) -> dict[str, str]:
     """恢复文档骨架与原文，并**重新入队摄入**。
 
@@ -152,6 +167,7 @@ def restore_from_trash(
     要再跑一遍解析与向量化才有检索能力。返回 202 并带上任务 id，
     界面可以引导用户去任务中心看进度。
     """
+    _require_admin_for_trash(caller)
     document_id, task_id = services.lifecycle.restore(trash_id)
     return {"document_id": document_id, "task_id": task_id or ""}
 
@@ -160,6 +176,7 @@ def restore_from_trash(
 def drop_trash(
     trash_id: str,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_write)],
+    caller: Annotated[Caller, Depends(require_write)],
 ) -> None:
+    _require_admin_for_trash(caller)
     services.lifecycle.drop_trash(trash_id)
