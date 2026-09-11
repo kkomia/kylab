@@ -18,7 +18,6 @@ import {
   listDocuments,
   reprocessDocument,
   type ImpactReport,
-  uploadDocument,
   type DocumentPart,
   type DocumentSummary,
 } from '@/api/documents'
@@ -31,6 +30,7 @@ import IconSearch from '@/components/icons/IconSearch.vue'
 import IconUpload from '@/components/icons/IconUpload.vue'
 import KbSearchPanel from '@/components/search/KbSearchPanel.vue'
 import SourcePanel from '@/components/knowledge/SourcePanel.vue'
+import UploadDialog from '@/components/knowledge/UploadDialog.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppModal from '@/components/ui/AppModal.vue'
@@ -40,6 +40,7 @@ import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { documentStageView } from '@/components/ui/status'
 import { formatBytes, formatRelativeTime } from '@/composables/useFormat'
+import { MAX_UPLOAD_MB, UPLOAD_FORMAT_HINT } from '@/composables/uploadLimits'
 import { roster } from '@/composables/useOperator'
 import { useToast } from '@/composables/useToast'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
@@ -59,7 +60,7 @@ const ACTIVE_STAGES = new Set([
 
 const route = useRoute()
 const store = useKnowledgeBaseStore()
-const { notifyError, notifySuccess, notifyWarning } = useToast()
+const { notifyError, notifySuccess } = useToast()
 
 /**
  * 删除确认（M6 / T6.4）。
@@ -114,10 +115,9 @@ const knowledgeBase = computed(() => store.byId(kbId.value))
 const documents = ref<DocumentSummary[]>([])
 const loading = ref(false)
 const error = ref('')
-const uploading = ref(false)
 const searchOpen = ref(false)
+const uploadOpen = ref(false)
 const expanded = ref<Record<string, DocumentPart[] | undefined>>({})
-const fileInput = ref<HTMLInputElement | null>(null)
 
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -166,29 +166,12 @@ onBeforeUnmount(() => {
   if (timer !== null) clearInterval(timer)
 })
 
-async function onFilesPicked(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement
-  const files = Array.from(input.files ?? [])
-  input.value = '' // 允许连续上传同一个文件
-  if (files.length === 0) return
-
-  uploading.value = true
-  try {
-    for (const file of files) {
-      const accepted = await uploadDocument(kbId.value, file)
-      if (accepted.is_duplicate) {
-        notifyWarning(`「${accepted.document.name}」内容与已有文档相同，已跳过重复摄入`)
-      } else {
-        notifySuccess(`已提交「${accepted.document.name}」，正在后台处理`)
-      }
-    }
-    await refresh()
-    syncPolling()
-  } catch (cause) {
-    notifyError(cause instanceof Error ? cause.message : '上传失败')
-  } finally {
-    uploading.value = false
-  }
+async function onUploaded(): Promise<void> {
+  // 弹窗自己负责**逐文件的结果**（哪个重复、哪个失败），这里只负责开始盯进度。
+  // 不再发 toast：批量上传时 toast 会连成一片，"哪几个没成功"根本看不清，
+  // 而那恰恰是用户唯一需要看的部分——那份清单留在弹窗里。
+  await refresh()
+  syncPolling()
 }
 
 async function toggleParts(document: DocumentSummary): Promise<void> {
@@ -236,14 +219,13 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
     </template>
 
     <template #actions>
-      <input ref="fileInput" class="visually-hidden" type="file" multiple @change="onFilesPicked" />
       <AppButton :disabled="documents.length === 0" @click="searchOpen = true">
         <template #icon><IconSearch /></template>
         在此库检索
       </AppButton>
-      <AppButton variant="primary" :disabled="uploading" @click="fileInput?.click()">
+      <AppButton variant="primary" @click="uploadOpen = true">
         <template #icon><IconUpload /></template>
-        {{ uploading ? '上传中…' : '上传文档' }}
+        上传文档
       </AppButton>
     </template>
 
@@ -254,9 +236,9 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
     <EmptyState
       v-else-if="documents.length === 0"
       title="这个知识库里还没有文档"
-      hint="支持 PDF、Office、Markdown、纯文本与图片，扫描件走 OCR 渠道；单文件上限 200MB。"
+      :hint="`${UPLOAD_FORMAT_HINT}；单文件上限 ${MAX_UPLOAD_MB}MB。`"
     >
-      <AppButton variant="primary" @click="fileInput?.click()">
+      <AppButton variant="primary" @click="uploadOpen = true">
         <template #icon><IconUpload /></template>
         上传文档
       </AppButton>
@@ -351,6 +333,18 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       :kb-id="kbId"
       :kb-name="knowledgeBase.name"
     />
+
+    <!--
+      上传（M6 / M5 收口）。**弹窗而不是"选完就传"**：
+      批量上传的重复/失败必须留在屏幕上让人逐个处理，toast 做不到这件事。
+    -->
+    <UploadDialog
+      v-if="knowledgeBase"
+      v-model:open="uploadOpen"
+      :kb-id="kbId"
+      :kb-name="knowledgeBase.name"
+      @uploaded="onUploaded"
+    />
     <!--
       删除确认（M6 / T6.4）。**先给人看影响清单再动手**：
       "删除该文档"没人会有感觉，"3 份文档、412 个切块"才会让人停一下。
@@ -437,15 +431,6 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 .error-line {
   margin: 0 0 var(--space-4);
   color: var(--status-danger);
-}
-
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
 }
 
 /* 列头与行共用同一套列宽，数字才会真的排在一条竖轴上 */
