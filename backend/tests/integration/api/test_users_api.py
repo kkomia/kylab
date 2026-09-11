@@ -193,3 +193,184 @@ def test_roster_writes_need_console_token(monkeypatch) -> None:
         user_id = created.json()["id"]
         assert client.delete(f"/api/v1/users/{user_id}", headers=apikey).status_code == 403
     get_settings.cache_clear()
+
+
+# --------------------------------------------------------------------- 账号管理（v10）
+#
+# 这组用例从 setup 开始（此时鉴权因账号存在而自动生效），全部用管理员会话驱动。
+
+
+@pytest.fixture
+def admin_client(client: TestClient) -> tuple[TestClient, dict[str, str]]:
+    setup = client.post(
+        "/api/v1/auth/setup", json={"username": "admin", "password": "correct horse battery"}
+    ).json()
+    return client, {"Authorization": f"Bearer {setup['token']}"}
+
+
+def test_admin_creates_account_and_member_can_log_in(admin_client) -> None:  # type: ignore[no-untyped-def]
+    client, admin = admin_client
+
+    created = client.post(
+        "/api/v1/users",
+        json={"name": "小王", "username": "Wang", "password": "initial pass 123"},
+        headers=admin,
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    # 登录名归一化为小写；名册字段（document_count）照常
+    assert (body["username"], body["role"], body["disabled"]) == ("wang", "member", False)
+
+    login = client.post(
+        "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
+    )
+    assert login.status_code == 200
+
+
+def test_account_requires_initial_password(admin_client) -> None:  # type: ignore[no-untyped-def]
+    client, admin = admin_client
+    response = client.post(
+        "/api/v1/users", json={"name": "小王", "username": "wang"}, headers=admin
+    )
+    # InvalidRequestError 映射 422（错误信封装"开通账号需要设置初始密码"）
+    assert response.status_code == 422
+    assert "初始密码" in response.json()["message"]
+
+
+def test_admin_resets_password_and_old_sessions_die(admin_client) -> None:  # type: ignore[no-untyped-def]
+    client, admin = admin_client
+    created = client.post(
+        "/api/v1/users",
+        json={"name": "小王", "username": "wang", "password": "initial pass 123"},
+        headers=admin,
+    ).json()
+    user_id = created["id"]
+    session = client.post(
+        "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
+    ).json()["token"]
+    assert (
+        client.put(
+            f"/api/v1/users/{user_id}/password",
+            json={"password": "brand new pass 456"},
+            headers=admin,
+        ).status_code
+        == 204
+    )
+
+    # 旧会话全部吊销，旧密码不能再登录，新密码可以
+    assert (
+        client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {session}"}).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
+        ).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login", json={"username": "wang", "password": "brand new pass 456"}
+        ).status_code
+        == 200
+    )
+
+
+def test_disabled_account_cannot_log_in_and_sessions_die(admin_client) -> None:  # type: ignore[no-untyped-def]
+    client, admin = admin_client
+    created = client.post(
+        "/api/v1/users",
+        json={"name": "小王", "username": "wang", "password": "initial pass 123"},
+        headers=admin,
+    ).json()
+    user_id = created["id"]
+    session = client.post(
+        "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
+    ).json()["token"]
+
+    assert (
+        client.put(
+            f"/api/v1/users/{user_id}/disabled", json={"disabled": True}, headers=admin
+        ).status_code
+        == 200
+    )
+    assert (
+        client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {session}"}).status_code
+        == 401
+    )
+    assert (
+        client.post(
+            "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
+        ).status_code
+        == 401
+    )
+
+    # 重新启用：能登录了
+    client.put(f"/api/v1/users/{user_id}/disabled", json={"disabled": False}, headers=admin)
+    assert (
+        client.post(
+            "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
+        ).status_code
+        == 200
+    )
+
+
+def test_member_cannot_manage_accounts(admin_client) -> None:  # type: ignore[no-untyped-def]
+    """成员对用户管理端点一律 403：账号体系是控制台级配置。"""
+    client, admin = admin_client
+    client.post(
+        "/api/v1/users",
+        json={"name": "小王", "username": "wang", "password": "initial pass 123"},
+        headers=admin,
+    )
+    member = client.post(
+        "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
+    ).json()
+    headers = {"Authorization": f"Bearer {member['token']}"}
+
+    assert (
+        client.post("/api/v1/users", json={"name": "偷偷加"}, headers=headers).status_code == 403
+    )
+    user_id = member["user"]["id"]
+    assert (
+        client.put(
+            f"/api/v1/users/{user_id}/password", json={"password": "x" * 10}, headers=headers
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put(
+            f"/api/v1/users/{user_id}/disabled", json={"disabled": True}, headers=headers
+        ).status_code
+        == 403
+    )
+    assert client.delete(f"/api/v1/users/{user_id}", headers=headers).status_code == 403
+
+
+def test_cannot_disable_the_last_admin(admin_client) -> None:  # type: ignore[no-untyped-def]
+    """禁掉最后一个可用管理员 = 没人能进设置页，只能靠改库恢复。必须拦。"""
+    client, admin = admin_client
+    admin_id = client.get("/api/v1/auth/me", headers=admin).json()["id"]
+
+    response = client.put(
+        f"/api/v1/users/{admin_id}/disabled", json={"disabled": True}, headers=admin
+    )
+    assert response.status_code == 409
+
+    # 有了第二个管理员就可以禁了
+    client.post(
+        "/api/v1/users",
+        json={
+            "name": "副管理员",
+            "username": "admin2",
+            "password": "second admin pass",
+            "role": "admin",
+        },
+        headers=admin,
+    )
+    assert (
+        client.put(
+            f"/api/v1/users/{admin_id}/disabled", json={"disabled": True}, headers=admin
+        ).status_code
+        == 200
+    )

@@ -40,12 +40,14 @@ def _guard_document(
 
 
 def _require_admin_for_trash(caller: Caller) -> None:
-    """回收站对成员关闭（v1 的刻意简化）。
+    """回收站只认控制台身份（管理员会话 / 控制台令牌）。
 
-    回收站里是**所有人**删掉的文档（含别人的），按库过滤会让"恢复"的语义
-    变复杂（恢复回哪个库、还算不算你的）。它是运维职能，先只给管理员。
+    回收站里是**所有人**删掉的文档（含别人的）。成员拦掉好理解；**API Key
+    也拦**是因为：哪怕只读档的 key 也能从列表里看到所有人删过什么（跨库
+    元信息泄露），读写档还能恢复/彻底删除任意条目。它是运维职能，
+    不属于任何集成场景。
     """
-    if caller.user is not None and not caller.is_console:
+    if not caller.is_console:
         raise ForbiddenError("回收站需要管理员身份")
 
 
@@ -132,6 +134,10 @@ def delete_knowledge_base(
 
     **返回影响清单**：界面拿它拼"已删除 3 份文档、412 个切块"的回执。
     比只回 204 有用——用户删完会想知道"到底删掉了多少"。
+
+    注意（v10）：write 档的被分享者也能删——"写"包含内容生命周期，
+    这与删库不可恢复（不进回收站）是同一个刻意选择的两端。
+    想要"能传不能删"的档位，得加第三档权限，暂不做。
     """
     check_kb_scope(services, caller, [kb_id], need=WRITE)
     return _impact_out(services.lifecycle.delete_knowledge_base(kb_id))

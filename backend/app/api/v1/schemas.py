@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -684,6 +685,20 @@ class TrashListOut(BaseModel):
 class UserCreateIn(BaseModel):
     name: str = Field(min_length=1, max_length=32)
     note: str = Field(default="", max_length=64)
+    # 账号字段（v10）：带了 username 就是开通账号，不带就是纯名册条目
+    username: str | None = Field(default=None, min_length=1, max_length=64)
+    password: str | None = Field(default=None)
+    role: Literal["admin", "member"] = "member"
+
+
+class UserPasswordIn(BaseModel):
+    """管理员重置某人的密码。"""
+
+    password: str = Field(min_length=1)
+
+
+class UserDisabledIn(BaseModel):
+    disabled: bool
 
 
 class UserOut(BaseModel):
@@ -692,6 +707,9 @@ class UserOut(BaseModel):
     id: str
     name: str
     note: str = ""
+    username: str | None = None
+    role: str = "member"
+    disabled: bool = False
     created_at: datetime | None = None
     document_count: int = 0
     """这个人传过多少文档——删他之前要能说清"会影响什么"。"""

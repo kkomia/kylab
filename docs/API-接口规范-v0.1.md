@@ -149,7 +149,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **82** 条端点。
+共 **84** 条端点。
 
 ### `api-keys`
 
@@ -315,8 +315,10 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/v1/users` | 使用者名册 |
-| `POST` | `/api/v1/users` | 添加使用者 |
+| `POST` | `/api/v1/users` | 添加使用者 / 开通账号（带 username 即账号） |
 | `DELETE` | `/api/v1/users/{user_id}` | 删除使用者（其文档保留，归属置空） |
+| `PUT` | `/api/v1/users/{user_id}/disabled` | 禁用 / 启用账号（禁用即吊销全部会话） |
+| `PUT` | `/api/v1/users/{user_id}/password` | 重置密码（吊销其全部会话） |
 
 ### `webhooks`
 

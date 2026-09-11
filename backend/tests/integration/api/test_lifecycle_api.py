@@ -224,7 +224,8 @@ def test_delete_needs_write_permission(monkeypatch) -> None:
 
         # 读影响清单可以（界面要显示它）
         assert client.get(f"/api/v1/documents/{doc_id}/impact", headers=readonly).status_code == 200
-        assert client.get("/api/v1/trash", headers=readonly).status_code == 200
+        # 回收站是控制台专属（含所有人删过什么的跨库元信息），外部密钥进不去
+        assert client.get("/api/v1/trash", headers=readonly).status_code == 403
         # 删除不行
         assert client.delete(f"/api/v1/documents/{doc_id}", headers=readonly).status_code == 403
         kb_id = kb.json()["id"]

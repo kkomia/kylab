@@ -16,8 +16,9 @@ import pytest
 
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.core.security import API_KEY_PREFIX, hash_token
-from app.models.enums import ApiKeyPermission
+from app.models.enums import ApiKeyPermission, SharePermission
 from app.services.api_key import READ, WRITE, ApiKeyService
+from app.storage.base import KnowledgeBaseRecord, ShareRecord, UserRecord
 
 
 @pytest.fixture
@@ -223,3 +224,33 @@ def test_member_sees_only_owned_kbs(service, store) -> None:  # type: ignore[no-
 def test_member_cannot_touch_admin_only_endpoints(service) -> None:  # type: ignore[no-untyped-def]
     """成员会话 is_console=False：require_console 那层（设置页/密钥管理）进不去。"""
     assert _member(service).is_console is False
+
+
+def test_readonly_share_cannot_write(service, store) -> None:  # type: ignore[no-untyped-def]
+    """只读档分享在 need=WRITE 时必须被拒——这是'分享只读不破写'的唯一闸门。
+
+    端点侧的上传 403 由集成测试钉住；这里钉判定本身：哪天某个写端点漏接
+    ``need=WRITE``，这条与该端点的集成用例会一起红。
+    """
+    store.create_knowledge_base(
+        KnowledgeBaseRecord(id="kb_shared", name="分享来的", embedding_model_id="m",
+                            embedding_dim=768, owner_id="user_o")
+    )
+    store.create_user(UserRecord(id="user_m2", name="成员", username="m2"))
+    store.put_share(
+        ShareRecord(kb_id="kb_shared", user_id="user_m2", permission=SharePermission.READ)
+    )
+
+    caller = _member(service, "user_m2")
+    # 读放行
+    service.check_access(caller, need=READ, kb_ids=["kb_shared"])
+    assert service.visible_kb_ids(caller) == ["kb_shared"]
+    # 写拒绝，且文案点明是"只读分享"
+    with pytest.raises(ForbiddenError, match="只读"):
+        service.check_access(caller, need=WRITE, kb_ids=["kb_shared"])
+
+    # 升档为 write 后放行
+    store.put_share(
+        ShareRecord(kb_id="kb_shared", user_id="user_m2", permission=SharePermission.WRITE)
+    )
+    service.check_access(caller, need=WRITE, kb_ids=["kb_shared"])

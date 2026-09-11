@@ -93,11 +93,10 @@ def test_share_target_must_be_a_real_account(shares: ShareService, store) -> Non
         _grant(shares, username="仅名册")
 
 
-def test_share_to_owner_or_admin_is_rejected(shares: ShareService) -> None:
+def test_share_to_owner_or_admin_is_rejected(shares: ShareService, store) -> None:  # type: ignore[no-untyped-def]
     with pytest.raises(InvalidRequestError, match="本来就是他的"):
         _grant(shares, username="owner")
-    store_admin = shares._stores.meta  # 造一个管理员账号
-    store_admin.create_user(
+    store.create_user(
         UserRecord(id="user_admin2", name="管理员", username="admin2", role=UserRole.ADMIN)
     )
     with pytest.raises(InvalidRequestError, match="管理员本来就能看到"):

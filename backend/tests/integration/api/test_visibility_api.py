@@ -366,3 +366,26 @@ def test_member_cannot_manage_shares_of_shared_kb(two_users) -> None:  # type: i
         ).status_code
         == 403
     )
+
+
+def test_member_cannot_touch_trash(two_users) -> None:  # type: ignore[no-untyped-def]
+    """回收站是控制台专属：里面有所有人删过什么的元信息，成员一律 403。"""
+    client, admin, member = two_users
+    kb = client.post(
+        "/api/v1/knowledge-bases", json={"name": "管理员的库"}, headers=_as(admin["token"])
+    ).json()
+    upload = client.post(
+        f"/api/v1/knowledge-bases/{kb['id']}/documents",
+        files={"file": ("待删.md", b"# t", "text/markdown")},
+        headers=_as(admin["token"]),
+    ).json()
+    trashed = client.delete(
+        f"/api/v1/documents/{upload['document']['id']}", headers=_as(admin["token"])
+    ).json()
+
+    member_h = _as(member["token"])
+    assert client.get("/api/v1/trash", headers=member_h).status_code == 403
+    assert (
+        client.post(f"/api/v1/trash/{trashed['id']}/restore", headers=member_h).status_code == 403
+    )
+    assert client.delete(f"/api/v1/trash/{trashed['id']}", headers=member_h).status_code == 403

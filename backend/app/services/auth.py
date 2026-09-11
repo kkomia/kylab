@@ -34,7 +34,12 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from app.core.exceptions import ConflictError, InvalidRequestError, UnauthorizedError
+from app.core.exceptions import (
+    ConflictError,
+    InvalidRequestError,
+    NotFoundError,
+    UnauthorizedError,
+)
 from app.core.security import (
     generate_session_token,
     hash_password,
@@ -230,6 +235,75 @@ class AuthService:
         return self._stores.meta.delete_sessions_for_user(
             user.id, except_session_id=keep_session_id
         )
+
+    # ------------------------------------------------------------------ 账号管理（管理员）
+
+    def create_account(
+        self,
+        *,
+        name: str,
+        username: str,
+        password: str,
+        role: UserRole = UserRole.MEMBER,
+        note: str = "",
+    ) -> UserRecord:
+        """管理员开通账号。
+
+        初始密码由管理员设定、用户首次登录后自己改（``change_password``）。
+        不强制"首次登录必须改密"：那是企业合规需求，家庭/小团队场景里
+        只会成为"所有人都用同一个初始密码"的温床。
+        """
+        cleaned = self._clean_username(username)
+        self._check_password(password)
+        return self._stores.meta.create_user(
+            UserRecord(
+                id=f"user_{uuid.uuid4().hex[:12]}",
+                name=name.strip() or cleaned,
+                note=note.strip(),
+                username=cleaned,
+                password_hash=hash_password(password),
+                role=role,
+            )
+        )
+
+    def reset_password(self, user_id: str, new_password: str) -> int:
+        """管理员重置密码，并吊销该账号的**全部**会话（含正在用的那条）。
+
+        与 ``change_password`` 的区别：那是本人改自己的（保住当前会话），
+        这是管理员处置——重置往往因为"原密码可能泄露了"，留着的会话都得死。
+        返回吊销了几条。
+        """
+        user = self._stores.meta.get_user(user_id)
+        if user is None or user.username is None:
+            raise NotFoundError(f"账号不存在：{user_id}")
+        self._check_password(new_password)
+        self._stores.meta.update_user_password(user.id, hash_password(new_password))
+        return self._stores.meta.delete_sessions_for_user(user.id)
+
+    def set_disabled(self, user_id: str, disabled: bool) -> None:
+        """禁用/启用账号。禁用时吊销全部会话——不能等它自然过期。
+
+        **最后一个可用的管理员不能被禁用**：禁完就没有人能进设置页，
+        只能靠控制台令牌或改库恢复——那是最难向用户解释的一类死锁。
+        """
+        user = self._stores.meta.get_user(user_id)
+        if user is None:
+            raise NotFoundError(f"账号不存在：{user_id}")
+        if disabled and user.role is UserRole.ADMIN:
+            other_admins = [
+                item
+                for item in self._stores.meta.list_users()
+                if item.role is UserRole.ADMIN
+                and not item.disabled
+                and item.username is not None
+                and item.id != user_id
+            ]
+            if not other_admins:
+                raise ConflictError("这是最后一个可用的管理员账号，不能禁用")
+        self._stores.meta.set_user_disabled(user_id, disabled)
+        if disabled:
+            revoked = self._stores.meta.delete_sessions_for_user(user_id)
+            logger.warning("账号 %s 已禁用，吊销会话 %d 条", user_id, revoked)
 
     # ------------------------------------------------------------------ 内部
 
