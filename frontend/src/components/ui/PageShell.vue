@@ -24,6 +24,9 @@ withDefaults(defineProps<{ title: string; description?: string; narrow?: boolean
     </nav>
 
     <PageHeader :title="title" :description="description">
+      <template v-if="$slots['title-suffix']" #title-suffix>
+        <slot name="title-suffix" />
+      </template>
       <template v-if="$slots.description" #description>
         <slot name="description" />
       </template>

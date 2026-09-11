@@ -11,7 +11,7 @@
  *
  * 父组件只负责"变了之后去哪儿"（列表刷新 / 详情页跳走），通过 `changed` 事件表达。
  */
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 
 import { getKnowledgeBaseImpact, type KnowledgeBase } from '@/api/knowledgeBases'
 import type { ImpactReport } from '@/api/documents'
@@ -28,6 +28,9 @@ const emit = defineEmits<{ changed: [action: 'renamed' | 'deleted'] }>()
 
 const store = useKnowledgeBaseStore()
 const { notifyError, notifySuccess } = useToast()
+
+/** 文档数来自 store 的汇总表（列表页已经拉过）。拿不到就不显示数字，而不是显示 0。 */
+const documentCount = computed(() => store.summaries[props.kb.id]?.count ?? null)
 
 const settingsOpen = ref(false)
 const draft = ref('')
@@ -126,6 +129,30 @@ async function confirmDelete(): Promise<void> {
         </p>
       </section>
 
+      <!-- 库的具体信息（原先挂在页头标题下那一行小字）。放在设置里读，而不是
+           每进一次页面就占掉标题下方一整行 -->
+      <section class="kb-setting">
+        <h3 class="kb-setting-title">库信息</h3>
+        <dl class="kb-setting-info">
+          <div>
+            <dt>文档</dt>
+            <dd>{{ documentCount === null ? '—' : `${documentCount} 篇` }}</dd>
+          </div>
+          <div>
+            <dt>嵌入模型</dt>
+            <dd>{{ kb.embedding_model_id || '—' }}</dd>
+          </div>
+          <div>
+            <dt>向量维度</dt>
+            <dd>{{ kb.embedding_dim || '—' }}</dd>
+          </div>
+          <div>
+            <dt>切分</dt>
+            <dd>块长 {{ kb.chunk_size }} / 重叠 {{ kb.chunk_overlap }}</dd>
+          </div>
+        </dl>
+      </section>
+
       <section class="kb-setting kb-setting-danger">
         <h3 class="kb-setting-title">删除知识库</h3>
         <p class="kb-setting-hint">
@@ -210,6 +237,26 @@ async function confirmDelete(): Promise<void> {
   margin-bottom: var(--space-2);
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
+}
+
+/* 库信息的只读清单：两列，标签弱、值强 */
+.kb-setting-info {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3) var(--space-4);
+  margin: 0;
+}
+
+.kb-setting-info dt {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.kb-setting-info dd {
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-meta-size);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
 }
 
 .kb-setting-row {

@@ -493,6 +493,8 @@ function onWindowResize(): void {
 onMounted(async () => {
   window.addEventListener('resize', onWindowResize)
   if (store.items.length === 0) await store.load()
+  // 设置弹窗里的"文档 N 篇"来自汇总表；直接进这一页时它可能还没拉过
+  void store.loadSummaries()
   await loadFirst()
   void nextTick(syncFillerRows)
 })
@@ -682,11 +684,10 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 
 <template>
   <PageShell :title="knowledgeBase?.name ?? '知识库'">
-    <template v-if="knowledgeBase" #description>
-      {{ documents.length }} 篇文档<span class="sep">·</span>{{ knowledgeBase.embedding_model_id
-      }}<span class="sep">·</span>{{ knowledgeBase.embedding_dim }} 维<span class="sep">·</span>切分
-      {{ knowledgeBase.chunk_size }}<span class="sep">/</span>重叠
-      {{ knowledgeBase.chunk_overlap }}
+    <!-- 设置齿轮贴在标题右侧：它是"这个库本身"的入口，不是页面的动作。
+         库的规模/模型/切分等具体信息移进设置弹窗，页头不再挂那行小字 -->
+    <template v-if="knowledgeBase?.can_write" #title-suffix>
+      <KnowledgeBaseMenu :kb="knowledgeBase" @changed="onKbChanged" />
     </template>
 
     <template #actions>
@@ -713,12 +714,6 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
         <template #icon><IconUpload /></template>
         上传文档
       </AppButton>
-      <!-- 库级设置：齿轮按钮 + 弹窗（参考 WeKnora 知识库旁的设置按钮） -->
-      <KnowledgeBaseMenu
-        v-if="knowledgeBase?.can_write"
-        :kb="knowledgeBase"
-        @changed="onKbChanged"
-      />
     </template>
 
     <p v-if="error" class="error-line">{{ error }}</p>
@@ -894,39 +889,43 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
         <SkeletonBlock v-if="loading && documents.length === 0" variant="list" :rows="4" />
 
         <template v-else>
-          <!-- 批量操作条：只有在勾了东西时才出现（没选东西时它只是噪音） -->
-          <div v-if="selectedCount > 0" class="batch-bar">
-            <span class="batch-count">已选 {{ selectedCount }} 篇</span>
-            <AppButton size="sm" :disabled="batchRunning" @click="runBatch('reprocess')">
-              <template #icon><IconRefresh /></template>
-              重新摄入
-            </AppButton>
-            <AppButton
-              size="sm"
-              variant="danger"
-              :disabled="batchRunning"
-              @click="runBatch('delete')"
-            >
-              <template #icon><IconTrash /></template>
-              删除
-            </AppButton>
-            <AppButton size="sm" :disabled="batchRunning" @click="clearSelection"
-              >取消选择</AppButton
-            >
+          <!-- 列表工具条：全选与批量动作都贴在列表正上方（不再塞进表头里）。
+               勾了东西才长出批量按钮，没勾时这一行只有"全选"，不占注意力 -->
+          <div v-if="knowledgeBase?.can_write" class="list-tools">
+            <label class="select-all">
+              <input
+                type="checkbox"
+                :checked="allSelected"
+                :aria-label="selectedCount > 0 ? `已选 ${selectedCount} 篇` : '全选当前列表'"
+                @change="toggleSelectAll"
+              />
+              <span>{{ selectedCount > 0 ? `已选 ${selectedCount} 篇` : '全选' }}</span>
+            </label>
+            <div v-if="selectedCount > 0" class="batch-actions">
+              <AppButton size="sm" :disabled="batchRunning" @click="runBatch('reprocess')">
+                <template #icon><IconRefresh /></template>
+                重新摄入
+              </AppButton>
+              <AppButton
+                size="sm"
+                variant="danger"
+                :disabled="batchRunning"
+                @click="runBatch('delete')"
+              >
+                <template #icon><IconTrash /></template>
+                删除
+              </AppButton>
+              <AppButton size="sm" :disabled="batchRunning" @click="clearSelection">
+                取消选择
+              </AppButton>
+            </div>
           </div>
 
           <!-- 列头：让右侧那串数字有名字，不必靠猜。
-           文字列标 aria-hidden（纯装饰），但全选框是交互控件，不能被一起藏掉 -->
+           文字列标 aria-hidden（纯装饰）；勾选列保留同宽占位，否则右侧数字列会错位 -->
           <div ref="listPanel" class="panel">
             <div class="panel-head list-head">
-              <span v-if="knowledgeBase?.can_write" class="head-check">
-                <input
-                  type="checkbox"
-                  :checked="allSelected"
-                  aria-label="全选当前列表"
-                  @change="toggleSelectAll"
-                />
-              </span>
+              <span v-if="knowledgeBase?.can_write" class="head-check" aria-hidden="true" />
               <span class="head-file" aria-hidden="true">文件</span>
               <span class="head-number" aria-hidden="true">切块</span>
               <span class="head-size" aria-hidden="true">大小</span>
@@ -1482,22 +1481,44 @@ button.tree-caret:hover {
 
 /* ---- 多选与批量 ---- */
 
-.batch-bar {
+/* 列表正上方的工具条：全选在左，批量动作在右。高度固定，勾选后不会把列表顶下去 */
+.list-tools {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  background: var(--accent-soft);
-  border-radius: var(--radius-control);
+  min-height: var(--control-height);
+  margin-bottom: var(--space-2);
 }
 
-/* 左侧计数吃掉剩余空间，把按钮推到右边 */
-.batch-count {
-  margin-right: auto;
+.select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
   font-size: var(--text-meta-size);
-  color: var(--accent-text);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.select-all:hover {
+  color: var(--text-primary);
+}
+
+.select-all input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* 批量动作靠右，与"全选"拉开距离——两者语义不同，挨着容易误点 */
+.batch-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
 }
 
 /* 勾选框列：列头与行同宽，右侧的列才不会错位 */
@@ -1509,7 +1530,6 @@ button.tree-caret:hover {
   justify-content: center;
 }
 
-.head-check input,
 .row-check input {
   width: 15px;
   height: 15px;

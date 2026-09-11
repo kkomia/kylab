@@ -12,7 +12,12 @@ defineProps<{ title: string; description?: string }>()
 <template>
   <header class="page-head">
     <div class="page-head-main">
-      <h1 class="page-title">{{ title }}</h1>
+      <div class="page-title-row">
+        <h1 class="page-title">{{ title }}</h1>
+        <!-- 紧贴标题的行内控件（如知识库的设置齿轮）。这类控件属于"这个对象本身"，
+             放在右侧动作区会读成"页面的动作"，语义不同 -->
+        <slot name="title-suffix" />
+      </div>
       <!-- 外层 p 提供排版，插槽内容可以是纯文本，也可以带 .sep 这类行内标记 -->
       <p v-if="description || $slots.description" class="page-description">
         <slot name="description">{{ description }}</slot>
@@ -32,6 +37,13 @@ defineProps<{ title: string; description?: string }>()
   gap: var(--space-4);
   padding-bottom: var(--space-4);
   border-bottom: 1px solid var(--border-hairline);
+}
+
+/* 标题与它右侧的行内控件同处一行，基线对齐 */
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 /* 操作按钮与标题的第一行基线对齐，而不是与整块垂直居中——
