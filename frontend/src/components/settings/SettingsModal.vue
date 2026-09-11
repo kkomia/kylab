@@ -81,29 +81,37 @@ type SectionKey =
   'registry' | 'models' | 'llm' | 'services' | 'storage' | 'appearance' | 'users' | 'system'
 
 /**
- * 左侧分组菜单。每项配一枚 Remix 图标（第二轮评审批注 8）：
- * 八行纯文字并排时只能逐字读，图标给一个"扫视锚点"。
+ * 左侧菜单（对齐 Kimi 桌面端 / wekora 的设置菜单）：
+ * **分组标题 + 图标 + 单行标签**，每项下面不再挂一句小字解释。
+ *
+ * 之前每项都有 hint，八行并排时八句灰字——扫视时先撞到的是解释，
+ * 而菜单要回答的只是"去哪一组"。解释属于内容区，进来再说。
  */
 const SECTIONS: {
   key: SectionKey
   label: string
-  hint: string
   icon: Component
   adminOnly?: boolean
 }[] = [
-  // **「模型」放在最前**：现在它是配置模型的**主路径**（供应商 → 模型 → 用途），
-  // 下面那两组是回退用的精细字段。先主路径、再回退项，顺序才符合用户的心智
-  { key: 'registry', label: '模型', hint: '供应商与用途分配', icon: IconRobot },
-  // 保留原有两组作为回退：没在「模型」里绑定的用途，仍然按这里的字段走。
-  // 命名上加「（精细）」以免用户以为要两处都填
-  { key: 'models', label: '向量化（精细）', hint: '未绑定时生效', icon: IconDatabase },
-  { key: 'llm', label: '对话模型（精细）', hint: '未绑定时生效', icon: IconChat },
-  { key: 'services', label: '服务配置', hint: '云端解析节点', icon: IconServer },
-  { key: 'storage', label: '存储配置', hint: '元数据与向量', icon: IconFolder },
-  { key: 'appearance', label: '外观', hint: '主题与字号', icon: IconSun },
+  // **「模型」放在最前**：它是配置模型的主路径（供应商 → 模型 → 用途）
+  { key: 'registry', label: '模型注册', icon: IconRobot },
+  // 这两组是回退用的精细字段：没在「模型」里绑定的用途，按这里的字段走
+  { key: 'models', label: '向量化', icon: IconDatabase },
+  { key: 'llm', label: '对话模型', icon: IconChat },
+  { key: 'services', label: '服务配置', icon: IconServer },
+  { key: 'storage', label: '存储配置', icon: IconFolder },
   // 只有管理员（或控制台令牌通道）能看：/users 的写与管理端点是控制台级
-  { key: 'users', label: '用户', hint: '账号与成员', icon: IconUser, adminOnly: true },
-  { key: 'system', label: '系统与安全', hint: '版本与鉴权', icon: IconShieldCheck },
+  { key: 'users', label: '用户', icon: IconUser, adminOnly: true },
+  { key: 'system', label: '系统与安全', icon: IconShieldCheck },
+  { key: 'appearance', label: '外观', icon: IconSun },
+]
+
+/** 菜单分组。分组标题是唯一的小字——它标段落，不解释条目。 */
+const NAV_GROUPS: { label: string; keys: SectionKey[] }[] = [
+  { label: '模型', keys: ['registry', 'models', 'llm'] },
+  { label: '服务', keys: ['services', 'storage'] },
+  { label: '账户', keys: ['users', 'system'] },
+  { label: '偏好', keys: ['appearance'] },
 ]
 
 const store = useKnowledgeBaseStore()
@@ -218,6 +226,13 @@ async function submitPasswordChange(): Promise<void> {
 const canManageUsers = computed(() => currentUser.value === null || isAdmin.value)
 const visibleSections = computed(() =>
   SECTIONS.filter((item) => !item.adminOnly || canManageUsers.value),
+)
+/** 菜单按分组渲染：组成员被权限过滤掉（如成员的「用户」）后，空组不占位。 */
+const visibleGroups = computed(() =>
+  NAV_GROUPS.map((group) => ({
+    label: group.label,
+    items: visibleSections.value.filter((item) => group.keys.includes(item.key)),
+  })).filter((group) => group.items.length > 0),
 )
 
 const users = ref<RosterUser[]>([])
@@ -521,22 +536,22 @@ async function runTest(target: string): Promise<void> {
 <template>
   <AppModal v-model:open="open" size="wide" height="tall" title="设置">
     <div class="settings">
-      <!-- 左：分组菜单。设置项会越来越多，平铺下去没人找得到 -->
+      <!-- 左：分组菜单（Kimi / wekora 式：分组标题 + 图标 + 单行标签） -->
       <nav class="settings-nav" aria-label="设置分组">
-        <button
-          v-for="item in visibleSections"
-          :key="item.key"
-          class="nav-entry"
-          :class="{ 'nav-entry-active': section === item.key }"
-          type="button"
-          @click="((section = item.key), (editing = null))"
-        >
-          <component :is="item.icon" class="nav-icon" />
-          <span class="nav-text">
+        <template v-for="navGroup in visibleGroups" :key="navGroup.label">
+          <p class="nav-group">{{ navGroup.label }}</p>
+          <button
+            v-for="item in navGroup.items"
+            :key="item.key"
+            class="nav-entry"
+            :class="{ 'nav-entry-active': section === item.key }"
+            type="button"
+            @click="((section = item.key), (editing = null))"
+          >
+            <component :is="item.icon" class="nav-icon" />
             <span class="nav-label">{{ item.label }}</span>
-            <span class="nav-hint">{{ item.hint }}</span>
-          </span>
-        </button>
+          </button>
+        </template>
       </nav>
 
       <!-- 右：内容 -->
@@ -615,7 +630,7 @@ async function runTest(target: string): Promise<void> {
               </AppButton>
             </div>
             <p v-if="config?.embedding_is_development" class="row-note">
-              未配置 API Key，当前用确定性哈希兜底：只有词面重叠、没有语义，检索质量不代表真实效果。
+              未配置 Key，现用哈希兜底：只有词面匹配，没有语义。
             </p>
 
             <div class="row">
@@ -632,9 +647,7 @@ async function runTest(target: string): Promise<void> {
               />
               <AppButton v-if="group('rerank')" @click="openEdit(group('rerank')!)">编辑</AppButton>
             </div>
-            <p class="row-note">
-              未配置时整体跳过重排，不影响检索可用性（失败也会退回 RRF 顺序）。
-            </p>
+            <p class="row-note">未配置时整体跳过重排，不影响检索。</p>
           </template>
         </template>
 
@@ -708,10 +721,7 @@ async function runTest(target: string): Promise<void> {
 
           <template v-else>
             <h3 class="section-title">对话模型（LLM）</h3>
-            <p class="section-note">
-              对话页用它把检索到的原文读成回答。没配好时「对话」会直接报错，
-              不会给出没有依据的答案——这一层是刻意不兜底的。
-            </p>
+            <p class="section-note">没配好时「对话」直接报错，不编造答案。</p>
 
             <div class="row">
               <div class="row-main">
@@ -736,7 +746,7 @@ async function runTest(target: string): Promise<void> {
               <span>{{ llmTest.detail }}</span>
             </div>
             <p v-if="fieldValue('llm', 'llm.enable_thinking') === 'true'" class="row-note">
-              已打开深度思考：回答更慢、更费 token，请确认「最大回复长度」留得足够大。
+              更慢、更费 token；确认「最大回复长度」够大。
             </p>
 
             <h3 class="section-title section-gap">对话行为</h3>
@@ -750,10 +760,7 @@ async function runTest(target: string): Promise<void> {
               >
               <AppButton v-if="group('chat')" @click="openEdit(group('chat')!)">编辑</AppButton>
             </div>
-            <p class="row-note">
-              「带入资料的条数」决定一次对话给模型看几段原文：条数越多依据越全，
-              但更容易把问题本身挤出上下文。
-            </p>
+            <p class="row-note">条数越多依据越全，但可能挤掉问题本身。</p>
           </template>
         </template>
 
@@ -798,10 +805,7 @@ async function runTest(target: string): Promise<void> {
 
           <template v-else>
             <h3 class="section-title">服务配置</h3>
-            <p class="section-note">
-              两个云端解析节点互为备选：文字型文档优先 MinerU，扫描件与混合型可降级到
-              PaddleOCR（架构 §4.1）。
-            </p>
+            <p class="section-note">两节点互为备选：文字型优先 MinerU，扫描件降级 PaddleOCR。</p>
 
             <div class="row">
               <div class="row-main">
@@ -817,10 +821,7 @@ async function runTest(target: string): Promise<void> {
               />
               <AppButton v-if="group('mineru')" @click="openEdit(group('mineru')!)">编辑</AppButton>
             </div>
-            <p class="row-note">
-              版面还原强，负责文字型 PDF 与 Office；单文件上限 200MB / 200 页，每日 1000
-              页优先额度。
-            </p>
+            <p class="row-note">文字型 PDF 与 Office；单文件 ≤ 200MB / 200 页。</p>
 
             <div class="row">
               <div class="row-main">
@@ -846,8 +847,7 @@ async function runTest(target: string): Promise<void> {
         <template v-else-if="section === 'storage'">
           <h3 class="section-title">存储配置</h3>
           <p class="section-note">
-            全内嵌存储，无需外部服务。数据目录由环境变量 <code>KYLAB_DATA_DIR</code> 决定，
-            改它要重启后端——这一项不适合放在界面上点。
+            全内嵌存储，无需外部服务；数据目录由 <code>KYLAB_DATA_DIR</code> 决定，改后需重启。
           </p>
           <div class="row row-static">
             <div class="row-main">
@@ -934,19 +934,13 @@ async function runTest(target: string): Promise<void> {
               <span class="scale-size tabular">{{ item.bodySize }}px</span>
             </button>
           </div>
-
-          <p class="text-hint">
-            小字号占满了界面外壳（侧栏、标签、元信息），正文反倒不突出——
-            所以整条字阶抬了一档，并允许你按屏幕距离微调。 最小档的辅助文字仍是
-            12px，再小就会影响辨认。
-          </p>
         </template>
 
         <!-- 用户（v10）：开通账号与成员管理。仅管理员/控制台可见 -->
         <template v-else-if="section === 'users'">
           <h3 class="section-title">用户</h3>
           <p class="section-note">
-            开通账号后，对方用自己的登录名登录，且只能看到你分享给他的知识库。没有登录名的名册条目仅用于标记文档归属。
+            对方登录后只能看到你分享给他的知识库；没有登录名的名册条目只用于标记归属。
           </p>
 
           <div class="create-card">
@@ -987,9 +981,7 @@ async function runTest(target: string): Promise<void> {
                 {{ creatingUser ? '开通中…' : '开通账号' }}
               </AppButton>
             </div>
-            <p class="row-note">
-              初始密码由你转告对方；刻意不强制首次登录改密——家庭场景下那只会变成所有人共用同一个密码。
-            </p>
+            <p class="row-note">初始密码需你转告对方。</p>
           </div>
 
           <h3 class="section-title section-gap">成员与名册</h3>
@@ -1180,11 +1172,7 @@ async function runTest(target: string): Promise<void> {
               <AppButton v-if="consoleToken" @click="forgetToken">清除</AppButton>
             </div>
 
-            <p class="row-note">
-              令牌由后端签发：首次部署时设置 KYLAB_CONSOLE_TOKEN，或调用 POST
-              /api/v1/auth/console-token 初始化一条。它只保存在这台机器的浏览器里，
-              不写进知识库配置。原文与图片下载走带过期时间的签名 URL，不产生永久直链。
-            </p>
+            <p class="row-note">令牌只保存在这台机器的浏览器里，不写进知识库配置。</p>
           </template>
         </template>
       </div>
@@ -1306,15 +1294,28 @@ async function runTest(target: string): Promise<void> {
   min-width: 0;
 }
 
-/* 主标题 + 副标题要读成一个整体，用成对间距令牌（base.css §间距）；
-   左侧图标给一个扫视锚点（评审批注 8） */
+/* 菜单项：图标 + 单行标签。**不再有第二行小字**——
+   八项各挂一句解释时，扫视先撞到的是解释；解释属于内容区。 */
 .nav-entry {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  gap: var(--space-3);
+  min-height: 36px;
+  padding: 0 var(--space-3);
   text-align: left;
   border-radius: var(--radius-control);
+}
+
+/* 分组标题：菜单里唯一的小字，它标段落、不解释条目 */
+.nav-group {
+  margin: var(--space-3) 0 var(--space-1);
+  padding: 0 var(--space-3);
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.settings-nav .nav-group:first-child {
+  margin-top: 0;
 }
 
 .nav-icon {
@@ -1322,19 +1323,12 @@ async function runTest(target: string): Promise<void> {
   color: var(--text-tertiary);
 }
 
-.nav-text {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-pair);
-  min-width: 0;
-}
-
 .nav-entry:hover {
   background: var(--bg-hover);
 }
 
 .nav-entry-active {
-  background: var(--bg-active);
+  background: var(--accent-soft);
 }
 
 .nav-entry-active .nav-icon {
@@ -1342,18 +1336,16 @@ async function runTest(target: string): Promise<void> {
 }
 
 .nav-label {
-  font-size: var(--text-meta-size);
+  overflow: hidden;
+  font-size: var(--text-body-size);
   color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav-entry-active .nav-label {
-  color: var(--text-primary);
+  color: var(--accent-text);
   font-weight: 500;
-}
-
-.nav-hint {
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
 }
 
 .settings-body {

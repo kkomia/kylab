@@ -332,7 +332,7 @@ defineExpose({ load })
       <!-- 第一部分：用途分配。**放最上面**，因为这才是用户每天要改的东西 -->
       <section class="block">
         <h3 class="block-title">用途分配</h3>
-        <p class="block-hint">为每种用途指定用哪个模型。未指定的用途走下面「精细」分组里的字段。</p>
+        <p class="block-hint">未指定的用途走「精细」配置。</p>
 
         <div v-for="item in slots" :key="item.slot" class="slot-row">
           <div class="slot-name">
@@ -358,9 +358,7 @@ defineExpose({ load })
         <div class="block-head">
           <div>
             <h3 class="block-title">供应商</h3>
-            <p class="block-hint">
-              一家供应商 = 一个接口地址 + 一把凭据。同一个地址下可以登记多个模型。
-            </p>
+            <p class="block-hint">一个供应商 = 一个地址 + 一把凭据，可登记多个模型。</p>
           </div>
           <AppButton @click="addingProvider = !addingProvider">
             <template #icon><IconPlus v-if="!addingProvider" :size="14" /></template>
@@ -403,7 +401,7 @@ defineExpose({ load })
         </div>
 
         <p v-if="providers.length === 0 && !addingProvider" class="muted">
-          还没有供应商。不添加也能用——下面的「精细」分组就是原来的配置方式。
+          还没有供应商。不添加也能用「精细」配置。
         </p>
 
         <div v-for="provider in providers" :key="provider.id" class="provider-card">
@@ -583,7 +581,7 @@ defineExpose({ load })
             </li>
           </ul>
           <p v-else-if="addingModelFor !== provider.id" class="muted model-empty">
-            这家还没有登记模型。点「加模型」把要用的模型登记进来。
+            还没有登记模型。
           </p>
         </div>
       </section>

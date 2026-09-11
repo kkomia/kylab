@@ -114,8 +114,10 @@ pre {
 /**
  * 滚动条：全局细滚动条（《界面评审与改进计划 v0.2》§2）。
  *
- * 默认的 OS 滚动条又宽又带按钮，在弹窗与侧栏里比内容本身还显眼。
- * 颜色只引主题变量，浅色/深色自动跟随；轨道透明，让内容区看起来是整块。
+ * 目标是 Kimi / wekora 那种**悬浮的圆角胶囊**：滑块比轨道窄、两端是圆的，
+ * 不贴着轨道边缘。做法是给滑块**透明边框 + `background-clip: content-box`**——
+ * 只靠 `border-radius` 的话，滑块会撑满整个轨道宽度，看起来还是一根方条。
+ * 颜色只引主题变量，浅色/深色自动跟随；轨道透明，内容区看起来是整块。
  */
 * {
   scrollbar-width: thin;
@@ -123,21 +125,26 @@ pre {
 }
 
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 12px;
+  height: 12px;
 }
 
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 
+/* 4px 的透明边框把滑块收成 4px 宽的胶囊；圆角按胶囊半径给足 */
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
+  background-clip: content-box;
+  border: 4px solid transparent;
   border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--text-tertiary);
+  background-clip: content-box;
+  border: 4px solid transparent;
 }
 
 /* 角落（横向与纵向滚动条相交处）不要那块默认的方疙瘩 */
