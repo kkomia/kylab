@@ -4,8 +4,10 @@ import {
   CONSOLE_TOKEN_STORAGE_KEY,
   clearConsoleToken,
   consoleToken,
+  requestConsoleToken,
   setConsoleToken,
   useConsoleToken,
+  useConsoleTokenPrompt,
 } from '@/composables/useConsoleToken'
 
 describe('useConsoleToken', () => {
@@ -46,5 +48,14 @@ describe('useConsoleToken', () => {
     setConsoleToken('')
 
     expect(window.localStorage.getItem(CONSOLE_TOKEN_STORAGE_KEY)).toBeNull()
+  })
+
+  it('401 提示信号是递增计数：连续触发多次 watch 都能收到', () => {
+    const before = useConsoleTokenPrompt().promptCount.value
+
+    requestConsoleToken()
+    requestConsoleToken()
+
+    expect(useConsoleTokenPrompt().promptCount.value).toBe(before + 2)
   })
 })

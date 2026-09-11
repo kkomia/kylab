@@ -11,6 +11,8 @@ export default defineConfig({
     },
   },
   server: {
+    // 绑定 0.0.0.0：用户经 VPN 从局域网访问，只监听 localhost 将无法打开页面
+    host: '0.0.0.0',
     port: 5173,
     // 后端 REST 统一走 /api/v1，开发期代理到本地服务（架构设计 v0.2 §3.1）
     proxy: {

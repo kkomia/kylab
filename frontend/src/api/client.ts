@@ -3,7 +3,7 @@
  * 组件不直接发请求，一律经本目录。
  */
 
-import { consoleToken } from '@/composables/useConsoleToken'
+import { consoleToken, requestConsoleToken } from '@/composables/useConsoleToken'
 import { operatorHeaders } from '@/composables/useOperator'
 
 export const API_BASE = '/api/v1'
@@ -42,6 +42,12 @@ async function unwrap<T>(response: Response): Promise<T> {
     }
     // 401 在错误对象上标一个记号：界面据此弹"填令牌"，而不是把原始文案甩给用户。
     // 用 Error 的自定义属性而不是新异常类，是为了让所有既有 catch 继续工作。
+    if (response.status === 401) {
+      // 后端原文（"请在请求头带上 Authorization: Bearer …"）是给 API 调用者看的；
+      // 控制台用户需要的是"去哪填"。触发信号让侧栏打开设置弹窗的令牌输入。
+      requestConsoleToken()
+      detail = '需要控制台令牌：请在「设置 → 系统与安全」粘贴令牌后重试'
+    }
     const error = new Error(detail) as Error & { status?: number }
     error.status = response.status
     throw error

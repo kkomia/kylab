@@ -50,6 +50,23 @@ export function clearConsoleToken(): void {
   setConsoleToken('')
 }
 
+/**
+ * 「需要填令牌」的信号：`request()` 收到 401 时调用 `requestConsoleToken()`，
+ * 侧栏监听后打开设置弹窗并落到「系统与安全」的令牌输入框。
+ *
+ * 用**计数器**而不是布尔：连续多个请求都 401 时，值不变 watch 不会再响，
+ * 用户会看到"第一次弹了、之后再没反应"。每次递增保证每次都触发。
+ */
+const promptCount = ref(0)
+
+export function requestConsoleToken(): void {
+  promptCount.value += 1
+}
+
+export function useConsoleTokenPrompt() {
+  return { promptCount: readonly(promptCount) }
+}
+
 export function useConsoleToken() {
   return { token: readonly(token), setConsoleToken, clearConsoleToken }
 }

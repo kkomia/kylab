@@ -41,6 +41,13 @@ import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 const open = defineModel<boolean>('open', { required: true })
 
+/**
+ * 打开时定位到的分组（可选）。401 兜底流程靠它直接落到「系统与安全」的
+ * 令牌输入框，免得用户在六组菜单里自己找。用 string 而不是 SectionKey：
+ * 调用方（侧栏）不该 import 本组件的内部类型。
+ */
+const props = defineProps<{ initialSection?: string }>()
+
 type SectionKey = 'registry' | 'models' | 'llm' | 'services' | 'storage' | 'appearance' | 'system'
 
 const SECTIONS: { key: SectionKey; label: string; hint: string }[] = [
@@ -113,10 +120,27 @@ const saving = ref(false)
 const testing = ref(false)
 const testResult = ref<{ ok: boolean; detail: string } | null>(null)
 
+/** 应用「打开时定位到某组」的请求：忽略未知分组名，不让调用方的一个错字符串把弹窗搞空。 */
+function applyInitialSection(): void {
+  const wanted = SECTIONS.find((item) => item.key === props.initialSection)
+  if (wanted) section.value = wanted.key
+}
+
 // 每次打开都重新读一次：配置可能被另一个标签页改过，也可能后端刚重启
 watch(open, (value) => {
-  if (value) void refresh()
+  if (value) {
+    applyInitialSection()
+    void refresh()
+  }
 })
+
+// 弹窗已开着时又收到 401（比如刚粘的令牌没通过验证）：也要把分组切过去
+watch(
+  () => props.initialSection,
+  () => {
+    if (open.value) applyInitialSection()
+  },
+)
 
 onMounted(() => {
   if (open.value) void refresh()

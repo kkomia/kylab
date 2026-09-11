@@ -11,7 +11,7 @@
  * 检索没有独立入口：它是"在某个库里查东西"，收在知识库详情页里；
  * 跨库问答则收在「对话」页——那里的问题是"这些库里怎么说"，不是"哪个块最像"。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { fetchHealth } from '@/api/health'
@@ -26,6 +26,7 @@ import IconTasks from '@/components/icons/IconTasks.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
 import { useTheme } from '@/composables/useTheme'
 import { loadRoster, operator, operatorId, roster, setOperator } from '@/composables/useOperator'
+import { useConsoleTokenPrompt } from '@/composables/useConsoleToken'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
@@ -84,6 +85,25 @@ const activeConversationId = computed(() => {
 
 /** 设置从页面收进弹窗：它是动作，做完就走（《界面信息架构草案》§1）。 */
 const settingsOpen = ref(false)
+
+/**
+ * 401 兜底：request() 收到 401 会递增 promptCount，这里打开设置弹窗并直接
+ * 落到「系统与安全」的令牌输入框。没有这层，用户只会在每个页面收到一句
+ * "缺少凭据"，而**没有任何恢复入口**（useConsoleToken.ts 的头部注释讲了这个坑）。
+ */
+const { promptCount } = useConsoleTokenPrompt()
+const settingsInitialSection = ref<string | undefined>(undefined)
+
+watch(promptCount, () => {
+  settingsInitialSection.value = 'system'
+  settingsOpen.value = true
+})
+
+/** 从按钮打开是一次全新浏览：清掉 401 流程留下的定位，回到默认分组。 */
+function openSettings(): void {
+  settingsInitialSection.value = undefined
+  settingsOpen.value = true
+}
 </script>
 
 <template>
@@ -157,7 +177,7 @@ const settingsOpen = ref(false)
         </select>
       </div>
 
-      <button class="foot-action" type="button" @click="settingsOpen = true">
+      <button class="foot-action" type="button" @click="openSettings">
         <IconSettings />
         <span>设置</span>
       </button>
@@ -195,7 +215,7 @@ const settingsOpen = ref(false)
       </p>
     </div>
 
-    <SettingsModal v-model:open="settingsOpen" />
+    <SettingsModal v-model:open="settingsOpen" :initial-section="settingsInitialSection" />
   </aside>
 </template>
 
