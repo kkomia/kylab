@@ -10,6 +10,14 @@ import { request } from './client'
 export type TaskKind = 'probe' | 'parse' | 'chunk' | 'embed'
 export type TaskState = 'pending' | 'running' | 'succeeded' | 'failed'
 
+/**
+ * 后端算出的健康判据（M7 / T7.4）。
+ *
+ * **为什么由后端算而不是前端猜**：判"卡住"要比较租约到期时间与当前时刻，
+ * 还要知道租约时长——那些只有后端有。前端只负责按这个值上色。
+ */
+export type TaskHealthState = 'running' | 'stalled' | 'overdue' | 'idle' | 'done'
+
 export interface TaskSummary {
   id: string
   kind: TaskKind
@@ -22,6 +30,11 @@ export interface TaskSummary {
   lease_expires_at: string | null
   created_at: string | null
   updated_at: string | null
+  health: TaskHealthState
+  /** 后端给的中文短标签（"可能卡住"、"长时间未执行"…）。前端不再自己翻译一遍。 */
+  health_label: string
+  /** 一句解释。**失败任务的原因也在这里**——所以它必须能被完整读到。 */
+  health_detail: string
 }
 
 export function listTasks(state?: TaskState): Promise<{ items: TaskSummary[] }> {

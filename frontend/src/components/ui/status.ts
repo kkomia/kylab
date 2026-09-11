@@ -44,6 +44,34 @@ const TASK_KINDS: Record<string, string> = {
   embed: '向量化',
 }
 
+/**
+ * 健康判据 → 语义色（M7 / T7.4）。
+ *
+ * **文字用后端给的 `health_label`，这里只决定颜色**：标签是后端判定的结论
+ * （"可能卡住" / "长时间未执行"），前端再翻译一遍就会出现两套说法。
+ *
+ * `done` 是唯一含糊的一档——它同时覆盖"已完成""已取消""已失败"三种终态，
+ * 所以这里给中性色，不让它冒充成功色。**但失败必须能一眼看出来**，
+ * 那一格由状态列的红字承担（见 `taskStateView`），两列合起来才读得对：
+ * 状态说"发生了什么"，健康说"要不要管"。
+ */
+const TASK_HEALTH_TONES: Record<string, StatusTone> = {
+  running: 'info',
+  stalled: 'danger',
+  overdue: 'warning',
+  idle: 'neutral',
+  done: 'neutral',
+}
+
+export function taskHealthTone(health: string): StatusTone {
+  return TASK_HEALTH_TONES[health] ?? 'neutral'
+}
+
+/** 只有这两种是**需要用户做点什么**的；用来决定要不要在行上给一个提示。 */
+export function isTaskProblem(health: string): boolean {
+  return health === 'stalled' || health === 'overdue'
+}
+
 /** 未知识别值兜底成中性文案：后端新增阶段时界面不会空白或崩掉。 */
 export function documentStageView(stage: string): StatusView {
   return DOCUMENT_STAGES[stage as DocumentStage] ?? { label: stage, tone: 'neutral' }
