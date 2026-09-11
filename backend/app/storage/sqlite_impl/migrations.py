@@ -429,6 +429,55 @@ _MIGRATION_009 = Migration(
     ),
 )
 
+_MIGRATION_010 = Migration(
+    version=10,
+    description="账号体系：名册升级为登录账号、会话、知识库归属与分享",
+    statements=(
+        # **翻案记录**：v9 刻意不做账号体系（见上面的注释），理由是"局域网几个人共用
+        # 一台机器"只需要归属标注。这个判断对"开发者自用"成立，但产品要面向
+        # **不懂技术的个人用户**——"粘贴控制台令牌"对他们不可用，而且私有数据
+        # （个人笔记、文档）天然要求"别人登录后看不到"。所以名册升级为账号：
+        # username/password_hash 可空，空 = 历史名册条目（只做归属标注，不能登录）。
+        "ALTER TABLE users ADD COLUMN username TEXT",
+        "ALTER TABLE users ADD COLUMN password_hash TEXT",
+        "ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'member'",
+        "ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0",
+        # 唯一索引用部分索引（WHERE username IS NOT NULL）：SQLite 里 UNIQUE 允许多个
+        # NULL，但名册条目会越来越多，显式部分索引把"可空但非空必唯一"的意图写死
+        "CREATE UNIQUE INDEX idx_users_username"
+        " ON users(username) WHERE username IS NOT NULL",
+        # 登录会话。**存哈希不存明文**（与 API Key 同一纪律）：库泄露不等于会话泄露。
+        # 过期与滑动续期由服务层管，表里只记三个时间戳。
+        """
+        CREATE TABLE sessions (
+            id           TEXT PRIMARY KEY,
+            user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            created_at   TEXT NOT NULL,
+            expires_at   TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_sessions_user ON sessions(user_id)",
+        # 归属列一律**可空且迁移时不填**：迁移跑的时候还没有任何账号，瞎填一个 id
+        # 比留 NULL 更难收拾。老数据由 setup 向导认领给首个管理员（services/auth.py）。
+        "ALTER TABLE knowledge_bases ADD COLUMN owner_id TEXT",
+        "ALTER TABLE conversations ADD COLUMN owner_id TEXT",
+        "ALTER TABLE api_keys ADD COLUMN created_by TEXT",
+        # 知识库分享：owner 把库分享给其他成员，读/写两档。
+        # 挂在 kb + user 复合主键上，重复分享同一库同一人即更新档位（INSERT OR REPLACE）。
+        """
+        CREATE TABLE kb_shares (
+            kb_id      TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+            user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            permission TEXT NOT NULL CHECK (permission IN ('read', 'write')),
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (kb_id, user_id)
+        )
+        """,
+        "CREATE INDEX idx_kb_shares_user ON kb_shares(user_id)",
+    ),
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
@@ -439,6 +488,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_007,
     _MIGRATION_008,
     _MIGRATION_009,
+    _MIGRATION_010,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

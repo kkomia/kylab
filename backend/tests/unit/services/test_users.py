@@ -2,8 +2,9 @@
 
 镜像同构：``app/services/users.py`` → 本文件。
 
-要钉住的核心是**名册不是鉴权边界**：伪造一个名字不会获得任何权限，
-只会让归属记错。这条容易被后来的人误解，所以要写明、也要有测试。
+要钉住的核心是**名册条目的名字不是鉴权边界**：伪造一个名字不会获得任何权限，
+只会让归属记错。v10 起名册升级为账号（username/password_hash），
+但那是另一条路径（登录会话），与本模块的"按名字解析归属"互不干涉。
 """
 
 from __future__ import annotations
@@ -121,15 +122,18 @@ def test_resolve_flattens_whitespace(users: UserService) -> None:
 
 
 def test_name_has_no_effect_on_permissions(users: UserService) -> None:
-    """**名册不是鉴权边界**：它只回答"是谁做的"，不决定"能做什么"。
+    """**名册条目本身不是鉴权主体**：只有名字、没有账号字段的记录不能登录。
 
-    这条用例是给后来的人看的——如果有人想在这里加权限判断，
-    应当先意识到本项目用的是三档 API 身份那套（§11.4）。
+    v10 起了变化要钉清楚：``UserRecord`` 现在**有** role 字段（账号体系），
+    但纯名册条目没有 username/password_hash——它回答"是谁做的"，
+    而"能做什么"从登录会话来（``services/auth.py``），不是从这条记录的名字来。
     """
     user = users.create(name="小王")
-    # 使用者记录上不存在任何权限字段
-    assert not hasattr(user, "permission")
-    assert not hasattr(user, "role")
+    # 名册条目没有凭据：登录按 username 查，查不到它
+    assert user.username is None
+    assert user.password_hash is None
+    # role 字段存在但默认 member 且无所附着——它只在账号登录后才有意义
+    assert user.role.value == "member"
 
 def test_resolve_accepts_an_id(users: UserService) -> None:
     """**界面发的是 id**（HTTP 头只能是 ASCII，而名字可能是中文）。

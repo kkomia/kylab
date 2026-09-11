@@ -17,14 +17,16 @@ import sqlite3
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
 
-from app.core.exceptions import ConflictError
+from app.core.exceptions import ConflictError, InvalidRequestError
 from app.models.enums import (
     ApiKeyPermission,
     DataSourceKind,
     DocumentStage,
+    SharePermission,
     TaskKind,
     TaskState,
     TrashKind,
+    UserRole,
 )
 from app.storage.base import (
     ApiKeyRecord,
@@ -41,6 +43,8 @@ from app.storage.base import (
     ModelProviderRecord,
     ParseResultRecord,
     RegisteredModelRecord,
+    SessionRecord,
+    ShareRecord,
     TaskRecord,
     TrashRecord,
     UsageEventRecord,
@@ -94,8 +98,8 @@ class SqliteMetaStore(MetaStore):
                 """
                 INSERT INTO knowledge_bases
                     (id, name, embedding_model_id, embedding_dim, embedding_base_url,
-                     chunk_strategy, chunk_size, chunk_overlap, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     chunk_strategy, chunk_size, chunk_overlap, owner_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -106,6 +110,7 @@ class SqliteMetaStore(MetaStore):
                     record.chunk_strategy,
                     record.chunk_size,
                     record.chunk_overlap,
+                    record.owner_id,
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
@@ -817,8 +822,8 @@ class SqliteMetaStore(MetaStore):
                 """
                 INSERT INTO api_keys
                     (id, name, key_hash, permission, knowledge_base_ids, key_prefix,
-                     created_at, last_used_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     created_by, created_at, last_used_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -827,6 +832,7 @@ class SqliteMetaStore(MetaStore):
                     record.permission.value,
                     _json(list(record.knowledge_base_ids)),
                     record.key_prefix,
+                    record.created_by,
                     _dump(record.created_at),
                     _dump(record.last_used_at),
                 ),
@@ -842,6 +848,7 @@ class SqliteMetaStore(MetaStore):
             permission=ApiKeyPermission(row["permission"]),
             knowledge_base_ids=tuple(json.loads(row["knowledge_base_ids"])),
             key_prefix=row["key_prefix"],
+            created_by=row["created_by"],
             created_at=_load(row["created_at"]),
             last_used_at=_load(row["last_used_at"]),
         )
@@ -941,6 +948,10 @@ class SqliteMetaStore(MetaStore):
             id=row["id"],
             name=row["name"],
             note=row["note"],
+            username=row["username"],
+            password_hash=row["password_hash"],
+            role=UserRole(row["role"]),
+            disabled=bool(row["disabled"]),
             created_at=_load(row["created_at"]),
         )
 
@@ -949,10 +960,34 @@ class SqliteMetaStore(MetaStore):
         try:
             with self._db.session() as conn:
                 conn.execute(
-                    "INSERT INTO users (id, name, note, created_at) VALUES (?, ?, ?, ?)",
-                    (record.id, record.name, record.note, _dump(record.created_at)),
+                    """
+                    INSERT INTO users (id, name, note, username, password_hash,
+                                       role, disabled, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.name,
+                        record.note,
+                        record.username,
+                        record.password_hash,
+                        record.role.value,
+                        int(record.disabled),
+                        _dump(record.created_at),
+                    ),
                 )
         except sqlite3.IntegrityError as exc:
+            # 冲突可能来自 id 主键、name 或 username 两个唯一索引，查出是哪个再给文案：
+            # 管理员开通账号时，"用户名被占"与"花名册里有同名的人"是两种不同的处理
+            with self._db.read() as conn:
+                if conn.execute(
+                    "SELECT 1 FROM users WHERE id = ?", (record.id,)
+                ).fetchone():
+                    raise ConflictError(f"使用者 id「{record.id}」已存在") from exc
+                if record.username and conn.execute(
+                    "SELECT 1 FROM users WHERE username = ?", (record.username,)
+                ).fetchone():
+                    raise ConflictError(f"用户名「{record.username}」已被占用") from exc
             raise ConflictError(f"已经有叫「{record.name}」的使用者了") from exc
         return record
 
@@ -972,14 +1007,26 @@ class SqliteMetaStore(MetaStore):
         return [self._user_from_row(row) for row in rows]
 
     def delete_user(self, user_id: str) -> None:
-        """删使用者，但**保留他传过的文档**。
+        """删使用者，但**保留他传过的数据**。
 
         文档已经进了知识库、已经向量化、可能已被引用——把使用者删掉就顺手
-        删掉他的文档，那是数据丢失而不是权限撤销。归属置空，界面显示"未记录"。
+        删掉他的文档，那是数据丢失而不是权限撤销。所有归属列（文档上传者、
+        库 owner、会话 owner、API Key 创建者）一律置空，界面显示"未记录"。
+        会话与分享记录不靠这里清：它们挂在 FK 级联上（connection.py 开了
+        ``PRAGMA foreign_keys``），随 users 行一起消失。
         """
         with self._db.session() as conn:
             conn.execute(
                 "UPDATE documents SET uploaded_by = NULL WHERE uploaded_by = ?", (user_id,)
+            )
+            conn.execute(
+                "UPDATE knowledge_bases SET owner_id = NULL WHERE owner_id = ?", (user_id,)
+            )
+            conn.execute(
+                "UPDATE conversations SET owner_id = NULL WHERE owner_id = ?", (user_id,)
+            )
+            conn.execute(
+                "UPDATE api_keys SET created_by = NULL WHERE created_by = ?", (user_id,)
             )
             conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
@@ -989,6 +1036,163 @@ class SqliteMetaStore(MetaStore):
                 "SELECT COUNT(*) AS n FROM documents WHERE uploaded_by = ?", (user_id,)
             ).fetchone()
         return int(row["n"])
+
+    # ------------------------------------------------------------------ 账号与会话
+
+    def find_user_by_username(self, username: str) -> UserRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        return self._user_from_row(row) if row else None
+
+    def update_user_password(self, user_id: str, password_hash: str) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?", (password_hash, user_id)
+            )
+
+    def set_user_disabled(self, user_id: str, disabled: bool) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE users SET disabled = ? WHERE id = ?", (int(disabled), user_id)
+            )
+
+    def claim_legacy_ownership(self, owner_id: str) -> dict[str, int]:
+        with self._db.session() as conn:
+            kbs = conn.execute(
+                "UPDATE knowledge_bases SET owner_id = ? WHERE owner_id IS NULL", (owner_id,)
+            ).rowcount
+            conversations = conn.execute(
+                "UPDATE conversations SET owner_id = ? WHERE owner_id IS NULL", (owner_id,)
+            ).rowcount
+        return {"knowledge_bases": kbs or 0, "conversations": conversations or 0}
+
+    # ------------------------------------------------------------------ 会话
+
+    @staticmethod
+    def _session_from_row(row: sqlite3.Row) -> SessionRecord:
+        return SessionRecord(
+            id=row["id"],
+            user_id=row["user_id"],
+            created_at=_load(row["created_at"]),
+            expires_at=_load(row["expires_at"]),  # type: ignore[arg-type]
+            last_seen_at=_load(row["last_seen_at"]),
+        )
+
+    def create_session(self, record: SessionRecord) -> SessionRecord:
+        stamp = _now()
+        record.created_at = record.created_at or stamp
+        record.last_seen_at = record.last_seen_at or stamp
+        try:
+            with self._db.session() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO sessions (id, user_id, created_at, expires_at, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        record.id,
+                        record.user_id,
+                        _dump(record.created_at),
+                        _dump(record.expires_at),
+                        _dump(record.last_seen_at),
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            # 主键撞车（哈希碰撞，实际不可能）与外键违例（账号不存在）都落这里；
+            # 对上层都是"这条会话建不成"，翻成领域错误而不是漏原生 sqlite 异常
+            raise InvalidRequestError("会话创建失败：账号不存在或会话标识冲突") from exc
+        return record
+
+    def get_session(self, session_id: str) -> SessionRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        return self._session_from_row(row) if row else None
+
+    def touch_session(
+        self, session_id: str, *, last_seen_at: datetime, expires_at: datetime
+    ) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE id = ?",
+                (_dump(last_seen_at), _dump(expires_at), session_id),
+            )
+
+    def delete_session(self, session_id: str) -> None:
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+
+    def delete_sessions_for_user(
+        self, user_id: str, *, except_session_id: str | None = None
+    ) -> int:
+        with self._db.session() as conn:
+            if except_session_id is None:
+                cursor = conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+            else:
+                cursor = conn.execute(
+                    "DELETE FROM sessions WHERE user_id = ? AND id != ?",
+                    (user_id, except_session_id),
+                )
+        return cursor.rowcount or 0
+
+    # ------------------------------------------------------------------ 知识库分享
+
+    @staticmethod
+    def _share_from_row(row: sqlite3.Row) -> ShareRecord:
+        return ShareRecord(
+            kb_id=row["kb_id"],
+            user_id=row["user_id"],
+            permission=SharePermission(row["permission"]),
+            created_at=_load(row["created_at"]),
+        )
+
+    def put_share(self, record: ShareRecord) -> ShareRecord:
+        record.created_at = record.created_at or _now()
+        try:
+            with self._db.session() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO kb_shares (kb_id, user_id, permission, created_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(kb_id, user_id) DO UPDATE SET permission = excluded.permission
+                    """,
+                    (
+                        record.kb_id,
+                        record.user_id,
+                        record.permission.value,
+                        _dump(record.created_at),
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            # 复合主键冲突已被 ON CONFLICT 接住，能落到这里的只剩外键违例
+            raise InvalidRequestError("知识库或使用者不存在，无法分享") from exc
+        # 重授只改档位：``created_at`` 要保留**首次授予**的时间，不随调整刷新——
+        # 所以返回前回读一次，而不是把本地这份（带着新时间戳的）直接给出去
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM kb_shares WHERE kb_id = ? AND user_id = ?",
+                (record.kb_id, record.user_id),
+            ).fetchone()
+        return self._share_from_row(row)
+
+    def list_shares_for_kb(self, kb_id: str) -> list[ShareRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM kb_shares WHERE kb_id = ? ORDER BY created_at", (kb_id,)
+            ).fetchall()
+        return [self._share_from_row(row) for row in rows]
+
+    def list_shares_for_user(self, user_id: str) -> list[ShareRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM kb_shares WHERE user_id = ? ORDER BY created_at", (user_id,)
+            ).fetchall()
+        return [self._share_from_row(row) for row in rows]
+
+    def delete_share(self, kb_id: str, user_id: str) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "DELETE FROM kb_shares WHERE kb_id = ? AND user_id = ?", (kb_id, user_id)
+            )
 
     # ------------------------------------------------------------------ 用量
 
@@ -1131,8 +1335,9 @@ class SqliteMetaStore(MetaStore):
             )
 
     def delete_model_provider(self, provider_id: str) -> None:
-        # 显式删子行：本项目的连接没开 PRAGMA foreign_keys，级联不生效。
-        # 只删供应商会留下指向不存在供应商的孤儿模型，而它还会出现在模型下拉里。
+        # 显式删子行（虽然连接开了 PRAGMA foreign_keys，级联也会删）：
+        # 意图写在代码里比藏在 schema 里可读。只删供应商会留下指向不存在
+        # 供应商的孤儿模型，而它还会出现在模型下拉里。
         with self._db.session() as conn:
             conn.execute("DELETE FROM model_registry WHERE provider_id = ?", (provider_id,))
             conn.execute("DELETE FROM model_providers WHERE id = ?", (provider_id,))
@@ -1215,6 +1420,7 @@ class SqliteMetaStore(MetaStore):
             id=row["id"],
             title=row["title"],
             kb_ids=tuple(json.loads(row["kb_ids"])),
+            owner_id=row["owner_id"],
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
         )
@@ -1236,12 +1442,13 @@ class SqliteMetaStore(MetaStore):
         record.updated_at = record.updated_at or now
         with self._db.session() as conn:
             conn.execute(
-                "INSERT INTO conversations (id, title, kb_ids, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO conversations (id, title, kb_ids, owner_id, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     record.id,
                     record.title,
                     _json(list(record.kb_ids)),
+                    record.owner_id,
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
@@ -1283,9 +1490,10 @@ class SqliteMetaStore(MetaStore):
     def delete_conversation(self, conversation_id: str) -> None:
         """删会话及其消息。
 
-        显式删消息而不是只靠外键级联：本项目的连接**没有开 `PRAGMA foreign_keys=ON`**，
-        级联不会生效。只删会话会留下一堆孤儿消息，而且它们会一直被
-        ``list_messages`` 之外的地方查到（例如按会话聚合的统计）。
+        显式删消息而不是只靠外键级联（连接的 ``PRAGMA foreign_keys`` 是开的，
+        级联也能删，但意图写在代码里比藏在 schema 里可读）。只删会话会留下
+        一堆孤儿消息，而且它们会一直被 ``list_messages`` 之外的地方查到
+        （例如按会话聚合的统计）。
         """
         with self._db.session() as conn:
             conn.execute(
@@ -1478,6 +1686,7 @@ class SqliteMetaStore(MetaStore):
             chunk_strategy=row["chunk_strategy"],
             chunk_size=row["chunk_size"],
             chunk_overlap=row["chunk_overlap"],
+            owner_id=row["owner_id"],
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
         )

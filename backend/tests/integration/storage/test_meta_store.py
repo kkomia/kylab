@@ -8,25 +8,32 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.core.exceptions import ConflictError, InvalidRequestError
 from app.models.enums import (
     ApiKeyPermission,
     DataSourceKind,
     DocumentStage,
+    SharePermission,
     TaskKind,
     TaskState,
     TrashKind,
+    UserRole,
 )
 from app.storage.base import (
     ApiKeyRecord,
     ChunkRecord,
+    ConversationRecord,
     DataSourceRecord,
     DocumentPartRecord,
     DocumentRecord,
     ImageRecord,
     KnowledgeBaseRecord,
     ParseResultRecord,
+    SessionRecord,
+    ShareRecord,
     TaskRecord,
     TrashRecord,
+    UserRecord,
     WebhookRecord,
 )
 from app.storage.sqlite_impl.connection import Database
@@ -587,3 +594,219 @@ def test_iter_chunks_on_document_without_chunks_returns_empty(store: SqliteMetaS
 def test_get_parse_result_returns_none_when_absent(store: SqliteMetaStore, document) -> None:
     assert store.get_parse_result("doc_1") is None
     assert store.get_parse_result("doc_not_exist") is None
+
+
+# --------------------------------------------------------------------- 账号（v10：名册升级）
+
+
+def test_account_fields_round_trip(store: SqliteMetaStore) -> None:
+    """账号列（username/role/disabled）写入后能原样读回。"""
+    store.create_user(
+        UserRecord(
+            id="user_a",
+            name="小又",
+            username="you",
+            password_hash="argon2$fake",
+            role=UserRole.ADMIN,
+        )
+    )
+
+    loaded = store.find_user_by_username("you")
+    assert loaded is not None
+    assert (loaded.role, loaded.disabled) == (UserRole.ADMIN, False)
+    # 名册语义不丢：按名字找依然有效（operator header 还在用它）
+    assert store.find_user_by_name("小又").id == "user_a"  # type: ignore[union-attr]
+
+
+def test_roster_entry_without_username_cannot_be_looked_up_as_account(
+    store: SqliteMetaStore,
+) -> None:
+    """纯名册条目（username 为 NULL）不是账号：按用户名查不到它。"""
+    store.create_user(UserRecord(id="user_r", name="仅名册"))
+
+    assert store.find_user_by_username("仅名册") is None
+    assert store.get_user("user_r").role is UserRole.MEMBER  # type: ignore[union-attr]
+
+
+def test_duplicate_username_is_rejected_with_precise_message(store: SqliteMetaStore) -> None:
+    """唯一索引冲突要分清是 username 还是 name：管理员处理这两件事的方式不同。"""
+    store.create_user(UserRecord(id="user_a", name="甲", username="taken"))
+
+    with pytest.raises(ConflictError, match="用户名「taken」已被占用"):
+        store.create_user(UserRecord(id="user_b", name="乙", username="taken"))
+    # name 冲突的旧文案不能变（名册页靠它提示）
+    with pytest.raises(ConflictError, match="已经有叫「甲」的使用者了"):
+        store.create_user(UserRecord(id="user_c", name="甲"))
+
+
+def test_update_password_and_disable(store: SqliteMetaStore) -> None:
+    store.create_user(UserRecord(id="user_a", name="甲", username="a", password_hash="h1"))
+
+    store.update_user_password("user_a", "h2")
+    assert store.get_user("user_a").password_hash == "h2"  # type: ignore[union-attr]
+
+    store.set_user_disabled("user_a", True)
+    assert store.get_user("user_a").disabled is True  # type: ignore[union-attr]
+    store.set_user_disabled("user_a", False)
+    assert store.get_user("user_a").disabled is False  # type: ignore[union-attr]
+
+
+def test_claim_legacy_ownership_only_touches_ownerless_rows(store: SqliteMetaStore, kb) -> None:
+    """认领只动 owner 为 NULL 的老数据；已有归属的行绝不能被改（否则 setup 会变成夺权）。"""
+    store.create_user(UserRecord(id="user_a", name="管理员", username="admin"))
+    store.create_knowledge_base(
+        KnowledgeBaseRecord(id="kb_2", name="已有主", embedding_model_id="m",
+                            embedding_dim=768, owner_id="user_other")
+    )
+    store.create_conversation(ConversationRecord(id="conv_1"))
+
+    counts = store.claim_legacy_ownership("user_a")
+
+    assert counts == {"knowledge_bases": 1, "conversations": 1}
+    assert store.get_knowledge_base("kb_1").owner_id == "user_a"  # type: ignore[union-attr]
+    assert store.get_knowledge_base("kb_2").owner_id == "user_other"  # type: ignore[union-attr]
+    assert store.get_conversation("conv_1").owner_id == "user_a"  # type: ignore[union-attr]
+    # 再认领一次是空操作：可重入，重复跑不会出错
+    assert store.claim_legacy_ownership("user_a") == {"knowledge_bases": 0, "conversations": 0}
+
+
+# --------------------------------------------------------------------- 登录会话（v10）
+
+
+def _session(session_id: str, user_id: str = "user_a", *, hours: int = 1) -> SessionRecord:
+    return SessionRecord(
+        id=session_id, user_id=user_id, expires_at=utc_now() + timedelta(hours=hours)
+    )
+
+
+def test_session_round_trip_and_touch(store: SqliteMetaStore) -> None:
+    store.create_user(UserRecord(id="user_a", name="甲", username="a"))
+    store.create_session(_session("sess_1"))
+
+    loaded = store.get_session("sess_1")
+    assert loaded is not None
+    assert loaded.user_id == "user_a"
+    assert loaded.last_seen_at is not None
+
+    later = utc_now() + timedelta(hours=2)
+    store.touch_session("sess_1", last_seen_at=later, expires_at=later + timedelta(days=7))
+    touched = store.get_session("sess_1")
+    assert touched is not None
+    assert touched.last_seen_at == later
+
+    store.delete_session("sess_1")
+    assert store.get_session("sess_1") is None
+
+
+def test_delete_sessions_for_user_keeps_current(store: SqliteMetaStore) -> None:
+    """改密吊销：保住当前这条（用户不该被自己的改密动作踢出去），其余全清。"""
+    store.create_user(UserRecord(id="user_a", name="甲", username="a"))
+    store.create_user(UserRecord(id="user_b", name="乙", username="b"))
+    for session_id in ("s1", "s2", "s3"):
+        store.create_session(_session(session_id))
+    store.create_session(_session("other", user_id="user_b"))
+
+    revoked = store.delete_sessions_for_user("user_a", except_session_id="s2")
+
+    assert revoked == 2
+    assert store.get_session("s2") is not None
+    # 别人的会话不能跟着遭殃
+    assert store.get_session("other") is not None
+
+
+def test_sessions_cascade_with_user(store: SqliteMetaStore) -> None:
+    """删账号必须连会话一起清：留着就是一把永远有效的万能钥匙。"""
+    store.create_user(UserRecord(id="user_a", name="甲", username="a"))
+    store.create_session(_session("sess_1"))
+
+    store.delete_user("user_a")
+
+    assert store.get_session("sess_1") is None
+
+
+def test_delete_user_clears_all_ownership_columns(store: SqliteMetaStore, kb, document) -> None:
+    """删账号后**所有**归属列都要置空——只清 documents.uploaded_by 而留下
+    knowledge_bases.owner_id 等，会造出指向不存在账号的悬空引用。"""
+    store.create_user(UserRecord(id="user_a", name="甲", username="a"))
+    store.create_knowledge_base(
+        KnowledgeBaseRecord(id="kb_2", name="他的库", embedding_model_id="m",
+                            embedding_dim=768, owner_id="user_a")
+    )
+    store.create_conversation(ConversationRecord(id="conv_1", owner_id="user_a"))
+    store.create_api_key(
+        ApiKeyRecord(id="key_1", name="集成", key_hash="h",
+                     permission=ApiKeyPermission.READONLY, created_by="user_a")
+    )
+    store.create_document(
+        DocumentRecord(
+            id="doc_2", knowledge_base_id="kb_1", name="他的.md",
+            source_kind=DataSourceKind.UPLOAD, content_hash="hash-2",
+            stage=DocumentStage.UPLOADED, uploaded_by="user_a",
+        )
+    )
+
+    store.delete_user("user_a")
+
+    assert store.get_knowledge_base("kb_2").owner_id is None  # type: ignore[union-attr]
+    assert store.get_conversation("conv_1").owner_id is None  # type: ignore[union-attr]
+    assert store.get_api_key_by_hash("h").created_by is None  # type: ignore[union-attr]
+    # 文档保留（数据不丢），只有归属置空
+    assert store.get_document("doc_2").uploaded_by is None  # type: ignore[union-attr]
+
+
+# --------------------------------------------------------------------- 知识库分享（v10）
+
+
+def test_share_round_trip_and_regrant_updates_permission(store: SqliteMetaStore, kb) -> None:
+    """重复分享同一库同一人 = 改档位，不是报错也不是插第二条。"""
+    store.create_user(UserRecord(id="user_a", name="甲", username="a"))
+    first = store.put_share(
+        ShareRecord(kb_id="kb_1", user_id="user_a", permission=SharePermission.READ)
+    )
+
+    assert store.list_shares_for_kb("kb_1")[0].permission is SharePermission.READ
+    assert store.list_shares_for_user("user_a")[0].kb_id == "kb_1"
+
+    regranted = store.put_share(
+        ShareRecord(kb_id="kb_1", user_id="user_a", permission=SharePermission.WRITE)
+    )
+    shares = store.list_shares_for_kb("kb_1")
+    assert len(shares) == 1
+    assert shares[0].permission is SharePermission.WRITE
+    # 重授只改档位：created_at 保留**首次授予**的时间，不随调整刷新
+    assert regranted.created_at == first.created_at
+
+    store.delete_share("kb_1", "user_a")
+    assert store.list_shares_for_kb("kb_1") == []
+
+
+def test_share_with_missing_target_is_rejected(store: SqliteMetaStore, kb) -> None:
+    """外键违例要翻成领域错误：漏原生 sqlite 异常给上层，调用方没法区分
+    "目标不存在"与"数据库坏了"。"""
+    with pytest.raises(InvalidRequestError, match="不存在"):
+        store.put_share(
+            ShareRecord(kb_id="kb_1", user_id="user_ghost", permission=SharePermission.READ)
+        )
+
+
+def test_shares_cascade_with_kb(store: SqliteMetaStore, kb) -> None:
+    store.create_user(UserRecord(id="user_a", name="甲", username="a"))
+    store.put_share(ShareRecord(kb_id="kb_1", user_id="user_a", permission=SharePermission.READ))
+
+    store.delete_knowledge_base("kb_1")
+
+    assert store.list_shares_for_user("user_a") == []
+
+
+# --------------------------------------------------------------------- 归属列（v10）
+
+
+def test_api_key_created_by_round_trip(store: SqliteMetaStore) -> None:
+    store.create_api_key(
+        ApiKeyRecord(id="key_1", name="集成", key_hash="h", permission=ApiKeyPermission.READONLY,
+                     created_by="user_a")
+    )
+
+    loaded = store.get_api_key_by_hash("h")
+    assert loaded is not None
+    assert loaded.created_by == "user_a"

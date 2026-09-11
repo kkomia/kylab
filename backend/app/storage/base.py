@@ -24,9 +24,11 @@ from app.models.enums import (
     ApiKeyPermission,
     DataSourceKind,
     DocumentStage,
+    SharePermission,
     TaskKind,
     TaskState,
     TrashKind,
+    UserRole,
 )
 
 __all__ = [
@@ -42,6 +44,8 @@ __all__ = [
     "ObjectStore",
     "ParseResultRecord",
     "SearchHit",
+    "SessionRecord",
+    "ShareRecord",
     "StorageError",
     "StoreBundle",
     "TaskRecord",
@@ -128,6 +132,9 @@ class KnowledgeBaseRecord:
     chunk_strategy: str = "fixed"
     chunk_size: int = 512
     chunk_overlap: int = 64
+    owner_id: str | None = None
+    """归属账号（v10）。``None`` = 账号体系启用前的老数据，
+    由 setup 向导认领给首个管理员（`services/auth.py`）。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -261,6 +268,8 @@ class ApiKeyRecord:
 
     明文本身永不落库；这一段来自高熵随机串，不足以定位任何密钥（见 migrations 002）。
     """
+    created_by: str | None = None
+    """创建这把钥匙的账号 id（v10）。``None`` = 账号体系启用前发放的老钥匙。"""
     created_at: datetime | None = None
     last_used_at: datetime | None = None
 
@@ -312,6 +321,8 @@ class ConversationRecord:
     id: str
     title: str = ""
     kb_ids: Sequence[str] = field(default_factory=tuple)
+    owner_id: str | None = None
+    """归属账号（v10）。``None`` = 老数据，setup 时认领给首个管理员。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -334,16 +345,46 @@ class ChatMessageRecord:
 
 @dataclass(slots=True)
 class UserRecord:
-    """使用者（调研报告 G6）。
+    """使用者。**v10 起是名册与账号的合体**：
 
-    **不是账号，是名册**：没有密码、没有角色。用途只有一个——
-    让"这份文档是谁传的""这个库是谁建的"有据可查。
-    凭据体系另有其人（三档 API 身份，见 §11.4）。
+    - 只有 ``name`` 的是名册条目（纯归属标注，历史数据）；
+    - 有 ``username`` + ``password_hash`` 的才是可登录账号。
+
+    两件事共用一张表而不是分开：账号本来就要回答"这是谁"，
+    另起一张表会让"归属标注"与"登录主体"成为两套需要互查的身份。
     """
 
     id: str
     name: str
     note: str = ""
+    username: str | None = None
+    """登录名。``None`` = 纯名册条目，不能登录。"""
+    password_hash: str | None = None
+    """argon2 哈希。慢哈希是口令的底线（`core/security.py` 的 SHA-256 不得用于口令）。"""
+    role: UserRole = UserRole.MEMBER
+    disabled: bool = False
+    """被管理员禁用的账号：登录拒绝，既有 session 在下次校验时失效。"""
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class SessionRecord:
+    """一条登录会话。``id`` 是明文 token 的 SHA-256——**明文不落库**（与 API Key 同纪律）。"""
+
+    id: str
+    user_id: str
+    expires_at: datetime
+    created_at: datetime | None = None
+    last_seen_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class ShareRecord:
+    """知识库分享：owner 把库授给另一个成员（读/写两档）。"""
+
+    kb_id: str
+    user_id: str
+    permission: SharePermission
     created_at: datetime | None = None
 
 
@@ -794,6 +835,76 @@ class MetaStore(ABC):
     def count_documents_by_user(self, user_id: str) -> int:
         """某人传过多少文档。删使用者前要能告诉他"会影响什么"。"""
         ...
+
+    # ---- 账号与会话（v10：名册升级为账号）----
+    @abstractmethod
+    def find_user_by_username(self, username: str) -> UserRecord | None:
+        """登录按 username 找。与 ``find_user_by_name`` 并存：name 给人看，username 给登录。
+
+        **大小写归一化是调用方的责任**（服务层统一转小写后存储与查询）。
+        存储层保持字节精确：在这里悄悄做 NOCASE 会让"库里到底存了什么"变得难追。
+        """
+        ...
+
+    @abstractmethod
+    def update_user_password(self, user_id: str, password_hash: str) -> None: ...
+
+    @abstractmethod
+    def set_user_disabled(self, user_id: str, disabled: bool) -> None: ...
+
+    @abstractmethod
+    def claim_legacy_ownership(self, owner_id: str) -> dict[str, int]:
+        """把 owner 为 NULL 的知识库与会话认领给指定账号（setup 向导用）。
+
+        返回 ``{"knowledge_bases": n, "conversations": n}``——认领了几条要让用户知道，
+        静默改掉一堆数据的归属而不吭声是不行的。
+        """
+        ...
+
+    @abstractmethod
+    def create_session(self, record: SessionRecord) -> SessionRecord: ...
+
+    @abstractmethod
+    def get_session(self, session_id: str) -> SessionRecord | None:
+        """按 id（明文 token 的 SHA-256）查。"""
+        ...
+
+    @abstractmethod
+    def touch_session(
+        self, session_id: str, *, last_seen_at: datetime, expires_at: datetime
+    ) -> None:
+        """滑动续期：每次用到都把 last_seen 与过期时间推后。"""
+        ...
+
+    @abstractmethod
+    def delete_session(self, session_id: str) -> None: ...
+
+    @abstractmethod
+    def delete_sessions_for_user(
+        self, user_id: str, *, except_session_id: str | None = None
+    ) -> int:
+        """吊销某人的会话（改密/禁用账号时）。``except_session_id`` 保住当前这条。
+
+        返回吊销了几条——改密后界面要告诉用户"其他 N 处登录已退出"。
+        """
+        ...
+
+    # ---- 知识库分享（v10）----
+    @abstractmethod
+    def put_share(self, record: ShareRecord) -> ShareRecord:
+        """授出/调整分享档位。重复分享同一库同一人 = 改档位（INSERT OR REPLACE）。"""
+        ...
+
+    @abstractmethod
+    def list_shares_for_kb(self, kb_id: str) -> list[ShareRecord]: ...
+
+    @abstractmethod
+    def list_shares_for_user(self, user_id: str) -> list[ShareRecord]:
+        """某人被分享了哪些库——可见性过滤（owned + shared）里的 shared 半边。"""
+        ...
+
+    @abstractmethod
+    def delete_share(self, kb_id: str, user_id: str) -> None: ...
 
     # ---- 用量（调研报告 G7）----
     @abstractmethod

@@ -103,6 +103,24 @@ class ApiKeyPermission(StrEnum):
     READWRITE = "readwrite"
 
 
+class UserRole(StrEnum):
+    """账号角色（migration v10 起名册升级为账号）。
+
+    只有两档，刻意不加第三档：设置页里是 embedding / LLM 的密钥，
+    "能改配置的"与"只能用自己数据的"之间不需要中间态。
+    """
+
+    ADMIN = "admin"
+    MEMBER = "member"
+
+
+class SharePermission(StrEnum):
+    """知识库分享档位：读 = 可检索可对话；写 = 还能上传与删除。"""
+
+    READ = "read"
+    WRITE = "write"
+
+
 class TrashKind(StrEnum):
     """回收站条目类型（《架构设计 v0.2》§6.2：原文保留 7 天冷备，向量立即删除）。"""
 
