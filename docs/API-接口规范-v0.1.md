@@ -55,6 +55,7 @@
 | `unauthorized` | 缺少或令牌无效 | 401 |
 | `forbidden` | 身份有效但无权做这件事（含超出密钥的库范围） | 403 |
 | `unsupported_content` | 格式或能力不支持（如该文档没有 Markdown 产物） | 422 |
+| `payload_too_large` | 上传内容超过限额（切分/压缩再试） | 413 |
 | `upstream_error` | 上游（模型、解析服务、被订阅的站点）失败 | 502 |
 | `internal_error` | 未预期的服务端错误 | 500 |
 

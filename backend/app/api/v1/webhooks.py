@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 
 from app.api.auth import require_admin, require_read
 from app.api.v1.schemas import (
@@ -24,6 +24,7 @@ from app.api.v1.schemas import (
     WebhookOut,
     WebhookUpdateIn,
 )
+from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.core.services import Services, get_services
 from app.services.api_key import Caller
 from app.services.webhook import EVENTS, MAX_ATTEMPTS, SIGNATURE_HEADER
@@ -56,7 +57,7 @@ def _out(record, *, reveal_secret: str | None = None) -> WebhookOut:  # type: ig
 
 def _require(record):  # type: ignore[no-untyped-def]
     if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="订阅不存在")
+        raise NotFoundError("订阅不存在")
     return record
 
 
@@ -106,7 +107,7 @@ def create_webhook(
     except ValueError as exc:
         # 拼错事件名是调用方错误，不是 500：``invalid_request`` 是这套接口
         # 对"你给的东西不对"的统一答复（《API 接口规范》§1.2）
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise InvalidRequestError(str(exc)) from exc
     return _out(record, reveal_secret=record.secret)
 
 

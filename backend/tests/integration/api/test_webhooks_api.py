@@ -91,22 +91,22 @@ def test_empty_events_means_all(client: TestClient) -> None:
     assert set(created["events"]) >= {"document.indexed", "document.failed"}
 
 
-def test_unknown_event_is_400(client: TestClient) -> None:
-    # 调用方给错了东西 → 400，不是 500
+def test_unknown_event_is_422(client: TestClient) -> None:
+    # 调用方给错了东西 → invalid_request（422），不是 500；且走统一信封
     response = client.post(
         "/api/v1/webhooks",
         json={"url": "https://example.com/hook", "events": ["document.done"]},
-
     )
-    assert response.status_code == 400
-    assert "不支持的事件" in response.json()["detail"]
+    assert response.status_code == 422
+    body = response.json()
+    assert body["code"] == "invalid_request"
+    assert "不支持的事件" in body["message"]
 
 
-def test_bad_scheme_is_400(client: TestClient) -> None:
-    response = client.post(
-        "/api/v1/webhooks", json={"url": "ftp://example.com/hook"}
-    )
-    assert response.status_code == 400
+def test_bad_scheme_is_422(client: TestClient) -> None:
+    response = client.post("/api/v1/webhooks", json={"url": "ftp://example.com/hook"})
+    assert response.status_code == 422
+    assert response.json()["code"] == "invalid_request"
 
 
 def test_toggle_enabled(client: TestClient) -> None:

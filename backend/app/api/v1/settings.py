@@ -25,12 +25,25 @@ from app.api.v1.schemas import (
 from app.core.services import Services, get_services
 from app.services.api_key import Caller
 from app.services.embedding import NOT_CONFIGURED_HINT
-from app.services.runtime_config import SECRET_KEYS
+from app.services.runtime_config import SECRET_KEYS, SETTING_GROUPS
 
 router = APIRouter(tags=["settings"])
 
 _PROBE_TEXT = "kylab 连接测试"
 _TEST_TIMEOUT_SECONDS = 30.0
+
+
+def _known_setting_keys() -> frozenset[str]:
+    """可写设置项的**唯一来源**：设置页渲染用的 ``SETTING_GROUPS``。
+
+    此前这里另抄了一份硬编码清单。v0.8 把模型身份从设置页收进注册表之后，
+    抄的那份没跟着删——于是 `llm.api_key` / `embedding.base_url` 这类键仍被接受、
+    回"已保存"，而运行时根本不读它们（**静默无效，最难查的一类问题**）。
+    从 ``SETTING_GROUPS`` 派生，两边就不可能再分叉。
+    """
+    return frozenset(
+        str(field["key"]) for group in SETTING_GROUPS.values() for field in group["fields"]
+    )
 
 
 @router.get("/settings", response_model=SettingsViewOut, summary="运行期配置（密钥打码）")
@@ -190,32 +203,7 @@ def _test_llm(services: Services) -> TestConnectionOut:
     return TestConnectionOut(ok=True, detail=f"{config.model_id} 可用（回复：{answer[:20]}）")
 
 
-_KNOWN_KEYS = frozenset(
-    {
-        "embedding.base_url",
-        "embedding.api_key",
-        "embedding.model_id",
-        "embedding.dim",
-        "embedding.batch_size",
-        "rerank.base_url",
-        "rerank.api_key",
-        "rerank.model_id",
-        "mineru.endpoint",
-        "mineru.token",
-        "mineru.model_version",
-        "paddleocr.endpoint",
-        "paddleocr.token",
-        "paddleocr.model",
-        "llm.base_url",
-        "llm.api_key",
-        "llm.model_id",
-        "llm.temperature",
-        "llm.max_tokens",
-        "llm.enable_thinking",
-        "chat.system_prompt",
-        "chat.top_k",
-    }
-)
+_KNOWN_KEYS = _known_setting_keys()
 
 # 密钥键必须都在已知键里，否则设置页"保存成功"但值写不进去
 _MISSING_SECRET_KEYS = SECRET_KEYS - _KNOWN_KEYS

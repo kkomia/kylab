@@ -5,7 +5,9 @@
 """
 
 from fastapi import FastAPI, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 
 class KylabError(Exception):
@@ -57,6 +59,20 @@ class UnsupportedContentError(KylabError):
     message = "该内容当前不可用"
 
 
+class PayloadTooLargeError(KylabError):
+    """上传内容超过限额。
+
+    单列一类而不是并进 ``InvalidRequestError``：413 对调用方的含义是
+    "东西太大，切分/压缩再试"，422 是"请求本身写错了"——下一步动作不同。
+    用 ``HTTP_413_CONTENT_TOO_LARGE`` 而不是旧的 ``REQUEST_ENTITY_TOO_LARGE``：
+    后者在当前 starlette 里已弃用，会在每次请求时打一条 DeprecationWarning。
+    """
+
+    code = "payload_too_large"
+    http_status = status.HTTP_413_CONTENT_TOO_LARGE
+    message = "上传内容超过限额"
+
+
 class UpstreamError(KylabError):
     """外部依赖出错（解析节点、embedding、对话模型）。
 
@@ -101,6 +117,37 @@ class ForbiddenError(KylabError):
         self.headers = headers or {}
 
 
+#: 未走领域异常的旁路（FastAPI 自带的请求校验 422、Starlette 自己的 404/405 等）
+#: 也要折成同一形状，否则对接方按 ``code`` 分支会拿到 undefined。
+_STATUS_TO_CODE: dict[int, str] = {
+    400: "invalid_request",
+    401: "unauthorized",
+    403: "forbidden",
+    404: "not_found",
+    405: "invalid_request",
+    409: "conflict",
+    413: "payload_too_large",
+    422: "invalid_request",
+    502: "upstream_error",
+}
+
+
+def _validation_message(exc: RequestValidationError) -> str:
+    """把 pydantic 的第一条校验错误折成一句人话。
+
+    默认响应体是 ``{"detail": [{"loc": [...], "msg": "..."}]}``——形状不对，
+    而且前端只读 ``message``。这里取第一条并带上字段路径，够定位即可；
+    不把整个数组塞进 message（那会变成一坨 JSON 文本）。
+    """
+    errors = exc.errors()
+    if not errors:
+        return InvalidRequestError.message
+    first = errors[0]
+    location = ".".join(str(part) for part in first.get("loc", ()) if part != "body")
+    message = str(first.get("msg", InvalidRequestError.message))
+    return f"{location}: {message}" if location else message
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """把领域异常注册为统一的 JSON 错误响应。"""
 
@@ -109,5 +156,26 @@ def register_exception_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=exc.http_status,
             content={"code": exc.code, "message": exc.detail},
+            headers=getattr(exc, "headers", None),
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=InvalidRequestError.http_status,
+            content={"code": InvalidRequestError.code, "message": _validation_message(exc)},
+        )
+
+    @app.exception_handler(StarletteHTTPException)
+    async def _handle_http_exception(_: Request, exc: StarletteHTTPException) -> JSONResponse:
+        # 覆盖 FastAPI 默认的 ``{"detail": ...}``：包括未匹配到路由的 404。
+        # 状态码映射不出来的（极少）退回 internal_error，但**保留原始文案**，
+        # 免得一句"服务内部错误"把真正的原因吞掉。
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "code": _STATUS_TO_CODE.get(exc.status_code, "internal_error"),
+                "message": str(exc.detail),
+            },
             headers=getattr(exc, "headers", None),
         )

@@ -125,7 +125,9 @@ def test_error_codes_are_enumerated() -> None:
     from app.core.exceptions import (
         ConflictError,
         ForbiddenError,
+        InvalidRequestError,
         NotFoundError,
+        PayloadTooLargeError,
         UnauthorizedError,
         UnsupportedContentError,
         UpstreamError,
@@ -135,10 +137,12 @@ def test_error_codes_are_enumerated() -> None:
     for error in (
         ConflictError,
         ForbiddenError,
+        InvalidRequestError,
         NotFoundError,
+        PayloadTooLargeError,
         UnauthorizedError,
         UnsupportedContentError,
-        UpstreamError
+        UpstreamError,
     ):
         assert error.code in text, f"错误码 {error.code} 没写进规范"
 

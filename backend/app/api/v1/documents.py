@@ -14,7 +14,6 @@ from fastapi import (
     Depends,
     File,
     Header,
-    HTTPException,
     Query,
     UploadFile,
     status,
@@ -40,7 +39,7 @@ from app.api.v1.schemas import (
     UploadAccepted,
 )
 from app.core.config import Settings, get_settings
-from app.core.exceptions import UnauthorizedError
+from app.core.exceptions import PayloadTooLargeError, UnauthorizedError
 from app.core.services import Services, get_services
 from app.core.signing import SigningError, verify_resource
 from app.models.enums import ApiKeyPermission
@@ -129,10 +128,8 @@ async def upload_document(
     operator = services.users.resolve_operator(operator_token)
     content = await file.read()
     if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"文件超过 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 上限",
-        )
+        # 走领域异常而不是 HTTPException：后者会绕过统一错误信封，返回 {"detail": ...}
+        raise PayloadTooLargeError(f"文件超过 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 上限")
 
     filename = file.filename or "未命名"
 
