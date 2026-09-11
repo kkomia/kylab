@@ -46,6 +46,7 @@ from app.services.runtime_config import RuntimeConfigService
 from app.services.share import ShareService
 from app.services.sources import SourceService
 from app.services.stats import StatsService
+from app.services.suggested_questions import SuggestedQuestionsService
 from app.services.tabular import TabularService
 from app.services.usage import UsageService
 from app.services.users import UserService
@@ -98,6 +99,8 @@ class Services:
     """表格结构化副本：读写 CSV/Excel 的行列（M2 / T2.11）。"""
     conversations: ConversationService
     """对话留存：会话与消息的读写（§11.2）。"""
+    suggested_questions: SuggestedQuestionsService
+    """示例问题：依据所选知识库的语料让对话模型生成开场问题（对话页空状态）。"""
     webhooks: WebhookService
     """Webhook 订阅与事件推送（M4 / T4.6）。"""
     embedder: EmbeddingProvider
@@ -276,12 +279,14 @@ def build_services(
         lifecycle = LifecycleService(bundle)
         lifecycle.purge_expired_trash()
 
+    chat_service = ChatService(retrieval, runtime, usage_recorder=_record_chat_usage)
+
     return Services(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder, models=registry),
         documents=documents_service,
         ingest=ingest,
         retrieval=retrieval,
-        chat=ChatService(retrieval, runtime, usage_recorder=_record_chat_usage),
+        chat=chat_service,
         stats=StatsService(bundle),
         runtime=runtime,
         api_keys=ApiKeyService(bundle),
@@ -299,6 +304,7 @@ def build_services(
             bundle, worker_lease_seconds=resolved.worker_lease_seconds
         ),
         conversations=ConversationService(bundle),
+        suggested_questions=SuggestedQuestionsService(bundle, chat_service),
         webhooks=webhooks,
         embedder=embedder,
         reranker=reranker,

@@ -53,14 +53,19 @@ class ConversationService:
         kb_ids: list[str] | None = None,
         title: str = "",
         owner_id: str | None = None,
+        model_pk: str | None = None,
     ) -> ConversationRecord:
-        """``owner_id``（v10）：登录成员的会话归自己；控制台/API Key 通道无主。"""
+        """``owner_id``（v10）：登录成员的会话归自己；控制台/API Key 通道无主。
+
+        ``model_pk``（v12）：这条会话选用的对话模型；``None`` = 跟随全局默认。
+        """
         return self._stores.meta.create_conversation(
             ConversationRecord(
                 id=f"conv_{uuid.uuid4().hex[:12]}",
                 title=title.strip(),
                 kb_ids=tuple(kb_ids or ()),
                 owner_id=owner_id,
+                model_pk=model_pk,
             )
         )
 
@@ -104,6 +109,16 @@ class ConversationService:
             raise ValueError("会话标题不能为空")
         self.get(conversation_id)
         self._stores.meta.rename_conversation(conversation_id, cleaned[:TITLE_MAX_CHARS])
+        return self.get(conversation_id)
+
+    def set_model(self, conversation_id: str, model_pk: str | None) -> ConversationRecord:
+        """记录该会话选用的对话模型（``None`` = 回到全局默认）。
+
+        **不校验 model_pk 是否真实存在**：那是 ``ModelRegistryService`` 的事（解析时
+        会报明确的错）。这里只管存，避免两处各写一份校验而漂。
+        """
+        self.get(conversation_id)
+        self._stores.meta.set_conversation_model(conversation_id, model_pk)
         return self.get(conversation_id)
 
     def delete(self, conversation_id: str) -> None:

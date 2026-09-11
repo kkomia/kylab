@@ -133,6 +133,25 @@ class ModelRegistryService:
             raise InvalidRequestError(f"供应商「{provider.name}」还没有填写 API Key")
         return provider, model
 
+    def chat_target(self, model_pk: str) -> tuple[ModelProviderRecord, RegisteredModelRecord]:
+        """取一个可直接用于对话的（供应商, 模型）。
+
+        与 ``embedding_target`` 同一理由，校验集中在一处：会话级选模型（v12）与运行时
+        按 pk 解析都要"这个模型能不能真用来对话"这个判断，分散写迟早会漂。
+        空 ``capabilities`` 视为"没声明"（旧数据不拦），声明了就必须包含 ``chat``。
+        """
+        model = self.get_model(model_pk)
+        if model.capabilities and "chat" not in model.capabilities:
+            raise InvalidRequestError(
+                f"模型「{model.label or model.model_id}」没有声明对话能力，不能用于对话"
+            )
+        provider = self.get_provider(model.provider_id)
+        if not provider.enabled:
+            raise InvalidRequestError(f"供应商「{provider.name}」已停用")
+        if not provider.api_key.strip():
+            raise InvalidRequestError(f"供应商「{provider.name}」还没有填写 API Key")
+        return provider, model
+
     def probe_provider(self, provider_id: str) -> str:
         """探活一家供应商：**用它的地址与凭据请求 ``GET {base_url}/models``**。
 

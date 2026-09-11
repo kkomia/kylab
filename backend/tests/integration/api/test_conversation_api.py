@@ -185,9 +185,15 @@ def test_history_comes_from_the_database_not_the_request(
     seen: dict = {}
     real = services.chat.answer
 
-    def spy(*, query, sources, history=None, system_prompt=None):  # type: ignore[no-untyped-def]
+    def spy(*, query, sources, history=None, system_prompt=None, model_pk=None):  # type: ignore[no-untyped-def]
         seen["history"] = [(item.role, item.content) for item in (history or [])]
-        return real(query=query, sources=sources, history=history, system_prompt=system_prompt)
+        return real(
+            query=query,
+            sources=sources,
+            history=history,
+            system_prompt=system_prompt,
+            model_pk=model_pk,
+        )
 
     services.chat.answer = spy  # type: ignore[method-assign]
     try:
@@ -267,3 +273,53 @@ def test_markdown_upload_placeholder(client: TestClient, kb_id: str) -> None:
         params={"start": "false"}
     )
     assert upload.status_code == 202
+
+
+# --------------------------------------------------------------------- 会话级模型（v12）
+
+
+def test_conversation_remembers_the_chosen_model(client: TestClient, kb_id: str) -> None:
+    """建会话时选的模型要能读回来（列表与详情都带上）——界面靠它回填选择器。"""
+    created = client.post(
+        "/api/v1/conversations", json={"kb_ids": [kb_id], "model_pk": "mdl_pick"}
+    ).json()
+
+    assert created["model_pk"] == "mdl_pick"
+    assert (
+        client.get(f"/api/v1/conversations/{created['id']}").json()["model_pk"] == "mdl_pick"
+    )
+    listed = client.get("/api/v1/conversations").json()["items"]
+    assert [item["model_pk"] for item in listed if item["id"] == created["id"]] == ["mdl_pick"]
+
+
+def test_conversation_without_model_pk_stays_none(client: TestClient, kb_id: str) -> None:
+    """没选就是 None（跟随全局默认），不落一个被猜出来的模型。"""
+    created = client.post("/api/v1/conversations", json={"kb_ids": [kb_id]}).json()
+    assert created["model_pk"] is None
+
+
+def test_chat_records_the_chosen_model_on_the_conversation(
+    client: TestClient, kb_id: str
+) -> None:
+    """在已有会话上用另一个模型提问，该会话应当记住新选择（v12"跟随会话保存"）。"""
+    services = get_services()
+    provider = services.models.create_provider(
+        kind="llm", name="切换家", base_url="https://switch.example.com/v1", api_key="sk-s"
+    )
+    model = services.models.register_model(
+        provider_id=provider.id, model_id="m-switch", capabilities=["chat"]
+    )
+    conv = client.post("/api/v1/conversations", json={"kb_ids": [kb_id]}).json()
+
+    response = client.post(
+        "/api/v1/chat",
+        json={
+            "query": "继续问",
+            "kb_ids": [kb_id],
+            "conversation_id": conv["id"],
+            "model_pk": model.id,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert client.get(f"/api/v1/conversations/{conv['id']}").json()["model_pk"] == model.id

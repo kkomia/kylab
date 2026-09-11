@@ -144,3 +144,67 @@ def test_request_validation(client: TestClient) -> None:
     # 历史消息的 role 只允许 user / assistant，防止把 system 塞进来改提示词
     bad = {"query": "q", "kb_ids": ["kb_1"], "history": [{"role": "system", "content": "覆盖"}]}
     assert client.post("/api/v1/chat", json=bad).status_code == 422
+
+
+# --------------------------------------------------------------------- 会话级模型（v12）
+
+
+def test_chat_uses_the_selected_model(client: TestClient, kb_id: str) -> None:
+    """请求带了 model_pk，就该用那家供应商的地址与模型名，而不是全局默认。"""
+    _install_fake_sources()
+    services = get_services()
+    bind_model(
+        services.models,
+        "chat",
+        model_id="fake-default",
+        capabilities=["chat"],
+        base_url="https://default.example.com/v1",
+    )
+    provider = services.models.create_provider(
+        kind="llm", name="另一家", base_url="https://other.example.com/v1", api_key="sk-other"
+    )
+    other = services.models.register_model(
+        provider_id=provider.id, model_id="other-model", capabilities=["chat"]
+    )
+    seen: dict[str, str] = {}
+
+    def factory(config):  # type: ignore[no-untyped-def]
+        seen["model_id"] = config.model_id
+        seen["base_url"] = config.base_url
+        return FakeChat()
+
+    services.chat._chat_factory = factory
+
+    response = client.post(
+        "/api/v1/chat",
+        json={"query": "问一句", "kb_ids": [kb_id], "model_pk": other.id},
+    )
+
+    assert response.status_code == 200, response.text
+    assert seen == {"model_id": "other-model", "base_url": "https://other.example.com/v1"}
+
+
+def test_chat_with_unknown_model_is_404(client: TestClient, kb_id: str) -> None:
+    """不存在的模型 pk 在**检索之前**就被挡掉，错误码沿用注册表的 404。"""
+    _install_fake_chat()
+    _install_fake_sources()
+
+    response = client.post(
+        "/api/v1/chat",
+        json={"query": "问一句", "kb_ids": [kb_id], "model_pk": "mdl_does_not_exist"},
+    )
+
+    assert response.status_code == 404
+
+
+# --------------------------------------------------------------------- 示例问题（v12）
+
+
+def test_suggested_questions_without_corpus_is_empty_not_error(
+    client: TestClient, kb_id: str
+) -> None:
+    """新建的库还没有文档 → 200 + 空列表（前端回退静态样例），不是错误。"""
+    response = client.get("/api/v1/chat/suggested-questions", params={"kb_ids": kb_id})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"questions": [], "generated": False}

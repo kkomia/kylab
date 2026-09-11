@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.core.config import Settings
+from app.core.exceptions import InvalidRequestError
 from app.parsers.mineru_cloud import MinerUConfig
 from app.parsers.paddleocr_api import PaddleOCRConfig
 from app.services.llm import LLMConfig
@@ -323,9 +324,33 @@ class RuntimeConfigService:
             )
 
         provider, model = bound
-        options = model.options or {}
-        # 模型自带的默认值可以覆盖设置页：不同模型对采样参数的最优区间不同，
-        # 例如推理模型通常要更低的 temperature
+        return self._llm_config(provider, model)
+
+    def llm_for(self, model_pk: str | None) -> LLMConfig:
+        """按**指定注册模型**取对话快照；``model_pk`` 为空等价于 ``llm()``。
+
+        ``llm()`` 只认注册表里绑定给 ``chat`` 的全局默认模型；会话级选模型（v12）
+        需要一个"就用这一个"的入口。**能不能用交校验给注册器的 ``chat_target``**：
+        模型不存在 / 没声明对话能力 / 供应商停用或没密钥，都在那里给出可读的 422。
+        """
+        if not model_pk:
+            return self.llm()
+        target = getattr(self._registry, "chat_target", None)
+        if target is None:
+            raise InvalidRequestError("模型注册表不可用，无法按指定模型对话")
+        provider, model = target(model_pk)
+        return self._llm_config(provider, model)
+
+    def _llm_config(self, provider: object, model: object) -> LLMConfig:
+        """把（供应商, 模型）折成 ``LLMConfig``：采样参数取设置页，模型 options 可覆盖。
+
+        不同模型对采样参数的最优区间不同（推理模型通常要更低的 temperature），
+        所以模型自带的默认值优先于设置页。
+        """
+        temperature = _as_float(self.get("llm.temperature"), 0.3)
+        max_tokens = self.get_int("llm.max_tokens") or 1024
+        thinking = self.get("llm.enable_thinking").lower() in ("1", "true", "yes", "on")
+        options = getattr(model, "options", None) or {}
         if "temperature" in options:
             temperature = _as_float(str(options["temperature"]), temperature)
         if "max_tokens" in options:
@@ -335,9 +360,9 @@ class RuntimeConfigService:
         if "enable_thinking" in options:
             thinking = bool(options["enable_thinking"])
         return LLMConfig(
-            base_url=provider.base_url,
-            api_key=provider.api_key,
-            model_id=model.model_id,
+            base_url=getattr(provider, "base_url", ""),
+            api_key=getattr(provider, "api_key", ""),
+            model_id=getattr(model, "model_id", ""),
             temperature=temperature,
             max_tokens=max_tokens,
             enable_thinking=thinking,

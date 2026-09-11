@@ -151,9 +151,11 @@ class ChatService:
         sources: list[SourceRef],
         history: list[ChatMessage] | None = None,
         system_prompt: str | None = None,
+        model_pk: str | None = None,
     ) -> ChatTurn:
-        """非流式：一次拿完整回答。"""
-        chat = self._build_chat()
+        """非流式：一次拿完整回答。``model_pk`` 为空时用全局默认对话模型。"""
+        config = self._resolve_llm(model_pk)
+        chat = self._chat_factory(config)
         messages = build_messages(
             query=query,
             sources=sources,
@@ -162,10 +164,10 @@ class ChatService:
         )
         started = time.monotonic()
         text = chat.complete(messages)
-        self._record_usage(chat, started, items=1)
+        self._record_usage(chat, started, items=1, config=config)
         return ChatTurn(answer=text, sources=sources)
 
-    def _record_usage(self, chat, started: float, *, items: int) -> None:  # type: ignore[no-untyped-def]
+    def _record_usage(self, chat, started: float, *, items: int, config: LLMConfig) -> None:
         """把这一次调用的用量交给回调（G7）。
 
         **读的是 provider 上的 ``last_usage`` 而不是改 ``complete`` 的返回值**：
@@ -173,10 +175,12 @@ class ChatService:
 
         回调缺席时什么都不做——用量统计是可选的旁路，不该成为 ChatService 的
         必需依赖（否则所有既有测试与用例都得跟着造一个）。
+
+        ``config`` 由调用方传进来（而不是这里再取一次 ``runtime.llm()``）：
+        会话级选模型之后，真正用的是哪个模型只有调用方知道，重取会记成全局默认那个。
         """
         if self._usage_recorder is None:
             return
-        config = self._runtime.llm()
         try:
             self._usage_recorder(
                 kind="chat",
@@ -199,13 +203,14 @@ class ChatService:
         sources: list[SourceRef],
         history: list[ChatMessage] | None = None,
         system_prompt: str | None = None,
+        model_pk: str | None = None,
     ) -> Iterator[str]:
         """流式：逐块产出回答文本。
 
         模型没配好时**抛 ChatError**，由协议层翻成错误事件——
         不能静默返回空答案，那会让用户以为"知识库里没有"。
         """
-        chat = self._build_chat()
+        chat = self._build_chat(model_pk)
         messages = build_messages(
             query=query,
             sources=sources,
@@ -214,8 +219,16 @@ class ChatService:
         )
         return chat.stream(messages)
 
-    def llm_config(self) -> LLMConfig:
-        return self._runtime.llm()
+    def llm_config(self, model_pk: str | None = None) -> LLMConfig:
+        return self._runtime.llm_for(model_pk)
+
+    def ask_raw(self, messages: list[ChatMessage], *, model_pk: str | None = None) -> str:
+        """用对话模型直接完成一组消息：**不检索、不拼资料**。
+
+        给"示例问题生成"这类旁路用——它要的是模型的语言能力，不是知识库的出处。
+        与 ``probe`` 一样走 ``_build_chat``，所以模型选择与未配置时的报错口径完全一致。
+        """
+        return self._build_chat(model_pk).complete(messages)
 
     def probe(self) -> str:
         """最小连通性探针：让模型回一句话，只用来验证"模型会不会说话"。
@@ -227,11 +240,15 @@ class ChatService:
 
     # ------------------------------------------------------------------ 内部
 
-    def _build_chat(self):  # type: ignore[no-untyped-def]
-        config = self._runtime.llm()
+    def _resolve_llm(self, model_pk: str | None) -> LLMConfig:
+        """取这一轮要用的对话配置；没配就抛可读错误。"""
+        config = self._runtime.llm_for(model_pk)
         if not config.is_configured:
             raise ChatError("尚未配置对话模型，请到设置 → 模型配置里填写 API Key 与模型 ID")
-        return self._chat_factory(config)
+        return config
+
+    def _build_chat(self, model_pk: str | None = None):  # type: ignore[no-untyped-def]
+        return self._chat_factory(self._resolve_llm(model_pk))
 
 
 def build_messages(

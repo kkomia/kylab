@@ -371,6 +371,10 @@ class ChatRequestIn(BaseModel):
         default=None,
         description="指定则把这一轮存进该会话，并以库里的历史为准（忽略上方的 history）",
     )
+    model_pk: str | None = Field(
+        default=None,
+        description="这一轮用哪个注册对话模型；留空则用会话已存的，再留空用全局默认",
+    )
 
 
 class ChatSourceOut(BaseModel):
@@ -395,6 +399,17 @@ class ChatTurnOut(BaseModel):
 
 class ChatResponseOut(ChatTurnOut):
     """一次性问答的响应（与流式共用同一套 source 结构）。"""
+
+
+class SuggestedQuestionsOut(BaseModel):
+    """对话页空状态的示例问题。
+
+    ``generated`` 为假（``questions`` 为空）时前端回退到静态样例——
+    生成不出来不是错误，只是没有语料依据的建议可给。
+    """
+
+    questions: list[str] = Field(default_factory=list)
+    generated: bool = False
 
 
 # --------------------------------------------------------------------- API Key
@@ -440,6 +455,8 @@ class ApiKeyListOut(BaseModel):
 class ConversationCreateIn(BaseModel):
     title: str = Field(default="", max_length=64)
     kb_ids: list[str] = Field(default_factory=list)
+    model_pk: str | None = None
+    """本条会话选用的对话模型（v12）。``None`` = 跟随全局默认。"""
 
 
 class ConversationRenameIn(BaseModel):
@@ -454,6 +471,8 @@ class ConversationOut(BaseModel):
     id: str
     title: str
     kb_ids: list[str] = Field(default_factory=list)
+    model_pk: str | None = None
+    """本条会话选用的对话模型（v12）；``None`` = 全局默认。界面据此回填模型选择器。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
     message_count: int = 0

@@ -375,6 +375,34 @@ class SqliteMetaStore(MetaStore):
             for row in rows
         ]
 
+    def sample_chunks(self, kb_ids: Sequence[str], *, limit: int) -> list[ChunkRecord]:
+        """从若干知识库随机抽切块（跳过人工禁用的）。给示例问题生成喂一点语料用。"""
+        if not kb_ids or limit <= 0:
+            return []
+        placeholders = ",".join("?" * len(kb_ids))
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM chunks "  # noqa: S608
+                f"WHERE knowledge_base_id IN ({placeholders}) AND disabled = 0"
+                " ORDER BY RANDOM() LIMIT ?",
+                [*kb_ids, limit],
+            ).fetchall()
+        return [
+            ChunkRecord(
+                chunk_id=row["chunk_id"],
+                document_id=row["document_id"],
+                knowledge_base_id=row["knowledge_base_id"],
+                part_id=row["part_id"],
+                ordinal=row["ordinal"],
+                text=row["text"],
+                content_hash=row["content_hash"],
+                heading_path=row["heading_path"],
+                page=row["page"],
+                disabled=bool(row["disabled"]),
+            )
+            for row in rows
+        ]
+
     def get_chunks(self, chunk_ids: Sequence[str]) -> list[ChunkRecord]:
         """按 ID 批量取回。检索时向量只给得出 chunk_id，正文与图片锚点得回表取；
         逐个查会退化成 N 次查询，所以接口层就要求批量。"""
@@ -1423,6 +1451,7 @@ class SqliteMetaStore(MetaStore):
             title=row["title"],
             kb_ids=tuple(json.loads(row["kb_ids"])),
             owner_id=row["owner_id"],
+            model_pk=row["model_pk"],
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
         )
@@ -1444,13 +1473,15 @@ class SqliteMetaStore(MetaStore):
         record.updated_at = record.updated_at or now
         with self._db.session() as conn:
             conn.execute(
-                "INSERT INTO conversations (id, title, kb_ids, owner_id, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO conversations"
+                " (id, title, kb_ids, owner_id, model_pk, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     record.id,
                     record.title,
                     _json(list(record.kb_ids)),
                     record.owner_id,
+                    record.model_pk,
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
@@ -1480,6 +1511,14 @@ class SqliteMetaStore(MetaStore):
         with self._db.session() as conn:
             conn.execute(
                 "UPDATE conversations SET title = ? WHERE id = ?", (title, conversation_id)
+            )
+
+    def set_conversation_model(self, conversation_id: str, model_pk: str | None) -> None:
+        # 与改名同理：切模型不算"发生了对话"，不推 updated_at
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE conversations SET model_pk = ? WHERE id = ?",
+                (model_pk, conversation_id),
             )
 
     def touch_conversation(self, conversation_id: str) -> None:

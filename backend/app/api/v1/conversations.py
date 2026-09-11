@@ -36,6 +36,7 @@ def _summary(services: Services, record) -> ConversationOut:  # type: ignore[no-
         id=record.id,
         title=record.title,
         kb_ids=list(record.kb_ids),
+        model_pk=record.model_pk,
         created_at=record.created_at,
         updated_at=record.updated_at,
         message_count=services.conversations.message_count(record.id),
@@ -88,7 +89,10 @@ def create_conversation(
     这里能传标题是为了"复制一次旧会话"这类将来可能有的用法。
     """
     record = services.conversations.create(
-        kb_ids=payload.kb_ids, title=payload.title, owner_id=_caller_owner(caller)
+        kb_ids=payload.kb_ids,
+        title=payload.title,
+        owner_id=_caller_owner(caller),
+        model_pk=payload.model_pk,
     )
     return _summary(services, record)
 

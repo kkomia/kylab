@@ -493,6 +493,21 @@ _MIGRATION_011 = Migration(
 )
 
 
+_MIGRATION_012 = Migration(
+    version=12,
+    description="会话级对话模型：记录该会话选用的注册模型（不同会话可用不同模型）",
+    statements=(
+        # **设计调整（用户提出）**：对话模型此前是全局单例——每条会话都走注册表里
+        # 绑定给 `chat` 槽位的那个模型。想换个模型开一轮对比，只能去设置页改全局绑定，
+        # 而那会把所有会话一起改掉。
+        # 现在：新建会话时选定一个对话模型并随会话冻结（与 §12.25"嵌入模型按库冻结"
+        # 同一思路，只是粒度从库换成会话）。凭据仍只在注册表存一处，这里只记 pk。
+        # 可空：老会话与"没显式选"的会话继续走全局默认，升级不打断既有部署。
+        "ALTER TABLE conversations ADD COLUMN model_pk TEXT",
+    ),
+)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
@@ -505,6 +520,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_009,
     _MIGRATION_010,
     _MIGRATION_011,
+    _MIGRATION_012,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

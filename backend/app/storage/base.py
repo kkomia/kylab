@@ -328,6 +328,8 @@ class ConversationRecord:
     kb_ids: Sequence[str] = field(default_factory=tuple)
     owner_id: str | None = None
     """归属账号（v10）。``None`` = 老数据，setup 时认领给首个管理员。"""
+    model_pk: str | None = None
+    """该会话选用的注册模型（v12）。``None`` = 走全局默认（注册表 chat 槽位）。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -605,6 +607,15 @@ class MetaStore(ABC):
     def count_chunks(self, document_id: str) -> int: ...
 
     @abstractmethod
+    def sample_chunks(self, kb_ids: Sequence[str], *, limit: int) -> list[ChunkRecord]:
+        """从若干知识库里**随机抽**若干切块（跳过人工禁用的）。
+
+        用途是"给示例问题生成提供一点语料"，不是检索：不需要相关性排序，
+        只要覆盖面够广——所以按库随机，而不是取每个文档的前几块（那样每个库
+        都只看得到第一份文档的开头）。空 ``kb_ids`` 返回空列表。
+        """
+
+    @abstractmethod
     def count_chunks_by_documents(self, document_ids: Sequence[str]) -> dict[str, int]:
         """批量查切块数：文档列表页要显示每个文档有多少块。
 
@@ -799,6 +810,14 @@ class MetaStore(ABC):
 
     @abstractmethod
     def rename_conversation(self, conversation_id: str, title: str) -> None: ...
+
+    @abstractmethod
+    def set_conversation_model(self, conversation_id: str, model_pk: str | None) -> None:
+        """记录该会话选用的对话模型（``None`` = 回到全局默认）。
+
+        **不推 ``updated_at``**，与改名同理：切一次模型不该把会话顶到"最近活动"的最前面。
+        """
+        ...
 
     @abstractmethod
     def touch_conversation(self, conversation_id: str) -> None:

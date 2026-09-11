@@ -156,7 +156,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **85** 条端点。
+共 **86** 条端点。
 
 ### `api-keys`
 
@@ -183,6 +183,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 |------|------|------|
 | `POST` | `/api/v1/chat` | 快速检索问答（一次性） |
 | `POST` | `/api/v1/chat/stream` | 快速检索问答（流式） |
+| `GET` | `/api/v1/chat/suggested-questions` | 示例问题（依据所选知识库的语料生成） |
 
 ### `chunks`
 

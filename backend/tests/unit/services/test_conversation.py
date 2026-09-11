@@ -191,3 +191,37 @@ def test_list_limit(service: ConversationService) -> None:
     for _ in range(5):
         service.create()
     assert len(service.list(limit=2)) == 2
+
+
+# --------------------------------------------------------------------- 会话级对话模型（v12）
+
+
+def test_conversation_remembers_the_chosen_model(service: ConversationService) -> None:
+    conv = service.create(kb_ids=["kb_1"], model_pk="mdl_a")
+    assert service.get(conv.id).model_pk == "mdl_a"
+
+
+def test_conversation_model_defaults_to_none(service: ConversationService) -> None:
+    """没显式选就是 None（跟随全局默认），不是某个被猜出来的模型。"""
+    conv = service.create()
+    assert service.get(conv.id).model_pk is None
+
+
+def test_set_model_switches_and_clears(service: ConversationService) -> None:
+    conv = service.create(model_pk="mdl_a")
+
+    service.set_model(conv.id, "mdl_b")
+    assert service.get(conv.id).model_pk == "mdl_b"
+
+    service.set_model(conv.id, None)
+    assert service.get(conv.id).model_pk is None
+
+
+def test_set_model_does_not_touch_updated_at(service: ConversationService) -> None:
+    """切模型不算"发生了对话"：不该把会话顶到"最近活动"最前面。"""
+    conv = service.create()
+    before = service.get(conv.id).updated_at
+
+    service.set_model(conv.id, "mdl_a")
+
+    assert service.get(conv.id).updated_at == before

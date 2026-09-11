@@ -20,11 +20,16 @@ import json
 import logging
 from collections.abc import Iterator
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
 from app.api.auth import check_kb_scope, require_read
-from app.api.v1.schemas import ChatRequestIn, ChatResponseOut, ChatSourceOut
+from app.api.v1.schemas import (
+    ChatRequestIn,
+    ChatResponseOut,
+    ChatSourceOut,
+    SuggestedQuestionsOut,
+)
 from app.core.services import Services, get_services
 from app.services.api_key import Caller
 from app.services.llm import ChatError, ChatMessage
@@ -55,8 +60,12 @@ async def chat_stream(
     check_kb_scope(services, caller, payload.kb_ids)
     _require_conversation(services, payload, caller)
     _warn_on_scope_drift(services, payload)
+    model_pk = _effective_model(services, payload)
+    # **在流开始前把模型校验掉**：坏 pk 应当是 422，而不是流内的一条 error 事件
+    # （流一旦开始，状态码已经发出去了）。没配任何模型不算错，交由流内报可读文案。
+    services.chat.llm_config(model_pk)
     return StreamingResponse(
-        _events(services, payload),
+        _events(services, payload, model_pk),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -72,6 +81,7 @@ async def chat_once(
     check_kb_scope(services, caller, payload.kb_ids)
     _require_conversation(services, payload, caller)
     _warn_on_scope_drift(services, payload)
+    model_pk = _effective_model(services, payload)
 
     sources = services.chat.retrieve_sources(
         query=payload.query,
@@ -82,15 +92,67 @@ async def chat_once(
         query=payload.query,
         sources=sources,
         history=_history(services, payload),
+        model_pk=model_pk,
     )
     _record_turn(services, payload, answer=answer.answer, sources=answer.sources)
     return ChatResponseOut(answer=answer.answer, sources=_sources_out(answer.sources))
 
 
+@router.get(
+    "/chat/suggested-questions",
+    response_model=SuggestedQuestionsOut,
+    summary="示例问题（依据所选知识库的语料生成）",
+)
+def suggested_questions(
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
+    kb_ids: str = Query(default="", description="逗号分隔的知识库 id；留空返回空列表"),
+    limit: int = Query(default=6, ge=1, le=8),
+    model_pk: str | None = Query(default=None, description="用哪个模型生成；留空用全局默认"),
+    refresh: bool = Query(default=False, description="true 绕过缓存重新生成"),
+) -> SuggestedQuestionsOut:
+    """给对话页空状态那排胶囊喂数据。
+
+    **失败返回空列表而不是报错**（``generated=false``）：示例问题只是引导，
+    拿不到就让界面回退到静态样例，不该把"打开对话页"变成一次错误提示。
+    """
+    ids = [item.strip() for item in kb_ids.split(",") if item.strip()]
+    if ids:
+        check_kb_scope(services, caller, ids)
+    questions = services.suggested_questions.suggest(
+        kb_ids=ids, limit=limit, model_pk=model_pk, refresh=refresh
+    )
+    return SuggestedQuestionsOut(questions=questions, generated=bool(questions))
+
+
 # --------------------------------------------------------------------- 内部
 
 
-def _events(services: Services, payload: ChatRequestIn) -> Iterator[str]:
+def _effective_model(services: Services, payload: ChatRequestIn) -> str | None:
+    """这一轮实际用哪个对话模型。
+
+    优先级：**请求里的 ``model_pk`` > 会话已存的 ``model_pk`` > 全局默认（``None``）**。
+
+    请求带了 ``model_pk`` 且指定了会话时**回写会话**——用户在输入框换了模型，
+    这条会话就该记住新选择（v12"跟随会话保存"）。回写失败只记日志：模型选择没存上
+    不该让这一轮问不出来。
+    """
+    if payload.model_pk:
+        if payload.conversation_id:
+            try:
+                record = services.conversations.get(payload.conversation_id)
+                if record.model_pk != payload.model_pk:
+                    services.conversations.set_model(payload.conversation_id, payload.model_pk)
+            except Exception:
+                logger.exception("会话模型回写失败：%s", payload.conversation_id)
+        return payload.model_pk
+    if payload.conversation_id:
+        # 走到这里说明 `_require_conversation` 已经把"不存在/越主"挡掉了（404）
+        return services.conversations.get(payload.conversation_id).model_pk
+    return None
+
+
+def _events(services: Services, payload: ChatRequestIn, model_pk: str | None) -> Iterator[str]:
     """把一次问答摊成一串 SSE 事件。
 
     任何异常都在**流内**报出去（``type=error``）而不是靠 HTTP 状态码：
@@ -123,6 +185,7 @@ def _events(services: Services, payload: ChatRequestIn) -> Iterator[str]:
             query=payload.query,
             sources=sources,
             history=_history(services, payload),
+            model_pk=model_pk,
         ):
             collected.append(delta)
             yield _sse({"type": "delta", "text": delta})
