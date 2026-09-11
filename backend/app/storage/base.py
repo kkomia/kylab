@@ -556,13 +556,25 @@ class MetaStore(ABC):
 
     @abstractmethod
     def list_documents(
-        self, kb_id: str, *, folder_id: str | None = None, root_only: bool = False
+        self,
+        kb_id: str,
+        *,
+        folder_id: str | None = None,
+        root_only: bool = False,
+        q: str | None = None,
+        stage: str | None = None,
+        source_kind: str | None = None,
     ) -> list[DocumentRecord]:
         """列某个库的文档。
 
         - ``root_only=True``：只看未归档的（``folder_id IS NULL``）；
         - ``folder_id`` 给了：只看这个目录里的；
+        - ``q``：文件名含该子串（大小写不敏感，``%``/``_`` 按字面匹配）；
+        - ``stage`` / ``source_kind``：精确值过滤；
         - 都不给：整个库（默认，保持既有调用点行为不变）。
+
+        过滤**在 SQL 里做而不是取回内存再筛**：一个库上万篇时，
+        "把全部读出来再过滤"会把列表接口的耗时和内存随库大小一起放大。
         """
 
     @abstractmethod

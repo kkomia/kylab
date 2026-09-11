@@ -205,7 +205,14 @@ class SqliteMetaStore(MetaStore):
         return self._document_from_row(row) if row else None
 
     def list_documents(
-        self, kb_id: str, *, folder_id: str | None = None, root_only: bool = False
+        self,
+        kb_id: str,
+        *,
+        folder_id: str | None = None,
+        root_only: bool = False,
+        q: str | None = None,
+        stage: str | None = None,
+        source_kind: str | None = None,
     ) -> list[DocumentRecord]:
         sql = "SELECT * FROM documents WHERE knowledge_base_id = ?"
         params: list[object] = [kb_id]
@@ -214,6 +221,19 @@ class SqliteMetaStore(MetaStore):
         elif folder_id is not None:
             sql += " AND folder_id = ?"
             params.append(folder_id)
+        if q:
+            # 转义 LIKE 的通配符：用户搜 "a_b" 时字面匹配，而不是"a 后跟任意一字符"。
+            # ESCAPE 子句让转义字符可判——没有它，反斜杠会被当普通字符，
+            # `\%` 反而匹配到真正的 "%"。
+            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            sql += " AND name LIKE ? ESCAPE '\\'"
+            params.append(f"%{escaped}%")
+        if stage:
+            sql += " AND stage = ?"
+            params.append(stage)
+        if source_kind:
+            sql += " AND source_kind = ?"
+            params.append(source_kind)
         sql += " ORDER BY created_at DESC"
         with self._db.read() as conn:
             rows = conn.execute(sql, params).fetchall()

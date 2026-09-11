@@ -99,12 +99,22 @@ class DocumentService:
     # ------------------------------------------------------------------ 文档
 
     def list_documents(
-        self, kb_id: str, *, folder_id: str | None = None, root_only: bool = False
+        self,
+        kb_id: str,
+        *,
+        folder_id: str | None = None,
+        root_only: bool = False,
+        q: str | None = None,
+        stage: str | None = None,
+        source_kind: str | None = None,
     ) -> list[DocumentRecord]:
-        """列文档；可按目录收窄（``root_only`` = 只看未归档的）。
+        """列文档；可按目录、文件名、状态、来源收窄。
 
         ``folder_id`` 会校验它属于这个库：传一个别的库的目录 id 时，静默返回空列表
         会让人以为"这个目录是空的"，而不是"你查错了库"。
+
+        ``q`` 为空串等同于不过滤：前端输入框清空后仍会带一个空串上来，
+        把它当"搜空串"会匹配到全部——结果相同，但让"有没有在搜"这件事变得含糊。
         """
         if self._stores.meta.get_knowledge_base(kb_id) is None:
             raise NotFoundError(f"知识库不存在：{kb_id}")
@@ -112,7 +122,14 @@ class DocumentService:
             folder = self._stores.meta.get_folder(folder_id)
             if folder is None or folder.kb_id != kb_id:
                 raise NotFoundError(f"目录不存在：{folder_id}")
-        return self._stores.meta.list_documents(kb_id, folder_id=folder_id, root_only=root_only)
+        return self._stores.meta.list_documents(
+            kb_id,
+            folder_id=folder_id,
+            root_only=root_only,
+            q=q.strip() if q else None,
+            stage=stage,
+            source_kind=source_kind,
+        )
 
     def chunk_counts(self, document_ids: list[str]) -> dict[str, int]:
         """批量取切块数。列表页用它，避免每个文档查一次库。"""

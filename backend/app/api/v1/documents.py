@@ -42,7 +42,7 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import PayloadTooLargeError, UnauthorizedError
 from app.core.services import Services, get_services
 from app.core.signing import SigningError, verify_resource
-from app.models.enums import ApiKeyPermission
+from app.models.enums import ApiKeyPermission, DataSourceKind, DocumentStage
 from app.services.api_key import Caller
 from app.services.documents import signature_resource
 from app.services.idempotency import fingerprint
@@ -243,9 +243,27 @@ async def list_documents(
     caller: Caller = Depends(require_read),
     folder_id: str | None = Query(default=None, description="只看这个目录里的文档"),
     root: bool = Query(default=False, description="只看未归档（根目录）的文档"),
+    q: str | None = Query(
+        default=None, max_length=200, description="按文件名模糊搜（大小写不敏感）"
+    ),
+    stage: DocumentStage | None = Query(default=None, description="只保留这个流水线阶段"),
+    source_kind: DataSourceKind | None = Query(default=None, description="只保留这个来源类型"),
 ) -> DocumentList:
+    """知识库下的文档列表，支持目录 / 文件名 / 状态 / 来源四个维度的收窄。
+
+    ``stage`` 与 ``source_kind`` 用枚举而不是裸字符串：传一个拼错的值时
+    框架直接回 422，而不是被当成"合法但匹配不到"而静默返回空列表——
+    后者会让用户以为"这个库真的没有失败文档"。
+    """
     check_kb_scope(services, caller, [kb_id])
-    records = services.documents.list_documents(kb_id, folder_id=folder_id, root_only=root)
+    records = services.documents.list_documents(
+        kb_id,
+        folder_id=folder_id,
+        root_only=root,
+        q=q,
+        stage=stage.value if stage else None,
+        source_kind=source_kind.value if source_kind else None,
+    )
     counts = services.documents.chunk_counts([record.id for record in records])
     names = _uploader_names(services, records)
     return DocumentList(

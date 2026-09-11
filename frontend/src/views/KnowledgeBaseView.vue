@@ -18,6 +18,9 @@ import {
   listDocuments,
   moveDocument,
   reprocessDocument,
+  type DataSourceKind,
+  type DocumentStage,
+  type DocumentListFilter,
   type ImpactReport,
   type DocumentPart,
   type DocumentSummary,
@@ -42,6 +45,7 @@ import RowMenu from '@/components/ui/RowMenu.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
@@ -128,6 +132,46 @@ const uploadOpen = ref(false)
 const shareOpen = ref(false)
 const expanded = ref<Record<string, DocumentPart[] | undefined>>({})
 
+// ------------------------------------------------------------------ 筛选
+
+const SEARCH_DEBOUNCE_MS = 300
+
+/**
+ * 筛选下拉的选项。状态文案从 `documentStageView` 取——文档行上显示什么，
+ * 下拉里就显示什么，不另写一套说法（否则"失败"在一处叫"失败"、另一处叫"异常"）。
+ */
+const FILTER_STAGE_KEYS: DocumentStage[] = [
+  'uploaded',
+  'probing',
+  'parsing',
+  'parsed',
+  'chunking',
+  'chunked',
+  'embedding',
+  'indexed',
+  'enriching',
+  'enriched',
+  'failed',
+]
+const STAGE_FILTER_OPTIONS = [
+  { value: '', label: '全部状态' },
+  ...FILTER_STAGE_KEYS.map((stage) => ({ value: stage, label: documentStageView(stage).label })),
+]
+/** 只列真实可能出现的来源：webdav 是框架预留、MVP 不实现，摆上去就是点了没反应的死选项。 */
+const SOURCE_FILTER_OPTIONS = [
+  { value: '', label: '全部来源' },
+  { value: 'upload', label: '本地上传' },
+  { value: 'html', label: '网页' },
+  { value: 'rss', label: 'RSS 订阅' },
+]
+
+const searchDraft = ref('')
+const stageFilter = ref('')
+const sourceFilter = ref('')
+const hasFilter = computed(() =>
+  Boolean(searchDraft.value.trim() || stageFilter.value || sourceFilter.value),
+)
+
 // ------------------------------------------------------------------ 目录（v13）
 
 /**
@@ -157,8 +201,9 @@ const moveOpen = computed({
   },
 })
 
-/** 空状态文案随筛选范围变——"这个库还没有文档"在目录里看到会误导。 */
+/** 空状态文案随筛选范围变——"这个库还没有文档"在目录或搜索里看到会误导。 */
 const emptyTitle = computed(() => {
+  if (hasFilter.value) return '没有符合条件的文档'
   if (activeFolder.value === ROOT_FILTER) return '根目录下还没有文档'
   if (activeFolder.value) return '这个目录里还没有文档'
   return '这个知识库里还没有文档'
@@ -170,6 +215,27 @@ const uploadFolderId = computed(() =>
 )
 
 let timer: ReturnType<typeof setInterval> | null = null
+let searchTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 搜文件名是**逐键**触发的：不防抖就会每敲一个字发一次请求，中文输入还会带上拼音中间态。 */
+function scheduleSearch(): void {
+  if (searchTimer !== null) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => {
+    searchTimer = null
+    void refresh()
+  }, SEARCH_DEBOUNCE_MS)
+}
+
+function clearFilters(): void {
+  searchDraft.value = ''
+  stageFilter.value = ''
+  sourceFilter.value = ''
+  if (searchTimer !== null) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  void refresh()
+}
 
 const hasActive = computed(() =>
   documents.value.some((document) => ACTIVE_STAGES.has(document.stage)),
@@ -178,12 +244,13 @@ const hasActive = computed(() =>
 async function refresh(): Promise<void> {
   if (!kbId.value) return
   try {
-    const filter =
-      activeFolder.value === ROOT_FILTER
-        ? { root: true }
-        : activeFolder.value
-          ? { folderId: activeFolder.value }
-          : {}
+    const filter: DocumentListFilter = {}
+    if (activeFolder.value === ROOT_FILTER) filter.root = true
+    else if (activeFolder.value) filter.folderId = activeFolder.value
+    const keyword = searchDraft.value.trim()
+    if (keyword) filter.q = keyword
+    if (stageFilter.value) filter.stage = stageFilter.value as DocumentStage
+    if (sourceFilter.value) filter.sourceKind = sourceFilter.value as DataSourceKind
     documents.value = (await listDocuments(kbId.value, filter)).items
     error.value = ''
   } catch (cause) {
@@ -226,9 +293,21 @@ watch(hasActive, syncPolling)
 watch(activeFolder, () => {
   void refresh()
 })
+watch(searchDraft, scheduleSearch)
+// 下拉是离散选择，没有"输入到一半"的中间态，直接刷；也顺带取消防抖中的搜索
+watch([stageFilter, sourceFilter], () => {
+  if (searchTimer !== null) {
+    clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  void refresh()
+})
 watch(kbId, () => {
   expanded.value = {}
   activeFolder.value = ''
+  searchDraft.value = ''
+  stageFilter.value = ''
+  sourceFilter.value = ''
   void loadFirst()
 })
 
@@ -239,6 +318,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   if (timer !== null) clearInterval(timer)
+  if (searchTimer !== null) clearTimeout(searchTimer)
 })
 
 async function onUploaded(): Promise<void> {
@@ -438,6 +518,25 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
         <template #icon><IconPlus /></template>
         新建目录
       </AppButton>
+    </div>
+
+    <!-- 筛选：文件名 / 状态 / 来源。放在目录之后——先缩小范围，再在范围内找 -->
+    <div v-if="knowledgeBase && !loading" class="filter-bar">
+      <div class="search-box">
+        <IconSearch class="search-icon" :size="16" />
+        <AppInput v-model="searchDraft" placeholder="搜索文件名…" />
+      </div>
+      <div class="filter-select">
+        <AppSelect v-model="stageFilter" :options="STAGE_FILTER_OPTIONS" aria-label="按状态筛选" />
+      </div>
+      <div class="filter-select">
+        <AppSelect
+          v-model="sourceFilter"
+          :options="SOURCE_FILTER_OPTIONS"
+          aria-label="按来源筛选"
+        />
+      </div>
+      <AppButton v-if="hasFilter" size="sm" @click="clearFilters">清除筛选</AppButton>
     </div>
 
     <!-- 新建/重命名共用一个表单：靠 folderEditingId 区分两种模式，交互与"添加供应商"一致 -->
@@ -777,6 +876,42 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 
 .folder-form :deep(.field) {
   width: 260px;
+}
+
+/* ---- 筛选 ---- */
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+/* 搜索框：图标压在输入框左内侧。AppInput 的 .field 在子组件里，
+   所以用 :deep 把左内边距让给图标 */
+.search-box {
+  position: relative;
+  flex: 0 1 260px;
+  min-width: 180px;
+}
+
+.search-box :deep(.field) {
+  padding-left: calc(var(--space-3) + 24px);
+}
+
+.search-icon {
+  position: absolute;
+  top: 50%;
+  left: var(--space-3);
+  z-index: 1;
+  color: var(--text-tertiary);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.filter-select {
+  flex: 0 0 148px;
 }
 
 /* ---- 移动到目录 ---- */

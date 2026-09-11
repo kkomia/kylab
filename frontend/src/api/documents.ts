@@ -81,6 +81,12 @@ export interface DocumentListFilter {
   folderId?: string
   /** 只看未归档（根目录）的文档。 */
   root?: boolean
+  /** 按文件名模糊搜（大小写不敏感）。 */
+  q?: string
+  /** 只保留这个流水线阶段。 */
+  stage?: DocumentStage
+  /** 只保留这个来源类型。 */
+  sourceKind?: DataSourceKind
 }
 
 export function listDocuments(
@@ -90,6 +96,9 @@ export function listDocuments(
   const params = new URLSearchParams()
   if (filter.folderId) params.set('folder_id', filter.folderId)
   else if (filter.root) params.set('root', 'true')
+  if (filter.q) params.set('q', filter.q)
+  if (filter.stage) params.set('stage', filter.stage)
+  if (filter.sourceKind) params.set('source_kind', filter.sourceKind)
   const query = params.toString()
   return request(`/knowledge-bases/${kbId}/documents${query ? `?${query}` : ''}`)
 }
