@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import quote
 
@@ -35,6 +36,7 @@ from app.services.splitting import (
     plan_split,
 )
 from app.services.tabular import TABULAR_EXTENSIONS, parse_tabular
+from app.services.webhook import DOCUMENT_FAILED, DOCUMENT_INDEXED
 from app.storage.base import (
     MARKDOWN,
     ORIGINALS,
@@ -94,11 +96,16 @@ class IngestService:
         router: ParserRouter,
         embedder: EmbeddingProvider,
         chunk_config: ChunkingConfig | None = None,
+        notifier: Callable[[str, dict], None] | None = None,
     ) -> None:
         self._stores = stores
         self._router = router
         self._embedder = embedder
         self._chunk_config = chunk_config or ChunkingConfig()
+        # Webhook 是**旁路**（T4.6）：默认什么都不做，组合根才把它接上。
+        # 做成回调而不是直接依赖 WebhookService，是为了不让摄入服务
+        # 反过来依赖通知服务——那会让"发通知失败"有机会影响摄入本身
+        self._notify = notifier or (lambda event, payload: None)
 
     # ------------------------------------------------------------------ 上传与去重
 
@@ -178,11 +185,43 @@ class IngestService:
         except (ParseError, EmbeddingError, InvalidTransition) as exc:
             stage = getattr(exc, "stage", "parsing")
             self._fail(document, str(exc), stage=stage)
+            self._announce_failure(document, str(exc), stage)
             raise IngestError(str(exc), document_id=document.id, stage=stage) from exc
 
         refreshed = self._require_document(document.id)
-        return IngestOutcome(
-            document=refreshed, chunk_count=self._stores.meta.count_chunks(document.id)
+        chunk_count = self._stores.meta.count_chunks(document.id)
+        # **事件在状态真的落到 indexed 之后发**：早发的话接收端来查会看到还在跑，
+        # 而它完全有理由相信"收到 indexed 就能取到内容"
+        self._notify(
+            DOCUMENT_INDEXED,
+            {
+                "document_id": refreshed.id,
+                "knowledge_base_id": refreshed.knowledge_base_id,
+                "name": refreshed.name,
+                "stage": refreshed.stage.value,
+                "chunk_count": chunk_count,
+                "page_count": refreshed.page_count,
+                "size_bytes": refreshed.size_bytes,
+            },
+        )
+        return IngestOutcome(document=refreshed, chunk_count=chunk_count)
+
+    def _announce_failure(self, document: DocumentRecord, message: str, stage: str) -> None:
+        """失败也要通知。
+
+        **只推成功是最常见的 webhook 设计错误**：调用方等一个永远不会来的
+        `indexed`，而文档早就 failed 了。它只能靠超时猜，或者靠轮询兜底——
+        那 webhook 就白做了。
+        """
+        self._notify(
+            DOCUMENT_FAILED,
+            {
+                "document_id": document.id,
+                "knowledge_base_id": document.knowledge_base_id,
+                "name": document.name,
+                "stage": stage,
+                "error": message,
+            },
         )
 
     def _resume_stage(self, document: DocumentRecord) -> DocumentStage:

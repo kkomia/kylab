@@ -45,6 +45,7 @@ from app.services.stats import StatsService
 from app.services.tabular import TabularService
 from app.services.usage import UsageService
 from app.services.users import UserService
+from app.services.webhook import WebhookService
 from app.storage.base import StoreBundle
 from app.workers.queue_worker import TaskWorker
 
@@ -89,6 +90,8 @@ class Services:
     """表格结构化副本：读写 CSV/Excel 的行列（M2 / T2.11）。"""
     conversations: ConversationService
     """对话留存：会话与消息的读写（§11.2）。"""
+    webhooks: WebhookService
+    """Webhook 订阅与事件推送（M4 / T4.6）。"""
     embedder: EmbeddingProvider
     reranker: RerankProvider
     worker: TaskWorker
@@ -199,11 +202,15 @@ def build_services(
     embedder = _RuntimeEmbedder(runtime, _record_embed_usage)
     reranker = _RuntimeReranker(runtime)
     retrieval = RetrievalService(bundle, embedder=embedder, reranker=reranker)
+    # webhook 先建：下面的摄入与生命周期都通过回调向它发事件（T4.6）。
+    # **用回调而不是直接依赖**：通知是旁路，它挂了不能让摄入卡住
+    webhooks = WebhookService(bundle)
     ingest = IngestService(
         bundle,
         # 路由按运行期配置现建解析器：设置页填完 token，下一个文件就走云端
         router=ParserRouter(runtime),
         embedder=embedder,
+        notifier=webhooks.emit,
     )
 
     documents_service = DocumentService(bundle)
@@ -251,13 +258,14 @@ def build_services(
         models=registry,
         usage=usage,
         users=UserService(bundle),
-        lifecycle=LifecycleService(bundle),
+        lifecycle=LifecycleService(bundle, notifier=webhooks.emit),
         tabular=TabularService(bundle),
         sources=sources_service,
         observability=ObservabilityService(
             bundle, worker_lease_seconds=resolved.worker_lease_seconds
         ),
         conversations=ConversationService(bundle),
+        webhooks=webhooks,
         embedder=embedder,
         reranker=reranker,
         worker=TaskWorker(

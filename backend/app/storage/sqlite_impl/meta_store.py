@@ -62,6 +62,17 @@ def _load(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value else None
 
 
+def _webhook_of(row) -> WebhookRecord:  # type: ignore[no-untyped-def]
+    """行 → 记录。抽出来是因为现在有四个地方要构造它（列表/单个/改开关后回读）。"""
+    return WebhookRecord(
+        id=row["id"],
+        url=row["url"],
+        events=tuple(json.loads(row["events"])),
+        secret=row["secret"],
+        enabled=bool(row["enabled"]),
+    )
+
+
 def _json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False)
 
@@ -1329,16 +1340,23 @@ class SqliteMetaStore(MetaStore):
     def list_webhooks(self) -> list[WebhookRecord]:
         with self._db.read() as conn:
             rows = conn.execute("SELECT * FROM webhooks ORDER BY id").fetchall()
-        return [
-            WebhookRecord(
-                id=row["id"],
-                url=row["url"],
-                events=tuple(json.loads(row["events"])),
-                secret=row["secret"],
-                enabled=bool(row["enabled"]),
+        return [_webhook_of(row) for row in rows]
+
+    def get_webhook(self, webhook_id: str) -> WebhookRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute("SELECT * FROM webhooks WHERE id = ?", (webhook_id,)).fetchone()
+        return _webhook_of(row) if row else None
+
+    def set_webhook_enabled(self, webhook_id: str, enabled: bool) -> WebhookRecord | None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE webhooks SET enabled = ? WHERE id = ?", (int(enabled), webhook_id)
             )
-            for row in rows
-        ]
+        return self.get_webhook(webhook_id)
+
+    def delete_webhook(self, webhook_id: str) -> None:
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM webhooks WHERE id = ?", (webhook_id,))
 
     # ------------------------------------------------------------------ 回收站
 

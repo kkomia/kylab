@@ -697,6 +697,16 @@ class MetaStore(ABC):
     @abstractmethod
     def list_webhooks(self) -> list[WebhookRecord]: ...
 
+    @abstractmethod
+    def get_webhook(self, webhook_id: str) -> WebhookRecord | None: ...
+
+    @abstractmethod
+    def set_webhook_enabled(self, webhook_id: str, enabled: bool) -> WebhookRecord | None:
+        """只切开关，**不提供改地址**：换投递目标应当是一次有意识的新建。"""
+
+    @abstractmethod
+    def delete_webhook(self, webhook_id: str) -> None: ...
+
     # ---- 幂等键（架构 §3.2：上传类接口带幂等键，防重试造成重复入库）----
     @abstractmethod
     def create_idempotency_key(self, record: IdempotencyRecord) -> IdempotencyRecord:

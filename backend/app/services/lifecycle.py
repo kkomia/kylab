@@ -23,12 +23,14 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.models.enums import DataSourceKind, DocumentStage, TaskState, TrashKind
 from app.parsers.probe import suffix_of
+from app.services.webhook import DOCUMENT_DELETED
 from app.storage.base import (
     ORIGINALS,
     DocumentRecord,
@@ -71,8 +73,16 @@ class ImpactReport:
 class LifecycleService:
     """删除前的影响评估、删除、回收站恢复。"""
 
-    def __init__(self, stores: StoreBundle) -> None:
+    def __init__(
+        self,
+        stores: StoreBundle,
+        *,
+        notifier: Callable[[str, dict], None] | None = None,
+    ) -> None:
         self._stores = stores
+        # Webhook 是旁路（T4.6）：默认什么都不做，组合根才接上它。
+        # 与摄入那边同一个形状——通知失败不该影响删除本身
+        self._notify = notifier or (lambda event, payload: None)
 
     # ------------------------------------------------------------------ 影响清单
 
@@ -200,6 +210,20 @@ class LifecycleService:
         # 4) 删元数据（级联带走任务与子文件）
         self._stores.meta.delete_document(document_id)
         logger.info("文档 %s 已删除（切块 %d 个）", document.name, len(chunk_ids))
+
+        # 5) 通知（旁路）。**放在最后**：早发的话接收端来查会拿到一个还存在的文档，
+        #    而它完全有理由相信"收到 deleted 就是已经删了"
+        self._notify(
+            DOCUMENT_DELETED,
+            {
+                "document_id": document_id,
+                "knowledge_base_id": kb_id,
+                "name": document.name,
+                # 让接收端知道自己还能不能捞回原文（7 天回收站）
+                "restorable_until": record.expires_at.isoformat(),
+                "trash_id": record.id if record.storage_path else None,
+            },
+        )
         return record
 
     def delete_knowledge_base(self, kb_id: str) -> ImpactReport:

@@ -767,3 +767,51 @@ class RegistryOut(BaseModel):
     slots: list[SlotOut] = Field(default_factory=list)
     provider_kinds: dict[str, str] = Field(default_factory=dict)
     capabilities: dict[str, str] = Field(default_factory=dict)
+
+
+class WebhookCreateIn(BaseModel):
+    url: str = Field(min_length=1, max_length=2048)
+    events: list[str] = Field(default_factory=list)
+    """留空 = 订阅全部事件。显式列出更安全，但默认全订更省事。"""
+    secret: str | None = Field(default=None, max_length=256)
+    enabled: bool = True
+
+
+class WebhookUpdateIn(BaseModel):
+    """PATCH 只改开关。
+
+    **单独一个模型而不是复用 ``WebhookCreateIn``**：复用会强迫调用方
+    在改开关时也传 ``url``，而那个字段会被静默忽略——"传了但没用"是最迷惑人的
+    一类接口。真传了 url 就明确报错（多出来的字段被忽略，见下方注释），
+    想换地址请删了重建，那一步是有意识的。
+    """
+
+    enabled: bool
+
+
+class WebhookOut(BaseModel):
+    id: str
+    url: str
+    events: list[str] = Field(default_factory=list)
+    enabled: bool = True
+    has_secret: bool = False
+    secret_masked: str | None = None
+    secret: str | None = None
+    """**明文只在新建成的那一次返回**，之后永远是 ``null``。
+
+    这不是小气：能反复读到签名密钥就等于签名没有意义——任何能列出订阅的人
+    都能伪造一份"验签通过"的载荷。
+    """
+
+
+class WebhookListOut(BaseModel):
+    items: list[WebhookOut] = Field(default_factory=list)
+
+
+class WebhookEventListOut(BaseModel):
+    events: list[str] = Field(default_factory=list)
+    signature_header: str = ""
+    max_attempts: int = 0
+    delivery_semantics: str = ""
+    """``at-least-once``。**必须让接收端知道这件事**——
+    不知道的话它会把重复投递当成故障去查，而那是契约的一部分。"""

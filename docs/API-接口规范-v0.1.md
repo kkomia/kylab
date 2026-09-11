@@ -149,7 +149,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **69** 条端点。
+共 **74** 条端点。
 
 ### `api-keys`
 
@@ -304,6 +304,16 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/users` | 使用者名册 |
 | `POST` | `/api/v1/users` | 添加使用者 |
 | `DELETE` | `/api/v1/users/{user_id}` | 删除使用者（其文档保留，归属置空） |
+
+### `webhooks`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/webhooks` | 订阅列表（密钥掩码） |
+| `POST` | `/api/v1/webhooks` | 新建订阅（密钥明文只在这里返回一次） |
+| `GET` | `/api/v1/webhooks/events` | 支持的事件清单 |
+| `DELETE` | `/api/v1/webhooks/{webhook_id}` | 删除订阅 |
+| `PATCH` | `/api/v1/webhooks/{webhook_id}` | 启用 / 停用订阅 |
 
 ---
 
