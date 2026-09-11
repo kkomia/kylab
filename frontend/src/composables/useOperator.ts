@@ -13,6 +13,7 @@
 import { computed, ref } from 'vue'
 
 import { listUsers, type RosterUser } from '@/api/users'
+import { currentUser } from '@/composables/useSessionToken'
 
 const STORAGE_KEY = 'kylab-operator-id'
 
@@ -70,5 +71,9 @@ export function setOperator(id: string): void {
 
 /** 供 `client.ts` 组装请求头用：**每个请求都带**，不只是上传。 */
 export function operatorHeaders(): Record<string, string> {
-  return operatorId.value ? { 'X-Kylab-Operator': operatorId.value } : {}
+  // 归属 = 当前用户（用户批注：不在系统里切换使用者）。
+  // 登录态下由账号身份决定，"谁传的"与"谁登录着"就永远一致；
+  // 只有没有登录态的旧部署（控制台令牌通道）才回退到本地声明。
+  const id = currentUser.value?.id ?? operatorId.value
+  return id ? { 'X-Kylab-Operator': id } : {}
 }

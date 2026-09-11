@@ -18,7 +18,7 @@ import ToastStack from '@/components/ui/ToastStack.vue'
 import { consoleToken } from '@/composables/useConsoleToken'
 import { initFontScale } from '@/composables/useFontScale'
 import { ensureAuthStatus, restoreSession } from '@/composables/useSession'
-import { hasCredential, useReloginPrompt } from '@/composables/useSessionToken'
+import { hasCredential, sessionToken, useReloginPrompt } from '@/composables/useSessionToken'
 import { initTheme } from '@/composables/useTheme'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
@@ -40,9 +40,11 @@ onMounted(async () => {
   // 那些请求必然 401，会在登录页顶上弹一句"需要控制台令牌"，而用户根本进不去主界面。
   if (status?.needs_setup && !consoleToken()) return
   if (status?.auth_enabled && !hasCredential()) return
-  // 已启用鉴权且还没走登录流程：用本地会话令牌恢复身份（侧栏要显示账号名）。
-  // 令牌过期时 restoreSession 自己清掉，随后任一请求的 401 会把用户送到登录页。
-  if (status?.auth_enabled) await restoreSession()
+  // 有会话令牌就验一次身份——**不看 auth_enabled**。
+  // auth_enabled 说的是"控制台令牌那一套"，而会话令牌本来就是后端账号体系签发的有效凭据；
+  // 界面又靠 currentUser 决定页脚显示谁的名字、给不给管理员入口。
+  // 之前只在 auth_enabled 时恢复，于是控制台通道下明明带着会话令牌，界面却当你没登录。
+  if (sessionToken()) await restoreSession()
   void store.load()
 })
 

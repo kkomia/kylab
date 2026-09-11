@@ -36,6 +36,14 @@ function readStoredTheme(): ThemeName | null {
 
 const theme = ref<ThemeName>('light')
 
+/**
+ * **当前解析后的**主题（`system` 已落到实际明暗）。
+ *
+ * 与 `themeMode` 分开导出：`themeMode` 说明"用户选的是哪一档"（含 `system`），
+ * 而"点一下切换主题该切到哪边"要看实际显示的是明还是暗。
+ */
+export const resolvedTheme = readonly(theme)
+
 /** 用户当前的档位；`system` = 没有本地选择、跟随系统（与首屏脚本同一判定）。 */
 export const themeMode = ref<ThemeMode>('system')
 

@@ -21,19 +21,19 @@ import { useRoute, useRouter } from 'vue-router'
 import IconChat from '@/components/icons/IconChat.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconDashboard from '@/components/icons/IconDashboard.vue'
-import IconKey from '@/components/icons/IconKey.vue'
 import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconLogo from '@/components/icons/IconLogo.vue'
 import IconLogout from '@/components/icons/IconLogout.vue'
 import IconSettings from '@/components/icons/IconSettings.vue'
+import IconSun from '@/components/icons/IconSun.vue'
 import IconTasks from '@/components/icons/IconTasks.vue'
 import IconUser from '@/components/icons/IconUser.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
-import AppSelect from '@/components/ui/AppSelect.vue'
-import { loadRoster, operator, operatorId, roster, setOperator } from '@/composables/useOperator'
+import { loadRoster, roster, setOperator } from '@/composables/useOperator'
 import { useConsoleTokenPrompt } from '@/composables/useConsoleToken'
 import { isAdmin, logout as logoutSession } from '@/composables/useSession'
 import { currentUser } from '@/composables/useSessionToken'
+import { resolvedTheme, setTheme } from '@/composables/useTheme'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
@@ -46,7 +46,7 @@ onMounted(async () => {
   if (store.items.length === 0) await store.load()
   void store.loadSummaries()
   void conversations.load()
-  // 名册是可选功能：拿不到就不显示选择器，不报错
+  // 名册只用于显示"文档是谁传的"这一列（不再有切换使用者的入口）
   void loadRoster()
 })
 
@@ -61,9 +61,6 @@ function isActive(to: string, exact: boolean): boolean {
   return exact ? route.path === to : route.path.startsWith(to)
 }
 
-/** 当前使用者（G6）。空 = 名册里没选人，上传归到"未记录"。 */
-const operatorName = computed(() => operator.value?.name ?? '')
-
 /**
  * 设置入口只给管理员 / 控制台令牌通道。
  *
@@ -71,12 +68,6 @@ const operatorName = computed(() => operator.value?.name ?? '')
  * （`require_console`）。把一个点进去只会报错的入口摆在侧栏，比不显示更糟。
  */
 const canOpenSettings = computed(() => currentUser.value === null || isAdmin.value)
-
-/** 使用者下拉选项（G6）：空值 = 不记归属，与 AppSelect 的 `{value,label}` 口径一致。 */
-const operatorOptions = computed(() => [
-  { value: '', label: '未指定' },
-  ...roster.value.map((person) => ({ value: person.id, label: person.name })),
-])
 
 /** 当前会话 id：从路径里取，用来高亮列表里那一条。 */
 const activeConversationId = computed(() => {
@@ -118,11 +109,30 @@ function closeAccountMenu(): void {
   if (accountMenu.value) accountMenu.value.open = false
 }
 
-/** 菜单里的「修改密码」：关掉菜单，打开设置并落到「系统与安全」。 */
-function openAccountSettings(): void {
+/**
+ * 页脚那一行显示的"我是谁"。
+ *
+ * 没有登录账号时显示「控制台」——那是这台机器上**真正的**身份：
+ * 控制台令牌通道 / 局域网开放模式下，后端认的就是控制台，
+ * 写成"未登录"会让人以为进不去，而实际上他是完全授权的。
+ */
+const identityName = computed(() => currentUser.value?.name ?? '控制台')
+const identityRole = computed(() => (currentUser.value ? (isAdmin.value ? '管理员' : '成员') : ''))
+
+/** 主题菜单项：点一下切到**另一边**，所以文案要说清切过去是哪个。 */
+const themeActionLabel = computed(() =>
+  resolvedTheme.value === 'dark' ? '切换为浅色' : '切换为深色',
+)
+
+function onToggleTheme(): void {
+  setTheme(resolvedTheme.value === 'dark' ? 'light' : 'dark')
   closeAccountMenu()
-  settingsInitialSection.value = 'system'
-  settingsOpen.value = true
+}
+
+/** 菜单里的「设置」：关掉菜单再开弹窗，避免两层浮层叠在一起。 */
+function onOpenSettings(): void {
+  closeAccountMenu()
+  openSettings()
 }
 
 /**
@@ -203,49 +213,40 @@ async function onLogout(): Promise<void> {
 
     <div class="sidebar-foot">
       <!--
-        已登录账号：一行摘要 + **二级菜单**（修改密码 / 退出登录）。
-        账号体系是主路径，所以登录后不再显示"当前使用者"名册下拉——
-        身份已经由登录确定，两处并存只会让人以为还要再选一次
-        （名册下拉留给未启用账号体系的老部署）。
+        页脚只显示**当前用户**，点它向上展开菜单（用户批注）。
+        **不提供在系统里切换使用者的入口**：切换身份必须先登出再登录——
+        一个下拉就能换人，会让"我以为我是谁"和"后端认为我是谁"分叉。
+        菜单向上弹：它挂在页脚底部，向下会出到屏幕外（与 RowMenu 同一手法）。
       -->
-      <details v-if="currentUser" ref="accountMenu" class="account">
+      <details ref="accountMenu" class="account">
         <summary class="account-row">
           <IconUser class="account-icon" />
-          <span class="account-name" :title="currentUser.name">{{ currentUser.name }}</span>
-          <span class="account-role">{{ isAdmin ? '管理员' : '成员' }}</span>
+          <span class="account-name" :title="identityName">{{ identityName }}</span>
+          <span v-if="identityRole" class="account-role">{{ identityRole }}</span>
           <IconChevronDown class="account-caret" :size="14" />
         </summary>
         <div class="account-pop">
-          <button type="button" @click="openAccountSettings">
-            <IconKey :size="14" />
-            <span>修改密码</span>
+          <button v-if="canOpenSettings" type="button" @click="onOpenSettings">
+            <IconSettings :size="14" />
+            <span>设置</span>
           </button>
-          <button type="button" class="account-danger" :disabled="loggingOut" @click="onLogout">
+          <button type="button" @click="onToggleTheme">
+            <IconSun :size="14" />
+            <span>{{ themeActionLabel }}</span>
+          </button>
+          <!-- 只有真的能登录时才给「退出登录」：控制台令牌通道没有会话可退 -->
+          <button
+            v-if="currentUser"
+            type="button"
+            class="account-danger"
+            :disabled="loggingOut"
+            @click="onLogout"
+          >
             <IconLogout :size="14" />
             <span>{{ loggingOut ? '正在退出…' : '退出登录' }}</span>
           </button>
         </div>
       </details>
-
-      <!--
-        当前使用者（G6）：名册没配人时不占位——名册是可选的，
-        空着比显示一个空下拉干净。
-      -->
-      <div v-else-if="roster.length || operatorName" class="identity">
-        <label class="identity-label" for="kylab-operator">当前使用者</label>
-        <AppSelect
-          id="kylab-operator"
-          :model-value="operatorId"
-          :options="operatorOptions"
-          aria-label="当前使用者"
-          @update:model-value="setOperator"
-        />
-      </div>
-
-      <button v-if="canOpenSettings" class="foot-action" type="button" @click="openSettings">
-        <IconSettings />
-        <span>设置</span>
-      </button>
     </div>
 
     <SettingsModal
@@ -419,31 +420,15 @@ async function onLogout(): Promise<void> {
   color: var(--text-tertiary);
 }
 
-/* 使用者选择：与页脚其他项同宽，但标签在上、下拉在下——
-   一个 select 直接顶着"设置"按钮会让人以为它也是可点即走的动作 */
-.identity {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: 0 var(--space-2) var(--space-2);
-}
-
-.identity-label {
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
 .sidebar-foot {
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border-hairline);
 }
 
-/* 账号区：一行摘要，点开是二级菜单（修改密码 / 退出登录）。
-   用 surface 底把它与下面的「设置」分开——前者是"我是谁"，
-   后者是"改这台机器怎么表现"，不该混成一组。 */
+/* 账号区：一行摘要，点开是向上的二级菜单（设置 / 切换主题 / 退出登录）。
+   页脚现在**只有这一行**——使用者下拉与独立的「设置」按钮都已收进菜单。 */
 .account {
   position: relative;
-  margin-bottom: var(--space-2);
   background: var(--bg-surface);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-control);
@@ -536,22 +521,5 @@ async function onLogout(): Promise<void> {
 /* 退出登录：语义红只在这一项——菜单里唯一不可逆的动作 */
 .account-pop .account-danger {
   color: var(--status-danger);
-}
-
-.foot-action {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  min-height: 32px;
-  padding: 0 var(--space-2);
-  font-size: var(--text-body-size);
-  color: var(--text-secondary);
-  border-radius: var(--radius-control);
-}
-
-.foot-action:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
 }
 </style>
