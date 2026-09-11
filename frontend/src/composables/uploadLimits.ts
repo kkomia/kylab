@@ -28,7 +28,9 @@ export const MAX_UPLOAD_FILES = 50
  *
  * 后端真正接受的是 `app/parsers/probe.py` 里那四组扩展名（文本 / PDF / Office / 图片）
  * 加压缩包。这里不逐条罗列扩展名：用户认的是"Word 能不能传"，
- * 而不是".docx 在不在白名单里"。扫描件另行说明 OCR 渠道，因为它决定的是解析质量。
+ * 而不是".docx 在不在白名单里"。
+ *
+ * **不写"扫描件走 OCR 渠道"这类解析链路的说明**：用户要决定的是"这个文件能不能传"，
+ * 至于我们内部走哪条解析路线，既不影响他的动作，也不是他能选的。
  */
-export const UPLOAD_FORMAT_HINT =
-  '支持 PDF、Word、PPT、Excel、Markdown、纯文本、CSV 与图片，扫描件走 OCR 渠道'
+export const UPLOAD_FORMAT_HINT = '支持 PDF、Word、PPT、Excel、Markdown、纯文本、CSV 与图片'

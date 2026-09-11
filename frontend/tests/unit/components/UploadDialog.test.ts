@@ -14,7 +14,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as documentsApi from '@/api/documents'
 import UploadDialog from '@/components/knowledge/UploadDialog.vue'
-import { MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from '@/composables/uploadLimits'
+import {
+  MAX_UPLOAD_BYTES,
+  MAX_UPLOAD_FILES,
+  MAX_UPLOAD_MB,
+  UPLOAD_FORMAT_HINT,
+} from '@/composables/uploadLimits'
 
 vi.mock('@/api/documents', () => ({
   uploadDocument: vi.fn(),
@@ -221,9 +226,53 @@ describe('切块参数', () => {
   it('弹窗里不提供逐文件的切块参数——那是知识库级属性', async () => {
     const wrapper = mountDialog()
     // 切块策略与块长在建库时定、向量化时冻结；放这里会让人以为可以逐文件不同，
-    // 那会造成同一库里切法不一致，检索质量无从解释
+    // 那会造成同一库里切法不一致，检索质量无从解释。
+    // 提示文案里也不再展开这段技术说明（用户要的只是"能不能传、多大"）。
     expect(wrapper.find('select').exists()).toBe(false)
     expect(wrapper.find('input[type=number]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('切块策略与块长由知识库决定')
+  })
+})
+
+describe('提示文案', () => {
+  it('只说支持的类型与大小/数量上限，不讲解析链路', async () => {
+    const wrapper = mountDialog()
+
+    const scope = wrapper.find('.scope').text()
+    expect(scope).toContain(UPLOAD_FORMAT_HINT)
+    expect(scope).toContain(String(MAX_UPLOAD_MB))
+    expect(scope).toContain(String(MAX_UPLOAD_FILES))
+    // 解析渠道/切块策略这类内部细节不该出现在给用户看的规则里
+    expect(scope).not.toContain('OCR')
+    expect(scope).not.toContain('切块')
+  })
+})
+
+describe('三种上传入口', () => {
+  it('单文件 / 多文件 / 文件夹各有一个 input，文件夹走 webkitdirectory', () => {
+    const wrapper = mountDialog()
+
+    const inputs = wrapper.findAll('input[type=file]')
+    expect(inputs).toHaveLength(3)
+    // 单文件：不能带 multiple，否则"选一个"的语义就没了
+    expect(inputs[0].attributes('multiple')).toBeUndefined()
+    expect(inputs[1].attributes('multiple')).toBeDefined()
+    expect(inputs[2].attributes('webkitdirectory')).toBeDefined()
+
+    const labels = wrapper.findAll('.dropzone-actions button').map((b) => b.text())
+    expect(labels).toEqual(['选择文件', '选择多个文件', '选择文件夹'])
+  })
+
+  it('文件夹里的同名文件按相对路径区分，不会被去重误吞', async () => {
+    const wrapper = mountDialog()
+    const inDocs = Object.assign(fileOf('a.txt'), { webkitRelativePath: 'docs/a.txt' })
+    const inOther = Object.assign(fileOf('a.txt'), { webkitRelativePath: 'other/a.txt' })
+
+    await pick(wrapper, [inDocs, inOther])
+
+    expect(wrapper.findAll('.file-row')).toHaveLength(2)
+    expect(wrapper.findAll('.file-name').map((node) => node.text())).toEqual([
+      'docs/a.txt',
+      'other/a.txt',
+    ])
   })
 })

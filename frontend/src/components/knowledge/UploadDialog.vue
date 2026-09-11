@@ -14,6 +14,11 @@
  * **刻意不做的事**：不提供切块参数。切块策略与块长是**知识库级属性**
  * （建库时定、向量化时冻结模型），放在上传弹窗里会让人以为可以逐文件不同——
  * 那会造成同一库里切法不一致，而检索质量无从解释。
+ *
+ * **三种入口**（单文件 / 多文件 / 文件夹）各用一个隐藏 input：浏览器的
+ * `<input type="file">` 没法在 `multiple` 与 `webkitdirectory` 之间来回切，
+ * 一个 input 只能表达一种选择方式。拖放则统一走一个处理函数，拖文件夹也收
+ * （通过 `webkitGetAsEntry` 递归展开——`dataTransfer.files` 对目录是空的）。
  */
 import { computed, ref, watch } from 'vue'
 
@@ -43,8 +48,13 @@ const emit = defineEmits<{ uploaded: [] }>()
  */
 type Status = 'pending' | 'uploading' | 'done' | 'duplicate' | 'failed' | 'rejected'
 
-interface Item {
+/** 待加入清单的一项。`name` 用相对路径（文件夹上传时）以便区分不同子目录里的同名文件。 */
+interface Candidate {
   file: File
+  name: string
+}
+
+interface Item extends Candidate {
   status: Status
   message: string
 }
@@ -52,7 +62,10 @@ interface Item {
 const items = ref<Item[]>([])
 const uploading = ref(false)
 const dragActive = ref(false)
-const input = ref<HTMLInputElement | null>(null)
+
+const singleInput = ref<HTMLInputElement | null>(null)
+const multiInput = ref<HTMLInputElement | null>(null)
+const folderInput = ref<HTMLInputElement | null>(null)
 
 /** 弹窗内的提醒（如"一次最多 N 个，后面几个没加进来"）。
  *  **不弹 toast**：toast 会飘到弹窗之外，而这句话说的正是弹窗里这份清单，
@@ -89,22 +102,37 @@ const hasResult = computed(() => items.value.some((i) => i.status !== 'pending')
 /** 能开始上传的前提：有**待上传**的，而且没有正在传的。 */
 const canSubmit = computed(() => pendingCount.value > 0 && !uploading.value)
 
-function addFiles(files: File[]): void {
+/** 三种选择方式各对应一个隐藏 input；`multiple` / `webkitdirectory` 无法在同一个上切换。 */
+function pick(kind: 'single' | 'multi' | 'folder'): void {
+  const target =
+    kind === 'single' ? singleInput.value : kind === 'multi' ? multiInput.value : folderInput.value
+  target?.click()
+}
+
+function candidatesFrom(list: FileList | null): Candidate[] {
+  return Array.from(list ?? []).map((file) => ({
+    file,
+    // 文件夹上传时浏览器会给 webkitRelativePath（如 `docs/a.pdf`），用它才能分清同名文件
+    name: file.webkitRelativePath || file.name,
+  }))
+}
+
+function addFiles(candidates: Candidate[]): void {
   // 去重要覆盖**同一批里自己重**：`Set` 是随加入一起长的，不是先算完再筛。
   // 写成"先按已有清单算出 fresh、再整个 append"时，同一次拖进来的两个同名同大小的
   // 文件会双双进清单（两个 `a.txt` 看着像界面出了错），而用户完全可能
   // 从两个目录各拖一个同名文件过来。
-  const existing = new Set(items.value.map((i) => `${i.file.name}:${i.file.size}`))
-  const fresh: File[] = []
+  const existing = new Set(items.value.map((i) => `${i.name}:${i.file.size}`))
+  const fresh: Candidate[] = []
   const dupInBatch: string[] = []
-  for (const file of files) {
-    const key = `${file.name}:${file.size}`
+  for (const candidate of candidates) {
+    const key = `${candidate.name}:${candidate.file.size}`
     if (existing.has(key)) {
-      dupInBatch.push(file.name)
+      dupInBatch.push(candidate.name)
       continue
     }
     existing.add(key)
-    fresh.push(file)
+    fresh.push(candidate)
   }
 
   // 超出一次能处理的量：只取前 N 个，并**明说被砍掉了几个**。
@@ -112,17 +140,17 @@ function addFiles(files: File[]): void {
   const overflow = fresh.length > MAX_UPLOAD_FILES
   const taken = overflow ? fresh.slice(0, MAX_UPLOAD_FILES) : fresh
 
-  const prepared: Item[] = taken.map((file) => {
+  const prepared: Item[] = taken.map((candidate) => {
     // 超限在本地就判定，不发出请求：等后端读完 300MB 再回 413，
     // 用户白等的那几十秒完全可以用 file.size 立刻省掉
-    if (file.size > MAX_UPLOAD_BYTES) {
+    if (candidate.file.size > MAX_UPLOAD_BYTES) {
       return {
-        file,
+        ...candidate,
         status: 'rejected' as Status,
         message: `超过 ${MAX_UPLOAD_MB}MB 上限，请先压缩或切分`,
       }
     }
-    return { file, status: 'pending' as Status, message: '' }
+    return { ...candidate, status: 'pending' as Status, message: '' }
   })
 
   items.value = [...items.value, ...prepared]
@@ -146,14 +174,82 @@ function reset(): void {
 
 function onPicked(event: Event): void {
   const target = event.target as HTMLInputElement
-  addFiles(Array.from(target.files ?? []))
+  addFiles(candidatesFrom(target.files))
   // 清空 value 才能连续选同一个文件
   target.value = ''
 }
 
-function onDrop(event: DragEvent): void {
+/** `readEntries` 一次最多回 100 条，必须反复读到空——只读一次会静默漏掉大目录里的文件。 */
+/**
+ * 拖放条目 API 的结构化声明。
+ *
+ * **不复用 lib.dom 的 `FileSystemEntry` 系列名字**：它们在类型层存在，但仓库的
+ * ESLint 配置把类型位置上的未声明标识符也按 `no-undef` 报（会红），
+ * 而这里只用到四个字段，自己声明反而更清楚要依赖什么。
+ */
+interface DroppedDirReader {
+  readEntries(callback: (entries: DroppedEntry[]) => void): void
+}
+
+interface DroppedEntry {
+  isFile: boolean
+  isDirectory: boolean
+  fullPath: string
+  file(onSuccess: (file: File) => void, onError?: () => void): void
+  createReader(): DroppedDirReader
+}
+
+/** `readEntries` 一次最多回 100 条，必须反复读到空——只读一次会静默漏掉大目录里的文件。 */
+function readEntries(reader: DroppedDirReader): Promise<DroppedEntry[]> {
+  return new Promise((resolve) => reader.readEntries((entries) => resolve(entries)))
+}
+
+async function walkEntry(entry: DroppedEntry, out: Candidate[]): Promise<void> {
+  if (entry.isFile) {
+    const file = await new Promise<File | null>((resolve) =>
+      entry.file(
+        (value) => resolve(value),
+        () => resolve(null),
+      ),
+    )
+    if (file) out.push({ file, name: entry.fullPath.replace(/^\//, '') || file.name })
+    return
+  }
+  if (entry.isDirectory) {
+    const reader = entry.createReader()
+    for (;;) {
+      const batch = await readEntries(reader)
+      if (batch.length === 0) break
+      for (const child of batch) await walkEntry(child, out)
+    }
+  }
+}
+
+/**
+ * 拖放进来的东西：优先按"条目"展开（这样文件夹才收得到——`dataTransfer.files`
+ * 对目录是空的），拿不到条目 API 时回退到平铺的文件列表。
+ */
+async function collectDropped(transfer: DataTransfer): Promise<Candidate[]> {
+  const entries = Array.from(transfer.items ?? [])
+    .map((item) => (typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null))
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
+    .map((entry) => entry as unknown as DroppedEntry)
+  if (entries.length === 0) return candidatesFrom(transfer.files)
+  const collected: Candidate[] = []
+  for (const entry of entries) await walkEntry(entry, collected)
+  return collected
+}
+
+async function onDrop(event: DragEvent): Promise<void> {
   dragActive.value = false
-  addFiles(Array.from(event.dataTransfer?.files ?? []))
+  const transfer = event.dataTransfer
+  if (!transfer) return
+  try {
+    addFiles(await collectDropped(transfer))
+  } catch {
+    // 条目 API 出问题时退回平铺列表，至少把文件收下（文件夹会丢，但不至于整个拖放失灵）
+    addFiles(candidatesFrom(transfer.files))
+  }
 }
 
 function remove(index: number): void {
@@ -225,13 +321,41 @@ watch(open, (isOpen) => {
       @drop.prevent="onDrop"
     >
       <IconUpload :size="items.length ? 16 : 24" />
-      <AppButton @click="input?.click()">选择文件…</AppButton>
-      <span class="dropzone-hint">也可以把文件直接拖到这里</span>
+      <div class="dropzone-actions">
+        <AppButton @click="pick('single')">选择文件</AppButton>
+        <AppButton @click="pick('multi')">选择多个文件</AppButton>
+        <AppButton @click="pick('folder')">选择文件夹</AppButton>
+      </div>
+      <span class="dropzone-hint">也可以把文件或整个文件夹拖到这里</span>
     </div>
+
+    <!--
+      三个隐藏 input：浏览器不允许同一个 input 在 `multiple` 与 `webkitdirectory`
+      之间切换，所以"单文件 / 多文件 / 文件夹"各用一个。
+    -->
     <input
-      ref="input"
+      ref="singleInput"
       class="visually-hidden"
       type="file"
+      tabindex="-1"
+      aria-hidden="true"
+      @change="onPicked"
+    />
+    <input
+      ref="multiInput"
+      class="visually-hidden"
+      type="file"
+      multiple
+      tabindex="-1"
+      aria-hidden="true"
+      @change="onPicked"
+    />
+    <input
+      ref="folderInput"
+      class="visually-hidden"
+      type="file"
+      webkitdirectory
+      directory
       multiple
       tabindex="-1"
       aria-hidden="true"
@@ -243,14 +367,11 @@ watch(open, (isOpen) => {
       塞进虚线框里会把那个框撑成四行。
       位置也讲究——它必须一直在，选完文件后清单可能滚到几百像素长，
       贴在拖放区里就会跟着滚出视野，规则和"为什么这个文件没收"就断了联系。
+      文案只说两件事：支持哪些类型、有没有大小/数量限制，不展开解析链路。
     -->
     <p class="scope">
-      {{ UPLOAD_FORMAT_HINT }}。单个文件不超过 {{ MAX_UPLOAD_MB }}MB、一次最多
+      {{ UPLOAD_FORMAT_HINT }}。单个文件不超过 {{ MAX_UPLOAD_MB }}MB，一次最多
       {{ MAX_UPLOAD_FILES }} 个。
-      <span class="scope-note">
-        切块策略与块长由知识库决定（建库时设定），这里不逐文件调整—— 同一个库里切法不一致
-        会让检索质量无从解释。
-      </span>
     </p>
 
     <!-- 提醒写在清单旁边而不是飘成 toast：这句话说的就是下面这份清单 -->
@@ -262,12 +383,8 @@ watch(open, (isOpen) => {
       固定列宽之后状态成了一条竖轴，说明文字统一从同一条线开始。
     -->
     <ul v-if="items.length" class="file-list">
-      <li
-        v-for="(item, index) in items"
-        :key="`${item.file.name}:${item.file.size}`"
-        class="file-row"
-      >
-        <span class="file-name" :title="item.file.name">{{ item.file.name }}</span>
+      <li v-for="(item, index) in items" :key="`${item.name}:${item.file.size}`" class="file-row">
+        <span class="file-name" :title="item.name">{{ item.name }}</span>
         <span class="file-size tabular">{{ formatBytes(item.file.size) }}</span>
 
         <!-- 状态用文字而不是只靠颜色：色弱与截图场景都要能读 -->
@@ -286,7 +403,7 @@ watch(open, (isOpen) => {
           <AppButton
             v-if="item.status === 'pending'"
             size="sm"
-            :aria-label="`移除 ${item.file.name}`"
+            :aria-label="`移除 ${item.name}`"
             @click="remove(index)"
           >
             <template #icon><IconClose :size="14" /></template>
@@ -357,8 +474,16 @@ watch(open, (isOpen) => {
   padding: var(--space-2) var(--space-4);
 }
 
+/* 三个选择入口并排；窄弹窗里允许折行 */
+.dropzone-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+}
+
 /* 两行说明都用同一档：micro 字号 + 三级文字色。
-   它们是**背景知识**而不是操作提示，比"选择文件…"按钮弱一档是对的。 */
+   它们是**背景知识**而不是操作提示，比"选择文件"按钮弱一档是对的。 */
 .dropzone-hint {
   max-width: 56ch;
   font-size: var(--text-micro-size);
@@ -377,12 +502,6 @@ watch(open, (isOpen) => {
   font-size: var(--text-micro-size);
   line-height: 1.7;
   color: var(--text-secondary);
-}
-
-/* 切块那段再弱一档：它是"为什么这里没有参数"的解释，
-   不是"你要准备什么"的操作要求 */
-.scope-note {
-  color: var(--text-tertiary);
 }
 
 .file-list {
