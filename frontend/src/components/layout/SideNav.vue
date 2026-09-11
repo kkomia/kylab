@@ -25,6 +25,7 @@ import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconLogo from '@/components/icons/IconLogo.vue'
 import IconLogout from '@/components/icons/IconLogout.vue'
 import IconSettings from '@/components/icons/IconSettings.vue'
+import IconSidebar from '@/components/icons/IconSidebar.vue'
 import IconSun from '@/components/icons/IconSun.vue'
 import IconTasks from '@/components/icons/IconTasks.vue'
 import IconUser from '@/components/icons/IconUser.vue'
@@ -32,6 +33,7 @@ import SettingsModal from '@/components/settings/SettingsModal.vue'
 import { loadRoster, roster, setOperator } from '@/composables/useOperator'
 import { isAdmin, logout as logoutSession } from '@/composables/useSession'
 import { currentUser } from '@/composables/useSessionToken'
+import { useSidebar } from '@/composables/useSidebar'
 import { resolvedTheme, setTheme } from '@/composables/useTheme'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
@@ -40,6 +42,9 @@ const route = useRoute()
 const router = useRouter()
 const store = useKnowledgeBaseStore()
 const conversations = useConversationStore()
+
+/** 折叠为图标栏：纯显示偏好，落 localStorage（见 useSidebar）。 */
+const { collapsed, toggleSidebar } = useSidebar()
 
 onMounted(async () => {
   if (store.items.length === 0) await store.load()
@@ -157,10 +162,23 @@ async function onLogout(): Promise<void> {
 </script>
 
 <template>
-  <aside class="sidebar">
-    <!-- 字标自带 "KYLAB" 字样，不再并排写一遍品牌名（重复反而削弱标识性） -->
+  <aside class="sidebar" :class="{ 'sidebar-collapsed': collapsed }">
+    <!-- 字标自带 "KYLAB" 字样，不再并排写一遍品牌名（重复反而削弱标识性）。
+         右侧是折叠开关：折叠后字标收起，只留这颗面板图标。
+         **字标与文字都不用 v-if 摘掉**——`v-if` 是瞬时的，没法过渡；
+         改用 max-width 收缩（见下方样式），宽度动画才连得上。 -->
     <div class="brand">
-      <IconLogo :size="24" />
+      <span class="brand-mark"><IconLogo :size="24" /></span>
+      <button
+        class="collapse-toggle"
+        type="button"
+        :aria-label="collapsed ? '展开侧栏' : '收缩侧栏'"
+        :aria-expanded="!collapsed"
+        :title="collapsed ? '展开侧栏' : '收缩侧栏'"
+        @click="toggleSidebar"
+      >
+        <IconSidebar :size="17" />
+      </button>
     </div>
 
     <nav class="nav" aria-label="主导航">
@@ -170,9 +188,10 @@ async function onLogout(): Promise<void> {
         class="nav-item"
         :class="{ 'nav-item-active': isActive(item.to, item.exact) }"
         :to="item.to"
+        :title="collapsed ? item.label : undefined"
       >
         <component :is="item.icon" class="nav-icon" />
-        <span>{{ item.label }}</span>
+        <span class="nav-label">{{ item.label }}</span>
       </RouterLink>
     </nav>
 
@@ -181,7 +200,7 @@ async function onLogout(): Promise<void> {
       这块位置最早是「最近文档」，后来换成一句指路的占位——因为用户在这一栏里真正
       需要的不是"我最近传了什么"，而是"我最近问过什么"。对话留存做完之后，它终于有东西可放。
     -->
-    <div class="side-section">
+    <div v-if="!collapsed" class="side-section">
       <div class="section-head">
         <p class="section-label">对话</p>
         <RouterLink class="section-action" to="/chat" title="开始新对话">新对话</RouterLink>
@@ -257,14 +276,115 @@ async function onLogout(): Promise<void> {
   background: var(--bg-canvas);
   border-right: 1px solid var(--border-hairline);
   overflow: hidden;
+  /* 折叠过渡：宽度与 flex-basis 一起动，内容区平滑让出 / 收回空间 */
+  transition:
+    width 180ms ease,
+    flex-basis 180ms ease;
 }
 
+/* 品牌行：高度定在 56px。折叠开关是绝对定位的（不参与撑高），
+   不写 min-height 的话字标一收起行高就塌，下方导航会突然上移。 */
 .brand {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-height: 56px;
   padding: var(--space-4) var(--space-4) var(--space-3);
   color: var(--text-primary);
+}
+
+/* 字标容器：折叠时用 max-width 收成 0，而不是 v-if 摘掉——后者是瞬时的，没法过渡 */
+.brand-mark {
+  display: flex;
+  overflow: hidden;
+  max-width: 200px;
+  transition:
+    max-width 180ms ease,
+    opacity 120ms ease;
+}
+
+.sidebar-collapsed .brand-mark {
+  max-width: 0;
+  opacity: 0;
+}
+
+/* 折叠开关：绝对定位在离右缘 `--space-4` 处。
+   **这不是随手定位，是为了让过渡不跳**：展开态它在右边距 16px；折叠态 60px 栏里
+   "居中"的位置恰好也是右边距 16px（60 − 16 − 28 = 16）。于是宽度动画一动，
+   它就顺着右缘平滑滑到正中，不用切换 `justify-content`，也就没有瞬移。 */
+.collapse-toggle {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-control);
+}
+
+.collapse-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* ---- 折叠态：图标栏 ---- */
+
+.sidebar-collapsed {
+  width: var(--sidebar-collapsed-width);
+  flex-basis: var(--sidebar-collapsed-width);
+  /* 账号菜单折叠态下向右飞出，不能被侧栏裁掉 */
+  overflow: visible;
+}
+
+/* 导航项不切 `justify-content`（那是瞬时的）：只把左右内边距改到能让图标居中的
+   14px（= (44 − 16) ÷ 2），图标平滑滑到中间，而不是"啪"地跳过去 */
+.sidebar-collapsed .nav-item {
+  gap: 0;
+  padding-right: 14px;
+  padding-left: 14px;
+}
+
+.sidebar-collapsed .sidebar-foot {
+  padding-right: var(--space-2);
+  padding-left: var(--space-2);
+}
+
+.sidebar-collapsed .account-row {
+  justify-content: center;
+}
+
+/* 名字 / 角色 / 箭头在 60px 里放不下；用 max-width 收成 0，动画才连得上
+   （`display: none` 是瞬时的，没有过渡） */
+.sidebar-collapsed .account-name,
+.sidebar-collapsed .account-role,
+.sidebar-collapsed .account-caret {
+  max-width: 0;
+  opacity: 0;
+}
+
+/* 菜单从侧栏右缘飞出：向上弹出会盖住图标栏本身 */
+.sidebar-collapsed .account-pop {
+  right: auto;
+  bottom: 0;
+  left: calc(100% + var(--space-1));
+  width: 168px;
+}
+
+/* 尊重"减少动态效果"：动画是锦上添花，不该在需要静的人那里坚持播放 */
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .brand-mark,
+  .nav-item,
+  .nav-label,
+  .account-name,
+  .account-role,
+  .account-caret {
+    transition: none;
+  }
 }
 
 .nav {
@@ -280,10 +400,30 @@ async function onLogout(): Promise<void> {
   gap: var(--space-2);
   min-height: 36px;
   padding: 0 var(--space-2);
+  overflow: hidden;
   font-size: var(--text-body-size);
   color: var(--text-secondary);
   text-decoration: none;
   border-radius: var(--radius-control);
+  /* gap 与内边距一起过渡：折叠时图标是"滑"到中间的，不是跳过去的 */
+  transition:
+    gap 180ms ease,
+    padding 180ms ease;
+}
+
+/* 标签用 max-width 收起（v-if 摘掉就没动画了）：折叠态收到 0 并淡出 */
+.nav-label {
+  overflow: hidden;
+  white-space: nowrap;
+  max-width: 200px;
+  transition:
+    max-width 180ms ease,
+    opacity 120ms ease;
+}
+
+.sidebar-collapsed .nav-label {
+  max-width: 0;
+  opacity: 0;
 }
 
 .nav-item:hover {
@@ -412,6 +552,9 @@ async function onLogout(): Promise<void> {
 }
 
 .sidebar-foot {
+  /* margin-top: auto 让页脚始终贴底：折叠态下会话列表整段隐藏，
+     flex:1 的撑高元素没了，不写这句页脚会跑到导航正下方。 */
+  margin-top: auto;
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border-hairline);
 }
@@ -450,26 +593,42 @@ async function onLogout(): Promise<void> {
   color: var(--text-tertiary);
 }
 
-/* 名字吃掉剩余宽度（同样给角色与折叠箭头让位） */
+/* 名字吃掉剩余宽度（同样给角色与折叠箭头让位）。
+   `max-width` + `overflow: hidden` 是为折叠过渡：折叠态收到 0 而不是 display:none */
 .account-name {
   flex: 1;
   overflow: hidden;
+  max-width: 200px;
   font-size: var(--text-meta-size);
   font-weight: 500;
   color: var(--text-primary);
   text-overflow: ellipsis;
   white-space: nowrap;
+  transition:
+    max-width 180ms ease,
+    opacity 120ms ease;
 }
 
 .account-role {
   flex: 0 0 auto;
+  overflow: hidden;
+  max-width: 80px;
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
+  white-space: nowrap;
+  transition:
+    max-width 180ms ease,
+    opacity 120ms ease;
 }
 
 .account-caret {
   flex: 0 0 auto;
+  overflow: hidden;
+  max-width: 16px;
   color: var(--text-tertiary);
+  transition:
+    max-width 180ms ease,
+    opacity 120ms ease;
 }
 
 /* 菜单向上弹出：它就挂在页脚底部，向下会出到屏幕外 */

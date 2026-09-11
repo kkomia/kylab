@@ -209,6 +209,8 @@ pre {
 
   /* 布局骨架：页面统一左对齐铺满内容区，不再居中留大片空白 */
   --sidebar-width: clamp(248px, 18vw, 320px);
+  /* 折叠态宽度：只放得下导航图标 + 账号图标，容纳 16px 图标 + 命中区 */
+  --sidebar-collapsed-width: 60px;
   /* 页面留白也跟着视口走一点：窗口越大，越不该是"内容贴边" */
   --page-gutter: clamp(20px, 2.4vw, 40px);
   --page-pad-top: var(--space-6);
