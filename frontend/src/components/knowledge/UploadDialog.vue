@@ -32,7 +32,7 @@ import {
 
 const open = defineModel<boolean>('open', { required: true })
 
-const props = defineProps<{ kbId: string; kbName?: string }>()
+const props = defineProps<{ kbId: string; kbName?: string; folderId?: string }>()
 const emit = defineEmits<{ uploaded: [] }>()
 
 /**
@@ -171,7 +171,7 @@ async function submit(): Promise<void> {
     if (item.status !== 'pending') continue
     item.status = 'uploading'
     try {
-      const accepted = await uploadDocument(props.kbId, item.file)
+      const accepted = await uploadDocument(props.kbId, item.file, props.folderId)
       if (accepted.is_duplicate) {
         item.status = 'duplicate'
         item.message = '内容与库中已有文档相同，未重复入库'

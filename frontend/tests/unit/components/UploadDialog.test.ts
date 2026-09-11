@@ -46,6 +46,7 @@ function accepted(name: string, duplicate = false): documentsApi.UploadAccepted 
       chunk_count: 0,
       uploaded_by: null,
       uploaded_by_name: '',
+      folder_id: null,
       created_at: '2026-09-11T00:00:00Z',
       updated_at: '2026-09-11T00:00:00Z',
     },

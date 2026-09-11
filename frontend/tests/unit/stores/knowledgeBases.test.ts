@@ -36,6 +36,7 @@ function doc(knowledgeBaseId: string, updatedAt: string | null): documentsApi.Do
     // G6：归属标注。未指定使用者时为 null / 空串
     uploaded_by: null,
     uploaded_by_name: '',
+    folder_id: null,
     created_at: updatedAt,
     updated_at: updatedAt,
   }

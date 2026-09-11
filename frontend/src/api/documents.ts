@@ -37,6 +37,8 @@ export interface DocumentSummary {
   uploaded_by: string | null
   /** 上传者名字，由后端解析好——前端拿 id 还得再查一次名册。 */
   uploaded_by_name: string
+  /** 所在目录（v13）。null = 未归档（根目录）。 */
+  folder_id: string | null
   created_at: string | null
   updated_at: string | null
 }
@@ -74,8 +76,33 @@ export interface UploadAccepted {
   task_id: string | null
 }
 
-export function listDocuments(kbId: string): Promise<{ items: DocumentSummary[] }> {
-  return request(`/knowledge-bases/${kbId}/documents`)
+export interface DocumentListFilter {
+  /** 只看这个目录；与 ``root`` 互斥。 */
+  folderId?: string
+  /** 只看未归档（根目录）的文档。 */
+  root?: boolean
+}
+
+export function listDocuments(
+  kbId: string,
+  filter: DocumentListFilter = {},
+): Promise<{ items: DocumentSummary[] }> {
+  const params = new URLSearchParams()
+  if (filter.folderId) params.set('folder_id', filter.folderId)
+  else if (filter.root) params.set('root', 'true')
+  const query = params.toString()
+  return request(`/knowledge-bases/${kbId}/documents${query ? `?${query}` : ''}`)
+}
+
+/** 把文档移进目录；``folderId=null`` 表示移回根目录（v13）。 */
+export function moveDocument(
+  documentId: string,
+  folderId: string | null,
+): Promise<DocumentSummary> {
+  return request(`/documents/${documentId}/folder`, {
+    method: 'PATCH',
+    body: JSON.stringify({ folder_id: folderId }),
+  })
 }
 
 export function getDocument(documentId: string): Promise<DocumentSummary> {
@@ -188,8 +215,13 @@ export function deleteChunk(documentId: string, ordinal: number): Promise<void> 
   return request(chunkPath(documentId, ordinal), { method: 'DELETE' })
 }
 
-export function uploadDocument(kbId: string, file: File): Promise<UploadAccepted> {
-  return upload(`/knowledge-bases/${kbId}/documents`, file)
+export function uploadDocument(
+  kbId: string,
+  file: File,
+  folderId?: string,
+): Promise<UploadAccepted> {
+  const query = folderId ? `?folder_id=${encodeURIComponent(folderId)}` : ''
+  return upload(`/knowledge-bases/${kbId}/documents${query}`, file)
 }
 
 export function reprocessDocument(documentId: string): Promise<UploadAccepted> {
