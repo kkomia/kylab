@@ -25,10 +25,10 @@ import {
 import { getConversation } from '@/api/conversations'
 import { getSettings, updateSettings } from '@/api/settings'
 import IconChat from '@/components/icons/IconChat.vue'
+import IconRefresh from '@/components/icons/IconRefresh.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
-import EmptyState from '@/components/ui/EmptyState.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import { renderAnswerMarkdown } from '@/composables/useMarkdown'
 import { useToast } from '@/composables/useToast'
@@ -77,9 +77,43 @@ const canSend = computed(
   () => selected.value.length > 0 && query.value.trim().length > 0 && !loadingHistory.value,
 )
 
-const selectedNames = computed(() =>
-  store.items.filter((item) => selected.value.includes(item.id)).map((item) => item.name),
+/**
+ * 「你可以这样问我」的示例问题。
+ *
+ * **刻意不按知识库内容生成**：生成式样例要么再花一次模型调用、要么得猜，
+ * 而猜出来的问题答不上来，比没有样例更伤信任。这里给的是**对任何语料都成立**的问法，
+ * 用户照着改一改就能问。刷新做的是"轮换"而不是随机——随机可能连着抽出同一批。
+ */
+const SAMPLE_POOL = [
+  '这些资料里反复提到的关键结论是什么？',
+  '把几份文档的主要观点对比一下。',
+  '有哪些明确的数字或阈值？分别出自哪里？',
+  '关于这个问题，资料里有相互矛盾的说法吗？',
+  '按资料的说法，第一步应该做什么？',
+  '有没有提到适用范围或前提条件？',
+  '最近入库的文档都讲了什么？',
+  '哪些结论有原文明确支持，哪些只是推测？',
+] as const
+
+const SAMPLE_COUNT = 5
+const sampleOffset = ref(0)
+const samples = computed(() =>
+  Array.from(
+    { length: Math.min(SAMPLE_COUNT, SAMPLE_POOL.length) },
+    (_, index) => SAMPLE_POOL[(sampleOffset.value + index) % SAMPLE_POOL.length],
+  ),
 )
+
+/** 换一批：整体后移一段，保证不会重复展示同一批。 */
+function shuffleSamples(): void {
+  sampleOffset.value = (sampleOffset.value + SAMPLE_COUNT) % SAMPLE_POOL.length
+}
+
+/** 点示例问题：填进输入框；能发就直接发——这一步本来就是"照着问"。 */
+function useSample(question: string): void {
+  query.value = question
+  if (selected.value.length > 0 && !sending.value && !loadingHistory.value) void send()
+}
 
 onMounted(async () => {
   if (store.items.length === 0) await store.load()
@@ -380,38 +414,44 @@ async function savePrompt(): Promise<void> {
       </AppButton>
     </template>
 
-    <!-- 选库：这一页唯一的"范围"开关。空选就等于没有资料可依据 -->
-    <div class="kb-bar">
-      <span class="bar-label">知识库</span>
-      <p v-if="store.error" class="bar-note bar-note-error">{{ store.error }}</p>
-      <p v-else-if="store.items.length === 0" class="bar-note">
-        还没有知识库。先到「知识库」里建一个并上传文档。
-      </p>
-      <template v-else>
-        <label v-for="kb in store.items" :key="kb.id" class="kb-choice">
-          <input type="checkbox" :checked="selected.includes(kb.id)" @change="toggleKb(kb.id)" />
-          <span class="kb-name">{{ kb.name }}</span>
-        </label>
-      </template>
-      <span v-if="selectedNames.length" class="bar-span tabular"
-        >已选 {{ selectedNames.length }} 个</span
-      >
-    </div>
-
-    <div ref="streamHost" class="stream" @scroll.passive="onStreamScroll">
-      <EmptyState
-        v-if="messages.length === 0"
-        title="选一个知识库，然后提问"
-        hint="比如「近视怎么监测眼轴」。回答里带 [1] [2] 的编号，对应下面的原文出处。"
-      >
-        <!-- 没库可选时这个按钮没有意义，指路比给一个点不动的按钮好 -->
-        <RouterLink v-if="store.items.length === 0" to="/knowledge-bases">
-          <AppButton variant="primary">去建一个知识库</AppButton>
+    <div
+      ref="streamHost"
+      class="stream"
+      :class="{ 'stream-welcome': messages.length === 0 }"
+      @scroll.passive="onStreamScroll"
+    >
+      <!-- 空状态：居中问候 + 示例问题（参考图的观感）。
+           有消息之后整块消失，让位给正文——它不是常驻装饰。 -->
+      <div v-if="messages.length === 0" class="welcome">
+        <h2 class="welcome-title">Hi，我是 KYLAB，让你的知识触手可及</h2>
+        <div class="welcome-sub">
+          <span>你可以这样问我</span>
+          <button
+            type="button"
+            class="welcome-refresh"
+            aria-label="换一批示例问题"
+            title="换一批"
+            @click="shuffleSamples"
+          >
+            <IconRefresh :size="14" />
+          </button>
+        </div>
+        <div class="samples">
+          <button
+            v-for="sample in samples"
+            :key="sample"
+            type="button"
+            class="sample"
+            @click="useSample(sample)"
+          >
+            {{ sample }}
+          </button>
+        </div>
+        <!-- 一个库都没有时，提问无从谈起：指路比给一排点了没反应的样例好 -->
+        <RouterLink v-if="store.items.length === 0" class="welcome-guide" to="/knowledge-bases">
+          还没有知识库，先去建一个并上传文档
         </RouterLink>
-        <AppButton v-else-if="selected.length === 0" variant="primary" @click="selectAll">
-          全选知识库
-        </AppButton>
-      </EmptyState>
+      </div>
 
       <article v-for="(message, index) in messages" :key="index" class="turn">
         <div v-if="message.role === 'user'" class="ask">
@@ -457,23 +497,62 @@ async function savePrompt(): Promise<void> {
       </article>
     </div>
 
+    <!-- 输入卡片：参考图里"一个大圆角框、控件收在框内底部"的做法。
+         我们的"模式"等价物是**知识库范围**——这一页唯一的范围开关，空选就没有资料可依据，
+         所以它放到底部工具条左侧，而不是再单独占一行。 -->
     <div class="composer">
       <AppInput
         id="chat-query"
         v-model="query"
         multiline
-        :rows="3"
+        :rows="2"
         :disabled="sending"
-        placeholder="提出你的问题，回车发送，Shift + 回车换行"
+        class="composer-field"
+        placeholder="向知识库提问…（回车发送，Shift + 回车换行）"
         @keydown.enter.exact.prevent="send"
       />
-      <div class="composer-actions">
-        <span class="composer-hint">
-          <template v-if="selectedNames.length"> 将检索：{{ selectedNames.join('、') }} </template>
-          <template v-else>未选择知识库，无法提问</template>
-        </span>
-        <AppButton v-if="sending" variant="danger" @click="stop">停止</AppButton>
-        <AppButton v-else variant="primary" :disabled="!canSend" @click="send">发送</AppButton>
+      <div class="composer-foot">
+        <div class="scope">
+          <span class="scope-label">知识库</span>
+          <p v-if="store.error" class="scope-note scope-note-error">{{ store.error }}</p>
+          <RouterLink
+            v-else-if="store.items.length === 0"
+            class="scope-note scope-link"
+            to="/knowledge-bases"
+          >
+            还没有知识库，去建一个
+          </RouterLink>
+          <template v-else>
+            <label
+              v-for="kb in store.items"
+              :key="kb.id"
+              class="scope-chip"
+              :class="{ 'scope-chip-on': selected.includes(kb.id) }"
+            >
+              <input
+                type="checkbox"
+                :checked="selected.includes(kb.id)"
+                @change="toggleKb(kb.id)"
+              />
+              <span class="scope-name">{{ kb.name }}</span>
+            </label>
+          </template>
+        </div>
+        <div class="composer-actions">
+          <button
+            v-if="store.items.length > 1 && selected.length < store.items.length"
+            type="button"
+            class="scope-all"
+            @click="selectAll"
+          >
+            全选
+          </button>
+          <span v-if="store.items.length && selected.length === 0" class="composer-warn">
+            未选知识库，无法提问
+          </span>
+          <AppButton v-if="sending" variant="danger" @click="stop">停止</AppButton>
+          <AppButton v-else variant="primary" :disabled="!canSend" @click="send">发送</AppButton>
+        </div>
       </div>
     </div>
 
@@ -496,67 +575,159 @@ async function savePrompt(): Promise<void> {
 </template>
 
 <style scoped>
-.kb-bar {
+/* ---- 空状态：居中问候 + 示例问题（参考图的观感） ---- */
+
+.stream-welcome {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2) var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  background: var(--bg-canvas);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-panel);
+  justify-content: center;
+  min-height: 46vh;
 }
 
-.bar-label {
-  font-size: var(--text-micro-size);
-  font-weight: 500;
-  color: var(--text-secondary);
+.welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  width: 100%;
+  padding: var(--space-5) var(--space-2);
+  text-align: center;
 }
 
-.bar-note {
+.welcome-title {
   margin: 0;
-  font-size: var(--text-meta-size);
-  color: var(--text-tertiary);
+  font-size: var(--text-page-title-size);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
 }
 
-.bar-note-error {
-  color: var(--status-danger);
-}
-
-.bar-span {
-  margin-left: auto;
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-/* 库名可能很长，勾选项限宽并省略，避免一个库名把整行挤成一列 */
-.kb-choice {
+.welcome-sub {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
-  height: 28px;
-  padding: 0 var(--space-3);
-  max-width: 240px;
+  gap: var(--space-1);
   font-size: var(--text-meta-size);
-  color: var(--text-secondary);
-  background: var(--bg-subtle);
-  border-radius: var(--radius-control);
-  cursor: pointer;
+  color: var(--text-tertiary);
 }
 
-.kb-choice:hover {
+.welcome-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-control);
+}
+
+.welcome-refresh:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
 
-.kb-choice input[type='checkbox'] {
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  accent-color: var(--text-secondary);
+/* 示例问题：宽度随文字（参考图里那种长短不一的胶囊），整体居中换行 */
+.samples {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+  max-width: 860px;
 }
 
-.kb-name {
+.sample {
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  border-radius: 999px;
+}
+
+.sample:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.welcome-guide {
+  font-size: var(--text-meta-size);
+  color: var(--accent-text);
+}
+
+.welcome-guide:hover {
+  text-decoration: underline;
+}
+
+/* ---- 输入卡片底部的知识库范围 ---- */
+
+.scope {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+
+.scope-label {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.scope-note {
+  margin: 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.scope-note-error {
+  color: var(--status-danger);
+}
+
+.scope-link {
+  color: var(--accent-text);
+}
+
+/* 库名可能很长：胶囊限宽并省略，避免一个库名把工具条挤成两行 */
+.scope-chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 200px;
+  height: 26px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-micro-size);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-hairline);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.scope-chip:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.scope-chip-on {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+/* 原生复选框保留"可聚焦、能被读屏识别"，但不占视觉位置 */
+.scope-chip input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.scope-chip:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.scope-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -737,27 +908,65 @@ async function savePrompt(): Promise<void> {
   -webkit-line-clamp: 2;
 }
 
+/* ---- 输入卡片 ---- */
+
 .composer {
   margin-top: var(--space-5);
-  padding-top: var(--space-4);
+  padding: var(--space-3) var(--space-4) var(--space-2);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+}
+
+/* 卡片里的文本域去掉自己的边框与底色——它是卡片的一部分，不该再套一层框；
+   聚焦反馈交给整张卡片（focus-within），这样"在写字"的提示更大、更好认 */
+.composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.composer :deep(.composer-field) {
+  padding: var(--space-1) 0;
+  background: transparent;
+  border: 0;
+  resize: none;
+}
+
+.composer :deep(.composer-field:hover),
+.composer :deep(.composer-field:focus) {
+  border: 0;
+}
+
+.composer-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-3);
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
   border-top: 1px solid var(--border-hairline);
 }
 
 .composer-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-3);
-  margin-top: var(--space-3);
+  margin-left: auto;
 }
 
-.composer-hint {
-  overflow: hidden;
-  min-width: 0;
+.scope-all {
   font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--accent-text);
+}
+
+.scope-all:hover {
+  text-decoration: underline;
+}
+
+.composer-warn {
+  font-size: var(--text-micro-size);
+  color: var(--status-warning);
 }
 
 .prompt-note {
