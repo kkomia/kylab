@@ -1,14 +1,16 @@
 <script setup lang="ts">
 /**
- * IconTrash 图标（内联 SVG，见《前端设计规范 v0.3》§3）。
+ * IconTrash 图标（内联 SVG，见《前端设计规范》§3）。
+ *
+ * 源：Remix 图标集合 `delete-bin-line`（Apache-2.0）。全仓图标统一取同一集合、
+ * 同一 24×24 网格、同一视觉重量；填充式线稿，颜色一律由 `currentColor` 决定。
  */
 import IconBase from './IconBase.vue'
 </script>
 
 <template>
-  <IconBase v-bind="$attrs">
-    <path d="M4 7h16" /><path d="M10 11v6M14 11v6" /><path
-      d="M6 7l1 12a2 2 0 0 0 2 1.8h6A2 2 0 0 0 17 19l1-12"
-    /><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-  </IconBase>
+  <IconBase v-bind="$attrs"
+    ><path
+      d="M17 6h5v2h-2v13a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V8H2V6h5V3a1 1 0 0 1 1-1h8a1 1 0 0 1 1 1zm1 2H6v12h12zm-9 3h2v6H9zm4 0h2v6h-2zM9 4v2h6V4z"
+  /></IconBase>
 </template>

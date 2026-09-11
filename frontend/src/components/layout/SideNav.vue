@@ -15,15 +15,21 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { fetchHealth } from '@/api/health'
+import IconAlert from '@/components/icons/IconAlert.vue'
 import IconChat from '@/components/icons/IconChat.vue'
+import IconCheck from '@/components/icons/IconCheck.vue'
 import IconDashboard from '@/components/icons/IconDashboard.vue'
 import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconLogo from '@/components/icons/IconLogo.vue'
+import IconLogout from '@/components/icons/IconLogout.vue'
 import IconMoon from '@/components/icons/IconMoon.vue'
+import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconSettings from '@/components/icons/IconSettings.vue'
 import IconSun from '@/components/icons/IconSun.vue'
 import IconTasks from '@/components/icons/IconTasks.vue'
+import IconUser from '@/components/icons/IconUser.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import { useTheme } from '@/composables/useTheme'
 import { loadRoster, operator, operatorId, roster, setOperator } from '@/composables/useOperator'
 import { useConsoleTokenPrompt } from '@/composables/useConsoleToken'
@@ -87,6 +93,12 @@ const operatorName = computed(() => operator.value?.name ?? '')
  * （`require_console`）。把一个点进去只会报错的入口摆在侧栏，比不显示更糟。
  */
 const canOpenSettings = computed(() => currentUser.value === null || isAdmin.value)
+
+/** 使用者下拉选项（G6）：空值 = 不记归属，与 AppSelect 的 `{value,label}` 口径一致。 */
+const operatorOptions = computed(() => [
+  { value: '', label: '未指定（上传不记归属）' },
+  ...roster.value.map((person) => ({ value: person.id, label: person.name })),
+])
 
 /** 当前会话 id：从路径里取，用来高亮列表里那一条。 */
 const activeConversationId = computed(() => {
@@ -200,11 +212,13 @@ async function onLogout(): Promise<void> {
       -->
       <div v-if="currentUser" class="account">
         <div class="account-row">
+          <IconUser class="account-icon" />
           <span class="account-name" :title="currentUser.name">{{ currentUser.name }}</span>
           <span class="account-role">{{ isAdmin ? '管理员' : '成员' }}</span>
         </div>
         <button class="account-action" type="button" :disabled="loggingOut" @click="onLogout">
-          {{ loggingOut ? '正在退出…' : '退出登录' }}
+          <IconLogout :size="14" />
+          <span>{{ loggingOut ? '正在退出…' : '退出登录' }}</span>
         </button>
       </div>
 
@@ -215,17 +229,13 @@ async function onLogout(): Promise<void> {
       -->
       <div v-else-if="roster.length || operatorName" class="identity">
         <label class="identity-label" for="kylab-operator">当前使用者</label>
-        <select
+        <AppSelect
           id="kylab-operator"
-          class="identity-select"
-          :value="operatorId"
-          @change="setOperator(($event.target as HTMLSelectElement).value)"
-        >
-          <option value="">未指定（上传不记归属）</option>
-          <option v-for="person in roster" :key="person.id" :value="person.id">
-            {{ person.name }}
-          </option>
-        </select>
+          :model-value="operatorId"
+          :options="operatorOptions"
+          aria-label="当前使用者"
+          @update:model-value="setOperator"
+        />
       </div>
 
       <button v-if="canOpenSettings" class="foot-action" type="button" @click="openSettings">
@@ -246,21 +256,9 @@ async function onLogout(): Promise<void> {
 
       <p class="service" :class="`service-${serviceState}`">
         <span class="service-icon">
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <circle cx="12" cy="12" r="9" />
-            <path v-if="serviceState === 'online'" d="M8 12.5l2.5 2.5L16 9.5" />
-            <path v-else d="M12 7.5v5M12 16h.01" />
-          </svg>
+          <IconCheck v-if="serviceState === 'online'" />
+          <IconAlert v-else-if="serviceState === 'offline'" />
+          <IconRefresh v-else />
         </span>
         <span class="service-text">{{ serviceDetail }}</span>
       </p>
@@ -456,18 +454,6 @@ async function onLogout(): Promise<void> {
   color: var(--text-tertiary);
 }
 
-.identity-select {
-  width: 100%;
-  min-height: var(--hit-target);
-  padding: 0 var(--space-2);
-  font-family: inherit;
-  font-size: var(--text-meta-size);
-  color: var(--text-secondary);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-control);
-}
-
 .sidebar-foot {
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border-hairline);
@@ -489,13 +475,20 @@ async function onLogout(): Promise<void> {
 
 .account-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
   min-width: 0;
 }
 
+.account-icon {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+/* 名字吃掉剩余宽度（去掉图标与角色占位） */
 .account-name {
+  flex: 1;
   overflow: hidden;
   font-size: var(--text-meta-size);
   font-weight: 500;
@@ -511,6 +504,9 @@ async function onLogout(): Promise<void> {
 }
 
 .account-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   align-self: flex-start;
   font-size: var(--text-micro-size);
   color: var(--text-secondary);

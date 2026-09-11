@@ -35,6 +35,7 @@ withDefaults(
 <style scoped>
 /* 与 AppInput 的 .field 同高同边框：一排控件不在一条基线上最容易被看出来 */
 .select {
+  width: 100%;
   min-height: 32px;
   padding: 0 var(--space-2);
   font: inherit;

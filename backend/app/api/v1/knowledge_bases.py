@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Depends
 
@@ -14,13 +15,15 @@ from app.api.v1.schemas import KnowledgeBaseCreate, KnowledgeBaseList, Knowledge
 from app.core.services import Services, get_services
 from app.models.enums import UserRole
 from app.services.api_key import Caller
-from app.storage.base import KnowledgeBaseRecord
 
 router = APIRouter(prefix="/knowledge-bases", tags=["knowledge-bases"])
 
 
-def _out(record: KnowledgeBaseRecord, caller: Caller, services: Services) -> KnowledgeBaseOut:
+def _out(record: Any, caller: Caller, services: Services) -> KnowledgeBaseOut:
     """记录 → 响应，并补上"当前主体能不能管 / 能不能写这个库"。
+
+    `record` 标成 `Any` 而不是具体记录类型：协议层不允许 import 存储
+    （`scripts/check_layering.py` 的 L1 规则），而那条纪律正是"换存储不用改 api"的保证。
 
     两条判定都**在后端算**，前端不重复实现：
     - `can_manage` 与 ``services/share.py`` 的 ``_require_owner_or_admin`` 一致；

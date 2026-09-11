@@ -38,6 +38,7 @@ import {
   type UserRole,
 } from '@/api/users'
 import IconCheck from '@/components/icons/IconCheck.vue'
+import IconLogout from '@/components/icons/IconLogout.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import ModelRegistryPanel from '@/components/settings/ModelRegistryPanel.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -1005,31 +1006,37 @@ async function runTest(target: string): Promise<void> {
 
             <h3 class="section-title section-gap">修改密码</h3>
             <div class="password-form">
-              <label class="field-label" for="kylab-old-password">当前密码</label>
-              <AppInput
-                id="kylab-old-password"
-                v-model="oldPassword"
-                type="password"
-                autocomplete="current-password"
-                :disabled="changingPassword"
-              />
-              <label class="field-label" for="kylab-new-password">新密码</label>
-              <AppInput
-                id="kylab-new-password"
-                v-model="newPassword"
-                type="password"
-                autocomplete="new-password"
-                :placeholder="`至少 ${MIN_PASSWORD_CHARS} 个字符`"
-                :disabled="changingPassword"
-              />
-              <label class="field-label" for="kylab-confirm-password">确认新密码</label>
-              <AppInput
-                id="kylab-confirm-password"
-                v-model="confirmNewPassword"
-                type="password"
-                autocomplete="new-password"
-                :disabled="changingPassword"
-              />
+              <div class="field">
+                <label class="field-label" for="kylab-old-password">当前密码</label>
+                <AppInput
+                  id="kylab-old-password"
+                  v-model="oldPassword"
+                  type="password"
+                  autocomplete="current-password"
+                  :disabled="changingPassword"
+                />
+              </div>
+              <div class="field">
+                <label class="field-label" for="kylab-new-password">新密码</label>
+                <AppInput
+                  id="kylab-new-password"
+                  v-model="newPassword"
+                  type="password"
+                  autocomplete="new-password"
+                  :placeholder="`至少 ${MIN_PASSWORD_CHARS} 个字符`"
+                  :disabled="changingPassword"
+                />
+              </div>
+              <div class="field">
+                <label class="field-label" for="kylab-confirm-password">确认新密码</label>
+                <AppInput
+                  id="kylab-confirm-password"
+                  v-model="confirmNewPassword"
+                  type="password"
+                  autocomplete="new-password"
+                  :disabled="changingPassword"
+                />
+              </div>
               <p v-if="passwordError" class="form-error" role="alert">{{ passwordError }}</p>
               <div class="password-actions">
                 <AppButton
@@ -1039,9 +1046,12 @@ async function runTest(target: string): Promise<void> {
                 >
                   {{ changingPassword ? '提交中…' : '更新密码' }}
                 </AppButton>
-                <AppButton variant="danger" @click="emit('logout')">退出登录</AppButton>
+                <AppButton variant="danger" @click="emit('logout')">
+                  <template #icon><IconLogout /></template>
+                  退出登录
+                </AppButton>
               </div>
-              <p class="row-note">
+              <p class="text-hint">
                 改密会吊销其他设备上的登录，当前这条保留。忘记密码时，可由管理员在「用户」里重置。
               </p>
             </div>
@@ -1333,6 +1343,7 @@ async function runTest(target: string): Promise<void> {
   margin: var(--space-2) 0 0;
   max-width: 64ch;
   font-size: var(--text-micro-size);
+  line-height: 1.7;
   color: var(--text-tertiary);
 }
 
@@ -1341,23 +1352,12 @@ async function runTest(target: string): Promise<void> {
   color: var(--text-tertiary);
 }
 
-/* 修改密码表单：与登录页同一套"标签在上、控件在下"的语言 */
+/* 修改密码表单：控件成组走全局 .field（评审 §2.1） */
 .password-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: var(--space-3);
   margin-top: var(--space-3);
-}
-
-.field-label {
-  margin-top: var(--space-2);
-  font-size: var(--text-micro-size);
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.password-form .field-label:first-child {
-  margin-top: 0;
 }
 
 .form-error {
@@ -1384,10 +1384,6 @@ async function runTest(target: string): Promise<void> {
   align-items: center;
   gap: var(--space-2) var(--space-3);
   grid-template-columns: 88px minmax(0, 1fr);
-}
-
-.create-grid .field-label {
-  margin-top: 0;
 }
 
 /* 成员与名册：一行一个人，操作在右端 */

@@ -152,7 +152,7 @@ async function submit(): Promise<void> {
 
         <p v-if="error" class="login-error" role="alert">{{ error }}</p>
 
-        <AppButton class="login-submit" variant="primary" type="submit" :disabled="busy">
+        <AppButton class="login-submit" variant="primary" type="submit" block :disabled="busy">
           {{ busy ? '请稍候…' : isSetup ? '创建并进入' : '登录' }}
         </AppButton>
       </form>
@@ -214,22 +214,8 @@ async function submit(): Promise<void> {
   margin-top: var(--space-6);
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.field-label {
-  font-size: var(--text-micro-size);
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
-.field-optional {
-  font-weight: 400;
-  color: var(--text-tertiary);
-}
+/* .field / .field-label / .field-optional 走全局（base.css），
+   这里不再各写一套——六处表单标签曾经就是各写一套的（评审 §2.1） */
 
 .login-error {
   margin: 0;
@@ -238,10 +224,8 @@ async function submit(): Promise<void> {
   color: var(--status-danger);
 }
 
-/* 登录是这一页唯一的动作，按钮占满整列，减少一次横向的视觉寻找 */
+/* 占满整列由 AppButton 的 block 负责；这里只留与上方字段的间距 */
 .login-submit {
-  justify-content: center;
-  width: 100%;
   margin-top: var(--space-1);
 }
 

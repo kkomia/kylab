@@ -26,6 +26,7 @@ import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconTrash from '@/components/icons/IconTrash.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { formatRelativeTime } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
@@ -36,6 +37,16 @@ const props = withDefaults(defineProps<{ kbId: string; canWrite?: boolean }>(), 
 const emit = defineEmits<{ changed: [] }>()
 
 const { notifySuccess, notifyError } = useToast()
+
+/** 下拉选项：类型是 SourceKind 的联合，故用 setKind 收口，不让 string 直接落进 ref。 */
+const KIND_OPTIONS: { value: SourceKind; label: string }[] = [
+  { value: 'rss', label: 'RSS / Atom 订阅' },
+  { value: 'html', label: '单个网页' },
+]
+
+function setKind(value: string): void {
+  draft.value = { ...draft.value, kind: value as SourceKind }
+}
 
 const sources = ref<DataSource[]>([])
 const loading = ref(true)
@@ -166,10 +177,12 @@ async function remove(source: DataSource): Promise<void> {
       <div class="form-row">
         <label class="field">
           <span class="field-label">类型</span>
-          <select v-model="draft.kind" class="field-select">
-            <option value="rss">RSS / Atom 订阅</option>
-            <option value="html">单个网页</option>
-          </select>
+          <AppSelect
+            :model-value="draft.kind"
+            :options="KIND_OPTIONS"
+            aria-label="数据源类型"
+            @update:model-value="setKind"
+          />
         </label>
         <label class="field">
           <span class="field-label">名称（可选）</span>
@@ -273,27 +286,8 @@ async function remove(source: DataSource): Promise<void> {
 }
 
 .field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
   margin-bottom: var(--space-3);
   min-width: 0;
-}
-
-.field-label {
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.field-select {
-  min-height: var(--hit-target);
-  padding: 0 var(--space-2);
-  font-family: inherit;
-  font-size: var(--text-meta-size);
-  color: var(--text-primary);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
 }
 
 .form-actions {

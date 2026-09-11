@@ -1,8 +1,11 @@
 <script setup lang="ts">
 /**
- * 通用按钮（《前端设计规范 v0.3》§7）：
- * 主按钮灰黑实心、次按钮透明 + 1px 边框、危险按钮语义红文字 + hover 浅红底。
- * 不使用 >8px 圆角，不加阴影。
+ * 通用按钮（《前端设计规范》§7）：
+ * 主按钮品牌色实心、次按钮透明 + 1px 边框、危险按钮语义红文字 + hover 浅红底。
+ * 圆角走 `--radius-control`，不加阴影。
+ *
+ * `block`：占满父容器宽度。表单的提交按钮、空状态的主操作需要它——
+ * 在此之前是各处用私有 CSS 写 `width: 100%`，同一个诉求散着实现。
  */
 withDefaults(
   defineProps<{
@@ -10,8 +13,9 @@ withDefaults(
     size?: 'sm' | 'md'
     disabled?: boolean
     type?: 'button' | 'submit'
+    block?: boolean
   }>(),
-  { variant: 'secondary', size: 'md', disabled: false, type: 'button' },
+  { variant: 'secondary', size: 'md', disabled: false, type: 'button', block: false },
 )
 </script>
 
@@ -20,7 +24,7 @@ withDefaults(
     :type="type"
     :disabled="disabled"
     class="button"
-    :class="[`button-${variant}`, `button-${size}`]"
+    :class="[`button-${variant}`, `button-${size}`, { 'button-block': block }]"
   >
     <slot name="icon" />
     <span v-if="$slots.default" class="button-label"><slot /></span>
@@ -67,6 +71,12 @@ withDefaults(
 .button-md {
   height: 32px;
   padding: 0 var(--space-3);
+}
+
+/* 占满整行：内容居中，横向不再需要用户"找一下按钮在哪" */
+.button-block {
+  justify-content: center;
+  width: 100%;
 }
 
 /* 主按钮：灰黑实心；深色主题下由变量自动变成近白（§2.2） */

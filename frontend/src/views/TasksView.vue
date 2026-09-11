@@ -391,7 +391,7 @@ function openDocument(documentId: string): void {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-pair);
   font-size: var(--text-micro-size);
   color: var(--status-danger);
 }
@@ -429,7 +429,7 @@ function openDocument(documentId: string): void {
 }
 
 .detail dd {
-  margin: 2px 0 0;
+  margin: var(--space-pair) 0 0;
   font-size: var(--text-meta-size);
   color: var(--text-primary);
   overflow-wrap: anywhere;

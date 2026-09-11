@@ -19,6 +19,7 @@ import IconSearch from '@/components/icons/IconSearch.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import { formatAge, formatScore } from '@/composables/useFormat'
@@ -39,6 +40,13 @@ const { notifyError, notifyWarning } = useToast()
 
 const query = ref('')
 const mode = ref<'hybrid' | 'vector' | 'fulltext'>('hybrid')
+
+/** 下拉选项：与 AppSelect 的 `{value,label}` 口径一致（《界面评审与改进计划》§1）。 */
+const MODE_OPTIONS = [
+  { value: 'hybrid', label: '混合（向量 + BM25）' },
+  { value: 'vector', label: '仅向量' },
+  { value: 'fulltext', label: '仅 BM25' },
+]
 /** 数字输入留成字符串交给原生 input，提交时再转——避免 v-model.number 与输入框类型打架。 */
 const topK = ref('8')
 const candidateK = ref('40')
@@ -138,26 +146,24 @@ function hitKey(hit: SearchHit): string {
   <AppModal v-model:open="open" size="wide" :title="`在「${kbName}」中检索`">
     <div class="panel">
       <div class="query-col">
-        <label class="field-label" for="kb-search-input">检索内容</label>
-        <AppInput
-          id="kb-search-input"
-          v-model="query"
-          multiline
-          :rows="3"
-          placeholder="输入问题或关键词，回车检索"
-          @keydown.enter.exact.prevent="runSearch"
-        />
+        <div class="field">
+          <label class="field-label" for="kb-search-input">检索内容</label>
+          <AppInput
+            id="kb-search-input"
+            v-model="query"
+            multiline
+            :rows="3"
+            placeholder="输入问题或关键词，回车检索"
+            @keydown.enter.exact.prevent="runSearch"
+          />
+        </div>
 
         <div class="field-row">
-          <label class="field">
+          <label class="field field-block">
             <span class="field-label">模式</span>
-            <select v-model="mode" class="select">
-              <option value="hybrid">混合（向量 + BM25）</option>
-              <option value="vector">仅向量</option>
-              <option value="fulltext">仅 BM25</option>
-            </select>
+            <AppSelect v-model="mode" :options="MODE_OPTIONS" aria-label="检索模式" />
           </label>
-          <label class="field field-narrow">
+          <label class="field field-block field-narrow">
             <span class="field-label">返回条数</span>
             <AppInput v-model="topK" type="number" />
           </label>
@@ -166,7 +172,7 @@ function hitKey(hit: SearchHit): string {
         <details class="advanced">
           <summary>高级选项</summary>
           <div class="field-row">
-            <label class="field field-narrow">
+            <label class="field field-block field-narrow">
               <span class="field-label">候选池</span>
               <AppInput v-model="candidateK" type="number" />
             </label>
@@ -312,8 +318,9 @@ function hitKey(hit: SearchHit): string {
   border-left: 1px solid var(--border-hairline);
 }
 
-.field {
-  display: block;
+/* 成组容器与标签走全局 .field / .field-label（base.css）；
+   这里只保留本面板特有的"块间距"与窄列 */
+.field-block {
   margin-bottom: var(--space-4);
 }
 
@@ -325,24 +332,6 @@ function hitKey(hit: SearchHit): string {
   display: flex;
   align-items: flex-start;
   gap: var(--space-3);
-}
-
-.field-label {
-  display: block;
-  margin-bottom: var(--space-2);
-  font-size: var(--text-micro-size);
-  color: var(--text-secondary);
-}
-
-.select {
-  width: 100%;
-  min-height: 32px;
-  padding: 0 var(--space-2);
-  font: inherit;
-  color: var(--text-primary);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
 }
 
 .checkbox-field {

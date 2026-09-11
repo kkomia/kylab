@@ -33,6 +33,7 @@ import {
 import IconTrash from '@/components/icons/IconTrash.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { useToast } from '@/composables/useToast'
 
@@ -81,6 +82,22 @@ function bindableModels(slot: Slot): RegisteredModel[] {
     return item.capabilities.length === 0 || item.capabilities.includes(slot.capability)
   })
 }
+
+/** 用途下拉的选项：空值 = 不绑定，其余是"模型名 · 供应商"。 */
+function slotOptions(slot: Slot): { value: string; label: string }[] {
+  return [
+    { value: '', label: '（不指定，走精细配置）' },
+    ...bindableModels(slot).map((model) => ({
+      value: model.id,
+      label: `${model.label || model.model_id} · ${model.provider_name}`,
+    })),
+  ]
+}
+
+/** 供应商类别下拉（键值对由后端给出，避免前端硬编码类别名）。 */
+const kindOptions = computed(() =>
+  Object.entries(kinds.value).map(([value, label]) => ({ value, label })),
+)
 
 async function load(): Promise<void> {
   loading.value = true
@@ -315,17 +332,14 @@ defineExpose({ load })
             <StatusTag v-else tone="warning" label="未配置" />
           </div>
 
-          <select
+          <AppSelect
             class="slot-select"
-            :value="item.bound_model_pk ?? ''"
+            :model-value="item.bound_model_pk ?? ''"
+            :options="slotOptions(item)"
             :disabled="busy === `slot:${item.slot}`"
-            @change="onBind(item, ($event.target as HTMLSelectElement).value)"
-          >
-            <option value="">（不指定，走精细配置）</option>
-            <option v-for="model in bindableModels(item)" :key="model.id" :value="model.id">
-              {{ model.label || model.model_id }} · {{ model.provider_name }}
-            </option>
-          </select>
+            :aria-label="`为「${item.label}」指定模型`"
+            @update:model-value="onBind(item, $event)"
+          />
 
           <AppButton
             :disabled="!item.configured || busy === `test:${item.slot}`"
@@ -354,9 +368,11 @@ defineExpose({ load })
           <div class="form-grid">
             <label class="field">
               <span class="field-label">类别</span>
-              <select v-model="providerDraft.kind" class="field-input">
-                <option v-for="(label, key) in kinds" :key="key" :value="key">{{ label }}</option>
-              </select>
+              <AppSelect
+                v-model="providerDraft.kind"
+                :options="kindOptions"
+                aria-label="供应商类别"
+              />
             </label>
             <label class="field">
               <span class="field-label">名称</span>
@@ -608,17 +624,10 @@ defineExpose({ load })
   color: var(--text-primary);
 }
 
+/* 只留布局：外观由 AppSelect 统一（《界面评审与改进计划》§1） */
 .slot-select {
   flex: 1;
   min-width: 0;
-  min-height: var(--hit-target);
-  padding: 0 var(--space-2);
-  font-family: inherit;
-  font-size: var(--text-meta-size);
-  color: var(--text-primary);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
 }
 
 /* ---- 供应商 ---- */
@@ -739,31 +748,9 @@ defineExpose({ load })
   gap: var(--space-3);
 }
 
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
+/* 成组容器用全局 .field；这里只补本面板特有的跨列 */
 .field-wide {
   grid-column: 1 / -1;
-}
-
-.field-label {
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.field-input {
-  min-height: var(--hit-target);
-  padding: 0 var(--space-2);
-  font-family: inherit;
-  font-size: var(--text-meta-size);
-  color: var(--text-primary);
-  background: var(--bg-surface);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
 }
 
 .cap-row {

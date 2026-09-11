@@ -177,13 +177,15 @@ function statsOf(kbId: string) {
     </div>
 
     <AppModal v-model:open="createOpen" title="新建知识库">
-      <label class="field-label" for="kb-name">名称</label>
-      <AppInput
-        id="kb-name"
-        v-model="draftName"
-        placeholder="例如：产品手册"
-        @keyup.enter="submitCreate"
-      />
+      <div class="field">
+        <label class="field-label" for="kb-name">名称</label>
+        <AppInput
+          id="kb-name"
+          v-model="draftName"
+          placeholder="例如：产品手册"
+          @keyup.enter="submitCreate"
+        />
+      </div>
       <p class="field-hint">
         模型与切分参数用服务端默认值。库内已有向量后再改模型会被拒绝，详见架构 §6.4。
       </p>
@@ -441,16 +443,10 @@ function statsOf(kbId: string) {
   color: var(--text-tertiary);
 }
 
-.field-label {
-  display: block;
-  margin-bottom: var(--space-2);
-  font-size: var(--text-meta-size);
-  color: var(--text-secondary);
-}
-
 .field-hint {
   margin: var(--space-3) 0 0;
   font-size: var(--text-micro-size);
+  line-height: 1.7;
   color: var(--text-tertiary);
 }
 </style>

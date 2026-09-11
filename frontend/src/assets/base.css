@@ -205,6 +205,48 @@ pre {
 }
 
 /**
+ * 表单标签与说明文字：全局唯一口径（《界面评审与改进计划 v0.1》§2）。
+ *
+ * 抽出来的理由：同一种"标签"曾在六个组件里各写一遍，字号在 micro/meta 之间、
+ * 颜色在 secondary/tertiary 之间漂；同一种"说明"有十五个局部类名。
+ * 各自都还行，摆在一起就是不齐——而扫视时看的正是这些对齐线。
+ *
+ * 取值依据规范 §4.2：注释 12–13px；三级灰需过 AA，所以"要被读到"的说明用
+ * secondary，"可以弱"的脚注才用 tertiary。
+ */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.field-label {
+  font-size: var(--text-micro-size);
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* "可选""留空表示不改动"这类后缀：与标签同字号，但退一档灰 */
+.field-optional {
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+
+/* 说明句：引导、影响、规则——用户需要读它才知道自己在做什么 */
+.text-note {
+  font-size: var(--text-micro-size);
+  line-height: 1.7;
+  color: var(--text-secondary);
+}
+
+/* 提示句：次要、可略过（字段示例、脚注） */
+.text-hint {
+  font-size: var(--text-micro-size);
+  line-height: 1.7;
+  color: var(--text-tertiary);
+}
+
+/**
  * 纯文本分隔符。
  *
  * 上一轮用 `--border-strong` 给分隔符着色，结果是 1.56:1——那已经近乎隐形了，

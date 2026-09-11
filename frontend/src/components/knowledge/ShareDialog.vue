@@ -129,6 +129,7 @@ async function revoke(share: Share): Promise<void> {
       />
       <AppSelect
         v-model="permissionDraft"
+        class="grant-permission"
         :options="PERMISSION_OPTIONS"
         aria-label="访问档位"
         :disabled="granting"
@@ -138,14 +139,14 @@ async function revoke(share: Share): Promise<void> {
       </AppButton>
     </div>
     <p v-if="grantError" class="share-error" role="alert">{{ grantError }}</p>
-    <p class="share-note">
+    <p class="text-hint share-note">
       只读 = 可检索、可对话；可写 = 还能上传与删除。被分享者不能把库再转授给别人。
     </p>
 
     <h3 class="share-title">已分享给</h3>
-    <p v-if="loading" class="share-note">正在加载…</p>
+    <p v-if="loading" class="text-hint share-note">正在加载…</p>
     <p v-else-if="loadError" class="share-error">{{ loadError }}</p>
-    <p v-else-if="shares.length === 0" class="share-note">
+    <p v-else-if="shares.length === 0" class="text-hint share-note">
       还没有分享给任何人。这个库目前只有你自己（和管理员）能看到。
     </p>
     <ul v-else class="share-list">
@@ -156,6 +157,7 @@ async function revoke(share: Share): Promise<void> {
         </span>
         <AppSelect
           :model-value="share.permission"
+          class="row-permission"
           :options="PERMISSION_OPTIONS"
           :disabled="busyId === share.user_id"
           :aria-label="`调整 ${share.name} 的访问档位`"
@@ -194,17 +196,21 @@ async function revoke(share: Share): Promise<void> {
   min-width: 0;
 }
 
+/* 档位下拉按内容定宽：让它吃掉剩余宽度会把"登录名"输入框挤到太窄 */
+.grant-permission {
+  flex: 0 0 104px;
+  width: 104px;
+}
+
 .share-error {
   margin: var(--space-2) 0 0;
   font-size: var(--text-micro-size);
   color: var(--status-danger);
 }
 
+/* 只给全局 .text-hint 补本弹窗需要的上间距（文案口径见 base.css） */
 .share-note {
-  margin: var(--space-2) 0 0;
-  font-size: var(--text-micro-size);
-  line-height: 1.7;
-  color: var(--text-tertiary);
+  margin-top: var(--space-2);
 }
 
 .share-title {
@@ -228,6 +234,12 @@ async function revoke(share: Share): Promise<void> {
 
 .share-row:last-child {
   border-bottom: none;
+}
+
+/* 行内档位下拉同样按内容定宽：它不该与"收回"按钮抢空间 */
+.row-permission {
+  flex: 0 0 88px;
+  width: 88px;
 }
 
 /* 显示名 + 登录名两行：后者是"账号标识"，用来核对授对了人 */

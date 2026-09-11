@@ -1,22 +1,16 @@
 <script setup lang="ts">
 /**
- * 月亮 / 深色主题图标。
- * 内联 SVG、1.5px 描边、currentColor（《前端设计规范 v0.3》§3）。
+ * IconMoon 图标（内联 SVG，见《前端设计规范》§3）。
+ *
+ * 源：Remix 图标集合 `moon-line`（Apache-2.0）。全仓图标统一取同一集合、
+ * 同一 24×24 网格、同一视觉重量；填充式线稿，颜色一律由 `currentColor` 决定。
  */
+import IconBase from './IconBase.vue'
 </script>
 
 <template>
-  <svg
-    width="16"
-    height="16"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="1.5"
-    stroke-linecap="round"
-    stroke-linejoin="round"
-    aria-hidden="true"
-  >
-    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-  </svg>
+  <IconBase v-bind="$attrs"
+    ><path
+      d="M10 7C10 10.866 13.134 14 17 14C18.9584 14 20.729 13.1957 21.9995 11.8995C22 11.933 22 11.9665 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C12.0335 2 12.067 2 12.1005 2.00049C10.8043 3.27098 10 5.04157 10 7ZM4 12C4 16.4183 7.58172 20 12 20C15.0583 20 17.7158 18.2839 19.062 15.7621C18.3945 15.9187 17.7035 16 17 16C12.0294 16 8 11.9706 8 7C8 6.29648 8.08133 5.60547 8.2379 4.938C5.71611 6.28423 4 8.9417 4 12Z"
+  /></IconBase>
 </template>
