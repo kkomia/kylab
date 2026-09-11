@@ -8,7 +8,7 @@
  * 上传走"提交后轮询"：后端是异步流水线（架构 §4），界面必须能看见任务在动，
  * 否则用户会以为"点了没反应"。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
@@ -54,7 +54,6 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
-import EmptyState from '@/components/ui/EmptyState.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
@@ -377,9 +376,37 @@ async function refresh(): Promise<void> {
     documents.value = (await listDocuments(kbId.value, filter)).items
     error.value = ''
     pruneSelection()
+    void nextTick(syncFillerRows)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '文档列表加载失败'
   }
+}
+
+// ------------------------------------------------------------------ 表格补白
+
+/** 与 CSS 的 `--row-height` 一致。补白行要按它算，两处漂了就会算错行数。 */
+const ROW_HEIGHT = 44
+
+/**
+ * 表格的行数**不跟着文件数走**：只有两三个文件时如果只画两三行，
+ * 下面就是一大片空白，页面看着像没加载完。所以补足到铺满可视区。
+ *
+ * 补的是**空行**（带分隔线），而不是把面板拉高——空行读起来是"表格还有位置"，
+ * 拉高一个空面板读起来是"这里坏了"。
+ */
+const listPanel = ref<HTMLElement | null>(null)
+const fillerRows = ref(0)
+
+function syncFillerRows(): void {
+  const element = listPanel.value
+  if (element === null) return
+  const headHeight = 40 /* .panel-head */
+  const bottomGap = 56 /* 给页面底部留一口气，别贴到边 */
+  const available = window.innerHeight - element.getBoundingClientRect().top - bottomGap
+  // 空库时也会有"还没有文档"那一行提示，所以数据侧至少占 1 行
+  const dataRows = Math.max(documents.value.length, 1)
+  const fit = Math.ceil((available - headHeight) / ROW_HEIGHT)
+  fillerRows.value = Math.max(0, Math.min(fit - dataRows, 60))
 }
 
 /** 刷新后剔除已不在列表里的选中项：否则批量删除后计数会虚高。 */
@@ -453,13 +480,25 @@ watch(kbId, () => {
   selected.value = []
   void loadFirst()
 })
+// 切回"文档"标签时面板是重新挂载的，补白行数要重算
+watch(activeTab, (tab) => {
+  if (tab === 'documents') void nextTick(syncFillerRows)
+})
+
+/** 窗口变高变矮都要重算补白——它本来就是"铺满可视区"的意思。 */
+function onWindowResize(): void {
+  syncFillerRows()
+}
 
 onMounted(async () => {
+  window.addEventListener('resize', onWindowResize)
   if (store.items.length === 0) await store.load()
   await loadFirst()
+  void nextTick(syncFillerRows)
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', onWindowResize)
   if (timer !== null) clearInterval(timer)
   if (searchTimer !== null) clearTimeout(searchTimer)
 })
@@ -854,17 +893,6 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 
         <SkeletonBlock v-if="loading && documents.length === 0" variant="list" :rows="4" />
 
-        <EmptyState
-          v-else-if="documents.length === 0"
-          :title="emptyTitle"
-          :hint="`${UPLOAD_FORMAT_HINT}；单文件上限 ${MAX_UPLOAD_MB}MB。`"
-        >
-          <AppButton v-if="knowledgeBase?.can_write" variant="primary" @click="uploadOpen = true">
-            <template #icon><IconUpload /></template>
-            上传文档
-          </AppButton>
-        </EmptyState>
-
         <template v-else>
           <!-- 批量操作条：只有在勾了东西时才出现（没选东西时它只是噪音） -->
           <div v-if="selectedCount > 0" class="batch-bar">
@@ -889,7 +917,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 
           <!-- 列头：让右侧那串数字有名字，不必靠猜。
            文字列标 aria-hidden（纯装饰），但全选框是交互控件，不能被一起藏掉 -->
-          <div class="panel">
+          <div ref="listPanel" class="panel">
             <div class="panel-head list-head">
               <span v-if="knowledgeBase?.can_write" class="head-check">
                 <input
@@ -907,6 +935,16 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
             </div>
 
             <ul class="doc-rows">
+              <!-- 空范围也照常给表头和数据区，只是第一行换成一句说明——
+                   换成一张居中大卡片会让页面塌下去一块，也丢掉了列结构 -->
+              <li v-if="documents.length === 0" class="doc-row-group">
+                <div class="doc-row panel-row doc-empty-row">
+                  <span class="doc-empty-text">{{ emptyTitle }}</span>
+                  <span class="doc-empty-hint">
+                    {{ UPLOAD_FORMAT_HINT }}；单文件上限 {{ MAX_UPLOAD_MB }}MB。
+                  </span>
+                </div>
+              </li>
               <li v-for="document in documents" :key="document.id" class="doc-row-group">
                 <div class="doc-row panel-row">
                   <span v-if="knowledgeBase?.can_write" class="row-check">
@@ -1015,6 +1053,17 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                     />
                   </li>
                 </ul>
+              </li>
+
+              <!-- 补白行：把表格铺满可视区，文件少时不留一大片空白。
+                   纯装饰（aria-hidden），不可点、也没有数据 -->
+              <li
+                v-for="row in fillerRows"
+                :key="`filler-${row}`"
+                class="doc-row-group doc-filler"
+                aria-hidden="true"
+              >
+                <div class="doc-row panel-row" />
               </li>
             </ul>
           </div>
@@ -1233,27 +1282,20 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 
 /* ---- 目录树（v13）---- */
 
-/* 两栏：左侧目录树（固定宽）+ 右侧文档区（吃满剩余）。
-   用 `align-items: flex-start` 让树保持自身高度，sticky 才有意义 */
+/* 两栏：左侧目录树 + 右侧文档区。
+   `align-items: stretch`（默认）让树**贯穿整个内容高度**——它是一条侧栏，
+   不是浮在旁边的一个方块；WeKnora 的目录也是贯穿的。 */
 .kb-body {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-4);
+  align-items: stretch;
+  gap: var(--space-5);
 }
 
-/* min-height 是给"库还空着"的时候兜底：只有两三个节点时，
-   树会缩成一小块贴在文档区旁边，看着像没画完。 */
+/* 目录：无边框无底色的竖栏，只用一条右侧分隔线。 */
 .folder-tree {
-  position: sticky;
-  top: var(--space-4);
-  flex: 0 0 220px;
-  min-height: 300px;
-  max-height: calc(100vh - 200px);
-  padding: var(--space-2);
-  overflow-y: auto;
-  background: var(--bg-canvas);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-panel);
+  flex: 0 0 200px;
+  padding: 0 var(--space-4) 0 0;
+  border-right: 1px solid var(--border-hairline);
 }
 
 .doc-area {
@@ -1261,22 +1303,19 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   min-width: 0;
 }
 
-/* 窄屏：树折到上方并铺满。阈值取 1024（而不是更小的 900）：
-   两栏并排时文档区要装下"切块/大小/时间/菜单"那几列固定宽度，
-   实测可用宽度掉到 900 出头就开始横向溢出，所以提前折行。 */
-@media (max-width: 1024px) {
-  .kb-body {
-    flex-direction: column;
+/* 窄窗口**不把树折到上方**：折上去它就不是"贯穿的侧栏"了（用户明确要 WeKnora 那种）。
+   代价是文档区变窄，所以这里牺牲"大小 / 更新时间"两列，保住主干：
+   勾选、名称/状态、切块数、操作菜单。1200px 以上全列都在。 */
+@media (max-width: 1200px) {
+  .folder-tree {
+    flex-basis: 180px;
   }
 
-  .folder-tree {
-    position: static;
-    flex-basis: auto;
-    width: 100%;
-    /* 折行后树在上方，min-height 会把列表推下去一大截，这里收回 */
-    min-height: 0;
-    max-height: none;
-    overflow: visible;
+  .head-size,
+  .row-size,
+  .head-time,
+  .row-time {
+    display: none;
   }
 }
 
@@ -1573,6 +1612,32 @@ button.tree-caret:hover {
 
 .doc-row {
   padding: 0 var(--space-4);
+}
+
+/* 空范围的那一行说明：标题说完，剩下的格式提示次要且可截断 */
+.doc-empty-row {
+  gap: var(--space-3);
+}
+
+.doc-empty-text {
+  flex: 0 0 auto;
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+}
+
+.doc-empty-hint {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 补白行：只负责占位与分隔线，不可交互 */
+.doc-filler {
+  pointer-events: none;
 }
 
 /* 展开器给足 24px 命中区：20px 在触屏上点不中 */
