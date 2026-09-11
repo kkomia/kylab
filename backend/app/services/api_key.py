@@ -50,25 +50,25 @@ class IssuedApiKey:
 
 @dataclass(frozen=True, slots=True)
 class Caller:
-    """一次调用的主体。登录会话、控制台令牌与 API Key 在这里统一成一种形状，
+    """一次调用的主体。管理员会话与 API Key 在这里统一成一种形状，
     免得下游每个地方都要判"这是哪种凭据"。"""
 
-    #: 控制台令牌与管理员会话都没有 API Key 记录；用它区分"管理员"与"受限调用方"
-    is_console: bool = False
+    #: 管理员会话没有 API Key 记录；用它区分"管理员"与"受限调用方"
+    is_admin: bool = False
     api_key: ApiKeyRecord | None = None
-    #: 登录会话对应的账号（v10）。``None`` = 控制台令牌或 API Key 通道
+    #: 登录会话对应的账号（v10）。``None`` = API Key 通道
     user: UserRecord | None = None
     #: 当前会话 id（明文 token 的哈希）。退出登录、改密吊销都要定位到它
     session_id: str | None = None
 
     @property
     def permission(self) -> ApiKeyPermission | None:
-        """``None`` 表示不受范围限制（控制台令牌与管理员会话如此）。"""
-        return None if self.is_console else (self.api_key.permission if self.api_key else None)
+        """``None`` 表示不受范围限制（管理员会话如此）。"""
+        return None if self.is_admin else (self.api_key.permission if self.api_key else None)
 
     @property
     def knowledge_base_ids(self) -> tuple[str, ...]:
-        if self.is_console or self.api_key is None:
+        if self.is_admin or self.api_key is None:
             return ()
         return tuple(self.api_key.knowledge_base_ids)
 
@@ -150,8 +150,8 @@ class ApiKeyService:
         越界时的报错**指出是哪个库**：用户配错了范围要能自己看出来，
         而库 ID 不是秘密（列表接口本来就能看到），提示它不额外泄露信息。
         """
-        if caller.is_console:
-            return  # 控制台令牌与管理员会话不受库范围限制
+        if caller.is_admin:
+            return  # 管理员会话不受库范围限制
 
         if caller.user is not None:
             # 登录成员（v10）：范围 = 自己拥有的库 + 被分享的库。
@@ -177,7 +177,7 @@ class ApiKeyService:
 
         permission = caller.permission
         if permission is None:
-            # 构造上不该出现（Caller 只有控制台 / 成员会话 / API Key 三种形态）。
+            # 构造上不该出现（Caller 只有管理员会话 / 成员会话 / API Key 三种形态）。
             # 真出现说明有人绕过了 authenticate，这时**拒绝**而不是放行——
             # 安全判定的默认值必须是"不通过"
             raise UnauthorizedError("调用主体缺少权限信息")
@@ -200,7 +200,7 @@ class ApiKeyService:
 
     def visible_kb_ids(self, caller: Caller) -> list[str] | None:
         """列出调用方能看到的库；``None`` 表示不受限（调用方不必再过滤）。"""
-        if caller.is_console:
+        if caller.is_admin:
             return None
         if caller.user is not None:
             # 成员：自己的库 + 被分享的库。**不能回 None**——那是不受限的意思，

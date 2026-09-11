@@ -77,7 +77,7 @@ def test_authenticate_accepts_a_valid_token(service) -> None:
     caller = service.authenticate(issued.token)
     assert caller.api_key is not None
     assert caller.api_key.id == issued.record.id
-    assert not caller.is_console
+    assert not caller.is_admin
 
 
 def test_authenticate_rejects_revoked_token(service) -> None:
@@ -168,7 +168,7 @@ def test_unscoped_key_reaches_everything(service) -> None:
 def test_visible_kb_ids_filters_console_and_scope(service) -> None:
     from app.services.api_key import Caller
 
-    console = Caller(is_console=True)
+    console = Caller(is_admin=True)
     assert service.visible_kb_ids(console) is None, "控制台不受限"
 
     scoped = service.authenticate(_issue(service, knowledge_base_ids=["kb_a"]).token)
@@ -181,7 +181,7 @@ def test_visible_kb_ids_filters_console_and_scope(service) -> None:
 def test_console_bypasses_scope_checks(service) -> None:
     from app.services.api_key import Caller
 
-    console = Caller(is_console=True)
+    console = Caller(is_admin=True)
     service.check_access(console, need=WRITE, kb_ids=["kb_任意"])
 
 
@@ -222,8 +222,8 @@ def test_member_sees_only_owned_kbs(service, store) -> None:  # type: ignore[no-
 
 
 def test_member_cannot_touch_admin_only_endpoints(service) -> None:  # type: ignore[no-untyped-def]
-    """成员会话 is_console=False：require_console 那层（设置页/密钥管理）进不去。"""
-    assert _member(service).is_console is False
+    """成员会话 is_admin=False：require_console 那层（设置页/密钥管理）进不去。"""
+    assert _member(service).is_admin is False
 
 
 def test_readonly_share_cannot_write(service, store) -> None:  # type: ignore[no-untyped-def]

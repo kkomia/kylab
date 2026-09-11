@@ -15,7 +15,7 @@ from __future__ import annotations
 import httpx
 from fastapi import APIRouter, Depends
 
-from app.api.auth import require_console
+from app.api.auth import require_admin
 from app.api.v1.schemas import (
     SettingsPatchIn,
     SettingsPatchOut,
@@ -36,7 +36,7 @@ _TEST_TIMEOUT_SECONDS = 30.0
 @router.get("/settings", response_model=SettingsViewOut, summary="运行期配置（密钥打码）")
 async def read_settings(
     services: Services = Depends(get_services),
-    _: Caller = Depends(require_console),
+    _: Caller = Depends(require_admin),
 ) -> SettingsViewOut:
     view = services.runtime.describe()
     return SettingsViewOut.model_validate(
@@ -55,7 +55,7 @@ async def read_settings(
 async def update_settings(
     payload: SettingsPatchIn,
     services: Services = Depends(get_services),
-    _: Caller = Depends(require_console),
+    _: Caller = Depends(require_admin),
 ) -> SettingsPatchOut:
     values = {item.key: item.value for item in payload.values}
     unknown = [key for key in values if key not in _KNOWN_KEYS]
@@ -75,7 +75,7 @@ async def update_settings(
 async def test_connection(
     target: str,
     services: Services = Depends(get_services),
-    _: Caller = Depends(require_console),
+    _: Caller = Depends(require_admin),
 ) -> TestConnectionOut:
     if target == "embedding":
         return _test_embedding(services)

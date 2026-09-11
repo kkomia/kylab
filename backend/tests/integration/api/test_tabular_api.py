@@ -15,16 +15,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.services import get_services
+from tests.conftest import admin_client as admin_session
 
 CSV = "姓名,年龄,城市\n张三,30,北京\n李四,25,上海\n王五,41,广州\n"
 
 
 @pytest.fixture
 def client():
-    from app.main import create_app
+    """带管理员会话凭据的客户端（v0.11 起 /api/v1 一律要凭据）。"""
+    with admin_session() as test_client:
 
-    with TestClient(create_app()) as test_client:
         yield test_client
+
 
 
 def _drain_worker() -> None:
@@ -45,7 +47,7 @@ def csv_document(client: TestClient) -> dict:
     kb = client.post("/api/v1/knowledge-bases", json={"name": "表格库"}).json()
     upload = client.post(
         f"/api/v1/knowledge-bases/{kb['id']}/documents",
-        files={"file": ("成员名册.csv", io.BytesIO(CSV.encode()), "text/csv")},
+        files={"file": ("成员名册.csv", io.BytesIO(CSV.encode()), "text/csv")}
     )
     assert upload.status_code == 202, upload.text
     document_id = upload.json()["document"]["id"]
@@ -93,7 +95,7 @@ def test_retrieval_hits_a_cell_by_its_column_name(
             "query": "张三的年龄",
             "kb_ids": [csv_document["kb_id"]],
             "top_k": 3,
-        },
+        }
     ).json()["hits"]
 
     assert hits, "带列名的行文本应当能被检索到"
@@ -124,7 +126,7 @@ def test_values_are_strings_not_inferred(client: TestClient, csv_document: dict)
 def test_pagination(client: TestClient, csv_document: dict) -> None:
     body = client.get(
         f"/api/v1/documents/{csv_document['document_id']}/table",
-        params={"limit": 1, "offset": 1},
+        params={"limit": 1, "offset": 1}
     ).json()
 
     assert body["rows"] == [["李四", "25", "上海"]]
@@ -138,7 +140,7 @@ def test_non_tabular_document_explains_itself(client: TestClient) -> None:
     kb = client.post("/api/v1/knowledge-bases", json={"name": "非表格库"}).json()
     upload = client.post(
         f"/api/v1/knowledge-bases/{kb['id']}/documents",
-        files={"file": ("说明.md", io.BytesIO("# 标题\n\n正文。\n".encode()), "text/markdown")},
+        files={"file": ("说明.md", io.BytesIO("# 标题\n\n正文。\n".encode()), "text/markdown")}
     )
     document_id = upload.json()["document"]["id"]
     _drain_worker()

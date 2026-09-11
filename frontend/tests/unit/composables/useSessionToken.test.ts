@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import { setConsoleToken } from '@/composables/useConsoleToken'
 import {
   SESSION_TOKEN_STORAGE_KEY,
   authStatus,
@@ -18,7 +17,6 @@ describe('useSessionToken', () => {
     window.localStorage.clear()
     clearSessionToken()
     authStatus.value = null
-    setConsoleToken('')
   })
 
   it('默认没有会话', () => {
@@ -34,11 +32,12 @@ describe('useSessionToken', () => {
     expect(window.localStorage.getItem(SESSION_TOKEN_STORAGE_KEY)).toBe('kylab_st_abc')
   })
 
-  it('持有控制台令牌也算有凭据', () => {
-    // 账号体系之前的老部署只有控制台令牌：它必须仍被认作"有凭据"，
-    // 否则升级后会被守卫挡在登录页，而令牌本身是应急恢复钥匙
-    setConsoleToken('kylab_console_abc')
+  it('只有会话令牌算凭据', () => {
+    // v0.11 起模型身份与控制台凭据都收口到账号：没有第二种凭据可以冒充"已登录"。
+    // 这条用例的意义是防止将来又冒出一条隐式凭据通道（那正是被取消的那套）。
+    expect(hasCredential()).toBe(false)
 
+    setSessionToken('kylab_st_abc')
     expect(hasCredential()).toBe(true)
   })
 

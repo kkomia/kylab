@@ -3,7 +3,6 @@
  * 组件不直接发请求，一律经本目录。
  */
 
-import { consoleToken, requestConsoleToken } from '@/composables/useConsoleToken'
 import { operatorHeaders } from '@/composables/useOperator'
 import { clearSessionToken, requestRelogin, sessionToken } from '@/composables/useSessionToken'
 
@@ -35,7 +34,7 @@ export interface RequestOptions {
  * 两者同时存在时用会话，这样"退出登录"能立即生效而不是退回令牌身份。
  */
 function authHeaders(): Record<string, string> {
-  const token = sessionToken() || consoleToken()
+  const token = sessionToken()
   // 操作者归属（G6）随**每个**请求带：它要出现在所有写操作上（上传、建库、删块……），
   // 逐个接口加字段既啰嗦又容易漏。值必须是 id——HTTP 头只能是 ASCII，
   // 而使用者名字可能是中文（实测会抛 UnicodeEncodeError）
@@ -58,16 +57,11 @@ async function unwrap<T>(response: Response, options: RequestOptions): Promise<T
     // 而不是把后端原文（"请在请求头带上 Authorization: Bearer …"）甩给用户。
     // 用 Error 的自定义属性而不是新异常类，是为了让所有既有 catch 继续工作。
     if (response.status === 401 && options.authFailure !== 'throw') {
-      if (sessionToken()) {
-        // 登录过但会话失效（过期/被吊销/改密）：清掉本地令牌，请用户重新登录
-        clearSessionToken()
-        requestRelogin()
-        detail = '登录已过期，请重新登录'
-      } else {
-        // 没登录过、也没会话令牌：控制台令牌通道的恢复入口
-        requestConsoleToken()
-        detail = '需要控制台令牌：请在「设置 → 系统与安全」粘贴令牌后重试'
-      }
+      // v0.11 起只有一种凭据（登录会话）：401 就只有一条恢复路径——重新登录。
+      // 清掉本地令牌，避免带着一条已知无效的令牌继续打请求。
+      clearSessionToken()
+      requestRelogin()
+      detail = '登录已过期，请重新登录'
     }
     const error = new Error(detail) as Error & { status?: number }
     error.status = response.status

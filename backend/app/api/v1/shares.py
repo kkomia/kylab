@@ -52,8 +52,8 @@ def _out(view: ShareView) -> ShareOut:
 
 
 def _actor(caller: Caller) -> tuple[str | None, bool]:
-    """（操作者账号 id, 是否管理员）。控制台令牌通道：actor None + console True。"""
-    return (caller.user.id if caller.user else None), caller.is_console
+    """（操作者账号 id, 是否管理员）。API Key 通道：actor None + is_admin 视角色而定。"""
+    return (caller.user.id if caller.user else None), caller.is_admin
 
 
 @router.get("", response_model=ShareListOut, summary="库的分享列表")
@@ -62,8 +62,8 @@ def list_shares(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_read)],
 ) -> ShareListOut:
-    actor_id, is_console = _actor(caller)
-    views = services.shares.list_for_kb(kb_id=kb_id, actor_id=actor_id, is_console=is_console)
+    actor_id, is_admin = _actor(caller)
+    views = services.shares.list_for_kb(kb_id=kb_id, actor_id=actor_id, is_admin=is_admin)
     return ShareListOut(items=[_out(view) for view in views])
 
 
@@ -74,13 +74,13 @@ def grant_share(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
 ) -> ShareOut:
-    actor_id, is_console = _actor(caller)
+    actor_id, is_admin = _actor(caller)
     view = services.shares.grant(
         kb_id=kb_id,
         username=payload.username,
         permission=payload.permission,
         actor_id=actor_id,
-        is_console=is_console,
+        is_admin=is_admin,
     )
     return _out(view)
 
@@ -92,5 +92,5 @@ def revoke_share(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
 ) -> None:
-    actor_id, is_console = _actor(caller)
-    services.shares.revoke(kb_id=kb_id, user_id=user_id, actor_id=actor_id, is_console=is_console)
+    actor_id, is_admin = _actor(caller)
+    services.shares.revoke(kb_id=kb_id, user_id=user_id, actor_id=actor_id, is_admin=is_admin)

@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.services.documents import content_kind
+from tests.conftest import admin_client as admin_session
 
 TEXT = "# 眼轴共识\n\n眼轴长度是主要监测指标。\n\n## 测量\n\n应散瞳后测量。\n".encode()
 SIGNING_SECRET = "preview-test-secret"
@@ -38,8 +39,8 @@ SIGNING_SECRET = "preview-test-secret"
         ("表格.xlsx", False, "binary"),
         ("合同.docx", False, "binary"),
         ("没有后缀", False, "binary"),
-    ],
-)
+    ]
+    )
 def test_content_kind(filename: str, has_markdown: bool, expected: str) -> None:
     assert content_kind(filename, has_markdown=has_markdown) == expected
 
@@ -49,46 +50,50 @@ def test_content_kind(filename: str, has_markdown: bool, expected: str) -> None:
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("KYLAB_URL_SIGNING_SECRET", SIGNING_SECRET)
-    monkeypatch.setenv("KYLAB_CONSOLE_TOKEN", "console-token-for-preview")
+    """带管理员会话凭据的客户端。
 
+    签名密钥仍走环境变量：它不属于凭据体系，单独配一次即可。
+    """
+    monkeypatch.setenv("KYLAB_URL_SIGNING_SECRET", SIGNING_SECRET)
     from app.core.config import get_settings
-    from app.main import create_app
 
     get_settings.cache_clear()
-    with TestClient(create_app()) as test_client:
+    with admin_session() as test_client:
         yield test_client
     get_settings.cache_clear()
 
 
-CONSOLE = {"Authorization": "Bearer console-token-for-preview"}
 
 
 def _upload(client: TestClient, name: str, content: bytes, mime: str) -> str:
-    kb = client.post("/api/v1/knowledge-bases", json={"name": f"库-{name}"}, headers=CONSOLE)
+    kb = client.post("/api/v1/knowledge-bases", json={"name": f"库-{name}"})
     upload = client.post(
         f"/api/v1/knowledge-bases/{kb.json()['id']}/documents",
         files={"file": (name, io.BytesIO(content), mime)},
         params={"start": "false"},
-        headers=CONSOLE,
+
     )
     assert upload.status_code == 202, upload.text
     return upload.json()["document"]["id"]
 
 
-def test_preview_needs_credentials(client: TestClient) -> None:
-    assert client.get("/api/v1/documents/doc_x/preview").status_code == 401
+def test_preview_needs_credentials() -> None:
+    """缺凭据要 401——刻意用不带会话的客户端，覆盖的就是这条分支。"""
+    from app.main import create_app
+
+    with TestClient(create_app()) as anonymous:
+        assert anonymous.get("/api/v1/documents/doc_x/preview").status_code == 401
 
 
 def test_unknown_document_is_404(client: TestClient) -> None:
-    assert client.get("/api/v1/documents/doc_不存在/preview", headers=CONSOLE).status_code == 404
+    assert client.get("/api/v1/documents/doc_不存在/preview").status_code == 404
 
 
 def test_text_document_preview_returns_markdown_inline(client: TestClient) -> None:
     """文本类内联返回，前端直接渲染——不必再发一次请求取内容。"""
     document_id = _upload(client, "说明.md", TEXT, "text/markdown")
 
-    body = client.get(f"/api/v1/documents/{document_id}/preview", headers=CONSOLE).json()
+    body = client.get(f"/api/v1/documents/{document_id}/preview").json()
 
     assert body["kind"] == "markdown"
     assert "眼轴长度是主要监测指标" in body["text"]
@@ -100,7 +105,7 @@ def test_binary_document_preview_degrades_to_download(client: TestClient) -> Non
     """Office 之类先不给预览，但也不能报错——退化成"只能下载"。"""
     document_id = _upload(client, "合同.docx", b"PK\x03\x04fake", "application/vnd.ms-word")
 
-    body = client.get(f"/api/v1/documents/{document_id}/preview", headers=CONSOLE).json()
+    body = client.get(f"/api/v1/documents/{document_id}/preview").json()
 
     assert body["kind"] == "binary"
     assert body["text"] is None and body["url"] is None
@@ -112,7 +117,7 @@ def test_pdf_preview_returns_a_signed_url(client: TestClient) -> None:
     """PDF 交给浏览器原生渲染，所以给签名链接而不是把字节塞进 JSON。"""
     document_id = _upload(client, "报告.pdf", b"%PDF-1.7 fake", "application/pdf")
 
-    body = client.get(f"/api/v1/documents/{document_id}/preview", headers=CONSOLE).json()
+    body = client.get(f"/api/v1/documents/{document_id}/preview").json()
 
     assert body["kind"] == "pdf"
     assert body["text"] is None
@@ -124,7 +129,7 @@ def test_pdf_preview_returns_a_signed_url(client: TestClient) -> None:
 def test_image_preview_returns_a_signed_url(client: TestClient) -> None:
     document_id = _upload(client, "截图.png", b"\x89PNG\r\n\x1a\nfake", "image/png")
 
-    body = client.get(f"/api/v1/documents/{document_id}/preview", headers=CONSOLE).json()
+    body = client.get(f"/api/v1/documents/{document_id}/preview").json()
 
     assert body["kind"] == "image"
     assert body["url"]
@@ -138,11 +143,11 @@ def test_preview_kind_matches_download_kind(client: TestClient) -> None:
     """
     document_id = _upload(client, "报告.pdf", b"%PDF-1.7 fake", "application/pdf")
 
-    preview = client.get(f"/api/v1/documents/{document_id}/preview", headers=CONSOLE).json()
+    preview = client.get(f"/api/v1/documents/{document_id}/preview").json()
     url = client.get(
         f"/api/v1/documents/{document_id}/download-url",
         params={"format": "original"},
-        headers=CONSOLE,
+
     ).json()["url"]
     downloaded = client.get(url)
 
@@ -166,7 +171,7 @@ async def test_markdown_after_parsing_becomes_the_reading_view(client: TestClien
     while await services.worker.run_once():
         pass
 
-    body = client.get(f"/api/v1/documents/{document_id}/preview", headers=CONSOLE).json()
+    body = client.get(f"/api/v1/documents/{document_id}/preview").json()
     if body["kind"] == "markdown":
         assert body["text"], "切到 markdown 却没有正文"
         assert body["url"] is None

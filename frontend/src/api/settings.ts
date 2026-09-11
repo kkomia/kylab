@@ -5,6 +5,7 @@
  * 写入时留空表示"不改动这把密钥"。
  */
 
+import type { AuthBootstrapStatus } from './auth'
 import { request } from './client'
 
 export interface SettingField {
@@ -57,17 +58,11 @@ export function testConnection(target: string): Promise<TestConnectionResult> {
   return request(`/settings/test/${target}`, { method: 'POST' })
 }
 
-export interface AuthStatus {
-  /** 为真表示还没有控制台令牌，可以调 POST /auth/console-token 初始化。 */
-  needs_token: boolean
-  auth_enabled: boolean
-}
+/** `/auth/status` 的返回形状与登录引导状态同一个（定义在 `api/auth.ts`）。 */
+export type AuthStatus = AuthBootstrapStatus
 
 /**
- * 鉴权状态。
- *
- * 这个端点**不需要凭据**（前端要靠它判断该显示登录还是首次设置），
- * 所以它只回两个布尔值，不透露任何可用信息。
+ * 鉴权状态。**不需要凭据**：前端靠它判断该显示首次设置还是登录。
  */
 export function getAuthStatus(): Promise<AuthStatus> {
   return request('/auth/status')

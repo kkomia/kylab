@@ -107,8 +107,8 @@ def test_every_endpoint_has_a_summary() -> None:
         "签名下载 URL",  # 无状态 HMAC + 过期
         "时间格式",  # ISO 8601 带时区
         "分页",  # limit + offset + total
-    ],
-)
+    ]
+    )
 def test_conventions_are_documented(section: str) -> None:
     """**约定部分是手写的，而它才是这份文档的价值所在。**
 
@@ -138,7 +138,7 @@ def test_error_codes_are_enumerated() -> None:
         NotFoundError,
         UnauthorizedError,
         UnsupportedContentError,
-        UpstreamError,
+        UpstreamError
     ):
         assert error.code in text, f"错误码 {error.code} 没写进规范"
 

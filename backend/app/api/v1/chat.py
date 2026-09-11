@@ -192,11 +192,11 @@ def _require_conversation(services: Services, payload: ChatRequestIn, caller: Ca
 
     成员（v10）越主同样 404：对话内容是私有数据，403 会暴露"这条会话存在"。
     不拦的话，成员拿着别人的会话 id 就能把整段历史读走（`_history` 以库里为准）。
-    管理员会话不受此限（is_console）：它要能看到控制台令牌/API Key 建的无主会话。
+    管理员会话不受此限（is_admin）：它要能看到 API Key 建的无主会话。
     """
     if not payload.conversation_id:
         return
-    if caller.user is not None and not caller.is_console:
+    if caller.user is not None and not caller.is_admin:
         services.conversations.get_for_owner(payload.conversation_id, caller.user.id)
     else:
         services.conversations.get(payload.conversation_id)

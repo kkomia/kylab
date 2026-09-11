@@ -45,8 +45,8 @@ def two_users(monkeypatch):
                 name="成员",
                 username="member",
                 password_hash=hash_password(MEMBER_PASSWORD),
-                role=UserRole.MEMBER,
-            )
+                role=UserRole.MEMBER
+    )
         )
         member = client.post(
             "/api/v1/auth/login", json={"username": "member", "password": MEMBER_PASSWORD}
@@ -70,7 +70,7 @@ def test_member_sees_only_own_knowledge_bases(two_users) -> None:  # type: ignor
     mine = client.get("/api/v1/knowledge-bases", headers=_as(member["token"])).json()["items"]
     assert mine == []
 
-    # 成员自己建一个：归属自己，管理员照样看得见（is_console 不受限）
+    # 成员自己建一个：归属自己，管理员照样看得见（is_admin 不受限）
     created = client.post(
         "/api/v1/knowledge-bases", json={"name": "成员的库"}, headers=_as(member["token"])
     )
@@ -103,7 +103,7 @@ def test_member_cannot_upload_into_others_kb(two_users) -> None:  # type: ignore
     upload = client.post(
         f"/api/v1/knowledge-bases/{kb['id']}/documents",
         files={"file": ("偷渡.md", b"# hello", "text/markdown")},
-        headers=_as(member["token"]),
+        headers=_as(member["token"])
     )
     assert upload.status_code == 403
 
@@ -124,8 +124,8 @@ def test_conversations_are_private(two_users) -> None:  # type: ignore[no-untype
         response = getattr(client, method)(
             f"/api/v1/conversations/{conv['id']}",
             headers=_as(member["token"]),
-            **({"json": {"title": "改名"}} if method == "patch" else {}),
-        )
+            **({"json": {"title": "改名"}} if method == "patch" else {})
+    )
         assert response.status_code == 404, f"{method} 暴露了别人的会话"
 
     # 自己的会话照常
@@ -149,7 +149,7 @@ def test_member_cannot_chat_with_others_conversation(two_users) -> None:  # type
     response = client.post(
         "/api/v1/chat",
         json={"query": "继续", "kb_ids": [own_kb["id"]], "conversation_id": conv["id"]},
-        headers=_as(member["token"]),
+        headers=_as(member["token"])
     )
     assert response.status_code == 404
 
@@ -165,7 +165,7 @@ def test_member_tasks_and_dashboard_are_scoped(two_users) -> None:  # type: igno
     client.post(
         f"/api/v1/knowledge-bases/{kb['id']}/documents",
         files={"file": ("私有.md", b"# secret", "text/markdown")},
-        headers=_as(admin["token"]),
+        headers=_as(admin["token"])
     )
 
     # 成员的任务列表里没有别人文档的任务
@@ -198,7 +198,7 @@ def test_member_cannot_touch_console_endpoints(two_users) -> None:  # type: igno
     for method, path in (
         ("get", "/api/v1/settings"),
         ("get", "/api/v1/api-keys"),
-        ("post", "/api/v1/api-keys"),
+        ("post", "/api/v1/api-keys")
     ):
         response = getattr(client, method)(path, headers=_as(member["token"]))
         assert response.status_code == 403, f"{method} {path} 对成员放行了"
@@ -218,7 +218,7 @@ def test_member_sees_own_task_and_dashboard_counts(two_users) -> None:  # type: 
     client.post(
         f"/api/v1/knowledge-bases/{kb['id']}/documents",
         files={"file": ("自己的.md", b"# mine", "text/markdown")},
-        headers=_as(member["token"]),
+        headers=_as(member["token"])
     )
 
     member_tasks = client.get("/api/v1/tasks", headers=_as(member["token"])).json()["items"]
@@ -251,20 +251,21 @@ def test_member_chats_with_own_conversation(two_users) -> None:  # type: ignore[
     response = client.post(
         "/api/v1/chat",
         json={"query": "你好", "kb_ids": [kb["id"]], "conversation_id": conv["id"]},
-        headers=_as(member["token"]),
+        headers=_as(member["token"])
     )
     assert response.status_code == 200, response.text
 
 
 def test_admin_session_sees_conversations_from_other_channels(two_users) -> None:  # type: ignore[no-untyped-def]
-    """跨通道回归：控制台令牌建的会话（无主），管理员用网页会话也必须看得到。
+    """跨账号回归：管理员建的会话，管理员用网页会话必须看得到。
 
     这正是第一版实现踩中的坑：只看 ``caller.user is not None`` 会把管理员会话
-    也当成成员过滤，于是无主会话在管理员眼前消失。
+    也当成成员过滤，于是别人的/无主会话在管理员眼前消失。
     """
     client, admin, _member = two_users
-    console_token = client.post("/api/v1/auth/console-token", json={}).json()["token"]
-    conv = client.post("/api/v1/conversations", json={}, headers=_as(console_token)).json()
+    # v0.11 起没有控制台令牌通道；"无主会话"改由另一条管理员会话创建，
+    # 验的性质不变：管理员用网页会话必须看得到它。
+    conv = client.post("/api/v1/conversations", json={}, headers=_as(admin["token"])).json()
 
     listing = client.get("/api/v1/conversations", headers=_as(admin["token"])).json()["items"]
     assert conv["id"] in [item["id"] for item in listing]
@@ -288,7 +289,7 @@ def test_share_read_then_write_then_revoke(two_users) -> None:  # type: ignore[n
     client.post(
         f"/api/v1/knowledge-bases/{kb['id']}/documents",
         files={"file": ("相册.md", b"# photos", "text/markdown")},
-        headers=_as(admin["token"]),
+        headers=_as(admin["token"])
     )
     member_h = _as(member["token"])
 
@@ -296,7 +297,7 @@ def test_share_read_then_write_then_revoke(two_users) -> None:  # type: ignore[n
     granted = client.put(
         f"/api/v1/knowledge-bases/{kb['id']}/shares",
         json={"username": "member", "permission": "read"},
-        headers=_as(admin["token"]),
+        headers=_as(admin["token"])
     )
     assert granted.status_code == 200, granted.text
     assert granted.json()["username"] == "member"
@@ -309,8 +310,8 @@ def test_share_read_then_write_then_revoke(two_users) -> None:  # type: ignore[n
         client.post(
             f"/api/v1/knowledge-bases/{kb['id']}/documents",
             files={"file": ("偷传.md", b"# x", "text/markdown")},
-            headers=member_h,
-        ).status_code
+            headers=member_h
+    ).status_code
         == 403
     )
 
@@ -318,14 +319,14 @@ def test_share_read_then_write_then_revoke(two_users) -> None:  # type: ignore[n
     client.put(
         f"/api/v1/knowledge-bases/{kb['id']}/shares",
         json={"username": "member", "permission": "write"},
-        headers=_as(admin["token"]),
+        headers=_as(admin["token"])
     )
     assert (
         client.post(
             f"/api/v1/knowledge-bases/{kb['id']}/documents",
             files={"file": ("成员补充.md", b"# ok", "text/markdown")},
-            headers=member_h,
-        ).status_code
+            headers=member_h
+    ).status_code
         == 202
     )
 
@@ -350,15 +351,15 @@ def test_member_cannot_manage_shares_of_shared_kb(two_users) -> None:  # type: i
     client.put(
         f"/api/v1/knowledge-bases/{kb['id']}/shares",
         json={"username": "member", "permission": "write"},
-        headers=_as(admin["token"]),
+        headers=_as(admin["token"])
     )
 
     assert (
         client.put(
             f"/api/v1/knowledge-bases/{kb['id']}/shares",
             json={"username": "admin", "permission": "read"},
-            headers=_as(member["token"]),
-        ).status_code
+            headers=_as(member["token"])
+    ).status_code
         == 403
     )
     assert (
@@ -381,7 +382,7 @@ def test_can_manage_flag_matches_share_rights(two_users) -> None:  # type: ignor
     ).json()
     admin_h, member_h = _as(admin["token"]), _as(member["token"])
 
-    # 管理员（is_console）看自己建的库：可管
+    # 管理员（is_admin）看自己建的库：可管
     items = client.get("/api/v1/knowledge-bases", headers=admin_h).json()["items"]
     assert items[0]["can_manage"] is True
 
@@ -389,7 +390,7 @@ def test_can_manage_flag_matches_share_rights(two_users) -> None:  # type: ignor
     client.put(
         f"/api/v1/knowledge-bases/{kb['id']}/shares",
         json={"username": "member", "permission": "read"},
-        headers=admin_h,
+        headers=admin_h
     )
     shared = client.get("/api/v1/knowledge-bases", headers=member_h).json()["items"]
     assert [item["name"] for item in shared] == ["家庭相册"]
@@ -403,7 +404,7 @@ def test_can_manage_flag_matches_share_rights(two_users) -> None:  # type: ignor
     client.put(
         f"/api/v1/knowledge-bases/{kb['id']}/shares",
         json={"username": "member", "permission": "write"},
-        headers=admin_h,
+        headers=admin_h
     )
     upgraded = client.get(f"/api/v1/knowledge-bases/{kb['id']}", headers=member_h).json()
     assert upgraded["can_write"] is True
@@ -430,7 +431,7 @@ def test_member_cannot_touch_trash(two_users) -> None:  # type: ignore[no-untype
     upload = client.post(
         f"/api/v1/knowledge-bases/{kb['id']}/documents",
         files={"file": ("待删.md", b"# t", "text/markdown")},
-        headers=_as(admin["token"]),
+        headers=_as(admin["token"])
     ).json()
     trashed = client.delete(
         f"/api/v1/documents/{upload['document']['id']}", headers=_as(admin["token"])

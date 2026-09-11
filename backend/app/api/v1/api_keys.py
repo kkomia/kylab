@@ -1,6 +1,6 @@
 """API Key 管理端点（M4 T4.4）。
 
-**这些端点只认控制台令牌**，不认 API Key：能签发钥匙的接口如果也能被钥匙打开，
+**这些端点只认管理员**，不认 API Key：能签发钥匙的接口如果也能被钥匙打开，
 那任何一把泄露的只读密钥都能给自己再发一把读写密钥——提权一步到位。
 
 响应里绝不出现 ``key_hash``，明文也只在创建那一次出现（见 schemas 的说明）。
@@ -12,7 +12,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
-from app.api.auth import require_console
+from app.api.auth import require_admin
 from app.api.v1.schemas import (
     ApiKeyCreateIn,
     ApiKeyIssuedOut,
@@ -46,7 +46,7 @@ def _to_out(record) -> dict:  # type: ignore[no-untyped-def]
 @router.get("", response_model=ApiKeyListOut, summary="API Key 列表")
 def list_api_keys(
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> ApiKeyListOut:
     return ApiKeyListOut(items=[ApiKeyOut(**_to_out(item)) for item in services.api_keys.list()])
 
@@ -60,7 +60,7 @@ def list_api_keys(
 def create_api_key(
     payload: ApiKeyCreateIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> ApiKeyIssuedOut:
     issued = services.api_keys.create(
         name=payload.name,
@@ -78,6 +78,6 @@ def create_api_key(
 def revoke_api_key(
     key_id: str,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> None:
     services.api_keys.revoke(key_id)

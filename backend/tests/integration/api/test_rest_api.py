@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.core.services import get_services
 from app.models.enums import DocumentStage, TaskState
+from tests.conftest import admin_client as admin_session
 
 MARKDOWN = (
     "# 知识库设计\n\n"
@@ -21,10 +22,11 @@ MARKDOWN = (
 
 @pytest.fixture
 def client():
-    from app.main import create_app
+    """带管理员会话凭据的客户端（v0.11 起 /api/v1 一律要凭据）。"""
+    with admin_session() as test_client:
 
-    with TestClient(create_app()) as test_client:
         yield test_client
+
 
 
 @pytest.fixture
@@ -37,7 +39,7 @@ def kb_id(client: TestClient) -> str:
 def _upload(client: TestClient, kb_id: str, *, name: str = "kb.md", content: str = MARKDOWN):
     return client.post(
         f"/api/v1/knowledge-bases/{kb_id}/documents",
-        files={"file": (name, io.BytesIO(content.encode()), "text/markdown")},
+        files={"file": (name, io.BytesIO(content.encode()), "text/markdown")}
     )
 
 
@@ -106,7 +108,7 @@ def test_upload_returns_accepted_with_task(client: TestClient, kb_id: str) -> No
 def test_upload_can_skip_ingest(client: TestClient, kb_id: str) -> None:
     response = client.post(
         f"/api/v1/knowledge-bases/{kb_id}/documents?start=false",
-        files={"file": ("kb.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")},
+        files={"file": ("kb.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")}
     )
     assert response.status_code == 202
     assert response.json()["task_id"] is None
@@ -160,7 +162,7 @@ def test_upload_keeps_chinese_filename_readable(client: TestClient, kb_id: str) 
     response = client.post(
         f"/api/v1/knowledge-bases/{kb_id}/documents",
         content=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"}
     )
 
     assert response.status_code == 202
@@ -302,7 +304,7 @@ def test_full_upload_to_search_flow(client: TestClient, kb_id: str) -> None:
 
     response = client.post(
         "/api/v1/search",
-        json={"query": "混合召回", "kb_ids": [kb_id], "top_k": 5},
+        json={"query": "混合召回", "kb_ids": [kb_id], "top_k": 5}
     )
     body = response.json()
     assert body["hits"], "摄入完成后应当能检索到内容"
@@ -328,7 +330,7 @@ def test_search_modes_and_filters(client: TestClient, kb_id: str) -> None:
 
     only_text = client.post(
         "/api/v1/search",
-        json={"query": "部署", "kb_ids": [kb_id], "mode": "fulltext"},
+        json={"query": "部署", "kb_ids": [kb_id], "mode": "fulltext"}
     ).json()
     assert [stat["channel"] for stat in only_text["stats"]] == ["fulltext"]
 
@@ -338,7 +340,7 @@ def test_search_modes_and_filters(client: TestClient, kb_id: str) -> None:
             "query": "部署",
             "kb_ids": [kb_id],
             "filters": {"document_ids": ["doc_not_exist"]},
-        },
+        }
     ).json()
     assert filtered["hits"] == []
     assert filtered["filtered_out"] > 0
@@ -351,16 +353,14 @@ def test_create_kb_without_an_embedding_model_is_rejected(monkeypatch) -> None:
     现在返回 422 + 一句"去哪儿配"，前端据此在弹窗里就能给出下一步。
     """
     from app.core.config import get_settings
-    from app.core.services import reset_services
-    from app.main import create_app
 
     # 关掉测试默认打开的开发兜底：这一条要验的正是"没有兜底会怎样"
     monkeypatch.setenv("KYLAB_DEV_EMBEDDING", "false")
     get_settings.cache_clear()
-    reset_services()
 
-    with TestClient(create_app()) as isolated:
+    with admin_session() as isolated:
         response = isolated.post("/api/v1/knowledge-bases", json={"name": "无模型库"})
+    get_settings.cache_clear()
 
     assert response.status_code == 422
     assert "模型注册" in response.json()["message"]

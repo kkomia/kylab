@@ -63,7 +63,6 @@ import AppSelect from '@/components/ui/AppSelect.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { useToast } from '@/composables/useToast'
-import { useConsoleToken } from '@/composables/useConsoleToken'
 import { useFontScale } from '@/composables/useFontScale'
 import { changeOwnPassword, isAdmin } from '@/composables/useSession'
 import { currentUser } from '@/composables/useSessionToken'
@@ -77,13 +76,6 @@ const open = defineModel<boolean>('open', { required: true })
  * 而那是"整个会话"的事，不适合塞进一个设置弹窗里。
  */
 const emit = defineEmits<{ logout: [] }>()
-
-/**
- * 打开时定位到的分组（可选）。401 兜底流程靠它直接落到「系统与安全」的
- * 令牌输入框，免得用户在六组菜单里自己找。用 string 而不是 SectionKey：
- * 调用方（侧栏）不该 import 本组件的内部类型。
- */
-const props = defineProps<{ initialSection?: string }>()
 
 type SectionKey =
   'registry' | 'models' | 'llm' | 'services' | 'storage' | 'appearance' | 'users' | 'system'
@@ -134,11 +126,9 @@ const loadError = ref('')
 /** 后端鉴权状态。这个端点本身不鉴权，所以拿不到也不该让设置页报错。 */
 const authStatus = ref<AuthStatus | null>(null)
 /** 令牌输入框的草稿（保存前不落到存储里）。 */
-const tokenDraft = ref('')
 
 // 字号是本地偏好，不进后端：直接读 composable，不做 save 流程
 const { scale: fontScale, options: fontOptions, setFontScale } = useFontScale()
-const { token: consoleToken, setConsoleToken, clearConsoleToken } = useConsoleToken()
 const currentScaleHint = computed(
   () => fontOptions.find((item) => item.name === fontScale.value)?.hint ?? '',
 )
@@ -149,34 +139,6 @@ const THEME_OPTIONS: { name: ThemeMode; label: string; hint: string }[] = [
   { name: 'light', label: '浅色', hint: '始终使用纸白' },
   { name: 'dark', label: '深色', hint: '始终使用近黑' },
 ]
-
-/**
- * 保存控制台令牌并**立刻复验**。
- *
- * 不复验的话，用户粘错一个字符只会看到"已保存"，然后在别处收到一堆 401——
- * 那时他已经不记得自己刚改过什么了。这里存完马上打一次需要鉴权的端点，
- * 失败就当场说清并**把错误的令牌撤掉**，免得它一直污染后续请求。
- */
-async function saveToken(): Promise<void> {
-  const candidate = tokenDraft.value.trim()
-  if (!candidate) return
-  setConsoleToken(candidate)
-  try {
-    await getSettings()
-    tokenDraft.value = ''
-    notifySuccess('控制台令牌已保存并验证通过')
-    await refresh()
-  } catch (error) {
-    clearConsoleToken()
-    notifyError(`令牌未通过验证，已撤销：${error instanceof Error ? error.message : '校验失败'}`)
-  }
-}
-
-function forgetToken(): void {
-  clearConsoleToken()
-  tokenDraft.value = ''
-  notifySuccess('已清除本机保存的控制台令牌')
-}
 
 /**
  * 修改自己的密码（v10 账号体系）。
@@ -409,28 +371,13 @@ const saving = ref(false)
 const testing = ref(false)
 const testResult = ref<{ ok: boolean; detail: string } | null>(null)
 
-/** 应用「打开时定位到某组」的请求：忽略未知分组名，不让调用方的一个错字符串把弹窗搞空。 */
-function applyInitialSection(): void {
-  const wanted = visibleSections.value.find((item) => item.key === props.initialSection)
-  if (wanted) section.value = wanted.key
-}
-
 // 每次打开都重新读一次：配置可能被另一个标签页改过，也可能后端刚重启
 watch(open, (value) => {
   if (value) {
-    applyInitialSection()
     void refresh()
     if (section.value === 'users') void loadUsers()
   }
 })
-
-// 弹窗已开着时又收到 401（比如刚粘的令牌没通过验证）：也要把分组切过去
-watch(
-  () => props.initialSection,
-  () => {
-    if (open.value) applyInitialSection()
-  },
-)
 
 onMounted(() => {
   if (open.value) void refresh()
@@ -1288,55 +1235,17 @@ async function runTest(target: string): Promise<void> {
               <span class="row-label">访问鉴权</span>
               <span class="row-value">
                 {{
-                  authStatus?.auth_enabled
-                    ? '已启用：/api/v1 需要凭据'
-                    : '未启用：仅本机使用，任何能访问端口的人都能读写'
+                  authStatus?.needs_setup
+                    ? '尚未初始化：请先创建管理员账号'
+                    : '已启用：/api/v1 一律需要登录会话或 API Key'
                 }}
               </span>
             </div>
             <StatusTag
-              :tone="authStatus?.auth_enabled ? 'success' : 'warning'"
-              :label="authStatus?.auth_enabled ? '已启用' : '未启用'"
+              :tone="authStatus?.needs_setup ? 'warning' : 'success'"
+              :label="authStatus?.needs_setup ? '未初始化' : '已启用'"
             />
           </div>
-
-          <!-- 凭据输入：**这是控制台在启用鉴权后的唯一入口**。
-               没有它，打开鉴权等于把控制台锁死——每个页面都报「缺少凭据」，
-               而用户没有任何地方可以填。
-               账号体系（v10）落地后它退为**恢复通道**：已有账号时不再显示，
-               否则会和"登录"这件事重复，让人以为要两处都配。 -->
-          <template v-if="!currentUser">
-            <div class="row row-static">
-              <div class="row-main">
-                <span class="row-label">控制台令牌</span>
-                <span class="row-value">
-                  {{
-                    consoleToken
-                      ? '已保存（只存在这台机器的浏览器里）'
-                      : '未填写。后端启用鉴权后，控制台需要它才能读写'
-                  }}
-                </span>
-              </div>
-              <StatusTag
-                :tone="consoleToken ? 'success' : 'neutral'"
-                :label="consoleToken ? '已配置' : '未填写'"
-              />
-            </div>
-
-            <div class="token-row">
-              <AppInput
-                id="console-token"
-                v-model="tokenDraft"
-                type="password"
-                placeholder="粘贴控制台令牌（kylab_console_…）"
-                @keyup.enter="saveToken"
-              />
-              <AppButton variant="primary" :disabled="!tokenDraft.trim()" @click="saveToken">
-                保存
-              </AppButton>
-              <AppButton v-if="consoleToken" @click="forgetToken">清除</AppButton>
-            </div>
-          </template>
         </template>
       </div>
     </div>

@@ -15,10 +15,9 @@ import { useRoute, useRouter } from 'vue-router'
 
 import SideNav from '@/components/layout/SideNav.vue'
 import ToastStack from '@/components/ui/ToastStack.vue'
-import { consoleToken } from '@/composables/useConsoleToken'
 import { initFontScale } from '@/composables/useFontScale'
 import { ensureAuthStatus, restoreSession } from '@/composables/useSession'
-import { hasCredential, sessionToken, useReloginPrompt } from '@/composables/useSessionToken'
+import { hasCredential, useReloginPrompt } from '@/composables/useSessionToken'
 import { initTheme } from '@/composables/useTheme'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
@@ -36,15 +35,13 @@ initTheme()
 
 onMounted(async () => {
   const status = await ensureAuthStatus()
-  // 还没有账号、也没有控制台令牌 → 用户会被送到首次设置向导；此时**不要**发业务请求：
-  // 那些请求必然 401，会在登录页顶上弹一句"需要控制台令牌"，而用户根本进不去主界面。
-  if (status?.needs_setup && !consoleToken()) return
-  if (status?.auth_enabled && !hasCredential()) return
-  // 有会话令牌就验一次身份——**不看 auth_enabled**。
-  // auth_enabled 说的是"控制台令牌那一套"，而会话令牌本来就是后端账号体系签发的有效凭据；
-  // 界面又靠 currentUser 决定页脚显示谁的名字、给不给管理员入口。
-  // 之前只在 auth_enabled 时恢复，于是控制台通道下明明带着会话令牌，界面却当你没登录。
-  if (sessionToken()) await restoreSession()
+  // 还没有账号 → 用户会被送到首次设置向导；此时**不要**发业务请求：
+  // 那些请求必然 401，只会在登录页顶上再弹一句"登录已过期"，而用户根本进不去。
+  if (status?.needs_setup) return
+  // 没有会话令牌 → 守卫已经把人送到登录页了，这里不必再发请求。
+  if (!hasCredential()) return
+  // 有令牌就验一次身份：界面靠 currentUser 决定页脚显示谁的名字、给不给管理员入口。
+  await restoreSession()
   void store.load()
 })
 

@@ -59,7 +59,7 @@ def hash_token(token: str) -> str:
 
 
 def tokens_equal(left: str, right: str) -> bool:
-    """定时安全比较（需要直接比明文时用，例如校验控制台令牌）。"""
+    """定时安全比较（需要直接比明文时用，例如校验 API Key 的摘要）。"""
     return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
 
 
@@ -84,7 +84,7 @@ def api_key_prefix(token: str) -> str:
 # --------------------------------------------------------------------------- 口令与会话（v10）
 
 #: 登录会话令牌的前缀。**按前缀路由凭据类型**（api/auth.py 的 current_caller）：
-#: 会话、API Key、控制台令牌是三种东西，各走各的校验路径。
+#: 会话与 API Key 是两种东西，各走各的校验路径。
 #: noqa 的理由：这是**前缀**不是口令，S105 按变量名含 token 误报。
 SESSION_TOKEN_PREFIX = "kylab_st_"  # noqa: S105
 

@@ -7,9 +7,13 @@
 不加包的话 pytest 会因 basename 冲突而报 "import file mismatch"。
 """
 
+from __future__ import annotations
+
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
 from app.core.services import reset_services
@@ -28,6 +32,49 @@ from app.storage.sqlite_impl.vector_store import SqliteVectorStore
 
 DEFAULT_MODEL_ID = "BAAI/bge-m3"
 DEFAULT_DIM = 1024
+
+#: 集成测试的管理员账号。**v0.11 起 /api/v1 一律要凭据**，所以每个 API 测试
+#: 都要先走一遍产品上第一次打开的真实路径：setup 建管理员 → 拿会话令牌。
+ADMIN_USERNAME = "admin"
+ADMIN_PASSWORD = "correct horse battery"
+
+
+def login_admin(client) -> str:  # type: ignore[no-untyped-def]
+    """首次初始化管理员并把会话令牌塞进 ``client.headers``，返回令牌。
+
+    已经初始化过就退化成登录（同一个账号），所以对"每个测试一个临时库"与
+    "同一个库跑多条用例"两种用法都成立。
+    """
+    from app.main import create_app  # noqa: F401  （保持与调用方一致的导入习惯）
+
+    response = client.post(
+        "/api/v1/auth/setup",
+        json={"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD, "name": "管理员"}
+    )
+    if response.status_code == 409:
+        # 已经建过管理员：改成登录
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}
+    )
+    assert response.status_code == 200, response.text
+    token = response.json()["token"]
+    client.headers["Authorization"] = f"Bearer {token}"
+    return token
+
+
+@contextmanager
+def admin_client():  # type: ignore[no-untyped-def]
+    """带管理员会话凭据的 TestClient（上下文管理器，跑完整 lifespan）。
+
+    想测"没有凭据会怎样"的用例请直接用裸 ``TestClient(create_app())``——
+    那正是它们要覆盖的分支。
+    """
+    from app.main import create_app
+
+    with TestClient(create_app()) as client:
+        login_admin(client)
+        yield client
 
 
 @pytest.fixture(autouse=True)
@@ -107,15 +154,15 @@ def tabular_store(tmp_path) -> DuckDbTabularStore:
 def bundle(
     database: Database,
     object_store: LocalObjectStore,
-    tabular_store: DuckDbTabularStore,
-) -> StoreBundle:
+    tabular_store: DuckDbTabularStore
+    ) -> StoreBundle:
     """五个仓储的装配（与组合根同构，但不碰磁盘上的开发库）。"""
     return StoreBundle(
         meta=SqliteMetaStore(database),
         vectors=SqliteVectorStore(database),
         fulltext=SqliteFullTextStore(database),
         objects=object_store,
-        tabular=tabular_store,
+        tabular=tabular_store
     )
 
 
@@ -144,8 +191,8 @@ def bind_model(
     capabilities: list[str],
     dim: int | None = None,
     api_key: str = "sk-fake",
-    base_url: str = "https://api.example.com/v1",
-):  # type: ignore[no-untyped-def]
+    base_url: str = "https://api.example.com/v1"
+    ):  # type: ignore[no-untyped-def]
     """登记一个模型并绑到某个用途——测试里"模型已配好"的唯一入口。
 
     v0.8 起模型身份（地址 / 密钥 / 模型名 / 维度）只来自注册表，
@@ -158,7 +205,7 @@ def bind_model(
         provider_id=provider.id,
         model_id=model_id,
         dim=dim,
-        capabilities=capabilities,
+        capabilities=capabilities
     )
     registry.bind(slot, model.id)
     return model
@@ -192,7 +239,7 @@ def document(store: SqliteMetaStore, kb: KnowledgeBaseRecord) -> DocumentRecord:
             source_kind=DataSourceKind.UPLOAD,
             content_hash="hash-1",
             stage=DocumentStage.UPLOADED,
-            size_bytes=128,
-        )
+            size_bytes=128
+    )
     )
 

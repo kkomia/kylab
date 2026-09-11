@@ -46,10 +46,10 @@ class ShareService:
 
     # ------------------------------------------------------------------ 查询
 
-    def list_for_kb(self, *, kb_id: str, actor_id: str | None, is_console: bool) -> list[ShareView]:
+    def list_for_kb(self, *, kb_id: str, actor_id: str | None, is_admin: bool) -> list[ShareView]:
         kb = self._require_kb(kb_id)
         self._require_owner_or_admin(
-            kb_owner=kb.owner_id, actor_id=actor_id, is_console=is_console
+            kb_owner=kb.owner_id, actor_id=actor_id, is_admin=is_admin
         )
         return [self._view(record) for record in self._stores.meta.list_shares_for_kb(kb_id)]
 
@@ -62,10 +62,10 @@ class ShareService:
         username: str,
         permission: SharePermission,
         actor_id: str | None,
-        is_console: bool,
+        is_admin: bool,
     ) -> ShareView:
         kb = self._require_kb(kb_id)
-        self._require_owner_or_admin(kb_owner=kb.owner_id, actor_id=actor_id, is_console=is_console)
+        self._require_owner_or_admin(kb_owner=kb.owner_id, actor_id=actor_id, is_admin=is_admin)
 
         target = self._stores.meta.find_user_by_username(username.strip().lower())
         if target is None or target.username is None:
@@ -83,9 +83,9 @@ class ShareService:
         logger.info("知识库 %s 已分享给 %s（%s）", kb_id, target.username, permission.value)
         return self._view(record)
 
-    def revoke(self, *, kb_id: str, user_id: str, actor_id: str | None, is_console: bool) -> None:
+    def revoke(self, *, kb_id: str, user_id: str, actor_id: str | None, is_admin: bool) -> None:
         kb = self._require_kb(kb_id)
-        self._require_owner_or_admin(kb_owner=kb.owner_id, actor_id=actor_id, is_console=is_console)
+        self._require_owner_or_admin(kb_owner=kb.owner_id, actor_id=actor_id, is_admin=is_admin)
         self._stores.meta.delete_share(kb_id, user_id)
 
     # ------------------------------------------------------------------ 内部
@@ -98,11 +98,11 @@ class ShareService:
 
     @staticmethod
     def _require_owner_or_admin(
-        *, kb_owner: str | None, actor_id: str | None, is_console: bool
+        *, kb_owner: str | None, actor_id: str | None, is_admin: bool
     ) -> None:
-        if is_console:
+        if is_admin:
             return
-        # 无主库（控制台令牌/API Key 建的）只有管理员能管分享——成员谁都不算 owner
+        # 无主库（API Key 建的）只有管理员能管分享——成员谁都不算 owner
         if actor_id is None or kb_owner is None or kb_owner != actor_id:
             raise ForbiddenError("只有知识库的拥有者或管理员能管理分享")
 

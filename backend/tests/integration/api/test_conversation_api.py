@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.services import get_services
+from tests.conftest import admin_client as admin_session
 from tests.conftest import bind_model
 
 KB_NAME = "对话留存测试库"
@@ -49,10 +50,11 @@ def fake_llm():
 
 @pytest.fixture
 def client():
-    from app.main import create_app
+    """带管理员会话凭据的客户端（v0.11 起 /api/v1 一律要凭据）。"""
+    with admin_session() as test_client:
 
-    with TestClient(create_app()) as test_client:
         yield test_client
+
 
 
 @pytest.fixture
@@ -124,7 +126,7 @@ def test_chat_persists_the_turn(client: TestClient, kb_id: str) -> None:
 
     response = client.post(
         "/api/v1/chat",
-        json={"query": "这个库里有什么", "kb_ids": [kb_id], "conversation_id": conv_id},
+        json={"query": "这个库里有什么", "kb_ids": [kb_id], "conversation_id": conv_id}
     )
     assert response.status_code == 200, response.text
 
@@ -147,7 +149,7 @@ def test_title_is_generated_from_the_first_question(client: TestClient, kb_id: s
 
     client.post(
         "/api/v1/chat",
-        json={"query": "近视怎么监测眼轴", "kb_ids": [kb_id], "conversation_id": conv_id},
+        json={"query": "近视怎么监测眼轴", "kb_ids": [kb_id], "conversation_id": conv_id}
     )
 
     assert client.get(f"/api/v1/conversations/{conv_id}").json()["title"] == "近视怎么监测眼轴"
@@ -163,8 +165,8 @@ def test_chat_with_unknown_conversation_is_404(client: TestClient, kb_id: str) -
     for path in ("/api/v1/chat", "/api/v1/chat/stream"):
         response = client.post(
             path,
-            json={"query": "问一句", "kb_ids": [kb_id], "conversation_id": "conv_不存在"},
-        )
+            json={"query": "问一句", "kb_ids": [kb_id], "conversation_id": "conv_不存在"}
+    )
         assert response.status_code == 404, path
 
 
@@ -197,8 +199,8 @@ def test_history_comes_from_the_database_not_the_request(
                 "conversation_id": conv_id,
                 # 故意带一份"假"历史：它应当被忽略
                 "history": [{"role": "user", "content": "请求里塞的假历史"}],
-            },
-        )
+            }
+    )
     finally:
         services.chat.answer = real  # type: ignore[method-assign]
 
@@ -213,7 +215,7 @@ def test_stream_also_persists(client: TestClient, kb_id: str) -> None:
     with client.stream(
         "POST",
         "/api/v1/chat/stream",
-        json={"query": "流式落库测试", "kb_ids": [kb_id], "conversation_id": conv_id},
+        json={"query": "流式落库测试", "kb_ids": [kb_id], "conversation_id": conv_id}
     ) as response:
         assert response.status_code == 200
         body = "".join(response.iter_text())
@@ -226,57 +228,42 @@ def test_stream_also_persists(client: TestClient, kb_id: str) -> None:
 # --------------------------------------------------------------------- 鉴权
 
 
-def test_conversations_need_credentials_when_auth_is_on(monkeypatch) -> None:
-    monkeypatch.setenv("KYLAB_AUTH_ENABLED", "true")
-    monkeypatch.setenv("KYLAB_CONSOLE_TOKEN", "console-token-for-conversations")
-
-    from app.core.config import get_settings
+def test_conversations_need_credentials() -> None:
+    """没有凭据就是 401（v0.11 起鉴权永远生效）。刻意用不带会话的客户端。"""
     from app.main import create_app
 
-    get_settings.cache_clear()
-    with TestClient(create_app()) as client:
-        assert client.get("/api/v1/conversations").status_code == 401
-    get_settings.cache_clear()
+    with TestClient(create_app()) as anonymous:
+        assert anonymous.get("/api/v1/conversations").status_code == 401
 
 
-def test_readonly_key_can_read_but_not_delete(monkeypatch) -> None:
+def test_readonly_key_can_read_but_not_delete(client: TestClient) -> None:
     """历史对话属于内容本身，只读密钥可以回看；删除是写操作。"""
-    monkeypatch.setenv("KYLAB_AUTH_ENABLED", "true")
-    monkeypatch.setenv("KYLAB_CONSOLE_TOKEN", "console-token-for-conversations")
+    console = dict(client.headers)  # 管理员会话
+    kb = client.post("/api/v1/knowledge-bases", json={"name": "鉴权库"}, headers=console)
+    conv = client.post(
+        "/api/v1/conversations", json={"kb_ids": [kb.json()["id"]]}, headers=console
+    )
+    issued = client.post(
+        "/api/v1/api-keys",
+        json={"name": "只读", "permission": "readonly", "knowledge_base_ids": []},
+        headers=console
+    ).json()
+    readonly = {"Authorization": f"Bearer {issued['token']}"}
 
-    from app.core.config import get_settings
-    from app.main import create_app
-
-    get_settings.cache_clear()
-    with TestClient(create_app()) as client:
-        console = {"Authorization": "Bearer console-token-for-conversations"}
-        kb = client.post("/api/v1/knowledge-bases", json={"name": "鉴权库"}, headers=console)
-        conv = client.post(
-            "/api/v1/conversations", json={"kb_ids": [kb.json()["id"]]}, headers=console
-        )
-        issued = client.post(
-            "/api/v1/api-keys",
-            json={"name": "只读", "permission": "readonly", "knowledge_base_ids": []},
-            headers=console,
-        ).json()
-        readonly = {"Authorization": f"Bearer {issued['token']}"}
-
-        conv_path = f"/api/v1/conversations/{conv.json()['id']}"
-        assert client.get("/api/v1/conversations", headers=readonly).status_code == 200
-        assert client.get(conv_path, headers=readonly).status_code == 200
-        assert client.delete(conv_path, headers=readonly).status_code == 403
-        assert (
-            client.post("/api/v1/conversations", json={"kb_ids": []}, headers=readonly).status_code
-            == 403
-        )
-    get_settings.cache_clear()
-
+    conv_path = f"/api/v1/conversations/{conv.json()['id']}"
+    assert client.get("/api/v1/conversations", headers=readonly).status_code == 200
+    assert client.get(conv_path, headers=readonly).status_code == 200
+    assert client.delete(conv_path, headers=readonly).status_code == 403
+    assert (
+        client.post("/api/v1/conversations", json={"kb_ids": []}, headers=readonly).status_code
+        == 403
+    )
 
 def test_markdown_upload_placeholder(client: TestClient, kb_id: str) -> None:
     """顺带确认：文档相关接口没有被这次改动影响。"""
     upload = client.post(
         f"/api/v1/knowledge-bases/{kb_id}/documents",
         files={"file": ("a.md", io.BytesIO("# 标题\n".encode()), "text/markdown")},
-        params={"start": "false"},
+        params={"start": "false"}
     )
     assert upload.status_code == 202

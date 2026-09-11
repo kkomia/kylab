@@ -53,7 +53,7 @@ class KnowledgeBaseService:
         那个模型（凭据运行时按 pk 解析）；没传就用注册表里绑定的**默认嵌入模型**，
         两者都没有则拒绝建库——向量空间是库的地基，没有它就建不出能检索的库。
 
-        ``owner_id``（v10）：登录成员建的库归自己；控制台令牌/API Key 通道
+        ``owner_id``（v10）：登录成员建的库归自己；API Key 通道
         没有账号概念，传 None 即无主（对管理员全可见）。
         """
         if embedding_model_pk:

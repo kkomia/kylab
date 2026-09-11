@@ -40,14 +40,14 @@ def _guard_document(
 
 
 def _require_admin_for_trash(caller: Caller) -> None:
-    """回收站只认控制台身份（管理员会话 / 控制台令牌）。
+    """回收站只认管理员（v0.11 起管理员身份只来自会话角色）。
 
     回收站里是**所有人**删掉的文档（含别人的）。成员拦掉好理解；**API Key
     也拦**是因为：哪怕只读档的 key 也能从列表里看到所有人删过什么（跨库
     元信息泄露），读写档还能恢复/彻底删除任意条目。它是运维职能，
     不属于任何集成场景。
     """
-    if not caller.is_console:
+    if not caller.is_admin:
         raise ForbiddenError("回收站需要管理员身份")
 
 

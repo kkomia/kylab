@@ -115,9 +115,8 @@ async def serve_http(host: str, port: int) -> None:
     """Streamable HTTP 传输：局域网内其他机器连过来时用这条。
 
     **默认只监听 127.0.0.1**：MCP 能读写知识库（含删除）。
-    在没有鉴权的情况下暴露到局域网，等于把库交给所有人。
-    要让别的机器连，得显式传 ``--host 0.0.0.0``——
-    那时请同时打开后端鉴权（``KYLAB_AUTH_ENABLED``）。
+    要让别的机器连，得显式传 ``--host 0.0.0.0``；调用时同样要带凭据
+    （会话令牌或 API Key），服务端的鉴权一直生效（v0.11 起没有关闭开关）。
     """
     await build_server().run_streamable_http_async(host=host, port=port)
 

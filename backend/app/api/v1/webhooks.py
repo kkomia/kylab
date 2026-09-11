@@ -1,6 +1,6 @@
 """Webhook 端点（M4 / T4.6）。
 
-**为什么订阅管理是控制台级**（``require_console``）：一个 webhook 订阅意味着
+**为什么订阅管理是控制台级**（``require_admin``）：一个 webhook 订阅意味着
 "这个服务会主动往某个地址发文档内容"。拿到读写 API Key 的集成方不该能
 凭空把知识库内容转发到它自己的服务器——那是数据外泄，不是普通写操作。
 
@@ -16,7 +16,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from app.api.auth import require_console, require_read
+from app.api.auth import require_admin, require_read
 from app.api.v1.schemas import (
     WebhookCreateIn,
     WebhookEventListOut,
@@ -80,7 +80,7 @@ def list_events(
 @router.get("", response_model=WebhookListOut, summary="订阅列表（密钥掩码）")
 def list_webhooks(
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> WebhookListOut:
     return WebhookListOut(items=[_out(item) for item in services.webhooks.list()])
 
@@ -94,7 +94,7 @@ def list_webhooks(
 def create_webhook(
     payload: WebhookCreateIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> WebhookOut:
     try:
         record = services.webhooks.create(
@@ -118,7 +118,7 @@ def create_webhook(
 def delete_webhook(
     webhook_id: str,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> None:
     _require(services.webhooks.get(webhook_id))
     services.webhooks.delete(webhook_id)
@@ -129,7 +129,7 @@ def update_webhook(
     webhook_id: str,
     payload: WebhookUpdateIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> WebhookOut:
     """只支持改 ``enabled``。
 

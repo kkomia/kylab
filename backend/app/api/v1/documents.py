@@ -434,7 +434,8 @@ def document_download_url(
         # 没有签名密钥 = 系统处于无鉴权状态。此时**拒绝签发**，而不是发一条
         # 永远有效的链接：那等于把"无鉴权"这个状态固化成永久凭据。
         raise UnauthorizedError(
-            "尚未配置下载签名密钥：请在设置里设置控制台令牌，或配置 KYLAB_URL_SIGNING_SECRET"
+            "尚未配置下载签名密钥：请配置 KYLAB_URL_SIGNING_SECRET，"
+            "或先完成首次初始化（会生成一条并落库）"
         )
 
     url, expires_at = services.documents.download_url(

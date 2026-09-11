@@ -1,7 +1,7 @@
 """使用者名册与账号管理端点（调研报告 G6；v10 起升级为账号体系）。
 
 **名册不参与鉴权**：伪造一个名字不会获得任何权限，只会让归属记错。
-所以读端点用 ``require_read``、写端点用 ``require_console``——
+所以读端点用 ``require_read``、写端点用 ``require_admin``——
 名册是控制台级配置（和 API Key 同一档），而不是靠名字本身做安全边界。
 
 v10 起管理员可以在这里**开通账号**（带 username/password 的创建）、
@@ -14,7 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
-from app.api.auth import require_console, require_read
+from app.api.auth import require_admin, require_read
 from app.api.v1.schemas import (
     UserCreateIn,
     UserDisabledIn,
@@ -64,7 +64,7 @@ def list_users(
 def create_user(
     payload: UserCreateIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> UserOut:
     if payload.username:
         # 开通账号必须有初始密码：不设密码的账号等于开着门的空房子
@@ -90,7 +90,7 @@ def reset_password(
     user_id: str,
     payload: UserPasswordIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> None:
     services.auth.reset_password(user_id, payload.password)
 
@@ -104,7 +104,7 @@ def set_disabled(
     user_id: str,
     payload: UserDisabledIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> UserOut:
     services.auth.set_disabled(user_id, payload.disabled)
     return _out(services, services.users.get(user_id))
@@ -118,6 +118,6 @@ def set_disabled(
 def delete_user(
     user_id: str,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> None:
     services.users.delete(user_id)

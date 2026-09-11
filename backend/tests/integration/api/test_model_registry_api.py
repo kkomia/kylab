@@ -14,16 +14,19 @@ import pytest
 import respx
 from fastapi.testclient import TestClient
 
+from tests.conftest import admin_client as admin_session
+
 CONSOLE = "console-token-for-registry"
 SECRET = "sk-super-secret-value-12345"
 
 
 @pytest.fixture
 def client():
-    from app.main import create_app
+    """带管理员会话凭据的客户端（v0.11 起 /api/v1 一律要凭据）。"""
+    with admin_session() as test_client:
 
-    with TestClient(create_app()) as test_client:
         yield test_client
+
 
 
 def _provider(client: TestClient, **overrides) -> dict:  # type: ignore[no-untyped-def]
@@ -98,7 +101,7 @@ def test_update_provider_without_key_keeps_it(client: TestClient) -> None:
 
     after = client.patch(
         f"/api/v1/model-registry/providers/{provider['id']}",
-        json={"name": "又改一次", "api_key": provider["api_key_hint"]},
+        json={"name": "又改一次", "api_key": provider["api_key_hint"]}
     ).json()
     # 即便前端把掩码原样回传，也不该把真实密钥变成掩码
     assert after["api_key_configured"] is True
@@ -141,7 +144,7 @@ def test_duplicate_model_is_409(client: TestClient) -> None:
     _model(client, provider["id"])
     response = client.post(
         "/api/v1/model-registry/models",
-        json={"provider_id": provider["id"], "model_id": "deepseek-chat"},
+        json={"provider_id": provider["id"], "model_id": "deepseek-chat"}
     )
     assert response.status_code == 409
 
@@ -244,62 +247,58 @@ def test_overview_returns_everything_in_one_call(client: TestClient) -> None:
 # --------------------------------------------------------------------- 鉴权
 
 
-def test_registry_requires_console_token_for_writes(monkeypatch) -> None:
-    """**凭据管理只认控制台令牌**：普通 API Key 不该能读写模型凭据，
-    否则一把泄露的读写密钥就能把所有人的模型指向别处。"""
-    monkeypatch.setenv("KYLAB_AUTH_ENABLED", "true")
-    monkeypatch.setenv("KYLAB_CONSOLE_TOKEN", CONSOLE)
-
-    from app.core.config import get_settings
+def test_registry_needs_credentials() -> None:
+    """注册表是凭据管理，没有凭据一律 401（v0.11 起鉴权永远生效）。"""
     from app.main import create_app
 
-    get_settings.cache_clear()
-    with TestClient(create_app()) as client:
-        # 未鉴权
-        assert client.get("/api/v1/model-registry/providers").status_code == 401
+    with TestClient(create_app()) as anonymous:
+        assert anonymous.get("/api/v1/model-registry/providers").status_code == 401
 
-        console = {"Authorization": f"Bearer {CONSOLE}"}
-        provider = client.post(
+
+def test_registry_writes_need_an_admin_session(client: TestClient) -> None:
+    """**凭据管理只认管理员会话**：普通 API Key 不该能读写模型凭据，
+    否则一把泄露的读写密钥就能把所有人的模型指向别处。"""
+    console = dict(client.headers)  # 管理员会话
+
+    provider = client.post(
+        "/api/v1/model-registry/providers",
+        json={"kind": "llm", "name": "甲", "base_url": "https://a.example.com", "api_key": "k"},
+        headers=console
+    )
+    assert provider.status_code == 201, provider.text
+
+    issued = client.post(
+        "/api/v1/api-keys",
+        json={"name": "读写", "permission": "readwrite", "knowledge_base_ids": []},
+        headers=console
+    ).json()
+    apikey = {"Authorization": f"Bearer {issued['token']}"}
+
+    # 读：普通密钥可以（界面要显示有哪些模型）
+    assert client.get("/api/v1/model-registry", headers=apikey).status_code == 200
+    # 写：不行
+    assert (
+        client.post(
             "/api/v1/model-registry/providers",
-            json={"kind": "llm", "name": "甲", "base_url": "https://a.example.com", "api_key": "k"},
-            headers=console,
-        )
-        assert provider.status_code == 201, provider.text
-
-        issued = client.post(
-            "/api/v1/api-keys",
-            json={"name": "读写", "permission": "readwrite", "knowledge_base_ids": []},
-            headers=console,
-        ).json()
-        apikey = {"Authorization": f"Bearer {issued['token']}"}
-
-        # 读：普通密钥可以（界面要显示有哪些模型）
-        assert client.get("/api/v1/model-registry", headers=apikey).status_code == 200
-        # 写：不行
-        assert (
-            client.post(
-                "/api/v1/model-registry/providers",
-                json={"kind": "llm", "name": "乙"},
-                headers=apikey,
-            ).status_code
-            == 403
-        )
-        assert (
-            client.patch(
-                f"/api/v1/model-registry/providers/{provider.json()['id']}",
-                json={"name": "偷改"},
-                headers=apikey,
-            ).status_code
-            == 403
-        )
-        assert (
-            client.delete(
-                f"/api/v1/model-registry/providers/{provider.json()['id']}", headers=apikey
-            ).status_code
-            == 403
-        )
-    get_settings.cache_clear()
-
+            json={"kind": "llm", "name": "乙"},
+            headers=apikey
+    ).status_code
+        == 403
+    )
+    assert (
+        client.patch(
+            f"/api/v1/model-registry/providers/{provider.json()['id']}",
+            json={"name": "偷改"},
+            headers=apikey
+    ).status_code
+        == 403
+    )
+    assert (
+        client.delete(
+            f"/api/v1/model-registry/providers/{provider.json()['id']}", headers=apikey
+        ).status_code
+        == 403
+    )
 
 # --------------------------------------------------------------------- 供应商探活
 

@@ -57,7 +57,7 @@ async def tasks_health(
     成员（v10）看不到这里：总览包含全局运维信息（有没有别的任务在跑、
     worker 状态），那是管理员的视角。成员的任务在列表里已经够用。
     """
-    if caller.user is not None and not caller.is_console:
+    if caller.user is not None and not caller.is_admin:
         raise ForbiddenError("运行态总览需要管理员身份")
     overview = services.observability.overview()
     # worker 是**启动期**开关（KYLAB_RUN_WORKER，见 main.py），不是运行期设置——

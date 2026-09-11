@@ -36,7 +36,7 @@ def _grant(shares: ShareService, **overrides):  # type: ignore[no-untyped-def]
         "username": "member",
         "permission": SharePermission.READ,
         "actor_id": OWNER,
-        "is_console": False,
+        "is_admin": False,
     }
     payload.update(overrides)
     return shares.grant(**payload)
@@ -45,12 +45,12 @@ def _grant(shares: ShareService, **overrides):  # type: ignore[no-untyped-def]
 def test_owner_grants_and_regrant_updates_permission(shares: ShareService) -> None:
     view = _grant(shares)
     assert (view.user_id, view.username, view.permission) == (
-        "user_m", "member", SharePermission.READ,
+        "user_m", "member", SharePermission.READ
     )
 
     upgraded = _grant(shares, permission=SharePermission.WRITE)
     assert upgraded.permission is SharePermission.WRITE
-    assert len(shares.list_for_kb(kb_id="kb_1", actor_id=OWNER, is_console=False)) == 1
+    assert len(shares.list_for_kb(kb_id="kb_1", actor_id=OWNER, is_admin=False)) == 1
 
 
 def test_non_owner_cannot_manage_shares(shares: ShareService) -> None:
@@ -60,14 +60,14 @@ def test_non_owner_cannot_manage_shares(shares: ShareService) -> None:
     with pytest.raises(ForbiddenError, match="拥有者或管理员"):
         shares.grant(
             kb_id="kb_1", username="owner", permission=SharePermission.READ,
-            actor_id="user_m", is_console=False,
-        )
+            actor_id="user_m", is_admin=False
+    )
     with pytest.raises(ForbiddenError):
-        shares.list_for_kb(kb_id="kb_1", actor_id="user_m", is_console=False)
+        shares.list_for_kb(kb_id="kb_1", actor_id="user_m", is_admin=False)
 
 
 def test_admin_can_manage_any_kb_shares(shares: ShareService) -> None:
-    view = _grant(shares, actor_id=None, is_console=True)
+    view = _grant(shares, actor_id=None, is_admin=True)
     assert view.user_id == "user_m"
 
 
@@ -80,8 +80,8 @@ def test_ownerless_kb_shares_are_admin_only(shares: ShareService, store) -> None
     with pytest.raises(ForbiddenError):
         shares.grant(
             kb_id="kb_free", username="member", permission=SharePermission.READ,
-            actor_id=OWNER, is_console=False,
-        )
+            actor_id=OWNER, is_admin=False
+    )
 
 
 def test_share_target_must_be_a_real_account(shares: ShareService, store) -> None:  # type: ignore[no-untyped-def]
@@ -111,5 +111,5 @@ def test_share_to_disabled_account_is_rejected(shares: ShareService, store) -> N
 
 def test_revoke(shares: ShareService) -> None:
     _grant(shares)
-    shares.revoke(kb_id="kb_1", user_id="user_m", actor_id=OWNER, is_console=False)
-    assert shares.list_for_kb(kb_id="kb_1", actor_id=OWNER, is_console=False) == []
+    shares.revoke(kb_id="kb_1", user_id="user_m", actor_id=OWNER, is_admin=False)
+    assert shares.list_for_kb(kb_id="kb_1", actor_id=OWNER, is_admin=False) == []

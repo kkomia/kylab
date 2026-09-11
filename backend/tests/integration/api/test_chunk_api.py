@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.services import get_services
+from tests.conftest import admin_client as admin_session
 
 # 刻意写成**多段且足够长**：切分器按固定长度切（默认 512 字），
 # 一份两百来字的文档只会得到一个块，而"删块后重排序号"至少两块才测得到
@@ -35,10 +36,11 @@ MARKDOWN = "# 眼轴共识\n\n" + "\n\n".join(_PARAGRAPHS * 3) + "\n"
 
 @pytest.fixture
 def client():
-    from app.main import create_app
+    """带管理员会话凭据的客户端（v0.11 起 /api/v1 一律要凭据）。"""
+    with admin_session() as test_client:
 
-    with TestClient(create_app()) as test_client:
         yield test_client
+
 
 
 def _drain_worker() -> None:
@@ -63,7 +65,7 @@ def document_id(client: TestClient) -> str:
     kb = client.post("/api/v1/knowledge-bases", json={"name": "干预库"})
     upload = client.post(
         f"/api/v1/knowledge-bases/{kb.json()['id']}/documents",
-        files={"file": ("眼轴.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")},
+        files={"file": ("眼轴.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")}
     )
     assert upload.status_code == 202, upload.text
     document_id = upload.json()["document"]["id"]
@@ -223,41 +225,31 @@ def test_delete_by_ordinal_out_of_range_is_404(client: TestClient, document_id: 
 # --------------------------------------------------------------------- 鉴权
 
 
-def test_write_operations_need_write_permission(monkeypatch) -> None:
+def test_write_operations_need_write_permission(client: TestClient) -> None:
     """三个动作都会改变检索结果，只读密钥不该能做。"""
-    monkeypatch.setenv("KYLAB_AUTH_ENABLED", "true")
-    monkeypatch.setenv("KYLAB_CONSOLE_TOKEN", "console-token-for-chunks")
+    console = dict(client.headers)  # 管理员会话
+    kb = client.post("/api/v1/knowledge-bases", json={"name": "鉴权库"}, headers=console)
+    upload = client.post(
+        f"/api/v1/knowledge-bases/{kb.json()['id']}/documents",
+        files={"file": ("a.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")},
+        headers=console,
+    )
+    doc_id = upload.json()["document"]["id"]
+    _drain_worker()
+    path = _by_ordinal(doc_id, 0)
 
-    from app.core.config import get_settings
-    from app.main import create_app
+    issued = client.post(
+        "/api/v1/api-keys",
+        json={"name": "只读", "permission": "readonly", "knowledge_base_ids": []},
+        headers=console,
+    ).json()
+    readonly = {"Authorization": f"Bearer {issued['token']}"}
 
-    get_settings.cache_clear()
-    with TestClient(create_app()) as client:
-        console = {"Authorization": "Bearer console-token-for-chunks"}
-        kb = client.post("/api/v1/knowledge-bases", json={"name": "鉴权库"}, headers=console)
-        upload = client.post(
-            f"/api/v1/knowledge-bases/{kb.json()['id']}/documents",
-            files={"file": ("a.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")},
-            headers=console,
-        )
-        doc_id = upload.json()["document"]["id"]
-        _drain_worker()
-        path = _by_ordinal(doc_id, 0)
-
-        issued = client.post(
-            "/api/v1/api-keys",
-            json={"name": "只读", "permission": "readonly", "knowledge_base_ids": []},
-            headers=console,
-        ).json()
-        readonly = {"Authorization": f"Bearer {issued['token']}"}
-
-        # 读可以
-        assert client.get(path, headers=readonly).status_code == 200
-        # 写不行
-        assert client.patch(path, json={"text": "偷改"}, headers=readonly).status_code == 403
-        assert (
-            client.put(f"{path}/disabled", json={"disabled": True}, headers=readonly).status_code
-            == 403
-        )
-        assert client.delete(path, headers=readonly).status_code == 403
-    get_settings.cache_clear()
+    # 读可以
+    assert client.get(path, headers=readonly).status_code == 200
+    # 写不行
+    assert client.patch(path, json={"text": "偷改"}, headers=readonly).status_code == 403
+    assert (
+        client.put(f"{path}/disabled", json={"disabled": True}, headers=readonly).status_code == 403
+    )
+    assert client.delete(path, headers=readonly).status_code == 403

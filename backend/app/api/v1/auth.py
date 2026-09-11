@@ -1,15 +1,17 @@
-"""认证端点：控制台令牌初始化（旧）+ 账号引导与登录（v10 起的主路径）。
+"""认证端点：账号引导、登录与会话。
 
-**为什么需要 console-token 这个端点**：鉴权会在"库里出现第一把 API Key"时
-自动生效，而设置页与密钥管理只认控制台令牌——于是"凭据关着时建了一把钥匙"
-会把自己锁在门外，而且没有任何恢复途径（要用令牌才能拿到令牌）。
-实测踩到过：建完 key 之后 ``GET /knowledge-bases`` 与 ``GET /api-keys`` 双双 401。
+**为什么"进控制台"只能靠账号**：设置页与密钥管理里是服务端的密钥与地址，
+必须是一种比 API Key 更高的身份。v0.11 之前这个身份还有第二种来源——控制台令牌
+（一个由服务端生成、明文存库的字符串），现在整条取消：它和账号体系并存时，
+"我以为我是谁"与"后端认为我是谁"会分叉，而且它本身没有归属、无法审计。
 
-v10 起的主路径是账号：``POST /auth/setup`` 一次性创建管理员（认领无主老数据），
-之后 ``POST /auth/login`` 换会话令牌。两个入口都是**一次性/限流**的，
-不会成为后门。
+于是入口只剩两个：
 
-令牌**明文存库**（不是摘要），这是一处刻意的例外，理由在 ``init_console_token`` 里。
+- ``POST /auth/setup``：**一次性**创建管理员（只在还没有任何账号时开放），
+  同时认领无主老数据、生成下载签名密钥；
+- ``POST /auth/login``：换会话令牌（滑动续期），之后一切凭据都从它派生。
+
+``GET /auth/status`` 不鉴权：前端靠它判断"该显示首次设置还是登录"。
 """
 
 from __future__ import annotations
@@ -20,10 +22,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from app.api.auth import CONSOLE_TOKEN_SETTING, CallerDep, bootstrap_allowed
-from app.core.config import Settings, get_settings
-from app.core.exceptions import ConflictError, UnauthorizedError
-from app.core.security import generate_token
+from app.api.auth import CallerDep
+from app.core.exceptions import UnauthorizedError
 from app.core.services import Services, get_services
 from app.services.auth import MIN_PASSWORD_CHARS
 
@@ -31,29 +31,12 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-#: 控制台令牌不用 ``kylab_sk_`` 前缀：那个前缀是给"会被到处粘贴的集成密钥"用的，
-#: 控制台令牌只在一台机器的浏览器里用，混用前缀会让两类凭据看起来一样。
-#: noqa 的理由：这是**前缀**不是口令，S105 按变量名含 token 误报。
-CONSOLE_TOKEN_PREFIX = "kylab_console_"  # noqa: S105
 
+class AuthStatusOut(BaseModel):
+    """前端据此决定显示"首次设置管理员"还是"登录"。"""
 
-class BootstrapStatusOut(BaseModel):
-    """前端据此决定显示"首次设置管理员"、"登录"还是直接进入。"""
-
-    needs_token: bool
-    auth_enabled: bool
     needs_setup: bool
-    """还没有任何可登录账号（v10）。为真时控制台应进入首次设置向导。"""
-
-
-class ConsoleTokenIn(BaseModel):
-    token: str | None = Field(default=None, min_length=16)
-    """留空表示由服务端生成（推荐：长度与随机性由服务端保证）。"""
-
-
-class ConsoleTokenOut(BaseModel):
-    token: str
-    """**只在这一次响应里出现**。丢了只能重置（改 app_settings 里那个键）。"""
+    """还没有任何可登录账号。为真时控制台进入首次设置向导。"""
 
 
 # ---------------------------------------------------------------------- 账号（v10）
@@ -94,63 +77,20 @@ def _account_out(user) -> AccountOut:  # type: ignore[no-untyped-def]
     )
 
 
-@router.get("/status", response_model=BootstrapStatusOut, summary="认证状态（是否需初始化/登录）")
-def status(
-    settings: Annotated[Settings, Depends(get_settings)],
-    services: Annotated[Services, Depends(get_services)],
-) -> BootstrapStatusOut:
-    """**不鉴权**：前端要靠它判断该显示登录界面还是首次设置界面。
+@router.get("/status", response_model=AuthStatusOut, summary="认证状态（是否需初始化）")
+def status(services: Annotated[Services, Depends(get_services)]) -> AuthStatusOut:
+    """**不鉴权**：前端要靠它判断该显示首次设置界面还是登录界面。
 
-    它只回布尔值，不透露任何可用信息。
+    只回一个布尔值，不透露任何可用信息。
     """
-    needs = bootstrap_allowed(settings, services)
     try:
         needs_setup = not services.auth.has_accounts()
     except Exception:
-        # 与 auth_enabled 同一口径：存储层抽风时按"已有账号"处理——
-        # 误开初始化入口是后门，误关只是让用户走登录页
+        # 存储层抽风时按"已有账号"处理：误开初始化入口是后门，
+        # 误关只是让用户走登录页（他本来就有账号）
         logger.warning("检查账号状态失败，按已有账号处理", exc_info=True)
         needs_setup = False
-    return BootstrapStatusOut(
-        needs_token=needs,
-        auth_enabled=not needs,
-        needs_setup=needs_setup,
-    )
-
-
-@router.post(
-    "/console-token",
-    response_model=ConsoleTokenOut,
-    summary="首次设置控制台令牌（仅在尚未设置时可用）",
-)
-def init_console_token(
-    payload: ConsoleTokenIn,
-    settings: Annotated[Settings, Depends(get_settings)],
-    services: Annotated[Services, Depends(get_services)],
-) -> ConsoleTokenOut:
-    """初始化控制台令牌。
-
-    **这里存明文，是全项目唯一一处**，理由是它必须能被比对：
-    用户从浏览器里送来的就是明文，而"鉴定它是否正确"只有两条路——
-    存明文直接比，或存摘要后比对摘要。后者其实更标准，但会让"用户忘了令牌要找回"
-    变得不可能（摘要不可逆）；而控制台令牌是**单机自用**的一把钥匙，
-    它不是发给第三方的凭据，泄露面就是"能读到这台机器 SQLite 的人"——
-    那个人本来就能拿到 embedding / LLM 的 API Key。
-
-    结论：**API Key 一律只存摘要**（那是要发给外部集成的），
-    控制台令牌存明文以便找回。这个区别是有意的，不是疏忽。
-    """
-    if not bootstrap_allowed(settings, services):
-        # 409 而不是 403：这不是权限问题，是状态问题——令牌已经设过了
-        raise ConflictError(
-            "控制台令牌已设置过，此入口已关闭。"
-            f"如需重置，请清空 app_settings 里的 {CONSOLE_TOKEN_SETTING}"
-        )
-
-    token = payload.token or (CONSOLE_TOKEN_PREFIX + generate_token().removeprefix("kylab_sk_"))
-    services.runtime.set({CONSOLE_TOKEN_SETTING: token})
-    logger.warning("已初始化控制台令牌：此后 /api/v1 需要凭据")
-    return ConsoleTokenOut(token=token)
+    return AuthStatusOut(needs_setup=needs_setup)
 
 
 @router.post("/setup", response_model=LoginOut, summary="首次初始化：创建管理员账号")
@@ -181,7 +121,7 @@ def logout(
     caller: CallerDep,
     services: Annotated[Services, Depends(get_services)],
 ) -> None:
-    # 只有会话能"退出"：API Key 要走撤销端点，控制台令牌要改配置
+    # 只有会话能"退出"：API Key 要走它自己的撤销端点
     if caller.session_id is None:
         raise UnauthorizedError("当前凭据不是登录会话，无需退出")
     services.auth.logout(caller.session_id)
@@ -189,7 +129,7 @@ def logout(
 
 @router.get("/me", response_model=AccountOut, summary="当前登录账号")
 def me(caller: CallerDep) -> AccountOut:
-    """前端启动时用它恢复身份。控制台令牌/API Key 通道没有账号，回 401。"""
+    """前端启动时用它恢复身份。API Key 通道没有账号，回 401。"""
     if caller.user is None:
         raise UnauthorizedError("当前凭据不是登录会话")
     return _account_out(caller.user)

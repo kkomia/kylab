@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { setConsoleToken } from '@/composables/useConsoleToken'
 import { ensureAuthStatus, login, logout, restoreSession, setup } from '@/composables/useSession'
 import {
   authStatus,
@@ -25,7 +24,6 @@ describe('useSession', () => {
     window.localStorage.clear()
     clearSessionToken()
     authStatus.value = null
-    setConsoleToken('')
   })
 
   afterEach(() => {

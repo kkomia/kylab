@@ -149,7 +149,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **85** 条端点。
+共 **84** 条端点。
 
 ### `api-keys`
 
@@ -163,13 +163,12 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/v1/auth/console-token` | 首次设置控制台令牌（仅在尚未设置时可用） |
 | `POST` | `/api/v1/auth/login` | 登录（用户名 + 密码） |
 | `POST` | `/api/v1/auth/logout` | 退出登录（吊销当前会话） |
 | `GET` | `/api/v1/auth/me` | 当前登录账号 |
 | `POST` | `/api/v1/auth/password` | 修改自己的密码 |
 | `POST` | `/api/v1/auth/setup` | 首次初始化：创建管理员账号 |
-| `GET` | `/api/v1/auth/status` | 认证状态（是否需初始化/登录） |
+| `GET` | `/api/v1/auth/status` | 认证状态（是否需初始化） |
 
 ### `chat`
 

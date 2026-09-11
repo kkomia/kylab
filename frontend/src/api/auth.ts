@@ -29,10 +29,7 @@ export interface LoginResult {
 }
 
 export interface AuthBootstrapStatus {
-  /** 还没有控制台令牌，可调 `POST /auth/console-token` 初始化。 */
-  needs_token: boolean
-  auth_enabled: boolean
-  /** 还没有任何可登录账号：控制台应进入首次设置向导（v10）。 */
+  /** 还没有任何可登录账号：控制台应进入首次设置向导。 */
   needs_setup: boolean
 }
 

@@ -10,15 +10,19 @@ import io
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import admin_client as admin_session
+from tests.conftest import login_admin
+
 MARKDOWN = "# 眼轴\n\n眼轴长度是主要监测指标。\n"
 
 
 @pytest.fixture
 def client():
-    from app.main import create_app
+    """带管理员会话凭据的客户端（v0.11 起 /api/v1 一律要凭据）。"""
+    with admin_session() as test_client:
 
-    with TestClient(create_app()) as test_client:
         yield test_client
+
 
 
 @pytest.fixture
@@ -39,8 +43,10 @@ def test_create_and_list(client: TestClient) -> None:
     _user(client, "小王")
 
     listed = client.get("/api/v1/users").json()
-    assert [item["name"] for item in listed["items"]] == ["小王"]
-    assert listed["items"][0]["document_count"] == 0
+    # conftest 已经建了管理员账号（它也在名册里），这里只看其余条目
+    others = [item for item in listed["items"] if item["username"] != "admin"]
+    assert [item["name"] for item in others] == ["小王"]
+    assert others[0]["document_count"] == 0
     # 请求头名由后端给出，免得两边各写一份会漂
     assert listed["header"] == "X-Kylab-Operator"
 
@@ -53,7 +59,9 @@ def test_duplicate_name_is_409(client: TestClient) -> None:
 def test_delete_user(client: TestClient) -> None:
     created = _user(client, "小王")
     assert client.delete(f"/api/v1/users/{created['id']}").status_code == 204
-    assert client.get("/api/v1/users").json()["items"] == []
+    remaining = client.get("/api/v1/users").json()["items"]
+    # 只剩 conftest 建的管理员账号
+    assert [item["username"] for item in remaining] == ["admin"]
 
 
 def test_blank_name_is_rejected(client: TestClient) -> None:
@@ -74,7 +82,7 @@ def test_upload_records_the_operator(client: TestClient, kb_id: str) -> None:
         params={"start": "false"},
         # **必须发 id 而不是名字**：HTTP 头只能是 ASCII，而"小王"是中文。
         # 发名字会让浏览器/httpx 直接抛 UnicodeEncodeError（实测踩到）
-        headers={"X-Kylab-Operator": created["id"]},
+        headers={"X-Kylab-Operator": created["id"]}
     )
 
     assert response.status_code == 202, response.text
@@ -88,7 +96,7 @@ def test_upload_without_operator_leaves_it_unrecorded(client: TestClient, kb_id:
     response = client.post(
         f"/api/v1/knowledge-bases/{kb_id}/documents",
         files={"file": ("a.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")},
-        params={"start": "false"},
+        params={"start": "false"}
     )
 
     body = response.json()["document"]
@@ -102,12 +110,13 @@ def test_unknown_operator_name_does_not_create_a_user(client: TestClient, kb_id:
         f"/api/v1/knowledge-bases/{kb_id}/documents",
         files={"file": ("a.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")},
         params={"start": "false"},
-        headers={"X-Kylab-Operator": "user_nobody"},
+        headers={"X-Kylab-Operator": "user_nobody"}
     )
 
     assert response.status_code == 202
     assert response.json()["document"]["uploaded_by"] is None
-    assert client.get("/api/v1/users").json()["items"] == []
+    # 只有 conftest 建的管理员账号，没有因为拼错的名字多出一条
+    assert [item["username"] for item in client.get("/api/v1/users").json()["items"]] == ["admin"]
 
 
 def test_document_list_shows_the_uploader(client: TestClient, kb_id: str) -> None:
@@ -117,7 +126,7 @@ def test_document_list_shows_the_uploader(client: TestClient, kb_id: str) -> Non
         f"/api/v1/knowledge-bases/{kb_id}/documents",
         files={"file": ("a.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")},
         params={"start": "false"},
-        headers={"X-Kylab-Operator": created["id"]},
+        headers={"X-Kylab-Operator": created["id"]}
     )
 
     items = client.get(f"/api/v1/knowledge-bases/{kb_id}/documents").json()["items"]
@@ -131,12 +140,11 @@ def test_user_document_count_reflects_uploads(client: TestClient, kb_id: str) ->
         f"/api/v1/knowledge-bases/{kb_id}/documents",
         files={"file": ("a.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")},
         params={"start": "false"},
-        headers={"X-Kylab-Operator": created["id"]},
+        headers={"X-Kylab-Operator": created["id"]}
     )
 
     listed = client.get("/api/v1/users").json()["items"]
-    assert listed[0]["id"] == created["id"]
-    assert listed[0]["document_count"] == 1
+    assert next(item for item in listed if item["id"] == created["id"])["document_count"] == 1
 
 
 def test_deleting_the_user_keeps_the_document(client: TestClient, kb_id: str) -> None:
@@ -145,7 +153,7 @@ def test_deleting_the_user_keeps_the_document(client: TestClient, kb_id: str) ->
         f"/api/v1/knowledge-bases/{kb_id}/documents",
         files={"file": ("a.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")},
         params={"start": "false"},
-        headers={"X-Kylab-Operator": created["id"]},
+        headers={"X-Kylab-Operator": created["id"]}
     )
 
     client.delete(f"/api/v1/users/{created['id']}")
@@ -159,28 +167,26 @@ def test_deleting_the_user_keeps_the_document(client: TestClient, kb_id: str) ->
 # --------------------------------------------------------------------- 鉴权
 
 
-def test_roster_writes_need_console_token(monkeypatch) -> None:
-    """名册是控制台级配置（与 API Key 同一档）。
+def test_roster_writes_need_an_admin_session() -> None:
+    """名册是控制台级配置（与 API Key 同一档），**只有管理员会话能改**。
 
     **但要说清楚**：名册本身不是鉴权边界——伪造名字只会让归属记错。
-    管理名册需要控制台令牌，是因为"谁在名册里"属于部署配置。
+    管理名册需要管理员，是因为"谁在名册里"属于部署配置。
     """
-    monkeypatch.setenv("KYLAB_AUTH_ENABLED", "true")
-    monkeypatch.setenv("KYLAB_CONSOLE_TOKEN", "console-token-for-users")
-
     from app.core.config import get_settings
     from app.main import create_app
 
     get_settings.cache_clear()
     with TestClient(create_app()) as client:
-        console = {"Authorization": "Bearer console-token-for-users"}
-        created = client.post("/api/v1/users", json={"name": "小王"}, headers=console)
+        login_admin(client)
+        admin = dict(client.headers)
+        created = client.post("/api/v1/users", json={"name": "小王"}, headers=admin)
         assert created.status_code == 201
 
         issued = client.post(
             "/api/v1/api-keys",
             json={"name": "读写", "permission": "readwrite", "knowledge_base_ids": []},
-            headers=console,
+            headers=admin,
         ).json()
         apikey = {"Authorization": f"Bearer {issued['token']}"}
 
@@ -195,182 +201,3 @@ def test_roster_writes_need_console_token(monkeypatch) -> None:
     get_settings.cache_clear()
 
 
-# --------------------------------------------------------------------- 账号管理（v10）
-#
-# 这组用例从 setup 开始（此时鉴权因账号存在而自动生效），全部用管理员会话驱动。
-
-
-@pytest.fixture
-def admin_client(client: TestClient) -> tuple[TestClient, dict[str, str]]:
-    setup = client.post(
-        "/api/v1/auth/setup", json={"username": "admin", "password": "correct horse battery"}
-    ).json()
-    return client, {"Authorization": f"Bearer {setup['token']}"}
-
-
-def test_admin_creates_account_and_member_can_log_in(admin_client) -> None:  # type: ignore[no-untyped-def]
-    client, admin = admin_client
-
-    created = client.post(
-        "/api/v1/users",
-        json={"name": "小王", "username": "Wang", "password": "initial pass 123"},
-        headers=admin,
-    )
-    assert created.status_code == 201, created.text
-    body = created.json()
-    # 登录名归一化为小写；名册字段（document_count）照常
-    assert (body["username"], body["role"], body["disabled"]) == ("wang", "member", False)
-
-    login = client.post(
-        "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
-    )
-    assert login.status_code == 200
-
-
-def test_account_requires_initial_password(admin_client) -> None:  # type: ignore[no-untyped-def]
-    client, admin = admin_client
-    response = client.post(
-        "/api/v1/users", json={"name": "小王", "username": "wang"}, headers=admin
-    )
-    # InvalidRequestError 映射 422（错误信封装"开通账号需要设置初始密码"）
-    assert response.status_code == 422
-    assert "初始密码" in response.json()["message"]
-
-
-def test_admin_resets_password_and_old_sessions_die(admin_client) -> None:  # type: ignore[no-untyped-def]
-    client, admin = admin_client
-    created = client.post(
-        "/api/v1/users",
-        json={"name": "小王", "username": "wang", "password": "initial pass 123"},
-        headers=admin,
-    ).json()
-    user_id = created["id"]
-    session = client.post(
-        "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
-    ).json()["token"]
-    assert (
-        client.put(
-            f"/api/v1/users/{user_id}/password",
-            json={"password": "brand new pass 456"},
-            headers=admin,
-        ).status_code
-        == 204
-    )
-
-    # 旧会话全部吊销，旧密码不能再登录，新密码可以
-    assert (
-        client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {session}"}).status_code
-        == 401
-    )
-    assert (
-        client.post(
-            "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
-        ).status_code
-        == 401
-    )
-    assert (
-        client.post(
-            "/api/v1/auth/login", json={"username": "wang", "password": "brand new pass 456"}
-        ).status_code
-        == 200
-    )
-
-
-def test_disabled_account_cannot_log_in_and_sessions_die(admin_client) -> None:  # type: ignore[no-untyped-def]
-    client, admin = admin_client
-    created = client.post(
-        "/api/v1/users",
-        json={"name": "小王", "username": "wang", "password": "initial pass 123"},
-        headers=admin,
-    ).json()
-    user_id = created["id"]
-    session = client.post(
-        "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
-    ).json()["token"]
-
-    assert (
-        client.put(
-            f"/api/v1/users/{user_id}/disabled", json={"disabled": True}, headers=admin
-        ).status_code
-        == 200
-    )
-    assert (
-        client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {session}"}).status_code
-        == 401
-    )
-    assert (
-        client.post(
-            "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
-        ).status_code
-        == 401
-    )
-
-    # 重新启用：能登录了
-    client.put(f"/api/v1/users/{user_id}/disabled", json={"disabled": False}, headers=admin)
-    assert (
-        client.post(
-            "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
-        ).status_code
-        == 200
-    )
-
-
-def test_member_cannot_manage_accounts(admin_client) -> None:  # type: ignore[no-untyped-def]
-    """成员对用户管理端点一律 403：账号体系是控制台级配置。"""
-    client, admin = admin_client
-    client.post(
-        "/api/v1/users",
-        json={"name": "小王", "username": "wang", "password": "initial pass 123"},
-        headers=admin,
-    )
-    member = client.post(
-        "/api/v1/auth/login", json={"username": "wang", "password": "initial pass 123"}
-    ).json()
-    headers = {"Authorization": f"Bearer {member['token']}"}
-
-    assert (
-        client.post("/api/v1/users", json={"name": "偷偷加"}, headers=headers).status_code == 403
-    )
-    user_id = member["user"]["id"]
-    assert (
-        client.put(
-            f"/api/v1/users/{user_id}/password", json={"password": "x" * 10}, headers=headers
-        ).status_code
-        == 403
-    )
-    assert (
-        client.put(
-            f"/api/v1/users/{user_id}/disabled", json={"disabled": True}, headers=headers
-        ).status_code
-        == 403
-    )
-    assert client.delete(f"/api/v1/users/{user_id}", headers=headers).status_code == 403
-
-
-def test_cannot_disable_the_last_admin(admin_client) -> None:  # type: ignore[no-untyped-def]
-    """禁掉最后一个可用管理员 = 没人能进设置页，只能靠改库恢复。必须拦。"""
-    client, admin = admin_client
-    admin_id = client.get("/api/v1/auth/me", headers=admin).json()["id"]
-
-    response = client.put(
-        f"/api/v1/users/{admin_id}/disabled", json={"disabled": True}, headers=admin
-    )
-    assert response.status_code == 409
-
-    # 有了第二个管理员就可以禁了
-    client.post(
-        "/api/v1/users",
-        json={
-            "name": "副管理员",
-            "username": "admin2",
-            "password": "second admin pass",
-            "role": "admin",
-        },
-        headers=admin,
-    )
-    assert (
-        client.put(
-            f"/api/v1/users/{admin_id}/disabled", json={"disabled": True}, headers=admin
-        ).status_code
-        == 200
-    )

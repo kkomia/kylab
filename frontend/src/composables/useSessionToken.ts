@@ -12,14 +12,12 @@
  * ```
  *
  * 存 localStorage 而不是 sessionStorage：自托管用户不想每开一个标签页就重新登录，
- * 这与主题、字号是同一类"这台机器的偏好"。令牌为空时不加 Authorization 头，
- * 于是"未启用鉴权"的本机开发连头都不出现。
+ * 这与主题、字号是同一类"这台机器的偏好"。令牌为空时不加 Authorization 头。
  */
 
 import { readonly, ref } from 'vue'
 
 import type { Account, AuthBootstrapStatus } from '@/api/auth'
-import { consoleToken } from '@/composables/useConsoleToken'
 
 export const SESSION_TOKEN_STORAGE_KEY = 'kylab-session-token'
 
@@ -60,9 +58,9 @@ export function clearSessionToken(): void {
   currentUser.value = null
 }
 
-/** 是否持有可用凭据：登录会话或控制台令牌，有其一即可访问 /api/v1。 */
+/** 是否持有可用凭据。v0.11 起只有一种：登录会话。 */
 export function hasCredential(): boolean {
-  return Boolean(token.value || consoleToken())
+  return Boolean(token.value)
 }
 
 /**
@@ -70,7 +68,7 @@ export function hasCredential(): boolean {
  * `App.vue` 监听后跳到登录页。
  *
  * 用**计数器**而不是布尔：连续多个请求同时 401 时，值不变 watch 不会再响，
- * 只会跳一次且之后失效。每次递增保证每次都触发（与 useConsoleToken 同一手法）。
+ * 只会跳一次且之后失效。每次递增保证每次都触发。
  */
 const reloginCount = ref(0)
 

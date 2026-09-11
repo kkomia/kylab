@@ -1,12 +1,17 @@
-"""鉴权的 HTTP 层行为（M4 T4.4）。
+"""鉴权的 HTTP 层行为（M4 T4.4；v0.11 起账号是唯一的管理员身份）。
 
 镜像同构：``app/api/auth.py`` + ``app/api/v1/api_keys.py`` →
 ``tests/integration/api/test_auth_api.py``。
 
 **这份用例存在的首要理由**是外部监测报告指出的那条凭据窃取路径：
-``PATCH /settings`` 无鉴权时，局域网内任何人把 ``embedding.base_url`` 改成自己的
-服务器，下一次 embed 调用就会把 API Key 以 ``Authorization: Bearer`` 发过去。
-所以"外部 API Key 进不了设置端点"必须有一条测试钉着，而不是只靠代码里的一句注释。
+``PATCH /settings`` 若能由外部密钥调用，局域网内任何人就能把
+``embedding.base_url`` 改成自己的服务器，下一次 embed 调用就会把 API Key
+以 ``Authorization: Bearer`` 发过去。所以"外部 API Key 进不了设置端点"
+必须有一条测试钉着，而不是只靠代码里的一句注释。
+
+v0.11 起还有第二条契约：**鉴权永远生效**。没有控制台令牌，也没有
+"还没配凭据所以先放行"——第一次打开时唯一能调的是 ``/auth/status`` 与
+``/auth/setup``，其余一律 401。
 """
 
 from __future__ import annotations
@@ -15,13 +20,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.models.enums import ApiKeyPermission
-
-CONSOLE = {"Authorization": "Bearer console-secret-token"}
+from tests.conftest import ADMIN_PASSWORD, ADMIN_USERNAME
+from tests.conftest import admin_client as admin_session
 
 
 @pytest.fixture
-def app_client(monkeypatch):
-    """默认关闭鉴权的客户端（本机开发口径）。"""
+def app_client():
+    """**没有任何凭据**的客户端：用于首次初始化与"缺凭据会被拒"两组用例。"""
     from app.core.config import get_settings
     from app.main import create_app
 
@@ -32,22 +37,22 @@ def app_client(monkeypatch):
 
 
 @pytest.fixture
-def locked(monkeypatch):
-    """启用鉴权并配一把控制台令牌的客户端。
+def locked():
+    """已初始化管理员、请求自带会话凭据的客户端。
 
-    鉴权只在 ``Settings`` 上；用环境变量切最贴近真实部署方式，
-    monkeypatch 会在用例结束后还原。
+    名字沿用旧版（"鉴权锁上之后"）；现在**每个**实例都是锁上的，
+    区别只在于有没有凭据。
     """
-    monkeypatch.setenv("KYLAB_AUTH_ENABLED", "true")
-    monkeypatch.setenv("KYLAB_CONSOLE_TOKEN", "console-secret-token")
-
-    from app.core.config import get_settings
-    from app.main import create_app
-
-    get_settings.cache_clear()
-    with TestClient(create_app()) as test_client:
+    with admin_session() as test_client:
         yield test_client
-    get_settings.cache_clear()
+
+
+def _setup_admin(client: TestClient, **overrides) -> dict:
+    body = {"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD}
+    body.update(overrides)
+    response = client.post("/api/v1/auth/setup", json=body)
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 def _issue(client: TestClient, **overrides) -> dict:
@@ -57,22 +62,13 @@ def _issue(client: TestClient, **overrides) -> dict:
         "knowledge_base_ids": [],
     }
     body.update(overrides)
-    response = client.post("/api/v1/api-keys", json=body, headers=CONSOLE)
+    response = client.post("/api/v1/api-keys", json=body)
     assert response.status_code == 201, response.text
     return response.json()
 
 
 # --------------------------------------------------------------------- 默认口径
 
-
-def test_local_development_needs_no_credentials(app_client: TestClient) -> None:
-    """没配任何凭据时不该要求令牌。
-
-    默认开启鉴权会让升级后所有既有客户端立刻 401，是最难排查的一类故障；
-    而本机单人开发每次带令牌纯属折磨。
-    """
-    assert app_client.get("/api/v1/knowledge-bases").status_code == 200
-    assert app_client.get("/api/v1/settings").status_code == 200
 
 
 def test_health_stays_open_even_when_locked(locked: TestClient) -> None:
@@ -90,10 +86,17 @@ def test_health_stays_open_even_when_locked(locked: TestClient) -> None:
         ("get", "/api/v1/settings"),
         ("get", "/api/v1/tasks"),
         ("get", "/api/v1/stats/dashboard"),
-    ],
-)
-def test_missing_credentials_are_rejected(locked: TestClient, method: str, path: str) -> None:
-    response = getattr(locked, method)(path)
+    ]
+    )
+def test_missing_credentials_are_rejected(
+    app_client: TestClient, method: str, path: str
+) -> None:
+    """**没有凭据就是 401，初始化之前也一样**（v0.11 取消了"没配凭据就放行"）。
+
+    用没有任何凭据的客户端：新实例上这些端点也必须先拒绝，
+    否则"还没建账号"就等于"谁都能读写"。
+    """
+    response = getattr(app_client, method)(path)
     assert response.status_code == 401
     assert response.json()["code"] == "unauthorized"
     # RFC 7235：401 要带 WWW-Authenticate，否则客户端不知道用哪种方案
@@ -123,7 +126,7 @@ def test_external_api_key_cannot_touch_settings(locked: TestClient) -> None:
     下一次 embedding 调用就会把用户的 API Key 发过去。必须 403。
 
     同时验证"只要求读写权限是不够的"——这是一把 **readwrite** 密钥，
-    仍然不能碰设置，说明拦它的是"必须是控制台身份"而不是权限档位。
+    仍然不能碰设置，说明拦它的是"必须是管理员会话"而不是权限档位。
     """
     issued = _issue(locked, permission=ApiKeyPermission.READWRITE.value)
     external = {"Authorization": f"Bearer {issued['token']}"}
@@ -135,7 +138,7 @@ def test_external_api_key_cannot_touch_settings(locked: TestClient) -> None:
     write = locked.patch(
         "/api/v1/settings",
         json={"values": [{"key": "embedding.base_url", "value": "https://evil.test"}]},
-        headers=external,
+        headers=external
     )
     assert write.status_code == 403, "外部密钥改掉了 base_url —— 凭据窃取路径没封住"
 
@@ -163,7 +166,7 @@ def test_readonly_key_cannot_create_knowledge_base(locked: TestClient) -> None:
     response = locked.post(
         "/api/v1/knowledge-bases",
         json={"name": "偷偷建的库"},
-        headers={"Authorization": f"Bearer {issued['token']}"},
+        headers={"Authorization": f"Bearer {issued['token']}"}
     )
     assert response.status_code == 403
 
@@ -181,10 +184,10 @@ def test_readonly_key_can_read(locked: TestClient) -> None:
 
 def test_listing_only_shows_knowledge_bases_in_scope(locked: TestClient) -> None:
     """列表也要过滤：否则光看名字就能探出这台机器上有哪些库。"""
-    locked.post("/api/v1/knowledge-bases", json={"name": "公开库"}, headers=CONSOLE)
-    locked.post("/api/v1/knowledge-bases", json={"name": "机密库"}, headers=CONSOLE)
+    locked.post("/api/v1/knowledge-bases", json={"name": "公开库"})
+    locked.post("/api/v1/knowledge-bases", json={"name": "机密库"})
 
-    all_kbs = locked.get("/api/v1/knowledge-bases", headers=CONSOLE).json()["items"]
+    all_kbs = locked.get("/api/v1/knowledge-bases").json()["items"]
     assert len(all_kbs) == 2
     target = next(kb for kb in all_kbs if kb["name"] == "公开库")
 
@@ -196,9 +199,9 @@ def test_listing_only_shows_knowledge_bases_in_scope(locked: TestClient) -> None
 
 
 def test_scoped_key_cannot_read_another_kb(locked: TestClient) -> None:
-    locked.post("/api/v1/knowledge-bases", json={"name": "公开库"}, headers=CONSOLE)
-    locked.post("/api/v1/knowledge-bases", json={"name": "机密库"}, headers=CONSOLE)
-    all_kbs = locked.get("/api/v1/knowledge-bases", headers=CONSOLE).json()["items"]
+    locked.post("/api/v1/knowledge-bases", json={"name": "公开库"})
+    locked.post("/api/v1/knowledge-bases", json={"name": "机密库"})
+    all_kbs = locked.get("/api/v1/knowledge-bases").json()["items"]
     public = next(kb for kb in all_kbs if kb["name"] == "公开库")
     secret = next(kb for kb in all_kbs if kb["name"] == "机密库")
 
@@ -216,9 +219,9 @@ def test_scoped_key_cannot_search_another_kb(locked: TestClient) -> None:
     "被拒"可能是因为库不存在而不是因为越界——那样即使范围判定坏掉了，
     用例照样是绿的（我第一版就是这么写的，属于会骗人的测试）。
     """
-    locked.post("/api/v1/knowledge-bases", json={"name": "公开库"}, headers=CONSOLE)
-    locked.post("/api/v1/knowledge-bases", json={"name": "机密库"}, headers=CONSOLE)
-    all_kbs = locked.get("/api/v1/knowledge-bases", headers=CONSOLE).json()["items"]
+    locked.post("/api/v1/knowledge-bases", json={"name": "公开库"})
+    locked.post("/api/v1/knowledge-bases", json={"name": "机密库"})
+    all_kbs = locked.get("/api/v1/knowledge-bases").json()["items"]
     public = next(kb["id"] for kb in all_kbs if kb["name"] == "公开库")
     secret = next(kb["id"] for kb in all_kbs if kb["name"] == "机密库")
 
@@ -245,7 +248,7 @@ def test_plaintext_token_only_in_creation_response(locked: TestClient) -> None:
     token = issued["token"]
     assert token.startswith("kylab_sk_")
 
-    listing = locked.get("/api/v1/api-keys", headers=CONSOLE).json()["items"]
+    listing = locked.get("/api/v1/api-keys").json()["items"]
     assert len(listing) == 1
 
     # 列表里既没有明文也没有摘要，只有展示前缀
@@ -260,98 +263,15 @@ def test_revoked_key_stops_working(locked: TestClient) -> None:
     scoped = {"Authorization": f"Bearer {issued['token']}"}
     assert locked.get("/api/v1/knowledge-bases", headers=scoped).status_code == 200
 
-    assert locked.delete(f"/api/v1/api-keys/{issued['id']}", headers=CONSOLE).status_code == 204
+    assert locked.delete(f"/api/v1/api-keys/{issued['id']}").status_code == 204
     assert locked.get("/api/v1/knowledge-bases", headers=scoped).status_code == 401
 
 
-def test_creating_a_key_turns_auth_on_automatically(monkeypatch, app_client: TestClient) -> None:
-    """第二个自动生效条件：库里已有密钥，就该开始要求凭据。
-
-    否则用户建了一把钥匙却忘了开开关，等于建了一扇不锁的门。
-    """
-    app_client.post(
-        "/api/v1/api-keys",
-        json={"name": "第一把", "permission": "readonly", "knowledge_base_ids": []},
-    )
-    # 下一次请求就该被拦（原来没配任何凭据时是放行的）
-    assert app_client.get("/api/v1/knowledge-bases").status_code == 401
 
 
-# --------------------------------------------------------------------- 首次初始化与控制台恢复
 
 
-def test_bootstrap_is_open_when_no_token_exists(app_client: TestClient) -> None:
-    status = app_client.get("/api/v1/auth/status")
-    assert status.status_code == 200
-    assert status.json()["needs_token"] is True
 
-
-def test_bootstrap_closes_after_setting(app_client: TestClient) -> None:
-    first = app_client.post("/api/v1/auth/console-token", json={})
-    assert first.status_code == 200
-    token = first.json()["token"]
-
-    # 入口随即关闭：再调一次是状态冲突，不是权限问题
-    again = app_client.post("/api/v1/auth/console-token", json={})
-    assert again.status_code == 409
-
-    assert app_client.get("/api/v1/auth/status").json()["needs_token"] is False
-    # 新令牌立刻可用，且控制台身份不受库范围限制
-    assert (
-        app_client.get("/api/v1/settings", headers={"Authorization": f"Bearer {token}"}).status_code
-        == 200
-    )
-
-
-def test_console_token_rescues_a_locked_out_instance(app_client: TestClient) -> None:
-    """**这条复现的是实测踩到的死锁**。
-
-    凭据关着的时候建一把 API Key → 鉴权自动生效 → 但设置页与密钥管理只认控制台令牌
-    → 而令牌还没设过，于是把自己锁在门外，没有任何恢复途径。
-
-    有了 ``POST /auth/console-token`` 就能救回来：它只在"两个来源都没有令牌"时开放。
-    """
-    # 1) 建一把密钥（此刻鉴权还没生效）
-    app_client.post(
-        "/api/v1/api-keys",
-        json={"name": "把自己锁在门外的那把", "permission": "readwrite", "knowledge_base_ids": []},
-    )
-
-    # 2) 果然锁住了
-    assert app_client.get("/api/v1/api-keys").status_code == 401
-    assert app_client.get("/api/v1/knowledge-bases").status_code == 401
-
-    # 3) 但初始化入口还开着，能救回来
-    assert app_client.get("/api/v1/auth/status").json()["needs_token"] is True
-    rescued = app_client.post("/api/v1/auth/console-token", json={})
-    assert rescued.status_code == 200
-
-    headers = {"Authorization": f"Bearer {rescued.json()['token']}"}
-    assert app_client.get("/api/v1/api-keys", headers=headers).status_code == 200
-    assert app_client.get("/api/v1/knowledge-bases", headers=headers).status_code == 200
-
-
-def test_bootstrap_is_closed_when_env_token_exists(locked: TestClient) -> None:
-    """.env 里配了令牌就不该再开放初始化入口——否则那是后门。"""
-    assert locked.get("/api/v1/auth/status").json()["needs_token"] is False
-    assert locked.post("/api/v1/auth/console-token", json={}).status_code == 409
-
-
-def test_custom_console_token_is_accepted(app_client: TestClient) -> None:
-    """允许自带令牌（有些人要用密码管理器里的固定值）。"""
-    chosen = "my-own-long-console-token"
-    assert app_client.post("/api/v1/auth/console-token", json={"token": chosen}).json()[
-        "token"
-    ] == chosen
-
-    headers = {"Authorization": f"Bearer {chosen}"}
-    assert app_client.get("/api/v1/settings", headers=headers).status_code == 200
-
-
-def test_generated_console_token_is_long_and_prefixed(app_client: TestClient) -> None:
-    token = app_client.post("/api/v1/auth/console-token", json={}).json()["token"]
-    assert token.startswith("kylab_console_")
-    assert len(token) > 40
 
 
 # --------------------------------------------------------------------- 账号体系（v10）
@@ -418,14 +338,6 @@ def test_login_rejects_wrong_password_with_uniform_message(app_client: TestClien
     assert wrong.json()["message"] == ghost.json()["message"]
 
 
-def test_creating_an_account_turns_auth_on(app_client: TestClient) -> None:
-    """第三个自动生效条件：有了账号，匿名请求就该被拦。"""
-    assert app_client.get("/api/v1/knowledge-bases").status_code == 200
-
-    _setup_admin(app_client)
-
-    assert app_client.get("/api/v1/knowledge-bases").status_code == 401
-
 
 def test_change_password_over_http(app_client: TestClient) -> None:
     setup = _setup_admin(app_client)
@@ -434,7 +346,7 @@ def test_change_password_over_http(app_client: TestClient) -> None:
     changed = app_client.post(
         "/api/v1/auth/password",
         json={"old_password": "correct horse battery", "new_password": "new-horse-battery"},
-        headers=session,
+        headers=session
     )
     assert changed.status_code == 200, changed.text
     assert changed.json()["revoked_sessions"] == 0  # 只有这一条会话，没有别的可吊销
@@ -449,21 +361,4 @@ def test_change_password_over_http(app_client: TestClient) -> None:
     )
 
 
-def test_console_token_still_works_alongside_accounts(app_client: TestClient) -> None:
-    """过渡兼容：老部署的控制台令牌在有账号之后依然有效（恢复钥匙）。"""
-    rescued = app_client.post("/api/v1/auth/console-token", json={})
-    token = rescued.json()["token"]
 
-    _setup_admin(app_client)
-
-    headers = {"Authorization": f"Bearer {token}"}
-    assert app_client.get("/api/v1/settings", headers=headers).status_code == 200
-
-
-def test_me_rejects_console_token(app_client: TestClient) -> None:
-    """/auth/me 只认登录会话：控制台令牌通道没有"账号"这个概念。"""
-    token = app_client.post("/api/v1/auth/console-token", json={}).json()["token"]
-    assert (
-        app_client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}).status_code
-        == 401
-    )

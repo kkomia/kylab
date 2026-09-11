@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.models.enums import DataSourceKind
 from app.services.sources import SourceService
+from tests.conftest import admin_client as admin_session
 
 RSS_FEED = """<?xml version="1.0"?>
 <rss version="2.0"><channel><title>测试源</title>
@@ -28,10 +29,11 @@ RSS_FEED = """<?xml version="1.0"?>
 
 @pytest.fixture
 def client():
-    from app.main import create_app
+    """带管理员会话凭据的客户端（v0.11 起 /api/v1 一律要凭据）。"""
+    with admin_session() as test_client:
 
-    with TestClient(create_app()) as test_client:
         yield test_client
+
 
 
 @pytest.fixture
@@ -64,7 +66,7 @@ def test_register_rejects_webdav(client: TestClient, kb_id: str) -> None:
     """WebDAV 明确不做（架构 §14 缓做）。"""
     response = client.post(
         f"/api/v1/knowledge-bases/{kb_id}/data-sources",
-        json={"kind": "webdav", "name": "网盘", "url": "https://example.com/dav"},
+        json={"kind": "webdav", "name": "网盘", "url": "https://example.com/dav"}
     )
     assert response.status_code == 422
 
@@ -73,7 +75,7 @@ def test_register_rejects_non_http_url(client: TestClient, kb_id: str) -> None:
     """只允许 http(s)：``file://`` 之类会变成任意文件读取。"""
     response = client.post(
         f"/api/v1/knowledge-bases/{kb_id}/data-sources",
-        json={"kind": "rss", "name": "本地", "url": "file:///etc/passwd"},
+        json={"kind": "rss", "name": "本地", "url": "file:///etc/passwd"}
     )
     assert response.status_code == 422
 
@@ -81,7 +83,7 @@ def test_register_rejects_non_http_url(client: TestClient, kb_id: str) -> None:
 def test_register_needs_an_existing_kb(client: TestClient) -> None:
     response = client.post(
         "/api/v1/knowledge-bases/kb_不存在/data-sources",
-        json={"kind": "rss", "name": "x", "url": "https://example.com/f"},
+        json={"kind": "rss", "name": "x", "url": "https://example.com/f"}
     )
     assert response.status_code == 404
 
@@ -107,7 +109,7 @@ def test_delete_keeps_already_fetched_documents(client: TestClient, kb_id: str) 
     upload = client.post(
         f"/api/v1/knowledge-bases/{kb_id}/documents",
         files={"file": ("a.md", "# 标题\n\n正文。".encode(), "text/markdown")},
-        params={"start": "false"},
+        params={"start": "false"}
     )
     assert upload.status_code == 202
 
@@ -223,7 +225,7 @@ def _bare_service(bundle):  # type: ignore[no-untyped-def]
     return SourceService(
         bundle,
         type("Ingest", (), {"submit": lambda **kwargs: None})(),
-        DocumentService(bundle),
+        DocumentService(bundle)
     )
 
 
@@ -234,8 +236,8 @@ def test_service_rejects_unknown_kind(bundle) -> None:  # type: ignore[no-untype
             knowledge_base_id="kb_1",
             kind=DataSourceKind.WEBDAV,
             name="x",
-            url="https://example.com",
-        )
+            url="https://example.com"
+    )
 
 
 def test_service_rejects_missing_kb(bundle) -> None:  # type: ignore[no-untyped-def]
@@ -245,8 +247,8 @@ def test_service_rejects_missing_kb(bundle) -> None:  # type: ignore[no-untyped-
             knowledge_base_id="kb_不存在",
             kind=DataSourceKind.RSS,
             name="x",
-            url="https://example.com/feed",
-        )
+            url="https://example.com/feed"
+    )
 
 
 def test_single_item_failure_does_not_abort_the_batch(

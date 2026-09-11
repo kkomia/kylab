@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from app.core.services import get_services
 from app.services.chat import SourceRef
 from app.services.llm import ChatError
+from tests.conftest import admin_client as admin_session
 from tests.conftest import bind_model
 
 
@@ -37,10 +38,11 @@ class FakeChat:
 
 @pytest.fixture
 def client():
-    from app.main import create_app
+    """带管理员会话凭据的客户端（v0.11 起 /api/v1 一律要凭据）。"""
+    with admin_session() as test_client:
 
-    with TestClient(create_app()) as test_client:
         yield test_client
+
 
 
 @pytest.fixture
@@ -68,8 +70,8 @@ def _install_fake_sources() -> None:
                 heading_path="3 监测",
                 page=4,
                 score=0.9,
-                preview="眼轴长度是主要参数。",
-            )
+                preview="眼轴长度是主要参数。"
+    )
         ]
 
     get_services().chat.retrieve_sources = fake_sources  # type: ignore[method-assign]

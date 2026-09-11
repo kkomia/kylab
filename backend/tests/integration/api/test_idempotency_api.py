@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.core.services import get_services
 from app.models.enums import DocumentStage
+from tests.conftest import admin_client as admin_session
 
 MARKDOWN = "# 设计\n\n用于验证幂等键的正文。\n".encode()
 HEADERS = {"Idempotency-Key": "client-retry-1"}
@@ -22,10 +23,11 @@ HEADERS = {"Idempotency-Key": "client-retry-1"}
 
 @pytest.fixture
 def client():
-    from app.main import create_app
+    """带管理员会话凭据的客户端（v0.11 起 /api/v1 一律要凭据）。"""
+    with admin_session() as test_client:
 
-    with TestClient(create_app()) as test_client:
         yield test_client
+
 
 
 @pytest.fixture
@@ -41,13 +43,13 @@ def _upload(
     *,
     content: bytes = MARKDOWN,
     headers=None,  # type: ignore[no-untyped-def]
-    start: bool = False,
-):  # type: ignore[no-untyped-def]
+    start: bool = False
+    ):  # type: ignore[no-untyped-def]
     return client.post(
         f"/api/v1/knowledge-bases/{kb_id}/documents",
         files={"file": ("a.md", io.BytesIO(content), "text/markdown")},
         params={"start": str(start).lower()},
-        headers=headers or {},
+        headers=headers or {}
     )
 
 

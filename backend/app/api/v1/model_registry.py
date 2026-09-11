@@ -18,7 +18,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, status
 from starlette.concurrency import run_in_threadpool
 
-from app.api.auth import require_console, require_read
+from app.api.auth import require_admin, require_read
 from app.api.v1.schemas import (
     ModelListOut,
     ModelOut,
@@ -151,9 +151,9 @@ def list_providers(
 def create_provider(
     payload: ProviderCreateIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> ProviderOut:
-    """**只认控制台令牌**：这里要写入明文密钥，属于凭据管理。
+    """**只认管理员**：这里要写入明文密钥，属于凭据管理。
 
     与 `/settings`、`/api-keys` 同一档——普通 API Key 不该能读写凭据，
     否则一把泄露的读写密钥就能把所有人的模型指向别处。
@@ -173,7 +173,7 @@ def update_provider(
     provider_id: str,
     payload: ProviderUpdateIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> ProviderOut:
     record = services.models.update_provider(
         provider_id,
@@ -193,7 +193,7 @@ def update_provider(
 def delete_provider(
     provider_id: str,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> None:
     services.models.delete_provider(provider_id)
 
@@ -221,7 +221,7 @@ def list_models(
 def register_model(
     payload: ModelRegisterIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> ModelOut:
     record = services.models.register_model(
         provider_id=payload.provider_id,
@@ -239,7 +239,7 @@ def update_model(
     model_pk: str,
     payload: ModelUpdateIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> ModelOut:
     record = services.models.update_model(
         model_pk,
@@ -258,7 +258,7 @@ def update_model(
 def delete_model(
     model_pk: str,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> None:
     services.models.delete_model(model_pk)
 
@@ -280,7 +280,7 @@ def bind_slot(
     slot: str,
     payload: SlotBindIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> SlotOut:
     """把某个用途绑定到某个模型（``model_pk`` 传 null 表示解绑）。
 
@@ -297,7 +297,7 @@ def bind_slot(
 async def test_provider(
     provider_id: str,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> dict[str, object]:
     """注册环节的验活：请求一次 ``GET {base_url}/models``，**不计费**。
 
@@ -314,11 +314,11 @@ async def test_provider(
 async def test_slot(
     slot: str,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_console)],
+    _: Annotated[Caller, Depends(require_admin)],
 ) -> dict[str, object]:
     """真调一次模型，回答"这条路通不通"。
 
-    **只认控制台令牌**：它会把凭据用于一次真实请求（可能产生费用），
+    **只认管理员**：它会把凭据用于一次真实请求（可能产生费用），
     也等于让调用方间接验证"这把 key 有效"——那是凭据探测面。
 
     在**线程池**里跑：客户端是同步的，直接在事件循环里调会把整个服务卡住

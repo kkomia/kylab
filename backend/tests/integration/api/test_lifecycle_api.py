@@ -15,16 +15,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.services import get_services
+from tests.conftest import admin_client as admin_session
 
 MARKDOWN = "# 眼轴\n\n眼轴长度是衡量儿童青少年眼球发育情况的主要参数之一。\n"
 
 
 @pytest.fixture
 def client():
-    from app.main import create_app
+    """带管理员会话凭据的客户端（v0.11 起 /api/v1 一律要凭据）。"""
+    with admin_session() as test_client:
 
-    with TestClient(create_app()) as test_client:
         yield test_client
+
 
 
 def _drain_worker() -> None:
@@ -45,7 +47,7 @@ def ingested(client: TestClient) -> dict:
     kb = client.post("/api/v1/knowledge-bases", json={"name": "生命周期库"}).json()
     upload = client.post(
         f"/api/v1/knowledge-bases/{kb['id']}/documents",
-        files={"file": ("眼轴.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")},
+        files={"file": ("眼轴.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")}
     )
     document_id = upload.json()["document"]["id"]
     _drain_worker()
@@ -105,7 +107,7 @@ def test_deleted_document_is_no_longer_searchable(client: TestClient, ingested: 
 
     hits = client.post(
         "/api/v1/search",
-        json={"query": "眼轴长度", "kb_ids": [ingested["kb_id"]], "top_k": 10},
+        json={"query": "眼轴长度", "kb_ids": [ingested["kb_id"]], "top_k": 10}
     ).json()["hits"]
     assert hits == []
 
@@ -147,17 +149,16 @@ def test_restore_brings_the_document_back(client: TestClient, ingested: dict) ->
 def test_restore_keeps_the_original_bytes(ingested: dict, monkeypatch) -> None:
     """恢复要**真的把原文找回来**——那是删除时唯一不可再生的东西。
 
-    单独建 client：签名下载链接需要签名密钥，而默认测试环境没配。
-    没有密钥时后端**拒绝签发**（而不是发一条无效链接，见 §11.6），
-    所以这条用例必须自己带上密钥。
+    单独建 client：签名下载链接要签名密钥，而默认测试环境没配（v0.11 起
+    没有密钥就**拒绝签发**，而不是发一条无效链接，见 §11.6）。
+    密钥走环境变量；凭据仍由 conftest 的 admin 会话提供。
     """
     monkeypatch.setenv("KYLAB_URL_SIGNING_SECRET", "lifecycle-test-secret")
 
     from app.core.config import get_settings
-    from app.main import create_app
 
     get_settings.cache_clear()
-    with TestClient(create_app()) as client:
+    with admin_session() as client:
         entry = client.delete(f"/api/v1/documents/{ingested['document_id']}").json()
         new_id = client.post(f"/api/v1/trash/{entry['id']}/restore").json()["document_id"]
 
@@ -196,39 +197,30 @@ def test_drop_trash_is_permanent(client: TestClient, ingested: dict) -> None:
 # --------------------------------------------------------------------- 鉴权
 
 
-def test_delete_needs_write_permission(monkeypatch) -> None:
+def test_delete_needs_write_permission(client: TestClient) -> None:
     """删除是破坏性动作，只读密钥不该能做。"""
-    monkeypatch.setenv("KYLAB_AUTH_ENABLED", "true")
-    monkeypatch.setenv("KYLAB_CONSOLE_TOKEN", "console-token-for-lifecycle")
+    console = dict(client.headers)  # 管理员会话
+    kb = client.post("/api/v1/knowledge-bases", json={"name": "鉴权库"}, headers=console)
+    upload = client.post(
+        f"/api/v1/knowledge-bases/{kb.json()['id']}/documents",
+        files={"file": ("a.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")},
+        headers=console
+    )
+    doc_id = upload.json()["document"]["id"]
 
-    from app.core.config import get_settings
-    from app.main import create_app
+    issued = client.post(
+        "/api/v1/api-keys",
+        json={"name": "只读", "permission": "readonly", "knowledge_base_ids": []},
+        headers=console
+    ).json()
+    readonly = {"Authorization": f"Bearer {issued['token']}"}
 
-    get_settings.cache_clear()
-    with TestClient(create_app()) as client:
-        console = {"Authorization": "Bearer console-token-for-lifecycle"}
-        kb = client.post("/api/v1/knowledge-bases", json={"name": "鉴权库"}, headers=console)
-        upload = client.post(
-            f"/api/v1/knowledge-bases/{kb.json()['id']}/documents",
-            files={"file": ("a.md", io.BytesIO(MARKDOWN.encode()), "text/markdown")},
-            headers=console,
-        )
-        doc_id = upload.json()["document"]["id"]
-
-        issued = client.post(
-            "/api/v1/api-keys",
-            json={"name": "只读", "permission": "readonly", "knowledge_base_ids": []},
-            headers=console,
-        ).json()
-        readonly = {"Authorization": f"Bearer {issued['token']}"}
-
-        # 读影响清单可以（界面要显示它）
-        assert client.get(f"/api/v1/documents/{doc_id}/impact", headers=readonly).status_code == 200
-        # 回收站是控制台专属（含所有人删过什么的跨库元信息），外部密钥进不去
-        assert client.get("/api/v1/trash", headers=readonly).status_code == 403
-        # 删除不行
-        assert client.delete(f"/api/v1/documents/{doc_id}", headers=readonly).status_code == 403
-        kb_id = kb.json()["id"]
-        denied = client.delete(f"/api/v1/knowledge-bases/{kb_id}", headers=readonly)
-        assert denied.status_code == 403
-    get_settings.cache_clear()
+    # 读影响清单可以（界面要显示它）
+    assert client.get(f"/api/v1/documents/{doc_id}/impact", headers=readonly).status_code == 200
+    # 回收站是控制台专属（含所有人删过什么的跨库元信息），外部密钥进不去
+    assert client.get("/api/v1/trash", headers=readonly).status_code == 403
+    # 删除不行
+    assert client.delete(f"/api/v1/documents/{doc_id}", headers=readonly).status_code == 403
+    kb_id = kb.json()["id"]
+    denied = client.delete(f"/api/v1/knowledge-bases/{kb_id}", headers=readonly)
+    assert denied.status_code == 403

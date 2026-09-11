@@ -1,7 +1,7 @@
 """登录会话与账号引导（v10：名册升级为账号体系）。
 
-**为什么会有这个模块**：产品面向不懂技术的个人用户，"粘贴控制台令牌"对他们
-不可用（控制台令牌仍保留，但降级为开发/恢复用途）。这里提供常规的
+**为什么会有这个模块**：产品面向不懂技术的个人用户，"粘贴令牌"这条路对他们
+不可用。v0.11 起控制台令牌整条取消，账号是**唯一**的管理员身份来源。这里提供常规的
 用户名+密码登录：口令 argon2 慢哈希入库，登录换会话令牌，令牌**哈希存表**
 （与 API Key 同一纪律：明文只在响应里出现一次）。
 
@@ -22,7 +22,7 @@
 
 4. **setup 一次性**。仅当"没有任何带 username 的账号"时开放，首个账号即管理员
    并认领全部无主老数据（v10 之前的库/会话 owner 都是 NULL）。
-   设过即关闭，与控制台令牌的 bootstrap 同一思路（api/v1/auth.py）。
+   设过即关闭：**只在没有任何账号时开放**，之后永久关闭。
 """
 
 from __future__ import annotations
@@ -65,7 +65,8 @@ _LOCKOUT_SECONDS = 60
 MIN_PASSWORD_CHARS = 8
 
 #: 签名密钥在 app_settings 里的键。setup 时生成：下载签名从此不再依赖
-#: 控制台令牌兜底（api/auth.py 的 signing_secret 曾经拿它当密钥）。
+#: 下载签名密钥。首次 setup 生成一次并落库，之后长期不变——
+#: 凭据会轮换，而签出去的链接不该跟着失效。
 URL_SIGNING_SECRET_SETTING = "auth.url_signing_secret"  # noqa: S105
 
 #: 哑哈希：用户不存在/没有口令时也拿它跑一遍 argon2，把"查无此人"与"口令错误"
@@ -148,7 +149,7 @@ class AuthService:
         return self._issue_session(user)
 
     def _ensure_signing_secret(self) -> None:
-        """下载签名密钥独立落库：不再拿控制台令牌兜底（那是凭据，不是密钥）。"""
+        """下载签名密钥独立落库：它是密钥，不该复用任何用户凭据。"""
         meta = self._stores.meta
         if not meta.get_setting(URL_SIGNING_SECRET_SETTING):
             # 直接用裸随机串，不借 generate_session_token：落库的是签名密钥不是
@@ -284,7 +285,7 @@ class AuthService:
         """禁用/启用账号。禁用时吊销全部会话——不能等它自然过期。
 
         **最后一个可用的管理员不能被禁用**：禁完就没有人能进设置页，
-        只能靠控制台令牌或改库恢复——那是最难向用户解释的一类死锁。
+        只能靠改库恢复——那是最难向用户解释的一类死锁。
         """
         user = self._stores.meta.get_user(user_id)
         if user is None:

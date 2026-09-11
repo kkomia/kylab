@@ -30,7 +30,7 @@ def _out(record: Any, caller: Caller, services: Services) -> KnowledgeBaseOut:
     - `can_write` 直接复用 ``api_keys.check_access(need=WRITE)``——
       界面据此决定要不要显示「上传文档」「添加数据源」，避免给出一个点了必然 403 的入口。
     """
-    managed = caller.is_console or (
+    managed = caller.is_admin or (
         caller.user is not None
         and (caller.user.role is UserRole.ADMIN or record.owner_id == caller.user.id)
     )
@@ -56,7 +56,7 @@ async def create_knowledge_base(
         name=payload.name,
         chunk_size=payload.chunk_size,
         chunk_overlap=payload.chunk_overlap,
-        # 登录成员建的库归自己（v10 私有隔离）；控制台令牌/API Key 通道无主
+        # 登录成员建的库归自己（v10 私有隔离）；API Key 通道建的库无主
         owner_id=caller.user.id if caller.user else None,
         # 嵌入模型随库选定并冻结（v11）；留空走服务端默认
         embedding_model_pk=payload.embedding_model_pk,

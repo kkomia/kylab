@@ -15,7 +15,7 @@
  * 检索没有独立入口：它是"在某个库里查东西"，收在知识库详情页里；
  * 跨库问答则收在「对话」页——那里的问题是"这些库里怎么说"，不是"哪个块最像"。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import IconChat from '@/components/icons/IconChat.vue'
@@ -30,7 +30,6 @@ import IconTasks from '@/components/icons/IconTasks.vue'
 import IconUser from '@/components/icons/IconUser.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
 import { loadRoster, roster, setOperator } from '@/composables/useOperator'
-import { useConsoleTokenPrompt } from '@/composables/useConsoleToken'
 import { isAdmin, logout as logoutSession } from '@/composables/useSession'
 import { currentUser } from '@/composables/useSessionToken'
 import { resolvedTheme, setTheme } from '@/composables/useTheme'
@@ -79,21 +78,13 @@ const activeConversationId = computed(() => {
 const settingsOpen = ref(false)
 
 /**
- * 401 兜底：request() 收到 401 会递增 promptCount，这里打开设置弹窗并直接
- * 落到「系统与安全」的令牌输入框。没有这层，用户只会在每个页面收到一句
- * "缺少凭据"，而**没有任何恢复入口**（useConsoleToken.ts 的头部注释讲了这个坑）。
+ * 设置弹窗的打开入口。
+ *
+ * **401 不再往这里兜**（v0.11）：唯一的恢复路径是重新登录，由 `App.vue` 监听
+ * relogin 信号统一送到登录页。原先那条"打开设置并落到令牌输入框"的兜底
+ * 连着已经取消的控制台令牌。
  */
-const { promptCount } = useConsoleTokenPrompt()
-const settingsInitialSection = ref<string | undefined>(undefined)
-
-watch(promptCount, () => {
-  settingsInitialSection.value = 'system'
-  settingsOpen.value = true
-})
-
-/** 从按钮打开是一次全新浏览：清掉 401 流程留下的定位，回到默认分组。 */
 function openSettings(): void {
-  settingsInitialSection.value = undefined
   settingsOpen.value = true
 }
 
@@ -249,11 +240,7 @@ async function onLogout(): Promise<void> {
       </details>
     </div>
 
-    <SettingsModal
-      v-model:open="settingsOpen"
-      :initial-section="settingsInitialSection"
-      @logout="onLogout"
-    />
+    <SettingsModal v-model:open="settingsOpen" @logout="onLogout" />
   </aside>
 </template>
 

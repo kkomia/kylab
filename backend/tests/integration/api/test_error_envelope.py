@@ -48,8 +48,8 @@ def client() -> TestClient:
         ("/conflict", 409, "conflict", "检测到相同文件"),
         ("/invalid", 422, "invalid_request", "top_k 必须大于 0"),
         ("/generic", 500, "internal_error", "服务内部错误"),
-    ],
-)
+    ]
+    )
 def test_error_envelope(client: TestClient, path: str, status: int, code: str,
                         message: str) -> None:
     response = client.get(path)
