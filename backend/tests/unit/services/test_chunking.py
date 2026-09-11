@@ -176,3 +176,78 @@ def test_metadata_is_filled_for_every_chunk() -> None:
         assert chunk.document_id == DOC
         assert chunk.knowledge_base_id == KB
         assert tuple(chunk.image_ids) == ()
+
+
+# ------------------------------------------------- 大文件切分后的页码（T2.7）
+
+
+class TestPageMapping:
+    """页标记 → ``chunk.page``。
+
+    大文件切分器把 1500 页的文档切成 8 段分别解析，产物是拼起来的。
+    没有这条映射，「这条命中在第几页」就永远答不出来——
+    而引文页码是"答案可核查"的前提（架构 §5）。
+
+    这一组同时钉住**两边共用的标记格式**：``splitting.PAGE_MARKER_TEMPLATE``
+    写、``chunking._PAGE_MARKER`` 读。格式改成一边就只剩另一边，测试会红。
+    """
+
+    def test_标记之后的正文带上那一页的页码(self) -> None:
+        from app.services.splitting import render_page_marker
+
+        # 段长给 10，让两段必然分开成两块——否则它们会被贪心装进同一个桶，
+        # 而那测的就不是"页码对不对"而是"桶怎么装"了
+        markdown = (
+            f"{render_page_marker(1)}\n\n第一段正文。\n\n"
+            f"{render_page_marker(501)}\n\n第二段正文。"
+        )
+        chunks = _chunk(markdown, config=ChunkingConfig(size=10, overlap=0))
+
+        assert [chunk.page for chunk in chunks] == [1, 501]
+
+    def test_标记本身不进_chunk_正文(self) -> None:
+        # 留在正文里会污染检索文本，也会让嵌入向量被一串 HTML 注释干扰
+        from app.services.splitting import render_page_marker
+
+        chunks = _chunk(f"{render_page_marker(7)}\n\n正文。\n")
+        assert all("<!--" not in chunk.text for chunk in chunks)
+        assert all("page:" not in chunk.text for chunk in chunks)
+
+    def test_没有标记的文档页码为空(self) -> None:
+        # 没被切分的文档本就没有页信息。编一个 1 出来会让界面显示假页码，
+        # 而 None 会被渲染成"—"，后者才是诚实的
+        chunks = _chunk("# 标题\n\n正文。\n")
+        assert all(chunk.page is None for chunk in chunks)
+
+    def test_一块横跨两段时标的是起始页(self) -> None:
+        """**已知的近似，不是 bug**：一块只带一个页码。
+
+        段长足够大时两段会被装进同一个 chunk，它只能报一个页码——
+        报的是**起始页**（1）。这与"PDF 未经切分时整篇报 None"是同一种取舍：
+        页码是**定位辅助**，不是精确映射；想要精确就得把页标记做成绝对分块边界，
+        而那会把块切得很碎，不值得。
+
+        这条测试是**记录这个决定**：将来若有人把页标记改成强制分块，
+        它会红，然后他必须回来读这段注释而不是默默改掉行为。
+        """
+        from app.services.splitting import render_page_marker
+
+        markdown = f"{render_page_marker(1)}\n\n第一页。\n\n{render_page_marker(2)}\n\n第二页。"
+        chunks = _chunk(markdown, config=ChunkingConfig(size=100, overlap=0))
+        assert len(chunks) == 1
+        assert chunks[0].page == 1
+        # 段长小时就会分成两块，各自带自己的页码
+        split = _chunk(markdown, config=ChunkingConfig(size=8, overlap=0))
+        assert [chunk.page for chunk in split] == [1, 2]
+
+    def test_页码缺失后不会沿用上一页(self) -> None:
+        # 一个文档里混合着"有标记的段"与"没标记的段"（例如后续增量追加的部分）时，
+        # 沿用上一页会把新内容标到旧页码上
+        from app.services.splitting import render_page_marker
+
+        chunks = _chunk(
+            f"{render_page_marker(3)}\n\n有页码。\n", config=ChunkingConfig(size=100, overlap=0)
+        )
+        assert chunks[0].page == 3
+        plain = _chunk("没有页码。\n", config=ChunkingConfig(size=100, overlap=0))
+        assert plain[0].page is None

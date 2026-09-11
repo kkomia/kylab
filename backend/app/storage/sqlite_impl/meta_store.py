@@ -210,9 +210,14 @@ class SqliteMetaStore(MetaStore):
         if not records:
             return
         with self._db.session() as conn:
+            # `INSERT OR REPLACE` 而不是 `INSERT`：摄入失败重跑时子文件 id 是同一批
+            # （由 document_id + 段序号派生），普通 INSERT 会撞主键，把**设计内**的
+            # 重跑路径（状态机支持从 parsing 继续）变成硬失败。
+            # 另有 UNIQUE(document_id, part_index)：段数变少时旧的高序号段会被替换掉
+            # 之外仍留着，所以由调用方先按 document_id 清一遍（delete_document_parts）。
             conn.executemany(
                 """
-                INSERT INTO document_parts
+                INSERT OR REPLACE INTO document_parts
                     (id, document_id, part_index, page_start, page_end, stage, error)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
@@ -256,6 +261,34 @@ class SqliteMetaStore(MetaStore):
             conn.execute(
                 "UPDATE document_parts SET stage = ?, error = ? WHERE id = ?",
                 (stage.value, error, part_id),
+            )
+
+    def delete_document_parts(self, document_id: str) -> None:
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM document_parts WHERE document_id = ?", (document_id,))
+
+    def update_document_page_count(self, document_id: str, page_count: int | None) -> None:
+        """把解析阶段得知的页数落库。
+
+        **单独一个方法而不是塞进 ``update_document_stage``**：页数是**解析产物**，
+        不是一个阶段推进事件。合成一个方法的话，每个调 ``update_document_stage``
+        的地方都要想"我这次要不要带页数"，而那 8 处里的 7 处根本没这个信息。
+        """
+        if page_count is None or page_count <= 0:
+            # 0 页不是"文档有 0 页"，是"没测出来"。写 0 会让界面显示"0 页"，
+            # 而 NULL 会被界面渲染成"—"，后者才是诚实的。
+            return
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE documents SET page_count = ?, updated_at = ? WHERE id = ?",
+                (page_count, _dump(_now()), document_id),
+            )
+
+    def mark_document_split(self, document_id: str, is_split: bool = True) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE documents SET is_split = ?, updated_at = ? WHERE id = ?",
+                (1 if is_split else 0, _dump(_now()), document_id),
             )
 
     # ------------------------------------------------------------------ chunk

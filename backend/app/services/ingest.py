@@ -21,16 +21,24 @@ from urllib.parse import quote
 
 from app.core.exceptions import NotFoundError
 from app.models.enums import DataSourceKind, DocumentStage
-from app.parsers.base import ParseError, ParseResult
+from app.parsers.base import ParseError, ParseResult, ParserProvider
 from app.parsers.probe import probe, suffix_of
 from app.pipeline.state_machine import InvalidTransition, assert_transition
 from app.services.chunking import ChunkingConfig, chunk_markdown
 from app.services.embedding.base import EmbeddingError, EmbeddingProvider
 from app.services.parser_router import ParserRouter
+from app.services.splitting import (
+    PageRangeSplitter,
+    PartOutcome,
+    SplitPlan,
+    build_result,
+    plan_split,
+)
 from app.services.tabular import TABULAR_EXTENSIONS, parse_tabular
 from app.storage.base import (
     MARKDOWN,
     ORIGINALS,
+    DocumentPartRecord,
     DocumentRecord,
     KnowledgeBaseRecord,
     ParseResultRecord,
@@ -47,6 +55,15 @@ __all__ = [
     "content_disposition",
     "normalize_filename",
 ]
+
+
+def _part_id(document_id: str, index: int) -> str:
+    """子文件 id：由文档 id + 段序号派生，**必须可重入**。
+
+    随机 id 会让"失败重跑"每次都建一批新的子文件记录——
+    于是界面上子文件树越跑越长，用户看到 5 段变成 10 段。
+    """
+    return f"{document_id}#part{index:03d}"
 
 
 class IngestError(Exception):
@@ -185,17 +202,117 @@ class IngestService:
         original = self._read_original(document)
         probe_result = probe(original, filename=document.name, mime_type=document.mime_type)
 
+        # 页数是**探测的产物**，先落库：它在下面决定要不要切分，
+        # 也是界面上"共 N 页"的唯一来源（此前这一列恒为 null，见 §12.18）
+        self._stores.meta.update_document_page_count(document.id, probe_result.page_count)
+
         self._advance(document, DocumentStage.PARSING)
         decision = self._router.decide(
             filename=document.name, mime_type=document.mime_type, probe=probe_result
         )
-        result = decision.parser.parse(
+
+        # 大文件强制切分（架构 §4.2 / T2.7）：超过渠道页数上限的 PDF 直接提交
+        # 只会拿到 -60006 然后整个文件失败，而它其实完全可以被解析。
+        split_plan = plan_split(probe_result.page_count)
+        if split_plan.needed:
+            result = self._parse_in_parts(
+                document=document,
+                original=original,
+                plan=split_plan,
+                parser=decision.parser,
+                probe_result=probe_result,
+            )
+        else:
+            result = decision.parser.parse(
+                content=original,
+                filename=document.name,
+                mime_type=document.mime_type,
+                probe=probe_result,
+            )
+
+        self._save_parse_artifacts(document, result, decision.reason, probe_result)
+        self._advance(document, DocumentStage.PARSED)
+        self._store_tabular_copy(document, original)
+        return result
+
+    def _parse_in_parts(
+        self,
+        *,
+        document: DocumentRecord,
+        original: bytes,
+        plan: SplitPlan,
+        parser: ParserProvider,
+        probe_result,
+    ) -> ParseResult:
+        """按页范围切分后逐段解析，再合并成一份产物（架构 §4.2）。
+
+        **子文件记录先建再跑**：这样界面上"第 1 段在跑、第 2 段还没开始"是可见的，
+        而不是全程只有一个转圈。跑完按段回写成功/失败。
+        """
+        self._stores.meta.delete_document_parts(document.id)
+        self._stores.meta.create_document_parts(
+            [
+                DocumentPartRecord(
+                    id=_part_id(document.id, index),
+                    document_id=document.id,
+                    part_index=index,
+                    page_start=part.start,
+                    page_end=part.end,
+                    stage=DocumentStage.PARSING,
+                )
+                for index, part in enumerate(plan.parts)
+            ]
+        )
+        # 主文档标记为已切分：界面据此把它渲染成**可展开**的父行，
+        # 而不是一个和普通文件一样的单行（架构 §4.2 "UI 显示为单个文件，点击展开子文件树"）
+        self._stores.meta.mark_document_split(document.id)
+
+        logger.info(
+            "文档 %s 共 %d 页，%s",
+            document.id,
+            plan.total_pages,
+            plan.reason,
+        )
+
+        splitter = PageRangeSplitter(
+            parser,
+            part_id_of=lambda index: _part_id(document.id, index),
+            on_part_done=self._record_part_outcome,
+        )
+        outcome = splitter.run(
             content=original,
             filename=document.name,
+            plan=plan,
             mime_type=document.mime_type,
             probe=probe_result,
         )
 
+        failed = outcome.failed
+        if failed:
+            # **一段失败就整体失败**——但不能只说"失败了"：
+            # 用户要知道是哪几段，才能只重跑那几段（架构 §4.2）
+            detail = "、".join(f"{item.part}：{item.error}" for item in failed)
+            raise ParseError(
+                f"{len(failed)}/{len(outcome.outcomes)} 段解析失败——{detail}",
+                stage="parsing",
+            )
+
+        return build_result(outcome, parser_name=parser.name, probe=probe_result)
+
+    def _record_part_outcome(self, outcome: PartOutcome) -> None:
+        self._stores.meta.update_part_stage(
+            outcome.part_id,
+            DocumentStage.PARSED if outcome.ok else DocumentStage.FAILED,
+            error=outcome.error,
+        )
+
+    def _save_parse_artifacts(
+        self,
+        document: DocumentRecord,
+        result: ParseResult,
+        route_reason: str,
+        probe_result,
+    ) -> None:
         markdown_path = self._stores.objects.write(
             f"{MARKDOWN}/{document.id}.md", result.markdown.encode("utf-8")
         )
@@ -208,14 +325,11 @@ class IngestService:
                 probe_meta={
                     "kind": probe_result.kind,
                     "text_coverage": probe_result.text_coverage,
-                    "route_reason": decision.reason,
+                    "route_reason": route_reason,
                     **probe_result.detail,
                 },
             )
         )
-        self._advance(document, DocumentStage.PARSED)
-        self._store_tabular_copy(document, original)
-        return result
 
     def _store_tabular_copy(self, document: DocumentRecord, original: bytes) -> None:
         """表格文档：另写一份结构化副本进 DuckDB（T2.11 双写）。

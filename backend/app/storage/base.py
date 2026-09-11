@@ -499,14 +499,36 @@ class MetaStore(ABC):
     ) -> None: ...
 
     @abstractmethod
+    def update_document_page_count(self, document_id: str, page_count: int | None) -> None:
+        """页数是**解析产物**而不是阶段推进，所以有独立入口。
+
+        ``None`` 或 ``<= 0`` 一律忽略、保持 NULL：写 0 会让界面显示"0 页"，
+        而 NULL 渲染成"—"，后者才是诚实的（"没测出来"不等于"有 0 页"）。
+        """
+
+    @abstractmethod
+    def mark_document_split(self, document_id: str, is_split: bool = True) -> None:
+        """标记"这个文档被切成子文件了"。
+
+        界面据此把它渲染成**可展开的父行**（架构 §4.2："UI 显示为单个文件，
+        点击展开子文件树"）。没有这个标记，子文件树就永远不会出现——
+        用户只能看到一个文档，却不知道它内部被切成了 5 段、其中一段失败了。
+        """
+
+    @abstractmethod
     def delete_document(self, document_id: str) -> None: ...
 
     # ---- 子文件 ----
     @abstractmethod
-    def create_document_parts(self, records: Sequence[DocumentPartRecord]) -> None: ...
+    def create_document_parts(self, records: Sequence[DocumentPartRecord]) -> None:
+        """建立子文件记录。**必须可重入**：摄入失败重跑时会用同一批 id 再来一次。"""
 
     @abstractmethod
     def list_document_parts(self, document_id: str) -> list[DocumentPartRecord]: ...
+
+    @abstractmethod
+    def delete_document_parts(self, document_id: str) -> None:
+        """重跑切分前清一遍：段数可能变少，``INSERT OR REPLACE`` 清不掉多出来的高序号段。"""
 
     @abstractmethod
     def update_part_stage(
