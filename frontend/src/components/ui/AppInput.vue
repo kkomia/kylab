@@ -14,6 +14,8 @@ withDefaults(
     id?: string
     /** 数字输入用原生 number：浏览器的步进与移动端数字键盘都归它管。 */
     type?: 'text' | 'number' | 'password'
+    /** 交给浏览器的自动填充提示（username / current-password / new-password）。 */
+    autocomplete?: string
   }>(),
   // 可选属性显式给 undefined 默认值：Vue 语义上一样，但能让 lint 配置看清"这是刻意的可选"
   {
@@ -23,6 +25,7 @@ withDefaults(
     disabled: false,
     id: undefined,
     type: 'text',
+    autocomplete: undefined,
   },
 )
 </script>
@@ -44,6 +47,7 @@ withDefaults(
     class="field"
     :type="type"
     :placeholder="placeholder"
+    :autocomplete="autocomplete"
     :disabled="disabled"
   />
 </template>

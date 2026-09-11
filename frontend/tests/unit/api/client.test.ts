@@ -6,6 +6,12 @@ import {
   setConsoleToken,
   useConsoleTokenPrompt,
 } from '@/composables/useConsoleToken'
+import {
+  clearSessionToken,
+  sessionToken,
+  setSessionToken,
+  useReloginPrompt,
+} from '@/composables/useSessionToken'
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -18,10 +24,44 @@ describe('api/client', () => {
   beforeEach(() => {
     window.localStorage.clear()
     clearConsoleToken()
+    clearSessionToken()
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('带会话令牌的 401 清掉会话并请求重新登录，不提示填令牌', async () => {
+    // 账号体系下会话过期是常态（7 天 / 改密 / 被吊销）。此时该做的是回登录页，
+    // 而不是弹"去设置里粘贴控制台令牌"——用户根本没有令牌
+    setSessionToken('kylab_st_expired')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse(401, { code: 'UNAUTHORIZED', message: '会话已失效' })),
+    )
+    const reloginBefore = useReloginPrompt().reloginCount.value
+    const tokenPromptBefore = useConsoleTokenPrompt().promptCount.value
+
+    const failure = await request('/knowledge-bases').catch((error: unknown) => error)
+
+    expect((failure as Error).message).toContain('重新登录')
+    expect(sessionToken()).toBe('')
+    expect(useReloginPrompt().reloginCount.value).toBe(reloginBefore + 1)
+    expect(useConsoleTokenPrompt().promptCount.value).toBe(tokenPromptBefore)
+  })
+
+  it('会话令牌优先于控制台令牌：同时存在时用它', async () => {
+    setSessionToken('kylab_st_primary')
+    setConsoleToken('kylab_console_backup')
+    const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
+      async () => jsonResponse(200, { ok: true }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await request('/knowledge-bases')
+
+    const headers = (fetchMock.mock.calls[0]?.[1]?.headers ?? {}) as Record<string, string>
+    expect(headers.Authorization).toBe('Bearer kylab_st_primary')
   })
 
   it('401 时触发"填令牌"信号，并把后端原文换成操作指引', async () => {

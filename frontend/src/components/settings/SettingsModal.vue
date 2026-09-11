@@ -17,6 +17,7 @@
  */
 import { computed, onMounted, ref, watch } from 'vue'
 
+import { MIN_PASSWORD_CHARS } from '@/api/auth'
 import { fetchHealth, type HealthResponse } from '@/api/health'
 import {
   getAuthStatus,
@@ -37,9 +38,17 @@ import StatusTag from '@/components/ui/StatusTag.vue'
 import { useToast } from '@/composables/useToast'
 import { useConsoleToken } from '@/composables/useConsoleToken'
 import { useFontScale } from '@/composables/useFontScale'
+import { changeOwnPassword, isAdmin } from '@/composables/useSession'
+import { currentUser } from '@/composables/useSessionToken'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 const open = defineModel<boolean>('open', { required: true })
+
+/**
+ * 退出登录由外壳（SideNav）执行：它还要清空两个 Pinia store 与名册缓存，
+ * 而那是"整个会话"的事，不适合塞进一个设置弹窗里。
+ */
+const emit = defineEmits<{ logout: [] }>()
 
 /**
  * 打开时定位到的分组（可选）。401 兜底流程靠它直接落到「系统与安全」的
@@ -111,6 +120,51 @@ function forgetToken(): void {
   clearConsoleToken()
   tokenDraft.value = ''
   notifySuccess('已清除本机保存的控制台令牌')
+}
+
+/**
+ * 修改自己的密码（v10 账号体系）。
+ *
+ * 三处与后端对齐的约束，前端先拦一遍是为了省一次往返、也让错误就近显示：
+ * 新密码长度（后端 MIN_PASSWORD_CHARS）、两次一致、当前密码非空。
+ * 真正的判定仍在后端——前端校验只是体验，不是安全边界。
+ */
+const oldPassword = ref('')
+const newPassword = ref('')
+const confirmNewPassword = ref('')
+const changingPassword = ref(false)
+const passwordError = ref('')
+
+async function submitPasswordChange(): Promise<void> {
+  passwordError.value = ''
+  if (!oldPassword.value || !newPassword.value) {
+    passwordError.value = '请填写当前密码与新密码'
+    return
+  }
+  if (newPassword.value.length < MIN_PASSWORD_CHARS) {
+    passwordError.value = `新密码至少 ${MIN_PASSWORD_CHARS} 个字符`
+    return
+  }
+  if (newPassword.value !== confirmNewPassword.value) {
+    passwordError.value = '两次输入的新密码不一致'
+    return
+  }
+  changingPassword.value = true
+  try {
+    const result = await changeOwnPassword(oldPassword.value, newPassword.value)
+    oldPassword.value = ''
+    newPassword.value = ''
+    confirmNewPassword.value = ''
+    notifySuccess(
+      result.revoked_sessions > 0
+        ? `密码已更新，其他 ${result.revoked_sessions} 处登录已退出`
+        : '密码已更新',
+    )
+  } catch (error) {
+    passwordError.value = error instanceof Error ? error.message : '修改失败，请重试'
+  } finally {
+    changingPassword.value = false
+  }
 }
 
 /** 正在编辑的分组（null = 仍在浏览态）。 */
@@ -662,6 +716,68 @@ async function runTest(target: string): Promise<void> {
         <!-- 系统与安全 -->
         <template v-else>
           <h3 class="section-title">系统与安全</h3>
+
+          <!-- 账号（v10 主路径）：登录状态下在这里改密、退出。
+               控制台令牌只留给没有账号的老部署/应急恢复，见下方 v-if 分支。 -->
+          <template v-if="currentUser">
+            <div class="row row-static">
+              <div class="row-main">
+                <span class="row-label">当前账号</span>
+                <span class="row-value">
+                  {{ currentUser.name }}
+                  <span class="row-sub">（{{ currentUser.username }}）</span>
+                </span>
+              </div>
+              <StatusTag
+                :tone="isAdmin ? 'success' : 'neutral'"
+                :label="isAdmin ? '管理员' : '成员'"
+              />
+            </div>
+
+            <h3 class="section-title section-gap">修改密码</h3>
+            <div class="password-form">
+              <label class="field-label" for="kylab-old-password">当前密码</label>
+              <AppInput
+                id="kylab-old-password"
+                v-model="oldPassword"
+                type="password"
+                autocomplete="current-password"
+                :disabled="changingPassword"
+              />
+              <label class="field-label" for="kylab-new-password">新密码</label>
+              <AppInput
+                id="kylab-new-password"
+                v-model="newPassword"
+                type="password"
+                autocomplete="new-password"
+                :placeholder="`至少 ${MIN_PASSWORD_CHARS} 个字符`"
+                :disabled="changingPassword"
+              />
+              <label class="field-label" for="kylab-confirm-password">确认新密码</label>
+              <AppInput
+                id="kylab-confirm-password"
+                v-model="confirmNewPassword"
+                type="password"
+                autocomplete="new-password"
+                :disabled="changingPassword"
+              />
+              <p v-if="passwordError" class="form-error" role="alert">{{ passwordError }}</p>
+              <div class="password-actions">
+                <AppButton
+                  variant="primary"
+                  :disabled="changingPassword"
+                  @click="submitPasswordChange"
+                >
+                  {{ changingPassword ? '提交中…' : '更新密码' }}
+                </AppButton>
+                <AppButton variant="danger" @click="emit('logout')">退出登录</AppButton>
+              </div>
+              <p class="row-note">
+                改密会吊销其他设备上的登录，当前这条保留。忘记密码时，可由管理员在「用户」里重置。
+              </p>
+            </div>
+          </template>
+
           <div class="row row-static">
             <div class="row-main">
               <span class="row-label">后端状态</span>
@@ -694,43 +810,47 @@ async function runTest(target: string): Promise<void> {
 
           <!-- 凭据输入：**这是控制台在启用鉴权后的唯一入口**。
                没有它，打开鉴权等于把控制台锁死——每个页面都报「缺少凭据」，
-               而用户没有任何地方可以填。 -->
-          <div class="row row-static">
-            <div class="row-main">
-              <span class="row-label">控制台令牌</span>
-              <span class="row-value">
-                {{
-                  consoleToken
-                    ? '已保存（只存在这台机器的浏览器里）'
-                    : '未填写。后端启用鉴权后，控制台需要它才能读写'
-                }}
-              </span>
+               而用户没有任何地方可以填。
+               账号体系（v10）落地后它退为**恢复通道**：已有账号时不再显示，
+               否则会和"登录"这件事重复，让人以为要两处都配。 -->
+          <template v-if="!currentUser">
+            <div class="row row-static">
+              <div class="row-main">
+                <span class="row-label">控制台令牌</span>
+                <span class="row-value">
+                  {{
+                    consoleToken
+                      ? '已保存（只存在这台机器的浏览器里）'
+                      : '未填写。后端启用鉴权后，控制台需要它才能读写'
+                  }}
+                </span>
+              </div>
+              <StatusTag
+                :tone="consoleToken ? 'success' : 'neutral'"
+                :label="consoleToken ? '已配置' : '未填写'"
+              />
             </div>
-            <StatusTag
-              :tone="consoleToken ? 'success' : 'neutral'"
-              :label="consoleToken ? '已配置' : '未填写'"
-            />
-          </div>
 
-          <div class="token-row">
-            <AppInput
-              id="console-token"
-              v-model="tokenDraft"
-              type="password"
-              placeholder="粘贴控制台令牌（kylab_console_…）"
-              @keyup.enter="saveToken"
-            />
-            <AppButton variant="primary" :disabled="!tokenDraft.trim()" @click="saveToken">
-              保存
-            </AppButton>
-            <AppButton v-if="consoleToken" @click="forgetToken">清除</AppButton>
-          </div>
+            <div class="token-row">
+              <AppInput
+                id="console-token"
+                v-model="tokenDraft"
+                type="password"
+                placeholder="粘贴控制台令牌（kylab_console_…）"
+                @keyup.enter="saveToken"
+              />
+              <AppButton variant="primary" :disabled="!tokenDraft.trim()" @click="saveToken">
+                保存
+              </AppButton>
+              <AppButton v-if="consoleToken" @click="forgetToken">清除</AppButton>
+            </div>
 
-          <p class="row-note">
-            令牌由后端签发：首次部署时设置 KYLAB_CONSOLE_TOKEN，或调用 POST
-            /api/v1/auth/console-token 初始化一条。它只保存在这台机器的浏览器里，
-            不写进知识库配置。原文与图片下载走带过期时间的签名 URL，不产生永久直链。
-          </p>
+            <p class="row-note">
+              令牌由后端签发：首次部署时设置 KYLAB_CONSOLE_TOKEN，或调用 POST
+              /api/v1/auth/console-token 初始化一条。它只保存在这台机器的浏览器里，
+              不写进知识库配置。原文与图片下载走带过期时间的签名 URL，不产生永久直链。
+            </p>
+          </template>
         </template>
       </div>
     </div>
@@ -906,6 +1026,42 @@ async function runTest(target: string): Promise<void> {
   max-width: 64ch;
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
+}
+
+/* 账号区里"（登录名）"这类补充信息：比主值再退一档，不与名字抢注意力 */
+.row-sub {
+  color: var(--text-tertiary);
+}
+
+/* 修改密码表单：与登录页同一套"标签在上、控件在下"的语言 */
+.password-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+}
+
+.field-label {
+  margin-top: var(--space-2);
+  font-size: var(--text-micro-size);
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.password-form .field-label:first-child {
+  margin-top: 0;
+}
+
+.form-error {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-micro-size);
+  color: var(--status-danger);
+}
+
+.password-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
 }
 
 .text-warn {

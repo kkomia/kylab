@@ -12,7 +12,7 @@
  * 跨库问答则收在「对话」页——那里的问题是"这些库里怎么说"，不是"哪个块最像"。
  */
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import { fetchHealth } from '@/api/health'
 import IconChat from '@/components/icons/IconChat.vue'
@@ -27,11 +27,14 @@ import SettingsModal from '@/components/settings/SettingsModal.vue'
 import { useTheme } from '@/composables/useTheme'
 import { loadRoster, operator, operatorId, roster, setOperator } from '@/composables/useOperator'
 import { useConsoleTokenPrompt } from '@/composables/useConsoleToken'
+import { isAdmin, logout as logoutSession } from '@/composables/useSession'
+import { currentUser } from '@/composables/useSessionToken'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 const { theme, toggleTheme } = useTheme()
 const route = useRoute()
+const router = useRouter()
 const store = useKnowledgeBaseStore()
 const conversations = useConversationStore()
 
@@ -104,6 +107,31 @@ function openSettings(): void {
   settingsInitialSection.value = undefined
   settingsOpen.value = true
 }
+
+/**
+ * 退出登录。
+ *
+ * 三件事必须一起做，少一件都会把上一个人的数据留给下一个人：
+ * 1. 吊销会话并清本地令牌（`logout`）；
+ * 2. **清空两个 store 与名册缓存**——Pinia 的数据留在内存里，不清的话
+ *    换个人登录进来会先看到前一个人的知识库与会话（列表非空，侧栏也不会重新加载）；
+ * 3. 跳登录页。
+ */
+const loggingOut = ref(false)
+
+async function onLogout(): Promise<void> {
+  loggingOut.value = true
+  try {
+    await logoutSession()
+    store.$reset()
+    conversations.$reset()
+    roster.value = []
+    setOperator('')
+    await router.push({ name: 'login' })
+  } finally {
+    loggingOut.value = false
+  }
+}
 </script>
 
 <template>
@@ -158,11 +186,26 @@ function openSettings(): void {
 
     <div class="sidebar-foot">
       <!--
+        已登录账号：显示名 + 角色 + 退出。账号体系是主路径，所以登录后
+        **不再显示"当前使用者"名册下拉**——身份已经由登录确定，两处并存只会
+        让人以为还要再选一次（名册下拉留给未启用账号体系的老部署）。
+      -->
+      <div v-if="currentUser" class="account">
+        <div class="account-row">
+          <span class="account-name" :title="currentUser.name">{{ currentUser.name }}</span>
+          <span class="account-role">{{ isAdmin ? '管理员' : '成员' }}</span>
+        </div>
+        <button class="account-action" type="button" :disabled="loggingOut" @click="onLogout">
+          {{ loggingOut ? '正在退出…' : '退出登录' }}
+        </button>
+      </div>
+
+      <!--
         当前使用者（G6）。**放在页脚而不是页头**：它是"我的身份"这类静态信息，
         不是每页都要操作的东西；页脚与主题/设置同级，符合"这里是环境设置"的语感。
         名册没配人时不占位——名册是可选的，空着比显示一个空下拉干净。
       -->
-      <div v-if="roster.length || operatorName" class="identity">
+      <div v-else-if="roster.length || operatorName" class="identity">
         <label class="identity-label" for="kylab-operator">当前使用者</label>
         <select
           id="kylab-operator"
@@ -215,7 +258,11 @@ function openSettings(): void {
       </p>
     </div>
 
-    <SettingsModal v-model:open="settingsOpen" :initial-section="settingsInitialSection" />
+    <SettingsModal
+      v-model:open="settingsOpen"
+      :initial-section="settingsInitialSection"
+      @logout="onLogout"
+    />
   </aside>
 </template>
 
@@ -416,6 +463,59 @@ function openSettings(): void {
 .sidebar-foot {
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--border-hairline);
+}
+
+/* 账号区：一行名字 + 角色，下面一个低调的"退出登录"。
+   用 surface 底把它与下面三个环境设置动作（设置/主题/服务状态）分开——
+   前者是"我是谁"，后者是"改这台机器怎么表现"，不该混成一组。 */
+.account {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-2);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-control);
+}
+
+.account-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.account-name {
+  overflow: hidden;
+  font-size: var(--text-meta-size);
+  font-weight: 500;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-role {
+  flex: 0 0 auto;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.account-action {
+  align-self: flex-start;
+  font-size: var(--text-micro-size);
+  color: var(--text-secondary);
+  border-radius: var(--radius-control);
+}
+
+.account-action:hover:not(:disabled) {
+  color: var(--status-danger);
+}
+
+.account-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .foot-action {
