@@ -13,6 +13,8 @@ export interface ConversationSummary {
   id: string
   title: string
   kb_ids: string[]
+  /** 本条会话选用的对话模型（v12）；`null` = 跟随全局默认。界面据此回填模型选择器。 */
+  model_pk: string | null
   created_at: string | null
   updated_at: string | null
   message_count: number
@@ -34,10 +36,13 @@ export function listConversations(limit = 50): Promise<{ items: ConversationSumm
   return request(`/conversations?limit=${limit}`)
 }
 
-export function createConversation(kbIds: string[]): Promise<ConversationSummary> {
+export function createConversation(
+  kbIds: string[],
+  modelPk?: string | null,
+): Promise<ConversationSummary> {
   return request('/conversations', {
     method: 'POST',
-    body: JSON.stringify({ kb_ids: kbIds }),
+    body: JSON.stringify({ kb_ids: kbIds, model_pk: modelPk ?? null }),
   })
 }
 

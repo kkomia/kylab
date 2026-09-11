@@ -11,7 +11,7 @@
  * 而且卡住时能立刻看出是模型在胡扯还是检索没命中。
  */
 
-import { API_BASE, type ApiErrorBody } from './client'
+import { API_BASE, request, type ApiErrorBody } from './client'
 
 export interface ChatSource {
   index: number
@@ -43,6 +43,14 @@ export interface ChatPayload {
    * 而脚本与 MCP 不带上它（无状态、不留垃圾会话）。
    */
   conversation_id?: string
+  /**
+   * 这一轮用哪个注册对话模型（v12）。
+   *
+   * 优先级在后端：请求里的 > 会话已存的 > 全局默认。带了它且指定会话时，
+   * 后端会把选择**记进该会话**——所以界面换模型只需在发送时带上，
+   * 不必额外调用改会话的接口。
+   */
+  model_pk?: string
 }
 
 /** 服务端事件（后端 api/v1/chat.py 的事件形状）。 */
@@ -252,4 +260,28 @@ export async function chatOnce(
   })
   if (!response.ok) throw new Error(await messageFromResponse(response))
   return (await response.json()) as { answer: string; sources: ChatSource[] }
+}
+
+export interface SuggestedQuestions {
+  questions: string[]
+  /** 后端生成不出来时为 `false`（没有语料、没配模型、上游失败），界面据此回退静态样例。 */
+  generated: boolean
+}
+
+/**
+ * 示例问题：依据所选知识库的语料生成（后端 `GET /chat/suggested-questions`）。
+ *
+ * 这是"引导"，不是内容：调用方拿到空列表或捕获到异常时应当回退到静态样例，
+ * 别让一次旁路失败把空状态变成错误页。
+ */
+export function getSuggestedQuestions(
+  kbIds: string[],
+  options: { limit?: number; modelPk?: string; refresh?: boolean } = {},
+): Promise<SuggestedQuestions> {
+  if (kbIds.length === 0) return Promise.resolve({ questions: [], generated: false })
+  const params = new URLSearchParams({ kb_ids: kbIds.join(',') })
+  if (options.limit) params.set('limit', String(options.limit))
+  if (options.modelPk) params.set('model_pk', options.modelPk)
+  if (options.refresh) params.set('refresh', 'true')
+  return request<SuggestedQuestions>(`/chat/suggested-questions?${params.toString()}`)
 }

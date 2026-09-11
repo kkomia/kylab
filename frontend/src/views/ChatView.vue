@@ -6,11 +6,17 @@
  * 对话回答"**这些资料**怎么说这个问题"。所以这里的入口是跨库多选，
  * 结果也不再摊开分数与通道，而是正文 + 引用列表——用户要的是结论，不是排名。
  *
- * 两处刻意的设计：
- * 1. 引用块**永远显示**，不折叠。回答是不是有据可依，是这一页存在的理由；
- *    引用藏在"展开"后面，就等于把验证成本推给了用户。
- * 2. 流式时给一个「停止」。模型偶尔会绕远路，而用户在那一刻唯一想要的
- *    就是让它闭嘴——不给这个按钮，他只能刷新页面，连已经看到的部分都丢。
+ * 布局与控件的取舍（v0.12，参考 WeKnora 的成熟做法）：
+ * - **没有页头**：对话页是"一块会一直用的对话面"，不是一份清单。上面再顶一个
+ *   "对话"标题只是重复（侧栏已经写着"对话"）。改为整页 flex 列 + 960px 居中窄列。
+ * - **输入卡片自己带控件**：知识库多选与对话模型都在卡片底部——它们决定的正是
+ *   "这一问依据什么、由谁回答"，跟输入放在一起才说得通。
+ * - **示例问题来自后端语料生成**（拿不到就回退静态样例）：写死的问题和用户的语料无关，
+ *   点进去往往答不上来。
+ *
+ * 两处仍然保留的刻意设计：
+ * 1. 引用块**永远显示**，不折叠。回答是不是有据可依，是这一页存在的理由。
+ * 2. 流式时给一个「停止」——模型偶尔会绕远路，那一刻用户唯一想要的就是让它闭嘴。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -18,18 +24,20 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   DEFAULT_SYSTEM_PROMPT,
   chatStream,
+  getSuggestedQuestions,
   isAbortError,
   type ChatHistoryMessage,
   type ChatSource,
 } from '@/api/chat'
 import { getConversation } from '@/api/conversations'
+import { getRegistry, type RegisteredModel, type Registry } from '@/api/modelRegistry'
 import { getSettings, updateSettings } from '@/api/settings'
-import IconChat from '@/components/icons/IconChat.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
-import PageShell from '@/components/ui/PageShell.vue'
+import AppMultiSelect from '@/components/ui/AppMultiSelect.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import { renderAnswerMarkdown } from '@/composables/useMarkdown'
 import { useToast } from '@/composables/useToast'
 import { useConversationStore } from '@/stores/conversations'
@@ -37,6 +45,10 @@ import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 /** 会话里带入模型的历史轮数上限：无边界地带上全部历史，提示词会先被自己挤爆。 */
 const HISTORY_LIMIT = 6
+/** 示例问题一次显示几个。一屏放得下五六个，再多就变成一堵墙。 */
+const SAMPLE_COUNT = 5
+/** 上次选过的对话模型：换会话/刷新之后仍然沿用（与 WeKnora 同一手法）。 */
+const LAST_MODEL_KEY = 'kylab-last-chat-model'
 
 interface Message {
   role: 'user' | 'assistant'
@@ -77,50 +89,17 @@ const canSend = computed(
   () => selected.value.length > 0 && query.value.trim().length > 0 && !loadingHistory.value,
 )
 
-/**
- * 「你可以这样问我」的示例问题。
- *
- * **刻意不按知识库内容生成**：生成式样例要么再花一次模型调用、要么得猜，
- * 而猜出来的问题答不上来，比没有样例更伤信任。这里给的是**对任何语料都成立**的问法，
- * 用户照着改一改就能问。刷新做的是"轮换"而不是随机——随机可能连着抽出同一批。
- */
-const SAMPLE_POOL = [
-  '这些资料里反复提到的关键结论是什么？',
-  '把几份文档的主要观点对比一下。',
-  '有哪些明确的数字或阈值？分别出自哪里？',
-  '关于这个问题，资料里有相互矛盾的说法吗？',
-  '按资料的说法，第一步应该做什么？',
-  '有没有提到适用范围或前提条件？',
-  '最近入库的文档都讲了什么？',
-  '哪些结论有原文明确支持，哪些只是推测？',
-] as const
-
-const SAMPLE_COUNT = 5
-const sampleOffset = ref(0)
-const samples = computed(() =>
-  Array.from(
-    { length: Math.min(SAMPLE_COUNT, SAMPLE_POOL.length) },
-    (_, index) => SAMPLE_POOL[(sampleOffset.value + index) % SAMPLE_POOL.length],
-  ),
-)
-
-/** 换一批：整体后移一段，保证不会重复展示同一批。 */
-function shuffleSamples(): void {
-  sampleOffset.value = (sampleOffset.value + SAMPLE_COUNT) % SAMPLE_POOL.length
-}
-
-/** 点示例问题：填进输入框；能发就直接发——这一步本来就是"照着问"。 */
-function useSample(question: string): void {
-  query.value = question
-  if (selected.value.length > 0 && !sending.value && !loadingHistory.value) void send()
-}
+/** 知识库多选的下拉选项（名字给用户看，id 给后端）。 */
+const kbOptions = computed(() => store.items.map((item) => ({ value: item.id, label: item.name })))
 
 onMounted(async () => {
   if (store.items.length === 0) await store.load()
   // 默认全选：打开这一页的人多半就是要问遍手上的资料，让他先做一轮取消勾选是白费功夫
   selected.value = store.items.map((item) => item.id)
   void loadPrompt()
+  void loadModels()
   await loadConversation()
+  scheduleSamples()
 })
 
 /**
@@ -139,6 +118,7 @@ async function loadConversation(): Promise<void> {
   const id = conversationId.value
   if (!id) {
     messages.value = []
+    scheduleSamples()
     return
   }
   loadingHistory.value = true
@@ -155,6 +135,8 @@ async function loadConversation(): Promise<void> {
     if (detail.kb_ids.length) {
       selected.value = detail.kb_ids.filter((kbId) => store.items.some((item) => item.id === kbId))
     }
+    // 会话当时选的对话模型：回放时也沿用（v12）。为空则保持当前的默认选择
+    if (detail.model_pk) modelPk.value = detail.model_pk
     stick.value = true
     void scrollToBottom()
   } catch (cause) {
@@ -177,20 +159,8 @@ onBeforeUnmount(() => {
   // 人已经离开这一页，流再跑下去只是烧 token
   unmounted = true
   stream.value?.abort()
+  window.clearTimeout(samplesTimer)
 })
-
-/** 一个库都没勾时用它一键全选（空状态里的那个按钮）。 */
-function selectAll(): void {
-  selected.value = store.items.map((item) => item.id)
-}
-
-function toggleKb(id: string): void {
-  const next = new Set(selected.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  // 按 store 顺序重建，勾选顺序不影响展示
-  selected.value = store.items.filter((item) => next.has(item.id)).map((item) => item.id)
-}
 
 const history = computed<ChatHistoryMessage[]>(() =>
   messages.value
@@ -209,13 +179,14 @@ async function send(): Promise<void> {
   }
   // 先算历史：这条提问还没进 messages，不能把自己也算成上下文
   const context = history.value
+  const model = modelPk.value || undefined
 
   // 新对话：第一句话落下去之前先建会话，拿到 id 再提问。
   // 反过来（先问再建）会丢掉这一轮的落库——后端要靠 conversation_id 才知道往哪写。
   let target = conversationId.value
   if (!target) {
     try {
-      const created = await conversations.create(selected.value)
+      const created = await conversations.create(selected.value, modelPk.value || null)
       target = created.id
       // 用 replace 而不是 push：用户按"新对话"只是想换个会话，
       // 在历史里留一条空的 /chat 没有任何意义，返回时会看到一片空白
@@ -252,7 +223,13 @@ async function send(): Promise<void> {
     const handle = await chatStream(
       // 带上 conversation_id 之后，历史由后端从库里取——所以 context 传不传都一样，
       // 留着是为了"没会话"那条路径（此处不会走到，但接口本身支持无状态调用）
-      { query: text, kb_ids: selected.value, history: context, conversation_id: target },
+      {
+        query: text,
+        kb_ids: selected.value,
+        history: context,
+        conversation_id: target,
+        model_pk: model,
+      },
       {
         onSources: (items) => patch({ sources: items }),
         onDelta: (delta) => patch({ text: (messages.value[index]?.text ?? '') + delta }),
@@ -357,6 +334,156 @@ function sourcePreview(source: ChatSource): string {
   return body.length > CITE_PREVIEW_CHARS ? `${body.slice(0, CITE_PREVIEW_CHARS)}…` : body
 }
 
+// ------------------------------------------------------------------ 对话模型（v12）
+
+const registry = ref<Registry | null>(null)
+/** 当前选用的注册模型 pk；空串 = 交给后端的全局默认。 */
+const modelPk = ref('')
+
+/** 可对话的模型：供应商启用，且能力为空或含 chat（与设置页同一套筛选口径）。 */
+const chatModels = computed<RegisteredModel[]>(() => {
+  const reg = registry.value
+  if (!reg) return []
+  return reg.models.filter((model) => {
+    const owner = reg.providers.find((item) => item.id === model.provider_id)
+    if (!owner || !owner.enabled) return false
+    return model.capabilities.length === 0 || model.capabilities.includes('chat')
+  })
+})
+
+const modelOptions = computed(() =>
+  chatModels.value.map((model) => ({
+    value: model.id,
+    label: `${model.label || model.model_id} · ${model.provider_name}`,
+  })),
+)
+
+async function loadModels(): Promise<void> {
+  try {
+    registry.value = await getRegistry()
+  } catch {
+    // 读不到注册表不该挡住提问：留空即"跟随全局默认"，由后端给出真正的错误
+    registry.value = null
+  }
+  ensureModelSelection()
+}
+
+/**
+ * 选一个默认模型。优先级：**会话已存的（由 loadConversation 写入）> 本地上次选择 >
+ * 注册表里绑定给 chat 的全局默认 > 第一个可用**。与 WeKnora 的默认口径一致，
+ * 多一档"会话已存"是因为我们把选择随会话保存了（v12）。
+ */
+function ensureModelSelection(): void {
+  if (modelPk.value && chatModels.value.some((item) => item.id === modelPk.value)) return
+  const bound = registry.value?.slots.find((slot) => slot.slot === 'chat')?.bound_model_pk ?? ''
+  const remembered = readLastModel()
+  const candidate = [bound, remembered].find(
+    (value) => value && chatModels.value.some((item) => item.id === value),
+  )
+  modelPk.value = candidate ?? chatModels.value[0]?.id ?? ''
+}
+
+function readLastModel(): string {
+  try {
+    return window.localStorage.getItem(LAST_MODEL_KEY) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+// 记住这次选的：换个会话/刷新之后仍然用它（"这台机器上次用的那个"）
+watch(modelPk, (value) => {
+  try {
+    if (value) window.localStorage.setItem(LAST_MODEL_KEY, value)
+  } catch {
+    // 隐私模式：不记忆即可
+  }
+})
+
+// ------------------------------------------------------------------ 示例问题
+
+/**
+ * 静态样例：**语料生成拿不到时的兜底**。
+ *
+ * 不按知识库内容生成的问题容易"点了答不上来"，所以它只做兜底；真正展示的是
+ * 后端依据所选库的原文生成的建议（见 `api/chat.ts::getSuggestedQuestions`）。
+ * 这一池子刻意选"对任何语料都成立"的问法。
+ */
+const STATIC_SAMPLES = [
+  '这些资料里反复提到的关键结论是什么？',
+  '把几份文档的主要观点对比一下。',
+  '有哪些明确的数字或阈值？分别出自哪里？',
+  '关于这个问题，资料里有相互矛盾的说法吗？',
+  '按资料的说法，第一步应该做什么？',
+  '有没有提到适用范围或前提条件？',
+  '最近入库的文档都讲了什么？',
+  '哪些结论有原文明确支持，哪些只是推测？',
+] as const
+
+const sampleOffset = ref(0)
+const staticSamples = computed(() =>
+  Array.from(
+    { length: Math.min(SAMPLE_COUNT, STATIC_SAMPLES.length) },
+    (_, index) => STATIC_SAMPLES[(sampleOffset.value + index) % STATIC_SAMPLES.length],
+  ),
+)
+
+const suggested = ref<string[]>([])
+const samplesLoading = ref(false)
+/** 有生成结果就用它，否则用静态兜底。 */
+const samples = computed(() => (suggested.value.length > 0 ? suggested.value : staticSamples.value))
+
+let samplesTimer: number | undefined
+
+/** 只在"空状态 + 至少选了一个库"时才去生成；有消息之后它是纯浪费。 */
+function scheduleSamples(refresh = false): void {
+  window.clearTimeout(samplesTimer)
+  if (messages.value.length > 0 || selected.value.length === 0) {
+    suggested.value = []
+    return
+  }
+  samplesTimer = window.setTimeout(() => void loadSamples(refresh), refresh ? 0 : 400)
+}
+
+async function loadSamples(refresh: boolean): Promise<void> {
+  if (messages.value.length > 0 || selected.value.length === 0) return
+  samplesLoading.value = true
+  try {
+    const result = await getSuggestedQuestions(selected.value, {
+      limit: SAMPLE_COUNT,
+      modelPk: modelPk.value || undefined,
+      refresh,
+    })
+    suggested.value = result.questions
+  } catch {
+    // 生成只是引导：失败就回退静态样例，别把空状态变成错误提示
+    suggested.value = []
+  } finally {
+    samplesLoading.value = false
+  }
+}
+
+/** 「换一批」：有生成结果就重新生成；否则只是轮换静态样例。 */
+function shuffleSamples(): void {
+  if (suggested.value.length > 0) {
+    void loadSamples(true)
+    return
+  }
+  sampleOffset.value = (sampleOffset.value + SAMPLE_COUNT) % STATIC_SAMPLES.length
+}
+
+// 换库/换模型会改变"依据什么语料"，示例问题跟着重算（防抖在 scheduleSamples 里）
+watch(
+  () => [selected.value.join(','), modelPk.value, messages.value.length].join('|'),
+  () => scheduleSamples(),
+)
+
+/** 点示例问题：填进输入框；能发就直接发——这一步本来就是"照着问"。 */
+function useSample(question: string): void {
+  query.value = question
+  if (selected.value.length > 0 && !sending.value && !loadingHistory.value) void send()
+}
+
 // ------------------------------------------------------------------ 提示词
 
 const promptOpen = ref(false)
@@ -403,155 +530,141 @@ async function savePrompt(): Promise<void> {
 </script>
 
 <template>
-  <PageShell
-    title="对话"
-    description="选一个或多个知识库，直接提问。回答只依据库里的原文，并逐条标出出处。"
-  >
-    <template #actions>
-      <AppButton :disabled="promptLoading" @click="openPrompt">
-        <template #icon><IconChat /></template>
-        {{ promptConfigured ? '提示词（已自定义）' : '提示词' }}
-      </AppButton>
-    </template>
+  <div class="chat">
+    <!-- 消息区自己滚：输入卡片要一直停在视野里，不能跟着回答一起被顶下去 -->
+    <div ref="streamHost" class="chat-scroll" @scroll.passive="onStreamScroll">
+      <div class="chat-inner" :class="{ 'chat-inner-welcome': messages.length === 0 }">
+        <!-- 空状态：居中问候 + 示例问题（参考 WeKnora 的欢迎层）。
+             有消息之后整块消失，让位给正文——它不是常驻装饰。 -->
+        <div v-if="messages.length === 0" class="welcome">
+          <h1 class="welcome-title">Hi，我是 KYLAB，让你的知识触手可及</h1>
+          <div class="welcome-sub">
+            <span>你可以这样问我</span>
+            <button
+              type="button"
+              class="welcome-refresh"
+              aria-label="换一批示例问题"
+              title="换一批"
+              :disabled="samplesLoading"
+              @click="shuffleSamples"
+            >
+              <IconRefresh :size="14" />
+            </button>
+          </div>
+          <div class="samples" :class="{ 'samples-loading': samplesLoading }">
+            <button
+              v-for="sample in samples"
+              :key="sample"
+              type="button"
+              class="sample"
+              @click="useSample(sample)"
+            >
+              {{ sample }}
+            </button>
+          </div>
+          <!-- 一个库都没有时，提问无从谈起：指路比给一排点了没反应的样例好 -->
+          <RouterLink v-if="store.items.length === 0" class="welcome-guide" to="/knowledge-bases">
+            还没有知识库，先去建一个并上传文档
+          </RouterLink>
+        </div>
 
-    <div
-      ref="streamHost"
-      class="stream"
-      :class="{ 'stream-welcome': messages.length === 0 }"
-      @scroll.passive="onStreamScroll"
-    >
-      <!-- 空状态：居中问候 + 示例问题（参考图的观感）。
-           有消息之后整块消失，让位给正文——它不是常驻装饰。 -->
-      <div v-if="messages.length === 0" class="welcome">
-        <h2 class="welcome-title">Hi，我是 KYLAB，让你的知识触手可及</h2>
-        <div class="welcome-sub">
-          <span>你可以这样问我</span>
-          <button
-            type="button"
-            class="welcome-refresh"
-            aria-label="换一批示例问题"
-            title="换一批"
-            @click="shuffleSamples"
-          >
-            <IconRefresh :size="14" />
-          </button>
-        </div>
-        <div class="samples">
-          <button
-            v-for="sample in samples"
-            :key="sample"
-            type="button"
-            class="sample"
-            @click="useSample(sample)"
-          >
-            {{ sample }}
-          </button>
-        </div>
-        <!-- 一个库都没有时，提问无从谈起：指路比给一排点了没反应的样例好 -->
-        <RouterLink v-if="store.items.length === 0" class="welcome-guide" to="/knowledge-bases">
-          还没有知识库，先去建一个并上传文档
-        </RouterLink>
+        <article v-for="(message, index) in messages" :key="index" class="turn">
+          <div v-if="message.role === 'user'" class="ask">
+            <p class="ask-label">我的问题</p>
+            <p class="ask-text">{{ message.text }}</p>
+          </div>
+
+          <div v-else class="reply">
+            <p class="reply-label">回答</p>
+
+            <p v-if="message.error" class="reply-error">{{ message.error }}</p>
+
+            <template v-else>
+              <!--
+                回答是模型写的 Markdown。这里用 v-html 是刻意的：renderAnswerMarkdown 会先转义
+                全部 HTML，再只还原它自己识别出的标记（tests/unit/composables/useMarkdown.test.ts
+                里有对应的注入用例）。换成插值就等于把 ** 和 - 原样摆给用户看。
+              -->
+              <!-- eslint-disable vue/no-v-html -->
+              <div
+                class="reply-text"
+                :class="{ 'reply-text-streaming': message.streaming }"
+                v-html="renderAnswerMarkdown(message.text)"
+              />
+              <!-- eslint-enable vue/no-v-html -->
+              <p v-if="message.streaming && !message.text" class="reply-wait">
+                正在检索并生成回答…
+              </p>
+            </template>
+
+            <!-- 引用：回答有没有依据，全看这一块 -->
+            <ol v-if="message.sources.length" class="cites">
+              <li v-for="source in message.sources" :key="source.chunk_id" class="cite">
+                <div class="cite-head">
+                  <span class="cite-index tabular">[{{ source.index }}]</span>
+                  <RouterLink class="cite-title" :to="`/documents/${source.document_id}`">
+                    {{ source.document_name }}
+                  </RouterLink>
+                  <span v-if="sourceWhere(source)" class="cite-where">{{
+                    sourceWhere(source)
+                  }}</span>
+                </div>
+                <p class="cite-preview">{{ sourcePreview(source) }}</p>
+              </li>
+            </ol>
+          </div>
+        </article>
       </div>
-
-      <article v-for="(message, index) in messages" :key="index" class="turn">
-        <div v-if="message.role === 'user'" class="ask">
-          <p class="ask-label">我的问题</p>
-          <p class="ask-text">{{ message.text }}</p>
-        </div>
-
-        <div v-else class="reply">
-          <p class="reply-label">回答</p>
-
-          <p v-if="message.error" class="reply-error">{{ message.error }}</p>
-
-          <template v-else>
-            <!--
-              回答是模型写的 Markdown。这里用 v-html 是刻意的：renderAnswerMarkdown 会先转义
-              全部 HTML，再只还原它自己识别出的标记（tests/unit/composables/useMarkdown.test.ts
-              里有对应的注入用例）。换成插值就等于把 ** 和 - 原样摆给用户看。
-            -->
-            <!-- eslint-disable vue/no-v-html -->
-            <div
-              class="reply-text"
-              :class="{ 'reply-text-streaming': message.streaming }"
-              v-html="renderAnswerMarkdown(message.text)"
-            />
-            <!-- eslint-enable vue/no-v-html -->
-            <p v-if="message.streaming && !message.text" class="reply-wait">正在检索并生成回答…</p>
-          </template>
-
-          <!-- 引用：回答有没有依据，全看这一块 -->
-          <ol v-if="message.sources.length" class="cites">
-            <li v-for="source in message.sources" :key="source.chunk_id" class="cite">
-              <div class="cite-head">
-                <span class="cite-index tabular">[{{ source.index }}]</span>
-                <RouterLink class="cite-title" :to="`/documents/${source.document_id}`">
-                  {{ source.document_name }}
-                </RouterLink>
-                <span v-if="sourceWhere(source)" class="cite-where">{{ sourceWhere(source) }}</span>
-              </div>
-              <p class="cite-preview">{{ sourcePreview(source) }}</p>
-            </li>
-          </ol>
-        </div>
-      </article>
     </div>
 
-    <!-- 输入卡片：参考图里"一个大圆角框、控件收在框内底部"的做法。
-         我们的"模式"等价物是**知识库范围**——这一页唯一的范围开关，空选就没有资料可依据，
-         所以它放到底部工具条左侧，而不是再单独占一行。 -->
-    <div class="composer">
-      <AppInput
-        id="chat-query"
-        v-model="query"
-        multiline
-        :rows="2"
-        :disabled="sending"
-        class="composer-field"
-        placeholder="向知识库提问…（回车发送，Shift + 回车换行）"
-        @keydown.enter.exact.prevent="send"
-      />
-      <div class="composer-foot">
-        <div class="scope">
-          <span class="scope-label">知识库</span>
-          <p v-if="store.error" class="scope-note scope-note-error">{{ store.error }}</p>
-          <RouterLink
-            v-else-if="store.items.length === 0"
-            class="scope-note scope-link"
-            to="/knowledge-bases"
-          >
-            还没有知识库，去建一个
-          </RouterLink>
-          <template v-else>
-            <label
-              v-for="kb in store.items"
-              :key="kb.id"
-              class="scope-chip"
-              :class="{ 'scope-chip-on': selected.includes(kb.id) }"
+    <!-- 输入卡片：参考 WeKnora——一个大圆角框，范围与模型都收在框内底部。
+         我们的"模式"等价物是**知识库范围**：它决定这一问依据什么，空选就没有依据。 -->
+    <div class="composer-wrap">
+      <div class="composer">
+        <AppInput
+          id="chat-query"
+          v-model="query"
+          multiline
+          :rows="2"
+          :disabled="sending"
+          class="composer-field"
+          placeholder="向知识库提问…（回车发送，Shift + 回车换行）"
+          @keydown.enter.exact.prevent="send"
+        />
+        <div class="composer-foot">
+          <div class="composer-left">
+            <AppMultiSelect
+              v-model="selected"
+              class="pick pick-kb"
+              :options="kbOptions"
+              aria-label="知识库"
+              placeholder="选择知识库"
+              search-placeholder="搜索知识库"
+            />
+            <AppSelect
+              v-model="modelPk"
+              class="pick pick-model"
+              :options="modelOptions"
+              :disabled="modelOptions.length === 0"
+              aria-label="对话模型"
+              :placeholder="modelOptions.length === 0 ? '未配置对话模型' : '默认模型'"
+            />
+          </div>
+          <div class="composer-right">
+            <button
+              type="button"
+              class="prompt-link"
+              :title="promptConfigured ? '已自定义系统提示词' : '查看/修改系统提示词'"
+              @click="openPrompt"
             >
-              <input
-                type="checkbox"
-                :checked="selected.includes(kb.id)"
-                @change="toggleKb(kb.id)"
-              />
-              <span class="scope-name">{{ kb.name }}</span>
-            </label>
-          </template>
-        </div>
-        <div class="composer-actions">
-          <button
-            v-if="store.items.length > 1 && selected.length < store.items.length"
-            type="button"
-            class="scope-all"
-            @click="selectAll"
-          >
-            全选
-          </button>
-          <span v-if="store.items.length && selected.length === 0" class="composer-warn">
-            未选知识库，无法提问
-          </span>
-          <AppButton v-if="sending" variant="danger" @click="stop">停止</AppButton>
-          <AppButton v-else variant="primary" :disabled="!canSend" @click="send">发送</AppButton>
+              {{ promptConfigured ? '提示词 · 已自定义' : '提示词' }}
+            </button>
+            <span v-if="store.items.length && selected.length === 0" class="composer-warn">
+              未选知识库
+            </span>
+            <AppButton v-if="sending" variant="danger" @click="stop">停止</AppButton>
+            <AppButton v-else variant="primary" :disabled="!canSend" @click="send">发送</AppButton>
+          </div>
         </div>
       </div>
     </div>
@@ -571,18 +684,41 @@ async function savePrompt(): Promise<void> {
         </AppButton>
       </template>
     </AppModal>
-  </PageShell>
+  </div>
 </template>
 
 <style scoped>
-/* ---- 空状态：居中问候 + 示例问题（参考图的观感） ---- */
+/* 整页占满内容区：中间滚动、底部固定输入卡片。
+   **对话页没有页头**（v0.12）：侧栏已经写着"对话"，再顶一个同名标题只是重复。 */
+.chat {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  --chat-measure: 960px;
+}
 
-.stream-welcome {
+.chat-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.chat-inner {
+  width: 100%;
+  max-width: var(--chat-measure);
+  margin: 0 auto;
+  padding: var(--space-6) var(--page-gutter) var(--space-4);
+}
+
+/* 空状态时把欢迎层垂直居中（WeKnora 的做法） */
+.chat-inner-welcome {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 46vh;
+  min-height: 100%;
 }
+
+/* ---- 空状态 ---- */
 
 .welcome {
   display: flex;
@@ -590,7 +726,7 @@ async function savePrompt(): Promise<void> {
   align-items: center;
   gap: var(--space-4);
   width: 100%;
-  padding: var(--space-5) var(--space-2);
+  padding: var(--space-6) var(--space-2);
   text-align: center;
 }
 
@@ -620,18 +756,28 @@ async function savePrompt(): Promise<void> {
   border-radius: var(--radius-control);
 }
 
-.welcome-refresh:hover {
+.welcome-refresh:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
 }
 
-/* 示例问题：宽度随文字（参考图里那种长短不一的胶囊），整体居中换行 */
+.welcome-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 示例问题：宽度随文字（长短不一的胶囊），整体居中换行 */
 .samples {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
   gap: var(--space-2);
   max-width: 860px;
+  transition: opacity 120ms ease;
+}
+
+.samples-loading {
+  opacity: 0.5;
 }
 
 .sample {
@@ -657,89 +803,7 @@ async function savePrompt(): Promise<void> {
   text-decoration: underline;
 }
 
-/* ---- 输入卡片底部的知识库范围 ---- */
-
-.scope {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1) var(--space-2);
-  min-width: 0;
-}
-
-.scope-label {
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.scope-note {
-  margin: 0;
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.scope-note-error {
-  color: var(--status-danger);
-}
-
-.scope-link {
-  color: var(--accent-text);
-}
-
-/* 库名可能很长：胶囊限宽并省略，避免一个库名把工具条挤成两行 */
-.scope-chip {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  max-width: 200px;
-  height: 26px;
-  padding: 0 var(--space-3);
-  font-size: var(--text-micro-size);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-hairline);
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.scope-chip:hover {
-  color: var(--text-primary);
-  border-color: var(--border-strong);
-}
-
-.scope-chip-on {
-  color: var(--accent-text);
-  background: var(--accent-soft);
-  border-color: transparent;
-}
-
-/* 原生复选框保留"可聚焦、能被读屏识别"，但不占视觉位置 */
-.scope-chip input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
-
-.scope-chip:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-.scope-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* 消息流自己滚：输入框要一直停在视野里，不能跟着回答一起被顶下去 */
-.stream {
-  overflow-y: auto;
-  max-height: 58vh;
-  min-height: 240px;
-  margin-top: var(--space-5);
-}
+/* ---- 消息 ---- */
 
 .turn + .turn {
   margin-top: var(--space-6);
@@ -851,6 +915,10 @@ async function savePrompt(): Promise<void> {
   .reply-text-streaming::after {
     animation: none;
   }
+
+  .samples {
+    transition: none;
+  }
 }
 
 .cites {
@@ -910,8 +978,15 @@ async function savePrompt(): Promise<void> {
 
 /* ---- 输入卡片 ---- */
 
+.composer-wrap {
+  flex: 0 0 auto;
+  padding: 0 var(--page-gutter) var(--space-5);
+}
+
 .composer {
-  margin-top: var(--space-5);
+  width: 100%;
+  max-width: var(--chat-measure);
+  margin: 0 auto;
   padding: var(--space-3) var(--space-4) var(--space-2);
   background: var(--bg-surface);
   border: 1px solid var(--border);
@@ -948,19 +1023,35 @@ async function savePrompt(): Promise<void> {
   border-top: 1px solid var(--border-hairline);
 }
 
-.composer-actions {
+.composer-left {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* 两个下拉各占一档宽度；窄屏时收缩，不把工具条挤成两行 */
+.pick {
+  width: 200px;
+  max-width: 42vw;
+}
+
+.composer-right {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   margin-left: auto;
 }
 
-.scope-all {
+/* 提示词是低频入口：降级成纯文字，不跟「发送」抢视觉重量 */
+.prompt-link {
   font-size: var(--text-micro-size);
-  color: var(--accent-text);
+  color: var(--text-tertiary);
 }
 
-.scope-all:hover {
+.prompt-link:hover {
+  color: var(--text-primary);
   text-decoration: underline;
 }
 

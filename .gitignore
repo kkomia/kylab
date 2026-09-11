@@ -50,6 +50,9 @@ Thumbs.db
 .shots/
 .playwright-mcp/
 
+# ---- 编辑器/工具状态（ZCode 的计划模式产物等，仅本机）----
+.zcode/
+
 # ---- npm 的锁文件：本仓库用 pnpm（pnpm-lock.yaml），
 #      误用 npm install 时不希望它被提交（工程规范 §6）----
 package-lock.json

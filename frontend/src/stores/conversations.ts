@@ -46,8 +46,8 @@ export const useConversationStore = defineStore('conversations', {
       }
     },
 
-    async create(kbIds: string[]): Promise<ConversationSummary> {
-      const created = await createConversation(kbIds)
+    async create(kbIds: string[], modelPk?: string | null): Promise<ConversationSummary> {
+      const created = await createConversation(kbIds, modelPk)
       // 新会话排在最前：后端按 updated_at 倒序，而它刚建出来就是最新的
       this.items = [created, ...this.items]
       return created
