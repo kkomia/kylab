@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from app.parsers.base import ParseResult, ParserProvider, ProbeResult
 from app.parsers.probe import suffix_of
-from app.services.tabular import TABULAR_EXTENSIONS, parse_tabular, rows_to_text
+from app.parsers.tabular_format import TABULAR_EXTENSIONS, parse_tabular, rows_to_text
 
 __all__ = ["TabularParser"]
 

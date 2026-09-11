@@ -2,7 +2,8 @@
 
 对应《项目工程规范 v0.3》§3.3（分层纪律）、§5.1（测试存放铁律）与 §6（脚本约定）。
 这些约束靠人工 review 容易漏，故做成机械检查接入 CI：
-``L1`` 协议层越界、``L2`` 业务层直连数据库/SQL、``L3`` 解析器互引、``T1`` 测试位置、
+``L1`` 协议层越界、``L2`` 业务层直连数据库/SQL、``L3`` 解析器互引、
+``L4`` 解析器反向依赖业务层、``T1`` 测试位置、
 ``S1`` .ps1 缺少 UTF-8 BOM、``PARSE`` 语法错误。
 
 用法：python scripts/check_layering.py [仓库根目录，默认当前目录]
@@ -25,15 +26,25 @@ PROTOCOL_LAYERS = ("app.api", "app.mcp_server")
 PROTOCOL_FORBIDDEN = ("app.storage", "app.parsers", "app.workers")
 PROTOCOL_MSG = "协议适配层只能转发 services/，禁止直接依赖存储/解析器/队列"
 
-# L2：业务层不得直接使用数据库驱动，也不得依赖具体存储实现
+# L2：业务层不得直接使用数据库驱动，也不得依赖具体存储实现。
+# **只允许 `app.storage.base`**（抽象契约）：具体实现（sqlite_impl / duckdb_impl）
+# 只被组合根装配。写成"允许清单"而不是"禁止前缀"是有意的——原来的禁止清单漏了
+# `app.storage.duckdb_impl`，也漏了 `from app.storage import sqlite_impl`（目标是
+# 包名 `app.storage`，任何前缀规则都不命中），等于留了口子。
 SERVICE_LAYER = "app.services"
 SERVICE_FORBIDDEN_MODULES = ("sqlite3", "sqlite_vec", "duckdb", "sqlalchemy")
-SERVICE_FORBIDDEN_PREFIXES = ("app.storage.sqlite_impl",)
+SERVICE_STORAGE_ALLOWED = "app.storage.base"
 SERVICE_MSG = "业务层禁止直连数据库，存储访问必须经 storage/base.py 的 Repository 接口"
 
 # L3：解析器实现之间互不引用（base.py 的 ParseResult 与 probe.py 是共享契约）
 PARSER_LAYER = "app.parsers"
-PARSER_SHARED = {"base", "probe", "__init__"}
+PARSER_SHARED = {"base", "probe", "tabular_format", "__init__"}
+
+# L4：解析器（插件层）不得反向依赖业务层/协议层。
+# 原规则只查 parser→parser，于是 `parsers/tabular.py` import `app.services.tabular`
+# 这种更严重的反向依赖直接通过——依赖方向反了，插件就没法脱离业务层复用。
+PARSER_FORBIDDEN = ("app.services", "app.api", "app.mcp_server", "app.workers")
+PARSER_MSG = "解析器是插件层，不得反向依赖业务层（services）或协议层（api/mcp/workers）"
 
 # T1：测试代码绝不进入源码目录
 SOURCE_ROOTS = ("backend/app", "frontend/src")
@@ -121,9 +132,12 @@ def check_layer_rules(path: Path, root: Path, tree: ast.AST) -> list[Violation]:
             violations.append(Violation("L1", display, lineno, f"{PROTOCOL_MSG}（import {target}）"))
 
         if in_layer(module, SERVICE_LAYER):
-            if target.split(".")[0] in SERVICE_FORBIDDEN_MODULES or any(
-                target == prefix or target.startswith(f"{prefix}.")
-                for prefix in SERVICE_FORBIDDEN_PREFIXES
+            allowed_storage = target == SERVICE_STORAGE_ALLOWED or target.startswith(
+                f"{SERVICE_STORAGE_ALLOWED}."
+            )
+            uses_storage = target == "app.storage" or target.startswith("app.storage.")
+            if target.split(".")[0] in SERVICE_FORBIDDEN_MODULES or (
+                uses_storage and not allowed_storage
             ):
                 violations.append(Violation("L2", display, lineno, f"{SERVICE_MSG}（import {target}）"))
 
@@ -139,6 +153,8 @@ def check_layer_rules(path: Path, root: Path, tree: ast.AST) -> list[Violation]:
                             f"解析器实现之间禁止互相引用，共享契约只能来自 base.py（import {target}）",
                         )
                     )
+            if any(target == prefix or target.startswith(f"{prefix}.") for prefix in PARSER_FORBIDDEN):
+                violations.append(Violation("L4", display, lineno, f"{PARSER_MSG}（import {target}）"))
 
     if in_layer(module, SERVICE_LAYER):
         for lineno, value in string_literals(tree):

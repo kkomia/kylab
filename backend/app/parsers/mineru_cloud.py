@@ -28,6 +28,14 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.parsers.base import ParseError, ParseResult, ParserProvider, ProbeKind, ProbeResult
+from app.parsers.probe import IMAGE_EXTENSIONS, OFFICE_EXTENSIONS, PDF_EXTENSIONS, suffix_of
+
+#: 支持范围与探测口径**同源**：`probe.py` 回答"这是什么类型的文件"，这里回答
+#: "我能不能解析它"。两者不该各抄一份字面量——抄一份迟早会漂（实测：probe 认
+#: `.tiff`，云端解析器却不认，那份文件就落到"暂不支持的文件类型"）。MinerU 不收
+#: tiff 与 odt/ods/odp，所以**显式排除**而不是另写一份列表。
+_SUPPORTED_IMAGES = IMAGE_EXTENSIONS - {".tif", ".tiff"}
+_SUPPORTED_OFFICE = OFFICE_EXTENSIONS - {".odt", ".ods", ".odp"}
 
 __all__ = ["MinerUCloudParser", "MinerUConfig"]
 
@@ -128,9 +136,10 @@ class MinerUCloudParser(ParserProvider):
         if lowered.endswith(self.NATIVE_SUFFIXES):
             return False
 
-        if lowered.endswith((".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".jp2")):
+        suffix = suffix_of(filename)
+        if suffix in PDF_EXTENSIONS or suffix in _SUPPORTED_IMAGES:
             return True
-        if lowered.endswith((".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx")):
+        if suffix in _SUPPORTED_OFFICE:
             return True
 
         # 后缀不认识时看探测结论：明确是文字型就别上云

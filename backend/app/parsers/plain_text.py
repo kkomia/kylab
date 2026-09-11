@@ -16,7 +16,7 @@ from app.parsers.probe import (
     TEXT_EXTENSIONS,
     suffix_of,
 )
-from app.services.tabular import TABULAR_EXTENSIONS
+from app.parsers.tabular_format import TABULAR_EXTENSIONS
 
 _ENCODINGS = ("utf-8-sig", "utf-8", "gb18030")
 """解码阶梯：先 UTF-8（含 BOM），再中文环境最常见的 GB18030，最后兜底不丢数据。"""

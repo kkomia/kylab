@@ -29,6 +29,11 @@ from dataclasses import dataclass, field
 import httpx
 
 from app.parsers.base import ParseError, ParseResult, ParserProvider, ProbeKind, ProbeResult
+from app.parsers.probe import IMAGE_EXTENSIONS, PDF_EXTENSIONS, suffix_of
+
+#: 与 `probe.py` 同源的支持范围（解释见 mineru_cloud.py 的同名常量）。
+#: PaddleOCR 只吃 pdf 与常见位图，tiff/gif/jp2 **显式排除**。
+_SUPPORTED_IMAGES = IMAGE_EXTENSIONS - {".gif", ".jp2", ".tif", ".tiff"}
 
 __all__ = ["PaddleOCRApiParser", "PaddleOCRConfig"]
 
@@ -107,7 +112,8 @@ class PaddleOCRApiParser(ParserProvider):
             return False
 
         # 它是"扫描件的第二选择"：文字型 PDF 交给 MinerU 更快更准
-        if lowered.endswith((".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp")):
+        suffix = suffix_of(filename)
+        if suffix in PDF_EXTENSIONS or suffix in _SUPPORTED_IMAGES:
             return probe.kind in {ProbeKind.SCANNED, ProbeKind.MIXED}
         return False
 
