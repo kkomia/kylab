@@ -37,6 +37,7 @@ import IconTrash from '@/components/icons/IconTrash.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import InfoTip from '@/components/ui/InfoTip.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { useToast } from '@/composables/useToast'
 
@@ -331,8 +332,10 @@ defineExpose({ load })
     <template v-else>
       <!-- 第一部分：用途分配。**放最上面**，因为这才是用户每天要改的东西 -->
       <section class="block">
-        <h3 class="block-title">用途分配</h3>
-        <p class="block-hint">未指定的用途走「精细」配置。</p>
+        <h3 class="block-title">
+          用途分配
+          <InfoTip text="为每种用途指定用哪个模型；未指定的用途走「精细」配置里的字段。" />
+        </h3>
 
         <div v-for="item in slots" :key="item.slot" class="slot-row">
           <div class="slot-name">
@@ -357,8 +360,12 @@ defineExpose({ load })
       <section class="block">
         <div class="block-head">
           <div>
-            <h3 class="block-title">供应商</h3>
-            <p class="block-hint">一个供应商 = 一个地址 + 一把凭据，可登记多个模型。</p>
+            <h3 class="block-title">
+              供应商
+              <InfoTip
+                text="一个供应商 = 一个接口地址 + 一把凭据；同一个地址下可以登记多个模型。"
+              />
+            </h3>
           </div>
           <AppButton @click="addingProvider = !addingProvider">
             <template #icon><IconPlus v-if="!addingProvider" :size="14" /></template>
@@ -604,15 +611,11 @@ defineExpose({ load })
 }
 
 .block-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
   margin: 0;
   font-size: var(--text-section-size);
-}
-
-.block-hint {
-  margin: var(--space-1) 0 var(--space-3);
-  font-size: var(--text-micro-size);
-  line-height: 1.6;
-  color: var(--text-tertiary);
 }
 
 /* ---- 用途分配 ---- */

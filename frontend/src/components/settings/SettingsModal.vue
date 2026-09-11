@@ -53,6 +53,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import InfoTip from '@/components/ui/InfoTip.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { useToast } from '@/composables/useToast'
 import { useConsoleToken } from '@/composables/useConsoleToken'
@@ -611,6 +612,9 @@ async function runTest(target: string): Promise<void> {
             <div class="row">
               <div class="row-main">
                 <span class="row-label">向量化</span>
+                <InfoTip
+                  text="未配置 Key 时用确定性哈希兜底：只有词面匹配、没有语义，检索质量不代表真实效果。"
+                />
                 <span class="row-value">
                   {{ fieldValue('embedding', 'embedding.model_id') || '未指定模型'
                   }}<span class="sep">·</span>{{ config?.embedding_dim ?? '—' }} 维<span class="sep"
@@ -629,13 +633,11 @@ async function runTest(target: string): Promise<void> {
                 编辑
               </AppButton>
             </div>
-            <p v-if="config?.embedding_is_development" class="row-note">
-              未配置 Key，现用哈希兜底：只有词面匹配，没有语义。
-            </p>
 
             <div class="row">
               <div class="row-main">
                 <span class="row-label">重排 rerank</span>
+                <InfoTip text="未配置时整体跳过重排，不影响检索可用性。" />
                 <span class="row-value">
                   {{ fieldValue('rerank', 'rerank.model_id') || '未指定模型'
                   }}<span class="sep">·</span>{{ secretSummary('rerank', 'rerank.api_key') }}
@@ -647,7 +649,6 @@ async function runTest(target: string): Promise<void> {
               />
               <AppButton v-if="group('rerank')" @click="openEdit(group('rerank')!)">编辑</AppButton>
             </div>
-            <p class="row-note">未配置时整体跳过重排，不影响检索。</p>
           </template>
         </template>
 
@@ -720,8 +721,10 @@ async function runTest(target: string): Promise<void> {
           </template>
 
           <template v-else>
-            <h3 class="section-title">对话模型（LLM）</h3>
-            <p class="section-note">没配好时「对话」直接报错，不编造答案。</p>
+            <h3 class="section-title">
+              对话模型（LLM）
+              <InfoTip text="没配好时「对话」会直接报错，不会编造没有依据的答案。" />
+            </h3>
 
             <div class="row">
               <div class="row-main">
@@ -760,7 +763,6 @@ async function runTest(target: string): Promise<void> {
               >
               <AppButton v-if="group('chat')" @click="openEdit(group('chat')!)">编辑</AppButton>
             </div>
-            <p class="row-note">条数越多依据越全，但可能挤掉问题本身。</p>
           </template>
         </template>
 
@@ -804,8 +806,12 @@ async function runTest(target: string): Promise<void> {
           </template>
 
           <template v-else>
-            <h3 class="section-title">服务配置</h3>
-            <p class="section-note">两节点互为备选：文字型优先 MinerU，扫描件降级 PaddleOCR。</p>
+            <h3 class="section-title">
+              服务配置
+              <InfoTip
+                text="两个云端节点互为备选：文字型文档优先 MinerU，扫描件与混合型可降级到 PaddleOCR。"
+              />
+            </h3>
 
             <div class="row">
               <div class="row-main">
@@ -821,7 +827,6 @@ async function runTest(target: string): Promise<void> {
               />
               <AppButton v-if="group('mineru')" @click="openEdit(group('mineru')!)">编辑</AppButton>
             </div>
-            <p class="row-note">文字型 PDF 与 Office；单文件 ≤ 200MB / 200 页。</p>
 
             <div class="row">
               <div class="row-main">
@@ -839,16 +844,17 @@ async function runTest(target: string): Promise<void> {
                 编辑
               </AppButton>
             </div>
-            <p class="row-note">扫描件的第二通道；MinerU 不可用时自动接管。</p>
           </template>
         </template>
 
         <!-- 存储配置（只读） -->
         <template v-else-if="section === 'storage'">
-          <h3 class="section-title">存储配置</h3>
-          <p class="section-note">
-            全内嵌存储，无需外部服务；数据目录由 <code>KYLAB_DATA_DIR</code> 决定，改后需重启。
-          </p>
+          <h3 class="section-title">
+            存储配置
+            <InfoTip
+              text="全内嵌存储，无需外部服务。数据目录由环境变量 KYLAB_DATA_DIR 决定，改后需重启后端。"
+            />
+          </h3>
           <div class="row row-static">
             <div class="row-main">
               <span class="row-label">元数据</span>
@@ -883,10 +889,10 @@ async function runTest(target: string): Promise<void> {
 
         <!-- 外观（本地偏好，不进后端） -->
         <template v-else-if="section === 'appearance'">
-          <h3 class="section-title">外观</h3>
-          <p class="section-note">
-            主题与字号只影响这一台机器的浏览器，存在本地，不写进知识库配置。
-          </p>
+          <h3 class="section-title">
+            外观
+            <InfoTip text="主题与字号只影响这一台机器的浏览器，存在本地，不写进知识库配置。" />
+          </h3>
 
           <div class="row row-static">
             <div class="row-main">
@@ -938,10 +944,12 @@ async function runTest(target: string): Promise<void> {
 
         <!-- 用户（v10）：开通账号与成员管理。仅管理员/控制台可见 -->
         <template v-else-if="section === 'users'">
-          <h3 class="section-title">用户</h3>
-          <p class="section-note">
-            对方登录后只能看到你分享给他的知识库；没有登录名的名册条目只用于标记归属。
-          </p>
+          <h3 class="section-title">
+            用户
+            <InfoTip
+              text="被开通的账号登录后只能看到分享给他的知识库；没有登录名的名册条目只用于标记文档归属。"
+            />
+          </h3>
 
           <div class="create-card">
             <div class="create-grid">
@@ -981,7 +989,6 @@ async function runTest(target: string): Promise<void> {
                 {{ creatingUser ? '开通中…' : '开通账号' }}
               </AppButton>
             </div>
-            <p class="row-note">初始密码需你转告对方。</p>
           </div>
 
           <h3 class="section-title section-gap">成员与名册</h3>
@@ -1052,7 +1059,12 @@ async function runTest(target: string): Promise<void> {
               />
             </div>
 
-            <h3 class="section-title section-gap">修改密码</h3>
+            <h3 class="section-title section-gap">
+              修改密码
+              <InfoTip
+                text="改密会吊销其他设备上的登录，当前这条保留。忘记密码时可由管理员在「用户」里重置。"
+              />
+            </h3>
             <div class="password-form">
               <div class="field">
                 <label class="field-label" for="kylab-old-password">当前密码</label>
@@ -1099,9 +1111,6 @@ async function runTest(target: string): Promise<void> {
                   退出登录
                 </AppButton>
               </div>
-              <p class="text-hint">
-                改密会吊销其他设备上的登录，当前这条保留。忘记密码时，可由管理员在「用户」里重置。
-              </p>
             </div>
           </template>
 
@@ -1171,8 +1180,6 @@ async function runTest(target: string): Promise<void> {
               </AppButton>
               <AppButton v-if="consoleToken" @click="forgetToken">清除</AppButton>
             </div>
-
-            <p class="row-note">令牌只保存在这台机器的浏览器里，不写进知识库配置。</p>
           </template>
         </template>
       </div>
@@ -1354,17 +1361,13 @@ async function runTest(target: string): Promise<void> {
 }
 
 .section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
   margin: 0 0 var(--space-2);
   font-size: var(--text-section-size);
   font-weight: 600;
   letter-spacing: -0.005em;
-}
-
-.section-note {
-  margin: 0 0 var(--space-4);
-  max-width: 60ch;
-  font-size: var(--text-meta-size);
-  color: var(--text-secondary);
 }
 
 /* 一个分组里放第二块内容时用它拉开：块与块之间的间距要大于块内的行距，
