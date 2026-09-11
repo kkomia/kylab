@@ -122,7 +122,8 @@ const summaryLine = computed(() => {
 })
 
 onMounted(() => {
-  void store.load().then(() => store.loadSummaries())
+  // 计数随列表一起回来，不必再单独拉一轮汇总
+  void store.load()
   // 提前把注册表拉回来：这样"没有可用嵌入模型"能在点开弹窗**之前**就显示在页头上，
   // 用户不必先填完名称才发现建不了
   void loadModels()
@@ -148,7 +149,6 @@ async function submitCreate(): Promise<void> {
     createOpen.value = false
     draftName.value = ''
     draftModel.value = ''
-    void store.loadSummaries()
   } catch (error) {
     notifyError(error instanceof Error ? error.message : '创建失败')
   } finally {
@@ -162,11 +162,6 @@ function initial(name: string): string {
 
 function statsOf(kbId: string) {
   return store.summaries[kbId]
-}
-
-/** 改名由 store 就地更新；删除由 store 摘掉。这里只需把汇总同步一遍。 */
-function onKbChanged(): void {
-  void store.loadSummaries()
 }
 </script>
 
@@ -248,12 +243,7 @@ function onKbChanged(): void {
           </span>
         </RouterLink>
         <!-- 管理入口挂在卡片右上角：写权限才有（与后端"删库属于写"一致） -->
-        <KnowledgeBaseMenu
-          v-if="kb.can_write"
-          class="kb-menu-corner"
-          :kb="kb"
-          @changed="onKbChanged"
-        />
+        <KnowledgeBaseMenu v-if="kb.can_write" class="kb-menu-corner" :kb="kb" />
       </li>
     </ul>
 
@@ -278,12 +268,7 @@ function onKbChanged(): void {
               {{ formatRelativeTime(statsOf(kb.id)?.updatedAt ?? null) }}
             </span>
           </RouterLink>
-          <KnowledgeBaseMenu
-            v-if="kb.can_write"
-            class="kb-row-menu"
-            :kb="kb"
-            @changed="onKbChanged"
-          />
+          <KnowledgeBaseMenu v-if="kb.can_write" class="kb-row-menu" :kb="kb" />
           <span v-else class="kb-row-menu" />
         </li>
       </ul>

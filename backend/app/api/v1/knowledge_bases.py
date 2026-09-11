@@ -24,7 +24,14 @@ from app.services.api_key import Caller
 router = APIRouter(prefix="/knowledge-bases", tags=["knowledge-bases"])
 
 
-def _out(record: Any, caller: Caller, services: Services) -> KnowledgeBaseOut:
+def _out(
+    record: Any,
+    caller: Caller,
+    services: Services,
+    *,
+    document_count: int = 0,
+    last_activity: Any = None,
+) -> KnowledgeBaseOut:
     """记录 → 响应，并补上"当前主体能不能管 / 能不能写这个库"。
 
     `record` 标成 `Any` 而不是具体记录类型：协议层不允许 import 存储
@@ -34,6 +41,9 @@ def _out(record: Any, caller: Caller, services: Services) -> KnowledgeBaseOut:
     - `can_manage` 与 ``services/share.py`` 的 ``_require_owner_or_admin`` 一致；
     - `can_write` 直接复用 ``api_keys.check_access(need=WRITE)``——
       界面据此决定要不要显示「上传文档」「添加数据源」，避免给出一个点了必然 403 的入口。
+
+    ``document_count`` / ``last_activity`` 由调用方传入：列表接口一次 ``GROUP BY``
+    拿到全部库的计数，单个库的接口用 ``document_stats()`` 里对应的一项。
     """
     managed = caller.is_admin or (
         caller.user is not None
@@ -43,6 +53,8 @@ def _out(record: Any, caller: Caller, services: Services) -> KnowledgeBaseOut:
         update={
             "can_manage": managed,
             "can_write": managed or services.api_keys.can_write(caller, record.id),
+            "document_count": document_count,
+            "last_activity": last_activity,
         }
     )
 
@@ -80,7 +92,20 @@ async def list_knowledge_bases(
     visible = services.api_keys.visible_kb_ids(caller)
     if visible is not None:
         records = [record for record in records if record.id in set(visible)]
-    return KnowledgeBaseList(items=[_out(record, caller, services) for record in records])
+    # 计数一次聚合查出来，随列表一起回——前端不必再"逐库拉文档列表只为数数"
+    stats = services.knowledge_bases.document_stats()
+    return KnowledgeBaseList(
+        items=[
+            _out(
+                record,
+                caller,
+                services,
+                document_count=stats.get(record.id, (0, None))[0],
+                last_activity=stats.get(record.id, (0, None))[1],
+            )
+            for record in records
+        ]
+    )
 
 
 @router.get("/{kb_id}", response_model=KnowledgeBaseOut, summary="知识库详情")
@@ -90,7 +115,14 @@ async def get_knowledge_base(
     caller: Caller = Depends(require_read),
 ) -> KnowledgeBaseOut:
     check_kb_scope(services, caller, [kb_id])
-    return _out(services.knowledge_bases.get(kb_id), caller, services)
+    count, last_activity = services.knowledge_bases.document_stats().get(kb_id, (0, None))
+    return _out(
+        services.knowledge_bases.get(kb_id),
+        caller,
+        services,
+        document_count=count,
+        last_activity=last_activity,
+    )
 
 
 @router.patch("/{kb_id}", response_model=KnowledgeBaseOut, summary="重命名知识库")
@@ -105,4 +137,7 @@ async def rename_knowledge_base(
     """
     check_kb_scope(services, caller, [kb_id], need=WRITE)
     record = services.knowledge_bases.rename(kb_id, payload.name)
-    return _out(record, caller, services)
+    count, last_activity = services.knowledge_bases.document_stats().get(kb_id, (0, None))
+    return _out(
+        record, caller, services, document_count=count, last_activity=last_activity
+    )

@@ -19,6 +19,10 @@ export interface KnowledgeBase {
   can_manage: boolean
   /** 能否写入（上传/删除）。只读分享的成员看得见但写不动，界面据此收起写入口。 */
   can_write: boolean
+  /** 库内文档数。由列表接口一次聚合带回，前端不必逐库拉文档列表。 */
+  document_count: number
+  /** 库内文档的最近更新时间；空库为 null。 */
+  last_activity: string | null
 }
 
 export interface KnowledgeBaseCreate {

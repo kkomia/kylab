@@ -1,11 +1,14 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import * as documentsApi from '@/api/documents'
 import * as api from '@/api/knowledgeBases'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
-function kb(id: string, name: string): api.KnowledgeBase {
+function kb(
+  id: string,
+  name: string,
+  counts: { document_count?: number; last_activity?: string | null } = {},
+): api.KnowledgeBase {
   return {
     id,
     name,
@@ -17,28 +20,8 @@ function kb(id: string, name: string): api.KnowledgeBase {
     created_at: '2026-09-10T00:00:00Z',
     can_manage: true,
     can_write: true,
-  }
-}
-
-function doc(knowledgeBaseId: string, updatedAt: string | null): documentsApi.DocumentSummary {
-  return {
-    id: `doc_${Math.random().toString(36).slice(2, 8)}`,
-    knowledge_base_id: knowledgeBaseId,
-    name: 'a.md',
-    source_kind: 'upload',
-    stage: 'indexed',
-    size_bytes: 100,
-    mime_type: 'text/markdown',
-    page_count: null,
-    is_split: false,
-    error: null,
-    chunk_count: 3,
-    // G6：归属标注。未指定使用者时为 null / 空串
-    uploaded_by: null,
-    uploaded_by_name: '',
-    folder_id: null,
-    created_at: updatedAt,
-    updated_at: updatedAt,
+    document_count: counts.document_count ?? 0,
+    last_activity: counts.last_activity ?? null,
   }
 }
 
@@ -80,35 +63,21 @@ describe('useKnowledgeBaseStore', () => {
     expect(store.items.map((item) => item.id)).toEqual(['kb_9'])
   })
 
-  it('汇总文档数与最近更新，供侧栏与概览页共用', async () => {
-    vi.spyOn(api, 'listKnowledgeBases').mockResolvedValue({
-      items: [kb('kb_1', '手册'), kb('kb_2', '归档')],
+  it('汇总（文档数 / 最近更新）随列表一次带回，不再逐库拉文档', async () => {
+    const listDocuments = vi.spyOn(api, 'listKnowledgeBases').mockResolvedValue({
+      items: [
+        kb('kb_1', '手册', { document_count: 2, last_activity: '2026-09-08T09:00:00' }),
+        kb('kb_2', '空库'),
+      ],
     })
-    vi.spyOn(documentsApi, 'listDocuments').mockImplementation(async (kbId: string) => ({
-      items:
-        kbId === 'kb_1'
-          ? [doc('kb_1', '2026-09-01T09:00:00'), doc('kb_1', '2026-09-08T09:00:00')]
-          : [],
-    }))
 
     const store = useKnowledgeBaseStore()
     await store.load()
-    await store.loadSummaries()
 
     expect(store.summaries['kb_1']).toEqual({ count: 2, updatedAt: '2026-09-08T09:00:00' })
-    // 空库不进汇总表：界面据此显示占位符，而不是一个容易误读的 0
-    expect(store.summaries['kb_2']).toBeUndefined()
-  })
-
-  it('汇总失败时留空表，不抛给界面', async () => {
-    vi.spyOn(api, 'listKnowledgeBases').mockResolvedValue({ items: [kb('kb_1', '手册')] })
-    vi.spyOn(documentsApi, 'listDocuments').mockRejectedValue(new Error('后端不可达'))
-
-    const store = useKnowledgeBaseStore()
-    await store.load()
-    await store.loadSummaries()
-
-    expect(store.summaries).toEqual({})
+    // 空库也给 0/None：数字是后端聚合出来的，比占位符准
+    expect(store.summaries['kb_2']).toEqual({ count: 0, updatedAt: null })
+    expect(listDocuments).toHaveBeenCalledTimes(1)
   })
 
   it('forget 同时清掉该库的汇总数据', async () => {
@@ -136,6 +105,8 @@ describe('useKnowledgeBaseStore', () => {
 
     expect(updated.name).toBe('新名字')
     expect(store.items[0]?.name).toBe('新名字')
+    // 改名不该把它的计数丢掉
+    expect(store.summaries['kb_1']).toEqual({ count: 0, updatedAt: null })
   })
 
   it('删库成功后从清单与汇总里一起摘掉', async () => {

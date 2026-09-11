@@ -135,7 +135,7 @@ async function confirmDelete(): Promise<void> {
     deleteOpen.value = false
     notifySuccess('已删除，原文在回收站保留 7 天')
     await refreshAll()
-    void store.loadSummaries()
+    void store.refreshSummaries()
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '删除失败')
   } finally {
@@ -339,7 +339,7 @@ async function runBatch(action: 'delete' | 'reprocess'): Promise<void> {
     const result = await batchDocuments(kbId.value, action, ids)
     await refreshAll()
     syncPolling()
-    void store.loadSummaries()
+    void store.refreshSummaries()
     if (result.failed === 0) {
       selected.value = []
       notifySuccess(`已${verb} ${result.succeeded} 篇`)
@@ -492,9 +492,8 @@ function onWindowResize(): void {
 
 onMounted(async () => {
   window.addEventListener('resize', onWindowResize)
+  // `load()` 带回每个库的文档数（设置弹窗里的"文档 N 篇"用它）
   if (store.items.length === 0) await store.load()
-  // 设置弹窗里的"文档 N 篇"来自汇总表；直接进这一页时它可能还没拉过
-  void store.loadSummaries()
   await loadFirst()
   void nextTick(syncFillerRows)
 })

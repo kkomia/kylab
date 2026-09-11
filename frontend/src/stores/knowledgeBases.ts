@@ -10,7 +10,7 @@
 
 import { defineStore } from 'pinia'
 
-import { listDocuments, type DocumentSummary, type ImpactReport } from '@/api/documents'
+import type { ImpactReport } from '@/api/documents'
 import {
   createKnowledgeBase,
   deleteKnowledgeBase,
@@ -19,14 +19,20 @@ import {
   type KnowledgeBase,
   type KnowledgeBaseCreate,
 } from '@/api/knowledgeBases'
-import { summarizeDocuments, type DocStats } from '@/composables/useFormat'
+import type { DocStats } from '@/composables/useFormat'
 
 interface State {
   items: KnowledgeBase[]
-  /** kbId → 文档数与最近更新时间；拿不到时为 {}，界面显示占位符。 */
+  /** kbId → 文档数与最近更新时间。**由列表接口一并带回**（`document_count` /
+   *  `last_activity`），不再"逐库拉文档列表只为数数"——那是 N 次请求。 */
   summaries: Record<string, DocStats>
   loading: boolean
   error: string
+}
+
+/** 一个库的汇总。空库也给 0/None：数字来自后端聚合，是准的，不该退回占位符。 */
+function summaryOf(kb: KnowledgeBase): DocStats {
+  return { count: kb.document_count, updatedAt: kb.last_activity }
 }
 
 export const useKnowledgeBaseStore = defineStore('knowledgeBases', {
@@ -42,6 +48,7 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBases', {
       this.loading = true
       try {
         this.items = (await listKnowledgeBases()).items
+        this.summaries = Object.fromEntries(this.items.map((kb) => [kb.id, summaryOf(kb)]))
         this.error = ''
       } catch (error) {
         this.error = error instanceof Error ? error.message : '知识库列表加载失败'
@@ -50,26 +57,15 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBases', {
       }
     },
 
-    /** 每个知识库一次列表请求（不是逐文档 N+1）。失败就留空，不阻断清单本身。 */
-    async loadSummaries(): Promise<void> {
-      if (this.items.length === 0) {
-        this.summaries = {}
-        return
-      }
-      try {
-        const rows: DocumentSummary[] = []
-        for (const kb of this.items) {
-          rows.push(...(await listDocuments(kb.id)).items)
-        }
-        this.summaries = summarizeDocuments(rows)
-      } catch {
-        this.summaries = {}
-      }
+    /** 上传/删除/改名之后重取一次列表（一次请求就带回全部计数）。 */
+    async refreshSummaries(): Promise<void> {
+      await this.load()
     },
 
     async create(payload: KnowledgeBaseCreate): Promise<KnowledgeBase> {
       const created = await createKnowledgeBase(payload)
       this.items = [...this.items, created]
+      this.summaries = { ...this.summaries, [created.id]: summaryOf(created) }
       return created
     },
 
@@ -77,6 +73,7 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBases', {
     async rename(kbId: string, name: string): Promise<KnowledgeBase> {
       const updated = await renameKnowledgeBase(kbId, name)
       this.items = this.items.map((item) => (item.id === kbId ? updated : item))
+      this.summaries = { ...this.summaries, [kbId]: summaryOf(updated) }
       return updated
     },
 

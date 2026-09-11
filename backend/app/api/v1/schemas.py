@@ -61,6 +61,11 @@ class KnowledgeBaseOut(BaseModel):
     """
     can_write: bool = False
     """能否写入这个库（上传/删除）。只读分享的成员看得见但写不动，界面据此收起写入口。"""
+    document_count: int = 0
+    """库内文档数。**由列表接口一并算出**（一条 GROUP BY），
+    前端不必再"逐库拉一次文档列表只为了数数"——那会随库数量线性放大请求数。"""
+    last_activity: datetime | None = None
+    """库内文档的最近更新时间；没有文档时为 None（界面显示占位符，而不是一个含糊的 0）。"""
 
 
 class KnowledgeBaseList(BaseModel):

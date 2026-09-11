@@ -137,6 +137,22 @@ class SqliteMetaStore(MetaStore):
                 (name, _dump(_now()), kb_id),
             )
 
+    def document_stats_by_kbs(self) -> dict[str, tuple[int, datetime | None]]:
+        """每个库的"文档数 + 最近更新时间"，一条 `GROUP BY` 出全部。"""
+        with self._db.read() as conn:
+            rows = conn.execute(
+                """
+                SELECT knowledge_base_id AS kb_id,
+                       COUNT(*) AS total,
+                       MAX(updated_at) AS last_update
+                  FROM documents
+                 GROUP BY knowledge_base_id
+                """
+            ).fetchall()
+        return {
+            row["kb_id"]: (int(row["total"]), _load(row["last_update"])) for row in rows
+        }
+
     def update_knowledge_base_embedding(
         self, kb_id: str, *, model_id: str, dim: int, base_url: str | None
     ) -> None:
@@ -201,6 +217,28 @@ class SqliteMetaStore(MetaStore):
         with self._db.read() as conn:
             row = conn.execute("SELECT * FROM documents WHERE id = ?", (document_id,)).fetchone()
         return self._document_from_row(row) if row else None
+
+    def get_documents_by_ids(self, document_ids: Sequence[str]) -> dict[str, DocumentRecord]:
+        if not document_ids:
+            return {}
+        # 分片拼 `IN (?, ?, …)`：SQLite 的变量上限是 999（旧版）/32766（新版），
+        # 任务列表一次几百条也可能撞上，按 500 一批切，稳妥且不影响可读性
+        result: dict[str, DocumentRecord] = {}
+        unique = list(dict.fromkeys(document_ids))
+        with self._db.read() as conn:
+            for start in range(0, len(unique), 500):
+                batch = unique[start : start + 500]
+                placeholders = ",".join("?" * len(batch))
+                rows = conn.execute(
+                    # placeholders 只由 "?" 拼成，没有插值任何外部数据；
+                    # 真正的值走参数绑定。S608 在这里是误报。
+                    f"SELECT * FROM documents WHERE id IN ({placeholders})",  # noqa: S608
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    record = self._document_from_row(row)
+                    result[record.id] = record
+        return result
 
     def get_document_by_hash(self, kb_id: str, content_hash: str) -> DocumentRecord | None:
         """架构 §6.3 的文件级去重：同库同 hash 只应有一份。"""

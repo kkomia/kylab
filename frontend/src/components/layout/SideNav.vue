@@ -47,8 +47,8 @@ const conversations = useConversationStore()
 const { collapsed, toggleSidebar } = useSidebar()
 
 onMounted(async () => {
+  // `load()` 一次就带回每个库的文档数（后端 GROUP BY），不再逐库拉文档列表
   if (store.items.length === 0) await store.load()
-  void store.loadSummaries()
   void conversations.load()
   // 名册只用于显示"文档是谁传的"这一列（不再有切换使用者的入口）
   void loadRoster()

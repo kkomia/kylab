@@ -9,6 +9,8 @@ v0.8：嵌入模型是知识库的必备属性。既没在建库时挑一个注�
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.embedding import NOT_CONFIGURED_HINT
 from app.services.embedding.base import EmbeddingProvider
@@ -91,6 +93,10 @@ class KnowledgeBaseService:
 
     def list_all(self) -> list[KnowledgeBaseRecord]:
         return self._stores.meta.list_knowledge_bases()
+
+    def document_stats(self) -> dict[str, tuple[int, datetime | None]]:
+        """每个库的 ``(文档数, 最近更新时间)``——**一次聚合查询**，不逐库列文档。"""
+        return self._stores.meta.document_stats_by_kbs()
 
     def rename(self, kb_id: str, name: str) -> KnowledgeBaseRecord:
         """改显示名。**不碰嵌入模型与切分参数**——那些在建库时冻结，改名只是标签。"""

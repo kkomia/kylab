@@ -116,6 +116,28 @@ def test_rename_unknown_knowledge_base_is_404(client: TestClient) -> None:
     assert client.patch("/api/v1/knowledge-bases/kb_none", json={"name": "x"}).status_code == 404
 
 
+def test_kb_list_carries_document_count_and_last_activity(client: TestClient) -> None:
+    """计数随列表一次返回：前端不必再逐库拉文档列表只为数数（N 次请求 → 1 次）。"""
+    kb_id = client.post("/api/v1/knowledge-bases", json={"name": "计数库"}).json()["id"]
+
+    empty = client.get("/api/v1/knowledge-bases").json()["items"][0]
+    assert empty["document_count"] == 0
+    assert empty["last_activity"] is None
+
+    client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents",
+        files={"file": ("a.md", io.BytesIO(b"# a\n"), "text/markdown")},
+        params={"start": "false"},
+    )
+
+    filled = client.get("/api/v1/knowledge-bases").json()["items"][0]
+    assert filled["document_count"] == 1
+    assert filled["last_activity"] is not None
+    # 详情接口给同一份数字，两个入口不能各说各话
+    detail = client.get(f"/api/v1/knowledge-bases/{kb_id}").json()
+    assert detail["document_count"] == 1
+
+
 # --------------------------------------------------------------------- 上传
 
 

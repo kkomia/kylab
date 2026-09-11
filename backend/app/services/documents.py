@@ -314,11 +314,15 @@ class DocumentService:
         if kb_ids is None:
             return tasks
         visible = set(kb_ids)
+        # 一次批量取文档，而不是在循环里逐条 get_document（任务列表可能上千条）
+        documents = self._stores.meta.get_documents_by_ids(
+            [task.document_id for task in tasks if task.document_id]
+        )
         result: list[TaskRecord] = []
         for task in tasks:
             if task.document_id is None:
                 continue
-            document = self._stores.meta.get_document(task.document_id)
+            document = documents.get(task.document_id)
             if document is not None and document.knowledge_base_id in visible:
                 result.append(task)
         return result

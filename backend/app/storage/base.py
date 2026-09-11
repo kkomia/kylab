@@ -534,6 +534,15 @@ class MetaStore(ABC):
     def list_knowledge_bases(self) -> list[KnowledgeBaseRecord]: ...
 
     @abstractmethod
+    def document_stats_by_kbs(self) -> dict[str, tuple[int, datetime | None]]:
+        """每个知识库的 ``(文档数, 最近更新时间)``，一次 ``GROUP BY`` 拿到。
+
+        **为什么必须是一个批量方法**：知识库列表与侧栏都要显示"每个库多少篇"，
+        逐个库调 ``list_documents`` 就是 N 次查询（而且是取全量文档再在 Python 里数）。
+        这里下推到 SQL，只回一行一个库的聚合结果。
+        """
+
+    @abstractmethod
     def rename_knowledge_base(self, kb_id: str, name: str) -> None:
         """改显示名。嵌入模型与切分参数都不受影响——名字只是标签。"""
 
@@ -554,6 +563,14 @@ class MetaStore(ABC):
 
     @abstractmethod
     def get_document(self, document_id: str) -> DocumentRecord | None: ...
+
+    @abstractmethod
+    def get_documents_by_ids(self, document_ids: Sequence[str]) -> dict[str, DocumentRecord]:
+        """按 id 批量取文档（``{id: record}``，不存在的 id 不会出现在结果里）。
+
+        给"手上已经有一批 id、只差记录"的场景用（如按知识库过滤任务列表）——
+        逐个 ``get_document`` 就是 N+1。
+        """
 
     @abstractmethod
     def get_document_by_hash(self, kb_id: str, content_hash: str) -> DocumentRecord | None: ...
