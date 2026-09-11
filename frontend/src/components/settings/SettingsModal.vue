@@ -259,6 +259,18 @@ const newRole = ref<UserRole>('member')
 const creatingUser = ref(false)
 const createError = ref('')
 
+/**
+ * 开通表单是否展开。**默认收起**：与「添加供应商」同一套交互——
+ * 一个四字段的表单常驻在列表上方，会把"成员与名册"推下去，
+ * 用户每次进来都先看到一堆空输入框，而他多半只是来看名单的。
+ */
+const addingUser = ref(false)
+
+function toggleAdding(): void {
+  addingUser.value = !addingUser.value
+  createError.value = ''
+}
+
 async function loadUsers(): Promise<void> {
   usersLoading.value = true
   try {
@@ -299,6 +311,8 @@ async function submitCreateUser(): Promise<void> {
     newUsername.value = ''
     newAccountPassword.value = ''
     newRole.value = 'member'
+    // 开通成功就收起表单：接着多半去核对名单，留在原地只会挡住列表
+    addingUser.value = false
     notifySuccess(`已开通账号「${created.username}」`)
     await loadUsers()
   } catch (error) {
@@ -631,7 +645,7 @@ async function runTest(target: string): Promise<void> {
             class="nav-entry"
             :class="{ 'nav-entry-active': section === item.key }"
             type="button"
-            @click="((section = item.key), (editing = null))"
+            @click="((section = item.key), (editing = null), (addingUser = false))"
           >
             <component :is="item.icon" class="nav-icon" />
             <span class="nav-label">{{ item.label }}</span>
@@ -1083,14 +1097,17 @@ async function runTest(target: string): Promise<void> {
 
         <!-- 用户（v10）：开通账号与成员管理。仅管理员/控制台可见 -->
         <template v-else-if="section === 'users'">
-          <h3 class="section-title">
-            用户
-            <InfoTip
-              text="被开通的账号登录后只能看到分享给他的知识库；没有登录名的名册条目只用于标记文档归属。"
-            />
-          </h3>
+          <div class="section-head">
+            <h3 class="section-title">
+              用户
+              <InfoTip
+                text="被开通的账号登录后只能看到分享给他的知识库；没有登录名的名册条目只用于标记文档归属。"
+              />
+            </h3>
+            <AppButton @click="toggleAdding">{{ addingUser ? '取消' : '添加用户' }}</AppButton>
+          </div>
 
-          <div class="create-card">
+          <div v-if="addingUser" class="create-card">
             <div class="create-grid">
               <label class="field-label" for="kylab-new-name">显示名</label>
               <AppInput
@@ -1614,8 +1631,18 @@ async function runTest(target: string): Promise<void> {
   margin-top: var(--space-3);
 }
 
+/* 分组标题 + 右侧动作（与「模型注册 → 供应商」同一套排法）：
+   标题在左、动作在右，两者顶对齐——标题是两行的，居中对齐会显得飘 */
+.section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
 /* 开通账号：标签列固定宽，控件列吃剩余——四行标签才会左边对齐 */
 .create-card {
+  margin-top: var(--space-3);
   padding: var(--space-4);
   background: var(--bg-subtle);
   border-radius: var(--radius-panel);
