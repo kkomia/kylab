@@ -130,6 +130,13 @@ class SqliteMetaStore(MetaStore):
             rows = conn.execute("SELECT * FROM knowledge_bases ORDER BY created_at").fetchall()
         return [self._kb_from_row(row) for row in rows]
 
+    def rename_knowledge_base(self, kb_id: str, name: str) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE knowledge_bases SET name = ?, updated_at = ? WHERE id = ?",
+                (name, _dump(_now()), kb_id),
+            )
+
     def update_knowledge_base_embedding(
         self, kb_id: str, *, model_id: str, dim: int, base_url: str | None
     ) -> None:

@@ -534,6 +534,10 @@ class MetaStore(ABC):
     def list_knowledge_bases(self) -> list[KnowledgeBaseRecord]: ...
 
     @abstractmethod
+    def rename_knowledge_base(self, kb_id: str, name: str) -> None:
+        """改显示名。嵌入模型与切分参数都不受影响——名字只是标签。"""
+
+    @abstractmethod
     def update_knowledge_base_embedding(
         self, kb_id: str, *, model_id: str, dim: int, base_url: str | None
     ) -> None: ...

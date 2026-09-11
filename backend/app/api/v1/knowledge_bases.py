@@ -10,8 +10,13 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from app.api.auth import check_kb_scope, require_read, require_write
-from app.api.v1.schemas import KnowledgeBaseCreate, KnowledgeBaseList, KnowledgeBaseOut
+from app.api.auth import WRITE, check_kb_scope, require_read, require_write
+from app.api.v1.schemas import (
+    KnowledgeBaseCreate,
+    KnowledgeBaseList,
+    KnowledgeBaseOut,
+    KnowledgeBaseRename,
+)
 from app.core.services import Services, get_services
 from app.models.enums import UserRole
 from app.services.api_key import Caller
@@ -86,3 +91,18 @@ async def get_knowledge_base(
 ) -> KnowledgeBaseOut:
     check_kb_scope(services, caller, [kb_id])
     return _out(services.knowledge_bases.get(kb_id), caller, services)
+
+
+@router.patch("/{kb_id}", response_model=KnowledgeBaseOut, summary="重命名知识库")
+async def rename_knowledge_base(
+    kb_id: str,
+    payload: KnowledgeBaseRename,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
+) -> KnowledgeBaseOut:
+    """改显示名。**与"删除知识库"同一档权限**（WRITE）——两者都是库级结构动作，
+    让改名比删库更严会得到一个说不通的权限阶梯（见 ``lifecycle.py`` 的同款说明）。
+    """
+    check_kb_scope(services, caller, [kb_id], need=WRITE)
+    record = services.knowledge_bases.rename(kb_id, payload.name)
+    return _out(record, caller, services)

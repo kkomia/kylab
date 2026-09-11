@@ -4,6 +4,7 @@
  */
 
 import { request } from './client'
+import type { ImpactReport } from './documents'
 
 export interface KnowledgeBase {
   id: string
@@ -39,4 +40,24 @@ export function createKnowledgeBase(payload: KnowledgeBaseCreate): Promise<Knowl
 
 export function getKnowledgeBase(kbId: string): Promise<KnowledgeBase> {
   return request(`/knowledge-bases/${kbId}`)
+}
+
+/** 重命名：只改显示名，不动嵌入模型与切分参数。 */
+export function renameKnowledgeBase(kbId: string, name: string): Promise<KnowledgeBase> {
+  return request(`/knowledge-bases/${kbId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  })
+}
+
+/** 删除这个知识库会波及什么（界面要在动手之前把它显示出来）。 */
+export function getKnowledgeBaseImpact(kbId: string): Promise<ImpactReport> {
+  return request(`/knowledge-bases/${kbId}/impact`)
+}
+
+/**
+ * 删除知识库。**不可恢复**（不进回收站），返回影响清单当回执。
+ */
+export function deleteKnowledgeBase(kbId: string): Promise<ImpactReport> {
+  return request(`/knowledge-bases/${kbId}`, { method: 'DELETE' })
 }

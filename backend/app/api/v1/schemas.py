@@ -36,6 +36,12 @@ class KnowledgeBaseCreate(BaseModel):
     """
 
 
+class KnowledgeBaseRename(BaseModel):
+    """改知识库名。与建库同一个上限（120），改名不该比建库更宽松。"""
+
+    name: str = Field(min_length=1, max_length=120)
+
+
 class KnowledgeBaseOut(BaseModel):
     model_config = _RECORD_CONFIG
 

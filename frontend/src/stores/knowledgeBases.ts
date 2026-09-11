@@ -10,10 +10,12 @@
 
 import { defineStore } from 'pinia'
 
-import { listDocuments, type DocumentSummary } from '@/api/documents'
+import { listDocuments, type DocumentSummary, type ImpactReport } from '@/api/documents'
 import {
   createKnowledgeBase,
+  deleteKnowledgeBase,
   listKnowledgeBases,
+  renameKnowledgeBase,
   type KnowledgeBase,
   type KnowledgeBaseCreate,
 } from '@/api/knowledgeBases'
@@ -71,7 +73,21 @@ export const useKnowledgeBaseStore = defineStore('knowledgeBases', {
       return created
     },
 
-    /** 删除接口在 M6 接入；当前只从本地列表移除，保证界面即时一致。 */
+    /** 改名并就地更新清单：侧栏、对话页用的是同一份，改完立刻一致。 */
+    async rename(kbId: string, name: string): Promise<KnowledgeBase> {
+      const updated = await renameKnowledgeBase(kbId, name)
+      this.items = this.items.map((item) => (item.id === kbId ? updated : item))
+      return updated
+    },
+
+    /** 删库（不可恢复）并把它从清单与汇总里摘掉。返回影响清单当回执。 */
+    async remove(kbId: string): Promise<ImpactReport> {
+      const report = await deleteKnowledgeBase(kbId)
+      this.forget(kbId)
+      return report
+    },
+
+    /** 从本地清单与汇总里摘掉（删除成功后调用；也用于其它"这个库没了"的场合）。 */
     forget(kbId: string): void {
       this.items = this.items.filter((item) => item.id !== kbId)
       // 汇总一起清：留着会让"已删除的库"仍在计数

@@ -92,6 +92,30 @@ def test_create_knowledge_base_validates_input(client: TestClient) -> None:
     ).status_code == 422
 
 
+def test_rename_knowledge_base(client: TestClient, kb_id: str) -> None:
+    response = client.patch(f"/api/v1/knowledge-bases/{kb_id}", json={"name": "改过的名字"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["name"] == "改过的名字"
+    # 详情与列表都要读到新名字（改名不能只改响应不回库）
+    assert client.get(f"/api/v1/knowledge-bases/{kb_id}").json()["name"] == "改过的名字"
+    assert client.get("/api/v1/knowledge-bases").json()["items"][0]["name"] == "改过的名字"
+
+
+def test_rename_knowledge_base_rejects_blank(client: TestClient, kb_id: str) -> None:
+    """空字符串由 schema 拦（min_length）；全空白由服务层拦。"""
+    assert (
+        client.patch(f"/api/v1/knowledge-bases/{kb_id}", json={"name": ""}).status_code == 422
+    )
+    assert (
+        client.patch(f"/api/v1/knowledge-bases/{kb_id}", json={"name": "   "}).status_code == 422
+    )
+
+
+def test_rename_unknown_knowledge_base_is_404(client: TestClient) -> None:
+    assert client.patch("/api/v1/knowledge-bases/kb_none", json={"name": "x"}).status_code == 404
+
+
 # --------------------------------------------------------------------- 上传
 
 

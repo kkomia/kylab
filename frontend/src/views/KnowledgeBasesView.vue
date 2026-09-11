@@ -15,6 +15,7 @@ import { computed, onMounted, ref } from 'vue'
 import { getRegistry, type Registry } from '@/api/modelRegistry'
 import IconChat from '@/components/icons/IconChat.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
+import KnowledgeBaseMenu from '@/components/knowledge/KnowledgeBaseMenu.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
@@ -162,6 +163,11 @@ function initial(name: string): string {
 function statsOf(kbId: string) {
   return store.summaries[kbId]
 }
+
+/** 改名由 store 就地更新；删除由 store 摘掉。这里只需把汇总同步一遍。 */
+function onKbChanged(): void {
+  void store.loadSummaries()
+}
 </script>
 
 <template>
@@ -212,7 +218,7 @@ function statsOf(kbId: string) {
 
     <!-- 卡片网格：容器型对象、条目少，用卡片承载"挑一个进去"这个动作 -->
     <ul v-else-if="useCards" class="kb-cards">
-      <li v-for="kb in store.items" :key="kb.id">
+      <li v-for="kb in store.items" :key="kb.id" class="kb-card-item">
         <RouterLink class="kb-card" :to="`/kb/${kb.id}`">
           <span class="kb-card-head">
             <span class="kb-mark" aria-hidden="true">{{ initial(kb.name) }}</span>
@@ -241,6 +247,13 @@ function statsOf(kbId: string) {
             最近更新 {{ formatRelativeTime(statsOf(kb.id)?.updatedAt ?? null) }}
           </span>
         </RouterLink>
+        <!-- 管理入口挂在卡片右上角：写权限才有（与后端"删库属于写"一致） -->
+        <KnowledgeBaseMenu
+          v-if="kb.can_write"
+          class="kb-menu-corner"
+          :kb="kb"
+          @changed="onKbChanged"
+        />
       </li>
     </ul>
 
@@ -250,6 +263,7 @@ function statsOf(kbId: string) {
         <span class="col-name">知识库</span>
         <span class="col-num">文档</span>
         <span class="col-time">最近更新</span>
+        <span class="col-menu" />
       </div>
       <ul class="kb-rows">
         <li v-for="kb in store.items" :key="kb.id" class="kb-row panel-row">
@@ -264,6 +278,13 @@ function statsOf(kbId: string) {
               {{ formatRelativeTime(statsOf(kb.id)?.updatedAt ?? null) }}
             </span>
           </RouterLink>
+          <KnowledgeBaseMenu
+            v-if="kb.can_write"
+            class="kb-row-menu"
+            :kb="kb"
+            @changed="onKbChanged"
+          />
+          <span v-else class="kb-row-menu" />
         </li>
       </ul>
     </div>
@@ -535,13 +556,44 @@ function statsOf(kbId: string) {
   padding: 0 var(--space-4);
 }
 
+/* 卡片右上角的管理入口：绝对定位，不挤压卡片内容 */
+.kb-card-item {
+  position: relative;
+}
+
+.kb-menu-corner {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+}
+
 .kb-rows {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
+/* 行 = 链接 + 菜单：菜单列定宽，右侧数字列才不会比表头右移 */
+.kb-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.kb-row-menu {
+  display: inline-flex;
+  flex: 0 0 var(--hit-target);
+  align-items: center;
+  justify-content: center;
+}
+
+.col-menu {
+  flex: 0 0 var(--hit-target);
+}
+
 .kb-link {
+  flex: 1;
+  min-width: 0;
   padding: var(--space-3) var(--space-4);
   color: inherit;
   text-decoration: none;

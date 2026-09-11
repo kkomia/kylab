@@ -9,7 +9,7 @@
  * 否则用户会以为"点了没反应"。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import {
   batchDocuments,
@@ -44,6 +44,7 @@ import IconSearch from '@/components/icons/IconSearch.vue'
 import IconShare from '@/components/icons/IconShare.vue'
 import IconUpload from '@/components/icons/IconUpload.vue'
 import KbSearchPanel from '@/components/search/KbSearchPanel.vue'
+import KnowledgeBaseMenu from '@/components/knowledge/KnowledgeBaseMenu.vue'
 import ShareDialog from '@/components/knowledge/ShareDialog.vue'
 import SourcePanel from '@/components/knowledge/SourcePanel.vue'
 import UploadDialog from '@/components/knowledge/UploadDialog.vue'
@@ -77,6 +78,7 @@ const ACTIVE_STAGES = new Set([
 ])
 
 const route = useRoute()
+const router = useRouter()
 const store = useKnowledgeBaseStore()
 const { notifyError, notifySuccess } = useToast()
 
@@ -143,6 +145,11 @@ async function confirmDelete(): Promise<void> {
 
 const kbId = computed(() => String(route.params.kbId ?? ''))
 const knowledgeBase = computed(() => store.byId(kbId.value))
+
+/** 库级管理动作的回声：改名由 store 就地更新；删库后这一页已无所指，回列表。 */
+function onKbChanged(action: 'renamed' | 'deleted'): void {
+  if (action === 'deleted') void router.push('/knowledge-bases')
+}
 
 const documents = ref<DocumentSummary[]>([])
 const loading = ref(false)
@@ -617,6 +624,12 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
         <template #icon><IconUpload /></template>
         上传文档
       </AppButton>
+      <!-- 库级管理：改名 / 删除。与「分享」同处页头，都是"对这个库本身"的动作 -->
+      <KnowledgeBaseMenu
+        v-if="knowledgeBase?.can_write"
+        :kb="knowledgeBase"
+        @changed="onKbChanged"
+      />
     </template>
 
     <p v-if="error" class="error-line">{{ error }}</p>

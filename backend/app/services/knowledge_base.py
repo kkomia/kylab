@@ -19,6 +19,9 @@ __all__ = ["DEFAULT_CHUNK_STRATEGY", "KnowledgeBaseService"]
 
 DEFAULT_CHUNK_STRATEGY = "fixed"
 
+KB_NAME_MAX_CHARS = 120
+"""与建库时的 schema 上限一致（``KnowledgeBaseCreate.name``）。"""
+
 
 class KnowledgeBaseService:
     """知识库的创建与查询。"""
@@ -88,3 +91,17 @@ class KnowledgeBaseService:
 
     def list_all(self) -> list[KnowledgeBaseRecord]:
         return self._stores.meta.list_knowledge_bases()
+
+    def rename(self, kb_id: str, name: str) -> KnowledgeBaseRecord:
+        """改显示名。**不碰嵌入模型与切分参数**——那些在建库时冻结，改名只是标签。"""
+        record = self.get(kb_id)
+        cleaned = name.strip()
+        if not cleaned:
+            raise InvalidRequestError("知识库名称不能为空")
+        if len(cleaned) > KB_NAME_MAX_CHARS:
+            raise InvalidRequestError(f"知识库名称最多 {KB_NAME_MAX_CHARS} 个字符")
+        if cleaned == record.name:
+            return record
+        self._stores.meta.rename_knowledge_base(kb_id, cleaned)
+        record.name = cleaned
+        return record

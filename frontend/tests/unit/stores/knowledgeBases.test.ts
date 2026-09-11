@@ -126,4 +126,39 @@ describe('useKnowledgeBaseStore', () => {
     const store = useKnowledgeBaseStore()
     expect(store.byId('kb_missing')).toBeUndefined()
   })
+
+  it('重命名就地更新清单（侧栏与对话页共用同一份）', async () => {
+    vi.spyOn(api, 'renameKnowledgeBase').mockResolvedValue(kb('kb_1', '新名字'))
+    const store = useKnowledgeBaseStore()
+    store.items = [kb('kb_1', '旧名字')]
+
+    const updated = await store.rename('kb_1', '新名字')
+
+    expect(updated.name).toBe('新名字')
+    expect(store.items[0]?.name).toBe('新名字')
+  })
+
+  it('删库成功后从清单与汇总里一起摘掉', async () => {
+    vi.spyOn(api, 'deleteKnowledgeBase').mockResolvedValue({
+      kind: 'knowledge_base',
+      id: 'kb_1',
+      name: '手册',
+      documents: 2,
+      chunks: 12,
+      parts: 0,
+      size_bytes: 1024,
+      running_tasks: 0,
+      document_names: [],
+      restorable: false,
+    })
+    const store = useKnowledgeBaseStore()
+    store.items = [kb('kb_1', '手册'), kb('kb_2', '归档')]
+    store.summaries = { kb_1: { count: 2, updatedAt: null } }
+
+    const report = await store.remove('kb_1')
+
+    expect(report.documents).toBe(2)
+    expect(store.items.map((item) => item.id)).toEqual(['kb_2'])
+    expect(store.summaries).toEqual({})
+  })
 })
