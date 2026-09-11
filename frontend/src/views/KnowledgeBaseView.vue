@@ -258,16 +258,40 @@ const folderEditingId = ref('')
 const folderDraft = ref('')
 const folderSaving = ref(false)
 
-/** 移动到目录的弹窗。 */
+/**
+ * 移动到目录的弹窗。**单篇与批量共用**：两者只差"移谁"与提交走哪个接口，
+ * 目录清单、选中逻辑、提示文案都一样，没必要做两个弹窗。
+ */
 const moveTarget = ref<DocumentSummary | null>(null)
+const moveBatchIds = ref<string[]>([])
 const moveChoice = ref('')
 const moving = ref(false)
 const moveOpen = computed({
-  get: () => moveTarget.value !== null,
+  get: () => moveTarget.value !== null || moveBatchIds.value.length > 0,
   set: (value: boolean) => {
-    if (!value) moveTarget.value = null
+    if (!value) {
+      moveTarget.value = null
+      moveBatchIds.value = []
+    }
   },
 })
+const moveLead = computed(() =>
+  moveBatchIds.value.length > 0
+    ? `把选中的 ${moveBatchIds.value.length} 篇移到：`
+    : `把「${moveTarget.value?.name}」移到：`,
+)
+
+/** 批量条目里第一条失败原因，用于"部分失败"的提示。 */
+function firstBatchError(items: { ok: boolean; error: string | null }[]): string {
+  return items.find((item) => !item.ok)?.error ?? ''
+}
+
+function onBatchMoveClick(): void {
+  moveBatchIds.value = [...selected.value]
+  // 默认落在"根目录"：批量选中的文档可能来自不同目录，没有共同的当前值
+  moveChoice.value =
+    activeFolder.value && activeFolder.value !== ROOT_FILTER ? activeFolder.value : ''
+}
 
 /** 空状态文案随筛选范围变——"这个库还没有文档"在目录或搜索里看到会误导。 */
 const emptyTitle = computed(() => {
@@ -601,11 +625,29 @@ function onMoveClick(close: () => void, document: DocumentSummary): void {
 }
 
 async function confirmMove(): Promise<void> {
-  const target = moveTarget.value
-  if (!target || moving.value) return
+  if (moving.value) return
   moving.value = true
+  const target = moveChoice.value || null
   try {
-    await moveDocument(target.id, moveChoice.value || null)
+    if (moveBatchIds.value.length > 0) {
+      const ids = [...moveBatchIds.value]
+      const result = await batchDocuments(kbId.value, 'move', ids, target)
+      moveBatchIds.value = []
+      await refreshAll()
+      if (result.failed === 0) {
+        notifySuccess(`已移动 ${result.succeeded} 篇`)
+      } else {
+        const reason = firstBatchError(result.items)
+        notifyError(
+          `移动：${result.succeeded} 篇成功、${result.failed} 篇失败${reason ? `（${reason}）` : ''}`,
+        )
+        selected.value = result.items.filter((item) => !item.ok).map((item) => item.document_id)
+      }
+      return
+    }
+    const single = moveTarget.value
+    if (!single) return
+    await moveDocument(single.id, target)
     moveTarget.value = null
     await refreshAll()
     notifySuccess('已移动')
@@ -918,6 +960,10 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
           <!-- 勾选后浮出的批量动作条（全选在列表内的表头里，不在这里） -->
           <div v-if="selectedCount > 0" class="batch-bar">
             <span class="batch-count">已选 {{ selectedCount }} 篇</span>
+            <AppButton size="sm" :disabled="batchRunning" @click="onBatchMoveClick">
+              <template #icon><IconFolder /></template>
+              移动到目录
+            </AppButton>
             <AppButton size="sm" :disabled="batchRunning" @click="runBatch('reprocess')">
               <template #icon><IconRefresh /></template>
               重新摄入
@@ -1143,7 +1189,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
     />
     <!-- 移动到目录（v13）。目录可能很多，所以用单选清单而不是"一行一个按钮" -->
     <AppModal v-model:open="moveOpen" title="移动到目录">
-      <p class="move-lead">把「{{ moveTarget?.name }}」移到：</p>
+      <p class="move-lead">{{ moveLead }}</p>
       <div class="move-options">
         <label class="move-option">
           <input v-model="moveChoice" type="radio" value="" />

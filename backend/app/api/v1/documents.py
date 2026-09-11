@@ -300,7 +300,9 @@ async def batch_documents(
     记为该条失败，不会被执行。
     """
     check_kb_scope(services, caller, [kb_id], need=WRITE)
-    items = services.batch.run(kb_id, payload.action, payload.document_ids)
+    items = services.batch.run(
+        kb_id, payload.action, payload.document_ids, folder_id=payload.folder_id
+    )
     return DocumentBatchOut(
         action=payload.action,
         succeeded=sum(1 for item in items if item.ok),

@@ -16,12 +16,13 @@ from dataclasses import dataclass
 
 from app.core.exceptions import KylabError
 from app.services.documents import DocumentService
+from app.services.folder import FolderService
 from app.services.lifecycle import LifecycleService
 from app.storage.base import StoreBundle
 
 __all__ = ["BatchItem", "DocumentBatchService"]
 
-BATCH_ACTIONS = ("delete", "reprocess")
+BATCH_ACTIONS = ("delete", "reprocess", "move")
 """支持的批量动作。加动作时同步改 API 的 ``Literal`` 与前端类型。"""
 
 
@@ -36,17 +37,27 @@ class BatchItem:
 
 class DocumentBatchService:
     def __init__(
-        self, stores: StoreBundle, documents: DocumentService, lifecycle: LifecycleService
+        self,
+        stores: StoreBundle,
+        documents: DocumentService,
+        lifecycle: LifecycleService,
+        folders: FolderService,
     ) -> None:
         self._stores = stores
         self._documents = documents
         self._lifecycle = lifecycle
+        self._folders = folders
 
-    def run(self, kb_id: str, action: str, document_ids: list[str]) -> list[BatchItem]:
+    def run(
+        self, kb_id: str, action: str, document_ids: list[str], *, folder_id: str | None = None
+    ) -> list[BatchItem]:
         """对一批文档执行同一个动作，逐条返回结果。
 
         **先校验归属再动手**：请求里的 id 可能来自另一个库（多标签页、手工构造），
         直接删就是越权。不属于本库的一律记成失败，不进入动作分支。
+
+        ``folder_id`` 只对 ``move`` 有意义：给 id 就是移进那个目录，给 ``None``
+        是移回根目录。目录归属由 ``FolderService.move_document`` 校验。
         """
         if action not in BATCH_ACTIONS:
             raise ValueError(f"不支持的批量动作：{action}")
@@ -55,12 +66,10 @@ class DocumentBatchService:
         for document_id in document_ids:
             document = self._stores.meta.get_document(document_id)
             if document is None or document.knowledge_base_id != kb_id:
-                results.append(
-                    BatchItem(document_id, False, "文档不存在或不属于这个知识库")
-                )
+                results.append(BatchItem(document_id, False, "文档不存在或不属于这个知识库"))
                 continue
             try:
-                self._apply(action, document_id)
+                self._apply(action, document_id, folder_id=folder_id)
             except KylabError as exc:
                 # 领域异常带可读文案（"已索引完成"之类），原样透给用户
                 results.append(BatchItem(document_id, False, str(exc)))
@@ -68,9 +77,13 @@ class DocumentBatchService:
                 results.append(BatchItem(document_id, True))
         return results
 
-    def _apply(self, action: str, document_id: str) -> None:
+    def _apply(self, action: str, document_id: str, *, folder_id: str | None = None) -> None:
         if action == "delete":
             self._lifecycle.delete_document(document_id)
+            return
+        if action == "move":
+            # `folder_id=None` 是"移回根目录"；目标目录的归属由 folder 服务校验
+            self._folders.move_document(document_id, folder_id)
             return
         # 重跑：force=True 才允许对已索引的文档重新入队（见 DocumentService.enqueue_ingest）
         self._documents.enqueue_ingest(document_id, force=True)

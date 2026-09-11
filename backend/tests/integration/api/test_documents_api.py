@@ -283,6 +283,48 @@ def test_batch_reprocess_enqueues_tasks(client: TestClient, kb_id: str) -> None:
     assert response.json()["succeeded"] == 2
 
 
+def test_batch_move_into_folder_and_back_to_root(client: TestClient, kb_id: str) -> None:
+    folder = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/folders", json={"name": "批量目录"}
+    ).json()
+    a = _upload(client, kb_id, "移甲.md")
+    b = _upload(client, kb_id, "移乙.md")
+
+    moved = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents/batch",
+        json={"action": "move", "document_ids": [a["id"], b["id"]], "folder_id": folder["id"]},
+    )
+
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["succeeded"] == 2
+    assert _list_names(client, kb_id, folder_id=folder["id"]) == ["移乙.md", "移甲.md"]
+
+    # folder_id 省略/为 null = 移回根目录
+    root = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents/batch",
+        json={"action": "move", "document_ids": [a["id"]], "folder_id": None},
+    )
+    assert root.json()["succeeded"] == 1
+    assert _list_names(client, kb_id, root="true") == ["移甲.md"]
+
+
+def test_batch_move_to_folder_of_another_kb_reports_failure(client: TestClient, kb_id: str) -> None:
+    other_kb = client.post("/api/v1/knowledge-bases", json={"name": "另一个库"}).json()["id"]
+    foreign = client.post(
+        f"/api/v1/knowledge-bases/{other_kb}/folders", json={"name": "别人的目录"}
+    ).json()
+    document = _upload(client, kb_id, "我的.md")
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents/batch",
+        json={"action": "move", "document_ids": [document["id"]], "folder_id": foreign["id"]},
+    )
+
+    body = response.json()
+    assert body["failed"] == 1
+    assert "不属于" in body["items"][0]["error"]
+
+
 def test_batch_rejects_bad_action_and_empty_list(client: TestClient, kb_id: str) -> None:
     document = _upload(client, kb_id, "x.md")
 

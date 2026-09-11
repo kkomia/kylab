@@ -141,14 +141,16 @@ class DocumentRenameIn(BaseModel):
 
 
 class DocumentBatchIn(BaseModel):
-    """批量动作：``delete``（进回收站）或 ``reprocess``（重新摄入）。
+    """批量动作：``delete``（进回收站）、``reprocess``（重新摄入）或 ``move``（移目录）。
 
     ``document_ids`` 设上限而不是"随便多少"：一次勾几千篇会把请求体、逐条查询
     与响应都拉大，而界面上的多选本来也到不了那个量级。
     """
 
-    action: Literal["delete", "reprocess"]
+    action: Literal["delete", "reprocess", "move"]
     document_ids: list[str] = Field(min_length=1, max_length=500)
+    folder_id: str | None = None
+    """``move`` 的目标目录；``None`` 表示移回根目录。其它动作忽略此字段。"""
 
 
 class DocumentBatchItemOut(BaseModel):

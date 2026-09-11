@@ -290,11 +290,12 @@ def build_services(
 
     chat_service = ChatService(retrieval, runtime, usage_recorder=_record_chat_usage)
     lifecycle_service = LifecycleService(bundle, notifier=webhooks.emit)
+    folders_service = FolderService(bundle)
 
     return Services(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder, models=registry),
         documents=documents_service,
-        folders=FolderService(bundle),
+        folders=folders_service,
         ingest=ingest,
         retrieval=retrieval,
         chat=chat_service,
@@ -309,7 +310,7 @@ def build_services(
         auth=AuthService(bundle),
         shares=ShareService(bundle),
         lifecycle=lifecycle_service,
-        batch=DocumentBatchService(bundle, documents_service, lifecycle_service),
+        batch=DocumentBatchService(bundle, documents_service, lifecycle_service, folders_service),
         tabular=TabularService(bundle),
         sources=sources_service,
         observability=ObservabilityService(

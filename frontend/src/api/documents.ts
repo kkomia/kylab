@@ -321,7 +321,7 @@ export function cancelDocument(documentId: string): Promise<DocumentSummary> {
   return request(`/documents/${documentId}/cancel`, { method: 'POST' })
 }
 
-export type DocumentBatchAction = 'delete' | 'reprocess'
+export type DocumentBatchAction = 'delete' | 'reprocess' | 'move'
 
 export interface DocumentBatchItem {
   document_id: string
@@ -346,9 +346,10 @@ export function batchDocuments(
   kbId: string,
   action: DocumentBatchAction,
   documentIds: string[],
+  folderId: string | null = null,
 ): Promise<DocumentBatchResult> {
   return request(`/knowledge-bases/${kbId}/documents/batch`, {
     method: 'POST',
-    body: JSON.stringify({ action, document_ids: documentIds }),
+    body: JSON.stringify({ action, document_ids: documentIds, folder_id: folderId }),
   })
 }
