@@ -37,6 +37,7 @@ import IconDownload from '@/components/icons/IconDownload.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
 import IconFile from '@/components/icons/IconFile.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
+import IconInbox from '@/components/icons/IconInbox.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconTrash from '@/components/icons/IconTrash.vue'
@@ -222,6 +223,27 @@ const ROOT_FILTER = '__root__'
 const folders = ref<Folder[]>([])
 const activeFolder = ref('')
 
+/**
+ * 目录树的「全部文档」节点是否展开。
+ *
+ * 树只有两层（全部 → 未归档 / 各目录），展开态没什么可配的，所以不给持久化，
+ * 每次进页面都是展开的——用户要的是"一眼看到所有目录"，不是记住上次折叠。
+ */
+const treeOpen = ref(true)
+
+/**
+ * 「未归档」的文档数。**单独查一次**而不是从当前列表推：
+ * 列表是按选中的节点过滤过的，拿它算总数会随选择变化而变。
+ */
+const unfiledCount = ref<number | null>(null)
+const foldersTotal = computed(() =>
+  folders.value.reduce((sum, folder) => sum + folder.document_count, 0),
+)
+/** 拿不到未归档数时回 null（界面不显示数字）——显示一个错的数比不显示更糟。 */
+const totalCount = computed(() =>
+  unfiledCount.value === null ? null : unfiledCount.value + foldersTotal.value,
+)
+
 /** 新建/重命名目录的表单（同一个表单，靠 `folderEditingId` 区分两种模式）。 */
 const folderFormOpen = ref(false)
 const folderEditingId = ref('')
@@ -369,9 +391,19 @@ async function loadFolders(): Promise<void> {
   }
 }
 
-/** 文档 + 目录一起刷（新建/删除/移动之后计数与列表都得跟着变）。 */
+/** 「未归档」计数：树上的数字要准，所以单独查一次根目录范围。 */
+async function loadCounts(): Promise<void> {
+  if (!kbId.value) return
+  try {
+    unfiledCount.value = (await listDocuments(kbId.value, { root: true })).items.length
+  } catch {
+    unfiledCount.value = null
+  }
+}
+
+/** 文档 + 目录 + 计数一起刷（新建/删除/移动之后计数与列表都得跟着变）。 */
 async function refreshAll(): Promise<void> {
-  await Promise.all([refresh(), loadFolders()])
+  await Promise.all([refresh(), loadFolders(), loadCounts()])
 }
 
 async function loadFirst(): Promise<void> {
@@ -638,244 +670,317 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       这是别人分享给你的库，你是只读权限：可以检索与查看，不能上传或删除。
     </p>
 
-    <!-- 目录（v13）：单层分类。默认「全部」＝这个功能之前的行为，不打扰老用户 -->
-    <div v-if="knowledgeBase && !loading" class="folder-bar">
-      <span class="folder-label">目录</span>
-      <button
-        type="button"
-        class="folder-chip"
-        :class="{ 'folder-chip-on': activeFolder === '' }"
-        @click="activeFolder = ''"
-      >
-        全部
-      </button>
-      <button
-        type="button"
-        class="folder-chip"
-        :class="{ 'folder-chip-on': activeFolder === ROOT_FILTER }"
-        @click="activeFolder = ROOT_FILTER"
-      >
-        未归档
-      </button>
-      <span v-for="folder in folders" :key="folder.id" class="folder-item">
-        <button
-          type="button"
-          class="folder-chip"
-          :class="{ 'folder-chip-on': activeFolder === folder.id }"
-          @click="activeFolder = folder.id"
-        >
-          <IconFolder :size="14" />
-          <span class="folder-name">{{ folder.name }}</span>
-          <span class="folder-count tabular">{{ folder.document_count }}</span>
-        </button>
-        <RowMenu v-if="knowledgeBase?.can_write" :label="`${folder.name} 的操作`">
-          <template #default="{ close }">
-            <button type="button" @click="(startRenameFolder(folder), close())">
-              <IconEdit :size="14" /> 重命名
-            </button>
-            <button class="menu-danger" type="button" @click="(removeFolder(folder), close())">
-              <IconTrash :size="14" /> 删除目录
-            </button>
-          </template>
-        </RowMenu>
-      </span>
-      <AppButton v-if="knowledgeBase?.can_write" size="sm" @click="startCreateFolder">
-        <template #icon><IconPlus /></template>
-        新建目录
-      </AppButton>
-    </div>
-
-    <!-- 筛选：文件名 / 状态 / 来源。放在目录之后——先缩小范围，再在范围内找 -->
-    <div v-if="knowledgeBase && !loading" class="filter-bar">
-      <div class="search-box">
-        <IconSearch class="search-icon" :size="16" />
-        <AppInput v-model="searchDraft" placeholder="搜索文件名…" />
-      </div>
-      <div class="filter-select">
-        <AppSelect v-model="stageFilter" :options="STAGE_FILTER_OPTIONS" aria-label="按状态筛选" />
-      </div>
-      <div class="filter-select">
-        <AppSelect
-          v-model="sourceFilter"
-          :options="SOURCE_FILTER_OPTIONS"
-          aria-label="按来源筛选"
-        />
-      </div>
-      <AppButton v-if="hasFilter" size="sm" @click="clearFilters">清除筛选</AppButton>
-    </div>
-
-    <!-- 新建/重命名共用一个表单：靠 folderEditingId 区分两种模式，交互与"添加供应商"一致 -->
-    <div v-if="folderFormOpen" class="folder-form">
-      <AppInput
-        v-model="folderDraft"
-        placeholder="目录名，例如：合同"
-        @keydown.enter="submitFolder"
-      />
-      <AppButton variant="primary" :disabled="folderSaving" @click="submitFolder">
-        {{ folderSaving ? '保存中…' : '保存' }}
-      </AppButton>
-      <AppButton @click="cancelFolderForm">取消</AppButton>
-    </div>
-
-    <SkeletonBlock v-if="loading && documents.length === 0" variant="list" :rows="4" />
-
-    <EmptyState
-      v-else-if="documents.length === 0"
-      :title="emptyTitle"
-      :hint="`${UPLOAD_FORMAT_HINT}；单文件上限 ${MAX_UPLOAD_MB}MB。`"
-    >
-      <AppButton v-if="knowledgeBase?.can_write" variant="primary" @click="uploadOpen = true">
-        <template #icon><IconUpload /></template>
-        上传文档
-      </AppButton>
-    </EmptyState>
-
-    <template v-else>
-      <!-- 批量操作条：只有在勾了东西时才出现（没选东西时它只是噪音） -->
-      <div v-if="selectedCount > 0" class="batch-bar">
-        <span class="batch-count">已选 {{ selectedCount }} 篇</span>
-        <AppButton size="sm" :disabled="batchRunning" @click="runBatch('reprocess')">
-          <template #icon><IconRefresh /></template>
-          重新摄入
-        </AppButton>
-        <AppButton size="sm" variant="danger" :disabled="batchRunning" @click="runBatch('delete')">
-          <template #icon><IconTrash /></template>
-          删除
-        </AppButton>
-        <AppButton size="sm" :disabled="batchRunning" @click="clearSelection">取消选择</AppButton>
-      </div>
-
-      <!-- 列头：让右侧那串数字有名字，不必靠猜。
-           文字列标 aria-hidden（纯装饰），但全选框是交互控件，不能被一起藏掉 -->
-      <div class="panel">
-        <div class="panel-head list-head">
-          <span v-if="knowledgeBase?.can_write" class="head-check">
-            <input
-              type="checkbox"
-              :checked="allSelected"
-              aria-label="全选当前列表"
-              @change="toggleSelectAll"
-            />
-          </span>
-          <span class="head-file" aria-hidden="true">文件</span>
-          <span class="head-number" aria-hidden="true">切块</span>
-          <span class="head-size" aria-hidden="true">大小</span>
-          <span class="head-time" aria-hidden="true">更新时间</span>
-          <span class="head-menu" aria-hidden="true" />
+    <!--
+      目录（v13）：**左侧树**。根节点「全部文档」展开后是「未归档」与各目录，
+      选中某个节点 = 右侧列表按它过滤（点根节点 = 不筛，与这个功能之前的行为一致）。
+      单层数据做成两层树：这是当前模型能如实表达的形态，不假装支持无限嵌套。
+    -->
+    <div class="kb-body">
+      <aside v-if="knowledgeBase" class="folder-tree" aria-label="目录">
+        <div class="tree-head">
+          <span class="tree-title">目录</span>
+          <button
+            v-if="knowledgeBase.can_write"
+            type="button"
+            class="tree-add"
+            aria-label="新建目录"
+            title="新建目录"
+            @click="startCreateFolder"
+          >
+            <IconPlus :size="15" />
+          </button>
         </div>
 
-        <ul class="doc-rows">
-          <li v-for="document in documents" :key="document.id" class="doc-row-group">
-            <div class="doc-row panel-row">
-              <span v-if="knowledgeBase?.can_write" class="row-check">
-                <input
-                  type="checkbox"
-                  :checked="selected.includes(document.id)"
-                  :aria-label="`选择 ${document.name}`"
-                  @change="toggleSelect(document.id)"
-                />
-              </span>
+        <ul class="tree-list">
+          <li>
+            <div class="tree-row" :class="{ 'tree-row-on': activeFolder === '' }">
               <button
-                v-if="document.is_split"
-                class="expander"
                 type="button"
-                :aria-label="expanded[document.id] ? '收起子文件' : '展开子文件'"
-                :aria-expanded="Boolean(expanded[document.id])"
-                @click="toggleParts(document)"
+                class="tree-caret"
+                :aria-expanded="treeOpen"
+                :aria-label="treeOpen ? '收起目录' : '展开目录'"
+                @click="treeOpen = !treeOpen"
               >
-                <IconChevronDown v-if="expanded[document.id]" />
-                <IconChevronRight v-else />
+                <IconChevronDown v-if="treeOpen" :size="14" />
+                <IconChevronRight v-else :size="14" />
               </button>
-              <span v-else class="expander-placeholder" />
-
-              <IconFile class="row-icon" />
-
-              <span class="row-main">
-                <RouterLink class="row-name" :to="`/documents/${document.id}`">
-                  {{ document.name }}
-                </RouterLink>
-                <StatusTag
-                  :label="stageOf(document).label"
-                  :tone="stageOf(document).tone"
-                  :running="ACTIVE_STAGES.has(document.stage)"
-                  :title="document.error ?? undefined"
-                />
-                <!-- 谁传的（G6）。没记到时显示"未记录"而不是留空——
-                     留空会让人以为是界面没渲染出来 -->
-                <span v-if="roster.length" class="row-uploader">
-                  {{ document.uploaded_by_name || '未记录' }}
-                </span>
-              </span>
-
-              <span class="row-number">{{ document.chunk_count }}</span>
-              <span class="row-size">{{ formatBytes(document.size_bytes) }}</span>
-              <span class="row-time">{{ formatRelativeTime(document.updated_at) }}</span>
-
-              <!-- 操作菜单对**所有能看这个库的人**开放：下载是只读动作，
-                   写动作再逐个按 can_write 收口（只读分享的成员也该下得走原文） -->
-              <RowMenu v-slot="{ close }" class="row-menu">
-                <button type="button" @click="onDownload(close, document)">
-                  <IconDownload :size="14" /> 下载
-                </button>
-                <button
-                  v-if="knowledgeBase?.can_write"
-                  type="button"
-                  @click="onRenameClick(close, document)"
-                >
-                  <IconEdit :size="14" /> 重命名
-                </button>
-                <button
-                  v-if="knowledgeBase?.can_write"
-                  type="button"
-                  @click="onMoveClick(close, document)"
-                >
-                  <IconFolder :size="14" /> 移动到目录
-                </button>
-                <button
-                  v-if="knowledgeBase?.can_write"
-                  type="button"
-                  @click="onReprocessClick(close, document)"
-                >
-                  <IconRefresh :size="14" /> 重新摄入
-                </button>
-                <!-- 取消只在真的还在跑时出现：对已完成的文档摆一个点了报错的按钮没有意义 -->
-                <button
-                  v-if="knowledgeBase?.can_write && ACTIVE_STAGES.has(document.stage)"
-                  type="button"
-                  :disabled="canceling === document.id"
-                  @click="onCancelClick(close, document)"
-                >
-                  <IconClose :size="14" /> {{ canceling === document.id ? '取消中…' : '取消解析' }}
-                </button>
-                <!-- 删除（M6 / T6.4）。**先进回收站**：删错是常事，
-                     而原文一旦没了就只能重新上传 -->
-                <button
-                  v-if="knowledgeBase?.can_write"
-                  class="menu-danger"
-                  type="button"
-                  @click="onDeleteClick(close, document)"
-                >
-                  <IconTrash :size="14" /> 删除
-                </button>
-              </RowMenu>
+              <button
+                type="button"
+                class="tree-node"
+                :aria-current="activeFolder === '' ? 'true' : undefined"
+                @click="activeFolder = ''"
+              >
+                <IconFile :size="14" />
+                <span class="tree-label">全部文档</span>
+                <span v-if="totalCount !== null" class="tree-count tabular">{{ totalCount }}</span>
+              </button>
             </div>
 
-            <p v-if="document.error" class="row-error">{{ document.error }}</p>
-
-            <ul v-if="expanded[document.id]?.length" class="part-rows">
-              <li v-for="part in expanded[document.id]" :key="part.id" class="part-row">
-                <span class="part-name">分片 P{{ part.part_index + 1 }}</span>
-                <span class="part-pages">第 {{ part.page_start }}–{{ part.page_end }} 页</span>
-                <StatusTag
-                  :label="documentStageView(part.stage).label"
-                  :tone="documentStageView(part.stage).tone"
-                />
+            <ul v-show="treeOpen" class="tree-children">
+              <li>
+                <div class="tree-row" :class="{ 'tree-row-on': activeFolder === ROOT_FILTER }">
+                  <!-- 占位：让未归档与目录项的文字起点对齐 -->
+                  <span class="tree-caret" aria-hidden="true" />
+                  <button
+                    type="button"
+                    class="tree-node"
+                    :aria-current="activeFolder === ROOT_FILTER ? 'true' : undefined"
+                    @click="activeFolder = ROOT_FILTER"
+                  >
+                    <IconInbox :size="14" />
+                    <span class="tree-label">未归档</span>
+                    <span v-if="unfiledCount !== null" class="tree-count tabular">
+                      {{ unfiledCount }}
+                    </span>
+                  </button>
+                </div>
               </li>
+
+              <li v-for="folder in folders" :key="folder.id">
+                <div class="tree-row" :class="{ 'tree-row-on': activeFolder === folder.id }">
+                  <span class="tree-caret" aria-hidden="true" />
+                  <button
+                    type="button"
+                    class="tree-node"
+                    :aria-current="activeFolder === folder.id ? 'true' : undefined"
+                    :title="folder.name"
+                    @click="activeFolder = folder.id"
+                  >
+                    <IconFolder :size="14" />
+                    <span class="tree-label">{{ folder.name }}</span>
+                    <span class="tree-count tabular">{{ folder.document_count }}</span>
+                  </button>
+                  <RowMenu v-if="knowledgeBase.can_write" :label="`${folder.name} 的操作`">
+                    <template #default="{ close }">
+                      <button type="button" @click="(startRenameFolder(folder), close())">
+                        重命名
+                      </button>
+                      <button
+                        class="menu-item-danger"
+                        type="button"
+                        @click="(removeFolder(folder), close())"
+                      >
+                        删除目录
+                      </button>
+                    </template>
+                  </RowMenu>
+                </div>
+              </li>
+
+              <li v-if="folders.length === 0" class="tree-empty">还没有目录</li>
             </ul>
           </li>
         </ul>
-      </div>
-    </template>
+
+        <!-- 新建/重命名共用一个表单：靠 folderEditingId 区分两种模式 -->
+        <div v-if="folderFormOpen" class="tree-form">
+          <AppInput
+            v-model="folderDraft"
+            placeholder="目录名，例如：合同"
+            @keydown.enter="submitFolder"
+          />
+          <div class="tree-form-actions">
+            <AppButton size="sm" variant="primary" :disabled="folderSaving" @click="submitFolder">
+              {{ folderSaving ? '保存中…' : '保存' }}
+            </AppButton>
+            <AppButton size="sm" @click="cancelFolderForm">取消</AppButton>
+          </div>
+        </div>
+      </aside>
+
+      <section class="doc-area">
+        <!-- 筛选：文件名 / 状态 / 来源。放在列表之上——先缩小范围，再在范围内找 -->
+        <div v-if="knowledgeBase && !loading" class="filter-bar">
+          <div class="search-box">
+            <IconSearch class="search-icon" :size="16" />
+            <AppInput v-model="searchDraft" placeholder="搜索文件名…" />
+          </div>
+          <div class="filter-select">
+            <AppSelect
+              v-model="stageFilter"
+              :options="STAGE_FILTER_OPTIONS"
+              aria-label="按状态筛选"
+            />
+          </div>
+          <div class="filter-select">
+            <AppSelect
+              v-model="sourceFilter"
+              :options="SOURCE_FILTER_OPTIONS"
+              aria-label="按来源筛选"
+            />
+          </div>
+          <AppButton v-if="hasFilter" size="sm" @click="clearFilters">清除筛选</AppButton>
+        </div>
+
+        <SkeletonBlock v-if="loading && documents.length === 0" variant="list" :rows="4" />
+
+        <EmptyState
+          v-else-if="documents.length === 0"
+          :title="emptyTitle"
+          :hint="`${UPLOAD_FORMAT_HINT}；单文件上限 ${MAX_UPLOAD_MB}MB。`"
+        >
+          <AppButton v-if="knowledgeBase?.can_write" variant="primary" @click="uploadOpen = true">
+            <template #icon><IconUpload /></template>
+            上传文档
+          </AppButton>
+        </EmptyState>
+
+        <template v-else>
+          <!-- 批量操作条：只有在勾了东西时才出现（没选东西时它只是噪音） -->
+          <div v-if="selectedCount > 0" class="batch-bar">
+            <span class="batch-count">已选 {{ selectedCount }} 篇</span>
+            <AppButton size="sm" :disabled="batchRunning" @click="runBatch('reprocess')">
+              <template #icon><IconRefresh /></template>
+              重新摄入
+            </AppButton>
+            <AppButton
+              size="sm"
+              variant="danger"
+              :disabled="batchRunning"
+              @click="runBatch('delete')"
+            >
+              <template #icon><IconTrash /></template>
+              删除
+            </AppButton>
+            <AppButton size="sm" :disabled="batchRunning" @click="clearSelection"
+              >取消选择</AppButton
+            >
+          </div>
+
+          <!-- 列头：让右侧那串数字有名字，不必靠猜。
+           文字列标 aria-hidden（纯装饰），但全选框是交互控件，不能被一起藏掉 -->
+          <div class="panel">
+            <div class="panel-head list-head">
+              <span v-if="knowledgeBase?.can_write" class="head-check">
+                <input
+                  type="checkbox"
+                  :checked="allSelected"
+                  aria-label="全选当前列表"
+                  @change="toggleSelectAll"
+                />
+              </span>
+              <span class="head-file" aria-hidden="true">文件</span>
+              <span class="head-number" aria-hidden="true">切块</span>
+              <span class="head-size" aria-hidden="true">大小</span>
+              <span class="head-time" aria-hidden="true">更新时间</span>
+              <span class="head-menu" aria-hidden="true" />
+            </div>
+
+            <ul class="doc-rows">
+              <li v-for="document in documents" :key="document.id" class="doc-row-group">
+                <div class="doc-row panel-row">
+                  <span v-if="knowledgeBase?.can_write" class="row-check">
+                    <input
+                      type="checkbox"
+                      :checked="selected.includes(document.id)"
+                      :aria-label="`选择 ${document.name}`"
+                      @change="toggleSelect(document.id)"
+                    />
+                  </span>
+                  <button
+                    v-if="document.is_split"
+                    class="expander"
+                    type="button"
+                    :aria-label="expanded[document.id] ? '收起子文件' : '展开子文件'"
+                    :aria-expanded="Boolean(expanded[document.id])"
+                    @click="toggleParts(document)"
+                  >
+                    <IconChevronDown v-if="expanded[document.id]" />
+                    <IconChevronRight v-else />
+                  </button>
+                  <span v-else class="expander-placeholder" />
+
+                  <IconFile class="row-icon" />
+
+                  <span class="row-main">
+                    <RouterLink class="row-name" :to="`/documents/${document.id}`">
+                      {{ document.name }}
+                    </RouterLink>
+                    <StatusTag
+                      :label="stageOf(document).label"
+                      :tone="stageOf(document).tone"
+                      :running="ACTIVE_STAGES.has(document.stage)"
+                      :title="document.error ?? undefined"
+                    />
+                    <!-- 谁传的（G6）。没记到时显示"未记录"而不是留空——
+                     留空会让人以为是界面没渲染出来 -->
+                    <span v-if="roster.length" class="row-uploader">
+                      {{ document.uploaded_by_name || '未记录' }}
+                    </span>
+                  </span>
+
+                  <span class="row-number">{{ document.chunk_count }}</span>
+                  <span class="row-size">{{ formatBytes(document.size_bytes) }}</span>
+                  <span class="row-time">{{ formatRelativeTime(document.updated_at) }}</span>
+
+                  <!-- 操作菜单对**所有能看这个库的人**开放：下载是只读动作，
+                   写动作再逐个按 can_write 收口（只读分享的成员也该下得走原文） -->
+                  <RowMenu v-slot="{ close }" class="row-menu">
+                    <button type="button" @click="onDownload(close, document)">
+                      <IconDownload :size="14" /> 下载
+                    </button>
+                    <button
+                      v-if="knowledgeBase?.can_write"
+                      type="button"
+                      @click="onRenameClick(close, document)"
+                    >
+                      <IconEdit :size="14" /> 重命名
+                    </button>
+                    <button
+                      v-if="knowledgeBase?.can_write"
+                      type="button"
+                      @click="onMoveClick(close, document)"
+                    >
+                      <IconFolder :size="14" /> 移动到目录
+                    </button>
+                    <button
+                      v-if="knowledgeBase?.can_write"
+                      type="button"
+                      @click="onReprocessClick(close, document)"
+                    >
+                      <IconRefresh :size="14" /> 重新摄入
+                    </button>
+                    <!-- 取消只在真的还在跑时出现：对已完成的文档摆一个点了报错的按钮没有意义 -->
+                    <button
+                      v-if="knowledgeBase?.can_write && ACTIVE_STAGES.has(document.stage)"
+                      type="button"
+                      :disabled="canceling === document.id"
+                      @click="onCancelClick(close, document)"
+                    >
+                      <IconClose :size="14" />
+                      {{ canceling === document.id ? '取消中…' : '取消解析' }}
+                    </button>
+                    <!-- 删除（M6 / T6.4）。**先进回收站**：删错是常事，
+                     而原文一旦没了就只能重新上传 -->
+                    <button
+                      v-if="knowledgeBase?.can_write"
+                      class="menu-danger"
+                      type="button"
+                      @click="onDeleteClick(close, document)"
+                    >
+                      <IconTrash :size="14" /> 删除
+                    </button>
+                  </RowMenu>
+                </div>
+
+                <p v-if="document.error" class="row-error">{{ document.error }}</p>
+
+                <ul v-if="expanded[document.id]?.length" class="part-rows">
+                  <li v-for="part in expanded[document.id]" :key="part.id" class="part-row">
+                    <span class="part-name">分片 P{{ part.part_index + 1 }}</span>
+                    <span class="part-pages">第 {{ part.page_start }}–{{ part.page_end }} 页</span>
+                    <StatusTag
+                      :label="documentStageView(part.stage).label"
+                      :tone="documentStageView(part.stage).tone"
+                    />
+                  </li>
+                </ul>
+              </li>
+            </ul>
+          </div>
+        </template>
+      </section>
+    </div>
 
     <!-- 检索是这个库的动作，不是另一个页面：在这里开，范围天然就是当前库 -->
     <!-- 数据源（M6）：与文档列表同页——它们都是"这个库里有什么"的来源 -->
@@ -927,7 +1032,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
         </label>
       </div>
       <p v-if="folders.length === 0" class="move-note">
-        还没有目录。先关掉这里，用页面上方的「新建目录」建一个。
+        还没有目录。先关掉这里，用左侧目录树右上角的「+」建一个。
       </p>
       <template #footer>
         <AppButton @click="moveOpen = false">取消</AppButton>
@@ -1048,74 +1153,169 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   border-radius: var(--radius-control);
 }
 
-/* ---- 目录（v13）---- */
+/* ---- 目录树（v13）---- */
 
-.folder-bar {
+/* 两栏：左侧目录树（固定宽）+ 右侧文档区（吃满剩余）。
+   用 `align-items: flex-start` 让树保持自身高度，sticky 才有意义 */
+.kb-body {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
+  align-items: flex-start;
+  gap: var(--space-4);
 }
 
-.folder-label {
+.folder-tree {
+  position: sticky;
+  top: var(--space-4);
+  flex: 0 0 220px;
+  padding: var(--space-2);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-panel);
+}
+
+.doc-area {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 窄屏：树折到上方并铺满。阈值取 1024（而不是更小的 900）：
+   两栏并排时文档区要装下"切块/大小/时间/菜单"那几列固定宽度，
+   实测可用宽度掉到 900 出头就开始横向溢出，所以提前折行。 */
+@media (max-width: 1024px) {
+  .kb-body {
+    flex-direction: column;
+  }
+
+  .folder-tree {
+    position: static;
+    flex-basis: auto;
+    width: 100%;
+  }
+}
+
+.tree-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-1) var(--space-2);
+}
+
+.tree-title {
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
 }
 
-.folder-item {
+.tree-add {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-1);
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-control);
 }
 
-/* 目录胶囊：未选是描边、选中用浅品牌底——与本产品其它"切换范围"的形态一致
-   （对话页的知识库胶囊也是这个样子） */
-.folder-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  height: 26px;
-  max-width: 200px;
-  padding: 0 var(--space-3);
-  font-size: var(--text-micro-size);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-hairline);
-  border-radius: 999px;
-}
-
-.folder-chip:hover {
+.tree-add:hover {
   color: var(--text-primary);
-  border-color: var(--border-strong);
+  background: var(--bg-hover);
 }
 
-.folder-chip-on {
-  color: var(--accent-text);
+.tree-list,
+.tree-children {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* 子级用一条竖线表达"在谁的下面"——树的两层关系全靠它读出来 */
+.tree-children {
+  margin-left: 10px;
+  border-left: 1px solid var(--border-hairline);
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: var(--radius-control);
+}
+
+.tree-row:hover {
+  background: var(--bg-hover);
+}
+
+.tree-row-on {
   background: var(--accent-soft);
-  border-color: transparent;
+}
+
+.tree-row-on .tree-node {
+  color: var(--accent-text);
+}
+
+.tree-caret {
+  display: inline-flex;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 26px;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-control);
+}
+
+button.tree-caret:hover {
+  color: var(--text-primary);
+}
+
+.tree-node {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  height: 26px;
+  padding: 0 var(--space-2) 0 0;
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  text-align: left;
+  border-radius: var(--radius-control);
+}
+
+.tree-node:hover {
+  color: var(--text-primary);
 }
 
 /* 目录名可能很长：省略号收口，别把整行挤走 */
-.folder-name {
+.tree-label {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.folder-count {
+.tree-count {
   flex: 0 0 auto;
+  font-size: var(--text-micro-size);
   color: var(--text-tertiary);
 }
 
-.folder-form {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
+.tree-empty {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
 }
 
-.folder-form :deep(.field) {
-  width: 260px;
+.tree-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2);
+}
+
+.tree-form-actions {
+  display: flex;
+  gap: var(--space-2);
 }
 
 /* ---- 筛选 ---- */
