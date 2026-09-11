@@ -35,17 +35,26 @@ class EmbeddingResolver:
         registry: ModelRegistryService,
         *,
         fallback: EmbeddingProvider,
-        max_batch: int = 32,
+        batch_size: int | Callable[[], int] = 32,
         factory: Callable[..., EmbeddingProvider] = OpenAICompatEmbedder,
     ) -> None:
         self._registry = registry
         self._fallback = fallback
-        self._max_batch = max_batch
+        # 可以是常量，也可以是**取值函数**（读运行期配置）：批大小在设置页可改，
+        # 直接固化成一个数字会让那个设置项对"按库选模型"这条主路径变成 no-op
+        self._batch_size = batch_size
         # 构造器做成可注入的：测试要验"按库选对了模型"，不该为此发真实 HTTP
         self._factory = factory
-        # 按 model_pk 缓存：一次摄入要分批嵌入几百个 chunk，每批重建客户端是浪费
-        self._cache: dict[str, EmbeddingProvider] = {}
+        # 缓存按「模型 + 生效配置」而不是只按 model_pk：一次摄入要分批嵌入几百个 chunk，
+        # 每批重建客户端是浪费；但只按 pk 缓存会让"改了地址/密钥/维度"要重启才生效
+        # （v0.12 review 抓到的静默问题）。
+        self._cache: dict[tuple[object, ...], EmbeddingProvider] = {}
         self._warned: set[str] = set()
+
+    def batch_size(self) -> int:
+        """当前生效的批大小。"""
+        value = self._batch_size() if callable(self._batch_size) else self._batch_size
+        return max(1, int(value))
 
     def for_kb(self, kb: KnowledgeBaseRecord) -> EmbeddingProvider:
         return self.for_model_pk(kb.embedding_model_pk)
@@ -53,9 +62,6 @@ class EmbeddingResolver:
     def for_model_pk(self, model_pk: str | None) -> EmbeddingProvider:
         if not model_pk:
             return self._fallback
-        cached = self._cache.get(model_pk)
-        if cached is not None:
-            return cached
         try:
             provider, model = self._registry.embedding_target(model_pk)
         except Exception as exc:
@@ -65,12 +71,28 @@ class EmbeddingResolver:
                 self._warned.add(model_pk)
             return self._fallback
 
+        batch = self.batch_size()
+        key = (
+            model_pk,
+            provider.base_url,
+            provider.api_key,
+            model.model_id,
+            model.dim or 0,
+            batch,
+        )
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        # 同一个模型的旧条目（配置已变）留着没有意义，顺手清掉，
+        # 免得缓存随"改了几次配置"一直长
+        for stale in [item for item in self._cache if item[0] == model_pk]:
+            del self._cache[stale]
         embedder = self._factory(
             base_url=provider.base_url,
             api_key=provider.api_key,
             model_id=model.model_id,
             dim=model.dim or 0,
-            max_batch=self._max_batch,
+            max_batch=batch,
         )
-        self._cache[model_pk] = embedder
+        self._cache[key] = embedder
         return embedder

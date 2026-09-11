@@ -231,8 +231,11 @@ def build_services(
     embedder = _RuntimeEmbedder(runtime, _record_embed_usage, dev_embedding=resolved.dev_embedding)
     reranker = _RuntimeReranker(runtime)
     # 嵌入模型是知识库属性（v11）：按库解析。显式选了注册模型就用它，
-    # 否则回退到上面的全局 embedder——老库与"不挑模型"的库行为不变
-    embedding_resolver = EmbeddingResolver(registry, fallback=embedder)
+    # 否则回退到上面的全局 embedder——老库与"不挑模型"的库行为不变。
+    # 批大小取运行期配置（取值函数而不是常量）：否则设置页那个项对这条路径是 no-op
+    embedding_resolver = EmbeddingResolver(
+        registry, fallback=embedder, batch_size=lambda: runtime.embedding().batch_size
+    )
     retrieval = RetrievalService(
         bundle, embedder=embedder, reranker=reranker, embedders=embedding_resolver
     )

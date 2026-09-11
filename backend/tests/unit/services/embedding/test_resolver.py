@@ -153,3 +153,64 @@ def test_instances_are_cached_per_model(registry: ModelRegistryService) -> None:
 
     assert first is second
     assert built == ["cached"]
+
+
+# --------------------------------------------------------------------- 批大小与失效（v0.12 review）
+
+
+def _resolver_with_batch(
+    registry: ModelRegistryService, batch: int | object
+) -> tuple[EmbeddingResolver, list[int]]:
+    seen: list[int] = []
+
+    def factory(*, model_id: str, dim: int, max_batch: int, **_: object) -> EmbeddingProvider:
+        seen.append(max_batch)
+        return _FakeEmbedder(model_id=model_id, dim=dim)
+
+    return EmbeddingResolver(registry, fallback=_FakeEmbedder(model_id="f", dim=1),
+                             batch_size=batch, factory=factory), seen  # type: ignore[arg-type]
+
+
+def test_batch_size_comes_from_the_runtime_provider(registry: ModelRegistryService) -> None:
+    """批大小要取运行期配置——否则设置页那个项对"按库选模型"是 no-op。"""
+    pk = _register_embedding_model(registry, model_id="m", dim=8)
+    current = {"batch": 7}
+    resolver, seen = _resolver_with_batch(registry, lambda: current["batch"])
+
+    resolver.for_model_pk(pk)
+    assert seen == [7]
+
+    # 设置改了 → 下一次解析就用新值
+    current["batch"] = 3
+    embedded = resolver.for_model_pk(pk)
+    assert seen == [7, 3]
+    assert embedded is not None
+
+
+def test_provider_change_invalidates_the_cached_embedder(registry: ModelRegistryService) -> None:
+    """改了供应商地址不必重启进程——缓存按"生效配置"而不是只按 model_pk。"""
+    provider = registry.create_provider(
+        kind="embedding", name="换地址", base_url="https://old.example.com", api_key="sk-1"
+    )
+    model = registry.register_model(
+        provider_id=provider.id, model_id="m", capabilities=["embedding"], dim=8
+    )
+    resolver, seen = _resolver_with_batch(registry, 32)
+
+    resolver.for_model_pk(model.id)
+    registry.update_provider(provider.id, base_url="https://new.example.com")
+    resolver.for_model_pk(model.id)
+
+    assert len(seen) == 2, "改了地址之后仍命中旧缓存"
+
+
+def test_batch_change_invalidates_the_cached_embedder(registry: ModelRegistryService) -> None:
+    pk = _register_embedding_model(registry, model_id="m", dim=8)
+    current = {"batch": 32}
+    resolver, seen = _resolver_with_batch(registry, lambda: current["batch"])
+
+    resolver.for_model_pk(pk)
+    current["batch"] = 8
+    resolver.for_model_pk(pk)
+
+    assert seen == [32, 8]
