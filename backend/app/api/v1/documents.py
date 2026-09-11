@@ -70,6 +70,21 @@ def _to_out(record, *, chunk_count: int = 0, uploader: str = "") -> DocumentOut:
     return out.model_copy(update={"chunk_count": chunk_count, "uploaded_by_name": uploader})
 
 
+def document_out(services: Services, record) -> DocumentOut:  # type: ignore[no-untyped-def]
+    """单个文档的完整响应（切块数与上传者名字都由后端补）。
+
+    公开出来给别的路由复用（如"移动到目录"要回一份文档）——两处各拼一遍
+    必然漂（一处忘了补 chunk_count，界面就少一列数字）。
+    """
+    counts = services.documents.chunk_counts([record.id])
+    names = _uploader_names(services, [record])
+    return _to_out(
+        record,
+        chunk_count=counts.get(record.id, 0),
+        uploader=names.get(record.uploaded_by or "", ""),
+    )
+
+
 def _uploader_names(services: Services, records) -> dict[str, str]:  # type: ignore[no-untyped-def]
     """把一批文档的 ``uploaded_by`` 一次解析成名字（G6）。
 
@@ -222,9 +237,11 @@ async def list_documents(
     kb_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
+    folder_id: str | None = Query(default=None, description="只看这个目录里的文档"),
+    root: bool = Query(default=False, description="只看未归档（根目录）的文档"),
 ) -> DocumentList:
     check_kb_scope(services, caller, [kb_id])
-    records = services.documents.list_documents(kb_id)
+    records = services.documents.list_documents(kb_id, folder_id=folder_id, root_only=root)
     counts = services.documents.chunk_counts([record.id for record in records])
     names = _uploader_names(services, records)
     return DocumentList(

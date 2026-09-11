@@ -162,8 +162,24 @@ class DocumentRecord:
     uploaded_by: str | None = None
     """上传者的使用者 id（G6）。``None`` = 系统摄入或名册启用前的老数据，
     界面据此显示"未记录"，而不是编一个名字出来。"""
+    folder_id: str | None = None
+    """所在目录（v13）。``None`` = 未归档（根目录）。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class FolderRecord:
+    """知识库内的目录（v13）。
+
+    **单层、不嵌套**：个人知识库的规模下，一层分类就够把不同用途的文件分开，
+    而嵌套会立刻带来拖拽跨层、路径拼接、删除策略一串复杂度。
+    """
+
+    id: str
+    kb_id: str
+    name: str
+    created_at: datetime | None = None
 
 
 @dataclass(slots=True)
@@ -539,7 +555,15 @@ class MetaStore(ABC):
     def get_document_by_hash(self, kb_id: str, content_hash: str) -> DocumentRecord | None: ...
 
     @abstractmethod
-    def list_documents(self, kb_id: str) -> list[DocumentRecord]: ...
+    def list_documents(
+        self, kb_id: str, *, folder_id: str | None = None, root_only: bool = False
+    ) -> list[DocumentRecord]:
+        """列某个库的文档。
+
+        - ``root_only=True``：只看未归档的（``folder_id IS NULL``）；
+        - ``folder_id`` 给了：只看这个目录里的；
+        - 都不给：整个库（默认，保持既有调用点行为不变）。
+        """
 
     @abstractmethod
     def update_document_stage(
@@ -565,6 +589,31 @@ class MetaStore(ABC):
 
     @abstractmethod
     def delete_document(self, document_id: str) -> None: ...
+
+    # ---- 目录（v13）----
+    @abstractmethod
+    def create_folder(self, record: FolderRecord) -> FolderRecord: ...
+
+    @abstractmethod
+    def get_folder(self, folder_id: str) -> FolderRecord | None: ...
+
+    @abstractmethod
+    def list_folders(self, kb_id: str) -> list[FolderRecord]:
+        """按名字排序——目录是人自己起的名字，按名字找比按创建时间找自然。"""
+
+    @abstractmethod
+    def rename_folder(self, folder_id: str, name: str) -> None: ...
+
+    @abstractmethod
+    def delete_folder(self, folder_id: str) -> None: ...
+
+    @abstractmethod
+    def count_documents_by_folders(self, kb_id: str) -> dict[str, int]:
+        """批量取每个目录的文档数（``GROUP BY``）：逐个目录查一次就是 N+1。"""
+
+    @abstractmethod
+    def set_document_folder(self, document_id: str, folder_id: str | None) -> None:
+        """把文档移进目录；``None`` = 移回根。"""
 
     # ---- 子文件 ----
     @abstractmethod

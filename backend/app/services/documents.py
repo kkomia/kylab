@@ -98,10 +98,21 @@ class DocumentService:
 
     # ------------------------------------------------------------------ 文档
 
-    def list_documents(self, kb_id: str) -> list[DocumentRecord]:
+    def list_documents(
+        self, kb_id: str, *, folder_id: str | None = None, root_only: bool = False
+    ) -> list[DocumentRecord]:
+        """列文档；可按目录收窄（``root_only`` = 只看未归档的）。
+
+        ``folder_id`` 会校验它属于这个库：传一个别的库的目录 id 时，静默返回空列表
+        会让人以为"这个目录是空的"，而不是"你查错了库"。
+        """
         if self._stores.meta.get_knowledge_base(kb_id) is None:
             raise NotFoundError(f"知识库不存在：{kb_id}")
-        return self._stores.meta.list_documents(kb_id)
+        if folder_id is not None:
+            folder = self._stores.meta.get_folder(folder_id)
+            if folder is None or folder.kb_id != kb_id:
+                raise NotFoundError(f"目录不存在：{folder_id}")
+        return self._stores.meta.list_documents(kb_id, folder_id=folder_id, root_only=root_only)
 
     def chunk_counts(self, document_ids: list[str]) -> dict[str, int]:
         """批量取切块数。列表页用它，避免每个文档查一次库。"""

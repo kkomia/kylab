@@ -83,12 +83,44 @@ class DocumentOut(BaseModel):
     uploaded_by_name: str = ""
     """解析后的名字。**由后端解析**：前端拿 id 还得再查一次名册，
     列表里就会有 N 次多余请求。"""
+    folder_id: str | None = None
+    """所在目录（v13）。``None`` = 未归档（根目录）。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
 
 class DocumentList(BaseModel):
     items: list[DocumentOut]
+
+
+class FolderOut(BaseModel):
+    """知识库内的目录（v13）。``document_count`` 由后端算——列表要显示"几篇"。"""
+
+    model_config = _RECORD_CONFIG
+
+    id: str
+    kb_id: str
+    name: str
+    document_count: int = 0
+    created_at: datetime | None = None
+
+
+class FolderListOut(BaseModel):
+    items: list[FolderOut]
+
+
+class FolderCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+class FolderRenameIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+class DocumentFolderIn(BaseModel):
+    """把文档移进目录；``folder_id`` 为 ``None`` 表示移回根目录。"""
+
+    folder_id: str | None = None
 
 
 class DocumentPartOut(BaseModel):

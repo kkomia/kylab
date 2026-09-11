@@ -508,6 +508,31 @@ _MIGRATION_012 = Migration(
 )
 
 
+_MIGRATION_013 = Migration(
+    version=13,
+    description="知识库内目录：kb_folders 表 + documents.folder_id（可空=根目录）",
+    statements=(
+        # **单层目录**（用户要求"知识库里要能新建目录"）：不做父子嵌套。
+        # 个人知识库的规模下，一层分类就够把"合同/发票/说明书"分开，而嵌套会立刻带来
+        # 拖拽跨层、路径拼接、删除策略一串复杂度。要嵌套时再加 parent_id 迁移即可。
+        """
+        CREATE TABLE kb_folders (
+            id         TEXT PRIMARY KEY,
+            kb_id      TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+            name       TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE (kb_id, name)
+        )
+        """,
+        "CREATE INDEX idx_kb_folders_kb ON kb_folders(kb_id)",
+        # 可空 = 未归档（根目录）。**没加外键**：SQLite 的 ALTER 加不了带 ON DELETE
+        # 的外键，所以"删目录时把成员移回根"由服务层负责（见 FolderService.delete）。
+        "ALTER TABLE documents ADD COLUMN folder_id TEXT",
+        "CREATE INDEX idx_documents_folder ON documents(folder_id)",
+    ),
+)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
@@ -521,6 +546,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_010,
     _MIGRATION_011,
     _MIGRATION_012,
+    _MIGRATION_013,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

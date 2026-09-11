@@ -36,6 +36,7 @@ from app.storage.base import (
     DataSourceRecord,
     DocumentPartRecord,
     DocumentRecord,
+    FolderRecord,
     IdempotencyRecord,
     ImageRecord,
     KnowledgeBaseRecord,
@@ -165,8 +166,9 @@ class SqliteMetaStore(MetaStore):
                 """
                 INSERT INTO documents
                     (id, knowledge_base_id, name, source_kind, content_hash, stage, size_bytes,
-                     mime_type, page_count, is_split, error, uploaded_by, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     mime_type, page_count, is_split, error, uploaded_by, folder_id,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -181,6 +183,7 @@ class SqliteMetaStore(MetaStore):
                     int(record.is_split),
                     record.error,
                     record.uploaded_by,
+                    record.folder_id,
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
@@ -201,13 +204,91 @@ class SqliteMetaStore(MetaStore):
             ).fetchone()
         return self._document_from_row(row) if row else None
 
-    def list_documents(self, kb_id: str) -> list[DocumentRecord]:
+    def list_documents(
+        self, kb_id: str, *, folder_id: str | None = None, root_only: bool = False
+    ) -> list[DocumentRecord]:
+        sql = "SELECT * FROM documents WHERE knowledge_base_id = ?"
+        params: list[object] = [kb_id]
+        if root_only:
+            sql += " AND folder_id IS NULL"
+        elif folder_id is not None:
+            sql += " AND folder_id = ?"
+            params.append(folder_id)
+        sql += " ORDER BY created_at DESC"
+        with self._db.read() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._document_from_row(row) for row in rows]
+
+    # ------------------------------------------------------------------ 目录（v13）
+
+    def create_folder(self, record: FolderRecord) -> FolderRecord:
+        record.created_at = record.created_at or _now()
+        with self._db.session() as conn:
+            try:
+                conn.execute(
+                    "INSERT INTO kb_folders (id, kb_id, name, created_at) VALUES (?, ?, ?, ?)",
+                    (
+                        record.id,
+                        record.kb_id,
+                        record.name,
+                        _dump(record.created_at),
+                    ),
+                )
+            except sqlite3.IntegrityError as exc:
+                # 同库重名由 UNIQUE(kb_id, name) 兜底；服务层也会先查一次给出可读文案，
+                # 这里是并发/直连场景的最后一道
+                raise ConflictError(f"目录已存在：{record.name}") from exc
+        return record
+
+    def get_folder(self, folder_id: str) -> FolderRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute("SELECT * FROM kb_folders WHERE id = ?", (folder_id,)).fetchone()
+        return self._folder_from_row(row) if row else None
+
+    def list_folders(self, kb_id: str) -> list[FolderRecord]:
         with self._db.read() as conn:
             rows = conn.execute(
-                "SELECT * FROM documents WHERE knowledge_base_id = ? ORDER BY created_at DESC",
+                "SELECT * FROM kb_folders WHERE kb_id = ? ORDER BY name COLLATE NOCASE",
                 (kb_id,),
             ).fetchall()
-        return [self._document_from_row(row) for row in rows]
+        return [self._folder_from_row(row) for row in rows]
+
+    def rename_folder(self, folder_id: str, name: str) -> None:
+        with self._db.session() as conn:
+            try:
+                conn.execute("UPDATE kb_folders SET name = ? WHERE id = ?", (name, folder_id))
+            except sqlite3.IntegrityError as exc:
+                raise ConflictError(f"目录已存在：{name}") from exc
+
+    def delete_folder(self, folder_id: str) -> None:
+        """只删目录本身——**成员的去向由服务层决定**（当前策略：非空则拒绝删）。"""
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM kb_folders WHERE id = ?", (folder_id,))
+
+    def count_documents_by_folders(self, kb_id: str) -> dict[str, int]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT folder_id, COUNT(*) AS n FROM documents"
+                " WHERE knowledge_base_id = ? AND folder_id IS NOT NULL"
+                " GROUP BY folder_id",
+                (kb_id,),
+            ).fetchall()
+        return {row["folder_id"]: int(row["n"]) for row in rows}
+
+    def set_document_folder(self, document_id: str, folder_id: str | None) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE documents SET folder_id = ? WHERE id = ?", (folder_id, document_id)
+            )
+
+    @staticmethod
+    def _folder_from_row(row: sqlite3.Row) -> FolderRecord:
+        return FolderRecord(
+            id=row["id"],
+            kb_id=row["kb_id"],
+            name=row["name"],
+            created_at=_load(row["created_at"]),
+        )
 
     def update_document_stage(
         self, document_id: str, stage: DocumentStage, *, error: str | None = None
@@ -1748,6 +1829,7 @@ class SqliteMetaStore(MetaStore):
             is_split=bool(row["is_split"]),
             error=row["error"],
             uploaded_by=row["uploaded_by"],
+            folder_id=row["folder_id"],
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
         )

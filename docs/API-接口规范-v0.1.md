@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **86** 条端点。
+共 **91** 条端点。
 
 ### `api-keys`
 
@@ -232,6 +232,16 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/documents/{document_id}/reprocess` | 重新摄入（失败重跑） |
 | `GET` | `/api/v1/knowledge-bases/{kb_id}/documents` | 知识库下的文档列表 |
 | `POST` | `/api/v1/knowledge-bases/{kb_id}/documents` | 上传文档（异步摄入） |
+
+### `folders`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `PATCH` | `/api/v1/documents/{document_id}/folder` | 把文档移进目录 / 移回根 |
+| `DELETE` | `/api/v1/folders/{folder_id}` | 删除目录（非空则拒绝） |
+| `PATCH` | `/api/v1/folders/{folder_id}` | 重命名目录 |
+| `GET` | `/api/v1/knowledge-bases/{kb_id}/folders` | 知识库的目录列表（含每个目录的文档数） |
+| `POST` | `/api/v1/knowledge-bases/{kb_id}/folders` | 新建目录 |
 
 ### `health`
 

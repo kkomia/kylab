@@ -32,6 +32,7 @@ from app.services.embedding import build_embedder
 from app.services.embedding.base import EmbeddingProvider
 from app.services.embedding.deterministic import DeterministicEmbedder
 from app.services.embedding.resolver import EmbeddingResolver
+from app.services.folder import FolderService
 from app.services.idempotency import IdempotencyService
 from app.services.ingest import IngestService
 from app.services.knowledge_base import KnowledgeBaseService
@@ -65,6 +66,8 @@ class Services:
 
     knowledge_bases: KnowledgeBaseService
     documents: DocumentService
+    folders: FolderService
+    """知识库内目录：建/列/改名/删，以及把文档放进目录（v13）。"""
     ingest: IngestService
     retrieval: RetrievalService
     chat: ChatService
@@ -287,6 +290,7 @@ def build_services(
     return Services(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder, models=registry),
         documents=documents_service,
+        folders=FolderService(bundle),
         ingest=ingest,
         retrieval=retrieval,
         chat=chat_service,
