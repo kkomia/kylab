@@ -15,9 +15,9 @@
  * （建库时定、向量化时冻结模型），放在上传弹窗里会让人以为可以逐文件不同——
  * 那会造成同一库里切法不一致，而检索质量无从解释。
  *
- * **三种入口**（单文件 / 多文件 / 文件夹）各用一个隐藏 input：浏览器的
- * `<input type="file">` 没法在 `multiple` 与 `webkitdirectory` 之间来回切，
- * 一个 input 只能表达一种选择方式。拖放则统一走一个处理函数，拖文件夹也收
+ * **两个入口**（文件 / 文件夹）：`选择文件` 本身就是多选，一次挑多个走同一条路径，
+ * 不必再单列一个"选择多个文件"；`选择文件夹` 用 `webkitdirectory`，
+ * 它必须独占一个 input。拖放则统一走一个处理函数，拖文件夹也收
  * （通过 `webkitGetAsEntry` 递归展开——`dataTransfer.files` 对目录是空的）。
  */
 import { computed, ref, watch } from 'vue'
@@ -63,10 +63,9 @@ const items = ref<Item[]>([])
 const uploading = ref(false)
 const dragActive = ref(false)
 
-const singleInput = ref<HTMLInputElement | null>(null)
-const multiInput = ref<HTMLInputElement | null>(null)
+/** 两个隐藏 input：一个是多选文件，一个是选文件夹（`webkitdirectory` 必须独占一个）。 */
+const fileInput = ref<HTMLInputElement | null>(null)
 const folderInput = ref<HTMLInputElement | null>(null)
-
 /** 弹窗内的提醒（如"一次最多 N 个，后面几个没加进来"）。
  *  **不弹 toast**：toast 会飘到弹窗之外，而这句话说的正是弹窗里这份清单，
  *  说给清单听的话就该写在清单旁边。 */
@@ -102,10 +101,9 @@ const hasResult = computed(() => items.value.some((i) => i.status !== 'pending')
 /** 能开始上传的前提：有**待上传**的，而且没有正在传的。 */
 const canSubmit = computed(() => pendingCount.value > 0 && !uploading.value)
 
-/** 三种选择方式各对应一个隐藏 input；`multiple` / `webkitdirectory` 无法在同一个上切换。 */
-function pick(kind: 'single' | 'multi' | 'folder'): void {
-  const target =
-    kind === 'single' ? singleInput.value : kind === 'multi' ? multiInput.value : folderInput.value
+/** 两个入口各对应一个隐藏 input；`webkitdirectory` 与普通多选无法共用一个。 */
+function pick(kind: 'files' | 'folder'): void {
+  const target = kind === 'files' ? fileInput.value : folderInput.value
   target?.click()
 }
 
@@ -299,16 +297,9 @@ watch(open, (isOpen) => {
 
 <template>
   <AppModal v-model:open="open" title="上传文档" size="wide">
-    <p class="lead">
-      上传到「{{ props.kbName ?? '当前知识库' }}」。选好文件再点「开始上传」，可以先挑掉选错的，
-      不必等它传完再删。
-    </p>
-
     <!--
-      拖放区是个**容器**而不是按钮：它里面要放一句很长的说明，整块做成 button
-      会让辅助技术把那段说明读成按钮名字。
-      可点的部分单独一个 AppButton——它自带 Tab 焦点与键盘激活，
-      而"整块可点"的 div 键盘用户根本到不了。
+      拖放区是个**容器**而不是按钮：它里面要放说明文字，整块做成 button
+      会让辅助技术把那段说明读成按钮名字。可点的入口是里面那两个按钮。
 
       **选完文件后它自己变矮**：这时人在读下面的清单，
       一个 150px 高的拖放区只是在把清单往下挤（那 320px 的清单才是重点）。
@@ -322,27 +313,18 @@ watch(open, (isOpen) => {
     >
       <IconUpload :size="items.length ? 16 : 24" />
       <div class="dropzone-actions">
-        <AppButton @click="pick('single')">选择文件</AppButton>
-        <AppButton @click="pick('multi')">选择多个文件</AppButton>
+        <AppButton @click="pick('files')">选择文件</AppButton>
         <AppButton @click="pick('folder')">选择文件夹</AppButton>
       </div>
       <span class="dropzone-hint">也可以把文件或整个文件夹拖到这里</span>
     </div>
 
     <!--
-      三个隐藏 input：浏览器不允许同一个 input 在 `multiple` 与 `webkitdirectory`
-      之间切换，所以"单文件 / 多文件 / 文件夹"各用一个。
+      两个隐藏 input：`选择文件` 本身就允许多选（一次选多个是同一条路径，
+      不必再单列一个入口）；`选择文件夹` 用 `webkitdirectory`，它必须独占一个 input。
     -->
     <input
-      ref="singleInput"
-      class="visually-hidden"
-      type="file"
-      tabindex="-1"
-      aria-hidden="true"
-      @change="onPicked"
-    />
-    <input
-      ref="multiInput"
+      ref="fileInput"
       class="visually-hidden"
       type="file"
       multiple
@@ -436,12 +418,6 @@ watch(open, (isOpen) => {
 </template>
 
 <style scoped>
-.lead {
-  margin: 0 0 var(--space-3);
-  font-size: var(--text-meta-size);
-  color: var(--text-secondary);
-}
-
 /* 拖放区：虚线边框表示"这里可以放东西"。
    它是可点区域，所以给足高度并保留 hover/focus 反馈 */
 .dropzone {

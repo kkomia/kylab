@@ -247,19 +247,19 @@ describe('提示文案', () => {
   })
 })
 
-describe('三种上传入口', () => {
-  it('单文件 / 多文件 / 文件夹各有一个 input，文件夹走 webkitdirectory', () => {
+describe('上传入口', () => {
+  it('文件与文件夹两个入口；"选择文件"本身就支持多选', () => {
     const wrapper = mountDialog()
 
     const inputs = wrapper.findAll('input[type=file]')
-    expect(inputs).toHaveLength(3)
-    // 单文件：不能带 multiple，否则"选一个"的语义就没了
-    expect(inputs[0].attributes('multiple')).toBeUndefined()
-    expect(inputs[1].attributes('multiple')).toBeDefined()
-    expect(inputs[2].attributes('webkitdirectory')).toBeDefined()
+    expect(inputs).toHaveLength(2)
+    // 一个入口就够：多选是"选择文件"自带的，不该再多一个"选择多个文件"
+    expect(inputs[0].attributes('multiple')).toBeDefined()
+    expect(inputs[0].attributes('webkitdirectory')).toBeUndefined()
+    expect(inputs[1].attributes('webkitdirectory')).toBeDefined()
 
     const labels = wrapper.findAll('.dropzone-actions button').map((b) => b.text())
-    expect(labels).toEqual(['选择文件', '选择多个文件', '选择文件夹'])
+    expect(labels).toEqual(['选择文件', '选择文件夹'])
   })
 
   it('文件夹里的同名文件按相对路径区分，不会被去重误吞', async () => {
