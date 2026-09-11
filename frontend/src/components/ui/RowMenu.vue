@@ -8,9 +8,11 @@
  *
  * 视觉上默认低对比、整行 hover 时才明显——但**始终可聚焦、始终可点**。
  *
- * v0.8 补上三个原生 `<details>` 没做的事：
- * 1. 点浮层外部收起（原生只在再点一次 summary 或 Esc 时收）；
- * 2. 焦点离开后收起（Tab 走掉还留一个浮层飘在页面上很怪）；
+ * v0.8 补上原生 `<details>` 没做的三件事：
+ * 1. 点浮层外部收起（原生只在再点一次 summary 时才收）；
+ * 2. Esc 收起，且**只收菜单不收外层弹窗**——设置弹窗是原生 `<dialog>`，
+ *    Esc 会触发它的 `cancel`，菜单开着时按 Esc 连人带对话框一起关掉、用户丢了位置。
+ *    所以在捕获阶段截住 Esc 并 `preventDefault`，让最内层先关；
  * 3. 下方空间不够时向上弹。设置弹窗的正文是个滚动容器，卡片贴着底边时
  *    向下弹的菜单会被裁掉——「删除」正好是最后一项，裁掉它就等于藏了破坏性操作。
  * 用 `toggle` 事件按需挂/摘监听，不给每个实例常驻 document 监听。
@@ -41,7 +43,15 @@ function clipParent(el: HTMLElement): HTMLElement {
   return document.documentElement
 }
 
-/** 浮层展开期间才监听外部点击，收起即摘掉。 */
+/** Esc 只关菜单：捕获阶段拦下，别让外层 `<dialog>` 的 cancel 跟着触发。 */
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape') return
+  event.preventDefault()
+  event.stopPropagation()
+  close()
+}
+
+/** 浮层展开期间才挂监听，收起即摘掉。 */
 function onToggle(): void {
   if (!menu.value) return
   if (menu.value.open) {
@@ -53,9 +63,11 @@ function onToggle(): void {
     const above = trigger.top - clip.top
     dropUp.value = height > below && above > below
     document.addEventListener('pointerdown', onOutsidePointer, true)
+    document.addEventListener('keydown', onKeydown, true)
   } else {
     dropUp.value = false
     document.removeEventListener('pointerdown', onOutsidePointer, true)
+    document.removeEventListener('keydown', onKeydown, true)
   }
 }
 
@@ -64,11 +76,14 @@ function onOutsidePointer(event: PointerEvent): void {
   if (target && !menu.value?.contains(target)) close()
 }
 
-onBeforeUnmount(() => document.removeEventListener('pointerdown', onOutsidePointer, true))
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onOutsidePointer, true)
+  document.removeEventListener('keydown', onKeydown, true)
+})
 </script>
 
 <template>
-  <details ref="menu" class="menu" @toggle="onToggle" @keydown.esc="close">
+  <details ref="menu" class="menu" @toggle="onToggle">
     <summary class="menu-trigger" :aria-label="label ?? '更多操作'">
       <IconMore />
     </summary>

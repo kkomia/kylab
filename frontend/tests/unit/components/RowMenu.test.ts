@@ -92,6 +92,23 @@ describe('RowMenu', () => {
     wrapper.unmount()
   })
 
+  it('Esc 被拦在外层之前：吃掉默认行为，不让弹窗跟着关', async () => {
+    // 设置弹窗是原生 <dialog>，Esc 会让它触发 cancel。菜单开着时按 Esc 若连弹窗一起关，
+    // 用户就丢了位置——所以最内层必须先把它截住。
+    const wrapper = mountMenu()
+    await open(wrapper)
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    })
+    document.body.dispatchEvent(event)
+
+    expect(event.defaultPrevented).toBe(true)
+    wrapper.unmount()
+  })
+
   it('下方放不下时向上弹', async () => {
     const wrapper = mountMenu()
     const details = wrapper.find('details').element as HTMLDetailsElement
