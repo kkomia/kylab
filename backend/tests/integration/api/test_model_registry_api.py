@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 
 from tests.conftest import admin_client as admin_session
 
-CONSOLE = "console-token-for-registry"
 SECRET = "sk-super-secret-value-12345"
 
 

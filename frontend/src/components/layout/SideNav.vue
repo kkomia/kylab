@@ -61,12 +61,16 @@ function isActive(to: string, exact: boolean): boolean {
 }
 
 /**
- * 设置入口只给管理员 / 控制台令牌通道。
+ * 设置入口只给管理员。
  *
  * 设置页里是 embedding / LLM 密钥与用户管理，后端对成员一律 403
- * （`require_console`）。把一个点进去只会报错的入口摆在侧栏，比不显示更糟。
+ * （`require_admin`）。把一个点进去只会报错的入口摆在侧栏，比不显示更糟。
+ *
+ * **身份还没验完（`currentUser` 为 null）时按"不是管理员"处理**：v0.11 起
+ * 没有第二种凭据，null 只可能是"还在恢复会话"，放行会让成员登录后
+ * 一瞬间看到管理员入口。
  */
-const canOpenSettings = computed(() => currentUser.value === null || isAdmin.value)
+const canOpenSettings = computed(() => isAdmin.value)
 
 /** 当前会话 id：从路径里取，用来高亮列表里那一条。 */
 const activeConversationId = computed(() => {
@@ -103,11 +107,11 @@ function closeAccountMenu(): void {
 /**
  * 页脚那一行显示的"我是谁"。
  *
- * 没有登录账号时显示「控制台」——那是这台机器上**真正的**身份：
- * 控制台令牌通道 / 局域网开放模式下，后端认的就是控制台，
- * 写成"未登录"会让人以为进不去，而实际上他是完全授权的。
+ * 只认登录账号。v0.11 起没有"控制台通道"这种无账号身份，
+ * 取不到账号就意味着**身份还没验完**（会话正在恢复），此时留空——
+ * 那不是一种身份，写个名字只会让人以为登录被吞了。
  */
-const identityName = computed(() => currentUser.value?.name ?? '控制台')
+const identityName = computed(() => currentUser.value?.name ?? '')
 const identityRole = computed(() => (currentUser.value ? (isAdmin.value ? '管理员' : '成员') : ''))
 
 /** 主题菜单项：点一下切到**另一边**，所以文案要说清切过去是哪个。 */
@@ -225,7 +229,7 @@ async function onLogout(): Promise<void> {
             <IconSun :size="14" />
             <span>{{ themeActionLabel }}</span>
           </button>
-          <!-- 只有真的能登录时才给「退出登录」：控制台令牌通道没有会话可退 -->
+          <!-- 退出登录只在真有账号时给：没有会话就没有可退的东西 -->
           <button
             v-if="currentUser"
             type="button"

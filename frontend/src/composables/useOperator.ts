@@ -71,9 +71,10 @@ export function setOperator(id: string): void {
 
 /** 供 `client.ts` 组装请求头用：**每个请求都带**，不只是上传。 */
 export function operatorHeaders(): Record<string, string> {
-  // 归属 = 当前用户（用户批注：不在系统里切换使用者）。
-  // 登录态下由账号身份决定，"谁传的"与"谁登录着"就永远一致；
-  // 只有没有登录态的旧部署（控制台令牌通道）才回退到本地声明。
+  // 归属 = 当前账号（用户批注：不在系统里切换使用者）：
+  // 谁传的与谁登录着永远一致。会话恢复完成前 currentUser 为空，
+  // 回退到本地声明——历史上（§12.29 之前）的部署可能在 localStorage 里留着 id。
+  // 它只是归属标注，不参与鉴权。
   const id = currentUser.value?.id ?? operatorId.value
   return id ? { 'X-Kylab-Operator': id } : {}
 }

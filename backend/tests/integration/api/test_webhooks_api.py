@@ -160,7 +160,7 @@ def test_events_list_allows_readonly(client: TestClient) -> None:
     """读事件清单是安全的：它只说明支持哪些事件，不含任何库内数据。
 
     **要允许只读**：集成方要用它来配置订阅，而配置订阅这件事本身
-    需要控制台令牌——但那不意味着"读清单"也该要。
+    需要管理员权限——但那不意味着"读清单"也该要。
     """
     readonly = _issue(client, permission="readonly")
     response = client.get(

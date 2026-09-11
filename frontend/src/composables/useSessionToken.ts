@@ -32,10 +32,10 @@ function read(): string {
 
 const token = ref<string>(typeof window === 'undefined' ? '' : read())
 
-/** 当前登录账号（会话令牌通道才有；控制台令牌/API Key 通道为 null）。 */
+/** 当前登录账号（会话恢复完成前为 null）。 */
 export const currentUser = ref<Account | null>(null)
 
-/** 后端认证状态（是否需初始化 / 是否已启用鉴权）。 */
+/** 后端认证状态（是否需初始化）。 */
 export const authStatus = ref<AuthBootstrapStatus | null>(null)
 
 export function sessionToken(): string {

@@ -100,7 +100,7 @@ const SECTIONS: {
   { key: 'llm', label: '对话模型', icon: IconChat },
   { key: 'services', label: '服务配置', icon: IconServer },
   { key: 'storage', label: '存储配置', icon: IconFolder },
-  // 只有管理员（或控制台令牌通道）能看：/users 的写与管理端点是控制台级
+  // 只有管理员能看：/users 的写与管理端点是管理员级（`require_admin`）
   { key: 'users', label: '用户', icon: IconUser, adminOnly: true },
   { key: 'system', label: '系统与安全', icon: IconShieldCheck },
   { key: 'appearance', label: '外观', icon: IconSun },
@@ -190,10 +190,11 @@ async function submitPasswordChange(): Promise<void> {
 /**
  * 用户分组只对管理员开放。
  *
- * `currentUser === null` 时也开放：那是控制台令牌通道（或鉴权未启用的本机开发），
- * 它与管理员同权，没有理由把用户管理藏起来。
+ * 身份还没验完（`currentUser` 为 null）时**不开放**：v0.11 起没有第二种凭据，
+ * null 只可能是"会话正在恢复"。用户管理是管理员专属，宁可晚一拍出现，
+ * 也不要在成员登录的一瞬间把管理入口亮出来。
  */
-const canManageUsers = computed(() => currentUser.value === null || isAdmin.value)
+const canManageUsers = computed(() => isAdmin.value)
 const visibleSections = computed(() =>
   SECTIONS.filter((item) => !item.adminOnly || canManageUsers.value),
 )
@@ -1042,7 +1043,7 @@ async function runTest(target: string): Promise<void> {
           </div>
         </template>
 
-        <!-- 用户（v10）：开通账号与成员管理。仅管理员/控制台可见 -->
+        <!-- 用户（v10）：开通账号与成员管理。仅管理员可见 -->
         <template v-else-if="section === 'users'">
           <div class="section-head">
             <h3 class="section-title">
@@ -1145,8 +1146,7 @@ async function runTest(target: string): Promise<void> {
         <template v-else>
           <h3 class="section-title">系统与安全</h3>
 
-          <!-- 账号（v10 主路径）：登录状态下在这里改密、退出。
-               控制台令牌只留给没有账号的老部署/应急恢复，见下方 v-if 分支。 -->
+          <!-- 账号（v10 主路径）：登录状态下在这里改密、退出。 -->
           <template v-if="currentUser">
             <div class="row row-static">
               <div class="row-main">
@@ -1350,20 +1350,6 @@ async function runTest(target: string): Promise<void> {
 .scale-size {
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
-}
-
-/* 令牌输入：输入框吃掉剩余宽度，两个按钮靠右。
-   输入框自带 min-width，所以这里要 min-width:0 允许它收缩。 */
-.token-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-}
-
-.token-row :deep(.field) {
-  flex: 1;
-  min-width: 0;
 }
 
 /* 菜单项：图标 + 单行标签。**不再有第二行小字**——

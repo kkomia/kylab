@@ -21,11 +21,11 @@ services:
     environment:
       # 数据都落在挂载卷里，容器重建不丢
       KYLAB_DATA_DIR: /data
-      # 局域网多人共用时建议打开鉴权，并设一个控制台令牌。
-      # **留空则不开鉴权**——单机自用不必多一道登录。
-      KYLAB_AUTH_ENABLED: ${KYLAB_AUTH_ENABLED:-false}
-      KYLAB_CONSOLE_TOKEN: ${KYLAB_CONSOLE_TOKEN:-}
-      # 签名下载链接用；不设则后端**拒绝签发**（而不是发一条无效链接）
+      # 鉴权**永远生效**（v0.11 起没有开关）。首次打开时访问界面会进
+      # 「创建管理员账号」向导；在此之前业务接口一律 401。
+      # 忘记密码没有 HTTP 应急入口，见 docs/部署与运行-v0.1.md 的恢复路径。
+      # 签名下载链接用；不设则后端**拒绝签发**（而不是发一条无效链接）。
+      # 不设也行：首次 setup 会自动生成一条并落库。
       KYLAB_URL_SIGNING_SECRET: ${KYLAB_URL_SIGNING_SECRET:-}
       # 允许的来源。走 nginx 同源反代时用不到，直连后端时需要
       KYLAB_CORS_ORIGINS: ${KYLAB_CORS_ORIGINS:-http://localhost:8080}

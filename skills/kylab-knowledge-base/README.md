@@ -29,10 +29,13 @@ curl -s http://127.0.0.1:8000/api/v1/health
 # 2) MCP 工具认得出来吗（需要先装 mcp extra）
 cd backend && python -m app.mcp_server.server --list-tools
 
-# 3) 脚本能查到东西吗（开了鉴权才需要令牌）
-KYLAB_CONSOLE_TOKEN=... python scripts/kylab_query.py --list
-KYLAB_CONSOLE_TOKEN=... python scripts/kylab_query.py --query "眼轴怎么监测"
+# 3) 脚本能查到东西吗（v0.11 起接口一律要凭据）
+KYLAB_API_KEY=... python scripts/kylab_query.py --list
+KYLAB_API_KEY=... python scripts/kylab_query.py --query "眼轴怎么监测"
 ```
+
+> 凭据怎么来：在控制台「设置 → API 密钥」建一把**只读**密钥即可
+> （查文档不需要读写档）。登录会话令牌只属于浏览器，别拿来配脚本。
 
 ## 三个容易踩的点
 
@@ -45,6 +48,7 @@ KYLAB_CONSOLE_TOKEN=... python scripts/kylab_query.py --query "眼轴怎么监�
 
 ## 安全
 
-MCP 的 HTTP 模式**没有自己的鉴权**，而工具能读**也能删**文档。
-默认只监听 `127.0.0.1` 是有意的；要在局域网上开，
-请先打开后端鉴权并只在可信网络里使用。
+MCP 的 HTTP 模式**没有自己的鉴权**，而工具能读**也能删**文档，
+且它绕过后端那套账号/API Key 直接操作存储。
+默认只监听 `127.0.0.1` 是有意的；确实要在局域网上开，
+请只放在可信网络里（后端鉴权**保护不到**这条链路）。

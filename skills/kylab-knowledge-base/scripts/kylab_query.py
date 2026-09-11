@@ -57,9 +57,10 @@ def _request(
         # actually fix, and it is otherwise easy to mistake for "no results".
         if exc.code in (401, 403):
             print(
-                f"需要凭据（HTTP {exc.code}）。kylab 开着鉴权时所有接口都要令牌：\n"
-                "  在控制台「设置 → 系统与安全」里取控制台令牌，然后设 KYLAB_CONSOLE_TOKEN，"
-                "或给本脚本传 --token。",
+                f"需要凭据（HTTP {exc.code}）。kylab 的接口一律要凭据（v0.11 起没有开关）：\n"
+                "  在控制台「设置 → API 密钥」建一把**只读**密钥，"
+                "然后设 KYLAB_API_KEY，或给本脚本传 --token。\n"
+                "  （登录会话令牌也可以，但它只属于浏览器；给脚本用请用 API Key。）",
                 file=sys.stderr,
             )
             raise SystemExit(2) from exc
@@ -144,8 +145,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-url", default=os.environ.get("KYLAB_BASE_URL", DEFAULT_BASE_URL))
     parser.add_argument(
         "--token",
-        default=os.environ.get("KYLAB_CONSOLE_TOKEN"),
-        help="控制台令牌；默认读 KYLAB_CONSOLE_TOKEN 环境变量",
+        default=os.environ.get("KYLAB_API_KEY"),
+        help="API Key（只读档即可）；默认读 KYLAB_API_KEY 环境变量",
     )
     parser.add_argument("--list", action="store_true", help="列出知识库后退出")
     parser.add_argument("--json", action="store_true", help="以 JSON 输出（给程序读）")

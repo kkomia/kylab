@@ -222,7 +222,7 @@ def test_member_sees_only_owned_kbs(service, store) -> None:  # type: ignore[no-
 
 
 def test_member_cannot_touch_admin_only_endpoints(service) -> None:  # type: ignore[no-untyped-def]
-    """成员会话 is_admin=False：require_console 那层（设置页/密钥管理）进不去。"""
+    """成员会话 is_admin=False：require_admin 那层（设置页/密钥管理）进不去。"""
     assert _member(service).is_admin is False
 
 

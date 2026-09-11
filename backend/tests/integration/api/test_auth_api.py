@@ -301,7 +301,7 @@ def test_setup_then_login_then_me(app_client: TestClient) -> None:
     # 用户名归一化为小写；显示名保留原样
     assert (setup["user"]["username"], setup["user"]["name"]) == ("admin", "小又")
 
-    # 会话令牌立即可用，且管理员会话与控制台令牌同权（能进设置页）
+    # 会话令牌立即可用，且管理员会话能进设置页
     session = {"Authorization": f"Bearer {setup['token']}"}
     assert app_client.get("/api/v1/settings", headers=session).status_code == 200
     assert app_client.get("/api/v1/auth/me", headers=session).json()["username"] == "admin"
