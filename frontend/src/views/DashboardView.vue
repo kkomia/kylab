@@ -11,17 +11,23 @@
  * 2. **颜色只来自主题 Token**：图表与页面共用一套灰阶 + 语义色，不另立一套"图表配色"；
  * 3. 数字先给**结论**（几个大数），再给**分布**（点状图 / 柱状图 / 趋势）。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
 
 import { getDashboard, getUsage, type ActivityPoint, type Dashboard, type Usage } from '@/api/stats'
 import ActivityHeatmap from '@/components/charts/ActivityHeatmap.vue'
-import EChart from '@/components/charts/EChart.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { formatBytes, formatCount, formatRelativeTime } from '@/composables/useFormat'
+
+/**
+ * 图表按需加载：`EChart.vue` 把整个 ECharts 拉进来（数百 KB）。
+ * 静态 import 会让驾驶舱的**首屏**必须先下完这个包；异步化之后
+ * 数字卡片与骨架先画出来，图表包到了再补上——首屏不再等一个图表库。
+ */
+const EChart = defineAsyncComponent(() => import('@/components/charts/EChart.vue'))
 
 /**
  * 观察窗口天数：90 天（约 14 周）。

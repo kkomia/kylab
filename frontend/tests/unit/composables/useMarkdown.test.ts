@@ -77,4 +77,16 @@ describe('renderAnswerMarkdown', () => {
     const html = renderAnswerMarkdown('**监测')
     expect(html).toContain('**监测')
   })
+  it('同文本重复渲染结果一致，不同文本不串味（渲染结果有缓存）', () => {
+    // 模板里是逐条内联调用：一次重渲染会把所有历史消息都算一遍，
+    // 所以按文本缓存了结果。缓存只允许"更快"，不允许改变输出。
+    const source = '# 标题\n\n- 一\n- 二'
+    const first = renderAnswerMarkdown(source)
+    const again = renderAnswerMarkdown(source)
+    const other = renderAnswerMarkdown('# 标题\n\n- 一\n- 三')
+
+    expect(again).toBe(first)
+    expect(other).not.toBe(first)
+    expect(other).toContain('三')
+  })
 })

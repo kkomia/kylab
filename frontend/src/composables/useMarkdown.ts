@@ -103,10 +103,26 @@ function renderBlock(block: Block): string {
 /**
  * 把回答文本转成可安全 `v-html` 的 HTML。
  *
- * 流式期间会被反复调用（每来一个 delta 一次），所以不做缓存：
- * 回答通常只有几百字，重新切块比维护缓存失效便宜。
+ * **结果按文本缓存**。原先这里不缓存，理由是"流式期间会被反复调用，回答只有几百字"——
+ * 那个理由只算了单条消息，漏掉了真实调用方式：模板里是
+ * `v-html="renderAnswerMarkdown(message.text)"` 逐条内联，**组件每次重渲染都会
+ * 把所有历史消息重算一遍**。流式时每个 token 触发一次重渲染，于是一轮回答的总
+ * 解析量随消息数×token 数增长（长会话越聊越卡）。
+ *
+ * 加上缓存后：正在流式的那一条每 token 命中不到缓存（只解析一条），
+ * 其余历史消息全部命中，总开销回到"每条解析一次"。
+ * 文本就是缓存键，没有失效问题——同文本必然同输出。
  */
+const HTML_CACHE = new Map<string, string>()
+/** 上限只是防"聊一整天"把内存撑大；超出直接清空，命中率下降但不会漏结果。 */
+const HTML_CACHE_LIMIT = 300
+
 export function renderAnswerMarkdown(text: string): string {
   if (!text) return ''
-  return splitBlocks(text).map(renderBlock).join('')
+  const cached = HTML_CACHE.get(text)
+  if (cached !== undefined) return cached
+  const html = splitBlocks(text).map(renderBlock).join('')
+  if (HTML_CACHE.size >= HTML_CACHE_LIMIT) HTML_CACHE.clear()
+  HTML_CACHE.set(text, html)
+  return html
 }

@@ -363,6 +363,9 @@ const hasActive = computed(() =>
   documents.value.some((document) => ACTIVE_STAGES.has(document.stage)),
 )
 
+/** 上一次请求的筛选条件。换了条件就把"显示更多"的进度归零——那是另一份清单。 */
+const lastFilterKey = ref('')
+
 async function refresh(): Promise<void> {
   if (!kbId.value) return
   try {
@@ -373,6 +376,11 @@ async function refresh(): Promise<void> {
     if (keyword) filter.q = keyword
     if (stageFilter.value) filter.stage = stageFilter.value as DocumentStage
     if (sourceFilter.value) filter.sourceKind = sourceFilter.value as DataSourceKind
+    const filterKey = JSON.stringify(filter)
+    if (filterKey !== lastFilterKey.value) {
+      lastFilterKey.value = filterKey
+      visibleLimit.value = RENDER_PAGE
+    }
     documents.value = (await listDocuments(kbId.value, filter)).items
     error.value = ''
     pruneSelection()
@@ -386,6 +394,25 @@ async function refresh(): Promise<void> {
 
 /** 与 CSS 的 `--row-height` 一致。补白行要按它算，两处漂了就会算错行数。 */
 const ROW_HEIGHT = 44
+
+/**
+ * 一次最多画多少行。
+ *
+ * 列表接口一次回全量（一个库里几千份文档是可能的），而**每一行都是有状态的组件**
+ * （状态标签、菜单、复选框）。几千个一起挂上去，首次渲染与后续每次刷新（轮询）
+ * 都会卡住主线程。这里先画前 N 行，其余靠"显示更多"按需追加——
+ * 用户的注意力本来也只在前几十行。
+ */
+const RENDER_PAGE = 100
+const visibleLimit = ref(RENDER_PAGE)
+const renderedDocuments = computed(() => documents.value.slice(0, visibleLimit.value))
+const hiddenCount = computed(() =>
+  Math.max(0, documents.value.length - renderedDocuments.value.length),
+)
+
+function showMore(): void {
+  visibleLimit.value += RENDER_PAGE
+}
 
 /**
  * 表格的行数**不跟着文件数走**：只有两三个文件时如果只画两三行，
@@ -404,7 +431,7 @@ function syncFillerRows(): void {
   const bottomGap = 56 /* 给页面底部留一口气，别贴到边 */
   const available = window.innerHeight - element.getBoundingClientRect().top - bottomGap
   // 空库时也会有"还没有文档"那一行提示，所以数据侧至少占 1 行
-  const dataRows = Math.max(documents.value.length, 1)
+  const dataRows = Math.max(renderedDocuments.value.length, 1)
   const fit = Math.ceil((available - headHeight) / ROW_HEIGHT)
   fillerRows.value = Math.max(0, Math.min(fit - dataRows, 60))
 }
@@ -939,7 +966,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                   </span>
                 </div>
               </li>
-              <li v-for="document in documents" :key="document.id" class="doc-row-group">
+              <li v-for="document in renderedDocuments" :key="document.id" class="doc-row-group">
                 <div class="doc-row panel-row">
                   <span v-if="knowledgeBase?.can_write" class="row-check">
                     <input
@@ -1047,6 +1074,14 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                     />
                   </li>
                 </ul>
+              </li>
+
+              <!-- 只画了前 N 行：剩下的按需追加，别一次挂几千个行组件 -->
+              <li v-if="hiddenCount > 0" class="doc-row-group">
+                <div class="doc-row panel-row doc-more-row">
+                  <span class="doc-more-text">还有 {{ hiddenCount }} 篇未显示</span>
+                  <AppButton size="sm" variant="subtle" @click="showMore">显示更多</AppButton>
+                </div>
               </li>
 
               <!-- 补白行：把表格铺满可视区，文件少时不留一大片空白。
@@ -1668,6 +1703,17 @@ button.tree-caret:hover {
 /* 补白行：只负责占位与分隔线，不可交互 */
 .doc-filler {
   pointer-events: none;
+}
+
+/* "显示更多"那一行：说明在左、按钮在右 */
+.doc-more-row {
+  gap: var(--space-3);
+}
+
+.doc-more-text {
+  flex: 1;
+  font-size: var(--text-meta-size);
+  color: var(--text-tertiary);
 }
 
 /* 展开器给足 24px 命中区：20px 在触屏上点不中 */

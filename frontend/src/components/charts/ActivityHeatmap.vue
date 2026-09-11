@@ -12,10 +12,17 @@
  * 3. **月份刻度放底部**：x 轴按周分列，月份标签只在每月第一周出现——
  *    放在顶部会和色块挤在一起（上一轮就是这么糊的）。
  */
-import { computed } from 'vue'
+import { computed, defineAsyncComponent } from 'vue'
 
 import type { ActivityPoint } from '@/api/stats'
-import EChart from '@/components/charts/EChart.vue'
+
+/**
+ * 图表基座**异步**引入：ECharts 是几百 KB 的重依赖，而这张热力图是驾驶舱里
+ * 最下面的一块。静态 import 会把它拽进驾驶舱的静态依赖图，让"按需加载图表"
+ * 在别处做的拆分全部失效（实测：拆了 DashboardView 的 EChart，
+ * 包体还是 595KB，因为这里又静态引了一次）。
+ */
+const EChart = defineAsyncComponent(() => import('@/components/charts/EChart.vue'))
 
 const props = withDefaults(defineProps<{ activity: ActivityPoint[]; maxCell?: number }>(), {
   maxCell: 20,
