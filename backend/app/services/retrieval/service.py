@@ -20,6 +20,7 @@ import time
 from collections.abc import Sequence
 
 from app.services.embedding.base import EmbeddingProvider
+from app.services.embedding.resolver import EmbeddingResolver
 from app.services.retrieval.fusion import DEFAULT_RRF_K, rrf_fuse
 from app.services.retrieval.rerank import RerankError, RerankProvider
 from app.services.retrieval.types import (
@@ -60,9 +61,12 @@ class RetrievalService:
         embedder: EmbeddingProvider,
         reranker: RerankProvider,
         rrf_k: int = DEFAULT_RRF_K,
+        embedders: EmbeddingResolver | None = None,
     ) -> None:
         self._stores = stores
         self._embedder = embedder
+        # 按库解析嵌入模型（v11）：不同库可能用不同模型，查询向量必须按库算
+        self._embedders = embedders
         self._reranker = reranker
         self._rrf_k = rrf_k
 
@@ -124,11 +128,14 @@ class RetrievalService:
     def _vector_channel(
         self, request: RetrievalQuery, query_vector: Sequence[float] | None
     ) -> tuple[list[str], dict[str, float]]:
-        vector = list(query_vector) if query_vector is not None else self._embedder.embed(
-            [request.query]
-        )[0]
         best: dict[str, float] = {}
         for kb_id in request.kb_ids:
+            # 每个库用自己的嵌入模型算查询向量：跨库混用一个向量是错的——
+            # 向量空间不同，相似度没有意义（v11 起嵌入模型是库属性）
+            if query_vector is not None:
+                vector = list(query_vector)
+            else:
+                vector = self._embedder_for(kb_id).embed([request.query])[0]
             for match in self._stores.vectors.search(
                 kb_id, query_vector=vector, top_k=request.candidate_k
             ):
@@ -140,6 +147,15 @@ class RetrievalService:
         return [chunk_id for chunk_id, _ in ranked], {
             chunk_id: similarity_from_distance(distance) for chunk_id, distance in ranked
         }
+
+    def _embedder_for(self, kb_id: str) -> EmbeddingProvider:
+        """这个库该用哪个嵌入实现：显式选了模型就用它，否则全局默认。"""
+        if self._embedders is None:
+            return self._embedder
+        kb = self._stores.meta.get_knowledge_base(kb_id)
+        if kb is None:
+            return self._embedder
+        return self._embedders.for_kb(kb)
 
     def _fulltext_channel(
         self, request: RetrievalQuery

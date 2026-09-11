@@ -26,6 +26,7 @@ import logging
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.chunking import content_hash_of
 from app.services.embedding.base import EmbeddingProvider
+from app.services.embedding.resolver import EmbeddingResolver
 from app.storage.base import ChunkRecord, StoreBundle
 
 __all__ = ["ChunkService"]
@@ -40,9 +41,17 @@ MAX_CHUNK_CHARS = 4000
 class ChunkService:
     """块的读、改、禁用、删除。"""
 
-    def __init__(self, stores: StoreBundle, *, embedder: EmbeddingProvider) -> None:
+    def __init__(
+        self,
+        stores: StoreBundle,
+        *,
+        embedder: EmbeddingProvider,
+        embedders: EmbeddingResolver | None = None,
+    ) -> None:
         self._stores = stores
         self._embedder = embedder
+        # 手工改块要重算向量，必须用**这个库自己的**嵌入模型（v11）
+        self._embedders = embedders
 
     # ------------------------------------------------------------------ 读
 
@@ -78,7 +87,7 @@ class ChunkService:
         previous_text = record.text
 
         # 1) 先算新向量（失败即整体失败，不留半成品）
-        vector = self._embedder.embed([cleaned])[0]
+        vector = self._embedder_for(record.knowledge_base_id).embed([cleaned])[0]
 
         # 2) 更新元数据
         record.text = cleaned
@@ -143,6 +152,14 @@ class ChunkService:
 
         self._renumber(document_id)
         logger.info("切块 %s 已删除（连同索引与向量）", chunk_id)
+
+    def _embedder_for(self, kb_id: str) -> EmbeddingProvider:
+        if self._embedders is None:
+            return self._embedder
+        kb = self._stores.meta.get_knowledge_base(kb_id)
+        if kb is None:
+            return self._embedder
+        return self._embedders.for_kb(kb)
 
     def _renumber(self, document_id: str) -> None:
         """把该文档剩余的块重新编号成连续的 0..n-1。"""

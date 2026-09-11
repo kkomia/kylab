@@ -6,8 +6,9 @@
 
 from __future__ import annotations
 
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.embedding.base import EmbeddingProvider
+from app.services.model_registry import ModelRegistryService
 from app.storage.base import KnowledgeBaseRecord, StoreBundle
 
 __all__ = ["DEFAULT_CHUNK_STRATEGY", "KnowledgeBaseService"]
@@ -18,9 +19,18 @@ DEFAULT_CHUNK_STRATEGY = "fixed"
 class KnowledgeBaseService:
     """知识库的创建与查询。"""
 
-    def __init__(self, stores: StoreBundle, *, embedder: EmbeddingProvider) -> None:
+    def __init__(
+        self,
+        stores: StoreBundle,
+        *,
+        embedder: EmbeddingProvider,
+        models: ModelRegistryService | None = None,
+    ) -> None:
         self._stores = stores
         self._embedder = embedder
+        # 建库时要按选中的注册模型取"模型 ID + 维度"，所以需要注册器。
+        # 允许为 None 只为老测试方便——生产由组合根传进来
+        self._models = models
 
     def create(
         self,
@@ -31,18 +41,32 @@ class KnowledgeBaseService:
         chunk_overlap: int = 64,
         chunk_strategy: str = DEFAULT_CHUNK_STRATEGY,
         owner_id: str | None = None,
+        embedding_model_pk: str | None = None,
     ) -> KnowledgeBaseRecord:
-        """建库并把当前 embedding 实现的模型与维度冻结进记录。
+        """建库并**冻结嵌入模型**（架构 §6.4）。
+
+        嵌入模型是知识库属性（v11 设计调整）：``embedding_model_pk`` 传了就用注册表里
+        那个模型（凭据运行时按 pk 解析），没传就沿用全局解析出的实现——老库与
+        "不挑模型"的库行为不变，升级不打断。
 
         ``owner_id``（v10）：登录成员建的库归自己；控制台令牌/API Key 通道
         没有账号概念，传 None 即无主（对管理员全可见）。
         """
+        model_id = self._embedder.model_id
+        dim = self._embedder.dim
+        if embedding_model_pk:
+            if self._models is None:
+                raise InvalidRequestError("未接入模型注册器，无法按所选模型建库")
+            _, model = self._models.embedding_target(embedding_model_pk)
+            model_id, dim = model.model_id, model.dim or 0
+
         return self._stores.meta.create_knowledge_base(
             KnowledgeBaseRecord(
                 id=kb_id,
                 name=name,
-                embedding_model_id=self._embedder.model_id,
-                embedding_dim=self._embedder.dim,
+                embedding_model_id=model_id,
+                embedding_dim=dim,
+                embedding_model_pk=embedding_model_pk,
                 chunk_strategy=chunk_strategy,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,

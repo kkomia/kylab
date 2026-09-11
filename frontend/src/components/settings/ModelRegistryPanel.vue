@@ -87,10 +87,15 @@ function bindableModels(slot: Slot): RegisteredModel[] {
   })
 }
 
+/** 嵌入槽位在全局这一层只是"新建知识库时的默认值"——名字要说出这件事。 */
+function displaySlotLabel(slot: Slot): string {
+  return slot.slot === 'embedding' ? '默认嵌入模型' : slot.label
+}
+
 /** 用途下拉的选项：空值 = 不绑定，其余是"模型名 · 供应商"。 */
 function slotOptions(slot: Slot): { value: string; label: string }[] {
   return [
-    { value: '', label: '（不指定，走精细配置）' },
+    { value: '', label: '不指定' },
     ...bindableModels(slot).map((model) => ({
       value: model.id,
       label: `${model.label || model.model_id} · ${model.provider_name}`,
@@ -333,13 +338,19 @@ defineExpose({ load })
       <!-- 第一部分：用途分配。**放最上面**，因为这才是用户每天要改的东西 -->
       <section class="block">
         <h3 class="block-title">
-          用途分配
-          <InfoTip text="为每种用途指定用哪个模型；未指定的用途走「精细」配置里的字段。" />
+          全局用途
+          <InfoTip
+            text="对话与重排是全局的，所有库共用。嵌入模型不在这里定——它是知识库属性，新建知识库时再选（见「知识库 → 新建」），这样小库能用高精度模型、大库能用小模型提速。"
+          />
         </h3>
 
         <div v-for="item in slots" :key="item.slot" class="slot-row">
           <div class="slot-name">
-            <span class="slot-label">{{ item.label }}</span>
+            <span class="slot-label">{{ displaySlotLabel(item) }}</span>
+            <InfoTip
+              v-if="item.slot === 'embedding'"
+              text="这是新建知识库时的预选模型。每个知识库在创建时各自选定并冻结，之后不能更换（换模型要新建库）。"
+            />
             <StatusTag v-if="item.source === 'registry'" tone="success" label="已绑定" />
             <StatusTag v-else-if="item.source === 'settings'" tone="neutral" label="走精细配置" />
             <StatusTag v-else tone="warning" label="未配置" />
@@ -633,7 +644,8 @@ defineExpose({ load })
 
 .slot-name {
   display: flex;
-  flex: 0 0 180px;
+  /* 200px：加了图标位与问号之后，「默认嵌入模型」在 180px 下会折行 */
+  flex: 0 0 200px;
   align-items: center;
   gap: var(--space-2);
 }

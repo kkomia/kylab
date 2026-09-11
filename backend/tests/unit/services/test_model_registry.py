@@ -368,3 +368,59 @@ def test_probe_provider_maps_server_error_to_upstream(registry: ModelRegistrySer
 
     with pytest.raises(UpstreamError, match="503"):
         registry.probe_provider(provider.id)
+
+
+# ------------------------------------------- 嵌入模型作为知识库属性（v11 设计调整）
+
+
+def _embedding_model(registry: ModelRegistryService, **overrides):  # type: ignore[no-untyped-def]
+    provider = _provider(registry, kind="embedding", api_key="sk-abc")
+    payload = {"model_id": "bge-m3", "capabilities": ["embedding"], "dim": 1024}
+    payload.update(overrides)
+    return _model(registry, provider.id, **payload)
+
+
+def test_embedding_target_returns_provider_and_model(registry: ModelRegistryService) -> None:
+    model = _embedding_model(registry)
+
+    provider, resolved = registry.embedding_target(model.id)
+
+    assert resolved.model_id == "bge-m3"
+    assert resolved.dim == 1024
+    assert provider.api_key == "sk-abc"
+
+
+def test_embedding_target_rejects_a_non_embedding_model(
+    registry: ModelRegistryService,
+) -> None:
+    model = _model(registry, _provider(registry).id, capabilities=["chat"], dim=None)
+
+    with pytest.raises(InvalidRequestError, match="embedding"):
+        registry.embedding_target(model.id)
+
+
+def test_embedding_target_requires_a_dimension(registry: ModelRegistryService) -> None:
+    """维度没登记就无法建向量表——必须在这里拦住，而不是摄入到一半才炸。"""
+    model = _embedding_model(registry, dim=None)
+
+    with pytest.raises(InvalidRequestError, match="维度"):
+        registry.embedding_target(model.id)
+
+
+def test_embedding_target_rejects_a_disabled_provider(
+    registry: ModelRegistryService,
+) -> None:
+    model = _embedding_model(registry)
+    registry.update_provider(model.provider_id, enabled=False)
+
+    with pytest.raises(InvalidRequestError, match="停用"):
+        registry.embedding_target(model.id)
+
+
+def test_embedding_target_rejects_a_missing_key(registry: ModelRegistryService) -> None:
+    model = _embedding_model(registry)
+    # 传空串 = 清空密钥（传 None 是"保持原值"，那是另一条语义）
+    registry.update_provider(model.provider_id, api_key="")
+
+    with pytest.raises(InvalidRequestError, match="API Key"):
+        registry.embedding_target(model.id)

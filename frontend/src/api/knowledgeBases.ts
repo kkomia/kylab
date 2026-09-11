@@ -24,6 +24,9 @@ export interface KnowledgeBaseCreate {
   name: string
   chunk_size?: number
   chunk_overlap?: number
+  /** 建库时选定的嵌入模型（注册表主键）。留空 = 用服务端默认。
+   *  嵌入模型是知识库属性：库内向量化之后不可更换（换模型要新建库）。 */
+  embedding_model_pk?: string
 }
 
 export function listKnowledgeBases(): Promise<{ items: KnowledgeBase[] }> {

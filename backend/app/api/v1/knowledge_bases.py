@@ -58,6 +58,8 @@ async def create_knowledge_base(
         chunk_overlap=payload.chunk_overlap,
         # 登录成员建的库归自己（v10 私有隔离）；控制台令牌/API Key 通道无主
         owner_id=caller.user.id if caller.user else None,
+        # 嵌入模型随库选定并冻结（v11）；留空走服务端默认
+        embedding_model_pk=payload.embedding_model_pk,
     )
     return _out(record, caller, services)
 

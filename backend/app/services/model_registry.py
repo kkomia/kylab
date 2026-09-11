@@ -108,6 +108,31 @@ class ModelRegistryService:
             raise NotFoundError(f"供应商不存在：{provider_id}")
         return record
 
+    def embedding_target(
+        self, model_pk: str
+    ) -> tuple[ModelProviderRecord, RegisteredModelRecord]:
+        """取一个可直接用于嵌入的（供应商, 模型）。
+
+        **校验放在这一处**：建库时选模型、运行时按 pk 解析，两处都要"能用"这个判断，
+        分散写会漂。空 ``capabilities`` 视为"没声明"，与绑定用途时的宽容口径一致
+        （旧数据不拦）；声明了就必须包含 ``embedding``。
+        """
+        model = self.get_model(model_pk)
+        if model.capabilities and "embedding" not in model.capabilities:
+            raise InvalidRequestError(
+                f"模型「{model.label or model.model_id}」没有声明 embedding 能力，不能作为嵌入模型"
+            )
+        if not model.dim:
+            raise InvalidRequestError(
+                f"模型「{model.label or model.model_id}」没有登记向量维度（dim），无法用于嵌入"
+            )
+        provider = self.get_provider(model.provider_id)
+        if not provider.enabled:
+            raise InvalidRequestError(f"供应商「{provider.name}」已停用")
+        if not provider.api_key.strip():
+            raise InvalidRequestError(f"供应商「{provider.name}」还没有填写 API Key")
+        return provider, model
+
     def probe_provider(self, provider_id: str) -> str:
         """探活一家供应商：**用它的地址与凭据请求 ``GET {base_url}/models``**。
 

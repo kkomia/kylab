@@ -30,6 +30,7 @@ from app.services.conversation import ConversationService
 from app.services.documents import DocumentService
 from app.services.embedding import build_embedder
 from app.services.embedding.base import EmbeddingProvider
+from app.services.embedding.resolver import EmbeddingResolver
 from app.services.idempotency import IdempotencyService
 from app.services.ingest import IngestService
 from app.services.knowledge_base import KnowledgeBaseService
@@ -207,7 +208,12 @@ def build_services(
 
     embedder = _RuntimeEmbedder(runtime, _record_embed_usage)
     reranker = _RuntimeReranker(runtime)
-    retrieval = RetrievalService(bundle, embedder=embedder, reranker=reranker)
+    # 嵌入模型是知识库属性（v11）：按库解析。显式选了注册模型就用它，
+    # 否则回退到上面的全局 embedder——老库与"不挑模型"的库行为不变
+    embedding_resolver = EmbeddingResolver(registry, fallback=embedder)
+    retrieval = RetrievalService(
+        bundle, embedder=embedder, reranker=reranker, embedders=embedding_resolver
+    )
     # webhook 先建：下面的摄入与生命周期都通过回调向它发事件（T4.6）。
     # **用回调而不是直接依赖**：通知是旁路，它挂了不能让摄入卡住
     webhooks = WebhookService(bundle)
@@ -216,6 +222,7 @@ def build_services(
         # 路由按运行期配置现建解析器：设置页填完 token，下一个文件就走云端
         router=ParserRouter(runtime),
         embedder=embedder,
+        embedders=embedding_resolver,
         notifier=webhooks.emit,
     )
 
@@ -251,7 +258,7 @@ def build_services(
         lifecycle.purge_expired_trash()
 
     return Services(
-        knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder),
+        knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder, models=registry),
         documents=documents_service,
         ingest=ingest,
         retrieval=retrieval,
@@ -260,7 +267,7 @@ def build_services(
         runtime=runtime,
         api_keys=ApiKeyService(bundle),
         idempotency=idempotency,
-        chunks=ChunkService(bundle, embedder=embedder),
+        chunks=ChunkService(bundle, embedder=embedder, embedders=embedding_resolver),
         models=registry,
         usage=usage,
         users=UserService(bundle),

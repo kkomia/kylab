@@ -74,7 +74,7 @@ const canOpenSettings = computed(() => currentUser.value === null || isAdmin.val
 
 /** 使用者下拉选项（G6）：空值 = 不记归属，与 AppSelect 的 `{value,label}` 口径一致。 */
 const operatorOptions = computed(() => [
-  { value: '', label: '未指定（上传不记归属）' },
+  { value: '', label: '未指定' },
   ...roster.value.map((person) => ({ value: person.id, label: person.name })),
 ])
 

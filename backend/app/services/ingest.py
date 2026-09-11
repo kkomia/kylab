@@ -27,6 +27,7 @@ from app.parsers.probe import probe, suffix_of
 from app.pipeline.state_machine import InvalidTransition, assert_transition
 from app.services.chunking import ChunkingConfig, chunk_markdown
 from app.services.embedding.base import EmbeddingError, EmbeddingProvider
+from app.services.embedding.resolver import EmbeddingResolver
 from app.services.parser_router import ParserRouter
 from app.services.splitting import (
     PageRangeSplitter,
@@ -97,10 +98,13 @@ class IngestService:
         embedder: EmbeddingProvider,
         chunk_config: ChunkingConfig | None = None,
         notifier: Callable[[str, dict], None] | None = None,
+        embedders: EmbeddingResolver | None = None,
     ) -> None:
         self._stores = stores
         self._router = router
         self._embedder = embedder
+        # 按库解析嵌入模型（v11）。不给就退回全局 embedder，行为与改动前一致
+        self._embedders = embedders
         self._chunk_config = chunk_config or ChunkingConfig()
         # Webhook 是**旁路**（T4.6）：默认什么都不做，组合根才把它接上。
         # 做成回调而不是直接依赖 WebhookService，是为了不让摄入服务
@@ -415,15 +419,22 @@ class IngestService:
         self._advance(document, DocumentStage.CHUNKED)
         return chunks
 
+    def _embedder_for(self, kb: KnowledgeBaseRecord) -> EmbeddingProvider:
+        """这个库该用哪个嵌入实现：显式选了模型就用它，否则全局默认。"""
+        if self._embedders is None:
+            return self._embedder
+        return self._embedders.for_kb(kb)
+
     def _embed_and_index(self, document: DocumentRecord, kb: KnowledgeBaseRecord, chunks) -> None:
         self._advance(document, DocumentStage.EMBEDDING)
         if not chunks:
             self._advance(document, DocumentStage.INDEXED)
             return
 
-        self._stores.vectors.ensure_partition(kb.id, dim=self._embedder.dim)
+        embedder = self._embedder_for(kb)
+        self._stores.vectors.ensure_partition(kb.id, dim=embedder.dim)
         texts = [chunk.text for chunk in chunks]
-        vectors = self._embedder.embed(texts)
+        vectors = embedder.embed(texts)
         self._stores.vectors.upsert_vectors(
             kb.id,
             items=[(chunk.chunk_id, vector) for chunk, vector in zip(chunks, vectors, strict=True)],
@@ -451,24 +462,25 @@ class IngestService:
         **刻意放在 try 之外**：这是配置错误而非文档处理失败——重试没有意义，
         所以既不把文档标成 ``failed``，也不抛可重试的 :class:`IngestError`。
         """
-        same_model = kb.embedding_model_id == self._embedder.model_id
-        same_dim = kb.embedding_dim == self._embedder.dim
+        embedder = self._embedder_for(kb)
+        same_model = kb.embedding_model_id == embedder.model_id
+        same_dim = kb.embedding_dim == embedder.dim
         if same_model and same_dim:
             return
         if self._stores.meta.count_kb_chunks(kb.id) == 0:
             self._stores.meta.update_knowledge_base_embedding(
                 kb.id,
-                model_id=self._embedder.model_id,
-                dim=self._embedder.dim,
+                model_id=embedder.model_id,
+                dim=embedder.dim,
                 base_url=None,
             )
-            kb.embedding_model_id = self._embedder.model_id
-            kb.embedding_dim = self._embedder.dim
+            kb.embedding_model_id = embedder.model_id
+            kb.embedding_dim = embedder.dim
             return
         raise EmbeddingError(
             f"知识库 {kb.id} 内已有向量化文件（模型 {kb.embedding_model_id}，"
-            f"{kb.embedding_dim} 维），不允许改用 {self._embedder.model_id}"
-            f"（{self._embedder.dim} 维）；需更换模型请新建知识库"
+            f"{kb.embedding_dim} 维），不允许改用 {embedder.model_id}"
+            f"（{embedder.dim} 维）；需更换模型请新建知识库"
         )
 
     def _require_kb(self, kb_id: str) -> KnowledgeBaseRecord:

@@ -28,6 +28,12 @@ class KnowledgeBaseCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     chunk_size: int = Field(default=512, gt=0, le=8000)
     chunk_overlap: int = Field(default=64, ge=0, le=4000)
+    embedding_model_pk: str | None = None
+    """建库时选定的嵌入模型（注册表主键）。留空 = 用服务端默认。
+
+    嵌入模型是**知识库属性**：文档量小的库可以选高精度模型，量大的选小模型提速。
+    模型 ID 与维度在建库时冻结，换模型必须新建库（架构 §6.4 模型锁）。
+    """
 
 
 class KnowledgeBaseOut(BaseModel):

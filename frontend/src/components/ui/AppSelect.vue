@@ -52,6 +52,8 @@ const popStyle = ref<Record<string, string>>({})
 
 const selectedIndex = computed(() => props.options.findIndex((item) => item.value === model.value))
 const selected = computed(() => props.options[selectedIndex.value] ?? null)
+/** 空值选项是"没选"，不是选了一个叫"不指定"的值——按占位符弱化显示。 */
+const isPlaceholder = computed(() => !selected.value || selected.value.value === '')
 
 function scrollActiveIntoView(): void {
   // 手动算滚动位置而不是 `scrollIntoView`：后者在 jsdom 里是"未实现"桩，
@@ -216,7 +218,7 @@ onBeforeUnmount(() => bindGlobal(false))
       @click="toggle"
       @keydown="onKeydown"
     >
-      <span class="select-value" :class="{ 'select-placeholder': !selected }">
+      <span class="select-value" :class="{ 'select-placeholder': isPlaceholder }">
         {{ selected?.label ?? placeholder }}
       </span>
       <IconChevronDown class="select-arrow" :size="16" />
@@ -350,10 +352,6 @@ onBeforeUnmount(() => bindGlobal(false))
 
 .select-option-active {
   background: var(--bg-hover);
-}
-
-.select-option-selected {
-  font-weight: 500;
 }
 
 .select-option-label {

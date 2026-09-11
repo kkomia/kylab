@@ -98,8 +98,9 @@ class SqliteMetaStore(MetaStore):
                 """
                 INSERT INTO knowledge_bases
                     (id, name, embedding_model_id, embedding_dim, embedding_base_url,
-                     chunk_strategy, chunk_size, chunk_overlap, owner_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     chunk_strategy, chunk_size, chunk_overlap, owner_id, embedding_model_pk,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -111,6 +112,7 @@ class SqliteMetaStore(MetaStore):
                     record.chunk_size,
                     record.chunk_overlap,
                     record.owner_id,
+                    record.embedding_model_pk,
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
@@ -1683,6 +1685,7 @@ class SqliteMetaStore(MetaStore):
             embedding_model_id=row["embedding_model_id"],
             embedding_dim=row["embedding_dim"],
             embedding_base_url=row["embedding_base_url"],
+            embedding_model_pk=row["embedding_model_pk"],
             chunk_strategy=row["chunk_strategy"],
             chunk_size=row["chunk_size"],
             chunk_overlap=row["chunk_overlap"],

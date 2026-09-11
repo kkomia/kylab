@@ -364,3 +364,44 @@ def test_filter_without_document_is_rejected() -> None:
 def test_invalid_query_parameters_are_rejected(kwargs: dict) -> None:
     with pytest.raises(ValueError):
         RetrievalQuery(query="q", kb_ids=["kb_1"], **kwargs)
+
+
+# ------------------------------------------------- 每个库用自己的嵌入模型（v11）
+
+
+class _RecordingResolver:
+    """记录"为哪个库解析了 embedder"，并把同一个确定性嵌入实现发下去。
+
+    这里验的是**检索会按库解析模型**这条性质（混合模型的库必须各自算查询向量），
+    而不是嵌入质量——质量由 embedding 自己的测试管。
+    """
+
+    def __init__(self, embedder) -> None:  # type: ignore[no-untyped-def]
+        self._embedder = embedder
+        self.calls: list[str | None] = []
+
+    def for_kb(self, kb):  # type: ignore[no-untyped-def]
+        self.calls.append(kb.embedding_model_pk)
+        return self._embedder
+
+
+def test_vector_channel_resolves_an_embedder_per_knowledge_base(seeded: StoreBundle,
+                                                               embedder) -> None:  # type: ignore[no-untyped-def]
+    """跨库检索时，每个库都要用**它自己的**嵌入模型算查询向量。
+
+    共用一个查询向量是错的：不同模型的向量空间不同，相似度没有意义。
+    """
+    resolver = _RecordingResolver(embedder)
+    service = RetrievalService(
+        seeded, embedder=embedder, reranker=NoopReranker(), embedders=resolver
+    )
+
+    service.search(RetrievalQuery(query="向量检索", kb_ids=["kb_1", "kb_2"]))
+
+    assert resolver.calls == [None, None]  # 两个库各解析一次（这里都没显式选模型）
+
+
+def test_retrieval_falls_back_when_no_resolver_is_wired(seeded: StoreBundle,
+                                                       retrieval: RetrievalService) -> None:
+    """没接注册器时行为与改动前一致——升级不打断既有部署。"""
+    assert retrieval.search(RetrievalQuery(query="部署", kb_ids=["kb_1"])).hits

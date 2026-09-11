@@ -135,6 +135,11 @@ class KnowledgeBaseRecord:
     owner_id: str | None = None
     """归属账号（v10）。``None`` = 账号体系启用前的老数据，
     由 setup 向导认领给首个管理员（`services/auth.py`）。"""
+    embedding_model_pk: str | None = None
+    """所选的**注册模型**主键（v11）。嵌入模型是知识库属性而非全局设置：
+    建库时从注册表里挑一个（文献量小的库可用高精度模型，量大的用小模型提速）。
+    ``None`` = 没显式选，运行时回退到注册表的默认槽位 / 设置页配置。
+    凭据不落这里——只在注册表存一份，运行时按 pk 解析。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

@@ -12,12 +12,15 @@
  */
 import { computed, onMounted, ref } from 'vue'
 
+import { getRegistry, type RegisteredModel } from '@/api/modelRegistry'
 import IconChat from '@/components/icons/IconChat.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
+import InfoTip from '@/components/ui/InfoTip.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import { formatRelativeTime } from '@/composables/useFormat'
@@ -32,7 +35,42 @@ const { notifyError, notifySuccess } = useToast()
 
 const createOpen = ref(false)
 const draftName = ref('')
+const draftModel = ref('')
 const creating = ref(false)
+
+/**
+ * 可选的嵌入模型：从注册表里筛出声明了 embedding 能力的。
+ *
+ * **为什么建库才选**（用户提出的设计调整）：嵌入模型原先全局一套，所有库共用，
+ * 于是"文档量小的库用高精度模型、量大的用小模型提速"做不到。现在它是知识库属性，
+ * 建库时定、随库冻结（库内一旦有向量就不能换，换模型要新建库）。
+ */
+const embeddingModels = ref<RegisteredModel[]>([])
+
+async function loadEmbeddingModels(): Promise<void> {
+  try {
+    const registry = await getRegistry()
+    embeddingModels.value = registry.models.filter(
+      (model) => model.capabilities.length === 0 || model.capabilities.includes('embedding'),
+    )
+  } catch {
+    // 拿不到注册表不该挡住建库：下拉退化成只剩"服务端默认"
+    embeddingModels.value = []
+  }
+}
+
+const embeddingOptions = computed(() => [
+  { value: '', label: '服务端默认' },
+  ...embeddingModels.value.map((model) => ({
+    value: model.id,
+    label: `${model.label || model.model_id}${model.dim ? ` · ${model.dim} 维` : ''}`,
+  })),
+])
+
+function openCreate(): void {
+  createOpen.value = true
+  void loadEmbeddingModels()
+}
 
 const hasItems = computed(() => store.items.length > 0)
 const useCards = computed(() => store.items.length <= CARD_LIMIT)
@@ -57,10 +95,14 @@ async function submitCreate(): Promise<void> {
   }
   creating.value = true
   try {
-    const created = await store.create({ name })
+    const created = await store.create({
+      name,
+      embedding_model_pk: draftModel.value || undefined,
+    })
     notifySuccess(`已创建知识库「${created.name}」`)
     createOpen.value = false
     draftName.value = ''
+    draftModel.value = ''
     void store.loadSummaries()
   } catch (error) {
     notifyError(error instanceof Error ? error.message : '创建失败')
@@ -81,7 +123,7 @@ function statsOf(kbId: string) {
 <template>
   <PageShell title="知识库" :description="summaryLine">
     <template #actions>
-      <AppButton variant="primary" @click="createOpen = true">
+      <AppButton variant="primary" @click="openCreate">
         <template #icon><IconPlus /></template>
         新建知识库
       </AppButton>
@@ -112,7 +154,7 @@ function statsOf(kbId: string) {
       title="还没有知识库"
       hint="知识库是最外层的容器，每个库对应一套 embedding 模型与一组切分参数。"
     >
-      <AppButton variant="primary" @click="createOpen = true">
+      <AppButton variant="primary" @click="openCreate">
         <template #icon><IconPlus /></template>
         新建知识库
       </AppButton>
@@ -186,9 +228,15 @@ function statsOf(kbId: string) {
           @keyup.enter="submitCreate"
         />
       </div>
-      <p class="field-hint">
-        模型与切分参数用服务端默认值。库内已有向量后再改模型会被拒绝，详见架构 §6.4。
-      </p>
+      <div class="field">
+        <label class="field-label" for="kb-embedding">
+          嵌入模型
+          <InfoTip
+            text="嵌入模型决定这个库的向量空间，建库时定、之后不能更换。文档量小的库可以选精度更高的模型；量大的选小模型以提升速度与存储效率。切分参数用服务端默认值。"
+          />
+        </label>
+        <AppSelect id="kb-embedding" v-model="draftModel" :options="embeddingOptions" />
+      </div>
       <template #footer>
         <AppButton @click="createOpen = false">取消</AppButton>
         <AppButton variant="primary" :disabled="creating" @click="submitCreate">

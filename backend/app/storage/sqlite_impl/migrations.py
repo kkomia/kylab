@@ -478,6 +478,21 @@ _MIGRATION_010 = Migration(
     ),
 )
 
+_MIGRATION_011 = Migration(
+    version=11,
+    description="嵌入模型改为知识库属性：记录所选的注册模型，支持不同库用不同模型",
+    statements=(
+        # **设计调整（用户提出）**：原先 embedding 是全局一套——建库时把全局解析出的
+        # 模型冻进记录，所有库共用一个 embedder。"小文档库用高精度模型、大文档库用
+        # 小模型提速"这个场景因此做不到。
+        # 现在：嵌入模型在**建库时**从注册表里选，随库冻结；这里只记"选的是哪个注册模型"
+        # （凭据仍只在注册表里存一处，运行时按 pk 解析，避免密钥散落）。
+        # 可空：老库与"没显式选"的库继续走全局/默认配置，升级不打断既有部署。
+        "ALTER TABLE knowledge_bases ADD COLUMN embedding_model_pk TEXT",
+    ),
+)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
@@ -489,6 +504,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_008,
     _MIGRATION_009,
     _MIGRATION_010,
+    _MIGRATION_011,
 )
 """全部迁移，按 version 升序。只增不改。"""
 
