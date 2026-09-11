@@ -2,7 +2,7 @@
 /**
  * 导航侧栏（《前端设计规范》§5）。
  *
- * 结构：产品名 → 导航（概览 / 知识库 / 对话 / 任务中心）→ 对话列表 → 页脚（账号 / 设置）。
+ * 结构：产品名 → 导航（对话 / 概览 / 知识库 / 任务中心）→ 对话列表 → 页脚（账号 / 设置）。
  *
  * 页脚只留"入口"，不留"状态与开关"（第二轮评审批注 1/2/3）：
  * - 退出登录收进账号的二级菜单——它低频且不可逆，摊在页脚上误点代价高；
@@ -50,9 +50,9 @@ onMounted(async () => {
 })
 
 const NAV_ITEMS = [
+  { to: '/chat', label: '对话', icon: IconChat, exact: false },
   { to: '/', label: '概览', icon: IconDashboard, exact: true },
   { to: '/knowledge-bases', label: '知识库', icon: IconLibrary, exact: false },
-  { to: '/chat', label: '对话', icon: IconChat, exact: false },
   { to: '/tasks', label: '任务中心', icon: IconTasks, exact: false },
 ] as const
 
