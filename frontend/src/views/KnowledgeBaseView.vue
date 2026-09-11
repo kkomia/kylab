@@ -200,6 +200,15 @@ const hasFilter = computed(() =>
   Boolean(searchDraft.value.trim() || stageFilter.value || sourceFilter.value),
 )
 
+/**
+ * 次级菜单：文档 / 数据源。
+ *
+ * 数据源（RSS / 网页订阅）原本堆在文档列表**下面**一大块，把页面拉得很长，
+ * 也和文档列表这个主体抢注意力。它其实是"这个库的另一种内容来源"，
+ * 与文档同级，所以抬成页头下的次级菜单。
+ */
+const activeTab = ref<'documents' | 'sources'>('documents')
+
 // ------------------------------------------------------------------ 多选与批量
 
 /** 勾选的文档 id。**用数组而不是 Set**：Pinia/Vue 对 Set 的变更追踪要额外小心，
@@ -642,7 +651,12 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
     </template>
 
     <template #actions>
-      <AppButton :disabled="documents.length === 0" @click="searchOpen = true">
+      <!-- 检索与上传是"文档"这个标签页的动作；切到数据源时它们没有所指，收起来 -->
+      <AppButton
+        v-if="activeTab === 'documents'"
+        :disabled="documents.length === 0"
+        @click="searchOpen = true"
+      >
         <template #icon><IconSearch /></template>
         在此库检索
       </AppButton>
@@ -652,11 +666,15 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
         分享
       </AppButton>
       <!-- 只读分享的成员看得到内容，但没有写入口（can_write 由后端算） -->
-      <AppButton v-if="knowledgeBase?.can_write" variant="primary" @click="uploadOpen = true">
+      <AppButton
+        v-if="activeTab === 'documents' && knowledgeBase?.can_write"
+        variant="primary"
+        @click="uploadOpen = true"
+      >
         <template #icon><IconUpload /></template>
         上传文档
       </AppButton>
-      <!-- 库级管理：改名 / 删除。与「分享」同处页头，都是"对这个库本身"的动作 -->
+      <!-- 库级设置：齿轮按钮 + 弹窗（参考 WeKnora 知识库旁的设置按钮） -->
       <KnowledgeBaseMenu
         v-if="knowledgeBase?.can_write"
         :kb="knowledgeBase"
@@ -670,12 +688,34 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       这是别人分享给你的库，你是只读权限：可以检索与查看，不能上传或删除。
     </p>
 
+    <!-- 次级菜单：文档 / 数据源。数据源从"列表下面的一大块"抬到这里 -->
+    <nav v-if="knowledgeBase" class="subnav" aria-label="知识库内容">
+      <button
+        type="button"
+        class="subnav-item"
+        :class="{ 'subnav-on': activeTab === 'documents' }"
+        :aria-current="activeTab === 'documents' ? 'page' : undefined"
+        @click="activeTab = 'documents'"
+      >
+        文档
+      </button>
+      <button
+        type="button"
+        class="subnav-item"
+        :class="{ 'subnav-on': activeTab === 'sources' }"
+        :aria-current="activeTab === 'sources' ? 'page' : undefined"
+        @click="activeTab = 'sources'"
+      >
+        数据源
+      </button>
+    </nav>
+
     <!--
       目录（v13）：**左侧树**。根节点「全部文档」展开后是「未归档」与各目录，
       选中某个节点 = 右侧列表按它过滤（点根节点 = 不筛，与这个功能之前的行为一致）。
       单层数据做成两层树：这是当前模型能如实表达的形态，不假装支持无限嵌套。
     -->
-    <div class="kb-body">
+    <div v-if="activeTab === 'documents'" class="kb-body">
       <aside v-if="knowledgeBase" class="folder-tree" aria-label="目录">
         <div class="tree-head">
           <span class="tree-title">目录</span>
@@ -982,10 +1022,9 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       </section>
     </div>
 
-    <!-- 检索是这个库的动作，不是另一个页面：在这里开，范围天然就是当前库 -->
-    <!-- 数据源（M6）：与文档列表同页——它们都是"这个库里有什么"的来源 -->
+    <!-- 数据源（M6）：抬到次级菜单里，不再堆在文档列表下面 -->
     <SourcePanel
-      v-if="knowledgeBase"
+      v-if="knowledgeBase && activeTab === 'sources'"
       :kb-id="kbId"
       :can-write="knowledgeBase.can_write"
       @changed="refresh"
@@ -1153,6 +1192,45 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   border-radius: var(--radius-control);
 }
 
+/* ---- 次级菜单（文档 / 数据源）---- */
+
+.subnav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-4);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.subnav-item {
+  position: relative;
+  height: var(--control-height);
+  padding: 0 var(--space-3);
+  font-size: var(--text-body-size);
+  color: var(--text-secondary);
+}
+
+.subnav-item:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.subnav-on {
+  color: var(--text-primary);
+}
+
+/* 选中态用下划线而不是填充：它是"换一屏内容"，不是按下了一个按钮 */
+.subnav-on::after {
+  position: absolute;
+  right: var(--space-3);
+  bottom: -1px;
+  left: var(--space-3);
+  height: 2px;
+  content: '';
+  background: var(--accent);
+  border-radius: 2px 2px 0 0;
+}
+
 /* ---- 目录树（v13）---- */
 
 /* 两栏：左侧目录树（固定宽）+ 右侧文档区（吃满剩余）。
@@ -1163,11 +1241,16 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   gap: var(--space-4);
 }
 
+/* min-height 是给"库还空着"的时候兜底：只有两三个节点时，
+   树会缩成一小块贴在文档区旁边，看着像没画完。 */
 .folder-tree {
   position: sticky;
   top: var(--space-4);
   flex: 0 0 220px;
+  min-height: 300px;
+  max-height: calc(100vh - 200px);
   padding: var(--space-2);
+  overflow-y: auto;
   background: var(--bg-canvas);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-panel);
@@ -1190,6 +1273,10 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
     position: static;
     flex-basis: auto;
     width: 100%;
+    /* 折行后树在上方，min-height 会把列表推下去一大截，这里收回 */
+    min-height: 0;
+    max-height: none;
+    overflow: visible;
   }
 }
 
@@ -1258,7 +1345,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   align-items: center;
   justify-content: center;
   width: 20px;
-  height: 26px;
+  height: 30px;
   color: var(--text-tertiary);
   border-radius: var(--radius-control);
 }
@@ -1273,7 +1360,7 @@ button.tree-caret:hover {
   min-width: 0;
   align-items: center;
   gap: var(--space-2);
-  height: 26px;
+  height: 30px;
   padding: 0 var(--space-2) 0 0;
   font-size: var(--text-meta-size);
   color: var(--text-secondary);

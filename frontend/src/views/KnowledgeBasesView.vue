@@ -582,13 +582,13 @@ function onKbChanged(): void {
 
 .kb-row-menu {
   display: inline-flex;
-  flex: 0 0 var(--hit-target);
+  flex: 0 0 var(--control-height);
   align-items: center;
   justify-content: center;
 }
 
 .col-menu {
-  flex: 0 0 var(--hit-target);
+  flex: 0 0 var(--control-height);
 }
 
 .kb-link {
