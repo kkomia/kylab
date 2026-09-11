@@ -9,7 +9,7 @@
  */
 withDefaults(
   defineProps<{
-    variant?: 'primary' | 'secondary' | 'danger' | 'ghost'
+    variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'subtle'
     size?: 'sm' | 'md'
     disabled?: boolean
     type?: 'button' | 'submit'
@@ -105,6 +105,20 @@ withDefaults(
 .button-ghost:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+/* 与下拉/输入同款的"扁平控件"：灰底、无边框、同一档圆角。
+   用在工具栏里，让按钮和旁边的筛选控件读成同一条控件带——
+   描边按钮混在无边框的筛选器之间会显得"凸出来一块"。 */
+.button-subtle {
+  background: var(--bg-subtle);
+  border: 1px solid transparent;
+  border-radius: var(--radius-row);
+  color: var(--text-primary);
+}
+
+.button-subtle:hover:not(:disabled) {
+  background: var(--bg-hover);
 }
 
 .button-danger {

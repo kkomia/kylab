@@ -860,20 +860,26 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
               aria-label="按来源筛选"
             />
           </div>
-          <AppButton v-if="hasFilter" size="sm" @click="clearFilters">清除筛选</AppButton>
+          <AppButton v-if="hasFilter" size="sm" variant="subtle" @click="clearFilters">
+            清除筛选
+          </AppButton>
 
           <div class="toolbar-actions">
-            <AppButton :disabled="documents.length === 0" @click="searchOpen = true">
+            <AppButton
+              variant="subtle"
+              :disabled="documents.length === 0"
+              @click="searchOpen = true"
+            >
               <template #icon><IconSearch /></template>
               在此库检索
             </AppButton>
             <!-- 分享入口只对 owner / 管理员出现：can_manage 由后端算，前端不重复判定 -->
-            <AppButton v-if="knowledgeBase?.can_manage" @click="shareOpen = true">
+            <AppButton v-if="knowledgeBase?.can_manage" variant="subtle" @click="shareOpen = true">
               <template #icon><IconShare /></template>
               分享
             </AppButton>
             <!-- 只读分享的成员看得到内容，但没有写入口（can_write 由后端算） -->
-            <AppButton v-if="knowledgeBase?.can_write" variant="primary" @click="uploadOpen = true">
+            <AppButton v-if="knowledgeBase?.can_write" variant="subtle" @click="uploadOpen = true">
               <template #icon><IconUpload /></template>
               上传文档
             </AppButton>
@@ -1065,7 +1071,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       <!-- 分享是库级动作，数据源标签下也该够得着；列表专属的检索/上传在这里没有所指 -->
       <div v-if="knowledgeBase.can_manage" class="toolbar toolbar-bare">
         <div class="toolbar-actions">
-          <AppButton @click="shareOpen = true">
+          <AppButton variant="subtle" @click="shareOpen = true">
             <template #icon><IconShare /></template>
             分享
           </AppButton>
@@ -1469,6 +1475,25 @@ button.tree-caret:hover {
 
 .search-box :deep(.field) {
   padding-left: calc(var(--space-3) + 24px);
+}
+
+/* 工具栏里的搜索框也走"扁平控件"那一档：与下拉、按钮同底、同圆角、无描边。
+   否则一根描边输入框夹在一排无边框的控件中间会显得突兀 */
+.toolbar .search-box :deep(.field) {
+  background: var(--bg-subtle);
+  border-color: transparent;
+  border-radius: var(--radius-row);
+}
+
+.toolbar .search-box :deep(.field:hover:not(:disabled)) {
+  background: var(--bg-hover);
+}
+
+/* 聚焦态与下拉一致：抬成纸面 + 品牌色细环，让"正在输入"看得出来 */
+.toolbar .search-box :deep(.field:focus) {
+  background: var(--bg-surface);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .search-icon {
