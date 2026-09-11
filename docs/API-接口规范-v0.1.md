@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **93** 条端点。
+共 **94** 条端点。
 
 ### `api-keys`
 
@@ -234,6 +234,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/documents/{document_id}/reprocess` | 重新摄入（失败重跑） |
 | `GET` | `/api/v1/knowledge-bases/{kb_id}/documents` | 知识库下的文档列表 |
 | `POST` | `/api/v1/knowledge-bases/{kb_id}/documents` | 上传文档（异步摄入） |
+| `POST` | `/api/v1/knowledge-bases/{kb_id}/documents/batch` | 批量删除 / 重新摄入 |
 
 ### `folders`
 

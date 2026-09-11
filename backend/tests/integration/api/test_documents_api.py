@@ -208,7 +208,8 @@ def test_cancel_marks_document_and_tasks_canceled(client: TestClient, kb_id: str
 
     assert canceled.status_code == 200, canceled.text
     assert canceled.json()["stage"] == "canceled"
-    task = next(item for item in client.get("/api/v1/tasks").json()["items"] if item["id"] == task_id)
+    tasks = client.get("/api/v1/tasks").json()["items"]
+    task = next(item for item in tasks if item["id"] == task_id)
     assert task["state"] == "canceled"
 
 
@@ -221,4 +222,83 @@ def test_cancel_is_idempotent(client: TestClient, kb_id: str) -> None:
 
 def test_cancel_missing_document_is_404(client: TestClient, kb_id: str) -> None:
     assert client.post("/api/v1/documents/doc_nope/cancel").status_code == 404
+
+
+# --------------------------------------------------------------------- 批量动作
+
+
+def _batch(client: TestClient, kb_id: str, action: str, ids: list[str]):
+    return client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents/batch",
+        json={"action": action, "document_ids": ids},
+    )
+
+
+def test_batch_delete_removes_all_and_reports_each(client: TestClient, kb_id: str) -> None:
+    a = _upload(client, kb_id, "甲.md")
+    b = _upload(client, kb_id, "乙.md")
+    _upload(client, kb_id, "丙.md")
+
+    response = _batch(client, kb_id, "delete", [a["id"], b["id"]])
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (2, 0)
+    assert [item["ok"] for item in body["items"]] == [True, True]
+    assert _list_names(client, kb_id) == ["丙.md"]
+
+
+def test_batch_delete_reports_partial_failure_without_stopping(
+    client: TestClient, kb_id: str
+) -> None:
+    """一篇失败不该带走其余：批量结果逐条给，成功的照旧生效。"""
+    good = _upload(client, kb_id, "在的.md")
+
+    response = _batch(client, kb_id, "delete", [good["id"], "doc_nope"])
+
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (1, 1)
+    failed = next(item for item in body["items"] if not item["ok"])
+    assert failed["document_id"] == "doc_nope"
+    assert _list_names(client, kb_id) == []
+
+
+def test_batch_rejects_documents_of_another_kb(client: TestClient, kb_id: str) -> None:
+    other_kb = client.post("/api/v1/knowledge-bases", json={"name": "别的库"}).json()["id"]
+    foreign = _upload(client, other_kb, "别人的.md")
+
+    response = _batch(client, kb_id, "delete", [foreign["id"]])
+
+    assert response.json()["failed"] == 1
+    # 别人的文档必须原封不动
+    assert _list_names(client, other_kb) == ["别人的.md"]
+
+
+def test_batch_reprocess_enqueues_tasks(client: TestClient, kb_id: str) -> None:
+    a = _upload(client, kb_id, "重跑甲.md")
+    b = _upload(client, kb_id, "重跑乙.md")
+
+    response = _batch(client, kb_id, "reprocess", [a["id"], b["id"]])
+
+    assert response.json()["succeeded"] == 2
+
+
+def test_batch_rejects_bad_action_and_empty_list(client: TestClient, kb_id: str) -> None:
+    document = _upload(client, kb_id, "x.md")
+
+    assert _batch(client, kb_id, "explode", [document["id"]]).status_code == 422
+    assert _batch(client, kb_id, "delete", []).status_code == 422
+
+
+def test_readonly_key_cannot_batch(client: TestClient, kb_id: str) -> None:
+    document = _upload(client, kb_id, "只读.md")
+    issued = _issue(client, "readonly")
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents/batch",
+        json={"action": "delete", "document_ids": [document["id"]]},
+        headers={"Authorization": f"Bearer {issued['token']}"},
+    )
+
+    assert response.status_code == 403
 

@@ -129,6 +129,32 @@ class DocumentRenameIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+class DocumentBatchIn(BaseModel):
+    """批量动作：``delete``（进回收站）或 ``reprocess``（重新摄入）。
+
+    ``document_ids`` 设上限而不是"随便多少"：一次勾几千篇会把请求体、逐条查询
+    与响应都拉大，而界面上的多选本来也到不了那个量级。
+    """
+
+    action: Literal["delete", "reprocess"]
+    document_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+class DocumentBatchItemOut(BaseModel):
+    document_id: str
+    ok: bool
+    error: str | None = None
+
+
+class DocumentBatchOut(BaseModel):
+    """逐条结果。**部分失败是常态**，所以要给出每一篇的成败而不是一个总数。"""
+
+    action: str
+    succeeded: int
+    failed: int
+    items: list[DocumentBatchItemOut]
+
+
 class DocumentPartOut(BaseModel):
     model_config = _RECORD_CONFIG
 

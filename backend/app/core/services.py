@@ -24,6 +24,7 @@ from app.core.config import Settings, get_settings
 from app.core.storage import build_stores
 from app.services.api_key import ApiKeyService
 from app.services.auth import AuthService
+from app.services.batch import DocumentBatchService
 from app.services.chat import ChatService
 from app.services.chunk import ChunkService
 from app.services.conversation import ConversationService
@@ -94,6 +95,8 @@ class Services:
     """知识库分享：owner 把库授给其他成员，读/写两档（v10）。"""
     lifecycle: LifecycleService
     """数据生命周期：影响清单、级联删除、回收站（M6 / T6.3、T6.4）。"""
+    batch: DocumentBatchService
+    """文档批量动作：多选后的删除 / 重新摄入，逐条返回成败。"""
     sources: SourceService
     """数据源：HTML / RSS 的登记与拉取（M6 / T6.1–T6.3）。"""
     observability: ObservabilityService
@@ -286,6 +289,7 @@ def build_services(
         lifecycle.purge_expired_trash()
 
     chat_service = ChatService(retrieval, runtime, usage_recorder=_record_chat_usage)
+    lifecycle_service = LifecycleService(bundle, notifier=webhooks.emit)
 
     return Services(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder, models=registry),
@@ -304,7 +308,8 @@ def build_services(
         users=UserService(bundle),
         auth=AuthService(bundle),
         shares=ShareService(bundle),
-        lifecycle=LifecycleService(bundle, notifier=webhooks.emit),
+        lifecycle=lifecycle_service,
+        batch=DocumentBatchService(bundle, documents_service, lifecycle_service),
         tabular=TabularService(bundle),
         sources=sources_service,
         observability=ObservabilityService(

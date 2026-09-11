@@ -12,6 +12,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import {
+  batchDocuments,
   cancelDocument,
   deleteDocument,
   downloadDocument,
@@ -191,6 +192,17 @@ const hasFilter = computed(() =>
   Boolean(searchDraft.value.trim() || stageFilter.value || sourceFilter.value),
 )
 
+// ------------------------------------------------------------------ 多选与批量
+
+/** 勾选的文档 id。**用数组而不是 Set**：Pinia/Vue 对 Set 的变更追踪要额外小心，
+ *  而这里最多几十个 id，数组的 `includes` 开销可以忽略。 */
+const selected = ref<string[]>([])
+const selectedCount = computed(() => selected.value.length)
+const allSelected = computed(
+  () => documents.value.length > 0 && selected.value.length === documents.value.length,
+)
+const batchRunning = ref(false)
+
 // ------------------------------------------------------------------ 目录（v13）
 
 /**
@@ -256,6 +268,60 @@ function clearFilters(): void {
   void refresh()
 }
 
+function toggleSelect(documentId: string): void {
+  selected.value = selected.value.includes(documentId)
+    ? selected.value.filter((id) => id !== documentId)
+    : [...selected.value, documentId]
+}
+
+/** 全选/清空：作用于**当前列表**（当前筛选结果），不是整个库。 */
+function toggleSelectAll(): void {
+  selected.value = allSelected.value ? [] : documents.value.map((document) => document.id)
+}
+
+function clearSelection(): void {
+  selected.value = []
+}
+
+/**
+ * 批量动作。**部分失败是正常结果**，所以按后端逐条回的成败分别处理：
+ * 全成 → 清空选择；有失败 → 把失败的那几条留在选中态，用户可以重试或看原因。
+ */
+async function runBatch(action: 'delete' | 'reprocess'): Promise<void> {
+  if (selectedCount.value === 0 || batchRunning.value) return
+  if (action === 'delete') {
+    const confirmed = window.confirm(
+      `删除选中的 ${selectedCount.value} 篇文档？原文会移入回收站保留 7 天，切块与向量立即清除。`,
+    )
+    if (!confirmed) return
+  }
+  batchRunning.value = true
+  const ids = [...selected.value]
+  const verb = action === 'delete' ? '删除' : '重新摄入'
+  try {
+    const result = await batchDocuments(kbId.value, action, ids)
+    await refreshAll()
+    syncPolling()
+    void store.loadSummaries()
+    if (result.failed === 0) {
+      selected.value = []
+      notifySuccess(`已${verb} ${result.succeeded} 篇`)
+      return
+    }
+    // 有失败：说清成功/失败各几篇，并把第一条失败原因带出来——只报总数等于让人自己找
+    const firstError = result.items.find((item) => !item.ok)?.error
+    notifyError(
+      `${verb}：${result.succeeded} 篇成功、${result.failed} 篇失败` +
+        (firstError ? `（${firstError}）` : ''),
+    )
+    selected.value = result.items.filter((item) => !item.ok).map((item) => item.document_id)
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : `批量${verb}失败`)
+  } finally {
+    batchRunning.value = false
+  }
+}
+
 const hasActive = computed(() =>
   documents.value.some((document) => ACTIVE_STAGES.has(document.stage)),
 )
@@ -272,9 +338,18 @@ async function refresh(): Promise<void> {
     if (sourceFilter.value) filter.sourceKind = sourceFilter.value as DataSourceKind
     documents.value = (await listDocuments(kbId.value, filter)).items
     error.value = ''
+    pruneSelection()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '文档列表加载失败'
   }
+}
+
+/** 刷新后剔除已不在列表里的选中项：否则批量删除后计数会虚高。 */
+function pruneSelection(): void {
+  if (selected.value.length === 0) return
+  const present = new Set(documents.value.map((document) => document.id))
+  const kept = selected.value.filter((id) => present.has(id))
+  if (kept.length !== selected.value.length) selected.value = kept
 }
 
 async function loadFolders(): Promise<void> {
@@ -327,6 +402,7 @@ watch(kbId, () => {
   searchDraft.value = ''
   stageFilter.value = ''
   sourceFilter.value = ''
+  selected.value = []
   void loadFirst()
 })
 
@@ -642,19 +718,50 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
     </EmptyState>
 
     <template v-else>
-      <!-- 列头：让右侧那串数字有名字，不必靠猜 -->
+      <!-- 批量操作条：只有在勾了东西时才出现（没选东西时它只是噪音） -->
+      <div v-if="selectedCount > 0" class="batch-bar">
+        <span class="batch-count">已选 {{ selectedCount }} 篇</span>
+        <AppButton size="sm" :disabled="batchRunning" @click="runBatch('reprocess')">
+          <template #icon><IconRefresh /></template>
+          重新摄入
+        </AppButton>
+        <AppButton size="sm" variant="danger" :disabled="batchRunning" @click="runBatch('delete')">
+          <template #icon><IconTrash /></template>
+          删除
+        </AppButton>
+        <AppButton size="sm" :disabled="batchRunning" @click="clearSelection">取消选择</AppButton>
+      </div>
+
+      <!-- 列头：让右侧那串数字有名字，不必靠猜。
+           文字列标 aria-hidden（纯装饰），但全选框是交互控件，不能被一起藏掉 -->
       <div class="panel">
-        <div class="panel-head list-head" aria-hidden="true">
-          <span class="head-file">文件</span>
-          <span class="head-number">切块</span>
-          <span class="head-size">大小</span>
-          <span class="head-time">更新时间</span>
-          <span class="head-menu" />
+        <div class="panel-head list-head">
+          <span v-if="knowledgeBase?.can_write" class="head-check">
+            <input
+              type="checkbox"
+              :checked="allSelected"
+              aria-label="全选当前列表"
+              @change="toggleSelectAll"
+            />
+          </span>
+          <span class="head-file" aria-hidden="true">文件</span>
+          <span class="head-number" aria-hidden="true">切块</span>
+          <span class="head-size" aria-hidden="true">大小</span>
+          <span class="head-time" aria-hidden="true">更新时间</span>
+          <span class="head-menu" aria-hidden="true" />
         </div>
 
         <ul class="doc-rows">
           <li v-for="document in documents" :key="document.id" class="doc-row-group">
             <div class="doc-row panel-row">
+              <span v-if="knowledgeBase?.can_write" class="row-check">
+                <input
+                  type="checkbox"
+                  :checked="selected.includes(document.id)"
+                  :aria-label="`选择 ${document.name}`"
+                  @change="toggleSelect(document.id)"
+                />
+              </span>
               <button
                 v-if="document.is_split"
                 class="expander"
@@ -1032,6 +1139,44 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 
 .filter-select {
   flex: 0 0 148px;
+}
+
+/* ---- 多选与批量 ---- */
+
+.batch-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent-soft);
+  border-radius: var(--radius-control);
+}
+
+/* 左侧计数吃掉剩余空间，把按钮推到右边 */
+.batch-count {
+  margin-right: auto;
+  font-size: var(--text-meta-size);
+  color: var(--accent-text);
+}
+
+/* 勾选框列：列头与行同宽，右侧的列才不会错位 */
+.head-check,
+.row-check {
+  display: flex;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+}
+
+.head-check input,
+.row-check input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 /* ---- 移动到目录 ---- */

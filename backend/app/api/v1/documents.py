@@ -32,6 +32,9 @@ from app.api.auth import (
 from app.api.v1.schemas import (
     ChunkList,
     ChunkOut,
+    DocumentBatchIn,
+    DocumentBatchItemOut,
+    DocumentBatchOut,
     DocumentList,
     DocumentOut,
     DocumentPartList,
@@ -276,6 +279,36 @@ async def list_documents(
             )
             for record in records
         ]
+    )
+
+
+@router.post(
+    "/knowledge-bases/{kb_id}/documents/batch",
+    response_model=DocumentBatchOut,
+    summary="批量删除 / 重新摄入",
+)
+async def batch_documents(
+    kb_id: str,
+    payload: DocumentBatchIn,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
+) -> DocumentBatchOut:
+    """对选中的一批文档执行同一个动作。
+
+    **逐条返回成败**，接口本身不因个别失败而报错——批量操作里"10 篇删掉 9 篇"
+    是正常结果，界面要能指出剩下那一篇为什么没成。请求里的 id 若不属于这个库，
+    记为该条失败，不会被执行。
+    """
+    check_kb_scope(services, caller, [kb_id], need=WRITE)
+    items = services.batch.run(kb_id, payload.action, payload.document_ids)
+    return DocumentBatchOut(
+        action=payload.action,
+        succeeded=sum(1 for item in items if item.ok),
+        failed=sum(1 for item in items if not item.ok),
+        items=[
+            DocumentBatchItemOut(document_id=item.document_id, ok=item.ok, error=item.error)
+            for item in items
+        ],
     )
 
 

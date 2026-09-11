@@ -320,3 +320,35 @@ export function renameDocument(documentId: string, name: string): Promise<Docume
 export function cancelDocument(documentId: string): Promise<DocumentSummary> {
   return request(`/documents/${documentId}/cancel`, { method: 'POST' })
 }
+
+export type DocumentBatchAction = 'delete' | 'reprocess'
+
+export interface DocumentBatchItem {
+  document_id: string
+  ok: boolean
+  error: string | null
+}
+
+export interface DocumentBatchResult {
+  action: DocumentBatchAction
+  succeeded: number
+  failed: number
+  items: DocumentBatchItem[]
+}
+
+/**
+ * 批量删除 / 重新摄入。
+ *
+ * **返回逐条结果**：批量操作里"10 篇删掉 9 篇"是正常结果，界面要能指出
+ * 剩下那篇为什么没成。所以这个调用不会因为个别失败而 reject。
+ */
+export function batchDocuments(
+  kbId: string,
+  action: DocumentBatchAction,
+  documentIds: string[],
+): Promise<DocumentBatchResult> {
+  return request(`/knowledge-bases/${kbId}/documents/batch`, {
+    method: 'POST',
+    body: JSON.stringify({ action, document_ids: documentIds }),
+  })
+}
