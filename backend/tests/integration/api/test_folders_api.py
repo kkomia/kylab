@@ -199,3 +199,32 @@ def test_readonly_key_cannot_manage_folders(client: TestClient, kb_id: str) -> N
 def test_move_missing_document_is_404(client: TestClient, kb_id: str) -> None:
     response = client.patch("/api/v1/documents/doc_nope/folder", json={"folder_id": None})
     assert response.status_code == 404
+
+
+def test_upload_directly_into_a_folder(client: TestClient, kb_id: str) -> None:
+    """在某个目录里点上传，文件就该落进那个目录——否则"传完就找不到"。"""
+    folder = _create_folder(client, kb_id, "合同")
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents",
+        files={"file": ("合同 A.md", io.BytesIO("# 合同 A\n".encode()), "text/markdown")},
+        params={"start": "false", "folder_id": folder["id"]},
+    )
+
+    assert response.status_code == 202, response.text
+    assert response.json()["document"]["folder_id"] == folder["id"]
+    listed = client.get(f"/api/v1/knowledge-bases/{kb_id}/folders").json()["items"]
+    assert listed[0]["document_count"] == 1
+
+
+def test_upload_into_a_folder_of_another_kb_is_422(client: TestClient, kb_id: str) -> None:
+    other_kb = client.post("/api/v1/knowledge-bases", json={"name": "另一个库"}).json()["id"]
+    foreign = _create_folder(client, other_kb, "别人的目录")
+
+    response = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents",
+        files={"file": ("x.md", io.BytesIO(b"# x\n"), "text/markdown")},
+        params={"start": "false", "folder_id": foreign["id"]},
+    )
+
+    assert response.status_code == 422

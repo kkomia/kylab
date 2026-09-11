@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import quote
 
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.models.enums import DataSourceKind, DocumentStage
 from app.parsers.base import ParseError, ParseResult, ParserProvider
 from app.parsers.probe import probe, suffix_of
@@ -122,15 +122,23 @@ class IngestService:
         mime_type: str | None = None,
         document_id: str | None = None,
         uploaded_by: str | None = None,
+        folder_id: str | None = None,
     ) -> IngestOutcome:
         """登记一份上传：按内容 hash 去重 → 存原文 → 建文档记录（``uploaded``）。
 
         ``uploaded_by`` 是使用者名册里的 id（G6）。**只是归属标注**，
         不参与鉴权——凭据是三档 API 身份那套，两者刻意分开。
+
+        ``folder_id``（v13）是要放进哪个目录；目录必须属于同一个库，
+        否则文档建出来后按目录查会"消失"（那种问题最难排查）。
         """
         kb = self._require_kb(knowledge_base_id)
         filename = normalize_filename(filename)
         digest = hashlib.sha256(content).hexdigest()
+        if folder_id is not None:
+            folder = self._stores.meta.get_folder(folder_id)
+            if folder is None or folder.kb_id != kb.id:
+                raise InvalidRequestError(f"目录不存在：{folder_id}")
 
         existing = self._stores.meta.get_document_by_hash(kb.id, digest)
         if existing is not None:
@@ -154,6 +162,7 @@ class IngestService:
                 size_bytes=len(content),
                 mime_type=mime_type,
                 uploaded_by=uploaded_by,
+                folder_id=folder_id,
             )
         )
         self._stores.meta.set_setting(f"document.{document.id}.original_path", stored_path)

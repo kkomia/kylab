@@ -107,6 +107,7 @@ async def upload_document(
     kb_id: str,
     file: UploadFile = File(...),
     start: bool = Query(default=True, description="是否立即入队摄入；false 表示仅登记"),
+    folder_id: str | None = Query(default=None, description="放进哪个目录（v13）；留空=根目录"),
     idempotency_key: str | None = Header(
         default=None,
         alias="Idempotency-Key",
@@ -171,6 +172,7 @@ async def upload_document(
             start=start,
             uploaded_by=operator.id if operator else None,
             uploader_name=operator.name if operator else "",
+            folder_id=folder_id,
         )
     except Exception:
         # 业务没跑成：把键放掉，让客户端能真正重试。
@@ -200,6 +202,7 @@ def _do_upload(
     start: bool,
     uploaded_by: str | None = None,
     uploader_name: str = "",
+    folder_id: str | None = None,
 ) -> UploadAccepted:
     """真正的入库动作。抽出来是为了让幂等层的"占键 → 执行 → 挂响应"读起来是直的。"""
     outcome = services.ingest.submit(
@@ -208,6 +211,7 @@ def _do_upload(
         content=content,
         mime_type=mime_type,
         uploaded_by=uploaded_by,
+        folder_id=folder_id,
     )
     if not start or outcome.is_duplicate:
         return UploadAccepted(
