@@ -89,6 +89,7 @@ kylab/
 | [Engineering spec v0.3](docs/项目工程规范-v0.3.md) | Layout, naming, layering discipline, testing, commits and branches |
 | [Frontend design spec v0.4](docs/前端设计规范-v0.4.md) | Notion-style grayscale system, light/dark tokens with measured contrast, no-emoji and inline SVG rules, card-vs-list by item count, UI information architecture rules |
 | [Development plan v0.1](docs/开发计划-v0.1.md) | Milestones M0–M7, task breakdown, quality gates, risk register |
+| [Handover 2026-09-11](docs/交接说明-2026-09-11.md) | Read this first when taking over: current status, three commands to get running, honest list of open items, discipline and pitfalls (Chinese) |
 
 > Documents are written in Chinese; the English README is a summary only.
 
