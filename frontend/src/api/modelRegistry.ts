@@ -148,3 +148,23 @@ export function testSlot(slot: string): Promise<{ ok: boolean; detail: string }>
 export function testProvider(providerId: string): Promise<{ ok: boolean; detail: string }> {
   return request(`/model-registry/providers/${providerId}/test`, { method: 'POST' })
 }
+
+export interface AvailableModel {
+  model_id: string
+  owned_by: string
+}
+
+export interface AvailableModels {
+  models: AvailableModel[]
+  count: number
+}
+
+/**
+ * 拉取该供应商上游可用的模型列表（**不落库**）。
+ *
+ * 用于「添加模型」时给下拉框喂候选：上游动不动几十上百个模型，全登记进来只是噪声，
+ * "选哪一个"才是用户的决定。探测不到时返回空列表而非报错——手写输入这条出路一直在。
+ */
+export function listAvailableModels(providerId: string): Promise<AvailableModels> {
+  return request(`/model-registry/providers/${providerId}/available-models`)
+}

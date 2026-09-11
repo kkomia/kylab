@@ -156,7 +156,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **84** 条端点。
+共 **85** 条端点。
 
 ### `api-keys`
 
@@ -270,6 +270,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/model-registry/providers` | 新建供应商 |
 | `DELETE` | `/api/v1/model-registry/providers/{provider_id}` | 删除供应商（连同其模型） |
 | `PATCH` | `/api/v1/model-registry/providers/{provider_id}` | 修改供应商 |
+| `GET` | `/api/v1/model-registry/providers/{provider_id}/available-models` | 拉取供应商可用的模型列表（探测，不落库） |
 | `POST` | `/api/v1/model-registry/providers/{provider_id}/test` | 测试供应商的地址与凭据是否可用 |
 | `GET` | `/api/v1/model-registry/slots` | 用途（任务槽位）状态 |
 | `PUT` | `/api/v1/model-registry/slots/{slot}` | 绑定 / 解绑用途 |

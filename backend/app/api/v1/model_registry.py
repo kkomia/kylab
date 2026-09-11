@@ -20,6 +20,8 @@ from starlette.concurrency import run_in_threadpool
 
 from app.api.auth import require_admin, require_read
 from app.api.v1.schemas import (
+    AvailableModelOut,
+    AvailableModelsOut,
     ModelListOut,
     ModelOut,
     ModelRegisterIn,
@@ -308,6 +310,32 @@ async def test_provider(
     """
     detail = await run_in_threadpool(services.models.probe_provider, provider_id)
     return {"ok": True, "detail": detail}
+
+
+@router.get(
+    "/providers/{provider_id}/available-models",
+    response_model=AvailableModelsOut,
+    summary="拉取供应商可用的模型列表（探测，不落库）",
+)
+async def list_available_models(
+    provider_id: str,
+    services: Annotated[Services, Depends(get_services)],
+    _: Annotated[Caller, Depends(require_admin)],
+) -> AvailableModelsOut:
+    """上游 ``GET {base_url}/models`` 的结果，喂给「添加模型」时的下拉框。
+
+    **不落库**：上游列出的模型往往几十上百个，全登记进来只是噪声；
+    用户"选哪一个"才是决定。手写输入仍然保留——有的端点不给列表，
+    或者想要的模型不在列表里。
+
+    只认管理员：它会用凭据请求上游（凭据探测面），与 ``/test`` 同一档。
+    在**线程池**里跑，理由同 ``/test``（同步 httpx 会卡住事件循环）。
+    """
+    models = await run_in_threadpool(services.models.list_available_models, provider_id)
+    return AvailableModelsOut(
+        models=[AvailableModelOut(**item) for item in models],
+        count=len(models),
+    )
 
 
 @router.post("/slots/{slot}/test", summary="测试该用途的模型是否可用")

@@ -9,6 +9,7 @@
 import { onBeforeUnmount, ref, watch } from 'vue'
 
 import IconClose from '@/components/icons/IconClose.vue'
+import { popTopLayerHost, pushTopLayerHost } from '@/composables/useTopLayer'
 
 const open = defineModel<boolean>('open', { required: true })
 
@@ -40,7 +41,11 @@ const dialog = ref<HTMLDialogElement | null>(null)
 watch(open, (isOpen) => {
   const element = dialog.value
   if (!element) return
-  if (isOpen && !element.open) element.showModal()
+  if (isOpen && !element.open) {
+    element.showModal()
+    // 通知条等全局浮层据此把自己送进这个 top-layer 元素（见 useTopLayer）
+    pushTopLayerHost(element)
+  }
   if (!isOpen && element.open) element.close()
 })
 
@@ -54,8 +59,15 @@ function onCancel(event: Event): void {
   close()
 }
 
+/** `dialog.close()` 之后（Esc、v-model 置假、卸载）都要把宿主摘掉。 */
+function onClose(): void {
+  if (dialog.value) popTopLayerHost(dialog.value)
+  close()
+}
+
 onBeforeUnmount(() => {
   if (dialog.value?.open) dialog.value.close()
+  if (dialog.value) popTopLayerHost(dialog.value)
 })
 </script>
 
@@ -65,7 +77,7 @@ onBeforeUnmount(() => {
     class="modal"
     :class="[`modal-${size}`, `modal-h-${height}`]"
     @cancel="onCancel"
-    @close="close"
+    @close="onClose"
   >
     <div class="modal-head">
       <h2 class="modal-title">{{ title }}</h2>

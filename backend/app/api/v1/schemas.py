@@ -585,6 +585,27 @@ class ModelListOut(BaseModel):
     items: list[ModelOut]
 
 
+class AvailableModelOut(BaseModel):
+    """上游 ``GET /models`` 列表里的一条。
+
+    ``owned_by`` 是给用户辨认的旁注（上游不一定给），不参与任何逻辑。
+    """
+
+    model_id: str
+    owned_by: str = ""
+
+
+class AvailableModelsOut(BaseModel):
+    """供应商可用模型探测结果。
+
+    **不落库**：上游动辄列出几十上百个模型，全登记进来只是噪声；
+    "选哪一个"才是用户的决定（界面据此喂下拉框，仍允许手写）。
+    """
+
+    models: list[AvailableModelOut]
+    count: int
+
+
 class SlotOut(BaseModel):
     """一个用途（任务槽位）的当前状态。"""
 

@@ -19,15 +19,18 @@ import {
   deleteModel,
   deleteProvider,
   getRegistry,
+  listAvailableModels,
   registerModel,
   testProvider,
   updateModel,
   updateProvider,
+  type AvailableModel,
   type Provider,
   type RegisteredModel,
   type Registry,
 } from '@/api/modelRegistry'
 import AppButton from '@/components/ui/AppButton.vue'
+import AppCombobox from '@/components/ui/AppCombobox.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
@@ -52,6 +55,21 @@ const providerEdit = ref({ name: '', base_url: '', api_key: '' })
 /** 正在给哪个供应商加模型（空 = 无）。 */
 const addingModelFor = ref('')
 const modelDraft = ref({ model_id: '', label: '', dim: '', capabilities: [] as string[] })
+
+/** 「添加模型」的候选：来自上游探测，**不落库**。 */
+const availableModels = ref<AvailableModel[]>([])
+const loadingAvailable = ref(false)
+const availableError = ref('')
+/** 候选属于哪个供应商——避免上一个供应商的列表串进下一个的表单。 */
+const availableFor = ref('')
+
+/** 候选下拉项：`模型 ID · 归属`（归属只是旁注，上游不一定给）。 */
+const availableOptions = computed(() =>
+  availableModels.value.map((item) => ({
+    value: item.model_id,
+    label: item.owned_by ? `${item.model_id} · ${item.owned_by}` : item.model_id,
+  })),
+)
 
 /** 正在编辑的模型 id。 */
 const editingModel = ref('')
@@ -201,9 +219,33 @@ async function onDeleteProvider(provider: Provider): Promise<void> {
 
 // ------------------------------------------------------------------ 模型
 
-function startAddModel(providerId: string): void {
-  addingModelFor.value = providerId
+function startAddModel(provider: Provider): void {
+  addingModelFor.value = provider.id
   modelDraft.value = { model_id: '', label: '', dim: '', capabilities: [] }
+  void loadAvailable(provider)
+}
+
+/**
+ * 拉取该供应商上游可用的模型，喂给「添加模型」的下拉框。
+ *
+ * **失败不弹错误通知**：手写模型 ID 这条出路一直在，探测失败只该是一句就地提示，
+ * 不该打断"我要手填"这个动作。用户要求下拉可搜索、同时保留手写，就是为这种情况。
+ */
+async function loadAvailable(provider: Provider): Promise<void> {
+  availableFor.value = provider.id
+  loadingAvailable.value = true
+  availableError.value = ''
+  availableModels.value = []
+  try {
+    const result = await listAvailableModels(provider.id)
+    if (availableFor.value !== provider.id) return // 用户已经切走，别写回旧列表
+    availableModels.value = result.models
+  } catch (cause) {
+    if (availableFor.value !== provider.id) return
+    availableError.value = cause instanceof Error ? cause.message : '拉取失败'
+  } finally {
+    if (availableFor.value === provider.id) loadingAvailable.value = false
+  }
 }
 
 async function submitModel(providerId: string): Promise<void> {
@@ -222,6 +264,8 @@ async function submitModel(providerId: string): Promise<void> {
       capabilities: draft.capabilities,
     })
     addingModelFor.value = ''
+    availableModels.value = []
+    availableError.value = ''
     await load()
     notifySuccess('模型已登记')
   } catch (cause) {
@@ -369,9 +413,7 @@ defineExpose({ load })
                   测试连接
                 </button>
                 <button type="button" @click="(startEditProvider(provider), close())">编辑</button>
-                <button type="button" @click="(startAddModel(provider.id), close())">
-                  添加模型
-                </button>
+                <button type="button" @click="(startAddModel(provider), close())">添加模型</button>
                 <button type="button" @click="(onToggleProvider(provider), close())">
                   {{ provider.enabled ? '停用' : '启用' }}
                 </button>
@@ -434,7 +476,14 @@ defineExpose({ load })
             <div class="form-grid">
               <label class="field">
                 <span class="field-label">模型 ID</span>
-                <AppInput v-model="modelDraft.model_id" placeholder="deepseek-chat" />
+                <AppCombobox
+                  v-model="modelDraft.model_id"
+                  :options="availableOptions"
+                  :loading="loadingAvailable"
+                  :aria-label="`${provider.name} 的模型 ID`"
+                  placeholder="选择或直接输入，如 BAAI/bge-m3"
+                  empty-text="没探测到候选，可直接输入模型 ID"
+                />
               </label>
               <label class="field">
                 <span class="field-label">显示名（可选）</span>
@@ -458,6 +507,25 @@ defineExpose({ load })
                 </div>
               </div>
             </div>
+            <!-- 候选来自上游探测：说清"有没有的选"，失败/为空都指明手写这条出路 -->
+            <p class="source-note">
+              <template v-if="loadingAvailable">正在从供应商拉取候选模型…</template>
+              <template v-else-if="availableError">
+                拉取候选失败：{{ availableError }}。可直接输入模型 ID。
+              </template>
+              <template v-else-if="availableModels.length">
+                已拉取到 {{ availableModels.length }} 个候选，可搜索选择，也可直接输入。
+              </template>
+              <template v-else>该供应商没有返回模型列表，请直接输入模型 ID。</template>
+              <button
+                v-if="!loadingAvailable"
+                type="button"
+                class="source-refresh"
+                @click="loadAvailable(provider)"
+              >
+                重新拉取
+              </button>
+            </p>
             <div class="form-actions">
               <AppButton @click="addingModelFor = ''">取消</AppButton>
               <AppButton
@@ -723,5 +791,24 @@ defineExpose({ load })
 .muted {
   font-size: var(--text-meta-size);
   color: var(--text-tertiary);
+}
+
+/* 候选来源说明：一行小字 + 一颗纯文字「重新拉取」 */
+.source-note {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.source-refresh {
+  font-size: var(--text-micro-size);
+  color: var(--accent);
+}
+
+.source-refresh:hover {
+  text-decoration: underline;
 }
 </style>

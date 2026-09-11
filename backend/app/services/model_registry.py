@@ -145,6 +145,43 @@ class ModelRegistryService:
           那是另一件事，两者不互相替代。
         """
         provider = self.get_provider(provider_id)
+        response = self._request_models(provider)
+        entries = self._model_entries(response)
+        if entries is None:
+            return f"「{provider.name}」地址与凭据可用"
+        return f"「{provider.name}」可用（发现 {len(entries)} 个模型）"
+
+    def list_available_models(self, provider_id: str) -> list[dict[str, str]]:
+        """上游 ``GET {base_url}/models`` 列出的模型，供"添加模型"时挑选。
+
+        与 ``probe_provider`` 共用同一条请求路径：探活回答"通不通"，
+        这里回答"有哪些"。**不落库**——上游动辄几十上百条，全登记只是噪声，
+        "选哪一个"才是用户的决定。
+
+        上游不给列表（有的端点只回 HTML、或格式不同）时返回空列表而**不报错**：
+        界面照常允许手写模型 ID，这条路不能因为探测不了就被堵死。
+        """
+        provider = self.get_provider(provider_id)
+        response = self._request_models(provider)
+        entries = self._model_entries(response) or []
+        out: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            model_id = str(item.get("id") or "").strip()
+            if not model_id or model_id in seen:
+                continue
+            seen.add(model_id)
+            out.append({"model_id": model_id, "owned_by": str(item.get("owned_by") or "")})
+        return out
+
+    def _request_models(self, provider: ModelProviderRecord) -> httpx.Response:
+        """校验地址与凭据，请求 ``GET {base_url}/models``，并把状态码翻成我们的错误。
+
+        探活与"拉列表"共用这一步：两处各写一份的话，鉴权失败的处理迟早会漂
+        （一处说"API Key 无效"、另一处说"HTTP 401"），而用户看到的是同一件事。
+        """
         if not provider.base_url.strip():
             raise InvalidRequestError(f"「{provider.name}」还没有填写接口地址")
         if not provider.api_key.strip():
@@ -164,21 +201,17 @@ class ModelRegistryService:
             raise InvalidRequestError("API Key 无效，或没有访问权限")
         if response.status_code >= 400:
             raise UpstreamError(f"「{provider.name}」返回 HTTP {response.status_code}")
-
-        count = self._count_models(response)
-        if count is None:
-            return f"「{provider.name}」地址与凭据可用"
-        return f"「{provider.name}」可用（发现 {count} 个模型）"
+        return response
 
     @staticmethod
-    def _count_models(response: httpx.Response) -> int | None:
-        """尽力解析 ``{"data": [...]}``；解析不出来也不算失败（有的端点不返回列表）。"""
+    def _model_entries(response: httpx.Response) -> list[object] | None:
+        """尽力解析 ``{"data": [...]}``；解析不出来返回 ``None``（**不算失败**）。"""
         try:
             payload = response.json()
         except ValueError:
             return None
         if isinstance(payload, dict) and isinstance(payload.get("data"), list):
-            return len(payload["data"])
+            return payload["data"]
         return None
 
     def list_providers(self) -> list[ModelProviderRecord]:

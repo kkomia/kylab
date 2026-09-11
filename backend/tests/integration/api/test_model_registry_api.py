@@ -337,3 +337,38 @@ def test_test_provider_endpoint_hides_the_key(client: TestClient) -> None:
         response = client.post(f"/api/v1/model-registry/providers/{provider['id']}/test")
 
     assert SECRET not in response.text
+
+
+# --------------------------------------------------------------------- 可用模型列表
+
+
+@respx.mock
+def test_available_models_endpoint_lists_upstream_models(client: TestClient) -> None:
+    """「添加模型」下拉的数据源：把上游 ``/models`` 的 id 给前端，且**不落库**。"""
+    provider = _provider(client)
+    respx.get("https://api.deepseek.com/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={"data": [{"id": "deepseek-chat"}, {"id": "BAAI/bge-m3", "owned_by": "sf"}]},
+        )
+    )
+
+    response = client.get(f"/api/v1/model-registry/providers/{provider['id']}/available-models")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["count"] == 2
+    assert [item["model_id"] for item in body["models"]] == ["deepseek-chat", "BAAI/bge-m3"]
+    # 探测不落库：注册表里的模型数仍是 0，选哪个由用户决定
+    assert client.get("/api/v1/model-registry/models").json()["items"] == []
+
+
+@respx.mock
+def test_available_models_endpoint_maps_bad_key(client: TestClient) -> None:
+    provider = _provider(client)
+    respx.get("https://api.deepseek.com/models").mock(return_value=httpx.Response(401))
+
+    response = client.get(f"/api/v1/model-registry/providers/{provider['id']}/available-models")
+
+    assert response.status_code == 422
+    assert "API Key" in response.json()["message"]

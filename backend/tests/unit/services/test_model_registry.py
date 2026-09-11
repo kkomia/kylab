@@ -352,6 +352,58 @@ def test_probe_provider_requires_base_url_and_key(registry: ModelRegistryService
         registry.probe_provider(no_key.id)
 
 
+# --------------------------------------------------------------------- 可用模型列表（下拉数据源）
+
+
+@respx.mock
+def test_list_available_models_cleans_and_dedupes(registry: ModelRegistryService) -> None:
+    """上游列表里混着重复、空 id 与非字典条目——清理掉，别让下拉框出现重复项。"""
+    provider = _provider(registry, api_key="sk-abc", base_url="https://api.example.com/v1")
+    respx.get("https://api.example.com/v1/models").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "BAAI/bge-m3", "owned_by": "siliconflow"},
+                    {"id": "BAAI/bge-m3"},
+                    {"id": "   "},
+                    "not-a-dict",
+                    {"id": "Qwen/Qwen2.5"},
+                ]
+            },
+        )
+    )
+
+    models = registry.list_available_models(provider.id)
+
+    assert models == [
+        {"model_id": "BAAI/bge-m3", "owned_by": "siliconflow"},
+        {"model_id": "Qwen/Qwen2.5", "owned_by": ""},
+    ]
+
+
+@respx.mock
+def test_list_available_models_empty_when_upstream_has_no_list(
+    registry: ModelRegistryService,
+) -> None:
+    """有的端点不返回模型列表：返回空列表而**不报错**，界面仍可手写模型 ID。"""
+    provider = _provider(registry, api_key="sk-abc")
+    respx.get("https://api.example.com/models").mock(
+        return_value=httpx.Response(200, text="<html>ok</html>")
+    )
+
+    assert registry.list_available_models(provider.id) == []
+
+
+@respx.mock
+def test_list_available_models_maps_bad_key(registry: ModelRegistryService) -> None:
+    provider = _provider(registry, api_key="sk-bad")
+    respx.get("https://api.example.com/models").mock(return_value=httpx.Response(401))
+
+    with pytest.raises(InvalidRequestError, match="API Key"):
+        registry.list_available_models(provider.id)
+
+
 @respx.mock
 def test_probe_provider_maps_transport_error_to_upstream(registry: ModelRegistryService) -> None:
     provider = _provider(registry, api_key="sk-abc")
