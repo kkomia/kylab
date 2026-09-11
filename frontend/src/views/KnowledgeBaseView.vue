@@ -690,32 +690,6 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       <KnowledgeBaseMenu :kb="knowledgeBase" @changed="onKbChanged" />
     </template>
 
-    <template #actions>
-      <!-- 检索与上传是"文档"这个标签页的动作；切到数据源时它们没有所指，收起来 -->
-      <AppButton
-        v-if="activeTab === 'documents'"
-        :disabled="documents.length === 0"
-        @click="searchOpen = true"
-      >
-        <template #icon><IconSearch /></template>
-        在此库检索
-      </AppButton>
-      <!-- 分享入口只对 owner / 管理员出现：can_manage 由后端算，前端不重复判定 -->
-      <AppButton v-if="knowledgeBase?.can_manage" @click="shareOpen = true">
-        <template #icon><IconShare /></template>
-        分享
-      </AppButton>
-      <!-- 只读分享的成员看得到内容，但没有写入口（can_write 由后端算） -->
-      <AppButton
-        v-if="activeTab === 'documents' && knowledgeBase?.can_write"
-        variant="primary"
-        @click="uploadOpen = true"
-      >
-        <template #icon><IconUpload /></template>
-        上传文档
-      </AppButton>
-    </template>
-
     <p v-if="error" class="error-line">{{ error }}</p>
 
     <p v-if="knowledgeBase && !knowledgeBase.can_write" class="readonly-note">
@@ -863,8 +837,11 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       </aside>
 
       <section class="doc-area">
-        <!-- 筛选：文件名 / 状态 / 来源。放在列表之上——先缩小范围，再在范围内找 -->
-        <div v-if="knowledgeBase && !loading" class="filter-bar">
+        <!--
+          工具栏：搜索/筛选与三个动作**同一行**，都在列表正上方（用户要求"齐平"）。
+          它们都在 `--control-height`(32px) 上，所以高度天然一致。
+        -->
+        <div class="toolbar">
           <div class="search-box">
             <IconSearch class="search-icon" :size="16" />
             <AppInput v-model="searchDraft" placeholder="搜索文件名…" />
@@ -884,48 +861,61 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
             />
           </div>
           <AppButton v-if="hasFilter" size="sm" @click="clearFilters">清除筛选</AppButton>
+
+          <div class="toolbar-actions">
+            <AppButton :disabled="documents.length === 0" @click="searchOpen = true">
+              <template #icon><IconSearch /></template>
+              在此库检索
+            </AppButton>
+            <!-- 分享入口只对 owner / 管理员出现：can_manage 由后端算，前端不重复判定 -->
+            <AppButton v-if="knowledgeBase?.can_manage" @click="shareOpen = true">
+              <template #icon><IconShare /></template>
+              分享
+            </AppButton>
+            <!-- 只读分享的成员看得到内容，但没有写入口（can_write 由后端算） -->
+            <AppButton v-if="knowledgeBase?.can_write" variant="primary" @click="uploadOpen = true">
+              <template #icon><IconUpload /></template>
+              上传文档
+            </AppButton>
+          </div>
         </div>
 
         <SkeletonBlock v-if="loading && documents.length === 0" variant="list" :rows="4" />
 
         <template v-else>
-          <!-- 列表工具条：全选与批量动作都贴在列表正上方（不再塞进表头里）。
-               勾了东西才长出批量按钮，没勾时这一行只有"全选"，不占注意力 -->
-          <div v-if="knowledgeBase?.can_write" class="list-tools">
-            <label class="select-all">
-              <input
-                type="checkbox"
-                :checked="allSelected"
-                :aria-label="selectedCount > 0 ? `已选 ${selectedCount} 篇` : '全选当前列表'"
-                @change="toggleSelectAll"
-              />
-              <span>{{ selectedCount > 0 ? `已选 ${selectedCount} 篇` : '全选' }}</span>
-            </label>
-            <div v-if="selectedCount > 0" class="batch-actions">
-              <AppButton size="sm" :disabled="batchRunning" @click="runBatch('reprocess')">
-                <template #icon><IconRefresh /></template>
-                重新摄入
-              </AppButton>
-              <AppButton
-                size="sm"
-                variant="danger"
-                :disabled="batchRunning"
-                @click="runBatch('delete')"
-              >
-                <template #icon><IconTrash /></template>
-                删除
-              </AppButton>
-              <AppButton size="sm" :disabled="batchRunning" @click="clearSelection">
-                取消选择
-              </AppButton>
-            </div>
+          <!-- 勾选后浮出的批量动作条（全选在列表内的表头里，不在这里） -->
+          <div v-if="selectedCount > 0" class="batch-bar">
+            <span class="batch-count">已选 {{ selectedCount }} 篇</span>
+            <AppButton size="sm" :disabled="batchRunning" @click="runBatch('reprocess')">
+              <template #icon><IconRefresh /></template>
+              重新摄入
+            </AppButton>
+            <AppButton
+              size="sm"
+              variant="danger"
+              :disabled="batchRunning"
+              @click="runBatch('delete')"
+            >
+              <template #icon><IconTrash /></template>
+              删除
+            </AppButton>
+            <AppButton size="sm" :disabled="batchRunning" @click="clearSelection">
+              取消选择
+            </AppButton>
           </div>
 
           <!-- 列头：让右侧那串数字有名字，不必靠猜。
-           文字列标 aria-hidden（纯装饰）；勾选列保留同宽占位，否则右侧数字列会错位 -->
+           文字列标 aria-hidden（纯装饰）；全选框是交互控件，保留可读名 -->
           <div ref="listPanel" class="panel">
             <div class="panel-head list-head">
-              <span v-if="knowledgeBase?.can_write" class="head-check" aria-hidden="true" />
+              <span v-if="knowledgeBase?.can_write" class="head-check">
+                <input
+                  type="checkbox"
+                  :checked="allSelected"
+                  aria-label="全选当前列表"
+                  @change="toggleSelectAll"
+                />
+              </span>
               <span class="head-file" aria-hidden="true">文件</span>
               <span class="head-number" aria-hidden="true">切块</span>
               <span class="head-size" aria-hidden="true">大小</span>
@@ -1071,12 +1061,18 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
     </div>
 
     <!-- 数据源（M6）：抬到次级菜单里，不再堆在文档列表下面 -->
-    <SourcePanel
-      v-if="knowledgeBase && activeTab === 'sources'"
-      :kb-id="kbId"
-      :can-write="knowledgeBase.can_write"
-      @changed="refresh"
-    />
+    <template v-if="knowledgeBase && activeTab === 'sources'">
+      <!-- 分享是库级动作，数据源标签下也该够得着；列表专属的检索/上传在这里没有所指 -->
+      <div v-if="knowledgeBase.can_manage" class="toolbar toolbar-bare">
+        <div class="toolbar-actions">
+          <AppButton @click="shareOpen = true">
+            <template #icon><IconShare /></template>
+            分享
+          </AppButton>
+        </div>
+      </div>
+      <SourcePanel :kb-id="kbId" :can-write="knowledgeBase.can_write" @changed="refresh" />
+    </template>
 
     <KbSearchPanel
       v-if="knowledgeBase"
@@ -1443,14 +1439,24 @@ button.tree-caret:hover {
   gap: var(--space-2);
 }
 
-/* ---- 筛选 ---- */
+/* ---- 工具栏（筛选 + 库级动作，同一行、都在列表上方）---- */
 
-.filter-bar {
+.toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
   margin-bottom: var(--space-3);
+}
+
+/* 动作组靠右；左侧的搜索/筛选吃掉剩余空间。
+   行内所有控件都是 `--control-height`（32px），所以天然齐平 */
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
 }
 
 /* 搜索框：图标压在输入框左内侧。AppInput 的 .field 在子组件里，
@@ -1481,44 +1487,23 @@ button.tree-caret:hover {
 
 /* ---- 多选与批量 ---- */
 
-/* 列表正上方的工具条：全选在左，批量动作在右。高度固定，勾选后不会把列表顶下去 */
-.list-tools {
+/* 勾选后浮出的批量动作条（全选在列表内的表头里） */
+.batch-bar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
-  min-height: var(--control-height);
-  margin-bottom: var(--space-2);
+  margin-bottom: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--accent-soft);
+  border-radius: var(--radius-control);
 }
 
-.select-all {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
+/* 左侧计数吃掉剩余空间，把按钮推到右边 */
+.batch-count {
+  margin-right: auto;
   font-size: var(--text-meta-size);
-  color: var(--text-secondary);
-  cursor: pointer;
-}
-
-.select-all:hover {
-  color: var(--text-primary);
-}
-
-.select-all input {
-  width: 15px;
-  height: 15px;
-  margin: 0;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-
-/* 批量动作靠右，与"全选"拉开距离——两者语义不同，挨着容易误点 */
-.batch-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2);
-  margin-left: auto;
+  color: var(--accent-text);
 }
 
 /* 勾选框列：列头与行同宽，右侧的列才不会错位 */
@@ -1530,6 +1515,7 @@ button.tree-caret:hover {
   justify-content: center;
 }
 
+.head-check input,
 .row-check input {
   width: 15px;
   height: 15px;
