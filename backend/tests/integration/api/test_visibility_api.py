@@ -1,0 +1,275 @@
+"""成员数据隔离的 HTTP 层行为（v10：私有 + 可分享）。
+
+镜像同构：``app/api/v1/knowledge_bases.py`` / ``conversations.py`` / ``chat.py`` /
+``tasks.py`` / ``stats.py`` 里的成员分支 → 本文件。
+
+**这份用例钉的是"私有"两个字**：成员登录后，别人的知识库、文档任务、会话、
+驾驶舱统计都不能露。每一条都先用管理员造出"别人的数据"，再拿成员的会话去够——
+不先造出别人的数据，"看不到"就可能是"根本没有"（会骗人的绿）。
+"""
+
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.core.security import hash_password
+from app.models.enums import UserRole
+from app.storage.base import UserRecord
+
+ADMIN_PASSWORD = "correct horse battery"
+MEMBER_PASSWORD = "member pass 123"
+
+
+@pytest.fixture
+def two_users(monkeypatch):
+    """一个管理员（经 setup）+ 一个普通成员（直接落库）的客户端。
+
+    成员开通端点是步骤 5 的事；这里直接写库造账号，测的是**隔离**不是开通流程。
+    """
+    from app.core.config import get_settings
+    from app.core.services import get_services
+    from app.main import create_app
+
+    get_settings.cache_clear()
+    with TestClient(create_app()) as client:
+        admin = client.post(
+            "/api/v1/auth/setup", json={"username": "admin", "password": ADMIN_PASSWORD}
+        ).json()
+        # 通过组合根拿到存储：测试与 app 同进程同单例（conftest 的 reset_services 保证）
+        meta = get_services().auth._stores.meta  # 测试需要直达存储造账号（开通端点是步骤 5）
+        meta.create_user(
+            UserRecord(
+                id="user_member",
+                name="成员",
+                username="member",
+                password_hash=hash_password(MEMBER_PASSWORD),
+                role=UserRole.MEMBER,
+            )
+        )
+        member = client.post(
+            "/api/v1/auth/login", json={"username": "member", "password": MEMBER_PASSWORD}
+        ).json()
+        yield client, admin, member
+    get_settings.cache_clear()
+
+
+def _as(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+# --------------------------------------------------------------------- 知识库
+
+
+def test_member_sees_only_own_knowledge_bases(two_users) -> None:  # type: ignore[no-untyped-def]
+    client, admin, member = two_users
+    client.post("/api/v1/knowledge-bases", json={"name": "管理员的库"}, headers=_as(admin["token"]))
+
+    # 成员眼里是空的
+    mine = client.get("/api/v1/knowledge-bases", headers=_as(member["token"])).json()["items"]
+    assert mine == []
+
+    # 成员自己建一个：归属自己，管理员照样看得见（is_console 不受限）
+    created = client.post(
+        "/api/v1/knowledge-bases", json={"name": "成员的库"}, headers=_as(member["token"])
+    )
+    assert created.status_code == 201
+    names = {
+        item["name"]
+        for item in client.get("/api/v1/knowledge-bases", headers=_as(admin["token"])).json()[
+            "items"
+        ]
+    }
+    assert names == {"管理员的库", "成员的库"}
+
+
+def test_member_cannot_read_others_kb_detail(two_users) -> None:  # type: ignore[no-untyped-def]
+    client, admin, member = two_users
+    kb = client.post(
+        "/api/v1/knowledge-bases", json={"name": "机密库"}, headers=_as(admin["token"])
+    ).json()
+
+    response = client.get(f"/api/v1/knowledge-bases/{kb['id']}", headers=_as(member["token"]))
+    assert response.status_code == 403
+
+
+def test_member_cannot_upload_into_others_kb(two_users) -> None:  # type: ignore[no-untyped-def]
+    client, admin, member = two_users
+    kb = client.post(
+        "/api/v1/knowledge-bases", json={"name": "机密库"}, headers=_as(admin["token"])
+    ).json()
+
+    upload = client.post(
+        f"/api/v1/knowledge-bases/{kb['id']}/documents",
+        files={"file": ("偷渡.md", b"# hello", "text/markdown")},
+        headers=_as(member["token"]),
+    )
+    assert upload.status_code == 403
+
+
+# --------------------------------------------------------------------- 会话
+
+
+def test_conversations_are_private(two_users) -> None:  # type: ignore[no-untyped-def]
+    client, admin, member = two_users
+    conv = client.post("/api/v1/conversations", json={}, headers=_as(admin["token"])).json()
+
+    # 成员列表里没有它
+    visible = client.get("/api/v1/conversations", headers=_as(member["token"])).json()["items"]
+    assert visible == []
+
+    # 详情/改名/删除：越主一律 404，不暴露"这条会话存在"
+    for method in ("get", "patch", "delete"):
+        response = getattr(client, method)(
+            f"/api/v1/conversations/{conv['id']}",
+            headers=_as(member["token"]),
+            **({"json": {"title": "改名"}} if method == "patch" else {}),
+        )
+        assert response.status_code == 404, f"{method} 暴露了别人的会话"
+
+    # 自己的会话照常
+    own = client.post("/api/v1/conversations", json={}, headers=_as(member["token"])).json()
+    assert client.get(
+        f"/api/v1/conversations/{own['id']}", headers=_as(member["token"])
+    ).status_code == 200
+
+
+def test_member_cannot_chat_with_others_conversation(two_users) -> None:  # type: ignore[no-untyped-def]
+    """拿别人的会话 id 提问 = 把整段历史读走，必须 404。
+
+    kb_ids 带成员**自己的**库：否则先撞库范围检查（403），测不到会话守卫。
+    """
+    client, admin, member = two_users
+    conv = client.post("/api/v1/conversations", json={}, headers=_as(admin["token"])).json()
+    own_kb = client.post(
+        "/api/v1/knowledge-bases", json={"name": "成员的库"}, headers=_as(member["token"])
+    ).json()
+
+    response = client.post(
+        "/api/v1/chat",
+        json={"query": "继续", "kb_ids": [own_kb["id"]], "conversation_id": conv["id"]},
+        headers=_as(member["token"]),
+    )
+    assert response.status_code == 404
+
+
+# --------------------------------------------------------------------- 任务与统计
+
+
+def test_member_tasks_and_dashboard_are_scoped(two_users) -> None:  # type: ignore[no-untyped-def]
+    client, admin, member = two_users
+    kb = client.post(
+        "/api/v1/knowledge-bases", json={"name": "管理员的库"}, headers=_as(admin["token"])
+    ).json()
+    client.post(
+        f"/api/v1/knowledge-bases/{kb['id']}/documents",
+        files={"file": ("私有.md", b"# secret", "text/markdown")},
+        headers=_as(admin["token"]),
+    )
+
+    # 成员的任务列表里没有别人文档的任务
+    member_tasks = client.get("/api/v1/tasks", headers=_as(member["token"])).json()["items"]
+    assert member_tasks == []
+    admin_tasks = client.get("/api/v1/tasks", headers=_as(admin["token"])).json()["items"]
+    assert len(admin_tasks) >= 1
+
+    # 驾驶舱：成员看到的库数是 0，管理员是 1
+    assert (
+        client.get("/api/v1/stats/dashboard", headers=_as(member["token"])).json()[
+            "total_knowledge_bases"
+        ]
+        == 0
+    )
+    assert (
+        client.get("/api/v1/stats/dashboard", headers=_as(admin["token"])).json()[
+            "total_knowledge_bases"
+        ]
+        == 1
+    )
+
+    # 运行态总览是管理员视角
+    assert client.get("/api/v1/tasks/health", headers=_as(member["token"])).status_code == 403
+
+
+def test_member_cannot_touch_console_endpoints(two_users) -> None:  # type: ignore[no-untyped-def]
+    """设置页/密钥管理/用户名册对成员是 403（与外部 API Key 同一档待遇）。"""
+    client, _admin, member = two_users
+    for method, path in (
+        ("get", "/api/v1/settings"),
+        ("get", "/api/v1/api-keys"),
+        ("post", "/api/v1/api-keys"),
+    ):
+        response = getattr(client, method)(path, headers=_as(member["token"]))
+        assert response.status_code == 403, f"{method} {path} 对成员放行了"
+
+
+# --------------------------------------------------------------------- 正向路径（防"会骗人的绿"）
+#
+# 上面的用例只断言"成员看不到/够不着"。如果实现错写成"成员永远为空"，
+# 那些断言照样绿——所以必须补"成员自己的东西照常工作"的正向用例。
+
+
+def test_member_sees_own_task_and_dashboard_counts(two_users) -> None:  # type: ignore[no-untyped-def]
+    client, _admin, member = two_users
+    kb = client.post(
+        "/api/v1/knowledge-bases", json={"name": "成员的库"}, headers=_as(member["token"])
+    ).json()
+    client.post(
+        f"/api/v1/knowledge-bases/{kb['id']}/documents",
+        files={"file": ("自己的.md", b"# mine", "text/markdown")},
+        headers=_as(member["token"]),
+    )
+
+    member_tasks = client.get("/api/v1/tasks", headers=_as(member["token"])).json()["items"]
+    assert len(member_tasks) >= 1, "成员自己上传的任务必须可见"
+    dashboard = client.get("/api/v1/stats/dashboard", headers=_as(member["token"])).json()
+    assert dashboard["total_knowledge_bases"] == 1
+
+
+def test_member_chats_with_own_conversation(two_users) -> None:  # type: ignore[no-untyped-def]
+    """成员带自己的 conversation_id 调 /chat 应正常工作（守卫只拦越主的）。"""
+    from app.core.services import get_services
+
+    class FakeChat:
+        def complete(self, messages):  # type: ignore[no-untyped-def]
+            return "这是回答。"
+
+    # 假模型 + 假配置（不配 llm.* 的话 ChatService 先报"未配置"，测不到守卫之后的路）
+    services = get_services()
+    services.runtime.set({"llm.api_key": "sk-fake", "llm.model_id": "fake-model"})
+    services.chat._chat_factory = lambda config: FakeChat()
+
+    client, _admin, member = two_users
+    kb = client.post(
+        "/api/v1/knowledge-bases", json={"name": "成员的库"}, headers=_as(member["token"])
+    ).json()
+    conv = client.post(
+        "/api/v1/conversations", json={"kb_ids": [kb["id"]]}, headers=_as(member["token"])
+    ).json()
+
+    response = client.post(
+        "/api/v1/chat",
+        json={"query": "你好", "kb_ids": [kb["id"]], "conversation_id": conv["id"]},
+        headers=_as(member["token"]),
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_admin_session_sees_conversations_from_other_channels(two_users) -> None:  # type: ignore[no-untyped-def]
+    """跨通道回归：控制台令牌建的会话（无主），管理员用网页会话也必须看得到。
+
+    这正是第一版实现踩中的坑：只看 ``caller.user is not None`` 会把管理员会话
+    也当成成员过滤，于是无主会话在管理员眼前消失。
+    """
+    client, admin, _member = two_users
+    console_token = client.post("/api/v1/auth/console-token", json={}).json()["token"]
+    conv = client.post("/api/v1/conversations", json={}, headers=_as(console_token)).json()
+
+    listing = client.get("/api/v1/conversations", headers=_as(admin["token"])).json()["items"]
+    assert conv["id"] in [item["id"] for item in listing]
+    assert (
+        client.get(
+            f"/api/v1/conversations/{conv['id']}", headers=_as(admin["token"])
+        ).status_code
+        == 200
+    )

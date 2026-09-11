@@ -42,13 +42,32 @@ def _summary(services: Services, record) -> ConversationOut:  # type: ignore[no-
     )
 
 
+def _get_visible(services: Services, caller: Caller, conversation_id: str):  # type: ignore[no-untyped-def]
+    """成员只能碰自己的会话（404 而不是 403：不暴露存在性）；其余通道照旧。"""
+    owner = _caller_owner(caller)
+    if owner is None:
+        return services.conversations.get(conversation_id)
+    return services.conversations.get_for_owner(conversation_id, owner)
+
+
+def _caller_owner(caller: Caller) -> str | None:
+    """只有**普通成员**会话才有归属过滤；管理员会话（is_console）、控制台令牌与
+    API Key 通道都没有——否则管理员用网页会话看不到 API Key 建的无主会话（回归踩过）。
+    """
+    if caller.user is not None and not caller.is_console:
+        return caller.user.id
+    return None
+
+
 @router.get("", response_model=ConversationListOut, summary="会话列表（按最近更新倒序）")
 def list_conversations(
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_read)],
+    caller: Annotated[Caller, Depends(require_read)],
     limit: int = Query(default=50, ge=1, le=200),
 ) -> ConversationListOut:
-    records = services.conversations.list(limit=limit)
+    # 成员只看到自己的会话（v10 私有隔离）：对话内容是私有数据，
+    # 列表不按归属过滤就等于把别人的问题全部摊开
+    records = services.conversations.list(limit=limit, owner_id=_caller_owner(caller))
     return ConversationListOut(items=[_summary(services, item) for item in records])
 
 
@@ -61,14 +80,16 @@ def list_conversations(
 def create_conversation(
     payload: ConversationCreateIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_write)],
+    caller: Annotated[Caller, Depends(require_write)],
 ) -> ConversationOut:
     """新建会话。
 
     标题允许留空：真正的标题由**第一轮提问**生成（见 ``ConversationService``）。
     这里能传标题是为了"复制一次旧会话"这类将来可能有的用法。
     """
-    record = services.conversations.create(kb_ids=payload.kb_ids, title=payload.title)
+    record = services.conversations.create(
+        kb_ids=payload.kb_ids, title=payload.title, owner_id=_caller_owner(caller)
+    )
     return _summary(services, record)
 
 
@@ -76,14 +97,14 @@ def create_conversation(
 def get_conversation(
     conversation_id: str,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_read)],
+    caller: Annotated[Caller, Depends(require_read)],
 ) -> ConversationDetailOut:
     """会话 + 全部消息。
 
     一次给全而不是分页：一次对话通常几十轮，比"翻页找上文"的体验好得多；
     真到了几百轮再谈分页。
     """
-    record = services.conversations.get(conversation_id)
+    record = _get_visible(services, caller, conversation_id)
     messages = [
         ChatMessageOut(
             id=item.id,
@@ -102,8 +123,9 @@ def rename_conversation(
     conversation_id: str,
     payload: ConversationRenameIn,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_write)],
+    caller: Annotated[Caller, Depends(require_write)],
 ) -> ConversationOut:
+    _get_visible(services, caller, conversation_id)
     return _summary(services, services.conversations.rename(conversation_id, payload.title))
 
 
@@ -115,6 +137,7 @@ def rename_conversation(
 def delete_conversation(
     conversation_id: str,
     services: Annotated[Services, Depends(get_services)],
-    _: Annotated[Caller, Depends(require_write)],
+    caller: Annotated[Caller, Depends(require_write)],
 ) -> None:
+    _get_visible(services, caller, conversation_id)
     services.conversations.delete(conversation_id)

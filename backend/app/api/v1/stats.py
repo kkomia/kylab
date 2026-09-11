@@ -28,9 +28,11 @@ async def dashboard(
         description="活跃度观察窗口（天）",
     ),
     services: Services = Depends(get_services),
-    _: Caller = Depends(require_read),
+    caller: Caller = Depends(require_read),
 ) -> DashboardOut:
-    stats = services.stats.dashboard(window_days=window_days)
+    # 成员（v10）的驾驶舱只统计自己可见的库：库名、文档数都是私有数据
+    kb_ids = services.api_keys.visible_kb_ids(caller) if caller.user is not None else None
+    stats = services.stats.dashboard(window_days=window_days, kb_ids=kb_ids)
     return DashboardOut.model_validate(stats)
 
 

@@ -30,8 +30,13 @@ class KnowledgeBaseService:
         chunk_size: int = 512,
         chunk_overlap: int = 64,
         chunk_strategy: str = DEFAULT_CHUNK_STRATEGY,
+        owner_id: str | None = None,
     ) -> KnowledgeBaseRecord:
-        """建库并把当前 embedding 实现的模型与维度冻结进记录。"""
+        """建库并把当前 embedding 实现的模型与维度冻结进记录。
+
+        ``owner_id``（v10）：登录成员建的库归自己；控制台令牌/API Key 通道
+        没有账号概念，传 None 即无主（对管理员全可见）。
+        """
         return self._stores.meta.create_knowledge_base(
             KnowledgeBaseRecord(
                 id=kb_id,
@@ -41,6 +46,7 @@ class KnowledgeBaseService:
                 chunk_strategy=chunk_strategy,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
+                owner_id=owner_id,
             )
         )
 

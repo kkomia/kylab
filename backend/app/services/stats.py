@@ -87,14 +87,33 @@ class StatsService:
     def __init__(self, stores: StoreBundle) -> None:
         self._stores = stores
 
-    def dashboard(self, *, window_days: int = DEFAULT_WINDOW_DAYS) -> DashboardStats:
+    def dashboard(
+        self, *, window_days: int = DEFAULT_WINDOW_DAYS, kb_ids: list[str] | None = None
+    ) -> DashboardStats:
+        """聚合成仪表盘要的形状。
+
+        ``kb_ids``（v10 成员视角）：只统计这些库。成员的驾驶舱不能露出
+        别人的库有几个、叫什么——那不叫统计，叫泄露。
+        """
         meta = self._stores.meta
         today = date.today()
         since = today - timedelta(days=window_days - 1)
 
         knowledge_bases = meta.list_knowledge_bases()
+        if kb_ids is not None:
+            visible = set(kb_ids)
+            knowledge_bases = [kb for kb in knowledge_bases if kb.id in visible]
         documents = [doc for kb in knowledge_bases for doc in meta.list_documents(kb.id)]
         tasks = meta.list_tasks()
+        if kb_ids is not None:
+            # 任务没有直接挂库：经 document 绕一道。没有文档的任务（数据源拉取）
+            # 在成员视角下隐藏——它属于管理员关心的全局运维面
+            visible_docs = {doc.id for doc in documents}
+            tasks = [
+                task
+                for task in tasks
+                if task.document_id is not None and task.document_id in visible_docs
+            ]
 
         chunk_counts = meta.count_chunks_by_documents([doc.id for doc in documents])
         total_chunks = sum(chunk_counts.values())

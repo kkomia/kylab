@@ -53,7 +53,7 @@ async def chat_stream(
 ) -> StreamingResponse:
     # 对话会读到库内原文，所以同样受密钥的库范围约束
     check_kb_scope(services, caller, payload.kb_ids)
-    _require_conversation(services, payload)
+    _require_conversation(services, payload, caller)
     _warn_on_scope_drift(services, payload)
     return StreamingResponse(
         _events(services, payload),
@@ -70,7 +70,7 @@ async def chat_once(
 ) -> ChatResponseOut:
     """非流式版本：给脚本、MCP 与自动化测试用，逻辑与流式完全相同。"""
     check_kb_scope(services, caller, payload.kb_ids)
-    _require_conversation(services, payload)
+    _require_conversation(services, payload, caller)
     _warn_on_scope_drift(services, payload)
 
     sources = services.chat.retrieve_sources(
@@ -183,14 +183,22 @@ def _record_turn(services: Services, payload: ChatRequestIn, *, answer: str, sou
         logger.exception("对话落库失败：%s", conversation_id)
 
 
-def _require_conversation(services: Services, payload: ChatRequestIn) -> None:
-    """指了会话就必须存在。
+def _require_conversation(services: Services, payload: ChatRequestIn, caller: Caller) -> None:
+    """指了会话就必须存在**且属于当前调用方**。
 
     **不做"静默新建"**：那样用户拼错一个 id 会得到一次正常回答，然后发现历史没存上
     ——而落库失败是静默的（见 ``_record_turn`` 的取舍），两次静默叠起来根本无法排查。
     在**流还没开始**之前抛 404，用户立刻知道 id 不对。
+
+    成员（v10）越主同样 404：对话内容是私有数据，403 会暴露"这条会话存在"。
+    不拦的话，成员拿着别人的会话 id 就能把整段历史读走（`_history` 以库里为准）。
+    管理员会话不受此限（is_console）：它要能看到控制台令牌/API Key 建的无主会话。
     """
-    if payload.conversation_id:
+    if not payload.conversation_id:
+        return
+    if caller.user is not None and not caller.is_console:
+        services.conversations.get_for_owner(payload.conversation_id, caller.user.id)
+    else:
         services.conversations.get(payload.conversation_id)
 
 

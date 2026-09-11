@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Query
 from app.api.auth import require_read
 from app.api.v1.schemas import HealthOverviewOut, TaskList, TaskOut
 from app.core.config import get_settings
+from app.core.exceptions import ForbiddenError
 from app.core.services import Services, get_services
 from app.models.enums import TaskState
 from app.services.api_key import Caller
@@ -26,9 +27,11 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 async def list_tasks(
     state: TaskState | None = Query(default=None, description="按状态过滤"),
     services: Services = Depends(get_services),
-    _: Caller = Depends(require_read),
+    caller: Caller = Depends(require_read),
 ) -> TaskList:
-    tasks = services.documents.list_tasks(state)
+    # 成员（v10）只看到自己库里的文档任务；任务内容（文件名、报错）是私有数据
+    kb_ids = services.api_keys.visible_kb_ids(caller) if caller.user is not None else None
+    tasks = services.documents.list_tasks(state, kb_ids=kb_ids)
     items: list[TaskOut] = []
     for task in tasks:
         health = services.observability.assess(task)
@@ -43,14 +46,19 @@ async def list_tasks(
 @router.get("/health", response_model=HealthOverviewOut, summary="运行态总览")
 async def tasks_health(
     services: Services = Depends(get_services),
-    _: Caller = Depends(require_read),
+    caller: Caller = Depends(require_read),
 ) -> HealthOverviewOut:
     """任务运行态总览。
 
     把"有没有卡住"变成一个可以直接看的数，而不是让用户自己去列表里比对时间。
     ``worker_enabled`` 尤其重要：**内嵌消费线程关掉时任务不会自己跑**——
     这是"任务一直排队"最常见的原因，界面必须能解释它。
+
+    成员（v10）看不到这里：总览包含全局运维信息（有没有别的任务在跑、
+    worker 状态），那是管理员的视角。成员的任务在列表里已经够用。
     """
+    if caller.user is not None and not caller.is_console:
+        raise ForbiddenError("运行态总览需要管理员身份")
     overview = services.observability.overview()
     # worker 是**启动期**开关（KYLAB_RUN_WORKER，见 main.py），不是运行期设置——
     # 它决定进程里到底有没有那个消费协程，改它要重启，所以从 Settings 读

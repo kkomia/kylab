@@ -31,6 +31,8 @@ async def create_knowledge_base(
         name=payload.name,
         chunk_size=payload.chunk_size,
         chunk_overlap=payload.chunk_overlap,
+        # 登录成员建的库归自己（v10 私有隔离）；控制台令牌/API Key 通道无主
+        owner_id=caller.user.id if caller.user else None,
     )
     return KnowledgeBaseOut.model_validate(record)
 

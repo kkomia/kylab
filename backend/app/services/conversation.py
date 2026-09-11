@@ -47,12 +47,20 @@ class ConversationService:
 
     # ------------------------------------------------------------------ 会话
 
-    def create(self, *, kb_ids: list[str] | None = None, title: str = "") -> ConversationRecord:
+    def create(
+        self,
+        *,
+        kb_ids: list[str] | None = None,
+        title: str = "",
+        owner_id: str | None = None,
+    ) -> ConversationRecord:
+        """``owner_id``（v10）：登录成员的会话归自己；控制台/API Key 通道无主。"""
         return self._stores.meta.create_conversation(
             ConversationRecord(
                 id=f"conv_{uuid.uuid4().hex[:12]}",
                 title=title.strip(),
                 kb_ids=tuple(kb_ids or ()),
+                owner_id=owner_id,
             )
         )
 
@@ -62,8 +70,33 @@ class ConversationService:
             raise NotFoundError(f"会话不存在：{conversation_id}")
         return record
 
-    def list(self, *, limit: int | None = None) -> list[ConversationRecord]:
-        return self._stores.meta.list_conversations(limit=limit)
+    def get_for_owner(self, conversation_id: str, owner_id: str) -> ConversationRecord:
+        """成员视角的取会话：**越主即 404**，不泄露"这条会话存在但不是你的"。
+
+        对话内容是私有数据；用 403 会把别人的会话 id 变成可探测的存在性 oracle。
+        """
+        record = self.get(conversation_id)
+        if record.owner_id != owner_id:
+            raise NotFoundError(f"会话不存在：{conversation_id}")
+        return record
+
+    def list(
+        self, *, limit: int | None = None, owner_id: str | None = None
+    ) -> list[ConversationRecord]:
+        """按最近更新倒序。``owner_id`` 给成员过滤用（v10 私有隔离）。
+
+        无过滤时保持 SQL LIMIT 透传；带过滤时全表取出再切片——本地部署的会话量
+        （几百条）下这点差异无所谓，而"先过滤再 LIMIT"的 SQL 要为一个低频操作
+        加一条仓储方法，不值。
+        """
+        if owner_id is None:
+            return self._stores.meta.list_conversations(limit=limit)
+        records = [
+            item
+            for item in self._stores.meta.list_conversations(limit=None)
+            if item.owner_id == owner_id
+        ]
+        return records[:limit] if limit is not None else records
 
     def rename(self, conversation_id: str, title: str) -> ConversationRecord:
         cleaned = title.strip()

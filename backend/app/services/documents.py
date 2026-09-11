@@ -231,8 +231,25 @@ class DocumentService:
             )
         )
 
-    def list_tasks(self, state: TaskState | None = None) -> list[TaskRecord]:
-        return self._stores.meta.list_tasks(state)
+    def list_tasks(
+        self, state: TaskState | None = None, *, kb_ids: list[str] | None = None
+    ) -> list[TaskRecord]:
+        """``kb_ids``（v10 成员视角）：只留这些库里的文档任务。
+
+        没有挂文档的任务（数据源拉取等）对成员隐藏——那属于全局运维面。
+        """
+        tasks = self._stores.meta.list_tasks(state)
+        if kb_ids is None:
+            return tasks
+        visible = set(kb_ids)
+        result: list[TaskRecord] = []
+        for task in tasks:
+            if task.document_id is None:
+                continue
+            document = self._stores.meta.get_document(task.document_id)
+            if document is not None and document.knowledge_base_id in visible:
+                result.append(task)
+        return result
 
     def get_task(self, task_id: str) -> TaskRecord:
         task = self._stores.meta.get_task(task_id)
