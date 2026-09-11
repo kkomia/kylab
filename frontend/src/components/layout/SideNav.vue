@@ -2,11 +2,15 @@
 /**
  * 导航侧栏（《前端设计规范》§5）。
  *
- * 结构：产品名 → 导航（概览 / 知识库 / 对话 / 任务中心）→ 对话说明 → 底部主题切换与服务状态。
+ * 结构：产品名 → 导航（概览 / 知识库 / 对话 / 任务中心）→ 对话列表 → 页脚（账号 / 设置）。
+ *
+ * 页脚只留"入口"，不留"状态与开关"（第二轮评审批注 1/2/3）：
+ * - 退出登录收进账号的二级菜单——它低频且不可逆，摊在页脚上误点代价高；
+ * - 主题切换移进「设置 → 外观」——那是"这台机器怎么显示"，属于设置；
+ * - 「后端在线」状态行删掉——开发期探针，真出问题会有请求报错，不必常驻。
  *
  * 知识库清单取自 store：侧栏与概览页是同一份数据，
  * 各查一遍就会出现"新建之后这边有、那边没有"这类不同步。
- * 侧栏自己只管后端连通性。
  *
  * 检索没有独立入口：它是"在某个库里查东西"，收在知识库详情页里；
  * 跨库问答则收在「对话」页——那里的问题是"这些库里怎么说"，不是"哪个块最像"。
@@ -14,23 +18,18 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { fetchHealth } from '@/api/health'
-import IconAlert from '@/components/icons/IconAlert.vue'
 import IconChat from '@/components/icons/IconChat.vue'
-import IconCheck from '@/components/icons/IconCheck.vue'
+import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconDashboard from '@/components/icons/IconDashboard.vue'
+import IconKey from '@/components/icons/IconKey.vue'
 import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconLogo from '@/components/icons/IconLogo.vue'
 import IconLogout from '@/components/icons/IconLogout.vue'
-import IconMoon from '@/components/icons/IconMoon.vue'
-import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconSettings from '@/components/icons/IconSettings.vue'
-import IconSun from '@/components/icons/IconSun.vue'
 import IconTasks from '@/components/icons/IconTasks.vue'
 import IconUser from '@/components/icons/IconUser.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
-import { useTheme } from '@/composables/useTheme'
 import { loadRoster, operator, operatorId, roster, setOperator } from '@/composables/useOperator'
 import { useConsoleTokenPrompt } from '@/composables/useConsoleToken'
 import { isAdmin, logout as logoutSession } from '@/composables/useSession'
@@ -38,39 +37,18 @@ import { currentUser } from '@/composables/useSessionToken'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
-const { theme, toggleTheme } = useTheme()
 const route = useRoute()
 const router = useRouter()
 const store = useKnowledgeBaseStore()
 const conversations = useConversationStore()
 
-/** 服务状态双编码：图标 + 文字（§8 必须项），不靠颜色单独表意。 */
-type ServiceState = 'checking' | 'online' | 'offline'
-const serviceState = ref<ServiceState>('checking')
-const serviceDetail = ref('正在检测后端服务')
-
-async function checkService(): Promise<void> {
-  try {
-    const health = await fetchHealth()
-    serviceState.value = 'online'
-    // 只留版本号：接口版本在这一行里没有决策价值，设置页有专门两项
-    serviceDetail.value = `后端在线 · v${health.version}`
-  } catch (error) {
-    serviceState.value = 'offline'
-    serviceDetail.value = error instanceof Error ? error.message : '后端不可达'
-  }
-}
-
 onMounted(async () => {
-  void checkService()
   if (store.items.length === 0) await store.load()
   void store.loadSummaries()
   void conversations.load()
   // 名册是可选功能：拿不到就不显示选择器，不报错
   void loadRoster()
 })
-
-defineExpose({ checkService })
 
 const NAV_ITEMS = [
   { to: '/', label: '概览', icon: IconDashboard, exact: true },
@@ -125,6 +103,25 @@ watch(promptCount, () => {
 /** 从按钮打开是一次全新浏览：清掉 401 流程留下的定位，回到默认分组。 */
 function openSettings(): void {
   settingsInitialSection.value = undefined
+  settingsOpen.value = true
+}
+
+/**
+ * 账号二级菜单（第二轮评审批注 1）。
+ *
+ * 用原生 `<details>`：键盘 Tab/Enter 能展开、Esc 能收起，行为由浏览器保证
+ * （与 RowMenu 同一手法）。菜单向上弹出——它就挂在页脚底部，向下会出到屏幕外。
+ */
+const accountMenu = ref<HTMLDetailsElement | null>(null)
+
+function closeAccountMenu(): void {
+  if (accountMenu.value) accountMenu.value.open = false
+}
+
+/** 菜单里的「修改密码」：关掉菜单，打开设置并落到「系统与安全」。 */
+function openAccountSettings(): void {
+  closeAccountMenu()
+  settingsInitialSection.value = 'system'
   settingsOpen.value = true
 }
 
@@ -206,26 +203,33 @@ async function onLogout(): Promise<void> {
 
     <div class="sidebar-foot">
       <!--
-        已登录账号：显示名 + 角色 + 退出。账号体系是主路径，所以登录后
-        **不再显示"当前使用者"名册下拉**——身份已经由登录确定，两处并存只会
-        让人以为还要再选一次（名册下拉留给未启用账号体系的老部署）。
+        已登录账号：一行摘要 + **二级菜单**（修改密码 / 退出登录）。
+        账号体系是主路径，所以登录后不再显示"当前使用者"名册下拉——
+        身份已经由登录确定，两处并存只会让人以为还要再选一次
+        （名册下拉留给未启用账号体系的老部署）。
       -->
-      <div v-if="currentUser" class="account">
-        <div class="account-row">
+      <details v-if="currentUser" ref="accountMenu" class="account">
+        <summary class="account-row">
           <IconUser class="account-icon" />
           <span class="account-name" :title="currentUser.name">{{ currentUser.name }}</span>
           <span class="account-role">{{ isAdmin ? '管理员' : '成员' }}</span>
+          <IconChevronDown class="account-caret" :size="14" />
+        </summary>
+        <div class="account-pop">
+          <button type="button" @click="openAccountSettings">
+            <IconKey :size="14" />
+            <span>修改密码</span>
+          </button>
+          <button type="button" class="account-danger" :disabled="loggingOut" @click="onLogout">
+            <IconLogout :size="14" />
+            <span>{{ loggingOut ? '正在退出…' : '退出登录' }}</span>
+          </button>
         </div>
-        <button class="account-action" type="button" :disabled="loggingOut" @click="onLogout">
-          <IconLogout :size="14" />
-          <span>{{ loggingOut ? '正在退出…' : '退出登录' }}</span>
-        </button>
-      </div>
+      </details>
 
       <!--
-        当前使用者（G6）。**放在页脚而不是页头**：它是"我的身份"这类静态信息，
-        不是每页都要操作的东西；页脚与主题/设置同级，符合"这里是环境设置"的语感。
-        名册没配人时不占位——名册是可选的，空着比显示一个空下拉干净。
+        当前使用者（G6）：名册没配人时不占位——名册是可选的，
+        空着比显示一个空下拉干净。
       -->
       <div v-else-if="roster.length || operatorName" class="identity">
         <label class="identity-label" for="kylab-operator">当前使用者</label>
@@ -242,26 +246,6 @@ async function onLogout(): Promise<void> {
         <IconSettings />
         <span>设置</span>
       </button>
-
-      <button
-        class="foot-action"
-        type="button"
-        :aria-label="theme === 'dark' ? '切换到浅色主题' : '切换到深色主题'"
-        @click="toggleTheme"
-      >
-        <IconSun v-if="theme === 'dark'" />
-        <IconMoon v-else />
-        <span>{{ theme === 'dark' ? '浅色主题' : '深色主题' }}</span>
-      </button>
-
-      <p class="service" :class="`service-${serviceState}`">
-        <span class="service-icon">
-          <IconCheck v-if="serviceState === 'online'" />
-          <IconAlert v-else-if="serviceState === 'offline'" />
-          <IconRefresh v-else />
-        </span>
-        <span class="service-text">{{ serviceDetail }}</span>
-      </p>
     </div>
 
     <SettingsModal
@@ -459,15 +443,12 @@ async function onLogout(): Promise<void> {
   border-top: 1px solid var(--border-hairline);
 }
 
-/* 账号区：一行名字 + 角色，下面一个低调的"退出登录"。
-   用 surface 底把它与下面三个环境设置动作（设置/主题/服务状态）分开——
-   前者是"我是谁"，后者是"改这台机器怎么表现"，不该混成一组。 */
+/* 账号区：一行摘要，点开是二级菜单（修改密码 / 退出登录）。
+   用 surface 底把它与下面的「设置」分开——前者是"我是谁"，
+   后者是"改这台机器怎么表现"，不该混成一组。 */
 .account {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  position: relative;
   margin-bottom: var(--space-2);
-  padding: var(--space-2) var(--space-2);
   background: var(--bg-surface);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-control);
@@ -476,9 +457,21 @@ async function onLogout(): Promise<void> {
 .account-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
   min-width: 0;
+  padding: var(--space-2);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  list-style: none;
+}
+
+.account-row::-webkit-details-marker {
+  display: none;
+}
+
+.account-row:hover,
+.account[open] .account-row {
+  background: var(--bg-hover);
 }
 
 .account-icon {
@@ -486,7 +479,7 @@ async function onLogout(): Promise<void> {
   color: var(--text-tertiary);
 }
 
-/* 名字吃掉剩余宽度（去掉图标与角色占位） */
+/* 名字吃掉剩余宽度（同样给角色与折叠箭头让位） */
 .account-name {
   flex: 1;
   overflow: hidden;
@@ -503,23 +496,51 @@ async function onLogout(): Promise<void> {
   color: var(--text-tertiary);
 }
 
-.account-action {
-  display: inline-flex;
+.account-caret {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+/* 菜单向上弹出：它就挂在页脚底部，向下会出到屏幕外 */
+.account-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 20;
+  padding: var(--space-1);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-popover);
+}
+
+.account-pop button {
+  display: flex;
   align-items: center;
-  gap: var(--space-1);
-  align-self: flex-start;
-  font-size: var(--text-micro-size);
+  gap: var(--space-2);
+  width: 100%;
+  min-height: 30px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-meta-size);
   color: var(--text-secondary);
+  text-align: left;
   border-radius: var(--radius-control);
 }
 
-.account-action:hover:not(:disabled) {
-  color: var(--status-danger);
+.account-pop button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
-.account-action:disabled {
+.account-pop button:disabled {
   cursor: not-allowed;
   opacity: 0.6;
+}
+
+/* 退出登录：语义红只在这一项——菜单里唯一不可逆的动作 */
+.account-pop .account-danger {
+  color: var(--status-danger);
 }
 
 .foot-action {
@@ -537,38 +558,5 @@ async function onLogout(): Promise<void> {
 .foot-action:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
-}
-
-.service {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  margin: var(--space-2) 0 0;
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.service-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.service-icon {
-  display: inline-flex;
-  margin-top: var(--space-1);
-  flex: 0 0 auto;
-}
-
-/* 语义色只用于状态传达（§2.3） */
-.service-online .service-icon {
-  color: var(--status-success);
-}
-
-.service-offline .service-icon {
-  color: var(--status-danger);
-}
-
-.service-checking .service-icon {
-  color: var(--status-info);
 }
 </style>

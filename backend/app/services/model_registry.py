@@ -23,12 +23,22 @@ from __future__ import annotations
 import logging
 import uuid
 
-from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
+import httpx
+
+from app.core.exceptions import (
+    ConflictError,
+    InvalidRequestError,
+    NotFoundError,
+    UpstreamError,
+)
 from app.storage.base import ModelProviderRecord, RegisteredModelRecord, StoreBundle
 
 __all__ = ["SLOTS", "ModelRegistryService"]
 
 logger = logging.getLogger(__name__)
+
+#: 探活超时。设置页里点一下"测试"，用户盯着按钮等——不能让它挂在那里。
+_PROBE_TIMEOUT_SECONDS = 10.0
 
 #: 用途（任务槽位）。**这是这套体系的核心概念**：
 #: 用户想的不是"我要配 embedding.base_url"，而是"向量化用哪个模型"。
@@ -97,6 +107,54 @@ class ModelRegistryService:
         if record is None:
             raise NotFoundError(f"供应商不存在：{provider_id}")
         return record
+
+    def probe_provider(self, provider_id: str) -> str:
+        """探活一家供应商：**用它的地址与凭据请求 ``GET {base_url}/models``**。
+
+        为什么选这一步（第二轮评审批注 4 把"测试"从用途行移到供应商注册环节）：
+        - ``/models`` 是 OpenAI 兼容端点的标准能力，**不消耗 token、不计费**，
+          却同时验了"地址对不对""凭据有没有效"这两件注册时最会填错的事；
+        - 不需要模型 ID：供应商刚注册时模型还没登记，"先登记一个模型才能测"
+          会把测试推后到用户已经填错很久之后；
+        - 真要验"这个模型会不会说话"仍然应该按用途测（``/slots/{slot}/test``）——
+          那是另一件事，两者不互相替代。
+        """
+        provider = self.get_provider(provider_id)
+        if not provider.base_url.strip():
+            raise InvalidRequestError(f"「{provider.name}」还没有填写接口地址")
+        if not provider.api_key.strip():
+            raise InvalidRequestError(f"「{provider.name}」还没有填写 API Key")
+
+        url = provider.base_url.rstrip("/") + "/models"
+        try:
+            response = httpx.get(
+                url,
+                headers={"Authorization": f"Bearer {provider.api_key}"},
+                timeout=_PROBE_TIMEOUT_SECONDS,
+            )
+        except httpx.HTTPError as exc:
+            raise UpstreamError(f"无法连接「{provider.name}」：{exc}") from exc
+
+        if response.status_code in (401, 403):
+            raise InvalidRequestError("API Key 无效，或没有访问权限")
+        if response.status_code >= 400:
+            raise UpstreamError(f"「{provider.name}」返回 HTTP {response.status_code}")
+
+        count = self._count_models(response)
+        if count is None:
+            return f"「{provider.name}」地址与凭据可用"
+        return f"「{provider.name}」可用（发现 {count} 个模型）"
+
+    @staticmethod
+    def _count_models(response: httpx.Response) -> int | None:
+        """尽力解析 ``{"data": [...]}``；解析不出来也不算失败（有的端点不返回列表）。"""
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+            return len(payload["data"])
+        return None
 
     def list_providers(self) -> list[ModelProviderRecord]:
         return self._stores.meta.list_model_providers()

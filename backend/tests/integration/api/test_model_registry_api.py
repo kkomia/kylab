@@ -9,7 +9,9 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
+import respx
 from fastapi.testclient import TestClient
 
 CONSOLE = "console-token-for-registry"
@@ -297,3 +299,43 @@ def test_registry_requires_console_token_for_writes(monkeypatch) -> None:
             == 403
         )
     get_settings.cache_clear()
+
+
+# --------------------------------------------------------------------- 供应商探活
+
+
+@respx.mock
+def test_test_provider_endpoint_reports_success(client: TestClient) -> None:
+    """注册环节的验活：``GET {base_url}/models`` 不计费，只验地址与凭据。"""
+    provider = _provider(client)
+    route = respx.get("https://api.deepseek.com/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "deepseek-chat"}]})
+    )
+
+    response = client.post(f"/api/v1/model-registry/providers/{provider['id']}/test")
+
+    assert response.status_code == 200, response.text
+    assert route.called
+    assert "1 个模型" in response.json()["detail"]
+
+
+@respx.mock
+def test_test_provider_endpoint_maps_bad_key(client: TestClient) -> None:
+    """凭据无效走 InvalidRequestError（422），文案要说清是 Key 的问题。"""
+    provider = _provider(client)
+    respx.get("https://api.deepseek.com/models").mock(return_value=httpx.Response(401))
+
+    response = client.post(f"/api/v1/model-registry/providers/{provider['id']}/test")
+
+    assert response.status_code == 422
+    assert "API Key" in response.json()["message"]
+
+
+def test_test_provider_endpoint_hides_the_key(client: TestClient) -> None:
+    """失败文案里绝不能带出真实密钥（错误信封会进日志与截图）。"""
+    provider = _provider(client)
+    with respx.mock:
+        respx.get("https://api.deepseek.com/models").mock(return_value=httpx.Response(500))
+        response = client.post(f"/api/v1/model-registry/providers/{provider['id']}/test")
+
+    assert SECRET not in response.text

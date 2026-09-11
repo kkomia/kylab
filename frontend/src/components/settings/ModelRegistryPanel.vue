@@ -22,7 +22,7 @@ import {
   deleteProvider,
   getRegistry,
   registerModel,
-  testSlot,
+  testProvider,
   updateModel,
   updateProvider,
   type Provider,
@@ -30,6 +30,9 @@ import {
   type Registry,
   type Slot,
 } from '@/api/modelRegistry'
+import IconEdit from '@/components/icons/IconEdit.vue'
+import IconPlus from '@/components/icons/IconPlus.vue'
+import IconShieldCheck from '@/components/icons/IconShieldCheck.vue'
 import IconTrash from '@/components/icons/IconTrash.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
@@ -127,10 +130,17 @@ async function onBind(slot: Slot, value: string): Promise<void> {
   }
 }
 
-async function onTest(slot: Slot): Promise<void> {
-  busy.value = `test:${slot.slot}`
+/**
+ * 探活供应商（第二轮评审批注 4）。
+ *
+ * 从"每个用途行一颗测试按钮"挪到这里：那条按钮挤在行尾被裁掉，
+ * 而且"这个地址与凭据对不对"本来就是**注册供应商时**要回答的问题；
+ * 用途行只该做"选哪个模型"这一件事。
+ */
+async function onTestProvider(provider: Provider): Promise<void> {
+  busy.value = `test:${provider.id}`
   try {
-    const result = await testSlot(slot.slot)
+    const result = await testProvider(provider.id)
     notifySuccess(result.detail)
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '测试失败')
@@ -340,13 +350,6 @@ defineExpose({ load })
             :aria-label="`为「${item.label}」指定模型`"
             @update:model-value="onBind(item, $event)"
           />
-
-          <AppButton
-            :disabled="!item.configured || busy === `test:${item.slot}`"
-            @click="onTest(item)"
-          >
-            {{ busy === `test:${item.slot}` ? '测试中…' : '测试' }}
-          </AppButton>
         </div>
       </section>
 
@@ -360,6 +363,7 @@ defineExpose({ load })
             </p>
           </div>
           <AppButton @click="addingProvider = !addingProvider">
+            <template #icon><IconPlus v-if="!addingProvider" :size="14" /></template>
             {{ addingProvider ? '取消' : '添加供应商' }}
           </AppButton>
         </div>
@@ -413,11 +417,25 @@ defineExpose({ load })
             <span class="provider-count tabular">{{ provider.model_count }} 个模型</span>
 
             <span class="provider-actions">
-              <AppButton @click="startEditProvider(provider)">编辑</AppButton>
+              <!-- 探活放在供应商这一层（评审批注 4）：登记时最会填错的就是地址与凭据 -->
+              <AppButton
+                :disabled="!provider.api_key_configured || busy === `test:${provider.id}`"
+                @click="onTestProvider(provider)"
+              >
+                <template #icon><IconShieldCheck :size="14" /></template>
+                {{ busy === `test:${provider.id}` ? '测试中…' : '测试' }}
+              </AppButton>
+              <AppButton @click="startEditProvider(provider)">
+                <template #icon><IconEdit :size="14" /></template>
+                编辑
+              </AppButton>
               <AppButton @click="onToggleProvider(provider)">
                 {{ provider.enabled ? '停用' : '启用' }}
               </AppButton>
-              <AppButton @click="startAddModel(provider.id)">加模型</AppButton>
+              <AppButton @click="startAddModel(provider.id)">
+                <template #icon><IconPlus :size="14" /></template>
+                加模型
+              </AppButton>
               <AppButton @click="onDeleteProvider(provider)">
                 <IconTrash />
               </AppButton>

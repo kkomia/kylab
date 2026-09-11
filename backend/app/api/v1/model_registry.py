@@ -318,6 +318,23 @@ def bind_slot(
 # --------------------------------------------------------------------- 验活
 
 
+@router.post("/providers/{provider_id}/test", summary="测试供应商的地址与凭据是否可用")
+async def test_provider(
+    provider_id: str,
+    services: Annotated[Services, Depends(get_services)],
+    _: Annotated[Caller, Depends(require_console)],
+) -> dict[str, object]:
+    """注册环节的验活：请求一次 ``GET {base_url}/models``，**不计费**。
+
+    与 ``/slots/{slot}/test`` 的分工：这里验"地址与凭据对不对"（注册时最会填错的两件事），
+    那里验"这个用途的模型会不会真的答话"（可能产生费用）。两者不互相替代。
+
+    在**线程池**里跑：``httpx`` 是同步调用，直接放事件循环里会卡住整个服务。
+    """
+    detail = await run_in_threadpool(services.models.probe_provider, provider_id)
+    return {"ok": True, "detail": detail}
+
+
 @router.post("/slots/{slot}/test", summary="测试该用途的模型是否可用")
 async def test_slot(
     slot: str,

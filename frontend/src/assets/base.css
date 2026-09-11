@@ -111,6 +111,40 @@ pre {
   font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
 }
 
+/**
+ * 滚动条：全局细滚动条（《界面评审与改进计划 v0.2》§2）。
+ *
+ * 默认的 OS 滚动条又宽又带按钮，在弹窗与侧栏里比内容本身还显眼。
+ * 颜色只引主题变量，浅色/深色自动跟随；轨道透明，让内容区看起来是整块。
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
+/* 角落（横向与纵向滚动条相交处）不要那块默认的方疙瘩 */
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 :root {
   /* 圆角：四档，按"控件 < 行 < 面板 < 弹层"递进。
      上一轮收到 4/6 两档，结果整屏全是直角——列表、面板、弹层没有一处是圆的，
@@ -178,6 +212,12 @@ pre {
 
   /* 最小可点尺寸：低于这个数的操作控件在触屏上点不中 */
   --hit-target: 24px;
+
+  /* 控件高度：**输入框 / 下拉 / 按钮唯一的高度口径**（规范 §7.4「与按钮同高」）。
+     在它之前，AppInput 用 `min-height:32px` + padding 撑，实际渲染 43px，
+     而 AppSelect 是 32px——同一行里差 11px，用户一眼就看出"大小不一"。
+     写成一个令牌之后，"同高"是算出来的，不是各自凑出来的。 */
+  --control-height: 32px;
 
   /* 悬浮层：静态内容不用阴影，只有真正浮起来的才用 */
   --shadow-raised: 0 1px 2px rgb(0 0 0 / 4%);

@@ -15,7 +15,7 @@
  *
  * 密钥永不回显明文：接口给掩码，输入框留空表示"不改动"。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch, type Component } from 'vue'
 
 import { MIN_PASSWORD_CHARS } from '@/api/auth'
 import { fetchHealth, type HealthResponse } from '@/api/health'
@@ -37,9 +37,17 @@ import {
   type RosterUser,
   type UserRole,
 } from '@/api/users'
+import IconChat from '@/components/icons/IconChat.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
+import IconDatabase from '@/components/icons/IconDatabase.vue'
+import IconFolder from '@/components/icons/IconFolder.vue'
 import IconLogout from '@/components/icons/IconLogout.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
+import IconRobot from '@/components/icons/IconRobot.vue'
+import IconServer from '@/components/icons/IconServer.vue'
+import IconShieldCheck from '@/components/icons/IconShieldCheck.vue'
+import IconSun from '@/components/icons/IconSun.vue'
+import IconUser from '@/components/icons/IconUser.vue'
 import ModelRegistryPanel from '@/components/settings/ModelRegistryPanel.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
@@ -51,6 +59,7 @@ import { useConsoleToken } from '@/composables/useConsoleToken'
 import { useFontScale } from '@/composables/useFontScale'
 import { changeOwnPassword, isAdmin } from '@/composables/useSession'
 import { currentUser } from '@/composables/useSessionToken'
+import { setTheme, themeMode, type ThemeMode } from '@/composables/useTheme'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 const open = defineModel<boolean>('open', { required: true })
@@ -71,20 +80,30 @@ const props = defineProps<{ initialSection?: string }>()
 type SectionKey =
   'registry' | 'models' | 'llm' | 'services' | 'storage' | 'appearance' | 'users' | 'system'
 
-const SECTIONS: { key: SectionKey; label: string; hint: string; adminOnly?: boolean }[] = [
+/**
+ * 左侧分组菜单。每项配一枚 Remix 图标（第二轮评审批注 8）：
+ * 八行纯文字并排时只能逐字读，图标给一个"扫视锚点"。
+ */
+const SECTIONS: {
+  key: SectionKey
+  label: string
+  hint: string
+  icon: Component
+  adminOnly?: boolean
+}[] = [
   // **「模型」放在最前**：现在它是配置模型的**主路径**（供应商 → 模型 → 用途），
   // 下面那两组是回退用的精细字段。先主路径、再回退项，顺序才符合用户的心智
-  { key: 'registry', label: '模型', hint: '供应商与用途分配' },
+  { key: 'registry', label: '模型', hint: '供应商与用途分配', icon: IconRobot },
   // 保留原有两组作为回退：没在「模型」里绑定的用途，仍然按这里的字段走。
   // 命名上加「（精细）」以免用户以为要两处都填
-  { key: 'models', label: '向量化（精细）', hint: '未绑定时生效' },
-  { key: 'llm', label: '对话模型（精细）', hint: '未绑定时生效' },
-  { key: 'services', label: '服务配置', hint: '云端解析节点' },
-  { key: 'storage', label: '存储配置', hint: '元数据与向量' },
-  { key: 'appearance', label: '外观', hint: '字号与显示' },
+  { key: 'models', label: '向量化（精细）', hint: '未绑定时生效', icon: IconDatabase },
+  { key: 'llm', label: '对话模型（精细）', hint: '未绑定时生效', icon: IconChat },
+  { key: 'services', label: '服务配置', hint: '云端解析节点', icon: IconServer },
+  { key: 'storage', label: '存储配置', hint: '元数据与向量', icon: IconFolder },
+  { key: 'appearance', label: '外观', hint: '主题与字号', icon: IconSun },
   // 只有管理员（或控制台令牌通道）能看：/users 的写与管理端点是控制台级
-  { key: 'users', label: '用户', hint: '账号与成员', adminOnly: true },
-  { key: 'system', label: '系统与安全', hint: '版本与鉴权' },
+  { key: 'users', label: '用户', hint: '账号与成员', icon: IconUser, adminOnly: true },
+  { key: 'system', label: '系统与安全', hint: '版本与鉴权', icon: IconShieldCheck },
 ]
 
 const store = useKnowledgeBaseStore()
@@ -107,6 +126,13 @@ const { token: consoleToken, setConsoleToken, clearConsoleToken } = useConsoleTo
 const currentScaleHint = computed(
   () => fontOptions.find((item) => item.name === fontScale.value)?.hint ?? '',
 )
+
+/** 主题三档（第二轮评审批注 2）：与字号同样用卡片式选择器，放在「外观」里。 */
+const THEME_OPTIONS: { name: ThemeMode; label: string; hint: string }[] = [
+  { name: 'system', label: '跟随系统', hint: '随设备明暗自动切换' },
+  { name: 'light', label: '浅色', hint: '始终使用纸白' },
+  { name: 'dark', label: '深色', hint: '始终使用近黑' },
+]
 
 /**
  * 保存控制台令牌并**立刻复验**。
@@ -505,8 +531,11 @@ async function runTest(target: string): Promise<void> {
           type="button"
           @click="((section = item.key), (editing = null))"
         >
-          <span class="nav-label">{{ item.label }}</span>
-          <span class="nav-hint">{{ item.hint }}</span>
+          <component :is="item.icon" class="nav-icon" />
+          <span class="nav-text">
+            <span class="nav-label">{{ item.label }}</span>
+            <span class="nav-hint">{{ item.hint }}</span>
+          </span>
         </button>
       </nav>
 
@@ -855,11 +884,38 @@ async function runTest(target: string): Promise<void> {
         <!-- 外观（本地偏好，不进后端） -->
         <template v-else-if="section === 'appearance'">
           <h3 class="section-title">外观</h3>
-          <p class="section-note">字号只影响这一台机器的浏览器，存在本地，不写进知识库配置。</p>
+          <p class="section-note">
+            主题与字号只影响这一台机器的浏览器，存在本地，不写进知识库配置。
+          </p>
 
           <div class="row row-static">
             <div class="row-main">
-              <span class="row-label">正文字号</span>
+              <span class="row-label">主题</span>
+              <span class="row-value">
+                {{ THEME_OPTIONS.find((item) => item.name === themeMode)?.hint ?? '' }}
+              </span>
+            </div>
+          </div>
+
+          <div class="scale-picker" role="group" aria-label="主题">
+            <button
+              v-for="item in THEME_OPTIONS"
+              :key="item.name"
+              class="scale-option"
+              :class="{ 'scale-option-active': themeMode === item.name }"
+              type="button"
+              :aria-pressed="themeMode === item.name"
+              @click="setTheme(item.name)"
+            >
+              <span class="scale-label">{{ item.label }}</span>
+              <span class="scale-size">{{ item.hint }}</span>
+            </button>
+          </div>
+
+          <h3 class="section-title section-gap">正文字号</h3>
+          <div class="row row-static">
+            <div class="row-main">
+              <span class="row-label">字号档位</span>
               <span class="row-value">{{ currentScaleHint }}</span>
             </div>
           </div>
@@ -879,9 +935,9 @@ async function runTest(target: string): Promise<void> {
             </button>
           </div>
 
-          <p class="row-note">
+          <p class="text-hint">
             小字号占满了界面外壳（侧栏、标签、元信息），正文反倒不突出——
-            所以这一版把整条字阶抬了一档，并允许你按屏幕距离微调。 最小档的辅助文字仍是
+            所以整条字阶抬了一档，并允许你按屏幕距离微调。 最小档的辅助文字仍是
             12px，再小就会影响辨认。
           </p>
         </template>
@@ -1183,7 +1239,8 @@ async function runTest(target: string): Promise<void> {
   display: grid;
   height: 100%;
   min-height: 0;
-  grid-template-columns: 168px 1fr;
+  /* 列宽 192px：加图标后 168px 会把「供应商与用途分配」挤成两行 */
+  grid-template-columns: 192px 1fr;
   gap: var(--space-5);
 }
 
@@ -1249,14 +1306,27 @@ async function runTest(target: string): Promise<void> {
   min-width: 0;
 }
 
-/* 主标题 + 副标题要读成一个整体，用成对间距令牌（base.css §间距） */
+/* 主标题 + 副标题要读成一个整体，用成对间距令牌（base.css §间距）；
+   左侧图标给一个扫视锚点（评审批注 8） */
 .nav-entry {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-pair);
+  align-items: center;
+  gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   text-align: left;
   border-radius: var(--radius-control);
+}
+
+.nav-icon {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+.nav-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-pair);
+  min-width: 0;
 }
 
 .nav-entry:hover {
@@ -1265,6 +1335,10 @@ async function runTest(target: string): Promise<void> {
 
 .nav-entry-active {
   background: var(--bg-active);
+}
+
+.nav-entry-active .nav-icon {
+  color: var(--accent);
 }
 
 .nav-label {

@@ -140,3 +140,11 @@ export function bindSlot(slot: string, modelPk: string | null): Promise<Slot> {
 export function testSlot(slot: string): Promise<{ ok: boolean; detail: string }> {
   return request(`/model-registry/slots/${slot}/test`, { method: 'POST' })
 }
+
+/**
+ * 探活一家供应商：后端请求一次 `GET {base_url}/models`，**不计费**，
+ * 只验"地址对不对、凭据有没有效"——注册环节最会填错的两件事。
+ */
+export function testProvider(providerId: string): Promise<{ ok: boolean; detail: string }> {
+  return request(`/model-registry/providers/${providerId}/test`, { method: 'POST' })
+}

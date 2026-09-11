@@ -1,7 +1,13 @@
 <script setup lang="ts">
 /**
- * 文本输入 / 文本域（《前端设计规范 v0.3》§7）：
- * 1px `--border-strong`，聚焦时边框加深 + 无外发光。
+ * 文本输入 / 文本域（《前端设计规范》§7）。
+ *
+ * 单行输入的高度取 `--control-height`，与下拉、按钮同一个口径——
+ * 之前用 `min-height:32px` + 上下 padding 撑，实际渲染成 43px（字体 15px × 行高 1.65
+ * 再加 16px padding），和 32px 的下拉在同一行里差 11px。
+ * **规范说的是 32px，就把高度写成 32px**，不要用 padding 去凑一个"大概"。
+ *
+ * 文本域不受此约束：它天然多行，高度由 `rows` 决定。
  */
 const model = defineModel<string>({ required: true })
 
@@ -35,7 +41,7 @@ withDefaults(
     v-if="multiline"
     :id="id"
     v-model="model"
-    class="field"
+    class="field field-multiline"
     :rows="rows"
     :placeholder="placeholder"
     :disabled="disabled"
@@ -44,7 +50,7 @@ withDefaults(
     v-else
     :id="id"
     v-model="model"
-    class="field"
+    class="field field-single"
     :type="type"
     :placeholder="placeholder"
     :autocomplete="autocomplete"
@@ -53,18 +59,25 @@ withDefaults(
 </template>
 
 <style scoped>
-/* 单行 32px 高，与按钮、下拉框同高：一排控件不在一条基线上是最容易被看出来的破绽。
-   内边距只用阶梯值（--space-2），高度靠 min-height 定，不再出现 6px 这种随手数。 */
 .field {
   width: 100%;
-  min-height: 32px;
-  padding: var(--space-2) var(--space-3);
   font: inherit;
   color: var(--text-primary);
   background: var(--bg-surface);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-control);
   outline: none;
+}
+
+/* 单行：高度就是控件口径，文本靠 height 自然垂直居中 */
+.field-single {
+  height: var(--control-height);
+  padding: 0 var(--space-3);
+}
+
+.field-multiline {
+  min-height: var(--control-height);
+  padding: var(--space-2) var(--space-3);
   resize: vertical;
 }
 
@@ -72,12 +85,17 @@ withDefaults(
   color: var(--text-tertiary);
 }
 
+.field:hover:not(:disabled) {
+  border-color: var(--text-tertiary);
+}
+
 .field:focus {
   border-color: var(--text-secondary);
 }
 
 .field:disabled {
-  opacity: 0.6;
+  color: var(--text-tertiary);
   cursor: not-allowed;
+  opacity: 0.7;
 }
 </style>

@@ -4,7 +4,9 @@ import {
   THEME_STORAGE_KEY,
   applyTheme,
   initTheme,
+  setTheme,
   toggleTheme,
+  themeMode,
   useTheme,
 } from '@/composables/useTheme'
 
@@ -51,5 +53,32 @@ describe('useTheme', () => {
     expect(document.documentElement.dataset.theme).toBe('dark')
     expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark')
     expect(useTheme().theme.value).toBe('dark')
+  })
+})
+
+describe('useTheme.setTheme', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    stubMatchMedia(false)
+  })
+
+  it('显式选择会落盘并即时生效', () => {
+    setTheme('dark')
+
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBe('dark')
+    expect(themeMode.value).toBe('dark')
+  })
+
+  it('跟随系统要清掉本地选择，且按系统偏好生效', () => {
+    // 不清本地选择的话，下一次 initTheme 会读到旧值，"跟随系统"看起来没生效
+    setTheme('dark')
+    stubMatchMedia(true)
+
+    setTheme('system')
+
+    expect(window.localStorage.getItem(THEME_STORAGE_KEY)).toBeNull()
+    expect(themeMode.value).toBe('system')
+    expect(document.documentElement.dataset.theme).toBe('dark')
   })
 })

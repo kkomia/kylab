@@ -19,6 +19,7 @@ import { consoleToken } from '@/composables/useConsoleToken'
 import { initFontScale } from '@/composables/useFontScale'
 import { ensureAuthStatus, restoreSession } from '@/composables/useSession'
 import { hasCredential, useReloginPrompt } from '@/composables/useSessionToken'
+import { initTheme } from '@/composables/useTheme'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 const route = useRoute()
@@ -27,10 +28,11 @@ const store = useKnowledgeBaseStore()
 
 const isLoginPage = computed(() => route.name === 'login')
 
-// index.html 的首屏脚本已经设过 --font-scale；这里只是把 composable 的状态
-// 与那个值对齐，好让设置页的选择器高亮在正确的档位上。不调用的话，
+// index.html 的首屏脚本已经设过 --font-scale 与 data-theme；这里把 composable
+// 的状态与那两个值对齐，好让设置页的选择器高亮在正确的档位上。不调用的话，
 // 页面按存储的档位渲染，而选择器停在默认档——两处对不上。
 initFontScale()
+initTheme()
 
 onMounted(async () => {
   const status = await ensureAuthStatus()

@@ -8,9 +8,16 @@
 
 from __future__ import annotations
 
+import httpx
 import pytest
+import respx
 
-from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
+from app.core.exceptions import (
+    ConflictError,
+    InvalidRequestError,
+    NotFoundError,
+    UpstreamError,
+)
 from app.services.model_registry import SLOTS, ModelRegistryService
 
 
@@ -293,3 +300,71 @@ def test_slots_cover_the_three_model_uses() -> None:
     for slot, spec in SLOTS.items():
         assert spec["label"], slot
         assert spec["capability"], slot
+
+
+# --------------------------------------------------------------------- 供应商探活（评审批注 4）
+
+
+@respx.mock
+def test_probe_provider_reports_discovered_models(registry: ModelRegistryService) -> None:
+    """注册时验活走 ``GET {base_url}/models``：不计费，同时验地址与凭据。"""
+    provider = _provider(registry, api_key="sk-abc", base_url="https://api.example.com/v1")
+    route = respx.get("https://api.example.com/v1/models").mock(
+        return_value=httpx.Response(200, json={"data": [{"id": "a"}, {"id": "b"}]})
+    )
+
+    detail = registry.probe_provider(provider.id)
+
+    assert route.called
+    assert "2 个模型" in detail
+    assert route.calls[0].request.headers["authorization"] == "Bearer sk-abc"
+
+
+@respx.mock
+def test_probe_provider_treats_401_as_bad_key(registry: ModelRegistryService) -> None:
+    provider = _provider(registry, api_key="sk-bad")
+    respx.get("https://api.example.com/models").mock(return_value=httpx.Response(401))
+
+    with pytest.raises(InvalidRequestError, match="API Key"):
+        registry.probe_provider(provider.id)
+
+
+@respx.mock
+def test_probe_provider_does_not_fail_when_body_is_not_json(
+    registry: ModelRegistryService,
+) -> None:
+    """有的端点不返回模型列表——那不算失败，只要鉴权过了就算可用。"""
+    provider = _provider(registry, api_key="sk-abc")
+    respx.get("https://api.example.com/models").mock(
+        return_value=httpx.Response(200, text="<html>ok</html>")
+    )
+
+    assert "可用" in registry.probe_provider(provider.id)
+
+
+def test_probe_provider_requires_base_url_and_key(registry: ModelRegistryService) -> None:
+    no_url = _provider(registry, api_key="sk-abc", base_url="")
+    with pytest.raises(InvalidRequestError, match="接口地址"):
+        registry.probe_provider(no_url.id)
+
+    no_key = _provider(registry, api_key="", base_url="https://api.example.com")
+    with pytest.raises(InvalidRequestError, match="API Key"):
+        registry.probe_provider(no_key.id)
+
+
+@respx.mock
+def test_probe_provider_maps_transport_error_to_upstream(registry: ModelRegistryService) -> None:
+    provider = _provider(registry, api_key="sk-abc")
+    respx.get("https://api.example.com/models").mock(side_effect=httpx.ConnectError("boom"))
+
+    with pytest.raises(UpstreamError, match="无法连接"):
+        registry.probe_provider(provider.id)
+
+
+@respx.mock
+def test_probe_provider_maps_server_error_to_upstream(registry: ModelRegistryService) -> None:
+    provider = _provider(registry, api_key="sk-abc")
+    respx.get("https://api.example.com/models").mock(return_value=httpx.Response(503))
+
+    with pytest.raises(UpstreamError, match="503"):
+        registry.probe_provider(provider.id)
