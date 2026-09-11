@@ -23,13 +23,20 @@ import hashlib
 import hmac
 import secrets
 
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
+
 __all__ = [
     "API_KEY_PREFIX",
+    "SESSION_TOKEN_PREFIX",
     "api_key_prefix",
     "display_prefix",
+    "generate_session_token",
     "generate_token",
+    "hash_password",
     "hash_token",
     "tokens_equal",
+    "verify_password",
 ]
 
 #: 明文前缀。**带前缀不是为了好看**：一串无特征的高熵字符串在日志、截图、
@@ -72,3 +79,39 @@ def api_key_prefix(token: str) -> str:
     只在创建响应里用得到——列表走的是库里存的 ``key_prefix``。
     """
     return f"{API_KEY_PREFIX}{display_prefix(token)}…"
+
+
+# --------------------------------------------------------------------------- 口令与会话（v10）
+
+#: 登录会话令牌的前缀。**按前缀路由凭据类型**（api/auth.py 的 current_caller）：
+#: 会话、API Key、控制台令牌是三种东西，各走各的校验路径。
+#: noqa 的理由：这是**前缀**不是口令，S105 按变量名含 token 误报。
+SESSION_TOKEN_PREFIX = "kylab_st_"  # noqa: S105
+
+#: 模块级单例：PasswordHasher 的参数在构造时定死，实例本身无状态，反复 new 没意义。
+_password_hasher = PasswordHasher()
+
+
+def generate_session_token() -> str:
+    """生成一条新的登录会话令牌明文（只在登录响应里出现一次，库里只存它的哈希）。"""
+    return SESSION_TOKEN_PREFIX + secrets.token_urlsafe(_TOKEN_BYTES)
+
+
+def hash_password(password: str) -> str:
+    """口令哈希（argon2id）。
+
+    **口令与凭据是两种东西**：API Key / 会话令牌是 256 位随机数，快速哈希足够；
+    口令是人选的、熵低，必须用慢哈希抗离线爆破——所以这里不用本模块的
+    ``hash_token``（SHA-256），那个函数只许用于高熵凭据。
+    """
+    return _password_hasher.hash(password)
+
+
+def verify_password(password: str, password_hash: str) -> bool:
+    """校验口令。**任何不匹配都返回 False**：格式错、哈希串损坏、口令不对，
+    对调用方都是同一件事——"不能登录"。区分开等于给攻击者布尔预言机。
+    """
+    try:
+        return _password_hasher.verify(password_hash, password)
+    except (VerifyMismatchError, VerificationError, InvalidHashError):
+        return False

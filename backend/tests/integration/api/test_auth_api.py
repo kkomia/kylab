@@ -352,3 +352,118 @@ def test_generated_console_token_is_long_and_prefixed(app_client: TestClient) ->
     token = app_client.post("/api/v1/auth/console-token", json={}).json()["token"]
     assert token.startswith("kylab_console_")
     assert len(token) > 40
+
+
+# --------------------------------------------------------------------- 账号体系（v10）
+
+
+def _setup_admin(client: TestClient, **overrides) -> dict:
+    body = {"username": "admin", "password": "correct horse battery"}
+    body.update(overrides)
+    response = client.post("/api/v1/auth/setup", json=body)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_status_reports_needs_setup(app_client: TestClient) -> None:
+    """前端据此决定显示"首次设置管理员"还是"登录"。"""
+    assert app_client.get("/api/v1/auth/status").json()["needs_setup"] is True
+
+    _setup_admin(app_client)
+
+    assert app_client.get("/api/v1/auth/status").json()["needs_setup"] is False
+
+
+def test_setup_then_login_then_me(app_client: TestClient) -> None:
+    setup = _setup_admin(app_client, username="Admin", name="小又")
+    assert setup["token"].startswith("kylab_st_")
+    assert setup["user"]["role"] == "admin"
+    # 用户名归一化为小写；显示名保留原样
+    assert (setup["user"]["username"], setup["user"]["name"]) == ("admin", "小又")
+
+    # 会话令牌立即可用，且管理员会话与控制台令牌同权（能进设置页）
+    session = {"Authorization": f"Bearer {setup['token']}"}
+    assert app_client.get("/api/v1/settings", headers=session).status_code == 200
+    assert app_client.get("/api/v1/auth/me", headers=session).json()["username"] == "admin"
+
+    # 退出后令牌作废
+    assert app_client.post("/api/v1/auth/logout", headers=session).status_code == 204
+    assert app_client.get("/api/v1/auth/me", headers=session).status_code == 401
+
+    # 重新登录（大小写不敏感）
+    login = app_client.post(
+        "/api/v1/auth/login", json={"username": "ADMIN", "password": "correct horse battery"}
+    )
+    assert login.status_code == 200, login.text
+
+
+def test_setup_is_one_shot_over_http(app_client: TestClient) -> None:
+    _setup_admin(app_client)
+    again = app_client.post(
+        "/api/v1/auth/setup", json={"username": "second", "password": "another good password"}
+    )
+    assert again.status_code == 409
+
+
+def test_login_rejects_wrong_password_with_uniform_message(app_client: TestClient) -> None:
+    _setup_admin(app_client)
+
+    wrong = app_client.post(
+        "/api/v1/auth/login", json={"username": "admin", "password": "wrong-password"}
+    )
+    ghost = app_client.post(
+        "/api/v1/auth/login", json={"username": "ghost", "password": "wrong-password"}
+    )
+    assert wrong.status_code == ghost.status_code == 401
+    assert wrong.json()["message"] == ghost.json()["message"]
+
+
+def test_creating_an_account_turns_auth_on(app_client: TestClient) -> None:
+    """第三个自动生效条件：有了账号，匿名请求就该被拦。"""
+    assert app_client.get("/api/v1/knowledge-bases").status_code == 200
+
+    _setup_admin(app_client)
+
+    assert app_client.get("/api/v1/knowledge-bases").status_code == 401
+
+
+def test_change_password_over_http(app_client: TestClient) -> None:
+    setup = _setup_admin(app_client)
+    session = {"Authorization": f"Bearer {setup['token']}"}
+
+    changed = app_client.post(
+        "/api/v1/auth/password",
+        json={"old_password": "correct horse battery", "new_password": "new-horse-battery"},
+        headers=session,
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["revoked_sessions"] == 0  # 只有这一条会话，没有别的可吊销
+
+    # 当前会话仍然有效；旧口令已不能登录
+    assert app_client.get("/api/v1/auth/me", headers=session).status_code == 200
+    assert (
+        app_client.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": "correct horse battery"}
+        ).status_code
+        == 401
+    )
+
+
+def test_console_token_still_works_alongside_accounts(app_client: TestClient) -> None:
+    """过渡兼容：老部署的控制台令牌在有账号之后依然有效（恢复钥匙）。"""
+    rescued = app_client.post("/api/v1/auth/console-token", json={})
+    token = rescued.json()["token"]
+
+    _setup_admin(app_client)
+
+    headers = {"Authorization": f"Bearer {token}"}
+    assert app_client.get("/api/v1/settings", headers=headers).status_code == 200
+
+
+def test_me_rejects_console_token(app_client: TestClient) -> None:
+    """/auth/me 只认登录会话：控制台令牌通道没有"账号"这个概念。"""
+    token = app_client.post("/api/v1/auth/console-token", json={}).json()["token"]
+    assert (
+        app_client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}).status_code
+        == 401
+    )

@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.core.security import display_prefix, generate_token, hash_token
 from app.models.enums import ApiKeyPermission
-from app.storage.base import ApiKeyRecord, StoreBundle
+from app.storage.base import ApiKeyRecord, StoreBundle, UserRecord
 
 __all__ = ["READ", "WRITE", "ApiKeyService", "Caller", "IssuedApiKey"]
 
@@ -50,16 +50,20 @@ class IssuedApiKey:
 
 @dataclass(frozen=True, slots=True)
 class Caller:
-    """一次调用的主体。控制台令牌与 API Key 在这里统一成一种形状，
+    """一次调用的主体。登录会话、控制台令牌与 API Key 在这里统一成一种形状，
     免得下游每个地方都要判"这是哪种凭据"。"""
 
-    #: 控制台令牌不是 API Key，没有记录；用它区分"管理员"与"受限调用方"
+    #: 控制台令牌与管理员会话都没有 API Key 记录；用它区分"管理员"与"受限调用方"
     is_console: bool = False
     api_key: ApiKeyRecord | None = None
+    #: 登录会话对应的账号（v10）。``None`` = 控制台令牌或 API Key 通道
+    user: UserRecord | None = None
+    #: 当前会话 id（明文 token 的哈希）。退出登录、改密吊销都要定位到它
+    session_id: str | None = None
 
     @property
     def permission(self) -> ApiKeyPermission | None:
-        """``None`` 表示不受范围限制（仅控制台令牌如此）。"""
+        """``None`` 表示不受范围限制（控制台令牌与管理员会话如此）。"""
         return None if self.is_console else (self.api_key.permission if self.api_key else None)
 
     @property
@@ -147,12 +151,24 @@ class ApiKeyService:
         而库 ID 不是秘密（列表接口本来就能看到），提示它不额外泄露信息。
         """
         if caller.is_console:
-            return  # 控制台令牌是管理员，不受库范围限制
+            return  # 控制台令牌与管理员会话不受库范围限制
+
+        if caller.user is not None:
+            # 登录成员（v10）：范围 = 自己拥有的库（被分享的库在 ShareService 并入）。
+            # 成员不是 API Key，没有 permission 档位——读与写都按归属判定
+            if kb_ids is None:
+                return
+            visible = set(self._owned_kb_ids(caller.user.id))
+            outside = [kb_id for kb_id in kb_ids if kb_id not in visible]
+            if outside:
+                raise ForbiddenError("你没有访问这些知识库的权限：" + "、".join(outside))
+            return
 
         permission = caller.permission
         if permission is None:
-            # 构造上不该出现（Caller 只有两种）。真出现说明有人绕过了 authenticate，
-            # 这时**拒绝**而不是放行——安全判定的默认值必须是"不通过"
+            # 构造上不该出现（Caller 只有控制台 / 成员会话 / API Key 三种形态）。
+            # 真出现说明有人绕过了 authenticate，这时**拒绝**而不是放行——
+            # 安全判定的默认值必须是"不通过"
             raise UnauthorizedError("调用主体缺少权限信息")
 
         if need is WRITE and permission is not ApiKeyPermission.READWRITE:
@@ -175,5 +191,14 @@ class ApiKeyService:
         """列出调用方能看到的库；``None`` 表示不受限（调用方不必再过滤）。"""
         if caller.is_console:
             return None
+        if caller.user is not None:
+            # 成员：只看到自己的库。**不能回 None**——那是不受限的意思，
+            # 与 check_access 的成员分支必须一致，两处矛盾就是越权洞
+            return self._owned_kb_ids(caller.user.id)
         scope = caller.knowledge_base_ids
         return list(scope) if scope else None
+
+    def _owned_kb_ids(self, user_id: str) -> list[str]:
+        return [
+            kb.id for kb in self._stores.meta.list_knowledge_bases() if kb.owner_id == user_id
+        ]

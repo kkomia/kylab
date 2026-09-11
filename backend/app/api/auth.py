@@ -1,25 +1,29 @@
-"""请求级鉴权依赖（《架构设计 v0.2》§3.2）。
+"""请求级鉴权依赖（《架构设计 v0.2》§3.2；v10 起加登录会话）。
 
-两种凭据，一个入口：
+三种凭据，一个入口：
 
-- **控制台令牌**（``KYLAB_CONSOLE_TOKEN``）：Web 控制台用，管理员身份，不受库范围限制；
+- **登录会话**（``kylab_st_`` 前缀）：Web 控制台用，用户名+密码换来（v10 起，
+  面向不懂技术的个人用户）；管理员会话与控制台令牌同权；
+- **控制台令牌**（``KYLAB_CONSOLE_TOKEN``）：开发/恢复用途的管理员身份；
 - **API Key**：给外部程序用，绑定知识库范围 + 只读/读写。
 
-为什么要有控制台令牌：控制台要能打开设置页，而设置页里就是 embedding / LLM 的密钥。
-**外部 API Key 绝不该能读设置**（那等于把凭据发给每一个集成方），
-所以"能进控制台"必须是一种比 API Key 更高的身份，而不是同一把钥匙的另一个权限档。
+为什么要有控制台令牌与管理员会话这两层：控制台要能打开设置页，而设置页里就是
+embedding / LLM 的密钥。**外部 API Key 绝不该能读设置**（那等于把凭据发给每一个
+集成方），所以"能进控制台"必须是一种比 API Key 更高的身份，而不是同一把钥匙的
+另一个权限档。
 
 三处刻意的决定：
 
-1. **默认关闭鉴权**。本机单人开发时每次请求都要带令牌纯属折磨，且默认开启会让
+1. **默认关闭鉴权**。本机单人开发时每次请求都要带凭据纯属折磨，且默认开启会让
    升级后所有既有客户端立刻 401（最难排查的一类故障）。所以
-   ``KYLAB_AUTH_ENABLED`` 默认为 false；**一旦设置了控制台令牌或创建过任何 API Key
-   就自动生效**，不需要用户记得去翻开关——能配出凭据，就说明他要鉴权。
+   ``KYLAB_AUTH_ENABLED`` 默认为 false；**一旦设置了控制台令牌、创建过任何
+   API Key、或初始化过任何账号就自动生效**，不需要用户记得去翻开关——
+   能配出凭据，就说明他要鉴权。
 
 2. **只在 ``/api/v1`` 下生效**。健康探针（``/health``）与前端静态资源不鉴权：
    前者是容器编排用来判断存活的，带上鉴权会让 readiness 探针误判。
 
-3. **失败快、文案钝**。缺令牌与令牌无效都回 401，且不区分原因（见 api_key.py）。
+3. **失败快、文案钝**。缺凭据与凭据无效都回 401，且不区分原因（见 api_key.py）。
 """
 
 from __future__ import annotations
@@ -31,10 +35,11 @@ from fastapi import Depends, Header
 
 from app.core.config import Settings, get_settings
 from app.core.exceptions import ForbiddenError, UnauthorizedError
-from app.core.security import tokens_equal
+from app.core.security import SESSION_TOKEN_PREFIX, tokens_equal
 from app.core.services import Services, get_services
-from app.models.enums import ApiKeyPermission
+from app.models.enums import ApiKeyPermission, UserRole
 from app.services.api_key import READ, WRITE, Caller
+from app.services.auth import URL_SIGNING_SECRET_SETTING
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +67,9 @@ def auth_enabled(settings: Settings, services: Services) -> bool:
     if console_token(settings, services):
         return True
     try:
+        # 账号体系：只要存在任何可登录账号，鉴权就必须生效（v10）
+        if services.auth.has_accounts():
+            return True
         return bool(services.api_keys.list())
     except Exception:
         logger.warning("检查 API Key 列表失败，本次按未启用鉴权处理", exc_info=True)
@@ -97,7 +105,18 @@ def current_caller(
             "缺少凭据：请在请求头带上 Authorization: Bearer <API Key 或控制台令牌>"
         )
 
-    # 先比控制台令牌。用定时安全比较；空的控制台令牌绝不能等于空请求令牌
+    # 凭据按前缀分流：会话 / API Key / 控制台令牌是三种东西，各走各的校验路径。
+    # 控制台令牌可能是用户自设的任意字符串（没有固定前缀），所以它放最后兜底比对
+    if token.startswith(SESSION_TOKEN_PREFIX):
+        user, session = services.auth.authenticate_session(token)
+        # 管理员会话与控制台令牌同权（is_console）；普通成员带着账号身份走
+        return Caller(
+            is_console=user.role is UserRole.ADMIN,
+            user=user,
+            session_id=session.id,
+        )
+
+    # 再比控制台令牌。用定时安全比较；空的控制台令牌绝不能等于空请求令牌
     expected = console_token(settings, services)
     if expected and tokens_equal(token, expected):
         return Caller(is_console=True)
@@ -197,11 +216,18 @@ def bootstrap_allowed(settings: Settings, services: Services) -> bool:
 def signing_secret(settings: Settings, services: Services) -> str | None:
     """下载签名用的密钥。
 
-    优先级：专用密钥 → 控制台令牌。**都没有时返回 None，表示不允许签发**——
-    那时系统处于"无鉴权"状态，与其发一条永远有效的链接，不如让调用方走需要鉴权的
-    常规接口（API 层据此要求带上凭据）。
+    优先级：专用密钥（库 / 环境变量）→ 控制台令牌（过渡兼容）。**都没有时返回
+    None，表示不允许签发**——那时系统处于"无鉴权"状态，与其发一条永远有效的
+    链接，不如让调用方走需要鉴权的常规接口（API 层据此要求带上凭据）。
 
-    为什么不"随机生成一个并持久化"：那样每次换机器/重建容器都会让库里的密钥变，
-    而自托管场景里迁移与重建很常见；用配置里的值，链接的有效期只由 TTL 决定。
+    v10 起 setup 会生成独立的 ``auth.url_signing_secret`` 落库：拿控制台令牌当
+    签名密钥是过渡做法——凭据会轮换、会被废弃，而签出去的链接不该跟着失效。
+    为什么不"随机生成一个并持久化"之外还要留控制台令牌兜底：老部署（只有令牌、
+    还没跑过 setup）不能升级后链接全废。
     """
-    return settings.url_signing_secret or console_token(settings, services)
+    try:
+        stored = services.runtime.get(URL_SIGNING_SECRET_SETTING)
+    except Exception:
+        logger.warning("读取签名密钥失败，退回环境变量与控制台令牌", exc_info=True)
+        stored = None
+    return stored or settings.url_signing_secret or console_token(settings, services)

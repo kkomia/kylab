@@ -182,3 +182,44 @@ def test_console_bypasses_scope_checks(service) -> None:
 
     console = Caller(is_console=True)
     service.check_access(console, need=WRITE, kb_ids=["kb_任意"])
+
+
+# --------------------------------------------------------------------- 成员会话（v10）
+
+
+def _member(service: ApiKeyService, user_id: str = "user_m"):  # type: ignore[no-untyped-def]
+    """构造一个普通成员的调用主体（登录会话通道）。"""
+    from app.services.api_key import Caller
+    from app.storage.base import UserRecord
+
+    return Caller(user=UserRecord(id=user_id, name="成员", username="m"), session_id="s_m")
+
+
+def test_member_sees_only_owned_kbs(service, store) -> None:  # type: ignore[no-untyped-def]
+    """成员可见范围 = 自己拥有的库；**绝不能回 None**（那是不受限的意思）。
+
+    这条与 check_access 的成员分支必须一致：一个放行一个拦，就是越权洞。
+    """
+    from app.storage.base import KnowledgeBaseRecord
+
+    store.create_knowledge_base(
+        KnowledgeBaseRecord(id="kb_mine", name="我的", embedding_model_id="m",
+                            embedding_dim=768, owner_id="user_m")
+    )
+    store.create_knowledge_base(
+        KnowledgeBaseRecord(id="kb_yours", name="别人的", embedding_model_id="m",
+                            embedding_dim=768, owner_id="user_o")
+    )
+
+    caller = _member(service)
+    assert service.visible_kb_ids(caller) == ["kb_mine"]
+    service.check_access(caller, kb_ids=["kb_mine"])
+    with pytest.raises(ForbiddenError, match="kb_yours"):
+        service.check_access(caller, kb_ids=["kb_yours"])
+    # 不涉及具体库的调用（如列任务）不受阻
+    service.check_access(caller, kb_ids=None)
+
+
+def test_member_cannot_touch_admin_only_endpoints(service) -> None:  # type: ignore[no-untyped-def]
+    """成员会话 is_console=False：require_console 那层（设置页/密钥管理）进不去。"""
+    assert _member(service).is_console is False

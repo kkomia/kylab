@@ -23,6 +23,7 @@ from functools import lru_cache
 from app.core.config import Settings, get_settings
 from app.core.storage import build_stores
 from app.services.api_key import ApiKeyService
+from app.services.auth import AuthService
 from app.services.chat import ChatService
 from app.services.chunk import ChunkService
 from app.services.conversation import ConversationService
@@ -80,6 +81,8 @@ class Services:
     """用量统计：按次记 token 与调用量（调研报告 G7）。"""
     users: UserService
     """使用者名册：记录"是谁传的"，不参与鉴权（调研报告 G6）。"""
+    auth: AuthService
+    """账号引导、登录与会话校验（v10：名册升级为账号体系）。"""
     lifecycle: LifecycleService
     """数据生命周期：影响清单、级联删除、回收站（M6 / T6.3、T6.4）。"""
     sources: SourceService
@@ -258,6 +261,7 @@ def build_services(
         models=registry,
         usage=usage,
         users=UserService(bundle),
+        auth=AuthService(bundle),
         lifecycle=LifecycleService(bundle, notifier=webhooks.emit),
         tabular=TabularService(bundle),
         sources=sources_service,
