@@ -28,12 +28,22 @@ import {
   type SettingGroup,
   type SettingsView,
 } from '@/api/settings'
+import {
+  createUser,
+  deleteUser,
+  listUsers,
+  resetUserPassword,
+  setUserDisabled,
+  type RosterUser,
+  type UserRole,
+} from '@/api/users'
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import ModelRegistryPanel from '@/components/settings/ModelRegistryPanel.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { useToast } from '@/composables/useToast'
 import { useConsoleToken } from '@/composables/useConsoleToken'
@@ -57,9 +67,10 @@ const emit = defineEmits<{ logout: [] }>()
  */
 const props = defineProps<{ initialSection?: string }>()
 
-type SectionKey = 'registry' | 'models' | 'llm' | 'services' | 'storage' | 'appearance' | 'system'
+type SectionKey =
+  'registry' | 'models' | 'llm' | 'services' | 'storage' | 'appearance' | 'users' | 'system'
 
-const SECTIONS: { key: SectionKey; label: string; hint: string }[] = [
+const SECTIONS: { key: SectionKey; label: string; hint: string; adminOnly?: boolean }[] = [
   // **「模型」放在最前**：现在它是配置模型的**主路径**（供应商 → 模型 → 用途），
   // 下面那两组是回退用的精细字段。先主路径、再回退项，顺序才符合用户的心智
   { key: 'registry', label: '模型', hint: '供应商与用途分配' },
@@ -70,6 +81,8 @@ const SECTIONS: { key: SectionKey; label: string; hint: string }[] = [
   { key: 'services', label: '服务配置', hint: '云端解析节点' },
   { key: 'storage', label: '存储配置', hint: '元数据与向量' },
   { key: 'appearance', label: '外观', hint: '字号与显示' },
+  // 只有管理员（或控制台令牌通道）能看：/users 的写与管理端点是控制台级
+  { key: 'users', label: '用户', hint: '账号与成员', adminOnly: true },
   { key: 'system', label: '系统与安全', hint: '版本与鉴权' },
 ]
 
@@ -167,6 +180,164 @@ async function submitPasswordChange(): Promise<void> {
   }
 }
 
+// ------------------------------------------------------------------ 用户（v10）
+
+/**
+ * 用户分组只对管理员开放。
+ *
+ * `currentUser === null` 时也开放：那是控制台令牌通道（或鉴权未启用的本机开发），
+ * 它与管理员同权，没有理由把用户管理藏起来。
+ */
+const canManageUsers = computed(() => currentUser.value === null || isAdmin.value)
+const visibleSections = computed(() =>
+  SECTIONS.filter((item) => !item.adminOnly || canManageUsers.value),
+)
+
+const users = ref<RosterUser[]>([])
+const usersLoading = ref(false)
+const usersError = ref('')
+
+const ROLE_OPTIONS: { value: UserRole; label: string }[] = [
+  { value: 'member', label: '成员' },
+  { value: 'admin', label: '管理员' },
+]
+
+const newName = ref('')
+const newUsername = ref('')
+const newAccountPassword = ref('')
+const newRole = ref<UserRole>('member')
+const creatingUser = ref(false)
+const createError = ref('')
+
+async function loadUsers(): Promise<void> {
+  usersLoading.value = true
+  try {
+    users.value = (await listUsers()).items
+    usersError.value = ''
+  } catch (error) {
+    usersError.value = error instanceof Error ? error.message : '用户列表加载失败'
+  } finally {
+    usersLoading.value = false
+  }
+}
+
+async function submitCreateUser(): Promise<void> {
+  createError.value = ''
+  const name = newName.value.trim()
+  const username = newUsername.value.trim()
+  if (!name) {
+    createError.value = '请填写显示名'
+    return
+  }
+  if (!username) {
+    createError.value = '请填写登录名'
+    return
+  }
+  if (newAccountPassword.value.length < MIN_PASSWORD_CHARS) {
+    createError.value = `初始密码至少 ${MIN_PASSWORD_CHARS} 个字符`
+    return
+  }
+  creatingUser.value = true
+  try {
+    const created = await createUser({
+      name,
+      username,
+      password: newAccountPassword.value,
+      role: newRole.value,
+    })
+    newName.value = ''
+    newUsername.value = ''
+    newAccountPassword.value = ''
+    newRole.value = 'member'
+    notifySuccess(`已开通账号「${created.username}」`)
+    await loadUsers()
+  } catch (error) {
+    createError.value = error instanceof Error ? error.message : '开通失败'
+  } finally {
+    creatingUser.value = false
+  }
+}
+
+/** 重置密码（弹窗）：改完会吊销对方所有登录会话，文案要说清。 */
+const resetTarget = ref<RosterUser | null>(null)
+const resetDraft = ref('')
+const resetting = ref(false)
+const resetError = ref('')
+
+function openReset(person: RosterUser): void {
+  resetTarget.value = person
+  resetDraft.value = ''
+  resetError.value = ''
+}
+
+/** 弹窗用 `:open` + `@update:open` 受控：Esc / 点遮罩关闭时也要把目标清掉。 */
+function onResetOpenChange(value: boolean): void {
+  if (!value) resetTarget.value = null
+}
+
+async function submitReset(): Promise<void> {
+  const target = resetTarget.value
+  if (!target) return
+  if (resetDraft.value.length < MIN_PASSWORD_CHARS) {
+    resetError.value = `密码至少 ${MIN_PASSWORD_CHARS} 个字符`
+    return
+  }
+  resetting.value = true
+  try {
+    await resetUserPassword(target.id, resetDraft.value)
+    resetTarget.value = null
+    notifySuccess(`已重置「${target.name}」的密码，其登录会话已全部失效`)
+    await loadUsers()
+  } catch (error) {
+    resetError.value = error instanceof Error ? error.message : '重置失败'
+  } finally {
+    resetting.value = false
+  }
+}
+
+async function toggleDisabled(person: RosterUser): Promise<void> {
+  try {
+    const updated = await setUserDisabled(person.id, !person.disabled)
+    notifySuccess(updated.disabled ? `已禁用「${updated.name}」` : `已启用「${updated.name}」`)
+    await loadUsers()
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '操作失败')
+  }
+}
+
+/** 删除账号（弹窗确认）：文档保留但归属置空，这一点必须说清。 */
+const deleteTarget = ref<RosterUser | null>(null)
+const deletingUser = ref(false)
+
+function openDelete(person: RosterUser): void {
+  deleteTarget.value = person
+}
+
+function onDeleteOpenChange(value: boolean): void {
+  if (!value) deleteTarget.value = null
+}
+
+async function confirmDeleteUser(): Promise<void> {
+  const target = deleteTarget.value
+  if (!target) return
+  deletingUser.value = true
+  try {
+    await deleteUser(target.id)
+    deleteTarget.value = null
+    notifySuccess(`已删除「${target.name}」；其文档保留，归属置空`)
+    await loadUsers()
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '删除失败')
+  } finally {
+    deletingUser.value = false
+  }
+}
+
+/** 切到用户分组就拉一次；用户可能在别处（另一个标签页）新建过账号。 */
+watch(section, (value) => {
+  if (value === 'users') void loadUsers()
+})
+
 /** 正在编辑的分组（null = 仍在浏览态）。 */
 const editing = ref<SettingGroup | null>(null)
 const draft = ref<Record<string, string>>({})
@@ -176,7 +347,7 @@ const testResult = ref<{ ok: boolean; detail: string } | null>(null)
 
 /** 应用「打开时定位到某组」的请求：忽略未知分组名，不让调用方的一个错字符串把弹窗搞空。 */
 function applyInitialSection(): void {
-  const wanted = SECTIONS.find((item) => item.key === props.initialSection)
+  const wanted = visibleSections.value.find((item) => item.key === props.initialSection)
   if (wanted) section.value = wanted.key
 }
 
@@ -185,6 +356,7 @@ watch(open, (value) => {
   if (value) {
     applyInitialSection()
     void refresh()
+    if (section.value === 'users') void loadUsers()
   }
 })
 
@@ -325,7 +497,7 @@ async function runTest(target: string): Promise<void> {
       <!-- 左：分组菜单。设置项会越来越多，平铺下去没人找得到 -->
       <nav class="settings-nav" aria-label="设置分组">
         <button
-          v-for="item in SECTIONS"
+          v-for="item in visibleSections"
           :key="item.key"
           class="nav-entry"
           :class="{ 'nav-entry-active': section === item.key }"
@@ -713,6 +885,103 @@ async function runTest(target: string): Promise<void> {
           </p>
         </template>
 
+        <!-- 用户（v10）：开通账号与成员管理。仅管理员/控制台可见 -->
+        <template v-else-if="section === 'users'">
+          <h3 class="section-title">用户</h3>
+          <p class="section-note">
+            开通账号后，对方用自己的登录名登录，且只能看到你分享给他的知识库。没有登录名的名册条目仅用于标记文档归属。
+          </p>
+
+          <div class="create-card">
+            <div class="create-grid">
+              <label class="field-label" for="kylab-new-name">显示名</label>
+              <AppInput
+                id="kylab-new-name"
+                v-model="newName"
+                placeholder="例如 小王"
+                :disabled="creatingUser"
+              />
+              <label class="field-label" for="kylab-new-username">登录名</label>
+              <AppInput
+                id="kylab-new-username"
+                v-model="newUsername"
+                placeholder="用于登录，不区分大小写"
+                :disabled="creatingUser"
+              />
+              <label class="field-label" for="kylab-account-password">初始密码</label>
+              <AppInput
+                id="kylab-account-password"
+                v-model="newAccountPassword"
+                type="password"
+                :placeholder="`至少 ${MIN_PASSWORD_CHARS} 个字符`"
+                :disabled="creatingUser"
+              />
+              <label class="field-label" for="kylab-new-role">角色</label>
+              <AppSelect
+                id="kylab-new-role"
+                v-model="newRole"
+                :options="ROLE_OPTIONS"
+                :disabled="creatingUser"
+              />
+            </div>
+            <p v-if="createError" class="form-error" role="alert">{{ createError }}</p>
+            <div class="password-actions">
+              <AppButton variant="primary" :disabled="creatingUser" @click="submitCreateUser">
+                {{ creatingUser ? '开通中…' : '开通账号' }}
+              </AppButton>
+            </div>
+            <p class="row-note">
+              初始密码由你转告对方；刻意不强制首次登录改密——家庭场景下那只会变成所有人共用同一个密码。
+            </p>
+          </div>
+
+          <h3 class="section-title section-gap">成员与名册</h3>
+          <p v-if="usersLoading" class="row-note">正在加载…</p>
+          <p v-else-if="usersError" class="error-line">{{ usersError }}</p>
+          <p v-else-if="users.length === 0" class="row-note">
+            还没有任何人。开通一个账号，对方就能登录了。
+          </p>
+          <ul v-else class="user-list">
+            <li v-for="person in users" :key="person.id" class="user-row">
+              <span class="user-main">
+                <span class="user-name">{{ person.name }}</span>
+                <span class="user-meta">
+                  <template v-if="person.username"
+                    >@{{ person.username }}<span class="sep">·</span></template
+                  >{{ person.document_count }} 篇文档
+                </span>
+              </span>
+              <StatusTag
+                v-if="person.username"
+                :tone="person.role === 'admin' ? 'success' : 'neutral'"
+                :label="person.role === 'admin' ? '管理员' : '成员'"
+              />
+              <StatusTag v-else tone="neutral" label="名册" />
+              <StatusTag v-if="person.disabled" tone="danger" label="已禁用" />
+              <span class="user-actions">
+                <template v-if="person.username">
+                  <AppButton size="sm" @click="openReset(person)">重置密码</AppButton>
+                  <AppButton
+                    v-if="person.id !== currentUser?.id"
+                    size="sm"
+                    @click="toggleDisabled(person)"
+                  >
+                    {{ person.disabled ? '启用' : '禁用' }}
+                  </AppButton>
+                </template>
+                <AppButton
+                  v-if="person.id !== currentUser?.id"
+                  size="sm"
+                  variant="danger"
+                  @click="openDelete(person)"
+                >
+                  删除
+                </AppButton>
+              </span>
+            </li>
+          </ul>
+        </template>
+
         <!-- 系统与安全 -->
         <template v-else>
           <h3 class="section-title">系统与安全</h3>
@@ -854,6 +1123,45 @@ async function runTest(target: string): Promise<void> {
         </template>
       </div>
     </div>
+
+    <!--
+      重置密码（嵌套弹窗）。放在弹窗里而不是行内展开：一次只处理一个人，
+      展开会把"成员与名册"列表推下去，让用户失去上下文。
+    -->
+    <AppModal :open="resetTarget !== null" title="重置密码" @update:open="onResetOpenChange">
+      <p class="share-lead">
+        为「{{ resetTarget?.name }}」设置新密码。对方所有已登录的设备会立即退出。
+      </p>
+      <AppInput
+        v-model="resetDraft"
+        type="password"
+        autocomplete="new-password"
+        :placeholder="`至少 ${MIN_PASSWORD_CHARS} 个字符`"
+        :disabled="resetting"
+      />
+      <p v-if="resetError" class="form-error" role="alert">{{ resetError }}</p>
+      <template #footer>
+        <AppButton @click="resetTarget = null">取消</AppButton>
+        <AppButton variant="primary" :disabled="resetting" @click="submitReset">
+          {{ resetting ? '提交中…' : '重置密码' }}
+        </AppButton>
+      </template>
+    </AppModal>
+
+    <!-- 删除账号：破坏性动作，按规范 §10.3 二次确认，并说清"文档会怎样" -->
+    <AppModal :open="deleteTarget !== null" title="删除用户" @update:open="onDeleteOpenChange">
+      <p class="share-lead">确定删除「{{ deleteTarget?.name }}」？</p>
+      <p class="row-note">
+        该用户上传的 {{ deleteTarget?.document_count ?? 0 }} 篇文档会保留，但归属置空；
+        对方将无法再登录。此操作不可撤销。
+      </p>
+      <template #footer>
+        <AppButton @click="deleteTarget = null">取消</AppButton>
+        <AppButton variant="danger" :disabled="deletingUser" @click="confirmDeleteUser">
+          {{ deletingUser ? '删除中…' : '删除' }}
+        </AppButton>
+      </template>
+    </AppModal>
   </AppModal>
 </template>
 
@@ -1062,6 +1370,78 @@ async function runTest(target: string): Promise<void> {
   display: flex;
   gap: var(--space-2);
   margin-top: var(--space-3);
+}
+
+/* 开通账号：标签列固定宽，控件列吃剩余——四行标签才会左边对齐 */
+.create-card {
+  padding: var(--space-4);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-panel);
+}
+
+.create-grid {
+  display: grid;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  grid-template-columns: 88px minmax(0, 1fr);
+}
+
+.create-grid .field-label {
+  margin-top: 0;
+}
+
+/* 成员与名册：一行一个人，操作在右端 */
+.user-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.user-row:last-child {
+  border-bottom: none;
+}
+
+.user-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-pair);
+}
+
+.user-name {
+  overflow: hidden;
+  font-size: var(--text-body-size);
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-meta {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.user-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--space-1);
+}
+
+/* 嵌套弹窗的引导句（重置/删除）：与分享弹窗同一套语气 */
+.share-lead {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-meta-size);
+  line-height: 1.7;
+  color: var(--text-secondary);
 }
 
 .text-warn {

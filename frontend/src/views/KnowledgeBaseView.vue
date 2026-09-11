@@ -27,8 +27,10 @@ import IconFile from '@/components/icons/IconFile.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconTrash from '@/components/icons/IconTrash.vue'
 import IconSearch from '@/components/icons/IconSearch.vue'
+import IconShare from '@/components/icons/IconShare.vue'
 import IconUpload from '@/components/icons/IconUpload.vue'
 import KbSearchPanel from '@/components/search/KbSearchPanel.vue'
+import ShareDialog from '@/components/knowledge/ShareDialog.vue'
 import SourcePanel from '@/components/knowledge/SourcePanel.vue'
 import UploadDialog from '@/components/knowledge/UploadDialog.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
@@ -117,6 +119,7 @@ const loading = ref(false)
 const error = ref('')
 const searchOpen = ref(false)
 const uploadOpen = ref(false)
+const shareOpen = ref(false)
 const expanded = ref<Record<string, DocumentPart[] | undefined>>({})
 
 let timer: ReturnType<typeof setInterval> | null = null
@@ -223,13 +226,23 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
         <template #icon><IconSearch /></template>
         在此库检索
       </AppButton>
-      <AppButton variant="primary" @click="uploadOpen = true">
+      <!-- 分享入口只对 owner / 管理员出现：can_manage 由后端算，前端不重复判定 -->
+      <AppButton v-if="knowledgeBase?.can_manage" @click="shareOpen = true">
+        <template #icon><IconShare /></template>
+        分享
+      </AppButton>
+      <!-- 只读分享的成员看得到内容，但没有写入口（can_write 由后端算） -->
+      <AppButton v-if="knowledgeBase?.can_write" variant="primary" @click="uploadOpen = true">
         <template #icon><IconUpload /></template>
         上传文档
       </AppButton>
     </template>
 
     <p v-if="error" class="error-line">{{ error }}</p>
+
+    <p v-if="knowledgeBase && !knowledgeBase.can_write" class="readonly-note">
+      这是别人分享给你的库，你是只读权限：可以检索与查看，不能上传或删除。
+    </p>
 
     <SkeletonBlock v-if="loading && documents.length === 0" variant="list" :rows="4" />
 
@@ -238,7 +251,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       title="这个知识库里还没有文档"
       :hint="`${UPLOAD_FORMAT_HINT}；单文件上限 ${MAX_UPLOAD_MB}MB。`"
     >
-      <AppButton variant="primary" @click="uploadOpen = true">
+      <AppButton v-if="knowledgeBase?.can_write" variant="primary" @click="uploadOpen = true">
         <template #icon><IconUpload /></template>
         上传文档
       </AppButton>
@@ -294,7 +307,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
               <span class="row-size">{{ formatBytes(document.size_bytes) }}</span>
               <span class="row-time">{{ formatRelativeTime(document.updated_at) }}</span>
 
-              <RowMenu v-slot="{ close }" class="row-menu">
+              <RowMenu v-if="knowledgeBase?.can_write" v-slot="{ close }" class="row-menu">
                 <button type="button" @click="onReprocessClick(close, document)">
                   <IconRefresh :size="14" /> 重新摄入
                 </button>
@@ -304,6 +317,8 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                   <IconTrash :size="14" /> 删除
                 </button>
               </RowMenu>
+              <!-- 只读分享：占住同一列宽，数字列才不会比表头右移 -->
+              <span v-else class="row-menu" />
             </div>
 
             <p v-if="document.error" class="row-error">{{ document.error }}</p>
@@ -325,7 +340,12 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 
     <!-- 检索是这个库的动作，不是另一个页面：在这里开，范围天然就是当前库 -->
     <!-- 数据源（M6）：与文档列表同页——它们都是"这个库里有什么"的来源 -->
-    <SourcePanel v-if="knowledgeBase" :kb-id="kbId" @changed="refresh" />
+    <SourcePanel
+      v-if="knowledgeBase"
+      :kb-id="kbId"
+      :can-write="knowledgeBase.can_write"
+      @changed="refresh"
+    />
 
     <KbSearchPanel
       v-if="knowledgeBase"
@@ -344,6 +364,14 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       :kb-id="kbId"
       :kb-name="knowledgeBase.name"
       @uploaded="onUploaded"
+    />
+
+    <!-- 分享（v10）：私有是默认，想让别人看到就必须显式授出 -->
+    <ShareDialog
+      v-if="knowledgeBase"
+      v-model:open="shareOpen"
+      :kb-id="kbId"
+      :kb-name="knowledgeBase.name"
     />
     <!--
       删除确认（M6 / T6.4）。**先给人看影响清单再动手**：
@@ -431,6 +459,17 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 .error-line {
   margin: 0 0 var(--space-4);
   color: var(--status-danger);
+}
+
+/* 只读分享的说明条：中性色，不是错误——它解释"为什么没有上传按钮" */
+.readonly-note {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-meta-size);
+  line-height: 1.6;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-control);
 }
 
 /* 列头与行共用同一套列宽，数字才会真的排在一条竖轴上 */

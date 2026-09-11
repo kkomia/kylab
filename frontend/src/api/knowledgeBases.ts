@@ -14,6 +14,10 @@ export interface KnowledgeBase {
   chunk_size: number
   chunk_overlap: number
   created_at: string | null
+  /** 当前账号能否管理这个库的分享（owner / 管理员 / 控制台令牌）。判定在后端。 */
+  can_manage: boolean
+  /** 能否写入（上传/删除）。只读分享的成员看得见但写不动，界面据此收起写入口。 */
+  can_write: boolean
 }
 
 export interface KnowledgeBaseCreate {

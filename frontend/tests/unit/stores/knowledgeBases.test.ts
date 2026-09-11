@@ -15,6 +15,8 @@ function kb(id: string, name: string): api.KnowledgeBase {
     chunk_size: 512,
     chunk_overlap: 64,
     created_at: '2026-09-10T00:00:00Z',
+    can_manage: true,
+    can_write: true,
   }
 }
 

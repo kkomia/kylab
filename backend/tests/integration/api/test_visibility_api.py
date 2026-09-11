@@ -368,6 +368,58 @@ def test_member_cannot_manage_shares_of_shared_kb(two_users) -> None:  # type: i
     )
 
 
+def test_can_manage_flag_matches_share_rights(two_users) -> None:  # type: ignore[no-untyped-def]
+    """``can_manage`` 是界面显示「分享」入口的依据，必须与"能不能管分享"一致。
+
+    三档都覆盖：自己建的库 true、管理员看别人的库 true、被分享者看别人的库 false。
+    最后一条最关键——否则界面上会出现一个点了必然 403 的按钮。
+    """
+    client, admin, member = two_users
+    kb = client.post(
+        "/api/v1/knowledge-bases", json={"name": "家庭相册"}, headers=_as(admin["token"])
+    ).json()
+    admin_h, member_h = _as(admin["token"]), _as(member["token"])
+
+    # 管理员（is_console）看自己建的库：可管
+    items = client.get("/api/v1/knowledge-bases", headers=admin_h).json()["items"]
+    assert items[0]["can_manage"] is True
+
+    # 授读之后成员能看到，但管不动分享
+    client.put(
+        f"/api/v1/knowledge-bases/{kb['id']}/shares",
+        json={"username": "member", "permission": "read"},
+        headers=admin_h,
+    )
+    shared = client.get("/api/v1/knowledge-bases", headers=member_h).json()["items"]
+    assert [item["name"] for item in shared] == ["家庭相册"]
+    assert shared[0]["can_manage"] is False
+    assert shared[0]["can_write"] is False
+    detail = client.get(f"/api/v1/knowledge-bases/{kb['id']}", headers=member_h).json()
+    assert detail["can_manage"] is False
+    assert detail["can_write"] is False
+
+    # 升到写档：看得见也写得动，但仍然管不了分享（权限扩散止于 owner）
+    client.put(
+        f"/api/v1/knowledge-bases/{kb['id']}/shares",
+        json={"username": "member", "permission": "write"},
+        headers=admin_h,
+    )
+    upgraded = client.get(f"/api/v1/knowledge-bases/{kb['id']}", headers=member_h).json()
+    assert upgraded["can_write"] is True
+    assert upgraded["can_manage"] is False
+
+    # 成员自己建的库：可管（详情与列表口径一致）
+    own = client.post(
+        "/api/v1/knowledge-bases", json={"name": "我的库"}, headers=member_h
+    ).json()
+    assert own["can_manage"] is True
+    assert own["can_write"] is True
+    assert (
+        client.get(f"/api/v1/knowledge-bases/{own['id']}", headers=member_h).json()["can_manage"]
+        is True
+    )
+
+
 def test_member_cannot_touch_trash(two_users) -> None:  # type: ignore[no-untyped-def]
     """回收站是控制台专属：里面有所有人删过什么的元信息，成员一律 403。"""
     client, admin, member = two_users

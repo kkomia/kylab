@@ -30,7 +30,9 @@ import StatusTag from '@/components/ui/StatusTag.vue'
 import { formatRelativeTime } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
 
-const props = defineProps<{ kbId: string }>()
+const props = withDefaults(defineProps<{ kbId: string; canWrite?: boolean }>(), {
+  canWrite: true,
+})
 const emit = defineEmits<{ changed: [] }>()
 
 const { notifySuccess, notifyError } = useToast()
@@ -150,11 +152,14 @@ async function remove(source: DataSource): Promise<void> {
           <strong>登记不会立刻抓取</strong>——点「立即拉取」，或等定时任务。
         </p>
       </div>
-      <AppButton @click="adding = !adding">
+      <AppButton v-if="canWrite" @click="adding = !adding">
         <template #icon><IconPlus /></template>
         {{ adding ? '取消' : '添加数据源' }}
       </AppButton>
     </div>
+
+    <!-- 只读分享：说明为什么没有操作入口，而不是让按钮点了才报 403 -->
+    <p v-if="!canWrite" class="muted">只读分享：你可以查看这里的数据源，但不能添加或修改。</p>
 
     <!-- 登记表单 -->
     <div v-if="adding" class="source-form">
@@ -206,7 +211,7 @@ async function remove(source: DataSource): Promise<void> {
         <span class="source-time">
           {{ source.last_pulled_at ? formatRelativeTime(source.last_pulled_at) : '从未拉取' }}
         </span>
-        <span class="source-actions">
+        <span v-if="canWrite" class="source-actions">
           <AppButton :disabled="busy === `sync:${source.id}`" @click="sync(source)">
             <template #icon><IconRefresh :size="14" /></template>
             {{ busy === `sync:${source.id}` ? '拉取中…' : '立即拉取' }}

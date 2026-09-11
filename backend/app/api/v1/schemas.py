@@ -41,6 +41,14 @@ class KnowledgeBaseOut(BaseModel):
     chunk_size: int
     chunk_overlap: int
     created_at: datetime | None = None
+    can_manage: bool = False
+    """当前调用主体能否管理这个库的分享（owner / 管理员 / 控制台令牌）。
+
+    **由后端算而不是前端推**：判定规则在 `services/share.py`（"看得见"与"管得动"
+    是两次判定），前端再实现一遍必然与它漂。界面据此决定要不要显示「分享」入口。
+    """
+    can_write: bool = False
+    """能否写入这个库（上传/删除）。只读分享的成员看得见但写不动，界面据此收起写入口。"""
 
 
 class KnowledgeBaseList(BaseModel):

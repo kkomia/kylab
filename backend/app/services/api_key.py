@@ -210,6 +210,19 @@ class ApiKeyService:
         scope = caller.knowledge_base_ids
         return list(scope) if scope else None
 
+    def can_write(self, caller: Caller, kb_id: str) -> bool:
+        """能否**写**这个库（不抛异常，供界面判定该不该显示上传/删除入口）。
+
+        刻意直接复用 ``check_access``：写成第二套判定必然与它漂，
+        而"看得见但写不动"的错判正是越权洞的形状。代价是每个库一次范围查询——
+        个人规模（几十个库）可忽略，换来的是这条规则只有一处实现。
+        """
+        try:
+            self.check_access(caller, need=WRITE, kb_ids=[kb_id])
+        except (ForbiddenError, UnauthorizedError):
+            return False
+        return True
+
     def _member_scope(self, user_id: str) -> tuple[set[str], dict[str, SharePermission]]:
         """成员的可见范围：自己拥有的库 id 集合 + 被分享的库（kb_id → 档位）。"""
         owned = set(self._owned_kb_ids(user_id))

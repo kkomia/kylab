@@ -80,6 +80,14 @@ function isActive(to: string, exact: boolean): boolean {
 /** 当前使用者（G6）。空 = 名册里没选人，上传归到"未记录"。 */
 const operatorName = computed(() => operator.value?.name ?? '')
 
+/**
+ * 设置入口只给管理员 / 控制台令牌通道。
+ *
+ * 设置页里是 embedding / LLM 密钥与用户管理，后端对成员一律 403
+ * （`require_console`）。把一个点进去只会报错的入口摆在侧栏，比不显示更糟。
+ */
+const canOpenSettings = computed(() => currentUser.value === null || isAdmin.value)
+
 /** 当前会话 id：从路径里取，用来高亮列表里那一条。 */
 const activeConversationId = computed(() => {
   const matched = /^\/chat\/([^/]+)$/.exec(route.path)
@@ -220,7 +228,7 @@ async function onLogout(): Promise<void> {
         </select>
       </div>
 
-      <button class="foot-action" type="button" @click="openSettings">
+      <button v-if="canOpenSettings" class="foot-action" type="button" @click="openSettings">
         <IconSettings />
         <span>设置</span>
       </button>

@@ -12,9 +12,31 @@ from fastapi import APIRouter, Depends
 from app.api.auth import check_kb_scope, require_read, require_write
 from app.api.v1.schemas import KnowledgeBaseCreate, KnowledgeBaseList, KnowledgeBaseOut
 from app.core.services import Services, get_services
+from app.models.enums import UserRole
 from app.services.api_key import Caller
+from app.storage.base import KnowledgeBaseRecord
 
 router = APIRouter(prefix="/knowledge-bases", tags=["knowledge-bases"])
+
+
+def _out(record: KnowledgeBaseRecord, caller: Caller, services: Services) -> KnowledgeBaseOut:
+    """记录 → 响应，并补上"当前主体能不能管 / 能不能写这个库"。
+
+    两条判定都**在后端算**，前端不重复实现：
+    - `can_manage` 与 ``services/share.py`` 的 ``_require_owner_or_admin`` 一致；
+    - `can_write` 直接复用 ``api_keys.check_access(need=WRITE)``——
+      界面据此决定要不要显示「上传文档」「添加数据源」，避免给出一个点了必然 403 的入口。
+    """
+    managed = caller.is_console or (
+        caller.user is not None
+        and (caller.user.role is UserRole.ADMIN or record.owner_id == caller.user.id)
+    )
+    return KnowledgeBaseOut.model_validate(record).model_copy(
+        update={
+            "can_manage": managed,
+            "can_write": managed or services.api_keys.can_write(caller, record.id),
+        }
+    )
 
 
 @router.post("", response_model=KnowledgeBaseOut, status_code=201, summary="创建知识库")
@@ -34,7 +56,7 @@ async def create_knowledge_base(
         # 登录成员建的库归自己（v10 私有隔离）；控制台令牌/API Key 通道无主
         owner_id=caller.user.id if caller.user else None,
     )
-    return KnowledgeBaseOut.model_validate(record)
+    return _out(record, caller, services)
 
 
 @router.get("", response_model=KnowledgeBaseList, summary="知识库列表")
@@ -48,7 +70,7 @@ async def list_knowledge_bases(
     visible = services.api_keys.visible_kb_ids(caller)
     if visible is not None:
         records = [record for record in records if record.id in set(visible)]
-    return KnowledgeBaseList(items=[KnowledgeBaseOut.model_validate(r) for r in records])
+    return KnowledgeBaseList(items=[_out(record, caller, services) for record in records])
 
 
 @router.get("/{kb_id}", response_model=KnowledgeBaseOut, summary="知识库详情")
@@ -58,4 +80,4 @@ async def get_knowledge_base(
     caller: Caller = Depends(require_read),
 ) -> KnowledgeBaseOut:
     check_kb_scope(services, caller, [kb_id])
-    return KnowledgeBaseOut.model_validate(services.knowledge_bases.get(kb_id))
+    return _out(services.knowledge_bases.get(kb_id), caller, services)
