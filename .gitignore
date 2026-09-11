@@ -48,6 +48,7 @@ Thumbs.db
 
 # ---- 本地视觉复核工作区（截图与夹具，仅本机使用）----
 .shots/
+.playwright-mcp/
 
 # ---- npm 的锁文件：本仓库用 pnpm（pnpm-lock.yaml），
 #      误用 npm install 时不希望它被提交（工程规范 §6）----
