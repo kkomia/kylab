@@ -30,14 +30,11 @@ import {
   type Registry,
   type Slot,
 } from '@/api/modelRegistry'
-import IconEdit from '@/components/icons/IconEdit.vue'
-import IconPlus from '@/components/icons/IconPlus.vue'
-import IconShieldCheck from '@/components/icons/IconShieldCheck.vue'
-import IconTrash from '@/components/icons/IconTrash.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
+import RowMenu from '@/components/ui/RowMenu.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { useToast } from '@/composables/useToast'
 
@@ -95,7 +92,7 @@ function displaySlotLabel(slot: Slot): string {
 /** 用途下拉的选项：空值 = 不绑定，其余是"模型名 · 供应商"。 */
 function slotOptions(slot: Slot): { value: string; label: string }[] {
   return [
-    { value: '', label: '不指定' },
+    { value: '', label: '未指定' },
     ...bindableModels(slot).map((model) => ({
       value: model.id,
       label: `${model.label || model.model_id} · ${model.provider_name}`,
@@ -379,7 +376,6 @@ defineExpose({ load })
             </h3>
           </div>
           <AppButton @click="addingProvider = !addingProvider">
-            <template #icon><IconPlus v-if="!addingProvider" :size="14" /></template>
             {{ addingProvider ? '取消' : '添加供应商' }}
           </AppButton>
         </div>
@@ -423,41 +419,50 @@ defineExpose({ load })
         </p>
 
         <div v-for="provider in providers" :key="provider.id" class="provider-card">
+          <!-- 卡内三段式（规范 §7）：标题 → 元信息 → 次要操作。
+               操作全部收进右上角「⋯」——五个按钮平铺会把卡片变成按钮墙。 -->
           <div class="provider-head">
-            <span class="provider-name">{{ provider.name }}</span>
-            <span class="provider-kind">{{ kinds[provider.kind] ?? provider.kind }}</span>
-            <StatusTag v-if="!provider.enabled" tone="warning" label="已停用" />
-            <span class="provider-key tabular">
-              {{ provider.api_key_configured ? provider.api_key_hint : '未配密钥' }}
-            </span>
-            <span class="provider-count tabular">{{ provider.model_count }} 个模型</span>
-
-            <span class="provider-actions">
-              <!-- 探活放在供应商这一层（评审批注 4）：登记时最会填错的就是地址与凭据 -->
-              <AppButton
-                :disabled="!provider.api_key_configured || busy === `test:${provider.id}`"
-                @click="onTestProvider(provider)"
-              >
-                <template #icon><IconShieldCheck :size="14" /></template>
-                {{ busy === `test:${provider.id}` ? '测试中…' : '测试' }}
-              </AppButton>
-              <AppButton @click="startEditProvider(provider)">
-                <template #icon><IconEdit :size="14" /></template>
-                编辑
-              </AppButton>
-              <AppButton @click="onToggleProvider(provider)">
-                {{ provider.enabled ? '停用' : '启用' }}
-              </AppButton>
-              <AppButton @click="startAddModel(provider.id)">
-                <template #icon><IconPlus :size="14" /></template>
-                加模型
-              </AppButton>
-              <AppButton @click="onDeleteProvider(provider)">
-                <IconTrash />
-              </AppButton>
-            </span>
+            <div class="provider-title">
+              <span class="provider-name">{{ provider.name }}</span>
+              <StatusTag v-if="!provider.enabled" tone="warning" label="已停用" />
+            </div>
+            <RowMenu :label="`${provider.name} 的操作`">
+              <template #default="{ close }">
+                <!-- 探活放在供应商这一层（评审批注 4）：登记时最会填错的就是地址与凭据 -->
+                <button
+                  type="button"
+                  :disabled="!provider.api_key_configured || busy === `test:${provider.id}`"
+                  @click="(onTestProvider(provider), close())"
+                >
+                  测试连接
+                </button>
+                <button type="button" @click="(startEditProvider(provider), close())">编辑</button>
+                <button type="button" @click="(startAddModel(provider.id), close())">
+                  添加模型
+                </button>
+                <button type="button" @click="(onToggleProvider(provider), close())">
+                  {{ provider.enabled ? '停用' : '启用' }}
+                </button>
+                <button
+                  class="menu-item-danger"
+                  type="button"
+                  @click="(onDeleteProvider(provider), close())"
+                >
+                  删除
+                </button>
+              </template>
+            </RowMenu>
           </div>
 
+          <p class="provider-meta">
+            <span>{{ kinds[provider.kind] ?? provider.kind }}</span>
+            <span class="sep">·</span>
+            <span class="tabular">{{
+              provider.api_key_configured ? provider.api_key_hint : '未配密钥'
+            }}</span>
+            <span class="sep">·</span>
+            <span class="tabular">{{ provider.model_count }} 个模型</span>
+          </p>
           <p v-if="provider.base_url" class="provider-url">{{ provider.base_url }}</p>
 
           <!-- 编辑供应商 -->
@@ -536,15 +541,19 @@ defineExpose({ load })
           <!-- 模型清单 -->
           <ul v-if="modelsOf(provider.id).length" class="model-list">
             <li v-for="model in modelsOf(provider.id)" :key="model.id" class="model-row">
-              <span class="model-name">{{ model.label || model.model_id }}</span>
-              <span class="model-id tabular">{{ model.model_id }}</span>
-              <span v-if="model.dim" class="model-dim tabular">{{ model.dim }} 维</span>
-              <StatusTag
-                v-for="cap in model.capabilities"
-                :key="cap"
-                tone="neutral"
-                :label="capabilities[cap] ?? cap"
-              />
+              <div class="model-title">
+                <span class="model-name">{{ model.label || model.model_id }}</span>
+                <span class="model-meta">
+                  <span class="tabular">{{ model.model_id }}</span>
+                  <template v-if="model.dim"
+                    ><span class="sep">·</span
+                    ><span class="tabular">{{ model.dim }} 维</span></template
+                  >
+                  <template v-for="cap in model.capabilities" :key="cap"
+                    ><span class="sep">·</span><span>{{ capabilities[cap] ?? cap }}</span></template
+                  >
+                </span>
+              </div>
               <!-- 正被哪些用途用着：一眼能看出"删了会影响什么" -->
               <StatusTag
                 v-for="slot in model.bound_slots"
@@ -552,10 +561,18 @@ defineExpose({ load })
                 tone="success"
                 :label="`用于${slotLabel(slot)}`"
               />
-              <span class="model-actions">
-                <AppButton @click="startEditModel(model)">编辑</AppButton>
-                <AppButton @click="onDeleteModel(model)"><IconTrash /></AppButton>
-              </span>
+              <RowMenu class="model-menu" :label="`${model.label || model.model_id} 的操作`">
+                <template #default="{ close }">
+                  <button type="button" @click="(startEditModel(model), close())">编辑</button>
+                  <button
+                    class="menu-item-danger"
+                    type="button"
+                    @click="(onDeleteModel(model), close())"
+                  >
+                    删除
+                  </button>
+                </template>
+              </RowMenu>
 
               <div v-if="editingModel === model.id" class="form-card model-edit">
                 <div class="form-grid">
@@ -674,8 +691,15 @@ defineExpose({ load })
 .provider-head {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
-  flex-wrap: wrap;
+}
+
+.provider-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .provider-name {
@@ -684,34 +708,16 @@ defineExpose({ load })
   color: var(--text-primary);
 }
 
-.provider-kind {
-  padding: 0 var(--space-1);
-  font-size: var(--text-micro-size);
-  color: var(--text-secondary);
-  background: var(--bg-canvas);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-control);
-}
-
-.provider-key,
-.provider-count {
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.provider-actions {
+/* 元信息压成一行低对比小字：类别 · 凭据 · 模型数。
+   三段挤在标题行会跟「⋯」抢位置，也会让卡片第一眼没有主次。 */
+.provider-meta {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-1);
-  margin-left: auto;
-}
-
-/* 图标按钮（删除）要和文字按钮有同样的命中宽度：
-   一个只包住 16px 图标的按钮，在触屏上几乎点不中 */
-.provider-actions :deep(.button),
-.model-actions :deep(.button) {
-  min-width: var(--hit-target);
-  justify-content: center;
+  margin: var(--space-1) 0 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
 }
 
 .provider-url {
@@ -738,20 +744,29 @@ defineExpose({ load })
   border-top: 1px solid var(--border-hairline);
 }
 
+.model-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
 .model-name {
   font-size: var(--text-meta-size);
   color: var(--text-primary);
 }
 
-.model-id,
-.model-dim {
+/* 模型 ID / 维度 / 能力合并成标题下的一行小字，
+   而不是三个并列的标签——标签一多，表格就散了 */
+.model-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
 }
 
-.model-actions {
-  display: flex;
-  gap: var(--space-1);
+.model-menu {
   margin-left: auto;
 }
 
