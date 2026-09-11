@@ -54,6 +54,8 @@ export interface SearchResponse {
   reranked: boolean
   filtered_out: number
   stats: ChannelStat[]
+  /** 为假时本次只做了全文通道，界面要如实说明。 */
+  embedding_configured: boolean
   embedding_is_development: boolean
 }
 

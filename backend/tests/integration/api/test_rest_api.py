@@ -342,3 +342,37 @@ def test_search_modes_and_filters(client: TestClient, kb_id: str) -> None:
     ).json()
     assert filtered["hits"] == []
     assert filtered["filtered_out"] > 0
+
+
+def test_create_kb_without_an_embedding_model_is_rejected(monkeypatch) -> None:
+    """没配嵌入模型时建库要被**明确拒绝**，而不是退回无语义的哈希实现。
+
+    v0.8 之前这里会静默兜底，界面上还标"开发兜底"——用户会以为检索是有效的。
+    现在返回 422 + 一句"去哪儿配"，前端据此在弹窗里就能给出下一步。
+    """
+    from app.core.config import get_settings
+    from app.core.services import reset_services
+    from app.main import create_app
+
+    # 关掉测试默认打开的开发兜底：这一条要验的正是"没有兜底会怎样"
+    monkeypatch.setenv("KYLAB_DEV_EMBEDDING", "false")
+    get_settings.cache_clear()
+    reset_services()
+
+    with TestClient(create_app()) as isolated:
+        response = isolated.post("/api/v1/knowledge-bases", json={"name": "无模型库"})
+
+    assert response.status_code == 422
+    assert "模型注册" in response.json()["message"]
+
+
+def test_settings_reports_whether_embedding_is_configured(client: TestClient) -> None:
+    """设置页要能区分"没配"与"配了"：前端据此决定建库入口能不能点。"""
+    body = client.get("/api/v1/settings").json()
+
+    # 测试环境显式开着开发兜底，因此没绑定注册模型 → 未配置
+    assert body["embedding_configured"] is False
+    assert body["embedding_is_development"] is True
+    # 模型身份不在设置页分组里了（v0.8）：那里只剩行为参数
+    embedding_group = next(g for g in body["groups"] if g["key"] == "embedding")
+    assert [f["key"] for f in embedding_group["fields"]] == ["embedding.batch_size"]

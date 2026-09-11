@@ -2,11 +2,15 @@
 
 知识库是模型锁定的载体：创建时把当前 embedding 实现写入 ``embedding_model_id`` 与
 ``embedding_dim``，此后**库内一旦有向量就不允许更换模型**（架构 §6.4）。
+
+v0.8：嵌入模型是知识库的必备属性。既没在建库时挑一个注册模型、全局默认也没配，
+就**拒绝建库**并给出下一步动作——不退回无语义的哈希实现（那会让用户以为检索有效）。
 """
 
 from __future__ import annotations
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
+from app.services.embedding import NOT_CONFIGURED_HINT
 from app.services.embedding.base import EmbeddingProvider
 from app.services.model_registry import ModelRegistryService
 from app.storage.base import KnowledgeBaseRecord, StoreBundle
@@ -46,19 +50,21 @@ class KnowledgeBaseService:
         """建库并**冻结嵌入模型**（架构 §6.4）。
 
         嵌入模型是知识库属性（v11 设计调整）：``embedding_model_pk`` 传了就用注册表里
-        那个模型（凭据运行时按 pk 解析），没传就沿用全局解析出的实现——老库与
-        "不挑模型"的库行为不变，升级不打断。
+        那个模型（凭据运行时按 pk 解析）；没传就用注册表里绑定的**默认嵌入模型**，
+        两者都没有则拒绝建库——向量空间是库的地基，没有它就建不出能检索的库。
 
         ``owner_id``（v10）：登录成员建的库归自己；控制台令牌/API Key 通道
         没有账号概念，传 None 即无主（对管理员全可见）。
         """
-        model_id = self._embedder.model_id
-        dim = self._embedder.dim
         if embedding_model_pk:
             if self._models is None:
                 raise InvalidRequestError("未接入模型注册器，无法按所选模型建库")
             _, model = self._models.embedding_target(embedding_model_pk)
             model_id, dim = model.model_id, model.dim or 0
+        else:
+            model_id, dim = self._embedder.model_id, self._embedder.dim
+            if not model_id or dim <= 0:
+                raise InvalidRequestError(NOT_CONFIGURED_HINT)
 
         return self._stores.meta.create_knowledge_base(
             KnowledgeBaseRecord(

@@ -1,8 +1,9 @@
-"""知识库创建：嵌入模型随库冻结（v11 设计调整）。
+"""知识库创建：嵌入模型随库冻结（v11 设计调整，v0.8 收紧）。
 
 原先建库是把**全局**解析出的模型冻进记录，所有库共用一个 embedder；
-现在嵌入模型是知识库属性——建库时从注册表挑，随库冻结。这个文件钉住三条：
-选了就用选的、没选就沿用全局（兼容）、选了个不能用的要当场报错而不是摄入到一半才炸。
+现在嵌入模型是知识库属性——建库时从注册表挑，随库冻结。这个文件钉住四条：
+选了就用选的、没选就用注册表里的默认、两个都没有要**当场拒绝**（v0.8 取消哈希兜底）、
+选了个不能用的也要当场报错而不是摄入到一半才炸。
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from collections.abc import Sequence
 import pytest
 
 from app.core.exceptions import InvalidRequestError
+from app.services.embedding import NOT_CONFIGURED_HINT
 from app.services.embedding.base import EmbeddingProvider
 from app.services.knowledge_base import KnowledgeBaseService
 from app.services.model_registry import ModelRegistryService
@@ -25,6 +27,10 @@ class _FakeEmbedder(EmbeddingProvider):
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         return [[0.0] * self.dim for _ in texts]
+
+
+#: 没配默认模型时组合根给出的 embedder：model_id 与 dim 都是空的
+_UNCONFIGURED = _FakeEmbedder(model_id="", dim=0)
 
 
 @pytest.fixture
@@ -42,9 +48,15 @@ def _register(registry: ModelRegistryService, *, model_id: str, dim: int | None)
     return model.id
 
 
-def _service(bundle, registry: ModelRegistryService) -> KnowledgeBaseService:  # type: ignore[no-untyped-def]
+def _service(
+    bundle,  # type: ignore[no-untyped-def]
+    registry: ModelRegistryService,
+    embedder: EmbeddingProvider | None = None,
+) -> KnowledgeBaseService:
     return KnowledgeBaseService(
-        bundle, embedder=_FakeEmbedder(model_id="global-default", dim=256), models=registry
+        bundle,
+        embedder=embedder or _FakeEmbedder(model_id="global-default", dim=256),
+        models=registry,
     )
 
 
@@ -68,6 +80,32 @@ def test_create_without_a_choice_uses_the_global_default(bundle, registry) -> No
     assert kb.embedding_model_id == "global-default"
     assert kb.embedding_dim == 256
     assert kb.embedding_model_pk is None
+
+
+def test_create_without_any_embedding_model_is_rejected(bundle, registry) -> None:  # type: ignore[no-untyped-def]
+    """没有嵌入模型就不许建库（v0.8 取消哈希兜底）。
+
+    以前这种情况会静默退回无语义的词面哈希，界面上还标个"开发兜底"，
+    用户会以为检索是有效的。现在当场拒绝，并说清去哪儿配。
+    """
+    service = _service(bundle, registry, embedder=_UNCONFIGURED)
+
+    with pytest.raises(InvalidRequestError) as excinfo:
+        service.create(kb_id="kb_5", name="无模型库")
+
+    assert str(excinfo.value) == NOT_CONFIGURED_HINT
+    assert bundle.meta.get_knowledge_base("kb_5") is None
+
+
+def test_create_with_an_explicit_model_needs_no_default(bundle, registry) -> None:  # type: ignore[no-untyped-def]
+    """建库时挑了一个模型就够了，全局默认没配也不该拦——这才是"每库可自选"的意义。"""
+    pk = _register(registry, model_id="tiny-small", dim=256)
+    service = _service(bundle, registry, embedder=_UNCONFIGURED)
+
+    kb = service.create(kb_id="kb_6", name="自带模型", embedding_model_pk=pk)
+
+    assert kb.embedding_model_id == "tiny-small"
+    assert kb.embedding_dim == 256
 
 
 def test_create_rejects_a_model_without_a_dimension(bundle, registry) -> None:  # type: ignore[no-untyped-def]

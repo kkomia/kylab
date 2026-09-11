@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 from app.core.security import hash_password
 from app.models.enums import UserRole
 from app.storage.base import UserRecord
+from tests.conftest import bind_model
 
 ADMIN_PASSWORD = "correct horse battery"
 MEMBER_PASSWORD = "member pass 123"
@@ -234,9 +235,9 @@ def test_member_chats_with_own_conversation(two_users) -> None:  # type: ignore[
         def complete(self, messages):  # type: ignore[no-untyped-def]
             return "这是回答。"
 
-    # 假模型 + 假配置（不配 llm.* 的话 ChatService 先报"未配置"，测不到守卫之后的路）
+    # 假模型 + 注册表里绑一个对话模型（不绑的话 ChatService 先报"未配置"，测不到守卫之后的路）
     services = get_services()
-    services.runtime.set({"llm.api_key": "sk-fake", "llm.model_id": "fake-model"})
+    bind_model(services.models, "chat", model_id="fake-model", capabilities=["chat"])
     services.chat._chat_factory = lambda config: FakeChat()
 
     client, _admin, member = two_users

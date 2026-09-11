@@ -19,7 +19,7 @@ import logging
 import time
 from collections.abc import Sequence
 
-from app.services.embedding.base import EmbeddingProvider
+from app.services.embedding.base import EmbeddingNotConfiguredError, EmbeddingProvider
 from app.services.embedding.resolver import EmbeddingResolver
 from app.services.retrieval.fusion import DEFAULT_RRF_K, rrf_fuse
 from app.services.retrieval.rerank import RerankError, RerankProvider
@@ -68,6 +68,8 @@ class RetrievalService:
         # 按库解析嵌入模型（v11）：不同库可能用不同模型，查询向量必须按库算
         self._embedders = embedders
         self._reranker = reranker
+        # "未配置嵌入模型"只告警一次：否则每次检索都刷一行同样的日志
+        self._unconfigured_warned = False
         self._rrf_k = rrf_k
 
     # ------------------------------------------------------------------ 入口
@@ -135,7 +137,16 @@ class RetrievalService:
             if query_vector is not None:
                 vector = list(query_vector)
             else:
-                vector = self._embedder_for(kb_id).embed([request.query])[0]
+                try:
+                    vector = self._embedder_for(kb_id).embed([request.query])[0]
+                except EmbeddingNotConfiguredError:
+                    # 没配嵌入模型不是"调用失败"，是"这个通道现在用不了"：跳过它，
+                    # 全文通道照常返回——库里已有内容仍可检索，界面也能如实说明
+                    # "当前只做了关键词检索"（v0.8 取消哈希兜底）
+                    if not self._unconfigured_warned:
+                        logger.warning("未配置嵌入模型，检索跳过向量通道，只做全文检索")
+                        self._unconfigured_warned = True
+                    continue
             for match in self._stores.vectors.search(
                 kb_id, query_vector=vector, top_k=request.candidate_k
             ):

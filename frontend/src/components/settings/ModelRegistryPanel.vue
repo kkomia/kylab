@@ -1,22 +1,20 @@
 <script setup lang="ts">
 /**
- * 模型（供应商 → 模型 → 用途）（调研报告 G1）。
+ * 模型注册：供应商 → 模型清单（调研报告 G1 / v0.8 归属整理）。
  *
- * **为什么改成列表而不是一组输入框**：原先的模型配置是每个用途一组固定字段，
- * 三处卡住：
- * 1. 同一个供应商下要用多个模型（便宜的做向量化、贵的做对话），而字段只能填一个；
- * 2. 换模型要覆盖旧凭据，想切回来得重填一遍 key；
- * 3. 看不出"这条模型是干什么用的"。
+ * **这里只做一件事：把模型登记进来。** 地址、凭据、模型名、维度都在这儿填。
+ * "哪个用途用哪个模型"不在这儿绑——向量化的默认模型在「设置 → 向量化」里选，
+ * 对话的在「设置 → 对话模型」里选。理由是**注册入口必须唯一**：
+ * 同一件事（这家供应商的这把钥匙）能在两个地方写，就必然会漂。
  *
- * 所以这里按成熟产品（6/6）的做法分三层，**顺序从上到下就是用户的心智顺序**：
- * 先决定"哪个用途用哪个模型"，再管理供应商，最后是供应商下面的模型清单。
+ * 模型行上仍会显示「用于向量化」这类标记，但那是**只读的状态**：
+ * 让用户删模型之前知道会影响什么。
  *
  * 密钥纪律：只显示掩码。**改名字时不回传掩码**——那会把密钥写成掩码。
  */
 import { computed, onMounted, ref } from 'vue'
 
 import {
-  bindSlot,
   createProvider,
   deleteModel,
   deleteProvider,
@@ -28,7 +26,6 @@ import {
   type Provider,
   type RegisteredModel,
   type Registry,
-  type Slot,
 } from '@/api/modelRegistry'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
@@ -61,43 +58,24 @@ const editingModel = ref('')
 const modelEdit = ref({ model_id: '', label: '', dim: '', capabilities: [] as string[] })
 
 const providers = computed(() => registry.value?.providers ?? [])
-const slots = computed(() => registry.value?.slots ?? [])
 const kinds = computed(() => registry.value?.provider_kinds ?? {})
 const capabilities = computed(() => registry.value?.capabilities ?? {})
+const slots = computed(() => registry.value?.slots ?? [])
 
 /** 某个供应商下的模型。 */
 function modelsOf(providerId: string): RegisteredModel[] {
   return (registry.value?.models ?? []).filter((item) => item.provider_id === providerId)
 }
 
-/** 用途键 → 中文名。界面上不能出现 `用于chat` 这种半中半英的混排。 */
+/**
+ * 用途键 → 中文名。
+ *
+ * **只用于模型行上的「用于向量化」标记**：绑定动作在「向量化 / 对话模型」面板里做
+ * （v0.8 归属整理：注册只有一个入口，选择在各自的分组里），但"这个模型正被谁用着"
+ * 要在这里看得见——删它之前得知道会影响什么。
+ */
 function slotLabel(key: string): string {
   return slots.value.find((item) => item.slot === key)?.label ?? key
-}
-
-/** 可以绑到某个用途的模型：声明了该能力，或压根没声明（旧数据不拦）。 */
-function bindableModels(slot: Slot): RegisteredModel[] {
-  return (registry.value?.models ?? []).filter((item) => {
-    const owner = providers.value.find((p) => p.id === item.provider_id)
-    if (!owner || !owner.enabled) return false
-    return item.capabilities.length === 0 || item.capabilities.includes(slot.capability)
-  })
-}
-
-/** 嵌入槽位在全局这一层只是"新建知识库时的默认值"——名字要说出这件事。 */
-function displaySlotLabel(slot: Slot): string {
-  return slot.slot === 'embedding' ? '默认嵌入模型' : slot.label
-}
-
-/** 用途下拉的选项：空值 = 不绑定，其余是"模型名 · 供应商"。 */
-function slotOptions(slot: Slot): { value: string; label: string }[] {
-  return [
-    { value: '', label: '未指定' },
-    ...bindableModels(slot).map((model) => ({
-      value: model.id,
-      label: `${model.label || model.model_id} · ${model.provider_name}`,
-    })),
-  ]
 }
 
 /** 供应商类别下拉（键值对由后端给出，避免前端硬编码类别名）。 */
@@ -117,21 +95,6 @@ async function load(): Promise<void> {
 }
 
 onMounted(load)
-
-// ------------------------------------------------------------------ 用途绑定
-
-async function onBind(slot: Slot, value: string): Promise<void> {
-  busy.value = `slot:${slot.slot}`
-  try {
-    await bindSlot(slot.slot, value || null)
-    await load()
-    notifySuccess(value ? `${slot.label}已绑定` : `${slot.label}已解绑，回退到精细配置`)
-  } catch (cause) {
-    notifyError(cause instanceof Error ? cause.message : '绑定失败')
-  } finally {
-    busy.value = ''
-  }
-}
 
 /**
  * 探活供应商（第二轮评审批注 4）。
@@ -332,39 +295,8 @@ defineExpose({ load })
     <p v-if="loading" class="muted">正在加载模型配置…</p>
 
     <template v-else>
-      <!-- 第一部分：用途分配。**放最上面**，因为这才是用户每天要改的东西 -->
-      <section class="block">
-        <h3 class="block-title">
-          全局用途
-          <InfoTip
-            text="对话与重排是全局的，所有库共用。嵌入模型不在这里定——它是知识库属性，新建知识库时再选（见「知识库 → 新建」），这样小库能用高精度模型、大库能用小模型提速。"
-          />
-        </h3>
-
-        <div v-for="item in slots" :key="item.slot" class="slot-row">
-          <div class="slot-name">
-            <span class="slot-label">{{ displaySlotLabel(item) }}</span>
-            <InfoTip
-              v-if="item.slot === 'embedding'"
-              text="这是新建知识库时的预选模型。每个知识库在创建时各自选定并冻结，之后不能更换（换模型要新建库）。"
-            />
-            <StatusTag v-if="item.source === 'registry'" tone="success" label="已绑定" />
-            <StatusTag v-else-if="item.source === 'settings'" tone="neutral" label="走精细配置" />
-            <StatusTag v-else tone="warning" label="未配置" />
-          </div>
-
-          <AppSelect
-            class="slot-select"
-            :model-value="item.bound_model_pk ?? ''"
-            :options="slotOptions(item)"
-            :disabled="busy === `slot:${item.slot}`"
-            :aria-label="`为「${item.label}」指定模型`"
-            @update:model-value="onBind(item, $event)"
-          />
-        </div>
-      </section>
-
-      <!-- 第二部分：供应商 -->
+      <!-- 供应商 → 模型清单。「用哪个模型」不在这里绑定：
+           向量化的默认模型在「向量化」里选，对话的在「对话模型」里选（v0.8 归属整理） -->
       <section class="block">
         <div class="block-head">
           <div>
@@ -644,38 +576,6 @@ defineExpose({ load })
   gap: var(--space-1);
   margin: 0;
   font-size: var(--text-section-size);
-}
-
-/* ---- 用途分配 ---- */
-
-.slot-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) 0;
-}
-
-.slot-row + .slot-row {
-  border-top: 1px solid var(--border-hairline);
-}
-
-.slot-name {
-  display: flex;
-  /* 200px：加了图标位与问号之后，「默认嵌入模型」在 180px 下会折行 */
-  flex: 0 0 200px;
-  align-items: center;
-  gap: var(--space-2);
-}
-
-.slot-label {
-  font-size: var(--text-meta-size);
-  color: var(--text-primary);
-}
-
-/* 只留布局：外观由 AppSelect 统一（《界面评审与改进计划》§1） */
-.slot-select {
-  flex: 1;
-  min-width: 0;
 }
 
 /* ---- 供应商 ---- */

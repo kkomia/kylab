@@ -153,9 +153,9 @@ async function onLogout(): Promise<void> {
 
 <template>
   <aside class="sidebar">
+    <!-- 字标自带 "KYLAB" 字样，不再并排写一遍品牌名（重复反而削弱标识性） -->
     <div class="brand">
-      <IconLogo />
-      <span class="brand-name">KYLAB 知识库</span>
+      <IconLogo :size="24" />
     </div>
 
     <nav class="nav" aria-label="主导航">
@@ -273,11 +273,6 @@ async function onLogout(): Promise<void> {
   gap: var(--space-2);
   padding: var(--space-4) var(--space-4) var(--space-3);
   color: var(--text-primary);
-}
-
-.brand-name {
-  font-weight: 600;
-  letter-spacing: -0.005em;
 }
 
 .nav {

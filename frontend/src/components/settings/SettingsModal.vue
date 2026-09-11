@@ -20,6 +20,13 @@ import { computed, onMounted, ref, watch, type Component } from 'vue'
 import { MIN_PASSWORD_CHARS } from '@/api/auth'
 import { fetchHealth, type HealthResponse } from '@/api/health'
 import {
+  bindSlot,
+  getRegistry,
+  type RegisteredModel,
+  type Registry,
+  type Slot,
+} from '@/api/modelRegistry'
+import {
   getAuthStatus,
   getSettings,
   testConnection,
@@ -434,6 +441,85 @@ async function refresh(): Promise<void> {
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : '配置读取失败'
   }
+  await loadRegistry()
+}
+
+// ------------------------------------------------------------------ 默认模型
+
+/**
+ * 模型注册表：本面板只**读**它，用来列出"可以选为默认的模型"。
+ *
+ * v0.8 归属整理：模型注册只负责登记，"哪个用途用哪个模型"在各自的分组里选
+ * （向量化 / 对话模型）。所以这里不再做注册，只做选择。
+ */
+const registry = ref<Registry | null>(null)
+
+async function loadRegistry(): Promise<void> {
+  try {
+    registry.value = await getRegistry()
+  } catch {
+    // 注册表读不到不该让整页报错：选择框退化成"只剩未指定"，用户至少能看懂状态
+    registry.value = null
+  }
+}
+
+/** 用途 → 当前状态（未绑定时后端也会给一条，`configured` 为假）。 */
+function slotOf(key: string): Slot | undefined {
+  return registry.value?.slots.find((item) => item.slot === key)
+}
+
+/** 可以绑到某个用途的模型：声明了该能力，或压根没声明（旧数据不拦）。 */
+function bindableModels(slot: string): RegisteredModel[] {
+  const capability = slotOf(slot)?.capability ?? slot
+  return (registry.value?.models ?? []).filter((model) => {
+    const owner = registry.value?.providers.find((p) => p.id === model.provider_id)
+    if (!owner || !owner.enabled) return false
+    return model.capabilities.length === 0 || model.capabilities.includes(capability)
+  })
+}
+
+/** 下拉选项：空值 = 未指定，其余是"模型名 · 供应商"。 */
+function slotOptions(slot: string): { value: string; label: string }[] {
+  return [
+    { value: '', label: '未指定' },
+    ...bindableModels(slot).map((model) => ({
+      value: model.id,
+      label: `${model.label || model.model_id} · ${model.provider_name}`,
+    })),
+  ]
+}
+
+const bindingSlot = ref('')
+
+async function onBindSlot(slot: string, value: string): Promise<void> {
+  bindingSlot.value = slot
+  try {
+    await bindSlot(slot, value || null)
+    await refresh()
+    notifySuccess(value ? '默认模型已更新' : '已取消默认模型')
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '保存失败')
+  } finally {
+    bindingSlot.value = ''
+  }
+}
+
+/** 是否已选定默认嵌入模型。为假时不能建库（与后端同一口径）。 */
+const embeddingConfigured = computed(() => slotOf('embedding')?.configured ?? false)
+const chatConfigured = computed(() => slotOf('chat')?.configured ?? false)
+
+/**
+ * 选中模型的"身份证"：名称 · 维度 · 供应商。
+ *
+ * 未选定时返回空串——选择器里已经写着「未指定」了，再跟一行同样的字只是噪声。
+ */
+function slotSummary(slot: string): string {
+  const state = slotOf(slot)
+  if (!state?.configured) return ''
+  const model = registry.value?.models.find((item) => item.id === state.bound_model_pk)
+  if (!model) return state.bound_model_label || '—'
+  const dim = model.dim ? ` · ${model.dim} 维` : ''
+  return `${model.label || model.model_id}${dim} · ${state.provider_name}`
 }
 
 function group(key: string): SettingGroup | undefined {
@@ -451,8 +537,6 @@ function isConfigured(groupKey: string, fieldKey: string): boolean {
 function secretSummary(groupKey: string, fieldKey: string): string {
   return isConfigured(groupKey, fieldKey) ? fieldValue(groupKey, fieldKey) : '未配置'
 }
-
-const embeddingConfigured = computed(() => isConfigured('embedding', 'embedding.api_key'))
 
 /**
  * 浏览态的对话模型连通性测试。
@@ -559,32 +643,73 @@ async function runTest(target: string): Promise<void> {
       <div class="settings-body">
         <p v-if="loadError" class="error-line">{{ loadError }}</p>
 
-        <!-- 模型（G1）：供应商 → 模型 → 用途。这是配置模型的**主路径** -->
+        <!-- 模型注册：**只登记模型**（供应商 → 模型清单） -->
         <template v-if="section === 'registry'">
           <ModelRegistryPanel />
         </template>
 
-        <!-- 向量化与重排的精细字段：未在「模型」里绑定对应用途时生效 -->
+        <!-- 向量化：只在这里**选**默认模型；登记在「模型注册」里做（v0.8 归属整理） -->
         <template v-else-if="section === 'models'">
-          <template v-if="editing?.key === 'embedding' || editing?.key === 'rerank'">
+          <template v-if="editing?.key === 'embedding'">
             <h3 class="section-title">编辑 {{ editing.label }}</h3>
             <div class="edit-form">
               <label v-for="field in editing.fields" :key="field.key" class="edit-field">
-                <span class="edit-label">
-                  {{ field.label }}
-                  <span v-if="field.type === 'secret' && field.configured" class="edit-current">
-                    当前 {{ field.value }}
-                  </span>
-                </span>
+                <span class="edit-label">{{ field.label }}</span>
                 <AppInput
                   v-model="draft[field.key]"
                   :type="field.type === 'int' ? 'number' : 'text'"
-                  :placeholder="field.type === 'secret' ? '留空表示不改动' : ''"
                 />
               </label>
-              <p v-if="editing.key === 'embedding'" class="edit-hint">
-                维度必须与模型实际输出一致（bge-m3 为 1024）。库内已有向量后再改模型会被拒绝（架构
-                §6.4）。
+              <p class="edit-hint">批大小影响单次请求的文本条数，太大可能被端点拒绝。</p>
+            </div>
+            <div class="edit-actions">
+              <AppButton @click="editing = null">返回</AppButton>
+              <AppButton variant="primary" :disabled="saving" @click="save">
+                {{ saving ? '保存中…' : '保存' }}
+              </AppButton>
+            </div>
+          </template>
+
+          <template v-else>
+            <h3 class="section-title">
+              向量化
+              <InfoTip
+                text="模型在「模型注册」里登记，这里只负责选默认的那个。新建知识库时也可以为单个库另选（小库用高精度、大库用小模型）。"
+              />
+            </h3>
+
+            <div class="slot-field">
+              <div class="slot-head">
+                <span class="slot-label">
+                  默认嵌入模型
+                  <InfoTip
+                    text="库建好即冻结，之后不能换（换模型要新建库）。未指定时无法新建知识库。"
+                  />
+                </span>
+                <StatusTag
+                  :tone="embeddingConfigured ? 'success' : 'warning'"
+                  :label="embeddingConfigured ? '已选定' : '未选定'"
+                />
+                <AppButton
+                  :disabled="testing || !embeddingConfigured"
+                  @click="runTest('embedding')"
+                >
+                  {{ testing ? '测试中…' : '测试连接' }}
+                </AppButton>
+              </div>
+              <AppSelect
+                :model-value="slotOf('embedding')?.bound_model_pk ?? ''"
+                :options="slotOptions('embedding')"
+                :disabled="bindingSlot === 'embedding'"
+                aria-label="默认嵌入模型"
+                @update:model-value="onBindSlot('embedding', $event)"
+              />
+              <p v-if="slotSummary('embedding')" class="slot-value tabular">
+                {{ slotSummary('embedding') }}
+              </p>
+              <p v-if="!embeddingConfigured" class="row-note">
+                未选定前不能新建知识库：没有嵌入模型就没有向量空间。如果这里没有可选项，
+                先到「模型注册」添加供应商并登记模型。
               </p>
               <div
                 v-if="testResult"
@@ -595,59 +720,47 @@ async function runTest(target: string): Promise<void> {
                 <span>{{ testResult.detail }}</span>
               </div>
             </div>
-            <div class="edit-actions">
-              <AppButton :disabled="testing" @click="runTest(editing.key)">
-                <template #icon><IconRefresh /></template>
-                {{ testing ? '测试中…' : '测试连接' }}
-              </AppButton>
-              <AppButton @click="editing = null">返回</AppButton>
-              <AppButton variant="primary" :disabled="saving" @click="save">
-                {{ saving ? '保存中…' : '保存' }}
-              </AppButton>
-            </div>
-          </template>
 
-          <template v-else>
-            <h3 class="section-title">模型配置</h3>
+            <div class="slot-field">
+              <div class="slot-head">
+                <span class="slot-label">
+                  重排模型
+                  <InfoTip text="可选。不选则整体跳过重排，不影响检索可用性。" />
+                </span>
+                <StatusTag
+                  :tone="slotOf('rerank')?.configured ? 'success' : 'neutral'"
+                  :label="slotOf('rerank')?.configured ? '已启用' : '未启用'"
+                />
+                <AppButton
+                  :disabled="testing || !slotOf('rerank')?.configured"
+                  @click="runTest('rerank')"
+                >
+                  {{ testing ? '测试中…' : '测试连接' }}
+                </AppButton>
+              </div>
+              <AppSelect
+                :model-value="slotOf('rerank')?.bound_model_pk ?? ''"
+                :options="slotOptions('rerank')"
+                :disabled="bindingSlot === 'rerank'"
+                aria-label="重排模型"
+                @update:model-value="onBindSlot('rerank', $event)"
+              />
+              <p v-if="slotSummary('rerank')" class="slot-value tabular">
+                {{ slotSummary('rerank') }}
+              </p>
+            </div>
+
+            <h3 class="section-title section-gap">高级</h3>
             <div class="row">
               <div class="row-main">
-                <span class="row-label">向量化</span>
-                <InfoTip
-                  text="未配置 Key 时用确定性哈希兜底：只有词面匹配、没有语义，检索质量不代表真实效果。"
-                />
-                <span class="row-value">
-                  {{ fieldValue('embedding', 'embedding.model_id') || '未指定模型'
-                  }}<span class="sep">·</span>{{ config?.embedding_dim ?? '—' }} 维<span class="sep"
-                    >·</span
-                  ><span :class="{ 'text-warn': !embeddingConfigured }">{{
-                    secretSummary('embedding', 'embedding.api_key')
-                  }}</span>
-                </span>
+                <span class="row-label">批大小</span>
+                <span class="row-value tabular">{{
+                  fieldValue('embedding', 'embedding.batch_size') || '—'
+                }}</span>
               </div>
-              <StatusTag
-                v-if="config"
-                :tone="config.embedding_is_development ? 'warning' : 'success'"
-                :label="config.embedding_is_development ? '开发兜底' : '已启用'"
-              />
               <AppButton v-if="group('embedding')" @click="openEdit(group('embedding')!)">
                 编辑
               </AppButton>
-            </div>
-
-            <div class="row">
-              <div class="row-main">
-                <span class="row-label">重排 rerank</span>
-                <InfoTip text="未配置时整体跳过重排，不影响检索可用性。" />
-                <span class="row-value">
-                  {{ fieldValue('rerank', 'rerank.model_id') || '未指定模型'
-                  }}<span class="sep">·</span>{{ secretSummary('rerank', 'rerank.api_key') }}
-                </span>
-              </div>
-              <StatusTag
-                :tone="config?.rerank_enabled ? 'success' : 'neutral'"
-                :label="config?.rerank_enabled ? '已启用' : '未启用'"
-              />
-              <AppButton v-if="group('rerank')" @click="openEdit(group('rerank')!)">编辑</AppButton>
             </div>
           </template>
         </template>
@@ -723,30 +836,56 @@ async function runTest(target: string): Promise<void> {
           <template v-else>
             <h3 class="section-title">
               对话模型（LLM）
-              <InfoTip text="没配好时「对话」会直接报错，不会编造没有依据的答案。" />
+              <InfoTip
+                text="模型在「模型注册」里登记，这里只选默认的那个。没选时「对话」会直接报错，不会编造没有依据的答案。"
+              />
             </h3>
 
+            <div class="slot-field">
+              <div class="slot-head">
+                <span class="slot-label">默认对话模型</span>
+                <StatusTag
+                  :tone="chatConfigured ? 'success' : 'warning'"
+                  :label="chatConfigured ? '已选定' : '未选定'"
+                />
+                <AppButton :disabled="llmTesting || !chatConfigured" @click="testLlm">
+                  {{ llmTesting ? '测试中…' : '测试连接' }}
+                </AppButton>
+              </div>
+              <AppSelect
+                :model-value="slotOf('chat')?.bound_model_pk ?? ''"
+                :options="slotOptions('chat')"
+                :disabled="bindingSlot === 'chat'"
+                aria-label="默认对话模型"
+                @update:model-value="onBindSlot('chat', $event)"
+              />
+              <p v-if="slotSummary('chat')" class="slot-value tabular">
+                {{ slotSummary('chat') }}
+              </p>
+              <p v-if="!chatConfigured" class="row-note">
+                未选定时「对话」与标题生成不可用。如果这里没有可选项，先到「模型注册」登记对话模型。
+              </p>
+              <div v-if="llmTest" class="test-result" :class="llmTest.ok ? 'test-ok' : 'test-bad'">
+                <IconCheck v-if="llmTest.ok" :size="14" />
+                <span>{{ llmTest.detail }}</span>
+              </div>
+            </div>
+
+            <h3 class="section-title section-gap">采样与行为</h3>
             <div class="row">
               <div class="row-main">
-                <span class="row-label">对话模型</span>
-                <span class="row-value">
-                  {{ fieldValue('llm', 'llm.model_id') || '未指定模型' }}<span class="sep">·</span
-                  >{{ secretSummary('llm', 'llm.api_key') }}
+                <span class="row-label">温度 / 最大回复长度 / 深度思考</span>
+                <span class="row-value tabular">
+                  温度 {{ fieldValue('llm', 'llm.temperature') || '—' }}<span class="sep">·</span
+                  >{{ fieldValue('llm', 'llm.max_tokens') || '—' }} tokens<span class="sep">·</span
+                  >{{
+                    fieldValue('llm', 'llm.enable_thinking') === 'true'
+                      ? '深度思考开'
+                      : '深度思考关'
+                  }}
                 </span>
               </div>
-              <StatusTag
-                :tone="isConfigured('llm', 'llm.api_key') ? 'success' : 'warning'"
-                :label="isConfigured('llm', 'llm.api_key') ? '已配置' : '未配置'"
-              />
-              <AppButton :disabled="llmTesting" @click="testLlm">
-                <template #icon><IconRefresh /></template>
-                {{ llmTesting ? '测试中…' : '测试连接' }}
-              </AppButton>
               <AppButton v-if="group('llm')" @click="openEdit(group('llm')!)">编辑</AppButton>
-            </div>
-            <div v-if="llmTest" class="test-result" :class="llmTest.ok ? 'test-ok' : 'test-bad'">
-              <IconCheck v-if="llmTest.ok" :size="14" />
-              <span>{{ llmTest.detail }}</span>
             </div>
             <p v-if="fieldValue('llm', 'llm.enable_thinking') === 'true'" class="row-note">
               更慢、更费 token；确认「最大回复长度」够大。
@@ -1383,6 +1522,40 @@ async function runTest(target: string): Promise<void> {
   gap: var(--space-3);
   padding: var(--space-3) 0;
   border-bottom: 1px solid var(--border-hairline);
+}
+
+/* 「选默认模型」这一块：标签 + 状态一行，选择器独占一行。
+   选择器比按钮宽得多，塞进 .row 的右侧会被压成一条窄缝——所以它不进 .row */
+.slot-field {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.slot-field + .slot-field {
+  border-top: none;
+}
+
+.slot-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.slot-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-body-size);
+  color: var(--text-primary);
+}
+
+/* 选中模型的"身份证"：名称 · 维度 · 供应商。光看选择器里的短标签不够确认 */
+.slot-value {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
 }
 
 .row-static {

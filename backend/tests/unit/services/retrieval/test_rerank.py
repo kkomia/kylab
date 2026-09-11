@@ -139,14 +139,15 @@ def test_factory_returns_noop_without_credentials(runtime) -> None:
     assert isinstance(build_reranker(runtime), NoopReranker)
 
 
-def test_factory_returns_real_reranker_when_configured(runtime) -> None:
-    runtime.set({"rerank.api_key": "k", "rerank.model_id": "bge-reranker"})
+def test_factory_returns_real_reranker_when_configured(runtime, bind_slot) -> None:
+    """重排模型只在注册表里选（v0.8）：绑定了才真的启用。"""
+    bind_slot("rerank", model_id="bge-reranker", capabilities=["rerank"])
     reranker = build_reranker(runtime)
     assert isinstance(reranker, OpenAICompatReranker)
     assert reranker.enabled is True
 
 
-@pytest.mark.parametrize(("api_key", "model"), [("", "m"), ("k", "")])
-def test_factory_needs_both_credentials(runtime, api_key: str, model: str) -> None:
-    runtime.set({"rerank.api_key": api_key, "rerank.model_id": model})
+def test_factory_needs_an_api_key(runtime, bind_slot) -> None:
+    """绑了个没填 Key 的供应商不算配好——否则重排会在调用时才炸。"""
+    bind_slot("rerank", model_id="bge-reranker", capabilities=["rerank"], api_key="")
     assert isinstance(build_reranker(runtime), NoopReranker)

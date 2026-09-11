@@ -30,6 +30,7 @@ from app.services.conversation import ConversationService
 from app.services.documents import DocumentService
 from app.services.embedding import build_embedder
 from app.services.embedding.base import EmbeddingProvider
+from app.services.embedding.deterministic import DeterministicEmbedder
 from app.services.embedding.resolver import EmbeddingResolver
 from app.services.idempotency import IdempotencyService
 from app.services.ingest import IngestService
@@ -115,11 +116,17 @@ class _RuntimeEmbedder(EmbeddingProvider):
     每次检索的 query），逐个去记必然漏。包在 provider 外面就有唯一入口。
     向量化接口通常**不返回 usage**，所以这里的 token 是按字符数估的——
     因此 ``reported=False``，界面上会明确标注"这是估算"。
+
+    ``model_id`` / ``dim`` 走**配置快照**而不是 ``current``：接口层要读它们做展示，
+    没配模型时那里不该抛异常，而应如实回"未配置"。
     """
 
-    def __init__(self, runtime: RuntimeConfigService, usage_recorder=None) -> None:  # type: ignore[no-untyped-def]
+    def __init__(
+        self, runtime: RuntimeConfigService, usage_recorder=None, *, dev_embedding: bool = False
+    ) -> None:  # type: ignore[no-untyped-def]
         self._runtime = runtime
         self._usage_recorder = usage_recorder
+        self._dev_embedding = dev_embedding
 
     def _record(self, texts: Sequence[str], started: float) -> None:
         if self._usage_recorder is None:
@@ -131,7 +138,7 @@ class _RuntimeEmbedder(EmbeddingProvider):
         self._usage_recorder(
             kind="embedding",
             provider=snapshot.base_url,
-            model_id=snapshot.model_id,
+            model_id=self.model_id,
             # estimated=True：这是我们按字符数估的，不是接口报的。
             # 不标记的话统计页会把估算当实测展示（假精度比没数字更糟）
             usage=LLMUsage(prompt_tokens=estimated, estimated=True),
@@ -141,19 +148,31 @@ class _RuntimeEmbedder(EmbeddingProvider):
 
     @property
     def current(self) -> EmbeddingProvider:
-        return build_embedder(self._runtime)
+        return build_embedder(self._runtime, dev_embedding=self._dev_embedding)
+
+    @property
+    def configured(self) -> bool:
+        """是否真的配了嵌入模型。界面据此区分"没配"与"配了但坏了"。"""
+        return self._runtime.embedding().is_configured
 
     @property
     def model_id(self) -> str:
-        return self.current.model_id
+        snapshot = self._runtime.embedding()
+        if snapshot.is_configured:
+            return snapshot.model_id
+        return DeterministicEmbedder.model_id if self._dev_embedding else ""
 
     @property
     def dim(self) -> int:
-        return self.current.dim
+        snapshot = self._runtime.embedding()
+        if snapshot.dim:
+            return snapshot.dim
+        return 256 if self._dev_embedding else 0
 
     @property
     def is_development(self) -> bool:
-        return self.current.is_development
+        """只有在**没配模型但显式开了开发兜底**时才为真。"""
+        return self._dev_embedding and not self._runtime.embedding().is_configured
 
     def embed(self, texts):  # type: ignore[no-untyped-def]
         started = time.monotonic()
@@ -206,7 +225,7 @@ def build_services(
     def _record_embed_usage(**kwargs: object) -> None:
         usage.record(**kwargs)  # type: ignore[arg-type]
 
-    embedder = _RuntimeEmbedder(runtime, _record_embed_usage)
+    embedder = _RuntimeEmbedder(runtime, _record_embed_usage, dev_embedding=resolved.dev_embedding)
     reranker = _RuntimeReranker(runtime)
     # 嵌入模型是知识库属性（v11）：按库解析。显式选了注册模型就用它，
     # 否则回退到上面的全局 embedder——老库与"不挑模型"的库行为不变

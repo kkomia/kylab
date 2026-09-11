@@ -245,8 +245,10 @@ class SearchResponse(BaseModel):
     reranked: bool
     filtered_out: int = 0
     stats: list[ChannelStatOut] = Field(default_factory=list)
+    embedding_configured: bool = True
+    """是否配了嵌入模型。为假时本次只做了全文通道，界面要如实说明。"""
     embedding_is_development: bool = False
-    """当前 embedding 是否为开发兜底实现：界面据此提示"检索质量不代表真实效果"。"""
+    """是否为开发用确定性嵌入（仅显式开着开发开关时）：界面提示"检索质量不代表真实效果"。"""
 
 
 # --------------------------------------------------------------------- 设置
@@ -274,6 +276,8 @@ class SettingsViewOut(BaseModel):
     groups: list[SettingGroupOut]
     embedding_model_id: str
     embedding_dim: int
+    embedding_configured: bool
+    """是否已选定嵌入模型。为假时不能建库，界面要给出去哪儿配的指引。"""
     embedding_is_development: bool
     rerank_enabled: bool
 
@@ -591,10 +595,9 @@ class SlotOut(BaseModel):
     bound_model_label: str = ""
     provider_name: str = ""
     configured: bool = False
-    """最终是否可用于该用途（注册表绑定了，或设置页那套字段填过）。"""
+    """最终是否可用于该用途（v0.8 起只看注册表里有没有绑定）。"""
     source: str = "none"
-    """``registry`` / ``settings`` / ``none``——说清当前生效的是哪一套，
-    否则用户会疑惑"我在设置页填了为什么还提示要绑定"。"""
+    """``registry`` / ``none``——保留字段以便将来出现第二种来源时不用改接口形状。"""
 
 
 class SlotBindIn(BaseModel):

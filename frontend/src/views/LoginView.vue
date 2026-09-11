@@ -90,8 +90,7 @@ async function submit(): Promise<void> {
   <div class="login">
     <div class="login-panel">
       <div class="login-brand">
-        <IconLogo />
-        <span class="login-brand-name">KYLAB 知识库</span>
+        <IconLogo :size="32" />
       </div>
 
       <h1 class="login-title">{{ isSetup ? '创建管理员账号' : '登录' }}</h1>
@@ -188,11 +187,6 @@ async function submit(): Promise<void> {
   align-items: center;
   gap: var(--space-2);
   color: var(--text-primary);
-}
-
-.login-brand-name {
-  font-weight: 600;
-  letter-spacing: -0.005em;
 }
 
 .login-title {

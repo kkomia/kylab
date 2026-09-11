@@ -74,23 +74,22 @@ class Settings(BaseSettings):
     paddleocr_token: str | None = None
 
     # Embedding（M2 启用；模型切换规则见架构设计 v0.2 §6.4）
-    embedding_base_url: str = "https://api.siliconflow.cn/v1"
-    embedding_api_key: str | None = None
-    embedding_model: str | None = None
-    embedding_dim: int = 256
-    """默认值对应开发兜底实现；换成真实模型时必须改成其真实维度（如 bge-m3 为 1024）。"""
+    #
+    # **模型的地址 / 密钥 / 名称 / 维度不在这里**：它们属于"注册了哪个模型"，
+    # 统一由模型注册表（供应商 → 模型）承担，见 services/model_registry.py。
+    # 这里是**行为参数**，不是模型身份。
     embedding_batch_size: int = 32
 
-    # Rerank（M3 启用；不配置则跳过重排，架构 §5）
-    rerank_base_url: str = "https://api.siliconflow.cn/v1"
-    rerank_api_key: str | None = None
-    rerank_model: str | None = None
+    dev_embedding: bool = False
+    """开发用确定性嵌入（哈希）开关，**默认关闭，生产不要开**。
 
-    # 对话模型（M6 快速检索问答；与 embedding 是两个不同的模型）
-    # 这些同样只是**引导默认值**，实际以设置页写入 app_settings 的为准
-    llm_base_url: str = "https://api.siliconflow.cn/v1"
-    llm_api_key: str | None = None
-    llm_model: str | None = None
+    关闭时"没配嵌入模型"就是**没配**：建库被拒、向量通道跳过，界面上如实说明。
+    打开它才会退回无语义的词面哈希——这个开关存在的唯一理由是离线开发与测试
+    需要一条不联网的链路，而不是给产品留一条"看起来能用"的假路径。
+    """
+
+    # 对话模型（M6 快速检索问答）
+    # 地址 / 密钥 / 模型名同样由注册表决定，这里只留采样与思考开关
     llm_temperature: float = 0.3
     llm_max_tokens: int = 1024
     llm_enable_thinking: bool = False

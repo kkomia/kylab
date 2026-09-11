@@ -1,10 +1,11 @@
-"""注册器与配置层的叠加关系（G1）。
+"""注册器与配置层的桥接（G1 / v0.8 归属整理）。
 
 镜像同构：``runtime_config.py`` 的 ``_bound`` 桥接 + 各快照方法 → 本文件。
 
-**这是 G1 里最要紧的一组用例**：注册器是**叠加**层而不是替换层。
-- 没绑定 → 完全照旧走 ``.env`` / 设置页（升级不打断已有部署）；
-- 绑定了 → 以注册表为准（同一个供应商下要用多个模型、换模型不覆盖旧凭据）。
+**v0.8 起注册表是模型身份的唯一来源**：地址 / 密钥 / 模型名 / 维度都只从
+绑定里取。没绑定就是没配（``is_configured`` 为假），设置页那些
+``embedding.model_id`` / ``llm.api_key`` 之类的键已经不再参与解析——
+留着半生效的第二个入口比没有更糟。
 """
 
 from __future__ import annotations
@@ -36,42 +37,49 @@ def _bind_chat(registry: ModelRegistryService, *, model_id="bound-chat-model", *
     return owner, model
 
 
-# --------------------------------------------------------------------- 回退
+# --------------------------------------------------------------------- 未绑定
 
 
-def test_without_a_registry_everything_falls_back(bundle) -> None:  # type: ignore[no-untyped-def]
-    """注册器缺席时行为与从前完全一致——既有部署与既有测试都不受影响。"""
+def test_without_a_registry_everything_is_unconfigured(bundle) -> None:  # type: ignore[no-untyped-def]
+    """注册器缺席时拿不到任何模型——**不再退回设置页**。
+
+    ``llm()`` 仍然可调用（要能安全地问"配好了没"），但快照是空的。
+    """
     runtime = RuntimeConfigService(bundle, None)  # 不传 registry
     bundle.meta.set_setting("llm.model_id", "from-settings")
     bundle.meta.set_setting("llm.api_key", "sk-settings")
 
     snapshot = runtime.llm()
 
-    assert snapshot.model_id == "from-settings"
-    assert snapshot.api_key == "sk-settings"
+    assert snapshot.is_configured is False
+    assert snapshot.model_id == ""
 
 
-def test_unbound_slot_uses_the_settings_page(bundle, runtime) -> None:  # type: ignore[no-untyped-def]
-    """**没绑定就走设置页那套。** 这是叠加层的核心，升级不能打断已有部署。"""
+def test_unbound_slot_is_unconfigured(bundle, runtime) -> None:  # type: ignore[no-untyped-def]
+    """**没绑用途就是没配**：设置页里写过的旧键不再参与解析。
+
+    这是 v0.8 归属整理的核心——"注册了哪个模型"只有一个入口，
+    否则两处各写一遍必然漂。
+    """
     bundle.meta.set_setting("llm.model_id", "from-settings")
     bundle.meta.set_setting("llm.api_key", "sk-settings")
 
     snapshot = runtime.llm()
 
-    assert snapshot.model_id == "from-settings"
-    assert snapshot.api_key == "sk-settings"
+    assert snapshot.is_configured is False
+    assert runtime.embedding().is_configured is False
+    assert runtime.rerank().is_configured is False
 
 
-# --------------------------------------------------------------------- 覆盖
+# --------------------------------------------------------------------- 绑定
 
 
-def test_bound_slot_overrides_the_settings_page(bundle, runtime, registry) -> None:  # type: ignore[no-untyped-def]
-    bundle.meta.set_setting("llm.model_id", "from-settings")
-    bundle.meta.set_setting("llm.api_key", "sk-settings")
+def test_bound_slot_supplies_the_identity(runtime, registry) -> None:  # type: ignore[no-untyped-def]
     _bind_chat(registry, api_key="sk-registry")
 
     snapshot = runtime.llm()
 
+    assert snapshot.is_configured is True
     assert snapshot.model_id == "bound-chat-model"
     assert snapshot.api_key == "sk-registry"
     assert snapshot.base_url == "https://registry.example.com"
@@ -96,22 +104,26 @@ def test_embedding_binding_drives_model_and_dim(bundle, runtime, registry) -> No
     assert snapshot.api_key == "sk-emb"
 
 
-def test_embedding_falls_back_to_settings_dim_when_not_registered(
-    bundle, runtime, registry
+def test_embedding_without_a_registered_dim_is_unconfigured(
+    runtime, registry
 ) -> None:  # type: ignore[no-untyped-def]
-    """注册表没登记 dim 时用设置页的值——总比 0 强。"""
-    bundle.meta.set_setting("embedding.dim", "768")
-    owner = registry.create_provider(kind="embedding", name="向量家")
+    """注册表没登记 dim 就是配不好——**不从设置页补一个**。
+
+    维度决定向量空间大小，猜错了检索会静默变差；宁可让用户去补登记。
+    """
+    owner = registry.create_provider(kind="embedding", name="向量家", api_key="sk-emb")
     model = registry.register_model(
         provider_id=owner.id, model_id="no-dim-model", capabilities=["embedding"]
     )
     registry.bind("embedding", model.id)
 
-    assert runtime.embedding().dim == 768
+    snapshot = runtime.embedding()
+
+    assert snapshot.dim == 0
+    assert snapshot.is_configured is False
 
 
-def test_rerank_binding_overrides(bundle, runtime, registry) -> None:  # type: ignore[no-untyped-def]
-    bundle.meta.set_setting("rerank.model_id", "from-settings")
+def test_rerank_binding_supplies_the_identity(runtime, registry) -> None:  # type: ignore[no-untyped-def]
     owner = registry.create_provider(
         kind="rerank", name="重排家", base_url="https://rerank.example.com", api_key="sk-rr"
     )

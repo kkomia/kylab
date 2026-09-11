@@ -89,6 +89,9 @@ const embeddingIsDevelopment = computed(
   () => latest.value?.response?.embedding_is_development === true,
 )
 
+/** 没配嵌入模型：向量通道被跳过，本次只做了关键词检索。 */
+const embeddingMissing = computed(() => latest.value?.response?.embedding_configured === false)
+
 function selectTurn(index: number): void {
   activeTurn.value = index
 }
@@ -232,10 +235,14 @@ function hitKey(hit: SearchHit): string {
             </span>
           </div>
 
-          <p v-if="embeddingIsDevelopment" class="dev-warning">
+          <p v-if="embeddingMissing" class="dev-warning">
+            <strong>本次只做了关键词检索：</strong>
+            服务端未选定嵌入模型，向量通道已跳过。请到「设置 → 向量化」选定默认嵌入模型后重试。
+          </p>
+          <p v-else-if="embeddingIsDevelopment" class="dev-warning">
             <strong>向量召回不代表真实效果：</strong>
-            服务端未配置 embedding API Key，正在用确定性哈希兜底（只反映词面重叠，没有语义）。
-            此模式下 BM25 的结果是可信的，向量分数仅供链路自测。
+            当前用的是开发用确定性哈希（只反映词面重叠，没有语义）。 BM25
+            的结果是可信的，向量分数仅供链路自测。
           </p>
 
           <!-- 通道耗时：三列对齐，数字沿一条竖轴 -->

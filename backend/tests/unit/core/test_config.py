@@ -28,8 +28,9 @@ def test_secret_defaults_are_empty() -> None:
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
     assert settings.mineru_token is None
     assert settings.paddleocr_token is None
-    assert settings.embedding_api_key is None
-    assert settings.embedding_model is None
+    # 模型凭据（embedding / llm 的 key）已归注册表，连字段都不在这里了（v0.8）
+    assert not hasattr(settings, "embedding_api_key")
+    assert not hasattr(settings, "llm_api_key")
 
 
 def test_get_settings_is_cached() -> None:

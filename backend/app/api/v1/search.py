@@ -59,5 +59,6 @@ async def search(
         reranked=response.reranked,
         filtered_out=response.filtered_out,
         stats=[ChannelStatOut.model_validate(stat) for stat in response.stats],
+        embedding_configured=services.runtime.embedding().is_configured,
         embedding_is_development=services.embedder.is_development,
     )

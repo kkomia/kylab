@@ -255,7 +255,7 @@ def test_custom_system_prompt_wins_but_blank_falls_back() -> None:
 # --------------------------------------------------------------------- 服务
 
 
-def test_answer_returns_sources_and_passes_prompt_to_model(runtime, bundle) -> None:
+def test_answer_returns_sources_and_passes_prompt_to_model(runtime, bind_slot) -> None:
     fake = FakeChat("眼轴长度是主要监测指标。[1]")
     captured: dict = {}
 
@@ -285,7 +285,7 @@ def test_answer_returns_sources_and_passes_prompt_to_model(runtime, bundle) -> N
             )()
 
     service = ChatService(RecordingRetrieval(), runtime, chat_factory=lambda config: fake)  # type: ignore[arg-type]
-    runtime.set({"llm.api_key": "sk-test", "llm.model_id": "Qwen/Qwen3.5-4B"})
+    bind_slot("chat", model_id="Qwen/Qwen3.5-4B", capabilities=["chat"])
 
     turn = service.answer(query="近视怎么监测", sources=service.retrieve_sources(
         query="近视怎么监测", kb_ids=["kb_1"]
@@ -340,10 +340,10 @@ def test_preview_keeps_plain_angle_brackets() -> None:
     assert "b <= c" in preview
 
 
-def test_stream_yields_pieces_in_order(runtime) -> None:
+def test_stream_yields_pieces_in_order(runtime, bind_slot) -> None:
     fake = FakeChat("一二三")
     service = ChatService(_EmptyRetrieval(), runtime, chat_factory=lambda config: fake)
-    runtime.set({"llm.api_key": "sk-test", "llm.model_id": "m"})
+    bind_slot("chat", model_id="m", capabilities=["chat"])
 
     pieces = list(service.answer_stream(query="q", sources=[]))
 
@@ -353,7 +353,6 @@ def test_stream_yields_pieces_in_order(runtime) -> None:
 def test_unconfigured_llm_raises_actionable_error(runtime) -> None:
     """没配模型时必须报"去哪配"，而不是返回空答案让用户以为知识库里没有。"""
     service = ChatService(_EmptyRetrieval(), runtime, chat_factory=lambda config: FakeChat())
-    runtime.set({"llm.api_key": ""})
 
     with pytest.raises(ChatError) as excinfo:
         service.answer(query="q", sources=[])
@@ -361,7 +360,7 @@ def test_unconfigured_llm_raises_actionable_error(runtime) -> None:
     assert "设置" in str(excinfo.value)
 
 
-def test_probe_reports_empty_content_as_error(runtime) -> None:
+def test_probe_reports_empty_content_as_error(runtime, bind_slot) -> None:
     """推理模型只回思考、content 为空时，探针必须报错而不是返回空串。"""
 
     class EmptyMessage:
@@ -369,7 +368,7 @@ def test_probe_reports_empty_content_as_error(runtime) -> None:
             raise ChatError("模型只返回了思考过程、没有正文")
 
     service = ChatService(_EmptyRetrieval(), runtime, chat_factory=lambda c: EmptyMessage())
-    runtime.set({"llm.api_key": "sk-test", "llm.model_id": "m"})
+    bind_slot("chat", model_id="m", capabilities=["chat"])
 
     with pytest.raises(ChatError):
         service.probe()

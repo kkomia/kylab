@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from app.core.services import get_services
 from app.services.chat import SourceRef
 from app.services.llm import ChatError
+from tests.conftest import bind_model
 
 
 class FakeChat:
@@ -50,7 +51,7 @@ def kb_id(client: TestClient) -> str:
 def _install_fake_chat(answer: str = "这是回答。[1]", error: str | None = None) -> None:
     """把 ChatService 的模型工厂换成假的，并配好 llm（否则它会先报"未配置"）。"""
     services = get_services()
-    services.runtime.set({"llm.api_key": "sk-fake", "llm.model_id": "fake-model"})
+    bind_model(services.models, "chat", model_id="fake-model", capabilities=["chat"])
     services.chat._chat_factory = lambda config: FakeChat(answer, error)
 
 
@@ -127,7 +128,6 @@ def test_once_endpoint_returns_answer_and_sources(client: TestClient, kb_id: str
 def test_unconfigured_model_is_a_readable_502(client: TestClient, kb_id: str) -> None:
     """没配模型：给 502 + "去哪配"，而不是 500「服务内部错误」。"""
     _install_fake_sources()
-    get_services().runtime.set({"llm.api_key": "", "llm.model_id": ""})
     get_services().chat._chat_factory = None  # 恢复真实工厂
 
     response = client.post("/api/v1/chat", json={"query": "问题", "kb_ids": [kb_id]})

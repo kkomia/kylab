@@ -47,8 +47,8 @@ export interface Slot {
   bound_model_label: string
   provider_name: string
   configured: boolean
-  /** `registry` = 用注册表里绑定的模型；`settings` = 用设置页那套字段。 */
-  source: 'registry' | 'settings' | 'none'
+  /** 当前生效的来源：v0.8 起只有 `registry`（绑定过）或 `none`（未绑定）。 */
+  source: 'registry' | 'none'
 }
 
 export interface Registry {

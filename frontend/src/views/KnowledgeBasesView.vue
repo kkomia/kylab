@@ -12,7 +12,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 
-import { getRegistry, type RegisteredModel } from '@/api/modelRegistry'
+import { getRegistry, type Registry } from '@/api/modelRegistry'
 import IconChat from '@/components/icons/IconChat.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -44,32 +44,69 @@ const creating = ref(false)
  * **为什么建库才选**（用户提出的设计调整）：嵌入模型原先全局一套，所有库共用，
  * 于是"文档量小的库用高精度模型、量大的用小模型提速"做不到。现在它是知识库属性，
  * 建库时定、随库冻结（库内一旦有向量就不能换，换模型要新建库）。
+ *
+ * **没有模型就不许建库**（v0.8 取消哈希兜底）：向量空间是库的地基，
+ * 与其建出一个检索不了的库，不如在这里挡住并说清去哪儿配。
  */
-const embeddingModels = ref<RegisteredModel[]>([])
+const registry = ref<Registry | null>(null)
 
-async function loadEmbeddingModels(): Promise<void> {
+const embeddingModels = computed(() =>
+  (registry.value?.models ?? []).filter(
+    (model) => model.capabilities.length === 0 || model.capabilities.includes('embedding'),
+  ),
+)
+
+/** 注册表里为「向量化」选定的默认模型（设置 → 向量化 里选的那个）。 */
+const defaultModelPk = computed(
+  () => registry.value?.slots.find((item) => item.slot === 'embedding')?.bound_model_pk ?? '',
+)
+
+const defaultModel = computed(() =>
+  embeddingModels.value.find((model) => model.id === defaultModelPk.value),
+)
+
+const defaultLabel = computed(() => {
+  const model = defaultModel.value
+  if (!model) return ''
+  return `${model.label || model.model_id}${model.dim ? ` · ${model.dim} 维` : ''}`
+})
+
+async function loadModels(): Promise<void> {
   try {
-    const registry = await getRegistry()
-    embeddingModels.value = registry.models.filter(
-      (model) => model.capabilities.length === 0 || model.capabilities.includes('embedding'),
-    )
+    registry.value = await getRegistry()
   } catch {
-    // 拿不到注册表不该挡住建库：下拉退化成只剩"服务端默认"
-    embeddingModels.value = []
+    // 拿不到注册表不该让整页报错：退化成"没有可选模型"，创建入口会被挡住
+    registry.value = null
   }
 }
 
 const embeddingOptions = computed(() => [
-  { value: '', label: '服务端默认' },
+  ...(defaultModel.value ? [{ value: '', label: `默认（${defaultLabel.value}）` }] : []),
   ...embeddingModels.value.map((model) => ({
     value: model.id,
     label: `${model.label || model.model_id}${model.dim ? ` · ${model.dim} 维` : ''}`,
   })),
 ])
 
+/** 没有任何可用的嵌入模型：建库入口整体挡掉，并指路「模型注册」。 */
+const noEmbeddingModel = computed(() => embeddingModels.value.length === 0)
+
+/** 有模型但没选默认：必须明确挑一个（没有"不指定"这条路了）。 */
+const mustPickModel = computed(() => !defaultModel.value && embeddingModels.value.length > 0)
+
+const canCreate = computed(
+  () => draftName.value.trim().length > 0 && (Boolean(draftModel.value) || !mustPickModel.value),
+)
+
 function openCreate(): void {
   createOpen.value = true
-  void loadEmbeddingModels()
+  draftModel.value = ''
+  void loadModels().then(() => {
+    // 没有默认模型时预选第一个：让"能选就选"的路径最短，而不是让用户先撞一次校验
+    if (mustPickModel.value && embeddingModels.value[0]) {
+      draftModel.value = embeddingModels.value[0].id
+    }
+  })
 }
 
 const hasItems = computed(() => store.items.length > 0)
@@ -85,12 +122,19 @@ const summaryLine = computed(() => {
 
 onMounted(() => {
   void store.load().then(() => store.loadSummaries())
+  // 提前把注册表拉回来：这样"没有可用嵌入模型"能在点开弹窗**之前**就显示在页头上，
+  // 用户不必先填完名称才发现建不了
+  void loadModels()
 })
 
 async function submitCreate(): Promise<void> {
   const name = draftName.value.trim()
   if (!name) {
     notifyError('知识库名称不能为空')
+    return
+  }
+  if (mustPickModel.value && !draftModel.value) {
+    notifyError('请先选择一个嵌入模型')
     return
   }
   creating.value = true
@@ -123,11 +167,17 @@ function statsOf(kbId: string) {
 <template>
   <PageShell title="知识库" :description="summaryLine">
     <template #actions>
-      <AppButton variant="primary" @click="openCreate">
+      <AppButton variant="primary" :disabled="noEmbeddingModel" @click="openCreate">
         <template #icon><IconPlus /></template>
         新建知识库
       </AppButton>
     </template>
+
+    <!-- 没有嵌入模型时**页面级**就说清原因：等用户填完名字再报错，白填一遍 -->
+    <p v-if="noEmbeddingModel" class="blocked-note">
+      还没有可用的嵌入模型，暂时无法新建知识库。请到「设置 → 模型注册」添加供应商并登记向量化模型，
+      再到「设置 → 向量化」把它选为默认。
+    </p>
 
     <!--
       对话入口横幅：以前这里是"尚未开放"的禁用按钮——现在对话已经通了（/chat），
@@ -235,11 +285,25 @@ function statsOf(kbId: string) {
             text="嵌入模型决定这个库的向量空间，建库时定、之后不能更换。文档量小的库可以选精度更高的模型；量大的选小模型以提升速度与存储效率。切分参数用服务端默认值。"
           />
         </label>
-        <AppSelect id="kb-embedding" v-model="draftModel" :options="embeddingOptions" />
+        <AppSelect
+          v-if="!noEmbeddingModel"
+          id="kb-embedding"
+          v-model="draftModel"
+          :options="embeddingOptions"
+        />
+        <!-- 没有可选项时给的是**下一步动作**，不是一个空下拉 -->
+        <p v-else class="modal-note">
+          还没有可用的嵌入模型，无法建库。请先到「设置 → 模型注册」添加供应商并登记向量化模型，
+          再到「设置 → 向量化」把它选为默认。
+        </p>
       </div>
       <template #footer>
         <AppButton @click="createOpen = false">取消</AppButton>
-        <AppButton variant="primary" :disabled="creating" @click="submitCreate">
+        <AppButton
+          variant="primary"
+          :disabled="creating || noEmbeddingModel || !canCreate"
+          @click="submitCreate"
+        >
           {{ creating ? '创建中…' : '创建' }}
         </AppButton>
       </template>
@@ -251,6 +315,25 @@ function statsOf(kbId: string) {
 .error-line {
   margin: var(--space-4) 0;
   color: var(--status-danger);
+}
+
+/* 缺前置条件时的常驻提示：不是错误（用户没做错什么），所以用警告色而不是红色 */
+.blocked-note {
+  margin: var(--space-4) 0 0;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-meta-size);
+  line-height: 1.7;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-panel);
+}
+
+.modal-note {
+  margin: 0;
+  font-size: var(--text-meta-size);
+  line-height: 1.7;
+  color: var(--text-secondary);
 }
 
 /* 对话入口：从"虚线预留位"改成实心可点横幅。

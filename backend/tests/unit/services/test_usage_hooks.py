@@ -13,6 +13,25 @@ import pytest
 
 from app.services.chat import ChatService, SourceRef
 from app.services.llm import LLMUsage
+from app.services.model_registry import ModelRegistryService
+from app.services.runtime_config import RuntimeConfigService
+
+
+def _bound_chat_runtime(bundle):  # type: ignore[no-untyped-def]
+    """一个"对话模型已配好"的运行期配置。
+
+    v0.8 起模型身份只从注册表取，所以这里要真的登记一个供应商 + 模型再绑定，
+    而不是往 app_settings 里写 ``llm.api_key``（那条路已经不通了）。
+    """
+    registry = ModelRegistryService(bundle)
+    provider = registry.create_provider(
+        kind="llm", name="测试供应商", base_url="https://api.example.com", api_key="sk-x"
+    )
+    model = registry.register_model(
+        provider_id=provider.id, model_id="test-model", capabilities=["chat"]
+    )
+    registry.bind("chat", model.id)
+    return RuntimeConfigService(bundle, registry=registry)
 
 
 @pytest.fixture
@@ -22,11 +41,7 @@ def recorded() -> list[dict]:
 
 @pytest.fixture
 def chat(bundle, recorded):  # type: ignore[no-untyped-def]
-    from app.services.runtime_config import RuntimeConfigService
-
-    runtime = RuntimeConfigService(bundle, None)
-    runtime.set({"llm.base_url": "https://api.example.com", "llm.api_key": "sk-x",
-                 "llm.model_id": "test-model"})
+    runtime = _bound_chat_runtime(bundle)
     from app.services.retrieval import RetrievalService
 
     retrieval = RetrievalService(bundle, embedder=_StubEmbedder(), reranker=_NoopReranker())
@@ -107,11 +122,7 @@ def test_chat_without_a_recorder_still_works(bundle) -> None:  # type: ignore[no
     """**回调缺席时功能照常**：用量统计是可选的旁路，不该成为 ChatService
     的必需依赖（否则所有既有用例都得跟着造一个 recorder）。"""
     from app.services.retrieval import RetrievalService
-    from app.services.runtime_config import RuntimeConfigService
-
-    runtime = RuntimeConfigService(bundle, None)
-    runtime.set({"llm.base_url": "https://api.example.com", "llm.api_key": "sk-x",
-                 "llm.model_id": "test-model"})
+    runtime = _bound_chat_runtime(bundle)
     retrieval = RetrievalService(bundle, embedder=_StubEmbedder(), reranker=_NoopReranker())
     service = ChatService(retrieval, runtime)  # 不传 recorder
     service._chat_factory = lambda config: _FakeChat(LLMUsage(10, 5))  # type: ignore[method-assign]
@@ -129,11 +140,7 @@ def test_recorder_exception_does_not_break_the_answer(bundle) -> None:  # type: 
     别的实现（测试注入、将来的上报队列），所以主路也要兜一层。
     """
     from app.services.retrieval import RetrievalService
-    from app.services.runtime_config import RuntimeConfigService
-
-    runtime = RuntimeConfigService(bundle, None)
-    runtime.set({"llm.base_url": "https://api.example.com", "llm.api_key": "sk-x",
-                 "llm.model_id": "test-model"})
+    runtime = _bound_chat_runtime(bundle)
     retrieval = RetrievalService(bundle, embedder=_StubEmbedder(), reranker=_NoopReranker())
 
     def boom(**kwargs: object) -> None:

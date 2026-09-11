@@ -24,6 +24,7 @@ from app.api.v1.schemas import (
 )
 from app.core.services import Services, get_services
 from app.services.api_key import Caller
+from app.services.embedding import NOT_CONFIGURED_HINT
 from app.services.runtime_config import SECRET_KEYS
 
 router = APIRouter(tags=["settings"])
@@ -43,6 +44,7 @@ async def read_settings(
             "groups": view["groups"],
             "embedding_model_id": services.embedder.model_id,
             "embedding_dim": services.embedder.dim,
+            "embedding_configured": services.runtime.embedding().is_configured,
             "embedding_is_development": services.embedder.is_development,
             "rerank_enabled": services.reranker.enabled,
         }
@@ -93,7 +95,7 @@ def _test_embedding(services: Services) -> TestConnectionOut:
     """真发一次最小请求：维度声明错了必须在这里暴露，而不是等摄入时炸。"""
     config = services.runtime.embedding()
     if not config.is_configured:
-        return TestConnectionOut(ok=False, detail="尚未配置 API Key 或模型 ID")
+        return TestConnectionOut(ok=False, detail=NOT_CONFIGURED_HINT)
 
     try:
         vectors = services.embedder.embed([_PROBE_TEXT])
@@ -167,7 +169,13 @@ def _test_llm(services: Services) -> TestConnectionOut:
     """
     config = services.runtime.llm()
     if not config.is_configured:
-        return TestConnectionOut(ok=False, detail="尚未配置 API Key 或模型 ID")
+        return TestConnectionOut(
+            ok=False,
+            detail=(
+                "未选定对话模型：请在「设置 → 模型注册」登记对话模型，"
+                "再到「设置 → 对话模型」把它选为默认"
+            ),
+        )
 
     try:
         answer = services.chat.probe()

@@ -8,6 +8,8 @@
  */
 import { onBeforeUnmount, ref, watch } from 'vue'
 
+import IconClose from '@/components/icons/IconClose.vue'
+
 const open = defineModel<boolean>('open', { required: true })
 
 /**
@@ -67,8 +69,10 @@ onBeforeUnmount(() => {
   >
     <div class="modal-head">
       <h2 class="modal-title">{{ title }}</h2>
+      <!-- 关闭按钮**默认带图标**：这个 slot 一直没人传，于是所有弹窗右上角是个
+           空的 24×24 方块——用户看到的就是"关闭在哪"（评审批注）。 -->
       <button class="modal-close" type="button" aria-label="关闭" @click="close">
-        <slot name="close-icon" />
+        <slot name="close-icon"><IconClose :size="18" /></slot>
       </button>
     </div>
     <div class="modal-body">
@@ -156,8 +160,8 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: var(--hit-target);
-  height: var(--hit-target);
+  width: 28px;
+  height: 28px;
   color: var(--text-secondary);
   border-radius: var(--radius-control);
 }

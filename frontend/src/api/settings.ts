@@ -25,6 +25,9 @@ export interface SettingsView {
   groups: SettingGroup[]
   embedding_model_id: string
   embedding_dim: number
+  /** 是否已选定嵌入模型。为假时不能建库，界面要给出去哪儿配的指引。 */
+  embedding_configured: boolean
+  /** 是否为开发用确定性嵌入（仅显式开着开发开关时）：界面提示"检索质量不代表真实效果"。 */
   embedding_is_development: boolean
   rerank_enabled: boolean
 }

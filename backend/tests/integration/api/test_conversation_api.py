@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.services import get_services
+from tests.conftest import bind_model
 
 KB_NAME = "对话留存测试库"
 
@@ -41,7 +42,7 @@ def fake_llm():
     from app.core.services import get_services
 
     services = get_services()
-    services.runtime.set({"llm.api_key": "sk-fake", "llm.model_id": "fake-model"})
+    bind_model(services.models, "chat", model_id="fake-model", capabilities=["chat"])
     services.chat._chat_factory = lambda config: FakeChat()
     yield
 

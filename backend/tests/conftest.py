@@ -15,6 +15,7 @@ from app.core.config import get_settings
 from app.core.services import reset_services
 from app.core.storage import reset_stores
 from app.models.enums import DataSourceKind, DocumentStage
+from app.services.model_registry import ModelRegistryService
 from app.services.runtime_config import RuntimeConfigService
 from app.storage.base import DocumentRecord, KnowledgeBaseRecord, StoreBundle
 from app.storage.duckdb_impl.tabular_store import DuckDbTabularStore
@@ -41,6 +42,9 @@ def isolated_data_dir(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("KYLAB_RUN_WORKER", "false")
+    # 测试要一条**不联网**的向量化链路：显式打开开发用确定性嵌入。
+    # v0.8 起它不再是"没配就自动兜底"，必须有人主动开——测试就是那个"人"。
+    monkeypatch.setenv("KYLAB_DEV_EMBEDDING", "true")
     get_settings.cache_clear()
     reset_services()
     reset_stores()
@@ -117,12 +121,57 @@ def bundle(
 
 @pytest.fixture
 def runtime(bundle: StoreBundle) -> RuntimeConfigService:
-    """运行期配置（凭据与模型）读写器。
+    """运行期配置（行为参数）读写器。
 
     不传 Settings（``.env`` 引导值）——单测要的是"只有代码默认值"这个干净起点，
     需要测引导优先级时再显式构造带 Settings 的实例。
+
+    **带上注册表**：与组合根同构（v0.8 起模型身份只从注册表取），
+    这样用例可以直接用下面的 ``bind_slot`` 造出"模型已配好"的状态。
     """
-    return RuntimeConfigService(bundle)
+    return RuntimeConfigService(bundle, registry=ModelRegistryService(bundle))
+
+
+#: 用途 → 供应商类别。注册供应商时要选一个类别，测试里按用途推出来就够了。
+_KIND_BY_SLOT = {"chat": "llm", "embedding": "embedding", "rerank": "rerank"}
+
+
+def bind_model(
+    registry: ModelRegistryService,
+    slot: str,
+    *,
+    model_id: str,
+    capabilities: list[str],
+    dim: int | None = None,
+    api_key: str = "sk-fake",
+    base_url: str = "https://api.example.com/v1",
+):  # type: ignore[no-untyped-def]
+    """登记一个模型并绑到某个用途——测试里"模型已配好"的唯一入口。
+
+    v0.8 起模型身份（地址 / 密钥 / 模型名 / 维度）只来自注册表，
+    所以"配好了没"不能再靠往 ``app_settings`` 里写 ``llm.api_key`` 来伪造。
+    """
+    provider = registry.create_provider(
+        kind=_KIND_BY_SLOT[slot], name="测试供应商", base_url=base_url, api_key=api_key
+    )
+    model = registry.register_model(
+        provider_id=provider.id,
+        model_id=model_id,
+        dim=dim,
+        capabilities=capabilities,
+    )
+    registry.bind(slot, model.id)
+    return model
+
+
+@pytest.fixture
+def bind_slot(bundle: StoreBundle):  # type: ignore[no-untyped-def]
+    """``bind_model`` 的夹具形态：省掉每次自己造 ``ModelRegistryService``。"""
+
+    def _bind(slot: str, **kwargs: object):  # type: ignore[no-untyped-def]
+        return bind_model(ModelRegistryService(bundle), slot, **kwargs)  # type: ignore[arg-type]
+
+    return _bind
 
 
 @pytest.fixture

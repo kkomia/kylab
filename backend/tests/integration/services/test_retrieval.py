@@ -10,6 +10,7 @@ import pytest
 from app.models.enums import DataSourceKind
 from app.parsers.plain_text import PlainTextParser
 from app.services.chunking import ChunkingConfig
+from app.services.embedding.base import EmbeddingNotConfiguredError
 from app.services.embedding.deterministic import DeterministicEmbedder
 from app.services.ingest import IngestService
 from app.services.knowledge_base import KnowledgeBaseService
@@ -405,3 +406,30 @@ def test_retrieval_falls_back_when_no_resolver_is_wired(seeded: StoreBundle,
                                                        retrieval: RetrievalService) -> None:
     """没接注册器时行为与改动前一致——升级不打断既有部署。"""
     assert retrieval.search(RetrievalQuery(query="部署", kb_ids=["kb_1"])).hits
+
+
+def test_unconfigured_embedding_skips_the_vector_channel(seeded: StoreBundle) -> None:
+    """没配嵌入模型时跳过向量通道，全文照常返回（v0.8 取消哈希兜底）。
+
+    这里刻意不降级成"无语义的假向量"——那会让用户以为语义召回是有效的。
+    正确行为是：这个通道用不了就不用，并且**不报错**，界面上另有字段说明。
+    """
+
+    class _Unconfigured:
+        model_id = ""
+        dim = 0
+
+        def embed(self, texts):  # type: ignore[no-untyped-def]
+            raise EmbeddingNotConfiguredError("未配置嵌入模型")
+
+        def embed_query(self, text: str) -> list[float]:
+            raise EmbeddingNotConfiguredError("未配置嵌入模型")
+
+    service = RetrievalService(seeded, embedder=_Unconfigured(), reranker=NoopReranker())
+
+    response = service.search(RetrievalQuery(query="部署说明", kb_ids=["kb_1"]))
+
+    # 全文通道仍能命中：库里已有的内容不会因为没配模型就查不到
+    assert response.hits
+    vector_stat = next(stat for stat in response.stats if stat.channel == "vector")
+    assert vector_stat.count == 0

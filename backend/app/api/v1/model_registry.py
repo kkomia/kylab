@@ -95,16 +95,8 @@ def _slot_out(services: Services, slot: str, bindings: dict[str, str]) -> SlotOu
             # 这里不抛：总览接口整页失败，比少显示一个名字糟得多
             bound_label = "（记录已丢失）"
 
-    # 最终是否可用：注册表绑定了，或者设置页那套字段填过
+    # 最终是否可用：只看注册表里有没有绑定（v0.8 起设置页不再提供模型身份）
     registry_ready = bool(bound_pk)
-    settings_ready = _settings_configured(services, slot)
-    if registry_ready:
-        source = "registry"
-    elif settings_ready:
-        source = "settings"
-    else:
-        source = "none"
-
     return SlotOut(
         slot=slot,
         label=spec["label"],
@@ -112,26 +104,9 @@ def _slot_out(services: Services, slot: str, bindings: dict[str, str]) -> SlotOu
         bound_model_pk=bound_pk,
         bound_model_label=bound_label,
         provider_name=provider_name,
-        configured=registry_ready or settings_ready,
-        source=source,
+        configured=registry_ready,
+        source="registry" if registry_ready else "none",
     )
-
-
-def _settings_configured(services: Services, slot: str) -> bool:
-    """设置页那套字段是否可用——**与 ``runtime`` 的快照口径一致**。
-
-    直接问快照而不是自己读键：口径只能有一处，否则会出现
-    "总览说没配、实际能跑"这种自相矛盾。
-    """
-    runtime = services.runtime
-    if slot == "chat":
-        return runtime.llm().is_configured
-    if slot == "embedding":
-        return runtime.embedding().is_configured
-    if slot == "rerank":
-        snapshot = runtime.rerank()
-        return bool(snapshot.base_url and snapshot.model_id)
-    return False
 
 
 # --------------------------------------------------------------------- 总览
@@ -351,8 +326,10 @@ async def test_slot(
     """
     if slot not in SLOTS:
         raise InvalidRequestError(f"未知的用途：{slot}")
-    if not _settings_configured(services, slot) and not services.models.bindings().get(slot):
-        raise InvalidRequestError(f"{SLOTS[slot]['label']}尚未配置任何模型")
+    if not services.models.bindings().get(slot):
+        raise InvalidRequestError(
+            f"{SLOTS[slot]['label']}尚未选定模型：请先在「模型注册」里登记，再选定为默认"
+        )
 
     try:
         if slot == "chat":

@@ -1,8 +1,10 @@
-"""运行期配置（凭据与模型），落 SQLite ``app_settings``。
+"""运行期配置（行为参数），落 SQLite ``app_settings``。
 
-为什么要从 ``.env`` 搬到这里：`工程规范 §6` 写明"密钥不入库"，但 `.env` 的问题不是安全，
-而是**用户改不了**——改一个 embedding 模型要 SSH 上去编辑文件、重启进程。凭据与模型属于
-"用户级配置"，架构 §13 与 M1 的表设计早就把 ``app_settings`` 留好了，这里把它用起来。
+**模型身份不在这里**（v0.8 归属整理）：embedding / rerank / llm 的地址、密钥、
+模型名与维度统一由模型注册表承担（``services/model_registry.py``）——
+"用哪个模型"只有一个登记入口，避免同一件事在设置页与注册表各写一遍然后不一致。
+本模块只留**行为参数**：向量化批大小、对话温度 / 最大回复长度 / 思考开关、
+系统提示词、云端解析节点的 token 与地址。
 
 三层优先级（从低到高）：
 
@@ -34,35 +36,26 @@ __all__ = [
     "mask_secret",
 ]
 
-#: 哪些键是密钥：对外只回显掩码，且不接受把掩码写回来
+#: 哪些键是密钥：对外只回显掩码，且不接受把掩码写回来。
+#: **模型凭据（embedding / rerank / llm 的 API Key）不在这里**——它们属于
+#: 供应商，只存在注册表里，不经过设置页这一层（见模块头 §"注册入口唯一"）。
 SECRET_KEYS = frozenset(
     {
-        "embedding.api_key",
-        "rerank.api_key",
         "mineru.token",
         "paddleocr.token",
-        "llm.api_key",
     }
 )
 
 #: 分组与字段定义。前端设置页按这个结构渲染，不自己硬编码字段名。
+#:
+#: **只放行为参数，不放模型身份**（模型注册 v0.8 的归属整理）：
+#: "用哪个模型"在「模型注册」里登记、在「向量化 / 对话模型」里选定；
+#: 这里剩下的是"怎么用"——批大小、温度、最大回复长度、思考开关、提示词。
 SETTING_GROUPS: dict[str, Any] = {
     "embedding": {
         "label": "向量化",
         "fields": [
-            {"key": "embedding.base_url", "label": "接口地址", "type": "text"},
-            {"key": "embedding.api_key", "label": "API Key", "type": "secret"},
-            {"key": "embedding.model_id", "label": "模型 ID", "type": "text"},
-            {"key": "embedding.dim", "label": "向量维度", "type": "int"},
             {"key": "embedding.batch_size", "label": "批大小", "type": "int"},
-        ],
-    },
-    "rerank": {
-        "label": "重排（可选）",
-        "fields": [
-            {"key": "rerank.base_url", "label": "接口地址", "type": "text"},
-            {"key": "rerank.api_key", "label": "API Key", "type": "secret"},
-            {"key": "rerank.model_id", "label": "模型 ID", "type": "text"},
         ],
     },
     "mineru": {
@@ -84,9 +77,6 @@ SETTING_GROUPS: dict[str, Any] = {
     "llm": {
         "label": "对话模型（LLM）",
         "fields": [
-            {"key": "llm.base_url", "label": "接口地址", "type": "text"},
-            {"key": "llm.api_key", "label": "API Key", "type": "secret"},
-            {"key": "llm.model_id", "label": "模型 ID", "type": "text"},
             {"key": "llm.temperature", "label": "温度", "type": "text"},
             {"key": "llm.max_tokens", "label": "最大回复长度", "type": "int"},
             {"key": "llm.enable_thinking", "label": "深度思考（推理模型）", "type": "bool"},
@@ -101,26 +91,15 @@ SETTING_GROUPS: dict[str, Any] = {
     },
 }
 
-#: 代码默认值。开箱即用指向硅基流动的 bge-m3（1024 维），用户可整套改掉。
+#: 代码默认值。**只有行为参数**：模型身份来自注册表，没有默认模型这回事。
 DEFAULTS: dict[str, str] = {
-    "embedding.base_url": "https://api.siliconflow.cn/v1",
-    "embedding.api_key": "",
-    "embedding.model_id": "BAAI/bge-m3",
-    "embedding.dim": "1024",
     "embedding.batch_size": "32",
-    "rerank.base_url": "https://api.siliconflow.cn/v1",
-    "rerank.api_key": "",
-    "rerank.model_id": "",
     "mineru.endpoint": "https://mineru.net/api/v4",
     "mineru.token": "",
     "mineru.model_version": "vlm",
     "paddleocr.endpoint": "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs",
     "paddleocr.token": "",
     "paddleocr.model": "PaddleOCR-VL-1.6",
-    # 对话模型：默认取硅基流动上免费的那档，方便快速验证；用户可换成任意 OpenAI 兼容端点
-    "llm.base_url": "https://api.siliconflow.cn/v1",
-    "llm.api_key": "",
-    "llm.model_id": "Qwen/Qwen3.5-4B",
     "llm.temperature": "0.3",
     "llm.max_tokens": "1024",
     # 推理模型默认**关掉思考**：开着会把 max_tokens 吃光、content 为空（实测）
@@ -273,43 +252,37 @@ class RuntimeConfigService:
     # ------------------------------------------------------------------ 快照
 
     def embedding(self) -> EmbeddingSettings:
-        """向量化配置快照。
+        """向量化配置快照——**只来自模型注册表**（v0.8 归属整理）。
 
-        **优先取模型注册器里绑定到「向量化」的那个模型**（G1），没绑定则回退到
-        设置页那套字段。``dim`` 以注册表登记的为准——它是模型属性，
-        登记一次就不该再让用户在两处各填一遍、然后两边不一致。
+        没绑定「向量化」用途就是没配：``is_configured`` 为假，调用方据此报错，
+        而不是退回某个"看起来能用"的实现。批大小是行为参数，仍在设置页。
         """
+        batch_size = self.get_int("embedding.batch_size") or 32
         bound = self._bound("embedding")
-        if bound is not None:
-            provider, model = bound
+        if bound is None:
             return EmbeddingSettings(
-                base_url=provider.base_url,
-                api_key=provider.api_key,
-                model_id=model.model_id,
-                dim=model.dim or self.get_int("embedding.dim"),
-                batch_size=self.get_int("embedding.batch_size") or 32,
+                base_url="", api_key="", model_id="", dim=0, batch_size=batch_size
             )
+        provider, model = bound
         return EmbeddingSettings(
-            base_url=self.get("embedding.base_url"),
-            api_key=self.get("embedding.api_key"),
-            model_id=self.get("embedding.model_id"),
-            dim=self.get_int("embedding.dim"),
-            batch_size=self.get_int("embedding.batch_size") or 32,
+            base_url=provider.base_url,
+            api_key=provider.api_key,
+            model_id=model.model_id,
+            # 维度是模型属性：注册表登记了才算数，不再从设置页补
+            dim=model.dim or 0,
+            batch_size=batch_size,
         )
 
     def rerank(self) -> RerankSettings:
+        """重排快照：同样只来自注册表；未绑定即未启用（跳过重排，不影响检索可用性）。"""
         bound = self._bound("rerank")
-        if bound is not None:
-            provider, model = bound
-            return RerankSettings(
-                base_url=provider.base_url,
-                api_key=provider.api_key,
-                model_id=model.model_id,
-            )
+        if bound is None:
+            return RerankSettings(base_url="", api_key="", model_id="")
+        provider, model = bound
         return RerankSettings(
-            base_url=self.get("rerank.base_url"),
-            api_key=self.get("rerank.api_key"),
-            model_id=self.get("rerank.model_id"),
+            base_url=provider.base_url,
+            api_key=provider.api_key,
+            model_id=model.model_id,
         )
 
     def mineru(self) -> MinerUConfig:
@@ -329,41 +302,42 @@ class RuntimeConfigService:
     def llm(self) -> LLMConfig:
         """对话模型快照。
 
-        采样参数（temperature / max_tokens / thinking）**始终来自设置页**，
-        不放进注册表：它们是"这次怎么问"而不是"用哪家模型"，换个模型通常也不想
-        重新调一遍。模型的身份（base_url / key / model_id）才由注册表决定。
+        **身份（base_url / key / model_id）只来自注册表**（v0.8 归属整理）；
+        采样参数（temperature / max_tokens / thinking）来自设置页——它们是
+        "这次怎么问"而不是"用哪家模型"，换个模型通常也不想重新调一遍。
+        没绑定「对话生成」就是没配，``is_configured`` 为假，对话会明确报错。
         """
-        bound = self._bound("chat")
         temperature = _as_float(self.get("llm.temperature"), 0.3)
         max_tokens = self.get_int("llm.max_tokens") or 1024
         thinking = self.get("llm.enable_thinking").lower() in ("1", "true", "yes", "on")
 
-        if bound is not None:
-            provider, model = bound
-            options = model.options or {}
-            # 模型自带的默认值可以覆盖设置页：不同模型对采样参数的最优区间不同，
-            # 例如推理模型通常要更低的 temperature
-            if "temperature" in options:
-                temperature = _as_float(str(options["temperature"]), temperature)
-            if "max_tokens" in options:
-                # 登记时可能填了非数字；解析不了就沿用手上的值，不要让整次对话失败
-                with contextlib.suppress(TypeError, ValueError):
-                    max_tokens = int(options["max_tokens"])  # type: ignore[arg-type]
-            if "enable_thinking" in options:
-                thinking = bool(options["enable_thinking"])
+        bound = self._bound("chat")
+        if bound is None:
             return LLMConfig(
-                base_url=provider.base_url,
-                api_key=provider.api_key,
-                model_id=model.model_id,
+                base_url="",
+                api_key="",
+                model_id="",
                 temperature=temperature,
                 max_tokens=max_tokens,
                 enable_thinking=thinking,
             )
 
+        provider, model = bound
+        options = model.options or {}
+        # 模型自带的默认值可以覆盖设置页：不同模型对采样参数的最优区间不同，
+        # 例如推理模型通常要更低的 temperature
+        if "temperature" in options:
+            temperature = _as_float(str(options["temperature"]), temperature)
+        if "max_tokens" in options:
+            # 登记时可能填了非数字；解析不了就沿用手上的值，不要让整次对话失败
+            with contextlib.suppress(TypeError, ValueError):
+                max_tokens = int(options["max_tokens"])  # type: ignore[arg-type]
+        if "enable_thinking" in options:
+            thinking = bool(options["enable_thinking"])
         return LLMConfig(
-            base_url=self.get("llm.base_url"),
-            api_key=self.get("llm.api_key"),
-            model_id=self.get("llm.model_id"),
+            base_url=provider.base_url,
+            api_key=provider.api_key,
+            model_id=model.model_id,
             temperature=temperature,
             max_tokens=max_tokens,
             enable_thinking=thinking,
@@ -372,24 +346,18 @@ class RuntimeConfigService:
     # ------------------------------------------------------------------ 引导值
 
     def _bootstrap_value(self, key: str) -> str:
-        """``.env`` 只作为引导：部署时可以预设一次，之后以网页上的值为准。"""
+        """``.env`` 只作为引导：部署时可以预设一次，之后以网页上的值为准。
+
+        **模型身份不在映射里**（v0.8）：embedding / rerank / llm 的地址与密钥由
+        模型注册表承担，``.env`` 里写也不生效——留着半生效的入口比没有更糟。
+        """
         settings = self._settings
         if settings is None:
             return ""
         mapping = {
-            "embedding.base_url": settings.embedding_base_url,
-            "embedding.api_key": settings.embedding_api_key,
-            "embedding.model_id": settings.embedding_model,
-            "embedding.dim": settings.embedding_dim,
             "embedding.batch_size": settings.embedding_batch_size,
-            "rerank.base_url": settings.rerank_base_url,
-            "rerank.api_key": settings.rerank_api_key,
-            "rerank.model_id": settings.rerank_model,
             "mineru.token": settings.mineru_token,
             "paddleocr.token": settings.paddleocr_token,
-            "llm.base_url": settings.llm_base_url,
-            "llm.api_key": settings.llm_api_key,
-            "llm.model_id": settings.llm_model,
             "llm.temperature": settings.llm_temperature,
             "llm.max_tokens": settings.llm_max_tokens,
             "llm.enable_thinking": settings.llm_enable_thinking,
