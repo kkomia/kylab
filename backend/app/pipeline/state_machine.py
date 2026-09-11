@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from app.models.enums import DocumentStage
+from app.models.enums import TERMINAL_STAGES, DocumentStage
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
@@ -36,19 +36,43 @@ RETRYABLE_STAGES: frozenset[DocumentStage] = frozenset(
 """可以从 ``failed`` 直接重新进入的阶段——对应四个可重试的流水线步骤。"""
 
 ALLOWED_TRANSITIONS: dict[DocumentStage, frozenset[DocumentStage]] = {
-    DocumentStage.UPLOADED: frozenset({DocumentStage.PROBING, DocumentStage.FAILED}),
-    DocumentStage.PROBING: frozenset({DocumentStage.PARSING, DocumentStage.FAILED}),
-    DocumentStage.PARSING: frozenset({DocumentStage.PARSED, DocumentStage.FAILED}),
-    DocumentStage.PARSED: frozenset({DocumentStage.CHUNKING, DocumentStage.FAILED}),
-    DocumentStage.CHUNKING: frozenset({DocumentStage.CHUNKED, DocumentStage.FAILED}),
-    DocumentStage.CHUNKED: frozenset({DocumentStage.EMBEDDING, DocumentStage.FAILED}),
-    DocumentStage.EMBEDDING: frozenset({DocumentStage.INDEXED, DocumentStage.FAILED}),
+    DocumentStage.UPLOADED: frozenset(
+        {DocumentStage.PROBING, DocumentStage.FAILED, DocumentStage.CANCELED}
+    ),
+    DocumentStage.PROBING: frozenset(
+        {DocumentStage.PARSING, DocumentStage.FAILED, DocumentStage.CANCELED}
+    ),
+    DocumentStage.PARSING: frozenset(
+        {DocumentStage.PARSED, DocumentStage.FAILED, DocumentStage.CANCELED}
+    ),
+    DocumentStage.PARSED: frozenset(
+        {DocumentStage.CHUNKING, DocumentStage.FAILED, DocumentStage.CANCELED}
+    ),
+    DocumentStage.CHUNKING: frozenset(
+        {DocumentStage.CHUNKED, DocumentStage.FAILED, DocumentStage.CANCELED}
+    ),
+    DocumentStage.CHUNKED: frozenset(
+        {DocumentStage.EMBEDDING, DocumentStage.FAILED, DocumentStage.CANCELED}
+    ),
+    DocumentStage.EMBEDDING: frozenset(
+        {DocumentStage.INDEXED, DocumentStage.FAILED, DocumentStage.CANCELED}
+    ),
     # 可选增强分支：从终态进入，默认关闭，失败不影响主链路（架构 §4、§11）
     DocumentStage.INDEXED: frozenset({DocumentStage.ENRICHING, DocumentStage.FAILED}),
-    DocumentStage.ENRICHING: frozenset({DocumentStage.ENRICHED, DocumentStage.FAILED}),
+    DocumentStage.ENRICHING: frozenset(
+        {DocumentStage.ENRICHED, DocumentStage.FAILED, DocumentStage.CANCELED}
+    ),
     DocumentStage.ENRICHED: frozenset({DocumentStage.FAILED}),
     DocumentStage.FAILED: RETRYABLE_STAGES,
+    # 取消后可以重新摄入：这不是"坏掉了"，只是"我不想让它继续了"。
+    # 允许直接回到四个可重试步骤，与 failed 同一条续跑语义。
+    DocumentStage.CANCELED: RETRYABLE_STAGES,
 }
+"""允许的迁移。
+
+**取消（``canceled``）只从"还在跑"的阶段可达**：已经 ``indexed`` 的文档没有
+"叫停解析"这回事，给它开一条迁移只会让状态机多一个说不通的入口。
+"""
 
 _MAIN_CHAIN: tuple[DocumentStage, ...] = (
     DocumentStage.UPLOADED,
@@ -97,4 +121,4 @@ def next_stage(current: DocumentStage) -> DocumentStage | None:
 
 def is_terminal(stage: DocumentStage) -> bool:
     """终态：不会再沿主链路自动推进。"""
-    return stage in (DocumentStage.INDEXED, DocumentStage.FAILED)
+    return stage in TERMINAL_STAGES

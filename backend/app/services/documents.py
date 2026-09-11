@@ -9,9 +9,15 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
-from app.core.exceptions import ConflictError, NotFoundError, UnsupportedContentError
+from app.core.exceptions import (
+    ConflictError,
+    InvalidRequestError,
+    NotFoundError,
+    UnsupportedContentError,
+)
 from app.core.signing import DEFAULT_TTL_SECONDS, sign_resource
 from app.models.enums import DocumentStage, TaskKind, TaskState
+from app.pipeline.state_machine import can_transition
 from app.storage.base import (
     ChunkRecord,
     DocumentPartRecord,
@@ -24,6 +30,10 @@ __all__ = ["DocumentContent", "DocumentService", "signature_resource"]
 
 ACTIVE_TASK_STATES = (TaskState.PENDING, TaskState.RUNNING)
 """这两个状态下重复入队没有意义——同一文档不该同时跑两个摄入任务。"""
+
+DOCUMENT_NAME_MAX_CHARS = 200
+"""文件名长度上限。比目录名（64）宽得多：真文件名的确可以很长，
+这里只是拦住"把一整段正文粘进文件名"那种。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +149,40 @@ class DocumentService:
         record = self._stores.meta.get_document(document_id)
         if record is None:
             raise NotFoundError(f"文档不存在：{document_id}")
+        return record
+
+    def rename(self, document_id: str, name: str) -> DocumentRecord:
+        """改显示名。**不动内容、不重跑解析**——索引里是切块，与文件名无关。"""
+        record = self.get(document_id)
+        cleaned = name.strip()
+        if not cleaned:
+            raise InvalidRequestError("文件名不能为空")
+        if len(cleaned) > DOCUMENT_NAME_MAX_CHARS:
+            raise InvalidRequestError(f"文件名最多 {DOCUMENT_NAME_MAX_CHARS} 个字符")
+        if cleaned == record.name:
+            return record
+        self._stores.meta.rename_document(document_id, cleaned)
+        record.name = cleaned
+        return record
+
+    def cancel(self, document_id: str) -> DocumentRecord:
+        """叫停一个还在跑的摄入。
+
+        **两步都要做**：把文档置为 ``canceled`` 让正在跑的那次摄入在下一个阶段
+        边界看见并停手（见 :meth:`IngestService._advance`）；把任务收成
+        ``canceled`` 则是让"排队中、还没轮到"的那份不再被领取。
+        少做任一步，用户都会看到"点了取消但状态还在动"。
+        """
+        record = self.get(document_id)
+        if not can_transition(record.stage, DocumentStage.CANCELED):
+            # 已经 indexed / 已失败，没有在跑的解析可取消——这是状态冲突，不是参数错
+            raise ConflictError("这个文档当前没有可取消的处理")
+        self._stores.meta.cancel_tasks_for_document(document_id)
+        self._stores.meta.update_document_stage(
+            document_id, DocumentStage.CANCELED, error="已取消"
+        )
+        record.stage = DocumentStage.CANCELED
+        record.error = "已取消"
         return record
 
     def list_parts(self, document_id: str) -> list[DocumentPartRecord]:

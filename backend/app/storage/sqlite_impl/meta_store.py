@@ -323,6 +323,13 @@ class SqliteMetaStore(MetaStore):
         with self._db.session() as conn:
             conn.execute("DELETE FROM documents WHERE id = ?", (document_id,))
 
+    def rename_document(self, document_id: str, name: str) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE documents SET name = ?, updated_at = ? WHERE id = ?",
+                (name, _dump(_now()), document_id),
+            )
+
     # ------------------------------------------------------------------ 子文件
 
     def create_document_parts(self, records: Sequence[DocumentPartRecord]) -> None:
@@ -792,6 +799,26 @@ class SqliteMetaStore(MetaStore):
                 (state.value, error, _dump(_now()), task_id, owner),
             )
         return cursor.rowcount == 1
+
+    def cancel_tasks_for_document(self, document_id: str) -> int:
+        """把这个文档还没结束的任务标成 canceled（见 ``MetaStore`` 的说明）。"""
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE tasks
+                   SET state = ?, error = '已取消', lease_owner = NULL,
+                       lease_expires_at = NULL, updated_at = ?
+                 WHERE document_id = ? AND state IN (?, ?)
+                """,
+                (
+                    TaskState.CANCELED.value,
+                    _dump(_now()),
+                    document_id,
+                    TaskState.PENDING.value,
+                    TaskState.RUNNING.value,
+                ),
+            )
+        return int(cursor.rowcount)
 
     def reclaim_expired_tasks(self, *, now: datetime | None = None) -> int:
         """回收超时任务：还有重试额度就回到 PENDING（断点续跑），否则判失败。"""

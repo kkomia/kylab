@@ -18,6 +18,7 @@ export type DocumentStage =
   | 'enriching'
   | 'enriched'
   | 'failed'
+  | 'canceled'
 
 export type DataSourceKind = 'upload' | 'directory' | 'webdav' | 'html' | 'rss'
 
@@ -301,4 +302,21 @@ export async function downloadDocument(
   document.body.appendChild(anchor)
   anchor.click()
   anchor.remove()
+}
+
+/** 重命名：只改显示名，不重跑解析。 */
+export function renameDocument(documentId: string, name: string): Promise<DocumentSummary> {
+  return request(`/documents/${documentId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  })
+}
+
+/**
+ * 取消解析：叫停还在跑的摄入。
+ *
+ * **不是删除**——已产出的切块与解析产物留着，之后可以重新摄入。
+ */
+export function cancelDocument(documentId: string): Promise<DocumentSummary> {
+  return request(`/documents/${documentId}/cancel`, { method: 'POST' })
 }

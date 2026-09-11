@@ -52,6 +52,7 @@ from app.storage.base import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "IngestCanceled",
     "IngestError",
     "IngestOutcome",
     "IngestService",
@@ -76,6 +77,18 @@ class IngestError(Exception):
         super().__init__(message)
         self.document_id = document_id
         self.stage = stage
+
+
+class IngestCanceled(Exception):
+    """摄入被用户叫停（**不是失败**）。
+
+    worker 据此把任务收成 ``canceled`` 而不是 ``failed``——否则用户主动停止的
+    动作会在任务中心里长成一条红色失败记录，下次看到会以为解析器坏了。
+    """
+
+    def __init__(self, document_id: str) -> None:
+        super().__init__(f"文档 {document_id} 的摄入已被取消")
+        self.document_id = document_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,7 +184,13 @@ class IngestService:
     # ------------------------------------------------------------------ 主链路
 
     def ingest(self, document_id: str) -> IngestOutcome:
-        """把文档推进到 ``indexed``；已完成的步骤会按当前阶段跳过（断点续跑）。"""
+        """把文档推进到 ``indexed``；已完成的步骤会按当前阶段跳过（断点续跑）。
+
+        **取消是协作式的**：用户在界面上点"取消解析"时，接口把文档置为
+        ``canceled``；正在线程里跑的这次摄入会在**下一个阶段边界**（见 ``_advance``）
+        发现这件事并抛出 :class:`IngestCanceled`。已经发出去的云端解析请求没法
+        中途掐断，但它返回之后不会再往下走——绝不会出现"我取消了，它却继续向量化"。
+        """
         document = self._require_document(document_id)
         kb = self._require_kb(document.knowledge_base_id)
         self._resolve_model(kb)
@@ -239,7 +258,7 @@ class IngestService:
 
     def _resume_stage(self, document: DocumentRecord) -> DocumentStage:
         """推断续跑起点。产物是唯一可信依据——状态可能因为崩溃而停在半路。"""
-        if document.stage is not DocumentStage.FAILED:
+        if document.stage not in (DocumentStage.FAILED, DocumentStage.CANCELED):
             return document.stage
         if self._stores.meta.count_chunks(document.id) > 0:
             return DocumentStage.CHUNKED  # 只差向量化
@@ -453,13 +472,30 @@ class IngestService:
     # ------------------------------------------------------------------ 状态与校验
 
     def _advance(self, document: DocumentRecord, target: DocumentStage) -> None:
+        # 取消检查放在**写状态之前**：抢在这一次推进落库前叫停，DB 里才留得住
+        # 用户点出来的 canceled。检查放在这里而不是每个阶段的入口，是因为
+        # 每个阶段结束都要 _advance —— 它天然就是"上一个动作已完成、下一个还没开始"
+        # 的安全切点，云端解析那种没法中途掐断的调用也只有在这里才停得住。
+        self._raise_if_canceled(document)
         assert_transition(document.stage, target)
         self._stores.meta.update_document_stage(document.id, target)
         document.stage = target
 
+    def _raise_if_canceled(self, document: DocumentRecord) -> None:
+        """发现"本次运行期间被取消"就抛 :class:`IngestCanceled`。
+
+        **判据是"内存里的阶段还不是 canceled、库里的已是"**，而不是"库里是 canceled"：
+        后者会把"取消后重新摄入"也当成取消——那次运行的起点本来就是 canceled。
+        """
+        if document.stage is DocumentStage.CANCELED:
+            return
+        current = self._stores.meta.get_document(document.id)
+        if current is not None and current.stage is DocumentStage.CANCELED:
+            raise IngestCanceled(document.id)
+
     def _fail(self, document: DocumentRecord, message: str, *, stage: str) -> None:
         """失败要落到文档记录上：界面才能显示卡在哪一步、为什么（架构 §12）。"""
-        if document.stage is not DocumentStage.FAILED:
+        if document.stage not in (DocumentStage.FAILED, DocumentStage.CANCELED):
             self._stores.meta.update_document_stage(
                 document.id, DocumentStage.FAILED, error=f"[{stage}] {message}"
             )

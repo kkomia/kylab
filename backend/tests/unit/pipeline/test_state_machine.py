@@ -43,9 +43,24 @@ def test_self_transition_is_allowed() -> None:
 
 def test_any_stage_can_fail() -> None:
     for stage in DocumentStage:
-        if stage is DocumentStage.FAILED:
+        if stage in (DocumentStage.FAILED, DocumentStage.CANCELED):
+            # 取消是终态且不指向失败：用户叫停的东西不该在任务中心里长成一条红色记录
             continue
         assert can_transition(stage, DocumentStage.FAILED) is True
+
+
+def test_canceled_is_terminal_and_resumable() -> None:
+    """取消不是死路：可以重新摄入，但不能"失败"。"""
+    assert can_transition(DocumentStage.UPLOADED, DocumentStage.CANCELED) is True
+    assert can_transition(DocumentStage.PARSING, DocumentStage.CANCELED) is True
+    assert can_transition(DocumentStage.CANCELED, DocumentStage.FAILED) is False
+    for stage in RETRYABLE_STAGES:
+        assert can_transition(DocumentStage.CANCELED, stage) is True
+
+
+def test_indexed_cannot_be_canceled() -> None:
+    """都跑完了，没有"取消解析"这回事。"""
+    assert can_transition(DocumentStage.INDEXED, DocumentStage.CANCELED) is False
 
 
 def test_failed_can_resume_from_each_step() -> None:

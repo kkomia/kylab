@@ -30,8 +30,8 @@ def test_pipeline_stage_order_matches_architecture() -> None:
     )
 
 
-def test_terminal_stages_are_indexed_and_failed() -> None:
-    assert {DocumentStage.INDEXED, DocumentStage.FAILED} == TERMINAL_STAGES
+def test_terminal_stages_are_indexed_failed_and_canceled() -> None:
+    assert {DocumentStage.INDEXED, DocumentStage.FAILED, DocumentStage.CANCELED} == TERMINAL_STAGES
 
 
 def test_enhancement_branch_is_outside_main_chain() -> None:

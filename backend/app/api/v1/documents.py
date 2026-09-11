@@ -36,6 +36,7 @@ from app.api.v1.schemas import (
     DocumentOut,
     DocumentPartList,
     DocumentPartOut,
+    DocumentRenameIn,
     UploadAccepted,
 )
 from app.core.config import Settings, get_settings
@@ -307,6 +308,39 @@ async def get_document(
         chunk_count=services.documents.chunk_count(document_id),
         uploader=_uploader_names(services, [record]).get(record.uploaded_by or "", ""),
     )
+
+
+@router.patch("/documents/{document_id}", response_model=DocumentOut, summary="重命名文档")
+async def rename_document(
+    document_id: str,
+    payload: DocumentRenameIn,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
+) -> DocumentOut:
+    """改显示名。只读分享的成员改不了——那是 owner 的库。"""
+    _guard_document(services, caller, document_id, need=WRITE)
+    record = services.documents.rename(document_id, payload.name)
+    return document_out(services, record)
+
+
+@router.post(
+    "/documents/{document_id}/cancel",
+    response_model=DocumentOut,
+    summary="取消解析（叫停还在跑的摄入）",
+)
+async def cancel_document(
+    document_id: str,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
+) -> DocumentOut:
+    """用户主动叫停。**不是删除**：已产出的东西留着，随时可以重新摄入。
+
+    语义是协作式的（见 ``IngestService.ingest``）：正在云端跑的那一次请求没法
+    中途掐断，但它返回后不会再往下推进。响应里回的已经是 ``canceled`` 态。
+    """
+    _guard_document(services, caller, document_id, need=WRITE)
+    record = services.documents.cancel(document_id)
+    return document_out(services, record)
 
 
 @router.get(

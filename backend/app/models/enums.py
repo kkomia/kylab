@@ -41,6 +41,9 @@ class DocumentStage(StrEnum):
 
     # 异常态
     FAILED = "failed"
+    CANCELED = "canceled"
+    """用户主动叫停（不是出错）。与 ``failed`` 分开：界面上"失败"与"我取消的"
+    是两件不同的事，混在一起会让人以为自己把文档弄坏了。"""
 
 
 PIPELINE_STAGE_ORDER: tuple[DocumentStage, ...] = (
@@ -55,8 +58,10 @@ PIPELINE_STAGE_ORDER: tuple[DocumentStage, ...] = (
 )
 """主链路顺序，供 M2 的状态机校验"只允许向前一步"与"断点续跑定位"。"""
 
-TERMINAL_STAGES: frozenset[DocumentStage] = frozenset({DocumentStage.INDEXED, DocumentStage.FAILED})
-"""终态：到达后不再自动推进。"""
+TERMINAL_STAGES: frozenset[DocumentStage] = frozenset(
+    {DocumentStage.INDEXED, DocumentStage.FAILED, DocumentStage.CANCELED}
+)
+"""终态：到达后不再自动推进。取消也算终态——它不该被轮询继续当作"在跑"。"""
 
 
 class TaskKind(StrEnum):

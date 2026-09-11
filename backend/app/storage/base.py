@@ -602,6 +602,12 @@ class MetaStore(ABC):
     @abstractmethod
     def delete_document(self, document_id: str) -> None: ...
 
+    @abstractmethod
+    def rename_document(self, document_id: str, name: str) -> None:
+        """改文件名。**只是显示名**：不改 ``content_hash``、不重跑解析，
+        下载时用的也是这个名字（``Content-Disposition`` 取的就是它）。
+        """
+
     # ---- 目录（v13）----
     @abstractmethod
     def create_folder(self, record: FolderRecord) -> FolderRecord: ...
@@ -736,6 +742,15 @@ class MetaStore(ABC):
         必须带 ``owner`` 做条件更新：租约被回收后，原消费者仍然可能跑完并回来写终态，
         无条件覆盖会把**新消费者正在跑的任务**改成成功，或者凭空清掉它的租约。
         返回 False 表示"这份任务已经不是你的了"，调用方应记日志而不是当成功。
+        """
+
+    @abstractmethod
+    def cancel_tasks_for_document(self, document_id: str) -> int:
+        """把这个文档还没结束（pending/running）的任务标成 canceled，返回条数。
+
+        与 ``finish_task`` 不同，它**不需要 owner**：这是管理动作，由看到"用户点了取消"
+        的 API 进程执行，而不是任务的持有者。它会一并清掉租约——租约还在，worker
+        的心跳就还会续，任务也就还"活着"。
         """
 
     @abstractmethod

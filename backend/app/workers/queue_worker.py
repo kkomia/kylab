@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.core.exceptions import NotFoundError
 from app.models.enums import TaskKind, TaskState
-from app.services.ingest import IngestService
+from app.services.ingest import IngestCanceled, IngestService
 from app.storage.base import StoreBundle, TaskRecord
 
 logger = logging.getLogger(__name__)
@@ -126,6 +126,9 @@ class TaskWorker:
         logger.info("领取任务 %s（%s，第 %d 次）", task.id, task.kind.value, task.attempts)
         try:
             await self._execute_with_heartbeat(task)
+        except IngestCanceled:
+            # 用户叫停不是故障：收成 canceled，别进重试链（重试只会再跑一遍用户不要的事）
+            self._finish_canceled(task)
         except Exception as exc:
             self._retry_or_fail(task, exc)
         else:
@@ -278,6 +281,17 @@ class TaskWorker:
         self._sync_source(source_id)
 
     # ------------------------------------------------------------------ 重试策略
+
+    def _finish_canceled(self, task: TaskRecord) -> None:
+        """把被叫停的任务收成 ``canceled``。
+
+        取不到租约是**正常路径**：取消接口在把文档置为 canceled 的同时就把任务的
+        租约清掉了，所以这里多半写不进去——那条日志只是留痕，不是异常。
+        """
+        if self._stores.meta.finish_task(task.id, TaskState.CANCELED, owner=self._owner):
+            logger.info("任务 %s 已取消", task.id)
+        else:
+            logger.info("任务 %s 已在别处取消，本 worker 不再写入", task.id)
 
     def _retry_or_fail(self, task: TaskRecord, exc: Exception) -> None:
         message = str(exc)

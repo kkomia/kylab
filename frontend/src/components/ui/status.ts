@@ -28,6 +28,8 @@ const DOCUMENT_STAGES: Record<DocumentStage, StatusView> = {
   enriching: { label: '增强中', tone: 'info' },
   enriched: { label: '已增强', tone: 'success' },
   failed: { label: '失败', tone: 'danger' },
+  // 取消不是失败：中性色 + 明确说"已取消"，别让它冒充红色故障
+  canceled: { label: '已取消', tone: 'neutral' },
 }
 
 const TASK_STATES: Record<TaskState, StatusView> = {
@@ -35,6 +37,7 @@ const TASK_STATES: Record<TaskState, StatusView> = {
   running: { label: '执行中', tone: 'info' },
   succeeded: { label: '已完成', tone: 'success' },
   failed: { label: '失败', tone: 'danger' },
+  canceled: { label: '已取消', tone: 'neutral' },
 }
 
 const TASK_KINDS: Record<string, string> = {

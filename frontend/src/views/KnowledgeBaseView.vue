@@ -12,11 +12,14 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import {
+  cancelDocument,
   deleteDocument,
+  downloadDocument,
   getDocumentImpact,
   listDocumentParts,
   listDocuments,
   moveDocument,
+  renameDocument,
   reprocessDocument,
   type DataSourceKind,
   type DocumentStage,
@@ -28,6 +31,8 @@ import {
 import { createFolder, deleteFolder, listFolders, renameFolder, type Folder } from '@/api/folders'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
+import IconClose from '@/components/icons/IconClose.vue'
+import IconDownload from '@/components/icons/IconDownload.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
 import IconFile from '@/components/icons/IconFile.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
@@ -84,6 +89,20 @@ const deleteOpen = ref(false)
 const deleteTarget = ref<DocumentSummary | null>(null)
 const impact = ref<ImpactReport | null>(null)
 const deleting = ref(false)
+
+/** 重命名弹窗：只改显示名，不动内容。 */
+const renameTarget = ref<DocumentSummary | null>(null)
+const renameDraft = ref('')
+const renaming = ref(false)
+const renameOpen = computed({
+  get: () => renameTarget.value !== null,
+  set: (value: boolean) => {
+    if (!value) renameTarget.value = null
+  },
+})
+
+/** 正在取消解析的文档 id（防重复点击；也是按钮的 busy 态）。 */
+const canceling = ref('')
 
 /** 从行内菜单点删除：先开弹窗（带上目标），再去取影响清单。 */
 function onDeleteClick(close: () => void, document: DocumentSummary): void {
@@ -430,6 +449,63 @@ async function reprocess(document: DocumentSummary): Promise<void> {
   }
 }
 
+/** 下载原文件。链路是"先签发短期链接再触发浏览器下载"（后端没有永久直链）。 */
+async function onDownload(close: () => void, document: DocumentSummary): Promise<void> {
+  close()
+  try {
+    await downloadDocument(document.id)
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '下载失败')
+  }
+}
+
+function onRenameClick(close: () => void, document: DocumentSummary): void {
+  close()
+  renameTarget.value = document
+  renameDraft.value = document.name
+}
+
+async function confirmRename(): Promise<void> {
+  const target = renameTarget.value
+  if (!target || renaming.value) return
+  const name = renameDraft.value.trim()
+  if (!name) {
+    notifyError('文件名不能为空')
+    return
+  }
+  renaming.value = true
+  try {
+    await renameDocument(target.id, name)
+    renameTarget.value = null
+    await refresh()
+    notifySuccess('已重命名')
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '重命名失败')
+  } finally {
+    renaming.value = false
+  }
+}
+
+/** 取消解析。**不是删除**：已产出的内容留着，之后还能重新摄入。 */
+async function onCancelClick(close: () => void, document: DocumentSummary): Promise<void> {
+  close()
+  const confirmed = window.confirm(
+    `取消「${document.name}」的解析？已解析出的内容会保留，之后可以重新摄入。`,
+  )
+  if (!confirmed) return
+  canceling.value = document.id
+  try {
+    await cancelDocument(document.id)
+    await refresh()
+    syncPolling()
+    notifySuccess('已取消解析')
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '取消失败')
+  } finally {
+    canceling.value = ''
+  }
+}
+
 function stageOf(document: DocumentSummary) {
   return documentStageView(document.stage)
 }
@@ -615,21 +691,53 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
               <span class="row-size">{{ formatBytes(document.size_bytes) }}</span>
               <span class="row-time">{{ formatRelativeTime(document.updated_at) }}</span>
 
-              <RowMenu v-if="knowledgeBase?.can_write" v-slot="{ close }" class="row-menu">
-                <button type="button" @click="onMoveClick(close, document)">
+              <!-- 操作菜单对**所有能看这个库的人**开放：下载是只读动作，
+                   写动作再逐个按 can_write 收口（只读分享的成员也该下得走原文） -->
+              <RowMenu v-slot="{ close }" class="row-menu">
+                <button type="button" @click="onDownload(close, document)">
+                  <IconDownload :size="14" /> 下载
+                </button>
+                <button
+                  v-if="knowledgeBase?.can_write"
+                  type="button"
+                  @click="onRenameClick(close, document)"
+                >
+                  <IconEdit :size="14" /> 重命名
+                </button>
+                <button
+                  v-if="knowledgeBase?.can_write"
+                  type="button"
+                  @click="onMoveClick(close, document)"
+                >
                   <IconFolder :size="14" /> 移动到目录
                 </button>
-                <button type="button" @click="onReprocessClick(close, document)">
+                <button
+                  v-if="knowledgeBase?.can_write"
+                  type="button"
+                  @click="onReprocessClick(close, document)"
+                >
                   <IconRefresh :size="14" /> 重新摄入
+                </button>
+                <!-- 取消只在真的还在跑时出现：对已完成的文档摆一个点了报错的按钮没有意义 -->
+                <button
+                  v-if="knowledgeBase?.can_write && ACTIVE_STAGES.has(document.stage)"
+                  type="button"
+                  :disabled="canceling === document.id"
+                  @click="onCancelClick(close, document)"
+                >
+                  <IconClose :size="14" /> {{ canceling === document.id ? '取消中…' : '取消解析' }}
                 </button>
                 <!-- 删除（M6 / T6.4）。**先进回收站**：删错是常事，
                      而原文一旦没了就只能重新上传 -->
-                <button class="menu-danger" type="button" @click="onDeleteClick(close, document)">
+                <button
+                  v-if="knowledgeBase?.can_write"
+                  class="menu-danger"
+                  type="button"
+                  @click="onDeleteClick(close, document)"
+                >
                   <IconTrash :size="14" /> 删除
                 </button>
               </RowMenu>
-              <!-- 只读分享：占住同一列宽，数字列才不会比表头右移 -->
-              <span v-else class="row-menu" />
             </div>
 
             <p v-if="document.error" class="row-error">{{ document.error }}</p>
@@ -705,6 +813,18 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
         <AppButton @click="moveOpen = false">取消</AppButton>
         <AppButton variant="primary" :disabled="moving" @click="confirmMove">
           {{ moving ? '移动中…' : '移动' }}
+        </AppButton>
+      </template>
+    </AppModal>
+
+    <!-- 重命名（v13 后）。只改显示名，不重跑解析 -->
+    <AppModal v-model:open="renameOpen" title="重命名文档">
+      <p class="move-lead">给「{{ renameTarget?.name }}」换一个名字：</p>
+      <AppInput v-model="renameDraft" placeholder="文件名" @keydown.enter="confirmRename" />
+      <template #footer>
+        <AppButton @click="renameOpen = false">取消</AppButton>
+        <AppButton variant="primary" :disabled="renaming" @click="confirmRename">
+          {{ renaming ? '保存中…' : '保存' }}
         </AppButton>
       </template>
     </AppModal>

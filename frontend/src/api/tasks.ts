@@ -8,7 +8,7 @@
 import { request } from './client'
 
 export type TaskKind = 'probe' | 'parse' | 'chunk' | 'embed'
-export type TaskState = 'pending' | 'running' | 'succeeded' | 'failed'
+export type TaskState = 'pending' | 'running' | 'succeeded' | 'failed' | 'canceled'
 
 /**
  * 后端算出的健康判据（M7 / T7.4）。

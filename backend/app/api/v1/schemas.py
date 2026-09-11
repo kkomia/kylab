@@ -123,6 +123,12 @@ class DocumentFolderIn(BaseModel):
     folder_id: str | None = None
 
 
+class DocumentRenameIn(BaseModel):
+    """改文件名。上限与服务层的常量一致（``DOCUMENT_NAME_MAX_CHARS``）。"""
+
+    name: str = Field(min_length=1, max_length=200)
+
+
 class DocumentPartOut(BaseModel):
     model_config = _RECORD_CONFIG
 

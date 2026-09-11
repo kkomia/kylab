@@ -11,7 +11,7 @@ from app.parsers.plain_text import PlainTextParser
 from app.services.chunking import ChunkingConfig
 from app.services.embedding.base import EmbeddingError
 from app.services.embedding.deterministic import DeterministicEmbedder
-from app.services.ingest import IngestError, IngestService
+from app.services.ingest import IngestCanceled, IngestError, IngestService
 from app.services.knowledge_base import KnowledgeBaseService
 from app.services.parser_router import ParserRouter
 from app.storage.base import StoreBundle
@@ -138,6 +138,63 @@ def test_probe_meta_records_coverage_and_suffix(bundle: StoreBundle,
     meta = bundle.meta.get_parse_result(outcome.document.id).probe_meta
     assert meta["text_coverage"] == pytest.approx(1.0)
     assert meta["suffix"] == ".md"
+
+
+# --------------------------------------------------------------------- 取消（v13 后）
+
+class _CancelingParser(PlainTextParser):
+    """解析过程中把文档置为 canceled，模拟"用户在这时候点了取消"。"""
+
+    def __init__(self, bundle: StoreBundle, holder: dict) -> None:
+        self._bundle = bundle
+        self._holder = holder
+
+    def parse(self, *, content, filename, mime_type, probe):  # type: ignore[no-untyped-def]
+        result = super().parse(
+            content=content, filename=filename, mime_type=mime_type, probe=probe
+        )
+        self._bundle.meta.update_document_stage(
+            self._holder["id"], DocumentStage.CANCELED, error="已取消"
+        )
+        return result
+
+
+def test_ingest_stops_at_the_next_stage_boundary_when_canceled(
+    bundle: StoreBundle, embedder: DeterministicEmbedder, kb
+) -> None:
+    """取消是协作式的：阶段边界发现 canceled 就抛 IngestCanceled，不再往下走。
+
+    这一条要证的是**不会出现"取消了却继续向量化"**：解析回来之后、切分之前
+    就停手，文档保持在 canceled（不被后续推进覆盖）。
+    """
+    holder: dict = {}
+    service = IngestService(
+        bundle,
+        router=ParserRouter([_CancelingParser(bundle, holder)]),
+        embedder=embedder,
+        chunk_config=ChunkingConfig(size=64, overlap=8),
+    )
+    outcome = service.submit(knowledge_base_id="kb_1", filename="kb.md", content=MARKDOWN.encode())
+    holder["id"] = outcome.document.id
+
+    with pytest.raises(IngestCanceled):
+        service.ingest(outcome.document.id)
+
+    assert bundle.meta.get_document(outcome.document.id).stage is DocumentStage.CANCELED
+    assert bundle.meta.count_chunks(outcome.document.id) == 0
+
+
+def test_canceled_document_can_be_reingested(
+    bundle: StoreBundle, ingest_service: IngestService, kb
+) -> None:
+    """"取消"不是死路：重新摄入应当从已有产物续跑并走到 indexed。"""
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="kb.md",
+                                    content=MARKDOWN.encode())
+    bundle.meta.update_document_stage(outcome.document.id, DocumentStage.CANCELED, error="已取消")
+
+    result = ingest_service.ingest(outcome.document.id)
+
+    assert result.document.stage is DocumentStage.INDEXED
 
 
 # --------------------------------------------------------------------- 去重

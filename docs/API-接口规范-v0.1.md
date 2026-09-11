@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **91** 条端点。
+共 **93** 条端点。
 
 ### `api-keys`
 
@@ -224,6 +224,8 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/v1/documents/{document_id}` | 文档详情 |
+| `PATCH` | `/api/v1/documents/{document_id}` | 重命名文档 |
+| `POST` | `/api/v1/documents/{document_id}/cancel` | 取消解析（叫停还在跑的摄入） |
 | `GET` | `/api/v1/documents/{document_id}/chunks` | 切块列表（文档详情页的正文预览） |
 | `GET` | `/api/v1/documents/{document_id}/content` | 按签名下载（浏览器可直接打开） |
 | `GET` | `/api/v1/documents/{document_id}/download-url` | 签发下载链接（带过期时间） |
