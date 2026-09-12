@@ -32,14 +32,12 @@ import {
 import { getConversation } from '@/api/conversations'
 import type { RegisteredModel } from '@/api/modelRegistry'
 import { getSettings, updateSettings } from '@/api/settings'
-import IconCheck from '@/components/icons/IconCheck.vue'
-import IconClose from '@/components/icons/IconClose.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppMultiSelect from '@/components/ui/AppMultiSelect.vue'
-import AppSelect from '@/components/ui/AppSelect.vue'
+import ModelPicker from '@/components/ui/ModelPicker.vue'
 import { renderAnswerMarkdown } from '@/composables/useMarkdown'
 import { useToast } from '@/composables/useToast'
 import { useConversationStore } from '@/stores/conversations'
@@ -466,7 +464,7 @@ function readStoredEffort(): ThinkingEffort {
 watch(thinkingOn, (value) => writeStored(LAST_THINKING_KEY, value ? 'true' : 'false'))
 watch(thinkingEffort, (value) => writeStored(LAST_EFFORT_KEY, value))
 
-/** AppSelect 回传的是 string；收进三档联合类型，非法值退回默认。 */
+/** ModelPicker 回传的是 string；收进三档联合类型，非法值退回默认。 */
 function onEffortChange(value: string): void {
   thinkingEffort.value = THINKING_EFFORTS.find((item) => item.value === value)?.value ?? 'medium'
 }
@@ -712,35 +710,20 @@ async function savePrompt(): Promise<void> {
               placeholder="选择知识库"
               search-placeholder="搜索知识库"
             />
-            <AppSelect
+            <!--
+              模型 + 思考 + 强度收在同一个入口里（见 ModelPicker 的注释）：
+              三个控件并排时工具条比输入框还热闹，而它们回答的是同一个问题——这一轮怎么生成。
+            -->
+            <ModelPicker
               v-model="modelPk"
+              v-model:thinking="thinkingOn"
               class="pick pick-model"
               :options="modelOptions"
+              :effort="thinkingEffort"
+              :efforts="THINKING_EFFORTS"
               :disabled="modelOptions.length === 0"
-              aria-label="对话模型"
               :placeholder="modelPlaceholder"
-            />
-            <!-- 思考开关：默认开。开着比关着多花时间与 token，所以状态要一眼可辨 -->
-            <button
-              type="button"
-              class="think-toggle"
-              :class="{ 'think-on': thinkingOn }"
-              :aria-pressed="thinkingOn"
-              :aria-label="thinkingOn ? '思考已开启，点击关闭' : '思考已关闭，点击开启'"
-              :title="thinkingOn ? '思考已开启' : '思考已关闭'"
-              @click="thinkingOn = !thinkingOn"
-            >
-              <IconCheck v-if="thinkingOn" :size="14" />
-              <IconClose v-else :size="14" />
-              <span>思考</span>
-            </button>
-            <AppSelect
-              class="pick pick-effort"
-              :model-value="thinkingEffort"
-              :options="THINKING_EFFORTS"
-              :disabled="!thinkingOn"
-              aria-label="思考强度"
-              @update:model-value="onEffortChange"
+              @update:effort="onEffortChange"
             />
           </div>
           <div class="composer-right">
@@ -1124,39 +1107,10 @@ async function savePrompt(): Promise<void> {
   min-width: 0;
 }
 
-/* 知识库与模型各占一档宽度；强度只需要放下"低/中/高"，窄一档 */
+/* 知识库与模型各占一档宽度（模型的思考设置收在它自己的浮层里） */
 .pick {
   width: 200px;
   max-width: 42vw;
-}
-
-.pick-effort {
-  width: 96px;
-}
-
-/* 思考开关：开=品牌色软底，关=灰底。用实心底色 + 图标表达状态，
-   不用透明度——透明度在深色主题下会把文字一起洗淡，状态反而更难读。 */
-.think-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  height: var(--control-height);
-  padding: 0 var(--space-3);
-  font: inherit;
-  color: var(--text-tertiary);
-  background: var(--bg-subtle);
-  border: 1px solid transparent;
-  border-radius: var(--radius-row);
-  cursor: pointer;
-}
-
-.think-toggle:hover {
-  background: var(--bg-hover);
-}
-
-.think-on {
-  color: var(--accent);
-  background: var(--accent-soft);
 }
 
 .composer-right {
