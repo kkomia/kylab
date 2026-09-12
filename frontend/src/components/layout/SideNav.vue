@@ -19,6 +19,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import IconChat from '@/components/icons/IconChat.vue'
+import IconChatNew from '@/components/icons/IconChatNew.vue'
 import IconClose from '@/components/icons/IconClose.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
 import IconPin from '@/components/icons/IconPin.vue'
@@ -345,7 +346,9 @@ async function onLogout(): Promise<void> {
     <div v-if="!collapsed" class="side-section">
       <div class="section-head">
         <p class="section-label">对话</p>
-        <RouterLink class="section-action" to="/chat" title="开始新对话">新对话</RouterLink>
+        <RouterLink class="section-action" to="/chat" aria-label="开始新对话" title="开始新对话">
+          <IconChatNew :size="16" />
+        </RouterLink>
       </div>
 
       <!-- 搜索只在有内容时出现：一个空列表下面挂个搜索框，是在问"你要找什么"，
@@ -683,25 +686,36 @@ async function onLogout(): Promise<void> {
   border-top: 1px solid var(--border-hairline);
 }
 
-/* 分区标签与"新对话"同一行：后者是个动作，贴着它所属的那一段放，
-   比另起一行更容易被理解为"在这一段里新建" */
+/* 分区标签与新建动作同一行：动作贴着它所属的那一段放，
+   比另起一行更容易被理解为"在这一段里新建"。
+   `center` 而不是 `baseline`——右侧从文字变成了图标按钮，基线对齐会把标签抬歪 */
 .section-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
   padding: 0 var(--space-2);
   margin-bottom: var(--space-2);
 }
 
+/* 「新建对话」自 v0.13 起是图标按钮（用户点名要图标）。
+   原来是一行里两个字号的文字并排，在 248px 的侧栏里反而更挤；
+   图标 + `title` / `aria-label` 只留一个 24px 命中区，也让右侧更安静。
+   **必须给足 `--hit-target`**：图标按钮没有文字兜底，命中区一小就点不中。 */
 .section-action {
   flex: 0 0 auto;
-  font-size: var(--text-micro-size);
-  color: var(--accent-text);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--hit-target);
+  height: var(--hit-target);
+  color: var(--text-secondary);
+  border-radius: var(--radius-control);
 }
 
 .section-action:hover {
-  text-decoration: underline;
+  background: var(--bg-hover);
+  color: var(--accent);
 }
 
 /* 分区标签：侧栏宽一点以后，光靠留白已经分不开"导航"与下面这段。
