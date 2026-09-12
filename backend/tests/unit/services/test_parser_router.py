@@ -86,3 +86,77 @@ def test_html_upload_goes_to_the_html_parser_not_plain_text() -> None:
     )
 
     assert decision.parser_name == "HtmlUploadParser"
+
+
+def test_built_in_order_prefers_cloud_and_keeps_local_as_fallback(bundle) -> None:  # type: ignore[no-untyped-def]
+    """真实注册顺序：云端在前、本地兜底在后（v17）。
+
+    刻意验"顺序"而不是"有没有"：顺序反了会让配了 MinerU 的用户也吃本地直提，
+    而那正是版面还原更差的路径。
+    """
+    from app.services.parser_router import build_parsers
+    from app.services.runtime_config import RuntimeConfigService
+
+    names = [
+        parser.name for parser in build_parsers(RuntimeConfigService(bundle))
+    ]
+
+    assert names.index("MinerUCloudParser") < names.index("LocalPdfTextParser")
+    assert names.index("PaddleOCRApiParser") < names.index("LocalPdfTextParser")
+    assert names.index("LocalPdfTextParser") < names.index("LocalOfficeParser")
+    # 表格与 HTML 必须在纯文本直通之前：它们都争同一个后缀
+    assert names.index("TabularParser") < names.index("PlainTextParser")
+    assert names.index("HtmlUploadParser") < names.index("PlainTextParser")
+
+
+def test_text_pdf_routes_to_local_when_no_cloud_credentials(bundle) -> None:  # type: ignore[no-untyped-def]
+    """没配任何云端凭据时，文字型 PDF 也要能解析（v17 之前它直接"暂不支持"）。"""
+    pytest.importorskip("pypdf")  # parsers extra 未装时 supports() 恒为 False（见解析器注释）
+    from app.services.parser_router import build_parsers
+    from app.services.runtime_config import RuntimeConfigService
+
+    router = ParserRouter(build_parsers(RuntimeConfigService(bundle)))
+
+    decision = router.decide(
+        filename="文字型.pdf",
+        mime_type="application/pdf",
+        probe=_text_probe(),
+    )
+
+    assert decision.parser_name == "LocalPdfTextParser"
+
+
+def test_scanned_pdf_still_unsupported_without_credentials(bundle) -> None:  # type: ignore[no-untyped-def]
+    """扫描件没有云端凭据时**仍然明确不支持**：本地没有 OCR，
+    给一份空白正文比说"不支持"更糟（用户以为收进来了）。"""
+    from app.services.parser_router import build_parsers
+    from app.services.runtime_config import RuntimeConfigService
+
+    router = ParserRouter(build_parsers(RuntimeConfigService(bundle)))
+
+    with pytest.raises(ParseError, match="暂不支持"):
+        router.decide(filename="扫描件.pdf", mime_type="application/pdf", probe=_scanned_probe())
+
+
+def test_scanned_pdf_hint_points_to_the_settings_page(bundle) -> None:  # type: ignore[no-untyped-def]
+    """说不支持之后要给出路：扫描件 + 没配云端引擎时，用户手上只有个打不开的 PDF。"""
+    from app.services.parser_router import build_parsers
+    from app.services.runtime_config import RuntimeConfigService
+
+    router = ParserRouter(build_parsers(RuntimeConfigService(bundle)))
+
+    with pytest.raises(ParseError) as excinfo:
+        router.decide(filename="扫描件.pdf", mime_type="application/pdf", probe=_scanned_probe())
+    assert "MinerU" in str(excinfo.value)
+
+
+def test_legacy_doc_hint_says_save_as_docx(bundle) -> None:  # type: ignore[no-untyped-def]
+    """旧的二进制 .doc 本地不解析（另一种格式），但要说清怎么办。"""
+    from app.services.parser_router import build_parsers
+    from app.services.runtime_config import RuntimeConfigService
+
+    router = ParserRouter(build_parsers(RuntimeConfigService(bundle)))
+
+    with pytest.raises(ParseError) as excinfo:
+        router.decide(filename="旧文档.doc", mime_type=None, probe=_text_probe())
+    assert ".docx" in str(excinfo.value)

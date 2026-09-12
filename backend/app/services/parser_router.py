@@ -15,11 +15,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from app.parsers.base import ParseError, ParserProvider, ProbeResult
+from app.parsers.base import ParseError, ParserProvider, ProbeKind, ProbeResult
 from app.parsers.html_upload import HtmlUploadParser
+from app.parsers.local_office import LOCAL_OFFICE_EXTENSIONS, LocalOfficeParser
+from app.parsers.local_pdf import LocalPdfTextParser
 from app.parsers.mineru_cloud import MinerUCloudParser
 from app.parsers.paddleocr_api import PaddleOCRApiParser
 from app.parsers.plain_text import PlainTextParser
+from app.parsers.probe import IMAGE_EXTENSIONS, OFFICE_EXTENSIONS, PDF_EXTENSIONS, suffix_of
 from app.parsers.tabular import TabularParser
 from app.services.runtime_config import RuntimeConfigService
 
@@ -34,7 +37,9 @@ def build_parsers(runtime: RuntimeConfigService) -> list[ParserProvider]:
        Markdown（列名只在第一行出现一次，切块后大部分行的列名就不在同一块里了）；
     2. **HTML 解析器**——同理，纯文本直通会把 ``.html`` 原样收下，脚本与导航直接进库；
     3. **纯文本直通**——最便宜，兜住所有 text/* 与已知文本后缀；
-    4. **MinerU**（版面还原更强，扫描件的第一选择）、**PaddleOCR**（备选通道）。
+    4. **MinerU**（版面还原更强，扫描件的第一选择）、**PaddleOCR**（备选通道）；
+    5. **本地 PDF/Office 直提**——垫在最后是有意的：有云端凭据就用还原更好的那份，
+       没凭据时文字型 PDF 与 docx/pptx 仍然能用（v17 之前它们直接"暂不支持"）。
     云端解析器都会在 ``supports()`` 里排除纯文本类文件，所以顺序不会误伤本地直读；
     未配置 token 时它们的 ``supports()`` 恒为 False —— 没凭据也能跑通整条链路。
     """
@@ -44,7 +49,25 @@ def build_parsers(runtime: RuntimeConfigService) -> list[ParserProvider]:
         PlainTextParser(),
         MinerUCloudParser(runtime.mineru()),
         PaddleOCRApiParser(runtime.paddleocr()),
+        # 本地兜底：扫描件不接（本地没有 OCR），文字型 PDF 与 OOXML 接
+        LocalPdfTextParser(),
+        LocalOfficeParser(),
     ]
+
+
+def _hint_for(probe: ProbeResult, filename: str) -> str:
+    """说不支持之后，再告诉用户**下一步做什么**。
+
+    最需要这句的是"扫描件 + 没配云端引擎"：`暂不支持` 本身没给任何出路，
+    而用户手上就有一个打不开的 PDF。这里直接指向设置页那两栏。
+    """
+    suffix = suffix_of(filename)
+    needs_ocr = suffix in PDF_EXTENSIONS or suffix in IMAGE_EXTENSIONS
+    if needs_ocr and probe.kind in {ProbeKind.SCANNED, ProbeKind.MIXED}:
+        return "。这个文件需要 OCR：请到「设置 → 服务配置」配置 MinerU 或 PaddleOCR"
+    if suffix in OFFICE_EXTENSIONS and suffix not in LOCAL_OFFICE_EXTENSIONS:
+        return "。旧的二进制 Office 格式只能走云端：请配置 MinerU，或先另存为 .docx / .pptx"
+    return ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +119,7 @@ class ParserRouter:
                     probe=probe,
                 )
         raise ParseError(
-            f"暂不支持的文件类型：{filename or '(未命名)'}（探测结论：{probe.kind}）",
+            f"暂不支持的文件类型：{filename or '(未命名)'}（探测结论：{probe.kind}）"
+            + _hint_for(probe, filename),
             stage="probing",
         )
