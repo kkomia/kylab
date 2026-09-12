@@ -47,10 +47,10 @@ class ProviderPreset:
 PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
     ProviderPreset(
         id="deepseek",
-        label="深度求索 DeepSeek",
+        label="深度求索",
         kind="llm",
         base_url="https://api.deepseek.com",
-        hint="推理模型默认思考；密钥在 platform.deepseek.com 申请。",
+        hint="密钥：platform.deepseek.com",
         models=(
             PresetModel("deepseek-flash", "DeepSeek Flash"),
             PresetModel("deepseek-v4-pro", "DeepSeek V4 Pro"),
@@ -59,10 +59,10 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
     ),
     ProviderPreset(
         id="dashscope",
-        label="阿里云百炼（通义千问）",
+        label="阿里云百炼",
         kind="llm",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        hint="中国大陆地址；国际站是 dashscope-intl.aliyuncs.com。思考开关走 enable_thinking。",
+        hint="密钥：bailian.console.aliyun.com",
         models=(
             PresetModel("qwen3.8-max", "Qwen3.8 Max"),
             PresetModel("qwen3.8-flash", "Qwen3.8 Flash"),
@@ -71,10 +71,10 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
     ),
     ProviderPreset(
         id="moonshot",
-        label="月之暗面 Kimi",
+        label="月之暗面",
         kind="llm",
         base_url="https://api.moonshot.cn/v1",
-        hint="中国大陆地址；国际站是 api.moonshot.ai。",
+        hint="密钥：platform.moonshot.cn",
         models=(
             PresetModel("kimi-k3", "Kimi K3"),
             PresetModel("kimi-k2.6", "Kimi K2.6"),
@@ -82,10 +82,10 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
     ),
     ProviderPreset(
         id="zhipu",
-        label="智谱 GLM",
+        label="智谱 AI",
         kind="llm",
         base_url="https://open.bigmodel.cn/api/paas/v4",
-        hint="思考开关走 thinking.type。",
+        hint="密钥：open.bigmodel.cn",
         models=(
             PresetModel("glm-5.3", "GLM-5.3"),
             PresetModel("glm-5.3-flash", "GLM-5.3 Flash"),
@@ -94,16 +94,16 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
     ),
     ProviderPreset(
         id="siliconflow",
-        label="硅基流动 SiliconFlow",
+        label="硅基流动",
         kind="llm",
         base_url="https://api.siliconflow.cn/v1",
-        hint="一个地址同时提供对话、向量化与重排；下面的建议里带能力标记。",
+        hint="密钥：cloud.siliconflow.cn",
         models=(
             PresetModel("deepseek-ai/DeepSeek-V4-Flash", "DeepSeek V4 Flash"),
             PresetModel("zai-org/GLM-5.2", "GLM-5.2"),
             PresetModel("Qwen/Qwen3.6-27B", "Qwen3.6 27B"),
-            PresetModel("BAAI/bge-m3", "BGE-M3（向量化）", ("embedding",), 1024),
-            PresetModel("BAAI/bge-reranker-v2-m3", "BGE Reranker v2 M3（重排）", ("rerank",), None),
+            PresetModel("BAAI/bge-m3", "BGE-M3", ("embedding",), 1024),
+            PresetModel("BAAI/bge-reranker-v2-m3", "BGE Reranker v2 M3", ("rerank",), None),
         ),
     ),
     ProviderPreset(
@@ -111,24 +111,20 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
         label="OpenAI",
         kind="llm",
         base_url="https://api.openai.com/v1",
-        hint="o 系 / GPT-5 系没有真正的「关闭思考」，强度走 reasoning_effort。",
+        hint="密钥：platform.openai.com",
         models=(
             PresetModel("gpt-5.6", "GPT-5.6"),
             PresetModel("gpt-5.5", "GPT-5.5"),
-            PresetModel(
-                "text-embedding-3-small", "Embedding 3 Small（向量化）", ("embedding",), 1536
-            ),
-            PresetModel(
-                "text-embedding-3-large", "Embedding 3 Large（向量化）", ("embedding",), 3072
-            ),
+            PresetModel("text-embedding-3-small", "Embedding 3 Small", ("embedding",), 1536),
+            PresetModel("text-embedding-3-large", "Embedding 3 Large", ("embedding",), 3072),
         ),
     ),
     ProviderPreset(
         id="anthropic",
-        label="Anthropic Claude（OpenAI 兼容层）",
+        label="Anthropic",
         kind="llm",
         base_url="https://api.anthropic.com/v1",
-        hint="走 Anthropic 的 OpenAI 兼容层；其原生 Messages 协议本产品不支持。",
+        hint="密钥：console.anthropic.com",
         models=(
             PresetModel("claude-opus-4-8", "Claude Opus 4.8"),
             PresetModel("claude-sonnet-4-6", "Claude Sonnet 4.6"),
@@ -136,10 +132,10 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
     ),
     ProviderPreset(
         id="gemini",
-        label="Google Gemini（OpenAI 兼容层）",
+        label="Google Gemini",
         kind="llm",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-        hint="注意地址以 /openai/ 结尾；思考走 thinking_config / thinking_level。",
+        hint="密钥：aistudio.google.com",
         models=(
             PresetModel("gemini-3.8-flash", "Gemini 3.8 Flash"),
             PresetModel("gemini-3.7-flash", "Gemini 3.7 Flash"),
@@ -147,9 +143,10 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
     ),
     ProviderPreset(
         id="xai",
-        label="xAI Grok",
+        label="xAI",
         kind="llm",
         base_url="https://api.x.ai/v1",
+        hint="密钥：console.x.ai",
         models=(
             PresetModel("grok-4.6", "Grok 4.6"),
             PresetModel("grok-4.5", "Grok 4.5"),
@@ -157,11 +154,9 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
     ),
     ProviderPreset(
         id="ollama",
-        label="Ollama（本地）",
+        label="Ollama",
         kind="llm",
         base_url="http://localhost:11434/v1",
-        hint="本机先 ollama pull 拉好模型；可用模型随本机而定，建议用「探测」而非这里的建议。",
     ),
-    # 「自定义」不在这里：选择器本身就有「自定义（手动填写）」这一项，
-    # 再加一个同义条目只会让人在两个"自定义"之间犹豫。
+    # 「自定义」不在这里：选择器本身就有一项「自定义」，再加一个同义条目只是噪声。
 )

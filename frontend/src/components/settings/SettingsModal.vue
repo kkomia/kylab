@@ -864,8 +864,7 @@ async function runTest(target: string): Promise<void> {
               <AppButton v-if="group('llm')" @click="openEdit(group('llm')!)">编辑</AppButton>
             </div>
             <p v-if="fieldValue('llm', 'llm.enable_thinking') === 'true'" class="row-note">
-              更慢、更费
-              token；确认「最大回复长度」够大。降强度或关闭思考都可以从对话输入框临时调整。
+              更慢、更费 token；确认「最大回复长度」够大。
             </p>
 
             <h3 class="section-title section-gap">对话行为</h3>

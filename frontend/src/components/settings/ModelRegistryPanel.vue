@@ -94,7 +94,7 @@ const presets = computed(() => registry.value?.provider_presets ?? [])
 const selectedPresetId = ref('')
 
 const presetOptions = computed(() => [
-  { value: '', label: '自定义（手动填写）' },
+  { value: '', label: '自定义' },
   ...presets.value.map((preset) => ({ value: preset.id, label: preset.label })),
 ])
 
@@ -102,7 +102,7 @@ const selectedPreset = computed(
   () => presets.value.find((preset) => preset.id === selectedPresetId.value) ?? null,
 )
 
-/** 选中预设后在表单下显示的一句话说明（地址为什么长这样、去哪拿密钥）。 */
+/** 选中预设后显示的一行小字（去哪拿密钥）。没有就不占位。 */
 const presetHint = computed(() => selectedPreset.value?.hint ?? '')
 
 function onPresetPick(id: string): void {
@@ -440,13 +440,13 @@ defineExpose({ load })
 
         <div v-if="addingProvider" class="form-card">
           <div class="form-grid">
-            <!-- 常见供应商预设：一键填好名称与接口地址（各家地址不一样，抄地址是纯摩擦） -->
+            <!-- 预设：一键填好名称与接口地址（各家地址不一样，抄地址是纯摩擦） -->
             <label class="field field-wide">
-              <span class="field-label">常见供应商（可选）</span>
+              <span class="field-label">预设</span>
               <AppSelect
                 :model-value="selectedPresetId"
                 :options="presetOptions"
-                aria-label="常见供应商预设"
+                aria-label="供应商预设"
                 @update:model-value="onPresetPick"
               />
             </label>
