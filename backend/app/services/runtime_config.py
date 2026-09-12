@@ -80,7 +80,18 @@ SETTING_GROUPS: dict[str, Any] = {
         "label": "对话模型（LLM）",
         "fields": [
             {"key": "llm.temperature", "label": "温度", "type": "text"},
-            {"key": "llm.max_tokens", "label": "最大回复长度", "type": "int"},
+            {
+                "key": "llm.max_tokens",
+                "label": "最大回复长度",
+                "type": "int",
+                # 用滑杆编辑：这是"有推荐区间、但精确到个位没意义"的量。
+                # 取值范围在这里给、不在前端写死——**范围是参数语义的一部分**；
+                # 界面另外会探测一次模型的真实上限，并把它夹到滑杆的最大值上。
+                "control": "range",
+                "min": 2048,
+                "max": 65536,
+                "step": 1024,
+            },
             {"key": "llm.enable_thinking", "label": "思考模式", "type": "bool"},
             {
                 "key": "llm.thinking_effort",
@@ -119,9 +130,12 @@ DEFAULTS: dict[str, str] = {
     "paddleocr.token": "",
     "paddleocr.model": "PaddleOCR-VL-1.6",
     "llm.temperature": "0.3",
-    # 2048 而不是 1024：思考开着时思考内容也占回复预算，1024 常常"想完了没正文"。
+    # 16384 而不是 2048：**思考也占回复预算**，2048 会把预算全花在思考上、
+    # 正文一个字都出不来（实测：一题中医辨证，思考开到"中"时思考用了 2048 打满、
+    # 正文 0 字；同一题在 8192 下只用了 1084 就答完）。模型自己的上限远高于此
+    # （实测 deepseek-flash 是 393216），界面会给滑杆并提供上限探测。
     # 显式改小的部署不受强制——取值以库里/表单里的为准。
-    "llm.max_tokens": "2048",
+    "llm.max_tokens": "16384",
     # 思考**默认开**：主流模型默认都思考，这里的开关只用来"临时关掉"。
     "llm.enable_thinking": "true",
     "llm.thinking_effort": "medium",
@@ -254,6 +268,15 @@ class RuntimeConfigService:
                 # 下拉项的候选值。只有 select 类字段带它，前端据此渲染 AppSelect。
                 if field.get("options"):
                     entry["options"] = list(field["options"])
+                # 滑杆的取值范围（只有 range 控件带）。放在这里透传，
+                # 是"范围的唯一来源在后端"这条约束的落点。
+                for meta_key in ("control", "min", "max", "step"):
+                    if field.get(meta_key) is not None:
+                        entry[meta_key] = field[meta_key]
+                if field.get("control") == "range":
+                    # 滑杆要画"默认值落在哪"，所以把代码默认值一并给出去。
+                    # 从 DEFAULTS 取而不是在字段里再写一遍：写两处迟早分叉。
+                    entry["default_value"] = DEFAULTS.get(field["key"])
                 fields.append(entry)
             groups.append({"key": group_key, "label": spec["label"], "fields": fields})
         return {"groups": groups}

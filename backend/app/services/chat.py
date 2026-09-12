@@ -325,6 +325,15 @@ class ChatService:
         """
         return self._build_chat().complete([ChatMessage(role="user", content="回复两个字：可用")])
 
+    def probe_max_tokens(self) -> int | None:
+        """探测当前对话模型能接受的**最大回复长度**（见 ``llm.OpenAICompatChat``）。
+
+        设置页拿它给「最大回复长度」的滑块定上界：上限是**模型自己的属性**，
+        各家常不一样（实测 deepseek-flash 是 393216）。探不到时返回 ``None``——
+        宁可回退到通用上界，也不要猜一个具体数字当真。
+        """
+        return self._build_chat().probe_max_tokens()
+
     # ------------------------------------------------------------------ 内部
 
     def _resolve_llm(

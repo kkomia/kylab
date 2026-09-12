@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
@@ -32,6 +33,15 @@ DEFAULT_TIMEOUT_SECONDS = 120.0
 """比 embedding 宽：生成一段答案比算一次向量慢得多。"""
 
 _MAX_ERROR_BODY = 300
+
+#: 探测 max_tokens 上限时故意发出去的"荒谬值"。远超任何模型的真实上限——
+#: 合规端点会**直接 400** 并在文案里写明合法区间，一 token 都不会生成。
+_ABSURD_MAX_TOKENS = 10**9
+
+#: 从错误文案里抠合法区间。只认"一对带数字的方括号"，不认具体措辞——
+#: DeepSeek 写的是 "the valid range of max_tokens is [1, 393216]"，
+#: 别家措辞可能不同，但"用区间表示合法范围"是通用习惯。
+_TOKENS_RANGE_RE = re.compile(r"\[\s*(\d+)\s*,\s*(\d+)\s*\]")
 
 
 class ChatError(UpstreamError):
@@ -163,6 +173,41 @@ class OpenAICompatChat:
                 delta = _delta_of(line)
                 if delta:
                     yield delta
+
+    def probe_max_tokens(self) -> int | None:
+        """问端点：这台模型的 ``max_tokens`` 上限是多少？
+
+        做法是**故意发一个荒谬的 max_tokens**，读 400 文案里的合法区间。
+
+        为什么不用 ``GET /models``：OpenAI 兼容协议只保证它返回模型 id，
+        实测 DeepSeek 回的是 ``{"id","object","owned_by"}``——上限这件事它不说。
+
+        为什么安全：请求带 ``stream=True`` 且**只看状态码就断开**。万一某个端点
+        不校验、真的开始生成，我们也不读正文，代价是几个 token；合规端点更是
+        在生成之前就 400 了（实测 deepseek-flash 回的是 ``[1, 393216]``，零消耗）。
+
+        探不到（端点不校验 / 文案里没有区间）时返回 ``None``，
+        由调用方回退到一个通用上限，而不是把上限猜成某个具体数字。
+        """
+        payload = {
+            "model": self.config.model_id,
+            "messages": [{"role": "user", "content": "1"}],
+            "max_tokens": _ABSURD_MAX_TOKENS,
+            "stream": True,
+        }
+        with self._open() as client, client.stream(
+            "POST",
+            f"{self.config.base_url.rstrip('/')}/chat/completions",
+            headers=self._headers(),
+            json=payload,
+        ) as response:
+            if response.status_code == 200:
+                # 不校验的端点。**这里绝不能继续读流**——否则真要生成 10 亿 token；
+                # 退出 with 会直接关掉连接
+                return None
+            response.read()
+            match = _TOKENS_RANGE_RE.search(_error_hint(response))
+            return int(match.group(2)) if match else None
 
     # ------------------------------------------------------------------ 内部
 

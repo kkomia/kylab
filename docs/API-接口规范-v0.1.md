@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **99** 条端点。
+共 **100** 条端点。
 
 ### `api-keys`
 
@@ -313,6 +313,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 |------|------|------|
 | `GET` | `/api/v1/settings` | 运行期配置（密钥打码） |
 | `PATCH` | `/api/v1/settings` | 更新运行期配置 |
+| `POST` | `/api/v1/settings/llm/max-tokens-probe` | 探测对话模型的回复长度上限 |
 | `POST` | `/api/v1/settings/test/{target}` | 连通性测试（embedding / mineru / paddleocr） |
 
 ### `shares`

@@ -84,3 +84,43 @@ def test_migrations_are_ordered_and_unique() -> None:
     # 版本号必须从 1 开始连续：apply_migrations 按 version 顺序执行，
     # 跳号意味着有人插了一个中间版本却没标号，老库升级会静默漏掉它
     assert versions == list(range(1, len(versions) + 1))
+
+
+def test_migration_018_bumps_only_the_untouched_default(conn: sqlite3.Connection) -> None:
+    """把"默认值本身不合适"与"用户有意调小"分开。
+
+    2048 是旧的默认值：思考开着一题就能把它吃满、正文一个字都出不来（实测）。
+    所以仍等于 2048 的部署要跟着升；但**用户自己填过的值绝不能被升级改掉**。
+    """
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version < 18])
+    conn.execute(
+        "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+        ("llm.max_tokens", "2048", "2026-09-01T00:00:00Z"),
+    )
+    conn.execute(
+        "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+        ("chat.top_k", "2048", "2026-09-01T00:00:00Z"),
+    )
+    conn.commit()
+
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version == 18])
+
+    value = conn.execute("SELECT value FROM app_settings WHERE key = 'llm.max_tokens'").fetchone()
+    assert value[0] == "16384"
+    # 别的键里出现同一个数字不该被误伤——迁移认的是键，不是值
+    other = conn.execute("SELECT value FROM app_settings WHERE key = 'chat.top_k'").fetchone()
+    assert other[0] == "2048"
+
+
+def test_migration_018_leaves_a_customised_value_alone(conn: sqlite3.Connection) -> None:
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version < 18])
+    conn.execute(
+        "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+        ("llm.max_tokens", "4096", "2026-09-01T00:00:00Z"),
+    )
+    conn.commit()
+
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version == 18])
+
+    value = conn.execute("SELECT value FROM app_settings WHERE key = 'llm.max_tokens'").fetchone()
+    assert value[0] == "4096"

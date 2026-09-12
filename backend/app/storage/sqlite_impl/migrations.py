@@ -577,6 +577,19 @@ _MIGRATION_017 = Migration(
 )
 
 
+_MIGRATION_018 = Migration(
+    version=18,
+    description="回复长度默认值 2048 → 16384（只改仍是旧默认值的那些部署）",
+    statements=(
+        # **只在没被人改过时才动**：值仍等于旧的默认 2048，说明"默认值本身不合适"
+        # （思考会把 2048 全吃掉，正文一个字都出不来，实测过），而不是用户有意的选择。
+        # 不这么判，一次升级就把别人调过的配置改掉了。
+        "UPDATE app_settings SET value = '16384'"
+        " WHERE key = 'llm.max_tokens' AND value = '2048'",
+    ),
+)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
@@ -595,6 +608,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_015,
     _MIGRATION_016,
     _MIGRATION_017,
+    _MIGRATION_018,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

@@ -206,3 +206,51 @@ def test_cloud_parser_snapshots_come_from_settings(runtime: RuntimeConfigService
 
     assert runtime.mineru().token == "m-token"
     assert runtime.paddleocr().token == "p-token"
+
+
+def test_max_tokens_has_a_sane_default_and_a_range_for_the_slider(
+    runtime: RuntimeConfigService,
+) -> None:
+    """回复长度的默认值与取值范围。
+
+    2048 太短这件事有实测：思考开着一题中医辨证就把 2048 全花在思考上、正文 0 字
+    （见《开发计划》§12.87）。所以默认抬到 16384，并且这一项改用滑杆编辑——
+    取值范围必须**由后端给**，前端写死就会出现"后端只认 1–4096、界面却让你拖到 65536"。
+    """
+    assert runtime.get("llm.max_tokens") == "16384"
+
+    field = next(
+        item
+        for group in SETTING_GROUPS.values()
+        for item in group["fields"]
+        if item["key"] == "llm.max_tokens"
+    )
+    assert field["control"] == "range"
+    assert field["min"] == 2048
+    assert field["max"] == 65536
+    assert field["step"] == 1024
+
+
+def test_describe_carries_the_slider_metadata(runtime: RuntimeConfigService) -> None:
+    """describe() 必须把 control/min/max/step 一起透传——少了它前端就渲染不出滑杆。"""
+    groups = runtime.describe()["groups"]
+    field = next(
+        item
+        for group in groups
+        for item in group["fields"]
+        if item["key"] == "llm.max_tokens"
+    )
+    assert (field["control"], field["min"], field["max"], field["step"]) == (
+        "range",
+        2048,
+        65536,
+        1024,
+    )
+    # 没有滑杆语义的字段不该凭空长出这几个键（前端据此判断渲染哪种控件）
+    temperature = next(
+        item
+        for group in groups
+        for item in group["fields"]
+        if item["key"] == "llm.temperature"
+    )
+    assert "control" not in temperature

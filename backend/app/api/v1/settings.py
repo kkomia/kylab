@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.auth import require_admin
 from app.api.v1.schemas import (
+    MaxTokensProbeOut,
     SettingsPatchIn,
     SettingsPatchOut,
     SettingsViewOut,
@@ -201,6 +202,38 @@ def _test_llm(services: Services) -> TestConnectionOut:
             detail="模型返回了空内容：若是推理模型，请关闭「深度思考」或调大最大回复长度",
         )
     return TestConnectionOut(ok=True, detail=f"{config.model_id} 可用（回复：{answer[:20]}）")
+
+
+@router.post(
+    "/settings/llm/max-tokens-probe",
+    response_model=MaxTokensProbeOut,
+    summary="探测对话模型的回复长度上限",
+)
+async def probe_llm_max_tokens(
+    services: Services = Depends(get_services),
+    _: Caller = Depends(require_admin),
+) -> MaxTokensProbeOut:
+    """问端点"这台模型最多能回多长"。
+
+    **不消耗额度**：探法是故意发一个荒谬的 max_tokens，让端点用 400 回一个合法区间
+    （实现见 ``services/llm.py``）。探不到就返回空 ceiling，让界面回退到通用上界——
+    "没探到"不能显示成某个具体数字。
+    """
+    config = services.runtime.llm()
+    if not config.is_configured:
+        return MaxTokensProbeOut(ceiling=None, detail="未选定对话模型，无法探测")
+
+    try:
+        ceiling = services.chat.probe_max_tokens()
+    except Exception as exc:  # 第三方错误文案原样给用户看
+        return MaxTokensProbeOut(ceiling=None, detail=f"未能探测：{exc}")
+
+    if ceiling is None:
+        return MaxTokensProbeOut(
+            ceiling=None,
+            detail="端点没有回报上限（可能不校验 max_tokens），已按通用上界处理",
+        )
+    return MaxTokensProbeOut(ceiling=ceiling, detail=f"{config.model_id} 的回复长度上限：{ceiling}")
 
 
 _KNOWN_KEYS = _known_setting_keys()
