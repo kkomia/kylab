@@ -29,13 +29,20 @@ const menu = ref<HTMLDetailsElement | null>(null)
 const dropUp = ref(false)
 
 /**
- * 浮层的位置（写进内联样式）。
+ * 浮层的位置（写进内联样式）。**同时负责"没算好之前不显示"**。
  *
  * **用 `position: fixed` 相对视口定位，而不是相对最近的滚动祖先做 absolute**。
  * 原先的写法会被滚动容器裁掉：侧栏的会话列表、设置弹窗的正文都是
  * `overflow-y: auto`，而"溢出隐藏"在计算样式上等价于两个方向都裁，
  * 于是贴着右边缘的「⋯」菜单横向也会被切一块，看起来像和旁边的内容"叠在一起"。
  * 改成 fixed 之后可见范围就是视口，只有视口边缘才需要翻向——判断也更简单。
+ *
+ * **为什么坐标里还带着 `visibility`**：`<details>` 的 `toggle` 事件是**异步任务**
+ * （规范里是"queue a details toggle event task"），所以点开的那一刻浏览器会先按
+ * **静态位置**画一帧，等 toggle 跑完、`place()` 算好坐标再跳到正确位置——
+ * 用户看到的就是"下拉框朝右边闪一下再回来"。把可见性一起写进这份内联样式，
+ * 两个属性在同一次 DOM 更新里落地，中间那一帧就不存在了（`visibility: hidden`
+ * 是可动画之外的"不绘制"，不会占位出错）。
  *
  * **调用方注意事项（踩过）**：浮层既然是 fixed，**任何祖先都不能有 `transform` /
  * `filter` / `contain: paint`**——它们会让那个祖先成为 fixed 后继的包含块，
@@ -72,6 +79,8 @@ function place(): void {
   listStyle.value = {
     top: `${Math.round(top)}px`,
     right: `${Math.round(Math.max(GAP, window.innerWidth - trigger.right))}px`,
+    // 与坐标同一次更新落地：见上面"为什么坐标里还带着 visibility"
+    visibility: 'visible',
   }
 }
 
@@ -95,6 +104,9 @@ function onToggle(): void {
     window.addEventListener('resize', place)
   } else {
     dropUp.value = false
+    // 收起时清掉坐标：下次打开必须重新走"先不可见、算好再显示"，
+    // 否则会退回静态位置那一帧（也就是用户看到的"朝右边闪一下再回来"）
+    listStyle.value = {}
     document.removeEventListener('pointerdown', onOutsidePointer, true)
     document.removeEventListener('keydown', onKeydown, true)
     window.removeEventListener('scroll', place, true)
@@ -154,9 +166,13 @@ onBeforeUnmount(() => {
 }
 
 .menu-list {
-  /* 位置由 `place()` 算好写进内联样式（fixed + top/right），这里只负责外观。
-     **不用 absolute**：那会被滚动容器裁掉，见 `listStyle` 上的说明。 */
+  /* 位置由 `place()` 算好写进内联样式（fixed + top/right + visibility），
+     这里只负责外观。
+     **不用 absolute**：那会被滚动容器裁掉，见 `listStyle` 上的说明。
+     **默认不可见**：`place()` 把 `visibility: visible` 和坐标一起写进来，
+     所以"没算好位置"的那一帧不会被画出来（否则会先闪到静态位置再跳回来）。 */
   position: fixed;
+  visibility: hidden;
   z-index: 30;
   min-width: 168px;
   padding: var(--space-1);

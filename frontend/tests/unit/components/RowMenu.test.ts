@@ -175,3 +175,60 @@ describe('RowMenu 浮层定位（v17，回归）', () => {
     wrapper.unmount()
   })
 })
+
+describe('RowMenu 展开首帧不闪（回归）', () => {
+  it('坐标与可见性在同一次样式更新里落地', async () => {
+    // 回归用例：`<details>` 的 toggle 是**异步任务**，点开瞬间浏览器会先按静态位置
+    // 画一帧——用户看到的就是"下拉框朝右边闪一下再回来"。
+    // 修法是让 `visibility: visible` 与坐标**写进同一份内联样式**，
+    // 中间就不存在"有位置但可见"或"可见但没位置"的状态。
+    //
+    // 这里断言的是这个不变量（而不是计算样式）：vitest 不过 SFC 的 `<style>`，
+    // jsdom 里没有 `.menu-list { visibility: hidden }` 这条规则，
+    // 拿 `getComputedStyle` 断言只会永远读到默认值 `visible`（先写过一版，假的）。
+    const wrapper = mountMenu()
+    const details = wrapper.find('details').element as HTMLDetailsElement
+    const list = details.querySelector('.menu-list') as HTMLElement
+
+    const styleNow = (): string => list.getAttribute('style') ?? ''
+    const assertPaired = (): void => {
+      const style = styleNow()
+      if (style.includes('visibility: visible')) {
+        expect(style).toContain('top:')
+        expect(style).toContain('right:')
+      }
+      if (style.includes('top:')) {
+        expect(style).toContain('visibility: visible')
+      }
+    }
+
+    // 打开前：没有任何内联样式 → 走 CSS 的 visibility: hidden，不会被画出来
+    expect(styleNow()).toBe('')
+
+    details.open = true
+    details.dispatchEvent(new Event('toggle'))
+    assertPaired() // toggle 是同步派发的，但 Vue 的渲染是异步的：两种时序都必须成对
+
+    await nextTick()
+    expect(styleNow()).toContain('visibility: visible')
+    assertPaired()
+
+    wrapper.unmount()
+  })
+
+  it('收起后坐标被清掉，下次打开重新走"先不可见"', async () => {
+    const wrapper = mountMenu()
+    const details = wrapper.find('details').element as HTMLDetailsElement
+    await open(wrapper)
+    const list = details.querySelector('.menu-list') as HTMLElement
+    expect(list.getAttribute('style') ?? '').toContain('top:')
+
+    details.open = false
+    details.dispatchEvent(new Event('toggle'))
+    await nextTick()
+
+    expect(list.getAttribute('style') ?? '').toBe('')
+
+    wrapper.unmount()
+  })
+})
