@@ -48,7 +48,6 @@ import IconUpload from '@/components/icons/IconUpload.vue'
 import KbSearchPanel from '@/components/search/KbSearchPanel.vue'
 import KnowledgeBaseMenu from '@/components/knowledge/KnowledgeBaseMenu.vue'
 import ShareDialog from '@/components/knowledge/ShareDialog.vue'
-import SourcePanel from '@/components/knowledge/SourcePanel.vue'
 import UploadDialog from '@/components/knowledge/UploadDialog.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -167,8 +166,16 @@ const kbId = computed(() => String(route.params.kbId ?? ''))
 const knowledgeBase = computed(() => store.byId(kbId.value))
 
 /** 库级管理动作的回声：改名由 store 就地更新；删库后这一页已无所指，回列表。 */
-function onKbChanged(action: 'renamed' | 'deleted'): void {
-  if (action === 'deleted') void router.push('/knowledge-bases')
+function onKbChanged(action: 'renamed' | 'deleted' | 'sources'): void {
+  if (action === 'deleted') {
+    void router.push('/knowledge-bases')
+    return
+  }
+  if (action === 'sources') {
+    // 数据源面板里点过「立即拉取」之后，新文档要出现在列表上
+    void refreshAll()
+    syncPolling()
+  }
 }
 
 const documents = ref<DocumentSummary[]>([])
@@ -218,15 +225,6 @@ const sourceFilter = ref('')
 const hasFilter = computed(() =>
   Boolean(searchDraft.value.trim() || stageFilter.value || sourceFilter.value),
 )
-
-/**
- * 次级菜单：文档 / 数据源。
- *
- * 数据源（RSS / 网页订阅）原本堆在文档列表**下面**一大块，把页面拉得很长，
- * 也和文档列表这个主体抢注意力。它其实是"这个库的另一种内容来源"，
- * 与文档同级，所以抬成页头下的次级菜单。
- */
-const activeTab = ref<'documents' | 'sources'>('documents')
 
 // ------------------------------------------------------------------ 多选与批量
 
@@ -589,11 +587,6 @@ watch(kbId, () => {
   selected.value = []
   void loadFirst()
 })
-// 切回"文档"标签时面板是重新挂载的，补白行数要重算
-watch(activeTab, (tab) => {
-  if (tab === 'documents') void nextTick(syncFillerRows)
-})
-
 /** 窗口变高变矮都要重算补白——它本来就是"铺满可视区"的意思。 */
 function onWindowResize(): void {
   syncFillerRows()
@@ -834,34 +827,12 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       这是别人分享给你的库，你是只读权限：可以检索与查看，不能上传或删除。
     </p>
 
-    <!-- 次级菜单：文档 / 数据源。数据源从"列表下面的一大块"抬到这里 -->
-    <nav v-if="knowledgeBase" class="subnav" aria-label="知识库内容">
-      <button
-        type="button"
-        class="subnav-item"
-        :class="{ 'subnav-on': activeTab === 'documents' }"
-        :aria-current="activeTab === 'documents' ? 'page' : undefined"
-        @click="activeTab = 'documents'"
-      >
-        文档
-      </button>
-      <button
-        type="button"
-        class="subnav-item"
-        :class="{ 'subnav-on': activeTab === 'sources' }"
-        :aria-current="activeTab === 'sources' ? 'page' : undefined"
-        @click="activeTab = 'sources'"
-      >
-        数据源
-      </button>
-    </nav>
-
     <!--
       目录（v13）：**左侧树**。根节点「全部文档」展开后是「未归档」与各目录，
       选中某个节点 = 右侧列表按它过滤（点根节点 = 不筛，与这个功能之前的行为一致）。
       单层数据做成两层树：这是当前模型能如实表达的形态，不假装支持无限嵌套。
     -->
-    <div v-if="activeTab === 'documents'" class="kb-body">
+    <div class="kb-body">
       <aside v-if="knowledgeBase" class="folder-tree" aria-label="目录">
         <div class="tree-head">
           <span class="tree-title">目录</span>
@@ -1236,20 +1207,6 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       </section>
     </div>
 
-    <!-- 数据源（M6）：抬到次级菜单里，不再堆在文档列表下面 -->
-    <template v-if="knowledgeBase && activeTab === 'sources'">
-      <!-- 分享是库级动作，数据源标签下也该够得着；列表专属的检索/上传在这里没有所指 -->
-      <div v-if="knowledgeBase.can_manage" class="toolbar toolbar-bare">
-        <div class="toolbar-actions">
-          <AppButton variant="subtle" @click="shareOpen = true">
-            <template #icon><IconShare /></template>
-            分享
-          </AppButton>
-        </div>
-      </div>
-      <SourcePanel :kb-id="kbId" :can-write="knowledgeBase.can_write" @changed="refresh" />
-    </template>
-
     <KbSearchPanel
       v-if="knowledgeBase"
       v-model:open="searchOpen"
@@ -1439,45 +1396,6 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   color: var(--text-secondary);
   background: var(--bg-subtle);
   border-radius: var(--radius-control);
-}
-
-/* ---- 次级菜单（文档 / 数据源）---- */
-
-.subnav {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin: 0 0 var(--space-4);
-  border-bottom: 1px solid var(--border-hairline);
-}
-
-.subnav-item {
-  position: relative;
-  height: var(--control-height);
-  padding: 0 var(--space-3);
-  font-size: var(--text-body-size);
-  color: var(--text-secondary);
-}
-
-.subnav-item:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.subnav-on {
-  color: var(--text-primary);
-}
-
-/* 选中态用下划线而不是填充：它是"换一屏内容"，不是按下了一个按钮 */
-.subnav-on::after {
-  position: absolute;
-  right: var(--space-3);
-  bottom: -1px;
-  left: var(--space-3);
-  height: 2px;
-  content: '';
-  background: var(--accent);
-  border-radius: 2px 2px 0 0;
 }
 
 /* ---- 目录树（v13）---- */

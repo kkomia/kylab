@@ -19,13 +19,14 @@ import IconSettings from '@/components/icons/IconSettings.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
+import SourcePanel from '@/components/knowledge/SourcePanel.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import { formatBytes } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 const props = defineProps<{ kb: KnowledgeBase }>()
-const emit = defineEmits<{ changed: [action: 'renamed' | 'deleted'] }>()
+const emit = defineEmits<{ changed: [action: 'renamed' | 'deleted' | 'sources'] }>()
 
 const store = useKnowledgeBaseStore()
 const { notifyError, notifySuccess } = useToast()
@@ -128,7 +129,7 @@ async function confirmDelete(): Promise<void> {
       <IconSettings :size="16" />
     </button>
 
-    <AppModal v-model:open="settingsOpen" title="知识库设置">
+    <AppModal v-model:open="settingsOpen" title="知识库设置" height="tall">
       <section class="kb-setting">
         <h3 class="kb-setting-title">基本信息</h3>
         <label class="kb-setting-label" for="kb-setting-name">名称</label>
@@ -191,6 +192,18 @@ async function confirmDelete(): Promise<void> {
         </dl>
       </section>
 
+      <!--
+        数据源（RSS / 网页订阅）。原先它是页头下的次级标签之一，现在收进设置里：
+        它不是"每天要看的内容"，而是"这个库怎么持续进货"的配置，与模型、切分同类。
+      -->
+      <section class="kb-setting">
+        <SourcePanel
+          :kb-id="kb.id"
+          :can-write="kb.can_write"
+          @changed="emit('changed', 'sources')"
+        />
+      </section>
+
       <section class="kb-setting kb-setting-danger">
         <h3 class="kb-setting-title">删除知识库</h3>
         <p class="kb-setting-hint">
@@ -251,6 +264,11 @@ async function confirmDelete(): Promise<void> {
 .kb-settings:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
+}
+
+/* SourcePanel 自己带页边距（它是按"页面里的一块"写的），进弹窗后要收掉 */
+.kb-setting :deep(.sources) {
+  margin-top: 0;
 }
 
 .kb-setting + .kb-setting {
