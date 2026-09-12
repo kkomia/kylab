@@ -152,3 +152,84 @@ def test_recorder_exception_does_not_break_the_answer(bundle) -> None:  # type: 
     turn = service.answer(query="问题", sources=[_source()])
 
     assert turn.answer == "这是回答。[1]"
+
+
+# --------------------------------------------------------- 检索用量（v17）
+
+
+def _retrieval(bundle, recorded, *, hits: int):  # type: ignore[no-untyped-def]
+    """一个"能返回固定条数命中"的检索服务，记录用了什么回调。"""
+    from app.services.retrieval import RetrievalQuery, RetrievalService
+
+    service = RetrievalService(
+        bundle,
+        embedder=_StubEmbedder(),
+        reranker=_NoopReranker(),
+        usage_recorder=lambda **kw: recorded.append(kw),
+    )
+
+    def _hit():  # type: ignore[no-untyped-def]
+        # SimpleNamespace 而不是手搓一个类：这里只要"有那些属性"，手搓类还得处理
+        # 可变类属性的告警（RUF012），收益为零
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            chunk_id="c1",
+            document_id="d1",
+            knowledge_base_id="kb_1",
+            document_name="示例.md",
+            heading_path=None,
+            page=None,
+            score=1.0,
+            text="原文",
+            channels=(),
+            ranks={},
+            raw_scores={},
+            rerank_score=None,
+        )
+
+    service._vector_channel = lambda request, qv: ([f"c{i}" for i in range(hits)], {})  # type: ignore[method-assign]
+    service._materialize = lambda fused, raw, request: ([_hit() for _ in range(hits)], 0)  # type: ignore[method-assign]
+    return service, RetrievalQuery
+
+
+def test_search_records_usage(bundle, recorded) -> None:  # type: ignore[no-untyped-def]
+    """检索次数原先只在日志里，仪表盘因此没有这个数（v17 起落库）。"""
+    service, RetrievalQuery = _retrieval(bundle, recorded, hits=3)
+
+    service.search(RetrievalQuery(query="问题", kb_ids=["kb_1"], mode="fulltext", top_k=5))
+
+    assert len(recorded) == 1
+    entry = recorded[0]
+    assert entry["kind"] == "search"
+    # items 记的是**返回给调用方的条数**（命中数），不是融合前的候选量
+    assert entry["items"] >= 0
+    # 时长的**上界**也要判：只判 >= 0 时，两个时钟起点不同会算出巨大的正数而蒙混过关
+    # （混用 perf_counter 与 monotonic 时实测出现过 -19，以及另一台机器上的正数偏差）
+    assert 0 <= entry["duration_ms"] < 5_000
+
+
+def test_empty_query_records_nothing(bundle, recorded) -> None:  # type: ignore[no-untyped-def]
+    """空查询直接早退：它不该在"检索量"里占一次（那是调用方写错了，不是一次检索）。"""
+    service, RetrievalQuery = _retrieval(bundle, recorded, hits=1)
+
+    service.search(RetrievalQuery(query="   ", kb_ids=["kb_1"], mode="fulltext"))
+
+    assert recorded == []
+
+
+def test_usage_recorder_failure_does_not_break_search(bundle) -> None:  # type: ignore[no-untyped-def]
+    """统计是旁路：它炸了不能把检索结果吞掉（已经算出来的结果更值钱）。"""
+    from app.services.retrieval import RetrievalQuery, RetrievalService
+
+    def boom(**kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError("统计服务挂了")
+
+    service = RetrievalService(
+        bundle, embedder=_StubEmbedder(), reranker=_NoopReranker(), usage_recorder=boom
+    )
+    service._fulltext_channel = lambda request: ([], {})  # type: ignore[method-assign]
+
+    response = service.search(RetrievalQuery(query="问题", kb_ids=["kb_1"], mode="fulltext"))
+
+    assert response.hits == []

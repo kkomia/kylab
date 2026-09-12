@@ -36,13 +36,13 @@ async def dashboard(
     return DashboardOut.model_validate(stats)
 
 
-@router.get("/stats/usage", response_model=UsageOut, summary="模型用量（token 与调用量）")
+@router.get("/stats/usage", response_model=UsageOut, summary="用量（token 与调用量，含检索）")
 async def usage_summary(
     days: int = Query(default=30, ge=1, le=MAX_WINDOW_DAYS, description="观察窗口（天）"),
     services: Services = Depends(get_services),
     _: Caller = Depends(require_read),
 ) -> UsageOut:
-    """最近 N 天的模型用量。
+    """最近 N 天的用量（对话 / 向量化 / 检索 / 重排）。
 
     **只给 token 与调用量，不给钱**：单价随供应商、版本、缓存命中、时段折扣
     不断变，内置一张价目表必然过期——而过期的价钱比不给更糟，

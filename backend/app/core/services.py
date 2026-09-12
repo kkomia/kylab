@@ -246,7 +246,12 @@ def build_services(
         registry, fallback=embedder, batch_size=lambda: runtime.embedding().batch_size
     )
     retrieval = RetrievalService(
-        bundle, embedder=embedder, reranker=reranker, embedders=embedding_resolver
+        bundle,
+        embedder=embedder,
+        reranker=reranker,
+        embedders=embedding_resolver,
+        # 检索次数原先只在日志里：接了回调仪表盘才有"检索量 / 平均命中"可看
+        usage_recorder=lambda **kwargs: usage.record(**kwargs),  # type: ignore[arg-type]
     )
     # webhook 先建：下面的摄入与生命周期都通过回调向它发事件（T4.6）。
     # **用回调而不是直接依赖**：通知是旁路，它挂了不能让摄入卡住

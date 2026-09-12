@@ -62,8 +62,12 @@ class RetrievalService:
         reranker: RerankProvider,
         rrf_k: int = DEFAULT_RRF_K,
         embedders: EmbeddingResolver | None = None,
+        usage_recorder=None,  # type: ignore[no-untyped-def]
     ) -> None:
         self._stores = stores
+        # 用量回调（可选）：**检索次数原先只在日志里**，于是"检索到底跑了多少次、
+        # 平均命中几块"这类问题没有数字可查。缺席时什么都不记，功能照常
+        self._usage_recorder = usage_recorder
         self._embedder = embedder
         # 按库解析嵌入模型（v11）：不同库可能用不同模型，查询向量必须按库算
         self._embedders = embedders
@@ -83,6 +87,7 @@ class RetrievalService:
         if not request.query.strip() or not request.kb_ids:
             return RetrievalResponse(hits=[], mode=request.mode, reranked=False)
 
+        started_all = time.perf_counter()
         raw: dict[str, dict[str, float]] = {}
         ordered: list[tuple[str, Sequence[str]]] = []
         stats: list[ChannelStat] = []
@@ -116,6 +121,9 @@ class RetrievalService:
         fused = rrf_fuse(ordered, k=self._rrf_k)
         hits, filtered_out = self._materialize(fused, raw, request)
         hits, reranked = self._maybe_rerank(hits, request)
+        # 记在**返回之前**：返回给调用方的条数才是"命中数"，与 stats 里的分路召回数
+        # 不是一回事（后者是融合前的候选量）
+        self._record_usage(request, hits=hits[: request.top_k], started=started_all)
 
         return RetrievalResponse(
             hits=hits[: request.top_k],
@@ -124,6 +132,32 @@ class RetrievalService:
             stats=stats,
             filtered_out=filtered_out,
         )
+
+    def _record_usage(
+        self, request: RetrievalQuery, *, hits: Sequence[object], started: float
+    ) -> None:
+        """记一次检索：条数与耗时。
+
+        **不记 mode**：用量事件表没有能放它的字段，把 "hybrid" 塞进 ``model_id``
+        会让"按模型聚合"那张表出现一行假模型。分模式的差异看 ``/search`` 响应里的
+        分路统计（那本来就是给调试台用的）。
+        ``items`` 记的是**返回给调用方的条数**（命中数），不是融合前的候选量。
+        """
+        if self._usage_recorder is None:
+            return
+        try:
+            self._usage_recorder(
+                kind="search",
+                items=len(hits),
+                # **必须与 started 用同一个时钟**：`perf_counter` 与 `monotonic` 的
+                # 起点不同（Windows 上一个是 QPC、一个是开机毫秒），混用会算出
+                # 负数时长——实测在整套测试里真的写出了 duration_ms=-19。
+                # 本文件的渠道统计也一直用 perf_counter，跟它保持一致。
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            )
+        except Exception:
+            # 与对话/嵌入同一条纪律：**统计失败绝不能反过来影响检索本身**
+            logger.exception("检索用量记录失败（不影响本次检索）")
 
     # ------------------------------------------------------------------ 召回通道
 

@@ -6,8 +6,8 @@
  * 库的清单有自己的页面（侧栏「知识库」）。
  *
  * 三条自我约束：
- * 1. **只画有数据支撑的图**。检索次数目前没有落库（只在日志里），所以这里不放调用量；
- *    宁可少一块图，也不放一个编出来的数字；
+ * 1. **只画有数据支撑的图**：调用量（对话/向量化/检索）走 `/stats/usage`，
+ *    检索原先只在日志里、v17 起也落库了；宁可少一块图，也不放一个编出来的数字；
  * 2. **颜色只来自主题 Token**：图表与页面共用一套灰阶 + 语义色，不另立一套"图表配色"；
  * 3. 数字先给**结论**（几个大数），再给**分布**（点状图 / 柱状图 / 趋势）。
  */
@@ -387,9 +387,15 @@ const stageOption = computed(() => {
             <span class="usage-bar">
               <span class="usage-bar-fill" :style="{ width: `${barWidth(item.calls)}%` }" />
             </span>
+            <!-- 有 token 的按 token 说，没有的（检索）说条数：把"输入 0 · 输出 0"
+                 摆出来只会让人以为统计坏了 -->
             <span class="usage-figures-inline tabular">
-              {{ formatCount(item.calls) }} 次 · 输入 {{ formatCount(item.prompt_tokens) }} · 输出
-              {{ formatCount(item.completion_tokens) }}
+              {{ formatCount(item.calls) }} 次<template
+                v-if="item.prompt_tokens || item.completion_tokens"
+              >
+                · 输入 {{ formatCount(item.prompt_tokens) }} · 输出
+                {{ formatCount(item.completion_tokens) }}</template
+              ><template v-else-if="item.items"> · 共 {{ formatCount(item.items) }} 条</template>
             </span>
           </li>
         </ul>

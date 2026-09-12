@@ -327,7 +327,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/v1/stats/dashboard` | 驾驶舱统计 |
-| `GET` | `/api/v1/stats/usage` | 模型用量（token 与调用量） |
+| `GET` | `/api/v1/stats/usage` | 用量（token 与调用量，含检索） |
 
 ### `tabular`
 

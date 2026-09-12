@@ -511,3 +511,28 @@ def test_create_knowledge_base_accepts_custom_chunking(client: TestClient) -> No
     )
     assert created.status_code == 201, created.text
     assert (created.json()["chunk_size"], created.json()["chunk_overlap"]) == (256, 32)
+
+
+def test_search_is_recorded_in_usage(client: TestClient, kb_id: str) -> None:
+    """检索次数要落库（v17）。
+
+    原先它只在日志里，于是仪表盘上"检索量"这个最该有的数没有——只有一张
+    "模型用量"的表。现在 `/stats/usage` 的 by_kind 里会出现 search。
+    """
+    client.post("/api/v1/search", json={"query": "眼轴长度", "kb_ids": [kb_id]})
+
+    usage = client.get("/api/v1/stats/usage").json()
+
+    kinds = {item["kind"]: item for item in usage["by_kind"]}
+    assert "search" in kinds
+    assert kinds["search"]["label"] == "检索"
+    assert kinds["search"]["calls"] >= 1
+
+
+def test_empty_search_is_not_counted(client: TestClient, kb_id: str) -> None:
+    """空库上的一次检索仍是一次"调用"（它真的跑了一趟），但空查询不算。"""
+    client.post("/api/v1/search", json={"query": "   ", "kb_ids": [kb_id]})
+
+    usage = client.get("/api/v1/stats/usage").json()
+
+    assert {item["kind"] for item in usage["by_kind"]} == set()

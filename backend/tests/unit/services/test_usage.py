@@ -234,3 +234,18 @@ def test_purge_removes_only_old_events(bundle) -> None:  # type: ignore[no-untyp
 
     assert removed == 1
     assert service.summary(days=400)["total"]["calls"] == 1
+
+
+def test_model_less_events_do_not_pollute_by_model(usage: UsageService) -> None:
+    """检索这类"没有 model_id"的事件只进按类目与按日，不进按模型。
+
+    否则"按模型"里会出现一行"（未记录）"，而它的嵌入消耗其实已由 embedding
+    事件计过一次，两处都算会让调用数虚高。
+    """
+    usage.record(kind="search", items=3, duration_ms=12)
+    usage.record(kind="chat", provider="https://api.example.com", model_id="m1", items=1)
+
+    summary = usage.summary(days=1)
+
+    assert {item["kind"] for item in summary["by_kind"]} == {"search", "chat"}
+    assert [item["model"] for item in summary["by_model"]] == ["https://api.example.com/m1"]

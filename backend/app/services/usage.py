@@ -32,6 +32,7 @@ USAGE_RETENTION_DAYS = 180
 KIND_LABELS: dict[str, str] = {
     "chat": "对话生成",
     "embedding": "向量化",
+    "search": "检索",
     "rerank": "重排",
     "parse": "文档解析",
 }
@@ -111,8 +112,13 @@ class UsageService:
             model_key = (
                 f"{event.provider}/{event.model_id}" if event.provider else event.model_id
             )
-            for bucket in (by_day[day], by_kind[event.kind], by_model[model_key]):
+            for bucket in (by_day[day], by_kind[event.kind]):
                 _accumulate(bucket, event)
+            # **没有 model_id 的事件不进"按模型"**（典型是检索）：它不是模型调用，
+            # 而检索消耗的嵌入模型已由 embedding 事件单独计过一次，
+            # 再算进来会让那张表出现一行"（未记录）"并让调用数虚高
+            if model_key:
+                _accumulate(by_model[model_key], event)
 
         estimated_tokens = sum(
             event.total_tokens for event in events if event.source == "estimated"
