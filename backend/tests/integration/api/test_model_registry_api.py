@@ -243,6 +243,25 @@ def test_overview_returns_everything_in_one_call(client: TestClient) -> None:
     assert "chat" in body["capabilities"]
 
 
+def test_overview_ships_provider_presets(client: TestClient) -> None:
+    """常见供应商预设随总览一起下发，前端不内置地址清单。
+
+    预设只用于"添加供应商"填表单（名称 / 类别 / 地址 / 几条常见模型），
+    **不落库**——所以这里断言的是结构，而不是"库里多了什么"。
+    """
+    body = client.get("/api/v1/model-registry").json()
+    presets = body["provider_presets"]
+
+    assert len(presets) >= 5
+    by_id = {item["id"]: item for item in presets}
+    deepseek = by_id["deepseek"]
+    assert deepseek["kind"] in body["provider_kinds"]
+    assert deepseek["base_url"] == "https://api.deepseek.com"
+    assert any(model["model_id"] == "deepseek-flash" for model in deepseek["models"])
+    # 地址一律是 OpenAI 兼容地址：本产品的对话客户端只会打 /chat/completions
+    assert all(item["base_url"].startswith("http") for item in presets)
+
+
 # --------------------------------------------------------------------- 鉴权
 
 

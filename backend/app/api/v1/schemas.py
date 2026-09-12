@@ -956,6 +956,26 @@ class UsageOut(BaseModel):
     """
 
 
+class PresetModelOut(BaseModel):
+    """预设里的一条模型建议。"""
+
+    model_id: str
+    label: str = ""
+    capabilities: list[str] = Field(default_factory=list)
+    dim: int | None = None
+
+
+class ProviderPresetOut(BaseModel):
+    """常见供应商预设：一键填好名称 / 类别 / 接口地址与几条常见模型。"""
+
+    id: str
+    label: str
+    kind: str
+    base_url: str
+    hint: str = ""
+    models: list[PresetModelOut] = Field(default_factory=list)
+
+
 class RegistryOut(BaseModel):
     """注册器总览：界面一次拿全，免得开设置页要打四个请求。"""
 
@@ -964,6 +984,8 @@ class RegistryOut(BaseModel):
     slots: list[SlotOut] = Field(default_factory=list)
     provider_kinds: dict[str, str] = Field(default_factory=dict)
     capabilities: dict[str, str] = Field(default_factory=dict)
+    provider_presets: list[ProviderPresetOut] = Field(default_factory=list)
+    """常见供应商预设。只给"添加供应商"填表单用，**不落库**——用户选了什么才存什么。"""
 
 
 class WebhookCreateIn(BaseModel):

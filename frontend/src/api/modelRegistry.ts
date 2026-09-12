@@ -51,12 +51,32 @@ export interface Slot {
   source: 'registry' | 'none'
 }
 
+/** 预设里的一条模型建议。 */
+export interface PresetModel {
+  model_id: string
+  label: string
+  capabilities: string[]
+  dim: number | null
+}
+
+/** 常见供应商预设：一键填好名称 / 类别 / 地址与几条常见模型。 */
+export interface ProviderPreset {
+  id: string
+  label: string
+  kind: string
+  base_url: string
+  hint: string
+  models: PresetModel[]
+}
+
 export interface Registry {
   providers: Provider[]
   models: RegisteredModel[]
   slots: Slot[]
   provider_kinds: Record<string, string>
   capabilities: Record<string, string>
+  /** 只用于"添加供应商"填表单，不落库。 */
+  provider_presets: ProviderPreset[]
 }
 
 export function getRegistry(): Promise<Registry> {

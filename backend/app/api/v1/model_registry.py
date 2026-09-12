@@ -26,9 +26,11 @@ from app.api.v1.schemas import (
     ModelOut,
     ModelRegisterIn,
     ModelUpdateIn,
+    PresetModelOut,
     ProviderCreateIn,
     ProviderListOut,
     ProviderOut,
+    ProviderPresetOut,
     ProviderUpdateIn,
     RegistryOut,
     SlotBindIn,
@@ -39,6 +41,7 @@ from app.core.services import Services, get_services
 from app.services.api_key import Caller
 from app.services.llm import ChatMessage
 from app.services.model_registry import CAPABILITIES, PROVIDER_KINDS, SLOTS
+from app.services.provider_presets import PROVIDER_PRESETS
 from app.services.runtime_config import mask_secret
 
 router = APIRouter(prefix="/model-registry", tags=["model-registry"])
@@ -128,6 +131,25 @@ def get_registry(
         slots=[_slot_out(services, slot, bindings) for slot in SLOTS],
         provider_kinds=dict(PROVIDER_KINDS),
         capabilities=dict(CAPABILITIES),
+        provider_presets=[
+            ProviderPresetOut(
+                id=preset.id,
+                label=preset.label,
+                kind=preset.kind,
+                base_url=preset.base_url,
+                hint=preset.hint,
+                models=[
+                    PresetModelOut(
+                        model_id=item.model_id,
+                        label=item.label,
+                        capabilities=list(item.capabilities),
+                        dim=item.dim,
+                    )
+                    for item in preset.models
+                ],
+            )
+            for preset in PROVIDER_PRESETS
+        ],
     )
 
 

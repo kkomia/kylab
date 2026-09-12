@@ -12,7 +12,7 @@
  *
  * 密钥纪律：只显示掩码。**改名字时不回传掩码**——那会把密钥写成掩码。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import {
   createProvider,
@@ -29,6 +29,7 @@ import {
   type RegisteredModel,
   type Registry,
 } from '@/api/modelRegistry'
+import { mergeModelOptions, presetModelMeta } from '@/components/settings/providerPresets'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCombobox from '@/components/ui/AppCombobox.vue'
 import AppInput from '@/components/ui/AppInput.vue'
@@ -80,6 +81,69 @@ const providers = computed(() => registry.value?.providers ?? [])
 const kinds = computed(() => registry.value?.provider_kinds ?? {})
 const capabilities = computed(() => registry.value?.capabilities ?? {})
 const slots = computed(() => registry.value?.slots ?? [])
+const presets = computed(() => registry.value?.provider_presets ?? [])
+
+// ------------------------------------------------------------------ 预设
+
+/**
+ * 「添加供应商」里选中的预设（空 = 自定义 / 手动填）。
+ *
+ * 预设只**填表单**，不落库：用户改过的地址、名称以表单里的为准。
+ * 它解决的是"各家地址不一样、还分原生与兼容两个"这件事——抄地址是纯摩擦。
+ */
+const selectedPresetId = ref('')
+
+const presetOptions = computed(() => [
+  { value: '', label: '自定义（手动填写）' },
+  ...presets.value.map((preset) => ({ value: preset.id, label: preset.label })),
+])
+
+const selectedPreset = computed(
+  () => presets.value.find((preset) => preset.id === selectedPresetId.value) ?? null,
+)
+
+/** 选中预设后在表单下显示的一句话说明（地址为什么长这样、去哪拿密钥）。 */
+const presetHint = computed(() => selectedPreset.value?.hint ?? '')
+
+function onPresetPick(id: string): void {
+  selectedPresetId.value = id
+  const preset = presets.value.find((item) => item.id === id)
+  if (!preset) {
+    // 回到自定义：清空由预设填进来的名称与地址，避免半截状态
+    providerDraft.value = { ...providerDraft.value, name: '', base_url: '' }
+    return
+  }
+  providerDraft.value = {
+    ...providerDraft.value,
+    kind: preset.kind,
+    name: preset.label,
+    base_url: preset.base_url,
+  }
+}
+
+/** 「添加模型」的下拉候选 = 上游探测到的 + 预设建议（去重，后者带 `· 预设` 标记）。 */
+function modelOptionsFor(provider: Provider): { value: string; label: string }[] {
+  return mergeModelOptions(availableOptions.value, presets.value, provider)
+}
+
+/**
+ * 从预设建议里选中一条模型时，把能力与维度也带上。
+ *
+ * **只有预设里的模型才有这待遇**：手写或上游探测到的 ID 没有元数据可填，
+ * 强行猜能力等于替用户做决定（一个 embedding 模型被标成 chat，建库时才发现）。
+ */
+watch(
+  () => modelDraft.value.model_id,
+  (value) => {
+    const provider = providers.value.find((item) => item.id === addingModelFor.value)
+    if (!provider) return
+    const match = presetModelMeta(presets.value, provider, value)
+    if (!match) return
+    modelDraft.value.capabilities = [...match.capabilities]
+    if (match.dim !== null) modelDraft.value.dim = String(match.dim)
+    if (match.label && !modelDraft.value.label) modelDraft.value.label = match.label
+  },
+)
 
 /** 某个供应商下的模型。 */
 function modelsOf(providerId: string): RegisteredModel[] {
@@ -151,6 +215,7 @@ async function submitProvider(): Promise<void> {
       api_key: draft.api_key,
     })
     providerDraft.value = { kind: 'llm', name: '', base_url: '', api_key: '' }
+    selectedPresetId.value = ''
     addingProvider.value = false
     await load()
     notifySuccess('供应商已添加')
@@ -375,6 +440,17 @@ defineExpose({ load })
 
         <div v-if="addingProvider" class="form-card">
           <div class="form-grid">
+            <!-- 常见供应商预设：一键填好名称与接口地址（各家地址不一样，抄地址是纯摩擦） -->
+            <label class="field field-wide">
+              <span class="field-label">常见供应商（可选）</span>
+              <AppSelect
+                :model-value="selectedPresetId"
+                :options="presetOptions"
+                aria-label="常见供应商预设"
+                @update:model-value="onPresetPick"
+              />
+            </label>
+            <p v-if="presetHint" class="preset-hint">{{ presetHint }}</p>
             <label class="field">
               <span class="field-label">类别</span>
               <AppSelect
@@ -495,7 +571,7 @@ defineExpose({ load })
                 <span class="field-label">模型 ID</span>
                 <AppCombobox
                   v-model="modelDraft.model_id"
-                  :options="availableOptions"
+                  :options="modelOptionsFor(provider)"
                   :loading="loadingAvailable"
                   :aria-label="`${provider.name} 的模型 ID`"
                   placeholder="选择或直接输入，如 BAAI/bge-m3"
@@ -793,6 +869,15 @@ defineExpose({ load })
 /* 成组容器用全局 .field；这里只补本面板特有的跨列 */
 .field-wide {
   grid-column: 1 / -1;
+}
+
+/* 预设说明：与字段同宽、贴着表单，不抢视觉重量 */
+.preset-hint {
+  grid-column: 1 / -1;
+  margin: calc(-1 * var(--space-2)) 0 0;
+  font-size: var(--text-micro-size);
+  line-height: 1.6;
+  color: var(--text-tertiary);
 }
 
 .cap-row {

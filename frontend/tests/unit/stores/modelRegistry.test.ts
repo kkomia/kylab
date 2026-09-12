@@ -39,6 +39,7 @@ function registry(modelId: string): api.Registry {
     slots: [],
     provider_kinds: {},
     capabilities: {},
+    provider_presets: [],
   }
 }
 
