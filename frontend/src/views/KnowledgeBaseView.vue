@@ -9,7 +9,7 @@
  * 否则用户会以为"点了没反应"。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, type LocationQuery, type LocationQueryRaw } from 'vue-router'
 
 import {
   batchDocuments,
@@ -46,6 +46,7 @@ import IconSearch from '@/components/icons/IconSearch.vue'
 import IconShare from '@/components/icons/IconShare.vue'
 import IconUpload from '@/components/icons/IconUpload.vue'
 import KbSearchPanel from '@/components/search/KbSearchPanel.vue'
+import DocumentDrawer from '@/components/knowledge/DocumentDrawer.vue'
 import KnowledgeBaseMenu from '@/components/knowledge/KnowledgeBaseMenu.vue'
 import ShareDialog from '@/components/knowledge/ShareDialog.vue'
 import UploadDialog from '@/components/knowledge/UploadDialog.vue'
@@ -82,6 +83,36 @@ const route = useRoute()
 const router = useRouter()
 const store = useKnowledgeBaseStore()
 const { notifyError, notifySuccess } = useToast()
+
+/**
+ * 当前打开的文档详情抽屉（URL 查询参数 `doc`）。
+ *
+ * **状态放 URL 而不是组件内部**：刷新、分享链接、浏览器后退都能回到同一个画面，
+ * 而"点文件名 → 换路由"这种事一旦只记在内存里，后退键就会变得不可预测。
+ */
+const openDocumentId = computed(() => String(route.query.doc ?? ''))
+
+function closeDocument(): void {
+  void router.replace({ path: route.path, query: withoutDocument(route.query) })
+}
+
+/**
+ * 从列表点开某份文档时的目标地址：保留筛选/页码之外的查询参数，去掉 `doc` 与 `page`。
+ *
+ * **`page` 必须去掉**：它是引用带进来的"看第 N 页"，只对引用那一份有意义；
+ * 留着它，接着点开另一份文档会莫名其妙跳到它的第 N 页。
+ */
+function documentLink(id: string): LocationQueryRaw {
+  return { ...withoutDocument(route.query), doc: id }
+}
+
+function withoutDocument(query: LocationQuery): LocationQueryRaw {
+  const next: LocationQueryRaw = {}
+  for (const [key, value] of Object.entries(query)) {
+    if (key !== 'doc' && key !== 'page' && value !== null) next[key] = value
+  }
+  return next
+}
 
 /**
  * 删除确认（M6 / T6.4）。
@@ -1089,7 +1120,13 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                   <IconFile class="row-icon" />
 
                   <span class="row-main">
-                    <RouterLink class="row-name" :to="`/documents/${document.id}`">
+                    <!-- 点文件名**留在本页**：把文档 id 写进查询参数，右侧滑出详情抽屉。
+                         走查询参数而不是独立路由，列表组件才不会被卸载——关掉抽屉回到原位，
+                         滚动位置与筛选都不丢。「在新标签打开」仍然得到 /documents/:id（跳板会转回来）。 -->
+                    <RouterLink
+                      class="row-name"
+                      :to="{ path: route.path, query: documentLink(document.id) }"
+                    >
                       {{ document.name }}
                     </RouterLink>
                     <StatusTag
@@ -1233,6 +1270,18 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       v-model:open="shareOpen"
       :kb-id="kbId"
       :kb-name="knowledgeBase.name"
+    />
+
+    <!--
+      文档详情抽屉：从右侧滑出、盖在列表上，**列表本身一点不动**。
+      `:key` 绑 id：换一份文档时重新播放一次入场动画，并把组件状态彻底重置
+      （否则上一份的切块、预览会短暂留在新文档上）。
+    -->
+    <DocumentDrawer
+      v-if="openDocumentId"
+      :key="openDocumentId"
+      :document-id="openDocumentId"
+      @close="closeDocument"
     />
     <!-- 移动到目录（v13）。目录可能很多，所以用单选清单而不是"一行一个按钮" -->
     <AppModal v-model:open="moveOpen" title="移动到目录">
