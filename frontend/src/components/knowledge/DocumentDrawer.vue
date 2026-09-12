@@ -34,7 +34,7 @@ import {
   type DocumentChunk,
   type DocumentSummary,
 } from '@/api/documents'
-import IconClose from '@/components/icons/IconClose.vue'
+import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconDownload from '@/components/icons/IconDownload.vue'
 import IconFile from '@/components/icons/IconFile.vue'
 import OfficePreview from '@/components/knowledge/OfficePreview.vue'
@@ -87,14 +87,35 @@ const view = ref<'read' | 'chunks'>('read')
 const preview = ref<DocumentPreview | null>(null)
 const previewLoading = ref(false)
 
+/** 收起动画时长。与样式里的 `transition` 保持一致——对不上的话会"滑一半就消失"。 */
+const LEAVE_MS = 180
+
+/** 正在收起：挡住重复触发（连点两下会排两次定时器）。 */
+const closing = ref(false)
+
 /**
- * Esc 关抽屉：与原生 `<dialog>` 的行为一致，用户不必去找那个 ×。
+ * 收起抽屉：**先滑回去，再通知宿主流掉它**。
+ *
+ * 出来是滑出来的、回去却"啪"地消失，会让人怀疑刚才那一下到底生效没有。
+ * 所以收起也走同一条路径：加上位移类 → 等动画跑完 → emit。
+ */
+function requestClose(): void {
+  if (closing.value) return
+  closing.value = true
+  leaveTimer = window.setTimeout(() => emit('close'), LEAVE_MS)
+}
+
+/** 收起途中被卸载（宿主换了路由）时把定时器收掉，避免对已卸载的组件 emit。 */
+let leaveTimer: number | undefined
+
+/**
+ * Esc 收起：与原生 `<dialog>` 的行为一致，用户不必去找那个按钮。
  *
  * 挂在 window 上而不是元素上：抽屉里的焦点可能在 iframe（PDF 预览）或某个输入框里，
  * 只监听根元素的 keydown 会经常收不到。
  */
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') emit('close')
+  if (event.key === 'Escape') requestClose()
 }
 
 const activeTabHint = computed(() => VIEW_TABS.find((tab) => tab.key === view.value)?.hint ?? '')
@@ -155,7 +176,10 @@ onMounted(() => {
   window.addEventListener('keydown', onKeydown)
 })
 
-onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeydown)
+  if (leaveTimer !== undefined) window.clearTimeout(leaveTimer)
+})
 
 /**
  * **抽屉里换文档（宿主点了列表里另一份）必须重新加载**：组件被复用，
@@ -367,35 +391,47 @@ const stage = computed(() =>
     列表样式一点都不动——用户扫列表时点一份看详情，关掉继续扫，位置不丢。
     没有遮罩：遮罩会把列表压暗，而"列表还在这儿"正是这个交互的前提。
   -->
-  <aside class="doc-drawer" role="dialog" aria-label="文档详情">
+  <aside
+    class="doc-drawer"
+    :class="{ 'doc-drawer-closing': closing }"
+    role="dialog"
+    aria-label="文档详情"
+  >
     <header class="drawer-head">
       <div class="drawer-title">
         <IconFile class="drawer-icon" :size="16" />
         <h2 class="drawer-name">{{ document?.name ?? '文档详情' }}</h2>
       </div>
       <div class="drawer-actions">
+        <!-- 两个下载**必须一眼分得清**：原先都只画一个下载图标，解析过的文档
+             会并排出现两个长得一样的按钮，用户根本不知道哪个是哪个 -->
         <AppButton
           v-if="document"
           size="sm"
-          :aria-label="'下载原文件'"
-          :title="'下载原文件'"
           :disabled="downloading !== null"
           @click="download('original')"
         >
           <template #icon><IconDownload :size="15" /></template>
+          {{ downloading === 'original' ? '准备中…' : '下载原文' }}
         </AppButton>
         <AppButton
           v-if="document && document.chunk_count > 0"
           size="sm"
-          :aria-label="'下载解析后的 Markdown'"
-          :title="'下载 Markdown'"
           :disabled="downloading !== null"
           @click="download('markdown')"
         >
           <template #icon><IconDownload :size="15" /></template>
+          {{ downloading === 'markdown' ? '准备中…' : '下载 Markdown' }}
         </AppButton>
-        <AppButton size="sm" aria-label="关闭" title="关闭" @click="emit('close')">
-          <template #icon><IconClose :size="15" /></template>
+        <!-- 收起：出来是滑出来的，回去也滑回去。图标指向右侧 = "收回右边" -->
+        <AppButton
+          size="sm"
+          aria-label="收起"
+          title="收起"
+          :disabled="closing"
+          @click="requestClose"
+        >
+          <template #icon><IconChevronRight :size="16" /></template>
         </AppButton>
       </div>
     </header>
@@ -640,7 +676,15 @@ const stage = computed(() =>
   background: var(--bg-surface);
   border-left: 1px solid var(--border);
   box-shadow: -10px 0 28px rgb(0 0 0 / 12%);
+  /* 进场用 animation、退场用 transition：进场只要跑一次，退场要能被 JS 等待
+     （`requestClose` 等这段时间再通知宿主卸载）。两者时长必须一致 */
   animation: drawer-in 180ms ease-out;
+  transition: transform 180ms ease-out;
+}
+
+/* 收起：滑回右边（组件此时还在 DOM 里，动画跑完才 emit） */
+.doc-drawer-closing {
+  transform: translateX(100%);
 }
 
 @keyframes drawer-in {

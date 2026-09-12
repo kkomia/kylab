@@ -109,33 +109,50 @@ describe('DocumentDrawer', () => {
     expect(wrapper.find('.drawer-name').text()).toBe('乙.pdf')
   })
 
-  it('关闭是通知宿主，抽屉自己不改路由', async () => {
+  it('两个下载按钮的文字不一样（长相一样会让人分不清哪个是哪个）', async () => {
     const wrapper = await mountDrawer()
 
-    await wrapper.find('button[aria-label="关闭"]').trigger('click')
-
-    expect(wrapper.emitted('close')).toHaveLength(1)
-  })
-
-  it('Esc 关抽屉（不必去找那个 ×）', async () => {
-    const wrapper = await mountDrawer()
-
-    // 监听在 window 上：焦点可能在 PDF iframe 或输入框里，只监听根元素会收不到
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
-    await flushPromises()
-
-    expect(wrapper.emitted('close')).toHaveLength(1)
-
-    wrapper.unmount()
+    const labels = wrapper.findAll('.drawer-actions button').map((b) => b.text())
+    expect(labels[0]).toContain('下载原文')
+    expect(labels[1]).toContain('下载 Markdown')
   })
 
   it('下载按钮走签名链接那条路', async () => {
     vi.mocked(api.downloadDocument).mockResolvedValue(undefined)
     const wrapper = await mountDrawer()
 
-    await wrapper.find('button[aria-label="下载原文件"]').trigger('click')
+    await wrapper.find('.drawer-actions button').trigger('click')
     await flushPromises()
 
     expect(api.downloadDocument).toHaveBeenCalledWith('doc_a', 'original')
+  })
+
+  it('收起是「先滑回去再通知宿主」，不是瞬间消失', async () => {
+    const wrapper = await mountDrawer()
+
+    await wrapper.find('button[aria-label="收起"]').trigger('click')
+
+    // 先加上位移类（滑回去），此时**还不能**通知宿主卸载——否则动画会被直接掐掉。
+    // 注意用 `find` 而不是 `wrapper.classes()`：这个组件是多根（抽屉 + 确认弹窗），
+    // 多根组件在 VTU 里没有"根元素"可问。
+    expect(wrapper.find('.doc-drawer').classes()).toContain('doc-drawer-closing')
+    expect(wrapper.emitted('close')).toBeUndefined()
+
+    // 等动画跑完（样式里是 180ms）
+    await new Promise((resolve) => setTimeout(resolve, 260))
+    expect(wrapper.emitted('close')).toHaveLength(1)
+
+    wrapper.unmount()
+  })
+
+  it('Esc 同样走收起（这条路径挂在 window 上：焦点可能在 iframe 里）', async () => {
+    const wrapper = await mountDrawer()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await new Promise((resolve) => setTimeout(resolve, 260))
+
+    expect(wrapper.emitted('close')).toHaveLength(1)
+
+    wrapper.unmount()
   })
 })
