@@ -233,6 +233,11 @@ class TaskOut(BaseModel):
     kind: TaskKind
     state: TaskState
     document_id: str | None = None
+    knowledge_base_id: str | None = None
+    """任务所属文档的知识库（v14 后随列表带回）。
+
+    界面的"按知识库筛选"靠它——没有它，任务中心就得逐个库拉文档来反查归属。
+    没有挂文档的任务（数据源拉取）为 None。"""
     attempts: int
     max_attempts: int
     error: str | None = None

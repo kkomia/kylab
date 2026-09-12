@@ -32,6 +32,11 @@ async def list_tasks(
     # 成员（v10）只看到自己库里的文档任务；任务内容（文件名、报错）是私有数据
     kb_ids = services.api_keys.visible_kb_ids(caller) if caller.user is not None else None
     tasks = services.documents.list_tasks(state, kb_ids=kb_ids)
+    # 任务 → 所属库，一次批量取回：界面的"按知识库筛选"靠它，
+    # 不必逐个库拉文档来反查归属（那是 N 次请求）
+    documents = services.documents.get_documents_by_ids(
+        [task.document_id for task in tasks if task.document_id]
+    )
     items: list[TaskOut] = []
     for task in tasks:
         health = services.observability.assess(task)
@@ -39,6 +44,8 @@ async def list_tasks(
         out.health = health.status
         out.health_label = health.label
         out.health_detail = health.detail
+        if task.document_id and task.document_id in documents:
+            out.knowledge_base_id = documents[task.document_id].knowledge_base_id
         items.append(out)
     return TaskList(items=items)
 

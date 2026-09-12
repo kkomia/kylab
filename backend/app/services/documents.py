@@ -151,6 +151,10 @@ class DocumentService:
             raise NotFoundError(f"文档不存在：{document_id}")
         return record
 
+    def get_documents_by_ids(self, document_ids: list[str]) -> dict[str, DocumentRecord]:
+        """按 id 批量取文档（不存在的 id 不在结果里）。给"手上有一批 id"的场景用。"""
+        return self._stores.meta.get_documents_by_ids(document_ids)
+
     def rename(self, document_id: str, name: str) -> DocumentRecord:
         """改显示名。**不动内容、不重跑解析**——索引里是切块，与文件名无关。"""
         record = self.get(document_id)

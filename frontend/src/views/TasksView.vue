@@ -19,6 +19,7 @@ import IconFile from '@/components/icons/IconFile.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppModal from '@/components/ui/AppModal.vue'
+import AppSelect from '@/components/ui/AppSelect.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
@@ -41,6 +42,54 @@ let timer: ReturnType<typeof setInterval> | null = null
  *  塞进 `title` 属性的话鼠标一移开就没了，也没法选中复制去查。 */
 const detail = ref<TaskSummary | null>(null)
 
+// ------------------------------------------------------------------ 筛选
+
+const kbFilter = ref('')
+const stateFilter = ref('')
+const healthFilter = ref('')
+
+const KB_OPTIONS = computed(() => [
+  { value: '', label: '全部知识库' },
+  ...store.items.map((item) => ({ value: item.id, label: item.name })),
+])
+
+const STATE_OPTIONS = [
+  { value: '', label: '全部状态' },
+  { value: 'pending', label: '排队中' },
+  { value: 'running', label: '执行中' },
+  { value: 'succeeded', label: '已完成' },
+  { value: 'failed', label: '失败' },
+  { value: 'canceled', label: '已取消' },
+]
+
+const HEALTH_OPTIONS = [
+  { value: '', label: '全部健康' },
+  { value: 'running', label: '执行中' },
+  { value: 'idle', label: '排队中' },
+  { value: 'stalled', label: '可能卡住' },
+  { value: 'overdue', label: '长时间未执行' },
+]
+
+const hasFilter = computed(
+  () => kbFilter.value !== '' || stateFilter.value !== '' || healthFilter.value !== '',
+)
+
+/** 任务量级在几百以内，筛选在客户端做：不必为它再加一版后端查询参数。 */
+const visibleTasks = computed(() =>
+  tasks.value.filter(
+    (task) =>
+      (kbFilter.value === '' || task.knowledge_base_id === kbFilter.value) &&
+      (stateFilter.value === '' || task.state === stateFilter.value) &&
+      (healthFilter.value === '' || task.health === healthFilter.value),
+  ),
+)
+
+function clearFilters(): void {
+  kbFilter.value = ''
+  stateFilter.value = ''
+  healthFilter.value = ''
+}
+
 const running = computed(() =>
   tasks.value.some((task) => task.state === 'pending' || task.state === 'running'),
 )
@@ -49,9 +98,16 @@ const running = computed(() =>
 async function loadDocumentNames(): Promise<void> {
   try {
     if (store.items.length === 0) await store.load()
+    await refresh()
+    // 只拉"确实有任务"的库：任务通常集中在个别库，多数情况一次请求就够
+    const kbIds = [
+      ...new Set(
+        tasks.value.map((task) => task.knowledge_base_id).filter((id): id is string => id !== null),
+      ),
+    ]
     const rows: DocumentSummary[] = []
-    for (const kb of store.items) {
-      rows.push(...(await listDocuments(kb.id)).items)
+    for (const kbId of kbIds) {
+      rows.push(...(await listDocuments(kbId)).items)
     }
     documents.value = Object.fromEntries(rows.map((row) => [row.id, row.name]))
   } catch {
@@ -69,7 +125,7 @@ async function refresh(): Promise<void> {
 }
 
 onMounted(async () => {
-  await Promise.all([refresh(), loadDocumentNames()])
+  await loadDocumentNames()
   loading.value = false
   timer = setInterval(() => {
     void refresh()
@@ -142,6 +198,23 @@ function openDocument(documentId: string): void {
     />
 
     <template v-else>
+      <!-- 筛选：库 / 状态 / 健康。任务量级在几百以内，客户端过滤即可 -->
+      <div class="toolbar">
+        <div class="filter-select">
+          <AppSelect v-model="kbFilter" :options="KB_OPTIONS" aria-label="按知识库筛选" />
+        </div>
+        <div class="filter-select">
+          <AppSelect v-model="stateFilter" :options="STATE_OPTIONS" aria-label="按状态筛选" />
+        </div>
+        <div class="filter-select">
+          <AppSelect v-model="healthFilter" :options="HEALTH_OPTIONS" aria-label="按健康筛选" />
+        </div>
+        <AppButton v-if="hasFilter" size="sm" variant="subtle" @click="clearFilters">
+          清除筛选
+        </AppButton>
+        <span class="toolbar-count tabular">{{ visibleTasks.length }} / {{ tasks.length }} 项</span>
+      </div>
+
       <div class="panel">
         <div class="panel-head list-head" aria-hidden="true">
           <span class="head-task">任务</span>
@@ -151,8 +224,13 @@ function openDocument(documentId: string): void {
           <span class="head-time">更新时间</span>
         </div>
 
-        <ul class="task-rows">
-          <li v-for="task in tasks" :key="task.id" class="task-row-group">
+        <!-- 筛选后可能为空：这不是"没有任务"，要给出与全局空态不同的文案 -->
+        <p v-if="visibleTasks.length === 0" class="muted filter-empty">
+          没有符合筛选条件的任务。换个条件，或点右上角「清除筛选」。
+        </p>
+
+        <ul v-else class="task-rows">
+          <li v-for="task in visibleTasks" :key="task.id" class="task-row-group">
             <div class="task-row panel-row">
               <IconFile class="row-icon" />
               <span class="row-kind">{{ taskKindLabel(task.kind) }}</span>
@@ -185,12 +263,15 @@ function openDocument(documentId: string): void {
                 :tone="taskStateView(task.state).tone"
                 :running="task.state === 'running'"
               />
-              <!-- 健康列的文字用后端给的 label：它是判定结论，前端再翻译一遍就有两套说法 -->
+              <!-- 健康列的文字用后端给的 label：它是判定结论，前端再翻译一遍就有两套说法。
+                   终态（done）与状态列语义重复，退成弱文字；只有"需要看"的判据才配胶囊 -->
               <StatusTag
+                v-if="task.health !== 'done'"
                 class="row-health"
                 :label="task.health_label"
                 :tone="taskHealthTone(task.health)"
               />
+              <span v-else class="row-health-done">{{ task.health_label }}</span>
               <span class="row-attempts">{{ attemptText(task) }}</span>
               <span class="row-time">{{ formatDate(task.updated_at) }}</span>
             </div>
@@ -275,6 +356,44 @@ function openDocument(documentId: string): void {
 .error-line {
   margin: 0 0 var(--space-4);
   color: var(--status-danger);
+}
+
+/* ---- 筛选工具栏（与知识库详情页同一套形态）---- */
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.filter-select {
+  flex: 0 0 148px;
+}
+
+/* 右侧计数弱一档：它是"筛出来多少"，不是动作 */
+.toolbar-count {
+  margin-left: auto;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.filter-empty {
+  margin: var(--space-4) 0;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-control);
+}
+
+/* 终态健康用弱文字：与状态列重复的胶囊会让人以为它们是两个不同的结论。
+   宽度与胶囊列（92px）一致，行与列头才不会错位 */
+.row-health-done {
+  flex: 0 0 92px;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
 }
 
 /* 列头与行共用同一套列宽，数字才会真的排在一条竖轴上 */

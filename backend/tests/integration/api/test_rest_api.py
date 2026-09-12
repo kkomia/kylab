@@ -151,6 +151,14 @@ def test_upload_returns_accepted_with_task(client: TestClient, kb_id: str) -> No
     assert body["document"]["stage"] == "uploaded"
 
 
+def test_task_list_carries_knowledge_base_id(client: TestClient, kb_id: str) -> None:
+    """任务带所属库 id：任务中心的"按知识库筛选"靠它，不必逐库拉文档反查。"""
+    _upload(client, kb_id)
+
+    task = client.get("/api/v1/tasks").json()["items"][0]
+    assert task["knowledge_base_id"] == kb_id
+
+
 def test_upload_can_skip_ingest(client: TestClient, kb_id: str) -> None:
     response = client.post(
         f"/api/v1/knowledge-bases/{kb_id}/documents?start=false",
