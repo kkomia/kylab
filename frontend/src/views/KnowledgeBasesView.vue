@@ -117,7 +117,11 @@ const summaryLine = computed(() => {
   if (!hasItems.value) return undefined
   const counts = Object.values(store.summaries)
   if (counts.length === 0) return `${store.items.length} 个知识库`
-  const total = counts.reduce((sum, item) => sum + item.count, 0)
+  // count 缺失按 0 算：直接相加会把 undefined 变成 NaN，页头上写"共 NaN 篇"（实测踩到）
+  const total = counts.reduce(
+    (sum, item) => sum + (Number.isFinite(item.count) ? item.count : 0),
+    0,
+  )
   return `${store.items.length} 个知识库 · 共 ${total} 篇文档`
 })
 

@@ -30,9 +30,11 @@ interface State {
   error: string
 }
 
-/** 一个库的汇总。空库也给 0/None：数字来自后端聚合，是准的，不该退回占位符。 */
+/** 一个库的汇总。空库也给 0/None：数字来自后端聚合，是准的，不该退回占位符。
+ *  `?? 0` 兜底的是"后端比前端旧"的窗口（列表响应里还没有计数字段）——
+ *  否则 undefined 一路传到页头就是"共 NaN 篇"（实测踩到）。 */
 function summaryOf(kb: KnowledgeBase): DocStats {
-  return { count: kb.document_count, updatedAt: kb.last_activity }
+  return { count: kb.document_count ?? 0, updatedAt: kb.last_activity ?? null }
 }
 
 export const useKnowledgeBaseStore = defineStore('knowledgeBases', {
