@@ -46,16 +46,20 @@ const router = createRouter({
       meta: { title: '知识库' },
     },
     {
-      path: '/chat',
+      /**
+       * 历史会话用**路径**而不是查询参数：侧栏点进去要能前进/后退，
+       * 也要能直接收藏某一次对话。
+       *
+       * **必须写成"一条可选参数路由"，不能拆成 `/chat` + `/chat/:id` 两条**：
+       * 两条就是两条不同的路由记录，从 `/chat` 跳到 `/chat/:id` 时 Vue 会把
+       * ChatView **卸载重建**（同一位置、不同类型 → patch 不了）。
+       * 旧实例的 `onBeforeUnmount` 会掐掉刚发出去的那条流，于是"新建会话问第一句"
+       * 永远拿不到回答：会话建出来了、路径也变了，但库里 0 条消息、界面弹回欢迎页
+       * （实测复现）。可选参数下是**同一条记录**，Vue 复用实例、只更新参数，
+       * 由 ChatView 里那个 watch 负责重新装载。
+       */
+      path: '/chat/:conversationId?',
       name: 'chat',
-      component: () => import('@/views/ChatView.vue'),
-      meta: { title: '对话' },
-    },
-    {
-      // 历史会话用**路径**而不是查询参数：侧栏点进去要能前进/后退，
-      // 也要能直接收藏某一次对话。/chat/:id 让这两件事都成立。
-      path: '/chat/:conversationId',
-      name: 'conversation',
       component: () => import('@/views/ChatView.vue'),
       meta: { title: '对话' },
     },

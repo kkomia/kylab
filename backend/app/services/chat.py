@@ -78,6 +78,10 @@ class SourceRef:
     page: int | None = None
     score: float = 0.0
     preview: str = ""
+    #: 出处所属的知识库。界面拿它把引用**直连到库页的文档抽屉**；
+    #: 没有它就只能走 `/documents/:id` 那条转发一跳（会闪一下空白）。
+    #: 默认空串是为了兼容历史会话里存下的旧快照（那时还没有这个字段）。
+    knowledge_base_id: str = ""
 
 
 @dataclass(slots=True)
@@ -142,6 +146,7 @@ class ChatService:
                     page=hit.page,
                     score=hit.score,
                     preview=_preview(hit.text),
+                    knowledge_base_id=hit.knowledge_base_id,
                 )
             )
         return sources

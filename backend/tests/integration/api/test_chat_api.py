@@ -70,8 +70,10 @@ def _install_fake_sources() -> None:
                 heading_path="3 监测",
                 page=4,
                 score=0.9,
-                preview="眼轴长度是主要参数。"
-    )
+                preview="眼轴长度是主要参数。",
+                # 出处要一路带到 SSE 事件里（界面靠它把引用直连到库页抽屉）
+                knowledge_base_id="kb_x",
+            )
         ]
 
     get_services().chat.retrieve_sources = fake_sources  # type: ignore[method-assign]
@@ -97,6 +99,7 @@ def test_stream_emits_sources_then_deltas_then_done(client: TestClient, kb_id: s
 
     assert [e["type"] for e in events] == ["sources", "delta", "delta", "done"]
     assert events[0]["items"][0]["document_name"] == "指南.pdf"
+    assert events[0]["items"][0]["knowledge_base_id"] == "kb_x"
     assert events[1]["text"] == "甲"
     assert events[3]["answer"] == "甲乙"
 

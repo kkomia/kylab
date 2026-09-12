@@ -11,7 +11,7 @@
  * 而且卡住时能立刻看出是模型在胡扯还是检索没命中。
  */
 
-import { API_BASE, request, type ApiErrorBody } from './client'
+import { API_BASE, authHeaders, handleUnauthorized, request, type ApiErrorBody } from './client'
 
 export interface ChatSource {
   index: number
@@ -22,6 +22,13 @@ export interface ChatSource {
   page: number | null
   score: number
   preview: string
+  /**
+   * 出处所属知识库：界面用它把引用直连到库页的文档抽屉。
+   *
+   * 可以是空串——历史会话里存的旧快照没有这个字段。所以用之前要判空，
+   * 空了就退回 `/documents/:id` 那条转发路径。
+   */
+  knowledge_base_id: string
 }
 
 export interface ChatHistoryMessage {
@@ -106,6 +113,18 @@ export interface ChatStreamHandle {
   abort: () => void
 }
 
+/**
+ * 非 2xx 的响应统一翻成错误。
+ *
+ * 401 单独走凭据失效那条路（清令牌 + 重新登录），与 `client.request` 同一口径：
+ * 否则用户看到的是后端原文「请在请求头带上 Authorization: Bearer …」——
+ * 那句话是写给调用方看的，不是写给用户看的。
+ */
+async function errorFromResponse(response: Response): Promise<Error> {
+  if (response.status === 401) return new Error(handleUnauthorized())
+  return new Error(await messageFromResponse(response))
+}
+
 /** 错误体里的 `message` 是后端写给用户看的中文原因，优先用它。 */
 async function messageFromResponse(response: Response): Promise<string> {
   let detail = `请求失败（HTTP ${response.status}）`
@@ -151,7 +170,10 @@ export async function chatStream(
   try {
     response = await fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // **凭据必须自己带上**：这条链路绕过了 client.request（响应是 SSE 不是 JSON），
+      // 而 authHeaders 是唯一知道令牌在哪的地方。漏了它，表现是对话页永远回
+      // 「缺少凭据」，别的页面却一切正常（实测踩过）。
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(payload),
       signal: controller.signal,
     })
@@ -161,9 +183,9 @@ export async function chatStream(
   }
 
   if (!response.ok) {
-    const detail = await messageFromResponse(response)
+    const error = await errorFromResponse(response)
     signal?.removeEventListener('abort', forward)
-    throw new Error(detail)
+    throw error
   }
 
   const reader = response.body?.getReader()
@@ -263,11 +285,11 @@ export async function chatOnce(
 ): Promise<{ answer: string; sources: ChatSource[] }> {
   const response = await fetch(`${API_BASE}/chat`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify(payload),
     signal,
   })
-  if (!response.ok) throw new Error(await messageFromResponse(response))
+  if (!response.ok) throw await errorFromResponse(response)
   return (await response.json()) as { answer: string; sources: ChatSource[] }
 }
 

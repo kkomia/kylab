@@ -18,7 +18,7 @@
  * 1. 引用块**永远显示**，不折叠。回答是不是有据可依，是这一页存在的理由。
  * 2. 流式时给一个「停止」——模型偶尔会绕远路，那一刻用户唯一想要的就是让它闭嘴。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
@@ -27,18 +27,37 @@ import {
   getSuggestedQuestions,
   isAbortError,
   type ChatHistoryMessage,
-  type ChatSource,
 } from '@/api/chat'
 import { getConversation } from '@/api/conversations'
 import type { RegisteredModel } from '@/api/modelRegistry'
 import { getSettings, updateSettings } from '@/api/settings'
+import IconArrowUp from '@/components/icons/IconArrowUp.vue'
+import IconCheck from '@/components/icons/IconCheck.vue'
+import IconChevronDown from '@/components/icons/IconChevronDown.vue'
+import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
+import IconRobot from '@/components/icons/IconRobot.vue'
+import IconSearch from '@/components/icons/IconSearch.vue'
+import IconStop from '@/components/icons/IconStop.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppMultiSelect from '@/components/ui/AppMultiSelect.vue'
 import ModelPicker from '@/components/ui/ModelPicker.vue'
-import { renderAnswerMarkdown } from '@/composables/useMarkdown'
+import { renderAnswerWithCitations } from '@/composables/useMarkdown'
+import {
+  buildTurns,
+  documentTarget,
+  isTraceOpen,
+  sourcePreview,
+  sourceWhere,
+  traceSteps,
+  traceSummary,
+  THINKING_EFFORTS,
+  type Message,
+  type ThinkingEffort,
+  type Turn,
+} from '@/composables/useChatTurns'
 import { useToast } from '@/composables/useToast'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
@@ -54,23 +73,11 @@ const LAST_MODEL_KEY = 'kylab-last-chat-model'
 const LAST_THINKING_KEY = 'kylab-last-thinking'
 const LAST_EFFORT_KEY = 'kylab-last-thinking-effort'
 
-type ThinkingEffort = 'low' | 'medium' | 'high'
-
-/** 强度三档。与后端 ``services/thinking.py`` 的归一化口径一致，界面只暴露这三个。 */
-const THINKING_EFFORTS: { value: ThinkingEffort; label: string }[] = [
-  { value: 'low', label: '低' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' },
-]
-
-interface Message {
-  role: 'user' | 'assistant'
-  /** 用户消息是提问原文；助手消息是流式累积的回答（或错误文案）。 */
-  text: string
-  sources: ChatSource[]
-  error: string
-  streaming: boolean
-}
+/**
+ * 步骤图标：检索、思考、成稿。收在一张表里，模板用 `<component :is>` 取。
+ * 图标映射留在页面而不是 `useChatTurns` 里——那是个纯逻辑模块，不该 import 一堆 .vue。
+ */
+const STEP_ICONS = { search: IconSearch, think: IconRobot, build: IconCheck } as const
 
 const store = useKnowledgeBaseStore()
 const conversations = useConversationStore()
@@ -127,6 +134,20 @@ watch(conversationId, () => {
   void loadConversation()
 })
 
+/**
+ * 正在流式写入哪条会话（空 = 没有）。
+ *
+ * 为什么需要它：**新建会话的第一句**会先建会话、再 `router.replace` 到 `/chat/:id`，
+ * 而"路径参数变了"就会触发 `loadConversation`。此刻库里还没有这一轮的任何消息
+ * ——落库要等回答流完——于是"按库里内容重画"会把刚追加的提问与空回答块一起抹掉，
+ * 连流式回来的字也无处可写（`patch` 找不到那条消息）。实测：界面直接弹回欢迎页，
+ * 会话里 0 条，用户以为"问了个寂寞"。
+ *
+ * 所以正在流式的会话，回放只认本地状态；等这一轮结束（`finish`）再交还给库里。
+ * 用普通变量而不是 ref：它只在异步流程里读写，不参与渲染。
+ */
+let streamingConversationId = ''
+
 /** 把库里的历史读进界面。 */
 async function loadConversation(): Promise<void> {
   const id = conversationId.value
@@ -135,6 +156,8 @@ async function loadConversation(): Promise<void> {
     scheduleSamples()
     return
   }
+  // 这一轮的回答还在路上，本地就是最新的——别用库里的旧快照盖掉它
+  if (id === streamingConversationId) return
   loadingHistory.value = true
   try {
     const detail = await getConversation(id)
@@ -144,6 +167,8 @@ async function loadConversation(): Promise<void> {
       sources: item.sources,
       error: '',
       streaming: false,
+      // 回放：这一轮当时用哪档思考没有存，别猜
+      thinking: null,
     }))
     // 会话建立时用的哪些库：回放时应当沿用，否则多轮上下文会指向上一次没查的库
     if (detail.kb_ids.length) {
@@ -177,6 +202,7 @@ onBeforeUnmount(() => {
   unmounted = true
   stream.value?.abort()
   window.clearTimeout(samplesTimer)
+  window.clearTimeout(flashTimer)
 })
 
 const history = computed<ChatHistoryMessage[]>(() =>
@@ -208,10 +234,14 @@ async function send(): Promise<void> {
         thinking_effort: thinkingEffort.value,
       })
       target = created.id
+      // **先登记再改路径**：改路径会立刻触发一次会话回放（见 streamingConversationId），
+      // 登记晚一步，那一次就已经把界面清空了
+      streamingConversationId = target
       // 用 replace 而不是 push：用户按"新对话"只是想换个会话，
       // 在历史里留一条空的 /chat 没有任何意义，返回时会看到一片空白
       await router.replace(`/chat/${target}`)
     } catch (cause) {
+      streamingConversationId = ''
       notifyError(cause instanceof Error ? cause.message : '无法新建对话')
       return
     }
@@ -219,8 +249,16 @@ async function send(): Promise<void> {
 
   messages.value = [
     ...messages.value,
-    { role: 'user', text, sources: [], error: '', streaming: false },
-    { role: 'assistant', text: '', sources: [], error: '', streaming: true },
+    { role: 'user', text, sources: [], error: '', streaming: false, thinking: null },
+    {
+      role: 'assistant',
+      text: '',
+      sources: [],
+      error: '',
+      streaming: true,
+      // 记下这一轮实际发出去的思考档：过程面板要如实显示"这一步做没做"
+      thinking: { enabled: thinkingOn.value, effort: thinkingEffort.value },
+    },
   ]
   const index = messages.value.length - 1
   query.value = ''
@@ -284,6 +322,8 @@ async function send(): Promise<void> {
 function finish(): void {
   sending.value = false
   stream.value = null
+  // 这一轮写完了，库里已经有完整记录，回放重新以库为准
+  streamingConversationId = ''
   // 一轮结束后刷新侧栏那一条：标题（首轮才有）与消息数都变了。
   // 只刷这一条而不是整表，避免把用户刚建的其他会话顺序打乱
   if (conversationId.value) void conversations.refreshOne(conversationId.value)
@@ -334,26 +374,76 @@ watch(
   { flush: 'post' },
 )
 
-/** 引用一行："[1] 文档名 › 章节（第 N 页）"——章节与页码可能缺，缺了就不占位。 */
-function sourceWhere(source: ChatSource): string {
-  const parts: string[] = []
-  if (source.heading_path) parts.push(source.heading_path)
-  if (source.page !== null) parts.push(`第 ${source.page} 页`)
-  return parts.join(' › ')
+/** 回到最新一行：把"跟随"重新打开，否则下一个字又会把视图留在原地。 */
+function jumpToLatest(): void {
+  stick.value = true
+  scrollToBottom()
+}
+
+// ------------------------------------------------------- 过程面板（参考 WeKnora）
+
+/** 提问 + 回答配对后的渲染列表（配对逻辑见 useChatTurns，搬出去是为了能单测）。 */
+const turns = computed<Turn[]>(() => buildTurns(messages.value))
+
+/** 出错的那一轮没有过程可讲，只报错。 */
+function hasTrace(message: Message): boolean {
+  return message.error.length === 0
+}
+
+function toggleTrace(turn: Turn): void {
+  const message = turn.reply
+  if (!message) return
+  message.traceOpen = !isTraceOpen(message)
+}
+
+/** 正在闪的引用（`"${turn}:${index}"`）。点行内徽标时用它把视线引过去。 */
+const flashCite = ref('')
+let flashTimer: number | undefined
+
+function onReplyClick(event: MouseEvent, index: number): void {
+  const chip = citeChipOf(event.target)
+  if (!chip) return
+  event.preventDefault()
+  void revealSource(index, chip)
+}
+
+/** 键盘与鼠标走同一条路：徽标是 `role="button"`，Enter / 空格都得能用。 */
+function onReplyKeydown(event: KeyboardEvent, index: number): void {
+  if (event.key !== 'Enter' && event.key !== ' ') return
+  const chip = citeChipOf(event.target)
+  if (!chip) return
+  event.preventDefault()
+  void revealSource(index, chip)
+}
+
+function citeChipOf(target: EventTarget | null): number | null {
+  const element = target instanceof Element ? target.closest('[data-cite-index]') : null
+  const value = Number(element?.getAttribute('data-cite-index'))
+  return Number.isInteger(value) ? value : null
 }
 
 /**
- * 引文在界面上只留一小段。
+ * 点行内引用徽标：展开过程面板 → 滚到那一条出处 → 闪一下。
  *
- * 后端的 preview 上限是 900 字（``MAX_CHUNK_CHARS``），那是给**模型**的上下文预算；
- * 照搬到界面上，六条引用会变成六屏长的文字墙——实测每条都比视口还高，
- * "引用列表"看起来就不再是列表。这里按界面用途再切一刀。
+ * 三步缺一不可：只展开不滚，用户还得自己在面板里找"3 是哪个"；
+ * 只滚不闪，视线跟丢（面板里每条的排版几乎一样）。徽标的形状与出处列表的
+ * 编号一致，所以"闪"这一步要落在编号上，不是整张卡片。
  */
-const CITE_PREVIEW_CHARS = 120
-
-function sourcePreview(source: ChatSource): string {
-  const body = source.preview
-  return body.length > CITE_PREVIEW_CHARS ? `${body.slice(0, CITE_PREVIEW_CHARS)}…` : body
+async function revealSource(turnIndex: number, sourceIndex: number): Promise<void> {
+  const turn = turns.value[turnIndex]
+  if (!turn?.reply || !Number.isInteger(sourceIndex)) return
+  turn.reply.traceOpen = true
+  flashCite.value = `${turnIndex}:${sourceIndex}`
+  await nextTick()
+  const host = streamHost.value
+  const article = host?.querySelectorAll('.turn')[turnIndex]
+  article
+    ?.querySelector(`[data-source="${sourceIndex}"]`)
+    ?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  window.clearTimeout(flashTimer)
+  flashTimer = window.setTimeout(() => {
+    if (flashCite.value === `${turnIndex}:${sourceIndex}`) flashCite.value = ''
+  }, 1400)
 }
 
 // ------------------------------------------------------------------ 对话模型（v12）
@@ -637,66 +727,113 @@ async function savePrompt(): Promise<void> {
           </RouterLink>
         </div>
 
-        <article v-for="(message, index) in messages" :key="index" class="turn">
-          <div v-if="message.role === 'user'" class="ask">
-            <p class="ask-label">我的问题</p>
-            <p class="ask-text">{{ message.text }}</p>
+        <div
+          v-for="(turn, turnIndex) in turns"
+          :key="turnIndex"
+          class="turn"
+          @click="onReplyClick($event, turnIndex)"
+          @keydown="onReplyKeydown($event, turnIndex)"
+        >
+          <!-- 提问：右侧气泡（参考 WeKnora）。不再有"我的问题"这类标签——
+               位置与形状已经说明了它是谁说的，多一行小字只是噪声 -->
+          <div v-if="turn.user" class="ask">
+            <p class="ask-text">{{ turn.user.text }}</p>
           </div>
 
-          <div v-else class="reply">
-            <p class="reply-label">回答</p>
-
-            <p v-if="message.error" class="reply-error">{{ message.error }}</p>
+          <div v-if="turn.reply" class="reply">
+            <p v-if="turn.reply.error" class="reply-error">{{ turn.reply.error }}</p>
 
             <template v-else>
+              <!-- 依据摘要：这一行的数字就是"这句回答有没有出处"的答案。
+                   展开才是过程与来源 -->
+              <button
+                v-if="hasTrace(turn.reply)"
+                type="button"
+                class="trace-head"
+                :aria-expanded="isTraceOpen(turn.reply)"
+                @click="toggleTrace(turn)"
+              >
+                <IconChevronRight
+                  class="trace-caret"
+                  :class="{ 'trace-caret-open': isTraceOpen(turn.reply) }"
+                  :size="14"
+                />
+                <span class="trace-summary">{{ traceSummary(turn.reply) }}</span>
+              </button>
+
+              <div v-show="isTraceOpen(turn.reply)" class="trace">
+                <!-- 过程时间线：只列真发生过的步骤 -->
+                <ol class="steps">
+                  <li v-for="step in traceSteps(turn)" :key="step.key" class="step">
+                    <span class="step-icon">
+                      <component :is="STEP_ICONS[step.icon]" :size="13" />
+                    </span>
+                    <div class="step-body">
+                      <p class="step-label">{{ step.label }}</p>
+                      <p v-if="step.detail" class="step-detail">{{ step.detail }}</p>
+                    </div>
+                  </li>
+                </ol>
+
+                <!-- 逐条出处：行内徽标点进来会滚到对应这一条 -->
+                <ol v-if="turn.reply.sources.length" class="cites">
+                  <li
+                    v-for="source in turn.reply.sources"
+                    :key="source.chunk_id"
+                    class="cite"
+                    :class="{ 'cite-flash': flashCite === `${turnIndex}:${source.index}` }"
+                    :data-source="source.index"
+                  >
+                    <div class="cite-head">
+                      <span class="cite-index tabular">[{{ source.index }}]</span>
+                      <!-- 带页码时把页码也带过去：详情页会转成 PDF 查看器的 #page=N 直接跳页，
+                           不带的话用户还得自己在长文档里翻 -->
+                      <RouterLink class="cite-title" :to="documentTarget(source)">
+                        {{ source.document_name }}
+                      </RouterLink>
+                      <span v-if="sourceWhere(source)" class="cite-where">{{
+                        sourceWhere(source)
+                      }}</span>
+                    </div>
+                    <p class="cite-preview">{{ sourcePreview(source) }}</p>
+                  </li>
+                </ol>
+              </div>
+
               <!--
-                回答是模型写的 Markdown。这里用 v-html 是刻意的：renderAnswerMarkdown 会先转义
+                回答是模型写的 Markdown。这里用 v-html 是刻意的：renderAnswerWithCitations 会先转义
                 全部 HTML，再只还原它自己识别出的标记（tests/unit/composables/useMarkdown.test.ts
                 里有对应的注入用例）。换成插值就等于把 ** 和 - 原样摆给用户看。
+                它同时把 `[1]` 标号换成可点击的徽标——点一下能落到那条出处。
               -->
               <!-- eslint-disable vue/no-v-html -->
               <div
                 class="reply-text"
-                :class="{ 'reply-text-streaming': message.streaming }"
-                v-html="renderAnswerMarkdown(message.text)"
+                :class="{ 'reply-text-streaming': turn.reply.streaming }"
+                v-html="renderAnswerWithCitations(turn.reply.text, turn.reply.sources)"
               />
               <!-- eslint-enable vue/no-v-html -->
-              <p v-if="message.streaming && !message.text" class="reply-wait">
-                正在检索并生成回答…
-              </p>
             </template>
-
-            <!-- 引用：回答有没有依据，全看这一块 -->
-            <ol v-if="message.sources.length" class="cites">
-              <li v-for="source in message.sources" :key="source.chunk_id" class="cite">
-                <div class="cite-head">
-                  <span class="cite-index tabular">[{{ source.index }}]</span>
-                  <!-- 带页码时把页码也带过去：详情页会转成 PDF 查看器的 #page=N 直接跳页，
-                       不带的话用户还得自己在长文档里翻 -->
-                  <RouterLink
-                    class="cite-title"
-                    :to="{
-                      path: `/documents/${source.document_id}`,
-                      query: source.page === null ? {} : { page: String(source.page) },
-                    }"
-                  >
-                    {{ source.document_name }}
-                  </RouterLink>
-                  <span v-if="sourceWhere(source)" class="cite-where">{{
-                    sourceWhere(source)
-                  }}</span>
-                </div>
-                <p class="cite-preview">{{ sourcePreview(source) }}</p>
-              </li>
-            </ol>
           </div>
-        </article>
+        </div>
       </div>
     </div>
 
     <!-- 输入卡片：参考 WeKnora——一个大圆角框，范围与模型都收在框内底部。
          我们的"模式"等价物是**知识库范围**：它决定这一问依据什么，空选就没有依据。 -->
     <div class="composer-wrap">
+      <!-- 往上翻旧回答时出现：一键回到最新一行（各家对话产品的通用件）。
+           挂在输入卡片上沿而不是消息区里——它要一直浮在手边，不跟着内容滚走 -->
+      <button
+        v-if="!stick && messages.length > 0"
+        type="button"
+        class="to-bottom"
+        aria-label="回到最新"
+        title="回到最新"
+        @click="jumpToLatest"
+      >
+        <IconChevronDown :size="18" />
+      </button>
       <div class="composer">
         <AppInput
           id="chat-query"
@@ -746,8 +883,29 @@ async function savePrompt(): Promise<void> {
             <span v-if="store.items.length && selected.length === 0" class="composer-warn">
               未选知识库
             </span>
-            <AppButton v-if="sending" variant="danger" @click="stop">停止</AppButton>
-            <AppButton v-else variant="primary" :disabled="!canSend" @click="send">发送</AppButton>
+            <!-- 发送 / 停止是**同一个位置、同一个形状**的图标按钮：切到"停止"时
+                 按钮不跳动，用户不必重新找它。文字版按钮在这条工具行里太占位置 -->
+            <button
+              v-if="sending"
+              type="button"
+              class="send-btn send-btn-stop"
+              aria-label="停止生成"
+              title="停止生成"
+              @click="stop"
+            >
+              <IconStop :size="16" />
+            </button>
+            <button
+              v-else
+              type="button"
+              class="send-btn"
+              aria-label="发送"
+              title="发送"
+              :disabled="!canSend"
+              @click="send"
+            >
+              <IconArrowUp :size="17" />
+            </button>
           </div>
         </div>
       </div>
@@ -773,8 +931,10 @@ async function savePrompt(): Promise<void> {
 
 <style scoped>
 /* 整页占满内容区：中间滚动、底部固定输入卡片。
-   **对话页没有页头**（v0.12）：侧栏已经写着"对话"，再顶一个同名标题只是重复。 */
+   **对话页没有页头**（v0.12）：侧栏已经写着"对话"，再顶一个同名标题只是重复。
+   `position: relative` 是给"回到最新"浮标定位用的——它要贴在输入卡片的上方。 */
 .chat {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -787,9 +947,12 @@ async function savePrompt(): Promise<void> {
   overflow-y: auto;
 }
 
+/* 消息列与输入卡片**左右对齐**：两者都是同一条 960px 的居中窄列。
+   所以这里用 `960 + 2×gutter` 的宽盒 + 内边距，而不是"960 的盒子再往里缩"——
+   后者会让正文比输入卡片往里缩一个 gutter，两列各排各的，一眼就不齐 */
 .chat-inner {
   width: 100%;
-  max-width: var(--chat-measure);
+  max-width: calc(var(--chat-measure) + 2 * var(--page-gutter));
   margin: 0 auto;
   padding: var(--space-6) var(--page-gutter) var(--space-4);
 }
@@ -893,37 +1056,152 @@ async function savePrompt(): Promise<void> {
   margin-top: var(--space-6);
 }
 
-.ask-label,
-.reply-label {
-  margin: 0 0 var(--space-1);
-  font-size: var(--text-micro-size);
-  font-weight: 500;
-  letter-spacing: 0.06em;
-  color: var(--text-tertiary);
-}
-
-/* 提问用左侧竖线认领：整块换底色会跟回答抢同一层视觉重量，而回答才是主体。
-   竖线只跟到文字长度：撑满整行的话，一个短问题会拖着一条长线跑到屏幕那头 */
+/* 提问：右对齐气泡。整块换底色在"对话"这个语境里是成熟产品的通例——
+   左右分栏（问在右、答在左）比任何标签都更快认。 */
 .ask {
-  display: inline-block;
-  padding-left: var(--space-3);
-  border-left: 2px solid var(--border-strong);
+  display: flex;
+  justify-content: flex-end;
 }
 
 .ask-text {
   margin: 0;
-  max-width: var(--measure);
-  font-size: var(--text-section-size);
+  max-width: min(78%, 620px);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-body-size);
   color: var(--text-primary);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-hairline);
+  /* 右下角收一个口：气泡的"尖"指向它的回答 */
+  border-radius: var(--radius-panel) var(--radius-panel) var(--space-1) var(--radius-panel);
 }
 
-.reply {
-  margin-top: var(--space-4);
+/* 回答紧跟着自己的提问：24px 是"两组问答之间"的距离，组内不该有那么大空隙 */
+.ask + .reply {
+  margin-top: var(--space-3);
+}
+
+/* ---- 过程面板 ---- */
+
+/* 摘要行本身是个按钮（展开/收起），但视觉上是一行低调的说明文字 */
+.trace-head {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-2) calc(-1 * var(--space-2));
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-micro-size);
+  color: var(--text-secondary);
+  border-radius: var(--radius-control);
+}
+
+.trace-head:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.trace-caret {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  transition: transform 140ms ease;
+}
+
+.trace-caret-open {
+  transform: rotate(90deg);
+}
+
+.trace {
+  margin: 0 0 var(--space-4);
+}
+
+/* 时间线：左侧一条竖线串起各步，图标压在线上（底色用页面底色"挖空"它） */
+.steps {
+  position: relative;
+  margin: 0 0 var(--space-4);
+  padding: 0;
+  list-style: none;
+}
+
+.steps::before {
+  content: '';
+  position: absolute;
+  top: 20px;
+  bottom: 18px;
+  left: 10px;
+  width: 1px;
+  background: var(--border);
+}
+
+.step {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.step + .step {
+  margin-top: var(--space-3);
+}
+
+.step-icon {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  color: var(--text-tertiary);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+.step-body {
+  min-width: 0;
+  padding-top: 1px;
+}
+
+.step-label {
+  margin: 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-secondary);
+}
+
+.step-detail {
+  margin: var(--space-pair) 0 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+  overflow-wrap: anywhere;
 }
 
 .reply-text {
   max-width: var(--measure);
   color: var(--text-primary);
+}
+
+/* 行内引用徽标：`[1]` 由 renderAnswerWithCitations 换成它。
+   形状与出处列表里的编号一致，所以"点徽标 → 那一条闪一下"才连得上 */
+.reply-text :deep(.md-cite) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  margin: 0 2px;
+  padding: 0 var(--space-1);
+  font-size: var(--text-micro-size);
+  line-height: 1;
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  vertical-align: 1px;
+}
+
+.reply-text :deep(.md-cite:hover) {
+  background: var(--accent-selected);
 }
 
 /* 流式光标：跟在最后一个字后面，说明"还在写" */
@@ -974,18 +1252,10 @@ async function savePrompt(): Promise<void> {
   border-radius: var(--radius-control);
 }
 
-.reply-wait,
 .reply-error {
   margin: 0;
   max-width: var(--measure);
   font-size: var(--text-meta-size);
-}
-
-.reply-wait {
-  color: var(--text-tertiary);
-}
-
-.reply-error {
   color: var(--status-danger);
 }
 
@@ -1006,18 +1276,23 @@ async function savePrompt(): Promise<void> {
 }
 
 .cites {
-  margin: var(--space-4) 0 0;
+  margin: 0;
   padding: 0;
   list-style: none;
-  border-top: 1px solid var(--border-hairline);
 }
 
 .cite {
-  padding: var(--space-3) 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
 }
 
 .cite + .cite {
-  border-top: 1px solid var(--border-hairline);
+  margin-top: var(--space-1);
+}
+
+/* 行内徽标跳过来的那一条：闪一下底色，让眼睛有落点 */
+.cite-flash {
+  background: var(--accent-soft);
 }
 
 .cite-head {
@@ -1063,8 +1338,33 @@ async function savePrompt(): Promise<void> {
 /* ---- 输入卡片 ---- */
 
 .composer-wrap {
+  position: relative;
   flex: 0 0 auto;
   padding: 0 var(--page-gutter) var(--space-5);
+}
+
+/* 「回到最新」浮标：贴在输入卡片上沿正中，浮在内容之上。
+   放在输入卡片的容器里（而不是消息区里）它才不跟着内容滚走 */
+.to-bottom {
+  position: absolute;
+  top: -50px;
+  left: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  color: var(--text-secondary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow-popover);
+  transform: translateX(-50%);
+}
+
+.to-bottom:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
 }
 
 .composer {
@@ -1142,6 +1442,39 @@ async function savePrompt(): Promise<void> {
 .composer-warn {
   font-size: var(--text-micro-size);
   color: var(--status-warning);
+}
+
+/* 发送 / 停止：同一个位置的圆形图标按钮，两态切换时按钮不跳动 */
+.send-btn {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: var(--control-height);
+  height: var(--control-height);
+  color: var(--button-primary-text);
+  background: var(--button-primary-bg);
+  border-radius: 999px;
+  transition: background 120ms ease;
+}
+
+.send-btn:hover:not(:disabled) {
+  background: var(--button-primary-bg-hover);
+}
+
+.send-btn:disabled {
+  color: var(--button-disabled-text);
+  background: var(--button-disabled-bg);
+  cursor: default;
+}
+
+.send-btn-stop {
+  color: var(--text-primary);
+  background: var(--bg-active);
+}
+
+.send-btn-stop:hover {
+  background: var(--border);
 }
 
 .prompt-note {

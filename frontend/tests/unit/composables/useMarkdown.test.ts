@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { renderAnswerMarkdown } from '@/composables/useMarkdown'
+import { renderAnswerMarkdown, renderAnswerWithCitations } from '@/composables/useMarkdown'
 
 describe('renderAnswerMarkdown', () => {
   it('空文本不产出任何标签', () => {
@@ -88,5 +88,67 @@ describe('renderAnswerMarkdown', () => {
     expect(again).toBe(first)
     expect(other).not.toBe(first)
     expect(other).toContain('三')
+  })
+})
+
+describe('renderAnswerWithCitations', () => {
+  const sources = [
+    { index: 1, document_name: '指南.pdf', heading_path: '3 监测', page: 4 },
+    { index: 2, document_name: '共识.md', heading_path: null, page: null },
+  ]
+
+  it('把 [N] 换成带 data-cite-index 的可点击徽标', () => {
+    const html = renderAnswerWithCitations('眼轴是主要参数[1]。', sources)
+
+    expect(html).toContain('class="md-cite"')
+    expect(html).toContain('data-cite-index="1"')
+    expect(html).toContain('role="button"')
+    expect(html).not.toContain('[1]')
+  })
+
+  it('徽标的悬浮说明带文件名与页码，用户能预判点了会去哪', () => {
+    const html = renderAnswerWithCitations('见[1]', sources)
+
+    expect(html).toContain('title="指南.pdf · 3 监测 › 第 4 页"')
+  })
+
+  it('一次点一串的写法也照顾：`[1,2]` 拆成两个徽标', () => {
+    const html = renderAnswerWithCitations('两种资料[1,2]都提到', sources)
+
+    expect(html.match(/data-cite-index=/g)).toHaveLength(2)
+  })
+
+  it('找不到对应出处的编号原样留着——点了没反应的徽标比不换更糟', () => {
+    const html = renderAnswerWithCitations('凭空引用[7]', sources)
+
+    expect(html).toContain('[7]')
+    expect(html).not.toContain('data-cite-index')
+  })
+
+  it('`[1,9]` 里只要有一个对不上，整组都不换（换一半会把原意读歪）', () => {
+    const html = renderAnswerWithCitations('混合[1,9]', sources)
+
+    expect(html).toContain('[1,9]')
+    expect(html).not.toContain('data-cite-index')
+  })
+
+  it('没有出处时退回普通渲染，不无端加一堆徽标', () => {
+    expect(renderAnswerWithCitations('眼轴[1]', [])).toBe(renderAnswerMarkdown('眼轴[1]'))
+  })
+
+  it('模型写进 title 的引号/尖括号被转义，不能逃出属性', () => {
+    const html = renderAnswerWithCitations('见[1]', [
+      { index: 1, document_name: 'a" onmouseover="alert(1)', heading_path: null, page: null },
+    ])
+
+    expect(html).not.toContain('onmouseover="alert(1)"')
+    expect(html).toContain('&quot;')
+  })
+
+  it('同文本同出处重复渲染结果一致（引用渲染也有缓存）', () => {
+    const first = renderAnswerWithCitations('眼轴[1]', sources)
+    const again = renderAnswerWithCitations('眼轴[1]', sources)
+
+    expect(again).toBe(first)
   })
 })

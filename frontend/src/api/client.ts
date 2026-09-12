@@ -29,8 +29,13 @@ export interface RequestOptions {
  * **每个请求都现取，而不是在模块加载时读一次**：用户刚登录拿到会话，
  * 下一次请求就该生效，不能要求刷新页面。没有令牌时不加这个头——
  * 此时请求注定 401，由 `unwrap` 统一送回登录页。
+ *
+ * 导出给 `api/chat.ts` 用：对话走 SSE，响应体是持续打开的字节流，
+ * 没法套 `request()`（它假定"响应是 JSON"），只能自己 fetch。
+ * 那种"自己发请求"的地方必须记得带上它——漏过一次，
+ * 表现是对话页永远回「缺少凭据」，而其它页面全都正常。
  */
-function authHeaders(): Record<string, string> {
+export function authHeaders(): Record<string, string> {
   const token = sessionToken()
   // 操作者归属（G6）随**每个**请求带：它要出现在所有写操作上（上传、建库、删块……），
   // 逐个接口加字段既啰嗦又容易漏。值必须是 id——HTTP 头只能是 ASCII，
@@ -38,6 +43,18 @@ function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = { ...operatorHeaders() }
   if (token) headers.Authorization = `Bearer ${token}`
   return headers
+}
+
+/**
+ * 凭据失效的统一处置：清掉本地令牌并请求重新登录。
+ *
+ * 返回给用户看的文案——**不要**把后端原文（"请在请求头带上 Authorization: Bearer …"）
+ * 甩给用户，那是写给调用方看的。
+ */
+export function handleUnauthorized(): string {
+  clearSessionToken()
+  requestRelogin()
+  return '登录已过期，请重新登录'
 }
 
 /** 把响应翻成结果或抛出带后端文案的错误（错误信封见后端 core/exceptions.py）。 */
@@ -55,10 +72,7 @@ async function unwrap<T>(response: Response, options: RequestOptions): Promise<T
     // 用 Error 的自定义属性而不是新异常类，是为了让所有既有 catch 继续工作。
     if (response.status === 401 && options.authFailure !== 'throw') {
       // v0.11 起只有一种凭据（登录会话）：401 就只有一条恢复路径——重新登录。
-      // 清掉本地令牌，避免带着一条已知无效的令牌继续打请求。
-      clearSessionToken()
-      requestRelogin()
-      detail = '登录已过期，请重新登录'
+      detail = handleUnauthorized()
     }
     const error = new Error(detail) as Error & { status?: number }
     error.status = response.status

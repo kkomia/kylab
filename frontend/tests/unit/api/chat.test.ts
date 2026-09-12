@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { chatOnce, chatStream, isAbortError, type ChatSource } from '@/api/chat'
+import { clearSessionToken, setSessionToken } from '@/composables/useSessionToken'
 
 function source(index: number): ChatSource {
   return {
@@ -12,6 +13,7 @@ function source(index: number): ChatSource {
     page: 3,
     score: 0.5,
     preview: '预览文字',
+    knowledge_base_id: 'kb1',
   }
 }
 
@@ -39,6 +41,28 @@ afterEach(() => {
 })
 
 describe('chatStream', () => {
+  it('带上登录凭据：这条链路绕过了 client.request，令牌得自己加', async () => {
+    // 回归用例。漏掉 Authorization 的表现极具迷惑性——对话页永远回「缺少凭据」，
+    // 而其它页面（走 client.request）全部正常，看起来像"对话功能坏了"。
+    // 用 setSessionToken 而不是直接写 localStorage：令牌是模块级 ref（登录时写入），
+    // 只改存储不会让已加载的模块看到。
+    setSessionToken('tok_abc')
+    let headers: Record<string, string> = {}
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        headers = init.headers as Record<string, string>
+        return sseResponse([events([{ type: 'done', answer: '好' }])])
+      }),
+    )
+
+    await chatStream({ query: 'q', kb_ids: ['kb_1'] }, {})
+    await settle()
+
+    expect(headers.Authorization).toBe('Bearer tok_abc')
+    clearSessionToken()
+  })
+
   it('解析 sources / delta / done 三类事件', async () => {
     const body = events([
       { type: 'sources', items: [source(1)] },

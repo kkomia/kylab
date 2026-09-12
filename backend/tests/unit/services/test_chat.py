@@ -273,6 +273,7 @@ def test_answer_returns_sources_and_passes_prompt_to_model(runtime, bind_slot) -
                             {
                                 "chunk_id": "c1",
                                 "document_id": "d1",
+                                "knowledge_base_id": "kb_1",
                                 "document_name": "眼轴共识.pdf",
                                 "heading_path": "3 监测",
                                 "page": 4,
@@ -294,6 +295,8 @@ def test_answer_returns_sources_and_passes_prompt_to_model(runtime, bind_slot) -
     assert turn.answer == "眼轴长度是主要监测指标。[1]"
     assert [s.index for s in turn.sources] == [1]
     assert turn.sources[0].document_name == "眼轴共识.pdf"
+    # 出处要带上知识库 id：界面靠它把引用直连到库页抽屉，而不是走 /documents 转发一跳
+    assert turn.sources[0].knowledge_base_id == "kb_1"
     assert captured["query"].query == "近视怎么监测"
     # 资料确实进了第一条 system
     assert "眼轴长度是主要参数之一" in fake.received[0][0].content

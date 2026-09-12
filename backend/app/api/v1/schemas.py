@@ -510,6 +510,9 @@ class ChatSourceOut(BaseModel):
     page: int | None = None
     score: float = 0.0
     preview: str = ""
+    #: 出处所属知识库，界面用它把引用直连到库页抽屉。
+    #: 默认空串：历史会话里存的快照没有这个字段，读出来要能兼容。
+    knowledge_base_id: str = ""
 
 
 class ChatTurnOut(BaseModel):

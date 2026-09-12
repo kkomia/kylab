@@ -126,3 +126,71 @@ export function renderAnswerMarkdown(text: string): string {
   HTML_CACHE.set(text, html)
   return html
 }
+
+/* ------------------------------------------------------------------ 行内引用 */
+
+/** 引用徽标要用的那一小撮字段（`ChatSource` 的子集，避免这里依赖 api 层）。 */
+export interface CitationSource {
+  index: number
+  document_name: string
+  heading_path?: string | null
+  page?: number | null
+}
+
+/**
+ * 回答里的 `[1] [2]` 标号**渲染成可点击的徽标**（参考 WeKnora / Perplexity 的做法）。
+ *
+ * 为什么不直接在 `inline()` 里处理：标号要能点、要知道它对应哪条出处，
+ * 而渲染器不认识 sources——两者是两件事。所以先按老样子渲染出 HTML，
+ * 再在这一步把标号替换成带 `data-cite-index` 的徽标，由页面用事件委托接住点击。
+ *
+ * 只替换**确实存在对应出处**的编号：模型偶尔会写 `[7]` 而检索只给了 6 条，
+ * 那种天上掉下来的编号必须原样留着——做成一个点了没反应的徽标比不替换更糟。
+ */
+export function renderAnswerWithCitations(
+  text: string,
+  sources: readonly CitationSource[],
+): string {
+  if (!text || sources.length === 0) return renderAnswerMarkdown(text)
+
+  const known = new Map(sources.map((source) => [source.index, source]))
+  const signature = sources
+    .map((source) => `${source.index}\u0001${source.document_name}\u0001${source.page ?? ''}`)
+    .join('\u0002')
+  const key = `${text}\u0000${signature}`
+  const cached = CITATION_CACHE.get(key)
+  if (cached !== undefined) return cached
+
+  const html = renderAnswerMarkdown(text).replace(CITE_RE, (match, group: string) => {
+    const numbers = group
+      .split(/[,，]/)
+      .map((part) => Number(part.trim()))
+      .filter((value) => Number.isInteger(value))
+    // 组里有一个对不上就整组不换：`[3, 9]` 换一半会把原意读歪
+    if (numbers.length === 0 || numbers.some((value) => !known.has(value))) return match
+    return numbers.map((value) => citationChip(known.get(value)!)).join('')
+  })
+
+  if (CITATION_CACHE.size >= HTML_CACHE_LIMIT) CITATION_CACHE.clear()
+  CITATION_CACHE.set(key, html)
+  return html
+}
+
+/** `[1]`、`[1,2]`、`[1，2]`——模型这几种写法都见过。 */
+const CITE_RE = /\[(\d+(?:\s*[,，]\s*\d+)*)\]/g
+
+/** 徽标上的 `title` 给鼠标悬停看"这一条是哪份文件的哪一段"。 */
+function citationChip(source: CitationSource): string {
+  const where: string[] = []
+  if (source.heading_path) where.push(source.heading_path)
+  if (source.page != null) where.push(`第 ${source.page} 页`)
+  const title = where.length
+    ? `${source.document_name} · ${where.join(' › ')}`
+    : source.document_name
+  return (
+    `<a class="md-cite" data-cite-index="${source.index}" role="button" tabindex="0"` +
+    ` title="${escapeHtml(title)}">${source.index}</a>`
+  )
+}
+
+const CITATION_CACHE = new Map<string, string>()
