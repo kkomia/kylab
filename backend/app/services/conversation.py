@@ -258,6 +258,21 @@ class ConversationService:
             if item.role in ("user", "assistant") and item.content.strip()
         ]
 
+    # ------------------------------------------------- 上下文摘要（v20.1 压缩）
+
+    def summary(self, conversation_id: str) -> tuple[str, str | None]:
+        """（早期对话的摘要，摘要覆盖到的最后一条消息 id）。
+
+        ``("", None)`` = 还没压缩过。取的时候**不校验会话是否存在**——
+        调用方通常是"先拿到会话再来问"，这里再查一次只是多一次往返。
+        """
+        return self._stores.meta.get_conversation_summary(conversation_id)
+
+    def set_summary(
+        self, conversation_id: str, summary: str, upto_message_id: str | None
+    ) -> None:
+        self._stores.meta.set_conversation_summary(conversation_id, summary, upto_message_id)
+
 
 def _title_from(question: str) -> str:
     """首轮提问 → 会话标题。

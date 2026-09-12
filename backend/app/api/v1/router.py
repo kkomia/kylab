@@ -21,6 +21,7 @@ from app.api.v1 import (
     lifecycle,
     maintenance,
     model_registry,
+    notes,
     search,
     settings,
     shares,
@@ -46,6 +47,7 @@ api_router.include_router(stats.router)
 api_router.include_router(tasks.router)
 api_router.include_router(api_keys.router)
 api_router.include_router(conversations.router)
+api_router.include_router(notes.router)
 api_router.include_router(chunks.router)
 api_router.include_router(model_registry.router)
 api_router.include_router(users.router)

@@ -32,6 +32,13 @@ class FakeChat:
     def stream(self, messages):  # type: ignore[no-untyped-def]
         yield from self.answer
 
+    def stream_events(self, messages):  # type: ignore[no-untyped-def]
+        # Agent 工作流走 stream_events（正文与思考分开）；这里只吐正文
+        from app.services.llm import LLMDelta
+
+        for char in self.answer:
+            yield LLMDelta(text=char)
+
 
 @pytest.fixture(autouse=True)
 def fake_llm():
@@ -183,24 +190,26 @@ def test_history_comes_from_the_database_not_the_request(
     services.conversations.append(conv_id, role="assistant", content="库里的回答")
 
     seen: dict = {}
-    real = services.chat.answer
+    real = services.chat.answer_agent
 
     def spy(  # type: ignore[no-untyped-def]
-        *, query, sources, history=None, system_prompt=None, model_pk=None,
-        thinking=None, thinking_effort=None,
+        *, query, kb_ids, history=None, summary="", system_prompt=None, model_pk=None,
+        thinking=None, thinking_effort=None, top_k=None,
     ):
         seen["history"] = [(item.role, item.content) for item in (history or [])]
         return real(
             query=query,
-            sources=sources,
+            kb_ids=kb_ids,
             history=history,
+            summary=summary,
             system_prompt=system_prompt,
             model_pk=model_pk,
             thinking=thinking,
             thinking_effort=thinking_effort,
+            top_k=top_k,
         )
 
-    services.chat.answer = spy  # type: ignore[method-assign]
+    services.chat.answer_agent = spy  # type: ignore[method-assign]
     try:
         client.post(
             "/api/v1/chat",
@@ -213,7 +222,7 @@ def test_history_comes_from_the_database_not_the_request(
             }
     )
     finally:
-        services.chat.answer = real  # type: ignore[method-assign]
+        services.chat.answer_agent = real  # type: ignore[method-assign]
 
     assert ("user", "库里的问题") in seen["history"]
     assert not any("假历史" in content for _, content in seen["history"])

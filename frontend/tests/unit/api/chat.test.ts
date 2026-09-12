@@ -1,7 +1,22 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { chatOnce, chatStream, isAbortError, type ChatSource } from '@/api/chat'
+import {
+  chatOnce,
+  chatStream,
+  isAbortError,
+  type ChatHandlers,
+  type ChatPayload,
+  type ChatSource,
+} from '@/api/chat'
 import { clearSessionToken, setSessionToken } from '@/composables/useSessionToken'
+
+/**
+ * 协议用例不看显示节流：关掉它，事件立即派发，断言才好写。
+ * 节流本身由 displayPacer 的用例覆盖（含一条经 pump 的联调用例）。
+ */
+function noPace(payload: ChatPayload, handlers: ChatHandlers, signal?: AbortSignal) {
+  return chatStream(payload, handlers, signal, { smooth: false })
+}
 
 function source(index: number): ChatSource {
   return {
@@ -56,7 +71,7 @@ describe('chatStream', () => {
       }),
     )
 
-    await chatStream({ query: 'q', kb_ids: ['kb_1'] }, {})
+    await noPace({ query: 'q', kb_ids: ['kb_1'] }, {})
     await settle()
 
     expect(headers.Authorization).toBe('Bearer tok_abc')
@@ -78,7 +93,7 @@ describe('chatStream', () => {
     const seen: string[] = []
     const answers: string[] = []
     let sources: ChatSource[] = []
-    await chatStream(
+    await noPace(
       { query: 'q', kb_ids: ['kb_1'] },
       {
         onSources: (items) => {
@@ -107,7 +122,7 @@ describe('chatStream', () => {
     )
 
     let text = ''
-    await chatStream({ query: 'q', kb_ids: ['kb_1'] }, { onDelta: (d) => (text += d) })
+    await noPace({ query: 'q', kb_ids: ['kb_1'] }, { onDelta: (d) => (text += d) })
     await settle()
 
     expect(text).toBe('甲乙')
@@ -120,7 +135,7 @@ describe('chatStream', () => {
     )
 
     let message = ''
-    await chatStream({ query: 'q', kb_ids: ['kb_1'] }, { onError: (m) => (message = m) })
+    await noPace({ query: 'q', kb_ids: ['kb_1'] }, { onError: (m) => (message = m) })
     await settle()
 
     expect(message).toBe('尚未配置对话模型')
@@ -137,7 +152,7 @@ describe('chatStream', () => {
       ),
     )
 
-    await expect(chatStream({ query: 'q', kb_ids: ['kb_1'] }, {})).rejects.toThrow(
+    await expect(noPace({ query: 'q', kb_ids: ['kb_1'] }, {})).rejects.toThrow(
       '对话端点返回 400',
     )
   })
@@ -172,7 +187,7 @@ describe('chatStream', () => {
     let text = ''
     let handle: { abort: () => void } | null = null
     // 正文永远不结束：handle 必须仍然拿得到
-    const pending = chatStream(
+    const pending = noPace(
       { query: 'q', kb_ids: ['kb_1'] },
       { onDelta: (d) => (text += d) },
     ).then((value) => {
@@ -205,7 +220,7 @@ describe('chatStream', () => {
     )
 
     const controller = new AbortController()
-    const pending = chatStream({ query: 'q', kb_ids: ['kb_1'] }, {}, controller.signal)
+    const pending = noPace({ query: 'q', kb_ids: ['kb_1'] }, {}, controller.signal)
     controller.abort()
 
     const error = await pending.catch((cause: unknown) => cause)
@@ -219,7 +234,7 @@ describe('chatStream', () => {
     )
 
     const seen: string[] = []
-    await chatStream({ query: 'q', kb_ids: ['kb_1'] }, { onError: (m) => seen.push(m) })
+    await noPace({ query: 'q', kb_ids: ['kb_1'] }, { onError: (m) => seen.push(m) })
     await settle()
 
     expect(seen).toEqual(['上游 500'])
@@ -232,7 +247,7 @@ describe('chatStream', () => {
     )
 
     let message = ''
-    await chatStream({ query: 'q', kb_ids: ['kb_1'] }, { onError: (m) => (message = m) })
+    await noPace({ query: 'q', kb_ids: ['kb_1'] }, { onError: (m) => (message = m) })
     await settle()
 
     expect(message).toContain('没有返回任何内容')
@@ -245,10 +260,46 @@ describe('chatStream', () => {
     )
 
     let answer = ''
-    await chatStream({ query: 'q', kb_ids: ['kb_1'] }, { onDone: (a) => (answer = a) })
+    await noPace({ query: 'q', kb_ids: ['kb_1'] }, { onDone: (a) => (answer = a) })
     await settle()
 
     expect(answer).toBe('半句')
+  })
+
+  it('平滑模式：整段一次到达也分拍显示，排空后才交付全文', async () => {
+    vi.useFakeTimers()
+    try {
+      const body = events([
+        { type: 'sources', items: [source(1), source(2)] },
+        { type: 'delta', text: 'x'.repeat(1200) },
+        { type: 'done', answer: 'x'.repeat(1200) },
+      ])
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => sseResponse([body])),
+      )
+
+      let text = ''
+      let answer = ''
+      await chatStream(
+        { query: 'q', kb_ids: ['kb_1'] },
+        {
+          onDelta: (chunk) => (text += chunk),
+          onDone: (value) => (answer = value),
+        },
+      )
+      // 100ms：事件早收下了，但节流层只吐了一小截
+      await vi.advanceTimersByTimeAsync(100)
+      expect(text.length).toBeGreaterThan(0)
+      expect(text.length).toBeLessThan(600)
+      expect(answer).toBe('')
+
+      await vi.advanceTimersByTimeAsync(6000)
+      expect(text).toHaveLength(1200)
+      expect(answer).toHaveLength(1200)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('isAbortError 只认 AbortError', () => {

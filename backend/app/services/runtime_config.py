@@ -104,6 +104,31 @@ SETTING_GROUPS: dict[str, Any] = {
                 "label": "每条资料的小节长度上限",
                 "type": "int",
             },
+            {
+                "key": "chat.agent_enabled",
+                "label": "启用 Agent 多轮检索",
+                "type": "bool",
+            },
+            {
+                "key": "chat.agent_max_rounds",
+                "label": "Agent 最多检索轮数",
+                "type": "int",
+            },
+            {
+                "key": "chat.context_window",
+                "label": "上下文窗口（token）",
+                "type": "int",
+            },
+            {
+                "key": "chat.compress_at",
+                "label": "上下文压缩阈值（占用百分比）",
+                "type": "int",
+            },
+            {
+                "key": "chat.compress_keep",
+                "label": "压缩时保留的最近消息条数",
+                "type": "int",
+            },
         ],
     },
 }
@@ -130,6 +155,17 @@ DEFAULTS: dict[str, str] = {
     # 检索按块命中，但**喂给模型的是整段小节**（v17，见 services/chat.py
     # 的「小块检索、大块阅读」）：0 = 关闭，只给命中的那一块
     "chat.section_chars": "1800",
+    # Agent 工作流（v20，见 services/agent.py）：意图识别 + 检索词改写 + 多轮检索。
+    # 默认开；关掉就退回"原问题单轮检索"的老链路。轮数上限 1~5，默认 3——
+    # 每多一轮都是一次真实检索加一次模型调用，3 轮是成本与召回的折中。
+    "chat.agent_enabled": "true",
+    "chat.agent_max_rounds": "3",
+    # 上下文压缩（v20.1，见 services/chat.py::prepare_context）：
+    # 占用达到阈值就把更早的对话折成摘要，避免长会话撑爆窗口或悄悄失忆。
+    # 窗口做成本设置项是因为**没有统一的 API 能查到模型的真实窗口**。
+    "chat.context_window": "65536",
+    "chat.compress_at": "70",
+    "chat.compress_keep": "6",
 }
 
 

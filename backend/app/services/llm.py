@@ -24,7 +24,7 @@ import httpx
 from app.core.exceptions import UpstreamError
 from app.services.thinking import DEFAULT_EFFORT, build_thinking_payload
 
-__all__ = ["ChatError", "ChatMessage", "LLMConfig", "OpenAICompatChat"]
+__all__ = ["ChatError", "ChatMessage", "LLMConfig", "LLMDelta", "OpenAICompatChat"]
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,20 @@ class LLMConfig:
     @property
     def is_configured(self) -> bool:
         return bool(self.api_key and self.model_id)
+
+
+@dataclass(frozen=True, slots=True)
+class LLMDelta:
+    """流式的一块增量。
+
+    **思考与正文分开**：推理模型把思考写在 ``reasoning_content`` 里，它与 ``content``
+    是同一条流里的两个字段，可能交替出现。界面要把它们分成两个区域显示
+    （思考是过程、正文是结果），所以从这一层就分开，而不是在上层再拆字符串。
+    两者都为空（例如只带 ``finish_reason`` 的收尾块）时，这一块直接跳过。
+    """
+
+    text: str = ""
+    reasoning: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,15 +169,26 @@ class OpenAICompatChat:
         return _content_of(body)
 
     def stream(self, messages: Sequence[ChatMessage]) -> Iterator[str]:
-        """流式产出增量文本（SSE）。
+        """流式产出**正文**增量（SSE）。
 
         逐块 yield，调用方可以直接转给前端做打字机效果——快速验证场景里
         "看着它写"比"等十秒然后一次出现"重要得多。
+
+        思考增量在这里被有意丢掉；要展示思考过程（界面的"过程面板"）用 ``stream_events``。
+        """
+        for delta in self.stream_events(messages):
+            if delta.text:
+                yield delta.text
+
+    def stream_events(self, messages: Sequence[ChatMessage]) -> Iterator[LLMDelta]:
+        """流式产出增量，**正文与思考分开**（推理模型的 ``reasoning_content`` 单独成块）。
 
         **一个字正文都没吐出来就报错**，不能静默收尾：静默的后果是上层存下一条空回答，
         用户看到"只有问题、没有回答"，却拿不到任何可处置的线索（实测过：推理模型的
         思考把预算吃光时就是这个现象，而且时好时坏）。非流式那条路一直有这道判断——
         两条路必须一个口径。
+
+        注意判断只看正文：思考再多也不算"有回答"。
         """
         produced = False
         finish_reason = ""
@@ -180,12 +205,13 @@ class OpenAICompatChat:
                 chunk = _chunk_of(line)
                 if chunk is None:
                     continue
-                delta, reason = chunk
+                text, reasoning, reason = chunk
                 if reason:
                     finish_reason = reason
-                if delta:
+                if text:
                     produced = True
-                    yield delta
+                if text or reasoning:
+                    yield LLMDelta(text=text, reasoning=reasoning)
         if not produced:
             raise ChatError(_empty_stream_hint(finish_reason))
 
@@ -311,11 +337,13 @@ def _empty_stream_hint(finish_reason: str) -> str:
     )
 
 
-def _chunk_of(line: str) -> tuple[str, str] | None:
-    """从一行 SSE 里取出（增量文本，结束原因）。
+def _chunk_of(line: str) -> tuple[str, str, str] | None:
+    """从一行 SSE 里取出（正文增量，思考增量，结束原因）。
 
     非数据行与 ``[DONE]`` 返回 ``None``。**结束原因也要取**：它是判断
     "为什么一个字都没出来"的唯一依据（``length`` = 被长度上限截断）。
+    **思考增量单独取**：推理模型把它写在 ``delta.reasoning_content``，
+    界面要把它与正文分两个区域显示（见 ``LLMDelta``）。
     """
     if not line or not line.startswith("data:"):
         return None
@@ -325,8 +353,10 @@ def _chunk_of(line: str) -> tuple[str, str] | None:
     try:
         body = json.loads(payload)
         choice = body["choices"][0]
-        delta = choice.get("delta", {}).get("content") or ""
-        return delta, str(choice.get("finish_reason") or "")
+        delta = choice.get("delta", {}) or {}
+        text = delta.get("content") or ""
+        reasoning = delta.get("reasoning_content") or ""
+        return str(text), str(reasoning), str(choice.get("finish_reason") or "")
     except (KeyError, IndexError, TypeError, ValueError):
         return None
 

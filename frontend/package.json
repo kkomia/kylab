@@ -15,11 +15,18 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@tiptap/extension-placeholder": "^3.31.3",
+    "@tiptap/extension-task-item": "^3.31.3",
+    "@tiptap/extension-task-list": "^3.31.3",
+    "@tiptap/pm": "^3.31.3",
+    "@tiptap/starter-kit": "^3.31.3",
+    "@tiptap/vue-3": "^3.31.3",
     "@vue-office/excel": "^1.7.14",
     "@vue-office/pptx": "^1.0.1",
     "docx-preview": "^0.4.0",
     "echarts": "^6.1.0",
     "pinia": "^2.2.6",
+    "tiptap-markdown": "^0.9.0",
     "vue": "^3.5.13",
     "vue-router": "^4.4.5"
   },

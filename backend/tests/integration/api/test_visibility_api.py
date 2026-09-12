@@ -235,6 +235,15 @@ def test_member_chats_with_own_conversation(two_users) -> None:  # type: ignore[
         def complete(self, messages):  # type: ignore[no-untyped-def]
             return "这是回答。"
 
+        def stream(self, messages):  # type: ignore[no-untyped-def]
+            yield "这是回答。"
+
+        def stream_events(self, messages):  # type: ignore[no-untyped-def]
+            from app.services.llm import LLMDelta
+
+            for char in "这是回答。":
+                yield LLMDelta(text=char)
+
     # 假模型 + 注册表里绑一个对话模型（不绑的话 ChatService 先报"未配置"，测不到守卫之后的路）
     services = get_services()
     bind_model(services.models, "chat", model_id="fake-model", capabilities=["chat"])

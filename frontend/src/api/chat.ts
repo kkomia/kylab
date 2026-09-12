@@ -12,6 +12,7 @@
  */
 
 import { API_BASE, authHeaders, handleUnauthorized, request, type ApiErrorBody } from './client'
+import { createDisplayPacer } from '@/composables/displayPacer'
 
 export interface ChatSource {
   index: number
@@ -69,9 +70,21 @@ export interface ChatPayload {
   thinking_effort?: 'low' | 'medium' | 'high'
 }
 
+/** Agent 工作流里的一个步骤（后端 ``StepEvent``）。 */
+export interface ChatStep {
+  /** intent / rewrite / retrieve / answer */
+  phase: string
+  label: string
+  detail: string
+  /** "running" | "done" */
+  status: string
+}
+
 /** 服务端事件（后端 api/v1/chat.py 的事件形状）。 */
 export type ChatStreamEvent =
+  | { type: 'step'; phase: string; label: string; detail: string; status: string }
   | { type: 'sources'; items: ChatSource[] }
+  | { type: 'thinking'; text: string }
   | { type: 'delta'; text: string }
   | { type: 'done'; answer: string }
   | { type: 'error'; message: string }
@@ -79,6 +92,10 @@ export type ChatStreamEvent =
 export interface ChatHandlers {
   /** 依据先到：用户不必等模型写完就知道"它拿到了什么"。 */
   onSources?: (items: ChatSource[]) => void
+  /** Agent 工作流的进度（理解问题、优化检索词、第 N 轮检索…）。 */
+  onStep?: (step: ChatStep) => void
+  /** 思考过程增量（推理模型的 reasoning_content），与正文分开。 */
+  onThinking?: (text: string) => void
   onDelta?: (text: string) => void
   onDone?: (answer: string) => void
   onError?: (message: string) => void
@@ -152,12 +169,18 @@ export function isAbortError(error: unknown): boolean {
  * 返回的 Promise 在**响应头到达**时就兑现（HTTP 层面的失败在这里 reject），
  * 之后的正文全部通过 handlers 送达——包括流内报的 error 事件。
  * 这一点很要紧：句柄必须早于正文可用，晚一步「停止」就点不到了。
+ *
+ * `options.smooth`（默认开）控制**显示节流**：服务端可能把几十个 delta 挤在一毫秒里
+ * （检索结果整批返回、端点特别快），节流层会把它们按受控速度缓缓送出，
+ * 让"检索、写作"的过程看得见。脚本/自测这类不需要过程感的调用可以关掉它。
  */
 export async function chatStream(
   payload: ChatPayload,
   handlers: ChatHandlers,
   signal?: AbortSignal,
+  options: { smooth?: boolean } = {},
 ): Promise<ChatStreamHandle> {
+  const smooth = options.smooth ?? true
   const controller = new AbortController()
   // 外部 signal 先于本次请求被取消时，abort() 不会再触发事件，这里补一次转发
   const forward = (): void => controller.abort()
@@ -196,7 +219,7 @@ export async function chatStream(
 
   // 读取循环**不 await**：句柄必须在响应头到达时就交回调用方。
   // 否则「停止」按钮要等整条流读完才生效——那正是它唯一该起作用的时刻。
-  void pump(reader, handlers, signal, forward)
+  void pump(reader, handlers, signal, forward, smooth)
 
   return { abort: () => controller.abort() }
 }
@@ -207,27 +230,85 @@ async function pump(
   handlers: ChatHandlers,
   signal: AbortSignal | undefined,
   forward: () => void,
+  smooth: boolean,
 ): Promise<void> {
   // 后端在流开始后不再能改状态码，任何失败都在流内以 error 事件送达，
   // 所以这里必须把 onError 与 onDone 都算作"已交付"，避免界面又叠一条通用报错。
   let delivered = false
   let answer = ''
+  /** done 里的拼装全文，以它为准；排空后据此交付。 */
+  let finalAnswer: string | null = null
   const decoder = new TextDecoder()
   let buffer = ''
 
+  // 节流层：正文与来源都经它出去，保证"再快到齐也看得见过程"。
+  const pacer = smooth
+    ? createDisplayPacer<ChatSource>({
+        onText: (chunk) => handlers.onDelta?.(chunk),
+        onSources: (items) => handlers.onSources?.(items),
+        onDrained: () => {
+          if (finalAnswer !== null) handlers.onDone?.(finalAnswer)
+        },
+      })
+    : null
+  // 思考单独一只节拍器、且更快：它是过程不是结果，不该让正文等它慢慢打完。
+  // 快模型一次涌出几千字思考时，界面仍然看得出"它在想"，但不会拖住答题。
+  const thinkingPacer = smooth
+    ? createDisplayPacer<string>(
+        { onText: (chunk) => handlers.onThinking?.(chunk) },
+        { minCps: 120, maxCps: 3000, catchUpSeconds: 0.4 },
+      )
+    : null
+
+  const flushAll = (): void => {
+    pacer?.flush()
+    pacer?.stop()
+    thinkingPacer?.flush()
+    thinkingPacer?.stop()
+  }
+
   const emit = (event: ChatStreamEvent): void => {
     if (event.type === 'sources') {
-      handlers.onSources?.(event.items)
+      if (pacer) pacer.setSources(event.items)
+      else handlers.onSources?.(event.items)
+      return
+    }
+    if (event.type === 'step') {
+      // 步骤本身自带节奏（每步背后都是一次真实调用），不再二次节流
+      handlers.onStep?.({
+        phase: event.phase,
+        label: event.label,
+        detail: event.detail,
+        status: event.status,
+      })
+      return
+    }
+    if (event.type === 'thinking') {
+      if (thinkingPacer) thinkingPacer.pushText(event.text)
+      else handlers.onThinking?.(event.text)
       return
     }
     if (event.type === 'delta') {
       answer += event.text
-      handlers.onDelta?.(event.text)
+      if (pacer) pacer.pushText(event.text)
+      else handlers.onDelta?.(event.text)
       return
     }
     delivered = true
-    if (event.type === 'done') handlers.onDone?.(event.answer)
-    else handlers.onError?.(event.message)
+    if (event.type === 'done') {
+      finalAnswer = event.answer
+      // 思考先落地（它是已完成的过程），再让正文按自己的节奏收尾
+      if (thinkingPacer) {
+        thinkingPacer.flush()
+        thinkingPacer.stop()
+      }
+      if (pacer) pacer.finish(event.answer)
+      else handlers.onDone?.(event.answer)
+    } else {
+      // 报错时把已经收到、还没显示的字先亮完，否则它们会凭空消失
+      flushAll()
+      handlers.onError?.(event.message)
+    }
   }
 
   const drain = (text: string): void => {
@@ -265,12 +346,28 @@ async function pump(
       // 流干净地结束了，却既没有 done 也没有 error。
       // 静默收场会显示成"空回答"，用户会读成"知识库里没有"，所以必须说出来；
       // 已经吐了一半的则当作完成——那半段仍然是有用的回答。
-      if (answer) handlers.onDone?.(answer)
-      else fail('对话没有返回任何内容，请重试')
+      if (answer) {
+        finalAnswer = answer
+        if (thinkingPacer) {
+          thinkingPacer.flush()
+          thinkingPacer.stop()
+        }
+        if (pacer) pacer.finish(answer)
+        else handlers.onDone?.(answer)
+      } else {
+        flushAll()
+        fail('对话没有返回任何内容，请重试')
+      }
     }
   } catch (error) {
     // 用户叫停：已经显示的部分留着，不报错
-    if (!isAbortError(error)) fail(error instanceof Error ? error.message : '对话中断')
+    if (isAbortError(error)) {
+      // 收到的字全部保留（可能还有一段在节流层排队）
+      flushAll()
+    } else {
+      flushAll()
+      fail(error instanceof Error ? error.message : '对话中断')
+    }
   } finally {
     signal?.removeEventListener('abort', forward)
     // 提前退出（含取消）时释放底层连接，否则这一条流会一直挂在后端

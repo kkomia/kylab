@@ -7,11 +7,15 @@
 事件形状（``text/event-stream``，每行一个 JSON）：
 
 ```
-data: {"type":"sources","items":[...]}      # 先给依据，再给答案
+data: {"type":"step","phase":"intent","label":"意图：查事实","detail":"…"}   # Agent 步骤
+data: {"type":"sources","items":[...]}      # 依据；多轮检索会多次发出，始终是累计列表
+data: {"type":"thinking","text":"…"}         # 思考增量（推理模型的 reasoning_content）
 data: {"type":"delta","text":"向"}           # 逐块增量
 data: {"type":"done","answer":"…"}           # 收尾（含拼接后的全文，便于前端兜底）
 data: {"type":"error","message":"…"}         # 任何失败都在流内报，不吞
 ```
+
+Agent 工作流（v20）默认开启，可用设置项 ``chat.agent_enabled`` 关掉退回单轮检索。
 """
 
 from __future__ import annotations
@@ -31,6 +35,12 @@ from app.api.v1.schemas import (
     SuggestedQuestionsOut,
 )
 from app.core.services import Services, get_services
+from app.services.agent import (
+    DeltaEvent,
+    SourcesEvent,
+    StepEvent,
+    ThinkingEvent,
+)
 from app.services.api_key import Caller
 from app.services.llm import ChatError, ChatMessage
 
@@ -84,20 +94,34 @@ async def chat_once(
     _warn_on_scope_drift(services, payload)
     model_pk = _effective_model(services, payload)
     thinking, effort = _effective_thinking(services, payload)
+    history, summary, _ = _context(services, payload, model_pk)
 
-    sources = services.chat.retrieve_sources(
-        query=payload.query,
-        kb_ids=payload.kb_ids,
-        top_k=payload.top_k or services.runtime.get_int("chat.top_k") or 6,
-    )
-    answer = services.chat.answer(
-        query=payload.query,
-        sources=sources,
-        history=_history(services, payload),
-        model_pk=model_pk,
-        thinking=thinking,
-        thinking_effort=effort,
-    )
+    if _use_agent(services):
+        answer = services.chat.answer_agent(
+            query=payload.query,
+            kb_ids=payload.kb_ids,
+            history=history,
+            summary=summary,
+            model_pk=model_pk,
+            thinking=thinking,
+            thinking_effort=effort,
+            top_k=payload.top_k,
+        )
+    else:
+        sources = services.chat.retrieve_sources(
+            query=payload.query,
+            kb_ids=payload.kb_ids,
+            top_k=payload.top_k or services.runtime.get_int("chat.top_k") or 6,
+        )
+        answer = services.chat.answer(
+            query=payload.query,
+            sources=sources,
+            history=history,
+            summary=summary,
+            model_pk=model_pk,
+            thinking=thinking,
+            thinking_effort=effort,
+        )
     _record_turn(services, payload, answer=answer.answer, sources=answer.sources)
     return ChatResponseOut(answer=answer.answer, sources=_sources_out(answer.sources))
 
@@ -201,47 +225,109 @@ def _events(
 
     任何异常都在**流内**报出去（``type=error``）而不是靠 HTTP 状态码：
     流一旦开始发送，状态码已经发出去了，改不了——这也是最容易漏的一处。
+
+    两条链路：Agent 工作流（默认，见 ``services/agent.py``）与单轮检索（``chat.agent_enabled``
+    关掉时）。两条都会把 ``sources`` 与 ``delta`` 用同一套事件形状发出去，
+    前端不必关心走的是哪条。
     """
     chat = services.chat
-    try:
-        sources = chat.retrieve_sources(
-            query=payload.query,
-            kb_ids=payload.kb_ids,
-            top_k=payload.top_k,
-        )
-    except Exception as exc:
-        yield _sse({"type": "error", "message": f"检索失败：{exc}"})
-        return
-
-    # 用 pydantic 序列化而不是 ``s.__dict__``：
-    # SourceRef 是 slots=True 的 dataclass，**没有 __dict__**，
-    # 取它会在流式刚发第一个事件时就抛 AttributeError、把连接截断（踩过）。
-    yield _sse(
-        {
-            "type": "sources",
-            "items": [item.model_dump() for item in _sources_out(sources)],
-        }
-    )
-
     collected: list[str] = []
-    try:
-        for delta in chat.answer_stream(
-            query=payload.query,
-            sources=sources,
-            history=_history(services, payload),
-            model_pk=model_pk,
-            thinking=thinking,
-            thinking_effort=effort,
-        ):
-            collected.append(delta)
-            yield _sse({"type": "delta", "text": delta})
-    except ChatError as exc:
-        yield _sse({"type": "error", "message": str(exc)})
-        return
-    except Exception as exc:
-        logger.exception("对话流异常")
-        yield _sse({"type": "error", "message": f"对话失败：{exc}"})
-        return
+    sources: list = []
+    # 上下文（含压缩）对两条链路都适用：Agent 关掉时同样需要"摘要 + 最近原文"
+    history, summary, compressed = _context(services, payload, model_pk)
+    if compressed:
+        yield _sse(
+            {
+                "type": "step",
+                "phase": "compress",
+                "label": "压缩上下文",
+                "detail": "较早的对话已折成摘要，之后的问答仍记得它们",
+                "status": "done",
+            }
+        )
+
+    if _use_agent(services):
+        try:
+            for event in chat.answer_agent_stream(
+                query=payload.query,
+                kb_ids=payload.kb_ids,
+                history=history,
+                summary=summary,
+                model_pk=model_pk,
+                thinking=thinking,
+                thinking_effort=effort,
+                top_k=payload.top_k,
+            ):
+                if isinstance(event, StepEvent):
+                    yield _sse(
+                        {
+                            "type": "step",
+                            "phase": event.phase,
+                            "label": event.label,
+                            "detail": event.detail,
+                            "status": event.status,
+                        }
+                    )
+                elif isinstance(event, SourcesEvent):
+                    sources = event.sources
+                    yield _sse(
+                        {
+                            "type": "sources",
+                            "items": [item.model_dump() for item in _sources_out(sources)],
+                        }
+                    )
+                elif isinstance(event, ThinkingEvent):
+                    yield _sse({"type": "thinking", "text": event.text})
+                elif isinstance(event, DeltaEvent):
+                    collected.append(event.text)
+                    yield _sse({"type": "delta", "text": event.text})
+                # DoneEvent 不在这里发：收尾统一放在循环外，保证 done 里的全文
+                # 与落库用的 answer 是同一个字符串
+        except ChatError as exc:
+            yield _sse({"type": "error", "message": str(exc)})
+            return
+        except Exception as exc:
+            logger.exception("对话流异常")
+            yield _sse({"type": "error", "message": f"对话失败：{exc}"})
+            return
+    else:
+        try:
+            sources = chat.retrieve_sources(
+                query=payload.query,
+                kb_ids=payload.kb_ids,
+                top_k=payload.top_k,
+            )
+        except Exception as exc:
+            yield _sse({"type": "error", "message": f"检索失败：{exc}"})
+            return
+        # 用 pydantic 序列化而不是 ``s.__dict__``：
+        # SourceRef 是 slots=True 的 dataclass，**没有 __dict__**，
+        # 取它会在流式刚发第一个事件时就抛 AttributeError、把连接截断（踩过）。
+        yield _sse(
+            {
+                "type": "sources",
+                "items": [item.model_dump() for item in _sources_out(sources)],
+            }
+        )
+        try:
+            for delta in chat.answer_stream(
+                query=payload.query,
+                sources=sources,
+                history=history,
+                summary=summary,
+                model_pk=model_pk,
+                thinking=thinking,
+                thinking_effort=effort,
+            ):
+                collected.append(delta)
+                yield _sse({"type": "delta", "text": delta})
+        except ChatError as exc:
+            yield _sse({"type": "error", "message": str(exc)})
+            return
+        except Exception as exc:
+            logger.exception("对话流异常")
+            yield _sse({"type": "error", "message": f"对话失败：{exc}"})
+            return
 
     answer = "".join(collected)
     # 只在**回答确实产出了**之后落库：失败的那一轮不留下半截记录，
@@ -255,20 +341,41 @@ def _events(
     yield _sse({"type": "done", "answer": answer})
 
 
+def _use_agent(services: Services) -> bool:
+    """Agent 工作流是否启用（设置项 ``chat.agent_enabled``，默认开）。"""
+    raw = services.runtime.get("chat.agent_enabled")
+    if raw is None:
+        return True
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def _history(services: Services, payload: ChatRequestIn) -> list[ChatMessage]:
-    """本次要带给模型的历史。
+def _context(
+    services: Services, payload: ChatRequestIn, model_pk: str | None
+) -> tuple[list[ChatMessage], str, bool]:
+    """本轮要带给模型的历史、摘要，以及"这轮有没有做过压缩"。
 
-    **带 ``conversation_id`` 时以库里的记录为准**，忽略前端传来的 history：
-    两处都带会让同一轮被算两遍（前端那份 + 库里那份），而且刷新后前端那份就没了，
-    行为会时好时坏。库里那份是唯一权威。
+    **不指定会话**（脚本/MCP 无状态调用）时不压缩：没有会话就没有历史可压。
+    ``prepare_context`` 里的摘要调用可能失败（模型临时不可用），这里兜底成
+    "最近若干条历史"——压缩是优化，不该把整轮问答拖垮。
     """
-    if payload.conversation_id:
-        return services.conversations.history(payload.conversation_id)
-    return [ChatMessage(role=item.role, content=item.content) for item in payload.history]
+    if not payload.conversation_id:
+        return (
+            [ChatMessage(role=item.role, content=item.content) for item in payload.history],
+            "",
+            False,
+        )
+    try:
+        prepared = services.chat.prepare_context(
+            conversation_id=payload.conversation_id, query=payload.query, model_pk=model_pk
+        )
+        return prepared.history, prepared.summary, prepared.compressed
+    except Exception:
+        logger.warning("上下文准备失败，退回最近历史", exc_info=True)
+        return services.conversations.history(payload.conversation_id), "", False
 
 
 def _record_turn(services: Services, payload: ChatRequestIn, *, answer: str, sources) -> None:  # type: ignore[no-untyped-def]

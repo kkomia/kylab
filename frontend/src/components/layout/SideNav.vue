@@ -30,6 +30,7 @@ import IconDashboard from '@/components/icons/IconDashboard.vue'
 import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconLogo from '@/components/icons/IconLogo.vue'
 import IconLogout from '@/components/icons/IconLogout.vue'
+import IconNote from '@/components/icons/IconNote.vue'
 import IconSettings from '@/components/icons/IconSettings.vue'
 import IconSidebar from '@/components/icons/IconSidebar.vue'
 import IconSun from '@/components/icons/IconSun.vue'
@@ -107,6 +108,7 @@ const NAV_ITEMS = [
   { to: '/chat', label: '对话', icon: IconChat, exact: false },
   { to: '/', label: '概览', icon: IconDashboard, exact: true },
   { to: '/knowledge-bases', label: '知识库', icon: IconLibrary, exact: false },
+  { to: '/notes', label: '笔记', icon: IconNote, exact: false },
   { to: '/tasks', label: '任务中心', icon: IconTasks, exact: false },
 ] as const
 

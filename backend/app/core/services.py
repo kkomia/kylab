@@ -41,6 +41,7 @@ from app.services.lifecycle import LifecycleService
 from app.services.llm import LLMUsage
 from app.services.maintenance import MaintenanceService
 from app.services.model_registry import ModelRegistryService
+from app.services.notes import NotesService
 from app.services.observability import ObservabilityService
 from app.services.parser_router import ParserRouter
 from app.services.retrieval import RetrievalService, build_reranker
@@ -108,6 +109,8 @@ class Services:
     """表格结构化副本：读写 CSV/Excel 的行列（M2 / T2.11）。"""
     conversations: ConversationService
     """对话留存：会话与消息的读写（§11.2）。"""
+    notes: NotesService
+    """笔记：Markdown 事实源 + 加入知识库（v20）。"""
     suggested_questions: SuggestedQuestionsService
     """示例问题：依据所选知识库的语料让对话模型生成开场问题（对话页空状态）。"""
     webhooks: WebhookService
@@ -296,15 +299,18 @@ def build_services(
         lifecycle = LifecycleService(bundle)
         lifecycle.purge_expired_trash()
 
+    lifecycle_service = LifecycleService(bundle, notifier=webhooks.emit)
+    folders_service = FolderService(bundle)
+    conversations_service = ConversationService(bundle)
     chat_service = ChatService(
         retrieval,
         runtime,
         # stores 用于"小块检索、大块阅读"（把命中块补成整段小节，v17）
         stores=bundle,
         usage_recorder=_record_chat_usage,
+        # 会话读写（v20.1）：上下文压缩要读历史、写摘要
+        conversations=conversations_service,
     )
-    lifecycle_service = LifecycleService(bundle, notifier=webhooks.emit)
-    folders_service = FolderService(bundle)
 
     return Services(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder, models=registry),
@@ -331,7 +337,8 @@ def build_services(
         observability=ObservabilityService(
             bundle, worker_lease_seconds=resolved.worker_lease_seconds
         ),
-        conversations=ConversationService(bundle),
+        conversations=conversations_service,
+        notes=NotesService(bundle, ingest=ingest, documents=documents_service),
         suggested_questions=SuggestedQuestionsService(bundle, chat_service),
         webhooks=webhooks,
         embedder=embedder,

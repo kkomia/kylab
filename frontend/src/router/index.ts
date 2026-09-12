@@ -76,6 +76,16 @@ const router = createRouter({
       meta: { title: '文档详情' },
     },
     {
+      /**
+       * 与对话同样写成"一条可选参数路由"：列表与编辑器共用一个视图，
+       * 拆成两条会在选中笔记时把编辑器连同未保存的内容一起卸载重建。
+       */
+      path: '/notes/:noteId?',
+      name: 'notes',
+      component: () => import('@/views/NotesView.vue'),
+      meta: { title: '笔记' },
+    },
+    {
       path: '/tasks',
       name: 'tasks',
       component: () => import('@/views/TasksView.vue'),

@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **99** 条端点。
+共 **106** 条端点。
 
 ### `api-keys`
 
@@ -300,6 +300,18 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/model-registry/slots` | 用途（任务槽位）状态 |
 | `PUT` | `/api/v1/model-registry/slots/{slot}` | 绑定 / 解绑用途 |
 | `POST` | `/api/v1/model-registry/slots/{slot}/test` | 测试该用途的模型是否可用 |
+
+### `notes`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/notes` | 笔记列表（置顶优先，其次最近更新） |
+| `POST` | `/api/v1/notes` | 新建笔记 |
+| `GET` | `/api/v1/notes/tags` | 用过的标签与条数 |
+| `DELETE` | `/api/v1/notes/{note_id}` | 删除笔记 |
+| `GET` | `/api/v1/notes/{note_id}` | 笔记详情 |
+| `PATCH` | `/api/v1/notes/{note_id}` | 更新笔记 |
+| `POST` | `/api/v1/notes/{note_id}/attach` | 把笔记加入知识库 |
 
 ### `search`
 

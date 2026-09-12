@@ -43,6 +43,7 @@ from app.storage.base import (
     KnowledgeBaseRecord,
     MetaStore,
     ModelProviderRecord,
+    NoteRecord,
     ParseResultRecord,
     RegisteredModelRecord,
     SessionRecord,
@@ -412,6 +413,186 @@ class SqliteMetaStore(MetaStore):
             name=row["name"],
             created_at=_load(row["created_at"]),
         )
+
+    # ------------------------------------------------------------------ 笔记（v20）
+
+    @staticmethod
+    def _note_from_row(row: sqlite3.Row, tags: Sequence[str] = ()) -> NoteRecord:
+        return NoteRecord(
+            id=row["id"],
+            user_id=row["user_id"],
+            title=row["title"],
+            content_md=row["content_md"],
+            source_kind=row["source_kind"],
+            source_ref=row["source_ref"],
+            kb_id=row["kb_id"],
+            doc_id=row["doc_id"],
+            pinned=bool(row["pinned"]),
+            tags=list(tags),
+            created_at=_load(row["created_at"]),
+            updated_at=_load(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _note_filters(
+        user_id: str | None, query: str | None, tag: str | None
+    ) -> tuple[str, list]:
+        """拼 WHERE 子句。
+
+        用 ``user_id IS ?`` 而不是 ``= ?``：SQLite 里 ``IS`` 对 NULL 也成立。
+        ``user_id=None`` 表示**不过滤归属**（管理员/API Key 通道要看全部，
+        与 ``list_conversations`` 同口径）；成员传自己的 id，只看自己的。
+
+        搜索用 ``LIKE`` 子串匹配而不是 FTS：笔记是个人规模的数据，
+        子串匹配对中文天然可用（不需要分词），也没有"改了正文忘了同步索引"这类静默故障。
+        多个词之间取 AND，命中更准。``%``/``_`` 会被转义，避免用户输入的它们变成通配符。
+        """
+        where: list[str] = []
+        params: list = []
+        if user_id is not None:
+            where.append("n.user_id IS ?")
+            params.append(user_id)
+        for term in (query or "").split():
+            escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append("(n.title LIKE ? ESCAPE '\\' OR n.content_md LIKE ? ESCAPE '\\')")
+            params.extend([f"%{escaped}%", f"%{escaped}%"])
+        if tag:
+            where.append("n.id IN (SELECT note_id FROM note_tags WHERE tag = ?)")
+            params.append(tag)
+        return (" AND ".join(where) or "1 = 1"), params
+
+    def _tags_of(self, conn: sqlite3.Connection, note_ids: Sequence[str]) -> dict[str, list[str]]:
+        """一次取回多条笔记的标签（逐条查就是 N+1）。"""
+        if not note_ids:
+            return {}
+        placeholders = ",".join("?" for _ in note_ids)
+        rows = conn.execute(
+            # placeholders 只由「?」拼成，值全部走参数绑定；表名是字面量
+            f"SELECT note_id, tag FROM note_tags WHERE note_id IN ({placeholders})"  # noqa: S608
+            " ORDER BY tag",
+            list(note_ids),
+        ).fetchall()
+        grouped: dict[str, list[str]] = {}
+        for row in rows:
+            grouped.setdefault(row["note_id"], []).append(row["tag"])
+        return grouped
+
+    def create_note(self, record: NoteRecord) -> NoteRecord:
+        moment = _now()
+        record.created_at = record.created_at or moment
+        record.updated_at = record.updated_at or moment
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO notes (id, user_id, title, content_md, source_kind, source_ref,"
+                " kb_id, doc_id, pinned, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record.id,
+                    record.user_id,
+                    record.title,
+                    record.content_md,
+                    record.source_kind,
+                    record.source_ref,
+                    record.kb_id,
+                    record.doc_id,
+                    1 if record.pinned else 0,
+                    _dump(record.created_at),
+                    _dump(record.updated_at),
+                ),
+            )
+            if record.tags:
+                conn.executemany(
+                    "INSERT OR IGNORE INTO note_tags (note_id, tag) VALUES (?, ?)",
+                    [(record.id, tag) for tag in record.tags],
+                )
+        return record
+
+    def get_note(self, note_id: str) -> NoteRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
+            if row is None:
+                return None
+            tags = self._tags_of(conn, [note_id]).get(note_id, [])
+        return self._note_from_row(row, tags)
+
+    def list_notes(
+        self,
+        *,
+        user_id: str | None,
+        query: str | None = None,
+        tag: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[NoteRecord]:
+        where, params = self._note_filters(user_id, query, tag)
+        sql = (
+            # where 由本文件内部拼装：列名是字面量，值一律走 ? 绑定
+            f"SELECT n.* FROM notes n WHERE {where}"  # noqa: S608
+            " ORDER BY n.pinned DESC, n.updated_at DESC, n.id DESC LIMIT ? OFFSET ?"
+        )
+        with self._db.read() as conn:
+            rows = conn.execute(sql, [*params, limit, offset]).fetchall()
+            tags = self._tags_of(conn, [row["id"] for row in rows])
+        return [self._note_from_row(row, tags.get(row["id"], [])) for row in rows]
+
+    def count_notes(
+        self, *, user_id: str | None, query: str | None = None, tag: str | None = None
+    ) -> int:
+        where, params = self._note_filters(user_id, query, tag)
+        with self._db.read() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS n FROM notes n WHERE {where}",  # noqa: S608
+                params,
+            ).fetchone()
+        return int(row["n"])
+
+    def update_note(
+        self,
+        note_id: str,
+        *,
+        title: str,
+        content_md: str,
+        pinned: bool,
+        updated_at: datetime,
+        tags: Sequence[str] | None = None,
+    ) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE notes SET title = ?, content_md = ?, pinned = ?, updated_at = ?"
+                " WHERE id = ?",
+                (title, content_md, 1 if pinned else 0, _dump(updated_at), note_id),
+            )
+            if tags is not None:
+                # 全量替换：标签是随笔记一起编辑的短列表，diff 没必要
+                conn.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
+                conn.executemany(
+                    "INSERT OR IGNORE INTO note_tags (note_id, tag) VALUES (?, ?)",
+                    [(note_id, tag) for tag in tags],
+                )
+
+    def delete_note(self, note_id: str) -> None:
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM note_tags WHERE note_id = ?", (note_id,))
+            conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+
+    def attach_note_document(self, note_id: str, *, kb_id: str, doc_id: str) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE notes SET kb_id = ?, doc_id = ? WHERE id = ?", (kb_id, doc_id, note_id)
+            )
+
+    def list_note_tags(self, *, user_id: str | None) -> list[tuple[str, int]]:
+        where = "" if user_id is None else "WHERE n.user_id IS ?"
+        params: tuple = () if user_id is None else (user_id,)
+        # where 只有两种取值（空串 / 一个字面量条件），用户值走绑定
+        sql = (
+            "SELECT t.tag AS tag, COUNT(*) AS n FROM note_tags t"  # noqa: S608
+            f" JOIN notes n ON n.id = t.note_id {where}"
+            " GROUP BY t.tag ORDER BY n DESC, t.tag"
+        )
+        with self._db.read() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [(row["tag"], int(row["n"])) for row in rows]
 
     def update_document_stage(
         self, document_id: str, stage: DocumentStage, *, error: str | None = None
@@ -1826,6 +2007,25 @@ class SqliteMetaStore(MetaStore):
             conn.execute(
                 "UPDATE conversations SET updated_at = ? WHERE id = ?",
                 (_dump(_now()), conversation_id),
+            )
+
+    def get_conversation_summary(self, conversation_id: str) -> tuple[str, str | None]:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT context_summary, summary_upto FROM conversations WHERE id = ?",
+                (conversation_id,),
+            ).fetchone()
+        if row is None:
+            return "", None
+        return row["context_summary"] or "", row["summary_upto"]
+
+    def set_conversation_summary(
+        self, conversation_id: str, summary: str, upto_message_id: str | None
+    ) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE conversations SET context_summary = ?, summary_upto = ? WHERE id = ?",
+                (summary, upto_message_id, conversation_id),
             )
 
     def delete_conversation(self, conversation_id: str) -> None:

@@ -188,6 +188,31 @@ class FolderRecord:
 
 
 @dataclass(slots=True)
+class NoteRecord:
+    """一条笔记（v20）。
+
+    ``content_md`` 是**唯一事实源**：编辑器（Tiptap）的 JSON 不落库，
+    导出的 Markdown 既直接可读，也能原样喂给摄入流水线。
+    """
+
+    id: str
+    user_id: str | None = None
+    title: str = ""
+    content_md: str = ""
+    #: manual（手记）/ chat（问答存为）/ clip（剪藏）
+    source_kind: str = "manual"
+    #: chat 存会话或消息 id，clip 存 URL
+    source_ref: str | None = None
+    #: 「加入知识库」后指向生成的文档（未入库为空）
+    kb_id: str | None = None
+    doc_id: str | None = None
+    pinned: bool = False
+    tags: list[str] = field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
 class DocumentPartRecord:
     """子文件（大文件强制切分后的页范围片段，UI 显示为可展开的子文件树）。
 
@@ -694,6 +719,62 @@ class MetaStore(ABC):
     def set_document_folder(self, document_id: str, folder_id: str | None) -> None:
         """把文档移进目录；``None`` = 移回根。"""
 
+    # ---- 笔记（v20）----
+    @abstractmethod
+    def create_note(self, record: NoteRecord) -> NoteRecord:
+        """建笔记并写入标签。"""
+
+    @abstractmethod
+    def get_note(self, note_id: str) -> NoteRecord | None:
+        """按 id 取一条（含标签）。"""
+
+    @abstractmethod
+    def list_notes(
+        self,
+        *,
+        user_id: str | None,
+        query: str | None = None,
+        tag: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[NoteRecord]:
+        """按置顶 + 更新时间倒序列出；``query`` 做标题/正文的子串匹配。
+
+        ``user_id=None`` 表示"无归属"（管理员/API Key 建的笔记），
+        用 ``IS`` 而不是 ``=`` 比较，才能同时匹配 NULL 与具体值。
+        """
+
+    @abstractmethod
+    def count_notes(
+        self, *, user_id: str | None, query: str | None = None, tag: str | None = None
+    ) -> int:
+        """与 ``list_notes`` 同一套过滤条件的总数（分页用）。"""
+
+    @abstractmethod
+    def update_note(
+        self,
+        note_id: str,
+        *,
+        title: str,
+        content_md: str,
+        pinned: bool,
+        updated_at: datetime,
+        tags: Sequence[str] | None = None,
+    ) -> None:
+        """整条覆盖更新；``tags=None`` 表示"不动标签"（只改正文时不必先读标签）。"""
+
+    @abstractmethod
+    def delete_note(self, note_id: str) -> None:
+        """删笔记并清掉它的标签。"""
+
+    @abstractmethod
+    def attach_note_document(self, note_id: str, *, kb_id: str, doc_id: str) -> None:
+        """记下"这条笔记已入库到哪个文档"，供检索命中时跳回笔记。"""
+
+    @abstractmethod
+    def list_note_tags(self, *, user_id: str | None) -> list[tuple[str, int]]:
+        """该用户用过的标签与条数（按条数、名字排序）。"""
+
     # ---- 子文件 ----
     @abstractmethod
     def create_document_parts(self, records: Sequence[DocumentPartRecord]) -> None:
@@ -980,6 +1061,20 @@ class MetaStore(ABC):
     def touch_conversation(self, conversation_id: str) -> None:
         """把 ``updated_at`` 推到现在（追加消息后调用）。"""
         ...
+
+    @abstractmethod
+    def get_conversation_summary(self, conversation_id: str) -> tuple[str, str | None]:
+        """取（上下文摘要，摘要已覆盖到的最后一条消息 id）。
+
+        没摘要过时是 ``("", None)``。**不推 ``updated_at``**：压缩是内部优化，
+        不该让会话在列表里被顶到最前——用户并没有说话。
+        """
+
+    @abstractmethod
+    def set_conversation_summary(
+        self, conversation_id: str, summary: str, upto_message_id: str | None
+    ) -> None:
+        """保存上下文摘要与它覆盖到的消息位置。"""
 
     @abstractmethod
     def delete_conversation(self, conversation_id: str) -> None:

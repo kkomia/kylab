@@ -141,3 +141,48 @@ def test_migration_019_drops_the_dead_model_identity_keys(conn: sqlite3.Connecti
     keys = {row[0] for row in conn.execute("SELECT key FROM app_settings")}
     assert not (set(stale) & keys), f"僵尸键没清干净：{sorted(set(stale) & keys)}"
     assert set(keep) <= keys, "把仍在用的设置项误删了"
+
+
+def test_migration_020_creates_the_notes_tables(conn: sqlite3.Connection) -> None:
+    """笔记两表要建出来，并带上归属+排序用的索引。"""
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version < 20])
+
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version == 20])
+
+    tables = {
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    assert {"notes", "note_tags"} <= tables
+    # 归属过滤 + 置顶/更新时间排序都靠这个索引；漏了会在数据量上来后才发现
+    indexes = {
+        row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index'")
+    }
+    assert "idx_notes_owner" in indexes
+    assert "idx_note_tags_tag" in indexes
+    # 可写：字段就这些，插得进去
+    conn.execute(
+        "INSERT INTO notes (id, user_id, title, content_md, created_at, updated_at)"
+        " VALUES ('n1', 'u1', '标题', '正文', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')"
+    )
+    conn.execute("INSERT INTO note_tags (note_id, tag) VALUES ('n1', '眼科')")
+    conn.commit()
+    assert conn.execute("SELECT COUNT(*) FROM notes").fetchone()[0] == 1
+
+
+def test_migration_021_adds_conversation_summary_columns(conn: sqlite3.Connection) -> None:
+    """上下文摘要两列加上，且老会话默认是"没摘要过"。"""
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version < 21])
+    conn.execute(
+        "INSERT INTO conversations (id, title, kb_ids, created_at, updated_at)"
+        " VALUES ('c1', '旧会话', '[]', '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')"
+    )
+    conn.commit()
+
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version == 21])
+
+    row = conn.execute(
+        "SELECT context_summary, summary_upto FROM conversations WHERE id = 'c1'"
+    ).fetchone()
+    assert row[0] == "" and row[1] is None
+    # 老数据没被清掉
+    assert conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 1

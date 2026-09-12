@@ -18,6 +18,20 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+from app.services.agent import (
+    DECIDE_PROMPT,
+    PLAN_PROMPT,
+    AgentDecision,
+    AgentPlan,
+    DeltaEvent,
+    DoneEvent,
+    SourcesEvent,
+    StepEvent,
+    ThinkingEvent,
+    intent_label,
+    parse_decision,
+    parse_plan,
+)
 from app.services.llm import ChatError, ChatMessage, LLMConfig, OpenAICompatChat
 from app.services.retrieval import RetrievalQuery, RetrievalService
 from app.services.runtime_config import RuntimeConfigService
@@ -34,6 +48,40 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+#: 没有原生工具调用时的多轮检索轮数上限（含第一轮）。设置项 `chat.agent_max_rounds`。
+#:
+#: 为什么要设上限：每一轮都是一次真实的检索（embedding + 检索）加一次模型调用，
+#: 模型又可能陷入"再搜一下"的循环。3 轮在成本与召回之间是个稳妥的折中——
+#: 绝大多数问题第一轮就够，复杂的对比/多跳问题两三轮能显著改善。
+DEFAULT_AGENT_ROUNDS = 3
+
+#: 上下文窗口（token）的保守默认。真实窗口由各家模型决定，没有一个统一可查的字段，
+#: 所以做成设置项：`chat.context_window`。65536 对当前主流模型是安全的下界。
+DEFAULT_CONTEXT_WINDOW = 65536
+#: 触发压缩的占用比例（百分比）。
+DEFAULT_COMPRESS_AT = 70
+#: 压缩时保留最近几条消息**原样**不进摘要：指代几乎总指向最近一两轮。
+DEFAULT_COMPRESS_KEEP = 6
+#: 系统提示词与资料块的固定开销（token）：估算时给一个额度，免得只算历史而低估。
+SYSTEM_PROMPT_TOKEN_ALLOWANCE = 1200
+#: 摘要长度上限（字）。摘要要短才有意义，否则等于没压。
+SUMMARY_MAX_CHARS = 1200
+
+#: 压缩提示词。要求保留可核对的硬信息（数字、结论、待办），丢掉客套与重复。
+COMPRESS_PROMPT = (
+    "你是对话压缩器。把下面这段较早的对话压缩成要点，供后续问答继续使用。\n"
+    "必须保留：用户问过什么、得出过什么结论、出现过的关键数字与名称、尚未解决的问题。\n"
+    "丢掉：寒暄、重复表述、与结论无关的推导过程。\n"
+    "用中文分条写，不要编造，不要输出任何解释或前后缀。"
+)
+
+#: 意图判断为"寒暄/无关"时用的系统提示词：此时没有资料可依据，
+#: 不能再用"资料里没有再回答"的那套要求，否则模型会把寒暄也答成"资料中没有找到"。
+CHAT_ONLY_SYSTEM_PROMPT = (
+    "你是知识库助手。用户这一轮是寒暄，或问的内容与知识库无关。"
+    "请用一句中文礼貌回应，并顺势提示用户可以就知识库里的资料提问。不要假装查阅了资料。"
+)
 
 DEFAULT_SYSTEM_PROMPT = (
     "你是知识库助手。只依据下面提供的「资料」回答用户的问题。\n"
@@ -153,6 +201,20 @@ class ChatTurn:
     sources: list[SourceRef] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class PreparedContext:
+    """这一轮要带给模型的上下文（v20.1）。
+
+    ``summary`` 是更早对话折成的摘要（没有则为空串），``history`` 是需要原样带上的近期消息。
+    ``compressed`` 为真表示**这一轮刚做过一次压缩**——协议层据此给界面发一条进度事件，
+    否则用户会看到"回答突然变慢"却不知道中间发生了一次额外的模型调用。
+    """
+
+    history: list[ChatMessage] = field(default_factory=list)
+    summary: str = ""
+    compressed: bool = False
+
+
 class ChatService:
     """把检索、提示词与对话模型串起来。"""
 
@@ -164,6 +226,7 @@ class ChatService:
         stores=None,  # type: ignore[no-untyped-def]
         chat_factory=None,  # type: ignore[no-untyped-def]
         usage_recorder=None,  # type: ignore[no-untyped-def]
+        conversations=None,  # type: ignore[no-untyped-def]
     ) -> None:
         self._retrieval = retrieval
         self._runtime = runtime
@@ -174,6 +237,8 @@ class ChatService:
         self._chat_factory = chat_factory or (lambda config: OpenAICompatChat(config))
         # 用量回调（G7）。可选：缺席时完全不记，功能照常
         self._usage_recorder = usage_recorder
+        #: 会话读写（v20.1）：上下文压缩要读历史、写摘要。可选——不给就只做单轮/无历史问答
+        self._conversations = conversations
 
     # ------------------------------------------------------------------ 对外
 
@@ -230,6 +295,7 @@ class ChatService:
         query: str,
         sources: list[SourceRef],
         history: list[ChatMessage] | None = None,
+        summary: str = "",
         system_prompt: str | None = None,
         model_pk: str | None = None,
         thinking: bool | None = None,
@@ -243,6 +309,7 @@ class ChatService:
             sources=sources,
             history=history,
             system_prompt=system_prompt or self._runtime.get("chat.system_prompt"),
+            summary=summary,
         )
         started = time.monotonic()
         text = chat.complete(messages)
@@ -284,6 +351,7 @@ class ChatService:
         query: str,
         sources: list[SourceRef],
         history: list[ChatMessage] | None = None,
+        summary: str = "",
         system_prompt: str | None = None,
         model_pk: str | None = None,
         thinking: bool | None = None,
@@ -303,8 +371,285 @@ class ChatService:
             sources=sources,
             history=history,
             system_prompt=system_prompt or self._runtime.get("chat.system_prompt"),
+            summary=summary,
         )
         return chat.stream(messages)
+
+    # ------------------------------------------------------------- Agent 工作流
+
+    def answer_agent_stream(
+        self,
+        *,
+        query: str,
+        kb_ids: list[str],
+        history: list[ChatMessage] | None = None,
+        summary: str = "",
+        system_prompt: str | None = None,
+        model_pk: str | None = None,
+        thinking: bool | None = None,
+        thinking_effort: str | None = None,
+        top_k: int | None = None,
+    ) -> Iterator[object]:
+        """Agent 工作流：意图识别 → 检索词优化 → 多轮检索 → 组织回答。
+
+        依次产出 ``StepEvent`` / ``SourcesEvent`` / ``ThinkingEvent`` / ``DeltaEvent`` /
+        ``DoneEvent``（见 ``services/agent.py``），由协议层翻成 SSE。
+
+        **规划失败自动降级**：意图识别/改写拿不到合法 JSON 时，退回"按原问题检索一轮"。
+        这是本方法最重要的健壮性约定——多轮检索是加分项，不该成为"模型换个格式就整轮失败"
+        的单点。真正的模型不可用（未配置/网络失败）仍会在下面组织回答时抛出，如实报错。
+        """
+        config = self._resolve_llm(model_pk, thinking, thinking_effort)
+        limit = top_k or self._runtime.get_int("chat.top_k") or MAX_CONTEXT_CHUNKS
+        configured_rounds = self._runtime.get_int("chat.agent_max_rounds") or DEFAULT_AGENT_ROUNDS
+        max_rounds = max(1, min(configured_rounds, 5))
+
+        yield StepEvent(phase="intent", label="理解问题", status="running")
+        plan: AgentPlan | None = None
+        try:
+            plan = self._plan_query(query, history, config)
+        except Exception:
+            # 规划是旁路：这里吞掉任何失败，让主路继续（降级到单轮）
+            logger.warning("意图识别/检索词优化失败，降级为原问题单轮检索", exc_info=True)
+
+        if plan is None:
+            plan = AgentPlan(intent="factual", queries=[query], need_retrieval=True)
+            yield StepEvent(phase="intent", label="理解问题", detail="规划不可用，按原问题检索")
+        else:
+            # label 保持"理解问题"不变、把结论放进 detail：界面上 running 占位与收尾是
+            # 同一行（同名替换），换了 label 就会显示成两行"理解问题"
+            detail = f"意图：{intent_label(plan.intent)}"
+            if plan.reason:
+                detail += f" · {plan.reason}"
+            yield StepEvent(phase="intent", label="理解问题", detail=detail)
+
+        sources: list[SourceRef] = []
+        if not plan.need_retrieval or not plan.queries:
+            yield StepEvent(phase="rewrite", label="无需检索，直接回答")
+        else:
+            yield StepEvent(phase="rewrite", label="优化检索词", detail="、".join(plan.queries))
+            sources = self.retrieve_sources_multi(plan.queries, kb_ids, top_k=limit)
+            yield SourcesEvent(sources=sources)
+
+            tried = list(plan.queries)
+            for round_no in range(2, max_rounds + 1):
+                decision: AgentDecision | None = None
+                try:
+                    decision = self._decide_next(
+                        query=query,
+                        intent=plan.intent,
+                        sources=sources,
+                        tried=tried,
+                        remaining=max_rounds - round_no + 1,
+                        config=config,
+                    )
+                except Exception:
+                    logger.warning("检索决策失败，结束多轮检索", exc_info=True)
+                if decision is None or decision.action != "search" or decision.query in tried:
+                    break
+                tried.append(decision.query)
+                yield StepEvent(
+                    phase="retrieve",
+                    label=f"第 {round_no} 轮检索",
+                    detail=decision.query,
+                    status="running",
+                )
+                extra = self.retrieve_sources(query=decision.query, kb_ids=kb_ids, top_k=limit)
+                sources = _merge_sources([sources, extra], limit=limit)
+                yield SourcesEvent(sources=sources)
+
+        prompt = system_prompt or self._runtime.get("chat.system_prompt")
+        if not plan.need_retrieval:
+            # 寒暄/无关：此时没有资料可依据，不能再用"资料里没有再回答"那套要求
+            prompt = prompt or CHAT_ONLY_SYSTEM_PROMPT
+        yield StepEvent(phase="answer", label="组织回答", status="running")
+
+        chat = self._chat_factory(config)
+        messages = build_messages(
+            query=query, sources=sources, history=history, system_prompt=prompt, summary=summary
+        )
+        started = time.monotonic()
+        parts: list[str] = []
+        for delta in chat.stream_events(messages):
+            if delta.reasoning:
+                yield ThinkingEvent(text=delta.reasoning)
+            if delta.text:
+                parts.append(delta.text)
+                yield DeltaEvent(text=delta.text)
+        self._record_usage(chat, started, items=1, config=config)
+        yield DoneEvent(answer="".join(parts))
+
+    def answer_agent(
+        self,
+        *,
+        query: str,
+        kb_ids: list[str],
+        history: list[ChatMessage] | None = None,
+        summary: str = "",
+        system_prompt: str | None = None,
+        model_pk: str | None = None,
+        thinking: bool | None = None,
+        thinking_effort: str | None = None,
+        top_k: int | None = None,
+    ) -> ChatTurn:
+        """Agent 工作流的非流式版本：把事件流的最终结果收成一次问答。"""
+        answer = ""
+        sources: list[SourceRef] = []
+        for event in self.answer_agent_stream(
+            query=query,
+            kb_ids=kb_ids,
+            history=history,
+            summary=summary,
+            system_prompt=system_prompt,
+            model_pk=model_pk,
+            thinking=thinking,
+            thinking_effort=thinking_effort,
+            top_k=top_k,
+        ):
+            if isinstance(event, SourcesEvent):
+                sources = event.sources
+            elif isinstance(event, DoneEvent):
+                answer = event.answer
+        return ChatTurn(answer=answer, sources=sources)
+
+    def retrieve_sources_multi(
+        self,
+        queries: list[str],
+        kb_ids: list[str],
+        *,
+        top_k: int | None = None,
+    ) -> list[SourceRef]:
+        """对多条改写查询各检索一次，按 chunk 去重后取分数最高的一批。
+
+        多查询是"召回补漏"：指代消解后的查询与原查询各命中一部分，
+        并起来比任何单条都全。去重按 ``chunk_id``——同一段资料被两条查询命中时
+        只保留一次，且保留分更高的那条（分数会影响排序与阈值）。
+        """
+        limit = top_k or self._runtime.get_int("chat.top_k") or MAX_CONTEXT_CHUNKS
+        groups: list[list[SourceRef]] = []
+        for item in queries:
+            if item.strip():
+                groups.append(self.retrieve_sources(query=item, kb_ids=kb_ids, top_k=limit))
+        return _merge_sources(groups, limit=limit)
+
+    # ------------------------------------------------- Agent 内部：规划与决策
+
+    def _plan_query(
+        self, query: str, history: list[ChatMessage] | None, config: LLMConfig
+    ) -> AgentPlan | None:
+        """一次规划调用：意图识别 + 检索词优化。
+
+        **思考关掉、温度归零**：这一步要的是稳定、短、结构化的输出，不是创造力。
+        开着思考会让每次规划先烧掉几秒与一批 token（而且输出仍可能带围栏），
+        对话的整体节奏会被三次这样的调用拖垮。
+        """
+        planner = self._planner_chat(config)
+        context = _history_snippet(history)
+        user = f"{context}\n用户问题：{query}" if context else f"用户问题：{query}"
+        started = time.monotonic()
+        text = planner.complete(
+            [
+                ChatMessage(role="system", content=PLAN_PROMPT),
+                ChatMessage(role="user", content=user),
+            ]
+        )
+        self._record_usage(planner, started, items=1, config=config)
+        return parse_plan(text)
+
+    def _decide_next(
+        self,
+        *,
+        query: str,
+        intent: str,
+        sources: list[SourceRef],
+        tried: list[str],
+        remaining: int,
+        config: LLMConfig,
+    ) -> AgentDecision | None:
+        """问模型：现有资料够不够？不够就再给一条检索词（工具调用）。"""
+        planner = self._planner_chat(config)
+        system = DECIDE_PROMPT.replace("{findings}", _findings_summary(sources)).replace(
+            "{tried}", "、".join(tried) or "（无）"
+        )
+        user = f"用户问题：{query}\n意图：{intent_label(intent)}\n还能检索 {remaining} 次。"
+        started = time.monotonic()
+        text = planner.complete(
+            [
+                ChatMessage(role="system", content=system),
+                ChatMessage(role="user", content=user),
+            ]
+        )
+        self._record_usage(planner, started, items=1, config=config)
+        return parse_decision(text)
+
+    def _planner_chat(self, config: LLMConfig):  # type: ignore[no-untyped-def]
+        """规划/决策专用的客户端：同一模型，但思考关、温度 0。"""
+        return self._chat_factory(
+            dataclasses.replace(config, temperature=0.0, enable_thinking=False)
+        )
+
+    # ------------------------------------------------- 上下文压缩（v20.1）
+
+    def prepare_context(
+        self, *, conversation_id: str, query: str, model_pk: str | None = None
+    ) -> PreparedContext:
+        """取本轮要带的上下文；**占用超过阈值时先把更早的对话折成摘要**。
+
+        与 `conversations.history()` 的区别：那个固定只取最近 6 条，等于把更早的
+        内容直接丢掉（用户以为"它还记着"，实际早忘了）。这里改成"摘要 + 最近若干条原文"，
+        阈值内不压缩，越过阈值才压——长会话因此不会撑爆窗口，也不会悄悄失忆。
+
+        压缩是**旁路**：摘要调用失败时退回"只带最近若干条原文"，绝不让一次优化
+        把整轮问答搞失败（真正的模型不可用会在下面作答时如实抛出）。
+        """
+        if self._conversations is None:
+            return PreparedContext()
+        records = self._conversations.messages(conversation_id)
+        summary, upto = self._conversations.summary(conversation_id)
+        pending = _after_marker(records, upto)
+        window = self._runtime.get_int("chat.context_window") or DEFAULT_CONTEXT_WINDOW
+        percent = self._runtime.get_int("chat.compress_at") or DEFAULT_COMPRESS_AT
+        keep = max(0, self._runtime.get_int("chat.compress_keep") or DEFAULT_COMPRESS_KEEP)
+        budget = max(1024, int(window * max(1, min(percent, 95)) / 100))
+        cost = (
+            SYSTEM_PROMPT_TOKEN_ALLOWANCE
+            + estimate_tokens(summary)
+            + estimate_tokens(query)
+            + sum(estimate_tokens(item.content) for item in pending)
+        )
+        if cost <= budget or len(pending) <= keep:
+            return PreparedContext(history=_to_chat(pending), summary=summary, compressed=False)
+
+        older = pending[:-keep] if keep else pending
+        recent = pending[-keep:] if keep else []
+        if not older:
+            return PreparedContext(history=_to_chat(pending), summary=summary, compressed=False)
+        try:
+            new_summary = self._summarize(summary, older, model_pk)
+        except Exception:
+            logger.warning("上下文压缩失败，退回最近若干条原文", exc_info=True)
+            return PreparedContext(history=_to_chat(recent), summary=summary, compressed=False)
+        self._conversations.set_summary(conversation_id, new_summary, older[-1].id)
+        return PreparedContext(history=_to_chat(recent), summary=new_summary, compressed=True)
+
+    def _summarize(
+        self, summary: str, messages: list, model_pk: str | None
+    ) -> str:
+        """把旧对话（含已有摘要）压成一段新摘要。"""
+        config = self._resolve_llm(model_pk, thinking=False)
+        chat = self._planner_chat(config)
+        system = COMPRESS_PROMPT
+        if summary:
+            system += f"\n\n【已有摘要，请与下面的新对话合并】\n{summary}"
+        body = "\n".join(
+            f"{'用户' if item.role == 'user' else '助手'}：{item.content}" for item in messages
+        )
+        started = time.monotonic()
+        text = chat.complete(
+            [ChatMessage(role="system", content=system), ChatMessage(role="user", content=body)]
+        )
+        self._record_usage(chat, started, items=1, config=config)
+        return " ".join((text or "").split())[:SUMMARY_MAX_CHARS]
 
     def llm_config(self, model_pk: str | None = None) -> LLMConfig:
         return self._runtime.llm_for(model_pk)
@@ -365,6 +710,7 @@ def build_messages(
     sources: list[SourceRef],
     history: list[ChatMessage] | None,
     system_prompt: str,
+    summary: str = "",
 ) -> list[ChatMessage]:
     """拼提示词：**一条** system（提示词 + 资料）+ 历史 + 当前问题。
 
@@ -411,11 +757,116 @@ def build_messages(
     else:
         parts.append("资料：（本次检索没有命中任何内容）")
 
+    if summary:
+        # 摘要同样是"数据"。它由模型自己生成，但内容源自更早的用户输入与文档——
+        # 一样要打散定界符，且声明"引用编号以本轮资料为准"，避免模型引用摘要里的旧编号。
+        parts.append(
+            "【此前对话的摘要】（用于保持上下文，引用编号仍以本轮资料为准）\n"
+            + neutralize(summary)
+        )
+
     messages: list[ChatMessage] = [ChatMessage(role="system", content="\n\n".join(parts))]
     for item in history or []:
         messages.append(item)
     messages.append(ChatMessage(role="user", content=query))
     return messages
+
+
+def estimate_tokens(text: str) -> int:
+    """粗估一段中文混合文本的 token 数。
+
+    **刻意保守（宁可高估）**：高估会让压缩早一点触发，代价是多一次摘要调用；
+    低估会让窗口被撑爆，代价是请求直接失败。两害相权取其轻。
+    公式：中日韩字符按 1 token/字，其余按 4 字符/token——与主流分词器的量级吻合。
+    """
+    if not text:
+        return 0
+    cjk = sum(1 for char in text if "\u3400" <= char <= "\u9fff")
+    return cjk + (len(text) - cjk) // 4 + 1
+
+
+def _after_marker(records: list, marker: str | None) -> list:
+    """取摘要标记之后的消息（只保留有正文的 user/assistant）。
+
+    标记为空 = 还没压缩过，全部返回；标记找不到（消息被回退删掉了）= 也全部返回，
+    宁可多带一点也不能漏掉上下文。
+    """
+    useful = [
+        item
+        for item in records
+        if item.role in ("user", "assistant") and item.content.strip()
+    ]
+    if not marker:
+        return useful
+    for index, item in enumerate(useful):
+        if item.id == marker:
+            return useful[index + 1 :]
+    return useful
+
+
+def _to_chat(records: list) -> list[ChatMessage]:
+    return [ChatMessage(role=item.role, content=item.content) for item in records]
+
+
+def _merge_sources(groups: list[list[SourceRef]], *, limit: int) -> list[SourceRef]:
+    """把多批检索结果合并、去重、重编号。
+
+    **重编号是关键**：引用编号 ``[n]`` 同时出现在提示词与界面里，
+    多轮检索后必须重新从 1 连续编号，否则模型引用的 [7] 在界面上可能不存在。
+    同一 ``chunk_id`` 保留分数更高的一条（分数决定排序，也决定阈值过滤后的取舍）。
+    """
+    best: dict[str, SourceRef] = {}
+    for group in groups:
+        for source in group:
+            current = best.get(source.chunk_id)
+            if current is None or source.score > current.score:
+                best[source.chunk_id] = source
+    ordered = sorted(best.values(), key=lambda item: (-item.score, item.chunk_id))[: max(1, limit)]
+    return [dataclasses.replace(item, index=index) for index, item in enumerate(ordered, start=1)]
+
+
+def _history_snippet(
+    history: list[ChatMessage] | None, *, per_message: int = 200, max_messages: int = 4
+) -> str:
+    """给规划器看的最近几轮摘要，用于消解指代（"它的上限呢"里的"它"）。
+
+    **故意只取尾部、并截断**：规划调用是每次问答的固定开销，把整段历史塞进去
+    会让它随对话变长而越来越贵，收益却很小——指代几乎都指向最近一两轮。
+    """
+    if not history:
+        return ""
+    lines: list[str] = []
+    for message in history[-max_messages:]:
+        text = " ".join(message.content.split())
+        if len(text) > per_message:
+            text = text[:per_message] + "…"
+        lines.append(f"{'用户' if message.role == 'user' else '助手'}：{text}")
+    return "最近对话：\n" + "\n".join(lines)
+
+
+def _findings_summary(
+    sources: list[SourceRef], *, per_source: int = 150, budget: int = 1600
+) -> str:
+    """把已检索到的资料压成给决策器看的摘要（标题 + 前若干字）。
+
+    给的是**目录级信息**：决策器只需要判断"这些够不够、还缺哪个角度"，
+    不需要读全文；塞全文会让这一步的输入 token 与第一轮检索重复付费。
+    """
+    if not sources:
+        return "（暂无）"
+    lines: list[str] = []
+    total = 0
+    for source in sources:
+        where = source.document_name
+        if source.heading_path:
+            where += f" › {source.heading_path}"
+        preview = " ".join(source.preview.split())[:per_source]
+        line = f"[{source.index}] {where}：{preview}"
+        if total + len(line) > budget:
+            break
+        lines.append(line)
+        total += len(line)
+    return "\n".join(lines) or "（暂无）"
 
 
 def neutralize(text: str) -> str:

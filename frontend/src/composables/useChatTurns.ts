@@ -12,7 +12,7 @@
 
 import type { RouteLocationRaw } from 'vue-router'
 
-import type { ChatSource } from '@/api/chat'
+import type { ChatSource, ChatStep } from '@/api/chat'
 
 export type ThinkingEffort = 'low' | 'medium' | 'high'
 
@@ -38,6 +38,13 @@ export interface Message {
    * 宁可少一步，也不拿会话级的偏好冒充某一轮的事实。
    */
   thinking: { enabled: boolean; effort: ThinkingEffort } | null
+  /**
+   * Agent 工作流的步骤（v20）。历史回放没有它（后端只存回答正文），
+   * 此时过程面板退回"检索 + 生成"两步的静态版本。
+   */
+  steps: ChatStep[]
+  /** 流式收到的思考过程（推理模型的 reasoning_content）；历史回放为空。 */
+  thinkingText: string
   /** 过程面板的展开态；`undefined` = 跟随默认（流式中、还没吐字时默认展开）。 */
   traceOpen?: boolean
 }
@@ -64,6 +71,28 @@ export interface TraceStep {
 
 /** 提问原文在面板里只显示一小段：它是"检索了什么"的提示，不是内容主体。 */
 export const TRACE_QUERY_CHARS = 44
+
+/**
+ * 新建一条消息。字段齐全，避免每处字面量漏掉新加的字段
+ * （v20 加 `steps` / `thinkingText` 时就差点漏了回放那条路径）。
+ */
+export function makeMessage(
+  role: Message['role'],
+  text: string,
+  extra: Partial<Message> = {},
+): Message {
+  return {
+    role,
+    text,
+    sources: [],
+    error: '',
+    streaming: false,
+    thinking: null,
+    steps: [],
+    thinkingText: '',
+    ...extra,
+  }
+}
 
 /**
  * 引文在界面上只留一小段。
@@ -93,20 +122,76 @@ export function buildTurns(messages: readonly Message[]): Turn[] {
 
 /** 摘要行：一眼回答"这句话有没有出处"。 */
 export function traceSummary(message: Message): string {
-  if (message.streaming && message.sources.length === 0) return '正在检索知识库…'
+  if (message.streaming && message.sources.length === 0) {
+    // 有 Agent 步骤就照它说，用户能看出"卡在理解还是卡在检索"
+    const phase = message.steps.at(-1)?.phase
+    if (phase === 'intent') return '正在理解问题…'
+    if (phase === 'rewrite') return '正在优化检索词…'
+    return '正在检索知识库…'
+  }
   if (message.sources.length === 0) return '检索完成 · 没有命中相关内容'
   const documents = new Set(message.sources.map((item) => item.document_id)).size
   return `检索完成 · 引用了 ${message.sources.length} 个片段 · ${documents} 篇文档`
 }
 
+/** Agent 步骤的阶段 → 图标键。 */
+const STEP_ICONS: Record<string, TraceStep['icon']> = {
+  intent: 'think',
+  rewrite: 'search',
+  retrieve: 'search',
+  answer: 'build',
+}
+
+/**
+ * 追加一个 Agent 步骤。
+ *
+ * 后端对"理解问题"会先发一条 ``running`` 占位、随后发一条同名 ``done``；
+ * 占位要**就地替换**而不是追加，否则面板里会出现两行"理解问题"。
+ * 检索轮次（"第 2 轮检索"）名字各不相同，不会被误合。
+ */
+export function mergeStep(steps: readonly ChatStep[], step: ChatStep): ChatStep[] {
+  if (step.status !== 'running') {
+    const index = steps.findIndex(
+      (item) => item.phase === step.phase && item.label === step.label && item.status === 'running',
+    )
+    if (index >= 0) {
+      const next = steps.slice()
+      next[index] = step
+      return next
+    }
+  }
+  return [...steps, step]
+}
+
 /**
  * 过程步骤。
  *
- * 只写**真的发生过**的事：检索、思考（这一轮开了才有）、生成。
- * 不搬 WeKnora 的"问题理解"那一行——我们的链路里没有查询改写这一步，
- * 摆一行假动作只是好看的谎话，用户迟早会问"它到底改写了什么"。
+ * 有 Agent 步骤就**如实照搬**（理解问题 → 优化检索词 → 第 N 轮检索 → 组织回答），
+ * 这些是后端真的做过的动作；历史回放（后端只存正文）拿不到步骤，
+ * 退回"检索 + 生成"两步的静态版本。思考这一轮开了才补一行。
  */
 export function traceSteps(turn: Turn): TraceStep[] {
+  const message = turn.reply
+  if (!message) return []
+  if (message.steps.length > 0) return agentTraceSteps(message)
+  return legacyTraceSteps(turn)
+}
+
+function agentTraceSteps(message: Message): TraceStep[] {
+  const steps = message.steps.map((step, index) => ({
+    key: `${step.phase}-${index}`,
+    icon: STEP_ICONS[step.phase] ?? 'search',
+    label: step.label,
+    detail: step.phase === 'answer' ? answerDetail(message) : step.detail,
+  }))
+  if (message.thinking?.enabled && !steps.some((item) => item.icon === 'think')) {
+    steps.unshift(...thinkingStep(message))
+  }
+  return steps
+}
+
+/** 老链路（Agent 关闭，或回放没有步骤的历史）：只有检索与生成两步。 */
+function legacyTraceSteps(turn: Turn): TraceStep[] {
   const message = turn.reply
   if (!message) return []
   const query = turn.user?.text ?? ''
@@ -124,22 +209,31 @@ export function traceSteps(turn: Turn): TraceStep[] {
           : `「${short}」找到 ${message.sources.length} 个片段`,
     },
   ]
-  if (message.thinking?.enabled) {
-    const effort = THINKING_EFFORTS.find((item) => item.value === message.thinking?.effort)
-    steps.push({
-      key: 'think',
-      icon: 'think',
-      label: '深度思考',
-      detail: effort ? `强度：${effort.label}` : '',
-    })
-  }
+  if (message.thinking?.enabled) steps.push(...thinkingStep(message))
   steps.push({
     key: 'answer',
     icon: 'build',
     label: message.streaming ? '正在生成回答' : '已生成回答',
-    detail: message.text.length > 0 ? `共 ${message.text.length} 字` : '',
+    detail: answerDetail(message),
   })
   return steps
+}
+
+function thinkingStep(message: Message): TraceStep[] {
+  const effort = THINKING_EFFORTS.find((item) => item.value === message.thinking?.effort)
+  return [
+    {
+      key: 'think',
+      icon: 'think',
+      label: '深度思考',
+      detail: effort ? `强度：${effort.label}` : '',
+    },
+  ]
+}
+
+function answerDetail(message: Message): string {
+  if (message.streaming) return '正在生成…'
+  return message.text.length > 0 ? `共 ${message.text.length} 字` : ''
 }
 
 /**

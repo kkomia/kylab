@@ -611,7 +611,61 @@ _MIGRATION_019 = Migration(
 )
 
 
-MIGRATIONS: tuple[Migration, ...] = (    _MIGRATION_001,
+_MIGRATION_020 = Migration(
+    version=20,
+    description="笔记：notes 表 + note_tags（对标 ima 笔记的最小数据模型）",
+    statements=(
+        # 笔记的**唯一事实源是 Markdown**（`content_md`），编辑器的 JSON 不落库：
+        # 换编辑器（现在是 Tiptap）零成本，导出/入知识库/全文检索也都直接吃 Markdown。
+        #
+        # `user_id` 可空：管理员/API Key 建的笔记没有归属用户（与 conversations 同口径）。
+        # `kb_id`/`doc_id` 是"加入知识库"的回填：笔记入库后指向生成的文档，
+        # 检索命中时能跳回笔记本身（见 services/notes.py）。
+        """
+        CREATE TABLE notes (
+            id          TEXT PRIMARY KEY,
+            user_id     TEXT,
+            title       TEXT NOT NULL DEFAULT '',
+            content_md  TEXT NOT NULL DEFAULT '',
+            source_kind TEXT NOT NULL DEFAULT 'manual',
+            source_ref  TEXT,
+            kb_id       TEXT,
+            doc_id      TEXT,
+            pinned      INTEGER NOT NULL DEFAULT 0,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        )
+        """,
+        # 列表按置顶 + 更新时间倒序，索引照这个排序建
+        "CREATE INDEX idx_notes_owner ON notes(user_id, pinned DESC, updated_at DESC)",
+        """
+        CREATE TABLE note_tags (
+            note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+            tag     TEXT NOT NULL,
+            PRIMARY KEY (note_id, tag)
+        )
+        """,
+        "CREATE INDEX idx_note_tags_tag ON note_tags(tag)",
+    ),
+)
+
+
+_MIGRATION_021 = Migration(
+    version=21,
+    description="会话上下文摘要：早期对话折成摘要，避免长会话把窗口撑爆（v20.1）",
+    statements=(
+        # 为什么要存摘要而不是每次现算：摘要是一次 LLM 调用（要花钱、要等），
+        # 只该在**第一次越过阈值**时算一次，之后每轮复用。
+        # ``summary_upto`` 记录"摘要已经覆盖到哪条消息"，之后只把更晚的消息算进上下文，
+        # 这样用户回看时原文一条没少，只是喂给模型的部分被压缩了。
+        "ALTER TABLE conversations ADD COLUMN context_summary TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE conversations ADD COLUMN summary_upto TEXT",
+    ),
+)
+
+
+MIGRATIONS: tuple[Migration, ...] = (
+    _MIGRATION_001,
     _MIGRATION_002,
     _MIGRATION_003,
     _MIGRATION_004,
@@ -630,6 +684,8 @@ MIGRATIONS: tuple[Migration, ...] = (    _MIGRATION_001,
     _MIGRATION_017,
     _MIGRATION_018,
     _MIGRATION_019,
+    _MIGRATION_020,
+    _MIGRATION_021,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

@@ -503,3 +503,71 @@ def test_preview_honours_a_custom_limit() -> None:
 
     assert len(preview_of(body, limit=1800)) <= 1801
     assert len(preview_of(body)) <= MAX_CHUNK_CHARS + 1
+
+
+# ------------------------------------------------- Agent 工作流（v20）
+
+
+def test_agent_stream_emits_steps_thinking_and_answer(runtime, bind_slot) -> None:
+    """完整事件序列：意图/改写步骤 + 思考增量 + 正文 + 收尾。
+
+    思考必须**单独**成事件（``thinking``），不能混进正文——界面把它们放在两个区域，
+    混在一起会让"过程"污染"结果"。
+    """
+    from app.services.agent import (
+        DeltaEvent,
+        DoneEvent,
+        SourcesEvent,
+        StepEvent,
+        ThinkingEvent,
+    )
+    from app.services.llm import LLMDelta
+
+    class _AgentChat:
+        def complete(self, messages):  # type: ignore[no-untyped-def]
+            return '{"intent":"factual","queries":["改写后的查询"],"need_retrieval":true}'
+
+        def stream_events(self, messages):  # type: ignore[no-untyped-def]
+            yield LLMDelta(reasoning="先想一想")
+            yield LLMDelta(text="答")
+            yield LLMDelta(text="案")
+
+    service = ChatService(_EmptyRetrieval(), runtime, chat_factory=lambda c: _AgentChat())
+    bind_slot("chat", model_id="m", capabilities=["chat"])
+
+    events = list(service.answer_agent_stream(query="原问题", kb_ids=["kb_1"]))
+
+    steps = [e for e in events if isinstance(e, StepEvent)]
+    assert any(e.phase == "intent" and "查事实" in e.detail for e in steps)
+    assert any(e.phase == "rewrite" and "改写后的查询" in e.detail for e in steps)
+    assert "".join(e.text for e in events if isinstance(e, ThinkingEvent)) == "先想一想"
+    assert "".join(e.text for e in events if isinstance(e, DeltaEvent)) == "答案"
+    assert any(isinstance(e, SourcesEvent) for e in events)
+    assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
+
+
+def test_agent_stream_skips_retrieval_for_chitchat(runtime, bind_slot) -> None:
+    """意图是寒暄时不去检索，也不该拿"资料中没有找到"的提示词作答。"""
+
+    class _AgentChat:
+        def complete(self, messages):  # type: ignore[no-untyped-def]
+            return '{"intent":"chat","queries":[],"need_retrieval":false}'
+
+        def stream_events(self, messages):  # type: ignore[no-untyped-def]
+            from app.services.llm import LLMDelta
+
+            yield LLMDelta(text="你好呀")
+
+    class _BoomRetrieval:
+        def search(self, query):  # type: ignore[no-untyped-def]
+            raise AssertionError("寒暄不该触发检索")
+
+    service = ChatService(_BoomRetrieval(), runtime, chat_factory=lambda c: _AgentChat())  # type: ignore[arg-type]
+    bind_slot("chat", model_id="m", capabilities=["chat"])
+
+    from app.services.agent import SourcesEvent
+
+    events = list(service.answer_agent_stream(query="你好", kb_ids=["kb_1"]))
+
+    # 没有 sources 事件（连空的也不发），回答照常
+    assert not any(isinstance(e, SourcesEvent) for e in events)

@@ -35,6 +35,7 @@ import { getSettings, updateSettings } from '@/api/settings'
 import IconArrowUp from '@/components/icons/IconArrowUp.vue'
 import IconCopy from '@/components/icons/IconCopy.vue'
 import IconRegenerate from '@/components/icons/IconRegenerate.vue'
+import IconNote from '@/components/icons/IconNote.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
@@ -52,6 +53,8 @@ import {
   buildTurns,
   documentTarget,
   isTraceOpen,
+  makeMessage,
+  mergeStep,
   sourcePreview,
   sourceWhere,
   traceSteps,
@@ -63,6 +66,7 @@ import {
 } from '@/composables/useChatTurns'
 import { useToast } from '@/composables/useToast'
 import { useConversationStore } from '@/stores/conversations'
+import { useNoteStore } from '@/stores/notes'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 import { useModelRegistryStore } from '@/stores/modelRegistry'
 
@@ -84,6 +88,7 @@ const STEP_ICONS = { search: IconSearch, think: IconRobot, build: IconCheck } as
 
 const store = useKnowledgeBaseStore()
 const conversations = useConversationStore()
+const notes = useNoteStore()
 const registryStore = useModelRegistryStore()
 const route = useRoute()
 const router = useRouter()
@@ -242,15 +247,13 @@ async function loadConversation(): Promise<void> {
   loadingHistory.value = true
   try {
     const detail = await getConversation(id)
-    messages.value = detail.messages.map((item) => ({
-      role: item.role === 'user' ? 'user' : 'assistant',
-      text: item.content,
-      sources: item.sources,
-      error: '',
-      streaming: false,
-      // 回放：这一轮当时用哪档思考没有存，别猜
-      thinking: null,
-    }))
+    messages.value = detail.messages.map((item) =>
+      makeMessage(item.role === 'user' ? 'user' : 'assistant', item.content, {
+        sources: item.sources,
+        // 回放：这一轮当时用哪档思考没有存，别猜
+        thinking: null,
+      }),
+    )
     // 会话建立时用的哪些库：回放时应当沿用，否则多轮上下文会指向上一次没查的库
     if (detail.kb_ids.length) {
       selected.value = detail.kb_ids.filter((kbId) => store.items.some((item) => item.id === kbId))
@@ -331,16 +334,12 @@ async function send(): Promise<void> {
 
   messages.value = [
     ...messages.value,
-    { role: 'user', text, sources: [], error: '', streaming: false, thinking: null },
-    {
-      role: 'assistant',
-      text: '',
-      sources: [],
-      error: '',
+    makeMessage('user', text),
+    makeMessage('assistant', '', {
       streaming: true,
       // 记下这一轮实际发出去的思考档：过程面板要如实显示"这一步做没做"
       thinking: { enabled: thinkingOn.value, effort: thinkingEffort.value },
-    },
+    }),
   ]
   const index = messages.value.length - 1
   query.value = ''
@@ -373,7 +372,10 @@ async function send(): Promise<void> {
         thinking_effort: thinkingEffort.value,
       },
       {
+        onStep: (step) => patch({ steps: mergeStep(messages.value[index]?.steps ?? [], step) }),
         onSources: (items) => patch({ sources: items }),
+        onThinking: (chunk) =>
+          patch({ thinkingText: (messages.value[index]?.thinkingText ?? '') + chunk }),
         onDelta: (delta) => patch({ text: (messages.value[index]?.text ?? '') + delta }),
         // done 带的是后端拼好的全文，以它为准，避免个别 delta 丢失后正文与引用对不上
         onDone: (answer) => {
@@ -449,7 +451,11 @@ function onStreamScroll(): void {
 // 只在跟随状态下自动滚到底；flush: 'post' 让它在内容写入 DOM 之后执行，
 // 顺带省掉一次 nextTick。往上翻看旧回答时，新字不该把视图拽走
 watch(
-  () => messages.value.length + (messages.value.at(-1)?.text.length ?? 0),
+  () =>
+    messages.value.length +
+    (messages.value.at(-1)?.text.length ?? 0) +
+    // 思考也在长，它流出来时同样要跟着滚，否则面板里的思考会停在开头
+    (messages.value.at(-1)?.thinkingText.length ?? 0),
   () => {
     if (stick.value) scrollToBottom()
   },
@@ -508,6 +514,36 @@ async function copyMessage(turnIndex: number, message: Message): Promise<void> {
 
 const regenerating = ref(false)
 
+/** 已存过笔记的轮次（`turnIndex`）：按钮据此显示"已存"。 */
+const savedTurns = ref<Set<number>>(new Set())
+
+/**
+ * 把一轮问答存成一条笔记（`source_kind='chat'`）。
+ *
+ * 内容用 Markdown 记：标题是提问、正文是回答。存完不跳页——用户的注意力还在对话上，
+ * 侧栏的「笔记」入口自然会多出一条。
+ */
+async function saveAsNote(turnIndex: number, turn: Turn): Promise<void> {
+  const question = (turn.user?.text ?? '').trim()
+  const answer = (turn.reply?.text ?? '').trim()
+  if (!answer) {
+    notifyWarning('这条回答还没有内容')
+    return
+  }
+  try {
+    await notes.create({
+      title: question.slice(0, 80) || '来自对话的笔记',
+      content_md: question ? `# ${question}\n\n${answer}` : answer,
+      source_kind: 'chat',
+      source_ref: conversationId.value || null,
+    })
+    savedTurns.value = new Set(savedTurns.value).add(turnIndex)
+    notifySuccess('已存为笔记，可在侧栏「笔记」里查看')
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '存为笔记失败')
+  }
+}
+
 /**
  * 重新生成最后一条回答。
  *
@@ -556,15 +592,11 @@ async function resend(
 ): Promise<void> {
   messages.value = [
     ...messages.value,
-    { role: 'user', text, sources: [], error: '', streaming: false, thinking: null },
-    {
-      role: 'assistant',
-      text: '',
-      sources: [],
-      error: '',
+    makeMessage('user', text),
+    makeMessage('assistant', '', {
       streaming: true,
       thinking: { enabled: thinkingOn.value, effort: thinkingEffort.value },
-    },
+    }),
   ]
   const index = messages.value.length - 1
   sending.value = true
@@ -586,7 +618,10 @@ async function resend(
         thinking_effort: thinkingEffort.value,
       },
       {
+        onStep: (step) => patch({ steps: mergeStep(messages.value[index]?.steps ?? [], step) }),
         onSources: (items) => patch({ sources: items }),
+        onThinking: (chunk) =>
+          patch({ thinkingText: (messages.value[index]?.thinkingText ?? '') + chunk }),
         onDelta: (delta) => patch({ text: (messages.value[index]?.text ?? '') + delta }),
         onDone: (answer) => {
           patch({ text: answer, streaming: false })
@@ -1021,6 +1056,20 @@ async function savePrompt(): Promise<void> {
                   </li>
                 </ol>
 
+                <!-- 思考过程（推理模型的 reasoning_content）：过程的一部分，收在面板里。
+                     它可能很长，所以限高滚动，不挤占正文的位置。 -->
+                <div v-if="turn.reply.thinkingText" class="thinking">
+                  <p class="thinking-label">
+                    <span
+                      v-if="turn.reply.streaming && !turn.reply.text"
+                      class="thinking-dot"
+                      aria-hidden="true"
+                    />
+                    思考过程
+                  </p>
+                  <p class="thinking-text">{{ turn.reply.thinkingText }}</p>
+                </div>
+
                 <!-- 逐条出处：行内徽标点进来会滚到对应这一条 -->
                 <ol v-if="turn.reply.sources.length" class="cites">
                   <li
@@ -1075,6 +1124,12 @@ async function savePrompt(): Promise<void> {
                 >
                   <IconCopy :size="13" />
                   {{ copiedKey === `${turnIndex}:assistant` ? '已复制' : '复制' }}
+                </button>
+                <!-- 存为笔记：问答是笔记最自然的来源之一（对标 ima 的"存为笔记"）。
+                     笔记本身可以再一键加入知识库，于是"问答 → 笔记 → 语料"闭环 -->
+                <button type="button" class="msg-action" @click="saveAsNote(turnIndex, turn)">
+                  <IconNote :size="13" />
+                  {{ savedTurns.has(turnIndex) ? '已存为笔记' : '存为笔记' }}
                 </button>
                 <button
                   v-if="turnIndex === turns.length - 1 && !sending"
@@ -1527,6 +1582,60 @@ async function savePrompt(): Promise<void> {
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
   overflow-wrap: anywhere;
+}
+
+/* 思考过程：它是"过程"不是"结果"，用弱化的底色与文字，别和正文抢视线。
+   限高滚动是因为推理模型的思考常常比回答还长。 */
+.thinking {
+  margin-top: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-control);
+}
+
+.thinking-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.thinking-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  animation: thinking-pulse 1.1s ease-in-out infinite;
+}
+
+.thinking-text {
+  max-height: 220px;
+  margin: 0;
+  overflow-y: auto;
+  font-size: var(--text-micro-size);
+  line-height: 1.7;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@keyframes thinking-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thinking-dot {
+    animation: none;
+  }
 }
 
 .reply-text {

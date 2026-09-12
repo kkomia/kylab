@@ -1114,3 +1114,66 @@ class WebhookEventListOut(BaseModel):
     delivery_semantics: str = ""
     """``at-least-once``。**必须让接收端知道这件事**——
     不知道的话它会把重复投递当成故障去查，而那是契约的一部分。"""
+
+
+# --------------------------------------------------------------------- 笔记（v20）
+
+
+class NoteCreateIn(BaseModel):
+    title: str = Field(default="", max_length=80)
+    content_md: str = ""
+    source_kind: Literal["manual", "chat", "clip"] = "manual"
+    source_ref: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class NoteUpdateIn(BaseModel):
+    """全部字段可空：只传要改的字段。``None`` = 不动这一项。"""
+
+    title: str | None = Field(default=None, max_length=80)
+    content_md: str | None = None
+    pinned: bool | None = None
+    tags: list[str] | None = None
+
+
+class NoteAttachIn(BaseModel):
+    kb_id: str = Field(min_length=1)
+
+
+class NoteOut(BaseModel):
+    model_config = _RECORD_CONFIG
+
+    id: str
+    title: str
+    content_md: str
+    source_kind: str
+    source_ref: str | None = None
+    kb_id: str | None = None
+    doc_id: str | None = None
+    pinned: bool = False
+    tags: list[str] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class NoteListItemOut(NoteOut):
+    """列表项不带正文：列表页只要标题、标签与时间，带上正文会让响应体积翻很多倍。"""
+
+    content_md: str = ""
+    preview: str = ""
+
+
+class NoteListOut(BaseModel):
+    items: list[NoteListItemOut] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+
+
+class NoteTagOut(BaseModel):
+    tag: str
+    count: int
+
+
+class NoteTagListOut(BaseModel):
+    items: list[NoteTagOut] = Field(default_factory=list)

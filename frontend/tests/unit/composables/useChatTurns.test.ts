@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import type { ChatSource } from '@/api/chat'
+import type { ChatSource, ChatStep } from '@/api/chat'
 import {
   buildTurns,
   documentTarget,
   isTraceOpen,
+  makeMessage,
+  mergeStep,
   sourcePreview,
   sourceWhere,
   THINKING_EFFORTS,
@@ -30,15 +32,11 @@ function source(index: number, extra: Partial<ChatSource> = {}): ChatSource {
 }
 
 function message(role: Message['role'], extra: Partial<Message> = {}): Message {
-  return {
-    role,
-    text: '',
-    sources: [],
-    error: '',
-    streaming: false,
-    thinking: null,
-    ...extra,
-  }
+  return makeMessage(role, '', extra)
+}
+
+function step(phase: string, extra: Partial<ChatStep> = {}): ChatStep {
+  return { phase, label: phase, detail: '', status: 'done', ...extra }
 }
 
 describe('buildTurns', () => {
@@ -157,6 +155,77 @@ describe('traceSteps', () => {
 
     expect(steps[0].detail).toContain('…')
     expect(steps[0].detail.length).toBeLessThan(80)
+  })
+})
+
+describe('Agent 步骤（v20）', () => {
+  it('summary 按当前步骤说进度，用户能分辨卡在理解还是检索', () => {
+    expect(
+      traceSummary(message('assistant', { streaming: true, steps: [step('intent')] })),
+    ).toBe('正在理解问题…')
+    expect(
+      traceSummary(message('assistant', { streaming: true, steps: [step('rewrite')] })),
+    ).toBe('正在优化检索词…')
+  })
+
+  it('有 Agent 步骤就照搬，不再编造老的两步', () => {
+    const turn = {
+      user: message('user', { text: '问' }),
+      reply: message('assistant', {
+        text: '答',
+        sources: [source(1)],
+        steps: [
+          step('intent', { label: '理解问题', detail: '意图：查事实' }),
+          step('rewrite', { label: '优化检索词', detail: '眼轴长度' }),
+          step('retrieve', { label: '第 2 轮检索', detail: '眼轴测量频率' }),
+          step('answer', { label: '组织回答', status: 'running' }),
+        ],
+      }),
+    }
+
+    const steps = traceSteps(turn)
+
+    expect(steps.map((item) => item.label)).toEqual([
+      '理解问题',
+      '优化检索词',
+      '第 2 轮检索',
+      '组织回答',
+    ])
+    expect(steps.map((item) => item.icon)).toEqual(['think', 'search', 'search', 'build'])
+    expect(steps.at(-1)?.detail).toBe('共 1 字') // 回答那一步就地补字数
+  })
+
+  it('渲染思考步骤时不与 Agent 步骤里的 think 重复', () => {
+    const turn = {
+      user: message('user', { text: '问' }),
+      reply: message('assistant', {
+        text: '答',
+        steps: [step('intent', { label: '理解问题' })],
+        thinking: { enabled: true, effort: 'low' as ThinkingEffort },
+      }),
+    }
+
+    const steps = traceSteps(turn)
+
+    expect(steps.filter((item) => item.icon === 'think')).toHaveLength(1)
+  })
+
+  it('mergeStep：running 占位被同名收尾就地替换，不出现两行', () => {
+    const steps = [step('intent', { label: '理解问题', status: 'running' })]
+
+    const merged = mergeStep(steps, step('intent', { label: '理解问题', detail: '意图：查事实' }))
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0].detail).toBe('意图：查事实')
+    expect(merged[0].status).toBe('done')
+  })
+
+  it('mergeStep：不同标签的检索轮次各自追加', () => {
+    const steps = [step('retrieve', { label: '第 2 轮检索' })]
+
+    const merged = mergeStep(steps, step('retrieve', { label: '第 3 轮检索' }))
+
+    expect(merged).toHaveLength(2)
   })
 })
 
