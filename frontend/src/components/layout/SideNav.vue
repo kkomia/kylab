@@ -37,6 +37,7 @@ import { useSidebar } from '@/composables/useSidebar'
 import { resolvedTheme, setTheme } from '@/composables/useTheme'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
+import { useStatsStore } from '@/stores/stats'
 import { useTaskStore } from '@/stores/tasks'
 
 const route = useRoute()
@@ -44,6 +45,7 @@ const router = useRouter()
 const store = useKnowledgeBaseStore()
 const conversations = useConversationStore()
 const taskStore = useTaskStore()
+const statsStore = useStatsStore()
 
 /** 折叠为图标栏：纯显示偏好，落 localStorage（见 useSidebar）。 */
 const { collapsed, toggleSidebar } = useSidebar()
@@ -67,7 +69,10 @@ onMounted(async () => {
  * 从"手指移过去"到"点下去"通常有 100ms 以上，够发完一次本地请求。
  */
 function scheduleTaskPrefetch(): void {
-  const run = (): void => void taskStore.prefetch()
+  const run = (): void => {
+    void taskStore.prefetch()
+    void statsStore.prefetch()
+  }
   const idle = (window as Window & { requestIdleCallback?: (cb: () => void) => number })
     .requestIdleCallback
   if (typeof idle === 'function') idle(run)
@@ -76,6 +81,7 @@ function scheduleTaskPrefetch(): void {
 
 function onNavIntent(to: string): void {
   if (to === '/tasks') void taskStore.prefetch()
+  if (to === '/') void statsStore.prefetch()
 }
 
 const NAV_ITEMS = [

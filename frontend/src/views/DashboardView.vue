@@ -13,7 +13,7 @@
  */
 import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
 
-import { getDashboard, getUsage, type ActivityPoint, type Dashboard, type Usage } from '@/api/stats'
+import type { ActivityPoint } from '@/api/stats'
 import ActivityHeatmap from '@/components/charts/ActivityHeatmap.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
@@ -21,6 +21,7 @@ import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { formatBytes, formatCount, formatRelativeTime } from '@/composables/useFormat'
+import { DASHBOARD_WINDOW_DAYS, USAGE_WINDOW_DAYS, useStatsStore } from '@/stores/stats'
 
 /**
  * 图表按需加载：`EChart.vue` 把整个 ECharts 拉进来（数百 KB）。
@@ -60,16 +61,18 @@ const EChart = defineAsyncComponent(() => import('@/components/charts/EChart.vue
  *
  * 一年也是这类图（GitHub 贡献图、Kimi 亲密度）的惯例刻度，顺便让"长期节奏"可读。
  */
-const WINDOW_DAYS = 365
+const WINDOW_DAYS = DASHBOARD_WINDOW_DAYS
 /** 格子边长上限：12px 与参考图同档；宽度不够时按列数自动缩小。 */
 const MAX_CELL = 14
 
-const data = ref<Dashboard | null>(null)
-const loading = ref(true)
-const error = ref('')
-/** 模型用量（G7）。与驾驶舱分开取：它是另一张表，慢一点不该挡主页渲染。 */
-const usage = ref<Usage | null>(null)
-const usageDays = 30
+const stats = useStatsStore()
+const data = computed(() => stats.dashboard)
+const error = computed(() => stats.error)
+/** 模型用量（G7）。与驾驶舱并行取：它是另一张表，取不到只是这一块空着。 */
+const usage = computed(() => stats.usage)
+const usageDays = USAGE_WINDOW_DAYS
+/** 用量还没回来：数字显示占位符。**不能显示 0**——0 的含义是"确实没有调用"。 */
+const usagePending = computed(() => usage.value === null && stats.loading)
 
 /** 按用途画个相对的条形——一眼看出"钱花在哪一类调用上"。 */
 function barWidth(calls: number): number {
@@ -85,54 +88,61 @@ const METRIC_LABELS: Record<typeof metric.value, string> = {
   tasks: '流水线任务',
 }
 
-onMounted(load)
-
-async function load(): Promise<void> {
-  loading.value = true
-  try {
-    data.value = await getDashboard(WINDOW_DAYS)
-    error.value = ''
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '统计加载失败'
-  } finally {
-    loading.value = false
-  }
-  // 用量单独取、单独失败：它来自另一张表，取不到不该让整个驾驶舱报错
-  void loadUsage()
-}
-
-async function loadUsage(): Promise<void> {
-  try {
-    usage.value = await getUsage(usageDays)
-  } catch {
-    usage.value = null
-  }
-}
+onMounted(() => {
+  // 已有缓存时这一次只是后台刷新：内容立刻就在，不闪骨架
+  void stats.load()
+})
 
 const summary = computed(() => data.value)
 const hasAnyDocument = computed(() => (data.value?.total_documents ?? 0) > 0)
 
-/** 顶部大数：每格一个"当前值 + 一句它是什么"。 */
-const figures = computed(() => {
+/**
+ * 顶部大数：每格一个"当前值 + 一句它是什么"。
+ *
+ * **数据没到也先把六个槽位画出来**（值为占位符、注解用静态说明）：
+ * 这是流式渲染的一半——页面的骨架立刻可见，用户不用盯着一块空白等最慢的请求。
+ */
+const figureSlots = computed(() => {
   const d = data.value
-  if (!d) return []
+  if (!d) {
+    return [
+      { label: '知识库', value: '—', note: '相互隔离的检索范围', ready: false },
+      { label: '文档', value: '—', note: '正在统计…', ready: false },
+      { label: '切块', value: '—', note: '向量化的最小单位', ready: false },
+      { label: '原文体积', value: '—', note: '不含向量与索引', ready: false },
+      { label: '索引完成率', value: '—', note: '正在统计…', ready: false },
+      { label: `近 ${WINDOW_DAYS} 天入库`, value: '—', note: '正在统计…', ready: false },
+    ]
+  }
   const indexedRate = d.total_documents
     ? Math.round((d.indexed_documents / d.total_documents) * 100)
     : 0
   return [
-    { label: '知识库', value: String(d.total_knowledge_bases), note: '相互隔离的检索范围' },
-    { label: '文档', value: String(d.total_documents), note: `已索引 ${d.indexed_documents} 篇` },
-    { label: '切块', value: String(d.total_chunks), note: '向量化的最小单位' },
-    { label: '原文体积', value: formatBytes(d.storage_bytes), note: '不含向量与索引' },
+    {
+      label: '知识库',
+      value: String(d.total_knowledge_bases),
+      note: '相互隔离的检索范围',
+      ready: true,
+    },
+    {
+      label: '文档',
+      value: String(d.total_documents),
+      note: `已索引 ${d.indexed_documents} 篇`,
+      ready: true,
+    },
+    { label: '切块', value: String(d.total_chunks), note: '向量化的最小单位', ready: true },
+    { label: '原文体积', value: formatBytes(d.storage_bytes), note: '不含向量与索引', ready: true },
     {
       label: '索引完成率',
       value: `${indexedRate}%`,
       note: d.failed_documents > 0 ? `${d.failed_documents} 篇失败` : '没有失败文档',
+      ready: true,
     },
     {
       label: `近 ${WINDOW_DAYS} 天入库`,
       value: String(d.recent_documents),
       note: d.running_tasks > 0 ? `${d.running_tasks} 个任务在跑` : '当前没有在跑的任务',
+      ready: true,
     },
   ]
 })
@@ -251,48 +261,55 @@ const stageOption = computed(() => {
 <template>
   <PageShell title="概览">
     <p v-if="error" class="error-line">{{ error }}</p>
-    <SkeletonBlock v-if="loading && !summary" variant="text" :rows="6" />
 
-    <template v-else-if="summary">
-      <!-- 一、结论：六个大数 -->
-      <ul class="figures">
-        <li v-for="item in figures" :key="item.label" class="figure">
-          <span class="figure-label">{{ item.label }}</span>
-          <span class="figure-value tabular">{{ item.value }}</span>
-          <span class="figure-note">{{ item.note }}</span>
-        </li>
-      </ul>
+    <!--
+      **流式渲染**：页面的骨架（标题、分区标题、卡片框）立刻画出来，数字与图表
+      各自到位后填进去，而不是等最慢的那条请求回来再整页一起出现。
+      图例：数字未就绪时显示占位符 "—"，图表区显示骨架条。
+    -->
+    <!-- 一、结论：六个大数 -->
+    <ul class="figures">
+      <li v-for="item in figureSlots" :key="item.label" class="figure">
+        <span class="figure-label">{{ item.label }}</span>
+        <span class="figure-value tabular" :class="{ 'figure-pending': !item.ready }">
+          {{ item.value }}
+        </span>
+        <span class="figure-note">{{ item.note }}</span>
+      </li>
+    </ul>
 
-      <!-- 二、节奏：点状图 + 趋势 -->
-      <h2 class="group-title">活跃度</h2>
-      <div class="panel card-block">
-        <div class="block-head">
-          <span class="block-title">近 {{ summary.window_days }} 天入库节奏</span>
-          <span class="block-hint">颜色越深表示当天入库越多</span>
-        </div>
-        <ActivityHeatmap :activity="summary.activity" :max-cell="MAX_CELL" />
+    <!-- 二、节奏：点状图 + 趋势 -->
+    <h2 class="group-title">活跃度</h2>
+    <div class="panel card-block">
+      <div class="block-head">
+        <span class="block-title">近 {{ summary?.window_days ?? WINDOW_DAYS }} 天入库节奏</span>
+        <span class="block-hint">颜色越深表示当天入库越多</span>
       </div>
+      <ActivityHeatmap v-if="summary" :activity="summary.activity" :max-cell="MAX_CELL" />
+      <SkeletonBlock v-else variant="card" :rows="1" />
+    </div>
 
-      <div class="panel card-block">
-        <div class="block-head">
-          <span class="block-title">趋势</span>
-          <div class="metric-switch">
-            <button
-              v-for="(label, key) in METRIC_LABELS"
-              :key="key"
-              class="metric-tab"
-              :class="{ 'metric-tab-active': metric === key }"
-              type="button"
-              @click="metric = key as typeof metric"
-            >
-              {{ label }}
-            </button>
-          </div>
+    <div v-if="summary" class="panel card-block">
+      <div class="block-head">
+        <span class="block-title">趋势</span>
+        <div class="metric-switch">
+          <button
+            v-for="(label, key) in METRIC_LABELS"
+            :key="key"
+            class="metric-tab"
+            :class="{ 'metric-tab-active': metric === key }"
+            type="button"
+            @click="metric = key as typeof metric"
+          >
+            {{ label }}
+          </button>
         </div>
-        <EChart :option="trendOption" :height="200" />
       </div>
+      <EChart :option="trendOption" :height="200" />
+    </div>
 
-      <!-- 三、构成 -->
+    <!-- 三、构成 -->
+    <template v-if="summary">
       <h2 class="group-title">构成</h2>
       <div class="chart-grid">
         <div class="panel card-block">
@@ -308,74 +325,85 @@ const stageOption = computed(() => {
           <EChart :option="suffixOption" :height="200" />
         </div>
       </div>
+    </template>
 
-      <!-- 三、模型用量（G7）。**刻意不算钱**：单价随供应商/版本/缓存/折扣不断变，
+    <!-- 三、模型用量（G7）。**刻意不算钱**：单价随供应商/版本/缓存/折扣不断变，
            内置价目表必然过期，而过期的价钱比不给更糟——用户会照着它做决定 -->
-      <h2 class="group-title">模型用量</h2>
-      <div class="panel card-block">
-        <div class="block-head">
-          <span class="block-title">近 {{ usageDays }} 天</span>
-          <span class="block-hint"> 向量化接口通常不返回用量，那部分按字符数估算 </span>
-        </div>
-
-        <dl class="usage-figures">
-          <div class="usage-figure">
-            <dt>调用次数</dt>
-            <dd class="tabular">{{ formatCount(usage?.total.calls ?? 0) }}</dd>
-          </div>
-          <div class="usage-figure">
-            <dt>输入 token</dt>
-            <dd class="tabular">{{ formatCount(usage?.total.prompt_tokens ?? 0) }}</dd>
-          </div>
-          <div class="usage-figure">
-            <dt>输出 token</dt>
-            <dd class="tabular">{{ formatCount(usage?.total.completion_tokens ?? 0) }}</dd>
-          </div>
-          <div class="usage-figure">
-            <dt>处理条数</dt>
-            <dd class="tabular">{{ formatCount(usage?.total.items ?? 0) }}</dd>
-          </div>
-        </dl>
-
-        <p v-if="!usage || usage.total.calls === 0" class="usage-empty">
-          还没有用量记录。提问或上传文档之后这里会有数据。
-        </p>
-
-        <template v-else>
-          <!-- 三态分开说：不区分的话会把"没报"画成"没用"、把"估算"画成"实测" -->
-          <p v-if="usage.estimated_tokens > 0" class="usage-note">
-            其中约 {{ formatCount(usage.estimated_tokens) }} token 是按字符数估算的（{{
-              usage.estimated_calls
-            }}
-            次向量化调用，接口不返回用量）。这部分只用于看趋势，别拿它精确对账。
-          </p>
-          <p v-if="usage.unreported_calls > 0" class="usage-note">
-            另有 {{ usage.unreported_calls }} 次调用供应商没有返回用量，
-            它们只计入「调用次数」与「处理条数」，token 数字不含它们。
-          </p>
-
-          <ul class="usage-list">
-            <li v-for="item in usage.by_kind" :key="item.kind" class="usage-row">
-              <span class="usage-name">{{ item.label }}</span>
-              <span class="usage-bar">
-                <span class="usage-bar-fill" :style="{ width: `${barWidth(item.calls)}%` }" />
-              </span>
-              <span class="usage-figures-inline tabular">
-                {{ formatCount(item.calls) }} 次 · 输入 {{ formatCount(item.prompt_tokens) }} · 输出
-                {{ formatCount(item.completion_tokens) }}
-              </span>
-            </li>
-          </ul>
-
-          <p class="usage-note">
-            按模型：{{
-              usage.by_model.map((m) => `${m.model}（${formatCount(m.calls)} 次）`).join('、')
-            }}
-          </p>
-        </template>
+    <h2 class="group-title">模型用量</h2>
+    <div class="panel card-block">
+      <div class="block-head">
+        <span class="block-title">近 {{ usageDays }} 天</span>
+        <span class="block-hint"> 向量化接口通常不返回用量，那部分按字符数估算 </span>
       </div>
 
-      <!-- 四、各库规模 -->
+      <dl class="usage-figures">
+        <div class="usage-figure">
+          <dt>调用次数</dt>
+          <dd class="tabular" :class="{ 'figure-pending': usagePending }">
+            {{ usagePending ? '—' : formatCount(usage?.total.calls ?? 0) }}
+          </dd>
+        </div>
+        <div class="usage-figure">
+          <dt>输入 token</dt>
+          <dd class="tabular" :class="{ 'figure-pending': usagePending }">
+            {{ usagePending ? '—' : formatCount(usage?.total.prompt_tokens ?? 0) }}
+          </dd>
+        </div>
+        <div class="usage-figure">
+          <dt>输出 token</dt>
+          <dd class="tabular" :class="{ 'figure-pending': usagePending }">
+            {{ usagePending ? '—' : formatCount(usage?.total.completion_tokens ?? 0) }}
+          </dd>
+        </div>
+        <div class="usage-figure">
+          <dt>处理条数</dt>
+          <dd class="tabular" :class="{ 'figure-pending': usagePending }">
+            {{ usagePending ? '—' : formatCount(usage?.total.items ?? 0) }}
+          </dd>
+        </div>
+      </dl>
+
+      <p v-if="usagePending" class="usage-empty">正在统计…</p>
+      <p v-else-if="!usage || usage.total.calls === 0" class="usage-empty">
+        还没有用量记录。提问或上传文档之后这里会有数据。
+      </p>
+
+      <template v-else>
+        <!-- 三态分开说：不区分的话会把"没报"画成"没用"、把"估算"画成"实测" -->
+        <p v-if="usage.estimated_tokens > 0" class="usage-note">
+          其中约 {{ formatCount(usage.estimated_tokens) }} token 是按字符数估算的（{{
+            usage.estimated_calls
+          }}
+          次向量化调用，接口不返回用量）。这部分只用于看趋势，别拿它精确对账。
+        </p>
+        <p v-if="usage.unreported_calls > 0" class="usage-note">
+          另有 {{ usage.unreported_calls }} 次调用供应商没有返回用量，
+          它们只计入「调用次数」与「处理条数」，token 数字不含它们。
+        </p>
+
+        <ul class="usage-list">
+          <li v-for="item in usage.by_kind" :key="item.kind" class="usage-row">
+            <span class="usage-name">{{ item.label }}</span>
+            <span class="usage-bar">
+              <span class="usage-bar-fill" :style="{ width: `${barWidth(item.calls)}%` }" />
+            </span>
+            <span class="usage-figures-inline tabular">
+              {{ formatCount(item.calls) }} 次 · 输入 {{ formatCount(item.prompt_tokens) }} · 输出
+              {{ formatCount(item.completion_tokens) }}
+            </span>
+          </li>
+        </ul>
+
+        <p class="usage-note">
+          按模型：{{
+            usage.by_model.map((m) => `${m.model}（${formatCount(m.calls)} 次）`).join('、')
+          }}
+        </p>
+      </template>
+    </div>
+
+    <!-- 四、各库规模 -->
+    <template v-if="summary">
       <h2 class="group-title">知识库规模</h2>
       <EmptyState
         v-if="!hasAnyDocument"
@@ -412,12 +440,19 @@ const stageOption = computed(() => {
         </ul>
       </div>
     </template>
+    <!-- 驾驶舱数据还没到：这一块先给骨架，标题已经在上面了 -->
+    <SkeletonBlock v-else variant="list" :rows="3" />
   </PageShell>
 </template>
 
 <style scoped>
 /* 用量四格：与顶部大数区分开——那里是"内容有多少"，这里是"用了多少"，
    所以数字小一号、不加注解，视觉上是二级信息 */
+/* 数值未就绪时的占位符：弱化，不让人误以为"统计结果是 0" */
+.figure-pending {
+  color: var(--text-tertiary);
+}
+
 .usage-figures {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
