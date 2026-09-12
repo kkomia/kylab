@@ -66,6 +66,28 @@ class SqliteVectorStore(VectorStore):
         with self._db.session() as conn:
             conn.execute(f"DROP TABLE IF EXISTS {self._table(kb_id)}")
 
+    def list_partitions(self) -> list[str]:
+        """列出已有的向量分区（返回知识库 id）。
+
+        **维护页要用它找孤儿分区**：删库时若没跟着 drop，表会永远留在库里
+        （实测踩到过一个无主分区），而这类表只能从 sqlite_master 才能发现——
+        ``knowledge_bases`` 里已经没有它了。返回空列表表示一个分区都没有。
+
+        **前缀必须取自 ``_TABLE_PREFIX``，不能另外写一个字面量**：写错过一次
+        （把 ``vec_`` 写成 ``vec_kb_``），结果是**每个正常分区都被判成孤儿**，
+        而"整理存储"会把它们全删掉——一次点击清空所有向量。所以表名与解析
+        共用同一个常量，并由 `test_compact_keeps_owned_partitions` 钉住。
+        """
+        prefix = _TABLE_PREFIX
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?",
+                (f"{prefix}%",),
+            ).fetchall()
+        # 影子表（_chunks/_info/_rowids/_vector_chunks00）不是分区本身，要滤掉
+        suffix = ("_chunks", "_info", "_rowids", "_vector_chunks00")
+        return [row["name"][len(prefix):] for row in rows if not row["name"].endswith(suffix)]
+
     def declared_dim(self, kb_id: str) -> int | None:
         """读取分区实际维度；未建分区返回 None。供上层做模型/维度校验。"""
         with self._db.read() as conn:

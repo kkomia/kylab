@@ -19,6 +19,7 @@ from app.api.v1 import (
     health,
     knowledge_bases,
     lifecycle,
+    maintenance,
     model_registry,
     search,
     settings,
@@ -53,3 +54,4 @@ api_router.include_router(data_sources.router)
 api_router.include_router(shares.router)
 api_router.include_router(tabular.router)
 api_router.include_router(webhooks.router)
+api_router.include_router(maintenance.router)

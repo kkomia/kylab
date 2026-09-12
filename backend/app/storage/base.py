@@ -572,6 +572,14 @@ class MetaStore(ABC):
     def delete_knowledge_base(self, kb_id: str) -> None: ...
 
     @abstractmethod
+    def storage_stats(self) -> dict:
+        """数据库物理占用与空闲页（维护页展示）。"""
+
+    @abstractmethod
+    def vacuum(self) -> None:
+        """回收空闲页。**必须在事务之外执行**，只能由显式的用户动作触发。"""
+
+    @abstractmethod
     def count_kb_chunks(self, kb_id: str) -> int: ...
 
     # ---- 文档 ----
@@ -1199,6 +1207,10 @@ class VectorStore(ABC):
 
     @abstractmethod
     def drop_partition(self, kb_id: str) -> None: ...
+
+    @abstractmethod
+    def list_partitions(self) -> list[str]:
+        """列出已存在的向量分区（知识库 id）。维护页据此识别孤儿分区。"""
 
 
 class FullTextStore(ABC):

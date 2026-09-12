@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **96** 条端点。
+共 **98** 条端点。
 
 ### `api-keys`
 
@@ -227,11 +227,11 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `PATCH` | `/api/v1/documents/{document_id}` | 重命名文档 |
 | `POST` | `/api/v1/documents/{document_id}/cancel` | 取消解析（叫停还在跑的摄入） |
 | `GET` | `/api/v1/documents/{document_id}/chunks` | 切块列表（文档详情页的正文预览） |
-| `GET` | `/api/v1/documents/{document_id}/content` | 按签名下载（浏览器可直接打开） |
+| `GET` | `/api/v1/documents/{document_id}/content` | 按签名取内容（下载 / 页面内渲染） |
 | `PATCH` | `/api/v1/documents/{document_id}/disabled` | 停用 / 恢复检索 |
 | `GET` | `/api/v1/documents/{document_id}/download-url` | 签发下载链接（带过期时间） |
 | `GET` | `/api/v1/documents/{document_id}/parts` | 子文件树（大文件切分） |
-| `GET` | `/api/v1/documents/{document_id}/preview` | 阅读视角（Markdown 内联 / PDF 与图片给签名链接） |
+| `GET` | `/api/v1/documents/{document_id}/preview` | 阅读视角（解析文本内联 / 原件版式给签名链接） |
 | `POST` | `/api/v1/documents/{document_id}/reprocess` | 重新摄入（失败重跑） |
 | `GET` | `/api/v1/knowledge-bases/{kb_id}/documents` | 知识库下的文档列表 |
 | `POST` | `/api/v1/knowledge-bases/{kb_id}/documents` | 上传文档（异步摄入） |
@@ -273,6 +273,13 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/trash` | 回收站 |
 | `DELETE` | `/api/v1/trash/{trash_id}` | 彻底删除 |
 | `POST` | `/api/v1/trash/{trash_id}/restore` | 从回收站恢复（需要重新摄入） |
+
+### `maintenance`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/v1/maintenance/compact` | 整理存储 |
+| `GET` | `/api/v1/maintenance/storage` | 存储空间概览 |
 
 ### `model-registry`
 

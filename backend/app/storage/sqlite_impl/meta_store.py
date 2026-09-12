@@ -16,6 +16,7 @@ import json
 import sqlite3
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from app.core.exceptions import ConflictError, InvalidRequestError
 from app.models.enums import (
@@ -152,6 +153,46 @@ class SqliteMetaStore(MetaStore):
                 "UPDATE knowledge_bases SET description = ?, updated_at = ? WHERE id = ?",
                 (description, _dump(_now()), kb_id),
             )
+
+    def storage_stats(self) -> dict:
+        """数据库的物理占用与空闲页。
+
+        为什么需要"空闲页"这个数字：SQLite 删数据**不会**把文件变小，
+        删掉的页进 freelist 等着复用（实测一个只有 169 个切块的库，
+        21MB 里有 4MB 是空闲页）。不看这个数字，用户会以为"删了没用"。
+        """
+        with self._db.read() as conn:
+            page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+            page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+            freelist = conn.execute("PRAGMA freelist_count").fetchone()[0]
+        file_bytes = 0
+        if not self._db.is_memory:
+            try:
+                file_bytes = Path(self._db.path).stat().st_size
+            except OSError:  # pragma: no cover - 文件被外部挪走等边缘情况
+                file_bytes = 0
+        return {
+            "file_bytes": file_bytes,
+            "page_count": int(page_count),
+            "page_size": int(page_size),
+            "free_pages": int(freelist),
+            "free_bytes": int(freelist) * int(page_size),
+        }
+
+    def vacuum(self) -> None:
+        """回收空闲页（VACUUM）。
+
+        **不能用 `session()`**：VACUUM 不能在事务里跑（SQLite 会直接报
+        "cannot VACUUM from within a transaction"）。连接本身是 autocommit
+        （`isolation_level=None`），所以单独 execute 一次即可。
+        它会重写整个库文件，几 GB 的库要几十秒——所以调用方必须是显式的用户动作，
+        不是每次删除后自动跑。
+        """
+        conn = self._db.connect()
+        try:
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
 
     def document_stats_by_kbs(self) -> dict[str, tuple[int, datetime | None]]:
         """每个库的"文档数 + 最近更新时间"，一条 `GROUP BY` 出全部。"""

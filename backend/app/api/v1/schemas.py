@@ -655,6 +655,24 @@ class ConversationDetailOut(ConversationOut):
     messages: list[ChatMessageOut] = Field(default_factory=list)
 
 
+class StorageOverviewOut(BaseModel):
+    """存储空间概览（v17，管理员）。
+
+    ``data_bytes + free_bytes`` 就是数据库文件大小——拆成两个数是因为
+    "可回收"才是用户能动手改的那部分（删数据不会让文件变小，要 VACUUM）。
+    """
+
+    model_config = _RECORD_CONFIG
+
+    file_bytes: int
+    data_bytes: int
+    free_bytes: int
+    partitions: int
+    """向量分区数。每个分区写入第一个向量就占一个 4MB 块，所以它值得单独看。"""
+    orphans: list[str] = Field(default_factory=list)
+    """无主的向量分区（知识库已删、表还留在库里）。「整理存储」会丢掉它们。"""
+
+
 # --------------------------------------------------------------------- 切块干预（G3）
 
 

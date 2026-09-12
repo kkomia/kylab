@@ -235,6 +235,10 @@ class LifecycleService:
             # 复用单文档清理：向量与全文索引按文档清，逻辑只有一份
             self._purge_document_content(document.id)
 
+        # **分区表本身也要丢**：上面按文档清的是行，表还在库里占着地方
+        # （sqlite-vec 的分区表首个向量就预分配一个 4MB 块）。漏了这一步会留下
+        # 永远查不到主人的孤儿分区——实测在库里发现过一个这样的表。
+        self._stores.vectors.drop_partition(kb_id)
         self._stores.meta.delete_knowledge_base(kb_id)
         logger.info(
             "知识库 %s 已删除（文档 %d、切块 %d）", impact.name, impact.documents, impact.chunks

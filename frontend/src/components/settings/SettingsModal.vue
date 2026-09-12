@@ -18,6 +18,7 @@
 import { computed, onMounted, ref, watch, type Component } from 'vue'
 
 import { MIN_PASSWORD_CHARS } from '@/api/auth'
+import { compactStorage, getStorageOverview, type StorageOverview } from '@/api/maintenance'
 import { fetchHealth, type HealthResponse } from '@/api/health'
 import {
   bindSlot,
@@ -57,11 +58,13 @@ import IconSun from '@/components/icons/IconSun.vue'
 import IconUser from '@/components/icons/IconUser.vue'
 import ModelRegistryPanel from '@/components/settings/ModelRegistryPanel.vue'
 import AppButton from '@/components/ui/AppButton.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
+import { formatBytes } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
 import { useFontScale } from '@/composables/useFontScale'
 import { changeOwnPassword, isAdmin } from '@/composables/useSession'
@@ -363,7 +366,48 @@ async function confirmDeleteUser(): Promise<void> {
 /** 切到用户分组就拉一次；用户可能在别处（另一个标签页）新建过账号。 */
 watch(section, (value) => {
   if (value === 'users') void loadUsers()
+  if (value === 'storage') void loadStorage()
 })
+
+// ------------------------------------------------------------------ 存储维护（v17）
+
+const storage = ref<StorageOverview | null>(null)
+const storageError = ref('')
+const storageLoading = ref(false)
+const compacting = ref(false)
+const compactConfirmOpen = ref(false)
+
+async function loadStorage(): Promise<void> {
+  storageLoading.value = true
+  try {
+    storage.value = await getStorageOverview()
+    storageError.value = ''
+  } catch (error) {
+    // 权限不足或后端不可达都不该把设置页弄崩：这一块单独显示原因
+    storageError.value = error instanceof Error ? error.message : '读取存储信息失败'
+  } finally {
+    storageLoading.value = false
+  }
+}
+
+/**
+ * 整理存储。**先确认再动手**：VACUUM 会重写整个数据库文件，
+ * 大库要几十秒，期间写请求会被 SQLite 挡住。
+ */
+async function runCompact(): Promise<void> {
+  compacting.value = true
+  try {
+    const before = storage.value?.free_bytes ?? 0
+    storage.value = await compactStorage()
+    compactConfirmOpen.value = false
+    const freed = before - storage.value.free_bytes
+    notifySuccess(freed > 0 ? `已回收 ${formatBytes(freed)}` : '存储已整理')
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '整理失败')
+  } finally {
+    compacting.value = false
+  }
+}
 
 /** 正在编辑的分组（null = 仍在浏览态）。 */
 const editing = ref<SettingGroup | null>(null)
@@ -1000,6 +1044,56 @@ async function runTest(target: string): Promise<void> {
               <span class="row-value tabular">{{ store.items.length }}</span>
             </div>
           </div>
+
+          <h3 class="section-title section-gap">空间占用</h3>
+          <p v-if="storageError" class="error-line">{{ storageError }}</p>
+          <template v-else-if="storage">
+            <div class="row row-static">
+              <div class="row-main">
+                <span class="row-label">数据库文件</span>
+                <span class="row-value tabular">{{ formatBytes(storage.file_bytes) }}</span>
+              </div>
+            </div>
+            <div class="row row-static">
+              <div class="row-main">
+                <span class="row-label">
+                  其中可回收
+                  <InfoTip
+                    text="SQLite 删数据不会让文件变小：删掉的页留在库里等复用，只有「整理存储」才会真正还给磁盘。"
+                  />
+                </span>
+                <span class="row-value tabular">{{ formatBytes(storage.free_bytes) }}</span>
+              </div>
+            </div>
+            <div class="row row-static">
+              <div class="row-main">
+                <span class="row-label">
+                  向量分区
+                  <InfoTip text="每个知识库一个向量分区；分区只要写入第一个向量就会预分配 4MB。" />
+                </span>
+                <span class="row-value tabular">{{ storage.partitions }}</span>
+              </div>
+            </div>
+            <p v-if="storage.orphans.length" class="orphan-note">
+              发现 {{ storage.orphans.length }} 个无主的向量分区（知识库已删除、表还留在库里）。
+              「整理存储」会把它们清掉。
+            </p>
+            <div class="row">
+              <div class="row-main">
+                <span class="row-label">整理存储</span>
+                <span class="row-hint">
+                  清理无主分区并回收空闲页。会重写数据库文件，大库需要几十秒；期间不要做其他写操作。
+                </span>
+              </div>
+              <AppButton
+                :disabled="compacting || storageLoading"
+                @click="compactConfirmOpen = true"
+              >
+                {{ compacting ? '整理中…' : '整理存储' }}
+              </AppButton>
+            </div>
+          </template>
+          <p v-else class="row-hint">{{ storageLoading ? '正在读取存储信息…' : '' }}</p>
         </template>
 
         <!-- 外观（本地偏好，不进后端） -->
@@ -1303,6 +1397,17 @@ async function runTest(target: string): Promise<void> {
       </template>
     </AppModal>
   </AppModal>
+
+  <ConfirmDialog
+    v-model:open="compactConfirmOpen"
+    title="整理存储"
+    lead="清理无主向量分区并回收空闲页？"
+    note="整理只动无主数据，不会碰任何文档、切块或向量。VACUUM 会重写整个数据库文件，库大时需要几十秒，期间请避免其他写操作。"
+    confirm-label="开始整理"
+    :busy="compacting"
+    busy-label="整理中…"
+    @confirm="runCompact"
+  />
 </template>
 
 <style scoped>

@@ -39,6 +39,7 @@ from app.services.ingest import IngestService
 from app.services.knowledge_base import KnowledgeBaseService
 from app.services.lifecycle import LifecycleService
 from app.services.llm import LLMUsage
+from app.services.maintenance import MaintenanceService
 from app.services.model_registry import ModelRegistryService
 from app.services.observability import ObservabilityService
 from app.services.parser_router import ParserRouter
@@ -97,6 +98,8 @@ class Services:
     """数据生命周期：影响清单、级联删除、回收站（M6 / T6.3、T6.4）。"""
     batch: DocumentBatchService
     """文档批量动作：多选后的删除 / 重新摄入，逐条返回成败。"""
+    maintenance: MaintenanceService
+    """存储维护：空间概览与"整理"（丢无主向量分区 + VACUUM，v17）。"""
     sources: SourceService
     """数据源：HTML / RSS 的登记与拉取（M6 / T6.1–T6.3）。"""
     observability: ObservabilityService
@@ -311,6 +314,7 @@ def build_services(
         shares=ShareService(bundle),
         lifecycle=lifecycle_service,
         batch=DocumentBatchService(bundle, documents_service, lifecycle_service, folders_service),
+        maintenance=MaintenanceService(bundle),
         tabular=TabularService(bundle),
         sources=sources_service,
         observability=ObservabilityService(
