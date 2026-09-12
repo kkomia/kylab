@@ -20,7 +20,6 @@
 import { computed, ref, type Component } from 'vue'
 
 import {
-  CHUNK_DEFAULT_OVERLAP,
   CHUNK_DEFAULT_SIZE,
   CHUNK_OVERLAP_MARKS,
   CHUNK_SIZE_MARKS,
@@ -42,6 +41,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
+import InfoTip from '@/components/ui/InfoTip.vue'
 import RangeField from '@/components/ui/RangeField.vue'
 import { chunkingErrorOf, parseIntOrNull } from '@/composables/useChunking'
 import { formatBytes } from '@/composables/useFormat'
@@ -426,12 +426,14 @@ async function confirmDelete(): Promise<void> {
 
           <!-- 切块策略（可改，v17） -->
           <template v-else-if="section === 'chunking'">
-            <h3 class="pane-title">切块策略</h3>
-            <p class="pane-desc">
-              文档在解析之后会被切成小块再向量化，检索命中的就是这些小块。
-              块太大时一个块里混着好几件事，命中后给模型的上下文就跑题；
-              块太小时一句话会被切断，答案也跟着断章取义。
-            </p>
+            <!-- 解释性文字收进「?」：这段话一屏好几行灰字，真正的两个滑杆反而不突出。
+                 想知道的人自己去问——与全仓其余说明同一套做法（见 `InfoTip` 顶部注释）。 -->
+            <h3 class="pane-title pane-title-standalone">
+              切块策略
+              <InfoTip
+                text="文档在解析之后会被切成小块再向量化，检索命中的就是这些小块。块太大时一个块里混着好几件事，命中后给模型的上下文就跑题；块太小时一句话会被切断，答案也跟着断章取义。轨道上的点是常用值，强调色的是默认值：块长 512 左右在中文资料里大约是一到两段话；块重叠留一点，是为了让跨块的句子不被拦腰截断。"
+              />
+            </h3>
 
             <div class="field">
               <label class="field-label" for="kb-chunk-size">块长（字符）</label>
@@ -442,10 +444,6 @@ async function confirmDelete(): Promise<void> {
                 :max="CHUNK_SIZE_MAX"
                 :marks="CHUNK_SIZE_MARKS"
               />
-              <p class="pane-hint">
-                轨道上的点是常用值，强调色的 {{ CHUNK_DEFAULT_SIZE }} 是默认——
-                中文资料里大约是一到两段话。
-              </p>
             </div>
 
             <div class="field">
@@ -457,12 +455,8 @@ async function confirmDelete(): Promise<void> {
                 :max="chunkOverlapCap"
                 :marks="CHUNK_OVERLAP_MARKS"
               />
-              <p class="pane-hint">
-                轨道上的点是常用值，强调色的 {{ CHUNK_DEFAULT_OVERLAP }} 是默认。
-                留一点重叠是为了让跨块的句子不被拦腰截断；上限是块长的一半（当前 0–{{
-                  chunkOverlapCap
-                }}）。
-              </p>
+              <!-- 这一行留着：上限是个**跟着块长变的数**，工具提示里写不死 -->
+              <p class="pane-hint">上限 {{ chunkOverlapCap }}（块长的一半）。</p>
             </div>
 
             <p v-if="chunkingError" class="pane-error" role="alert">{{ chunkingError }}</p>
@@ -663,6 +657,12 @@ async function confirmDelete(): Promise<void> {
   font-size: var(--text-section-size);
   font-weight: 600;
   color: var(--text-primary);
+}
+
+/* 说明收进「?」的面板：标题后面没有 `pane-desc` 垫着，与第一个控件的间距要自己补。
+   其余面板靠 `pane-desc` 的 `margin-bottom` 撑开，所以不能统一改 `.pane-title`。 */
+.pane-title-standalone {
+  margin-bottom: var(--space-5);
 }
 
 .pane-title-danger {

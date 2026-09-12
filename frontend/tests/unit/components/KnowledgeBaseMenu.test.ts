@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import * as documentsApi from '@/api/documents'
 import * as kbApi from '@/api/knowledgeBases'
 import KnowledgeBaseMenu from '@/components/knowledge/KnowledgeBaseMenu.vue'
+import InfoTip from '@/components/ui/InfoTip.vue'
 import type { KnowledgeBase } from '@/api/knowledgeBases'
 
 vi.mock('@/api/knowledgeBases', async (importOriginal) => {
@@ -182,6 +183,19 @@ describe('KnowledgeBaseMenu 切块策略（v17）', () => {
     await flushPromises()
 
     expect(kbApi.updateKnowledgeBase).toHaveBeenCalledWith('kb_1', { chunk_size: 256 })
+  })
+
+  it('解释性文字收进标题旁的「?」，面板里不再摊着一段灰字', async () => {
+    const wrapper = await openChunking(await mountMenu())
+
+    // 面板正文里不该再有 pane-desc
+    expect(wrapper.find('.pane-desc').exists()).toBe(false)
+    // 说明移到了 InfoTip 的 text 里（用户要求：转到 ？图标里面）
+    const tip = wrapper.findComponent(InfoTip)
+    expect(tip.exists()).toBe(true)
+    expect(tip.props('text')).toContain('块太大时一个块里混着好几件事')
+    // 跟着块长变的那句留在正文里：工具提示里写不死一个动态的数
+    expect(wrapper.text()).toContain('块长的一半')
   })
 
   it('块长是滑杆：范围固定在 128–2048，默认值处有刻度点', async () => {
