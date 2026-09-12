@@ -37,11 +37,13 @@ import { useSidebar } from '@/composables/useSidebar'
 import { resolvedTheme, setTheme } from '@/composables/useTheme'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
+import { useTaskStore } from '@/stores/tasks'
 
 const route = useRoute()
 const router = useRouter()
 const store = useKnowledgeBaseStore()
 const conversations = useConversationStore()
+const taskStore = useTaskStore()
 
 /** 折叠为图标栏：纯显示偏好，落 localStorage（见 useSidebar）。 */
 const { collapsed, toggleSidebar } = useSidebar()
@@ -52,7 +54,29 @@ onMounted(async () => {
   void conversations.load()
   // 名册只用于显示"文档是谁传的"这一列（不再有切换使用者的入口）
   void loadRoster()
+  // 启动后空闲时预热任务列表：用户点进任务中心时数据通常已经在手里。
+  // 放在 idle 里而不是与上面并发——预热是"顺手多做的准备"，不该和首屏抢带宽。
+  scheduleTaskPrefetch()
 })
+
+/**
+ * 预取任务列表。
+ *
+ * **两个触发点**：启动后空闲（`requestIdleCallback`，不支持时退化成延时）、
+ * 以及鼠标悬停/键盘聚焦「任务中心」这个导航项——后者是最准的意图信号，
+ * 从"手指移过去"到"点下去"通常有 100ms 以上，够发完一次本地请求。
+ */
+function scheduleTaskPrefetch(): void {
+  const run = (): void => void taskStore.prefetch()
+  const idle = (window as Window & { requestIdleCallback?: (cb: () => void) => number })
+    .requestIdleCallback
+  if (typeof idle === 'function') idle(run)
+  else window.setTimeout(run, 1200)
+}
+
+function onNavIntent(to: string): void {
+  if (to === '/tasks') void taskStore.prefetch()
+}
 
 const NAV_ITEMS = [
   { to: '/chat', label: '对话', icon: IconChat, exact: false },
@@ -189,6 +213,8 @@ async function onLogout(): Promise<void> {
         :class="{ 'nav-item-active': isActive(item.to, item.exact) }"
         :to="item.to"
         :title="collapsed ? item.label : undefined"
+        @mouseenter="onNavIntent(item.to)"
+        @focus="onNavIntent(item.to)"
       >
         <component :is="item.icon" class="nav-icon" />
         <span class="nav-label">{{ item.label }}</span>

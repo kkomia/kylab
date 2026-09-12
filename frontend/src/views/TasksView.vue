@@ -9,10 +9,10 @@
  * 一个跑了 5 秒的和一个卡了两小时的看起来完全一样。后端按租约是否续上算出
  * "可能卡住 / 长时间未执行"，这里负责把它显示出来（§12.17 记了为什么之前漏了）。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { listTasks, type TaskSummary } from '@/api/tasks'
+import type { TaskSummary } from '@/api/tasks'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconFile from '@/components/icons/IconFile.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
@@ -26,14 +26,18 @@ import StatusTag from '@/components/ui/StatusTag.vue'
 import { isTaskProblem, taskHealthTone, taskKindLabel, taskStateView } from '@/components/ui/status'
 import { formatDate } from '@/composables/useFormat'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
+import { useTaskStore } from '@/stores/tasks'
 
 const POLL_INTERVAL_MS = 2000
 
 const store = useKnowledgeBaseStore()
+const taskStore = useTaskStore()
 const router = useRouter()
-const tasks = ref<TaskSummary[]>([])
-const loading = ref(true)
-const error = ref('')
+
+/** 列表来自 store（可能已被预取）：有缓存时首屏直接出内容，不再闪骨架屏。 */
+const tasks = computed(() => taskStore.items)
+const error = computed(() => taskStore.error)
+const loading = computed(() => !taskStore.loaded && taskStore.loading)
 let timer: ReturnType<typeof setInterval> | null = null
 
 /** 详情弹窗的目标。**失败原因常常是一整段**（含 URL 与 JSON 片段），
@@ -88,30 +92,35 @@ function clearFilters(): void {
   healthFilter.value = ''
 }
 
-const running = computed(() =>
-  tasks.value.some((task) => task.state === 'pending' || task.state === 'running'),
-)
+const running = computed(() => taskStore.hasActive)
 
 async function refresh(): Promise<void> {
-  try {
-    tasks.value = (await listTasks()).items
-    error.value = ''
-  } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '任务列表加载失败'
-  }
+  await taskStore.load()
 }
 
 onMounted(async () => {
   // 知识库下拉的选项来自 store；侧栏通常已在加载，这里**不等它**——
-  // 等的代价是把任务列表的首屏拖到列表请求之后（实测感知很明显）
+  // 等的代价是把任务列表的首屏拖到列表请求之后
   if (store.items.length === 0) void store.load()
-  // 文档名由任务响应直接带回（document_name），这一页不再为它拉任何文档列表
-  await refresh()
-  loading.value = false
-  timer = setInterval(() => {
-    void refresh()
-  }, POLL_INTERVAL_MS)
+  // 文档名由任务响应直接带回（document_name），这一页不再为它拉任何文档列表。
+  // 已有缓存时这一句只是后台刷新，内容立刻就在
+  void refresh()
+  syncPolling()
 })
+
+/** 只在有任务处于排队/执行中时轮询：全静止时停表，省掉每 2 秒一次的往返。 */
+function syncPolling(): void {
+  if (running.value && timer === null) {
+    timer = setInterval(() => {
+      void refresh()
+    }, POLL_INTERVAL_MS)
+  } else if (!running.value && timer !== null) {
+    clearInterval(timer)
+    timer = null
+  }
+}
+
+watch(running, syncPolling)
 
 onBeforeUnmount(() => {
   if (timer !== null) clearInterval(timer)
