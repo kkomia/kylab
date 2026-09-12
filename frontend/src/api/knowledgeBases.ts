@@ -75,6 +75,14 @@ export const CHUNK_SIZE_MIN = 128
 export const CHUNK_SIZE_MAX = 2048
 export const CHUNK_OVERLAP_RATIO_MAX = 0.5
 
+/**
+ * 后端默认值（`services/chunking.py` 的 `DEFAULT_CHUNK_SIZE` / `DEFAULT_OVERLAP`）。
+ * 界面上它有两个用处：新建弹窗的初值，以及滑杆轨道上那个「默认」刻度点。
+ * 两处都从这里取——写死在两个组件里，迟早有一个忘了改。
+ */
+export const CHUNK_DEFAULT_SIZE = 512
+export const CHUNK_DEFAULT_OVERLAP = 64
+
 /** 给定块长时，重叠的上限。默认块长（512）下就是 256。 */
 export function chunkOverlapMax(size: number): number {
   return Math.max(1, Math.floor(size * CHUNK_OVERLAP_RATIO_MAX))

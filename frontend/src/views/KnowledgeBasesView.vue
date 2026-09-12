@@ -10,9 +10,15 @@
  * 页头留了一个**对话入口**的位置：知识库问答（拿库内容直接提问）是下一步，
  * 这里先放一个禁用态的入口与一句说明，不做点了没反应的假控件。
  */
-import { computed, onMounted, ref, type Ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
-import { CHUNK_SIZE_MAX, CHUNK_SIZE_MIN } from '@/api/knowledgeBases'
+import {
+  CHUNK_DEFAULT_OVERLAP,
+  CHUNK_DEFAULT_SIZE,
+  CHUNK_SIZE_MAX,
+  CHUNK_SIZE_MIN,
+  chunkOverlapMax,
+} from '@/api/knowledgeBases'
 import { getRegistry, type Registry } from '@/api/modelRegistry'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import KnowledgeBaseMenu from '@/components/knowledge/KnowledgeBaseMenu.vue'
@@ -23,6 +29,7 @@ import AppSelect from '@/components/ui/AppSelect.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
 import PageShell from '@/components/ui/PageShell.vue'
+import RangeField from '@/components/ui/RangeField.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import { chunkingErrorOf, parseIntOrNull } from '@/composables/useChunking'
 import { formatRelativeTime } from '@/composables/useFormat'
@@ -112,27 +119,38 @@ const canCreate = computed(
 )
 
 /** 切分参数草稿（可折叠区，默认就是后端默认值）。字符串存：空输入要能与 0 区分。 */
-const CHUNK_DEFAULT_SIZE = 512
-const CHUNK_DEFAULT_OVERLAP = 64
 const chunkSizeDraft = ref(String(CHUNK_DEFAULT_SIZE))
 const chunkOverlapDraft = ref(String(CHUNK_DEFAULT_OVERLAP))
 
 /**
- * 数字输入框回传 number，而草稿是 string——直接 v-model 会让 `AppInput`
- * 收到与声明不符的类型（控制台告警）。统一收成字符串，空输入仍是空串。
- * 与 `KnowledgeBaseMenu` 里同一套处理，见那边的注释。
+ * 滑杆只认 number、草稿是 string，这两个 `computed` 就是那层转换。
+ * 校验（`chunkingErrorOf`）与提交都继续读字符串草稿，一行都不用改；
+ * 与 `KnowledgeBaseMenu` 同一套处理，见那边的注释。
  */
-function textDraft(source: Ref<string>) {
-  return computed({
-    get: () => source.value,
-    set: (value: string) => {
-      source.value = String(value ?? '')
-    },
-  })
-}
+const chunkSizeNumber = computed({
+  get: () => parseIntOrNull(chunkSizeDraft.value) ?? CHUNK_DEFAULT_SIZE,
+  set: (value: number) => {
+    chunkSizeDraft.value = String(value)
+    // 块长调小后原重叠可能超上限，就地压回——否则滑块停在 max、读数还是旧值，画面分裂
+    const max = chunkOverlapMax(value)
+    if ((parseIntOrNull(chunkOverlapDraft.value) ?? 0) > max) {
+      chunkOverlapDraft.value = String(max)
+    }
+  },
+})
 
-const chunkSizeInput = textDraft(chunkSizeDraft)
-const chunkOverlapInput = textDraft(chunkOverlapDraft)
+/** 重叠上限跟着块长走：滑杆的 max 与提示文案用同一个值。 */
+const chunkOverlapCap = computed(() =>
+  chunkOverlapMax(parseIntOrNull(chunkSizeDraft.value) ?? CHUNK_DEFAULT_SIZE),
+)
+
+const chunkOverlapNumber = computed({
+  get: () => parseIntOrNull(chunkOverlapDraft.value) ?? 0,
+  set: (value: number) => {
+    chunkOverlapDraft.value = String(value)
+  },
+})
+
 const chunkError = computed(() => chunkingErrorOf(chunkSizeDraft.value, chunkOverlapDraft.value))
 
 function openCreate(): void {
@@ -345,15 +363,29 @@ function statsOf(kbId: string) {
       <!-- 切分参数收在折叠区：多数人用默认值就好，不该让"建个库"变成填五个框。
            但**要用的时候必须找得到**——它会直接影响检索质量（见设置里的「切块策略」） -->
       <details class="field chunking-more">
-        <summary>切块设置（可选，默认 512 / 64）</summary>
+        <summary>
+          切块设置（可选，默认 {{ CHUNK_DEFAULT_SIZE }} / {{ CHUNK_DEFAULT_OVERLAP }}）
+        </summary>
         <div class="chunking-grid">
           <label class="field">
             <span class="field-label" for="kb-chunk-size">块长</span>
-            <AppInput id="kb-chunk-size" v-model="chunkSizeInput" type="number" />
+            <RangeField
+              id="kb-chunk-size"
+              v-model="chunkSizeNumber"
+              :min="CHUNK_SIZE_MIN"
+              :max="CHUNK_SIZE_MAX"
+              :marks="[{ value: CHUNK_DEFAULT_SIZE, primary: true }]"
+            />
           </label>
           <label class="field">
             <span class="field-label" for="kb-chunk-overlap">块重叠</span>
-            <AppInput id="kb-chunk-overlap" v-model="chunkOverlapInput" type="number" />
+            <RangeField
+              id="kb-chunk-overlap"
+              v-model="chunkOverlapNumber"
+              :min="0"
+              :max="chunkOverlapCap"
+              :marks="[{ value: CHUNK_DEFAULT_OVERLAP, primary: true }]"
+            />
           </label>
         </div>
         <p v-if="chunkError" class="chunking-error" role="alert">{{ chunkError }}</p>

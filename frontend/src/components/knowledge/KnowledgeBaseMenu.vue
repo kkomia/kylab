@@ -17,9 +17,11 @@
  *
  * 父组件只负责"变了之后去哪儿"（列表刷新 / 详情页跳走），通过 `changed` 事件表达。
  */
-import { computed, ref, type Component, type Ref } from 'vue'
+import { computed, ref, type Component } from 'vue'
 
 import {
+  CHUNK_DEFAULT_OVERLAP,
+  CHUNK_DEFAULT_SIZE,
   CHUNK_SIZE_MAX,
   CHUNK_SIZE_MIN,
   chunkOverlapMax,
@@ -38,6 +40,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
+import RangeField from '@/components/ui/RangeField.vue'
 import { chunkingErrorOf, parseIntOrNull } from '@/composables/useChunking'
 import { formatBytes } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
@@ -91,30 +94,40 @@ const nameDraft = ref('')
 const descriptionDraft = ref('')
 const saving = ref(false)
 
-/** 切分参数草稿。用字符串而不是 number：`AppInput` 的模型是 string，
- *  而且"输入框被清空"要能与"填了 0"区分开，才好给校验提示。 */
+/**
+ * 切分参数草稿。**仍然是字符串**：保存、脏检查、与后端记录比对都走这一套
+ * （`parseIntOrNull` 分得开"空"与"0"）。滑杆只是它的一个数字视图——见下面两个
+ * `computed`，读时转数字、写时转回字符串，校验与保存的代码一行都不用改。
+ */
 const chunkSizeDraft = ref('')
 const chunkOverlapDraft = ref('')
 
-/**
- * 原生 `type="number"` 的输入框回传的是 **number**，而草稿按字符串存。
- *
- * 直接 `v-model` 会把 number 写进 ref（类型标注拦不住运行期），于是
- * `AppInput` 的 `modelValue` 收到 number、与它声明的 string 不符——
- * 浏览器控制台会刷一串 prop 类型告警。这里统一收成字符串：
- * 空输入仍然是空串（而不是 `Number('')`＝0），"清空"与"填了 0"才分得开。
- */
-function textDraft(source: Ref<string>) {
-  return computed({
-    get: () => source.value,
-    set: (value: string) => {
-      source.value = String(value ?? '')
-    },
-  })
-}
+/** 块长滑杆的值：滑杆只认 number，草稿是 string，这里做那一层转换。 */
+const chunkSizeNumber = computed({
+  get: () => parseIntOrNull(chunkSizeDraft.value) ?? CHUNK_DEFAULT_SIZE,
+  set: (value: number) => {
+    chunkSizeDraft.value = String(value)
+    // 块长调小以后，原重叠可能超过新上限（不超过块长的一半）。滑杆画不出超上限的值，
+    // 就地压回上限——否则会出现"读数 256、滑块却停在 64"的分裂画面
+    const max = chunkOverlapMax(value)
+    if ((parseIntOrNull(chunkOverlapDraft.value) ?? 0) > max) {
+      chunkOverlapDraft.value = String(max)
+    }
+  },
+})
 
-const chunkSizeInput = textDraft(chunkSizeDraft)
-const chunkOverlapInput = textDraft(chunkOverlapDraft)
+/** 重叠的上限跟着块长走：滑杆的 max 与下面那行提示文案用的是同一个值。 */
+const chunkOverlapCap = computed(() =>
+  chunkOverlapMax(parseIntOrNull(chunkSizeDraft.value) ?? props.kb.chunk_size),
+)
+
+const chunkOverlapNumber = computed({
+  get: () => parseIntOrNull(chunkOverlapDraft.value) ?? 0,
+  set: (value: number) => {
+    chunkOverlapDraft.value = String(value)
+  },
+})
+
 /** 刚保存过切分参数、但已有文档还是旧切块：面板上会出现"重新摄入"的提示。 */
 const chunkingStale = ref(false)
 const reingestOpen = ref(false)
@@ -420,29 +433,31 @@ async function confirmDelete(): Promise<void> {
 
             <div class="field">
               <label class="field-label" for="kb-chunk-size">块长（字符）</label>
-              <AppInput
+              <RangeField
                 id="kb-chunk-size"
-                v-model="chunkSizeInput"
-                type="number"
-                :placeholder="String(CHUNK_SIZE_MIN)"
+                v-model="chunkSizeNumber"
+                :min="CHUNK_SIZE_MIN"
+                :max="CHUNK_SIZE_MAX"
+                :marks="[{ value: CHUNK_DEFAULT_SIZE, primary: true }]"
               />
               <p class="pane-hint">
-                {{ CHUNK_SIZE_MIN }}–{{ CHUNK_SIZE_MAX }} 之间。默认 512——
-                中文资料里大约是一到两段话。
+                {{ CHUNK_SIZE_MIN }}–{{ CHUNK_SIZE_MAX }} 之间。中文资料里 512 左右
+                大约是一到两段话，也是轨道上那个点。
               </p>
             </div>
 
             <div class="field">
               <label class="field-label" for="kb-chunk-overlap">块重叠（字符）</label>
-              <AppInput
+              <RangeField
                 id="kb-chunk-overlap"
-                v-model="chunkOverlapInput"
-                type="number"
-                placeholder="64"
+                v-model="chunkOverlapNumber"
+                :min="0"
+                :max="chunkOverlapCap"
+                :marks="[{ value: CHUNK_DEFAULT_OVERLAP, primary: true }]"
               />
               <p class="pane-hint">
-                0–{{ chunkOverlapMax(Number(chunkSizeDraft) || CHUNK_SIZE_MIN) }} 之间。
-                留一点重叠是为了让跨块的句子不被拦腰截断，默认 64。
+                0–{{ chunkOverlapCap }} 之间（不超过块长的一半）。
+                留一点重叠是为了让跨块的句子不被拦腰截断。
               </p>
             </div>
 

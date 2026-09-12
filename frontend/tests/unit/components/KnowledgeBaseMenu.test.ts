@@ -184,27 +184,41 @@ describe('KnowledgeBaseMenu 切块策略（v17）', () => {
     expect(kbApi.updateKnowledgeBase).toHaveBeenCalledWith('kb_1', { chunk_size: 256 })
   })
 
-  it('块长越界时不发请求，跳到那一栏说明原因', async () => {
+  it('块长是滑杆：范围固定在 128–2048，默认值处有刻度点', async () => {
     const wrapper = await openChunking(await mountMenu())
 
-    await wrapper.find('#kb-chunk-size').setValue('10')
-    await saveButton(wrapper).trigger('click')
-    await flushPromises()
-
-    expect(kbApi.updateKnowledgeBase).not.toHaveBeenCalled()
-    expect(wrapper.find('.pane-error').text()).toContain('块长需要在')
+    const input = wrapper.find('#kb-chunk-size')
+    expect(input.attributes('type')).toBe('range')
+    expect(input.attributes('min')).toBe('128')
+    expect(input.attributes('max')).toBe('2048')
+    // 常用值（默认 512）画成一个点——要求用户心算"512 是几等分点"是不合理的
+    expect(wrapper.find('.range-mark-primary').exists()).toBe(true)
   })
 
-  it('重叠超过块长一半同样拦住（前端先给中文原因，不等 422）', async () => {
+  it('滑杆把越界值夹回范围内——"填了个 10"这条路已经不存在了', async () => {
     const wrapper = await openChunking(await mountMenu())
 
-    await wrapper.find('#kb-chunk-size').setValue('128')
-    await wrapper.find('#kb-chunk-overlap').setValue('100')
+    // 原生 range 的取值算法会把超出 [min, max] 的赋值夹到边界
+    await wrapper.find('#kb-chunk-size').setValue('10')
+    expect((wrapper.find('#kb-chunk-size').element as HTMLInputElement).value).toBe('128')
+
     await saveButton(wrapper).trigger('click')
     await flushPromises()
 
-    expect(kbApi.updateKnowledgeBase).not.toHaveBeenCalled()
-    expect(wrapper.find('.pane-error').text()).toContain('一半')
+    expect(kbApi.updateKnowledgeBase).toHaveBeenCalledWith('kb_1', { chunk_size: 128 })
+    expect(wrapper.find('.pane-error').exists()).toBe(false)
+  })
+
+  it('块长调小以后，重叠自动压回新上限（滑块画不出超上限的值）', async () => {
+    const wrapper = await openChunking(await mountMenu())
+
+    await wrapper.find('#kb-chunk-overlap').setValue('256')
+    expect((wrapper.find('#kb-chunk-overlap').element as HTMLInputElement).value).toBe('256')
+
+    // 块长 128 时重叠上限是 64：压不回去的话，滑块会停在 64 而读数还是 256
+    await wrapper.find('#kb-chunk-size').setValue('128')
+    expect((wrapper.find('#kb-chunk-overlap').element as HTMLInputElement).value).toBe('64')
+    expect(wrapper.find('#kb-chunk-overlap').attributes('max')).toBe('64')
   })
 
   it('保存切分参数后**不关弹窗**，停在切块栏并提示需要重新摄入', async () => {
