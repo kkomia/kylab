@@ -9,7 +9,7 @@
  * 原文下载走签名 URL（架构 §6.5、开发计划 T4.5）：链接由后端签发、带过期时间，
  * 所以页面上不出现任何永久直链——两个下载按钮每次都现取一条新链接。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { useRoute } from 'vue-router'
 
@@ -20,6 +20,7 @@ import {
   getDocument,
   getDocumentPreview,
   listDocumentChunks,
+  listDocuments,
   setChunkDisabled,
   updateChunk,
   type DocumentPreview,
@@ -27,10 +28,10 @@ import {
   type DocumentChunk,
   type DocumentSummary,
 } from '@/api/documents'
-import OfficePreview from '@/components/knowledge/OfficePreview.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
+import IconFile from '@/components/icons/IconFile.vue'
+import OfficePreview from '@/components/knowledge/OfficePreview.vue'
 import AppButton from '@/components/ui/AppButton.vue'
-import PageShell from '@/components/ui/PageShell.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
@@ -40,6 +41,7 @@ import { cleanInlineLatex } from '@/composables/useLatex'
 import { renderAnswerMarkdown } from '@/composables/useMarkdown'
 import { formatBytes, formatDate } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
+import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
 /** 预览最多拉几块：再多就该去库内检索面板，而不是在这一页翻。 */
 const PREVIEW_LIMIT = 5
@@ -61,6 +63,7 @@ const SOURCE_TABS = [
 
 const route = useRoute()
 const { notifyError, notifySuccess } = useToast()
+const kbStore = useKnowledgeBaseStore()
 
 const documentId = computed(() => String(route.params.documentId ?? ''))
 const document = ref<DocumentSummary | null>(null)
@@ -73,6 +76,20 @@ const downloading = ref<DownloadFormat | null>(null)
 const view = ref<'read' | 'chunks'>('read')
 const preview = ref<DocumentPreview | null>(null)
 const previewLoading = ref(false)
+
+/**
+ * 同一个知识库里的其他文档。
+ *
+ * **为什么放在这一页**：文档详情只占左半边、右边一片空，是因为它被当成独立页面在
+ * 宽屏上居中/限宽渲染。改成"左边列表 + 右边抽屉"之后，空白被同库的文档填上，
+ * 也顺手回答了"这是哪一份、周围还有哪些"——原先要靠回列表才能知道。
+ */
+const siblings = ref<DocumentSummary[]>([])
+const siblingTotal = ref(0)
+
+const kbName = computed(
+  () => kbStore.items.find((item) => item.id === document.value?.knowledge_base_id)?.name ?? '文档',
+)
 
 const activeTabHint = computed(() => VIEW_TABS.find((tab) => tab.key === view.value)?.hint ?? '')
 
@@ -101,19 +118,55 @@ async function download(format: DownloadFormat): Promise<void> {
   }
 }
 
-onMounted(async () => {
+/** 把这一份文档的四个数据源（元信息 / 切块 / 阅读视角 / 同库列表）一次加载齐。 */
+async function load(): Promise<void> {
+  loading.value = true
+  error.value = ''
+  // 换文档时先清空：否则加载期间头部还挂着上一份的名字，看起来像"点了没反应"
+  document.value = null
+  chunks.value = []
+  chunkTotal.value = 0
+  previewError.value = ''
+  preview.value = null
+  previewCache.value = { original: null, parsed: null }
   try {
     document.value = await getDocument(documentId.value)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '文档加载失败'
-  } finally {
     loading.value = false
+    return
   }
+  loading.value = false
   // 能看原件就先看原件：用户打开一份 PDF/Office，想看的首先是那个文件本身。
   // 解析文本是"核对解析得对不对"的第二视角，摆在切换里。
   // 没有原件版式可渲染时才回落到解析文本（纯文本类文件就是这种）。
   previewSource.value = canRenderOriginal.value ? 'original' : 'parsed'
-  await Promise.all([loadPreview(), loadReadingView()])
+  await Promise.all([loadPreview(), loadReadingView(), loadSiblings()])
+}
+
+async function loadSiblings(): Promise<void> {
+  const kbId = document.value?.knowledge_base_id
+  if (!kbId) return
+  try {
+    const body = await listDocuments(kbId)
+    siblings.value = body.items
+    siblingTotal.value = body.items.length
+  } catch {
+    // 列表是上下文，不是这一页的主体：拿不到就不显示，不打断阅读
+    siblings.value = []
+    siblingTotal.value = 0
+  }
+}
+
+onMounted(load)
+
+/**
+ * **同一路由换文档必须重新加载**：左边列表点另一份时路径只变参数，Vue 复用组件、
+ * 不会重新挂载——只写在 onMounted 里就会"点了没反应"（这是路由参数类页面的经典坑，
+ * 对话页也踩过同一个）。
+ */
+watch(documentId, (value) => {
+  if (value) void load()
 })
 
 /** 切块预览是补充信息：拿不到不影响状态与元信息。 */
@@ -310,232 +363,285 @@ const stage = computed(() =>
 </script>
 
 <template>
-  <PageShell :title="document?.name ?? '文档详情'" narrow>
-    <template #breadcrumb>
-      <RouterLink
-        class="breadcrumb-link"
-        :to="document ? `/kb/${document.knowledge_base_id}` : '/'"
-      >
-        {{ document ? '文档列表' : '知识库' }}
-      </RouterLink>
-      <IconChevronRight class="breadcrumb-sep" :size="14" />
-      <span class="breadcrumb-current">{{ document?.name ?? '文档详情' }}</span>
-    </template>
+  <!--
+    两栏：**左边同库文档列表 + 右边抽屉式详情**。
 
-    <template #actions>
-      <AppButton v-if="document" :disabled="downloading !== null" @click="download('original')">
-        {{ downloading === 'original' ? '准备中…' : '下载原文件' }}
-      </AppButton>
-      <AppButton
-        v-if="document && document.chunk_count > 0"
-        :disabled="downloading !== null"
-        @click="download('markdown')"
-      >
-        {{ downloading === 'markdown' ? '准备中…' : '下载 Markdown' }}
-      </AppButton>
-      <RouterLink v-if="document" :to="`/kb/${document.knowledge_base_id}`">
-        <AppButton>回列表重跑</AppButton>
-      </RouterLink>
-    </template>
+    以前这一页是"整页居中一条"，宽屏上右边一大片空白（一份 PDF 只有左半边有内容），
+    而且"这是哪一份、这个库还有什么"完全看不到。左栏把这些空白填上，右栏仍是详情，
+    但从右侧滑入、带自己的圆角与外阴影——读起来是"从列表里拉出来的一份"，
+    而不是"另一个页面"。
+  -->
+  <div class="page-shell doc-layout">
+    <aside class="doc-context" aria-label="同库文档">
+      <div class="context-head">
+        <RouterLink class="context-kb" :to="document ? `/kb/${document.knowledge_base_id}` : '/'">
+          {{ kbName }}
+        </RouterLink>
+        <span v-if="siblingTotal" class="context-count">{{ siblingTotal }} 份</span>
+      </div>
 
-    <p v-if="error" class="error-line">{{ error }}</p>
-    <SkeletonBlock v-if="loading" variant="text" :rows="5" />
+      <ul class="context-list">
+        <li v-for="item in siblings" :key="item.id">
+          <RouterLink
+            class="context-row"
+            :class="{ 'context-row-active': item.id === documentId }"
+            :to="`/documents/${item.id}`"
+          >
+            <IconFile class="context-icon" :size="15" />
+            <span class="context-name">{{ item.name }}</span>
+            <StatusTag
+              :label="documentStageView(item.stage).label"
+              :tone="documentStageView(item.stage).tone"
+            />
+          </RouterLink>
+        </li>
+      </ul>
+      <p v-if="!loading && siblings.length === 0" class="context-empty">这个库还没有别的文档。</p>
+    </aside>
 
-    <template v-else-if="document">
-      <dl class="meta">
-        <div class="meta-item">
-          <dt>状态</dt>
-          <dd>
-            <StatusTag :label="stage.label" :tone="stage.tone" />
-          </dd>
+    <!-- 右侧抽屉：从右边滑入。用 key 绑文档 id，切换文档时重新播放一次入场动画，
+         让"换了一份"这件事在视觉上成立 -->
+    <section :key="documentId" class="doc-drawer">
+      <header class="drawer-head">
+        <div class="drawer-title">
+          <h1 class="drawer-name">{{ document?.name ?? '文档详情' }}</h1>
+          <RouterLink
+            v-if="document"
+            class="drawer-crumb"
+            :to="`/kb/${document.knowledge_base_id}`"
+          >
+            回到列表
+            <IconChevronRight :size="13" />
+          </RouterLink>
         </div>
-        <div class="meta-item">
-          <dt>大小</dt>
-          <dd>{{ formatBytes(document.size_bytes) }}</dd>
+        <div class="drawer-actions">
+          <AppButton
+            v-if="document"
+            size="sm"
+            :disabled="downloading !== null"
+            @click="download('original')"
+          >
+            {{ downloading === 'original' ? '准备中…' : '下载原文件' }}
+          </AppButton>
+          <AppButton
+            v-if="document && document.chunk_count > 0"
+            size="sm"
+            :disabled="downloading !== null"
+            @click="download('markdown')"
+          >
+            {{ downloading === 'markdown' ? '准备中…' : '下载 Markdown' }}
+          </AppButton>
         </div>
-        <div class="meta-item">
-          <dt>切块数</dt>
-          <dd>{{ document.chunk_count }}</dd>
-        </div>
-        <div class="meta-item">
-          <dt>页数</dt>
-          <dd>{{ document.page_count ?? '—' }}</dd>
-        </div>
-        <div class="meta-item">
-          <dt>来源</dt>
-          <dd>{{ document.source_kind }}</dd>
-        </div>
-        <div class="meta-item">
-          <dt>更新时间</dt>
-          <dd>{{ formatDate(document.updated_at) }}</dd>
-        </div>
-      </dl>
+      </header>
 
-      <p v-if="document.error" class="error-line">{{ document.error }}</p>
+      <div class="drawer-body">
+        <p v-if="error" class="error-line">{{ error }}</p>
+        <SkeletonBlock v-if="loading" variant="text" :rows="5" />
 
-      <!--
+        <template v-else-if="document">
+          <dl class="meta">
+            <div class="meta-item">
+              <dt>状态</dt>
+              <dd>
+                <StatusTag :label="stage.label" :tone="stage.tone" />
+              </dd>
+            </div>
+            <div class="meta-item">
+              <dt>大小</dt>
+              <dd>{{ formatBytes(document.size_bytes) }}</dd>
+            </div>
+            <div class="meta-item">
+              <dt>切块数</dt>
+              <dd>{{ document.chunk_count }}</dd>
+            </div>
+            <div class="meta-item">
+              <dt>页数</dt>
+              <dd>{{ document.page_count ?? '—' }}</dd>
+            </div>
+            <div class="meta-item">
+              <dt>来源</dt>
+              <dd>{{ document.source_kind }}</dd>
+            </div>
+            <div class="meta-item">
+              <dt>更新时间</dt>
+              <dd>{{ formatDate(document.updated_at) }}</dd>
+            </div>
+          </dl>
+
+          <p v-if="document.error" class="error-line">{{ document.error }}</p>
+
+          <!--
         两个视角刻意并存：
         - 阅读：原文长什么样（渲染件，日常用）
         - 切块：解析成了什么（等宽文本带块号，调试用）
         成熟产品（RAGFlow / MaxKB / Open WebUI）都有前者；我们原先只有后者——
         「只看切块」适合调试期，但进入日常使用后，用户第一动作是"确认原文长什么样"。
       -->
-      <div class="view-tabs" role="tablist" aria-label="查看方式">
-        <button
-          v-for="tab in VIEW_TABS"
-          :key="tab.key"
-          class="view-tab"
-          :class="{ 'view-tab-active': view === tab.key }"
-          type="button"
-          role="tab"
-          :aria-selected="view === tab.key"
-          @click="view = tab.key"
-        >
-          {{ tab.label }}
-        </button>
-        <span class="view-tabs-hint">{{ activeTabHint }}</span>
-      </div>
+          <div class="view-tabs" role="tablist" aria-label="查看方式">
+            <button
+              v-for="tab in VIEW_TABS"
+              :key="tab.key"
+              class="view-tab"
+              :class="{ 'view-tab-active': view === tab.key }"
+              type="button"
+              role="tab"
+              :aria-selected="view === tab.key"
+              @click="view = tab.key"
+            >
+              {{ tab.label }}
+            </button>
+            <span class="view-tabs-hint">{{ activeTabHint }}</span>
+          </div>
 
-      <!-- 阅读视角 -->
-      <template v-if="view === 'read'">
-        <!-- 原件版式 / 解析文本：两个都成立时才出现。默认看原件，
+          <!-- 阅读视角 -->
+          <template v-if="view === 'read'">
+            <!-- 原件版式 / 解析文本：两个都成立时才出现。默认看原件，
              解析文本是"核对解析得对不对"用的第二视角 -->
-        <div v-if="canSwitchSource && !previewLoading" class="source-switch" role="tablist">
-          <button
-            v-for="option in SOURCE_TABS"
-            :key="option.key"
-            type="button"
-            class="source-tab"
-            :class="{ 'source-tab-active': previewSource === option.key }"
-            role="tab"
-            :aria-selected="previewSource === option.key"
-            @click="showSource(option.key)"
-          >
-            {{ option.label }}
-          </button>
-        </div>
+            <div v-if="canSwitchSource && !previewLoading" class="source-switch" role="tablist">
+              <button
+                v-for="option in SOURCE_TABS"
+                :key="option.key"
+                type="button"
+                class="source-tab"
+                :class="{ 'source-tab-active': previewSource === option.key }"
+                role="tab"
+                :aria-selected="previewSource === option.key"
+                @click="showSource(option.key)"
+              >
+                {{ option.label }}
+              </button>
+            </div>
 
-        <p v-if="previewLoading" class="muted">正在加载原文…</p>
-        <p v-else-if="previewError" class="muted">{{ previewError }}</p>
-        <template v-else-if="preview">
-          <p v-if="preview.kind === 'binary'" class="muted">
-            「{{ preview.filename }}」这个格式不能在线预览，请用右上角的下载按钮 用本机应用打开。
-          </p>
+            <p v-if="previewLoading" class="muted">正在加载原文…</p>
+            <p v-else-if="previewError" class="muted">{{ previewError }}</p>
+            <template v-else-if="preview">
+              <p v-if="preview.kind === 'binary'" class="muted">
+                「{{ preview.filename }}」这个格式不能在线预览，请用右上角的下载按钮
+                用本机应用打开。
+              </p>
 
-          <!-- Markdown / 纯文本：直接渲染。复用对话页那套渲染器，
+              <!-- Markdown / 纯文本：直接渲染。复用对话页那套渲染器，
                它先整体转义再白名单还原标记，所以文档里带 HTML 也不会被注入 -->
-          <!-- eslint-disable vue/no-v-html -->
-          <div v-else-if="preview.kind === 'markdown'" class="reader" v-html="readerHtml" />
-          <!-- eslint-enable vue/no-v-html -->
+              <!-- eslint-disable vue/no-v-html -->
+              <div v-else-if="preview.kind === 'markdown'" class="reader" v-html="readerHtml" />
+              <!-- eslint-enable vue/no-v-html -->
 
-          <!-- PDF：交给浏览器原生渲染器。不引 PDF.js 是刻意的——
+              <!-- PDF：交给浏览器原生渲染器。不引 PDF.js 是刻意的——
                原生查看器自带翻页、缩放、搜索、文本选择，还没有体积成本；
                需要按引用高亮时才值得引库。
                `#page=N` 是原生查看器的 PDF Open Parameters：从引用点进来直接落到那一页 -->
-          <!-- `:key` 绑到 url：签名链接会过期（默认 10 分钟），重新取到新链接时
+              <!-- `:key` 绑到 url：签名链接会过期（默认 10 分钟），重新取到新链接时
                要让 iframe **重建**而不是沿用旧 src——否则长时间停留后翻页会去请求
                一条已过期的链接 -->
-          <iframe
-            v-else-if="preview.kind === 'pdf'"
-            :key="preview.url ?? ''"
-            class="reader-frame"
-            :src="pdfFrameUrl"
-            :title="preview.filename"
-          />
+              <iframe
+                v-else-if="preview.kind === 'pdf'"
+                :key="preview.url ?? ''"
+                class="reader-frame"
+                :src="pdfFrameUrl"
+                :title="preview.filename"
+              />
 
-          <img
-            v-else-if="preview.kind === 'image'"
-            class="reader-image"
-            :src="preview.url ?? ''"
-            :alt="preview.filename"
-          />
+              <img
+                v-else-if="preview.kind === 'image'"
+                class="reader-image"
+                :src="preview.url ?? ''"
+                :alt="preview.filename"
+              />
 
-          <!-- Office 三件套：浏览器不会原生显示，交前端库按需渲染
+              <!-- Office 三件套：浏览器不会原生显示，交前端库按需渲染
                （组件内部再按 kind 动态 import，看 Word 不必下 Excel 的引擎） -->
-          <OfficePreview
-            v-else-if="
-              preview.kind === 'docx' || preview.kind === 'pptx' || preview.kind === 'excel'
-            "
-            :kind="preview.kind"
-            :url="preview.url ?? ''"
-            :filename="preview.filename"
-          />
-        </template>
-      </template>
+              <OfficePreview
+                v-else-if="
+                  preview.kind === 'docx' || preview.kind === 'pptx' || preview.kind === 'excel'
+                "
+                :kind="preview.kind"
+                :url="preview.url ?? ''"
+                :filename="preview.filename"
+              />
+            </template>
+          </template>
 
-      <!-- 切块视角 -->
-      <template v-else>
-        <p v-if="document.chunk_count === 0" class="muted">
-          还没有切块产物：文档尚未处理完成，或处理失败。回到列表页可以重新摄入。
-        </p>
-        <p v-else-if="previewError" class="muted">{{ previewError }}</p>
-        <template v-else-if="chunks.length">
-          <p class="preview-note">{{ previewNote }}</p>
-          <ol class="preview">
-            <li
-              v-for="chunk in chunks"
-              :key="chunk.chunk_id"
-              class="preview-block"
-              :class="{ 'preview-block-disabled': chunk.disabled }"
-            >
-              <div class="preview-head">
-                <span class="tabular">第 {{ chunk.ordinal + 1 }} 块</span>
-                <template v-if="chunk.heading_path"
-                  ><span class="sep">·</span>{{ chunk.heading_path }}</template
+          <!-- 切块视角 -->
+          <template v-else>
+            <p v-if="document.chunk_count === 0" class="muted">
+              还没有切块产物：文档尚未处理完成，或处理失败。回到列表页可以重新摄入。
+            </p>
+            <p v-else-if="previewError" class="muted">{{ previewError }}</p>
+            <template v-else-if="chunks.length">
+              <p class="preview-note">{{ previewNote }}</p>
+              <ol class="preview">
+                <li
+                  v-for="chunk in chunks"
+                  :key="chunk.chunk_id"
+                  class="preview-block"
+                  :class="{ 'preview-block-disabled': chunk.disabled }"
                 >
-                <template v-if="chunk.page !== null"
-                  ><span class="sep">·</span>第 {{ chunk.page }} 页</template
-                >
-                <StatusTag v-if="chunk.disabled" tone="warning" label="已禁用" />
+                  <div class="preview-head">
+                    <span class="tabular">第 {{ chunk.ordinal + 1 }} 块</span>
+                    <template v-if="chunk.heading_path"
+                      ><span class="sep">·</span>{{ chunk.heading_path }}</template
+                    >
+                    <template v-if="chunk.page !== null"
+                      ><span class="sep">·</span>第 {{ chunk.page }} 页</template
+                    >
+                    <StatusTag v-if="chunk.disabled" tone="warning" label="已禁用" />
 
-                <!-- 行内操作：解析器一定会出错，所以"用户能自己修"是质量的最后兜底。
+                    <!-- 行内操作：解析器一定会出错，所以"用户能自己修"是质量的最后兜底。
                      三个动作语义分开——禁用是"先藏起来"（可恢复），删除是"这是垃圾"。 -->
-                <RowMenu class="chunk-menu" label="切块操作">
-                  <template #default="{ close }">
-                    <button
-                      class="menu-item"
-                      type="button"
-                      @click="((editing = chunk.chunk_id), (draft = chunk.text), close())"
-                    >
-                      编辑正文
-                    </button>
-                    <button class="menu-item" type="button" @click="(toggleChunk(chunk), close())">
-                      {{ chunk.disabled ? '恢复参与检索' : '禁用（不参与检索）' }}
-                    </button>
-                    <button
-                      class="menu-item menu-item-danger"
-                      type="button"
-                      @click="(requestRemoveChunk(chunk), close())"
-                    >
-                      删除
-                    </button>
-                  </template>
-                </RowMenu>
-              </div>
+                    <RowMenu class="chunk-menu" label="切块操作">
+                      <template #default="{ close }">
+                        <button
+                          class="menu-item"
+                          type="button"
+                          @click="((editing = chunk.chunk_id), (draft = chunk.text), close())"
+                        >
+                          编辑正文
+                        </button>
+                        <button
+                          class="menu-item"
+                          type="button"
+                          @click="(toggleChunk(chunk), close())"
+                        >
+                          {{ chunk.disabled ? '恢复参与检索' : '禁用（不参与检索）' }}
+                        </button>
+                        <button
+                          class="menu-item menu-item-danger"
+                          type="button"
+                          @click="(requestRemoveChunk(chunk), close())"
+                        >
+                          删除
+                        </button>
+                      </template>
+                    </RowMenu>
+                  </div>
 
-              <!-- 编辑态：显式保存。改正文要重新向量化，是有代价的操作，
+                  <!-- 编辑态：显式保存。改正文要重新向量化，是有代价的操作，
                    不该边打字边存 -->
-              <div v-if="editing === chunk.chunk_id" class="chunk-editor">
-                <textarea v-model="draft" class="chunk-textarea" rows="6" />
-                <div class="chunk-actions">
-                  <span class="chunk-hint"> 保存后会重新向量化这一块，检索随即按新内容生效。 </span>
-                  <AppButton :disabled="savingChunk" @click="cancelEdit">取消</AppButton>
-                  <AppButton
-                    variant="primary"
-                    :disabled="savingChunk || !draft.trim()"
-                    @click="saveChunk(chunk)"
-                  >
-                    {{ savingChunk ? '保存中…' : '保存' }}
-                  </AppButton>
-                </div>
-              </div>
-              <pre v-else class="preview-text">{{ chunk.text }}</pre>
-            </li>
-          </ol>
+                  <div v-if="editing === chunk.chunk_id" class="chunk-editor">
+                    <textarea v-model="draft" class="chunk-textarea" rows="6" />
+                    <div class="chunk-actions">
+                      <span class="chunk-hint">
+                        保存后会重新向量化这一块，检索随即按新内容生效。
+                      </span>
+                      <AppButton :disabled="savingChunk" @click="cancelEdit">取消</AppButton>
+                      <AppButton
+                        variant="primary"
+                        :disabled="savingChunk || !draft.trim()"
+                        @click="saveChunk(chunk)"
+                      >
+                        {{ savingChunk ? '保存中…' : '保存' }}
+                      </AppButton>
+                    </div>
+                  </div>
+                  <pre v-else class="preview-text">{{ chunk.text }}</pre>
+                </li>
+              </ol>
+            </template>
+          </template>
         </template>
-      </template>
-    </template>
-  </PageShell>
+      </div>
+    </section>
+  </div>
 
   <!-- 删除切块：不可恢复，且"其实想禁用"的人不少——后果说明里把替代方案写出来 -->
   <ConfirmDialog
@@ -550,6 +656,183 @@ const stage = computed(() =>
 </template>
 
 <style scoped>
+/* ---------------------------------------------------------------- 两栏骨架 */
+
+/* 覆盖 .page-shell 的纵向 flex：这一页是"左列表 + 右抽屉"的横向两栏 */
+.page-shell.doc-layout {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: var(--space-5);
+}
+
+/* 左栏：同库文档。窄屏（塞不下两栏）时整栏收起——它是上下文，不是主体 */
+.doc-context {
+  position: sticky;
+  top: var(--page-pad-top);
+  flex: 0 0 264px;
+  max-height: calc(100vh - var(--page-pad-top) - var(--space-6));
+  overflow-y: auto;
+}
+
+.context-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  padding: 0 var(--space-2);
+}
+
+.context-kb {
+  overflow: hidden;
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-kb:hover {
+  color: var(--text-primary);
+}
+
+.context-count {
+  flex: 0 0 auto;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.context-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.context-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--row-height);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-row);
+}
+
+.context-row:hover {
+  background: var(--bg-hover);
+}
+
+/* 当前这一份：底色 + 左侧色条，和列表页的选中态同一套语言 */
+.context-row-active {
+  background: var(--accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.context-icon {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+.context-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-meta-size);
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-empty {
+  margin: var(--space-2) var(--space-2);
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+/* ---------------------------------------------------------------- 抽屉 */
+
+.doc-drawer {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* 从右侧滑入：位移 + 淡入，让"拉出这一份"这件事在视觉上成立 */
+  animation: drawer-in 180ms ease-out;
+}
+
+@keyframes drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* 抽屉是一块"纸面"：自己的圆角、描边与外阴影，与左栏的平面列表区分开 */
+.drawer-head,
+.drawer-body {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-overlay) var(--radius-overlay) 0 0;
+  border-bottom: 0;
+  box-shadow: var(--shadow-popover);
+}
+
+.drawer-title {
+  min-width: 0;
+}
+
+.drawer-name {
+  margin: 0;
+  overflow: hidden;
+  font-size: var(--text-section-size);
+  font-weight: 600;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawer-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: 2px;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.drawer-crumb:hover {
+  color: var(--text-primary);
+}
+
+.drawer-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--space-2);
+}
+
+.drawer-body {
+  padding: var(--space-4);
+  border-radius: 0 0 var(--radius-overlay) var(--radius-overlay);
+  box-shadow: var(--shadow-popover);
+}
+
+/* 两栏塞不下就只留抽屉：文档内容本身在任何宽度下都要能读 */
+@media (max-width: 1100px) {
+  .doc-context {
+    display: none;
+  }
+}
+
 /* 视角切换：两个标签贴在一起，用底边表示选中。
    不用大按钮——它们是"同一份内容的两种看法"，不是两个动作，
    做得像按钮会让人以为点了会跳走。 */
@@ -698,28 +981,6 @@ const stage = computed(() =>
   margin-top: var(--space-5);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-panel);
-}
-
-.breadcrumb-link {
-  display: inline-flex;
-  align-items: center;
-  min-height: var(--hit-target);
-  color: var(--text-secondary);
-}
-
-.breadcrumb-link:hover {
-  color: var(--text-primary);
-}
-
-.breadcrumb-sep {
-  color: var(--text-tertiary);
-}
-
-.breadcrumb-current {
-  overflow: hidden;
-  color: var(--text-tertiary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* 元信息用一块圆角面板装起来：它是"这张纸的页眉"，不是散落的标签 */
