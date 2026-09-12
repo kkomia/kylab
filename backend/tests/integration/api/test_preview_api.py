@@ -187,6 +187,68 @@ def test_image_preview_returns_a_signed_url(client: TestClient) -> None:
     assert body["url"]
 
 
+def test_preview_url_renders_inline_but_download_still_attaches(client: TestClient) -> None:
+    """**预览要 inline，下载要 attachment**——两条路径共用一个端点，靠参数区分。
+
+    回归：详情页默认看「原文版式」之后，PDF 进了 iframe；而那个端点一直无条件
+    返回 `Content-Disposition: attachment`，于是浏览器把 iframe 里的 PDF
+    **变成下载**——表现为"点开文档就下载"。
+    """
+    document_id = _upload(client, "报告.pdf", b"%PDF-1.7 fake", "application/pdf")
+
+    preview = client.get(f"/api/v1/documents/{document_id}/preview").json()
+    assert "disposition=inline" in preview["url"]
+    rendered = client.get(preview["url"])
+    assert rendered.headers["content-disposition"].startswith("inline")
+    # 内联渲染时禁止嗅探：上传时声明的 mime 是用户可控的
+    assert rendered.headers["x-content-type-options"] == "nosniff"
+
+    # 走「下载」那条路签发的链接仍然是 attachment（否则点下载会在浏览器里打开）
+    download = client.get(
+        f"/api/v1/documents/{document_id}/download-url", params={"format": "original"}
+    ).json()["url"]
+    assert "disposition" not in download
+    assert client.get(download).headers["content-disposition"].startswith("attachment")
+
+
+def test_pdf_with_a_generic_mime_still_renders_inline(client: TestClient) -> None:
+    """上传时没声明 mime（存成 octet-stream）的 PDF 也要能内联渲染。
+
+    判定用**服务端按后缀算出的 kind**，不是客户端给的 mime——后者不可靠，
+    拿它当开关会让这类文件白白退化成下载。
+    """
+    document_id = _upload(client, "报告.pdf", b"%PDF-1.7 fake", "application/octet-stream")
+
+    body = client.get(f"/api/v1/documents/{document_id}/preview").json()
+
+    assert body["kind"] == "pdf"
+    assert client.get(body["url"]).headers["content-disposition"].startswith("inline")
+
+
+def test_svg_is_never_served_inline(client: TestClient) -> None:
+    """SVG 能带 ``<script>``：内联渲染等于在上传者的诱导下于本站 origin 执行脚本。
+
+    所以 `disposition=inline` **不是**调用方能决定的开关——服务端按媒体类型复核，
+    SVG 一律回 attachment。
+    """
+    document_id = _upload(client, "向量图.svg", b"<svg onload='alert(1)'/>", "image/svg+xml")
+
+    body = client.get(f"/api/v1/documents/{document_id}/preview").json()
+    assert body["kind"] == "image"
+
+    served = client.get(body["url"])
+
+    assert served.headers["content-disposition"].startswith("attachment")
+
+
+def test_inline_is_refused_for_unknown_disposition(client: TestClient) -> None:
+    """拼错的取值当场 422，而不是被当成 inline 悄悄放过。"""
+    document_id = _upload(client, "报告.pdf", b"%PDF-1.7 fake", "application/pdf")
+    url = client.get(f"/api/v1/documents/{document_id}/preview").json()["url"]
+
+    assert client.get(url.replace("disposition=inline", "disposition=embed")).status_code == 422
+
+
 def test_preview_kind_matches_download_kind(client: TestClient) -> None:
     """**两条路径必须给同一个答案。**
 
@@ -256,6 +318,45 @@ async def test_original_source_shows_the_file_even_after_parsing(client: TestCli
     assert original["kind"] == "pdf"
     assert original["url"]
     assert original["text"] is None
+    # **解析过的** PDF 的原件链接也必须是 inline——曾经这里退化成 attachment，
+    # 因为 inline 的判定读的是 `content.kind`，而它对"有解析产物的原件"是 markdown
+    assert "disposition=inline" in original["url"]
+    assert client.get(original["url"]).headers["content-disposition"].startswith("inline")
+
+
+def test_content_supports_byte_ranges(client: TestClient) -> None:
+    """**PDF 内联预览的前提**：Chrome 的 PDF 查看器按 Range 渐进加载。
+
+    服务端只回整包（200、无 Accept-Ranges）时，Chrome 会退化成下载——
+    表现为"点开 PDF 就下载"。静态托管天生支持 Range，所以这个缺口只在自建端点上。
+    """
+    payload = b"%PDF-1.7 " + bytes(range(64))
+    document_id = _upload(client, "报告.pdf", payload, "application/pdf")
+    url = client.get(f"/api/v1/documents/{document_id}/preview").json()["url"]
+
+    head = client.get(url)
+    assert head.headers["accept-ranges"] == "bytes"
+    assert head.status_code == 200
+
+    ranged = client.get(url, headers={"Range": "bytes=0-3"})
+    assert ranged.status_code == 206
+    assert ranged.content == payload[:4]
+    assert ranged.headers["content-range"] == f"bytes 0-3/{len(payload)}"
+
+    # 到结尾 / 尾部 N 字节两种写法 PDF 查看器都会用到
+    assert client.get(url, headers={"Range": "bytes=5-"}).content == payload[5:]
+    assert client.get(url, headers={"Range": "bytes=-4"}).content == payload[-4:]
+
+
+def test_out_of_range_is_416_not_a_full_body(client: TestClient) -> None:
+    """越界的 Range 要回 416，**不能**默默回整包——那会被当成"不支持分段"。"""
+    document_id = _upload(client, "报告.pdf", b"%PDF-1.7 fake", "application/pdf")
+    url = client.get(f"/api/v1/documents/{document_id}/preview").json()["url"]
+
+    response = client.get(url, headers={"Range": "bytes=99999-"})
+
+    assert response.status_code == 416
+    assert response.headers["content-range"].startswith("bytes */")
 
 
 def test_unknown_source_is_rejected(client: TestClient) -> None:

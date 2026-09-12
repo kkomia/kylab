@@ -299,13 +299,24 @@ class DocumentService:
         return replace(content, kind=content_kind(document.name, has_markdown=False))
 
     def download_url(
-        self, document_id: str, *, fmt: str, secret: str, ttl_seconds: int = DEFAULT_TTL_SECONDS
+        self,
+        document_id: str,
+        *,
+        fmt: str,
+        secret: str,
+        ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        disposition: str = "attachment",
     ) -> tuple[str, int]:
-        """签发一条下载链接，返回 ``(相对 URL, 到期时间戳)``。
+        """签发一条内容链接，返回 ``(相对 URL, 到期时间戳)``。
 
         返回相对路径而不是绝对地址：绝对地址需要知道对外域名，而那个信息
         只有部署时才知道（反代、端口、协议）。让前端拿相对路径自己拼
         比在这里猜一个 ``http://localhost:8000`` 可靠。
+
+        ``disposition`` 只影响响应头，**不参与签名**（签名绑的是"哪个文档、哪种格式"）：
+        它不是一个权限参数——需要直接打开（iframe 里渲染、`<img>` 显示）时用
+        ``inline``，需要落盘时用默认的 ``attachment``。所以调用方改它不会越权，
+        真正决定能不能 inline 的是协议层那份媒体类型白名单。
         """
         self.get(document_id)  # 文档不存在就别签发
         resource = signature_resource(document_id, fmt)
@@ -316,6 +327,8 @@ class DocumentService:
             f"/api/v1/documents/{document_id}/content"
             f"?format={fmt}&expires={expires_at}&signature={signature}"
         )
+        if disposition != "attachment":
+            url += f"&disposition={disposition}"
         return url, expires_at
 
     # ------------------------------------------------------------------ 任务

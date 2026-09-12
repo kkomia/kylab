@@ -109,8 +109,9 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
-  // 有原件版式就先看原件。从引用点进来时带 `?page=N`，PDF 那侧会把它转成
-  // 原生查看器的 `#page=N` 直接跳到那一页——这比先给一屏解析文本更贴用户意图。
+  // 能看原件就先看原件：用户打开一份 PDF/Office，想看的首先是那个文件本身。
+  // 解析文本是"核对解析得对不对"的第二视角，摆在切换里。
+  // 没有原件版式可渲染时才回落到解析文本（纯文本类文件就是这种）。
   previewSource.value = canRenderOriginal.value ? 'original' : 'parsed'
   await Promise.all([loadPreview(), loadReadingView()])
 })

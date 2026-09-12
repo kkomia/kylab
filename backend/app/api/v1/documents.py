@@ -15,6 +15,7 @@ from fastapi import (
     File,
     Header,
     Query,
+    Request,
     UploadFile,
     status,
 )
@@ -557,8 +558,11 @@ def preview_document(
             # 没有签名密钥时发不了链接（同 download-url 的说明）。但这里**不报错**：
             # 回一个 binary 让前端退化成"只能下载"，比整个阅读面板报红字好
             return PreviewOut(kind="binary", filename=content.filename, original_kind=original_kind)
+        # inline：这些内容要**在页面里直接渲染**（PDF 进 iframe、图片进 img、
+        # Office 由前端 fetch 后自己画）。带 attachment 的话浏览器会把 iframe
+        # 里的 PDF 变成下载——那正是"点开文档就下载"的原因。
         url, expires_at = services.documents.download_url(
-            document_id, fmt="original", secret=secret
+            document_id, fmt="original", secret=secret, disposition="inline"
         )
         return PreviewOut(
             kind=content.kind,
@@ -609,9 +613,24 @@ def document_download_url(
     return DownloadUrlOut(url=url, expires_at=expires_at, format=fmt)
 
 
+#: 可以 ``inline`` 呈现的种类。判定用 ``content_kind``（**按文件名后缀**得出，
+#: 服务端自己算的），而不是数据库里那个 mime——上传时声明的 mime 是客户端给的，
+#: 有的上传器干脆留空（存成 ``application/octet-stream``），拿它当开关会让这些
+#: 文件白白退化成下载。
+INLINE_KINDS = frozenset({"pdf", "image", "docx", "pptx", "excel"})
+
+#: 即使种类允许也**必须**走 attachment 的媒体类型。
+#:
+#: 这一条是**安全边界**，不是显示偏好：``inline`` 意味着浏览器按返回的
+#: Content-Type 在本站 origin 下渲染它——一份上传的 SVG 能带 ``<script>``，
+#: 内联渲染就等于在**我们的 origin 下执行上传者的脚本**（存储型 XSS）。
+#: 其余非 PDF/位图的类型（HTML、XML…）根本不在 :data:`INLINE_KINDS` 里，够不着这条路径。
+INLINE_BLOCKED_MEDIA_TYPES = frozenset({"image/svg+xml"})
+
+
 @router.get(
     "/documents/{document_id}/content",
-    summary="按签名下载（浏览器可直接打开）",
+    summary="按签名取内容（下载 / 页面内渲染）",
     response_class=Response,
     responses={
         200: {"content": {"application/octet-stream": {}}, "description": "文件内容"}
@@ -619,13 +638,19 @@ def document_download_url(
 )
 def download_document_content(
     document_id: str,
+    request: Request,
     fmt: str = Query(default="original", alias="format", pattern="^(original|markdown)$"),
     expires: int = Query(..., description="签发时给出的到期时间戳"),
     signature: str = Query(..., description="签发时给出的签名"),
+    disposition: str = Query(
+        default="attachment",
+        pattern="^(attachment|inline)$",
+        description="inline 供页面内直接渲染（PDF / 位图）；其余类型服务端强制 attachment",
+    ),
     services: Services = Depends(get_services),
     settings: Settings = Depends(get_settings),
 ) -> Response:
-    """签名下载端点。
+    """签名内容端点（下载 / 页面内渲染共用）。
 
     **刻意不挂 ``require_read`` 依赖**：这个 URL 要能直接在浏览器里打开
     （图片标签、下载按钮都带不了自定义头）。它的授权凭据是 URL 里的签名，
@@ -634,6 +659,12 @@ def download_document_content(
     用 ``Response`` 而不是 ``FileResponse``：内容是从对象存储读进内存的字节，
     没有磁盘路径可给。``FileResponse`` 只接受路径，传 BytesIO 会在
     ``os.stat`` 上抛 TypeError（实测踩到）。
+
+    **``disposition=inline`` 必须由服务端按媒体类型复核**：它不在签名里，
+    调用方可以自己改这个参数，所以它绝不能成为"能不能在内联渲染"的开关——
+    真正的开关是 :data:`_INLINE_SAFE_MEDIA_TYPES`。这正是 iframe 里预览 PDF
+    必须的：带着 ``attachment`` 的响应在 iframe 里会被浏览器**变成下载**
+    （踩过：详情页一打开就下载 PDF）。
     """
     secret = signing_secret(settings, services)
     if not secret:
@@ -647,8 +678,72 @@ def download_document_content(
 
     content = services.documents.content(document_id, fmt=fmt)
     filename = normalize_filename(content.filename)
-    return Response(
-        content=content.data,
-        media_type=content.media_type,
-        headers={"Content-Disposition": content_disposition(filename)},
+    # inline 只对**原件**有意义。种类的判定必须用 `has_markdown=False`：
+    # `content()` 对"有解析产物的原件"会返回 kind=markdown（它按"给用户看什么"判），
+    # 拿它当开关会让解析过的 PDF 全部拿不到 inline —— 而"解析过的 PDF"恰恰是预览的常态。
+    kind = content_kind(content.filename, has_markdown=False) if fmt == "original" else ""
+    inline = (
+        disposition == "inline"
+        and kind in INLINE_KINDS
+        and content.media_type not in INLINE_BLOCKED_MEDIA_TYPES
     )
+    headers = {
+        "Content-Disposition": content_disposition(
+            filename, disposition="inline" if inline else "attachment"
+        ),
+        # 内联渲染时禁止浏览器嗅探内容类型：上传时声明的 mime 是用户可控的，
+        # 没有 nosniff 就能把一个"声明成图片"的 HTML 嗅探成网页并执行脚本
+        "X-Content-Type-Options": "nosniff",
+        # 告诉浏览器这个端点支持分段取。**PDF 内联预览必须要它**：
+        # Chrome 的 PDF 查看器按 Range 渐进加载，服务端只回整包（200、无 Accept-Ranges）时
+        # 它会退化成"下载这个文件"——表现为点开 PDF 就下载（实测踩到）。
+        "Accept-Ranges": "bytes",
+    }
+
+    total = len(content.data)
+    range_header = request.headers.get("range")
+    if range_header is not None:
+        span = _parse_range(range_header, total)
+        if span is None:
+            # 416：Range 不合法或越界。**不能**默默回整包——那会让客户端把 200 当成
+            # "服务端不支持分段"，进而放弃内联渲染
+            return Response(
+                status_code=416,
+                headers={"Content-Range": f"bytes */{total}", "Accept-Ranges": "bytes"},
+            )
+        start, end = span
+        headers["Content-Range"] = f"bytes {start}-{end}/{total}"
+        return Response(
+            content=content.data[start : end + 1],
+            status_code=206,
+            media_type=content.media_type,
+            headers=headers,
+        )
+
+    return Response(content=content.data, media_type=content.media_type, headers=headers)
+
+
+def _parse_range(value: str, total: int) -> tuple[int, int] | None:
+    """解析单段 ``Range``，返回闭区间 ``(start, end)``；不合法返回 ``None``。
+
+    只支持单段：多段（``bytes=0-1,5-6``）要发 multipart/byteranges，浏览器看 PDF
+    从来不用它，支持它是纯负担。三种写法都要认，PDF 查看器三种都会用到：
+    ``bytes=0-1023``（定长）、``bytes=1000-``（到结尾）、``bytes=-500``（尾部 N 字节）。
+    """
+    if not value.startswith("bytes=") or "," in value:
+        return None
+    start_text, _, end_text = value[len("bytes=") :].strip().partition("-")
+    try:
+        if not start_text:
+            # 后缀写法：最后 N 字节
+            length = int(end_text)
+            if length <= 0:
+                return None
+            return max(0, total - length), total - 1
+        start = int(start_text)
+        end = int(end_text) if end_text else total - 1
+    except ValueError:
+        return None
+    if start > end or start >= total:
+        return None
+    return start, min(end, total - 1)
