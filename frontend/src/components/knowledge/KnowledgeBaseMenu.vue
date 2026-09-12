@@ -22,6 +22,8 @@ import { computed, ref, type Component } from 'vue'
 import {
   CHUNK_DEFAULT_OVERLAP,
   CHUNK_DEFAULT_SIZE,
+  CHUNK_OVERLAP_MARKS,
+  CHUNK_SIZE_MARKS,
   CHUNK_SIZE_MAX,
   CHUNK_SIZE_MIN,
   chunkOverlapMax,
@@ -438,11 +440,11 @@ async function confirmDelete(): Promise<void> {
                 v-model="chunkSizeNumber"
                 :min="CHUNK_SIZE_MIN"
                 :max="CHUNK_SIZE_MAX"
-                :marks="[{ value: CHUNK_DEFAULT_SIZE, primary: true }]"
+                :marks="CHUNK_SIZE_MARKS"
               />
               <p class="pane-hint">
-                {{ CHUNK_SIZE_MIN }}–{{ CHUNK_SIZE_MAX }} 之间。中文资料里 512 左右
-                大约是一到两段话，也是轨道上那个点。
+                轨道上的点是常用值，强调色的 {{ CHUNK_DEFAULT_SIZE }} 是默认——
+                中文资料里大约是一到两段话。
               </p>
             </div>
 
@@ -453,11 +455,13 @@ async function confirmDelete(): Promise<void> {
                 v-model="chunkOverlapNumber"
                 :min="0"
                 :max="chunkOverlapCap"
-                :marks="[{ value: CHUNK_DEFAULT_OVERLAP, primary: true }]"
+                :marks="CHUNK_OVERLAP_MARKS"
               />
               <p class="pane-hint">
-                0–{{ chunkOverlapCap }} 之间（不超过块长的一半）。
-                留一点重叠是为了让跨块的句子不被拦腰截断。
+                轨道上的点是常用值，强调色的 {{ CHUNK_DEFAULT_OVERLAP }} 是默认。
+                留一点重叠是为了让跨块的句子不被拦腰截断；上限是块长的一半（当前 0–{{
+                  chunkOverlapCap
+                }}）。
               </p>
             </div>
 

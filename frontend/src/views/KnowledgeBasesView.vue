@@ -15,6 +15,8 @@ import { computed, onMounted, ref } from 'vue'
 import {
   CHUNK_DEFAULT_OVERLAP,
   CHUNK_DEFAULT_SIZE,
+  CHUNK_OVERLAP_MARKS,
+  CHUNK_SIZE_MARKS,
   CHUNK_SIZE_MAX,
   CHUNK_SIZE_MIN,
   chunkOverlapMax,
@@ -374,7 +376,7 @@ function statsOf(kbId: string) {
               v-model="chunkSizeNumber"
               :min="CHUNK_SIZE_MIN"
               :max="CHUNK_SIZE_MAX"
-              :marks="[{ value: CHUNK_DEFAULT_SIZE, primary: true }]"
+              :marks="CHUNK_SIZE_MARKS"
             />
           </label>
           <label class="field">
@@ -384,7 +386,7 @@ function statsOf(kbId: string) {
               v-model="chunkOverlapNumber"
               :min="0"
               :max="chunkOverlapCap"
-              :marks="[{ value: CHUNK_DEFAULT_OVERLAP, primary: true }]"
+              :marks="CHUNK_OVERLAP_MARKS"
             />
           </label>
         </div>

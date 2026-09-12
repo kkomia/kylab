@@ -83,6 +83,32 @@ export const CHUNK_OVERLAP_RATIO_MAX = 0.5
 export const CHUNK_DEFAULT_SIZE = 512
 export const CHUNK_DEFAULT_OVERLAP = 64
 
+/**
+ * 滑杆轨道上的刻度点（常用值）。`primary` = 默认值，画成强调色。
+ *
+ * 放这里而不是各自的组件里：新建弹窗与知识库设置用的是**同两个参数**，
+ * 刻度给得不一样会让人以为它们是两回事。越界的点由 `RangeField` 丢掉——
+ * 重叠的上限跟着块长走，块长调小时 128/256 必须自动消失。
+ *
+ * 两块长都**不标最小值**（128 / 0 那种）：线性轴上 128 与 256 只差 6.7%，
+ * 新建弹窗（轨道约 400px）里两个数值标签只剩 3px 间隙，挤成一团；
+ * 而轴的两端本来就是"范围"，说明文字里已经写了。最大值可以标——它离前一个点足够远。
+ */
+export const CHUNK_SIZE_MARKS: { value: number; primary?: boolean }[] = [
+  { value: 256 },
+  { value: CHUNK_DEFAULT_SIZE, primary: true },
+  { value: 1024 },
+  { value: CHUNK_SIZE_MAX },
+]
+
+export const CHUNK_OVERLAP_MARKS: { value: number; primary?: boolean }[] = [
+  { value: 0 },
+  { value: 32 },
+  { value: CHUNK_DEFAULT_OVERLAP, primary: true },
+  { value: 128 },
+  { value: 256 },
+]
+
 /** 给定块长时，重叠的上限。默认块长（512）下就是 256。 */
 export function chunkOverlapMax(size: number): number {
   return Math.max(1, Math.floor(size * CHUNK_OVERLAP_RATIO_MAX))

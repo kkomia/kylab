@@ -3,19 +3,22 @@
  * 数值滑杆（《前端设计规范》§7.4）。
  *
  * 用在"有推荐值、但精确到个位没意义"的参数上（块长 / 块重叠）：填数字要求用户先知道
- * 该填多少，滑杆把**范围**和**默认值落在哪**直接画在轨道上。
+ * 该填多少，滑杆把**范围**和**常用值落在哪**直接画出来——轨道上每个刻度点都是
+ * 一个常用值，点下面是它的数值。
  *
- * 四个刻意的约定：
- * 1. **默认值画成一个点**（`marks` 里 `primary` 的那个）：用户不用心算"512 是几等分点"，
- *    一眼能看到自己离常态多远。点用 `pointer-events: none`——它只是路标，
- *    **绝不能挡住拖动**（挡住比没有点更糟：拖到那儿会卡住）。
- *    "跳到默认值"不需要额外逻辑：范围线性，拖到点上就是那个值。
- * 2. **右侧常驻读数**：滑杆藏了精度，没有读数就只能靠猜。
- * 3. **轨道自己画**（`::before`），不去改原生 `::-webkit-slider-runnable-track`：
+ * 五个刻意的约定：
+ * 1. **刻度点 = 常用值**：`marks` 传进来，越界的自动丢掉（重叠的上限跟着块长变，
+ *    传进来的 256 在块长 128 时必须消失，否则点会画到轨道外面去）。
+ * 2. **默认值那个点画成强调色**（`primary`）：用户一眼看到"常态在哪、我现在离它多远"。
+ *    点用 `pointer-events: none`——它只是路标，**绝不能挡住拖动**（挡住比没有点更糟）。
+ *    "跳到某个点"不需要额外逻辑：范围线性，拖到点上就是那个值。
+ * 3. **右侧常驻读数**：滑杆藏了精度，没有读数就只能靠猜。刻度点标的是常用值，
+ *    读数标的是当前值——两件事，缺一不可。
+ * 4. **轨道自己画**（`::before`），不去改原生 `::-webkit-slider-runnable-track`：
  *    原生 track 的盒模型各浏览器不一样，改出来的线与滑块中心常差一两个像素。
  *    自己画就能用同一个 `--range-thumb` 把线、点、滑块三者对齐。
- * 4. **值到位置的换算是"滑块中心"**：滑块中心走的是
- *    `[半滑块, 宽度 − 半滑块]`，直接按百分比铺点会在两端差半个滑块（约 7px）。
+ * 5. **值到位置的换算是"滑块中心"**：滑块中心走的是 `[半滑块, 宽度 − 半滑块]`，
+ *    直接按百分比铺点会在两端差半个滑块（约 7px）。
  */
 import { computed } from 'vue'
 
@@ -27,7 +30,10 @@ const props = withDefaults(
     max: number
     step?: number
     id?: string
-    /** 轨道上的刻度点。`primary` 的那个是默认值（画重一点，并在轨道下写一句「默认」）。 */
+    /**
+     * 轨道上的刻度点（常用值）。`primary` 的那个是默认值，画成强调色。
+     * 落在 `[min, max]` 之外的点会被丢掉。
+     */
     marks?: { value: number; primary?: boolean }[]
     /** 外层没有 `<label for>` 时，给读屏器的名字。 */
     ariaLabel?: string
@@ -35,14 +41,19 @@ const props = withDefaults(
   { step: 1, id: undefined, marks: () => [], ariaLabel: undefined },
 )
 
-const primary = computed(() => props.marks.find((mark) => mark.primary))
-
-/** 值 → 轨道上的中心位置。与 `--range-thumb` 同一个口径，改滑块尺寸时不会错位。 */
-function centerOf(value: number): string {
-  const span = props.max - props.min
-  const ratio = span <= 0 ? 0 : (value - props.min) / span
-  return `calc((100% - var(--range-thumb)) * ${ratio} + var(--range-thumb) / 2)`
-}
+/** 刻度点 + 它的落点。位置与 `--range-thumb` 同一个口径，改滑块尺寸时不会错位。 */
+const items = computed(() =>
+  props.marks
+    .filter((mark) => mark.value >= props.min && mark.value <= props.max)
+    .map((mark) => {
+      const span = props.max - props.min
+      const ratio = span <= 0 ? 0 : (mark.value - props.min) / span
+      return {
+        ...mark,
+        left: `calc((100% - var(--range-thumb)) * ${ratio} + var(--range-thumb) / 2)`,
+      }
+    }),
+)
 
 function onInput(event: Event): void {
   model.value = Number((event.target as HTMLInputElement).value)
@@ -52,7 +63,7 @@ function onInput(event: Event): void {
 <template>
   <div class="range-field">
     <div class="range-row">
-      <div class="range-col" :class="{ 'range-col-marked': primary }">
+      <div class="range-col" :class="{ 'range-col-marked': items.length > 0 }">
         <div class="range-rail">
           <input
             :id="id"
@@ -65,17 +76,25 @@ function onInput(event: Event): void {
             :aria-label="ariaLabel"
             @input="onInput"
           />
-          <!-- 刻度点铺在轨道上：见顶部注释第 1 条，它绝不能挡住拖动 -->
+          <!-- 刻度点与数值都只铺不点：见顶部注释第 2 条，绝不能挡住拖动 -->
           <span
-            v-for="mark in marks"
+            v-for="mark in items"
             :key="mark.value"
             class="range-mark"
             :class="{ 'range-mark-primary': mark.primary }"
-            :style="{ left: centerOf(mark.value) }"
+            :style="{ left: mark.left }"
             aria-hidden="true"
           />
         </div>
-        <p v-if="primary" class="range-note" :style="{ left: centerOf(primary.value) }">默认</p>
+        <span
+          v-for="mark in items"
+          :key="`label-${mark.value}`"
+          class="range-mark-label"
+          :class="{ 'range-mark-label-primary': mark.primary }"
+          :style="{ left: mark.left }"
+          aria-hidden="true"
+          >{{ mark.value }}</span
+        >
       </div>
       <output class="range-value tabular">{{ model }}</output>
     </div>
@@ -89,10 +108,10 @@ function onInput(event: Event): void {
   gap: var(--space-3);
 }
 
-/* 滑块尺寸只有这一个来源：轨道线、刻度点、滑块三者都按它对齐。
+/* 滑块尺寸只有这一个来源：轨道线、刻度点、数值标签、滑块都按它对齐。
    **必须定义在这一层**——`--range-thumb` 是自定义属性，只向下继承；
-   挂在 `.range-rail` 上时，轨道的兄弟节点（下面那行「默认」小字）读不到它，
-   `calc()` 整条失效、`left` 退回 `auto`，小字就飘到轨道最左端了（真机上量到差 145px）。 */
+   挂在 `.range-rail` 上时，轨道的兄弟节点（下面那行数值标签）读不到它，
+   `calc()` 整条失效、`left` 退回 `auto`，标签就全叠到轨道最左端了（真机上量到差 145px）。 */
 .range-field {
   --range-thumb: 14px;
 }
@@ -103,9 +122,9 @@ function onInput(event: Event): void {
   min-width: 0;
 }
 
-/* 给「默认」那行小字留出高度：它是绝对定位的，不留就会压到下面的说明文字上 */
+/* 给刻度数值留一行高度：它们是绝对定位的，不留就会压到下面的说明文字上 */
 .range-col-marked {
-  padding-bottom: 15px;
+  padding-bottom: 17px;
 }
 
 .range-rail {
@@ -179,6 +198,22 @@ function onInput(event: Event): void {
   border-color: var(--accent-text);
 }
 
+/* 刻度数值：跟着刻度点走，两端会略微伸出轨道——左右各有容器内边距接着，不裁也不挤 */
+.range-mark-label {
+  position: absolute;
+  bottom: 0;
+  font-size: var(--text-micro-size);
+  line-height: 1.2;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.range-mark-label-primary {
+  color: var(--accent-text);
+}
+
 .range-value {
   flex: 0 0 auto;
   /* 按 4 位字预留：数值从 3 位变 4 位时不能推着轨道左右跳 */
@@ -186,17 +221,5 @@ function onInput(event: Event): void {
   font-size: var(--text-meta-size);
   text-align: right;
   color: var(--text-primary);
-}
-
-.range-note {
-  position: absolute;
-  bottom: 0;
-  margin: 0;
-  font-size: var(--text-micro-size);
-  line-height: 1.2;
-  color: var(--text-tertiary);
-  white-space: nowrap;
-  transform: translateX(-50%);
-  pointer-events: none;
 }
 </style>
