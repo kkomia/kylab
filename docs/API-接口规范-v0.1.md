@@ -260,7 +260,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/knowledge-bases` | 知识库列表 |
 | `POST` | `/api/v1/knowledge-bases` | 创建知识库 |
 | `GET` | `/api/v1/knowledge-bases/{kb_id}` | 知识库详情 |
-| `PATCH` | `/api/v1/knowledge-bases/{kb_id}` | 重命名知识库 |
+| `PATCH` | `/api/v1/knowledge-bases/{kb_id}` | 修改知识库（名称 / 简介） |
 
 ### `lifecycle`
 

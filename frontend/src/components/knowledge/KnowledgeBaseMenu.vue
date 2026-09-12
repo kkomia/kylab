@@ -35,7 +35,9 @@ const documentCount = computed(() => store.summaries[props.kb.id]?.count ?? null
 
 const settingsOpen = ref(false)
 const draft = ref('')
+const descriptionDraft = ref('')
 const renaming = ref(false)
+const savingDescription = ref(false)
 
 const deleteOpen = ref(false)
 const impact = ref<ImpactReport | null>(null)
@@ -43,7 +45,23 @@ const deleting = ref(false)
 
 function openSettings(): void {
   draft.value = props.kb.name
+  descriptionDraft.value = props.kb.description
   settingsOpen.value = true
+}
+
+/** 简介单独保存：它与改名是两个动作，合在一个按钮里会让人以为必须一起改。 */
+async function submitDescription(): Promise<void> {
+  const description = descriptionDraft.value.trim()
+  if (description === props.kb.description) return
+  savingDescription.value = true
+  try {
+    await store.update(props.kb.id, { description })
+    notifySuccess('简介已保存')
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '简介保存失败')
+  } finally {
+    savingDescription.value = false
+  }
 }
 
 async function submitRename(): Promise<void> {
@@ -128,6 +146,25 @@ async function confirmDelete(): Promise<void> {
         <p class="kb-setting-hint">
           只改显示名，不影响这个库的嵌入模型与切分参数（那些在建库时冻结）。
         </p>
+      </section>
+
+      <section class="kb-setting">
+        <h3 class="kb-setting-title">简介</h3>
+        <p class="kb-setting-hint">一句话说明这个库是干什么的，会显示在知识库列表的卡片上。</p>
+        <div class="kb-setting-row kb-setting-row-top">
+          <AppInput
+            id="kb-setting-description"
+            v-model="descriptionDraft"
+            placeholder="例如：产品说明书与常见问题，面向客服与售前"
+          />
+          <AppButton
+            variant="primary"
+            :disabled="savingDescription || descriptionDraft.trim() === kb.description"
+            @click="submitDescription"
+          >
+            {{ savingDescription ? '保存中…' : '保存' }}
+          </AppButton>
+        </div>
       </section>
 
       <!-- 库的具体信息（原先挂在页头标题下那一行小字）。放在设置里读，而不是
@@ -265,6 +302,11 @@ async function confirmDelete(): Promise<void> {
 .kb-setting-row :deep(.field) {
   flex: 1;
   min-width: 0;
+}
+
+/* 长文案的输入行（简介）：按钮与输入框顶部对齐，多行时看着不歪 */
+.kb-setting-row-top {
+  align-items: flex-start;
 }
 
 .kb-setting-hint {

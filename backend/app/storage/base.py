@@ -130,6 +130,8 @@ class KnowledgeBaseRecord:
     embedding_dim: int
     embedding_base_url: str | None = None
     chunk_strategy: str = "fixed"
+    description: str = ""
+    """库简介（v15）。列表卡片上的一句概述；空串 = 未填写。"""
     chunk_size: int = 512
     chunk_overlap: int = 64
     owner_id: str | None = None
@@ -548,6 +550,10 @@ class MetaStore(ABC):
     @abstractmethod
     def rename_knowledge_base(self, kb_id: str, name: str) -> None:
         """改显示名。嵌入模型与切分参数都不受影响——名字只是标签。"""
+
+    @abstractmethod
+    def set_knowledge_base_description(self, kb_id: str, description: str) -> None:
+        """改库简介（v15）。与改名同性质：只是标签，不影响检索。"""
 
     @abstractmethod
     def update_knowledge_base_embedding(

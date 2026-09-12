@@ -9,6 +9,8 @@ import type { ImpactReport } from './documents'
 export interface KnowledgeBase {
   id: string
   name: string
+  /** 库简介（v15）。空串 = 未填写，卡片显示"暂无简介"。 */
+  description: string
   embedding_model_id: string
   embedding_dim: number
   chunk_strategy: string
@@ -46,11 +48,17 @@ export function getKnowledgeBase(kbId: string): Promise<KnowledgeBase> {
   return request(`/knowledge-bases/${kbId}`)
 }
 
-/** 重命名：只改显示名，不动嵌入模型与切分参数。 */
-export function renameKnowledgeBase(kbId: string, name: string): Promise<KnowledgeBase> {
+/**
+ * 修改知识库的名称 / 简介。**两者都可选**，只传要改的那个
+ * （传 `{ description: '' }` 是清空简介）。
+ */
+export function updateKnowledgeBase(
+  kbId: string,
+  patch: { name?: string; description?: string },
+): Promise<KnowledgeBase> {
   return request(`/knowledge-bases/${kbId}`, {
     method: 'PATCH',
-    body: JSON.stringify({ name }),
+    body: JSON.stringify(patch),
   })
 }
 

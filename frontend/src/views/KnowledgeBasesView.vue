@@ -13,7 +13,6 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { getRegistry, type Registry } from '@/api/modelRegistry'
-import IconChat from '@/components/icons/IconChat.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import KnowledgeBaseMenu from '@/components/knowledge/KnowledgeBaseMenu.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -51,6 +50,11 @@ const creating = ref(false)
  */
 const registry = ref<Registry | null>(null)
 
+/** 注册表是否已拉过。**"还在加载"与"确实没有模型"必须分开**：
+ *  否则进页面的一瞬间 embeddingModels 是空的，页头会先闪一下"还没有可用的嵌入模型"
+ *  再消失（实测到的 bug）。 */
+const modelsLoaded = ref(false)
+
 const embeddingModels = computed(() =>
   (registry.value?.models ?? []).filter(
     (model) => model.capabilities.length === 0 || model.capabilities.includes('embedding'),
@@ -78,6 +82,8 @@ async function loadModels(): Promise<void> {
   } catch {
     // 拿不到注册表不该让整页报错：退化成"没有可选模型"，创建入口会被挡住
     registry.value = null
+  } finally {
+    modelsLoaded.value = true
   }
 }
 
@@ -89,8 +95,9 @@ const embeddingOptions = computed(() => [
   })),
 ])
 
-/** 没有任何可用的嵌入模型：建库入口整体挡掉，并指路「模型注册」。 */
-const noEmbeddingModel = computed(() => embeddingModels.value.length === 0)
+/** 没有任何可用的嵌入模型：建库入口整体挡掉，并指路「模型注册」。
+ *  **加载完成前不算"没有"**——那是闪一下的误报。 */
+const noEmbeddingModel = computed(() => modelsLoaded.value && embeddingModels.value.length === 0)
 
 /** 有模型但没选默认：必须明确挑一个（没有"不指定"这条路了）。 */
 const mustPickModel = computed(() => !defaultModel.value && embeddingModels.value.length > 0)
@@ -184,23 +191,6 @@ function statsOf(kbId: string) {
       再到「设置 → 向量化」把它选为默认。
     </p>
 
-    <!--
-      对话入口横幅：以前这里是"尚未开放"的禁用按钮——现在对话已经通了（/chat），
-      留着禁用按钮就是在告诉用户一个不成立的事实。改成真正的入口。
-      「在此库检索」仍然保留：它回答"哪个块最像"，对话回答"这些资料怎么说"，
-      两者不是替代关系（界面信息架构草案 §2）。
-    -->
-    <RouterLink class="ask-slot" to="/chat">
-      <span class="ask-icon" aria-hidden="true"><IconChat /></span>
-      <span class="ask-text">
-        <span class="ask-title">对话式快速检索</span>
-        <span class="ask-hint">
-          选一个或多个知识库直接提问，回答只依据库里的原文，并逐条标出出处。
-        </span>
-      </span>
-      <span class="ask-go">去提问</span>
-    </RouterLink>
-
     <p v-if="store.error" class="error-line">{{ store.error }}</p>
     <SkeletonBlock v-if="store.loading && !hasItems" variant="card" :rows="4" />
 
@@ -227,18 +217,19 @@ function statsOf(kbId: string) {
             </span>
           </span>
 
-          <span class="kb-card-stats">
-            <span class="stat">
-              <span class="stat-value tabular">{{ statsOf(kb.id)?.count ?? '—' }}</span>
-              <span class="stat-label">文档</span>
+          <!--
+            卡片主体只用两样东西说清一个库：**一个数字 + 一段概述**。
+            维度和块长是建库时就定了的实现细节，卡片上不参与"挑哪个库"这个决定，
+            挤在数字行里反而把简介的位置占了。
+          -->
+          <span class="kb-card-body">
+            <span class="kb-doc-count">
+              <span class="kb-doc-value tabular">{{ statsOf(kb.id)?.count ?? '—' }}</span>
+              <span class="kb-doc-unit">篇文档</span>
             </span>
-            <span class="stat">
-              <span class="stat-value tabular">{{ kb.embedding_dim }}</span>
-              <span class="stat-label">维度</span>
-            </span>
-            <span class="stat">
-              <span class="stat-value tabular">{{ kb.chunk_size }}</span>
-              <span class="stat-label">块长</span>
+            <!-- 空简介不留空白：写"暂无简介"，让人知道这里是"没填"而不是"没加载出来" -->
+            <span class="kb-description" :class="{ 'kb-description-empty': !kb.description }">
+              {{ kb.description || '暂无简介' }}
             </span>
           </span>
 
@@ -264,8 +255,15 @@ function statsOf(kbId: string) {
           <RouterLink class="kb-link" :to="`/kb/${kb.id}`">
             <span class="col-name">
               <span class="kb-mark-sm" aria-hidden="true">{{ initial(kb.name) }}</span>
-              <span class="kb-name">{{ kb.name }}</span>
-              <span class="kb-model">{{ kb.embedding_model_id }}</span>
+              <span class="kb-row-text">
+                <span class="kb-row-top">
+                  <span class="kb-name">{{ kb.name }}</span>
+                  <span class="kb-model">{{ kb.embedding_model_id }}</span>
+                </span>
+                <span v-if="kb.description" class="kb-description-one-line">
+                  {{ kb.description }}
+                </span>
+              </span>
             </span>
             <span class="col-num tabular">{{ statsOf(kb.id)?.count ?? '—' }}</span>
             <span class="col-time tabular">
@@ -343,66 +341,6 @@ function statsOf(kbId: string) {
   margin: 0;
   font-size: var(--text-meta-size);
   line-height: 1.7;
-  color: var(--text-secondary);
-}
-
-/* 对话入口：从"虚线预留位"改成实心可点横幅。
-   虚线 + 禁用按钮原本是表达"还没做"，现在功能已经有了，虚线反而读成"这里不重要"。 */
-.ask-slot {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-top: var(--space-5);
-  padding: var(--space-3) var(--space-4);
-  color: inherit;
-  text-decoration: none;
-  background: var(--accent-soft);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-panel);
-  transition: border-color 120ms ease;
-}
-
-.ask-slot:hover {
-  border-color: var(--accent);
-}
-
-.ask-slot:hover .ask-go {
-  background: var(--accent-selected);
-}
-
-.ask-icon {
-  display: inline-flex;
-  color: var(--accent);
-}
-
-.ask-text {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-/* 入场动作：它是横幅的"该点这里"，用文字而非按钮——整条横幅都可点，
-   再放一个按钮会出现两个可点目标指向同一个地方 */
-.ask-go {
-  flex: 0 0 auto;
-  padding: var(--space-1) var(--space-3);
-  font-size: var(--text-meta-size);
-  font-weight: 500;
-  color: var(--accent-text);
-  border-radius: var(--radius-control);
-  transition: background-color 120ms ease;
-}
-
-.ask-title {
-  font-size: var(--text-body-size);
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.ask-hint {
-  font-size: var(--text-micro-size);
   color: var(--text-secondary);
 }
 
@@ -500,30 +438,72 @@ function statsOf(kbId: string) {
   white-space: nowrap;
 }
 
-/* 三个小统计：卡片里唯一的"数字区"，靠一条 hairline 与标题分开 */
-.kb-card-stats {
+/* 行形态：名字 + 模型一行，简介一行（超出省略） */
+.kb-row-text {
   display: flex;
-  gap: var(--space-6);
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.kb-row-top {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.kb-description-one-line {
+  overflow: hidden;
+  font-size: var(--text-micro-size);
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 卡片主体：一个数字 + 一段概述，靠一条 hairline 与标题分开。
+   简介固定两行高度（-webkit-line-clamp: 2），这样一行简介与三行简介的卡片一样高——
+   网格里高度参差比"文字被截断"更显乱。 */
+.kb-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
   padding-top: var(--space-3);
   border-top: 1px solid var(--border-hairline);
 }
 
-.stat {
+.kb-doc-count {
   display: flex;
-  flex-direction: column;
-  /* 数字与标签要读成一个整体，用成对间距令牌（base.css §间距） */
-  gap: var(--space-pair);
+  align-items: baseline;
+  gap: var(--space-1);
 }
 
-.stat-value {
+/* 数字是卡片里唯一的"规模"信号：给足字号，单位弱一档 */
+.kb-doc-value {
   font-size: var(--text-figure-size);
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--text-primary);
 }
 
-.stat-label {
+.kb-doc-unit {
   font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.kb-description {
+  display: -webkit-box;
+  overflow: hidden;
+  min-height: calc(var(--text-meta-size) * 1.7 * 2);
+  font-size: var(--text-meta-size);
+  line-height: 1.7;
+  color: var(--text-secondary);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* 没填简介时弱化：它是"暂无"，不是内容 */
+.kb-description-empty {
   color: var(--text-tertiary);
 }
 

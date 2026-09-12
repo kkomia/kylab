@@ -15,7 +15,7 @@ from app.api.v1.schemas import (
     KnowledgeBaseCreate,
     KnowledgeBaseList,
     KnowledgeBaseOut,
-    KnowledgeBaseRename,
+    KnowledgeBaseUpdate,
 )
 from app.core.services import Services, get_services
 from app.models.enums import UserRole
@@ -125,18 +125,24 @@ async def get_knowledge_base(
     )
 
 
-@router.patch("/{kb_id}", response_model=KnowledgeBaseOut, summary="重命名知识库")
-async def rename_knowledge_base(
+@router.patch("/{kb_id}", response_model=KnowledgeBaseOut, summary="修改知识库（名称 / 简介）")
+async def update_knowledge_base(
     kb_id: str,
-    payload: KnowledgeBaseRename,
+    payload: KnowledgeBaseUpdate,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),
 ) -> KnowledgeBaseOut:
-    """改显示名。**与"删除知识库"同一档权限**（WRITE）——两者都是库级结构动作，
+    """改名称或简介。**与"删除知识库"同一档权限**（WRITE）——两者都是库级结构动作，
     让改名比删库更严会得到一个说不通的权限阶梯（见 ``lifecycle.py`` 的同款说明）。
+
+    两个字段都可选，只处理传了的那个；都为空时不动任何东西（幂等）。
     """
     check_kb_scope(services, caller, [kb_id], need=WRITE)
-    record = services.knowledge_bases.rename(kb_id, payload.name)
+    record = services.knowledge_bases.get(kb_id)
+    if payload.name is not None:
+        record = services.knowledge_bases.rename(kb_id, payload.name)
+    if payload.description is not None:
+        record = services.knowledge_bases.set_description(kb_id, payload.description)
     count, last_activity = services.knowledge_bases.document_stats().get(kb_id, (0, None))
     return _out(
         record, caller, services, document_count=count, last_activity=last_activity

@@ -544,6 +544,16 @@ _MIGRATION_014 = Migration(
 )
 
 
+_MIGRATION_015 = Migration(
+    version=15,
+    description="知识库简介：knowledge_bases.description（默认空串，列表卡片展示）",
+    statements=(
+        # NOT NULL DEFAULT ''：老库不需要回填，界面把空串当"暂无简介"。
+        "ALTER TABLE knowledge_bases ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+    ),
+)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
@@ -559,6 +569,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_012,
     _MIGRATION_013,
     _MIGRATION_014,
+    _MIGRATION_015,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

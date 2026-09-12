@@ -24,6 +24,9 @@ DEFAULT_CHUNK_STRATEGY = "fixed"
 KB_NAME_MAX_CHARS = 120
 """与建库时的 schema 上限一致（``KnowledgeBaseCreate.name``）。"""
 
+KB_DESCRIPTION_MAX_CHARS = 200
+"""库简介上限。卡片上只显示两行，200 字足够写清"这个库是干什么的"。"""
+
 
 class KnowledgeBaseService:
     """知识库的创建与查询。"""
@@ -97,6 +100,18 @@ class KnowledgeBaseService:
     def document_stats(self) -> dict[str, tuple[int, datetime | None]]:
         """每个库的 ``(文档数, 最近更新时间)``——**一次聚合查询**，不逐库列文档。"""
         return self._stores.meta.document_stats_by_kbs()
+
+    def set_description(self, kb_id: str, description: str) -> KnowledgeBaseRecord:
+        """改库简介。空串是合法值（= 清空），不做"必须填"的要求。"""
+        record = self.get(kb_id)
+        cleaned = " ".join((description or "").split())
+        if len(cleaned) > KB_DESCRIPTION_MAX_CHARS:
+            raise InvalidRequestError(f"简介最多 {KB_DESCRIPTION_MAX_CHARS} 个字符")
+        if cleaned == record.description:
+            return record
+        self._stores.meta.set_knowledge_base_description(kb_id, cleaned)
+        record.description = cleaned
+        return record
 
     def rename(self, kb_id: str, name: str) -> KnowledgeBaseRecord:
         """改显示名。**不碰嵌入模型与切分参数**——那些在建库时冻结，改名只是标签。"""

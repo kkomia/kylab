@@ -36,10 +36,15 @@ class KnowledgeBaseCreate(BaseModel):
     """
 
 
-class KnowledgeBaseRename(BaseModel):
-    """改知识库名。与建库同一个上限（120），改名不该比建库更宽松。"""
+class KnowledgeBaseUpdate(BaseModel):
+    """改知识库的可编辑属性：名称与简介。**两者都可选**，只传要改的那个。
 
-    name: str = Field(min_length=1, max_length=120)
+    名称与建库同一个上限（120），改名不该比建库更宽松；简介上限 200（卡片两行）。
+    空简介（``""``）是合法值 = 清空，所以不加 min_length。
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=200)
 
 
 class KnowledgeBaseOut(BaseModel):
@@ -47,6 +52,8 @@ class KnowledgeBaseOut(BaseModel):
 
     id: str
     name: str
+    description: str = ""
+    """库简介（v15）。空串 = 未填写，卡片上显示"暂无简介"。"""
     embedding_model_id: str
     embedding_dim: int
     chunk_strategy: str
@@ -238,6 +245,9 @@ class TaskOut(BaseModel):
 
     界面的"按知识库筛选"靠它——没有它，任务中心就得逐个库拉文档来反查归属。
     没有挂文档的任务（数据源拉取）为 None。"""
+    document_name: str = ""
+    """关联文档名。**由后端批量解析**：否则任务中心要为每个库各拉一次文档列表
+    只为把 id 换成名字（实测那是这一页最慢的一段）。"""
     attempts: int
     max_attempts: int
     error: str | None = None

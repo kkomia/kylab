@@ -151,6 +151,27 @@ def test_upload_returns_accepted_with_task(client: TestClient, kb_id: str) -> No
     assert body["document"]["stage"] == "uploaded"
 
 
+def test_update_knowledge_base_description(client: TestClient, kb_id: str) -> None:
+    """简介是库属性：可写、可清空，且与改名互不影响（两者都可选，只改传的那个）。"""
+    response = client.patch(
+        f"/api/v1/knowledge-bases/{kb_id}", json={"description": "  产品手册与常见问题  "}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["description"] == "产品手册与常见问题"
+    # 只传 name 时简介保持不变
+    renamed = client.patch(f"/api/v1/knowledge-bases/{kb_id}", json={"name": "改名后"})
+    assert renamed.json()["name"] == "改名后"
+    assert renamed.json()["description"] == "产品手册与常见问题"
+    # 空串是合法值 = 清空
+    cleared = client.patch(f"/api/v1/knowledge-bases/{kb_id}", json={"description": ""})
+    assert cleared.json()["description"] == ""
+
+
+def test_description_over_limit_is_422(client: TestClient, kb_id: str) -> None:
+    response = client.patch(f"/api/v1/knowledge-bases/{kb_id}", json={"description": "x" * 201})
+    assert response.status_code == 422
+
+
 def test_task_list_carries_knowledge_base_id(client: TestClient, kb_id: str) -> None:
     """任务带所属库 id：任务中心的"按知识库筛选"靠它，不必逐库拉文档反查。"""
     _upload(client, kb_id)

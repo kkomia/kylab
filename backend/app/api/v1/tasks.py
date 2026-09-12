@@ -45,7 +45,9 @@ async def list_tasks(
         out.health_label = health.label
         out.health_detail = health.detail
         if task.document_id and task.document_id in documents:
-            out.knowledge_base_id = documents[task.document_id].knowledge_base_id
+            document = documents[task.document_id]
+            out.knowledge_base_id = document.knowledge_base_id
+            out.document_name = document.name
         items.append(out)
     return TaskList(items=items)
 

@@ -25,6 +25,8 @@ export interface TaskSummary {
   document_id: string | null
   /** 任务所属文档的知识库（随列表带回），界面的"按知识库筛选"靠它。 */
   knowledge_base_id: string | null
+  /** 关联文档名（后端解析好）。拿它就不必逐库拉文档列表来反查名字。 */
+  document_name: string
   attempts: number
   max_attempts: number
   error: string | null

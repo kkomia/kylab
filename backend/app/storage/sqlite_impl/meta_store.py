@@ -98,14 +98,15 @@ class SqliteMetaStore(MetaStore):
             conn.execute(
                 """
                 INSERT INTO knowledge_bases
-                    (id, name, embedding_model_id, embedding_dim, embedding_base_url,
+                    (id, name, description, embedding_model_id, embedding_dim, embedding_base_url,
                      chunk_strategy, chunk_size, chunk_overlap, owner_id, embedding_model_pk,
                      created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
                     record.name,
+                    record.description,
                     record.embedding_model_id,
                     record.embedding_dim,
                     record.embedding_base_url,
@@ -135,6 +136,13 @@ class SqliteMetaStore(MetaStore):
             conn.execute(
                 "UPDATE knowledge_bases SET name = ?, updated_at = ? WHERE id = ?",
                 (name, _dump(_now()), kb_id),
+            )
+
+    def set_knowledge_base_description(self, kb_id: str, description: str) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE knowledge_bases SET description = ?, updated_at = ? WHERE id = ?",
+                (description, _dump(_now()), kb_id),
             )
 
     def document_stats_by_kbs(self) -> dict[str, tuple[int, datetime | None]]:
@@ -1917,6 +1925,7 @@ class SqliteMetaStore(MetaStore):
         return KnowledgeBaseRecord(
             id=row["id"],
             name=row["name"],
+            description=row["description"],
             embedding_model_id=row["embedding_model_id"],
             embedding_dim=row["embedding_dim"],
             embedding_base_url=row["embedding_base_url"],

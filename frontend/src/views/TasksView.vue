@@ -12,7 +12,6 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { listDocuments, type DocumentSummary } from '@/api/documents'
 import { listTasks, type TaskSummary } from '@/api/tasks'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconFile from '@/components/icons/IconFile.vue'
@@ -33,7 +32,6 @@ const POLL_INTERVAL_MS = 2000
 const store = useKnowledgeBaseStore()
 const router = useRouter()
 const tasks = ref<TaskSummary[]>([])
-const documents = ref<Record<string, string>>({})
 const loading = ref(true)
 const error = ref('')
 let timer: ReturnType<typeof setInterval> | null = null
@@ -94,27 +92,6 @@ const running = computed(() =>
   tasks.value.some((task) => task.state === 'pending' || task.state === 'running'),
 )
 
-/** 任务只带 document_id，标题得从文档侧补；每个库一次请求，不发逐文档的 N+1 请求。 */
-async function loadDocumentNames(): Promise<void> {
-  try {
-    if (store.items.length === 0) await store.load()
-    await refresh()
-    // 只拉"确实有任务"的库：任务通常集中在个别库，多数情况一次请求就够
-    const kbIds = [
-      ...new Set(
-        tasks.value.map((task) => task.knowledge_base_id).filter((id): id is string => id !== null),
-      ),
-    ]
-    const rows: DocumentSummary[] = []
-    for (const kbId of kbIds) {
-      rows.push(...(await listDocuments(kbId)).items)
-    }
-    documents.value = Object.fromEntries(rows.map((row) => [row.id, row.name]))
-  } catch {
-    // 文档名只是锦上添花：拿不到就退化成显示 ID，不影响任务本身的可见性
-  }
-}
-
 async function refresh(): Promise<void> {
   try {
     tasks.value = (await listTasks()).items
@@ -125,7 +102,11 @@ async function refresh(): Promise<void> {
 }
 
 onMounted(async () => {
-  await loadDocumentNames()
+  // 知识库下拉的选项来自 store；侧栏通常已在加载，这里**不等它**——
+  // 等的代价是把任务列表的首屏拖到列表请求之后（实测感知很明显）
+  if (store.items.length === 0) void store.load()
+  // 文档名由任务响应直接带回（document_name），这一页不再为它拉任何文档列表
+  await refresh()
   loading.value = false
   timer = setInterval(() => {
     void refresh()
@@ -138,7 +119,8 @@ onBeforeUnmount(() => {
 
 function documentName(task: TaskSummary): string {
   if (!task.document_id) return '—'
-  return documents.value[task.document_id] ?? task.document_id
+  // 后端解析好的名字；理论上不会为空，为空时退回 id 而不是显示空白
+  return task.document_name || task.document_id
 }
 
 /**

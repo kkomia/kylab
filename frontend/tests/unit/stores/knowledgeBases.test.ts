@@ -12,6 +12,7 @@ function kb(
   return {
     id,
     name,
+    description: '',
     embedding_model_id: 'dev/deterministic-hash',
     embedding_dim: 256,
     chunk_strategy: 'fixed',
@@ -80,6 +81,18 @@ describe('useKnowledgeBaseStore', () => {
     expect(listDocuments).toHaveBeenCalledTimes(1)
   })
 
+  it('并发 load 合并成一次请求（页面上曾把 /knowledge-bases 发了三遍）', async () => {
+    const list = vi
+      .spyOn(api, 'listKnowledgeBases')
+      .mockResolvedValue({ items: [kb('kb_1', '手册')] })
+    const store = useKnowledgeBaseStore()
+
+    await Promise.all([store.load(), store.load(), store.load()])
+
+    expect(list).toHaveBeenCalledTimes(1)
+    expect(store.items).toHaveLength(1)
+  })
+
   it('forget 同时清掉该库的汇总数据', async () => {
     const store = useKnowledgeBaseStore()
     store.items = [kb('kb_1', '手册')]
@@ -97,7 +110,7 @@ describe('useKnowledgeBaseStore', () => {
   })
 
   it('重命名就地更新清单（侧栏与对话页共用同一份）', async () => {
-    vi.spyOn(api, 'renameKnowledgeBase').mockResolvedValue(kb('kb_1', '新名字'))
+    vi.spyOn(api, 'updateKnowledgeBase').mockResolvedValue(kb('kb_1', '新名字'))
     const store = useKnowledgeBaseStore()
     store.items = [kb('kb_1', '旧名字')]
 
