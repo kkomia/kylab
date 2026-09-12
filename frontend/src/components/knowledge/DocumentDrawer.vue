@@ -16,7 +16,7 @@
  * 原文下载走签名 URL（架构 §6.5、开发计划 T4.5）：链接由后端签发、带过期时间，
  * 所以界面上不出现任何永久直链——两个下载按钮每次都现取一条新链接。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { useRoute } from 'vue-router'
 
@@ -37,7 +37,6 @@ import {
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconDownload from '@/components/icons/IconDownload.vue'
 import IconFile from '@/components/icons/IconFile.vue'
-import OfficePreview from '@/components/knowledge/OfficePreview.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
@@ -48,6 +47,19 @@ import { cleanInlineLatex } from '@/composables/useLatex'
 import { renderAnswerMarkdown } from '@/composables/useMarkdown'
 import { formatBytes, formatDate } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
+
+/**
+ * Office 预览**异步加载**（v17）。
+ *
+ * 原先这里是静态 import，于是这个预览组件（以及它引用的样式）进了抽屉所属路由的
+ * **静态依赖图**。改成异步后，构建产物里 KB 路由的 chunk 不再引用任何 office 相关
+ * 的 chunk——只有真正预览一份 Office 文件时才会去取。
+ *
+ * **诚实补一句**：Office 的三个渲染引擎本来就是动态导入的，所以两种写法下
+ * KB 路由的实测下载量几乎一样（都约 370KB）。这个改动的价值是"依赖关系正确"，
+ * 不是"省了多少 KB"——不要拿它当体积优化的成绩。
+ */
+const OfficePreview = defineAsyncComponent(() => import('@/components/knowledge/OfficePreview.vue'))
 
 const props = defineProps<{ documentId: string }>()
 
