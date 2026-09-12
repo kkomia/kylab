@@ -185,7 +185,10 @@ def test_history_comes_from_the_database_not_the_request(
     seen: dict = {}
     real = services.chat.answer
 
-    def spy(*, query, sources, history=None, system_prompt=None, model_pk=None):  # type: ignore[no-untyped-def]
+    def spy(  # type: ignore[no-untyped-def]
+        *, query, sources, history=None, system_prompt=None, model_pk=None,
+        thinking=None, thinking_effort=None,
+    ):
         seen["history"] = [(item.role, item.content) for item in (history or [])]
         return real(
             query=query,
@@ -193,6 +196,8 @@ def test_history_comes_from_the_database_not_the_request(
             history=history,
             system_prompt=system_prompt,
             model_pk=model_pk,
+            thinking=thinking,
+            thinking_effort=thinking_effort,
         )
 
     services.chat.answer = spy  # type: ignore[method-assign]
@@ -323,3 +328,86 @@ def test_chat_records_the_chosen_model_on_the_conversation(
 
     assert response.status_code == 200, response.text
     assert client.get(f"/api/v1/conversations/{conv['id']}").json()["model_pk"] == model.id
+
+
+# --------------------------------------------------------------------- 思考偏好（v16）
+
+
+def _capturing_chat() -> dict:
+    """把对话工厂换成"记下收到的 config"，用来断言这一轮真正用的思考档位。"""
+    services = get_services()
+    seen: dict = {}
+
+    def factory(config):  # type: ignore[no-untyped-def]
+        seen["config"] = config
+        return FakeChat()
+
+    services.chat._chat_factory = factory
+    return seen
+
+
+def test_conversation_can_be_created_with_thinking_preference(
+    client: TestClient, kb_id: str
+) -> None:
+    created = client.post(
+        "/api/v1/conversations",
+        json={"kb_ids": [kb_id], "thinking": True, "thinking_effort": "low"},
+    ).json()
+
+    assert created["thinking"] is True
+    assert created["thinking_effort"] == "low"
+
+
+def test_chat_request_thinking_override_reaches_the_model_and_persists(
+    client: TestClient, kb_id: str
+) -> None:
+    """输入框里的那两档是**请求级覆盖**，并且要随会话留痕（回看时仍是当时那一档）。"""
+    seen = _capturing_chat()
+    conv = client.post("/api/v1/conversations", json={"kb_ids": [kb_id]}).json()
+
+    response = client.post(
+        "/api/v1/chat",
+        json={
+            "query": "关掉思考再问",
+            "kb_ids": [kb_id],
+            "conversation_id": conv["id"],
+            "thinking": False,
+            "thinking_effort": "high",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert seen["config"].enable_thinking is False
+    assert seen["config"].thinking_effort == "high"
+    detail = client.get(f"/api/v1/conversations/{conv['id']}").json()
+    assert detail["thinking"] is False
+    assert detail["thinking_effort"] == "high"
+
+
+def test_chat_falls_back_to_the_conversation_thinking(client: TestClient, kb_id: str) -> None:
+    """请求不带时沿用会话已存的——这是"会话级偏好"存在的意义。"""
+    seen = _capturing_chat()
+    conv = client.post(
+        "/api/v1/conversations",
+        json={"kb_ids": [kb_id], "thinking": False, "thinking_effort": "low"},
+    ).json()
+
+    response = client.post(
+        "/api/v1/chat",
+        json={"query": "沿用会话设置", "kb_ids": [kb_id], "conversation_id": conv["id"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert seen["config"].enable_thinking is False
+    assert seen["config"].thinking_effort == "low"
+
+
+def test_chat_without_conversation_uses_global_default(client: TestClient, kb_id: str) -> None:
+    """没有会话可记时回到全局默认（默认开、中档），而不是悄悄关掉。"""
+    seen = _capturing_chat()
+
+    response = client.post("/api/v1/chat", json={"query": "一次性提问", "kb_ids": [kb_id]})
+
+    assert response.status_code == 200, response.text
+    assert seen["config"].enable_thinking is True
+    assert seen["config"].thinking_effort == "medium"

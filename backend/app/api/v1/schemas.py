@@ -354,6 +354,11 @@ class SearchResponse(BaseModel):
 # --------------------------------------------------------------------- 设置
 
 
+class SettingFieldOptionOut(BaseModel):
+    value: str
+    label: str
+
+
 class SettingFieldOut(BaseModel):
     """一个配置项。密钥只给掩码，``configured`` 说明是否已填。"""
 
@@ -362,6 +367,8 @@ class SettingFieldOut(BaseModel):
     type: str
     value: str
     configured: bool
+    options: list[SettingFieldOptionOut] = Field(default_factory=list)
+    """``type == "select"`` 时的候选值；其余类型为空。"""
 
 
 class SettingGroupOut(BaseModel):
@@ -475,6 +482,13 @@ class ChatRequestIn(BaseModel):
         default=None,
         description="这一轮用哪个注册对话模型；留空则用会话已存的，再留空用全局默认",
     )
+    thinking: bool | None = Field(
+        default=None,
+        description="这一轮是否开启思考；留空则用会话已存的，再留空用全局默认（默认开）",
+    )
+    thinking_effort: Literal["low", "medium", "high"] | None = Field(
+        default=None, description="这一轮的思考强度；同上，留空逐级回退"
+    )
 
 
 class ChatSourceOut(BaseModel):
@@ -557,6 +571,10 @@ class ConversationCreateIn(BaseModel):
     kb_ids: list[str] = Field(default_factory=list)
     model_pk: str | None = None
     """本条会话选用的对话模型（v12）。``None`` = 跟随全局默认。"""
+    thinking: bool | None = None
+    """本条会话是否开启思考（v16）。``None`` = 跟随全局默认。"""
+    thinking_effort: Literal["low", "medium", "high"] | None = None
+    """本条会话的思考强度（v16）。``None`` = 跟随全局默认。"""
 
 
 class ConversationRenameIn(BaseModel):
@@ -573,6 +591,10 @@ class ConversationOut(BaseModel):
     kb_ids: list[str] = Field(default_factory=list)
     model_pk: str | None = None
     """本条会话选用的对话模型（v12）；``None`` = 全局默认。界面据此回填模型选择器。"""
+    thinking: bool | None = None
+    """本条会话是否开启思考（v16）；``None`` = 全局默认。界面据此回填思考开关。"""
+    thinking_effort: str | None = None
+    """本条会话的思考强度（v16）；``None`` = 全局默认。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
     message_count: int = 0

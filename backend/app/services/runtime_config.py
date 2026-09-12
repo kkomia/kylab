@@ -28,6 +28,7 @@ from app.core.exceptions import InvalidRequestError
 from app.parsers.mineru_cloud import MinerUConfig
 from app.parsers.paddleocr_api import PaddleOCRConfig
 from app.services.llm import LLMConfig
+from app.services.thinking import normalize_effort
 from app.storage.base import StoreBundle
 
 __all__ = [
@@ -80,7 +81,18 @@ SETTING_GROUPS: dict[str, Any] = {
         "fields": [
             {"key": "llm.temperature", "label": "温度", "type": "text"},
             {"key": "llm.max_tokens", "label": "最大回复长度", "type": "int"},
-            {"key": "llm.enable_thinking", "label": "深度思考（推理模型）", "type": "bool"},
+            {"key": "llm.enable_thinking", "label": "思考模式", "type": "bool"},
+            {
+                "key": "llm.thinking_effort",
+                "label": "思考强度",
+                "type": "select",
+                # 归一化三档；具体翻译成哪家的参数由 services/thinking.py 决定
+                "options": [
+                    {"value": "low", "label": "低（快，省 token）"},
+                    {"value": "medium", "label": "中（默认）"},
+                    {"value": "high", "label": "高（深，慢）"},
+                ],
+            },
         ],
     },
     "chat": {
@@ -102,9 +114,12 @@ DEFAULTS: dict[str, str] = {
     "paddleocr.token": "",
     "paddleocr.model": "PaddleOCR-VL-1.6",
     "llm.temperature": "0.3",
-    "llm.max_tokens": "1024",
-    # 推理模型默认**关掉思考**：开着会把 max_tokens 吃光、content 为空（实测）
-    "llm.enable_thinking": "false",
+    # 2048 而不是 1024：思考开着时思考内容也占回复预算，1024 常常"想完了没正文"。
+    # 显式改小的部署不受强制——取值以库里/表单里的为准。
+    "llm.max_tokens": "2048",
+    # 思考**默认开**：主流模型默认都思考，这里的开关只用来"临时关掉"。
+    "llm.enable_thinking": "true",
+    "llm.thinking_effort": "medium",
     "chat.system_prompt": "",  # 空则用 services/chat.py 的内置提示词
     "chat.top_k": "6",
 }
@@ -220,16 +235,18 @@ class RuntimeConfigService:
             for field in spec["fields"]:
                 raw = self.get(field["key"])
                 is_secret = field["key"] in SECRET_KEYS
-                fields.append(
-                    {
-                        "key": field["key"],
-                        "label": field["label"],
-                        "type": field["type"],
-                        # 密钥只给掩码；前端据此显示"已配置 sk-xu…ten"
-                        "value": mask_secret(raw) if is_secret else raw,
-                        "configured": bool(raw),
-                    }
-                )
+                entry: dict[str, Any] = {
+                    "key": field["key"],
+                    "label": field["label"],
+                    "type": field["type"],
+                    # 密钥只给掩码；前端据此显示"已配置 sk-xu…ten"
+                    "value": mask_secret(raw) if is_secret else raw,
+                    "configured": bool(raw),
+                }
+                # 下拉项的候选值。只有 select 类字段带它，前端据此渲染 AppSelect。
+                if field.get("options"):
+                    entry["options"] = list(field["options"])
+                fields.append(entry)
             groups.append({"key": group_key, "label": spec["label"], "fields": fields})
         return {"groups": groups}
 
@@ -308,9 +325,7 @@ class RuntimeConfigService:
         "这次怎么问"而不是"用哪家模型"，换个模型通常也不想重新调一遍。
         没绑定「对话生成」就是没配，``is_configured`` 为假，对话会明确报错。
         """
-        temperature = _as_float(self.get("llm.temperature"), 0.3)
-        max_tokens = self.get_int("llm.max_tokens") or 1024
-        thinking = self.get("llm.enable_thinking").lower() in ("1", "true", "yes", "on")
+        temperature, max_tokens, thinking, effort = self._sampling()
 
         bound = self._bound("chat")
         if bound is None:
@@ -321,6 +336,7 @@ class RuntimeConfigService:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 enable_thinking=thinking,
+                thinking_effort=effort,
             )
 
         provider, model = bound
@@ -347,9 +363,8 @@ class RuntimeConfigService:
         不同模型对采样参数的最优区间不同（推理模型通常要更低的 temperature），
         所以模型自带的默认值优先于设置页。
         """
-        temperature = _as_float(self.get("llm.temperature"), 0.3)
-        max_tokens = self.get_int("llm.max_tokens") or 1024
-        thinking = self.get("llm.enable_thinking").lower() in ("1", "true", "yes", "on")
+        temperature, max_tokens, thinking, effort = self._sampling()
+        dialect: str | None = None
         options = getattr(model, "options", None) or {}
         if "temperature" in options:
             temperature = _as_float(str(options["temperature"]), temperature)
@@ -359,6 +374,10 @@ class RuntimeConfigService:
                 max_tokens = int(options["max_tokens"])  # type: ignore[arg-type]
         if "enable_thinking" in options:
             thinking = bool(options["enable_thinking"])
+        if "thinking_effort" in options:
+            effort = normalize_effort(options["thinking_effort"], effort)
+        if options.get("thinking_dialect"):
+            dialect = str(options["thinking_dialect"]).strip().lower()
         return LLMConfig(
             base_url=getattr(provider, "base_url", ""),
             api_key=getattr(provider, "api_key", ""),
@@ -366,7 +385,22 @@ class RuntimeConfigService:
             temperature=temperature,
             max_tokens=max_tokens,
             enable_thinking=thinking,
+            thinking_effort=effort,
+            thinking_dialect=dialect,
         )
+
+    def _sampling(self) -> tuple[float, int, bool, str]:
+        """设置页那几档采样参数的快照：温度、最大回复长度、思考开关与强度。
+
+        思考开着时思考内容也占回复预算，所以**默认值**取 2048 而不是 1024
+        （DeepSeek 实测：预算被思考吃光时正文为空）。库里显式设过值就按值来，
+        不做强制抬升——用户缩过回复长度是有理由的，界面会用可读错误提示他调回去。
+        """
+        temperature = _as_float(self.get("llm.temperature"), 0.3)
+        max_tokens = self.get_int("llm.max_tokens") or 2048
+        thinking = self.get("llm.enable_thinking").lower() in ("1", "true", "yes", "on")
+        effort = normalize_effort(self.get("llm.thinking_effort"))
+        return temperature, max_tokens, thinking, effort
 
     # ------------------------------------------------------------------ 引导值
 
@@ -386,6 +420,7 @@ class RuntimeConfigService:
             "llm.temperature": settings.llm_temperature,
             "llm.max_tokens": settings.llm_max_tokens,
             "llm.enable_thinking": settings.llm_enable_thinking,
+            "llm.thinking_effort": settings.llm_thinking_effort,
         }
         value = mapping.get(key)
         return "" if value is None else str(value)

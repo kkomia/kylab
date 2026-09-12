@@ -54,10 +54,13 @@ class ConversationService:
         title: str = "",
         owner_id: str | None = None,
         model_pk: str | None = None,
+        thinking: bool | None = None,
+        thinking_effort: str | None = None,
     ) -> ConversationRecord:
         """``owner_id``（v10）：登录成员的会话归自己；控制台/API Key 通道无主。
 
         ``model_pk``（v12）：这条会话选用的对话模型；``None`` = 跟随全局默认。
+        ``thinking`` / ``thinking_effort``（v16）：思考开关与强度；``None`` = 跟随全局默认。
         """
         return self._stores.meta.create_conversation(
             ConversationRecord(
@@ -66,6 +69,8 @@ class ConversationService:
                 kb_ids=tuple(kb_ids or ()),
                 owner_id=owner_id,
                 model_pk=model_pk,
+                thinking=thinking,
+                thinking_effort=thinking_effort,
             )
         )
 
@@ -119,6 +124,14 @@ class ConversationService:
         """
         self.get(conversation_id)
         self._stores.meta.set_conversation_model(conversation_id, model_pk)
+        return self.get(conversation_id)
+
+    def set_thinking(
+        self, conversation_id: str, thinking: bool | None, effort: str | None
+    ) -> ConversationRecord:
+        """记录该会话的思考偏好（``None`` = 回到全局默认）。与 ``set_model`` 同一套口径。"""
+        self.get(conversation_id)
+        self._stores.meta.set_conversation_thinking(conversation_id, thinking, effort)
         return self.get(conversation_id)
 
     def delete(self, conversation_id: str) -> None:

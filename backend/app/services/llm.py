@@ -22,6 +22,7 @@ from dataclasses import dataclass
 import httpx
 
 from app.core.exceptions import UpstreamError
+from app.services.thinking import DEFAULT_EFFORT, build_thinking_payload
 
 __all__ = ["ChatError", "ChatMessage", "LLMConfig", "OpenAICompatChat"]
 
@@ -61,8 +62,16 @@ class LLMConfig:
     model_id: str
     temperature: float = 0.3
     max_tokens: int = 1024
-    enable_thinking: bool = False
-    """推理模型（Qwen3.5 等）的思考开关。关掉它回答才出现在 content 里。"""
+    enable_thinking: bool = True
+    """思考开关，**默认开**（市场上主流模型默认都思考）。
+
+    注意：不同的供应商用不同的字段表示它，由 ``services/thinking.py`` 按方言翻译；
+    发错字段的后果是"开关看起来有效、实际没生效"（DeepSeek 就是这样）。
+    """
+    thinking_effort: str = DEFAULT_EFFORT
+    """思考强度，归一化为 low / medium / high；同样交方言层翻译。"""
+    thinking_dialect: str | None = None
+    """思考方言的显式覆盖（模型 ``options.thinking_dialect``）；空则按地址与模型名自动识别。"""
 
     @property
     def is_configured(self) -> bool:
@@ -176,11 +185,18 @@ class OpenAICompatChat:
             "temperature": self.config.temperature,
             "max_tokens": self.config.max_tokens,
         }
-        if self.config.enable_thinking:
-            # 显式打开才算开；默认关，见 LLMConfig 的注释
-            payload["enable_thinking"] = True
-        else:
-            payload["enable_thinking"] = False
+        # 思考参数按供应商方言翻译：各家字段名不同，见 services/thinking.py 的模块注释。
+        # 只发这家认识的字段——多发一个未知字段会被严格的端点打成 400。
+        payload.update(
+            build_thinking_payload(
+                base_url=self.config.base_url,
+                model_id=self.config.model_id,
+                enabled=self.config.enable_thinking,
+                effort=self.config.thinking_effort,
+                dialect=self.config.thinking_dialect,
+                max_tokens=self.config.max_tokens,
+            )
+        )
         return payload
 
     def _decode(self, response: httpx.Response) -> dict:
@@ -240,8 +256,8 @@ def _content_of(body: dict) -> str:
 
     if (message.get("reasoning_content") or "").strip():
         raise ChatError(
-            "模型只返回了思考过程、没有正文：这是推理模型，请在设置里关闭「深度思考」"
-            "（或把 max_tokens 调大）"
+            "模型只返回了思考过程、没有正文：这是推理模型，思考吃掉了回复预算。"
+            "请把「最大回复长度」调大，或在输入框把思考强度调低 / 关闭思考"
         )
     # 两者都空：**不能**返回空串。返回空串的话上层只会得到一句"没有回答"，
     # 用户看不出是模型没配好、被限流还是提示词太长——所以在这里就给出可处置的原因。

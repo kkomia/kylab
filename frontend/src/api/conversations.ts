@@ -15,9 +15,19 @@ export interface ConversationSummary {
   kb_ids: string[]
   /** 本条会话选用的对话模型（v12）；`null` = 跟随全局默认。界面据此回填模型选择器。 */
   model_pk: string | null
+  /** 本条会话是否开启思考（v16）；`null` = 跟随全局默认。界面据此回填思考开关。 */
+  thinking: boolean | null
+  /** 本条会话的思考强度（v16）；`null` = 跟随全局默认。 */
+  thinking_effort: 'low' | 'medium' | 'high' | null
   created_at: string | null
   updated_at: string | null
   message_count: number
+}
+
+/** 对话的思考偏好（请求级参数，随会话保存）。 */
+export interface ConversationThinking {
+  thinking?: boolean | null
+  thinking_effort?: 'low' | 'medium' | 'high' | null
 }
 
 export interface StoredMessage {
@@ -39,10 +49,18 @@ export function listConversations(limit = 50): Promise<{ items: ConversationSumm
 export function createConversation(
   kbIds: string[],
   modelPk?: string | null,
+  thinking?: ConversationThinking,
 ): Promise<ConversationSummary> {
   return request('/conversations', {
     method: 'POST',
-    body: JSON.stringify({ kb_ids: kbIds, model_pk: modelPk ?? null }),
+    body: JSON.stringify({
+      kb_ids: kbIds,
+      model_pk: modelPk ?? null,
+      // 不带思考偏好时不发字段：让后端按"跟随全局默认"处理，
+      // 而不是把它写成一个我们这边猜出来的值
+      ...(thinking?.thinking !== undefined ? { thinking: thinking.thinking } : {}),
+      ...(thinking?.thinking_effort ? { thinking_effort: thinking.thinking_effort } : {}),
+    }),
   })
 }
 

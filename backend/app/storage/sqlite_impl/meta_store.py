@@ -1656,6 +1656,9 @@ class SqliteMetaStore(MetaStore):
             kb_ids=tuple(json.loads(row["kb_ids"])),
             owner_id=row["owner_id"],
             model_pk=row["model_pk"],
+            # 可空列在旧库里是 NULL：``None`` 表示"跟随全局默认"，不要折成 False
+            thinking=None if row["thinking"] is None else bool(row["thinking"]),
+            thinking_effort=row["thinking_effort"],
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
         )
@@ -1678,14 +1681,17 @@ class SqliteMetaStore(MetaStore):
         with self._db.session() as conn:
             conn.execute(
                 "INSERT INTO conversations"
-                " (id, title, kb_ids, owner_id, model_pk, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                " (id, title, kb_ids, owner_id, model_pk, thinking, thinking_effort,"
+                "  created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     record.id,
                     record.title,
                     _json(list(record.kb_ids)),
                     record.owner_id,
                     record.model_pk,
+                    None if record.thinking is None else int(record.thinking),
+                    record.thinking_effort,
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
@@ -1723,6 +1729,15 @@ class SqliteMetaStore(MetaStore):
             conn.execute(
                 "UPDATE conversations SET model_pk = ? WHERE id = ?",
                 (model_pk, conversation_id),
+            )
+
+    def set_conversation_thinking(
+        self, conversation_id: str, thinking: bool | None, effort: str | None
+    ) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE conversations SET thinking = ?, thinking_effort = ? WHERE id = ?",
+                (None if thinking is None else int(thinking), effort, conversation_id),
             )
 
     def touch_conversation(self, conversation_id: str) -> None:

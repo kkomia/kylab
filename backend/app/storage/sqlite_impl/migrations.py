@@ -554,6 +554,18 @@ _MIGRATION_015 = Migration(
 )
 
 
+_MIGRATION_016 = Migration(
+    version=16,
+    description="会话级思考偏好：conversations.thinking / thinking_effort（可空=跟随全局）",
+    statements=(
+        # 可空：老会话与"没显式选"的会话继续走全局默认。与 model_pk（v12）同一套口径：
+        # 用户在输入框改过的选择随会话留下，回看时仍然是当时那一档。
+        "ALTER TABLE conversations ADD COLUMN thinking INTEGER",
+        "ALTER TABLE conversations ADD COLUMN thinking_effort TEXT",
+    ),
+)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
@@ -570,6 +582,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_013,
     _MIGRATION_014,
     _MIGRATION_015,
+    _MIGRATION_016,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

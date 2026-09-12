@@ -61,11 +61,12 @@ async def chat_stream(
     _require_conversation(services, payload, caller)
     _warn_on_scope_drift(services, payload)
     model_pk = _effective_model(services, payload)
+    thinking, effort = _effective_thinking(services, payload)
     # **在流开始前把模型校验掉**：坏 pk 应当是 422，而不是流内的一条 error 事件
     # （流一旦开始，状态码已经发出去了）。没配任何模型不算错，交由流内报可读文案。
     services.chat.llm_config(model_pk)
     return StreamingResponse(
-        _events(services, payload, model_pk),
+        _events(services, payload, model_pk, thinking, effort),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -82,6 +83,7 @@ async def chat_once(
     _require_conversation(services, payload, caller)
     _warn_on_scope_drift(services, payload)
     model_pk = _effective_model(services, payload)
+    thinking, effort = _effective_thinking(services, payload)
 
     sources = services.chat.retrieve_sources(
         query=payload.query,
@@ -93,6 +95,8 @@ async def chat_once(
         sources=sources,
         history=_history(services, payload),
         model_pk=model_pk,
+        thinking=thinking,
+        thinking_effort=effort,
     )
     _record_turn(services, payload, answer=answer.answer, sources=answer.sources)
     return ChatResponseOut(answer=answer.answer, sources=_sources_out(answer.sources))
@@ -152,7 +156,47 @@ def _effective_model(services: Services, payload: ChatRequestIn) -> str | None:
     return None
 
 
-def _events(services: Services, payload: ChatRequestIn, model_pk: str | None) -> Iterator[str]:
+def _effective_thinking(
+    services: Services, payload: ChatRequestIn
+) -> tuple[bool | None, str | None]:
+    """这一轮实际用哪档思考设置。
+
+    与 ``_effective_model`` 同一套优先级：**请求 > 会话已存 > 全局默认（``None``）**。
+    请求里带了任一项且指定了会话时回写会话，让这条会话记住用户在输入框里的选择；
+    回写失败只记日志——偏好没存上不该让这一轮问不出来。
+
+    返回 ``None`` 表示"交给设置页/模型 options 决定"，而不是"关闭"：
+    两层都用 ``None`` 当"没选"，把 False 混进去会让"没选"变成"显式关闭"。
+    """
+    thinking = payload.thinking
+    effort = payload.thinking_effort
+    if thinking is None and effort is None:
+        if payload.conversation_id:
+            record = services.conversations.get(payload.conversation_id)
+            return record.thinking, record.thinking_effort
+        return None, None
+
+    if payload.conversation_id:
+        try:
+            record = services.conversations.get(payload.conversation_id)
+            merged_thinking = thinking if thinking is not None else record.thinking
+            merged_effort = effort if effort is not None else record.thinking_effort
+            if record.thinking != merged_thinking or record.thinking_effort != merged_effort:
+                services.conversations.set_thinking(
+                    payload.conversation_id, merged_thinking, merged_effort
+                )
+        except Exception:
+            logger.exception("会话思考偏好回写失败：%s", payload.conversation_id)
+    return thinking, effort
+
+
+def _events(
+    services: Services,
+    payload: ChatRequestIn,
+    model_pk: str | None,
+    thinking: bool | None,
+    effort: str | None,
+) -> Iterator[str]:
     """把一次问答摊成一串 SSE 事件。
 
     任何异常都在**流内**报出去（``type=error``）而不是靠 HTTP 状态码：
@@ -186,6 +230,8 @@ def _events(services: Services, payload: ChatRequestIn, model_pk: str | None) ->
             sources=sources,
             history=_history(services, payload),
             model_pk=model_pk,
+            thinking=thinking,
+            thinking_effort=effort,
         ):
             collected.append(delta)
             yield _sse({"type": "delta", "text": delta})

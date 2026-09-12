@@ -83,9 +83,16 @@ class Settings(BaseSettings):
     # 对话模型（M6 快速检索问答）
     # 地址 / 密钥 / 模型名同样由注册表决定，这里只留采样与思考开关
     llm_temperature: float = 0.3
-    llm_max_tokens: int = 1024
-    llm_enable_thinking: bool = False
-    """推理模型（Qwen3.5 等）的思考开关：开着会把 max_tokens 吃光、正文为空（实测）。"""
+    llm_max_tokens: int = 2048
+    """回复长度上限。思考开着时思考内容也占预算，1024 常导致"想完了没正文"。"""
+    llm_enable_thinking: bool = True
+    """思考开关，**默认开**：主流模型默认都思考，关掉是例外而不是常态。
+
+    不同供应商用不同字段表达它（DeepSeek 认 ``thinking.type``、Qwen 认
+    ``enable_thinking``），翻译见 ``services/thinking.py``。
+    """
+    llm_thinking_effort: str = "medium"
+    """思考强度（low / medium / high），同样按方言翻译或丢弃。"""
 
     @property
     def cors_origin_list(self) -> list[str]:

@@ -51,6 +51,15 @@ export interface ChatPayload {
    * 不必额外调用改会话的接口。
    */
   model_pk?: string
+  /**
+   * 这一轮是否开启思考（v16）。**留空 = 跟随会话/全局默认（默认开）**。
+   *
+   * 注意 `false` 与 `undefined` 是两个意思：前者是"我要关掉"，
+   * 后者是"没表过态"。后端据此区分，所以不要用 `?? false` 折叠。
+   */
+  thinking?: boolean
+  /** 这一轮的思考强度；留空逐级回退到会话、再回退到设置页。 */
+  thinking_effort?: 'low' | 'medium' | 'high'
 }
 
 /** 服务端事件（后端 api/v1/chat.py 的事件形状）。 */

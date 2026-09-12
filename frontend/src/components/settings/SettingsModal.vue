@@ -496,6 +496,12 @@ function isConfigured(groupKey: string, fieldKey: string): boolean {
   return group(groupKey)?.fields.find((item) => item.key === fieldKey)?.configured ?? false
 }
 
+/** select 字段当前值的显示文案。候选值来自后端，前端不做一份映射表。 */
+function selectLabel(groupKey: string, fieldKey: string, value: string): string {
+  const field = group(groupKey)?.fields.find((item) => item.key === fieldKey)
+  return field?.options.find((option) => option.value === value)?.label ?? value
+}
+
 function secretSummary(groupKey: string, fieldKey: string): string {
   return isConfigured(groupKey, fieldKey) ? fieldValue(groupKey, fieldKey) : '未配置'
 }
@@ -749,6 +755,14 @@ async function runTest(target: string): Promise<void> {
                   />
                   <span>{{ field.label }}</span>
                 </label>
+                <label v-else-if="field.type === 'select'" class="edit-field">
+                  <span class="edit-label">{{ field.label }}</span>
+                  <AppSelect
+                    v-model="draft[field.key]"
+                    :options="field.options"
+                    :aria-label="field.label"
+                  />
+                </label>
                 <label v-else class="edit-field">
                   <span class="edit-label">
                     {{ field.label }}
@@ -842,15 +856,16 @@ async function runTest(target: string): Promise<void> {
                   >{{ fieldValue('llm', 'llm.max_tokens') || '—' }} tokens<span class="sep">·</span
                   >{{
                     fieldValue('llm', 'llm.enable_thinking') === 'true'
-                      ? '深度思考开'
-                      : '深度思考关'
+                      ? `思考开（${selectLabel('llm', 'llm.thinking_effort', fieldValue('llm', 'llm.thinking_effort'))}）`
+                      : '思考关'
                   }}
                 </span>
               </div>
               <AppButton v-if="group('llm')" @click="openEdit(group('llm')!)">编辑</AppButton>
             </div>
             <p v-if="fieldValue('llm', 'llm.enable_thinking') === 'true'" class="row-note">
-              更慢、更费 token；确认「最大回复长度」够大。
+              更慢、更费
+              token；确认「最大回复长度」够大。降强度或关闭思考都可以从对话输入框临时调整。
             </p>
 
             <h3 class="section-title section-gap">对话行为</h3>

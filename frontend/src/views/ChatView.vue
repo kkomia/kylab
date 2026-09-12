@@ -30,8 +30,10 @@ import {
   type ChatSource,
 } from '@/api/chat'
 import { getConversation } from '@/api/conversations'
-import { getRegistry, type RegisteredModel, type Registry } from '@/api/modelRegistry'
+import type { RegisteredModel } from '@/api/modelRegistry'
 import { getSettings, updateSettings } from '@/api/settings'
+import IconCheck from '@/components/icons/IconCheck.vue'
+import IconClose from '@/components/icons/IconClose.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
@@ -42,6 +44,7 @@ import { renderAnswerMarkdown } from '@/composables/useMarkdown'
 import { useToast } from '@/composables/useToast'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
+import { useModelRegistryStore } from '@/stores/modelRegistry'
 
 /** 会话里带入模型的历史轮数上限：无边界地带上全部历史，提示词会先被自己挤爆。 */
 const HISTORY_LIMIT = 6
@@ -49,6 +52,18 @@ const HISTORY_LIMIT = 6
 const SAMPLE_COUNT = 5
 /** 上次选过的对话模型：换会话/刷新之后仍然沿用（与 WeKnora 同一手法）。 */
 const LAST_MODEL_KEY = 'kylab-last-chat-model'
+/** 思考开关与强度的本机默认（新建会话时用；选中已有会话则回填会话里存的那一档）。 */
+const LAST_THINKING_KEY = 'kylab-last-thinking'
+const LAST_EFFORT_KEY = 'kylab-last-thinking-effort'
+
+type ThinkingEffort = 'low' | 'medium' | 'high'
+
+/** 强度三档。与后端 ``services/thinking.py`` 的归一化口径一致，界面只暴露这三个。 */
+const THINKING_EFFORTS: { value: ThinkingEffort; label: string }[] = [
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+]
 
 interface Message {
   role: 'user' | 'assistant'
@@ -61,6 +76,7 @@ interface Message {
 
 const store = useKnowledgeBaseStore()
 const conversations = useConversationStore()
+const registryStore = useModelRegistryStore()
 const route = useRoute()
 const router = useRouter()
 const { notifyError, notifySuccess, notifyWarning } = useToast()
@@ -137,6 +153,9 @@ async function loadConversation(): Promise<void> {
     }
     // 会话当时选的对话模型：回放时也沿用（v12）。为空则保持当前的默认选择
     if (detail.model_pk) modelPk.value = detail.model_pk
+    // 会话当时的思考偏好（v16）：`null` = 当时跟随全局，保持当前默认即可
+    if (detail.thinking !== null) thinkingOn.value = detail.thinking
+    if (detail.thinking_effort) thinkingEffort.value = detail.thinking_effort
     stick.value = true
     void scrollToBottom()
   } catch (cause) {
@@ -186,7 +205,10 @@ async function send(): Promise<void> {
   let target = conversationId.value
   if (!target) {
     try {
-      const created = await conversations.create(selected.value, modelPk.value || null)
+      const created = await conversations.create(selected.value, modelPk.value || null, {
+        thinking: thinkingOn.value,
+        thinking_effort: thinkingEffort.value,
+      })
       target = created.id
       // 用 replace 而不是 push：用户按"新对话"只是想换个会话，
       // 在历史里留一条空的 /chat 没有任何意义，返回时会看到一片空白
@@ -229,6 +251,8 @@ async function send(): Promise<void> {
         history: context,
         conversation_id: target,
         model_pk: model,
+        thinking: thinkingOn.value,
+        thinking_effort: thinkingEffort.value,
       },
       {
         onSources: (items) => patch({ sources: items }),
@@ -336,9 +360,11 @@ function sourcePreview(source: ChatSource): string {
 
 // ------------------------------------------------------------------ 对话模型（v12）
 
-const registry = ref<Registry | null>(null)
+const registry = computed(() => registryStore.registry)
+/** 是否已经拿到过注册表。没拿到之前不显示"未配置对话模型"——那会把加载中误报成没配。 */
+const modelsLoaded = computed(() => registryStore.loaded)
 /** 当前选用的注册模型 pk；空串 = 交给后端的全局默认。 */
-const modelPk = ref('')
+const modelPk = ref(readStored(LAST_MODEL_KEY))
 
 /** 可对话的模型：供应商启用，且能力为空或含 chat（与设置页同一套筛选口径）。 */
 const chatModels = computed<RegisteredModel[]>(() => {
@@ -351,20 +377,33 @@ const chatModels = computed<RegisteredModel[]>(() => {
   })
 })
 
+/**
+ * 只显示模型名，不带供应商。
+ *
+ * 输入框的宽度有限，而"是哪一家"在设置 → 模型注册里看得到；把
+ * `deepseek-flash · 深度求索` 塞进 200px 的控件里，真正要认的模型名反而被挤掉。
+ */
 const modelOptions = computed(() =>
   chatModels.value.map((model) => ({
     value: model.id,
-    label: `${model.label || model.model_id} · ${model.provider_name}`,
+    label: model.label || model.model_id,
   })),
 )
 
+/**
+ * 下拉占位文案。
+ *
+ * **加载中与"没配置"必须分开说**：注册表回来之前显示"未配置对话模型"，
+ * 会让每次进页面都闪一下一个并不成立的状态（实测 430ms），
+ * 看起来像模型名在闪烁、也像配置丢了。
+ */
+const modelPlaceholder = computed(() => {
+  if (!modelsLoaded.value) return '默认模型'
+  return modelOptions.value.length === 0 ? '未配置对话模型' : '默认模型'
+})
+
 async function loadModels(): Promise<void> {
-  try {
-    registry.value = await getRegistry()
-  } catch {
-    // 读不到注册表不该挡住提问：留空即"跟随全局默认"，由后端给出真正的错误
-    registry.value = null
-  }
+  await registryStore.load()
   ensureModelSelection()
 }
 
@@ -376,29 +415,61 @@ async function loadModels(): Promise<void> {
 function ensureModelSelection(): void {
   if (modelPk.value && chatModels.value.some((item) => item.id === modelPk.value)) return
   const bound = registry.value?.slots.find((slot) => slot.slot === 'chat')?.bound_model_pk ?? ''
-  const remembered = readLastModel()
+  const remembered = readStored(LAST_MODEL_KEY)
   const candidate = [bound, remembered].find(
     (value) => value && chatModels.value.some((item) => item.id === value),
   )
   modelPk.value = candidate ?? chatModels.value[0]?.id ?? ''
 }
 
-function readLastModel(): string {
+/** 读一条本机偏好。隐私模式（localStorage 抛错）下当作没有。 */
+function readStored(key: string): string {
   try {
-    return window.localStorage.getItem(LAST_MODEL_KEY) ?? ''
+    return window.localStorage.getItem(key) ?? ''
   } catch {
     return ''
   }
 }
 
-// 记住这次选的：换个会话/刷新之后仍然用它（"这台机器上次用的那个"）
-watch(modelPk, (value) => {
+function writeStored(key: string, value: string): void {
   try {
-    if (value) window.localStorage.setItem(LAST_MODEL_KEY, value)
+    window.localStorage.setItem(key, value)
   } catch {
     // 隐私模式：不记忆即可
   }
+}
+
+// 记住这次选的：换个会话/刷新之后仍然用它（"这台机器上次用的那个"）
+watch(modelPk, (value) => {
+  if (value) writeStored(LAST_MODEL_KEY, value)
 })
+
+// ------------------------------------------------------------------ 思考模式（v16）
+
+/**
+ * 思考开关与强度。
+ *
+ * **默认开**：主流对话模型默认都思考，关掉是例外。用户在这里改的选择会随会话
+ * 保存（与模型选择同一套口径），本机另存一份作为**新建会话**时的默认。
+ *
+ * 这两个值只影响"这一轮怎么问"：真正翻译成哪家的字段（DeepSeek 的
+ * ``thinking.type``、Qwen 的 ``enable_thinking``…）由后端按供应商方言决定。
+ */
+const thinkingOn = ref(readStored(LAST_THINKING_KEY) !== 'false')
+const thinkingEffort = ref<ThinkingEffort>(readStoredEffort())
+
+function readStoredEffort(): ThinkingEffort {
+  const raw = readStored(LAST_EFFORT_KEY)
+  return THINKING_EFFORTS.find((item) => item.value === raw)?.value ?? 'medium'
+}
+
+watch(thinkingOn, (value) => writeStored(LAST_THINKING_KEY, value ? 'true' : 'false'))
+watch(thinkingEffort, (value) => writeStored(LAST_EFFORT_KEY, value))
+
+/** AppSelect 回传的是 string；收进三档联合类型，非法值退回默认。 */
+function onEffortChange(value: string): void {
+  thinkingEffort.value = THINKING_EFFORTS.find((item) => item.value === value)?.value ?? 'medium'
+}
 
 // ------------------------------------------------------------------ 示例问题
 
@@ -647,7 +718,29 @@ async function savePrompt(): Promise<void> {
               :options="modelOptions"
               :disabled="modelOptions.length === 0"
               aria-label="对话模型"
-              :placeholder="modelOptions.length === 0 ? '未配置对话模型' : '默认模型'"
+              :placeholder="modelPlaceholder"
+            />
+            <!-- 思考开关：默认开。开着比关着多花时间与 token，所以状态要一眼可辨 -->
+            <button
+              type="button"
+              class="think-toggle"
+              :class="{ 'think-on': thinkingOn }"
+              :aria-pressed="thinkingOn"
+              :aria-label="thinkingOn ? '思考已开启，点击关闭' : '思考已关闭，点击开启'"
+              :title="thinkingOn ? '思考已开启' : '思考已关闭'"
+              @click="thinkingOn = !thinkingOn"
+            >
+              <IconCheck v-if="thinkingOn" :size="14" />
+              <IconClose v-else :size="14" />
+              <span>思考</span>
+            </button>
+            <AppSelect
+              class="pick pick-effort"
+              :model-value="thinkingEffort"
+              :options="THINKING_EFFORTS"
+              :disabled="!thinkingOn"
+              aria-label="思考强度"
+              @update:model-value="onEffortChange"
             />
           </div>
           <div class="composer-right">
@@ -1031,10 +1124,39 @@ async function savePrompt(): Promise<void> {
   min-width: 0;
 }
 
-/* 两个下拉各占一档宽度；窄屏时收缩，不把工具条挤成两行 */
+/* 知识库与模型各占一档宽度；强度只需要放下"低/中/高"，窄一档 */
 .pick {
   width: 200px;
   max-width: 42vw;
+}
+
+.pick-effort {
+  width: 96px;
+}
+
+/* 思考开关：开=品牌色软底，关=灰底。用实心底色 + 图标表达状态，
+   不用透明度——透明度在深色主题下会把文字一起洗淡，状态反而更难读。 */
+.think-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--control-height);
+  padding: 0 var(--space-3);
+  font: inherit;
+  color: var(--text-tertiary);
+  background: var(--bg-subtle);
+  border: 1px solid transparent;
+  border-radius: var(--radius-row);
+  cursor: pointer;
+}
+
+.think-toggle:hover {
+  background: var(--bg-hover);
+}
+
+.think-on {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .composer-right {

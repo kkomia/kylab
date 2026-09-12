@@ -11,6 +11,7 @@ LLM 只出现在这一层，并且**强制带引用**——回答必须能回到
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 import time
@@ -20,6 +21,7 @@ from dataclasses import dataclass, field
 from app.services.llm import ChatError, ChatMessage, LLMConfig, OpenAICompatChat
 from app.services.retrieval import RetrievalQuery, RetrievalService
 from app.services.runtime_config import RuntimeConfigService
+from app.services.thinking import normalize_effort
 
 __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
@@ -152,9 +154,11 @@ class ChatService:
         history: list[ChatMessage] | None = None,
         system_prompt: str | None = None,
         model_pk: str | None = None,
+        thinking: bool | None = None,
+        thinking_effort: str | None = None,
     ) -> ChatTurn:
         """非流式：一次拿完整回答。``model_pk`` 为空时用全局默认对话模型。"""
-        config = self._resolve_llm(model_pk)
+        config = self._resolve_llm(model_pk, thinking, thinking_effort)
         chat = self._chat_factory(config)
         messages = build_messages(
             query=query,
@@ -204,13 +208,18 @@ class ChatService:
         history: list[ChatMessage] | None = None,
         system_prompt: str | None = None,
         model_pk: str | None = None,
+        thinking: bool | None = None,
+        thinking_effort: str | None = None,
     ) -> Iterator[str]:
         """流式：逐块产出回答文本。
 
         模型没配好时**抛 ChatError**，由协议层翻成错误事件——
         不能静默返回空答案，那会让用户以为"知识库里没有"。
+
+        ``thinking`` / ``thinking_effort``：请求级覆盖（输入框里的思考开关与强度），
+        为空表示"沿用会话/全局的那一档"。
         """
-        chat = self._build_chat(model_pk)
+        chat = self._build_chat(model_pk, thinking, thinking_effort)
         messages = build_messages(
             query=query,
             sources=sources,
@@ -240,15 +249,36 @@ class ChatService:
 
     # ------------------------------------------------------------------ 内部
 
-    def _resolve_llm(self, model_pk: str | None) -> LLMConfig:
-        """取这一轮要用的对话配置；没配就抛可读错误。"""
+    def _resolve_llm(
+        self,
+        model_pk: str | None,
+        thinking: bool | None = None,
+        thinking_effort: str | None = None,
+    ) -> LLMConfig:
+        """取这一轮要用的对话配置；没配就抛可读错误。
+
+        请求级覆盖在**拿到配置之后**再套：注册表/设置页给出的那套是默认，
+        输入框里的开关是这一轮的临时选择。用 ``dataclasses.replace`` 而不是改快照，
+        因为配置是 frozen 的、也**不能被就地改**（会被其它请求看到）。
+        """
         config = self._runtime.llm_for(model_pk)
+        if thinking is not None:
+            config = dataclasses.replace(config, enable_thinking=thinking)
+        if thinking_effort is not None:
+            config = dataclasses.replace(
+                config, thinking_effort=normalize_effort(thinking_effort, config.thinking_effort)
+            )
         if not config.is_configured:
             raise ChatError("尚未配置对话模型，请到设置 → 模型配置里填写 API Key 与模型 ID")
         return config
 
-    def _build_chat(self, model_pk: str | None = None):  # type: ignore[no-untyped-def]
-        return self._chat_factory(self._resolve_llm(model_pk))
+    def _build_chat(
+        self,
+        model_pk: str | None = None,
+        thinking: bool | None = None,
+        thinking_effort: str | None = None,
+    ):  # type: ignore[no-untyped-def]
+        return self._chat_factory(self._resolve_llm(model_pk, thinking, thinking_effort))
 
 
 def build_messages(

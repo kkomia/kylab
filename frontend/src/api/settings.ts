@@ -8,12 +8,19 @@
 import type { AuthBootstrapStatus } from './auth'
 import { request } from './client'
 
+export interface SettingFieldOption {
+  value: string
+  label: string
+}
+
 export interface SettingField {
   key: string
   label: string
-  type: 'text' | 'secret' | 'int' | string
+  type: 'text' | 'secret' | 'int' | 'bool' | 'textarea' | 'select' | string
   value: string
   configured: boolean
+  /** `type === 'select'` 时的候选值；由后端给出，前端不硬编码。 */
+  options: SettingFieldOption[]
 }
 
 export interface SettingGroup {

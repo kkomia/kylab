@@ -157,6 +157,50 @@ def test_llm_snapshot_lets_model_options_override_sampling(
     assert snapshot.model_id == "deepseek-reasoner"
 
 
+def test_thinking_defaults_to_on_with_medium_effort(runtime: RuntimeConfigService, bundle) -> None:  # type: ignore[no-untyped-def]
+    """思考**默认开**：主流模型默认都思考，关掉是例外。强度默认中档。"""
+    bind_model(ModelRegistryService(bundle), "chat", model_id="m-default", capabilities=["chat"])
+
+    snapshot = runtime.llm()
+
+    assert snapshot.enable_thinking is True
+    assert snapshot.thinking_effort == "medium"
+
+
+def test_model_options_override_thinking_effort_and_dialect(
+    runtime: RuntimeConfigService, bundle
+) -> None:  # type: ignore[no-untyped-def]
+    registry = ModelRegistryService(bundle)
+    provider = registry.create_provider(
+        kind="llm", name="推理家", base_url="https://reason.example.com/v1", api_key="sk-r"
+    )
+    model = registry.register_model(
+        provider_id=provider.id,
+        model_id="m",
+        capabilities=["chat"],
+        options={"enable_thinking": False, "thinking_effort": "high", "thinking_dialect": "qwen"},
+    )
+    registry.bind("chat", model.id)
+
+    snapshot = runtime.llm()
+
+    assert snapshot.enable_thinking is False
+    assert snapshot.thinking_effort == "high"
+    assert snapshot.thinking_dialect == "qwen"
+
+
+def test_describe_exposes_thinking_effort_as_a_select(runtime: RuntimeConfigService) -> None:
+    """设置页靠这个结构渲染下拉；候选值必须由后端给出，前端不硬编码。"""
+    groups = {group["key"]: group for group in runtime.describe()["groups"]}
+    fields = {field["key"]: field for field in groups["llm"]["fields"]}
+
+    assert fields["llm.enable_thinking"]["type"] == "bool"
+    effort = fields["llm.thinking_effort"]
+    assert effort["type"] == "select"
+    assert [option["value"] for option in effort["options"]] == ["low", "medium", "high"]
+    assert effort["value"] == "medium"
+
+
 def test_cloud_parser_snapshots_come_from_settings(runtime: RuntimeConfigService) -> None:
     runtime.set({"mineru.token": "m-token", "paddleocr.token": "p-token"})
 

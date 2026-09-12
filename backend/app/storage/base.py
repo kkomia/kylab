@@ -351,6 +351,10 @@ class ConversationRecord:
     """归属账号（v10）。``None`` = 老数据，setup 时认领给首个管理员。"""
     model_pk: str | None = None
     """该会话选用的注册模型（v12）。``None`` = 走全局默认（注册表 chat 槽位）。"""
+    thinking: bool | None = None
+    """该会话是否开启思考（v16）。``None`` = 跟随全局默认。"""
+    thinking_effort: str | None = None
+    """该会话的思考强度（v16，low/medium/high）。``None`` = 跟随全局默认。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -935,6 +939,13 @@ class MetaStore(ABC):
 
         **不推 ``updated_at``**，与改名同理：切一次模型不该把会话顶到"最近活动"的最前面。
         """
+        ...
+
+    @abstractmethod
+    def set_conversation_thinking(
+        self, conversation_id: str, thinking: bool | None, effort: str | None
+    ) -> None:
+        """记录该会话的思考偏好（``None`` = 回到全局默认）。同样不推 ``updated_at``。"""
         ...
 
     @abstractmethod

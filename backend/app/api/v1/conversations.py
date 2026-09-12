@@ -37,6 +37,8 @@ def _summary(services: Services, record) -> ConversationOut:  # type: ignore[no-
         title=record.title,
         kb_ids=list(record.kb_ids),
         model_pk=record.model_pk,
+        thinking=record.thinking,
+        thinking_effort=record.thinking_effort,
         created_at=record.created_at,
         updated_at=record.updated_at,
         message_count=services.conversations.message_count(record.id),
@@ -93,6 +95,8 @@ def create_conversation(
         title=payload.title,
         owner_id=_caller_owner(caller),
         model_pk=payload.model_pk,
+        thinking=payload.thinking,
+        thinking_effort=payload.thinking_effort,
     )
     return _summary(services, record)
 
