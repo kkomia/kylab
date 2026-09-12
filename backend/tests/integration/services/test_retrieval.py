@@ -248,6 +248,59 @@ def test_relative_score_threshold_filters_weak_hits(seeded: StoreBundle,
     assert len(strict.hits) == 1  # 1.0 = 只保留并列第一
 
 
+# --------------------------------------------------------------------- 文档级停用（v14）
+
+
+def test_disabled_document_is_excluded_from_both_channels(
+    seeded: StoreBundle, retrieval: RetrievalService
+) -> None:
+    """停用一份文档后，全文与向量两条通道都不应再命中它。
+
+    全文在 SQL 里裁（JOIN documents）；向量靠下游过滤 + 超采补偿。
+    两边一起改才不会出现"全文搜不到、向量搜得到"的静默不一致——这条用例钉住它。
+    """
+    bundle = seeded
+    document = bundle.meta.get_document_by_hash("kb_1", _hash_of(bundle, "kb_1", "deploy.md"))
+    assert document is not None
+
+    bundle.meta.set_document_disabled(document.id, True)
+    assert bundle.meta.get_document(document.id).disabled is True
+
+    # 全文通道单独查
+    fulltext_hits = bundle.fulltext.search(query="部署说明", top_k=5, kb_id="kb_1")
+    assert all(hit.document_id != document.id for hit in fulltext_hits)
+
+    # 混合检索整体（向量通道也覆盖）
+    response = retrieval.search(
+        RetrievalQuery(query="Docker Compose 部署 端口", kb_ids=["kb_1"], top_k=5)
+    )
+    assert all(hit.document_id != document.id for hit in response.hits)
+    # 另一份未停用的文档不受影响
+    assert response.hits
+
+
+def test_disabled_document_is_restorable_without_reingest(
+    seeded: StoreBundle, retrieval: RetrievalService
+) -> None:
+    """恢复=把标记翻回来：切块与向量原样保留，立刻重新可检索。"""
+    bundle = seeded
+    document = bundle.meta.get_document_by_hash("kb_1", _hash_of(bundle, "kb_1", "deploy.md"))
+    bundle.meta.set_document_disabled(document.id, True)
+
+    bundle.meta.set_document_disabled(document.id, False)
+
+    response = retrieval.search(RetrievalQuery(query="部署说明", kb_ids=["kb_1"], top_k=5))
+    assert any(hit.document_id == document.id for hit in response.hits)
+
+
+def _hash_of(bundle: StoreBundle, kb_id: str, name: str) -> str:
+    """找到已入库文档的 content_hash：测试里用名字反查（文档少，可接受）。"""
+    for document in bundle.meta.list_documents(kb_id):
+        if document.name == name:
+            return document.content_hash
+    raise AssertionError(f"fixture 里没有 {name}")
+
+
 # --------------------------------------------------------------------- rerank
 
 

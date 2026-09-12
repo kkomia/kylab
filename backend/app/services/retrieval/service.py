@@ -131,6 +131,7 @@ class RetrievalService:
         self, request: RetrievalQuery, query_vector: Sequence[float] | None
     ) -> tuple[list[str], dict[str, float]]:
         best: dict[str, float] = {}
+        recall_factor = 2 if self._stores.meta.any_disabled_documents(request.kb_ids) else 1
         for kb_id in request.kb_ids:
             # 每个库用自己的嵌入模型算查询向量：跨库混用一个向量是错的——
             # 向量空间不同，相似度没有意义（v11 起嵌入模型是库属性）
@@ -147,8 +148,11 @@ class RetrievalService:
                         logger.warning("未配置嵌入模型，检索跳过向量通道，只做全文检索")
                         self._unconfigured_warned = True
                     continue
+            # 有停用文档的库才 2 倍超采：KNN 扫描时没法按"文档是否停用"过滤，
+            # 停用的命中会在下游 _materialize 被裁掉——多召回一倍作补偿。
+            # 没有停用文档时保持原深度（candidate_k 语义不漂，也省一次放大）。
             for match in self._stores.vectors.search(
-                kb_id, query_vector=vector, top_k=request.candidate_k
+                kb_id, query_vector=vector, top_k=request.candidate_k * recall_factor
             ):
                 # 同一条 chunk 不应出现在多个库，但真出现时取更近的那个距离
                 if match.chunk_id not in best or match.distance < best[match.chunk_id]:
@@ -218,6 +222,12 @@ class RetrievalService:
                 continue
 
             document = documents.get(chunk.document_id)
+            if document is not None and document.disabled:
+                # 文档级停用（v14）：与切块禁用同一套语义，只是范围是整份文档。
+                # KNN 没法在扫描时按文档过滤，所以这里兜底（向量通道已按 2 倍超采缓解）。
+                filtered_out += 1
+                continue
+
             if not _passes_filters(document, request.filters):
                 filtered_out += 1
                 continue

@@ -96,6 +96,8 @@ class DocumentOut(BaseModel):
     列表里就会有 N 次多余请求。"""
     folder_id: str | None = None
     """所在目录（v13）。``None`` = 未归档（根目录）。"""
+    disabled: bool = False
+    """停用（v14）。停用后不参与检索（两条通道都过滤），其余一切保留。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -140,6 +142,12 @@ class DocumentRenameIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
 
 
+class DocumentDisabledIn(BaseModel):
+    """停用/恢复检索。**只动标记**：不删切块与向量，恢复零成本。"""
+
+    disabled: bool
+
+
 class DocumentBatchIn(BaseModel):
     """批量动作：``delete``（进回收站）、``reprocess``（重新摄入）或 ``move``（移目录）。
 
@@ -147,7 +155,7 @@ class DocumentBatchIn(BaseModel):
     与响应都拉大，而界面上的多选本来也到不了那个量级。
     """
 
-    action: Literal["delete", "reprocess", "move"]
+    action: Literal["delete", "reprocess", "move", "enable", "disable"]
     document_ids: list[str] = Field(min_length=1, max_length=500)
     folder_id: str | None = None
     """``move`` 的目标目录；``None`` 表示移回根目录。其它动作忽略此字段。"""

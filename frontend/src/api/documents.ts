@@ -40,6 +40,8 @@ export interface DocumentSummary {
   uploaded_by_name: string
   /** 所在目录（v13）。null = 未归档（根目录）。 */
   folder_id: string | null
+  /** 停用（v14）：不参与检索（两条通道都过滤），其余一切保留。 */
+  disabled: boolean
   created_at: string | null
   updated_at: string | null
 }
@@ -304,6 +306,19 @@ export async function downloadDocument(
   anchor.remove()
 }
 
+/**
+ * 停用 / 恢复检索。只动标记：切块与向量保留，恢复零成本。
+ */
+export function setDocumentDisabled(
+  documentId: string,
+  disabled: boolean,
+): Promise<DocumentSummary> {
+  return request(`/documents/${documentId}/disabled`, {
+    method: 'PATCH',
+    body: JSON.stringify({ disabled }),
+  })
+}
+
 /** 重命名：只改显示名，不重跑解析。 */
 export function renameDocument(documentId: string, name: string): Promise<DocumentSummary> {
   return request(`/documents/${documentId}`, {
@@ -321,7 +336,7 @@ export function cancelDocument(documentId: string): Promise<DocumentSummary> {
   return request(`/documents/${documentId}/cancel`, { method: 'POST' })
 }
 
-export type DocumentBatchAction = 'delete' | 'reprocess' | 'move'
+export type DocumentBatchAction = 'delete' | 'reprocess' | 'move' | 'enable' | 'disable'
 
 export interface DocumentBatchItem {
   document_id: string

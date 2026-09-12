@@ -22,7 +22,7 @@ from app.storage.base import StoreBundle
 
 __all__ = ["BatchItem", "DocumentBatchService"]
 
-BATCH_ACTIONS = ("delete", "reprocess", "move")
+BATCH_ACTIONS = ("delete", "reprocess", "move", "enable", "disable")
 """支持的批量动作。加动作时同步改 API 的 ``Literal`` 与前端类型。"""
 
 
@@ -84,6 +84,10 @@ class DocumentBatchService:
         if action == "move":
             # `folder_id=None` 是"移回根目录"；目标目录的归属由 folder 服务校验
             self._folders.move_document(document_id, folder_id)
+            return
+        if action in ("enable", "disable"):
+            # 与切块级禁用同一套语义：只动标记，恢复零成本
+            self._documents.set_disabled(document_id, action == "disable")
             return
         # 重跑：force=True 才允许对已索引的文档重新入队（见 DocumentService.enqueue_ingest）
         self._documents.enqueue_ingest(document_id, force=True)

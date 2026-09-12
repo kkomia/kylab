@@ -189,9 +189,9 @@ class SqliteMetaStore(MetaStore):
                 """
                 INSERT INTO documents
                     (id, knowledge_base_id, name, source_kind, content_hash, stage, size_bytes,
-                     mime_type, page_count, is_split, error, uploaded_by, folder_id,
+                     mime_type, page_count, is_split, error, uploaded_by, folder_id, disabled,
                      created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -207,6 +207,7 @@ class SqliteMetaStore(MetaStore):
                     record.error,
                     record.uploaded_by,
                     record.folder_id,
+                    int(record.disabled),
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
@@ -374,6 +375,28 @@ class SqliteMetaStore(MetaStore):
                 "UPDATE documents SET name = ?, updated_at = ? WHERE id = ?",
                 (name, _dump(_now()), document_id),
             )
+
+    def set_document_disabled(self, document_id: str, disabled: bool) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE documents SET disabled = ?, updated_at = ? WHERE id = ?",
+                (int(disabled), _dump(_now()), document_id),
+            )
+
+    def any_disabled_documents(self, kb_ids: Sequence[str]) -> bool:
+        if not kb_ids:
+            return False
+        placeholders = ",".join("?" * len(kb_ids))
+        with self._db.read() as conn:
+            row = conn.execute(
+                # placeholders 只由 "?" 拼成，值走参数绑定（S608 误报）
+                f"SELECT EXISTS("  # noqa: S608
+                f"SELECT 1 FROM documents WHERE disabled = 1 "
+                f"AND knowledge_base_id IN ({placeholders})"
+                f") AS has_disabled",
+                tuple(kb_ids),
+            ).fetchone()
+        return bool(row["has_disabled"])
 
     # ------------------------------------------------------------------ 子文件
 
@@ -1922,6 +1945,7 @@ class SqliteMetaStore(MetaStore):
             error=row["error"],
             uploaded_by=row["uploaded_by"],
             folder_id=row["folder_id"],
+            disabled=bool(row["disabled"]),
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
         )

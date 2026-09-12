@@ -164,6 +164,9 @@ class DocumentRecord:
     界面据此显示"未记录"，而不是编一个名字出来。"""
     folder_id: str | None = None
     """所在目录（v13）。``None`` = 未归档（根目录）。"""
+    disabled: bool = False
+    """停用（v14）。停用后**不参与检索**，但原文/切块/向量都保留——与
+    chunks.disabled 同一套语义：禁用与删除是两件事，恢复零成本。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -628,6 +631,18 @@ class MetaStore(ABC):
         """改文件名。**只是显示名**：不改 ``content_hash``、不重跑解析，
         下载时用的也是这个名字（``Content-Disposition`` 取的就是它）。
         """
+
+    @abstractmethod
+    def set_document_disabled(self, document_id: str, disabled: bool) -> None:
+        """停用/恢复一个文档。**只动标记**：不删切块与向量，检索侧按标记过滤，
+        恢复零成本（与 chunks.disabled 同一套做法）。"""
+
+    @abstractmethod
+    def any_disabled_documents(self, kb_ids: Sequence[str]) -> bool:
+        """这些库里是否存在停用的文档。
+
+        供检索的向量通道决定要不要超采：没有停用文档时按原深度召回（不浪费），
+        有才加倍——KNN 没法按文档过滤，超采是唯一不伤召回的补偿。"""
 
     # ---- 目录（v13）----
     @abstractmethod

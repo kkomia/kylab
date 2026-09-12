@@ -84,6 +84,13 @@ class SqliteFullTextStore(FullTextStore):
     # ------------------------------------------------------------------ 检索
 
     def search(self, *, query: str, top_k: int, kb_id: str | None = None) -> list[SearchHit]:
+        """全文检索。
+
+        **JOIN documents 并要求 ``disabled = 0``**：文档级停用（v14）在 SQL 里就裁掉，
+        不浪费 top_k 名额——KNN 那边做不到这一点，靠下游过滤 + 超采弥补（见
+        ``retrieval/service.py`` 的向量通道），两边必须一起改才不会出现
+        "全文搜不到、向量搜得到"的静默不一致。
+        """
         if top_k <= 0:
             return []
         self._ensure_jieba()
@@ -97,6 +104,7 @@ class SqliteFullTextStore(FullTextStore):
             "       c.page, bm25(chunks_fts) AS rank",
             "  FROM chunks_fts AS f",
             "  JOIN chunks AS c ON c.chunk_id = f.chunk_id",
+            "  JOIN documents AS d ON d.id = c.document_id AND d.disabled = 0",
             " WHERE chunks_fts MATCH ?",
         ]
         params: list[object] = [match_query]

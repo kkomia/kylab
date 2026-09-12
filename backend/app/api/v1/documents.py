@@ -35,6 +35,7 @@ from app.api.v1.schemas import (
     DocumentBatchIn,
     DocumentBatchItemOut,
     DocumentBatchOut,
+    DocumentDisabledIn,
     DocumentList,
     DocumentOut,
     DocumentPartList,
@@ -355,6 +356,27 @@ async def rename_document(
     """改显示名。只读分享的成员改不了——那是 owner 的库。"""
     _guard_document(services, caller, document_id, need=WRITE)
     record = services.documents.rename(document_id, payload.name)
+    return document_out(services, record)
+
+
+@router.patch(
+    "/documents/{document_id}/disabled",
+    response_model=DocumentOut,
+    summary="停用 / 恢复检索",
+)
+async def set_document_disabled(
+    document_id: str,
+    payload: DocumentDisabledIn,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
+) -> DocumentOut:
+    """停用后文档**不参与检索**（全文与向量两条通道都过滤），其余一切保留：
+
+    原文、切块、向量、上传记录都在，恢复是零成本。与删除的区别是
+    删除会把原文移入回收站并立即清掉切块与向量。
+    """
+    _guard_document(services, caller, document_id, need=WRITE)
+    record = services.documents.set_disabled(document_id, payload.disabled)
     return document_out(services, record)
 
 

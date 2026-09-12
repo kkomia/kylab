@@ -224,6 +224,76 @@ def test_cancel_missing_document_is_404(client: TestClient, kb_id: str) -> None:
     assert client.post("/api/v1/documents/doc_nope/cancel").status_code == 404
 
 
+# --------------------------------------------------------------------- 停用 / 恢复
+
+
+def test_disable_document_stops_retrieval_but_keeps_everything(
+    client: TestClient, kb_id: str
+) -> None:
+    """停用=只动标记：列表还在、可下载，只是检索不再命中。"""
+    response = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents",
+        files={
+            "file": (
+                "停用我.md",
+                io.BytesIO("# 停用测试\n\n独特关键词青稞酒。\n".encode()),
+                "text/markdown",
+            )
+        },
+        params={"start": "false"},
+    )
+    document = response.json()["document"]
+    assert document["disabled"] is False
+
+    disabled = client.patch(f"/api/v1/documents/{document['id']}/disabled", json={"disabled": True})
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["disabled"] is True
+
+    # 列表仍看得到（停用不是删除），并带停用标记
+    listed = client.get(f"/api/v1/knowledge-bases/{kb_id}/documents").json()["items"]
+    target = next(item for item in listed if item["id"] == document["id"])
+    assert target["disabled"] is True
+
+    # 恢复
+    restored = client.patch(
+        f"/api/v1/documents/{document['id']}/disabled", json={"disabled": False}
+    )
+    assert restored.json()["disabled"] is False
+
+
+def test_batch_enable_and_disable(client: TestClient, kb_id: str) -> None:
+    a = _upload(client, kb_id, "批停甲.md")
+    b = _upload(client, kb_id, "批停乙.md")
+
+    disabled = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents/batch",
+        json={"action": "disable", "document_ids": [a["id"], b["id"]]},
+    )
+    assert disabled.json()["succeeded"] == 2
+    items = client.get(f"/api/v1/knowledge-bases/{kb_id}/documents").json()["items"]
+    assert all(item["disabled"] for item in items if item["id"] in {a["id"], b["id"]})
+
+    enabled = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents/batch",
+        json={"action": "enable", "document_ids": [a["id"], b["id"]]},
+    )
+    assert enabled.json()["succeeded"] == 2
+    items = client.get(f"/api/v1/knowledge-bases/{kb_id}/documents").json()["items"]
+    assert not any(item["disabled"] for item in items if item["id"] in {a["id"], b["id"]})
+
+
+def test_readonly_key_cannot_disable(client: TestClient, kb_id: str) -> None:
+    document = _upload(client, kb_id, "只读停.md")
+    issued = _issue(client, "readonly")
+
+    response = client.patch(
+        f"/api/v1/documents/{document['id']}/disabled",
+        json={"disabled": True},
+        headers={"Authorization": f"Bearer {issued['token']}"},
+    )
+    assert response.status_code == 403
+
+
 # --------------------------------------------------------------------- 批量动作
 
 

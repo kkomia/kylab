@@ -165,6 +165,20 @@ class DocumentService:
         record.name = cleaned
         return record
 
+    def set_disabled(self, document_id: str, disabled: bool) -> DocumentRecord:
+        """停用/恢复一个文档。
+
+        **只动标记**：切块与向量原样保留，检索在两条通道上都按标记过滤
+        （全文在 SQL 里裁，向量在融合后裁），所以恢复是零成本——
+        这与切块级 `disabled`（§G3）是同一套设计，只是范围是整份文档。
+        """
+        record = self.get(document_id)
+        if record.disabled == disabled:
+            return record
+        self._stores.meta.set_document_disabled(document_id, disabled)
+        record.disabled = disabled
+        return record
+
     def cancel(self, document_id: str) -> DocumentRecord:
         """叫停一个还在跑的摄入。
 

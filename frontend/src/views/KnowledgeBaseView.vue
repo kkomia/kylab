@@ -16,6 +16,7 @@ import {
   cancelDocument,
   deleteDocument,
   downloadDocument,
+  setDocumentDisabled,
   getDocumentImpact,
   listDocumentParts,
   listDocuments,
@@ -400,6 +401,43 @@ async function runBatch(action: 'delete' | 'reprocess'): Promise<void> {
     notifyError(cause instanceof Error ? cause.message : `批量${verb}失败`)
   } finally {
     batchRunning.value = false
+  }
+}
+
+/** 停用 / 恢复检索（批量）：与删除/重建同一条逐条回成败的路径。 */
+async function runBatchToggleDisabled(action: 'enable' | 'disable'): Promise<void> {
+  if (selectedCount.value === 0 || batchRunning.value) return
+  batchRunning.value = true
+  const ids = [...selected.value]
+  const verb = action === 'disable' ? '停用' : '恢复'
+  try {
+    const result = await batchDocuments(kbId.value, action, ids)
+    await refresh()
+    if (result.failed === 0) {
+      notifySuccess(`已${verb} ${result.succeeded} 篇的检索`)
+      return
+    }
+    const firstError = result.items.find((item) => !item.ok)?.error
+    notifyError(
+      `${verb}：${result.succeeded} 篇成功、${result.failed} 篇失败` +
+        (firstError ? `（${firstError}）` : ''),
+    )
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : `批量${verb}失败`)
+  } finally {
+    batchRunning.value = false
+  }
+}
+
+/** 单篇停用 / 恢复（行菜单）。 */
+async function onToggleDisabledClick(close: () => void, document: DocumentSummary): Promise<void> {
+  close()
+  try {
+    await setDocumentDisabled(document.id, !document.disabled)
+    await refresh()
+    notifySuccess(document.disabled ? '已恢复检索' : '已停用检索——文档与其内容都保留')
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '操作失败')
   }
 }
 
@@ -996,6 +1034,16 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
               <template #icon><IconFolder /></template>
               移动到目录
             </AppButton>
+            <AppButton
+              size="sm"
+              :disabled="batchRunning"
+              @click="runBatchToggleDisabled('disable')"
+            >
+              停用检索
+            </AppButton>
+            <AppButton size="sm" :disabled="batchRunning" @click="runBatchToggleDisabled('enable')">
+              恢复检索
+            </AppButton>
             <AppButton size="sm" :disabled="batchRunning" @click="runBatch('reprocess')">
               <template #icon><IconRefresh /></template>
               重新摄入
@@ -1079,6 +1127,8 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                       :running="ACTIVE_STAGES.has(document.stage)"
                       :title="document.error ?? undefined"
                     />
+                    <!-- 停用（v14）：不参与检索但一切保留。中性色——它是"被搁置"，不是"出错" -->
+                    <StatusTag v-if="document.disabled" label="已停用" tone="neutral" />
                     <!-- 谁传的（G6）。没记到时显示"未记录"而不是留空——
                      留空会让人以为是界面没渲染出来 -->
                     <span v-if="roster.length" class="row-uploader">
@@ -1116,6 +1166,14 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                       @click="onReprocessClick(close, document)"
                     >
                       <IconRefresh :size="14" /> 重新摄入
+                    </button>
+                    <button
+                      v-if="knowledgeBase?.can_write"
+                      type="button"
+                      @click="(onToggleDisabledClick(close, document), close())"
+                    >
+                      <IconClose :size="14" />
+                      {{ document.disabled ? '恢复检索' : '停用检索' }}
                     </button>
                     <!-- 取消只在真的还在跑时出现：对已完成的文档摆一个点了报错的按钮没有意义 -->
                     <button

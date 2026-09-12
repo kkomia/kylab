@@ -533,6 +533,17 @@ _MIGRATION_013 = Migration(
 )
 
 
+_MIGRATION_014 = Migration(
+    version=14,
+    description="文档级停用：documents.disabled（停用后不参与检索，不删任何东西）",
+    statements=(
+        # 与 chunks.disabled 同一套语义（_MIGRATION_004 的注释：「禁用」与「删除」
+        # 是两件事）。**检索侧按标记过滤，不删向量**：恢复零成本，也不必重新 embedding。
+        "ALTER TABLE documents ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0",
+    ),
+)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
@@ -547,6 +558,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_011,
     _MIGRATION_012,
     _MIGRATION_013,
+    _MIGRATION_014,
 )
 """全部迁移，按 version 升序。只增不改。"""
 
