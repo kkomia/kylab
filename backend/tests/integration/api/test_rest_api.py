@@ -451,3 +451,63 @@ def test_settings_reports_whether_embedding_is_configured(client: TestClient) ->
     # 模型身份不在设置页分组里了（v0.8）：那里只剩行为参数
     embedding_group = next(g for g in body["groups"] if g["key"] == "embedding")
     assert [f["key"] for f in embedding_group["fields"]] == ["embedding.batch_size"]
+
+
+# ------------------------------------------------- 切分参数可调（v17）
+
+
+def test_patch_knowledge_base_chunking(client: TestClient, kb_id: str) -> None:
+    """改切分参数要落库，且只传一个字段时另一个保持不变。"""
+    response = client.patch(f"/api/v1/knowledge-bases/{kb_id}", json={"chunk_size": 256})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["chunk_size"] == 256
+    assert body["chunk_overlap"] == 64  # 没传的字段不动
+    # 详情里也要是新值（不能只改响应）
+    detail = client.get(f"/api/v1/knowledge-bases/{kb_id}").json()
+    assert (detail["chunk_size"], detail["chunk_overlap"]) == (256, 64)
+
+
+def test_patch_chunking_rejects_overlap_not_smaller_than_size(
+    client: TestClient, kb_id: str
+) -> None:
+    """重叠必须小于块长的一半——这是**跨字段**约束，只能由服务层判。
+
+    只传 chunk_size（把块长调小）时，库里已有的重叠可能就超标了，同样要拦住。
+    """
+    first = client.patch(
+        f"/api/v1/knowledge-bases/{kb_id}", json={"chunk_size": 512, "chunk_overlap": 200}
+    )
+    assert first.status_code == 200, first.text
+    # 块长调到 256 之后，200 的重叠超过一半 → 拒绝，且带上可读的下一步
+    rejected = client.patch(f"/api/v1/knowledge-bases/{kb_id}", json={"chunk_size": 256})
+    assert rejected.status_code == 422, rejected.text
+    assert "一半" in rejected.json()["message"]
+    # 拒绝之后原值不变
+    assert client.get(f"/api/v1/knowledge-bases/{kb_id}").json()["chunk_size"] == 512
+
+
+def test_patch_chunking_validates_single_field_range(client: TestClient, kb_id: str) -> None:
+    """单个字段越界由 schema 拦（范围与 services/chunking.py 的常量同源）。"""
+    assert (
+        client.patch(f"/api/v1/knowledge-bases/{kb_id}", json={"chunk_size": 10}).status_code
+        == 422
+    )
+    assert (
+        client.patch(f"/api/v1/knowledge-bases/{kb_id}", json={"chunk_size": 99999}).status_code
+        == 422
+    )
+    assert (
+        client.patch(f"/api/v1/knowledge-bases/{kb_id}", json={"chunk_overlap": 99999}).status_code
+        == 422
+    )
+
+
+def test_create_knowledge_base_accepts_custom_chunking(client: TestClient) -> None:
+    created = client.post(
+        "/api/v1/knowledge-bases",
+        json={"name": "自定义切分", "chunk_size": 256, "chunk_overlap": 32},
+    )
+    assert created.status_code == 201, created.text
+    assert (created.json()["chunk_size"], created.json()["chunk_overlap"]) == (256, 32)

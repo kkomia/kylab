@@ -370,3 +370,75 @@ def test_embedding_error_stage_is_reported(bundle: StoreBundle, kb) -> None:
     with pytest.raises(IngestError) as excinfo:
         service.ingest(outcome.document.id)
     assert excinfo.value.stage == "embedding"
+
+
+# --------------------------------------------------------------------- 切分参数按库生效（v17）
+
+
+def _per_kb_service(bundle: StoreBundle, embedder: DeterministicEmbedder) -> IngestService:
+    """**不注入 chunk_config** 的摄入服务：生产走的就是这条路径（按库读参数）。"""
+    return IngestService(bundle, router=ParserRouter([PlainTextParser()]), embedder=embedder)
+
+
+def test_chunking_follows_the_knowledge_base_config(
+    bundle: StoreBundle, embedder: DeterministicEmbedder, kb_service: KnowledgeBaseService
+) -> None:
+    """切分参数按库生效——这是"存了没人用"那个缺陷的回归用例。
+
+    之前 `KnowledgeBaseService.create(chunk_size=...)` 只是把值存进库，
+    `IngestService` 永远用硬编码的 512/64。现在两个库给同一份文本、不同的块长，
+    切出来的块数必须不同，且各自不超过自己的上限。
+    """
+    text = ("这是一段用于验证切分参数的文本。" * 60).encode()
+    kb_service.create(kb_id="kb_tiny", name="小块库", chunk_size=128, chunk_overlap=16)
+    kb_service.create(kb_id="kb_big", name="大块库", chunk_size=1024, chunk_overlap=0)
+    service = _per_kb_service(bundle, embedder)
+
+    tiny = service.submit(knowledge_base_id="kb_tiny", filename="a.md", content=text)
+    service.ingest(tiny.document.id)
+    big = service.submit(knowledge_base_id="kb_big", filename="b.md", content=text)
+    service.ingest(big.document.id)
+
+    tiny_sizes = [len(item.text) for item in bundle.meta.iter_chunks(tiny.document.id)]
+    big_sizes = [len(item.text) for item in bundle.meta.iter_chunks(big.document.id)]
+    assert tiny_sizes and big_sizes
+    assert max(tiny_sizes) <= 128
+    assert max(big_sizes) <= 1024
+    # 同一个文本，块长差 8 倍，块数必须明显不同——否则说明参数根本没被读
+    assert len(tiny_sizes) > len(big_sizes)
+
+
+def test_injected_chunk_config_still_wins(
+    bundle: StoreBundle, embedder: DeterministicEmbedder, kb_service: KnowledgeBaseService,
+    ingest_service: IngestService,
+) -> None:
+    """显式注入的配置优先于库里的值（测试与批量导入的旁路，不能因为接线而失效）。"""
+    kb_service.create(kb_id="kb_1", name="默认库", chunk_size=2048, chunk_overlap=0)
+    text = ("用于验证注入优先的文本。" * 80).encode()
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="a.md", content=text)
+    ingest_service.ingest(outcome.document.id)
+
+    sizes = [len(item.text) for item in bundle.meta.iter_chunks(outcome.document.id)]
+    assert max(sizes) <= 64  # 注入的是 size=64，不是库里的 2048
+
+
+def test_legacy_out_of_range_chunking_is_clamped(
+    bundle: StoreBundle, embedder: DeterministicEmbedder, kb_service: KnowledgeBaseService,
+) -> None:
+    """历史库里的越界参数（例如 overlap=4000 配 size=512）不许把摄入打挂。
+
+    旧版建库接口允许这种组合入库；切分器收到 overlap >= size 会直接抛错，
+    看起来像"文件坏了"。所以读出来时钳位。
+    """
+    record = kb_service.create(kb_id="kb_1", name="默认库")
+    bundle.meta.set_knowledge_base_chunking("kb_1", 512, 4000)  # 模拟历史脏数据
+    assert bundle.meta.get_knowledge_base("kb_1").chunk_overlap == 4000
+
+    service = _per_kb_service(bundle, embedder)
+    outcome = service.submit(
+        knowledge_base_id="kb_1", filename="a.md", content=("文本内容。" * 200).encode()
+    )
+    result = service.ingest(outcome.document.id)
+
+    assert result.document.stage is DocumentStage.INDEXED
+    assert record.id == "kb_1"

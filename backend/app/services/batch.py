@@ -14,16 +14,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.core.exceptions import KylabError
+from app.core.exceptions import InvalidRequestError, KylabError
+from app.models.enums import DocumentStage
 from app.services.documents import DocumentService
 from app.services.folder import FolderService
 from app.services.lifecycle import LifecycleService
 from app.storage.base import StoreBundle
 
-__all__ = ["BatchItem", "DocumentBatchService"]
+__all__ = ["BATCH_ALL_LIMIT", "BatchItem", "DocumentBatchService"]
 
 BATCH_ACTIONS = ("delete", "reprocess", "move", "enable", "disable")
 """支持的批量动作。加动作时同步改 API 的 ``Literal`` 与前端类型。"""
+
+BATCH_ALL_LIMIT = 2000
+"""``all=True`` 一次最多覆盖多少篇。
+
+**为什么要有个上限**：``all`` 服务的是"改完切分参数整库重跑"——真跑起来每一篇
+都要走一次云端解析（要钱、要配额、要几十分钟），而它对用户只是一个点击。
+超过上限就拒绝并说清怎么办（分批，或走 API 自己控节奏），
+比"静默排了五万个任务"负责。这个数字是产品判断，不是技术限制。
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,7 +59,13 @@ class DocumentBatchService:
         self._folders = folders
 
     def run(
-        self, kb_id: str, action: str, document_ids: list[str], *, folder_id: str | None = None
+        self,
+        kb_id: str,
+        action: str,
+        document_ids: list[str],
+        *,
+        folder_id: str | None = None,
+        all_documents: bool = False,
     ) -> list[BatchItem]:
         """对一批文档执行同一个动作，逐条返回结果。
 
@@ -58,9 +74,18 @@ class DocumentBatchService:
 
         ``folder_id`` 只对 ``move`` 有意义：给 id 就是移进那个目录，给 ``None``
         是移回根目录。目录归属由 ``FolderService.move_document`` 校验。
+
+        ``all_documents=True``（v17）时由服务端解析全集，忽略传进来的 ids：
+        "改了切分参数要整库重跑"是库级动作，让界面先取一遍文档 id 再回传
+        纯属绕路。上限见 ``BATCH_ALL_LIMIT``。
         """
         if action not in BATCH_ACTIONS:
             raise ValueError(f"不支持的批量动作：{action}")
+
+        if all_documents:
+            document_ids = self._all_document_ids(kb_id)
+        elif not document_ids:
+            raise InvalidRequestError("没有指定要处理的文档")
 
         results: list[BatchItem] = []
         for document_id in document_ids:
@@ -76,6 +101,34 @@ class DocumentBatchService:
             else:
                 results.append(BatchItem(document_id, True))
         return results
+
+    def _all_document_ids(self, kb_id: str) -> list[str]:
+        """整库的目标集合。**排除正在跑的**：给已经在队列里的文档再排一次
+        只会让同一篇被解析两遍（第二遍还会撞上"已在处理中"），白花钱。
+
+        判据用 ``DocumentStage`` 而不是字符串：阶段是 StrEnum，拿字符串集合比
+        会永远不命中（枚举成员不等于它的字符串值），那样这个过滤器就成了摆设。
+        """
+        pending = {
+            DocumentStage.UPLOADED,
+            DocumentStage.PROBING,
+            DocumentStage.PARSING,
+            DocumentStage.CHUNKING,
+            DocumentStage.EMBEDDING,
+        }
+        records = self._stores.meta.list_documents(kb_id)
+        if not records:
+            raise InvalidRequestError("这个库还没有文档")
+        ids = [record.id for record in records if record.stage not in pending]
+        if not ids:
+            # 有文档但全在跑：与"空库"是两件事，文案分开——否则用户会以为文档丢了
+            raise InvalidRequestError("这个库的文档都还在处理中，请等它们跑完再操作")
+        if len(ids) > BATCH_ALL_LIMIT:
+            raise InvalidRequestError(
+                f"这个库有 {len(ids)} 篇文档，一次最多处理 {BATCH_ALL_LIMIT} 篇；"
+                "请分批操作，或通过 API 自行控制节奏"
+            )
+        return ids
 
     def _apply(self, action: str, document_id: str, *, folder_id: str | None = None) -> None:
         if action == "delete":

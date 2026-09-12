@@ -266,3 +266,43 @@ class TestPageMapping:
             f"{render_page_marker(3)}\n\n有页码。\n", config=ChunkingConfig(size=100, overlap=0)
         )
         assert chunks[0].page == 3
+
+
+class TestConfigFromRecord:
+    """从知识库记录读切分参数（v17）：正常值原样、越界值钳位。"""
+
+    def test_正常值原样通过(self) -> None:
+        from app.services.chunking import config_from_record
+
+        record = type("R", (), {"chunk_size": 300, "chunk_overlap": 20})()
+        config = config_from_record(record)
+
+        assert (config.size, config.overlap) == (300, 20)
+
+    def test_历史脏数据被钳位而不是抛错(self) -> None:
+        """旧版允许 size=512 & overlap=4000 入库；直接构造 ChunkingConfig 会抛错，
+        那会让"一条老配置"把之后所有文档的摄入打挂，且看起来像文件坏了。"""
+        from app.services.chunking import config_from_record
+
+        record = type("R", (), {"chunk_size": 512, "chunk_overlap": 4000})()
+        config = config_from_record(record)
+
+        assert config.size == 512
+        assert config.overlap == 256  # 钳到一半
+
+    def test_块长越界同样钳位(self) -> None:
+        from app.services.chunking import CHUNK_SIZE_MAX, CHUNK_SIZE_MIN, config_from_record
+
+        assert config_from_record(type("R", (), {"chunk_size": 1, "chunk_overlap": 0})()).size == (
+            CHUNK_SIZE_MIN
+        )
+        assert config_from_record(
+            type("R", (), {"chunk_size": 99999, "chunk_overlap": 10})()
+        ).size == CHUNK_SIZE_MAX
+
+    def test_字段缺失时退回默认(self) -> None:
+        from app.services.chunking import DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP, config_from_record
+
+        config = config_from_record(type("R", (), {})())
+
+        assert (config.size, config.overlap) == (DEFAULT_CHUNK_SIZE, DEFAULT_OVERLAP)

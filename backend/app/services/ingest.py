@@ -25,7 +25,7 @@ from app.models.enums import DataSourceKind, DocumentStage
 from app.parsers.base import ParseError, ParseResult, ParserProvider
 from app.parsers.probe import probe, suffix_of
 from app.pipeline.state_machine import InvalidTransition, assert_transition
-from app.services.chunking import ChunkingConfig, chunk_markdown
+from app.services.chunking import ChunkingConfig, chunk_markdown, config_from_record
 from app.services.embedding.base import EmbeddingError, EmbeddingProvider
 from app.services.embedding.resolver import EmbeddingResolver
 from app.services.parser_router import ParserRouter
@@ -118,7 +118,10 @@ class IngestService:
         self._embedder = embedder
         # 按库解析嵌入模型（v11）。不给就退回全局 embedder，行为与改动前一致
         self._embedders = embedders
-        self._chunk_config = chunk_config or ChunkingConfig()
+        #: 显式注入的切分参数（测试与特殊调用用）。**为 None 时按库读取**——
+        #: 生产走的就是那条路：每个库有自己的块长/重叠（v17）。
+        #: 与 `_embedders` 同一套写法：不给就退回"按库解析"。
+        self._chunk_config = chunk_config
         # Webhook 是**旁路**（T4.6）：默认什么都不做，组合根才把它接上。
         # 做成回调而不是直接依赖 WebhookService，是为了不让摄入服务
         # 反过来依赖通知服务——那会让"发通知失败"有机会影响摄入本身
@@ -208,7 +211,7 @@ class IngestService:
                 self._reuse_parse_result(document)
 
             if _before(resume_from, DocumentStage.CHUNKED):
-                chunks = self._chunk(document, parse_result)
+                chunks = self._chunk(document, kb, parse_result)
             else:
                 chunks = list(self._stores.meta.iter_chunks(document.id))
 
@@ -432,7 +435,12 @@ class IngestService:
                 stage="parsing",
             )
 
-    def _chunk(self, document: DocumentRecord, parse_result: ParseResult | None) -> list:
+    def _chunk(
+        self,
+        document: DocumentRecord,
+        kb: KnowledgeBaseRecord,
+        parse_result: ParseResult | None,
+    ) -> list:
         self._advance(document, DocumentStage.CHUNKING)
         markdown = parse_result.markdown if parse_result else self._read_markdown(document)
 
@@ -440,12 +448,23 @@ class IngestService:
             markdown,
             document_id=document.id,
             knowledge_base_id=document.knowledge_base_id,
-            config=self._chunk_config,
+            config=self._chunking_for(kb),
         )
         self._stores.meta.replace_chunks(document.id, chunks)
         self._stores.fulltext.index_chunks(chunks)
         self._advance(document, DocumentStage.CHUNKED)
         return chunks
+
+    def _chunking_for(self, kb: KnowledgeBaseRecord) -> ChunkingConfig:
+        """这个库该用哪套切分参数。
+
+        显式注入的配置优先（测试与批量导入等场景），否则**按库读**——
+        这就是切分参数从"存了没人用"变成"真的生效"的那一处接线。
+        ``config_from_record`` 会钳位越界的历史值，避免一条老配置把摄入打挂。
+        """
+        if self._chunk_config is not None:
+            return self._chunk_config
+        return config_from_record(kb)
 
     def _embedder_for(self, kb: KnowledgeBaseRecord) -> EmbeddingProvider:
         """这个库该用哪个嵌入实现：显式选了模型就用它，否则全局默认。"""

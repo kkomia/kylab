@@ -556,6 +556,10 @@ class MetaStore(ABC):
         """改显示名。嵌入模型与切分参数都不受影响——名字只是标签。"""
 
     @abstractmethod
+    def set_knowledge_base_chunking(self, kb_id: str, size: int, overlap: int) -> None:
+        """改切分参数（v17）。**只影响之后摄入的文档**，已切好的块不动。"""
+
+    @abstractmethod
     def set_knowledge_base_description(self, kb_id: str, description: str) -> None:
         """改库简介（v15）。与改名同性质：只是标签，不影响检索。"""
 

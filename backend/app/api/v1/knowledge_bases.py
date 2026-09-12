@@ -132,10 +132,13 @@ async def update_knowledge_base(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),
 ) -> KnowledgeBaseOut:
-    """改名称或简介。**与"删除知识库"同一档权限**（WRITE）——两者都是库级结构动作，
+    """改名称、简介或切分参数。**与"删除知识库"同一档权限**（WRITE）——都是库级结构动作，
     让改名比删库更严会得到一个说不通的权限阶梯（见 ``lifecycle.py`` 的同款说明）。
 
-    两个字段都可选，只处理传了的那个；都为空时不动任何东西（幂等）。
+    各项都可选，只处理传了的那些；都为空时不动任何东西（幂等）。
+
+    切分参数**只对之后摄入的文档生效**（切块是解析阶段写下的）。这里不假装
+    "改完就重切"——重跑由用户显式触发，取舍见 ``services/knowledge_base.py::set_chunking``。
     """
     check_kb_scope(services, caller, [kb_id], need=WRITE)
     record = services.knowledge_bases.get(kb_id)
@@ -143,6 +146,10 @@ async def update_knowledge_base(
         record = services.knowledge_bases.rename(kb_id, payload.name)
     if payload.description is not None:
         record = services.knowledge_bases.set_description(kb_id, payload.description)
+    if payload.chunk_size is not None or payload.chunk_overlap is not None:
+        record = services.knowledge_bases.set_chunking(
+            kb_id, chunk_size=payload.chunk_size, chunk_overlap=payload.chunk_overlap
+        )
     count, last_activity = services.knowledge_bases.document_stats().get(kb_id, (0, None))
     return _out(
         record, caller, services, document_count=count, last_activity=last_activity

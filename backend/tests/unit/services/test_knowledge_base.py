@@ -130,3 +130,60 @@ def test_create_rejects_a_non_embedding_model(bundle, registry) -> None:  # type
         _service(bundle, registry).create(
             kb_id="kb_4", name="用错模型", embedding_model_pk=model.id
         )
+
+
+# ------------------------------------------------------- 切分参数可调（v17）
+
+from app.services.chunking import CHUNK_SIZE_MAX, CHUNK_SIZE_MIN  # noqa: E402
+from app.services.knowledge_base import validate_chunking  # noqa: E402
+
+
+def _plain(bundle, registry) -> KnowledgeBaseService:  # type: ignore[no-untyped-def]
+    return _service(bundle, registry, _FakeEmbedder(model_id="m", dim=8))
+
+
+def test_create_validates_chunking_bounds(bundle, registry) -> None:  # type: ignore[no-untyped-def]
+    """建库与改配置共用一套校验：越界要当场拒绝，并说清该填多少。"""
+    service = _plain(bundle, registry)
+    with pytest.raises(InvalidRequestError, match=str(CHUNK_SIZE_MIN)):
+        service.create(kb_id="kb_a", name="太小", chunk_size=CHUNK_SIZE_MIN - 1)
+    with pytest.raises(InvalidRequestError, match="一半"):
+        service.create(kb_id="kb_b", name="重叠过头", chunk_size=512, chunk_overlap=300)
+    # 边界值合法：重叠恰为块长的一半
+    record = service.create(kb_id="kb_c", name="边界", chunk_size=512, chunk_overlap=256)
+    assert (record.chunk_size, record.chunk_overlap) == (512, 256)
+
+
+def test_set_chunking_persists_and_merges_partial_updates(bundle, registry) -> None:  # type: ignore[no-untyped-def]
+    """只传一个字段时，另一个用库里已有的值——所以"重叠<块长"必须合并后再判。"""
+    service = _plain(bundle, registry)
+    service.create(kb_id="kb_1", name="库", chunk_size=512, chunk_overlap=64)
+
+    updated = service.set_chunking("kb_1", chunk_size=256, chunk_overlap=None)
+
+    assert (updated.chunk_size, updated.chunk_overlap) == (256, 64)
+    # 真的落库了，不只是改了内存里的记录
+    assert (bundle.meta.get_knowledge_base("kb_1").chunk_size) == 256
+    # 再只改重叠
+    again = service.set_chunking("kb_1", chunk_size=None, chunk_overlap=32)
+    assert (again.chunk_size, again.chunk_overlap) == (256, 32)
+
+
+def test_set_chunking_rejects_pair_that_only_service_can_see(bundle, registry) -> None:  # type: ignore[no-untyped-def]
+    """块长调小之后，旧的重叠可能就"太大"了——单独传一个字段也必须拦住。"""
+    service = _plain(bundle, registry)
+    service.create(kb_id="kb_1", name="库", chunk_size=512, chunk_overlap=200)
+
+    with pytest.raises(InvalidRequestError, match="一半"):
+        service.set_chunking("kb_1", chunk_size=256, chunk_overlap=None)
+    # 拒绝之后原值不变
+    assert bundle.meta.get_knowledge_base("kb_1").chunk_size == 512
+
+
+def test_validate_chunking_returns_normalized_pair() -> None:
+    assert validate_chunking(512, 64) == (512, 64)
+    assert validate_chunking(CHUNK_SIZE_MIN, 0) == (CHUNK_SIZE_MIN, 0)
+    assert validate_chunking(CHUNK_SIZE_MAX, CHUNK_SIZE_MAX // 2) == (
+        CHUNK_SIZE_MAX,
+        CHUNK_SIZE_MAX // 2,
+    )

@@ -12,12 +12,23 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
+from app.services.chunking import (
+    CHUNK_OVERLAP_RATIO_MAX,
+    CHUNK_SIZE_MAX,
+    CHUNK_SIZE_MIN,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_OVERLAP,
+)
 from app.services.embedding import NOT_CONFIGURED_HINT
 from app.services.embedding.base import EmbeddingProvider
 from app.services.model_registry import ModelRegistryService
 from app.storage.base import KnowledgeBaseRecord, StoreBundle
 
-__all__ = ["DEFAULT_CHUNK_STRATEGY", "KnowledgeBaseService"]
+__all__ = [
+    "DEFAULT_CHUNK_STRATEGY",
+    "KnowledgeBaseService",
+    "validate_chunking",
+]
 
 DEFAULT_CHUNK_STRATEGY = "fixed"
 
@@ -26,6 +37,29 @@ KB_NAME_MAX_CHARS = 120
 
 KB_DESCRIPTION_MAX_CHARS = 200
 """库简介上限。卡片上只显示两行，200 字足够写清"这个库是干什么的"。"""
+
+
+def validate_chunking(size: int, overlap: int) -> tuple[int, int]:
+    """校验切分参数，返回规范化后的 ``(size, overlap)``。
+
+    **为什么放在服务层而不是只靠 pydantic**：PATCH 可能只传其中一个字段，
+    必须与库里已有的那个合并之后再判"重叠 < 块长"——单个字段的 ``ge/le``
+    校验看不到另一个字段，做不到这件事。两个字段一起传时也走这里，
+    保证建库与改配置**用同一套口径**，不会出现"建库能过、改配置不过"。
+
+    报错文案写给用户看：说清该填多少，而不是回一句"参数非法"。
+    """
+    if not (CHUNK_SIZE_MIN <= size <= CHUNK_SIZE_MAX):
+        raise InvalidRequestError(
+            f"块长需要在 {CHUNK_SIZE_MIN}–{CHUNK_SIZE_MAX} 之间（当前 {size}）"
+        )
+    overlap_max = max(1, int(size * CHUNK_OVERLAP_RATIO_MAX))
+    if not (0 <= overlap <= overlap_max):
+        raise InvalidRequestError(
+            f"块重叠需要在 0–{overlap_max} 之间（当前 {overlap}）；"
+            "上限是块长的一半——重叠等于块长会让切分原地打转"
+        )
+    return size, overlap
 
 
 class KnowledgeBaseService:
@@ -49,8 +83,8 @@ class KnowledgeBaseService:
         *,
         kb_id: str,
         name: str,
-        chunk_size: int = 512,
-        chunk_overlap: int = 64,
+        chunk_size: int = DEFAULT_CHUNK_SIZE,
+        chunk_overlap: int = DEFAULT_OVERLAP,
         chunk_strategy: str = DEFAULT_CHUNK_STRATEGY,
         owner_id: str | None = None,
         embedding_model_pk: str | None = None,
@@ -63,7 +97,11 @@ class KnowledgeBaseService:
 
         ``owner_id``（v10）：登录成员建的库归自己；API Key 通道
         没有账号概念，传 None 即无主（对管理员全可见）。
+
+        切分参数（v17）在这里就落库并校验，**摄入时按库读取**——之前它只是被存下来
+        没人用（真实切分永远是默认 512/64），那是一个不成立的承诺。
         """
+        chunk_size, chunk_overlap = validate_chunking(chunk_size, chunk_overlap)
         if embedding_model_pk:
             if self._models is None:
                 raise InvalidRequestError("未接入模型注册器，无法按所选模型建库")
@@ -114,7 +152,10 @@ class KnowledgeBaseService:
         return record
 
     def rename(self, kb_id: str, name: str) -> KnowledgeBaseRecord:
-        """改显示名。**不碰嵌入模型与切分参数**——那些在建库时冻结，改名只是标签。"""
+        """改显示名。**不碰嵌入模型**——那是库的地基，改名只是标签。
+
+        切分参数另走 ``set_chunking``：它与改名不是一回事，改错了要重跑摄入。
+        """
         record = self.get(kb_id)
         cleaned = name.strip()
         if not cleaned:
@@ -125,4 +166,29 @@ class KnowledgeBaseService:
             return record
         self._stores.meta.rename_knowledge_base(kb_id, cleaned)
         record.name = cleaned
+        return record
+
+    def set_chunking(
+        self, kb_id: str, *, chunk_size: int | None, chunk_overlap: int | None
+    ) -> KnowledgeBaseRecord:
+        """改切分参数（块长 / 块重叠）。两个都可选，只传要改的那个。
+
+        **改动只对之后摄入的文档生效**——切块是解析阶段写进库的，
+        已经切好的文档不会自己跟着变。所以接口不假装"改完就生效"：
+        调用方（界面）负责提示"已有文档需要重新摄入"，并把
+        `documents/batch` 的 reprocess 入口摆在那里。
+
+        这里**不做自动重跑**是刻意的：一个几万文档的库被一次参数微调
+        静默全量重跑（要钱、要时间、还要临时占用云端配额）比"没生效"更糟。
+        用户自己点那一下，才知道代价。
+        """
+        record = self.get(kb_id)
+        size = record.chunk_size if chunk_size is None else chunk_size
+        overlap = record.chunk_overlap if chunk_overlap is None else chunk_overlap
+        size, overlap = validate_chunking(size, overlap)
+        if (size, overlap) == (record.chunk_size, record.chunk_overlap):
+            return record
+        self._stores.meta.set_knowledge_base_chunking(kb_id, size, overlap)
+        record.chunk_size = size
+        record.chunk_overlap = overlap
         return record

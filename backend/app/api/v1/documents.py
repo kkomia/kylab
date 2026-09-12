@@ -310,7 +310,11 @@ async def batch_documents(
     """
     check_kb_scope(services, caller, [kb_id], need=WRITE)
     items = services.batch.run(
-        kb_id, payload.action, payload.document_ids, folder_id=payload.folder_id
+        kb_id,
+        payload.action,
+        payload.document_ids,
+        folder_id=payload.folder_id,
+        all_documents=payload.all,
     )
     return DocumentBatchOut(
         action=payload.action,

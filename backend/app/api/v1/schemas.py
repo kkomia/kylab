@@ -9,9 +9,16 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.enums import ApiKeyPermission, DataSourceKind, DocumentStage, TaskKind, TaskState
+from app.services.chunking import (
+    CHUNK_OVERLAP_MAX,
+    CHUNK_SIZE_MAX,
+    CHUNK_SIZE_MIN,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_OVERLAP,
+)
 
 _RECORD_CONFIG = ConfigDict(from_attributes=True)
 """记录类响应模型直接由服务/存储的记录对象构建。
@@ -26,8 +33,12 @@ _RECORD_CONFIG = ConfigDict(from_attributes=True)
 
 class KnowledgeBaseCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    chunk_size: int = Field(default=512, gt=0, le=8000)
-    chunk_overlap: int = Field(default=64, ge=0, le=4000)
+    #: 切分参数。**范围与 `services/chunking.py` 的常量同源**——在这里写死一份
+    #: 迟早会与真正生效的那套漂移（这一层只声明"形状"，业务判断仍在服务层）。
+    #: 单个字段的越界在这里就是 422；"重叠 < 块长"这种**跨字段**约束服务层才能
+    #: 判断（PATCH 可能只传其中一个），所以那种情况由服务层回 400 + 可读文案。
+    chunk_size: int = Field(default=DEFAULT_CHUNK_SIZE, ge=CHUNK_SIZE_MIN, le=CHUNK_SIZE_MAX)
+    chunk_overlap: int = Field(default=DEFAULT_OVERLAP, ge=0, le=CHUNK_OVERLAP_MAX)
     embedding_model_pk: str | None = None
     """建库时选定的嵌入模型（注册表主键）。留空 = 用服务端默认。
 
@@ -37,14 +48,19 @@ class KnowledgeBaseCreate(BaseModel):
 
 
 class KnowledgeBaseUpdate(BaseModel):
-    """改知识库的可编辑属性：名称与简介。**两者都可选**，只传要改的那个。
+    """改知识库的可编辑属性：名称 / 简介 / 切分参数。**都可选**，只传要改的那个。
 
     名称与建库同一个上限（120），改名不该比建库更宽松；简介上限 200（卡片两行）。
     空简介（``""``）是合法值 = 清空，所以不加 min_length。
+
+    切分参数（v17）改的是**之后摄入的文档**怎么切；已经切好的块不会自己变，
+    界面据此提示"已有文档需要重新摄入"。范围常量与建库同源。
     """
 
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=200)
+    chunk_size: int | None = Field(default=None, ge=CHUNK_SIZE_MIN, le=CHUNK_SIZE_MAX)
+    chunk_overlap: int | None = Field(default=None, ge=0, le=CHUNK_OVERLAP_MAX)
 
 
 class KnowledgeBaseOut(BaseModel):
@@ -166,12 +182,24 @@ class DocumentBatchIn(BaseModel):
 
     ``document_ids`` 设上限而不是"随便多少"：一次勾几千篇会把请求体、逐条查询
     与响应都拉大，而界面上的多选本来也到不了那个量级。
+
+    ``all=True``（v17）表示**对这个库的全部文档**执行，忽略 ``document_ids``。
+    它服务的场景是"切分参数改了、要整库重跑"：由服务端自己解析全集，
+    界面不必先翻页取 id 再回传（那个列表接口一次回全量，本身就是瓶颈）。
     """
 
     action: Literal["delete", "reprocess", "move", "enable", "disable"]
-    document_ids: list[str] = Field(min_length=1, max_length=500)
+    document_ids: list[str] = Field(default_factory=list, max_length=500)
     folder_id: str | None = None
     """``move`` 的目标目录；``None`` 表示移回根目录。其它动作忽略此字段。"""
+    all: bool = False
+
+    @model_validator(mode="after")
+    def _require_target(self) -> DocumentBatchIn:
+        """两者都不给是写错了，当场说清——否则服务层会执行一个空批次、看起来像成功。"""
+        if not self.all and not self.document_ids:
+            raise ValueError("document_ids 与 all 至少要给一个")
+        return self
 
 
 class DocumentBatchItemOut(BaseModel):

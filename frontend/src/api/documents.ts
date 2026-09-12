@@ -385,15 +385,20 @@ export interface DocumentBatchResult {
  *
  * **返回逐条结果**：批量操作里"10 篇删掉 9 篇"是正常结果，界面要能指出
  * 剩下那篇为什么没成。所以这个调用不会因为个别失败而 reject。
+ *
+ * `all = true`（v17）表示**整库**：服务端自己解析目标集合（会跳过还在跑的文档），
+ * 传进来的 `documentIds` 被忽略。它服务的是"改了切分参数要整库重跑"——
+ * 界面不必先翻页取一遍 id 再回传。
  */
 export function batchDocuments(
   kbId: string,
   action: DocumentBatchAction,
   documentIds: string[],
   folderId: string | null = null,
+  all = false,
 ): Promise<DocumentBatchResult> {
   return request(`/knowledge-bases/${kbId}/documents/batch`, {
     method: 'POST',
-    body: JSON.stringify({ action, document_ids: documentIds, folder_id: folderId }),
+    body: JSON.stringify({ action, document_ids: documentIds, folder_id: folderId, all }),
   })
 }

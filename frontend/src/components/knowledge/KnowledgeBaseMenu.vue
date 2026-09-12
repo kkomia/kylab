@@ -17,13 +17,20 @@
  *
  * 父组件只负责"变了之后去哪儿"（列表刷新 / 详情页跳走），通过 `changed` 事件表达。
  */
-import { computed, ref, type Component } from 'vue'
+import { computed, ref, type Component, type Ref } from 'vue'
 
-import { getKnowledgeBaseImpact, type KnowledgeBase } from '@/api/knowledgeBases'
-import type { ImpactReport } from '@/api/documents'
+import {
+  CHUNK_SIZE_MAX,
+  CHUNK_SIZE_MIN,
+  chunkOverlapMax,
+  getKnowledgeBaseImpact,
+  type KnowledgeBase,
+} from '@/api/knowledgeBases'
+import { batchDocuments, type ImpactReport } from '@/api/documents'
 import IconDatabase from '@/components/icons/IconDatabase.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
 import IconInbox from '@/components/icons/IconInbox.vue'
+import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconSettings from '@/components/icons/IconSettings.vue'
 import IconTrash from '@/components/icons/IconTrash.vue'
 import SourcePanel from '@/components/knowledge/SourcePanel.vue'
@@ -31,6 +38,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
+import { chunkingErrorOf, parseIntOrNull } from '@/composables/useChunking'
 import { formatBytes } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
@@ -47,7 +55,10 @@ const documentCount = computed(() => store.summaries[props.kb.id]?.count ?? null
 /** 简介上限。与后端 `KB_DESCRIPTION_MAX_CHARS` 对齐，超了后端也会拒。 */
 const DESCRIPTION_MAX = 200
 
-type SectionKey = 'basic' | 'info' | 'sources' | 'danger'
+type SectionKey = 'basic' | 'chunking' | 'info' | 'sources' | 'danger'
+
+/** 底部有「取消 / 保存并关闭」的分区：只有会改数据的那些。 */
+const SAVE_SECTIONS: SectionKey[] = ['basic', 'chunking']
 
 /**
  * 左侧导航的分组。**分组不是装饰**：它回答"这些设置属于哪一类"，
@@ -63,7 +74,10 @@ const GROUPS: { label: string; items: { key: SectionKey; label: string; icon: Co
   },
   {
     label: '数据',
-    items: [{ key: 'sources', label: '数据源', icon: IconInbox }],
+    items: [
+      { key: 'chunking', label: '切块策略', icon: IconSettings },
+      { key: 'sources', label: '数据源', icon: IconInbox },
+    ],
   },
   {
     label: '危险操作',
@@ -77,21 +91,63 @@ const nameDraft = ref('')
 const descriptionDraft = ref('')
 const saving = ref(false)
 
+/** 切分参数草稿。用字符串而不是 number：`AppInput` 的模型是 string，
+ *  而且"输入框被清空"要能与"填了 0"区分开，才好给校验提示。 */
+const chunkSizeDraft = ref('')
+const chunkOverlapDraft = ref('')
+
+/**
+ * 原生 `type="number"` 的输入框回传的是 **number**，而草稿按字符串存。
+ *
+ * 直接 `v-model` 会把 number 写进 ref（类型标注拦不住运行期），于是
+ * `AppInput` 的 `modelValue` 收到 number、与它声明的 string 不符——
+ * 浏览器控制台会刷一串 prop 类型告警。这里统一收成字符串：
+ * 空输入仍然是空串（而不是 `Number('')`＝0），"清空"与"填了 0"才分得开。
+ */
+function textDraft(source: Ref<string>) {
+  return computed({
+    get: () => source.value,
+    set: (value: string) => {
+      source.value = String(value ?? '')
+    },
+  })
+}
+
+const chunkSizeInput = textDraft(chunkSizeDraft)
+const chunkOverlapInput = textDraft(chunkOverlapDraft)
+/** 刚保存过切分参数、但已有文档还是旧切块：面板上会出现"重新摄入"的提示。 */
+const chunkingStale = ref(false)
+const reingestOpen = ref(false)
+const reingesting = ref(false)
+
 const deleteOpen = ref(false)
 const impact = ref<ImpactReport | null>(null)
 const deleting = ref(false)
 
-/** 名称与简介合成一次保存：只有真正变了的字段才发。 */
+/** 切分参数的前端校验（与新建弹窗共用同一份文案，见 `composables/useChunking`）。 */
+const chunkingError = computed(() => chunkingErrorOf(chunkSizeDraft.value, chunkOverlapDraft.value))
+
+const chunkingDirty = computed(
+  () =>
+    parseIntOrNull(chunkSizeDraft.value) !== props.kb.chunk_size ||
+    parseIntOrNull(chunkOverlapDraft.value) !== props.kb.chunk_overlap,
+)
+
+/** 名称 / 简介 / 切分参数合成一次保存：只有真正变了的字段才发。 */
 const dirty = computed(
   () =>
     nameDraft.value.trim() !== props.kb.name ||
-    descriptionDraft.value.trim() !== props.kb.description,
+    descriptionDraft.value.trim() !== props.kb.description ||
+    chunkingDirty.value,
 )
 
 function openSettings(): void {
   section.value = 'basic'
   nameDraft.value = props.kb.name
   descriptionDraft.value = props.kb.description
+  chunkSizeDraft.value = String(props.kb.chunk_size)
+  chunkOverlapDraft.value = String(props.kb.chunk_overlap)
+  chunkingStale.value = false
   settingsOpen.value = true
 }
 
@@ -103,6 +159,9 @@ function closeSettings(): void {
 function cancel(): void {
   nameDraft.value = props.kb.name
   descriptionDraft.value = props.kb.description
+  chunkSizeDraft.value = String(props.kb.chunk_size)
+  chunkOverlapDraft.value = String(props.kb.chunk_overlap)
+  chunkingStale.value = false
   closeSettings()
 }
 
@@ -112,10 +171,28 @@ async function save(): Promise<void> {
     notifyError('知识库名称不能为空')
     return
   }
-  const patch: { name?: string; description?: string } = {}
+  // 参数不合法时**跳到那一栏再说原因**：一个"就是不让你点"的灰按钮
+  // 除了让人反复试，什么信息都没给
+  if (chunkingError.value) {
+    section.value = 'chunking'
+    notifyError(chunkingError.value)
+    return
+  }
+
+  const patch: {
+    name?: string
+    description?: string
+    chunk_size?: number
+    chunk_overlap?: number
+  } = {}
   if (name !== props.kb.name) patch.name = name
   const description = descriptionDraft.value.trim()
   if (description !== props.kb.description) patch.description = description
+  const size = Number(chunkSizeDraft.value)
+  const overlap = Number(chunkOverlapDraft.value)
+  if (size !== props.kb.chunk_size) patch.chunk_size = size
+  if (overlap !== props.kb.chunk_overlap) patch.chunk_overlap = overlap
+  const chunkingChanged = patch.chunk_size !== undefined || patch.chunk_overlap !== undefined
 
   // 没改就直接关：发一次空 PATCH 除了浪费一个来回没有任何意义
   if (Object.keys(patch).length === 0) {
@@ -126,10 +203,21 @@ async function save(): Promise<void> {
   saving.value = true
   try {
     await store.update(props.kb.id, patch)
-    notifySuccess('已保存')
     // 改名会让列表/页面标题跟着变，得让宿主知道
     if (patch.name) emit('changed', 'renamed')
-    closeSettings()
+    if (chunkingChanged) {
+      // **不关弹窗**：切块是解析时写下的，已有文档不会跟着变。
+      // 让用户停在"切块策略"这一栏，重新摄入的按钮就在眼前——
+      // 关掉之后靠一句提示让他自己找回来，那一步多半会丢
+      chunkingStale.value = true
+      section.value = 'chunking'
+      chunkSizeDraft.value = String(props.kb.chunk_size)
+      chunkOverlapDraft.value = String(props.kb.chunk_overlap)
+      notifySuccess('切分参数已保存')
+    } else {
+      notifySuccess('已保存')
+      closeSettings()
+    }
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '保存失败')
   } finally {
@@ -138,11 +226,37 @@ async function save(): Promise<void> {
 }
 
 /**
+ * 整库重新摄入。
+ *
+ * 由服务端解析全集（`all=true`），这里只负责把代价说清——一次云端解析
+ * 要花钱、要时间，所以放在确认弹窗后面，而不是保存参数时自动触发。
+ */
+async function confirmReingest(): Promise<void> {
+  if (reingesting.value) return
+  reingesting.value = true
+  try {
+    const result = await batchDocuments(props.kb.id, 'reprocess', [], null, true)
+    reingestOpen.value = false
+    chunkingStale.value = false
+    if (result.failed > 0) {
+      notifyError(`已排队 ${result.succeeded} 篇，${result.failed} 篇没能入队`)
+    } else {
+      notifySuccess(`已把 ${result.succeeded} 篇文档排入重新摄入队列`)
+    }
+    emit('changed', 'sources')
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '重新摄入失败')
+  } finally {
+    reingesting.value = false
+  }
+}
+
+/**
  * 回车保存。**只对单行输入生效**：描述是多行文本框，那里回车的含义是换行，
  * 顺手提交会让人打不完一段话。
  */
 function onEnter(event: KeyboardEvent): void {
-  if (section.value !== 'basic') return
+  if (!SAVE_SECTIONS.includes(section.value)) return
   if (event.target instanceof HTMLTextAreaElement) return
   void save()
 }
@@ -249,9 +363,7 @@ async function confirmDelete(): Promise<void> {
             <label class="field">
               <span class="field-label">知识库名称</span>
               <AppInput id="kb-setting-name" v-model="nameDraft" placeholder="知识库名称" />
-              <p class="pane-hint">
-                只改显示名，不影响这个库的嵌入模型与切分参数（那些在建库时冻结）。
-              </p>
+              <p class="pane-hint">只改显示名，不影响这个库的嵌入模型与切块方式。</p>
             </label>
 
             <label class="field">
@@ -274,7 +386,8 @@ async function confirmDelete(): Promise<void> {
           <template v-else-if="section === 'info'">
             <h3 class="pane-title">库信息</h3>
             <p class="pane-desc">
-              这些在建库时就定下了，之后不再变——换嵌入模型或切分参数会让已有向量失效。
+              嵌入模型在建库时就定下了，之后不再变——换嵌入模型会让已有向量失效。
+              切块方式可以在「切块策略」里调整。
             </p>
             <dl class="info-list">
               <div>
@@ -294,6 +407,66 @@ async function confirmDelete(): Promise<void> {
                 <dd>块长 {{ kb.chunk_size }} / 重叠 {{ kb.chunk_overlap }}</dd>
               </div>
             </dl>
+          </template>
+
+          <!-- 切块策略（可改，v17） -->
+          <template v-else-if="section === 'chunking'">
+            <h3 class="pane-title">切块策略</h3>
+            <p class="pane-desc">
+              文档在解析之后会被切成小块再向量化，检索命中的就是这些小块。
+              块太大时一个块里混着好几件事，命中后给模型的上下文就跑题；
+              块太小时一句话会被切断，答案也跟着断章取义。
+            </p>
+
+            <div class="field">
+              <label class="field-label" for="kb-chunk-size">块长（字符）</label>
+              <AppInput
+                id="kb-chunk-size"
+                v-model="chunkSizeInput"
+                type="number"
+                :placeholder="String(CHUNK_SIZE_MIN)"
+              />
+              <p class="pane-hint">
+                {{ CHUNK_SIZE_MIN }}–{{ CHUNK_SIZE_MAX }} 之间。默认 512——
+                中文资料里大约是一到两段话。
+              </p>
+            </div>
+
+            <div class="field">
+              <label class="field-label" for="kb-chunk-overlap">块重叠（字符）</label>
+              <AppInput
+                id="kb-chunk-overlap"
+                v-model="chunkOverlapInput"
+                type="number"
+                placeholder="64"
+              />
+              <p class="pane-hint">
+                0–{{ chunkOverlapMax(Number(chunkSizeDraft) || CHUNK_SIZE_MIN) }} 之间。
+                留一点重叠是为了让跨块的句子不被拦腰截断，默认 64。
+              </p>
+            </div>
+
+            <p v-if="chunkingError" class="pane-error" role="alert">{{ chunkingError }}</p>
+
+            <!-- 改动只对之后摄入的文档生效：这一条必须写出来，否则用户会以为
+                 "保存了却没反应"。重新摄入的按钮就放在这段话下面 -->
+            <div class="callout" :class="{ 'callout-strong': chunkingStale }">
+              <p class="callout-text">
+                {{
+                  chunkingStale
+                    ? '参数已保存。已有文档仍是按旧参数切的，需要重新摄入才会生效。'
+                    : '改动只对之后上传或重新摄入的文档生效；已有文档要重新摄入才会按新参数切块。'
+                }}
+              </p>
+              <AppButton
+                size="sm"
+                :disabled="reingesting || documentCount === 0"
+                @click="reingestOpen = true"
+              >
+                <IconRefresh :size="14" />
+                重新摄入全部文档
+              </AppButton>
+            </div>
           </template>
 
           <!-- 数据源 -->
@@ -323,7 +496,7 @@ async function confirmDelete(): Promise<void> {
       </div>
 
       <template #footer>
-        <template v-if="section === 'basic'">
+        <template v-if="SAVE_SECTIONS.includes(section)">
           <AppButton @click="cancel">取消</AppButton>
           <AppButton variant="primary" :disabled="saving || !dirty" @click="save">
             {{ saving ? '保存中…' : '保存并关闭' }}
@@ -332,6 +505,18 @@ async function confirmDelete(): Promise<void> {
         <AppButton v-else @click="closeSettings">关闭</AppButton>
       </template>
     </AppModal>
+
+    <!-- 整库重跑：把代价说清楚再动手（云端解析要花钱、要时间） -->
+    <ConfirmDialog
+      v-model:open="reingestOpen"
+      title="重新摄入全部文档"
+      :lead="`把「${kb.name}」里的文档全部重新解析、切块与向量化？`"
+      note="这会消耗云端解析额度并占用一段时间；期间知识库照常可检索（旧的切块会保留到新切块写入）。正在处理中的文档会被跳过。"
+      confirm-label="开始重新摄入"
+      :busy="reingesting"
+      busy-label="排队中…"
+      @confirm="confirmReingest"
+    />
 
     <ConfirmDialog
       v-model:open="deleteOpen"
@@ -513,6 +698,41 @@ async function confirmDelete(): Promise<void> {
 /* 字数计数右对齐：它跟的是输入框，不是说明文字 */
 .pane-hint-end {
   text-align: right;
+}
+
+/* 参数不合法时的原因。放在字段下面而不是弹 toast：它是"这一栏要改"，
+   与输入框在同一视野里才能边看边改 */
+.pane-error {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-micro-size);
+  color: var(--status-danger);
+}
+
+/* 「改了不会自动生效」这类提示：它不是说明文字，而是"下一步做什么"，
+   所以给底色与边框，让它从一堆 hint 里站出来。参数刚改过时加重一档 */
+.callout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-panel);
+}
+
+.callout-strong {
+  background: var(--status-warning-soft);
+  border-color: transparent;
+}
+
+.callout-text {
+  flex: 1 1 260px;
+  margin: 0;
+  font-size: var(--text-micro-size);
+  line-height: 1.7;
+  color: var(--text-secondary);
 }
 
 /* 库信息的只读清单：两列，标签弱、值强 */

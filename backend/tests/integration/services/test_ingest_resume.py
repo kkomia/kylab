@@ -49,7 +49,7 @@ def test_resume_from_chunked_reuses_existing_chunks(
     document_id = outcome.document.id
 
     ingest_service._probe_and_parse(bundle.meta.get_document(document_id))
-    ingest_service._chunk(bundle.meta.get_document(document_id), None)
+    ingest_service._chunk(bundle.meta.get_document(document_id), kb, None)
     bundle.meta.update_document_stage(document_id, DocumentStage.FAILED, error="模拟向量化失败")
 
     result = ingest_service.ingest(document_id)

@@ -49,17 +49,35 @@ export function getKnowledgeBase(kbId: string): Promise<KnowledgeBase> {
 }
 
 /**
- * 修改知识库的名称 / 简介。**两者都可选**，只传要改的那个
+ * 修改知识库的名称 / 简介 / 切分参数。**各项都可选**，只传要改的那个
  * （传 `{ description: '' }` 是清空简介）。
+ *
+ * 切分参数（v17）只影响**之后摄入**的文档：已切好的块不会自己变，
+ * 所以界面要提示"已有文档需要重新摄入"。
  */
 export function updateKnowledgeBase(
   kbId: string,
-  patch: { name?: string; description?: string },
+  patch: { name?: string; description?: string; chunk_size?: number; chunk_overlap?: number },
 ): Promise<KnowledgeBase> {
   return request(`/knowledge-bases/${kbId}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   })
+}
+
+/**
+ * 切分参数的可用区间。**与后端 `services/chunking.py` 的常量一一对应**。
+ *
+ * 前端先校验是为了让用户当场看到中文原因，而不是等一个 422 回来；
+ * 权威仍在后端（服务层会再校验一次，两处都改才算改完）。
+ */
+export const CHUNK_SIZE_MIN = 128
+export const CHUNK_SIZE_MAX = 2048
+export const CHUNK_OVERLAP_RATIO_MAX = 0.5
+
+/** 给定块长时，重叠的上限。默认块长（512）下就是 256。 */
+export function chunkOverlapMax(size: number): number {
+  return Math.max(1, Math.floor(size * CHUNK_OVERLAP_RATIO_MAX))
 }
 
 /** 删除这个知识库会波及什么（界面要在动手之前把它显示出来）。 */

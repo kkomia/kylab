@@ -20,7 +20,15 @@ from dataclasses import dataclass
 from app.core.page_markers import PAGE_MARKER_RE
 from app.storage.base import ChunkRecord
 
-__all__ = ["ChunkingConfig", "chunk_markdown", "content_hash_of"]
+__all__ = [
+    "CHUNK_OVERLAP_MAX",
+    "CHUNK_SIZE_MAX",
+    "CHUNK_SIZE_MIN",
+    "ChunkingConfig",
+    "chunk_markdown",
+    "config_from_record",
+    "content_hash_of",
+]
 
 
 #: 页标记的读取侧。格式定义在 ``app/core/page_markers.py``（写侧：解析器与切分器），
@@ -31,6 +39,18 @@ _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 """ATX 标题最多 6 级：7 个 ``#`` 在 Markdown 里就不是标题，而是普通段落。"""
 DEFAULT_CHUNK_SIZE = 512
 DEFAULT_OVERLAP = 64
+
+#: 块长的可用区间。**上下限都是"产品判断"而不是技术限制**：
+#: - 128 以下：一个块装不满两句完整的话，检索命中后给模型的上下文没有意义；
+#: - 2048 以上：嵌入模型普遍有 token 上限（按中文约 1 字 1.5 token 估，2048 字 ≈ 3072 token），
+#:   再大就有被上游静默截断的风险——那会变成"向量只对前一半文字负责"的隐蔽错误。
+CHUNK_SIZE_MIN = 128
+CHUNK_SIZE_MAX = 2048
+
+#: 重叠的上限比例。重叠是为了让跨块的句子不被切断，但重叠=块长会让切分原地打转
+#: （每块都是上一块的尾巴），所以最多到一半。
+CHUNK_OVERLAP_RATIO_MAX = 0.5
+CHUNK_OVERLAP_MAX = int(CHUNK_SIZE_MAX * CHUNK_OVERLAP_RATIO_MAX)
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +67,23 @@ class ChunkingConfig:
             raise ValueError("重叠长度不能为负")
         if self.overlap >= self.size:
             raise ValueError("重叠长度必须小于块长，否则切分会原地打转")
+
+
+def config_from_record(record) -> ChunkingConfig:  # type: ignore[no-untyped-def]
+    """从知识库记录里取切分参数，并**兜底钳位**。
+
+    为什么要钳而不是直接信库里的值：早期版本的建库接口允许
+    ``chunk_size=512 & chunk_overlap=4000`` 这种组合入库，``ChunkingConfig``
+    会直接抛 ValueError——那会让**一份历史配置把后续所有文档的摄入打挂**，
+    而且报错发生在切分阶段，看起来像文件坏了。
+    钳位只影响越界的历史值，正常值原样通过。
+    """
+    size = int(getattr(record, "chunk_size", DEFAULT_CHUNK_SIZE) or DEFAULT_CHUNK_SIZE)
+    size = min(max(size, CHUNK_SIZE_MIN), CHUNK_SIZE_MAX)
+    # 字段缺失时退回默认重叠；存的是 0（显式"不重叠"）或 None（历史空值）都按 0 处理
+    overlap = int(getattr(record, "chunk_overlap", DEFAULT_OVERLAP) or 0)
+    overlap = min(max(overlap, 0), max(0, int(size * CHUNK_OVERLAP_RATIO_MAX)))
+    return ChunkingConfig(size=size, overlap=overlap)
 
 
 def content_hash_of(text: str) -> str:

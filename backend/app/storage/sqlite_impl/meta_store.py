@@ -138,6 +138,14 @@ class SqliteMetaStore(MetaStore):
                 (name, _dump(_now()), kb_id),
             )
 
+    def set_knowledge_base_chunking(self, kb_id: str, size: int, overlap: int) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE knowledge_bases SET chunk_size = ?, chunk_overlap = ?, updated_at = ?"
+                " WHERE id = ?",
+                (size, overlap, _dump(_now()), kb_id),
+            )
+
     def set_knowledge_base_description(self, kb_id: str, description: str) -> None:
         with self._db.session() as conn:
             conn.execute(

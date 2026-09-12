@@ -10,8 +10,9 @@
  * 页头留了一个**对话入口**的位置：知识库问答（拿库内容直接提问）是下一步，
  * 这里先放一个禁用态的入口与一句说明，不做点了没反应的假控件。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, type Ref } from 'vue'
 
+import { CHUNK_SIZE_MAX, CHUNK_SIZE_MIN } from '@/api/knowledgeBases'
 import { getRegistry, type Registry } from '@/api/modelRegistry'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import KnowledgeBaseMenu from '@/components/knowledge/KnowledgeBaseMenu.vue'
@@ -23,6 +24,7 @@ import EmptyState from '@/components/ui/EmptyState.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
+import { chunkingErrorOf, parseIntOrNull } from '@/composables/useChunking'
 import { formatRelativeTime } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
@@ -103,12 +105,42 @@ const noEmbeddingModel = computed(() => modelsLoaded.value && embeddingModels.va
 const mustPickModel = computed(() => !defaultModel.value && embeddingModels.value.length > 0)
 
 const canCreate = computed(
-  () => draftName.value.trim().length > 0 && (Boolean(draftModel.value) || !mustPickModel.value),
+  () =>
+    draftName.value.trim().length > 0 &&
+    (Boolean(draftModel.value) || !mustPickModel.value) &&
+    chunkError.value === '',
 )
+
+/** 切分参数草稿（可折叠区，默认就是后端默认值）。字符串存：空输入要能与 0 区分。 */
+const CHUNK_DEFAULT_SIZE = 512
+const CHUNK_DEFAULT_OVERLAP = 64
+const chunkSizeDraft = ref(String(CHUNK_DEFAULT_SIZE))
+const chunkOverlapDraft = ref(String(CHUNK_DEFAULT_OVERLAP))
+
+/**
+ * 数字输入框回传 number，而草稿是 string——直接 v-model 会让 `AppInput`
+ * 收到与声明不符的类型（控制台告警）。统一收成字符串，空输入仍是空串。
+ * 与 `KnowledgeBaseMenu` 里同一套处理，见那边的注释。
+ */
+function textDraft(source: Ref<string>) {
+  return computed({
+    get: () => source.value,
+    set: (value: string) => {
+      source.value = String(value ?? '')
+    },
+  })
+}
+
+const chunkSizeInput = textDraft(chunkSizeDraft)
+const chunkOverlapInput = textDraft(chunkOverlapDraft)
+const chunkError = computed(() => chunkingErrorOf(chunkSizeDraft.value, chunkOverlapDraft.value))
 
 function openCreate(): void {
   createOpen.value = true
   draftModel.value = ''
+  // 每次打开都回到默认值：上一次改过的切块参数留着，下一座库会莫名其妙继承它
+  chunkSizeDraft.value = String(CHUNK_DEFAULT_SIZE)
+  chunkOverlapDraft.value = String(CHUNK_DEFAULT_OVERLAP)
   void loadModels().then(() => {
     // 没有默认模型时预选第一个：让"能选就选"的路径最短，而不是让用户先撞一次校验
     if (mustPickModel.value && embeddingModels.value[0]) {
@@ -152,9 +184,14 @@ async function submitCreate(): Promise<void> {
   }
   creating.value = true
   try {
+    const size = parseIntOrNull(chunkSizeDraft.value)
+    const overlap = parseIntOrNull(chunkOverlapDraft.value)
     const created = await store.create({
       name,
       embedding_model_pk: draftModel.value || undefined,
+      // 与默认值相同时**不发**：让"服务端默认"成为唯一的默认，而不是前端也钉一份数字
+      ...(size !== null && size !== CHUNK_DEFAULT_SIZE ? { chunk_size: size } : {}),
+      ...(overlap !== null && overlap !== CHUNK_DEFAULT_OVERLAP ? { chunk_overlap: overlap } : {}),
     })
     notifySuccess(`已创建知识库「${created.name}」`)
     createOpen.value = false
@@ -290,7 +327,7 @@ function statsOf(kbId: string) {
         <label class="field-label" for="kb-embedding">
           嵌入模型
           <InfoTip
-            text="嵌入模型决定这个库的向量空间，建库时定、之后不能更换。文档量小的库可以选精度更高的模型；量大的选小模型以提升速度与存储效率。切分参数用服务端默认值。"
+            text="嵌入模型决定这个库的向量空间，建库时定、之后不能更换。文档量小的库可以选精度更高的模型；量大的选小模型以提升速度与存储效率。"
           />
         </label>
         <AppSelect
@@ -305,6 +342,26 @@ function statsOf(kbId: string) {
           再到「设置 → 向量化」把它选为默认。
         </p>
       </div>
+      <!-- 切分参数收在折叠区：多数人用默认值就好，不该让"建个库"变成填五个框。
+           但**要用的时候必须找得到**——它会直接影响检索质量（见设置里的「切块策略」） -->
+      <details class="field chunking-more">
+        <summary>切块设置（可选，默认 512 / 64）</summary>
+        <div class="chunking-grid">
+          <label class="field">
+            <span class="field-label" for="kb-chunk-size">块长</span>
+            <AppInput id="kb-chunk-size" v-model="chunkSizeInput" type="number" />
+          </label>
+          <label class="field">
+            <span class="field-label" for="kb-chunk-overlap">块重叠</span>
+            <AppInput id="kb-chunk-overlap" v-model="chunkOverlapInput" type="number" />
+          </label>
+        </div>
+        <p v-if="chunkError" class="chunking-error" role="alert">{{ chunkError }}</p>
+        <p v-else class="modal-note">
+          块长 {{ CHUNK_SIZE_MIN }}–{{ CHUNK_SIZE_MAX }} 字符；重叠不超过块长的一半。
+          建库之后仍可在「知识库设置 → 切块策略」里调整。
+        </p>
+      </details>
       <template #footer>
         <AppButton @click="createOpen = false">取消</AppButton>
         <AppButton

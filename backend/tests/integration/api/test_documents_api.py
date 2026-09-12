@@ -414,3 +414,41 @@ def test_readonly_key_cannot_batch(client: TestClient, kb_id: str) -> None:
 
     assert response.status_code == 403
 
+
+
+# --------------------------------------------------- 整库批量（v17，切分参数改后重跑）
+
+
+def test_batch_all_skips_documents_still_in_the_pipeline(client: TestClient, kb_id: str) -> None:
+    """`all=true` 不重复排队正在跑的文档——那会让同一篇被解析两遍（要花钱）。
+
+    这一条同时也是"全部都在跑"时的出口：给的是"都在处理中"，不是"没有文档"。
+    """
+    _upload(client, kb_id, "还在跑.md")
+    response = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents/batch",
+        json={"action": "reprocess", "all": True},
+    )
+
+    assert response.status_code == 422
+    assert "处理中" in response.json()["message"]
+
+
+def test_batch_requires_a_target(client: TestClient, kb_id: str) -> None:
+    """既不给 ids 也不给 all：当场 422，而不是执行一个空批次看起来像成功。"""
+    response = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents/batch",
+        json={"action": "reprocess"},
+    )
+    assert response.status_code == 422
+
+
+def test_batch_all_on_empty_kb_is_rejected(client: TestClient) -> None:
+    """空库与"都在跑"要分开说：前者是"还没有文档"，后者是"再等等"。"""
+    kb = client.post("/api/v1/knowledge-bases", json={"name": "空库"}).json()
+    response = client.post(
+        f"/api/v1/knowledge-bases/{kb['id']}/documents/batch",
+        json={"action": "reprocess", "all": True},
+    )
+    assert response.status_code == 422
+    assert "还没有文档" in response.json()["message"]

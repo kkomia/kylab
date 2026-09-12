@@ -11,6 +11,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import * as documentsApi from '@/api/documents'
 import * as kbApi from '@/api/knowledgeBases'
 import KnowledgeBaseMenu from '@/components/knowledge/KnowledgeBaseMenu.vue'
 import type { KnowledgeBase } from '@/api/knowledgeBases'
@@ -23,6 +24,11 @@ vi.mock('@/api/knowledgeBases', async (importOriginal) => {
     getKnowledgeBaseImpact: vi.fn(),
     deleteKnowledgeBase: vi.fn(),
   }
+})
+
+vi.mock('@/api/documents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/documents')>()
+  return { ...actual, batchDocuments: vi.fn() }
 })
 
 function kbFixture(overrides: Partial<KnowledgeBase> = {}): KnowledgeBase {
@@ -91,6 +97,7 @@ describe('KnowledgeBaseMenu', () => {
     expect(wrapper.findAll('.nav-item').map((el) => el.text())).toEqual([
       '基本信息',
       '库信息',
+      '切块策略',
       '数据源',
       '删除知识库',
     ])
@@ -147,5 +154,87 @@ describe('KnowledgeBaseMenu', () => {
       name: '改个名',
       description: '新的一段描述',
     })
+  })
+})
+
+describe('KnowledgeBaseMenu 切块策略（v17）', () => {
+  async function openChunking(wrapper: Awaited<ReturnType<typeof mountMenu>>) {
+    const tab = wrapper.findAll('.nav-item').find((el) => el.text() === '切块策略')!
+    await tab.trigger('click')
+    return wrapper
+  }
+
+  it('切块这一栏是可编辑的，预填当前值，且底部有保存', async () => {
+    const wrapper = await openChunking(await mountMenu())
+
+    expect((wrapper.find('#kb-chunk-size').element as HTMLInputElement).value).toBe('512')
+    expect((wrapper.find('#kb-chunk-overlap').element as HTMLInputElement).value).toBe('64')
+    expect(saveButton(wrapper).exists()).toBe(true)
+    // 这一条必须写在界面上：否则用户会以为"保存了却没反应"
+    expect(wrapper.text()).toContain('重新摄入')
+  })
+
+  it('只改块长时只发 chunk_size，另一项不动', async () => {
+    const wrapper = await openChunking(await mountMenu())
+
+    await wrapper.find('#kb-chunk-size').setValue('256')
+    await saveButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(kbApi.updateKnowledgeBase).toHaveBeenCalledWith('kb_1', { chunk_size: 256 })
+  })
+
+  it('块长越界时不发请求，跳到那一栏说明原因', async () => {
+    const wrapper = await openChunking(await mountMenu())
+
+    await wrapper.find('#kb-chunk-size').setValue('10')
+    await saveButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(kbApi.updateKnowledgeBase).not.toHaveBeenCalled()
+    expect(wrapper.find('.pane-error').text()).toContain('块长需要在')
+  })
+
+  it('重叠超过块长一半同样拦住（前端先给中文原因，不等 422）', async () => {
+    const wrapper = await openChunking(await mountMenu())
+
+    await wrapper.find('#kb-chunk-size').setValue('128')
+    await wrapper.find('#kb-chunk-overlap').setValue('100')
+    await saveButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(kbApi.updateKnowledgeBase).not.toHaveBeenCalled()
+    expect(wrapper.find('.pane-error').text()).toContain('一半')
+  })
+
+  it('保存切分参数后**不关弹窗**，停在切块栏并提示需要重新摄入', async () => {
+    const wrapper = await openChunking(await mountMenu())
+
+    await wrapper.find('#kb-chunk-size').setValue('256')
+    await saveButton(wrapper).trigger('click')
+    await flushPromises()
+
+    // 报错与"参数已保存"都靠看这里，而不是猜
+    expect(wrapper.find('.nav-item-active').text()).toBe('切块策略')
+    expect(wrapper.find('.callout').classes()).toContain('callout-strong')
+    expect(wrapper.text()).toContain('已有文档仍是按旧参数切的')
+  })
+
+  it('「重新摄入全部文档」走 all=true，由服务端解析全集', async () => {
+    vi.mocked(documentsApi.batchDocuments).mockResolvedValue({
+      action: 'reprocess',
+      succeeded: 2,
+      failed: 0,
+      items: [],
+    })
+    const wrapper = await openChunking(await mountMenu())
+
+    const button = wrapper.findAll('button').find((b) => b.text().includes('重新摄入全部文档'))!
+    await button.trigger('click')
+    await wrapper.findComponent({ name: 'ConfirmDialog' }).vm.$emit('confirm')
+    await flushPromises()
+
+    expect(documentsApi.batchDocuments).toHaveBeenCalledWith('kb_1', 'reprocess', [], null, true)
+    expect(wrapper.emitted('changed')).toContainEqual(['sources'])
   })
 })
