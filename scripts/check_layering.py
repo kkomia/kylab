@@ -37,8 +37,12 @@ SERVICE_STORAGE_ALLOWED = "app.storage.base"
 SERVICE_MSG = "业务层禁止直连数据库，存储访问必须经 storage/base.py 的 Repository 接口"
 
 # L3：解析器实现之间互不引用（base.py 的 ParseResult 与 probe.py 是共享契约）
+#
+# `tabular_format` / `html_format` 是**共享的格式转换器**而不是"某个解析器实现"：
+# 它们不含任何解析器注册逻辑，可以被多个解析器与连接器复用。放进允许清单是刻意的
+# ——把它们算作"实现"，只会逼着后来的人复制一份 HTML 剥标签的代码。
 PARSER_LAYER = "app.parsers"
-PARSER_SHARED = {"base", "probe", "tabular_format", "__init__"}
+PARSER_SHARED = {"base", "probe", "tabular_format", "html_format", "__init__"}
 
 # L4：解析器（插件层）不得反向依赖业务层/协议层。
 # 原规则只查 parser→parser，于是 `parsers/tabular.py` import `app.services.tabular`

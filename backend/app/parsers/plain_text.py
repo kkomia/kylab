@@ -45,7 +45,11 @@ class PlainTextParser(ParserProvider):
         # 后缀不认识时，才允许拿 MIME 与探测结论兜底，且必须不是二进制容器
         if suffix_of(filename) in BINARY_EXTENSIONS:
             return False
-        return (mime_type or "").startswith("text/")
+        mime = (mime_type or "").lower()
+        # HTML 让给 HtmlUploadParser：这里收下就等于把 <script> 与导航一起入库
+        if mime.startswith("text/html"):
+            return False
+        return mime.startswith("text/")
 
     def parse(
         self,

@@ -25,8 +25,8 @@ from xml.etree import ElementTree
 import httpx
 
 from app.models.enums import DataSourceKind
+from app.parsers.html_format import extract_article
 from app.services.connectors.base import Connector, FetchedItem
-from app.services.connectors.html_reader import extract_article
 
 __all__ = ["RssConnector"]
 
@@ -213,7 +213,7 @@ def _html_fragment_to_markdown(raw: str) -> str:
     片段里通常没有 ``<article>``，所以走整段转换而不是正文提取——
     提取的启发式规则在"只有一段"时会挑走半个片段（实测过）。
     """
-    from app.services.connectors.html_reader import html_to_markdown
+    from app.parsers.html_format import html_to_markdown
 
     return html_to_markdown(raw)
 

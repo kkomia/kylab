@@ -21,8 +21,8 @@ from datetime import UTC, datetime
 import httpx
 
 from app.models.enums import DataSourceKind
+from app.parsers.html_format import extract_article
 from app.services.connectors.base import Connector, FetchedItem
-from app.services.connectors.html_reader import extract_article
 
 __all__ = ["HtmlConnector"]
 

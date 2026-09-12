@@ -442,3 +442,40 @@ def test_legacy_out_of_range_chunking_is_clamped(
 
     assert result.document.stage is DocumentStage.INDEXED
     assert record.id == "kb_1"
+
+
+def test_uploaded_html_is_stripped_before_indexing(
+    bundle: StoreBundle, embedder, kb  # type: ignore[no-untyped-def]
+) -> None:
+    """上传的 .html 走正文提取（v17）。
+
+    回归用例：原先 `.html` 落到纯文本直通（靠 MIME text/* 兜底），
+    `<script>` 与导航原样入库——用户问什么都能匹配到菜单里的"首页 关于 联系方式"。
+    """
+    from app.parsers.html_upload import HtmlUploadParser
+
+    service = IngestService(
+        bundle,
+        router=ParserRouter([HtmlUploadParser(), PlainTextParser()]),
+        embedder=embedder,
+    )
+    html = (
+        "<html><body>"
+        "<nav>首页 关于我们 联系方式</nav>"
+        "<p>眼轴长度是近视防控的核心指标。</p>"
+        "<script>var tracking = 1;</script>"
+        "</body></html>"
+    )
+    outcome = service.submit(
+        knowledge_base_id="kb_1", filename="page.html", content=html.encode()
+    )
+    result = service.ingest(outcome.document.id)
+
+    assert result.document.stage is DocumentStage.INDEXED
+    parsed = bundle.meta.get_parse_result(outcome.document.id)
+    assert parsed is not None
+    assert parsed.parser_name == "HtmlUploadParser"
+    markdown = bundle.objects.read(parsed.markdown_path).decode()
+    assert "眼轴长度是近视防控的核心指标" in markdown
+    assert "首页 关于我们" not in markdown
+    assert "var tracking" not in markdown

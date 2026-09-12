@@ -70,3 +70,19 @@ def test_registration_order_is_priority() -> None:
 def test_exposes_registered_parser_names() -> None:
     router = ParserRouter([PlainTextParser(), _AlwaysParser()])
     assert router.parser_names == ("PlainTextParser", "AlwaysParser")
+
+
+def test_html_upload_goes_to_the_html_parser_not_plain_text() -> None:
+    """`.html` 必须走正文提取。顺序反了就会把 <script> 与导航原样收进库
+    ——纯文本直通在 MIME 是 text/* 时会收下任何东西。"""
+    from app.parsers.html_upload import HtmlUploadParser
+    from app.parsers.probe import probe
+
+    router = ParserRouter([HtmlUploadParser(), PlainTextParser()])
+    html = "<html><body><script>x</script><p>正文</p></body></html>".encode()
+
+    decision = router.decide(
+        filename="page.html", mime_type="text/html", probe=probe(html, filename="page.html")
+    )
+
+    assert decision.parser_name == "HtmlUploadParser"

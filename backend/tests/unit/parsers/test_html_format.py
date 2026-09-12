@@ -1,6 +1,6 @@
 """HTML 正文提取与 Markdown 转换（M6 / T6.2）。
 
-镜像同构：``app/services/connectors/html_reader.py`` → 本文件。
+镜像同构：``app/parsers/html_format.py`` → 本文件。
 
 **这是这一层最该有测试的地方**：提取质量全靠一堆启发式规则，
 而没有测试的启发式规则改一行就可能开始抓导航栏——那种退化在界面上
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.connectors.html_reader import (
+from app.parsers.html_format import (
     extract_article,
     html_to_markdown,
     html_to_text,
