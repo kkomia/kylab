@@ -80,18 +80,6 @@ SETTING_GROUPS: dict[str, Any] = {
         "label": "对话模型（LLM）",
         "fields": [
             {"key": "llm.temperature", "label": "温度", "type": "text"},
-            {
-                "key": "llm.max_tokens",
-                "label": "最大回复长度",
-                "type": "int",
-                # 用滑杆编辑：这是"有推荐区间、但精确到个位没意义"的量。
-                # 取值范围在这里给、不在前端写死——**范围是参数语义的一部分**；
-                # 界面另外会探测一次模型的真实上限，并把它夹到滑杆的最大值上。
-                "control": "range",
-                "min": 2048,
-                "max": 65536,
-                "step": 1024,
-            },
             {"key": "llm.enable_thinking", "label": "思考模式", "type": "bool"},
             {
                 "key": "llm.thinking_effort",
@@ -130,12 +118,10 @@ DEFAULTS: dict[str, str] = {
     "paddleocr.token": "",
     "paddleocr.model": "PaddleOCR-VL-1.6",
     "llm.temperature": "0.3",
-    # 16384 而不是 2048：**思考也占回复预算**，2048 会把预算全花在思考上、
-    # 正文一个字都出不来（实测：一题中医辨证，思考开到"中"时思考用了 2048 打满、
-    # 正文 0 字；同一题在 8192 下只用了 1084 就答完）。模型自己的上限远高于此
-    # （实测 deepseek-flash 是 393216），界面会给滑杆并提供上限探测。
-    # 显式改小的部署不受强制——取值以库里/表单里的为准。
-    "llm.max_tokens": "16384",
+    # 回复长度上限**不再是设置项**：默认不传，把这个上限交还给模型自己。
+    # 曾经是 2048，实测会把回复预算全花在思考上、正文一个字都出不来（且时好时坏）；
+    # 改成 16384 只是把概率调低。正确做法是别替模型做主——详见《开发计划》§12.88。
+    # 个别端点"不传就退化成很小的默认值"时，走模型注册的 options.max_tokens。
     # 思考**默认开**：主流模型默认都思考，这里的开关只用来"临时关掉"。
     "llm.enable_thinking": "true",
     "llm.thinking_effort": "medium",
@@ -268,15 +254,6 @@ class RuntimeConfigService:
                 # 下拉项的候选值。只有 select 类字段带它，前端据此渲染 AppSelect。
                 if field.get("options"):
                     entry["options"] = list(field["options"])
-                # 滑杆的取值范围（只有 range 控件带）。放在这里透传，
-                # 是"范围的唯一来源在后端"这条约束的落点。
-                for meta_key in ("control", "min", "max", "step"):
-                    if field.get(meta_key) is not None:
-                        entry[meta_key] = field[meta_key]
-                if field.get("control") == "range":
-                    # 滑杆要画"默认值落在哪"，所以把代码默认值一并给出去。
-                    # 从 DEFAULTS 取而不是在字段里再写一遍：写两处迟早分叉。
-                    entry["default_value"] = DEFAULTS.get(field["key"])
                 fields.append(entry)
             groups.append({"key": group_key, "label": spec["label"], "fields": fields})
         return {"groups": groups}
@@ -420,18 +397,19 @@ class RuntimeConfigService:
             thinking_dialect=dialect,
         )
 
-    def _sampling(self) -> tuple[float, int, bool, str]:
-        """设置页那几档采样参数的快照：温度、最大回复长度、思考开关与强度。
+    def _sampling(self) -> tuple[float, int | None, bool, str]:
+        """设置页那几档采样参数的快照：温度、回复长度上限、思考开关与强度。
 
-        思考开着时思考内容也占回复预算，所以**默认值**取 2048 而不是 1024
-        （DeepSeek 实测：预算被思考吃光时正文为空）。库里显式设过值就按值来，
-        不做强制抬升——用户缩过回复长度是有理由的，界面会用可读错误提示他调回去。
+        **回复长度上限默认是 ``None``（请求里不发这个字段）**：上限本来就是模型自己的事，
+        不传时端点会一直生成到模型自然收尾。我们拍一个数字只会引入新故障——
+        2048 时实测过"思考把预算吃光、正文一个字都出不来"，而且随采样时好时坏。
+        只有模型注册里显式写了 ``options.max_tokens`` 才发（见 ``llm_for``），
+        那是给"不传就用一个很小默认值"的端点留的手动出路。
         """
         temperature = _as_float(self.get("llm.temperature"), 0.3)
-        max_tokens = self.get_int("llm.max_tokens") or 2048
         thinking = self.get("llm.enable_thinking").lower() in ("1", "true", "yes", "on")
         effort = normalize_effort(self.get("llm.thinking_effort"))
-        return temperature, max_tokens, thinking, effort
+        return temperature, None, thinking, effort
 
     # ------------------------------------------------------------------ 引导值
 
@@ -449,7 +427,6 @@ class RuntimeConfigService:
             "mineru.token": settings.mineru_token,
             "paddleocr.token": settings.paddleocr_token,
             "llm.temperature": settings.llm_temperature,
-            "llm.max_tokens": settings.llm_max_tokens,
             "llm.enable_thinking": settings.llm_enable_thinking,
             "llm.thinking_effort": settings.llm_thinking_effort,
         }

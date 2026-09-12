@@ -146,15 +146,17 @@ def test_sampling_parameters_stay_on_the_settings_page(bundle, runtime, registry
 
     它们是"这次怎么问"而不是"用哪家模型"——换个模型通常不想重新调一遍
     temperature。模型的身份（base_url / key / model_id）才由注册表决定。
+
+    回复长度不在其中：**它已经不是设置项了**，默认压根不发这个字段
+    （见 ``services/llm.py`` 的 ``LLMConfig.max_tokens``）。
     """
     bundle.meta.set_setting("llm.temperature", "0.7")
-    bundle.meta.set_setting("llm.max_tokens", "2048")
     _bind_chat(registry)
 
     snapshot = runtime.llm()
 
     assert snapshot.temperature == pytest.approx(0.7)
-    assert snapshot.max_tokens == 2048
+    assert snapshot.max_tokens is None
 
 
 def test_model_options_can_override_sampling(bundle, runtime, registry) -> None:  # type: ignore[no-untyped-def]
@@ -178,8 +180,10 @@ def test_model_options_can_override_sampling(bundle, runtime, registry) -> None:
 
 
 def test_unparseable_option_does_not_break_the_chat(bundle, runtime, registry) -> None:  # type: ignore[no-untyped-def]
-    """登记时把 max_tokens 填成非数字是人之常情，不该让整次对话失败。"""
-    bundle.meta.set_setting("llm.max_tokens", "1024")
+    """登记时把 max_tokens 填成非数字是人之常情，不该让整次对话失败。
+
+    解析不出来就退回"不发这个字段"（``None``），而不是让 ``int("一千")`` 抛出去。
+    """
     owner = registry.create_provider(kind="llm", name="手滑家", base_url="https://x.example.com")
     model = registry.register_model(
         provider_id=owner.id,
@@ -189,7 +193,7 @@ def test_unparseable_option_does_not_break_the_chat(bundle, runtime, registry) -
     )
     registry.bind("chat", model.id)
 
-    assert runtime.llm().max_tokens == 1024
+    assert runtime.llm().max_tokens is None
 
 
 # --------------------------------------------------------------------- 换模型

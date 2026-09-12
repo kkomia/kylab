@@ -579,13 +579,15 @@ _MIGRATION_017 = Migration(
 
 _MIGRATION_018 = Migration(
     version=18,
-    description="回复长度默认值 2048 → 16384（只改仍是旧默认值的那些部署）",
+    description="清掉已废弃的 llm.max_tokens（回复长度上限不再由我们设置）",
     statements=(
-        # **只在没被人改过时才动**：值仍等于旧的默认 2048，说明"默认值本身不合适"
-        # （思考会把 2048 全吃掉，正文一个字都出不来，实测过），而不是用户有意的选择。
-        # 不这么判，一次升级就把别人调过的配置改掉了。
-        "UPDATE app_settings SET value = '16384'"
-        " WHERE key = 'llm.max_tokens' AND value = '2048'",
+        # 这个键曾经是「回复长度上限」，默认 2048。实测它会把回复预算掐死在思考阶段
+        # ——正文一个字都出不来，而且随采样时好时坏（同一题有时答得出来）。
+        # 先是想抬到 16384，最后结论是**不替模型决定长度**：请求里干脆不带这个字段，
+        # 让端点生成到模型自然收尾（见 services/llm.py 的 LLMConfig.max_tokens）。
+        # 键留着没人读，就会变成"界面看不到、代码也不认"的僵尸配置，删掉。
+        # （018 在写下这一版之前从未在任何库上应用过——它和上一版是同一天内的一稿一改。）
+        "DELETE FROM app_settings WHERE key = 'llm.max_tokens'",
     ),
 )
 

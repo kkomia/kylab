@@ -83,8 +83,6 @@ class Settings(BaseSettings):
     # 对话模型（M6 快速检索问答）
     # 地址 / 密钥 / 模型名同样由注册表决定，这里只留采样与思考开关
     llm_temperature: float = 0.3
-    llm_max_tokens: int = 2048
-    """回复长度上限。思考开着时思考内容也占预算，1024 常导致"想完了没正文"。"""
     llm_enable_thinking: bool = True
     """思考开关，**默认开**：主流模型默认都思考，关掉是例外而不是常态。
 

@@ -30,11 +30,9 @@ import {
 import {
   getAuthStatus,
   getSettings,
-  probeMaxTokens,
   testConnection,
   updateSettings,
   type AuthStatus,
-  type SettingField,
   type SettingGroup,
   type SettingsView,
 } from '@/api/settings'
@@ -65,7 +63,6 @@ import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
-import RangeField from '@/components/ui/RangeField.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { formatBytes } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
@@ -418,14 +415,6 @@ const draft = ref<Record<string, string>>({})
 const saving = ref(false)
 const testing = ref(false)
 const testResult = ref<{ ok: boolean; detail: string } | null>(null)
-/**
- * 对话模型能接受的最大回复长度（后端探测，见 `api/settings.probeMaxTokens`）。
- *
- * `null` = **还没探到 / 探不到**。滑杆据此把上界收到模型真实上限——
- * 上界给高了，用户能拖出一个端点会 400 的值。
- */
-const maxTokensCeiling = ref<number | null>(null)
-const maxTokensProbeDetail = ref('')
 
 // 每次打开都重新读一次：配置可能被另一个标签页改过，也可能后端刚重启
 watch(open, (value) => {
@@ -599,64 +588,6 @@ function openEdit(target: SettingGroup): void {
     next[field.key] = field.type === 'secret' ? '' : field.value
   }
   draft.value = next
-  if (target.fields.some((field) => field.control === 'range')) void probeRangeCeiling(target)
-}
-
-/**
- * 打开编辑器时探一次模型上限（只有带滑杆的组需要）。
- *
- * **不阻塞、不打扰**：探不到就回退到后端给的静态上界——那只是"少一层保护"，
- * 没必要为此弹个红字；探测到的细节放在字段提示里，想知道的人自己看。
- */
-async function probeRangeCeiling(target: SettingGroup): Promise<void> {
-  maxTokensCeiling.value = null
-  maxTokensProbeDetail.value = '正在探测模型上限…'
-  try {
-    const result = await probeMaxTokens()
-    maxTokensCeiling.value = result.ceiling
-    maxTokensProbeDetail.value = result.detail
-  } catch (cause) {
-    maxTokensProbeDetail.value = cause instanceof Error ? cause.message : '上限探测失败'
-    return
-  }
-  // 探到的上限比当前值还小：就地夹回来。否则会出现"读数 16384、滑块却停在上界"的分裂，
-  // 而且保存下去那个值端点一定会拒
-  const field = target.fields.find((item) => item.control === 'range')
-  if (field && maxTokensCeiling.value !== null) {
-    const current = Number(draft.value[field.key])
-    if (Number.isFinite(current) && current > maxTokensCeiling.value) {
-      draft.value[field.key] = String(maxTokensCeiling.value)
-    }
-  }
-}
-
-/** 滑杆的上界：后端给的静态上界与探测到的模型上限取小。 */
-function rangeMax(field: SettingField): number {
-  const fallback = field.max ?? 65536
-  const min = field.min ?? 0
-  return Math.max(min, Math.min(fallback, maxTokensCeiling.value ?? fallback))
-}
-
-/**
- * 轨道刻度：范围内 2 的幂 + 上界本身。
- *
- * **按 min/max 推导，不写死数字**：写死的话后端一改上限，刻度就跑到轨道外面去了。
- * 最小档不标（它就是轴的起点，标签会伸出轨道）。
- */
-function rangeMarks(field: SettingField): { value: number; primary?: boolean }[] {
-  const min = field.min ?? 0
-  const max = rangeMax(field)
-  const marks: { value: number; primary?: boolean }[] = []
-  for (let value = 1; value <= max; value *= 2) {
-    if (value > min * 2 && value < max) marks.push({ value })
-  }
-  marks.push({ value: max })
-  // 默认值那一个画成强调色：用户一眼看到"常态在哪、我现在离它多远"
-  const fallback = Number(field.default_value ?? Number.NaN)
-  if (Number.isFinite(fallback) && fallback > min && fallback < max) {
-    marks.push({ value: fallback, primary: true })
-  }
-  return marks
 }
 
 async function save(): Promise<void> {
@@ -876,27 +807,6 @@ async function runTest(target: string): Promise<void> {
                     :aria-label="field.label"
                   />
                 </label>
-                <!--
-                  滑杆项（`control: 'range'`）：这类参数有推荐区间、精确到个位没意义，
-                  给输入框是在考用户"该填多少"。取值范围由后端给，上界再按探测到的
-                  模型上限收一次（见 probeRangeCeiling）。
-                -->
-                <div v-else-if="field.control === 'range'" class="edit-field">
-                  <span class="edit-label">{{ field.label }}</span>
-                  <RangeField
-                    :id="`setting-${field.key}`"
-                    :model-value="Number(draft[field.key]) || 0"
-                    :min="field.min ?? 0"
-                    :max="rangeMax(field)"
-                    :step="field.step ?? 1"
-                    :marks="rangeMarks(field)"
-                    :aria-label="field.label"
-                    @update:model-value="draft[field.key] = String($event)"
-                  />
-                  <p v-if="maxTokensProbeDetail" class="edit-hint edit-hint-tight">
-                    {{ maxTokensProbeDetail }}
-                  </p>
-                </div>
                 <label v-else class="edit-field">
                   <span class="edit-label">
                     {{ field.label }}
@@ -915,9 +825,8 @@ async function runTest(target: string): Promise<void> {
               </template>
 
               <p v-if="editing.key === 'llm'" class="edit-hint">
-                推理模型打开深度思考后会更慢、更费 token，并且需要把「最大回复长度」调大，
-                否则可能只返回思考过程、不返回正文。回复长度上限是模型自己的属性，
-                各家差别很大，所以滑杆的上界用的是探测到的值。
+                推理模型打开深度思考后会更慢、更费 token（回复长度不再设上限，
+                由模型自己决定何时收尾）。关掉它更快，但难题上的推导会浅一些。
               </p>
               <p v-else class="edit-hint">
                 留空即恢复内置提示词：内置版本要求模型只依据资料作答，并在引用处标出资料编号。
@@ -986,14 +895,13 @@ async function runTest(target: string): Promise<void> {
             <div class="row">
               <div class="row-main">
                 <span class="row-label">
-                  温度 / 最大回复长度 / 深度思考
+                  温度 / 深度思考
                   <InfoTip
-                    text="「最大回复长度」是这一轮回答的 token 上限，思考用的 token 也算在里面。开得太低、思考又开得高时，预算会先被思考吃光，正文一个字都出不来——界面上看起来就是「只有问题、没有回答」。实测：思考开在「中」时，一题中医辨证用 2048 会把预算打满、正文 0 字，同样的题在 8192 下只用了 1084 就答完。建议至少 8192；回答通常越长越好时给到 16384。调大只是放宽上限，不会为了凑满而多花钱——模型答完就停。"
+                    text="回复长度不再设上限：这个上限本来就是模型自己的事，由它生成到自然收尾。我们曾经替它定过 2048，实测反而会出事——思考用的 token 也算在回复预算里，预算被思考吃光时正文一个字都出不来，界面上看起来就是「只有问题、没有回答」，而且时好时坏。个别端点不传就退化成很小的默认值时，可在「模型注册」里给那个模型加 options.max_tokens 单独指定。"
                   />
                 </span>
                 <span class="row-value tabular">
                   温度 {{ fieldValue('llm', 'llm.temperature') || '—' }}<span class="sep">·</span
-                  >{{ fieldValue('llm', 'llm.max_tokens') || '—' }} tokens<span class="sep">·</span
                   >{{
                     fieldValue('llm', 'llm.enable_thinking') === 'true'
                       ? `思考开（${selectLabel('llm', 'llm.thinking_effort', fieldValue('llm', 'llm.thinking_effort'))}）`
@@ -1004,10 +912,10 @@ async function runTest(target: string): Promise<void> {
               <AppButton v-if="group('llm')" @click="openEdit(group('llm')!)">编辑</AppButton>
             </div>
             <p v-if="fieldValue('llm', 'llm.enable_thinking') === 'true'" class="row-note">
-              更慢、更费 token；确认「最大回复长度」够大。
+              更慢、更费 token。
             </p>
             <p v-if="fieldValue('llm', 'llm.enable_thinking') === 'true'" class="row-note">
-              更慢、更费 token；确认「最大回复长度」够大。
+              更慢、更费 token。
             </p>
 
             <h3 class="section-title section-gap">对话行为</h3>
@@ -1878,11 +1786,6 @@ async function runTest(target: string): Promise<void> {
   margin: 0;
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
-}
-
-/* 跟在某一个字段下面（不是整组下面）的提示：贴紧一点，别和字段分家 */
-.edit-hint-tight {
-  margin-top: calc(var(--space-2) * -1 + 2px);
 }
 
 .edit-actions {

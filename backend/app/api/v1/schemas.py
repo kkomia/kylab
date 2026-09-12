@@ -403,17 +403,6 @@ class SettingFieldOut(BaseModel):
     configured: bool
     options: list[SettingFieldOptionOut] = Field(default_factory=list)
     """``type == "select"`` 时的候选值；其余类型为空。"""
-    control: str | None = None
-    """``"range"`` = 这一项该用滑杆编辑（见《前端设计规范》§7.4）。
-
-    取值范围（``min``/``max``/``step``）由后端给：**范围是参数语义的一部分**，
-    写死在前端迟早出现"后端只认 1–4096、界面却让你拖到 65536"。
-    """
-    min: int | None = None
-    max: int | None = None
-    step: int | None = None
-    default_value: str | None = None
-    """代码默认值。滑杆把它画成一个刻度点，用户一眼看到"常态在哪"。"""
 
 
 class SettingGroupOut(BaseModel):
@@ -451,17 +440,6 @@ class SettingsPatchOut(BaseModel):
 
 class TestConnectionOut(BaseModel):
     ok: bool
-    detail: str
-
-
-class MaxTokensProbeOut(BaseModel):
-    """对话模型的回复长度上限探测结果。
-
-    ``ceiling`` 为空 = **没探到**（端点不校验 max_tokens，或错误文案里没有区间），
-    此时界面回退到通用上界——不要把"没探到"显示成某个具体数字。
-    """
-
-    ceiling: int | None = None
     detail: str
 
 

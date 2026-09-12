@@ -10,8 +10,9 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 
-from app.services.llm import ChatMessage, LLMConfig, OpenAICompatChat
+from app.services.llm import ChatError, ChatMessage, LLMConfig, OpenAICompatChat
 
 _MESSAGES = [ChatMessage(role="user", content="你好")]
 
@@ -93,75 +94,77 @@ def test_content_error_mentions_budget_and_strength() -> None:
         OpenAICompatChat(_config(), client=client).complete(_MESSAGES)
     except Exception as exc:
         text = str(exc)
-        assert "最大回复长度" in text
+        # 可处置的两条路：调低/关掉思考，或换个非推理模型。
+        # **不再提「最大回复长度」**——那个设置项已经去掉了（不再替模型决定长度）
         assert "思考" in text
+        assert "非推理模型" in text
     else:  # pragma: no cover - 走到这里说明行为变了
         raise AssertionError("空正文应当抛错")
 
 
-# --------------------------------------------------------------- 回复长度上限探测
+# ------------------------------------------------- 长度上限与"一个字都没出来"
 
 
-def test_probe_max_tokens_reads_the_range_out_of_the_400() -> None:
-    """探法：故意发一个荒谬的 max_tokens，让端点自己说出合法区间。
+def _stream_client(chunks: list[dict], status: int = 200) -> httpx.Client:
+    """把若干 SSE 行按顺序吐出来，模拟端点的流式响应。"""
 
-    这是**唯一**能拿到上限的路子——OpenAI 兼容的 ``GET /models`` 只保证返回 id
-    （实测 DeepSeek 回的是 ``{id, object, owned_by}``，上限它不说）。
+    def handler(request: httpx.Request) -> httpx.Response:
+        # 用 chr(10) 拼换行：SSE 的空行是"事件结束"的标记，这里要的是真的换行符
+        nl = chr(10)
+        body = "".join(f"data: {json.dumps(c)}{nl}{nl}" for c in chunks)
+        body += f"data: [DONE]{nl}{nl}"
+        return httpx.Response(status, content=body.encode("utf-8"))
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def _delta(text: str, finish: str | None = None) -> dict:
+    return {"choices": [{"delta": {"content": text}, "finish_reason": finish}]}
+
+
+def test_payload_omits_max_tokens_unless_explicitly_set() -> None:
+    """**默认不发长度上限**：上限是模型自己的事。
+
+    我们拍过的那个 2048 会把回复预算掐死在思考阶段，正文一个字都出不来
+    （实测，而且时好时坏）。不传时端点会生成到模型自然收尾。
     """
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured.update(json.loads(request.content))
-        return httpx.Response(
-            400,
-            json={
-                "error": {
-                    "message": (
-                        "Invalid max_tokens value, the valid range of max_tokens is [1, 393216]"
-                    )
-                }
-            },
-        )
-
-    client = httpx.Client(transport=httpx.MockTransport(handler))
-    ceiling = OpenAICompatChat(_config(), client=client).probe_max_tokens()
-
-    assert ceiling == 393216
-    assert captured["max_tokens"] == 10**9
-    # 必须是流式：万一端点不校验，我们也能只看状态码就断开，不去读它的正文
-    assert captured["stream"] is True
-    # 探测不带思考参数：多一个字段就可能撞上"参数不认识"的 400，那就探不到了
-    assert "thinking" not in captured
+    captured = _capture(_config())
+    assert "max_tokens" not in captured
+    # 但显式给了就得发——有些端点"不传就退化成很小的默认值"（走模型注册的 options）
+    assert _capture(_config(max_tokens=4096))["max_tokens"] == 4096
 
 
-def test_probe_max_tokens_gives_up_when_the_endpoint_accepts_the_absurd_value() -> None:
-    """不校验的端点：返回 None，绝不继续读流（读下去真的要生成 10 亿 token）。"""
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"choices": [{"delta": {"content": "x"}}]})
-
-    client = httpx.Client(transport=httpx.MockTransport(handler))
-    assert OpenAICompatChat(_config(), client=client).probe_max_tokens() is None
+def test_stream_passes_through_content_deltas() -> None:
+    client = _stream_client([_delta("你"), _delta("好"), _delta("", "stop")])
+    chunks = list(OpenAICompatChat(_config(), client=client).stream(_MESSAGES))
+    assert chunks == ["你", "好"]
 
 
-def test_probe_max_tokens_gives_up_when_the_message_has_no_range() -> None:
-    """各家措辞不同：文案里没有"[a, b]"就老实返回 None，由调用方回退通用上界。"""
+def test_stream_raises_when_not_a_single_character_came_back() -> None:
+    """**一个字正文都没出来就报错**，不能静默收尾。
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(400, json={"error": {"message": "max_tokens too large"}})
+    静默的后果是上层存下一条空回答，用户看到"只有问题、没有回答"，却没有任何
+    可处置的线索——非流式那条路一直有这道判断，两条路必须一个口径。
+    推理模型把预算全花在思考上时正是这个现象（只吐 reasoning_content）。
+    """
+    reasoning_only = {
+        "choices": [{"delta": {"reasoning_content": "想了很久……"}, "finish_reason": "length"}]
+    }
+    client = _stream_client([reasoning_only])
+    chat = OpenAICompatChat(_config(), client=client)
 
-    client = httpx.Client(transport=httpx.MockTransport(handler))
-    assert OpenAICompatChat(_config(), client=client).probe_max_tokens() is None
+    with pytest.raises(ChatError) as caught:
+        list(chat.stream(_MESSAGES))
+
+    message = str(caught.value)
+    assert "长度上限" in message
+    # 给的是"下一步做什么"，不是"参数非法"
+    assert "深度思考" in message
 
 
-def test_probe_max_tokens_ignores_other_numbers_in_the_message() -> None:
-    """只认方括号里的一对数字：错误文案里常见的 "code: 400" 不该被当成上限。"""
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            400,
-            json={"error": {"code": "400", "message": "bad request; valid range is [1, 8192]"}},
-        )
-
-    client = httpx.Client(transport=httpx.MockTransport(handler))
-    assert OpenAICompatChat(_config(), client=client).probe_max_tokens() == 8192
+def test_stream_raises_without_length_reason_too() -> None:
+    """结束原因是 stop 但同样一个字都没有：也要报错，只是措辞不同。"""
+    client = _stream_client([_delta("", "stop")])
+    with pytest.raises(ChatError) as caught:
+        list(OpenAICompatChat(_config(), client=client).stream(_MESSAGES))
+    assert "没有返回任何正文" in str(caught.value)

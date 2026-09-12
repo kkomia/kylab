@@ -21,13 +21,6 @@ export interface SettingField {
   configured: boolean
   /** `type === 'select'` 时的候选值；由后端给出，前端不硬编码。 */
   options: SettingFieldOption[]
-  /** `'range'` = 这一项用滑杆编辑；取值范围由后端给（范围是参数语义的一部分）。 */
-  control?: 'range' | null
-  min?: number | null
-  max?: number | null
-  step?: number | null
-  /** 代码默认值；滑杆把它画成一个刻度点。 */
-  default_value?: string | null
 }
 
 export interface SettingGroup {
@@ -70,22 +63,6 @@ export function updateSettings(
 /** 连通性测试：embedding / mineru / paddleocr。刻意做得很轻，不消耗解析额度。 */
 export function testConnection(target: string): Promise<TestConnectionResult> {
   return request(`/settings/test/${target}`, { method: 'POST' })
-}
-
-export interface MaxTokensProbeResult {
-  /** 模型能接受的最大回复长度；**`null` = 没探到**（不要显示成某个具体数字）。 */
-  ceiling: number | null
-  detail: string
-}
-
-/**
- * 探测对话模型的回复长度上限。
- *
- * 后端用"故意发一个荒谬的 max_tokens、读 400 里的合法区间"实现，**不消耗额度**。
- * 设置页拿它给滑杆定上界：上限是模型自己的属性，各家差别很大。
- */
-export function probeMaxTokens(): Promise<MaxTokensProbeResult> {
-  return request('/settings/llm/max-tokens-probe', { method: 'POST' })
 }
 
 /** `/auth/status` 的返回形状与登录引导状态同一个（定义在 `api/auth.ts`）。 */

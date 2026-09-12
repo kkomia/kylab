@@ -127,8 +127,8 @@ def test_env_only_bootstraps_until_user_overrides(runtime, bundle) -> None:
     from app.core.config import Settings
     from app.services.runtime_config import RuntimeConfigService
 
-    boot = RuntimeConfigService(bundle, Settings(_env_file=None, llm_max_tokens=2048))
-    assert boot.get("llm.max_tokens") == "2048"
+    boot = RuntimeConfigService(bundle, Settings(_env_file=None, llm_temperature=0.9))
+    assert boot.get("llm.temperature") == "0.9"
 
-    boot.set({"llm.max_tokens": "512"})
-    assert boot.get("llm.max_tokens") == "512"
+    boot.set({"llm.temperature": "0.2"})
+    assert boot.get("llm.temperature") == "0.2"

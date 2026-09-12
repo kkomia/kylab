@@ -245,8 +245,13 @@ def _events(
 
     answer = "".join(collected)
     # 只在**回答确实产出了**之后落库：失败的那一轮不留下半截记录，
-    # 否则回看时会出现"问了但没答"的空档，而用户无从判断当时发生了什么
-    _record_turn(services, payload, answer=answer, sources=sources)
+    # 否则回看时会出现"问了但没答"的空档，而用户无从判断当时发生了什么。
+    # 这条判断必须真的写出来——v0.12 之前只有注释、没有 if，于是流"正常结束但一个字都没吐"
+    # 时照样落了一条空回答（实测：推理模型的思考吃光预算时就是这样）。
+    if answer:
+        _record_turn(services, payload, answer=answer, sources=sources)
+    else:
+        logger.warning("对话流没有产出任何正文，本轮不落库：query=%r", payload.query[:80])
     yield _sse({"type": "done", "answer": answer})
 
 

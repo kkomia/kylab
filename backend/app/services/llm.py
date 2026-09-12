@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
@@ -33,15 +32,6 @@ DEFAULT_TIMEOUT_SECONDS = 120.0
 """比 embedding 宽：生成一段答案比算一次向量慢得多。"""
 
 _MAX_ERROR_BODY = 300
-
-#: 探测 max_tokens 上限时故意发出去的"荒谬值"。远超任何模型的真实上限——
-#: 合规端点会**直接 400** 并在文案里写明合法区间，一 token 都不会生成。
-_ABSURD_MAX_TOKENS = 10**9
-
-#: 从错误文案里抠合法区间。只认"一对带数字的方括号"，不认具体措辞——
-#: DeepSeek 写的是 "the valid range of max_tokens is [1, 393216]"，
-#: 别家措辞可能不同，但"用区间表示合法范围"是通用习惯。
-_TOKENS_RANGE_RE = re.compile(r"\[\s*(\d+)\s*,\s*(\d+)\s*\]")
 
 
 class ChatError(UpstreamError):
@@ -71,7 +61,17 @@ class LLMConfig:
     api_key: str
     model_id: str
     temperature: float = 0.3
-    max_tokens: int = 1024
+    max_tokens: int | None = None
+    """回复长度上限。**默认不传**（``None`` = 请求里不带这个字段）。
+
+    为什么不设默认值：上限本来就是模型自己的事——不传时端点会一直生成到模型自然收尾
+    或撞上它自己的上限（OpenAI 兼容协议就是这么定的，实测 DeepSeek 也是），
+    我们再拍一个数字只会引入一类新故障：设小了思考就把预算吃光、正文一个字都出不来
+    （2048 时实测过，而且**时好时坏**，因为思考长短随采样波动）。
+
+    只有显式给了值才发出去：给「有些端点不传就退化成很小的默认值」留一条手动出路
+    （走模型注册里的 ``options.max_tokens``），而不是把它当成默认。
+    """
     enable_thinking: bool = True
     """思考开关，**默认开**（市场上主流模型默认都思考）。
 
@@ -159,7 +159,14 @@ class OpenAICompatChat:
 
         逐块 yield，调用方可以直接转给前端做打字机效果——快速验证场景里
         "看着它写"比"等十秒然后一次出现"重要得多。
+
+        **一个字正文都没吐出来就报错**，不能静默收尾：静默的后果是上层存下一条空回答，
+        用户看到"只有问题、没有回答"，却拿不到任何可处置的线索（实测过：推理模型的
+        思考把预算吃光时就是这个现象，而且时好时坏）。非流式那条路一直有这道判断——
+        两条路必须一个口径。
         """
+        produced = False
+        finish_reason = ""
         with self._open() as client, client.stream(
             "POST",
             f"{self.config.base_url.rstrip('/')}/chat/completions",
@@ -170,44 +177,17 @@ class OpenAICompatChat:
                 response.read()
                 raise ChatError(_error_hint(response))
             for line in response.iter_lines():
-                delta = _delta_of(line)
+                chunk = _chunk_of(line)
+                if chunk is None:
+                    continue
+                delta, reason = chunk
+                if reason:
+                    finish_reason = reason
                 if delta:
+                    produced = True
                     yield delta
-
-    def probe_max_tokens(self) -> int | None:
-        """问端点：这台模型的 ``max_tokens`` 上限是多少？
-
-        做法是**故意发一个荒谬的 max_tokens**，读 400 文案里的合法区间。
-
-        为什么不用 ``GET /models``：OpenAI 兼容协议只保证它返回模型 id，
-        实测 DeepSeek 回的是 ``{"id","object","owned_by"}``——上限这件事它不说。
-
-        为什么安全：请求带 ``stream=True`` 且**只看状态码就断开**。万一某个端点
-        不校验、真的开始生成，我们也不读正文，代价是几个 token；合规端点更是
-        在生成之前就 400 了（实测 deepseek-flash 回的是 ``[1, 393216]``，零消耗）。
-
-        探不到（端点不校验 / 文案里没有区间）时返回 ``None``，
-        由调用方回退到一个通用上限，而不是把上限猜成某个具体数字。
-        """
-        payload = {
-            "model": self.config.model_id,
-            "messages": [{"role": "user", "content": "1"}],
-            "max_tokens": _ABSURD_MAX_TOKENS,
-            "stream": True,
-        }
-        with self._open() as client, client.stream(
-            "POST",
-            f"{self.config.base_url.rstrip('/')}/chat/completions",
-            headers=self._headers(),
-            json=payload,
-        ) as response:
-            if response.status_code == 200:
-                # 不校验的端点。**这里绝不能继续读流**——否则真要生成 10 亿 token；
-                # 退出 with 会直接关掉连接
-                return None
-            response.read()
-            match = _TOKENS_RANGE_RE.search(_error_hint(response))
-            return int(match.group(2)) if match else None
+        if not produced:
+            raise ChatError(_empty_stream_hint(finish_reason))
 
     # ------------------------------------------------------------------ 内部
 
@@ -228,8 +208,11 @@ class OpenAICompatChat:
             "model": self.config.model_id,
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "temperature": self.config.temperature,
-            "max_tokens": self.config.max_tokens,
         }
+        # 长度上限**没显式给就不发**：把它交给模型自己（见 ``LLMConfig.max_tokens``）。
+        # 发一个我们拍的数字，只会在某些模型上把回复预算掐死在思考阶段
+        if self.config.max_tokens is not None:
+            payload["max_tokens"] = self.config.max_tokens
         # 思考参数按供应商方言翻译：各家字段名不同，见 services/thinking.py 的模块注释。
         # 只发这家认识的字段——多发一个未知字段会被严格的端点打成 400。
         payload.update(
@@ -301,29 +284,51 @@ def _content_of(body: dict) -> str:
 
     if (message.get("reasoning_content") or "").strip():
         raise ChatError(
-            "模型只返回了思考过程、没有正文：这是推理模型，思考吃掉了回复预算。"
-            "请把「最大回复长度」调大，或在输入框把思考强度调低 / 关闭思考"
+            "模型只返回了思考过程、没有正文：这是推理模型，思考把回复预算用完了。"
+            "请在输入框把「深度思考」调低或关掉，或换一个非推理模型"
         )
     # 两者都空：**不能**返回空串。返回空串的话上层只会得到一句"没有回答"，
     # 用户看不出是模型没配好、被限流还是提示词太长——所以在这里就给出可处置的原因。
     raise ChatError(
-        "模型返回了空正文：常见原因是 max_tokens 太小、提示词过长被截断，"
-        "或该模型不支持当前请求格式。请到设置 → 对话模型里检查后重试"
+        "模型返回了空正文：常见原因是提示词过长被截断，或该模型不支持当前请求格式。"
+        "请到设置 → 对话模型里检查后重试"
     )
 
 
-def _delta_of(line: str) -> str:
-    """从一行 SSE 里取出增量文本。非数据行与结束标记返回空串。"""
+def _empty_stream_hint(finish_reason: str) -> str:
+    """流式一个字正文都没出来时的可处置提示。
+
+    与非流式的 ``_content_of`` 同一口径：给"下一步做什么"，不给"参数非法"。
+    """
+    if finish_reason == "length":
+        return (
+            "模型到了长度上限就停住了，正文一个字都没留下——推理模型把预算全花在思考上"
+            "就是这个现象。请在输入框把「深度思考」调低或关掉，或换一个非推理模型"
+        )
+    return (
+        "模型没有返回任何正文（可能只返回了思考内容）。请把「深度思考」调低或关掉，"
+        "或换一个非推理模型再试"
+    )
+
+
+def _chunk_of(line: str) -> tuple[str, str] | None:
+    """从一行 SSE 里取出（增量文本，结束原因）。
+
+    非数据行与 ``[DONE]`` 返回 ``None``。**结束原因也要取**：它是判断
+    "为什么一个字都没出来"的唯一依据（``length`` = 被长度上限截断）。
+    """
     if not line or not line.startswith("data:"):
-        return ""
+        return None
     payload = line[5:].strip()
     if not payload or payload == "[DONE]":
-        return ""
+        return None
     try:
         body = json.loads(payload)
-        return body["choices"][0].get("delta", {}).get("content") or ""
+        choice = body["choices"][0]
+        delta = choice.get("delta", {}).get("content") or ""
+        return delta, str(choice.get("finish_reason") or "")
     except (KeyError, IndexError, TypeError, ValueError):
-        return ""
+        return None
 
 
 def _error_hint(response: httpx.Response) -> str:

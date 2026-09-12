@@ -145,15 +145,15 @@ def test_llm_snapshot_lets_model_options_override_sampling(
         options={"temperature": 0.1, "enable_thinking": True},
     )
     registry.bind("chat", model.id)
-    runtime.set({"llm.temperature": "0.7", "llm.max_tokens": "2048"})
+    runtime.set({"llm.temperature": "0.7"})
 
     snapshot = runtime.llm()
 
     # 模型自带的采样参数优先于设置页（推理模型的最优区间不同）
     assert snapshot.temperature == 0.1
     assert snapshot.enable_thinking is True
-    # 模型没覆盖的仍取设置页
-    assert snapshot.max_tokens == 2048
+    # 模型没指定长度上限时不发这个字段（设置页也管不着它了）
+    assert snapshot.max_tokens is None
     assert snapshot.model_id == "deepseek-reasoner"
 
 
@@ -208,49 +208,17 @@ def test_cloud_parser_snapshots_come_from_settings(runtime: RuntimeConfigService
     assert runtime.paddleocr().token == "p-token"
 
 
-def test_max_tokens_has_a_sane_default_and_a_range_for_the_slider(
-    runtime: RuntimeConfigService,
-) -> None:
-    """回复长度的默认值与取值范围。
+def test_max_tokens_is_no_longer_a_setting(runtime: RuntimeConfigService) -> None:
+    """回复长度上限**不再是设置项**：默认不传这个字段，交还给模型自己。
 
-    2048 太短这件事有实测：思考开着一题中医辨证就把 2048 全花在思考上、正文 0 字
-    （见《开发计划》§12.87）。所以默认抬到 16384，并且这一项改用滑杆编辑——
-    取值范围必须**由后端给**，前端写死就会出现"后端只认 1–4096、界面却让你拖到 65536"。
+    它曾经默认 2048，实测会把回复预算掐死在思考阶段、正文一个字都出不来（且时好时坏）。
+    抬到 16384 只是降低概率；正确做法是不替模型决定长度。想显式限制的走模型注册的
+    ``options.max_tokens``（见 test_registry_bridge）。
     """
-    assert runtime.get("llm.max_tokens") == "16384"
-
-    field = next(
-        item
+    assert "llm.max_tokens" not in DEFAULTS
+    assert all(
+        field["key"] != "llm.max_tokens"
         for group in SETTING_GROUPS.values()
-        for item in group["fields"]
-        if item["key"] == "llm.max_tokens"
+        for field in group["fields"]
     )
-    assert field["control"] == "range"
-    assert field["min"] == 2048
-    assert field["max"] == 65536
-    assert field["step"] == 1024
-
-
-def test_describe_carries_the_slider_metadata(runtime: RuntimeConfigService) -> None:
-    """describe() 必须把 control/min/max/step 一起透传——少了它前端就渲染不出滑杆。"""
-    groups = runtime.describe()["groups"]
-    field = next(
-        item
-        for group in groups
-        for item in group["fields"]
-        if item["key"] == "llm.max_tokens"
-    )
-    assert (field["control"], field["min"], field["max"], field["step"]) == (
-        "range",
-        2048,
-        65536,
-        1024,
-    )
-    # 没有滑杆语义的字段不该凭空长出这几个键（前端据此判断渲染哪种控件）
-    temperature = next(
-        item
-        for group in groups
-        for item in group["fields"]
-        if item["key"] == "llm.temperature"
-    )
-    assert "control" not in temperature
+    assert runtime.llm().max_tokens is None
