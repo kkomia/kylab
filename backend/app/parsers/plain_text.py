@@ -9,7 +9,7 @@ Markdown 产物，让"上传 → 解析 → 切分 → 向量化 → 可检索"�
 
 from __future__ import annotations
 
-from app.parsers.base import ParseError, ParseResult, ParserProvider, ProbeResult
+from app.parsers.base import ParseResult, ParserProvider, ProbeResult
 from app.parsers.probe import (
     BINARY_EXTENSIONS,
     MARKDOWN_EXTENSIONS,
@@ -17,9 +17,7 @@ from app.parsers.probe import (
     suffix_of,
 )
 from app.parsers.tabular_format import TABULAR_EXTENSIONS
-
-_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030")
-"""解码阶梯：先 UTF-8（含 BOM），再中文环境最常见的 GB18030，最后兜底不丢数据。"""
+from app.parsers.text_decode import decode_bytes
 
 _FENCE = "```"
 
@@ -71,19 +69,12 @@ class PlainTextParser(ParserProvider):
 
     @staticmethod
     def decode(content: bytes, filename: str = "") -> str:
-        """按编码阶梯解码。
+        """按编码阶梯解码（实现共享在 ``text_decode``，见那里的说明）。
 
-        全部失败时用 UTF-8 替换错误字符而不是抛错——宁可留几个乱码字符，
-        也不要因为编码问题丢掉整篇文档；替换数写进异常信息之外由调用方观测。
+        保留这个静态方法是因为它一直是本解析器对外的用法（测试与连接器都在调）；
+        实现搬走是为了让 HTML 解析器也能用同一份阶梯，而不是复制一遍。
         """
-        if not content:
-            raise ParseError(f"文件内容为空：{filename or '(未命名)'}")
-        for encoding in _ENCODINGS:
-            try:
-                return content.decode(encoding)
-            except UnicodeDecodeError:
-                continue
-        return content.decode("utf-8", errors="replace")
+        return decode_bytes(content, filename)
 
     @staticmethod
     def _to_markdown(text: str, filename: str) -> str:

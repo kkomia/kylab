@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from app.parsers.base import ParseError, ParseResult, ParserProvider, ProbeResult
 from app.parsers.html_format import extract_article, html_to_markdown
-from app.parsers.plain_text import PlainTextParser
 from app.parsers.probe import suffix_of
+from app.parsers.text_decode import decode_bytes
 
 __all__ = ["HTML_EXTENSIONS", "HtmlUploadParser"]
 
@@ -24,8 +24,8 @@ HTML_EXTENSIONS = frozenset({".html", ".htm", ".xhtml"})
 class HtmlUploadParser(ParserProvider):
     """上传的 HTML：先做正文提取，提取不出来再退回整页转换。
 
-    解码复用 `PlainTextParser.decode` 的编码阶梯（UTF-8 → GB18030 → 替换），
-    而不是自己写一遍：中文网页里 GB18030 很常见，两处各写一份迟早只剩一处能修。
+    解码复用共享的 `decode_bytes`（UTF-8 → GB18030 → 替换），不自己写一遍：
+    中文网页里 GB18030 很常见，两处各写一份迟早只剩一处能修。
     """
 
     name = "HtmlUploadParser"
@@ -44,7 +44,7 @@ class HtmlUploadParser(ParserProvider):
         mime_type: str | None = None,
         probe: ProbeResult | None = None,
     ) -> ParseResult:
-        text = PlainTextParser.decode(content, filename)
+        text = decode_bytes(content, filename)
         markdown = extract_article(text).strip()
         if not markdown:
             # 正文提取挑不出容器时退回整页转换——**宁可带点噪声，也别让文档变空**：
