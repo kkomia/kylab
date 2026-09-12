@@ -141,3 +141,37 @@ describe('RowMenu', () => {
     ).not.toThrow()
   })
 })
+
+describe('RowMenu 浮层定位（v17，回归）', () => {
+  it('展开后写出 fixed 定位的内联坐标', async () => {
+    // 回归用例：浮层改成 fixed 之后，位置**只能**靠 place() 写内联样式。
+    // 一旦 place() 没跑到（或祖先有 transform 让它变成包含块），浮层会退回到
+    // 静态位置——实测跑了 left:-988px，整个飘出视口，而 DOM 上完全看不出异常。
+    const wrapper = mountMenu()
+    const details = await open(wrapper)
+    const list = details.querySelector('.menu-list') as HTMLElement
+
+    const style = list.getAttribute('style') ?? ''
+    expect(style).toContain('top:')
+    expect(style).toContain('right:')
+
+    wrapper.unmount()
+  })
+
+  it('翻向时不再依赖 `bottom`（定位统一由 top 决定）', async () => {
+    const wrapper = mountMenu()
+    const details = wrapper.find('details').element as HTMLDetailsElement
+    stubTightLayout(details, 200)
+
+    details.open = true
+    details.dispatchEvent(new Event('toggle'))
+    await nextTick()
+
+    const list = details.querySelector('.menu-list') as HTMLElement
+    // 用的是 class 标记翻向，而 top 由 place() 算出来（不再是 CSS 的 bottom）
+    expect(wrapper.find('.menu-list').classes()).toContain('menu-list-up')
+    expect(list.getAttribute('style') ?? '').toContain('top:')
+
+    wrapper.unmount()
+  })
+})

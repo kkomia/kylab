@@ -790,25 +790,38 @@ async function onLogout(): Promise<void> {
   padding-right: var(--space-6);
 }
 
-/* 行菜单平时隐形、悬停/聚焦/当前项才出现（侧栏只有 248px） */
+/* 行菜单平时隐形，悬停/聚焦才出现。
+   **只有悬停/聚焦**——原来"当前会话也常驻显示"会让菜单与「N 条」同时出现、
+   在同一处叠着（用户报的"和列表有冲突"就是这个）。 */
 .conv-menu {
   position: absolute;
   top: 50%;
   right: var(--space-1);
-  transform: translateY(-50%);
+  z-index: 1;
+  /* **垂直居中用负 margin，不用 `transform: translateY(-50%)`**：
+     带 transform 的元素会成为 fixed 定位后代的包含块，而菜单浮层正是 fixed
+     （见 RowMenu）。实测这一条会让浮层跑到视口外（left 变成 -988px）。
+     负 margin 的取值是触发器的一半高（--hit-target / 2） */
+  margin-top: calc(var(--hit-target) / -2);
   opacity: 0;
   transition: opacity 120ms ease;
 }
 
 .conv-row:hover .conv-menu,
 .conv-row:focus-within .conv-menu,
-.conv-item-active + .conv-menu {
+.conv-menu:focus-within {
   opacity: 1;
 }
 
-/* 键盘用户：Tab 到菜单按钮时它必须在（透明度 0 仍然可聚焦，这里只补可见性） */
-.conv-menu:focus-within {
-  opacity: 1;
+/* 菜单出现时把「N 条」隐掉：两者在同一个位置，**先隐后现而不是叠在一起**。
+   条数没被删掉，移开鼠标就回来；行宽 231px，塞不下两个并排的元素 */
+.conv-meta {
+  transition: opacity 120ms ease;
+}
+
+.conv-row:hover .conv-meta,
+.conv-row:focus-within .conv-meta {
+  opacity: 0;
 }
 
 /* 置顶标记：固定宽度，置顶与否不会让标题左右跳动 */

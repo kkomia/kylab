@@ -28,19 +28,51 @@ const menu = ref<HTMLDetailsElement | null>(null)
 /** 浮层向上弹出（下方放不下时）。 */
 const dropUp = ref(false)
 
+/**
+ * 浮层的位置（写进内联样式）。
+ *
+ * **用 `position: fixed` 相对视口定位，而不是相对最近的滚动祖先做 absolute**。
+ * 原先的写法会被滚动容器裁掉：侧栏的会话列表、设置弹窗的正文都是
+ * `overflow-y: auto`，而"溢出隐藏"在计算样式上等价于两个方向都裁，
+ * 于是贴着右边缘的「⋯」菜单横向也会被切一块，看起来像和旁边的内容"叠在一起"。
+ * 改成 fixed 之后可见范围就是视口，只有视口边缘才需要翻向——判断也更简单。
+ *
+ * **调用方注意事项（踩过）**：浮层既然是 fixed，**任何祖先都不能有 `transform` /
+ * `filter` / `contain: paint`**——它们会让那个祖先成为 fixed 后继的包含块，
+ * 浮层就会被摆错位置。实测侧栏里一个 `transform: translateY(-50%)`（用来做垂直居中）
+ * 把菜单摆到了 `left: -988px`，整个飘出视口。祖先要垂直居中请用负 margin 或
+ * `inset-block: 0; margin-block: auto`。
+ */
+const listStyle = ref<Record<string, string>>({})
+
 /** 点了菜单里的项就收起来；不依赖冒泡顺序，直接关。 */
 function close(): void {
   if (menu.value) menu.value.open = false
 }
 
-/** 离最近的可滚动祖先：浮层的可见范围由它决定，不是由视口决定。 */
-function clipParent(el: HTMLElement): HTMLElement {
-  let node = el.parentElement
-  while (node) {
-    if (/(auto|scroll|hidden)/.test(getComputedStyle(node).overflowY)) return node
-    node = node.parentElement
+const GAP = 4
+
+/**
+ * 按触发器的位置摆放浮层；放不下就翻到上方，顶端再兜个底。
+ *
+ * 每次打开与滚动/改变窗口大小时都重算：浮层如果滚走了会看起来"和按钮脱开了"，
+ * 比直接关掉更让人困惑（用户会以为菜单坏了）。
+ */
+function place(): void {
+  const element = menu.value
+  const list = element?.querySelector('.menu-list') as HTMLElement | null
+  if (!element || !list) return
+  const trigger = element.getBoundingClientRect()
+  const height = list.offsetHeight
+  const below = window.innerHeight - trigger.bottom - GAP
+  const above = trigger.top - GAP
+  const flip = height > below && above > below
+  dropUp.value = flip
+  const top = flip ? Math.max(GAP, trigger.top - GAP - height) : trigger.bottom + GAP
+  listStyle.value = {
+    top: `${Math.round(top)}px`,
+    right: `${Math.round(Math.max(GAP, window.innerWidth - trigger.right))}px`,
   }
-  return document.documentElement
 }
 
 /** Esc 只关菜单：捕获阶段拦下，别让外层 `<dialog>` 的 cancel 跟着触发。 */
@@ -55,19 +87,18 @@ function onKeydown(event: KeyboardEvent): void {
 function onToggle(): void {
   if (!menu.value) return
   if (menu.value.open) {
-    const list = menu.value.querySelector('.menu-list') as HTMLElement | null
-    const trigger = menu.value.getBoundingClientRect()
-    const clip = clipParent(menu.value).getBoundingClientRect()
-    const height = list?.offsetHeight ?? 0
-    const below = clip.bottom - trigger.bottom
-    const above = trigger.top - clip.top
-    dropUp.value = height > below && above > below
+    place()
     document.addEventListener('pointerdown', onOutsidePointer, true)
     document.addEventListener('keydown', onKeydown, true)
+    // capture: 真正滚动的往往是内层容器，冒泡的 scroll 事件不会传到 document
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
   } else {
     dropUp.value = false
     document.removeEventListener('pointerdown', onOutsidePointer, true)
     document.removeEventListener('keydown', onKeydown, true)
+    window.removeEventListener('scroll', place, true)
+    window.removeEventListener('resize', place)
   }
 }
 
@@ -79,6 +110,8 @@ function onOutsidePointer(event: PointerEvent): void {
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', onOutsidePointer, true)
   document.removeEventListener('keydown', onKeydown, true)
+  window.removeEventListener('scroll', place, true)
+  window.removeEventListener('resize', place)
 })
 </script>
 
@@ -87,7 +120,7 @@ onBeforeUnmount(() => {
     <summary class="menu-trigger" :aria-label="label ?? '更多操作'">
       <IconMore />
     </summary>
-    <div class="menu-list" :class="{ 'menu-list-up': dropUp }">
+    <div class="menu-list" :class="{ 'menu-list-up': dropUp }" :style="listStyle">
       <slot :close="close" />
     </div>
   </details>
@@ -121,21 +154,16 @@ onBeforeUnmount(() => {
 }
 
 .menu-list {
-  position: absolute;
-  right: 0;
-  top: calc(100% + var(--space-1));
-  z-index: 10;
+  /* 位置由 `place()` 算好写进内联样式（fixed + top/right），这里只负责外观。
+     **不用 absolute**：那会被滚动容器裁掉，见 `listStyle` 上的说明。 */
+  position: fixed;
+  z-index: 30;
   min-width: 168px;
   padding: var(--space-1);
   background: var(--bg-surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-overlay);
   box-shadow: var(--shadow-popover);
-}
-
-.menu-list-up {
-  top: auto;
-  bottom: calc(100% + var(--space-1));
 }
 
 /* 菜单项统一在这里定，调用方只写语义类（menu-item-danger / disabled）。
