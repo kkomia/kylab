@@ -27,6 +27,7 @@ import {
   getSuggestedQuestions,
   isAbortError,
   type ChatHistoryMessage,
+  type ChatSource,
 } from '@/api/chat'
 import { getConversation, rewindConversation } from '@/api/conversations'
 import type { RegisteredModel } from '@/api/modelRegistry'
@@ -781,6 +782,23 @@ function useSample(question: string): void {
 
 // ------------------------------------------------------------------ 提示词
 
+/**
+ * 引用原文弹窗：出处卡片上只显示 120 字（见 CITE_PREVIEW_CHARS），
+ * 但"这段到底怎么说的"往往要看全——否则用户还得跳去文档页再找回来。
+ * 所以给一个就地看全文的入口。
+ *
+ * **没有做"高亮被引段落"**：那需要命中片段在原文里的字符区间，而我们只存了
+ * chunk 文本本身（`preview`）。要做就得在切块时记录偏移并落库——那是另一件事，
+ * 记在《开发计划》§12.76 里，不假装做了。
+ */
+const sourceOpen = ref(false)
+const activeSource = ref<ChatSource | null>(null)
+
+function openSource(source: ChatSource): void {
+  activeSource.value = source
+  sourceOpen.value = true
+}
+
 const promptOpen = ref(false)
 const promptDraft = ref('')
 const promptConfigured = ref(false)
@@ -940,6 +958,11 @@ async function savePrompt(): Promise<void> {
                       <span v-if="sourceWhere(source)" class="cite-where">{{
                         sourceWhere(source)
                       }}</span>
+                      <!-- 预览只显示 120 字（见 CITE_PREVIEW_CHARS）：给一个就地看全的入口，
+                           否则用户得跳去文档页再自己找回来 -->
+                      <button type="button" class="cite-more" @click="openSource(source)">
+                        看全文
+                      </button>
                     </div>
                     <p class="cite-preview">{{ sourcePreview(source) }}</p>
                   </li>
@@ -1079,6 +1102,30 @@ async function savePrompt(): Promise<void> {
         </div>
       </div>
     </div>
+
+    <!-- 引用原文：就地看全，不必先跳去文档页 -->
+    <AppModal v-model:open="sourceOpen" title="引用原文" size="wide">
+      <template v-if="activeSource">
+        <p class="source-meta">
+          <span class="source-doc">{{ activeSource.document_name }}</span>
+          <span v-if="sourceWhere(activeSource)" class="source-where">{{
+            sourceWhere(activeSource)
+          }}</span>
+        </p>
+        <p class="source-body">{{ activeSource.preview }}</p>
+      </template>
+      <template #footer>
+        <AppButton @click="sourceOpen = false">关闭</AppButton>
+        <RouterLink
+          v-if="activeSource"
+          class="source-open"
+          :to="documentTarget(activeSource)"
+          @click="sourceOpen = false"
+        >
+          打开文档
+        </RouterLink>
+      </template>
+    </AppModal>
 
     <AppModal v-model:open="promptOpen" title="系统提示词" size="wide">
       <p class="prompt-note">这段文字会拼在每轮提问的最前面。留空即恢复内置提示词。</p>
@@ -1641,13 +1688,69 @@ async function savePrompt(): Promise<void> {
    JS 侧已按 CITE_PREVIEW_CHARS 切过一刀，这里的 clamp 是排版兜底 */
 .cite-preview {
   display: -webkit-box;
-  margin: var(--space-1) 0 0;
   overflow: hidden;
   max-width: var(--measure);
   font-size: var(--text-meta-size);
   color: var(--text-secondary);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+/* "看全文"是低频动作：字号与颜色都压到最低，只在悬停时给下划线 */
+.cite-more {
+  flex: 0 0 auto;
+  font-size: var(--text-micro-size);
+  color: var(--accent-text);
+  white-space: nowrap;
+}
+
+.cite-more:hover {
+  text-decoration: underline;
+}
+
+/* ---- 引用原文弹窗 ---- */
+
+.source-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-meta-size);
+}
+
+.source-doc {
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.source-where {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+/* 原文按原样显示：切块保留的换行是它的结构，压平会读不出层次 */
+.source-body {
+  margin: 0;
+  max-height: 50vh;
+  overflow-y: auto;
+  font-size: var(--text-meta-size);
+  line-height: 1.8;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.source-open {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 var(--space-3);
+  height: var(--control-height);
+  font-size: var(--text-meta-size);
+  color: var(--accent-text);
+}
+
+.source-open:hover {
+  text-decoration: underline;
 }
 
 /* ---- 输入卡片 ---- */
