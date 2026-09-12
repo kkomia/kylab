@@ -110,3 +110,34 @@ def test_migration_018_drops_the_retired_max_tokens_setting(conn: sqlite3.Connec
     assert "llm.max_tokens" not in keys
     # 只删它一个：别的采样参数照旧
     assert "llm.temperature" in keys
+
+
+def test_migration_019_drops_the_dead_model_identity_keys(conn: sqlite3.Connection) -> None:
+    """v0.8 之后模型身份归注册表，老库里那几行"全局凭据"没人读了——清掉。
+
+    它们不只是占地方：其中两行是明文密钥，且设置接口**明确拒绝**写入它们，
+    属于"界面看不见、代码也不认"的僵尸配置。**仍在用的设置项一个都不能动。**
+    """
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version < 19])
+    stale = [
+        "llm.api_key",
+        "llm.base_url",
+        "llm.model_id",
+        "embedding.api_key",
+        "embedding.model_id",
+        "embedding.dim",
+        "rerank.base_url",
+    ]
+    keep = ["llm.temperature", "llm.enable_thinking", "embedding.batch_size", "chat.top_k"]
+    for key in stale + keep:
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)",
+            (key, "x", "2026-09-01T00:00:00Z"),
+        )
+    conn.commit()
+
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version == 19])
+
+    keys = {row[0] for row in conn.execute("SELECT key FROM app_settings")}
+    assert not (set(stale) & keys), f"僵尸键没清干净：{sorted(set(stale) & keys)}"
+    assert set(keep) <= keys, "把仍在用的设置项误删了"

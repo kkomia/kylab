@@ -592,8 +592,26 @@ _MIGRATION_018 = Migration(
 )
 
 
-MIGRATIONS: tuple[Migration, ...] = (
-    _MIGRATION_001,
+_MIGRATION_019 = Migration(
+    version=19,
+    description="清掉 v0.8 起已由模型注册表承担、无人读取的模型身份键",
+    statements=(
+        # 这些键曾经是"全局各一套自己的模型凭据"。v0.8 把模型身份收进注册表之后，
+        # 没有任何代码再读它们（``RuntimeConfigService._bootstrap_value`` 的映射里没有，
+        # 设置接口还会**明确拒绝**写入），留着就是一行行"界面看不见、代码也不认"的
+        # 僵尸配置——而其中两行是**明文密钥**。
+        # 凭据没丢：注册表里每个供应商各自存着自己的 api_key。
+        # 注意别碰 ``embedding.batch_size``：那是仍在用的设置项（SETTING_GROUPS 里有）。
+        "DELETE FROM app_settings WHERE key IN ("
+        " 'llm.api_key', 'llm.base_url', 'llm.model_id',"
+        " 'embedding.api_key', 'embedding.base_url', 'embedding.model_id', 'embedding.dim',"
+        " 'rerank.api_key', 'rerank.base_url', 'rerank.model_id'"
+        ")",
+    ),
+)
+
+
+MIGRATIONS: tuple[Migration, ...] = (    _MIGRATION_001,
     _MIGRATION_002,
     _MIGRATION_003,
     _MIGRATION_004,
@@ -611,6 +629,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_016,
     _MIGRATION_017,
     _MIGRATION_018,
+    _MIGRATION_019,
 )
 """全部迁移，按 version 升序。只增不改。"""
 
