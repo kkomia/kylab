@@ -29,6 +29,8 @@ import {
   type RegisteredModel,
   type Registry,
 } from '@/api/modelRegistry'
+import { providerIcon } from '@/components/icons/brands'
+import IconServer from '@/components/icons/IconServer.vue'
 import { mergeModelOptions, presetModelMeta } from '@/components/settings/providerPresets'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppCombobox from '@/components/ui/AppCombobox.vue'
@@ -94,8 +96,13 @@ const presets = computed(() => registry.value?.provider_presets ?? [])
 const selectedPresetId = ref('')
 
 const presetOptions = computed(() => [
-  { value: '', label: '自定义' },
-  ...presets.value.map((preset) => ({ value: preset.id, label: preset.label })),
+  // 自定义 = 自己填一个地址，用通用的服务图标；品牌图标见 icons/brands
+  { value: '', label: '自定义', icon: IconServer },
+  ...presets.value.map((preset) => ({
+    value: preset.id,
+    label: preset.label,
+    icon: providerIcon(preset.id),
+  })),
 ])
 
 const selectedPreset = computed(

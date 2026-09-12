@@ -10,6 +10,7 @@
  * 3. 选中的那一项带勾选标记——这是"当前值是哪个"的唯一视觉线索。
  */
 import { mount } from '@vue/test-utils'
+import { h } from 'vue'
 import { describe, expect, it } from 'vitest'
 
 import AppSelect from '@/components/ui/AppSelect.vue'
@@ -114,5 +115,32 @@ describe('AppSelect', () => {
     await wrapper.find('.select-trigger').trigger('click')
 
     expect(wrapper.find('.select-pop').exists()).toBe(false)
+  })
+
+  it('带图标的选项：触发器与列表都画图标；没给图标的选项不占位', async () => {
+    // 供应商预设用品牌图标，但绝大多数下拉没有图标——两种都要对
+    const StubIcon = () => h('svg', { class: 'stub-icon' })
+    const wrapper = mount(AppSelect, {
+      props: {
+        options: [
+          { value: 'deepseek', label: '深度求索', icon: StubIcon },
+          { value: 'custom', label: '自定义' },
+        ],
+        modelValue: 'deepseek',
+        ariaLabel: '预设',
+      },
+      attachTo: document.body,
+    })
+
+    expect(wrapper.find('.select-trigger .select-icon').exists()).toBe(true)
+
+    await wrapper.find('.select-trigger').trigger('click')
+    const options = wrapper.findAll('.select-option')
+    expect(options[0].find('.select-icon').exists()).toBe(true)
+    expect(options[1].find('.select-icon').exists()).toBe(false)
+    // 文本仍然照常显示（图标不该把 label 挤掉）
+    expect(options[1].text()).toContain('自定义')
+
+    wrapper.unmount()
   })
 })

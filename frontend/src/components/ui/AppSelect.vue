@@ -14,17 +14,24 @@
  * 方向键/Home/End/Enter/Esc/Tab、点外部关闭。**焦点不离开触发器**是这套模式的关键，
  * 它让"键盘选中"和"屏幕阅读器朗读"用同一份状态。
  */
-import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch, type Component } from 'vue'
 
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
+
+/** 一个选项：值 + 文案，外加可选的前置图标（品牌标识这类，如供应商预设）。 */
+export interface SelectOption {
+  value: string
+  label: string
+  icon?: Component
+}
 
 const model = defineModel<string>({ required: true })
 
 const props = withDefaults(
   defineProps<{
     /** 选项值 → 显示文案。空值选项用于"不指定"这类语义。 */
-    options: { value: string; label: string }[]
+    options: SelectOption[]
     id?: string
     disabled?: boolean
     /** 无障碍名：没有可见 <label> 时必填。 */
@@ -219,7 +226,8 @@ onBeforeUnmount(() => bindGlobal(false))
       @keydown="onKeydown"
     >
       <span class="select-value" :class="{ 'select-placeholder': isPlaceholder }">
-        {{ selected?.label ?? placeholder }}
+        <component :is="selected.icon" v-if="selected?.icon" class="select-icon" :size="16" />
+        <span class="select-text">{{ selected?.label ?? placeholder }}</span>
       </span>
       <IconChevronDown class="select-arrow" :size="16" />
     </button>
@@ -251,7 +259,10 @@ onBeforeUnmount(() => bindGlobal(false))
         @pointerdown.prevent="choose(index)"
         @pointermove="activeIndex = index"
       >
-        <span class="select-option-label">{{ option.label }}</span>
+        <span class="select-option-label">
+          <component :is="option.icon" v-if="option.icon" class="select-icon" :size="16" />
+          <span class="select-text">{{ option.label }}</span>
+        </span>
         <IconCheck v-if="option.value === model" class="select-check" :size="14" />
       </li>
     </ul>
@@ -303,13 +314,32 @@ onBeforeUnmount(() => bindGlobal(false))
   opacity: 0.7;
 }
 
+/* 值区：图标 + 文本。文本单独一层做截断——直接对 flex 容器设 ellipsis 不生效 */
 .select-value {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.select-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* 品牌图标这类前置图标：不参与压缩，颜色跟随文本（占位态自动变浅） */
+.select-icon {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+}
+
 .select-placeholder {
+  color: var(--text-tertiary);
+}
+
+.select-placeholder .select-icon {
   color: var(--text-tertiary);
 }
 
@@ -355,9 +385,11 @@ onBeforeUnmount(() => bindGlobal(false))
 }
 
 .select-option-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .select-check {
