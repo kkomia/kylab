@@ -10,7 +10,7 @@
  * 2. **拉取结果显示"取回 / 新入库 / 重复"三个数**：用户看到"取回 20、新入库 0"
  *    时该立刻明白"这个源没更新"，而不是以为抓取失败了。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import {
   createDataSource,
@@ -27,6 +27,7 @@ import IconTrash from '@/components/icons/IconTrash.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { formatRelativeTime } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
@@ -133,16 +134,26 @@ async function toggle(source: DataSource): Promise<void> {
   }
 }
 
-async function remove(source: DataSource): Promise<void> {
-  const confirmed = window.confirm(
-    `删除数据源「${source.name}」？\n\n` +
-      '已经抓进来的文档会保留——它们是知识库的正式内容。' +
-      '停掉订阅不等于要撤销已经收集的资料。',
-  )
-  if (!confirmed) return
+/** 待确认删除的数据源（统一走 ConfirmDialog）。 */
+const deleteTarget = ref<DataSource | null>(null)
+const deleteOpen = computed({
+  get: () => deleteTarget.value !== null,
+  set: (value: boolean) => {
+    if (!value) deleteTarget.value = null
+  },
+})
+
+function requestRemove(source: DataSource): void {
+  deleteTarget.value = source
+}
+
+async function confirmRemove(): Promise<void> {
+  const source = deleteTarget.value
+  if (!source) return
   busy.value = `delete:${source.id}`
   try {
     await deleteDataSource(source.id)
+    deleteTarget.value = null
     await load()
     notifySuccess('数据源已删除，已抓取的文档保留')
   } catch (cause) {
@@ -232,13 +243,24 @@ async function remove(source: DataSource): Promise<void> {
           <AppButton @click="toggle(source)">
             {{ source.enabled ? '停用' : '启用' }}
           </AppButton>
-          <AppButton @click="remove(source)">
+          <AppButton @click="requestRemove(source)">
             <template #icon><IconTrash :size="14" /></template>
           </AppButton>
         </span>
       </li>
     </ul>
   </div>
+
+  <!-- 删除确认：已抓取的文档保留是关键信息，要写在后果里 -->
+  <ConfirmDialog
+    v-model:open="deleteOpen"
+    title="删除数据源"
+    :lead="`删除数据源「${deleteTarget?.name}」？`"
+    note="已经抓进来的文档会保留——它们是知识库的正式内容。停掉订阅不等于要撤销已经收集的资料。"
+    :busy="busy.startsWith('delete:')"
+    busy-label="删除中…"
+    @confirm="confirmRemove"
+  />
 </template>
 
 <style scoped>

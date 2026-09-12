@@ -10,6 +10,7 @@
  * 所以页面上不出现任何永久直链——两个下载按钮每次都现取一条新链接。
  */
 import { computed, onMounted, ref } from 'vue'
+
 import { useRoute } from 'vue-router'
 
 import {
@@ -31,6 +32,7 @@ import PageShell from '@/components/ui/PageShell.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import { documentStageView } from '@/components/ui/status'
 import { cleanInlineLatex } from '@/composables/useLatex'
 import { renderAnswerMarkdown } from '@/composables/useMarkdown'
@@ -174,19 +176,29 @@ async function toggleChunk(chunk: DocumentChunk): Promise<void> {
 /**
  * 删除一个块。
  *
- * **要二次确认**：这是破坏性动作，而且用户很可能只是想"禁用"。
- * 用原生 `confirm` 而不是自建弹窗——这里没有需要填写的字段，
- * 为一个"是/否"引一整套弹窗状态不值得。
+ * **要二次确认**：这是破坏性动作，而且用户很可能只是想"禁用"——
+ * 确认弹窗的后果说明里把这一点写清楚，比让人在原生 confirm 里读到强。
  */
-async function removeChunk(chunk: DocumentChunk): Promise<void> {
-  const confirmed = window.confirm(
-    `确定删除第 ${chunk.ordinal + 1} 块？\n\n` +
-      '它会从检索索引与向量库中一并移除，无法恢复。\n' +
-      '如果只是想让它在检索时暂时不出现，用「禁用」更好——禁用可以随时恢复。',
-  )
-  if (!confirmed) return
+const chunkDeleteTarget = ref<DocumentChunk | null>(null)
+const chunkDeleting = ref(false)
+const chunkDeleteOpen = computed({
+  get: () => chunkDeleteTarget.value !== null,
+  set: (value: boolean) => {
+    if (!value) chunkDeleteTarget.value = null
+  },
+})
+
+function requestRemoveChunk(chunk: DocumentChunk): void {
+  chunkDeleteTarget.value = chunk
+}
+
+async function confirmRemoveChunk(): Promise<void> {
+  const chunk = chunkDeleteTarget.value
+  if (!chunk || chunkDeleting.value) return
+  chunkDeleting.value = true
   try {
     await deleteChunk(documentId.value, chunk.ordinal)
+    chunkDeleteTarget.value = null
     // 服务端删完会重排序号，所以整段重拉，不能只从本地列表里摘掉那一条
     await loadPreview()
     if (document.value) {
@@ -195,6 +207,8 @@ async function removeChunk(chunk: DocumentChunk): Promise<void> {
     notifySuccess('切块已删除')
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '删除失败')
+  } finally {
+    chunkDeleting.value = false
   }
 }
 
@@ -394,7 +408,7 @@ const stage = computed(() =>
                     <button
                       class="menu-item menu-item-danger"
                       type="button"
-                      @click="(removeChunk(chunk), close())"
+                      @click="(requestRemoveChunk(chunk), close())"
                     >
                       删除
                     </button>
@@ -425,6 +439,17 @@ const stage = computed(() =>
       </template>
     </template>
   </PageShell>
+
+  <!-- 删除切块：不可恢复，且"其实想禁用"的人不少——后果说明里把替代方案写出来 -->
+  <ConfirmDialog
+    v-model:open="chunkDeleteOpen"
+    title="删除切块"
+    :lead="`确定删除第 ${chunkDeleteTarget && chunkDeleteTarget.ordinal + 1} 块？`"
+    note="它会从检索索引与向量库中一并移除，无法恢复。如果只是想让它在检索时暂时不出现，用「禁用」更好——禁用可以随时恢复。"
+    :busy="chunkDeleting"
+    busy-label="删除中…"
+    @confirm="confirmRemoveChunk"
+  />
 </template>
 
 <style scoped>

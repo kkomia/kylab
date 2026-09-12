@@ -33,6 +33,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppCombobox from '@/components/ui/AppCombobox.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
@@ -198,18 +199,53 @@ async function onToggleProvider(provider: Provider): Promise<void> {
   }
 }
 
-async function onDeleteProvider(provider: Provider): Promise<void> {
-  const confirmed = window.confirm(
-    `删除供应商「${provider.name}」？\n\n` +
-      `它下面的 ${provider.model_count} 个模型会被一并删除，` +
-      '引用这些模型的用途会自动解绑。',
-  )
-  if (!confirmed) return
-  busy.value = `provider:${provider.id}`
+/** 待确认的删除目标（供应商 / 模型共用一个 ConfirmDialog，用可辨识联合区分）。 */
+type DeleteTarget =
+  { kind: 'provider'; provider: Provider } | { kind: 'model'; model: RegisteredModel }
+
+const deleteTarget = ref<DeleteTarget | null>(null)
+const deleteOpen = computed({
+  get: () => deleteTarget.value !== null,
+  set: (value: boolean) => {
+    if (!value) deleteTarget.value = null
+  },
+})
+const deleteLead = computed(() => {
+  const target = deleteTarget.value
+  if (!target) return ''
+  return target.kind === 'provider'
+    ? `删除供应商「${target.provider.name}」？`
+    : `删除模型「${target.model.label || target.model.model_id}」？`
+})
+const deleteNote = computed(() => {
+  const target = deleteTarget.value
+  if (!target) return ''
+  return target.kind === 'provider'
+    ? `它下面的 ${target.provider.model_count} 个模型会被一并删除，引用这些模型的用途会自动解绑。`
+    : target.model.bound_slots.length > 0
+      ? `它正被 ${target.model.bound_slots.length} 个用途使用，删除后会自动解绑。`
+      : ''
+})
+
+function requestDelete(target: DeleteTarget): void {
+  deleteTarget.value = target
+}
+
+async function confirmDelete(): Promise<void> {
+  const target = deleteTarget.value
+  if (!target) return
+  busy.value =
+    target.kind === 'provider' ? `provider:${target.provider.id}` : `model:${target.model.id}`
   try {
-    await deleteProvider(provider.id)
+    if (target.kind === 'provider') {
+      await deleteProvider(target.provider.id)
+      notifySuccess('供应商已删除')
+    } else {
+      await deleteModel(target.model.id)
+      notifySuccess('模型已删除')
+    }
+    deleteTarget.value = null
     await load()
-    notifySuccess('供应商已删除')
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '删除失败')
   } finally {
@@ -300,25 +336,6 @@ async function submitModelEdit(model: RegisteredModel): Promise<void> {
     notifySuccess('模型已更新')
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '更新失败')
-  } finally {
-    busy.value = ''
-  }
-}
-
-async function onDeleteModel(model: RegisteredModel): Promise<void> {
-  const bound = model.bound_slots.length > 0
-  const confirmed = window.confirm(
-    `删除模型「${model.label || model.model_id}」？` +
-      (bound ? `\n\n它正被 ${model.bound_slots.length} 个用途使用，删除后会自动解绑。` : ''),
-  )
-  if (!confirmed) return
-  busy.value = `model:${model.id}`
-  try {
-    await deleteModel(model.id)
-    await load()
-    notifySuccess('模型已删除')
-  } catch (cause) {
-    notifyError(cause instanceof Error ? cause.message : '删除失败')
   } finally {
     busy.value = ''
   }
@@ -420,7 +437,7 @@ defineExpose({ load })
                 <button
                   class="menu-item-danger"
                   type="button"
-                  @click="(onDeleteProvider(provider), close())"
+                  @click="(requestDelete({ kind: 'provider', provider }), close())"
                 >
                   删除
                 </button>
@@ -567,7 +584,7 @@ defineExpose({ load })
                   <button
                     class="menu-item-danger"
                     type="button"
-                    @click="(onDeleteModel(model), close())"
+                    @click="(requestDelete({ kind: 'model', model }), close())"
                   >
                     删除
                   </button>
@@ -622,6 +639,17 @@ defineExpose({ load })
       </section>
     </template>
   </div>
+
+  <!-- 删除供应商 / 删除模型：两者的后果不同，由 computed 按目标拼出来 -->
+  <ConfirmDialog
+    v-model:open="deleteOpen"
+    title="删除确认"
+    :lead="deleteLead"
+    :note="deleteNote || undefined"
+    :busy="busy.startsWith('provider:') || busy.startsWith('model:')"
+    busy-label="删除中…"
+    @confirm="confirmDelete"
+  />
 </template>
 
 <style scoped>

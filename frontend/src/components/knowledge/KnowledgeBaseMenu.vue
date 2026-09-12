@@ -19,6 +19,7 @@ import IconSettings from '@/components/icons/IconSettings.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import { formatBytes } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
@@ -162,9 +163,16 @@ async function confirmDelete(): Promise<void> {
       </section>
     </AppModal>
 
-    <AppModal v-model:open="deleteOpen" title="删除知识库">
-      <p class="kb-setting-lead">确定删除知识库「{{ kb.name }}」？</p>
-
+    <ConfirmDialog
+      v-model:open="deleteOpen"
+      title="删除知识库"
+      :lead="`确定删除知识库「${kb.name}」？`"
+      note="此操作不可恢复：整个知识库连同其中的文档、切块与向量都会被删除，不会进回收站。"
+      confirm-label="删除知识库"
+      :busy="deleting"
+      busy-label="删除中…"
+      @confirm="confirmDelete"
+    >
       <p v-if="!impact" class="kb-setting-hint">正在统计影响…</p>
       <dl v-else class="kb-menu-impact">
         <div>
@@ -180,18 +188,7 @@ async function confirmDelete(): Promise<void> {
           <dd class="tabular">{{ formatBytes(impact.size_bytes) }}</dd>
         </div>
       </dl>
-
-      <p class="kb-setting-danger-text">
-        此操作不可恢复：整个知识库连同其中的文档、切块与向量都会被删除，不会进回收站。
-      </p>
-
-      <template #footer>
-        <AppButton @click="deleteOpen = false">取消</AppButton>
-        <AppButton variant="danger" :disabled="deleting" @click="confirmDelete">
-          {{ deleting ? '删除中…' : '删除知识库' }}
-        </AppButton>
-      </template>
-    </AppModal>
+    </ConfirmDialog>
   </span>
 </template>
 

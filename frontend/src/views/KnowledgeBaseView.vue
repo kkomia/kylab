@@ -54,6 +54,7 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
@@ -106,6 +107,24 @@ const renameOpen = computed({
 
 /** 正在取消解析的文档 id（防重复点击；也是按钮的 busy 态）。 */
 const canceling = ref('')
+
+/** 待确认的动作（统一走 ConfirmDialog，不再用浏览器原生 confirm）。 */
+const folderDeleteTarget = ref<Folder | null>(null)
+const folderDeleting = ref(false)
+const folderDeleteOpen = computed({
+  get: () => folderDeleteTarget.value !== null,
+  set: (value: boolean) => {
+    if (!value) folderDeleteTarget.value = null
+  },
+})
+const batchDeleteOpen = ref(false)
+const cancelParseTarget = ref<DocumentSummary | null>(null)
+const cancelParseOpen = computed({
+  get: () => cancelParseTarget.value !== null,
+  set: (value: boolean) => {
+    if (!value) cancelParseTarget.value = null
+  },
+})
 
 /** 从行内菜单点删除：先开弹窗（带上目标），再去取影响清单。 */
 function onDeleteClick(close: () => void, document: DocumentSummary): void {
@@ -344,18 +363,19 @@ function clearSelection(): void {
   selected.value = []
 }
 
+/** 批量删除走确认弹窗（与单篇删除同一套形态），确认后再真正执行。 */
+function requestBatchDelete(): void {
+  if (selectedCount.value === 0 || batchRunning.value) return
+  batchDeleteOpen.value = true
+}
+
 /**
  * 批量动作。**部分失败是正常结果**，所以按后端逐条回的成败分别处理：
  * 全成 → 清空选择；有失败 → 把失败的那几条留在选中态，用户可以重试或看原因。
  */
 async function runBatch(action: 'delete' | 'reprocess'): Promise<void> {
   if (selectedCount.value === 0 || batchRunning.value) return
-  if (action === 'delete') {
-    const confirmed = window.confirm(
-      `删除选中的 ${selectedCount.value} 篇文档？原文会移入回收站保留 7 天，切块与向量立即清除。`,
-    )
-    if (!confirmed) return
-  }
+  batchDeleteOpen.value = false
   batchRunning.value = true
   const ids = [...selected.value]
   const verb = action === 'delete' ? '删除' : '重新摄入'
@@ -603,10 +623,17 @@ async function submitFolder(): Promise<void> {
   }
 }
 
-async function removeFolder(folder: Folder): Promise<void> {
-  if (!window.confirm(`删除目录「${folder.name}」？`)) return
+function requestFolderDelete(folder: Folder): void {
+  folderDeleteTarget.value = folder
+}
+
+async function confirmFolderDelete(): Promise<void> {
+  const folder = folderDeleteTarget.value
+  if (!folder || folderDeleting.value) return
+  folderDeleting.value = true
   try {
     await deleteFolder(folder.id)
+    folderDeleteTarget.value = null
     // 正在看的目录被删了：回到「全部」，否则列表会停在一个不存在的筛选上
     if (activeFolder.value === folder.id) activeFolder.value = ''
     await refreshAll()
@@ -614,6 +641,8 @@ async function removeFolder(folder: Folder): Promise<void> {
   } catch (cause) {
     // 目录非空时后端会拒绝，消息里带"还有 N 篇"——原样透给用户，他才好决定下一步
     notifyError(cause instanceof Error ? cause.message : '删除失败')
+  } finally {
+    folderDeleting.value = false
   }
 }
 
@@ -720,15 +749,18 @@ async function confirmRename(): Promise<void> {
 }
 
 /** 取消解析。**不是删除**：已产出的内容留着，之后还能重新摄入。 */
-async function onCancelClick(close: () => void, document: DocumentSummary): Promise<void> {
+function onCancelClick(close: () => void, document: DocumentSummary): void {
   close()
-  const confirmed = window.confirm(
-    `取消「${document.name}」的解析？已解析出的内容会保留，之后可以重新摄入。`,
-  )
-  if (!confirmed) return
+  cancelParseTarget.value = document
+}
+
+async function confirmCancelParse(): Promise<void> {
+  const document = cancelParseTarget.value
+  if (!document || canceling.value) return
   canceling.value = document.id
   try {
     await cancelDocument(document.id)
+    cancelParseTarget.value = null
     await refresh()
     syncPolling()
     notifySuccess('已取消解析')
@@ -874,7 +906,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                       <button
                         class="menu-item-danger"
                         type="button"
-                        @click="(removeFolder(folder), close())"
+                        @click="(requestFolderDelete(folder), close())"
                       >
                         删除目录
                       </button>
@@ -972,7 +1004,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
               size="sm"
               variant="danger"
               :disabled="batchRunning"
-              @click="runBatch('delete')"
+              @click="requestBatchDelete"
             >
               <template #icon><IconTrash /></template>
               删除
@@ -1228,9 +1260,19 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       "删除该文档"没人会有感觉，"3 份文档、412 个切块"才会让人停一下。
       这是《界面信息架构草案》§2"破坏性动作必须二次确认"的落点。
     -->
-    <AppModal v-model:open="deleteOpen" title="删除文档">
-      <p class="delete-lead">确定删除「{{ deleteTarget?.name }}」？</p>
-
+    <ConfirmDialog
+      v-model:open="deleteOpen"
+      title="删除文档"
+      :lead="`确定删除「${deleteTarget?.name}」？`"
+      :note="
+        impact?.restorable
+          ? '原文会移入回收站保留 7 天，期间可以恢复。切块与向量会立即清除——删除后立刻搜不到。'
+          : '此操作不可恢复。'
+      "
+      :busy="deleting"
+      busy-label="删除中…"
+      @confirm="confirmDelete"
+    >
       <p v-if="!impact" class="delete-note">正在统计影响…</p>
       <dl v-else class="delete-impact">
         <div>
@@ -1246,22 +1288,41 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
           <dd class="tabular">{{ impact.running_tasks }}</dd>
         </div>
       </dl>
+    </ConfirmDialog>
 
-      <p class="delete-note">
-        {{
-          impact?.restorable
-            ? '原文会移入回收站保留 7 天，期间可以恢复。切块与向量会立即清除——删除后立刻搜不到。'
-            : '此操作不可恢复。'
-        }}
-      </p>
+    <!-- 目录删除：非空时后端会拒绝，说明文案由确认弹窗带出 -->
+    <ConfirmDialog
+      v-model:open="folderDeleteOpen"
+      title="删除目录"
+      :lead="`删除目录「${folderDeleteTarget?.name}」？`"
+      note="目录本身删除后不可恢复；目录里的文档不受影响（仍留在知识库中）。"
+      :busy="folderDeleting"
+      busy-label="删除中…"
+      @confirm="confirmFolderDelete"
+    />
 
-      <template #footer>
-        <AppButton @click="deleteOpen = false">取消</AppButton>
-        <AppButton variant="danger" :disabled="deleting" @click="confirmDelete">
-          {{ deleting ? '删除中…' : '删除' }}
-        </AppButton>
-      </template>
-    </AppModal>
+    <!-- 批量删除：与单篇删除同一套形态 -->
+    <ConfirmDialog
+      v-model:open="batchDeleteOpen"
+      title="删除文档"
+      :lead="`删除选中的 ${selectedCount} 篇文档？`"
+      note="原文会移入回收站保留 7 天；切块与向量立即清除，删除后立刻搜不到。"
+      :busy="batchRunning"
+      busy-label="删除中…"
+      @confirm="runBatch('delete')"
+    />
+
+    <!-- 取消解析：不是删除——已产出的内容保留，之后可以重新摄入 -->
+    <ConfirmDialog
+      v-model:open="cancelParseOpen"
+      title="取消解析"
+      :lead="`取消「${cancelParseTarget?.name}」的解析？`"
+      note="已解析出的内容会保留，之后可以重新摄入。"
+      confirm-label="取消解析"
+      busy-label="取消中…"
+      :busy="canceling !== ''"
+      @confirm="confirmCancelParse"
+    />
   </PageShell>
 </template>
 
