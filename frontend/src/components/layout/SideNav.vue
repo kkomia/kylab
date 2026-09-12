@@ -346,7 +346,10 @@ async function onLogout(): Promise<void> {
     <div v-if="!collapsed" class="side-section">
       <div class="section-head">
         <p class="section-label">对话</p>
-        <RouterLink class="section-action" to="/chat">
+        <!-- 带上 `?new=1` 才是"新建"。裸 `/chat` 现在表示"回到最近一次对话"
+             （见 ChatView 的 enterChat）——两个入口共用一条链接时，
+             从知识库返回也会落在空态上，看起来就像"又给我开了个新对话"。 -->
+        <RouterLink class="section-action" :to="{ path: '/chat', query: { new: '1' } }">
           <IconChatNew :size="16" />
           <span>新对话</span>
         </RouterLink>

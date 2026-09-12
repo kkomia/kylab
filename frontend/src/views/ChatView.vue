@@ -100,6 +100,21 @@ let unmounted = false
 const streamHost = ref<HTMLElement | null>(null)
 /** 正在回放哪一次历史对话（空 = 新对话）。 */
 const loadingHistory = ref(false)
+/**
+ * 停在 `/chat` 时正在解析"最近一次对话"。
+ *
+ * 存在的唯一理由是**别先画一屏欢迎层再跳走**：那会让用户看到"新对话一闪而过"，
+ * 也就是这次要修的那个现象，只是从"一直停着"变成"闪一下"。
+ */
+const resolvingEntry = ref(false)
+
+/**
+ * 还没决定这一页显示什么：正在解析入口，或正在回放某条会话。
+ *
+ * 欢迎层要等这两件事都结束再画。回放也算进去，是因为入口解析完会 `replace` 到
+ * `/chat/:id`，紧接着就是一次回放——中间那一小段空档同样会闪出欢迎层。
+ */
+const pendingEntry = computed(() => resolvingEntry.value || loadingHistory.value)
 
 /**
  * 当前会话 id。**以路径为唯一来源**，不做本地副本：
@@ -108,9 +123,25 @@ const loadingHistory = ref(false)
  */
 const conversationId = computed(() => String(route.params.conversationId ?? ''))
 
+/**
+ * 是不是"显式新建"（侧栏那颗「新对话」按钮带过来的 `?new=1`）。
+ *
+ * 为什么要靠查询参数把两个入口分开：`/chat`（侧栏「对话」）与「新对话」原本是同一条
+ * 链接，于是从知识库返回时也落在空态上——用户看到的就是"又给我开了个新对话"。
+ * 现在 `/chat` 表示"回到最近一次"，只有带 `?new=1` 才新建。
+ *
+ * 用**查询参数**而不是 `/chat/new` 这样的新路径：那就成了第二条路由记录，
+ * 从 `/chat/:id` 过去会把 ChatView 卸载重建（正是路由表注释里记的那个坑）。
+ */
+const wantsNew = computed(() => Boolean(route.query.new))
+
 /** 没选库时的问题没有可依据的原文，与后端的 kb_ids 必填是同一条约束。 */
 const canSend = computed(
-  () => selected.value.length > 0 && query.value.trim().length > 0 && !loadingHistory.value,
+  () =>
+    selected.value.length > 0 &&
+    query.value.trim().length > 0 &&
+    !loadingHistory.value &&
+    !resolvingEntry.value,
 )
 
 /** 知识库多选的下拉选项（名字给用户看，id 给后端）。 */
@@ -122,9 +153,53 @@ onMounted(async () => {
   selected.value = store.items.map((item) => item.id)
   void loadPrompt()
   void loadModels()
-  await loadConversation()
+  await enterChat()
   scheduleSamples()
 })
+
+/**
+ * 停在 `/chat`（没有 id）时该显示什么：最近一次对话，或者空态。
+ *
+ * 三条为什么这么写：
+ * 1. **只认路径与查询参数**：直接开链接、收藏、前进后退、中键新标签都会落到 `/chat`，
+ *    只在侧栏的点击里算一次，这些入口就漏了；
+ * 2. **解析期间不画欢迎层**（见 `resolvingEntry`）：先画再跳的话，用户还是会看到
+ *    "一屏新对话一闪而过"——正是这次要修的现象，只是变短了；
+ * 3. **用 `replace` 而不是 `push`**：历史里不该留下中间那个空的 `/chat`，
+ *    否则"返回"会回到空态、又被解析弹回来，卡成一个循环（与新建会话那里同一套理由）。
+ * 4. **拿到结论后要再确认一次"我还站在 `/chat` 上"**：解析是一次网络往返，
+ *    这期间用户完全可能已经点了侧栏里某条会话、或按了「新对话」——
+ *    那时手上的结论已经过期，照旧 `replace` 就是把人从他刚选的那条上拽走
+ *    （实测：直接打开 `/chat` 后马上点第二条会话，会被弹回"最近一条"）。
+ */
+async function enterChat(): Promise<void> {
+  if (conversationId.value) {
+    await loadConversation()
+    return
+  }
+  if (wantsNew.value) {
+    messages.value = []
+    return
+  }
+  resolvingEntry.value = true
+  try {
+    const latest = await conversations.latestId()
+    // 见上面第 4 条：跑完这一趟如果路径已经变了，就别再动它
+    if (conversationId.value || wantsNew.value) return
+    if (latest) {
+      await router.replace(`/chat/${latest}`)
+      return
+    }
+    // 一条历史都没有：就是新用户，停在空态
+    messages.value = []
+  } catch {
+    // 拿不到列表就停在空态。这里不该弹红字：用户是来问问题的，
+    // 而"最近一条"只是个便利，拿不到不等于这一页坏了
+    messages.value = []
+  } finally {
+    resolvingEntry.value = false
+  }
+}
 
 /**
  * 切换会话时重新装载。
@@ -132,9 +207,12 @@ onMounted(async () => {
  * **必须 watch 而不是只靠 onMounted**：`/chat` 与 `/chat/:id` 用的是同一个组件，
  * Vue 会复用实例、不会重新挂载——只写在 onMounted 里，从列表点另一条会话时
  * 界面不会有任何变化（这是路由参数类页面最经典的坑）。
+ *
+ * 查询参数也要看：从「新对话」（`/chat?new=1`）再点侧栏「对话」（`/chat`）时，
+ * 路径参数前后都是空，只有查询参数变了——不 watch 它就还停在空态。
  */
-watch(conversationId, () => {
-  void loadConversation()
+watch([conversationId, wantsNew], () => {
+  void enterChat()
 })
 
 /**
@@ -846,10 +924,14 @@ async function savePrompt(): Promise<void> {
   <div class="chat">
     <!-- 消息区自己滚：输入卡片要一直停在视野里，不能跟着回答一起被顶下去 -->
     <div ref="streamHost" class="chat-scroll" @scroll.passive="onStreamScroll">
-      <div class="chat-inner" :class="{ 'chat-inner-welcome': messages.length === 0 }">
+      <div
+        class="chat-inner"
+        :class="{ 'chat-inner-welcome': messages.length === 0 && !pendingEntry }"
+      >
         <!-- 空状态：居中问候 + 示例问题（参考 WeKnora 的欢迎层）。
-             有消息之后整块消失，让位给正文——它不是常驻装饰。 -->
-        <div v-if="messages.length === 0" class="welcome">
+             有消息之后整块消失，让位给正文——它不是常驻装饰。
+             `pendingEntry` 期间不画：那时还没决定该显示哪条对话（见 resolvingEntry）。 -->
+        <div v-if="messages.length === 0 && !pendingEntry" class="welcome">
           <h1 class="welcome-title">Hi，我是 KYLAB，让你的知识触手可及</h1>
           <div class="welcome-sub">
             <span>你可以这样问我</span>

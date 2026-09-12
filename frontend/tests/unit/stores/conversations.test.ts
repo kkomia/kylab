@@ -122,3 +122,46 @@ describe('rename / remove', () => {
     expect(store.items.map((item) => item.id)).toEqual(['c2'])
   })
 })
+
+describe('latestId（侧栏「对话」入口的落点）', () => {
+  it('按最近活动挑，不按列表第一行（置顶的不算"最新"）', async () => {
+    vi.mocked(api.listConversations).mockResolvedValue({
+      items: [
+        // 后端是"置顶优先"排的：c_old 置顶在前，但它一周没动过
+        summary('c_old', { pinned: true, updated_at: '2026-09-01T00:00:00Z' }),
+        summary('c_new', { updated_at: '2026-09-07T00:00:00Z' }),
+        summary('c_mid', { updated_at: '2026-09-05T00:00:00Z' }),
+      ],
+    })
+
+    expect(await useConversationStore().latestId()).toBe('c_new')
+  })
+
+  it('一条历史都没有时返回空串（调用方据此停在空态）', async () => {
+    vi.mocked(api.listConversations).mockResolvedValue({ items: [] })
+
+    expect(await useConversationStore().latestId()).toBe('')
+  })
+
+  it('列表里 updated_at 缺失的条目不会被当成最新', async () => {
+    vi.mocked(api.listConversations).mockResolvedValue({
+      items: [
+        summary('c_unknown', { updated_at: null }),
+        summary('c_known', { updated_at: '2026-09-07T00:00:00Z' }),
+      ],
+    })
+
+    expect(await useConversationStore().latestId()).toBe('c_known')
+  })
+
+  it('自己问后端要一页，不用可能被搜索筛过的 items', async () => {
+    const store = useConversationStore()
+    store.items = [summary('c_filtered', { updated_at: '2026-09-09T00:00:00Z' })]
+    vi.mocked(api.listConversations).mockResolvedValue({
+      items: [summary('c_new', { updated_at: '2026-09-07T00:00:00Z' })],
+    })
+
+    expect(await store.latestId()).toBe('c_new')
+    expect(api.listConversations).toHaveBeenCalled()
+  })
+})

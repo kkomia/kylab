@@ -26,6 +26,12 @@ interface State {
 }
 
 /**
+ * 列表一页取多少。侧栏那份清单与"最近一条"共用同一个数——
+ * 两处各写一个 50，改了其中一个就会出现"侧栏看得到、入口却挑不着"。
+ */
+const CONVERSATION_PAGE = 50
+
+/**
  * 与后端 `ORDER BY pinned DESC, updated_at DESC` 同一口径。
  *
  * 两边各排一份是有意的：后端那份决定"重新打开页面时看到什么"，
@@ -51,7 +57,7 @@ export const useConversationStore = defineStore('conversations', {
     async load(q?: string): Promise<void> {
       this.loading = true
       try {
-        this.items = (await listConversations(50, q)).items
+        this.items = (await listConversations(CONVERSATION_PAGE, q)).items
         this.error = ''
       } catch (error) {
         // 鉴权开着而没填令牌时这里必然失败——但那是**设置页**要解决的问题，
@@ -115,6 +121,25 @@ export const useConversationStore = defineStore('conversations', {
 
     byId(id: string): ConversationSummary | undefined {
       return this.items.find((item) => item.id === id)
+    },
+
+    /**
+     * 「对话」入口该落到哪一条：**按最近活动**（`updated_at` 最大）。
+     *
+     * 三条为什么这么写：
+     * 1. 不用 `items[0]`——那份清单是"置顶优先"的（后端与 `sortConversations` 同一口径），
+     *    而置顶是人工整理的次序，代表"我想常看"，不代表"我上次在聊哪个"；
+     * 2. 也不在 `items` 里自己挑——侧栏搜索时它是筛过的子集，拿它挑"最新"会挑错；
+     * 3. 所以直接问后端要一页。置顶优先的排序不影响这里的"取最大"，
+     *    只要这一页里含有真正最新的那条——置顶数超过一页才会退化，现实中遇不到。
+     */
+    async latestId(): Promise<string> {
+      const { items } = await listConversations(CONVERSATION_PAGE)
+      const latest = items.reduce<ConversationSummary | null>(
+        (best, item) => (!best || (item.updated_at ?? '') > (best.updated_at ?? '') ? item : best),
+        null,
+      )
+      return latest?.id ?? ''
     },
   },
 })
