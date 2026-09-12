@@ -28,7 +28,7 @@ from app.pipeline.state_machine import InvalidTransition, assert_transition
 from app.services.chunking import ChunkingConfig, chunk_markdown, config_from_record
 from app.services.embedding.base import EmbeddingError, EmbeddingProvider
 from app.services.embedding.resolver import EmbeddingResolver
-from app.services.parser_router import ParserRouter
+from app.services.parser_router import ParserRouter, RoutingDecision
 from app.services.splitting import (
     PageRangeSplitter,
     PartOutcome,
@@ -59,6 +59,16 @@ __all__ = [
     "content_disposition",
     "normalize_filename",
 ]
+
+
+def _degrade_message(filename: str, failures: list[tuple[str, str]]) -> str:
+    """所有候选都失败时的错误：**把每个引擎为什么失败都写出来**。
+
+    只回最后一条会误导——用户看到"PaddleOCR 超时"，以为换个引擎就行，
+    其实 MinerU 早就因为额度用尽失败了（那才是要处理的那件事）。
+    """
+    detail = "；".join(f"{name}：{reason}" for name, reason in failures)
+    return f"所有解析通道都失败了（{filename}）：{detail}"
 
 
 def _part_id(document_id: str, index: int) -> str:
@@ -281,33 +291,99 @@ class IngestService:
         self._stores.meta.update_document_page_count(document.id, probe_result.page_count)
 
         self._advance(document, DocumentStage.PARSING)
-        decision = self._router.decide(
+        # **拿全部候选而不是一个**：云端引擎会失败（额度、抖动、半截结果），
+        # 而"这个文件谁都能解"很常见——扫描件有 MinerU/PaddleOCR 两条路，
+        # 文字型 PDF 还有本地直提。只试第一个会让后面的通道白放着（架构 §4.1）
+        decisions = self._router.candidates(
             filename=document.name, mime_type=document.mime_type, probe=probe_result
         )
+        if not decisions:
+            # 一个都不支持：让 decide() 抛出带"下一步动作"的那条错误
+            self._router.decide(
+                filename=document.name, mime_type=document.mime_type, probe=probe_result
+            )
+            raise AssertionError("unreachable")  # pragma: no cover
 
         # 大文件强制切分（架构 §4.2 / T2.7）：超过渠道页数上限的 PDF 直接提交
         # 只会拿到 -60006 然后整个文件失败，而它其实完全可以被解析。
         split_plan = plan_split(probe_result.page_count)
+
+        failures: list[tuple[str, str]] = []
+        result: ParseResult | None = None
+        for index, decision in enumerate(decisions):
+            try:
+                result = self._parse_once(
+                    document=document,
+                    original=original,
+                    probe_result=probe_result,
+                    decision=decision,
+                    split_plan=split_plan,
+                )
+            except ParseError as exc:
+                # **只对 ParseError 降级**：取消（IngestCanceled）与程序错误都不该
+                # 触发"再试下一个引擎"——那会把"用户不想跑了"变成"换个引擎继续花钱"
+                failures.append((decision.parser_name, str(exc)))
+                if index == len(decisions) - 1:
+                    # **只有一个候选时原样抛出**：包一层"所有通道都失败"只会让
+                    # 那条本来可读的原因（"云端额度用尽"）前面多一段废话
+                    if len(failures) == 1:
+                        raise
+                    raise ParseError(
+                        _degrade_message(document.name, failures), stage="parsing"
+                    ) from exc
+                logger.warning(
+                    "文档 %s 用 %s 解析失败，降级到 %s：%s",
+                    document.name,
+                    decision.parser_name,
+                    decisions[index + 1].parser_name,
+                    exc,
+                )
+                continue
+            if index > 0:
+                # 降级成功要把原因写进产物说明：界面上"这个文件是谁解析的"
+                # 必须能解释"为什么不是首选那个"
+                decision = RoutingDecision(
+                    parser=decision.parser,
+                    reason=(
+                        f"{failures[0][0]} 解析失败（{failures[0][1]}），"
+                        f"已改用 {decision.parser_name}"
+                    ),
+                    probe=probe_result,
+                )
+            break
+
+        if result is None:  # pragma: no cover - 上面的分支已覆盖
+            raise ParseError(f"没有可用的解析器：{document.name}", stage="parsing")
+
+        self._save_parse_artifacts(document, result, decision.reason, probe_result)
+        self._advance(document, DocumentStage.PARSED)
+        self._store_tabular_copy(document, original)
+        return result
+
+    def _parse_once(
+        self,
+        *,
+        document: DocumentRecord,
+        original: bytes,
+        probe_result,
+        decision,  # type: ignore[no-untyped-def]
+        split_plan: SplitPlan,
+    ) -> ParseResult:
+        """用一个解析器跑一遍（大文件走分段）。"""
         if split_plan.needed:
-            result = self._parse_in_parts(
+            return self._parse_in_parts(
                 document=document,
                 original=original,
                 plan=split_plan,
                 parser=decision.parser,
                 probe_result=probe_result,
             )
-        else:
-            result = decision.parser.parse(
-                content=original,
-                filename=document.name,
-                mime_type=document.mime_type,
-                probe=probe_result,
-            )
-
-        self._save_parse_artifacts(document, result, decision.reason, probe_result)
-        self._advance(document, DocumentStage.PARSED)
-        self._store_tabular_copy(document, original)
-        return result
+        return decision.parser.parse(
+            content=original,
+            filename=document.name,
+            mime_type=document.mime_type,
+            probe=probe_result,
+        )
 
     def _parse_in_parts(
         self,

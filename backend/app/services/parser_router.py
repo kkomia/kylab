@@ -108,16 +108,35 @@ class ParserRouter:
     def parser_names(self) -> tuple[str, ...]:
         return tuple(parser.name for parser in self.parsers)
 
+    def candidates(
+        self, *, filename: str, mime_type: str | None, probe: ProbeResult
+    ) -> list[RoutingDecision]:
+        """**所有**能处理该文件的解析器，按优先级排列（v17 起用于失败降级）。
+
+        为什么要有这个而不是只给一个：云端引擎会失败（额度用尽、接口抖动、
+        返回半截结果），而"这个文件谁都能解"的情况其实很常见——
+        扫描件有 MinerU 与 PaddleOCR 两条路，文字型 PDF 还有本地直提。
+        原先只挑第一个，第一个失败就整份文档失败，白白浪费了后面的通道。
+        """
+        decisions: list[RoutingDecision] = []
+        for parser in self.parsers:
+            if parser.supports(filename=filename, mime_type=mime_type, probe=probe):
+                decisions.append(
+                    RoutingDecision(
+                        parser=parser,
+                        reason=f"{parser.name} 支持该类型（探测结论：{probe.kind}）",
+                        probe=probe,
+                    )
+                )
+        return decisions
+
     def decide(
         self, *, filename: str, mime_type: str | None, probe: ProbeResult
     ) -> RoutingDecision:
-        for parser in self.parsers:
-            if parser.supports(filename=filename, mime_type=mime_type, probe=probe):
-                return RoutingDecision(
-                    parser=parser,
-                    reason=f"{parser.name} 支持该类型（探测结论：{probe.kind}）",
-                    probe=probe,
-                )
+        """挑第一个能处理的解析器，**不降级**（单次决策，给调用方自己编排用）。"""
+        decisions = self.candidates(filename=filename, mime_type=mime_type, probe=probe)
+        if decisions:
+            return decisions[0]
         raise ParseError(
             f"暂不支持的文件类型：{filename or '(未命名)'}（探测结论：{probe.kind}）"
             + _hint_for(probe, filename),

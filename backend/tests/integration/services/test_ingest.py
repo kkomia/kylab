@@ -7,6 +7,7 @@
 import pytest
 
 from app.models.enums import DocumentStage
+from app.parsers.base import ParseError
 from app.parsers.plain_text import PlainTextParser
 from app.services.chunking import ChunkingConfig
 from app.services.embedding.base import EmbeddingError
@@ -479,3 +480,67 @@ def test_uploaded_html_is_stripped_before_indexing(
     assert "眼轴长度是近视防控的核心指标" in markdown
     assert "首页 关于我们" not in markdown
     assert "var tracking" not in markdown
+
+
+# ------------------------------------------------- 解析引擎自动降级（v17）
+
+
+class _FailingParser(PlainTextParser):
+    """首选引擎：一定失败。"""
+
+    name = "FailingParser"
+
+    def parse(self, **_kwargs):  # type: ignore[override]
+        raise ParseError("云端额度用尽", stage="parsing")
+
+
+def test_parser_failure_degrades_to_the_next_candidate(bundle: StoreBundle, kb) -> None:  # type: ignore[no-untyped-def]
+    """首选引擎失败时自动换下一个：扫描件有两条云端通道，文字型 PDF 还有本地直提。
+
+    原先只挑第一个，第一个失败就整份文档失败——后面的通道白放着。
+    """
+    service = IngestService(
+        bundle,
+        router=ParserRouter([_FailingParser(), PlainTextParser()]),
+        embedder=DeterministicEmbedder(dim=DIM),
+    )
+    outcome = service.submit(knowledge_base_id="kb_1", filename="a.md", content=MARKDOWN.encode())
+
+    result = service.ingest(outcome.document.id)
+
+    assert result.document.stage is DocumentStage.INDEXED
+    parsed = bundle.meta.get_parse_result(outcome.document.id)
+    assert parsed is not None
+    assert parsed.parser_name == "PlainTextParser"
+    # 降级原因要写进产物说明：界面上"这个文件是谁解析的"必须能解释为什么不是首选
+    reason = parsed.probe_meta.get("route_reason", "")
+    assert "FailingParser" in reason
+    assert "云端额度用尽" in reason
+
+
+def test_all_parsers_failing_reports_every_reason(bundle: StoreBundle, kb) -> None:  # type: ignore[no-untyped-def]
+    """全挂时把**每个引擎为什么失败**都说出来。
+
+    只回最后一条会误导：用户看到"PaddleOCR 超时"以为换个引擎就行，
+    其实 MinerU 早就因为额度用尽失败了（那才是要处理的事）。
+    """
+
+    class _AlsoFailing(PlainTextParser):
+        name = "AlsoFailingParser"
+
+        def parse(self, **_kwargs):  # type: ignore[override]
+            raise ParseError("接口抖动", stage="parsing")
+
+    service = IngestService(
+        bundle,
+        router=ParserRouter([_FailingParser(), _AlsoFailing()]),
+        embedder=DeterministicEmbedder(dim=DIM),
+    )
+    outcome = service.submit(knowledge_base_id="kb_1", filename="a.md", content=MARKDOWN.encode())
+
+    with pytest.raises(IngestError) as excinfo:
+        service.ingest(outcome.document.id)
+
+    message = str(excinfo.value)
+    assert "FailingParser" in message and "云端额度用尽" in message
+    assert "AlsoFailingParser" in message and "接口抖动" in message

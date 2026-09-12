@@ -160,3 +160,34 @@ def test_legacy_doc_hint_says_save_as_docx(bundle) -> None:  # type: ignore[no-u
     with pytest.raises(ParseError) as excinfo:
         router.decide(filename="旧文档.doc", mime_type=None, probe=_text_probe())
     assert ".docx" in str(excinfo.value)
+
+
+def test_candidates_returns_all_supporting_parsers_in_priority_order() -> None:
+    """降级的依据：谁都能解时要把它们**按优先级**都列出来。
+
+    只给一个的话，首选失败就等于整份文档失败——扫描件的 MinerU/PaddleOCR
+    两条通道、文字型 PDF 的本地直提都白放着。
+    """
+    router = ParserRouter([_AlwaysParser(), PlainTextParser()])
+
+    decisions = router.candidates(
+        filename="a.md", mime_type="text/markdown", probe=_text_probe()
+    )
+
+    assert [item.parser_name for item in decisions] == ["AlwaysParser", "PlainTextParser"]
+    # decide 仍然只给第一个（单次决策语义不变）
+    assert (
+        router.decide(filename="a.md", mime_type="text/markdown", probe=_text_probe()).parser_name
+        == "AlwaysParser"
+    )
+
+
+def test_candidates_is_empty_for_unsupported_types() -> None:
+    """一个都不支持时给空列表（由调用方决定怎么报错），而不是抛异常。"""
+    router = ParserRouter([PlainTextParser()])
+
+    empty = router.candidates(
+        filename="a.pdf", mime_type="application/pdf", probe=_scanned_probe()
+    )
+
+    assert empty == []
