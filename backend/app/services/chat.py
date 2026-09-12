@@ -51,6 +51,15 @@ MAX_CONTEXT_CHUNKS = 6
 #: 每条资料截断长度：一条 chunk 通常 500 字上下，超长的只取开头
 MAX_CHUNK_CHARS = 900
 
+#: 「小块检索、大块阅读」的默认预算（v17，设置项 `chat.section_chars`）。
+#:
+#: 检索按块命中（块是**定位**的粒度，RRF 与 rerank 都建立在它上面），但喂给模型的
+#: 是**命中块所在的那一小节**：一份 512 字的块常常只是某节的一段，模型据此作答时
+#: 看不到上下文，答出来的东西容易断章取义。补到 1800 字（约 3~4 块）通常够。
+#: **0 = 关闭**，只给命中的那一块——留这个开关是为了控制提示词成本，
+#: 因为这一点点上下文会让每轮多花一些 token。
+DEFAULT_SECTION_CHARS = 1800
+
 #: 资料区块的定界符。用尖括号包起来的整词，几乎不会与正常正文撞车；
 #: 区块外的一切（系统提示词、历史、用户问题）都不受这些标记影响。
 MATERIAL_BEGIN = "<<<资料 开始>>>"
@@ -84,6 +93,58 @@ class SourceRef:
     knowledge_base_id: str = ""
 
 
+class _SectionReader:
+    """把命中块扩成"所在小节"，**一次检索内按文档缓存 chunk 列表**。
+
+    扩的口子收在这里而不是在检索服务：检索要回答的是"哪一块最像"，
+    所以命中仍是块（检索调试台看到的也是块级结果）；只有"喂给模型的内容"
+    才需要补全上下文。两者混在一起，就没法再解释"为什么这一条排第一"。
+
+    **按 ordinal 相邻向外扩，而不是按标题路径全取**：同一份文档里可能出现两处
+    同名标题（"参考资料"这类），按路径取会把两段不相干的内容拼在一起。
+    """
+
+    def __init__(self, stores, budget: int) -> None:
+        self._stores = stores
+        self._budget = budget
+        self._cache: dict[str, list] = {}
+
+    def text_for(self, hit) -> str:  # type: ignore[no-untyped-def]
+        if self._budget <= 0 or not hit.heading_path:
+            return hit.text
+        chunks = self._chunks_of(hit.document_id)
+        index = next((i for i, item in enumerate(chunks) if item.chunk_id == hit.chunk_id), None)
+        if index is None:
+            return hit.text
+        picked = [chunks[index]]
+        size = len(chunks[index].text)
+        # 先往后、再往前交替取：同一小节里"下一段"通常比"上一段"更贴近命中句
+        step = 1
+        while size < self._budget:
+            moved = False
+            for offset in (index + step, index - step):
+                if not (0 <= offset < len(chunks)):
+                    continue
+                candidate = chunks[offset]
+                if candidate.heading_path != hit.heading_path:
+                    continue  # 出了这一节就停：相邻但不同节的内容不该混进来
+                if size + len(candidate.text) > self._budget and len(picked) > 1:
+                    continue
+                picked.append(candidate)
+                size += len(candidate.text)
+                moved = True
+            if not moved:
+                break
+            step += 1
+        picked.sort(key=lambda item: item.ordinal)
+        return "\n\n".join(item.text for item in picked)
+
+    def _chunks_of(self, document_id: str) -> list:
+        if document_id not in self._cache:
+            self._cache[document_id] = list(self._stores.meta.iter_chunks(document_id))
+        return self._cache[document_id]
+
+
 @dataclass(slots=True)
 class ChatTurn:
     """一次问答的结果。"""
@@ -100,11 +161,15 @@ class ChatService:
         retrieval: RetrievalService,
         runtime: RuntimeConfigService,
         *,
+        stores=None,  # type: ignore[no-untyped-def]
         chat_factory=None,  # type: ignore[no-untyped-def]
         usage_recorder=None,  # type: ignore[no-untyped-def]
     ) -> None:
         self._retrieval = retrieval
         self._runtime = runtime
+        #: 存储（v17）：用于把命中块补成整段小节。可选——不给就退回"只给命中的那一块"，
+        #: 这样单测与脚本可以在没有存储的情况下构造它
+        self._stores = stores
         # 工厂可注入：测试里换成假模型，避免真打网络
         self._chat_factory = chat_factory or (lambda config: OpenAICompatChat(config))
         # 用量回调（G7）。可选：缺席时完全不记，功能照常
@@ -134,8 +199,10 @@ class ChatService:
                 candidate_k=candidate_k,
             )
         )
+        reader = _SectionReader(self._stores, self._section_chars) if self._stores else None
         sources: list[SourceRef] = []
         for index, hit in enumerate(response.hits, start=1):
+            text = reader.text_for(hit) if reader else hit.text
             sources.append(
                 SourceRef(
                     index=index,
@@ -145,11 +212,17 @@ class ChatService:
                     heading_path=hit.heading_path,
                     page=hit.page,
                     score=hit.score,
-                    preview=_preview(hit.text),
+                    preview=_preview(text, limit=self._section_chars or MAX_CHUNK_CHARS),
                     knowledge_base_id=hit.knowledge_base_id,
                 )
             )
         return sources
+
+    @property
+    def _section_chars(self) -> int:
+        """这一轮资料的小节预算。设置页把它设成 0 就等于回到"只给命中块"。"""
+        configured = self._runtime.get_int("chat.section_chars")
+        return DEFAULT_SECTION_CHARS if configured is None else configured
 
     def answer(
         self,
@@ -357,7 +430,7 @@ def neutralize(text: str) -> str:
     return _DELIMITER_LIKE.sub(lambda m: m.group(0).replace(" ", "·"), text)
 
 
-def _preview(text: str) -> str:
+def _preview(text: str, *, limit: int = MAX_CHUNK_CHARS) -> str:
     """压平空白 → 剥掉 HTML 标记 → 截断。
 
     两个坑都是实测踩到的：
@@ -373,4 +446,5 @@ def _preview(text: str) -> str:
     """
     body = _HTML_TAG.sub(" ", " ".join(text.split()))
     body = " ".join(body.split())
-    return body[:MAX_CHUNK_CHARS] + ("…" if len(body) > MAX_CHUNK_CHARS else "")
+    keep = max(1, int(limit))
+    return body[:keep] + ("…" if len(body) > keep else "")

@@ -296,7 +296,13 @@ def build_services(
         lifecycle = LifecycleService(bundle)
         lifecycle.purge_expired_trash()
 
-    chat_service = ChatService(retrieval, runtime, usage_recorder=_record_chat_usage)
+    chat_service = ChatService(
+        retrieval,
+        runtime,
+        # stores 用于"小块检索、大块阅读"（把命中块补成整段小节，v17）
+        stores=bundle,
+        usage_recorder=_record_chat_usage,
+    )
     lifecycle_service = LifecycleService(bundle, notifier=webhooks.emit)
     folders_service = FolderService(bundle)
 

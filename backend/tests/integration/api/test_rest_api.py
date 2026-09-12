@@ -536,3 +536,4 @@ def test_empty_search_is_not_counted(client: TestClient, kb_id: str) -> None:
     usage = client.get("/api/v1/stats/usage").json()
 
     assert {item["kind"] for item in usage["by_kind"]} == set()
+

@@ -1729,7 +1729,9 @@ async function savePrompt(): Promise<void> {
   color: var(--text-tertiary);
 }
 
-/* 原文按原样显示：切块保留的换行是它的结构，压平会读不出层次 */
+/* 原文按 pre-wrap 显示。**注意后端给的 preview 已经把空白压平了**
+   （见 services/chat.py 的 _preview：压平是为了拼提示词时不破坏「资料」的结构），
+   所以这里实际看到的是连续文本；保留 pre-wrap 是为了将来若改为原样下发不用再改样式 */
 .source-body {
   margin: 0;
   max-height: 50vh;

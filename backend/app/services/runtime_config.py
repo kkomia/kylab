@@ -100,6 +100,11 @@ SETTING_GROUPS: dict[str, Any] = {
         "fields": [
             {"key": "chat.system_prompt", "label": "系统提示词", "type": "textarea"},
             {"key": "chat.top_k", "label": "带入资料的条数", "type": "int"},
+            {
+                "key": "chat.section_chars",
+                "label": "每条资料的小节长度上限",
+                "type": "int",
+            },
         ],
     },
 }
@@ -122,6 +127,9 @@ DEFAULTS: dict[str, str] = {
     "llm.thinking_effort": "medium",
     "chat.system_prompt": "",  # 空则用 services/chat.py 的内置提示词
     "chat.top_k": "6",
+    # 检索按块命中，但**喂给模型的是整段小节**（v17，见 services/chat.py
+    # 的「小块检索、大块阅读」）：0 = 关闭，只给命中的那一块
+    "chat.section_chars": "1800",
 }
 
 

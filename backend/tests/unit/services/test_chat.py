@@ -380,3 +380,126 @@ def test_probe_reports_empty_content_as_error(runtime, bind_slot) -> None:
 class _EmptyRetrieval:
     def search(self, query):  # type: ignore[no-untyped-def]
         return type("Response", (), {"hits": []})()
+
+
+# ------------------------------------------------- 小块检索、大块阅读（v17）
+
+
+def _chunk(chunk_id: str, ordinal: int, text: str, heading: str | None = "3 监测"):  # type: ignore[no-untyped-def]
+    return type(
+        "Chunk",
+        (),
+        {"chunk_id": chunk_id, "ordinal": ordinal, "text": text, "heading_path": heading},
+    )()
+
+
+class _SectionStores:
+    """只提供 `meta.iter_chunks` 的假存储。"""
+
+    def __init__(self, chunks):  # type: ignore[no-untyped-def]
+        self.calls = 0
+        self._chunks = chunks
+        self.meta = self
+
+    def iter_chunks(self, document_id: str):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        return list(self._chunks)
+
+
+def _reader(chunks, budget: int):  # type: ignore[no-untyped-def]
+    from app.services.chat import _SectionReader
+
+    stores = _SectionStores(chunks)
+    return _SectionReader(stores, budget), stores
+
+
+def test_section_reader_extends_around_the_hit() -> None:
+    """命中块只是某节的一段：补上同一小节的相邻块，模型才看得到上下文。"""
+    chunks = [_chunk("c1", 0, "甲" * 10), _chunk("c2", 1, "乙" * 10), _chunk("c3", 2, "丙" * 10)]
+    reader, _ = _reader(chunks, 1000)
+    hit = type("Hit", (), {"chunk_id": "c2", "document_id": "d1", "heading_path": "3 监测",
+                           "text": "乙" * 10})()
+
+    text = reader.text_for(hit)
+
+    assert "甲" in text and "乙" in text and "丙" in text
+    # 顺序按 ordinal 还原，而不是按"取到的顺序"
+    assert text.index("甲") < text.index("乙") < text.index("丙")
+
+
+def test_section_reader_respects_the_budget() -> None:
+    """预算上限必须守住：小节合并是为了让模型看懂，不是为了把提示词撑爆。"""
+    chunks = [_chunk(f"c{i}", i, "字" * 100) for i in range(10)]
+    reader, _ = _reader(chunks, 250)
+    hit = type("Hit", (), {"chunk_id": "c0", "document_id": "d1", "heading_path": "3 监测",
+                           "text": "字" * 100})()
+
+    text = reader.text_for(hit)
+
+    assert len(text) <= 250
+
+
+def test_section_reader_stops_at_the_heading_boundary() -> None:
+    """相邻但不同小节的块不该混进来：那是另一段话，拼上会误导模型。"""
+    chunks = [
+        _chunk("c1", 0, "上一节的内容", heading="2 方法"),
+        _chunk("c2", 1, "命中的这一段", heading="3 监测"),
+        _chunk("c3", 2, "下一节的内容", heading="4 结论"),
+    ]
+    reader, _ = _reader(chunks, 1000)
+    hit = type("Hit", (), {"chunk_id": "c2", "document_id": "d1", "heading_path": "3 监测",
+                           "text": "命中的这一段"})()
+
+    text = reader.text_for(hit)
+
+    assert text == "命中的这一段"
+
+
+def test_section_reader_is_off_when_budget_is_zero() -> None:
+    """0 = 关闭（设置页的开关）：只给命中的那一块，且**不去读存储**。"""
+    reader, stores = _reader([_chunk("c1", 0, "内容")], 0)
+    hit = type("Hit", (), {"chunk_id": "c1", "document_id": "d1", "heading_path": "3 监测",
+                           "text": "内容"})()
+
+    assert reader.text_for(hit) == "内容"
+    assert stores.calls == 0
+
+
+def test_section_reader_without_heading_does_not_expand() -> None:
+    """没有标题路径（整篇没标题的纯文本）就没有"小节"可言，不扩。"""
+    reader, stores = _reader([_chunk("c1", 0, "内容", heading=None)], 1000)
+    hit = type("Hit", (), {"chunk_id": "c1", "document_id": "d1", "heading_path": None,
+                           "text": "内容"})()
+
+    assert reader.text_for(hit) == "内容"
+    assert stores.calls == 0
+
+
+def test_section_reader_reads_each_document_once() -> None:
+    """同一次检索里多条命中落在同一份文档：chunk 列表只读一次。"""
+    chunks = [_chunk(f"c{i}", i, "字" * 50) for i in range(4)]
+    reader, stores = _reader(chunks, 200)
+    def hit(cid: str):  # type: ignore[no-untyped-def]
+        return type(
+            "Hit",
+            (),
+            {
+                "chunk_id": cid,
+                "document_id": "d1",
+                "heading_path": "3 监测",
+                "text": "字" * 50,
+            },
+        )()
+
+    reader.text_for(hit("c0"))
+    reader.text_for(hit("c1"))
+
+    assert stores.calls == 1
+
+
+def test_preview_honours_a_custom_limit() -> None:
+    """截断上限可传：小节合并后按小节预算截，而不是老死 900 字。"""
+    body = "字" * 2000
+
+    assert len(preview_of(body, limit=1800)) <= 1801
+    assert len(preview_of(body)) <= MAX_CHUNK_CHARS + 1

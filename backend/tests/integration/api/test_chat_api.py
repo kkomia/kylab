@@ -6,6 +6,7 @@
 最后一条最容易漏：流一旦开始发送，状态码已经发出去了，改不了。
 """
 
+import io
 import json
 
 import pytest
@@ -211,3 +212,47 @@ def test_suggested_questions_without_corpus_is_empty_not_error(
 
     assert response.status_code == 200, response.text
     assert response.json() == {"questions": [], "generated": False}
+
+
+# ------------------------------------------- 小块检索、大块阅读（v17 接线）
+
+
+def test_chat_sources_carry_the_whole_section(client: TestClient, kb_id: str) -> None:
+    """检索按块命中，但**喂给模型的资料是整段小节**。
+
+    单测覆盖了合并逻辑本身；这一条验的是**接线**——组合根有没有把存储传进
+    ChatService。传漏了会静默退回"只给命中的那一块"，而那块看起来完全正常，
+    只是上下文变窄，光看接口形状发现不了。
+    """
+    import asyncio
+
+    paragraph = "眼轴长度是近视防控的核心指标，建议每三个月测量一次。" * 8
+    markdown = f"## 3 监测\n\n{paragraph}\n\n{paragraph}\n\n{paragraph}\n"
+    upload = client.post(
+        f"/api/v1/knowledge-bases/{kb_id}/documents",
+        files={"file": ("section.md", io.BytesIO(markdown.encode()), "text/markdown")},
+        params={"start": "true"},
+    )
+    document_id = upload.json()["document"]["id"]
+
+    worker = get_services().worker
+
+    async def drain() -> None:
+        while await worker.run_once():
+            pass
+
+    asyncio.run(drain())
+
+    chunks = client.get(f"/api/v1/documents/{document_id}/chunks").json()["items"]
+    assert len(chunks) >= 2, "这份文档该被切成多块，否则这条用例证明不了什么"
+
+    _install_fake_chat()
+    response = client.post(
+        "/api/v1/chat/stream", json={"query": "眼轴多久测一次", "kb_ids": [kb_id]}
+    )
+    events = _parse_sse(response.text)
+    sources = next(item for item in events if item["type"] == "sources")["items"]
+
+    assert sources, "检索应当命中刚入库的文档"
+    # 单块时 preview 等于某一块；合并小节后它比任何单块都长
+    assert len(sources[0]["preview"]) > max(len(item["text"]) for item in chunks)
