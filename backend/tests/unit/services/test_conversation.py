@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.conversation import TITLE_MAX_CHARS, ConversationService
 
 
@@ -225,3 +225,98 @@ def test_set_model_does_not_touch_updated_at(service: ConversationService) -> No
     service.set_model(conv.id, "mdl_a")
 
     assert service.get(conv.id).updated_at == before
+
+
+# ------------------------------------------------- 置顶 / 搜索 / 回退（v17）
+
+
+def _seed(service: ConversationService, count: int = 3):  # type: ignore[no-untyped-def]
+    """造 count 条会话，每条一轮问答。返回按创建顺序的会话。"""
+    made = []
+    for index in range(count):
+        record = service.create(kb_ids=["kb_1"], title=f"会话{index}")
+        service.append(record.id, role="user", content=f"问题{index}")
+        service.append(record.id, role="assistant", content=f"回答{index}")
+        made.append(record)
+    return made
+
+
+def test_pinned_sorts_first_and_keeps_its_rank(service) -> None:  # type: ignore[no-untyped-def]
+    """置顶排在列表最前，**且之后聊天不会把它挤下去**——用户置顶正是为了这个。"""
+    first, _second, third = _seed(service)
+
+    service.set_pinned(first.id, True)
+    # 让后来者"更活跃"：updated_at 更大，但置顶的不该被顶下去
+    service.append(third.id, role="user", content="又聊了一句")
+
+    order = [item.id for item in service.list()]
+
+    assert order[0] == first.id
+    # 其余按最近更新：third 刚聊过，所以排在 second 之前
+    assert order[1] == third.id
+
+
+def test_unpin_returns_to_normal_order(service) -> None:  # type: ignore[no-untyped-def]
+    first, _second, third = _seed(service)
+    service.set_pinned(first.id, True)
+    service.append(third.id, role="user", content="新的一句")
+
+    service.set_pinned(first.id, False)
+
+    assert next(item.id for item in service.list()) == third.id
+
+
+def test_search_filters_by_title(service) -> None:  # type: ignore[no-untyped-def]
+    """按标题搜索在 SQL 里做，才能与 LIMIT 组合出正确语义。"""
+    _seed(service, 3)
+    service.create(kb_ids=["kb_1"], title="眼科指南问答")
+
+    hits = service.list(q="眼科")
+
+    assert [item.title for item in hits] == ["眼科指南问答"]
+
+
+def test_search_treats_wildcards_literally(service) -> None:  # type: ignore[no-untyped-def]
+    """搜 `_` 不该变成"任意一个字符"（与文档搜索同一套转义）。"""
+    service.create(kb_ids=["kb_1"], title="a_b")
+    service.create(kb_ids=["kb_1"], title="axb")
+
+    hits = service.list(q="a_b")
+
+    assert [item.title for item in hits] == ["a_b"]
+
+
+def test_rewind_removes_last_turn_and_returns_the_question(service) -> None:  # type: ignore[no-untyped-def]
+    """「重新生成」的底座：删掉最后一轮并把那句提问还回来。"""
+    record = service.create(kb_ids=["kb_1"], title="会话")
+    service.append(record.id, role="user", content="第一问")
+    service.append(record.id, role="assistant", content="第一答")
+    service.append(record.id, role="user", content="第二问")
+    service.append(record.id, role="assistant", content="第二答")
+
+    query = service.rewind(record.id)
+
+    assert query == "第二问"
+    remaining = [item.content for item in service.messages(record.id)]
+    assert remaining == ["第一问", "第一答"]
+
+
+def test_rewind_without_a_question_is_rejected(service) -> None:  # type: ignore[no-untyped-def]
+    """没有可回退的提问时明说，而不是让调用方发一次空提问。"""
+    record = service.create(kb_ids=["kb_1"], title="空会话")
+
+    with pytest.raises(InvalidRequestError, match="没有可回退"):
+        service.rewind(record.id)
+
+
+def test_rewind_two_turns(service) -> None:  # type: ignore[no-untyped-def]
+    record = service.create(kb_ids=["kb_1"], title="会话")
+    service.append(record.id, role="user", content="一")
+    service.append(record.id, role="assistant", content="答一")
+    service.append(record.id, role="user", content="二")
+    service.append(record.id, role="assistant", content="答二")
+
+    query = service.rewind(record.id, turns=2)
+
+    assert query == "一"
+    assert service.messages(record.id) == []

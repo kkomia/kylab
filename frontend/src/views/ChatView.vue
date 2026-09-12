@@ -28,10 +28,12 @@ import {
   isAbortError,
   type ChatHistoryMessage,
 } from '@/api/chat'
-import { getConversation } from '@/api/conversations'
+import { getConversation, rewindConversation } from '@/api/conversations'
 import type { RegisteredModel } from '@/api/modelRegistry'
 import { getSettings, updateSettings } from '@/api/settings'
 import IconArrowUp from '@/components/icons/IconArrowUp.vue'
+import IconCopy from '@/components/icons/IconCopy.vue'
+import IconRegenerate from '@/components/icons/IconRegenerate.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
@@ -203,6 +205,7 @@ onBeforeUnmount(() => {
   stream.value?.abort()
   window.clearTimeout(samplesTimer)
   window.clearTimeout(flashTimer)
+  window.clearTimeout(copiedTimer)
 })
 
 const history = computed<ChatHistoryMessage[]>(() =>
@@ -394,6 +397,139 @@ function toggleTrace(turn: Turn): void {
   const message = turn.reply
   if (!message) return
   message.traceOpen = !isTraceOpen(message)
+}
+
+// ------------------------------------------------------- 消息操作（v17）
+
+/** 刚复制过的那条（`"${turn}:${role}"`）。给按钮一个"已复制"的即时反馈。 */
+const copiedKey = ref('')
+let copiedTimer: number | undefined
+
+/**
+ * 复制一条消息的正文。
+ *
+ * 复制的是**原文**（Markdown 源文本）而不是渲染后的文字：用户多半要粘到别处，
+ * 而带 `**` 与 `[1]` 的原文在其它 Markdown 环境里仍然成立；
+ * 复制渲染后的纯文本会把结构丢掉，反而不可用。
+ */
+async function copyMessage(turnIndex: number, message: Message): Promise<void> {
+  const key = `${turnIndex}:${message.role}`
+  try {
+    await navigator.clipboard.writeText(message.text)
+    copiedKey.value = key
+    window.clearTimeout(copiedTimer)
+    copiedTimer = window.setTimeout(() => {
+      if (copiedKey.value === key) copiedKey.value = ''
+    }, 1600)
+  } catch {
+    // 剪贴板不可用（非 https、权限被拒）：如实说，别假装复制成功
+    notifyError('复制失败，请手动选中后复制')
+  }
+}
+
+const regenerating = ref(false)
+
+/**
+ * 重新生成最后一条回答。
+ *
+ * 两步：**先把会话退回到提问之前**（后端删掉那一轮），再原样重发那句提问——
+ * 重发走的是正常提问链路，所以不存在"第二条生成实现"。
+ *
+ * 为什么不是"让后端重跑一次"：回答是流式的，重试/中断/落库的时序都在前端这条链路上，
+ * 后端再实现一遍只会让两边行为分叉。
+ *
+ * 回退是**服务端已删、本地才跟上**的顺序：反过来（先清本地再调接口）在接口失败时
+ * 会留下一段"界面上没有、库里还有"的错位，而重发会把它变成重复的提问。
+ */
+async function regenerate(turnIndex: number): Promise<void> {
+  const turn = turns.value[turnIndex]
+  const id = conversationId.value
+  if (!turn?.user || !id || regenerating.value || sending.value) return
+  const query = turn.user.text
+  const context = history.value
+  const model = modelPk.value || undefined
+  regenerating.value = true
+  try {
+    await rewindConversation(id, 1)
+    // 本地同步回退：把这一轮从界面上摘掉（连同它后面的所有轮次）
+    messages.value = messages.value.slice(0, turnIndex * 2)
+    await resend(query, context, model, id)
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '重新生成失败')
+    // 回退可能已经成功、重发失败：以库里的状态为准重新装载，别让界面与库里错位
+    void loadConversation()
+  } finally {
+    regenerating.value = false
+  }
+}
+
+/**
+ * 按给定的一句提问重新发一轮（重新生成用）。
+ *
+ * 与 `send()` 共用同一套流式处理，但不走"新建会话"那条分支——会话已经存在，
+ * 也不该再改路由。
+ */
+async function resend(
+  text: string,
+  context: ChatHistoryMessage[],
+  model: string | undefined,
+  id: string,
+): Promise<void> {
+  messages.value = [
+    ...messages.value,
+    { role: 'user', text, sources: [], error: '', streaming: false, thinking: null },
+    {
+      role: 'assistant',
+      text: '',
+      sources: [],
+      error: '',
+      streaming: true,
+      thinking: { enabled: thinkingOn.value, effort: thinkingEffort.value },
+    },
+  ]
+  const index = messages.value.length - 1
+  sending.value = true
+  stick.value = true
+  void scrollToBottom()
+  const patch = (part: Partial<Message>): void => {
+    const current = messages.value[index]
+    if (current) Object.assign(current, part)
+  }
+  try {
+    const handle = await chatStream(
+      {
+        query: text,
+        kb_ids: selected.value,
+        history: context,
+        conversation_id: id,
+        model_pk: model,
+        thinking: thinkingOn.value,
+        thinking_effort: thinkingEffort.value,
+      },
+      {
+        onSources: (items) => patch({ sources: items }),
+        onDelta: (delta) => patch({ text: (messages.value[index]?.text ?? '') + delta }),
+        onDone: (answer) => {
+          patch({ text: answer, streaming: false })
+          finish()
+        },
+        onError: (message) => {
+          patch({ error: message, streaming: false })
+          finish()
+        },
+      },
+    )
+    stream.value = handle
+    if (unmounted) {
+      handle.abort()
+      finish()
+    }
+  } catch (cause) {
+    if (!isAbortError(cause)) {
+      patch({ error: cause instanceof Error ? cause.message : '对话失败', streaming: false })
+    }
+    finish()
+  }
 }
 
 /** 正在闪的引用（`"${turn}:${index}"`）。点行内徽标时用它把视线引过去。 */
@@ -738,6 +874,16 @@ async function savePrompt(): Promise<void> {
                位置与形状已经说明了它是谁说的，多一行小字只是噪声 -->
           <div v-if="turn.user" class="ask">
             <p class="ask-text">{{ turn.user.text }}</p>
+            <!-- 提问也能复制：用户常常要把同一个问题拿去别处问 -->
+            <button
+              type="button"
+              class="ask-copy"
+              :aria-label="copiedKey === `${turnIndex}:user` ? '已复制提问' : '复制提问'"
+              :title="copiedKey === `${turnIndex}:user` ? '已复制' : '复制'"
+              @click="copyMessage(turnIndex, turn.user)"
+            >
+              <IconCopy :size="13" />
+            </button>
           </div>
 
           <div v-if="turn.reply" class="reply">
@@ -813,6 +959,29 @@ async function savePrompt(): Promise<void> {
                 v-html="renderAnswerWithCitations(turn.reply.text, turn.reply.sources)"
               />
               <!-- eslint-enable vue/no-v-html -->
+
+              <!-- 消息级操作：复制永远可用；重新生成只给**最后一轮**——
+                   重生成中间那轮要先回退掉它之后的全部对话，那不是用户点这个按钮的意思 -->
+              <div v-if="!turn.reply.streaming" class="reply-actions">
+                <button
+                  type="button"
+                  class="msg-action"
+                  @click="copyMessage(turnIndex, turn.reply)"
+                >
+                  <IconCopy :size="13" />
+                  {{ copiedKey === `${turnIndex}:assistant` ? '已复制' : '复制' }}
+                </button>
+                <button
+                  v-if="turnIndex === turns.length - 1 && !sending"
+                  type="button"
+                  class="msg-action"
+                  :disabled="regenerating"
+                  @click="regenerate(turnIndex)"
+                >
+                  <IconRegenerate :size="13" />
+                  {{ regenerating ? '生成中…' : '重新生成' }}
+                </button>
+              </div>
             </template>
           </div>
         </div>
@@ -1080,6 +1249,61 @@ async function savePrompt(): Promise<void> {
 /* 回答紧跟着自己的提问：24px 是"两组问答之间"的距离，组内不该有那么大空隙 */
 .ask + .reply {
   margin-top: var(--space-3);
+}
+
+/* ---- 消息级操作 ---- */
+
+/* 提问的复制按钮：悬停在气泡里才出现，平时不占视觉重量 */
+.ask-copy {
+  align-self: flex-end;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-control);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.ask:hover .ask-copy,
+.ask-copy:focus-visible {
+  opacity: 1;
+}
+
+.ask-copy:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+/* 回答的操作行：靠左、字号小、颜色弱——它是"事后可做的一件事"，
+   不该和正文抢注意力 */
+.reply-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+}
+
+.msg-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+  border-radius: var(--radius-control);
+}
+
+.msg-action:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.msg-action:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 /* ---- 过程面板 ---- */

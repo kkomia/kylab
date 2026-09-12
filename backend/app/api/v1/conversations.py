@@ -23,7 +23,9 @@ from app.api.v1.schemas import (
     ConversationDetailOut,
     ConversationListOut,
     ConversationOut,
-    ConversationRenameIn,
+    ConversationRewindIn,
+    ConversationRewindOut,
+    ConversationUpdateIn,
 )
 from app.core.services import Services, get_services
 from app.services.api_key import Caller
@@ -39,6 +41,7 @@ def _summary(services: Services, record) -> ConversationOut:  # type: ignore[no-
         model_pk=record.model_pk,
         thinking=record.thinking,
         thinking_effort=record.thinking_effort,
+        pinned=record.pinned,
         created_at=record.created_at,
         updated_at=record.updated_at,
         message_count=services.conversations.message_count(record.id),
@@ -62,15 +65,18 @@ def _caller_owner(caller: Caller) -> str | None:
     return None
 
 
-@router.get("", response_model=ConversationListOut, summary="会话列表（按最近更新倒序）")
+@router.get("", response_model=ConversationListOut, summary="会话列表（置顶优先，其次最近更新）")
 def list_conversations(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_read)],
     limit: int = Query(default=50, ge=1, le=200),
+    q: str | None = Query(default=None, description="按标题搜索（包含匹配）"),
 ) -> ConversationListOut:
     # 成员只看到自己的会话（v10 私有隔离）：对话内容是私有数据，
     # 列表不按归属过滤就等于把别人的问题全部摊开
-    records = services.conversations.list(limit=limit, owner_id=_caller_owner(caller))
+    records = services.conversations.list(
+        limit=limit, owner_id=_caller_owner(caller), q=q
+    )
     return ConversationListOut(items=[_summary(services, item) for item in records])
 
 
@@ -126,15 +132,49 @@ def get_conversation(
     return ConversationDetailOut(**_summary(services, record).model_dump(), messages=messages)
 
 
-@router.patch("/{conversation_id}", response_model=ConversationOut, summary="重命名会话")
-def rename_conversation(
+@router.patch(
+    "/{conversation_id}",
+    response_model=ConversationOut,
+    summary="修改会话（标题 / 置顶）",
+)
+def update_conversation(
     conversation_id: str,
-    payload: ConversationRenameIn,
+    payload: ConversationUpdateIn,
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
 ) -> ConversationOut:
+    """标题与置顶都可选，只处理传了的那些；都为空时幂等。"""
     _get_visible(services, caller, conversation_id)
-    return _summary(services, services.conversations.rename(conversation_id, payload.title))
+    record = services.conversations.get(conversation_id)
+    if payload.title is not None:
+        record = services.conversations.rename(conversation_id, payload.title)
+    if payload.pinned is not None:
+        record = services.conversations.set_pinned(conversation_id, payload.pinned)
+    return _summary(services, record)
+
+
+@router.post(
+    "/{conversation_id}/rewind",
+    response_model=ConversationRewindOut,
+    summary="回退最近 N 轮问答（「重新生成」用）",
+)
+def rewind_conversation(
+    conversation_id: str,
+    payload: ConversationRewindIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_write)],
+) -> ConversationRewindOut:
+    """删掉最近 ``turns`` 轮（提问 + 回答），返回被删掉的那句提问。
+
+    **不在这里重新生成**：回答是流式产出的，重发必须走 `/chat/stream`——
+    在这里再调一次模型会让"怎么重试、怎么中断"出现第二条实现。
+    前端拿到 ``query`` 后原样重发一次即可。
+    """
+    _get_visible(services, caller, conversation_id)
+    before = services.conversations.message_count(conversation_id)
+    query = services.conversations.rewind(conversation_id, turns=payload.turns)
+    after = services.conversations.message_count(conversation_id)
+    return ConversationRewindOut(query=query, removed=max(0, before - after))
 
 
 @router.delete(

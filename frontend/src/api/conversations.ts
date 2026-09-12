@@ -19,6 +19,8 @@ export interface ConversationSummary {
   thinking: boolean | null
   /** 本条会话的思考强度（v16）；`null` = 跟随全局默认。 */
   thinking_effort: 'low' | 'medium' | 'high' | null
+  /** 置顶（v17）。置顶的排在列表最前，且聊天不改变它的名次。 */
+  pinned: boolean
   created_at: string | null
   updated_at: string | null
   message_count: number
@@ -42,8 +44,19 @@ export interface ConversationDetail extends ConversationSummary {
   messages: StoredMessage[]
 }
 
-export function listConversations(limit = 50): Promise<{ items: ConversationSummary[] }> {
-  return request(`/conversations?limit=${limit}`)
+/**
+ * 会话列表：**置顶优先，其次最近更新**。
+ *
+ * `q` 交给后端做（标题包含匹配）：只在已加载的前 50 条里筛，会搜不到更早的会话，
+ * 而用户搜标题恰恰常常是为了找回很久以前的那条。
+ */
+export function listConversations(
+  limit = 50,
+  q?: string,
+): Promise<{ items: ConversationSummary[] }> {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (q?.trim()) params.set('q', q.trim())
+  return request(`/conversations?${params.toString()}`)
 }
 
 export function createConversation(
@@ -68,10 +81,32 @@ export function getConversation(id: string): Promise<ConversationDetail> {
   return request(`/conversations/${id}`)
 }
 
-export function renameConversation(id: string, title: string): Promise<ConversationSummary> {
+/**
+ * 改会话的标题 / 置顶。**两者都可选**，只传要改的那个。
+ */
+export function updateConversation(
+  id: string,
+  patch: { title?: string; pinned?: boolean },
+): Promise<ConversationSummary> {
   return request(`/conversations/${id}`, {
     method: 'PATCH',
-    body: JSON.stringify({ title }),
+    body: JSON.stringify(patch),
+  })
+}
+
+/**
+ * 回退最近 N 轮问答，返回**被删掉的那句提问**（供「重新生成」重发）。
+ *
+ * 重发不在这里做：回答是流式的，必须走 `chatStream`。所以这个接口只负责
+ * "把会话退回到提问之前"，生成交给对话页那条现成的链路。
+ */
+export function rewindConversation(
+  id: string,
+  turns = 1,
+): Promise<{ query: string; removed: number }> {
+  return request(`/conversations/${id}/rewind`, {
+    method: 'POST',
+    body: JSON.stringify({ turns }),
   })
 }
 

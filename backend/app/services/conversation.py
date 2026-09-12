@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from app.core.exceptions import NotFoundError
+from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.llm import ChatMessage
 from app.storage.base import ChatMessageRecord, ConversationRecord, StoreBundle
 
@@ -91,19 +91,27 @@ class ConversationService:
         return record
 
     def list(
-        self, *, limit: int | None = None, owner_id: str | None = None
+        self,
+        *,
+        limit: int | None = None,
+        owner_id: str | None = None,
+        q: str | None = None,
     ) -> list[ConversationRecord]:
-        """按最近更新倒序。``owner_id`` 给成员过滤用（v10 私有隔离）。
+        """置顶优先、其次最近更新（v17 起支持按标题搜索）。
 
-        无过滤时保持 SQL LIMIT 透传；带过滤时全表取出再切片——本地部署的会话量
+        ``owner_id`` 给成员过滤用（v10 私有隔离）。**搜索与归属过滤都在这里做**，
+        而不是在 SQL 里——见下面的取舍说明。
+
+        无过滤时保持 SQL LIMIT 透传；带归属过滤时全表取出再切片——本地部署的会话量
         （几百条）下这点差异无所谓，而"先过滤再 LIMIT"的 SQL 要为一个低频操作
-        加一条仓储方法，不值。
+        加一条仓储方法，不值。`q` 走 SQL（标题包含匹配），因为它能把结果集整体缩小，
+        与 LIMIT 组合后语义才正确（"搜出来的前 50 条"而不是"前 50 条里搜出来的"）。
         """
         if owner_id is None:
-            return self._stores.meta.list_conversations(limit=limit)
+            return self._stores.meta.list_conversations(limit=limit, q=q)
         records = [
             item
-            for item in self._stores.meta.list_conversations(limit=None)
+            for item in self._stores.meta.list_conversations(limit=None, q=q)
             if item.owner_id == owner_id
         ]
         return records[:limit] if limit is not None else records
@@ -135,8 +143,52 @@ class ConversationService:
         return self.get(conversation_id)
 
     def delete(self, conversation_id: str) -> None:
+        """删会话（消息由外键级联一并删掉）。"""
         self.get(conversation_id)
         self._stores.meta.delete_conversation(conversation_id)
+
+    def set_pinned(self, conversation_id: str, pinned: bool) -> ConversationRecord:
+        """置顶 / 取消置顶。**不推 updated_at**（与改名同一套口径）：置顶是一次整理
+        动作，不该把会话顶到"最近活动"的最前面——何况它本来就排最前了。"""
+        record = self.get(conversation_id)
+        if bool(pinned) == record.pinned:
+            return record
+        self._stores.meta.set_conversation_pinned(conversation_id, pinned)
+        record.pinned = bool(pinned)
+        return record
+
+    def rewind(self, conversation_id: str, *, turns: int = 1) -> str:
+        """回退最近 ``turns`` 轮问答，返回**被删掉的那句提问**（没有则空串）。
+
+        给「重新生成」用：删掉最后一轮（提问 + 回答），把那句提问还给调用方，
+        由它重新发一次——重发走的是正常提问链路，所以**不需要**第二条生成路径。
+
+        为什么是"删一轮"而不是"给回答加个版本"：会话是一份线性记录，
+        版本化的代价（每条回答多一张表、回看时还要选版本）远大于它带来的价值；
+        用户要的是"这个答案我不满意，重来一次"，旧答案留着反而会让上下文里有两条
+        相互矛盾的回复。
+
+        **没有可回退的提问就报错**，不返回空串：静默成功会让调用方以为删了点什么，
+        接着发一次空提问。契约只有一个（要么给回问题、要么报错），调用方不必判两种情况。
+        """
+        if turns <= 0:
+            raise InvalidRequestError("回退轮数必须为正整数")
+        messages = self._stores.meta.list_messages(conversation_id)
+        # 从末尾往前找第 turns 个"提问"，它就是这一轮的开始
+        start: int | None = None
+        seen = 0
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].role == "user":
+                seen += 1
+                if seen == turns:
+                    start = index
+                    break
+        if start is None:
+            raise InvalidRequestError("这段对话里没有可回退的提问")
+        removed = [item.id for item in messages[start:]]
+        query = messages[start].content
+        self._stores.meta.delete_chat_messages(removed)
+        return query
 
     # ------------------------------------------------------------------ 消息
 

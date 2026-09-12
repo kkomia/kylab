@@ -566,6 +566,17 @@ _MIGRATION_016 = Migration(
 )
 
 
+_MIGRATION_017 = Migration(
+    version=17,
+    description="会话置顶：conversations.pinned（0/1，列表按 置顶+最近更新 排序）",
+    statements=(
+        # 默认 0：老会话全都不置顶。**不加索引**——会话表通常几十到几百行，
+        # 排序本来就快，加索引只会让写入多一次维护成本。
+        "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+    ),
+)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
@@ -583,6 +594,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_014,
     _MIGRATION_015,
     _MIGRATION_016,
+    _MIGRATION_017,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

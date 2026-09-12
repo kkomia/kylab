@@ -411,3 +411,77 @@ def test_chat_without_conversation_uses_global_default(client: TestClient, kb_id
     assert response.status_code == 200, response.text
     assert seen["config"].enable_thinking is True
     assert seen["config"].thinking_effort == "medium"
+
+
+# ------------------------------------------------- 置顶 / 搜索 / 回退（v17）
+
+
+def _two_turns(client: TestClient) -> str:
+    """建一条会话并写进一轮问答（直接落库，不经过模型）。"""
+    from app.core.services import get_services
+
+    conversation = client.post("/api/v1/conversations", json={"kb_ids": []}).json()
+    services = get_services()
+    services.conversations.append(conversation["id"], role="user", content="眼轴怎么测")
+    services.conversations.append(conversation["id"], role="assistant", content="用 AL 测量")
+    return conversation["id"]
+
+
+def test_patch_pins_a_conversation(client: TestClient) -> None:
+    """置顶是 PATCH 的一个字段：与改名同属"整理这条会话"。"""
+    first = _two_turns(client)
+    second = client.post("/api/v1/conversations", json={"kb_ids": []}).json()["id"]
+
+    response = client.patch(f"/api/v1/conversations/{first}", json={"pinned": True})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["pinned"] is True
+    # 列表里置顶的排最前（第二个是刚建的，不置顶）
+    items = client.get("/api/v1/conversations").json()["items"]
+    assert next(item["id"] for item in items) == first
+    assert second in [item["id"] for item in items]
+
+
+def test_patch_can_rename_and_pin_together(client: TestClient) -> None:
+    """两个字段一起传就一起改；只传一个时另一个不动。"""
+    conversation_id = _two_turns(client)
+
+    body = client.patch(
+        f"/api/v1/conversations/{conversation_id}", json={"title": "改过的标题", "pinned": True}
+    ).json()
+
+    assert (body["title"], body["pinned"]) == ("改过的标题", True)
+
+
+def test_list_searches_by_title(client: TestClient) -> None:
+    from app.core.services import get_services
+
+    services = get_services()
+    target = client.post("/api/v1/conversations", json={"kb_ids": []}).json()["id"]
+    services.conversations.rename(target, "眼科指南问答")
+    client.post("/api/v1/conversations", json={"kb_ids": []})
+
+    items = client.get("/api/v1/conversations", params={"q": "眼科"}).json()["items"]
+
+    assert [item["id"] for item in items] == [target]
+
+
+def test_rewind_returns_the_question_and_removes_the_turn(client: TestClient) -> None:
+    """「重新生成」的两步：先回退拿到提问，再由前端重发（重发走正常提问链路）。"""
+    conversation_id = _two_turns(client)
+
+    response = client.post(f"/api/v1/conversations/{conversation_id}/rewind", json={"turns": 1})
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"query": "眼轴怎么测", "removed": 2}
+    detail = client.get(f"/api/v1/conversations/{conversation_id}").json()
+    assert detail["messages"] == []
+
+
+def test_rewind_without_a_question_is_422(client: TestClient) -> None:
+    empty = client.post("/api/v1/conversations", json={"kb_ids": []}).json()["id"]
+
+    response = client.post(f"/api/v1/conversations/{empty}/rewind", json={})
+
+    assert response.status_code == 422
+    assert "没有可回退" in response.json()["message"]

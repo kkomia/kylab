@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **98** 条端点。
+共 **99** 条端点。
 
 ### `api-keys`
 
@@ -203,11 +203,12 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/v1/conversations` | 会话列表（按最近更新倒序） |
+| `GET` | `/api/v1/conversations` | 会话列表（置顶优先，其次最近更新） |
 | `POST` | `/api/v1/conversations` | 新建会话 |
 | `DELETE` | `/api/v1/conversations/{conversation_id}` | 删除会话（连同全部消息） |
 | `GET` | `/api/v1/conversations/{conversation_id}` | 会话详情 |
-| `PATCH` | `/api/v1/conversations/{conversation_id}` | 重命名会话 |
+| `PATCH` | `/api/v1/conversations/{conversation_id}` | 修改会话（标题 / 置顶） |
+| `POST` | `/api/v1/conversations/{conversation_id}/rewind` | 回退最近 N 轮问答（「重新生成」用） |
 
 ### `data-sources`
 

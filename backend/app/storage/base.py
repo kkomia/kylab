@@ -347,6 +347,9 @@ class ConversationRecord:
     id: str
     title: str = ""
     kb_ids: Sequence[str] = field(default_factory=tuple)
+    pinned: bool = False
+    """置顶（v17）。置顶的会话排在列表最前，**且聊天不会改变它的名次**——
+    用户置顶正是为了"别被新对话挤下去"。"""
     owner_id: str | None = None
     """归属账号（v10）。``None`` = 老数据，setup 时认领给首个管理员。"""
     model_pk: str | None = None
@@ -938,12 +941,25 @@ class MetaStore(ABC):
     def get_conversation(self, conversation_id: str) -> ConversationRecord | None: ...
 
     @abstractmethod
-    def list_conversations(self, *, limit: int | None = None) -> list[ConversationRecord]:
-        """按最近更新倒序。"""
+    def list_conversations(
+        self, *, limit: int | None = None, q: str | None = None
+    ) -> list[ConversationRecord]:
+        """**置顶优先，其次按最近更新倒序**；``q`` 按标题做包含匹配。"""
         ...
 
     @abstractmethod
     def rename_conversation(self, conversation_id: str, title: str) -> None: ...
+
+    @abstractmethod
+    def set_conversation_pinned(self, conversation_id: str, pinned: bool) -> None:
+        """置顶/取消置顶。**不推 ``updated_at``**：置顶是一次整理动作，
+        和改名一样不该把会话顶到"最近活动"的最前面（置顶本来就排最前了）。"""
+        ...
+
+    @abstractmethod
+    def delete_chat_messages(self, message_ids: Sequence[str]) -> int:
+        """按 id 删除消息，返回删除条数（「重新生成」回退一轮用）。"""
+        ...
 
     @abstractmethod
     def set_conversation_model(self, conversation_id: str, model_pk: str | None) -> None:

@@ -19,6 +19,11 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import IconChat from '@/components/icons/IconChat.vue'
+import IconClose from '@/components/icons/IconClose.vue'
+import IconEdit from '@/components/icons/IconEdit.vue'
+import IconPin from '@/components/icons/IconPin.vue'
+import IconSearch from '@/components/icons/IconSearch.vue'
+import IconTrash from '@/components/icons/IconTrash.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconDashboard from '@/components/icons/IconDashboard.vue'
 import IconLibrary from '@/components/icons/IconLibrary.vue'
@@ -30,15 +35,22 @@ import IconSun from '@/components/icons/IconSun.vue'
 import IconTasks from '@/components/icons/IconTasks.vue'
 import IconUser from '@/components/icons/IconUser.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
+import AppButton from '@/components/ui/AppButton.vue'
+import AppInput from '@/components/ui/AppInput.vue'
+import AppModal from '@/components/ui/AppModal.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
+import RowMenu from '@/components/ui/RowMenu.vue'
 import { loadRoster, roster, setOperator } from '@/composables/useOperator'
 import { isAdmin, logout as logoutSession } from '@/composables/useSession'
 import { currentUser } from '@/composables/useSessionToken'
 import { useSidebar } from '@/composables/useSidebar'
 import { resolvedTheme, setTheme } from '@/composables/useTheme'
+import type { ConversationSummary } from '@/api/conversations'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 import { useModelRegistryStore } from '@/stores/modelRegistry'
 import { useStatsStore } from '@/stores/stats'
+import { useToast } from '@/composables/useToast'
 import { useTaskStore } from '@/stores/tasks'
 
 const route = useRoute()
@@ -48,6 +60,7 @@ const conversations = useConversationStore()
 const taskStore = useTaskStore()
 const statsStore = useStatsStore()
 const modelStore = useModelRegistryStore()
+const { notifyError, notifySuccess } = useToast()
 
 /** 折叠为图标栏：纯显示偏好，落 localStorage（见 useSidebar）。 */
 const { collapsed, toggleSidebar } = useSidebar()
@@ -117,6 +130,98 @@ const activeConversationId = computed(() => {
   const matched = /^\/chat\/([^/]+)$/.exec(route.path)
   return matched ? matched[1] : ''
 })
+
+// ---------------------------------------------------------------- 会话管理（v17）
+
+/** 标题上限，与后端 `ConversationUpdateIn.title`（64）对齐。 */
+const TITLE_MAX = 64
+
+/** 搜索词。**交给后端筛**：只筛已加载的前 50 条会搜不到更早的会话。 */
+const searchDraft = ref('')
+let searchTimer: number | undefined
+
+/**
+ * 输入即搜，但**防抖 300ms**：每敲一个字发一次请求，在本地实例上也能看出卡顿，
+ * 而且中文输入法在组字阶段会连续触发 input（"眼科"会打出 眼/眼轴/眼科 三次请求）。
+ */
+function onSearchInput(): void {
+  window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(() => void conversations.load(searchDraft.value), 300)
+}
+
+function clearSearch(): void {
+  searchDraft.value = ''
+  window.clearTimeout(searchTimer)
+  void conversations.load()
+}
+
+const renameOpen = ref(false)
+const renameDraft = ref('')
+const renameTarget = ref<ConversationSummary | null>(null)
+const renaming = ref(false)
+
+function openRename(item: ConversationSummary): void {
+  renameTarget.value = item
+  renameDraft.value = item.title || ''
+  renameOpen.value = true
+}
+
+async function confirmRename(): Promise<void> {
+  const target = renameTarget.value
+  const title = renameDraft.value.trim()
+  if (!target) return
+  if (!title) {
+    notifyError('标题不能为空')
+    return
+  }
+  renaming.value = true
+  try {
+    await conversations.rename(target.id, title)
+    renameOpen.value = false
+    notifySuccess('已重命名')
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '重命名失败')
+  } finally {
+    renaming.value = false
+  }
+}
+
+const deleteOpen = ref(false)
+const deleteTarget = ref<ConversationSummary | null>(null)
+const deleting = ref(false)
+
+function openDelete(item: ConversationSummary): void {
+  deleteTarget.value = item
+  deleteOpen.value = true
+}
+
+/**
+ * 删除当前正在看的会话时**要把人送走**：留在 `/chat/{已删 id}` 上，
+ * 对话页会去拉一个不存在的会话并报错——用户刚删完就看到红字，像是删坏了。
+ */
+async function confirmDelete(): Promise<void> {
+  const target = deleteTarget.value
+  if (!target) return
+  deleting.value = true
+  try {
+    await conversations.remove(target.id)
+    deleteOpen.value = false
+    if (activeConversationId.value === target.id) await router.push('/chat')
+    notifySuccess('已删除对话')
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '删除失败')
+  } finally {
+    deleting.value = false
+  }
+}
+
+async function togglePin(item: ConversationSummary): Promise<void> {
+  try {
+    await conversations.setPinned(item.id, !item.pinned)
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '置顶失败')
+  }
+}
 
 /** 设置从页面收进弹窗：它是动作，做完就走（《界面信息架构草案》§1）。 */
 const settingsOpen = ref(false)
@@ -243,24 +348,96 @@ async function onLogout(): Promise<void> {
         <RouterLink class="section-action" to="/chat" title="开始新对话">新对话</RouterLink>
       </div>
 
+      <!-- 搜索只在有内容时出现：一个空列表下面挂个搜索框，是在问"你要找什么"，
+           可用户手里什么也没有 -->
+      <div v-if="conversations.items.length > 0 || searchDraft" class="conv-search">
+        <IconSearch class="conv-search-icon" :size="14" />
+        <AppInput
+          v-model="searchDraft"
+          class="conv-search-input"
+          placeholder="搜索对话"
+          aria-label="搜索对话"
+          @input="onSearchInput"
+        />
+        <button
+          v-if="searchDraft"
+          type="button"
+          class="conv-search-clear"
+          aria-label="清除搜索"
+          @click="clearSearch"
+        >
+          <IconClose :size="14" />
+        </button>
+      </div>
+
       <p v-if="conversations.error" class="side-note">{{ conversations.error }}</p>
+      <p v-else-if="conversations.items.length === 0 && searchDraft" class="side-note">
+        没有标题匹配「{{ searchDraft }}」的对话。
+      </p>
       <p v-else-if="conversations.items.length === 0" class="side-note">
         还没有对话。在上面「对话」里提问，这里会留下记录。
       </p>
       <ul v-else class="conv-list">
-        <li v-for="item in conversations.items" :key="item.id">
+        <li v-for="item in conversations.items" :key="item.id" class="conv-row">
           <RouterLink
             class="conv-item"
             :class="{ 'conv-item-active': item.id === activeConversationId }"
             :to="`/chat/${item.id}`"
             :title="item.title || '未命名对话'"
           >
+            <!-- 置顶标记占位固定宽：不占位的话，置顶与否会让标题左右跳动 -->
+            <IconPin v-if="item.pinned" class="conv-pin" :size="12" />
             <span class="conv-title">{{ item.title || '未命名对话' }}</span>
             <span class="conv-meta tabular">{{ item.message_count }} 条</span>
           </RouterLink>
+          <!-- 行菜单：悬停/聚焦/当前项才显示。侧栏只有 248px，每行常驻一个"…"
+               会把标题挤到只剩十来个字 -->
+          <RowMenu class="conv-menu" :label="`${item.title || '未命名对话'} 的操作`">
+            <template #default="{ close }">
+              <button type="button" @click="(togglePin(item), close())">
+                <IconPin :size="14" /> {{ item.pinned ? '取消置顶' : '置顶' }}
+              </button>
+              <button type="button" @click="(openRename(item), close())">
+                <IconEdit :size="14" /> 重命名
+              </button>
+              <button class="menu-item-danger" type="button" @click="(openDelete(item), close())">
+                <IconTrash :size="14" /> 删除
+              </button>
+            </template>
+          </RowMenu>
         </li>
       </ul>
     </div>
+
+    <AppModal v-model:open="renameOpen" title="重命名对话">
+      <label class="field">
+        <span class="field-label">标题</span>
+        <AppInput
+          v-model="renameDraft"
+          :maxlength="TITLE_MAX"
+          placeholder="给这段对话起个名字"
+          @keyup.enter="confirmRename"
+        />
+        <p class="field-hint">{{ renameDraft.trim().length }} / {{ TITLE_MAX }}</p>
+      </label>
+      <template #footer>
+        <AppButton @click="renameOpen = false">取消</AppButton>
+        <AppButton variant="primary" :disabled="renaming" @click="confirmRename">
+          {{ renaming ? '保存中…' : '保存' }}
+        </AppButton>
+      </template>
+    </AppModal>
+
+    <ConfirmDialog
+      v-model:open="deleteOpen"
+      title="删除对话"
+      :lead="`确定删除「${deleteTarget?.title || '未命名对话'}」？`"
+      note="这段对话的全部消息会一并删掉，**不进退回收站**，无法恢复。"
+      confirm-label="删除"
+      :busy="deleting"
+      busy-label="删除中…"
+      @confirm="confirmDelete"
+    />
 
     <div class="sidebar-foot">
       <!--
@@ -537,10 +714,107 @@ async function onLogout(): Promise<void> {
   color: var(--text-tertiary);
 }
 
+/* 重命名弹窗里的一行提示：右对齐跟在输入框下面，与知识库设置里的计数同款 */
+.field-hint {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+  text-align: right;
+}
+
+/* 搜索框：与行同高、无边框感——它是列表的一部分，不是一个独立表单 */
+.conv-search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.conv-search-icon {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+}
+
+/* 输入框去掉自己的边框与底色：外层已经有视觉容器，再套一层框会显得很吵 */
+.conv-search :deep(.conv-search-input) {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0;
+  font-size: var(--text-micro-size);
+  background: transparent;
+  border: 0;
+}
+
+.conv-search :deep(.conv-search-input:hover),
+.conv-search :deep(.conv-search-input:focus) {
+  border: 0;
+  box-shadow: none;
+}
+
+.conv-search:focus-within {
+  background: var(--bg-hover);
+  border-radius: var(--radius-control);
+}
+
+.conv-search-clear {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  color: var(--text-tertiary);
+  border-radius: var(--radius-control);
+}
+
+.conv-search-clear:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
 .conv-list {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+/* 每行是"链接 + 行菜单"：菜单绝对定位在右侧，不占标题宽度 */
+.conv-row {
+  position: relative;
+}
+
+.conv-row .conv-item {
+  /* 右侧留出菜单的位置，否则标题会压到它在下面 */
+  padding-right: var(--space-6);
+}
+
+/* 行菜单平时隐形、悬停/聚焦/当前项才出现（侧栏只有 248px） */
+.conv-menu {
+  position: absolute;
+  top: 50%;
+  right: var(--space-1);
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.conv-row:hover .conv-menu,
+.conv-row:focus-within .conv-menu,
+.conv-item-active + .conv-menu {
+  opacity: 1;
+}
+
+/* 键盘用户：Tab 到菜单按钮时它必须在（透明度 0 仍然可聚焦，这里只补可见性） */
+.conv-menu:focus-within {
+  opacity: 1;
+}
+
+/* 置顶标记：固定宽度，置顶与否不会让标题左右跳动 */
+.conv-pin {
+  flex: 0 0 auto;
+  color: var(--accent-text);
 }
 
 .conv-item {
@@ -569,6 +843,7 @@ async function onLogout(): Promise<void> {
 
 /* 标题占满剩余宽度并省略：会话标题来自首轮提问，长度不可控 */
 .conv-title {
+  flex: 1;
   overflow: hidden;
   min-width: 0;
   text-overflow: ellipsis;

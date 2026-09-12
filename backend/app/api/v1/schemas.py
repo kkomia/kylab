@@ -614,8 +614,31 @@ class ConversationCreateIn(BaseModel):
     """本条会话的思考强度（v16）。``None`` = 跟随全局默认。"""
 
 
-class ConversationRenameIn(BaseModel):
-    title: str = Field(min_length=1, max_length=64)
+class ConversationUpdateIn(BaseModel):
+    """改会话的可编辑属性：标题 / 置顶。**都可选**，只传要改的那个。
+
+    从一个字段扩成两个而不是新加一个端点：两者都是"整理这条会话"的同一类动作，
+    分两个端点只会让前端的"改完刷新"写两遍。
+    """
+
+    title: str | None = Field(default=None, min_length=1, max_length=64)
+    pinned: bool | None = None
+
+
+class ConversationRewindIn(BaseModel):
+    """回退最近 N 轮问答（「重新生成」用）。默认一轮。"""
+
+    turns: int = Field(default=1, ge=1, le=20)
+
+
+class ConversationRewindOut(BaseModel):
+    """回退结果：``query`` 是被删掉的那句提问，调用方拿它重新发一次。
+
+    没有可回退的内容时 ``query`` 为空串——调用方据此提示，而不是发一次空提问。
+    """
+
+    query: str = ""
+    removed: int = 0
 
 
 class ConversationOut(BaseModel):
@@ -632,6 +655,8 @@ class ConversationOut(BaseModel):
     """本条会话是否开启思考（v16）；``None`` = 全局默认。界面据此回填思考开关。"""
     thinking_effort: str | None = None
     """本条会话的思考强度（v16）；``None`` = 全局默认。"""
+    pinned: bool = False
+    """置顶（v17）。置顶的会话排在列表最前，且聊天不改变它的名次。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
     message_count: int = 0

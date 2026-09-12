@@ -1708,6 +1708,7 @@ class SqliteMetaStore(MetaStore):
             # 可空列在旧库里是 NULL：``None`` 表示"跟随全局默认"，不要折成 False
             thinking=None if row["thinking"] is None else bool(row["thinking"]),
             thinking_effort=row["thinking_effort"],
+            pinned=bool(row["pinned"]),
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
         )
@@ -1754,15 +1755,46 @@ class SqliteMetaStore(MetaStore):
             ).fetchone()
         return self._conversation_from_row(row) if row else None
 
-    def list_conversations(self, *, limit: int | None = None) -> list[ConversationRecord]:
-        sql = "SELECT * FROM conversations ORDER BY updated_at DESC"
-        params: tuple[object, ...] = ()
+    def list_conversations(
+        self, *, limit: int | None = None, q: str | None = None
+    ) -> list[ConversationRecord]:
+        """置顶优先，其次最近更新；``q`` 按标题包含匹配（忽略大小写）。"""
+        sql = "SELECT * FROM conversations"
+        params: list[object] = []
+        if q:
+            # 与文档搜索同一套转义：用户搜 "a_b" 要字面匹配，而不是"a 后跟任意一字符"
+            escaped = q.replace("\\", r"\\").replace("%", r"\%").replace("_", r"\_")
+            sql += r" WHERE title LIKE ? ESCAPE '\'"
+            params.append(f"%{escaped}%")
+        # **置顶的排最前**，其余按最近更新。SQLite 里 pinned 是 0/1，直接 DESC 即可
+        sql += " ORDER BY pinned DESC, updated_at DESC"
         if limit is not None:
             sql += " LIMIT ?"
-            params = (limit,)
+            params.append(limit)
         with self._db.read() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._conversation_from_row(row) for row in rows]
+
+    def set_conversation_pinned(self, conversation_id: str, pinned: bool) -> None:
+        # 与改名同理：不推 updated_at
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE conversations SET pinned = ? WHERE id = ?",
+                (1 if pinned else 0, conversation_id),
+            )
+
+    def delete_chat_messages(self, message_ids: Sequence[str]) -> int:
+        if not message_ids:
+            return 0
+        # 与上面的批量查询同一手法：placeholders 只由 "?" 拼成（数量来自 len），
+        # 真正的值走参数绑定。S608 在这里是误报。
+        placeholders = ",".join("?" * len(message_ids))
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                f"DELETE FROM chat_messages WHERE id IN ({placeholders})",  # noqa: S608
+                list(message_ids),
+            )
+        return int(cursor.rowcount or 0)
 
     def rename_conversation(self, conversation_id: str, title: str) -> None:
         # 改名不推 updated_at：否则用户整理一遍标题列表，会话按"最近更新"的排序
