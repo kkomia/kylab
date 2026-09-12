@@ -225,6 +225,53 @@ def test_pdf_with_a_generic_mime_still_renders_inline(client: TestClient) -> Non
     assert client.get(body["url"]).headers["content-disposition"].startswith("inline")
 
 
+def test_pdf_uploaded_without_a_content_type_still_renders_inline(client: TestClient) -> None:
+    """上传时**没带** Content-Type 的 PDF 也要能内联预览。
+
+    回归：库里 mime_type 为 NULL 时，响应会退成 `application/octet-stream`——
+    而 octet-stream 的响应**即使带 `Content-Disposition: inline` 也只会被下载**。
+    类型要按后缀兜底，因为声明类型是可选字段（curl / SDK / 脚本上传常常留空）。
+    """
+    kb = client.post("/api/v1/knowledge-bases", json={"name": "无类型"}).json()
+    # 手工拼 multipart：`files=` 那条路 httpx 总会补一个 Content-Type，
+    # 造不出"这个 part 没有类型"——而那正是要复现的输入（curl / SDK 上传就是这样）
+    boundary = "----kylab-no-type"
+    body = b"".join(
+        [
+            f"--{boundary}\r\n".encode(),
+            b'Content-Disposition: form-data; name="file"; filename="report.pdf"\r\n',
+            b"\r\n",
+            b"%PDF-1.7 fake",
+            f"\r\n--{boundary}--\r\n".encode(),
+        ]
+    )
+    upload = client.post(
+        f"/api/v1/knowledge-bases/{kb['id']}/documents",
+        content=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        params={"start": "false"},
+    )
+    assert upload.status_code == 202, upload.text
+    # 前提要成立：库里存的确实是"没有类型"，否则这条测的就成了 octet-stream 那支
+    assert upload.json()["document"]["mime_type"] is None
+    document_id = upload.json()["document"]["id"]
+
+    body = client.get(f"/api/v1/documents/{document_id}/preview").json()
+    served = client.get(body["url"])
+
+    assert served.headers["content-type"].startswith("application/pdf")
+    assert served.headers["content-disposition"].startswith("inline")
+
+    # 显式声明成 octet-stream 的也一样：那等于没声明
+    upload2 = client.post(
+        f"/api/v1/knowledge-bases/{kb['id']}/documents",
+        files={"file": ("另一份.pdf", io.BytesIO(b"%PDF-1.7 fake"), "application/octet-stream")},
+        params={"start": "false"},
+    )
+    body2 = client.get(f"/api/v1/documents/{upload2.json()['document']['id']}/preview").json()
+    assert client.get(body2["url"]).headers["content-type"].startswith("application/pdf")
+
+
 def test_svg_is_never_served_inline(client: TestClient) -> None:
     """SVG 能带 ``<script>``：内联渲染等于在上传者的诱导下于本站 origin 执行脚本。
 

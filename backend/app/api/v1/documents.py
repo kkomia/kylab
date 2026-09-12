@@ -619,13 +619,15 @@ def document_download_url(
 #: 文件白白退化成下载。
 INLINE_KINDS = frozenset({"pdf", "image", "docx", "pptx", "excel"})
 
-#: 即使种类允许也**必须**走 attachment 的媒体类型。
+#: 即使种类允许也**必须**走 attachment 的后缀。按后缀判而不是按媒体类型判：
+#: 媒体类型可能来自上传方声明（不可靠，甚至可以声明成 image/png 来蒙混），
+#: 而后缀是唯一稳定的身份。
 #:
 #: 这一条是**安全边界**，不是显示偏好：``inline`` 意味着浏览器按返回的
 #: Content-Type 在本站 origin 下渲染它——一份上传的 SVG 能带 ``<script>``，
 #: 内联渲染就等于在**我们的 origin 下执行上传者的脚本**（存储型 XSS）。
 #: 其余非 PDF/位图的类型（HTML、XML…）根本不在 :data:`INLINE_KINDS` 里，够不着这条路径。
-INLINE_BLOCKED_MEDIA_TYPES = frozenset({"image/svg+xml"})
+INLINE_BLOCKED_SUFFIXES = (".svg", ".svgz")
 
 
 @router.get(
@@ -685,7 +687,7 @@ def download_document_content(
     inline = (
         disposition == "inline"
         and kind in INLINE_KINDS
-        and content.media_type not in INLINE_BLOCKED_MEDIA_TYPES
+        and not content.filename.lower().endswith(INLINE_BLOCKED_SUFFIXES)
     )
     headers = {
         "Content-Disposition": content_disposition(

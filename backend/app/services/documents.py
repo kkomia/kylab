@@ -97,6 +97,44 @@ def _suffix(name: str) -> str:
     return lowered[dot:] if dot > 0 else ""
 
 
+#: 后缀 → 媒体类型，**只在上传时声明的类型缺失或过于笼统时兜底**。
+#:
+#: 为什么必须兜底：`Content-Type` 错了的后果很实在——一个
+#: ``application/octet-stream`` 的响应，**即使带 ``Content-Disposition: inline``，
+#: 浏览器也只会下载、不会渲染**。而上传时声明的类型是可选字段，浏览器之外的上传器
+#: （curl、SDK、脚本）常常留空，于是库里的 PDF 一预览就变下载（实测踩到）。
+#: 判后缀是服务端自己算的，比客户端声明的类型可靠。
+_FALLBACK_MEDIA_TYPES: dict[str, str] = {
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".avif": "image/avif",
+    ".svg": "image/svg+xml",
+    ".txt": "text/plain; charset=utf-8",
+    ".md": "text/markdown; charset=utf-8",
+    ".markdown": "text/markdown; charset=utf-8",
+    ".csv": "text/csv; charset=utf-8",
+    ".json": "application/json",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+
+#: 「太笼统、等于没说」的媒体类型：留着它们还不如按后缀猜。
+_VAGUE_MEDIA_TYPES = frozenset({"", "application/octet-stream", "binary/octet-stream"})
+
+
+def media_type_of(filename: str, stored: str | None) -> str:
+    """一份内容该用哪个媒体类型：声明得具体就用它，笼统/缺失就按后缀兜底。"""
+    if stored and stored.strip().lower() not in _VAGUE_MEDIA_TYPES:
+        return stored
+    return _FALLBACK_MEDIA_TYPES.get(_suffix(filename), stored or "application/octet-stream")
+
+
 def signature_resource(document_id: str, fmt: str) -> str:
     """被签名的资源标识。
 
@@ -270,7 +308,8 @@ class DocumentService:
         return DocumentContent(
             data=self._stores.objects.read(path),
             filename=document.name,
-            media_type=document.mime_type or "application/octet-stream",
+            # 声明缺失或笼统时按后缀兜底：octet-stream 的响应会被浏览器下载而不是渲染
+            media_type=media_type_of(document.name, document.mime_type),
             # 有解析产物时，原文也按 markdown 展示会给前端"读归一化文本"的
             # 一致体验；没有产物才回落到 PDF/图片预览
             kind=content_kind(document.name, has_markdown=parsed is not None),
