@@ -896,6 +896,97 @@ const stage = computed(() =>
 .reader :deep(.md-ul li + li) {
   margin-top: var(--space-1);
 }
+/* ---- 有序列表 / 引用 / 代码块 / 表格 / 分隔线（v17 渲染器增强） ---- */
+
+.reader :deep(.md-ol) {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+}
+
+.reader :deep(.md-ol li + li) {
+  margin-top: var(--space-1);
+}
+
+/* 引用：左侧竖线 + 弱化文字。用底色会更重，而引用在回答里是补充说明 */
+.reader :deep(.md-quote) {
+  margin: var(--space-3) 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-secondary);
+  border-left: 3px solid var(--border);
+}
+
+/* 代码块：**横向滚动而不是折行**——折行会让缩进与对齐失真，
+   而代码恰恰靠缩进读结构 */
+.reader :deep(.md-pre) {
+  position: relative;
+  margin: var(--space-3) 0;
+  padding: var(--space-3);
+  overflow-x: auto;
+  font-size: var(--text-micro-size);
+  line-height: 1.6;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-control);
+}
+
+.reader :deep(.md-pre code) {
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: none;
+}
+
+/* 语言名贴在右上角：读者一眼知道这是什么语言，而不必去数关键字 */
+.reader :deep(.md-pre[data-lang]::before) {
+  content: attr(data-lang);
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 2px var(--space-2);
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+  background: var(--bg-active);
+  border-bottom-left-radius: var(--radius-control);
+}
+
+/* 表格：窄列里必须能横向滚，否则宽表会把整页撑破 */
+.reader :deep(.md-table-wrap) {
+  margin: var(--space-3) 0;
+  overflow-x: auto;
+}
+
+.reader :deep(.md-table) {
+  border-collapse: collapse;
+  font-size: var(--text-meta-size);
+}
+
+.reader :deep(.md-table th),
+.reader :deep(.md-table td) {
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border: 1px solid var(--border-hairline);
+}
+
+.reader :deep(.md-table th) {
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-subtle);
+}
+
+.reader :deep(.md-hr) {
+  margin: var(--space-5) 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+/* 链接：回答里的 URL 之前是纯文本，只能手抄 */
+.reader :deep(.md-link) {
+  color: var(--accent-text);
+  text-decoration: none;
+}
+
+.reader :deep(.md-link:hover) {
+  text-decoration: underline;
+}
 
 .reader :deep(code) {
   padding: 0 var(--space-1);

@@ -14,6 +14,11 @@
 type Block =
   | { kind: 'heading'; level: number; text: string }
   | { kind: 'list'; items: string[] }
+  | { kind: 'ordered'; items: string[] }
+  | { kind: 'quote'; lines: string[] }
+  | { kind: 'code'; lang: string; code: string }
+  | { kind: 'table'; header: string[]; rows: string[][] }
+  | { kind: 'hr' }
   | { kind: 'paragraph'; lines: string[] }
 
 /** HTML 转义：`&` 必须第一个换，否则会把后面换出来的实体再转一遍。 */
@@ -25,17 +30,56 @@ function escapeHtml(text: string): string {
     .replace(/"/g, '&quot;')
 }
 
-/** 行内标记：只处理成对的 `**加粗**` 与 `` `代码` ``，代码先换，避免它与加粗互相吃掉。 */
+/** 只允许这两种协议：`javascript:` 之类的链接点了就是执行代码，必须挡掉。 */
+const SAFE_LINK = /^(https?:\/\/|mailto:)/i
+
+/**
+ * 行内标记：`代码`、**加粗**、[文字](链接)。
+ *
+ * 顺序要紧：**先换代码**，否则代码里的 `**` 会被当加粗；
+ * 而链接放在加粗之后——链接文字里常带加粗（`**[标题](url)**`），
+ * 先处理加粗会让链接语法被拆开，反而识别不出来。实测那一版就是这样。
+ */
 function inline(text: string): string {
   return escapeHtml(text)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, label: string, href: string) => {
+      // 链接是模型写的外部内容：只放行 http(s)/mailto，其余原样留着（可读、不可点）
+      if (!SAFE_LINK.test(href)) return match
+      return `<a class="md-link" href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`
+    })
 }
 
-/** 先切块再渲染：切块只依赖行首，比"边扫边补标签"少一半状态。 */
+/** 表格分隔行：`| --- | :--: |`。用来把"表头 + 分隔行"认成一张表。 */
+const TABLE_SEPARATOR = /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/
+/** 有序列表项：`1. ` / `2) `。 */
+const ORDERED_ITEM = /^\s*\d+[.)]\s+(.*)$/
+/** 围栏代码块的开头：``` 或 ~~~，后面可跟语言名。 */
+const FENCE = /^\s*(`{3,}|~{3,})\s*([^\s`]*)\s*$/
+/** 分隔线：`---` / `***` / `___`（三个以上）。与列表项的 `- ` 不冲突（它要跟空格与内容）。 */
+const HR = /^\s*([-*_])\1{2,}\s*$/
+
+/** 拆一行表格：去掉首尾的空单元（外层的竖线），并 trim 每一格。 */
+function splitRow(line: string): string[] {
+  const cells = line.split('|').map((cell) => cell.trim())
+  if (cells.length && cells[0] === '') cells.shift()
+  if (cells.length && cells[cells.length - 1] === '') cells.pop()
+  return cells
+}
+
+/**
+ * 先切块再渲染：切块只依赖行首，比"边扫边补标签"少一半状态。
+ *
+ * 用**下标循环**而不是 `for...of`：表格与代码块需要"往后看几行"
+ * （分隔行、闭合围栏），拿不到后续行的写法只能靠状态机硬凑。
+ */
 function splitBlocks(text: string): Block[] {
   const blocks: Block[] = []
+  const lines = text.split('\n')
   let list: string[] | null = null
+  let ordered: string[] | null = null
+  let quote: string[] | null = null
   let paragraph: string[] | null = null
 
   const flush = (): void => {
@@ -43,17 +87,47 @@ function splitBlocks(text: string): Block[] {
       blocks.push({ kind: 'list', items: list })
       list = null
     }
+    if (ordered) {
+      blocks.push({ kind: 'ordered', items: ordered })
+      ordered = null
+    }
+    if (quote) {
+      blocks.push({ kind: 'quote', lines: quote })
+      quote = null
+    }
     if (paragraph) {
       blocks.push({ kind: 'paragraph', lines: paragraph })
       paragraph = null
     }
   }
 
-  for (const raw of text.split('\n')) {
-    const line = raw.trimEnd()
-    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line)
-    const heading = /^\s*(#{1,6})\s+(.*)$/.exec(line)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].trimEnd()
+    const fence = FENCE.exec(line)
 
+    // 围栏代码块：**内容原样保留**（只转义），内部不再做任何行内标记。
+    // 流式中途还没等到闭合围栏时也照样渲染——否则代码会先以纯文本闪一下再变成代码块
+    if (fence) {
+      flush()
+      const marker = fence[1]
+      const lang = fence[2]
+      const body: string[] = []
+      index += 1
+      while (index < lines.length && !new RegExp(`^\\s*${marker[0]}{3,}\\s*$`).test(lines[index])) {
+        body.push(lines[index])
+        index += 1
+      }
+      blocks.push({ kind: 'code', lang, code: body.join('\n') })
+      continue
+    }
+
+    if (HR.test(line)) {
+      flush()
+      blocks.push({ kind: 'hr' })
+      continue
+    }
+
+    const heading = /^\s*(#{1,6})\s+(.*)$/.exec(line)
     if (heading) {
       flush()
       // **保留原始层级**：原先一律渲染成 h4，于是一份 119 块的长文档
@@ -64,6 +138,24 @@ function splitBlocks(text: string): Block[] {
       blocks.push({ kind: 'heading', level, text: heading[2] })
       continue
     }
+
+    // 表格：当前行是表头、下一行是分隔行。**必须是两行都成立**才算表，
+    // 否则正文里偶尔出现的 `|`（"a | b"）会被当表格切碎
+    if (line.includes('|') && index + 1 < lines.length && TABLE_SEPARATOR.test(lines[index + 1])) {
+      flush()
+      const header = splitRow(line)
+      const rows: string[][] = []
+      index += 2
+      while (index < lines.length && lines[index].includes('|') && lines[index].trim() !== '') {
+        rows.push(splitRow(lines[index]))
+        index += 1
+      }
+      index -= 1
+      blocks.push({ kind: 'table', header, rows })
+      continue
+    }
+
+    const bullet = /^\s*[-*+]\s+(.*)$/.exec(line)
     if (bullet) {
       if (paragraph) {
         blocks.push({ kind: 'paragraph', lines: paragraph })
@@ -73,6 +165,29 @@ function splitBlocks(text: string): Block[] {
       list.push(bullet[1])
       continue
     }
+
+    const numbered = ORDERED_ITEM.exec(line)
+    if (numbered) {
+      if (paragraph) {
+        blocks.push({ kind: 'paragraph', lines: paragraph })
+        paragraph = null
+      }
+      ordered = ordered ?? []
+      ordered.push(numbered[1])
+      continue
+    }
+
+    const quoted = /^\s*>\s?(.*)$/.exec(line)
+    if (quoted) {
+      if (paragraph) {
+        blocks.push({ kind: 'paragraph', lines: paragraph })
+        paragraph = null
+      }
+      quote = quote ?? []
+      quote.push(quoted[1])
+      continue
+    }
+
     if (line.trim() === '') {
       flush()
       continue
@@ -80,6 +195,14 @@ function splitBlocks(text: string): Block[] {
     if (list) {
       blocks.push({ kind: 'list', items: list })
       list = null
+    }
+    if (ordered) {
+      blocks.push({ kind: 'ordered', items: ordered })
+      ordered = null
+    }
+    if (quote) {
+      blocks.push({ kind: 'quote', lines: quote })
+      quote = null
     }
     paragraph = paragraph ?? []
     paragraph.push(line)
@@ -97,6 +220,35 @@ function renderBlock(block: Block): string {
     const items = block.items.map((item) => `<li>${inline(item)}</li>`).join('')
     return `<ul class="md-ul">${items}</ul>`
   }
+  if (block.kind === 'ordered') {
+    const items = block.items.map((item) => `<li>${inline(item)}</li>`).join('')
+    return `<ol class="md-ol">${items}</ol>`
+  }
+  if (block.kind === 'quote') {
+    // 引用块内部仍走行内标记：引用里常带加粗与代码
+    const body = block.lines.map((item) => inline(item)).join('<br />')
+    return `<blockquote class="md-quote">${body}</blockquote>`
+  }
+  if (block.kind === 'code') {
+    // 语言名放 data 属性、样式里用 ::before 显示：不必额外包一层元素，
+    // 也避免把语言名混进可复制的代码文本里
+    const lang = block.lang ? ` data-lang="${escapeHtml(block.lang)}"` : ''
+    return `<pre class="md-pre"${lang}><code>${escapeHtml(block.code)}</code></pre>`
+  }
+  if (block.kind === 'table') {
+    const head = block.header.map((cell) => `<th>${inline(cell)}</th>`).join('')
+    const body = block.rows
+      .map(
+        (row) =>
+          `<tr>${block.header
+            .map((_, cellIndex) => `<td>${inline(row[cellIndex] ?? '')}</td>`)
+            .join('')}</tr>`,
+      )
+      .join('')
+    // 外层套一个可横向滚动的容器：宽表格在窄列里必须能滚，否则会把整页撑破
+    return `<div class="md-table-wrap"><table class="md-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`
+  }
+  if (block.kind === 'hr') return '<hr class="md-hr" />'
   return `<p class="md-p">${block.lines.map(inline).join('<br />')}</p>`
 }
 
@@ -161,15 +313,7 @@ export function renderAnswerWithCitations(
   const cached = CITATION_CACHE.get(key)
   if (cached !== undefined) return cached
 
-  const html = renderAnswerMarkdown(text).replace(CITE_RE, (match, group: string) => {
-    const numbers = group
-      .split(/[,，]/)
-      .map((part) => Number(part.trim()))
-      .filter((value) => Number.isInteger(value))
-    // 组里有一个对不上就整组不换：`[3, 9]` 换一半会把原意读歪
-    if (numbers.length === 0 || numbers.some((value) => !known.has(value))) return match
-    return numbers.map((value) => citationChip(known.get(value)!)).join('')
-  })
+  const html = decorateCitations(renderAnswerMarkdown(text), known)
 
   if (CITATION_CACHE.size >= HTML_CACHE_LIMIT) CITATION_CACHE.clear()
   CITATION_CACHE.set(key, html)
@@ -178,6 +322,39 @@ export function renderAnswerWithCitations(
 
 /** `[1]`、`[1,2]`、`[1，2]`——模型这几种写法都见过。 */
 const CITE_RE = /\[(\d+(?:\s*[,，]\s*\d+)*)\]/g
+
+/** 代码块与行内代码：**里面的 `[1]` 是代码，不是引用**，替换进去会改坏代码。 */
+const CODE_SPAN = /<pre[\s\S]*?<\/pre>|<code[\s\S]*?<\/code>/g
+
+/**
+ * 把 `[1]` 换成可点的引用徽标。
+ *
+ * **跳过代码**：一份讲正则或数组的回答里 `[1]` 极常见，把它换成徽标会
+ * ① 改坏代码的字面量 ② 让人以为那是在引用资料。所以先按代码段切开，
+ * 只在代码之外做替换。
+ */
+function decorateCitations(html: string, known: Map<number, CitationSource>): string {
+  let result = ''
+  let cursor = 0
+  CODE_SPAN.lastIndex = 0
+  for (let match = CODE_SPAN.exec(html); match; match = CODE_SPAN.exec(html)) {
+    result += replaceOutsideCode(html.slice(cursor, match.index), known) + match[0]
+    cursor = match.index + match[0].length
+  }
+  return result + replaceOutsideCode(html.slice(cursor), known)
+}
+
+function replaceOutsideCode(segment: string, known: Map<number, CitationSource>): string {
+  return segment.replace(CITE_RE, (match, group: string) => {
+    const numbers = group
+      .split(/[,，]/)
+      .map((part) => Number(part.trim()))
+      .filter((value) => Number.isInteger(value))
+    // 组里有一个对不上就整组不换：`[3, 9]` 换一半会把原意读歪
+    if (numbers.length === 0 || numbers.some((value) => !known.has(value))) return match
+    return numbers.map((value) => citationChip(known.get(value)!)).join('')
+  })
+}
 
 /** 徽标上的 `title` 给鼠标悬停看"这一条是哪份文件的哪一段"。 */
 function citationChip(source: CitationSource): string {

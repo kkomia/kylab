@@ -152,3 +152,105 @@ describe('renderAnswerWithCitations', () => {
     expect(again).toBe(first)
   })
 })
+
+describe('块级增强（v17）', () => {
+  it('围栏代码块：内容原样保留，语言名进 data-lang', () => {
+    const html = renderAnswerMarkdown('```python\nprint("hi")\n```')
+
+    expect(html).toContain('<pre class="md-pre" data-lang="python">')
+    expect(html).toContain('print(&quot;hi&quot;)')
+    // 代码块内部不再做行内标记：`**` 与反引号在代码里就是字面量
+    expect(html).not.toContain('<strong>')
+  })
+
+  it('代码块里的 HTML 被转义（不能让模型用代码块注入标签）', () => {
+    const html = renderAnswerMarkdown('```\n<script>alert(1)</script>\n```')
+
+    expect(html).not.toContain('<script')
+    expect(html).toContain('&lt;script&gt;')
+  })
+
+  it('流式中途没有闭合围栏也按代码块渲染', () => {
+    // 否则代码会先以纯文本闪一下，再在闭合时"跳"成代码块
+    const html = renderAnswerMarkdown('```js\nconst a = 1')
+
+    expect(html).toContain('<pre class="md-pre" data-lang="js">')
+    expect(html).toContain('const a = 1')
+  })
+
+  it('剥掉代码块前后的空行', () => {
+    const html = renderAnswerMarkdown('前文\n\n```\ncode\n```\n\n后文')
+
+    expect(html).toContain('<p class="md-p">前文</p>')
+    expect(html).toContain('<p class="md-p">后文</p>')
+  })
+
+  it('有序列表与无序列表各自成块，不会混在一起', () => {
+    const html = renderAnswerMarkdown('1. 甲\n2. 乙\n\n- 丙')
+
+    expect(html).toContain('<ol class="md-ol"><li>甲</li><li>乙</li></ol>')
+    expect(html).toContain('<ul class="md-ul"><li>丙</li></ul>')
+  })
+
+  it('引用块：连续的行合成一个 blockquote', () => {
+    const html = renderAnswerMarkdown('> 第一行\n> 第二行')
+
+    expect(html).toBe('<blockquote class="md-quote">第一行<br />第二行</blockquote>')
+  })
+
+  it('表格：表头 + 分隔行才认，并对齐列数', () => {
+    const html = renderAnswerMarkdown('| 年龄 | 参考值 |\n| --- | --- |\n| 6 岁 | 22.5mm |')
+
+    expect(html).toContain('<table class="md-table">')
+    expect(html).toContain('<th>年龄</th>')
+    expect(html).toContain('<td>22.5mm</td>')
+  })
+
+  it('正文里孤零零的竖线不会被当表格切碎', () => {
+    const html = renderAnswerMarkdown('a | b 只是文字')
+
+    expect(html).toContain('<p class="md-p">a | b 只是文字</p>')
+    expect(html).not.toContain('md-table')
+  })
+
+  it('分隔线渲染成 hr，且不与列表项混淆', () => {
+    expect(renderAnswerMarkdown('---')).toContain('<hr class="md-hr" />')
+    expect(renderAnswerMarkdown('- 甲')).toContain('<ul class="md-ul">')
+  })
+
+  it('链接只放行 http(s) 与 mailto', () => {
+    expect(renderAnswerMarkdown('[看这个](https://example.com/a)')).toContain(
+      '<a class="md-link" href="https://example.com/a"',
+    )
+    // javascript: 是执行代码，必须原样留着（可读、不可点）
+    const danger = renderAnswerMarkdown('[点我](javascript:alert(1))')
+    expect(danger).not.toContain('href')
+    expect(danger).toContain('[点我]')
+  })
+
+  it('加粗里的链接仍能识别（先加粗会让链接语法被拆开）', () => {
+    const html = renderAnswerMarkdown('**[标题](https://example.com)**')
+
+    expect(html).toContain('md-link')
+    expect(html).toContain('<strong>')
+  })
+})
+
+describe('引用徽标不碰代码（v17）', () => {
+  const sources = [{ index: 1, document_name: '指南.pdf', heading_path: null, page: null }]
+
+  it('行内代码里的 [1] 保持原样', () => {
+    const html = renderAnswerWithCitations('用 `arr[1]` 取第二项，依据见 [1]', sources)
+
+    expect(html).toContain('arr[1]')
+    // 代码之外的那个才变成徽标
+    expect(html.match(/data-cite-index/g)).toHaveLength(1)
+  })
+
+  it('代码块里的 [1] 不会被换成徽标（改坏代码 + 误导读者）', () => {
+    const html = renderAnswerWithCitations('示例：\n\n```python\nx = a[1]\n```\n\n见 [1]', sources)
+
+    expect(html).toContain('a[1]')
+    expect(html.match(/data-cite-index/g)).toHaveLength(1)
+  })
+})
