@@ -36,15 +36,22 @@ describe('IconBase', () => {
 })
 
 describe('IconChatNew', () => {
-  it('把 Ant 的 64..960 网格正好映射到 0..24', () => {
+  it('把 Ant 的 64..960 内容盒映射到 2..22（与 Remix 图标同一光学尺寸）', () => {
     const transform = mount(IconChatNew).get('g').attributes('transform') ?? ''
-    const scale = Number(/scale\(([\d.]+)\)/.exec(transform)?.[1])
-    expect(Number.isFinite(scale)).toBe(true)
-    // 896 是 Ant viewBox 的内容边长（960 − 64），缩放后必须正好是 24。
-    // 数字被改错的话图标会溢出或被缩得比邻座小一圈，肉眼不细看发现不了。
-    expect(scale * 896).toBeCloseTo(24, 6)
-    // 先平移再缩放：不写 translate 的话 64..960 会整块偏出可视区
-    expect(transform).toContain('translate(-64 -64)')
+    const m =
+      /translate\(([\d.]+) ([\d.]+)\)\s*scale\(([\d.]+)\)\s*translate\((-?[\d.]+) (-?[\d.]+)\)/.exec(
+        transform,
+      )
+    expect(m, `transform 的形状变了：${transform}`).toBeTruthy()
+    const [tx, ty, scale, ix, iy] = m!.slice(1).map(Number)
+    // 里层平移把 Ant 的 64 原点挪到 0
+    expect(ix).toBeCloseTo(-64, 6)
+    expect(iy).toBeCloseTo(-64, 6)
+    // 内容盒 64..960 → [tx, tx + 896·scale]，必须正好是 [2, 22]：
+    // 铺满 0..24 会比旁边 Remix 图标大一圈（Ant 满格、Remix 内缩 2），缩错则肉眼才看得出
+    expect(tx).toBeCloseTo(2, 6)
+    expect(ty).toBeCloseTo(2, 6)
+    expect(tx + 896 * scale).toBeCloseTo(22, 6)
   })
 
   it('不留死 fill——颜色只能由 currentColor 决定', () => {
@@ -54,7 +61,7 @@ describe('IconChatNew', () => {
     expect(wrapper.findAll('[fill]')).toHaveLength(1)
   })
 
-  it('几何完整：方框 + 加号两条路径', () => {
+  it('几何完整：圆圈 + 加号两条路径', () => {
     const paths = mount(IconChatNew).findAll('path')
     expect(paths).toHaveLength(2)
     for (const path of paths) {
