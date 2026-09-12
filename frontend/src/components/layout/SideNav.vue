@@ -346,8 +346,9 @@ async function onLogout(): Promise<void> {
     <div v-if="!collapsed" class="side-section">
       <div class="section-head">
         <p class="section-label">对话</p>
-        <RouterLink class="section-action" to="/chat" aria-label="开始新对话" title="开始新对话">
+        <RouterLink class="section-action" to="/chat">
           <IconChatNew :size="16" />
+          <span>新对话</span>
         </RouterLink>
       </div>
 
@@ -686,9 +687,9 @@ async function onLogout(): Promise<void> {
   border-top: 1px solid var(--border-hairline);
 }
 
-/* 分区标签与新建动作同一行：动作贴着它所属的那一段放，
+/* 分区标签与「新对话」同一行：动作贴着它所属的那一段放，
    比另起一行更容易被理解为"在这一段里新建"。
-   `center` 而不是 `baseline`——右侧从文字变成了图标按钮，基线对齐会把标签抬歪 */
+   `center` 而不是 `baseline`——右侧是图标 + 文字，基线对齐会让图标相对文字上下偏 */
 .section-head {
   display: flex;
   align-items: center;
@@ -698,24 +699,21 @@ async function onLogout(): Promise<void> {
   margin-bottom: var(--space-2);
 }
 
-/* 「新建对话」自 v0.13 起是图标按钮（用户点名要图标）。
-   原来是一行里两个字号的文字并排，在 248px 的侧栏里反而更挤；
-   图标 + `title` / `aria-label` 只留一个 24px 命中区，也让右侧更安静。
-   **必须给足 `--hit-target`**：图标按钮没有文字兜底，命中区一小就点不中。 */
+/* 「新对话」= 图标 + 文字（用户给的参考图就是这个样子：气泡图标 +加粗的动作名）。
+   左侧那个「对话」是这段列表的路标（小号、弱色），右侧这个是**动作**，两者职责不同，
+   所以不冲突——就像 "Chats  ·  New chat" 那样一行里各占一边。 */
 .section-action {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: var(--hit-target);
-  height: var(--hit-target);
-  color: var(--text-secondary);
-  border-radius: var(--radius-control);
+  gap: var(--space-1);
+  font-size: var(--text-micro-size);
+  font-weight: 500;
+  color: var(--accent-text);
 }
 
 .section-action:hover {
-  background: var(--bg-hover);
-  color: var(--accent);
+  text-decoration: underline;
 }
 
 /* 分区标签：侧栏宽一点以后，光靠留白已经分不开"导航"与下面这段。
