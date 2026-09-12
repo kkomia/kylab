@@ -16,7 +16,8 @@
 关键提醒（官方示例里踩过的坑）：``multipart`` 的 ``optionalPayload`` 必须是 **JSON 字符串**，
 传 dict 会被当成字段展开而报错。
 
-实现只依赖 ``parsers/base.py`` 的 ``ParseResult``（工程规范 §3.3 的 L3 规则）。
+实现只依赖 ``parsers/base.py`` 的 ``ParseResult``（工程规范 §3.3 的 L3 规则），
+外加 ``core/page_markers.py`` 这个纯文本工具（core 是共享层，不违反插件层纪律）。
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from app.core.page_markers import page_marker
 from app.parsers.base import ParseError, ParseResult, ParserProvider, ProbeKind, ProbeResult
 from app.parsers.probe import IMAGE_EXTENSIONS, PDF_EXTENSIONS, suffix_of
 
@@ -140,7 +142,17 @@ class PaddleOCRApiParser(ParserProvider):
             if owns_client:
                 client.close()
 
-        markdown = "\n\n".join(page.markdown.strip() for page in pages if page.markdown.strip())
+        # 逐页产出时就插页标记：PaddleOCR 本来就是按页给结果的，这是拿到**准确页码**
+        # 的唯一机会——合并成一整段之后再想拆回来只能靠猜。
+        # 页码用 enumerate 的位置（真实页序号），空页也占一个页号，不做压缩。
+        blocks: list[str] = []
+        for page_number, page in enumerate(pages, start=1):
+            body = page.markdown.strip()
+            if not body:
+                continue
+            blocks.append(page_marker(page_number))
+            blocks.append(body)
+        markdown = "\n\n".join(blocks)
         if not markdown:
             raise ParseError("PaddleOCR 返回的 Markdown 为空", stage="parsing")
 

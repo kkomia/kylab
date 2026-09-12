@@ -31,6 +31,8 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from app.core.page_markers import PAGE_MARKER_TEMPLATE as _PAGE_MARKER_TEMPLATE
+from app.core.page_markers import page_marker
 from app.parsers.base import ParseError, ParseResult, ParserProvider
 
 __all__ = [
@@ -75,12 +77,14 @@ DEFAULT_PART_PAGES = 500
 #: 形态是一个可以被正则认出的独占行。`chunking` 会认它、把它从正文里摘掉、
 #: 把页号写进 `ChunkRecord.page`。
 #:
-#: **它是一个"段起始页"标记，不是强制分块边界**：页标记不强制 chunker 断块，
-#: 所以一个 chunk 可能横跨两个标记，那时它报的是起始页。这是刻意的取舍——
-#: 页号是**定位辅助**而不是精确映射，做成绝对边界会把块切得很碎
-#: （实测：每段 1 页的文档会得到每块都很小的几千个 chunk）。
-#: `tests/unit/services/test_chunking.py` 里有一条测试**记录**这个决定。
-PAGE_MARKER_TEMPLATE = "<!-- page:{page} -->"
+#: 页标记的格式定义在 ``app/core/page_markers.py``（写侧与读侧共用一份，
+#: 解析器也要写它——那里解释了为什么不能各写一份）。这里保留同名别名，
+#: 老代码与测试继续用 ``splitting.PAGE_MARKER_TEMPLATE`` 即可。
+#:
+#: 语义上它是**段起始页标记**：MinerU/PaddleOCR 逐页产出时插的是真实页号，
+#: 切段合并时插的是该段的第一页。chunker 把它当**硬边界**（一块只能属于一页，
+#: 标错了比没有更糟），所以块不会横跨两个标记。
+PAGE_MARKER_TEMPLATE = _PAGE_MARKER_TEMPLATE
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,7 +216,7 @@ def extract_page_range(content: bytes, pages: PageRange) -> bytes:
 
 def render_page_marker(page: int) -> str:
     """给合并用的页标记。"""
-    return PAGE_MARKER_TEMPLATE.format(page=page)
+    return page_marker(page)
 
 
 def merge_parts(texts: Sequence[str], parts: Sequence[PageRange]) -> str:

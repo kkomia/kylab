@@ -14,6 +14,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import {
+  RENDERABLE_KINDS,
   deleteChunk,
   downloadDocument,
   getDocument,
@@ -26,6 +27,7 @@ import {
   type DocumentChunk,
   type DocumentSummary,
 } from '@/api/documents'
+import OfficePreview from '@/components/knowledge/OfficePreview.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import PageShell from '@/components/ui/PageShell.vue'
@@ -49,6 +51,12 @@ const PREVIEW_LIMIT = 5
 const VIEW_TABS = [
   { key: 'read' as const, label: '阅读', hint: '原文渲染，日常看这个' },
   { key: 'chunks' as const, label: '切块', hint: '解析产物，等宽带块号，调解析用' },
+]
+
+/** 「阅读」里的两个来源：原件版式 / 解析文本。 */
+const SOURCE_TABS = [
+  { key: 'original' as const, label: '原文版式' },
+  { key: 'parsed' as const, label: '解析文本' },
 ]
 
 const route = useRoute()
@@ -101,6 +109,9 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+  // 有原件版式就先看原件。从引用点进来时带 `?page=N`，PDF 那侧会把它转成
+  // 原生查看器的 `#page=N` 直接跳到那一页——这比先给一屏解析文本更贴用户意图。
+  previewSource.value = canRenderOriginal.value ? 'original' : 'parsed'
   await Promise.all([loadPreview(), loadReadingView()])
 })
 
@@ -115,18 +126,75 @@ async function loadPreview(): Promise<void> {
   }
 }
 
+/**
+ * 阅读视角的内容来源。
+ *
+ * 默认**看原件版式**：用户打开一份 PDF/Office，想看的首先是那个文件本身。
+ * 「解析文本」是给"核对解析得对不对"用的第二视角——只在既有解析产物、
+ * 原件又能渲染时才给这个切换（否则切过去是空的，等于给个假入口）。
+ */
+const previewSource = ref<'original' | 'parsed'>('parsed')
+/** 两个来源各自缓存：来回切不该反复取（PDF 每次都会重新签发链接）。 */
+const previewCache = ref<Record<'original' | 'parsed', DocumentPreview | null>>({
+  original: null,
+  parsed: null,
+})
+
+const canRenderOriginal = computed(
+  () => !!document.value && RENDERABLE_KINDS.includes(document.value.original_kind),
+)
+
+/**
+ * 原件能渲染 + 有解析产物 → 两个视角都成立，才给切换。
+ *
+ * 用 ``chunk_count > 0`` 判断"有没有解析产物"：切块是摄入的产物，
+ * 没有块就说明还没解析成功（或解析失败），此时"解析文本"那一侧是空的。
+ */
+const canSwitchSource = computed(
+  () => canRenderOriginal.value && (document.value?.chunk_count ?? 0) > 0,
+)
+
 /** 阅读视角。失败**不写进 previewError**——那是切块视角的报错位，
     两个视角的失败原因不同，混在一起会让用户看到"切块加载失败"却在看阅读页。 */
 async function loadReadingView(): Promise<void> {
+  const source = previewSource.value
+  const cached = previewCache.value[source]
+  if (cached) {
+    preview.value = cached
+    return
+  }
   previewLoading.value = true
   try {
-    preview.value = await getDocumentPreview(documentId.value)
+    const body = await getDocumentPreview(
+      documentId.value,
+      source === 'original' ? 'original' : 'auto',
+    )
+    previewCache.value[source] = body
+    preview.value = body
   } catch {
     preview.value = null
   } finally {
     previewLoading.value = false
   }
 }
+
+function showSource(source: 'original' | 'parsed'): void {
+  if (previewSource.value === source) return
+  previewSource.value = source
+  void loadReadingView()
+}
+
+/**
+ * PDF 预览的跳页锚点。
+ *
+ * 用浏览器原生 PDF 查看器的 PDF Open Parameters（`#page=N`）——
+ * 零依赖，就能从引用直接落到那一页。`#` 之后是片段，不会发给服务端。
+ */
+const pdfFrameUrl = computed(() => {
+  const base = preview.value?.url ?? ''
+  const page = Number(route.query.page ?? 0)
+  return base && page > 0 ? `${base}#page=${page}` : base
+})
 
 // ------------------------------------------------------------------ 切块干预（G3）
 
@@ -329,12 +397,28 @@ const stage = computed(() =>
 
       <!-- 阅读视角 -->
       <template v-if="view === 'read'">
+        <!-- 原件版式 / 解析文本：两个都成立时才出现。默认看原件，
+             解析文本是"核对解析得对不对"用的第二视角 -->
+        <div v-if="canSwitchSource && !previewLoading" class="source-switch" role="tablist">
+          <button
+            v-for="option in SOURCE_TABS"
+            :key="option.key"
+            type="button"
+            class="source-tab"
+            :class="{ 'source-tab-active': previewSource === option.key }"
+            role="tab"
+            :aria-selected="previewSource === option.key"
+            @click="showSource(option.key)"
+          >
+            {{ option.label }}
+          </button>
+        </div>
+
         <p v-if="previewLoading" class="muted">正在加载原文…</p>
         <p v-else-if="previewError" class="muted">{{ previewError }}</p>
         <template v-else-if="preview">
           <p v-if="preview.kind === 'binary'" class="muted">
-            「{{ preview.filename }}」暂不支持在线预览（Office 等格式先只提供下载），
-            请用右上角的下载按钮。
+            「{{ preview.filename }}」这个格式不能在线预览，请用右上角的下载按钮 用本机应用打开。
           </p>
 
           <!-- Markdown / 纯文本：直接渲染。复用对话页那套渲染器，
@@ -345,7 +429,8 @@ const stage = computed(() =>
 
           <!-- PDF：交给浏览器原生渲染器。不引 PDF.js 是刻意的——
                原生查看器自带翻页、缩放、搜索、文本选择，还没有体积成本；
-               等需要"跳到引用页并高亮"时再引库（那是 G2 的后半） -->
+               需要按引用高亮时才值得引库。
+               `#page=N` 是原生查看器的 PDF Open Parameters：从引用点进来直接落到那一页 -->
           <!-- `:key` 绑到 url：签名链接会过期（默认 10 分钟），重新取到新链接时
                要让 iframe **重建**而不是沿用旧 src——否则长时间停留后翻页会去请求
                一条已过期的链接 -->
@@ -353,7 +438,7 @@ const stage = computed(() =>
             v-else-if="preview.kind === 'pdf'"
             :key="preview.url ?? ''"
             class="reader-frame"
-            :src="preview.url ?? ''"
+            :src="pdfFrameUrl"
             :title="preview.filename"
           />
 
@@ -362,6 +447,17 @@ const stage = computed(() =>
             class="reader-image"
             :src="preview.url ?? ''"
             :alt="preview.filename"
+          />
+
+          <!-- Office 三件套：浏览器不会原生显示，交前端库按需渲染
+               （组件内部再按 kind 动态 import，看 Word 不必下 Excel 的引擎） -->
+          <OfficePreview
+            v-else-if="
+              preview.kind === 'docx' || preview.kind === 'pptx' || preview.kind === 'excel'
+            "
+            :kind="preview.kind"
+            :url="preview.url ?? ''"
+            :filename="preview.filename"
           />
         </template>
       </template>
@@ -488,6 +584,39 @@ const stage = computed(() =>
   padding-bottom: var(--space-2);
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
+}
+
+/* 原件 / 解析：次级切换，用分段控件而不是下划线标签页——它跟视角标签页
+   不是一层：视角决定"看什么"（阅读 / 切块），来源决定"看哪一份"（原件 / 解析） */
+.source-switch {
+  display: inline-flex;
+  gap: 2px;
+  margin-top: var(--space-4);
+  padding: 2px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-row);
+}
+
+.source-tab {
+  height: 26px;
+  padding: 0 var(--space-3);
+  font: inherit;
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.source-tab:hover {
+  color: var(--text-primary);
+}
+
+.source-tab-active {
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
 }
 
 /* 阅读区：限宽到 --measure（66ch），与文档详情页"阅读内容限宽"的口径一致 */

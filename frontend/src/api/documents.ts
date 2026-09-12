@@ -42,6 +42,13 @@ export interface DocumentSummary {
   folder_id: string | null
   /** 停用（v14）：不参与检索（两条通道都过滤），其余一切保留。 */
   disabled: boolean
+  /**
+   * 原件能不能在这页里渲染（pdf / image / docx / pptx / excel）。
+   *
+   * 由后端判断（见 `content_kind`）：前端不该为了"该不该渲染"去猜文件后缀。
+   * 详情页据此决定首页先取「原文版式」还是「解析文本」。
+   */
+  original_kind: PreviewKind
   created_at: string | null
   updated_at: string | null
 }
@@ -243,17 +250,32 @@ export function reprocessDocument(documentId: string): Promise<UploadAccepted> {
 /** 下载格式：原文件（默认）或解析产物 Markdown。 */
 export type DownloadFormat = 'original' | 'markdown'
 
-/** 阅读视角的内容形态。 */
-export type PreviewKind = 'markdown' | 'pdf' | 'image' | 'binary'
+/**
+ * 阅读视角的内容形态。
+ *
+ * `pdf` / `image` 交给浏览器原生渲染（一条签名链接就够）；`docx` / `pptx` / `excel`
+ * 要在前端用库渲染——浏览器不会原生显示它们。`binary` = 只能下载。
+ */
+export type PreviewKind = 'markdown' | 'pdf' | 'image' | 'docx' | 'pptx' | 'excel' | 'binary'
+
+/** 可以在这页里渲染出来的原件类型（前端库支持的那几种）。 */
+export const RENDERABLE_KINDS: readonly PreviewKind[] = ['pdf', 'image', 'docx', 'pptx', 'excel']
 
 export interface DocumentPreview {
   kind: PreviewKind
   filename: string
   /** 文本类内联返回（Markdown / 纯文本）。 */
   text: string | null
-  /** 非文本类给一条签名链接，交给浏览器自己渲染。 */
+  /** 需要自己渲染的类型给一条签名链接。 */
   url: string | null
   expires_at: number | null
+  /**
+   * 原件本身的类型（与本次返回的 kind 无关）。
+   *
+   * 界面据此决定要不要给「原文版式 / 解析文本」这个切换：`binary` 或 `null`
+   * 表示原件没有可渲染的版式，就别给用户一个点开是空的入口。
+   */
+  original_kind: PreviewKind | null
 }
 
 /**
@@ -261,9 +283,16 @@ export interface DocumentPreview {
  *
  * 与切块预览是两个视角：切块回答"解析成了什么"（调试用，等宽带块号），
  * 这个回答"原文长什么样"（日常用，渲染件）。
+ *
+ * `source='original'` 强制看原件版式：默认（auto）在解析完成后会给归一化文本，
+ * 但用户点「原文版式」时要的是那个文件本身。
  */
-export function getDocumentPreview(documentId: string): Promise<DocumentPreview> {
-  return request(`/documents/${documentId}/preview`)
+export function getDocumentPreview(
+  documentId: string,
+  source: 'auto' | 'original' = 'auto',
+): Promise<DocumentPreview> {
+  const query = source === 'original' ? '?source=original' : ''
+  return request(`/documents/${documentId}/preview${query}`)
 }
 
 export interface DownloadUrl {

@@ -12,6 +12,10 @@
 
 from __future__ import annotations
 
+import io
+import json
+import zipfile
+
 import pytest
 
 from app.parsers.base import ParseError
@@ -88,3 +92,95 @@ def test_mineru_polling_returns_normally_when_done(monkeypatch) -> None:
     monkeypatch.setattr("app.parsers.mineru_cloud.time.monotonic", _advancing_clock(1.0))
 
     assert _parser(client)._poll_zip(client, "batch-2") == b"zip-bytes"  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------- 页码
+
+
+def _zip_with(content_list, markdown: str = "# 标题\n\n第一段。\n\n第二段。\n") -> bytes:
+    """造一个 MinerU 结果包：一份合并 md + 一份 content_list。"""
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("doc/auto/doc.md", markdown)
+        if content_list is not None:
+            archive.writestr("doc/auto/doc_content_list.json", json.dumps(content_list))
+    return buffer.getvalue()
+
+
+class _ZipClient:
+    """把整条上传→轮询链路都用假响应走完，结果包返回给定的 zip 字节。"""
+
+    def __init__(self, zip_bytes: bytes) -> None:
+        self._zip = zip_bytes
+
+    def post(self, url: str, **kwargs):  # type: ignore[no-untyped-def]
+        return _Response(
+            {"code": 0, "data": {"file_urls": ["https://up.test/f"], "batch_id": "b1"}}
+        )
+
+    def put(self, url: str, **kwargs):  # type: ignore[no-untyped-def]
+        return _Response({}, status_code=200)
+
+    def get(self, url: str, **kwargs):  # type: ignore[no-untyped-def]
+        if "extract-results" in url:
+            return _Response(
+                {
+                    "code": 0,
+                    "data": {
+                        "extract_result": [
+                            {"state": "done", "full_zip_url": "https://example.test/z.zip"}
+                        ]
+                    },
+                }
+            )
+        return _Response({}, content=self._zip)
+
+
+def test_parse_inserts_page_markers_from_content_list() -> None:
+    """页码只能从 content_list 的 page_idx 来——合并 md 里没有页边界。"""
+    zip_bytes = _zip_with(
+        [
+            {"type": "text", "text": "# 标题", "page_idx": 0},
+            {"type": "text", "text": "第一段。", "page_idx": 0},
+            {"type": "text", "text": "第二段。", "page_idx": 1},
+        ]
+    )
+    parser = MinerUCloudParser(MinerUConfig(token="sk-test"), client=_ZipClient(zip_bytes))
+
+    result = parser.parse(content=b"x", filename="a.pdf", mime_type="application/pdf")
+
+    assert "<!-- page:1 -->" in result.markdown
+    assert "<!-- page:2 -->" in result.markdown
+    # 页码在 content_list 里是 0 起，对外必须是 1 起
+    assert result.markdown.index("<!-- page:2 -->") < result.markdown.index("第二段。")
+    assert result.page_count == 2
+
+
+def test_parse_without_content_list_keeps_markdown_untouched() -> None:
+    """没有 content_list 就不带页码——**不猜**。"""
+    parser = MinerUCloudParser(
+        MinerUConfig(token="sk-test"), client=_ZipClient(_zip_with(None))
+    )
+
+    result = parser.parse(content=b"x", filename="a.pdf", mime_type="application/pdf")
+
+    assert "page:" not in result.markdown
+
+
+def test_read_content_list_tolerates_broken_input() -> None:
+    """读不懂辅助文件不该让整份解析失败：没有页码可以，解析挂了不行。"""
+    from app.parsers.mineru_cloud import _read_content_list
+
+    assert _read_content_list(b"") == ([], None)
+    assert _read_content_list(b"not json") == ([], None)
+    assert _read_content_list(b'{"items": "nope"}') == ([], None)
+
+
+def test_needle_prefers_table_html_then_image_path() -> None:
+    from app.parsers.mineru_cloud import _needle_of
+
+    assert _needle_of({"type": "table", "table_body": "<table><tr/></table>"}) == (
+        "<table><tr/></table>"
+    )
+    assert _needle_of({"type": "image", "img_path": "images/a.png"}) == "a.png"
+    assert _needle_of({"type": "text", "text": "正文"}) == "正文"

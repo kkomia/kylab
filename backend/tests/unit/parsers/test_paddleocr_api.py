@@ -82,3 +82,28 @@ def test_paddleocr_polling_returns_url_when_done(monkeypatch) -> None:
     monkeypatch.setattr("app.parsers.paddleocr_api.time.monotonic", _advancing_clock(1.0))
 
     assert _parser(client)._poll(client, "job-2") == "https://example.test/r.jsonl"  # type: ignore[arg-type]
+
+
+# --------------------------------------------------------------------- 页码
+
+
+def test_parse_marks_every_page_with_its_real_number(monkeypatch) -> None:
+    """PaddleOCR 逐页产出，是拿到**准确页码**的最好机会。
+
+    空页不插标记（没有内容可标），但**页号不压缩**——第 3 页就是第 3 页，
+    不能因为第 2 页是空的就把它叫成第 2 页。
+    """
+    from app.parsers.paddleocr_api import PaddleOCRApiParser, PaddleOCRConfig, _Page
+
+    parser = PaddleOCRApiParser(PaddleOCRConfig(token="sk-test"), client=object())  # type: ignore[arg-type]
+    monkeypatch.setattr(parser, "_submit", lambda *a, **k: "job")  # type: ignore[method-assign]
+    monkeypatch.setattr(parser, "_poll", lambda *a, **k: "url")  # type: ignore[method-assign]
+    pages = [_Page("第一页正文。"), _Page(""), _Page("第三页正文。")]
+    monkeypatch.setattr(parser, "_collect", lambda *a, **k: pages)  # type: ignore[method-assign]
+
+    result = parser.parse(content=b"x", filename="a.pdf", mime_type="application/pdf")
+
+    assert "<!-- page:1 -->" in result.markdown
+    assert "<!-- page:3 -->" in result.markdown
+    assert "<!-- page:2 -->" not in result.markdown
+    assert result.page_count == 3

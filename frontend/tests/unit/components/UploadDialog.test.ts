@@ -53,6 +53,7 @@ function accepted(name: string, duplicate = false): documentsApi.UploadAccepted 
       uploaded_by_name: '',
       folder_id: null,
       disabled: false,
+      original_kind: 'binary',
       created_at: '2026-09-11T00:00:00Z',
       updated_at: '2026-09-11T00:00:00Z',
     },

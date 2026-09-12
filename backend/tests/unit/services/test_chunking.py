@@ -240,14 +240,29 @@ class TestPageMapping:
         split = _chunk(markdown, config=ChunkingConfig(size=8, overlap=0))
         assert [chunk.page for chunk in split] == [1, 2]
 
-    def test_页码缺失后不会沿用上一页(self) -> None:
-        # 一个文档里混合着"有标记的段"与"没标记的段"（例如后续增量追加的部分）时，
-        # 沿用上一页会把新内容标到旧页码上
+    def test_同一页的每一块都带这一页的页码(self) -> None:
+        """**页码是页的属性，不是"紧跟标记那一段"的属性。**
+
+        真实回归：一份 2 页 PDF 曾拿到 ``[1, null, null, null, 2, null, null, null]``——
+        页码用掉一次就被清掉，同一页后面的段落全成了 None。八块里六块没有页码，
+        引用照样写不出"第几页"。这里钉住"标记之后的每一块都带这一页"。
+        """
+        from app.services.splitting import render_page_marker
+
+        markdown = (
+            f"{render_page_marker(1)}\n\n第一页第一段。\n\n第一页第二段。\n\n"
+            f"{render_page_marker(2)}\n\n第二页第一段。\n\n第二页第二段。"
+        )
+        # 段长调小，让每个自然段各自成块（否则测的是桶怎么装，不是页码）
+        chunks = _chunk(markdown, config=ChunkingConfig(size=8, overlap=0))
+
+        assert [chunk.page for chunk in chunks] == [1, 1, 2, 2]
+
+    def test_有标记时页码不会丢(self) -> None:
+        # 与"没有标记就为空"相反的方向：有标记就必须带上，不能因为分块而丢掉
         from app.services.splitting import render_page_marker
 
         chunks = _chunk(
             f"{render_page_marker(3)}\n\n有页码。\n", config=ChunkingConfig(size=100, overlap=0)
         )
         assert chunks[0].page == 3
-        plain = _chunk("没有页码。\n", config=ChunkingConfig(size=100, overlap=0))
-        assert plain[0].page is None

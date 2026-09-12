@@ -4,7 +4,13 @@
 # - esbuild：postinstall 安装平台二进制，vite/vitest 依赖它；
 # - vue-demi：postinstall 按 vue 版本切换入口，pinia 依赖它。
 #
+# 而 `@vue-office/*` 的 postinstall 是 **明确不放行**（false）：它只生成一个
+# vue-demi 切换入口（`lib/index.js`），而 vite 配置里已经用别名直接指向
+# `lib/v3/index.js`（Vue 3 构建），不需要它跑脚本。
+#
 # 变更方式：pnpm approve-builds（结果即写回本文件）。
 allowBuilds:
+  '@vue-office/excel': false
+  '@vue-office/pptx': false
   esbuild: true
   vue-demi: true

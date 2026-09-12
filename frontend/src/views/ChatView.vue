@@ -671,7 +671,15 @@ async function savePrompt(): Promise<void> {
               <li v-for="source in message.sources" :key="source.chunk_id" class="cite">
                 <div class="cite-head">
                   <span class="cite-index tabular">[{{ source.index }}]</span>
-                  <RouterLink class="cite-title" :to="`/documents/${source.document_id}`">
+                  <!-- 带页码时把页码也带过去：详情页会转成 PDF 查看器的 #page=N 直接跳页，
+                       不带的话用户还得自己在长文档里翻 -->
+                  <RouterLink
+                    class="cite-title"
+                    :to="{
+                      path: `/documents/${source.document_id}`,
+                      query: source.page === null ? {} : { page: String(source.page) },
+                    }"
+                  >
                     {{ source.document_name }}
                   </RouterLink>
                   <span v-if="sourceWhere(source)" class="cite-where">{{

@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
 import time
 import zipfile
@@ -27,6 +28,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from app.core.page_markers import insert_page_markers, locate_block_offsets
 from app.parsers.base import ParseError, ParseResult, ParserProvider, ProbeKind, ProbeResult
 from app.parsers.probe import IMAGE_EXTENSIONS, OFFICE_EXTENSIONS, PDF_EXTENSIONS, suffix_of
 
@@ -97,6 +99,11 @@ class ParsedZip:
 
     markdown: str
     images: list[_ImageRef] = field(default_factory=list)
+    #: ``content_list.json`` 折出来的 ``(可检索文本, 页码)``，按阅读顺序。
+    #: 合并的 Markdown 里没有页边界，页码只能从这里来；缺文件时为空（不发页标记）。
+    page_blocks: list[tuple[str | None, int | None]] = field(default_factory=list)
+    #: ``content_list.json`` 给出的总页数（比探测更准，VLM 后端尤其）。
+    page_count: int | None = None
 
 
 class MinerUCloudParser(ParserProvider):
@@ -172,10 +179,19 @@ class MinerUCloudParser(ParserProvider):
         if not parsed.markdown.strip():
             raise ParseError("MinerU 返回的 Markdown 为空", stage="parsing")
 
+        # 页码：按 content_list 的 page_idx 顺序锚定，在合并 Markdown 里插页标记。
+        # 定位不到的边界宁可跳过（"宁缺勿错"，见 core/page_markers 的说明）。
+        markdown = parsed.markdown
+        if parsed.page_blocks:
+            markdown = insert_page_markers(
+                markdown, locate_block_offsets(markdown, parsed.page_blocks)
+            )
+
         return ParseResult(
-            markdown=parsed.markdown,
+            markdown=markdown,
             parser_name=self.name,
-            page_count=probe.page_count if probe else None,
+            # content_list 的页数比探测准（探测只读文本层，VLM 后端页数可能不同）
+            page_count=parsed.page_count or (probe.page_count if probe else None),
             probe=probe,
             image_ids=[image.name for image in parsed.images],
         )
@@ -266,10 +282,72 @@ class MinerUCloudParser(ParserProvider):
                 for name in names
                 if name.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".bmp"))
             ]
+            content_name = next(
+                (n for n in names if n.lower().endswith("_content_list.json")), None
+            )
+            page_blocks, page_count = _read_content_list(
+                archive.read(content_name) if content_name else b""
+            )
             return ParsedZip(
                 markdown=archive.read(markdown_name).decode("utf-8", errors="replace"),
                 images=images,
+                page_blocks=page_blocks,
+                page_count=page_count,
             )
+
+
+def _read_content_list(payload: bytes) -> tuple[list[tuple[str | None, int | None]], int | None]:
+    """把 ``*_content_list.json`` 折成 ``(锚点文本, 页码)`` 序列。
+
+    **这是合并 Markdown 里页码的唯一来源**：MinerU 只回一份 md，页边界藏在
+    content_list 的 ``page_idx`` 里。缺失/损坏一律返回空——没有页码可以，
+    不能因为读不懂一个辅助文件就把整份解析判失败。
+
+    页码在 content_list 里是 **0 起**，这里转成 1 起（用户看到的"第几页"）。
+    """
+    if not payload:
+        return [], None
+    try:
+        data = json.loads(payload.decode("utf-8", errors="replace"))
+    except ValueError:
+        logger.warning("MinerU content_list.json 不是合法 JSON，本次不带页码")
+        return [], None
+
+    items = data.get("items") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return [], None
+
+    blocks: list[tuple[str | None, int | None]] = []
+    pages: list[int] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw_page = item.get("page_idx")
+        page: int | None = None
+        if isinstance(raw_page, int):
+            page = raw_page + 1
+            pages.append(page)
+        blocks.append((_needle_of(item), page))
+    return blocks, (max(pages) if pages else None)
+
+
+def _needle_of(item: dict) -> str | None:
+    """从 content_list 的一个块里取"能在 Markdown 中找到它"的文本。
+
+    优先级按"在 md 里的形态"排：表格在 md 里是 HTML（``table_body``），
+    图片是 ``![](路径)``（用文件名定位），其余块用正文本身。
+    """
+    if item.get("type") == "table":
+        body = item.get("table_body")
+        if isinstance(body, str) and body.strip():
+            return body
+    image_path = item.get("img_path")
+    if isinstance(image_path, str) and image_path.strip():
+        return image_path.rsplit("/", 1)[-1]
+    text = item.get("text")
+    if isinstance(text, str) and text.strip():
+        return text
+    return None
 
 
 def _unwrap(response: httpx.Response, *, action: str) -> dict:

@@ -7,7 +7,7 @@ API 层只做协议适配，所以"列文档""入队""查任务"这些动作都�
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from app.core.exceptions import (
     ConflictError,
@@ -15,6 +15,7 @@ from app.core.exceptions import (
     NotFoundError,
     UnsupportedContentError,
 )
+from app.core.page_markers import strip_page_markers
 from app.core.signing import DEFAULT_TTL_SECONDS, sign_resource
 from app.models.enums import DocumentStage, TaskKind, TaskState
 from app.pipeline.state_machine import can_transition
@@ -44,10 +45,14 @@ class DocumentContent:
     filename: str
     media_type: str
     kind: str = "binary"
-    """怎么展示它：``markdown`` / ``pdf`` / ``image`` / ``binary``。
+    """怎么展示它：``markdown`` / ``pdf`` / ``image`` / ``docx`` / ``pptx`` /
+    ``excel`` / ``binary``。
 
     判定放在**服务层**而不是前端：前端不该为了"该不该渲染"去猜文件后缀；
     而且下载与预览两条路径必须给出同一答案——同一次请求能渲染、下载却变二进制会很怪。
+
+    Office 三件套单列 kind，是因为它们要在**前端**用库渲染（浏览器不会原生显示），
+    与 pdf/image 那种"给个地址让浏览器自己画"不是一回事。
     """
 
 
@@ -57,12 +62,19 @@ _IMAGE_SUFFIXES = frozenset(
 )
 
 
+#: 能交给前端库渲染的 Office 格式（OOXML）。**不含** .doc/.ppt/.xls：
+#: 那是 OLE2 二进制，预览库解析不了，硬试只会得到一句 zip 报错，不如直接给下载。
+_OFFICE_KINDS = {".docx": "docx", ".pptx": "pptx", ".xlsx": "excel"}
+
 def content_kind(filename: str, *, has_markdown: bool = False) -> str:
     """这份内容该怎么展示。
 
     **有解析产物就优先当 markdown**：那是流水线归一化后的文本，
     是检索真正依据的东西——用户要核对"解析对不对"，看它比看原始版式更直接。
-    PDF 只有在没有产物时才回落到"原始 PDF 预览"。
+    PDF/Office 只有在没有产物时才回落到"原始版式"。
+
+    想看原始版式而不看解析文本时，走 ``DocumentService.original_view``——
+    那里的 ``has_markdown`` 恒为 False，因为用户已经明确说了"我要看原文"。
     """
     if has_markdown:
         return "markdown"
@@ -71,6 +83,8 @@ def content_kind(filename: str, *, has_markdown: bool = False) -> str:
         return "pdf"
     if suffix in _IMAGE_SUFFIXES:
         return "image"
+    if suffix in _OFFICE_KINDS:
+        return _OFFICE_KINDS[suffix]
     if suffix in {".md", ".markdown", ".txt", ".text", ".csv", ".json", ".log"}:
         # 纯文本类即使没走完整流水线也可以直接按文本读
         return "markdown"
@@ -240,9 +254,11 @@ class DocumentService:
                 raise UnsupportedContentError(
                     "该文档还没有 Markdown 产物（解析尚未完成或已失败）"
                 )
-            data = self._stores.objects.read(parsed.markdown_path)
+            # 落盘的 Markdown 带着页标记（chunker 靠它把页码写进 chunk），
+            # 但标记是内部的锚点，**不该出现在用户读到的正文或下载的文件里**。
+            raw = self._stores.objects.read(parsed.markdown_path).decode("utf-8", errors="replace")
             return DocumentContent(
-                data=data,
+                data=strip_page_markers(raw).encode("utf-8"),
                 filename=f"{_stem(document.name)}.md",
                 media_type="text/markdown; charset=utf-8",
                 kind="markdown",
@@ -271,6 +287,16 @@ class DocumentService:
         if parsed is not None:
             return self.content(document_id, fmt="markdown")
         return self.content(document_id, fmt="original")
+
+    def original_view(self, document_id: str) -> DocumentContent:
+        """原始版式：**不管有没有解析产物**，都按文件本身判断怎么展示。
+
+        与 ``reading_view`` 的差别是它明确回答"那个文件长什么样"——用户点了
+        "原文版式"就是要看原件，此时再返回解析后的 Markdown 是答非所问。
+        """
+        document = self.get(document_id)
+        content = self.content(document_id, fmt="original")
+        return replace(content, kind=content_kind(document.name, has_markdown=False))
 
     def download_url(
         self, document_id: str, *, fmt: str, secret: str, ttl_seconds: int = DEFAULT_TTL_SECONDS

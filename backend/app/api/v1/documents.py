@@ -49,7 +49,7 @@ from app.core.services import Services, get_services
 from app.core.signing import SigningError, verify_resource
 from app.models.enums import ApiKeyPermission, DataSourceKind, DocumentStage
 from app.services.api_key import Caller
-from app.services.documents import signature_resource
+from app.services.documents import content_kind, signature_resource
 from app.services.idempotency import fingerprint
 from app.services.ingest import content_disposition, normalize_filename
 
@@ -72,7 +72,14 @@ def _to_out(record, *, chunk_count: int = 0, uploader: str = "") -> DocumentOut:
     字段名对不上时 pydantic 会直接报错，不用等到线上发现"某个字段忘了同步"。
     """
     out = DocumentOut.model_validate(record)
-    return out.model_copy(update={"chunk_count": chunk_count, "uploaded_by_name": uploader})
+    return out.model_copy(
+        update={
+            "chunk_count": chunk_count,
+            "uploaded_by_name": uploader,
+            # 原件类型：界面据此决定首页先取「原文版式」还是「解析文本」
+            "original_kind": content_kind(record.name, has_markdown=False),
+        }
+    )
 
 
 def document_out(services: Services, record) -> DocumentOut:  # type: ignore[no-untyped-def]
@@ -484,53 +491,84 @@ class PreviewOut(BaseModel):
     """
 
     kind: str
-    """``markdown`` / ``pdf`` / ``image`` / ``binary``。"""
+    """``markdown`` / ``pdf`` / ``image`` / ``docx`` / ``pptx`` / ``excel`` / ``binary``。"""
     filename: str
     text: str | None = None
     url: str | None = None
     expires_at: int | None = None
+    original_kind: str | None = None
+    """原始文件的类型（按扩展名判断），**与本次返回的 kind 无关**。
+
+    界面据此决定要不要给「原文版式 / 解析文本」这个切换：``binary`` 或 ``None``
+    表示原件没有可渲染的版式（老式 .doc、压缩包等），就不给用户一个点开是空的入口。
+    """
+
+
+#: 需要一个签名链接、由浏览器或前端库自己画出来的类型。
+_RENDERABLE_KINDS = frozenset({"pdf", "image", "docx", "pptx", "excel"})
 
 
 @router.get(
     "/documents/{document_id}/preview",
     response_model=PreviewOut,
-    summary="阅读视角（Markdown 内联 / PDF 与图片给签名链接）",
+    summary="阅读视角（解析文本内联 / 原件版式给签名链接）",
 )
 def preview_document(
     document_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
+    source: str = Query(
+        default="auto",
+        pattern="^(auto|original)$",
+        description="auto=有解析产物就给解析文本；original=强制看原件版式",
+    ),
 ) -> PreviewOut:
-    """文档的「阅读」视角。
+    """文档的「阅读」视角，两种来源：
+
+    - ``auto``（默认）：有解析产物就给归一化后的 Markdown，否则给原件版式；
+    - ``original``：**不管有没有产物**都看原件（PDF / 图片 / Office 原版式）。
 
     与「切块预览」是两个视角、刻意并存：切块回答"解析成了什么"（调试用，
     等宽文本带块号），阅读回答"原文长什么样"（日常用，渲染件）。
     """
     _guard_document(services, caller, document_id)
 
-    content = services.documents.reading_view(document_id)
+    content = (
+        services.documents.original_view(document_id)
+        if source == "original"
+        else services.documents.reading_view(document_id)
+    )
+    # 原件本身是什么类型：界面据此决定要不要给「原文版式 / 解析文本」这个切换
+    original_kind = content_kind(
+        services.documents.get(document_id).name, has_markdown=False
+    )
 
     if content.kind == "markdown":
         return PreviewOut(
             kind="markdown",
             filename=content.filename,
             text=content.data.decode("utf-8", errors="replace"),
+            original_kind=original_kind,
         )
 
-    if content.kind in ("pdf", "image"):
+    if content.kind in _RENDERABLE_KINDS:
         secret = signing_secret(get_settings(), services)
         if not secret:
             # 没有签名密钥时发不了链接（同 download-url 的说明）。但这里**不报错**：
             # 回一个 binary 让前端退化成"只能下载"，比整个阅读面板报红字好
-            return PreviewOut(kind="binary", filename=content.filename)
+            return PreviewOut(kind="binary", filename=content.filename, original_kind=original_kind)
         url, expires_at = services.documents.download_url(
             document_id, fmt="original", secret=secret
         )
         return PreviewOut(
-            kind=content.kind, filename=content.filename, url=url, expires_at=expires_at
+            kind=content.kind,
+            filename=content.filename,
+            url=url,
+            expires_at=expires_at,
+            original_kind=original_kind,
         )
 
-    return PreviewOut(kind="binary", filename=content.filename)
+    return PreviewOut(kind="binary", filename=content.filename, original_kind=original_kind)
 
 
 @router.get(

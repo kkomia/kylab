@@ -105,6 +105,12 @@ class DocumentOut(BaseModel):
     """所在目录（v13）。``None`` = 未归档（根目录）。"""
     disabled: bool = False
     """停用（v14）。停用后不参与检索（两条通道都过滤），其余一切保留。"""
+    original_kind: str = "binary"
+    """原件能不能在这页里渲染出来（``pdf`` / ``image`` / ``docx`` / ``pptx`` / ``excel``）。
+
+    界面据此决定首页要不要给「原文版式 / 解析文本」这个切换、以及**先取哪一个**——
+    判在后端是为了不让前端去猜文件后缀（同 ``content_kind`` 的理由）。
+    """
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

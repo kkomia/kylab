@@ -17,17 +17,15 @@ import hashlib
 import re
 from dataclasses import dataclass
 
+from app.core.page_markers import PAGE_MARKER_RE
 from app.storage.base import ChunkRecord
 
 __all__ = ["ChunkingConfig", "chunk_markdown", "content_hash_of"]
 
 
-#: 大文件切分器插入的页标记（`splitting.PAGE_MARKER_TEMPLATE` 的读取侧）。
-#:
-#: 与 `splitting.py` 是**一对**：那边写、这边读。改格式要同时改两处，
-#: 而且 `test_splitting.py` / `test_chunking.py` 各有一条断言钉住这对格式，
-#: 所以只改一边会被测试挡下来。
-_PAGE_MARKER = re.compile(r"^<!--\s*page:(\d+)\s*-->$")
+#: 页标记的读取侧。格式定义在 ``app/core/page_markers.py``（写侧：解析器与切分器），
+#: 两处共用一份，不可能分家。
+_PAGE_MARKER = PAGE_MARKER_RE
 
 _HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 """ATX 标题最多 6 级：7 个 ``#`` 在 Markdown 里就不是标题，而是普通段落。"""
@@ -131,22 +129,18 @@ def _split_blocks(markdown: str) -> list[tuple[str, str | None, int | None]]:
     没有标记的话「这条命中在第几页」这个问题就永远答不出来——
     而引文页码是"答案可核查"的前提（架构 §5）。
 
-    **为什么待用的页码要攒成一个列表，而不是只记"当前值"**：
-    第一版把页码记在"当前值"上、遇到空行就落块，结果这样一份产物出错了：
+    **页号是"当前页"，会一直沿用到下一个标记**，而不是只用一次。
+    这一点踩过两次：
 
-    ```
-    <!-- page:1 -->
-    （空行）
-    第一页正文
-    （空行）          <- 落块，页码 1，正确
-    <!-- page:2 -->
-    （空行）          <- pending 是空的，那个待用的页码 2 被丢掉
-    第二页正文        <- 拿到 None
-    ```
+    1. 第一版遇到空行就把页码清掉——而页标记与正文之间必然隔着空行
+       （`merge_parts` 就是这么拼的），于是标记后面那段正文拿到 None；
+    2. 第二版改成"待用页码用掉即清"，只修了第一段：**同一页的第二段又成了 None**。
+       实测一份 2 页的 PDF 拿到的是 `[1, null, null, null, 2, null, null, null]`——
+       八块里六块没有页码，引用照样写不出"第几页"。页码是页的属性，
+       不是"紧跟标记那一段"的属性。
 
-    空行是**比页标记更强**的分块信号，而页标记与正文之间必然隔着空行
-    （`merge_parts` 就是这么拼的），所以"当前值"一定会被空行冲掉。
-    正确做法是让页码**等着被下一段正文用掉**，落块时取最后一个。
+    所以现在是：标记设置当前页，之后所有段落都带上它，直到下一个标记。
+    空行、标题都不影响（它们只是分块信号，不是分页信号）。
 
     **标记本身不进 chunk 正文**：它是给这里读的元数据，留在正文里会污染检索文本，
     也会让嵌入向量被一串 HTML 注释干扰。
@@ -154,9 +148,7 @@ def _split_blocks(markdown: str) -> list[tuple[str, str | None, int | None]]:
     blocks: list[tuple[str, str | None, int | None]] = []
     stack: list[tuple[int, str]] = []
     pending: list[str] = []
-    # 还没被正文用掉的页标记。正常情况下最多一个；紧挨着几个标记
-    # （例如空段）也不该让后面的正文彻底丢掉页码
-    pages: list[int] = []
+    current_page: int | None = None
 
     def heading_path() -> str | None:
         return " > ".join(title for _, title in stack) if stack else None
@@ -165,18 +157,16 @@ def _split_blocks(markdown: str) -> list[tuple[str, str | None, int | None]]:
         text = "\n".join(pending).strip()
         pending.clear()
         if text:
-            blocks.append((text, heading_path(), pages[-1] if pages else None))
-            pages.clear()
+            blocks.append((text, heading_path(), current_page))
 
     for line in markdown.splitlines():
         stripped = line.strip()
         marker = _PAGE_MARKER.match(stripped)
         if marker:
-            # 页标记是**切块的硬边界**：先落掉前面积攒的内容，
-            # 之后的内容属于新的一页。不在这里落的话，一块会横跨两页，
-            # 而一块只能标一个页码——标错了比没有更糟
+            # 页标记是**块边界**（前面积攒的内容属于上一页）兼**页码来源**：
+            # 先把前面的落成块，再更新"当前页"，之后的内容直到下一个标记都属于这一页
             flush_pending()
-            pages.append(int(marker.group(1)))
+            current_page = int(marker.group(1))
             continue
         match = _HEADING.match(stripped)
         if match:
