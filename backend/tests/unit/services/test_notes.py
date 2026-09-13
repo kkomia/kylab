@@ -225,3 +225,63 @@ def test_attach_without_pipeline_is_rejected(bundle) -> None:  # type: ignore[no
 
     with pytest.raises(InvalidRequestError):
         service.attach_to_kb(record.id, user_id="u1", kb_id="kb_1")
+
+
+# ------------------------------------------------------------------ 配图
+
+
+def _png() -> bytes:
+    # 最小合法 PNG（1x1）；这里只关心字节进出，不关心它长什么样
+    return bytes.fromhex(
+        "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+        "1f15c4890000000a49444154789c6360000002000100ffff0300000600"
+        "05570a2e0000000049454e44ae426082"
+    )
+
+
+def test_upload_image_returns_content_addressed_name(notes: NotesService) -> None:
+    record = notes.create(user_id="u1", title="带图")
+
+    path, name = notes.upload_image(
+        record.id, user_id="u1", filename="截图 2026.PNG", content=_png()
+    )
+
+    assert name.endswith(".png") and len(name) == 16 + 4  # 哈希前缀 + 后缀
+    assert path.endswith(name)
+    assert notes.image_bytes(record.id, name) == _png()  # 读得回来
+
+
+def test_upload_image_rejects_svg_and_unknown_suffix(notes: NotesService) -> None:
+    """不收 SVG：它能内嵌脚本，而图片 URL 是给 <img> 直接加载的。"""
+    record = notes.create(user_id="u1", title="t")
+
+    with pytest.raises(InvalidRequestError):
+        notes.upload_image(record.id, user_id="u1", filename="x.svg", content=b"<svg/>")
+    with pytest.raises(InvalidRequestError):
+        notes.upload_image(record.id, user_id="u1", filename="x.exe", content=b"x")
+
+
+def test_upload_image_rejects_empty_and_oversized(notes: NotesService) -> None:
+    record = notes.create(user_id="u1", title="t")
+
+    with pytest.raises(InvalidRequestError):
+        notes.upload_image(record.id, user_id="u1", filename="a.png", content=b"")
+    with pytest.raises(InvalidRequestError):
+        notes.upload_image(
+            record.id, user_id="u1", filename="a.png", content=b"x" * (11 * 1024 * 1024)
+        )
+
+
+def test_upload_image_hides_other_peoples_notes(notes: NotesService) -> None:
+    record = notes.create(user_id="u1", title="t")
+
+    with pytest.raises(NotFoundError):
+        notes.upload_image(record.id, user_id="u2", filename="a.png", content=_png())
+
+
+def test_image_bytes_rejects_path_traversal(notes: NotesService) -> None:
+    record = notes.create(user_id="u1", title="t")
+
+    for bad in ("../secret", "..", "a/b.png", ""):
+        with pytest.raises(NotFoundError):
+            notes.image_bytes(record.id, bad)

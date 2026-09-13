@@ -121,3 +121,109 @@ def test_notes_require_credentials() -> None:
 
     with PlainClient(app) as anon:
         assert anon.get("/api/v1/notes").status_code == 401
+
+
+# ------------------------------------------------- AI 处理与配图（v20.2）
+
+
+class _FakeChat:
+    """只实现 complete：笔记 AI 走的是 `ask_raw`（不检索、不拼资料）。"""
+
+    def __init__(self, answer: str = "整理后的正文") -> None:
+        self.answer = answer
+
+    def complete(self, messages):  # type: ignore[no-untyped-def]
+        return self.answer
+
+
+def _install_fake_chat(answer: str = "整理后的正文") -> None:
+    from app.core.services import get_services
+    from tests.conftest import bind_model
+
+    services = get_services()
+    bind_model(services.models, "chat", model_id="fake-model", capabilities=["chat"])
+    services.chat._chat_factory = lambda config: _FakeChat(answer)
+
+
+def _png() -> bytes:
+    return bytes.fromhex(
+        "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+        "1f15c4890000000a49444154789c6360000002000100ffff0300000600"
+        "05570a2e0000000049454e44ae426082"
+    )
+
+
+def test_ai_transform_returns_processed_markdown(client: TestClient) -> None:
+    _install_fake_chat("## 标题\n\n- 要点一\n- 要点二")
+    note = client.post(
+        "/api/v1/notes", json={"title": "T", "content_md": "标题 要点一 要点二"}
+    ).json()
+
+    response = client.post(f"/api/v1/notes/{note['id']}/ai", json={"action": "format"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["content_md"].startswith("## 标题")
+    # 不自动落库：用户先看结果再决定存不存
+    assert client.get(f"/api/v1/notes/{note['id']}").json()["content_md"] == "标题 要点一 要点二"
+
+
+def test_ai_transform_rejects_unknown_action(client: TestClient) -> None:
+    note = client.post("/api/v1/notes", json={"title": "T", "content_md": "正文"}).json()
+
+    response = client.post(f"/api/v1/notes/{note['id']}/ai", json={"action": "translate"})
+
+    assert response.status_code == 422  # 字面量校验在协议层挡掉
+
+
+def test_ai_transform_on_empty_note_is_a_readable_400(client: TestClient) -> None:
+    _install_fake_chat()
+    note = client.post("/api/v1/notes", json={"title": "空的"}).json()
+
+    response = client.post(f"/api/v1/notes/{note['id']}/ai", json={"action": "polish"})
+
+    # InvalidRequestError 统一映射 422（与全仓口径一致）
+    assert response.status_code == 422
+    assert "为空" in response.json()["message"]
+
+
+def test_upload_and_serve_note_image(client: TestClient) -> None:
+    note = client.post("/api/v1/notes", json={"title": "带图", "content_md": "正文"}).json()
+
+    upload = client.post(
+        f"/api/v1/notes/{note['id']}/images",
+        files={"file": ("shot.png", _png(), "image/png")},
+    )
+
+    assert upload.status_code == 200, upload.text
+    body = upload.json()
+    assert body["name"].endswith(".png")
+    assert body["url"].startswith(f"/api/v1/notes/{note['id']}/images/")
+    assert "signature=" in body["url"]
+
+    served = client.get(body["url"])
+    assert served.status_code == 200
+    assert served.headers["content-type"].startswith("image/png")
+    assert served.content == _png()
+
+
+def test_note_image_rejects_a_tampered_signature(client: TestClient) -> None:
+    note = client.post("/api/v1/notes", json={"title": "带图", "content_md": "正文"}).json()
+    url = client.post(
+        f"/api/v1/notes/{note['id']}/images",
+        files={"file": ("shot.png", _png(), "image/png")},
+    ).json()["url"]
+
+    tampered = url.split("signature=")[0] + "signature=deadbeef"
+    assert client.get(tampered).status_code == 401
+
+
+def test_note_image_rejects_svg(client: TestClient) -> None:
+    """SVG 能内嵌脚本，而图片是按 URL 直接加载的——不收。"""
+    note = client.post("/api/v1/notes", json={"title": "带图", "content_md": "正文"}).json()
+
+    response = client.post(
+        f"/api/v1/notes/{note['id']}/images",
+        files={"file": ("x.svg", b"<svg onload=alert(1)/>", "image/svg+xml")},
+    )
+
+    assert response.status_code == 422

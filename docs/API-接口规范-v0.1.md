@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **106** 条端点。
+共 **109** 条端点。
 
 ### `api-keys`
 
@@ -311,7 +311,10 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `DELETE` | `/api/v1/notes/{note_id}` | 删除笔记 |
 | `GET` | `/api/v1/notes/{note_id}` | 笔记详情 |
 | `PATCH` | `/api/v1/notes/{note_id}` | 更新笔记 |
+| `POST` | `/api/v1/notes/{note_id}/ai` | 用对话模型排版 / 润色笔记 |
 | `POST` | `/api/v1/notes/{note_id}/attach` | 把笔记加入知识库 |
+| `POST` | `/api/v1/notes/{note_id}/images` | 上传笔记配图 |
+| `GET` | `/api/v1/notes/{note_id}/images/{name}` | 读取笔记配图 |
 
 ### `search`
 

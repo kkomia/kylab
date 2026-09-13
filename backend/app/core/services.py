@@ -41,6 +41,7 @@ from app.services.lifecycle import LifecycleService
 from app.services.llm import LLMUsage
 from app.services.maintenance import MaintenanceService
 from app.services.model_registry import ModelRegistryService
+from app.services.note_ai import NoteAiService
 from app.services.notes import NotesService
 from app.services.observability import ObservabilityService
 from app.services.parser_router import ParserRouter
@@ -111,6 +112,8 @@ class Services:
     """对话留存：会话与消息的读写（§11.2）。"""
     notes: NotesService
     """笔记：Markdown 事实源 + 加入知识库（v20）。"""
+    note_ai: NoteAiService
+    """笔记的 AI 排版 / 润色（v20.2）。单独依赖 LLM，保住 NotesService 的"无模型也能用"。"""
     suggested_questions: SuggestedQuestionsService
     """示例问题：依据所选知识库的语料让对话模型生成开场问题（对话页空状态）。"""
     webhooks: WebhookService
@@ -339,6 +342,7 @@ def build_services(
         ),
         conversations=conversations_service,
         notes=NotesService(bundle, ingest=ingest, documents=documents_service),
+        note_ai=NoteAiService(chat_service),
         suggested_questions=SuggestedQuestionsService(bundle, chat_service),
         webhooks=webhooks,
         embedder=embedder,

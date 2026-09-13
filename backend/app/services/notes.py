@@ -17,14 +17,23 @@ kylab 已有知识库、对话（SSE 流式）、摄入流水线三大底座，�
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from datetime import UTC, datetime
+from pathlib import PurePosixPath
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
-from app.storage.base import NoteRecord, StoreBundle
+from app.storage.base import IMAGES, NoteRecord, StoreBundle
 
-__all__ = ["MAX_TAGS", "MAX_TAG_CHARS", "NotesService", "normalize_tags"]
+__all__ = [
+    "MAX_IMAGE_BYTES",
+    "MAX_TAGS",
+    "MAX_TAG_CHARS",
+    "NotesService",
+    "image_resource",
+    "normalize_tags",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +44,27 @@ MAX_TAGS = 8
 MAX_TAG_CHARS = 24
 #: 允许的来源类型。``manual`` 手记 / ``chat`` 问答存为 / ``clip`` 剪藏。
 SOURCE_KINDS = frozenset({"manual", "chat", "clip"})
+
+#: 笔记配图上限。比文档上传（200MB）小得多：它要内联在正文里，
+#: 大图会让笔记自身变得难以加载。
+MAX_IMAGE_BYTES = 10 * 1024 * 1024
+#: 只收光栅图。**刻意不收 SVG**：SVG 可以内嵌脚本，而图片 URL 是给 ``<img>``
+#: 直接加载的（无自定义头、靠签名授权），内联渲染 SVG 等于给自己开一个 XSS 口子。
+ALLOWED_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
+
+
+def image_resource(note_id: str, name: str) -> str:
+    """被签名的资源标识。
+
+    公开导出：API 层签发与校验都要用**同一个**函数算被签内容，
+    两处各写一遍字符串拼接迟早会漂（漂了就是图片全部 401）。
+    """
+    return f"note-image:{note_id}:{name}"
+
+
+def _image_key(note_id: str, name: str) -> str:
+    """对象存储里的键。按笔记分目录，删笔记时能整目录清理。"""
+    return f"{IMAGES}/notes/{note_id}/{name}"
 
 
 def normalize_tags(tags: list[str] | None) -> list[str]:
@@ -156,6 +186,38 @@ class NotesService:
             note_id, kb_id=kb_id, doc_id=outcome.document.id
         )
         return self.get(note_id)
+
+    # ------------------------------------------------------------------ 配图
+
+    def upload_image(
+        self, note_id: str, *, user_id: str | None, filename: str, content: bytes
+    ) -> tuple[str, str]:
+        """存下一张笔记配图，返回 ``(存储路径, 文件名)``。
+
+        文件名用**内容哈希**而不是用户给的原名：同一张图重复插入只存一份，
+        也避免中文名/空格带来的转义问题。后缀只在白名单内保留。
+        """
+        self.get_for_owner(note_id, user_id)
+        if not content:
+            raise InvalidRequestError("图片内容为空")
+        if len(content) > MAX_IMAGE_BYTES:
+            raise InvalidRequestError(f"图片超过 {MAX_IMAGE_BYTES // (1024 * 1024)}MB 上限")
+        suffix = PurePosixPath(filename or "").suffix.lower()
+        if suffix not in ALLOWED_IMAGE_SUFFIXES:
+            allowed = "、".join(sorted(ALLOWED_IMAGE_SUFFIXES))
+            raise InvalidRequestError(f"不支持的图片格式，请使用：{allowed}")
+        name = f"{hashlib.sha256(content).hexdigest()[:16]}{suffix}"
+        path = self._stores.objects.write(_image_key(note_id, name), content)
+        return path, name
+
+    def image_bytes(self, note_id: str, name: str) -> bytes:
+        """读回一张配图。``name`` 只允许纯文件名，防止拼出越界路径。"""
+        if "/" in name or "\\" in name or name in ("", ".", ".."):
+            raise NotFoundError(f"图片不存在：{name}")
+        try:
+            return self._stores.objects.read(_image_key(note_id, name))
+        except FileNotFoundError as exc:
+            raise NotFoundError(f"图片不存在：{name}") from exc
 
     # ------------------------------------------------------------------ 读
 

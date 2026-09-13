@@ -6,7 +6,7 @@
  * 换编辑器时这一层不用改。
  */
 
-import { request } from './client'
+import { request, upload } from './client'
 
 export type NoteSourceKind = 'manual' | 'chat' | 'clip'
 
@@ -95,4 +95,34 @@ export function attachNote(noteId: string, kbId: string): Promise<Note> {
     method: 'POST',
     body: JSON.stringify({ kb_id: kbId }),
   })
+}
+
+/** AI 处理的三档动作：只排版 / 只润色 / 两者一起。 */
+export type NoteAiAction = 'format' | 'polish' | 'both'
+
+/**
+ * 用对话模型处理笔记正文。**不落库**：返回结果由调用方放进编辑器，
+ * 用户看到满意后再走正常的保存（也能撤销）。
+ */
+export function aiTransform(
+  noteId: string,
+  action: NoteAiAction,
+  modelPk?: string | null,
+): Promise<{ content_md: string }> {
+  return request<{ content_md: string }>(`/notes/${noteId}/ai`, {
+    method: 'POST',
+    body: JSON.stringify({ action, model_pk: modelPk ?? null }),
+  })
+}
+
+export interface NoteImage {
+  /** 带签名的相对地址，可直接放进 `<img src>`（图片标签带不了鉴权头）。 */
+  url: string
+  name: string
+  alt: string
+}
+
+/** 上传一张笔记配图，返回可内联显示的地址。 */
+export function uploadNoteImage(noteId: string, file: File): Promise<NoteImage> {
+  return upload<NoteImage>(`/notes/${noteId}/images`, file)
 }

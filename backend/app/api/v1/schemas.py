@@ -1177,3 +1177,27 @@ class NoteTagOut(BaseModel):
 
 class NoteTagListOut(BaseModel):
     items: list[NoteTagOut] = Field(default_factory=list)
+
+
+class NoteAiIn(BaseModel):
+    """笔记 AI 处理请求。
+
+    ``action`` 三档：``format`` 只排版 / ``polish`` 只润色 / ``both`` 两者一起。
+    """
+
+    action: Literal["format", "polish", "both"]
+    model_pk: str | None = None
+    """用哪个对话模型；留空用全局默认。"""
+
+
+class NoteAiOut(BaseModel):
+    content_md: str
+    """处理后的 Markdown。**不自动落库**：由调用方决定要不要写回，用户可先看再存。"""
+
+
+class NoteImageOut(BaseModel):
+    url: str
+    """可直接放进 ``<img src>`` 的相对地址（带签名，无需自定义请求头）。"""
+
+    name: str
+    alt: str

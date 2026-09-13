@@ -12,7 +12,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import type { Note, NoteListItem } from '@/api/notes'
+import type { Note, NoteAiAction, NoteListItem } from '@/api/notes'
+import { aiTransform } from '@/api/notes'
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconPin from '@/components/icons/IconPin.vue'
@@ -59,6 +60,7 @@ const saveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
 
 const searchInput = ref(store.query)
 const tagDraft = ref('')
+const aiBusy = ref(false)
 const attachOpen = ref(false)
 const attachKb = ref('')
 const attaching = ref(false)
@@ -255,6 +257,39 @@ function onTitleEnter(): void {
   ;(document.activeElement as HTMLElement | null)?.blur()
 }
 
+/** 编辑器内的提示（图片上传失败等）由页面统一弹。 */
+function onEditorNotify(payload: { type: 'error' | 'success'; message: string }): void {
+  if (payload.type === 'error') notifyError(payload.message)
+  else notifySuccess(payload.message)
+}
+
+/**
+ * 执行一次 AI 处理。
+ *
+ * 顺序要紧：**先把当前改动落盘**，因为后端处理的是库里保存的正文——
+ * 不保存就会出现"AI 整理的是旧版本"这种很难察觉的错位。
+ * 结果写回 `draft.content_md`，随后由正常的防抖保存持久化；空结果不覆盖原文。
+ */
+async function runAi(action: NoteAiAction): Promise<void> {
+  const item = draft.value
+  if (!item || aiBusy.value) return
+  aiBusy.value = true
+  try {
+    await saveNow()
+    const result = await aiTransform(item.id, action)
+    if (!result.content_md.trim()) {
+      notifyError('AI 没有返回内容，正文保持原样')
+      return
+    }
+    item.content_md = result.content_md
+    notifySuccess('AI 处理完成；不满意可以用工具栏的撤销或直接改')
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : 'AI 处理失败')
+  } finally {
+    aiBusy.value = false
+  }
+}
+
 async function toggleTag(tag: string): Promise<void> {
   await store.setFilter(searchInput.value.trim(), store.activeTag === tag ? '' : tag)
 }
@@ -390,7 +425,15 @@ onBeforeUnmount(() => {
 
       <section class="notes-pane">
         <div v-if="loadingNote" class="pane-placeholder">正在加载…</div>
-        <NoteEditor v-else-if="draft" v-model="draft.content_md" class="pane-editor">
+        <NoteEditor
+          v-else-if="draft"
+          v-model="draft.content_md"
+          class="pane-editor"
+          :note-id="draft.id"
+          :ai-busy="aiBusy"
+          @notify="onEditorNotify"
+          @ai="runAi"
+        >
           <template #actions>
             <span class="save-label" :class="{ 'save-error': saveState === 'error' }">{{
               saveLabel

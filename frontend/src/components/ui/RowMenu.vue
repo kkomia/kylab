@@ -130,7 +130,8 @@ onBeforeUnmount(() => {
 <template>
   <details ref="menu" class="menu" @toggle="onToggle">
     <summary class="menu-trigger" :aria-label="label ?? '更多操作'">
-      <IconMore />
+      <!-- 触发器默认是「…」；需要别的入口（如笔记的 AI 星芒）时用 #trigger 覆盖 -->
+      <slot name="trigger"><IconMore /></slot>
     </summary>
     <div class="menu-list" :class="{ 'menu-list-up': dropUp }" :style="listStyle">
       <slot :close="close" />
@@ -147,8 +148,12 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: var(--hit-target);
+  /* 触发器内容由插槽决定：图标时是 24px 的方块，带文字（如「AI」）时按内容撑开。
+     用 min-width 而不是 width，两种形态都不用各自覆盖样式。 */
+  min-width: var(--hit-target);
+  width: auto;
   height: var(--hit-target);
+  padding: 0 var(--space-1);
   color: var(--text-tertiary);
   border-radius: var(--radius-control);
   cursor: pointer;

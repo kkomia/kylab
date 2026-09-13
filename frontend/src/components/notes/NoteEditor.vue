@@ -14,10 +14,13 @@
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { TaskItem } from '@tiptap/extension-task-item'
 import { TaskList } from '@tiptap/extension-task-list'
+import Image from '@tiptap/extension-image'
 import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { ref, watch } from 'vue'
 
+import { uploadNoteImage, type NoteAiAction } from '@/api/notes'
+import IconAi from '@/components/icons/IconAi.vue'
 import IconFormatBold from '@/components/icons/IconFormatBold.vue'
 import IconFormatBulletList from '@/components/icons/IconFormatBulletList.vue'
 import IconFormatCode from '@/components/icons/IconFormatCode.vue'
@@ -31,14 +34,23 @@ import IconFormatQuote from '@/components/icons/IconFormatQuote.vue'
 import IconFormatStrike from '@/components/icons/IconFormatStrike.vue'
 import IconFormatTaskList from '@/components/icons/IconFormatTaskList.vue'
 import IconFormatUnderline from '@/components/icons/IconFormatUnderline.vue'
+import IconImage from '@/components/icons/IconImage.vue'
 import IconRedo from '@/components/icons/IconRedo.vue'
 import IconUndo from '@/components/icons/IconUndo.vue'
+import RowMenu from '@/components/ui/RowMenu.vue'
 import { Markdown } from 'tiptap-markdown'
 
-const props = withDefaults(defineProps<{ modelValue: string; editable?: boolean }>(), {
-  editable: true,
-})
-const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
+const props = withDefaults(
+  defineProps<{ modelValue: string; editable?: boolean; noteId?: string; aiBusy?: boolean }>(),
+  { editable: true, noteId: undefined, aiBusy: false },
+)
+const emit = defineEmits<{
+  'update:modelValue': [value: string]
+  /** 交给页面去弹提示：编辑器不做全局通知。 */
+  notify: [payload: { type: 'error' | 'success'; message: string }]
+  /** 请求对本篇做一次 AI 处理；由页面负责保存、调用、写回。 */
+  ai: [action: NoteAiAction]
+}>()
 
 const editor = useEditor({
   editable: props.editable,
@@ -53,6 +65,8 @@ const editor = useEditor({
     Placeholder.configure({ placeholder: '记录点什么… 选中文字后可用上方工具栏格式化' }),
     TaskList,
     TaskItem.configure({ nested: true }),
+    // 配图：地址是带签名的相对链接，正文里存的就是它（Markdown 里是 ![](...)）
+    Image.configure({ inline: false, allowBase64: false }),
     Markdown.configure({ html: false, linkify: true, breaks: false }),
   ],
   onUpdate: ({ editor: instance }) => {
@@ -157,6 +171,45 @@ function toggleLink(): void {
   const url = window.prompt('链接地址（留空则取消）', 'https://')
   if (!url) return
   instance.chain().focus().extendMarkRange('link').setLink({ href: url }).run()
+}
+
+const fileInput = ref<HTMLInputElement | null>(null)
+const uploading = ref(false)
+
+function pickImage(): void {
+  fileInput.value?.click()
+}
+
+/** 选图 → 上传到后端 → 以带签名的地址插入。图片标签带不了鉴权头，所以必须签名地址。 */
+async function onFileChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 允许连续选同一张
+  const instance = editor.value
+  if (!file || !instance) return
+  if (!props.noteId) {
+    emit('notify', { type: 'error', message: '笔记还没保存，先等一下再插图' })
+    return
+  }
+  uploading.value = true
+  try {
+    const image = await uploadNoteImage(props.noteId, file)
+    instance.chain().focus().setImage({ src: image.url, alt: image.alt }).run()
+  } catch (cause) {
+    emit('notify', {
+      type: 'error',
+      message: cause instanceof Error ? cause.message : '图片上传失败',
+    })
+  } finally {
+    uploading.value = false
+  }
+}
+
+/** 选定 AI 动作后交给页面执行（页面负责先保存，再替换正文）。 */
+function chooseAi(action: NoteAiAction, close: () => void): void {
+  close()
+  if (props.aiBusy) return
+  emit('ai', action)
 }
 </script>
 
@@ -319,11 +372,52 @@ function toggleLink(): void {
         >
           <IconFormatLink :size="15" />
         </button>
+        <button
+          type="button"
+          class="tool"
+          :disabled="uploading || !noteId"
+          :title="noteId ? '插入图片' : '保存后才能插入图片'"
+          @click="pickImage"
+        >
+          <IconImage :size="15" />
+        </button>
       </div>
 
       <div class="toolbar-right">
+        <!-- AI 处理：星芒图标 + 三档动作下拉。放在格式工具栏与右侧动作之间——
+             它属于"对内容做什么"，不属于"对这条笔记做什么"。 -->
+        <RowMenu label="AI 处理">
+          <template #trigger>
+            <span class="ai-trigger" :class="{ 'ai-busy': aiBusy }" title="AI 处理">
+              <IconAi :size="15" />
+              <span class="ai-trigger-text">AI</span>
+            </span>
+          </template>
+          <template #default="{ close }">
+            <button type="button" :disabled="aiBusy" @click="chooseAi('format', close)">
+              <span class="ai-item-label">智能排版</span>
+              <span class="ai-item-hint">只调分段与标题，不改文字</span>
+            </button>
+            <button type="button" :disabled="aiBusy" @click="chooseAi('polish', close)">
+              <span class="ai-item-label">内容润色</span>
+              <span class="ai-item-hint">只改措辞与标点，不动结构</span>
+            </button>
+            <button type="button" :disabled="aiBusy" @click="chooseAi('both', close)">
+              <span class="ai-item-label">排版并润色</span>
+              <span class="ai-item-hint">两件事一起做</span>
+            </button>
+          </template>
+        </RowMenu>
         <slot name="actions" />
       </div>
+
+      <input
+        ref="fileInput"
+        type="file"
+        accept="image/png,image/jpeg,image/gif,image/webp,image/bmp"
+        class="file-input"
+        @change="onFileChange"
+      />
     </div>
 
     <div class="editor-body">
@@ -400,6 +494,35 @@ function toggleLink(): void {
   gap: var(--space-1);
   align-items: center;
   margin-left: auto;
+}
+
+.file-input {
+  display: none;
+}
+
+/* AI 入口：星芒 + 短标签，用强调色与普通格式按钮区分开 */
+.ai-trigger {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  font-size: var(--text-micro-size);
+  font-weight: 600;
+  color: var(--accent-text);
+}
+
+.ai-busy {
+  opacity: 0.55;
+}
+
+.ai-item-label {
+  display: block;
+}
+
+.ai-item-hint {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
 }
 
 .editor-body {
@@ -494,6 +617,18 @@ function toggleLink(): void {
 .editor-content :deep(.tiptap a) {
   color: var(--accent-text);
   text-decoration: underline;
+}
+
+.editor-content :deep(.tiptap img) {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-control);
+}
+
+.editor-content :deep(.tiptap img.ProseMirror-selectednode) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .editor-content :deep(.tiptap p.is-editor-empty:first-child::before) {

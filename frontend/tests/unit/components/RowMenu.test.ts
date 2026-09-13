@@ -56,6 +56,25 @@ describe('RowMenu', () => {
 
     expect(wrapper.find('summary').attributes('aria-label')).toBe('更多操作')
     expect(wrapper.find('.menu-list .item').text()).toBe('编辑')
+    // 默认触发器是「…」图标
+    expect(wrapper.find('summary svg').exists()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('触发器可以用 #trigger 覆盖（笔记的 AI 入口就靠它）', () => {
+    const wrapper = mount(RowMenu, {
+      props: { label: 'AI 处理' },
+      slots: {
+        trigger: '<span class="mine">AI</span>',
+        default: '<button type="button">智能排版</button>',
+      },
+      attachTo: document.body,
+    })
+
+    expect(wrapper.find('summary .mine').text()).toBe('AI')
+    // 覆盖触发器不影响可访问名
+    expect(wrapper.find('summary').attributes('aria-label')).toBe('AI 处理')
 
     wrapper.unmount()
   })

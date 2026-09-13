@@ -41,8 +41,10 @@ function plainPreview(markdown: string): string {
     .filter(Boolean)
   const body = lines
     .join(' ')
-    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\*\*|__|`{1,3}/g, '')
+    .trim()
   return body.slice(0, 120) + (body.length > 120 ? '…' : '')
 }
 
