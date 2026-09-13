@@ -23,7 +23,10 @@ function item(id: string, updatedAt: string | null, pinned = false): NoteListIte
 describe('latestNoteId', () => {
   it('取更新时间最新的一条，而不是列表第一条', () => {
     // 列表里置顶的旧笔记排第一——"最新"不该被置顶带偏
-    const items = [item('pinned-old', '2026-01-01T00:00:00Z', true), item('new', '2026-09-13T00:00:00Z')]
+    const items = [
+      item('pinned-old', '2026-01-01T00:00:00Z', true),
+      item('new', '2026-09-13T00:00:00Z'),
+    ]
 
     expect(latestNoteId(items)).toBe('new')
   })

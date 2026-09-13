@@ -160,12 +160,12 @@ describe('traceSteps', () => {
 
 describe('Agent 步骤（v20）', () => {
   it('summary 按当前步骤说进度，用户能分辨卡在理解还是检索', () => {
-    expect(
-      traceSummary(message('assistant', { streaming: true, steps: [step('intent')] })),
-    ).toBe('正在理解问题…')
-    expect(
-      traceSummary(message('assistant', { streaming: true, steps: [step('rewrite')] })),
-    ).toBe('正在优化检索词…')
+    expect(traceSummary(message('assistant', { streaming: true, steps: [step('intent')] }))).toBe(
+      '正在理解问题…',
+    )
+    expect(traceSummary(message('assistant', { streaming: true, steps: [step('rewrite')] }))).toBe(
+      '正在优化检索词…',
+    )
   })
 
   it('有 Agent 步骤就照搬，不再编造老的两步', () => {

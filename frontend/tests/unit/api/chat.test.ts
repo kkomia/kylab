@@ -152,9 +152,7 @@ describe('chatStream', () => {
       ),
     )
 
-    await expect(noPace({ query: 'q', kb_ids: ['kb_1'] }, {})).rejects.toThrow(
-      '对话端点返回 400',
-    )
+    await expect(noPace({ query: 'q', kb_ids: ['kb_1'] }, {})).rejects.toThrow('对话端点返回 400')
   })
 
   it('响应头一到就交出句柄：正文还没结束时「停止」已经可用', async () => {
@@ -187,12 +185,11 @@ describe('chatStream', () => {
     let text = ''
     let handle: { abort: () => void } | null = null
     // 正文永远不结束：handle 必须仍然拿得到
-    const pending = noPace(
-      { query: 'q', kb_ids: ['kb_1'] },
-      { onDelta: (d) => (text += d) },
-    ).then((value) => {
-      handle = value
-    })
+    const pending = noPace({ query: 'q', kb_ids: ['kb_1'] }, { onDelta: (d) => (text += d) }).then(
+      (value) => {
+        handle = value
+      },
+    )
     await settle()
 
     expect(handle).not.toBeNull()
