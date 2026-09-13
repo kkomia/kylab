@@ -1776,35 +1776,58 @@ async function savePrompt(): Promise<void> {
    显示名字而不是序号，是因为读者想知道"这句依据哪份资料"；序号只有回去数出处列表
    才有意义。点它仍会展开过程面板并闪出对应的那一条出处。
 
-   名字长度不设上限、交给 max-width + 内层省略：中文文件名长短差别很大，
-   写死截断字符数会在短名上白白丢掉信息 */
+   **中性色 + 小尺寸**（对齐 WeKnora 的克制做法）：它是句尾的脚注，不该和正文抢
+   注意力。早先用强调色胶囊是过火了——一屏看下来满眼蓝块，视线被脚注带走了。
+   名字长度不写死截断字符数，交给 max-width + 内层省略：短名不该被白白砍掉信息 */
 .reply-text :deep(.md-cite) {
   display: inline-flex;
   align-items: center;
-  max-width: 11em;
-  height: 18px;
+  gap: 3px;
+  max-width: 8.5em;
+  height: 16px;
   margin: 0 2px;
-  padding: 0 var(--space-2);
+  padding: 0 5px;
   font-size: var(--text-micro-size);
   line-height: 1;
-  color: var(--accent-text);
-  background: var(--accent-soft);
+  color: var(--text-tertiary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-hairline);
   border-radius: var(--radius-control);
   cursor: pointer;
-  /* 18px 的胶囊压在 1.75 行高的正文里：不抬一点会明显偏下 */
-  vertical-align: -3px;
+  /* 16px 的胶囊压在 1.75 行高的正文里：不抬一点会明显偏下 */
+  vertical-align: -2px;
+}
+
+/* 文件名前的小图标：拿 IconFile（Remix `file-text-line`）的路径做 mask、用 currentColor
+   上色。这样不必往 HTML 字符串里塞 SVG（渲染逻辑不该管画什么图），也自动跟主题色 */
+.reply-text :deep(.md-cite::before) {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  content: '';
+  background: currentColor;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M21 8v12.993A1 1 0 0 1 20.007 22H3.993A.993.993 0 0 1 3 21.008V2.992C3 2.455 3.449 2 4.002 2h10.995zm-2 1h-5V4H5v16h14zM8 7h3v2H8zm0 4h8v2H8zm0 4h8v2H8z'/%3E%3C/svg%3E");
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M21 8v12.993A1 1 0 0 1 20.007 22H3.993A.993.993 0 0 1 3 21.008V2.992C3 2.455 3.449 2 4.002 2h10.995zm-2 1h-5V4H5v16h14zM8 7h3v2H8zm0 4h8v2H8zm0 4h8v2H8z'/%3E%3C/svg%3E");
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
 }
 
 /* 省略号必须挂在**内层 span** 上：inline-flex 容器自己设 overflow: hidden 时，
-   文本的 text-overflow 在部分浏览器不生效，会直接把字裁掉而没有"…" */
+   文本的 text-overflow 在部分浏览器不生效，会直接把字裁掉而没有"…"。
+   还要 min-width: 0——flex 项默认不收缩到内容宽度以下，不给它就永远省略不了 */
 .reply-text :deep(.md-cite-name) {
   overflow: hidden;
+  min-width: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .reply-text :deep(.md-cite:hover) {
-  background: var(--accent-selected);
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  border-color: var(--border);
 }
 
 /* 流式光标：跟在最后一个字后面，说明"还在写" */
