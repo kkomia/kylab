@@ -533,7 +533,8 @@ async function saveAsNote(turnIndex: number, turn: Turn): Promise<void> {
   try {
     await notes.create({
       title: question.slice(0, 80) || '来自对话的笔记',
-      content_md: question ? `# ${question}\n\n${answer}` : answer,
+      // 正文只放回答：提问已经在标题里了，再写成一级标题会在文档里重复一遍
+      content_md: answer,
       source_kind: 'chat',
       source_ref: conversationId.value || null,
     })

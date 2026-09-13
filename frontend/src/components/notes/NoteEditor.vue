@@ -7,8 +7,9 @@
  * `content_md` 是唯一事实源——进出这一层的都是 Markdown 字符串，编辑器 JSON 不落库，
  * 所以以后换编辑器，数据与后端都不用动。
  *
- * 工具栏用**文字标签**而不是图标：粗体/斜体/各类列表这些没有现成图标，
- * 为它们画十几个 SVG 不划算，而中文标签在小尺寸下比抽象图标更不用猜。
+ * 版式对齐 ima 笔记：**工具栏在顶部、标题在文档里**（不是"表单标题框"），
+ * 正文收在一条居中的窄栏里阅读。所以标题通过 `#header` 插槽交给调用方，
+ * 由本组件把它放在工具栏与正文之间——顺序对了，观感才对。
  */
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { TaskItem } from '@tiptap/extension-task-item'
@@ -16,6 +17,22 @@ import { TaskList } from '@tiptap/extension-task-list'
 import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { ref, watch } from 'vue'
+
+import IconFormatBold from '@/components/icons/IconFormatBold.vue'
+import IconFormatBulletList from '@/components/icons/IconFormatBulletList.vue'
+import IconFormatCode from '@/components/icons/IconFormatCode.vue'
+import IconFormatH1 from '@/components/icons/IconFormatH1.vue'
+import IconFormatH2 from '@/components/icons/IconFormatH2.vue'
+import IconFormatItalic from '@/components/icons/IconFormatItalic.vue'
+import IconFormatLink from '@/components/icons/IconFormatLink.vue'
+import IconFormatOrderedList from '@/components/icons/IconFormatOrderedList.vue'
+import IconFormatParagraph from '@/components/icons/IconFormatParagraph.vue'
+import IconFormatQuote from '@/components/icons/IconFormatQuote.vue'
+import IconFormatStrike from '@/components/icons/IconFormatStrike.vue'
+import IconFormatTaskList from '@/components/icons/IconFormatTaskList.vue'
+import IconFormatUnderline from '@/components/icons/IconFormatUnderline.vue'
+import IconRedo from '@/components/icons/IconRedo.vue'
+import IconUndo from '@/components/icons/IconUndo.vue'
 import { Markdown } from 'tiptap-markdown'
 
 const props = withDefaults(defineProps<{ modelValue: string; editable?: boolean }>(), {
@@ -25,12 +42,13 @@ const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
 const editor = useEditor({
   editable: props.editable,
+  // 初值必须来自 props：调用方只在内容就绪后才挂载本组件，
+  // 若这里给空串、指望下面的 watch 灌进来，会踩到"watch 先于 editor 实例"的时序而丢正文
   content: props.modelValue,
   extensions: [
     StarterKit.configure({
       // 笔记里贴链接是常态，但点一下就跳走会打断写作——按住 Ctrl 才打开
       link: { openOnClick: false, autolink: true },
-      codeBlock: {},
     }),
     Placeholder.configure({ placeholder: '记录点什么… 选中文字后可用上方工具栏格式化' }),
     TaskList,
@@ -47,8 +65,8 @@ const editor = useEditor({
 })
 
 /**
- * `useEditor` 返回的是 core 的 `Editor`（不是 vue-3 包装的那个子类），
- * 所以类型从实例本身推——手写 import 反而会撞上两个包各自的 `Editor`。
+ * `useEditor` 返回的是 core 的 `Editor`，不同包各有自己的 `Editor` 类型，
+ * 手写 import 会撞类型；这里从实例本身推。
  */
 type CoreEditor = NonNullable<typeof editor.value>
 
@@ -70,6 +88,7 @@ watch(
       instance.commands.setContent(value || '', { emitUpdate: false })
     }
   },
+  { immediate: true },
 )
 watch(
   () => props.editable,
@@ -77,42 +96,49 @@ watch(
 )
 
 /**
- * 各按钮的激活态。
+ * 各按钮的激活/可用态。
  *
- * Tiptap 实例不在 Vue 的响应式图里，所以不能直接 `computed(isActive)`——
- * 改成"每次交易回调里重算一次"的普通 ref（`onTransaction` 里调 `refreshActive`）。
+ * Tiptap 实例不在 Vue 的响应式图里，不能直接 `computed(isActive)`——
+ * 改成"每次交易回调里重算一次"的普通 ref。
  */
 const active = ref({
+  paragraph: true,
   h1: false,
   h2: false,
   bold: false,
   italic: false,
+  underline: false,
   strike: false,
   bullet: false,
   ordered: false,
+  task: false,
   quote: false,
   code: false,
-  task: false,
   link: false,
+  canUndo: false,
+  canRedo: false,
 })
 
 function refreshActive(): void {
   const instance = editor.value
-  active.value = instance
-    ? {
-        h1: instance.isActive('heading', { level: 1 }),
-        h2: instance.isActive('heading', { level: 2 }),
-        bold: instance.isActive('bold'),
-        italic: instance.isActive('italic'),
-        strike: instance.isActive('strike'),
-        bullet: instance.isActive('bulletList'),
-        ordered: instance.isActive('orderedList'),
-        quote: instance.isActive('blockquote'),
-        code: instance.isActive('codeBlock'),
-        task: instance.isActive('taskList'),
-        link: instance.isActive('link'),
-      }
-    : active.value
+  if (!instance) return
+  active.value = {
+    paragraph: instance.isActive('paragraph'),
+    h1: instance.isActive('heading', { level: 1 }),
+    h2: instance.isActive('heading', { level: 2 }),
+    bold: instance.isActive('bold'),
+    italic: instance.isActive('italic'),
+    underline: instance.isActive('underline'),
+    strike: instance.isActive('strike'),
+    bullet: instance.isActive('bulletList'),
+    ordered: instance.isActive('orderedList'),
+    task: instance.isActive('taskList'),
+    quote: instance.isActive('blockquote'),
+    code: instance.isActive('codeBlock'),
+    link: instance.isActive('link'),
+    canUndo: instance.can().undo(),
+    canRedo: instance.can().redo(),
+  }
 }
 
 function run(action: (instance: CoreEditor) => void): void {
@@ -136,106 +162,176 @@ function toggleLink(): void {
 
 <template>
   <div class="note-editor">
-    <div v-if="editable" class="toolbar" role="toolbar" aria-label="排版工具栏">
-      <button
-        type="button"
-        class="tool"
-        :class="{ 'tool-on': active.h1 }"
-        title="一级标题"
-        @click="run((e) => e.chain().focus().toggleHeading({ level: 1 }).run())"
-      >
-        H1
-      </button>
-      <button
-        type="button"
-        class="tool"
-        :class="{ 'tool-on': active.h2 }"
-        title="二级标题"
-        @click="run((e) => e.chain().focus().toggleHeading({ level: 2 }).run())"
-      >
-        H2
-      </button>
+    <div class="toolbar" role="toolbar" aria-label="排版工具栏">
+      <div class="tool-group">
+        <button
+          type="button"
+          class="tool"
+          title="撤销"
+          :disabled="!active.canUndo"
+          @click="run((e) => e.chain().focus().undo().run())"
+        >
+          <IconUndo :size="15" />
+        </button>
+        <button
+          type="button"
+          class="tool"
+          title="重做"
+          :disabled="!active.canRedo"
+          @click="run((e) => e.chain().focus().redo().run())"
+        >
+          <IconRedo :size="15" />
+        </button>
+      </div>
+
       <span class="tool-sep" aria-hidden="true" />
-      <button
-        type="button"
-        class="tool"
-        :class="{ 'tool-on': active.bold }"
-        title="粗体"
-        @click="run((e) => e.chain().focus().toggleBold().run())"
-      >
-        B
-      </button>
-      <button
-        type="button"
-        class="tool tool-italic"
-        :class="{ 'tool-on': active.italic }"
-        title="斜体"
-        @click="run((e) => e.chain().focus().toggleItalic().run())"
-      >
-        I
-      </button>
-      <button
-        type="button"
-        class="tool tool-strike"
-        :class="{ 'tool-on': active.strike }"
-        title="删除线"
-        @click="run((e) => e.chain().focus().toggleStrike().run())"
-      >
-        S
-      </button>
+
+      <div class="tool-group">
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.paragraph }"
+          title="正文"
+          @click="run((e) => e.chain().focus().setParagraph().run())"
+        >
+          <IconFormatParagraph :size="15" />
+        </button>
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.h1 }"
+          title="一级标题"
+          @click="run((e) => e.chain().focus().toggleHeading({ level: 1 }).run())"
+        >
+          <IconFormatH1 :size="15" />
+        </button>
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.h2 }"
+          title="二级标题"
+          @click="run((e) => e.chain().focus().toggleHeading({ level: 2 }).run())"
+        >
+          <IconFormatH2 :size="15" />
+        </button>
+      </div>
+
       <span class="tool-sep" aria-hidden="true" />
-      <button
-        type="button"
-        class="tool"
-        :class="{ 'tool-on': active.bullet }"
-        title="无序列表"
-        @click="run((e) => e.chain().focus().toggleBulletList().run())"
-      >
-        列表
-      </button>
-      <button
-        type="button"
-        class="tool"
-        :class="{ 'tool-on': active.ordered }"
-        title="有序列表"
-        @click="run((e) => e.chain().focus().toggleOrderedList().run())"
-      >
-        编号
-      </button>
-      <button
-        type="button"
-        class="tool"
-        :class="{ 'tool-on': active.task }"
-        title="待办清单"
-        @click="run((e) => e.chain().focus().toggleTaskList().run())"
-      >
-        待办
-      </button>
+
+      <div class="tool-group">
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.bold }"
+          title="粗体"
+          @click="run((e) => e.chain().focus().toggleBold().run())"
+        >
+          <IconFormatBold :size="15" />
+        </button>
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.italic }"
+          title="斜体"
+          @click="run((e) => e.chain().focus().toggleItalic().run())"
+        >
+          <IconFormatItalic :size="15" />
+        </button>
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.underline }"
+          title="下划线"
+          @click="run((e) => e.chain().focus().toggleUnderline().run())"
+        >
+          <IconFormatUnderline :size="15" />
+        </button>
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.strike }"
+          title="删除线"
+          @click="run((e) => e.chain().focus().toggleStrike().run())"
+        >
+          <IconFormatStrike :size="15" />
+        </button>
+      </div>
+
       <span class="tool-sep" aria-hidden="true" />
-      <button
-        type="button"
-        class="tool"
-        :class="{ 'tool-on': active.quote }"
-        title="引用"
-        @click="run((e) => e.chain().focus().toggleBlockquote().run())"
-      >
-        引用
-      </button>
-      <button
-        type="button"
-        class="tool"
-        :class="{ 'tool-on': active.code }"
-        title="代码块"
-        @click="run((e) => e.chain().focus().toggleCodeBlock().run())"
-      >
-        代码
-      </button>
-      <button type="button" class="tool" :class="{ 'tool-on': active.link }" title="链接" @click="toggleLink">
-        链接
-      </button>
+
+      <div class="tool-group">
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.bullet }"
+          title="无序列表"
+          @click="run((e) => e.chain().focus().toggleBulletList().run())"
+        >
+          <IconFormatBulletList :size="15" />
+        </button>
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.ordered }"
+          title="有序列表"
+          @click="run((e) => e.chain().focus().toggleOrderedList().run())"
+        >
+          <IconFormatOrderedList :size="15" />
+        </button>
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.task }"
+          title="待办清单"
+          @click="run((e) => e.chain().focus().toggleTaskList().run())"
+        >
+          <IconFormatTaskList :size="15" />
+        </button>
+      </div>
+
+      <span class="tool-sep" aria-hidden="true" />
+
+      <div class="tool-group">
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.quote }"
+          title="引用"
+          @click="run((e) => e.chain().focus().toggleBlockquote().run())"
+        >
+          <IconFormatQuote :size="15" />
+        </button>
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.code }"
+          title="代码块"
+          @click="run((e) => e.chain().focus().toggleCodeBlock().run())"
+        >
+          <IconFormatCode :size="15" />
+        </button>
+        <button
+          type="button"
+          class="tool"
+          :class="{ 'tool-on': active.link }"
+          title="链接"
+          @click="toggleLink"
+        >
+          <IconFormatLink :size="15" />
+        </button>
+      </div>
+
+      <div class="toolbar-right">
+        <slot name="actions" />
+      </div>
     </div>
 
-    <EditorContent class="editor-body" :editor="editor" />
+    <div class="editor-body">
+      <div class="editor-column">
+        <slot name="header" />
+        <EditorContent class="editor-content" :editor="editor" />
+      </div>
+    </div>
   </div>
 </template>
 
@@ -251,42 +347,45 @@ function toggleLink(): void {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-pair);
+  gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border-hairline);
   background: var(--bg-surface);
 }
 
+.tool-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .tool {
-  min-width: var(--hit-target);
-  height: var(--hit-target);
-  padding: 0 var(--space-2);
-  font-size: var(--text-micro-size);
-  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   color: var(--text-secondary);
   background: transparent;
-  border: 1px solid transparent;
+  border: none;
   border-radius: var(--radius-control);
   cursor: pointer;
 }
 
-.tool:hover {
-  background: var(--bg-hover);
+.tool:hover:not(:disabled) {
   color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.tool:disabled {
+  color: var(--text-tertiary);
+  opacity: 0.45;
+  cursor: default;
 }
 
 .tool-on {
   color: var(--accent-text);
   background: var(--accent-soft);
-  border-color: var(--accent-selected);
-}
-
-.tool-italic {
-  font-style: italic;
-}
-
-.tool-strike {
-  text-decoration: line-through;
 }
 
 .tool-sep {
@@ -296,75 +395,88 @@ function toggleLink(): void {
   background: var(--border);
 }
 
+.toolbar-right {
+  display: flex;
+  gap: var(--space-1);
+  align-items: center;
+  margin-left: auto;
+}
+
 .editor-body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
 }
 
-.editor-body :deep(.tiptap) {
-  min-height: 320px;
-  padding: var(--space-4) var(--space-5) var(--space-12);
+/* 正文收在一条窄栏里居中：满屏宽的行读起来很累，也不像"写作工具" */
+.editor-column {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: var(--space-6) var(--space-6) var(--space-16);
+}
+
+.editor-content :deep(.tiptap) {
+  min-height: 360px;
   font-size: var(--text-body-size);
   line-height: 1.75;
   color: var(--text-primary);
   outline: none;
 }
 
-.editor-body :deep(.tiptap > * + *) {
+.editor-content :deep(.tiptap > * + *) {
   margin-top: var(--space-3);
 }
 
-.editor-body :deep(.tiptap h1) {
-  font-size: var(--text-page-title-size);
+.editor-content :deep(.tiptap h1) {
+  font-size: 18px;
 }
 
-.editor-body :deep(.tiptap h2) {
+.editor-content :deep(.tiptap h2) {
   font-size: var(--text-section-size);
 }
 
-.editor-body :deep(.tiptap h3) {
+.editor-content :deep(.tiptap h3) {
   font-size: var(--text-body-size);
   font-weight: 600;
 }
 
-.editor-body :deep(.tiptap ul),
-.editor-body :deep(.tiptap ol) {
+.editor-content :deep(.tiptap ul),
+.editor-content :deep(.tiptap ol) {
   padding-left: var(--space-6);
 }
 
-.editor-body :deep(.tiptap ul) {
+.editor-content :deep(.tiptap ul) {
   list-style: disc;
 }
 
-.editor-body :deep(.tiptap ol) {
+.editor-content :deep(.tiptap ol) {
   list-style: decimal;
 }
 
-.editor-body :deep(.tiptap ul[data-type='taskList']) {
+.editor-content :deep(.tiptap ul[data-type='taskList']) {
   list-style: none;
   padding-left: var(--space-2);
 }
 
-.editor-body :deep(.tiptap ul[data-type='taskList'] li) {
+.editor-content :deep(.tiptap ul[data-type='taskList'] li) {
   display: flex;
   gap: var(--space-2);
   align-items: flex-start;
 }
 
 /* 原生复选框默认是浏览器蓝，和全站的青绿强调色不是一套；显式交给主题令牌 */
-.editor-body :deep(.tiptap input[type='checkbox']) {
+.editor-content :deep(.tiptap input[type='checkbox']) {
   accent-color: var(--accent);
   margin-top: 0.35em;
 }
 
-.editor-body :deep(.tiptap blockquote) {
+.editor-content :deep(.tiptap blockquote) {
   padding-left: var(--space-4);
   color: var(--text-secondary);
   border-left: 2px solid var(--border-strong);
 }
 
-.editor-body :deep(.tiptap pre) {
+.editor-content :deep(.tiptap pre) {
   padding: var(--space-3) var(--space-4);
   overflow-x: auto;
   font-family: var(--font-mono);
@@ -374,17 +486,17 @@ function toggleLink(): void {
   border-radius: var(--radius-control);
 }
 
-.editor-body :deep(.tiptap code) {
+.editor-content :deep(.tiptap code) {
   font-family: var(--font-mono);
   font-size: 0.92em;
 }
 
-.editor-body :deep(.tiptap a) {
+.editor-content :deep(.tiptap a) {
   color: var(--accent-text);
   text-decoration: underline;
 }
 
-.editor-body :deep(.tiptap p.is-editor-empty:first-child::before) {
+.editor-content :deep(.tiptap p.is-editor-empty:first-child::before) {
   float: left;
   height: 0;
   color: var(--text-tertiary);
