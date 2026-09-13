@@ -19,6 +19,18 @@ from app.services.chunking import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_OVERLAP,
 )
+from app.services.suggested_questions import (
+    DEFAULT_LIMIT as DEFAULT_SUGGESTED_COUNT,
+)
+from app.services.suggested_questions import (
+    MAX_QUESTIONS as SUGGESTED_COUNT_MAX,
+)
+from app.services.suggested_questions import (
+    MIN_QUESTIONS as SUGGESTED_COUNT_MIN,
+)
+from app.services.suggested_questions import (
+    PROMPT_MAX_CHARS as SUGGESTED_PROMPT_MAX_CHARS,
+)
 
 _RECORD_CONFIG = ConfigDict(from_attributes=True)
 """记录类响应模型直接由服务/存储的记录对象构建。
@@ -46,6 +58,17 @@ class KnowledgeBaseCreate(BaseModel):
     模型 ID 与维度在建库时冻结，换模型必须新建库（架构 §6.4 模型锁）。
     """
 
+    #: 推荐问题（对话页空状态那排胶囊，v19）。**建库时就能定**，之后在
+    #: 「知识库设置 → 推荐问题」里改。四个字段与库设置同源，范围常量取自服务层。
+    suggested_enabled: bool = True
+    suggested_count: int = Field(
+        default=DEFAULT_SUGGESTED_COUNT, ge=SUGGESTED_COUNT_MIN, le=SUGGESTED_COUNT_MAX
+    )
+    suggested_model_pk: str | None = None
+    """出题用哪个对话模型（注册表主键）。留空 = 跟随对话页当前选的模型。"""
+    suggested_prompt: str = Field(default="", max_length=SUGGESTED_PROMPT_MAX_CHARS)
+    """自定义出题提示词。留空 = 用内置提示词。"""
+
 
 class KnowledgeBaseUpdate(BaseModel):
     """改知识库的可编辑属性：名称 / 简介 / 切分参数。**都可选**，只传要改的那个。
@@ -62,6 +85,16 @@ class KnowledgeBaseUpdate(BaseModel):
     chunk_size: int | None = Field(default=None, ge=CHUNK_SIZE_MIN, le=CHUNK_SIZE_MAX)
     chunk_overlap: int | None = Field(default=None, ge=0, le=CHUNK_OVERLAP_MAX)
 
+    #: 推荐问题设置（v19）。与切块参数不同，这组**立刻生效**（出题时现读）。
+    #: 四个字段一起提交，但都可不传（不传 = 不改）；``suggested_model_pk`` 传空串
+    #: 表示"清除"= 回到跟随对话模型（与简介传空串表示清空同一套约定）。
+    suggested_enabled: bool | None = None
+    suggested_count: int | None = Field(
+        default=None, ge=SUGGESTED_COUNT_MIN, le=SUGGESTED_COUNT_MAX
+    )
+    suggested_model_pk: str | None = None
+    suggested_prompt: str | None = Field(default=None, max_length=SUGGESTED_PROMPT_MAX_CHARS)
+
 
 class KnowledgeBaseOut(BaseModel):
     model_config = _RECORD_CONFIG
@@ -75,6 +108,13 @@ class KnowledgeBaseOut(BaseModel):
     chunk_strategy: str
     chunk_size: int
     chunk_overlap: int
+    suggested_enabled: bool = True
+    """推荐问题开关（v19）。界面据此回显，也据此判断要不要显示"已关闭"的说明。"""
+    suggested_count: int = DEFAULT_SUGGESTED_COUNT
+    suggested_model_pk: str | None = None
+    """出题模型。``None`` = 跟随对话页当前选的模型。"""
+    suggested_prompt: str = ""
+    """自定义出题提示词；空串 = 用内置提示词。"""
     created_at: datetime | None = None
     can_manage: bool = False
     """当前调用主体能否管理这个库的分享（owner / 管理员）。

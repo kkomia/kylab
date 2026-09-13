@@ -22,12 +22,25 @@ from app.services.chunking import (
 from app.services.embedding import NOT_CONFIGURED_HINT
 from app.services.embedding.base import EmbeddingProvider
 from app.services.model_registry import ModelRegistryService
+from app.services.suggested_questions import (
+    DEFAULT_LIMIT as DEFAULT_SUGGESTED_COUNT,
+)
+from app.services.suggested_questions import (
+    MAX_QUESTIONS as SUGGESTED_COUNT_MAX,
+)
+from app.services.suggested_questions import (
+    MIN_QUESTIONS as SUGGESTED_COUNT_MIN,
+)
+from app.services.suggested_questions import (
+    PROMPT_MAX_CHARS as SUGGESTED_PROMPT_MAX_CHARS,
+)
 from app.storage.base import KnowledgeBaseRecord, StoreBundle
 
 __all__ = [
     "DEFAULT_CHUNK_STRATEGY",
     "KnowledgeBaseService",
     "validate_chunking",
+    "validate_suggested",
 ]
 
 DEFAULT_CHUNK_STRATEGY = "fixed"
@@ -62,6 +75,23 @@ def validate_chunking(size: int, overlap: int) -> tuple[int, int]:
     return size, overlap
 
 
+def validate_suggested(count: int, prompt: str) -> tuple[int, str]:
+    """校验推荐问题设置，返回规范化后的 ``(count, prompt)``。
+
+    与 ``validate_chunking`` 同一套理由：建库与改配置必须共用一份口径，
+    否则会出现"建库能过、改设置不过"这种说不清的差别。提示词只做 trim——
+    它是给模型的自然语言，除了长度没有别的可判定标准。
+    """
+    if not (SUGGESTED_COUNT_MIN <= count <= SUGGESTED_COUNT_MAX):
+        raise InvalidRequestError(
+            f"推荐问题条数需要在 {SUGGESTED_COUNT_MIN}–{SUGGESTED_COUNT_MAX} 之间（当前 {count}）"
+        )
+    cleaned = (prompt or "").strip()
+    if len(cleaned) > SUGGESTED_PROMPT_MAX_CHARS:
+        raise InvalidRequestError(f"出题提示词最多 {SUGGESTED_PROMPT_MAX_CHARS} 个字符")
+    return count, cleaned
+
+
 class KnowledgeBaseService:
     """知识库的创建与查询。"""
 
@@ -88,6 +118,10 @@ class KnowledgeBaseService:
         chunk_strategy: str = DEFAULT_CHUNK_STRATEGY,
         owner_id: str | None = None,
         embedding_model_pk: str | None = None,
+        suggested_enabled: bool = True,
+        suggested_count: int = DEFAULT_SUGGESTED_COUNT,
+        suggested_model_pk: str | None = None,
+        suggested_prompt: str = "",
     ) -> KnowledgeBaseRecord:
         """建库并**冻结嵌入模型**（架构 §6.4）。
 
@@ -102,6 +136,11 @@ class KnowledgeBaseService:
         没人用（真实切分永远是默认 512/64），那是一个不成立的承诺。
         """
         chunk_size, chunk_overlap = validate_chunking(chunk_size, chunk_overlap)
+        suggested_count, suggested_prompt = validate_suggested(suggested_count, suggested_prompt)
+        if suggested_model_pk:
+            # 与"嵌入模型必须能真用"同一套：出题也是真发一次模型调用，
+            # 存一个不能对话的 pk 只会让这个库的空状态永远出不了题（还查不出原因）
+            self._require_chat_model(suggested_model_pk)
         if embedding_model_pk:
             if self._models is None:
                 raise InvalidRequestError("未接入模型注册器，无法按所选模型建库")
@@ -122,9 +161,19 @@ class KnowledgeBaseService:
                 chunk_strategy=chunk_strategy,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
+                suggested_enabled=suggested_enabled,
+                suggested_count=suggested_count,
+                suggested_model_pk=suggested_model_pk or None,
+                suggested_prompt=suggested_prompt,
                 owner_id=owner_id,
             )
         )
+
+    def _require_chat_model(self, model_pk: str) -> None:
+        """校验"这个 pk 真能用来对话"。没有注册器（老测试）时跳过。"""
+        if self._models is None:
+            return
+        self._models.chat_target(model_pk)
 
     def get(self, kb_id: str) -> KnowledgeBaseRecord:
         record = self._stores.meta.get_knowledge_base(kb_id)
@@ -191,4 +240,47 @@ class KnowledgeBaseService:
         self._stores.meta.set_knowledge_base_chunking(kb_id, size, overlap)
         record.chunk_size = size
         record.chunk_overlap = overlap
+        return record
+
+    def set_suggested(
+        self,
+        kb_id: str,
+        *,
+        enabled: bool,
+        count: int,
+        model_pk: str | None,
+        prompt: str,
+    ) -> KnowledgeBaseRecord:
+        """改这个库的推荐问题设置（v19）。
+
+        与切块参数不同，这组设置**立刻生效**：出题发生在对话页的空状态，读的就是
+        库里的这份设置，没有"只对之后入库的文档生效"那种滞后。
+
+        ``model_pk`` 为空 = 跟随对话页当前选的模型；这是默认，也是多数人该用的档
+        （单独指定一般是为了"出题用便宜的小模型"）。
+        """
+        record = self.get(kb_id)
+        count, prompt = validate_suggested(count, prompt)
+        normalized = model_pk or None
+        if normalized:
+            self._require_chat_model(normalized)
+        if (
+            enabled,
+            count,
+            normalized,
+            prompt,
+        ) == (
+            record.suggested_enabled,
+            record.suggested_count,
+            record.suggested_model_pk,
+            record.suggested_prompt,
+        ):
+            return record
+        self._stores.meta.set_knowledge_base_suggested(
+            kb_id, enabled=enabled, count=count, model_pk=normalized, prompt=prompt
+        )
+        record.suggested_enabled = enabled
+        record.suggested_count = count
+        record.suggested_model_pk = normalized
+        record.suggested_prompt = prompt
         return record

@@ -43,6 +43,12 @@ from app.services.agent import (
 )
 from app.services.api_key import Caller
 from app.services.llm import ChatError, ChatMessage
+from app.services.suggested_questions import (
+    MAX_QUESTIONS as SUGGESTED_MAX,
+)
+from app.services.suggested_questions import (
+    MIN_QUESTIONS as SUGGESTED_MIN,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -135,14 +141,24 @@ def suggested_questions(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
     kb_ids: str = Query(default="", description="逗号分隔的知识库 id；留空返回空列表"),
-    limit: int = Query(default=6, ge=1, le=8),
-    model_pk: str | None = Query(default=None, description="用哪个模型生成；留空用全局默认"),
+    limit: int | None = Query(
+        default=None,
+        ge=SUGGESTED_MIN,
+        le=SUGGESTED_MAX,
+        description="条数。留空 = 用知识库上的推荐问题设置（界面走这条）",
+    ),
+    model_pk: str | None = Query(
+        default=None, description="用哪个模型生成；留空 = 用库设置，再回落到全局默认"
+    ),
     refresh: bool = Query(default=False, description="true 绕过缓存重新生成"),
 ) -> SuggestedQuestionsOut:
     """给对话页空状态那排胶囊喂数据。
 
     **失败返回空列表而不是报错**（``generated=false``）：示例问题只是引导，
     拿不到就让界面回退到静态样例，不该把"打开对话页"变成一次错误提示。
+
+    条数 / 模型 / 提示词都以**所选知识库上的设置**为准（v19）；``limit`` 与
+    ``model_pk`` 是显式覆盖，给脚本与 MCP 用。关掉了推荐问题的库不参与出题。
     """
     ids = [item.strip() for item in kb_ids.split(",") if item.strip()]
     if ids:

@@ -77,6 +77,11 @@ async def create_knowledge_base(
         owner_id=caller.user.id if caller.user else None,
         # 嵌入模型随库选定并冻结（v11）；留空走服务端默认
         embedding_model_pk=payload.embedding_model_pk,
+        # 推荐问题设置（v19）：建库时就能定，之后在「知识库设置 → 推荐问题」里改
+        suggested_enabled=payload.suggested_enabled,
+        suggested_count=payload.suggested_count,
+        suggested_model_pk=payload.suggested_model_pk,
+        suggested_prompt=payload.suggested_prompt,
     )
     return _out(record, caller, services)
 
@@ -150,7 +155,49 @@ async def update_knowledge_base(
         record = services.knowledge_bases.set_chunking(
             kb_id, chunk_size=payload.chunk_size, chunk_overlap=payload.chunk_overlap
         )
+    if _touches_suggested(payload):
+        record = services.knowledge_bases.set_suggested(
+            kb_id,
+            enabled=(
+                payload.suggested_enabled
+                if payload.suggested_enabled is not None
+                else record.suggested_enabled
+            ),
+            count=(
+                payload.suggested_count
+                if payload.suggested_count is not None
+                else record.suggested_count
+            ),
+            # 空串表示"清除"（回到跟随对话模型），与简介空串表示清空同一套约定
+            model_pk=(
+                payload.suggested_model_pk
+                if payload.suggested_model_pk is not None
+                else record.suggested_model_pk
+            ),
+            prompt=(
+                payload.suggested_prompt
+                if payload.suggested_prompt is not None
+                else record.suggested_prompt
+            ),
+        )
     count, last_activity = services.knowledge_bases.document_stats().get(kb_id, (0, None))
     return _out(
         record, caller, services, document_count=count, last_activity=last_activity
+    )
+
+
+def _touches_suggested(payload: KnowledgeBaseUpdate) -> bool:
+    """这次 PATCH 有没有碰推荐问题设置。
+
+    四个字段都可选，``None`` 表示"不改"；但只要有一个不是 ``None`` 就整组提交
+    （``set_suggested`` 一次写四个值，界面也是一屏提交）。
+    """
+    return any(
+        value is not None
+        for value in (
+            payload.suggested_enabled,
+            payload.suggested_count,
+            payload.suggested_model_pk,
+            payload.suggested_prompt,
+        )
     )

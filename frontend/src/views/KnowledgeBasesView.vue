@@ -20,10 +20,12 @@ import {
   CHUNK_SIZE_MAX,
   CHUNK_SIZE_MIN,
   chunkOverlapMax,
+  SUGGESTED_COUNT_DEFAULT,
 } from '@/api/knowledgeBases'
 import { getRegistry, type Registry } from '@/api/modelRegistry'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import KnowledgeBaseMenu from '@/components/knowledge/KnowledgeBaseMenu.vue'
+import SuggestedQuestionsFields from '@/components/knowledge/SuggestedQuestionsFields.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
@@ -155,12 +157,27 @@ const chunkOverlapNumber = computed({
 
 const chunkError = computed(() => chunkingErrorOf(chunkSizeDraft.value, chunkOverlapDraft.value))
 
+/**
+ * 推荐问题草稿（v19，同样收在折叠区）。
+ *
+ * 与切块参数不同，这几个值**立刻生效**：出题发生在对话页空状态，读的就是库上的设置。
+ * 所以不提示"要重新摄入"。
+ */
+const sqEnabled = ref(true)
+const sqCount = ref(SUGGESTED_COUNT_DEFAULT)
+const sqModelPk = ref('')
+const sqPrompt = ref('')
+
 function openCreate(): void {
   createOpen.value = true
   draftModel.value = ''
   // 每次打开都回到默认值：上一次改过的切块参数留着，下一座库会莫名其妙继承它
   chunkSizeDraft.value = String(CHUNK_DEFAULT_SIZE)
   chunkOverlapDraft.value = String(CHUNK_DEFAULT_OVERLAP)
+  sqEnabled.value = true
+  sqCount.value = SUGGESTED_COUNT_DEFAULT
+  sqModelPk.value = ''
+  sqPrompt.value = ''
   void loadModels().then(() => {
     // 没有默认模型时预选第一个：让"能选就选"的路径最短，而不是让用户先撞一次校验
     if (mustPickModel.value && embeddingModels.value[0]) {
@@ -212,6 +229,11 @@ async function submitCreate(): Promise<void> {
       // 与默认值相同时**不发**：让"服务端默认"成为唯一的默认，而不是前端也钉一份数字
       ...(size !== null && size !== CHUNK_DEFAULT_SIZE ? { chunk_size: size } : {}),
       ...(overlap !== null && overlap !== CHUNK_DEFAULT_OVERLAP ? { chunk_overlap: overlap } : {}),
+      // 推荐问题：只有"与内置默认不同"的那几项才发，口径与上面两个一致
+      ...(sqEnabled.value ? {} : { suggested_enabled: false }),
+      ...(sqCount.value !== SUGGESTED_COUNT_DEFAULT ? { suggested_count: sqCount.value } : {}),
+      ...(sqModelPk.value ? { suggested_model_pk: sqModelPk.value } : {}),
+      ...(sqPrompt.value.trim() ? { suggested_prompt: sqPrompt.value.trim() } : {}),
     })
     notifySuccess(`已创建知识库「${created.name}」`)
     createOpen.value = false
@@ -334,68 +356,86 @@ function statsOf(kbId: string) {
     </div>
 
     <AppModal v-model:open="createOpen" title="新建知识库">
-      <div class="field">
-        <label class="field-label" for="kb-name">名称</label>
-        <AppInput
-          id="kb-name"
-          v-model="draftName"
-          placeholder="例如：产品手册"
-          @keyup.enter="submitCreate"
-        />
-      </div>
-      <div class="field">
-        <label class="field-label" for="kb-embedding">
-          嵌入模型
-          <InfoTip
-            text="嵌入模型决定这个库的向量空间，建库时定、之后不能更换。文档量小的库可以选精度更高的模型；量大的选小模型以提升速度与存储效率。"
+      <!-- 字段之间要留白。AppModal 的内容区是共用件、本身不带 gap（在那边改会波及
+           所有弹窗），所以这层间距由本页自己给——新建弹窗就三块，
+           松一点才像"要做三个决定"，而不是一坨表单 -->
+      <div class="create-form">
+        <div class="field">
+          <label class="field-label" for="kb-name">名称</label>
+          <AppInput
+            id="kb-name"
+            v-model="draftName"
+            placeholder="例如：产品手册"
+            @keyup.enter="submitCreate"
           />
-        </label>
-        <AppSelect
-          v-if="!noEmbeddingModel"
-          id="kb-embedding"
-          v-model="draftModel"
-          :options="embeddingOptions"
-        />
-        <!-- 没有可选项时给的是**下一步动作**，不是一个空下拉 -->
-        <p v-else class="modal-note">
-          还没有可用的嵌入模型，无法建库。请先到「设置 → 模型注册」添加供应商并登记向量化模型，
-          再到「设置 → 向量化」把它选为默认。
-        </p>
-      </div>
-      <!-- 切分参数收在折叠区：多数人用默认值就好，不该让"建个库"变成填五个框。
-           但**要用的时候必须找得到**——它会直接影响检索质量（见设置里的「切块策略」） -->
-      <details class="field chunking-more">
-        <summary>
-          切块设置（可选，默认 {{ CHUNK_DEFAULT_SIZE }} / {{ CHUNK_DEFAULT_OVERLAP }}）
-        </summary>
-        <div class="chunking-grid">
-          <label class="field">
-            <span class="field-label" for="kb-chunk-size">块长</span>
-            <RangeField
-              id="kb-chunk-size"
-              v-model="chunkSizeNumber"
-              :min="CHUNK_SIZE_MIN"
-              :max="CHUNK_SIZE_MAX"
-              :marks="CHUNK_SIZE_MARKS"
-            />
-          </label>
-          <label class="field">
-            <span class="field-label" for="kb-chunk-overlap">块重叠</span>
-            <RangeField
-              id="kb-chunk-overlap"
-              v-model="chunkOverlapNumber"
-              :min="0"
-              :max="chunkOverlapCap"
-              :marks="CHUNK_OVERLAP_MARKS"
-            />
-          </label>
         </div>
-        <p v-if="chunkError" class="chunking-error" role="alert">{{ chunkError }}</p>
-        <p v-else class="modal-note">
-          块长 {{ CHUNK_SIZE_MIN }}–{{ CHUNK_SIZE_MAX }} 字符；重叠不超过块长的一半。
-          建库之后仍可在「知识库设置 → 切块策略」里调整。
-        </p>
-      </details>
+
+        <div class="field">
+          <label class="field-label" for="kb-embedding">
+            嵌入模型
+            <InfoTip
+              text="嵌入模型决定这个库的向量空间，建库时定、之后不能更换。文档量小的库可以选精度更高的模型；量大的选小模型以提升速度与存储效率。"
+            />
+          </label>
+          <AppSelect
+            v-if="!noEmbeddingModel"
+            id="kb-embedding"
+            v-model="draftModel"
+            :options="embeddingOptions"
+          />
+          <!-- 没有可选项时给的是**下一步动作**，不是一个空下拉 -->
+          <p v-else class="modal-note">
+            还没有可用的嵌入模型，无法建库。请先到「设置 → 模型注册」添加供应商并登记向量化模型，
+            再到「设置 → 向量化」把它选为默认。
+          </p>
+        </div>
+
+        <!-- 切分参数收在折叠区：多数人用默认值就好，不该让"建个库"变成填五个框。
+             但**要用的时候必须找得到**——它会直接影响检索质量（见设置里的「切块策略」） -->
+        <details class="advanced">
+          <summary>
+            切块设置（可选，默认 {{ CHUNK_DEFAULT_SIZE }} / {{ CHUNK_DEFAULT_OVERLAP }}）
+          </summary>
+          <div class="advanced-grid">
+            <label class="field">
+              <span class="field-label" for="kb-chunk-size">块长</span>
+              <RangeField
+                id="kb-chunk-size"
+                v-model="chunkSizeNumber"
+                :min="CHUNK_SIZE_MIN"
+                :max="CHUNK_SIZE_MAX"
+                :marks="CHUNK_SIZE_MARKS"
+              />
+            </label>
+            <label class="field">
+              <span class="field-label" for="kb-chunk-overlap">块重叠</span>
+              <RangeField
+                id="kb-chunk-overlap"
+                v-model="chunkOverlapNumber"
+                :min="0"
+                :max="chunkOverlapCap"
+                :marks="CHUNK_OVERLAP_MARKS"
+              />
+            </label>
+          </div>
+          <p v-if="chunkError" class="chunking-error" role="alert">{{ chunkError }}</p>
+          <p v-else class="advanced-note">
+            重叠不超过块长的一半；建库后可在「知识库设置 → 切块策略」调整。
+          </p>
+        </details>
+
+        <!-- 推荐问题（v19）：与切块设置同样是"可选、默认就好"，所以同样收在折叠区。
+             区别是它**立刻生效**，所以不提"需要重新摄入" -->
+        <details class="advanced">
+          <summary>推荐问题（可选，默认开启 · {{ SUGGESTED_COUNT_DEFAULT }} 条）</summary>
+          <SuggestedQuestionsFields
+            v-model:enabled="sqEnabled"
+            v-model:count="sqCount"
+            v-model:model-pk="sqModelPk"
+            v-model:prompt="sqPrompt"
+          />
+        </details>
+      </div>
       <template #footer>
         <AppButton @click="createOpen = false">取消</AppButton>
         <AppButton
@@ -691,5 +731,47 @@ function statsOf(kbId: string) {
   font-size: var(--text-micro-size);
   line-height: 1.7;
   color: var(--text-tertiary);
+}
+
+/* ---------------------------------------------------------------- 新建弹窗 */
+
+/* 字段之间要留白：AppModal 的内容区不带 gap（那是共用件，在那里改会波及所有弹窗） */
+.create-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* 可折叠的"进阶项"（切块设置 / 推荐问题）。
+   原先这两块挨在一起时挤成一坨：折叠标题紧贴第一项、两个滑杆背靠背，
+   而每个滑杆下面本来就带着刻度数值行。给标题一点自身内边距、给组内足行距 */
+.advanced > summary {
+  padding: var(--space-1) 0;
+  font-size: var(--text-meta-size);
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.advanced[open] > summary {
+  margin-bottom: var(--space-4);
+}
+
+.advanced-grid {
+  display: grid;
+  gap: var(--space-5);
+}
+
+.advanced-note {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-micro-size);
+  line-height: 1.7;
+  color: var(--text-tertiary);
+}
+
+.chunking-error {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-micro-size);
+  color: var(--status-danger);
 }
 </style>

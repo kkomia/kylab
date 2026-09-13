@@ -23,13 +23,23 @@ from app.services.chat import ChatService
 from app.services.llm import ChatMessage
 from app.storage.base import StoreBundle
 
-__all__ = ["DEFAULT_LIMIT", "MAX_QUESTIONS", "SuggestedQuestionsService"]
+__all__ = [
+    "DEFAULT_LIMIT",
+    "MAX_QUESTIONS",
+    "MIN_QUESTIONS",
+    "PROMPT_MAX_CHARS",
+    "SuggestedQuestionsService",
+]
 
 logger = logging.getLogger(__name__)
 
 #: 一次最多给几条。前端一屏也就放得下五六个。
 MAX_QUESTIONS = 8
+MIN_QUESTIONS = 1
 DEFAULT_LIMIT = 6
+
+#: 自定义出题提示词的长度上限。它是给模型的自然语言指令，写太长只是浪费 token。
+PROMPT_MAX_CHARS = 2000
 
 #: 采样多少块语料。够模型看出"这个库在讲什么"，又不至于把提示词撑大。
 _SAMPLE_CHUNKS = 8
@@ -64,27 +74,72 @@ class SuggestedQuestionsService:
         self,
         *,
         kb_ids: list[str],
-        limit: int = DEFAULT_LIMIT,
+        limit: int | None = None,
         model_pk: str | None = None,
         refresh: bool = False,
     ) -> list[str]:
-        """生成示例问题；生成不出来返回空列表（调用方据此回退）。"""
-        if not kb_ids:
+        """生成示例问题；生成不出来返回空列表（调用方据此回退）。
+
+        设置来源（v19）：**条数 / 模型 / 提示词都读库上的设置**，请求参数只是覆盖。
+        多库同时选中时，取样包含全部启用的库，而"条数 / 模型 / 提示词"取**第一个
+        启用的库**——出一份列表只能有一套参数，按选择顺序取第一个既确定，
+        也符合"你先点的那个库说了算"。
+
+        请求显式给了 ``limit`` 就以它为准（脚本 / API 用）；界面上不再传，
+        让库设置说了算，否则在界面上改了条数却看不到变化。
+        ``model_pk`` 优先级：**库设置 > 请求 > 全局默认**（库上单独指定一个
+        "出题用的便宜模型"是这组设置存在的理由之一）。
+        """
+        resolved = self._resolve(kb_ids)
+        if resolved is None:
             return []
-        capped = max(1, min(limit, MAX_QUESTIONS))
-        key = (tuple(sorted(set(kb_ids))), capped, model_pk or "")
+        ids, count, kb_prompt, kb_model = resolved
+        if limit is not None:
+            count = max(MIN_QUESTIONS, min(limit, MAX_QUESTIONS))
+        model = kb_model or model_pk or None
+        key = (tuple(sorted(set(ids))), count, model or "", kb_prompt)
         if not refresh:
             cached = self._cache.get(key)
             if cached is not None and cached[0] > time.monotonic():
                 return cached[1]
-        questions = self._generate(kb_ids, limit=capped, model_pk=model_pk)
+        questions = self._generate(ids, limit=count, model_pk=model, instruction=kb_prompt)
         if questions:
             self._cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, questions)
         return questions
 
     # ------------------------------------------------------------------ 内部
 
-    def _generate(self, kb_ids: list[str], *, limit: int, model_pk: str | None) -> list[str]:
+    def _resolve(self, kb_ids: list[str]) -> tuple[list[str], int, str, str | None] | None:
+        """把请求里的库 id 收敛成"参与出题的那几个 + 一套参数"。
+
+        关掉推荐问题的库**既不取样也不参与**——这正是那个开关的意思。
+        一个都没启用（或都没了）时返回 ``None``，调用方据此直接回退静态样例，
+        连一次模型调用都不花。
+        """
+        enabled = []
+        for kb_id in kb_ids:
+            record = self._stores.meta.get_knowledge_base(kb_id)
+            if record is not None and record.suggested_enabled:
+                enabled.append(record)
+        if not enabled:
+            return None
+        head = enabled[0]
+        count = max(MIN_QUESTIONS, min(head.suggested_count, MAX_QUESTIONS))
+        return (
+            [item.id for item in enabled],
+            count,
+            head.suggested_prompt.strip(),
+            head.suggested_model_pk or None,
+        )
+
+    def _generate(
+        self,
+        kb_ids: list[str],
+        *,
+        limit: int,
+        model_pk: str | None,
+        instruction: str = "",
+    ) -> list[str]:
         try:
             chunks = self._stores.meta.sample_chunks(kb_ids, limit=_SAMPLE_CHUNKS)
             snippets = [_snippet(item) for item in chunks if item.text.strip()]
@@ -93,7 +148,7 @@ class SuggestedQuestionsService:
             raw = self._chat.ask_raw(
                 [
                     ChatMessage(role="system", content=_SYSTEM_PROMPT),
-                    ChatMessage(role="user", content=_build_prompt(snippets, limit)),
+                    ChatMessage(role="user", content=_build_prompt(snippets, limit, instruction)),
                 ],
                 model_pk=model_pk,
             )
@@ -111,9 +166,21 @@ def _snippet(chunk) -> str:  # type: ignore[no-untyped-def]
     return f"[{where}] {body}" if where else body
 
 
-def _build_prompt(snippets: list[str], limit: int) -> str:
+def _build_prompt(snippets: list[str], limit: int, instruction: str = "") -> str:
+    """资料片段 + 出题指令。
+
+    ``instruction`` 为库上的自定义提示词时**替换内置那一句**，资料片段照旧附在前面——
+    自定义的是"怎么出题"，而"依据哪些片段"是系统必须给的东西，不该让用户去拼。
+    句子里的 ``{n}`` 会替换成条数；用户写了别的大括号（比如正则或 JSON 示例）时
+    ``format`` 会抛，那就原样发出去，不因为一次格式化失败让出题整个失败。
+    """
     material = "\n".join(f"{index}. {text}" for index, text in enumerate(snippets, start=1))
-    return f"资料片段：\n{material}\n\n{_INSTRUCTION.format(n=limit)}"
+    template = instruction or _INSTRUCTION
+    try:
+        ask = template.format(n=limit)
+    except (KeyError, IndexError, ValueError):
+        ask = template
+    return f"资料片段：\n{material}\n\n{ask}"
 
 
 def _parse_questions(raw: str, limit: int) -> list[str]:

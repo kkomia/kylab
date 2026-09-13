@@ -537,3 +537,75 @@ def test_empty_search_is_not_counted(client: TestClient, kb_id: str) -> None:
 
     assert {item["kind"] for item in usage["by_kind"]} == set()
 
+
+
+# ------------------------------------------------- 推荐问题设置（v19）
+
+
+def test_create_and_patch_suggested_settings(client: TestClient) -> None:
+    """建库时能定推荐问题，之后 PATCH 也能改，且详情里读得到。"""
+    created = client.post(
+        "/api/v1/knowledge-bases",
+        json={"name": "出题库", "suggested_count": 3, "suggested_prompt": "按诊断标准出题"},
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert (body["suggested_enabled"], body["suggested_count"]) == (True, 3)
+    assert body["suggested_prompt"] == "按诊断标准出题"
+    kb_id = body["id"]
+
+    patched = client.patch(
+        f"/api/v1/knowledge-bases/{kb_id}",
+        json={"suggested_enabled": False, "suggested_count": 5},
+    )
+    assert patched.status_code == 200, patched.text
+    updated = patched.json()
+    assert (updated["suggested_enabled"], updated["suggested_count"]) == (False, 5)
+    # 没传的字段不动
+    assert updated["suggested_prompt"] == "按诊断标准出题"
+
+
+def test_patch_suggested_defaults_are_returned_on_a_plain_kb(
+    client: TestClient, kb_id: str
+) -> None:
+    """老库升级后（或建库时没填）这四个值要有一套与之前一致的默认。"""
+    body = client.get(f"/api/v1/knowledge-bases/{kb_id}").json()
+
+    assert body["suggested_enabled"] is True
+    assert body["suggested_count"] == 6
+    assert body["suggested_model_pk"] is None
+    assert body["suggested_prompt"] == ""
+
+
+def test_patch_suggested_validates_range(client: TestClient, kb_id: str) -> None:
+    assert (
+        client.patch(
+            f"/api/v1/knowledge-bases/{kb_id}", json={"suggested_count": 99}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.patch(
+            f"/api/v1/knowledge-bases/{kb_id}", json={"suggested_count": 0}
+        ).status_code
+        == 422
+    )
+
+
+def test_patch_suggested_model_rejects_a_bogus_pk(client: TestClient, kb_id: str) -> None:
+    """出题也是真发一次模型调用：存一个不能对话的 pk，会让这个库永远出不了题。"""
+    response = client.patch(
+        f"/api/v1/knowledge-bases/{kb_id}", json={"suggested_model_pk": "mdl_不存在"}
+    )
+
+    assert response.status_code in (400, 404, 422), response.text
+
+
+def test_patch_suggested_model_empty_string_clears_it(client: TestClient, kb_id: str) -> None:
+    """空串 = 清除（回到跟随对话模型），与简介空串表示清空同一套约定。"""
+    response = client.patch(
+        f"/api/v1/knowledge-bases/{kb_id}", json={"suggested_model_pk": ""}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["suggested_model_pk"] is None

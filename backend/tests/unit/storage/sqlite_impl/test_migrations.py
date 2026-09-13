@@ -186,3 +186,28 @@ def test_migration_021_adds_conversation_summary_columns(conn: sqlite3.Connectio
     assert row[0] == "" and row[1] is None
     # 老数据没被清掉
     assert conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0] == 1
+
+
+def test_migration_022_adds_kb_suggested_settings_with_old_behavior(
+    conn: sqlite3.Connection,
+) -> None:
+    """推荐问题设置四列加上，且老库升级后**行为与之前一致**：
+
+    默认开、6 条、不指定模型（跟随对话模型）、空提示词（用内置）。
+    老库如果被升成"关"或"0 条"，对话页的空状态会突然不出题，而且没人知道为什么。
+    """
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version < 22])
+    conn.execute(
+        "INSERT INTO knowledge_bases (id, name, embedding_model_id, embedding_dim, created_at,"
+        " updated_at) VALUES ('kb_old', '老库', 'm1', 1024, '2026-09-01T00:00:00Z',"
+        " '2026-09-01T00:00:00Z')"
+    )
+    conn.commit()
+
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version == 22])
+
+    row = conn.execute(
+        "SELECT suggested_enabled, suggested_count, suggested_model_pk, suggested_prompt"
+        " FROM knowledge_bases WHERE id = 'kb_old'"
+    ).fetchone()
+    assert tuple(row) == (1, 6, None, "")

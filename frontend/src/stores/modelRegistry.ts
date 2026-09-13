@@ -12,7 +12,7 @@
 
 import { defineStore } from 'pinia'
 
-import { getRegistry, type Registry } from '@/api/modelRegistry'
+import { getRegistry, type RegisteredModel, type Registry } from '@/api/modelRegistry'
 
 interface State {
   registry: Registry | null
@@ -32,9 +32,28 @@ export const useModelRegistryStore = defineStore('modelRegistry', {
     error: '',
   }),
 
+  getters: {
+    /**
+     * 能用来对话的模型（供应商启用，且能力为空或含 chat）。
+     *
+     * 放在 store 而不是各页面各算一遍：对话页的模型选择器与
+     * 「知识库设置 → 推荐问题」里的"出题模型"用的是**同一个口径**，
+     * 两处各写一份迟早会漂（一处放行了不能对话的模型、另一处没有）。
+     */
+    chatModels(state): RegisteredModel[] {
+      const reg = state.registry
+      if (!reg) return []
+      return reg.models.filter((model) => {
+        const owner = reg.providers.find((item) => item.id === model.provider_id)
+        if (!owner || !owner.enabled) return false
+        return model.capabilities.length === 0 || model.capabilities.includes('chat')
+      })
+    },
+  },
+
   actions: {
     /**
-     * 拉注册表。已有数据时不阻塞：界面先用手上的那份，这次结果到了再替换。
+     * 拉注册表。已有数据时不阻塞：界面先用手上那份，这次结果到了再替换。
      *
      * 失败**保留旧数据**（只记 error）——刷新失败让下拉变空，比用一份稍旧的
      * 模型列表糟得多：前者会让"当前用的模型"变成一个无法解析的占位。

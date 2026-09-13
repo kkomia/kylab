@@ -16,6 +16,14 @@ export interface KnowledgeBase {
   chunk_strategy: string
   chunk_size: number
   chunk_overlap: number
+  /** 推荐问题开关（v19）：关掉后这个库不参与对话空状态的出题。 */
+  suggested_enabled: boolean
+  /** 一次出几条。 */
+  suggested_count: number
+  /** 出题用哪个对话模型（注册表主键）。null = 跟随对话页当前选的模型。 */
+  suggested_model_pk: string | null
+  /** 自定义出题提示词；空串 = 用内置提示词。 */
+  suggested_prompt: string
   created_at: string | null
   /** 当前账号能否管理这个库的分享（owner / 管理员）。判定在后端。 */
   can_manage: boolean
@@ -34,6 +42,12 @@ export interface KnowledgeBaseCreate {
   /** 建库时选定的嵌入模型（注册表主键）。留空 = 用服务端默认。
    *  嵌入模型是知识库属性：库内向量化之后不可更换（换模型要新建库）。 */
   embedding_model_pk?: string
+  /** 推荐问题（v19）。建库时就能定，之后在「知识库设置 → 推荐问题」里改。 */
+  suggested_enabled?: boolean
+  suggested_count?: number
+  /** 出题模型；空串 / 不传 = 跟随对话模型。 */
+  suggested_model_pk?: string | null
+  suggested_prompt?: string
 }
 
 export function listKnowledgeBases(): Promise<{ items: KnowledgeBase[] }> {
@@ -49,15 +63,24 @@ export function getKnowledgeBase(kbId: string): Promise<KnowledgeBase> {
 }
 
 /**
- * 修改知识库的名称 / 简介 / 切分参数。**各项都可选**，只传要改的那个
- * （传 `{ description: '' }` 是清空简介）。
+ * 修改知识库的名称 / 简介 / 切分参数 / 推荐问题设置。**各项都可选**，只传要改的那个
+ * （传 `{ description: '' }` 是清空简介；`{ suggested_model_pk: '' }` 是"跟随对话模型"）。
  *
  * 切分参数（v17）只影响**之后摄入**的文档：已切好的块不会自己变，
- * 所以界面要提示"已有文档需要重新摄入"。
+ * 所以界面要提示"已有文档需要重新摄入"。推荐问题设置（v19）不同，**立刻生效**。
  */
 export function updateKnowledgeBase(
   kbId: string,
-  patch: { name?: string; description?: string; chunk_size?: number; chunk_overlap?: number },
+  patch: {
+    name?: string
+    description?: string
+    chunk_size?: number
+    chunk_overlap?: number
+    suggested_enabled?: boolean
+    suggested_count?: number
+    suggested_model_pk?: string | null
+    suggested_prompt?: string
+  },
 ): Promise<KnowledgeBase> {
   return request(`/knowledge-bases/${kbId}`, {
     method: 'PATCH',
@@ -125,3 +148,12 @@ export function getKnowledgeBaseImpact(kbId: string): Promise<ImpactReport> {
 export function deleteKnowledgeBase(kbId: string): Promise<ImpactReport> {
   return request(`/knowledge-bases/${kbId}`, { method: 'DELETE' })
 }
+
+/**
+ * 推荐问题设置的可用区间与默认值。**与后端 `services/suggested_questions.py`
+ * 的常量一一对应**（那里是权威，这里只是让用户当场看到中文原因）。
+ */
+export const SUGGESTED_COUNT_MIN = 1
+export const SUGGESTED_COUNT_MAX = 8
+export const SUGGESTED_COUNT_DEFAULT = 6
+export const SUGGESTED_PROMPT_MAX_CHARS = 2000

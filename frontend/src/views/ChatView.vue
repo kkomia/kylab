@@ -789,16 +789,11 @@ const modelsLoaded = computed(() => registryStore.loaded)
 /** 当前选用的注册模型 pk；空串 = 交给后端的全局默认。 */
 const modelPk = ref(readStored(LAST_MODEL_KEY))
 
-/** 可对话的模型：供应商启用，且能力为空或含 chat（与设置页同一套筛选口径）。 */
-const chatModels = computed<RegisteredModel[]>(() => {
-  const reg = registry.value
-  if (!reg) return []
-  return reg.models.filter((model) => {
-    const owner = reg.providers.find((item) => item.id === model.provider_id)
-    if (!owner || !owner.enabled) return false
-    return model.capabilities.length === 0 || model.capabilities.includes('chat')
-  })
-})
+/**
+ * 可对话的模型。口径在 store 的 `chatModels` getter 里——
+ * 「知识库设置 → 推荐问题」的"出题模型"用的是同一个筛选，两处各写一份迟早会漂。
+ */
+const chatModels = computed<RegisteredModel[]>(() => registryStore.chatModels)
 
 /**
  * 只显示模型名，不带供应商。
@@ -943,8 +938,9 @@ async function loadSamples(refresh: boolean): Promise<void> {
   if (messages.value.length > 0 || selected.value.length === 0) return
   samplesLoading.value = true
   try {
+    // **不传 limit**：条数以所选知识库上的设置为准（v19）。传了就会盖过它，
+    // 于是"在设置里改了条数却看不到变化"
     const result = await getSuggestedQuestions(selected.value, {
-      limit: SAMPLE_COUNT,
       modelPk: modelPk.value || undefined,
       refresh,
     })

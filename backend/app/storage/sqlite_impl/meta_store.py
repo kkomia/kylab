@@ -102,8 +102,9 @@ class SqliteMetaStore(MetaStore):
                 INSERT INTO knowledge_bases
                     (id, name, description, embedding_model_id, embedding_dim, embedding_base_url,
                      chunk_strategy, chunk_size, chunk_overlap, owner_id, embedding_model_pk,
+                     suggested_enabled, suggested_count, suggested_model_pk, suggested_prompt,
                      created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -117,6 +118,10 @@ class SqliteMetaStore(MetaStore):
                     record.chunk_overlap,
                     record.owner_id,
                     record.embedding_model_pk,
+                    int(record.suggested_enabled),
+                    record.suggested_count,
+                    record.suggested_model_pk,
+                    record.suggested_prompt,
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
@@ -153,6 +158,22 @@ class SqliteMetaStore(MetaStore):
             conn.execute(
                 "UPDATE knowledge_bases SET description = ?, updated_at = ? WHERE id = ?",
                 (description, _dump(_now()), kb_id),
+            )
+
+    def set_knowledge_base_suggested(
+        self,
+        kb_id: str,
+        *,
+        enabled: bool,
+        count: int,
+        model_pk: str | None,
+        prompt: str,
+    ) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE knowledge_bases SET suggested_enabled = ?, suggested_count = ?,"
+                " suggested_model_pk = ?, suggested_prompt = ?, updated_at = ? WHERE id = ?",
+                (int(enabled), count, model_pk, prompt, _dump(_now()), kb_id),
             )
 
     def storage_stats(self) -> dict:
@@ -2229,6 +2250,10 @@ class SqliteMetaStore(MetaStore):
             chunk_strategy=row["chunk_strategy"],
             chunk_size=row["chunk_size"],
             chunk_overlap=row["chunk_overlap"],
+            suggested_enabled=bool(row["suggested_enabled"]),
+            suggested_count=row["suggested_count"],
+            suggested_model_pk=row["suggested_model_pk"],
+            suggested_prompt=row["suggested_prompt"],
             owner_id=row["owner_id"],
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),

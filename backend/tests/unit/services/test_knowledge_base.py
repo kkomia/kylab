@@ -187,3 +187,74 @@ def test_validate_chunking_returns_normalized_pair() -> None:
         CHUNK_SIZE_MAX,
         CHUNK_SIZE_MAX // 2,
     )
+
+
+# ------------------------------------------------------- 推荐问题设置（v19）
+
+from app.services.knowledge_base import validate_suggested  # noqa: E402
+from app.services.suggested_questions import (  # noqa: E402
+    DEFAULT_LIMIT,
+    MAX_QUESTIONS,
+    MIN_QUESTIONS,
+    PROMPT_MAX_CHARS,
+)
+
+
+def test_create_persists_suggested_settings(bundle, registry) -> None:  # type: ignore[no-untyped-def]
+    service = _plain(bundle, registry)
+
+    record = service.create(
+        kb_id="kb_s",
+        name="库",
+        suggested_enabled=False,
+        suggested_count=4,
+        suggested_prompt="  按诊断标准出题  ",
+    )
+
+    assert record.suggested_enabled is False
+    assert record.suggested_count == 4
+    # 提示词只 trim，不做别的加工
+    assert record.suggested_prompt == "按诊断标准出题"
+    # 真的落库了：重新读一遍也是这几个值（列名与记录字段不能对不上）
+    saved = bundle.meta.get_knowledge_base("kb_s")
+    assert (
+        saved.suggested_enabled,
+        saved.suggested_count,
+        saved.suggested_prompt,
+    ) == (False, 4, "按诊断标准出题")
+
+
+def test_create_defaults_match_the_service_constants(bundle, registry) -> None:  # type: ignore[no-untyped-def]
+    """默认值在两个地方各写了一份（storage 不许 import services），用用例钉住一致。"""
+    service = _plain(bundle, registry)
+
+    record = service.create(kb_id="kb_d", name="库")
+
+    assert record.suggested_enabled is True
+    assert record.suggested_count == DEFAULT_LIMIT
+
+
+def test_set_suggested_merges_and_persists(bundle, registry) -> None:  # type: ignore[no-untyped-def]
+    service = _plain(bundle, registry)
+    service.create(kb_id="kb_1", name="库", suggested_count=6)
+
+    updated = service.set_suggested("kb_1", enabled=False, count=3, model_pk=None, prompt="出题")
+
+    assert (updated.suggested_enabled, updated.suggested_count, updated.suggested_prompt) == (
+        False,
+        3,
+        "出题",
+    )
+    saved = bundle.meta.get_knowledge_base("kb_1")
+    assert (saved.suggested_enabled, saved.suggested_count) == (False, 3)
+
+
+def test_validate_suggested_bounds_and_trim() -> None:
+    assert validate_suggested(MIN_QUESTIONS, "  x  ") == (MIN_QUESTIONS, "x")
+    assert validate_suggested(MAX_QUESTIONS, "") == (MAX_QUESTIONS, "")
+    with pytest.raises(InvalidRequestError, match=str(MIN_QUESTIONS)):
+        validate_suggested(MIN_QUESTIONS - 1, "")
+    with pytest.raises(InvalidRequestError, match=str(MAX_QUESTIONS)):
+        validate_suggested(MAX_QUESTIONS + 1, "")
+    with pytest.raises(InvalidRequestError, match=str(PROMPT_MAX_CHARS)):
+        validate_suggested(3, "长" * (PROMPT_MAX_CHARS + 1))

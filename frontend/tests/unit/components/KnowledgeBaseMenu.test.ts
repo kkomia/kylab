@@ -42,6 +42,10 @@ function kbFixture(overrides: Partial<KnowledgeBase> = {}): KnowledgeBase {
     chunk_strategy: 'fixed',
     chunk_size: 512,
     chunk_overlap: 64,
+    suggested_enabled: true,
+    suggested_count: 6,
+    suggested_model_pk: null,
+    suggested_prompt: '',
     created_at: '2026-09-11T00:00:00Z',
     can_manage: true,
     can_write: true,
@@ -99,6 +103,7 @@ describe('KnowledgeBaseMenu', () => {
       '基本信息',
       '库信息',
       '切块策略',
+      '推荐问题',
       '数据源',
       '删除知识库',
     ])
@@ -264,5 +269,38 @@ describe('KnowledgeBaseMenu 切块策略（v17）', () => {
 
     expect(documentsApi.batchDocuments).toHaveBeenCalledWith('kb_1', 'reprocess', [], null, true)
     expect(wrapper.emitted('changed')).toContainEqual(['sources'])
+  })
+})
+
+describe('推荐问题（v19）', () => {
+  it('四个控件的初值来自这个库，保存时按"改过的才发"提交', async () => {
+    const wrapper = await mountMenu()
+    const tab = wrapper.findAll('.nav-item').find((el) => el.text() === '推荐问题')!
+    await tab.trigger('click')
+
+    // 初值来自 kb（fixture 里是开 / 6 条）
+    const checkbox = wrapper.find('.suggested-toggle input')
+    expect((checkbox.element as HTMLInputElement).checked).toBe(true)
+
+    await checkbox.setValue(false)
+
+    await saveButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(kbApi.updateKnowledgeBase).toHaveBeenCalledWith(
+      'kb_1',
+      expect.objectContaining({ suggested_enabled: false }),
+    )
+  })
+
+  it('没动过就不发这一组字段（与切块参数同一套"脏了才发"）', async () => {
+    const wrapper = await mountMenu()
+    await nameInput(wrapper).setValue('改了名')
+    await saveButton(wrapper).trigger('click')
+    await flushPromises()
+
+    const patch = vi.mocked(kbApi.updateKnowledgeBase).mock.calls[0][1] as Record<string, unknown>
+    expect(patch).not.toHaveProperty('suggested_enabled')
+    expect(patch).not.toHaveProperty('suggested_prompt')
   })
 })

@@ -134,6 +134,17 @@ class KnowledgeBaseRecord:
     """库简介（v15）。列表卡片上的一句概述；空串 = 未填写。"""
     chunk_size: int = 512
     chunk_overlap: int = 64
+    suggested_enabled: bool = True
+    """空状态推荐问题开关（v19）。关掉后这个库不参与出题、也不被取样。"""
+    suggested_count: int = 6
+    """一次出几条。上限由服务层夹住（`suggested_questions.MAX_QUESTIONS`）。
+    默认值在这里也写 6、不去 import services——storage 不许依赖 services
+    （工程规范 §3.3 L3），两处常量由用例钉住一致。"""
+    suggested_model_pk: str | None = None
+    """出题用哪个对话模型（注册表主键）。``None`` = 跟随对话页当前选的模型。"""
+    suggested_prompt: str = ""
+    """自定义出题提示词。空串 = 用内置提示词（替换内置的**指令**那句，
+    资料片段与条数仍由服务层附加）。"""
     owner_id: str | None = None
     """归属账号（v10）。``None`` = 账号体系启用前的老数据，
     由 setup 向导认领给首个管理员（`services/auth.py`）。"""
@@ -590,6 +601,23 @@ class MetaStore(ABC):
     @abstractmethod
     def set_knowledge_base_description(self, kb_id: str, description: str) -> None:
         """改库简介（v15）。与改名同性质：只是标签，不影响检索。"""
+
+    @abstractmethod
+    @abstractmethod
+    def set_knowledge_base_suggested(
+        self,
+        kb_id: str,
+        *,
+        enabled: bool,
+        count: int,
+        model_pk: str | None,
+        prompt: str,
+    ) -> None:
+        """改这个库的推荐问题设置（v19）。
+
+        四个值一起写而不是逐个可空：它们是**同一组设置**，界面也是一屏提交，
+        逐个判空只会多出"传了 null 是清除还是不改"的歧义。
+        """
 
     @abstractmethod
     def update_knowledge_base_embedding(

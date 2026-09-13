@@ -31,6 +31,7 @@ import {
 } from '@/api/knowledgeBases'
 import { batchDocuments, type ImpactReport } from '@/api/documents'
 import IconDatabase from '@/components/icons/IconDatabase.vue'
+import IconAi from '@/components/icons/IconAi.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
 import IconInbox from '@/components/icons/IconInbox.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
@@ -43,6 +44,8 @@ import AppModal from '@/components/ui/AppModal.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
 import RangeField from '@/components/ui/RangeField.vue'
+import SuggestedQuestionsFields from '@/components/knowledge/SuggestedQuestionsFields.vue'
+import { SUGGESTED_COUNT_DEFAULT } from '@/api/knowledgeBases'
 import { chunkingErrorOf, parseIntOrNull } from '@/composables/useChunking'
 import { formatBytes } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
@@ -60,10 +63,10 @@ const documentCount = computed(() => store.summaries[props.kb.id]?.count ?? null
 /** 简介上限。与后端 `KB_DESCRIPTION_MAX_CHARS` 对齐，超了后端也会拒。 */
 const DESCRIPTION_MAX = 200
 
-type SectionKey = 'basic' | 'chunking' | 'info' | 'sources' | 'danger'
+type SectionKey = 'basic' | 'chunking' | 'suggested' | 'info' | 'sources' | 'danger'
 
 /** 底部有「取消 / 保存并关闭」的分区：只有会改数据的那些。 */
-const SAVE_SECTIONS: SectionKey[] = ['basic', 'chunking']
+const SAVE_SECTIONS: SectionKey[] = ['basic', 'chunking', 'suggested']
 
 /**
  * 左侧导航的分组。**分组不是装饰**：它回答"这些设置属于哪一类"，
@@ -81,6 +84,7 @@ const GROUPS: { label: string; items: { key: SectionKey; label: string; icon: Co
     label: '数据',
     items: [
       { key: 'chunking', label: '切块策略', icon: IconSettings },
+      { key: 'suggested', label: '推荐问题', icon: IconAi },
       { key: 'sources', label: '数据源', icon: IconInbox },
     ],
   },
@@ -103,6 +107,15 @@ const saving = ref(false)
  */
 const chunkSizeDraft = ref('')
 const chunkOverlapDraft = ref('')
+
+/**
+ * 推荐问题草稿（v19）。与切块参数不同，这四个值**立刻生效**——出题发生在对话页
+ * 空状态，读的就是这份设置，所以保存后不提示"要重新摄入"。
+ */
+const sqEnabled = ref(true)
+const sqCount = ref(SUGGESTED_COUNT_DEFAULT)
+const sqModelPk = ref('')
+const sqPrompt = ref('')
 
 /** 块长滑杆的值：滑杆只认 number，草稿是 string，这里做那一层转换。 */
 const chunkSizeNumber = computed({
@@ -148,12 +161,22 @@ const chunkingDirty = computed(
     parseIntOrNull(chunkOverlapDraft.value) !== props.kb.chunk_overlap,
 )
 
-/** 名称 / 简介 / 切分参数合成一次保存：只有真正变了的字段才发。 */
+/** 推荐问题有没有改动。 */
+const suggestedDirty = computed(
+  () =>
+    sqEnabled.value !== props.kb.suggested_enabled ||
+    sqCount.value !== props.kb.suggested_count ||
+    sqModelPk.value !== (props.kb.suggested_model_pk ?? '') ||
+    sqPrompt.value.trim() !== props.kb.suggested_prompt,
+)
+
+/** 名称 / 简介 / 切分参数 / 推荐问题合成一次保存：只有真正变了的字段才发。 */
 const dirty = computed(
   () =>
     nameDraft.value.trim() !== props.kb.name ||
     descriptionDraft.value.trim() !== props.kb.description ||
-    chunkingDirty.value,
+    chunkingDirty.value ||
+    suggestedDirty.value,
 )
 
 function openSettings(): void {
@@ -162,6 +185,7 @@ function openSettings(): void {
   descriptionDraft.value = props.kb.description
   chunkSizeDraft.value = String(props.kb.chunk_size)
   chunkOverlapDraft.value = String(props.kb.chunk_overlap)
+  resetSuggestedDraft()
   chunkingStale.value = false
   settingsOpen.value = true
 }
@@ -170,12 +194,21 @@ function closeSettings(): void {
   settingsOpen.value = false
 }
 
+/** 把推荐问题草稿拉回"库里存的那份"。 */
+function resetSuggestedDraft(): void {
+  sqEnabled.value = props.kb.suggested_enabled
+  sqCount.value = props.kb.suggested_count
+  sqModelPk.value = props.kb.suggested_model_pk ?? ''
+  sqPrompt.value = props.kb.suggested_prompt
+}
+
 /** 取消：丢掉草稿。不丢的话下次打开会看到上次没存的半截内容。 */
 function cancel(): void {
   nameDraft.value = props.kb.name
   descriptionDraft.value = props.kb.description
   chunkSizeDraft.value = String(props.kb.chunk_size)
   chunkOverlapDraft.value = String(props.kb.chunk_overlap)
+  resetSuggestedDraft()
   chunkingStale.value = false
   closeSettings()
 }
@@ -199,6 +232,10 @@ async function save(): Promise<void> {
     description?: string
     chunk_size?: number
     chunk_overlap?: number
+    suggested_enabled?: boolean
+    suggested_count?: number
+    suggested_model_pk?: string | null
+    suggested_prompt?: string
   } = {}
   if (name !== props.kb.name) patch.name = name
   const description = descriptionDraft.value.trim()
@@ -208,6 +245,14 @@ async function save(): Promise<void> {
   if (size !== props.kb.chunk_size) patch.chunk_size = size
   if (overlap !== props.kb.chunk_overlap) patch.chunk_overlap = overlap
   const chunkingChanged = patch.chunk_size !== undefined || patch.chunk_overlap !== undefined
+  // 推荐问题：四个值一起提交（后端也是一次写四个）。空串表示"跟随对话模型"/"用内置提示词"，
+  // 所以这里判的是"与库里不同"，而不是"非空"
+  if (suggestedDirty.value) {
+    patch.suggested_enabled = sqEnabled.value
+    patch.suggested_count = sqCount.value
+    patch.suggested_model_pk = sqModelPk.value
+    patch.suggested_prompt = sqPrompt.value.trim()
+  }
 
   // 没改就直接关：发一次空 PATCH 除了浪费一个来回没有任何意义
   if (Object.keys(patch).length === 0) {
@@ -220,6 +265,11 @@ async function save(): Promise<void> {
     await store.update(props.kb.id, patch)
     // 改名会让列表/页面标题跟着变，得让宿主知道
     if (patch.name) emit('changed', 'renamed')
+    if (suggestedDirty.value) {
+      // 保存成功后把草稿对齐到刚提交的值：props 要等父级重新拉数据才更新，
+      // 不对齐的话脏检查会一直是 true（"取消"会提示有未保存改动）
+      sqPrompt.value = sqPrompt.value.trim()
+    }
     if (chunkingChanged) {
       // **不关弹窗**：切块是解析时写下的，已有文档不会跟着变。
       // 让用户停在"切块策略"这一栏，重新摄入的按钮就在眼前——
@@ -480,6 +530,26 @@ async function confirmDelete(): Promise<void> {
                 重新摄入全部文档
               </AppButton>
             </div>
+          </template>
+
+          <!-- 推荐问题（v19，可改） -->
+          <template v-else-if="section === 'suggested'">
+            <h3 class="pane-title pane-title-standalone">
+              推荐问题
+              <InfoTip
+                text="对话页空状态那排「你可以这样问我」，是拿这个库里的少量原文片段让模型现场出的题。这里决定出不出、出几条、用哪个模型出、按什么要求出。它立刻生效，不像切块策略那样要重新摄入。"
+              />
+            </h3>
+            <p class="pane-desc">
+              对话页同时选中多个库时，只有开启的库参与出题；条数、模型与提示词取你最先选中的那个开启的库。
+            </p>
+
+            <SuggestedQuestionsFields
+              v-model:enabled="sqEnabled"
+              v-model:count="sqCount"
+              v-model:model-pk="sqModelPk"
+              v-model:prompt="sqPrompt"
+            />
           </template>
 
           <!-- 数据源 -->

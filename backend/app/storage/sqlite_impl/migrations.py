@@ -664,6 +664,22 @@ _MIGRATION_021 = Migration(
 )
 
 
+_MIGRATION_022 = Migration(
+    version=22,
+    description="知识库的推荐问题设置：开关 / 条数 / 生成模型 / 自定义提示词（v19）",
+    statements=(
+        # 推荐问题（对话页空状态那排胶囊）此前只认写死的常量：条数 6、固定提示词、
+        # 跟着当前对话模型。现在下放到库上——**一个库的语料决定"该问什么"**，
+        # 于是"出几条、用哪个模型出、怎么出"也归它管。
+        # 四列都带默认值：老库升级后的行为与之前一致（开 / 6 条 / 跟随对话模型 / 内置提示词）。
+        "ALTER TABLE knowledge_bases ADD COLUMN suggested_enabled INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE knowledge_bases ADD COLUMN suggested_count INTEGER NOT NULL DEFAULT 6",
+        "ALTER TABLE knowledge_bases ADD COLUMN suggested_model_pk TEXT",
+        "ALTER TABLE knowledge_bases ADD COLUMN suggested_prompt TEXT NOT NULL DEFAULT ''",
+    ),
+)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
@@ -686,6 +702,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_019,
     _MIGRATION_020,
     _MIGRATION_021,
+    _MIGRATION_022,
 )
 """全部迁移，按 version 升序。只增不改。"""
 
