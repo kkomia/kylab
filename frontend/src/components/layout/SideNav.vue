@@ -91,17 +91,54 @@ function scheduleTaskPrefetch(): void {
     void statsStore.prefetch()
     // 注册表也预热：对话页的模型名要在首次进页时就解析得出来，否则会闪一下占位文案
     void modelStore.prefetch()
+    // 最近一次会话的正文：点「对话」时命中缓存，就不必先空白一下
+    void conversations.prefetchLatestDetail()
   }
-  const idle = (window as Window & { requestIdleCallback?: (cb: () => void) => number })
-    .requestIdleCallback
-  if (typeof idle === 'function') idle(run)
+  // **必须带 timeout**：没有超时的 requestIdleCallback 在页面一直不空闲时会被无限推迟，
+  // 预热就永远不会发生——那正好退化成"每次点进去都要等一次往返"。
+  const idle = (
+    window as Window & {
+      requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
+    }
+  ).requestIdleCallback
+  if (typeof idle === 'function') idle(run, { timeout: 1500 })
   else window.setTimeout(run, 1200)
 }
 
+/**
+ * 把某个路由的**代码块**先拉下来。
+ *
+ * 视图是懒加载的：第一次点某个菜单要等 chunk 下载（本地也要一两百毫秒）。
+ * 那段时间与"取数据"是两件事，串在一起就成了"点进去要等这么久"。
+ * 这里从路由记录里取出懒加载函数直接调一次——模块加载器会缓存结果，
+ * 之后路由真正加载时命中的是同一份，既不重复下载，也不必在侧栏里再抄一份 import。
+ */
+function preloadRoute(path: string): void {
+  const loader = router.resolve(path).matched.at(-1)?.components?.default
+  if (typeof loader !== 'function') return
+  void (loader as () => Promise<unknown>)().catch(() => undefined)
+}
+
+/**
+ * 悬停/聚焦一个入口时的预热。
+ *
+ * 这是最准的意图信号：从"手指移过去"到"点下去"通常有百来毫秒，够把要用的东西先取回来——
+ * 既包括页面代码块，也包括那一页要显示的数据。
+ * 对话页除了注册表，还要预热**会话正文**——它是进页后唯一还要等的东西。
+ */
 function onNavIntent(to: string): void {
+  preloadRoute(to)
   if (to === '/tasks') void taskStore.prefetch()
   if (to === '/') void statsStore.prefetch()
-  if (to === '/chat') void modelStore.prefetch()
+  if (to === '/chat') {
+    void modelStore.prefetch()
+    void conversations.prefetchLatestDetail()
+  }
+}
+
+/** 悬停/聚焦某条历史会话：把它的正文先取回来（失败静默，见 store）。 */
+function onConversationIntent(id: string): void {
+  void conversations.prefetchDetail(id)
 }
 
 const NAV_ITEMS = [
@@ -393,6 +430,8 @@ async function onLogout(): Promise<void> {
             :class="{ 'conv-item-active': item.id === activeConversationId }"
             :to="`/chat/${item.id}`"
             :title="item.title || '未命名对话'"
+            @mouseenter="onConversationIntent(item.id)"
+            @focus="onConversationIntent(item.id)"
           >
             <!-- 置顶标记占位固定宽：不占位的话，置顶与否会让标题左右跳动 -->
             <IconPin v-if="item.pinned" class="conv-pin" :size="12" />

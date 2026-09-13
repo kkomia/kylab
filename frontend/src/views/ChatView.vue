@@ -29,7 +29,11 @@ import {
   type ChatHistoryMessage,
   type ChatSource,
 } from '@/api/chat'
-import { getConversation, rewindConversation } from '@/api/conversations'
+import {
+  rewindConversation,
+  type ConversationDetail,
+  type StoredMessage,
+} from '@/api/conversations'
 import type { RegisteredModel } from '@/api/modelRegistry'
 import { getSettings, updateSettings } from '@/api/settings'
 import IconArrowUp from '@/components/icons/IconArrowUp.vue'
@@ -48,6 +52,7 @@ import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppMultiSelect from '@/components/ui/AppMultiSelect.vue'
 import ModelPicker from '@/components/ui/ModelPicker.vue'
+import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import { renderAnswerWithCitations } from '@/composables/useMarkdown'
 import {
   buildTurns,
@@ -112,6 +117,8 @@ const loadingHistory = ref(false)
  * 也就是这次要修的那个现象，只是从"一直停着"变成"闪一下"。
  */
 const resolvingEntry = ref(false)
+/** 入口解析的序号：迟到的解析不许再把用户拽走（见 `enterChat`）。 */
+let entryToken = 0
 
 /**
  * 还没决定这一页显示什么：正在解析入口，或正在回放某条会话。
@@ -177,6 +184,20 @@ onMounted(async () => {
  *    那时手上的结论已经过期，照旧 `replace` 就是把人从他刚选的那条上拽走
  *    （实测：直接打开 `/chat` 后马上点第二条会话，会被弹回"最近一条"）。
  */
+/**
+ * 解析期间用户可能已经离开了这一页：`replace` 之前必须再确认三件事。
+ *
+ * - `unmounted`：组件都没了，任何改路径都是替别人做决定；
+ * - **`route.name !== 'chat'`**：这是"跳回对话"那个 bug 的正主。光看
+ *   `conversationId` 是不够的——切到别的菜单之后 `route.params.conversationId`
+ *   本来就是空的，于是守卫放行、`replace('/chat/<latest>')` 把刚走的人拽回对话页
+ *   （实测复现：点「对话」后 80ms 内点「知识库」，最终仍停在 /chat/xxx）；
+ * - 路径/查询参数变了：用户已经自己选了别的会话或点了「新对话」。
+ */
+function entryIsStale(): boolean {
+  return unmounted || route.name !== 'chat' || Boolean(conversationId.value) || wantsNew.value
+}
+
 async function enterChat(): Promise<void> {
   if (conversationId.value) {
     await loadConversation()
@@ -186,11 +207,12 @@ async function enterChat(): Promise<void> {
     messages.value = []
     return
   }
+  const token = ++entryToken
   resolvingEntry.value = true
   try {
     const latest = await conversations.latestId()
-    // 见上面第 4 条：跑完这一趟如果路径已经变了，就别再动它
-    if (conversationId.value || wantsNew.value) return
+    // 并发进来的后一次说了算：只有最新那次允许改路径
+    if (token !== entryToken || entryIsStale()) return
     if (latest) {
       await router.replace(`/chat/${latest}`)
       return
@@ -200,9 +222,9 @@ async function enterChat(): Promise<void> {
   } catch {
     // 拿不到列表就停在空态。这里不该弹红字：用户是来问问题的，
     // 而"最近一条"只是个便利，拿不到不等于这一页坏了
-    messages.value = []
+    if (token === entryToken) messages.value = []
   } finally {
-    resolvingEntry.value = false
+    if (token === entryToken) resolvingEntry.value = false
   }
 }
 
@@ -234,7 +256,37 @@ watch([conversationId, wantsNew], () => {
  */
 let streamingConversationId = ''
 
-/** 把库里的历史读进界面。 */
+/** 把一份会话详情铺进界面（缓存与网络两条路都走它，口径才不会分叉）。 */
+function applyDetail(detail: ConversationDetail): void {
+  messages.value = detail.messages.map((item) =>
+    makeMessage(item.role === 'user' ? 'user' : 'assistant', item.content, {
+      sources: item.sources,
+      // 回放：这一轮当时用哪档思考没有存，别猜
+      thinking: null,
+    }),
+  )
+  // 会话建立时用的哪些库：回放时应当沿用，否则多轮上下文会指向上一次没查的库
+  if (detail.kb_ids.length) {
+    selected.value = detail.kb_ids.filter((kbId) => store.items.some((item) => item.id === kbId))
+  }
+  // 会话当时选的对话模型：回放时也沿用（v12）。为空则保持当前的默认选择
+  if (detail.model_pk) modelPk.value = detail.model_pk
+  // 会话当时的思考偏好（v16）：`null` = 当时跟随全局，保持当前默认即可
+  if (detail.thinking !== null) thinkingOn.value = detail.thinking
+  if (detail.thinking_effort) thinkingEffort.value = detail.thinking_effort
+  stick.value = true
+  void scrollToBottom()
+}
+
+/**
+ * 把库里的历史读进界面。
+ *
+ * **先看缓存**：命中就同步画出来（零等待），不再等一个往返——"离开对话页再回来"
+ * 是最常见的动作之一，原来每次都要空白一下。侧栏悬停时也会预取，所以多数情况下
+ * 点进来就已经命中了。
+ *
+ * 未命中才走网络，此时给骨架屏（`pendingEntry` + 无消息）而不是干等一屏空白。
+ */
 async function loadConversation(): Promise<void> {
   const id = conversationId.value
   if (!id) {
@@ -244,28 +296,21 @@ async function loadConversation(): Promise<void> {
   }
   // 这一轮的回答还在路上，本地就是最新的——别用库里的旧快照盖掉它
   if (id === streamingConversationId) return
+
+  const cached = conversations.cachedDetail(id)
+  if (cached) {
+    applyDetail(cached)
+    return
+  }
+
   loadingHistory.value = true
   try {
-    const detail = await getConversation(id)
-    messages.value = detail.messages.map((item) =>
-      makeMessage(item.role === 'user' ? 'user' : 'assistant', item.content, {
-        sources: item.sources,
-        // 回放：这一轮当时用哪档思考没有存，别猜
-        thinking: null,
-      }),
-    )
-    // 会话建立时用的哪些库：回放时应当沿用，否则多轮上下文会指向上一次没查的库
-    if (detail.kb_ids.length) {
-      selected.value = detail.kb_ids.filter((kbId) => store.items.some((item) => item.id === kbId))
-    }
-    // 会话当时选的对话模型：回放时也沿用（v12）。为空则保持当前的默认选择
-    if (detail.model_pk) modelPk.value = detail.model_pk
-    // 会话当时的思考偏好（v16）：`null` = 当时跟随全局，保持当前默认即可
-    if (detail.thinking !== null) thinkingOn.value = detail.thinking
-    if (detail.thinking_effort) thinkingEffort.value = detail.thinking_effort
-    stick.value = true
-    void scrollToBottom()
+    const detail = await conversations.fetchDetail(id)
+    // 取回来的路上用户可能又切走了：别把旧会话的内容盖到新选的这条上
+    if (conversationId.value !== id) return
+    applyDetail(detail)
   } catch (cause) {
+    if (conversationId.value !== id) return
     notifyError(cause instanceof Error ? cause.message : '会话加载失败')
     messages.value = []
   } finally {
@@ -402,15 +447,37 @@ async function send(): Promise<void> {
   }
 }
 
+/**
+ * 本地消息 → 库里的形状。
+ *
+ * 过滤口径与 `history` 一致（失败或没吐字的助手消息不入库），但**不截断**：
+ * 缓存要的是全量，`history` 只带最近几轮是因为提示词装不下。
+ */
+function persistedMessages(): StoredMessage[] {
+  return messages.value
+    .filter((item) => item.role === 'user' || (item.text.length > 0 && !item.error))
+    .map((item) => ({
+      id: '',
+      role: item.role,
+      content: item.text,
+      sources: item.sources,
+      created_at: null,
+    }))
+}
+
 /** 一轮结束：收掉「停止」，把输入权还给用户。 */
 function finish(): void {
   sending.value = false
   stream.value = null
   // 这一轮写完了，库里已经有完整记录，回放重新以库为准
   streamingConversationId = ''
-  // 一轮结束后刷新侧栏那一条：标题（首轮才有）与消息数都变了。
-  // 只刷这一条而不是整表，避免把用户刚建的其他会话顺序打乱
-  if (conversationId.value) void conversations.refreshOne(conversationId.value)
+  if (!conversationId.value) return
+  const id = conversationId.value
+  // 先用本地这份覆盖缓存：后端同刻刚写完，"聊完切走再切回"才不会看到上一版
+  conversations.rememberDetailMessages(id, persistedMessages())
+  // 再让后端校准一次（标题是首轮才生成的、条数与时间也变了），
+  // 一次请求同时更新缓存与侧栏那一条
+  void conversations.refreshDetail(id)
 }
 
 /** 用户点了「停止」：已经流出来的部分留着，它仍然是有用的。 */
@@ -964,10 +1031,17 @@ async function savePrompt(): Promise<void> {
         class="chat-inner"
         :class="{ 'chat-inner-welcome': messages.length === 0 && !pendingEntry }"
       >
+        <!-- 还没决定显示哪条对话（解析入口 / 回放会话）时给骨架屏。
+             只画有把握的结构、不画"空对话"的欢迎层，也别让人干等一屏白：
+             会话正文要等一次网络往返，这段空档是"点进来空白一下"的来源。 -->
+        <div v-if="messages.length === 0 && pendingEntry" class="chat-loading">
+          <SkeletonBlock variant="list" :rows="4" />
+        </div>
+
         <!-- 空状态：居中问候 + 示例问题（参考 WeKnora 的欢迎层）。
              有消息之后整块消失，让位给正文——它不是常驻装饰。
              `pendingEntry` 期间不画：那时还没决定该显示哪条对话（见 resolvingEntry）。 -->
-        <div v-if="messages.length === 0 && !pendingEntry" class="welcome">
+        <div v-else-if="messages.length === 0" class="welcome">
           <h1 class="welcome-title">Hi，我是 KYLAB，让你的知识触手可及</h1>
           <div class="welcome-sub">
             <span>你可以这样问我</span>
@@ -1317,6 +1391,13 @@ async function savePrompt(): Promise<void> {
   align-items: center;
   justify-content: center;
   min-height: 100%;
+}
+
+/* ---- 加载骨架 ---- */
+
+/* 只占正文列宽，别撑出横向滚动；与消息列同一套左右对齐 */
+.chat-loading {
+  padding: var(--space-6) 0;
 }
 
 /* ---- 空状态 ---- */
