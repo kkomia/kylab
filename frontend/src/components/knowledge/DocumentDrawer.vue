@@ -663,6 +663,15 @@ const stage = computed(() =>
                   </div>
                 </div>
                 <pre v-else class="preview-text">{{ chunk.text }}</pre>
+
+                <!-- 这一段生成的问题（v23）：只读展示。
+                     问题会一起进检索索引，用户换个问法就能命中这一段——
+                     所以要能看见它们，才能判断"出题质量如何、值不值得开着" -->
+                <ul v-if="chunk.questions.length" class="chunk-questions">
+                  <li v-for="question in chunk.questions" :key="question" class="chunk-question">
+                    {{ question }}
+                  </li>
+                </ul>
               </li>
             </ol>
           </template>
@@ -1113,6 +1122,33 @@ const stage = computed(() =>
   color: var(--text-primary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* 这一段生成的问题：小号、弱色、缩进——它是"这一段能被怎么问"的旁注，
+   不该和正文一样重 */
+.chunk-questions {
+  margin: var(--space-3) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.chunk-question {
+  display: flex;
+  gap: var(--space-1);
+  align-items: baseline;
+  font-size: var(--text-micro-size);
+  line-height: 1.7;
+  color: var(--text-tertiary);
+}
+
+.chunk-question::before {
+  flex: 0 0 auto;
+  content: '问';
+  padding: 0 4px;
+  font-size: var(--text-micro-size);
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-radius: var(--radius-control);
 }
 
 /* 抬头一行：块号在左，操作菜单推到最右。

@@ -10,6 +10,7 @@ from app.models.enums import DocumentStage
 from app.parsers.base import ParseError
 from app.parsers.plain_text import PlainTextParser
 from app.services.chunking import ChunkingConfig
+from app.services.documents import DocumentService
 from app.services.embedding.base import EmbeddingError
 from app.services.embedding.deterministic import DeterministicEmbedder
 from app.services.ingest import IngestCanceled, IngestError, IngestService
@@ -544,3 +545,133 @@ def test_all_parsers_failing_reports_every_reason(bundle: StoreBundle, kb) -> No
     message = str(excinfo.value)
     assert "FailingParser" in message and "云端额度用尽" in message
     assert "AlsoFailingParser" in message and "接口抖动" in message
+
+
+# ------------------------------------------------------- 分段出题（v23）
+
+
+class _RecordingEmbedder(DeterministicEmbedder):
+    """把"被拿去向量化的文本"记下来，用来断言用的是 index_text 而不是原文。"""
+
+    def __init__(self, dim: int = DIM) -> None:
+        super().__init__(dim=dim)
+        self.seen: list[str] = []
+
+    def embed(self, texts):  # type: ignore[no-untyped-def]
+        self.seen.extend(texts)
+        return super().embed(texts)
+
+
+class _StubQuestions:
+    """假的出题服务：按 chunk_id 给固定问题，并记录调用次数。"""
+
+    def __init__(self, question: str = "这一段能回答什么？") -> None:
+        self.question = question
+        self.calls = 0
+        self.last_count: int | None = None
+        self.last_prompt: str | None = None
+        self.last_model: str | None = None
+
+    def generate_for_chunks(self, chunks, *, model_pk=None, count=3, prompt=""):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        self.last_count = count
+        self.last_prompt = prompt
+        self.last_model = model_pk
+        return {chunk.chunk_id: [f"{self.question}{index}"] for index, chunk in enumerate(chunks)}
+
+
+def _service_with_questions(bundle, embedder, questions) -> IngestService:  # type: ignore[no-untyped-def]
+    return IngestService(
+        bundle,
+        router=ParserRouter([PlainTextParser()]),
+        embedder=embedder,
+        chunk_config=ChunkingConfig(size=64, overlap=8),
+        questions=questions,
+    )
+
+
+def test_ingest_generates_questions_only_when_the_kb_turns_them_on(
+    bundle: StoreBundle, kb, embedder: DeterministicEmbedder
+) -> None:
+    """开关关着时**一次模型调用都不发**，块也没有问题——这是默认状态。"""
+    questions = _StubQuestions()
+    service = _service_with_questions(bundle, embedder, questions)
+
+    outcome = service.submit(knowledge_base_id=kb.id, filename="kb.md", content=MARKDOWN.encode())
+    service.ingest(outcome.document.id)
+
+    assert questions.calls == 0
+    assert all(not chunk.questions for chunk in bundle.meta.iter_chunks(outcome.document.id))
+
+
+def test_ingest_stores_questions_and_indexes_the_augmented_text(
+    bundle: StoreBundle, kb, kb_service: KnowledgeBaseService, embedder: DeterministicEmbedder
+) -> None:
+    """开着时：问题落进 chunks，且**向量化用的是"原文 + 问题"**。
+
+    后者是这个功能的全部意义——只存问题而不把它带进索引，召回一点都不会变好。
+    """
+    kb_service.set_suggested(kb.id, enabled=True, count=2, model_pk=None, prompt="")
+    questions = _StubQuestions("这一段能回答什么？")
+    recorder = _RecordingEmbedder()
+    service = _service_with_questions(bundle, recorder, questions)
+
+    outcome = service.submit(knowledge_base_id=kb.id, filename="kb.md", content=MARKDOWN.encode())
+    service.ingest(outcome.document.id)
+
+    chunks = list(bundle.meta.iter_chunks(outcome.document.id))
+    assert questions.calls == 1
+    assert questions.last_count == 2  # 用库上设置的"每段几条"
+    assert all(chunk.questions for chunk in chunks)
+    assert chunks[0].questions[0].startswith("这一段能回答什么？")
+    # 向量化的文本 = index_text（含问题），而不是纯原文
+    assert any("这一段能回答什么？" in text for text in recorder.seen)
+    assert any(chunk.index_text in recorder.seen for chunk in chunks)
+    # 原文那一列没被污染（引用预览读的是它）
+    assert "这一段能回答什么？" not in chunks[0].text
+
+
+def test_ingest_survives_a_failing_question_service(
+    bundle: StoreBundle, kb, kb_service: KnowledgeBaseService, embedder: DeterministicEmbedder
+) -> None:
+    """出题整体挂掉也只能让文档"没有问题"，**绝不能把摄入打成 failed**。"""
+
+    class _Boom:
+        def generate_for_chunks(self, chunks, **kwargs):  # type: ignore[no-untyped-def]
+            raise RuntimeError("出题服务炸了")
+
+    kb_service.set_suggested(kb.id, enabled=True, count=2, model_pk=None, prompt="")
+    service = _service_with_questions(bundle, embedder, _Boom())
+
+    outcome = service.submit(knowledge_base_id=kb.id, filename="kb.md", content=MARKDOWN.encode())
+    result = service.ingest(outcome.document.id)
+
+    assert result.document.stage is DocumentStage.INDEXED
+    assert all(not chunk.questions for chunk in bundle.meta.iter_chunks(outcome.document.id))
+
+
+def test_reprocess_actually_reruns_chunking_and_embedding(
+    bundle: StoreBundle, kb, embedder: DeterministicEmbedder
+) -> None:
+    """**重新摄入对已 indexed 的文档必须真的重跑**（v23 修）。
+
+    修之前：force 只允许入队、不重置阶段，`_resume_stage` 返回 indexed，
+    三个 `_before(...)` 全 false → 整次摄入什么都不做。于是"打开分段出题后重新摄入"
+    这个动作永远不会生效，用户会以为功能坏了。
+    """
+    service = _service_with_questions(bundle, embedder, _StubQuestions())
+    outcome = service.submit(knowledge_base_id=kb.id, filename="kb.md", content=MARKDOWN.encode())
+    service.ingest(outcome.document.id)
+    before = list(bundle.meta.iter_chunks(outcome.document.id))
+    assert before
+
+    # 走用户那条路：文档服务入队 force → worker 消费
+    documents = DocumentService(bundle)
+    documents.enqueue_ingest(outcome.document.id, force=True)
+    assert bundle.meta.get_document(outcome.document.id).stage is DocumentStage.CHUNKING
+
+    service.ingest(outcome.document.id)
+
+    after = list(bundle.meta.iter_chunks(outcome.document.id))
+    assert after  # 块被重建了（不是空转）
+    assert bundle.meta.get_document(outcome.document.id).stage is DocumentStage.INDEXED

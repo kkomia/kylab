@@ -36,6 +36,7 @@ from app.services.splitting import (
     build_result,
     plan_split,
 )
+from app.services.suggested_questions import SuggestedQuestionsService
 from app.services.tabular import TABULAR_EXTENSIONS, parse_tabular
 from app.services.webhook import DOCUMENT_FAILED, DOCUMENT_INDEXED
 from app.storage.base import (
@@ -122,12 +123,17 @@ class IngestService:
         chunk_config: ChunkingConfig | None = None,
         notifier: Callable[[str, dict], None] | None = None,
         embedders: EmbeddingResolver | None = None,
+        questions: SuggestedQuestionsService | None = None,
     ) -> None:
         self._stores = stores
         self._router = router
         self._embedder = embedder
         # 按库解析嵌入模型（v11）。不给就退回全局 embedder，行为与改动前一致
         self._embedders = embedders
+        #: 分段出题（v23）。库上开着才用，且**失败不影响摄入**——
+        #: 与 notifier 同一套理由：旁路能力的失败不该把文档打成 failed。
+        #: 不给就完全不生成（老测试与"不配模型也能跑通摄入"的路径）。
+        self._questions = questions
         #: 显式注入的切分参数（测试与特殊调用用）。**为 None 时按库读取**——
         #: 生产走的就是那条路：每个库有自己的块长/重叠（v17）。
         #: 与 `_embedders` 同一套写法：不给就退回"按库解析"。
@@ -526,10 +532,38 @@ class IngestService:
             knowledge_base_id=document.knowledge_base_id,
             config=self._chunking_for(kb),
         )
+        # 出题**必须在落库之前**：问题要跟着块一起写进去（不然后面还得再 UPDATE 一遍），
+        # 而且紧接着的全文索引读的就是含问题的 `index_text`。
+        self._attach_questions(kb, chunks)
         self._stores.meta.replace_chunks(document.id, chunks)
         self._stores.fulltext.index_chunks(chunks)
         self._advance(document, DocumentStage.CHUNKED)
         return chunks
+
+    def _attach_questions(self, kb: KnowledgeBaseRecord, chunks: list) -> None:
+        """按库设置给每个分段出题，就地写进 ``chunk.questions``。
+
+        **整段包在 try 里**：出题是旁路能力，模型没配、上游挂了、输出解析不出来，
+        都只该让这篇文档"这一段没有题"，绝不能让摄入失败——`ingest()` 里任何
+        漏出来的异常都会被 worker 当成可重试失败，最后把文档打成 failed。
+        （服务内部已经逐批兜了异常，这里再兜一层是防"服务本身没接上"。）
+
+        关掉时**一次模型调用都不发**，这是那个开关的主要意义。
+        """
+        if self._questions is None or not kb.suggested_enabled:
+            return
+        try:
+            generated = self._questions.generate_for_chunks(
+                chunks,
+                model_pk=kb.suggested_model_pk,
+                count=kb.suggested_count,
+                prompt=kb.suggested_prompt,
+            )
+        except Exception:
+            logger.warning("分段出题整体失败，文档 %s 不带问题入库", kb.id, exc_info=True)
+            return
+        for chunk in chunks:
+            chunk.questions = tuple(generated.get(chunk.chunk_id, ()))
 
     def _chunking_for(self, kb: KnowledgeBaseRecord) -> ChunkingConfig:
         """这个库该用哪套切分参数。
@@ -556,7 +590,9 @@ class IngestService:
 
         embedder = self._embedder_for(kb)
         self._stores.vectors.ensure_partition(kb.id, dim=embedder.dim)
-        texts = [chunk.text for chunk in chunks]
+        # **index_text 而不是 text**：含该段生成的问题，于是"换个问法"也能命中
+        # （见 ChunkRecord.index_text）。原文那一列不动，引用预览里不会多出问题。
+        texts = [chunk.index_text for chunk in chunks]
         vectors = embedder.embed(texts)
         self._stores.vectors.upsert_vectors(
             kb.id,

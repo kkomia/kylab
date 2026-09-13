@@ -20,7 +20,7 @@ from app.services.chunking import (
     DEFAULT_OVERLAP,
 )
 from app.services.suggested_questions import (
-    DEFAULT_LIMIT as DEFAULT_SUGGESTED_COUNT,
+    DEFAULT_QUESTIONS_PER_CHUNK as DEFAULT_SUGGESTED_COUNT,
 )
 from app.services.suggested_questions import (
     MAX_QUESTIONS as SUGGESTED_COUNT_MAX,
@@ -58,9 +58,10 @@ class KnowledgeBaseCreate(BaseModel):
     模型 ID 与维度在建库时冻结，换模型必须新建库（架构 §6.4 模型锁）。
     """
 
-    #: 推荐问题（对话页空状态那排胶囊，v19）。**建库时就能定**，之后在
-    #: 「知识库设置 → 推荐问题」里改。四个字段与库设置同源，范围常量取自服务层。
-    suggested_enabled: bool = True
+    #: 分段问题生成（v19 起，v23 起是"入库时为每个分段出题"）。**建库时就能定**，
+    #: 之后在「知识库设置 → 切块策略」里改——它与分段同属"入库时怎么处理文本"。
+    #: 四个字段与库设置同源，范围常量取自服务层。**默认关**：生成发生在上传之后，要花钱。
+    suggested_enabled: bool = False
     suggested_count: int = Field(
         default=DEFAULT_SUGGESTED_COUNT, ge=SUGGESTED_COUNT_MIN, le=SUGGESTED_COUNT_MAX
     )
@@ -85,9 +86,11 @@ class KnowledgeBaseUpdate(BaseModel):
     chunk_size: int | None = Field(default=None, ge=CHUNK_SIZE_MIN, le=CHUNK_SIZE_MAX)
     chunk_overlap: int | None = Field(default=None, ge=0, le=CHUNK_OVERLAP_MAX)
 
-    #: 推荐问题设置（v19）。与切块参数不同，这组**立刻生效**（出题时现读）。
-    #: 四个字段一起提交，但都可不传（不传 = 不改）；``suggested_model_pk`` 传空串
-    #: 表示"清除"= 回到跟随对话模型（与简介传空串表示清空同一套约定）。
+    #: 分段问题生成设置（v19/v23）。四个字段一起提交，但都可不传（不传 = 不改）；
+    #: ``suggested_model_pk`` 传空串表示"清除"= 回到跟随对话模型（与简介空串同一套约定）。
+    #:
+    #: **只对之后摄入的文档生效**：问题是在切块那一步生成的，已入库的块不会自己
+    #: 长出新问题——要生效得重新摄入（「重新摄入全部文档」，不重新解析）。
     suggested_enabled: bool | None = None
     suggested_count: int | None = Field(
         default=None, ge=SUGGESTED_COUNT_MIN, le=SUGGESTED_COUNT_MAX
@@ -108,8 +111,8 @@ class KnowledgeBaseOut(BaseModel):
     chunk_strategy: str
     chunk_size: int
     chunk_overlap: int
-    suggested_enabled: bool = True
-    """推荐问题开关（v19）。界面据此回显，也据此判断要不要显示"已关闭"的说明。"""
+    suggested_enabled: bool = False
+    """是否为每个分段生成推荐问题（v23）。界面据此回显。"""
     suggested_count: int = DEFAULT_SUGGESTED_COUNT
     suggested_model_pk: str | None = None
     """出题模型。``None`` = 跟随对话页当前选的模型。"""
@@ -289,6 +292,9 @@ class ChunkOut(BaseModel):
     image_ids: list[str] = Field(default_factory=list)
     disabled: bool = False
     """被禁用的块不再参与检索，但仍留在库里（§G3）。"""
+    questions: list[str] = Field(default_factory=list)
+    """入库时为这一段生成的问题（v23）。**只读展示**——它由模型产出，
+    用户要判断"出题质量如何、值不值得开着"，就得看得见它。"""
 
 
 class ChunkList(BaseModel):

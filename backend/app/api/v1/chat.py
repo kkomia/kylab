@@ -44,6 +44,9 @@ from app.services.agent import (
 from app.services.api_key import Caller
 from app.services.llm import ChatError, ChatMessage
 from app.services.suggested_questions import (
+    DEFAULT_LIMIT as SUGGESTED_DEFAULT_LIMIT,
+)
+from app.services.suggested_questions import (
     MAX_QUESTIONS as SUGGESTED_MAX,
 )
 from app.services.suggested_questions import (
@@ -135,7 +138,7 @@ async def chat_once(
 @router.get(
     "/chat/suggested-questions",
     response_model=SuggestedQuestionsOut,
-    summary="示例问题（依据所选知识库的语料生成）",
+    summary="推荐问题（取自入库时为各分段生成的问题）",
 )
 def suggested_questions(
     services: Services = Depends(get_services),
@@ -145,26 +148,25 @@ def suggested_questions(
         default=None,
         ge=SUGGESTED_MIN,
         le=SUGGESTED_MAX,
-        description="条数。留空 = 用知识库上的推荐问题设置（界面走这条）",
+        description="最多返回几条；留空用默认",
     ),
-    model_pk: str | None = Query(
-        default=None, description="用哪个模型生成；留空 = 用库设置，再回落到全局默认"
-    ),
-    refresh: bool = Query(default=False, description="true 绕过缓存重新生成"),
 ) -> SuggestedQuestionsOut:
     """给对话页空状态那排胶囊喂数据。
 
-    **失败返回空列表而不是报错**（``generated=false``）：示例问题只是引导，
-    拿不到就让界面回退到静态样例，不该把"打开对话页"变成一次错误提示。
+    **不再调模型**（v23）：问题在**入库时**就为每个分段生成好了（见
+    `services/suggested_questions.py`），这里只是随机抽几段、把它们的问题取回来。
+    这样空状态看到的"你可以这样问"与库里真实内容一致，也不必为一个引导多花一次
+    模型调用。
 
-    条数 / 模型 / 提示词都以**所选知识库上的设置**为准（v19）；``limit`` 与
-    ``model_pk`` 是显式覆盖，给脚本与 MCP 用。关掉了推荐问题的库不参与出题。
+    **失败返回空列表而不是报错**（``generated=false``）：库里还没有问题
+    （功能没开、或文档还没重新摄入）时如此，界面据此回退到静态样例——
+    不该把"打开对话页"变成一次错误提示。
     """
     ids = [item.strip() for item in kb_ids.split(",") if item.strip()]
     if ids:
         check_kb_scope(services, caller, ids)
-    questions = services.suggested_questions.suggest(
-        kb_ids=ids, limit=limit, model_pk=model_pk, refresh=refresh
+    questions = services.suggested_questions.list_questions(
+        kb_ids=ids, limit=limit or SUGGESTED_DEFAULT_LIMIT
     )
     return SuggestedQuestionsOut(questions=questions, generated=bool(questions))
 

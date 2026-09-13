@@ -680,6 +680,24 @@ _MIGRATION_022 = Migration(
 )
 
 
+_MIGRATION_023 = Migration(
+    version=23,
+    description="分段问题：每个分段的生成问题随块入库，并进检索文本（v23）",
+    statements=(
+        # 为什么问题要跟块存在一起：它是**这一段的**属性，块的 chunk_id 已经稳定，
+        # 重跑/断点续跑时按 id 对得上；而它又是"提升召回"的手段——见
+        # ``ChunkRecord.index_text``：向量与全文索引都用「原文 + 问题」，
+        # 于是用户换一种问法也能命中这一段。原文那一列不动，引用预览里不会多出问题。
+        "ALTER TABLE chunks ADD COLUMN questions TEXT NOT NULL DEFAULT '[]'",
+        # **语义变更（翻案 022）**：`suggested_enabled` 从"空状态要不要显示推荐问题"
+        # 变成"入库时要不要为每个分段生成问题"。生成要花模型调用（每 8 段一次请求，
+        # 发生在上传之后）——升级后不能默默开始烧 token，所以老库一律先关掉，
+        # 用户自己按需打开。`suggested_count` 同步从"显示几条"变成"每段生成几条"。
+        "UPDATE knowledge_bases SET suggested_enabled = 0",
+    ),
+)
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
     _MIGRATION_002,
@@ -703,6 +721,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_020,
     _MIGRATION_021,
     _MIGRATION_022,
+    _MIGRATION_023,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

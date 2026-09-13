@@ -1,16 +1,22 @@
-"""示例问题生成（对话页空状态）。
+"""推荐问题：入库出题（写端）与空状态取题（读端）。
 
 镜像同构：``app/services/suggested_questions.py`` → 本文件。
 
-要紧的三条：拿不到语料/生成失败都**不报错**（回退静态样例）、模型输出被保守清洗、
-同一组知识库在缓存期内不重复调用（切一次库就重新生成一次太费 token）。
+要紧的四条：
+1. **写端从不抛**——它是摄入链路上的旁路，出题失败只能让这一段没有题，
+   不能让整篇文档 failed；
+2. 写端**分批**（一份 100 段的文档不能变成 100 次模型调用）；
+3. 解析时**宁缺勿错**——编号对不上的块整块丢掉，不能把 A 段的问题写到 B 段上；
+4. 读端**不调模型**，只从库里已存的问题里取；没有就返回空（前端回退静态样例）。
 """
 
 from __future__ import annotations
 
 from app.models.enums import DataSourceKind, DocumentStage
 from app.services.suggested_questions import (
+    _CHUNKS_PER_CALL,
     SuggestedQuestionsService,
+    _parse_blocks,
     _parse_questions,
 )
 from app.storage.base import ChunkRecord, DocumentRecord, KnowledgeBaseRecord
@@ -33,8 +39,32 @@ class FakeChat:
 
 
 class BoomChat:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def ask_raw(self, messages, *, model_pk=None):  # type: ignore[no-untyped-def]
+        self.calls += 1
         raise RuntimeError("上游挂了")
+
+
+def _chunk(
+    kb_id: str,
+    document_id: str,
+    ordinal: int,
+    *,
+    prefix: str = "c",
+    questions: tuple[str, ...] = (),
+) -> ChunkRecord:
+    return ChunkRecord(
+        chunk_id=f"{prefix}{ordinal}",
+        document_id=document_id,
+        knowledge_base_id=kb_id,
+        part_id=None,
+        ordinal=ordinal,
+        text=f"第 {ordinal} 段原文，讲的是眼轴测量与近视防控。",
+        content_hash=f"h{prefix}{ordinal}",
+        questions=questions,
+    )
 
 
 def _seed_chunks(
@@ -43,18 +73,17 @@ def _seed_chunks(
     document_id: str,
     count: int = 2,
     prefix: str = "c",
+    questions: dict[int, tuple[str, ...]] | None = None,
 ) -> None:
     bundle.meta.replace_chunks(
         document_id,
         [
-            ChunkRecord(
-                chunk_id=f"{prefix}{index}",
-                document_id=document_id,
-                knowledge_base_id=kb_id,
-                part_id=None,
-                ordinal=index,
-                text=f"第 {index} 段原文，讲的是眼轴测量与近视防控。",
-                content_hash=f"h{prefix}{index}",
+            _chunk(
+                kb_id,
+                document_id,
+                index,
+                prefix=prefix,
+                questions=(questions or {}).get(index, ()),
             )
             for index in range(count)
         ],
@@ -85,162 +114,164 @@ def test_parse_respects_the_limit_and_drops_overlong_lines() -> None:
     assert _parse_questions(raw, limit=2) == ["问题一？", "问题二？"]
 
 
-# --------------------------------------------------------------------- 生成
+# --------------------------------------------------------------------- 按段拆块
 
 
-def test_suggest_returns_questions_from_the_model(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    _seed_chunks(bundle, kb.id, document.id)
-    service = SuggestedQuestionsService(bundle, FakeChat())
+def test_parse_blocks_maps_each_block_to_its_chunk() -> None:
+    chunks = [_chunk("kb", "d", 0), _chunk("kb", "d", 1)]
+    raw = "###片段1\n眼轴怎么测？\n多久测一次？\n\n###片段2\n近视怎么防控？"
 
-    assert service.suggest(kb_ids=[kb.id], limit=5) == ["第一个问题？", "第二个问题？"]
-
-
-def test_suggest_without_chunks_is_empty(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    """库里没有可采样的块（空库）→ 空列表，而不是抛错。"""
-    service = SuggestedQuestionsService(bundle, FakeChat())
-
-    assert service.suggest(kb_ids=[kb.id]) == []
-
-
-def test_suggest_without_kb_ids_is_empty(bundle) -> None:  # type: ignore[no-untyped-def]
-    service = SuggestedQuestionsService(bundle, FakeChat())
-    assert service.suggest(kb_ids=[]) == []
-
-
-def test_suggest_swallows_model_failures(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    """模型调用失败不该把对话页变成一个错误页——返回空列表，界面回退静态样例。"""
-    _seed_chunks(bundle, kb.id, document.id)
-    service = SuggestedQuestionsService(bundle, BoomChat())
-
-    assert service.suggest(kb_ids=[kb.id]) == []
-
-
-def test_suggest_caches_until_refresh(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    _seed_chunks(bundle, kb.id, document.id)
-    chat = FakeChat()
-    service = SuggestedQuestionsService(bundle, chat)
-
-    service.suggest(kb_ids=[kb.id])
-    service.suggest(kb_ids=[kb.id])
-    assert chat.calls == 1
-
-    service.suggest(kb_ids=[kb.id], refresh=True)
-    assert chat.calls == 2
-
-
-def test_suggest_caps_the_limit(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    """一次要 100 条也只给上限内——这是成本闸门。"""
-    _seed_chunks(bundle, kb.id, document.id)
-    service = SuggestedQuestionsService(bundle, FakeChat())
-
-    # 假模型只回 2 条，但 limit 会被夹到上限；用超长 limit 不报错即可
-    assert service.suggest(kb_ids=[kb.id], limit=100) == ["第一个问题？", "第二个问题？"]
-
-
-def test_suggest_does_not_cache_an_empty_result(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    """生成不出来不写缓存：下次进来还要再试，否则一次失败会粘住五分钟。"""
-    _seed_chunks(bundle, kb.id, document.id)
-    chat = FakeChat(reply="")
-    service = SuggestedQuestionsService(bundle, chat)
-
-    assert service.suggest(kb_ids=[kb.id]) == []
-    assert service.suggest(kb_ids=[kb.id]) == []
-    assert chat.calls == 2
-
-
-# --------------------------------------------------------------------- 每库设置（v19）
-
-
-def _set(bundle, kb_id: str, **values) -> None:  # type: ignore[no-untyped-def]
-    """直接写库上的推荐问题设置（绕过服务层的校验，测的是读取侧）。"""
-    base = {
-        "enabled": True,
-        "count": 6,
-        "model_pk": None,
-        "prompt": "",
+    assert _parse_blocks(raw, chunks, limit=3) == {
+        "c0": ["眼轴怎么测？", "多久测一次？"],
+        "c1": ["近视怎么防控？"],
     }
-    base.update(values)
-    bundle.meta.set_knowledge_base_suggested(kb_id, **base)
 
 
-def test_suggest_uses_kb_count_and_prompt(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    """条数与提示词以**库上的设置**为准——这正是"设置没体现"要修的地方。"""
-    _seed_chunks(bundle, kb.id, document.id)
-    _set(bundle, kb.id, count=3, prompt="请从诊断标准的角度出题，每行一个问题。{n}")
+def test_parse_blocks_is_tolerant_about_the_header_style() -> None:
+    chunks = [_chunk("kb", "d", 0), _chunk("kb", "d", 1)]
+    raw = "## 片段1\n问题一？\n### 片段 2\n问题二？"
+
+    assert _parse_blocks(raw, chunks, limit=3) == {"c0": ["问题一？"], "c1": ["问题二？"]}
+
+
+def test_parse_blocks_drops_out_of_range_indices() -> None:
+    """编号对不上的块整块丢掉——**宁可这一段没题，也不能把题写到别的段上**
+    （那会让检索把用户带到一段完全无关的正文）。"""
+    chunks = [_chunk("kb", "d", 0)]
+    raw = "###片段1\n问题一？\n###片段7\n这是别的段的题？"
+
+    assert _parse_blocks(raw, chunks, limit=3) == {"c0": ["问题一？"]}
+
+
+def test_parse_blocks_treats_a_lone_chunk_as_the_whole_output() -> None:
+    """只带了一段时，模型经常"贴心"地省掉块头——这时整份输出都算它的。"""
+    chunks = [_chunk("kb", "d", 0)]
+
+    assert _parse_blocks("眼轴怎么测？\n多久测一次？", chunks, limit=3) == {
+        "c0": ["眼轴怎么测？", "多久测一次？"]
+    }
+
+
+# --------------------------------------------------------------------- 写端
+
+
+def test_generate_asks_once_per_batch(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    """一批（8 段）一次请求：一份 100 段的文档不能变成 100 次调用。"""
+    _seed_chunks(bundle, kb.id, document.id, count=_CHUNKS_PER_CALL + 2)
+    chat = FakeChat(reply="###片段1\n问题一？")
+    service = SuggestedQuestionsService(bundle, chat)
+
+    chunks = list(bundle.meta.iter_chunks(document.id))
+    service.generate_for_chunks(chunks, count=2)
+
+    assert chat.calls == 2
+
+
+def test_generate_returns_questions_per_chunk(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    _seed_chunks(bundle, kb.id, document.id, count=2)
+    chat = FakeChat(reply="###片段1\n眼轴怎么测？\n###片段2\n近视怎么防控？")
+    service = SuggestedQuestionsService(bundle, chat)
+
+    generated = service.generate_for_chunks(
+        list(bundle.meta.iter_chunks(document.id)), count=2, model_pk="mdl_out"
+    )
+
+    assert generated == {"c0": ["眼轴怎么测？"], "c1": ["近视怎么防控？"]}
+    assert chat.last_model == "mdl_out"
+
+
+def test_generate_passes_the_custom_prompt_with_the_count(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    _seed_chunks(bundle, kb.id, document.id, count=1)
     chat = FakeChat()
     service = SuggestedQuestionsService(bundle, chat)
 
-    service.suggest(kb_ids=[kb.id])
+    service.generate_for_chunks(
+        list(bundle.meta.iter_chunks(document.id)), count=2, prompt="按诊断标准出题。{n}"
+    )
 
-    # 自定义提示词替换了内置那句，资料片段照旧附在前面；{n} 换成了条数
-    assert "请从诊断标准的角度出题，每行一个问题。3" in chat.last_prompt
+    assert "按诊断标准出题。2" in chat.last_prompt
     assert "资料片段：" in chat.last_prompt
 
 
-def test_suggest_keeps_builtin_prompt_when_kb_has_none(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    _seed_chunks(bundle, kb.id, document.id)
+def test_generate_falls_back_to_the_builtin_prompt(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    _seed_chunks(bundle, kb.id, document.id, count=1)
     chat = FakeChat()
     service = SuggestedQuestionsService(bundle, chat)
 
-    service.suggest(kb_ids=[kb.id])
+    service.generate_for_chunks(list(bundle.meta.iter_chunks(document.id)), count=3)
 
-    assert "写出 6 个用户可能想追问的中文问题" in chat.last_prompt
+    assert "各写 3 个中文问题" in chat.last_prompt
 
 
-def test_suggest_uses_kb_model_over_the_request(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    """"出题用哪个模型"是库上的设置，显式设了就该盖过请求里的对话模型。"""
-    _seed_chunks(bundle, kb.id, document.id)
-    _set(bundle, kb.id, model_pk="mdl_cheap")
+def test_generate_swallows_model_failures(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    """**从不抛**：出题是摄入链路的旁路，失败只能让这一段没有题。"""
+    _seed_chunks(bundle, kb.id, document.id, count=2)
+    service = SuggestedQuestionsService(bundle, BoomChat())
+
+    assert service.generate_for_chunks(list(bundle.meta.iter_chunks(document.id))) == {}
+
+
+def test_generate_without_chunks_makes_no_call(bundle) -> None:  # type: ignore[no-untyped-def]
     chat = FakeChat()
     service = SuggestedQuestionsService(bundle, chat)
 
-    service.suggest(kb_ids=[kb.id], model_pk="mdl_chat")
-
-    assert chat.last_model == "mdl_cheap"
-
-
-def test_suggest_falls_back_to_the_request_model(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    _seed_chunks(bundle, kb.id, document.id)
-    chat = FakeChat()
-    service = SuggestedQuestionsService(bundle, chat)
-
-    service.suggest(kb_ids=[kb.id], model_pk="mdl_chat")
-
-    assert chat.last_model == "mdl_chat"
-
-
-def test_suggest_request_limit_overrides_kb_count(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    """脚本/API 显式给了条数就以它为准（界面不再传，让库设置说话）。"""
-    _seed_chunks(bundle, kb.id, document.id)
-    _set(bundle, kb.id, count=6)
-    chat = FakeChat()
-    service = SuggestedQuestionsService(bundle, chat)
-
-    service.suggest(kb_ids=[kb.id], limit=2)
-
-    assert "写出 2 个用户可能想追问的中文问题" in chat.last_prompt
-
-
-def test_suggest_skips_a_kb_that_turned_questions_off(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    """关掉推荐问题的库既不取样也不出题——连一次模型调用都不该花。"""
-    _seed_chunks(bundle, kb.id, document.id)
-    _set(bundle, kb.id, enabled=False)
-    chat = FakeChat()
-    service = SuggestedQuestionsService(bundle, chat)
-
-    assert service.suggest(kb_ids=[kb.id]) == []
+    assert service.generate_for_chunks([]) == {}
     assert chat.calls == 0
 
 
-def test_suggest_multi_kb_takes_settings_from_the_first_enabled(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    """多库被同时选中：取样含全部启用的库，参数取第一个启用的库。"""
-    second = bundle.meta.create_knowledge_base(
-        KnowledgeBaseRecord(id="kb_2", name="乙库", embedding_model_id="m", embedding_dim=8)
+# --------------------------------------------------------------------- 读端
+
+
+def test_list_questions_reads_what_was_stored(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    _seed_chunks(
+        bundle,
+        kb.id,
+        document.id,
+        count=2,
+        questions={0: ("眼轴怎么测？", "多久测一次？"), 1: ("近视怎么防控？",)},
+    )
+    chat = FakeChat()
+    service = SuggestedQuestionsService(bundle, chat)
+
+    questions = service.list_questions(kb_ids=[kb.id], limit=10)
+
+    assert set(questions) == {"眼轴怎么测？", "多久测一次？", "近视怎么防控？"}
+    # **不再调模型**：这是 v23 与之前最大的区别
+    assert chat.calls == 0
+
+
+def test_list_questions_dedupes_and_caps(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    _seed_chunks(
+        bundle,
+        kb.id,
+        document.id,
+        count=3,
+        questions={0: ("同一个问题？",), 1: ("同一个问题？", "第二个问题？"), 2: ("第三个问题？",)},
+    )
+    service = SuggestedQuestionsService(bundle, FakeChat())
+
+    questions = service.list_questions(kb_ids=[kb.id], limit=2)
+
+    assert len(questions) == 2
+    assert len(set(questions)) == 2
+
+
+def test_list_questions_without_any_stored_question_is_empty(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    """库还没开这个功能（或文档还没重新摄入）→ 空列表，界面回退静态样例。"""
+    _seed_chunks(bundle, kb.id, document.id, count=2)
+    service = SuggestedQuestionsService(bundle, FakeChat())
+
+    assert service.list_questions(kb_ids=[kb.id]) == []
+
+
+def test_list_questions_only_uses_the_given_kbs(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    other = bundle.meta.create_knowledge_base(
+        KnowledgeBaseRecord(id="kb_2", name="别的库", embedding_model_id="m", embedding_dim=8)
     )
     bundle.meta.create_document(
         DocumentRecord(
             id="doc_2",
-            knowledge_base_id=second.id,
+            knowledge_base_id=other.id,
             name="乙.md",
             source_kind=DataSourceKind.UPLOAD,
             content_hash="hash-2",
@@ -248,23 +279,26 @@ def test_suggest_multi_kb_takes_settings_from_the_first_enabled(bundle, kb, docu
             size_bytes=64,
         )
     )
-    _seed_chunks(bundle, kb.id, document.id)
-    # chunk_id 是全库主键，第二个库要换个前缀，否则撞键
-    _seed_chunks(bundle, second.id, "doc_2", prefix="d")
-    _set(bundle, kb.id, enabled=False, count=8)
-    _set(bundle, second.id, count=2, model_pk="mdl_b")
-    chat = FakeChat()
-    service = SuggestedQuestionsService(bundle, chat)
-
-    service.suggest(kb_ids=[kb.id, second.id], limit=None)
-
-    assert chat.last_model == "mdl_b"
-    assert "写出 2 个用户可能想追问的中文问题" in chat.last_prompt
-
-
-def test_suggest_ignores_unknown_kb_ids(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
-    """会话里存着、但库已经被删掉了的 id 不该让出题整个失败。"""
-    _seed_chunks(bundle, kb.id, document.id)
+    _seed_chunks(bundle, kb.id, document.id, count=1, prefix="a", questions={0: ("我的问题？",)})
+    _seed_chunks(bundle, other.id, "doc_2", count=1, prefix="b", questions={0: ("别人的问题？",)})
     service = SuggestedQuestionsService(bundle, FakeChat())
 
-    assert service.suggest(kb_ids=["kb_gone", kb.id]) == ["第一个问题？", "第二个问题？"]
+    assert service.list_questions(kb_ids=[kb.id]) == ["我的问题？"]
+
+
+def test_list_questions_without_kb_ids_is_empty(bundle) -> None:  # type: ignore[no-untyped-def]
+    service = SuggestedQuestionsService(bundle, FakeChat())
+
+    assert service.list_questions(kb_ids=[]) == []
+
+
+# --------------------------------------------------------------------- 检索文本
+
+
+def test_index_text_appends_the_questions_to_the_original() -> None:
+    """索引文本 = 原文 + 问题；原文那一列**一个字都不改**（引用预览读的是它）。"""
+    plain = _chunk("kb", "d", 0)
+    with_questions = _chunk("kb", "d", 0, questions=("眼轴怎么测？", "多久测一次？"))
+
+    assert plain.index_text == plain.text
+    assert with_questions.index_text == f"{with_questions.text}\n眼轴怎么测？\n多久测一次？"

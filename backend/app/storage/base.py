@@ -134,17 +134,23 @@ class KnowledgeBaseRecord:
     """库简介（v15）。列表卡片上的一句概述；空串 = 未填写。"""
     chunk_size: int = 512
     chunk_overlap: int = 64
-    suggested_enabled: bool = True
-    """空状态推荐问题开关（v19）。关掉后这个库不参与出题、也不被取样。"""
-    suggested_count: int = 6
-    """一次出几条。上限由服务层夹住（`suggested_questions.MAX_QUESTIONS`）。
-    默认值在这里也写 6、不去 import services——storage 不许依赖 services
-    （工程规范 §3.3 L3），两处常量由用例钉住一致。"""
+    suggested_enabled: bool = False
+    """入库时是否为每个分段生成推荐问题（v19 起，v23 起是这个含义）。
+
+    **默认关**：生成发生在上传之后、要花模型调用（每 8 段一次请求），
+    于是它必须由用户显式打开，而不是升级后默默开始烧 token。
+    （列上的 DEFAULT 仍是 1——SQLite 改不了列默认值；但所有建库都经服务层，
+    它显式传值，迁移 023 也把老库统一置 0。）"""
+    suggested_count: int = 3
+    """**每个分段生成几条**（v23 起；v22 时曾是"空状态显示几条"）。
+    上限由服务层夹住（`suggested_questions.MAX_QUESTIONS`）。默认值在这里写一份、
+    服务层写一份——storage 不许依赖 services（工程规范 §3.3 L3），
+    两处由用例钉住一致。"""
     suggested_model_pk: str | None = None
     """出题用哪个对话模型（注册表主键）。``None`` = 跟随对话页当前选的模型。"""
     suggested_prompt: str = ""
     """自定义出题提示词。空串 = 用内置提示词（替换内置的**指令**那句，
-    资料片段与条数仍由服务层附加）。"""
+    资料片段仍然由服务层附加）。"""
     owner_id: str | None = None
     """归属账号（v10）。``None`` = 账号体系启用前的老数据，
     由 setup 向导认领给首个管理员（`services/auth.py`）。"""
@@ -256,6 +262,27 @@ class ChunkRecord:
     disabled: bool = False
     """人工禁用（§G3）。被禁用的块**不再参与检索**，但仍留在库里——
     表格切碎、公式拆开这类"切得不好"的块，用户往往想留着待改，而不是直接删掉。"""
+    questions: Sequence[str] = field(default_factory=tuple)
+    """入库时由模型为这一段生成的问题（v23）。
+
+    **它们是"用问题换召回"的全部实现**：见 :attr:`index_text`。空元组 = 没生成
+    （这个库的功能关着，或这一篇是开启之前入库的、还没重新摄入）。"""
+
+    @property
+    def index_text(self) -> str:
+        """**真正拿去向量化与建全文索引的文本**：原文 + 生成的问题。
+
+        原文 ``text`` 保持不动——引用预览、喂给模型的资料、重排都读它，
+        用户不该在回答里看到"问题"混进原文。索引侧多出这一层之后，
+        用户换一种问法（"怎么测眼轴" vs 正文里的"眼轴长度测量"）也能命中同一段：
+        向量是原文与问题一起算的，全文索引里也有问题的词。
+
+        所以检索链路（向量 / 全文 / RRF / 重排）**一行都不用改**——
+        它们只认 ``chunk_id``，不关心这条记录的文本是怎么拼出来的。
+        """
+        if not self.questions:
+            return self.text
+        return f"{self.text}\n" + "\n".join(self.questions)
 
 
 @dataclass(slots=True)

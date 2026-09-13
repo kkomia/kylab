@@ -262,6 +262,27 @@ def build_services(
     # webhook 先建：下面的摄入与生命周期都通过回调向它发事件（T4.6）。
     # **用回调而不是直接依赖**：通知是旁路，它挂了不能让摄入卡住
     webhooks = WebhookService(bundle)
+
+    # 对话的 token 用量通过回调记（G7）：ChatService 不该依赖统计服务，
+    # 那会让"记不记账"变成它的必需前提
+    def _record_chat_usage(**kwargs: object) -> None:
+        usage.record(**kwargs)  # type: ignore[arg-type]
+
+    # **对话与出题服务必须在摄入之前建**（v23）：摄入现在要依赖"分段出题"
+    # （SuggestedQuestionsService → ChatService）。反过来建的话 IngestService
+    # 只能拿到 None，"上传即出题"就永远不生效。
+    conversations_service = ConversationService(bundle)
+    chat_service = ChatService(
+        retrieval,
+        runtime,
+        # stores 用于"小块检索、大块阅读"（把命中块补成整段小节，v17）
+        stores=bundle,
+        usage_recorder=_record_chat_usage,
+        # 会话读写（v20.1）：上下文压缩要读历史、写摘要
+        conversations=conversations_service,
+    )
+    questions_service = SuggestedQuestionsService(bundle, chat_service)
+
     ingest = IngestService(
         bundle,
         # 路由按运行期配置现建解析器：设置页填完 token，下一个文件就走云端
@@ -269,6 +290,8 @@ def build_services(
         embedder=embedder,
         embedders=embedding_resolver,
         notifier=webhooks.emit,
+        # 分段出题（v23）：库上开着才用，失败不影响摄入
+        questions=questions_service,
     )
 
     documents_service = DocumentService(bundle)
@@ -277,11 +300,6 @@ def build_services(
     sources_service = SourceService(bundle, ingest, documents_service)
 
     idempotency = IdempotencyService(bundle)
-
-    # 对话的 token 用量通过回调记（G7）：ChatService 不该依赖统计服务，
-    # 那会让"记不记账"变成它的必需前提
-    def _record_chat_usage(**kwargs: object) -> None:
-        usage.record(**kwargs)  # type: ignore[arg-type]
 
     def _maintain() -> None:
         """空闲维护：把"会悄悄长大的表"收一收。
@@ -304,16 +322,6 @@ def build_services(
 
     lifecycle_service = LifecycleService(bundle, notifier=webhooks.emit)
     folders_service = FolderService(bundle)
-    conversations_service = ConversationService(bundle)
-    chat_service = ChatService(
-        retrieval,
-        runtime,
-        # stores 用于"小块检索、大块阅读"（把命中块补成整段小节，v17）
-        stores=bundle,
-        usage_recorder=_record_chat_usage,
-        # 会话读写（v20.1）：上下文压缩要读历史、写摘要
-        conversations=conversations_service,
-    )
 
     return Services(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder, models=registry),
@@ -326,7 +334,13 @@ def build_services(
         runtime=runtime,
         api_keys=ApiKeyService(bundle),
         idempotency=idempotency,
-        chunks=ChunkService(bundle, embedder=embedder, embedders=embedding_resolver),
+        chunks=ChunkService(
+            bundle,
+            embedder=embedder,
+            embedders=embedding_resolver,
+            # 手工改块后要重出这一段的题（v23）
+            questions=questions_service,
+        ),
         models=registry,
         usage=usage,
         users=UserService(bundle),
@@ -343,7 +357,7 @@ def build_services(
         conversations=conversations_service,
         notes=NotesService(bundle, ingest=ingest, documents=documents_service),
         note_ai=NoteAiService(chat_service),
-        suggested_questions=SuggestedQuestionsService(bundle, chat_service),
+        suggested_questions=questions_service,
         webhooks=webhooks,
         embedder=embedder,
         reranker=reranker,

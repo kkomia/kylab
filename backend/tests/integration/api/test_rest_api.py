@@ -550,17 +550,18 @@ def test_create_and_patch_suggested_settings(client: TestClient) -> None:
     )
     assert created.status_code == 201, created.text
     body = created.json()
-    assert (body["suggested_enabled"], body["suggested_count"]) == (True, 3)
+    # 建库没传 suggested_enabled → 默认**关**（生成要花钱，必须显式开）
+    assert (body["suggested_enabled"], body["suggested_count"]) == (False, 3)
     assert body["suggested_prompt"] == "按诊断标准出题"
     kb_id = body["id"]
 
     patched = client.patch(
         f"/api/v1/knowledge-bases/{kb_id}",
-        json={"suggested_enabled": False, "suggested_count": 5},
+        json={"suggested_enabled": True, "suggested_count": 5},
     )
     assert patched.status_code == 200, patched.text
     updated = patched.json()
-    assert (updated["suggested_enabled"], updated["suggested_count"]) == (False, 5)
+    assert (updated["suggested_enabled"], updated["suggested_count"]) == (True, 5)
     # 没传的字段不动
     assert updated["suggested_prompt"] == "按诊断标准出题"
 
@@ -568,11 +569,11 @@ def test_create_and_patch_suggested_settings(client: TestClient) -> None:
 def test_patch_suggested_defaults_are_returned_on_a_plain_kb(
     client: TestClient, kb_id: str
 ) -> None:
-    """老库升级后（或建库时没填）这四个值要有一套与之前一致的默认。"""
+    """建库时没填时的默认值：**生成开关关**、每段 3 条、跟随对话模型、内置提示词。"""
     body = client.get(f"/api/v1/knowledge-bases/{kb_id}").json()
 
-    assert body["suggested_enabled"] is True
-    assert body["suggested_count"] == 6
+    assert body["suggested_enabled"] is False
+    assert body["suggested_count"] == 3
     assert body["suggested_model_pk"] is None
     assert body["suggested_prompt"] == ""
 

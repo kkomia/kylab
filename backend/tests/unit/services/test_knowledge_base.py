@@ -193,7 +193,7 @@ def test_validate_chunking_returns_normalized_pair() -> None:
 
 from app.services.knowledge_base import validate_suggested  # noqa: E402
 from app.services.suggested_questions import (  # noqa: E402
-    DEFAULT_LIMIT,
+    DEFAULT_QUESTIONS_PER_CHUNK,
     MAX_QUESTIONS,
     MIN_QUESTIONS,
     PROMPT_MAX_CHARS,
@@ -230,23 +230,23 @@ def test_create_defaults_match_the_service_constants(bundle, registry) -> None: 
 
     record = service.create(kb_id="kb_d", name="库")
 
-    assert record.suggested_enabled is True
-    assert record.suggested_count == DEFAULT_LIMIT
+    assert record.suggested_enabled is False
+    assert record.suggested_count == DEFAULT_QUESTIONS_PER_CHUNK
 
 
 def test_set_suggested_merges_and_persists(bundle, registry) -> None:  # type: ignore[no-untyped-def]
     service = _plain(bundle, registry)
-    service.create(kb_id="kb_1", name="库", suggested_count=6)
+    service.create(kb_id="kb_1", name="库", suggested_count=2)
 
-    updated = service.set_suggested("kb_1", enabled=False, count=3, model_pk=None, prompt="出题")
+    updated = service.set_suggested("kb_1", enabled=True, count=3, model_pk=None, prompt="出题")
 
     assert (updated.suggested_enabled, updated.suggested_count, updated.suggested_prompt) == (
-        False,
+        True,
         3,
         "出题",
     )
     saved = bundle.meta.get_knowledge_base("kb_1")
-    assert (saved.suggested_enabled, saved.suggested_count) == (False, 3)
+    assert (saved.suggested_enabled, saved.suggested_count) == (True, 3)
 
 
 def test_validate_suggested_bounds_and_trim() -> None:

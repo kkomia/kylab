@@ -247,3 +247,69 @@ def test_delete_keeps_other_chunks(chunks: ChunkService, seeded) -> None:  # typ
 def test_delete_missing_chunk_raises(chunks: ChunkService, seeded) -> None:  # type: ignore[no-untyped-def]
     with pytest.raises(NotFoundError):
         chunks.delete("c_不存在")
+
+
+# ------------------------------------------------------- 改正文后重出题（v23）
+
+
+class _StubQuestions:
+    """假的出题服务：给这一段返回固定的一条问题。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def generate_for_chunks(self, chunks, **kwargs):  # type: ignore[no-untyped-def]
+        self.calls += 1
+        return {chunks[0].chunk_id: ["这一段的题？"]}
+
+
+class _RecordingEmbedder(DeterministicEmbedder):
+    """记下被向量化的文本，用来断言用的是 index_text。"""
+
+    def __init__(self, dim: int = DIM) -> None:
+        super().__init__(dim=dim)
+        self.seen: list[str] = []
+
+    def embed(self, texts):  # type: ignore[no-untyped-def]
+        self.seen.extend(texts)
+        return super().embed(texts)
+
+
+def _store_questions(bundle, chunk_id: str, questions: tuple[str, ...]) -> None:  # type: ignore[no-untyped-def]
+    record = bundle.meta.get_chunks([chunk_id])[0]
+    record.questions = questions
+    bundle.meta.update_chunk(record)
+
+
+def test_update_text_regenerates_the_questions(bundle, seeded) -> None:  # type: ignore[no-untyped-def]
+    """正文改了必须**重出题**：旧问题是照着旧正文出的，留着它等于给检索埋一条
+    "命中一段已经不存在的文字"的假线索。重出的问题也要一起进索引文本。"""
+    stub = _StubQuestions()
+    recorder = _RecordingEmbedder()
+    service = ChunkService(bundle, embedder=recorder, questions=stub)
+    _store_questions(bundle, "c1", ("旧问题？",))
+    bundle.meta.set_knowledge_base_suggested(
+        "kb_1", enabled=True, count=2, model_pk=None, prompt=""
+    )
+
+    updated = service.update_text("c1", "改写后的正文。")
+
+    assert updated.questions == ("这一段的题？",)
+    assert stub.calls == 1
+    # 落库了，且**向量化用的是含问题的索引文本**
+    assert bundle.meta.get_chunks(["c1"])[0].questions == ("这一段的题？",)
+    assert any("这一段的题？" in text for text in recorder.seen)
+
+
+def test_update_text_clears_stale_questions_when_disabled(bundle, seeded) -> None:  # type: ignore[no-untyped-def]
+    """库上关着这个功能时**清空**而不是保留旧问题——宁可这一段没有题，
+    也不能留一批对不上新正文的问题在索引里。"""
+    stub = _StubQuestions()
+    service = ChunkService(bundle, embedder=DeterministicEmbedder(dim=DIM), questions=stub)
+    _store_questions(bundle, "c1", ("旧问题？",))
+
+    updated = service.update_text("c1", "改写后的正文。")
+
+    assert updated.questions == ()
+    assert stub.calls == 0
+    assert bundle.meta.get_chunks(["c1"])[0].questions == ()

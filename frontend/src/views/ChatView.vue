@@ -925,25 +925,23 @@ const samples = computed(() => (suggested.value.length > 0 ? suggested.value : s
 let samplesTimer: number | undefined
 
 /** 只在"空状态 + 至少选了一个库"时才去生成；有消息之后它是纯浪费。 */
-function scheduleSamples(refresh = false): void {
+function scheduleSamples(): void {
   window.clearTimeout(samplesTimer)
   if (messages.value.length > 0 || selected.value.length === 0) {
     suggested.value = []
     return
   }
-  samplesTimer = window.setTimeout(() => void loadSamples(refresh), refresh ? 0 : 400)
+  samplesTimer = window.setTimeout(() => void loadSamples(), 400)
 }
 
-async function loadSamples(refresh: boolean): Promise<void> {
+async function loadSamples(): Promise<void> {
   if (messages.value.length > 0 || selected.value.length === 0) return
   samplesLoading.value = true
   try {
-    // **不传 limit**：条数以所选知识库上的设置为准（v19）。传了就会盖过它，
-    // 于是"在设置里改了条数却看不到变化"
-    const result = await getSuggestedQuestions(selected.value, {
-      modelPk: modelPk.value || undefined,
-      refresh,
-    })
+    // **只传库**：问题取自库里入库时生成的（v23），不再现场调模型，
+    // 所以既没有 limit（那是"每段生成几条"，属于库设置）也没有 model_pk。
+    // 读端每次都重新随机抽样，所以"换一批"什么都不用传
+    const result = await getSuggestedQuestions(selected.value)
     suggested.value = result.questions
   } catch {
     // 生成只是引导：失败就回退静态样例，别把空状态变成错误提示
@@ -953,10 +951,10 @@ async function loadSamples(refresh: boolean): Promise<void> {
   }
 }
 
-/** 「换一批」：有生成结果就重新生成；否则只是轮换静态样例。 */
+/** 「换一批」：库里有问题时重新抽一批；否则只是轮换静态样例。 */
 function shuffleSamples(): void {
   if (suggested.value.length > 0) {
-    void loadSamples(true)
+    void loadSamples()
     return
   }
   sampleOffset.value = (sampleOffset.value + SAMPLE_COUNT) % STATIC_SAMPLES.length

@@ -1,6 +1,10 @@
 <script setup lang="ts">
 /**
- * 「推荐问题」的四个设置项（v19），建库弹窗与知识库设置共用同一份。
+ * 「为每个分段生成推荐问题」的四个设置项（v23），建库弹窗与知识库设置共用同一份。
+ *
+ * 它跟的是**分段**，不是"空状态的展示"：文档切完块之后，为每一段让模型出几个问题，
+ * 问题存进这一段、并进该段的检索文本——用户换一种问法也能命中同一段（提升召回）。
+ * 对话页空状态那排胶囊就是从这里取的，**不再单独调模型**。
  *
  * 为什么要抽成组件：这两处**必须完全一致**——同一组设置出现两套控件，
  * 迟早会出现"建库时能关、设置里关不掉"这种说不清的差别。文案与取值范围也只有一份。
@@ -44,9 +48,15 @@ const modelOptions = computed(() => [
   })),
 ])
 
-/** 轨道上的常用值：3 条够试、6 条是默认、8 条是上限。 */
+/**
+ * 出题时的合并批大小（**与后端 `_CHUNKS_PER_CALL` 一致**）。
+ * 只用于把这句代价说明写准确——真正合并发生在后端。
+ */
+const _CHUNKS_PER_CALL_HINT = 8
+
+/** 轨道上的常用值：1 条太薄、2 条兜底、3 条是默认、5 条是上限。 */
 const COUNT_MARKS = [
-  { value: 3 },
+  { value: 2 },
   { value: SUGGESTED_COUNT_DEFAULT, primary: true },
   { value: SUGGESTED_COUNT_MAX },
 ]
@@ -62,22 +72,29 @@ const COUNT_MARKS = [
           :checked="enabled"
           @change="enabled = ($event.target as HTMLInputElement).checked"
         />
-        <span>在对话空状态生成推荐问题</span>
+        <span>为每个分段生成推荐问题</span>
       </label>
-      <!-- 关掉之后到底发生什么，必须写出来：否则用户以为"关了就再没有示例问题"，
-           其实是回退到内置的静态样例 -->
-      <p class="suggested-hint">关掉后这个库不参与出题，对话页空状态改用内置的静态示例问题。</p>
+      <!-- 关掉之后到底发生什么、开着要付什么代价，都得写出来——它是一个会花钱的
+           入库步骤，用户要在勾之前知道 -->
+      <p class="suggested-hint">
+        入库时为每一段让模型出几个问题，问题会一起进检索索引，于是用户换个问法也能命中这一段。
+        关掉则这段能力不参与，对话页空状态改用内置的静态示例问题。
+      </p>
     </div>
 
     <div class="field">
-      <span class="field-label">一次生成条数</span>
+      <span class="field-label">每个分段生成几条</span>
       <RangeField
         v-model="count"
         :min="SUGGESTED_COUNT_MIN"
         :max="SUGGESTED_COUNT_MAX"
         :marks="COUNT_MARKS"
-        aria-label="推荐问题条数"
+        aria-label="每个分段生成几条问题"
       />
+      <!-- 说清"花多少钱、什么时候生效"：这是设置里唯一会持续花钱的开关 -->
+      <p class="suggested-hint">
+        每 {{ _CHUNKS_PER_CALL_HINT }} 段合并成一次模型调用；只对之后上传或重新摄入的文档生效。
+      </p>
     </div>
 
     <div class="field">

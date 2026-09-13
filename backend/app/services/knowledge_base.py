@@ -23,7 +23,7 @@ from app.services.embedding import NOT_CONFIGURED_HINT
 from app.services.embedding.base import EmbeddingProvider
 from app.services.model_registry import ModelRegistryService
 from app.services.suggested_questions import (
-    DEFAULT_LIMIT as DEFAULT_SUGGESTED_COUNT,
+    DEFAULT_QUESTIONS_PER_CHUNK as DEFAULT_SUGGESTED_COUNT,
 )
 from app.services.suggested_questions import (
     MAX_QUESTIONS as SUGGESTED_COUNT_MAX,
@@ -76,7 +76,10 @@ def validate_chunking(size: int, overlap: int) -> tuple[int, int]:
 
 
 def validate_suggested(count: int, prompt: str) -> tuple[int, str]:
-    """校验推荐问题设置，返回规范化后的 ``(count, prompt)``。
+    """校验"分段问题生成"设置，返回规范化后的 ``(count, prompt)``。
+
+    ``count`` 是**每个分段生成几条**（v23 起；v22 时曾是"空状态显示几条"）。
+    ``prompt`` 是出题提示词，空串 = 用内置的。
 
     与 ``validate_chunking`` 同一套理由：建库与改配置必须共用一份口径，
     否则会出现"建库能过、改设置不过"这种说不清的差别。提示词只做 trim——
@@ -84,7 +87,8 @@ def validate_suggested(count: int, prompt: str) -> tuple[int, str]:
     """
     if not (SUGGESTED_COUNT_MIN <= count <= SUGGESTED_COUNT_MAX):
         raise InvalidRequestError(
-            f"推荐问题条数需要在 {SUGGESTED_COUNT_MIN}–{SUGGESTED_COUNT_MAX} 之间（当前 {count}）"
+            f"每个分段生成的问题条数需要在 {SUGGESTED_COUNT_MIN}–{SUGGESTED_COUNT_MAX} 之间"
+            f"（当前 {count}）"
         )
     cleaned = (prompt or "").strip()
     if len(cleaned) > SUGGESTED_PROMPT_MAX_CHARS:
@@ -118,7 +122,7 @@ class KnowledgeBaseService:
         chunk_strategy: str = DEFAULT_CHUNK_STRATEGY,
         owner_id: str | None = None,
         embedding_model_pk: str | None = None,
-        suggested_enabled: bool = True,
+        suggested_enabled: bool = False,
         suggested_count: int = DEFAULT_SUGGESTED_COUNT,
         suggested_model_pk: str | None = None,
         suggested_prompt: str = "",

@@ -66,9 +66,12 @@ class SqliteFullTextStore(FullTextStore):
                 "DELETE FROM chunks_fts WHERE chunk_id = ?",
                 [(chunk.chunk_id,) for chunk in chunks],
             )
+            # 索引的是 **index_text**（原文 + 该段生成的问题，见 ChunkRecord）：
+            # 问题的用词因此也进了全文索引，"换个问法"能靠 BM25 命中原段。
+            # 这是"分段问题提升召回"的全文那一半，向量那一半在 ingest 用同一个属性。
             conn.executemany(
                 "INSERT INTO chunks_fts (chunk_id, tokens) VALUES (?, ?)",
-                [(chunk.chunk_id, tokenize(chunk.text)) for chunk in chunks],
+                [(chunk.chunk_id, tokenize(chunk.index_text)) for chunk in chunks],
             )
 
     def delete_chunks(self, chunk_ids: Sequence[str]) -> int:

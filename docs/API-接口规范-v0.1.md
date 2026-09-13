@@ -184,7 +184,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 |------|------|------|
 | `POST` | `/api/v1/chat` | 快速检索问答（一次性） |
 | `POST` | `/api/v1/chat/stream` | 快速检索问答（流式） |
-| `GET` | `/api/v1/chat/suggested-questions` | 示例问题（依据所选知识库的语料生成） |
+| `GET` | `/api/v1/chat/suggested-questions` | 推荐问题（取自入库时为各分段生成的问题） |
 
 ### `chunks`
 

@@ -158,12 +158,15 @@ const chunkOverlapNumber = computed({
 const chunkError = computed(() => chunkingErrorOf(chunkSizeDraft.value, chunkOverlapDraft.value))
 
 /**
- * 推荐问题草稿（v19，同样收在折叠区）。
+ * 分段出题草稿（v23，与切块参数同一个折叠区）。
  *
- * 与切块参数不同，这几个值**立刻生效**：出题发生在对话页空状态，读的就是库上的设置。
- * 所以不提示"要重新摄入"。
+ * 它跟的是**分段**：入库时为每一段出几个问题，问题并进该段的检索文本，
+ * 于是用户换个问法也能命中同一段。与切块参数一样**只对之后摄入的文档生效**，
+ * 所以和它们放在一起——打开之后需要重新摄入已有文档。
+ *
+ * 默认**关**：生成发生在上传之后、要花模型调用。
  */
-const sqEnabled = ref(true)
+const sqEnabled = ref(false)
 const sqCount = ref(SUGGESTED_COUNT_DEFAULT)
 const sqModelPk = ref('')
 const sqPrompt = ref('')
@@ -174,7 +177,8 @@ function openCreate(): void {
   // 每次打开都回到默认值：上一次改过的切块参数留着，下一座库会莫名其妙继承它
   chunkSizeDraft.value = String(CHUNK_DEFAULT_SIZE)
   chunkOverlapDraft.value = String(CHUNK_DEFAULT_OVERLAP)
-  sqEnabled.value = true
+  // 默认**不出题**：它发生在入库那一步、要花模型调用，必须由用户显式勾上
+  sqEnabled.value = false
   sqCount.value = SUGGESTED_COUNT_DEFAULT
   sqModelPk.value = ''
   sqPrompt.value = ''
@@ -229,8 +233,9 @@ async function submitCreate(): Promise<void> {
       // 与默认值相同时**不发**：让"服务端默认"成为唯一的默认，而不是前端也钉一份数字
       ...(size !== null && size !== CHUNK_DEFAULT_SIZE ? { chunk_size: size } : {}),
       ...(overlap !== null && overlap !== CHUNK_DEFAULT_OVERLAP ? { chunk_overlap: overlap } : {}),
-      // 推荐问题：只有"与内置默认不同"的那几项才发，口径与上面两个一致
-      ...(sqEnabled.value ? {} : { suggested_enabled: false }),
+      // 分段出题：只有"与内置默认不同"的那几项才发，口径与上面两个一致。
+      // 开关的默认是**关**，所以只在勾上时发 true
+      ...(sqEnabled.value ? { suggested_enabled: true } : {}),
       ...(sqCount.value !== SUGGESTED_COUNT_DEFAULT ? { suggested_count: sqCount.value } : {}),
       ...(sqModelPk.value ? { suggested_model_pk: sqModelPk.value } : {}),
       ...(sqPrompt.value.trim() ? { suggested_prompt: sqPrompt.value.trim() } : {}),
@@ -394,7 +399,7 @@ function statsOf(kbId: string) {
              但**要用的时候必须找得到**——它会直接影响检索质量（见设置里的「切块策略」） -->
         <details class="advanced">
           <summary>
-            切块设置（可选，默认 {{ CHUNK_DEFAULT_SIZE }} / {{ CHUNK_DEFAULT_OVERLAP }}）
+            切块与出题（可选，默认 {{ CHUNK_DEFAULT_SIZE }} / {{ CHUNK_DEFAULT_OVERLAP }} · 不出题）
           </summary>
           <div class="advanced-grid">
             <label class="field">
@@ -422,12 +427,10 @@ function statsOf(kbId: string) {
           <p v-else class="advanced-note">
             重叠不超过块长的一半；建库后可在「知识库设置 → 切块策略」调整。
           </p>
-        </details>
 
-        <!-- 推荐问题（v19）：与切块设置同样是"可选、默认就好"，所以同样收在折叠区。
-             区别是它**立刻生效**，所以不提"需要重新摄入" -->
-        <details class="advanced">
-          <summary>推荐问题（可选，默认开启 · {{ SUGGESTED_COUNT_DEFAULT }} 条）</summary>
+          <!-- 分段出题放在**同一个折叠区**里（v23）：它跟的是分段，不是"对话页的展示"。
+               分成两个折叠区会让人以为它们是两件互不相干的事 -->
+          <div class="advanced-divider" role="separator" aria-hidden="true" />
           <SuggestedQuestionsFields
             v-model:enabled="sqEnabled"
             v-model:count="sqCount"
@@ -767,6 +770,13 @@ function statsOf(kbId: string) {
   font-size: var(--text-micro-size);
   line-height: 1.7;
   color: var(--text-tertiary);
+}
+
+/* 同一个折叠区里的两件事（切块参数 / 分段出题）之间画一条细线：
+   它们相关但不是一回事，靠留白分不开 */
+.advanced-divider {
+  margin: var(--space-5) 0;
+  border-top: 1px solid var(--border-hairline);
 }
 
 .chunking-error {

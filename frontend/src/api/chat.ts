@@ -392,24 +392,25 @@ export async function chatOnce(
 
 export interface SuggestedQuestions {
   questions: string[]
-  /** 后端生成不出来时为 `false`（没有语料、没配模型、上游失败），界面据此回退静态样例。 */
+  /** 库里还没有问题（功能没开、或文档还没重新摄入）时为 `false`，界面据此回退静态样例。 */
   generated: boolean
 }
 
 /**
- * 示例问题：依据所选知识库的语料生成（后端 `GET /chat/suggested-questions`）。
+ * 推荐问题：从所选知识库里**已存的分段问题**里取（后端 `GET /chat/suggested-questions`）。
+ *
+ * **不再调模型**（v23）：问题在入库时就为每个分段生成好了，这里只是随机抽几段取回来。
+ * 所以没有 `model_pk` / `refresh` 这类参数——每次调用本来就是新的随机抽样。
  *
  * 这是"引导"，不是内容：调用方拿到空列表或捕获到异常时应当回退到静态样例，
  * 别让一次旁路失败把空状态变成错误页。
  */
 export function getSuggestedQuestions(
   kbIds: string[],
-  options: { limit?: number; modelPk?: string; refresh?: boolean } = {},
+  options: { limit?: number } = {},
 ): Promise<SuggestedQuestions> {
   if (kbIds.length === 0) return Promise.resolve({ questions: [], generated: false })
   const params = new URLSearchParams({ kb_ids: kbIds.join(',') })
   if (options.limit) params.set('limit', String(options.limit))
-  if (options.modelPk) params.set('model_pk', options.modelPk)
-  if (options.refresh) params.set('refresh', 'true')
   return request<SuggestedQuestions>(`/chat/suggested-questions?${params.toString()}`)
 }

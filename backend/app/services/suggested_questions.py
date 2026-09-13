@@ -1,30 +1,39 @@
-"""示例问题生成（对话页空状态的那排胶囊）。
+"""推荐问题：**入库时为每个分段生成**，空状态再从中取（v23）。
 
-依据所选知识库的**少量原文片段**，让已配置的对话模型写出"用户可能想追问的问题"。
-做法参考 WeKnora 的 `GET /agents/{id}/suggested-questions`：问题来自后端，
-而不是在前端写死——写死的问题和用户的语料无关，点进去往往答不上来。
+它是同一件事的两端：
 
-三条边界：
+- **写端**（`generate_for_chunks`）：文档切完块之后，让对话模型为**每一段**写出
+  「这段可能被问什么」。问题存进 `chunks.questions`，并**并进该段的检索文本**
+  （见 `ChunkRecord.index_text`）——向量与全文索引都带上问题的用词，
+  于是用户换一种问法也能命中同一段。这是这个功能存在的全部理由：**提升召回**。
+- **读端**（`list_questions`）：对话页空状态那排胶囊，直接从库里已存的问题里取。
 
-1. **失败不报错**：没配模型、上游失败、输出解析不出——一律返回空列表，
-   界面回退到静态样例。示例问题只是引导，不该让空状态变成一个错误页。
-2. **成本有上限**：只采样少量片段、只生成少量问题、`max_tokens` 有上限，
-   并对同一组知识库做**短 TTL 缓存**（切库会反复触发，缓存把重复调用挡掉）。
-3. **不落库**：它是展示用的建议，不是内容。
+**读端不再调模型**（v23 之前是每次进空状态现场生成一次）。既然入库时已经为本库的
+每一段出了题，再单独花一次模型调用"猜"一批问题就是浪费——而且那样猜出来的问题
+与分段无关，答不上来的情况反而更多。
+
+三条边界（沿用 v12 定下的）：
+
+1. **失败不报错**：写端失败只是这一段没有题（摄入照常完成），读端取不到就由前端
+   回退静态样例。推荐问题只是引导，不该让"上传"或"打开对话页"变成错误页。
+2. **成本有上限**：一次请求最多带 `_CHUNKS_PER_CALL` 段、每段最多 `MAX_QUESTIONS` 条；
+   整篇文档按这个批量切分，不逐段调一次。
+3. **写端只在库上开着时发生**：开关默认关（生成发生在上传之后，要花钱）。
 """
 
 from __future__ import annotations
 
 import logging
 import re
-import time
+from collections.abc import Sequence
 
 from app.services.chat import ChatService
 from app.services.llm import ChatMessage
-from app.storage.base import StoreBundle
+from app.storage.base import ChunkRecord, StoreBundle
 
 __all__ = [
     "DEFAULT_LIMIT",
+    "DEFAULT_QUESTIONS_PER_CHUNK",
     "MAX_QUESTIONS",
     "MIN_QUESTIONS",
     "PROMPT_MAX_CHARS",
@@ -33,29 +42,39 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-#: 一次最多给几条。前端一屏也就放得下五六个。
-MAX_QUESTIONS = 8
+#: 每个分段生成几条。1 条常常覆盖不了不同问法，超过 5 条边际收益很低、还稀释原文向量。
 MIN_QUESTIONS = 1
+MAX_QUESTIONS = 5
+DEFAULT_QUESTIONS_PER_CHUNK = 3
+
+#: 空状态一次最多显示几条（读端）。
 DEFAULT_LIMIT = 6
 
 #: 自定义出题提示词的长度上限。它是给模型的自然语言指令，写太长只是浪费 token。
 PROMPT_MAX_CHARS = 2000
 
-#: 采样多少块语料。够模型看出"这个库在讲什么"，又不至于把提示词撑大。
-_SAMPLE_CHUNKS = 8
-#: 每块截多长。示例问题不需要细节，看到主题就够。
+#: 一次请求带几段。8 段 × 约 512 字 ≈ 4K 字，主流模型都吃得下；
+#: 再多会让提示词变长，也更难要求模型按段对齐输出。
+_CHUNKS_PER_CALL = 8
+#: 每段截多长。出题不需要细节，看到这段在讲什么就够。
 _SNIPPET_CHARS = 500
-#: 生成结果的缓存时长。切一次库就重新生成一次太费，缓存 5 分钟。
-_CACHE_TTL_SECONDS = 300
+#: 读端抽多少块来找问题。抽块本身很便宜（一条 SQL），所以抽得比写端宽——
+#: 老文档多半还没出过题，抽太少会"看着有文档却一条问题都没有"。
+_READ_SAMPLE_CHUNKS = 40
 
 _SYSTEM_PROMPT = (
-    "你是一个知识库助手。用户会给你资料库里的若干原文片段，"
-    "请据此推测用户可能想追问的问题。只输出问题本身，不要答案、不要解释。"
+    "你是一个知识库助手。用户会给你资料里的若干片段，"
+    "请为每一段分别写出用户可能提出的问题。只输出问题本身，不要答案、不要解释。"
 )
 _INSTRUCTION = (
-    "根据以上资料片段，写出 {n} 个用户可能想追问的中文问题。"
-    "要求：具体、能靠这些资料回答；每行一个；不要编号、不要引号、不要任何额外文字。"
+    "为上面每一段各写 {n} 个中文问题。要求：具体、能靠这一段的内容回答，"
+    "尽量贴近用户真实的问法（同一段可以从不同角度问）。\n"
+    "输出格式必须照做：每段以 `###片段N` 单独一行开头（N 是上面的片段编号，"
+    "从 1 开始），紧接着每行写一个问题，不要编号、不要引号、不要额外说明。"
 )
+
+#: 分段块头：`###片段3` / `### 片段3` / `##片段3`。宽松匹配——模型很少一字不差。
+_BLOCK_HEADER = re.compile(r"^\s*#{2,4}\s*片段\s*(\d+)\s*$")
 
 #: 去掉行首的编号/项目符号（`1.` `-` `•` `1、` `1)`）。**只吃前缀**，
 #: 不能用一个 lstrip(chars) 把"2024 年的…"这种以数字开头的问题也削掉。
@@ -63,124 +82,163 @@ _ENUMERATOR = re.compile(r"^\s*(?:[-*•]+|\d+\s*[.、)．]\s*)")
 
 
 class SuggestedQuestionsService:
-    """把"采样语料 → 问模型 → 清洗成问题列表"这条链路收在一处。"""
+    """写端（入库出题）与读端（空状态取题）都收在这里。"""
 
     def __init__(self, stores: StoreBundle, chat: ChatService) -> None:
         self._stores = stores
         self._chat = chat
-        self._cache: dict[tuple[object, ...], tuple[float, list[str]]] = {}
 
-    def suggest(
+    # ------------------------------------------------------------------ 写端：入库出题
+
+    def generate_for_chunks(
         self,
+        chunks: Sequence[ChunkRecord],
         *,
-        kb_ids: list[str],
-        limit: int | None = None,
         model_pk: str | None = None,
-        refresh: bool = False,
-    ) -> list[str]:
-        """生成示例问题；生成不出来返回空列表（调用方据此回退）。
+        count: int = DEFAULT_QUESTIONS_PER_CHUNK,
+        prompt: str = "",
+    ) -> dict[str, list[str]]:
+        """为每个分段生成问题，返回 ``{chunk_id: [问题]}``。
 
-        设置来源（v19）：**条数 / 模型 / 提示词都读库上的设置**，请求参数只是覆盖。
-        多库同时选中时，取样包含全部启用的库，而"条数 / 模型 / 提示词"取**第一个
-        启用的库**——出一份列表只能有一套参数，按选择顺序取第一个既确定，
-        也符合"你先点的那个库说了算"。
+        **从不抛异常**：这是摄入链路上的一步旁路，出题失败只该让这一段没有题，
+        不该让整篇文档 failed（`IngestService` 里任何未捕获的异常都会被 worker
+        当成可重试失败，最终把文档置为 failed）。所以逐批 try/except，
+        失败的批次直接少几条题。
 
-        请求显式给了 ``limit`` 就以它为准（脚本 / API 用）；界面上不再传，
-        让库设置说了算，否则在界面上改了条数却看不到变化。
-        ``model_pk`` 优先级：**库设置 > 请求 > 全局默认**（库上单独指定一个
-        "出题用的便宜模型"是这组设置存在的理由之一）。
+        一次请求带 `_CHUNKS_PER_CALL` 段，而不是每段一次调用——一份 100 段的文档
+        那就是 100 次请求，贵得离谱。
         """
-        resolved = self._resolve(kb_ids)
-        if resolved is None:
-            return []
-        ids, count, kb_prompt, kb_model = resolved
-        if limit is not None:
-            count = max(MIN_QUESTIONS, min(limit, MAX_QUESTIONS))
-        model = kb_model or model_pk or None
-        key = (tuple(sorted(set(ids))), count, model or "", kb_prompt)
-        if not refresh:
-            cached = self._cache.get(key)
-            if cached is not None and cached[0] > time.monotonic():
-                return cached[1]
-        questions = self._generate(ids, limit=count, model_pk=model, instruction=kb_prompt)
-        if questions:
-            self._cache[key] = (time.monotonic() + _CACHE_TTL_SECONDS, questions)
-        return questions
+        if not chunks:
+            return {}
+        per_chunk = max(MIN_QUESTIONS, min(count, MAX_QUESTIONS))
+        generated: dict[str, list[str]] = {}
+        for batch in _batched(chunks, _CHUNKS_PER_CALL):
+            generated.update(
+                self._generate_batch(batch, model_pk=model_pk, count=per_chunk, prompt=prompt)
+            )
+        return generated
 
-    # ------------------------------------------------------------------ 内部
-
-    def _resolve(self, kb_ids: list[str]) -> tuple[list[str], int, str, str | None] | None:
-        """把请求里的库 id 收敛成"参与出题的那几个 + 一套参数"。
-
-        关掉推荐问题的库**既不取样也不参与**——这正是那个开关的意思。
-        一个都没启用（或都没了）时返回 ``None``，调用方据此直接回退静态样例，
-        连一次模型调用都不花。
-        """
-        enabled = []
-        for kb_id in kb_ids:
-            record = self._stores.meta.get_knowledge_base(kb_id)
-            if record is not None and record.suggested_enabled:
-                enabled.append(record)
-        if not enabled:
-            return None
-        head = enabled[0]
-        count = max(MIN_QUESTIONS, min(head.suggested_count, MAX_QUESTIONS))
-        return (
-            [item.id for item in enabled],
-            count,
-            head.suggested_prompt.strip(),
-            head.suggested_model_pk or None,
-        )
-
-    def _generate(
+    def _generate_batch(
         self,
-        kb_ids: list[str],
+        batch: Sequence[ChunkRecord],
         *,
-        limit: int,
         model_pk: str | None,
-        instruction: str = "",
-    ) -> list[str]:
+        count: int,
+        prompt: str,
+    ) -> dict[str, list[str]]:
         try:
-            chunks = self._stores.meta.sample_chunks(kb_ids, limit=_SAMPLE_CHUNKS)
-            snippets = [_snippet(item) for item in chunks if item.text.strip()]
-            if not snippets:
-                return []
             raw = self._chat.ask_raw(
                 [
                     ChatMessage(role="system", content=_SYSTEM_PROMPT),
-                    ChatMessage(role="user", content=_build_prompt(snippets, limit, instruction)),
+                    ChatMessage(role="user", content=_build_prompt(batch, count, prompt)),
                 ],
                 model_pk=model_pk,
             )
         except Exception:
-            # **只记日志不抛**：示例问题是引导，拿不到就回退静态样例，
-            # 不能让"点开对话页"因为一次旁路调用失败而变成错误页
-            logger.warning("示例问题生成失败，回退到静态样例", exc_info=True)
+            logger.warning("分段问题生成失败（%d 段没有出题）", len(batch), exc_info=True)
+            return {}
+        return _parse_blocks(raw, batch, count)
+
+    # ------------------------------------------------------------------ 读端：空状态取题
+
+    def list_questions(
+        self, *, kb_ids: Sequence[str], limit: int = DEFAULT_LIMIT
+    ) -> list[str]:
+        """从库里**已存的分段问题**里取几条（不调模型）。
+
+        抽块是随机的（`sample_chunks`），所以每次进空状态看到的问题会换一批——
+        这是有意的：它只是"你可以这样问"的引导，不是一份固定清单。
+        没有任何已存问题（库的功能关着、或文档还没重新摄入）时返回空列表，
+        由前端回退到内置静态样例。
+        """
+        if not kb_ids or limit <= 0:
             return []
-        return _parse_questions(raw, limit)
+        chunks = self._stores.meta.sample_chunks(list(kb_ids), limit=_READ_SAMPLE_CHUNKS)
+        picked: list[str] = []
+        seen: set[str] = set()
+        for chunk in chunks:
+            for question in chunk.questions:
+                text = question.strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                picked.append(text)
+                if len(picked) >= limit:
+                    return picked
+        return picked
 
 
-def _snippet(chunk) -> str:  # type: ignore[no-untyped-def]
+# --------------------------------------------------------------------- 纯函数
+
+
+def _batched(items: Sequence[ChunkRecord], size: int) -> list[list[ChunkRecord]]:
+    return [list(items[index : index + size]) for index in range(0, len(items), size)]
+
+
+def _snippet(chunk: ChunkRecord) -> str:
     where = chunk.heading_path or (f"第 {chunk.page} 页" if chunk.page else "")
     body = " ".join(chunk.text.split())[:_SNIPPET_CHARS]
     return f"[{where}] {body}" if where else body
 
 
-def _build_prompt(snippets: list[str], limit: int, instruction: str = "") -> str:
-    """资料片段 + 出题指令。
+def _build_prompt(chunks: Sequence[ChunkRecord], limit: int, instruction: str = "") -> str:
+    """资料片段（按 `###片段N` 编号）+ 出题指令。
 
-    ``instruction`` 为库上的自定义提示词时**替换内置那一句**，资料片段照旧附在前面——
+    ``instruction`` 为库上的自定义提示词时**替换内置那一句**，片段照旧附在前面——
     自定义的是"怎么出题"，而"依据哪些片段"是系统必须给的东西，不该让用户去拼。
-    句子里的 ``{n}`` 会替换成条数；用户写了别的大括号（比如正则或 JSON 示例）时
+    句子里的 ``{n}`` 会替换成条数；用户写了别的大括号（正则、JSON 示例）时
     ``format`` 会抛，那就原样发出去，不因为一次格式化失败让出题整个失败。
     """
-    material = "\n".join(f"{index}. {text}" for index, text in enumerate(snippets, start=1))
+    material = "\n".join(
+        f"###片段{index}\n{_snippet(chunk)}" for index, chunk in enumerate(chunks, start=1)
+    )
     template = instruction or _INSTRUCTION
     try:
         ask = template.format(n=limit)
     except (KeyError, IndexError, ValueError):
         ask = template
     return f"资料片段：\n{material}\n\n{ask}"
+
+
+def _parse_blocks(
+    raw: str, chunks: Sequence[ChunkRecord], limit: int
+) -> dict[str, list[str]]:
+    """把模型的输出按 `###片段N` 拆开，落到各自的 chunk_id 上。
+
+    **宽容两条**：
+    1. 编号对不上（比如模型从 0 开始、或跳号）的块直接丢掉——宁可少几段有题，
+       也不能把 A 段的问题写到 B 段上（那会让检索把用户带到完全无关的段落）。
+    2. 只带了一段时，整个输出就当成那一段的题——模型经常"贴心"地省掉块头，
+       这时候严格解析会一条都拿不到。
+    """
+    if not chunks:
+        return {}
+    lines = raw.splitlines()
+    # 只有一段**且模型没写块头**时，整份输出都算它的——模型经常"贴心"地省掉
+    # `###片段1`。但若写了块头就仍走按块解析：否则块头本身会被当成一行问题。
+    if len(chunks) == 1 and not any(_BLOCK_HEADER.match(line) for line in lines):
+        questions = _parse_questions(raw, limit)
+        return {chunks[0].chunk_id: questions} if questions else {}
+
+    blocks: dict[int, list[str]] = {}
+    current: int | None = None
+    for line in lines:
+        header = _BLOCK_HEADER.match(line)
+        if header:
+            current = int(header.group(1))
+            blocks.setdefault(current, [])
+            continue
+        if current is not None:
+            blocks[current].append(line)
+
+    out: dict[str, list[str]] = {}
+    for index, lines in blocks.items():
+        if not 1 <= index <= len(chunks):
+            continue
+        questions = _parse_questions("\n".join(lines), limit)
+        if questions:
+            out[chunks[index - 1].chunk_id] = questions
+    return out
 
 
 def _parse_questions(raw: str, limit: int) -> list[str]:

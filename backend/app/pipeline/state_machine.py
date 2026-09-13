@@ -58,7 +58,14 @@ ALLOWED_TRANSITIONS: dict[DocumentStage, frozenset[DocumentStage]] = {
         {DocumentStage.INDEXED, DocumentStage.FAILED, DocumentStage.CANCELED}
     ),
     # 可选增强分支：从终态进入，默认关闭，失败不影响主链路（架构 §4、§11）
-    DocumentStage.INDEXED: frozenset({DocumentStage.ENRICHING, DocumentStage.FAILED}),
+    #
+    # ``INDEXED → CHUNKING`` 是**"重新摄入"**：改完切分参数、或打开"分段出题"之后，
+    # 已入库的文档要重新切分 + 重新向量化才生效。回到 CHUNKING 而不是 UPLOADED——
+    # 后者会连解析一起重来，而解析可能是收费的云端服务（解析产物还在，
+    # `_reuse_parse_result` 会直接复用）。`_advance` 允许自转（CHUNKING → CHUNKING）。
+    DocumentStage.INDEXED: frozenset(
+        {DocumentStage.CHUNKING, DocumentStage.ENRICHING, DocumentStage.FAILED}
+    ),
     DocumentStage.ENRICHING: frozenset(
         {DocumentStage.ENRICHED, DocumentStage.FAILED, DocumentStage.CANCELED}
     ),

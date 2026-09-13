@@ -27,6 +27,7 @@ from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.chunking import content_hash_of
 from app.services.embedding.base import EmbeddingProvider
 from app.services.embedding.resolver import EmbeddingResolver
+from app.services.suggested_questions import SuggestedQuestionsService
 from app.storage.base import ChunkRecord, StoreBundle
 
 __all__ = ["ChunkService"]
@@ -47,11 +48,14 @@ class ChunkService:
         *,
         embedder: EmbeddingProvider,
         embedders: EmbeddingResolver | None = None,
+        questions: SuggestedQuestionsService | None = None,
     ) -> None:
         self._stores = stores
         self._embedder = embedder
         # 手工改块要重算向量，必须用**这个库自己的**嵌入模型（v11）
         self._embedders = embedders
+        #: 改正文要重出这一段的题（v23）：不给就只清空，不再生成
+        self._questions = questions
 
     # ------------------------------------------------------------------ 读
 
@@ -85,12 +89,18 @@ class ChunkService:
 
         record = self.get(chunk_id)
         previous_text = record.text
+        previous_questions = tuple(record.questions)
 
-        # 1) 先算新向量（失败即整体失败，不留半成品）
-        vector = self._embedder_for(record.knowledge_base_id).embed([cleaned])[0]
-
-        # 2) 更新元数据
+        # 1) 先算新问题与新向量（失败即整体失败，不留半成品）
+        #
+        # 正文改了，**旧问题是照着旧正文出的**——必须一起重出，否则那些问题会把
+        # 用户带到一段已经不存在的正文上。重出失败就清空：宁可这一段没有题，
+        # 也不能留一批对不上正文的问题在索引里（检索会一直命中它）。
         record.text = cleaned
+        record.questions = self._regenerate_questions(record)
+        vector = self._embedder_for(record.knowledge_base_id).embed([record.index_text])[0]
+
+        # 2) 更新元数据（questions 一起写回，见 update_chunk 的 SQL）
         record.content_hash = content_hash_of(cleaned)
         self._stores.meta.update_chunk(record)
 
@@ -105,6 +115,7 @@ class ChunkService:
             # 索引没跟上，但元数据已经改了——回滚文本，保证三处一致（宁可回到旧状态）
             logger.exception("切块 %s 的索引更新失败，回滚正文", chunk_id)
             record.text = previous_text
+            record.questions = previous_questions
             record.content_hash = content_hash_of(previous_text)
             self._stores.meta.update_chunk(record)
             self._stores.fulltext.delete_chunks([chunk_id])
@@ -113,6 +124,29 @@ class ChunkService:
 
         logger.info("切块 %s 正文已更新并重新向量化", chunk_id)
         return record
+
+    def _regenerate_questions(self, record: ChunkRecord) -> tuple[str, ...]:
+        """为刚改过的这一段重出题；库上关着或出题失败就返回空（= 清空）。
+
+        **清空而不是保留旧的**：问题指向的是旧正文，留着它等于给检索埋了一条
+        "命中一段已经改掉的文字"的假线索。
+        """
+        if self._questions is None:
+            return ()
+        kb = self._stores.meta.get_knowledge_base(record.knowledge_base_id)
+        if kb is None or not kb.suggested_enabled:
+            return ()
+        try:
+            generated = self._questions.generate_for_chunks(
+                [record],
+                model_pk=kb.suggested_model_pk,
+                count=kb.suggested_count,
+                prompt=kb.suggested_prompt,
+            )
+        except Exception:
+            logger.warning("切块 %s 重出题失败，清空它的问题", record.chunk_id, exc_info=True)
+            return ()
+        return tuple(generated.get(record.chunk_id, ()))
 
     # ------------------------------------------------------------------ 禁用
 

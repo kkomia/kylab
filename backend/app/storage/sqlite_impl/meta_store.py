@@ -756,8 +756,8 @@ class SqliteMetaStore(MetaStore):
                 """
                 INSERT INTO chunks
                     (chunk_id, document_id, knowledge_base_id, part_id, ordinal, text,
-                     content_hash, heading_path, page)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     content_hash, heading_path, page, questions)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -770,6 +770,7 @@ class SqliteMetaStore(MetaStore):
                         chunk.content_hash,
                         chunk.heading_path,
                         chunk.page,
+                        _json(list(chunk.questions)),
                     )
                     for chunk in chunks
                 ],
@@ -806,12 +807,17 @@ class SqliteMetaStore(MetaStore):
                 page=row["page"],
                 image_ids=tuple(images.get(row["chunk_id"], ())),
                 disabled=bool(row["disabled"]),
+                questions=tuple(json.loads(row["questions"])),
             )
             for row in rows
         ]
 
     def sample_chunks(self, kb_ids: Sequence[str], *, limit: int) -> list[ChunkRecord]:
-        """从若干知识库随机抽切块（跳过人工禁用的）。给示例问题生成喂一点语料用。"""
+        """从若干知识库随机抽切块（跳过人工禁用的）。
+
+        两个用途：入库时出题的语料采样，以及**读端**（对话页空状态）随机抽几块、
+        把它们已存的问题取出来展示（v23）。
+        """
         if not kb_ids or limit <= 0:
             return []
         placeholders = ",".join("?" * len(kb_ids))
@@ -834,6 +840,7 @@ class SqliteMetaStore(MetaStore):
                 heading_path=row["heading_path"],
                 page=row["page"],
                 disabled=bool(row["disabled"]),
+                questions=tuple(json.loads(row["questions"])),
             )
             for row in rows
         ]
@@ -865,6 +872,7 @@ class SqliteMetaStore(MetaStore):
                 page=row["page"],
                 image_ids=tuple(images.get(row["chunk_id"], ())),
                 disabled=bool(row["disabled"]),
+                questions=tuple(json.loads(row["questions"])),
             )
             for row in rows
         ]
@@ -891,7 +899,7 @@ class SqliteMetaStore(MetaStore):
         with self._db.session() as conn:
             conn.execute(
                 "UPDATE chunks SET text = ?, content_hash = ?, heading_path = ?,"
-                " page = ?, disabled = ?, ordinal = ? WHERE chunk_id = ?",
+                " page = ?, disabled = ?, ordinal = ?, questions = ? WHERE chunk_id = ?",
                 (
                     record.text,
                     record.content_hash,
@@ -899,6 +907,7 @@ class SqliteMetaStore(MetaStore):
                     record.page,
                     int(record.disabled),
                     record.ordinal,
+                    _json(list(record.questions)),
                     record.chunk_id,
                 ),
             )

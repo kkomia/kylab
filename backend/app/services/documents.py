@@ -380,6 +380,15 @@ class DocumentService:
         默认**幂等**：同一文档已有待执行/执行中的任务时返回既有的那个，
         避免用户连点几次上传就在队列里堆出重复任务。
         ``force=True`` 用于"重跑"按钮，会先确认没有在跑的任务。
+
+        **``force`` 还必须把阶段推回 ``CHUNKING``**（v23 修）：摄入是"按产物断点续跑"
+        的，已 ``indexed`` 的文档若原样入队，``_resume_stage`` 会返回 ``indexed``，
+        三个 ``_before(...)`` 全是 false——整次摄入**什么都不做**，只重新发一遍
+        indexed 通知。也就是说界面上那个「重新摄入全部文档」对成功索引的文档
+        一直是个空操作，而文档里却写着"改完切分参数要重新摄入才生效"。
+
+        回到 ``CHUNKING``（而不是 ``UPLOADED``）：重新切分 + 重新向量化，
+        **不重新解析**——解析可能是收费的云端服务，而解析产物还在库里。
         """
         document = self.get(document_id)
         if document.stage is DocumentStage.INDEXED and not force:
@@ -388,6 +397,10 @@ class DocumentService:
         existing = self._find_active_task(document_id, kind)
         if existing is not None:
             return existing
+
+        if force and can_transition(document.stage, DocumentStage.CHUNKING):
+            self._stores.meta.update_document_stage(document_id, DocumentStage.CHUNKING)
+            document.stage = DocumentStage.CHUNKING
 
         return self._stores.meta.enqueue_task(
             TaskRecord(

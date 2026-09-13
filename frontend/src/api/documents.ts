@@ -72,6 +72,8 @@ export interface DocumentChunk {
   image_ids: string[]
   /** 被禁用的块不再参与检索，但仍在库里（§G3）。 */
   disabled: boolean
+  /** 入库时为这一段生成的问题（v23）。只读展示——用来判断"出题质量如何"。 */
+  questions: string[]
 }
 
 export interface ChunkList {

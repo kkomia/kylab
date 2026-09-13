@@ -211,3 +211,35 @@ def test_migration_022_adds_kb_suggested_settings_with_old_behavior(
         " FROM knowledge_bases WHERE id = 'kb_old'"
     ).fetchone()
     assert tuple(row) == (1, 6, None, "")
+
+
+def test_migration_023_adds_chunk_questions_and_turns_the_toggle_off(
+    conn: sqlite3.Connection,
+) -> None:
+    """分段问题两件事：块上多一列 questions；老库的生成开关一律置 0。
+
+    第二件同样重要：`suggested_enabled` 的语义从"空状态要不要显示推荐问题"
+    换成了"入库要不要为每个分段出题"（要花模型调用，且发生在上传之后）。
+    升级后不能默默开始烧 token，所以老库先关掉、由用户自己打开。
+    """
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version < 23])
+    conn.execute(
+        "INSERT INTO knowledge_bases (id, name, embedding_model_id, embedding_dim,"
+        " suggested_enabled, created_at, updated_at)"
+        " VALUES ('kb_old', '老库', 'm1', 4, 1, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO documents (id, knowledge_base_id, name, source_kind, content_hash, stage,"
+        " created_at, updated_at)"
+        " VALUES ('d1', 'kb_old', 'a.md', 'upload', 'h1', 'indexed', 't', 't')"
+    )
+    conn.execute(
+        "INSERT INTO chunks (chunk_id, document_id, knowledge_base_id, ordinal, text, content_hash)"
+        " VALUES ('c1', 'd1', 'kb_old', 0, '旧正文', 'h1')"
+    )
+    conn.commit()
+
+    apply_migrations(conn, [m for m in MIGRATIONS if m.version == 23])
+
+    assert conn.execute("SELECT questions FROM chunks WHERE chunk_id = 'c1'").fetchone()[0] == "[]"
+    assert conn.execute("SELECT suggested_enabled FROM knowledge_bases").fetchone()[0] == 0

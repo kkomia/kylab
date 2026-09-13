@@ -103,7 +103,6 @@ describe('KnowledgeBaseMenu', () => {
       '基本信息',
       '库信息',
       '切块策略',
-      '推荐问题',
       '数据源',
       '删除知识库',
     ])
@@ -250,7 +249,7 @@ describe('KnowledgeBaseMenu 切块策略（v17）', () => {
     // 报错与"参数已保存"都靠看这里，而不是猜
     expect(wrapper.find('.nav-item-active').text()).toBe('切块策略')
     expect(wrapper.find('.callout').classes()).toContain('callout-strong')
-    expect(wrapper.text()).toContain('已有文档仍是按旧参数切的')
+    expect(wrapper.text()).toContain('已有文档还是按旧的切块参数、也没有问题')
   })
 
   it('「重新摄入全部文档」走 all=true，由服务端解析全集', async () => {
@@ -272,10 +271,12 @@ describe('KnowledgeBaseMenu 切块策略（v17）', () => {
   })
 })
 
-describe('推荐问题（v19）', () => {
+describe('分段出题（v23，并在切块栏里）', () => {
   it('四个控件的初值来自这个库，保存时按"改过的才发"提交', async () => {
     const wrapper = await mountMenu()
-    const tab = wrapper.findAll('.nav-item').find((el) => el.text() === '推荐问题')!
+    // 没有独立的"推荐问题"栏了：它跟的是分段，就在「切块与出题」里
+    expect(wrapper.findAll('.nav-item').map((el) => el.text())).not.toContain('推荐问题')
+    const tab = wrapper.findAll('.nav-item').find((el) => el.text() === '切块策略')!
     await tab.trigger('click')
 
     // 初值来自 kb（fixture 里是开 / 6 条）

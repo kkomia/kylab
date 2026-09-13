@@ -106,12 +106,12 @@ describe('SuggestedQuestionsFields', () => {
     await flushPromises()
 
     await wrapper.find('.suggested-toggle input').setValue(false)
-    await wrapper.find('.range-input').setValue('7')
+    await wrapper.find('.range-input').setValue('4')
     await wrapper.find('textarea').setValue('换个问法')
 
     const emitted = wrapper.emitted()
     expect(emitted['update:enabled']?.at(-1)).toEqual([false])
-    expect(emitted['update:count']?.at(-1)).toEqual([7])
+    expect(emitted['update:count']?.at(-1)).toEqual([4])
     expect(emitted['update:prompt']?.at(-1)).toEqual(['换个问法'])
   })
 

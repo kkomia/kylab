@@ -16,9 +16,9 @@ export interface KnowledgeBase {
   chunk_strategy: string
   chunk_size: number
   chunk_overlap: number
-  /** 推荐问题开关（v19）：关掉后这个库不参与对话空状态的出题。 */
+  /** 入库时是否为每个分段生成推荐问题（v23）。**默认关**：生成要花模型调用。 */
   suggested_enabled: boolean
-  /** 一次出几条。 */
+  /** 每个分段生成几条。 */
   suggested_count: number
   /** 出题用哪个对话模型（注册表主键）。null = 跟随对话页当前选的模型。 */
   suggested_model_pk: string | null
@@ -42,7 +42,7 @@ export interface KnowledgeBaseCreate {
   /** 建库时选定的嵌入模型（注册表主键）。留空 = 用服务端默认。
    *  嵌入模型是知识库属性：库内向量化之后不可更换（换模型要新建库）。 */
   embedding_model_pk?: string
-  /** 推荐问题（v19）。建库时就能定，之后在「知识库设置 → 推荐问题」里改。 */
+  /** 分段问题生成（v19/v23）。建库时就能定，之后在「知识库设置 → 切块策略」里改。 */
   suggested_enabled?: boolean
   suggested_count?: number
   /** 出题模型；空串 / 不传 = 跟随对话模型。 */
@@ -150,10 +150,12 @@ export function deleteKnowledgeBase(kbId: string): Promise<ImpactReport> {
 }
 
 /**
- * 推荐问题设置的可用区间与默认值。**与后端 `services/suggested_questions.py`
+ * 分段问题生成的可用区间与默认值。**与后端 `services/suggested_questions.py`
  * 的常量一一对应**（那里是权威，这里只是让用户当场看到中文原因）。
+ *
+ * `SUGGESTED_COUNT_*` 指的是**每个分段生成几条**（v23 起；v22 时曾是"空状态显示几条"）。
  */
 export const SUGGESTED_COUNT_MIN = 1
-export const SUGGESTED_COUNT_MAX = 8
-export const SUGGESTED_COUNT_DEFAULT = 6
+export const SUGGESTED_COUNT_MAX = 5
+export const SUGGESTED_COUNT_DEFAULT = 3
 export const SUGGESTED_PROMPT_MAX_CHARS = 2000

@@ -463,8 +463,10 @@ async def reprocess_document(
     caller: Caller = Depends(require_write),
 ) -> UploadAccepted:
     _guard_document(services, caller, document_id, need=WRITE)
-    document = services.documents.get(document_id)
     task = services.documents.enqueue_ingest(document_id, force=True)
+    # **重新取一次**：force 会把阶段推回 CHUNKING（见 enqueue_ingest），
+    # 拿入队前那份快照回给前端会显示成"还是 indexed"，用户会以为点了没反应
+    document = services.documents.get(document_id)
     return UploadAccepted(
         document=_to_out(
             document,

@@ -179,3 +179,46 @@ describe('DocumentDrawer', () => {
     wrapper.unmount()
   })
 })
+
+describe('切块视角里的分段问题（v23）', () => {
+  it('把这一段生成的问题只读列出来（判断出题质量靠它）', async () => {
+    vi.mocked(api.listDocumentChunks).mockResolvedValue({
+      items: [
+        {
+          chunk_id: 'c1',
+          document_id: 'doc_a',
+          ordinal: 0,
+          text: '眼轴长度是近视防控的核心指标。',
+          heading_path: '3 监测',
+          page: 2,
+          image_ids: [],
+          disabled: false,
+          questions: ['眼轴怎么测？', '多久测一次？'],
+        },
+        {
+          chunk_id: 'c2',
+          document_id: 'doc_a',
+          ordinal: 1,
+          text: '没有出题的这一段。',
+          heading_path: null,
+          page: 3,
+          image_ids: [],
+          disabled: false,
+          questions: [],
+        },
+      ],
+      total: 2,
+    } as unknown as Awaited<ReturnType<typeof api.listDocumentChunks>>)
+    const wrapper = await mountDrawer()
+
+    // 切到「切块」视角
+    const chunkTab = wrapper.findAll('.view-tab').find((el) => el.text() === '切块')!
+    await chunkTab.trigger('click')
+    await flushPromises()
+
+    const questions = wrapper.findAll('.chunk-question').map((el) => el.text())
+    expect(questions).toEqual(['眼轴怎么测？', '多久测一次？'])
+    // 没出题的那一段不该凭空多出一个空列表
+    expect(wrapper.findAll('.chunk-questions')).toHaveLength(1)
+  })
+})

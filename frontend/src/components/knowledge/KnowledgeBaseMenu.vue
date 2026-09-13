@@ -31,7 +31,6 @@ import {
 } from '@/api/knowledgeBases'
 import { batchDocuments, type ImpactReport } from '@/api/documents'
 import IconDatabase from '@/components/icons/IconDatabase.vue'
-import IconAi from '@/components/icons/IconAi.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
 import IconInbox from '@/components/icons/IconInbox.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
@@ -63,10 +62,10 @@ const documentCount = computed(() => store.summaries[props.kb.id]?.count ?? null
 /** 简介上限。与后端 `KB_DESCRIPTION_MAX_CHARS` 对齐，超了后端也会拒。 */
 const DESCRIPTION_MAX = 200
 
-type SectionKey = 'basic' | 'chunking' | 'suggested' | 'info' | 'sources' | 'danger'
+type SectionKey = 'basic' | 'chunking' | 'info' | 'sources' | 'danger'
 
 /** 底部有「取消 / 保存并关闭」的分区：只有会改数据的那些。 */
-const SAVE_SECTIONS: SectionKey[] = ['basic', 'chunking', 'suggested']
+const SAVE_SECTIONS: SectionKey[] = ['basic', 'chunking']
 
 /**
  * 左侧导航的分组。**分组不是装饰**：它回答"这些设置属于哪一类"，
@@ -84,7 +83,6 @@ const GROUPS: { label: string; items: { key: SectionKey; label: string; icon: Co
     label: '数据',
     items: [
       { key: 'chunking', label: '切块策略', icon: IconSettings },
-      { key: 'suggested', label: '推荐问题', icon: IconAi },
       { key: 'sources', label: '数据源', icon: IconInbox },
     ],
   },
@@ -245,8 +243,9 @@ async function save(): Promise<void> {
   if (size !== props.kb.chunk_size) patch.chunk_size = size
   if (overlap !== props.kb.chunk_overlap) patch.chunk_overlap = overlap
   const chunkingChanged = patch.chunk_size !== undefined || patch.chunk_overlap !== undefined
-  // 推荐问题：四个值一起提交（后端也是一次写四个）。空串表示"跟随对话模型"/"用内置提示词"，
+  // 分段出题：四个值一起提交（后端也是一次写四个）。空串表示"跟随对话模型"/"用内置提示词"，
   // 所以这里判的是"与库里不同"，而不是"非空"
+  const suggestedChanged = suggestedDirty.value
   if (suggestedDirty.value) {
     patch.suggested_enabled = sqEnabled.value
     patch.suggested_count = sqCount.value
@@ -270,15 +269,15 @@ async function save(): Promise<void> {
       // 不对齐的话脏检查会一直是 true（"取消"会提示有未保存改动）
       sqPrompt.value = sqPrompt.value.trim()
     }
-    if (chunkingChanged) {
-      // **不关弹窗**：切块是解析时写下的，已有文档不会跟着变。
-      // 让用户停在"切块策略"这一栏，重新摄入的按钮就在眼前——
-      // 关掉之后靠一句提示让他自己找回来，那一步多半会丢
+    if (chunkingChanged || suggestedChanged) {
+      // **不关弹窗**：这两件事都发生在**摄入那一步**（切块时写下），已有文档不会
+      // 跟着变。让用户停在这一栏，重新摄入的按钮就在眼前——关掉之后靠一句提示
+      // 让他自己找回来，那一步多半会丢。
       chunkingStale.value = true
       section.value = 'chunking'
       chunkSizeDraft.value = String(props.kb.chunk_size)
       chunkOverlapDraft.value = String(props.kb.chunk_overlap)
-      notifySuccess('切分参数已保存')
+      notifySuccess(chunkingChanged ? '切分参数已保存' : '分段出题设置已保存')
     } else {
       notifySuccess('已保存')
       closeSettings()
@@ -479,9 +478,9 @@ async function confirmDelete(): Promise<void> {
             <!-- 解释性文字收进「?」：这段话一屏好几行灰字，真正的两个滑杆反而不突出。
                  想知道的人自己去问——与全仓其余说明同一套做法（见 `InfoTip` 顶部注释）。 -->
             <h3 class="pane-title pane-title-standalone">
-              切块策略
+              切块与出题
               <InfoTip
-                text="文档在解析之后会被切成小块再向量化，检索命中的就是这些小块。块太大时一个块里混着好几件事，命中后给模型的上下文就跑题；块太小时一句话会被切断，答案也跟着断章取义。轨道上的点是常用值，强调色的是默认值：块长 512 左右在中文资料里大约是一到两段话；块重叠留一点，是为了让跨块的句子不被拦腰截断。"
+                text="文档在解析之后会被切成小块再向量化，检索命中的就是这些小块。块太大时一个块里混着好几件事，命中后给模型的上下文就跑题；块太小时一句话会被切断，答案也跟着断章取义。轨道上的点是常用值，强调色的是默认值：块长 512 左右在中文资料里大约是一到两段话；块重叠留一点，是为了让跨块的句子不被拦腰截断。下面「为每个分段生成推荐问题」是可选的一步：让模型为每一段出几个问题，问题一起进索引，用户换个问法也能命中这一段。"
               />
             </h3>
 
@@ -517,8 +516,8 @@ async function confirmDelete(): Promise<void> {
               <p class="callout-text">
                 {{
                   chunkingStale
-                    ? '参数已保存。已有文档仍是按旧参数切的，需要重新摄入才会生效。'
-                    : '改动只对之后上传或重新摄入的文档生效；已有文档要重新摄入才会按新参数切块。'
+                    ? '已保存。已有文档还是按旧的切块参数、也没有问题，需要重新摄入才会生效。'
+                    : '改动只对之后上传或重新摄入的文档生效；已有文档要重新摄入才会按新参数切块、并补上问题。'
                 }}
               </p>
               <AppButton
@@ -530,20 +529,10 @@ async function confirmDelete(): Promise<void> {
                 重新摄入全部文档
               </AppButton>
             </div>
-          </template>
 
-          <!-- 推荐问题（v19，可改） -->
-          <template v-else-if="section === 'suggested'">
-            <h3 class="pane-title pane-title-standalone">
-              推荐问题
-              <InfoTip
-                text="对话页空状态那排「你可以这样问我」，是拿这个库里的少量原文片段让模型现场出的题。这里决定出不出、出几条、用哪个模型出、按什么要求出。它立刻生效，不像切块策略那样要重新摄入。"
-              />
-            </h3>
-            <p class="pane-desc">
-              对话页同时选中多个库时，只有开启的库参与出题；条数、模型与提示词取你最先选中的那个开启的库。
-            </p>
-
+            <!-- 分段出题并在**同一栏**里（v23）：它跟的是分段。同样只对之后摄入的
+                 文档生效，所以上面那个「重新摄入」的入口对它也适用 -->
+            <div class="pane-divider" role="separator" aria-hidden="true" />
             <SuggestedQuestionsFields
               v-model:enabled="sqEnabled"
               v-model:count="sqCount"
@@ -787,6 +776,12 @@ async function confirmDelete(): Promise<void> {
 /* 字数计数右对齐：它跟的是输入框，不是说明文字 */
 .pane-hint-end {
   text-align: right;
+}
+
+/* 同一栏里两件事（切块参数 / 分段出题）之间的细线 */
+.pane-divider {
+  margin: var(--space-6) 0 var(--space-5);
+  border-top: 1px solid var(--border-hairline);
 }
 
 /* 参数不合法时的原因。放在字段下面而不是弹 toast：它是"这一栏要改"，
