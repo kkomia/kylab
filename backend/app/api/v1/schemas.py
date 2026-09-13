@@ -70,6 +70,12 @@ class KnowledgeBaseCreate(BaseModel):
     suggested_prompt: str = Field(default="", max_length=SUGGESTED_PROMPT_MAX_CHARS)
     """自定义出题提示词。留空 = 用内置提示词。"""
 
+    wiki_enabled: bool = False
+    """库形态（v24）：要不要把这个库的已录入内容整理成 Wiki 页面。
+
+    **默认关**：生成要把库里的片段喂给模型（每页一次调用），属于要花钱的产物，
+    不该在用户没选之前就开始跑。老库可以在设置里随时打开。"""
+
 
 class KnowledgeBaseUpdate(BaseModel):
     """改知识库的可编辑属性：名称 / 简介 / 切分参数。**都可选**，只传要改的那个。
@@ -97,6 +103,8 @@ class KnowledgeBaseUpdate(BaseModel):
     )
     suggested_model_pk: str | None = None
     suggested_prompt: str | None = Field(default=None, max_length=SUGGESTED_PROMPT_MAX_CHARS)
+    wiki_enabled: bool | None = None
+    """库形态（v24）：要不要生成 Wiki 页面。不传 = 不改。"""
 
 
 class KnowledgeBaseOut(BaseModel):
@@ -118,6 +126,10 @@ class KnowledgeBaseOut(BaseModel):
     """出题模型。``None`` = 跟随对话页当前选的模型。"""
     suggested_prompt: str = ""
     """自定义出题提示词；空串 = 用内置提示词。"""
+    wiki_enabled: bool = False
+    """库形态（v24）：``False`` = 仅向量检索；``True`` = 向量检索 + Wiki 页面。
+
+    界面据此决定要不要给「Wiki」入口、以及在设置里回显勾选态。"""
     created_at: datetime | None = None
     can_manage: bool = False
     """当前调用主体能否管理这个库的分享（owner / 管理员）。
@@ -1267,3 +1279,62 @@ class NoteImageOut(BaseModel):
 
     name: str
     alt: str
+
+
+# --------------------------------------------------------------------- Wiki（v24）
+
+
+class WikiSourceOut(BaseModel):
+    """Wiki 页面的一条出处。``index`` 就是正文里 ``[n]`` 的 n。"""
+
+    index: int
+    chunk_id: str
+    document_id: str
+    document_name: str = ""
+    """后端解析好的文档名——前端拿 id 还得再查一次。"""
+    heading_path: str | None = None
+    page: int | None = None
+
+
+class WikiPageOut(BaseModel):
+    """目录里的一个页面（不含正文，导航树只需要这些）。"""
+
+    id: str
+    parent_id: str | None = None
+    level: int = 0
+    ord: int = 0
+    title: str
+    brief: str = ""
+    status: str = "ready"
+    generated_at: datetime | None = None
+
+
+class WikiOverviewOut(BaseModel):
+    """Wiki 页头需要的全部信息 + 页面目录。
+
+    ``status`` 只有四档（``idle`` / ``generating`` / ``ready`` / ``failed``），
+    **由后端推出来**（有没有在跑的任务 + 有没有页面），前端不自己组合状态。
+    """
+
+    kb_id: str
+    enabled: bool
+    status: str
+    page_count: int = 0
+    generated_at: datetime | None = None
+    model: str | None = None
+    last_error: str | None = None
+    """上次失败的原文（任务里的 error）。只在 ``status='failed'`` 时有值。"""
+    pages: list[WikiPageOut] = Field(default_factory=list)
+
+
+class WikiPageDetailOut(WikiPageOut):
+    kb_id: str
+    content_md: str = ""
+    model: str | None = None
+    updated_at: datetime | None = None
+    sources: list[WikiSourceOut] = Field(default_factory=list)
+
+
+class WikiGenerateOut(BaseModel):
+    task_id: str
+    kb_id: str

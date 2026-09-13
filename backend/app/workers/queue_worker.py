@@ -62,6 +62,7 @@ class TaskWorker:
         maintain: Callable[[], None] | None = None,
         maintain_interval: float = DEFAULT_MAINTAIN_INTERVAL,
         sync_source: Callable[[str], object] | None = None,
+        compile_wiki: Callable[[str], object] | None = None,
     ) -> None:
         if lease_seconds <= 0:
             raise ValueError("租约时长必须为正")
@@ -83,6 +84,9 @@ class TaskWorker:
         # 数据源拉取的执行体（M6 / T6.1）。可选：没有它时 FETCH_SOURCE 任务会
         # 明确失败，而不是被静默丢掉——静默丢掉会让"拉取一直没反应"极难排查
         self._sync_source = sync_source
+        # Wiki 重建（v24）。同样是可选回调：没接上时 WIKI 任务明确失败，
+        # 而不是被静默丢掉
+        self._compile_wiki = compile_wiki
         self._last_maintain = 0.0
         self._current_task_id: str | None = None
         self._thread: asyncio.Task[None] | None = None
@@ -260,6 +264,15 @@ class TaskWorker:
     def _handle(self, task: TaskRecord) -> None:
         if task.kind is TaskKind.FETCH_SOURCE:
             self._handle_source(task)
+            return
+        if task.kind is TaskKind.WIKI:
+            # 知识库级任务：没有 document_id，也不能落进下面的摄入分支
+            if self._compile_wiki is None:
+                raise NotImplementedError("Wiki 生成尚未接线")
+            kb_id = str(task.payload.get("kb_id") or "")
+            if not kb_id:
+                raise ValueError(f"任务 {task.id} 缺少 kb_id")
+            self._compile_wiki(kb_id)
             return
         if task.kind is TaskKind.QUESTIONS:
             # 补出题不走摄入阶段机（文档已 indexed，只读现有块），所以**不能**

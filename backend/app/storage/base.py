@@ -161,6 +161,62 @@ class KnowledgeBaseRecord:
     凭据不落这里——只在注册表存一份，运行时按 pk 解析。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    wiki_enabled: bool = False
+    """库形态（v24）：是否把库里已录入的内容整理成一套 Wiki 页面。
+
+    ``False``（默认）= 仅向量检索：问答按片段检索原文作答，最省 token。
+    ``True`` = 向量检索 + Wiki：额外生成带原文出处的百科式页面。
+    它**只是一个开关**——不改变检索链路，Wiki 只是多出来的一层产物。
+    """
+
+
+@dataclass(slots=True)
+class WikiPageRecord:
+    """生成出来的一页 Wiki（v24）。
+
+    ``level`` + ``parent_id`` 就是摘要树的落库形态：level 0 是总览页（根），
+    1 是主题页。``content_md`` 里带 ``[n]`` 标记，n 对应
+    :class:`WikiSourceRecord.index` —— **每个要点都指得回原文**，这是自动 Wiki
+    敢被人相信的前提（调研报告 §3.5）。
+    """
+
+    id: str
+    kb_id: str
+    title: str
+    parent_id: str | None = None
+    level: int = 0
+    ord: int = 0
+    slug: str = ""
+    brief: str = ""
+    content_md: str = ""
+    status: str = "ready"
+    """``ready`` / ``generating`` / ``failed``。本版按"整库一次性重建"写，
+    所以生成期间行不存在；这个字段主要给失败重试与将来的增量留位。"""
+    model: str | None = None
+    generated_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class WikiSourceRecord:
+    """一页 Wiki 的一条出处（v24）。"""
+
+    page_id: str
+    chunk_id: str
+    document_id: str
+    rank: int = 0
+    index: int = 0
+    """正文里的 ``[n]`` 编号。**持久化时就是它**（列名 ``rank``）——
+    引用编号必须与生成时喂给模型的那份清单一致，重排会让正文里的 ``[n]`` 指错段落。"""
+    heading_path: str | None = None
+    """命中那段所属的章节路径（生成时从检索命中一起抄下来）。
+
+    **存快照而不是回查 chunks**：文档被删/重切之后，这一页引用的原文可能已经不在，
+    但"当时引的是哪一段"必须留得住——否则页面上的出处会集体变成悬空编号。
+    """
+    page: int | None = None
+    """命中那段的页码（同上，存快照）。"""
 
 
 @dataclass(slots=True)
@@ -647,6 +703,14 @@ class MetaStore(ABC):
         """
 
     @abstractmethod
+    def set_knowledge_base_wiki(self, kb_id: str, *, enabled: bool) -> None:
+        """改这个库的形态：要不要生成 Wiki 页面（v24）。
+
+        只动开关，**不碰已有页面**——关掉只是"不再生成/不再展示"，
+        页面留着（用户可能只是暂时不想看；真要清空有单独的删除接口）。
+        """
+
+    @abstractmethod
     def update_knowledge_base_embedding(
         self, kb_id: str, *, model_id: str, dim: int, base_url: str | None
     ) -> None: ...
@@ -664,6 +728,40 @@ class MetaStore(ABC):
 
     @abstractmethod
     def count_kb_chunks(self, kb_id: str) -> int: ...
+
+    # ---- Wiki（v24）----
+    @abstractmethod
+    def replace_wiki_pages(
+        self,
+        kb_id: str,
+        pages: Sequence[WikiPageRecord],
+        sources: Sequence[WikiSourceRecord],
+    ) -> None:
+        """整体替换一个库的 Wiki 页面与出处（同一事务内先删后插）。
+
+        **整库重建而不是逐页 upsert**：本版生成是"一次把全库重写一遍"，
+        逐页 upsert 会留下上一版多出来的、已经不存在的页面（改名、合并之后
+        它们就是无主页面）。先删后插最简单，也保证页树与正文同一次生成的结果一致。
+        """
+
+    @abstractmethod
+    def list_wiki_pages(self, kb_id: str) -> list[WikiPageRecord]:
+        """按 ``level, ord`` 列出页面（不含 ``content_md`` 之外的东西——它本来就带着）。
+
+        列表接口只回目录信息时由服务层裁字段，存储层不做两种投影：
+        Wiki 页面数量小（十几页），多读一列正文不值得多一个方法。
+        """
+
+    @abstractmethod
+    def get_wiki_page(self, page_id: str) -> WikiPageRecord | None: ...
+
+    @abstractmethod
+    def list_wiki_sources(self, page_id: str) -> list[WikiSourceRecord]:
+        """一页的出处，按 ``rank`` 升序（rank 就是正文里的 ``[n]``）。"""
+
+    @abstractmethod
+    def wiki_stats(self, kb_id: str) -> tuple[int, datetime | None]:
+        """``(页面数, 最近生成时间)``。列表卡片与 Wiki 页头部都要显示。"""
 
     # ---- 文档 ----
     @abstractmethod

@@ -364,11 +364,16 @@ function replaceOutsideCode(segment: string, known: Map<number, CitationSource>)
  */
 const DOC_EXTENSION = /\.(pdf|docx?|xlsx?|pptx?|md|markdown|txt|csv|json|html?)$/i
 
-/** 徽标上显示的文档短名：压平空白 + 去掉扩展名（空名兜底成"文档"）。 */
+/** 徽标上显示的文档短名：压平空白 + 去掉目录前缀与扩展名（空名兜底成"文档"）。 */
 export function shortDocumentName(name: string): string {
   const trimmed = name.trim().replace(/\s+/g, ' ')
   if (!trimmed) return '文档'
-  return trimmed.replace(DOC_EXTENSION, '') || trimmed
+  // **目录前缀也要去掉**：整目录上传的文档名带一层批次目录
+  // （`markdown_20260908-…_110files/共识.md`），留着它，徽标里最先被看到的就是
+  // 那串无意义的批次号——而窄徽标恰恰只显示开头几个字。
+  const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  const base = cut >= 0 ? trimmed.slice(cut + 1) : trimmed
+  return base.replace(DOC_EXTENSION, '') || base
 }
 
 /**

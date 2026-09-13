@@ -345,3 +345,53 @@ async def test_question_task_runs_through_the_backfill_path(
     done = bundle.meta.get_task(task.id)
     assert done is not None and done.state is TaskState.SUCCEEDED
     assert bundle.meta.get_document(outcome.document.id).stage is DocumentStage.INDEXED
+
+
+@pytest.mark.asyncio
+async def test_wiki_task_runs_the_kb_level_callback(
+    bundle: StoreBundle, ingest: IngestService, kb
+) -> None:
+    """WIKI 是知识库级任务：没有 document_id，必须走独立分支而不是摄入。
+
+    落进 `ingest(document_id)` 会因为缺 document_id 直接报错，而且摄入那条路
+    对"读已有内容写 Wiki"本来就不适用。
+    """
+    calls: list[str] = []
+    worker = TaskWorker(
+        bundle, ingest, owner="worker-wiki", poll_interval=0.01, compile_wiki=calls.append
+    )
+    task = bundle.meta.enqueue_task(
+        TaskRecord(
+            id="task_wiki",
+            kind=TaskKind.WIKI,
+            state=TaskState.PENDING,
+            payload={"kb_id": "kb_1"},
+        )
+    )
+
+    assert await worker.run_once() is True
+
+    assert calls == ["kb_1"]
+    done = bundle.meta.get_task(task.id)
+    assert done is not None and done.state is TaskState.SUCCEEDED
+
+
+@pytest.mark.asyncio
+async def test_wiki_task_without_wiring_fails_clearly(
+    bundle: StoreBundle, ingest: IngestService
+) -> None:
+    """没接上生成能力时明确失败，而不是被静默丢掉（"点了没反应"最难查）。"""
+    worker = TaskWorker(bundle, ingest, owner="worker-nomap", poll_interval=0.01)
+    task = bundle.meta.enqueue_task(
+        TaskRecord(
+            id="task_wiki2",
+            kind=TaskKind.WIKI,
+            state=TaskState.PENDING,
+            payload={"kb_id": "kb_1"},
+        )
+    )
+
+    assert await worker.run_once() is True
+
+    failed = bundle.meta.get_task(task.id)
+    assert failed is not None and "尚未接线" in (failed.error or "")

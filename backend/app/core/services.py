@@ -56,6 +56,7 @@ from app.services.tabular import TabularService
 from app.services.usage import UsageService
 from app.services.users import UserService
 from app.services.webhook import WebhookService
+from app.services.wiki import WikiService
 from app.storage.base import StoreBundle
 from app.workers.queue_worker import TaskWorker
 
@@ -116,6 +117,8 @@ class Services:
     """笔记的 AI 排版 / 润色（v20.2）。单独依赖 LLM，保住 NotesService 的"无模型也能用"。"""
     suggested_questions: SuggestedQuestionsService
     """示例问题：依据所选知识库的语料让对话模型生成开场问题（对话页空状态）。"""
+    wiki: WikiService
+    """知识库 Wiki：把已入库内容整理成带出处的百科式页面（v24）。"""
     webhooks: WebhookService
     """Webhook 订阅与事件推送（M4 / T4.6）。"""
     embedder: EmbeddingProvider
@@ -282,6 +285,8 @@ def build_services(
         conversations=conversations_service,
     )
     questions_service = SuggestedQuestionsService(bundle, chat_service)
+    # Wiki 生成（v24）：规划主题 + 逐页写作，资料直接复用上面的混合检索
+    wiki_service = WikiService(bundle, chat=chat_service, retrieval=retrieval)
 
     ingest = IngestService(
         bundle,
@@ -358,6 +363,7 @@ def build_services(
         notes=NotesService(bundle, ingest=ingest, documents=documents_service),
         note_ai=NoteAiService(chat_service),
         suggested_questions=questions_service,
+        wiki=wiki_service,
         webhooks=webhooks,
         embedder=embedder,
         reranker=reranker,
@@ -369,6 +375,8 @@ def build_services(
             maintain=_maintain,
             # 数据源拉取没有 document_id，走 worker 里的独立分支（见 _handle_source）
             sync_source=sources_service.sync_now,
+            # Wiki 重建同样是知识库级任务（见 _handle）
+            compile_wiki=wiki_service.generate,
         ),
     )
 

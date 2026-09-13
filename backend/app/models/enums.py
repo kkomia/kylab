@@ -83,6 +83,14 @@ class TaskKind(StrEnum):
     把块号与人工干预全部推翻——补出题不该有那些副作用。
     """
 
+    WIKI = "wiki"
+    """重建一个知识库的 Wiki 页面（v24）。
+
+    **这是知识库级任务，没有 document_id**（payload 里是 ``kb_id``），
+    所以与 FETCH_SOURCE 一样走 worker 里的独立分支。它是"读已经入库的内容、
+    写出一层新产物"，不改任何文档的阶段与内容——失败只影响 Wiki 自己。
+    """
+
 
 class TaskState(StrEnum):
     """任务状态。

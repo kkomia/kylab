@@ -697,6 +697,54 @@ _MIGRATION_023 = Migration(
     ),
 )
 
+_MIGRATION_024 = Migration(
+    version=24,
+    description="知识库 Wiki：库形态开关 + 生成的页面与出处（v24）",
+    statements=(
+        # 库形态：0 = 仅向量检索（默认），1 = 向量检索 + Wiki 页面。
+        # **默认关**：生成要把库里的 chunk 喂给模型（一页一次调用），
+        # 老库升级后不能默默开始烧 token。与 suggested_enabled 同一个理由。
+        "ALTER TABLE knowledge_bases ADD COLUMN wiki_enabled INTEGER NOT NULL DEFAULT 0",
+        # 生成的页面。`level + parent_id` 就是"摘要树"的落库形态：
+        # level 0 是总览页（根），1..n 是主题页（本版只做两层，够用且好解释）。
+        # `content_md` 里带 `[n]` 引用标记，n 指向 wiki_page_sources.index。
+        """
+        CREATE TABLE wiki_pages (
+            id           TEXT PRIMARY KEY,
+            kb_id        TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+            parent_id    TEXT,
+            level        INTEGER NOT NULL DEFAULT 0,
+            ord          INTEGER NOT NULL DEFAULT 0,
+            slug         TEXT NOT NULL DEFAULT '',
+            title        TEXT NOT NULL,
+            brief        TEXT NOT NULL DEFAULT '',
+            content_md   TEXT NOT NULL DEFAULT '',
+            status       TEXT NOT NULL DEFAULT 'ready',
+            model        TEXT,
+            generated_at TEXT,
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL
+        )
+        """,
+        "CREATE INDEX idx_wiki_pages_kb ON wiki_pages(kb_id, level, ord)",
+        # 页面的出处：引用渲染与（将来的）增量失效都靠它。
+        # **不给 chunks 建外键**：文档删除会级联删块，而这里要保留"这页曾经引用了谁"，
+        # 以便日后做 stale 判定；真要清理时按 chunk_id 比对即可。
+        """
+        CREATE TABLE wiki_page_sources (
+            page_id      TEXT NOT NULL REFERENCES wiki_pages(id) ON DELETE CASCADE,
+            chunk_id     TEXT NOT NULL,
+            document_id  TEXT NOT NULL,
+            rank         INTEGER NOT NULL DEFAULT 0,
+            heading_path TEXT,
+            page         INTEGER,
+            PRIMARY KEY (page_id, chunk_id)
+        )
+        """,
+        "CREATE INDEX idx_wiki_sources_chunk ON wiki_page_sources(chunk_id)",
+    ),
+)
+
 
 MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_001,
@@ -722,6 +770,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     _MIGRATION_021,
     _MIGRATION_022,
     _MIGRATION_023,
+    _MIGRATION_024,
 )
 """全部迁移，按 version 升序。只增不改。"""
 

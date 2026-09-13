@@ -24,6 +24,11 @@ export interface KnowledgeBase {
   suggested_model_pk: string | null
   /** 自定义出题提示词；空串 = 用内置提示词。 */
   suggested_prompt: string
+  /**
+   * 是否开启 Wiki（v24）。**默认关**：生成会把整库内容过一遍模型，要花钱与时间，
+   * 所以建库/设置时由用户显式打开。关掉只是不再展示与生成，已有页面保留。
+   */
+  wiki_enabled: boolean
   created_at: string | null
   /** 当前账号能否管理这个库的分享（owner / 管理员）。判定在后端。 */
   can_manage: boolean
@@ -48,6 +53,8 @@ export interface KnowledgeBaseCreate {
   /** 出题模型；空串 / 不传 = 跟随对话模型。 */
   suggested_model_pk?: string | null
   suggested_prompt?: string
+  /** 是否开启 Wiki（库形态）。不传 = 关，与后端默认一致。 */
+  wiki_enabled?: boolean
 }
 
 export function listKnowledgeBases(): Promise<{ items: KnowledgeBase[] }> {
@@ -80,6 +87,8 @@ export function updateKnowledgeBase(
     suggested_count?: number
     suggested_model_pk?: string | null
     suggested_prompt?: string
+    /** 库形态（v24）：开启后可以在 Wiki 页面用已录入内容生成页面。 */
+    wiki_enabled?: boolean
   },
 ): Promise<KnowledgeBase> {
   return request(`/knowledge-bases/${kbId}`, {

@@ -180,6 +180,11 @@ describe('shortDocumentName（引用徽标上的短名）', () => {
     expect(shortDocumentName('干眼共识')).toBe('干眼共识')
   })
 
+  it('去掉目录前缀：整目录上传的批次号不该占掉徽标的开头', () => {
+    expect(shortDocumentName('markdown_20260908-140833_110files/共识.md')).toBe('共识')
+    expect(shortDocumentName('a\\b\\指南.pdf')).toBe('指南')
+  })
+
   it('压平空白：换行/连续空格不该把徽标撑成两行', () => {
     expect(shortDocumentName('  中国干眼  临床\n共识  ')).toBe('中国干眼 临床 共识')
   })

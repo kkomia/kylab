@@ -126,6 +126,7 @@ class KnowledgeBaseService:
         suggested_count: int = DEFAULT_SUGGESTED_COUNT,
         suggested_model_pk: str | None = None,
         suggested_prompt: str = "",
+        wiki_enabled: bool = False,
     ) -> KnowledgeBaseRecord:
         """建库并**冻结嵌入模型**（架构 §6.4）。
 
@@ -170,8 +171,22 @@ class KnowledgeBaseService:
                 suggested_model_pk=suggested_model_pk or None,
                 suggested_prompt=suggested_prompt,
                 owner_id=owner_id,
+                wiki_enabled=wiki_enabled,
             )
         )
+
+    def set_wiki(self, kb_id: str, enabled: bool) -> KnowledgeBaseRecord:
+        """改库形态：要不要生成 Wiki 页面（v24）。
+
+        **只动开关**：已有页面留着（关掉只是不再生成/不再展示，用户可能只是
+        暂时不想看；要清空有单独的删除接口）。这与 `set_suggested` 同一套写法。
+        """
+        record = self.get(kb_id)
+        if record.wiki_enabled == enabled:
+            return record
+        self._stores.meta.set_knowledge_base_wiki(kb_id, enabled=enabled)
+        record.wiki_enabled = enabled
+        return record
 
     def _require_chat_model(self, model_pk: str) -> None:
         """校验"这个 pk 真能用来对话"。没有注册器（老测试）时跳过。"""

@@ -53,6 +53,8 @@ from app.storage.base import (
     UsageEventRecord,
     UserRecord,
     WebhookRecord,
+    WikiPageRecord,
+    WikiSourceRecord,
 )
 from app.storage.sqlite_impl.connection import Database
 
@@ -103,8 +105,8 @@ class SqliteMetaStore(MetaStore):
                     (id, name, description, embedding_model_id, embedding_dim, embedding_base_url,
                      chunk_strategy, chunk_size, chunk_overlap, owner_id, embedding_model_pk,
                      suggested_enabled, suggested_count, suggested_model_pk, suggested_prompt,
-                     created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     wiki_enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.id,
@@ -122,6 +124,7 @@ class SqliteMetaStore(MetaStore):
                     record.suggested_count,
                     record.suggested_model_pk,
                     record.suggested_prompt,
+                    int(record.wiki_enabled),
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
@@ -174,6 +177,13 @@ class SqliteMetaStore(MetaStore):
                 "UPDATE knowledge_bases SET suggested_enabled = ?, suggested_count = ?,"
                 " suggested_model_pk = ?, suggested_prompt = ?, updated_at = ? WHERE id = ?",
                 (int(enabled), count, model_pk, prompt, _dump(_now()), kb_id),
+            )
+
+    def set_knowledge_base_wiki(self, kb_id: str, *, enabled: bool) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE knowledge_bases SET wiki_enabled = ?, updated_at = ? WHERE id = ?",
+                (int(enabled), _dump(_now()), kb_id),
             )
 
     def storage_stats(self) -> dict:
@@ -1068,6 +1078,130 @@ class SqliteMetaStore(MetaStore):
                 ),
             ).fetchall()
         return {str(row["document_id"]) for row in rows if row["document_id"]}
+
+    # ------------------------------------------------------------------ Wiki（v24）
+
+    @staticmethod
+    def _wiki_page_from_row(row: sqlite3.Row) -> WikiPageRecord:
+        return WikiPageRecord(
+            id=row["id"],
+            kb_id=row["kb_id"],
+            parent_id=row["parent_id"],
+            level=row["level"],
+            ord=row["ord"],
+            slug=row["slug"],
+            title=row["title"],
+            brief=row["brief"],
+            content_md=row["content_md"],
+            status=row["status"],
+            model=row["model"],
+            generated_at=_load(row["generated_at"]),
+            created_at=_load(row["created_at"]),
+            updated_at=_load(row["updated_at"]),
+        )
+
+    def replace_wiki_pages(
+        self,
+        kb_id: str,
+        pages: Sequence[WikiPageRecord],
+        sources: Sequence[WikiSourceRecord],
+    ) -> None:
+        with self._db.session() as conn:
+            # 先删出处再删页面：不依赖 `PRAGMA foreign_keys` 是否打开
+            # （老库/内存库的取值不一定一致），级联只是兜底。
+            conn.execute(
+                "DELETE FROM wiki_page_sources WHERE page_id IN"
+                " (SELECT id FROM wiki_pages WHERE kb_id = ?)",
+                (kb_id,),
+            )
+            conn.execute("DELETE FROM wiki_pages WHERE kb_id = ?", (kb_id,))
+            if not pages:
+                return
+            stamp = _dump(_now())
+            conn.executemany(
+                "INSERT INTO wiki_pages"
+                " (id, kb_id, parent_id, level, ord, slug, title, brief, content_md,"
+                "  status, model, generated_at, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        page.id,
+                        page.kb_id,
+                        page.parent_id,
+                        page.level,
+                        page.ord,
+                        page.slug,
+                        page.title,
+                        page.brief,
+                        page.content_md,
+                        page.status,
+                        page.model,
+                        _dump(page.generated_at) if page.generated_at else None,
+                        _dump(page.created_at) if page.created_at else stamp,
+                        _dump(page.updated_at) if page.updated_at else stamp,
+                    )
+                    for page in pages
+                ],
+            )
+            if sources:
+                conn.executemany(
+                    "INSERT INTO wiki_page_sources"
+                    " (page_id, chunk_id, document_id, rank, heading_path, page)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            item.page_id,
+                            item.chunk_id,
+                            item.document_id,
+                            item.index,
+                            item.heading_path,
+                            item.page,
+                        )
+                        for item in sources
+                    ],
+                )
+
+    def list_wiki_pages(self, kb_id: str) -> list[WikiPageRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM wiki_pages WHERE kb_id = ? ORDER BY level, ord, title",
+                (kb_id,),
+            ).fetchall()
+        return [self._wiki_page_from_row(row) for row in rows]
+
+    def get_wiki_page(self, page_id: str) -> WikiPageRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute("SELECT * FROM wiki_pages WHERE id = ?", (page_id,)).fetchone()
+        return self._wiki_page_from_row(row) if row else None
+
+    def list_wiki_sources(self, page_id: str) -> list[WikiSourceRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM wiki_page_sources WHERE page_id = ? ORDER BY rank",
+                (page_id,),
+            ).fetchall()
+        return [
+            WikiSourceRecord(
+                page_id=row["page_id"],
+                chunk_id=row["chunk_id"],
+                document_id=row["document_id"],
+                rank=row["rank"],
+                index=row["rank"],
+                heading_path=row["heading_path"],
+                page=row["page"],
+            )
+            for row in rows
+        ]
+
+    def wiki_stats(self, kb_id: str) -> tuple[int, datetime | None]:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n, MAX(generated_at) AS latest FROM wiki_pages WHERE kb_id = ?",
+                (kb_id,),
+            ).fetchone()
+        if row is None:
+            return 0, None
+        return int(row["n"]), _load(row["latest"])
 
     # ------------------------------------------------------------------ 图片
 
@@ -2380,6 +2514,7 @@ class SqliteMetaStore(MetaStore):
             chunk_overlap=row["chunk_overlap"],
             suggested_enabled=bool(row["suggested_enabled"]),
             suggested_count=row["suggested_count"],
+            wiki_enabled=bool(row["wiki_enabled"]),
             suggested_model_pk=row["suggested_model_pk"],
             suggested_prompt=row["suggested_prompt"],
             owner_id=row["owner_id"],

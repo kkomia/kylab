@@ -46,6 +46,7 @@ function kbFixture(overrides: Partial<KnowledgeBase> = {}): KnowledgeBase {
     suggested_count: 6,
     suggested_model_pk: null,
     suggested_prompt: '',
+    wiki_enabled: false,
     created_at: '2026-09-11T00:00:00Z',
     can_manage: true,
     can_write: true,
@@ -103,6 +104,7 @@ describe('KnowledgeBaseMenu', () => {
       '基本信息',
       '库信息',
       '切块策略',
+      'Wiki',
       '数据源',
       '删除知识库',
     ])

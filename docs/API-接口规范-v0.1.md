@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **109** 条端点。
+共 **113** 条端点。
 
 ### `api-keys`
 
@@ -377,6 +377,15 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/webhooks/events` | 支持的事件清单 |
 | `DELETE` | `/api/v1/webhooks/{webhook_id}` | 删除订阅 |
 | `PATCH` | `/api/v1/webhooks/{webhook_id}` | 启用 / 停用订阅 |
+
+### `wiki`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `DELETE` | `/api/v1/knowledge-bases/{kb_id}/wiki` | 清空这个知识库的 Wiki 页面 |
+| `GET` | `/api/v1/knowledge-bases/{kb_id}/wiki` | Wiki 目录与生成状态 |
+| `POST` | `/api/v1/knowledge-bases/{kb_id}/wiki/generate` | 重建这个知识库的 Wiki（异步） |
+| `GET` | `/api/v1/wiki/pages/{page_id}` | 读一页 Wiki（正文 + 出处） |
 
 ---
 

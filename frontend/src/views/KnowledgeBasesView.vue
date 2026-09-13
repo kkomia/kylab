@@ -52,6 +52,15 @@ const draftModel = ref('')
 const creating = ref(false)
 
 /**
+ * 库形态（v24）：`vector` = 仅向量检索（默认），`wiki` = 额外开启 Wiki。
+ *
+ * 用字符串而不是布尔，是因为模板里要绑到 `<input type="radio">` 的 `value` 上——
+ * 真单选组（同一个 name）能拿到浏览器自带的方向键与读屏语义，比两个自绘按钮可靠。
+ */
+type KbForm = 'vector' | 'wiki'
+const draftForm = ref<KbForm>('vector')
+
+/**
  * 可选的嵌入模型：从注册表里筛出声明了 embedding 能力的。
  *
  * **为什么建库才选**（用户提出的设计调整）：嵌入模型原先全局一套，所有库共用，
@@ -182,6 +191,8 @@ function openCreate(): void {
   sqCount.value = SUGGESTED_COUNT_DEFAULT
   sqModelPk.value = ''
   sqPrompt.value = ''
+  // 库形态每次打开回到默认「仅向量检索」：上一座库开了 Wiki，不该让下一座默默继承
+  draftForm.value = 'vector'
   void loadModels().then(() => {
     // 没有默认模型时预选第一个：让"能选就选"的路径最短，而不是让用户先撞一次校验
     if (mustPickModel.value && embeddingModels.value[0]) {
@@ -239,6 +250,9 @@ async function submitCreate(): Promise<void> {
       ...(sqCount.value !== SUGGESTED_COUNT_DEFAULT ? { suggested_count: sqCount.value } : {}),
       ...(sqModelPk.value ? { suggested_model_pk: sqModelPk.value } : {}),
       ...(sqPrompt.value.trim() ? { suggested_prompt: sqPrompt.value.trim() } : {}),
+      // 库形态：默认「仅向量检索」是后端默认值，所以只在选 Wiki 时发 true——
+      // 与上面几项同一口径，不让前端再钉一份"默认"
+      ...(draftForm.value === 'wiki' ? { wiki_enabled: true } : {}),
     })
     notifySuccess(`已创建知识库「${created.name}」`)
     createOpen.value = false
@@ -394,6 +408,29 @@ function statsOf(kbId: string) {
             再到「设置 → 向量化」把它选为默认。
           </p>
         </div>
+
+        <!-- 库形态（v24）：建库时就要定的第二件大事——它决定"这个库有没有 Wiki"。
+             用真单选组（同一个 name）：方向键切换、读屏播报都由浏览器负责，
+             比两个自绘按钮少一半要维护的东西 -->
+        <fieldset class="field form-fieldset">
+          <legend class="field-label">库形态</legend>
+          <div class="form-options">
+            <label class="form-option" :class="{ 'form-option-on': draftForm === 'vector' }">
+              <input v-model="draftForm" type="radio" name="kb-form" value="vector" />
+              <span class="form-option-text">
+                <span class="form-option-title">仅向量检索</span>
+                <span class="form-option-desc">问答时按片段检索原文作答，最省 token（默认）</span>
+              </span>
+            </label>
+            <label class="form-option" :class="{ 'form-option-on': draftForm === 'wiki' }">
+              <input v-model="draftForm" type="radio" name="kb-form" value="wiki" />
+              <span class="form-option-text">
+                <span class="form-option-title">向量检索 + Wiki</span>
+                <span class="form-option-desc"> 额外把库里的内容整理成一套带出处的百科式页面 </span>
+              </span>
+            </label>
+          </div>
+        </fieldset>
 
         <!-- 切分参数收在折叠区：多数人用默认值就好，不该让"建个库"变成填五个框。
              但**要用的时候必须找得到**——它会直接影响检索质量（见设置里的「切块策略」） -->
@@ -743,6 +780,66 @@ function statsOf(kbId: string) {
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
+}
+
+/* 库形态的单选组：fieldset 自带边框与内边距，全清掉，只留 `.field` 的标签间距 */
+.form-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.form-options {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+}
+
+/* 选项是一张可点的卡片：整块都是命中区，不必精确点到那个小圆点 */
+.form-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  cursor: pointer;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-panel);
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+
+.form-option:hover {
+  background: var(--bg-subtle);
+}
+
+/* 选中态用品牌色描边 + 极淡底色：这是"当前选择"，不是警告 */
+.form-option-on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.form-option input[type='radio'] {
+  flex: 0 0 auto;
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.form-option-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-pair);
+}
+
+.form-option-title {
+  font-size: var(--text-meta-size);
+  color: var(--text-primary);
+}
+
+.form-option-desc {
+  font-size: var(--text-micro-size);
+  line-height: 1.7;
+  color: var(--text-secondary);
 }
 
 /* 可折叠的"进阶项"（切块设置 / 推荐问题）。

@@ -30,6 +30,7 @@ from app.api.v1 import (
     tasks,
     users,
     webhooks,
+    wiki,
 )
 
 api_router = APIRouter()
@@ -57,3 +58,4 @@ api_router.include_router(shares.router)
 api_router.include_router(tabular.router)
 api_router.include_router(webhooks.router)
 api_router.include_router(maintenance.router)
+api_router.include_router(wiki.router)

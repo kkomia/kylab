@@ -70,6 +70,18 @@ const router = createRouter({
       meta: { title: '文档列表' },
     },
     {
+      /**
+       * Wiki 是知识库的**一种阅读形态**，挂在库下面而不是新增一个全局页面：
+       * 它读的就是这个库的内容，离开库上下文没有意义（《界面信息架构草案》§1）。
+       * 当前选中哪一页走查询参数 `?page=`，与文档页的 `?doc=` 同一约定——
+       * 刷新、分享链接、浏览器后退都能回到同一页。
+       */
+      path: '/kb/:kbId/wiki',
+      name: 'kb-wiki',
+      component: () => import('@/views/WikiView.vue'),
+      meta: { title: 'Wiki' },
+    },
+    {
       path: '/documents/:documentId',
       name: 'document',
       component: () => import('@/views/DocumentView.vue'),

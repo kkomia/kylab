@@ -18,6 +18,7 @@
  * 父组件只负责"变了之后去哪儿"（列表刷新 / 详情页跳走），通过 `changed` 事件表达。
  */
 import { computed, ref, type Component } from 'vue'
+import { useRouter } from 'vue-router'
 
 import {
   CHUNK_DEFAULT_SIZE,
@@ -30,9 +31,11 @@ import {
   type KnowledgeBase,
 } from '@/api/knowledgeBases'
 import { batchDocuments, type ImpactReport } from '@/api/documents'
+import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconDatabase from '@/components/icons/IconDatabase.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
 import IconInbox from '@/components/icons/IconInbox.vue'
+import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconSettings from '@/components/icons/IconSettings.vue'
 import IconTrash from '@/components/icons/IconTrash.vue'
@@ -54,6 +57,7 @@ const props = defineProps<{ kb: KnowledgeBase }>()
 const emit = defineEmits<{ changed: [action: 'renamed' | 'deleted' | 'sources'] }>()
 
 const store = useKnowledgeBaseStore()
+const router = useRouter()
 const { notifyError, notifySuccess } = useToast()
 
 /** 文档数来自 store 的汇总表（列表页已经拉过）。拿不到就不显示数字，而不是显示 0。 */
@@ -62,10 +66,10 @@ const documentCount = computed(() => store.summaries[props.kb.id]?.count ?? null
 /** 简介上限。与后端 `KB_DESCRIPTION_MAX_CHARS` 对齐，超了后端也会拒。 */
 const DESCRIPTION_MAX = 200
 
-type SectionKey = 'basic' | 'chunking' | 'info' | 'sources' | 'danger'
+type SectionKey = 'basic' | 'chunking' | 'wiki' | 'info' | 'sources' | 'danger'
 
 /** 底部有「取消 / 保存并关闭」的分区：只有会改数据的那些。 */
-const SAVE_SECTIONS: SectionKey[] = ['basic', 'chunking']
+const SAVE_SECTIONS: SectionKey[] = ['basic', 'chunking', 'wiki']
 
 /**
  * 左侧导航的分组。**分组不是装饰**：它回答"这些设置属于哪一类"，
@@ -83,6 +87,7 @@ const GROUPS: { label: string; items: { key: SectionKey; label: string; icon: Co
     label: '数据',
     items: [
       { key: 'chunking', label: '切块策略', icon: IconSettings },
+      { key: 'wiki', label: 'Wiki', icon: IconLibrary },
       { key: 'sources', label: '数据源', icon: IconInbox },
     ],
   },
@@ -114,6 +119,14 @@ const sqEnabled = ref(true)
 const sqCount = ref(SUGGESTED_COUNT_DEFAULT)
 const sqModelPk = ref('')
 const sqPrompt = ref('')
+
+/**
+ * Wiki 开关草稿（v24）。
+ *
+ * 与切块参数不同，**不需要"重新摄入"**：它只是允许去 Wiki 页面用**已录入**的内容
+ * 生成页面，开关本身不动文档。所以它归在可保存关闭的那一档里。
+ */
+const wikiEnabled = ref(false)
 
 /** 块长滑杆的值：滑杆只认 number，草稿是 string，这里做那一层转换。 */
 const chunkSizeNumber = computed({
@@ -168,13 +181,17 @@ const suggestedDirty = computed(
     sqPrompt.value.trim() !== props.kb.suggested_prompt,
 )
 
-/** 名称 / 简介 / 切分参数 / 推荐问题合成一次保存：只有真正变了的字段才发。 */
+/** Wiki 开关有没有改动（布尔，直接比）。 */
+const wikiDirty = computed(() => wikiEnabled.value !== props.kb.wiki_enabled)
+
+/** 名称 / 简介 / 切分参数 / 推荐问题 / Wiki 合成一次保存：只有真正变了的字段才发。 */
 const dirty = computed(
   () =>
     nameDraft.value.trim() !== props.kb.name ||
     descriptionDraft.value.trim() !== props.kb.description ||
     chunkingDirty.value ||
-    suggestedDirty.value,
+    suggestedDirty.value ||
+    wikiDirty.value,
 )
 
 function openSettings(): void {
@@ -184,6 +201,7 @@ function openSettings(): void {
   chunkSizeDraft.value = String(props.kb.chunk_size)
   chunkOverlapDraft.value = String(props.kb.chunk_overlap)
   resetSuggestedDraft()
+  wikiEnabled.value = props.kb.wiki_enabled
   chunkingStale.value = false
   settingsOpen.value = true
 }
@@ -207,6 +225,7 @@ function cancel(): void {
   chunkSizeDraft.value = String(props.kb.chunk_size)
   chunkOverlapDraft.value = String(props.kb.chunk_overlap)
   resetSuggestedDraft()
+  wikiEnabled.value = props.kb.wiki_enabled
   chunkingStale.value = false
   closeSettings()
 }
@@ -234,6 +253,7 @@ async function save(): Promise<void> {
     suggested_count?: number
     suggested_model_pk?: string | null
     suggested_prompt?: string
+    wiki_enabled?: boolean
   } = {}
   if (name !== props.kb.name) patch.name = name
   const description = descriptionDraft.value.trim()
@@ -252,6 +272,8 @@ async function save(): Promise<void> {
     patch.suggested_model_pk = sqModelPk.value
     patch.suggested_prompt = sqPrompt.value.trim()
   }
+  // Wiki 开关独立提交：它不涉及"重新摄入"，与基本信息同属"存完即生效"
+  if (wikiDirty.value) patch.wiki_enabled = wikiEnabled.value
 
   // 没改就直接关：发一次空 PATCH 除了浪费一个来回没有任何意义
   if (Object.keys(patch).length === 0) {
@@ -333,6 +355,11 @@ async function copyId(): Promise<void> {
   } catch {
     notifyError('复制失败，请手动选中复制')
   }
+}
+
+/** 打开这个库的 Wiki 页面（应用内跳转，不留在这个弹窗里）。 */
+function openWiki(): void {
+  void router.push(`/kb/${props.kb.id}/wiki`)
 }
 
 /**
@@ -539,6 +566,38 @@ async function confirmDelete(): Promise<void> {
               v-model:model-pk="sqModelPk"
               v-model:prompt="sqPrompt"
             />
+          </template>
+
+          <!-- Wiki（v24，库形态之二） -->
+          <template v-else-if="section === 'wiki'">
+            <h3 class="pane-title pane-title-standalone">
+              Wiki
+              <InfoTip
+                text="Wiki 是知识库的一种阅读形态：把库里已录入的内容整理成一套分层页面，每个要点都标注原文出处。开启只是允许生成，真正构建要去 Wiki 页面点「生成 Wiki」；页面越多，耗时与模型调用越多。"
+              />
+            </h3>
+
+            <div class="wiki-toggle">
+              <label class="wiki-switch">
+                <input v-model="wikiEnabled" type="checkbox" />
+                <span>为这个知识库开启 Wiki</span>
+              </label>
+              <!-- 开与关分别发生什么，必须在勾之前说清：这是库级形态，关掉不代表删掉 -->
+              <p class="pane-hint">
+                老库也能开：开完之后到 Wiki 页面点「生成 Wiki」，用已录入的内容构建。
+                关闭只是不再展示与生成，已有页面会保留；想彻底清掉可以在 Wiki 页面里删除。
+              </p>
+            </div>
+
+            <div class="wiki-open">
+              <AppButton :disabled="!kb.wiki_enabled" @click="openWiki">
+                <template #icon><IconChevronRight /></template>
+                打开 Wiki 页面
+              </AppButton>
+              <p v-if="!kb.wiki_enabled" class="pane-hint">
+                这个库还没开启 Wiki。勾上上面的开关并保存后，入口就会出现。
+              </p>
+            </div>
           </template>
 
           <!-- 数据源 -->
@@ -782,6 +841,40 @@ async function confirmDelete(): Promise<void> {
 .pane-divider {
   margin: var(--space-6) 0 var(--space-5);
   border-top: 1px solid var(--border-hairline);
+}
+
+/* ---- Wiki 开关 ---- */
+
+/* 开关 + 它的解释是一组：贴紧，和下面的按钮之间才留大间距 */
+.wiki-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin-bottom: var(--space-5);
+}
+
+/* 用原生复选框：文本域里的 "false" 是非空字符串，容易说反，复选框不会 */
+.wiki-switch {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.wiki-switch input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.wiki-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
 }
 
 /* 参数不合法时的原因。放在字段下面而不是弹 toast：它是"这一栏要改"，

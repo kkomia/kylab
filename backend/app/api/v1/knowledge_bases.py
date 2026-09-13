@@ -82,6 +82,7 @@ async def create_knowledge_base(
         suggested_count=payload.suggested_count,
         suggested_model_pk=payload.suggested_model_pk,
         suggested_prompt=payload.suggested_prompt,
+        wiki_enabled=payload.wiki_enabled,
     )
     return _out(record, caller, services)
 
@@ -180,6 +181,8 @@ async def update_knowledge_base(
                 else record.suggested_prompt
             ),
         )
+    if payload.wiki_enabled is not None:
+        record = services.knowledge_bases.set_wiki(kb_id, payload.wiki_enabled)
     count, last_activity = services.knowledge_bases.document_stats().get(kb_id, (0, None))
     return _out(
         record, caller, services, document_count=count, last_activity=last_activity

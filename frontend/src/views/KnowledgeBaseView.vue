@@ -41,6 +41,7 @@ import IconEdit from '@/components/icons/IconEdit.vue'
 import IconFile from '@/components/icons/IconFile.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
 import IconInbox from '@/components/icons/IconInbox.vue'
+import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import IconQuestion from '@/components/icons/IconQuestion.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
@@ -1163,6 +1164,16 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
             >
               <template #icon><IconSearch /></template>
               在此库检索
+            </AppButton>
+            <!-- Wiki 入口只在库形态选了「向量检索 + Wiki」时出现：没开这个形态的库
+                 给它一个点了只看到引导页的按钮，等于兑现不了的承诺 -->
+            <AppButton
+              v-if="knowledgeBase?.wiki_enabled"
+              variant="subtle"
+              @click="router.push(`/kb/${kbId}/wiki`)"
+            >
+              <template #icon><IconLibrary /></template>
+              Wiki
             </AppButton>
             <!-- 分享入口只对 owner / 管理员出现：can_manage 由后端算，前端不重复判定 -->
             <AppButton v-if="knowledgeBase?.can_manage" variant="subtle" @click="shareOpen = true">
