@@ -1314,31 +1314,34 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                 <div class="doc-row panel-row" />
               </li>
             </ul>
+          </div>
 
-            <!-- 翻页：只在确实多于一页时出现。单页时显示一行"第 1 / 1 页"是噪音 -->
-            <div v-if="pageCount > 1" class="pager">
-              <span class="pager-total">共 {{ total }} 篇</span>
-              <div class="pager-controls">
-                <AppButton
-                  size="sm"
-                  variant="subtle"
-                  :disabled="page <= 1"
-                  @click="goToPage(page - 1)"
-                >
-                  <template #icon><IconChevronLeft :size="14" /></template>
-                  上一页
-                </AppButton>
-                <span class="pager-page tabular">第 {{ page }} / {{ pageCount }} 页</span>
-                <AppButton
-                  size="sm"
-                  variant="subtle"
-                  :disabled="page >= pageCount"
-                  @click="goToPage(page + 1)"
-                >
-                  <template #icon><IconChevronRight :size="14" /></template>
-                  下一页
-                </AppButton>
-              </div>
+          <!-- 翻页条**放在面板之外并贴合视口底部**（sticky）：放进 .panel 里不行，
+               那个类有 `overflow: hidden`，子元素没法粘到视口上。
+               这样不管列表多长、也不管滚到哪，页码始终在屏幕内——
+               用户不必"滚到最底下才知道还有几页"。 -->
+          <div v-if="pageCount > 1" class="pager">
+            <span class="pager-total">共 {{ total }} 篇</span>
+            <div class="pager-controls">
+              <AppButton
+                size="sm"
+                variant="subtle"
+                :disabled="page <= 1"
+                @click="goToPage(page - 1)"
+              >
+                <template #icon><IconChevronLeft :size="14" /></template>
+                上一页
+              </AppButton>
+              <span class="pager-page tabular">第 {{ page }} / {{ pageCount }} 页</span>
+              <AppButton
+                size="sm"
+                variant="subtle"
+                :disabled="page >= pageCount"
+                @click="goToPage(page + 1)"
+              >
+                <template #icon><IconChevronRight :size="14" /></template>
+                下一页
+              </AppButton>
             </div>
           </div>
         </template>
@@ -1943,14 +1946,24 @@ button.tree-caret:hover {
   pointer-events: none;
 }
 
-/* 翻页条：说明在左、控件在右，与文档行的左右分栏同一节奏 */
+/* 翻页条：说明在左、控件在右，与文档行的左右分栏同一节奏。
+   **粘在滚动容器（main.content）底部**：列表比一屏长时它一直浮在最下面，
+   不透明底 + 顶边线，行从它下面滚过去不会透出来。
+   `margin-top: -1px` 让静止时与面板的底边线叠成一条，不留双线。 */
 .pager {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+  margin-top: -1px;
   padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-hairline);
+  border-radius: 0 0 var(--radius-panel) var(--radius-panel);
+  box-shadow: 0 -1px 0 var(--border-hairline);
 }
 
 .pager-total {

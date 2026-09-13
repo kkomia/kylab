@@ -99,10 +99,12 @@ export interface DocumentListPage {
 /**
  * 文档列表每页取几篇。
  *
- * 后端默认为 50、上限 200；前端固定用同一个值，翻页的 ``offset`` 才与
- * "第几页 × 每页几篇"对得上。改这里要连同 ``offset`` 的算法一起看。
+ * 后端默认 50、上限 200；这里取 **20**：一屏大致能放下十几行，
+ * 20 篇是"多翻一页"与"一页塞满到看不见页码"之间的折中
+ * （页码另有 sticky 兜底，始终贴在屏幕底部，见 KnowledgeBaseView 的 `.pager`）。
+ * 前端固定用这一个值，翻页的 ``offset`` 才与"第几页 × 每页几篇"对得上。
  */
-export const DOCUMENT_PAGE_SIZE = 50
+export const DOCUMENT_PAGE_SIZE = 20
 
 export interface DocumentListFilter {
   /** 只看这个目录；与 ``root`` 互斥。 */
