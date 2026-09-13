@@ -60,7 +60,9 @@ stages:
           - uv --version
           - ''
           - '# ---- 后端依赖（ruff 与 pytest 都在这里）----'
-          - cd backend && uv sync && cd ..
+          - '# --all-extras 不能省：storage 组合根无条件构造 DuckDB 表格副本，'
+          - '# 少 tabular 这个 extra 时 import app.main 直接失败、收集阶段整体红'
+          - cd backend && uv sync --all-extras && cd ..
           - ''
           - '# ---- 前端依赖 ----'
           - pnpm --dir frontend install --frozen-lockfile

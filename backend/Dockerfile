@@ -14,11 +14,15 @@ ENV UV_COMPILE_BYTECODE=1 \
 WORKDIR /app
 
 # 先只拷依赖清单再装：源码改动不会让依赖层失效，重复构建能命中缓存
+#
+# **`--all-extras` 是必需的，不是可选的**：`app/core/storage.py` 无条件构造 DuckDB
+# 表格副本，少了 `tabular` 这个 extra，容器连 `import app.main` 都过不去（启动即崩）；
+# 解析层（pypdf/pymupdf/python-docx/openpyxl）是上传→入库的主链路，镜像里也必须有。
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --no-install-project --no-dev
+RUN uv sync --no-install-project --no-dev --all-extras
 
 COPY app ./app
-RUN uv sync --no-dev
+RUN uv sync --no-dev --all-extras
 
 
 FROM python:3.12-slim AS runtime
