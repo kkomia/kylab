@@ -384,13 +384,20 @@ function chooseAi(action: NoteAiAction, close: () => void): void {
       </div>
 
       <div class="toolbar-right">
+        <!-- 保存状态放在最左：它是"这条笔记当前的状态"，比任何动作都更该先被看到 -->
+        <slot name="status" />
         <!-- AI 处理：星芒图标 + 三档动作下拉。放在格式工具栏与右侧动作之间——
              它属于"对内容做什么"，不属于"对这条笔记做什么"。 -->
         <RowMenu label="AI 处理">
           <template #trigger>
-            <span class="ai-trigger" :class="{ 'ai-busy': aiBusy }" title="AI 处理">
-              <IconAi :size="15" />
-              <span class="ai-trigger-text">AI</span>
+            <span
+              class="ai-trigger"
+              :class="{ 'ai-busy': aiBusy }"
+              :title="aiBusy ? 'AI 正在处理…' : 'AI 处理'"
+            >
+              <span v-if="aiBusy" class="ai-spinner" aria-hidden="true" />
+              <IconAi v-else :size="15" />
+              <span class="ai-trigger-text">{{ aiBusy ? '处理中' : 'AI' }}</span>
             </span>
           </template>
           <template #default="{ close }">
@@ -496,6 +503,19 @@ function chooseAi(action: NoteAiAction, close: () => void): void {
   margin-left: auto;
 }
 
+/* 工具栏右侧是一个 28px 的按钮排；AI 入口的外框必须同高，否则文字基线会与邻排错开
+   （实测：RowMenu 默认触发器是 24px 的方块，带文字的触发器又只有 21px 行高）
+   再把 details 本身也变成 flex 项：inline 级盒子按基线对齐，会与按钮差 1px。 */
+.toolbar-right :deep(.menu) {
+  display: flex;
+  align-items: center;
+}
+
+.toolbar :deep(.menu-trigger) {
+  min-width: 28px;
+  height: 28px;
+}
+
 .file-input {
   display: none;
 }
@@ -505,13 +525,37 @@ function chooseAi(action: NoteAiAction, close: () => void): void {
   display: inline-flex;
   gap: 4px;
   align-items: center;
+  height: 21px;
   font-size: var(--text-micro-size);
   font-weight: 600;
   color: var(--accent-text);
 }
 
 .ai-busy {
-  opacity: 0.55;
+  opacity: 0.8;
+}
+
+/* 运行中的进度圈：把星芒换成一个转圈，用户一眼知道"它在跑" */
+.ai-spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--accent-soft);
+  border-top-color: var(--accent);
+  border-radius: 999px;
+  animation: ai-spin 0.7s linear infinite;
+}
+
+@keyframes ai-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* 降级成慢转而不是停住：停住就没有"在跑"的信息了 */
+  .ai-spinner {
+    animation-duration: 1.8s;
+  }
 }
 
 .ai-item-label {

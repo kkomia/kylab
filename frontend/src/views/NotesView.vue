@@ -57,6 +57,8 @@ const loadingNote = ref(false)
 /** 灌入内容时抑制自动保存：装载不是"用户改了字"。 */
 const hydrating = ref(false)
 const saveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
+/** 最近一次保存成功的时刻：只显示"已保存"看不出"什么时候存的"。 */
+const savedAt = ref<Date | null>(null)
 
 const searchInput = ref(store.query)
 const tagDraft = ref('')
@@ -121,6 +123,7 @@ function applyNote(note: Note): void {
   }
   tagDraft.value = ''
   saveState.value = 'idle'
+  savedAt.value = null
   // 等这次赋值引发的 watch 跑完再解除抑制，否则装载会被当成一次编辑并触发自动保存
   void nextTick(() => {
     hydrating.value = false
@@ -177,6 +180,7 @@ async function saveNow(): Promise<void> {
     })
     item.kb_id = updated.kb_id
     item.doc_id = updated.doc_id
+    savedAt.value = new Date()
     saveState.value = 'saved'
   } catch (cause) {
     saveState.value = 'error'
@@ -184,9 +188,17 @@ async function saveNow(): Promise<void> {
   }
 }
 
+function formatClock(date: Date): string {
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mm = String(date.getMinutes()).padStart(2, '0')
+  return `${hh}:${mm}`
+}
+
 const saveLabel = computed(() => {
   if (saveState.value === 'saving') return '保存中…'
-  if (saveState.value === 'saved') return '已保存'
+  if (saveState.value === 'saved') {
+    return savedAt.value ? `已保存 ${formatClock(savedAt.value)}` : '已保存'
+  }
   if (saveState.value === 'error') return '保存失败'
   return ''
 })
@@ -434,10 +446,13 @@ onBeforeUnmount(() => {
           @notify="onEditorNotify"
           @ai="runAi"
         >
-          <template #actions>
+          <template #status>
             <span class="save-label" :class="{ 'save-error': saveState === 'error' }">{{
               saveLabel
             }}</span>
+          </template>
+
+          <template #actions>
             <button
               type="button"
               class="icon-action"
@@ -765,9 +780,9 @@ onBeforeUnmount(() => {
 }
 
 .save-label {
-  margin-right: var(--space-1);
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
+  white-space: nowrap;
 }
 
 .save-error {
