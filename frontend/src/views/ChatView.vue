@@ -18,7 +18,15 @@
  * 1. 引用块**永远显示**，不折叠。回答是不是有据可依，是这一页存在的理由。
  * 2. 流式时给一个「停止」——模型偶尔会绕远路，那一刻用户唯一想要的就是让它闭嘴。
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import {
+  computed,
+  defineAsyncComponent,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import {
@@ -53,10 +61,19 @@ import AppModal from '@/components/ui/AppModal.vue'
 import AppMultiSelect from '@/components/ui/AppMultiSelect.vue'
 import ModelPicker from '@/components/ui/ModelPicker.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
+
+/**
+ * 引用文档抽屉（从右侧滑出）。
+ *
+ * **异步加载**：它带着 PDF iframe / Office 预览那一套，而为看一份原文而付这次下载
+ * 不该摊到"每次打开对话页"上——不用它就是零成本。
+ */
+const DocumentDrawer = defineAsyncComponent(
+  () => import('@/components/knowledge/DocumentDrawer.vue'),
+)
 import { renderAnswerWithCitations } from '@/composables/useMarkdown'
 import {
   buildTurns,
-  documentTarget,
   isTraceOpen,
   makeMessage,
   mergeStep,
@@ -980,6 +997,25 @@ function openSource(source: ChatSource): void {
   sourceOpen.value = true
 }
 
+/**
+ * 引用文档抽屉（v18）：**在对话页就地看原文**，而不是跳去知识库页。
+ *
+ * 原来的做法是把用户送到 `/kb/:id?doc=…&page=…`——那会离开对话、丢掉正在读的回答上下文，
+ * 而"这句结论出自哪一段"本来是看回答时顺手一瞥的动作。抽屉从右侧盖上来，
+ * 关掉就回到原来那条回答（滚动位置、展开的过程面板都还在）。
+ *
+ * 整条 `source` 存下来而不是只存 id：页码要一起带过去（引用指向第 2 页，就该打开第 2 页）。
+ */
+const readerSource = ref<ChatSource | null>(null)
+
+function openReader(source: ChatSource): void {
+  readerSource.value = source
+}
+
+function closeReader(): void {
+  readerSource.value = null
+}
+
 const promptOpen = ref(false)
 const promptDraft = ref('')
 const promptConfigured = ref(false)
@@ -1156,11 +1192,12 @@ async function savePrompt(): Promise<void> {
                   >
                     <div class="cite-head">
                       <span class="cite-index tabular">[{{ source.index }}]</span>
-                      <!-- 带页码时把页码也带过去：详情页会转成 PDF 查看器的 #page=N 直接跳页，
-                           不带的话用户还得自己在长文档里翻 -->
-                      <RouterLink class="cite-title" :to="documentTarget(source)">
+                      <!-- 点文件名在**右侧抽屉**里打开原文，带着页码落到那一页
+                           （PDF 走 #page=N）。不做成链接跳转：离开对话会丢掉
+                           正在读的回答，而看出处本来是顺手一瞥的动作 -->
+                      <button type="button" class="cite-title" @click="openReader(source)">
                         {{ source.document_name }}
-                      </RouterLink>
+                      </button>
                       <span v-if="sourceWhere(source)" class="cite-where">{{
                         sourceWhere(source)
                       }}</span>
@@ -1328,16 +1365,26 @@ async function savePrompt(): Promise<void> {
       </template>
       <template #footer>
         <AppButton @click="sourceOpen = false">关闭</AppButton>
-        <RouterLink
+        <!-- 关掉弹窗、在右侧抽屉里打开原文：同样不离开对话页 -->
+        <AppButton
           v-if="activeSource"
-          class="source-open"
-          :to="documentTarget(activeSource)"
-          @click="sourceOpen = false"
+          variant="primary"
+          @click="((sourceOpen = false), openReader(activeSource))"
         >
-          打开文档
-        </RouterLink>
+          查看文档
+        </AppButton>
       </template>
     </AppModal>
+
+    <!-- 引用文档抽屉：右侧滑出、盖在对话上。`:key` 绑文档 id——换一份文档时
+         重新播放入场动画并把上一份的切块/预览状态彻底重置 -->
+    <DocumentDrawer
+      v-if="readerSource"
+      :key="readerSource.document_id"
+      :document-id="readerSource.document_id"
+      :page="readerSource.page"
+      @close="closeReader"
+    />
 
     <AppModal v-model:open="promptOpen" title="系统提示词" size="wide">
       <p class="prompt-note">这段文字会拼在每轮提问的最前面。留空即恢复内置提示词。</p>
@@ -1725,23 +1772,35 @@ async function savePrompt(): Promise<void> {
   color: var(--text-primary);
 }
 
-/* 行内引用徽标：`[1]` 由 renderAnswerWithCitations 换成它。
-   形状与出处列表里的编号一致，所以"点徽标 → 那一条闪一下"才连得上 */
+/* 行内引用徽标：`[1]` 由 renderAnswerWithCitations 换成**文档短名**（见 citationChip）。
+   显示名字而不是序号，是因为读者想知道"这句依据哪份资料"；序号只有回去数出处列表
+   才有意义。点它仍会展开过程面板并闪出对应的那一条出处。
+
+   名字长度不设上限、交给 max-width + 内层省略：中文文件名长短差别很大，
+   写死截断字符数会在短名上白白丢掉信息 */
 .reply-text :deep(.md-cite) {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  min-width: 16px;
-  height: 16px;
+  max-width: 11em;
+  height: 18px;
   margin: 0 2px;
-  padding: 0 var(--space-1);
+  padding: 0 var(--space-2);
   font-size: var(--text-micro-size);
   line-height: 1;
   color: var(--accent-text);
   background: var(--accent-soft);
   border-radius: var(--radius-control);
   cursor: pointer;
-  vertical-align: 1px;
+  /* 18px 的胶囊压在 1.75 行高的正文里：不抬一点会明显偏下 */
+  vertical-align: -3px;
+}
+
+/* 省略号必须挂在**内层 span** 上：inline-flex 容器自己设 overflow: hidden 时，
+   文本的 text-overflow 在部分浏览器不生效，会直接把字裁掉而没有"…" */
+.reply-text :deep(.md-cite-name) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .reply-text :deep(.md-cite:hover) {
@@ -1943,9 +2002,21 @@ async function savePrompt(): Promise<void> {
   color: var(--text-secondary);
 }
 
+/* 文件名是个按钮（点它在右侧抽屉里看原文），不是跳去知识库的链接。
+   长文件名要能省略，否则一份长名的 PDF 会把整行挤爆 */
 .cite-title {
+  overflow: hidden;
+  max-width: 34ch;
   font-weight: 500;
   color: var(--text-primary);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cite-title:hover {
+  color: var(--accent-text);
+  text-decoration: underline;
 }
 
 .cite-where {
@@ -2013,19 +2084,6 @@ async function savePrompt(): Promise<void> {
   line-height: 1.8;
   color: var(--text-secondary);
   white-space: pre-wrap;
-}
-
-.source-open {
-  display: inline-flex;
-  align-items: center;
-  padding: 0 var(--space-3);
-  height: var(--control-height);
-  font-size: var(--text-meta-size);
-  color: var(--accent-text);
-}
-
-.source-open:hover {
-  text-decoration: underline;
 }
 
 /* ---- 输入卡片 ---- */

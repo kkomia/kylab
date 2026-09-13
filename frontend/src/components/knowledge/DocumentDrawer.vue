@@ -61,7 +61,15 @@ import { useToast } from '@/composables/useToast'
  */
 const OfficePreview = defineAsyncComponent(() => import('@/components/knowledge/OfficePreview.vue'))
 
-const props = defineProps<{ documentId: string }>()
+const props = defineProps<{
+  documentId: string
+  /**
+   * 要直接落到的页码（PDF）。调用方明确给的时候以它为准——对话页的引用抽屉
+   * 就是"点第 2 页的引用 → 打开第 2 页"，而那条路径上没有 `?page=` 可读。
+   * 不给（库页那种走 URL 的用法）时回落到 `?page=`。
+   */
+  page?: number | null
+}>()
 
 /** 关掉抽屉。由宿主（文档列表页）负责把 URL 里的 `doc` 参数去掉。 */
 const emit = defineEmits<{ close: [] }>()
@@ -281,7 +289,7 @@ function showSource(source: 'original' | 'parsed'): void {
  */
 const pdfFrameUrl = computed(() => {
   const base = preview.value?.url ?? ''
-  const page = Number(route.query.page ?? 0)
+  const page = props.page ?? Number(route.query.page ?? 0)
   return base && page > 0 ? `${base}#page=${page}` : base
 })
 
@@ -549,12 +557,14 @@ const stage = computed(() =>
                原生查看器自带翻页、缩放、搜索、文本选择，还没有体积成本；
                需要按引用高亮时才值得引库。
                `#page=N` 是原生查看器的 PDF Open Parameters：从引用点进来直接落到那一页 -->
-            <!-- `:key` 绑到 url：签名链接会过期（默认 10 分钟），重新取到新链接时
-               要让 iframe **重建**而不是沿用旧 src——否则长时间停留后翻页会去请求
-               一条已过期的链接 -->
+            <!-- `:key` 绑到**最终地址**（含 `#page=N`）：
+               a) 签名链接会过期（默认 10 分钟），重新取到新链接时 iframe 必须**重建**
+                  而不是沿用旧 src，否则长时间停留后翻页会去请求一条已过期的链接；
+               b) 同一个文档被引用到不同页时，页码变了也要重建，否则原生查看器
+                  不会重新定位（片段变化不会让已加载的 PDF 跳页）。 -->
             <iframe
               v-else-if="preview.kind === 'pdf'"
-              :key="preview.url ?? ''"
+              :key="pdfFrameUrl"
               class="reader-frame"
               :src="pdfFrameUrl"
               :title="preview.filename"

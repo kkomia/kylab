@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest'
 import type { ChatSource, ChatStep } from '@/api/chat'
 import {
   buildTurns,
-  documentTarget,
   isTraceOpen,
   makeMessage,
   mergeStep,
@@ -241,26 +240,6 @@ describe('isTraceOpen', () => {
   it('用户点过之后完全听用户的（不受流式状态影响）', () => {
     expect(isTraceOpen(message('assistant', { streaming: true, traceOpen: false }))).toBe(false)
     expect(isTraceOpen(message('assistant', { traceOpen: true }))).toBe(true)
-  })
-})
-
-describe('documentTarget', () => {
-  it('有知识库 id 时直连库页抽屉', () => {
-    expect(
-      documentTarget(source(1, { knowledge_base_id: 'kb9', document_id: 'd9', page: 7 })),
-    ).toEqual({ path: '/kb/kb9', query: { doc: 'd9', page: '7' } })
-  })
-
-  it('没有页码就不带 page', () => {
-    const target = documentTarget(source(1, { knowledge_base_id: 'kb9' }))
-    expect(target).toEqual({ path: '/kb/kb9', query: { doc: 'd1' } })
-  })
-
-  it('历史快照缺知识库 id 时退回 /documents 转发一跳', () => {
-    expect(documentTarget(source(1, { knowledge_base_id: '' }))).toEqual({
-      path: '/documents/d1',
-      query: {},
-    })
   })
 })
 

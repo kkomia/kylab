@@ -66,6 +66,25 @@ vi.mock('@/api/notes', async (importOriginal) => {
   return { ...actual, createNote: vi.fn() }
 })
 
+// 引用抽屉（DocumentDrawer）会拉文档详情与预览；这些用例只关心"抽屉开没开、路由动没动"
+const getDocument = vi.fn()
+vi.mock('@/api/documents', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/documents')>()
+  return {
+    ...actual,
+    getDocument: (...args: unknown[]) => getDocument(...args),
+    listDocumentChunks: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+    getDocumentPreview: vi.fn().mockResolvedValue({
+      kind: 'markdown',
+      filename: '指南.md',
+      text: '正文',
+      url: null,
+      expires_at: null,
+      original_kind: 'markdown',
+    }),
+  }
+})
+
 import { clearConversationDetailCache, useConversationStore } from '@/stores/conversations'
 import ChatView from '@/views/ChatView.vue'
 
@@ -95,6 +114,35 @@ function chatDetail(id: string): ConversationDetail {
   }
 }
 
+/** 带一条出处的会话：用来测"点文件名 → 右侧抽屉"。 */
+function detailWithSource(id: string): ConversationDetail {
+  return {
+    ...summary(id),
+    messages: [
+      { id: 'm1', role: 'user', content: '眼轴怎么监测', sources: [], created_at: null },
+      {
+        id: 'm2',
+        role: 'assistant',
+        content: '眼轴是主要参数[1]。',
+        created_at: null,
+        sources: [
+          {
+            index: 1,
+            chunk_id: 'chunk1',
+            document_id: 'doc_a',
+            document_name: '中国干眼共识（2024年）.pdf',
+            heading_path: '4 黏蛋白',
+            page: 2,
+            score: 0.9,
+            preview: '原文片段',
+            knowledge_base_id: 'kb_1',
+          },
+        ],
+      },
+    ],
+  }
+}
+
 let pinia: Pinia
 
 async function mountAt(path: string): Promise<{ wrapper: VueWrapper; router: Router }> {
@@ -111,11 +159,41 @@ async function mountAt(path: string): Promise<{ wrapper: VueWrapper; router: Rou
   return { wrapper, router }
 }
 
+// jsdom 没有实现原生 <dialog> 的 showModal/close，而 AppModal 正是靠它们进出 top-layer
+beforeEach(() => {
+  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) {
+    this.open = true
+  }
+  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) {
+    this.open = false
+  }
+})
+
 beforeEach(() => {
   pinia = createPinia()
   setActivePinia(pinia)
   clearConversationDetailCache()
   vi.clearAllMocks()
+  getDocument.mockImplementation(async (id: string) => ({
+    id,
+    knowledge_base_id: 'kb_1',
+    name: '中国干眼共识（2024年）.pdf',
+    source_kind: 'upload',
+    stage: 'indexed',
+    size_bytes: 1024,
+    mime_type: 'application/pdf',
+    page_count: 10,
+    is_split: false,
+    error: null,
+    chunk_count: 3,
+    uploaded_by: null,
+    uploaded_by_name: '',
+    folder_id: null,
+    disabled: false,
+    original_kind: 'markdown',
+    created_at: null,
+    updated_at: null,
+  }))
 })
 
 describe('停在 /chat 时解析"最近一次会话"', () => {
@@ -166,6 +244,22 @@ describe('会话正文', () => {
     wrapper.unmount()
   })
 
+  it('回答里的引用徽标显示文档短名（去扩展名），而不是序号', async () => {
+    const store = useConversationStore()
+    store.rememberDetail(detailWithSource('c1'))
+
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    const chip = wrapper.find('.md-cite')
+    expect(chip.exists()).toBe(true)
+    expect(chip.text()).toBe('中国干眼共识（2024年）')
+    // 序号不再出现在徽标里；完整名字与位置留在 title
+    expect(chip.attributes('title')).toContain('中国干眼共识（2024年）.pdf')
+    expect(chip.attributes('title')).toContain('第 2 页')
+    wrapper.unmount()
+  })
+
   it('未命中缓存：先骨架屏，内容到达后换成消息', async () => {
     let resolveDetail!: (value: ConversationDetail) => void
     getConversation.mockReturnValue(
@@ -184,6 +278,58 @@ describe('会话正文', () => {
 
     expect(wrapper.find('.chat-loading').exists()).toBe(false)
     expect(wrapper.findAll('.turn')).toHaveLength(1)
+    wrapper.unmount()
+  })
+})
+
+describe('引用文档抽屉', () => {
+  it('点出处文件名：在右侧抽屉里打开原文，不跳知识库页', async () => {
+    const store = useConversationStore()
+    store.rememberDetail(detailWithSource('c1'))
+    const { wrapper, router } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    await wrapper.find('.cite-title').trigger('click')
+
+    await vi.waitFor(() => expect(wrapper.find('.doc-drawer').exists()).toBe(true))
+    // 关键：人还在对话页（旧实现在这里会跳到 /kb/kb_1?doc=…）
+    expect(router.currentRoute.value.path).toBe('/chat/c1')
+    // 抽屉拿到的是被引用的那份文档
+    expect(getDocument).toHaveBeenCalledWith('doc_a')
+    wrapper.unmount()
+  })
+
+  it('「引用原文」弹窗里的「查看文档」也走抽屉，关掉弹窗不跳走', async () => {
+    const store = useConversationStore()
+    store.rememberDetail(detailWithSource('c1'))
+    const { wrapper, router } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    await wrapper.find('.cite-more').trigger('click')
+    await flushPromises()
+    const action = wrapper.findAll('button').find((button) => button.text().includes('查看文档'))
+    expect(action).toBeTruthy()
+
+    await action!.trigger('click')
+
+    await vi.waitFor(() => expect(wrapper.find('.doc-drawer').exists()).toBe(true))
+    expect(router.currentRoute.value.path).toBe('/chat/c1')
+    wrapper.unmount()
+  })
+
+  it('抽屉收起（Esc / 收起按钮）后回到对话，不残留', async () => {
+    const store = useConversationStore()
+    store.rememberDetail(detailWithSource('c1'))
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+    await wrapper.find('.cite-title').trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('.doc-drawer').exists()).toBe(true))
+
+    await wrapper.find('button[aria-label="收起"]').trigger('click')
+    // 抽屉是"先滑回去再卸载"，等它的收起动画（样式里 180ms）
+    await vi.waitFor(() => expect(wrapper.find('.doc-drawer').exists()).toBe(false), {
+      timeout: 1000,
+    })
     wrapper.unmount()
   })
 })

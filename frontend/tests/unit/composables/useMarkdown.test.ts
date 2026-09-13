@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
-import { renderAnswerMarkdown, renderAnswerWithCitations } from '@/composables/useMarkdown'
+import {
+  renderAnswerMarkdown,
+  renderAnswerWithCitations,
+  shortDocumentName,
+} from '@/composables/useMarkdown'
 
 describe('renderAnswerMarkdown', () => {
   it('空文本不产出任何标签', () => {
@@ -106,6 +110,16 @@ describe('renderAnswerWithCitations', () => {
     expect(html).not.toContain('[1]')
   })
 
+  it('徽标显示文档短名（去掉扩展名）而不是序号，省略交给 CSS', () => {
+    const html = renderAnswerWithCitations('眼轴是主要参数[1]。', sources)
+
+    // 名字进内层 span：inline-flex 容器自己设 overflow 时省略号在部分浏览器不生效
+    expect(html).toContain('<span class="md-cite-name">指南</span>')
+    expect(html).not.toContain('指南.pdf</span>')
+    // 完整名字仍在 title 里，悬停能看到
+    expect(html).toContain('title="指南.pdf · 3 监测 › 第 4 页"')
+  })
+
   it('徽标的悬浮说明带文件名与页码，用户能预判点了会去哪', () => {
     const html = renderAnswerWithCitations('见[1]', sources)
 
@@ -150,6 +164,29 @@ describe('renderAnswerWithCitations', () => {
     const again = renderAnswerWithCitations('眼轴[1]', sources)
 
     expect(again).toBe(first)
+  })
+})
+
+describe('shortDocumentName（引用徽标上的短名）', () => {
+  it('去掉常见扩展名，大小写不敏感', () => {
+    expect(shortDocumentName('指南.pdf')).toBe('指南')
+    expect(shortDocumentName('共识.MD')).toBe('共识')
+    expect(shortDocumentName('数据.xlsx')).toBe('数据')
+    expect(shortDocumentName('报告.docx')).toBe('报告')
+    expect(shortDocumentName('幻灯片.PPTX')).toBe('幻灯片')
+  })
+
+  it('没有扩展名时原样保留（比如目录名或已去掉后缀的标题）', () => {
+    expect(shortDocumentName('干眼共识')).toBe('干眼共识')
+  })
+
+  it('压平空白：换行/连续空格不该把徽标撑成两行', () => {
+    expect(shortDocumentName('  中国干眼  临床\n共识  ')).toBe('中国干眼 临床 共识')
+  })
+
+  it('空名兜底成"文档"，不给一个空徽标', () => {
+    expect(shortDocumentName('')).toBe('文档')
+    expect(shortDocumentName('   ')).toBe('文档')
   })
 })
 

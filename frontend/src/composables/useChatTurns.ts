@@ -10,8 +10,6 @@
  * 免得一个纯逻辑模块去 import 一堆 .vue。
  */
 
-import type { RouteLocationRaw } from 'vue-router'
-
 import type { ChatSource, ChatStep } from '@/api/chat'
 
 export type ThinkingEffort = 'low' | 'medium' | 'high'
@@ -262,17 +260,12 @@ export function sourcePreview(source: ChatSource): string {
   return body.length > CITE_PREVIEW_CHARS ? `${body.slice(0, CITE_PREVIEW_CHARS)}…` : body
 }
 
-/**
- * 引用要跳去哪。
+/*
+ * 这里原先有个 `documentTarget(source)`：把引用拼成 `/kb/:id?doc=…&page=…`，
+ * 让用户跳去知识库页的文档抽屉。
  *
- * 有知识库 id 就**直连库页的文档抽屉**（`/kb/:id?doc=…&page=…`）——这是引用最该
- * 落到的地方，也是用户点"出处"想看的东西。只有历史快照缺这个字段（旧数据）时，
- * 才退回 `/documents/:id` 那条转发一跳。
+ * v18 起删掉了——点出处改成**在对话页就地滑出右侧抽屉**（见 ChatView 的
+ * `readerSource` 与 `DocumentDrawer`）。跳走会丢掉正在读的回答与滚动位置，
+ * 而出处本来是看回答时顺手一瞥的动作；抽屉只需要 `document_id` 与页码，
+ * 于是"历史快照缺 knowledge_base_id 就退回 /documents"那条分支也一并没了。
  */
-export function documentTarget(source: ChatSource): RouteLocationRaw {
-  const page = source.page === null ? {} : { page: String(source.page) }
-  if (source.knowledge_base_id) {
-    return { path: `/kb/${source.knowledge_base_id}`, query: { doc: source.document_id, ...page } }
-  }
-  return { path: `/documents/${source.document_id}`, query: page }
-}

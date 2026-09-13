@@ -356,7 +356,28 @@ function replaceOutsideCode(segment: string, known: Map<number, CitationSource>)
   })
 }
 
-/** 徽标上的 `title` 给鼠标悬停看"这一条是哪份文件的哪一段"。 */
+/**
+ * 常见文档扩展名。
+ *
+ * 徽标里"这份文件叫什么"比"它是什么格式"更该先被看到，`…专家共识（2024年.pdf`
+ * 里的 `.pdf` 只是尾巴；而且它占的那 4 个字符正好是最先被省略号吃掉的位置。
+ */
+const DOC_EXTENSION = /\.(pdf|docx?|xlsx?|pptx?|md|markdown|txt|csv|json|html?)$/i
+
+/** 徽标上显示的文档短名：压平空白 + 去掉扩展名（空名兜底成"文档"）。 */
+export function shortDocumentName(name: string): string {
+  const trimmed = name.trim().replace(/\s+/g, ' ')
+  if (!trimmed) return '文档'
+  return trimmed.replace(DOC_EXTENSION, '') || trimmed
+}
+
+/**
+ * 徽标上的 `title` 给鼠标悬停看"这一条是哪份文件的哪一段"。
+ *
+ * 徽标**显示文档名而不是序号**：读者要的是"这句依据来自哪份资料"，序号只有回去
+ * 数出处列表才有意义。名字太长由内层 span 省略（样式见 ChatView 的 `.md-cite-name`），
+ * 完整名字与位置仍在 `title` 里，悬停可见。
+ */
 function citationChip(source: CitationSource): string {
   const where: string[] = []
   if (source.heading_path) where.push(source.heading_path)
@@ -366,7 +387,8 @@ function citationChip(source: CitationSource): string {
     : source.document_name
   return (
     `<a class="md-cite" data-cite-index="${source.index}" role="button" tabindex="0"` +
-    ` title="${escapeHtml(title)}">${source.index}</a>`
+    ` title="${escapeHtml(title)}">` +
+    `<span class="md-cite-name">${escapeHtml(shortDocumentName(source.document_name))}</span></a>`
   )
 }
 

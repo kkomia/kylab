@@ -49,15 +49,18 @@ function summary(id: string, name: string): api.DocumentSummary {
   }
 }
 
-async function mountDrawer(documentId = 'doc_a') {
+async function mountDrawer(
+  documentId = 'doc_a',
+  options: { props?: Record<string, unknown>; query?: Record<string, string> } = {},
+) {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [{ path: '/kb/:kbId', component: { template: '<div />' } }],
   })
-  await router.push('/kb/kb_1')
+  await router.push({ path: '/kb/kb_1', query: options.query })
   await router.isReady()
   const wrapper = mount(DocumentDrawer, {
-    props: { documentId },
+    props: { documentId, ...options.props },
     global: { plugins: [router, createPinia()] },
   })
   await flushPromises()
@@ -107,6 +110,26 @@ describe('DocumentDrawer', () => {
 
     expect(api.getDocument).toHaveBeenLastCalledWith('doc_b')
     expect(wrapper.find('.drawer-name').text()).toBe('乙.pdf')
+  })
+
+  it('外部传入的页码直接落进 PDF 地址（对话页的引用抽屉走这条，那条路径上没有 ?page=）', async () => {
+    const wrapper = await mountDrawer('doc_a', { props: { page: 2 } })
+
+    expect(wrapper.find('.reader-frame').attributes('src')).toContain('#page=2')
+  })
+
+  it('没传页码时仍认 URL 上的 ?page=（库页的用法不受影响）', async () => {
+    const wrapper = await mountDrawer('doc_a', { query: { page: '5' } })
+
+    expect(wrapper.find('.reader-frame').attributes('src')).toContain('#page=5')
+  })
+
+  it('页码变了地址跟着变（iframe 以最终地址为 key，原生查看器才会重新定位）', async () => {
+    const wrapper = await mountDrawer('doc_a', { props: { page: 2 } })
+
+    await wrapper.setProps({ page: 7 })
+
+    expect(wrapper.find('.reader-frame').attributes('src')).toContain('#page=7')
   })
 
   it('两个下载按钮的文字不一样（长相一样会让人分不清哪个是哪个）', async () => {
