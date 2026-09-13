@@ -26,7 +26,6 @@ import AppModal from '@/components/ui/AppModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
-import PageShell from '@/components/ui/PageShell.vue'
 import { useToast } from '@/composables/useToast'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 import { useNoteStore } from '@/stores/notes'
@@ -321,7 +320,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <PageShell title="笔记" description="随手记录、基于知识库写作，写好的笔记也能加入知识库被检索到。">
+  <!-- 刻意不用 PageShell：这一页的第一屏应当是"列表头 + 编辑器工具栏"，
+       而不是通用页头（大标题 + 说明）。工具型界面里那两行只是占地方。 -->
+  <div class="notes-page">
     <div class="notes-layout">
       <aside class="notes-list">
         <div class="list-head">
@@ -477,15 +478,19 @@ onBeforeUnmount(() => {
         </AppButton>
       </template>
     </AppModal>
-  </PageShell>
+  </div>
 </template>
 
 <style scoped>
+/* 没有通用页头，顶部内边距收得很小：第一眼就是列表头与工具栏 */
+.notes-page {
+  padding: var(--space-3) var(--page-gutter) var(--space-8);
+}
+
 .notes-layout {
   display: grid;
   grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
   align-items: start;
-  margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-1)) 0;
 }
 
 /* ------------------------------------------------ 列表：扁平 + 时间分组 */
@@ -494,7 +499,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
-  padding: var(--space-3) var(--space-4) var(--space-6) var(--space-1);
+  padding: var(--space-2) var(--space-4) var(--space-6) var(--space-1);
   border-right: 1px solid var(--border-hairline);
 }
 
