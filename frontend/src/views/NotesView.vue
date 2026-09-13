@@ -53,7 +53,6 @@ const kbs = useKnowledgeBaseStore()
 const { notifyError, notifySuccess } = useToast()
 
 const draft = ref<Draft | null>(null)
-const loadingNote = ref(false)
 /** 灌入内容时抑制自动保存：装载不是"用户改了字"。 */
 const hydrating = ref(false)
 const saveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle')
@@ -138,14 +137,14 @@ async function loadFromRoute(): Promise<void> {
   }
   if (draft.value?.id === id) return
   await saveNow()
-  loadingNote.value = true
   try {
-    applyNote(await store.fetch(id))
+    const note = await store.fetch(id)
+    // 取回来的路上用户可能又切走了：别把旧请求的结果盖到新笔记上
+    if (String(route.params.noteId ?? '') !== id) return
+    applyNote(note)
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '笔记加载失败')
     draft.value = null
-  } finally {
-    loadingNote.value = false
   }
 }
 
@@ -454,9 +453,11 @@ onBeforeUnmount(() => {
       </aside>
 
       <section class="notes-pane">
-        <div v-if="loadingNote" class="pane-placeholder">正在加载…</div>
+        <!-- **不要**在切换时把编辑器换成"加载中"占位：那会卸载并重建整个 Tiptap
+             （工具栏、扩展、DOM 全部重来），切换笔记看起来就像卡了一下。
+             这里让它一直挂着，只换内容——同类型笔记之间没有必须重建的东西。 -->
         <NoteEditor
-          v-else-if="draft"
+          v-if="draft"
           v-model="draft.content_md"
           class="pane-editor"
           :note-id="draft.id"
@@ -780,11 +781,6 @@ onBeforeUnmount(() => {
 
 .pane-editor {
   flex: 1;
-}
-
-.pane-placeholder {
-  padding: var(--space-8);
-  color: var(--text-tertiary);
 }
 
 /* 没选笔记时把提示放在视觉中心：左上角一行字会被宽敞的编辑区衬得很空 */
