@@ -693,6 +693,8 @@ class MetaStore(ABC):
         q: str | None = None,
         stage: str | None = None,
         source_kind: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[DocumentRecord]:
         """列某个库的文档。
 
@@ -700,10 +702,29 @@ class MetaStore(ABC):
         - ``folder_id`` 给了：只看这个目录里的；
         - ``q``：文件名含该子串（大小写不敏感，``%``/``_`` 按字面匹配）；
         - ``stage`` / ``source_kind``：精确值过滤；
+        - ``limit`` / ``offset``：分页。``limit=None``（默认）不分页——
+          服务内部的调用点（统计、批处理、生命周期）本来就要全量，不能被分页截断；
         - 都不给：整个库（默认，保持既有调用点行为不变）。
 
         过滤**在 SQL 里做而不是取回内存再筛**：一个库上万篇时，
         "把全部读出来再过滤"会把列表接口的耗时和内存随库大小一起放大。
+        """
+
+    @abstractmethod
+    def count_documents(
+        self,
+        kb_id: str,
+        *,
+        folder_id: str | None = None,
+        root_only: bool = False,
+        q: str | None = None,
+        stage: str | None = None,
+        source_kind: str | None = None,
+    ) -> int:
+        """与 ``list_documents`` 同一套过滤条件下有多少篇（``COUNT(*)`` 下推）。
+
+        分页界面要显示"共 N 篇 / 第 X 页"，而 ``len(list_documents(..., limit=...))``
+        只能数到当前页，越翻越错。
         """
 
     @abstractmethod

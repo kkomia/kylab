@@ -169,21 +169,21 @@ class DocumentService:
         q: str | None = None,
         stage: str | None = None,
         source_kind: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[DocumentRecord]:
-        """列文档；可按目录、文件名、状态、来源收窄。
+        """列文档；可按目录、文件名、状态、来源收窄，并按 ``limit``/``offset`` 分页。
 
         ``folder_id`` 会校验它属于这个库：传一个别的库的目录 id 时，静默返回空列表
         会让人以为"这个目录是空的"，而不是"你查错了库"。
 
         ``q`` 为空串等同于不过滤：前端输入框清空后仍会带一个空串上来，
         把它当"搜空串"会匹配到全部——结果相同，但让"有没有在搜"这件事变得含糊。
+
+        ``limit=None``（默认）返回全量：统计、批处理、生命周期这些内部调用点
+        本来就要全部文档。列表接口显式传 ``limit``/``offset``。
         """
-        if self._stores.meta.get_knowledge_base(kb_id) is None:
-            raise NotFoundError(f"知识库不存在：{kb_id}")
-        if folder_id is not None:
-            folder = self._stores.meta.get_folder(folder_id)
-            if folder is None or folder.kb_id != kb_id:
-                raise NotFoundError(f"目录不存在：{folder_id}")
+        self._validate_document_scope(kb_id, folder_id)
         return self._stores.meta.list_documents(
             kb_id,
             folder_id=folder_id,
@@ -191,7 +191,43 @@ class DocumentService:
             q=q.strip() if q else None,
             stage=stage,
             source_kind=source_kind,
+            limit=limit,
+            offset=offset,
         )
+
+    def count_documents(
+        self,
+        kb_id: str,
+        *,
+        folder_id: str | None = None,
+        root_only: bool = False,
+        q: str | None = None,
+        stage: str | None = None,
+        source_kind: str | None = None,
+    ) -> int:
+        """同一套过滤条件下的文档总数（分页界面的"共 N 篇"）。
+
+        ``q`` 的清洗口径与 ``list_documents`` 保持一致——否则搜空串时列表有内容、
+        总数却对不上。
+        """
+        self._validate_document_scope(kb_id, folder_id)
+        return self._stores.meta.count_documents(
+            kb_id,
+            folder_id=folder_id,
+            root_only=root_only,
+            q=q.strip() if q else None,
+            stage=stage,
+            source_kind=source_kind,
+        )
+
+    def _validate_document_scope(self, kb_id: str, folder_id: str | None) -> None:
+        """库与目录都必须存在、且目录属于这个库。列表与计数同一条判定。"""
+        if self._stores.meta.get_knowledge_base(kb_id) is None:
+            raise NotFoundError(f"知识库不存在：{kb_id}")
+        if folder_id is not None:
+            folder = self._stores.meta.get_folder(folder_id)
+            if folder is None or folder.kb_id != kb_id:
+                raise NotFoundError(f"目录不存在：{folder_id}")
 
     def chunk_counts(self, document_ids: list[str]) -> dict[str, int]:
         """批量取切块数。列表页用它，避免每个文档查一次库。"""

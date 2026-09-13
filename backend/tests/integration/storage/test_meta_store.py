@@ -159,6 +159,77 @@ def test_list_documents_is_newest_first(store: SqliteMetaStore, kb, document) ->
     assert ids[0] == "doc_2" and set(ids) == {"doc_1", "doc_2"}
 
 
+def test_list_documents_pages_and_counts_with_filters(
+    store: SqliteMetaStore, kb, document
+) -> None:
+    """分页与计数用同一套过滤条件：翻到任何一页，总数都不该变。
+
+    这里同时钉住"count 不会因为 limit 变小"——那正是分页界面显示
+    "共 N 篇"时最怕的错。
+    """
+    for index in range(1, 6):
+        store.create_document(
+            DocumentRecord(
+                id=f"doc_p{index}",
+                knowledge_base_id="kb_1",
+                name=f"合同 {index}.md" if index <= 3 else f"预算 {index}.md",
+                source_kind=DataSourceKind.UPLOAD,
+                content_hash=f"hash-p{index}",
+                stage=DocumentStage.UPLOADED,
+            )
+        )
+
+    assert store.count_documents("kb_1") == 6  # 含 fixture 的 doc_1
+    page_one = store.list_documents("kb_1", limit=2, offset=0)
+    page_two = store.list_documents("kb_1", limit=2, offset=2)
+    page_three = store.list_documents("kb_1", limit=2, offset=4)
+    assert [len(page) for page in (page_one, page_two, page_three)] == [2, 2, 2]
+    ids = [item.id for page in (page_one, page_two, page_three) for item in page]
+    assert len(ids) == len(set(ids)) == 6  # 页与页不重不漏
+
+    # 过滤条件同时作用于 list 与 count：3 篇合同
+    assert store.count_documents("kb_1", q="合同") == 3
+    filtered = store.list_documents("kb_1", q="合同", limit=1, offset=1)
+    assert len(filtered) == 1 and "合同" in filtered[0].name
+
+    # 越界页回空列表，但总数照旧——界面据此把页码夹回最后一页
+    assert store.list_documents("kb_1", limit=2, offset=99) == []
+    assert store.count_documents("kb_1") == 6
+
+    # 不过滤 stage 时把 uploaded 与别的阶段分开算
+    store.update_document_stage("doc_p1", DocumentStage.INDEXED)
+    assert store.count_documents("kb_1", stage=DocumentStage.UPLOADED.value) == 5
+
+    # limit=None（内部调用点）不受分页影响
+    assert len(store.list_documents("kb_1")) == 6
+
+
+def test_pagination_is_stable_when_created_at_ties(store: SqliteMetaStore, kb) -> None:
+    """同一秒上传的文档 ``created_at`` 相同，只按它排时分页会漏行或重复。
+
+    定序键必须能唯一定序（这里补了 ``id``）：否则 SQLite 对等值行的顺序不作保证，
+    两次 LIMIT/OFFSET 查询各排各的，翻页就会出现"第 2 页少了 A、第 3 页又出现 A"。
+    """
+    stamp = datetime(2026, 1, 1, tzinfo=UTC)
+    for index in range(4):
+        store.create_document(
+            DocumentRecord(
+                id=f"doc_tie{index}",
+                knowledge_base_id="kb_1",
+                name=f"同秒 {index}.md",
+                source_kind=DataSourceKind.UPLOAD,
+                content_hash=f"hash-tie{index}",
+                stage=DocumentStage.UPLOADED,
+                created_at=stamp,
+            )
+        )
+
+    first = store.list_documents("kb_1", limit=2, offset=0)
+    second = store.list_documents("kb_1", limit=2, offset=2)
+    ids = [item.id for item in (*first, *second)]
+    assert len(ids) == len(set(ids)) == 4
+
+
 # --------------------------------------------------------------------- 子文件
 
 

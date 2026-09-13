@@ -4,7 +4,8 @@
  * 侧栏、对话页与概览页是同一份清单：放在 store 里只查一次、只存一份，
  * 避免"新建之后这边有、那边没有"这类不同步。
  *
- * `summaries`（每库文档数与最近更新时间）也收在这里：它来自 `listDocuments`，
+ * `summaries`（每库文档数与最近更新时间）也收在这里：它是知识库列表接口
+ * （`GET /knowledge-bases`）带回的 `document_count` / `last_activity`，
  * 各页面各查一遍既慢、口径又容易漂。
  */
 

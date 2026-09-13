@@ -175,7 +175,17 @@ class DocumentOut(BaseModel):
 
 
 class DocumentList(BaseModel):
+    """一页文档。
+
+    ``total`` 是**这套筛选条件下的总数**（不是 ``items`` 的长度）：界面要显示
+    "共 N 篇 · 第 X / Y 页"，只回一页数据的话前端算不出总页数。
+    ``limit`` / ``offset`` 原样回显，调用方不必自己记住请求时传了什么。
+    """
+
     items: list[DocumentOut]
+    total: int
+    limit: int
+    offset: int
 
 
 class FolderOut(BaseModel):

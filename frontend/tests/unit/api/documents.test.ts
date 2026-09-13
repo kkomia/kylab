@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { RENDERABLE_KINDS, getDocumentPreview } from '@/api/documents'
+import { RENDERABLE_KINDS, getDocumentPreview, listDocuments } from '@/api/documents'
 
 function ok(): Response {
   return new Response(
@@ -54,5 +54,31 @@ describe('RENDERABLE_KINDS', () => {
     expect([...RENDERABLE_KINDS].sort()).toEqual(['docx', 'excel', 'image', 'pdf', 'pptx'])
     expect(RENDERABLE_KINDS).not.toContain('binary')
     expect(RENDERABLE_KINDS).not.toContain('markdown')
+  })
+})
+
+describe('listDocuments', () => {
+  it('分页参数下推给后端：limit / offset 都带上', async () => {
+    const fetchMock = fetchStub()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await listDocuments('kb_1', { limit: 50, offset: 100 })
+
+    const url = String(fetchMock.mock.calls.at(-1)?.[0])
+    expect(url).toContain('/knowledge-bases/kb_1/documents')
+    expect(url).toContain('limit=50')
+    expect(url).toContain('offset=100')
+  })
+
+  it('不给分页参数时不拼 limit / offset：由后端用默认值', async () => {
+    const fetchMock = fetchStub()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await listDocuments('kb_1', { q: '合同' })
+
+    const url = String(fetchMock.mock.calls.at(-1)?.[0])
+    expect(url).toContain('q=')
+    expect(url).not.toContain('limit=')
+    expect(url).not.toContain('offset=')
   })
 })

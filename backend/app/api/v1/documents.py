@@ -261,12 +261,18 @@ async def list_documents(
     ),
     stage: DocumentStage | None = Query(default=None, description="只保留这个流水线阶段"),
     source_kind: DataSourceKind | None = Query(default=None, description="只保留这个来源类型"),
+    limit: int = Query(default=50, ge=1, le=200, description="这一页取几篇"),
+    offset: int = Query(default=0, ge=0, description="从第几篇开始取（跳过多少篇）"),
 ) -> DocumentList:
     """知识库下的文档列表，支持目录 / 文件名 / 状态 / 来源四个维度的收窄。
 
     ``stage`` 与 ``source_kind`` 用枚举而不是裸字符串：传一个拼错的值时
     框架直接回 422，而不是被当成"合法但匹配不到"而静默返回空列表——
     后者会让用户以为"这个库真的没有失败文档"。
+
+    **分页在 SQL 里做**（``limit``/``offset``），并另起一次 ``COUNT(*)`` 回 ``total``：
+    一个库上万篇时，"把全量读出来再在 Python 里切页"会把响应体和耗时
+    都随库大小放大。``total`` 与 ``items`` 用的是同一套过滤条件（同一个构造器）。
     """
     check_kb_scope(services, caller, [kb_id])
     records = services.documents.list_documents(
@@ -276,9 +282,19 @@ async def list_documents(
         q=q,
         stage=stage.value if stage else None,
         source_kind=source_kind.value if source_kind else None,
+        limit=limit,
+        offset=offset,
     )
     counts = services.documents.chunk_counts([record.id for record in records])
     names = _uploader_names(services, records)
+    total = services.documents.count_documents(
+        kb_id,
+        folder_id=folder_id,
+        root_only=root,
+        q=q,
+        stage=stage.value if stage else None,
+        source_kind=source_kind.value if source_kind else None,
+    )
     return DocumentList(
         items=[
             _to_out(
@@ -287,7 +303,10 @@ async def list_documents(
                 uploader=names.get(record.uploaded_by or "", ""),
             )
             for record in records
-        ]
+        ],
+        total=total,
+        limit=limit,
+        offset=offset,
     )
 
 

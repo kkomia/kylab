@@ -131,6 +131,93 @@ def test_filter_composes_with_folder(client: TestClient, kb_id: str) -> None:
     assert _list_names(client, kb_id, folder_id=folder["id"], q="2025") == []
 
 
+# --------------------------------------------------------------------- 分页
+
+
+def _list_page(client: TestClient, kb_id: str, **params: str) -> dict:
+    response = client.get(f"/api/v1/knowledge-bases/{kb_id}/documents", params=params)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_list_returns_one_page_with_total(client: TestClient, kb_id: str) -> None:
+    """默认一页 50 篇；``total`` 是总数而不是本页条数。"""
+    for index in range(5):
+        _upload(client, kb_id, f"第 {index} 篇.md")
+
+    page = _list_page(client, kb_id, limit="2")
+
+    assert len(page["items"]) == 2
+    assert (page["total"], page["limit"], page["offset"]) == (5, 2, 0)
+
+    # 无参：全量（少于默认页大小）且 total 与 items 对得上
+    whole = _list_page(client, kb_id)
+    assert len(whole["items"]) == 5 and whole["total"] == 5
+
+
+def test_pages_do_not_overlap_or_drop(client: TestClient, kb_id: str) -> None:
+    """逐页翻完，id 集合必须恰好等于全集——分页最常见的错就是漏/重。"""
+    for index in range(5):
+        _upload(client, kb_id, f"分页 {index}.md")
+
+    collected: list[str] = []
+    offset = 0
+    while True:
+        page = _list_page(client, kb_id, limit="2", offset=str(offset))
+        collected.extend(item["id"] for item in page["items"])
+        offset += 2
+        if offset >= page["total"]:
+            break
+
+    assert len(collected) == len(set(collected)) == 5
+
+
+def test_total_follows_the_filter_not_the_page(client: TestClient, kb_id: str) -> None:
+    """``total`` 用的是与 items 相同的过滤条件：搜出来的 3 篇就是 3，不是全库 5。"""
+    _upload(client, kb_id, "合同 2026.md")
+    _upload(client, kb_id, "合同 2025.md")
+    _upload(client, kb_id, "合同 2024.md")
+    _upload(client, kb_id, "预算表.md")
+    _upload(client, kb_id, "会议纪要.md")
+
+    page = _list_page(client, kb_id, q="合同", limit="1", offset="1")
+
+    assert len(page["items"]) == 1
+    assert page["total"] == 3
+
+
+def test_offset_past_the_end_returns_empty_but_keeps_total(client: TestClient, kb_id: str) -> None:
+    """越界页回空列表而不是报错；总数照旧——前端据此把页码夹回最后一页。"""
+    _upload(client, kb_id, "只有一篇.md")
+
+    page = _list_page(client, kb_id, limit="10", offset="50")
+
+    assert page["items"] == []
+    assert page["total"] == 1
+
+
+def test_pagination_params_are_bounded(client: TestClient, kb_id: str) -> None:
+    """``limit=0`` 会让前端陷入"永远翻不动"，直接 422；上限挡住一次拉全库。"""
+    assert (
+        client.get(
+            f"/api/v1/knowledge-bases/{kb_id}/documents", params={"limit": "0"}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            f"/api/v1/knowledge-bases/{kb_id}/documents", params={"limit": "201"}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            f"/api/v1/knowledge-bases/{kb_id}/documents", params={"offset": "-1"}
+        ).status_code
+        == 422
+    )
+
+
 # --------------------------------------------------------------------- 重命名
 
 

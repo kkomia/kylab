@@ -23,6 +23,7 @@ import {
   moveDocument,
   renameDocument,
   reprocessDocument,
+  DOCUMENT_PAGE_SIZE,
   type DataSourceKind,
   type DocumentStage,
   type DocumentListFilter,
@@ -32,6 +33,7 @@ import {
 } from '@/api/documents'
 import { createFolder, deleteFolder, listFolders, renameFolder, type Folder } from '@/api/folders'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
+import IconChevronLeft from '@/components/icons/IconChevronLeft.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconClose from '@/components/icons/IconClose.vue'
 import IconDownload from '@/components/icons/IconDownload.vue'
@@ -260,7 +262,8 @@ const hasFilter = computed(() =>
 // ------------------------------------------------------------------ 多选与批量
 
 /** 勾选的文档 id。**用数组而不是 Set**：Pinia/Vue 对 Set 的变更追踪要额外小心，
- *  而这里最多几十个 id，数组的 `includes` 开销可以忽略。 */
+ *  而这里最多几十个 id，数组的 `includes` 开销可以忽略。
+ *  分页之后它只覆盖**当前页**（翻页即清空，见 `goToPage`）——整库语义走后端 `all=true`。 */
 const selected = ref<string[]>([])
 const selectedCount = computed(() => selected.value.length)
 const allSelected = computed(
@@ -384,7 +387,7 @@ function toggleSelect(documentId: string): void {
     : [...selected.value, documentId]
 }
 
-/** 全选/清空：作用于**当前列表**（当前筛选结果），不是整个库。 */
+/** 全选/清空：作用于**当前这一页**（选择不跨页，见 `goToPage`）。 */
 function toggleSelectAll(): void {
   selected.value = allSelected.value ? [] : documents.value.map((document) => document.id)
 }
@@ -470,29 +473,77 @@ async function onToggleDisabledClick(close: () => void, document: DocumentSummar
   }
 }
 
+/** 当前页还有没有在跑的文档。按时间倒序时它们都在第 1 页（新上传的在最前），
+ *  所以只看当前页不会漏掉"该轮询"的信号；翻到后面的页停下来是正常的。 */
 const hasActive = computed(() =>
   documents.value.some((document) => ACTIVE_STAGES.has(document.stage)),
 )
 
-/** 上一次请求的筛选条件。换了条件就把"显示更多"的进度归零——那是另一份清单。 */
+// ------------------------------------------------------------------ 分页
+
+/**
+ * 当前页（从 1 开始）与总数。
+ *
+ * 列表**一次只取一页**（`limit`/`offset` 下推到 SQL）：一个库几百上千篇时，
+ * "全量拉回来再在内存里切"会把响应体、耗时和渲染量都随库大小一起涨。
+ * `total` 来自后端：前端只拿得到当前页的 `items`，算不出总页数。
+ */
+const PAGE_SIZE = DOCUMENT_PAGE_SIZE
+const page = ref(1)
+const total = ref(0)
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)))
+
+/** 上一次请求的筛选条件（**不含分页**）。换了条件就回第 1 页——那是另一份清单。 */
 const lastFilterKey = ref('')
+
+/** 把筛选状态收成一个对象；分页参数由调用方追加，不进 filterKey。 */
+function buildFilter(): DocumentListFilter {
+  const filter: DocumentListFilter = {}
+  if (activeFolder.value === ROOT_FILTER) filter.root = true
+  else if (activeFolder.value) filter.folderId = activeFolder.value
+  const keyword = searchDraft.value.trim()
+  if (keyword) filter.q = keyword
+  if (stageFilter.value) filter.stage = stageFilter.value as DocumentStage
+  if (sourceFilter.value) filter.sourceKind = sourceFilter.value as DataSourceKind
+  return filter
+}
+
+/**
+ * 翻页。
+ *
+ * **翻页会清空勾选**：选择只作用于看得见的这一页，把上一页的 id 留着，
+ * "已选 N 篇"就与用户眼前的列表对不上，而批量删除/停用仍会打到那些看不见的文档上。
+ * 需要"整库"语义的批量动作走后端的 `all=true`，不靠跨页攒 id。
+ */
+function goToPage(next: number): void {
+  const clamped = Math.min(Math.max(1, next), pageCount.value)
+  if (clamped === page.value) return
+  page.value = clamped
+  selected.value = []
+  void refresh()
+}
 
 async function refresh(): Promise<void> {
   if (!kbId.value) return
   try {
-    const filter: DocumentListFilter = {}
-    if (activeFolder.value === ROOT_FILTER) filter.root = true
-    else if (activeFolder.value) filter.folderId = activeFolder.value
-    const keyword = searchDraft.value.trim()
-    if (keyword) filter.q = keyword
-    if (stageFilter.value) filter.stage = stageFilter.value as DocumentStage
-    if (sourceFilter.value) filter.sourceKind = sourceFilter.value as DataSourceKind
+    const filter = buildFilter()
     const filterKey = JSON.stringify(filter)
     if (filterKey !== lastFilterKey.value) {
       lastFilterKey.value = filterKey
-      visibleLimit.value = RENDER_PAGE
+      page.value = 1
+      selected.value = []
     }
-    documents.value = (await listDocuments(kbId.value, filter)).items
+    const offset = (page.value - 1) * PAGE_SIZE
+    const list = await listDocuments(kbId.value, { ...filter, limit: PAGE_SIZE, offset })
+    // 删除到某页空了（比如最后一页只剩 1 篇被删掉）就夹回最后一页再取，
+    // 而不是给用户一个空列表——那看起来像"这个库没文档了"。
+    const pages = Math.max(1, Math.ceil(list.total / PAGE_SIZE))
+    if (page.value > pages) {
+      page.value = pages
+      return refresh()
+    }
+    documents.value = list.items
+    total.value = list.total
     error.value = ''
     pruneSelection()
     void nextTick(syncFillerRows)
@@ -505,25 +556,6 @@ async function refresh(): Promise<void> {
 
 /** 与 CSS 的 `--row-height` 一致。补白行要按它算，两处漂了就会算错行数。 */
 const ROW_HEIGHT = 44
-
-/**
- * 一次最多画多少行。
- *
- * 列表接口一次回全量（一个库里几千份文档是可能的），而**每一行都是有状态的组件**
- * （状态标签、菜单、复选框）。几千个一起挂上去，首次渲染与后续每次刷新（轮询）
- * 都会卡住主线程。这里先画前 N 行，其余靠"显示更多"按需追加——
- * 用户的注意力本来也只在前几十行。
- */
-const RENDER_PAGE = 100
-const visibleLimit = ref(RENDER_PAGE)
-const renderedDocuments = computed(() => documents.value.slice(0, visibleLimit.value))
-const hiddenCount = computed(() =>
-  Math.max(0, documents.value.length - renderedDocuments.value.length),
-)
-
-function showMore(): void {
-  visibleLimit.value += RENDER_PAGE
-}
 
 /**
  * 表格的行数**不跟着文件数走**：只有两三个文件时如果只画两三行，
@@ -542,7 +574,7 @@ function syncFillerRows(): void {
   const bottomGap = 56 /* 给页面底部留一口气，别贴到边 */
   const available = window.innerHeight - element.getBoundingClientRect().top - bottomGap
   // 空库时也会有"还没有文档"那一行提示，所以数据侧至少占 1 行
-  const dataRows = Math.max(renderedDocuments.value.length, 1)
+  const dataRows = Math.max(documents.value.length, 1)
   const fit = Math.ceil((available - headHeight) / ROW_HEIGHT)
   fillerRows.value = Math.max(0, Math.min(fit - dataRows, 60))
 }
@@ -565,11 +597,12 @@ async function loadFolders(): Promise<void> {
   }
 }
 
-/** 「未归档」计数：树上的数字要准，所以单独查一次根目录范围。 */
+/** 「未归档」计数：树上的数字要准，所以单独查一次根目录范围。
+ *  `limit: 1` 只要那个 `total`——分页之后 `items.length` 最多是每页条数。 */
 async function loadCounts(): Promise<void> {
   if (!kbId.value) return
   try {
-    unfiledCount.value = (await listDocuments(kbId.value, { root: true })).items.length
+    unfiledCount.value = (await listDocuments(kbId.value, { root: true, limit: 1 })).total
   } catch {
     unfiledCount.value = null
   }
@@ -641,6 +674,8 @@ async function onUploaded(): Promise<void> {
   // 弹窗自己负责**逐文件的结果**（哪个重复、哪个失败），这里只负责开始盯进度。
   // 不再发 toast：批量上传时 toast 会连成一片，"哪几个没成功"根本看不清，
   // 而那恰恰是用户唯一需要看的部分——那份清单留在弹窗里。
+  // 新文档按时间倒序排在第 1 页最前，所以传完先跳回第 1 页，别让用户以为没进去。
+  page.value = 1
   await refreshAll()
   syncPolling()
 }
@@ -1094,7 +1129,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                   </span>
                 </div>
               </li>
-              <li v-for="document in renderedDocuments" :key="document.id" class="doc-row-group">
+              <li v-for="document in documents" :key="document.id" class="doc-row-group">
                 <div class="doc-row panel-row">
                   <span v-if="knowledgeBase?.can_write" class="row-check">
                     <input
@@ -1220,14 +1255,6 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                 </ul>
               </li>
 
-              <!-- 只画了前 N 行：剩下的按需追加，别一次挂几千个行组件 -->
-              <li v-if="hiddenCount > 0" class="doc-row-group">
-                <div class="doc-row panel-row doc-more-row">
-                  <span class="doc-more-text">还有 {{ hiddenCount }} 篇未显示</span>
-                  <AppButton size="sm" variant="subtle" @click="showMore">显示更多</AppButton>
-                </div>
-              </li>
-
               <!-- 补白行：把表格铺满可视区，文件少时不留一大片空白。
                    纯装饰（aria-hidden），不可点、也没有数据 -->
               <li
@@ -1239,6 +1266,32 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                 <div class="doc-row panel-row" />
               </li>
             </ul>
+
+            <!-- 翻页：只在确实多于一页时出现。单页时显示一行"第 1 / 1 页"是噪音 -->
+            <div v-if="pageCount > 1" class="pager">
+              <span class="pager-total">共 {{ total }} 篇</span>
+              <div class="pager-controls">
+                <AppButton
+                  size="sm"
+                  variant="subtle"
+                  :disabled="page <= 1"
+                  @click="goToPage(page - 1)"
+                >
+                  <template #icon><IconChevronLeft :size="14" /></template>
+                  上一页
+                </AppButton>
+                <span class="pager-page tabular">第 {{ page }} / {{ pageCount }} 页</span>
+                <AppButton
+                  size="sm"
+                  variant="subtle"
+                  :disabled="page >= pageCount"
+                  @click="goToPage(page + 1)"
+                >
+                  <template #icon><IconChevronRight :size="14" /></template>
+                  下一页
+                </AppButton>
+              </div>
+            </div>
           </div>
         </template>
       </section>
@@ -1837,15 +1890,33 @@ button.tree-caret:hover {
   pointer-events: none;
 }
 
-/* "显示更多"那一行：说明在左、按钮在右 */
-.doc-more-row {
+/* 翻页条：说明在左、控件在右，与文档行的左右分栏同一节奏 */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--border-subtle);
 }
 
-.doc-more-text {
-  flex: 1;
+.pager-total {
   font-size: var(--text-meta-size);
   color: var(--text-tertiary);
+}
+
+.pager-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* 页码数字用等宽数字：翻页时"第 1 / 9 页"到"第 2 / 9 页"不该左右抖 */
+.pager-page {
+  min-width: 6.5em;
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  text-align: center;
 }
 
 /* 展开器给足 24px 命中区：20px 在触屏上点不中 */

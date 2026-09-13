@@ -329,6 +329,43 @@ class SqliteMetaStore(MetaStore):
             ).fetchone()
         return self._document_from_row(row) if row else None
 
+    @staticmethod
+    def _document_where(
+        kb_id: str,
+        *,
+        folder_id: str | None = None,
+        root_only: bool = False,
+        q: str | None = None,
+        stage: str | None = None,
+        source_kind: str | None = None,
+    ) -> tuple[str, list[object]]:
+        """文档列表的 ``WHERE`` 片段与参数。
+
+        **列与计数共用同一个构造器**：分页要同时给出"这一页"和"共几篇"，
+        两处各写一遍过滤条件，迟早会漂——漂的那天接口会返回"第 2 页 0 篇但总数 100"。
+        """
+        clauses = ["knowledge_base_id = ?"]
+        params: list[object] = [kb_id]
+        if root_only:
+            clauses.append("folder_id IS NULL")
+        elif folder_id is not None:
+            clauses.append("folder_id = ?")
+            params.append(folder_id)
+        if q:
+            # 转义 LIKE 的通配符：用户搜 "a_b" 时字面匹配，而不是"a 后跟任意一字符"。
+            # ESCAPE 子句让转义字符可判——没有它，反斜杠会被当普通字符，
+            # `\%` 反而匹配到真正的 "%"。
+            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            clauses.append("name LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped}%")
+        if stage:
+            clauses.append("stage = ?")
+            params.append(stage)
+        if source_kind:
+            clauses.append("source_kind = ?")
+            params.append(source_kind)
+        return " AND ".join(clauses), params
+
     def list_documents(
         self,
         kb_id: str,
@@ -338,31 +375,54 @@ class SqliteMetaStore(MetaStore):
         q: str | None = None,
         stage: str | None = None,
         source_kind: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[DocumentRecord]:
-        sql = "SELECT * FROM documents WHERE knowledge_base_id = ?"
-        params: list[object] = [kb_id]
-        if root_only:
-            sql += " AND folder_id IS NULL"
-        elif folder_id is not None:
-            sql += " AND folder_id = ?"
-            params.append(folder_id)
-        if q:
-            # 转义 LIKE 的通配符：用户搜 "a_b" 时字面匹配，而不是"a 后跟任意一字符"。
-            # ESCAPE 子句让转义字符可判——没有它，反斜杠会被当普通字符，
-            # `\%` 反而匹配到真正的 "%"。
-            escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            sql += " AND name LIKE ? ESCAPE '\\'"
-            params.append(f"%{escaped}%")
-        if stage:
-            sql += " AND stage = ?"
-            params.append(stage)
-        if source_kind:
-            sql += " AND source_kind = ?"
-            params.append(source_kind)
-        sql += " ORDER BY created_at DESC"
+        where, params = self._document_where(
+            kb_id,
+            folder_id=folder_id,
+            root_only=root_only,
+            q=q,
+            stage=stage,
+            source_kind=source_kind,
+        )
+        # `id` 是**分页的定序键**：同秒上传的文档 `created_at` 可能相同，
+        # 只按它排时 SQLite 不保证两次查询顺序一致，LIMIT/OFFSET 就会漏行或重复。
+        # 与笔记列表（`ORDER BY n.updated_at DESC, n.id DESC`）同一口径。
+        sql = f"SELECT * FROM documents WHERE {where} ORDER BY created_at DESC, id DESC"  # noqa: S608
+        if limit is not None:
+            # 服务内部的调用点（统计/批处理/生命周期）要全量，limit=None 时不分页；
+            # SQLite 的 OFFSET 必须配 LIMIT，所以只有给了 limit 才带 offset。
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([max(0, limit), max(0, offset)])
         with self._db.read() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [self._document_from_row(row) for row in rows]
+
+    def count_documents(
+        self,
+        kb_id: str,
+        *,
+        folder_id: str | None = None,
+        root_only: bool = False,
+        q: str | None = None,
+        stage: str | None = None,
+        source_kind: str | None = None,
+    ) -> int:
+        where, params = self._document_where(
+            kb_id,
+            folder_id=folder_id,
+            root_only=root_only,
+            q=q,
+            stage=stage,
+            source_kind=source_kind,
+        )
+        with self._db.read() as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS n FROM documents WHERE {where}",  # noqa: S608
+                params,
+            ).fetchone()
+        return int(row["n"]) if row else 0
 
     # ------------------------------------------------------------------ 目录（v13）
 

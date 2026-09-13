@@ -88,6 +88,22 @@ export interface UploadAccepted {
   task_id: string | null
 }
 
+/** 一页文档：``total`` 是这套筛选条件下的总数，不是 ``items`` 的长度。 */
+export interface DocumentListPage {
+  items: DocumentSummary[]
+  total: number
+  limit: number
+  offset: number
+}
+
+/**
+ * 文档列表每页取几篇。
+ *
+ * 后端默认为 50、上限 200；前端固定用同一个值，翻页的 ``offset`` 才与
+ * "第几页 × 每页几篇"对得上。改这里要连同 ``offset`` 的算法一起看。
+ */
+export const DOCUMENT_PAGE_SIZE = 50
+
 export interface DocumentListFilter {
   /** 只看这个目录；与 ``root`` 互斥。 */
   folderId?: string
@@ -99,18 +115,24 @@ export interface DocumentListFilter {
   stage?: DocumentStage
   /** 只保留这个来源类型。 */
   sourceKind?: DataSourceKind
+  /** 分页：取几篇（不传 = 后端默认 50）。 */
+  limit?: number
+  /** 分页：跳过几篇。 */
+  offset?: number
 }
 
 export function listDocuments(
   kbId: string,
   filter: DocumentListFilter = {},
-): Promise<{ items: DocumentSummary[] }> {
+): Promise<DocumentListPage> {
   const params = new URLSearchParams()
   if (filter.folderId) params.set('folder_id', filter.folderId)
   else if (filter.root) params.set('root', 'true')
   if (filter.q) params.set('q', filter.q)
   if (filter.stage) params.set('stage', filter.stage)
   if (filter.sourceKind) params.set('source_kind', filter.sourceKind)
+  if (filter.limit !== undefined) params.set('limit', String(filter.limit))
+  if (filter.offset !== undefined) params.set('offset', String(filter.offset))
   const query = params.toString()
   return request(`/knowledge-bases/${kbId}/documents${query ? `?${query}` : ''}`)
 }

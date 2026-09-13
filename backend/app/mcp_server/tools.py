@@ -201,7 +201,7 @@ def _list_knowledge_bases(services: Services, args: dict[str, Any]) -> list[dict
         {
             "id": item.id,
             "name": item.name,
-            "documents": len(services.documents.list_documents(item.id)),
+            "documents": services.documents.count_documents(item.id),
             "embedding_model": item.embedding_model_id,
         }
         for item in services.knowledge_bases.list_all()
