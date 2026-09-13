@@ -6,14 +6,13 @@
  * 不会像 Cherry/Vditor 那样自带一套皮肤跟控制台打架（见《笔记功能调研》§2.1）。
  * `content_md` 是唯一事实源——进出这一层的都是 Markdown 字符串，编辑器 JSON 不落库。
  *
- * **画布单独拆成 `NoteCanvas` 并由调用方按 noteId 上 key**：Tiptap v3 自己维护 state，
- * 没有清撤销栈的公开 API（`view.updateState` 改不动它），所以切换笔记只能换实例。
- * 换实例这件事收在画布里，工具栏/标题/动作留在本组件——切换时它们不重建，只换内容。
+ * **画布 `NoteCanvas` 是单实例**：切换笔记靠"原地换文档 + 清撤销栈"（见画布注释），
+ * 连文档 DOM 都不重建——只换内容，工具栏/标题/动作/滚动容器全程留在原地。
  *
  * 版式对齐 ima 笔记：工具栏在顶部、标题在文档里、正文走居中窄栏。
  */
 import type { Editor } from '@tiptap/core'
-import { ref, shallowRef, watch } from 'vue'
+import { nextTick, ref, shallowRef, watch } from 'vue'
 
 import { uploadNoteImage, type NoteAiAction } from '@/api/notes'
 import IconAi from '@/components/icons/IconAi.vue'
@@ -36,9 +35,19 @@ import IconUndo from '@/components/icons/IconUndo.vue'
 import NoteCanvas from '@/components/notes/NoteCanvas.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 
+/** 画布实例的公开面：页面在 hover 预取命中后调它预热文档解析。 */
+const canvasRef = ref<InstanceType<typeof NoteCanvas> | null>(null)
+
 const props = withDefaults(
-  defineProps<{ modelValue: string; editable?: boolean; noteId?: string; aiBusy?: boolean }>(),
-  { editable: true, noteId: undefined, aiBusy: false },
+  defineProps<{
+    modelValue: string
+    editable?: boolean
+    noteId?: string
+    aiBusy?: boolean
+    /** 正在等这条笔记的正文（缓存未命中）：给内容一层"正在换"的过渡，别硬切。 */
+    loading?: boolean
+  }>(),
+  { editable: true, noteId: undefined, aiBusy: false, loading: false },
 )
 const emit = defineEmits<{
   'update:modelValue': [value: string]
@@ -166,6 +175,53 @@ function chooseAi(action: NoteAiAction, close: () => void): void {
 watch(
   () => props.editable,
   (value) => instance.value?.setEditable(value),
+)
+
+/** 转发给画布：提前把某篇的正文解析成文档（切换时省掉这段主线程开销）。 */
+function warm(markdown: string): void {
+  canvasRef.value?.warm(markdown)
+}
+
+defineExpose({ warm })
+
+/**
+ * 每条笔记记一个滚动位置。
+ *
+ * 单实例换文档之后，滚动位置不再被重建——如果不主动处理，切到新笔记会**继承上一条
+ * 的滚动位置**（长笔记切走再回来停在半中间很突兀，切到短笔记还会因高度骤减而乱跳）。
+ * 记住每条自己的位置，回来时接着看，这也是笔记类应用的常规手感。
+ *
+ * 注意真正的滚动容器**不是 `.editor-body`**：正文区高度随内容增长，本身并不滚，
+ * 会滚的是外层布局的 `main.content`（高度固定、内容溢出）。所以这里往上找
+ * 第一个"样式允许滚且确实滚得动"的祖先，而不是写死某个类名。
+ */
+const bodyRef = ref<HTMLElement | null>(null)
+const scrollByNote = new Map<string, number>()
+
+function scrollParentOf(el: HTMLElement | null): HTMLElement | null {
+  let node: HTMLElement | null = el
+  while (node) {
+    const overflowY = getComputedStyle(node).overflowY
+    const scrollable = overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay'
+    if (scrollable && node.scrollHeight > node.clientHeight + 1) return node
+    node = node.parentElement
+  }
+  return (document.scrollingElement as HTMLElement | null) ?? null
+}
+
+watch(
+  () => props.noteId,
+  (noteId, previous) => {
+    if (previous) {
+      const scroller = scrollParentOf(bodyRef.value)
+      if (scroller) scrollByNote.set(previous, scroller.scrollTop)
+    }
+    // 等画布把新正文换完再定位：早一步拿到的是旧文档的高度
+    void nextTick(() => {
+      const scroller = scrollParentOf(bodyRef.value)
+      if (scroller) scroller.scrollTop = (noteId && scrollByNote.get(noteId)) || 0
+    })
+  },
 )
 </script>
 
@@ -383,15 +439,15 @@ watch(
       />
     </div>
 
-    <div class="editor-body">
+    <div ref="bodyRef" class="editor-body" :class="{ 'is-loading': loading }">
       <div class="editor-column">
         <slot name="header" />
-        <!-- 按 noteId 换实例：切换笔记只重建这块画布，工具栏与标题不动。
-             撤销栈随实例一起换掉，天然不会跨笔记。 -->
+        <!-- 单实例：切换笔记由画布原地换文档并清撤销栈，这里不上 key、不重建 -->
         <NoteCanvas
-          :key="noteId ?? 'draft'"
+          ref="canvasRef"
           :model-value="modelValue"
           :editable="editable"
+          :note-id="noteId"
           @update:model-value="emit('update:modelValue', $event)"
           @ready="onReady"
           @change="onCanvasChange"
@@ -538,6 +594,20 @@ watch(
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  transition: opacity 160ms ease;
+}
+
+/* 正文还在路上（缓存未命中）时把旧内容轻轻压暗：换笔记就有了过渡而不是硬切，
+   而这段时间通常刚好够请求回来——回来即恢复，看不出一道闪。
+   延迟 120ms 才加这个类（见 NotesView），所以命中缓存的切换完全不会压暗。 */
+.editor-body.is-loading {
+  opacity: 0.45;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .editor-body {
+    transition: none;
+  }
 }
 
 /* 正文收在一条窄栏里居中：满屏宽的行读起来很累，也不像"写作工具" */

@@ -73,6 +73,41 @@ export function latestNoteId(items: NoteListItem[]): string {
 /** 正在飞的那次列表请求：列表页挂载与"默认打开最新"几乎同时触发 `load()`。 */
 let inflightLoad: Promise<void> | null = null
 
+/**
+ * 正文缓存：切换笔记时**直接拿本地这份画出来**，不再等一个往返。
+ *
+ * 列表接口刻意不带正文（只给预览），所以"点一条笔记"必然要请求详情。
+ * 局域网/远程访问时这个往返肉眼可见，而它换来的内容用户十有八九刚看过或马上要回来。
+ * 于是这里做一层短 TTL 缓存：
+ * - 鼠标移到列表项上就先取（`prefetch`）——从 hover 到点击通常有百来毫秒，够它落地；
+ * - 命中缓存时同步渲染，零等待；未命中才走网络。
+ *
+ * 为什么带 TTL 而不是永久缓存：正文可能被另一个标签页改掉，
+ * 60 秒是"切换手感"与"看到别处改动"之间的折中；超过 TTL 一律回源。
+ * 缓存同时是**本地编辑的兜底**：离开一条笔记时把它当时的正文写进来，
+ * 所以"改完立刻切走再切回来"不会看到旧版本。
+ */
+export interface NoteBody {
+  id: string
+  title: string
+  content_md: string
+  tags: string[]
+  pinned: boolean
+  kb_id: string | null
+  doc_id: string | null
+  updated_at: string | null
+}
+
+const BODY_TTL_MS = 60_000
+const bodyCache = new Map<string, { body: NoteBody; at: number }>()
+const inflightBody = new Map<string, Promise<Note>>()
+
+/** 测试用：清掉正文缓存，免得用例之间互相污染。 */
+export function clearNoteBodyCache(): void {
+  bodyCache.clear()
+  inflightBody.clear()
+}
+
 export const useNoteStore = defineStore('notes', {
   state: (): State => ({
     items: [],
@@ -117,18 +152,74 @@ export const useNoteStore = defineStore('notes', {
       }
     },
 
+    /** 取缓存里那条正文；没有或过期返回 null。**同步**，用于切换时立刻上屏。 */
+    cached(noteId: string): NoteBody | null {
+      const hit = bodyCache.get(noteId)
+      if (!hit) return null
+      if (Date.now() - hit.at > BODY_TTL_MS) {
+        bodyCache.delete(noteId)
+        return null
+      }
+      return hit.body
+    },
+
+    /** 把一份正文放进缓存（离开笔记时的本地兜底、保存成功后的回填都走这里）。 */
+    remember(body: NoteBody): void {
+      bodyCache.set(body.id, { body, at: Date.now() })
+    },
+
+    /**
+     * 后台预取一条笔记的正文（列表项 hover / 按下时调）。
+     *
+     * 只填缓存，不改任何界面状态；已经在飞或已有新鲜缓存就复用/跳过——
+     * 否则鼠标扫过列表会打出一串请求。
+     *
+     * 返回取到的笔记（供调用方接着做别的预热，比如提前解析文档），
+     * 失败返回 null——预取是尽力而为，真正需要时 `fetch` 会再取一次。
+     */
+    async prefetch(noteId: string): Promise<Note | null> {
+      const fresh = this.cached(noteId)
+      if (fresh) return fresh as Note
+      const existing = inflightBody.get(noteId)
+      if (existing) return existing.catch(() => null)
+      const task = getNote(noteId)
+        .then((note) => {
+          this.remember(note)
+          return note
+        })
+        .finally(() => {
+          inflightBody.delete(noteId)
+        })
+      // 显式挂一个 catch，免得"预取失败"变成 unhandled rejection
+      task.catch(() => undefined)
+      inflightBody.set(noteId, task)
+      return task.catch(() => null)
+    },
+
     async fetch(noteId: string): Promise<Note> {
-      return getNote(noteId)
+      const pending = inflightBody.get(noteId)
+      if (pending) {
+        try {
+          return await pending
+        } catch {
+          // 预取失败：回落到自己发一次
+        }
+      }
+      const note = await getNote(noteId)
+      this.remember(note)
+      return note
     },
 
     async create(payload: NotePayload = {}): Promise<Note> {
       const created = await createNote({ content_md: '', ...payload })
+      this.remember(created)
       await Promise.all([this.load(), this.loadTags()])
       return created
     },
 
     async save(noteId: string, payload: NoteUpdate): Promise<Note> {
       const updated = await updateNote(noteId, payload)
+      this.remember(updated)
       const index = this.items.findIndex((item) => item.id === noteId)
       if (index >= 0) {
         const next = [...this.items]
@@ -140,6 +231,7 @@ export const useNoteStore = defineStore('notes', {
 
     async remove(noteId: string): Promise<void> {
       await deleteNote(noteId)
+      bodyCache.delete(noteId)
       this.items = this.items.filter((item) => item.id !== noteId)
       this.total = Math.max(0, this.total - 1)
       await this.loadTags()
@@ -147,6 +239,7 @@ export const useNoteStore = defineStore('notes', {
 
     async attach(noteId: string, kbId: string): Promise<Note> {
       const updated = await attachNote(noteId, kbId)
+      this.remember(updated)
       const index = this.items.findIndex((item) => item.id === noteId)
       if (index >= 0) {
         const next = [...this.items]

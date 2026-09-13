@@ -1,11 +1,14 @@
 /**
- * 文档画布：切换笔记靠"换实例"来隔离撤销栈。
+ * 文档画布：**一个实例服务所有笔记**，切换笔记靠原地换文档 + 清撤销栈。
  *
- * 背景：Tiptap v3 自己维护 state，没有清撤销栈的公开 API
- * （`editor.view.updateState(EditorState.create(...))` 在 v3 上不生效——
- * 实测 `editor.state === before` 仍为真，`can().undo()` 依旧 true）。
- * 所以隔离只能靠新实例；本用例钉住"新实例的历史是空的"这个前提，
- * 免得哪天有人把它换回"重建 state"的写法而悄悄退化成跨笔记撤销。
+ * 这里钉住两件容易退化的事：
+ * 1. 切换笔记**不重建实例**（重建是之前"切换卡一下"的根因）；
+ * 2. 撤销栈仍然按笔记隔离（上一条的编辑绝不能被撤销回当前这条——
+ *    否则会自动保存把串台内容写进库里）。
+ *
+ * 第 2 点用 `view.updateState(EditorState.create({ doc, plugins }))` 实现：
+ * ProseMirror 会重算所有插件 state，历史自然归零。曾经误以为这招在 Tiptap v3 无效，
+ * 于是退化成"换实例"；如果哪天有人把这行删了，下面的用例会立刻红。
  */
 import { flushPromises, mount } from '@vue/test-utils'
 import type { Editor } from '@tiptap/core'
@@ -13,9 +16,9 @@ import { describe, expect, it } from 'vitest'
 
 import NoteCanvas from '@/components/notes/NoteCanvas.vue'
 
-async function mountCanvas(content: string) {
+async function mountCanvas(content: string, noteId?: string) {
   const wrapper = mount(NoteCanvas, {
-    props: { modelValue: content },
+    props: { modelValue: content, noteId },
     attachTo: document.body,
   })
   // useEditor 在 onMounted 里建实例，ready 要等一轮刷新才送出
@@ -24,9 +27,15 @@ async function mountCanvas(content: string) {
   return { wrapper, editor: editor as Editor }
 }
 
+/** 本组件从始至终只应交给父组件一个实例。 */
+function readyInstances(wrapper: ReturnType<typeof mount>): Editor[] {
+  const all = (wrapper.emitted('ready') ?? []).map((event) => event[0]).filter(Boolean) as Editor[]
+  return [...new Set(all)]
+}
+
 describe('NoteCanvas', () => {
   it('挂载后把实例交出来，内容来自 modelValue、撤销栈为空', async () => {
-    const { wrapper, editor } = await mountCanvas('# 第一条\n\n正文')
+    const { wrapper, editor } = await mountCanvas('# 第一条\n\n正文', 'a')
 
     expect(editor).toBeTruthy()
     expect(editor.getText()).toContain('第一条')
@@ -36,7 +45,7 @@ describe('NoteCanvas', () => {
   })
 
   it('编辑后会上报 markdown 与交易', async () => {
-    const { wrapper, editor } = await mountCanvas('正文')
+    const { wrapper, editor } = await mountCanvas('正文', 'a')
     editor.commands.insertContent('追加')
 
     const updates = wrapper.emitted('update:modelValue') ?? []
@@ -47,30 +56,72 @@ describe('NoteCanvas', () => {
     wrapper.unmount()
   })
 
-  it('换一个实例（按 noteId 上 key 的效果）= 新内容 + 空撤销栈', async () => {
-    const first = await mountCanvas('第一条的正文')
-    first.editor.commands.insertContent('改了一下')
-    expect(first.editor.can().undo()).toBe(true)
-    first.wrapper.unmount()
+  it('切换笔记：复用同一个实例换内容，且撤销栈被清空', async () => {
+    const { wrapper, editor } = await mountCanvas('第一条的正文', 'a')
+    editor.commands.insertContent('改了一下')
+    expect(editor.can().undo()).toBe(true)
 
-    // 模拟 :key 变化后的重建
-    const second = await mountCanvas('第二条的正文')
+    await wrapper.setProps({ modelValue: '第二条的正文', noteId: 'b' })
+    await flushPromises()
 
-    expect(second.editor).not.toBe(first.editor)
-    expect(second.editor.getText()).toContain('第二条')
-    // 关键：上一条的编辑不可撤销回来（否则会自动保存写进这一条）
-    expect(second.editor.getText()).not.toContain('第一条')
-    expect(second.editor.can().undo()).toBe(false)
+    // 关键：实例没有重建
+    expect(readyInstances(wrapper)).toHaveLength(1)
+    expect(editor.getText()).toContain('第二条')
+    expect(editor.getText()).not.toContain('第一条')
+    // 关键：上一条的编辑不可撤销回来（否则会被自动保存写进这一条）
+    expect(editor.can().undo()).toBe(false)
 
-    second.wrapper.unmount()
+    wrapper.unmount()
   })
 
-  it('外部改 modelValue（AI 写回）会灌进当前实例', async () => {
-    const { wrapper, editor } = await mountCanvas('原文')
+  it('A→B→A 来回切：每次都换对内容、每次都清空历史（走文档缓存那条路）', async () => {
+    const { wrapper, editor } = await mountCanvas('甲的正文', 'a')
+
+    await wrapper.setProps({ modelValue: '乙的正文', noteId: 'b' })
+    await flushPromises()
+    expect(editor.getText()).toContain('乙')
+    expect(editor.can().undo()).toBe(false)
+
+    await wrapper.setProps({ modelValue: '甲的正文', noteId: 'a' })
+    await flushPromises()
+
+    expect(readyInstances(wrapper)).toHaveLength(1)
+    expect(editor.getText()).toContain('甲')
+    expect(editor.getText()).not.toContain('乙')
+    expect(editor.can().undo()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('预热过的那篇切过来内容正确、历史清空（warm 产出的文档与正常装载一致）', async () => {
+    const { wrapper, editor } = await mountCanvas('甲的正文', 'a')
+    const target = '# 乙的标题\n\n乙的正文，带 **粗体** 与列表\n\n- 一\n- 二'
+
+    // 模拟 hover 预取命中后的预热（空闲时提前解析）
+    ;(wrapper.vm as unknown as { warm: (markdown: string) => void }).warm(target)
+
+    await wrapper.setProps({ modelValue: target, noteId: 'b' })
+    await flushPromises()
+
+    expect(editor.getText()).toContain('乙的标题')
+    expect(editor.getText()).toContain('粗体')
+    expect(editor.getText()).not.toContain('甲的正文')
+    expect(editor.can().undo()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('同一条笔记内容被外部改写（AI 写回）：换内容但**保留**撤销栈', async () => {
+    const { wrapper, editor } = await mountCanvas('原文', 'a')
+    editor.commands.insertContent('我自己加的')
+    expect(editor.can().undo()).toBe(true)
+
     await wrapper.setProps({ modelValue: 'AI 整理后的正文' })
     await flushPromises()
 
     expect(editor.getText()).toContain('AI 整理后的正文')
+    // 保留历史：用户要能撤销掉 AI 的改动（提示里就是这么承诺的）
+    expect(editor.can().undo()).toBe(true)
 
     wrapper.unmount()
   })

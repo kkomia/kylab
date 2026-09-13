@@ -39,7 +39,23 @@ interface Draft {
   pinned: boolean
   kb_id: string | null
   doc_id: string | null
+  updated_at: string | null
 }
+
+/** 页面只关心这些字段：缓存里的正文、服务端详情、草稿都满足这个形状。 */
+type NoteBodyLike = Pick<
+  Note,
+  'id' | 'title' | 'content_md' | 'tags' | 'pinned' | 'kb_id' | 'doc_id' | 'updated_at'
+>
+
+/**
+ * 切换时"压暗旧内容"的启动延迟。
+ *
+ * 比这更快到货的切换（命中缓存、局域网快往返）**完全不压暗**——
+ * 快路径不该被动画拖慢，看起来就该是瞬移；只有真的在等网络时才给一个过渡，
+ * 让这段时间有交代，而不是画面僵住再硬切。
+ */
+const SWITCH_DIM_DELAY_MS = 120
 
 interface Group {
   label: string
@@ -68,11 +84,71 @@ const attaching = ref(false)
 const deleteOpen = ref(false)
 const deleting = ref(false)
 
+const editorRef = ref<InstanceType<typeof NoteEditor> | null>(null)
+
 const kbOptions = computed(() => kbs.items.map((kb) => ({ value: kb.id, label: kb.name })))
 const activeKbName = computed(() => kbs.byId(draft.value?.kb_id ?? '')?.name ?? '')
 
+/** 缓存未命中、正文还在路上：给编辑区一个过渡（延迟后才亮，见 SWITCH_DIM_DELAY_MS）。 */
+const switching = ref(false)
+
 let saveTimer: ReturnType<typeof setTimeout> | undefined
 let searchTimer: ReturnType<typeof setTimeout> | undefined
+let switchDimTimer: ReturnType<typeof setTimeout> | undefined
+/** 切换请求的序号：迟到的响应不许覆盖后点的笔记，也不许乱灭"加载中"。 */
+let switchToken = 0
+
+/**
+ * 已落盘内容的指纹。保存前比一次：没改过就不发请求。
+ *
+ * 切换笔记时原来会无条件 PATCH 一次（哪怕一个字没动），既是一次白写的数据库事务，
+ * 也是切换延迟里的一段。存个指纹就能直接把这次往返省掉。
+ */
+let savedSnapshot = ''
+
+function snapshotOf(item: Pick<Draft, 'title' | 'content_md' | 'tags' | 'pinned'>): string {
+  return `${item.title}\u0000${item.content_md}\u0000${item.tags.join('\u0001')}\u0000${item.pinned ? '1' : '0'}`
+}
+
+/**
+ * 鼠标移到列表项上时：先取正文，取到后**在空闲时间把它预先解析成文档**。
+ *
+ * 从 hover 到点击通常有百来毫秒，够这两件事都不落在点击路径上——
+ * 于是切换只剩一次 state 替换，大笔记也不会在点击后卡一下。
+ * 只保留最后一次悬停的预热（连扫多行不会排一队解析）。
+ */
+let warmToken = 0
+
+function scheduleWarm(markdown: string): void {
+  const token = ++warmToken
+  const run = (): void => {
+    if (token === warmToken) editorRef.value?.warm(markdown)
+  }
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 300 })
+  else setTimeout(run, 0)
+}
+
+function onNoteHover(noteId: string): void {
+  void store.prefetch(noteId).then((note) => {
+    if (note) scheduleWarm(note.content_md)
+  })
+}
+
+function beginSwitchWait(token: number): void {
+  if (switchDimTimer) clearTimeout(switchDimTimer)
+  switchDimTimer = setTimeout(() => {
+    if (token === switchToken) switching.value = true
+  }, SWITCH_DIM_DELAY_MS)
+}
+
+function endSwitchWait(token: number): void {
+  if (token !== switchToken) return
+  if (switchDimTimer) {
+    clearTimeout(switchDimTimer)
+    switchDimTimer = undefined
+  }
+  switching.value = false
+}
 
 function timeOf(item: NoteListItem): number {
   return item.updated_at ? new Date(item.updated_at).getTime() : 0
@@ -109,7 +185,7 @@ const groups = computed<Group[]>(() => {
   return buckets
 })
 
-function applyNote(note: Note): void {
+function applyNote(note: NoteBodyLike): void {
   hydrating.value = true
   draft.value = {
     id: note.id,
@@ -119,36 +195,69 @@ function applyNote(note: Note): void {
     pinned: note.pinned,
     kb_id: note.kb_id,
     doc_id: note.doc_id,
+    updated_at: note.updated_at,
   }
   tagDraft.value = ''
   // 状态直接落到"已保存 <这条笔记的上次保存时间>"，而不是先清空再等下一次保存：
   // 清空会让标签在切换时闪一下再消失，而库里本来就存着这个时间，照实显示即可。
   saveState.value = 'saved'
   savedAt.value = note.updated_at ? new Date(note.updated_at) : null
+  savedSnapshot = snapshotOf(draft.value)
   // 等这次赋值引发的 watch 跑完再解除抑制，否则装载会被当成一次编辑并触发自动保存
   void nextTick(() => {
     hydrating.value = false
   })
 }
 
+/**
+ * 切到路由上的那条笔记。
+ *
+ * 三条路径，按代价从低到高：
+ * 1. 就是当前这条 → 什么都不做；
+ * 2. 正文在本地缓存里（刚看过、或 hover 时已预取）→ **同步上屏，零等待**；
+ * 3. 缓存没有 → 请求详情，期间给编辑区一个延迟生效的压暗过渡。
+ *
+ * 两条旧实现里的坑，这里都绕开了：
+ * - 不再 `await saveNow()` 再 `fetch()`：保存旧笔记与读取新笔记之间没有先后依赖，
+ *   串行只是白等一个往返。现在保存**不阻塞**（`flush` 只发不等）。
+ * - 离开前把旧笔记的当前正文写进本地缓存：这样"改完立刻切走再切回来"
+ *   看到的是自己刚写的内容，而不是一个还在飞的保存里的旧版本。
+ */
 async function loadFromRoute(): Promise<void> {
+  const token = ++switchToken
   const id = String(route.params.noteId ?? '')
   if (!id) {
+    endSwitchWait(token)
     await openLatest()
     return
   }
-  if (draft.value?.id === id) return
-  // 离开这条笔记之前先落盘，但**不要动保存状态**：那个标签马上要归下一条笔记了，
-  // 此刻亮出"保存中…/已保存"只会闪一下（用户实测到的闪烁）
-  await saveNow({ silent: true })
+  if (draft.value?.id === id) {
+    endSwitchWait(token)
+    return
+  }
+  const leaving = draft.value
+  if (leaving) {
+    store.remember({ ...leaving })
+    flush(leaving)
+  }
+  const cached = store.cached(id)
+  if (cached) {
+    applyNote(cached)
+    endSwitchWait(token)
+    return
+  }
+  beginSwitchWait(token)
   try {
     const note = await store.fetch(id)
     // 取回来的路上用户可能又切走了：别把旧请求的结果盖到新笔记上
-    if (String(route.params.noteId ?? '') !== id) return
+    if (token !== switchToken) return
     applyNote(note)
   } catch (cause) {
+    if (token !== switchToken) return
     notifyError(cause instanceof Error ? cause.message : '笔记加载失败')
     draft.value = null
+  } finally {
+    endSwitchWait(token)
   }
 }
 
@@ -170,7 +279,11 @@ async function openLatest(): Promise<void> {
   draft.value = null // 一条都没有：显示空态，让用户去点「新建」
 }
 
-watch(() => route.params.noteId, () => void loadFromRoute(), { immediate: true })
+watch(
+  () => route.params.noteId,
+  () => void loadFromRoute(),
+  { immediate: true },
+)
 
 watch(
   () => {
@@ -189,7 +302,7 @@ watch(
 )
 
 /**
- * 保存当前笔记。
+ * 保存当前笔记（Ctrl/Cmd+S、AI、入库前的落盘）。
  *
  * `silent`：切换/新建这种"马上就要离开这条笔记"的场合用——照常落盘，
  * 但**不碰保存状态**（那个标签立刻要归下一条笔记，亮一下再消失就是闪烁）。
@@ -197,7 +310,25 @@ watch(
 async function saveNow(options: { silent?: boolean } = {}): Promise<void> {
   const item = draft.value
   if (!item || hydrating.value) return
-  if (saveTimer) clearTimeout(saveTimer)
+  await saveDraft(item, options)
+}
+
+/**
+ * 落盘一份草稿快照。
+ *
+ * 注意它接收的是**快照对象**而不是读 `draft.value`：切换笔记时的保存是"不等结果"的，
+ * 等响应回来时 `draft` 早就换成下一条了——如果那时才去读，就会把下一条的内容
+ * 写进上一条。
+ *
+ * 没改动（指纹一致）直接返回：不发请求、也不动保存标签。
+ */
+async function saveDraft(item: Draft, options: { silent?: boolean } = {}): Promise<void> {
+  const snap = snapshotOf(item)
+  if (snap === savedSnapshot) return
+  if (saveTimer) {
+    clearTimeout(saveTimer)
+    saveTimer = undefined
+  }
   if (!options.silent) saveState.value = 'saving'
   try {
     const updated = await store.save(item.id, {
@@ -208,13 +339,34 @@ async function saveNow(options: { silent?: boolean } = {}): Promise<void> {
     })
     item.kb_id = updated.kb_id
     item.doc_id = updated.doc_id
+    item.updated_at = updated.updated_at
+    // 只有它还是当前笔记时才碰界面状态；离开的笔记的响应不许改新笔记的标签。
+    // 指纹只推进到**这次真正发出去的那份**：请求期间用户又敲的字仍算未保存，
+    // 会被防抖保存接着写出去，不会被误判成已保存。
+    if (item.id !== draft.value?.id) return
+    savedSnapshot = snap
     if (options.silent) return
     savedAt.value = new Date()
     saveState.value = 'saved'
   } catch (cause) {
-    if (!options.silent) saveState.value = 'error'
+    if (item.id === draft.value?.id && !options.silent) saveState.value = 'error'
     notifyError(cause instanceof Error ? cause.message : '保存失败')
   }
+}
+
+/**
+ * 离开一条笔记前把它落盘——**只发不等**。
+ *
+ * 新笔记的读取与旧笔记的写入彼此独立，串起来只是让用户多等一个往返。
+ * 顺带清掉防抖定时器：留着它会在 800ms 后用**新笔记**的草稿去触发保存。
+ */
+function flush(item: Draft): void {
+  if (saveTimer) {
+    clearTimeout(saveTimer)
+    saveTimer = undefined
+  }
+  if (snapshotOf(item) === savedSnapshot) return
+  void saveDraft(item, { silent: true })
 }
 
 /** 同一天只给时间；跨天带上日期——否则"已保存 09:12"看不出是哪天的 09:12。 */
@@ -280,13 +432,36 @@ function removeTag(tag: string): void {
 
 async function createNew(): Promise<void> {
   try {
-    // 同样要离开当前这条：安静落盘，别让保存状态在新笔记的工具栏上闪一下
-    await saveNow({ silent: true })
+    // 同样要离开当前这条：留一份本地副本并安静落盘（不等结果），
+    // 别让保存状态在新笔记的工具栏上闪一下
+    const leaving = draft.value
+    if (leaving) {
+      store.remember({ ...leaving })
+      flush(leaving)
+    }
     const note = await store.create({ title: '', content_md: '' })
     await router.push(`/notes/${note.id}`)
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '新建失败')
   }
+}
+
+/**
+ * 列表出来之后，趁空闲把**最靠前的几条**正文先取回来。
+ *
+ * 用户最先点的通常就是列表头部这几条（刚写过、刚看过），提前取好，
+ * 就算他没悬停、直接点，切换也不必等一个往返。只取前几条是刻意的：
+ * 整表预取会在打开页面时打出一串请求，得不偿失。
+ */
+const PREFETCH_TOP_N = 6
+
+function prefetchTopNotes(): void {
+  const ids = store.items.slice(0, PREFETCH_TOP_N).map((item) => item.id)
+  const run = (): void => {
+    for (const id of ids) void store.prefetch(id)
+  }
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(run, { timeout: 800 })
+  else setTimeout(run, 0)
 }
 
 function onSearchInput(): void {
@@ -391,7 +566,7 @@ async function confirmDelete(): Promise<void> {
 
 onMounted(() => {
   window.addEventListener('keydown', onKeydown)
-  void store.load()
+  void store.load().then(prefetchTopNotes)
   void store.loadTags()
   void kbs.load()
 })
@@ -399,6 +574,7 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeydown)
   if (saveTimer) clearTimeout(saveTimer)
   if (searchTimer) clearTimeout(searchTimer)
+  if (switchDimTimer) clearTimeout(switchDimTimer)
 })
 </script>
 
@@ -409,7 +585,9 @@ onBeforeUnmount(() => {
     <div class="notes-layout">
       <aside class="notes-list">
         <div class="list-head">
-          <p class="list-title">全部<span class="list-count tabular">{{ store.total }}</span></p>
+          <p class="list-title">
+            全部<span class="list-count tabular">{{ store.total }}</span>
+          </p>
           <button type="button" class="icon-action" title="新建笔记" @click="createNew">
             <IconPlus :size="16" />
           </button>
@@ -417,11 +595,7 @@ onBeforeUnmount(() => {
 
         <div class="search-box">
           <IconSearch :size="14" class="search-icon" />
-          <AppInput
-            v-model="searchInput"
-            placeholder="搜索标题与正文"
-            aria-label="搜索笔记"
-          />
+          <AppInput v-model="searchInput" placeholder="搜索标题与正文" aria-label="搜索笔记" />
         </div>
 
         <div v-if="store.tags.length" class="tag-bar">
@@ -452,6 +626,9 @@ onBeforeUnmount(() => {
                   class="note-item"
                   :class="{ 'note-item-active': item.id === draft?.id }"
                   :to="`/notes/${item.id}`"
+                  @pointerenter="onNoteHover(item.id)"
+                  @pointerdown="onNoteHover(item.id)"
+                  @focus="onNoteHover(item.id)"
                 >
                   <span class="note-item-title">
                     <IconPin v-if="item.pinned" :size="12" class="pin-icon" />
@@ -477,10 +654,12 @@ onBeforeUnmount(() => {
              这里让它一直挂着，只换内容——同类型笔记之间没有必须重建的东西。 -->
         <NoteEditor
           v-if="draft"
+          ref="editorRef"
           v-model="draft.content_md"
           class="pane-editor"
           :note-id="draft.id"
           :ai-busy="aiBusy"
+          :loading="switching"
           @notify="onEditorNotify"
           @ai="runAi"
         >
@@ -509,7 +688,12 @@ onBeforeUnmount(() => {
             >
               <IconLibrary :size="15" />
             </button>
-            <button type="button" class="icon-action icon-action-danger" title="删除" @click="deleteOpen = true">
+            <button
+              type="button"
+              class="icon-action icon-action-danger"
+              title="删除"
+              @click="deleteOpen = true"
+            >
               <IconTrash :size="15" />
             </button>
           </template>
@@ -525,7 +709,12 @@ onBeforeUnmount(() => {
             <div class="tag-row">
               <span v-for="tag in draft.tags" :key="tag" class="tag-pill">
                 {{ tag }}
-                <button type="button" class="tag-remove" :title="`移除 ${tag}`" @click="removeTag(tag)">
+                <button
+                  type="button"
+                  class="tag-remove"
+                  :title="`移除 ${tag}`"
+                  @click="removeTag(tag)"
+                >
                   ×
                 </button>
               </span>
