@@ -121,8 +121,10 @@ function applyNote(note: Note): void {
     doc_id: note.doc_id,
   }
   tagDraft.value = ''
-  saveState.value = 'idle'
-  savedAt.value = null
+  // 状态直接落到"已保存 <这条笔记的上次保存时间>"，而不是先清空再等下一次保存：
+  // 清空会让标签在切换时闪一下再消失，而库里本来就存着这个时间，照实显示即可。
+  saveState.value = 'saved'
+  savedAt.value = note.updated_at ? new Date(note.updated_at) : null
   // 等这次赋值引发的 watch 跑完再解除抑制，否则装载会被当成一次编辑并触发自动保存
   void nextTick(() => {
     hydrating.value = false
@@ -136,7 +138,9 @@ async function loadFromRoute(): Promise<void> {
     return
   }
   if (draft.value?.id === id) return
-  await saveNow()
+  // 离开这条笔记之前先落盘，但**不要动保存状态**：那个标签马上要归下一条笔记了，
+  // 此刻亮出"保存中…/已保存"只会闪一下（用户实测到的闪烁）
+  await saveNow({ silent: true })
   try {
     const note = await store.fetch(id)
     // 取回来的路上用户可能又切走了：别把旧请求的结果盖到新笔记上
@@ -177,17 +181,24 @@ watch(
   },
   () => {
     if (hydrating.value || !draft.value) return
-    saveState.value = 'idle'
+    // 刻意不在这里把状态退回 idle：那会让"已保存 12:30"在每次敲字时先消失、
+    // 800ms 后再出现，看起来像闪烁。让上一行保存结果留着，等真正开始保存再变。
     if (saveTimer) clearTimeout(saveTimer)
     saveTimer = setTimeout(() => void saveNow(), 800)
   },
 )
 
-async function saveNow(): Promise<void> {
+/**
+ * 保存当前笔记。
+ *
+ * `silent`：切换/新建这种"马上就要离开这条笔记"的场合用——照常落盘，
+ * 但**不碰保存状态**（那个标签立刻要归下一条笔记，亮一下再消失就是闪烁）。
+ */
+async function saveNow(options: { silent?: boolean } = {}): Promise<void> {
   const item = draft.value
   if (!item || hydrating.value) return
   if (saveTimer) clearTimeout(saveTimer)
-  saveState.value = 'saving'
+  if (!options.silent) saveState.value = 'saving'
   try {
     const updated = await store.save(item.id, {
       title: item.title,
@@ -197,24 +208,31 @@ async function saveNow(): Promise<void> {
     })
     item.kb_id = updated.kb_id
     item.doc_id = updated.doc_id
+    if (options.silent) return
     savedAt.value = new Date()
     saveState.value = 'saved'
   } catch (cause) {
-    saveState.value = 'error'
+    if (!options.silent) saveState.value = 'error'
     notifyError(cause instanceof Error ? cause.message : '保存失败')
   }
 }
 
-function formatClock(date: Date): string {
+/** 同一天只给时间；跨天带上日期——否则"已保存 09:12"看不出是哪天的 09:12。 */
+function formatSavedAt(date: Date): string {
+  const now = new Date()
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
   const hh = String(date.getHours()).padStart(2, '0')
   const mm = String(date.getMinutes()).padStart(2, '0')
-  return `${hh}:${mm}`
+  return sameDay ? `${hh}:${mm}` : `${date.getMonth() + 1}/${date.getDate()} ${hh}:${mm}`
 }
 
 const saveLabel = computed(() => {
   if (saveState.value === 'saving') return '保存中…'
   if (saveState.value === 'saved') {
-    return savedAt.value ? `已保存 ${formatClock(savedAt.value)}` : '已保存'
+    return savedAt.value ? `已保存 ${formatSavedAt(savedAt.value)}` : '已保存'
   }
   if (saveState.value === 'error') return '保存失败'
   return ''
@@ -262,7 +280,8 @@ function removeTag(tag: string): void {
 
 async function createNew(): Promise<void> {
   try {
-    await saveNow()
+    // 同样要离开当前这条：安静落盘，别让保存状态在新笔记的工具栏上闪一下
+    await saveNow({ silent: true })
     const note = await store.create({ title: '', content_md: '' })
     await router.push(`/notes/${note.id}`)
   } catch (cause) {
