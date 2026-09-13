@@ -56,6 +56,23 @@ function toListItem(note: Note, previous?: NoteListItem): NoteListItem {
   return { ...note, content_md: '', preview: plainPreview(note.content_md) }
 }
 
+/**
+ * 列表里"最新的一条"是哪个。
+ *
+ * 取 `updated_at` 最大的那条，而**不是列表里的第一条**：列表按"置顶优先"排，
+ * 第一条可能是很久以前置顶的旧笔记，而"点进笔记菜单看到最新内容"要的是时间意义上的最新。
+ */
+export function latestNoteId(items: NoteListItem[]): string {
+  let best: NoteListItem | null = null
+  for (const item of items) {
+    if (best === null || (item.updated_at ?? '') > (best.updated_at ?? '')) best = item
+  }
+  return best?.id ?? ''
+}
+
+/** 正在飞的那次列表请求：列表页挂载与"默认打开最新"几乎同时触发 `load()`。 */
+let inflightLoad: Promise<void> | null = null
+
 export const useNoteStore = defineStore('notes', {
   state: (): State => ({
     items: [],
@@ -69,21 +86,26 @@ export const useNoteStore = defineStore('notes', {
 
   actions: {
     async load(): Promise<void> {
+      if (inflightLoad !== null) return inflightLoad
       this.loading = true
-      try {
-        const result = await listNotes({
-          q: this.query || undefined,
-          tag: this.activeTag || undefined,
-          limit: 100,
-        })
-        this.items = result.items
-        this.total = result.total
-        this.error = ''
-      } catch (error) {
-        this.error = error instanceof Error ? error.message : '笔记加载失败'
-      } finally {
-        this.loading = false
-      }
+      inflightLoad = (async () => {
+        try {
+          const result = await listNotes({
+            q: this.query || undefined,
+            tag: this.activeTag || undefined,
+            limit: 100,
+          })
+          this.items = result.items
+          this.total = result.total
+          this.error = ''
+        } catch (error) {
+          this.error = error instanceof Error ? error.message : '笔记加载失败'
+        } finally {
+          this.loading = false
+          inflightLoad = null
+        }
+      })()
+      return inflightLoad
     },
 
     async loadTags(): Promise<void> {

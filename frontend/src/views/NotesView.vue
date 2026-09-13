@@ -29,7 +29,7 @@ import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import { useToast } from '@/composables/useToast'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
-import { useNoteStore } from '@/stores/notes'
+import { latestNoteId, useNoteStore } from '@/stores/notes'
 
 interface Draft {
   id: string
@@ -133,7 +133,7 @@ function applyNote(note: Note): void {
 async function loadFromRoute(): Promise<void> {
   const id = String(route.params.noteId ?? '')
   if (!id) {
-    draft.value = null
+    await openLatest()
     return
   }
   if (draft.value?.id === id) return
@@ -147,6 +147,24 @@ async function loadFromRoute(): Promise<void> {
   } finally {
     loadingNote.value = false
   }
+}
+
+/**
+ * 没有指定笔记时，**默认打开最新的一条**（与「对话」入口同一套语义：
+ * 既然已经有「新建」按钮，入口就该回到上次写的那条，而不是停在一个空页面）。
+ *
+ * 等待列表期间用户可能已经点了某条（或点了新建）——那就不许再改路径，
+ * 否则会把刚打开的那条顶掉（`ChatView` 的 `enterChat` 踩过同一个坑）。
+ */
+async function openLatest(): Promise<void> {
+  if (!store.items.length) await store.load()
+  if (route.params.noteId) return
+  const latest = latestNoteId(store.items)
+  if (latest) {
+    await router.replace(`/notes/${latest}`)
+    return
+  }
+  draft.value = null // 一条都没有：显示空态，让用户去点「新建」
 }
 
 watch(() => route.params.noteId, () => void loadFromRoute(), { immediate: true })
