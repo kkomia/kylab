@@ -150,10 +150,16 @@ class SuggestedQuestionsService:
         这是有意的：它只是"你可以这样问"的引导，不是一份固定清单。
         没有任何已存问题（库的功能关着、或文档还没重新摄入）时返回空列表，
         由前端回退到内置静态样例。
+
+        **抽样只在"有题的块"里做**（`with_questions_only=True`）：出题是逐文档补的，
+        绝大多数块没有题；在全库随机抽会经常一条都抽不到，界面就退回静态样例——
+        看起来像"功能没生效"（v24 用户反馈）。
         """
         if not kb_ids or limit <= 0:
             return []
-        chunks = self._stores.meta.sample_chunks(list(kb_ids), limit=_READ_SAMPLE_CHUNKS)
+        chunks = self._stores.meta.sample_chunks(
+            list(kb_ids), limit=_READ_SAMPLE_CHUNKS, with_questions_only=True
+        )
         picked: list[str] = []
         seen: set[str] = set()
         for chunk in chunks:

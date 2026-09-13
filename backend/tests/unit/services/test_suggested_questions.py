@@ -302,3 +302,39 @@ def test_index_text_appends_the_questions_to_the_original() -> None:
 
     assert plain.index_text == plain.text
     assert with_questions.index_text == f"{with_questions.text}\n眼轴怎么测？\n多久测一次？"
+
+
+def test_list_questions_ignores_the_questionless_majority(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    """库里的块**绝大多数没有题**，抽样必须在"有题的块"里做。
+
+    这是 v24 的用户反馈：库里已经有上百条问题，对话空状态却还是静态样例。
+    原因就是读端在全库随机抽 40 块，而有题的块只占极小一部分——10 次调用有 5 次
+    一条都抽不到，于是回退静态样例（看起来像"功能没生效"）。
+
+    这里故意造 3000 块无题 + 2 块有题：若抽样回到"全库随机"，连续三次都抽中
+    有题的块的概率约是 0.02%，用例会稳定地红。
+    """
+    _seed_chunks(
+        bundle,
+        kb.id,
+        document.id,
+        count=2,
+        questions={0: ("眼轴怎么测？",), 1: ("多久测一次？",)},
+    )
+    bulk = bundle.meta.create_document(
+        DocumentRecord(
+            id="doc_bulk",
+            knowledge_base_id=kb.id,
+            name="大量无题文档.md",
+            source_kind=DataSourceKind.UPLOAD,
+            content_hash="hash-bulk",
+            stage=DocumentStage.INDEXED,
+        )
+    )
+    _seed_chunks(bundle, kb.id, bulk.id, count=3000, prefix="bulk")
+    service = SuggestedQuestionsService(bundle, FakeChat())
+
+    for _ in range(3):
+        questions = service.list_questions(kb_ids=[kb.id], limit=6)
+        assert set(questions) <= {"眼轴怎么测？", "多久测一次？"}
+        assert questions, "有题的块存在时，读端不该返回空（那会让界面退回静态样例）"

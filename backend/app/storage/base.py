@@ -892,12 +892,18 @@ class MetaStore(ABC):
     def count_chunks(self, document_id: str) -> int: ...
 
     @abstractmethod
-    def sample_chunks(self, kb_ids: Sequence[str], *, limit: int) -> list[ChunkRecord]:
+    def sample_chunks(
+        self, kb_ids: Sequence[str], *, limit: int, with_questions_only: bool = False
+    ) -> list[ChunkRecord]:
         """从若干知识库里**随机抽**若干切块（跳过人工禁用的）。
 
         用途是"给示例问题生成提供一点语料"，不是检索：不需要相关性排序，
         只要覆盖面够广——所以按库随机，而不是取每个文档的前几块（那样每个库
         都只看得到第一份文档的开头）。空 ``kb_ids`` 返回空列表。
+
+        ``with_questions_only=True`` 只抽**已经出过题**的块。读端（对话页空状态）
+        必须用它：库里绝大多数块没有题，在全库随机抽会一次次抽到空块，
+        于是"有上百条问题却一条都显示不出来"。
         """
 
     @abstractmethod

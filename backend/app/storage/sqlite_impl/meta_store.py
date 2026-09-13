@@ -872,19 +872,29 @@ class SqliteMetaStore(MetaStore):
             for row in rows
         ]
 
-    def sample_chunks(self, kb_ids: Sequence[str], *, limit: int) -> list[ChunkRecord]:
+    def sample_chunks(
+        self, kb_ids: Sequence[str], *, limit: int, with_questions_only: bool = False
+    ) -> list[ChunkRecord]:
         """从若干知识库随机抽切块（跳过人工禁用的）。
 
         两个用途：入库时出题的语料采样，以及**读端**（对话页空状态）随机抽几块、
         把它们已存的问题取出来展示（v23）。
+
+        ``with_questions_only=True`` 是读端必须加的：库里的块**绝大部分没有题**
+        （只有开过出题或事后补过的文档才有），在全库随机抽只会一次次抽到空块，
+        于是"库里明明有上百条问题，空状态却什么都没有"（v24 实测：10 次调用有 5 次为空）。
+        加上这个过滤，抽样的分母就是"有题的块"，有几条就能稳定看到几条。
         """
         if not kb_ids or limit <= 0:
             return []
         placeholders = ",".join("?" * len(kb_ids))
+        # questions 的写入侧只经 _json（replace_chunks / update_chunk），永远是合法 JSON 数组
+        only_questions = " AND questions <> '[]'" if with_questions_only else ""
         with self._db.read() as conn:
             rows = conn.execute(
                 "SELECT * FROM chunks "  # noqa: S608
                 f"WHERE knowledge_base_id IN ({placeholders}) AND disabled = 0"
+                f"{only_questions}"
                 " ORDER BY RANDOM() LIMIT ?",
                 [*kb_ids, limit],
             ).fetchall()
