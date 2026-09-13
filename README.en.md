@@ -144,6 +144,7 @@ kylab/
 | [Handover 2026-09-11](docs/交接说明-2026-09-11.md) | Read this first when taking over: current status, three commands to get running, honest list of open items, discipline and pitfalls |
 | [Product benchmark v0.1](docs/知识库产品对标调研-v0.1.md) | Gap analysis and trade-offs against Dify / RAGFlow / FastGPT / WeKnora and peers |
 | [Notes research v0.1](docs/笔记功能调研-v0.1.md) | Feature decomposition vs. Tencent ima, editor selection (Tiptap), landing checklist |
+| [Wiki generation research v0.1](docs/Wiki生成调研-v0.1.md) | Four routes for auto-generating wiki pages, product examples, and a copy-ready checklist |
 | [Retrieval evaluation v0.1](docs/检索评测-v0.1.md) | Retrieval quality evaluation method and conclusions |
 | [Deployment & operations v0.1](docs/部署与运行-v0.1.md) | LAN access, deployment recipes and known pitfalls |
 
