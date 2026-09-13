@@ -185,6 +185,9 @@ async function confirmDelete(): Promise<void> {
   try {
     await deleteDocument(target.id)
     deleteOpen.value = false
+    // 跨页选择下要**主动**摘掉这一篇：列表刷新只换当前页的内容，
+    // 不摘的话它会一直算在"已选 N 篇"里（后端删它会报不存在）。
+    dropFromSelection([target.id])
     notifySuccess('已删除，原文在回收站保留 7 天')
     await refreshAll()
     void store.refreshSummaries()
@@ -263,12 +266,35 @@ const hasFilter = computed(() =>
 
 /** 勾选的文档 id。**用数组而不是 Set**：Pinia/Vue 对 Set 的变更追踪要额外小心，
  *  而这里最多几十个 id，数组的 `includes` 开销可以忽略。
- *  分页之后它只覆盖**当前页**（翻页即清空，见 `goToPage`）——整库语义走后端 `all=true`。 */
+ *
+ *  **跨页累计**：翻页不清空，上一页勾的继续算数——所以批量动作打到的可能是
+ *  看不见那一页的文档。界面上要如实说明（`offPageSelected`），不能只报个总数。
+ *  筛选条件一变则清空（见 `refresh`）：换了一组文档还留着旧选择，
+ *  用户没法知道自己到底选了些什么。 */
 const selected = ref<string[]>([])
 const selectedCount = computed(() => selected.value.length)
+
+/** 当前页的 id 是否**全部**已在选中集里（决定表头复选框的状态）。 */
 const allSelected = computed(
-  () => documents.value.length > 0 && selected.value.length === documents.value.length,
+  () =>
+    documents.value.length > 0 &&
+    documents.value.every((document) => selected.value.includes(document.id)),
 )
+
+/** 当前页勾了几篇——用来判断半选，也用来决定表头点击是"补上"还是"去掉"。 */
+const pageSelectedCount = computed(
+  () => documents.value.filter((document) => selected.value.includes(document.id)).length,
+)
+
+/** 当前页选中了一部分：表头复选框显示"半选"。（原生 indeterminate 只能走 DOM 属性。） */
+const someSelected = computed(() => !allSelected.value && pageSelectedCount.value > 0)
+
+/** 选中的文档里有几篇**不在当前页**。批量条据此如实提示跨页选择。 */
+const offPageSelected = computed(() => {
+  const onPage = new Set(documents.value.map((document) => document.id))
+  return selected.value.filter((id) => !onPage.has(id)).length
+})
+
 const batchRunning = ref(false)
 
 // ------------------------------------------------------------------ 目录（v13）
@@ -387,13 +413,34 @@ function toggleSelect(documentId: string): void {
     : [...selected.value, documentId]
 }
 
-/** 全选/清空：作用于**当前这一页**（选择不跨页，见 `goToPage`）。 */
+/**
+ * 表头复选框：**只切换当前页**在选中集里的去留。
+ *
+ * - 当前页还没全选（含半选）→ 把这一页**并入**选中集（不覆盖其他页的选择）；
+ * - 当前页已全选 → 把这一页**移出**选中集（其他页保留）。
+ *
+ * 因此它是"逐页累加"的入口：连点几页的表头 = 跨页全选。
+ */
 function toggleSelectAll(): void {
-  selected.value = allSelected.value ? [] : documents.value.map((document) => document.id)
+  if (allSelected.value) {
+    const onPage = new Set(documents.value.map((document) => document.id))
+    selected.value = selected.value.filter((id) => !onPage.has(id))
+    return
+  }
+  const merged = new Set(selected.value)
+  for (const document of documents.value) merged.add(document.id)
+  selected.value = [...merged]
 }
 
 function clearSelection(): void {
   selected.value = []
+}
+
+/** 把一批 id 从选中集里去掉（文档被删/被移走之后调用）。 */
+function dropFromSelection(ids: readonly string[]): void {
+  if (selected.value.length === 0) return
+  const gone = new Set(ids)
+  selected.value = selected.value.filter((id) => !gone.has(id))
 }
 
 /** 批量删除走确认弹窗（与单篇删除同一套形态），确认后再真正执行。 */
@@ -511,15 +558,14 @@ function buildFilter(): DocumentListFilter {
 /**
  * 翻页。
  *
- * **翻页会清空勾选**：选择只作用于看得见的这一页，把上一页的 id 留着，
- * "已选 N 篇"就与用户眼前的列表对不上，而批量删除/停用仍会打到那些看不见的文档上。
- * 需要"整库"语义的批量动作走后端的 `all=true`，不靠跨页攒 id。
+ * **翻页不清空勾选**：选中的是一批文档，不是"这一页"，跨页累计起来才有意义
+ * （连点几页的表头就是跨页全选）。所以翻页只换内容，选择留着；换来换去的是
+ * 哪些文档，由批量条上的"另有 N 篇不在本页"如实说明。
  */
 function goToPage(next: number): void {
   const clamped = Math.min(Math.max(1, next), pageCount.value)
   if (clamped === page.value) return
   page.value = clamped
-  selected.value = []
   void refresh()
 }
 
@@ -545,7 +591,6 @@ async function refresh(): Promise<void> {
     documents.value = list.items
     total.value = list.total
     error.value = ''
-    pruneSelection()
     void nextTick(syncFillerRows)
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '文档列表加载失败'
@@ -577,14 +622,6 @@ function syncFillerRows(): void {
   const dataRows = Math.max(documents.value.length, 1)
   const fit = Math.ceil((available - headHeight) / ROW_HEIGHT)
   fillerRows.value = Math.max(0, Math.min(fit - dataRows, 60))
-}
-
-/** 刷新后剔除已不在列表里的选中项：否则批量删除后计数会虚高。 */
-function pruneSelection(): void {
-  if (selected.value.length === 0) return
-  const present = new Set(documents.value.map((document) => document.id))
-  const kept = selected.value.filter((id) => present.has(id))
-  if (kept.length !== selected.value.length) selected.value = kept
 }
 
 async function loadFolders(): Promise<void> {
@@ -761,6 +798,8 @@ async function confirmMove(): Promise<void> {
       moveBatchIds.value = []
       await refreshAll()
       if (result.failed === 0) {
+        // 移动完成即收工：选中的那批已经不在这个位置，留着只会变成跨页的幽灵勾选
+        selected.value = []
         notifySuccess(`已移动 ${result.succeeded} 篇`)
       } else {
         const reason = firstBatchError(result.items)
@@ -775,6 +814,7 @@ async function confirmMove(): Promise<void> {
     if (!single) return
     await moveDocument(single.id, target)
     moveTarget.value = null
+    dropFromSelection([single.id])
     await refreshAll()
     notifySuccess('已移动')
   } catch (cause) {
@@ -1066,7 +1106,14 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
         <template v-else>
           <!-- 勾选后浮出的批量动作条（全选在列表内的表头里，不在这里） -->
           <div v-if="selectedCount > 0" class="batch-bar">
-            <span class="batch-count">已选 {{ selectedCount }} 篇</span>
+            <span class="batch-count">
+              已选 {{ selectedCount }} 篇
+              <!-- 跨页选择必须说清楚：否则用户看到"已选 60 篇"而眼前只有 50 行，
+                   会以为计数错了，或不知道批量动作会打到别的页上 -->
+              <span v-if="offPageSelected > 0" class="batch-offpage">
+                （另有 {{ offPageSelected }} 篇不在本页）
+              </span>
+            </span>
             <AppButton size="sm" :disabled="batchRunning" @click="onBatchMoveClick">
               <template #icon><IconFolder /></template>
               移动到目录
@@ -1107,7 +1154,8 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                 <input
                   type="checkbox"
                   :checked="allSelected"
-                  aria-label="全选当前列表"
+                  :indeterminate="someSelected"
+                  :aria-label="allSelected ? '取消选择本页' : '全选本页（可逐页累加）'"
                   @change="toggleSelectAll"
                 />
               </span>
@@ -1748,6 +1796,11 @@ button.tree-caret:hover {
   margin-right: auto;
   font-size: var(--text-meta-size);
   color: var(--accent-text);
+}
+
+/* 跨页选择的那半句要弱于总数，别抢"已选 N 篇"的注意力 */
+.batch-offpage {
+  color: var(--text-tertiary);
 }
 
 /* 勾选框列：列头与行同宽，右侧的列才不会错位 */
