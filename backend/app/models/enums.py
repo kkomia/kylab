@@ -74,6 +74,14 @@ class TaskKind(StrEnum):
     ENRICH = "enrich"
     DELETE = "delete"
     FETCH_SOURCE = "fetch_source"
+    QUESTIONS = "questions"
+    """为一篇**已索引**文档的分段补生成问题（提升召回）。
+
+    它不走摄入阶段机：解析/切块都已完成，只读现有的块出题，再把该段的
+    `index_text`（原文 + 问题）重新向量化并重建全文索引，文档阶段保持 indexed。
+    之所以单列一个任务类型而不是复用 CHUNK，是因为"重新切块"会连带重新解析、
+    把块号与人工干预全部推翻——补出题不该有那些副作用。
+    """
 
 
 class TaskState(StrEnum):

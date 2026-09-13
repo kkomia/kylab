@@ -389,6 +389,21 @@ const previewNote = computed(() =>
 )
 
 /**
+ * 出题情况一句话（v24）。
+ *
+ * 数字取自**文档级统计**（`document`），不是当前这几块的合计——预览只拉了前几块，
+ * 拿它数会少报。没出过题时直接给出补出题的入口位置，省得用户去猜。
+ */
+const questionSummary = computed(() => {
+  const doc = document.value
+  if (!doc || doc.chunk_count === 0) return '还没有分段，无法出题。'
+  if (doc.question_count === 0) {
+    return '还没有生成分段问题——在文档列表里选中这份，点「生成问题」即可补上。'
+  }
+  return `已为 ${doc.questioned_chunk_count}/${doc.chunk_count} 段出题，共 ${doc.question_count} 条；下面每块的问题列在正文之后。`
+})
+
+/**
  * 阅读视角的正文。
  *
  * 先清 LaTeX 再交给 Markdown 渲染器：云端解析器把 PDF 里的上标原样输出成
@@ -598,6 +613,12 @@ const stage = computed(() =>
           <p v-else-if="previewError" class="muted">{{ previewError }}</p>
           <template v-else-if="chunks.length">
             <p class="preview-note">{{ previewNote }}</p>
+            <p
+              class="question-summary"
+              :class="{ 'is-empty': (document?.question_count ?? 0) === 0 }"
+            >
+              {{ questionSummary }}
+            </p>
             <ol class="preview">
               <li
                 v-for="chunk in chunks"
@@ -1088,6 +1109,17 @@ const stage = computed(() =>
 .preview-note {
   margin: 0 0 var(--space-4);
   font-size: var(--text-meta-size);
+  color: var(--text-tertiary);
+}
+
+/* 出题情况：没出题时更淡（是个待办），出了题就是正信息 */
+.question-summary {
+  margin: calc(var(--space-4) * -1 + var(--space-2)) 0 var(--space-4);
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+}
+
+.question-summary.is-empty {
   color: var(--text-tertiary);
 }
 

@@ -66,25 +66,36 @@ MAX_CHUNK_PREVIEW = 200
 """单次最多返回多少块：详情页只预览开头几段，但接口不能没有上限。"""
 
 
-def _to_out(record, *, chunk_count: int = 0, uploader: str = "") -> DocumentOut:
+def _to_out(
+    record,  # type: ignore[no-untyped-def]
+    *,
+    chunk_count: int = 0,
+    uploader: str = "",
+    question_stats: tuple[int, int] = (0, 0),
+    questions_pending: bool = False,
+) -> DocumentOut:
     """记录 → 响应模型。用 ``model_validate`` 而不是手抄字段：
 
     协议层不该 import ``app.storage`` 的记录类型（工程规范 §3.3 L1），
     字段名对不上时 pydantic 会直接报错，不用等到线上发现"某个字段忘了同步"。
     """
     out = DocumentOut.model_validate(record)
+    questioned_chunks, question_total = question_stats
     return out.model_copy(
         update={
             "chunk_count": chunk_count,
             "uploaded_by_name": uploader,
             # 原件类型：界面据此决定首页先取「原文版式」还是「解析文本」
             "original_kind": content_kind(record.name, has_markdown=False),
+            "question_count": question_total,
+            "questioned_chunk_count": questioned_chunks,
+            "questions_pending": questions_pending,
         }
     )
 
 
 def document_out(services: Services, record) -> DocumentOut:  # type: ignore[no-untyped-def]
-    """单个文档的完整响应（切块数与上传者名字都由后端补）。
+    """单个文档的完整响应（切块数、上传者名字、出题情况都由后端补）。
 
     公开出来给别的路由复用（如"移动到目录"要回一份文档）——两处各拼一遍
     必然漂（一处忘了补 chunk_count，界面就少一列数字）。
@@ -95,6 +106,8 @@ def document_out(services: Services, record) -> DocumentOut:  # type: ignore[no-
         record,
         chunk_count=counts.get(record.id, 0),
         uploader=names.get(record.uploaded_by or "", ""),
+        question_stats=services.documents.question_stats([record.id]).get(record.id, (0, 0)),
+        questions_pending=record.id in services.documents.active_question_documents([record.id]),
     )
 
 
@@ -287,6 +300,9 @@ async def list_documents(
     )
     counts = services.documents.chunk_counts([record.id for record in records])
     names = _uploader_names(services, records)
+    ids = [record.id for record in records]
+    question_stats = services.documents.question_stats(ids)
+    questions_pending = services.documents.active_question_documents(ids)
     total = services.documents.count_documents(
         kb_id,
         folder_id=folder_id,
@@ -301,6 +317,8 @@ async def list_documents(
                 record,
                 chunk_count=counts.get(record.id, 0),
                 uploader=names.get(record.uploaded_by or "", ""),
+                question_stats=question_stats.get(record.id, (0, 0)),
+                questions_pending=record.id in questions_pending,
             )
             for record in records
         ],
@@ -313,7 +331,7 @@ async def list_documents(
 @router.post(
     "/knowledge-bases/{kb_id}/documents/batch",
     response_model=DocumentBatchOut,
-    summary="批量删除 / 重新摄入",
+    summary="批量删除 / 重新摄入 / 移动 / 停用启用 / 生成问题",
 )
 async def batch_documents(
     kb_id: str,
@@ -370,11 +388,9 @@ async def get_document(
 ) -> DocumentOut:
     _guard_document(services, caller, document_id)
     record = services.documents.get(document_id)
-    return _to_out(
-        record,
-        chunk_count=services.documents.chunk_count(document_id),
-        uploader=_uploader_names(services, [record]).get(record.uploaded_by or "", ""),
-    )
+    # 走共享的 document_out 而不是就地拼 _to_out：出题统计这类"后端补的派生字段"
+    # 一处漏传就是"列表有、详情没有"的不一致（v24 实测踩到：详情一直显示 0 条问题）。
+    return document_out(services, record)
 
 
 @router.patch("/documents/{document_id}", response_model=DocumentOut, summary="重命名文档")
@@ -487,11 +503,7 @@ async def reprocess_document(
     # 拿入队前那份快照回给前端会显示成"还是 indexed"，用户会以为点了没反应
     document = services.documents.get(document_id)
     return UploadAccepted(
-        document=_to_out(
-            document,
-            chunk_count=services.documents.chunk_count(document_id),
-            uploader=_uploader_names(services, [document]).get(document.uploaded_by or "", ""),
-        ),
+        document=document_out(services, document),
         is_duplicate=False,
         task_id=task.id,
     )

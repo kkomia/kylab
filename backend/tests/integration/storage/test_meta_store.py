@@ -46,7 +46,8 @@ def utc_now() -> datetime:
 
 
 def _chunk(chunk_id: str, ordinal: int, *, document_id: str = "doc_1", kb_id: str = "kb_1",
-           text: str = "正文", image_ids: tuple[str, ...] = ()) -> ChunkRecord:
+           text: str = "正文", image_ids: tuple[str, ...] = (),
+           questions: tuple[str, ...] = ()) -> ChunkRecord:
     return ChunkRecord(
         chunk_id=chunk_id,
         document_id=document_id,
@@ -58,15 +59,17 @@ def _chunk(chunk_id: str, ordinal: int, *, document_id: str = "doc_1", kb_id: st
         heading_path="第1章 > 1.1",
         page=ordinal + 1,
         image_ids=image_ids,
+        questions=questions,
     )
 
 
 def _task(task_id: str, *, state: TaskState = TaskState.PENDING, attempts: int = 0,
-          max_attempts: int = 5, next_run_at=None, document_id: str | None = None) -> TaskRecord:
+          max_attempts: int = 5, next_run_at=None, document_id: str | None = None,
+          kind: TaskKind = TaskKind.PARSE) -> TaskRecord:
     """document_id 默认为 None：并非所有任务都挂文档（如数据源拉取）。"""
     return TaskRecord(
         id=task_id,
-        kind=TaskKind.PARSE,
+        kind=kind,
         state=state,
         payload={"stage": "parsing"},
         document_id=document_id,
@@ -881,3 +884,37 @@ def test_api_key_created_by_round_trip(store: SqliteMetaStore) -> None:
     loaded = store.get_api_key_by_hash("h")
     assert loaded is not None
     assert loaded.created_by == "user_a"
+
+
+def test_question_stats_by_documents_counts_chunks_and_questions(
+    store: SqliteMetaStore, kb, document
+) -> None:
+    """列表要显示"这份出没出题、出了多少"：一条 GROUP BY 拿全，缺的补 (0, 0)。"""
+    store.replace_chunks(
+        "doc_1",
+        [
+            _chunk("c1", 0, questions=("这道题？", "那道题？")),
+            _chunk("c2", 1, questions=("第三题？",)),
+            _chunk("c3", 2),  # 没出题的段
+        ],
+    )
+
+    stats = store.question_stats_by_documents(["doc_1", "doc_missing", "doc_1"])
+
+    assert stats == {"doc_1": (2, 3), "doc_missing": (0, 0)}
+    assert store.question_stats_by_documents([]) == {}
+
+
+def test_active_question_documents_only_lists_queued_ones(
+    store: SqliteMetaStore, kb, document
+) -> None:
+    """轮询与"生成中…"都靠它：只有排队/在跑的出题任务才算数。"""
+    store.enqueue_task(_task("t_run", state=TaskState.RUNNING, document_id="doc_1",
+                             kind=TaskKind.QUESTIONS))
+    store.enqueue_task(_task("t_done", state=TaskState.SUCCEEDED, document_id="doc_1",
+                             kind=TaskKind.QUESTIONS))
+    store.enqueue_task(_task("t_parse", state=TaskState.PENDING, document_id="doc_1",
+                             kind=TaskKind.PARSE))
+
+    assert store.active_question_documents(["doc_1", "doc_missing"]) == {"doc_1"}
+    assert store.active_question_documents([]) == set()

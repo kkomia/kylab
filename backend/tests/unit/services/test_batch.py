@@ -27,9 +27,13 @@ class _RecordingDocuments:
 
     def __init__(self) -> None:
         self.enqueued: list[str] = []
+        self.questions: list[str] = []
 
     def enqueue_ingest(self, document_id: str, *, force: bool = False) -> None:
         self.enqueued.append(document_id)
+
+    def enqueue_questions(self, document_id: str) -> None:
+        self.questions.append(document_id)
 
 
 @pytest.fixture
@@ -145,3 +149,30 @@ def test_foreign_document_is_reported_not_executed(
     assert items[0].ok is False
     assert items[0].error is not None
     assert documents.enqueued == []
+
+
+def test_questions_action_queues_only_indexed_documents(
+    bundle: StoreBundle, ingest_service: IngestService, seeded
+) -> None:
+    """「生成问题」只认已索引的文档：别的阶段要么没切块、要么正被重写。
+
+    用真的 ``DocumentService`` 而不是记录器：阶段这条规则就在它身上，
+    假掉的话这个用例就只剩"函数被调到了"，等于没测。
+    """
+    from app.models.enums import TaskKind, TaskState
+    from app.services.documents import DocumentService
+
+    indexed, failed, running = seeded
+    items = _service(bundle, DocumentService(bundle)).run(
+        "kb_1", "questions", [indexed, failed, running]
+    )
+    by_id = {item.document_id: item for item in items}
+
+    assert by_id[indexed].ok is True
+    assert by_id[failed].ok is False and "已索引" in (by_id[failed].error or "")
+    assert by_id[running].ok is False
+    queued = [task for task in bundle.meta.list_tasks(TaskState.PENDING)
+              if task.kind is TaskKind.QUESTIONS]
+    assert [task.document_id for task in queued] == [indexed]
+    # 出题不重置阶段：文档仍是 indexed（重新摄入那条路才会推回 CHUNKING）
+    assert bundle.meta.get_document(indexed).stage is DocumentStage.INDEXED

@@ -46,6 +46,9 @@ function summary(id: string, name: string): api.DocumentSummary {
     original_kind: 'pdf',
     created_at: '2026-09-11T00:00:00Z',
     updated_at: '2026-09-11T00:00:00Z',
+    question_count: 0,
+    questioned_chunk_count: 0,
+    questions_pending: false,
   }
 }
 

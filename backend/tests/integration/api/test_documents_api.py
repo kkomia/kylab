@@ -539,3 +539,95 @@ def test_batch_all_on_empty_kb_is_rejected(client: TestClient) -> None:
     )
     assert response.status_code == 422
     assert "还没有文档" in response.json()["message"]
+
+
+# --------------------------------------------------------------- 生成问题（v24）
+
+
+def test_list_reports_question_status_fields(client: TestClient, kb_id: str) -> None:
+    """列表要能回答"这份出没出题、出了多少"：新字段缺省是 0 / false，不是缺字段。"""
+    _upload(client, kb_id, "待出题.md")
+
+    item = client.get(f"/api/v1/knowledge-bases/{kb_id}/documents").json()["items"][0]
+
+    assert item["question_count"] == 0
+    assert item["questioned_chunk_count"] == 0
+    assert item["questions_pending"] is False
+
+
+def test_questions_action_rejects_documents_not_indexed_yet(
+    client: TestClient, kb_id: str
+) -> None:
+    """还没索引完就出题，问题会被随后的重切覆盖——逐条记成失败并说清原因。"""
+    document = _upload(client, kb_id, "还没索引.md")
+
+    response = _batch(client, kb_id, "questions", [document["id"]])
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["succeeded"], body["failed"]) == (0, 1)
+    assert "已索引" in body["items"][0]["error"]
+
+
+def test_questions_action_is_accepted_by_the_schema(client: TestClient, kb_id: str) -> None:
+    """动作名进了 Literal：不会再被 422 当成拼错的动作。"""
+    document = _upload(client, kb_id, "动作名.md")
+
+    response = _batch(client, kb_id, "questions", [document["id"]])
+
+    assert response.status_code != 422
+
+
+def test_detail_and_list_report_the_same_question_status(
+    client: TestClient, kb_id: str
+) -> None:
+    """详情与列表必须给出同一份出题统计。
+
+    v24 的 bug 就在这里：详情路由自己拼 ``_to_out`` 而漏传统计，于是列表显示"4 题"、
+    详情一直显示 0 条。两处共用 ``document_out`` 才不会漂。
+    """
+    from app.core.config import get_settings
+    from app.storage.base import ChunkRecord
+    from app.storage.sqlite_impl.connection import Database
+    from app.storage.sqlite_impl.meta_store import SqliteMetaStore
+
+    document = _upload(client, kb_id, "有题的.md")
+    store = SqliteMetaStore(Database(get_settings().db_path))
+    store.replace_chunks(
+        document["id"],
+        [
+            ChunkRecord(
+                chunk_id=f"{document['id']}#00000",
+                document_id=document["id"],
+                knowledge_base_id=kb_id,
+                part_id=None,
+                ordinal=0,
+                text="正文一",
+                content_hash="h-0",
+                heading_path=None,
+                page=None,
+                questions=("第一个问题？", "第二个问题？"),
+            ),
+            ChunkRecord(
+                chunk_id=f"{document['id']}#00001",
+                document_id=document["id"],
+                knowledge_base_id=kb_id,
+                part_id=None,
+                ordinal=1,
+                text="正文二",
+                content_hash="h-1",
+                heading_path=None,
+                page=None,
+            ),
+        ],
+    )
+
+    detail = client.get(f"/api/v1/documents/{document['id']}").json()
+    listed = client.get(f"/api/v1/knowledge-bases/{kb_id}/documents").json()["items"][0]
+
+    assert detail["question_count"] == 2
+    assert detail["questioned_chunk_count"] == 1
+    assert (detail["question_count"], detail["questioned_chunk_count"]) == (
+        listed["question_count"],
+        listed["questioned_chunk_count"],
+    )

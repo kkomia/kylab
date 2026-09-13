@@ -172,6 +172,15 @@ class DocumentOut(BaseModel):
     """
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    question_count: int = 0
+    """该文档各分段已生成问题的**总条数**（v24）。0 = 还没出过题。"""
+    questioned_chunk_count: int = 0
+    """有题的分段数。配合 ``chunk_count`` 显示"几段里有几段出了题"。"""
+    questions_pending: bool = False
+    """是否还有出题任务在队列里/在跑（v24）。
+
+    列表据此显示"生成中…"，也据此决定继续轮询——出题**不改变文档阶段**，
+    只看 ``stage`` 的话前端永远等不到它完成。"""
 
 
 class DocumentList(BaseModel):
@@ -231,7 +240,8 @@ class DocumentDisabledIn(BaseModel):
 
 
 class DocumentBatchIn(BaseModel):
-    """批量动作：``delete``（进回收站）、``reprocess``（重新摄入）或 ``move``（移目录）。
+    """批量动作：``delete``（进回收站）、``reprocess``（重新摄入）、``move``（移目录）、
+    ``enable`` / ``disable``（停用或恢复检索）或 ``questions``（为已索引文档补生成分段问题）。
 
     ``document_ids`` 设上限而不是"随便多少"：一次勾几千篇会把请求体、逐条查询
     与响应都拉大，而界面上的多选本来也到不了那个量级。
@@ -241,7 +251,7 @@ class DocumentBatchIn(BaseModel):
     界面不必先翻页取 id 再回传（那个列表接口一次回全量，本身就是瓶颈）。
     """
 
-    action: Literal["delete", "reprocess", "move", "enable", "disable"]
+    action: Literal["delete", "reprocess", "move", "enable", "disable", "questions"]
     document_ids: list[str] = Field(default_factory=list, max_length=500)
     folder_id: str | None = None
     """``move`` 的目标目录；``None`` 表示移回根目录。其它动作忽略此字段。"""

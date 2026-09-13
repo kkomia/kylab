@@ -62,6 +62,7 @@ describe('taskKindLabel', () => {
   it('任务类型有中文名，未知类型回显原值', () => {
     expect(taskKindLabel('parse')).toBe('解析')
     expect(taskKindLabel('embed')).toBe('向量化')
+    expect(taskKindLabel('questions')).toBe('出题')
     expect(taskKindLabel('delete')).toBe('delete')
   })
 })

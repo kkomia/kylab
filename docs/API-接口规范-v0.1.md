@@ -236,7 +236,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/documents/{document_id}/reprocess` | 重新摄入（失败重跑） |
 | `GET` | `/api/v1/knowledge-bases/{kb_id}/documents` | 知识库下的文档列表 |
 | `POST` | `/api/v1/knowledge-bases/{kb_id}/documents` | 上传文档（异步摄入） |
-| `POST` | `/api/v1/knowledge-bases/{kb_id}/documents/batch` | 批量删除 / 重新摄入 |
+| `POST` | `/api/v1/knowledge-bases/{kb_id}/documents/batch` | 批量删除 / 重新摄入 / 移动 / 停用启用 / 生成问题 |
 
 ### `folders`
 

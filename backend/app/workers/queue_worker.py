@@ -261,6 +261,13 @@ class TaskWorker:
         if task.kind is TaskKind.FETCH_SOURCE:
             self._handle_source(task)
             return
+        if task.kind is TaskKind.QUESTIONS:
+            # 补出题不走摄入阶段机（文档已 indexed，只读现有块），所以**不能**
+            # 落进下面那条 `self._ingest.ingest(...)`——那会按断点续跑规则什么也不做。
+            if not task.document_id:
+                raise ValueError(f"任务 {task.id} 缺少 document_id")
+            self._ingest.generate_questions(task.document_id)
+            return
         if task.kind not in DOCUMENT_KINDS:
             raise NotImplementedError(f"任务类型尚未接线：{task.kind.value}")
         if not task.document_id:

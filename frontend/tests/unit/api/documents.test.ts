@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { RENDERABLE_KINDS, getDocumentPreview, listDocuments } from '@/api/documents'
+import {
+  RENDERABLE_KINDS,
+  batchDocuments,
+  getDocumentPreview,
+  listDocuments,
+} from '@/api/documents'
 
 function ok(): Response {
   return new Response(
@@ -80,5 +85,21 @@ describe('listDocuments', () => {
     expect(url).toContain('q=')
     expect(url).not.toContain('limit=')
     expect(url).not.toContain('offset=')
+  })
+})
+
+describe('batchDocuments', () => {
+  it('把动作与目标 id 原样送出（含新的 questions 动作）', async () => {
+    const fetchMock = fetchStub()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await batchDocuments('kb_1', 'questions', ['doc_1', 'doc_2'])
+
+    const [url, init] = fetchMock.mock.calls.at(-1) ?? []
+    expect(String(url)).toContain('/knowledge-bases/kb_1/documents/batch')
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      action: 'questions',
+      document_ids: ['doc_1', 'doc_2'],
+    })
   })
 })

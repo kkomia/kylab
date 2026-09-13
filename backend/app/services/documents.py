@@ -233,6 +233,14 @@ class DocumentService:
         """批量取切块数。列表页用它，避免每个文档查一次库。"""
         return self._stores.meta.count_chunks_by_documents(document_ids)
 
+    def question_stats(self, document_ids: list[str]) -> dict[str, tuple[int, int]]:
+        """批量取 ``{document_id: (有题块数, 问题总数)}``（v24，列表页显示出题情况）。"""
+        return self._stores.meta.question_stats_by_documents(document_ids)
+
+    def active_question_documents(self, document_ids: list[str]) -> set[str]:
+        """这些文档里还有出题任务在队列里的那几个（列表显示"生成中"并继续轮询）。"""
+        return self._stores.meta.active_question_documents(document_ids)
+
     def get(self, document_id: str) -> DocumentRecord:
         record = self._stores.meta.get_document(document_id)
         if record is None:
@@ -442,6 +450,36 @@ class DocumentService:
             TaskRecord(
                 id=f"task_{uuid.uuid4().hex[:12]}",
                 kind=kind,
+                state=TaskState.PENDING,
+                payload={"document_id": document_id},
+                document_id=document_id,
+            )
+        )
+
+    def enqueue_questions(self, document_id: str) -> TaskRecord:
+        """把一篇**已索引**文档排进"补生成问题"队列（v24）。
+
+        与 ``enqueue_ingest`` 是两条路，所以单独一个方法：
+
+        - **只收已索引的文档**。别的阶段要么还没切块、要么正在被摄入重写，
+          这时候出题会被随后的重切覆盖，白花模型调用。给一条明确的拒绝，
+          而不是排一个注定被覆盖的任务。
+        - **不碰文档阶段**。出题不改内容与切块，跑完文档仍是 indexed，
+          所以这里不能走 ``force``（那会把阶段推回 CHUNKING，连带重新切块）。
+        """
+        document = self.get(document_id)
+        if document.stage is not DocumentStage.INDEXED:
+            raise ConflictError(
+                f"「{document.name}」当前处于 {document.stage.value}，"
+                "只有已索引完成的文档才能生成问题"
+            )
+        existing = self._find_active_task(document_id, TaskKind.QUESTIONS)
+        if existing is not None:
+            return existing
+        return self._stores.meta.enqueue_task(
+            TaskRecord(
+                id=f"task_{uuid.uuid4().hex[:12]}",
+                kind=TaskKind.QUESTIONS,
                 state=TaskState.PENDING,
                 payload={"document_id": document_id},
                 document_id=document_id,

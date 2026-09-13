@@ -23,7 +23,7 @@ from app.storage.base import StoreBundle
 
 __all__ = ["BATCH_ALL_LIMIT", "BatchItem", "DocumentBatchService"]
 
-BATCH_ACTIONS = ("delete", "reprocess", "move", "enable", "disable")
+BATCH_ACTIONS = ("delete", "reprocess", "move", "enable", "disable", "questions")
 """支持的批量动作。加动作时同步改 API 的 ``Literal`` 与前端类型。"""
 
 BATCH_ALL_LIMIT = 2000
@@ -141,6 +141,11 @@ class DocumentBatchService:
         if action in ("enable", "disable"):
             # 与切块级禁用同一套语义：只动标记，恢复零成本
             self._documents.set_disabled(document_id, action == "disable")
+            return
+        if action == "questions":
+            # 补生成分段问题（v24）：只有已索引的文档收得下，非索引进来的那条
+            # 会抛 ConflictError，被 run() 记成这条的失败原因（部分失败是正常结果）
+            self._documents.enqueue_questions(document_id)
             return
         # 重跑：force=True 才允许对已索引的文档重新入队（见 DocumentService.enqueue_ingest）
         self._documents.enqueue_ingest(document_id, force=True)

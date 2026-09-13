@@ -45,6 +45,7 @@ const TASK_KINDS: Record<string, string> = {
   parse: '解析',
   chunk: '切分',
   embed: '向量化',
+  questions: '出题',
 }
 
 /**

@@ -600,6 +600,67 @@ class IngestService:
         )
         self._advance(document, DocumentStage.INDEXED)
 
+    # ------------------------------------------------------------------ 补出题（v24）
+
+    def generate_questions(self, document_id: str) -> int:
+        """为**已索引**文档的分段补生成问题，返回落库的问题条数。
+
+        与入库时的出题（``_attach_questions``）走同一个出题服务，但**不走阶段机**：
+        文档已经 indexed，这里不重新解析、也不重新切块，只读现有的块出题，
+        再把含问题的 ``index_text`` 重新向量化并重建全文索引——问题进不了这两条索引，
+        "换个问法也能命中同一段"这件事就不会发生。
+
+        与入库时的一条关键差别：入库出题是旁路（失败只让这段没有题，不能让文档 failed），
+        这里是**用户显式点出来的动作**，一条题都没出出来就直接抛错，
+        让任务以失败收场并带上原因，而不是静默地"成功但什么都没发生"。
+        """
+        document = self._stores.meta.get_document(document_id)
+        if document is None:
+            raise NotFoundError(f"文档不存在：{document_id}")
+        if document.stage is not DocumentStage.INDEXED:
+            raise InvalidRequestError(
+                f"这份文档当前处于「{document.stage.value}」，只有已索引完成的文档才能补生成问题"
+                "——等它摄入完成，或先用「重新摄入」把它跑完"
+            )
+        if self._questions is None:
+            raise InvalidRequestError("当前服务没有接出题能力，无法生成问题")
+        kb = self._stores.meta.get_knowledge_base(document.knowledge_base_id)
+        if kb is None:
+            raise NotFoundError(f"知识库不存在：{document.knowledge_base_id}")
+
+        chunks = list(self._stores.meta.iter_chunks(document_id))
+        if not chunks:
+            raise InvalidRequestError("这份文档还没有分段，无法出题")
+
+        generated = self._questions.generate_for_chunks(
+            chunks,
+            model_pk=kb.suggested_model_pk,
+            count=kb.suggested_count,
+            prompt=kb.suggested_prompt,
+        )
+        if not any(generated.values()):
+            raise InvalidRequestError(
+                "没有生成出任何问题：请确认已配置可用的对话模型，或换一份内容更实的文档再试"
+            )
+
+        for chunk in chunks:
+            chunk.questions = tuple(generated.get(chunk.chunk_id, ()))
+        # 三处用同一份记录同步：元数据（questions 列）→ 全文索引（index_text 分词）
+        # → 向量（index_text 嵌入）。顺序与 ChunkService.update_text 一致。
+        for chunk in chunks:
+            self._stores.meta.update_chunk(chunk)
+        self._stores.fulltext.index_chunks(chunks)
+        embedder = self._embedder_for(kb)
+        self._stores.vectors.ensure_partition(kb.id, dim=embedder.dim)
+        vectors = embedder.embed([chunk.index_text for chunk in chunks])
+        self._stores.vectors.upsert_vectors(
+            kb.id,
+            items=[(chunk.chunk_id, vector) for chunk, vector in zip(chunks, vectors, strict=True)],
+        )
+        total = sum(len(chunk.questions) for chunk in chunks)
+        logger.info("文档 %s 补生成问题 %d 条（共 %d 段）", document_id, total, len(chunks))
+        return total
+
     # ------------------------------------------------------------------ 状态与校验
 
     def _advance(self, document: DocumentRecord, target: DocumentStage) -> None:

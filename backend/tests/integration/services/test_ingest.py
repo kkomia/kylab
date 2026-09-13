@@ -6,6 +6,7 @@
 
 import pytest
 
+from app.core.exceptions import InvalidRequestError
 from app.models.enums import DocumentStage
 from app.parsers.base import ParseError
 from app.parsers.plain_text import PlainTextParser
@@ -675,3 +676,107 @@ def test_reprocess_actually_reruns_chunking_and_embedding(
     after = list(bundle.meta.iter_chunks(outcome.document.id))
     assert after  # 块被重建了（不是空转）
     assert bundle.meta.get_document(outcome.document.id).stage is DocumentStage.INDEXED
+
+
+# --------------------------------------------------- 补出题（v24，用户显式触发）
+
+
+def test_generate_questions_backfills_an_indexed_document(
+    bundle: StoreBundle, kb, kb_service: KnowledgeBaseService, embedder: DeterministicEmbedder
+) -> None:
+    """对已索引的文档补出题：问题落库、两条索引都按新 index_text 重建，阶段不变。
+
+    这是文档列表「生成问题」按钮干的事——老文档入库时功能还没开（或开关关着），
+    需要一个"事后补上"的入口。它**不重新解析、不重新切块**，所以块号、正文、
+    人工干预都原样保留。
+    """
+    kb_service.set_suggested(kb.id, enabled=False, count=2, model_pk="m1", prompt="按这个出")
+    questions = _StubQuestions("青稞酒的酿造温度")
+    recorder = _RecordingEmbedder()
+    service = _service_with_questions(bundle, recorder, questions)
+
+    outcome = service.submit(knowledge_base_id=kb.id, filename="kb.md", content=MARKDOWN.encode())
+    service.ingest(outcome.document.id)
+    # 开关关着 → 入库时一段题都没有，正是"老文档"的样子
+    chunks = list(bundle.meta.iter_chunks(outcome.document.id))
+    assert chunks and all(not chunk.questions for chunk in chunks)
+    texts_before = [chunk.text for chunk in chunks]
+    questions.calls = 0
+    recorder.seen.clear()
+
+    total = service.generate_questions(outcome.document.id)
+
+    assert total == len(chunks)  # stub 每段给一条
+    assert questions.calls == 1
+    assert questions.last_count == 2  # 用库上配置的"每段几条"
+    assert questions.last_model == "m1"
+    assert questions.last_prompt == "按这个出"
+    after = list(bundle.meta.iter_chunks(outcome.document.id))
+    assert [chunk.text for chunk in after] == texts_before  # 正文没被动
+    assert [chunk.chunk_id for chunk in after] == [c.chunk_id for c in chunks]  # 没重切
+    assert all(chunk.questions for chunk in after)
+    # 重新向量化用的是含问题的 index_text（否则"换个问法命中同一段"不会发生）
+    assert any("青稞酒" in text for text in recorder.seen)
+    assert all(chunk.index_text in recorder.seen for chunk in after)
+    # 全文索引也重建了：问题里的词能搜到这一段
+    hits = bundle.fulltext.search(query="青稞酒", top_k=5, kb_id=kb.id)
+    assert hits and hits[0].chunk_id in {chunk.chunk_id for chunk in after}
+    # 文档阶段不变——补出题不是摄入
+    assert bundle.meta.get_document(outcome.document.id).stage is DocumentStage.INDEXED
+    # 列表用的统计跟着出结果
+    stats = bundle.meta.question_stats_by_documents([outcome.document.id])
+    assert stats[outcome.document.id] == (len(after), len(after))
+
+
+def test_generate_questions_rejects_a_document_still_in_the_pipeline(
+    bundle: StoreBundle, kb, embedder: DeterministicEmbedder
+) -> None:
+    """还没索引完就出题会被随后的重切覆盖，白花模型调用——直接拒绝。"""
+    questions = _StubQuestions()
+    service = _service_with_questions(bundle, embedder, questions)
+    outcome = service.submit(knowledge_base_id=kb.id, filename="kb.md", content=MARKDOWN.encode())
+
+    with pytest.raises(InvalidRequestError, match="已索引"):
+        service.generate_questions(outcome.document.id)
+    assert questions.calls == 0
+
+
+def test_generate_questions_reports_when_nothing_was_generated(
+    bundle: StoreBundle, kb, embedder: DeterministicEmbedder
+) -> None:
+    """一条题都没出出来时报错，而不是"成功但什么都没发生"（用户显式动作的诉求）。
+
+    报错发生在写库之前，所以原有的问题不会被清掉。
+    """
+
+    class _Silent:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate_for_chunks(self, chunks, **kwargs):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            return {}
+
+    silent = _Silent()
+    service = _service_with_questions(bundle, embedder, silent)
+    outcome = service.submit(knowledge_base_id=kb.id, filename="kb.md", content=MARKDOWN.encode())
+    service.ingest(outcome.document.id)
+    before = list(bundle.meta.iter_chunks(outcome.document.id))
+
+    with pytest.raises(InvalidRequestError, match="没有生成出任何问题"):
+        service.generate_questions(outcome.document.id)
+    after = list(bundle.meta.iter_chunks(outcome.document.id))
+    assert [chunk.questions for chunk in after] == [chunk.questions for chunk in before]
+
+
+def test_generate_questions_without_the_service_is_rejected(
+    bundle: StoreBundle, ingest_service: IngestService, kb
+) -> None:
+    """没接出题服务时给一句可读的拒绝，而不是 AttributeError。"""
+    outcome = ingest_service.submit(
+        knowledge_base_id=kb.id, filename="kb.md", content=MARKDOWN.encode()
+    )
+    ingest_service.ingest(outcome.document.id)
+
+    with pytest.raises(InvalidRequestError, match="出题能力"):
+        ingest_service.generate_questions(outcome.document.id)

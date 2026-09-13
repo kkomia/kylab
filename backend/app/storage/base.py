@@ -908,6 +908,24 @@ class MetaStore(ABC):
         所以接口层直接要求批量。缺席的文档 ID 在返回里补 0。
         """
 
+    @abstractmethod
+    def question_stats_by_documents(
+        self, document_ids: Sequence[str]
+    ) -> dict[str, tuple[int, int]]:
+        """批量查每个文档的出题情况，返回 ``{document_id: (有题块数, 问题总数)}``。
+
+        文档列表要显示"这份有没有出题、出了多少"（v24）。同样是 N+1 问题，
+        一条 ``GROUP BY`` 拿全；缺席的文档补 ``(0, 0)``。
+        """
+
+    @abstractmethod
+    def active_question_documents(self, document_ids: Sequence[str]) -> set[str]:
+        """这些文档里，哪几个还有排队/在跑的出题任务。
+
+        列表用它显示"生成中…"，也用它决定还要不要继续轮询——出题不改变文档阶段，
+        光看 ``stage`` 是看不出它在跑的（前端 `needsPolling` 就靠这个字段）。
+        """
+
     # ---- 切块人工干预（§G3）----
     @abstractmethod
     def update_chunk(self, record: ChunkRecord) -> None:

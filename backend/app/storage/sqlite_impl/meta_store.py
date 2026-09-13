@@ -1010,6 +1010,55 @@ class SqliteMetaStore(MetaStore):
         counted = {str(row["document_id"]): int(row["n"]) for row in rows}
         return {document_id: counted.get(document_id, 0) for document_id in wanted}
 
+    def question_stats_by_documents(
+        self, document_ids: Sequence[str]
+    ) -> dict[str, tuple[int, int]]:
+        """批量查每个文档的 ``(有题块数, 问题总数)``。
+
+        ``json_array_length`` 走 SQLite 自带的 JSON1（3.38+ 默认编译进来）；
+        ``questions`` 这一列的写入侧只经 ``_json``（见 replace_chunks / update_chunk），
+        所以永远是合法 JSON 数组——不会因为一行脏数据把整个列表接口打挂。
+        """
+        wanted = list(dict.fromkeys(document_ids))  # 去重但保序
+        if not wanted:
+            return {}
+        placeholders = ",".join("?" * len(wanted))
+        sql = (
+            "SELECT document_id,"  # noqa: S608
+            " SUM(CASE WHEN questions <> '[]' THEN 1 ELSE 0 END) AS with_questions,"
+            " SUM(json_array_length(questions)) AS total"
+            f" FROM chunks WHERE document_id IN ({placeholders}) GROUP BY document_id"
+        )
+        with self._db.read() as conn:
+            rows = conn.execute(sql, tuple(wanted)).fetchall()
+        stats = {
+            str(row["document_id"]): (int(row["with_questions"] or 0), int(row["total"] or 0))
+            for row in rows
+        }
+        return {document_id: stats.get(document_id, (0, 0)) for document_id in wanted}
+
+    def active_question_documents(self, document_ids: Sequence[str]) -> set[str]:
+        wanted = list(dict.fromkeys(document_ids))
+        if not wanted:
+            return set()
+        placeholders = ",".join("?" * len(wanted))
+        sql = (
+            "SELECT DISTINCT document_id FROM tasks"  # noqa: S608
+            " WHERE kind = ? AND state IN (?, ?)"
+            f" AND document_id IN ({placeholders})"
+        )
+        with self._db.read() as conn:
+            rows = conn.execute(
+                sql,
+                (
+                    TaskKind.QUESTIONS.value,
+                    TaskState.PENDING.value,
+                    TaskState.RUNNING.value,
+                    *wanted,
+                ),
+            ).fetchall()
+        return {str(row["document_id"]) for row in rows if row["document_id"]}
+
     # ------------------------------------------------------------------ 图片
 
     def add_images(self, records: Sequence[ImageRecord]) -> None:

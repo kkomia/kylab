@@ -42,6 +42,7 @@ import IconFile from '@/components/icons/IconFile.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
 import IconInbox from '@/components/icons/IconInbox.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
+import IconQuestion from '@/components/icons/IconQuestion.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconTrash from '@/components/icons/IconTrash.vue'
 import IconSearch from '@/components/icons/IconSearch.vue'
@@ -483,6 +484,53 @@ async function runBatch(action: 'delete' | 'reprocess'): Promise<void> {
   }
 }
 
+/**
+ * 批量补生成分段问题（v24）。
+ *
+ * **非破坏性、也不清空选择**：文档还在、还想再生成一次都可能，留着选中的那批
+ * 反而方便。它是一个异步任务，所以立刻给一句"已完成会自动刷新"的预期，
+ * 列表靠 `questions_pending` 轮询刷新（出题不改文档阶段，`hasActive` 看不到它）。
+ */
+async function runBatchQuestions(): Promise<void> {
+  if (selectedCount.value === 0 || batchRunning.value) return
+  batchRunning.value = true
+  try {
+    const result = await batchDocuments(kbId.value, 'questions', [...selected.value])
+    await refresh()
+    syncPolling()
+    if (result.failed === 0) {
+      notifySuccess(`已排队为 ${result.succeeded} 篇生成问题，完成后列表会自动刷新`)
+      return
+    }
+    const firstError = result.items.find((item) => !item.ok)?.error
+    notifyError(
+      `生成问题：${result.succeeded} 篇已排队、${result.failed} 篇未排队` +
+        (firstError ? `（${firstError}）` : ''),
+    )
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '生成问题失败')
+  } finally {
+    batchRunning.value = false
+  }
+}
+
+/** 单篇「生成问题」（行菜单）：与批量同一条路，只是目标只有这一篇。 */
+async function onQuestionsClick(close: () => void, document: DocumentSummary): Promise<void> {
+  close()
+  try {
+    const result = await batchDocuments(kbId.value, 'questions', [document.id])
+    await refresh()
+    syncPolling()
+    if (result.failed === 0) {
+      notifySuccess('已排队生成问题，完成后列表会自动刷新')
+      return
+    }
+    notifyError(result.items[0]?.error || '生成问题失败')
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '生成问题失败')
+  }
+}
+
 /** 停用 / 恢复检索（批量）：与删除/重建同一条逐条回成败的路径。 */
 async function runBatchToggleDisabled(action: 'enable' | 'disable'): Promise<void> {
   if (selectedCount.value === 0 || batchRunning.value) return
@@ -525,6 +573,34 @@ async function onToggleDisabledClick(close: () => void, document: DocumentSummar
 const hasActive = computed(() =>
   documents.value.some((document) => ACTIVE_STAGES.has(document.stage)),
 )
+
+/** 有没有出题任务在跑。**必须单列**：它不改变文档阶段，`hasActive` 看不到它，
+ *  于是"点了生成问题但列表一直不刷新"会变成一个无从解释的现象。 */
+const questionsPending = computed(() =>
+  documents.value.some((document) => document.questions_pending),
+)
+
+/** 需要轮询的两个来源：文档阶段在动，或出题任务在跑。 */
+const needsPolling = computed(() => hasActive.value || questionsPending.value)
+
+/** 出题列文案：生成中 > 已出题条数 > 未生成 > 还没切块（出不了题）。 */
+function questionCell(document: DocumentSummary): string {
+  if (document.questions_pending) return '生成中…'
+  if (document.question_count > 0) return `${document.question_count} 题`
+  if (document.chunk_count === 0) return '—'
+  return '未生成'
+}
+
+/** 出题列的悬浮说明：把"几段里有几段出了题"说全，列里只放得下总数。 */
+function questionTitle(document: DocumentSummary): string {
+  if (document.questions_pending) return '正在为这份文档生成分段问题'
+  if (document.question_count === 0) {
+    return document.chunk_count === 0
+      ? '还没有分段，无法出题'
+      : '还没有为这份文档生成分段问题（选中后可点「生成问题」）'
+  }
+  return `${document.questioned_chunk_count}/${document.chunk_count} 段有问题，共 ${document.question_count} 条`
+}
 
 // ------------------------------------------------------------------ 分页
 
@@ -658,15 +734,15 @@ async function loadFirst(): Promise<void> {
 
 /** 只在有活儿在跑时轮询：全绿之后停表，避免无意义的持续请求。 */
 function syncPolling(): void {
-  if (hasActive.value && timer === null) {
+  if (needsPolling.value && timer === null) {
     timer = setInterval(() => void refresh(), POLL_INTERVAL_MS)
-  } else if (!hasActive.value && timer !== null) {
+  } else if (!needsPolling.value && timer !== null) {
     clearInterval(timer)
     timer = null
   }
 }
 
-watch(hasActive, syncPolling)
+watch(needsPolling, syncPolling)
 watch(activeFolder, () => {
   void refresh()
 })
@@ -1128,6 +1204,10 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
             <AppButton size="sm" :disabled="batchRunning" @click="runBatchToggleDisabled('enable')">
               恢复检索
             </AppButton>
+            <AppButton size="sm" :disabled="batchRunning" @click="runBatchQuestions">
+              <template #icon><IconQuestion /></template>
+              生成问题
+            </AppButton>
             <AppButton size="sm" :disabled="batchRunning" @click="runBatch('reprocess')">
               <template #icon><IconRefresh /></template>
               重新摄入
@@ -1161,6 +1241,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
               </span>
               <span class="head-file" aria-hidden="true">文件</span>
               <span class="head-number" aria-hidden="true">切块</span>
+              <span class="head-question" aria-hidden="true">问题</span>
               <span class="head-size" aria-hidden="true">大小</span>
               <span class="head-time" aria-hidden="true">更新时间</span>
               <span class="head-menu" aria-hidden="true" />
@@ -1228,6 +1309,13 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                   </span>
 
                   <span class="row-number">{{ document.chunk_count }}</span>
+                  <span
+                    class="row-question"
+                    :class="{ 'is-muted': questionCell(document) === '未生成' }"
+                    :title="questionTitle(document)"
+                  >
+                    {{ questionCell(document) }}
+                  </span>
                   <span class="row-size">{{ formatBytes(document.size_bytes) }}</span>
                   <span class="row-time">{{ formatRelativeTime(document.updated_at) }}</span>
 
@@ -1257,6 +1345,15 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                       @click="onReprocessClick(close, document)"
                     >
                       <IconRefresh :size="14" /> 重新摄入
+                    </button>
+                    <!-- 补生成分段问题：只对已索引的文档有意义（别的阶段还没切块，
+                         或正被重写）。非索引进来的那份后端会逐条拒绝并说明原因 -->
+                    <button
+                      v-if="knowledgeBase?.can_write && document.stage === 'indexed'"
+                      type="button"
+                      @click="onQuestionsClick(close, document)"
+                    >
+                      <IconQuestion :size="14" /> 生成问题
                     </button>
                     <button
                       v-if="knowledgeBase?.can_write"
@@ -1892,6 +1989,12 @@ button.tree-caret:hover {
   text-align: right;
 }
 
+/* 出题列：比"大小"窄一点——内容只有"N 题 / 未生成 / 生成中" */
+.head-question {
+  flex: 0 0 64px;
+  text-align: right;
+}
+
 .head-size {
   flex: 0 0 72px;
   text-align: right;
@@ -2036,6 +2139,21 @@ button.tree-caret:hover {
   text-align: right;
   font-size: var(--text-meta-size);
   color: var(--text-secondary);
+}
+
+/* 出题列：有题时用次级文字色（是个有效信息），未生成时更淡（是个待办提示） */
+.row-question {
+  flex: 0 0 64px;
+  overflow: hidden;
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-question.is-muted {
+  color: var(--text-tertiary);
 }
 
 .row-size {

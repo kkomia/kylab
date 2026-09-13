@@ -303,3 +303,45 @@ def test_document_service_lists_tasks_and_parts(bundle: StoreBundle, ingest: Ing
     assert service.get_task(service.list_tasks()[0].id).kind is TaskKind.PARSE
     assert len(service.list_parts("doc_big")) == 1
     assert service.list_documents("kb_1")
+
+
+@pytest.mark.asyncio
+async def test_question_task_runs_through_the_backfill_path(
+    bundle: StoreBundle, embedder: DeterministicEmbedder, kb
+) -> None:
+    """QUESTIONS 任务走"补出题"而不是摄入——落进 `ingest()` 会按断点续跑空转。
+
+    文档已经 indexed，摄入那条路 `_resume_stage` 返回 indexed、三个 `_before` 全 false，
+    整次调用什么都不做。所以这个用例盯的是"任务真的产出了问题"。
+    """
+
+    class _StubQuestions:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate_for_chunks(self, chunks, **kwargs):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            return {chunk.chunk_id: ["这个任务派生的提问？"] for chunk in chunks}
+
+    questions = _StubQuestions()
+    service = IngestService(
+        bundle,
+        router=ParserRouter([PlainTextParser()]),
+        embedder=embedder,
+        chunk_config=ChunkingConfig(size=64, overlap=8),
+        questions=questions,
+    )
+    outcome = service.submit(knowledge_base_id=kb.id, filename="a.md", content=CONTENT.encode())
+    service.ingest(outcome.document.id)
+    assert all(not chunk.questions for chunk in bundle.meta.iter_chunks(outcome.document.id))
+
+    task = DocumentService(bundle).enqueue_questions(outcome.document.id)
+    worker = TaskWorker(bundle, service, owner="worker-q", poll_interval=0.01)
+
+    assert await worker.run_once() is True
+
+    assert questions.calls == 1
+    assert all(chunk.questions for chunk in bundle.meta.iter_chunks(outcome.document.id))
+    done = bundle.meta.get_task(task.id)
+    assert done is not None and done.state is TaskState.SUCCEEDED
+    assert bundle.meta.get_document(outcome.document.id).stage is DocumentStage.INDEXED

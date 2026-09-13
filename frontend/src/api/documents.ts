@@ -42,6 +42,12 @@ export interface DocumentSummary {
   folder_id: string | null
   /** 停用（v14）：不参与检索（两条通道都过滤），其余一切保留。 */
   disabled: boolean
+  /** 各分段已生成问题的**总条数**（v24）。0 = 还没出过题。 */
+  question_count: number
+  /** 有题的分段数。配合 `chunk_count` 显示"几段里有几段出了题"。 */
+  questioned_chunk_count: number
+  /** 还有出题任务在排队/在跑（v24）。列表据此显示"生成中…"并继续轮询。 */
+  questions_pending: boolean
   /**
    * 原件能不能在这页里渲染（pdf / image / docx / pptx / excel）。
    *
@@ -391,7 +397,8 @@ export function cancelDocument(documentId: string): Promise<DocumentSummary> {
   return request(`/documents/${documentId}/cancel`, { method: 'POST' })
 }
 
-export type DocumentBatchAction = 'delete' | 'reprocess' | 'move' | 'enable' | 'disable'
+export type DocumentBatchAction =
+  'delete' | 'reprocess' | 'move' | 'enable' | 'disable' | 'questions'
 
 export interface DocumentBatchItem {
   document_id: string

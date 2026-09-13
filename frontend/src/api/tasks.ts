@@ -7,7 +7,7 @@
 
 import { request } from './client'
 
-export type TaskKind = 'probe' | 'parse' | 'chunk' | 'embed'
+export type TaskKind = 'probe' | 'parse' | 'chunk' | 'embed' | 'questions'
 export type TaskState = 'pending' | 'running' | 'succeeded' | 'failed' | 'canceled'
 
 /**
