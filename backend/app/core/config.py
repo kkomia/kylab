@@ -2,7 +2,14 @@
 
 约定（工程规范 §6）：
 - 密钥只从环境变量读取，模板见 ``backend/.env.example``，禁止入库；
-- 用户级配置（解析节点、API Key、embedding 模型）运行期落 SQLite，M1 起接管。
+- 用户级配置（解析节点、API Key、模型登记）运行期落**数据库**，M1 起接管。
+
+**两级配置，别混**（v0.12 起明确）：
+
+1. **引导级**（本文件）：连不上就起不来的东西——数据库连接串、对象存储凭据、
+   数据目录。它们**只能来自环境变量**，因为"把数据库连接串存进数据库"是鸡生蛋。
+2. **运行期级**（``app_settings`` 表）：可以在网页上改、改完即刻生效的东西——
+   解析节点 token、模型登记、推荐问题开关。这些落库，带掩码，不回显明文。
 """
 
 from functools import lru_cache
@@ -39,6 +46,35 @@ class Settings(BaseSettings):
     worker_lease_seconds: int = 60
     """任务租约时长：worker 执行期间按 1/3 周期续租，崩溃后由超时回收兜底。"""
 
+    # ---- 存储后端（引导级：只能在环境变量里给）----------------------------
+    #
+    # v0.12 起存储改为 **PostgreSQL（元数据 + 向量 + 全文）+ 对象存储（原件）
+    # + DuckDB（表格副本）**，SQLite 退役。装配点仍只有一处：
+    # ``core/storage.py::build_stores()``，它按这里的配置构造实现并在启动时校验。
+
+    database_url: str | None = None
+    """PostgreSQL 连接串，例如 ``postgresql://kylab:secret@postgres:5432/kylab``。
+
+    **留空时回落到本地 SQLite（过渡期）**；PG 实现落地后这里改为必填，
+    并在启动时校验连通性、``vector`` 扩展与 schema 版本，失败即退出。
+    """
+
+    s3_endpoint: str | None = None
+    """S3 兼容对象存储的端点（MinIO 形如 ``http://minio:9000``）。
+
+    留空时原件落本地文件系统（``data_dir/{originals,markdown,images}``）。
+    与 ``database_url`` 同一原则：这是引导级配置，不能存库。
+    """
+    s3_access_key: str | None = None
+    s3_secret_key: str | None = None
+    s3_bucket: str = "kylab"
+    s3_region: str = "us-east-1"
+    """MinIO 不校验 region，但 S3 SDK 需要一个非空值。"""
+    s3_secure: bool = False
+    """是否用 HTTPS 连对象存储。容器内网互通时为假（MinIO 默认 http）。"""
+    s3_prefix: str = ""
+    """桶内的 key 前缀，便于一个桶放多套环境。留空即桶根。"""
+
     # 鉴权（M4 T4.4；《架构设计 v0.2》§3.2）
     #
     # v0.11：**鉴权永远生效**，没有开关也没有第二种管理员凭据。
@@ -58,7 +94,11 @@ class Settings(BaseSettings):
 
     @property
     def db_path(self) -> Path:
-        """SQLite 主库文件（元数据 + 向量 + 全文同库，架构 §8.1）。"""
+        """SQLite 主库文件（元数据 + 向量 + 全文同库，架构 §8.1）。
+
+        **过渡期保留**：``database_url`` 未配置时仍走它。PG 实现接管后随
+        ``sqlite_impl/`` 一起删除。
+        """
         return self.data_dir / "kylab.db"
 
     # 云端解析节点（M2 启用）

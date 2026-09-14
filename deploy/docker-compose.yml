@@ -1,26 +1,129 @@
-# kylab 一键起（M7 / T7.1）。
+# kylab 一键起（M7 / T7.1；v0.12 起为 PostgreSQL + MinIO + 后端 + 前端 四件套）。
 #
-# **未在本机验证过**：开发机没有 docker（计划里的风险 R9）。
-# 这份文件是按 Compose 规范写的，但"干净机器一键起"这条验收只能在有 docker
-# 的机器上跑。所以它**不声称已验证**——那正是 R9 要解决的事。
-# 本地开发仍然走 venv + 脚本那条路线（见 docs/部署与运行-v0.1.md）。
+# **部分已验证**：开发机没有 docker（计划里的风险 R9），所以这份 compose 整体
+# 仍未经"一键起"实测。但其中的 postgres 服务定义已在真实部署服务器上跑通
+# （kylab-postgres，健康，schema 已应用，pgvector + HNSW + KNN 实测可用），
+# 见 docs/部署与运行-v0.1.md。minio 相关 service 与整体编排仍待实测。
+#
+# 本地开发仍可走 venv + 脚本那条路线（见 docs/部署与运行-v0.1.md）。
+#
+# schema 由 **应用** 在启动时拥有（单一属主，避免两个真相来源）。在 PG 实现
+# （storage/postgres_impl/）落地之前，新库需要手工应用一次：
+#   psql "$KYLAB_DATABASE_URL" -f backend/app/storage/postgres_impl/schema.sql
 #
 #   docker compose -f deploy/docker-compose.yml up -d
 #
 # 起来之后：
-#   界面   http://localhost:8080
-#   API    http://localhost:8080/api/v1/health
+#   界面        http://localhost:8080
+#   API         http://localhost:8080/api/v1/health
+#   MinIO 控制台 http://localhost:9001（账号密码同 KYLAB_S3_ACCESS_KEY/SECRET_KEY）
+#
+# 存储分工（架构设计 v0.2 §8）：
+#   postgres  元数据 + 向量(pgvector) + 全文(tsvector)
+#   minio     原件 / Markdown 产物 / 图片
+#   kylab-data 卷  DuckDB 表格副本（以及未配 S3 时的原件回退目录）
 name: kylab
 
 services:
+  # ---- PostgreSQL（含 pgvector）----
+  #
+  # 官方 pgvector 镜像：只带 vector 一个扩展，许可证是 PostgreSQL License，
+  # 镜像干净、版本可预期。**这是面向用户的部署方案里选的镜像。**
+  # 选 pg17 而不是 pg18，是为了与开发服务器上的 PG 大版本保持一致
+  # （服务器因拉取受限暂用 paradedb/paradedb:v0.22.2-pg17，同样是 PG 17），
+  # 避免"开发能跑、部署行为不同"这类最难查的问题。
+  #
+  # 可以换成 pg18-trixie 等其他版本，但那会改变 PG 大版本；
+  # 升级大版本前必须按 PostgreSQL 的版本升级流程处理数据目录。
+  #
+  # 若需要 BM25 全文检索（pg_search）或 PostGIS，可换 paradedb/paradedb：
+  # 它自带这些扩展，但**社区版是 AGPLv3**，且会在 public 下建
+  # spatial_ref_sys（PostGIS）等与项目无关的对象。当前 schema 用的是
+  # 内建 tsvector，不需要它。
+  postgres:
+    image: pgvector/pgvector:pg17-trixie
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${KYLAB_PG_USER:-kylab}
+      POSTGRES_PASSWORD: ${KYLAB_PG_PASSWORD:-kylab-dev-secret}
+      POSTGRES_DB: ${KYLAB_PG_DB:-kylab}
+      # 显式指定，避免数据落进镜像声明的匿名卷而不是我们挂的目录
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - kylab-pg:/var/lib/postgresql/data
+    # PG 的并行查询要共享内存，默认 64MB 偏小
+    shm_size: 256mb
+    # 不对外暴露 5432：库只给 compose 网络内的后端用。
+    # 需要从宿主机连（调试/迁移）时取消下面两行注释。
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${KYLAB_PG_USER:-kylab} -d ${KYLAB_PG_DB:-kylab}"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+
+  # ---- MinIO（S3 兼容对象存储）----
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      # 与后端共用同一对凭据，避免"两处各写一份、改一处忘另一处"
+      MINIO_ROOT_USER: ${KYLAB_S3_ACCESS_KEY:-kylab}
+      MINIO_ROOT_PASSWORD: ${KYLAB_S3_SECRET_KEY:-kylab-dev-secret}
+    volumes:
+      - kylab-objects:/data
+    ports:
+      # 控制台只在宿主机本机可达；S3 API 端口供 compose 网络内的后端使用
+      - "127.0.0.1:${KYLAB_MINIO_CONSOLE_PORT:-9001}:9001"
+      - "127.0.0.1:${KYLAB_MINIO_PORT:-9000}:9000"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+
+  # 一次性任务：建桶。MinIO 不会自动建桶，没桶后端启动校验就会失败。
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MC_HOST_kylab: http://${KYLAB_S3_ACCESS_KEY:-kylab}:${KYLAB_S3_SECRET_KEY:-kylab-dev-secret}@minio:9000
+    entrypoint:
+      - /bin/sh
+      - -c
+      - "mc mb --ignore-existing kylab/${KYLAB_S3_BUCKET:-kylab}"
+    restart: "no"
+
   backend:
     build:
       context: ../backend
     image: kylab-backend:${KYLAB_VERSION:-0.1.0}
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     environment:
       # 数据都落在挂载卷里，容器重建不丢
       KYLAB_DATA_DIR: /data
+      # ---- 存储后端 ----
+      # 库与对象存储只走内网服务名；宿主机不暴露端口
+      KYLAB_DATABASE_URL: postgresql://${KYLAB_PG_USER:-kylab}:${KYLAB_PG_PASSWORD:-kylab-dev-secret}@postgres:5432/${KYLAB_PG_DB:-kylab}
+      KYLAB_S3_ENDPOINT: http://minio:9000
+      KYLAB_S3_ACCESS_KEY: ${KYLAB_S3_ACCESS_KEY:-kylab}
+      KYLAB_S3_SECRET_KEY: ${KYLAB_S3_SECRET_KEY:-kylab-dev-secret}
+      KYLAB_S3_BUCKET: ${KYLAB_S3_BUCKET:-kylab}
+      KYLAB_S3_REGION: ${KYLAB_S3_REGION:-us-east-1}
+      # 容器内网互通走 http
+      KYLAB_S3_SECURE: "false"
+      # ---- 应用 ----
       # 鉴权**永远生效**（v0.11 起没有开关）。首次打开时访问界面会进
       # 「创建管理员账号」向导；在此之前业务接口一律 401。
       # 忘记密码没有 HTTP 应急入口，见 docs/部署与运行-v0.1.md 的恢复路径。
@@ -69,3 +172,8 @@ volumes:
     # 具名卷由 docker 管理，位置随平台而变。
     # 要固定到某个路径（比如挂到 NAS）就换成 bind mount：
     #   driver_opts: { type: none, device: /srv/kylab, o: bind }
+  kylab-pg:
+    # PG 数据目录。**备份要在这里做**（pg_dump），不能靠拷文件：
+    # 运行中的 data 目录直接拷贝是不一致的。
+  kylab-objects:
+    # MinIO 的对象数据（原件 / Markdown / 图片）
