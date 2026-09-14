@@ -245,7 +245,13 @@ def test_relative_score_threshold_filters_weak_hits(seeded: StoreBundle,
     )
 
     assert len(strict.hits) <= len(everything.hits)
-    assert len(strict.hits) == 1  # 1.0 = 只保留并列第一
+    # 1.0 = 只保留并列第一。**不能写死条数**：并列与否取决于两个通道的名次，
+    # 而 bm25 与 ts_rank_cd 对同一批命中的排序可以不同（换后端时实测踩到：
+    # 两通道名次互为镜像 → 融合分相等 → 出现两个并列第一）。
+    # 要验的是语义本身：留下来的分数都等于最高分。
+    assert strict.hits
+    top = everything.hits[0].score
+    assert all(hit.score == pytest.approx(top) for hit in strict.hits)
 
 
 # --------------------------------------------------------------------- 文档级停用（v14）
