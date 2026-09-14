@@ -9,11 +9,16 @@
 
 from __future__ import annotations
 
+import os
+import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
+from psycopg import sql as pgsql
 
 from app.core.config import get_settings
 from app.core.services import reset_services
@@ -32,6 +37,10 @@ from app.storage.sqlite_impl.vector_store import SqliteVectorStore
 
 DEFAULT_MODEL_ID = "BAAI/bge-m3"
 DEFAULT_DIM = 1024
+
+#: 提供它就打开"PG 后端的集成测试"。值是**维护库**的连接串（如 …/postgres），
+#: 测试会用它建一个临时库、跑完删掉。指向带 pgvector 的 PG；建扩展需要超级用户。
+PG_TEST_DSN_ENV = "KYLAB_TEST_DATABASE_URL"
 
 #: 集成测试的管理员账号。**v0.11 起 /api/v1 一律要凭据**，所以每个 API 测试
 #: 都要先走一遍产品上第一次打开的真实路径：setup 建管理员 → 拿会话令牌。
@@ -111,6 +120,85 @@ def database(tmp_path) -> Database:
     finally:
         conn.close()
     return db
+
+
+# ---------------------------------------------------------------- PG 后端（可选）
+#
+# 目标存储是 PostgreSQL，但 SQLite 仍在跑（向量/全文/对象三个仓储尚未移植）。
+# 所以这里**不接管全局 `store` 夹具**——那会连带弄坏那些"用 store 造数据、
+# 再用 SQLite 专有仓储查询"的用例。需要 PG 的测试文件自己覆盖 `store`：
+#
+#     @pytest.fixture
+#     def store(pg_meta_store, database):
+#         if pg_meta_store is not None:
+#             return pg_meta_store
+#         return SqliteMetaStore(database)
+#
+# 未设置 KYLAB_TEST_DATABASE_URL 时这些夹具返回 None，测试自动退回 SQLite。
+
+
+def _truncate_public_tables(db) -> None:  # type: ignore[no-untyped-def]
+    """清空一个 PG 库的全部业务表，让用例之间互不影响。"""
+    with db.session() as conn:
+        rows = conn.execute(
+            "select table_name from information_schema.tables "
+            "where table_schema = 'public' and table_type = 'BASE TABLE'"
+        ).fetchall()
+        names = [row["table_name"] for row in rows]
+        if not names:
+            return
+        # 表名来自 information_schema，不是外部输入；用 Identifier 组合避免拼接
+        conn.execute(
+            pgsql.SQL("truncate {} restart identity cascade").format(
+                pgsql.SQL(", ").join(pgsql.Identifier(name) for name in names)
+            )
+        )
+
+
+@pytest.fixture(scope="session")
+def pg_meta_database() -> Iterator[object | None]:
+    """一个**独立的临时 PG 库**（建好 schema），跑完删除；未配置则 None。
+
+    用独立库而不是开发库：测试要 TRUNCATE 整库，绝不能落到开发数据上。
+    """
+    dsn = os.environ.get(PG_TEST_DSN_ENV)
+    if not dsn:
+        yield None
+        return
+
+    from app.storage.postgres_impl.connection import Database as PgDatabase
+    from app.storage.postgres_impl.schema import prepare
+
+    name = f"kylab_meta_{uuid.uuid4().hex[:8]}"
+    with psycopg.connect(dsn, autocommit=True) as admin:
+        admin.execute(pgsql.SQL("create database {}").format(pgsql.Identifier(name)))
+
+    db = PgDatabase(psycopg.conninfo.make_conninfo(dsn, dbname=name))
+    db.open()
+    try:
+        prepare(db)
+        yield db
+    finally:
+        db.close()
+        with psycopg.connect(dsn, autocommit=True) as admin:
+            admin.execute(
+                pgsql.SQL("drop database if exists {} with (force)").format(
+                    pgsql.Identifier(name)
+                )
+            )
+
+
+@pytest.fixture
+def pg_meta_store(pg_meta_database) -> Iterator[object | None]:
+    """``PostgresMetaStore``；未配置 PG 时为 None（调用方退回 SQLite）。"""
+    if pg_meta_database is None:
+        yield None
+        return
+
+    from app.storage.postgres_impl.meta_store import PostgresMetaStore
+
+    _truncate_public_tables(pg_meta_database)
+    yield PostgresMetaStore(pg_meta_database)
 
 
 @pytest.fixture

@@ -1,7 +1,11 @@
-"""``SqliteMetaStore`` 的行为测试（集成）。
+"""``MetaStore`` 的行为测试（集成）。
 
 覆盖架构里靠元数据兑现的承诺：文件去重（§6.3）、断点续跑的任务租约（§4）、
 回收站 7 天（§6.2）、embedding 模型锁（§6.4）、大文件切分（§4.2）。
+
+**同一套用例喂两个后端**：默认跑 SQLite；配了 ``KYLAB_TEST_DATABASE_URL``
+就覆盖下面的 ``store`` 夹具、整套跑在 PostgreSQL 上。接口抽象立没立住，
+靠这个来验，而不是靠人肉比对两版实现。
 """
 
 from datetime import UTC, datetime, timedelta
@@ -28,6 +32,7 @@ from app.storage.base import (
     DocumentRecord,
     ImageRecord,
     KnowledgeBaseRecord,
+    MetaStore,
     ParseResultRecord,
     SessionRecord,
     ShareRecord,
@@ -38,6 +43,14 @@ from app.storage.base import (
 )
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
+
+
+@pytest.fixture
+def store(pg_meta_store, database: Database) -> MetaStore:
+    """覆盖 conftest 的同名夹具：配了 PG 就跑 PG，否则维持 SQLite。"""
+    if pg_meta_store is not None:
+        return pg_meta_store  # type: ignore[no-any-return]
+    return SqliteMetaStore(database)
 
 
 def utc_now() -> datetime:
@@ -124,7 +137,10 @@ def test_get_document_by_hash_finds_duplicate(store: SqliteMetaStore, kb, docume
 
 
 def test_duplicate_document_in_same_kb_is_rejected(store: SqliteMetaStore, kb, document) -> None:
-    with pytest.raises(Exception, match="UNIQUE constraint failed"):
+    # 断言的是"数据库拒绝了"，不是驱动的报错措辞：
+    # SQLite 说 "UNIQUE constraint failed"，PG 说 "duplicate key value violates
+    # unique constraint"。按措辞断言会把这个跨后端的行为测试绑死在一个驱动上。
+    with pytest.raises(Exception, match=r"(?i)unique"):
         store.create_document(
             DocumentRecord(
                 id="doc_dup",
@@ -421,14 +437,22 @@ def test_finish_task_releases_lease(store: SqliteMetaStore) -> None:
 
 
 @pytest.fixture
-def reassign_lease(database: Database):
+def reassign_lease(database: Database, pg_meta_database):
     """把租约判给另一个消费者。
 
     ``heartbeat_task`` 做不到这件事：它要求 ``lease_owner = owner``，只能在
     "自己还持有租约"时续期。要制造"被回收后重领"，只能直接改这一行。
+
+    **两个后端都要支持**：这条用例靠绕过仓储接口直接改库，所以不能只写 SQLite。
     """
 
     def _reassign(task_id: str, owner: str) -> None:
+        if pg_meta_database is not None:
+            with pg_meta_database.session() as conn:
+                conn.execute(
+                    "update tasks set lease_owner = %s where id = %s", (owner, task_id)
+                )
+            return
         conn = database.connect()
         try:
             conn.execute("UPDATE tasks SET lease_owner = ? WHERE id = ?", (owner, task_id))
@@ -526,8 +550,12 @@ def test_task_can_reference_an_existing_document(store: SqliteMetaStore, kb, doc
 
 
 def test_task_referencing_missing_document_is_rejected(store: SqliteMetaStore) -> None:
-    """外键约束生效：任务不能挂到不存在的文档上（也是级联删除可信的前提）。"""
-    with pytest.raises(Exception, match="FOREIGN KEY constraint failed"):
+    """外键约束生效：任务不能挂到不存在的文档上（也是级联删除可信的前提）。
+
+    同 ``test_duplicate_document_in_same_kb_is_rejected``：按错误种类断言，
+    不绑驱动措辞（SQLite "FOREIGN KEY constraint failed" / PG "violates foreign key"）。
+    """
+    with pytest.raises(Exception, match=r"(?i)foreign key"):
         store.enqueue_task(_task("t1", document_id="doc_not_exist"))
 
 
