@@ -10,6 +10,7 @@
 import pytest
 
 from app.storage.base import FullTextStore, ObjectStore, VectorStore
+from app.storage.postgres_impl.fulltext_store import PostgresFullTextStore
 from app.storage.postgres_impl.vector_store import PostgresVectorStore
 from app.storage.s3_impl.object_store import S3ObjectStore
 from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
@@ -22,6 +23,7 @@ IMPLEMENTATIONS = (
     (SqliteVectorStore, VectorStore),
     (PostgresVectorStore, VectorStore),
     (SqliteFullTextStore, FullTextStore),
+    (PostgresFullTextStore, FullTextStore),
     (LocalObjectStore, ObjectStore),
     (S3ObjectStore, ObjectStore),
 )

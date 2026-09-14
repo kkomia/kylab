@@ -239,6 +239,19 @@ def pg_vector_store(pg_meta_database) -> Iterator[object | None]:
 
 
 @pytest.fixture
+def pg_fulltext_store(pg_meta_database) -> Iterator[object | None]:
+    """``PostgresFullTextStore``；未配置 PG 时为 None。"""
+    if pg_meta_database is None:
+        yield None
+        return
+
+    from app.storage.postgres_impl.fulltext_store import PostgresFullTextStore
+
+    _reset_database(pg_meta_database)
+    yield PostgresFullTextStore(pg_meta_database)
+
+
+@pytest.fixture
 def db_file(database: Database) -> Path:
     """数据库文件的真实路径。
 

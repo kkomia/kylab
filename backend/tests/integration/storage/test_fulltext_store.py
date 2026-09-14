@@ -1,12 +1,41 @@
-"""``SqliteFullTextStore`` 的行为测试（集成）。
+"""``FullTextStore`` 的行为测试（集成）。
 
 覆盖架构 §5 的全文召回路径：chunk 写入索引、中文可检索、按库收敛、与图片锚点回填。
+
+同一套用例喂两个后端：默认 SQLite（FTS5）；配了 ``KYLAB_TEST_DATABASE_URL``
+就跑 PostgreSQL（tsvector 生成列）。**两个夹具都要覆盖**——这套用例同时用
+``store``（元数据）与 ``fulltext_store``，只切其中一个会变成"元数据在 SQLite、
+索引在 PG"的错配。
 """
 
+import pytest
+
 from app.models.enums import DataSourceKind, DocumentStage
-from app.storage.base import ChunkRecord, DocumentRecord, KnowledgeBaseRecord
+from app.storage.base import (
+    ChunkRecord,
+    DocumentRecord,
+    FullTextStore,
+    KnowledgeBaseRecord,
+    MetaStore,
+)
 from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
+
+
+@pytest.fixture
+def store(pg_meta_store, database) -> MetaStore:
+    """覆盖 conftest 的同名夹具：配了 PG 就走 PG。"""
+    if pg_meta_store is not None:
+        return pg_meta_store  # type: ignore[no-any-return]
+    return SqliteMetaStore(database)
+
+
+@pytest.fixture
+def fulltext_store(pg_fulltext_store, database) -> FullTextStore:
+    """覆盖 conftest 的同名夹具：配了 PG 就走 PG。"""
+    if pg_fulltext_store is not None:
+        return pg_fulltext_store  # type: ignore[no-any-return]
+    return SqliteFullTextStore(database)
 
 
 def _chunk(chunk_id: str, ordinal: int, text: str, *, document_id: str = "doc_1",

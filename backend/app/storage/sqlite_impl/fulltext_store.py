@@ -19,6 +19,8 @@ import jieba
 
 from app.storage.base import ChunkRecord, FullTextStore, SearchHit
 from app.storage.sqlite_impl.connection import Database
+from app.storage.text import cut
+from app.storage.text import tokenize as tokenize  # 转出：既有用例从这里导入
 
 logger = logging.getLogger(__name__)
 
@@ -27,14 +29,9 @@ DEFAULT_SLOW_QUERY_MS = 500
 """超过该耗时的查询留一条 WARNING（架构 §12 可观测性）。构造时可覆盖，便于测试。"""
 
 
-def tokenize(text: str) -> str:
-    """切词并空格连接；过滤纯空白，避免产生无意义的 FTS 词元。"""
-    return _SPACE.join(word for word in jieba.cut_for_search(text) if word.strip())
-
-
 def _to_match_query(text: str) -> str:
     """把用户输入转成 FTS5 MATCH 表达式：词元加引号防止语法字符（如 ``*``、``:``）报错。"""
-    tokens = [word for word in jieba.cut_for_search(text) if word.strip()]
+    tokens = cut(text)
     if not tokens:
         return ""
     return " OR ".join(f'"{token}"' for token in tokens)
