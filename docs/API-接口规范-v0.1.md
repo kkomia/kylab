@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **113** 条端点。
+共 **114** 条端点。
 
 ### `api-keys`
 
@@ -356,6 +356,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/v1/tasks` | 任务列表（每项带健康判据） |
+| `POST` | `/api/v1/tasks/cancel` | 取消还没结束的任务 |
 | `GET` | `/api/v1/tasks/health` | 运行态总览 |
 
 ### `users`

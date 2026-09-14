@@ -1102,6 +1102,16 @@ class MetaStore(ABC):
         """
 
     @abstractmethod
+    def cancel_tasks(self, task_ids: Sequence[str]) -> int:
+        """按 id 把还没结束的任务标成 canceled，返回实际改动的条数。
+
+        给"任务中心里取消排队中的任务"用：用户看到几十条 pending 堵在队列里，
+        得有一个地方把它们撤下来，而不是只能逐篇去取消文档。
+        同样清租约、同样不需要 owner。已结束（succeeded/failed/canceled）的任务
+        不在改动范围内——它们的 rowcount 自然是 0，调用方据此报"任务已结束"。
+        """
+
+    @abstractmethod
     def reschedule_task(
         self, task_id: str, *, owner: str, next_run_at: datetime, error: str | None
     ) -> bool:

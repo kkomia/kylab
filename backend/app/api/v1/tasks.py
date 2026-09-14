@@ -12,13 +12,20 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from app.api.auth import require_read
-from app.api.v1.schemas import HealthOverviewOut, TaskList, TaskOut
+from app.api.auth import check_kb_scope, require_read, require_write
+from app.api.v1.schemas import (
+    HealthOverviewOut,
+    TaskCancelIn,
+    TaskCancelItemOut,
+    TaskCancelOut,
+    TaskList,
+    TaskOut,
+)
 from app.core.config import get_settings
-from app.core.exceptions import ForbiddenError
+from app.core.exceptions import ForbiddenError, KylabError
 from app.core.services import Services, get_services
 from app.models.enums import TaskState
-from app.services.api_key import Caller
+from app.services.api_key import WRITE, Caller
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -73,4 +80,70 @@ async def tasks_health(
     # 它决定进程里到底有没有那个消费协程，改它要重启，所以从 Settings 读
     return HealthOverviewOut.model_validate(
         {**overview, "worker_enabled": get_settings().run_worker}
+    )
+
+
+@router.post("/cancel", response_model=TaskCancelOut, summary="取消还没结束的任务")
+async def cancel_tasks(
+    payload: TaskCancelIn,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
+) -> TaskCancelOut:
+    """撤销排队中（或正在跑）的任务，**逐条返回成败**。
+
+    存在这一条的理由：队列里堆了几十条 pending 时，用户唯一能按的刹车是"逐篇取消文档"。
+    文档级的取消仍然保留（它同时把文档置为 canceled），这里给的是任务视角的入口。
+
+    权限沿用列表那一套：成员只能动**自己可见知识库**里的文档任务；
+    没有挂文档的全局任务（数据源拉取、Wiki 生成）只有管理员能动——
+    它们属于运维面，与列表里"对成员隐藏"是同一条口径。
+
+    ``state='all'`` 会连正在跑的一起撤：那条路径靠"把文档置 canceled"让 worker 在
+    下一个阶段边界停手，所以**不是立刻中断**，云端解析仍会跑完当前那次调用。
+    """
+    wanted = set(payload.task_ids)
+    if payload.task_ids:
+        tasks = [task for task in services.documents.list_tasks() if task.id in wanted]
+        missing = wanted - {task.id for task in tasks}
+    else:
+        states = {
+            "pending": {TaskState.PENDING},
+            "running": {TaskState.RUNNING},
+            "all": {TaskState.PENDING, TaskState.RUNNING},
+        }[payload.state]
+        tasks = [task for task in services.documents.list_tasks() if task.state in states]
+        missing = set()
+
+    documents = services.documents.get_documents_by_ids(
+        [task.document_id for task in tasks if task.document_id]
+    )
+    allowed: list[str] = []
+    items: list[TaskCancelItemOut] = [
+        TaskCancelItemOut(task_id=task_id, ok=False, error="任务不存在")
+        for task_id in sorted(missing)
+    ]
+    for task in tasks:
+        document = documents.get(task.document_id or "")
+        if document is None:
+            # 没有挂文档的全局任务：只有管理员能动
+            if not caller.is_admin:
+                items.append(
+                    TaskCancelItemOut(task_id=task.id, ok=False, error="需要管理员权限")
+                )
+                continue
+        else:
+            try:
+                check_kb_scope(services, caller, [document.knowledge_base_id], need=WRITE)
+            except KylabError as exc:
+                items.append(TaskCancelItemOut(task_id=task.id, ok=False, error=str(exc)))
+                continue
+        allowed.append(task.id)
+
+    for item in services.documents.cancel_tasks(allowed):
+        items.append(TaskCancelItemOut(task_id=item.task_id, ok=item.ok, error=item.error))
+
+    return TaskCancelOut(
+        succeeded=sum(1 for item in items if item.ok),
+        failed=sum(1 for item in items if not item.ok),
+        items=items,
     )

@@ -1515,6 +1515,32 @@ class PostgresMetaStore(MetaStore):
             )
         return int(cursor.rowcount)
 
+    def cancel_tasks(self, task_ids: Sequence[str]) -> int:
+        """按 id 撤销还没结束的任务（见 ``MetaStore`` 的说明）。"""
+        wanted = list(dict.fromkeys(task_ids))
+        if not wanted:
+            return 0
+        # 占位符按数量现拼：`IN (%s, %s, ...)` 没法用单个参数表达，而值仍然走参数绑定
+        placeholders = ", ".join(["%s"] * len(wanted))
+        sql = (
+            "UPDATE tasks"  # noqa: S608
+            " SET state = %s, error = '已取消', lease_owner = NULL,"
+            " lease_expires_at = NULL, updated_at = %s"
+            f" WHERE id IN ({placeholders}) AND state IN (%s, %s)"
+        )
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                sql,
+                (
+                    TaskState.CANCELED.value,
+                    _dump(_now()),
+                    *wanted,
+                    TaskState.PENDING.value,
+                    TaskState.RUNNING.value,
+                ),
+            )
+        return int(cursor.rowcount)
+
     def reclaim_expired_tasks(self, *, now: datetime | None = None) -> int:
         """回收超时任务：还有重试额度就回到 PENDING（断点续跑），否则判失败。"""
         moment = now or _now()

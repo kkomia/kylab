@@ -45,3 +45,23 @@ export function listTasks(state?: TaskState): Promise<{ items: TaskSummary[] }> 
   const query = state ? `?state=${state}` : ''
   return request(`/tasks${query}`)
 }
+
+/** 取消还没结束的任务。两种用法：点名 `taskIds`，或只给 `state` 清空整批排队。 */
+export interface TaskCancelResult {
+  succeeded: number
+  failed: number
+  items: { task_id: string; ok: boolean; error: string | null }[]
+}
+
+export function cancelTasks(payload: {
+  taskIds?: string[]
+  state?: 'pending' | 'running' | 'all'
+}): Promise<TaskCancelResult> {
+  return request('/tasks/cancel', {
+    method: 'POST',
+    body: JSON.stringify({
+      task_ids: payload.taskIds ?? [],
+      state: payload.state ?? 'pending',
+    }),
+  })
+}

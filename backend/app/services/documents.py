@@ -12,6 +12,7 @@ from dataclasses import dataclass, replace
 from app.core.exceptions import (
     ConflictError,
     InvalidRequestError,
+    KylabError,
     NotFoundError,
     UnsupportedContentError,
 )
@@ -27,7 +28,12 @@ from app.storage.base import (
     TaskRecord,
 )
 
-__all__ = ["DocumentContent", "DocumentService", "signature_resource"]
+__all__ = [
+    "DocumentContent",
+    "DocumentService",
+    "TaskCancelItem",
+    "signature_resource",
+]
 
 ACTIVE_TASK_STATES = (TaskState.PENDING, TaskState.RUNNING)
 """这两个状态下重复入队没有意义——同一文档不该同时跑两个摄入任务。"""
@@ -35,6 +41,15 @@ ACTIVE_TASK_STATES = (TaskState.PENDING, TaskState.RUNNING)
 DOCUMENT_NAME_MAX_CHARS = 200
 """文件名长度上限。比目录名（64）宽得多：真文件名的确可以很长，
 这里只是拦住"把一整段正文粘进文件名"那种。"""
+
+
+@dataclass(frozen=True, slots=True)
+class TaskCancelItem:
+    """撤销排队任务的一条结果。``error`` 为空即成功。"""
+
+    task_id: str
+    ok: bool
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,6 +313,54 @@ class DocumentService:
         record.stage = DocumentStage.CANCELED
         record.error = "已取消"
         return record
+
+    def cancel_tasks(self, task_ids: list[str]) -> list[TaskCancelItem]:
+        """撤销一批**还没结束**的任务，逐条返回结果（v24）。
+
+        为什么要有它：队列里堆着几十条 pending 时，用户唯一的刹车是"逐篇取消文档"——
+        而我们自己文档里还写着"取消排队中的任务"是任务中心该有的能力。这里补上。
+
+        三种情况分开处理，**不能只改任务行的状态**：
+
+        - ``pending``：直接把任务标 canceled。``claim_task`` 只领 pending，所以它不会再
+          被领取——文档留在原阶段（uploaded 之类），之后还能重新入队，不是不可逆的。
+        - ``running`` 且挂在文档上：光改任务行没用，worker 手上那一次不会因此停手，
+          跑完还会把状态写成 succeeded。所以**连同文档一起置 canceled**——摄入在下一个
+          阶段边界看见就停（``IngestService._advance``）。云端解析那种没法中断的调用
+          也只能在边界才停得住，这与 ``cancel`` 是同一套语义。
+        - ``running`` 但不是文档任务（数据源拉取 / Wiki 生成）：没有阶段可置，
+          只能明确拒绝并说清原因，而不是给一个"看起来取消了、其实还在跑"的假象。
+        """
+        results: list[TaskCancelItem] = []
+        for task_id in task_ids:
+            task = self._stores.meta.get_task(task_id)
+            if task is None:
+                results.append(TaskCancelItem(task_id, False, "任务不存在"))
+                continue
+            if task.state not in (TaskState.PENDING, TaskState.RUNNING):
+                results.append(TaskCancelItem(task_id, False, f"任务已结束（{task.state.value}）"))
+                continue
+            if task.state is TaskState.RUNNING and task.document_id:
+                try:
+                    self.cancel(task.document_id)
+                except KylabError as exc:
+                    results.append(TaskCancelItem(task_id, False, str(exc)))
+                else:
+                    results.append(TaskCancelItem(task_id, True))
+                continue
+            if task.state is TaskState.RUNNING:
+                results.append(
+                    TaskCancelItem(task_id, False, "这类任务没有可中断的阶段，等它跑完或重启服务")
+                )
+                continue
+            changed = self._stores.meta.cancel_tasks([task_id])
+            # rowcount 为 0 = 这条在"读到"和"改"之间已经结束了（并发下的正常结果）
+            results.append(
+                TaskCancelItem(task_id, True)
+                if changed
+                else TaskCancelItem(task_id, False, "任务已结束")
+            )
+        return results
 
     def list_parts(self, document_id: str) -> list[DocumentPartRecord]:
         """子文件树（大文件切分的产物，UI 点击展开）。"""

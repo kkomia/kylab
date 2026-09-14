@@ -119,11 +119,16 @@ def isolated_data_dir(tmp_path, monkeypatch, pg_database):
     # 应用层用例（走 create_app）不经过 pg_stores 夹具，得在这里清一次库，
     # 否则上一个用例建的管理员/知识库会漏到下一个用例里
     _reset_database(pg_database)
-    # **测试绝不碰真实对象存储**：本机若导出过 KYLAB_S3_*（比如为了手工验证），
+    # **测试绝不碰真实对象存储**：本机若配了 KYLAB_S3_*（比如为了手工验证），
     # build_stores() 会真的往那个桶里写。这里一律清掉，需要对象存储的用例
     # 自己用 KYLAB_TEST_S3_* 显式构造（见 test_s3_object_store.py）。
+    #
+    # **必须 setenv 成空串，不能 delenv**：`Settings` 会读 `backend/.env` 文件，
+    # 删掉环境变量之后同名值会从文件里"复活"（实测：本机 .env 配了 MinIO，
+    # 于是走的是 S3 而不是本地实现，两个 lifespan 用例因此红）。环境变量优先于
+    # .env，设成空串才真的把它压下去——库连接串用的是同一套办法（见上）。
     for name in ("KYLAB_S3_ENDPOINT", "KYLAB_S3_ACCESS_KEY", "KYLAB_S3_SECRET_KEY"):
-        monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv(name, "")
     # 测试要一条**不联网**的向量化链路：显式打开开发用确定性嵌入。
     # v0.8 起它不再是"没配就自动兜底"，必须有人主动开——测试就是那个"人"。
     monkeypatch.setenv("KYLAB_DEV_EMBEDDING", "true")

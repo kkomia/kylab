@@ -12,13 +12,15 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
-import type { TaskSummary } from '@/api/tasks'
+import { cancelTasks, type TaskSummary } from '@/api/tasks'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconFile from '@/components/icons/IconFile.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import AppButton from '@/components/ui/AppButton.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
+import { useToast } from '@/composables/useToast'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
@@ -93,6 +95,48 @@ function clearFilters(): void {
 }
 
 const running = computed(() => taskStore.hasActive)
+
+/** 排队中的任务数：工具栏那个"一键撤下"按钮只在真有排队时才出现。 */
+const pendingCount = computed(() => tasks.value.filter((task) => task.state === 'pending').length)
+
+const { notifySuccess, notifyError } = useToast()
+const cancelOpen = ref(false)
+const canceling = ref(false)
+
+/**
+ * 撤下任务。
+ *
+ * **逐条结果**：批量里"30 条撤下 28 条"是正常结果（有的刚好跑完了），
+ * 所以按成功/失败分别报，并把第一条失败原因带出来——只报总数等于让人自己找。
+ */
+async function runCancel(taskIds?: string[]): Promise<void> {
+  if (canceling.value) return
+  canceling.value = true
+  cancelOpen.value = false
+  try {
+    const result = await cancelTasks(taskIds ? { taskIds } : {})
+    detail.value = null
+    await refresh()
+    if (result.failed === 0) {
+      notifySuccess(`已撤下 ${result.succeeded} 个任务`)
+      return
+    }
+    const firstError = result.items.find((item) => !item.ok)?.error
+    notifyError(
+      `撤下：${result.succeeded} 个成功、${result.failed} 个未撤下` +
+        (firstError ? `（${firstError}）` : ''),
+    )
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '取消任务失败')
+  } finally {
+    canceling.value = false
+  }
+}
+
+/** 单个任务能否取消：只有还没结束的两种状态可以（与后端口径一致）。 */
+function canCancel(task: TaskSummary | null): boolean {
+  return task !== null && (task.state === 'pending' || task.state === 'running')
+}
 
 async function refresh(): Promise<void> {
   await taskStore.load()
@@ -202,6 +246,18 @@ function openDocument(documentId: string): void {
         </div>
         <AppButton v-if="hasFilter" size="sm" variant="subtle" @click="clearFilters">
           清除筛选
+        </AppButton>
+        <!-- 唯一能真正"给队列踩刹车"的地方：几十条 pending 堵着时，
+             逐篇取消文档是做不到的（用户反馈） -->
+        <AppButton
+          v-if="pendingCount > 0"
+          size="sm"
+          variant="subtle"
+          :disabled="canceling"
+          @click="cancelOpen = true"
+        >
+          <template #icon><IconStop /></template>
+          取消排队中的任务（{{ pendingCount }}）
         </AppButton>
         <span class="toolbar-count tabular">{{ visibleTasks.length }} / {{ tasks.length }} 项</span>
       </div>
@@ -332,6 +388,14 @@ function openDocument(documentId: string): void {
       <template #footer>
         <AppButton @click="detail = null">关闭</AppButton>
         <AppButton
+          v-if="canCancel(detail)"
+          variant="danger"
+          :disabled="canceling"
+          @click="detail && runCancel([detail.id])"
+        >
+          取消这个任务
+        </AppButton>
+        <AppButton
           v-if="detail?.document_id"
           variant="primary"
           @click="openDocument(detail.document_id)"
@@ -340,6 +404,18 @@ function openDocument(documentId: string): void {
         </AppButton>
       </template>
     </AppModal>
+
+    <!-- 批量撤下要二次确认：这是"把几十篇的处理全叫停"，点错了代价不小。
+         文案里说清"文档不会被删/不会变状态"，因为那正是用户担心的 -->
+    <ConfirmDialog
+      v-model:open="cancelOpen"
+      title="取消排队中的任务"
+      :lead="`撤下 ${pendingCount} 个还在排队的任务？`"
+      note="只是不再处理：文档与已入库的内容都保留。之后可以重新上传，或对文档点「重新摄入」。正在执行的任务不在范围内。"
+      confirm-label="撤下"
+      :busy="canceling"
+      @confirm="runCancel()"
+    />
   </PageShell>
 </template>
 

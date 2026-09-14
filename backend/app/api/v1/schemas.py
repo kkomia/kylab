@@ -1338,3 +1338,32 @@ class WikiPageDetailOut(WikiPageOut):
 class WikiGenerateOut(BaseModel):
     task_id: str
     kb_id: str
+
+
+class TaskCancelIn(BaseModel):
+    """取消还没结束的任务（v24）。
+
+    **两种用法**，都支持：
+
+    - 点名取消：给 ``task_ids``；
+    - 一键清空排队：不给 ids，只给 ``state``（默认 ``pending``），
+      服务端按调用方**可见范围**解析出全部候选——这才是"几十条堵在队列里"时
+      真正想点的那个按钮。
+    """
+
+    task_ids: list[str] = Field(default_factory=list, max_length=500)
+    state: Literal["pending", "running", "all"] = "pending"
+
+
+class TaskCancelItemOut(BaseModel):
+    task_id: str
+    ok: bool
+    error: str | None = None
+
+
+class TaskCancelOut(BaseModel):
+    """逐条结果：批量里"30 条撤下 28 条"是正常结果，界面要能指出剩下两条为什么没成。"""
+
+    succeeded: int
+    failed: int
+    items: list[TaskCancelItemOut] = Field(default_factory=list)
