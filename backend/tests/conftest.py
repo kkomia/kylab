@@ -98,6 +98,11 @@ def isolated_data_dir(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("KYLAB_RUN_WORKER", "false")
+    # **测试绝不碰真实对象存储**：本机若导出过 KYLAB_S3_*（比如为了手工验证），
+    # build_stores() 会真的往那个桶里写。这里一律清掉，需要对象存储的用例
+    # 自己用 KYLAB_TEST_S3_* 显式构造（见 test_s3_object_store.py）。
+    for name in ("KYLAB_S3_ENDPOINT", "KYLAB_S3_ACCESS_KEY", "KYLAB_S3_SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
     # 测试要一条**不联网**的向量化链路：显式打开开发用确定性嵌入。
     # v0.8 起它不再是"没配就自动兜底"，必须有人主动开——测试就是那个"人"。
     monkeypatch.setenv("KYLAB_DEV_EMBEDDING", "true")

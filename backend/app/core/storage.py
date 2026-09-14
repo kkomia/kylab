@@ -12,8 +12,9 @@ from functools import lru_cache
 from pathlib import Path
 
 from app.core.config import Settings, get_settings
-from app.storage.base import StoreBundle
+from app.storage.base import ObjectStore, StoreBundle
 from app.storage.duckdb_impl.tabular_store import DuckDbTabularStore
+from app.storage.s3_impl.object_store import S3ObjectStore, build_client
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
@@ -27,6 +28,41 @@ ORIGINALS_DIR = "originals"
 MARKDOWN_DIR = "markdown"
 IMAGES_DIR = "images"
 STORAGE_SUBDIRS = (ORIGINALS_DIR, MARKDOWN_DIR, IMAGES_DIR)
+
+_S3_REQUIRED = ("s3_endpoint", "s3_access_key", "s3_secret_key")
+
+
+def _build_object_store(settings: Settings, data_dir: Path) -> ObjectStore:
+    """按配置选对象存储：配了 S3 端点就走 S3，否则落到本地目录。
+
+    这是个**可以独立于数据库切换**的组件：文件与元数据本来就是两套东西，
+    所以 MinIO 可以先上，不必等 PG 实现。
+
+    配了端点但缺凭据 → 启动即失败。半配状态（有端点没钥匙）如果不能立刻报错，
+    就会变成"上传时才发现"。
+    """
+    if not settings.s3_endpoint:
+        store = LocalObjectStore(data_dir)
+        for subdir in STORAGE_SUBDIRS:
+            (data_dir / subdir).mkdir(parents=True, exist_ok=True)
+        return store
+
+    missing = [name for name in _S3_REQUIRED if not getattr(settings, name)]
+    if missing:
+        raise RuntimeError(
+            f"配置了 KYLAB_S3_ENDPOINT 但缺少 {missing}；"
+            "要么补齐凭据，要么清空端点以使用本地文件系统"
+        )
+
+    client = build_client(
+        endpoint=settings.s3_endpoint,
+        access_key=settings.s3_access_key or "",
+        secret_key=settings.s3_secret_key or "",
+        region=settings.s3_region,
+        secure=settings.s3_secure,
+    )
+    # 构造时校验桶可达（head_bucket）：配错了要在启动时炸
+    return S3ObjectStore(client, bucket=settings.s3_bucket, prefix=settings.s3_prefix)
 
 
 def build_stores(settings: Settings | None = None) -> StoreBundle:
@@ -48,9 +84,7 @@ def build_stores(settings: Settings | None = None) -> StoreBundle:
     finally:
         connection.close()
 
-    object_store = LocalObjectStore(data_dir)
-    for subdir in STORAGE_SUBDIRS:
-        (data_dir / subdir).mkdir(parents=True, exist_ok=True)
+    object_store = _build_object_store(resolved, data_dir)
 
     return StoreBundle(
         meta=SqliteMetaStore(database),

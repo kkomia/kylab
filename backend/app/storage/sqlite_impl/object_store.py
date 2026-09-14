@@ -22,12 +22,10 @@ from app.storage.base import (
     MARKDOWN,
     ORIGINALS,
     SAFE_KEY_CHARS,
+    TRASH,
     ObjectStore,
     content_key,
 )
-
-TRASH = ".trash"
-"""回收站目录名：属于本地文件系统的实现细节，故留在本模块。"""
 
 __all__ = [
     "IMAGES",

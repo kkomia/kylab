@@ -93,6 +93,14 @@ ORIGINALS = "originals"
 MARKDOWN = "markdown"
 IMAGES = "images"
 
+TRASH = ".trash"
+"""回收站目录名。
+
+**放在接口层而不是某个实现里**：``move_to_trash`` 的返回值会写进 ``trash`` 表，
+换实现（本地文件系统 ↔ S3）时那些历史路径必须仍然解析得到——两套实现各写一份
+常量，迟早会漂成 ``.trash`` 与 ``trash``。
+"""
+
 SAFE_KEY_CHARS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
 )

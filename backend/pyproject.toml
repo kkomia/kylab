@@ -20,6 +20,10 @@ dependencies = [
     # binary 版免去本地编译。pgvector 的 Python 类型适配待向量层落地时再加。
     "psycopg[binary]>=3.2",
     "psycopg-pool>=3.2",
+    # 对象存储（原件 / Markdown 产物 / 图片）。放基础依赖而不是 extra：
+    # Dockerfile 虽然 --all-extras，但漏装 extra 的后果是"第一次上传才炸"，
+    # 而不是启动时炸——这类失败不该赌。
+    "boto3>=1.35",
     # 口令慢哈希（多用户登录）。SHA-256 不得用于口令（core/security.py 的约定），
     # 口令熵低、必须抗离线爆破；选 argon2 而不是 bcrypt：后者有 72 字节截断的坑
     "argon2-cffi>=23.1",
