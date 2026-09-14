@@ -1,15 +1,16 @@
 # kylab 一键起（M7 / T7.1；v0.12 起为 PostgreSQL + MinIO + 后端 + 前端 四件套）。
 #
 # **部分已验证**：开发机没有 docker（计划里的风险 R9），所以这份 compose 整体
-# 仍未经"一键起"实测。但其中的 postgres 服务定义已在真实部署服务器上跑通
-# （kylab-postgres，健康，schema 已应用，pgvector + HNSW + KNN 实测可用），
+# 仍未经"一键起"实测。但其中的 postgres 服务**已按这一份定义在真实部署服务器上
+# 跑通**（同一个镜像 pgvector/pgvector:pg17-trixie，kylab-postgres 健康，
+# PG 17.11 + pgvector 0.8.6，schema 由应用自检引导成功，HNSW + KNN 实测可用），
 # 见 docs/部署与运行-v0.1.md。minio 相关 service 与整体编排仍待实测。
 #
 # 本地开发仍可走 venv + 脚本那条路线（见 docs/部署与运行-v0.1.md）。
 #
-# schema 由 **应用** 在启动时拥有（单一属主，避免两个真相来源）。在 PG 实现
-# （storage/postgres_impl/）落地之前，新库需要手工应用一次：
-#   psql "$KYLAB_DATABASE_URL" -f backend/app/storage/postgres_impl/schema.sql
+# schema 由 **应用** 在启动时拥有（单一属主，避免两个真相来源）。现在可直接用
+# 应用自带的自检入口引导/校验，不必手工 psql：
+#   python -m app.storage.postgres_impl.validate
 #
 #   docker compose -f deploy/docker-compose.yml up -d
 #
@@ -28,13 +29,14 @@ services:
   # ---- PostgreSQL（含 pgvector）----
   #
   # 官方 pgvector 镜像：只带 vector 一个扩展，许可证是 PostgreSQL License，
-  # 镜像干净、版本可预期。**这是面向用户的部署方案里选的镜像。**
-  # 选 pg17 而不是 pg18，是为了与开发服务器上的 PG 大版本保持一致
-  # （服务器因拉取受限暂用 paradedb/paradedb:v0.22.2-pg17，同样是 PG 17），
-  # 避免"开发能跑、部署行为不同"这类最难查的问题。
+  # 镜像干净、版本可预期。
   #
-  # 可以换成 pg18-trixie 等其他版本，但那会改变 PG 大版本；
-  # 升级大版本前必须按 PostgreSQL 的版本升级流程处理数据目录。
+  # 选 pg17 而不是 pg18：**开发服务器上跑的就是这一个镜像**（kylab-postgres，
+  # PG 17.11 + pgvector 0.8.6），同一版本、同一扩展，避免"开发能跑、
+  # 部署行为不同"这类最难查的问题。改这里等于同时改开发环境，别单独动。
+  #
+  # 要升大版本（如 pg18-trixie）必须按 PostgreSQL 的版本升级流程处理数据目录，
+  # 不是改一行 tag 的事。
   #
   # 若需要 BM25 全文检索（pg_search）或 PostGIS，可换 paradedb/paradedb：
   # 它自带这些扩展，但**社区版是 AGPLv3**，且会在 public 下建
