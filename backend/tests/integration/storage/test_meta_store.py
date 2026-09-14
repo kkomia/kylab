@@ -4,8 +4,8 @@
 回收站 7 天（§6.2）、embedding 模型锁（§6.4）、大文件切分（§4.2）。
 
 **同一套用例喂两个后端**：默认跑 SQLite；配了 ``KYLAB_TEST_DATABASE_URL``
-就覆盖下面的 ``store`` 夹具、整套跑在 PostgreSQL 上。接口抽象立没立住，
-靠这个来验，而不是靠人肉比对两版实现。
+则由 conftest 把整套夹具切到 PostgreSQL。接口抽象立没立住靠这个来验，
+而不是靠人肉比对两版实现。
 """
 
 from datetime import UTC, datetime, timedelta
@@ -32,7 +32,6 @@ from app.storage.base import (
     DocumentRecord,
     ImageRecord,
     KnowledgeBaseRecord,
-    MetaStore,
     ParseResultRecord,
     SessionRecord,
     ShareRecord,
@@ -43,14 +42,6 @@ from app.storage.base import (
 )
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
-
-
-@pytest.fixture
-def store(pg_meta_store, database: Database) -> MetaStore:
-    """覆盖 conftest 的同名夹具：配了 PG 就跑 PG，否则维持 SQLite。"""
-    if pg_meta_store is not None:
-        return pg_meta_store  # type: ignore[no-any-return]
-    return SqliteMetaStore(database)
 
 
 def utc_now() -> datetime:
@@ -437,7 +428,7 @@ def test_finish_task_releases_lease(store: SqliteMetaStore) -> None:
 
 
 @pytest.fixture
-def reassign_lease(database: Database, pg_meta_database):
+def reassign_lease(database: Database, pg_database):
     """把租约判给另一个消费者。
 
     ``heartbeat_task`` 做不到这件事：它要求 ``lease_owner = owner``，只能在
@@ -447,8 +438,8 @@ def reassign_lease(database: Database, pg_meta_database):
     """
 
     def _reassign(task_id: str, owner: str) -> None:
-        if pg_meta_database is not None:
-            with pg_meta_database.session() as conn:
+        if pg_database is not None:
+            with pg_database.session() as conn:
                 conn.execute(
                     "update tasks set lease_owner = %s where id = %s", (owner, task_id)
                 )

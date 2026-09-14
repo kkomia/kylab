@@ -13,6 +13,7 @@ from app.core.config import API_VERSION, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import setup_logging
 from app.core.services import get_services
+from app.core.storage import close_stores
 from app.workers.queue_worker import TaskWorker
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         stop.set()
         if worker_task is not None:
             await asyncio.gather(worker_task, return_exceptions=True)
+        # 释放 PG 连接池：进程级资源，不还回去会拖住连接直到进程被回收
+        close_stores()
 
 
 async def _run_worker(worker: TaskWorker, stop: asyncio.Event) -> None:

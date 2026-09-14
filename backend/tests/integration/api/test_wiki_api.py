@@ -28,12 +28,11 @@ def _create_kb(client: TestClient, *, wiki: bool = True) -> str:
 
 def _seed_page(kb_id: str) -> str:
     """直接往库里写一页带出处的 Wiki（生成路径由服务层用例覆盖）。"""
-    from app.core.config import get_settings
+    from app.core.services import get_services
     from app.storage.base import WikiPageRecord, WikiSourceRecord
-    from app.storage.sqlite_impl.connection import Database
-    from app.storage.sqlite_impl.meta_store import SqliteMetaStore
 
-    store = SqliteMetaStore(Database(get_settings().db_path))
+    # 用**应用自己的**仓储：存储迁到 PG 后，另建 SQLite 库只会写到另一个库里
+    store = get_services().auth._stores.meta
     page_id = f"wpage_{kb_id}_overview"
     store.replace_wiki_pages(
         kb_id,

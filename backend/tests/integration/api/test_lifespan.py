@@ -1,6 +1,9 @@
 """应用生命周期与启动装配（集成）。
 
 守的是"服务起来的时候存储是否真的准备好了"——这一条不测，M1 的装配就只是纸面功夫。
+
+**断言对象随后端而变**：SQLite 时代看的是 ``kylab.db`` 文件在不在；迁到 PG 之后
+那个文件不存在了，改成看 schema 版本。守的东西没变：启动即就绪。
 """
 
 from pathlib import Path
@@ -10,6 +13,15 @@ from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
 from app.core.storage import STORAGE_SUBDIRS, reset_stores
+
+
+def _assert_storage_ready(data_dir: Path, pg_database) -> None:
+    if pg_database is not None:
+        from app.storage.postgres_impl.schema import BASELINE_VERSION, current_version
+
+        assert current_version(pg_database) == BASELINE_VERSION, "启动后 schema 应已就位"
+        return
+    assert (data_dir / "kylab.db").is_file(), "启动后应已建库并跑完迁移"
 
 
 @pytest.fixture
@@ -27,18 +39,19 @@ def wired_app(monkeypatch, tmp_path):
         get_settings.cache_clear()
 
 
-def test_lifespan_initializes_storage_on_startup(wired_app) -> None:
+def test_lifespan_initializes_storage_on_startup(wired_app, pg_database) -> None:
     app, data_dir = wired_app
 
     with TestClient(app) as client:
         assert client.get("/api/v1/health").status_code == 200
 
-    assert (data_dir / "kylab.db").is_file(), "启动后应已建库并跑完迁移"
+    _assert_storage_ready(data_dir, pg_database)
     for subdir in STORAGE_SUBDIRS:
+        # 测试里对象存储走本地实现（S3 环境变量被 conftest 清掉），目录应已建好
         assert (data_dir / subdir).is_dir()
 
 
-def test_startup_is_repeatable(wired_app) -> None:
+def test_startup_is_repeatable(wired_app, pg_database) -> None:
     """重启（再来一次 lifespan）不应因迁移重复执行而失败。"""
     app, data_dir = wired_app
 
@@ -46,7 +59,7 @@ def test_startup_is_repeatable(wired_app) -> None:
         with TestClient(app) as client:
             assert client.get("/api/v1/health").status_code == 200
 
-    assert (data_dir / "kylab.db").is_file()
+    _assert_storage_ready(data_dir, pg_database)
 
 
 def test_docs_and_openapi_are_versioned(wired_app) -> None:
@@ -57,7 +70,7 @@ def test_docs_and_openapi_are_versioned(wired_app) -> None:
     assert all(path.startswith("/api/v1") for path in paths)
 
 
-def test_data_directory_is_respected(monkeypatch, tmp_path) -> None:
+def test_data_directory_is_respected(monkeypatch, tmp_path, pg_database) -> None:
     """``KYLAB_DATA_DIR`` 必须真的生效（否则会把数据写到仓库里）。"""
     target = tmp_path / "custom-data"
     monkeypatch.setenv("KYLAB_DATA_DIR", str(target))
@@ -68,7 +81,10 @@ def test_data_directory_is_respected(monkeypatch, tmp_path) -> None:
 
         with TestClient(create_app()) as client:
             assert client.get("/api/v1/health").status_code == 200
-        assert Path(target, "kylab.db").is_file()
+        # 对象存储目录建在指定数据目录下 —— 这条与后端无关，PG 下同样成立
+        assert Path(target, STORAGE_SUBDIRS[0]).is_dir()
+        if pg_database is None:
+            assert Path(target, "kylab.db").is_file()
     finally:
         reset_stores()
         get_settings.cache_clear()

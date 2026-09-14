@@ -26,8 +26,18 @@ from app.core.storage import reset_stores
 from app.models.enums import DataSourceKind, DocumentStage
 from app.services.model_registry import ModelRegistryService
 from app.services.runtime_config import RuntimeConfigService
-from app.storage.base import DocumentRecord, KnowledgeBaseRecord, StoreBundle
+from app.storage.base import (
+    DocumentRecord,
+    FullTextStore,
+    KnowledgeBaseRecord,
+    MetaStore,
+    StoreBundle,
+    VectorStore,
+)
 from app.storage.duckdb_impl.tabular_store import DuckDbTabularStore
+from app.storage.postgres_impl.fulltext_store import PostgresFullTextStore
+from app.storage.postgres_impl.meta_store import PostgresMetaStore
+from app.storage.postgres_impl.vector_store import PostgresVectorStore
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
@@ -87,17 +97,29 @@ def admin_client():  # type: ignore[no-untyped-def]
 
 
 @pytest.fixture(autouse=True)
-def isolated_data_dir(tmp_path, monkeypatch):
-    """全局兜底：任何测试都不许把运行期数据写进仓库。
+def isolated_data_dir(tmp_path, monkeypatch, pg_database):
+    """全局兜底：任何测试都不许把运行期数据写进仓库或**真实开发库**。
 
     起因：`build_stores()` 默认用 ``./data``，一旦某个测试忘了指临时目录，
     就会在 `backend/data/` 建出 kylab.db 与三个子目录（被 .gitignore 挡住所以不易发现，
     但会污染本地状态、干扰后续手工验证）。
 
+    **数据库同理**：配了 ``KYLAB_TEST_DATABASE_URL`` 跑 PG 测试时，若不同时把应用的
+    ``KYLAB_DATABASE_URL`` 指到临时测试库，``create_app()`` 会连上真名那个库
+    （通常就是开发库）并把测试数据写进去。所以这里把它改指临时库；未配测试库时
+    清掉该变量，让应用走 SQLite 回退路径。
+
     同时关掉内嵌任务消费者：测试要手动驱动 worker，才能对时序下断言。
     """
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("KYLAB_RUN_WORKER", "false")
+    if pg_database is not None:
+        monkeypatch.setenv("KYLAB_DATABASE_URL", pg_database.dsn)
+        # 应用层用例（走 create_app）不经过 pg_stores 夹具，得在这里清一次库，
+        # 否则上一个用例建的管理员/知识库会漏到下一个用例里
+        _reset_database(pg_database)
+    else:
+        monkeypatch.delenv("KYLAB_DATABASE_URL", raising=False)
     # **测试绝不碰真实对象存储**：本机若导出过 KYLAB_S3_*（比如为了手工验证），
     # build_stores() 会真的往那个桶里写。这里一律清掉，需要对象存储的用例
     # 自己用 KYLAB_TEST_S3_* 显式构造（见 test_s3_object_store.py）。
@@ -127,63 +149,65 @@ def database(tmp_path) -> Database:
     return db
 
 
-# ---------------------------------------------------------------- PG 后端（可选）
+# ---------------------------------------------------------------- 存储后端切换
 #
-# 目标存储是 PostgreSQL，但 SQLite 仍在跑（向量/全文/对象三个仓储尚未移植）。
-# 所以这里**不接管全局 `store` 夹具**——那会连带弄坏那些"用 store 造数据、
-# 再用 SQLite 专有仓储查询"的用例。需要 PG 的测试文件自己覆盖 `store`：
+# 存储已迁到 PostgreSQL。测试默认仍跑 SQLite（回退分支还在，安全网），
+# 配了 ``KYLAB_TEST_DATABASE_URL`` 就**整套**切到 PG。
 #
-#     @pytest.fixture
-#     def store(pg_meta_store, database):
-#         if pg_meta_store is not None:
-#             return pg_meta_store
-#         return SqliteMetaStore(database)
-#
-# 未设置 KYLAB_TEST_DATABASE_URL 时这些夹具返回 None，测试自动退回 SQLite。
+# 切换只在这一层做，不让各测试文件各自覆盖同名夹具：那样容易只切一半
+# （出现过"元数据在 SQLite、全文索引在 PG"的错配），也无从知道还有谁没切。
+# 未配置 DSN 时 PG 夹具返回 None，一律退回 SQLite。
+
+
+_RESET_SQL = """
+do $$
+declare
+    r record;
+    targets text;
+begin
+    -- 动态向量分区：只能 drop（TRUNCATE 清不掉"表"本身），索引随表一起走
+    for r in
+        select c.relname as name
+          from pg_class c
+          join pg_namespace n on n.oid = c.relnamespace
+         where n.nspname = current_schema()
+           and c.relkind = 'r'
+           and starts_with(c.relname, 'vec_')
+    loop
+        execute format('drop table if exists %I', r.name);
+    end loop;
+
+    -- 固定业务表：一条 TRUNCATE 全清；**保留版本表**，清掉它应用会认为
+    -- 库比基线还旧（current_version 返回 0），于是每个用例都起不来
+    select string_agg(format('%I', table_name), ', ') into targets
+      from information_schema.tables
+     where table_schema = current_schema()
+       and table_type = 'BASE TABLE'
+       and table_name <> 'schema_migrations';
+    if targets is not null then
+        execute 'truncate table ' || targets || ' restart identity cascade';
+    end if;
+end $$;
+"""
+"""清库用**一条**语句完成。
+
+拆成"查分区表 / 查全部表 / TRUNCATE"三次往返在本地 PG 上无所谓，
+但在跨网络的 PG 上（测试机连远端库）每次往返都是实打实的延迟，
+乘以每个用例一次就变成了分钟级浪费——压成一次是纯赚。
+"""
 
 
 def _reset_database(db) -> None:  # type: ignore[no-untyped-def]
-    """清空一个 PG 库，让用例之间互不影响。
-
-    两件事都要做：**truncate** 固定业务表，**drop** 动态的向量分区。
-    只 truncate 不够——``vec_<kb_id>`` 是按库建的表，上一个用例建过的分区
-    会让"未建分区应返回 None / 空结果"这类断言失效（SQLite 版每个用例一个新库，
-    所以没有这个问题）。
-    """
+    """清空一个 PG 库，让用例之间互不影响。"""
     with db.session() as conn:
-        # 只 drop 表：索引（含主键、HNSW）随表一起消失，不必也不能逐个 drop——
-        # 主键索引属于约束，单独 drop 会报 DependentObjectsStillExist
-        partitions = conn.execute(
-            "select c.relname as name from pg_class c "
-            "join pg_namespace n on n.oid = c.relnamespace "
-            "where n.nspname = current_schema() and c.relkind = 'r' "
-            "and starts_with(c.relname, 'vec_')"
-        ).fetchall()
-        for row in partitions:
-            conn.execute(
-                pgsql.SQL("drop table if exists {}").format(pgsql.Identifier(row["name"]))
-            )
-
-        rows = conn.execute(
-            "select table_name from information_schema.tables "
-            "where table_schema = current_schema() and table_type = 'BASE TABLE'"
-        ).fetchall()
-        names = [row["table_name"] for row in rows]
-        if not names:
-            return
-        # 表名来自 information_schema，不是外部输入；用 Identifier 组合避免拼接
-        conn.execute(
-            pgsql.SQL("truncate {} restart identity cascade").format(
-                pgsql.SQL(", ").join(pgsql.Identifier(name) for name in names)
-            )
-        )
+        conn.execute(_RESET_SQL)
 
 
 @pytest.fixture(scope="session")
-def pg_meta_database() -> Iterator[object | None]:
+def pg_database() -> Iterator[object | None]:
     """一个**独立的临时 PG 库**（建好 schema），跑完删除；未配置则 None。
 
-    用独立库而不是开发库：测试要 TRUNCATE 整库，绝不能落到开发数据上。
+    用独立库而不是开发库：测试要清空整库，绝不能落到开发数据上。
     """
     dsn = os.environ.get(PG_TEST_DSN_ENV)
     if not dsn:
@@ -193,7 +217,7 @@ def pg_meta_database() -> Iterator[object | None]:
     from app.storage.postgres_impl.connection import Database as PgDatabase
     from app.storage.postgres_impl.schema import prepare
 
-    name = f"kylab_meta_{uuid.uuid4().hex[:8]}"
+    name = f"kylab_test_{uuid.uuid4().hex[:8]}"
     with psycopg.connect(dsn, autocommit=True) as admin:
         admin.execute(pgsql.SQL("create database {}").format(pgsql.Identifier(name)))
 
@@ -213,42 +237,17 @@ def pg_meta_database() -> Iterator[object | None]:
 
 
 @pytest.fixture
-def pg_meta_store(pg_meta_database) -> Iterator[object | None]:
-    """``PostgresMetaStore``；未配置 PG 时为 None（调用方退回 SQLite）。"""
-    if pg_meta_database is None:
+def pg_stores(pg_database) -> Iterator[object | None]:
+    """清空 PG 库（用例隔离）后把连接交出去；未配置 PG 时为 None。
+
+    **只在这里清库一次**，各仓储夹具共用它。做成一堆"各自清库"的夹具会出问题：
+    一个用例同时要几个仓储时，后构造的那个会把先建的数据清掉。
+    """
+    if pg_database is None:
         yield None
         return
-
-    from app.storage.postgres_impl.meta_store import PostgresMetaStore
-
-    _reset_database(pg_meta_database)
-    yield PostgresMetaStore(pg_meta_database)
-
-
-@pytest.fixture
-def pg_vector_store(pg_meta_database) -> Iterator[object | None]:
-    """``PostgresVectorStore``；未配置 PG 时为 None。"""
-    if pg_meta_database is None:
-        yield None
-        return
-
-    from app.storage.postgres_impl.vector_store import PostgresVectorStore
-
-    _reset_database(pg_meta_database)
-    yield PostgresVectorStore(pg_meta_database)
-
-
-@pytest.fixture
-def pg_fulltext_store(pg_meta_database) -> Iterator[object | None]:
-    """``PostgresFullTextStore``；未配置 PG 时为 None。"""
-    if pg_meta_database is None:
-        yield None
-        return
-
-    from app.storage.postgres_impl.fulltext_store import PostgresFullTextStore
-
-    _reset_database(pg_meta_database)
-    yield PostgresFullTextStore(pg_meta_database)
+    _reset_database(pg_database)
+    yield pg_database
 
 
 @pytest.fixture
@@ -262,17 +261,24 @@ def db_file(database: Database) -> Path:
 
 
 @pytest.fixture
-def store(database: Database) -> SqliteMetaStore:
+def store(pg_stores, database: Database) -> MetaStore:
+    """元数据仓储：配了 PG 就跑 PG，否则 SQLite。"""
+    if pg_stores is not None:
+        return PostgresMetaStore(pg_stores)
     return SqliteMetaStore(database)
 
 
 @pytest.fixture
-def vector_store(database: Database) -> SqliteVectorStore:
+def vector_store(pg_stores, database: Database) -> VectorStore:
+    if pg_stores is not None:
+        return PostgresVectorStore(pg_stores)
     return SqliteVectorStore(database)
 
 
 @pytest.fixture
-def fulltext_store(database: Database) -> SqliteFullTextStore:
+def fulltext_store(pg_stores, database: Database) -> FullTextStore:
+    if pg_stores is not None:
+        return PostgresFullTextStore(pg_stores)
     return SqliteFullTextStore(database)
 
 
@@ -290,17 +296,23 @@ def tabular_store(tmp_path) -> DuckDbTabularStore:
 
 @pytest.fixture
 def bundle(
-    database: Database,
+    store: MetaStore,
+    vector_store: VectorStore,
+    fulltext_store: FullTextStore,
     object_store: LocalObjectStore,
-    tabular_store: DuckDbTabularStore
-    ) -> StoreBundle:
-    """五个仓储的装配（与组合根同构，但不碰磁盘上的开发库）。"""
+    tabular_store: DuckDbTabularStore,
+) -> StoreBundle:
+    """五个仓储的装配（与组合根同构，但不碰磁盘上的开发库）。
+
+    直接复用上面那几个夹具，而不是自己再 new 一遍实现：那样才能跟着
+    "配了 DSN 就整套切 PG"一起走，也不会出现同一用例里两个不同的库。
+    """
     return StoreBundle(
-        meta=SqliteMetaStore(database),
-        vectors=SqliteVectorStore(database),
-        fulltext=SqliteFullTextStore(database),
+        meta=store,
+        vectors=vector_store,
+        fulltext=fulltext_store,
         objects=object_store,
-        tabular=tabular_store
+        tabular=tabular_store,
     )
 
 

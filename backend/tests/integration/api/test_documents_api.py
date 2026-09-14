@@ -586,13 +586,13 @@ def test_detail_and_list_report_the_same_question_status(
     v24 的 bug 就在这里：详情路由自己拼 ``_to_out`` 而漏传统计，于是列表显示"4 题"、
     详情一直显示 0 条。两处共用 ``document_out`` 才不会漂。
     """
-    from app.core.config import get_settings
+    from app.core.services import get_services
     from app.storage.base import ChunkRecord
-    from app.storage.sqlite_impl.connection import Database
-    from app.storage.sqlite_impl.meta_store import SqliteMetaStore
 
     document = _upload(client, kb_id, "有题的.md")
-    store = SqliteMetaStore(Database(get_settings().db_path))
+    # 用**应用自己的**仓储，而不是另建一个：存储迁到 PG 之后，另建的 SQLite 库
+    # 只会把数据写到另一个库里，API 那边纹丝不动，断言必然失败
+    store = get_services().auth._stores.meta
     store.replace_chunks(
         document["id"],
         [
