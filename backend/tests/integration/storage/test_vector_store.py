@@ -1,14 +1,25 @@
-"""``SqliteVectorStore`` 的行为测试（集成）。
+"""``VectorStore`` 的行为测试（集成）。
 
 覆盖 D4 的落地方式：维度随知识库分区、不同库各自独立、维度不符**硬失败**。
+
+同一套用例喂两个后端：默认 SQLite；配了 ``KYLAB_TEST_DATABASE_URL``
+就覆盖下面的 ``vector_store`` 夹具、整套跑在 PostgreSQL + pgvector 上。
 """
 
 import pytest
 
-from app.storage.base import VectorDimensionMismatch
+from app.storage.base import VectorDimensionMismatch, VectorStore
 from app.storage.sqlite_impl.vector_store import SqliteVectorStore
 
 DIM = 4
+
+
+@pytest.fixture
+def vector_store(pg_vector_store, database) -> VectorStore:
+    """覆盖 conftest 的同名夹具：配了 PG 就跑 pgvector，否则维持 sqlite-vec。"""
+    if pg_vector_store is not None:
+        return pg_vector_store  # type: ignore[no-any-return]
+    return SqliteVectorStore(database)
 
 
 def _v(*values: float) -> list[float]:

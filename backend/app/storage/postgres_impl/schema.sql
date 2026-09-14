@@ -18,8 +18,9 @@
 --  5. **全文检索不再是独立虚拟表**。原 chunks_fts（FTS5）与 chunks 是两张表、
 --     查询要 JOIN；现在 tokens 就是 chunks 上的一个生成列，索引与过滤同一行完成。
 --     中文分词继续在应用侧用 jieba 做（架构 §8），数据库只负责索引与排序。
---  6. **向量分区的维度不再靠反查系统表**。原实现从 sqlite_master 的建表 SQL 里
---     正则抠维度；现在有 kb_vector_partitions 登记表（见文件末），查表即可。
+--  6. **向量分区的维度也不靠解析建表语句**。原实现从 sqlite_master 的建表 SQL 里
+--     正则抠维度；PG 这边既有 pg_attribute.atttypmod（维度）、
+--     pg_class（分区列表）可用，就不需要任何"分区登记表"——分区即真相。
 --  7. **队列领取改用 FOR UPDATE SKIP LOCKED**，不再依赖 SQLite 的"单写者"语义。
 --
 -- 过渡说明：应用侧 PG 实现（storage/postgres_impl/）尚未落地。在它接管之前，
@@ -307,13 +308,11 @@ CREATE TABLE chunk_images (
 -- 查询（取代 sqlite-vec 的 MATCH ... k=?）：
 --   SELECT chunk_id, embedding <=> :q AS distance FROM vec_<kb_id>
 --    ORDER BY embedding <=> :q LIMIT :k;
-
-CREATE TABLE kb_vector_partitions (
-    kb_id      text PRIMARY KEY REFERENCES knowledge_bases (id) ON DELETE CASCADE,
-    table_name text NOT NULL UNIQUE,
-    dim        integer NOT NULL CHECK (dim > 0),
-    created_at timestamptz NOT NULL DEFAULT now()
-);
+--
+-- **不建"分区登记表"**：分区就是那些表本身，维度可从系统目录直接读出
+-- （pgvector 把维度放在 pg_attribute.atttypmod），分区列表查 pg_class 即得。
+-- 登记表会引入第二处事实来源——建表成功但登记失败、或 drop 了忘了删行，
+-- 两种漂移都要额外代码兜。这与 sqlite_impl 里"不另建分区表"的判断一致。
 
 
 -- ============================================================

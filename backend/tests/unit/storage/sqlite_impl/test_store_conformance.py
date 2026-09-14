@@ -10,14 +10,20 @@
 import pytest
 
 from app.storage.base import FullTextStore, ObjectStore, VectorStore
+from app.storage.postgres_impl.vector_store import PostgresVectorStore
+from app.storage.s3_impl.object_store import S3ObjectStore
 from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
 from app.storage.sqlite_impl.object_store import LocalObjectStore
 from app.storage.sqlite_impl.vector_store import SqliteVectorStore
 
+#: 同一接口的每个实现都要在这里登记。新增实现忘了登记时，
+#: "抽象方法有没有漏实现"这条守卫就会漏掉它——所以这份清单要跟着实现一起长。
 IMPLEMENTATIONS = (
     (SqliteVectorStore, VectorStore),
+    (PostgresVectorStore, VectorStore),
     (SqliteFullTextStore, FullTextStore),
     (LocalObjectStore, ObjectStore),
+    (S3ObjectStore, ObjectStore),
 )
 
 

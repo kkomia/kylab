@@ -142,12 +142,31 @@ def database(tmp_path) -> Database:
 # 未设置 KYLAB_TEST_DATABASE_URL 时这些夹具返回 None，测试自动退回 SQLite。
 
 
-def _truncate_public_tables(db) -> None:  # type: ignore[no-untyped-def]
-    """清空一个 PG 库的全部业务表，让用例之间互不影响。"""
+def _reset_database(db) -> None:  # type: ignore[no-untyped-def]
+    """清空一个 PG 库，让用例之间互不影响。
+
+    两件事都要做：**truncate** 固定业务表，**drop** 动态的向量分区。
+    只 truncate 不够——``vec_<kb_id>`` 是按库建的表，上一个用例建过的分区
+    会让"未建分区应返回 None / 空结果"这类断言失效（SQLite 版每个用例一个新库，
+    所以没有这个问题）。
+    """
     with db.session() as conn:
+        # 只 drop 表：索引（含主键、HNSW）随表一起消失，不必也不能逐个 drop——
+        # 主键索引属于约束，单独 drop 会报 DependentObjectsStillExist
+        partitions = conn.execute(
+            "select c.relname as name from pg_class c "
+            "join pg_namespace n on n.oid = c.relnamespace "
+            "where n.nspname = current_schema() and c.relkind = 'r' "
+            "and starts_with(c.relname, 'vec_')"
+        ).fetchall()
+        for row in partitions:
+            conn.execute(
+                pgsql.SQL("drop table if exists {}").format(pgsql.Identifier(row["name"]))
+            )
+
         rows = conn.execute(
             "select table_name from information_schema.tables "
-            "where table_schema = 'public' and table_type = 'BASE TABLE'"
+            "where table_schema = current_schema() and table_type = 'BASE TABLE'"
         ).fetchall()
         names = [row["table_name"] for row in rows]
         if not names:
@@ -202,8 +221,21 @@ def pg_meta_store(pg_meta_database) -> Iterator[object | None]:
 
     from app.storage.postgres_impl.meta_store import PostgresMetaStore
 
-    _truncate_public_tables(pg_meta_database)
+    _reset_database(pg_meta_database)
     yield PostgresMetaStore(pg_meta_database)
+
+
+@pytest.fixture
+def pg_vector_store(pg_meta_database) -> Iterator[object | None]:
+    """``PostgresVectorStore``；未配置 PG 时为 None。"""
+    if pg_meta_database is None:
+        yield None
+        return
+
+    from app.storage.postgres_impl.vector_store import PostgresVectorStore
+
+    _reset_database(pg_meta_database)
+    yield PostgresVectorStore(pg_meta_database)
 
 
 @pytest.fixture
