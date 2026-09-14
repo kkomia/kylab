@@ -145,8 +145,8 @@ def test_session_sliding_renewal(auth: AuthService, store) -> None:  # type: ign
     session_id = hash_token(result.token)
     with store._db.session() as conn:  # 测试需要直接操纵时间（仓储层不接受非法状态）
         conn.execute(
-            "UPDATE sessions SET last_seen_at = ? WHERE id = ?",
-            ((datetime.now(UTC) - timedelta(hours=2)).isoformat(), session_id),
+            "update sessions set last_seen_at = %s where id = %s",
+            (datetime.now(UTC) - timedelta(hours=2), session_id),
         )
     before = store.get_session(session_id)
 
@@ -178,8 +178,8 @@ def test_expired_session_is_rejected(auth: AuthService, store) -> None:  # type:
     session_id = hash_token(result.token)
     with store._db.session() as conn:  # 测试需要直接操纵时间（仓储层不接受非法状态）
         conn.execute(
-            "UPDATE sessions SET expires_at = ? WHERE id = ?",
-            ((datetime.now(UTC) - timedelta(seconds=1)).isoformat(), session_id),
+            "update sessions set expires_at = %s where id = %s",
+            (datetime.now(UTC) - timedelta(seconds=1), session_id),
         )
 
     with pytest.raises(UnauthorizedError, match="重新登录"):

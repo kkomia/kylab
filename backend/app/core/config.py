@@ -55,14 +55,17 @@ class Settings(BaseSettings):
     database_url: str | None = None
     """PostgreSQL 连接串，例如 ``postgresql://kylab:secret@postgres:5432/kylab``。
 
-    **留空时回落到本地 SQLite（过渡期）**；PG 实现落地后这里改为必填，
-    并在启动时校验连通性、``vector`` 扩展与 schema 版本，失败即退出。
+    **必填**（SQLite 已于 v0.12 退役）。这里声明成可选只是为了"缺配置"能由
+    ``build_stores()`` 给一句可操作的报错，而不是在构造 Settings 时就抛一句
+    pydantic 的字段错误——前者能告诉运维该填什么。
+    启动时会校验连通性、``vector`` 扩展与 schema 版本，失败即退出。
     """
 
     s3_endpoint: str | None = None
     """S3 兼容对象存储的端点（MinIO 形如 ``http://minio:9000``）。
 
-    留空时原件落本地文件系统（``data_dir/{originals,markdown,images}``）。
+    留空时原件落本地文件系统（``data_dir/{originals,markdown,images}``）——
+    测试与本地开发需要这条不联网的路径。
     与 ``database_url`` 同一原则：这是引导级配置，不能存库。
     """
     s3_access_key: str | None = None
@@ -91,15 +94,6 @@ class Settings(BaseSettings):
     首次 ``POST /auth/setup`` 会自动生成一条落库；这里是给不想落库的部署用的
     环境变量入口。
     """
-
-    @property
-    def db_path(self) -> Path:
-        """SQLite 主库文件（元数据 + 向量 + 全文同库，架构 §8.1）。
-
-        **过渡期保留**：``database_url`` 未配置时仍走它。PG 实现接管后随
-        ``sqlite_impl/`` 一起删除。
-        """
-        return self.data_dir / "kylab.db"
 
     # 云端解析节点（M2 启用）
     mineru_token: str | None = None

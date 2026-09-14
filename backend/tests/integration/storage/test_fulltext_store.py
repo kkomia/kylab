@@ -2,19 +2,17 @@
 
 覆盖架构 §5 的全文召回路径：chunk 写入索引、中文可检索、按库收敛、与图片锚点回填。
 
-同一套用例喂两个后端：默认 SQLite（FTS5）；配了 ``KYLAB_TEST_DATABASE_URL``
-则由 conftest 把整套夹具切到 PostgreSQL（tsvector 生成列）。
+需要 PostgreSQL 测试库（``KYLAB_TEST_DATABASE_URL``），未配置则整文件跳过。
 """
-
 
 from app.models.enums import DataSourceKind, DocumentStage
 from app.storage.base import (
     ChunkRecord,
     DocumentRecord,
+    FullTextStore,
     KnowledgeBaseRecord,
+    MetaStore,
 )
-from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
-from app.storage.sqlite_impl.meta_store import SqliteMetaStore
 
 
 def _chunk(chunk_id: str, ordinal: int, text: str, *, document_id: str = "doc_1",
@@ -33,12 +31,12 @@ def _chunk(chunk_id: str, ordinal: int, text: str, *, document_id: str = "doc_1"
     )
 
 
-def _seed(store: SqliteMetaStore, fulltext: SqliteFullTextStore, chunks: list[ChunkRecord]) -> None:
+def _seed(store: MetaStore, fulltext: FullTextStore, chunks: list[ChunkRecord]) -> None:
     store.replace_chunks(chunks[0].document_id, chunks)
     fulltext.index_chunks(chunks)
 
 
-def test_chinese_query_finds_chunk(store: SqliteMetaStore, fulltext_store: SqliteFullTextStore,
+def test_chinese_query_finds_chunk(store: MetaStore, fulltext_store: FullTextStore,
                                    kb, document) -> None:
     _seed(store, fulltext_store, [
         _chunk("c1", 0, "本系统提供向量检索与全文检索的混合召回能力"),
@@ -52,8 +50,8 @@ def test_chinese_query_finds_chunk(store: SqliteMetaStore, fulltext_store: Sqlit
     assert hits[0].page == 1
 
 
-def test_scores_are_positive_and_sorted_desc(store: SqliteMetaStore,
-                                             fulltext_store: SqliteFullTextStore, kb,
+def test_scores_are_positive_and_sorted_desc(store: MetaStore,
+                                             fulltext_store: FullTextStore, kb,
                                              document) -> None:
     """bm25 越小越相关，实现里取了负值，统一成"分越高越相关"。"""
     _seed(store, fulltext_store, [
@@ -67,7 +65,7 @@ def test_scores_are_positive_and_sorted_desc(store: SqliteMetaStore,
     assert hits[0].score >= hits[1].score
 
 
-def test_kb_filter_scopes_results(store: SqliteMetaStore, fulltext_store: SqliteFullTextStore,
+def test_kb_filter_scopes_results(store: MetaStore, fulltext_store: FullTextStore,
                                   kb) -> None:
     """架构 §5：元数据过滤要能按知识库收敛。"""
     store.create_knowledge_base(
@@ -86,8 +84,8 @@ def test_kb_filter_scopes_results(store: SqliteMetaStore, fulltext_store: Sqlite
     assert fulltext_store.search(query="检索", top_k=5, kb_id="kb_1") == []
 
 
-def test_reindexing_same_chunk_does_not_duplicate(store: SqliteMetaStore,
-                                                  fulltext_store: SqliteFullTextStore, kb,
+def test_reindexing_same_chunk_does_not_duplicate(store: MetaStore,
+                                                  fulltext_store: FullTextStore, kb,
                                                   document) -> None:
     chunk = _chunk("c1", 0, "重复索引测试")
     _seed(store, fulltext_store, [chunk])
@@ -98,8 +96,8 @@ def test_reindexing_same_chunk_does_not_duplicate(store: SqliteMetaStore,
     assert [hit.chunk_id for hit in hits] == ["c1"]
 
 
-def test_delete_chunks_removes_from_index(store: SqliteMetaStore,
-                                          fulltext_store: SqliteFullTextStore, kb,
+def test_delete_chunks_removes_from_index(store: MetaStore,
+                                          fulltext_store: FullTextStore, kb,
                                           document) -> None:
     _seed(store, fulltext_store, [_chunk("c1", 0, "待删除内容"), _chunk("c2", 1, "保留内容")])
 
@@ -109,8 +107,8 @@ def test_delete_chunks_removes_from_index(store: SqliteMetaStore,
     assert fulltext_store.delete_chunks([]) == 0
 
 
-def test_image_anchors_are_returned_with_hits(store: SqliteMetaStore,
-                                              fulltext_store: SqliteFullTextStore, kb,
+def test_image_anchors_are_returned_with_hits(store: MetaStore,
+                                              fulltext_store: FullTextStore, kb,
                                               document) -> None:
     """架构 §7：命中含图段落时要把图片引用带出来。"""
     _seed(store, fulltext_store, [_chunk("c1", 0, "如图所示，架构分层", image_ids=("img_1",))])
@@ -119,8 +117,8 @@ def test_image_anchors_are_returned_with_hits(store: SqliteMetaStore,
     assert tuple(hits[0].image_ids) == ("img_1",)
 
 
-def test_special_characters_do_not_break_match(store: SqliteMetaStore,
-                                               fulltext_store: SqliteFullTextStore, kb,
+def test_special_characters_do_not_break_match(store: MetaStore,
+                                               fulltext_store: FullTextStore, kb,
                                                document) -> None:
     """用户输入里的 FTS5 语法字符必须被安全处理，不能抛 OperationalError。"""
     _seed(store, fulltext_store, [_chunk("c1", 0, "C++ 与向量检索")])
@@ -130,6 +128,6 @@ def test_special_characters_do_not_break_match(store: SqliteMetaStore,
     assert fulltext_store.search(query="向量", top_k=0) == []
 
 
-def test_empty_index_returns_no_hits(fulltext_store: SqliteFullTextStore) -> None:
+def test_empty_index_returns_no_hits(fulltext_store: FullTextStore) -> None:
     assert fulltext_store.search(query="任何词", top_k=5) == []
     assert fulltext_store.index_chunks([]) is None

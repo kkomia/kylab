@@ -1,6 +1,8 @@
 """后端测试共享夹具。
 
-工程规范 §5.2：集成测试使用**独立临时 SQLite 文件**（tmp 目录），禁止触碰开发库。
+工程规范 §5.2：集成测试用**独立临时的库**，禁止触碰开发库。v0.12 起存储是
+PostgreSQL，所以测试库是临时建的 PG 数据库（见 ``pg_database``）；
+设置 ``KYLAB_TEST_DATABASE_URL``（指向维护库，如 …/postgres）即启用。
 
 各测试目录都放了 ``__init__.py``：工程规范 §5.1 要求测试文件与被测模块镜像同构，
 于是 ``unit`` 与 ``integration`` 下会出现同名 ``test_<模块>.py``；
@@ -13,7 +15,6 @@ import os
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from pathlib import Path
 
 import psycopg
 import pytest
@@ -35,15 +36,10 @@ from app.storage.base import (
     VectorStore,
 )
 from app.storage.duckdb_impl.tabular_store import DuckDbTabularStore
+from app.storage.local_impl.object_store import LocalObjectStore
 from app.storage.postgres_impl.fulltext_store import PostgresFullTextStore
 from app.storage.postgres_impl.meta_store import PostgresMetaStore
 from app.storage.postgres_impl.vector_store import PostgresVectorStore
-from app.storage.sqlite_impl.connection import Database
-from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
-from app.storage.sqlite_impl.meta_store import SqliteMetaStore
-from app.storage.sqlite_impl.migrations import apply_migrations
-from app.storage.sqlite_impl.object_store import LocalObjectStore
-from app.storage.sqlite_impl.vector_store import SqliteVectorStore
 
 DEFAULT_MODEL_ID = "BAAI/bge-m3"
 DEFAULT_DIM = 1024
@@ -101,25 +97,28 @@ def isolated_data_dir(tmp_path, monkeypatch, pg_database):
     """全局兜底：任何测试都不许把运行期数据写进仓库或**真实开发库**。
 
     起因：`build_stores()` 默认用 ``./data``，一旦某个测试忘了指临时目录，
-    就会在 `backend/data/` 建出 kylab.db 与三个子目录（被 .gitignore 挡住所以不易发现，
+    就会在 `backend/data/` 建出运行时文件（被 .gitignore 挡住所以不易发现，
     但会污染本地状态、干扰后续手工验证）。
 
-    **数据库同理**：配了 ``KYLAB_TEST_DATABASE_URL`` 跑 PG 测试时，若不同时把应用的
-    ``KYLAB_DATABASE_URL`` 指到临时测试库，``create_app()`` 会连上真名那个库
-    （通常就是开发库）并把测试数据写进去。所以这里把它改指临时库；未配测试库时
-    清掉该变量，让应用走 SQLite 回退路径。
+    **数据库同理**：跑 PG 测试时若不同时把应用的 ``KYLAB_DATABASE_URL`` 指到
+    临时测试库，``create_app()`` 会连上真名那个库（通常就是开发库）并把测试数据
+    写进去。所以这里把它改指临时库。
+
+    **没有测试库就整体跳过**：v0.12 起存储只有 PostgreSQL，没有可回退的本地实现。
+    静默退回别的实现只会掩盖"这套用例其实没跑"，所以宁可显式跳过——
+    门禁脚本另有检查，缺 DSN 时不会让它悄悄变绿。
 
     同时关掉内嵌任务消费者：测试要手动驱动 worker，才能对时序下断言。
     """
+    if pg_database is None:
+        pytest.skip("需要 PostgreSQL 测试库：请设置 KYLAB_TEST_DATABASE_URL")
+
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("KYLAB_RUN_WORKER", "false")
-    if pg_database is not None:
-        monkeypatch.setenv("KYLAB_DATABASE_URL", pg_database.dsn)
-        # 应用层用例（走 create_app）不经过 pg_stores 夹具，得在这里清一次库，
-        # 否则上一个用例建的管理员/知识库会漏到下一个用例里
-        _reset_database(pg_database)
-    else:
-        monkeypatch.delenv("KYLAB_DATABASE_URL", raising=False)
+    monkeypatch.setenv("KYLAB_DATABASE_URL", pg_database.dsn)
+    # 应用层用例（走 create_app）不经过 pg_stores 夹具，得在这里清一次库，
+    # 否则上一个用例建的管理员/知识库会漏到下一个用例里
+    _reset_database(pg_database)
     # **测试绝不碰真实对象存储**：本机若导出过 KYLAB_S3_*（比如为了手工验证），
     # build_stores() 会真的往那个桶里写。这里一律清掉，需要对象存储的用例
     # 自己用 KYLAB_TEST_S3_* 显式构造（见 test_s3_object_store.py）。
@@ -137,26 +136,11 @@ def isolated_data_dir(tmp_path, monkeypatch, pg_database):
     get_settings.cache_clear()
 
 
-@pytest.fixture
-def database(tmp_path) -> Database:
-    """建好 schema 的临时数据库文件。"""
-    db = Database(tmp_path / "kylab-test.db")
-    conn = db.connect()
-    try:
-        apply_migrations(conn)
-    finally:
-        conn.close()
-    return db
-
-
-# ---------------------------------------------------------------- 存储后端切换
+# ---------------------------------------------------------------- PostgreSQL 测试库
 #
-# 存储已迁到 PostgreSQL。测试默认仍跑 SQLite（回退分支还在，安全网），
-# 配了 ``KYLAB_TEST_DATABASE_URL`` 就**整套**切到 PG。
-#
-# 切换只在这一层做，不让各测试文件各自覆盖同名夹具：那样容易只切一半
-# （出现过"元数据在 SQLite、全文索引在 PG"的错配），也无从知道还有谁没切。
-# 未配置 DSN 时 PG 夹具返回 None，一律退回 SQLite。
+# v0.12 起存储只有 PostgreSQL（SQLite 已退役），所以仓储夹具**必须**有测试库。
+# 未设置 ``KYLAB_TEST_DATABASE_URL`` 时依赖仓储的用例会**跳过**（而不是静默退回
+# 别的实现——那只会掩盖"这套用例其实没跑"）。
 
 
 _RESET_SQL = """
@@ -250,36 +234,28 @@ def pg_stores(pg_database) -> Iterator[object | None]:
     yield pg_database
 
 
-@pytest.fixture
-def db_file(database: Database) -> Path:
-    """数据库文件的真实路径。
-
-    给"必须绕过仓储接口"的测试用：例如模拟另一个进程抢走任务租约——
-    仓储接口都带 owner 校验，正因如此它没法自己制造出"租约易主"这个状态。
-    """
-    return Path(database.path)
+def _require_pg(pg_stores, what: str):  # type: ignore[no-untyped-def]
+    if pg_stores is None:
+        pytest.skip(f"{what} 需要 PostgreSQL 测试库：请设置 KYLAB_TEST_DATABASE_URL")
+    return pg_stores
 
 
 @pytest.fixture
-def store(pg_stores, database: Database) -> MetaStore:
-    """元数据仓储：配了 PG 就跑 PG，否则 SQLite。"""
-    if pg_stores is not None:
-        return PostgresMetaStore(pg_stores)
-    return SqliteMetaStore(database)
+def store(pg_stores) -> MetaStore:
+    """元数据仓储（PG）。"""
+    return PostgresMetaStore(_require_pg(pg_stores, "元数据仓储"))
 
 
 @pytest.fixture
-def vector_store(pg_stores, database: Database) -> VectorStore:
-    if pg_stores is not None:
-        return PostgresVectorStore(pg_stores)
-    return SqliteVectorStore(database)
+def vector_store(pg_stores) -> VectorStore:
+    """向量仓储（pgvector）。"""
+    return PostgresVectorStore(_require_pg(pg_stores, "向量仓储"))
 
 
 @pytest.fixture
-def fulltext_store(pg_stores, database: Database) -> FullTextStore:
-    if pg_stores is not None:
-        return PostgresFullTextStore(pg_stores)
-    return SqliteFullTextStore(database)
+def fulltext_store(pg_stores) -> FullTextStore:
+    """全文仓储（tsvector）。"""
+    return PostgresFullTextStore(_require_pg(pg_stores, "全文仓储"))
 
 
 @pytest.fixture
@@ -304,8 +280,8 @@ def bundle(
 ) -> StoreBundle:
     """五个仓储的装配（与组合根同构，但不碰磁盘上的开发库）。
 
-    直接复用上面那几个夹具，而不是自己再 new 一遍实现：那样才能跟着
-    "配了 DSN 就整套切 PG"一起走，也不会出现同一用例里两个不同的库。
+    直接复用上面那几个夹具：这样"用哪个后端"只有一处决定，也不会出现
+    同一用例里两个不同的库。
     """
     return StoreBundle(
         meta=store,
@@ -372,7 +348,7 @@ def bind_slot(bundle: StoreBundle):  # type: ignore[no-untyped-def]
 
 
 @pytest.fixture
-def kb(store: SqliteMetaStore) -> KnowledgeBaseRecord:
+def kb(store: MetaStore) -> KnowledgeBaseRecord:
     return store.create_knowledge_base(
         KnowledgeBaseRecord(id="kb_1", name="默认库", embedding_model_id=DEFAULT_MODEL_ID,
                             embedding_dim=DEFAULT_DIM)
@@ -380,7 +356,7 @@ def kb(store: SqliteMetaStore) -> KnowledgeBaseRecord:
 
 
 @pytest.fixture
-def document(store: SqliteMetaStore, kb: KnowledgeBaseRecord) -> DocumentRecord:
+def document(store: MetaStore, kb: KnowledgeBaseRecord) -> DocumentRecord:
     return store.create_document(
         DocumentRecord(
             id="doc_1",

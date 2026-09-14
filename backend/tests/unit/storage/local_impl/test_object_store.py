@@ -1,12 +1,12 @@
 """``LocalObjectStore`` 的单元测试。
 
-镜像同构：``app/storage/sqlite_impl/object_store.py``
-→ ``tests/unit/storage/sqlite_impl/test_object_store.py``。
+镜像同构：``app/storage/local_impl/object_store.py``
+→ ``tests/unit/storage/local_impl/test_object_store.py``。
 """
 
 import pytest
 
-from app.storage.sqlite_impl.object_store import (
+from app.storage.local_impl.object_store import (
     MARKDOWN,
     ORIGINALS,
     TRASH,

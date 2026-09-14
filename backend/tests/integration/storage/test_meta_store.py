@@ -3,9 +3,9 @@
 覆盖架构里靠元数据兑现的承诺：文件去重（§6.3）、断点续跑的任务租约（§4）、
 回收站 7 天（§6.2）、embedding 模型锁（§6.4）、大文件切分（§4.2）。
 
-**同一套用例喂两个后端**：默认跑 SQLite；配了 ``KYLAB_TEST_DATABASE_URL``
-则由 conftest 把整套夹具切到 PostgreSQL。接口抽象立没立住靠这个来验，
-而不是靠人肉比对两版实现。
+这套用例是把 921 行的行为契约喂给仓储接口——**当初正是靠它把一个实现换成
+另一个实现**（SQLite → PostgreSQL）而不用重写用例。需要 PostgreSQL 测试库
+（``KYLAB_TEST_DATABASE_URL``），未配置则整文件跳过。
 """
 
 from datetime import UTC, datetime, timedelta
@@ -32,6 +32,7 @@ from app.storage.base import (
     DocumentRecord,
     ImageRecord,
     KnowledgeBaseRecord,
+    MetaStore,
     ParseResultRecord,
     SessionRecord,
     ShareRecord,
@@ -40,8 +41,6 @@ from app.storage.base import (
     UserRecord,
     WebhookRecord,
 )
-from app.storage.sqlite_impl.connection import Database
-from app.storage.sqlite_impl.meta_store import SqliteMetaStore
 
 
 def utc_now() -> datetime:
@@ -86,7 +85,7 @@ def _task(task_id: str, *, state: TaskState = TaskState.PENDING, attempts: int =
 # --------------------------------------------------------------------- 知识库
 
 
-def test_create_and_get_knowledge_base(store: SqliteMetaStore) -> None:
+def test_create_and_get_knowledge_base(store: MetaStore) -> None:
     record = store.create_knowledge_base(
         KnowledgeBaseRecord(id="kb_9", name="研究库", embedding_model_id="BAAI/bge-m3",
                             embedding_dim=1024)
@@ -99,14 +98,14 @@ def test_create_and_get_knowledge_base(store: SqliteMetaStore) -> None:
     assert store.get_knowledge_base("nope") is None
 
 
-def test_list_knowledge_bases_returns_all(store: SqliteMetaStore, kb) -> None:
+def test_list_knowledge_bases_returns_all(store: MetaStore, kb) -> None:
     store.create_knowledge_base(
         KnowledgeBaseRecord(id="kb_2", name="第二个", embedding_model_id="m", embedding_dim=768)
     )
     assert {item.id for item in store.list_knowledge_bases()} == {"kb_1", "kb_2"}
 
 
-def test_update_knowledge_base_embedding(store: SqliteMetaStore, kb) -> None:
+def test_update_knowledge_base_embedding(store: MetaStore, kb) -> None:
     """架构 §6.4：允许换 endpoint，模型 ID 与维度随库更新。"""
     store.update_knowledge_base_embedding(
         "kb_1", model_id="BAAI/bge-m3", dim=1024, base_url="http://127.0.0.1:11434/v1"
@@ -119,7 +118,7 @@ def test_update_knowledge_base_embedding(store: SqliteMetaStore, kb) -> None:
 # --------------------------------------------------------------------- 文档与去重
 
 
-def test_get_document_by_hash_finds_duplicate(store: SqliteMetaStore, kb, document) -> None:
+def test_get_document_by_hash_finds_duplicate(store: MetaStore, kb, document) -> None:
     """架构 §6.3：上传前先按 hash 查重，命中则提醒"检测到相同文件"。"""
     found = store.get_document_by_hash("kb_1", "hash-1")
     assert found is not None
@@ -127,7 +126,7 @@ def test_get_document_by_hash_finds_duplicate(store: SqliteMetaStore, kb, docume
     assert store.get_document_by_hash("kb_1", "other") is None
 
 
-def test_duplicate_document_in_same_kb_is_rejected(store: SqliteMetaStore, kb, document) -> None:
+def test_duplicate_document_in_same_kb_is_rejected(store: MetaStore, kb, document) -> None:
     # 断言的是"数据库拒绝了"，不是驱动的报错措辞：
     # SQLite 说 "UNIQUE constraint failed"，PG 说 "duplicate key value violates
     # unique constraint"。按措辞断言会把这个跨后端的行为测试绑死在一个驱动上。
@@ -144,7 +143,7 @@ def test_duplicate_document_in_same_kb_is_rejected(store: SqliteMetaStore, kb, d
         )
 
 
-def test_update_document_stage_records_error(store: SqliteMetaStore, document) -> None:
+def test_update_document_stage_records_error(store: MetaStore, document) -> None:
     store.update_document_stage("doc_1", DocumentStage.PARSING)
     assert store.get_document("doc_1").stage is DocumentStage.PARSING  # type: ignore[union-attr]
 
@@ -154,7 +153,7 @@ def test_update_document_stage_records_error(store: SqliteMetaStore, document) -
     assert loaded.error == "云端额度耗尽"
 
 
-def test_list_documents_is_newest_first(store: SqliteMetaStore, kb, document) -> None:
+def test_list_documents_is_newest_first(store: MetaStore, kb, document) -> None:
     store.create_document(
         DocumentRecord(
             id="doc_2",
@@ -170,7 +169,7 @@ def test_list_documents_is_newest_first(store: SqliteMetaStore, kb, document) ->
 
 
 def test_list_documents_pages_and_counts_with_filters(
-    store: SqliteMetaStore, kb, document
+    store: MetaStore, kb, document
 ) -> None:
     """分页与计数用同一套过滤条件：翻到任何一页，总数都不该变。
 
@@ -214,7 +213,7 @@ def test_list_documents_pages_and_counts_with_filters(
     assert len(store.list_documents("kb_1")) == 6
 
 
-def test_pagination_is_stable_when_created_at_ties(store: SqliteMetaStore, kb) -> None:
+def test_pagination_is_stable_when_created_at_ties(store: MetaStore, kb) -> None:
     """同一秒上传的文档 ``created_at`` 相同，只按它排时分页会漏行或重复。
 
     定序键必须能唯一定序（这里补了 ``id``）：否则 SQLite 对等值行的顺序不作保证，
@@ -243,7 +242,7 @@ def test_pagination_is_stable_when_created_at_ties(store: SqliteMetaStore, kb) -
 # --------------------------------------------------------------------- 子文件
 
 
-def test_document_parts_are_ordered_by_index(store: SqliteMetaStore, document) -> None:
+def test_document_parts_are_ordered_by_index(store: MetaStore, document) -> None:
     """架构 §4.2：大文件按页范围切子文件，顺序必须稳定。"""
     store.create_document_parts(
         [
@@ -264,7 +263,7 @@ def test_document_parts_are_ordered_by_index(store: SqliteMetaStore, document) -
 # --------------------------------------------------------------------- chunk
 
 
-def test_replace_chunks_stores_order_and_image_anchors(store: SqliteMetaStore, kb,
+def test_replace_chunks_stores_order_and_image_anchors(store: MetaStore, kb,
                                                        document) -> None:
     """架构 §7：图片不入向量库，只在 chunk 元数据里记锚点。"""
     store.replace_chunks(
@@ -279,7 +278,7 @@ def test_replace_chunks_stores_order_and_image_anchors(store: SqliteMetaStore, k
     assert store.count_kb_chunks("kb_1") == 2
 
 
-def test_count_chunks_by_documents_batches_and_fills_zero(store: SqliteMetaStore, kb,
+def test_count_chunks_by_documents_batches_and_fills_zero(store: MetaStore, kb,
                                                           document) -> None:
     """文档列表页要显示每个文档有多少块：一条查询拿全，且去重、缺的补 0。"""
     store.replace_chunks("doc_1", [_chunk("c1", 0), _chunk("c2", 1)])
@@ -301,7 +300,7 @@ def test_count_chunks_by_documents_batches_and_fills_zero(store: SqliteMetaStore
     assert store.count_chunks_by_documents([]) == {}
 
 
-def test_replace_chunks_removes_previous_version(store: SqliteMetaStore, kb, document) -> None:
+def test_replace_chunks_removes_previous_version(store: MetaStore, kb, document) -> None:
     """增量更新语义：整体替换而非叠加。"""
     store.replace_chunks("doc_1", [_chunk("c1", 0), _chunk("c2", 1)])
     store.replace_chunks("doc_1", [_chunk("c3", 0)])
@@ -311,7 +310,7 @@ def test_replace_chunks_removes_previous_version(store: SqliteMetaStore, kb, doc
     assert store.count_kb_chunks("kb_1") == 1
 
 
-def test_get_chunks_batch_returns_requested_ids(store: SqliteMetaStore, kb, document) -> None:
+def test_get_chunks_batch_returns_requested_ids(store: MetaStore, kb, document) -> None:
     """检索时向量只给得出 chunk_id，正文得靠批量回表取。"""
     store.replace_chunks("doc_1", [_chunk("c1", 0), _chunk("c2", 1), _chunk("c3", 2)])
 
@@ -321,7 +320,7 @@ def test_get_chunks_batch_returns_requested_ids(store: SqliteMetaStore, kb, docu
     assert store.get_chunks(["missing"]) == []
 
 
-def test_replace_chunks_with_empty_list_clears(store: SqliteMetaStore, kb, document) -> None:
+def test_replace_chunks_with_empty_list_clears(store: MetaStore, kb, document) -> None:
     store.replace_chunks("doc_1", [_chunk("c1", 0)])
     store.replace_chunks("doc_1", [])
     assert store.count_chunks("doc_1") == 0
@@ -330,7 +329,7 @@ def test_replace_chunks_with_empty_list_clears(store: SqliteMetaStore, kb, docum
 # --------------------------------------------------------------------- 图片 / 解析产物
 
 
-def test_images_are_upserted_and_listed_by_page(store: SqliteMetaStore, document) -> None:
+def test_images_are_upserted_and_listed_by_page(store: MetaStore, document) -> None:
     store.add_images(
         [
             ImageRecord(image_id="img_1", document_id="doc_1", storage_path="data/images/1.png",
@@ -350,7 +349,7 @@ def test_images_are_upserted_and_listed_by_page(store: SqliteMetaStore, document
     assert images[1].caption == "架构图"
 
 
-def test_parse_result_is_idempotent_and_keeps_probe_meta(store: SqliteMetaStore, document) -> None:
+def test_parse_result_is_idempotent_and_keeps_probe_meta(store: MetaStore, document) -> None:
     """重新解析应覆盖产物，而不是留下多份（架构 §6：解析产物分层持久化）。"""
     store.save_parse_result(
         ParseResultRecord(
@@ -381,7 +380,7 @@ def test_parse_result_is_idempotent_and_keeps_probe_meta(store: SqliteMetaStore,
 # --------------------------------------------------------------------- 任务队列（断点续跑）
 
 
-def test_claim_task_marks_running_and_counts_attempt(store: SqliteMetaStore) -> None:
+def test_claim_task_marks_running_and_counts_attempt(store: MetaStore) -> None:
     store.enqueue_task(_task("t1"))
     claimed = store.claim_task(owner="worker-1", lease_seconds=60)
 
@@ -392,24 +391,24 @@ def test_claim_task_marks_running_and_counts_attempt(store: SqliteMetaStore) -> 
     assert claimed.lease_expires_at is not None
 
 
-def test_claim_task_returns_none_when_queue_is_empty(store: SqliteMetaStore) -> None:
+def test_claim_task_returns_none_when_queue_is_empty(store: MetaStore) -> None:
     assert store.claim_task(owner="worker-1", lease_seconds=60) is None
 
 
-def test_claimed_task_cannot_be_claimed_twice(store: SqliteMetaStore) -> None:
+def test_claimed_task_cannot_be_claimed_twice(store: MetaStore) -> None:
     """并发消费者之间不能双领：领取是单条原子语句。"""
     store.enqueue_task(_task("t1"))
     assert store.claim_task(owner="worker-1", lease_seconds=60) is not None
     assert store.claim_task(owner="worker-2", lease_seconds=60) is None
 
 
-def test_claim_task_respects_next_run_at(store: SqliteMetaStore) -> None:
+def test_claim_task_respects_next_run_at(store: MetaStore) -> None:
     """指数退避：未到重试时间的任务不该被领走。"""
     store.enqueue_task(_task("t1", next_run_at=utc_now() + timedelta(minutes=5)))
     assert store.claim_task(owner="worker-1", lease_seconds=60) is None
 
 
-def test_heartbeat_requires_lease_owner(store: SqliteMetaStore) -> None:
+def test_heartbeat_requires_lease_owner(store: MetaStore) -> None:
     store.enqueue_task(_task("t1"))
     store.claim_task(owner="worker-1", lease_seconds=60)
 
@@ -417,7 +416,7 @@ def test_heartbeat_requires_lease_owner(store: SqliteMetaStore) -> None:
     assert store.heartbeat_task("t1", owner="worker-2", lease_seconds=60) is False
 
 
-def test_finish_task_releases_lease(store: SqliteMetaStore) -> None:
+def test_finish_task_releases_lease(store: MetaStore) -> None:
     store.enqueue_task(_task("t1"))
     store.claim_task(owner="worker-1", lease_seconds=60)
     assert store.finish_task("t1", TaskState.SUCCEEDED, owner="worker-1") is True
@@ -428,32 +427,24 @@ def test_finish_task_releases_lease(store: SqliteMetaStore) -> None:
 
 
 @pytest.fixture
-def reassign_lease(database: Database, pg_database):
+def reassign_lease(pg_database):
     """把租约判给另一个消费者。
 
     ``heartbeat_task`` 做不到这件事：它要求 ``lease_owner = owner``，只能在
     "自己还持有租约"时续期。要制造"被回收后重领"，只能直接改这一行。
 
-    **两个后端都要支持**：这条用例靠绕过仓储接口直接改库，所以不能只写 SQLite。
+    仓储接口都带 owner 校验，正因如此它没法自己制造出"租约易主"这个状态，
+    只能绕过接口直接改库——所以这里用的是测试库的连接，不是仓储。
     """
 
     def _reassign(task_id: str, owner: str) -> None:
-        if pg_database is not None:
-            with pg_database.session() as conn:
-                conn.execute(
-                    "update tasks set lease_owner = %s where id = %s", (owner, task_id)
-                )
-            return
-        conn = database.connect()
-        try:
-            conn.execute("UPDATE tasks SET lease_owner = ? WHERE id = ?", (owner, task_id))
-        finally:
-            conn.close()
+        with pg_database.session() as conn:
+            conn.execute("update tasks set lease_owner = %s where id = %s", (owner, task_id))
 
     return _reassign
 
 
-def test_finish_task_refuses_when_lease_moved_on(store: SqliteMetaStore,
+def test_finish_task_refuses_when_lease_moved_on(store: MetaStore,
                                                  reassign_lease) -> None:
     """租约易主后原消费者写不了终态。
 
@@ -470,7 +461,7 @@ def test_finish_task_refuses_when_lease_moved_on(store: SqliteMetaStore,
     assert still_running.lease_owner == "worker-2", "新主人的租约不该被旧消费者清掉"
 
 
-def test_reschedule_task_returns_task_to_queue(store: SqliteMetaStore) -> None:
+def test_reschedule_task_returns_task_to_queue(store: MetaStore) -> None:
     """指数退避的落地：任务回到 PENDING、释放租约、记录失败原因。"""
     store.enqueue_task(_task("t1"))
     store.claim_task(owner="worker-1", lease_seconds=60)
@@ -487,7 +478,7 @@ def test_reschedule_task_returns_task_to_queue(store: SqliteMetaStore) -> None:
     assert store.claim_task(owner="worker-2", lease_seconds=60) is None
 
 
-def test_reschedule_task_refuses_when_lease_moved_on(store: SqliteMetaStore,
+def test_reschedule_task_refuses_when_lease_moved_on(store: MetaStore,
                                                      reassign_lease) -> None:
     """同理：旧消费者不能把任务拽回队列，否则它会和新消费者同时被调度。"""
     store.enqueue_task(_task("t1"))
@@ -501,7 +492,7 @@ def test_reschedule_task_refuses_when_lease_moved_on(store: SqliteMetaStore,
     assert store.list_tasks(TaskState.PENDING) == [], "不该被拽回队列"
 
 
-def test_reclaim_requeues_expired_task_with_budget_left(store: SqliteMetaStore) -> None:
+def test_reclaim_requeues_expired_task_with_budget_left(store: MetaStore) -> None:
     """进程崩溃后：超时任务回到 PENDING，实现断点续跑（架构 §4）。"""
     store.enqueue_task(_task("t1"))
     store.claim_task(owner="worker-crashed", lease_seconds=1)
@@ -517,7 +508,7 @@ def test_reclaim_requeues_expired_task_with_budget_left(store: SqliteMetaStore) 
     assert reclaimed is not None and reclaimed.attempts == 2
 
 
-def test_reclaim_fails_task_that_exhausted_retries(store: SqliteMetaStore) -> None:
+def test_reclaim_fails_task_that_exhausted_retries(store: MetaStore) -> None:
     store.enqueue_task(_task("t1", attempts=5, max_attempts=5))
     store.claim_task(owner="worker-1", lease_seconds=1)
 
@@ -529,18 +520,18 @@ def test_reclaim_fails_task_that_exhausted_retries(store: SqliteMetaStore) -> No
     assert "最大重试次数" in (failed[0].error or "")
 
 
-def test_reclaim_ignores_live_lease(store: SqliteMetaStore) -> None:
+def test_reclaim_ignores_live_lease(store: MetaStore) -> None:
     store.enqueue_task(_task("t1"))
     store.claim_task(owner="worker-1", lease_seconds=600)
     assert store.reclaim_expired_tasks() == 0
 
 
-def test_task_can_reference_an_existing_document(store: SqliteMetaStore, kb, document) -> None:
+def test_task_can_reference_an_existing_document(store: MetaStore, kb, document) -> None:
     store.enqueue_task(_task("t1", document_id="doc_1"))
     assert store.list_tasks()[0].document_id == "doc_1"
 
 
-def test_task_referencing_missing_document_is_rejected(store: SqliteMetaStore) -> None:
+def test_task_referencing_missing_document_is_rejected(store: MetaStore) -> None:
     """外键约束生效：任务不能挂到不存在的文档上（也是级联删除可信的前提）。
 
     同 ``test_duplicate_document_in_same_kb_is_rejected``：按错误种类断言，
@@ -550,7 +541,7 @@ def test_task_referencing_missing_document_is_rejected(store: SqliteMetaStore) -
         store.enqueue_task(_task("t1", document_id="doc_not_exist"))
 
 
-def test_tasks_follow_document_deletion(store: SqliteMetaStore, kb, document) -> None:
+def test_tasks_follow_document_deletion(store: MetaStore, kb, document) -> None:
     """文档删除后其任务一并消失，避免留下永远跑不通的孤儿任务。"""
     store.enqueue_task(_task("t1", document_id="doc_1"))
     store.delete_document("doc_1")
@@ -560,7 +551,7 @@ def test_tasks_follow_document_deletion(store: SqliteMetaStore, kb, document) ->
 # --------------------------------------------------------------------- 数据源 / 凭据 / webhook
 
 
-def test_data_source_keeps_config_and_etag(store: SqliteMetaStore, kb) -> None:
+def test_data_source_keeps_config_and_etag(store: MetaStore, kb) -> None:
     """架构 §10：定时拉取靠 etag 做变更检测。"""
     store.create_data_source(
         DataSourceRecord(id="ds_1", knowledge_base_id="kb_1", kind=DataSourceKind.RSS,
@@ -572,7 +563,7 @@ def test_data_source_keeps_config_and_etag(store: SqliteMetaStore, kb) -> None:
     assert sources[0].enabled is True
 
 
-def test_api_key_is_stored_and_looked_up_by_hash(store: SqliteMetaStore, kb) -> None:
+def test_api_key_is_stored_and_looked_up_by_hash(store: MetaStore, kb) -> None:
     """架构 §3.2：key 绑定知识库范围与只读/读写权限。"""
     store.create_api_key(
         ApiKeyRecord(id="key_1", name="只读客户端", key_hash="sha256:deadbeef",
@@ -585,7 +576,7 @@ def test_api_key_is_stored_and_looked_up_by_hash(store: SqliteMetaStore, kb) -> 
     assert store.get_api_key_by_hash("sha256:nope") is None
 
 
-def test_webhook_round_trip(store: SqliteMetaStore) -> None:
+def test_webhook_round_trip(store: MetaStore) -> None:
     store.create_webhook(
         WebhookRecord(id="wh_1", url="https://example.com/hook",
                       events=("document.indexed",), secret="s3cr3t")
@@ -598,7 +589,7 @@ def test_webhook_round_trip(store: SqliteMetaStore) -> None:
 # --------------------------------------------------------------------- 回收站 / 设置
 
 
-def test_trash_keeps_original_for_retention_window(store: SqliteMetaStore, document) -> None:
+def test_trash_keeps_original_for_retention_window(store: MetaStore, document) -> None:
     """架构 §6.2：原文进回收站保留 7 天。"""
     store.add_to_trash(
         TrashRecord(id="tr_1", document_id="doc_1", kind=TrashKind.ORIGINAL,
@@ -610,7 +601,7 @@ def test_trash_keeps_original_for_retention_window(store: SqliteMetaStore, docum
 
 
 def test_purge_expired_trash_returns_and_removes_due_items(
-    store: SqliteMetaStore, document
+    store: MetaStore, document
 ) -> None:
     store.add_to_trash(
         TrashRecord(id="tr_old", document_id="doc_1", kind=TrashKind.ORIGINAL,
@@ -629,7 +620,7 @@ def test_purge_expired_trash_returns_and_removes_due_items(
     assert [item.id for item in store.list_trash()] == ["tr_new"]
 
 
-def test_settings_upsert(store: SqliteMetaStore) -> None:
+def test_settings_upsert(store: MetaStore) -> None:
     assert store.get_setting("mineru_token") is None
     store.set_setting("mineru_token", "v1")
     store.set_setting("mineru_token", "v2")
@@ -639,7 +630,7 @@ def test_settings_upsert(store: SqliteMetaStore) -> None:
 # --------------------------------------------------------------------- 级联
 
 
-def test_deleting_document_cascades_to_parts_chunks_and_images(store: SqliteMetaStore, kb,
+def test_deleting_document_cascades_to_parts_chunks_and_images(store: MetaStore, kb,
                                                                document) -> None:
     store.create_document_parts(
         [DocumentPartRecord(id="part_1", document_id="doc_1", part_index=1, page_start=1,
@@ -657,7 +648,7 @@ def test_deleting_document_cascades_to_parts_chunks_and_images(store: SqliteMeta
     assert store.list_images("doc_1") == []
 
 
-def test_deleting_knowledge_base_removes_everything_inside(store: SqliteMetaStore, kb,
+def test_deleting_knowledge_base_removes_everything_inside(store: MetaStore, kb,
                                                            document) -> None:
     """架构 §6.2 级联删除在库一级同样成立。"""
     store.replace_chunks("doc_1", [_chunk("c1", 0)])
@@ -671,7 +662,7 @@ def test_deleting_knowledge_base_removes_everything_inside(store: SqliteMetaStor
 # --------------------------------------------------------------------- 空输入与未命中路径
 
 
-def test_empty_inputs_are_no_ops(store: SqliteMetaStore, document) -> None:
+def test_empty_inputs_are_no_ops(store: MetaStore, document) -> None:
     """批量写入收到空列表时应直接返回，不产生空事务。"""
     store.create_document_parts([])
     store.add_images([])
@@ -679,12 +670,12 @@ def test_empty_inputs_are_no_ops(store: SqliteMetaStore, document) -> None:
     assert store.list_images("doc_1") == []
 
 
-def test_iter_chunks_on_document_without_chunks_returns_empty(store: SqliteMetaStore,
+def test_iter_chunks_on_document_without_chunks_returns_empty(store: MetaStore,
                                                               document) -> None:
     assert list(store.iter_chunks("doc_1")) == []
 
 
-def test_get_parse_result_returns_none_when_absent(store: SqliteMetaStore, document) -> None:
+def test_get_parse_result_returns_none_when_absent(store: MetaStore, document) -> None:
     assert store.get_parse_result("doc_1") is None
     assert store.get_parse_result("doc_not_exist") is None
 
@@ -692,7 +683,7 @@ def test_get_parse_result_returns_none_when_absent(store: SqliteMetaStore, docum
 # --------------------------------------------------------------------- 账号（v10：名册升级）
 
 
-def test_account_fields_round_trip(store: SqliteMetaStore) -> None:
+def test_account_fields_round_trip(store: MetaStore) -> None:
     """账号列（username/role/disabled）写入后能原样读回。"""
     store.create_user(
         UserRecord(
@@ -712,7 +703,7 @@ def test_account_fields_round_trip(store: SqliteMetaStore) -> None:
 
 
 def test_roster_entry_without_username_cannot_be_looked_up_as_account(
-    store: SqliteMetaStore,
+    store: MetaStore,
 ) -> None:
     """纯名册条目（username 为 NULL）不是账号：按用户名查不到它。"""
     store.create_user(UserRecord(id="user_r", name="仅名册"))
@@ -721,7 +712,7 @@ def test_roster_entry_without_username_cannot_be_looked_up_as_account(
     assert store.get_user("user_r").role is UserRole.MEMBER  # type: ignore[union-attr]
 
 
-def test_duplicate_username_is_rejected_with_precise_message(store: SqliteMetaStore) -> None:
+def test_duplicate_username_is_rejected_with_precise_message(store: MetaStore) -> None:
     """唯一索引冲突要分清是 username 还是 name：管理员处理这两件事的方式不同。"""
     store.create_user(UserRecord(id="user_a", name="甲", username="taken"))
 
@@ -732,7 +723,7 @@ def test_duplicate_username_is_rejected_with_precise_message(store: SqliteMetaSt
         store.create_user(UserRecord(id="user_c", name="甲"))
 
 
-def test_update_password_and_disable(store: SqliteMetaStore) -> None:
+def test_update_password_and_disable(store: MetaStore) -> None:
     store.create_user(UserRecord(id="user_a", name="甲", username="a", password_hash="h1"))
 
     store.update_user_password("user_a", "h2")
@@ -744,7 +735,7 @@ def test_update_password_and_disable(store: SqliteMetaStore) -> None:
     assert store.get_user("user_a").disabled is False  # type: ignore[union-attr]
 
 
-def test_claim_legacy_ownership_only_touches_ownerless_rows(store: SqliteMetaStore, kb) -> None:
+def test_claim_legacy_ownership_only_touches_ownerless_rows(store: MetaStore, kb) -> None:
     """认领只动 owner 为 NULL 的老数据；已有归属的行绝不能被改（否则 setup 会变成夺权）。"""
     store.create_user(UserRecord(id="user_a", name="管理员", username="admin"))
     store.create_knowledge_base(
@@ -772,7 +763,7 @@ def _session(session_id: str, user_id: str = "user_a", *, hours: int = 1) -> Ses
     )
 
 
-def test_session_round_trip_and_touch(store: SqliteMetaStore) -> None:
+def test_session_round_trip_and_touch(store: MetaStore) -> None:
     store.create_user(UserRecord(id="user_a", name="甲", username="a"))
     store.create_session(_session("sess_1"))
 
@@ -791,7 +782,7 @@ def test_session_round_trip_and_touch(store: SqliteMetaStore) -> None:
     assert store.get_session("sess_1") is None
 
 
-def test_delete_sessions_for_user_keeps_current(store: SqliteMetaStore) -> None:
+def test_delete_sessions_for_user_keeps_current(store: MetaStore) -> None:
     """改密吊销：保住当前这条（用户不该被自己的改密动作踢出去），其余全清。"""
     store.create_user(UserRecord(id="user_a", name="甲", username="a"))
     store.create_user(UserRecord(id="user_b", name="乙", username="b"))
@@ -807,7 +798,7 @@ def test_delete_sessions_for_user_keeps_current(store: SqliteMetaStore) -> None:
     assert store.get_session("other") is not None
 
 
-def test_sessions_cascade_with_user(store: SqliteMetaStore) -> None:
+def test_sessions_cascade_with_user(store: MetaStore) -> None:
     """删账号必须连会话一起清：留着就是一把永远有效的万能钥匙。"""
     store.create_user(UserRecord(id="user_a", name="甲", username="a"))
     store.create_session(_session("sess_1"))
@@ -817,7 +808,7 @@ def test_sessions_cascade_with_user(store: SqliteMetaStore) -> None:
     assert store.get_session("sess_1") is None
 
 
-def test_delete_user_clears_all_ownership_columns(store: SqliteMetaStore, kb, document) -> None:
+def test_delete_user_clears_all_ownership_columns(store: MetaStore, kb, document) -> None:
     """删账号后**所有**归属列都要置空——只清 documents.uploaded_by 而留下
     knowledge_bases.owner_id 等，会造出指向不存在账号的悬空引用。"""
     store.create_user(UserRecord(id="user_a", name="甲", username="a"))
@@ -850,7 +841,7 @@ def test_delete_user_clears_all_ownership_columns(store: SqliteMetaStore, kb, do
 # --------------------------------------------------------------------- 知识库分享（v10）
 
 
-def test_share_round_trip_and_regrant_updates_permission(store: SqliteMetaStore, kb) -> None:
+def test_share_round_trip_and_regrant_updates_permission(store: MetaStore, kb) -> None:
     """重复分享同一库同一人 = 改档位，不是报错也不是插第二条。"""
     store.create_user(UserRecord(id="user_a", name="甲", username="a"))
     first = store.put_share(
@@ -873,8 +864,8 @@ def test_share_round_trip_and_regrant_updates_permission(store: SqliteMetaStore,
     assert store.list_shares_for_kb("kb_1") == []
 
 
-def test_share_with_missing_target_is_rejected(store: SqliteMetaStore, kb) -> None:
-    """外键违例要翻成领域错误：漏原生 sqlite 异常给上层，调用方没法区分
+def test_share_with_missing_target_is_rejected(store: MetaStore, kb) -> None:
+    """外键违例要翻成领域错误：漏原生驱动异常给上层，调用方没法区分
     "目标不存在"与"数据库坏了"。"""
     with pytest.raises(InvalidRequestError, match="不存在"):
         store.put_share(
@@ -882,7 +873,7 @@ def test_share_with_missing_target_is_rejected(store: SqliteMetaStore, kb) -> No
         )
 
 
-def test_shares_cascade_with_kb(store: SqliteMetaStore, kb) -> None:
+def test_shares_cascade_with_kb(store: MetaStore, kb) -> None:
     store.create_user(UserRecord(id="user_a", name="甲", username="a"))
     store.put_share(ShareRecord(kb_id="kb_1", user_id="user_a", permission=SharePermission.READ))
 
@@ -894,7 +885,7 @@ def test_shares_cascade_with_kb(store: SqliteMetaStore, kb) -> None:
 # --------------------------------------------------------------------- 归属列（v10）
 
 
-def test_api_key_created_by_round_trip(store: SqliteMetaStore) -> None:
+def test_api_key_created_by_round_trip(store: MetaStore) -> None:
     store.create_api_key(
         ApiKeyRecord(id="key_1", name="集成", key_hash="h", permission=ApiKeyPermission.READONLY,
                      created_by="user_a")
@@ -906,7 +897,7 @@ def test_api_key_created_by_round_trip(store: SqliteMetaStore) -> None:
 
 
 def test_question_stats_by_documents_counts_chunks_and_questions(
-    store: SqliteMetaStore, kb, document
+    store: MetaStore, kb, document
 ) -> None:
     """列表要显示"这份出没出题、出了多少"：一条 GROUP BY 拿全，缺的补 (0, 0)。"""
     store.replace_chunks(
@@ -925,7 +916,7 @@ def test_question_stats_by_documents_counts_chunks_and_questions(
 
 
 def test_active_question_documents_only_lists_queued_ones(
-    store: SqliteMetaStore, kb, document
+    store: MetaStore, kb, document
 ) -> None:
     """轮询与"生成中…"都靠它：只有排队/在跑的出题任务才算数。"""
     store.enqueue_task(_task("t_run", state=TaskState.RUNNING, document_id="doc_1",

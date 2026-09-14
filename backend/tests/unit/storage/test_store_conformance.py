@@ -1,7 +1,6 @@
 """另外三个仓储的接口一致性测试（M1 T1.7）。
 
-镜像同构：``app/storage/sqlite_impl/{vector,fulltext,object}_store.py``
-→ ``tests/unit/storage/sqlite_impl/test_store_conformance.py``。
+一个接口的每个实现都在下面的清单里登记，漏登记就等于漏掉这条守卫。
 
 行为验证在 ``tests/integration/storage/``，这里只守"接口是否被完整实现"。
 新增接口方法时这里会立刻变红，提醒实现方补齐。
@@ -13,18 +12,12 @@ from app.storage.base import FullTextStore, ObjectStore, VectorStore
 from app.storage.postgres_impl.fulltext_store import PostgresFullTextStore
 from app.storage.postgres_impl.vector_store import PostgresVectorStore
 from app.storage.s3_impl.object_store import S3ObjectStore
-from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
-from app.storage.sqlite_impl.object_store import LocalObjectStore
-from app.storage.sqlite_impl.vector_store import SqliteVectorStore
 
 #: 同一接口的每个实现都要在这里登记。新增实现忘了登记时，
 #: "抽象方法有没有漏实现"这条守卫就会漏掉它——所以这份清单要跟着实现一起长。
 IMPLEMENTATIONS = (
-    (SqliteVectorStore, VectorStore),
     (PostgresVectorStore, VectorStore),
-    (SqliteFullTextStore, FullTextStore),
     (PostgresFullTextStore, FullTextStore),
-    (LocalObjectStore, ObjectStore),
     (S3ObjectStore, ObjectStore),
 )
 
@@ -46,5 +39,5 @@ def test_choose_implementation_by_interface_not_by_class() -> None:
     annotations = StoreBundle.__annotations__
     assert annotations["meta"] is not None
     assert all(
-        "sqlite_impl" not in str(annotation) for annotation in annotations.values()
+        "_impl" not in str(annotation) for annotation in annotations.values()
     ), "StoreBundle 的字段类型不应是具体实现"

@@ -43,7 +43,17 @@ if [ -x "$VENV_PY" ]; then
 else
     echo "==> 同步 API 接口规范（跳过：找不到 venv 解释器）"
 fi
-step "后端测试" sh -c "cd '$ROOT/backend' && '$VENV_PY' -m pytest tests -m 'not bench and not cloud' -q"
+if [ -z "${KYLAB_TEST_DATABASE_URL:-}" ]; then
+    echo "!! 未设置 KYLAB_TEST_DATABASE_URL"
+    echo "   v0.12 起存储只有 PostgreSQL（SQLite 已退役），没有它"
+    echo "   仓储测试与所有走 create_app 的集成测试都会整体跳过，"
+    echo "   门禁会变成'绿得没有意义'。请指向一个带 pgvector 的库："
+    echo "   KYLAB_TEST_DATABASE_URL=postgresql://用户:口令@主机:5432/postgres \\"
+    echo "     sh scripts/check-backend.sh"
+    fail=$((fail + 1))
+else
+    step "后端测试" sh -c "cd '$ROOT/backend' && '$VENV_PY' -m pytest tests -m 'not bench and not cloud' -q"
+fi
 
 if [ "$fail" -ne 0 ]; then
     echo "后端门禁未通过（$fail 项）"

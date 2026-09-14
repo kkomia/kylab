@@ -1,70 +1,115 @@
 """存储装配（组合根）测试。
 
 镜像同构：``app/core/storage.py`` → ``tests/unit/core/test_storage.py``。
+
+v0.12 起存储只有 PostgreSQL：装配会连库并校验 schema，所以这些用例需要
+``KYLAB_TEST_DATABASE_URL``（未配置则跳过）。
 """
 
-import sqlite3
 from pathlib import Path
 
 import pytest
 
 from app.core.config import Settings
-from app.core.storage import STORAGE_SUBDIRS, build_stores, get_stores, reset_stores
+from app.core.storage import (
+    STORAGE_SUBDIRS,
+    build_stores,
+    close_stores,
+    get_stores,
+    reset_stores,
+)
 from app.models.enums import DataSourceKind, DocumentStage
 from app.storage.base import DocumentRecord, KnowledgeBaseRecord
-from app.storage.sqlite_impl.migrations import MIGRATIONS, current_version
+from app.storage.postgres_impl.connection import Database
+from app.storage.postgres_impl.schema import BASELINE_VERSION, current_version
+
+
+def _query(settings: Settings, sql: str):  # type: ignore[no-untyped-def]
+    """直连测试库取一个标量——这几条用例要验的正是装配本身，所以不走仓储。"""
+    db = Database(settings.database_url or "")
+    db.open()
+    try:
+        with db.read() as conn:
+            row = conn.execute(sql).fetchone()
+            return next(iter(row.values())) if row else None
+    finally:
+        db.close()
 
 
 @pytest.fixture
-def settings(tmp_path) -> Settings:
-    return Settings(_env_file=None, data_dir=tmp_path / "data")  # type: ignore[call-arg]
+def settings(pg_database, tmp_path) -> Settings:
+    """指向临时测试库与临时数据目录，绝不碰开发库/仓库目录。"""
+    if pg_database is None:
+        pytest.skip("需要 PostgreSQL 测试库：请设置 KYLAB_TEST_DATABASE_URL")
+    return Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        database_url=pg_database.dsn,
+    )
 
 
-def test_build_stores_creates_database_and_directories(settings: Settings) -> None:
+@pytest.fixture(autouse=True)
+def _close_pools():
+    """用例会直接调 build_stores，连接池得还回去。"""
+    yield
+    close_stores()
+
+
+def test_missing_database_url_fails_with_a_useful_message(tmp_path) -> None:
+    """没配连接串要**启动即失败**并说清填什么，而不是静默退回别的实现。"""
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None, data_dir=tmp_path / "data", database_url=None
+    )
+    with pytest.raises(RuntimeError, match="KYLAB_DATABASE_URL"):
+        build_stores(settings)
+
+
+def test_build_stores_creates_object_directories(settings: Settings) -> None:
     build_stores(settings)
 
-    assert settings.db_path.is_file()
     for subdir in STORAGE_SUBDIRS:
         assert (Path(settings.data_dir) / subdir).is_dir()
 
 
-def test_build_stores_applies_migrations(settings: Settings) -> None:
-    build_stores(settings)
+def test_build_stores_applies_baseline_schema(settings: Settings) -> None:
+    stores = build_stores(settings)
 
-    connection = sqlite3.connect(settings.db_path)
+    assert isinstance(stores.meta, object)
+    db = Database(settings.database_url or "")
+    db.open()
     try:
-        assert current_version(connection) >= 1
+        assert current_version(db) == BASELINE_VERSION
     finally:
-        connection.close()
+        db.close()
 
 
 def test_build_stores_is_idempotent(settings: Settings) -> None:
-    """每次启动都会调用，必须能重复执行而不出错、不重复迁移。"""
+    """每次启动都会调用，必须能重复执行而不出错、不重复应用基线。"""
     build_stores(settings)
+    close_stores()
     build_stores(settings)
 
-    assert settings.db_path.is_file()
-    connection = sqlite3.connect(settings.db_path)
-    try:
-        applied = connection.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
-    finally:
-        connection.close()
-    # 与"全部迁移数"比，而不是硬编码一个数字：后者每加一个迁移就得改这里，
-    # 而它要验的是"没有被重复应用"（踩过）
-    assert applied == len(MIGRATIONS)
+    applied = _query(settings, "select count(*) as n from schema_migrations")
+    assert applied == 1, "基线只应记录一次"
 
 
 def test_stores_are_functionally_wired(settings: Settings) -> None:
-    """四个仓储确实能协同工作（元数据 + 全文 + 向量 + 对象）。"""
+    """四个仓储确实能协同工作（元数据 + 向量 + 全文 + 对象）。"""
     stores = build_stores(settings)
     stores.meta.create_knowledge_base(
-        KnowledgeBaseRecord(id="kb_1", name="库", embedding_model_id="BAAI/bge-m3",
-                            embedding_dim=4)
+        KnowledgeBaseRecord(
+            id="kb_1", name="库", embedding_model_id="BAAI/bge-m3", embedding_dim=4
+        )
     )
     stores.meta.create_document(
-        DocumentRecord(id="doc_1", knowledge_base_id="kb_1", name="a.md",
-                       source_kind=DataSourceKind.UPLOAD, content_hash="h1",
-                       stage=DocumentStage.UPLOADED)
+        DocumentRecord(
+            id="doc_1",
+            knowledge_base_id="kb_1",
+            name="a.md",
+            source_kind=DataSourceKind.UPLOAD,
+            content_hash="h1",
+            stage=DocumentStage.UPLOADED,
+        )
     )
     stores.vectors.ensure_partition("kb_1", dim=4)
     stores.vectors.upsert_vectors("kb_1", items=[("c1", [1.0, 0.0, 0.0, 0.0])])
@@ -75,8 +120,10 @@ def test_stores_are_functionally_wired(settings: Settings) -> None:
     assert stores.objects.read(path) == "# 标题".encode()
 
 
-def test_get_stores_is_cached_and_resettable(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
+def test_get_stores_is_cached_and_resettable(monkeypatch, pg_database) -> None:
+    if pg_database is None:
+        pytest.skip("需要 PostgreSQL 测试库：请设置 KYLAB_TEST_DATABASE_URL")
+    monkeypatch.setenv("KYLAB_DATABASE_URL", pg_database.dsn)
     reset_stores()
     try:
         first = get_stores()

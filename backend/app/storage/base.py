@@ -2,9 +2,9 @@
 
 纪律（工程规范 §3.3）：
 
-- ``services/`` 只允许 import 本模块的接口，**禁止 import** ``storage/sqlite_impl/``；
+- ``services/`` 只允许 import 本模块的接口，**禁止 import** 任何 ``storage/*_impl/``；
 - 本模块内不得出现任何 SQLite 方言（SQL、连接对象、``rowid`` 语义），
-  以保证未来平级新增 PostgreSQL 实现时接口不用改（《架构设计 v0.2》§8.3 迁移后门）。
+  这是 v0.12 从 SQLite 迁到 PostgreSQL 时接口一行未改的原因（《架构设计 v0.2》§8.3 迁移后门）。
 
 关于 embedding 维度（M1 决策 D4）：维度**不是全局常量**，而是每个知识库的属性
 （``KnowledgeBaseRecord.embedding_model_id`` / ``embedding_dim``），

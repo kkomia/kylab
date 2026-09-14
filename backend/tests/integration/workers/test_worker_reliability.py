@@ -6,11 +6,9 @@
 
 import asyncio
 import logging
-import sqlite3
 import threading
 import time
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -105,7 +103,7 @@ async def test_long_task_keeps_renewing_its_lease(bundle: StoreBundle, ingest: I
 
 @pytest.mark.asyncio
 async def test_lease_loss_is_noticed_even_when_the_task_finishes_first(
-    bundle: StoreBundle, ingest: IngestService, kb, monkeypatch, db_file: Path,
+    bundle: StoreBundle, ingest: IngestService, kb, monkeypatch,
     pg_database,
 ) -> None:
     """任务跑得比心跳还快时，也必须发现租约被抢。
@@ -133,7 +131,7 @@ async def test_lease_loss_is_noticed_even_when_the_task_finishes_first(
     monkeypatch.setattr(worker, "_execute_with_heartbeat", instant_execute)
 
     # 先把租约判给别人，再让 worker 跑：finish_task 必然以 owner 不符而失败
-    _steal_lease(db_file, pg_database, task.id, "someone-else")
+    _steal_lease(pg_database, task.id, "someone-else")
 
     await asyncio.wait_for(worker.run_once(), timeout=5)
 
@@ -142,7 +140,7 @@ async def test_lease_loss_is_noticed_even_when_the_task_finishes_first(
 
 @pytest.mark.asyncio
 async def test_lease_loss_stops_the_worker_without_stealing_the_outcome(
-    bundle: StoreBundle, ingest: IngestService, kb, monkeypatch, db_file: Path,
+    bundle: StoreBundle, ingest: IngestService, kb, monkeypatch,
     pg_database,
 ) -> None:
     """租约被抢走后要停手，但**不能**去写这份任务的终态。
@@ -168,7 +166,7 @@ async def test_lease_loss_stops_the_worker_without_stealing_the_outcome(
     runner = asyncio.create_task(worker.run_forever())
     assert await asyncio.to_thread(started.wait, 5)
 
-    _steal_lease(db_file, pg_database, task.id, "someone-else")
+    _steal_lease(pg_database, task.id, "someone-else")
     release.set()
 
     await asyncio.wait_for(runner, timeout=5)
@@ -178,28 +176,20 @@ async def test_lease_loss_stops_the_worker_without_stealing_the_outcome(
     assert bundle.meta.get_document(outcome.document.id).stage is DocumentStage.INDEXED
 
 
-def _steal_lease(db_file: Path, pg_database, task_id: str, owner: str) -> None:
+def _steal_lease(pg_database, task_id: str, owner: str) -> None:
     """直接把租约判给别人，模拟"任务被另一个消费者回收后重新领取"。
 
     不用 ``heartbeat_task``：那个接口本身要求租约还在自己名下（``lease_owner = owner``），
     所以它只能在"自己还持有租约"时续期，没法把租约判给第二个人。
 
-    **两个后端都要支持**：这条用例的价值就在于绕过仓储接口改库，不能只写 SQLite。
-    PG 的时间列是 ``timestamptz``（绑 ``datetime``），SQLite 存的是 ISO 文本。
+    这条用例的价值就在于绕过仓储接口改库，所以直接写测试库的连接。
     """
     expires = datetime.now(UTC) + timedelta(seconds=60)
-    if pg_database is not None:
-        with pg_database.session() as conn:
-            changed = conn.execute(
-                "update tasks set lease_owner = %s, lease_expires_at = %s where id = %s",
-                (owner, expires, task_id),
-            ).rowcount
-    else:
-        with sqlite3.connect(db_file) as conn:
-            changed = conn.execute(
-                "UPDATE tasks SET lease_owner = ?, lease_expires_at = ? WHERE id = ?",
-                (owner, expires.isoformat(), task_id),
-            ).rowcount
+    with pg_database.session() as conn:
+        changed = conn.execute(
+            "update tasks set lease_owner = %s, lease_expires_at = %s where id = %s",
+            (owner, expires, task_id),
+        ).rowcount
     assert changed == 1, f"没找到任务 {task_id}"
 
 
@@ -346,7 +336,7 @@ def test_worker_crash_is_logged_and_does_not_kill_the_app(monkeypatch, tmp_path,
 
 def test_retry_is_dropped_when_lease_was_taken_over(bundle: StoreBundle,
                                                     ingest: IngestService, kb,
-                                                    db_file: Path, pg_database) -> None:
+                                                    pg_database) -> None:
     """失败重试也要认租约：过期消费者不能把任务拽回队列，否则会和新主人一起被调度。"""
     outcome = ingest.submit(knowledge_base_id="kb_1", filename="a.md", content=CONTENT.encode())
     task = _enqueue(bundle, outcome.document.id, "task_retry")
@@ -354,7 +344,7 @@ def test_retry_is_dropped_when_lease_was_taken_over(bundle: StoreBundle,
     worker = TaskWorker(bundle, ingest, owner="w-old")
     claimed = bundle.meta.claim_task(owner="w-old", lease_seconds=60)
     assert claimed is not None
-    _steal_lease(db_file, pg_database, task.id, "w-new")
+    _steal_lease(pg_database, task.id, "w-new")
 
     worker._retry_or_fail(
         claimed,
@@ -366,7 +356,7 @@ def test_retry_is_dropped_when_lease_was_taken_over(bundle: StoreBundle,
 
 def test_failure_is_dropped_when_lease_was_taken_over(bundle: StoreBundle,
                                                       ingest: IngestService, kb,
-                                                      db_file: Path, pg_database) -> None:
+                                                      pg_database) -> None:
     """不可重试的失败同理：判失败也必须确认租约还在自己手上。"""
     outcome = ingest.submit(knowledge_base_id="kb_1", filename="a.md", content=CONTENT.encode())
     task = _enqueue(bundle, outcome.document.id, "task_fail")
@@ -374,7 +364,7 @@ def test_failure_is_dropped_when_lease_was_taken_over(bundle: StoreBundle,
     worker = TaskWorker(bundle, ingest, owner="w-old")
     claimed = bundle.meta.claim_task(owner="w-old", lease_seconds=60)
     assert claimed is not None
-    _steal_lease(db_file, pg_database, task.id, "w-new")
+    _steal_lease(pg_database, task.id, "w-new")
 
     worker._retry_or_fail(claimed, ValueError("参数非法，重试没意义"))
 

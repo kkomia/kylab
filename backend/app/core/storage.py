@@ -1,9 +1,16 @@
 """存储装配（组合根）。
 
-**这里（以及测试）是唯一允许 import `sqlite_impl` 的地方。**
-`services/` 只依赖 `storage/base.py` 的接口，具体实现由本模块在启动时装配注入——
-这样未来平级新增 PostgreSQL 实现时，改动收敛在这一处，
+**这里是唯一允许 import 具体实现的地方**（测试夹具另算）。
+`services/` 只依赖 `storage/base.py` 的接口，实现由本模块在启动时装配注入——
 `scripts/check_layering.py` 的 `L2` 规则会守住这条边界。
+
+三个存储各管一段（架构 §8）：
+
+- **PostgreSQL**（``postgres_impl/``）：元数据 + 向量(pgvector) + 全文(tsvector)。
+  SQLite 已于 v0.12 退役，``database_url`` 未配置时**直接启动失败**——
+  留一条"没配就悄悄退回本地文件"的后路，只会让部署问题变成运行期怪现象。
+- **对象存储**（``s3_impl/`` 或 ``local_impl/``）：原件、Markdown 产物、图片。
+- **DuckDB**（``duckdb_impl/``）：表格型文档的结构化副本，与主库物理分离。
 """
 
 from __future__ import annotations
@@ -14,18 +21,13 @@ from pathlib import Path
 from app.core.config import Settings, get_settings
 from app.storage.base import FullTextStore, MetaStore, ObjectStore, StoreBundle, VectorStore
 from app.storage.duckdb_impl.tabular_store import DuckDbTabularStore
+from app.storage.local_impl.object_store import LocalObjectStore
 from app.storage.postgres_impl.connection import Database as PgDatabase
 from app.storage.postgres_impl.fulltext_store import PostgresFullTextStore
 from app.storage.postgres_impl.meta_store import PostgresMetaStore
 from app.storage.postgres_impl.schema import prepare as prepare_pg_schema
 from app.storage.postgres_impl.vector_store import PostgresVectorStore
 from app.storage.s3_impl.object_store import S3ObjectStore, build_client
-from app.storage.sqlite_impl.connection import Database
-from app.storage.sqlite_impl.fulltext_store import SqliteFullTextStore
-from app.storage.sqlite_impl.meta_store import SqliteMetaStore
-from app.storage.sqlite_impl.migrations import apply_migrations
-from app.storage.sqlite_impl.object_store import LocalObjectStore
-from app.storage.sqlite_impl.vector_store import SqliteVectorStore
 
 __all__ = ["STORAGE_SUBDIRS", "build_stores", "close_stores", "get_stores", "reset_stores"]
 
@@ -33,6 +35,7 @@ ORIGINALS_DIR = "originals"
 MARKDOWN_DIR = "markdown"
 IMAGES_DIR = "images"
 STORAGE_SUBDIRS = (ORIGINALS_DIR, MARKDOWN_DIR, IMAGES_DIR)
+"""本地对象存储的目录规约。走 S3 时对象在桶里，不涉及这些目录。"""
 
 _S3_REQUIRED = ("s3_endpoint", "s3_access_key", "s3_secret_key")
 
@@ -43,8 +46,7 @@ _OPEN_DATABASES: list[PgDatabase] = []
 def _build_object_store(settings: Settings, data_dir: Path) -> ObjectStore:
     """按配置选对象存储：配了 S3 端点就走 S3，否则落到本地目录。
 
-    这是个**可以独立于数据库切换**的组件：文件与元数据本来就是两套东西，
-    所以 MinIO 可以先上，不必等 PG 实现。
+    这是个**可以独立于数据库切换**的组件：文件与元数据本来就是两套东西。
 
     配了端点但缺凭据 → 启动即失败。半配状态（有端点没钥匙）如果不能立刻报错，
     就会变成"上传时才发现"。
@@ -99,25 +101,6 @@ def _build_pg_stores(
     )
 
 
-def _build_sqlite_stores(settings: Settings) -> tuple[MetaStore, VectorStore, FullTextStore]:
-    """过渡期保留：未配 ``database_url`` 时仍走本地 SQLite。
-
-    PG 实现已全部就位并双后端验证过，SQLite 只是**回退路径**；
-    拆除 ``sqlite_impl/`` 时这个分支与其上面的 import 一起删。
-    """
-    database = Database(settings.db_path)
-    connection = database.connect()
-    try:
-        apply_migrations(connection)
-    finally:
-        connection.close()
-    return (
-        SqliteMetaStore(database),
-        SqliteVectorStore(database),
-        SqliteFullTextStore(database, slow_query_ms=settings.slow_query_ms),
-    )
-
-
 def build_stores(settings: Settings | None = None) -> StoreBundle:
     """按配置建库、迁移、准备目录，并装配五个仓储。
 
@@ -127,16 +110,20 @@ def build_stores(settings: Settings | None = None) -> StoreBundle:
     一旦交出去，调用方就会顺手拿它写 SQL，Repository 抽象就白做了。
     """
     resolved = settings or get_settings()
+    if not resolved.database_url:
+        raise RuntimeError(
+            "未配置 KYLAB_DATABASE_URL：SQLite 已于 v0.12 退役，"
+            "存储为 PostgreSQL 必选。示例："
+            "postgresql://用户:口令@主机:5432/库名"
+        )
+
     data_dir = Path(resolved.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
 
     object_store = _build_object_store(resolved, data_dir)
-    if resolved.database_url:
-        meta, vectors, fulltext = _build_pg_stores(
-            resolved.database_url, slow_query_ms=resolved.slow_query_ms
-        )
-    else:
-        meta, vectors, fulltext = _build_sqlite_stores(resolved)
+    meta, vectors, fulltext = _build_pg_stores(
+        resolved.database_url, slow_query_ms=resolved.slow_query_ms
+    )
 
     return StoreBundle(
         meta=meta,

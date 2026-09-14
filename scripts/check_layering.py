@@ -27,9 +27,9 @@ PROTOCOL_FORBIDDEN = ("app.storage", "app.parsers", "app.workers")
 PROTOCOL_MSG = "协议适配层只能转发 services/，禁止直接依赖存储/解析器/队列"
 
 # L2：业务层不得直接使用数据库驱动，也不得依赖具体存储实现。
-# **只允许 `app.storage.base`**（抽象契约）：具体实现（sqlite_impl / duckdb_impl）
+# **只允许 `app.storage.base`**（抽象契约）：具体实现（postgres_impl / s3_impl / local_impl / duckdb_impl）
 # 只被组合根装配。写成"允许清单"而不是"禁止前缀"是有意的——原来的禁止清单漏了
-# `app.storage.duckdb_impl`，也漏了 `from app.storage import sqlite_impl`（目标是
+# `app.storage.duckdb_impl`，也漏了 `from app.storage import postgres_impl`（目标是
 # 包名 `app.storage`，任何前缀规则都不命中），等于留了口子。
 SERVICE_LAYER = "app.services"
 SERVICE_FORBIDDEN_MODULES = (

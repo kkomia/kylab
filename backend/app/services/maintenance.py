@@ -1,12 +1,14 @@
 """存储维护：空间概览与"整理"（v17）。
 
-**为什么要有这个服务**：SQLite 删数据不会把文件变小——删掉的页进 freelist 等复用。
-实测那个只有 169 个切块的库，21MB 里有 4MB 是空闲页，而 sqlite-vec 的向量分区
-还有个更隐蔽的开销：每个分区只要写入第一个向量就预分配一个 4MB 块。
+**为什么要有这个服务**：数据库删数据不会把文件变小——删掉的行变成死元组留在页里
+等复用（SQLite 时代是 freelist，PG 是 dead tuples，症状一样）。
 这些数字如果不摆出来，用户只会看到"我删了东西，磁盘却没变"，然后怀疑系统在偷偷存。
 
 **"整理"只做两件安全的事**：丢掉无主的向量分区（早期版本删库时漏掉的），
 然后 VACUUM。两件都不动任何有主的数据。
+
+（v0.12 起底层是 PostgreSQL：空间口径来自 ``pg_database_size`` /
+``pg_stat_user_tables``，整理走 ``VACUUM (ANALYZE)``，见 ``postgres_impl/meta_store``。）
 """
 
 from __future__ import annotations
