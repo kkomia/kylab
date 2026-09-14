@@ -18,7 +18,6 @@ import {
   createProvider,
   deleteModel,
   deleteProvider,
-  getRegistry,
   listAvailableModels,
   registerModel,
   testProvider,
@@ -27,7 +26,6 @@ import {
   type AvailableModel,
   type Provider,
   type RegisteredModel,
-  type Registry,
 } from '@/api/modelRegistry'
 import { providerIcon } from '@/components/icons/brands'
 import IconServer from '@/components/icons/IconServer.vue'
@@ -41,10 +39,20 @@ import InfoTip from '@/components/ui/InfoTip.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { useToast } from '@/composables/useToast'
+import { useModelRegistryStore } from '@/stores/modelRegistry'
 
 const { notifySuccess, notifyError } = useToast()
 
-const registry = ref<Registry | null>(null)
+/**
+ * 注册表来自共享 store，**不在这里另存一份**。
+ *
+ * 原先本面板自己 `getRegistry()` 存一个 ref，于是登记完模型只刷新了自己，
+ * 「设置 → 向量化」的默认模型下拉读的却是弹窗里那份旧数据——必须关掉重开才刷新
+ * （用户实测 bug）。现在登记完调 `load()` 刷新的就是全站共用的那一份。
+ */
+const modelRegistry = useModelRegistryStore()
+
+const registry = computed(() => modelRegistry.registry)
 const loading = ref(true)
 const busy = ref('')
 
@@ -176,9 +184,9 @@ const kindOptions = computed(() =>
 async function load(): Promise<void> {
   loading.value = true
   try {
-    registry.value = await getRegistry()
-  } catch (cause) {
-    notifyError(cause instanceof Error ? cause.message : '模型配置加载失败')
+    // store 自己吞掉异常并记进 error，这里负责把它翻成一次提示
+    await modelRegistry.load()
+    if (modelRegistry.error) notifyError(modelRegistry.error)
   } finally {
     loading.value = false
   }

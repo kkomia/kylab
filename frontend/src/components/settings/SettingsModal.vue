@@ -20,13 +20,7 @@ import { computed, onMounted, ref, watch, type Component } from 'vue'
 import { MIN_PASSWORD_CHARS } from '@/api/auth'
 import { compactStorage, getStorageOverview, type StorageOverview } from '@/api/maintenance'
 import { fetchHealth, type HealthResponse } from '@/api/health'
-import {
-  bindSlot,
-  getRegistry,
-  type RegisteredModel,
-  type Registry,
-  type Slot,
-} from '@/api/modelRegistry'
+import { bindSlot, type RegisteredModel, type Slot } from '@/api/modelRegistry'
 import {
   getAuthStatus,
   getSettings,
@@ -71,6 +65,7 @@ import { changeOwnPassword, isAdmin } from '@/composables/useSession'
 import { currentUser } from '@/composables/useSessionToken'
 import { setTheme, themeMode, type ThemeMode } from '@/composables/useTheme'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
+import { useModelRegistryStore } from '@/stores/modelRegistry'
 
 const open = defineModel<boolean>('open', { required: true })
 
@@ -457,16 +452,20 @@ async function refresh(): Promise<void> {
  *
  * v0.8 归属整理：模型注册只负责登记，"哪个用途用哪个模型"在各自的分组里选
  * （向量化 / 对话模型）。所以这里不再做注册，只做选择。
+ *
+ * **读写共用 `useModelRegistryStore` 这一份缓存**（原先本弹窗与「模型注册」面板
+ * 各存一份，于是刚登记完模型、切到「向量化」下拉里根本没有它，要关掉弹窗重开
+ * 才刷新——实测 bug）。现在任何一处登记完都调 `load()` 刷新同一份，
+ * 所有引用它的分组、以及知识库页会一起更新。
  */
-const registry = ref<Registry | null>(null)
+const modelRegistry = useModelRegistryStore()
+
+const registry = computed(() => modelRegistry.registry)
 
 async function loadRegistry(): Promise<void> {
-  try {
-    registry.value = await getRegistry()
-  } catch {
-    // 注册表读不到不该让整页报错：选择框退化成"只剩未指定"，用户至少能看懂状态
-    registry.value = null
-  }
+  // 失败不清空：store 保留上一份可用数据，只在 error 里记一笔
+  // （读不到就让选择框退化成"未指定"，比整页报错好）
+  await modelRegistry.load()
 }
 
 /** 用途 → 当前状态（未绑定时后端也会给一条，`configured` 为假）。 */

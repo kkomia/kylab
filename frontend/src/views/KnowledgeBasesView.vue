@@ -22,7 +22,6 @@ import {
   chunkOverlapMax,
   SUGGESTED_COUNT_DEFAULT,
 } from '@/api/knowledgeBases'
-import { getRegistry, type Registry } from '@/api/modelRegistry'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import KnowledgeBaseMenu from '@/components/knowledge/KnowledgeBaseMenu.vue'
 import SuggestedQuestionsFields from '@/components/knowledge/SuggestedQuestionsFields.vue'
@@ -39,6 +38,7 @@ import { chunkingErrorOf, parseIntOrNull } from '@/composables/useChunking'
 import { formatRelativeTime } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
+import { useModelRegistryStore } from '@/stores/modelRegistry'
 
 /** 规范 §5.1 的阈值：超过 12 个容器就用行而不是卡片，避免格子被挤窄。 */
 const CARD_LIMIT = 12
@@ -69,13 +69,18 @@ const draftForm = ref<KbForm>('vector')
  *
  * **没有模型就不许建库**（v0.8 取消哈希兜底）：向量空间是库的地基，
  * 与其建出一个检索不了的库，不如在这里挡住并说清去哪儿配。
+ *
+ * 注册表读共享 store（原先这里自己拉一份）：在「设置 → 模型注册」刚加完模型，
+ * 本页不重新挂载就看不到——同一份缓存被存了多份，是那个"下拉不刷新"的根因。
  */
-const registry = ref<Registry | null>(null)
+const modelRegistry = useModelRegistryStore()
 
-/** 注册表是否已拉过。**"还在加载"与"确实没有模型"必须分开**：
+const registry = computed(() => modelRegistry.registry)
+
+/** 加载是否已有结论（成功或失败）。**"还在加载"与"确实没有模型"必须分开**：
  *  否则进页面的一瞬间 embeddingModels 是空的，页头会先闪一下"还没有可用的嵌入模型"
- *  再消失（实测到的 bug）。 */
-const modelsLoaded = ref(false)
+ *  再消失（实测到的 bug）。失败也算有结论——那时按"没有模型"处理并给出提示。 */
+const modelsLoaded = computed(() => modelRegistry.loaded || modelRegistry.error !== '')
 
 const embeddingModels = computed(() =>
   (registry.value?.models ?? []).filter(
@@ -99,14 +104,9 @@ const defaultLabel = computed(() => {
 })
 
 async function loadModels(): Promise<void> {
-  try {
-    registry.value = await getRegistry()
-  } catch {
-    // 拿不到注册表不该让整页报错：退化成"没有可选模型"，创建入口会被挡住
-    registry.value = null
-  } finally {
-    modelsLoaded.value = true
-  }
+  // 拉不到不该让整页报错：store 把失败记进 error，`modelsLoaded` 据此仍算"有结论"，
+  // 创建入口会被挡住并给出提示
+  await modelRegistry.load()
 }
 
 const embeddingOptions = computed(() => [
@@ -296,12 +296,7 @@ function statsOf(kbId: string) {
       v-else-if="!hasItems"
       title="还没有知识库"
       hint="知识库是最外层的容器，每个库对应一套 embedding 模型与一组切分参数。"
-    >
-      <AppButton variant="primary" @click="openCreate">
-        <template #icon><IconPlus /></template>
-        新建知识库
-      </AppButton>
-    </EmptyState>
+    />
 
     <!-- 卡片网格：容器型对象、条目少，用卡片承载"挑一个进去"这个动作 -->
     <ul v-else-if="useCards" class="kb-cards">
