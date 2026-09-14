@@ -15,6 +15,11 @@ dependencies = [
     # 存储与检索是核心能力（M1 起），不再放进 extras
     "sqlite-vec>=0.1.6",
     "jieba>=0.42",
+    # 目标存储：PostgreSQL。psycopg3 同时支持同步/异步，这里用同步以保持
+    # storage 层接口不变（详见 storage/postgres_impl/connection.py 的说明）；
+    # binary 版免去本地编译。pgvector 的 Python 类型适配待向量层落地时再加。
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
     # 口令慢哈希（多用户登录）。SHA-256 不得用于口令（core/security.py 的约定），
     # 口令熵低、必须抗离线爆破；选 argon2 而不是 bcrypt：后者有 72 字节截断的坑
     "argon2-cffi>=23.1",

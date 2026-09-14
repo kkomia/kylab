@@ -32,7 +32,15 @@ PROTOCOL_MSG = "协议适配层只能转发 services/，禁止直接依赖存储
 # `app.storage.duckdb_impl`，也漏了 `from app.storage import sqlite_impl`（目标是
 # 包名 `app.storage`，任何前缀规则都不命中），等于留了口子。
 SERVICE_LAYER = "app.services"
-SERVICE_FORBIDDEN_MODULES = ("sqlite3", "sqlite_vec", "duckdb", "sqlalchemy")
+SERVICE_FORBIDDEN_MODULES = (
+    "sqlite3",
+    "sqlite_vec",
+    "duckdb",
+    "sqlalchemy",
+    # v0.12 起存储转向 PostgreSQL：psycopg 与 sqlite3 同级，业务层同样不得直连
+    "psycopg",
+    "psycopg_pool",
+)
 SERVICE_STORAGE_ALLOWED = "app.storage.base"
 SERVICE_MSG = "业务层禁止直连数据库，存储访问必须经 storage/base.py 的 Repository 接口"
 
