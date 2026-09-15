@@ -39,6 +39,7 @@ import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag, { type StatusTone } from '@/components/ui/StatusTag.vue'
 import { formatDate, formatRelativeTime } from '@/composables/useFormat'
 import { renderAnswerWithCitations } from '@/composables/useMarkdown'
+import { usePolling } from '@/composables/usePolling'
 import { useToast } from '@/composables/useToast'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 
@@ -168,8 +169,6 @@ function ensureSelection(): void {
 }
 
 /** 只在生成中时轮询：落定之后停表，不做无意义的持续请求（同文档列表页）。 */
-let timer: ReturnType<typeof setInterval> | null = null
-
 async function poll(): Promise<void> {
   await loadOverview()
   if (overview.value?.status === 'generating') return
@@ -178,17 +177,9 @@ async function poll(): Promise<void> {
   if (selectedPageId.value) await loadPage(selectedPageId.value)
 }
 
-function syncPolling(): void {
-  const active = overview.value?.status === 'generating'
-  if (active && timer === null) {
-    timer = setInterval(() => void poll(), POLL_INTERVAL_MS)
-  } else if (!active && timer !== null) {
-    clearInterval(timer)
-    timer = null
-  }
-}
-
-watch(() => overview.value?.status, syncPolling)
+/** 生成中才轮询。节奏 / 隐藏暂停 / 防叠加都由 `usePolling` 统一负责（§12.116）。 */
+const wikiGenerating = computed(() => overview.value?.status === 'generating')
+usePolling(poll, { active: wikiGenerating, intervalMs: POLL_INTERVAL_MS })
 
 async function runGenerate(): Promise<void> {
   if (generating.value) return
@@ -199,7 +190,6 @@ async function runGenerate(): Promise<void> {
     notifySuccess('已开始生成 Wiki，页面会陆续出现')
     // 立刻翻一次总览拿到 `generating`：这样状态标签与轮询都是马上对的
     await loadOverview()
-    syncPolling()
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '发起生成失败')
   } finally {
@@ -453,12 +443,10 @@ onMounted(async () => {
   if (store.items.length === 0) await store.load()
   await loadOverview()
   ensureSelection()
-  syncPolling()
   loading.value = false
 })
 
 onBeforeUnmount(() => {
-  if (timer !== null) clearInterval(timer)
   window.clearTimeout(flashTimer)
 })
 
@@ -474,7 +462,6 @@ watch(kbId, async () => {
   }
   await loadOverview()
   ensureSelection()
-  syncPolling()
   loading.value = false
 })
 </script>
@@ -931,7 +918,7 @@ button.nav-caret:hover {
 .article-text :deep(.md-cite) {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: var(--space-1);
   max-width: 8.5em;
   height: 16px;
   margin: 0 2px;

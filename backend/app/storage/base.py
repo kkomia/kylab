@@ -410,6 +410,22 @@ class TaskRecord:
     updated_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class TaskCounts:
+    """任务队列的聚合概览（一次查询拿到，见 ``MetaStore.task_counts``）。"""
+
+    running: int = 0
+    pending: int = 0
+    stalled: int = 0
+    """在跑但租约已过期：没有 worker 在续约（与 ``reclaim_expired_tasks`` 同一判据）。"""
+    overdue: int = 0
+    """排队但已过了 ``overdue_before`` 还没被领走。"""
+    oldest_pending_at: datetime | None = None
+    """最老的排队任务是什么时候入的队（``None`` = 队列空）。"""
+    pending_by_kind: dict[str, int] = field(default_factory=dict)
+    """排队的任务按类型分布——"积压全是出题"和"积压全是解析"该做的事不同。"""
+
+
 @dataclass(slots=True)
 class DataSourceRecord:
     """数据源（本地上传 / HTML / RSS / WebDAV 预留）。"""
@@ -1185,6 +1201,19 @@ class MetaStore(ABC):
     def list_tasks(self, state: TaskState | None = None) -> list[TaskRecord]: ...
 
     @abstractmethod
+    def task_counts(self, *, now: datetime, overdue_before: datetime) -> TaskCounts:
+        """队列概览：**全部计数下推到 SQL**，一行结果，与任务总量无关。
+
+        负载面板每 2 秒问一次（§12.115），而任务表只增不减。原先那条路是
+        "把整张表读出来、构造每条记录、再在 Python 里数"——代价随任务总量线性涨，
+        而这里要的只是几个数。
+
+        ``now`` 与 ``overdue_before`` 都由调用方给：**时钟归服务层**（它才好注入、
+        好测），阈值也只该有一个出处（``services/observability.OVERDUE_AFTER``）——
+        在这里再写一个 10 分钟就是两套判据。
+        """
+
+    @abstractmethod
     def get_task(self, task_id: str) -> TaskRecord | None:
         """按主键取单个任务：不要为了找一条而拉全表。"""
 
@@ -1277,6 +1306,25 @@ class MetaStore(ABC):
         所以保留一天就远远够用。
         """
         ...
+
+    @abstractmethod
+    def purge_finished_tasks(self, *, before: datetime) -> int:
+        """清掉 ``updated_at < before`` 且**已经结束**的任务，返回删除条数。
+
+        任务表只增不减：每次上传都会留下 probe/parse/chunk/embed 几条，
+        出题与 Wiki 再各加一条。不清的话列表接口、队列概览、逐条健康判定
+        全都会随历史缓慢变重——而"三个月前那次成功"没有任何人还会去看。
+        **在跑/排队的一律不动**（未结束的任务是状态，不是历史）。
+        """
+
+    @abstractmethod
+    def purge_stage_events(self, *, before: datetime) -> int:
+        """清掉 ``entered_at < before`` 的阶段事件，返回删除条数。
+
+        时间线的数据源只追加（重试、重新摄入都再加一条）。清理的代价是老文档
+        在抽屉里只剩"当前这一步"的耗时——这是可接受的：**正在跑的东西才需要
+        时间线**，几个月前跑完的文档不需要逐环节回放。
+        """
 
     @abstractmethod
     def release_idempotency_key(self, key: str) -> None:

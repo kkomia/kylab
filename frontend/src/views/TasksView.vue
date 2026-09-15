@@ -9,7 +9,7 @@
  * 一个跑了 5 秒的和一个卡了两小时的看起来完全一样。后端按租约是否续上算出
  * "可能卡住 / 长时间未执行"，这里负责把它显示出来（§12.17 记了为什么之前漏了）。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { cancelTasks, getTaskLoad, type SystemLoad, type TaskSummary } from '@/api/tasks'
@@ -28,6 +28,7 @@ import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { isTaskProblem, taskHealthTone, taskKindLabel, taskStateView } from '@/components/ui/status'
 import { formatDate } from '@/composables/useFormat'
+import { usePolling } from '@/composables/usePolling'
 import { isAdmin } from '@/composables/useSession'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 import { useTaskStore } from '@/stores/tasks'
@@ -42,7 +43,6 @@ const router = useRouter()
 const tasks = computed(() => taskStore.items)
 const error = computed(() => taskStore.error)
 const loading = computed(() => !taskStore.loaded && taskStore.loading)
-let timer: ReturnType<typeof setInterval> | null = null
 
 /**
  * 运行负载（§12.115）。
@@ -158,45 +158,27 @@ function canCancel(task: TaskSummary | null): boolean {
   return task !== null && (task.state === 'pending' || task.state === 'running')
 }
 
-onMounted(async () => {
+onMounted(() => {
   // 知识库下拉的选项来自 store；侧栏通常已在加载，这里**不等它**——
   // 等的代价是把任务列表的首屏拖到列表请求之后
   if (store.items.length === 0) void store.load()
-  // 文档名由任务响应直接带回（document_name），这一页不再为它拉任何文档列表。
-  // 已有缓存时这一句只是后台刷新，内容立刻就在
-  void refresh()
-  void refreshLoad()
-  syncPolling()
 })
 
 /**
- * 轮询节奏：任务在跑时每 2 秒刷一次列表。
+ * 轮询：任务在跑时每 2 秒刷一次。
  *
- * **负载跟列表同一个节拍**（放在 `refresh` 里而不是另起一个计时器）：
+ * **负载跟列表同一个节拍**（同一次 `refresh`，而不是另起一个计时器）：
  * 两个计时器会让"列表说有 3 个在跑"和面板上的"在跑 1"出现在同一帧里对不上，
  * 而这两个数正是要合起来读的（"队列深 + 槽位满"才是结论）。
+ *
+ * 节奏、标签页隐藏时暂停、慢请求不叠加，都交给 `usePolling`（§12.116）——
+ * 这几件事原先在四个页面各写了一遍 `setInterval`，也就各漏了一遍。
  */
 async function refresh(): Promise<void> {
   await Promise.all([taskStore.load(), refreshLoad()])
 }
 
-/** 只在有任务处于排队/执行中时轮询：全静止时停表，省掉每 2 秒一次的往返。 */
-function syncPolling(): void {
-  if (running.value && timer === null) {
-    timer = setInterval(() => {
-      void refresh()
-    }, POLL_INTERVAL_MS)
-  } else if (!running.value && timer !== null) {
-    clearInterval(timer)
-    timer = null
-  }
-}
-
-watch(running, syncPolling)
-
-onBeforeUnmount(() => {
-  if (timer !== null) clearInterval(timer)
-})
+usePolling(refresh, { active: running, intervalMs: POLL_INTERVAL_MS })
 
 function documentName(task: TaskSummary): string {
   if (!task.document_id) return '—'

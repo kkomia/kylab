@@ -20,7 +20,7 @@ MAX_WINDOW_DAYS = 365
 
 
 @router.get("/stats/dashboard", response_model=DashboardOut, summary="驾驶舱统计")
-async def dashboard(
+def dashboard(
     window_days: int = Query(
         default=DEFAULT_WINDOW_DAYS,
         ge=7,
@@ -37,7 +37,7 @@ async def dashboard(
 
 
 @router.get("/stats/usage", response_model=UsageOut, summary="用量（token 与调用量，含检索）")
-async def usage_summary(
+def usage_summary(
     days: int = Query(default=30, ge=1, le=MAX_WINDOW_DAYS, description="观察窗口（天）"),
     services: Services = Depends(get_services),
     _: Caller = Depends(require_read),

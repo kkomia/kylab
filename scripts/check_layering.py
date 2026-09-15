@@ -3,8 +3,8 @@
 对应《项目工程规范 v0.3》§3.3（分层纪律）、§5.1（测试存放铁律）与 §6（脚本约定）。
 这些约束靠人工 review 容易漏，故做成机械检查接入 CI：
 ``L1`` 协议层越界、``L2`` 业务层直连数据库/SQL、``L3`` 解析器互引、
-``L4`` 解析器反向依赖业务层、``T1`` 测试位置、
-``S1`` .ps1 缺少 UTF-8 BOM、``PARSE`` 语法错误。
+``L4`` 解析器反向依赖业务层、``A1`` 异步端点里没有 await（假异步，会按住事件循环）、
+``T1`` 测试位置、``S1`` .ps1 缺少 UTF-8 BOM、``PARSE`` 语法错误。
 
 用法：python scripts/check_layering.py [仓库根目录，默认当前目录]
 退出码：0 = 通过；1 = 发现违规。
@@ -64,6 +64,21 @@ PARSER_SHARED = {
 # 这种更严重的反向依赖直接通过——依赖方向反了，插件就没法脱离业务层复用。
 PARSER_FORBIDDEN = ("app.services", "app.api", "app.mcp_server", "app.workers")
 PARSER_MSG = "解析器是插件层，不得反向依赖业务层（services）或协议层（api/mcp/workers）"
+
+# A1：协议层的 `async def` 端点**必须真的 await 点什么**。
+#
+# 起因是一次实测：38 个端点里有 33 个是 `async def` 但内部一行 await 都没有，
+# 它们调的是同步的 psycopg / httpx。这会把这些阻塞调用**全部按在事件循环线程上**，
+# 于是"并发"完全不成立——实测不碰库的 /health 在并发 20 下，中位延迟从 4.7ms
+# 涨到 140ms（整个循环在等别人的同步 IO）。
+#
+# 修法是把这类端点写成普通的 `def`：Starlette 会把同步端点丢进线程池（默认 40 线程），
+# 阻塞不再卡住循环。这条规则就是防止后来者（或"顺手加个 async"）把它退回去。
+ASYNC_API_LAYERS = ("app.api",)
+ASYNC_MSG = (
+    "协议层的异步端点里没有任何 await：它调的是同步 IO，会把事件循环按住。"
+    "请改成普通的 def（Starlette 会丢进线程池），或真的用异步驱动。"
+)
 
 # T1：测试代码绝不进入源码目录
 SOURCE_ROOTS = ("backend/app", "frontend/src")
@@ -186,6 +201,27 @@ def check_layer_rules(path: Path, root: Path, tree: ast.AST) -> list[Violation]:
     return violations
 
 
+def check_async_endpoints(path: Path, root: Path, tree: ast.AST) -> list[Violation]:
+    """A1：协议层的 ``async def`` 必须真的 await 东西（见 ``ASYNC_MSG``）。"""
+    violations: list[Violation] = []
+    module = module_name_of(path, root)
+    if not any(in_layer(module, layer) for layer in ASYNC_API_LAYERS):
+        return violations
+    display = path.relative_to(root)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.AsyncFunctionDef) or node.name.startswith("_"):
+            continue
+        # 只查**路由处理函数**：带装饰器的那些（Depends 注入的依赖函数不在此列）
+        if not node.decorator_list:
+            continue
+        has_await = any(
+            isinstance(n, (ast.Await, ast.AsyncWith, ast.AsyncFor)) for n in ast.walk(node)
+        )
+        if not has_await:
+            violations.append(Violation("A1", display, node.lineno, f"{node.name}：{ASYNC_MSG}"))
+    return violations
+
+
 def check_test_placement(path: Path, root: Path) -> list[Violation]:
     """T1：源码目录内不得出现测试文件。``path`` 为绝对路径。"""
     rel = path.relative_to(root)
@@ -249,6 +285,7 @@ def main() -> int:
                 violations.append(Violation("PARSE", path, exc.lineno or 1, f"语法错误：{exc.msg}"))
                 continue
             violations.extend(check_layer_rules(path, root, tree))
+            violations.extend(check_async_endpoints(path, root, tree))
             violations.extend(check_test_placement(path, root))
 
     frontend_src = root / "frontend" / "src"

@@ -75,7 +75,7 @@ def _sources_out(services: Services, sources) -> list[WikiSourceOut]:  # type: i
     response_model=WikiOverviewOut,
     summary="Wiki 目录与生成状态",
 )
-async def get_wiki(
+def get_wiki(
     kb_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
@@ -102,7 +102,7 @@ async def get_wiki(
     response_model=WikiPageDetailOut,
     summary="读一页 Wiki（正文 + 出处）",
 )
-async def get_wiki_page(
+def get_wiki_page(
     page_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
@@ -127,7 +127,7 @@ async def get_wiki_page(
     status_code=status.HTTP_202_ACCEPTED,
     summary="重建这个知识库的 Wiki（异步）",
 )
-async def generate_wiki(
+def generate_wiki(
     kb_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),
@@ -146,7 +146,7 @@ async def generate_wiki(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="清空这个知识库的 Wiki 页面",
 )
-async def clear_wiki(
+def clear_wiki(
     kb_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),

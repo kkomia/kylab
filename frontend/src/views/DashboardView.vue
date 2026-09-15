@@ -140,8 +140,11 @@ const figureSlots = computed(() => {
     },
     {
       label: `近 ${WINDOW_DAYS} 天入库`,
+      // 注释必须与**主数字同义**：原来这里写的是"13 个任务在跑"——那是另一件事，
+      // 读起来像"近 365 天入库 23 / 13 个任务在跑"（§12.116 审阅发现）。
+      // 任务在跑的信息属于任务中心（那里有队列深度与槽位），不该蹭这张卡。
       value: String(d.recent_documents),
-      note: d.running_tasks > 0 ? `${d.running_tasks} 个任务在跑` : '当前没有在跑的任务',
+      note: d.total_documents > 0 ? `占全部 ${d.total_documents} 篇` : '还没有文档',
       ready: true,
     },
   ]

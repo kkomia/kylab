@@ -15,10 +15,23 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 
 from app.storage.base import StoreBundle
 
-__all__ = ["MaintenanceService", "StorageOverview"]
+__all__ = [
+    "STAGE_EVENT_RETENTION_DAYS",
+    "TASK_RETENTION_DAYS",
+    "MaintenanceService",
+    "StorageOverview",
+]
+
+#: 已完成任务保留多久。**它是历史记录，不是审计**：运维排查看的是"最近出过什么事"，
+#: 而任务表在热路径上被反复读（列表、队列概览、健康判定），留太久只有坏处。
+TASK_RETENTION_DAYS = 30
+#: 阶段事件保留多久。时间线是**排查"这篇为什么慢"**用的：正在跑的与最近跑完的才有意义，
+#: 几个月前的逐环节耗时没人会看，而它对列表每行的进度条是实打实的读放大。
+STAGE_EVENT_RETENTION_DAYS = 90
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +69,27 @@ class MaintenanceService:
             partitions=len(partitions),
             orphans=orphans,
         )
+
+    def prune_history(self) -> tuple[int, int]:
+        """清掉超过保留期的任务与阶段事件，返回 ``(任务条数, 事件条数)``。
+
+        **为什么要它**：这两张表只增不减，而它们都在热路径上——任务表被列表、
+        队列概览、健康判定反复读，事件表被列表每行的进度条读。历史积累到几万条时，
+        每次读都要跨过它们，而三个月前那次成功的任务没有任何人还会看（§12.116）。
+
+        保留期见 ``TASK_RETENTION_DAYS`` / ``STAGE_EVENT_RETENTION_DAYS``。
+        **未结束的任务与进行中的文档事件一律不动**（那是状态不是历史）。
+        """
+        now = datetime.now(UTC)
+        tasks = self._stores.meta.purge_finished_tasks(
+            before=now - timedelta(days=TASK_RETENTION_DAYS)
+        )
+        events = self._stores.meta.purge_stage_events(
+            before=now - timedelta(days=STAGE_EVENT_RETENTION_DAYS)
+        )
+        if tasks or events:
+            logger.info("清理历史：任务 %d 条、阶段事件 %d 条", tasks, events)
+        return tasks, events
 
     def compact(self) -> StorageOverview:
         """丢掉无主分区并 VACUUM，返回整理**之后**的概览。

@@ -73,6 +73,7 @@ import {
   showsProgress,
 } from '@/composables/useProgress'
 import { MAX_UPLOAD_MB, UPLOAD_FORMAT_HINT } from '@/composables/uploadLimits'
+import { usePolling } from '@/composables/usePolling'
 import { roster } from '@/composables/useOperator'
 import { useToast } from '@/composables/useToast'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
@@ -231,7 +232,6 @@ function onKbChanged(action: 'renamed' | 'deleted' | 'sources'): void {
   if (action === 'sources') {
     // 数据源面板里点过「立即拉取」之后，新文档要出现在列表上
     void refreshAll()
-    syncPolling()
   }
 }
 
@@ -405,7 +405,6 @@ const uploadFolderId = computed(() =>
   activeFolder.value && activeFolder.value !== ROOT_FILTER ? activeFolder.value : undefined,
 )
 
-let timer: ReturnType<typeof setInterval> | null = null
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 /** 搜文件名是**逐键**触发的：不防抖就会每敲一个字发一次请求，中文输入还会带上拼音中间态。 */
@@ -483,7 +482,6 @@ async function runBatch(action: 'delete' | 'reprocess'): Promise<void> {
   try {
     const result = await batchDocuments(kbId.value, action, ids)
     await refreshAll()
-    syncPolling()
     void store.refreshSummaries()
     if (result.failed === 0) {
       selected.value = []
@@ -517,7 +515,6 @@ async function runBatchQuestions(): Promise<void> {
   try {
     const result = await batchDocuments(kbId.value, 'questions', [...selected.value])
     await refresh()
-    syncPolling()
     if (result.failed === 0) {
       notifySuccess(`已排队为 ${result.succeeded} 篇生成问题，完成后列表会自动刷新`)
       return
@@ -540,7 +537,6 @@ async function onQuestionsClick(close: () => void, document: DocumentSummary): P
   try {
     const result = await batchDocuments(kbId.value, 'questions', [document.id])
     await refresh()
-    syncPolling()
     if (result.failed === 0) {
       notifySuccess('已排队生成问题，完成后列表会自动刷新')
       return
@@ -752,17 +748,14 @@ async function loadFirst(): Promise<void> {
   loading.value = false
 }
 
-/** 只在有活儿在跑时轮询：全绿之后停表，避免无意义的持续请求。 */
-function syncPolling(): void {
-  if (needsPolling.value && timer === null) {
-    timer = setInterval(() => void refresh(), POLL_INTERVAL_MS)
-  } else if (!needsPolling.value && timer !== null) {
-    clearInterval(timer)
-    timer = null
-  }
-}
-
-watch(needsPolling, syncPolling)
+/**
+ * 只在有活儿在跑时轮询：全绿之后停表，避免无意义的持续请求。
+ *
+ * 节奏、标签页隐藏时暂停、慢请求不叠加都交给 `usePolling`（§12.116）——
+ * 原先这四处（本页、任务中心、Wiki、抽屉明细）各写了一遍 `setInterval`，
+ * 也就各漏了一遍"隐藏时照打"与"慢请求堆积"。
+ */
+usePolling(refresh, { active: needsPolling, intervalMs: POLL_INTERVAL_MS })
 watch(activeFolder, () => {
   void refresh()
 })
@@ -799,7 +792,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', onWindowResize)
-  if (timer !== null) clearInterval(timer)
   if (searchTimer !== null) clearTimeout(searchTimer)
 })
 
@@ -810,7 +802,6 @@ async function onUploaded(): Promise<void> {
   // 新文档按时间倒序排在第 1 页最前，所以传完先跳回第 1 页，别让用户以为没进去。
   page.value = 1
   await refreshAll()
-  syncPolling()
 }
 
 // ------------------------------------------------------------------ 目录动作
@@ -938,7 +929,6 @@ async function reprocess(document: DocumentSummary): Promise<void> {
     await reprocessDocument(document.id)
     notifySuccess(`已重新提交「${document.name}」`)
     await refresh()
-    syncPolling()
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '重跑失败')
   }
@@ -995,7 +985,6 @@ async function confirmCancelParse(): Promise<void> {
     await cancelDocument(document.id)
     cancelParseTarget.value = null
     await refresh()
-    syncPolling()
     notifySuccess('已取消解析')
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '取消失败')
@@ -1473,9 +1462,15 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                那个类有 `overflow: hidden`，子元素没法粘到视口上。
                这样不管列表多长、也不管滚到哪，页码始终在屏幕内——
                用户不必"滚到最底下才知道还有几页"。 -->
-          <div v-if="pageCount > 1" class="pager">
+          <!--
+            **总数常显，只有翻页控件在单页时隐藏**（§12.116）。
+            原先整个分页条挂在 `pageCount > 1` 上：一个库不到 20 篇时，"共 N 篇"也跟着
+            消失了——而总数恰恰是用户扫列表时想知道的第一件事；它还会让"库间切换"
+            时分页条忽有忽无，列表高度跟着跳一下。
+          -->
+          <div v-if="total > 0 || documents.length > 0" class="pager">
             <span class="pager-total">共 {{ total }} 篇</span>
-            <div class="pager-controls">
+            <div v-if="pageCount > 1" class="pager-controls">
               <AppButton
                 size="sm"
                 variant="subtle"
@@ -1731,15 +1726,23 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 /* 窄窗口**不把树折到上方**：折上去它就不是"贯穿的侧栏"了（用户明确要 WeKnora 那种）。
    代价是文档区变窄，所以这里牺牲"大小 / 更新时间"两列，保住主干：
    勾选、名称/状态、切块数、操作菜单。1200px 以上全列都在。 */
+/*
+ * 窄屏（<1200px）列优先级（§12.116）。
+ *
+ * 原先砍掉的是「大小 + 更新时间」，而「上传者」留着——那个取舍站不住：
+ * 一份文件"什么时候传的/更新过"比"谁传的"有用得多（后者在详情抽屉里也有），
+ * 而文件名被挤到只剩二十来个字、截断得看不清是什么文件。
+ * 现在的顺序是：先让出**上传者**，再让出**大小**，保住文件名与更新时间。
+ */
 @media (max-width: 1200px) {
   .folder-tree {
     flex-basis: 180px;
   }
 
+  .head-uploader,
+  .row-uploader,
   .head-size,
-  .row-size,
-  .head-time,
-  .row-time {
+  .row-size {
     display: none;
   }
 }
@@ -1787,7 +1790,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 .tree-row {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--space-pair);
   border-radius: var(--radius-control);
 }
 

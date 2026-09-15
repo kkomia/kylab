@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import time
+
 from app.models.enums import DataSourceKind, DocumentStage
 from app.services.suggested_questions import (
     _CHUNKS_PER_CALL,
@@ -338,3 +340,81 @@ def test_list_questions_ignores_the_questionless_majority(bundle, kb, document) 
         questions = service.list_questions(kb_ids=[kb.id], limit=6)
         assert set(questions) <= {"眼轴怎么测？", "多久测一次？"}
         assert questions, "有题的块存在时，读端不该返回空（那会让界面退回静态样例）"
+
+
+# ----------------------------------------------------------- 并发（v24 的性能修）
+
+class SlowChat:
+    """记录**同时在飞的调用数**：并发生效的唯一可靠证据。
+
+    只断言"总共调了几次"是验不出并发的——串行也会调同样多次。
+    """
+
+    def __init__(self, delay: float = 0.05, fail_on: int | None = None) -> None:
+        import threading
+
+        self.calls = 0
+        self.inflight = 0
+        self.peak = 0
+        self._delay = delay
+        self._fail_on = fail_on
+        self._lock = threading.Lock()
+
+    def ask_raw(self, messages, *, model_pk=None):  # type: ignore[no-untyped-def]
+        with self._lock:
+            self.calls += 1
+            index = self.calls
+            self.inflight += 1
+            self.peak = max(self.peak, self.inflight)
+        try:
+            time.sleep(self._delay)
+            if self._fail_on is not None and index == self._fail_on:
+                raise RuntimeError("这一批上游挂了")
+            return "###片段1\n问题一？"
+        finally:
+            with self._lock:
+                self.inflight -= 1
+
+
+def test_batches_are_sent_concurrently(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    """**批与批要并发发**：出题是摄入链路里最慢的一步，而这些调用在等远端。
+
+    实机量级：一份 400 段的文档 = 50 批，每批一次模型调用（思考型模型 1~2 分钟），
+    串行就是 50~100 分钟，还把后面排队的所有文档一起堵住（§12.113）。
+    """
+    _seed_chunks(bundle, kb.id, document.id, count=_CHUNKS_PER_CALL * 4)
+    chat = SlowChat(delay=0.08)
+    service = SuggestedQuestionsService(bundle, chat, batch_concurrency=4)
+
+    service.generate_for_chunks(list(bundle.meta.iter_chunks(document.id)), count=1)
+
+    assert chat.calls == 4
+    assert chat.peak > 1, "批次是串行发的（同时在飞的调用数始终是 1）"
+
+
+def test_batch_concurrency_of_one_stays_serial(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    """显式配成 1 时按串行走：模型的 RPM 限额是真约束，得留一条能踩刹车的路。"""
+    _seed_chunks(bundle, kb.id, document.id, count=_CHUNKS_PER_CALL * 3)
+    chat = SlowChat(delay=0.02)
+    service = SuggestedQuestionsService(bundle, chat, batch_concurrency=1)
+
+    service.generate_for_chunks(list(bundle.meta.iter_chunks(document.id)), count=1)
+
+    assert chat.calls == 3
+    assert chat.peak == 1
+
+
+def test_a_failed_batch_does_not_take_the_others_down(bundle, kb, document) -> None:  # type: ignore[no-untyped-def]
+    """并发**不改变**"失败只丢那几段"这条边界：出题是旁路，不能让文档 failed。"""
+    _seed_chunks(bundle, kb.id, document.id, count=_CHUNKS_PER_CALL * 3)
+    chat = SlowChat(delay=0.02, fail_on=2)
+    service = SuggestedQuestionsService(bundle, chat, batch_concurrency=3)
+
+    generated = service.generate_for_chunks(
+        list(bundle.meta.iter_chunks(document.id)), count=1
+    )
+
+    # 3 批都发了，其中一批炸掉 → 只有两批的题入库。
+    # **不断言"哪一批"炸**：并发下调用顺序不确定，钉具体 chunk_id 会变成随机失败的用例。
+    assert chat.calls == 3
+    assert len(generated) == 2

@@ -867,7 +867,7 @@ onBeforeUnmount(() => {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  padding: 2px var(--space-2);
+  padding: var(--space-pair) var(--space-2);
   font-size: var(--text-micro-size);
   color: var(--text-secondary);
   background: var(--bg-subtle);
@@ -914,7 +914,7 @@ onBeforeUnmount(() => {
 .note-items {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-pair);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1059,6 +1059,9 @@ onBeforeUnmount(() => {
   justify-content: center;
   width: 14px;
   height: 14px;
+  /* 这个 × 是**固定 14px 的圆钮**里的一枚符号（不是正文字），所以字号不跟
+     `--font-scale` 走：它一旦放大就会从 14px 的钮里溢出来，钮又不能再大
+     （标签胶囊只有 24px 高）。全站唯一一处刻意脱离字阶的地方，在这里写明。 */
   font-size: 12px;
   line-height: 1;
   color: var(--text-tertiary);
@@ -1075,7 +1078,7 @@ onBeforeUnmount(() => {
 
 .tag-entry {
   min-width: 80px;
-  padding: 2px var(--space-2);
+  padding: var(--space-pair) var(--space-2);
   font-family: inherit;
   font-size: var(--text-micro-size);
   color: var(--text-secondary);

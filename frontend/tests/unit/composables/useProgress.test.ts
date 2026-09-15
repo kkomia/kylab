@@ -97,7 +97,9 @@ describe('progressCaption', () => {
   })
 
   it('重试过的要在文字里露头', () => {
-    expect(progressCaption(makeProgress({ retries: 2 }))).toContain('已重试 2 次')
+    // 文案刻意短（"重试 2 次"而不是"已重试 2 次"）：这一行在窄屏会被
+    // `text-overflow: ellipsis` 截断，省两个字就能让"重试"这两个字留在可见区
+    expect(progressCaption(makeProgress({ retries: 2 }))).toContain('重试 2 次')
     // 没重试过就不提，免得每行都挂一句
     expect(progressCaption(makeProgress({ retries: 0 }))).not.toContain('重试')
   })

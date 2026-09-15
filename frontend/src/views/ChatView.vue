@@ -1776,7 +1776,7 @@ async function savePrompt(): Promise<void> {
 .reply-text :deep(.md-cite) {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: var(--space-1);
   max-width: 8.5em;
   height: 16px;
   margin: 0 2px;
@@ -1909,7 +1909,7 @@ async function savePrompt(): Promise<void> {
   position: absolute;
   top: 0;
   right: 0;
-  padding: 2px var(--space-2);
+  padding: var(--space-pair) var(--space-2);
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
   background: var(--bg-active);

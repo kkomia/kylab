@@ -273,7 +273,7 @@ def _do_upload(
     response_model=DocumentList,
     summary="知识库下的文档列表",
 )
-async def list_documents(
+def list_documents(
     kb_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
@@ -346,7 +346,7 @@ async def list_documents(
     response_model=DocumentBatchOut,
     summary="批量删除 / 重新摄入 / 移动 / 停用启用 / 生成问题",
 )
-async def batch_documents(
+def batch_documents(
     kb_id: str,
     payload: DocumentBatchIn,
     services: Services = Depends(get_services),
@@ -399,7 +399,7 @@ def _guard_document(
 
 
 @router.get("/documents/{document_id}", response_model=DocumentOut, summary="文档详情")
-async def get_document(
+def get_document(
     document_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
@@ -416,7 +416,7 @@ async def get_document(
     response_model=DocumentTimelineOut,
     summary="处理进度时间线（共几步 / 现在第几步 / 每步耗时）",
 )
-async def document_timeline(
+def document_timeline(
     document_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
@@ -438,7 +438,7 @@ async def document_timeline(
 
 
 @router.patch("/documents/{document_id}", response_model=DocumentOut, summary="重命名文档")
-async def rename_document(
+def rename_document(
     document_id: str,
     payload: DocumentRenameIn,
     services: Services = Depends(get_services),
@@ -455,7 +455,7 @@ async def rename_document(
     response_model=DocumentOut,
     summary="停用 / 恢复检索",
 )
-async def set_document_disabled(
+def set_document_disabled(
     document_id: str,
     payload: DocumentDisabledIn,
     services: Services = Depends(get_services),
@@ -476,7 +476,7 @@ async def set_document_disabled(
     response_model=DocumentOut,
     summary="取消解析（叫停还在跑的摄入）",
 )
-async def cancel_document(
+def cancel_document(
     document_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),
@@ -496,7 +496,7 @@ async def cancel_document(
     response_model=DocumentPartList,
     summary="子文件树（大文件切分）",
 )
-async def list_document_parts(
+def list_document_parts(
     document_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
@@ -511,7 +511,7 @@ async def list_document_parts(
     response_model=ChunkList,
     summary="切块列表（文档详情页的正文预览）",
 )
-async def list_document_chunks(
+def list_document_chunks(
     document_id: str,
     limit: int = Query(default=20, ge=1, le=MAX_CHUNK_PREVIEW, description="最多返回多少块"),
     services: Services = Depends(get_services),
@@ -536,7 +536,7 @@ async def list_document_chunks(
     status_code=status.HTTP_202_ACCEPTED,
     summary="重新摄入（失败重跑）",
 )
-async def reprocess_document(
+def reprocess_document(
     document_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),

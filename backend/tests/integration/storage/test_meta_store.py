@@ -68,7 +68,7 @@ def _chunk(chunk_id: str, ordinal: int, *, document_id: str = "doc_1", kb_id: st
 
 def _task(task_id: str, *, state: TaskState = TaskState.PENDING, attempts: int = 0,
           max_attempts: int = 5, next_run_at=None, document_id: str | None = None,
-          kind: TaskKind = TaskKind.PARSE) -> TaskRecord:
+          kind: TaskKind = TaskKind.PARSE, created_at=None, updated_at=None) -> TaskRecord:
     """document_id 默认为 None：并非所有任务都挂文档（如数据源拉取）。"""
     return TaskRecord(
         id=task_id,
@@ -79,6 +79,8 @@ def _task(task_id: str, *, state: TaskState = TaskState.PENDING, attempts: int =
         attempts=attempts,
         max_attempts=max_attempts,
         next_run_at=next_run_at,
+        created_at=created_at,
+        updated_at=updated_at,
     )
 
 
@@ -964,3 +966,93 @@ def test_active_tasks_by_documents_keeps_only_unfinished_ones(
     assert set(found) == {"doc_1"}
     assert found["doc_1"].id == "t_run"
     assert store.active_tasks_by_documents([]) == {}
+
+
+def test_task_counts_aggregates_in_one_query(store: MetaStore, kb, document) -> None:
+    """队列概览必须**在 SQL 里聚合**（负载面板每 2 秒问一次，任务表只增不减）。
+
+    这一条同时钉住"停滞/逾期"的判据：它们与回收过期租约、与任务中心那一列
+    用的是同一个条件（租约过期 / 排队超过阈值），不是另算一套。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.enums import TaskKind
+
+    now = datetime.now(UTC)
+    store.enqueue_task(_task("t_run", state=TaskState.RUNNING, document_id="doc_1"))
+    store.enqueue_task(_task("t_stall", state=TaskState.RUNNING, document_id="doc_1"))
+    store.enqueue_task(_task("t_wait", state=TaskState.PENDING, document_id="doc_1"))
+    store.enqueue_task(
+        _task("t_overdue", state=TaskState.PENDING, document_id="doc_1", kind=TaskKind.QUESTIONS)
+    )
+    store.enqueue_task(_task("t_done", state=TaskState.SUCCEEDED, document_id="doc_1"))
+
+    # 一条租约有效、一条已过期；t_overdue 的 next_run_at 在过去
+    with store._db.session() as conn:  # type: ignore[attr-defined]
+        conn.execute(
+            "UPDATE tasks SET lease_owner = 'w', lease_expires_at = %s WHERE id = 't_run'",
+            (now + timedelta(minutes=5),),
+        )
+        conn.execute(
+            "UPDATE tasks SET lease_owner = 'w', lease_expires_at = %s WHERE id = 't_stall'",
+            (now - timedelta(minutes=5),),
+        )
+        conn.execute(
+            "UPDATE tasks SET next_run_at = %s WHERE id = 't_overdue'",
+            (now - timedelta(hours=1),),
+        )
+
+    counts = store.task_counts(now=now, overdue_before=now - timedelta(minutes=10))
+
+    assert (counts.running, counts.pending) == (2, 2)
+    assert counts.stalled == 1  # 只有租约过期的那条
+    assert counts.overdue == 1
+    assert counts.pending_by_kind == {"parse": 1, "questions": 1}
+    assert counts.oldest_pending_at is not None
+
+
+def test_purge_finished_tasks_keeps_unfinished_ones(store: MetaStore, kb, document) -> None:
+    """清理历史**绝不碰未结束的任务**：删掉排队中的那条，文档就永远不会被处理，
+    而且没有任何报错——这是最坏的一类 bug。
+
+    这条同时钉住"只清终态"：succeeded / failed / canceled 才是历史。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    old = datetime.now(UTC) - timedelta(days=40)
+    for task_id, state in (
+        ("t_done", TaskState.SUCCEEDED),
+        ("t_failed", TaskState.FAILED),
+        ("t_canceled", TaskState.CANCELED),
+        ("t_pending", TaskState.PENDING),
+        ("t_running", TaskState.RUNNING),
+    ):
+        store.enqueue_task(
+            _task(task_id, state=state, document_id="doc_1", created_at=old, updated_at=old)
+        )
+
+    removed = store.purge_finished_tasks(before=datetime.now(UTC) - timedelta(days=30))
+
+    assert removed == 3
+    left = {task.id for task in store.list_tasks()}
+    assert left == {"t_pending", "t_running"}
+
+
+def test_purge_stage_events_only_drops_old_ones(store: MetaStore, kb, document) -> None:
+    """老事件可以清（时间线退化成"只有当前这一步"），**近期的必须留着**——
+    正在跑的那篇的时间线还得看。"""
+    from datetime import UTC, datetime, timedelta
+
+    store.update_document_stage("doc_1", DocumentStage.PARSING)
+    with store._db.session() as conn:  # type: ignore[attr-defined]
+        conn.execute(
+            "UPDATE document_stage_events SET entered_at = %s",
+            (datetime.now(UTC) - timedelta(days=100),),
+        )
+    store.update_document_stage("doc_1", DocumentStage.CHUNKING)
+
+    removed = store.purge_stage_events(before=datetime.now(UTC) - timedelta(days=90))
+
+    assert removed == 2  # uploaded + parsing
+    stages = [event.stage for event in store.list_document_stage_events("doc_1")]
+    assert stages == ["chunking"]

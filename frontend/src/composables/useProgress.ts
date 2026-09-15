@@ -84,7 +84,7 @@ export function progressCaption(progress: DocumentProgress | null | undefined): 
     return `${head} · 已取消`
   }
   if (progress.retries > 0) {
-    return `${head} · ${elapsed} · 已重试 ${progress.retries} 次`
+    return `${head} · ${elapsed} · 重试 ${progress.retries} 次`
   }
   return `${head} · ${elapsed}`
 }

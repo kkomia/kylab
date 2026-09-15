@@ -23,7 +23,7 @@ router = APIRouter(tags=["search"])
 
 
 @router.post("/search", response_model=SearchResponse, summary="混合检索")
-async def search(
+def search(
     payload: SearchRequest,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),

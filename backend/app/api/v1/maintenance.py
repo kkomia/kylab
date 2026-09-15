@@ -26,7 +26,7 @@ def _require_admin(caller: Caller) -> None:
 
 
 @router.get("/maintenance/storage", response_model=StorageOverviewOut, summary="存储空间概览")
-async def storage_overview(
+def storage_overview(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
 ) -> StorageOverviewOut:
@@ -41,7 +41,7 @@ async def storage_overview(
 
 
 @router.post("/maintenance/compact", response_model=StorageOverviewOut, summary="整理存储")
-async def compact_storage(
+def compact_storage(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
 ) -> StorageOverviewOut:

@@ -70,7 +70,7 @@ SSE_HEADERS = {
     summary="快速检索问答（流式）",
     response_class=StreamingResponse,
 )
-async def chat_stream(
+def chat_stream(
     payload: ChatRequestIn,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
@@ -92,7 +92,7 @@ async def chat_stream(
 
 
 @router.post("/chat", response_model=ChatResponseOut, summary="快速检索问答（一次性）")
-async def chat_once(
+def chat_once(
     payload: ChatRequestIn,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),

@@ -17,7 +17,7 @@
  * **不给百分比**：环节耗时不均（解析几分钟、切分几秒），百分比只能编出一个
  * 对不上的数字；"第 3/6 步 + 每步实际耗时"每一项都能和事实对上。
  */
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { getDocumentTimeline, type DocumentTimeline } from '@/api/documents'
 import MeterBar from '@/components/ui/MeterBar.vue'
@@ -25,6 +25,7 @@ import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import type { StatusTone } from '@/components/ui/StatusTag.vue'
 import { formatMillis } from '@/composables/useFormat'
+import { usePolling } from '@/composables/usePolling'
 import { progressSegments, progressTone } from '@/composables/useProgress'
 
 const props = defineProps<{
@@ -39,7 +40,6 @@ const POLL_INTERVAL_MS = 2000
 const timeline = ref<DocumentTimeline | null>(null)
 const error = ref('')
 const loading = ref(true)
-let timer: ReturnType<typeof setInterval> | null = null
 
 /** 还有活干：只有这时才需要轮询，静止时停表。 */
 const running = computed(() => timeline.value?.status === 'running')
@@ -107,17 +107,10 @@ async function load(): Promise<void> {
   }
 }
 
-function syncPolling(): void {
-  const shouldPoll = props.active && running.value
-  if (shouldPoll && timer === null) {
-    timer = setInterval(() => void load(), POLL_INTERVAL_MS)
-  } else if (!shouldPoll && timer !== null) {
-    clearInterval(timer)
-    timer = null
-  }
-}
-
-watch([running, () => props.active], syncPolling)
+// 正在跑**而且**这一页签被看着时才轮询（另外两个页签的读者不关心这些数）。
+// 节奏 / 隐藏暂停 / 防叠加都由 `usePolling` 统一负责（§12.116）。
+const polling = computed(() => props.active && running.value)
+usePolling(load, { active: polling, intervalMs: POLL_INTERVAL_MS, immediate: false })
 
 /** 切到这个页签时才第一次加载：另外两个页签的读者不关心这些数。 */
 watch(
@@ -138,13 +131,10 @@ watch(
 )
 
 onMounted(() => {
+  // 首屏由这里加载；轮询由 `usePolling` 的 watch 接管（`immediate: false` 是为了
+  // 不让它在挂载时又打一次——这个页签第一次打开只需要一次请求）
   if (props.active) void load()
   else loading.value = false
-  syncPolling()
-})
-
-onBeforeUnmount(() => {
-  if (timer !== null) clearInterval(timer)
 })
 </script>
 

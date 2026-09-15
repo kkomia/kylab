@@ -27,7 +27,15 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 DEFAULT_POOL_MIN = 1
-DEFAULT_POOL_MAX = 10
+DEFAULT_POOL_MAX = 20
+"""连接池上限。
+
+**为什么是 20 而不是 10**：协议层改成同步端点之后，Starlette 用 40 个线程跑它们
+（见 scripts/check_layering.py 的 A1 规则），也就是说并发请求最多能有 40 个同时在
+向存储要连接。池子只有 10 时，多出来的线程只是从"等事件循环"换成"等池子"——
+那仍然是串行，只是换了个地方排队。20 是折中：够覆盖典型并发，又不至于把 PG 的
+``max_connections``（默认 100）吃光，毕竟还要给 worker、psql、备份留位置。
+"""
 DEFAULT_OPEN_TIMEOUT_S = 10.0
 
 

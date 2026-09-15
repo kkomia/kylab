@@ -886,9 +886,9 @@ const stage = computed(() =>
    不是一层：视角决定"看什么"（阅读 / 切块），来源决定"看哪一份"（原件 / 解析） */
 .source-switch {
   display: inline-flex;
-  gap: 2px;
+  gap: var(--space-pair);
   margin-top: var(--space-4);
-  padding: 2px;
+  padding: var(--space-pair);
   background: var(--bg-subtle);
   border-radius: var(--radius-row);
 }
@@ -1012,7 +1012,7 @@ const stage = computed(() =>
   position: absolute;
   top: 0;
   right: 0;
-  padding: 2px var(--space-2);
+  padding: var(--space-pair) var(--space-2);
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
   background: var(--bg-active);

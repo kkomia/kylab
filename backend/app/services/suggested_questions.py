@@ -26,12 +26,14 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 
 from app.services.chat import ChatService
 from app.services.llm import ChatMessage
 from app.storage.base import ChunkRecord, StoreBundle
 
 __all__ = [
+    "DEFAULT_BATCH_CONCURRENCY",
     "DEFAULT_LIMIT",
     "DEFAULT_QUESTIONS_PER_CHUNK",
     "MAX_QUESTIONS",
@@ -56,6 +58,19 @@ PROMPT_MAX_CHARS = 2000
 #: 一次请求带几段。8 段 × 约 512 字 ≈ 4K 字，主流模型都吃得下；
 #: 再多会让提示词变长，也更难要求模型按段对齐输出。
 _CHUNKS_PER_CALL = 8
+
+#: 同时发几批（默认 4，可用 ``KYLAB_QUESTIONS_CONCURRENCY`` 调）。
+#:
+#: **为什么这件事很要紧**：出题是整条摄入链路里最慢的一步，而它原先**严格串行**——
+#: 一份 400 段左右的文档有 50 批，每批一次模型调用（思考型模型 1~2 分钟），
+#: 于是单单这一步就是 50~100 分钟，还把所有排队文档一起堵在后面（§12.113 实测）。
+#: 这些调用是在**等远端**，不是在本机算：并发几批不会多花 CPU，
+#: 只是把等待重叠起来，墙上时间按倍数下降。
+#:
+#: 上限取 4 而不是更大：模型的 RPM/TPM 限额是真实的约束，撞上去只会拿到 429，
+#: 那时重试的代价比省下的时间更大。批次之间互不依赖（每批自带片段编号），
+#: 失败的那一批照旧只丢它自己那几段。
+DEFAULT_BATCH_CONCURRENCY = 4
 #: 每段截多长。出题不需要细节，看到这段在讲什么就够。
 _SNIPPET_CHARS = 500
 #: 读端抽多少块来找问题。抽块本身很便宜（一条 SQL），所以抽得比写端宽——
@@ -84,9 +99,18 @@ _ENUMERATOR = re.compile(r"^\s*(?:[-*•]+|\d+\s*[.、)．]\s*)")
 class SuggestedQuestionsService:
     """写端（入库出题）与读端（空状态取题）都收在这里。"""
 
-    def __init__(self, stores: StoreBundle, chat: ChatService) -> None:
+    def __init__(
+        self,
+        stores: StoreBundle,
+        chat: ChatService,
+        *,
+        batch_concurrency: int = DEFAULT_BATCH_CONCURRENCY,
+    ) -> None:
         self._stores = stores
         self._chat = chat
+        # 至少 1：0 会让"出题"静默变成什么都不做（并发度写成 0 的配置错误
+        # 不该表现成"这个功能不见了"，而应该退化成串行）
+        self._batch_concurrency = max(1, int(batch_concurrency))
 
     # ------------------------------------------------------------------ 写端：入库出题
 
@@ -106,16 +130,37 @@ class SuggestedQuestionsService:
         失败的批次直接少几条题。
 
         一次请求带 `_CHUNKS_PER_CALL` 段，而不是每段一次调用——一份 100 段的文档
-        那就是 100 次请求，贵得离谱。
+        那就是 100 次请求，贵得离谱。批与批之间**并发**发（见
+        ``DEFAULT_BATCH_CONCURRENCY``）：它们是在等远端，串行等于把等待叠起来。
         """
         if not chunks:
             return {}
         per_chunk = max(MIN_QUESTIONS, min(count, MAX_QUESTIONS))
+        batches = _batched(chunks, _CHUNKS_PER_CALL)
         generated: dict[str, list[str]] = {}
-        for batch in _batched(chunks, _CHUNKS_PER_CALL):
-            generated.update(
-                self._generate_batch(batch, model_pk=model_pk, count=per_chunk, prompt=prompt)
-            )
+        if len(batches) <= 1 or self._batch_concurrency <= 1:
+            # 一批（或配置成串行）时不必开线程池：省掉一次调度，
+            # 串行这条路径也仍然是默认之外的显式选择
+            for batch in batches:
+                generated.update(
+                    self._generate_batch(batch, model_pk=model_pk, count=per_chunk, prompt=prompt)
+                )
+            return generated
+
+        # `map` 保持顺序，结果与串行完全一致（同一个文档反复跑得到同样的题序）。
+        # `_generate_batch` 自带 try/except：某一批失败只丢它那几段，
+        # **不会**把整篇文档带成 failed（这条边界是 v23 定下的，并发不改变它）。
+        with ThreadPoolExecutor(
+            max_workers=min(self._batch_concurrency, len(batches)),
+            thread_name_prefix="questions",
+        ) as pool:
+            for produced in pool.map(
+                lambda batch: self._generate_batch(
+                    batch, model_pk=model_pk, count=per_chunk, prompt=prompt
+                ),
+                batches,
+            ):
+                generated.update(produced)
         return generated
 
     def _generate_batch(

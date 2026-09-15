@@ -60,7 +60,7 @@ def _out(
 
 
 @router.post("", response_model=KnowledgeBaseOut, status_code=201, summary="创建知识库")
-async def create_knowledge_base(
+def create_knowledge_base(
     payload: KnowledgeBaseCreate,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),
@@ -88,7 +88,7 @@ async def create_knowledge_base(
 
 
 @router.get("", response_model=KnowledgeBaseList, summary="知识库列表")
-async def list_knowledge_bases(
+def list_knowledge_bases(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
 ) -> KnowledgeBaseList:
@@ -115,7 +115,7 @@ async def list_knowledge_bases(
 
 
 @router.get("/{kb_id}", response_model=KnowledgeBaseOut, summary="知识库详情")
-async def get_knowledge_base(
+def get_knowledge_base(
     kb_id: str,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
@@ -132,7 +132,7 @@ async def get_knowledge_base(
 
 
 @router.patch("/{kb_id}", response_model=KnowledgeBaseOut, summary="修改知识库（名称 / 简介）")
-async def update_knowledge_base(
+def update_knowledge_base(
     kb_id: str,
     payload: KnowledgeBaseUpdate,
     services: Services = Depends(get_services),

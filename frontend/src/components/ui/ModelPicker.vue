@@ -411,7 +411,7 @@ onBeforeUnmount(() => bindGlobal(false))
 /* 强度：三档分段控件。窄，比一个下拉少一次点击 */
 .mp-seg {
   display: flex;
-  padding: 2px;
+  padding: var(--space-pair);
   background: var(--bg-subtle);
   border-radius: var(--radius-row);
 }

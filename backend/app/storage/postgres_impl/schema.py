@@ -25,7 +25,7 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 """应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
 
 **启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
@@ -61,6 +61,24 @@ MIGRATIONS: tuple[Migration, ...] = (
             # 时间线永远按"某文档、先后顺序"读，所以索引带上 id 而不是只 document_id：
             # entered_at 可能同微秒，id 才是稳定的先后关系。
             "CREATE INDEX idx_document_stage_events_doc ON document_stage_events (document_id, id)",
+        ),
+    ),
+    Migration(
+        version=3,
+        description="补三条索引：云端额度统计、阶段事件清理、任务状态聚合（v24 性能审阅）",
+        statements=(
+            # ① 云端额度统计（负载面板每 2 秒问一次）按 (parser_name, created_at) 过滤，
+            #    而 parse_results 原来只有 (document_id, part_id) 主键 —— 那是**全表扫**。
+            #    实测这条查询的代价随"解析过的文件数"线性涨，而它跑在每次面板轮询上。
+            "CREATE INDEX idx_parse_results_parser_created"
+            " ON parse_results (parser_name, created_at)",
+            # ② 阶段事件表只增不减（每次重试/重新摄入都追加），要按时间做保留期清理，
+            #    没有 entered_at 索引时那条 DELETE 也是全表扫。
+            "CREATE INDEX idx_document_stage_events_entered"
+            " ON document_stage_events (entered_at)",
+            # ③ 队列深度改成一条 `GROUP BY state, kind` 聚合（不再把整表行搬到 Python）；
+            #    这个索引让那次聚合走 index-only scan，不必读堆里的每一行。
+            "CREATE INDEX idx_tasks_state_kind ON tasks (state, kind)",
         ),
     ),
 )

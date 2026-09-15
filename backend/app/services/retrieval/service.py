@@ -166,22 +166,36 @@ class RetrievalService:
     ) -> tuple[list[str], dict[str, float]]:
         best: dict[str, float] = {}
         recall_factor = 2 if self._stores.meta.any_disabled_documents(request.kb_ids) else 1
+        # **查询向量按模型缓存**：跨库检索时"每个库各算一次查询向量"是浪费——
+        # 而多库共用同一个嵌入模型恰恰是常态（默认配置就是这样），
+        # `embed()` 又是一次真实的远端调用。缓存键用实现对象的身份：
+        # `EmbeddingResolver` 按（供应商, 模型, 维度, 批大小）缓存实例，同模型必得同一对象，
+        # 不同模型必得不同对象，且这些对象在一次检索期间都被 resolver 持有（不会被回收后
+        # 让 id 复用）。用 id() 而不是自己拼一个模型键，是为了不假设每种嵌入实现都暴露
+        # 同样的属性（远端实现与确定性实现长得并不一样）。
+        embedded: dict[int, Sequence[float]] = {}
         for kb_id in request.kb_ids:
             # 每个库用自己的嵌入模型算查询向量：跨库混用一个向量是错的——
             # 向量空间不同，相似度没有意义（v11 起嵌入模型是库属性）
             if query_vector is not None:
                 vector = list(query_vector)
             else:
-                try:
-                    vector = self._embedder_for(kb_id).embed([request.query])[0]
-                except EmbeddingNotConfiguredError:
-                    # 没配嵌入模型不是"调用失败"，是"这个通道现在用不了"：跳过它，
-                    # 全文通道照常返回——库里已有内容仍可检索，界面也能如实说明
-                    # "当前只做了关键词检索"（v0.8 取消哈希兜底）
-                    if not self._unconfigured_warned:
-                        logger.warning("未配置嵌入模型，检索跳过向量通道，只做全文检索")
-                        self._unconfigured_warned = True
-                    continue
+                embedder = self._embedder_for(kb_id)
+                cached = embedded.get(id(embedder))
+                if cached is not None:
+                    vector = list(cached)
+                else:
+                    try:
+                        vector = embedder.embed([request.query])[0]
+                    except EmbeddingNotConfiguredError:
+                        # 没配嵌入模型不是"调用失败"，是"这个通道现在用不了"：跳过它，
+                        # 全文通道照常返回——库里已有内容仍可检索，界面也能如实说明
+                        # "当前只做了关键词检索"（v0.8 取消哈希兜底）
+                        if not self._unconfigured_warned:
+                            logger.warning("未配置嵌入模型，检索跳过向量通道，只做全文检索")
+                            self._unconfigured_warned = True
+                        continue
+                    embedded[id(embedder)] = vector
             # 有停用文档的库才 2 倍超采：KNN 扫描时没法按"文档是否停用"过滤，
             # 停用的命中会在下游 _materialize 被裁掉——多召回一倍作补偿。
             # 没有停用文档时保持原深度（candidate_k 语义不漂，也省一次放大）。
@@ -289,13 +303,15 @@ class RetrievalService:
         return hits, filtered_out
 
     def _documents_of(self, chunks) -> dict[str, DocumentRecord]:
-        """批量取回命中的文档元信息（用于过滤与展示来源文档名）。"""
-        documents: dict[str, DocumentRecord] = {}
-        for document_id in {chunk.document_id for chunk in chunks}:
-            record = self._stores.meta.get_document(document_id)
-            if record is not None:
-                documents[document_id] = record
-        return documents
+        """批量取回命中的文档元信息（用于过滤与展示来源文档名）。
+
+        **一条查询取回全部**：逐篇 ``get_document`` 是 N+1，而跨多个库检索时
+        命中的文档数可能不小（每个库 candidate_k 条候选，去重后仍可能有几十篇）。
+        """
+        wanted = list({chunk.document_id for chunk in chunks})
+        if not wanted:
+            return {}
+        return self._stores.meta.get_documents_by_ids(wanted)
 
     # ------------------------------------------------------------------ rerank
 

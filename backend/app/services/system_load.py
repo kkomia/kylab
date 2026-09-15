@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from app.parsers.mineru_cloud import MinerUCloudParser
-from app.services.observability import ObservabilityService
+from app.services.observability import OVERDUE_AFTER, ObservabilityService
 from app.storage.base import StoreBundle
 
 __all__ = [
@@ -269,37 +269,32 @@ class SystemLoadService:
     # ------------------------------------------------------------------ 队列
 
     def _queue(self) -> QueueLoad:
-        """队列深度。数据量与任务列表同一份（几百行），直接复用 ``list_tasks``。"""
+        """队列深度：**一条聚合查询**，不把任务表搬进 Python（见 ``MetaStore.task_counts``）。
+
+        负载面板每 2 秒被问一次（§12.115），而任务表只增不减。原先那条路会把每一行
+        都构造出来再在 Python 里数，代价随任务总量线性涨，而这里要的只是几个数。
+
+        逾期阈值**从可观测性服务拿**（``OVERDUE_AFTER``）：判定"等太久"的只能有一个
+        数字，不能这里写一个、那里写一个。
+        """
         load = QueueLoad(running=0, pending=0, slots=self._slots)
         try:
-            tasks = self._stores.meta.list_tasks()
+            moment = self._now()
+            counts = self._stores.meta.task_counts(
+                now=moment, overdue_before=moment - OVERDUE_AFTER
+            )
         except Exception:
             logger.warning("读取任务队列失败", exc_info=True)
             return load
 
-        moment = self._now()
-        oldest: datetime | None = None
-        # 健康判据来自可观测性服务（**唯一**那一套阈值），这里只做计数。
-        # 状态名到队列口径的映射：stalled 仍然是"在跑"（只是没人续约），
-        # overdue 仍然是"排队"（只是等久了）——它们不该被算成两类新任务。
-        for task in tasks:
-            status = self._observability.assess(task, now=moment).status
-            if status in ("running", "stalled"):
-                load.running += 1
-                load.stalled += status == "stalled"
-                continue
-            if status not in ("idle", "overdue"):
-                continue
-            load.pending += 1
-            load.overdue += status == "overdue"
-            kind = task.kind.value
-            load.pending_by_kind[kind] = load.pending_by_kind.get(kind, 0) + 1
-            created = _aware(task.created_at)
-            if created is not None and (oldest is None or created < oldest):
-                oldest = created
-
-        if oldest is not None:
-            load.oldest_pending_seconds = round((moment - oldest).total_seconds(), 1)
+        load.running = counts.running
+        load.pending = counts.pending
+        load.stalled = counts.stalled
+        load.overdue = counts.overdue
+        load.pending_by_kind = dict(counts.pending_by_kind)
+        if counts.oldest_pending_at is not None:
+            age = (moment - _aware(counts.oldest_pending_at)).total_seconds()
+            load.oldest_pending_seconds = round(max(0.0, age), 1)
         return load
 
     # ------------------------------------------------------------------ 云端额度

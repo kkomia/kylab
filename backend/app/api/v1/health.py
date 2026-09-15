@@ -21,7 +21,7 @@ class HealthResponse(BaseModel):
 
 
 @router.get("/health", response_model=HealthResponse, summary="服务存活探针")
-async def health() -> HealthResponse:
+def health() -> HealthResponse:
     """返回服务存活状态与版本信息。"""
     settings = get_settings()
     return HealthResponse(

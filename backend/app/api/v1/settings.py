@@ -47,7 +47,7 @@ def _known_setting_keys() -> frozenset[str]:
 
 
 @router.get("/settings", response_model=SettingsViewOut, summary="运行期配置（密钥打码）")
-async def read_settings(
+def read_settings(
     services: Services = Depends(get_services),
     _: Caller = Depends(require_admin),
 ) -> SettingsViewOut:
@@ -65,7 +65,7 @@ async def read_settings(
 
 
 @router.patch("/settings", response_model=SettingsPatchOut, summary="更新运行期配置")
-async def update_settings(
+def update_settings(
     payload: SettingsPatchIn,
     services: Services = Depends(get_services),
     _: Caller = Depends(require_admin),
@@ -85,7 +85,7 @@ async def update_settings(
     response_model=TestConnectionOut,
     summary="连通性测试（embedding / mineru / paddleocr）",
 )
-async def test_connection(
+def test_connection(
     target: str,
     services: Services = Depends(get_services),
     _: Caller = Depends(require_admin),

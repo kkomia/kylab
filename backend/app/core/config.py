@@ -112,6 +112,16 @@ class Settings(BaseSettings):
     # 云端解析节点（M2 启用）
     mineru_token: str | None = None
     paddleocr_token: str | None = None
+    questions_concurrency: int = 4
+    """分段出题同时发几批（默认 4）。
+
+    出题是摄入链路里最慢的一步，而这些调用是在**等远端**：串行发等于把等待叠起来。
+    实测一份 400 段的文档有 50 批、每批 1~2 分钟（思考型模型），
+    串行就是 50~100 分钟，还把后面所有排队文档一起堵住（§12.113）。
+
+    别开太大：模型的 RPM/TPM 限额是真的，撞上去只会拿到 429。
+    """
+
     mineru_daily_page_quota: int = 1000
     """MinerU 每日**优先额度**的页数（官方口径 1000 页/天，超出后不再保证速度）。
 

@@ -32,7 +32,7 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 
 @router.get("", response_model=TaskList, summary="任务列表（每项带健康判据）")
-async def list_tasks(
+def list_tasks(
     state: TaskState | None = Query(default=None, description="按状态过滤"),
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
@@ -61,7 +61,7 @@ async def list_tasks(
 
 
 @router.get("/health", response_model=HealthOverviewOut, summary="运行态总览")
-async def tasks_health(
+def tasks_health(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
 ) -> HealthOverviewOut:
@@ -85,7 +85,7 @@ async def tasks_health(
 
 
 @router.get("/load", response_model=SystemLoadOut, summary="负载面板（CPU / 内存 / 队列 / 额度）")
-async def tasks_load(
+def tasks_load(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
 ) -> SystemLoadOut:
@@ -106,7 +106,7 @@ async def tasks_load(
 
 
 @router.post("/cancel", response_model=TaskCancelOut, summary="取消还没结束的任务")
-async def cancel_tasks(
+def cancel_tasks(
     payload: TaskCancelIn,
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),

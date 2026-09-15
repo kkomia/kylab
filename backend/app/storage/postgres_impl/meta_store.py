@@ -68,6 +68,7 @@ from app.storage.base import (
     RegisteredModelRecord,
     SessionRecord,
     ShareRecord,
+    TaskCounts,
     TaskRecord,
     TrashRecord,
     UsageEventRecord,
@@ -1718,6 +1719,50 @@ class PostgresMetaStore(MetaStore):
                 ).fetchall()
         return [self._task_from_row(row) for row in rows]
 
+    def task_counts(self, *, now: datetime, overdue_before: datetime) -> TaskCounts:
+        # 一条聚合拿到四个计数与最老入队时间（FILTER 子句让它们共享同一次扫描），
+        # 再用一条只扫 PENDING 的 GROUP BY 拿类型分布。
+        with self._db.read() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    count(*) FILTER (WHERE state = %s) AS running,
+                    count(*) FILTER (WHERE state = %s) AS pending,
+                    count(*) FILTER (
+                        WHERE state = %s AND lease_expires_at IS NOT NULL
+                          AND lease_expires_at <= %s
+                    ) AS stalled,
+                    count(*) FILTER (
+                        WHERE state = %s AND next_run_at IS NOT NULL AND next_run_at <= %s
+                    ) AS overdue,
+                    min(created_at) FILTER (WHERE state = %s) AS oldest_pending
+                  FROM tasks
+                """,
+                (
+                    TaskState.RUNNING.value,
+                    TaskState.PENDING.value,
+                    TaskState.RUNNING.value,
+                    _dump(now),
+                    TaskState.PENDING.value,
+                    _dump(overdue_before),
+                    TaskState.PENDING.value,
+                ),
+            ).fetchone()
+            kinds = conn.execute(
+                "SELECT kind, count(*) AS n FROM tasks WHERE state = %s GROUP BY kind",
+                (TaskState.PENDING.value,),
+            ).fetchall()
+        if not row:
+            return TaskCounts()
+        return TaskCounts(
+            running=int(row["running"] or 0),
+            pending=int(row["pending"] or 0),
+            stalled=int(row["stalled"] or 0),
+            overdue=int(row["overdue"] or 0),
+            oldest_pending_at=_load(row["oldest_pending"]),
+            pending_by_kind={str(item["kind"]): int(item["n"]) for item in kinds},
+        )
+
     def get_task(self, task_id: str) -> TaskRecord | None:
         with self._db.read() as conn:
             row = conn.execute("SELECT * FROM tasks WHERE id = %s", (task_id,)).fetchone()
@@ -1929,6 +1974,31 @@ class PostgresMetaStore(MetaStore):
                 "DELETE FROM idempotency_keys WHERE created_at < %s", (_dump(before),)
             )
         return cursor.rowcount or 0
+
+    def purge_finished_tasks(self, *, before: datetime) -> int:
+        # 只删终态：PENDING/RUNNING 是"当前状态"，不是历史——删掉会让正在排队的
+        # 文档永远不再被处理（而且没有任何报错）
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM tasks
+                 WHERE state IN (%s, %s, %s) AND updated_at < %s
+                """,
+                (
+                    TaskState.SUCCEEDED.value,
+                    TaskState.FAILED.value,
+                    TaskState.CANCELED.value,
+                    _dump(before),
+                ),
+            )
+        return int(cursor.rowcount)
+
+    def purge_stage_events(self, *, before: datetime) -> int:
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                "DELETE FROM document_stage_events WHERE entered_at < %s", (_dump(before),)
+            )
+        return int(cursor.rowcount)
 
     def release_idempotency_key(self, key: str) -> None:
         # 只删"还没挂上响应"的那种：已经成功过的键不能因为一次重放异常被放掉，

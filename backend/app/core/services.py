@@ -294,7 +294,9 @@ def build_services(
         # 会话读写（v20.1）：上下文压缩要读历史、写摘要
         conversations=conversations_service,
     )
-    questions_service = SuggestedQuestionsService(bundle, chat_service)
+    questions_service = SuggestedQuestionsService(
+        bundle, chat_service, batch_concurrency=resolved.questions_concurrency
+    )
     # Wiki 生成（v24）：规划主题 + 逐页写作，资料直接复用上面的混合检索
     wiki_service = WikiService(bundle, chat=chat_service, retrieval=retrieval)
 
@@ -332,6 +334,9 @@ def build_services(
         if removed_keys:
             logger.info("清理过期幂等键 %d 条", removed_keys)
         usage.purge_expired()
+        # 任务与阶段事件这两张表只增不减，而它们都在热路径上（列表、队列概览、
+        # 每行的进度条都会读）。保留期见 services/maintenance.py（§12.116）。
+        MaintenanceService(bundle).prune_history()
         # 走 lifecycle 而不是直接调存储层：它会**连磁盘上的原文一起删**。
         # 只删数据库行会把对象存储变成只增不减的垃圾场，
         # 而用户以为"7 天后就清掉了"
