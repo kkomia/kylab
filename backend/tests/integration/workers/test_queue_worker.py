@@ -425,3 +425,48 @@ async def test_stuck_lease_is_reclaimed_by_the_running_worker(
     assert bundle.meta.list_tasks(TaskState.PENDING)
     assert await worker.run_once() is True
     assert bundle.meta.get_document(outcome.document.id).stage is DocumentStage.INDEXED
+
+
+@pytest.mark.asyncio
+async def test_reclaim_cadence_does_not_depend_on_how_long_a_task_takes(
+    bundle: StoreBundle, ingest: IngestService
+) -> None:
+    """**回收的节奏只由租约时长决定**，与"手上这份活要跑多久"无关。
+
+    这条用例钉的是一个踩了两次的坑（实机各验证过一次）：
+
+    1. 回收原先只在"没活可干"的分支里跑 —— 队列一直有活就永远不跑；
+    2. 改成每轮开头跑之后仍然不对：**一轮就是一份文档**（解析加出题几分钟到
+       几十分钟），于是"回收间隔"实际等于"一份文档的耗时"。实机里那个僵尸任务
+       带着刚过期 90 秒的租约一直挂着，界面上写着"疑似卡住"，而回收还在等当前
+       这篇跑完。
+
+    所以这里让"一轮"故意跑得比回收间隔长得多：回收仍然必须按自己的节拍发生。
+    """
+    calls = 0
+
+    def counting_reclaim() -> int:
+        nonlocal calls
+        calls += 1
+        return 0
+
+    worker = TaskWorker(
+        bundle, ingest, owner="worker-busy", lease_seconds=0.1, poll_interval=0.01
+    )
+    bundle.meta.reclaim_expired_tasks = counting_reclaim  # type: ignore[method-assign]
+
+    async def one_long_task() -> bool:
+        await asyncio.sleep(1.5)  # 一份"长任务"：比回收间隔（0.1s）长十几倍
+        return True
+
+    worker.run_once = one_long_task  # type: ignore[method-assign]
+
+    stop = asyncio.Event()
+    running = asyncio.create_task(worker.run_forever(stop=stop))
+    await asyncio.sleep(0.5)
+    stop.set()
+    await asyncio.wait_for(running, timeout=5)
+
+    # 0.5 秒内按 0.1s 的节拍：至少 4 次（启动那次 + 之后每 0.1s 一次）。
+    # 挂在消费循环上的话这里只会是 1 次——那份"长任务"还没跑完。
+    assert calls >= 4, f"回收被长任务拖住了（0.5 秒内只调用了 {calls} 次）"

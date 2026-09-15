@@ -12,10 +12,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { cancelTasks, type TaskSummary } from '@/api/tasks'
+import { cancelTasks, getTaskLoad, type SystemLoad, type TaskSummary } from '@/api/tasks'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconFile from '@/components/icons/IconFile.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
+import LoadPanel from '@/components/tasks/LoadPanel.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import AppModal from '@/components/ui/AppModal.vue'
@@ -27,6 +28,7 @@ import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { isTaskProblem, taskHealthTone, taskKindLabel, taskStateView } from '@/components/ui/status'
 import { formatDate } from '@/composables/useFormat'
+import { isAdmin } from '@/composables/useSession'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 import { useTaskStore } from '@/stores/tasks'
 
@@ -41,6 +43,24 @@ const tasks = computed(() => taskStore.items)
 const error = computed(() => taskStore.error)
 const loading = computed(() => !taskStore.loaded && taskStore.loading)
 let timer: ReturnType<typeof setInterval> | null = null
+
+/**
+ * 运行负载（§12.115）。
+ *
+ * **只管理员拉**：这个端点对成员是 403（机器资源与运维参数不给成员看），
+ * 明知会被拒还发请求只会让控制台多一串红字。
+ */
+const load = ref<SystemLoad | null>(null)
+
+async function refreshLoad(): Promise<void> {
+  if (!isAdmin.value) return
+  try {
+    load.value = await getTaskLoad()
+  } catch {
+    // 负载读不到不该影响任务列表：它是解释性的附加信息，
+    // 而列表才是这一页的主体（错误弹窗在这里反而更吵）
+  }
+}
 
 /** 详情弹窗的目标。**失败原因常常是一整段**（含 URL 与 JSON 片段），
  *  塞进 `title` 属性的话鼠标一移开就没了，也没法选中复制去查。 */
@@ -138,10 +158,6 @@ function canCancel(task: TaskSummary | null): boolean {
   return task !== null && (task.state === 'pending' || task.state === 'running')
 }
 
-async function refresh(): Promise<void> {
-  await taskStore.load()
-}
-
 onMounted(async () => {
   // 知识库下拉的选项来自 store；侧栏通常已在加载，这里**不等它**——
   // 等的代价是把任务列表的首屏拖到列表请求之后
@@ -149,8 +165,20 @@ onMounted(async () => {
   // 文档名由任务响应直接带回（document_name），这一页不再为它拉任何文档列表。
   // 已有缓存时这一句只是后台刷新，内容立刻就在
   void refresh()
+  void refreshLoad()
   syncPolling()
 })
+
+/**
+ * 轮询节奏：任务在跑时每 2 秒刷一次列表。
+ *
+ * **负载跟列表同一个节拍**（放在 `refresh` 里而不是另起一个计时器）：
+ * 两个计时器会让"列表说有 3 个在跑"和面板上的"在跑 1"出现在同一帧里对不上，
+ * 而这两个数正是要合起来读的（"队列深 + 槽位满"才是结论）。
+ */
+async function refresh(): Promise<void> {
+  await Promise.all([taskStore.load(), refreshLoad()])
+}
 
 /** 只在有任务处于排队/执行中时轮询：全静止时停表，省掉每 2 秒一次的往返。 */
 function syncPolling(): void {
@@ -222,6 +250,13 @@ function openDocument(documentId: string): void {
         刷新
       </AppButton>
     </template>
+
+    <!--
+      运行负载（§12.115）。**放在最上面**：它解释的是"为什么后台慢"，
+      而那正是用户打开这一页时的问题——排在列表下方的话，他要先翻过几十行任务才看得到。
+      管理员专属（端点对成员是 403）。
+    -->
+    <LoadPanel v-if="isAdmin" :load="load" :live="running" />
 
     <p v-if="error" class="error-line">{{ error }}</p>
     <SkeletonBlock v-if="loading" variant="list" :rows="5" />

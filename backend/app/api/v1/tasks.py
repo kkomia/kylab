@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, Query
 from app.api.auth import check_kb_scope, require_read, require_write
 from app.api.v1.schemas import (
     HealthOverviewOut,
+    SystemLoadOut,
     TaskCancelIn,
     TaskCancelItemOut,
     TaskCancelOut,
@@ -81,6 +82,27 @@ async def tasks_health(
     return HealthOverviewOut.model_validate(
         {**overview, "worker_enabled": get_settings().run_worker}
     )
+
+
+@router.get("/load", response_model=SystemLoadOut, summary="负载面板（CPU / 内存 / 队列 / 额度）")
+async def tasks_load(
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
+) -> SystemLoadOut:
+    """这台机器现在有多忙。
+
+    **为什么要一个单独的端点**：任务列表回答的是"每个任务怎么了"，而"后台为什么慢"
+    常常与任何单个任务无关——是 CPU 满了、并发槽位只有 1 个、还是云端额度用尽。
+    这些数都属于**服务端**资源（浏览器那边的 CPU 是用户自己电脑的，与此无关），
+    所以只能由后端回。
+
+    与 ``/tasks/health`` 同一档：**管理员专属**。它暴露的是机器资源与运维参数，
+    对成员没有可操作的意义。
+    """
+    if caller.user is not None and not caller.is_admin:
+        raise ForbiddenError("负载信息需要管理员身份")
+    snapshot = services.load.snapshot()
+    return SystemLoadOut.model_validate(snapshot, from_attributes=True)
 
 
 @router.post("/cancel", response_model=TaskCancelOut, summary="取消还没结束的任务")

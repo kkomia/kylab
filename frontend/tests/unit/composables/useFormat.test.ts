@@ -5,6 +5,8 @@ import {
   formatBytes,
   formatCount,
   formatDate,
+  formatDuration,
+  formatMillis,
   formatRelativeTime,
   formatScore,
   summarizeDocuments,
@@ -134,5 +136,37 @@ describe('formatCount', () => {
     expect(formatCount(undefined)).toBe('—')
     expect(formatCount(Number.NaN)).toBe('—')
     expect(formatCount(Number.POSITIVE_INFINITY)).toBe('—')
+  })
+})
+
+describe('formatDuration', () => {
+  it('只给两级：再多的位数没人读', () => {
+    expect(formatDuration(134)).toBe('2 分 14 秒')
+    expect(formatDuration(3782)).toBe('1 小时 3 分')
+    expect(formatDuration(45)).toBe('45 秒')
+  })
+
+  it('整除时不留一个多余的 0', () => {
+    // "3 分 0 秒"读起来像缺了点什么；"3 分"就是 3 分
+    expect(formatDuration(180)).toBe('3 分')
+    expect(formatDuration(7200)).toBe('2 小时')
+  })
+
+  it('不足一秒说"不到 1 秒"而不是 0 秒', () => {
+    // 进度条上写 0 秒会让人以为这一步没跑
+    expect(formatDuration(0)).toBe('不到 1 秒')
+    expect(formatDuration(0.4)).toBe('不到 1 秒')
+  })
+
+  it('拿不到值时给占位符而不是 NaN 分', () => {
+    expect(formatDuration(null)).toBe('—')
+    expect(formatDuration(undefined)).toBe('—')
+    expect(formatDuration(Number.NaN)).toBe('—')
+  })
+
+  it('毫秒版只在这里除以 1000', () => {
+    // 后端时间线给毫秒；转换散到各处就会有人忘掉一次
+    expect(formatMillis(134000)).toBe('2 分 14 秒')
+    expect(formatMillis(null)).toBe('—')
   })
 })

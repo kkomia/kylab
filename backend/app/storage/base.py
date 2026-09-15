@@ -860,6 +860,29 @@ class MetaStore(ABC):
         """某文档的阶段进入事件，按发生顺序。进度时间线读它。"""
 
     @abstractmethod
+    def list_document_stage_events_for_documents(
+        self, document_ids: Sequence[str]
+    ) -> dict[str, list[DocumentStageEventRecord]]:
+        """一批文档的阶段事件（一条 SQL 取回，按文档分组）。
+
+        列表页每行都要画进度条，逐篇调 ``list_document_stage_events`` 就是 N+1 次
+        查询——一页 20 篇就是 20 次往返。缺失的文档不出现在结果里（与
+        ``get_documents_by_ids`` 同一约定：调用方 `.get(id, [])`）。
+        """
+
+    @abstractmethod
+    def active_tasks_by_documents(self, document_ids: Sequence[str]) -> dict[str, TaskRecord]:
+        """这些文档各自**还没结束**的任务（pending / running），一次取回。
+
+        "停滞"判据要用它：租约过期 = 没有 worker 在续约（见
+        ``ObservabilityService.assess``）。不给这个批量入口的话，列表页要么
+        逐篇查任务，要么把整张任务表读出来再筛——前者是 N+1，后者随任务总数放大。
+
+        一个文档同时只会有一条未结束的任务（入队是幂等的），所以
+        ``{document_id: 任务}`` 这个形状是安全的。
+        """
+
+    @abstractmethod
     def update_document_page_count(self, document_id: str, page_count: int | None) -> None:
         """页数是**解析产物**而不是阶段推进，所以有独立入口。
 
@@ -1086,6 +1109,19 @@ class MetaStore(ABC):
 
     @abstractmethod
     def get_parse_result(self, document_id: str) -> ParseResultRecord | None: ...
+
+    @abstractmethod
+    def parser_page_usage(self, parser_name: str, *, since: datetime) -> tuple[int, int]:
+        """某个云端解析器自 ``since`` 起消耗的 ``(页数, 调用次数)``。
+
+        云端渠道有**每日页数额度**（MinerU 1000 页/天），而额度用尽不是报错、
+        是**降级排队**——用户只看到"卡住不动"。负载面板把已用量显示出来，
+        这种"看起来卡住"才有可核查的解释（见 §12.115）。
+
+        页数**按子文件页范围累加**（切分后每段单独送云端，一次调用只算它那几页），
+        只有没切分的文档才用 ``documents.page_count``：否则一篇 1500 页切 8 段的
+        文档会被记成 8 × 1500 页，额度数字立刻失真到没法用。
+        """
 
     # ---- 任务 ----
     @abstractmethod

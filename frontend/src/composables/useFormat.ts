@@ -77,12 +77,42 @@ export function formatAge(at: number, now: number = Date.now()): string {
   return `${Math.floor(seconds / 60)} 分钟前`
 }
 
+/**
+ * 时长：`2 分 14 秒` / `1 小时 3 分` / `不到 1 秒`。
+ *
+ * **只给两级**（最大单位 + 下一级）：再多的位数没人读，"1 小时 3 分 12 秒"里的后两位
+ * 从来不影响判断。而进度条那一栏要同时看**多个**时长（总耗时 + 各环节耗时），
+ * 每个都写全三位会立刻挤成一团。
+ *
+ * 入参是**秒**。后端时间线给的是毫秒，转换只经 `formatMillis` 一次，
+ * 免得各处各写一个 `/1000`。
+ */
+export function formatDuration(seconds: number | null | undefined): string {
+  if (seconds === null || seconds === undefined || !Number.isFinite(seconds)) return '—'
+  const total = Math.max(0, Math.round(seconds))
+  if (total < 1) return '不到 1 秒'
+  if (total < 60) return `${total} 秒`
+  if (total < 3600) {
+    const minutes = Math.floor(total / 60)
+    const rest = total % 60
+    return rest === 0 ? `${minutes} 分` : `${minutes} 分 ${rest} 秒`
+  }
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  return minutes === 0 ? `${hours} 小时` : `${hours} 小时 ${minutes} 分`
+}
+
+/** 毫秒版，给时间线字段用。 */
+export function formatMillis(millis: number | null | undefined): string {
+  if (millis === null || millis === undefined) return '—'
+  return formatDuration(millis / 1000)
+}
+
 /** 每个知识库的文档数与最近更新时间。 */
 export interface DocStats {
   count: number
   updatedAt: string | null
 }
-
 /**
  * 把文档行按知识库聚合成两列数字（文档数、最近更新）。
  *

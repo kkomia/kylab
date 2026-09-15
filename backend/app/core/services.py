@@ -16,8 +16,8 @@ from __future__ import annotations
 import logging
 import os
 import time
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from functools import lru_cache
 
 from app.core.config import Settings, get_settings
@@ -52,6 +52,7 @@ from app.services.share import ShareService
 from app.services.sources import SourceService
 from app.services.stats import StatsService
 from app.services.suggested_questions import SuggestedQuestionsService
+from app.services.system_load import SystemLoadService
 from app.services.tabular import TabularService
 from app.services.usage import UsageService
 from app.services.users import UserService
@@ -121,9 +122,18 @@ class Services:
     """知识库 Wiki：把已入库内容整理成带出处的百科式页面（v24）。"""
     webhooks: WebhookService
     """Webhook 订阅与事件推送（M4 / T4.6）。"""
+    load: SystemLoadService
+    """负载面板数据源：CPU / 内存 / 队列深度 / 并发槽位 / 云端解析额度（§12.115）。"""
     embedder: EmbeddingProvider
     reranker: RerankProvider
     worker: TaskWorker
+    """消费者之一。**单消费者场景用它**（测试、只跑一条任务）。
+    实际并发数看 ``workers``。"""
+    workers: list[TaskWorker] = field(default_factory=list)
+    """进程里全部消费者（``KYLAB_WORKER_CONCURRENCY`` 个），应用启动时各起一个协程。
+
+    默认空列表是为了让"手工构造 Services 的测试"不必挨个补参数——
+    但它**必须包含 ``worker``**（见 ``build_services``）。"""
 
 
 class _RuntimeEmbedder(EmbeddingProvider):
@@ -299,7 +309,10 @@ def build_services(
         questions=questions_service,
     )
 
-    documents_service = DocumentService(bundle)
+    # 可观测性服务**先建**：文档列表的进度条要判"停滞"，而那个判据（租约还在不在续）
+    # 与任务中心那一列必须是同一个结论，所以两处共用这一个实例
+    observability = ObservabilityService(bundle, worker_lease_seconds=resolved.worker_lease_seconds)
+    documents_service = DocumentService(bundle, observability=observability)
     # 数据源要往摄入队列里塞任务，所以依赖 DocumentService（入队）与
     # IngestService（登记）两者——它们分工不同，见 services/sources.py
     sources_service = SourceService(bundle, ingest, documents_service)
@@ -327,6 +340,16 @@ def build_services(
 
     lifecycle_service = LifecycleService(bundle, notifier=webhooks.emit)
     folders_service = FolderService(bundle)
+
+    workers = _build_workers(
+        resolved.worker_concurrency,
+        bundle=bundle,
+        ingest=ingest,
+        lease_seconds=resolved.worker_lease_seconds,
+        maintain=_maintain,
+        sources=sources_service,
+        wiki=wiki_service,
+    )
 
     return Services(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder, models=registry),
@@ -356,9 +379,7 @@ def build_services(
         maintenance=MaintenanceService(bundle),
         tabular=TabularService(bundle),
         sources=sources_service,
-        observability=ObservabilityService(
-            bundle, worker_lease_seconds=resolved.worker_lease_seconds
-        ),
+        observability=observability,
         conversations=conversations_service,
         notes=NotesService(bundle, ingest=ingest, documents=documents_service),
         note_ai=NoteAiService(chat_service),
@@ -367,18 +388,57 @@ def build_services(
         webhooks=webhooks,
         embedder=embedder,
         reranker=reranker,
-        worker=TaskWorker(
+        worker=workers[0],
+        workers=workers,
+        load=SystemLoadService(
             bundle,
-            ingest,
-            owner=f"worker-{os.getpid()}",
-            lease_seconds=resolved.worker_lease_seconds,
-            maintain=_maintain,
-            # 数据源拉取没有 document_id，走 worker 里的独立分支（见 _handle_source）
-            sync_source=sources_service.sync_now,
-            # Wiki 重建同样是知识库级任务（见 _handle）
-            compile_wiki=wiki_service.generate,
+            concurrency=resolved.worker_concurrency,
+            mineru_quota_pages=resolved.mineru_daily_page_quota,
+            # "配没配 MinerU"问运行期配置（设置页可改），不能问启动期 Settings——
+            # 用户填完令牌不重启就该生效
+            mineru_configured=lambda: runtime.mineru().is_configured,
+            observability=observability,
         ),
     )
+
+
+def _build_workers(
+    count: int,
+    *,
+    bundle: StoreBundle,
+    ingest: IngestService,
+    lease_seconds: int,
+    maintain: Callable[[], None],
+    sources: SourceService,
+    wiki: WikiService,
+) -> list[TaskWorker]:
+    """按 ``KYLAB_WORKER_CONCURRENCY`` 造 N 个消费者。
+
+    **为什么是 N 个实例而不是给一个 worker 加并发**：任务表本身就是队列，
+    ``claim_task`` 是原子单语句（``FOR UPDATE SKIP LOCKED``），多实例各自领各自的活
+    就是天然的并发——给单实例加并发反而要自己实现"同时跑几个任务"的调度与心跳，
+    等于把队列已经解决的事再做一遍。
+
+    ``owner`` 必须**各不相同**：租约是按 owner 校验的，同名会让两个消费者互相
+    认领对方的租约（``heartbeat_task`` 返回真、终态写入互相覆盖）。
+    """
+    if count <= 1:
+        count = 1
+    pid = os.getpid()
+    return [
+        TaskWorker(
+            bundle,
+            ingest,
+            owner=f"worker-{pid}-{index}",
+            lease_seconds=lease_seconds,
+            maintain=maintain,
+            # 数据源拉取没有 document_id，走 worker 里的独立分支（见 _handle_source）
+            sync_source=sources.sync_now,
+            # Wiki 重建同样是知识库级任务（见 _handle）
+            compile_wiki=wiki.generate,
+        )
+        for index in range(count)
+    ]
 
 
 @lru_cache

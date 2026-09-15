@@ -36,6 +36,8 @@ _EXPECTED = (
     "embedder",
     "reranker",
     "worker",
+    "workers",
+    "load",
 )
 
 
@@ -61,3 +63,34 @@ def test_suggested_questions_and_chat_share_the_same_chat_service(bundle) -> Non
     services = build_services(stores=bundle)
 
     assert services.suggested_questions._chat is services.chat
+
+
+def test_worker_pool_size_follows_the_concurrency_setting(bundle) -> None:  # type: ignore[no-untyped-def]
+    """``KYLAB_WORKER_CONCURRENCY`` 决定**进程里有几个消费者**（§12.115）。
+
+    钉三件事，每一件写错了都会很安静：数量、owner 互不相同、面板上的槽位与它同源。
+    **owner 必须互不相同**：租约按 owner 校验，同名会让两个消费者互相认领对方的租约
+    （心跳返回真、终态互相覆盖）。
+    """
+    from app.core.config import Settings
+
+    services = build_services(settings=Settings(worker_concurrency=3), stores=bundle)
+
+    assert len(services.workers) == 3
+    assert services.worker is services.workers[0]
+    assert len({worker.owner for worker in services.workers}) == 3
+    # 面板上的"并发槽位"与这里同源：上限不能是另一处硬编码的数字
+    slots = services.load.snapshot().queue.slots
+    assert slots == 3
+
+
+def test_single_worker_is_the_default(bundle) -> None:  # type: ignore[no-untyped-def]
+    """默认只 1 个消费者。
+
+    并发要花 CPU 与内存（切词、向量化都在进程内），"默认炸内存"比"默认慢"更糟。
+    """
+    from app.core.config import Settings
+
+    services = build_services(settings=Settings(worker_concurrency=1), stores=bundle)
+
+    assert len(services.workers) == 1

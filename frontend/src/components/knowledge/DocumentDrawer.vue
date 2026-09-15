@@ -42,6 +42,7 @@ import RowMenu from '@/components/ui/RowMenu.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
+import ProcessingTimeline from '@/components/knowledge/ProcessingTimeline.vue'
 import { documentStageView } from '@/components/ui/status'
 import { cleanInlineLatex } from '@/composables/useLatex'
 import { renderAnswerMarkdown } from '@/composables/useMarkdown'
@@ -69,6 +70,11 @@ const props = defineProps<{
    * 不给（库页那种走 URL 的用法）时回落到 `?page=`。
    */
   page?: number | null
+  /**
+   * 打开时落在哪个页签（`?tab=progress`）。**由宿主的 URL 决定**：
+   * 列表行上的「处理明细」直接把人送到那一页，而不是"先开抽屉再自己找页签"。
+   */
+  initialTab?: 'read' | 'chunks' | 'progress' | null
 }>()
 
 /** 关掉抽屉。由宿主（文档列表页）负责把 URL 里的 `doc` 参数去掉。 */
@@ -84,6 +90,9 @@ const PREVIEW_LIMIT = 5
 const VIEW_TABS = [
   { key: 'read' as const, label: '阅读', hint: '原文渲染，日常看这个' },
   { key: 'chunks' as const, label: '切块', hint: '解析产物，等宽带块号，调解析用' },
+  // 第三个视角（§12.115）：这份文档走到哪一步了、每步各花多久。
+  // 它回答的是"为什么还没好"，与"解析成了什么"是两件事，所以单开一页签
+  { key: 'progress' as const, label: '处理明细', hint: '环节与耗时，排查"卡住"用' },
 ]
 
 /** 「阅读」里的两个来源：原件版式 / 解析文本。 */
@@ -103,7 +112,7 @@ const previewError = ref('')
 const loading = ref(true)
 const error = ref('')
 const downloading = ref<DownloadFormat | null>(null)
-const view = ref<'read' | 'chunks'>('read')
+const view = ref<'read' | 'chunks' | 'progress'>(props.initialTab ?? 'read')
 const preview = ref<DocumentPreview | null>(null)
 const previewLoading = ref(false)
 
@@ -605,8 +614,10 @@ const stage = computed(() =>
           </template>
         </template>
 
-        <!-- 切块视角 -->
-        <template v-else>
+        <!-- 切块视角。**必须是 v-else-if 而不是 v-else**：`v-else` 会把「处理明细」
+             也一起吃进来，于是那一页签上同时出现"还没有切块产物"的提示（实机截图里
+             两者叠在一起） -->
+        <template v-else-if="view === 'chunks'">
           <p v-if="document.chunk_count === 0" class="muted">
             还没有切块产物：文档尚未处理完成，或处理失败。回到列表页可以重新摄入。
           </p>
@@ -697,6 +708,14 @@ const stage = computed(() =>
             </ol>
           </template>
         </template>
+
+        <!-- 处理明细（§12.115）：走到哪一步了、每步各花多久、在哪停的。
+             `active` 传下去是为了"没被看着就别轮询"——切到别的页签时停表 -->
+        <ProcessingTimeline
+          v-if="view === 'progress'"
+          :document-id="documentId"
+          :active="view === 'progress'"
+        />
       </template>
     </div>
   </aside>

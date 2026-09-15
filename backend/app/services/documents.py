@@ -7,6 +7,7 @@ API 层只做协议适配，所以"列文档""入队""查任务"这些动作都�
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
@@ -21,7 +22,8 @@ from app.core.page_markers import strip_page_markers
 from app.core.signing import DEFAULT_TTL_SECONDS, sign_resource
 from app.models.enums import DocumentStage, TaskKind, TaskState
 from app.pipeline.state_machine import can_transition
-from app.services.timeline import DocumentTimeline, build_timeline
+from app.services.observability import ObservabilityService
+from app.services.timeline import DocumentProgress, DocumentTimeline, build_timeline, progress_of
 from app.storage.base import (
     ChunkRecord,
     DocumentPartRecord,
@@ -172,8 +174,17 @@ def _stem(name: str) -> str:
 class DocumentService:
     """文档查询、重跑入队与任务查询。"""
 
-    def __init__(self, stores: StoreBundle) -> None:
+    def __init__(
+        self,
+        stores: StoreBundle,
+        *,
+        observability: ObservabilityService | None = None,
+    ) -> None:
         self._stores = stores
+        # "停滞"这一档必须与任务中心用**同一个判据**（租约还在不在续），所以注入
+        # 可观测性服务而不是自己比时间戳——两套阈值就是同一件事有两种说法。
+        # 不给（手工构造的测试）就退化成"不判停滞"，其余字段照常。
+        self._observability = observability
 
     # ------------------------------------------------------------------ 文档
 
@@ -273,6 +284,44 @@ class DocumentService:
             events=events,
             now=datetime.now(UTC),
         )
+
+    def progress_by_documents(
+        self, records: Sequence[DocumentRecord]
+    ) -> dict[str, DocumentProgress]:
+        """一批文档的进度摘要（列表行上的分段进度条）。
+
+        **批量取事件与任务**：一页 20 篇，逐篇查就是 40 次往返。这里两条 SQL
+        拿到全部输入，剩下的折叠是纯函数（``build_timeline`` + ``progress_of``）。
+        """
+        ids = [record.id for record in records]
+        if not ids:
+            return {}
+        events = self._stores.meta.list_document_stage_events_for_documents(ids)
+        tasks = self._stores.meta.active_tasks_by_documents(ids)
+        now = datetime.now(UTC)
+
+        result: dict[str, DocumentProgress] = {}
+        for record in records:
+            timeline = build_timeline(
+                document_id=record.id,
+                stage=record.stage.value,
+                events=events.get(record.id, []),
+                now=now,
+            )
+            result[record.id] = progress_of(
+                timeline, stalled=self._is_stalled(tasks.get(record.id), now)
+            )
+        return result
+
+    def _is_stalled(self, task: TaskRecord | None, now: datetime) -> bool:
+        """这条未结束的任务是不是"跑着但没人管"。
+
+        判据来自 ``ObservabilityService``（租约过期 = 没有 worker 在续约）——
+        与任务中心那一列是同一个结论，不是另算一个。
+        """
+        if task is None or self._observability is None:
+            return False
+        return self._observability.assess(task, now=now).status == "stalled"
 
     def get(self, document_id: str) -> DocumentRecord:
         record = self._stores.meta.get_document(document_id)

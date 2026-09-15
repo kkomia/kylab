@@ -928,3 +928,39 @@ def test_active_question_documents_only_lists_queued_ones(
 
     assert store.active_question_documents(["doc_1", "doc_missing"]) == {"doc_1"}
     assert store.active_question_documents([]) == set()
+
+
+def test_stage_events_batch_groups_by_document(store: MetaStore, kb, document) -> None:
+    """列表每行画进度条，所以要**一次取回整页**的事件（逐篇查就是 N+1）。
+
+    缺失的文档不出现（与 ``get_documents_by_ids`` 同一约定），调用方 ``.get(id, [])``。
+    """
+    store.update_document_stage("doc_1", DocumentStage.PARSING)
+    store.update_document_stage("doc_1", DocumentStage.CHUNKING)
+
+    grouped = store.list_document_stage_events_for_documents(
+        ["doc_1", "doc_missing", "doc_1"]
+    )
+
+    assert set(grouped) == {"doc_1"}
+    assert [event.stage for event in grouped["doc_1"]] == ["uploaded", "parsing", "chunking"]
+    assert store.list_document_stage_events_for_documents([]) == {}
+
+
+def test_active_tasks_by_documents_keeps_only_unfinished_ones(
+    store: MetaStore, kb, document
+) -> None:
+    """停滞判据要用它：只有还没结束的任务才有租约可言。
+
+    已成功的那条不能出现——它没有租约，"租约过期"对它无从谈起（把它算进去
+    会让列表把一篇正常索引完的文档标成"可能卡住"）。
+    """
+    store.enqueue_task(_task("t_run", state=TaskState.RUNNING, document_id="doc_1"))
+    store.enqueue_task(_task("t_done", state=TaskState.SUCCEEDED, document_id="doc_1"))
+    store.enqueue_task(_task("t_global", state=TaskState.PENDING))  # 数据源拉取，不挂文档
+
+    found = store.active_tasks_by_documents(["doc_1", "doc_missing"])
+
+    assert set(found) == {"doc_1"}
+    assert found["doc_1"].id == "t_run"
+    assert store.active_tasks_by_documents([]) == {}

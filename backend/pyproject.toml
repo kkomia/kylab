@@ -27,6 +27,9 @@ dependencies = [
     # 口令慢哈希（多用户登录）。SHA-256 不得用于口令（core/security.py 的约定），
     # 口令熵低、必须抗离线爆破；选 argon2 而不是 bcrypt：后者有 72 字节截断的坑
     "argon2-cffi>=23.1",
+    # 负载面板要读**本机** CPU / 内存（services/system_load.py）。
+    # 不用 /proc 自己解析：那只在 Linux 上成立，而这个项目要在 Windows 上开发。
+    "psutil>=6.0",
 ]
 
 # 按里程碑分层引入的重依赖

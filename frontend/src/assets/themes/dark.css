@@ -30,6 +30,10 @@
   --border: #383836;
   --border-strong: #6f6f69;
 
+  /* 进度条的空槽。见浅色主题里的说明：它必须在卡片底（`--bg-subtle` #262625）
+     上也看得见，所以比 hairline 亮一档。 */
+  --meter-track: #3a3a37;
+
   --separator: var(--text-tertiary);
 
   /* 语义色：深色下反而要提亮，否则在自己那层浅红底上读不出来。

@@ -46,6 +46,56 @@ export function listTasks(state?: TaskState): Promise<{ items: TaskSummary[] }> 
   return request(`/tasks${query}`)
 }
 
+/**
+ * 负载面板（§12.115）：这台机器现在有多忙。
+ *
+ * **为什么不是前端自己算**：CPU / 内存是**服务端**的资源（浏览器看到的那个数字是
+ * 用户自己电脑的，与后台快慢无关）；队列深度与云端额度只有后端知道。
+ */
+export interface HardwareLoad {
+  /** 0–100；**可能是 null**——首次采样没有差值可算，界面显示"—"而不是 0%。 */
+  cpu_percent: number | null
+  cpu_count: number
+  memory_used_bytes: number
+  memory_total_bytes: number
+  memory_percent: number
+  process_rss_bytes: number | null
+}
+
+export interface QueueLoad {
+  running: number
+  pending: number
+  /** 并发上限（`KYLAB_WORKER_CONCURRENCY`）。 */
+  slots: number
+  /** 排队任务按类型分布："积压全是出题"和"积压全是解析"该做的事完全不同。 */
+  pending_by_kind: Record<string, number>
+  oldest_pending_seconds: number | null
+  stalled: number
+  overdue: number
+}
+
+export interface ParserQuota {
+  parser_name: string
+  configured: boolean
+  pages_used: number
+  calls: number
+  daily_quota: number
+  remaining: number
+  /** 额度用尽。**不是错误**：云端只是不再优先处理，任务会继续但变慢。 */
+  exhausted: boolean
+}
+
+export interface SystemLoad {
+  hardware: HardwareLoad
+  queue: QueueLoad
+  quota: ParserQuota
+  sampled_at: string
+}
+
+export function getTaskLoad(): Promise<SystemLoad> {
+  return request('/tasks/load')
+}
+
 /** 取消还没结束的任务。两种用法：点名 `taskIds`，或只给 `state` 清空整批排队。 */
 export interface TaskCancelResult {
   succeeded: number

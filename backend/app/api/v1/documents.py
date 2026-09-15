@@ -41,6 +41,7 @@ from app.api.v1.schemas import (
     DocumentOut,
     DocumentPartList,
     DocumentPartOut,
+    DocumentProgressOut,
     DocumentRenameIn,
     DocumentTimelineOut,
     UploadAccepted,
@@ -74,6 +75,7 @@ def _to_out(
     uploader: str = "",
     question_stats: tuple[int, int] = (0, 0),
     questions_pending: bool = False,
+    progress=None,  # type: ignore[no-untyped-def]
 ) -> DocumentOut:
     """记录 → 响应模型。用 ``model_validate`` 而不是手抄字段：
 
@@ -91,6 +93,12 @@ def _to_out(
             "question_count": question_total,
             "questioned_chunk_count": questioned_chunks,
             "questions_pending": questions_pending,
+            # 分段进度（§12.115）。**必须在这里校验一次**：``model_copy(update=...)``
+            # 不做校验，直接塞 dataclass 会得到"序列化出来的形状对、但 pydantic
+            # 每次都警告 UnexpectedValue"的结果（用例的 warning 抓到的）
+            "progress": DocumentProgressOut.model_validate(progress, from_attributes=True)
+            if progress is not None
+            else None,
         }
     )
 
@@ -109,6 +117,7 @@ def document_out(services: Services, record) -> DocumentOut:  # type: ignore[no-
         uploader=names.get(record.uploaded_by or "", ""),
         question_stats=services.documents.question_stats([record.id]).get(record.id, (0, 0)),
         questions_pending=record.id in services.documents.active_question_documents([record.id]),
+        progress=services.documents.progress_by_documents([record]).get(record.id),
     )
 
 
@@ -304,6 +313,8 @@ async def list_documents(
     ids = [record.id for record in records]
     question_stats = services.documents.question_stats(ids)
     questions_pending = services.documents.active_question_documents(ids)
+    # 分段进度（§12.115）：整页一次算完——每行画进度条，逐篇查就是 40 次往返
+    progress = services.documents.progress_by_documents(records)
     total = services.documents.count_documents(
         kb_id,
         folder_id=folder_id,
@@ -320,6 +331,7 @@ async def list_documents(
                 uploader=names.get(record.uploaded_by or "", ""),
                 question_stats=question_stats.get(record.id, (0, 0)),
                 questions_pending=record.id in questions_pending,
+                progress=progress.get(record.id),
             )
             for record in records
         ],
@@ -367,8 +379,8 @@ async def batch_documents(
 
 def _guard_document(
     services: Services, caller: Caller, document_id: str, *, need: ApiKeyPermission = READ
-) -> None:
-    """按文档归属的知识库做范围判定。
+) -> object:
+    """按文档归属的知识库做范围判定，**并把它已经读出来的那条文档返回**。
 
     这几个端点只拿到 ``document_id``，而密钥范围是绑在知识库上的，
     所以必须先把文档读出来、取出它属于哪个库再判。
@@ -376,9 +388,14 @@ def _guard_document(
     注意**先取文档再判范围**的顺序：反过来（先判后取）在文档不存在时
     会给出 403 而不是 404，等于告诉调用方"这个 id 在本机上存在但你无权看"——
     越权探测者最想要的就是这种区分。
+
+    返回类型写成 ``object``：这条记录是 ``app.storage`` 的类型，而协议层不得
+    依赖它（工程规范 §3.3 L1）。返回值只是**省掉一次多余的查询**，
+    需要用的端点自己 ``model_validate`` 或交给服务层。
     """
     record = services.documents.get(document_id)
     check_kb_scope(services, caller, [record.knowledge_base_id], need=need)
+    return record
 
 
 @router.get("/documents/{document_id}", response_model=DocumentOut, summary="文档详情")
@@ -408,11 +425,16 @@ async def document_timeline(
 
     **跑着时最后一步的耗时是"到现在为止"**，所以前端轮询时它会一直在长——
     这是"还在动"的证据，比一个转圈图标可信。
+
+    ``stalled`` 走与列表同一个入口（``progress_by_documents``）拿：抽屉里那个
+    "疑似卡住"与列表行上那个必须是同一个结论，两处各判一次迟早说不到一块儿去。
     """
-    _guard_document(services, caller, document_id)
-    return DocumentTimelineOut.model_validate(
-        services.documents.timeline(document_id), from_attributes=True
-    )
+    record = _guard_document(services, caller, document_id)
+    timeline = services.documents.timeline(document_id)
+    out = DocumentTimelineOut.model_validate(timeline, from_attributes=True)
+    # 停滞只在"还在跑"时有意义：跑完的文档没有租约，标它等于误报
+    out.stalled = services.documents.progress_by_documents([record])[document_id].stalled
+    return out
 
 
 @router.patch("/documents/{document_id}", response_model=DocumentOut, summary="重命名文档")

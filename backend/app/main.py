@@ -26,10 +26,20 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     services = get_services()
 
     stop = asyncio.Event()
-    worker_task: asyncio.Task[None] | None = None
+    worker_tasks: list[asyncio.Task[None]] = []
     if settings.run_worker:
-        worker_task = asyncio.create_task(_run_worker(services.worker, stop))
-        logger.info("内嵌任务消费者已启动：%s", services.worker.owner)
+        # 一个消费者 = 一个协程（``KYLAB_WORKER_CONCURRENCY`` 个）。
+        # 它们各自领活、互不阻塞：任务表本身就是队列，``claim_task`` 原子单语句，
+        # 所以"多消费者"不需要额外的调度器（见 services/_build_workers 的说明）。
+        # 兜底用 ``services.worker``：装配点已经保证 ``workers`` 非空，
+        # 但"消费者一个都没起"是最难查的一类故障（任务永远排队），宁可这里多一句
+        consumers = services.workers or [services.worker]
+        worker_tasks = [asyncio.create_task(_run_worker(worker, stop)) for worker in consumers]
+        logger.info(
+            "内嵌任务消费者已启动 %d 个：%s",
+            len(worker_tasks),
+            "、".join(worker.owner for worker in consumers),
+        )
     else:
         logger.warning("KYLAB_RUN_WORKER=false：未启动任务消费者，上传的文档不会被处理")
 
@@ -37,8 +47,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         stop.set()
-        if worker_task is not None:
-            await asyncio.gather(worker_task, return_exceptions=True)
+        if worker_tasks:
+            await asyncio.gather(*worker_tasks, return_exceptions=True)
         # 释放 PG 连接池：进程级资源，不还回去会拖住连接直到进程被回收
         close_stores()
 

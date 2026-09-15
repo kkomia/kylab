@@ -153,6 +153,30 @@ class KnowledgeBaseList(BaseModel):
 # --------------------------------------------------------------------- 文档
 
 
+class DocumentProgressOut(BaseModel):
+    """列表行上那条分段进度所需要的信息（§12.115）。
+
+    **不给百分比**（用户也这么要求）：6 个环节的耗时极不均（解析几分钟、切分几秒），
+    百分比只会编出一个对不上的数字——"第 3/6 步 · 解析内容 · 已用 2 分 14 秒"
+    每一项都能和实际对上。
+    """
+
+    status: str = "running"
+    """``running`` / ``done`` / ``failed`` / ``canceled``。"""
+    step_index: int = 1
+    """当前第几步（1-based）。失败时是**停下那一步**，所以能读出"炸在哪"。"""
+    step_total: int = 0
+    step_label: str = ""
+    elapsed_ms: int = 0
+    """当前这一步已花的时间。跑着时每次轮询都在涨——这是"还在动"的证据。"""
+    total_ms: int = 0
+    """整条流水线累计（含重试与重新摄入）。"""
+    retries: int = 0
+    """这一步重试过几次。"卡住"与"反复重试"要看的处置完全不同。"""
+    stalled: bool = False
+    """执行租约已过期 = 没有 worker 在续约。**唯一能确定说"卡住"的情形**。"""
+
+
 class DocumentOut(BaseModel):
     model_config = _RECORD_CONFIG
 
@@ -193,6 +217,9 @@ class DocumentOut(BaseModel):
 
     列表据此显示"生成中…"，也据此决定继续轮询——出题**不改变文档阶段**，
     只看 ``stage`` 的话前端永远等不到它完成。"""
+    progress: DocumentProgressOut | None = None
+    """分段进度的摘要（§12.115）。列表行的进度条吃它；完整那棵树在
+    ``GET /documents/{id}/timeline``。``None`` = 这条路径没算（老调用点）。"""
 
 
 class DocumentList(BaseModel):
@@ -402,6 +429,54 @@ class HealthOverviewOut(BaseModel):
     worker_enabled: bool = True
     """内嵌消费线程是否开着。**关掉时任务不会自己跑**——
     这是"任务一直排队"最常见的原因，界面必须能解释它。"""
+
+
+class HardwareLoadOut(BaseModel):
+    """机器与本进程的资源占用（负载面板）。"""
+
+    cpu_percent: float | None = None
+    """0–100；**首次采样为 null**（没有上一次采样就没有差值可算），界面显示"—"。"""
+    cpu_count: int = 1
+    memory_used_bytes: int = 0
+    memory_total_bytes: int = 0
+    memory_percent: float = 0.0
+    process_rss_bytes: int | None = None
+
+
+class QueueLoadOut(BaseModel):
+    """队列深度与并发槽位。"""
+
+    running: int = 0
+    pending: int = 0
+    slots: int = 1
+    """并发上限（``KYLAB_WORKER_CONCURRENCY``）。"""
+    pending_by_kind: dict[str, int] = Field(default_factory=dict)
+    """排队任务按类型分布——"积压全是出题"和"积压全是解析"该做的事完全不同。"""
+    oldest_pending_seconds: float | None = None
+    stalled: int = 0
+    overdue: int = 0
+
+
+class ParserQuotaOut(BaseModel):
+    """云端解析器的当日额度。"""
+
+    parser_name: str = ""
+    configured: bool = False
+    pages_used: int = 0
+    calls: int = 0
+    daily_quota: int = 0
+    remaining: int = 0
+    exhausted: bool = False
+    """额度用尽。**不是错误**：云端只是不再优先处理，任务会继续但变慢。"""
+
+
+class SystemLoadOut(BaseModel):
+    """负载面板（§12.115）：CPU / 内存 / 队列 / 槽位 / 云端额度。"""
+
+    hardware: HardwareLoadOut
+    queue: QueueLoadOut
+    quota: ParserQuotaOut
+    sampled_at: datetime
 
 
 # --------------------------------------------------------------------- 检索
@@ -1394,3 +1469,9 @@ class DocumentTimelineOut(BaseModel):
     step_total: int
     total_ms: int
     steps: list[TimelineStepOut] = Field(default_factory=list)
+    stalled: bool = False
+    """执行租约已过期 = 没有 worker 在续约（§12.115）。
+
+    抽屉要显示它，而它是**唯一能确定说"卡住"**的判据——光看"某一步跑了一小时"
+    说明不了问题（解析大文件本来就慢）。判据来自 ``ObservabilityService``，
+    与任务中心那一列同源。"""

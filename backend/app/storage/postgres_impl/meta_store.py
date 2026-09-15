@@ -816,6 +816,53 @@ class PostgresMetaStore(MetaStore):
             for row in rows
         ]
 
+    def list_document_stage_events_for_documents(
+        self, document_ids: Sequence[str]
+    ) -> dict[str, list[DocumentStageEventRecord]]:
+        wanted = list(dict.fromkeys(document_ids))
+        if not wanted:
+            return {}
+        sql = (
+            "SELECT id, document_id, stage, entered_at, error FROM document_stage_events"  # noqa: S608
+            f" WHERE document_id IN ({_placeholders(len(wanted))}) ORDER BY id"
+        )
+        with self._db.read() as conn:
+            rows = conn.execute(sql, tuple(wanted)).fetchall()
+        grouped: dict[str, list[DocumentStageEventRecord]] = {}
+        for row in rows:
+            grouped.setdefault(str(row["document_id"]), []).append(
+                DocumentStageEventRecord(
+                    id=row["id"],
+                    document_id=row["document_id"],
+                    stage=row["stage"],
+                    entered_at=row["entered_at"],
+                    error=row["error"],
+                )
+            )
+        return grouped
+
+    def active_tasks_by_documents(self, document_ids: Sequence[str]) -> dict[str, TaskRecord]:
+        wanted = list(dict.fromkeys(document_ids))
+        if not wanted:
+            return {}
+        sql = (
+            "SELECT * FROM tasks"  # noqa: S608
+            f" WHERE document_id IN ({_placeholders(len(wanted))}) AND state IN (%s, %s)"
+        )
+        with self._db.read() as conn:
+            rows = conn.execute(
+                sql,
+                (*wanted, TaskState.PENDING.value, TaskState.RUNNING.value),
+            ).fetchall()
+        # 一个文档只会有一条未结束的任务；真出现两条（历史脏数据）时留**先入队**的那条，
+        # 它才是当前真正的阻塞点
+        result: dict[str, TaskRecord] = {}
+        for row in rows:
+            record = self._task_from_row(row)
+            if record.document_id and record.document_id not in result:
+                result[record.document_id] = record
+        return result
+
     def delete_document(self, document_id: str) -> None:
         with self._db.session() as conn:
             conn.execute("DELETE FROM documents WHERE id = %s", (document_id,))
@@ -1427,6 +1474,32 @@ class PostgresMetaStore(MetaStore):
             probe_meta=row["probe_meta"],
             created_at=_load(row["created_at"]),
         )
+
+    def parser_page_usage(self, parser_name: str, *, since: datetime) -> tuple[int, int]:
+        # 页数取下界 0：`page_count` 为 NULL（探测没测出页数）时整篇按 0 计，
+        # 而不是 NULL 把 SUM 变成 NULL——"没测出页数"是"算不准"，不是"没消耗"，
+        # 但编一个数字更糟：如实少报，用户看到的是下限。
+        with self._db.read() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(
+                        CASE WHEN p.id IS NOT NULL
+                             THEN p.page_end - p.page_start + 1
+                             ELSE COALESCE(d.page_count, 0)
+                        END
+                    ), 0) AS pages,
+                    COUNT(*) AS calls
+                FROM parse_results r
+                JOIN documents d ON d.id = r.document_id
+                LEFT JOIN document_parts p ON p.id = r.part_id
+                WHERE r.parser_name = %s AND r.created_at >= %s
+                """,
+                (parser_name, _dump(since)),
+            ).fetchone()
+        if not row:
+            return (0, 0)
+        return (int(row["pages"]), int(row["calls"]))
 
     # ------------------------------------------------------------------ 任务队列
 

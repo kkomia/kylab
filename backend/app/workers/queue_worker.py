@@ -172,13 +172,11 @@ class TaskWorker:
             async with asyncio.TaskGroup() as group:
                 group.create_task(self._consume_loop(stopping))
                 group.create_task(self._beat_loop(stopping))
+                group.create_task(self._reclaim_loop(stopping))
         finally:
             await self._drain_thread()
 
     async def _consume_loop(self, stopping: asyncio.Event) -> None:
-        # 启动先回收一次：上一次进程崩溃/被 kill 时手上的任务还写着 running，
-        # 不回收就永远不会被重新领取（文档也永远停在中间阶段）。
-        self._reclaim_expired(force=True)
         while not stopping.is_set() and not self._lease_lost.is_set():
             try:
                 worked = await self.run_once()
@@ -188,10 +186,32 @@ class TaskWorker:
                 logger.exception("worker 循环出现未预期异常，继续运行")
                 worked = False
             if not worked:
-                self._reclaim_expired()
+                # 维护仍然只在空闲时跑：它是"清会长大的表"，没必要和摄入抢 IO
                 self._run_maintenance()
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stopping.wait(), timeout=self._poll_interval)
+
+    async def _reclaim_loop(self, stopping: asyncio.Event) -> None:
+        """按租约时长周期回收过期任务，**独立成一条循环**。
+
+        为什么不能挂在消费循环里（v24 的两版修法，实机各踩了一次）：
+
+        1. 最先它只在"没活可干"的分支里跑 —— 而队列里只要一直有活，那个分支就永远
+           进不去，"消费者忙着长任务、另一个消费者崩了"这种最需要回收的情形恰恰永不回收；
+        2. 改到每轮开头跑之后，仍然不对：**一轮就是一份文档**（解析加出题几分钟到
+           几十分钟），于是"回收间隔"实际等于"一份文档的耗时"。实机验证时那个僵尸任务
+           带着刚过期 90 秒的租约一直挂着——界面写着"疑似卡住"，而回收要等当前这篇跑完。
+
+        第三条路就是它：回收的节奏只由租约时长决定，与手上有没有活无关。
+        多一条协程的成本可以忽略，而它做的是一条带条件的 UPDATE（幂等）。
+
+        启动时先回收一次：上一次进程崩溃/被 kill 时手上的任务还写着 ``running``，
+        不回收就永远不会被重新领取（文档也永远停在中间阶段）。
+        """
+        while not stopping.is_set() and not self._lease_lost.is_set():
+            self._reclaim_expired(force=True)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stopping.wait(), timeout=self._reclaim_interval)
 
     def _reclaim_expired(self, *, force: bool = False) -> None:
         """把租约过期、还写着 ``running`` 的任务回收掉（回到队列或判失败）。
@@ -201,8 +221,10 @@ class TaskWorker:
         任何调用者**——于是任何被中断的任务都永远停在 running：既不会被重试，
         也不会失败，文档就永远钉在 parsing/chunking 上。实测有一篇这样挂了 8 小时。
 
-        **只在空闲分支跑**（与 ``_run_maintenance`` 同一条理由）：回收要写库，
-        有活干的时候不该去抢。失败一律吞掉——回收失败不该带走消费者。
+        **节奏由 ``_reclaim_loop`` 决定，与忙闲无关**（那条理由——"别和摄入抢写锁"——
+        来自 SQLite 单写者的年代，到了 PG 就是一条带条件的 UPDATE）。
+        ``force`` 表示跳过这里的节流：调用方自己负责节奏（回收循环与启动那一次）。
+        失败一律吞掉——回收失败不该带走消费者。
         """
         now = time.monotonic()
         if not force and now - self._last_reclaim < self._reclaim_interval:

@@ -60,11 +60,18 @@ import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
+import MeterBar from '@/components/ui/MeterBar.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { documentStageView } from '@/components/ui/status'
 import { formatBytes, formatRelativeTime } from '@/composables/useFormat'
+import {
+  progressCaption,
+  progressSegments,
+  progressTone,
+  showsProgress,
+} from '@/composables/useProgress'
 import { MAX_UPLOAD_MB, UPLOAD_FORMAT_HINT } from '@/composables/uploadLimits'
 import { roster } from '@/composables/useOperator'
 import { useToast } from '@/composables/useToast'
@@ -113,10 +120,22 @@ function documentLink(id: string): LocationQueryRaw {
 function withoutDocument(query: LocationQuery): LocationQueryRaw {
   const next: LocationQueryRaw = {}
   for (const [key, value] of Object.entries(query)) {
-    if (key !== 'doc' && key !== 'page' && value !== null) next[key] = value
+    // `tab` 也要去掉：它只对"刚才点开的那一份"有意义，留着的话关掉抽屉再点另一份
+    // 会莫名其妙落在「处理明细」上（用户点文件名时想看的是阅读）
+    if (key !== 'doc' && key !== 'page' && key !== 'tab' && value !== null) next[key] = value
   }
   return next
 }
+
+/** 打开抽屉时落在哪个页签（`?tab=progress` 直接送进「处理明细」）。 */
+const DRAWER_TABS = ['read', 'chunks', 'progress'] as const
+
+const initialDrawerTab = computed(() => {
+  const wanted = String(route.query.tab ?? '')
+  return DRAWER_TABS.includes(wanted as (typeof DRAWER_TABS)[number])
+    ? (wanted as (typeof DRAWER_TABS)[number])
+    : null
+})
 
 /**
  * 删除确认（M6 / T6.4）。
@@ -1399,6 +1418,32 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 
                 <p v-if="document.error" class="row-error">{{ document.error }}</p>
 
+                <!--
+                  分段进度（§12.115）：**只在还没跑完的文档上出现**。
+                  跑完的文档每段都是满的，画出来纯噪声；而"在列表上就能看到这篇
+                  走到第几步了"正是当初的诉求。停滞/失败/重试的差别写在文字里，
+                  颜色只负责加速识别（§8）。
+                -->
+                <div v-if="showsProgress(document.progress)" class="row-progress">
+                  <MeterBar
+                    class="row-progress-meter"
+                    size="sm"
+                    :segments="progressSegments(document.progress, { pulsing: needsPolling })"
+                    :tone="progressTone(document.progress)"
+                    :aria-label="progressCaption(document.progress)"
+                  />
+                  <span class="row-progress-text">{{ progressCaption(document.progress) }}</span>
+                  <RouterLink
+                    class="row-progress-more"
+                    :to="{
+                      path: route.path,
+                      query: { ...documentLink(document.id), tab: 'progress' },
+                    }"
+                  >
+                    处理明细
+                  </RouterLink>
+                </div>
+
                 <ul v-if="expanded[document.id]?.length" class="part-rows">
                   <li v-for="part in expanded[document.id]" :key="part.id" class="part-row">
                     <span class="part-name">分片 P{{ part.part_index + 1 }}</span>
@@ -1493,6 +1538,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       v-if="openDocumentId"
       :key="openDocumentId"
       :document-id="openDocumentId"
+      :initial-tab="initialDrawerTab"
       @close="closeDocument"
     />
     <!-- 移动到目录（v13）。目录可能很多，所以用单选清单而不是"一行一个按钮" -->
@@ -2198,6 +2244,53 @@ button.tree-caret:hover {
   padding: 0 var(--space-3) var(--space-2) var(--space-12);
   font-size: var(--text-meta-size);
   color: var(--status-danger);
+}
+
+/*
+ * 分段进度那一行（§12.115）。
+ *
+ * 左缩进与 `.row-error` / 子文件树一致（`--space-12`）：它是这一行的**附属信息**，
+ * 与文档名左对齐会让它看起来像另一行数据。
+ *
+ * **只出现在没跑完的文档上**（见模板里的 `showsProgress`）：跑完的每段都是满的，
+ * 画出来是噪声；而"每篇都多一行"正是上一轮被抱怨的"一屏看不了几篇"。
+ */
+.row-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-3) var(--space-2) var(--space-12);
+}
+
+/* 条要装得下 6 段（每段才看得清），又不该把文字挤到折行 */
+.row-progress-meter {
+  flex: 0 1 220px;
+  min-width: 120px;
+}
+
+.row-progress-text {
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "处理明细"是这一行的附属动作（主动作是点文件名看正文），给足命中区（§8）
+   但**不常驻强调色**：一屏几十行，每行一个蓝链接会把整页染成蓝色，
+   而它只是"想知道为什么慢"时才点的东西。悬停时才亮起来。 */
+.row-progress-more {
+  flex: 0 0 auto;
+  padding: var(--space-pair) var(--space-2);
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+  border-radius: var(--radius-control);
+}
+
+.row-progress-more:hover {
+  color: var(--accent-text);
+  background: var(--bg-hover);
 }
 
 /* 子文件树：缩进一级（§6） */

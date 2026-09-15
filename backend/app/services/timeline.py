@@ -26,6 +26,7 @@ __all__ = [
     "StageSpan",
     "TimelineStep",
     "build_timeline",
+    "progress_of",
 ]
 
 
@@ -40,7 +41,10 @@ class _StepDef:
 #: ``stages`` 是归属它的内部阶段：中间态（parsed/chunked）与主阶段归并到同一步，
 #: 否则进度条会在"解析→解析完成"之间莫名多出一段。
 PIPELINE_STEPS: tuple[_StepDef, ...] = (
-    _StepDef("uploaded", "已接收", ("uploaded",)),
+    # 第一步的耗时 = 排队等了多久（文档是带着 uploaded 建出来的，到下一条事件之间
+    # 就是它躺在队列里的时间）。所以标签叫「排队等待」而不是「已接收」——
+    # 后者配上"已用 26 分钟"会被读成"接收花了 26 分钟"（实机看到的就是这个）。
+    _StepDef("uploaded", "排队等待", ("uploaded",)),
     _StepDef("probing", "探测文件", ("probing",)),
     _StepDef("parsing", "解析内容", ("parsing", "parsed")),
     _StepDef("chunking", "切分与出题", ("chunking", "chunked")),
@@ -94,6 +98,69 @@ class DocumentTimeline:
     """逐次停留的原始明细。抽屉里可以展开看"第 2 次解析花了 4 分钟"。"""
 
 
+@dataclass(frozen=True, slots=True)
+class DocumentProgress:
+    """列表行上那一条进度所需要的最小信息（``DocumentTimeline`` 的摘要）。
+
+    **为什么不直接把时间线塞进列表**：一页 20 篇 × 6 个环节 × 每次停留的明细，
+    响应体会膨胀到与页面信息量完全不成比例——而列表要的只有
+    "第几步 / 这一步叫什么 / 已经花了多久 / 是不是卡住了"。完整那棵树归抽屉。
+    """
+
+    status: str
+    """``running`` / ``done`` / ``failed`` / ``canceled``。"""
+    step_index: int
+    """当前第几步（1-based）。终态时是**停下时那一步**，不是总数——
+    "炸在第 3 步"比"共 6 步"有用得多。"""
+    step_total: int
+    step_label: str
+    """当前环节的中文名（"解析内容"）。"""
+    elapsed_ms: int
+    """当前这一步已经花了多久。跑着时它一直在涨。"""
+    total_ms: int
+    """整条流水线累计耗时（含重试与重新摄入）。"""
+    retries: int = 0
+    """进入过当前环节几次 − 1。>0 说明这一步重试过，
+    而"卡住"与"反复重试"要看的处置完全不同。"""
+    stalled: bool = False
+    """执行租约已过期 = 没有 worker 在续约（判据来自 ``ObservabilityService``，
+    这里只承载结果）。**跑着但没人管**是唯一能确定说"卡住"的情形。"""
+
+
+def progress_of(timeline: DocumentTimeline, *, stalled: bool = False) -> DocumentProgress:
+    """时间线 → 列表行要的摘要。
+
+    ``visits`` 折成 ``retries``（次数 − 1），**只算当前环节**：进过一次是正常路径，
+    把 1 显示成"重试 1 次"等于每篇文档都挂个假标记；而已经走过去的那一步也不再算
+    ——"重试过解析、如今在正常切分"的文档不该永远带着历史标记（各步的进出次数
+    在抽屉的明细里都还在）。
+    """
+    current = next(
+        (step for step in timeline.steps if _ORDER[step.key] == timeline.current_index - 1),
+        None,
+    )
+    if current is None:  # pragma: no cover - current_index 一定落在环节表里
+        return DocumentProgress(
+            status=timeline.status,
+            step_index=timeline.current_index,
+            step_total=timeline.step_total,
+            step_label="",
+            elapsed_ms=0,
+            total_ms=timeline.total_ms,
+            stalled=stalled,
+        )
+    return DocumentProgress(
+        status=timeline.status,
+        step_index=timeline.current_index,
+        step_total=timeline.step_total,
+        step_label=current.label,
+        elapsed_ms=current.duration_ms,
+        total_ms=timeline.total_ms,
+        retries=max(0, current.visits - 1),
+        stalled=stalled and timeline.status == "running",
+    )
+
+
 def build_timeline(
     *,
     document_id: str,
@@ -127,7 +194,12 @@ def build_timeline(
         if key is None:
             continue
         totals[key] = totals.get(key, 0) + span.duration_ms
-        visits[key] = visits.get(key, 0) + 1
+        # **只数"主阶段"的进入**：一个环节里含两个阶段（主阶段 + `parsed`/`chunked`
+        # 这种"做完了"的中间态），而正常的 `parsing → parsed` 会数成两次进入——
+        # 于是每一次正常解析都被标成"进入 2 次"，也就是把正常路径报成了重试。
+        # 实机第一次跑就撞上了（界面写着"解析内容 进入 2 次 7 秒"）。
+        if span.stage == _STEP_ENTRY[key]:
+            visits[key] = visits.get(key, 0) + 1
 
     terminal = _TERMINAL.get(stage)
     # 失败/取消时"炸在哪一步"：**往回找最后一个真正落到环节上的事件**，而不是
@@ -193,6 +265,8 @@ def build_timeline(
 _STEP_KEY = {
     stage: step.key for step in PIPELINE_STEPS for stage in step.stages
 }
+#: 环节 key → 它的**主阶段**（`stages[0]`）。次进次数的判定用它，见上面那句注释。
+_STEP_ENTRY = {step.key: step.stages[0] for step in PIPELINE_STEPS}
 _ORDER = {step.key: index for index, step in enumerate(PIPELINE_STEPS)}
 
 

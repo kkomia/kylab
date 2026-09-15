@@ -55,8 +55,32 @@ export interface DocumentSummary {
    * 详情页据此决定首页先取「原文版式」还是「解析文本」。
    */
   original_kind: PreviewKind
+  /** 分段进度摘要（§12.115）。列表行的进度条吃它；完整那棵树在 `getTimeline`。 */
+  progress: DocumentProgress | null
   created_at: string | null
   updated_at: string | null
+}
+
+/**
+ * 列表行上那条分段进度所需要的信息（§12.115）。
+ *
+ * **没有百分比**：6 个环节的耗时极不均（解析几分钟、切分几秒），百分比只会编出
+ * 一个对不上的数字——"第 3/6 步 · 解析内容 · 已用 2 分 14 秒"每一项都能对上事实。
+ */
+export interface DocumentProgress {
+  status: 'running' | 'done' | 'failed' | 'canceled'
+  /** 当前第几步（1-based）。失败时是**停下那一步**，所以能读出"炸在哪"。 */
+  step_index: number
+  step_total: number
+  step_label: string
+  /** 当前这一步已花的时间。跑着时每次轮询都在涨——这是"还在动"的证据。 */
+  elapsed_ms: number
+  /** 整条流水线累计（含重试与重新摄入）。 */
+  total_ms: number
+  /** **当前这一步**重试过几次（已经走过去的不算，那是历史不是现状）。 */
+  retries: number
+  /** 执行租约已过期 = 没有 worker 在续约。唯一能确定说"卡住"的情形。 */
+  stalled: boolean
 }
 
 export interface DocumentPart {
@@ -162,6 +186,40 @@ export function getDocument(documentId: string): Promise<DocumentSummary> {
 
 export function listDocumentParts(documentId: string): Promise<{ items: DocumentPart[] }> {
   return request(`/documents/${documentId}/parts`)
+}
+
+/**
+ * 处理进度时间线（§12.115 的「处理明细」）。
+ *
+ * 与列表行上的 `progress` 是**同一份数据的两种粒度**：列表要"第几步"，
+ * 抽屉要"每一步各花了多久、重试过几次、在哪一步停的"。
+ */
+export interface TimelineStep {
+  key: string
+  label: string
+  status: 'done' | 'running' | 'pending' | 'failed' | 'canceled'
+  duration_ms: number
+  /** 进入过几次。>1 = 重试或重新摄入过——"卡住"与"反复重试"要看的东西不同。 */
+  visits: number
+  error: string | null
+}
+
+export interface DocumentTimeline {
+  document_id: string
+  status: 'running' | 'done' | 'failed' | 'canceled'
+  /** 当前第几个环节（1-based；失败时是**停下那一步**）。 */
+  current_index: number
+  /** 一共几个环节。 */
+  step_total: number
+  /** 总耗时（毫秒），含重试与重新摄入。 */
+  total_ms: number
+  steps: TimelineStep[]
+  /** 租约已过期 = 没有 worker 在续约。唯一能确定说"卡住"的判据。 */
+  stalled: boolean
+}
+
+export function getDocumentTimeline(documentId: string): Promise<DocumentTimeline> {
+  return request(`/documents/${documentId}/timeline`)
 }
 
 /** 切块正文（文档详情页的预览）。limit 只截断 items，total 始终是全量。 */

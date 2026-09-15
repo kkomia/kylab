@@ -677,3 +677,49 @@ def test_timeline_follows_the_whole_pipeline(client: TestClient, kb_id: str) -> 
 
 def test_timeline_missing_document_is_404(client: TestClient) -> None:
     assert client.get("/api/v1/documents/doc_nope/timeline").status_code == 404
+
+
+def test_document_list_carries_the_progress_summary(client: TestClient, kb_id: str) -> None:
+    """列表每行都带 progress（§12.115）——**一次请求算完整页**，不是逐篇再问一次。
+
+    逐篇拉时间线意味着 20 篇文档 = 20 次往返，而列表要的只是"第几步"。
+    完整那棵树仍然只在 ``/timeline`` 里（抽屉用）。
+    """
+    from app.core.services import get_services
+
+    first = _upload(client, kb_id, "排队中.md")
+    second = _upload(client, kb_id, "跑完.md")
+    get_services().ingest.ingest(second["id"])
+
+    items = client.get(f"/api/v1/knowledge-bases/{kb_id}/documents").json()["items"]
+    by_id = {item["id"]: item for item in items}
+
+    queued = by_id[first["id"]]["progress"]
+    assert queued["status"] == "running"
+    assert (queued["step_index"], queued["step_total"]) == (1, 6)
+    assert queued["step_label"] == "排队等待"
+    assert queued["stalled"] is False  # 刚入队，租约还在
+    assert queued["elapsed_ms"] >= 0
+
+    done = by_id[second["id"]]["progress"]
+    assert done["status"] == "done"
+    assert done["step_index"] == done["step_total"] == 6
+    assert done["step_label"] == "完成索引"
+
+
+def test_document_detail_carries_progress_too(client: TestClient, kb_id: str) -> None:
+    """详情与列表同一口径：两处各拼一遍必然漂（踩过一次：详情少了出题统计）。
+
+    **不比较 ``elapsed_ms``**：它是"到现在为止"，两次请求之间本来就会涨几毫秒。
+    比的是那些该稳定的字段——它们才代表口径。
+    """
+    document = _upload(client, kb_id, "详情.md")
+
+    detail = client.get(f"/api/v1/documents/{document['id']}").json()["progress"]
+    listed = client.get(f"/api/v1/knowledge-bases/{kb_id}/documents").json()["items"][0][
+        "progress"
+    ]
+
+    stable = ("status", "step_index", "step_total", "step_label", "retries", "stalled")
+    assert {key: detail[key] for key in stable} == {key: listed[key] for key in stable}
+    assert detail["elapsed_ms"] >= 0
