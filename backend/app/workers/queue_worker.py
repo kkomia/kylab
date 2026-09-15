@@ -88,6 +88,12 @@ class TaskWorker:
         # 而不是被静默丢掉
         self._compile_wiki = compile_wiki
         self._last_maintain = 0.0
+        # 租约回收的节奏（v24 补）：**必须比维护间隔短得多**。维护是"清会长大的表"，
+        # 一小时一次没问题；而租约回收是"把被崩溃/重启打断的任务放回队列"——
+        # 一小时一次意味着队列要卡整整一小时（实测卡了 8 小时，因为压根没人调）。
+        # 默认跟着租约时长走：租约过期多久，就该在多久内被发现。
+        self._reclaim_interval = float(lease_seconds)
+        self._last_reclaim = 0.0
         self._current_task_id: str | None = None
         self._thread: asyncio.Task[None] | None = None
         #: 租约已易主的标志。见 ``_mark_lease_lost`` 的说明：它必须活在 worker 级，
@@ -170,6 +176,9 @@ class TaskWorker:
             await self._drain_thread()
 
     async def _consume_loop(self, stopping: asyncio.Event) -> None:
+        # 启动先回收一次：上一次进程崩溃/被 kill 时手上的任务还写着 running，
+        # 不回收就永远不会被重新领取（文档也永远停在中间阶段）。
+        self._reclaim_expired(force=True)
         while not stopping.is_set() and not self._lease_lost.is_set():
             try:
                 worked = await self.run_once()
@@ -179,9 +188,33 @@ class TaskWorker:
                 logger.exception("worker 循环出现未预期异常，继续运行")
                 worked = False
             if not worked:
+                self._reclaim_expired()
                 self._run_maintenance()
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stopping.wait(), timeout=self._poll_interval)
+
+    def _reclaim_expired(self, *, force: bool = False) -> None:
+        """把租约过期、还写着 ``running`` 的任务回收掉（回到队列或判失败）。
+
+        **这是断点续跑的兜底那一环**：架构 §4 承诺"进程崩溃后超时任务回到 PENDING"，
+        而它过去只写在 ``MetaStore.reclaim_expired_tasks`` 与文档里，**生产代码里没有
+        任何调用者**——于是任何被中断的任务都永远停在 running：既不会被重试，
+        也不会失败，文档就永远钉在 parsing/chunking 上。实测有一篇这样挂了 8 小时。
+
+        **只在空闲分支跑**（与 ``_run_maintenance`` 同一条理由）：回收要写库，
+        有活干的时候不该去抢。失败一律吞掉——回收失败不该带走消费者。
+        """
+        now = time.monotonic()
+        if not force and now - self._last_reclaim < self._reclaim_interval:
+            return
+        self._last_reclaim = now
+        try:
+            reclaimed = self._stores.meta.reclaim_expired_tasks()
+        except Exception:
+            logger.warning("回收过期租约失败，跳过本轮", exc_info=True)
+            return
+        if reclaimed:
+            logger.info("回收过期租约 %d 条（已放回队列或判失败）", reclaimed)
 
     def _run_maintenance(self) -> None:
         """空闲时按间隔跑一次维护。

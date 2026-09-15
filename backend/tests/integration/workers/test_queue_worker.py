@@ -6,6 +6,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+import psycopg
 import pytest
 
 from app.models.enums import DocumentStage, TaskKind, TaskState
@@ -395,3 +396,32 @@ async def test_wiki_task_without_wiring_fails_clearly(
 
     failed = bundle.meta.get_task(task.id)
     assert failed is not None and "尚未接线" in (failed.error or "")
+
+
+@pytest.mark.asyncio
+async def test_stuck_lease_is_reclaimed_by_the_running_worker(
+    bundle: StoreBundle, ingest: IngestService, kb
+) -> None:
+    """**worker 自己会把卡住的任务捞回来**（v24 补的调用点）。
+
+    在这之前 `reclaim_expired_tasks` 只有实现和用例、生产代码里没有调用者，
+    于是被崩溃/重启打断的任务永远停在 running：不重试、不失败、文档永远钉在
+    中间阶段（实测挂过 8 小时）。这里钉住"回收真的会跑"。
+    """
+    outcome = ingest.submit(knowledge_base_id="kb_1", filename="a.md", content=CONTENT.encode())
+    _enqueue(bundle, outcome.document.id)
+    # 模拟"上一个进程领走了任务然后死了"：租约已经过期，状态还写着 running
+    bundle.meta.claim_task(owner="worker-dead", lease_seconds=1)
+    from app.core.config import get_settings
+
+    with psycopg.connect(get_settings().database_url) as conn:
+        conn.execute(
+            "UPDATE tasks SET lease_expires_at = now() - interval '1 hour' WHERE state = 'running'"
+        )
+
+    worker = TaskWorker(bundle, ingest, owner="worker-alive", poll_interval=0.01)
+    worker._reclaim_expired(force=True)  # type: ignore[attr-defined]
+
+    assert bundle.meta.list_tasks(TaskState.PENDING)
+    assert await worker.run_once() is True
+    assert bundle.meta.get_document(outcome.document.id).stage is DocumentStage.INDEXED
