@@ -2804,6 +2804,18 @@ class PostgresMetaStore(MetaStore):
             ).fetchone()
         return row["value"] if row else None
 
+    def get_settings(self, keys: Sequence[str]) -> dict[str, str]:
+        wanted = list(dict.fromkeys(keys))
+        if not wanted:
+            return {}
+        sql = (
+            "SELECT key, value FROM app_settings"  # noqa: S608
+            f" WHERE key IN ({_placeholders(len(wanted))})"
+        )
+        with self._db.read() as conn:
+            rows = conn.execute(sql, tuple(wanted)).fetchall()
+        return {str(row["key"]): str(row["value"]) for row in rows}
+
     def set_setting(self, key: str, value: str) -> None:
         with self._db.session() as conn:
             conn.execute(

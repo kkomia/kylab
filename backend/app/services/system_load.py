@@ -46,6 +46,9 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
+CONFIG_CACHE_SECONDS = 30.0
+"""运行期配置的短缓存时长。见 ``_mineru_configured_cached``。"""
+
 MIN_CPU_SAMPLE_GAP = 0.2
 """两次 CPU 采样至少隔这么久才算得动。
 
@@ -191,6 +194,11 @@ class SystemLoadService:
         self._now = now or (lambda: datetime.now(UTC))
         self._cpu_sample: tuple[float, float, float] | None = None
         self._lock = threading.Lock()
+        # "配没配 MinerU"的短缓存（§12.116）。它要读运行期配置（一条 SQL ≈ 6ms，
+        # 成本几乎全在往返上），而面板每 2 秒问一次；令牌不会秒级变化，
+        # 缓存 30 秒既省掉这笔固定税，又不会让"刚填完令牌"看起来没生效。
+        self._mineru_checked_at: float = 0.0
+        self._mineru_is_configured: bool = False
 
     # ------------------------------------------------------------------ 对外
 
@@ -297,14 +305,25 @@ class SystemLoadService:
             load.oldest_pending_seconds = round(max(0.0, age), 1)
         return load
 
+    def _mineru_configured_cached(self) -> bool:
+        """带 30 秒缓存地读"配没配令牌"（见构造函数里的说明）。"""
+        moment = time.monotonic()
+        if moment - self._mineru_checked_at < CONFIG_CACHE_SECONDS:
+            return self._mineru_is_configured
+        try:
+            # 注意字段名不能与注入进来的回调重名（第一版就是这样炸的：
+            # 缓存值把回调覆盖了，下一次调用 `bool` 直接 TypeError）
+            self._mineru_is_configured = bool(self._mineru_configured())
+        except Exception:  # pragma: no cover - 配置读取失败按"没配"处理
+            logger.warning("读取 MinerU 配置失败", exc_info=True)
+            self._mineru_is_configured = False
+        self._mineru_checked_at = moment
+        return self._mineru_is_configured
+
     # ------------------------------------------------------------------ 云端额度
 
     def _quota(self) -> ParserQuota:
-        configured = False
-        try:
-            configured = bool(self._mineru_configured())
-        except Exception:  # pragma: no cover - 配置读取失败按"没配"处理
-            logger.warning("读取 MinerU 配置失败", exc_info=True)
+        configured = self._mineru_configured_cached()
 
         quota = ParserQuota(
             parser_name=MinerUCloudParser.name,

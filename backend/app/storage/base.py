@@ -1602,6 +1602,17 @@ class MetaStore(ABC):
     def get_setting(self, key: str) -> str | None: ...
 
     @abstractmethod
+    def get_settings(self, keys: Sequence[str]) -> dict[str, str]:
+        """一次取多个设置项（一条 SQL），只返回**库里真有值的**那些。
+
+        单键版在每次请求的路径上被连读好几次（一次 `mineru()` 读三个键 = 三次往返，
+        实测 18ms，而 PG 每次只要 2ms——成本全在往返上）。批量版把 N 次降到 1 次。
+        没值的键**不出现在结果里**（不是空串）：调用方要按"库 > 引导值 > 默认值"
+        的同一套优先级补齐。
+        """
+
+
+    @abstractmethod
     def set_setting(self, key: str, value: str) -> None: ...
 
     @abstractmethod

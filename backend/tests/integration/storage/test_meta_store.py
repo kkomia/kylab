@@ -1056,3 +1056,18 @@ def test_purge_stage_events_only_drops_old_ones(store: MetaStore, kb, document) 
     assert removed == 2  # uploaded + parsing
     stages = [event.stage for event in store.list_document_stage_events("doc_1")]
     assert stages == ["chunking"]
+
+
+def test_get_settings_batch_returns_only_stored_keys(store: MetaStore) -> None:
+    """批量读设置：**一条 SQL** 拿多个键（每次请求的路径上省掉 N−1 次往返）。
+
+    只返回"库里真有值"的键——没值的键不出现在结果里（不是空串），
+    调用方按同一套优先级（库 > 引导值 > 默认值）补齐。
+    """
+    store.set_setting("mineru.token", "tk-1")
+    store.set_setting("llm.temperature", "0.5")
+
+    got = store.get_settings(["mineru.token", "llm.temperature", "llm.enable_thinking"])
+
+    assert got == {"mineru.token": "tk-1", "llm.temperature": "0.5"}
+    assert store.get_settings([]) == {}
