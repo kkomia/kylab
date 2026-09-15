@@ -42,6 +42,7 @@ from app.api.v1.schemas import (
     DocumentPartList,
     DocumentPartOut,
     DocumentRenameIn,
+    DocumentTimelineOut,
     UploadAccepted,
 )
 from app.core.config import Settings, get_settings
@@ -391,6 +392,27 @@ async def get_document(
     # 走共享的 document_out 而不是就地拼 _to_out：出题统计这类"后端补的派生字段"
     # 一处漏传就是"列表有、详情没有"的不一致（v24 实测踩到：详情一直显示 0 条问题）。
     return document_out(services, record)
+
+
+@router.get(
+    "/documents/{document_id}/timeline",
+    response_model=DocumentTimelineOut,
+    summary="处理进度时间线（共几步 / 现在第几步 / 每步耗时）",
+)
+async def document_timeline(
+    document_id: str,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
+) -> DocumentTimelineOut:
+    """给列表行的分段进度条与右侧抽屉的明细喂数据。
+
+    **跑着时最后一步的耗时是"到现在为止"**，所以前端轮询时它会一直在长——
+    这是"还在动"的证据，比一个转圈图标可信。
+    """
+    _guard_document(services, caller, document_id)
+    return DocumentTimelineOut.model_validate(
+        services.documents.timeline(document_id), from_attributes=True
+    )
 
 
 @router.patch("/documents/{document_id}", response_model=DocumentOut, summary="重命名文档")

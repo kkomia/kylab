@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 
 from app.core.exceptions import (
     ConflictError,
@@ -20,6 +21,7 @@ from app.core.page_markers import strip_page_markers
 from app.core.signing import DEFAULT_TTL_SECONDS, sign_resource
 from app.models.enums import DocumentStage, TaskKind, TaskState
 from app.pipeline.state_machine import can_transition
+from app.services.timeline import DocumentTimeline, build_timeline
 from app.storage.base import (
     ChunkRecord,
     DocumentPartRecord,
@@ -255,6 +257,22 @@ class DocumentService:
     def active_question_documents(self, document_ids: list[str]) -> set[str]:
         """这些文档里还有出题任务在队列里的那几个（列表显示"生成中"并继续轮询）。"""
         return self._stores.meta.active_question_documents(document_ids)
+
+    def timeline(self, document_id: str) -> DocumentTimeline:
+        """这篇文档的处理进度时间线（v24）。
+
+        数据源是阶段事件（每次进入某阶段一条），折成"共几步 / 现在第几步 /
+        每步各花多久"。**跑着时最后一步的耗时是"到现在为止"**，所以前端每次轮询
+        都会看到它在长——这正是"还在动"的证据。
+        """
+        record = self.get(document_id)
+        events = self._stores.meta.list_document_stage_events(document_id)
+        return build_timeline(
+            document_id=document_id,
+            stage=record.stage.value,
+            events=events,
+            now=datetime.now(UTC),
+        )
 
     def get(self, document_id: str) -> DocumentRecord:
         record = self._stores.meta.get_document(document_id)

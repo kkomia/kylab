@@ -16,9 +16,9 @@ from app.core.storage import STORAGE_SUBDIRS, reset_stores
 
 
 def _assert_storage_ready(pg_database) -> None:
-    from app.storage.postgres_impl.schema import BASELINE_VERSION, current_version
+    from app.storage.postgres_impl.schema import SCHEMA_VERSION, current_version
 
-    assert current_version(pg_database) == BASELINE_VERSION, "启动后 schema 应已就位"
+    assert current_version(pg_database) == SCHEMA_VERSION, "启动后 schema 应已就位"
 
 
 @pytest.fixture

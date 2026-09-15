@@ -16,7 +16,7 @@ import sys
 
 from app.core.config import get_settings
 from app.storage.postgres_impl.connection import Database
-from app.storage.postgres_impl.schema import BASELINE_VERSION, prepare
+from app.storage.postgres_impl.schema import SCHEMA_VERSION, prepare
 
 _TABLE_COUNT_SQL = """
 select count(*) as n
@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         db.close()
 
-    print(f"\n结论：存储后端可用（schema 基线 v{BASELINE_VERSION}）")
+    print(f"\n结论：存储后端可用（schema 版本 v{SCHEMA_VERSION}）")
     return 0
 
 

@@ -228,6 +228,23 @@ class WikiSourceRecord:
 
 
 @dataclass(slots=True)
+class DocumentStageEventRecord:
+    """一次"进入某阶段"的事件（v24）。进度时间线的数据源。
+
+    阶段会**重复进入**（失败重试、重新摄入、取消后重跑），所以事件是追加的、
+    不是覆盖的——"每个环节各花多久"正是相邻两次进入的时间差。
+    """
+
+    document_id: str
+    stage: str
+    entered_at: datetime
+    id: int = 0
+    """自增序号。比时间戳更适合定序：同一微秒进入两次也分得清先后。"""
+    error: str | None = None
+    """进入该阶段时带上的错误（失败/取消时有值）。"""
+
+
+@dataclass(slots=True)
 class DocumentRecord:
     """文档。大文件切分后，本记录代表用户看到的那一个文件。"""
 
@@ -837,6 +854,10 @@ class MetaStore(ABC):
     def update_document_stage(
         self, document_id: str, stage: DocumentStage, *, error: str | None = None
     ) -> None: ...
+
+    @abstractmethod
+    def list_document_stage_events(self, document_id: str) -> list[DocumentStageEventRecord]:
+        """某文档的阶段进入事件，按发生顺序。进度时间线读它。"""
 
     @abstractmethod
     def update_document_page_count(self, document_id: str, page_count: int | None) -> None:

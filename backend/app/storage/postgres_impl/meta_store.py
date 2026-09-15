@@ -56,6 +56,7 @@ from app.storage.base import (
     DataSourceRecord,
     DocumentPartRecord,
     DocumentRecord,
+    DocumentStageEventRecord,
     FolderRecord,
     IdempotencyRecord,
     ImageRecord,
@@ -366,6 +367,14 @@ class PostgresMetaStore(MetaStore):
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
+            )
+            # **初始阶段也要记一条事件**：文档是带着 `uploaded` 建出来的，它不经过
+            # ``update_document_stage``，于是"已接收"在时间线上会是 0 次进入、0 耗时
+            # ——恰恰把用户最想知道的**排队等待时间**漏掉了（用例抓到过）。
+            conn.execute(
+                "INSERT INTO document_stage_events (document_id, stage, error)"
+                " VALUES (%s, %s, %s)",
+                (record.id, record.stage.value, record.error),
             )
         return record
 
@@ -769,11 +778,43 @@ class PostgresMetaStore(MetaStore):
     def update_document_stage(
         self, document_id: str, stage: DocumentStage, *, error: str | None = None
     ) -> None:
+        """改文档阶段**并追加一条阶段事件**（v24）。
+
+        **事件写在这里而不是各个调用点**：这是全仓唯一改 ``documents.stage`` 的地方
+        （摄入的 `_advance`、取消、重新摄入的复位都经过它）。散到调用点去写，
+        迟早会漏一处，时间线就会缺一段——而"缺一段"在界面上看起来像"这一步没耗时"，
+        比报错还难查。
+
+        两件事同一个事务：阶段与它的时间戳必须一起落地，否则会出现
+        "阶段是切分、事件却还停在解析"的错位。
+        """
         with self._db.session() as conn:
             conn.execute(
                 "UPDATE documents SET stage = %s, error = %s, updated_at = %s WHERE id = %s",
                 (stage.value, error, _dump(_now()), document_id),
             )
+            conn.execute(
+                "INSERT INTO document_stage_events (document_id, stage, error) VALUES (%s, %s, %s)",
+                (document_id, stage.value, error),
+            )
+
+    def list_document_stage_events(self, document_id: str) -> list[DocumentStageEventRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT id, document_id, stage, entered_at, error FROM document_stage_events"
+                " WHERE document_id = %s ORDER BY id",
+                (document_id,),
+            ).fetchall()
+        return [
+            DocumentStageEventRecord(
+                id=row["id"],
+                document_id=row["document_id"],
+                stage=row["stage"],
+                entered_at=row["entered_at"],
+                error=row["error"],
+            )
+            for row in rows
+        ]
 
     def delete_document(self, document_id: str) -> None:
         with self._db.session() as conn:

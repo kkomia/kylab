@@ -631,3 +631,49 @@ def test_detail_and_list_report_the_same_question_status(
         listed["question_count"],
         listed["questioned_chunk_count"],
     )
+
+
+# ----------------------------------------------------- 处理进度时间线（v24）
+
+
+def test_timeline_reports_steps_and_current_position(client: TestClient, kb_id: str) -> None:
+    """给列表的分段进度条喂数据：共几步、现在第几步、每步多久。
+
+    **不给百分比**：环节耗时不均，百分比只会编出一个对不上的数字。
+    """
+    document = _upload(client, kb_id, "走一遍.md")
+
+    timeline = client.get(f"/api/v1/documents/{document['id']}/timeline").json()
+
+    assert timeline["step_total"] == 6
+    assert timeline["current_index"] == 1  # 刚上传：停在第一个环节
+    assert timeline["status"] == "running"
+    first = timeline["steps"][0]
+    assert (first["key"], first["status"], first["visits"]) == ("uploaded", "running", 1)
+
+
+def test_timeline_follows_the_whole_pipeline(client: TestClient, kb_id: str) -> None:
+    """跑完一遍真实摄入，时间线要把 6 个环节都记上——**这是它的全部数据来源**。
+
+    事件写在存储层唯一那处阶段推进点（``update_document_stage``），所以这里
+    真的把摄入跑完（测试里 worker 是关的，直接调 ingest），而不是直接改库——
+    直接改库恰好绕过事件写入，等于什么都没验证。
+    """
+    from app.core.services import get_services
+
+    document = _upload(client, kb_id, "推进.md")
+    get_services().ingest.ingest(document["id"])
+
+    timeline = client.get(f"/api/v1/documents/{document['id']}/timeline").json()
+
+    assert timeline["status"] == "done"
+    assert timeline["current_index"] == timeline["step_total"] == 6
+    # 每一步都被真的进入过（有事件），且没有一个停在 pending
+    assert all(step["visits"] >= 1 for step in timeline["steps"])
+    assert all(step["status"] != "pending" for step in timeline["steps"])
+    # 总耗时 = 各环节耗时之和（口径一致，界面上的数字才对得上）
+    assert timeline["total_ms"] == sum(step["duration_ms"] for step in timeline["steps"])
+
+
+def test_timeline_missing_document_is_404(client: TestClient) -> None:
+    assert client.get("/api/v1/documents/doc_nope/timeline").status_code == 404

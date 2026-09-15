@@ -1,7 +1,8 @@
 """PG schema 的创建与校验（v0.12）。
 
 本次迁移**不做数据迁移**（旧 SQLite 库直接舍弃），所以没有"24 条增量迁移要重放"
-这件事：``schema.sql`` 就是第 1 版基线，之后的演进再往 ``MIGRATIONS`` 里追加。
+这件事：``schema.sql`` 就是第 1 版基线，之后的演进往 ``MIGRATIONS`` 里追加、
+由启动时的 ``ensure_schema`` 自动应用（不需要人工 psql——DDL 的唯一属主是应用）。
 
 职责边界：DDL 的**唯一属主是应用**。启动时由这里负责建 schema / 校验版本，
 不依赖容器 initdb 脚本或人工 psql（那会造出第二个真相来源）。
@@ -9,16 +10,61 @@
 
 from __future__ import annotations
 
+import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import psycopg
 
 from app.storage.postgres_impl.connection import Database
 
+logger = logging.getLogger(__name__)
+
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
+
+SCHEMA_VERSION = 2
+"""应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
+
+**启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
+（库被更新版应用升过级）。这与"库比基线还旧"是两码事——后者要人工处理。"""
+
+
+@dataclass(frozen=True, slots=True)
+class Migration:
+    """一条增量迁移。**只增不改**：已经发布的条目一律不许改字面量。"""
+
+    version: int
+    description: str
+    statements: tuple[str, ...]
+
+
+MIGRATIONS: tuple[Migration, ...] = (
+    Migration(
+        version=2,
+        description="文档阶段事件：记录每次进入某阶段的时间，用于进度时间线（v24）",
+        statements=(
+            # 时间线的数据源。为什么另存事件而不是给 documents 加几个时间戳列：
+            # 阶段会**重复进入**（失败重试、重新摄入、取消后重跑），一行时间戳
+            # 存不下历史；而"每个环节各花多久"正是要看相邻两次进入的间隔。
+            """
+            CREATE TABLE document_stage_events (
+                id          bigserial PRIMARY KEY,
+                document_id text NOT NULL REFERENCES documents (id) ON DELETE CASCADE,
+                stage       text NOT NULL,
+                entered_at  timestamptz NOT NULL DEFAULT now(),
+                error       text
+            )
+            """,
+            # 时间线永远按"某文档、先后顺序"读，所以索引带上 id 而不是只 document_id：
+            # entered_at 可能同微秒，id 才是稳定的先后关系。
+            "CREATE INDEX idx_document_stage_events_doc ON document_stage_events (document_id, id)",
+        ),
+    ),
+)
+
 
 REQUIRED_EXTENSIONS = ("vector",)
 """启用项目功能所必需的扩展。缺失时**启动即失败**并给出可操作的提示——
@@ -81,12 +127,38 @@ def ensure_schema(db: Database) -> int:
             f"schema 版本为 {version}，低于应用要求的基线 {BASELINE_VERSION}；"
             "请执行 backend/app/storage/postgres_impl/schema.sql"
         )
-    if version > BASELINE_VERSION:
+    if version > SCHEMA_VERSION:
         raise SchemaError(
-            f"schema 版本为 {version}，高于本应用已知的 {BASELINE_VERSION}；"
+            f"schema 版本为 {version}，高于本应用已知的 {SCHEMA_VERSION}；"
             "库是被更新版应用升过级的，请升级应用而不是降级数据库"
         )
-    return version
+    return _apply_migrations(db, version)
+
+
+def _apply_migrations(db: Database, version: int) -> int:
+    """把缺的增量迁移按序补上，返回补完后的版本。
+
+    **每条一个事务、并把版本号写在同一事务里**：DDL 在中途失败时要么整条生效、
+    要么整条回滚，不会留下"表建了但版本没记"的半截状态（下一轮启动会重跑它）。
+    这也让并发启动的多个副本天然安全——两个进程同时补同一条时，先提交的那个赢，
+    后一个会因为版本已推进而在下一轮跳过（`schema_migrations` 的主键还会挡住重复写入）。
+    """
+    pending = [item for item in MIGRATIONS if item.version > version]
+    for item in pending:
+        try:
+            with db.session() as conn:
+                for statement in item.statements:
+                    conn.execute(statement)
+                conn.execute(
+                    "INSERT INTO schema_migrations (version, description) VALUES (%s, %s)",
+                    (item.version, item.description),
+                )
+        except Exception as exc:
+            raise SchemaError(
+                f"增量迁移 v{item.version}（{item.description}）执行失败：{exc}"
+            ) from exc
+        logger.info("已应用增量迁移 v%d：%s", item.version, item.description)
+    return current_version(db) if pending else version
 
 
 def check_extensions(db: Database) -> None:

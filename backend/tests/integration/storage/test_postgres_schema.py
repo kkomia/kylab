@@ -23,8 +23,8 @@ from psycopg import sql
 
 from app.storage.postgres_impl.connection import Database
 from app.storage.postgres_impl.schema import (
-    BASELINE_VERSION,
     SCHEMA_PATH,
+    SCHEMA_VERSION,
     SchemaError,
     current_version,
     ensure_schema,
@@ -88,8 +88,8 @@ def test_current_version_is_none_before_schema(fresh_db: Database) -> None:
 
 
 def test_prepare_bootstraps_a_fresh_database(fresh_db: Database) -> None:
-    """空库上 prepare 必须能一次建成：建表 + 装扩展，而不是先抱怨缺扩展。"""
-    assert prepare(fresh_db) == BASELINE_VERSION
+    """空库上 prepare 必须能一次建成：建表 + 装扩展 + 补齐增量，而不是先抱怨缺扩展。"""
+    assert prepare(fresh_db) == SCHEMA_VERSION
     assert _missing_tables(fresh_db) == set(), "schema.sql 声明的表应全部建成"
 
     with fresh_db.read() as conn:
@@ -103,7 +103,7 @@ def test_prepare_is_idempotent(fresh_db: Database) -> None:
     """启动会反复调用：第二次不能因为"表已存在"而失败。"""
     first = prepare(fresh_db)
     second = prepare(fresh_db)
-    assert first == second == BASELINE_VERSION
+    assert first == second == SCHEMA_VERSION
     assert _missing_tables(fresh_db) == set()
 
 
@@ -117,13 +117,14 @@ def test_version_older_than_baseline_is_rejected(fresh_db: Database) -> None:
         ensure_schema(fresh_db)
 
 
-def test_version_newer_than_baseline_is_rejected(fresh_db: Database) -> None:
+def test_version_newer_than_schema_version_is_rejected(fresh_db: Database) -> None:
     """库被更新版应用升过级 → 同样拒绝，避免旧代码往新结构里写。"""
     prepare(fresh_db)
     with fresh_db.session() as conn:
         conn.execute(
             "insert into schema_migrations (version, description) values (%s, %s)",
-            (BASELINE_VERSION + 1, "未来版本"),
+            # "来自未来"的定义随 SCHEMA_VERSION 走：比它再高一级才算库被升过级
+            (SCHEMA_VERSION + 1, "未来版本"),
         )
 
     with pytest.raises(SchemaError, match="高于本应用已知的"):

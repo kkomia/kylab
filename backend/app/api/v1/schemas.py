@@ -1367,3 +1367,30 @@ class TaskCancelOut(BaseModel):
     succeeded: int
     failed: int
     items: list[TaskCancelItemOut] = Field(default_factory=list)
+
+
+class TimelineStepOut(BaseModel):
+    """时间线上的一个环节。"""
+
+    key: str
+    label: str
+    status: Literal["done", "running", "pending", "failed", "canceled"]
+    duration_ms: int
+    visits: int
+    """进入过几次；>1 = 重试或重新摄入过。"""
+    error: str | None = None
+
+
+class DocumentTimelineOut(BaseModel):
+    """一篇文档的处理进度：共几步、现在第几步、共耗时多少、每步各花多久。
+
+    **不给百分比**：摄入的环节耗时不均（解析可能几分钟、切分几秒），
+    百分比只会编出一个骗人的数字；"第 3/6 步 + 每步实际耗时"才是能对得上的信息。
+    """
+
+    document_id: str
+    status: Literal["running", "done", "failed", "canceled"]
+    current_index: int
+    step_total: int
+    total_ms: int
+    steps: list[TimelineStepOut] = Field(default_factory=list)

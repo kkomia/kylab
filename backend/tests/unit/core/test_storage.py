@@ -21,7 +21,7 @@ from app.core.storage import (
 from app.models.enums import DataSourceKind, DocumentStage
 from app.storage.base import DocumentRecord, KnowledgeBaseRecord
 from app.storage.postgres_impl.connection import Database
-from app.storage.postgres_impl.schema import BASELINE_VERSION, current_version
+from app.storage.postgres_impl.schema import MIGRATIONS, SCHEMA_VERSION, current_version
 
 
 def _query(settings: Settings, sql: str):  # type: ignore[no-untyped-def]
@@ -78,7 +78,7 @@ def test_build_stores_applies_baseline_schema(settings: Settings) -> None:
     db = Database(settings.database_url or "")
     db.open()
     try:
-        assert current_version(db) == BASELINE_VERSION
+        assert current_version(db) == SCHEMA_VERSION
     finally:
         db.close()
 
@@ -90,7 +90,8 @@ def test_build_stores_is_idempotent(settings: Settings) -> None:
     build_stores(settings)
 
     applied = _query(settings, "select count(*) as n from schema_migrations")
-    assert applied == 1, "基线只应记录一次"
+    # 基线一条 + 每条增量一条；幂等意味着**再启动一次不会多出来**
+    assert applied == 1 + len(MIGRATIONS), "基线与增量各只应记录一次"
 
 
 def test_stores_are_functionally_wired(settings: Settings) -> None:
