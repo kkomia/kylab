@@ -685,8 +685,13 @@ def _list_documents(
 def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
     """在**记忆**里召回，与 `search` 是两条路。
 
-    记忆的归属按账号走：会话令牌能给出账号，`recall` 因此天然是"我自己的记忆"。
-    这里的判定与文档库不同——记忆不绑知识库范围，它绑人。
+    **记忆目前是"一个工作区"，不按账号分**（设计文档 §5 的已知边界）：
+    只要 ReMe 跑在同一个工作区上，不同账号召回的就是同一份记忆。
+    这里**不做归属过滤**，因为过滤不了——真过滤需要按账号分工作区目录，
+    而那个决定在产品层面还没做。
+
+    这段话是刻意写在这里的：先前这里写的是"记忆的归属按账号走、它绑人"，
+    而代码里没有任何一处做这件事。留着那种说法，下一个人就会以为记忆已经隔离好了。
     """
     query = _require(args, "query")
     limit = int(args.get("limit") or DEFAULT_RECALL)

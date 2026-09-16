@@ -12,7 +12,12 @@
 - ``remember`` → 写 ``MEMORY.md``，**不经过 ReMe**。理由：那是"核心长期记忆"这一层，
   按 QwenPaw/ReMe 的设计它就是**用户与 Agent 共编的普通文件**、
   且明确"不由自动流程覆盖"。我们直接维护它，于是**没有 ReMe 也能记住东西**；
-- ``core_text`` → 供对话把 ``MEMORY.md`` 注入 system prompt（二期）。
+- ``core_text`` → 供对话把 ``MEMORY.md`` 注入 system prompt（二期）；
+- ``files`` / ``file_text`` / ``write_file`` / ``delete_file`` / ``graph`` → 三期的
+  记忆页（浏览/编辑/看图谱）。这些**直接读写本地工作区**，理由写在
+  ``services/memory_files.py`` 的模块头：看自己的文本文件不该先要求另一个进程活着。
+  编辑后的索引由 ReMe 自己的文件守护追（实测：5 秒 debounce），**保存路径上不需要
+  我们做什么**；``reindex`` 只是手动兜底。
 
 **关着时一律明确报错，不返回空**：返回空会让模型以为"没有相关记忆"，
 然后基于错误前提继续推理——那是比报错更坏的一种失败。
@@ -30,12 +35,19 @@ import httpx
 
 from app.core.exceptions import InvalidRequestError, UpstreamError
 from app.models.enums import TaskKind, TaskState
+from app.services import memory_files
+from app.services.memory_files import MemoryFile, MemoryFileDetail, MemoryGraph
 from app.services.runtime_config import RuntimeConfigService
 from app.storage.base import StoreBundle, TaskRecord
 
 __all__ = [
     "CORE_MEMORY_FILE",
+    "MAX_ENTRY_CHARS",
+    "MAX_RECALL",
     "SOUL_FILE",
+    "MemoryFile",
+    "MemoryFileDetail",
+    "MemoryGraph",
     "MemoryHit",
     "MemoryLink",
     "MemoryService",
@@ -59,6 +71,11 @@ DEFAULT_RECALL = 6
 #: 5 是 ReMe/QwenPaw 的默认（见设计文档 §2.4），这里保持一致——
 #: 换成别的数没有依据，而它有：那条默认值来自它们的实际使用经验。
 DEFAULT_CAPTURE_EVERY = 5
+
+#: 一条记忆的字数上限。**协议层与这里同源**（``api/v1/schemas.py`` 的
+#: ``MemoryRememberIn`` 直接引这个常量）：写死两份的话，界面会先放行再被服务层拒，
+#: 用户看到的是一句"请求不合法"，而不是"这条太长了，请存成笔记"。
+MAX_ENTRY_CHARS = 500
 
 #: 调用 ReMe 的超时。它的检索是本地 BM25，正常在毫秒级；
 #: 给到 10 秒是为了容忍首次索引建立，而不是为了容忍它卡死。
@@ -319,12 +336,12 @@ class MemoryService:
         text = " ".join(content.split()).strip()
         if not text:
             raise InvalidRequestError("缺少参数：content")
-        if len(text) > 500:
+        if len(text) > MAX_ENTRY_CHARS:
             # 一条记忆该是一句可复用的事实，不是一篇文档。超长的应该存成笔记
             # （notes + 知识库那条路），否则 MEMORY.md 会被一篇长文撑爆，
             # 而它每轮都要注入上下文。
             raise InvalidRequestError(
-                f"一条记忆最多 500 字（收到 {len(text)} 字）。"
+                f"一条记忆最多 {MAX_ENTRY_CHARS} 字（收到 {len(text)} 字）。"
                 "更长的内容请用笔记：存成笔记再决定要不要加入知识库"
             )
 
@@ -376,6 +393,63 @@ class MemoryService:
         return True
 
     # ------------------------------------------------------------------ 文件
+    #
+    # 三期的浏览/编辑走**本地目录**（理由见 services/memory_files.py 的模块头）：
+    # 这几个方法**不要求 ``memory.enabled``**——记忆关着的时候，用户依然该能打开
+    # 自己的记忆文件看看写了什么、把不对的改掉。要求"先起一个服务才能读自己的文本
+    # 文件"是没道理的。真正需要服务活着的只有召回与索引（``recall`` / ``reindex``）。
+
+    def files(self) -> list[MemoryFile]:
+        """列出工作区里的记忆文件（分类、摘要、出链、是否已整合）。"""
+        return memory_files.scan(self.workspace)
+
+    @property
+    def scan_limit(self) -> int:
+        """一次最多列多少个文件。界面要拿它判断"列表是不是被截断了"——
+        截断了却不说，用户会以为"我的文件丢了"。"""
+        return memory_files.MAX_LISTED_FILES
+
+    def describe(self, path: str) -> MemoryFile:
+        """单个文件的元信息（不含正文）。见 ``memory_files.describe``。"""
+        return memory_files.describe(self.workspace, path)
+
+    def file_text(self, path: str) -> MemoryFileDetail:
+        """读一个文件的原文（含 frontmatter，供编辑器逐字还原）。"""
+        return memory_files.read_file(self.workspace, path)
+
+    def write_file(self, path: str, content: str) -> MemoryFileDetail:
+        """写一个文件。
+
+        **故意不在这里调 ``reindex``**：ReMe 自己有一组后台守护
+        （``index_update_loop``，``watch_dirs: [daily_dir, digest_dir]``、
+        ``force_polling`` + 5 秒 debounce），编辑会被它自动吃掉；
+        而 ``reindex`` 的说明是 *without rescanning workspace files*——
+        它只重建"已入库分片"的索引，**看不见刚新建的文件**。所以每次保存后调它
+        既是多余的、又解决不了新文件的问题。要手动兜底时用 ``reindex``（界面上是
+        那个按钮），而不是在保存路径上假装做了点什么。
+        """
+        return memory_files.write_file(self.workspace, path, content)
+
+    def delete_file(self, path: str) -> None:
+        """删一个文件。索引同上：交给 ReMe 的守护去追。"""
+        memory_files.delete_file(self.workspace, path)
+
+    def graph(self) -> MemoryGraph:
+        """wikilink 图谱（本地算，见 ``memory_files.graph_of`` 的说明）。"""
+        return memory_files.graph_of(self.files())
+
+    def reindex(self) -> str:
+        """请记忆服务重建索引，返回它给的一句话。
+
+        这是**手动兜底**，不是保存流程的一环：守护进程只在服务活着的时候看文件，
+        所以"服务没起时改了一批文件、后来才起"这类情况下索引可能是旧的
+        （它启动时有 ``init_changes_step`` 做一次差量，但没覆盖到的就得手动来）。
+        ``scope`` 默认 ``all``（它自己的默认值），我们不传。
+        """
+        self._require_enabled()
+        return _brief(self._post("reindex", {}))
+
+    # ------------------------------------------------------ 核心记忆的条目
 
     def _read_entries(self) -> list[str]:
         """读回「核心长期记忆」那一节里的条目（保持顺序与原文）。"""

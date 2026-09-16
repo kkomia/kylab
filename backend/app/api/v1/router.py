@@ -20,6 +20,7 @@ from app.api.v1 import (
     knowledge_bases,
     lifecycle,
     maintenance,
+    memory,
     model_registry,
     notes,
     search,
@@ -59,3 +60,5 @@ api_router.include_router(tabular.router)
 api_router.include_router(webhooks.router)
 api_router.include_router(maintenance.router)
 api_router.include_router(wiki.router)
+# 记忆（v0.14 三期）：与知识库是**两个池子**，所以单独一组 /memory
+api_router.include_router(memory.router)

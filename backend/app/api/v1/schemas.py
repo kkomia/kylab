@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -19,6 +19,9 @@ from app.services.chunking import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_OVERLAP,
 )
+from app.services.memory import MAX_ENTRY_CHARS as MAX_MEMORY_ENTRY_CHARS
+from app.services.memory import MAX_RECALL as MAX_MEMORY_RECALL
+from app.services.memory_files import MAX_WRITE_CHARS as MAX_MEMORY_FILE_CHARS
 from app.services.suggested_questions import (
     DEFAULT_QUESTIONS_PER_CHUNK as DEFAULT_SUGGESTED_COUNT,
 )
@@ -1482,3 +1485,147 @@ class DocumentTimelineOut(BaseModel):
     抽屉要显示它，而它是**唯一能确定说"卡住"**的判据——光看"某一步跑了一小时"
     说明不了问题（解析大文件本来就慢）。判据来自 ``ObservabilityService``，
     与任务中心那一列同源。"""
+
+
+# --------------------------------------------------------------------- 记忆（v0.14 三期）
+
+
+class MemoryFileOut(BaseModel):
+    """记忆工作区里的一个文件（列表项，不含正文）。"""
+
+    path: str
+    name: str
+    title: str
+    kind: Literal["core", "daily", "digest", "other"]
+    summary: str = ""
+    tags: list[str] = Field(default_factory=list)
+    size_bytes: int = 0
+    modified_at: str = ""
+    links: list[str] = Field(default_factory=list)
+    retrievable: bool = False
+    """``recall`` 找不找得到它。
+
+    **必须显示出来**：只有 ``daily/`` 与 ``digest/`` 在 ReMe 的 ``watch_dirs`` 里、
+    才进检索索引；``MEMORY.md`` / ``SOUL.md`` 走注入。用户改完一个不参与检索的
+    文件却搜不到时，界面得能解释"这是位置决定的"，而不是让他怀疑索引坏了。
+    """
+
+    injected: bool = False
+    """每轮对话会不会被注入 system prompt（只有两个核心文件）。"""
+
+    consolidated: bool = False
+    """``daily`` 专有：有没有被 ``digest/`` 里的文件链到（= 是否已被整合）。"""
+
+
+class MemoryFilesOut(BaseModel):
+    files: list[MemoryFileOut] = Field(default_factory=list)
+    total: int = 0
+    truncated: bool = False
+    """文件数达到扫描上限被截断了——列表不完整这件事要让用户知道。"""
+
+
+class MemoryFileDetailOut(MemoryFileOut):
+    content: str = ""
+    """原文，**含 frontmatter**：编辑器要能逐字存回去，不能因为我们"顺手格式化"
+    而丢掉用户手写的东西。"""
+
+    meta: dict[str, Any] = Field(default_factory=dict)
+    truncated: bool = False
+    consolidated: bool | None = None
+    """**这里恒为 None**（= "没算"）：整合状态要跨文件才知道，而读单个文件不该
+    扫整个工作区。覆盖父类的同名布尔字段，就是为了不让界面把一个"恒 False"
+    显示成"未整合"——那是在说假话。列表接口里它是真值。"""
+
+
+class MemoryFileWriteIn(BaseModel):
+    content: str = Field(max_length=MAX_MEMORY_FILE_CHARS)
+    """整份内容（含 frontmatter）。**是覆盖不是追加**——编辑器里看到什么就存什么。"""
+
+
+class MemoryStatusOut(BaseModel):
+    """记忆层的状态。
+
+    ``enabled`` 与 ``reachable`` 是**两件事**：前者是"有没有打开"，后者是
+    "记忆服务活着吗"。分开是因为它们对应完全不同的处置——没打开要去设置里开，
+    服务没起要去把进程拉起来。揉成一个"不可用"会让用户不知道该动哪里。
+    """
+
+    enabled: bool
+    base_url: str = ""
+    workspace: str = ""
+    core_file_exists: bool = False
+    reachable: bool = False
+    detail: str = ""
+    file_count: int = 0
+    retrievable_count: int = 0
+    unconsolidated_count: int = 0
+    """``daily/`` 里还没被 ``digest/`` 链到的条数——"哪些还没被整合"（设计文档三期）。"""
+
+
+class MemoryOverviewOut(BaseModel):
+    status: MemoryStatusOut
+    files: list[MemoryFileOut] = Field(default_factory=list)
+    truncated: bool = False
+
+
+class MemoryRecallIn(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
+    limit: int | None = Field(default=None, ge=1, le=MAX_MEMORY_RECALL)
+
+
+class MemoryHitOut(BaseModel):
+    text: str
+    path: str = ""
+    start_line: int | None = None
+    end_line: int | None = None
+    score: float | None = None
+
+
+class MemoryLinkOut(BaseModel):
+    path: str
+    direction: Literal["out", "in"]
+    name: str = ""
+
+
+class MemoryRecallOut(BaseModel):
+    query: str
+    hits: list[MemoryHitOut] = Field(default_factory=list)
+    links: list[MemoryLinkOut] = Field(default_factory=list)
+    note: str = ""
+    """一句话提醒这是记忆而不是知识库原文（与 MCP 那份同口径）。"""
+
+
+class MemoryRememberIn(BaseModel):
+    content: str = Field(min_length=1, max_length=MAX_MEMORY_ENTRY_CHARS)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+
+
+class MemoryRememberOut(BaseModel):
+    saved: bool
+    entries: int = 0
+    reason: str = ""
+
+
+class MemoryGraphNodeOut(BaseModel):
+    path: str
+    title: str
+    kind: Literal["core", "daily", "digest", "other"]
+    degree: int = 0
+
+
+class MemoryGraphOut(BaseModel):
+    nodes: list[MemoryGraphNodeOut] = Field(default_factory=list)
+    edges: list[tuple[str, str]] = Field(default_factory=list)
+    dangling: list[tuple[str, str]] = Field(default_factory=list)
+    """写了但没解析到文件的链接 ``(来自哪份, 原始目标)``——界面提示"有 N 条链接指空"。"""
+
+
+class MemoryProbeOut(BaseModel):
+    reachable: bool
+    detail: str = ""
+
+
+class MemoryActionOut(BaseModel):
+    """无返回值的动作（重建索引）统一用它回一句人话。"""
+
+    detail: str = ""
