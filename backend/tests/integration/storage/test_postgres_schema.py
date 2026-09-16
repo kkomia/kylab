@@ -7,8 +7,12 @@
 
 运行方式（指向任意一个带 pgvector 的 PG，必须是超级用户以免 CREATE EXTENSION 被拒）：
 
-    KYLAB_TEST_DATABASE_URL="postgresql://kylab:kylab123@host:54321/postgres" \
+    KYLAB_TEST_DATABASE_URL="postgresql://USER:PASSWORD@host:5432/postgres" \
       pytest tests/integration/storage/test_postgres_schema.py -q
+
+**这里曾经写的是一组真实的开发库凭据**（用户名、口令、端口都是真的）——
+示例里放真口令等于把口令提交进了仓库，而"示例"正是最容易被复制粘贴到别处的东西。
+用占位符：读的人只需要看出**形状**（谁:什么@哪:哪/哪个库）。
 """
 
 from __future__ import annotations
