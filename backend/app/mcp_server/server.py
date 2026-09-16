@@ -49,7 +49,9 @@ def build_server():  # type: ignore[no-untyped-def]
 
     from mcp.server.mcpserver import MCPServer
 
+    from app.core.exceptions import KylabError
     from app.core.services import get_services
+    from app.mcp_server.auth import CallerMiddleware, current_caller
     from app.mcp_server.tools import tool_definitions
 
     server = MCPServer(
@@ -60,6 +62,9 @@ def build_server():  # type: ignore[no-untyped-def]
             "不是生成的回答。先 list_knowledge_bases 确认有哪些库，再按库检索"
             "——库里没有的东西检索不出来。"
         ),
+        # 身份解析：HTTP 读 Authorization 头，stdio 读 KYLAB_MCP_KEY（见 auth.py）。
+        # 挂在这里而不是每个工具里：判定只写一处，漏判才不会成为可能
+        middleware=[CallerMiddleware(get_services())],
     )
 
     # 描述从 tool_definitions 读，不在这里另写一份：那份清单已经是唯一真相，
@@ -75,9 +80,21 @@ def build_server():  # type: ignore[no-untyped-def]
 
         async def handler(**kwargs: object) -> str:
             payload = {key: value for key, value in kwargs.items() if key in accepted}
-            # 同步的服务层调用扔到线程池：MCP 的请求处理跑在事件循环里，
-            # 而检索与入库都是阻塞的，直接在循环里调会把整个服务卡住
-            result = await asyncio.to_thread(call_tool, get_services(), tool_name, payload)
+            try:
+                # **身份在事件循环这一侧取**：ContextVar 是中间件在本任务里 set 的，
+                # 而 to_thread 会把它复制到另一个线程——先取出来再带进去，语义更清楚
+                caller = current_caller()
+                # 同步的服务层调用扔到线程池：MCP 的请求处理跑在事件循环里，
+                # 而检索与入库都是阻塞的，直接在循环里调会把整个服务卡住
+                result = await asyncio.to_thread(
+                    call_tool, get_services(), tool_name, payload, caller=caller
+                )
+            except KylabError as exc:
+                # **领域错误交给模型看，不要抛出去**：SDK 会把异常统一压成
+                # 一句没有细节的 "Error executing tool xxx"（实测确认），
+                # 模型看不到"缺少参数：filename"，只能盲猜着重试。
+                # 返回成 JSON 之后，它能自己把参数改对，或者把原因转述给用户。
+                return json.dumps({"error": str(exc)}, ensure_ascii=False, indent=2)
             return json.dumps(result, ensure_ascii=False, indent=2, default=str)
 
         handler.__name__ = tool_name
@@ -107,7 +124,12 @@ def build_server():  # type: ignore[no-untyped-def]
 
 
 async def serve_stdio() -> None:
-    """stdio 传输：被客户端当子进程拉起时用这条。"""
+    """stdio 传输：被客户端当子进程拉起时用这条。
+
+    **凭据放在客户端配置的 ``env`` 里**（键名 ``KYLAB_MCP_KEY``，值是 API Key）：
+    这条传输没有请求头可读，所以环境变量是唯一的来源。没设也能连上、能列出工具，
+    但每个工具调用都会被拒并说明原因——见 ``auth.py`` 的解释。
+    """
     await build_server().run_stdio_async()
 
 
@@ -115,8 +137,12 @@ async def serve_http(host: str, port: int) -> None:
     """Streamable HTTP 传输：局域网内其他机器连过来时用这条。
 
     **默认只监听 127.0.0.1**：MCP 能读写知识库（含删除）。
-    要让别的机器连，得显式传 ``--host 0.0.0.0``；调用时同样要带凭据
-    （会话令牌或 API Key），服务端的鉴权一直生效（v0.11 起没有关闭开关）。
+    要让别的机器连，得显式传 ``--host 0.0.0.0``。
+
+    **鉴权现在是强制的**（v0.12 收口）：每个请求都要带
+    ``Authorization: Bearer <API Key>``，Key 的作用域决定它能看到、能写哪些库。
+    在此之前这里**没有任何身份**——实测不带凭据即可列出全部知识库，
+    而同一进程还挂着 ``delete_document``。收口方式见 ``auth.py``。
     """
     await build_server().run_streamable_http_async(host=host, port=port)
 

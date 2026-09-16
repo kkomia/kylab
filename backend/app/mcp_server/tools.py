@@ -22,6 +22,11 @@
 
 **关于返回值**：MCP 工具的结果要给 LLM 读，所以**不用 pydantic 模型**，
 直接给 dict / list——模型不需要 schema，而多一层转换只多一处出错的地方。
+
+**每个工具都必须带上调用者**（v0.12 起的收口）：``call_tool`` 的 ``caller``
+是**必填关键字参数、没有默认值**——默认值一旦存在，"忘了传"就等于匿名放行，
+而这类洞不会报错。作用域判定一律走 ``ApiKeyService``（``check_access`` /
+``visible_kb_ids``），不在这里另写一套：两套判定必然相漂。
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ from typing import Any
 from app.core.exceptions import InvalidRequestError
 from app.core.services import Services
 from app.models.enums import DataSourceKind
+from app.services.api_key import WRITE, Caller
 
 __all__ = ["TOOL_NAMES", "call_tool", "tool_definitions"]
 
@@ -173,17 +179,24 @@ def tool_definitions() -> list[dict[str, Any]]:
     ]
 
 
-def call_tool(services: Services, name: str, arguments: dict[str, Any] | None) -> Any:
+def call_tool(
+    services: Services,
+    name: str,
+    arguments: dict[str, Any] | None,
+    *,
+    caller: Caller,
+) -> Any:
     """执行一个工具。**未知工具报错而不是返回空**——静默失败会让模型
     以为"查到了但没有结果"，然后基于错误前提继续推理。
+
+    ``caller`` 是必填的（见模块头）：调用方从 ``auth.current_caller()`` 取，
+    拿不到就会在那里抛 401，而不是走到这里变成匿名调用。
     """
     args = arguments or {}
     handler = _HANDLERS.get(name)
     if handler is None:
-        raise InvalidRequestError(
-            f"未知的工具：{name}（可用：{'、'.join(TOOL_NAMES)}）"
-        )
-    return handler(services, args)
+        raise InvalidRequestError(f"未知的工具：{name}（可用：{'、'.join(TOOL_NAMES)}）")
+    return handler(services, args, caller=caller)
 
 
 # --------------------------------------------------------------------- 各工具
@@ -196,7 +209,20 @@ def _require(args: dict[str, Any], key: str) -> str:
     return value
 
 
-def _list_knowledge_bases(services: Services, args: dict[str, Any]) -> list[dict[str, Any]]:
+def _visible_items(services: Services, caller: Caller) -> list[Any]:
+    """当前调用者能看到的库。``visible_kb_ids`` 返回 ``None`` 表示**不受限**
+    （管理员会话，或范围为空 = 不限范围的 API Key），此时不过滤。"""
+    visible = services.api_keys.visible_kb_ids(caller)
+    items = services.knowledge_bases.list_all()
+    if visible is None:
+        return items
+    allowed = set(visible)
+    return [item for item in items if item.id in allowed]
+
+
+def _list_knowledge_bases(
+    services: Services, args: dict[str, Any], *, caller: Caller
+) -> list[dict[str, Any]]:
     return [
         {
             "id": item.id,
@@ -204,24 +230,39 @@ def _list_knowledge_bases(services: Services, args: dict[str, Any]) -> list[dict
             "documents": services.documents.count_documents(item.id),
             "embedding_model": item.embedding_model_id,
         }
-        for item in services.knowledge_bases.list_all()
+        for item in _visible_items(services, caller)
     ]
 
 
-def _create_knowledge_base(services: Services, args: dict[str, Any]) -> dict[str, Any]:
+def _create_knowledge_base(
+    services: Services, args: dict[str, Any], *, caller: Caller
+) -> dict[str, Any]:
     name = _require(args, "name")
+    # 不涉及既有库，所以只判权限档位（只读 Key 会被拒）。
+    # **kb_ids 传 None**：这是"要新建"，不是"要访问某个既有库"
+    services.api_keys.check_access(caller, need=WRITE)
     # kb_id 由调用方生成：服务层要求显式传入（与 REST 层同一口径），
     # 这样将来要支持"由客户端指定 id"时不用改服务层签名
     record = services.knowledge_bases.create(
-        kb_id=f"kb_{uuid.uuid4().hex[:12]}", name=name
+        kb_id=f"kb_{uuid.uuid4().hex[:12]}",
+        name=name,
+        # 归属要跟着身份走：不写 owner 的话，成员建出来的库**自己都看不见**
+        # （visible_kb_ids 对成员只算"自己拥有的 + 被分享的"）
+        owner_id=caller.user.id if caller.user is not None else None,
     )
     return {"id": record.id, "name": record.name}
 
 
-def _upload_document(services: Services, args: dict[str, Any]) -> dict[str, Any]:
+def _upload_document(
+    services: Services, args: dict[str, Any], *, caller: Caller
+) -> dict[str, Any]:
     kb_id = _require(args, "knowledge_base_id")
     filename = _require(args, "filename")
     raw = _require(args, "content_base64")
+
+    # 写入必须先判作用域：越界时**指出是哪个库**，
+    # 模型据此能告诉用户"这把 Key 没有那个库的写权限"，而不是笼统地失败
+    services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
 
     try:
         content = base64.b64decode(raw, validate=True)
@@ -237,7 +278,11 @@ def _upload_document(services: Services, args: dict[str, Any]) -> dict[str, Any]
         )
 
     outcome = services.ingest.submit(
-        knowledge_base_id=kb_id, filename=filename, content=content
+        knowledge_base_id=kb_id,
+        filename=filename,
+        content=content,
+        # 记上"是谁传的"：多用户下这是文档列表里的上传者列，缺了就显示"未记录"
+        uploaded_by=caller.user.id if caller.user is not None else None,
     )
     if not outcome.is_duplicate:
         services.documents.enqueue_ingest(outcome.document.id)
@@ -254,12 +299,17 @@ def _upload_document(services: Services, args: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def _add_data_source(services: Services, args: dict[str, Any]) -> dict[str, Any]:
+def _add_data_source(
+    services: Services, args: dict[str, Any], *, caller: Caller
+) -> dict[str, Any]:
     kb_id = _require(args, "knowledge_base_id")
     kind = _require(args, "kind").lower()
     url = _require(args, "url")
     if kind not in ("rss", "html"):
         raise InvalidRequestError(f"kind 只能是 rss 或 html，收到：{kind}")
+
+    # 挂数据源会让内容源源不断进库，是**写**操作
+    services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
 
     record = services.sources.create(
         knowledge_base_id=kb_id,
@@ -274,21 +324,25 @@ def _add_data_source(services: Services, args: dict[str, Any]) -> dict[str, Any]
     }
 
 
-def _search(services: Services, args: dict[str, Any]) -> dict[str, Any]:
+def _search(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
     query = _require(args, "query")
     kb_ids = [str(item) for item in (args.get("knowledge_base_ids") or [])]
     if not kb_ids:
-        # 留空 = 查全部：Agent 常常不知道有哪些库，逼它先列一遍是多余的一步
-        kb_ids = [item.id for item in services.knowledge_bases.list_all()]
+        # 留空 = 查**这个调用者能看到的全部**：Agent 常常不知道有哪些库，
+        # 逼它先列一遍是多余的一步。注意这里**不是** list_all()——
+        # 那是"所有人的库"，在收口之前正是越权的来源
+        kb_ids = [item.id for item in _visible_items(services, caller)]
+    else:
+        # 显式指定了库就把越界挡在检索之前：检索是很重的操作，
+        # 让它先跑完再拒，白烧一次算力
+        services.api_keys.check_access(caller, kb_ids=kb_ids)
     if not kb_ids:
         return {"query": query, "hits": [], "note": "没有任何知识库"}
 
     top_k = int(args.get("top_k") or 6)
     top_k = max(1, min(MAX_TOP_K, top_k))
 
-    response = services.retrieval.search(
-        _query(query=query, kb_ids=kb_ids, top_k=top_k)
-    )
+    response = services.retrieval.search(_query(query=query, kb_ids=kb_ids, top_k=top_k))
     return {
         "query": query,
         "hits": [
@@ -306,9 +360,24 @@ def _search(services: Services, args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _get_document_status(services: Services, args: dict[str, Any]) -> dict[str, Any]:
-    document_id = _require(args, "document_id")
+def _document_or_403(services: Services, document_id: str, *, caller: Caller) -> Any:
+    """取文档并判它所属库的读权限。
+
+    顺序是"先取再判"：文档记录里才有所属库 id，没有它无从判起。
+    代价是"猜 id 探测存在性"——不存在的 id 报 404、存在但越界的报 403，
+    两者可分。局域网自用工具的这个量级上可接受，真要收紧就得把
+    doc_id 也变成不可枚举的。
+    """
     record = services.documents.get(document_id)
+    services.api_keys.check_access(caller, kb_ids=[record.knowledge_base_id])
+    return record
+
+
+def _get_document_status(
+    services: Services, args: dict[str, Any], *, caller: Caller
+) -> dict[str, Any]:
+    document_id = _require(args, "document_id")
+    record = _document_or_403(services, document_id, caller=caller)
     return {
         "document_id": record.id,
         "name": record.name,
@@ -324,8 +393,15 @@ def _get_document_status(services: Services, args: dict[str, Any]) -> dict[str, 
     }
 
 
-def _delete_document(services: Services, args: dict[str, Any]) -> dict[str, Any]:
+def _delete_document(
+    services: Services, args: dict[str, Any], *, caller: Caller
+) -> dict[str, Any]:
     document_id = _require(args, "document_id")
+    record = services.documents.get(document_id)
+    # 删除是写操作：只读分享拿到的库不能删
+    services.api_keys.check_access(
+        caller, need=WRITE, kb_ids=[record.knowledge_base_id]
+    )
     entry = services.lifecycle.delete_document(document_id)
     return {
         "document_id": document_id,
