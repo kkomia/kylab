@@ -466,3 +466,120 @@ def test_sandbox_exec_respects_deny_policy(client: TestClient) -> None:
 
 def test_sandbox_exec_rejects_an_empty_command(client: TestClient) -> None:
     assert client.post("/api/v1/sandbox/exec", json={"argv": []}).status_code == 422
+
+
+# ------------------------------------------------------------- 准入规则（v0.17）
+
+def _set_rules(client: TestClient, **values: str) -> None:
+    response = client.patch(
+        "/api/v1/settings",
+        json={"values": [{"key": key, "value": value} for key, value in values.items()]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["rejected"] == []
+
+
+def test_exec_deny_rule_wins_over_a_broader_allow(client: TestClient) -> None:
+    """**deny 永远优先**，而且要能通过接口看到这个结论。
+
+    少了这一条，用户"我加了一条 deny"会被一条更宽的 allow 静默盖掉——
+    而用户以为自己已经禁掉了。
+    """
+    _set_rules(
+        client,
+        **{
+            "sandbox.exec_policy": "allow",
+            "sandbox.rules_allow": "Bash(git push:*)",
+            "sandbox.rules_deny": "Bash(git push --force:*)",
+        },
+    )
+
+    allowed = client.post("/api/v1/sandbox/plan", json={"argv": ["git", "push", "origin", "main"]})
+    assert allowed.status_code == 200
+
+    blocked = client.post(
+        "/api/v1/sandbox/exec", json={"argv": ["git", "push", "--force", "origin", "main"]}
+    )
+    assert blocked.status_code == 403, blocked.text
+    assert "拒绝规则" in blocked.json()["message"]
+
+
+def test_allow_rule_skips_the_confirmation(client: TestClient) -> None:
+    """放行清单里的命令**不再问**——这正是规则存在的意义（同一个动作问一遍就够）。"""
+    _set_rules(
+        client,
+        **{"sandbox.exec_policy": "ask", "sandbox.rules_allow": "Bash(git status:*)"},
+    )
+
+    # 命中放行规则 → **不再问确认**。这台机器没有内核隔离，所以它会继续走到
+    # 隔离层并被那里拒绝（code=unsupported_content）——用这个区分两件事：
+    # "准入已通过、卡在隔离" 与 "准入没过、卡在确认"。
+    response = client.post("/api/v1/sandbox/exec", json={"argv": ["git", "status", "--short"]})
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "unsupported_content"
+
+
+def test_command_outside_the_rules_still_asks(client: TestClient) -> None:
+    """没命中任何规则时回到默认档（ask）——**默认放行等于规则表形同虚设**。"""
+    _set_rules(client, **{"sandbox.exec_policy": "ask", "sandbox.rules_allow": "Bash(ls)"})
+
+    response = client.post("/api/v1/sandbox/exec", json={"argv": ["curl", "https://x.test"]})
+
+    assert response.status_code == 409
+    assert "确认" in response.json()["message"]
+
+
+def test_remember_writes_a_word_prefix_rule(client: TestClient) -> None:
+    """「以后都允许」写进放行清单的是**词前缀**，不是完整命令——
+    记住完整命令等于没记住（下次参数就不同了）。"""
+    _set_rules(client, **{"sandbox.exec_policy": "ask", "sandbox.rules_allow": ""})
+
+    client.post(
+        "/api/v1/sandbox/exec",
+        json={"argv": ["git", "status", "--short"], "approved": True, "remember": True},
+    )
+
+    # 设置的读回形状是 `groups[].fields[]`（**不是** `values`）——
+    # 密钥那一类只给掩码，这里读的是明文配置项
+    view = client.get("/api/v1/settings").json()
+    values = {
+        field["key"]: field["value"]
+        for group in view["groups"]
+        for field in group["fields"]
+    }
+    assert values["sandbox.rules_allow"].strip() == "Bash(git:*)"
+
+
+def test_remember_does_not_duplicate(client: TestClient) -> None:
+    _set_rules(client, **{"sandbox.exec_policy": "ask", "sandbox.rules_allow": "Bash(git:*)"})
+
+    client.post(
+        "/api/v1/sandbox/exec",
+        json={"argv": ["git", "commit"], "approved": True, "remember": True},
+    )
+
+    view = client.get("/api/v1/settings").json()
+    values = {
+        field["key"]: field["value"]
+        for group in view["groups"]
+        for field in group["fields"]
+    }
+    assert values["sandbox.rules_allow"].count("Bash(git:*)") == 1
+
+
+def test_mcp_deny_rule_blocks_an_external_tool(client: TestClient) -> None:
+    """规则层**对 MCP 工具同样生效**（用限定名匹配）：外部工具与本地命令是同一类
+    "以用户名义执行的动作"，两处各写一套判定就会出现"这边能拦、那边拦不住"。"""
+    server = client.post(
+        "/api/v1/mcp-servers",
+        json={"name": "外部服务", "transport": "stdio", "target": "python"},
+    ).json()
+    _set_rules(client, **{"sandbox.rules_deny": "mcp__外部服务__danger"})
+
+    response = client.post(
+        f"/api/v1/mcp-servers/{server['id']}/call",
+        json={"tool": "danger", "arguments": {}, "approved": True},
+    )
+
+    assert response.status_code == 403, response.text
+    assert "拒绝规则" in response.json()["message"]

@@ -36,6 +36,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
@@ -48,9 +49,11 @@ __all__ = [
     "BACKEND_DOCKER",
     "BACKEND_NONE",
     "BACKEND_SEATBELT",
+    "DEFAULT_BIND_RO",
     "ExecutionResult",
     "Isolation",
     "IsolationPlan",
+    "bind_paths_from",
     "build_plan",
     "detect",
     "run_isolated",
@@ -62,6 +65,26 @@ BACKEND_BWRAP = "bwrap"
 BACKEND_SEATBELT = "sandbox-exec"
 BACKEND_DOCKER = "docker"
 BACKEND_NONE = "none"
+
+#: Linux 上**只读挂载**的目录：只挂"能把命令跑起来"的那些。
+#:
+#: 这是 QwenPaw 说的 *restricted filesystem view*：与其把整个 ``/`` 只读挂进来
+#: （那样 ``/etc/passwd``、``~/.ssh`` 都还在视野里，只是不能写），
+#: 不如**只挂运行时要用的**——没挂上的路径在沙箱里**根本不存在**。
+#:
+#: 抄这份清单时保留了"少而够用"的取舍：``/usr`` 与 ``/lib*`` 是解释器与依赖，
+#: ``/bin`` ``/sbin`` 是系统命令，``/etc/ssl`` 给 TLS 证书（很多 CLI 起不来是因为它）。
+#: **故意不含 ``/etc`` 整体**：口令文件、sudoers 都在那里，而它们与"跑一条命令"无关。
+DEFAULT_BIND_RO: tuple[str, ...] = (
+    "/usr",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib64",
+    "/etc/ssl",
+    "/etc/alternatives",
+    "/etc/ld.so.cache",
+)
 
 #: Docker 镜像。**刻意用一个最小且可预测的**：隔离层不该顺带引入一个我们
 #: 没审过的用户态环境。需要别的工具链时由部署方改这里。
@@ -195,6 +218,7 @@ def build_plan(
     sandbox_dir: Path,
     isolation: Isolation | None = None,
     allow_network: bool = False,
+    bind_ro: tuple[str, ...] | None = None,
 ) -> IsolationPlan:
     """把一条命令包进隔离后端。
 
@@ -207,7 +231,7 @@ def build_plan(
         raise InvalidRequestError("缺少要执行的命令")
 
     if chosen.backend == BACKEND_BWRAP:
-        return _bwrap_plan(argv, workspace_root, sandbox_dir, allow_network)
+        return _bwrap_plan(argv, workspace_root, sandbox_dir, allow_network, bind_ro)
     if chosen.backend == BACKEND_SEATBELT:
         return _seatbelt_plan(argv, workspace_root, sandbox_dir, allow_network)
     if chosen.backend == BACKEND_DOCKER:
@@ -222,23 +246,34 @@ def build_plan(
 
 
 def _bwrap_plan(
-    argv: list[str], workspace_root: Path, sandbox_dir: Path, allow_network: bool
+    argv: list[str],
+    workspace_root: Path,
+    sandbox_dir: Path,
+    allow_network: bool,
+    bind_ro: tuple[str, ...] | None = None,
 ) -> IsolationPlan:
-    """bubblewrap：整个 ``/`` 只读，工作区与沙箱读写，``/tmp`` 换成 tmpfs。
+    """bubblewrap：**限定文件系统视图** + 工作区与沙箱读写 + ``/tmp`` 是 tmpfs。
 
-    **``--ro-bind / /`` 放在最前面**：先有一个完整但只读的世界，
-    再把需要写的地方单独挂开。反过来（只挂要用的目录）会得到一个缺库缺工具链的
-    环境，用户看到的是"命令跑不起来"，而真正的原因与隔离无关。
+    挂载策略是这一层最要紧的决定，而它有两种写法，差别很大：
+
+    - ``--ro-bind / /``（整个根只读）：命令一定跑得起来，但 ``/etc/passwd``、
+      ``~/.ssh``、别人的项目都**还在视野里**——只是不能写。而"能读"本身就可能
+      是事故（读走凭据不需要写权限）。
+    - **只挂运行所需的目录**（采用）：没挂上的路径在沙箱里**根本不存在**。
+      代价是可能缺某个工具要的文件——那时命令跑不起来，用户看到的是
+      "缺文件"，而不是"文件被读了"。**两害相权，取"跑不起来"**。
+
+    这正是 QwenPaw 说的 *restricted filesystem view*。清单在
+    ``DEFAULT_BIND_RO``，可通过设置扩展（见 ``sandbox.bind_ro``）。
     """
-    parts = [
-        "bwrap",
-        "--ro-bind",
-        "/",
-        "/",
-        "--dev",
-        "/dev",
-        "--proc",
-        "/proc",
+    paths = bind_ro if bind_ro is not None else DEFAULT_BIND_RO
+    parts = ["bwrap", "--dev", "/dev", "--proc", "/proc"]
+    # 只挂**存在**的那些：清单是跨发行版通用的，某个目录在某台机器上不存在很正常，
+    # 而 bwrap 遇到不存在的源会直接失败（那会让整个沙箱不可用）。
+    for path in paths:
+        if Path(path).exists():
+            parts += ["--ro-bind", path, path]
+    parts += [
         "--tmpfs",
         "/tmp",  # noqa: S108 - 这是沙箱**里面**的 tmpfs，不是宿主机的临时目录
         # 工作区读写：这是"在哪儿干活"
@@ -263,7 +298,7 @@ def _bwrap_plan(
         argv=parts,
         workdir=str(sandbox_dir),
         available=True,
-        detail="bubblewrap：/ 只读，工作区与沙箱读写"
+        detail="bubblewrap：只挂运行所需目录（限定视图），工作区与沙箱读写"
         + ("，已断网" if not allow_network else "，允许联网"),
     )
 
@@ -346,6 +381,7 @@ def run_isolated(
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
     allow_network: bool = False,
     isolation: Isolation | None = None,
+    bind_ro: tuple[str, ...] | None = None,
 ) -> ExecutionResult:
     """在隔离里跑一条命令。
 
@@ -359,6 +395,7 @@ def run_isolated(
         sandbox_dir=sandbox_dir,
         isolation=isolation,
         allow_network=allow_network,
+        bind_ro=bind_ro,
     )
     if not plan.available:
         raise UnsupportedContentError(
@@ -416,3 +453,17 @@ def _clip(text: str) -> tuple[str, bool]:
     if len(text) <= MAX_OUTPUT_CHARS:
         return text, False
     return text[:MAX_OUTPUT_CHARS] + f"\n…（已截断，共 {len(text)} 字）", True
+
+
+def bind_paths_from(raw: str) -> tuple[str, ...] | None:
+    """把设置里那串逗号/换行分隔的路径解析成只读挂载清单。
+
+    空字符串 → ``None``（用 :data:`DEFAULT_BIND_RO` 的默认清单）。
+    **不给"挂整个 /"这个选项**：那正是这一层想避免的形态；
+    真需要某个目录时把它加进来（如 ``/opt/toolchain``），
+    那是一次明确的、看得见的放权。
+    """
+    if not raw or not raw.strip():
+        return None
+    parts = [item.strip() for item in re.split(r"[,\n]", raw) if item.strip()]
+    return tuple(parts) or None

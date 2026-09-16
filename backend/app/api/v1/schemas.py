@@ -1527,7 +1527,13 @@ class SandboxExecIn(BaseModel):
     而"能联网"是数据外泄那条路上最省事的一环。"""
     timeout_seconds: float | None = Field(default=None, gt=0, le=600)
     approved: bool = False
-    """``ask`` 策略下第一次不带它（回 409），用户确认后再带上重调。"""
+    """``ask`` 政策下第一次不带它（回 409），用户确认后再带上重调。"""
+    remember: bool = False
+    """确认之后**把这条规则写进放行清单**（「以后都允许」）。
+
+    写入的是**建议的词前缀**（``Bash(git status:*)``）而不是完整命令——
+    记住完整命令等于没记住（下次参数就不同了）。
+    """
 
 
 class SandboxPlanOut(BaseModel):
@@ -1667,6 +1673,8 @@ class MCPCallIn(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     approved: bool = False
     """``ask`` 策略下：第一次调用不带它（回 409），用户确认后再带上它重调。"""
+    remember: bool = False
+    """确认之后把这条工具的规则写进放行清单（「以后都允许」）。"""
 
 
 class MCPCallOut(BaseModel):

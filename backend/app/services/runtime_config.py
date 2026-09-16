@@ -140,7 +140,29 @@ SETTING_GROUPS: dict[str, Any] = {
         "fields": [
             {
                 "key": "sandbox.exec_policy",
-                "label": "执行策略（allow / ask / deny / sandbox）",
+                "label": "总开关（allow / ask / deny / sandbox）",
+                "type": "text",
+            },
+            # 三张清单，语法照抄 Claude Code 的权限模型（见 services/command_policy.py）：
+            # `Bash(git status:*)` 那样的规则，**deny 永远优先**。
+            {
+                "key": "sandbox.rules_allow",
+                "label": "放行清单（每行一条，如 Bash(git status:*)）",
+                "type": "text",
+            },
+            {
+                "key": "sandbox.rules_ask",
+                "label": "需确认清单（每行一条）",
+                "type": "text",
+            },
+            {
+                "key": "sandbox.rules_deny",
+                "label": "拒绝清单（每行一条，优先级最高）",
+                "type": "text",
+            },
+            {
+                "key": "sandbox.bind_ro",
+                "label": "只读挂载目录（逗号分隔；留空用默认清单）",
                 "type": "text",
             },
         ],
@@ -219,6 +241,17 @@ DEFAULTS: dict[str, str] = {
     # 记忆（v0.14）。关闭时 recall / remember 都**明确报"未启用"**，不静默返回空
     # ——返回空会让模型以为"没有相关记忆"，然后基于错误前提继续推理。
     "sandbox.exec_policy": "ask",
+    # **三张清单默认都空**，也就是"一律先问"。
+    # 抄的是 Claude Code 的默认：它也不预置放行清单——预置一张"看起来安全"的
+    # 只读命令表是危险的，因为**只读不等于无害**：`cat /etc/passwd` 是只读的，
+    # 而它能读到工作区外面的东西（内核隔离只管住了写与网络，见设计文档 §4）。
+    # 所以放行清单由用户按自己的环境决定，界面上提供"以后都允许"一键写入。
+    # 只读挂载清单：留空用 services/isolation.DEFAULT_BIND_RO（只挂运行所需的目录）。
+    # **不给"挂整个 /"这个选项**：那正是这一层想避免的形态（见设计文档 §4）。
+    "sandbox.bind_ro": "",
+    "sandbox.rules_allow": "",
+    "sandbox.rules_ask": "",
+    "sandbox.rules_deny": "",
     "memory.enabled": "false",
     # ReMe 的服务地址。它的接口是 `POST /<job 名>`（见设计文档 §3.1）。
     # **端口 2333 是实测出来的默认值**：`reme/constants.py` 里写着

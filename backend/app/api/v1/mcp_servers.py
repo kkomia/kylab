@@ -29,8 +29,11 @@ from app.api.v1.schemas import (
     MCPServerUpdateIn,
     MCPToolOut,
 )
+from app.core.exceptions import ForbiddenError
 from app.core.services import Services, get_services
 from app.services.api_key import Caller
+from app.services.command_policy import ACTION_ASK, ACTION_DENY, build_rule_set, suggest_rule
+from app.services.mcp_client import tool_qualified_name
 
 router = APIRouter(prefix="/mcp-servers", tags=["mcp"])
 
@@ -43,8 +46,6 @@ def _owner(caller: Caller) -> str | None:
 
 
 def _out(record) -> MCPServerOut:  # type: ignore[no-untyped-def]
-    from app.services.mcp_client import tool_qualified_name
-
     return MCPServerOut(
         id=record.id,
         name=record.name,
@@ -175,6 +176,25 @@ def call_tool(
 ) -> MCPCallOut:
     """按策略闸调用。``ask`` 且未确认时回 409，界面确认后带 ``approved=true`` 重调。"""
     record = services.mcp.get(server_id, user_id=_owner(caller))
+    # **规则层对 MCP 工具同样生效**（用限定名匹配）：外部工具与本地命令是同一类
+    # "以用户名义执行的动作"，两处各写一套判定就会出现"这边能拦、那边拦不住"。
+    qualified = tool_qualified_name(record.name, payload.tool)
+    rules = build_rule_set(
+        allow_text=services.runtime.get("sandbox.rules_allow"),
+        ask_text=services.runtime.get("sandbox.rules_ask"),
+        deny_text=services.runtime.get("sandbox.rules_deny"),
+        default=ACTION_ASK,
+    )
+    decision = rules.decide(qualified, "")
+    if decision.action == ACTION_DENY:
+        raise ForbiddenError(f"这个外部工具被拒绝规则拦下：{decision.reason}")
+    if payload.remember and decision.action == ACTION_ASK:
+        current = (services.runtime.get("sandbox.rules_allow") or "").rstrip()
+        line = suggest_rule(qualified, "").describe()
+        if line not in {item.strip() for item in current.splitlines()}:
+            # 显式拼接，不在源码里写转义换行（那样改一次就可能落进真换行，语法直接错）
+            merged = "\n".join(part for part in (current, line) if part)
+            services.runtime.set({"sandbox.rules_allow": merged})
     text = services.mcp.call(
         record, payload.tool, payload.arguments, approved=payload.approved
     )

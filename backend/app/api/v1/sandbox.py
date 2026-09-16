@@ -29,9 +29,17 @@ from app.api.v1.schemas import (
     SandboxExecOut,
     SandboxPlanOut,
 )
+from app.core.exceptions import ForbiddenError
 from app.core.services import Services, get_services
 from app.services import isolation as isolation_service
 from app.services.api_key import Caller
+from app.services.command_policy import (
+    ACTION_ASK,
+    ACTION_DENY,
+    build_rule_set,
+    suggest_rule,
+    tool_arguments,
+)
 from app.services.sandbox import POLICY_ASK, ExecutionPolicy, sandbox_for
 
 router = APIRouter(prefix="/sandbox", tags=["sandbox"])
@@ -75,6 +83,7 @@ def preview_plan(
         workspace_root=root,
         sandbox_dir=box,
         allow_network=payload.allow_network,
+        bind_ro=isolation_service.bind_paths_from(services.runtime.get("sandbox.bind_ro")),
     )
     return SandboxPlanOut(
         backend=plan.backend,
@@ -97,9 +106,35 @@ def exec_command(
     确认后带 ``approved=true`` 再调一次。409 不是错误，是流程的一步。
     """
     root, box = _paths(services, payload)
-    policy = ExecutionPolicy(mode=services.runtime.get("sandbox.exec_policy") or POLICY_ASK,
-                             workspace_root=root)
+    arguments = tool_arguments(payload.argv)
+    decision = _decide(services, "Bash", arguments)
+
+    # 判定的两半：总开关（粗）与规则（细）。**规则比总开关更具体，所以规则说了算**。
+    #
+    # 两条顺序上的讲究，都是这套方案里最要紧的地方：
+    #
+    # 1. **deny 永远优先**（无论来自规则还是总开关）——先判 deny，再谈别的档位。
+    #    少了它，一条更宽的 allow 会把用户的 deny 静默盖掉；
+    # 2. **命中 allow 就真的跳过确认**（第一版漏了这条：规则说放行、而总开关还是
+    #    ask，于是"以后都允许"点完照样再问一遍——那正是规则存在的意义被架空了）。
+    #    实现上就是把命中的那条规则当作生效档位；没命中规则才用总开关。
+    global_mode = services.runtime.get("sandbox.exec_policy") or POLICY_ASK
+    if decision.action == ACTION_DENY:
+        raise ForbiddenError(f"这条命令被拒绝规则拦下：{decision.reason}")
+    if global_mode == ACTION_DENY:
+        raise ForbiddenError("沙箱执行的总开关设成了「拒绝执行」（设置 → 沙箱执行）")
+
+    policy = ExecutionPolicy(
+        mode=decision.action if decision.rule is not None else global_mode,
+        workspace_root=root,
+    )
     policy.require_allowed(approved=payload.approved, what="在沙箱里执行命令")
+
+    # 用户点了「以后都允许」：把**建议的那条规则**写进放行清单。
+    # 建议的是词前缀（`Bash(git status:*)`）而不是完整命令——记住完整命令
+    # 等于没记住（下次参数就不同了）。
+    if payload.remember and decision.action == ACTION_ASK:
+        _remember_rule(services, "Bash", arguments)
 
     result = isolation_service.run_isolated(
         payload.argv,
@@ -107,6 +142,7 @@ def exec_command(
         sandbox_dir=box,
         timeout=payload.timeout_seconds or isolation_service.DEFAULT_TIMEOUT_SECONDS,
         allow_network=payload.allow_network,
+        bind_ro=isolation_service.bind_paths_from(services.runtime.get("sandbox.bind_ro")),
     )
     return SandboxExecOut(
         exit_code=result.exit_code,
@@ -116,6 +152,34 @@ def exec_command(
         timed_out=result.timed_out,
         backend=result.backend,
     )
+
+
+def _rule_set(services: Services):  # type: ignore[no-untyped-def]
+    """按用户配的三张清单建规则集。"""
+    return build_rule_set(
+        allow_text=services.runtime.get("sandbox.rules_allow"),
+        ask_text=services.runtime.get("sandbox.rules_ask"),
+        deny_text=services.runtime.get("sandbox.rules_deny"),
+        default=ACTION_ASK,
+        source="s",
+    )
+
+
+def _decide(services: Services, tool: str, arguments: str):  # type: ignore[no-untyped-def]
+    return _rule_set(services).decide(tool, arguments)
+
+
+def _remember_rule(services: Services, tool: str, arguments: str) -> None:
+    """把这次调用建议的规则追加到放行清单。"""
+    rule = suggest_rule(tool, arguments)
+    current = (services.runtime.get("sandbox.rules_allow") or "").rstrip()
+    line = rule.describe()
+    if line in {item.strip() for item in current.splitlines()}:
+        return
+    # 用 join 而不是在源码里写转义换行：那段多行字符串已经被我改坏过一次
+    # （字符串里落进了真换行，语法直接错），换成显式拼接就不再有这个风险
+    merged = "\n".join(part for part in (current, line) if part)
+    services.runtime.set({"sandbox.rules_allow": merged})
 
 
 def _paths(services: Services, payload: SandboxExecIn):  # type: ignore[no-untyped-def]

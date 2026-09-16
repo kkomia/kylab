@@ -143,10 +143,30 @@ id, owner_id, name, root_path, description, kb_ids jsonb, created_at, updated_at
 它自己多了一堆文件"是最让人不敢再用一个 Agent 的原因。沙箱把**探索的痕迹**与
 **真实的产物**分开：想留下的，由用户（或 Agent 明确地）从沙箱挪进工作区。
 
-**Governance（准入策略）**照 QwenPaw 的四档：`allow` / `deny` / `ask` / `sandbox`。
-本轮的实现范围（§7）是**策略层 + 沙箱目录 + 工作区路径约束**；
-真正的内核级隔离（容器 / Seatbelt / Landlock）不在本轮——那是部署形态的事，
-而策略层先立起来，以后换执行后端不用改上层。
+**Governance（准入策略）**分两层，都是照成熟方案抄的（v0.17 补）：
+
+1. **总开关**（QwenPaw 的四档词表）：`allow` / `ask` / `deny` / `sandbox`；
+2. **规则清单**（**Claude Code 的权限模型**）：三张清单 + `Tool(specifier)` 语法
+   （`Bash(git status:*)`），**优先级 deny > ask > allow**，
+   **`:*` 只在词边界生效**（`git status:*` 匹配 `git status --short`、
+   不匹配 `git statuses`），没命中就回总开关那一档。规则比总开关更具体，所以命中时规则说了算。
+
+两条必须照抄的理由：
+
+- **deny 永远优先**：少了它，一条更宽的 allow 会把用户的 deny 静默盖掉，
+  而用户以为自己已经禁掉了；
+- **默认不放行**（这里是 ask，与 Claude Code 的默认模式一致）：
+  预置一张"看起来安全"的只读命令表是危险的，因为**只读不等于无害**——
+  `cat /etc/passwd` 是只读的，而它能读到工作区外面的东西。
+
+**后一条同时说明了内核隔离为什么不能只做写**：最初的 bwrap 参数是
+`--ro-bind / /`（整个根只读）+ 工作区与沙箱挂读写。命令一定跑得起来，
+但 `/etc/passwd`、`~/.ssh` 都**还在视野里**，只是不能写——而读走凭据不需要写权限。
+现在改成 **restricted filesystem view**（QwenPaw 的说法）：**只挂运行所需的目录**
+（`/usr` `/bin` `/lib*` `/etc/ssl` 等），没挂上的路径在沙箱里**根本不存在**。
+代价是可能缺某个工具要的文件，那时命令跑不起来——**两害相权，取"跑不起来"**。
+清单可用 `sandbox.bind_ro` 显式扩展，但**不提供"挂整个 /"这个选项**：
+需要时请把具体目录加进来，那是一次看得见的放权。
 
 ## 5. 知识库与 Agent 的融合
 

@@ -71,15 +71,16 @@ def test_detect_prefers_the_requested_backend_when_available() -> None:
 # -------------------------------------------------------------- argv 构造
 
 
-def test_bwrap_plan_binds_root_readonly_and_both_writable_dirs(tmp_path: Path) -> None:
-    r"""**这三条挂载是这一层的全部要害**：
+def test_bwrap_plan_binds_a_restricted_view_and_both_writable_dirs(tmp_path: Path) -> None:
+    r"""**挂载策略是这一层最要紧的决定**：
 
-    - ``--ro-bind / /`` 先给一个完整但只读的世界（缺它命令会因为找不到库而跑不起来）；
+    - 只挂**运行所需的目录**（QwenPaw 说的 *restricted filesystem view*），
+      **不挂整个 ``/``**：没挂上的路径在沙箱里根本不存在。挂整个根（哪怕只读）
+      意味着 ``/etc/passwd``、``~/.ssh`` 还在视野里——而"能读"本身就可能
+      是事故（读走凭据不需要写权限）；
     - 工作区与沙箱**各挂一次读写**（缺工作区 = 干不了活；缺沙箱 = 试错的地方写不了）。
 
-    用 ``tmp_path`` 而不是 ``Path("/work")`` 这类字面量：路径在 Windows 上会
-    ``\work``、在 POSIX 上会 ``/work``，写死字面量的断言就变成了"只在某个平台上成立"
-    ——而它测的是**平台无关的挂载逻辑**。
+    用 ``tmp_path`` 而不是字面量路径：断言不该只在某个平台上成立。
     """
     work = tmp_path / "work"
     box = tmp_path / "box"
@@ -91,14 +92,68 @@ def test_bwrap_plan_binds_root_readonly_and_both_writable_dirs(tmp_path: Path) -
     )
 
     argv = plan.argv
-    assert argv[0] == "bwrap"
-    assert argv[1:4] == ["--ro-bind", "/", "/"]
     joined = " ".join(argv)
+    assert argv[0] == "bwrap"
+    # 不再有"整个 / 只读"这一条
+    assert "--ro-bind / /" not in joined
     assert f"--bind {work} {work}" in joined
     assert f"--bind {box} {box}" in joined
     assert "--tmpfs /tmp" in joined
     # 命令本身必须原样跟在 `--` 之后（否则会被 bwrap 当成自己的参数吃掉）
     assert argv[-5:] == ["--unshare-net", "--", "python", "-c", "print(1)"]
+
+
+def test_default_bind_list_excludes_etc_and_home() -> None:
+    """默认清单**故意不含 ``/etc`` 整体与家目录**：口令文件、sudoers、``~/.ssh``
+    都在那里，而它们与"跑一条命令"无关。需要时由部署方显式加。"""
+    assert "/etc" not in iso.DEFAULT_BIND_RO
+    assert not any(
+        path.startswith("/home") or path.startswith("/root") for path in iso.DEFAULT_BIND_RO
+    )
+    assert "/usr" in iso.DEFAULT_BIND_RO
+
+
+def test_bind_list_can_be_overridden(tmp_path: Path) -> None:
+    """部署方可以显式放权（如某个工具链目录）：那是一次**看得见的**动作，
+    而不是"默认就什么都能看"。
+
+    用一个**真的存在**的临时目录：不存在的路径会被跳过（bwrap 遇到不存在的源会
+    直接失败，那会让整个沙箱不可用），所以拿一个字面量路径断言会因为平台而红。
+    """
+    toolchain = tmp_path / "toolchain"
+    toolchain.mkdir()
+
+    plan = iso.build_plan(
+        ["ls"],
+        workspace_root=tmp_path / "w",
+        sandbox_dir=tmp_path / "s",
+        isolation=_fake(iso.BACKEND_BWRAP),
+        bind_ro=(str(toolchain),),
+    )
+
+    assert f"--ro-bind {toolchain} {toolchain}" in " ".join(plan.argv)
+
+
+def test_nonexistent_bind_is_skipped(tmp_path: Path) -> None:
+    """清单是跨发行版通用的，某个目录在某台机器上不存在很正常——
+    跳过它，而不是让整个沙箱起不来。"""
+    plan = iso.build_plan(
+        ["ls"],
+        workspace_root=tmp_path / "w",
+        sandbox_dir=tmp_path / "s",
+        isolation=_fake(iso.BACKEND_BWRAP),
+        bind_ro=(str(tmp_path / "不存在"),),
+    )
+
+    assert "--ro-bind" not in " ".join(plan.argv)
+
+
+def test_bind_paths_from_settings_text() -> None:
+    assert iso.bind_paths_from("/opt/a, /opt/b") == ("/opt/a", "/opt/b")
+    assert iso.bind_paths_from("/a\n/b") == ("/a", "/b")
+    # 空 = 用默认清单（**不给"挂整个 /"这个选项**：那正是要避免的形态）
+    assert iso.bind_paths_from("") is None
+    assert iso.bind_paths_from("   ") is None
 
 
 def test_bwrap_disables_network_by_default(tmp_path: Path) -> None:
