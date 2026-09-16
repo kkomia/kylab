@@ -144,7 +144,11 @@
   --bg-subtle: var(--Bg-Secondary);
   --bg-hover: var(--Fills-F1);
   --bg-active: var(--Fills-F3);
+  /* 当前项用 Fills-F2（与浅色同构），不用品牌色底——Kimi 的实测值如此 */
+  --bg-selected: var(--Fills-F2);
   --bg-header: var(--Bg-Secondary);
+  /* 深色下 BgGp-Secondary 比画布亮一档（#1f1f1f），块按钮因此"浮"起来 */
+  --bg-group: var(--BgGp-Secondary);
   --bg-overlay: var(--modal-bg);
 
   --text-primary: var(--Labels-Primary);
@@ -168,6 +172,10 @@
   --accent-2-text: var(--Colors-Purple);
   --accent-2-soft: #a16bff1a;
 
+  /* 徽章：深色下 Kimi 的原色本身就达标（5.08:1 起），直接用原值 */
+  --badge-bg: var(--Others-KMBlue10);
+  --badge-text: var(--Colors-KMBlue);
+
   --status-success: var(--Colors-PositiveGreen);
   --status-warning: var(--Colors-Orange);
   --status-danger: var(--Colors-Red);
@@ -180,12 +188,11 @@
   --status-info-soft: var(--Others-LightBlueBg);
   --status-neutral-soft: var(--Bg-Secondary);
 
-  /* 主按钮：深色下白字压 #1a88ff 只有 3.49:1，
-     所以按钮底取**更深的蓝**（与浅色同值），保证白字可读——
-     "当文字的色"和"当底的色"不是同一个值。 */
-  --button-primary-bg: #0d6ede;
-  --button-primary-bg-hover: #1a7ae8;
-  --button-primary-text: var(--Always-White);
+  /* 主按钮：深色下同样取 `Labels-Primary`（近白）作底，文字用画布深色。
+     与浅色同构，理由是 Kimi 的纪律：**动作靠墨色，蓝只做小面积强调**。 */
+  --button-primary-bg: var(--Labels-Primary);
+  --button-primary-bg-hover: var(--Labels-Primary-hover);
+  --button-primary-text: var(--Bg-Primary);
 
   --button-disabled-bg: var(--Bg-Secondary);
   --button-disabled-text: var(--Labels-Quaternary);

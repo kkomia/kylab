@@ -383,16 +383,18 @@ async function onLogout(): Promise<void> {
       需要的不是"我最近传了什么"，而是"我最近问过什么"。对话留存做完之后，它终于有东西可放。
     -->
     <div v-if="!collapsed" class="side-section">
-      <div class="section-head">
-        <p class="section-label">对话</p>
-        <!-- 带上 `?new=1` 才是"新建"。裸 `/chat` 现在表示"回到最近一次对话"
-             （见 ChatView 的 enterChat）——两个入口共用一条链接时，
-             从知识库返回也会落在空态上，看起来就像"又给我开了个新对话"。 -->
-        <RouterLink class="section-action" :to="{ path: '/chat', query: { new: '1' } }">
-          <IconChatNew :size="16" />
-          <span>新对话</span>
-        </RouterLink>
-      </div>
+      <!-- 分区标题行只有路标，**动作另起一行**（Kimi 的结构）：
+           它把「新对话」做成一个整块的填充按钮（BgGp-Secondary + 12px 圆角 + 44px 高），
+           而不是挤在标题右边的一个文字链接——后者在视觉上像"次要入口"，
+           而新建对话是这一栏里最常用的动作。 -->
+      <p class="section-label">对话</p>
+      <!-- 带上 `?new=1` 才是"新建"。裸 `/chat` 现在表示"回到最近一次对话"
+           （见 ChatView 的 enterChat）——两个入口共用一条链接时，
+           从知识库返回也会落在空态上，看起来就像"又给我开了个新对话"。 -->
+      <RouterLink class="new-chat" :to="{ path: '/chat', query: { new: '1' } }">
+        <IconChatNew :size="18" />
+        <span>新对话</span>
+      </RouterLink>
 
       <!-- 搜索只在有内容时出现：一个空列表下面挂个搜索框，是在问"你要找什么"，
            可用户手里什么也没有 -->
@@ -551,8 +553,8 @@ async function onLogout(): Promise<void> {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: 56px;
-  padding: var(--space-4) var(--space-4) var(--space-3);
+  min-height: var(--header-height);
+  padding: var(--space-3) var(--space-4) var(--space-2);
   color: var(--text-primary);
 }
 
@@ -655,18 +657,21 @@ async function onLogout(): Promise<void> {
   padding: 0 var(--space-2) var(--space-2);
 }
 
-/* 行高 36px = 8 + 20 + 8，落在 4px 阶梯上；侧栏项与知识库项字号统一 13.5px */
+/* 行高 40px、圆角 12px、图标与文字间距 6px——三个值都取自 Kimi 的
+   `.next-sidebar-nav-item` 实测。此前是 36px / 10px / 8px，整体小一号。 */
 .nav-item {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  min-height: 36px;
+  gap: var(--space-1-5);
+  min-height: var(--nav-height);
   padding: 0 var(--space-2);
   overflow: hidden;
   font-size: var(--text-body-size);
-  color: var(--text-secondary);
+  /* 静止态就用主文字色（Kimi 如此）。此前用二级灰，
+     五个入口读起来像"次要信息"，而它们是主导航。 */
+  color: var(--text-primary);
   text-decoration: none;
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-nav);
   /* gap 与内边距一起过渡：折叠时图标是"滑"到中间的，不是跳过去的 */
   transition:
     gap 180ms ease,
@@ -695,30 +700,18 @@ async function onLogout(): Promise<void> {
 
 .nav-icon {
   flex: 0 0 auto;
-  color: var(--text-tertiary);
+  /* 跟随条目文字色（Kimi 的 `__icon-wrapper` 就是 currentColor）。
+     此前固定三级灰，于是"图标比文字浅一档"成了默认，
+     而它在静止态本该和文字同色。 */
+  color: currentColor;
 }
 
-/* 选中项：浅品牌色底 + 左侧 2px 品牌色指示条（§5）。
-   全站唯一用品牌色的地方就在这里与主按钮、图表——它们是"当前在哪 / 该点哪里" */
+/* 选中项：**中性 alpha 底，不是品牌色底**（Kimi 的实测值）。
+   它同时去掉了原来那条 2px 品牌色左指示条——Kimi 的选中态只有底色，
+   靠底色 + 文字色表达"当前在这里"，不需要再加一根线。
+   全站仍然只有主按钮与小徽章用品牌色。 */
 .nav-item-active {
-  position: relative;
-  color: var(--accent-text);
-  background: var(--accent-soft);
-}
-
-.nav-item-active .nav-icon {
-  color: var(--accent);
-}
-
-.nav-item-active::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: var(--space-2);
-  bottom: var(--space-2);
-  width: 2px;
-  background: var(--accent);
-  border-radius: 1px;
+  background: var(--bg-selected);
 }
 
 /* 侧栏下半部分：会话列表。flex:1 占住剩余高度，
@@ -731,43 +724,42 @@ async function onLogout(): Promise<void> {
   border-top: 1px solid var(--border-hairline);
 }
 
-/* 分区标签与「新对话」同一行：动作贴着它所属的那一段放，
-   比另起一行更容易被理解为"在这一段里新建"。
-   `center` 而不是 `baseline`——右侧是图标 + 文字，基线对齐会让图标相对文字上下偏 */
-.section-head {
+/* 「新对话」= 整块的填充按钮，Kimi 的结构与取值：
+   `BgGp-Secondary` 底 + 12px 圆角 + 44px 高 + `12px 8px` 内边距。
+   它与侧栏底色是"浮起来一层"的关系，所以在任何主题下都读得出可点。 */
+.new-chat {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: 0 var(--space-2);
+  gap: var(--space-1-5);
+  min-height: 44px;
+  padding: var(--space-3) var(--space-2);
   margin-bottom: var(--space-2);
-}
-
-/* 「新对话」= 图标 + 文字（用户给的参考图就是这个样子：气泡图标 +加粗的动作名）。
-   左侧那个「对话」是这段列表的路标（小号、弱色），右侧这个是**动作**，两者职责不同，
-   所以不冲突——就像 "Chats  ·  New chat" 那样一行里各占一边。 */
-.section-action {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--text-micro-size);
+  font-size: var(--text-meta-size);
   font-weight: 500;
-  color: var(--accent-text);
+  color: var(--text-primary);
+  text-decoration: none;
+  background: var(--bg-group);
+  border-radius: var(--radius-nav);
 }
 
-.section-action:hover {
-  text-decoration: underline;
+.new-chat:hover {
+  background: var(--bg-hover);
 }
 
 /* 分区标签：侧栏宽一点以后，光靠留白已经分不开"导航"与下面这段。
-   小号 + 加宽字距 + 弱色——它只是一个"这里是另一段"的路标，不该跟可点项抢注意力。 */
+   高度 28px 与左右 8px 内边距让它和下面「新对话」块的左边缘对齐——
+   对不齐的话，扫视时会看到两条错开的起始线。
+   字号取 14（Kimi 的分区标题是 ui-B2），不再加宽字距：
+   加字距是"小号全大写西文"的习惯，中文上加字距只是变稀，不增加区分度。 */
 .section-label {
+  display: flex;
+  align-items: center;
+  height: var(--nav-section-title-height);
   margin: 0;
-  font-size: var(--text-micro-size);
+  padding: 0 var(--space-2);
+  font-size: var(--text-meta-size);
   font-weight: 500;
-  letter-spacing: 0.06em;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
 }
 
 /* 重命名弹窗里的一行提示：右对齐跟在输入框下面，与知识库设置里的计数同款 */
@@ -880,10 +872,12 @@ async function onLogout(): Promise<void> {
   opacity: 0;
 }
 
-/* 置顶标记：固定宽度，置顶与否不会让标题左右跳动 */
+/* 置顶标记：固定宽度，置顶与否不会让标题左右跳动。
+   颜色用三级灰而不是品牌色——它是"这条被钉住了"的状态标记，
+   不是"该点这里"的动作，抢品牌色会与主导航的强调打架。 */
 .conv-pin {
   flex: 0 0 auto;
-  color: var(--accent-text);
+  color: var(--text-tertiary);
 }
 
 .conv-item {
@@ -891,23 +885,23 @@ async function onLogout(): Promise<void> {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  min-height: 32px;
+  /* 高 40px、圆角 12px（Kimi 的 `.next-sidebar-history-item` 实测值）。
+     此前 32px——同样一条标题在侧栏里多占一行的高度。 */
+  min-height: var(--nav-height);
   padding: 0 var(--space-2);
   font-size: var(--text-meta-size);
-  color: var(--text-secondary);
+  color: var(--text-primary);
   text-decoration: none;
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-nav);
 }
 
 .conv-item:hover {
   background: var(--bg-hover);
-  color: var(--text-primary);
 }
 
-/* 选中态与主导航用同一套语言：浅品牌底 + 品牌色文字 */
+/* 选中态与主导航同一套语言：**中性 alpha 底**（Kimi 也是 Fills-F2） */
 .conv-item-active {
-  color: var(--accent-text);
-  background: var(--accent-soft);
+  background: var(--bg-selected);
 }
 
 /* 标题占满剩余宽度并省略：会话标题来自首轮提问，长度不可控 */

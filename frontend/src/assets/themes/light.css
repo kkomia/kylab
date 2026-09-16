@@ -177,7 +177,16 @@
   /* hover 与选中改用 alpha 填充：叠在任何底上都对，不必为每种底色各配一个值 */
   --bg-hover: var(--Fills-F1);
   --bg-active: var(--Fills-F3);
+  /* **当前项**（侧栏选中的导航/会话）用 Fills-F2，不用品牌色底。
+     Kimi 的实测值如此：`.next-sidebar-nav-item.router-link-active` 与
+     `.next-sidebar-history-item.is-active` 都是 `Fills-F2`，文字始终
+     `Labels-Primary`。蓝色只在**小面积**上出现（徽章、未读点、info）。
+     我们此前给选中项铺浅蓝底——那是"像 Kimi 的颜色、不像 Kimi 的界面"。 */
+  --bg-selected: var(--Fills-F2);
   --bg-header: var(--Bg-Secondary);
+  /* 成组容器里的那一层（Kimi 的 `BgGp-Secondary`）：浅色下是白，
+     深色下比画布亮一档。侧栏的「新对话」块按钮用它。 */
+  --bg-group: var(--BgGp-Secondary);
   /* 弹层表面：带一点蓝调，不用纯白 */
   --bg-overlay: var(--modal-bg);
 
@@ -206,6 +215,12 @@
   --accent-2-text: var(--Colors-Purple-text);
   --accent-2-soft: #985ffb1a;
 
+  /* 徽章：蓝字 + 蓝的 10% 底 + 4px 方角（Kimi 的小标记一律如此）。
+     字色用**加深档**而不是原色——原色当 12px 文字只有 3.52:1，
+     而"填充色与文字色分开"这条纪律我已经在主题里立过了，这里照它办。 */
+  --badge-bg: var(--Others-KMBlue10);
+  --badge-text: var(--Colors-KMBlue-text);
+
   /* 语义色：底色用 Kimi 原值，文字用同色相的达标档 */
   --status-success: var(--Colors-PositiveGreen-text);
   --status-warning: var(--Colors-Orange-text);
@@ -219,12 +234,16 @@
   --status-info-soft: var(--Others-LightBlueBg);
   --status-neutral-soft: var(--Bg-Secondary);
 
-  /* 主按钮：全站唯一的实心按钮。白字压 #1783ff 实测 3.67:1——
-     低于正文门槛，但按 Kimi 的做法保持蓝色实心（按钮文字 ≥14px、字重 500，
-     按大字号标准 3:1 合格）。与三级灰一样，属于"照抄并记录实测值"。 */
-  --button-primary-bg: var(--Colors-KMBlue);
-  --button-primary-bg-hover: var(--Colors-KMBlue-hover);
-  --button-primary-text: var(--Always-White);
+  /* 主按钮：**墨色实心，不是品牌蓝**。
+     这是对齐 Kimi 时最容易搞反的一条。它的 `--button-bg` 与
+     `.send-button-container`、`.kimi-button.primary`、`.action-card-button.primary`
+     全都取 `Labels-Primary`（浅色下近黑、深色下近白），而 `Colors-KMBlue`
+     当背景只出现在**极小的语义标记**上（未读点、日历的今天、info 态按钮）。
+     也就是说它的用色纪律是：**动作靠墨色，状态靠中性 alpha，蓝只做小面积强调**。
+     我们此前把主按钮做成蓝底，于是"像 Kimi 的颜色、不像 Kimi 的界面"。 */
+  --button-primary-bg: var(--Labels-Primary);
+  --button-primary-bg-hover: var(--Labels-Primary-hover);
+  --button-primary-text: var(--Bg-Primary);
 
   /* 禁用态仍用实色，不用 opacity：半透明会把前景与背景一起推向对方 */
   --button-disabled-bg: var(--Bg-Secondary);
