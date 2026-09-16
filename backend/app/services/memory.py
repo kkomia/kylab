@@ -30,7 +30,14 @@ import httpx
 from app.core.exceptions import InvalidRequestError, UpstreamError
 from app.services.runtime_config import RuntimeConfigService
 
-__all__ = ["CORE_MEMORY_FILE", "SOUL_FILE", "MemoryHit", "MemoryService", "MemoryStatus"]
+__all__ = [
+    "CORE_MEMORY_FILE",
+    "SOUL_FILE",
+    "MemoryHit",
+    "MemoryLink",
+    "MemoryService",
+    "MemoryStatus",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -83,13 +90,25 @@ class MemoryStatus:
 class MemoryHit:
     """一条召回结果。
 
-    ``text`` 是 ReMe 给的片段原文；``path`` 是它在工作区里的相对路径——
-    两者都保留，因为"这条记忆是从哪个文件来的"决定了用户能不能去改它。
+    ``text`` 是 ReMe 给的片段原文；``path`` + 行号是它在工作区里的位置——
+    保留位置是因为"这条记忆从哪个文件的哪一段来"决定了用户能不能去改它，
+    也是"渐进式展开"的入口（先给片段，不够再按路径读全文）。
     """
 
     text: str
     path: str = ""
+    start_line: int | None = None
+    end_line: int | None = None
     score: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryLink:
+    """命中文档的邻接边（wikilink 图谱）。``direction`` 是 ``out`` / ``in``。"""
+
+    path: str
+    direction: str
+    name: str = ""
 
 
 class MemoryService:
@@ -203,8 +222,15 @@ class MemoryService:
 
     # ------------------------------------------------------------------ 召回
 
-    def recall(self, query: str, *, limit: int | None = None) -> list[MemoryHit]:
-        """在记忆里找回相关片段。**与文档检索是两条路**（见模块头）。"""
+    def recall(
+        self, query: str, *, limit: int | None = None
+    ) -> tuple[list[MemoryHit], list[MemoryLink]]:
+        """在记忆里找回相关片段。**与文档检索是两条路**（见模块头）。
+
+        返回（片段，邻接边）。带图谱是因为 ReMe 的召回本来就是"渐进式"的：
+        先给最相关的片段，不够时按 wikilink 走到相关的记忆节点——
+        这一步不额外花检索成本，它就在同一个响应里。
+        """
         self._require_enabled()
         text = query.strip()
         if not text:
@@ -212,7 +238,54 @@ class MemoryService:
         count = max(1, min(int(limit or DEFAULT_RECALL), MAX_RECALL))
 
         payload = self._post("search", {"query": text, "limit": count})
-        return _hits_of(payload)
+        return _hits_of(payload), _links_of(payload)
+
+    # ------------------------------------------------------------------ 捕获
+
+    def capture(self, messages: list[dict[str, str]], *, session_id: str) -> dict[str, Any]:
+        """把一轮对话交给 ReMe 的 Auto-Memory 沉淀。
+
+        **由 ReMe 决定记什么**，我们不在这里做二次筛选——它的规矩是
+        "识别以后仍可能有用的事"（稳定偏好、项目背景与限制、已确认的决定及原因、
+        当前进展与阻塞、可复用的流程），并且没有值得记的内容时**不产生空记忆**。
+        我们替它筛一遍，只会把它判断得比它差。
+
+        ``messages`` 每项要带 ``role`` 与 ``name``：ReMe 那侧收的是 agentscope 的
+        ``Msg``，**缺 ``name`` 会被它的校验直接拒掉**（实测报
+        ``1 validation error for Msg / name Field required``）。``name`` 就是
+        "谁说的"，所以这里强制调用方给全，而不是替它编一个。
+
+        ``session_id`` 是**溯源锚点**：ReMe 会把来源对话写成
+        ``session/dialog/<session_id>.jsonl`` 并在记忆笔记里回链，
+        这样"这条记忆是哪次对话来的"永远查得到。用我们的 conversation id 正好。
+        """
+        self._require_enabled()
+        if not messages:
+            raise InvalidRequestError("没有可沉淀的消息")
+        for index, item in enumerate(messages):
+            if not (item.get("role") and item.get("name") and item.get("content")):
+                raise InvalidRequestError(
+                    f"第 {index + 1} 条消息缺少 role / name / content"
+                    "（记忆服务要求每条都标明是谁说的）"
+                )
+        if not session_id.strip():
+            raise InvalidRequestError("缺少参数：session_id（记忆要靠它回溯来源对话）")
+
+        payload = self._post(
+            "auto_memory", {"messages": messages, "session_id": session_id}
+        )
+        meta = payload.get("metadata") if isinstance(payload, dict) else None
+        meta = meta if isinstance(meta, dict) else {}
+        return {
+            "created": bool(meta.get("created")),
+            "modified": bool(meta.get("modified")),
+            # `answer` 是它给人类读的一句话（"记下了什么"），直接透出给日志与界面
+            "summary": str(payload.get("answer") or "")[:300]
+            if isinstance(payload, dict)
+            else "",
+            "path": str(meta.get("path") or ""),
+            "messages": int(meta.get("n_messages") or 0),
+        }
 
     # ------------------------------------------------------------------ 记住
 
@@ -346,21 +419,20 @@ def _normalize(line: str) -> str:
 def _hits_of(payload: Any) -> list[MemoryHit]:
     """从记忆服务的返回里取出片段。
 
-    **刻意容错**：ReMe 那侧的**响应 schema 我们还没钉死**（它的服务在缺 LLM Key 时
-    起不来，本轮只钉到了路径）。所以这里做三件事而不是断言一个形状：
+    **真实形状**（实测得出，见设计文档 §3.2）::
 
-    1. 常见的信封（``data`` / ``result`` / ``results``）逐层剥开；
-    2. 列表项按候选字段名取文本（``text`` / ``content`` / ``snippet`` / ``chunk``），
-       取不到就跳过这一项；
-    3. **一个都取不出来时抛出上游错误**，而不是返回空列表——
-       返回空会让模型以为"记忆里没有"，而真实原因是我们没读懂它的返回。
-       这条与"关着时明确报错"是同一条纪律。
+        {"answer": "…给人读的文本…", "success": true,
+         "metadata": {"results": [{"id","text","path","start_line","end_line",
+                                   "scores": {"keyword": 2.72, "score": 2.72}}],
+                      "link_expansion": {…}}}
+
+    注意分数在 ``scores.score`` 里（不是顶层 ``score``），
+    而结果列表在 ``metadata.results`` 里——这两个位置第一版都猜错了，
+    是靠**真跑一遍服务**才纠正的（原先的容错解析会直接报"认不出结构"）。
+    容错仍然保留：字段名多认几种，版本升级时不至于立刻断，
+    但"整个返回都不认识"要报错而不是返回空。
     """
-    body = payload
-    for key in ("data", "result", "results", "payload"):
-        if isinstance(body, dict) and key in body:
-            body = body[key]
-            break
+    body = _unwrap(payload)
 
     items: list[Any] = []
     found_list = False
@@ -397,29 +469,98 @@ def _hits_of(payload: Any) -> list[MemoryHit]:
             if isinstance(value, str):
                 path = value
                 break
-        score = None
-        for key in ("score", "rrf_score", "relevance"):
-            value = item.get(key)
-            if isinstance(value, (int, float)):
-                score = float(value)
-                break
-        hits.append(MemoryHit(text=text, path=path, score=score))
+        hits.append(
+            MemoryHit(
+                text=text,
+                path=path,
+                start_line=_int_or_none(item.get("start_line")),
+                end_line=_int_or_none(item.get("end_line")),
+                score=_score_of(item),
+            )
+        )
 
     if hits:
         return hits
     if items:
-        # 有内容但一条都认不出来 = 我们没读懂它的返回，不是"没有记忆"
         raise UpstreamError(
             "记忆服务返回了内容，但没有认出其中的片段字段；"
             f"可能是它的响应格式变了（原始返回前 200 字：{_brief(payload)}）"
         )
     if not found_list and payload:
-        # **认不出结构也要报错**：这一条是自我审查时补上的——
-        # 只判"列表非空却认不出"会漏掉"整个返回都不是我们认识的样子"，
-        # 那种情况会静默返回空列表，而模型会当成"记忆里没有"。
         raise UpstreamError(
             "记忆服务的返回结构与预期不符（找不到结果列表）；"
             f"原始返回前 200 字：{_brief(payload)}"
         )
     # 认出来了、而且是空的 = 真的没有相关记忆。这才是该返回空的情况。
     return []
+
+
+def _links_of(payload: Any) -> list[MemoryLink]:
+    """命中片段的邻接边（ReMe 的 ``metadata.link_expansion``）。
+
+    结构是 ``{命中路径: {"outlinks": [{"path","meta":{"name"}}], "inlinks": [...]}}``。
+    它是**免费附带的**：ReMe 在同一个响应里给了图谱，我们不额外花一次检索就能让
+    模型"顺着链接走"。取不出来时返回空列表——图谱缺失不该让一次召回失败，
+    片段本身已经够用了。
+    """
+    body = _unwrap(payload)
+    if not isinstance(body, dict):
+        return []
+    expansion = body.get("link_expansion")
+    if not isinstance(expansion, dict):
+        return []
+
+    links: list[MemoryLink] = []
+    for _source, sides in expansion.items():
+        if not isinstance(sides, dict):
+            continue
+        for key, direction in (("outlinks", "out"), ("inlinks", "in")):
+            for edge in sides.get(key) or []:
+                if not isinstance(edge, dict):
+                    continue
+                path = edge.get("path")
+                if not isinstance(path, str) or not path:
+                    continue
+                meta = edge.get("meta") if isinstance(edge.get("meta"), dict) else {}
+                name = meta.get("name")
+                links.append(
+                    MemoryLink(
+                        path=path,
+                        direction=direction,
+                        name=name if isinstance(name, str) else "",
+                    )
+                )
+    return links
+
+
+def _unwrap(payload: Any) -> Any:
+    """逐层剥开外层信封。
+
+    ``metadata`` 是 ReMe 的实际信封（实测），其余几个是容错：它的版本之间
+    换过字段名，多认几个不至于一升级就"召回到零条"。
+    """
+    body = payload
+    for key in ("metadata", "data", "result", "payload"):
+        if isinstance(body, dict) and isinstance(body.get(key), (dict, list)):
+            body = body[key]
+            break
+    return body
+
+
+def _int_or_none(value: Any) -> int | None:
+    return int(value) if isinstance(value, (int, float)) else None
+
+
+def _score_of(item: dict[str, Any]) -> float | None:
+    """分数在 ``scores.score``（融合后的分）里；也认顶层 ``score``。"""
+    scores = item.get("scores")
+    if isinstance(scores, dict):
+        for key in ("score", "rrf", "vector", "keyword"):
+            value = scores.get(key)
+            if isinstance(value, (int, float)):
+                return float(value)
+    for key in ("score", "rrf_score", "relevance"):
+        value = item.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None

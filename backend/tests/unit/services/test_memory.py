@@ -182,7 +182,7 @@ def test_recall_flattens_a_common_envelope(
         lambda *a, **k: _FakeResponse({"data": {"results": [hit]}}),
     )
 
-    hits = service.recall("偏好")
+    hits, _links = service.recall("偏好")
 
     assert len(hits) == 1
     assert hits[0].text == "用户偏好简短回答"
@@ -216,7 +216,8 @@ def test_recall_returns_empty_only_when_the_provider_says_empty(
         "app.services.memory.httpx.post", lambda *a, **k: _FakeResponse({"results": []})
     )
 
-    assert service.recall("偏好") == []
+    hits, links = service.recall("偏好")
+    assert hits == [] and links == []
 
 
 def test_recall_raises_when_the_shape_is_unrecognized(
@@ -337,3 +338,139 @@ def test_prompt_block_is_empty_when_disabled(tmp_path: Path) -> None:
     (tmp_path / "memory" / CORE_MEMORY_FILE).write_text("- 有内容", encoding="utf-8")
 
     assert service.prompt_block() == ""
+
+
+# ----------------------------------------------------- 真实返回（从活服务抓的）
+
+#: 这条不是编的：把 ReMe 真跑起来、写两份记忆文件、调 POST /search 拿到的**原始返回**。
+#: 第一版的容错解析会在这份数据上直接报"认不出结构"——分数在 scores.score 里、
+#: 结果列表在 metadata.results 里，两个位置当时都猜错了。
+REAL_SEARCH_RESPONSE = {
+    "answer": "========== digest/wiki/锂价敏感性.md:5-9 [score=2.7236] ==========\n…",
+    "success": True,
+    "metadata": {
+        "results": [
+            {
+                "id": "f2343cef20b6",
+                # 原文照抄、不折行：这是服务的真实输出，改了就不再是"实测证据"了
+                "text": "## 当前判断\n\n锂价下跌通常缓解材料成本，但净影响取决于售价联动速度与高價庫存减值。",  # noqa: E501
+                "metadata": {},
+                "path": "digest/wiki/锂价敏感性.md",
+                "start_line": 5,
+                "end_line": 9,
+                "scores": {"keyword": 2.7236328125, "score": 2.7236328125},
+            },
+            {
+                "id": "ca3bea6afb29",
+                "text": "# 碳酸锂\n\n需求从整车销量传导到电池排产，再影响碳酸锂需求。",
+                "metadata": {},
+                "path": "digest/wiki/碳酸锂.md",
+                "start_line": 5,
+                "end_line": 8,
+                "scores": {"keyword": 0.6965709328651428, "score": 0.6965709328651428},
+            },
+        ],
+        "link_expansion": {
+            "digest/wiki/锂价敏感性.md": {
+                "outlinks": [
+                    {
+                        "path": "digest/wiki/碳酸锂.md",
+                        "meta": {"name": "碳酸锂", "description": "电池上游关键原料。"},
+                        "anchors": [],
+                    }
+                ],
+                "inlinks": [],
+            },
+            "digest/wiki/碳酸锂.md": {
+                "outlinks": [],
+                "inlinks": [{"path": "digest/wiki/锂价敏感性.md", "meta": {"name": "锂价敏感性"}}],
+            },
+        },
+    },
+}
+
+
+def test_hits_match_the_real_service_response() -> None:
+    hits = _hits_of(REAL_SEARCH_RESPONSE)
+
+    assert [hit.path for hit in hits] == ["digest/wiki/锂价敏感性.md", "digest/wiki/碳酸锂.md"]
+    first = hits[0]
+    assert first.text.startswith("## 当前判断")
+    # 分数在 scores.score 里；行号是"渐进式展开"的入口
+    assert first.score == pytest.approx(2.7236, rel=1e-3)
+    assert (first.start_line, first.end_line) == (5, 9)
+
+
+def test_links_match_the_real_service_response() -> None:
+    from app.services.memory import _links_of
+
+    links = _links_of(REAL_SEARCH_RESPONSE)
+
+    pairs = {(item.path, item.direction) for item in links}
+    assert ("digest/wiki/碳酸锂.md", "out") in pairs
+    assert ("digest/wiki/锂价敏感性.md", "in") in pairs
+    assert next(item for item in links if item.direction == "out").name == "碳酸锂"
+
+
+# --------------------------------------------------------------------- 捕获
+
+
+def test_capture_sends_messages_and_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """捕获的请求体：``messages``（每条要 role / name / content）+ ``session_id``。
+
+    ``name`` 是实测踩出来的：ReMe 那侧收的是 agentscope 的 ``Msg``，
+    缺 ``name`` 会被它自己的校验拒掉（报 ``1 validation error for Msg``）。
+    """
+    service = _service(tmp_path)
+    seen: dict[str, object] = {}
+
+    def fake_post(url, *, json, timeout):  # type: ignore[no-untyped-def]
+        seen.update({"url": url, "json": json})
+        return _FakeResponse({"success": True, "answer": "记下了", "metadata": {"created": True}})
+
+    monkeypatch.setattr("app.services.memory.httpx.post", fake_post)
+
+    result = service.capture(
+        [
+            {"role": "user", "name": "用户", "content": "以后简短点"},
+            {"role": "assistant", "name": "助手", "content": "好"},
+        ],
+        session_id="conv_1",
+    )
+
+    assert seen["url"] == "http://reme.test/auto_memory"
+    assert seen["json"]["session_id"] == "conv_1"
+    assert len(seen["json"]["messages"]) == 2
+    assert result["created"] is True
+    assert result["summary"] == "记下了"
+
+
+def test_capture_rejects_messages_without_a_name(tmp_path: Path) -> None:
+    """缺 ``name`` 要在**我们这边**就拦住：不然错误会以"记忆服务 422"的形式出现，
+    而真正的原因（谁说的没给）藏在它的校验信息里。"""
+    service = _service(tmp_path)
+
+    with pytest.raises(InvalidRequestError) as excinfo:
+        service.capture([{"role": "user", "content": "没给名字"}], session_id="conv_1")
+
+    assert "role / name / content" in str(excinfo.value)
+
+
+def test_capture_requires_a_session_id(tmp_path: Path) -> None:
+    """没有 session_id 就没法回溯来源对话——那是记忆可信度的锚点。"""
+    service = _service(tmp_path)
+
+    with pytest.raises(InvalidRequestError):
+        service.capture(
+            [{"role": "user", "name": "用户", "content": "x"}],
+            session_id="   ",
+        )
+
+
+def test_capture_rejects_empty_messages(tmp_path: Path) -> None:
+    service = _service(tmp_path)
+
+    with pytest.raises(InvalidRequestError):
+        service.capture([], session_id="conv_1")

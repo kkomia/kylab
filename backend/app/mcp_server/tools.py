@@ -690,16 +690,27 @@ def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
     """
     query = _require(args, "query")
     limit = int(args.get("limit") or DEFAULT_RECALL)
-    hits = services.memory.recall(query, limit=limit)
+    hits, links = services.memory.recall(query, limit=limit)
     return {
         "query": query,
         "hits": [
             {
                 "text": item.text,
                 "path": item.path,
+                # 行号是"渐进式展开"的入口：片段不够时按它去读全文
+                "lines": (
+                    f"{item.start_line}-{item.end_line}"
+                    if item.start_line is not None
+                    else None
+                ),
                 "score": round(item.score, 4) if item.score is not None else None,
             }
             for item in hits
+        ],
+        # wikilink 图谱随召回免费附上：不够时顺着它走到相关记忆，不用再搜一次
+        "links": [
+            {"path": item.path, "name": item.name, "direction": item.direction}
+            for item in links[:20]
         ],
         "total": len(hits),
         "note": (
