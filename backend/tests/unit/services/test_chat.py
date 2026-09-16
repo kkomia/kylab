@@ -571,3 +571,63 @@ def test_agent_stream_skips_retrieval_for_chitchat(runtime, bind_slot) -> None:
 
     # 没有 sources 事件（连空的也不发），回答照常
     assert not any(isinstance(e, SourcesEvent) for e in events)
+
+
+# ------------------------------------------------- 资料装配：摘要与预算（v25）
+
+
+def _source(index: int, document_id: str, summary: str = "", preview: str = "片段"):  # type: ignore[no-untyped-def]
+    from app.services.chat import SourceRef
+
+    return SourceRef(
+        index=index,
+        chunk_id=f"{document_id}-c{index}",
+        document_id=document_id,
+        document_name=f"{document_id}.pdf",
+        preview=preview,
+        document_summary=summary,
+    )
+
+
+def test_document_background_is_attached_once_per_document() -> None:
+    """同一篇文档的多个片段只带一次摘要：带多次是纯浪费（重复计费）。"""
+    from app.services.chat import build_messages
+
+    messages = build_messages(
+        query="讲了什么",
+        sources=[
+            _source(1, "d1", "这是一篇系统综述。"),
+            _source(2, "d1", "这是一篇系统综述。"),
+            _source(3, "d2"),
+        ],
+        history=None,
+        system_prompt="",
+    )
+
+    body = messages[0].content
+    assert body.count("文档背景") == 1
+    assert "这是一篇系统综述。" in body
+
+
+def test_document_without_summary_adds_no_noise() -> None:
+    """没摘要（老文档）时不留空行、不写"（文档背景：）"这种半截话。"""
+    from app.services.chat import build_messages
+
+    messages = build_messages(
+        query="问", sources=[_source(1, "d1")], history=None, system_prompt=""
+    )
+
+    assert "文档背景" not in messages[0].content
+
+
+def test_material_budget_caps_the_total_material() -> None:
+    """**整块资料有字数预算**（v25）：命中 6 条时不再每人都补成 1800 字的小节。
+
+    这是省 token 的落点：摘要补上了"文档在讲什么"这层背景，片段本身可以更短。
+    """
+    from app.services.chat import MATERIAL_CHARS, MIN_SOURCE_CHARS
+
+    assert MATERIAL_CHARS == 6000
+    assert MIN_SOURCE_CHARS < MATERIAL_CHARS
+    # 6 条命中时每条的上限 = 6000 / 6 = 1000 字，明显小于 section_chars 的 1800
+    assert MATERIAL_CHARS // 6 < 1800

@@ -217,6 +217,9 @@ class DocumentOut(BaseModel):
 
     列表据此显示"生成中…"，也据此决定继续轮询——出题**不改变文档阶段**，
     只看 ``stage`` 的话前端永远等不到它完成。"""
+    summary: str = ""
+    """入库时生成的文档摘要（v25）。**问答上下文靠它省 token**，
+    界面也把它当一句话说明（抽屉里显示、列表行悬浮显示）。空串 = 还没生成。"""
     progress: DocumentProgressOut | None = None
     """分段进度的摘要（§12.115）。列表行的进度条吃它；完整那棵树在
     ``GET /documents/{id}/timeline``。``None`` = 这条路径没算（老调用点）。"""
@@ -694,6 +697,10 @@ class ChatSourceOut(BaseModel):
     #: 出处所属知识库，界面用它把引用直连到库页抽屉。
     #: 默认空串：历史会话里存的快照没有这个字段，读出来要能兼容。
     knowledge_base_id: str = ""
+    #: 这篇文档的摘要（v25）。**它进了提示词**（每条资料后面跟一行"文档背景"，
+    #: 同一篇只带一次），在这里回给前端是为了**可核对**：用户能看见模型
+    #: 到底拿到了什么背景，而不是只能猜"它为什么这么答"。
+    document_summary: str = ""
 
 
 class ChatTurnOut(BaseModel):

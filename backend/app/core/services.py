@@ -52,6 +52,7 @@ from app.services.share import ShareService
 from app.services.sources import SourceService
 from app.services.stats import StatsService
 from app.services.suggested_questions import SuggestedQuestionsService
+from app.services.summary import DocumentSummaryService
 from app.services.system_load import SystemLoadService
 from app.services.tabular import TabularService
 from app.services.usage import UsageService
@@ -116,6 +117,8 @@ class Services:
     """笔记：Markdown 事实源 + 加入知识库（v20）。"""
     note_ai: NoteAiService
     """笔记的 AI 排版 / 润色（v20.2）。单独依赖 LLM，保住 NotesService 的"无模型也能用"。"""
+    summaries: DocumentSummaryService
+    """文档摘要（v25）：入库时生成，问答上下文与界面都用它。"""
     suggested_questions: SuggestedQuestionsService
     """示例问题：依据所选知识库的语料让对话模型生成开场问题（对话页空状态）。"""
     wiki: WikiService
@@ -297,6 +300,13 @@ def build_services(
     questions_service = SuggestedQuestionsService(
         bundle, chat_service, batch_concurrency=resolved.questions_concurrency
     )
+    summary_service = DocumentSummaryService(
+        bundle,
+        chat_service,
+        # 开关走运行期配置（设置页可改）。默认开：它是一次性成本换每轮问答的
+        # token 节省，关掉只会让问答更贵（见 services/summary.py 的说明）
+        enabled=lambda: runtime.get("ingest.summary_enabled").lower() not in ("0", "false", "no"),
+    )
     # Wiki 生成（v24）：规划主题 + 逐页写作，资料直接复用上面的混合检索
     wiki_service = WikiService(bundle, chat=chat_service, retrieval=retrieval)
 
@@ -309,6 +319,8 @@ def build_services(
         notifier=webhooks.emit,
         # 分段出题（v23）：库上开着才用，失败不影响摄入
         questions=questions_service,
+        # 文档摘要（v25）：入库时每篇一次调用，供问答上下文省 token
+        summaries=summary_service,
     )
 
     # 可观测性服务**先建**：文档列表的进度条要判"停滞"，而那个判据（租约还在不在续）
@@ -337,6 +349,12 @@ def build_services(
         # 任务与阶段事件这两张表只增不减，而它们都在热路径上（列表、队列概览、
         # 每行的进度条都会读）。保留期见 services/maintenance.py（§12.116）。
         MaintenanceService(bundle).prune_history()
+        # 给还没有摘要的文档补摘要（v25）。挂在空闲分支上：它是"用空闲时间换
+        # 后续每轮问答的 token"，一小批一小批地补，不需要用户点任何东西。
+        try:
+            summary_service.summarize_missing()
+        except Exception:
+            logger.warning("补生成文档摘要失败，跳过本轮", exc_info=True)
         # 走 lifecycle 而不是直接调存储层：它会**连磁盘上的原文一起删**。
         # 只删数据库行会把对象存储变成只增不减的垃圾场，
         # 而用户以为"7 天后就清掉了"
@@ -354,6 +372,7 @@ def build_services(
         maintain=_maintain,
         sources=sources_service,
         wiki=wiki_service,
+        summaries=summary_service,
     )
 
     return Services(
@@ -389,6 +408,7 @@ def build_services(
         notes=NotesService(bundle, ingest=ingest, documents=documents_service),
         note_ai=NoteAiService(chat_service),
         suggested_questions=questions_service,
+        summaries=summary_service,
         wiki=wiki_service,
         webhooks=webhooks,
         embedder=embedder,
@@ -416,6 +436,7 @@ def _build_workers(
     maintain: Callable[[], None],
     sources: SourceService,
     wiki: WikiService,
+    summaries: DocumentSummaryService,
 ) -> list[TaskWorker]:
     """按 ``KYLAB_WORKER_CONCURRENCY`` 造 N 个消费者。
 
@@ -441,6 +462,8 @@ def _build_workers(
             sync_source=sources.sync_now,
             # Wiki 重建同样是知识库级任务（见 _handle）
             compile_wiki=wiki.generate,
+            # 补文档摘要（v25）：空闲时一小批一小批地补，不需要用户点任何东西
+            summarize_gap=summaries.summarize_missing,
         )
         for index in range(count)
     ]

@@ -55,6 +55,14 @@ export interface DocumentSummary {
    * 详情页据此决定首页先取「原文版式」还是「解析文本」。
    */
   original_kind: PreviewKind
+  /**
+   * 入库时生成的文档摘要（v25）。
+   *
+   * **它主要是给问答上下文省 token 的**（按文档带一行背景，就不必把每段命中都
+   * 补成整个小节）；在界面上它顺带是一句有用的说明——抽屉里显示，列表行当悬浮提示。
+   * 空串 = 还没生成（老文档会由后台补）。
+   */
+  summary: string
   /** 分段进度摘要（§12.115）。列表行的进度条吃它；完整那棵树在 `getTimeline`。 */
   progress: DocumentProgress | null
   created_at: string | null

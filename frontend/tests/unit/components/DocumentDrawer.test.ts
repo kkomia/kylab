@@ -49,6 +49,7 @@ function summary(id: string, name: string): api.DocumentSummary {
     question_count: 0,
     questioned_chunk_count: 0,
     questions_pending: false,
+    summary: '',
     progress: null,
   }
 }

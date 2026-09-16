@@ -30,6 +30,13 @@ export interface ChatSource {
    * 空了就退回 `/documents/:id` 那条转发路径。
    */
   knowledge_base_id: string
+  /**
+   * 这篇文档的摘要（v25）。**它进了提示词**（同一篇文档只带一次"文档背景"行），
+   * 在这里回给前端是为了可核对：用户能看见模型拿到了什么背景，
+   * 而不是只能猜"它为什么这么答"。空串 = 这篇还没生成摘要；
+   * **也可以是 undefined**——历史会话里存的旧快照没有这个字段。
+   */
+  document_summary?: string
 }
 
 export interface ChatHistoryMessage {

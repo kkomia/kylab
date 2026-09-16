@@ -114,6 +114,21 @@ function closeDocument(): void {
  * **`page` 必须去掉**：它是引用带进来的"看第 N 页"，只对引用那一份有意义；
  * 留着它，接着点开另一份文档会莫名其妙跳到它的第 N 页。
  */
+/**
+ * 列表行的悬浮提示：文件名 + 摘要（v25）。
+ *
+ * 摘要**不占列**（列表已经八列，再加一列就真读不动了），但它对"这篇是啥"
+ * 很省事——悬浮一眼就看到。没有摘要时只显示文件名，不留空行。
+ */
+function rowTitle(document: DocumentSummary): string {
+  const summary = document.summary?.trim()
+  return summary
+    ? `${document.name}
+
+${summary}`
+    : document.name
+}
+
 function documentLink(id: string): LocationQueryRaw {
   return { ...withoutDocument(route.query), doc: id }
 }
@@ -1309,8 +1324,9 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
                     <RouterLink
                       class="row-name"
                       :to="{ path: route.path, query: documentLink(document.id) }"
+                      :title="rowTitle(document)"
                     >
-                      {{ document.name }}
+                      <span class="row-name-text">{{ document.name }}</span>
                     </RouterLink>
                     <StatusTag
                       :label="stageOf(document).label"
@@ -2186,9 +2202,26 @@ button.tree-caret:hover {
   display: inline-flex;
   align-items: center;
   align-self: stretch;
+  min-width: 0;
   min-height: var(--hit-target);
-  overflow: hidden;
   color: var(--text-primary);
+}
+
+/*
+ * **省略号必须挂在"真正装着文本的那个元素"上**（v24 修，用户报的渲染异常）。
+ *
+ * `.row-name` 是 `inline-flex`（为了撑满行高、垂直居中），而 **flex 容器上的
+ * `text-overflow: ellipsis` 不生效**：文件名一长就被直接裁断，连"…"都没有——
+ * 截图里就是"文献表格/2.Greenness Surrounding Schools and Visual Impairment in
+ * Chinese Children anc"这样硬切。仓库在 ChatView 的引用徽标上踩过同一个坑，
+ * 这里是第二处，所以规则写得更显眼一点。
+ *
+ * 三个条件缺一不可：**块级容器 + overflow: hidden + min-width: 0**
+ * （flex 项默认不收缩到内容宽度以下，不给 min-width 就永远省略不了）。
+ */
+.row-main .row-name-text {
+  overflow: hidden;
+  min-width: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

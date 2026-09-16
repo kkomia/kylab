@@ -545,6 +545,14 @@ const stage = computed(() =>
           <span class="view-tabs-hint">{{ activeTabHint }}</span>
         </div>
 
+        <!--
+          文档摘要（v25）。放在两个视角**之上**：它是"这份文档是什么"的一句话答案，
+          而阅读/切块回答的是"里面有什么"。生成机制见 services/summary.py。
+        -->
+        <p v-if="document.summary" class="doc-summary">
+          <span class="doc-summary-label">摘要</span>{{ document.summary }}
+        </p>
+
         <!-- 阅读视角 -->
         <template v-if="view === 'read'">
           <!-- 原件版式 / 解析文本：两个都成立时才出现。默认看原件，
@@ -733,6 +741,24 @@ const stage = computed(() =>
 </template>
 
 <style scoped>
+/* 摘要：一句话说明，用次级底色把它与下面的内容分开（它不是正文，是导语） */
+.doc-summary {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-meta-size);
+  line-height: 1.7;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-control);
+}
+
+/* "摘要"两个字用更弱的色，正文才是要读的——避免它被当成标题去争注意力 */
+.doc-summary-label {
+  margin-right: var(--space-2);
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
 /* ---------------------------------------------------------------- 抽屉 */
 
 /* 贴右边、整屏高，从右侧滑入。**没有遮罩**：遮罩会把列表压暗，

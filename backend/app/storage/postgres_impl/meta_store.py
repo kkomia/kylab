@@ -799,6 +799,28 @@ class PostgresMetaStore(MetaStore):
                 (document_id, stage.value, error),
             )
 
+    def list_documents_without_summary(self, *, limit: int) -> list[DocumentRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM documents
+                 WHERE stage = %s AND summary = ''
+                 ORDER BY created_at, id
+                 LIMIT %s
+                """,
+                (DocumentStage.INDEXED.value, max(1, int(limit))),
+            ).fetchall()
+        return [self._document_from_row(row) for row in rows]
+
+    def update_document_summary(self, document_id: str, summary: str) -> None:
+        # **只改 summary 与 updated_at**：不动阶段、不动 error——摘要是内容层的补充，
+        # 与流水线状态无关。写成"顺手也改 stage"会让时间线多出一条假事件。
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE documents SET summary = %s, updated_at = %s WHERE id = %s",
+                (summary, _dump(_now()), document_id),
+            )
+
     def list_document_stage_events(self, document_id: str) -> list[DocumentStageEventRecord]:
         with self._db.read() as conn:
             rows = conn.execute(
@@ -2890,6 +2912,7 @@ class PostgresMetaStore(MetaStore):
             uploaded_by=row["uploaded_by"],
             folder_id=row["folder_id"],
             disabled=bool(row["disabled"]),
+            summary=row.get("summary") or "",
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
         )

@@ -59,6 +59,7 @@ function accepted(name: string, duplicate = false): documentsApi.UploadAccepted 
       question_count: 0,
       questioned_chunk_count: 0,
       questions_pending: false,
+      summary: '',
       progress: null,
     },
     is_duplicate: duplicate,

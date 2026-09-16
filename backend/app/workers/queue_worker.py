@@ -32,6 +32,15 @@ DEFAULT_MAX_BACKOFF = 60.0
 DEFAULT_MAINTAIN_INTERVAL = 3600.0
 """空闲维护间隔（秒）。一小时一次：清理是"防表无限长大"，不必更勤。"""
 
+DEFAULT_SUMMARY_INTERVAL = 30.0
+"""补文档摘要的间隔（秒）。
+
+**为什么要与 ``DEFAULT_MAINTAIN_INTERVAL`` 分开**：维护是"防表长大"，一小时一次
+没问题；补摘要是"把已有文档补上，好让后续每轮问答省 token"——一小时只补 2 篇的话，
+一个 20 篇的库要 10 小时才补完，而它恰恰是这版新加的机制、老文档全都缺（实测踩到：
+按小时节拍跑了 10 分钟只补了 2 篇）。30 秒一批、一批 2 篇，20 篇几分钟收敛。
+离线时它一次都不跑（只在"没活可干"的分支里触发），不会与摄入抢配额。"""
+
 HANDLED_KINDS = frozenset(
     {
         TaskKind.PROBE,
@@ -63,6 +72,7 @@ class TaskWorker:
         maintain_interval: float = DEFAULT_MAINTAIN_INTERVAL,
         sync_source: Callable[[str], object] | None = None,
         compile_wiki: Callable[[str], object] | None = None,
+        summarize_gap: Callable[[], object] | None = None,
     ) -> None:
         if lease_seconds <= 0:
             raise ValueError("租约时长必须为正")
@@ -87,6 +97,11 @@ class TaskWorker:
         # Wiki 重建（v24）。同样是可选回调：没接上时 WIKI 任务明确失败，
         # 而不是被静默丢掉
         self._compile_wiki = compile_wiki
+        # 补文档摘要（v25）。同样是可选回调：不接上就没有这个动作，
+        # 而不是"静默什么都不做"——它由组合根显式传入。
+        self._summarize_gap = summarize_gap
+        self._summary_interval = DEFAULT_SUMMARY_INTERVAL
+        self._last_summary = 0.0
         self._last_maintain = 0.0
         # 租约回收的节奏（v24 补）：**必须比维护间隔短得多**。维护是"清会长大的表"，
         # 一小时一次没问题；而租约回收是"把被崩溃/重启打断的任务放回队列"——
@@ -188,6 +203,8 @@ class TaskWorker:
             if not worked:
                 # 维护仍然只在空闲时跑：它是"清会长大的表"，没必要和摄入抢 IO
                 self._run_maintenance()
+                # 补摘要也用空闲时间，但节奏快得多（见 DEFAULT_SUMMARY_INTERVAL）
+                self._fill_summaries()
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stopping.wait(), timeout=self._poll_interval)
 
@@ -237,6 +254,23 @@ class TaskWorker:
             return
         if reclaimed:
             logger.info("回收过期租约 %d 条（已放回队列或判失败）", reclaimed)
+
+    def _fill_summaries(self) -> None:
+        """空闲时给缺摘要的文档补摘要（一小批，可失败）。
+
+        与 ``_run_maintenance`` 的三点一致：只在空闲分支跑、按自己的间隔节流、
+        失败一律吞掉（补摘要失败不该带走消费者）。
+        """
+        if self._summarize_gap is None:
+            return
+        now = time.monotonic()
+        if now - self._last_summary < self._summary_interval:
+            return
+        self._last_summary = now
+        try:
+            self._summarize_gap()
+        except Exception:
+            logger.warning("补文档摘要失败，跳过本轮", exc_info=True)
 
     def _run_maintenance(self) -> None:
         """空闲时按间隔跑一次维护。

@@ -37,6 +37,7 @@ from app.services.splitting import (
     plan_split,
 )
 from app.services.suggested_questions import SuggestedQuestionsService
+from app.services.summary import DocumentSummaryService
 from app.services.tabular import TABULAR_EXTENSIONS, parse_tabular
 from app.services.webhook import DOCUMENT_FAILED, DOCUMENT_INDEXED
 from app.storage.base import (
@@ -124,6 +125,7 @@ class IngestService:
         notifier: Callable[[str, dict], None] | None = None,
         embedders: EmbeddingResolver | None = None,
         questions: SuggestedQuestionsService | None = None,
+        summaries: DocumentSummaryService | None = None,
     ) -> None:
         self._stores = stores
         self._router = router
@@ -134,6 +136,9 @@ class IngestService:
         #: 与 notifier 同一套理由：旁路能力的失败不该把文档打成 failed。
         #: 不给就完全不生成（老测试与"不配模型也能跑通摄入"的路径）。
         self._questions = questions
+        #: 文档摘要（v25）。与出题同一条边界：旁路能力，失败只记日志。
+        #: 它的价值在**别处**——问答上下文靠它省 token（见 services/summary.py）。
+        self._summaries = summaries
         #: 显式注入的切分参数（测试与特殊调用用）。**为 None 时按库读取**——
         #: 生产走的就是那条路：每个库有自己的块长/重叠（v17）。
         #: 与 `_embedders` 同一套写法：不给就退回"按库解析"。
@@ -538,6 +543,9 @@ class IngestService:
         self._stores.meta.replace_chunks(document.id, chunks)
         self._stores.fulltext.index_chunks(chunks)
         self._advance(document, DocumentStage.CHUNKED)
+        # 摘要放在**落库之后**：它读的是库里的块（与出题同一份输入），
+        # 而且它自己的失败与块无关——先让块落地，摘要没写出来也不影响入库。
+        self._attach_summary(document)
         return chunks
 
     def _attach_questions(self, kb: KnowledgeBaseRecord, chunks: list) -> None:
@@ -564,6 +572,23 @@ class IngestService:
             return
         for chunk in chunks:
             chunk.questions = tuple(generated.get(chunk.chunk_id, ()))
+
+    def _attach_summary(self, document: DocumentRecord) -> None:
+        """给这篇文档写一段摘要（v25）。
+
+        **整段包在 try 里**（与出题同一条边界）：摘要是旁路能力，
+        模型没配、上游挂了都只该让这篇文档"没有摘要"，绝不能让摄入失败——
+        `ingest()` 里漏出来的异常会被 worker 当成可重试失败，最后把文档打成 failed。
+
+        它**不参与阶段机**（不推进阶段、不写阶段事件）：摘要不是流水线上的一环，
+        而是内容层的一笔补充。所以它在 `CHUNKED` 之后跑，跑完文档继续往向量化走。
+        """
+        if self._summaries is None:
+            return
+        try:
+            self._summaries.summarize(document.id)
+        except Exception:
+            logger.warning("文档摘要失败，文档 %s 不带摘要入库", document.id, exc_info=True)
 
     def _chunking_for(self, kb: KnowledgeBaseRecord) -> ChunkingConfig:
         """这个库该用哪套切分参数。

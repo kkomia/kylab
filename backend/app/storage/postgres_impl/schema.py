@@ -25,7 +25,7 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 """应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
 
 **启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
@@ -79,6 +79,16 @@ MIGRATIONS: tuple[Migration, ...] = (
             # ③ 队列深度改成一条 `GROUP BY state, kind` 聚合（不再把整表行搬到 Python）；
             #    这个索引让那次聚合走 index-only scan，不必读堆里的每一行。
             "CREATE INDEX idx_tasks_state_kind ON tasks (state, kind)",
+        ),
+    ),
+    Migration(
+        version=4,
+        description="文档摘要：入库时生成一段紧凑摘要，供问答上下文与界面复用（v25）",
+        statements=(
+            # 摘要存在的**唯一理由**是省 token：命中 6 段资料时，把每段"所在小节"
+            # 整段塞给模型要上万字；有了每篇文档的摘要，就能只带摘要 + 更短的片段，
+            # 模型仍然知道"这几段来自一篇讲什么的文档"。见 services/summary.py。
+            "ALTER TABLE documents ADD COLUMN summary text NOT NULL DEFAULT ''",
         ),
     ),
 )

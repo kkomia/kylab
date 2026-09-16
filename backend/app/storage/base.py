@@ -267,6 +267,12 @@ class DocumentRecord:
     disabled: bool = False
     """停用（v14）。停用后**不参与检索**，但原文/切块/向量都保留——与
     chunks.disabled 同一套语义：禁用与删除是两件事，恢复零成本。"""
+    summary: str = ""
+    """入库时生成的紧凑摘要（v25，见 services/summary.py）。空串 = 还没生成。
+
+    **它的用途是省 token**：问答上下文里按文档带一行摘要，就不必把每段命中都补成
+    "整个小节"（那是上万字）。顺带在界面上也是一句有用的说明文字。
+    """
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -904,6 +910,23 @@ class MetaStore(ABC):
 
         ``None`` 或 ``<= 0`` 一律忽略、保持 NULL：写 0 会让界面显示"0 页"，
         而 NULL 渲染成"—"，后者才是诚实的（"没测出来"不等于"有 0 页"）。
+        """
+
+    @abstractmethod
+    def list_documents_without_summary(self, *, limit: int) -> list[DocumentRecord]:
+        """**已索引、但还没有摘要**的文档，按入库时间从早到晚（最多 ``limit`` 篇）。
+
+        给"补漏"用：摘要是 v25 才有的机制，已有文档不会重新入库，
+        不补它们就永远享受不到"省 token"这件事（而这正是这个机制的理由）。
+        只取已索引的：没跑完的文档块还没定稿，摘要写出来就得重写。
+        """
+
+    @abstractmethod
+    def update_document_summary(self, document_id: str, summary: str) -> None:
+        """写入文档摘要（空串 = 清除）。
+
+        **不改阶段、不动 updated_at 之外的任何东西**：摘要是内容层的补充，
+        与流水线阶段无关（它不参与阶段机，失败也不该让文档 failed）。
         """
 
     @abstractmethod

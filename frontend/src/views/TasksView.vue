@@ -9,10 +9,11 @@
  * 一个跑了 5 秒的和一个卡了两小时的看起来完全一样。后端按租约是否续上算出
  * "可能卡住 / 长时间未执行"，这里负责把它显示出来（§12.17 记了为什么之前漏了）。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { cancelTasks, getTaskLoad, type SystemLoad, type TaskSummary } from '@/api/tasks'
+import IconChevronLeft from '@/components/icons/IconChevronLeft.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconFile from '@/components/icons/IconFile.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
@@ -72,6 +73,25 @@ const kbFilter = ref('')
 const stateFilter = ref('')
 const healthFilter = ref('')
 
+/**
+ * 是否把**已取消**的任务也列出来（默认不显示）。
+ *
+ * 取消是"我不等了"的动作，撤下来的那批对用户没有后续价值，却会立刻把列表淹掉——
+ * 实测一次批量撤下就留下 23 行"已取消"，而它们既不会再跑、也没法操作。
+ * 但它们不能**永久**藏起来（排查"我明明取消了怎么还在跑"时要看得到），
+ * 所以给一个显式开关，并在工具栏上如实说明"藏了多少条"。
+ */
+const showCanceled = ref(false)
+
+/** 分页：任务列表原先一次铺满（几百条时滚不到底），与文档列表同一套口径。 */
+const PAGE_SIZE = 20
+const page = ref(1)
+
+/** 工具栏上那条提示：藏了多少条（0 就不显示）。 */
+const hiddenCanceled = computed(() =>
+  showCanceled.value ? 0 : tasks.value.filter((task) => task.state === 'canceled').length,
+)
+
 const KB_OPTIONS = computed(() => [
   { value: '', label: '全部知识库' },
   ...store.items.map((item) => ({ value: item.id, label: item.name })),
@@ -95,7 +115,11 @@ const HEALTH_OPTIONS = [
 ]
 
 const hasFilter = computed(
-  () => kbFilter.value !== '' || stateFilter.value !== '' || healthFilter.value !== '',
+  () =>
+    kbFilter.value !== '' ||
+    stateFilter.value !== '' ||
+    healthFilter.value !== '' ||
+    showCanceled.value,
 )
 
 /** 任务量级在几百以内，筛选在客户端做：不必为它再加一版后端查询参数。 */
@@ -104,14 +128,35 @@ const visibleTasks = computed(() =>
     (task) =>
       (kbFilter.value === '' || task.knowledge_base_id === kbFilter.value) &&
       (stateFilter.value === '' || task.state === stateFilter.value) &&
-      (healthFilter.value === '' || task.health === healthFilter.value),
+      (healthFilter.value === '' || task.health === healthFilter.value) &&
+      // 默认不看已取消（见 `showCanceled`）；显式选了「已取消」这个状态时当然要显示
+      (showCanceled.value || stateFilter.value === 'canceled' || task.state !== 'canceled'),
   ),
 )
+
+const pageCount = computed(() => Math.max(1, Math.ceil(visibleTasks.value.length / PAGE_SIZE)))
+
+/** 当前页的那几条。分页在客户端做：列表本来就整份在 store 里，翻页不必再请求。 */
+const pagedTasks = computed(() =>
+  visibleTasks.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE),
+)
+
+function goToPage(next: number): void {
+  const clamped = Math.min(Math.max(1, next), pageCount.value)
+  if (clamped === page.value) return
+  page.value = clamped
+}
+
+/** 筛选一变就回第 1 页：否则会停在"新条件下不存在的那一页"上，看起来像列表空了。 */
+watch([kbFilter, stateFilter, healthFilter, showCanceled], () => {
+  page.value = 1
+})
 
 function clearFilters(): void {
   kbFilter.value = ''
   stateFilter.value = ''
   healthFilter.value = ''
+  showCanceled.value = false
 }
 
 const running = computed(() => taskStore.hasActive)
@@ -261,6 +306,14 @@ function openDocument(documentId: string): void {
         <div class="filter-select">
           <AppSelect v-model="healthFilter" :options="HEALTH_OPTIONS" aria-label="按健康筛选" />
         </div>
+        <!-- 已取消默认不显示（见 `showCanceled`）：给一个显式开关，并如实说藏了多少条 -->
+        <label class="canceled-toggle">
+          <input v-model="showCanceled" type="checkbox" />
+          <span>显示已取消</span>
+        </label>
+        <span v-if="hiddenCanceled > 0" class="toolbar-note">
+          已隐藏 {{ hiddenCanceled }} 条已取消
+        </span>
         <AppButton v-if="hasFilter" size="sm" variant="subtle" @click="clearFilters">
           清除筛选
         </AppButton>
@@ -294,7 +347,7 @@ function openDocument(documentId: string): void {
         </p>
 
         <ul v-else class="task-rows">
-          <li v-for="task in visibleTasks" :key="task.id" class="task-row-group">
+          <li v-for="task in pagedTasks" :key="task.id" class="task-row-group">
             <div class="task-row panel-row">
               <IconFile class="row-icon" />
               <span class="row-kind">{{ taskKindLabel(task.kind) }}</span>
@@ -341,6 +394,30 @@ function openDocument(documentId: string): void {
             </div>
           </li>
         </ul>
+      </div>
+
+      <!--
+        分页（§12.117）。任务列表原先一次铺满：几百条任务时既滚不到底、也看不清
+        "最近发生了什么"。**总数常显、只藏翻页控件**，与文档列表同一套口径。
+      -->
+      <div v-if="visibleTasks.length > 0" class="pager">
+        <span class="pager-total">共 {{ visibleTasks.length }} 项</span>
+        <div v-if="pageCount > 1" class="pager-controls">
+          <AppButton size="sm" variant="subtle" :disabled="page <= 1" @click="goToPage(page - 1)">
+            <template #icon><IconChevronLeft :size="14" /></template>
+            上一页
+          </AppButton>
+          <span class="pager-page tabular">第 {{ page }} / {{ pageCount }} 页</span>
+          <AppButton
+            size="sm"
+            variant="subtle"
+            :disabled="page >= pageCount"
+            @click="goToPage(page + 1)"
+          >
+            下一页
+            <template #icon><IconChevronRight :size="14" /></template>
+          </AppButton>
+        </div>
       </div>
     </template>
 
@@ -454,6 +531,54 @@ function openDocument(documentId: string): void {
 
 .filter-select {
   flex: 0 0 148px;
+}
+
+/* "显示已取消"（§12.117）：它是个筛选器，所以与旁边的下拉同款字号/颜色，
+   不做成按钮——按钮会让人以为点了会触发动作，而它只是改变列表范围 */
+.canceled-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.canceled-toggle input {
+  accent-color: var(--accent);
+}
+
+/* "已隐藏 N 条"：弱一档，它是解释而不是操作 */
+.toolbar-note {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+/* 分页条：与文档列表同一形态（左总数、右控件） */
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding: 0 var(--space-1);
+}
+
+.pager-total {
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+}
+
+.pager-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.pager-page {
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
 }
 
 /* 右侧计数弱一档：它是"筛出来多少"，不是动作 */
