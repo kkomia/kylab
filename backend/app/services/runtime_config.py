@@ -132,6 +132,19 @@ SETTING_GROUPS: dict[str, Any] = {
             },
         ],
     },
+    # 沙箱执行（v0.16，见 docs/Agent-工作区与能力层设计-v0.1.md §4）。
+    # **默认 ask**：这是权限最大的一个动作（在用户的机器上执行代码），
+    # 默认放行是这一层最不该有的默认。四档：allow / ask / deny / sandbox。
+    "sandbox": {
+        "label": "沙箱执行",
+        "fields": [
+            {
+                "key": "sandbox.exec_policy",
+                "label": "执行策略（allow / ask / deny / sandbox）",
+                "type": "text",
+            },
+        ],
+    },
     # 记忆（v0.14，见 docs/记忆层设计-v0.1.md）。
     # **默认关**：启用它等于多跑一个进程（ReMe）且会调 LLM（捕获与整合都要），
     # 升级之后默默开始烧 token 是最不该有的默认。
@@ -205,6 +218,7 @@ DEFAULTS: dict[str, str] = {
     "chat.compress_keep": "6",
     # 记忆（v0.14）。关闭时 recall / remember 都**明确报"未启用"**，不静默返回空
     # ——返回空会让模型以为"没有相关记忆"，然后基于错误前提继续推理。
+    "sandbox.exec_policy": "ask",
     "memory.enabled": "false",
     # ReMe 的服务地址。它的接口是 `POST /<job 名>`（见设计文档 §3.1）。
     # **端口 2333 是实测出来的默认值**：`reme/constants.py` 里写着
@@ -302,6 +316,16 @@ class RuntimeConfigService:
         所以既有部署与既有测试不受影响——注册器是叠加层，不是替换。"""
 
     # ------------------------------------------------------------------ 读写
+
+    @property
+    def data_dir(self):
+        """数据目录（运行期数据的落点）。
+
+        **从设置来而不是再传一遍**：组合根已经把它给了记忆/工作区/技能三个服务，
+        再给沙箱传一次就多一个可能对不上的副本。沙箱端点要它来定位沙箱根
+        （``data/sandbox/<会话>/``）。
+        """
+        return self._settings.data_dir
 
     def get(self, key: str) -> str:
         """取一个键的最终值：数据库 > .env 引导值 > 代码默认值。"""

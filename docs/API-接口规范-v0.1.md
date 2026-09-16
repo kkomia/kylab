@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **140** 条端点。
+共 **147** 条端点。
 
 ### `api-keys`
 
@@ -344,6 +344,14 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/notes/{note_id}/images` | 上传笔记配图 |
 | `GET` | `/api/v1/notes/{note_id}/images/{name}` | 读取笔记配图 |
 
+### `sandbox`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/sandbox` | 这台机器上的隔离能力 |
+| `POST` | `/api/v1/sandbox/exec` | 在隔离里执行一条命令 |
+| `POST` | `/api/v1/sandbox/plan` | 看这条命令会被怎么隔离 |
+
 ### `search`
 
 | 方法 | 路径 | 说明 |
@@ -371,6 +379,10 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/v1/skills` | 技能列表 |
+| `POST` | `/api/v1/skills/market` | 浏览一个源的技能索引 |
+| `POST` | `/api/v1/skills/market/install` | 安装一个技能 |
+| `GET` | `/api/v1/skills/market/installed` | 已从市场装的技能 |
+| `DELETE` | `/api/v1/skills/market/installed/{name}` | 卸载一个技能 |
 | `GET` | `/api/v1/skills/{name}` | 技能详情（含正文） |
 
 ### `stats`

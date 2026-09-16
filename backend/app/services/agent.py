@@ -42,6 +42,10 @@ __all__ = [
     "parse_plan",
 ]
 
+#: 决策里子任务的粗筛长度上限。真正的上限在 ``services/subagent.py``——
+#: 这里只是不让一段超长文本原样传下去（解析层不该做业务判断，但该挡住明显的坏输入）。
+MAX_TASK_CHARS_RAW = 4000
+
 #: 单次改写最多接受几条查询：多了会把检索成本乘上去，收益却很小。
 MAX_PLAN_QUERIES = 3
 #: 单条查询的长度上限（字）。检索是短查询的游戏，太长反而稀释语义。
@@ -85,7 +89,7 @@ DECIDE_PROMPT = (
     "相关资料——那种情况直接作答并说明，不要靠换词反复试探（那只会在无关内容里越挖越远）。\n"
     "只输出一个 JSON 对象，不要解释，不要 Markdown 代码块：\n"
     '{"action":"search","query":"..."} 或 {"action":"skill","name":"..."}'
-    ' 或 {"action":"answer","reason":"一句话"}'
+    ' 或 {"action":"spawn","task":"..."} 或 {"action":"answer","reason":"一句话"}'
 )
 
 
@@ -103,10 +107,12 @@ class AgentPlan:
 class AgentDecision:
     """一轮"要不要再检索"的决策。"""
 
-    action: str  # "search" | "skill" | "answer"
+    action: str  # "search" | "skill" | "spawn" | "answer"
     query: str = ""
-    """``search`` 时是检索词；``skill`` 时是技能名（复用一个字段是有意的：
-    两者都是"这一步要操作的对象"，各开一个字段会让每个消费点都得判两遍）。"""
+    """``search`` 时是检索词；``skill`` 时是技能名；``spawn`` 时是子任务描述。
+
+    复用一个字段是有意的：三者都是"这一步要操作的对象"，
+    各开一个字段会让每个消费点都得判三遍。"""
     reason: str = ""
 
 
@@ -269,6 +275,12 @@ def parse_decision(text: str) -> AgentDecision | None:
         if not query:
             return None
         return AgentDecision(action="search", query=query)
+    if action == "spawn":
+        task = body.get("task")
+        if not isinstance(task, str) or not task.strip():
+            return None
+        # 长度只做粗筛（上限在服务层），这里只保证非空与去空白
+        return AgentDecision(action="spawn", query=" ".join(task.split())[:MAX_TASK_CHARS_RAW])
     if action == "skill":
         name = body.get("name")
         if not isinstance(name, str) or not name.strip():

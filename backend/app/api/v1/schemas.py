@@ -1499,6 +1499,56 @@ class DocumentTimelineOut(BaseModel):
     与任务中心那一列同源。"""
 
 
+# ------------------------------------------------------------------ 沙箱（v0.16）
+
+
+class SandboxCapabilityOut(BaseModel):
+    """这台机器上的内核级隔离能力。"""
+
+    backend: Literal["bwrap", "sandbox-exec", "docker", "none"]
+    available: bool
+    detail: str = ""
+    """人话说明（为什么可用/不可用）。界面直接显示它。"""
+    max_output_chars: int = 0
+    default_timeout_seconds: float = 0
+
+
+class SandboxExecIn(BaseModel):
+    """一次沙箱执行。``argv`` 是**命令数组**（不是 shell 字符串）——
+    数组没有引号解析、没有管道、没有重定向，省掉一整类注入面。"""
+
+    argv: list[str] = Field(min_length=1, max_length=64)
+    workspace_id: str | None = None
+    """在哪个工作区里跑。不给就只在沙箱里跑，不挂任何真实工作区。"""
+    session_id: str = ""
+    """沙箱按会话分（同一会话的多次尝试共享一份，见设计文档 §4）。"""
+    allow_network: bool = False
+    """**默认断网**：Agent 跑的命令绝大多数不需要网络，
+    而"能联网"是数据外泄那条路上最省事的一环。"""
+    timeout_seconds: float | None = Field(default=None, gt=0, le=600)
+    approved: bool = False
+    """``ask`` 策略下第一次不带它（回 409），用户确认后再带上重调。"""
+
+
+class SandboxPlanOut(BaseModel):
+    """隔离后的命令行——**给用户核对的**。"""
+
+    backend: str
+    available: bool
+    detail: str = ""
+    argv: list[str] = Field(default_factory=list)
+    workdir: str = ""
+
+
+class SandboxExecOut(BaseModel):
+    exit_code: int
+    stdout: str = ""
+    stderr: str = ""
+    truncated: bool = False
+    timed_out: bool = False
+    backend: str = ""
+
+
 # ------------------------------------------------------------------ 工作区（v0.15）
 
 
@@ -1649,6 +1699,42 @@ class SkillOut(BaseModel):
 class SkillDetailOut(SkillOut):
     body: str = ""
     """正文（frontmatter 之后的部分）。**按需展开的那一段**。"""
+
+
+class SkillMarketIn(BaseModel):
+    """浏览一个源。``source`` 可以是目录 / ``catalog.json`` / 它们的 URL。"""
+
+    source: str = Field(min_length=1, max_length=2000)
+
+
+class SkillMarketEntryOut(BaseModel):
+    name: str
+    description: str = ""
+    source: str = ""
+    installed: bool = False
+    """已经装过——界面上据此把"安装"按钮换成"已安装"。"""
+
+
+class SkillMarketOut(BaseModel):
+    source: str
+    items: list[SkillMarketEntryOut] = Field(default_factory=list)
+
+
+class SkillInstallIn(BaseModel):
+    """安装一个技能。"""
+
+    name: str = Field(min_length=1, max_length=120)
+    source: str = Field(min_length=1, max_length=2000)
+    """目录 / zip / URL。三种形态服务端都认（见 services/skill_market.py）。"""
+    catalog: str = ""
+    """可选的源目录：``source`` 只是源里的条目名时，由它定位。"""
+
+
+class SkillInstalledOut(BaseModel):
+    """已装清单：``技能名 → 来源``。"""
+
+    items: dict[str, str] = Field(default_factory=dict)
+    total: int = 0
 
 
 class SkillListOut(BaseModel):

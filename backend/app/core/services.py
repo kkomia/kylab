@@ -51,6 +51,7 @@ from app.services.retrieval import RetrievalService, build_reranker
 from app.services.retrieval.rerank import RerankProvider
 from app.services.runtime_config import RuntimeConfigService
 from app.services.share import ShareService
+from app.services.skill_market import SkillMarketService
 from app.services.skills import SkillService
 from app.services.sources import SourceService
 from app.services.stats import StatsService
@@ -134,6 +135,7 @@ class Services:
     memory: MemoryService
     workspaces: WorkspaceService
     skills: SkillService
+    skill_market: SkillMarketService
     mcp: MCPClientService
     """长期记忆的门面（§12.130）。默认关；关着时它的每个方法都明确报错。"""
     embedder: EmbeddingProvider
@@ -271,6 +273,8 @@ def build_services(
     workspace_service = WorkspaceService(bundle, resolved.data_dir)
     # 技能：扫描仓库自带 skills/ 与数据目录 data/skills/（见 services/skills.py）
     skill_service = SkillService(resolved.data_dir)
+    # 技能市场（v0.16）：安装/卸载。**只写 data/skills/**——仓库自带的那份动不了
+    skill_market_service = SkillMarketService(resolved.data_dir, skill_service)
     # MCP 客户端（v0.15）：连外部 MCP 服务，是「插件能力」的落点
     mcp_service = MCPClientService(bundle)
     # 用量服务要**先建**：下面的 embedder 回调闭包引用了它
@@ -453,6 +457,7 @@ def build_services(
         memory=memory_service,
         workspaces=workspace_service,
         skills=skill_service,
+        skill_market=skill_market_service,
         mcp=mcp_service,
     )
 

@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
+from app.services import subagent as subagent_service
 from app.services.agent import (
     DECIDE_PROMPT,
     PLAN_PROMPT,
@@ -107,6 +108,11 @@ DEFAULT_SYSTEM_PROMPT = (
 
 #: 拼进提示词的资料条数上限：太多会挤掉问题本身，也更容易让模型跑偏
 MAX_CONTEXT_CHUNKS = 6
+
+#: 一轮问答里最多派几个子 Agent（v0.16）。**与技能/检索各自计数**：
+#: 它是最贵的一个动作（一次完整的子调研）。给 1 是"够用"——
+#: 一轮里要派两个子任务，通常说明这件事本来就该拆成两轮问。
+MAX_SUBAGENTS = 1
 
 #: 一轮问答里最多展开几个技能（v0.15）。**与检索轮次分开计数**：
 #: 读技能是"先看看该怎么做"，再搜一次是"再找一遍事实"，成本与收益都不同。
@@ -569,6 +575,11 @@ class ChatService:
         # 于是**每一句寒暄都 500**（全量跑测试时抓到的）。
         loaded_skills: list[str] = []
         skill_bodies: list[str] = []
+        # 子 Agent（v0.16）：`spawned` 计数防"反复派"，`child_sources` 收它的出处，
+        # `subagent_notes` 收它的结论（进最终作答的提示词）
+        spawned = 0
+        child_sources: list[SourceRef] = []
+        subagent_notes: list[str] = []
         if not plan.need_retrieval or not plan.queries:
             yield StepEvent(phase="rewrite", label="无需检索，直接回答")
         else:
@@ -599,7 +610,54 @@ class ChatService:
                     except Exception:
                         logger.warning("检索决策失败，结束多轮检索", exc_info=True)
                         decision = None
-                    if decision is None or decision.action != "skill":
+                    if decision is None or decision.action not in ("skill", "spawn"):
+                        break
+                    if decision.action == "spawn":
+                        # 派子 Agent（v0.16）：**范围只继承**（kb_ids 从父任务复制），
+                        # 深度固定 0→1（子 Agent 不能再派）。它是最贵的动作，
+                        # 所以单独计数并给上限。
+                        if spawned >= MAX_SUBAGENTS:
+                            yield StepEvent(
+                                phase="subagent",
+                                label="子 Agent 已达上限",
+                                detail=f"本轮最多派 {MAX_SUBAGENTS} 个，继续按现有资料作答",
+                            )
+                            decision = None
+                            break
+                        spawned += 1
+                        yield StepEvent(
+                            phase="subagent",
+                            label="派子 Agent",
+                            detail=decision.query,
+                            status="running",
+                        )
+                        child = self.run_subagent(
+                            subagent_service.SubAgentTask(
+                                question=decision.query,
+                                kb_ids=list(kb_ids),
+                                depth=0,
+                            ),
+                            config=config,
+                            top_k=limit,
+                        )
+                        if child.answer:
+                            child_sources.extend(child.sources)
+                            subagent_notes.append(
+                                f"【子 Agent 的结论（{child.stopped_reason}）】{child.answer}"
+                            )
+                            sources = _merge_sources([sources, child.sources], limit=limit)
+                            yield SourcesEvent(sources=sources)
+                        # **停下来时如实说**：把"预算用完"说成"查完了"，
+                        # 会让父 Agent 把一段不完整的结论当完整的用
+                        yield StepEvent(
+                            phase="subagent",
+                            label="子 Agent 回报",
+                            detail=(
+                                f"{child.stopped_reason} · {child.turns} 轮 · "
+                                f"{child.searches} 次检索 · {child.elapsed_seconds:.1f}s"
+                            ),
+                        )
+                        decision = None
                         break
                     name = decision.query
                     if name.casefold() in {item.casefold() for item in loaded_skills}:
@@ -682,7 +740,7 @@ class ChatService:
             memory=self._memory_block(owner_id),
             # 目录 + 本轮**已展开**的技能正文（v0.15）：目录让模型知道有什么，
             # 正文是它自己要求读出来的。两者一起给，它才能按流程干活。
-            skills=self._skill_block(_SKILL_SEPARATOR.join(skill_bodies)),
+            skills=self._skill_block(_SKILL_SEPARATOR.join(skill_bodies + subagent_notes)),
         )
         started = time.monotonic()
         parts: list[str] = []
@@ -828,6 +886,80 @@ class ChatService:
         )
         self._record_usage(planner, started, items=1, config=config)
         return parse_decision(text)
+
+    def run_subagent(
+        self,
+        task: subagent_service.SubAgentTask,
+        *,
+        config,  # type: ignore[no-untyped-def] - 与文件里其它 config 参数同一处理
+        top_k: int | None = None,
+    ) -> subagent_service.SubAgentResult:
+        """跑一个子 Agent。**有界**：轮次、检索次数、时限三道闸（见 services/subagent.py）。
+
+        它做的事与主链路同构（检索 → 组织回答），区别在**提示词与工具面**：
+        子 Agent 只要结论与出处，没有对话历史、没有技能目录里那些"怎么跟人说话"的
+        规矩，也**没有派生的能力**。
+
+        停下来的原因要如实带回去（``stopped_reason``）：把"预算用完"说成"查完了"
+        会让父 Agent 拿一段不完整的结论当完整的用。
+        """
+        subagent_service.check_depth(task.depth)
+        budget = subagent_service.SubAgentBudget()
+        # 调用它是为了**校验任务描述**（太短/太长都拒，见 subagent.build_task_prompt）：
+        # 子 Agent 看不到父的对话历史，说不清的任务本来也不该派出去
+        subagent_service.build_task_prompt(task)
+
+        sources: list[SourceRef] = []
+        searches = 0
+        turns = 0
+        stopped = "answered"
+        try:
+            if task.kb_ids:
+                sources = self.retrieve_sources(
+                    task.question, kb_ids=task.kb_ids, top_k=top_k
+                )
+                searches += 1
+            turns += 1
+            if budget.expired:
+                stopped = "timeout"
+            else:
+                chat = self._chat_factory(config)
+                messages = build_messages(
+                    query=task.question,
+                    sources=sources[:MAX_CONTEXT_CHUNKS],
+                    history=None,
+                    # 子 Agent 的系统提示词与主 Agent 的**不是同一个**：
+                    # 它是在交作业，不是在跟人对话
+                    system_prompt=subagent_service.SUBAGENT_SYSTEM_PROMPT,
+                    # 记忆与技能目录都不给：子任务是自足的，给它这些只会混淆来源
+                    memory="",
+                    skills="",
+                )
+                started = time.monotonic()
+                answer = chat.complete(messages)
+                self._record_usage(chat, started, items=1, config=config)
+                turns += 1
+                return subagent_service.SubAgentResult(
+                    answer=answer.strip(),
+                    sources=sources,
+                    turns=turns,
+                    searches=searches,
+                    elapsed_seconds=budget.elapsed,
+                    stopped_reason="answered",
+                )
+        except Exception:
+            # 子 Agent 失败**不该让父任务失败**：它是增强。如实标成 error，
+            # 让父 Agent 自己决定要不要换个方式查。
+            logger.warning("子 Agent 失败，按失败收尾", exc_info=True)
+            stopped = "error"
+        return subagent_service.SubAgentResult(
+            answer="",
+            sources=sources,
+            turns=turns,
+            searches=searches,
+            elapsed_seconds=budget.elapsed,
+            stopped_reason=stopped,
+        )
 
     def _library_summary(self, kb_ids: list[str], sources: list[SourceRef]) -> str:
         """给决策器看的"这个库大概有什么"：库的规模 + 命中文档的摘要。

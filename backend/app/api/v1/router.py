@@ -24,6 +24,7 @@ from app.api.v1 import (
     memory,
     model_registry,
     notes,
+    sandbox,
     search,
     settings,
     shares,
@@ -71,3 +72,5 @@ api_router.include_router(workspaces.router)
 api_router.include_router(skills.router)
 # MCP 客户端（v0.15）：接外部工具进来（此前只有服务端的一半）
 api_router.include_router(mcp_servers.router)
+# 沙箱执行（v0.16）：内核级隔离 + 策略闸（管理员专属）
+api_router.include_router(sandbox.router)

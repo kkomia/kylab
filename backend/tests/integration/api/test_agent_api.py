@@ -378,3 +378,91 @@ def test_mcp_servers_are_owner_scoped(client: TestClient, member_token: str) -> 
         client.get(f"/api/v1/mcp-servers/{mine['id']}", headers=_as(member_token)).status_code
         == 404
     )
+
+
+# ------------------------------------------------------------------ 沙箱
+
+
+def test_sandbox_capability_is_admin_only(client: TestClient, member_token: str) -> None:
+    """沙箱执行是这个产品里权限最大的动作（在用户机器上跑代码），
+    与设置页同档：**管理员专属**。"""
+    response = client.get("/api/v1/sandbox", headers=_as(member_token))
+
+    assert response.status_code == 403
+
+
+def test_sandbox_capability_reports_something(client: TestClient) -> None:
+    """无论这台机器有没有隔离，都要**如实报出来**（含怎么办），而不是报错。"""
+    body = client.get("/api/v1/sandbox").json()
+
+    assert body["backend"] in ("bwrap", "sandbox-exec", "docker", "none")
+    assert body["detail"]
+    assert body["max_output_chars"] > 0
+
+
+def test_sandbox_plan_shows_what_would_run(client: TestClient) -> None:
+    """`plan` **只算不跑**：用户要核对"到底会发生什么"时，
+    最需要的不是我们替他判断，而是看清楚 argv。"""
+    body = client.post(
+        "/api/v1/sandbox/plan", json={"argv": ["python", "-c", "print(1)"], "session_id": "t1"}
+    ).json()
+
+    assert body["argv"]  # 有隔离时是包好的 argv；没有隔离时是原样命令
+    assert body["workdir"]
+
+
+def test_sandbox_exec_requires_approval_under_ask_policy(client: TestClient) -> None:
+    """默认策略是 ``ask``：未确认回 **409**（不是 403）——不是"你不能做"，
+    是"要先确认"。界面据此弹确认框，确认后带 approved 重调。"""
+    client.patch(
+        "/api/v1/settings",
+        json={"values": [{"key": "sandbox.exec_policy", "value": "ask"}]},
+    )
+
+    response = client.post("/api/v1/sandbox/exec", json={"argv": ["python", "-c", "print(1)"]})
+
+    assert response.status_code == 409, response.text
+    assert "确认" in response.json()["message"]
+
+
+def test_sandbox_exec_refuses_when_no_isolation_is_available(client: TestClient) -> None:
+    """**没有内核级隔离就拒绝执行**，不回退成裸跑。
+
+    这条是这一层的立场，也是最容易被"先让它跑起来"优化掉的一条：
+    回退会把"我们以为它在沙箱里"变成一个静默的假象，而那个假象比拒绝危险得多。
+    """
+    from app.services import isolation
+
+    found = isolation.detect()
+    if found.available:  # pragma: no cover - 有隔离的机器上这条不适用
+        pytest.skip("这台机器有可用的隔离后端，拒绝路径不适用")
+
+    client.patch(
+        "/api/v1/settings",
+        json={"values": [{"key": "sandbox.exec_policy", "value": "allow"}]},
+    )
+    response = client.post(
+        "/api/v1/sandbox/exec", json={"argv": ["python", "-c", "print(1)"], "approved": True}
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "unsupported_content"
+    assert "拒绝执行" in response.json()["message"]
+
+
+def test_sandbox_exec_respects_deny_policy(client: TestClient) -> None:
+    client.patch(
+        "/api/v1/settings",
+        json={"values": [{"key": "sandbox.exec_policy", "value": "deny"}]},
+    )
+
+    response = client.post(
+        "/api/v1/sandbox/exec", json={"argv": ["ls"], "approved": True}
+    )
+
+    assert response.status_code == 403
+    assert "拒绝" in response.json()["message"]
+
+
+def test_sandbox_exec_rejects_an_empty_command(client: TestClient) -> None:
+    assert client.post("/api/v1/sandbox/exec", json={"argv": []}).status_code == 422

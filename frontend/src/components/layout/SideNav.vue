@@ -465,6 +465,19 @@ async function onLogout(): Promise<void> {
       </button>
     </div>
 
+    <!--
+      「新对话」放在**最上面**（导航之上）：它是这一栏里最高频的动作，
+      埋在任何东西下面都是浪费。Kimi Work / ChatGPT 也都是这个位置。
+
+      带上 `?new=1` 才是"新建"；裸 `/chat` 表示"回到最近一次对话"
+      （见 ChatView 的 enterChat）——两个入口共用一条链接时，
+      从知识库返回也会落在空态上，看起来就像"又给我开了个新对话"。
+    -->
+    <RouterLink v-if="!collapsed" class="new-chat" :to="{ path: '/chat', query: { new: '1' } }">
+      <IconChatNew :size="18" />
+      <span>新对话</span>
+    </RouterLink>
+
     <nav class="nav" aria-label="主导航">
       <RouterLink
         v-for="item in NAV_ITEMS"
@@ -531,18 +544,12 @@ async function onLogout(): Promise<void> {
            它把「新对话」做成一个整块的填充按钮（BgGp-Secondary + 12px 圆角 + 44px 高），
            而不是挤在标题右边的一个文字链接——后者在视觉上像"次要入口"，
            而新建对话是这一栏里最常用的动作。 -->
-      <!-- 「新对话」常驻在最上面：它是这一栏里最高频的动作，不该埋在工作区下面。
-           带上 `?new=1` 才是"新建"；裸 `/chat` 表示"回到最近一次对话"
-           （见 ChatView 的 enterChat）——两个入口共用一条链接时，
-           从知识库返回也会落在空态上，看起来就像"又给我开了个新对话"。 -->
-      <RouterLink class="new-chat" :to="{ path: '/chat', query: { new: '1' } }">
-        <IconChatNew :size="18" />
-        <span>新对话</span>
-      </RouterLink>
-
-      <!-- 工作区栏（v0.15）：**在导航之上**。它承载的是"我正在做的事"，
-           导航承载的是"去哪个功能区"——两者性质不同，顺序也不同
-           （Kimi Work 也是这个顺序）。 -->
+      <!-- 工作区栏（v0.15）：**在导航之下、会话列表之上**。
+           顺序是刻意的：导航是"去哪个功能区"，它短且固定，理应待在上面；
+           工作区与会话是会**不断变长**的清单，把清单放在导航之上，
+           长起来就会把导航推走——那是导航最不该有的行为。
+           （这里原先在注释与设计文档里写的是"工作区在导航之上"，
+           而代码一直是导航在前；是侧栏的组件测试把这句话与实现对上了。） -->
       <div class="workspace-head">
         <p class="section-label">工作区</p>
         <button type="button" class="section-action" title="新建工作区" @click="onNewWorkspace">
