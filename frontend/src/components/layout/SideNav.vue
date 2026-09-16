@@ -860,7 +860,7 @@ async function onLogout(): Promise<void> {
      负 margin 的取值是触发器的一半高（--hit-target / 2） */
   margin-top: calc(var(--hit-target) / -2);
   opacity: 0;
-  transition: opacity 120ms ease;
+  transition: opacity var(--motion-fast) var(--motion-ease);
 }
 
 .conv-row:hover .conv-menu,
@@ -872,7 +872,7 @@ async function onLogout(): Promise<void> {
 /* 菜单出现时把「N 条」隐掉：两者在同一个位置，**先隐后现而不是叠在一起**。
    条数没被删掉，移开鼠标就回来；行宽 231px，塞不下两个并排的元素 */
 .conv-meta {
-  transition: opacity 120ms ease;
+  transition: opacity var(--motion-fast) var(--motion-ease);
 }
 
 .conv-row:hover .conv-meta,

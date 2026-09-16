@@ -722,7 +722,11 @@ const fillerRows = ref(0)
 function syncFillerRows(): void {
   const element = listPanel.value
   if (element === null) return
-  const headHeight = 40 /* .panel-head */
+  // 表头高度**从 DOM 量**，不写死：这里原本写着 40 并注明"= .panel-head"，
+  // 而 base.css 里 .panel-head 实际是 36px。两个数字各自看着都对，合起来差 4px，
+  // 于是补足的行数一直偏多一行左右。量一次就不会再和样式表漂开。
+  const head = element.querySelector<HTMLElement>('.panel-head')
+  const headHeight = head?.offsetHeight ?? 36
   const bottomGap = 56 /* 给页面底部留一口气，别贴到边 */
   const available = window.innerHeight - element.getBoundingClientRect().top - bottomGap
   // 空库时也会有"还没有文档"那一行提示，所以数据侧至少占 1 行
