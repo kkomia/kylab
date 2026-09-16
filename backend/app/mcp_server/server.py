@@ -40,6 +40,8 @@ _PARAMS: dict[str, tuple[str, ...]] = {
     "create_note": ("content_md", "title", "tags", "source_kind", "source_ref"),
     "attach_note_to_kb": ("note_id", "knowledge_base_id"),
     "list_notes": ("query", "limit"),
+    "recall": ("query", "limit"),
+    "remember": ("content", "tags"),
 }
 
 

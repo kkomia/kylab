@@ -364,11 +364,12 @@ def _events(
 
 
 def _use_agent(services: Services) -> bool:
-    """Agent 工作流是否启用（设置项 ``chat.agent_enabled``，默认开）。"""
-    raw = services.runtime.get("chat.agent_enabled")
-    if raw is None:
-        return True
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
+    """Agent 工作流是否启用（设置项 ``chat.agent_enabled``，默认开）。
+
+    布尔解析统一走 ``RuntimeConfigService.get_bool``：此前这里是手写的一份，
+    记忆层的开关会是第二份，而两处判断迟早分叉（一处把空值当关、另一处当开）。
+    """
+    return services.runtime.get_bool("chat.agent_enabled", default=True)
 
 
 def _sse(payload: dict) -> str:

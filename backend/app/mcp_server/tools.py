@@ -51,6 +51,7 @@ from app.core.exceptions import InvalidRequestError
 from app.core.services import Services
 from app.models.enums import DataSourceKind
 from app.services.api_key import WRITE, Caller
+from app.services.memory import DEFAULT_RECALL, MAX_RECALL
 
 __all__ = ["TOOL_NAMES", "call_tool", "tool_definitions"]
 
@@ -84,6 +85,8 @@ TOOL_NAMES = (
     "create_note",
     "attach_note_to_kb",
     "list_notes",
+    "recall",
+    "remember",
 )
 
 
@@ -288,6 +291,51 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "description": "最多返回几条，默认 20",
                     },
                 },
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "recall",
+            "description": (
+                "在**长期记忆**里召回：过去对话沉淀下来的结论、偏好与约定。"
+                "**它与 search 是两个池子**——search 给「文献怎么写的」（有出处可引用），"
+                "recall 给「我们之前怎么说的」（没有出处）。"
+                "回答「我们上次怎么决定的」「我的偏好是什么」这类问题时用它。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "想找回什么，自然语言即可"},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_RECALL,
+                        "description": f"最多返回几条，默认 {DEFAULT_RECALL}",
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "remember",
+            "description": (
+                "把一条**长期有效**的事实写进核心记忆，之后的对话都会带上它。"
+                "适合：用户的稳定偏好、定下来的约定与决策、踩过的坑。"
+                "**一条只记一句**（上限 500 字）；成篇的内容用 create_note。"
+                "同一件事重复记不会写第二遍。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "一句可复用的事实"},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "标签，便于以后筛",
+                    },
+                },
+                "required": ["content"],
                 "additionalProperties": False,
             },
         },
@@ -631,6 +679,54 @@ def _list_documents(
     }
 
 
+# --------------------------------------------------------------------- 记忆
+
+
+def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
+    """在**记忆**里召回，与 `search` 是两条路。
+
+    记忆的归属按账号走：会话令牌能给出账号，`recall` 因此天然是"我自己的记忆"。
+    这里的判定与文档库不同——记忆不绑知识库范围，它绑人。
+    """
+    query = _require(args, "query")
+    limit = int(args.get("limit") or DEFAULT_RECALL)
+    hits = services.memory.recall(query, limit=limit)
+    return {
+        "query": query,
+        "hits": [
+            {
+                "text": item.text,
+                "path": item.path,
+                "score": round(item.score, 4) if item.score is not None else None,
+            }
+            for item in hits
+        ],
+        "total": len(hits),
+        "note": (
+            "这是**记忆**（过去对话里沉淀下来的结论与偏好），不是知识库原文。"
+            "需要可引用的原文依据时用 search。"
+        ),
+    }
+
+
+def _remember(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
+    content = _require(args, "content")
+    raw_tags = args.get("tags") or []
+    result = services.memory.remember(
+        content, tags=[str(item) for item in raw_tags] if isinstance(raw_tags, list) else []
+    )
+    if not result["saved"]:
+        return {**result, "note": "这条已经在核心记忆里了，没有重复写入"}
+    return {
+        **result,
+        "note": (
+            "已写入核心长期记忆，之后的对话会带上它。"
+            "**一条只记一句可复用的事实**（偏好、约定、结论）；"
+            "成篇的内容请用 create_note"
+        ),
+    }
+
+
 _HANDLERS = {
     "list_knowledge_bases": _list_knowledge_bases,
     "create_knowledge_base": _create_knowledge_base,
@@ -643,6 +739,8 @@ _HANDLERS = {
     "create_note": _create_note,
     "attach_note_to_kb": _attach_note_to_kb,
     "list_notes": _list_notes,
+    "recall": _recall,
+    "remember": _remember,
 }
 
 

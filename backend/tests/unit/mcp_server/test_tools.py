@@ -706,3 +706,49 @@ def test_every_tool_has_a_parameter_whitelist() -> None:
     from app.mcp_server.server import _PARAMS
 
     assert set(_PARAMS) == set(TOOL_NAMES)
+
+
+# --------------------------------------------------------------------- 记忆
+
+
+def test_recall_says_disabled_instead_of_returning_nothing(
+    services: Services, admin: Caller
+) -> None:
+    """**默认关**，而且关着时必须明说。
+
+    MCP 这一层是"模型读到一段文本"的界面：如果这里返回空列表，
+    模型会当成"记忆里没有"，然后基于错误前提继续推理——比报错坏得多。
+    """
+    services.runtime.set({"memory.enabled": "false"})
+
+    with pytest.raises(InvalidRequestError) as excinfo:
+        call_tool(services, "recall", {"query": "我的偏好"}, caller=admin)
+
+    assert "未启用" in str(excinfo.value)
+
+
+def test_remember_writes_the_core_memory_file(services: Services, admin: Caller) -> None:
+    """打开开关后，``remember`` 写的是 ``MEMORY.md``——**不经过 ReMe**。
+
+    所以"记住东西"这件事不依赖那个额外进程；依赖它的只有召回。
+    """
+    services.runtime.set({"memory.enabled": "true"})
+    try:
+        first = call_tool(
+            services, "remember", {"content": "用户偏好简短回答", "tags": ["偏好"]}, caller=admin
+        )
+        second = call_tool(services, "remember", {"content": "用户偏好简短回答"}, caller=admin)
+
+        assert first["saved"] is True
+        # 同一件事记第二遍不写第二条
+        assert second["saved"] is False
+
+        core = services.memory.core_file
+        assert core.exists()
+        body = core.read_text(encoding="utf-8")
+        assert body.count("用户偏好简短回答") == 1
+        # 关掉之后注入路径应当立刻不再带上它（记忆是"有就带上"）
+        services.runtime.set({"memory.enabled": "false"})
+        assert services.memory.core_text() == ""
+    finally:
+        services.runtime.set({"memory.enabled": "false"})

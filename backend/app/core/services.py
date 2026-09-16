@@ -40,6 +40,7 @@ from app.services.knowledge_base import KnowledgeBaseService
 from app.services.lifecycle import LifecycleService
 from app.services.llm import LLMUsage
 from app.services.maintenance import MaintenanceService
+from app.services.memory import MemoryService
 from app.services.model_registry import ModelRegistryService
 from app.services.note_ai import NoteAiService
 from app.services.notes import NotesService
@@ -127,6 +128,8 @@ class Services:
     """Webhook 订阅与事件推送（M4 / T4.6）。"""
     load: SystemLoadService
     """负载面板数据源：CPU / 内存 / 队列深度 / 并发槽位 / 云端解析额度（§12.115）。"""
+    memory: MemoryService
+    """长期记忆的门面（§12.130）。默认关；关着时它的每个方法都明确报错。"""
     embedder: EmbeddingProvider
     reranker: RerankProvider
     worker: TaskWorker
@@ -424,6 +427,9 @@ def build_services(
             mineru_configured=lambda: runtime.mineru().is_configured,
             observability=observability,
         ),
+        # 记忆工作区放在数据目录下（见 services/memory.py 与设计文档 §2.2）：
+        # 与其它数据一起备份/迁移，一个部署只有一处要备份
+        memory=MemoryService(runtime, resolved.data_dir),
     )
 
 

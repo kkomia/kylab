@@ -132,6 +132,25 @@ SETTING_GROUPS: dict[str, Any] = {
             },
         ],
     },
+    # 记忆（v0.14，见 docs/记忆层设计-v0.1.md）。
+    # **默认关**：启用它等于多跑一个进程（ReMe）且会调 LLM（捕获与整合都要），
+    # 升级之后默默开始烧 token 是最不该有的默认。
+    "memory": {
+        "label": "长期记忆",
+        "fields": [
+            {"key": "memory.enabled", "label": "启用长期记忆", "type": "bool"},
+            {
+                "key": "memory.base_url",
+                "label": "记忆服务地址（ReMe）",
+                "type": "text",
+            },
+            {
+                "key": "memory.workspace",
+                "label": "记忆工作区目录（相对数据目录）",
+                "type": "text",
+            },
+        ],
+    },
 }
 
 #: 代码默认值。**只有行为参数**：模型身份来自注册表，没有默认模型这回事。
@@ -174,6 +193,14 @@ DEFAULTS: dict[str, str] = {
     "chat.context_window": "65536",
     "chat.compress_at": "70",
     "chat.compress_keep": "6",
+    # 记忆（v0.14）。关闭时 recall / remember 都**明确报"未启用"**，不静默返回空
+    # ——返回空会让模型以为"没有相关记忆"，然后基于错误前提继续推理。
+    "memory.enabled": "false",
+    # ReMe 的服务地址。它的接口是 `POST /<job 名>`（见设计文档 §3.1）。
+    "memory.base_url": "http://127.0.0.1:8181",
+    # 记忆工作区放在数据目录下（相对路径）：与其它数据一起备份/迁移，
+    # 一个部署只有一处要备份。
+    "memory.workspace": "memory",
 }
 
 
@@ -294,6 +321,18 @@ class RuntimeConfigService:
             return int(raw)
         except ValueError:
             return int(DEFAULTS.get(key, "0") or 0)
+
+    def get_bool(self, key: str, *, default: bool = False) -> bool:
+        """取一个布尔设置。
+
+        取值口径在这里统一：**空值回落默认**，否则认 ``1/true/yes/on``（不区分大小写）。
+        此前这个判断在 ``api/v1/chat.py`` 里手写过一遍，记忆层的开关会是第二遍——
+        而"同一件事两处判断"正是这类开关最容易分叉的地方（一处把空当关、另一处当开）。
+        """
+        raw = self.get(key)
+        if raw is None or not raw.strip():
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
 
     def set(self, values: dict[str, str], *, clear_secrets: set[str] | None = None) -> None:
         """写入一批配置。

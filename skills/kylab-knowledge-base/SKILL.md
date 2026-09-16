@@ -38,8 +38,23 @@ the evidence, and a summary is not.
 | `create_note` | You produced a conclusion, decision, or procedure worth keeping | Expect it to be searchable yet — a note is not in any library until `attach_note_to_kb` |
 | `attach_note_to_kb` | The user wants a result kept in a library, or says "记到知识库" | Re-attach the same note to "refresh" it; identical content dedups |
 | `list_notes` | You need to find a note again, or check what has not been filed yet | Assume a listed note is searchable — `in_knowledge_base` is the field that says so |
+| `recall` | The question is about **us**: what we decided, what the user prefers, what went wrong last time | Use it as a substitute for `search` — memory has no sources to cite |
+| `remember` | A durable preference, decision, or lesson came up and should survive the session | Dump a whole document into it — one reusable fact per call, and long material belongs in `create_note` |
 | `delete_document` | The user explicitly asks to remove something | Treat it as reversible without saying so — the original goes to a 7-day trash, but the chunks and vectors are gone immediately, so it stops being searchable at once |
 | `create_knowledge_base` | The user wants a new, separate library | Mix unrelated material into one library; separate libraries keep retrieval scoped |
+
+## Two pools: `search` and `recall` are not interchangeable
+
+kylab keeps **documents** and **memory** apart, and mixing them is the mistake to avoid:
+
+| | `search` | `recall` |
+| --- | --- | --- |
+| Answers | "what does the material say" | "what did we say" |
+| Has sources | Yes — document, page, heading; quote it | No — it came from a conversation |
+| Use when | The user needs a verifiable basis | The user references prior context, or their own preferences |
+
+Do not present recalled memory as if it were sourced evidence, and do not answer "what did we
+decide" from `search` — the decision may never have been written into a document.
 
 ## Saving results back into the knowledge base
 
