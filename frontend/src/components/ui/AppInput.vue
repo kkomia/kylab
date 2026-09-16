@@ -64,9 +64,12 @@ withDefaults(
   font: inherit;
   color: var(--text-primary);
   background: var(--bg-surface);
-  border: 1px solid var(--border-strong);
+  /* 静止态用 hairline（= Kimi 的 Separators-S1）而不是 border-strong：
+     控件的边界由底色差与一层浅线共同表达，线一重就成了"表格框"。 */
+  border: 1px solid var(--border);
   border-radius: var(--radius-control);
   outline: none;
+  transition: var(--transition-ui);
 }
 
 /* 单行：高度就是控件口径，文本靠 height 自然垂直居中 */
@@ -81,21 +84,30 @@ withDefaults(
   resize: vertical;
 }
 
+/* 占位符用四级灰。这是规范 v0.13 §2 的用途约定：
+   Quaternary 只给禁用态与占位符——它不属于"要被读到的信息"。 */
 .field::placeholder {
-  color: var(--text-tertiary);
+  color: var(--text-quaternary);
 }
 
 .field:hover:not(:disabled) {
-  border-color: var(--text-tertiary);
+  border-color: var(--text-quaternary);
 }
 
+/* 聚焦：描边转品牌色 + 一圈柔光。只换描边颜色在浅色下几乎看不出来，
+   而"我现在在哪个框里"是打字时最需要一眼确认的事。 */
 .field:focus {
-  border-color: var(--text-secondary);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+/* 禁用态用**实色**而不是 opacity：半透明会把文字与底色一起推向对方，
+   实测禁用文字常常掉到 3:1 以下——而"这里写的是什么"恰恰是禁用态最需要读清的。
+   与主题里 --button-disabled-* 同一口径。 */
 .field:disabled {
-  color: var(--text-tertiary);
+  color: var(--button-disabled-text);
+  background: var(--button-disabled-bg);
+  border-color: var(--button-disabled-border);
   cursor: not-allowed;
-  opacity: 0.7;
 }
 </style>

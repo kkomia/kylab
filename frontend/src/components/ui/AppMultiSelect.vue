@@ -327,10 +327,11 @@ onBeforeUnmount(() => bindGlobal(false))
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+/* 禁用态用实色，不用 opacity（与 --button-disabled-* 同一口径） */
 .multi-trigger:disabled {
-  color: var(--text-tertiary);
+  color: var(--button-disabled-text);
+  background: var(--button-disabled-bg);
   cursor: not-allowed;
-  opacity: 0.7;
 }
 
 .multi-value {
@@ -339,14 +340,15 @@ onBeforeUnmount(() => bindGlobal(false))
   white-space: nowrap;
 }
 
+/* 占位态用四级灰（规范 v0.13 §2：Quaternary 只给禁用态与占位符） */
 .multi-placeholder {
-  color: var(--text-tertiary);
+  color: var(--text-quaternary);
 }
 
 .multi-arrow {
   flex: 0 0 auto;
   color: var(--text-tertiary);
-  transition: transform 120ms ease;
+  transition: transform var(--motion-fast) var(--motion-ease);
 }
 
 .multi-open .multi-arrow {

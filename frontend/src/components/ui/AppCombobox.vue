@@ -293,8 +293,9 @@ onBeforeUnmount(() => bindGlobal(false))
   border-radius: var(--radius-row);
 }
 
+/* 占位态用四级灰（规范 v0.13 §2：Quaternary 只给禁用态与占位符） */
 .combo-input::placeholder {
-  color: var(--text-tertiary);
+  color: var(--text-quaternary);
 }
 
 .combo-input:hover:not(:disabled) {
@@ -309,10 +310,11 @@ onBeforeUnmount(() => bindGlobal(false))
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+/* 禁用态用实色，不用 opacity（与 --button-disabled-* 同一口径） */
 .combo-input:disabled {
-  color: var(--text-tertiary);
+  color: var(--button-disabled-text);
+  background: var(--button-disabled-bg);
   cursor: not-allowed;
-  opacity: 0.7;
 }
 
 .combo-toggle {
@@ -328,7 +330,7 @@ onBeforeUnmount(() => bindGlobal(false))
 }
 
 .combo-arrow {
-  transition: transform 120ms ease;
+  transition: transform var(--motion-fast) var(--motion-ease);
 }
 
 .combo-open .combo-arrow {

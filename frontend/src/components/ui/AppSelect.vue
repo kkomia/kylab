@@ -308,10 +308,12 @@ onBeforeUnmount(() => bindGlobal(false))
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
+/* 禁用态用实色而不是 opacity：半透明会把文字与底色一起推向对方，
+   与主题里的 --button-disabled-* 保持同一口径（规范 v0.13 §5）。 */
 .select-trigger:disabled {
-  color: var(--text-tertiary);
+  color: var(--button-disabled-text);
+  background: var(--button-disabled-bg);
   cursor: not-allowed;
-  opacity: 0.7;
 }
 
 /* 值区：图标 + 文本。文本单独一层做截断——直接对 flex 容器设 ellipsis 不生效 */
@@ -335,18 +337,19 @@ onBeforeUnmount(() => bindGlobal(false))
   color: var(--text-secondary);
 }
 
+/* 占位态用四级灰（规范 v0.13 §2 的用途约定：Quaternary 只给禁用态与占位符） */
 .select-placeholder {
-  color: var(--text-tertiary);
+  color: var(--text-quaternary);
 }
 
 .select-placeholder .select-icon {
-  color: var(--text-tertiary);
+  color: var(--text-quaternary);
 }
 
 .select-arrow {
   flex: 0 0 auto;
   color: var(--text-tertiary);
-  transition: transform 120ms ease;
+  transition: transform var(--motion-fast) var(--motion-ease);
 }
 
 .select-open .select-arrow {

@@ -287,7 +287,7 @@ onBeforeUnmount(() => bindGlobal(false))
 .mp-arrow {
   flex: 0 0 auto;
   color: var(--text-tertiary);
-  transition: transform 120ms ease;
+  transition: transform var(--motion-fast) var(--motion-ease);
 }
 
 .model-picker-open .mp-arrow {
@@ -401,7 +401,7 @@ onBeforeUnmount(() => bindGlobal(false))
   height: 14px;
   background: var(--bg-surface);
   border-radius: 50%;
-  transition: transform 120ms ease;
+  transition: transform var(--motion-fast) var(--motion-ease);
 }
 
 .mp-switch[aria-checked='true'] .mp-knob {
