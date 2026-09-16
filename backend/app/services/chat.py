@@ -108,6 +108,15 @@ DEFAULT_SYSTEM_PROMPT = (
 #: 拼进提示词的资料条数上限：太多会挤掉问题本身，也更容易让模型跑偏
 MAX_CONTEXT_CHUNKS = 6
 
+#: 一轮问答里最多展开几个技能（v0.15）。**与检索轮次分开计数**：
+#: 读技能是"先看看该怎么做"，再搜一次是"再找一遍事实"，成本与收益都不同。
+#: 给 2 是"够用但不至于绕圈"——正常一轮只该展开一个。
+MAX_SKILL_LOADS = 2
+
+#: 拼"技能目录 + 已展开正文"时的分隔符。单独提出来是因为在参数位置写转义换行
+#: 很容易被后续编辑弄坏（写这段时已经坏过一次：字符串里落进了真换行）。
+_SKILL_SEPARATOR = chr(10) * 2
+
 #: **整块资料的字数预算**（v25，设置项 `chat.material_chars`）。
 #:
 #: 上限的由来：6 条资料 × 每条补成 1800 字的"所在小节"最多 10800 字（约 7k token），
@@ -265,7 +274,8 @@ class ChatService:
         chat_factory=None,  # type: ignore[no-untyped-def]
         usage_recorder=None,  # type: ignore[no-untyped-def]
         conversations=None,  # type: ignore[no-untyped-def]
-        memory=None,  # type: ignore[no-untyped-def]
+        memory=None,
+        skills=None,  # type: ignore[no-untyped-def]
     ) -> None:
         self._retrieval = retrieval
         self._runtime = runtime
@@ -280,6 +290,23 @@ class ChatService:
         self._conversations = conversations
         #: 长期记忆（v0.14）。可选：不给就不注入，与关闭记忆时行为一致
         self._memory = memory
+        #: 技能注册表（v0.15）。可选：不给就不注入技能目录
+        self._skills = skills
+
+    def _skill_block(self, loaded: str = "") -> str:
+        """要注入 system prompt 的技能块：**目录** + 本轮已展开的**正文**。
+
+        目录不带正文（见 ``services/skills.py`` 的模块头：目录进上下文、
+        正文按需展开，这是"装很多技能也不贵"的原因）；``loaded`` 是本轮
+        模型主动 ``use_skill`` 读出来的那几篇，它们**应该**占上下文——
+        那是它自己判断需要的。
+        """
+        if self._skills is None:
+            return ""
+        catalog = self._skills.catalog()
+        if not loaded:
+            return catalog
+        return f"{catalog}{_SKILL_SEPARATOR}{loaded}" if catalog else loaded
 
     def _memory_block(self, owner_id: str | None = None) -> str:
         """要注入 system prompt 的记忆块；未接入或没内容时是空串。
@@ -405,6 +432,7 @@ class ChatService:
             history=history,
             system_prompt=system_prompt or self._runtime.get("chat.system_prompt"),
             memory=self._memory_block(owner_id),
+            skills=self._skill_block(),
             summary=summary,
         )
         started = time.monotonic()
@@ -469,6 +497,7 @@ class ChatService:
             history=history,
             system_prompt=system_prompt or self._runtime.get("chat.system_prompt"),
             memory=self._memory_block(owner_id),
+            skills=self._skill_block(),
             summary=summary,
         )
         return chat.stream(messages)
@@ -544,20 +573,61 @@ class ChatService:
             seen = {item.chunk_id for item in sources}
 
             tried = list(plan.queries)
+            # 已展开的技能（v0.15）：名字进 `loaded_skills` 防重复，正文进 `skill_bodies`
+            # 并在最终作答时一并注入。**技能加载不占检索轮次**——它是"先看看该怎么做"，
+            # 与"再搜一次"是两件事；但要单独计数，否则模型可以一直读技能不干活。
+            loaded_skills: list[str] = []
+            skill_bodies: list[str] = []
             for round_no in range(2, max_rounds + 1):
                 decision: AgentDecision | None = None
-                try:
-                    decision = self._decide_next(
-                        query=query,
-                        intent=plan.intent,
-                        sources=sources,
-                        tried=tried,
-                        remaining=max_rounds - round_no + 1,
-                        config=config,
-                        kb_ids=kb_ids,
+                for _ in range(MAX_SKILL_LOADS + 1):
+                    try:
+                        decision = self._decide_next(
+                            query=query,
+                            intent=plan.intent,
+                            sources=sources,
+                            tried=tried,
+                            remaining=max_rounds - round_no + 1,
+                            config=config,
+                            kb_ids=kb_ids,
+                        )
+                    except Exception:
+                        logger.warning("检索决策失败，结束多轮检索", exc_info=True)
+                        decision = None
+                    if decision is None or decision.action != "skill":
+                        break
+                    name = decision.query
+                    if name.casefold() in {item.casefold() for item in loaded_skills}:
+                        # 同一个技能不重复读：它就是一段文本，读第二遍除了烧 token 没别的用
+                        logger.info("技能 %s 已加载过，跳过", name)
+                        decision = None
+                        break
+                    if len(loaded_skills) >= MAX_SKILL_LOADS:
+                        yield StepEvent(
+                            phase="skill",
+                            label="技能加载已达上限",
+                            detail=f"本轮最多展开 {MAX_SKILL_LOADS} 个技能，继续按现有信息作答",
+                        )
+                        decision = None
+                        break
+                    try:
+                        record, body = self._skills.read(name) if self._skills else (None, "")
+                    except Exception as exc:
+                        # 技能读不出来**不该让整轮问答失败**：它是增强，不是依赖
+                        yield StepEvent(
+                            phase="skill",
+                            label="技能没读出来",
+                            detail=f"{name}：{exc}",
+                        )
+                        decision = None
+                        break
+                    loaded_skills.append(record.name)
+                    skill_bodies.append(f"【技能 {record.name} 的流程】" + _SKILL_SEPARATOR + body)
+                    yield StepEvent(
+                        phase="skill",
+                        label="读取技能",
+                        detail=record.name,
                     )
-                except Exception:
-                    logger.warning("检索决策失败，结束多轮检索", exc_info=True)
                 if decision is None or decision.action != "search" or decision.query in tried:
                     break
                 tried.append(decision.query)
@@ -605,6 +675,9 @@ class ChatService:
             system_prompt=prompt,
             summary=summary,
             memory=self._memory_block(owner_id),
+            # 目录 + 本轮**已展开**的技能正文（v0.15）：目录让模型知道有什么，
+            # 正文是它自己要求读出来的。两者一起给，它才能按流程干活。
+            skills=self._skill_block(_SKILL_SEPARATOR.join(skill_bodies)),
         )
         started = time.monotonic()
         parts: list[str] = []
@@ -919,6 +992,7 @@ def build_messages(
     system_prompt: str,
     summary: str = "",
     memory: str = "",
+    skills: str = "",
 ) -> list[ChatMessage]:
     """拼提示词：**一条** system（提示词 + 资料）+ 历史 + 当前问题。
 
@@ -949,6 +1023,11 @@ def build_messages(
     # （`system_prompt.strip() or DEFAULT_SYSTEM_PROMPT` 拿到的是那段记忆而不是默认提示词）。
     if memory:
         parts.append(memory)
+
+    # 技能目录同理跟在内置提示词之后（同一个理由）。它**只是目录**：
+    # 名字 + 何时用，正文由 `use_skill` 按需展开（见 services/skills.py 的模块头）。
+    if skills:
+        parts.append(skills)
 
     if sources:
         blocks = []

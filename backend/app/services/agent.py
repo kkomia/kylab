@@ -84,7 +84,8 @@ DECIDE_PROMPT = (
     "**看清知识库概况**：如果命中的文档与问题方向明显无关，说明这个库本来就可能没有"
     "相关资料——那种情况直接作答并说明，不要靠换词反复试探（那只会在无关内容里越挖越远）。\n"
     "只输出一个 JSON 对象，不要解释，不要 Markdown 代码块：\n"
-    '{"action":"search","query":"..."} 或 {"action":"answer","reason":"一句话"}'
+    '{"action":"search","query":"..."} 或 {"action":"skill","name":"..."}'
+    ' 或 {"action":"answer","reason":"一句话"}'
 )
 
 
@@ -102,8 +103,10 @@ class AgentPlan:
 class AgentDecision:
     """一轮"要不要再检索"的决策。"""
 
-    action: str  # "search" | "answer"
+    action: str  # "search" | "skill" | "answer"
     query: str = ""
+    """``search`` 时是检索词；``skill`` 时是技能名（复用一个字段是有意的：
+    两者都是"这一步要操作的对象"，各开一个字段会让每个消费点都得判两遍）。"""
     reason: str = ""
 
 
@@ -266,4 +269,11 @@ def parse_decision(text: str) -> AgentDecision | None:
         if not query:
             return None
         return AgentDecision(action="search", query=query)
+    if action == "skill":
+        name = body.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return None
+        # 名字只做**长度与字符**的清洗；能不能找到由服务层说了算——
+        # 那里才知道有哪些技能，也才能给出"没有这个技能"的可读报错。
+        return AgentDecision(action="skill", query=" ".join(name.split())[:80].strip())
     return None

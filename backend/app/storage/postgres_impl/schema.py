@@ -25,7 +25,7 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 """应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
 
 **启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
@@ -122,6 +122,32 @@ MIGRATIONS: tuple[Migration, ...] = (
             CREATE INDEX idx_conversations_workspace
                 ON conversations (workspace_id, pinned DESC, updated_at DESC)
             """,
+        ),
+    ),
+    Migration(
+        version=6,
+        description="MCP 服务登记：接外部工具进来（v0.15，见 Agent-工作区与能力层设计 §6.2）",
+        statements=(
+            # 在此之前 KYLAB 只做 MCP **服务端**；这张表是客户端的一半。
+            # `policy` 默认 `ask`：接一个外部服务进来就默认让它静默执行动作，
+            # 是这一层最不该有的默认（QwenPaw 的 Drivers 也是"每次调用过策略闸"）。
+            """
+            CREATE TABLE mcp_servers (
+                id         text PRIMARY KEY,
+                owner_id   text,
+                name       text NOT NULL,
+                transport  text NOT NULL,
+                target     text NOT NULL,
+                args       jsonb NOT NULL DEFAULT '[]'::jsonb,
+                env        jsonb NOT NULL DEFAULT '{}'::jsonb,
+                headers    jsonb NOT NULL DEFAULT '{}'::jsonb,
+                policy     text NOT NULL DEFAULT 'ask',
+                enabled    boolean NOT NULL DEFAULT true,
+                created_at timestamptz NOT NULL DEFAULT now(),
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """,
+            "CREATE INDEX idx_mcp_servers_owner ON mcp_servers (owner_id, updated_at DESC)",
         ),
     ),
 )

@@ -40,10 +40,25 @@ class DuckDbTabularStore(TabularStore):
     def __init__(self, path: str | Path) -> None:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        # 单连接足够：表格副本是**写入少、读取少**的旁路数据，
-        # 而 DuckDB 的多连接要走同样的文件锁，收益不抵复杂度
-        self._conn = duckdb.connect(str(self._path))
-        logger.info("表格副本库就位：%s", self._path)
+        #: 连接**延迟到第一次真正用时**才建。
+        #
+        # 为什么必须延迟（实测踩到）：DuckDB 一个文件只允许一个写进程，
+        # 而 `build_stores()` 是"启动就建全部仓储"。于是**只要后端在跑**，
+        # 任何另一个进程（`kylab-mcp` 的 stdio 模式、脚本、测试）一启动就炸在
+        # `Cannot open file ... File is already open in ... python.exe`。
+        # 而 stdio MCP 服务的**标准用法就是被客户端当子进程拉起**——
+        # 也就是说：不延迟的话，这个功能在"后端也在跑"这个最常见的前提下根本用不了。
+        #
+        # 单连接仍然够用：表格副本是写入少、读取少的旁路数据，
+        # 而 DuckDB 的多连接要走同样的文件锁，收益不抵复杂度。
+        self._conn: duckdb.DuckDBPyConnection | None = None
+
+    def _connection(self) -> duckdb.DuckDBPyConnection:
+        """取连接，第一次调用时才真正打开文件。"""
+        if self._conn is None:
+            self._conn = duckdb.connect(str(self._path))
+            logger.info("表格副本库就位：%s", self._path)
+        return self._conn
 
     # ------------------------------------------------------------------ 写
 
@@ -56,10 +71,10 @@ class DuckDbTabularStore(TabularStore):
 
         # DROP + CREATE 而不是 CREATE OR REPLACE：后者在列数变化时报错，
         # 而"重跑时列变了"是正常情况（用户改了源文件）
-        self._conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+        self._connection().execute(f'DROP TABLE IF EXISTS "{table}"')
         # 先建表再 INSERT，并显式声明 VARCHAR——避免 DuckDB 自己推断类型
         column_defs = ", ".join(f'{_quote(name)} VARCHAR' for name in columns)
-        self._conn.execute(
+        self._connection().execute(
             f'CREATE TABLE "{table}" ({_ORDINAL} BIGINT, {column_defs})'
         )
 
@@ -69,7 +84,7 @@ class DuckDbTabularStore(TabularStore):
                 [index, *[_text(cell) for cell in row[: len(columns)]]]
                 for index, row in enumerate(rows)
             ]
-            self._conn.executemany(
+            self._connection().executemany(
                 f'INSERT INTO "{table}" VALUES ({placeholders})',  # noqa: S608
                 payload,
             )
@@ -78,13 +93,13 @@ class DuckDbTabularStore(TabularStore):
 
     def drop_table(self, table: str) -> None:
         _require_safe(table)
-        self._conn.execute(f'DROP TABLE IF EXISTS "{table}"')
+        self._connection().execute(f'DROP TABLE IF EXISTS "{table}"')
 
     # ------------------------------------------------------------------ 读
 
     def table_exists(self, table: str) -> bool:
         _require_safe(table)
-        row = self._conn.execute(
+        row = self._connection().execute(
             "SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table]
         ).fetchone()
         return row is not None
@@ -93,7 +108,7 @@ class DuckDbTabularStore(TabularStore):
         _require_safe(table)
         if not self.table_exists(table):
             return []
-        described = self._conn.execute(f'DESCRIBE "{table}"').fetchall()
+        described = self._connection().execute(f'DESCRIBE "{table}"').fetchall()
         # 第一列是内部行号，不属于用户看到的数据
         return [row[0] for row in described if row[0] != _ORDINAL]
 
@@ -101,7 +116,7 @@ class DuckDbTabularStore(TabularStore):
         _require_safe(table)
         if not self.table_exists(table):
             return 0
-        row = self._conn.execute(
+        row = self._connection().execute(
             f'SELECT COUNT(*) FROM "{table}"'  # noqa: S608
         ).fetchone()
         return int(row[0]) if row else 0
@@ -114,7 +129,7 @@ class DuckDbTabularStore(TabularStore):
         selected = ", ".join(_quote(name) for name in names)
         # **按内部行号排序**：DuckDB 不保证无 ORDER BY 的行序，
         # 而用户说的"第 3 行"必须与源文件一致
-        rows = self._conn.execute(
+        rows = self._connection().execute(
             f'SELECT {selected} FROM "{table}" ORDER BY {_ORDINAL} LIMIT ? OFFSET ?',  # noqa: S608
             [limit, offset],
         ).fetchall()
@@ -123,7 +138,10 @@ class DuckDbTabularStore(TabularStore):
     # ------------------------------------------------------------------ 生命周期
 
     def close(self) -> None:
-        self._conn.close()
+        # 没打开过就不用关（延迟打开之后这是常态：多数进程从没碰过表格副本）
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
 
 
 def _quote(name: str) -> str:

@@ -61,6 +61,7 @@ from app.storage.base import (
     IdempotencyRecord,
     ImageRecord,
     KnowledgeBaseRecord,
+    MCPServerRecord,
     MetaStore,
     ModelProviderRecord,
     NoteRecord,
@@ -2676,6 +2677,92 @@ class PostgresMetaStore(MetaStore):
                 (workspace_id,),
             ).fetchone()
         return int(row["total"]) if row else 0
+
+    # ---- MCP 服务 ----
+
+    def create_mcp_server(self, record: MCPServerRecord) -> MCPServerRecord:
+        now = _now()
+        record.created_at = record.created_at or now
+        record.updated_at = record.updated_at or now
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO mcp_servers"
+                " (id, owner_id, name, transport, target, args, env, headers, policy,"
+                "  enabled, created_at, updated_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    record.id,
+                    record.owner_id,
+                    record.name,
+                    record.transport,
+                    record.target,
+                    _json(list(record.args)),
+                    _json(dict(record.env)),
+                    _json(dict(record.headers)),
+                    record.policy,
+                    record.enabled,
+                    _dump(record.created_at),
+                    _dump(record.updated_at),
+                ),
+            )
+        return record
+
+    def get_mcp_server(self, server_id: str) -> MCPServerRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM mcp_servers WHERE id = %s", (server_id,)
+            ).fetchone()
+        return self._mcp_server_from_row(row) if row else None
+
+    def list_mcp_servers(self) -> list[MCPServerRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM mcp_servers ORDER BY updated_at DESC"
+            ).fetchall()
+        return [self._mcp_server_from_row(row) for row in rows]
+
+    def update_mcp_server(self, record: MCPServerRecord) -> MCPServerRecord:
+        record.updated_at = _now()
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE mcp_servers SET name = %s, transport = %s, target = %s, args = %s,"
+                " env = %s, headers = %s, policy = %s, enabled = %s, updated_at = %s"
+                " WHERE id = %s",
+                (
+                    record.name,
+                    record.transport,
+                    record.target,
+                    _json(list(record.args)),
+                    _json(dict(record.env)),
+                    _json(dict(record.headers)),
+                    record.policy,
+                    record.enabled,
+                    _dump(record.updated_at),
+                    record.id,
+                ),
+            )
+        return record
+
+    def delete_mcp_server(self, server_id: str) -> None:
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM mcp_servers WHERE id = %s", (server_id,))
+
+    @staticmethod
+    def _mcp_server_from_row(row: dict) -> MCPServerRecord:
+        return MCPServerRecord(
+            id=row["id"],
+            name=row["name"],
+            transport=row["transport"],
+            target=row["target"],
+            args=tuple(row["args"]),
+            env=dict(row["env"]),
+            headers=dict(row["headers"]),
+            policy=row["policy"],
+            enabled=bool(row["enabled"]),
+            owner_id=row["owner_id"],
+            created_at=_load(row["created_at"]),
+            updated_at=_load(row["updated_at"]),
+        )
 
     @staticmethod
     def _workspace_from_row(row: dict) -> WorkspaceRecord:

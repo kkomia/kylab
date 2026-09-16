@@ -536,6 +536,31 @@ class ConversationRecord:
 
 
 @dataclass(slots=True)
+class MCPServerRecord:
+    """一个外部 MCP 服务（v0.15）：插件能力的落点。
+
+    见 ``docs/Agent-工作区与能力层设计-v0.1.md`` §6.2。``env`` / ``headers`` 里
+    可能带凭据——**接口绝不回显它们的值**，只回"配过没有"。
+    """
+
+    id: str
+    name: str
+    transport: str
+    """``stdio``（起子进程）或 ``http``（连远端服务）。"""
+    target: str
+    """stdio = 要执行的命令；http = 服务的 URL。"""
+    args: Sequence[str] = field(default_factory=tuple)
+    env: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict)
+    policy: str = "ask"
+    """``allow`` / ``ask`` / ``deny``。默认 ``ask``：外部工具会以用户的名义执行动作。"""
+    enabled: bool = True
+    owner_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
 class WorkspaceRecord:
     """工作区（v0.15）：Agent 的"在哪儿干活"。
 
@@ -1457,6 +1482,24 @@ class MetaStore(ABC):
         """删工作区。**里面的会话退回未归档**（外键是 ON DELETE SET NULL），
         不是跟着一起删——会话里有用户问过的内容，误删不可恢复。"""
         ...
+
+    # ---- MCP 服务（v0.15）----
+    @abstractmethod
+    def create_mcp_server(self, record: MCPServerRecord) -> MCPServerRecord: ...
+
+    @abstractmethod
+    def get_mcp_server(self, server_id: str) -> MCPServerRecord | None: ...
+
+    @abstractmethod
+    def list_mcp_servers(self) -> list[MCPServerRecord]:
+        """按最近更新倒序。归属过滤在服务层做（存储层不认识调用者身份）。"""
+        ...
+
+    @abstractmethod
+    def update_mcp_server(self, record: MCPServerRecord) -> MCPServerRecord: ...
+
+    @abstractmethod
+    def delete_mcp_server(self, server_id: str) -> None: ...
 
     @abstractmethod
     def count_workspace_conversations(self, workspace_id: str) -> int:

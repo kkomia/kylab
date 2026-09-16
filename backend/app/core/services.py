@@ -40,6 +40,7 @@ from app.services.knowledge_base import KnowledgeBaseService
 from app.services.lifecycle import LifecycleService
 from app.services.llm import LLMUsage
 from app.services.maintenance import MaintenanceService
+from app.services.mcp_client import MCPClientService
 from app.services.memory import MemoryService
 from app.services.model_registry import ModelRegistryService
 from app.services.note_ai import NoteAiService
@@ -50,6 +51,7 @@ from app.services.retrieval import RetrievalService, build_reranker
 from app.services.retrieval.rerank import RerankProvider
 from app.services.runtime_config import RuntimeConfigService
 from app.services.share import ShareService
+from app.services.skills import SkillService
 from app.services.sources import SourceService
 from app.services.stats import StatsService
 from app.services.suggested_questions import SuggestedQuestionsService
@@ -131,6 +133,8 @@ class Services:
     """负载面板数据源：CPU / 内存 / 队列深度 / 并发槽位 / 云端解析额度（§12.115）。"""
     memory: MemoryService
     workspaces: WorkspaceService
+    skills: SkillService
+    mcp: MCPClientService
     """长期记忆的门面（§12.130）。默认关；关着时它的每个方法都明确报错。"""
     embedder: EmbeddingProvider
     reranker: RerankProvider
@@ -265,6 +269,10 @@ def build_services(
     # 工作区也要 data_dir：它要拦住「把数据目录当工作区」这种配置
     # （指向那里等于绕过账号隔离，见 services/workspace.py 的第三道校验）
     workspace_service = WorkspaceService(bundle, resolved.data_dir)
+    # 技能：扫描仓库自带 skills/ 与数据目录 data/skills/（见 services/skills.py）
+    skill_service = SkillService(resolved.data_dir)
+    # MCP 客户端（v0.15）：连外部 MCP 服务，是「插件能力」的落点
+    mcp_service = MCPClientService(bundle)
     # 用量服务要**先建**：下面的 embedder 回调闭包引用了它
     usage = UsageService(bundle)
 
@@ -310,6 +318,9 @@ def build_services(
         conversations=conversations_service,
         # 长期记忆（v0.14）：非空时把 MEMORY.md / SOUL.md 注入 system prompt
         memory=memory_service,
+        # 技能（v0.15）：把技能目录（名字 + 何时用）注入 system prompt，
+        # 正文由 `use_skill` 按需展开——见 services/skills.py 的模块头
+        skills=skill_service,
     )
     questions_service = SuggestedQuestionsService(
         bundle, chat_service, batch_concurrency=resolved.questions_concurrency
@@ -441,6 +452,8 @@ def build_services(
         ),
         memory=memory_service,
         workspaces=workspace_service,
+        skills=skill_service,
+        mcp=mcp_service,
     )
 
 

@@ -1543,6 +1543,120 @@ class WorkspaceListOut(BaseModel):
     items: list[WorkspaceOut] = Field(default_factory=list)
 
 
+# ------------------------------------------------------------------ MCP（v0.15）
+
+
+class MCPServerCreateIn(BaseModel):
+    """登记一个外部 MCP 服务。见《Agent-工作区与能力层设计》§6.2。"""
+
+    name: str = Field(min_length=1, max_length=120)
+    transport: Literal["stdio", "http"]
+    """``stdio`` 会**起一个本地子进程**；``http`` 连远端服务。"""
+    target: str = Field(min_length=1, max_length=1000)
+    """stdio = 要执行的命令（如 ``python``）；http = 服务的 URL。"""
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    """子进程的环境变量。**可能含凭据，接口不回显它的值。**"""
+    headers: dict[str, str] = Field(default_factory=dict)
+    """http 服务的请求头（如 ``Authorization``）。同上，不回显。"""
+    policy: Literal["allow", "ask", "deny"] = "ask"
+    """**默认 ask**：外部工具会以用户的名义执行动作，接进来就默认静默执行
+    是这一层最不该有的默认。"""
+
+
+class MCPServerUpdateIn(BaseModel):
+    """改配置。**凭据是整份替换**（合并语义下"删掉"与"没传"分不开）。"""
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    transport: Literal["stdio", "http"] | None = None
+    target: str | None = Field(default=None, min_length=1, max_length=1000)
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+    headers: dict[str, str] | None = None
+    policy: Literal["allow", "ask", "deny"] | None = None
+    enabled: bool | None = None
+
+
+class MCPToolOut(BaseModel):
+    name: str
+    qualified: str
+    """限定名 ``mcp__<服务>__<工具>``：外部工具名我们无法约束，
+    撞上内置工具（``search``）会让"在调哪个"变得无解。"""
+    description: str = ""
+    server_id: str = ""
+    server_name: str = ""
+
+
+class MCPServerOut(BaseModel):
+    id: str
+    name: str
+    transport: Literal["stdio", "http"]
+    target: str
+    args: list[str] = Field(default_factory=list)
+    policy: Literal["allow", "ask", "deny"] = "ask"
+    enabled: bool = True
+    secret_keys: list[str] = Field(default_factory=list)
+    """配过凭据的**键名**（不含值）。界面据此显示"已配置"。"""
+    has_secrets: bool = False
+    tool_prefix: str = ""
+    """该服务工具的限定名前缀，界面上照它拼全名。"""
+    reachable: bool | None = None
+    """只有 ``probe`` 会给：``None`` = 没探过（列表里就是这样）。"""
+    detail: str = ""
+    tools: list[MCPToolOut] = Field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class MCPServerListOut(BaseModel):
+    items: list[MCPServerOut] = Field(default_factory=list)
+
+
+class MCPCallIn(BaseModel):
+    tool: str = Field(min_length=1, max_length=200)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    approved: bool = False
+    """``ask`` 策略下：第一次调用不带它（回 409），用户确认后再带上它重调。"""
+
+
+class MCPCallOut(BaseModel):
+    server_id: str
+    tool: str
+    text: str
+    """工具返回的**文本**内容。非文本（图片、资源引用）不往上下文里塞。"""
+
+
+# ------------------------------------------------------------------- 技能（v0.15）
+
+
+class SkillOut(BaseModel):
+    """一个技能（列表项，不含正文）。"""
+
+    name: str
+    description: str = ""
+    source: Literal["builtin", "user"] = "builtin"
+    """``builtin`` = 随代码发布（仓库 ``skills/``）；``user`` = 数据目录里用户放的。"""
+    path: str = ""
+    """``SKILL.md`` 的绝对路径。排错时要能找到它。"""
+    directory: str = ""
+    """技能目录（``references/`` 相对它解析）。"""
+    used_by_prompt: bool = True
+    """会不会进 system prompt 的目录。被安全扫描拦下的为 false。"""
+    flagged: list[str] = Field(default_factory=list)
+    """没进目录的原因（人话）。空 = 没问题。"""
+
+
+class SkillDetailOut(SkillOut):
+    body: str = ""
+    """正文（frontmatter 之后的部分）。**按需展开的那一段**。"""
+
+
+class SkillListOut(BaseModel):
+    items: list[SkillOut] = Field(default_factory=list)
+    usable: int = 0
+    """其中真正会进模型目录的条数——界面上一眼看出"装了 N 个，能用 M 个"。"""
+
+
 # --------------------------------------------------------------------- 记忆（v0.14 三期）
 
 

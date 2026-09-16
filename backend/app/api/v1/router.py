@@ -20,12 +20,14 @@ from app.api.v1 import (
     knowledge_bases,
     lifecycle,
     maintenance,
+    mcp_servers,
     memory,
     model_registry,
     notes,
     search,
     settings,
     shares,
+    skills,
     stats,
     tabular,
     tasks,
@@ -65,3 +67,7 @@ api_router.include_router(wiki.router)
 api_router.include_router(memory.router)
 # 工作区（v0.15）：Agent 的项目，会话挂在它下面
 api_router.include_router(workspaces.router)
+# 技能（v0.15）：磁盘上的 SKILL.md，目录进提示词、正文按需展开
+api_router.include_router(skills.router)
+# MCP 客户端（v0.15）：接外部工具进来（此前只有服务端的一半）
+api_router.include_router(mcp_servers.router)
