@@ -18,7 +18,6 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import IconChat from '@/components/icons/IconChat.vue'
 import IconChatNew from '@/components/icons/IconChatNew.vue'
 import IconClose from '@/components/icons/IconClose.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
@@ -35,6 +34,7 @@ import IconLogo from '@/components/icons/IconLogo.vue'
 import IconLogout from '@/components/icons/IconLogout.vue'
 import IconNote from '@/components/icons/IconNote.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
+import IconServer from '@/components/icons/IconServer.vue'
 import IconSettings from '@/components/icons/IconSettings.vue'
 import IconSidebar from '@/components/icons/IconSidebar.vue'
 import IconSun from '@/components/icons/IconSun.vue'
@@ -242,11 +242,18 @@ async function moveConversation(
 }
 
 const NAV_ITEMS = [
-  { to: '/chat', label: '对话', icon: IconChat, exact: false },
+  // **没有「对话」这一项**（v0.17 去掉）：它与下面的会话列表、以及最上面的
+  // 「新对话」是同一件事的三个入口——点「对话」是"回到最近一次对话"，
+  // 而列表也是"去某次对话"，两者并排时用户会犹豫该点哪个。
+  // Kimi Work / ChatGPT / Claude 都没有这一项：**会话列表本身就是那个入口**。
+  // `/chat` 路由仍然在（新对话按钮与会话项都指向它），只是不再占一个导航位。
   { to: '/', label: '概览', icon: IconDashboard, exact: true },
   { to: '/notes', label: '笔记', icon: IconNote, exact: false },
   { to: '/memory', label: '记忆', icon: IconRobot, exact: false },
-  { to: '/capabilities', label: '能力', icon: IconSettings, exact: false },
+  // 能力的图标**不能用齿轮**：齿轮在账号菜单里是「设置」，同一个图标两种含义
+  // 会让人以为这一项是设置（踩过：一眼看过去就是"两个设置"）。
+  // 用 IconServer 与能力页里的 MCP 服务图标一致。
+  { to: '/capabilities', label: '能力', icon: IconServer, exact: false },
   { to: '/tasks', label: '任务中心', icon: IconTasks, exact: false },
 ] as const
 
@@ -544,20 +551,41 @@ async function onLogout(): Promise<void> {
            它把「新对话」做成一个整块的填充按钮（BgGp-Secondary + 12px 圆角 + 44px 高），
            而不是挤在标题右边的一个文字链接——后者在视觉上像"次要入口"，
            而新建对话是这一栏里最常用的动作。 -->
-      <!-- 工作区栏（v0.15）：**在导航之下、会话列表之上**。
-           顺序是刻意的：导航是"去哪个功能区"，它短且固定，理应待在上面；
-           工作区与会话是会**不断变长**的清单，把清单放在导航之上，
-           长起来就会把导航推走——那是导航最不该有的行为。
-           （这里原先在注释与设计文档里写的是"工作区在导航之上"，
-           而代码一直是导航在前；是侧栏的组件测试把这句话与实现对上了。） -->
+      <!-- 会话区（v0.17 重排）——**它是一节「会话」，不是两节**：
+           工作区与会话是同一件事的两种归类（会话按工作区分组），所以「工作区 A」
+           与「未归档会话」是**同一层级的分组行**。原先「工作区」是分区标题、
+           而「未归档会话」是它下面的一行——层级不一致，后者看起来像一个工作区。
+
+           顺序上这一节在导航**之下**：导航是"去哪个功能区"，短且固定；
+           会话清单会不断变长，放在导航之上就会把导航推走。 -->
       <div class="workspace-head">
-        <p class="section-label">工作区</p>
-        <button type="button" class="section-action" title="新建工作区" @click="onNewWorkspace">
-          <IconPlus :size="14" />
-        </button>
+        <p class="section-label">会话</p>
       </div>
 
       <p v-if="workspaces.error" class="side-note">{{ workspaces.error }}</p>
+
+      <!-- 搜索放在这一节的**最上面**：它搜的是全部会话（后端按标题全局搜），
+           位置就该在"全部会话"这个层级上。原先它嵌在「未归档会话」里面，
+           看起来像只搜那一组。 -->
+      <div v-if="conversations.items.length > 0 || searchDraft" class="conv-search">
+        <IconSearch class="conv-search-icon" :size="14" />
+        <AppInput
+          v-model="searchDraft"
+          class="conv-search-input"
+          placeholder="搜索全部对话"
+          aria-label="搜索对话"
+          @input="onSearchInput"
+        />
+        <button
+          v-if="searchDraft"
+          type="button"
+          class="conv-search-clear"
+          aria-label="清除搜索"
+          @click="clearSearch"
+        >
+          <IconClose :size="14" />
+        </button>
+      </div>
 
       <ul class="ws-list">
         <li v-for="workspace in workspaces.items" :key="workspace.id" class="ws-group">
@@ -635,9 +663,10 @@ async function onLogout(): Promise<void> {
           </ul>
         </li>
 
-        <!-- 未归档会话：**单独一栏**（v0.15）。不给它们自动建一个默认工作区——
-             那会让"未归档"这个真实状态消失，用户就分不清"特意放进去的"
-             与"随手问的"。 -->
+        <!-- 未归档会话：与工作区**同一层级的分组行**（v0.17 起层级一致；
+             原先它是「工作区」标题下的一行，看起来像一个工作区）。
+             不给它们自动建默认工作区——那会让"未归档"这个真实状态消失，
+             用户就分不清"特意放进去的"与"随手问的"。 -->
         <li class="ws-group">
           <button
             type="button"
@@ -650,37 +679,12 @@ async function onLogout(): Promise<void> {
             <span class="ws-count tabular">{{ ungroupedConversations.length }}</span>
           </button>
 
-          <!-- 搜索只在有内容时出现：一个空列表下面挂个搜索框，是在问"你要找什么"，
-               可用户手里什么也没有 -->
-          <div
-            v-if="ungroupedOpen && (conversations.items.length > 0 || searchDraft)"
-            class="conv-search"
-          >
-            <IconSearch class="conv-search-icon" :size="14" />
-            <AppInput
-              v-model="searchDraft"
-              class="conv-search-input"
-              placeholder="搜索对话"
-              aria-label="搜索对话"
-              @input="onSearchInput"
-            />
-            <button
-              v-if="searchDraft"
-              type="button"
-              class="conv-search-clear"
-              aria-label="清除搜索"
-              @click="clearSearch"
-            >
-              <IconClose :size="14" />
-            </button>
-          </div>
-
           <p v-if="conversations.error" class="side-note">{{ conversations.error }}</p>
           <p v-else-if="conversations.items.length === 0 && searchDraft" class="side-note">
             没有标题匹配「{{ searchDraft }}」的对话。
           </p>
           <p v-else-if="conversations.items.length === 0" class="side-note">
-            还没有对话。在上面「新对话」里提问，这里会留下记录。
+            还没有对话。点最上面的「新对话」开始，记录会出现在这里。
           </p>
           <ul v-else-if="ungroupedOpen" class="conv-list">
             <li v-for="item in ungroupedConversations" :key="item.id" class="conv-row">
@@ -723,6 +727,16 @@ async function onLogout(): Promise<void> {
               </RowMenu>
             </li>
           </ul>
+        </li>
+
+        <!-- 「新建工作区」写成一行字，而不是标题右边一个裸 +：
+             裸 + 与最上面的「新对话」在视觉上是一类东西（都是"新建"），
+             而它们建的是两件不同的事（一个会话 / 一个工作区）。 -->
+        <li>
+          <button type="button" class="ws-add" @click="onNewWorkspace">
+            <IconPlus :size="14" />
+            <span>新建工作区</span>
+          </button>
         </li>
       </ul>
     </div>
@@ -1394,6 +1408,29 @@ async function onLogout(): Promise<void> {
   justify-content: space-between;
   gap: var(--space-2);
   margin-top: var(--space-3);
+}
+
+/* 「新建工作区」行：与分组行同高同缩进，读起来是清单的一部分 */
+.ws-add {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  width: 100%;
+  height: var(--nav-height);
+  padding: 0 var(--space-1-5);
+  border: none;
+  background: none;
+  border-radius: var(--radius-nav);
+  color: var(--text-tertiary);
+  font-size: var(--text-meta-size);
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition-ui);
+}
+
+.ws-add:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .section-action {

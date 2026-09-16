@@ -200,4 +200,35 @@ describe('SideNav（v0.15 信息架构）', () => {
     // 它在工作区标题之前
     expect(html.indexOf('新对话')).toBeLessThan(html.indexOf('工作区'))
   })
+  it('导航里没有「对话」——它与会话列表、新对话是同一件事的三个入口', () => {
+    // 这是这一轮去重的那一条：点「对话」是"回到最近一次对话"，而下面的列表
+    // 也是"去某次对话"，两者并排时用户会犹豫该点哪个。
+    // Kimi Work / ChatGPT / Claude 都没有这一项：**会话列表本身就是那个入口**。
+    const wrapper = mountNav()
+
+    const navLabels = wrapper.findAll('.nav-item .nav-label').map((node) => node.text())
+    expect(navLabels).not.toContain('对话')
+    expect(navLabels).toContain('概览')
+  })
+
+  it('搜索框在「会话」这一节的层级上，不嵌在某个分组里', () => {
+    // 它搜的是**全部**会话；嵌在「未归档会话」里面会让人以为只搜那一组（原先就是）
+    const wrapper = mountNav()
+
+    const search = wrapper.find('.conv-search')
+    expect(search.exists()).toBe(true)
+    // 它的祖先里不该有会话分组
+    expect(search.element.closest('.ws-group')).toBeNull()
+  })
+
+  it('「会话」是这一节的标签，工作区与未归档是同级分组', () => {
+    // 原先「工作区」是标题、而「未归档会话」是它下面的一行——层级不一致，
+    // 后者看起来像一个工作区。
+    const wrapper = mountNav()
+
+    expect(wrapper.find('.section-label').text()).toBe('会话')
+    // 两个分组行都是 .ws-item（同一层级、同一套样式）
+    expect(wrapper.findAll('.ws-item').length).toBeGreaterThanOrEqual(1)
+    expect(wrapper.text()).toContain('未归档会话')
+  })
 })
