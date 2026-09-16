@@ -73,6 +73,7 @@ class TaskWorker:
         sync_source: Callable[[str], object] | None = None,
         compile_wiki: Callable[[str], object] | None = None,
         summarize_gap: Callable[[], object] | None = None,
+        capture_memory: Callable[[list[dict[str, str]], str], object] | None = None,
     ) -> None:
         if lease_seconds <= 0:
             raise ValueError("租约时长必须为正")
@@ -97,6 +98,8 @@ class TaskWorker:
         # Wiki 重建（v24）。同样是可选回调：没接上时 WIKI 任务明确失败，
         # 而不是被静默丢掉
         self._compile_wiki = compile_wiki
+        #: 记忆沉淀回调（v0.14）。签名 (messages, session_id)
+        self._capture_memory = capture_memory
         # 补文档摘要（v25）。同样是可选回调：不接上就没有这个动作，
         # 而不是"静默什么都不做"——它由组合根显式传入。
         self._summarize_gap = summarize_gap
@@ -362,6 +365,18 @@ class TaskWorker:
             if not kb_id:
                 raise ValueError(f"任务 {task.id} 缺少 kb_id")
             self._compile_wiki(kb_id)
+            return
+        if task.kind is TaskKind.MEMORY:
+            # 记忆沉淀既没有 document_id 也没有 kb_id：payload 直接带那一轮的消息。
+            # 与其它分支一样**没接线就明确报错**，不静默跳过——
+            # 静默跳过会让人以为"记忆开着却什么都没记住"，那是最难查的一类症状。
+            if self._capture_memory is None:
+                raise NotImplementedError("记忆沉淀尚未接线")
+            messages = task.payload.get("messages")
+            session_id = str(task.payload.get("session_id") or "")
+            if not isinstance(messages, list) or not session_id:
+                raise ValueError(f"任务 {task.id} 缺少 messages / session_id")
+            self._capture_memory(messages, session_id)
             return
         if task.kind is TaskKind.QUESTIONS:
             # 补出题不走摄入阶段机（文档已 indexed，只读现有块），所以**不能**

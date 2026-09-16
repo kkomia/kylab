@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,9 @@ from typing import Any
 import httpx
 
 from app.core.exceptions import InvalidRequestError, UpstreamError
+from app.models.enums import TaskKind, TaskState
 from app.services.runtime_config import RuntimeConfigService
+from app.storage.base import StoreBundle, TaskRecord
 
 __all__ = [
     "CORE_MEMORY_FILE",
@@ -51,6 +54,11 @@ SOUL_FILE = "SOUL.md"
 #: 而不是它说要多少就给多少（上下文预算是有限的）。
 MAX_RECALL = 20
 DEFAULT_RECALL = 6
+
+#: 捕获节流的默认值：每几个用户回合沉淀一次。
+#: 5 是 ReMe/QwenPaw 的默认（见设计文档 §2.4），这里保持一致——
+#: 换成别的数没有依据，而它有：那条默认值来自它们的实际使用经验。
+DEFAULT_CAPTURE_EVERY = 5
 
 #: 调用 ReMe 的超时。它的检索是本地 BM25，正常在毫秒级；
 #: 给到 10 秒是为了容忍首次索引建立，而不是为了容忍它卡死。
@@ -114,9 +122,18 @@ class MemoryLink:
 class MemoryService:
     """记忆的门面。**不持有任何 ReMe 的进程内状态**——它是另一个进程。"""
 
-    def __init__(self, runtime: RuntimeConfigService, data_dir: Path) -> None:
+    def __init__(
+        self,
+        runtime: RuntimeConfigService,
+        data_dir: Path,
+        *,
+        stores: StoreBundle | None = None,
+    ) -> None:
         self._runtime = runtime
         self._data_dir = data_dir
+        #: 存储（可选）：**只有入队捕获任务时才需要**。不给它也能用——
+        #: recall / remember / 注入都不碰数据库，测试与脚本因此可以轻量构造。
+        self._stores = stores
 
     # ------------------------------------------------------------------ 配置
 
@@ -325,6 +342,38 @@ class MemoryService:
         entries.append(line)
         self._write_entries(entries)
         return {"saved": True, "entries": len(entries)}
+
+    def enqueue_capture(
+        self, messages: list[dict[str, str]], *, session_id: str, turn_count: int
+    ) -> bool:
+        """按节流规则把一次沉淀排进队列；返回**是否真的入了队**。
+
+        为什么必须有节流：ReMe 的设计是"每累计 5 个用户回合触发一次"，
+        **但它的服务不管累计**（每次调用就是一次 LLM 调用）。每轮都沉淀
+        等于每轮多花一次模型调用，而省 token 是这个项目反复强调的事。
+
+        为什么放在服务层而不是调用方：它是"记忆怎么工作"的一部分。
+        调用方只该提供"这是第几轮"，不该知道"每几轮一次"这个规则——
+        规则散到调用方，界面入口和自动化入口就会各有一个阈值。
+
+        节流不通过时**返回 False 而不是报错**：这不是失败，是设计如此。
+        """
+        if not self.enabled or self._stores is None:
+            return False
+        every = self._runtime.get_int("memory.capture_every") or DEFAULT_CAPTURE_EVERY
+        every = max(1, every)
+        if turn_count <= 0 or turn_count % every != 0:
+            return False
+
+        self._stores.meta.enqueue_task(
+            TaskRecord(
+                id=f"task_{uuid.uuid4().hex[:12]}",
+                kind=TaskKind.MEMORY,
+                state=TaskState.PENDING,
+                payload={"messages": messages, "session_id": session_id},
+            )
+        )
+        return True
 
     # ------------------------------------------------------------------ 文件
 

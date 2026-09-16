@@ -55,6 +55,10 @@ from app.services.suggested_questions import (
 
 logger = logging.getLogger(__name__)
 
+#: 交给记忆服务时"助手"这一侧的说话人名字。
+#: 记忆服务要求每条消息标明"谁说的"，缺了会被它自己的校验拒掉。
+ASSISTANT_NAME = "KYLAB"
+
 router = APIRouter(tags=["chat"])
 
 SSE_HEADERS = {
@@ -401,6 +405,43 @@ def _context(
         return services.conversations.history(payload.conversation_id), "", False
 
 
+def _maybe_capture_memory(
+    services: Services, conversation_id: str, *, query: str, answer: str
+) -> None:
+    """把这一轮交给记忆沉淀——**节流后的、best-effort 的**。
+
+    三件事缺一不可，缺了就不入队：
+
+    1. 记忆开着（``MemoryService`` 自己判，这里不重复判）；
+    2. 这一轮真的落进了某个会话——没有会话就没有可回溯的来源；
+    3. **到了该沉淀的回合**（每 N 个用户回合一次）。节流规则在服务层，
+       这里只提供"这是第几个用户回合"。
+
+    失败一律吞掉只记日志：**记忆是加分项，绝不能让它影响一次已经成功的问答**。
+    这与 webhook 的处置同一口径。
+    """
+    if not conversation_id:
+        return
+    try:
+        count = services.conversations.message_count(conversation_id)
+    except Exception:
+        logger.warning("读会话消息数失败，本轮不沉淀记忆：%s", conversation_id, exc_info=True)
+        return
+    # 一个回合 = 用户 + 助手两条消息（见 _record_turn）
+    turn_count = count // 2
+    messages = [
+        {"role": "user", "name": "用户", "content": query},
+        # `name` 是记忆服务要求的"谁说的"（缺它会被它自己的校验拒掉）
+        {"role": "assistant", "name": ASSISTANT_NAME, "content": answer},
+    ]
+    try:
+        services.memory.enqueue_capture(
+            messages, session_id=conversation_id, turn_count=turn_count
+        )
+    except Exception:
+        logger.warning("记忆沉淀入队失败：%s", conversation_id, exc_info=True)
+
+
 def _record_turn(services: Services, payload: ChatRequestIn, *, answer: str, sources) -> None:  # type: ignore[no-untyped-def]
     """把这一轮写进会话（仅在指定了 ``conversation_id`` 时）。
 
@@ -425,6 +466,9 @@ def _record_turn(services: Services, payload: ChatRequestIn, *, answer: str, sou
         # 落库失败不该让用户丢掉已经拿到的回答——那是**已经付过费**的结果。
         # 记日志即可；下一轮的历史会缺这一条，但不影响继续对话。
         logger.exception("对话落库失败：%s", conversation_id)
+        return
+    # 落库成功之后才谈沉淀：消息没进库就沉淀，记忆会指向一个空会话
+    _maybe_capture_memory(services, conversation_id, query=payload.query, answer=answer)
 
 
 def _require_conversation(services: Services, payload: ChatRequestIn, caller: Caller) -> None:

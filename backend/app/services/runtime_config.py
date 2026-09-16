@@ -149,6 +149,11 @@ SETTING_GROUPS: dict[str, Any] = {
                 "label": "记忆工作区目录（相对数据目录）",
                 "type": "text",
             },
+            {
+                "key": "memory.capture_every",
+                "label": "每多少个用户回合沉淀一次记忆",
+                "type": "int",
+            },
         ],
     },
 }
@@ -201,6 +206,10 @@ DEFAULTS: dict[str, str] = {
     # 记忆工作区放在数据目录下（相对路径）：与其它数据一起备份/迁移，
     # 一个部署只有一处要备份。
     "memory.workspace": "memory",
+    # **每多少个用户回合沉淀一次**。ReMe 的设计是"每累计 5 个用户回合触发一次"，
+    # 但它服务本身不管累计（每次调用就是一次 LLM 调用），所以节流得我们做。
+    # 每轮都沉淀 = 每轮多一次 LLM 调用，而这个用户反复强调过省 token。
+    "memory.capture_every": "5",
 }
 
 

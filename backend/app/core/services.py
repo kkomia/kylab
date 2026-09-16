@@ -259,7 +259,7 @@ def build_services(
     # 记忆服务**先建**：ChatService 要拿它把长期记忆注入 system prompt。
     # 工作区放在数据目录下（见 services/memory.py 与设计文档 §2.2）：
     # 与其它数据一起备份/迁移，一个部署只有一处要备份
-    memory_service = MemoryService(runtime, resolved.data_dir)
+    memory_service = MemoryService(runtime, resolved.data_dir, stores=bundle)
     # 用量服务要**先建**：下面的 embedder 回调闭包引用了它
     usage = UsageService(bundle)
 
@@ -382,6 +382,7 @@ def build_services(
         sources=sources_service,
         wiki=wiki_service,
         summaries=summary_service,
+        memory=memory_service,
     )
 
     return Services(
@@ -447,6 +448,7 @@ def _build_workers(
     sources: SourceService,
     wiki: WikiService,
     summaries: DocumentSummaryService,
+    memory: MemoryService,
 ) -> list[TaskWorker]:
     """按 ``KYLAB_WORKER_CONCURRENCY`` 造 N 个消费者。
 
@@ -472,6 +474,12 @@ def _build_workers(
             sync_source=sources.sync_now,
             # Wiki 重建同样是知识库级任务（见 _handle）
             compile_wiki=wiki.generate,
+            # 记忆沉淀（v0.14）：把一轮对话交给记忆服务。**它是可选回调**——
+            # 记忆关着时这个回调仍然存在，由 MemoryService 自己判断"未启用"并报错
+            # （而不是在这里判，那样"关着"会表现成任务静默失败）
+            capture_memory=lambda messages, session_id: memory.capture(
+                messages, session_id=session_id
+            ),
             # 补文档摘要（v25）：空闲时一小批一小批地补，不需要用户点任何东西
             summarize_gap=summaries.summarize_missing,
         )

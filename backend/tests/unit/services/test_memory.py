@@ -40,6 +40,17 @@ class _FakeRuntime:
             return default
         return raw.strip().lower() in {"1", "true", "yes", "on"}
 
+    def get_int(self, key: str) -> int:
+        """与真实实现同一口径：解析不了返回 0，由调用方回落到默认值。
+
+        替身的形状**必须和真的一样**，否则测的是替身的行为、不是产品的——
+        这条在别处踩过（假的 `Msg` 少一个字段，于是"测试绿、真调用崩"）。
+        """
+        try:
+            return int(self.get(key))
+        except ValueError:
+            return 0
+
 
 def _service(tmp_path: Path, **values: str) -> MemoryService:
     base = {
@@ -474,3 +485,88 @@ def test_capture_rejects_empty_messages(tmp_path: Path) -> None:
 
     with pytest.raises(InvalidRequestError):
         service.capture([], session_id="conv_1")
+
+
+# --------------------------------------------------------------------- 节流
+
+
+class _FakeMeta:
+    def __init__(self) -> None:
+        self.enqueued: list = []
+
+    def enqueue_task(self, record):  # type: ignore[no-untyped-def]
+        self.enqueued.append(record)
+        return record
+
+
+class _FakeStores:
+    def __init__(self) -> None:
+        self.meta = _FakeMeta()
+
+
+def _service_with_stores(tmp_path: Path, **values: str) -> tuple[MemoryService, _FakeStores]:
+    stores = _FakeStores()
+    base = {"memory.enabled": "true", "memory.base_url": "http://reme.test"}
+    base.update(values)
+    service = MemoryService(_FakeRuntime(base), tmp_path, stores=stores)  # type: ignore[arg-type]
+    return service, stores
+
+
+TURN = [
+    {"role": "user", "name": "用户", "content": "问"},
+    {"role": "assistant", "name": "KYLAB", "content": "答"},
+]
+
+
+def test_capture_is_throttled_to_every_n_turns(tmp_path: Path) -> None:
+    """**节流**：不是每一轮都沉淀。
+
+    ReMe 的设计是"每累计 5 个用户回合触发一次"，但**它的服务不管累计**——
+    每次调用就是一次 LLM 调用。每轮都沉淀等于每轮多花一次模型调用，
+    而省 token 是这个项目反复强调的事。
+    """
+    service, stores = _service_with_stores(tmp_path, **{"memory.capture_every": "3"})
+
+    for turn in (1, 2, 4, 5):
+        assert service.enqueue_capture(TURN, session_id="c1", turn_count=turn) is False
+    assert stores.meta.enqueued == [], "没到回合也入队了"
+
+    assert service.enqueue_capture(TURN, session_id="c1", turn_count=3) is True
+    assert len(stores.meta.enqueued) == 1
+    task = stores.meta.enqueued[0]
+    assert task.kind.value == "memory"
+    assert task.payload["session_id"] == "c1"
+    assert task.payload["messages"] == TURN
+
+
+def test_capture_every_one_means_every_turn(tmp_path: Path) -> None:
+    service, stores = _service_with_stores(tmp_path, **{"memory.capture_every": "1"})
+
+    assert service.enqueue_capture(TURN, session_id="c1", turn_count=1) is True
+    assert service.enqueue_capture(TURN, session_id="c1", turn_count=2) is True
+    assert len(stores.meta.enqueued) == 2
+
+
+def test_capture_is_off_when_memory_is_disabled(tmp_path: Path) -> None:
+    service, stores = _service_with_stores(
+        tmp_path, **{"memory.enabled": "false", "memory.capture_every": "1"}
+    )
+
+    assert service.enqueue_capture(TURN, session_id="c1", turn_count=1) is False
+    assert stores.meta.enqueued == []
+
+
+def test_capture_without_stores_is_a_noop(tmp_path: Path) -> None:
+    """没接存储时不入队、也不报错——recall / remember / 注入都不需要数据库，
+    所以 MemoryService 允许没有 stores 地构造。"""
+    service = _service(tmp_path)
+
+    assert service.enqueue_capture(TURN, session_id="c1", turn_count=5) is False
+
+
+def test_capture_every_falls_back_when_the_setting_is_garbage(tmp_path: Path) -> None:
+    """设置被写坏时回落到默认 5，而不是除零或每轮都沉淀。"""
+    service, stores = _service_with_stores(tmp_path, **{"memory.capture_every": "abc"})
+
+    assert service.enqueue_capture(TURN, session_id="c1", turn_count=5) is True
+    assert len(stores.meta.enqueued) == 1
