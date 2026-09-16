@@ -305,3 +305,35 @@ class _FakeResponse:
 
     def json(self) -> object:
         return self._payload
+
+
+# --------------------------------------------------------------------- 注入
+
+
+def test_prompt_block_frames_soul_and_memory_separately(tmp_path: Path) -> None:
+    """人格与记忆分开写，且**标明记忆来自过去的对话**。
+
+    不标注来源的话模型会把记忆当成"用户这一轮说的话"——而记忆可能已经过时，
+    用户当下说的才是准的。所以块里带一句"冲突时以用户当下为准"。
+    """
+    service = _service(tmp_path)
+    service.remember("用户偏好简短回答")
+    (tmp_path / "memory" / "SOUL.md").write_text("你说话直接，不寒暄。", encoding="utf-8")
+
+    block = service.prompt_block()
+
+    assert "SOUL.md" in block and "你说话直接" in block
+    assert "MEMORY.md" in block and "用户偏好简短回答" in block
+    assert "以用户当下为准" in block, "没有出处说明，模型会把它当成用户刚说的话"
+
+
+def test_prompt_block_is_empty_without_files(tmp_path: Path) -> None:
+    assert _service(tmp_path).prompt_block() == ""
+
+
+def test_prompt_block_is_empty_when_disabled(tmp_path: Path) -> None:
+    service = _service(tmp_path, **{"memory.enabled": "false"})
+    (tmp_path / "memory").mkdir(parents=True)
+    (tmp_path / "memory" / CORE_MEMORY_FILE).write_text("- 有内容", encoding="utf-8")
+
+    assert service.prompt_block() == ""

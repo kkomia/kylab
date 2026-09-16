@@ -793,3 +793,52 @@ def test_multi_query_retrieval_runs_the_queries_in_parallel(runtime, bind_slot) 
 
     assert sorted(retrieval.calls) == ["改写一", "改写三", "改写二"]
     assert retrieval.peak > 1, "多条查询是串行跑的"
+
+
+# --------------------------------------------------------------- 长期记忆注入
+
+
+def test_memory_block_goes_after_the_base_prompt() -> None:
+    messages = build_messages(
+        query="问题",
+        sources=[],
+        history=None,
+        system_prompt="系统提示词",
+        memory="【长期记忆】用户偏好简短回答",
+    )
+
+    system = messages[0].content
+    assert system.index("系统提示词") < system.index("用户偏好简短回答")
+
+
+def test_default_prompt_survives_when_memory_is_injected() -> None:
+    """**这是注入位置选在 build_messages 里的理由。**
+
+    ``system_prompt`` 为空时那一行会回落到内置提示词；如果在调用方拼接记忆，
+    传进来的就是一串非空的记忆文本，``system_prompt.strip() or DEFAULT`` 会
+    把内置提示词整个顶掉——模型于是只看到记忆、看不到"只依据资料回答"那套规则。
+    """
+    messages = build_messages(
+        query="问题",
+        sources=[],
+        history=None,
+        system_prompt="   ",
+        memory="【长期记忆】用户偏好简短回答",
+    )
+
+    system = messages[0].content
+    assert DEFAULT_SYSTEM_PROMPT in system, "内置提示词被记忆块顶掉了"
+    assert "用户偏好简短回答" in system
+
+
+def test_no_memory_means_unchanged_prompt() -> None:
+    """没有记忆时提示词里**不该多出任何记忆框架**——关闭记忆不改变既有行为。
+
+    （不比对整串：没有命中资料时 ``build_messages`` 会自己补一句
+    "本次检索没有命中任何内容"，那是它既有的行为，与记忆无关。）
+    """
+    system = build_messages(query="问题", sources=[], history=None, system_prompt="X")[0].content
+
+    assert system.startswith("X")
+    assert "长期记忆" not in system
+    assert "SOUL.md" not in system

@@ -265,6 +265,7 @@ class ChatService:
         chat_factory=None,  # type: ignore[no-untyped-def]
         usage_recorder=None,  # type: ignore[no-untyped-def]
         conversations=None,  # type: ignore[no-untyped-def]
+        memory=None,  # type: ignore[no-untyped-def]
     ) -> None:
         self._retrieval = retrieval
         self._runtime = runtime
@@ -277,6 +278,14 @@ class ChatService:
         self._usage_recorder = usage_recorder
         #: 会话读写（v20.1）：上下文压缩要读历史、写摘要。可选——不给就只做单轮/无历史问答
         self._conversations = conversations
+        #: 长期记忆（v0.14）。可选：不给就不注入，与关闭记忆时行为一致
+        self._memory = memory
+
+    def _memory_block(self) -> str:
+        """要注入 system prompt 的记忆块；未接入或没内容时是空串。"""
+        if self._memory is None:
+            return ""
+        return self._memory.prompt_block()
 
     # ------------------------------------------------------------------ 对外
 
@@ -385,6 +394,7 @@ class ChatService:
             sources=sources,
             history=history,
             system_prompt=system_prompt or self._runtime.get("chat.system_prompt"),
+            memory=self._memory_block(),
             summary=summary,
         )
         started = time.monotonic()
@@ -447,6 +457,7 @@ class ChatService:
             sources=sources,
             history=history,
             system_prompt=system_prompt or self._runtime.get("chat.system_prompt"),
+            memory=self._memory_block(),
             summary=summary,
         )
         return chat.stream(messages)
@@ -576,7 +587,12 @@ class ChatService:
 
         chat = self._chat_factory(config)
         messages = build_messages(
-            query=query, sources=sources, history=history, system_prompt=prompt, summary=summary
+            query=query,
+            sources=sources,
+            history=history,
+            system_prompt=prompt,
+            summary=summary,
+            memory=self._memory_block(),
         )
         started = time.monotonic()
         parts: list[str] = []
@@ -890,6 +906,7 @@ def build_messages(
     history: list[ChatMessage] | None,
     system_prompt: str,
     summary: str = "",
+    memory: str = "",
 ) -> list[ChatMessage]:
     """拼提示词：**一条** system（提示词 + 资料）+ 历史 + 当前问题。
 
@@ -914,6 +931,12 @@ def build_messages(
     它降低的是"文档无意/有意写出定界符"这一类最容易实现的绕过。
     """
     parts = [system_prompt.strip() or DEFAULT_SYSTEM_PROMPT]
+
+    # 长期记忆块**跟在内置提示词之后**：这一行是"最终提示词"落定的地方，
+    # 放在调用方拼的话，system_prompt 为空时会把内置提示词整个顶掉
+    # （`system_prompt.strip() or DEFAULT_SYSTEM_PROMPT` 拿到的是那段记忆而不是默认提示词）。
+    if memory:
+        parts.append(memory)
 
     if sources:
         blocks = []

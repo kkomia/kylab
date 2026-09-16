@@ -256,6 +256,10 @@ def build_services(
     # 未绑定时才回退到设置页那套字段（叠加层，见 services/model_registry.py）
     registry = ModelRegistryService(bundle)
     runtime = RuntimeConfigService(bundle, resolved, registry=registry)
+    # 记忆服务**先建**：ChatService 要拿它把长期记忆注入 system prompt。
+    # 工作区放在数据目录下（见 services/memory.py 与设计文档 §2.2）：
+    # 与其它数据一起备份/迁移，一个部署只有一处要备份
+    memory_service = MemoryService(runtime, resolved.data_dir)
     # 用量服务要**先建**：下面的 embedder 回调闭包引用了它
     usage = UsageService(bundle)
 
@@ -299,6 +303,8 @@ def build_services(
         usage_recorder=_record_chat_usage,
         # 会话读写（v20.1）：上下文压缩要读历史、写摘要
         conversations=conversations_service,
+        # 长期记忆（v0.14）：非空时把 MEMORY.md / SOUL.md 注入 system prompt
+        memory=memory_service,
     )
     questions_service = SuggestedQuestionsService(
         bundle, chat_service, batch_concurrency=resolved.questions_concurrency
@@ -427,9 +433,7 @@ def build_services(
             mineru_configured=lambda: runtime.mineru().is_configured,
             observability=observability,
         ),
-        # 记忆工作区放在数据目录下（见 services/memory.py 与设计文档 §2.2）：
-        # 与其它数据一起备份/迁移，一个部署只有一处要备份
-        memory=MemoryService(runtime, resolved.data_dir),
+        memory=memory_service,
     )
 
 

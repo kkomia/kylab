@@ -30,12 +30,15 @@ import httpx
 from app.core.exceptions import InvalidRequestError, UpstreamError
 from app.services.runtime_config import RuntimeConfigService
 
-__all__ = ["CORE_MEMORY_FILE", "MemoryHit", "MemoryService", "MemoryStatus"]
+__all__ = ["CORE_MEMORY_FILE", "SOUL_FILE", "MemoryHit", "MemoryService", "MemoryStatus"]
 
 logger = logging.getLogger(__name__)
 
 #: 核心长期记忆的文件名。**不进检索**，靠注入 system prompt 生效。
 CORE_MEMORY_FILE = "MEMORY.md"
+
+#: 人格文件。与记忆并列的第二类持久文件（见 ``soul_text`` 的说明）。
+SOUL_FILE = "SOUL.md"
 
 #: 一次召回最多取几条。与检索工具同一口径：给模型"够用"的几条，
 #: 而不是它说要多少就给多少（上下文预算是有限的）。
@@ -135,6 +138,43 @@ class MemoryService:
             return self.core_file.read_text(encoding="utf-8").strip()
         except OSError:
             return ""
+
+    def soul_text(self) -> str:
+        """``SOUL.md`` 的正文（人格，一句话说就是"你是谁"）。
+
+        与 ``MEMORY.md`` 性质不同：那个记事实与偏好，这个定身份与准则。
+        两条约定照抄 QwenPaw：**由 Agent 自己进化**，以及**改动要告知用户**
+        （"这是你的灵魂，他们该知道"）——后一条是产品约定，写在设计文档里。
+        """
+        if not self.enabled:
+            return ""
+        try:
+            return (self.workspace / SOUL_FILE).read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    def prompt_block(self) -> str:
+        """拼成注入 system prompt 的**一个块**；两者都空时返回空串。
+
+        为什么要一起给、且各带一句出处说明：
+
+        - 不标注来源的话，模型会把记忆当成**用户这一轮说的话**——那是两回事，
+          记忆可能已经过时，而用户当下说的才是准的；
+        - 人格与记忆分开写，模型才知道哪句是"该怎么说话"、哪句是"已知的事实"。
+        """
+        core = self.core_text()
+        soul = self.soul_text()
+        if not core and not soul:
+            return ""
+        parts: list[str] = []
+        if soul:
+            parts.append(f"【你的人格（SOUL.md，由你自己维护）】\n{soul}")
+        if core:
+            parts.append(
+                "【长期记忆（MEMORY.md，来自过去的对话，可能已经过时；"
+                f"与用户当前所说冲突时以用户当下为准）】\n{core}"
+            )
+        return "\n\n".join(parts)
 
     def status(self) -> MemoryStatus:
         """当前状态。**不做网络探测**（那是 ``probe`` 的事）——
