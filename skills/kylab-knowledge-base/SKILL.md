@@ -31,11 +31,31 @@ the evidence, and a summary is not.
 | --- | --- | --- |
 | `list_knowledge_bases` | Always, at the start; and again after the user adds documents | Assume a library id — they are generated and opaque |
 | `search` | The default action for answering anything | Use it as a substitute for reading the returned text; the passages are the answer's basis |
+| `list_documents` | The user asks what a library contains, or you need to check whether a document finished processing | Use `search` to survey a library — it only returns passages related to a query, never the full inventory |
 | `upload_document` | The user hands you a file (base64) to add | Re-upload the same content to "refresh" it — content-hash dedup returns the existing document instead |
 | `add_data_source` | The user wants a feed or page kept up to date | Expect content to appear immediately — registering does **not** fetch |
 | `get_document_status` | After an upload, or when search finds nothing | Assume a non-`indexed` document is searchable; it is not |
+| `create_note` | You produced a conclusion, decision, or procedure worth keeping | Expect it to be searchable yet — a note is not in any library until `attach_note_to_kb` |
+| `attach_note_to_kb` | The user wants a result kept in a library, or says "记到知识库" | Re-attach the same note to "refresh" it; identical content dedups |
+| `list_notes` | You need to find a note again, or check what has not been filed yet | Assume a listed note is searchable — `in_knowledge_base` is the field that says so |
 | `delete_document` | The user explicitly asks to remove something | Treat it as reversible without saying so — the original goes to a 7-day trash, but the chunks and vectors are gone immediately, so it stops being searchable at once |
 | `create_knowledge_base` | The user wants a new, separate library | Mix unrelated material into one library; separate libraries keep retrieval scoped |
+
+## Saving results back into the knowledge base
+
+The retrieval tools answer questions; these two **keep the answer**. Use them when the
+conversation produces something worth finding again later — a settled conclusion, a
+decision with its reasons, a procedure that worked.
+
+1. `create_note` with the content as Markdown (`title` optional, `tags` help later).
+   **A note alone is not searchable.** Say so rather than implying it is saved.
+2. `attach_note_to_kb` with the `note_id` and the target `knowledge_base_id`.
+   The note becomes a Markdown document and goes through the same pipeline as an upload,
+   so it is not searchable until processing finishes (`get_document_status` reports it).
+
+Two habits worth keeping: ask before filing into a library the user did not name, and
+prefer one note per distinct conclusion over one long running log — the point is that a
+future search can land on it.
 
 ## Answering rules
 
@@ -59,11 +79,16 @@ This Skill drives the kylab MCP server, which runs beside the kylab backend.
 ```bash
 # from the kylab repository
 cd backend
-python -m app.mcp_server.server --list-tools          # confirm the 7 tools are visible
+python -m app.mcp_server.server --list-tools          # confirm the 11 tools are visible
 python -m app.mcp_server.server --transport stdio      # what an MCP client launches
 ```
 
-MCP client configuration (Claude Desktop / Cursor and similar):
+**Every tool call needs a credential** — there is no anonymous access. Create a key in
+kylab's console (设置 → API 密钥) and give it the scope you want the agent to have:
+a key bound to specific libraries can only see and write those, and a read-only key
+cannot upload, file notes, or delete.
+
+stdio has no request headers, so the key goes in the client's environment:
 
 ```json
 {
@@ -72,22 +97,27 @@ MCP client configuration (Claude Desktop / Cursor and similar):
       "command": "python",
       "args": ["-m", "app.mcp_server.server", "--transport", "stdio"],
       "cwd": "/absolute/path/to/kylab/backend",
-      "env": { "KYLAB_DATA_DIR": "./data" }
+      "env": { "KYLAB_DATA_DIR": "./data", "KYLAB_MCP_KEY": "<your API key>" }
     }
   }
 }
 ```
 
-For a machine on the LAN, start the HTTP transport instead — but read the warning below
-first:
+For a machine on the LAN, start the HTTP transport instead and pass the key as a bearer
+token on each request:
 
 ```bash
 python -m app.mcp_server.server --transport http --host 0.0.0.0 --port 8765
+curl -H "Authorization: Bearer <your API key>" ... 
 ```
 
-**The HTTP transport has no authentication of its own and the tools can read *and delete*
-documents.** Only bind it to `0.0.0.0` on a network you trust; the default is
-`127.0.0.1` on purpose.
+Both transports accept either an API key or a **login session token**
+(`kylab_st_…`). Prefer the session token when the agent should act *as the user*:
+notes created through a plain API key have no account behind them, so they are filed
+without an owner and will not show up in that user's own note list.
+
+The server binds `127.0.0.1` by default on purpose. The key decides what a caller can
+reach, but the tool set still includes deletion — only expose it on a network you trust.
 
 ## Proxying a plain REST client
 

@@ -24,13 +24,17 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from app.core.exceptions import ForbiddenError, UnauthorizedError
-from app.core.security import display_prefix, generate_token, hash_token
-from app.models.enums import ApiKeyPermission, SharePermission
+from app.core.security import SESSION_TOKEN_PREFIX, display_prefix, generate_token, hash_token
+from app.models.enums import ApiKeyPermission, SharePermission, UserRole
 from app.storage.base import ApiKeyRecord, StoreBundle, UserRecord
 
-__all__ = ["READ", "WRITE", "ApiKeyService", "Caller", "IssuedApiKey"]
+if TYPE_CHECKING:  # 只为标注：core.services 会 import 本模块，顶层 import 就成了环
+    from app.core.services import Services
+
+__all__ = ["READ", "WRITE", "ApiKeyService", "Caller", "IssuedApiKey", "resolve_caller"]
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +75,32 @@ class Caller:
         if self.is_admin or self.api_key is None:
             return ()
         return tuple(self.api_key.knowledge_base_ids)
+
+
+def resolve_caller(services: Services, token: str) -> Caller:
+    """把一串凭据换成调用主体（v0.12）。
+
+    **REST 与 MCP 共用这一处**：两条协议层各写一份分流，迟早会漂
+    （一处认会话令牌、另一处只认 API Key），而"同一串令牌在 A 入口是管理员、
+    在 B 入口是匿名"正是最难发现的一类不一致。
+
+    凭据按前缀分流——会话与 API Key 是两种东西，各走各的校验路径：
+
+    - ``kylab_st_`` 开头 = 登录会话 → 身份来自会话里的账号，成员/管理员据此判定；
+    - 其余 = API Key → 受限调用方，范围由密钥绑定决定。
+
+    为什么要支持会话令牌：**归属**。API Key 通道没有账号，用它建的笔记
+    ``user_id`` 只能是 NULL，而成员视角的列表按 ``user_id`` 过滤——
+    于是"agent 替我把成果存进我的知识库"会存成一条用户自己看不见的笔记。
+    """
+    if token.startswith(SESSION_TOKEN_PREFIX):
+        user, session = services.auth.authenticate_session(token)
+        return Caller(
+            is_admin=user.role is UserRole.ADMIN,
+            user=user,
+            session_id=session.id,
+        )
+    return services.api_keys.authenticate(token)
 
 
 class ApiKeyService:

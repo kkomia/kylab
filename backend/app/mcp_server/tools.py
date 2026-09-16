@@ -1,6 +1,6 @@
 """MCP 工具的装配与调用（M6 之后的独立里程碑 / T4.8）。
 
-架构 §5 定的**七个工具**，与 OpenAPI 一一对应、共用服务层：
+架构 §5 定的七个工具，加上 v0.12 为"个人 agent 读写知识库"补的四个（标注 +）。
 
 | 工具 | 作用 |
 |------|------|
@@ -9,8 +9,18 @@
 | `upload_document` | 传文档（内容用 base64 传） |
 | `add_data_source` | 挂 RSS / 网页订阅 |
 | `search` | 检索（产品的主打能力） |
+| `list_documents` + | 库里有哪些文档、处理到什么状态 |
 | `get_document_status` | 文档处理到哪一步了 |
 | `delete_document` | 删文档（进回收站） |
+| `create_note` + | 把成果存成笔记 |
+| `attach_note_to_kb` + | 把笔记加进知识库（"沉淀成果"的收口动作） |
+| `list_notes` + | 列笔记，并标明哪些还没进知识库 |
+
+**为什么补那两个笔记工具**：知识库此前只有"上传文件"这一个入口，
+于是 agent 干完活之后无处安放——它没法把"刚整理出的结论"变成库里可检索的内容。
+`create_note` + `attach_note_to_kb` 就是这条路的两个半步，与界面上手动
+「存为笔记 → 加入知识库」走的是**同一条服务层链路**（不另开一条写文档的通道，
+否则库里会出现两种来源、两种格式）。
 
 **为什么工具实现在这里、而不在 stdio/HTTP 的入口里**：两种传输方式要暴露同一批
 工具。写在入口里就得复制两份，而两份迟早会漂（一个加了字段另一个没加）。
@@ -53,14 +63,27 @@ MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 #: 检索条数上限：工具是给 Agent 用的，它通常只要"够回答"的几条。
 MAX_TOP_K = 20
 
+#: 列表类工具的每页条数上限。给模型一个上限而不是"它说要多少就给多少"：
+#: 上下文预算是有限的，而 50 条已经够它判断"库里有没有我要的东西"。
+MAX_NOTE_PAGE = 50
+MAX_DOC_PAGE = 100
+DEFAULT_DOC_PAGE = 30
+#: 笔记摘录长度：正文可能很长，全量塞进上下文会把预算吃光。
+#: 需要读全文时它应该换用检索或直接在界面上看。
+NOTE_EXCERPT_CHARS = 200
+
 TOOL_NAMES = (
     "list_knowledge_bases",
     "create_knowledge_base",
     "upload_document",
     "add_data_source",
     "search",
+    "list_documents",
     "get_document_status",
     "delete_document",
+    "create_note",
+    "attach_note_to_kb",
+    "list_notes",
 )
 
 
@@ -173,6 +196,98 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {"document_id": {"type": "string"}},
                 "required": ["document_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "list_documents",
+            "description": (
+                "列出某个知识库里的文档及其处理状态。"
+                "**想确认「这个库里到底有什么」时用它**——search 只返回与问题相关的片段，"
+                "看不出库的全貌。可按文件名片段过滤。"
+                "只有 searchable 为 true 的文档能被检索到。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "knowledge_base_id": {"type": "string"},
+                    "query": {"type": "string", "description": "按文件名片段过滤，可留空"},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_DOC_PAGE,
+                        "description": f"最多返回几条，默认 {DEFAULT_DOC_PAGE}",
+                    },
+                },
+                "required": ["knowledge_base_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "create_note",
+            "description": (
+                "把一段成果保存成笔记（Markdown）。**这是「把对话结论沉淀下来」的第一步**，"
+                "但笔记此时还不在知识库里、检索不到；要能被检索，再调 attach_note_to_kb。"
+                "适合保存：整理出的结论、待办与决定、可复用的流程。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "content_md": {"type": "string", "description": "笔记正文，Markdown"},
+                    "title": {"type": "string", "description": "标题；留空则取正文首行"},
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "标签，便于以后筛",
+                    },
+                    "source_kind": {
+                        "type": "string",
+                        "enum": ["manual", "chat", "clip"],
+                        "description": "来源类型；默认 manual",
+                    },
+                    "source_ref": {
+                        "type": "string",
+                        "description": "来源引用：chat 填会话 id，clip 填网址",
+                    },
+                },
+                "required": ["content_md"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "attach_note_to_kb",
+            "description": (
+                "把一条笔记作为 Markdown 文档加进知识库，之后就能被 search 检索到。"
+                "内容相同的重复入库不会产生副本（按内容哈希去重）。"
+                "**这是「把对话成果放进知识库」的收口动作。**"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "note_id": {"type": "string"},
+                    "knowledge_base_id": {"type": "string"},
+                },
+                "required": ["note_id", "knowledge_base_id"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "list_notes",
+            "description": (
+                "列出笔记（可按关键词搜标题与正文）。"
+                "每条会标明**是否已经进过知识库**：没进的检索不到，需要先 attach。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "关键词，可留空"},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_NOTE_PAGE,
+                        "description": "最多返回几条，默认 20",
+                    },
+                },
                 "additionalProperties": False,
             },
         },
@@ -411,14 +526,123 @@ def _delete_document(
     }
 
 
+# --------------------------------------------------------------------- 笔记
+
+
+def _owner_of(caller: Caller) -> str | None:
+    """笔记的归属 id。
+
+    会话令牌（``kylab_st_``）能给出账号，于是笔记归那个人；
+    API Key 通道没有账号，只能是 ``None``——而 ``None`` 在本仓库里
+    表示"不校验归属"（与 ``NotesService.list`` 同一口径）。
+    所以**想让 agent 存的东西出现在你自己的笔记列表里，就用会话令牌接 MCP**。
+    """
+    return caller.user.id if caller.user is not None else None
+
+
+def _create_note(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
+    content = _require(args, "content_md")
+    raw_tags = args.get("tags") or []
+    note = services.notes.create(
+        user_id=_owner_of(caller),
+        title=str(args.get("title") or "").strip(),
+        content_md=content,
+        # 来源交给服务层校验（不在白名单里会落回 manual），这里不重复一份
+        source_kind=str(args.get("source_kind") or "manual"),
+        source_ref=(str(args["source_ref"]) if args.get("source_ref") else None),
+        tags=[str(item) for item in raw_tags] if isinstance(raw_tags, list) else [],
+    )
+    return {
+        "note_id": note.id,
+        "title": note.title,
+        "note": (
+            "笔记已保存。**此时还检索不到它**——"
+            "要让知识库能检索，再调 attach_note_to_kb 把它加进某个库"
+        ),
+    }
+
+
+def _attach_note_to_kb(
+    services: Services, args: dict[str, Any], *, caller: Caller
+) -> dict[str, Any]:
+    note_id = _require(args, "note_id")
+    kb_id = _require(args, "knowledge_base_id")
+    # 入库是写操作，而且是"往库里加内容"，所以判的是目标库的写权限
+    services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
+    # attach_to_kb 内部按归属取笔记：不是自己的会 404（不泄露存在性）
+    note = services.notes.attach_to_kb(note_id, user_id=_owner_of(caller), kb_id=kb_id)
+    return {
+        "note_id": note.id,
+        "document_id": note.doc_id,
+        "knowledge_base_id": note.kb_id,
+        "note": (
+            "已作为 Markdown 文档入库，处理是异步的："
+            "用 get_document_status 查进度，索引完成后即可被 search 检索到"
+        ),
+    }
+
+
+def _list_notes(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
+    limit = max(1, min(int(args.get("limit") or 20), MAX_NOTE_PAGE))
+    query = str(args.get("query") or "").strip() or None
+    items, total = services.notes.list(user_id=_owner_of(caller), query=query, limit=limit)
+    return {
+        "total": total,
+        "notes": [
+            {
+                "note_id": item.id,
+                "title": item.title,
+                # 正文只给前 200 字：笔记可能很长，全量塞进上下文会把预算吃光
+                "excerpt": item.content_md[:NOTE_EXCERPT_CHARS],
+                "tags": list(item.tags),
+                "in_knowledge_base": item.doc_id is not None,
+                "source_kind": item.source_kind,
+                "updated_at": item.updated_at.isoformat() if item.updated_at else None,
+            }
+            for item in items
+        ],
+        "note": "「in_knowledge_base」为 false 表示这条只是笔记，还没进知识库、检索不到",
+    }
+
+
+def _list_documents(
+    services: Services, args: dict[str, Any], *, caller: Caller
+) -> dict[str, Any]:
+    kb_id = _require(args, "knowledge_base_id")
+    services.api_keys.check_access(caller, kb_ids=[kb_id])
+    limit = max(1, min(int(args.get("limit") or DEFAULT_DOC_PAGE), MAX_DOC_PAGE))
+    records = services.documents.list_documents(
+        kb_id, q=str(args.get("query") or "").strip() or None, limit=limit
+    )
+    return {
+        "knowledge_base_id": kb_id,
+        "total": services.documents.count_documents(kb_id),
+        "documents": [
+            {
+                "document_id": item.id,
+                "name": item.name,
+                "stage": item.stage.value,
+                "searchable": item.stage.value == "indexed",
+                "disabled": item.disabled,
+            }
+            for item in records
+        ],
+        "note": "只有 searchable 为 true 的文档能被 search 检索到",
+    }
+
+
 _HANDLERS = {
     "list_knowledge_bases": _list_knowledge_bases,
     "create_knowledge_base": _create_knowledge_base,
     "upload_document": _upload_document,
     "add_data_source": _add_data_source,
     "search": _search,
+    "list_documents": _list_documents,
     "get_document_status": _get_document_status,
     "delete_document": _delete_document,
+    "create_note": _create_note,
+    "attach_note_to_kb": _attach_note_to_kb,
+    "list_notes": _list_notes,
 }
 
 

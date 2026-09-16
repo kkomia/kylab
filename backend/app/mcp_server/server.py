@@ -34,13 +34,17 @@ _PARAMS: dict[str, tuple[str, ...]] = {
     "upload_document": ("knowledge_base_id", "filename", "content_base64"),
     "add_data_source": ("knowledge_base_id", "kind", "url", "name"),
     "search": ("query", "knowledge_base_ids", "top_k"),
+    "list_documents": ("knowledge_base_id", "query", "limit"),
     "get_document_status": ("document_id",),
     "delete_document": ("document_id",),
+    "create_note": ("content_md", "title", "tags", "source_kind", "source_ref"),
+    "attach_note_to_kb": ("note_id", "knowledge_base_id"),
+    "list_notes": ("query", "limit"),
 }
 
 
 def build_server():  # type: ignore[no-untyped-def]
-    """组装 MCP server，把七个工具挂上去。
+    """组装 MCP server，把十一个工具挂上去。
 
     延迟 import：``mcp`` 在可选 extra 里。顶层 import 会让没装 extra 的用户
     连主服务都起不来——而 MCP 是**可选能力**，不该成为主链路的硬依赖。

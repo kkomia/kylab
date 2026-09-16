@@ -29,7 +29,7 @@ from typing import Any
 
 from app.core.exceptions import UnauthorizedError
 from app.core.services import Services
-from app.services.api_key import Caller
+from app.services.api_key import Caller, resolve_caller
 
 __all__ = [
     "MCP_KEY_ENV",
@@ -130,7 +130,7 @@ class CallerMiddleware:
         if token is None:
             return await call_next(ctx)
 
-        caller = self._services.api_keys.authenticate(token)
+        caller = resolve_caller(self._services, token)
         reset = _caller.set(caller)
         try:
             return await call_next(ctx)

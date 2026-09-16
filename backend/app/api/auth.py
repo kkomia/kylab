@@ -31,10 +31,9 @@ from fastapi import Depends, Header
 
 from app.core.config import Settings
 from app.core.exceptions import ForbiddenError, UnauthorizedError
-from app.core.security import SESSION_TOKEN_PREFIX
 from app.core.services import Services, get_services
-from app.models.enums import ApiKeyPermission, UserRole
-from app.services.api_key import READ, WRITE, Caller
+from app.models.enums import ApiKeyPermission
+from app.services.api_key import READ, WRITE, Caller, resolve_caller
 from app.services.auth import URL_SIGNING_SECRET_SETTING
 
 logger = logging.getLogger(__name__)
@@ -70,17 +69,10 @@ def current_caller(
             "缺少凭据：请在请求头带上 Authorization: Bearer <会话令牌或 API Key>"
         )
 
-    # 凭据按前缀分流：会话与 API Key 是两种东西，各走各的校验路径。
-    # 控制台令牌在 v0.11 已取消——管理员身份只能来自会话里的 role。
-    if token.startswith(SESSION_TOKEN_PREFIX):
-        user, session = services.auth.authenticate_session(token)
-        return Caller(
-            is_admin=user.role is UserRole.ADMIN,
-            user=user,
-            session_id=session.id,
-        )
-
-    return services.api_keys.authenticate(token)
+    # 分流与校验都在服务层 `resolve_caller` 里：**MCP 走同一份判定**。
+    # 两处各写一份的话，"同一串令牌在一个入口是管理员、在另一个是匿名"
+    # 这类不一致不会有任何测试能同时看到。
+    return resolve_caller(services, token)
 
 
 CallerDep = Annotated[Caller, Depends(current_caller)]

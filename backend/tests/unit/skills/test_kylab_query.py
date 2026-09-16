@@ -297,9 +297,28 @@ def test_skill_frontmatter_is_parseable() -> None:
 
 
 def test_skill_mentions_every_plan_tool() -> None:
-    """说明书要点到计划里承诺的七个工具，漏一个模型就不知道它存在。"""
+    """说明书要点到全部工具，漏一个模型就不知道它存在。
+
+    工具清单会随版本增长（v0.12 补了 list_documents 与三个笔记工具），
+    所以这里比的是 ``TOOL_NAMES`` 而不是写死的数字——写数字的话每加一个工具
+    都要来改一次，而漏改的表现是"文档里悄悄少了一个工具"。
+    """
     from app.mcp_server.tools import TOOL_NAMES
 
     text = (SCRIPT.parents[1] / "SKILL.md").read_text(encoding="utf-8")
     missing = [name for name in TOOL_NAMES if name not in text]
     assert not missing, f"SKILL.md 没提到这些工具：{missing}"
+
+
+def test_skill_does_not_claim_there_is_no_authentication() -> None:
+    """**回归用例**：说明书曾写着"HTTP 传输自身没有鉴权"。
+
+    v0.12 起每个工具调用都要带凭据（会话令牌或 API Key），那句话就成了反的——
+    而误导性的文档比"没有鉴权"更危险：读到的人会以为不必配 Key，
+    照着配完发现工具全部报错，却不知道该改哪里。
+    """
+    text = (SCRIPT.parents[1] / "SKILL.md").read_text(encoding="utf-8")
+    assert "has no authentication of its own" not in text
+    # 反过来要明确告诉读者怎么带凭据
+    assert "KYLAB_MCP_KEY" in text
+    assert "Authorization: Bearer" in text

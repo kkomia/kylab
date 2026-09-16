@@ -29,6 +29,7 @@ from app.mcp_server.auth import current_caller
 from app.mcp_server.tools import (
     MAX_TOP_K,
     MAX_UPLOAD_BYTES,
+    NOTE_EXCERPT_CHARS,
     TOOL_NAMES,
     call_tool,
     tool_definitions,
@@ -547,3 +548,161 @@ def test_max_top_k_is_documented_in_the_schema() -> None:
     """schema 里的上限要与实现一致，否则模型会按错的上限要条数。"""
     search = next(item for item in tool_definitions() if item["name"] == "search")
     assert search["inputSchema"]["properties"]["top_k"]["maximum"] == MAX_TOP_K
+
+
+# --------------------------------------------------------------------- 笔记
+
+
+def test_create_note_then_attach_makes_it_searchable(
+    services: Services, kb: str, admin: Caller
+) -> None:
+    """**这是"把对话成果放进知识库"的完整两步**，也是本轮补这两个工具的理由。
+
+    在此之前知识库只有"上传文件"一个入口，agent 干完活无处安放。
+    """
+    created = call_tool(
+        services,
+        "create_note",
+        {
+            "content_md": "# 锂价结论\n\n锂价下跌通常缓解材料成本，但净影响取决于售价联动与库存。",
+            "title": "锂价敏感性",
+            "tags": ["锂价", "结论"],
+            "source_kind": "chat",
+            "source_ref": "conv_abc",
+        },
+        caller=admin,
+    )
+    assert created["note_id"].startswith("note_")
+    # 返回值必须说清"这一步之后还检索不到"，否则模型会以为已经入库了
+    assert "attach_note_to_kb" in created["note"]
+
+    attached = call_tool(
+        services,
+        "attach_note_to_kb",
+        {"note_id": created["note_id"], "knowledge_base_id": kb},
+        caller=admin,
+    )
+    assert attached["document_id"].startswith("doc_")
+    assert attached["knowledge_base_id"] == kb
+
+    listed = call_tool(services, "list_notes", {}, caller=admin)
+    target = next(item for item in listed["notes"] if item["note_id"] == created["note_id"])
+    assert target["in_knowledge_base"] is True
+    # 标签顺序按服务层的规范化结果比（它会对标签去重排序），所以用集合
+    assert set(target["tags"]) == {"锂价", "结论"}
+    assert target["source_kind"] == "chat"
+
+
+def test_list_notes_marks_notes_that_are_not_in_a_knowledge_base(
+    services: Services, admin: Caller
+) -> None:
+    """没进库的笔记必须**明确标出来**：否则模型会以为存了就能检索到。"""
+    created = call_tool(
+        services, "create_note", {"content_md": "# 还没入库的"}, caller=admin
+    )
+
+    listed = call_tool(services, "list_notes", {}, caller=admin)
+
+    target = next(item for item in listed["notes"] if item["note_id"] == created["note_id"])
+    assert target["in_knowledge_base"] is False
+
+
+def test_note_excerpt_is_bounded(services: Services, admin: Caller) -> None:
+    """摘录要有上限：笔记可能很长，全量塞进上下文会把预算吃光。"""
+    long_body = "长" * (NOTE_EXCERPT_CHARS * 3)
+    call_tool(
+        services,
+        "create_note",
+        {"content_md": long_body, "title": "很长的笔记"},
+        caller=admin,
+    )
+
+    listed = call_tool(services, "list_notes", {"query": "很长的笔记"}, caller=admin)
+
+    target = next(item for item in listed["notes"] if item["title"] == "很长的笔记")
+    assert len(target["excerpt"]) == NOTE_EXCERPT_CHARS
+
+
+def test_attach_note_needs_write_on_the_target_kb(
+    services: Services, kb: str, admin: Caller, key_for
+) -> None:  # type: ignore[no-untyped-def]
+    """入库是往库里加内容，所以要的是**目标库的写权限**，不是"有笔记权限"。"""
+    created = call_tool(
+        services, "create_note", {"content_md": "# 只读库的笔记"}, caller=admin
+    )
+    readonly = key_for(kb_ids=[kb], permission=READ)
+
+    with pytest.raises(ForbiddenError):
+        call_tool(
+            services,
+            "attach_note_to_kb",
+            {"note_id": created["note_id"], "knowledge_base_id": kb},
+            caller=readonly,
+        )
+
+
+def test_attach_unknown_note_raises(services: Services, kb: str, admin: Caller) -> None:
+    with pytest.raises(NotFoundError):
+        call_tool(
+            services,
+            "attach_note_to_kb",
+            {"note_id": "note_不存在", "knowledge_base_id": kb},
+            caller=admin,
+        )
+
+
+def test_create_note_requires_content(services: Services, admin: Caller) -> None:
+    with pytest.raises(InvalidRequestError):
+        call_tool(services, "create_note", {"content_md": "   "}, caller=admin)
+
+
+# --------------------------------------------------------------------- 列文档
+
+
+def test_list_documents_reports_stage_and_searchability(
+    services: Services, kb: str, admin: Caller
+) -> None:
+    """**"库里到底有什么"是 search 答不了的问题**——它只返回与问题相关的片段。
+
+    所以单独一个工具来列文档，并且必须带上"能不能被检索到"。
+    """
+    call_tool(
+        services,
+        "upload_document",
+        {
+            "knowledge_base_id": kb,
+            "filename": "列文档.md",
+            "content_base64": base64.b64encode(MARKDOWN.encode()).decode(),
+        },
+        caller=admin,
+    )
+
+    result = call_tool(services, "list_documents", {"knowledge_base_id": kb}, caller=admin)
+
+    assert result["total"] == 1
+    item = result["documents"][0]
+    assert item["name"] == "列文档.md"
+    # 刚上传还没跑流水线，所以此时不可检索——这条信息比文件名更重要
+    assert item["stage"] == "uploaded"
+    assert item["searchable"] is False
+
+
+def test_list_documents_respects_scope(services: Services, kb: str, key_for) -> None:  # type: ignore[no-untyped-def]
+    other = services.knowledge_bases.create(
+        kb_id=f"kb_{uuid.uuid4().hex[:12]}", name="别人的库"
+    ).id
+    scoped = key_for(kb_ids=[other])
+
+    with pytest.raises(ForbiddenError):
+        call_tool(services, "list_documents", {"knowledge_base_id": kb}, caller=scoped)
+
+
+def test_every_tool_has_a_parameter_whitelist() -> None:
+    """``server.py`` 的 ``_PARAMS`` 必须覆盖全部工具。
+
+    少一个的后果不是"参数被过滤掉"，而是 ``build_server`` 直接 KeyError——
+    服务起不来。放在这里断言是因为它跨了两个模块，只看一边发现不了。
+    """
+    from app.mcp_server.server import _PARAMS
+
+    assert set(_PARAMS) == set(TOOL_NAMES)
