@@ -1434,7 +1434,10 @@ async function savePrompt(): Promise<void> {
   display: flex;
   flex-direction: column;
   height: 100%;
-  --chat-measure: 960px;
+  /* 消息列与输入框共用同一个宽度口径 = Kimi 的 `--chat-input-max-width`（768px）。
+     此前是 960px：对话是**阅读型**界面，行太长会让人看丢行；
+     Kimi 的窄栏正是它读起来"轻"的原因之一，这里跟着收窄。 */
+  --chat-measure: var(--chat-input-max-width);
 }
 
 .chat-scroll {
@@ -1523,7 +1526,7 @@ async function savePrompt(): Promise<void> {
   justify-content: center;
   gap: var(--space-2);
   max-width: 860px;
-  transition: opacity 120ms ease;
+  transition: opacity var(--motion-fast) var(--motion-ease);
 }
 
 .samples-loading {
@@ -1598,7 +1601,7 @@ async function savePrompt(): Promise<void> {
   color: var(--text-tertiary);
   border-radius: var(--radius-control);
   opacity: 0;
-  transition: opacity 120ms ease;
+  transition: opacity var(--motion-fast) var(--motion-ease);
 }
 
 .ask:hover .ask-copy,
@@ -1697,7 +1700,7 @@ async function savePrompt(): Promise<void> {
 .trace-caret {
   flex: 0 0 auto;
   color: var(--text-tertiary);
-  transition: transform 140ms ease;
+  transition: transform var(--motion-fast) var(--motion-ease);
 }
 
 .trace-caret-open {
@@ -2203,15 +2206,22 @@ async function savePrompt(): Promise<void> {
   margin: 0 auto;
   padding: var(--space-3) var(--space-4) var(--space-2);
   background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-panel);
+  /* 圆角取 Kimi 的 `--chat-input-radius`（24px），比面板那一档更圆——
+     输入框是"手里的东西"，圆到接近胶囊才符合它的体量。
+     **不画描边**：Kimi 的输入卡片靠"底色抬起来"表达边界，线会让它变成又一个表单项。
+     改为一层极淡的浮起阴影，在暖底上足以划出边界，又不喧哗。 */
+  border: 0;
+  border-radius: var(--chat-input-radius);
+  box-shadow: var(--shadow-raised);
 }
 
 /* 卡片里的文本域去掉自己的边框与底色——它是卡片的一部分，不该再套一层框；
-   聚焦反馈交给整张卡片（focus-within），这样"在写字"的提示更大、更好认 */
+   聚焦反馈交给整张卡片（focus-within），这样"在写字"的提示更大、更好认。
+   卡片已无描边，所以聚焦环只能走阴影：保留浮起那一层，再叠一圈品牌色柔光。 */
 .composer:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  box-shadow:
+    var(--shadow-raised),
+    0 0 0 3px var(--accent-soft);
 }
 
 .composer :deep(.composer-field) {
@@ -2280,12 +2290,12 @@ async function savePrompt(): Promise<void> {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: var(--control-height);
-  height: var(--control-height);
+  width: var(--icon-button-height);
+  height: var(--icon-button-height);
   color: var(--button-primary-text);
   background: var(--button-primary-bg);
-  border-radius: 999px;
-  transition: background 120ms ease;
+  border-radius: var(--radius-pill);
+  transition: var(--transition-ui);
 }
 
 .send-btn:hover:not(:disabled) {
