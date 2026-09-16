@@ -524,6 +524,37 @@ class ConversationRecord:
     """该会话是否开启思考（v16）。``None`` = 跟随全局默认。"""
     thinking_effort: str | None = None
     """该会话的思考强度（v16，low/medium/high）。``None`` = 跟随全局默认。"""
+    workspace_id: str | None = None
+    """所属工作区（v0.15）。``None`` = **未归档**，侧栏把它单独排一列。
+
+    为什么不给未归档的会话自动建一个默认工作区：未归档是一个**真实存在的状态**
+    （"我就是随手问一句"）。替它安一个默认工作区，用户就再也分不清"这条是我
+    特意放进项目里的"还是"随手问的"——而那个区分正是工作区这个概念的用处。
+    """
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class WorkspaceRecord:
+    """工作区（v0.15）：Agent 的"在哪儿干活"。
+
+    见 ``docs/Agent-工作区与能力层设计-v0.1.md`` §3。与**沙箱**是两个概念：
+    工作区是长期、用户拥有、`root_path` 是他自己的目录；沙箱是一次性的试错空间。
+    """
+
+    id: str
+    name: str
+    root_path: str
+    """用户指定的真实目录（绝对路径）。创建时校验存在且是目录，
+    并拒绝指向数据目录或文件系统根——否则"把工作区设成 /"就等于把整台机器交出去。"""
+    owner_id: str | None = None
+    """归属账号。与知识库 / 会话同一套口径：``None`` = 管理员或 API Key 通道，
+    能看到全部；普通成员只看自己的。"""
+    description: str = ""
+    kb_ids: Sequence[str] = field(default_factory=tuple)
+    """这个工作区**带着哪些知识库**。这是"知识库与 Agent 天生融合"的落点：
+    进入工作区，资料范围就定了；新会话默认继承它们（见设计文档 §5）。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -1393,6 +1424,43 @@ class MetaStore(ABC):
         self, *, limit: int | None = None, q: str | None = None
     ) -> list[ConversationRecord]:
         """**置顶优先，其次按最近更新倒序**；``q`` 按标题做包含匹配。"""
+        ...
+
+    @abstractmethod
+    def set_conversation_workspace(
+        self, conversation_id: str, workspace_id: str | None
+    ) -> None:
+        """把会话挂到某个工作区，或（``None``）退回未归档。
+
+        **不推 ``updated_at``**：归类是一次整理动作，和改名/置顶同理——推了的话
+        "把五条会话整理进项目"会让它们按整理时间重排，而用户想按对话发生的时间找。
+        """
+        ...
+
+    # ---- 工作区（v0.15；见 docs/Agent-工作区与能力层设计-v0.1.md §3）----
+    @abstractmethod
+    def create_workspace(self, record: WorkspaceRecord) -> WorkspaceRecord: ...
+
+    @abstractmethod
+    def get_workspace(self, workspace_id: str) -> WorkspaceRecord | None: ...
+
+    @abstractmethod
+    def list_workspaces(self) -> list[WorkspaceRecord]:
+        """按最近更新倒序。归属过滤在服务层做（存储层不认识调用者身份）。"""
+        ...
+
+    @abstractmethod
+    def update_workspace(self, record: WorkspaceRecord) -> WorkspaceRecord: ...
+
+    @abstractmethod
+    def delete_workspace(self, workspace_id: str) -> None:
+        """删工作区。**里面的会话退回未归档**（外键是 ON DELETE SET NULL），
+        不是跟着一起删——会话里有用户问过的内容，误删不可恢复。"""
+        ...
+
+    @abstractmethod
+    def count_workspace_conversations(self, workspace_id: str) -> int:
+        """这个工作区下有多少会话。侧栏每个工作区后面那个计数用它。"""
         ...
 
     @abstractmethod

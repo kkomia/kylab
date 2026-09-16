@@ -42,6 +42,7 @@ def _summary(services: Services, record) -> ConversationOut:  # type: ignore[no-
         thinking=record.thinking,
         thinking_effort=record.thinking_effort,
         pinned=record.pinned,
+        workspace_id=record.workspace_id,
         created_at=record.created_at,
         updated_at=record.updated_at,
         message_count=services.conversations.message_count(record.id),
@@ -71,11 +72,24 @@ def list_conversations(
     caller: Annotated[Caller, Depends(require_read)],
     limit: int = Query(default=50, ge=1, le=200),
     q: str | None = Query(default=None, description="按标题搜索（包含匹配）"),
+    workspace_id: str | None = Query(
+        default=None, description="只看这个工作区下的会话（v0.15）"
+    ),
+    ungrouped: bool = Query(
+        default=False, description="只看**未归档**的会话（不属于任何工作区）"
+    ),
 ) -> ConversationListOut:
     # 成员只看到自己的会话（v10 私有隔离）：对话内容是私有数据，
     # 列表不按归属过滤就等于把别人的问题全部摊开
+    if workspace_id is not None:
+        # 越权的工作区 id 直接 404：否则可以拿它当探针，试出别人有哪些工作区
+        services.workspaces.get(workspace_id, user_id=_caller_owner(caller))
     records = services.conversations.list(
-        limit=limit, owner_id=_caller_owner(caller), q=q
+        limit=limit,
+        owner_id=_caller_owner(caller),
+        q=q,
+        workspace_id=workspace_id,
+        ungrouped=ungrouped,
     )
     return ConversationListOut(items=[_summary(services, item) for item in records])
 
@@ -96,13 +110,24 @@ def create_conversation(
     标题允许留空：真正的标题由**第一轮提问**生成（见 ``ConversationService``）。
     这里能传标题是为了"复制一次旧会话"这类将来可能有的用法。
     """
+    kb_ids = list(payload.kb_ids)
+    if payload.workspace_id is not None:
+        # 校验可见性（越权 404），并在调用方没指定库时**继承工作区的库**：
+        # 这就是"知识库与 Agent 天生融合"落到行为上的样子——进入项目，
+        # 资料范围就定了（见 docs/Agent-工作区与能力层设计-v0.1.md §5）
+        workspace = services.workspaces.get(
+            payload.workspace_id, user_id=_caller_owner(caller)
+        )
+        if not kb_ids:
+            kb_ids = list(workspace.kb_ids)
     record = services.conversations.create(
-        kb_ids=payload.kb_ids,
+        kb_ids=kb_ids,
         title=payload.title,
         owner_id=_caller_owner(caller),
         model_pk=payload.model_pk,
         thinking=payload.thinking,
         thinking_effort=payload.thinking_effort,
+        workspace_id=payload.workspace_id,
     )
     return _summary(services, record)
 
@@ -143,13 +168,23 @@ def update_conversation(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
 ) -> ConversationOut:
-    """标题与置顶都可选，只处理传了的那些；都为空时幂等。"""
+    """标题 / 置顶 / 归属都可选，只处理传了的那些；都为空时幂等。
+
+    **归属用 ``model_fields_set`` 判断是否传了**，不能只看 ``is not None``：
+    "退回未归档"要传 ``workspace_id: null``，而那与"这个字段没传"在值上完全一样。
+    Pydantic v2 的 ``model_fields_set`` 正好区分这两者，比自定义哨兵干净。
+    """
     _get_visible(services, caller, conversation_id)
     record = services.conversations.get(conversation_id)
     if payload.title is not None:
         record = services.conversations.rename(conversation_id, payload.title)
     if payload.pinned is not None:
         record = services.conversations.set_pinned(conversation_id, payload.pinned)
+    if "workspace_id" in payload.model_fields_set:
+        services.workspaces.bind_conversation(
+            conversation_id, payload.workspace_id, user_id=_caller_owner(caller)
+        )
+        record = services.conversations.get(conversation_id)
     return _summary(services, record)
 
 

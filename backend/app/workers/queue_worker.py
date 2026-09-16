@@ -73,7 +73,7 @@ class TaskWorker:
         sync_source: Callable[[str], object] | None = None,
         compile_wiki: Callable[[str], object] | None = None,
         summarize_gap: Callable[[], object] | None = None,
-        capture_memory: Callable[[list[dict[str, str]], str], object] | None = None,
+        capture_memory: Callable[[list[dict[str, str]], str, str], object] | None = None,
     ) -> None:
         if lease_seconds <= 0:
             raise ValueError("租约时长必须为正")
@@ -376,7 +376,10 @@ class TaskWorker:
             session_id = str(task.payload.get("session_id") or "")
             if not isinstance(messages, list) or not session_id:
                 raise ValueError(f"任务 {task.id} 缺少 messages / session_id")
-            self._capture_memory(messages, session_id)
+            # 账号随 payload 走（v0.15）：worker 没有调用者上下文，
+            # 事后也无从推断这条记忆该落到谁名下。空串 = 共享桶。
+            user_id = str(task.payload.get("user_id") or "")
+            self._capture_memory(messages, session_id, user_id)
             return
         if task.kind is TaskKind.QUESTIONS:
             # 补出题不走摄入阶段机（文档已 indexed，只读现有块），所以**不能**

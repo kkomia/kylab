@@ -281,11 +281,15 @@ class ChatService:
         #: 长期记忆（v0.14）。可选：不给就不注入，与关闭记忆时行为一致
         self._memory = memory
 
-    def _memory_block(self) -> str:
-        """要注入 system prompt 的记忆块；未接入或没内容时是空串。"""
+    def _memory_block(self, owner_id: str | None = None) -> str:
+        """要注入 system prompt 的记忆块；未接入或没内容时是空串。
+
+        **按账号取**（v0.15）：甲用户的人格与记忆不该出现在乙用户的提示词里——
+        注入是记忆里最容易"串号"的一环，因为它是每轮都静默发生的。
+        """
         if self._memory is None:
             return ""
-        return self._memory.prompt_block()
+        return self._memory.prompt_block(owner_id)
 
     # ------------------------------------------------------------------ 对外
 
@@ -385,8 +389,14 @@ class ChatService:
         model_pk: str | None = None,
         thinking: bool | None = None,
         thinking_effort: str | None = None,
+        owner_id: str | None = None,
     ) -> ChatTurn:
-        """非流式：一次拿完整回答。``model_pk`` 为空时用全局默认对话模型。"""
+        """非流式：一次拿完整回答。``model_pk`` 为空时用全局默认对话模型。
+
+        ``owner_id``（v0.15）：**这次问答属于哪个账号**。它决定注入哪一份记忆
+        （``data/memory/<owner_id>/``）——"一个账号一个 Agent"在对话链路上的落点。
+        ``None`` = 共享桶（管理员控制台 / API Key 通道）。
+        """
         config = self._resolve_llm(model_pk, thinking, thinking_effort)
         chat = self._chat_factory(config)
         messages = build_messages(
@@ -394,7 +404,7 @@ class ChatService:
             sources=sources,
             history=history,
             system_prompt=system_prompt or self._runtime.get("chat.system_prompt"),
-            memory=self._memory_block(),
+            memory=self._memory_block(owner_id),
             summary=summary,
         )
         started = time.monotonic()
@@ -442,6 +452,7 @@ class ChatService:
         model_pk: str | None = None,
         thinking: bool | None = None,
         thinking_effort: str | None = None,
+        owner_id: str | None = None,
     ) -> Iterator[str]:
         """流式：逐块产出回答文本。
 
@@ -457,7 +468,7 @@ class ChatService:
             sources=sources,
             history=history,
             system_prompt=system_prompt or self._runtime.get("chat.system_prompt"),
-            memory=self._memory_block(),
+            memory=self._memory_block(owner_id),
             summary=summary,
         )
         return chat.stream(messages)
@@ -476,6 +487,7 @@ class ChatService:
         thinking: bool | None = None,
         thinking_effort: str | None = None,
         top_k: int | None = None,
+        owner_id: str | None = None,
     ) -> Iterator[object]:
         """Agent 工作流：意图识别 → 检索词优化 → 多轮检索 → 组织回答。
 
@@ -592,7 +604,7 @@ class ChatService:
             history=history,
             system_prompt=prompt,
             summary=summary,
-            memory=self._memory_block(),
+            memory=self._memory_block(owner_id),
         )
         started = time.monotonic()
         parts: list[str] = []

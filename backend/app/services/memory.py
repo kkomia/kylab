@@ -57,6 +57,10 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 #: 核心长期记忆的文件名。**不进检索**，靠注入 system prompt 生效。
+#: 共享桶的代号：管理员控制台与 API Key 通道的记忆（无账号归属）。
+#: 它同时是 `data/memory/` 本身，见 ``workspace_for``。
+SHARED_SCOPE = "shared"
+
 CORE_MEMORY_FILE = "MEMORY.md"
 
 #: 人格文件。与记忆并列的第二类持久文件（见 ``soul_text`` 的说明）。
@@ -173,14 +177,68 @@ class MemoryService:
     def base_url(self) -> str:
         return self._runtime.get("memory.base_url").rstrip("/")
 
+    def workspace_for(self, user_id: str | None = None) -> Path:
+        """某个账号的记忆工作区（**agent 按账号隔离的落点**，v0.15）。
+
+        目录形状（与设计文档 §3.1 的"四条轴"对应）：
+
+        - 账号 ``u1`` → ``data/memory/u1/``
+        - 共享桶（``None``：管理员控制台与 API Key 通道）→ ``data/memory/``
+
+        **共享桶刻意就是老路径本身**，不另开 ``_shared`` 子目录：单用户部署
+        （绝大多数）升级前后路径一字不变，已有的 ``MEMORY.md`` / ``daily`` / ``digest``
+        原地继续用——升级不该让一个人的记忆"消失"。
+
+        为什么"一个账号一个目录"就是"一个账号一个 agent"：这个目录里放着它的
+        ``SOUL.md``（人格）与 ``MEMORY.md``（长期记忆），
+        而这两份东西每轮都进 system prompt。**分开它们，Agent 才真的是"我的"**。
+        """
+        raw = (self._runtime.get("memory.workspace") or "memory").strip()
+        base = self._data_dir / raw
+        return base / user_id if user_id else base
+
     @property
     def workspace(self) -> Path:
-        raw = (self._runtime.get("memory.workspace") or "memory").strip()
-        return self._data_dir / raw
+        """共享桶的工作区（兼容旧调用：``workspace_for(None)``）。"""
+        return self.workspace_for(None)
+
+    def core_file_for(self, user_id: str | None = None) -> Path:
+        return self.workspace_for(user_id) / CORE_MEMORY_FILE
 
     @property
     def core_file(self) -> Path:
-        return self.workspace / CORE_MEMORY_FILE
+        """共享桶的 ``MEMORY.md``（``core_file_for(None)`` 的兼容写法）。"""
+        return self.core_file_for(None)
+
+    @property
+    def service_scope(self) -> str:
+        """配置里那个 ReMe 实例服务的是**哪个账号的记忆**。
+
+        ReMe 的 ``workspace_dir`` 是**进程级**配置（它的 ``watch_dirs`` 只认
+        ``daily`` / ``digest`` 两个固定子目录），一个实例只能盯一份工作区。
+        所以"按账号召回"的完整形态是**每个账号一个 ReMe 实例**；在只有一个实例的
+        部署里，我们只能如实说"它服务的是谁"，而不是假装所有账号都隔离好了。
+
+        默认 ``shared``：单用户部署里那个实例盯的就是共享桶。
+        """
+        return (self._runtime.get("memory.service_scope") or SHARED_SCOPE).strip()
+
+    def _require_scope_served(self, user_id: str | None) -> None:
+        """召回/重建索引前确认"这个账号的记忆由这个实例服务"。
+
+        **不糊弄**：实例服务的是别人时，宁可报错也不返回——返回的话，
+        甲用户会读到乙用户的记忆片段，而且界面上完全看不出来。
+        """
+        wanted = user_id or SHARED_SCOPE
+        served = self.service_scope
+        if wanted == served:
+            return
+        raise InvalidRequestError(
+            f"当前记忆服务（ReMe）盯的是「{served}」的记忆，不是「{wanted}」的。"
+            "按账号召回需要为该账号单独跑一个记忆服务，"
+            "并把它的 workspace_dir 指到该账号的目录、在设置里把"
+            "「记忆服务所属账号」改成它。"
+        )
 
     def _require_enabled(self) -> None:
         if not self.enabled:
@@ -191,7 +249,7 @@ class MemoryService:
 
     # ------------------------------------------------------------------ 读取
 
-    def core_text(self) -> str:
+    def core_text(self, user_id: str | None = None) -> str:
         """``MEMORY.md`` 的正文（供注入 system prompt）。
 
         未启用或文件还不存在时返回空串——注入是"有就带上"，缺了不该让对话失败。
@@ -199,11 +257,11 @@ class MemoryService:
         if not self.enabled:
             return ""
         try:
-            return self.core_file.read_text(encoding="utf-8").strip()
+            return self.core_file_for(user_id).read_text(encoding="utf-8").strip()
         except OSError:
             return ""
 
-    def soul_text(self) -> str:
+    def soul_text(self, user_id: str | None = None) -> str:
         """``SOUL.md`` 的正文（人格，一句话说就是"你是谁"）。
 
         与 ``MEMORY.md`` 性质不同：那个记事实与偏好，这个定身份与准则。
@@ -213,11 +271,11 @@ class MemoryService:
         if not self.enabled:
             return ""
         try:
-            return (self.workspace / SOUL_FILE).read_text(encoding="utf-8").strip()
+            return (self.workspace_for(user_id) / SOUL_FILE).read_text(encoding="utf-8").strip()
         except OSError:
             return ""
 
-    def prompt_block(self) -> str:
+    def prompt_block(self, user_id: str | None = None) -> str:
         """拼成注入 system prompt 的**一个块**；两者都空时返回空串。
 
         为什么要一起给、且各带一句出处说明：
@@ -226,8 +284,8 @@ class MemoryService:
           记忆可能已经过时，而用户当下说的才是准的；
         - 人格与记忆分开写，模型才知道哪句是"该怎么说话"、哪句是"已知的事实"。
         """
-        core = self.core_text()
-        soul = self.soul_text()
+        core = self.core_text(user_id)
+        soul = self.soul_text(user_id)
         if not core and not soul:
             return ""
         parts: list[str] = []
@@ -279,7 +337,7 @@ class MemoryService:
     # ------------------------------------------------------------------ 召回
 
     def recall(
-        self, query: str, *, limit: int | None = None
+        self, query: str, *, limit: int | None = None, user_id: str | None = None
     ) -> tuple[list[MemoryHit], list[MemoryLink]]:
         """在记忆里找回相关片段。**与文档检索是两条路**（见模块头）。
 
@@ -288,6 +346,7 @@ class MemoryService:
         这一步不额外花检索成本，它就在同一个响应里。
         """
         self._require_enabled()
+        self._require_scope_served(user_id)
         text = query.strip()
         if not text:
             raise InvalidRequestError("缺少参数：query")
@@ -298,7 +357,9 @@ class MemoryService:
 
     # ------------------------------------------------------------------ 捕获
 
-    def capture(self, messages: list[dict[str, str]], *, session_id: str) -> dict[str, Any]:
+    def capture(
+        self, messages: list[dict[str, str]], *, session_id: str, user_id: str | None = None
+    ) -> dict[str, Any]:
         """把一轮对话交给 ReMe 的 Auto-Memory 沉淀。
 
         **由 ReMe 决定记什么**，我们不在这里做二次筛选——它的规矩是
@@ -316,6 +377,8 @@ class MemoryService:
         这样"这条记忆是哪次对话来的"永远查得到。用我们的 conversation id 正好。
         """
         self._require_enabled()
+        # 捕获是"写进谁的记忆"，所以同样要过服务范围校验
+        self._require_scope_served(user_id)
         if not messages:
             raise InvalidRequestError("没有可沉淀的消息")
         for index, item in enumerate(messages):
@@ -345,7 +408,9 @@ class MemoryService:
 
     # ------------------------------------------------------------------ 记住
 
-    def remember(self, content: str, *, tags: list[str] | None = None) -> dict[str, Any]:
+    def remember(
+        self, content: str, *, tags: list[str] | None = None, user_id: str | None = None
+    ) -> dict[str, Any]:
         """把一条长期事实写进 ``MEMORY.md``。
 
         **按 QwenPaw/ReMe 的约定做合并去重**：它们在 MEMORY.md 的说明里明确
@@ -370,7 +435,7 @@ class MemoryService:
         tag_text = "".join(f" #{tag.strip()}" for tag in (tags or []) if tag.strip())
         line = f"- {text}{tag_text}"
 
-        entries = self._read_entries()
+        entries = self._read_entries(user_id)
         if any(_normalize(item) == _normalize(line) for item in entries):
             return {
                 "saved": False,
@@ -379,11 +444,16 @@ class MemoryService:
             }
 
         entries.append(line)
-        self._write_entries(entries)
+        self._write_entries(entries, user_id)
         return {"saved": True, "entries": len(entries)}
 
     def enqueue_capture(
-        self, messages: list[dict[str, str]], *, session_id: str, turn_count: int
+        self,
+        messages: list[dict[str, str]],
+        *,
+        session_id: str,
+        turn_count: int,
+        user_id: str | None = None,
     ) -> bool:
         """按节流规则把一次沉淀排进队列；返回**是否真的入了队**。
 
@@ -409,7 +479,13 @@ class MemoryService:
                 id=f"task_{uuid.uuid4().hex[:12]}",
                 kind=TaskKind.MEMORY,
                 state=TaskState.PENDING,
-                payload={"messages": messages, "session_id": session_id},
+                payload={
+                    "messages": messages,
+                    "session_id": session_id,
+                    # 捕获是**异步**的（走队列），所以"落到谁的记忆里"必须随任务带走：
+                    # worker 那边没有调用者上下文，事后也无从推断。
+                    "user_id": user_id or "",
+                },
             )
         )
         return True
@@ -421,9 +497,9 @@ class MemoryService:
     # 自己的记忆文件看看写了什么、把不对的改掉。要求"先起一个服务才能读自己的文本
     # 文件"是没道理的。真正需要服务活着的只有召回与索引（``recall`` / ``reindex``）。
 
-    def files(self) -> list[MemoryFile]:
-        """列出工作区里的记忆文件（分类、摘要、出链、是否已整合）。"""
-        return memory_files.scan(self.workspace)
+    def files(self, user_id: str | None = None) -> list[MemoryFile]:
+        """列出这个账号工作区里的记忆文件（分类、摘要、出链、是否已整合）。"""
+        return memory_files.scan(self.workspace_for(user_id))
 
     @property
     def scan_limit(self) -> int:
@@ -431,15 +507,15 @@ class MemoryService:
         截断了却不说，用户会以为"我的文件丢了"。"""
         return memory_files.MAX_LISTED_FILES
 
-    def describe(self, path: str) -> MemoryFile:
+    def describe(self, path: str, user_id: str | None = None) -> MemoryFile:
         """单个文件的元信息（不含正文）。见 ``memory_files.describe``。"""
-        return memory_files.describe(self.workspace, path)
+        return memory_files.describe(self.workspace_for(user_id), path)
 
-    def file_text(self, path: str) -> MemoryFileDetail:
+    def file_text(self, path: str, user_id: str | None = None) -> MemoryFileDetail:
         """读一个文件的原文（含 frontmatter，供编辑器逐字还原）。"""
-        return memory_files.read_file(self.workspace, path)
+        return memory_files.read_file(self.workspace_for(user_id), path)
 
-    def write_file(self, path: str, content: str) -> MemoryFileDetail:
+    def write_file(self, path: str, content: str, user_id: str | None = None) -> MemoryFileDetail:
         """写一个文件。
 
         **故意不在这里调 ``reindex``**：ReMe 自己有一组后台守护
@@ -450,17 +526,17 @@ class MemoryService:
         既是多余的、又解决不了新文件的问题。要手动兜底时用 ``reindex``（界面上是
         那个按钮），而不是在保存路径上假装做了点什么。
         """
-        return memory_files.write_file(self.workspace, path, content)
+        return memory_files.write_file(self.workspace_for(user_id), path, content)
 
-    def delete_file(self, path: str) -> None:
+    def delete_file(self, path: str, user_id: str | None = None) -> None:
         """删一个文件。索引同上：交给 ReMe 的守护去追。"""
-        memory_files.delete_file(self.workspace, path)
+        memory_files.delete_file(self.workspace_for(user_id), path)
 
-    def graph(self) -> MemoryGraph:
+    def graph(self, user_id: str | None = None) -> MemoryGraph:
         """wikilink 图谱（本地算，见 ``memory_files.graph_of`` 的说明）。"""
-        return memory_files.graph_of(self.files())
+        return memory_files.graph_of(self.files(user_id))
 
-    def reindex(self) -> str:
+    def reindex(self, user_id: str | None = None) -> str:
         """请记忆服务重建索引，返回它给的一句话。
 
         这是**手动兜底**，不是保存流程的一环：守护进程只在服务活着的时候看文件，
@@ -469,14 +545,15 @@ class MemoryService:
         ``scope`` 默认 ``all``（它自己的默认值），我们不传。
         """
         self._require_enabled()
+        self._require_scope_served(user_id)
         return _brief(self._post("reindex", {}))
 
     # ------------------------------------------------------ 核心记忆的条目
 
-    def _read_entries(self) -> list[str]:
+    def _read_entries(self, user_id: str | None = None) -> list[str]:
         """读回「核心长期记忆」那一节里的条目（保持顺序与原文）。"""
         try:
-            body = self.core_file.read_text(encoding="utf-8")
+            body = self.core_file_for(user_id).read_text(encoding="utf-8")
         except OSError:
             return []
         lines: list[str] = []
@@ -489,14 +566,14 @@ class MemoryService:
                 lines.append(raw.strip())
         return lines
 
-    def _write_entries(self, entries: list[str]) -> None:
+    def _write_entries(self, entries: list[str], user_id: str | None = None) -> None:
         """整份重写。
 
         **只重建「核心长期记忆」那一节**：其余小节（工具设置、重要决策与经验）
         原样保留——它们可能有人手写的内容，重写整份文件会把它们抹掉。
         """
         try:
-            body = self.core_file.read_text(encoding="utf-8")
+            body = self.core_file_for(user_id).read_text(encoding="utf-8")
         except OSError:
             body = _TEMPLATE.format(entries="")
 
@@ -514,8 +591,9 @@ class MemoryService:
         else:
             body = body.rstrip() + f"\n\n## 核心长期记忆\n\n{block}\n"
 
-        self.workspace.mkdir(parents=True, exist_ok=True)
-        self.core_file.write_text(body, encoding="utf-8")
+        space = self.workspace_for(user_id)
+        space.mkdir(parents=True, exist_ok=True)
+        self.core_file_for(user_id).write_text(body, encoding="utf-8")
 
     # ------------------------------------------------------------------ HTTP
 

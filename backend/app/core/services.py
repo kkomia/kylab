@@ -60,6 +60,7 @@ from app.services.usage import UsageService
 from app.services.users import UserService
 from app.services.webhook import WebhookService
 from app.services.wiki import WikiService
+from app.services.workspace import WorkspaceService
 from app.storage.base import StoreBundle
 from app.workers.queue_worker import TaskWorker
 
@@ -129,6 +130,7 @@ class Services:
     load: SystemLoadService
     """负载面板数据源：CPU / 内存 / 队列深度 / 并发槽位 / 云端解析额度（§12.115）。"""
     memory: MemoryService
+    workspaces: WorkspaceService
     """长期记忆的门面（§12.130）。默认关；关着时它的每个方法都明确报错。"""
     embedder: EmbeddingProvider
     reranker: RerankProvider
@@ -260,6 +262,9 @@ def build_services(
     # 工作区放在数据目录下（见 services/memory.py 与设计文档 §2.2）：
     # 与其它数据一起备份/迁移，一个部署只有一处要备份
     memory_service = MemoryService(runtime, resolved.data_dir, stores=bundle)
+    # 工作区也要 data_dir：它要拦住「把数据目录当工作区」这种配置
+    # （指向那里等于绕过账号隔离，见 services/workspace.py 的第三道校验）
+    workspace_service = WorkspaceService(bundle, resolved.data_dir)
     # 用量服务要**先建**：下面的 embedder 回调闭包引用了它
     usage = UsageService(bundle)
 
@@ -435,6 +440,7 @@ def build_services(
             observability=observability,
         ),
         memory=memory_service,
+        workspaces=workspace_service,
     )
 
 
@@ -477,8 +483,8 @@ def _build_workers(
             # 记忆沉淀（v0.14）：把一轮对话交给记忆服务。**它是可选回调**——
             # 记忆关着时这个回调仍然存在，由 MemoryService 自己判断"未启用"并报错
             # （而不是在这里判，那样"关着"会表现成任务静默失败）
-            capture_memory=lambda messages, session_id: memory.capture(
-                messages, session_id=session_id
+            capture_memory=lambda messages, session_id, user_id: memory.capture(
+                messages, session_id=session_id, user_id=user_id or None
             ),
             # 补文档摘要（v25）：空闲时一小批一小批地补，不需要用户点任何东西
             summarize_gap=summaries.summarize_missing,

@@ -56,11 +56,13 @@ class ConversationService:
         model_pk: str | None = None,
         thinking: bool | None = None,
         thinking_effort: str | None = None,
+        workspace_id: str | None = None,
     ) -> ConversationRecord:
         """``owner_id``（v10）：登录成员的会话归自己；控制台/API Key 通道无主。
 
         ``model_pk``（v12）：这条会话选用的对话模型；``None`` = 跟随全局默认。
         ``thinking`` / ``thinking_effort``（v16）：思考开关与强度；``None`` = 跟随全局默认。
+        ``workspace_id``（v0.15）：挂到哪个工作区；``None`` = 未归档。
         """
         return self._stores.meta.create_conversation(
             ConversationRecord(
@@ -71,6 +73,7 @@ class ConversationService:
                 model_pk=model_pk,
                 thinking=thinking,
                 thinking_effort=thinking_effort,
+                workspace_id=workspace_id,
             )
         )
 
@@ -96,6 +99,8 @@ class ConversationService:
         limit: int | None = None,
         owner_id: str | None = None,
         q: str | None = None,
+        workspace_id: str | None = None,
+        ungrouped: bool = False,
     ) -> list[ConversationRecord]:
         """置顶优先、其次最近更新（v17 起支持按标题搜索）。
 
@@ -107,12 +112,22 @@ class ConversationService:
         加一条仓储方法，不值。`q` 走 SQL（标题包含匹配），因为它能把结果集整体缩小，
         与 LIMIT 组合后语义才正确（"搜出来的前 50 条"而不是"前 50 条里搜出来的"）。
         """
-        if owner_id is None:
+        # 工作区过滤与归属过滤同类（都是"这批里要哪一部分"），所以在同一处做：
+        # `workspace_id` 点名某个工作区；`ungrouped` 要的是"未归档"那一栏
+        # （`workspace_id IS NULL`）——两者互斥，同时给等于没有交集，直接返回空。
+        def keep(item: ConversationRecord) -> bool:
+            if owner_id is not None and item.owner_id != owner_id:
+                return False
+            if ungrouped:
+                return item.workspace_id is None
+            if workspace_id is not None:
+                return item.workspace_id == workspace_id
+            return True
+
+        if owner_id is None and workspace_id is None and not ungrouped:
             return self._stores.meta.list_conversations(limit=limit, q=q)
         records = [
-            item
-            for item in self._stores.meta.list_conversations(limit=None, q=q)
-            if item.owner_id == owner_id
+            item for item in self._stores.meta.list_conversations(limit=None, q=q) if keep(item)
         ]
         return records[:limit] if limit is not None else records
 

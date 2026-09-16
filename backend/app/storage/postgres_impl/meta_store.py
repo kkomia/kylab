@@ -76,6 +76,7 @@ from app.storage.base import (
     WebhookRecord,
     WikiPageRecord,
     WikiSourceRecord,
+    WorkspaceRecord,
 )
 from app.storage.postgres_impl.connection import Database
 
@@ -2548,6 +2549,8 @@ class PostgresMetaStore(MetaStore):
             thinking=None if row["thinking"] is None else bool(row["thinking"]),
             thinking_effort=row["thinking_effort"],
             pinned=bool(row["pinned"]),
+            # 旧库/未归档的会话这一列是 NULL —— 保持 None，不要折成空串
+            workspace_id=row.get("workspace_id"),
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
         )
@@ -2571,8 +2574,8 @@ class PostgresMetaStore(MetaStore):
             conn.execute(
                 "INSERT INTO conversations"
                 " (id, title, kb_ids, owner_id, model_pk, thinking, thinking_effort,"
-                "  created_at, updated_at)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "  workspace_id, created_at, updated_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     record.id,
                     record.title,
@@ -2581,6 +2584,7 @@ class PostgresMetaStore(MetaStore):
                     record.model_pk,
                     record.thinking,
                     record.thinking_effort,
+                    record.workspace_id,
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
@@ -2593,6 +2597,98 @@ class PostgresMetaStore(MetaStore):
                 "SELECT * FROM conversations WHERE id = %s", (conversation_id,)
             ).fetchone()
         return self._conversation_from_row(row) if row else None
+
+    def set_conversation_workspace(
+        self, conversation_id: str, workspace_id: str | None
+    ) -> None:
+        # 不推 updated_at：见协议里那段说明（整理动作不该改变"最近活动"的名次）
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE conversations SET workspace_id = %s WHERE id = %s",
+                (workspace_id, conversation_id),
+            )
+
+    # ---- 工作区 ----
+
+    def create_workspace(self, record: WorkspaceRecord) -> WorkspaceRecord:
+        now = _now()
+        record.created_at = record.created_at or now
+        record.updated_at = record.updated_at or now
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO workspaces"
+                " (id, owner_id, name, root_path, description, kb_ids, created_at, updated_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    record.id,
+                    record.owner_id,
+                    record.name,
+                    record.root_path,
+                    record.description,
+                    _json(list(record.kb_ids)),
+                    _dump(record.created_at),
+                    _dump(record.updated_at),
+                ),
+            )
+        return record
+
+    def get_workspace(self, workspace_id: str) -> WorkspaceRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM workspaces WHERE id = %s", (workspace_id,)
+            ).fetchone()
+        return self._workspace_from_row(row) if row else None
+
+    def list_workspaces(self) -> list[WorkspaceRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM workspaces ORDER BY updated_at DESC"
+            ).fetchall()
+        return [self._workspace_from_row(row) for row in rows]
+
+    def update_workspace(self, record: WorkspaceRecord) -> WorkspaceRecord:
+        record.updated_at = _now()
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE workspaces SET name = %s, root_path = %s, description = %s,"
+                " kb_ids = %s, updated_at = %s WHERE id = %s",
+                (
+                    record.name,
+                    record.root_path,
+                    record.description,
+                    _json(list(record.kb_ids)),
+                    _dump(record.updated_at),
+                    record.id,
+                ),
+            )
+        return record
+
+    def delete_workspace(self, workspace_id: str) -> None:
+        # 外键是 ON DELETE SET NULL：里面的会话**退回未归档**，不跟着删。
+        # 这是刻意的，见 base.py 协议里那段说明。
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM workspaces WHERE id = %s", (workspace_id,))
+
+    def count_workspace_conversations(self, workspace_id: str) -> int:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT count(*) AS total FROM conversations WHERE workspace_id = %s",
+                (workspace_id,),
+            ).fetchone()
+        return int(row["total"]) if row else 0
+
+    @staticmethod
+    def _workspace_from_row(row: dict) -> WorkspaceRecord:
+        return WorkspaceRecord(
+            id=row["id"],
+            name=row["name"],
+            root_path=row["root_path"],
+            owner_id=row["owner_id"],
+            description=row["description"],
+            kb_ids=tuple(row["kb_ids"]),
+            created_at=_load(row["created_at"]),
+            updated_at=_load(row["updated_at"]),
+        )
 
     def list_conversations(
         self, *, limit: int | None = None, q: str | None = None

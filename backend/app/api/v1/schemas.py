@@ -769,6 +769,11 @@ class ApiKeyListOut(BaseModel):
 class ConversationCreateIn(BaseModel):
     title: str = Field(default="", max_length=64)
     kb_ids: list[str] = Field(default_factory=list)
+    workspace_id: str | None = None
+    """挂到哪个工作区（v0.15）。``None`` = 未归档。
+
+    传了工作区而 ``kb_ids`` 留空时，**知识库范围继承工作区的**（见设计文档 §5）：
+    "进入项目，资料范围就定了"——用户不必每次重勾一遍。"""
     model_pk: str | None = None
     """本条会话选用的对话模型（v12）。``None`` = 跟随全局默认。"""
     thinking: bool | None = None
@@ -786,6 +791,11 @@ class ConversationUpdateIn(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=64)
     pinned: bool | None = None
+    workspace_id: str | None = None
+    """改归属：传工作区 id = 挂进去，传 ``null`` = 退回未归档。
+
+    这个字段与上两个的区别是它**必须能区分"不传"与"传 null"**——
+    所以用了一个哨兵（``UNSET``）在服务端判断，见 conversations.py 的说明。"""
 
 
 class ConversationRewindIn(BaseModel):
@@ -820,6 +830,8 @@ class ConversationOut(BaseModel):
     """本条会话的思考强度（v16）；``None`` = 全局默认。"""
     pinned: bool = False
     """置顶（v17）。置顶的会话排在列表最前，且聊天不改变它的名次。"""
+    workspace_id: str | None = None
+    """所属工作区（v0.15）；``None`` = 未归档，侧栏把它单独排一列。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
     message_count: int = 0
@@ -1485,6 +1497,50 @@ class DocumentTimelineOut(BaseModel):
     抽屉要显示它，而它是**唯一能确定说"卡住"**的判据——光看"某一步跑了一小时"
     说明不了问题（解析大文件本来就慢）。判据来自 ``ObservabilityService``，
     与任务中心那一列同源。"""
+
+
+# ------------------------------------------------------------------ 工作区（v0.15）
+
+
+class WorkspaceCreateIn(BaseModel):
+    """新建工作区。``root_path`` 是**用户指定的真实目录**——
+    这是"可以指定路径作为工作区"的落点。"""
+
+    name: str = Field(min_length=1, max_length=120)
+    root_path: str = Field(min_length=1, max_length=1000)
+    """根目录的绝对路径（或带 ``~``）。服务端校验：存在、是目录、
+    不是文件系统根、不指向数据目录。"""
+    description: str = Field(default="", max_length=500)
+    kb_ids: list[str] = Field(default_factory=list)
+    """这个工作区绑定的知识库（"知识库与 Agent 天生融合"的落点）。
+    新会话默认继承它们，所以用户不必每开一次会话重勾一遍。"""
+
+
+class WorkspaceUpdateIn(BaseModel):
+    """改工作区。**都可选**，只改传了的那些（``None`` = 不动）。"""
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    root_path: str | None = Field(default=None, min_length=1, max_length=1000)
+    description: str | None = Field(default=None, max_length=500)
+    kb_ids: list[str] | None = None
+
+
+class WorkspaceOut(BaseModel):
+    model_config = _RECORD_CONFIG
+
+    id: str
+    name: str
+    root_path: str
+    description: str = ""
+    kb_ids: list[str] = Field(default_factory=list)
+    conversation_count: int = 0
+    """这个工作区下的会话数。侧栏每个工作区后面那个数字。"""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class WorkspaceListOut(BaseModel):
+    items: list[WorkspaceOut] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------- 记忆（v0.14 三期）

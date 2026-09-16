@@ -695,7 +695,7 @@ def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
     """
     query = _require(args, "query")
     limit = int(args.get("limit") or DEFAULT_RECALL)
-    hits, links = services.memory.recall(query, limit=limit)
+    hits, links = services.memory.recall(query, limit=limit, user_id=_owner_of(caller))
     return {
         "query": query,
         "hits": [

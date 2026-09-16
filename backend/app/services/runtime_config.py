@@ -154,6 +154,11 @@ SETTING_GROUPS: dict[str, Any] = {
                 "label": "每多少个用户回合沉淀一次记忆",
                 "type": "int",
             },
+            {
+                "key": "memory.service_scope",
+                "label": "记忆服务所属账号（shared = 共享桶）",
+                "type": "text",
+            },
         ],
     },
 }
@@ -214,6 +219,11 @@ DEFAULTS: dict[str, str] = {
     # 但它服务本身不管累计（每次调用就是一次 LLM 调用），所以节流得我们做。
     # 每轮都沉淀 = 每轮多一次 LLM 调用，而这个用户反复强调过省 token。
     "memory.capture_every": "5",
+    # **记忆服务（ReMe）盯的是哪个账号的记忆**。它的 workspace_dir 是进程级配置
+    # （watch_dirs 只认固定的 daily/digest 两个子目录），一个实例只能服务一份记忆。
+    # 所以"按账号隔离"的完整形态是**每个账号一个实例**；只有一个实例时，
+    # 这里如实写明它服务谁，请求别的账号的记忆会被**明确拒绝**而不是返回别人的片段。
+    "memory.service_scope": "shared",
 }
 
 

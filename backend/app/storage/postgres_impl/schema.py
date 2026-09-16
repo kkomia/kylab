@@ -25,7 +25,7 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 """应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
 
 **启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
@@ -89,6 +89,39 @@ MIGRATIONS: tuple[Migration, ...] = (
             # 整段塞给模型要上万字；有了每篇文档的摘要，就能只带摘要 + 更短的片段，
             # 模型仍然知道"这几段来自一篇讲什么的文档"。见 services/summary.py。
             "ALTER TABLE documents ADD COLUMN summary text NOT NULL DEFAULT ''",
+        ),
+    ),
+    Migration(
+        version=5,
+        description="工作区（Agent 的项目）：会话挂到工作区下，知识库范围跟着工作区走（v0.15）",
+        statements=(
+            # 工作区 = Agent 的"在哪干活"。`root_path` 是用户指定的真实目录
+            # （见 docs/Agent-工作区与能力层设计-v0.1.md §3.2）。沙箱与它是两个概念，
+            # 所以这里**没有** sandbox 字段。
+            """
+            CREATE TABLE workspaces (
+                id          text PRIMARY KEY,
+                owner_id    text,
+                name        text NOT NULL,
+                root_path   text NOT NULL,
+                description text NOT NULL DEFAULT '',
+                kb_ids      jsonb NOT NULL DEFAULT '[]'::jsonb,
+                created_at  timestamptz NOT NULL DEFAULT now(),
+                updated_at  timestamptz NOT NULL DEFAULT now()
+            )
+            """,
+            "CREATE INDEX idx_workspaces_owner ON workspaces (owner_id, updated_at DESC)",
+            # `ON DELETE SET NULL` 是刻意的：删工作区**不该删掉里面的会话**。
+            # 会话里有用户问过的内容，误删无法恢复；失去归属只是"掉回未归档那一栏"。
+            """
+            ALTER TABLE conversations
+                ADD COLUMN workspace_id text REFERENCES workspaces (id) ON DELETE SET NULL
+            """,
+            # 侧栏按工作区分组拉会话，这条索引直接服务那个查询
+            """
+            CREATE INDEX idx_conversations_workspace
+                ON conversations (workspace_id, pinned DESC, updated_at DESC)
+            """,
         ),
     ),
 )

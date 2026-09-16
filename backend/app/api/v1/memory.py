@@ -52,6 +52,20 @@ RECALL_NOTE = (
 )
 
 
+def _scope(caller: Caller) -> str | None:
+    """**这个调用者的记忆属于谁**——"一个账号一个 Agent"在记忆层的落点。
+
+    普通成员 → 自己的账号（各自一份 ``data/memory/<user_id>/``）；
+    管理员会话与 API Key 通道 → ``None``（共享桶，即 ``data/memory/`` 本身）。
+
+    与知识库 / 会话 / 笔记的归属口径一致（见 ``api/auth.py``）：
+    管理员用网页会话要能看到全部，所以不能折成"管理员=自己的账号"。
+    """
+    if caller.user is not None and not caller.is_admin:
+        return caller.user.id
+    return None
+
+
 def _file_out(record) -> MemoryFileOut:  # type: ignore[no-untyped-def]
     """记录 → 响应。不 import 存储层类型（工程规范 §3.3 L1），
     形状由 services 返回的对象保证（与 wiki.py 的 ``_page_out`` 同一套写法）。"""
@@ -105,7 +119,7 @@ def get_memory(
     **不打远端**（``status`` 而不是 ``probe``）：状态栏每次刷新都调它，
     顺手打一次记忆服务会让"打开记忆页"变成一次网络等待。
     """
-    files = services.memory.files()
+    files = services.memory.files(_scope(caller))
     status_out = _status_out(services.memory.status(), files)
     return MemoryOverviewOut(
         status=status_out,
@@ -126,8 +140,8 @@ def read_memory_file(
     路径里的 ``path:path`` 让 ``digest/wiki/xxx.md`` 这种带斜杠的路径能当**一个**
     路径参数传进来，前端不必把斜杠编码成 ``%2F``（有些反代会先解开再匹配，反而更脆）。
     """
-    detail = services.memory.file_text(path)
-    base = _file_out(services.memory.describe(detail.path))
+    detail = services.memory.file_text(path, _scope(caller))
+    base = _file_out(services.memory.describe(detail.path, _scope(caller)))
     return MemoryFileDetailOut(
         # ``consolidated`` 是**跨文件**才知道的事（要看书里有没有 digest 链过来），
         # 而读一个文件不该去扫整个工作区。这里显式给 None = "这次没算"，
@@ -155,7 +169,7 @@ def write_memory_file(
     索引不在这里管：ReMe 自己有文件守护会追（实测 5 秒 debounce），
     而它的 ``reindex`` 看不见新文件（"without rescanning workspace files"）。
     """
-    services.memory.write_file(path, payload.content)
+    services.memory.write_file(path, payload.content, _scope(caller))
     return read_memory_file(path, services=services, caller=caller)
 
 
@@ -169,7 +183,7 @@ def delete_memory_file(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),
 ) -> None:
-    services.memory.delete_file(path)
+    services.memory.delete_file(path, _scope(caller))
 
 
 @router.get("/graph", response_model=MemoryGraphOut, summary="记忆的 wikilink 图谱")
@@ -182,7 +196,7 @@ def get_memory_graph(
     只画连上边的节点，孤立文件不进图——它们已经在文件列表里了，
     图要回答的是"结构"而不是"清单"（见 ``memory_files.graph_of``）。
     """
-    graph = services.memory.graph()
+    graph = services.memory.graph(_scope(caller))
     return MemoryGraphOut(
         nodes=[
             MemoryGraphNodeOut(
@@ -206,7 +220,9 @@ def recall_memory(
     记忆服务没起或没启用时**明确报错**，不返回空结果（§2.3）——返回空会让模型
     （和用户）以为"没有相关记忆"，然后基于错误前提继续。
     """
-    hits, links = services.memory.recall(payload.query, limit=payload.limit)
+    hits, links = services.memory.recall(
+        payload.query, limit=payload.limit, user_id=_scope(caller)
+    )
     return MemoryRecallOut(
         query=payload.query,
         hits=[
@@ -237,7 +253,9 @@ def remember(
 
     重复的一条返回 ``saved=false``，不是错误：那是"本来就有"，调用方据此不必再记一遍。
     """
-    result = services.memory.remember(payload.content, tags=payload.tags)
+    result = services.memory.remember(
+        payload.content, tags=payload.tags, user_id=_scope(caller)
+    )
     return MemoryRememberOut(
         saved=bool(result.get("saved")),
         entries=int(result.get("entries") or 0),
@@ -254,7 +272,7 @@ def reindex(
 
     真正要它的时候是这一类：服务当时没起、用户改了一批文件，之后才把服务拉起来。
     """
-    return MemoryActionOut(detail=services.memory.reindex())
+    return MemoryActionOut(detail=services.memory.reindex(_scope(caller)))
 
 
 @router.post("/probe", response_model=MemoryProbeOut, summary="测试记忆服务连通性")

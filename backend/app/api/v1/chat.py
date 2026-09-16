@@ -89,7 +89,7 @@ def chat_stream(
     # （流一旦开始，状态码已经发出去了）。没配任何模型不算错，交由流内报可读文案。
     services.chat.llm_config(model_pk)
     return StreamingResponse(
-        _events(services, payload, model_pk, thinking, effort),
+        _events(services, payload, model_pk, thinking, effort, caller),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -135,7 +135,9 @@ def chat_once(
             thinking=thinking,
             thinking_effort=effort,
         )
-    _record_turn(services, payload, answer=answer.answer, sources=answer.sources)
+    _record_turn(
+        services, payload, answer=answer.answer, sources=answer.sources, caller=caller
+    )
     return ChatResponseOut(answer=answer.answer, sources=_sources_out(answer.sources))
 
 
@@ -242,6 +244,7 @@ def _events(
     model_pk: str | None,
     thinking: bool | None,
     effort: str | None,
+    caller: Caller,
 ) -> Iterator[str]:
     """把一次问答摊成一串 SSE 事件。
 
@@ -279,6 +282,7 @@ def _events(
                 thinking=thinking,
                 thinking_effort=effort,
                 top_k=payload.top_k,
+                owner_id=_memory_owner(caller),
             ):
                 if isinstance(event, StepEvent):
                     yield _sse(
@@ -344,6 +348,7 @@ def _events(
                 model_pk=model_pk,
                 thinking=thinking,
                 thinking_effort=effort,
+                owner_id=_memory_owner(caller),
             ):
                 collected.append(delta)
                 yield _sse({"type": "delta", "text": delta})
@@ -361,7 +366,7 @@ def _events(
     # 这条判断必须真的写出来——v0.12 之前只有注释、没有 if，于是流"正常结束但一个字都没吐"
     # 时照样落了一条空回答（实测：推理模型的思考吃光预算时就是这样）。
     if answer:
-        _record_turn(services, payload, answer=answer, sources=sources)
+        _record_turn(services, payload, answer=answer, sources=sources, caller=caller)
     else:
         logger.warning("对话流没有产出任何正文，本轮不落库：query=%r", payload.query[:80])
     yield _sse({"type": "done", "answer": answer})
@@ -406,7 +411,12 @@ def _context(
 
 
 def _maybe_capture_memory(
-    services: Services, conversation_id: str, *, query: str, answer: str
+    services: Services,
+    conversation_id: str,
+    *,
+    query: str,
+    answer: str,
+    caller: Caller,
 ) -> None:
     """把这一轮交给记忆沉淀——**节流后的、best-effort 的**。
 
@@ -436,13 +446,18 @@ def _maybe_capture_memory(
     ]
     try:
         services.memory.enqueue_capture(
-            messages, session_id=conversation_id, turn_count=turn_count
+            messages,
+            session_id=conversation_id,
+            turn_count=turn_count,
+            user_id=_memory_owner(caller),
         )
     except Exception:
         logger.warning("记忆沉淀入队失败：%s", conversation_id, exc_info=True)
 
 
-def _record_turn(services: Services, payload: ChatRequestIn, *, answer: str, sources) -> None:  # type: ignore[no-untyped-def]
+def _record_turn(  # type: ignore[no-untyped-def]
+    services: Services, payload: ChatRequestIn, *, answer: str, sources, caller: Caller
+) -> None:
     """把这一轮写进会话（仅在指定了 ``conversation_id`` 时）。
 
     引用**存快照**：``_sources_out`` 出来的就是这一轮实际依据的原文出处。
@@ -468,7 +483,21 @@ def _record_turn(services: Services, payload: ChatRequestIn, *, answer: str, sou
         logger.exception("对话落库失败：%s", conversation_id)
         return
     # 落库成功之后才谈沉淀：消息没进库就沉淀，记忆会指向一个空会话
-    _maybe_capture_memory(services, conversation_id, query=payload.query, answer=answer)
+    _maybe_capture_memory(
+        services, conversation_id, query=payload.query, answer=answer, caller=caller
+    )
+
+
+def _memory_owner(caller: Caller) -> str | None:
+    """这次问答该用**谁的记忆**（v0.15）。
+
+    普通成员 → 自己的账号；管理员会话与 API Key 通道 → 共享桶（``None``）。
+    与知识库/会话/工作区的归属口径一致，也与 ``api/v1/memory.py::_scope`` 一致
+    ——两处必须同口径，否则"同一份记忆在设置页和对话里看到的不一样"。
+    """
+    if caller.user is not None and not caller.is_admin:
+        return caller.user.id
+    return None
 
 
 def _require_conversation(services: Services, payload: ChatRequestIn, caller: Caller) -> None:

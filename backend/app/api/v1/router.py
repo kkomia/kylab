@@ -32,6 +32,7 @@ from app.api.v1 import (
     users,
     webhooks,
     wiki,
+    workspaces,
 )
 
 api_router = APIRouter()
@@ -62,3 +63,5 @@ api_router.include_router(maintenance.router)
 api_router.include_router(wiki.router)
 # 记忆（v0.14 三期）：与知识库是**两个池子**，所以单独一组 /memory
 api_router.include_router(memory.router)
+# 工作区（v0.15）：Agent 的项目，会话挂在它下面
+api_router.include_router(workspaces.router)
