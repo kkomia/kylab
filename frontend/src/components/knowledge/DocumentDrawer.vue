@@ -405,9 +405,9 @@ const previewNote = computed(() =>
  */
 const questionSummary = computed(() => {
   const doc = document.value
-  if (!doc || doc.chunk_count === 0) return '还没有分段，无法出题。'
+  if (!doc || doc.chunk_count === 0) return '还没有切块，无法出题。'
   if (doc.question_count === 0) {
-    return '还没有生成分段问题——在文档列表里选中这份，点「生成问题」即可补上。'
+    return '还没有为切块生成问题。在文档列表里选中这份，点「生成问题」补上。'
   }
   return `已为 ${doc.questioned_chunk_count}/${doc.chunk_count} 段出题，共 ${doc.question_count} 条；下面每块的问题列在正文之后。`
 })
@@ -519,7 +519,7 @@ const stage = computed(() =>
 
         <h3 class="section-title">
           文件内容
-          <span v-if="chunkTotal > 0" class="section-badge">共 {{ chunkTotal }} 个片段</span>
+          <span v-if="chunkTotal > 0" class="section-badge">共 {{ chunkTotal }} 个切块</span>
         </h3>
 
         <!--
@@ -733,7 +733,7 @@ const stage = computed(() =>
     v-model:open="chunkDeleteOpen"
     title="删除切块"
     :lead="`确定删除第 ${chunkDeleteTarget && chunkDeleteTarget.ordinal + 1} 块？`"
-    note="它会从检索索引与向量库中一并移除，无法恢复。如果只是想让它在检索时暂时不出现，用「禁用」更好——禁用可以随时恢复。"
+    note="会从检索索引与向量库中一并移除，无法恢复。只想让它暂时不出现在检索里，用「禁用」，随时可以恢复。"
     :busy="chunkDeleting"
     busy-label="删除中…"
     @confirm="confirmRemoveChunk"

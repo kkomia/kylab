@@ -388,7 +388,7 @@ function statsOf(kbId: string) {
           <label class="field-label" for="kb-embedding">
             嵌入模型
             <InfoTip
-              text="嵌入模型决定这个库的向量空间，建库时定、之后不能更换。文档量小的库可以选精度更高的模型；量大的选小模型以提升速度与存储效率。"
+              text="决定这个库的向量空间，建库时定下、之后不能换。小库选精度高的，大库选小的（更快、更省存储）。"
             />
           </label>
           <AppSelect

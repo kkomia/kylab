@@ -171,7 +171,7 @@ async function confirmRemove(): Promise<void> {
         <h2 class="sources-title">数据源</h2>
         <p class="sources-hint">
           订阅 RSS 或盯住一个网页，内容会自动抓进这个知识库。
-          <strong>登记不会立刻抓取</strong>——点「立即拉取」，或等定时任务。
+          <strong>登记后不会立刻抓取</strong>：点「立即拉取」，或等定时任务。
         </p>
       </div>
       <AppButton v-if="canWrite" @click="adding = !adding">
@@ -256,7 +256,7 @@ async function confirmRemove(): Promise<void> {
     v-model:open="deleteOpen"
     title="删除数据源"
     :lead="`删除数据源「${deleteTarget?.name}」？`"
-    note="已经抓进来的文档会保留——它们是知识库的正式内容。停掉订阅不等于要撤销已经收集的资料。"
+    note="已抓进来的文档会保留：停掉订阅不等于撤销已收集的资料。"
     :busy="busy.startsWith('delete:')"
     busy-label="删除中…"
     @confirm="confirmRemove"

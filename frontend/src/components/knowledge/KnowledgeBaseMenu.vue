@@ -299,7 +299,7 @@ async function save(): Promise<void> {
       section.value = 'chunking'
       chunkSizeDraft.value = String(props.kb.chunk_size)
       chunkOverlapDraft.value = String(props.kb.chunk_overlap)
-      notifySuccess(chunkingChanged ? '切分参数已保存' : '分段出题设置已保存')
+      notifySuccess(chunkingChanged ? '切分参数已保存' : '切块出题设置已保存')
     } else {
       notifySuccess('已保存')
       closeSettings()
@@ -477,7 +477,7 @@ async function confirmDelete(): Promise<void> {
           <template v-else-if="section === 'info'">
             <h3 class="pane-title">库信息</h3>
             <p class="pane-desc">
-              嵌入模型在建库时就定下了，之后不再变——换嵌入模型会让已有向量失效。
+              嵌入模型在建库时定下，之后不能换：换了会让已有向量失效。
               切块方式可以在「切块策略」里调整。
             </p>
             <dl class="info-list">
@@ -507,7 +507,7 @@ async function confirmDelete(): Promise<void> {
             <h3 class="pane-title pane-title-standalone">
               切块与出题
               <InfoTip
-                text="文档在解析之后会被切成小块再向量化，检索命中的就是这些小块。块太大时一个块里混着好几件事，命中后给模型的上下文就跑题；块太小时一句话会被切断，答案也跟着断章取义。轨道上的点是常用值，强调色的是默认值：块长 512 左右在中文资料里大约是一到两段话；块重叠留一点，是为了让跨块的句子不被拦腰截断。下面「为每个分段生成推荐问题」是可选的一步：让模型为每一段出几个问题，问题一起进索引，用户换个问法也能命中这一段。"
+                text="块太大：一段里混着好几件事，命中后给模型的上下文会跑题。块太小：句子被切断。中文资料里 512 约一到两段话；重叠留一点，跨块的句子才不会被截断。轨道上的点是常用值，强调色是默认值。"
               />
             </h3>
 
@@ -573,7 +573,7 @@ async function confirmDelete(): Promise<void> {
             <h3 class="pane-title pane-title-standalone">
               Wiki
               <InfoTip
-                text="Wiki 是知识库的一种阅读形态：把库里已录入的内容整理成一套分层页面，每个要点都标注原文出处。开启只是允许生成，真正构建要去 Wiki 页面点「生成 Wiki」；页面越多，耗时与模型调用越多。"
+                text="把库里已录入的内容整理成分层页面，每个要点标注原文出处。开启只是允许生成，构建要到 Wiki 页点「生成 Wiki」；页面越多，耗时与模型调用越多。"
               />
             </h3>
 
@@ -605,7 +605,7 @@ async function confirmDelete(): Promise<void> {
             <h3 class="pane-title">数据源</h3>
             <p class="pane-desc">
               订阅 RSS 或盯住一个网页，内容会自动抓进这个知识库。
-              登记不会立刻抓取——点「立即拉取」，或等定时任务。
+              登记后不会立刻抓取：点「立即拉取」，或等定时任务。
             </p>
             <SourcePanel
               :kb-id="kb.id"
@@ -653,7 +653,7 @@ async function confirmDelete(): Promise<void> {
       v-model:open="deleteOpen"
       title="删除知识库"
       :lead="`确定删除知识库「${kb.name}」？`"
-      note="此操作不可恢复：整个知识库连同其中的文档、切块与向量都会被删除，不会进回收站。"
+      note="不可恢复。库里的文档、切块与向量都会删除，不进回收站。"
       confirm-label="删除知识库"
       :busy="deleting"
       busy-label="删除中…"

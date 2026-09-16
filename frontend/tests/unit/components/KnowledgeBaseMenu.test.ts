@@ -199,7 +199,7 @@ describe('KnowledgeBaseMenu 切块策略（v17）', () => {
     // 说明移到了 InfoTip 的 text 里（用户要求：转到 ？图标里面）
     const tip = wrapper.findComponent(InfoTip)
     expect(tip.exists()).toBe(true)
-    expect(tip.props('text')).toContain('块太大时一个块里混着好几件事')
+    expect(tip.props('text')).toContain('块太大：一段里混着好几件事')
     // 跟着块长变的那句留在正文里：工具提示里写不死一个动态的数
     expect(wrapper.text()).toContain('块长的一半')
   })

@@ -475,7 +475,7 @@ function openDocument(documentId: string): void {
 
         <p class="detail-id">
           任务 ID <code>{{ detail.id }}</code
-          >——排查日志时用它去搜。
+          >。排查日志时用它去搜。
         </p>
       </template>
 
@@ -505,7 +505,7 @@ function openDocument(documentId: string): void {
       v-model:open="cancelOpen"
       title="取消排队中的任务"
       :lead="`撤下 ${pendingCount} 个还在排队的任务？`"
-      note="只是不再处理：文档与已入库的内容都保留。之后可以重新上传，或对文档点「重新摄入」。正在执行的任务不在范围内。"
+      note="只是不再处理：文档与已入库内容都保留，之后可重新上传或点「重新摄入」。正在执行的任务不在此列。"
       confirm-label="撤下"
       :busy="canceling"
       @confirm="runCancel()"

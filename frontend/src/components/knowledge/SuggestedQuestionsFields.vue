@@ -72,7 +72,7 @@ const COUNT_MARKS = [
           :checked="enabled"
           @change="enabled = ($event.target as HTMLInputElement).checked"
         />
-        <span>为每个分段生成推荐问题</span>
+        <span>为每个切块生成推荐问题</span>
       </label>
       <!-- 关掉之后到底发生什么、开着要付什么代价，都得写出来——它是一个会花钱的
            入库步骤，用户要在勾之前知道 -->
@@ -84,13 +84,13 @@ const COUNT_MARKS = [
     </div>
 
     <div class="field">
-      <span class="field-label">每个分段生成几条</span>
+      <span class="field-label">每个切块生成几条</span>
       <RangeField
         v-model="count"
         :min="SUGGESTED_COUNT_MIN"
         :max="SUGGESTED_COUNT_MAX"
         :marks="COUNT_MARKS"
-        aria-label="每个分段生成几条问题"
+        aria-label="每个切块生成几条问题"
       />
       <!-- 说清"花多少钱、什么时候生效"：这是设置里唯一会持续花钱的开关 -->
       <p class="suggested-hint">
@@ -102,7 +102,7 @@ const COUNT_MARKS = [
       <span class="field-label">
         出题用的模型
         <InfoTip
-          text="默认跟随对话页当前选的模型。单独指定一个便宜的小模型可以省 token——出题只需要看出这批资料在讲什么，不需要很强的推理。"
+          text="默认跟随对话页当前选的模型。换一个便宜的小模型可以省 token：出题只需判断这段在讲什么。"
         />
       </span>
       <AppSelect v-model="modelPk" :options="modelOptions" aria-label="出题用的模型" />

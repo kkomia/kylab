@@ -624,7 +624,7 @@ defineExpose({ load })
               <template v-else-if="availableModels.length">
                 已拉取到 {{ availableModels.length }} 个候选，可搜索选择，也可直接输入。
               </template>
-              <template v-else>该供应商没有返回模型列表，请直接输入模型 ID。</template>
+              <template v-else>供应商没有返回模型列表，手动填写模型 ID。</template>
               <button
                 v-if="!loadingAvailable"
                 type="button"

@@ -896,7 +896,7 @@ async function runTest(target: string): Promise<void> {
                 <span class="row-label">
                   温度 / 深度思考
                   <InfoTip
-                    text="回复长度不再设上限：这个上限本来就是模型自己的事，由它生成到自然收尾。我们曾经替它定过 2048，实测反而会出事——思考用的 token 也算在回复预算里，预算被思考吃光时正文一个字都出不来，界面上看起来就是「只有问题、没有回答」，而且时好时坏。个别端点不传就退化成很小的默认值时，可在「模型注册」里给那个模型加 options.max_tokens 单独指定。"
+                    text="长度上限交给模型：它自己决定什么时候收尾。少数端点不传就会退化成很小的默认值，那种情况在「模型注册」里给该模型加 options.max_tokens。"
                   />
                 </span>
                 <span class="row-value tabular">
@@ -974,7 +974,7 @@ async function runTest(target: string): Promise<void> {
             <h3 class="section-title">
               服务配置
               <InfoTip
-                text="两个云端节点互为备选：文字型文档优先 MinerU，扫描件与混合型可降级到 PaddleOCR。"
+                text="两个云端节点互为备选：文字型文档优先 MinerU，扫描件与混合型降级到 PaddleOCR。"
               />
             </h3>
 
@@ -1392,8 +1392,9 @@ async function runTest(target: string): Promise<void> {
     <AppModal :open="deleteTarget !== null" title="删除用户" @update:open="onDeleteOpenChange">
       <p class="share-lead">确定删除「{{ deleteTarget?.name }}」？</p>
       <p class="row-note">
-        该用户上传的 {{ deleteTarget?.document_count ?? 0 }} 篇文档会保留，但归属置空；
-        对方将无法再登录。此操作不可撤销。
+        对方上传的
+        {{ deleteTarget?.document_count ?? 0 }}
+        篇文档会保留，但不再归属任何人；账号将无法再登录。不可撤销。
       </p>
       <template #footer>
         <AppButton @click="deleteTarget = null">取消</AppButton>
@@ -1408,7 +1409,7 @@ async function runTest(target: string): Promise<void> {
     v-model:open="compactConfirmOpen"
     title="整理存储"
     lead="清理无主向量分区并回收空闲页？"
-    note="整理只动无主数据，不会碰任何文档、切块或向量。VACUUM 会重写整个数据库文件，库大时需要几十秒，期间请避免其他写操作。"
+    note="只清理无主数据，不动文档、切块与向量。库大时 VACUUM 要几十秒，期间避免其他写操作。"
     confirm-label="开始整理"
     :busy="compacting"
     busy-label="整理中…"

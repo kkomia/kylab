@@ -134,7 +134,7 @@ const option = computed(() => {
       :option="option"
       :square-cells="{ columns: weekCount, rows: 7, maxSize: maxCell, minSize: 9, gap: 3 }"
     />
-    <p v-else class="empty-note">窗口内还没有入库记录——上传文档后这里会出现活跃度分布。</p>
+    <p v-else class="empty-note">窗口内还没有入库记录。上传文档后这里会显示活跃度。</p>
   </div>
 </template>
 

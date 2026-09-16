@@ -593,7 +593,7 @@ async function onToggleDisabledClick(close: () => void, document: DocumentSummar
   try {
     await setDocumentDisabled(document.id, !document.disabled)
     await refresh()
-    notifySuccess(document.disabled ? '已恢复检索' : '已停用检索——文档与其内容都保留')
+    notifySuccess(document.disabled ? '已恢复检索' : '已停用检索：文档与内容都保留')
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '操作失败')
   }
@@ -624,11 +624,11 @@ function questionCell(document: DocumentSummary): string {
 
 /** 出题列的悬浮说明：把"几段里有几段出了题"说全，列里只放得下总数。 */
 function questionTitle(document: DocumentSummary): string {
-  if (document.questions_pending) return '正在为这份文档生成分段问题'
+  if (document.questions_pending) return '正在为这份文档的切块生成问题'
   if (document.question_count === 0) {
     return document.chunk_count === 0
-      ? '还没有分段，无法出题'
-      : '还没有为这份文档生成分段问题（选中后可点「生成问题」）'
+      ? '还没有切块，无法出题'
+      : '还没有为这份文档生成切块问题（选中后可点「生成问题」）'
   }
   return `${document.questioned_chunk_count}/${document.chunk_count} 段有问题，共 ${document.question_count} 条`
 }
@@ -1599,7 +1599,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
       :lead="`确定删除「${deleteTarget?.name}」？`"
       :note="
         impact?.restorable
-          ? '原文会移入回收站保留 7 天，期间可以恢复。切块与向量会立即清除——删除后立刻搜不到。'
+          ? '原文进回收站保留 7 天，其间可恢复；切块与向量立即清除，删掉就搜不到。'
           : '此操作不可恢复。'
       "
       :busy="deleting"

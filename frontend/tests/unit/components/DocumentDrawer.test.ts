@@ -91,13 +91,13 @@ beforeEach(() => {
 })
 
 describe('DocumentDrawer', () => {
-  it('按 WeKnora 的分区呈现：基本信息 + 文件内容（带片段数）', async () => {
+  it('按 WeKnora 的分区呈现：基本信息 + 文件内容（带切块数）', async () => {
     const wrapper = await mountDrawer()
 
     const titles = wrapper.findAll('.section-title').map((el) => el.text())
     expect(titles[0]).toContain('基本信息')
     expect(titles[1]).toContain('文件内容')
-    expect(wrapper.find('.section-badge').text()).toContain('共 3 个片段')
+    expect(wrapper.find('.section-badge').text()).toContain('共 3 个切块')
 
     // 元信息六项：状态 / 大小 / 切块数 / 页数 / 来源 / 更新时间
     expect(wrapper.findAll('.meta-item')).toHaveLength(6)
