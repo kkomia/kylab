@@ -799,6 +799,31 @@ class PostgresMetaStore(MetaStore):
                 (document_id, stage.value, error),
             )
 
+    def replace_document_content(
+        self,
+        document_id: str,
+        *,
+        content_hash: str,
+        name: str,
+        size_bytes: int,
+        mime_type: str | None,
+    ) -> None:
+        """原地替换文档的内容元数据（v0.12）。
+
+        ``page_count`` 一并置 NULL：新内容可能页数不同，留着旧值会显示一个错的页数
+        （"没测出来"渲染成"—"，比一个过期的数字诚实）。
+
+        **刻意不碰 ``stage``**：全仓只有 ``update_document_stage`` 改那一列
+        （它同时追加时间线事件，见那边的说明）。这里改内容、那里改阶段，
+        调用方按顺序各调一次——阶段事件因此天然完整，不会出现"内容换了但时间线说没换"。
+        """
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE documents SET content_hash = %s, name = %s, size_bytes = %s,"
+                " mime_type = %s, page_count = NULL, updated_at = %s WHERE id = %s",
+                (content_hash, name, size_bytes, mime_type, _dump(_now()), document_id),
+            )
+
     def list_documents_without_summary(self, *, limit: int) -> list[DocumentRecord]:
         with self._db.read() as conn:
             rows = conn.execute(

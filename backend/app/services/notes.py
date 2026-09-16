@@ -145,6 +145,13 @@ class NotesService:
         if title is None and content_md is not None and not clean_title:
             # 正文被清空后标题不必跟着清掉；但原标题为空时要重新推导
             clean_title = derive_title(body)
+
+        # 正文真的变了、而且这条笔记已经进过知识库 → 库里那一份要跟着变（v0.12）。
+        # **放在写笔记之前**：同步失败（比如那份文档正在处理中）时整次更新都不做，
+        # 用户看到明确报错，而不会留下"笔记改了、库里还是旧的"这种没人发现的不一致。
+        if content_md is not None and content_md != record.content_md:
+            self._sync_kb_copy(record, body=body, title=clean_title)
+
         self._stores.meta.update_note(
             note_id,
             title=clean_title,
@@ -154,6 +161,36 @@ class NotesService:
             tags=None if tags is None else normalize_tags(tags),
         )
         return self.get(note_id)
+
+    def _sync_kb_copy(self, record: NoteRecord, *, body: str, title: str) -> None:
+        """把知识库里那一份同步成当前正文。
+
+        **为什么必须做**：此前 ``update`` 只写笔记表，于是"笔记改了、库里还是旧的"。
+        用户在界面上看不到任何异常，直到某天检索出一段自己已经改掉的话——
+        这不是缺个功能，是静默的不一致，而静默的不一致比报错难查得多。
+
+        两处刻意的选择：
+
+        - **原地替换而不是"删了重加"**：文档 id 是引用的锚点（对话出处、笔记关联），
+          换 id 会打断引用，旧版还会白占一次回收站；
+        - **正文被清空时不同步**：库里保留最后那版内容，而不是变成一份空文档——
+          空文档检索不到，会让"这篇还在库里"这件事凭空消失，那比留个旧版更糟。
+        """
+        if self._ingest is None or self._documents is None or not record.doc_id:
+            return
+        stripped = body.strip()
+        if not stripped:
+            return
+        self._ingest.replace(
+            record.doc_id,
+            filename=f"{title or '未命名笔记'}.md",
+            content=stripped.encode("utf-8"),
+            mime_type="text/markdown",
+        )
+        # 不带 force：replace 已经把阶段推回 uploaded，这一趟要**从头**走
+        # （解析 → 切块 → 向量化）。用 force 会把它直接推到 CHUNKING，
+        # 于是拿着上一次的解析产物切块——切出来还是旧内容
+        self._documents.enqueue_ingest(record.doc_id)
 
     def delete(self, note_id: str, *, user_id: str | None) -> None:
         self.get_for_owner(note_id, user_id)

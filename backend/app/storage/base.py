@@ -878,6 +878,29 @@ class MetaStore(ABC):
     ) -> None: ...
 
     @abstractmethod
+    def replace_document_content(
+        self,
+        document_id: str,
+        *,
+        content_hash: str,
+        name: str,
+        size_bytes: int,
+        mime_type: str | None,
+    ) -> None:
+        """用新内容**原地替换**一份文档的元数据（v0.12）。
+
+        与 ``create_document`` 的分工：那个是"新文档"，这个是"同一份文档的内容变了"。
+
+        **为什么要有它**：判重是按内容哈希的，所以"编辑后重新入库"会**新建一份文档**
+        而不是更新既有那份——旧内容还留在库里，同一份东西出现两版。
+        要真正"更新"，必须有原地替换。
+
+        调用方（``IngestService.replace``）负责：写新的原文对象、清掉旧切块与向量、
+        把阶段推回 ``uploaded``（内容变了就是重新走一遍流水线）。
+        这里只改元数据——存储层不编排流水线。
+        """
+
+    @abstractmethod
     def list_document_stage_events(self, document_id: str) -> list[DocumentStageEventRecord]:
         """某文档的阶段进入事件，按发生顺序。进度时间线读它。"""
 

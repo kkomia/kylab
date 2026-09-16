@@ -5,7 +5,7 @@
 
 import pytest
 
-from app.core.exceptions import InvalidRequestError, NotFoundError
+from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
 from app.services.notes import MAX_TAGS, NotesService, derive_title, normalize_tags
 
 
@@ -161,14 +161,22 @@ def test_tags_are_aggregated(notes: NotesService) -> None:
 
 
 class _FakeIngest:
-    def __init__(self, *, duplicate: bool = False) -> None:
+    def __init__(self, *, duplicate: bool = False, replace_error: Exception | None = None) -> None:
         self.calls: list[dict] = []
+        self.replaced: list[dict] = []
         self._duplicate = duplicate
+        self._replace_error = replace_error
 
     def submit(self, **kwargs):  # type: ignore[no-untyped-def]
         self.calls.append(kwargs)
         document = type("Doc", (), {"id": "doc_1"})()
         return type("Outcome", (), {"document": document, "is_duplicate": self._duplicate})()
+
+    def replace(self, document_id: str, **kwargs):  # type: ignore[no-untyped-def]
+        if self._replace_error is not None:
+            raise self._replace_error
+        self.replaced.append({"document_id": document_id, **kwargs})
+        return type("Doc", (), {"id": document_id})()
 
 
 class _FakeDocuments:
@@ -225,6 +233,112 @@ def test_attach_without_pipeline_is_rejected(bundle) -> None:  # type: ignore[no
 
     with pytest.raises(InvalidRequestError):
         service.attach_to_kb(record.id, user_id="u1", kb_id="kb_1")
+
+
+# ------------------------------------------------------- 改动回流到知识库（v0.12）
+
+
+def _attached(bundle):  # type: ignore[no-untyped-def]
+    """建一条已入库的笔记，返回（服务、假摄入、假文档、笔记 id）。"""
+    ingest = _FakeIngest()
+    documents = _FakeDocuments()
+    service = NotesService(bundle, ingest=ingest, documents=documents)
+    record = service.create(user_id="u1", title="眼轴笔记", content_md="# 眼轴\n每三个月测一次")
+    service.attach_to_kb(record.id, user_id="u1", kb_id="kb_1")
+    documents.enqueued.clear()  # 只关心"编辑之后"的入队
+    return service, ingest, documents, record.id
+
+
+def test_editing_an_attached_note_syncs_the_knowledge_base_copy(bundle) -> None:  # type: ignore[no-untyped-def]
+    """**本轮修的核心缺陷**：改了笔记，库里那一份不能还是旧的。
+
+    此前 ``update`` 只写笔记表，于是"笔记改了、库里没变"——界面上看不出任何异常，
+    直到某天检索出一段自己已经改掉的话。
+    """
+    service, ingest, documents, note_id = _attached(bundle)
+
+    service.update(note_id, user_id="u1", content_md="# 眼轴\n改成每半年测一次")
+
+    assert len(ingest.replaced) == 1
+    call = ingest.replaced[0]
+    assert call["document_id"] == "doc_1"
+    assert call["content"].decode("utf-8") == "# 眼轴\n改成每半年测一次"
+    assert call["filename"] == "眼轴笔记.md"
+    # 内容变了就要重跑一遍流水线，否则新的正文永远不会被索引
+    assert documents.enqueued == ["doc_1"]
+
+
+def test_edit_uses_the_new_title_for_the_filename(bundle) -> None:  # type: ignore[no-untyped-def]
+    """标题也跟着改时，库里那份文件名要一起变——它是用户在文档列表里认它的依据。"""
+    service, ingest, _documents, note_id = _attached(bundle)
+
+    service.update(note_id, user_id="u1", title="眼轴监测规范", content_md="# 新正文")
+
+    assert ingest.replaced[0]["filename"] == "眼轴监测规范.md"
+
+
+def test_editing_a_note_outside_any_kb_touches_no_pipeline(bundle) -> None:  # type: ignore[no-untyped-def]
+    """没入库的笔记改动不该惊动摄入流水线。"""
+    ingest = _FakeIngest()
+    documents = _FakeDocuments()
+    service = NotesService(bundle, ingest=ingest, documents=documents)
+    record = service.create(user_id="u1", content_md="还没入库")
+
+    service.update(record.id, user_id="u1", content_md="改一下")
+
+    assert ingest.replaced == []
+    assert documents.enqueued == []
+
+
+def test_editing_only_tags_does_not_resync(bundle) -> None:  # type: ignore[no-untyped-def]
+    """只改标签不是内容变化：重新索引一遍白烧算力。"""
+    service, ingest, documents, note_id = _attached(bundle)
+
+    service.update(note_id, user_id="u1", tags=["眼科"])
+
+    assert ingest.replaced == []
+    assert documents.enqueued == []
+
+
+def test_identical_content_does_not_resync(bundle) -> None:  # type: ignore[no-untyped-def]
+    """正文没变时不该重跑——前端"保存"按钮常常原样提交。"""
+    service, ingest, documents, note_id = _attached(bundle)
+
+    service.update(note_id, user_id="u1", content_md="# 眼轴\n每三个月测一次")
+
+    assert ingest.replaced == []
+    assert documents.enqueued == []
+
+
+def test_clearing_the_body_leaves_the_kb_copy_alone(bundle) -> None:  # type: ignore[no-untyped-def]
+    """清空正文时**不同步**：库里保留最后那版内容。
+
+    变成一份空文档更糟——空文档检索不到，会让"这篇还在库里"凭空消失。
+    """
+    service, ingest, documents, note_id = _attached(bundle)
+
+    service.update(note_id, user_id="u1", content_md="   ")
+
+    assert ingest.replaced == []
+    assert documents.enqueued == []
+
+
+def test_sync_failure_leaves_the_note_unchanged(bundle) -> None:  # type: ignore[no-untyped-def]
+    """同步失败时**整次更新都不做**——不能留下"笔记改了、库里没改"。
+
+    实测里最容易触发的失败是"那份文档正在处理中"（``IngestService.replace``
+    在检测到未结束的任务时会拒绝）。顺序上先同步再写笔记，所以失败时笔记是干净的。
+    """
+    ingest = _FakeIngest(replace_error=ConflictError("这份文档正在处理中，请等它处理完再改"))
+    documents = _FakeDocuments()
+    service = NotesService(bundle, ingest=ingest, documents=documents)
+    record = service.create(user_id="u1", title="t", content_md="原正文")
+    service.attach_to_kb(record.id, user_id="u1", kb_id="kb_1")
+
+    with pytest.raises(ConflictError):
+        service.update(record.id, user_id="u1", content_md="新正文")
+
+    assert service.get(record.id).content_md == "原正文"
 
 
 # ------------------------------------------------------------------ 配图

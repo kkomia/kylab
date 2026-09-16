@@ -6,7 +6,7 @@
 
 import pytest
 
-from app.core.exceptions import InvalidRequestError
+from app.core.exceptions import ConflictError, InvalidRequestError
 from app.models.enums import DocumentStage
 from app.parsers.base import ParseError
 from app.parsers.plain_text import PlainTextParser
@@ -82,6 +82,95 @@ def test_ingest_reaches_indexed(bundle: StoreBundle, ingest_service: IngestServi
     assert result.document.stage is DocumentStage.INDEXED
     assert result.document.error is None
     assert result.chunk_count > 0
+
+
+# --------------------------------------------------------- 原地替换内容（v0.12）
+
+
+OLD = "# 旧结论\n\n锂价下跌必然利好电池厂。\n"
+NEW = "# 新结论\n\n锂价下跌通常缓解材料成本，但净影响取决于售价联动与库存。\n"
+
+
+def test_replace_rewrites_content_and_resets_stage(
+    bundle: StoreBundle, ingest_service: IngestService, kb
+) -> None:
+    """替换必须做到三件事：换元数据、**清掉旧产物**、把阶段推回 uploaded。
+
+    清产物这条最要紧：旧切块留着的话，重新索引完成之前检索会同时命中新旧两版，
+    表现成"我明明改了，搜出来还是旧的"。
+    """
+    outcome = ingest_service.submit(
+        knowledge_base_id="kb_1", filename="note.md", content=OLD.encode()
+    )
+    doc_id = outcome.document.id
+    ingest_service.ingest(doc_id)
+    before = bundle.meta.get_document(doc_id)
+    assert before is not None
+    assert bundle.meta.count_chunks(doc_id) > 0
+
+    replaced = ingest_service.replace(doc_id, filename="改过的笔记.md", content=NEW.encode())
+
+    assert replaced.id == doc_id, "文档 id 必须不变——它是引用的锚点"
+    assert replaced.content_hash != before.content_hash
+    assert replaced.name == "改过的笔记.md"
+    assert replaced.size_bytes == len(NEW.encode())
+    assert replaced.stage is DocumentStage.UPLOADED, "内容变了就要重走一遍流水线"
+    assert bundle.meta.count_chunks(doc_id) == 0, "旧切块必须清掉"
+
+    # 重跑之后检索到的应该是新内容
+    result = ingest_service.ingest(doc_id)
+    assert result.document.stage is DocumentStage.INDEXED
+    texts = "".join(item.text for item in bundle.meta.iter_chunks(doc_id))
+    assert "售价联动" in texts
+    assert "必然利好" not in texts
+
+
+def test_replace_with_the_same_content_is_a_noop(
+    bundle: StoreBundle, ingest_service: IngestService, kb
+) -> None:
+    """内容没变就不该动：白跑一遍切分与向量化是纯浪费。"""
+    outcome = ingest_service.submit(
+        knowledge_base_id="kb_1", filename="note.md", content=OLD.encode()
+    )
+    doc_id = outcome.document.id
+    ingest_service.ingest(doc_id)
+    before = bundle.meta.get_document(doc_id)
+    assert before is not None
+
+    again = ingest_service.replace(doc_id, filename="note.md", content=OLD.encode())
+
+    assert again.content_hash == before.content_hash
+    assert again.stage is DocumentStage.INDEXED, "没变就不该把阶段推回去重跑"
+
+
+def test_replace_refuses_while_a_task_is_running(
+    bundle: StoreBundle, ingest_service: IngestService, kb
+) -> None:
+    """有任务在跑时拒绝替换：worker 正在旧内容上写产物，这时替换会让新旧交叉。
+
+    宁可报错让人稍后再改，也不留下错乱的产物——那类问题查起来极其费劲。
+    """
+    import uuid as _uuid
+
+    from app.models.enums import TaskKind, TaskState
+    from app.storage.base import TaskRecord
+
+    outcome = ingest_service.submit(
+        knowledge_base_id="kb_1", filename="note.md", content=OLD.encode()
+    )
+    doc_id = outcome.document.id
+    bundle.meta.enqueue_task(
+        TaskRecord(
+            id=f"task_{_uuid.uuid4().hex[:12]}",
+            kind=TaskKind.PARSE,
+            state=TaskState.PENDING,
+            payload={"document_id": doc_id},
+            document_id=doc_id,
+        )
+    )
+
+    with pytest.raises(ConflictError):
+        ingest_service.replace(doc_id, filename="note.md", content=NEW.encode())
 
 
 def test_ingest_writes_markdown_artifact(bundle: StoreBundle, ingest_service: IngestService,

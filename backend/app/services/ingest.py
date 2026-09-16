@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import quote
 
-from app.core.exceptions import InvalidRequestError, NotFoundError
+from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
 from app.models.enums import DataSourceKind, DocumentStage
 from app.parsers.base import ParseError, ParseResult, ParserProvider
 from app.parsers.probe import probe, suffix_of
@@ -204,6 +204,70 @@ class IngestService:
         )
         self._stores.meta.set_setting(f"document.{document.id}.original_path", stored_path)
         return IngestOutcome(document=document, chunk_count=0)
+
+    def replace(
+        self,
+        document_id: str,
+        *,
+        filename: str,
+        content: bytes,
+        mime_type: str | None = None,
+    ) -> DocumentRecord:
+        """用新内容**原地替换**一份文档（v0.12）。
+
+        与 ``submit`` 的分工很清楚：``submit`` 是"来了一份文件"——同内容去重、
+        不同内容**新建一份**；而这里是"**这份**文档的内容变了"。
+
+        为什么要原地替换、而不是"删掉重新入库"：
+
+        - **文档 id 是引用的锚点**——对话里的出处、笔记上的关联都指向它，
+          换 id 等于把所有引用打断；
+        - 删掉会把旧版送进回收站，用户会看到一堆"自己没删过的"东西。
+
+        内容没变就直接返回：重新入队会白跑一遍切分与向量化。
+
+        **有任务在跑时拒绝**：worker 正在旧内容上写产物，这时替换会让新旧交叉
+        （比如它把旧内容的切块写回库里）。宁可报错让人稍后再改，也不留下错乱的产物。
+        """
+        document = self._require_document(document_id)
+        kb = self._require_kb(document.knowledge_base_id)
+        filename = normalize_filename(filename)
+        digest = hashlib.sha256(content).hexdigest()
+        if digest == document.content_hash:
+            return document
+
+        if self._stores.meta.active_tasks_by_documents([document_id]):
+            raise ConflictError("这份文档正在处理中，请等它处理完再改")
+
+        stored_path = self._stores.objects.write(
+            content_key(ORIGINALS, digest, _suffix_of(filename)), content
+        )
+        # 旧产物**先清干净**：不清的话它们还带着旧正文，重新索引完成之前
+        # 检索会同时命中新旧两版内容——"我明明改了，搜出来还是旧的"就是这个。
+        #
+        # 三处都要清，缺一不可：向量（检索用）、全文索引（检索用）、
+        # **chunks 表本身**（抽屉与"同小节扩读"读的是它）。删除文档那条路不用管
+        # chunks——那是外键级联删的；替换保留了文档行，所以得自己删。
+        # 用 `replace_chunks(doc, [])` 而不是新增一个删除方法：它就是
+        # "这份文档现在没有块了"，语义正好，且先删后插本来就在它的事务里。
+        chunk_ids = [item.chunk_id for item in self._stores.meta.iter_chunks(document_id)]
+        if chunk_ids:
+            self._stores.vectors.delete_vectors(kb.id, chunk_ids=chunk_ids)
+            self._stores.fulltext.delete_chunks(chunk_ids)
+            self._stores.meta.replace_chunks(document_id, [])
+
+        self._stores.meta.replace_document_content(
+            document_id,
+            content_hash=digest,
+            name=filename,
+            size_bytes=len(content),
+            mime_type=mime_type,
+        )
+        self._stores.meta.set_setting(f"document.{document_id}.original_path", stored_path)
+        # 内容变了就是重新走一遍流水线：阶段推回 uploaded（走 update_document_stage
+        # 而不是直接改列，这样时间线上会多一段"重新开始"的记录）
+        self._stores.meta.update_document_stage(document_id, DocumentStage.UPLOADED)
+        return self._require_document(document_id)
 
     # ------------------------------------------------------------------ 主链路
 
