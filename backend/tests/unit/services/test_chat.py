@@ -6,6 +6,9 @@
 检索没命中时的行为），所以逐个钉住。
 """
 
+import threading
+import time
+
 import pytest
 
 from app.services.chat import (
@@ -631,3 +634,162 @@ def test_material_budget_caps_the_total_material() -> None:
     assert MIN_SOURCE_CHARS < MATERIAL_CHARS
     # 6 条命中时每条的上限 = 6000 / 6 = 1000 字，明显小于 section_chars 的 1800
     assert MATERIAL_CHARS // 6 < 1800
+
+
+# ------------------------------------------------- 多轮检索的收益判断与并行（v25）
+
+
+def _hit(chunk_id: str, *, document_id: str = "d1", score: float = 0.9):  # type: ignore[no-untyped-def]
+    return type(
+        "Hit",
+        (),
+        {
+            "chunk_id": chunk_id,
+            "document_id": document_id,
+            "knowledge_base_id": "kb_1",
+            "text": f"{chunk_id} 的正文",
+            "heading_path": None,
+            "page": None,
+            "score": score,
+            "image_ids": (),
+            "document_name": "某文档.pdf",
+        },
+    )()
+
+
+class _ScriptedRetrieval:
+    """按查询词返回预设命中，并记录**同时在飞的检索数**（并行与否的唯一证据）。"""
+
+    def __init__(self, mapping: dict[str, list]) -> None:
+        self._mapping = mapping
+        self.calls: list[str] = []
+        self.peak = 0
+        self._inflight = 0
+        self._lock = threading.Lock()
+
+    def search(self, query):  # type: ignore[no-untyped-def]
+        text = query.query
+        with self._lock:
+            self.calls.append(text)
+            self._inflight += 1
+            self.peak = max(self.peak, self._inflight)
+        try:
+            time.sleep(0.05)
+            return type("Response", (), {"hits": self._mapping.get(text, [])})()
+        finally:
+            with self._lock:
+                self._inflight -= 1
+
+
+class _ScriptedChat:
+    """脚本化的模型：**第一次 complete 是规划**，之后依次是每轮的决策。
+
+    顺序不能写反（第一版就写反了：规划那次拿到了决策 JSON，于是规划解析出"没有查询"，
+    整条链路直接走了"无需检索"——用例红得莫名其妙，其实是被自己的假模型骗了）。
+    """
+
+    def __init__(self, plan: str, decisions: list[str]) -> None:
+        self._plan = plan
+        self._decisions = list(decisions)
+        self.planner_calls = 0
+
+    def complete(self, messages):  # type: ignore[no-untyped-def]
+        call_index = self.planner_calls
+        self.planner_calls += 1
+        if call_index == 0:
+            return self._plan
+        return self._decisions.pop(0) if self._decisions else '{"action":"answer"}'
+
+    def stream_events(self, messages):  # type: ignore[no-untyped-def]
+        from app.services.llm import LLMDelta
+
+        yield LLMDelta(text="答案")
+
+
+def _agent_service(retrieval, chat, runtime, bind_slot):  # type: ignore[no-untyped-def]
+    bind_slot("chat", model_id="m", capabilities=["chat"])
+    return ChatService(retrieval, runtime, chat_factory=lambda c: chat)  # type: ignore[arg-type]
+
+
+def test_a_round_that_finds_nothing_new_stops_the_loop(runtime, bind_slot) -> None:
+    """**这一轮没有新资料就停**：换词没挖出新东西时，不必再花一次决策调用。
+
+    模型在"这个库本来没有"时最容易这样绕圈：换着说法反复搜，每次都召回同一批片段。
+    判据只能是"新增条数"——模型自己说"够了"并不可靠。
+    """
+    from app.services.agent import StepEvent
+
+    retrieval = _ScriptedRetrieval({"改写一": [_hit("c1")], "改写二": [_hit("c1")]})
+    chat = _ScriptedChat(
+        '{"intent":"factual","queries":["改写一"]}',
+        ['{"action":"search","query":"改写二"}', '{"action":"search","query":"改写三"}'],
+    )
+    service = _agent_service(retrieval, chat, runtime, bind_slot)
+
+    events = list(service.answer_agent_stream(query="问题", kb_ids=["kb_1"]))
+
+    steps = [e for e in events if isinstance(e, StepEvent)]
+    assert any("停止多轮检索" in e.label for e in steps)
+    # 第二轮之后就停了，不该再为"改写三"发一次决策调用
+    assert retrieval.calls == ["改写一", "改写二"]
+    assert not any("改写三" in e.detail for e in steps)
+
+
+def test_a_round_reports_how_many_new_chunks_it_added(runtime, bind_slot) -> None:
+    """每轮如实报"新增几段"：用户看得见这一轮到底有没有用。"""
+    from app.services.agent import StepEvent
+
+    retrieval = _ScriptedRetrieval({"改写一": [_hit("c1")], "改写二": [_hit("c2")]})
+    chat = _ScriptedChat(
+        '{"intent":"factual","queries":["改写一"]}',
+        ['{"action":"search","query":"改写二"}', '{"action":"answer"}'],
+    )
+    service = _agent_service(retrieval, chat, runtime, bind_slot)
+
+    events = list(service.answer_agent_stream(query="问题", kb_ids=["kb_1"]))
+
+    rounds = [e for e in events if isinstance(e, StepEvent) and e.phase == "retrieve"]
+    assert [e.added for e in rounds if e.added is not None] == [1]
+
+
+def test_planning_failure_is_marked_degraded(runtime, bind_slot) -> None:
+    """规划失败要**标记成降级**：界面据此给重试入口，而不是让用户以为"这次答得差"。"""
+
+    class _BrokenPlanner:
+        def complete(self, messages):  # type: ignore[no-untyped-def]
+            raise RuntimeError("上游挂了")
+
+        def stream_events(self, messages):  # type: ignore[no-untyped-def]
+            from app.services.llm import LLMDelta
+
+            yield LLMDelta(text="按原问题答")
+
+    from app.services.agent import StepEvent
+
+    retrieval = _ScriptedRetrieval({"原问题": [_hit("c1")]})
+    service = _agent_service(retrieval, _BrokenPlanner(), runtime, bind_slot)
+
+    events = list(service.answer_agent_stream(query="原问题", kb_ids=["kb_1"]))
+
+    degraded = [e for e in events if isinstance(e, StepEvent) and e.degraded]
+    assert len(degraded) == 1
+    # 降级不等于失败：仍然按原问题检索并给出了回答
+    assert retrieval.calls == ["原问题"]
+    assert "按原问题答" in "".join(getattr(e, "text", "") for e in events)
+
+
+def test_multi_query_retrieval_runs_the_queries_in_parallel(runtime, bind_slot) -> None:
+    """多条改写查询**并发**跑：串行等于把三份延迟叠起来。
+
+    只断言"总共检索了 3 次"验不出并发——串行也是 3 次；所以量"同时在飞"的峰值。
+    """
+    retrieval = _ScriptedRetrieval(
+        {"改写一": [_hit("c1")], "改写二": [_hit("c2")], "改写三": [_hit("c3")]}
+    )
+    chat = _ScriptedChat('{"intent":"factual","queries":["改写一","改写二","改写三"]}', [])
+    service = _agent_service(retrieval, chat, runtime, bind_slot)
+
+    list(service.answer_agent_stream(query="问题", kb_ids=["kb_1"]))
+
+    assert sorted(retrieval.calls) == ["改写一", "改写三", "改写二"]
+    assert retrieval.peak > 1, "多条查询是串行跑的"

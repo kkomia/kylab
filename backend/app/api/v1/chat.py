@@ -284,6 +284,10 @@ def _events(
                             "label": event.label,
                             "detail": event.detail,
                             "status": event.status,
+                            # 两个都是"可选补充"，只在有意义时发（v25）：
+                            # degraded 让界面给重试入口，added 让界面说清这轮找到了几条新资料
+                            **({"degraded": True} if event.degraded else {}),
+                            **({"added": event.added} if event.added is not None else {}),
                         }
                     )
                 elif isinstance(event, SourcesEvent):

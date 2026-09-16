@@ -14,8 +14,10 @@ from __future__ import annotations
 import dataclasses
 import logging
 import re
+import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from app.services.agent import (
@@ -115,6 +117,10 @@ MAX_CONTEXT_CHUNKS = 6
 MATERIAL_CHARS = 6000
 #: 单条资料的下限：再少就只剩下标题和表格残渣，不如不给。
 MIN_SOURCE_CHARS = 400
+
+#: 给决策器的"库概况"预算（文档摘要合计字数，v25）。
+#: 决策只需判断方向对不对，一屏概述足够；给太多等于把作答的上下文再付一遍。
+LIBRARY_SUMMARY_CHARS = 900
 #: 每条资料截断长度：一条 chunk 通常 500 字上下，超长的只取开头
 MAX_CHUNK_CHARS = 900
 
@@ -179,6 +185,7 @@ class _SectionReader:
         self._stores = stores
         self._budget = budget
         self._cache: dict[str, list] = {}
+        self._lock = threading.Lock()
 
     def text_for(self, hit) -> str:  # type: ignore[no-untyped-def]
         if self._budget <= 0 or not hit.heading_path:
@@ -211,9 +218,17 @@ class _SectionReader:
         return "\n\n".join(item.text for item in picked)
 
     def _chunks_of(self, document_id: str) -> list:
-        if document_id not in self._cache:
-            self._cache[document_id] = list(self._stores.meta.iter_chunks(document_id))
-        return self._cache[document_id]
+        # **加锁**：多查询/多轮检索会把同一个 reader 交给几个线程并发用（v25 起
+        # `retrieve_sources_multi` 并行跑），而字典的"查了没有就写"不是原子操作——
+        # 并发下会重复读库（白花一次 IO），极端时还会看到半填的列表。
+        with self._lock:
+            cached = self._cache.get(document_id)
+        if cached is not None:
+            return cached
+        chunks = list(self._stores.meta.iter_chunks(document_id))
+        with self._lock:
+            # 谁先写好算谁的：两次并发读到的是同一份库内容，覆盖也无害
+            return self._cache.setdefault(document_id, chunks)
 
 
 @dataclass(slots=True)
@@ -272,11 +287,16 @@ class ChatService:
         kb_ids: list[str],
         top_k: int | None = None,
         candidate_k: int = 40,
+        reader: _SectionReader | None = None,
     ) -> list[SourceRef]:
         """先检索，拿到带编号的出处。流式回答时**先把这个发给前端**，
         用户能立刻看到"依据是哪几段"，不用等模型写完。
 
         ``top_k`` 留空时读设置页里的「带入资料的条数」。
+
+        ``reader`` 由调用方传入即可**跨查询/跨轮次复用**那份"按文档缓存的块列表"：
+        多查询检索时几条查询常常命中同一批文档，各建一个 reader 就会把同样的块
+        重复读好几遍（v25 起多查询并行，缓存还必须线程安全，见 ``_SectionReader``）。
         """
         limit = top_k or self._runtime.get_int("chat.top_k") or MAX_CONTEXT_CHUNKS
         response = self._retrieval.search(
@@ -287,7 +307,8 @@ class ChatService:
                 candidate_k=candidate_k,
             )
         )
-        reader = _SectionReader(self._stores, self._section_chars) if self._stores else None
+        if reader is None and self._stores is not None:
+            reader = _SectionReader(self._stores, self._section_chars)
         # 每条资料的预算 = 总数均摊，**但不超过设置页那条 section_chars**，
         # 也不低于 MIN_SOURCE_CHARS。这样"命中 6 条"总字数封顶，
         # 而命中 2 条时仍然给得足（不必为没发生的拥挤买单）。
@@ -469,7 +490,14 @@ class ChatService:
 
         if plan is None:
             plan = AgentPlan(intent="factual", queries=[query], need_retrieval=True)
-            yield StepEvent(phase="intent", label="理解问题", detail="规划不可用，按原问题检索")
+            # degraded 让界面能给出"重试"入口：这次少了意图识别与检索词改写，
+            # 用户应当能自己再要一次，而不是只能接受退化的结果
+            yield StepEvent(
+                phase="intent",
+                label="理解问题",
+                detail="规划不可用，按原问题检索",
+                degraded=True,
+            )
         else:
             # label 保持"理解问题"不变、把结论放进 detail：界面上 running 占位与收尾是
             # 同一行（同名替换），换了 label 就会显示成两行"理解问题"
@@ -482,9 +510,15 @@ class ChatService:
         if not plan.need_retrieval or not plan.queries:
             yield StepEvent(phase="rewrite", label="无需检索，直接回答")
         else:
+            # 一份小节缓存在**所有查询与所有轮次之间共用**：多查询常常命中同一批文档，
+            # 各建一个 reader 会把同样的块重复读好几遍（v25）
+            reader = _SectionReader(self._stores, self._section_chars) if self._stores else None
             yield StepEvent(phase="rewrite", label="优化检索词", detail="、".join(plan.queries))
-            sources = self.retrieve_sources_multi(plan.queries, kb_ids, top_k=limit)
+            sources = self.retrieve_sources_multi(
+                plan.queries, kb_ids, top_k=limit, reader=reader
+            )
             yield SourcesEvent(sources=sources)
+            seen = {item.chunk_id for item in sources}
 
             tried = list(plan.queries)
             for round_no in range(2, max_rounds + 1):
@@ -497,6 +531,7 @@ class ChatService:
                         tried=tried,
                         remaining=max_rounds - round_no + 1,
                         config=config,
+                        kb_ids=kb_ids,
                     )
                 except Exception:
                     logger.warning("检索决策失败，结束多轮检索", exc_info=True)
@@ -509,8 +544,28 @@ class ChatService:
                     detail=decision.query,
                     status="running",
                 )
-                extra = self.retrieve_sources(query=decision.query, kb_ids=kb_ids, top_k=limit)
+                extra = self.retrieve_sources(
+                    query=decision.query, kb_ids=kb_ids, top_k=limit, reader=reader
+                )
+                # **这一轮带来了几条新资料**：为 0 说明换个说法也没挖出别的东西
+                # （模型在无关内容里绕圈时就是这样），不必再花一次决策调用去问它。
+                fresh = sum(1 for item in extra if item.chunk_id not in seen)
                 sources = _merge_sources([sources, extra], limit=limit)
+                seen = {item.chunk_id for item in sources}
+                yield StepEvent(
+                    phase="retrieve",
+                    label=f"第 {round_no} 轮检索",
+                    detail=f"{decision.query} · 新增 {fresh} 段",
+                    added=fresh,
+                )
+                if fresh == 0:
+                    yield StepEvent(
+                        phase="retrieve",
+                        label="停止多轮检索",
+                        detail="换了个问法也没有找到新资料，直接作答",
+                    )
+                    logger.info("第 %d 轮检索没有新增资料，提前结束多轮", round_no)
+                    break
                 yield SourcesEvent(sources=sources)
 
         prompt = system_prompt or self._runtime.get("chat.system_prompt")
@@ -573,18 +628,40 @@ class ChatService:
         kb_ids: list[str],
         *,
         top_k: int | None = None,
+        reader: _SectionReader | None = None,
     ) -> list[SourceRef]:
         """对多条改写查询各检索一次，按 chunk 去重后取分数最高的一批。
 
         多查询是"召回补漏"：指代消解后的查询与原查询各命中一部分，
         并起来比任何单条都全。去重按 ``chunk_id``——同一段资料被两条查询命中时
         只保留一次，且保留分更高的那条（分数会影响排序与阈值）。
+
+        **几条查询并发跑**（v25）：每条查询都是一次完整的混合检索（向量 + 全文 +
+        融合 + 组装），而它们**互不依赖**——串行跑等于把三份延迟叠起来，用户等着
+        三段检索依次完成才看到第一屏依据。并发上限跟着查询条数（规划最多给 3 条），
+        不再另设阈值：这个数本来就被 `MAX_PLAN_QUERIES` 卡死了。
+
+        ``reader`` 传进来是为了让几条查询**共用一份小节缓存**：它们常常命中同一批
+        文档，各建一个 reader 会把同样的块重复读好几遍。
         """
         limit = top_k or self._runtime.get_int("chat.top_k") or MAX_CONTEXT_CHUNKS
-        groups: list[list[SourceRef]] = []
-        for item in queries:
-            if item.strip():
-                groups.append(self.retrieve_sources(query=item, kb_ids=kb_ids, top_k=limit))
+        wanted = [item for item in queries if item.strip()]
+        if not wanted:
+            return []
+        if len(wanted) == 1:
+            return self.retrieve_sources(
+                query=wanted[0], kb_ids=kb_ids, top_k=limit, reader=reader
+            )
+        with ThreadPoolExecutor(max_workers=len(wanted)) as pool:
+            # map 保持顺序：合并结果与串行时完全一致（`_merge_sources` 还会再按分数排一次）
+            groups = list(
+                pool.map(
+                    lambda item: self.retrieve_sources(
+                        query=item, kb_ids=kb_ids, top_k=limit, reader=reader
+                    ),
+                    wanted,
+                )
+            )
         return _merge_sources(groups, limit=limit)
 
     # ------------------------------------------------- Agent 内部：规划与决策
@@ -620,11 +697,20 @@ class ChatService:
         tried: list[str],
         remaining: int,
         config: LLMConfig,
+        kb_ids: list[str],
     ) -> AgentDecision | None:
-        """问模型：现有资料够不够？不够就再给一条检索词（工具调用）。"""
+        """问模型：现有资料够不够？不够就再给一条检索词（工具调用）。
+
+        **带上"库的概况"**（v25）：只看命中的片段，决策器无从判断"是这个库本来没有这类
+        资料"还是"我这轮词找得不好"，于是会一直换词试探——在无关内容里越挖越远。
+        给它库的规模 + 命中文档的摘要（它们是"这个库大概有什么"的抽样），
+        它才有依据说出"这里没有，直接作答"。
+        """
         planner = self._planner_chat(config)
-        system = DECIDE_PROMPT.replace("{findings}", _findings_summary(sources)).replace(
-            "{tried}", "、".join(tried) or "（无）"
+        system = (
+            DECIDE_PROMPT.replace("{library}", self._library_summary(kb_ids, sources))
+            .replace("{findings}", _findings_summary(sources))
+            .replace("{tried}", "、".join(tried) or "（无）")
         )
         user = f"用户问题：{query}\n意图：{intent_label(intent)}\n还能检索 {remaining} 次。"
         started = time.monotonic()
@@ -636,6 +722,44 @@ class ChatService:
         )
         self._record_usage(planner, started, items=1, config=config)
         return parse_decision(text)
+
+    def _library_summary(self, kb_ids: list[str], sources: list[SourceRef]) -> str:
+        """给决策器看的"这个库大概有什么"：库的规模 + 命中文档的摘要。
+
+        用文档摘要而不是全文（v25 起每篇都有）：一行一篇，几百字就能交代清"库的方向"。
+        命中的文档恰好是**离问题最近的那几篇**——如果连它们的方向都不对，
+        那这个库大概真没有相关资料，这正是决策器需要知道的事。
+        """
+        lines: list[str] = []
+        total = 0
+        for kb_id in kb_ids:
+            try:
+                total += self._stores.meta.count_documents(kb_id) if self._stores else 0
+            except Exception:  # pragma: no cover - 计数失败不该影响决策这一步
+                logger.warning("统计知识库文档数失败：%s", kb_id, exc_info=True)
+        if total:
+            lines.append(f"共 {total} 篇文档。下面给出**本次命中的**文档各自的摘要：")
+
+        summaries = self._summaries_of([item.document_id for item in sources])
+        budget = LIBRARY_SUMMARY_CHARS
+        spent = 0
+        seen_docs: set[str] = set()
+        for source in sources:
+            if source.document_id in seen_docs:
+                continue
+            seen_docs.add(source.document_id)
+            summary = " ".join(summaries.get(source.document_id, "").split())
+            if not summary:
+                continue
+            line = f"- {source.document_name}：{summary[:120]}"
+            if spent + len(line) > budget:
+                break
+            lines.append(line)
+            spent += len(line)
+        if len(lines) <= 1:
+            # 一篇摘要都拿不到（老文档还没补上）时不要留个空标题：明说"没有背景"
+            lines.append("（这些文档还没有摘要，只能靠上面的片段判断）")
+        return "\n".join(lines)
 
     def _planner_chat(self, config: LLMConfig):  # type: ignore[no-untyped-def]
         """规划/决策专用的客户端：同一模型，但思考关、温度 0。"""

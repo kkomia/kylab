@@ -65,6 +65,8 @@ export interface TraceStep {
   icon: 'search' | 'think' | 'build'
   label: string
   detail: string
+  /** 这一步一个片段都没新增（只有检索步骤有）：界面上弱化它，别和"有收获"的轮次一样重。 */
+  empty?: boolean
 }
 
 /** 提问原文在面板里只显示一小段：它是"检索了什么"的提示，不是内容主体。 */
@@ -132,6 +134,16 @@ export function traceSummary(message: Message): string {
   return `检索完成 · 引用了 ${message.sources.length} 个片段 · ${documents} 篇文档`
 }
 
+/**
+ * 这一轮里有没有走过降级路径（只有"规划不可用"一种）。
+ *
+ * 放在这里而不是页面上现算：历史回放（后端只存正文）拿不到步骤，那时它就该是 false，
+ * 页面不必自己判断"有没有 steps"。
+ */
+export function wasDegraded(message: Message): boolean {
+  return message.steps.some((step) => step.degraded === true)
+}
+
 /** Agent 步骤的阶段 → 图标键。 */
 const STEP_ICONS: Record<string, TraceStep['icon']> = {
   intent: 'think',
@@ -176,11 +188,14 @@ export function traceSteps(turn: Turn): TraceStep[] {
 }
 
 function agentTraceSteps(message: Message): TraceStep[] {
-  const steps = message.steps.map((step, index) => ({
+  // 显式标注元素类型：不标的话 TS 会把 `empty` 推成必填，后面 unshift 思考那一步就类型不兼容
+  const steps: TraceStep[] = message.steps.map((step, index) => ({
     key: `${step.phase}-${index}`,
     icon: STEP_ICONS[step.phase] ?? 'search',
     label: step.label,
     detail: step.phase === 'answer' ? answerDetail(message) : step.detail,
+    // "这一轮什么新东西都没找到"在过程面板里要轻一档：它是一句交代，不是一次收获
+    empty: step.added === 0,
   }))
   if (message.thinking?.enabled && !steps.some((item) => item.icon === 'think')) {
     steps.unshift(...thinkingStep(message))

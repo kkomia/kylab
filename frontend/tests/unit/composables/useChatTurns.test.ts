@@ -11,6 +11,7 @@ import {
   THINKING_EFFORTS,
   traceSteps,
   traceSummary,
+  wasDegraded,
   type Message,
   type ThinkingEffort,
 } from '@/composables/useChatTurns'
@@ -262,5 +263,55 @@ describe('出处排版', () => {
 describe('THINKING_EFFORTS', () => {
   it('只有三档，与后端归一化口径一致', () => {
     expect(THINKING_EFFORTS.map((item) => item.value)).toEqual(['low', 'medium', 'high'])
+  })
+})
+
+describe('降级与"这一轮没找到新东西"（v25）', () => {
+  it('reports a degraded planning step', () => {
+    const message = makeMessage('assistant', '答', {
+      steps: [
+        {
+          phase: 'intent',
+          label: '理解问题',
+          detail: '规划不可用',
+          status: 'done',
+          degraded: true,
+        },
+      ],
+    })
+
+    expect(wasDegraded(message)).toBe(true)
+  })
+
+  it('is not degraded on a normal run', () => {
+    const message = makeMessage('assistant', '答', {
+      steps: [{ phase: 'intent', label: '理解问题', detail: '意图：查事实', status: 'done' }],
+    })
+
+    expect(wasDegraded(message)).toBe(false)
+  })
+
+  it('marks a round that added nothing as empty', () => {
+    const message = makeMessage('assistant', '答', {
+      steps: [
+        {
+          phase: 'retrieve',
+          label: '第 2 轮检索',
+          detail: '换个问法 · 新增 0 段',
+          status: 'done',
+          added: 0,
+        },
+        {
+          phase: 'retrieve',
+          label: '第 3 轮检索',
+          detail: '再换一个 · 新增 4 段',
+          status: 'done',
+          added: 4,
+        },
+      ],
+    })
+
+    const steps = traceSteps({ user: null, reply: message })
+    expect(steps.map((item) => item.empty)).toEqual([true, false])
   })
 })

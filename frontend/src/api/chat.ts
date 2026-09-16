@@ -85,11 +85,27 @@ export interface ChatStep {
   detail: string
   /** "running" | "done" */
   status: string
+  /**
+   * 这一步走了降级路径（目前只有"规划不可用，按原问题检索"）。
+   *
+   * 界面据此给一个**重试入口**：这次少了意图识别与检索词改写，用户应当能自己再要一次。
+   */
+  degraded?: boolean
+  /** 这一步带来的**新增**资料条数（只有检索步骤有）。0 表示换了个问法也没挖出新东西。 */
+  added?: number
 }
 
 /** 服务端事件（后端 api/v1/chat.py 的事件形状）。 */
 export type ChatStreamEvent =
-  | { type: 'step'; phase: string; label: string; detail: string; status: string }
+  | {
+      type: 'step'
+      phase: string
+      label: string
+      detail: string
+      status: string
+      degraded?: boolean
+      added?: number
+    }
   | { type: 'sources'; items: ChatSource[] }
   | { type: 'thinking'; text: string }
   | { type: 'delta'; text: string }
@@ -287,6 +303,10 @@ async function pump(
         label: event.label,
         detail: event.detail,
         status: event.status,
+        // 两个可选补充**只在后端真发了的时候带上**：降级标记要给界面一个重试入口，
+        // 新增条数让"这一轮有没有挖到新东西"可见（v25）
+        ...(event.degraded ? { degraded: event.degraded } : {}),
+        ...(event.added === undefined ? {} : { added: event.added }),
       })
       return
     }

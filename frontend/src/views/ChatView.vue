@@ -46,6 +46,7 @@ import type { RegisteredModel } from '@/api/modelRegistry'
 import { getSettings, updateSettings } from '@/api/settings'
 import IconArrowUp from '@/components/icons/IconArrowUp.vue'
 import IconCopy from '@/components/icons/IconCopy.vue'
+import IconAlert from '@/components/icons/IconAlert.vue'
 import IconRegenerate from '@/components/icons/IconRegenerate.vue'
 import IconNote from '@/components/icons/IconNote.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
@@ -81,6 +82,7 @@ import {
   sourceWhere,
   traceSteps,
   traceSummary,
+  wasDegraded,
   THINKING_EFFORTS,
   type Message,
   type ThinkingEffort,
@@ -1150,7 +1152,12 @@ async function savePrompt(): Promise<void> {
               <div v-show="isTraceOpen(turn.reply)" class="trace">
                 <!-- 过程时间线：只列真发生过的步骤 -->
                 <ol class="steps">
-                  <li v-for="step in traceSteps(turn)" :key="step.key" class="step">
+                  <li
+                    v-for="step in traceSteps(turn)"
+                    :key="step.key"
+                    class="step"
+                    :class="{ 'step-empty': step.empty }"
+                  >
                     <span class="step-icon">
                       <component :is="STEP_ICONS[step.icon]" :size="13" />
                     </span>
@@ -1219,6 +1226,26 @@ async function savePrompt(): Promise<void> {
                 v-html="renderAnswerWithCitations(turn.reply.text, turn.reply.sources)"
               />
               <!-- eslint-enable vue/no-v-html -->
+
+              <!--
+                降级提示（v25）：这一轮少了意图识别与检索词改写（规划调用失败），
+                所以要**如实说出来并给一个重试入口**——否则用户只会觉得"这次答得差"，
+                却不知道是链路退化了、也不知道能不能再要一次。
+                重试就是重发同一句提问（复用 `regenerate`），所以只在最后一轮给按钮。
+              -->
+              <p v-if="!turn.reply.streaming && wasDegraded(turn.reply)" class="reply-degraded">
+                <IconAlert :size="13" />
+                这次没走多轮检索（规划调用失败，直接按原问题检索了一遍）。
+                <button
+                  v-if="turnIndex === turns.length - 1 && !sending"
+                  type="button"
+                  class="degraded-retry"
+                  :disabled="regenerating"
+                  @click="regenerate(turnIndex)"
+                >
+                  {{ regenerating ? '重试中…' : '重试' }}
+                </button>
+              </p>
 
               <!-- 消息级操作：复制永远可用；重新生成只给**最后一轮**——
                    重生成中间那轮要先回退掉它之后的全部对话，那不是用户点这个按钮的意思 -->
@@ -1586,6 +1613,41 @@ async function savePrompt(): Promise<void> {
 
 /* 回答的操作行：靠左、字号小、颜色弱——它是"事后可做的一件事"，
    不该和正文抢注意力 */
+/* 降级提示：介于"错误"与"正常"之间，用警示色而不是危险色——
+   答案是能用的，只是链路退化了 */
+.reply-degraded {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-micro-size);
+  line-height: 1.6;
+  color: var(--status-warning);
+}
+
+/* 「重试」是个文字按钮：它是一句话里的动作，做成实心按钮会把提示的权重抬得过高 */
+.degraded-retry {
+  padding: 0 var(--space-1);
+  font-size: inherit;
+  color: var(--accent-text);
+  text-decoration: underline;
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.degraded-retry:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
+
+/* 没有新增资料的检索轮次：压暗一档。它和"找到了新东西"的那几轮价值不同，
+   一样重会让人以为每一轮都有收获 */
+.step-empty .step-label,
+.step-empty .step-detail {
+  color: var(--text-tertiary);
+}
+
 .reply-actions {
   display: flex;
   align-items: center;

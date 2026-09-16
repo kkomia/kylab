@@ -71,7 +71,7 @@ def _install_fake_chat(answer: str = "这是回答。[1]", error: str | None = N
 def _install_fake_sources() -> None:
     """让检索返回固定出处——不打真检索，专注测协议。"""
 
-    def fake_sources(*, query: str, kb_ids: list[str], top_k=None):  # type: ignore[no-untyped-def]
+    def fake_sources(*, query: str, kb_ids: list[str], top_k=None, reader=None):  # type: ignore[no-untyped-def]
         return [
             SourceRef(
                 index=1,
@@ -296,7 +296,7 @@ def test_agent_runs_intent_rewrite_and_a_second_retrieval(client: TestClient, kb
     """跑通完整工作流：意图 → 改写 → 按第一次结果再检索一次 → 作答。"""
     seen_queries: list[str] = []
 
-    def query_aware_sources(*, query: str, kb_ids: list[str], top_k=None):  # type: ignore[no-untyped-def]
+    def query_aware_sources(*, query: str, kb_ids: list[str], top_k=None, reader=None):  # type: ignore[no-untyped-def]
         seen_queries.append(query)
         # 两条查询各命中不同 chunk：合并后应有两处来源，且重编号为 1、2
         suffix = "1" if query == "眼轴长度" else "2"

@@ -5,6 +5,7 @@
 所以把边界逐个钉住。
 """
 
+from app.models.enums import DataSourceKind, DocumentStage
 from app.services.agent import (
     MAX_PLAN_QUERIES,
     MAX_QUERY_CHARS,
@@ -12,11 +13,23 @@ from app.services.agent import (
     parse_decision,
     parse_plan,
 )
-from app.services.chat import SourceRef, _findings_summary, _history_snippet, _merge_sources
+from app.services.chat import (
+    SourceRef,
+    _findings_summary,
+    _history_snippet,
+    _merge_sources,
+)
 from app.services.llm import ChatMessage
 
 
-def source(chunk_id: str, *, index: int = 1, score: float = 0.5, name: str = "a.pdf") -> SourceRef:
+def source(
+    chunk_id: str,
+    *,
+    index: int = 1,
+    score: float = 0.5,
+    name: str = "a.pdf",
+    document_summary: str = "",
+) -> SourceRef:
     return SourceRef(
         index=index,
         chunk_id=chunk_id,
@@ -24,6 +37,7 @@ def source(chunk_id: str, *, index: int = 1, score: float = 0.5, name: str = "a.
         document_name=name,
         score=score,
         preview="预览",
+        document_summary=document_summary,
     )
 
 
@@ -186,3 +200,78 @@ def test_history_snippet_only_takes_the_tail() -> None:
 
     assert "第9问" in snippet and "第5问" not in snippet
     assert snippet.startswith("最近对话：")
+
+
+# ------------------------------------------------- 决策器拿到的"库概况"（v25）
+
+
+def test_decide_prompt_asks_for_the_library_context() -> None:
+    """决策提示词里必须有「知识库概况」这一格。
+
+    只看命中片段时，决策器分不清"是这个库本来没有"和"这一轮词没找好"，
+    于是会一直换词试探，在无关内容里越挖越远。
+    """
+    from app.services.agent import DECIDE_PROMPT
+
+    assert "{library}" in DECIDE_PROMPT
+    assert "知识库概况" in DECIDE_PROMPT
+    # 明确交代"无关就直接作答"，否则那句概况给了也没人用
+    assert "直接作答" in DECIDE_PROMPT
+
+
+class _FakeMeta:
+    """只实现 ``_library_summary`` 用到的两个方法（鸭子类型，避免装配整条链路）。"""
+
+    def __init__(self, total: int, documents: dict) -> None:
+        self._total = total
+        self._documents = documents
+
+    def count_documents(self, kb_id: str) -> int:
+        return self._total
+
+    def get_documents_by_ids(self, ids):  # type: ignore[no-untyped-def]
+        return self._documents
+
+
+def _summary_service(total: int = 0, documents: dict | None = None):  # type: ignore[no-untyped-def]
+    from app.services.chat import ChatService
+
+    service = ChatService.__new__(ChatService)  # 只测这一个纯拼装方法
+    service._stores = type("S", (), {"meta": _FakeMeta(total, documents or {})})()  # type: ignore[assignment]
+    return service
+
+
+def test_library_summary_states_the_size_and_the_hit_documents() -> None:
+    """库概况 = **库有多大** + 命中文档的摘要（一行一篇、去重）。"""
+    from app.storage.base import DocumentRecord
+
+    summary = "一篇关于绿地与近视的系统综述。"
+    # 同一篇文档的两段命中：摘要只该出现一次（SourceRef 是 frozen，摘要构造时就给）
+    hits = [
+        source("c1", name="绿地与近视.pdf", document_summary=summary),
+        source("c2", name="绿地与近视.pdf", document_summary=summary),
+    ]
+    documents = {
+        "doc_c1": DocumentRecord(
+            id="doc_c1",
+            knowledge_base_id="kb_1",
+            name="绿地与近视.pdf",
+            source_kind=DataSourceKind.UPLOAD,
+            content_hash="h1",
+            stage=DocumentStage.INDEXED,
+            summary=summary,
+        )
+    }
+
+    text = _summary_service(total=23, documents=documents)._library_summary(["kb_1"], hits)
+
+    assert "共 23 篇文档" in text
+    assert text.count(summary) == 1
+    assert "绿地与近视.pdf" in text
+
+
+def test_library_summary_says_so_when_no_summary_is_available() -> None:
+    """摘要还没补上时不留空标题，明说"没有背景"。"""
+    text = _summary_service(total=3)._library_summary(["kb_1"], [source("c1")])
+
+    assert "还没有摘要" in text
