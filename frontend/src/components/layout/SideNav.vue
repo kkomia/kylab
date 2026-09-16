@@ -26,8 +26,11 @@ import IconPin from '@/components/icons/IconPin.vue'
 import IconSearch from '@/components/icons/IconSearch.vue'
 import IconTrash from '@/components/icons/IconTrash.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
+import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconDashboard from '@/components/icons/IconDashboard.vue'
+import IconFolder from '@/components/icons/IconFolder.vue'
 import IconLibrary from '@/components/icons/IconLibrary.vue'
+import IconPlus from '@/components/icons/IconPlus.vue'
 import IconLogo from '@/components/icons/IconLogo.vue'
 import IconLogout from '@/components/icons/IconLogout.vue'
 import IconNote from '@/components/icons/IconNote.vue'
@@ -52,6 +55,7 @@ import type { ConversationSummary } from '@/api/conversations'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 import { useModelRegistryStore } from '@/stores/modelRegistry'
+import { useWorkspaceStore } from '@/stores/workspaces'
 import { useStatsStore } from '@/stores/stats'
 import { useToast } from '@/composables/useToast'
 import { useTaskStore } from '@/stores/tasks'
@@ -60,6 +64,7 @@ const route = useRoute()
 const router = useRouter()
 const store = useKnowledgeBaseStore()
 const conversations = useConversationStore()
+const workspaces = useWorkspaceStore()
 const taskStore = useTaskStore()
 const statsStore = useStatsStore()
 const modelStore = useModelRegistryStore()
@@ -72,6 +77,7 @@ onMounted(async () => {
   // `load()` 一次就带回每个库的文档数（后端 GROUP BY），不再逐库拉文档列表
   if (store.items.length === 0) await store.load()
   void conversations.load()
+  void workspaces.load()
   // 名册只用于显示"文档是谁传的"这一列（不再有切换使用者的入口）
   void loadRoster()
   // 启动后空闲时预热任务列表：用户点进任务中心时数据通常已经在手里。
@@ -147,15 +153,105 @@ function onConversationIntent(id: string): void {
  *
  * 「记忆」排在笔记之后、任务中心之前：它与笔记同属"我写下的东西"，
  * 但比笔记低频（记忆主要靠对话自动沉淀，人进来是校对与整理）。
+ *
+ * **「知识库」不在这里**（v0.15）：它是一个**可折叠的子菜单**（见下面的
+ * `KNOWLEDGE_GROUP` 与模板里的那段）。理由：知识库在侧栏占着一个顶级位置，
+ * 却没承担该承担的导航——要进某个库还得先进"知识库"页再找。
+ * 展开之后每个库一行，**点一次就到**。
  */
+/**
+ * 工作区与知识库子菜单的开合状态（v0.15）。
+ *
+ * **默认都收起**：这两个子菜单的意义就是"把空间让给会话"，
+ * 默认展开等于没改。会话所在的工作区会自动展开（见 `openWorkspaceIds` 的 watch）。
+ */
+const knowledgeOpen = ref(false)
+const openWorkspaceIds = ref<string[]>([])
+const ungroupedOpen = ref(true)
+
+/** 按工作区把会话分好组。会话只有**一份**平铺清单，分组在这里做——
+ *  两处各存一份，"把会话挪进工作区"就得改两个地方。 */
+const conversationsByWorkspace = computed(() => {
+  const groups = new Map<string, ConversationSummary[]>()
+  for (const item of conversations.items) {
+    if (!item.workspace_id) continue
+    const list = groups.get(item.workspace_id) ?? []
+    list.push(item)
+    groups.set(item.workspace_id, list)
+  }
+  return groups
+})
+
+/** 不属于任何工作区的会话（侧栏单独一栏，按最近更新排）。 */
+const ungroupedConversations = computed(() =>
+  conversations.items.filter((item) => !item.workspace_id),
+)
+
+const knowledgeBases = computed(() => store.items)
+
+function toggleKnowledge(): void {
+  knowledgeOpen.value = !knowledgeOpen.value
+}
+
+function toggleWorkspace(workspaceId: string): void {
+  openWorkspaceIds.value = openWorkspaceIds.value.includes(workspaceId)
+    ? openWorkspaceIds.value.filter((item) => item !== workspaceId)
+    : [...openWorkspaceIds.value, workspaceId]
+}
+
+function isWorkspaceOpen(workspaceId: string): boolean {
+  return openWorkspaceIds.value.includes(workspaceId)
+}
+
+/** 「新建工作区」：跳工作区页并让它直接把新建表单打开（`?new=1`）。 */
+function onNewWorkspace(): void {
+  void router.push({ path: '/workspaces', query: { new: '1' } })
+}
+
+function isKnowledgeActive(): boolean {
+  return route.path.startsWith('/knowledge-bases') || route.path.startsWith('/kb/')
+}
+
+/** 在这个工作区里开一条新会话：带上工作区，**知识库范围由后端继承工作区的**
+ *  （见 api/v1/conversations.py）。这就是"进入项目，资料范围就定了"。 */
+async function newConversationIn(workspaceId: string): Promise<void> {
+  const workspace = workspaces.byId.get(workspaceId)
+  try {
+    const record = await conversations.create([], null, undefined, workspaceId)
+    openWorkspaceIds.value = [...new Set([...openWorkspaceIds.value, workspaceId])]
+    await workspaces.refreshCounts()
+    await router.push(`/chat/${record.id}`)
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '新建会话失败')
+    void workspace
+  }
+}
+
+/** 把一个会话挪进工作区 / 退回未归档（会话行菜单里用）。 */
+async function moveConversation(
+  conversation: ConversationSummary,
+  workspaceId: string | null,
+): Promise<void> {
+  try {
+    await conversations.setWorkspace(conversation.id, workspaceId)
+    await workspaces.refreshCounts()
+    notifySuccess(workspaceId ? '已挪进工作区' : '已移出工作区')
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '移动失败')
+  }
+}
+
 const NAV_ITEMS = [
   { to: '/chat', label: '对话', icon: IconChat, exact: false },
   { to: '/', label: '概览', icon: IconDashboard, exact: true },
-  { to: '/knowledge-bases', label: '知识库', icon: IconLibrary, exact: false },
   { to: '/notes', label: '笔记', icon: IconNote, exact: false },
   { to: '/memory', label: '记忆', icon: IconRobot, exact: false },
+  { to: '/capabilities', label: '能力', icon: IconSettings, exact: false },
   { to: '/tasks', label: '任务中心', icon: IconTasks, exact: false },
 ] as const
+
+/** 知识库子菜单的入口（与 `NAV_ITEMS` 平级渲染，但带展开/收起）。 */
+const KNOWLEDGE_GROUP = { to: '/knowledge-bases', label: '知识库', icon: IconLibrary } as const
 
 function isActive(to: string, exact: boolean): boolean {
   return exact ? route.path === to : route.path.startsWith(to)
@@ -383,6 +479,46 @@ async function onLogout(): Promise<void> {
         <component :is="item.icon" class="nav-icon" />
         <span class="nav-label">{{ item.label }}</span>
       </RouterLink>
+
+      <!--
+        知识库：**收成子菜单**（v0.15）。它原先占一个顶级位置，却没承担该承担的
+        导航——要进某个库还得先点"知识库"、再在页面里找。展开之后每个库一行，
+        **点一次就到**；收起时只占一行。
+      -->
+      <div class="nav-group">
+        <button
+          type="button"
+          class="nav-item nav-item-group"
+          :class="{ 'nav-item-active': isKnowledgeActive() && !knowledgeOpen }"
+          :aria-expanded="knowledgeOpen"
+          :title="collapsed ? KNOWLEDGE_GROUP.label : undefined"
+          @click="toggleKnowledge"
+        >
+          <component :is="KNOWLEDGE_GROUP.icon" class="nav-icon" />
+          <span class="nav-label">{{ KNOWLEDGE_GROUP.label }}</span>
+          <span class="nav-count tabular">{{ knowledgeBases.length }}</span>
+          <IconChevronRight
+            v-if="!collapsed"
+            class="nav-chevron"
+            :class="{ open: knowledgeOpen }"
+            :size="13"
+          />
+        </button>
+        <ul v-if="knowledgeOpen && !collapsed" class="nav-sub">
+          <li>
+            <RouterLink class="nav-sub-item" :to="KNOWLEDGE_GROUP.to">
+              <IconLibrary :size="14" />
+              <span>所有知识库</span>
+            </RouterLink>
+          </li>
+          <li v-for="kb in knowledgeBases" :key="kb.id">
+            <RouterLink class="nav-sub-item" :to="`/kb/${kb.id}`" :title="kb.name">
+              <span class="nav-sub-name">{{ kb.name }}</span>
+            </RouterLink>
+          </li>
+          <li v-if="!knowledgeBases.length" class="nav-sub-empty">还没有知识库</li>
+        </ul>
+      </div>
     </nav>
 
     <!--
@@ -395,8 +531,8 @@ async function onLogout(): Promise<void> {
            它把「新对话」做成一个整块的填充按钮（BgGp-Secondary + 12px 圆角 + 44px 高），
            而不是挤在标题右边的一个文字链接——后者在视觉上像"次要入口"，
            而新建对话是这一栏里最常用的动作。 -->
-      <p class="section-label">对话</p>
-      <!-- 带上 `?new=1` 才是"新建"。裸 `/chat` 现在表示"回到最近一次对话"
+      <!-- 「新对话」常驻在最上面：它是这一栏里最高频的动作，不该埋在工作区下面。
+           带上 `?new=1` 才是"新建"；裸 `/chat` 表示"回到最近一次对话"
            （见 ChatView 的 enterChat）——两个入口共用一条链接时，
            从知识库返回也会落在空态上，看起来就像"又给我开了个新对话"。 -->
       <RouterLink class="new-chat" :to="{ path: '/chat', query: { new: '1' } }">
@@ -404,65 +540,182 @@ async function onLogout(): Promise<void> {
         <span>新对话</span>
       </RouterLink>
 
-      <!-- 搜索只在有内容时出现：一个空列表下面挂个搜索框，是在问"你要找什么"，
-           可用户手里什么也没有 -->
-      <div v-if="conversations.items.length > 0 || searchDraft" class="conv-search">
-        <IconSearch class="conv-search-icon" :size="14" />
-        <AppInput
-          v-model="searchDraft"
-          class="conv-search-input"
-          placeholder="搜索对话"
-          aria-label="搜索对话"
-          @input="onSearchInput"
-        />
-        <button
-          v-if="searchDraft"
-          type="button"
-          class="conv-search-clear"
-          aria-label="清除搜索"
-          @click="clearSearch"
-        >
-          <IconClose :size="14" />
+      <!-- 工作区栏（v0.15）：**在导航之上**。它承载的是"我正在做的事"，
+           导航承载的是"去哪个功能区"——两者性质不同，顺序也不同
+           （Kimi Work 也是这个顺序）。 -->
+      <div class="workspace-head">
+        <p class="section-label">工作区</p>
+        <button type="button" class="section-action" title="新建工作区" @click="onNewWorkspace">
+          <IconPlus :size="14" />
         </button>
       </div>
 
-      <p v-if="conversations.error" class="side-note">{{ conversations.error }}</p>
-      <p v-else-if="conversations.items.length === 0 && searchDraft" class="side-note">
-        没有标题匹配「{{ searchDraft }}」的对话。
-      </p>
-      <p v-else-if="conversations.items.length === 0" class="side-note">
-        还没有对话。在上面「对话」里提问，这里会留下记录。
-      </p>
-      <ul v-else class="conv-list">
-        <li v-for="item in conversations.items" :key="item.id" class="conv-row">
-          <RouterLink
-            class="conv-item"
-            :class="{ 'conv-item-active': item.id === activeConversationId }"
-            :to="`/chat/${item.id}`"
-            :title="item.title || '未命名对话'"
-            @mouseenter="onConversationIntent(item.id)"
-            @focus="onConversationIntent(item.id)"
+      <p v-if="workspaces.error" class="side-note">{{ workspaces.error }}</p>
+
+      <ul class="ws-list">
+        <li v-for="workspace in workspaces.items" :key="workspace.id" class="ws-group">
+          <div class="ws-row">
+            <button
+              type="button"
+              class="ws-item"
+              :aria-expanded="isWorkspaceOpen(workspace.id)"
+              :title="workspace.root_path"
+              @click="toggleWorkspace(workspace.id)"
+            >
+              <IconChevronDown
+                class="ws-chevron"
+                :class="{ collapsed: !isWorkspaceOpen(workspace.id) }"
+                :size="13"
+              />
+              <IconFolder :size="14" class="ws-icon" />
+              <span class="ws-name">{{ workspace.name }}</span>
+              <span class="ws-count tabular">{{ workspace.conversation_count }}</span>
+            </button>
+            <button
+              type="button"
+              class="ws-new"
+              :title="`在「${workspace.name}」里新开一条会话`"
+              @click="newConversationIn(workspace.id)"
+            >
+              <IconChatNew :size="14" />
+            </button>
+          </div>
+
+          <ul v-if="isWorkspaceOpen(workspace.id)" class="conv-list">
+            <li
+              v-for="item in conversationsByWorkspace.get(workspace.id) ?? []"
+              :key="item.id"
+              class="conv-row"
+            >
+              <RouterLink
+                class="conv-item conv-item-nested"
+                :class="{ 'conv-item-active': item.id === activeConversationId }"
+                :to="`/chat/${item.id}`"
+                :title="item.title || '未命名对话'"
+                @mouseenter="onConversationIntent(item.id)"
+                @focus="onConversationIntent(item.id)"
+              >
+                <IconPin v-if="item.pinned" class="conv-pin" :size="12" />
+                <span class="conv-title">{{ item.title || '未命名对话' }}</span>
+              </RouterLink>
+              <RowMenu class="conv-menu" :label="`${item.title || '未命名对话'} 的操作`">
+                <template #default="{ close }">
+                  <button type="button" @click="(togglePin(item), close())">
+                    <IconPin :size="14" /> {{ item.pinned ? '取消置顶' : '置顶' }}
+                  </button>
+                  <button type="button" @click="(openRename(item), close())">
+                    <IconEdit :size="14" /> 重命名
+                  </button>
+                  <button type="button" @click="(moveConversation(item, null), close())">
+                    <IconFolder :size="14" /> 移出工作区
+                  </button>
+                  <button
+                    class="menu-item-danger"
+                    type="button"
+                    @click="(openDelete(item), close())"
+                  >
+                    <IconTrash :size="14" /> 删除
+                  </button>
+                </template>
+              </RowMenu>
+            </li>
+            <li
+              v-if="(conversationsByWorkspace.get(workspace.id) ?? []).length === 0"
+              class="conv-empty"
+            >
+              还没有会话
+            </li>
+          </ul>
+        </li>
+
+        <!-- 未归档会话：**单独一栏**（v0.15）。不给它们自动建一个默认工作区——
+             那会让"未归档"这个真实状态消失，用户就分不清"特意放进去的"
+             与"随手问的"。 -->
+        <li class="ws-group">
+          <button
+            type="button"
+            class="ws-item ws-item-plain"
+            :aria-expanded="ungroupedOpen"
+            @click="ungroupedOpen = !ungroupedOpen"
           >
-            <!-- 置顶标记占位固定宽：不占位的话，置顶与否会让标题左右跳动 -->
-            <IconPin v-if="item.pinned" class="conv-pin" :size="12" />
-            <span class="conv-title">{{ item.title || '未命名对话' }}</span>
-            <span class="conv-meta tabular">{{ item.message_count }} 条</span>
-          </RouterLink>
-          <!-- 行菜单：悬停/聚焦/当前项才显示。侧栏只有 248px，每行常驻一个"…"
-               会把标题挤到只剩十来个字 -->
-          <RowMenu class="conv-menu" :label="`${item.title || '未命名对话'} 的操作`">
-            <template #default="{ close }">
-              <button type="button" @click="(togglePin(item), close())">
-                <IconPin :size="14" /> {{ item.pinned ? '取消置顶' : '置顶' }}
-              </button>
-              <button type="button" @click="(openRename(item), close())">
-                <IconEdit :size="14" /> 重命名
-              </button>
-              <button class="menu-item-danger" type="button" @click="(openDelete(item), close())">
-                <IconTrash :size="14" /> 删除
-              </button>
-            </template>
-          </RowMenu>
+            <IconChevronDown class="ws-chevron" :class="{ collapsed: !ungroupedOpen }" :size="13" />
+            <span class="ws-name">未归档会话</span>
+            <span class="ws-count tabular">{{ ungroupedConversations.length }}</span>
+          </button>
+
+          <!-- 搜索只在有内容时出现：一个空列表下面挂个搜索框，是在问"你要找什么"，
+               可用户手里什么也没有 -->
+          <div
+            v-if="ungroupedOpen && (conversations.items.length > 0 || searchDraft)"
+            class="conv-search"
+          >
+            <IconSearch class="conv-search-icon" :size="14" />
+            <AppInput
+              v-model="searchDraft"
+              class="conv-search-input"
+              placeholder="搜索对话"
+              aria-label="搜索对话"
+              @input="onSearchInput"
+            />
+            <button
+              v-if="searchDraft"
+              type="button"
+              class="conv-search-clear"
+              aria-label="清除搜索"
+              @click="clearSearch"
+            >
+              <IconClose :size="14" />
+            </button>
+          </div>
+
+          <p v-if="conversations.error" class="side-note">{{ conversations.error }}</p>
+          <p v-else-if="conversations.items.length === 0 && searchDraft" class="side-note">
+            没有标题匹配「{{ searchDraft }}」的对话。
+          </p>
+          <p v-else-if="conversations.items.length === 0" class="side-note">
+            还没有对话。在上面「新对话」里提问，这里会留下记录。
+          </p>
+          <ul v-else-if="ungroupedOpen" class="conv-list">
+            <li v-for="item in ungroupedConversations" :key="item.id" class="conv-row">
+              <RouterLink
+                class="conv-item"
+                :class="{ 'conv-item-active': item.id === activeConversationId }"
+                :to="`/chat/${item.id}`"
+                :title="item.title || '未命名对话'"
+                @mouseenter="onConversationIntent(item.id)"
+                @focus="onConversationIntent(item.id)"
+              >
+                <IconPin v-if="item.pinned" class="conv-pin" :size="12" />
+                <span class="conv-title">{{ item.title || '未命名对话' }}</span>
+                <span class="conv-meta tabular">{{ item.message_count }} 条</span>
+              </RouterLink>
+              <RowMenu class="conv-menu" :label="`${item.title || '未命名对话'} 的操作`">
+                <template #default="{ close }">
+                  <button type="button" @click="(togglePin(item), close())">
+                    <IconPin :size="14" /> {{ item.pinned ? '取消置顶' : '置顶' }}
+                  </button>
+                  <button type="button" @click="(openRename(item), close())">
+                    <IconEdit :size="14" /> 重命名
+                  </button>
+                  <button
+                    v-for="workspace in workspaces.items"
+                    :key="workspace.id"
+                    type="button"
+                    @click="(moveConversation(item, workspace.id), close())"
+                  >
+                    <IconFolder :size="14" /> 挪进「{{ workspace.name }}」
+                  </button>
+                  <button
+                    class="menu-item-danger"
+                    type="button"
+                    @click="(openDelete(item), close())"
+                  >
+                    <IconTrash :size="14" /> 删除
+                  </button>
+                </template>
+              </RowMenu>
+            </li>
+          </ul>
         </li>
       </ul>
     </div>
@@ -1054,5 +1307,210 @@ async function onLogout(): Promise<void> {
 /* 退出登录：语义红只在这一项——菜单里唯一不可逆的动作 */
 .account-pop .account-danger {
   color: var(--status-danger);
+}
+/* ---------------------------------------------------------------- 侧栏（v0.15）
+   新增的都是"分组"这一族：可折叠的子菜单、工作区及其会话。
+   尺寸沿用 §7 的实测值（导航项 40px / 圆角 12 / gap 6），子项比父项矮一档、
+   缩进一级——层级靠**缩进 + 字号**表达，不靠加边框（那会让侧栏看起来像表格）。 */
+
+.nav-group {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 分组头也是 40px 的导航项，只是右端多了计数与箭头 */
+.nav-item-group {
+  width: 100%;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav-count {
+  margin-left: auto;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.nav-chevron {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+.nav-chevron.open {
+  transform: rotate(90deg);
+}
+
+.nav-sub {
+  margin: 0 0 var(--space-1);
+  padding: 0 0 0 var(--space-6);
+  list-style: none;
+}
+
+.nav-sub-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  height: var(--row-height-compact);
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  font-size: var(--text-meta-size);
+  text-decoration: none;
+  transition: var(--transition-ui);
+}
+
+.nav-sub-item:hover,
+.nav-sub-item.router-link-active {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.nav-sub-name {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.nav-sub-empty {
+  padding: var(--space-1) var(--space-2);
+  color: var(--text-tertiary);
+  font-size: var(--text-micro-size);
+}
+
+/* 工作区栏：标题 + 右侧「+」 */
+.workspace-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.section-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--hit-target);
+  height: var(--hit-target);
+  border: none;
+  background: none;
+  border-radius: var(--radius-control);
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+
+.section-action:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+.ws-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ws-group + .ws-group {
+  margin-top: var(--space-0-5);
+}
+
+.ws-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-0-5);
+}
+
+/* 工作区行：与导航项同为 40px，但文字用次要色——它是"容器"，不是"目的地" */
+.ws-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  flex: 1;
+  min-width: 0;
+  height: var(--nav-height);
+  padding: 0 var(--space-1-5);
+  border: none;
+  background: none;
+  border-radius: var(--radius-nav);
+  color: var(--text-secondary);
+  font-size: var(--text-meta-size);
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition-ui);
+}
+
+.ws-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.ws-item-plain {
+  flex: 1;
+}
+
+.ws-chevron {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+.ws-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.ws-icon {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+}
+
+.ws-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.ws-count {
+  flex-shrink: 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+/* 工作区行里的「新开一条会话」：悬停才显眼，但始终可点（§8 禁止项） */
+.ws-new {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--hit-target);
+  height: var(--hit-target);
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  border-radius: var(--radius-control);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.ws-new:hover {
+  background: var(--bg-active);
+  color: var(--text-primary);
+  opacity: 1;
+}
+
+/* 工作区下的会话缩进一级，且不带"几条消息"——那一栏属于工作区，
+   会话本身只需要标题（宽度本来就只有 240px）。 */
+.conv-item-nested {
+  padding-left: var(--space-6);
+}
+
+.conv-empty {
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-6);
+  color: var(--text-tertiary);
+  font-size: var(--text-micro-size);
 }
 </style>

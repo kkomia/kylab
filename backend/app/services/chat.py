@@ -559,6 +559,16 @@ class ChatService:
             yield StepEvent(phase="intent", label="理解问题", detail=detail)
 
         sources: list[SourceRef] = []
+        # 已展开的技能（v0.15）：名字进 `loaded_skills` 防重复，正文进 `skill_bodies`
+        # 并在最终作答时一并注入。**技能加载不占检索轮次**——它是"先看看该怎么做"，
+        # 与"再搜一次"是两件事；但要单独计数（MAX_SKILL_LOADS），
+        # 否则模型可以一直读技能不干活。
+        #
+        # **必须在分支之外初始化**：寒暄/无关的那一轮不会进下面的检索循环，
+        # 而作答时要用到 `skill_bodies`——放在循环里就会 UnboundLocalError，
+        # 于是**每一句寒暄都 500**（全量跑测试时抓到的）。
+        loaded_skills: list[str] = []
+        skill_bodies: list[str] = []
         if not plan.need_retrieval or not plan.queries:
             yield StepEvent(phase="rewrite", label="无需检索，直接回答")
         else:
@@ -573,11 +583,6 @@ class ChatService:
             seen = {item.chunk_id for item in sources}
 
             tried = list(plan.queries)
-            # 已展开的技能（v0.15）：名字进 `loaded_skills` 防重复，正文进 `skill_bodies`
-            # 并在最终作答时一并注入。**技能加载不占检索轮次**——它是"先看看该怎么做"，
-            # 与"再搜一次"是两件事；但要单独计数，否则模型可以一直读技能不干活。
-            loaded_skills: list[str] = []
-            skill_bodies: list[str] = []
             for round_no in range(2, max_rounds + 1):
                 decision: AgentDecision | None = None
                 for _ in range(MAX_SKILL_LOADS + 1):

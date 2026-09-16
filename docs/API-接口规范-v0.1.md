@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **125** 条端点。
+共 **140** 条端点。
 
 ### `api-keys`
 
@@ -283,6 +283,19 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/maintenance/compact` | 整理存储 |
 | `GET` | `/api/v1/maintenance/storage` | 存储空间概览 |
 
+### `mcp`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/mcp-servers` | MCP 服务列表 |
+| `POST` | `/api/v1/mcp-servers` | 登记一个 MCP 服务 |
+| `GET` | `/api/v1/mcp-servers/tools` | 所有已登记服务的工具 |
+| `DELETE` | `/api/v1/mcp-servers/{server_id}` | 删除 MCP 服务 |
+| `GET` | `/api/v1/mcp-servers/{server_id}` | 单个 MCP 服务 |
+| `PATCH` | `/api/v1/mcp-servers/{server_id}` | 改 MCP 服务 |
+| `POST` | `/api/v1/mcp-servers/{server_id}/call` | 调用一个外部工具 |
+| `POST` | `/api/v1/mcp-servers/{server_id}/probe` | 测试连接并发现工具 |
+
 ### `memory`
 
 | 方法 | 路径 | 说明 |
@@ -353,6 +366,13 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `PUT` | `/api/v1/knowledge-bases/{kb_id}/shares` | 分享/调整档位（按登录名） |
 | `DELETE` | `/api/v1/knowledge-bases/{kb_id}/shares/{user_id}` | 收回分享 |
 
+### `skills`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/skills` | 技能列表 |
+| `GET` | `/api/v1/skills/{name}` | 技能详情（含正文） |
+
 ### `stats`
 
 | 方法 | 路径 | 说明 |
@@ -403,6 +423,16 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/knowledge-bases/{kb_id}/wiki` | Wiki 目录与生成状态 |
 | `POST` | `/api/v1/knowledge-bases/{kb_id}/wiki/generate` | 重建这个知识库的 Wiki（异步） |
 | `GET` | `/api/v1/wiki/pages/{page_id}` | 读一页 Wiki（正文 + 出处） |
+
+### `workspaces`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/workspaces` | 工作区列表 |
+| `POST` | `/api/v1/workspaces` | 新建工作区（指定根目录） |
+| `DELETE` | `/api/v1/workspaces/{workspace_id}` | 删除工作区（里面的会话退回未归档） |
+| `GET` | `/api/v1/workspaces/{workspace_id}` | 工作区详情 |
+| `PATCH` | `/api/v1/workspaces/{workspace_id}` | 改工作区 |
 
 ---
 

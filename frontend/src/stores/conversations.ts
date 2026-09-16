@@ -97,6 +97,7 @@ function summaryOf(detail: ConversationDetail): ConversationSummary {
     title: detail.title,
     kb_ids: detail.kb_ids,
     model_pk: detail.model_pk,
+    workspace_id: detail.workspace_id,
     thinking: detail.thinking,
     thinking_effort: detail.thinking_effort,
     pinned: detail.pinned,
@@ -139,11 +140,23 @@ export const useConversationStore = defineStore('conversations', {
       kbIds: string[],
       modelPk?: string | null,
       thinking?: ConversationThinking,
+      workspaceId?: string | null,
     ): Promise<ConversationSummary> {
-      const created = await createConversation(kbIds, modelPk, thinking)
+      const created = await createConversation(kbIds, modelPk, thinking, workspaceId)
       // 新会话排在最前：后端按 updated_at 倒序，而它刚建出来就是最新的
       this.items = [created, ...this.items]
       return created
+    },
+
+    /**
+     * 把会话挪进工作区，或（``null``）退回未归档（v0.15）。
+     *
+     * 就地替换那一条而**不重排**：与改名/置顶同理——归类是整理动作，
+     * 不该把会话顶到"最近活动"的最前面（后端也不推 ``updated_at``）。
+     */
+    async setWorkspace(id: string, workspaceId: string | null): Promise<void> {
+      const updated = await updateConversation(id, { workspace_id: workspaceId })
+      this.items = this.items.map((item) => (item.id === id ? { ...item, ...updated } : item))
     },
 
     async rename(id: string, title: string): Promise<void> {

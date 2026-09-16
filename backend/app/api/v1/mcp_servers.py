@@ -97,6 +97,16 @@ def create_server(
     return _out(record)
 
 
+@router.get("/{server_id}", response_model=MCPServerOut, summary="单个 MCP 服务")
+def get_server(
+    server_id: str,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_read)],
+) -> MCPServerOut:
+    """取一个服务的登记信息（**不含凭据值**）。"""
+    return _out(services.mcp.get(server_id, user_id=_owner(caller)))
+
+
 @router.patch("/{server_id}", response_model=MCPServerOut, summary="改 MCP 服务")
 def update_server(
     server_id: str,
@@ -136,8 +146,11 @@ def probe_server(
     """
     ok, detail, tools = services.mcp.probe(server_id, user_id=_owner(caller))
     record = services.mcp.get(server_id, user_id=_owner(caller))
+    # **要 exclude 掉 reachable**：`_out()` 按列表语义把它填成默认值，
+    # 这里再传一次就是 "got multiple values for keyword argument"，
+    # 而这个 TypeError 会让探活**永远 500**（实测：接口测试一跑就炸）。
     return MCPServerOut(
-        **_out(record).model_dump(),
+        **_out(record).model_dump(exclude={"reachable", "detail", "tools"}),
         reachable=ok,
         detail=detail,
         tools=[

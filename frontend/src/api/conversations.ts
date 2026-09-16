@@ -21,6 +21,8 @@ export interface ConversationSummary {
   thinking_effort: 'low' | 'medium' | 'high' | null
   /** 置顶（v17）。置顶的排在列表最前，且聊天不改变它的名次。 */
   pinned: boolean
+  /** 所属工作区（v0.15）；`null` = **未归档**，侧栏把它单独排一列。 */
+  workspace_id: string | null
   created_at: string | null
   updated_at: string | null
   message_count: number
@@ -53,9 +55,12 @@ export interface ConversationDetail extends ConversationSummary {
 export function listConversations(
   limit = 50,
   q?: string,
+  filter: { workspaceId?: string; ungrouped?: boolean } = {},
 ): Promise<{ items: ConversationSummary[] }> {
   const params = new URLSearchParams({ limit: String(limit) })
   if (q?.trim()) params.set('q', q.trim())
+  if (filter.workspaceId) params.set('workspace_id', filter.workspaceId)
+  if (filter.ungrouped) params.set('ungrouped', 'true')
   return request(`/conversations?${params.toString()}`)
 }
 
@@ -63,12 +68,16 @@ export function createConversation(
   kbIds: string[],
   modelPk?: string | null,
   thinking?: ConversationThinking,
+  workspaceId?: string | null,
 ): Promise<ConversationSummary> {
   return request('/conversations', {
     method: 'POST',
     body: JSON.stringify({
       kb_ids: kbIds,
       model_pk: modelPk ?? null,
+      // 挂到工作区（v0.15）：kb_ids 留空时后端会**继承工作区的库**，
+      // 这就是"进入项目，资料范围就定了"落到行为上的样子
+      workspace_id: workspaceId ?? null,
       // 不带思考偏好时不发字段：让后端按"跟随全局默认"处理，
       // 而不是把它写成一个我们这边猜出来的值
       ...(thinking?.thinking !== undefined ? { thinking: thinking.thinking } : {}),
@@ -86,7 +95,7 @@ export function getConversation(id: string): Promise<ConversationDetail> {
  */
 export function updateConversation(
   id: string,
-  patch: { title?: string; pinned?: boolean },
+  patch: { title?: string; pinned?: boolean; workspace_id?: string | null },
 ): Promise<ConversationSummary> {
   return request(`/conversations/${id}`, {
     method: 'PATCH',

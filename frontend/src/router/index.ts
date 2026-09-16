@@ -118,6 +118,27 @@ const router = createRouter({
       meta: { title: '记忆' },
     },
     {
+      /**
+       * 工作区（v0.15）：Agent 的项目。**独立一页**而不是塞进对话页的设置里——
+       * 它管的是"根目录 + 绑定的知识库 + 里面有哪些会话"，是一份清单，不是一次设置。
+       * `?new=1` 让侧栏的「+」能直接把新建表单打开。
+       */
+      path: '/workspaces',
+      name: 'workspaces',
+      component: () => import('@/views/WorkspacesView.vue'),
+      meta: { title: '工作区' },
+    },
+    {
+      /**
+       * 能力（v0.15）：技能与 MCP 服务。同样是一份清单（"这个 Agent 会什么"），
+       * 所以给它一页，而不是埋在设置弹窗里。
+       */
+      path: '/capabilities',
+      name: 'capabilities',
+      component: () => import('@/views/CapabilitiesView.vue'),
+      meta: { title: '能力' },
+    },
+    {
       path: '/search',
       redirect: { name: 'knowledge-bases' },
     },

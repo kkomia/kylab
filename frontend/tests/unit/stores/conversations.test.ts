@@ -36,6 +36,8 @@ function summary(id: string, extra: Partial<ConversationSummary> = {}): Conversa
     thinking: null,
     thinking_effort: null,
     pinned: false,
+    // 未归档（v0.15）：夹具默认放在"未归档"那一栏，与真实的新建行为一致
+    workspace_id: null,
     created_at: '2026-09-01T00:00:00Z',
     updated_at: '2026-09-01T00:00:00Z',
     message_count: 2,
