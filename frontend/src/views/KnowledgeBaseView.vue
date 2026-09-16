@@ -359,7 +359,11 @@ const treeOpen = ref(true)
  */
 const unfiledCount = ref<number | null>(null)
 const foldersTotal = computed(() =>
-  folders.value.reduce((sum, folder) => sum + folder.document_count, 0),
+  // `?? 0` 不是多余的：少了它，任何一个目录缺 `document_count`（后端换字段、
+  // 夹具不全、旧缓存）都会让这个和变成 NaN，于是树根显示"全部文档 NaN"——
+  // 而 `totalCount` 的注释刚说完"显示一个错的数比不显示更糟"，NaN 正是那个错的数。
+  // 同一个字段在 stores/knowledgeBases.ts 里已经这么防过了，这里漏了。
+  folders.value.reduce((sum, folder) => sum + (folder.document_count ?? 0), 0),
 )
 /** 拿不到未归档数时回 null（界面不显示数字）——显示一个错的数比不显示更糟。 */
 const totalCount = computed(() =>
