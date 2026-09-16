@@ -54,8 +54,13 @@ export interface MemoryStatus {
   base_url: string
   workspace: string
   core_file_exists: boolean
-  /** 记忆服务活着吗。与 `enabled` 是**两件事**：一个去设置里开，一个去把进程拉起来。 */
-  reachable: boolean
+  /**
+   * 记忆服务活着吗。**三态**：`null` = 这次没探测（`GET /memory` 从不打远端），
+   * `true`/`false` = `POST /memory/probe` 真探过。
+   *
+   * 用它之前先想清楚：`null` 不代表"连不上"，只代表"没人问过"。
+   */
+  reachable: boolean | null
   detail: string
   file_count: number
   retrievable_count: number

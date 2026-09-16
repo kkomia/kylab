@@ -366,3 +366,58 @@ class _FakeResponse:
     @property
     def text(self) -> str:
         return str(self._payload)
+
+
+def test_overview_does_not_claim_a_connection_it_never_checked(
+    client: TestClient, workspace, monkeypatch
+) -> None:
+    """``GET /memory`` **不打远端**，所以它只能说"已启用"，不能说"未连接"。
+
+    这是实测踩出来的：该端点原先返回 ``reachable: false``，而同一时刻
+    ``/memory/probe`` 报"服务正常"——页头因此一直挂着"记忆服务未连接"的警示，
+    而那时根本没有任何一次连接失败过。**没测过就别下结论。**
+    """
+    _enable(client, **{"memory.base_url": "http://reme.test"})
+
+    def boom(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise AssertionError("GET /memory 不该发网络请求")
+
+    monkeypatch.setattr("app.services.memory.httpx.post", boom)
+
+    body = client.get("/api/v1/memory").json()
+
+    assert body["status"]["enabled"] is True
+    assert body["status"]["reachable"] is None
+
+
+def test_probe_reports_a_real_connection(client: TestClient, workspace, monkeypatch) -> None:
+    """probe 这条**成功路径**原先一条用例都没有，于是它在真机上 500：
+    ``MemoryStatus`` 是 slots 记录、没有 ``__dict__``，而那里用
+    ``MemoryStatus(**{**base.__dict__, ...})`` 拼的。只有真打一次服务才发现得了。
+    """
+    _enable(client, **{"memory.base_url": "http://reme.test"})
+    monkeypatch.setattr(
+        "app.services.memory.httpx.post",
+        lambda *a, **k: _FakeResponse({"answer": "ReMe v0.4.1.12 - healthy"}),
+    )
+
+    body = client.post("/api/v1/memory/probe").json()
+
+    assert body["reachable"] is True
+    assert "服务正常" in body["detail"]
+
+
+def test_probe_reports_a_failure_without_500(client: TestClient, workspace, monkeypatch) -> None:
+    """连不上是 probe 的**正常产出**（它是设置页的「测试连接」），不是服务器错误。"""
+    import httpx
+
+    _enable(client, **{"memory.base_url": "http://reme.test"})
+    monkeypatch.setattr(
+        "app.services.memory.httpx.post",
+        lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("连不上")),
+    )
+
+    response = client.post("/api/v1/memory/probe")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["reachable"] is False

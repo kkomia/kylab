@@ -570,3 +570,70 @@ def test_capture_every_falls_back_when_the_setting_is_garbage(tmp_path: Path) ->
 
     assert service.enqueue_capture(TURN, session_id="c1", turn_count=5) is True
     assert len(stores.meta.enqueued) == 1
+
+
+# ------------------------------------------------------------------ 连通性检查
+#
+# 这一组是**补上来的**：probe 原先一条用例都没有，而它当时是坏的——
+# `MemoryStatus(**{**base.__dict__, ...})` 在 `slots=True` 的记录上会抛
+# AttributeError（slots 类没有 __dict__），于是"启用且服务活着"这条路径 500。
+# 唯一沾到 probe 的接口测试断言的是**成员访问被拒**（403），压根没走到实现里。
+# 教训不是"漏了一条用例"，而是"只测失败分支"会让整条成功路径无人看守。
+
+
+def test_probe_reports_reachable_when_the_service_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.services.memory.httpx.post", lambda *a, **k: _FakeResponse({"status": "ok"})
+    )
+    service = _service(tmp_path)
+
+    result = service.probe()
+
+    assert result.reachable is True
+    assert "服务正常" in result.detail
+    # 其余字段要保持 status() 的那份，不能因为拼装而丢
+    assert result.enabled is True
+    assert result.workspace == str(service.workspace)
+
+
+def test_probe_reports_the_error_without_raising(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """服务没起时 probe 要**回一句人话**，而不是把异常抛给调用方——
+    它是设置页的「测试连接」，报错正是它的产出。"""
+    import httpx
+
+    monkeypatch.setattr(
+        "app.services.memory.httpx.post",
+        lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("连不上")),
+    )
+    service = _service(tmp_path)
+
+    result = service.probe()
+
+    assert result.reachable is False
+    assert "记忆服务" in result.detail or "连不上" in result.detail
+    assert result.enabled is True
+
+
+def test_probe_on_a_disabled_layer_does_not_touch_the_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """关着时**一次网络都不打**：没启用就没有"连不连得上"这回事，
+    打过去只会让设置页在一个纯本地判断上等超时。"""
+
+    def boom(*_a, **_k):  # type: ignore[no-untyped-def]
+        raise AssertionError("关着的时候不该发请求")
+
+    monkeypatch.setattr("app.services.memory.httpx.post", boom)
+    service = _service(tmp_path, **{"memory.enabled": "false"})
+
+    result = service.probe()
+
+    assert result.enabled is False
+    # 关着时 `reachable` 是 **None**（"没这回事"），不是 False（"连不上"）：
+    # 一个没启用的层不存在"连不连得上"，界面因此只显示"未启用"而不是警示色。
+    assert result.reachable is None
+    assert result.detail == "未启用"

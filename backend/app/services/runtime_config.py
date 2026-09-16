@@ -202,7 +202,11 @@ DEFAULTS: dict[str, str] = {
     # ——返回空会让模型以为"没有相关记忆"，然后基于错误前提继续推理。
     "memory.enabled": "false",
     # ReMe 的服务地址。它的接口是 `POST /<job 名>`（见设计文档 §3.1）。
-    "memory.base_url": "http://127.0.0.1:8181",
+    # **端口 2333 是实测出来的默认值**：`reme/constants.py` 里写着
+    # `REME_DEFAULT_PORT = 2333`，`reme start` 起来后日志打的也是 2333。
+    # 这里原先写的是 8181（照文档抄的），照它配就永远连不上——
+    # 而"连不上"在界面上只表现为一句报错，很难看出是端口抄错了。
+    "memory.base_url": "http://127.0.0.1:2333",
     # 记忆工作区放在数据目录下（相对路径）：与其它数据一起备份/迁移，
     # 一个部署只有一处要备份。
     "memory.workspace": "memory",

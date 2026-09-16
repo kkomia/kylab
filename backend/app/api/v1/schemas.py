@@ -1554,7 +1554,12 @@ class MemoryStatusOut(BaseModel):
     base_url: str = ""
     workspace: str = ""
     core_file_exists: bool = False
-    reachable: bool = False
+    reachable: bool | None = None
+    """**三态**：``None`` = 这次没探测（``GET /memory`` 从不打远端），
+    ``True``/``False`` = ``POST /memory/probe`` 真探过。
+
+    用布尔的话，页头会在服务健康时挂出"记忆服务未连接"——因为没有谁去连过。
+    没测过就别下结论。"""
     detail: str = ""
     file_count: int = 0
     retrievable_count: int = 0

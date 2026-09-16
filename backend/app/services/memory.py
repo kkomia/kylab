@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -107,7 +107,18 @@ class MemoryStatus:
     base_url: str
     workspace: str
     core_file_exists: bool
-    reachable: bool
+    reachable: bool | None = None
+    """**三态**：``None`` = 这次没探测，``True``/``False`` = 真探过。
+
+    为什么不是布尔：``status()`` 故意不打远端（界面每次渲染都调它），
+    而 ``probe()`` 才真的打一次。用布尔的话，``status()`` 只能填一个值，
+    于是页面上会出现"记忆服务未连接"——而那时根本没有谁去连过。
+    **没测过就别下结论**，界面据此只显示"已启用"。
+
+    实测踩过：`GET /memory` 返回 `reachable: false` 而服务其实是健康的
+    （`probe` 同一时刻返回"服务正常"），页头因此一直挂着警示。
+    """
+
     detail: str = ""
 
 
@@ -231,28 +242,39 @@ class MemoryService:
 
     def status(self) -> MemoryStatus:
         """当前状态。**不做网络探测**（那是 ``probe`` 的事）——
-        界面每次渲染都调它，不该顺手打一次远端。"""
+        界面每次渲染都调它，不该顺手打一次远端。
+
+        因此 ``reachable`` 是 ``None``（= 没探过），不是 ``False``：
+        见 ``MemoryStatus.reachable`` 上那段实测记录。
+        """
         return MemoryStatus(
             enabled=self.enabled,
             base_url=self.base_url,
             workspace=str(self.workspace),
             core_file_exists=self.core_file.exists(),
-            reachable=False,
+            reachable=None,
             detail="" if self.enabled else "未启用",
         )
 
     def probe(self) -> MemoryStatus:
-        """连通性检查：真的打一次记忆服务。供设置的「测试连接」用。"""
+        """连通性检查：真的打一次记忆服务。供设置的「测试连接」用。
+
+        **必须用 `dataclasses.replace`，不能 `MemoryStatus(**{**base.__dict__, ...})`**：
+        `MemoryStatus` 是 `slots=True` 的记录，**没有 `__dict__`**，
+        那样写会在"启用且服务活着"这条路径上抛 `AttributeError` → 500。
+        这个 bug 只在真打一次服务时才出现：关着时走的是上面那个 early return，
+        而单测里唯一覆盖 probe 的用例恰好是关着的那条。
+        """
         base = self.status()
         if not self.enabled:
             return base
         try:
             payload = self._post("health_check", {})
         except (UpstreamError, InvalidRequestError) as exc:
-            return MemoryStatus(**{**base.__dict__, "detail": str(exc)})
-        return MemoryStatus(
-            **{**base.__dict__, "reachable": True, "detail": f"服务正常：{_brief(payload)}"}
-        )
+            # **要显式给 `reachable=False`**：`status()` 那份是 None（没探过），
+            # 而这里确实探过并且失败了——不写就会把"没探过"当成"连不上"传出去。
+            return replace(base, reachable=False, detail=str(exc))
+        return replace(base, reachable=True, detail=f"服务正常：{_brief(payload)}")
 
     # ------------------------------------------------------------------ 召回
 

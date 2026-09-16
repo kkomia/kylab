@@ -142,6 +142,9 @@ const statusView = computed(() => {
   const current = status.value
   if (!current) return { label: '读取中', tone: 'neutral' as const }
   if (!current.enabled) return { label: '未启用', tone: 'neutral' as const }
+  // `reachable === null` = **这次没探测**（GET /memory 不打远端）：
+  // 这时只能说"已启用"，不能说"未连接"——那是替一个没发生过的检查下结论。
+  if (current.reachable === null) return { label: '已启用', tone: 'neutral' as const }
   return current.reachable
     ? { label: '记忆服务正常', tone: 'success' as const }
     : { label: '记忆服务未连接', tone: 'warning' as const }
