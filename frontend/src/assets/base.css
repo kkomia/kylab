@@ -24,17 +24,16 @@ body {
   margin: 0;
   background: var(--bg-canvas);
   color: var(--text-primary);
+  /* 字体栈按 Kimi 的顺序（它同样是纯系统字体，不引 webfont 做正文） */
   font-family:
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    'PingFang SC',
-    'Microsoft YaHei',
-    'Source Han Sans SC',
-    'Noto Sans SC',
-    sans-serif;
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, Roboto, 'Noto Sans', Ubuntu,
+    Cantarell, 'Helvetica Neue', sans-serif, Arial, 'PingFang SC', 'Source Han Sans SC',
+    'Microsoft YaHei UI', 'Microsoft YaHei';
   font-size: var(--text-body-size);
-  line-height: 1.65;
+  /* 行高按 Kimi 的 ui-B1（22 / 15 ≈ 1.47）。比原来的 1.65 紧——
+     Kimi 的观感有相当一部分来自这个密度。长篇阅读面（文档正文、Wiki）
+     仍用 --line-prose，不受这一档影响。 */
+  line-height: 1.47;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizelegibility;
 }
@@ -106,9 +105,11 @@ input[type='radio'] {
   border-radius: var(--radius-control);
 }
 
+/* 等宽用 Kimi 指定的 Geist Mono。**本机没装时逐级回退**，所以这里是一条链而不是一个值。
+   顺带修一个既有问题：--font-mono 此前被组件引用却从未定义（引用处一直拿到空值）。 */
 code,
 pre {
-  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 /**
@@ -153,15 +154,21 @@ pre {
 }
 
 :root {
-  /* 圆角：四档，按"控件 < 行 < 面板 < 弹层"递进。
-     上一轮收到 4/6 两档，结果整屏全是直角——列表、面板、弹层没有一处是圆的，
-     硬得像个终端。圆角在这里不是装饰，是用来表达层级与"可点"的。 */
-  --radius-control: 6px;
-  --radius-row: 8px;
-  --radius-panel: 10px;
-  --radius-overlay: 12px;
+  /* ---------------------------------------------------------------- 圆角
+     按 Kimi 的尺度整体放大。它的实测值只有三处：聊天输入 24px、弹层 20px、
+     图标按钮 20px；控件/行/面板/浮层四档它没单独暴露，按同一比例推上去
+     （原为 6/8/10/12 → 10/12/16/20）。圆角在这里不是装饰，
+     是"这是可点的""这是浮起来的"这类层级的表达。 */
+  --radius-control: 10px;
+  --radius-row: 12px;
+  --radius-panel: 16px;
+  --radius-overlay: 20px;
+  --radius-input: 24px;
+  --radius-icon-button: 20px;
+  --radius-pill: 999px;
 
-  /* 间距阶梯：所有 padding/margin 只能用这些值（§4）。
+  /* ---------------------------------------------------------------- 间距
+     所有 padding/margin 只能用这些值（§4）。
      网格之外的尺寸只允许一类：结构常量（图标 16/20/24、行高、列宽）——
      它们跟布局对齐有关，不属于"节奏"。 */
   --space-1: 4px;
@@ -184,30 +191,50 @@ pre {
      前者放行、后者照报。**除成对文本外不要用它。** */
   --space-pair: 2px;
 
-  /* 字阶：跨越组件复用，页面里不要再手写 12.5px / 13.5px 这类数字。
-     定稿值来自一条实际反馈「web 字体偏小」：查下来不是基线低（正文 14px 与同类
-     产品一致），而是**分布**——meta 用了 43 处、micro 35 处，body 只有 4 处，
-     小字号占满了界面外壳。所以整条阶梯抬一档，让正文真正成为"正文"。
+  /* ---------------------------------------------------------------- 字阶
+     **改用 Kimi 的 ui-* 六档**（默认档取值，三档来源见《Kimi 设计 token 对照表》§5）：
+       T1 18 / T2 16 / B1 15 / B2 14 / C1 12 / C2 10
+     与上一版的两处差别：
+     1. **页标题从 28px 降到 18px**——Kimi 的层级不靠大标题，靠留白与密度；
+     2. 多了 C2（10px）。中文在它上面会糊，所以 C2 **只允许用于拉丁字母与数字**
+        （版本号、计数徽标）；中文最小仍用 C1（12px）。这条约束写在规范 §4。
 
      **可调层**：所有档位都乘 `--font-scale`（由 composables/useFontScale.ts 写在
-     根节点上，用户可在设置 → 外观里切）。用乘法而不是给每档写死两套值：
-     后者改一处要同步五个地方，迟早漂。
-
-     上限有硬约束：`--text-micro-size` 在最小档（0.933）下仍为 **12px**——
-     低于 12px 的中文在常规显示器上已经影响辨认，字号可调不该能调到不可读。 */
+     根节点上，用户可在设置 → 外观里切）。Kimi 的三档是"换整套值"，我们用乘法近似：
+     0.933 / 1 / 1.15 分别落在它 small / default / large 附近，少数档位偏差 1px。 */
   --font-scale: 1;
-  --text-page-title-size: calc(28px * var(--font-scale));
-  --text-section-size: calc(16px * var(--font-scale));
-  --text-body-size: calc(15px * var(--font-scale));
-  --text-meta-size: calc(14px * var(--font-scale));
-  --text-micro-size: calc(13px * var(--font-scale));
-  /* 大数字（驾驶舱结论区、卡片上的统计值）：比正文明显大一档，但不到标题级 */
-  --text-figure-size: calc(19px * var(--font-scale));
+  --font-mono: 'Geist Mono', 'JetBrains Mono', 'SF Mono', Consolas, 'Liberation Mono', monospace;
+
+  --ui-t1-size: calc(18px * var(--font-scale));
+  --ui-t2-size: calc(16px * var(--font-scale));
+  --ui-b1-size: calc(15px * var(--font-scale));
+  --ui-b2-size: calc(14px * var(--font-scale));
+  --ui-c1-size: calc(12px * var(--font-scale));
+  --ui-c2-size: calc(10px * var(--font-scale));
+
+  /* 别名：页面与组件继续用这些名字，值指向 Kimi 那六档 */
+  --text-page-title-size: var(--ui-t1-size);
+  --text-section-size: var(--ui-t2-size);
+  --text-body-size: var(--ui-b1-size);
+  --text-meta-size: var(--ui-b2-size);
+  --text-micro-size: var(--ui-c1-size);
+  /* 大数字（驾驶舱结论区、卡片上的统计值） */
+  --text-figure-size: calc(20px * var(--font-scale));
+  /* 只给拉丁字母与数字用的微标签（见上） */
+  --text-c2-size: var(--ui-c2-size);
+
+  /* 行高：Kimi 的 ui-* 是"字号 + 行高"成对给的，UI 文字取 B1 的比例；
+     长篇阅读面（文档正文、Wiki、命中引文）单独放宽，避免密到难读。 */
+  --line-ui: 1.47;
+  --line-prose: 1.7;
 
   /* 阅读类内容限宽（文档正文、命中引文用） */
   --measure: 66ch;
 
-  /* 布局骨架：页面统一左对齐铺满内容区，不再居中留大片空白 */
+  /* ------------------------------------------------------------ 布局骨架 */
+  --header-height: 58px;
+  --chat-input-max-width: 768px;
+  --chat-input-radius: var(--radius-input);
   --sidebar-width: clamp(248px, 18vw, 320px);
   /* 折叠态宽度：只放得下导航图标 + 账号图标，容纳 16px 图标 + 命中区 */
   --sidebar-collapsed-width: 60px;
@@ -227,6 +254,20 @@ pre {
      而 AppSelect 是 32px——同一行里差 11px，用户一眼就看出"大小不一"。
      写成一个令牌之后，"同高"是算出来的，不是各自凑出来的。 */
   --control-height: 32px;
+
+  /* 图标按钮：Kimi 的三个实测值——高 36px、描边 **0.5px**、圆角 20px。
+     半像素描边在高分屏上几乎是"无线条的"，这是它按钮看起来轻的原因。 */
+  --icon-button-height: 36px;
+  --icon-button-border-width: 0.5px;
+
+  /* ---------------------------------------------------------------- 动效
+     Kimi 全站统一这一条 .15s ease（我们此前各组件各写各的，从 .12s 到 .2s 都有）。
+     抽成令牌之后，状态变化的手感是一致的。 */
+  --motion-fast: 0.15s;
+  --motion-ease: ease;
+  --transition-ui:
+    background-color var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease);
 
   /* 悬浮层：静态内容不用阴影，只有真正浮起来的才用 */
   --shadow-raised: 0 1px 2px rgb(0 0 0 / 4%);
@@ -340,7 +381,9 @@ pre {
  */
 .panel {
   overflow: hidden;
-  background: var(--bg-canvas);
+  /* 面板是"抬起来的那一层"：暖底之上放白色面板，层级才看得出来。
+     此前是 canvas 底色 + 白色内容区，方向正好相反，等于没有层级。 */
+  background: var(--bg-surface);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-panel);
 }
@@ -350,7 +393,7 @@ pre {
   font-size: var(--text-micro-size);
   font-weight: 500;
   color: var(--text-secondary);
-  background: var(--bg-header);
+  background: var(--bg-subtle);
   border-bottom: 1px solid var(--border-hairline);
 }
 
@@ -363,6 +406,8 @@ pre {
   border-top: 1px solid var(--border-hairline);
 }
 
+/* 行悬停用 alpha 填充（--bg-hover = Fills-F1）而不是换一个实色：
+   叠在纸白、浅灰、选中底上都对，不必为每种底色各配一个值。 */
 .panel-row:hover {
-  background: var(--bg-surface);
+  background: var(--bg-hover);
 }

@@ -38,9 +38,11 @@ withDefaults(
   gap: var(--space-2);
   border-radius: var(--radius-control);
   white-space: nowrap;
+  /* 状态过渡统一走 Kimi 的那一条（.15s ease）。此前这里是 120ms，
+     与下拉、侧栏、行悬停各写各的，快慢不一会让界面读起来"不齐"。 */
   transition:
-    background-color 120ms ease,
-    border-color 120ms ease;
+    var(--transition-ui),
+    border-color var(--motion-fast) var(--motion-ease);
 }
 
 /* 禁用态用**实色**，不用 `opacity`。
@@ -89,8 +91,11 @@ withDefaults(
   background: var(--button-primary-bg-hover);
 }
 
+/* 次按钮的描边用 hairline（= Kimi 的 Separators-S1）而不是 border-strong：
+   Kimi 的描边按钮是"浅浅一圈"，靠背景的层级差而不是靠线的重量来表达可点。
+   用强描边会让按钮在同一行里"凸出来一块"，与旁边的扁平筛选控件不成一体。 */
 .button-secondary {
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--border);
   color: var(--text-primary);
 }
 

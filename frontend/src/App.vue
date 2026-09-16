@@ -72,7 +72,9 @@ watch(reloginCount, () => {
 .content {
   flex: 1;
   min-width: 0;
-  background: var(--bg-surface);
+  /* 内容区是**暖底的地面**，面板/卡片才是抬起来的白层（Kimi 的层级方向）。
+     此前这里放的是纸白，与面板同色，于是"面板"这个概念其实没被画出来。 */
+  background: var(--bg-canvas);
   overflow-y: auto;
 }
 
