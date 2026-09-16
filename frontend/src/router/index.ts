@@ -104,6 +104,20 @@ const router = createRouter({
       meta: { title: '任务中心' },
     },
     {
+      /**
+       * 记忆是**独立的一页**，不挂在某个库下面：它跟知识库是两个池子
+       * （记忆="你说的"、无出处；知识库="文献说的"、有出处），共用一页会让
+       * "我要找的是哪一种"变成一个先得回答的问题。见《记忆层设计 v0.1》§2.1。
+       *
+       * 页内三块（文件 / 图谱 / 召回）走分段控件而不是路由：它们是同一份数据的
+       * 三种看法，切来切去不该产生历史记录，也不该让"刷新后回到哪一屏"变成问题。
+       */
+      path: '/memory',
+      name: 'memory',
+      component: () => import('@/views/MemoryView.vue'),
+      meta: { title: '记忆' },
+    },
+    {
       path: '/search',
       redirect: { name: 'knowledge-bases' },
     },

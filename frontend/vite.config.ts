@@ -59,5 +59,8 @@ export default defineConfig({
     environment: 'jsdom',
     include: ['tests/**/*.test.ts'],
     globals: false,
+    // jsdom 缺几个浏览器 API（ResizeObserver 等），组件用它做尺寸自适应。
+    // 补丁写在 tests/setup.ts 里，理由见那个文件。
+    setupFiles: ['tests/setup.ts'],
   },
 })

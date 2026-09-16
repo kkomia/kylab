@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **116** 条端点。
+共 **125** 条端点。
 
 ### `api-keys`
 
@@ -282,6 +282,20 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 |------|------|------|
 | `POST` | `/api/v1/maintenance/compact` | 整理存储 |
 | `GET` | `/api/v1/maintenance/storage` | 存储空间概览 |
+
+### `memory`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/memory` | 记忆状态与文件列表 |
+| `DELETE` | `/api/v1/memory/files/{path}` | 删除一个记忆文件 |
+| `GET` | `/api/v1/memory/files/{path}` | 读一个记忆文件 |
+| `PUT` | `/api/v1/memory/files/{path}` | 写入（覆盖）一个记忆文件 |
+| `GET` | `/api/v1/memory/graph` | 记忆的 wikilink 图谱 |
+| `POST` | `/api/v1/memory/probe` | 测试记忆服务连通性 |
+| `POST` | `/api/v1/memory/recall` | 在记忆里召回 |
+| `POST` | `/api/v1/memory/reindex` | 请记忆服务重建索引 |
+| `POST` | `/api/v1/memory/remember` | 记一条长期事实 |
 
 ### `model-registry`
 

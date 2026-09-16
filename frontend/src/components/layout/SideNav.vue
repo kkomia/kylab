@@ -31,6 +31,7 @@ import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconLogo from '@/components/icons/IconLogo.vue'
 import IconLogout from '@/components/icons/IconLogout.vue'
 import IconNote from '@/components/icons/IconNote.vue'
+import IconRobot from '@/components/icons/IconRobot.vue'
 import IconSettings from '@/components/icons/IconSettings.vue'
 import IconSidebar from '@/components/icons/IconSidebar.vue'
 import IconSun from '@/components/icons/IconSun.vue'
@@ -141,11 +142,18 @@ function onConversationIntent(id: string): void {
   void conversations.prefetchDetail(id)
 }
 
+/**
+ * 导航项顺序 = 使用频率（《界面信息架构草案》§1）。
+ *
+ * 「记忆」排在笔记之后、任务中心之前：它与笔记同属"我写下的东西"，
+ * 但比笔记低频（记忆主要靠对话自动沉淀，人进来是校对与整理）。
+ */
 const NAV_ITEMS = [
   { to: '/chat', label: '对话', icon: IconChat, exact: false },
   { to: '/', label: '概览', icon: IconDashboard, exact: true },
   { to: '/knowledge-bases', label: '知识库', icon: IconLibrary, exact: false },
   { to: '/notes', label: '笔记', icon: IconNote, exact: false },
+  { to: '/memory', label: '记忆', icon: IconRobot, exact: false },
   { to: '/tasks', label: '任务中心', icon: IconTasks, exact: false },
 ] as const
 
