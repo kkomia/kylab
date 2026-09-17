@@ -196,61 +196,59 @@ describe('SideNav（v0.15 信息架构）', () => {
   // 把清单放在上面，长起来就会把导航推走，而那是导航最不该有的行为。
   // 这条曾经与文档对不上（文档写「工作区在导航之上」，代码一直是导航在前），
   // 是这个断言把它对上的。
-  it('顺序是「新建会话 → 导航 → 项目 → 对话」（v0.22）', () => {
-    // Kimi Work 的侧栏条目表是：新建任务 / 看板 / 插件 / 技能 / 定时任务 /
-    // WebBridge / **项目** / **对话**——导航在前，两个入口在后，项目在对话之前。
-    // **按 DOM 顺序断言**：字符串下标会被 logo 的 aria-label 之类绊到（踩过）。
+  it('顺序是「新建会话 → 导航 → 项目 → 对话」，两节默认都展开（v0.22）', () => {
+    // 依据是用户给的 Kimi Work 截图：进来就是铺开的，`项目 ⌄` / `对话 ⌄`
+    // 的箭头紧跟文字（它表示"能收起来"），清单直接跟在下面。
     const wrapper = mountNav()
 
-    const nodes = Array.from(
-      wrapper.element.querySelectorAll(
-        '.new-chat, nav.nav, .side-entry-projects, .side-entry-chat',
-      ),
-    ).map((node) => (node as Element).className.split(' ')[0])
+    const heads = wrapper.findAll('.side-head .side-title').map((node) => node.text())
+    expect(heads).toEqual(['项目', '对话'])
 
-    expect(nodes[0]).toBe('nav-item') // 新建会话（它复用 nav-item 的形态）
-    expect(nodes[1]).toBe('nav')
-    expect(nodes[2]).toBe('nav-item') // 项目
-    expect(nodes[3]).toBe('nav-item') // 对话
-    const projects = wrapper.element.querySelector('.side-entry-projects')!
-    const chat = wrapper.element.querySelector('.side-entry-chat')!
-    // 用**文档位置**比较：RowMenu 的桩会在两行外面各包一层 div，相邻兄弟不成立
-    const order = projects.compareDocumentPosition(chat)
-    expect(order & Node.DOCUMENT_POSITION_FOLLOWING, '项目要在对话之前').toBeTruthy()
+    // 默认展开：两份清单都渲染着
+    expect(wrapper.find('.side-toggle').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.findAll('.side-list')).toHaveLength(2)
+    expect(wrapper.text()).toContain('产品化') // 项目那一节里的项目
+    expect(wrapper.text()).toContain('随手问的') // 对话那一节里没归项目的会话
   })
 
-  it('侧栏里不铺任何会话清单——两条入口而已（v0.22）', () => {
-    // 用户的原话是"对话里面的都是临时的，不要再在下面加一个未归档会话"，
-    // 而 Kimi Work 那边侧栏里**一条会话都不列**：点「对话」进搜索菜单。
-    // 原先那一栏堆的是随手问的"你好"（实测 9 条里 6 条）。
+  it('两节标题右侧的「新建」按钮**悬停才出现**，且始终可 Tab 到', () => {
+    // Kimi Work 那里，`项目` 右边默认什么都不摆，鼠标移上来才出现一个
+    // 带加号的文件夹。常驻的话两节各挂一个加号，读起来像"这两行各有一个
+    // 主要动作"，而它们的主语其实是下面那份清单。
+    const wrapper = mountNav()
+
+    const adds = wrapper.findAll('.side-add')
+    expect(adds).toHaveLength(2)
+    expect(adds[0].attributes('aria-label')).toBe('新建项目')
+    expect(adds[1].attributes('aria-label')).toBe('新建会话')
+  })
+
+  it('不再有「未归档会话」那一栏，但两节各自铺自己的清单（v0.22）', () => {
+    // 用户的原话是"对话里面的都是临时的，不要再在下面加一个未归档会话了，
+    // 已经归档的在查看全部会话里看"。所以：**分节照铺，那个多余的分组去掉**。
     const wrapper = mountNav()
 
     expect(wrapper.text()).not.toContain('未归档会话')
-    expect(wrapper.text()).not.toContain('工作区里的会话')
-    expect(wrapper.text()).not.toContain('随手问的')
-    expect(wrapper.findAll('.conv-item')).toHaveLength(0)
+    // 项目那一节：项目名 + 它下面的会话
+    expect(wrapper.text()).toContain('产品化')
+    expect(wrapper.text()).toContain('工作区里的会话')
+    // 对话那一节：没归项目的会话
+    expect(wrapper.text()).toContain('随手问的')
+    // 找旧会话的入口仍在（搜索 + 已归档都在面板里）
+    expect(wrapper.text()).toContain('查看全部会话')
   })
 
-  it('项目入口是一个菜单：两个动作 + 最近的项目', () => {
-    // 「通过一个项目菜单来统一管理」：新建 / 全部 / 具体项目都在同一个菜单里，
-    // 点某个项目**直接进它**（`?focus=<id>`），不必进去再找。
-    const wrapper = mountNav()
-    const menu = wrapper.find('.side-entry-projects').element.closest('div')!.parentElement!
-
-    expect(wrapper.text()).toContain('新建项目')
-    expect(wrapper.text()).toContain('全部项目')
-    expect(wrapper.text()).toContain('产品化') // 夹具里的项目
-    expect(wrapper.find('.side-entry-projects').exists()).toBe(true)
-    void menu
-  })
-
-  it('点菜单里的项目 → 带 focus 进项目页', async () => {
+  it('项目行直接进项目（带 focus），会话行直接进会话', () => {
+    // 项目名那一行是**项目本身的入口**，不是折叠开关：点它进项目页并选中它。
+    // 「全部项目」在清单末尾（没有项目时不占位）。
     const wrapper = mountNav()
 
-    const item = wrapper.findAll('button').find((node) => node.text().includes('产品化'))
-    await item!.trigger('click')
+    const rows = wrapper.findAll('.side-row-group')
+    expect(rows.map((node) => node.text())).toEqual(['产品化1'])
 
+    void rows[0].trigger('click')
     expect(JSON.stringify(routerPush.mock.calls.at(-1)?.[0])).toContain('focus')
+    expect(wrapper.text()).toContain('全部项目')
   })
 
   it('「新建会话」常驻最上面，且与导航项**同一套形态**', () => {
@@ -323,11 +321,13 @@ describe('SideNav（v0.15 信息架构）', () => {
     expect(navLabels).toContain('笔记')
   })
 
-  it('「对话」那一条打开搜索面板（管理对话交给它）', async () => {
-    // 侧栏不再自己列会话，所以"找一条旧会话"只有这一条入口——它必须真的能开面板。
+  it('「查看全部会话」打开搜索面板（搜索与已归档都在那里）', async () => {
+    // 侧栏只铺最近几条；"找一条旧会话"仍然只有这一个入口——
+    // 它必须真的能开面板，否则那些会话就再也找不着了。
     const wrapper = mountNav()
 
-    await wrapper.find('.side-entry-chat').trigger('click')
+    const more = wrapper.findAll('.side-more').find((node) => node.text().includes('查看全部'))
+    await more!.trigger('click')
 
     expect(wrapper.emitted('openHistory')).toBeTruthy()
   })

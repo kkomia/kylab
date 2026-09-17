@@ -31,14 +31,13 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import IconChat from '@/components/icons/IconChat.vue'
 import IconChatNew from '@/components/icons/IconChatNew.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconDashboard from '@/components/icons/IconDashboard.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
+import IconFolderPlus from '@/components/icons/IconFolderPlus.vue'
 import IconLibrary from '@/components/icons/IconLibrary.vue'
-import IconPlus from '@/components/icons/IconPlus.vue'
 import IconLogo from '@/components/icons/IconLogo.vue'
 import IconLogout from '@/components/icons/IconLogout.vue'
 import IconNote from '@/components/icons/IconNote.vue'
@@ -50,12 +49,12 @@ import IconSun from '@/components/icons/IconSun.vue'
 import IconTasks from '@/components/icons/IconTasks.vue'
 import IconUser from '@/components/icons/IconUser.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
-import RowMenu from '@/components/ui/RowMenu.vue'
 import { loadRoster, roster, setOperator } from '@/composables/useOperator'
 import { isAdmin, logout as logoutSession } from '@/composables/useSession'
 import { currentUser } from '@/composables/useSessionToken'
 import { useSidebar } from '@/composables/useSidebar'
 import { resolvedTheme, setTheme } from '@/composables/useTheme'
+import type { ConversationSummary } from '@/api/conversations'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 import { useModelRegistryStore } from '@/stores/modelRegistry'
@@ -215,6 +214,69 @@ function toggleKnowledge(): void {
 
 function isKnowledgeActive(): boolean {
   return route.path.startsWith('/knowledge-bases') || route.path.startsWith('/kb/')
+}
+
+// ------------------------------------------------- 下半栏：项目 / 对话（v0.22）
+
+/**
+ * 两节**默认都展开**（照 Kimi Work 的实际形态：它进来就是铺开的）。
+ *
+ * 折叠状态不落 localStorage：它是"我现在想不想看"，不是一条长期偏好——
+ * 存起来的话，用户哪天顺手收起来一次，之后每次打开都是收着的，而他会以为坏了。
+ */
+const projectsOpen = ref(true)
+const chatsOpen = ref(true)
+
+/** 每个项目默认露几条会话（其余的收在「展开」后面）。 */
+const PROJECT_PREVIEW = 5
+/** 对话那一节默认露几条（一屏放不下的清单会把这一栏变成滚动条）。 */
+const CHAT_PREVIEW = 8
+
+/** 手动展开了哪几个项目（`:id` → true）。 */
+const expandedProjects = ref<string[]>([])
+
+/** 按项目分好组。会话只有**一份**平铺清单，分组在这里做。 */
+const conversationsByWorkspace = computed(() => {
+  const groups = new Map<string, ConversationSummary[]>()
+  for (const item of conversations.items) {
+    if (!item.workspace_id) continue
+    const list = groups.get(item.workspace_id) ?? []
+    list.push(item)
+    groups.set(item.workspace_id, list)
+  }
+  return groups
+})
+
+/**
+ * 没归项目的会话（对话那一节铺的就是它们）。
+ *
+ * **已归档的不在这里**：归档后 store 会把它从这份清单里摘掉（`setArchived`），
+ * 它们只在「查看全部会话」的「已归档」视图里。
+ */
+const looseConversations = computed(() => conversations.items.filter((item) => !item.workspace_id))
+
+const shownLoose = computed(() => looseConversations.value.slice(0, CHAT_PREVIEW))
+
+function projectConversations(workspaceId: string): ConversationSummary[] {
+  return conversationsByWorkspace.value.get(workspaceId) ?? []
+}
+
+function shownConversations(workspaceId: string): ConversationSummary[] {
+  const all = projectConversations(workspaceId)
+  return expandedProjects.value.includes(workspaceId) ? all : all.slice(0, PROJECT_PREVIEW)
+}
+
+function hiddenCount(workspaceId: string): number {
+  return projectConversations(workspaceId).length - shownConversations(workspaceId).length
+}
+
+function showAll(workspaceId: string): void {
+  expandedProjects.value = [...new Set([...expandedProjects.value, workspaceId])]
+}
+
+/** 对话那一节标题右边那个加号：与最上面的「新建会话」是同一件事。 */
+function newConversation(): void {
+  void router.push({ path: '/chat', query: { new: '1' } })
 }
 
 /** 「新建项目」：跳项目页并让它直接把新建表单打开（`?new=1`）。 */
@@ -459,57 +521,119 @@ async function onLogout(): Promise<void> {
     </nav>
 
     <!--
-      下半栏（v0.22，照 Kimi Work）：**两个入口，两条行**。
+      下半栏（v0.22，照 Kimi Work 的实际形态）：**两节，默认都展开**。
 
-      Kimi Work 把「项目」与「对话」与看板/插件并列成条目，**侧栏里不铺清单**；
-      点它们各自打开自己的菜单。这两行因此长成导航项的样子（右侧 `›` 表示"进去"），
-      而不是分组标题——它们不是容器，是门。
-
-      「对话」那一行原先还挂着"未归档会话"那张平铺清单（实测 9 条里 6 条是"你好"）：
-      对话是临时的，管理它的地方是搜索菜单，不是侧栏。
+      形状来自用户给的 Kimi Work 截图：
+      - 节标题是 `项目 ⌄`——**箭头紧跟在文字后面**，它表示"这一节能收起来"，
+        不是"点进去"（点进去用的是 `›`，那是另一种意思，两者别混）；
+      - 标题右侧**默认什么都不摆**，鼠标移上来才出现一个"新建"图标（项目是
+        带加号的文件夹、对话是新建会话）——那是这一节唯一的增补动作；
+      - 标题下面直接铺清单（默认展开）：项目那一节是「项目 + 它的会话」，
+        对话那一节是没归项目的会话。
     -->
     <div v-if="!collapsed" class="side-section">
-      <!-- 项目菜单：两个动作 + 最近的项目。列表摆在这里是为了"点一次就到"——
-           菜单里点得着那个项目，进项目页直接就选中它。 -->
-      <RowMenu class="side-entry-menu" label="项目" align="right">
-        <template #trigger>
-          <span class="nav-item side-entry side-entry-projects">
-            <IconFolder class="nav-icon" :size="16" />
-            <span class="nav-label">项目</span>
-            <IconChevronRight class="side-entry-chevron" :size="13" />
-          </span>
-        </template>
-        <template #default="{ close }">
-          <button type="button" @click="(onNewWorkspace(), close())">
-            <IconPlus :size="14" /> 新建项目
-          </button>
-          <button type="button" @click="(openProjects(), close())">
-            <IconLibrary :size="14" /> 全部项目
-          </button>
-          <template v-if="workspaces.items.length">
-            <p class="menu-sep">最近的项目</p>
-            <button
-              v-for="workspace in workspaces.items"
-              :key="workspace.id"
-              type="button"
-              @click="(openProject(workspace.id), close())"
-            >
-              <IconFolder :size="14" />
-              <span class="menu-grow">{{ workspace.name }}</span>
-              <span class="menu-count tabular">{{ workspace.conversation_count }}</span>
-            </button>
-          </template>
-        </template>
-      </RowMenu>
-
-      <!-- 对话：打开搜索菜单（搜索 + 全部 / 已归档）。侧栏不列会话。 -->
-      <button type="button" class="nav-item side-entry side-entry-chat" @click="emit('openHistory')">
-        <IconChat class="nav-icon" :size="16" />
-        <span class="nav-label">对话</span>
-        <IconChevronRight class="side-entry-chevron" :size="13" />
-      </button>
+      <!-- ------------------------------------------------------------ 项目 -->
+      <div class="side-head">
+        <button
+          type="button"
+          class="side-toggle"
+          :aria-expanded="projectsOpen"
+          @click="projectsOpen = !projectsOpen"
+        >
+          <span class="side-title">项目</span>
+          <IconChevronDown class="side-chevron" :class="{ collapsed: !projectsOpen }" :size="13" />
+        </button>
+        <button
+          type="button"
+          class="side-add"
+          title="新建项目"
+          aria-label="新建项目"
+          @click="onNewWorkspace"
+        >
+          <IconFolderPlus :size="15" />
+        </button>
+      </div>
 
       <p v-if="workspaces.error" class="side-note">{{ workspaces.error }}</p>
+
+      <ul v-show="projectsOpen" class="side-list">
+        <template v-for="workspace in workspaces.items" :key="workspace.id">
+          <li>
+            <button
+              type="button"
+              class="side-row side-row-group"
+              :title="workspace.root_path"
+              @click="openProject(workspace.id)"
+            >
+              <IconFolder class="side-row-icon" :size="15" />
+              <span class="side-row-name">{{ workspace.name }}</span>
+              <span class="side-row-count tabular">{{ workspace.conversation_count }}</span>
+            </button>
+          </li>
+          <li v-for="item in shownConversations(workspace.id)" :key="item.id" class="side-sub-row">
+            <RouterLink
+              class="side-row side-row-sub"
+              :to="`/chat/${item.id}`"
+              :title="item.title || '未命名对话'"
+            >
+              <span class="side-row-name">{{ item.title || '未命名对话' }}</span>
+            </RouterLink>
+          </li>
+          <!-- 超出上限就先收起，点「展开」再看——一屏放不下的清单会把下面那一节推走 -->
+          <li v-if="hiddenCount(workspace.id) > 0" :key="`${workspace.id}-more`">
+            <button
+              type="button"
+              class="side-row side-row-sub side-more"
+              @click="showAll(workspace.id)"
+            >
+              展开（还有 {{ hiddenCount(workspace.id) }} 条）
+            </button>
+          </li>
+        </template>
+        <li v-if="!workspaces.items.length" class="side-empty">
+          还没有项目。项目决定"在哪儿干活"，会一直留着。
+        </li>
+        <li v-else>
+          <button type="button" class="side-row side-more" @click="openProjects">全部项目</button>
+        </li>
+      </ul>
+
+      <!-- ------------------------------------------------------------ 对话 -->
+      <div class="side-head">
+        <button
+          type="button"
+          class="side-toggle"
+          :aria-expanded="chatsOpen"
+          @click="chatsOpen = !chatsOpen"
+        >
+          <span class="side-title">对话</span>
+          <IconChevronDown class="side-chevron" :class="{ collapsed: !chatsOpen }" :size="13" />
+        </button>
+        <button
+          type="button"
+          class="side-add"
+          title="新建会话（Ctrl/Cmd + K）"
+          aria-label="新建会话"
+          @click="newConversation"
+        >
+          <IconChatNew :size="15" />
+        </button>
+      </div>
+
+      <ul v-show="chatsOpen" class="side-list">
+        <li v-for="item in shownLoose" :key="item.id">
+          <RouterLink class="side-row" :to="`/chat/${item.id}`" :title="item.title || '未命名对话'">
+            <span class="side-row-name">{{ item.title || '未命名对话' }}</span>
+          </RouterLink>
+        </li>
+        <li v-if="!looseConversations.length" class="side-empty">还没有对话。点上面的加号开始。</li>
+        <!-- 「找一条旧会话」仍然只有这一个入口（搜索 + 全部 / 已归档都在面板里） -->
+        <li>
+          <button type="button" class="side-row side-more" @click="emit('openHistory')">
+            查看全部会话
+          </button>
+        </li>
+      </ul>
     </div>
 
     <div class="sidebar-foot">
@@ -748,6 +872,145 @@ async function onLogout(): Promise<void> {
   padding: var(--space-3) var(--space-2) var(--space-2);
   overflow-y: auto;
   border-top: 1px solid var(--border-hairline);
+}
+
+/* 节标题行：`项目 ⌄` + 右侧**悬停才出现**的"新建"按钮（Kimi Work 的形态）。
+   箭头紧跟在文字后面（它表示"这一节能收起来"），右侧留给动作——
+   而那个动作默认不摆，鼠标移上来才出现：常驻的话，两节各挂一个加号，
+   读起来像"这两行各有一个主要动作"，而它们的主语其实是下面那份清单。 */
+.side-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+  padding-right: var(--space-1);
+}
+
+.side-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--nav-section-title-height);
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-tertiary);
+  font-size: var(--text-meta-size);
+  cursor: pointer;
+}
+
+.side-toggle:hover {
+  color: var(--text-primary);
+}
+
+.side-chevron {
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+.side-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.side-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--hit-target);
+  height: var(--hit-target);
+  margin-left: auto;
+  padding: 0;
+  border: none;
+  background: none;
+  border-radius: var(--radius-control);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+/* 悬停显形，但**始终可 Tab 到**（规范 §8 禁止 hover-only 的关键操作） */
+.side-head:hover .side-add,
+.side-add:focus-visible {
+  opacity: 1;
+}
+
+.side-add:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 清单：每一行都**铺满侧栏宽度**（v0.22 修）。
+   上一版把行做成了行内元素，于是它只有文字那么宽（实测 87px），
+   悬停高亮只覆盖一小块，看着像"没铺满"。 */
+.side-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.side-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  width: 100%;
+  height: var(--nav-height);
+  padding: 0 var(--space-1-5);
+  border: none;
+  border-radius: var(--radius-nav);
+  background: none;
+  color: var(--text-primary);
+  font-size: var(--text-meta-size);
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+  transition: var(--transition-ui);
+}
+
+.side-row:hover {
+  background: var(--bg-hover);
+}
+
+/* 项目那一行：名字后面跟条数 */
+.side-row-group {
+  color: var(--text-primary);
+}
+
+.side-row-icon {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.side-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.side-row-count {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-micro-size);
+}
+
+/* 项目下的会话缩进一级（与项目行形成从属关系） */
+.side-row-sub {
+  padding-left: var(--space-6);
+  color: var(--text-secondary);
+}
+
+.side-more {
+  color: var(--text-tertiary);
+}
+
+/* 空态：一行灰字，高度与行一致（免得清单塌成一条缝） */
+.side-empty {
+  padding: var(--space-2) var(--space-1-5);
+  color: var(--text-tertiary);
+  font-size: var(--text-meta-size);
+  line-height: 1.5;
 }
 
 /* 「新建会话」用**和导航项一样的形态**（v0.17 改的）。
@@ -1177,5 +1440,4 @@ async function onLogout(): Promise<void> {
 
 /* 工作区下的会话缩进一级，且不带"几条消息"——那一栏属于工作区，
    会话本身只需要标题（宽度本来就只有 240px）。 */
-
 </style>
