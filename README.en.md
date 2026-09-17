@@ -139,7 +139,7 @@ kylab/
 |----------|----------|
 | [Architecture v0.2](docs/架构设计-v0.2.md) | Original positioning, architecture, ingestion pipeline, retrieval, storage choice (positioning superseded by the "drift" section above) |
 | [Engineering spec v0.3](docs/项目工程规范-v0.3.md) | Layout, naming, layering discipline, testing, commits and branches |
-| [Frontend design spec v0.12](docs/前端设计规范-v0.12.md) | Design tokens, light/dark themes, accessible controls, UI information architecture |
+| [Frontend design spec v0.13](docs/前端设计规范-v0.13.md) | Design tokens, light/dark themes, accessible controls, UI information architecture (values measured from Kimi) |
 | [Development plan v0.1](docs/开发计划-v0.1.md) | Milestones M0–M7, task breakdown, quality gates, risk register |
 | [Handover 2026-09-11](docs/交接说明-2026-09-11.md) | Read this first when taking over: current status, three commands to get running, honest list of open items, discipline and pitfalls |
 | [Product benchmark v0.1](docs/知识库产品对标调研-v0.1.md) | Gap analysis and trade-offs against Dify / RAGFlow / FastGPT / WeKnora and peers |
