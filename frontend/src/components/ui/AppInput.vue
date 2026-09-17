@@ -94,11 +94,17 @@ withDefaults(
   border-color: var(--text-quaternary);
 }
 
-/* 聚焦：描边转品牌色 + 一圈柔光。只换描边颜色在浅色下几乎看不出来，
-   而"我现在在哪个框里"是打字时最需要一眼确认的事。 */
+/* 聚焦：描边转**墨色**并加厚 1px（外描边 1px + 内描边 1px = 视觉上 2px）。
+   v0.18 从"品牌色描边 + 3px 柔光"改成这个形态，两个理由：
+
+   1. **Kimi 的焦点环是墨色的**（实测 `inset 0 0 0 1px var(--Labels-Primary)` 出现 21 处，
+      蓝色只有 3 处）。一圈蓝柔光在整页表单上就是"品牌色被大面积使用"。
+   2. **柔光是"又一圈线"**：它画在控件外面，与容器的聚焦环叠起来就是两根蓝线
+      （对话框里那圈重复的蓝框线就是这么来的）。墨色描边贴在控件自己的边上，
+      不往外扩，也就不会与谁叠。 */
 .field:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--text-primary);
 }
 
 /* 禁用态用**实色**而不是 opacity：半透明会把文字与底色一起推向对方，

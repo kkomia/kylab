@@ -345,6 +345,12 @@ class ChatService:
         重复读好几遍（v25 起多查询并行，缓存还必须线程安全，见 ``_SectionReader``）。
         """
         limit = top_k or self._runtime.get_int("chat.top_k") or MAX_CONTEXT_CHUNKS
+        # 一个库都没给（v0.18 的「不使用知识库」开关）= 这一轮不查库。
+        # **在检索层直接返回空**，而不是让 `kb_ids=[]` 一路传到 SQL——
+        # 那样要么拼出 `IN ()`（语法错），要么被各存储实现各自解释一遍。
+        # 放在这里，四条调用路径（流式 / 一次性 / 非 Agent / 子 Agent）全都覆盖到。
+        if not kb_ids:
+            return []
         response = self._retrieval.search(
             RetrievalQuery(
                 query=query,
@@ -515,6 +521,7 @@ class ChatService:
         *,
         query: str,
         kb_ids: list[str],
+        skill_names: list[str] | None = None,
         history: list[ChatMessage] | None = None,
         summary: str = "",
         system_prompt: str | None = None,
@@ -580,7 +587,32 @@ class ChatService:
         spawned = 0
         child_sources: list[SourceRef] = []
         subagent_notes: list[str] = []
-        if not plan.need_retrieval or not plan.queries:
+        # 本轮**钉住的技能**（v0.18）：界面上「加号 → 技能」勾了什么，这里就把它的正文
+        # 直接展开——效果等同"模型自己 `use_skill` 读了一次"，区别是**由人指定**。
+        #
+        # **钉住的不占 `MAX_SKILL_LOADS`**：那个上限防的是"模型反复读技能却不干活"，
+        # 而这是用户勾的。占了上限就会出现"勾了两个、只生效了一个"这种说不通的结果。
+        # 读不出来**不让整轮失败**（与循环里那条同一口径）：技能是增强，不是依赖。
+        for pinned in skill_names or []:
+            name = pinned.strip()
+            if not name or name.casefold() in {item.casefold() for item in loaded_skills}:
+                continue
+            try:
+                record, body = self._skills.read(name) if self._skills else (None, "")
+            except Exception as exc:
+                yield StepEvent(phase="skill", label="技能没读出来", detail=f"{name}：{exc}")
+                continue
+            if record is None:
+                continue
+            loaded_skills.append(record.name)
+            skill_bodies.append(f"【技能 {record.name} 的流程】" + _SKILL_SEPARATOR + body)
+            yield StepEvent(phase="skill", label="按你的指定启用技能", detail=record.name)
+        if not kb_ids:
+            # 「使用知识库」关掉（v0.18）：这一轮**不查库**，就是纯对话。
+            # **不与"无需检索"混为一谈**：那是"这问题不需要资料"，这是"人不让查"，
+            # 界面上该说清是哪一种——否则用户会以为系统判断错了。
+            yield StepEvent(phase="rewrite", label="不使用知识库", detail="这一轮按对话回答")
+        elif not plan.need_retrieval or not plan.queries:
             yield StepEvent(phase="rewrite", label="无需检索，直接回答")
         else:
             # 一份小节缓存在**所有查询与所有轮次之间共用**：多查询常常命中同一批文档，
@@ -725,8 +757,11 @@ class ChatService:
                 yield SourcesEvent(sources=sources)
 
         prompt = system_prompt or self._runtime.get("chat.system_prompt")
-        if not plan.need_retrieval:
-            # 寒暄/无关：此时没有资料可依据，不能再用"资料里没有再回答"那套要求
+        if not plan.need_retrieval or not kb_ids:
+            # 寒暄/无关：此时没有资料可依据，不能再用"资料里没有再回答"那套要求。
+            # **没有知识库也是同一处境**（v0.18）：既然这一轮根本不查库，
+            # 提示词里就不能再要求它"只能依据资料"——那会逼它说"资料里没有"，
+            # 而它压根没查过。
             prompt = prompt or CHAT_ONLY_SYSTEM_PROMPT
         yield StepEvent(phase="answer", label="组织回答", status="running")
 
@@ -758,6 +793,7 @@ class ChatService:
         *,
         query: str,
         kb_ids: list[str],
+        skill_names: list[str] | None = None,
         history: list[ChatMessage] | None = None,
         summary: str = "",
         system_prompt: str | None = None,
@@ -772,6 +808,7 @@ class ChatService:
         for event in self.answer_agent_stream(
             query=query,
             kb_ids=kb_ids,
+            skill_names=skill_names,
             history=history,
             summary=summary,
             system_prompt=system_prompt,

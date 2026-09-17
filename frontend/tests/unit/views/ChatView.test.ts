@@ -14,9 +14,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 
 import type { ConversationDetail, ConversationSummary } from '@/api/conversations'
+import type { KnowledgeBase } from '@/api/knowledgeBases'
 
 const listConversations = vi.fn()
 const getConversation = vi.fn()
+// 知识库清单要能被单个用例改写：v0.18 的「使用知识库」开关会按库数显示不同文案，
+// 固定返回空列表就测不到"选了库"那一档
+const listKnowledgeBases = vi.fn()
+const createConversation = vi.fn()
+const chatStream = vi.fn()
+const listSkills = vi.fn()
 
 vi.mock('@/api/conversations', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/conversations')>()
@@ -24,7 +31,7 @@ vi.mock('@/api/conversations', async (importOriginal) => {
     ...actual,
     listConversations: (...args: unknown[]) => listConversations(...args),
     getConversation: (...args: unknown[]) => getConversation(...args),
-    createConversation: vi.fn(),
+    createConversation: (...args: unknown[]) => createConversation(...args),
     updateConversation: vi.fn(),
     deleteConversation: vi.fn(),
   }
@@ -34,7 +41,7 @@ vi.mock('@/api/chat', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/chat')>()
   return {
     ...actual,
-    chatStream: vi.fn(),
+    chatStream: (...args: unknown[]) => chatStream(...args),
     getSuggestedQuestions: vi.fn().mockResolvedValue({ questions: [] }),
   }
 })
@@ -50,7 +57,7 @@ vi.mock('@/api/settings', async (importOriginal) => {
 
 vi.mock('@/api/knowledgeBases', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/knowledgeBases')>()
-  return { ...actual, listKnowledgeBases: vi.fn().mockResolvedValue({ items: [] }) }
+  return { ...actual, listKnowledgeBases: (...args: unknown[]) => listKnowledgeBases(...args) }
 })
 
 vi.mock('@/api/modelRegistry', async (importOriginal) => {
@@ -59,6 +66,11 @@ vi.mock('@/api/modelRegistry', async (importOriginal) => {
     ...actual,
     getRegistry: vi.fn().mockResolvedValue({ providers: [], models: [], slots: [] }),
   }
+})
+
+vi.mock('@/api/capabilities', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/capabilities')>()
+  return { ...actual, listSkills: (...args: unknown[]) => listSkills(...args) }
 })
 
 vi.mock('@/api/notes', async (importOriginal) => {
@@ -113,6 +125,30 @@ function chatDetail(id: string): ConversationDetail {
       { id: 'm1', role: 'user', content: '你好', sources: [], created_at: null },
       { id: 'm2', role: 'assistant', content: '这是回答', sources: [], created_at: null },
     ],
+  }
+}
+
+/** 知识库夹具：只填与这一页有关的那几个字段（其余照 store 那边的默认值）。 */
+function kb(id: string, name: string): KnowledgeBase {
+  return {
+    id,
+    name,
+    description: '',
+    embedding_model_id: 'dev/deterministic-hash',
+    embedding_dim: 256,
+    chunk_strategy: 'fixed',
+    chunk_size: 512,
+    chunk_overlap: 64,
+    suggested_enabled: true,
+    suggested_count: 6,
+    suggested_model_pk: null,
+    suggested_prompt: '',
+    wiki_enabled: false,
+    created_at: '2026-09-10T00:00:00Z',
+    can_manage: true,
+    can_write: true,
+    document_count: 1,
+    last_activity: null,
   }
 }
 
@@ -176,6 +212,17 @@ beforeEach(() => {
   setActivePinia(pinia)
   clearConversationDetailCache()
   vi.clearAllMocks()
+  // 「使用知识库」与钉住的技能是**落 localStorage 的偏好**，而 jsdom 的 localStorage
+  // 在同一个文件里的用例之间是共享的——不清就会出现"上一个用例把开关关了，
+  // 这一个用例一进来就是关的、再点一下反而打开"这种顺序依赖
+  // （这条就是这么被抓出来的：单独跑过、连起来跑挂）。
+  window.localStorage.clear()
+  listKnowledgeBases.mockResolvedValue({ items: [] })
+  listSkills.mockResolvedValue({ items: [], usable: 0 })
+  // 默认"手上一条会话都没有"：`listConversations` 的实现是会被 `mockClear` 留下的，
+  // 不清成空会让后面的用例落到"最近一条会话"上——那时发送**不会新建会话**，
+  // 于是断言新建参数就随用例顺序飘（这条也是这么被抓出来的）
+  listConversations.mockResolvedValue([])
   getDocument.mockImplementation(async (id: string) => ({
     id,
     knowledge_base_id: 'kb_1',
@@ -332,6 +379,130 @@ describe('引用文档抽屉', () => {
     await vi.waitFor(() => expect(wrapper.find('.doc-drawer').exists()).toBe(false), {
       timeout: 1000,
     })
+    wrapper.unmount()
+  })
+  // ------------------------------------------------- 输入框上的开关（v0.18）
+  //
+  // 用户要求：把「使用知识库」单独做一个开关，并在子菜单里选库。
+  // 这两条是能被断言的部分——**关掉之后必须能发**（否则开关是假的），
+  // 以及文案要跟着状态走（占位符还写着"向知识库提问"就是在骗人）。
+
+  it('默认开着知识库，占位符与触发器都写明依据', async () => {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库'), kb('kb_2', '论文库')] })
+    const { wrapper } = await mountAt('/chat')
+    await flushPromises()
+
+    expect(wrapper.find('.composer-field').attributes('placeholder')).toContain('向知识库提问')
+    // 默认全选：打开这一页的人多半就是要问遍手上的资料
+    expect(wrapper.find('.tool-kb .tool-trigger-text').text()).toBe('知识库 2 个')
+    wrapper.unmount()
+  })
+
+  it('关掉开关：文案转成"不使用知识库"，且此时**没有选库也能发**', async () => {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    const { wrapper } = await mountAt('/chat')
+    await flushPromises()
+
+    // 先取消勾选——模拟"开着但一个库都没选"这种发不出去的状态
+    await wrapper.find('.tool-kb .tool-check input').setValue(false)
+    await wrapper.find('.composer-field').setValue('随便聊聊')
+    const sendBtn = wrapper.find('.send-btn')
+    expect(sendBtn.attributes('disabled')).toBeDefined()
+
+    // 关掉开关之后同一个输入就该能发了
+    await wrapper.find('.tool-kb .tool-switch').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.tool-kb .tool-trigger-text').text()).toBe('不使用知识库')
+    // 触发器上要能看出"关"这个状态：它会影响答案的性质，藏进菜单里等于没说
+    expect(wrapper.find('.tool-kb').classes()).toContain('tool-off')
+    expect(wrapper.find('.composer-field').attributes('placeholder')).toContain('纯对话')
+    expect(wrapper.find('.send-btn').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('关掉开关之后选库框变成不可点（状态与操作要对得上）', async () => {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    const { wrapper } = await mountAt('/chat')
+    await flushPromises()
+
+    await wrapper.find('.tool-kb .tool-switch').trigger('click')
+    await flushPromises()
+
+    const box = wrapper.find('.tool-kb .tool-check input')
+    expect(box.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.tool-sub-muted').exists()).toBe(true)
+    wrapper.unmount()
+  })
+  // 上面三条钉的是"界面状态对不对"，下面两条钉的是**发出去的东西对不对**——
+  // 开关只在界面上断开、请求里还带着库，那就是个假的开关。
+  //
+  // 都挂在一个**已存在的会话**上（`/chat/c1`）：那样发送不经过"新建会话 + 改路径"，
+  // 一步就走到 `chatStream`，断言的东西只有一件——请求体。
+  // （先在 `/chat` 上试过，`createConversation` 与路由跳转把断言搅成了顺序依赖。）
+
+  it('关掉知识库后发送：请求里 kb_ids 是空的', async () => {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    chatStream.mockResolvedValue({ abort: vi.fn() })
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    await wrapper.find('.tool-kb .tool-switch').trigger('click')
+    await wrapper.find('.composer-field').setValue('纯聊一句')
+    await wrapper.find('.send-btn').trigger('click')
+    await flushPromises()
+
+    const payload = chatStream.mock.calls.at(-1)?.[0] as { kb_ids: string[] }
+    expect(payload.kb_ids).toEqual([])
+    wrapper.unmount()
+  })
+
+  it('勾了技能后发送：钉住的技能进了 skill_names', async () => {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    chatStream.mockResolvedValue({ abort: vi.fn() })
+    listSkills.mockResolvedValue({
+      items: [
+        {
+          name: '周报',
+          description: '写周报的流程',
+          source: 'builtin',
+          path: '/skills/report',
+          directory: 'report',
+          used_by_prompt: true,
+          flagged: [],
+        },
+        {
+          name: '被拦下的技能',
+          description: '',
+          source: 'user',
+          path: '/skills/bad',
+          directory: 'bad',
+          // 被安全扫描拦下的**不该出现在可勾列表里**：钉了也不生效，摆出来就是骗人
+          used_by_prompt: false,
+          flagged: ['含有可疑指令'],
+        },
+      ],
+      usable: 1,
+    })
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    // 展开「加号 → 技能」，勾上周报
+    await wrapper.findAll('.tool-plus .tool-item')[1].trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.tool-plus .tool-check-name').map((node) => node.text())).toEqual([
+      '周报',
+    ])
+    await wrapper.find('.tool-plus .tool-check input').setValue(true)
+
+    await wrapper.find('.composer-field').setValue('写个周报')
+    await wrapper.find('.send-btn').trigger('click')
+    await flushPromises()
+
+    const payload = chatStream.mock.calls.at(-1)?.[0] as { skill_names: string[] }
+    expect(payload.skill_names).toEqual(['周报'])
     wrapper.unmount()
   })
 })

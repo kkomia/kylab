@@ -113,6 +113,7 @@ def chat_once(
         answer = services.chat.answer_agent(
             query=payload.query,
             kb_ids=payload.kb_ids,
+            skill_names=payload.skill_names,
             history=history,
             summary=summary,
             model_pk=model_pk,
@@ -276,6 +277,7 @@ def _events(
             for event in chat.answer_agent_stream(
                 query=payload.query,
                 kb_ids=payload.kb_ids,
+                skill_names=payload.skill_names,
                 history=history,
                 summary=summary,
                 model_pk=model_pk,

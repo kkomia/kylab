@@ -21,7 +21,14 @@ import { onBeforeUnmount, ref } from 'vue'
 
 import IconMore from '@/components/icons/IconMore.vue'
 
-defineProps<{ label?: string }>()
+/**
+ * ``align``：浮层贴触发器的哪一边。
+ *
+ * 默认 ``right``（贴右缘），因为行内的「⋯」大多在右边。**输入框左下角那排工具按钮
+ * 要用 ``left``**：它们贴着容器左边，按右缘对齐会让浮层往左伸出视口
+ * （对话页的加号菜单实测就是这样被推出去的）。
+ */
+const props = defineProps<{ label?: string; align?: 'right' | 'left' }>()
 
 const menu = ref<HTMLDetailsElement | null>(null)
 
@@ -76,9 +83,17 @@ function place(): void {
   const flip = height > below && above > below
   dropUp.value = flip
   const top = flip ? Math.max(GAP, trigger.top - GAP - height) : trigger.bottom + GAP
+  // 贴左缘时按触发器的左边定位，**并往回收一步**：贴左缘的按钮常在窄容器里，
+  // 浮层比触发器宽，不夹一下就会伸出视口右侧（左对齐的典型失效方向与右对齐相反）。
+  const left =
+    props.align === 'left'
+      ? Math.round(Math.min(trigger.left, window.innerWidth - list.offsetWidth - GAP))
+      : null
   listStyle.value = {
     top: `${Math.round(top)}px`,
-    right: `${Math.round(Math.max(GAP, window.innerWidth - trigger.right))}px`,
+    ...(left === null
+      ? { right: `${Math.round(Math.max(GAP, window.innerWidth - trigger.right))}px` }
+      : { left: `${Math.round(Math.max(GAP, left))}px` }),
     // 与坐标同一次更新落地：见上面"为什么坐标里还带着 visibility"
     visibility: 'visible',
   }

@@ -247,10 +247,13 @@ onBeforeUnmount(() => bindGlobal(false))
   background: var(--bg-hover);
 }
 
+/* 展开态/键盘聚焦：描边转**墨色**（v0.18，与全局焦点环同一口径）。
+   此前是品牌蓝——那一行控件里只有它是蓝的，与「加号」「知识库」两个新控件并排时
+   显得不是一族；而且 Kimi 的焦点态也是墨色的（见 base.css 里那条实测记录）。 */
 .model-picker-open .mp-trigger,
 .mp-trigger:focus-visible {
   background: var(--bg-surface);
-  border-color: var(--accent);
+  border-color: var(--text-primary);
   outline: none;
   box-shadow: 0 0 0 3px var(--accent-soft);
 }

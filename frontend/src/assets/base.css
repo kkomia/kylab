@@ -98,9 +98,17 @@ input[type='radio'] {
 }
 
 /* 键盘可达性：鼠标点击不出现焦点环，键盘导航必须有。
-   焦点环用品牌色——它是"你现在在这里"，值得被看见 */
+   焦点环用**墨色**（`Labels-Primary`），不是品牌蓝——v0.18 照 Kimi 的实测值改的：
+
+     box-shadow: var(--next-sidebar-focus-ring, inset 0 0 0 1px var(--Labels-Primary))   ← 21 处
+     outline: 2px solid var(--Labels-Primary)                                             ← 6 处
+     outline: 2px solid var(--Colors-KMBlue)                                              ← 3 处
+
+   蓝的只有 3 处、墨色的近 30 处：**Kimi 的焦点环是墨色的**，品牌蓝留给小面积强调
+   （与本仓规范 §7「强调只在小面积上用品牌色」同一口径）。原来那圈 2px 蓝环在整页
+   到处都是，正是"品牌色被大面积使用"；用户点名的"蓝色框线表现与 Kimi 不一致"就是它。 */
 :focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--text-primary);
   outline-offset: 2px;
   border-radius: var(--radius-control);
 }

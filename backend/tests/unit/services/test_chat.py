@@ -576,6 +576,100 @@ def test_agent_stream_skips_retrieval_for_chitchat(runtime, bind_slot) -> None:
     assert not any(isinstance(e, SourcesEvent) for e in events)
 
 
+# --------------------------------------------- 不使用知识库 / 钉住技能（v0.18）
+
+
+def test_no_knowledge_base_means_no_retrieval(runtime, bind_slot) -> None:
+    """「使用知识库」关掉（`kb_ids=[]`）：这一轮**根本不查库**，且要说清是这个原因。
+
+    与"寒暄不用检索"是两件事：那是模型判断"这问题不需要资料"，这是**人不让查**。
+    两者都会跳过检索，但界面上的措辞不能混——否则用户会以为系统判断错了。
+    """
+
+    class _AgentChat:
+        def complete(self, messages):  # type: ignore[no-untyped-def]
+            # 刻意让规划说"需要检索"：闸门必须开在 kb_ids 上，而不是靠模型的判断
+            return '{"intent":"factual","queries":["改写后的查询"],"need_retrieval":true}'
+
+        def stream_events(self, messages):  # type: ignore[no-untyped-def]
+            from app.services.llm import LLMDelta
+
+            yield LLMDelta(text="纯聊一句")
+
+    class _BoomRetrieval:
+        def search(self, query):  # type: ignore[no-untyped-def]
+            raise AssertionError("关掉知识库之后不该触发检索")
+
+    service = ChatService(_BoomRetrieval(), runtime, chat_factory=lambda c: _AgentChat())  # type: ignore[arg-type]
+    bind_slot("chat", model_id="m", capabilities=["chat"])
+
+    from app.services.agent import SourcesEvent, StepEvent
+
+    events = list(service.answer_agent_stream(query="问题", kb_ids=[]))
+
+    steps = [e for e in events if isinstance(e, StepEvent)]
+    assert any(e.label == "不使用知识库" for e in steps)
+    assert not any(isinstance(e, SourcesEvent) for e in events)
+    # 回答照常产出——关掉知识库不等于不能问答
+    assert any(getattr(e, "answer", "") == "纯聊一句" for e in events)
+
+
+def test_pinned_skills_get_expanded_without_spending_the_skill_budget(runtime, bind_slot) -> None:
+    """勾在「加号 → 技能」里的技能，正文直接展开——等价于模型自己 `use_skill` 了一次。
+
+    **它不占 `MAX_SKILL_LOADS`**：那个上限防的是"模型反复读技能却不干活"，
+    而这是用户勾的。占了上限就会出现"勾了两个只生效一个"这种说不通的结果。
+    """
+
+    from app.services.agent import StepEvent
+
+    seen: dict[str, object] = {}
+
+    class _AgentChat:
+        def complete(self, messages):  # type: ignore[no-untyped-def]
+            return '{"intent":"factual","queries":["q"],"need_retrieval":false}'
+
+        def stream_events(self, messages):  # type: ignore[no-untyped-def]
+            seen["messages"] = messages
+            from app.services.llm import LLMDelta
+
+            yield LLMDelta(text="好")
+
+    class _Skills:
+        def catalog(self):  # type: ignore[no-untyped-def]
+            return "可用的技能：周报"
+
+        def read(self, name):  # type: ignore[no-untyped-def]
+            record = type("Record", (), {"name": name})()
+            return record, f"{name} 的正文：先拉数据再写成三段。"
+
+    # 勾三个，超过 MAX_SKILL_LOADS（2）——这正是要钉的那条：不该被上限砍掉
+    service = ChatService(
+        _EmptyRetrieval(),
+        runtime,
+        chat_factory=lambda c: _AgentChat(),
+        skills=_Skills(),
+    )
+    bind_slot("chat", model_id="m", capabilities=["chat"])
+
+    events = list(
+        service.answer_agent_stream(
+            query="问题", kb_ids=["kb_1"], skill_names=["周报", "复盘", "竞品分析"]
+        )
+    )
+
+    loaded = [
+        e.detail for e in events if isinstance(e, StepEvent) and e.label == "按你的指定启用技能"
+    ]
+    assert loaded == ["周报", "复盘", "竞品分析"]
+
+    # 正文真的进了提示词，而不只是发了一条界面事件
+    messages = seen["messages"]
+    blob = "\n".join(str(getattr(m, "content", m)) for m in messages)  # type: ignore[union-attr]
+    assert "周报 的正文" in blob
+    assert "竞品分析 的正文" in blob
+
+
 # ------------------------------------------------- 资料装配：摘要与预算（v25）
 
 

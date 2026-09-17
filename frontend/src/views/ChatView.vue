@@ -42,11 +42,16 @@ import {
   type ConversationDetail,
   type StoredMessage,
 } from '@/api/conversations'
+import { uploadDocument } from '@/api/documents'
+import { listSkills, type Skill } from '@/api/capabilities'
 import type { RegisteredModel } from '@/api/modelRegistry'
 import { getSettings, updateSettings } from '@/api/settings'
 import IconArrowUp from '@/components/icons/IconArrowUp.vue'
+import IconAi from '@/components/icons/IconAi.vue'
 import IconCopy from '@/components/icons/IconCopy.vue'
 import IconAlert from '@/components/icons/IconAlert.vue'
+import IconLibrary from '@/components/icons/IconLibrary.vue'
+import IconPlus from '@/components/icons/IconPlus.vue'
 import IconRegenerate from '@/components/icons/IconRegenerate.vue'
 import IconNote from '@/components/icons/IconNote.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
@@ -56,11 +61,12 @@ import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
 import IconSearch from '@/components/icons/IconSearch.vue'
 import IconStop from '@/components/icons/IconStop.vue'
+import IconUpload from '@/components/icons/IconUpload.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
-import AppMultiSelect from '@/components/ui/AppMultiSelect.vue'
 import ModelPicker from '@/components/ui/ModelPicker.vue'
+import RowMenu from '@/components/ui/RowMenu.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 
 /**
@@ -166,17 +172,175 @@ const conversationId = computed(() => String(route.params.conversationId ?? ''))
  */
 const wantsNew = computed(() => Boolean(route.query.new))
 
-/** 没选库时的问题没有可依据的原文，与后端的 kb_ids 必填是同一条约束。 */
+/**
+ * 能不能发。
+ *
+ * **关掉「使用知识库」之后不再要求选了库**（v0.18）：那一轮本来就不查库，
+ * 还拦着不让发就等于开关是假的。开着时仍然要求至少选一个库——
+ * 那时"没有可依据的原文"与后端的取数语义对不上。
+ */
 const canSend = computed(
   () =>
-    selected.value.length > 0 &&
+    (!useKb.value || selected.value.length > 0) &&
     query.value.trim().length > 0 &&
     !loadingHistory.value &&
     !resolvingEntry.value,
 )
 
+/** 这一轮真正发出去的库范围：开关关掉就是空（后端据此跳过检索）。 */
+const effectiveKbIds = computed(() => (useKb.value ? selected.value : []))
+
+/**
+ * 输入框的占位文案**跟着开关走**。
+ *
+ * 关掉知识库还写"向知识库提问"是在骗人：用户会以为答案有依据，
+ * 而这一轮根本没查库。占位符是这一页最容易被读到的一句话，值得跟着状态改。
+ */
+const composerPlaceholder = computed(() =>
+  useKb.value
+    ? '向知识库提问…（回车发送，Shift + 回车换行）'
+    : '纯对话，不查知识库…（回车发送，Shift + 回车换行）',
+)
+
 /** 知识库多选的下拉选项（名字给用户看，id 给后端）。 */
 const kbOptions = computed(() => store.items.map((item) => ({ value: item.id, label: item.name })))
+
+// ------------------------------------------------- 输入框上的三个开关（v0.18）
+
+/**
+ * 「使用知识库」开关。
+ *
+ * **关掉 = 这一轮不查库**（后端 `kb_ids` 收空数组），就是纯对话。它和"选了库但
+ * 一个都没勾"是两种状态：前者是"我不想查"，后者是"我还没选"——所以不能靠
+ * `selected.length > 0` 反推，得单独存一个布尔。
+ *
+ * 落 localStorage：这是"我平时怎么用"的偏好，不是某一轮的一次性选择。
+ */
+const KB_SWITCH_KEY = 'kylab-chat-use-kb'
+const useKb = ref(readStored(KB_SWITCH_KEY) !== '0')
+
+/** 选库面板里的过滤词。库多了（几十个）没有它就得在一长条里找。 */
+const kbFilter = ref('')
+
+/** 过滤后的待选库；过滤词只用于显示，不影响已勾选的那些。 */
+const visibleKbOptions = computed(() => {
+  const keyword = kbFilter.value.trim().toLocaleLowerCase()
+  if (!keyword) return kbOptions.value
+  return kbOptions.value.filter((item) => item.label.toLocaleLowerCase().includes(keyword))
+})
+
+/** 关掉开关时触发器上写什么：状态要能一眼看出来，不能只靠勾选框的差异。 */
+const kbTriggerText = computed(() => {
+  if (!useKb.value) return '不使用知识库'
+  // **还没加载完就说"还没有知识库"是假话**：库明明在，只是还没取回来。
+  // 加载中报空会让用户以为自己的库丢了（实测确实会先闪一下这句）。
+  if (store.loading && store.items.length === 0) return '知识库'
+  if (store.items.length === 0) return '还没有知识库'
+  return selected.value.length === 0 ? '未选库' : `知识库 ${selected.value.length} 个`
+})
+
+function toggleKbSwitch(): void {
+  useKb.value = !useKb.value
+  writeStored(KB_SWITCH_KEY, useKb.value ? '1' : '0')
+}
+
+function toggleKb(kbId: string): void {
+  selected.value = selected.value.includes(kbId)
+    ? selected.value.filter((item) => item !== kbId)
+    : [...selected.value, kbId]
+}
+
+/**
+ * 本轮钉住的技能（「加号 → 技能」勾的）。
+ *
+ * 也落 localStorage：它更像"我常开哪几个技能"而不是"这一句话要什么"。
+ * 勾了就会每一轮都把它展开——**代价是占上下文**，所以勾选行上要写明这一点。
+ */
+const PINNED_SKILLS_KEY = 'kylab-chat-pinned-skills'
+const pinnedSkills = ref<string[]>(
+  readStored(PINNED_SKILLS_KEY)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean),
+)
+/** 技能清单（懒加载：不点开「技能」就不请求）。 */
+const skillOptions = ref<Skill[]>([])
+const skillsLoaded = ref(false)
+const skillsOpen = ref(false)
+
+async function loadSkills(): Promise<void> {
+  if (skillsLoaded.value) return
+  try {
+    const { items } = await listSkills()
+    // 只列**能进提示词**的：被安全扫描拦下的技能钉了也不生效，
+    // 摆在可勾的位置上就是骗人（能力页里能看到它们被拦的原因）
+    skillOptions.value = items.filter((item) => item.used_by_prompt)
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '技能清单取不到')
+  } finally {
+    skillsLoaded.value = true
+  }
+}
+
+function toggleSkillsPanel(): void {
+  skillsOpen.value = !skillsOpen.value
+  if (skillsOpen.value) void loadSkills()
+}
+
+function toggleSkill(name: string): void {
+  pinnedSkills.value = pinnedSkills.value.includes(name)
+    ? pinnedSkills.value.filter((item) => item !== name)
+    : [...pinnedSkills.value, name]
+  writeStored(PINNED_SKILLS_KEY, pinnedSkills.value.join(','))
+}
+
+// ------------------------------------------------------- 附件（「加号」的第一项）
+
+/**
+ * 隐藏的文件选择器。**用 `<input type=file>` 而不是拖拽**：拖拽是加分项，
+ * 而它在触屏上根本不存在，只做拖拽等于这部分功能在手机上没人能用。
+ */
+const fileInput = ref<HTMLInputElement | null>(null)
+const uploading = ref(false)
+
+/**
+ * 往哪个库传。
+ *
+ * 附件在 KYLAB 里就是**知识库文档**（没有"只挂在这一轮消息上"的附件）——
+ * 所以必须有一个落点：优先用当前勾选的第一个库。一个库都没勾（或开关关着）
+ * 时**明确拒绝并说明**，而不是偷偷挑一个库塞进去。
+ */
+const attachTarget = computed(() => {
+  if (!useKb.value) return null
+  const id = selected.value[0] ?? store.items[0]?.id
+  if (!id) return null
+  return { id, name: store.items.find((item) => item.id === id)?.name ?? '' }
+})
+
+async function onFilesPicked(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = '' // 同一个文件连选两次也要能触发 change
+  if (files.length === 0) return
+  const target = attachTarget.value
+  if (!target) {
+    notifyWarning(
+      useKb.value ? '先在「知识库」里选一个库，文件才有地方放' : '打开「知识库」开关后再传文件',
+    )
+    return
+  }
+  uploading.value = true
+  try {
+    for (const file of files) await uploadDocument(target.id, file)
+    notifySuccess(`已把 ${files.length} 个文件传给「${target.name}」，入库后就能被引用`)
+    // 计数与文档列表随之变化：让侧栏与知识库页拿到新数字，不然要刷新才看得见
+    void store.load()
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '上传失败')
+  } finally {
+    uploading.value = false
+  }
+}
 
 onMounted(async () => {
   if (store.items.length === 0) await store.load()
@@ -378,7 +542,7 @@ async function send(): Promise<void> {
   let target = conversationId.value
   if (!target) {
     try {
-      const created = await conversations.create(selected.value, modelPk.value || null, {
+      const created = await conversations.create(effectiveKbIds.value, modelPk.value || null, {
         thinking: thinkingOn.value,
         thinking_effort: thinkingEffort.value,
       })
@@ -428,7 +592,8 @@ async function send(): Promise<void> {
       // 留着是为了"没会话"那条路径（此处不会走到，但接口本身支持无状态调用）
       {
         query: text,
-        kb_ids: selected.value,
+        kb_ids: effectiveKbIds.value,
+        skill_names: pinnedSkills.value,
         history: context,
         conversation_id: target,
         model_pk: model,
@@ -697,7 +862,8 @@ async function resend(
     const handle = await chatStream(
       {
         query: text,
-        kb_ids: selected.value,
+        kb_ids: effectiveKbIds.value,
+        skill_names: pinnedSkills.value,
         history: context,
         conversation_id: id,
         model_pk: model,
@@ -929,7 +1095,7 @@ let samplesTimer: number | undefined
 /** 只在"空状态 + 至少选了一个库"时才去生成；有消息之后它是纯浪费。 */
 function scheduleSamples(): void {
   window.clearTimeout(samplesTimer)
-  if (messages.value.length > 0 || selected.value.length === 0) {
+  if (messages.value.length > 0 || effectiveKbIds.value.length === 0) {
     suggested.value = []
     return
   }
@@ -937,13 +1103,15 @@ function scheduleSamples(): void {
 }
 
 async function loadSamples(): Promise<void> {
-  if (messages.value.length > 0 || selected.value.length === 0) return
+  // 示例问题是从库里的分段出题结果抽的，所以**关掉知识库就没有语料**——
+  // 与"没选库"同一处理，不去请求（请求也会是空集）
+  if (messages.value.length > 0 || effectiveKbIds.value.length === 0) return
   samplesLoading.value = true
   try {
     // **只传库**：问题取自库里入库时生成的（v23），不再现场调模型，
     // 所以既没有 limit（那是"每段生成几条"，属于库设置）也没有 model_pk。
     // 读端每次都重新随机抽样，所以"换一批"什么都不用传
-    const result = await getSuggestedQuestions(selected.value)
+    const result = await getSuggestedQuestions(effectiveKbIds.value)
     suggested.value = result.questions
   } catch {
     // 生成只是引导：失败就回退静态样例，别把空状态变成错误提示
@@ -971,7 +1139,9 @@ watch(
 /** 点示例问题：填进输入框；能发就直接发——这一步本来就是"照着问"。 */
 function useSample(question: string): void {
   query.value = question
-  if (selected.value.length > 0 && !sending.value && !loadingHistory.value) void send()
+  // 能发就直接发——这一步本来就是"照着问"。用 `canSend` 而不是"选了库"：
+  // 关掉知识库时同样该能一键问出去
+  if (canSend.value && !sending.value) void send()
 }
 
 // ------------------------------------------------------------------ 提示词
@@ -1304,19 +1474,124 @@ async function savePrompt(): Promise<void> {
           :rows="2"
           :disabled="sending"
           class="composer-field"
-          placeholder="向知识库提问…（回车发送，Shift + 回车换行）"
+          :placeholder="composerPlaceholder"
           @keydown.enter.exact.prevent="send"
         />
         <div class="composer-foot">
           <div class="composer-left">
-            <AppMultiSelect
-              v-model="selected"
-              class="pick pick-kb"
-              :options="kbOptions"
-              aria-label="知识库"
-              placeholder="选择知识库"
-              search-placeholder="搜索知识库"
-            />
+            <!--
+              「加号」：附件与技能都收在这里（v0.18，照 Kimi 的输入框布局）。
+              拼成一个菜单而不是并排两个按钮：它们回答的是同一个问题——
+              "这一轮除了问题本身，还要给它什么"。摆成两个按钮时工具条会比输入框还热闹。
+            -->
+            <RowMenu class="tool tool-plus" align="left" label="添加附件或技能">
+              <template #trigger>
+                <IconPlus :size="16" />
+              </template>
+              <template #default>
+                <button type="button" class="tool-item" @click="fileInput?.click()">
+                  <IconUpload :size="15" />
+                  <span>添加文件和图片</span>
+                </button>
+                <button
+                  type="button"
+                  class="tool-item"
+                  :aria-expanded="skillsOpen"
+                  @click="toggleSkillsPanel"
+                >
+                  <IconAi :size="15" />
+                  <span>技能</span>
+                  <IconChevronRight class="tool-caret" :class="{ open: skillsOpen }" :size="13" />
+                </button>
+                <!--
+                  技能是**钉住**（本轮必定展开正文）而不是"打开某个开关"：
+                  后端没有"关掉某个技能"的概念——技能由模型按需 `use_skill` 读，
+                  钉住只是把"要读"这一步替它做了。措辞按这个语义写。
+                -->
+                <ul v-if="skillsOpen" class="tool-sub">
+                  <li v-for="skill in skillOptions" :key="skill.name">
+                    <label class="tool-check" :title="skill.description">
+                      <input
+                        type="checkbox"
+                        :checked="pinnedSkills.includes(skill.name)"
+                        @change="toggleSkill(skill.name)"
+                      />
+                      <span class="tool-check-name">{{ skill.name }}</span>
+                    </label>
+                  </li>
+                  <li v-if="!skillsLoaded" class="tool-note">正在读技能清单…</li>
+                  <li v-else-if="skillOptions.length === 0" class="tool-note">
+                    还没有可用的技能。去「能力」页装一个。
+                  </li>
+                  <li v-else class="tool-note">
+                    勾上的技能每一轮都会展开正文——它会占上下文，按需勾。
+                  </li>
+                </ul>
+              </template>
+            </RowMenu>
+
+            <!--
+              「知识库」：一个开关 + 一个子菜单（v0.18，用户指定）。
+              **开关与选库是两件事**：关掉是"这一轮不查库"（纯对话），
+              开着才有"查哪几个"。所以它们在同一块里，但状态分开表达——
+              触发器上直接写清当前是"不使用知识库"还是"知识库 3 个"。
+            -->
+            <RowMenu
+              class="tool tool-kb"
+              :class="{ 'tool-off': !useKb }"
+              align="left"
+              label="使用知识库"
+            >
+              <template #trigger>
+                <IconLibrary :size="15" />
+                <span class="tool-trigger-text">{{ kbTriggerText }}</span>
+                <IconChevronDown :size="13" />
+              </template>
+              <template #default>
+                <button
+                  type="button"
+                  class="tool-item tool-switch"
+                  role="switch"
+                  :aria-checked="useKb"
+                  @click="toggleKbSwitch"
+                >
+                  <span class="tool-switch-track" :class="{ 'tool-switch-on': useKb }">
+                    <span class="tool-switch-knob" />
+                  </span>
+                  <span>使用知识库</span>
+                </button>
+                <p class="tool-note tool-note-block">
+                  关掉就是纯对话：这一轮不查库，回答只按模型自己的知识来。
+                </p>
+                <input
+                  v-if="useKb && store.items.length > 8"
+                  v-model="kbFilter"
+                  class="tool-filter"
+                  type="search"
+                  placeholder="筛选知识库"
+                />
+                <ul class="tool-sub" :class="{ 'tool-sub-muted': !useKb }">
+                  <li v-for="item in visibleKbOptions" :key="item.value">
+                    <label class="tool-check">
+                      <input
+                        type="checkbox"
+                        :checked="selected.includes(item.value)"
+                        :disabled="!useKb"
+                        @change="toggleKb(item.value)"
+                      />
+                      <span class="tool-check-name">{{ item.label }}</span>
+                    </label>
+                  </li>
+                  <li v-if="store.items.length === 0" class="tool-note">
+                    还没有知识库。去「所有知识库」建一个，或先用纯对话。
+                  </li>
+                  <li v-else-if="useKb && visibleKbOptions.length === 0" class="tool-note">
+                    没有匹配的知识库。
+                  </li>
+                </ul>
+              </template>
+            </RowMenu>
+
             <!--
               模型 + 思考 + 强度收在同一个入口里（见 ModelPicker 的注释）：
               三个控件并排时工具条比输入框还热闹，而它们回答的是同一个问题——这一轮怎么生成。
@@ -1342,9 +1617,10 @@ async function savePrompt(): Promise<void> {
             >
               {{ promptConfigured ? '提示词 · 已自定义' : '提示词' }}
             </button>
-            <span v-if="store.items.length && selected.length === 0" class="composer-warn">
+            <span v-if="useKb && store.items.length && selected.length === 0" class="composer-warn">
               未选知识库
             </span>
+            <span v-if="uploading" class="composer-warn">正在上传…</span>
             <!-- 发送 / 停止是**同一个位置、同一个形状**的图标按钮：切到"停止"时
                  按钮不跳动，用户不必重新找它。文字版按钮在这条工具行里太占位置 -->
             <button
@@ -1370,6 +1646,20 @@ async function savePrompt(): Promise<void> {
             </button>
           </div>
         </div>
+        <!--
+          「添加文件和图片」的实际落点。**藏起来的 `<input type=file>` 而不是自绘按钮**：
+          文件选择器必须由真实的用户手势触发，而原生 input 自带键盘可达与系统对话框，
+          自绘一个再去模拟点击只是把同一件事做复杂。
+        -->
+        <input
+          ref="fileInput"
+          class="file-input"
+          type="file"
+          multiple
+          tabindex="-1"
+          aria-hidden="true"
+          @change="onFilesPicked"
+        />
       </div>
     </div>
 
@@ -2215,13 +2505,18 @@ async function savePrompt(): Promise<void> {
   box-shadow: var(--shadow-raised);
 }
 
-/* 卡片里的文本域去掉自己的边框与底色——它是卡片的一部分，不该再套一层框；
-   聚焦反馈交给整张卡片（focus-within），这样"在写字"的提示更大、更好认。
-   卡片已无描边，所以聚焦环只能走阴影：保留浮起那一层，再叠一圈品牌色柔光。 */
+/* 聚焦环**只画一圈，画在卡片上**（v0.18 修）。
+   此前这里有两条环：卡片这圈 3px 品牌蓝柔光 + `AppInput` 自己那圈 3px 品牌蓝柔光——
+   而 `.composer :deep(.composer-field:focus)` 只把 `border` 归零、**没归 `box-shadow`**，
+   所以里面那圈一直留着。用户报的"对话框选中后有重复的蓝色框线"就是这两圈。
+
+   现在：内层文本域**完全不画环**（见下面的 `box-shadow: none`），卡片这圈改用
+   Kimi 的形态——墨色、1px、inset（不往外扩）。它已经有一层 `--shadow-raised` 抬起，
+   叠一圈贴边的墨线就够表达"在写字了"，不需要再套一层彩色柔光。 */
 .composer:focus-within {
   box-shadow:
     var(--shadow-raised),
-    0 0 0 3px var(--accent-soft);
+    inset 0 0 0 1px var(--text-primary);
 }
 
 .composer :deep(.composer-field) {
@@ -2231,9 +2526,13 @@ async function savePrompt(): Promise<void> {
   resize: none;
 }
 
+/* 内层不画任何环。Kimi 的 `chat-input-editor` 就是 `outline: none`——
+   焦点态整张卡片负责，输入区只是卡片里的一段文字。 */
 .composer :deep(.composer-field:hover),
 .composer :deep(.composer-field:focus) {
   border: 0;
+  box-shadow: none;
+  outline: none;
 }
 
 .composer-foot {
@@ -2255,7 +2554,194 @@ async function savePrompt(): Promise<void> {
   min-width: 0;
 }
 
-/* 知识库与模型各占一档宽度（模型的思考设置收在它自己的浮层里） */
+/* ---------------------------------------------------------------- 工具栏控件
+   这一行里现在有三个控件：加号、知识库、模型。**它们必须像同一族东西**——
+   用户报的"样式统一"就是这件事。
+
+   现成的族标准是 `ModelPicker` 的触发器（也是这一行里最老的那个控件）：
+   高 `--control-height`、浅填充 `--bg-subtle`、透明描边、圆角 `--radius-row`。
+   所以加号与知识库都照这一套写，而不是各自发明一个高度。
+   （Kimi 那一排是 28px 的无底纯文字按钮；这里不跟它，理由是**跟同页的模型选择器
+   对齐**比跟参考图对齐更重要——一排里两个高度比"整体矮 4px"难看得多。） */
+.tool {
+  flex: 0 0 auto;
+}
+
+/* 触发器**就是那颗胶囊本身**。
+   RowMenu 默认把 `summary` 做成一个 24px（`--hit-target`）的图标方块，直接套在工具条上
+   会有两个毛病：比旁边两个控件矮 8px（一排里两个高度），而且**可点区域小于看到的方块**
+   ——外圈那 4px 点下去没反应。所以把胶囊样式写到 `summary` 上，让它就是那个洞。 */
+.tool :deep(.menu-trigger) {
+  gap: var(--space-1-5);
+  min-width: 0;
+  height: var(--control-height);
+  padding: 0 var(--space-2);
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border: 1px solid transparent;
+  border-radius: var(--radius-row);
+}
+
+.tool-plus :deep(.menu-trigger) {
+  justify-content: center;
+  width: var(--control-height);
+  padding: 0;
+}
+
+.tool :deep(.menu-trigger:hover),
+.tool[open] :deep(.menu-trigger) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+/* 关掉知识库时触发器转成"关"的形态：文字降一档灰、填充去掉、改用一圈 hairline。
+   **不能只靠图标或勾选框表达**——关掉会改变答案的性质（不再依据库里的原文），
+   这个状态必须在触发器本身上就看得见：用户不会为了确认状态去展开菜单。 */
+.tool-off :deep(.menu-trigger) {
+  color: var(--text-tertiary);
+  background: transparent;
+  border-color: var(--border-hairline);
+}
+
+.tool-trigger-text {
+  max-width: 132px;
+  overflow: hidden;
+  font-size: var(--text-meta-size);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 浮层里的项：图标 + 文字 + （可选的）右端箭头。RowMenu 的默认项是纯文字，
+   这里要带图标，所以把它的 `display: block` 改成 flex。 */
+.tool :deep(.tool-item) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2);
+}
+
+.tool :deep(.tool-caret) {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+.tool :deep(.tool-caret.open) {
+  transform: rotate(90deg);
+}
+
+/* 子菜单（技能清单 / 知识库清单）。**缩进 + 分隔线**表达层级：
+   它们从属于上面那一项，而不是并列的另一组动作。 */
+.tool :deep(.tool-sub) {
+  max-height: 260px;
+  margin: var(--space-0-5) 0 0;
+  padding: var(--space-1) 0 0 var(--space-4);
+  overflow-y: auto;
+  list-style: none;
+  border-top: 1px solid var(--border-hairline);
+}
+
+.tool :deep(.tool-sub-muted) {
+  opacity: 0.5;
+}
+
+.tool :deep(.tool-check) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1-5) var(--space-2);
+  font-size: var(--text-meta-size);
+  color: var(--text-primary);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.tool :deep(.tool-check:hover) {
+  background: var(--bg-hover);
+}
+
+.tool :deep(.tool-check input) {
+  flex: 0 0 auto;
+  accent-color: var(--text-primary);
+}
+
+.tool :deep(.tool-check-name) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 说明文字：菜单里的"这一项是什么意思"。**必须有**——
+   "钉住技能""关掉知识库"都不是一眼能懂的状态，靠标题猜会猜错。 */
+.tool :deep(.tool-note) {
+  padding: var(--space-1) var(--space-2) var(--space-1) 0;
+  font-size: var(--text-micro-size);
+  line-height: 1.5;
+  color: var(--text-tertiary);
+}
+
+.tool :deep(.tool-note-block) {
+  margin: 0;
+  padding: 0 var(--space-2) var(--space-2);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.tool :deep(.tool-filter) {
+  width: 100%;
+  height: 28px;
+  margin: var(--space-1) 0;
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: var(--text-micro-size);
+  color: var(--text-primary);
+  background: var(--bg-subtle);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  outline: none;
+}
+
+.tool :deep(.tool-filter:focus) {
+  border-color: var(--text-primary);
+}
+
+/* 开关：轨道 + 圆钮。用 `role="switch"` 的按钮而不是 `<input type=checkbox>` 加样式，
+   `aria-checked` 才是这个控件真正的语义（"开着的知识库"不是"勾选的项"）。 */
+.tool :deep(.tool-switch-track) {
+  position: relative;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 16px;
+  background: var(--border-strong);
+  border-radius: 999px;
+  transition: background var(--motion-fast) var(--motion-ease);
+}
+
+.tool :deep(.tool-switch-on) {
+  background: var(--text-primary);
+}
+
+.tool :deep(.tool-switch-knob) {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background: var(--bg-surface);
+  border-radius: 999px;
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+.tool :deep(.tool-switch-on .tool-switch-knob) {
+  transform: translateX(12px);
+}
+
+/* 文件选择器只作为"点加号 → 弹出系统文件框"的落点，本身不显示 */
+.file-input {
+  display: none;
+}
+
+/* 模型与知识库各占一档宽度（思考设置收在模型自己的浮层里） */
 .pick {
   width: 200px;
   max-width: 42vw;

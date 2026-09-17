@@ -664,7 +664,14 @@ class ChatHistoryIn(BaseModel):
 
 class ChatRequestIn(BaseModel):
     query: str = Field(min_length=1)
-    kb_ids: list[str] = Field(min_length=1)
+    kb_ids: list[str] = Field(
+        default_factory=list,
+        description="这一轮依据哪些知识库；**空 = 不使用知识库**（界面上那个开关关掉时）",
+    )
+    skill_names: list[str] = Field(
+        default_factory=list,
+        description="本轮钉住（必定展开正文）的技能名，来自输入框「加号 → 技能」",
+    )
     top_k: int | None = Field(default=None, gt=0, le=20, description="留空用设置里的条数")
     history: list[ChatHistoryIn] = Field(default_factory=list)
     conversation_id: str | None = Field(
