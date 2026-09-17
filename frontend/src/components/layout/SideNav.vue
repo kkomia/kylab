@@ -15,14 +15,12 @@
  * 检索没有独立入口：它是"在某个库里查东西"，收在知识库详情页里；
  * 跨库问答则收在「对话」页——那里的问题是"这些库里怎么说"，不是"哪个块最像"。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import IconChatNew from '@/components/icons/IconChatNew.vue'
-import IconClose from '@/components/icons/IconClose.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
 import IconPin from '@/components/icons/IconPin.vue'
-import IconSearch from '@/components/icons/IconSearch.vue'
 import IconTrash from '@/components/icons/IconTrash.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
@@ -85,6 +83,13 @@ onMounted(async () => {
   // 启动后空闲时预热任务列表：用户点进任务中心时数据通常已经在手里。
   // 放在 idle 里而不是与上面并发——预热是"顺手多做的准备"，不该和首屏抢带宽。
   scheduleTaskPrefetch()
+  // 快捷键挂在 window 上：它在页面的任何位置都该生效（侧栏只是它的提示位）。
+  // **必须在卸载时摘掉**：侧栏在登录页不渲染，残留的监听会在别处误触发。
+  window.addEventListener('keydown', onShortcut)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onShortcut)
 })
 
 /**
@@ -168,6 +173,44 @@ function onConversationIntent(id: string): void {
  * 默认展开等于没改。会话所在的工作区会自动展开（见 `openWorkspaceIds` 的 watch）。
  */
 const sectionHovered = ref(false)
+
+/**
+ * 图标动效的**重播键**（v0.17，照 kimi.com 的 AnimatedIcon）。
+ *
+ * CSS 动画只在它"被挂上"的那一刻播一次；鼠标再次移上去时不会自动重播。
+ * 换一个 `key` 会重建这个元素，于是动画重新开始——这是让"每次悬停都动一下"
+ * 成立的最短路径（Kimi 的库也是这个路子：它给 enter 与 leave 各定义一份
+ * **内容相同**的关键帧，靠切换类名来重播）。
+ */
+const iconEpoch = ref(0)
+
+/**
+ * 悬停过的导航项。**只给它们播"离开"那段**：没悬停过的项不该在挂载时播
+ * （那会变成整列图标一起动，像加载动画）。
+ */
+const hoveredNav = ref<string[]>([])
+
+function enterNav(key: string): void {
+  iconEpoch.value += 1
+  if (!hoveredNav.value.includes(key)) hoveredNav.value = [...hoveredNav.value, key]
+}
+
+/**
+ * `Ctrl/Cmd + K` = 新建会话。
+ *
+ * 提示写了就要能用：界面上摆一个按不出来的快捷键，比不摆更糟。
+ * 只在**非输入态**触发——用户正在输入框里敲字时，Ctrl+K 该归输入框
+ * （那是很多编辑器的删行快捷键）。
+ */
+function onShortcut(event: KeyboardEvent): void {
+  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'k') return
+  const target = event.target as HTMLElement | null
+  if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) {
+    return
+  }
+  event.preventDefault()
+  void router.push({ path: '/chat', query: { new: '1' } })
+}
 /** 整节折叠（Kimi 的 `对话 ⌄`）。默认展开——它是这一栏的主体。 */
 const sectionCollapsed = ref(false)
 const knowledgeOpen = ref(false)
@@ -191,8 +234,6 @@ const conversationsByWorkspace = computed(() => {
 const ungroupedConversations = computed(() =>
   conversations.items.filter((item) => !item.workspace_id),
 )
-
-const knowledgeBases = computed(() => store.items)
 
 function toggleKnowledge(): void {
   knowledgeOpen.value = !knowledgeOpen.value
@@ -247,23 +288,32 @@ async function moveConversation(
 }
 
 const NAV_ITEMS = [
-  // **没有「对话」这一项**（v0.17 去掉）：它与下面的会话列表、以及最上面的
-  // 「新对话」是同一件事的三个入口——点「对话」是"回到最近一次对话"，
-  // 而列表也是"去某次对话"，两者并排时用户会犹豫该点哪个。
-  // Kimi Work / ChatGPT / Claude 都没有这一项：**会话列表本身就是那个入口**。
-  // `/chat` 路由仍然在（新对话按钮与会话项都指向它），只是不再占一个导航位。
-  { to: '/', label: '概览', icon: IconDashboard, exact: true },
+  // **没有「对话」这一项**：它与下面的会话列表、以及最上面的「新对话」是同一件事的
+  // 三个入口，并排时用户会犹豫该点哪个。Kimi / ChatGPT / Claude 都没有它
+  // ——**会话列表本身就是那个入口**。
   { to: '/notes', label: '笔记', icon: IconNote, exact: false },
   { to: '/memory', label: '记忆', icon: IconRobot, exact: false },
   // 能力的图标**不能用齿轮**：齿轮在账号菜单里是「设置」，同一个图标两种含义
   // 会让人以为这一项是设置（踩过：一眼看过去就是"两个设置"）。
-  // 用 IconServer 与能力页里的 MCP 服务图标一致。
   { to: '/capabilities', label: '能力', icon: IconServer, exact: false },
-  { to: '/tasks', label: '任务中心', icon: IconTasks, exact: false },
 ] as const
 
-/** 知识库子菜单的入口（与 `NAV_ITEMS` 平级渲染，但带展开/收起）。 */
-const KNOWLEDGE_GROUP = { to: '/knowledge-bases', label: '知识库', icon: IconLibrary } as const
+/**
+ * 知识库组：**概览与任务中心也收进来**（v0.17，用户指定）。
+ *
+ * 组的子项只有三条，**不再在这里列每个库的名字**：库可能几十个，全铺在侧栏上
+ * 正是"知识库占的地方太多"那件事的根源。要看库，点「所有知识库」——
+ * 主页面会给出完整那份清单（带排序、搜索、操作），那才是它该待的地方。
+ */
+const KNOWLEDGE_GROUP = {
+  label: '知识库',
+  icon: IconLibrary,
+  children: [
+    { to: '/knowledge-bases', label: '所有知识库', icon: IconLibrary, exact: true },
+    { to: '/', label: '概览', icon: IconDashboard, exact: true },
+    { to: '/tasks', label: '任务中心', icon: IconTasks, exact: false },
+  ],
+} as const
 
 function isActive(to: string, exact: boolean): boolean {
   return exact ? route.path === to : route.path.startsWith(to)
@@ -293,23 +343,6 @@ const activeConversationId = computed(() => {
 const TITLE_MAX = 64
 
 /** 搜索词。**交给后端筛**：只筛已加载的前 50 条会搜不到更早的会话。 */
-const searchDraft = ref('')
-let searchTimer: number | undefined
-
-/**
- * 输入即搜，但**防抖 300ms**：每敲一个字发一次请求，在本地实例上也能看出卡顿，
- * 而且中文输入法在组字阶段会连续触发 input（"眼科"会打出 眼/眼轴/眼科 三次请求）。
- */
-function onSearchInput(): void {
-  window.clearTimeout(searchTimer)
-  searchTimer = window.setTimeout(() => void conversations.load(searchDraft.value), 300)
-}
-
-function clearSearch(): void {
-  searchDraft.value = ''
-  window.clearTimeout(searchTimer)
-  void conversations.load()
-}
 
 const renameOpen = ref(false)
 const renameDraft = ref('')
@@ -485,9 +518,21 @@ async function onLogout(): Promise<void> {
       （见 ChatView 的 enterChat）——两个入口共用一条链接时，
       从知识库返回也会落在空态上，看起来就像"又给我开了个新对话"。
     -->
-    <RouterLink v-if="!collapsed" class="new-chat" :to="{ path: '/chat', query: { new: '1' } }">
-      <IconChatNew :size="18" />
-      <span>新对话</span>
+    <RouterLink
+      v-if="!collapsed"
+      class="nav-item new-chat"
+      :class="{ 'nav-item-hovered': hoveredNav.includes('__new__') }"
+      :to="{ path: '/chat', query: { new: '1' } }"
+      title="新建会话（Ctrl/Cmd + K）"
+      @mouseenter="enterNav('__new__')"
+    >
+      <IconChatNew :key="iconEpoch" class="nav-icon" />
+      <span class="nav-label">新建会话</span>
+      <!--
+        快捷键提示（Kimi 的 `新建会话  Ctrl K`）。**显示它就必须真的能用**——
+        界面上写着一个按不出来的快捷键，比不写更糟。所以下面绑了全局 keydown。
+      -->
+      <kbd class="shortcut">Ctrl K</kbd>
     </RouterLink>
 
     <nav class="nav" aria-label="主导航">
@@ -495,10 +540,13 @@ async function onLogout(): Promise<void> {
         v-for="item in NAV_ITEMS"
         :key="item.to"
         class="nav-item"
-        :class="{ 'nav-item-active': isActive(item.to, item.exact) }"
+        :class="{
+          'nav-item-active': isActive(item.to, item.exact),
+          'nav-item-hovered': hoveredNav.includes(item.to),
+        }"
         :to="item.to"
         :title="collapsed ? item.label : undefined"
-        @mouseenter="onNavIntent(item.to)"
+        @mouseenter="(onNavIntent(item.to), enterNav(item.to))"
         @focus="onNavIntent(item.to)"
       >
         <component :is="item.icon" class="nav-icon" />
@@ -506,22 +554,25 @@ async function onLogout(): Promise<void> {
       </RouterLink>
 
       <!--
-        知识库：**收成子菜单**（v0.15）。它原先占一个顶级位置，却没承担该承担的
-        导航——要进某个库还得先点"知识库"、再在页面里找。展开之后每个库一行，
-        **点一次就到**；收起时只占一行。
+        知识库组（v0.17）：三条固定子项，**不列库名**。
+        原先这里把每个库铺一行——库一多，侧栏就被它占满了（那正是"知识库占的
+        地方太多"的根源）。要看库就点「所有知识库」，主页面给完整清单。
       -->
       <div class="nav-group">
         <button
           type="button"
           class="nav-item nav-item-group"
-          :class="{ 'nav-item-active': isKnowledgeActive() && !knowledgeOpen }"
+          :class="{
+            'nav-item-active': isKnowledgeActive() && !knowledgeOpen,
+            'nav-item-hovered': hoveredNav.includes(KNOWLEDGE_GROUP.label),
+          }"
           :aria-expanded="knowledgeOpen"
           :title="collapsed ? KNOWLEDGE_GROUP.label : undefined"
+          @mouseenter="enterNav(KNOWLEDGE_GROUP.label)"
           @click="toggleKnowledge"
         >
           <component :is="KNOWLEDGE_GROUP.icon" class="nav-icon" />
           <span class="nav-label">{{ KNOWLEDGE_GROUP.label }}</span>
-          <span class="nav-count tabular">{{ knowledgeBases.length }}</span>
           <IconChevronRight
             v-if="!collapsed"
             class="nav-chevron"
@@ -530,18 +581,16 @@ async function onLogout(): Promise<void> {
           />
         </button>
         <ul v-if="knowledgeOpen && !collapsed" class="nav-sub">
-          <li>
-            <RouterLink class="nav-sub-item" :to="KNOWLEDGE_GROUP.to">
-              <IconLibrary :size="14" />
-              <span>所有知识库</span>
+          <li v-for="item in KNOWLEDGE_GROUP.children" :key="item.to">
+            <RouterLink
+              class="nav-sub-item"
+              :class="{ 'nav-sub-item-active': isActive(item.to, item.exact) }"
+              :to="item.to"
+            >
+              <component :is="item.icon" :size="14" />
+              <span>{{ item.label }}</span>
             </RouterLink>
           </li>
-          <li v-for="kb in knowledgeBases" :key="kb.id">
-            <RouterLink class="nav-sub-item" :to="`/kb/${kb.id}`" :title="kb.name">
-              <span class="nav-sub-name">{{ kb.name }}</span>
-            </RouterLink>
-          </li>
-          <li v-if="!knowledgeBases.length" class="nav-sub-empty">还没有知识库</li>
         </ul>
       </div>
     </nav>
@@ -596,31 +645,9 @@ async function onLogout(): Promise<void> {
 
       <p v-if="workspaces.error" class="side-note">{{ workspaces.error }}</p>
 
-      <!-- 搜索放在这一节的**最上面**：它搜的是全部会话（后端按标题全局搜），
-           位置就该在"全部会话"这个层级上。原先它嵌在「未归档会话」里面，
-           看起来像只搜那一组。 -->
-      <div
-        v-if="!sectionCollapsed && (conversations.items.length > 0 || searchDraft)"
-        class="conv-search"
-      >
-        <IconSearch class="conv-search-icon" :size="14" />
-        <AppInput
-          v-model="searchDraft"
-          class="conv-search-input"
-          placeholder="搜索全部对话"
-          aria-label="搜索对话"
-          @input="onSearchInput"
-        />
-        <button
-          v-if="searchDraft"
-          type="button"
-          class="conv-search-clear"
-          aria-label="清除搜索"
-          @click="clearSearch"
-        >
-          <IconClose :size="14" />
-        </button>
-      </div>
+      <!-- 搜索**不放在侧栏**（v0.17，用户指定）：侧栏条数有限、位置也窄，
+           而"找一条旧会话"是历史会话面板的活——那里有更大的窗口、时间分组与预览。
+           侧栏只负责"最近几条"。 -->
 
       <ul v-show="!sectionCollapsed" class="ws-list">
         <li v-for="workspace in workspaces.items" :key="workspace.id" class="ws-group">
@@ -715,11 +742,8 @@ async function onLogout(): Promise<void> {
           </button>
 
           <p v-if="conversations.error" class="side-note">{{ conversations.error }}</p>
-          <p v-else-if="conversations.items.length === 0 && searchDraft" class="side-note">
-            没有标题匹配「{{ searchDraft }}」的对话。
-          </p>
           <p v-else-if="conversations.items.length === 0" class="side-note">
-            还没有对话。点最上面的「新对话」开始，记录会出现在这里。
+            还没有对话。点最上面的「新建会话」开始，记录会出现在这里。
           </p>
           <ul v-else-if="ungroupedOpen" class="conv-list">
             <li v-for="item in ungroupedConversations" :key="item.id" class="conv-row">
@@ -1041,26 +1065,35 @@ async function onLogout(): Promise<void> {
   border-top: 1px solid var(--border-hairline);
 }
 
-/* 「新对话」= 整块的填充按钮，Kimi 的结构与取值：
-   `BgGp-Secondary` 底 + 12px 圆角 + 44px 高 + `12px 8px` 内边距。
-   它与侧栏底色是"浮起来一层"的关系，所以在任何主题下都读得出可点。 */
+/* 「新建会话」用**和导航项一样的形态**（v0.17 改的）。
+   原先它是一个 44px 的填充块按钮（`BgGp-Secondary` 底），而它正下方紧接着
+   就是一堆长得完全不同的导航行——同一栏里两种按钮形态，用户得先分辨"哪个能点、
+   哪个是链接"。现在它复用 `.nav-item`（40px 高、图标 + 文字、同样的悬停填充），
+   只在最右端多一枚快捷键提示。
+
+   这不只是"好看"：它把"新建会话"和"去某个地方"归成同一类东西——**都是侧栏里的一个入口**。
+   填充块按钮的语义是"这一栏的主操作"，而主操作在菜单型侧栏里没有单独强调的必要。 */
 .new-chat {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  min-height: 44px;
-  padding: var(--space-3) var(--space-2);
   margin-bottom: var(--space-2);
-  font-size: var(--text-meta-size);
-  font-weight: 500;
-  color: var(--text-primary);
-  text-decoration: none;
-  background: var(--bg-group);
-  border-radius: var(--radius-nav);
+  /* 图标与文字的位置和导航项完全对齐：左内边距由 .nav-item 决定 */
 }
 
-.new-chat:hover {
-  background: var(--bg-hover);
+/* 快捷键提示：`Ctrl K`（Kimi 的写法）。等宽字体 + 极轻的描边，
+   一眼看出是"按键"而不是文字。 */
+.shortcut {
+  margin-left: auto;
+  padding: 0 var(--space-1-5);
+  min-width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-badge);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: var(--text-c2-size);
+  line-height: 1;
 }
 
 /* 分区标签：侧栏宽一点以后，光靠留白已经分不开"导航"与下面这段。
@@ -1068,6 +1101,99 @@ async function onLogout(): Promise<void> {
    对不齐的话，扫视时会看到两条错开的起始线。
    字号取 14（Kimi 的分区标题是 ui-B2），不再加宽字距：
    加字距是"小号全大写西文"的习惯，中文上加字距只是变稀，不增加区分度。 */
+/* ------------------------------------------------------------------ 图标动效
+   照 kimi.com 的 **AnimatedIcon** 抄的（v0.17）。抓的是它线上样式表里的关键帧：
+
+     @keyframes LeftBarAnimatedIcon-enter-…{
+       0%      translateX(62.97%) scale(.6)  opacity 0    stroke-opacity .2
+       8.333%  同位置                        opacity 1    stroke-opacity .2
+       41.667% translateX(59.01%) scale(1)                stroke-opacity 1
+       100%    translateX(52.083%) scale(1)               stroke-opacity 1
+     }
+
+   三处照抄、一处按我们的图标调整：
+
+   - **位移**：它在 100% 时落在 52.083%（略偏左），起点 62.97% 比终点靠右约 11%
+     ——也就是"**从右侧滑进来并落定**"。这里换算成相对自身宽度的位移。
+   - **缩放** 0.6 → 1：小图放大到原位，是"落定"的观感来源。
+   - **描边由淡到实**（stroke-opacity .2 → 1）：我们的图标是填充式（见 IconBase），
+     所以等价的表达是 `opacity` 从 .2 到 1。
+   - **它的 `matrix(-1,0,0,-1)` 没有照搬**：那是 Lottie 导出时对美术稿做的翻转校正，
+     我们手写的 24×24 图标不需要它。
+
+   时长取 **0.5s**：线上的动画时长写在组件的内联样式里（来自 Lottie 资源本身），
+   CSS 里查不到，按它 12 帧的时间线（8.333% = 1/12）取一个常见帧率下的值。
+
+   **enter 与 leave 各一份、内容相同**：Kimi 也是这么做的——两侧都播同一段，
+   于是"移上去动一下、移开又动一下"（它的 leave 关键帧与 enter 一字不差）。
+*/
+@keyframes icon-settle-in {
+  0% {
+    transform: translateX(11%) scale(0.6);
+    opacity: 0.2;
+  }
+
+  8.333% {
+    transform: translateX(11%) scale(0.6);
+    opacity: 1;
+  }
+
+  41.667% {
+    transform: translateX(1.5%) scale(1);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* 与上面内容相同，只是名字不同：**换名字是为了能重播**——
+   CSS 动画只在元素重新拿到这个 animation 时才开始，同名的话第二次悬停不会动。 */
+@keyframes icon-settle-out {
+  0% {
+    transform: translateX(11%) scale(0.6);
+    opacity: 0.2;
+  }
+
+  8.333% {
+    transform: translateX(11%) scale(0.6);
+    opacity: 1;
+  }
+
+  41.667% {
+    transform: translateX(1.5%) scale(1);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translateX(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* 鼠标移上去播一次 */
+.nav-item:hover .nav-icon {
+  animation: icon-settle-in 0.5s var(--motion-ease) both;
+}
+
+/* 光标离开时再播一次（与 Kimi 一致：它的 leave 关键帧与 enter 相同）。
+   **必须加 `.nav-item-hovered` 这个前提**：只写 `:not(:hover)` 的话，
+   页面一挂载时所有图标都处于"未悬停"状态，于是整列图标会一起播一遍
+   ——那看着像加载动画，而不是悬停反馈（写第一版时就是这么错的）。 */
+.nav-item-hovered:not(:hover) .nav-icon {
+  animation: icon-settle-out 0.5s var(--motion-ease) both;
+}
+
+/* 动效不该在"减少动态效果"的系统设置下仍然播放（规范 §8 的无障碍底线） */
+@media (prefers-reduced-motion: reduce) {
+  .nav-item .nav-icon,
+  .new-chat .nav-icon {
+    animation: none;
+  }
+}
+
 .section-label {
   display: flex;
   align-items: center;

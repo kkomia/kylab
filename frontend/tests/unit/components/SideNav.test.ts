@@ -87,12 +87,14 @@ const knowledgeBases = {
 // 侧栏要读 `route.path` 判当前项。**要 mock 它**：不装 router 时
 // `useRoute()` 返回 undefined，而组件一读 `route.path` 就在 setup 里炸
 // ——报的是 "Cannot read properties of undefined"，看着像组件坏了。
+const routerPush = vi.fn()
+
 vi.mock('vue-router', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('vue-router')
   return {
     ...actual,
     useRoute: () => ({ path: '/chat', query: {} }),
-    useRouter: () => ({ push: vi.fn() }),
+    useRouter: () => ({ push: routerPush }),
   }
 })
 
@@ -149,27 +151,56 @@ describe('SideNav（v0.15 信息架构）', () => {
     expect(wrapper.find('.nav-sub').exists()).toBe(false)
   })
 
-  it('展开知识库后每个库一行可点', async () => {
+  it('展开知识库后是三条固定子项，**不列库名**', async () => {
+    // v0.17：原先这里把每个库铺一行，库一多侧栏就被占满（正是"知识库占的地方太多"）。
+    // 现在固定三条：所有知识库 / 概览 / 任务中心；要看库去主页面。
     const wrapper = mountNav()
 
     await wrapper.find('.nav-item-group').trigger('click')
 
     expect(wrapper.find('.nav-sub').exists()).toBe(true)
-    expect(wrapper.text()).toContain('产品手册')
-    expect(wrapper.text()).toContain('运维库')
-    expect(wrapper.findAll('.nav-sub-item')).toHaveLength(3) // 所有知识库 + 两个库
+    expect(wrapper.findAll('.nav-sub-item').map((node) => node.text())).toEqual([
+      '所有知识库',
+      '概览',
+      '任务中心',
+    ])
+    expect(wrapper.text()).not.toContain('产品手册')
+  })
+
+  it('概览与任务中心在知识库组里，不在顶级导航里', async () => {
+    // 用户指定：把这两个也收进知识库菜单
+    const wrapper = mountNav()
+
+    const topLabels = wrapper.findAll('nav.nav > .nav-item .nav-label').map((n) => n.text())
+    expect(topLabels).not.toContain('概览')
+    expect(topLabels).not.toContain('任务中心')
+    expect(topLabels).toContain('笔记')
+  })
+
+  it('侧栏里不再有搜索框（找旧会话是历史面板的活）', () => {
+    const wrapper = mountNav()
+
+    expect(wrapper.find('.conv-search').exists()).toBe(false)
   })
 
   // 导航在清单**之上**是刻意的：导航短且固定，清单会不断变长——
   // 把清单放在上面，长起来就会把导航推走，而那是导航最不该有的行为。
   // 这条曾经与文档对不上（文档写「工作区在导航之上」，代码一直是导航在前），
   // 是这个断言把它对上的。
-  it('顺序是「新对话 → 导航 → 工作区与会话」', () => {
+  it('顺序是「新建会话 → 导航 → 工作区与会话」', () => {
     const wrapper = mountNav()
-    const html = wrapper.html()
 
-    expect(html.indexOf('新对话')).toBeLessThan(html.indexOf('任务中心'))
-    expect(html.indexOf('任务中心')).toBeLessThan(html.indexOf('产品化'))
+    // **按 DOM 顺序断言，不按 HTML 字符串下标**：字符串里"知识库"三个字早在
+    // 第 426 位就出现过一次——那是 logo 的 `aria-label="KYLAB 知识库"`，
+    // 于是 `indexOf('知识库')` 永远指向它（这条断言第一版就是这么假失败的）。
+    // 取真实节点的顺序，才是它想表达的东西。
+    const nodes = Array.from(
+      wrapper.element.querySelectorAll('.new-chat, nav.nav > .nav-item, .ws-list'),
+    ).map((node) => (node as Element).className.split(' ')[0])
+
+    expect(nodes[0]).toBe('nav-item') // 新建会话（它复用 nav-item 的形态）
+    expect(nodes.at(-1)).toBe('ws-list') // 会话清单在最下
+    expect(nodes.filter((name) => name === 'nav-item').length).toBeGreaterThan(1)
     expect(wrapper.text()).toContain('产品化')
   })
 
@@ -192,13 +223,28 @@ describe('SideNav（v0.15 信息架构）', () => {
     expect(wrapper.text()).toContain('工作区里的会话')
   })
 
-  it('「新对话」常驻在最上面（它是这一栏最高频的动作）', () => {
+  it('「新建会话」常驻最上面，且与导航项**同一套形态**', () => {
+    const wrapper = mountNav()
+    const html = wrapper.html()
+
+    expect(html).toContain('新建会话')
+    // 它在会话节之前
+    expect(html.indexOf('新建会话')).toBeLessThan(html.indexOf('新建工作区'))
+    // **同形态**：它复用 .nav-item（不再是那个 44px 的填充块按钮）
+    const button = wrapper.find('.new-chat')
+    expect(button.classes()).toContain('nav-item')
+  })
+
+  it('快捷键提示写了就真的能用（Ctrl/Cmd+K）', async () => {
+    // 界面上摆一个按不出来的快捷键，比不摆更糟——所以这条要钉住
     const wrapper = mountNav()
 
-    const html = wrapper.html()
-    expect(html).toContain('新对话')
-    // 它在工作区标题之前
-    expect(html.indexOf('新对话')).toBeLessThan(html.indexOf('工作区'))
+    expect(wrapper.find('.shortcut').text()).toContain('Ctrl K')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }))
+    await wrapper.vm.$nextTick()
+    expect(routerPush).toHaveBeenCalled()
+    expect(JSON.stringify(routerPush.mock.calls.at(-1)?.[0])).toContain('new')
   })
   it('导航里没有「对话」——它与会话列表、新对话是同一件事的三个入口', () => {
     // 这是这一轮去重的那一条：点「对话」是"回到最近一次对话"，而下面的列表
@@ -206,19 +252,9 @@ describe('SideNav（v0.15 信息架构）', () => {
     // Kimi Work / ChatGPT / Claude 都没有这一项：**会话列表本身就是那个入口**。
     const wrapper = mountNav()
 
-    const navLabels = wrapper.findAll('.nav-item .nav-label').map((node) => node.text())
+    const navLabels = wrapper.findAll('nav.nav > .nav-item .nav-label').map((node) => node.text())
     expect(navLabels).not.toContain('对话')
-    expect(navLabels).toContain('概览')
-  })
-
-  it('搜索框在「会话」这一节的层级上，不嵌在某个分组里', () => {
-    // 它搜的是**全部**会话；嵌在「未归档会话」里面会让人以为只搜那一组（原先就是）
-    const wrapper = mountNav()
-
-    const search = wrapper.find('.conv-search')
-    expect(search.exists()).toBe(true)
-    // 它的祖先里不该有会话分组
-    expect(search.element.closest('.ws-group')).toBeNull()
+    expect(navLabels).toContain('笔记')
   })
 
   it('「对话」是这一节的标签，工作区与未归档是同级分组', () => {
