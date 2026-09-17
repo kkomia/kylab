@@ -49,10 +49,14 @@ _PARAMS: dict[str, tuple[str, ...]] = {
 
 
 def build_server():  # type: ignore[no-untyped-def]
-    """组装 MCP server，把十一个工具挂上去。
+    """组装 MCP server，把 ``TOOL_NAMES`` 里的每个工具挂上去。
 
     延迟 import：``mcp`` 在可选 extra 里。顶层 import 会让没装 extra 的用户
     连主服务都起不来——而 MCP 是**可选能力**，不该成为主链路的硬依赖。
+
+    **别在这里写工具个数**：它随版本变（写"十一个"时已经涨到十六个），
+    而一句过期的数字会让读的人以为少挂了几个。个数以 ``TOOL_NAMES`` 为准。
+
     """
     import json
 
