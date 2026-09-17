@@ -21,7 +21,7 @@ function Invoke-Step {
 
 Invoke-Step 'ruff' 'uv' @('run', '--directory', "$root/backend", 'ruff', 'check', 'app/', 'tests/')
 Invoke-Step 'emoji 扫描（后端）' 'python' @("$root/scripts/scan_emoji.py", "$root/backend/app")
-Invoke-Step '分层纪律与测试位置' 'python' @("$root/scripts/check_layering.py", $root)
+Invoke-Step '结构性规范（分层 / 测试位置 / 界面文案）' 'python' @("$root/scripts/check_layering.py", $root)
 Invoke-Step '同步 API 接口规范' (Join-Path $root 'backend/.venv/Scripts/python.exe') @("$root/scripts/gen_api_spec.py")
 Invoke-Step '后端测试' 'uv' @('run', '--directory', "$root/backend", 'pytest', 'tests', '-m', 'not bench and not cloud', '-q')
 

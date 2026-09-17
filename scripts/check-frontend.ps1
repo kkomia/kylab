@@ -27,6 +27,8 @@ Invoke-Step '类型检查（vue-tsc）' 'pnpm' @('--dir', "$root/frontend", 'typ
 Invoke-Step '前端单测（vitest）' 'pnpm' @('--dir', "$root/frontend", 'test')
 Invoke-Step '生产构建' 'pnpm' @('--dir', "$root/frontend", 'build')
 Invoke-Step 'emoji 扫描（前端）' 'python' @("$root/scripts/scan_emoji.py", "$root/frontend/src")
+# 结构性规范里有一条是**前端规则**（U1：界面文案），所以这个门禁也要跑它
+Invoke-Step '结构性规范（分层 / 测试位置 / 界面文案）' 'python' @("$root/scripts/check_layering.py", $root)
 
 if ($script:failures -gt 0) {
     Write-Host "前端门禁未通过（$script:failures 项）" -ForegroundColor Red

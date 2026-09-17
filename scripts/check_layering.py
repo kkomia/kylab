@@ -1,10 +1,12 @@
-"""仓库结构性规范自动核查：分层纪律、测试位置、脚本编码。
+"""仓库结构性规范自动核查：分层纪律、测试位置、脚本编码、界面文案。
 
-对应《项目工程规范 v0.3》§3.3（分层纪律）、§5.1（测试存放铁律）与 §6（脚本约定）。
+对应《项目工程规范 v0.3》§3.3（分层纪律）、§5.1（测试存放铁律）与 §6（脚本约定），
+以及《前端设计规范》§5.1（界面里不写解释性小字）。
 这些约束靠人工 review 容易漏，故做成机械检查接入 CI：
 ``L1`` 协议层越界、``L2`` 业务层直连数据库/SQL、``L3`` 解析器互引、
 ``L4`` 解析器反向依赖业务层、``A1`` 异步端点里没有 await（假异步，会按住事件循环）、
-``T1`` 测试位置、``S1`` .ps1 缺少 UTF-8 BOM、``PARSE`` 语法错误。
+``T1`` 测试位置、``S1`` .ps1 缺少 UTF-8 BOM、``U1`` 界面里的解释性小字、
+``PARSE`` 语法错误。
 
 用法：python scripts/check_layering.py [仓库根目录，默认当前目录]
 退出码：0 = 通过；1 = 发现违规。
@@ -94,6 +96,48 @@ TEST_FILE_RE = re.compile(r"^(test_.*\.py|.*_test\.py|.*\.test\.ts|.*\.spec\.ts)
 SQL_START_RE = re.compile(
     r"(?i)^\s*(select|insert|update|delete|create|drop|alter|pragma|attach"
     r"|replace\s+into)\s+\S"
+)
+
+
+# ---------------------------------------------------------------- U1：界面文案
+#
+# 《前端设计规范》§5.1：**界面里不写"这一页/这一节是什么"的解释性小字**。
+# 它是用户明确要求删干净的一类东西（原话"所有类似这种的全部删除，一个不留"），
+# 而它删完还会长回来——`PageShell` 的 `description` prop 就是被写回来的口子，
+# 所以那个 prop 连同一整套样式都删了。
+#
+# 为什么这条要靠机械检查：**Vue 对多余属性是宽容的**，给 `<PageShell description="…">`
+# 传一个不存在的 prop 不会报错，它会变成落到根元素的 attr 安静地渲染出来；
+# 而 `class="panel-desc"` 这种新写的类名更是谁也不会拦。靠 review 一定漏。
+#
+# 判据是**命名约定**而不是"这段文字像不像解释"——后者没法机械判。所以：
+# 属性名精确匹配；类名按前缀族匹配（要写别的用途的名字，就别用 page-/panel-/section- 开头）。
+
+FORBIDDEN_ATTRS = ("description=", ":description=")
+
+#: 类名族：命中即报。`page-desc` / `panel-desc` / `section-desc` / `page-description` /
+#: `panel-lead` … 都在这几族里。
+#: 类名族：命中即报。`page-desc` / `panel-desc` / `section-desc` / `page-description` /
+#: `panel-lead` … 都在这几族里。
+#:
+#: **用分词而不是正则**：类名本来就是按空白分开的，拆开看更准；而正则要写的 ``
+#: 这类转义在这个仓库里被 heredoc 吃掉过一次（第一版的正则里剩了个退格符，
+#: 规则从此永远不命中——所以这条检查的写法本身就是那次事故的产物）。
+UI_COPY_FAMILIES = ("page", "panel", "section", "view", "tab")
+UI_COPY_TAILS = ("desc", "description", "lead")
+UI_COPY_CLASS = re.compile(
+    r"""class="[^"]*(?:(?:page|panel|section|view|tab)-desc(?:ription)?"""
+    r"""|(?:page|panel|section|view|tab)-lead)""",
+    re.I,
+)
+
+#: 允许的例外：有正当用途、名字恰好落在上面那几族里的类。
+#: **能空就空着**——留一个例外就要写清理由，不然它会长成一条通道。
+UI_COPY_ALLOWED: frozenset[str] = frozenset()
+
+UI_COPY_MSG = (
+    "界面里的解释性小字（标题下面那句「这一页是什么」）："
+    "删掉它，或改用别的类名（别用 page-/panel-/section- 开头的 desc/lead）"
 )
 
 
@@ -240,6 +284,92 @@ def check_test_placement(path: Path, root: Path) -> list[Violation]:
     return []
 
 
+def check_ui_copy(path: Path) -> list[Violation]:
+    """U1：界面里不许出现"这一页是什么"的解释性小字（《前端设计规范》§5.1）。
+
+    两条判据都是**机械可判的**：
+
+    1. 给 `PageShell` / `PageHeader` 传 `description`——那个 prop 已经删了，
+       而 Vue 不为多余属性报错，它会安静地落在根元素上渲染出来（这正是它会被写回来的原因）；
+    2. 类名落在 `page-` / `panel-` / `section-` / `view-` / `tab-` 的 `desc` / `lead` 族里。
+
+    **注释不算**：注释里提到这些词，多半正是在解释"为什么删掉它"，那要留着。
+
+    例外靠 `UI_COPY_ALLOWED` 显式列（默认是空的）：留一个例外就得写清理由，
+    不然它会长成一条通道。
+    """
+    if path.suffix not in (".vue", ".ts"):
+        return []
+    text = path.read_text(encoding="utf-8", errors="replace")
+    found: list[Violation] = []
+    for lineno, line in enumerate(text.splitlines(), start=1):
+        if line.lstrip().startswith(("//", "/*", "*", "<!--")):
+            continue
+        if any(token in line for token in FORBIDDEN_ATTRS) and _targets_page_shell(
+            line, text, lineno
+        ):
+            found.append(Violation("U1", path, lineno, UI_COPY_MSG))
+            continue
+        banned = [name for name in _class_names(line) if _is_ui_copy_class(name)]
+        if banned and not all(name in UI_COPY_ALLOWED for name in banned):
+            found.append(Violation("U1", path, lineno, f"{UI_COPY_MSG}：{'、'.join(banned)}"))
+    return found
+
+
+def _class_names(line: str) -> list[str]:
+    """这一行里 `class="…"` 写到的类名（`class=` 后紧跟引号，与模板一致）。"""
+    names: list[str] = []
+    for chunk in line.split('class="')[1:]:
+        names.extend(chunk.split('"')[0].split())
+    return names
+
+
+def _is_ui_copy_class(name: str) -> bool:
+    """这个类名是不是"页面/小节说明"那一族。
+
+    族前缀 + `desc`/`description`/`lead` 打头。用 `partition` 而不是正则：
+    这个文件里**不写正则转义**（第一版写的 `\b` 被 heredoc 变成了退格符，
+    规则从此永远不命中——一次看不出任何异常的静默失效）。
+    """
+    head, _, tail = name.partition("-")
+    if head not in UI_COPY_FAMILIES or not tail:
+        return False
+    return any(tail == item or tail.startswith(f"{item}-") for item in UI_COPY_TAILS)
+
+
+def _targets_page_shell(line: str, text: str, lineno: int) -> bool:
+    """这一行的 `description=` 是不是挂在 `PageShell` / `PageHeader` 上。
+
+    属性可能被 prettier 换到下一行写，所以本行看不到标签名时**往回找最近的那个开标签**。
+    """
+    window = [line]
+    lines = text.splitlines()
+    for back in range(0, 4):
+        if back:
+            index = lineno - 1 - back
+            if index >= 0:
+                window.insert(0, lines[index])
+        opened = _opened_tags(chr(10).join(window))
+        if opened:
+            return opened[-1] in ("PageShell", "PageHeader")
+    return False
+
+
+def _opened_tags(text: str) -> list[str]:
+    """文本里所有开标签的名字（按出现顺序）。不用正则：见 `_is_ui_copy_class` 的说明。"""
+    names: list[str] = []
+    for chunk in text.split("<")[1:]:
+        name = ""
+        for char in chunk:
+            if char.isalnum() or char in "_.-":
+                name += char
+            else:
+                break
+        if name and name[0].isalpha():
+            names.append(name)
+    return names
+
+
 def check_ps1_bom(root: Path) -> list[Violation]:
     """S1：``scripts/*.ps1`` 必须带 UTF-8 BOM。
 
@@ -293,6 +423,7 @@ def main() -> int:
         for path in sorted(frontend_src.rglob("*")):
             if path.is_file():
                 violations.extend(check_test_placement(path, root))
+                violations.extend(check_ui_copy(path))
 
     violations.extend(check_ps1_bom(root))
 
@@ -302,7 +433,7 @@ def main() -> int:
     if violations:
         print(f"\n共发现 {len(violations)} 处结构性违规，违反《项目工程规范》§3.3 / §5.1 与脚本编码约定。")
         return 1
-    print("分层纪律、测试位置与脚本编码检查通过。")
+    print("分层纪律、测试位置、脚本编码与界面文案检查通过。")
     return 0
 
 

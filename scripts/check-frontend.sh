@@ -40,6 +40,9 @@ step "类型检查（vue-tsc）" pnpm --dir "$ROOT/frontend" typecheck
 step "前端单测（vitest）" pnpm --dir "$ROOT/frontend" test
 step "生产构建" pnpm --dir "$ROOT/frontend" build
 step "emoji 扫描（前端）" "$PY" "$ROOT/scripts/scan_emoji.py" "$ROOT/frontend/src"
+# 结构性规范里有一条是**前端规则**（U1：界面文案），所以这个门禁也要跑它——
+# 只改前端时跳过它，那条规则就等于没有
+step "结构性规范（分层 / 测试位置 / 界面文案）" "$PY" "$ROOT/scripts/check_layering.py" "$ROOT"
 
 if [ "$fail" -ne 0 ]; then
     echo "前端门禁未通过（$fail 项）"

@@ -37,7 +37,7 @@ step() {
 
 step "ruff" sh -c "cd '$ROOT/backend' && uv run ruff check app/ tests/"
 step "emoji 扫描（后端）" "$PY" "$ROOT/scripts/scan_emoji.py" "$ROOT/backend/app"
-step "分层纪律与测试位置" "$PY" "$ROOT/scripts/check_layering.py" "$ROOT"
+step "结构性规范（分层 / 测试位置 / 界面文案）" "$PY" "$ROOT/scripts/check_layering.py" "$ROOT"
 if [ -x "$VENV_PY" ]; then
     step "同步 API 接口规范" "$VENV_PY" "$ROOT/scripts/gen_api_spec.py"
 else
