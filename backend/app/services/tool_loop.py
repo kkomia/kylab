@@ -226,7 +226,14 @@ class ToolLoop:
         return _truncate(outcome)
 
     def _answer(self, messages: list[ChatMessage]) -> Iterator[object]:
-        """流式产出正文与思考（与旧链路的收尾完全一致）。"""
+        """流式产出正文与思考（与旧链路的收尾完全一致）。
+
+        **"组织回答"这一步必须发出来**：它是真实发生的动作；少了它，一轮
+        "没调工具、直接回答"的消息在界面上会变成**零步骤**——而界面在零步骤时会
+        退回一条兜底（历史上那套"检索 + 生成"两步），于是凭空画出一条"检索知识库"，
+        用户看到的现象就是"我明明没开知识库，它为什么去检索了"（实测报过来的就是这个）。
+        """
+        yield StepEvent(phase="answer", label="组织回答", status="running")
         parts: list[str] = []
         for delta in self._client_factory().stream_events(messages):
             if delta.reasoning:

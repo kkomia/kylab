@@ -78,8 +78,8 @@ describe('buildTurns', () => {
 })
 
 describe('traceSummary', () => {
-  it('检索还在跑时说"正在检索"，别报一个还没成立的结论', () => {
-    expect(traceSummary(message('assistant', { streaming: true }))).toBe('正在检索知识库…')
+  it('还没出步骤时说"正在处理"，**不说"正在检索"**（那一轮可能压根不查库）', () => {
+    expect(traceSummary(message('assistant', { streaming: true }))).toBe('正在处理…')
   })
 
   it('按片段数与文档数一起说：两个数字都有用', () => {
@@ -92,10 +92,21 @@ describe('traceSummary', () => {
     expect(summary).toBe('检索完成 · 引用了 3 个片段 · 2 篇文档')
   })
 
-  it('没命中也要说清楚（不能让"空"读成"还在转"）', () => {
-    expect(traceSummary(message('assistant', { streaming: false }))).toBe(
-      '检索完成 · 没有命中相关内容',
+  it('**没证据就不说"检索完成"**：那一轮可能压根没用工具', () => {
+    // 实测报过来的现象：用户关掉了知识库，界面却写着"检索完成 · 没有命中相关内容"，
+    // 于是问"我明明没开知识库，为什么还是检索了"。真实情况是那一轮模型直接作答、
+    // 一次工具都没调——是这句文案替它编了一段经过。
+    expect(traceSummary(message('assistant', { streaming: false }))).toBe('直接作答')
+  })
+
+  it('调过工具但没命中资料时，说的是"本轮没有命中资料"', () => {
+    const summary = traceSummary(
+      message('assistant', {
+        steps: [{ phase: 'tool', label: '检索知识库', detail: '命中 0 段原文', status: 'done' }],
+      }),
     )
+
+    expect(summary).toBe('本轮没有命中资料')
   })
 })
 
@@ -313,5 +324,31 @@ describe('降级与"这一轮没找到新东西"（v25）', () => {
 
     const steps = traceSteps({ user: null, reply: message })
     expect(steps.map((item) => item.empty)).toEqual([true, false])
+  })
+
+  it('**零步骤零出处时不编"检索知识库"**（关掉知识库的闲聊就是这种）', () => {
+    // 这条兜底原先是给"回放没有步骤的历史"用的（那时确实检索过），
+    // 但 P0 之后"模型直接作答"成了常态，凭空画一条检索步骤会让人以为它去查了。
+    const empty = {
+      user: message('user', { text: '你好' }),
+      reply: message('assistant', { text: '你好！有什么我可以帮你的？' }),
+    }
+
+    const steps = traceSteps(empty)
+
+    expect(steps.map((step) => step.key)).toEqual(['answer'])
+    expect(steps[0].label).toBe('已生成回答')
+  })
+
+  it('有出处的回放仍然补出"检索知识库"（那时确实检索过）', () => {
+    const replay = {
+      user: message('user', { text: '近视怎么监测' }),
+      reply: message('assistant', { text: '看眼轴。', sources: [source(1)] }),
+    }
+
+    const steps = traceSteps(replay)
+
+    expect(steps[0].label).toBe('检索知识库')
+    expect(steps[0].detail).toContain('1 个片段')
   })
 })

@@ -133,9 +133,15 @@ export function traceSummary(message: Message): string {
       const label = message.steps.at(-1)?.label
       return label ? `正在${label}…` : '正在调用工具…'
     }
-    return '正在检索知识库…'
+    // **没有步骤时不说"正在检索"**：P0 之后没有步骤的常见原因是"模型直接作答"，
+    // 而不是"还在检索"。说成检索同样是替它编一段经过（与 0 出处不说"检索完成"同一条）
+    return '正在处理…'
   }
-  if (message.sources.length === 0) return '检索完成 · 没有命中相关内容'
+  // 没有出处就**不说"检索完成"**（同上：没证据不声称查过）。
+  // 这一轮可能压根没用工具，说成"检索完成但没有命中"是在替它编一段经过。
+  if (message.sources.length === 0) {
+    return message.steps.some((step) => step.phase === 'tool') ? '本轮没有命中资料' : '直接作答'
+  }
   const documents = new Set(message.sources.map((item) => item.document_id)).size
   return `检索完成 · 引用了 ${message.sources.length} 个片段 · ${documents} 篇文档`
 }
@@ -217,19 +223,23 @@ function legacyTraceSteps(turn: Turn): TraceStep[] {
   if (!message) return []
   const query = turn.user?.text ?? ''
   const short = query.length > TRACE_QUERY_CHARS ? `${query.slice(0, TRACE_QUERY_CHARS)}…` : query
-  const searching = message.streaming && message.sources.length === 0
-  const steps: TraceStep[] = [
-    {
+  const steps: TraceStep[] = []
+  // **只在确实有出处时**才补这一条。
+  //
+  // 这条兜底原本是给"回放没有步骤的历史"用的（那时后端真的检索过，只是没存步骤），
+  // 所以补一条"检索知识库"还算如实。但 P0 换框架之后，"这一轮没调工具、模型直接答"
+  // 成了常态——那时这里会**凭空画出一条"检索知识库 / 没有命中任何片段"**，
+  // 用户看到的现象就是"我明明没开知识库，它为什么去检索了"（实测报过来的就是这个）。
+  //
+  // 判据取"有没有出处"而不是"有没有步骤"：出处是**证据**，没有证据就不该声称查过。
+  if (message.sources.length > 0) {
+    steps.push({
       key: 'retrieve',
       icon: 'search',
       label: '检索知识库',
-      detail: searching
-        ? `「${short}」`
-        : message.sources.length === 0
-          ? `「${short}」没有命中任何片段`
-          : `「${short}」找到 ${message.sources.length} 个片段`,
-    },
-  ]
+      detail: `「${short}」找到 ${message.sources.length} 个片段`,
+    })
+  }
   if (message.thinking?.enabled) steps.push(...thinkingStep(message))
   steps.push({
     key: 'answer',

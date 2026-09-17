@@ -73,7 +73,9 @@ def test_model_can_answer_without_any_tool() -> None:
 
     events = list(loop.run(messages=[]))
 
-    assert _steps(events) == []
+    # **不出现工具步骤**，但作答这一步要在（它是真实动作；界面上少了它会退回
+    # 一条会凭空画出"检索知识库"的兜底，见 tool_loop._answer 的说明）
+    assert [s.label for s in _steps(events)] == ["组织回答"]
     assert [e.text for e in events if isinstance(e, DeltaEvent)] == ["答案"]
     assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
     assert len(client.calls) == 1
@@ -114,7 +116,7 @@ def test_tool_call_runs_and_its_result_goes_back_to_the_model() -> None:
     assert assistant and assistant[0].tool_calls[0].name == "search"
     # 界面上要出现这一步与出处
     labels = [s.label for s in _steps(events)]
-    assert labels == ["检索知识库", "检索知识库"]
+    assert labels == ["检索知识库", "检索知识库", "组织回答"]
     sources = [e for e in events if isinstance(e, SourcesEvent)]
     assert sources and sources[0].sources[0].document_name == "指南.pdf"
 
