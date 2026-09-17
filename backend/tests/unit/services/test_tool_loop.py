@@ -309,3 +309,93 @@ def test_spawn_subagent_requires_a_task() -> None:
     runner = build_runner(_FakeServices(), None)  # type: ignore[arg-type]
 
     assert "task" in runner("spawn_subagent", {}).content
+
+
+# ------------------------------------------------------------------ 来源账本（v0.20 修）
+
+
+class _SearchServices:
+    """``search`` 那条路要用到的两样：凭据判定与"资料从哪来"。"""
+
+    def __init__(self, batches: list[list[SourceRef]]) -> None:
+        self._batches = list(batches)
+        self.queries: list[str] = []
+
+        class _Keys:
+            @staticmethod
+            def check_access(caller, *, kb_ids):  # type: ignore[no-untyped-def]
+                return None
+
+        class _Chat:
+            def __init__(self, outer) -> None:  # type: ignore[no-untyped-def]
+                self._outer = outer
+
+            def retrieve_sources(self, *, query, kb_ids, top_k=None):  # type: ignore[no-untyped-def]
+                self._outer.queries.append(query)
+                return self._outer._batches.pop(0) if self._outer._batches else []
+
+        self.api_keys = _Keys()
+        self.chat = _Chat(self)
+
+
+def test_sources_are_cumulative_and_renumbered_across_searches() -> None:
+    """一轮里查两次：第二次发出的出处是**累计的**，且编号接着往下排。
+
+    这一条守的是引用号。模型一次回答里可能同时引 [1] 与 [2]，而它们来自两次不同的
+    检索：如果界面只认最后一批、编号又各自从 1 开始，那么答案里的 [1] 指向的东西
+    与用户看到的那一段**不是同一段**——引用看起来有、点开来是错的内容，
+    这比"没有引用"更坏。
+    """
+    from app.agent_tools import build_runner
+
+    services = _SearchServices([[_hit(1)], [_hit(1)]])
+    runner = build_runner(services, None, kb_ids=["kb_1"])  # type: ignore[arg-type]
+
+    first = runner("search", {"query": "第一次"})
+    second = runner("search", {"query": "第二次"})
+
+    assert [item.index for item in first.sources] == [1]
+    assert [item.index for item in second.sources] == [1, 2]
+    # 渲染给模型的文本用的是**同一套号**：内容与界面必须对得上
+    assert second.content.startswith("[2] ")
+
+
+def test_search_renders_the_material_not_the_raw_hit() -> None:
+    """喂给模型的是**整段小节**（``SourceRef.preview``），不是命中的那一块。
+
+    这是 P0 换框架时丢过的东西：工具那条路直接回 chunk，模型读到的上下文变窄，
+    而它**看起来完全正常**，只是答得更浅。所以这条用例盯住"用哪一份文本"。
+    """
+    from app.agent_tools import build_runner
+
+    hit = SourceRef(
+        index=1,
+        chunk_id="c1",
+        document_id="d1",
+        document_name="指南.pdf",
+        heading_path="3 监测",
+        page=4,
+        score=0.9,
+        preview="整段小节：眼轴长度是主要参数。" * 3,
+    )
+    services = _SearchServices([[hit]])
+    runner = build_runner(services, None, kb_ids=["kb_1"])  # type: ignore[arg-type]
+
+    outcome = runner("search", {"query": "眼轴"})
+
+    assert "整段小节" in outcome.content
+    assert "指南.pdf › 3 监测（第 4 页）" in outcome.content
+    assert outcome.sources == [hit]
+
+
+def test_search_without_scope_does_not_query_the_retriever() -> None:
+    """关掉知识库开关时**一次检索都不发**（不是"查了再丢掉"）。"""
+    from app.agent_tools import build_runner
+
+    services = _SearchServices([[_hit(1)]])
+    runner = build_runner(services, None, kb_ids=[])  # type: ignore[arg-type]
+
+    outcome = runner("search", {"query": "随便"})
+
+    assert services.queries == []
+    assert "没有可查的知识库" in outcome.content

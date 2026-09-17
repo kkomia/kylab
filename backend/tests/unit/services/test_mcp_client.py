@@ -298,3 +298,154 @@ def test_tool_dataclass_shape() -> None:
     tool = MCPTool(name="t", qualified="mcp__s__t", description="d", server_id="1", server_name="s")
 
     assert (tool.name, tool.qualified, tool.server_name) == ("t", "mcp__s__t", "s")
+
+
+# ------------------------------------------------------------------ 判定（两处共用）
+
+
+def _rule_set(**lists: str):  # type: ignore[no-untyped-def]
+    from app.services.command_policy import rules_from_runtime
+
+    class _Runtime:
+        def get(self, key: str) -> str:
+            return lists.get(key, "")
+
+    return rules_from_runtime(_Runtime())
+
+
+def _service_with(policy: str) -> tuple[MCPClientService, MCPServerRecord]:
+    service, meta = _service()
+    record = MCPServerRecord(
+        id="mcp_1", name="web", transport="stdio", target="python", policy=policy
+    )
+    meta.records["mcp_1"] = record
+    return service, record
+
+
+def test_decide_allows_when_policy_allows_and_no_rule_matches() -> None:
+    """**最常见的部署**：服务设成允许、清单一个字没写 → 就是放行。
+
+    这里踩过一个真坑：规则集没命中时的默认档也是 ``ask``，把它当成"一张命中的
+    ask 规则"用，就会让"我已经把它设成允许了"变成"每次还是要确认"。
+    判定的依据必须是 ``decision.rule is not None``（真的命中了），而不是档位值。
+    """
+    service, record = _service_with("allow")
+
+    assert service.decide(record, "search", rules=_rule_set()).action == "allow"
+
+
+def test_decide_lets_a_matching_rule_outrank_the_service_policy() -> None:
+    """规则更具体，所以命中时它说了算——两个方向都要成立。
+
+    能放宽：``ask`` 的服务下，给这一个工具写一条放行规则，它就直接通过
+    （不必把整台服务放开，这是最小权限的用法）。
+    能收紧：``allow`` 的服务下，一条 ask 规则能让它重新需要确认。
+    """
+    service, record = _service_with("ask")
+    relaxed = _rule_set(**{"sandbox.rules_allow": "mcp__web__search"})
+    assert service.decide(record, "search", rules=relaxed).action == "allow"
+
+    service, record = _service_with("allow")
+    tightened = _rule_set(**{"sandbox.rules_ask": "mcp__web__search"})
+    assert service.decide(record, "search", rules=tightened).action == "ask"
+
+
+def test_decide_keeps_the_deny_switch_absolute() -> None:
+    """服务被设成拒绝时，**一条放行规则也不能把它掀开**。
+
+    否则"我在能力页关掉了它"会被设置页里一条旧规则静默推翻，
+    而用户以为自己已经禁掉了——这正是 deny 优先级那条规矩要防的事。
+    """
+    service, record = _service_with("deny")
+    rules = _rule_set(**{"sandbox.rules_allow": "mcp__web__search"})
+
+    assert service.decide(record, "search", rules=rules).action == "deny"
+
+
+# ------------------------------------------------------------------ 工具清单缓存
+
+
+def _discovered(monkeypatch: pytest.MonkeyPatch, calls: list[str]):  # type: ignore[no-untyped-def]
+    """把"连上去问一次"换成一个计数器（真连接要起子进程，不该在单测里跑）。"""
+
+    def fake(self, record):  # type: ignore[no-untyped-def]
+        calls.append(record.name)
+        return [MCPTool(name="t", qualified="mcp__web__t", server_name=record.name)]
+
+    monkeypatch.setattr(MCPClientService, "list_tools", fake)
+
+
+def test_tool_list_is_cached_between_turns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**工具清单每轮都要用**，而取它 = 连一次服务。不缓存的话，
+    问一句话的成本会变成"起子进程 + 握手"乘上服务数。"""
+    calls: list[str] = []
+    _discovered(monkeypatch, calls)
+    service, record = _service_with("allow")
+
+    assert len(service.cached_tools(record)[0]) == 1
+    assert len(service.cached_tools(record)[0]) == 1
+    assert calls == ["web"]  # 只连了一次
+
+
+def test_failure_is_cached_too_but_as_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """连不上要缓存**失败**而不是空清单，且**不抛异常**给调用方。
+
+    两件事都重要：不缓存失败 → 一个挂掉的服务让每轮对话都白等一个超时；
+    抛出异常 → 一个外部服务挂掉会把整张工具表带走。
+    """
+    state = {"n": 0}
+
+    def boom(self, record):  # type: ignore[no-untyped-def]
+        state["n"] += 1
+        raise FileNotFoundError("没有这个命令")
+
+    monkeypatch.setattr(MCPClientService, "list_tools", boom)
+    service, record = _service_with("allow")
+
+    tools, reason = service.cached_tools(record)
+
+    assert tools == [] and "没有这个命令" in reason
+    assert service.cached_tools(record) == (tools, reason)
+    assert state["n"] == 1  # 第二次没再连
+
+
+def test_invalidating_reconnects(monkeypatch: pytest.MonkeyPatch) -> None:
+    """改了配置就得重新发现：否则用户改完 target，对话里用的还是旧服务那张表。"""
+    calls: list[str] = []
+    _discovered(monkeypatch, calls)
+    service, record = _service_with("allow")
+    service.cached_tools(record)
+
+    service.invalidate(record.id)
+    service.cached_tools(record)
+
+    assert calls == ["web", "web"]
+
+
+def test_available_tools_skips_disabled_and_broken_services(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**一个人不能因为另一个服务挂了就用不了工具**：坏的服务跳过，停用的不出现。"""
+    _discovered(monkeypatch, [])
+    service, meta = _service()
+    meta.records["mcp_1"] = MCPServerRecord(
+        id="mcp_1", name="good", transport="stdio", target="python"
+    )
+    meta.records["mcp_2"] = MCPServerRecord(
+        id="mcp_2", name="off", transport="stdio", target="python", enabled=False
+    )
+    meta.records["mcp_3"] = MCPServerRecord(
+        id="mcp_3", name="dead", transport="stdio", target="python"
+    )
+    original = MCPClientService.list_tools
+
+    def picky(self, record):  # type: ignore[no-untyped-def]
+        if record.name == "dead":
+            raise TimeoutError("握手超时")
+        return original(self, record)
+
+    monkeypatch.setattr(MCPClientService, "list_tools", picky)
+
+    names = [tool.server_name for _r, tool in service.available_tools(user_id=None)]
+
+    assert names == ["good"]

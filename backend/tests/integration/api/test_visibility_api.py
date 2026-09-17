@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 from app.core.security import hash_password
 from app.models.enums import UserRole
 from app.storage.base import UserRecord
-from tests.conftest import bind_model
 
 ADMIN_PASSWORD = "correct horse battery"
 MEMBER_PASSWORD = "member pass 123"
@@ -229,25 +228,11 @@ def test_member_sees_own_task_and_dashboard_counts(two_users) -> None:  # type: 
 
 def test_member_chats_with_own_conversation(two_users) -> None:  # type: ignore[no-untyped-def]
     """成员带自己的 conversation_id 调 /chat 应正常工作（守卫只拦越主的）。"""
-    from app.core.services import get_services
-
-    class FakeChat:
-        def complete(self, messages):  # type: ignore[no-untyped-def]
-            return "这是回答。"
-
-        def stream(self, messages):  # type: ignore[no-untyped-def]
-            yield "这是回答。"
-
-        def stream_events(self, messages):  # type: ignore[no-untyped-def]
-            from app.services.llm import LLMDelta
-
-            for char in "这是回答。":
-                yield LLMDelta(text=char)
 
     # 假模型 + 注册表里绑一个对话模型（不绑的话 ChatService 先报"未配置"，测不到守卫之后的路）
-    services = get_services()
-    bind_model(services.models, "chat", model_id="fake-model", capabilities=["chat"])
-    services.chat._chat_factory = lambda config: FakeChat()
+    from tests.conftest import install_fake_chat
+
+    install_fake_chat("这是回答。")
 
     client, _admin, member = two_users
     kb = client.post(

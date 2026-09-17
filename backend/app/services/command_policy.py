@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from app.core.exceptions import InvalidRequestError
 
@@ -42,9 +43,11 @@ __all__ = [
     "Decision",
     "Rule",
     "RuleSet",
+    "append_allow_rule",
     "format_rule",
     "parse_rule",
     "parse_rules",
+    "rules_from_runtime",
     "suggest_rule",
 ]
 
@@ -306,3 +309,38 @@ def build_rule_set(
 def tool_arguments(argv: list[str]) -> str:
     """把 argv 拼成规则匹配用的参数串（**就是用户看到的那一行命令**）。"""
     return " ".join(part for part in argv if part)
+
+
+def rules_from_runtime(runtime: Any, *, source: str = "") -> RuleSet:
+    """按用户配的三张清单建规则集。
+
+    **三个调用点共用这一处**（沙箱执行、MCP 端点、对话里的工具闸）：三处各写一遍的话，
+    迟早出现"某处读到的是另一个 key"或者"某处默认档不一样"，
+    而那种分叉的表现是"这个入口拦得住、那个拦不住"——正是策略层最不能有的一种不一致。
+
+    ``runtime`` 是鸭子类型的运行期配置（只要求 ``get(key)``），
+    这样本模块不必依赖 ``RuntimeConfigService``。
+    """
+    return build_rule_set(
+        allow_text=runtime.get("sandbox.rules_allow"),
+        ask_text=runtime.get("sandbox.rules_ask"),
+        deny_text=runtime.get("sandbox.rules_deny"),
+        default=ACTION_ASK,
+        source=source,
+    )
+
+
+def append_allow_rule(runtime: Any, rule: Rule) -> bool:
+    """把一条放行规则追加进清单（界面上「以后都允许」用它）；返回**是否真的写了**。
+
+    重复的行**不重复追加**：界面上那句话是"以后都允许"，第二次点还是同一句意思，
+    而清单里多一行一模一样的规则，用户只会以为界面坏了。
+    """
+    current = (runtime.get("sandbox.rules_allow") or "").rstrip()
+    line = rule.describe()
+    if line in {item.strip() for item in current.splitlines()}:
+        return False
+    # 显式拼接，不在源码里写多行字符串：那段字符串被改坏过一次
+    # （转义换行落进了真换行，语法直接错）
+    runtime.set({"sandbox.rules_allow": "\n".join(part for part in (current, line) if part)})
+    return True

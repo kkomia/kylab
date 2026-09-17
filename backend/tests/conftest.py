@@ -25,6 +25,7 @@ from app.core.config import get_settings
 from app.core.services import reset_services
 from app.core.storage import reset_stores
 from app.models.enums import DataSourceKind, DocumentStage
+from app.services.llm import ChatError, LLMDelta, LLMReply, ToolCall
 from app.services.model_registry import ModelRegistryService
 from app.services.runtime_config import RuntimeConfigService
 from app.storage.base import (
@@ -374,3 +375,92 @@ def document(store: MetaStore, kb: KnowledgeBaseRecord) -> DocumentRecord:
     )
     )
 
+
+
+# --------------------------------------------------------------------- 假模型
+#
+# **只有这一份**：对话链路换了协议（P0 起走原生工具调用）之后，三个集成测试文件
+# 各自那份假模型同时失效——它们都只实现了旧协议的方法，于是整条链路在
+# "对象没有 complete_with_tools"上失败，而报错长得像被测代码坏了。
+# 协议再变时只改这里。
+
+
+class FakeChatModel:
+    """假的对话模型：不打网络，按字符吐正文。
+
+    ``complete_with_tools`` 是工具循环真正会调的那个（``services/tool_loop.py``）：
+    没给 ``script`` 时它回一条"不调工具"的回复，于是循环直接进入作答；
+    给了就按顺序取用——**一轮里它可能被问好几次**（每次工具调用之后再问一遍）。
+
+    ``complete`` / ``stream`` 留给还没换框架的旁路（编排、摘要一类）。
+    """
+
+    def __init__(
+        self,
+        answer: str = "这是回答。[1]",
+        error: str | Exception | None = None,
+        script: list[LLMReply] | None = None,
+    ) -> None:
+        self.answer = answer
+        # 给字符串就当成"模型失败了"的那句话（真实失败是 `ChatError`）；
+        # 给异常实例就原样抛（测更底层的失败时用）
+        self.error = ChatError(error) if isinstance(error, str) else error
+        self._script = list(script or [])
+        #: 最近一次拿到的工具名（用例据此断言"该给的工具都给了"）
+        self.seen_tools: list[str] = []
+
+    def complete(self, messages):  # type: ignore[no-untyped-def]
+        if self.error:
+            raise self.error
+        return self.answer
+
+    def stream(self, messages):  # type: ignore[no-untyped-def]
+        if self.error:
+            raise self.error
+        yield from self.answer
+
+    def complete_with_tools(self, messages, tools):  # type: ignore[no-untyped-def]
+        self.seen_tools = [item.name for item in tools]
+        if self.error:
+            raise self.error
+        if self._script:
+            return self._script.pop(0)
+        return LLMReply(text="")
+
+    def stream_events(self, messages):  # type: ignore[no-untyped-def]
+        if self.error:
+            raise self.error
+        for char in self.answer:
+            yield LLMDelta(text=char)
+
+
+def install_fake_chat(
+    answer: str = "这是回答。[1]",
+    *,
+    error: str | Exception | None = None,
+    script: list[LLMReply] | None = None,
+) -> FakeChatModel:
+    """把 ChatService 的模型工厂换成假的，返回那个实例。
+
+    **同一个实例被复用**（工厂每次返回它）：工具循环一轮里会多次向模型提问，
+    工厂若每次新建一个，``script`` 就会被从头重放——表现是"模型不停地调同一个工具"，
+    而那看起来像循环的 bug。
+    """
+    from app.core.services import get_services
+
+    services = get_services()
+    bind_model(services.models, "chat", model_id="fake-model", capabilities=["chat"])
+    chat = FakeChatModel(answer, error, script)
+    services.chat._chat_factory = lambda config: chat
+    return chat
+
+
+def search_tool_call(query: str, call_id: str = "c1") -> LLMReply:
+    """一条"先查资料"的模型回复（工具循环的第一轮）。"""
+    import json
+
+    return LLMReply(
+        tool_calls=(
+            ToolCall(id=call_id, name="search", arguments=json.dumps({"query": query})),
+        )
+    )

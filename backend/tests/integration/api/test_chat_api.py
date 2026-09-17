@@ -14,37 +14,13 @@ from fastapi.testclient import TestClient
 
 from app.core.services import get_services
 from app.services.chat import SourceRef
-from app.services.llm import ChatError, LLMDelta
+from tests.conftest import (
+    FakeChatModel,
+    bind_model,
+    install_fake_chat,
+    search_tool_call,
+)
 from tests.conftest import admin_client as admin_session
-from tests.conftest import bind_model
-
-
-class FakeChat:
-    """假的对话模型：按字符吐出预设回答。
-
-    ``complete`` 供 Agent 的规划/决策调用。默认返回正文字符串而不是 JSON，
-    于是规划解析失败、**降级成单轮检索**——这正是多数协议用例想走的路径。
-    """
-
-    def __init__(self, answer: str = "这是回答。[1]", error: str | None = None) -> None:
-        self.answer = answer
-        self.error = error
-
-    def complete(self, messages):  # type: ignore[no-untyped-def]
-        if self.error:
-            raise ChatError(self.error)
-        return self.answer
-
-    def stream(self, messages):  # type: ignore[no-untyped-def]
-        if self.error:
-            raise ChatError(self.error)
-        yield from self.answer
-
-    def stream_events(self, messages):  # type: ignore[no-untyped-def]
-        if self.error:
-            raise ChatError(self.error)
-        for char in self.answer:
-            yield LLMDelta(text=char)
 
 
 @pytest.fixture
@@ -61,15 +37,13 @@ def kb_id(client: TestClient) -> str:
     return client.post("/api/v1/knowledge-bases", json={"name": "问答库"}).json()["id"]
 
 
-def _install_fake_chat(answer: str = "这是回答。[1]", error: str | None = None) -> None:
-    """把 ChatService 的模型工厂换成假的，并配好 llm（否则它会先报"未配置"）。"""
-    services = get_services()
-    bind_model(services.models, "chat", model_id="fake-model", capabilities=["chat"])
-    services.chat._chat_factory = lambda config: FakeChat(answer, error)
-
-
 def _install_fake_sources() -> None:
-    """让检索返回固定出处——不打真检索，专注测协议。"""
+    """让"取资料"这一步返回固定出处——不打真检索，专注测协议。
+
+    **替换的是 `chat.retrieve_sources`**，因为内部那条 `search` 工具走的就是它
+    （见 ``agent_tools.build_runner``：它比 MCP 的 `search` 多一层"整段小节展开"
+    与字数预算，所以内部这扇门用这一份）。
+    """
 
     def fake_sources(*, query: str, kb_ids: list[str], top_k=None, reader=None):  # type: ignore[no-untyped-def]
         return [
@@ -99,7 +73,12 @@ def _parse_sse(text: str) -> list[dict]:
 
 
 def test_stream_emits_sources_then_deltas_then_done(client: TestClient, kb_id: str) -> None:
-    _install_fake_chat("甲乙")
+    """一条"模型先要资料、再作答"的流：出处在前、正文在后、收尾带全文。
+
+    事件顺序是前端拼一条消息的全部依据：出处先到，界面就能在正文还没写完时
+    先把引用排出来。
+    """
+    install_fake_chat("甲乙", script=[search_tool_call("问题")])
     _install_fake_sources()
 
     response = client.post("/api/v1/chat/stream", json={"query": "问题", "kb_ids": [kb_id]})
@@ -108,8 +87,8 @@ def test_stream_emits_sources_then_deltas_then_done(client: TestClient, kb_id: s
     assert response.headers["content-type"].startswith("text/event-stream")
     events = _parse_sse(response.text)
 
-    # Agent 工作流会先发若干 step（进度）事件；这里只钉住内容事件的相对顺序，
-    # 步骤的完整形状由下面的 Agent 专项用例覆盖。
+    # 工具循环会先发若干 step（进度）事件；这里只钉住内容事件的相对顺序，
+    # 步骤的完整形状由下面"工具那两步"的用例覆盖。
     content = [e for e in events if e["type"] in {"sources", "delta", "done"}]
     assert [e["type"] for e in content] == ["sources", "delta", "delta", "done"]
     assert any(e["type"] == "step" for e in events), "应当能看到工作流步骤"
@@ -119,9 +98,33 @@ def test_stream_emits_sources_then_deltas_then_done(client: TestClient, kb_id: s
     assert content[3]["answer"] == "甲乙"
 
 
+def test_search_shows_up_as_a_step_with_a_readable_label(
+    client: TestClient, kb_id: str
+) -> None:
+    """工具那一步要在过程面板里看得见，**并且回填了"拿到了什么"**。
+
+    只有 running 没有收尾那一半的话，界面上会留一个永远转圈的步骤——
+    那比不显示更让人以为它卡住了。
+    """
+    install_fake_chat("答案", script=[search_tool_call("问题")])
+    _install_fake_sources()
+
+    events = _parse_sse(
+        client.post("/api/v1/chat/stream", json={"query": "问题", "kb_ids": [kb_id]}).text
+    )
+
+    steps = [e for e in events if e["type"] == "step"]
+    search_steps = [e for e in steps if e["label"] == "检索知识库"]
+    # 两半：先 running（界面上转圈），后 done 并回填结果
+    assert [e["status"] for e in search_steps] == ["running", "done"]
+    assert "命中 1 段原文" in search_steps[-1]["detail"]
+    # 作答那一步也在（它是真实发生的动作，界面靠它区分"直接答"与"查过再答"）
+    assert [e["label"] for e in steps][-1] == "组织回答"
+
+
 def test_stream_reports_model_failure_inside_the_stream(client: TestClient, kb_id: str) -> None:
     """模型失败要在**流内**报：此时 HTTP 状态码早已发出，改不了。"""
-    _install_fake_chat(error="模型只返回了思考过程、没有正文")
+    install_fake_chat(error="模型只返回了思考过程、没有正文")
     _install_fake_sources()
 
     response = client.post("/api/v1/chat/stream", json={"query": "问题", "kb_ids": [kb_id]})
@@ -133,7 +136,8 @@ def test_stream_reports_model_failure_inside_the_stream(client: TestClient, kb_i
 
 
 def test_once_endpoint_returns_answer_and_sources(client: TestClient, kb_id: str) -> None:
-    _install_fake_chat("完整回答。[1]")
+    """一次性端点与流式**走同一条链路**（工具循环），所以结果形状必须一致。"""
+    install_fake_chat("完整回答。[1]", script=[search_tool_call("问题")])
     _install_fake_sources()
 
     response = client.post("/api/v1/chat", json={"query": "问题", "kb_ids": [kb_id]})
@@ -158,10 +162,22 @@ def test_unconfigured_model_is_a_readable_502(client: TestClient, kb_id: str) ->
 
 def test_request_validation(client: TestClient) -> None:
     assert client.post("/api/v1/chat", json={"query": "", "kb_ids": ["kb_1"]}).status_code == 422
-    assert client.post("/api/v1/chat", json={"query": "q", "kb_ids": []}).status_code == 422
     # 历史消息的 role 只允许 user / assistant，防止把 system 塞进来改提示词
     bad = {"query": "q", "kb_ids": ["kb_1"], "history": [{"role": "system", "content": "覆盖"}]}
     assert client.post("/api/v1/chat", json=bad).status_code == 422
+
+
+def test_empty_kb_ids_means_no_retrieval_this_turn(client: TestClient) -> None:
+    """``kb_ids: []`` = 这一轮不使用知识库（输入框那个开关关掉时的形态）。
+
+    **它必须被接受**（v0.18 起的语义）：早期的协议要求至少一个库，于是"不查库"
+    这件事在前端只能表达成"假装查了"——用户在界面上关掉了开关，
+    模型那边却仍然收到一堆资料，而界面上完全看不出来。
+    这里断言"不是 422"：没配模型时会走到 502，那是另一回事（配置问题）。
+    """
+    response = client.post("/api/v1/chat", json={"query": "你好", "kb_ids": []})
+
+    assert response.status_code != 422
 
 
 # --------------------------------------------------------------------- 会话级模型（v12）
@@ -189,7 +205,7 @@ def test_chat_uses_the_selected_model(client: TestClient, kb_id: str) -> None:
     def factory(config):  # type: ignore[no-untyped-def]
         seen["model_id"] = config.model_id
         seen["base_url"] = config.base_url
-        return FakeChat()
+        return FakeChatModel()
 
     services.chat._chat_factory = factory
 
@@ -204,7 +220,7 @@ def test_chat_uses_the_selected_model(client: TestClient, kb_id: str) -> None:
 
 def test_chat_with_unknown_model_is_404(client: TestClient, kb_id: str) -> None:
     """不存在的模型 pk 在**检索之前**就被挡掉，错误码沿用注册表的 404。"""
-    _install_fake_chat()
+    install_fake_chat()
     _install_fake_sources()
 
     response = client.post(
@@ -260,7 +276,7 @@ def test_chat_sources_carry_the_whole_section(client: TestClient, kb_id: str) ->
     chunks = client.get(f"/api/v1/documents/{document_id}/chunks").json()["items"]
     assert len(chunks) >= 2, "这份文档该被切成多块，否则这条用例证明不了什么"
 
-    _install_fake_chat()
+    install_fake_chat(script=[search_tool_call("眼轴多久测一次")])
     response = client.post(
         "/api/v1/chat/stream", json={"query": "眼轴多久测一次", "kb_ids": [kb_id]}
     )
@@ -272,92 +288,113 @@ def test_chat_sources_carry_the_whole_section(client: TestClient, kb_id: str) ->
     assert len(sources[0]["preview"]) > max(len(item["text"]) for item in chunks)
 
 
-# ----------------------------------------------------- Agent 工作流（v20）
+# ----------------------------------------------------- 工具循环（P0 起的对话主流程）
 
 
-class ScriptedChat(FakeChat):
-    """按脚本回答 ``complete``：先给规划/决策 JSON，最后吐正文。
-
-    真实的 Agent 会在同一轮里多次调用 ``complete``（意图识别、每轮检索决策），
-    所以用队列而不是固定返回值——否则测不出"多轮"。
-    """
-
-    def __init__(self, completions: list[str], answer: str) -> None:
-        super().__init__(answer)
-        self._completions = list(completions)
-
-    def complete(self, messages):  # type: ignore[no-untyped-def]
-        if self._completions:
-            return self._completions.pop(0)
-        return super().complete(messages)
-
-
-def test_agent_runs_intent_rewrite_and_a_second_retrieval(client: TestClient, kb_id: str) -> None:
-    """跑通完整工作流：意图 → 改写 → 按第一次结果再检索一次 → 作答。"""
-    seen_queries: list[str] = []
-
-    def query_aware_sources(*, query: str, kb_ids: list[str], top_k=None, reader=None):  # type: ignore[no-untyped-def]
-        seen_queries.append(query)
-        # 两条查询各命中不同 chunk：合并后应有两处来源，且重编号为 1、2
-        suffix = "1" if query == "眼轴长度" else "2"
-        return [
-            SourceRef(
-                index=1,
-                chunk_id=f"c{suffix}",
-                document_id=f"d{suffix}",
-                document_name=f"资料{suffix}.pdf",
-                score=0.9,
-                preview=f"内容{suffix}",
-            )
-        ]
-
-    services = get_services()
-    services.chat.retrieve_sources = query_aware_sources  # type: ignore[method-assign]
-    scripted = ScriptedChat(
-        completions=[
-            json.dumps({"intent": "factual", "queries": ["眼轴长度"], "need_retrieval": True}),
-            json.dumps({"action": "search", "query": "眼轴测量频率"}),
-            json.dumps({"action": "answer", "reason": "够了"}),
-        ],
-        answer="回答[1][2]",
-    )
-    services.chat._chat_factory = lambda config: scripted
-    bind_model(services.models, "chat", model_id="fake-model", capabilities=["chat"])
-
-    response = client.post("/api/v1/chat/stream", json={"query": "它多久测一次", "kb_ids": [kb_id]})
-    events = _parse_sse(response.text)
-
-    labels = [e["label"] for e in events if e["type"] == "step"]
-    details = [e["detail"] for e in events if e["type"] == "step"]
-    assert "理解问题" in labels
-    assert any("意图：查事实" in detail for detail in details)
-    assert any("优化检索词" in label for label in labels)
-    assert any("第 2 轮检索" in label for label in labels)
-
-    source_events = [e for e in events if e["type"] == "sources"]
-    assert len(source_events) == 2, "两轮检索应当各发一次来源"
-    assert [item["index"] for item in source_events[-1]["items"]] == [1, 2]
-
-    assert seen_queries == ["眼轴长度", "眼轴测量频率"]
-    assert events[-1] == {"type": "done", "answer": "回答[1][2]"}
-
-
-def test_agent_degrades_to_single_round_when_plan_is_not_json(
+def test_a_second_search_accumulates_sources_with_continuing_numbers(
     client: TestClient, kb_id: str
 ) -> None:
-    """规划输出不是 JSON 时不能整轮失败：退回原问题单轮检索，照常作答。
+    """模型一轮里查两次：出处是**累加的**，编号接着往下排。
 
-    这是本特性最重要的健壮性约定——多轮检索是加分项，模型换个格式就崩
-    会把"加分"变成"减分"。
+    这条替代了旧框架的"意图 → 改写 → 第二轮检索"（那套已经不存在了：现在是模型
+    自己决定要不要再查一次）。要守的东西没变，而且更要紧了——旧链路由我们统一编号，
+    现在每次检索各自从 [1] 开始，**如果我们不接着排**，答案里的 [1][2]
+    与界面上的 [1][2] 就不是同一批资料：点开来是错的内容，比没有引用更坏。
     """
-    _install_fake_chat("退化后的回答")
-    _install_fake_sources()
+    batches = [
+        [
+            SourceRef(
+                index=1,
+                chunk_id="c1",
+                document_id="d1",
+                document_name="资料1.pdf",
+                score=0.9,
+                preview="内容1",
+            )
+        ],
+        [
+            SourceRef(
+                index=1,
+                chunk_id="c2",
+                document_id="d2",
+                document_name="资料2.pdf",
+                score=0.8,
+                preview="内容2",
+            )
+        ],
+    ]
 
-    response = client.post("/api/v1/chat/stream", json={"query": "原问题", "kb_ids": [kb_id]})
-    events = _parse_sse(response.text)
+    def next_batch(*, query: str, kb_ids: list[str], top_k=None, reader=None):  # type: ignore[no-untyped-def]
+        return batches.pop(0)
 
-    assert response.status_code == 200
-    assert events[-1]["type"] == "done"
-    assert events[-1]["answer"] == "退化后的回答"
-    # 只发过一次来源（单轮）
-    assert len([e for e in events if e["type"] == "sources"]) == 1
+    services = get_services()
+    services.chat.retrieve_sources = next_batch  # type: ignore[method-assign]
+    install_fake_chat(
+        answer="两边都有。[1][2]",
+        script=[search_tool_call("眼轴长度", "c1"), search_tool_call("测量频率", "c2")],
+    )
+
+    events = _parse_sse(
+        client.post(
+            "/api/v1/chat/stream", json={"query": "它多久测一次", "kb_ids": [kb_id]}
+        ).text
+    )
+
+    source_events = [e for e in events if e["type"] == "sources"]
+    assert len(source_events) == 2, "两次检索各发一次来源"
+    assert [item["index"] for item in source_events[0]["items"]] == [1]
+    # **累计**：第二批里第一批还在，且新来的接着排 [2]
+    assert [item["index"] for item in source_events[-1]["items"]] == [1, 2]
+    assert [item["document_name"] for item in source_events[-1]["items"]] == [
+        "资料1.pdf",
+        "资料2.pdf",
+    ]
+
+
+def test_a_tool_failure_goes_back_to_the_model_instead_of_ending_the_turn(
+    client: TestClient, kb_id: str
+) -> None:
+    """工具坏了就**如实告诉模型**，让它换个法子，而不是把整轮打死。
+
+    这条替代了旧框架那条"规划不是 JSON 就降级成单轮检索"：现在没有"规划 JSON"
+    这一步了，但"某一步出岔子之后这轮还能不能答完"这件事仍然要守住。
+    """
+
+    def boom(*, query: str, kb_ids: list[str], top_k=None, reader=None):  # type: ignore[no-untyped-def]
+        raise RuntimeError("索引暂时读不到")
+
+    services = get_services()
+    services.chat.retrieve_sources = boom  # type: ignore[method-assign]
+    install_fake_chat(answer="资料没读到，我先按已知的说。", script=[search_tool_call("眼轴")])
+
+    events = _parse_sse(
+        client.post("/api/v1/chat/stream", json={"query": "眼轴", "kb_ids": [kb_id]}).text
+    )
+
+    steps = [e for e in events if e["type"] == "step"]
+    failed = [e for e in steps if "索引暂时读不到" in (e.get("detail") or "")]
+    assert failed, "工具的失败要出现在过程面板里，不能悄悄吞掉"
+    assert not [e for e in events if e["type"] == "error"], "工具失败不该把整轮变成错误"
+    assert events[-1]["type"] == "done" and events[-1]["answer"]
+    # 失败时**一条出处都不该发**：没有资料就是没有资料，不能给个空壳
+    assert not [e for e in events if e["type"] == "sources"]
+
+
+def test_the_model_can_answer_without_any_tool(client: TestClient, kb_id: str) -> None:
+    """模型不调工具就直接作答，是**正常路径**（不是"检索没命中"）。
+
+    这条替代了旧框架那条"规划不是 JSON 就降级成单轮检索"：现在没有规划那一步了。
+    但要守的事没变——一轮对话里"没查资料"与"查了没查到"是两回事，
+    界面上不能把前者画成后者（实测报过的现象就是"我没开知识库，它为什么去检索了"）。
+    """
+    install_fake_chat("退化后的回答")
+
+    events = _parse_sse(
+        client.post("/api/v1/chat/stream", json={"query": "原问题", "kb_ids": [kb_id]}).text
+    )
+
+    assert events[-1] == {"type": "done", "answer": "退化后的回答"}
+    steps = [e for e in events if e["type"] == "step"]
+    # 只有"组织回答"这一步，没有工具那一步
+    assert [e["label"] for e in steps] == ["组织回答"]
+    assert not [e for e in events if e["type"] == "sources"]

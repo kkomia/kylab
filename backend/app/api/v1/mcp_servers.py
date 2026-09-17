@@ -32,17 +32,22 @@ from app.api.v1.schemas import (
 from app.core.exceptions import ForbiddenError
 from app.core.services import Services, get_services
 from app.services.api_key import Caller
-from app.services.command_policy import ACTION_ASK, ACTION_DENY, build_rule_set, suggest_rule
+from app.services.command_policy import (
+    ACTION_ALLOW,
+    ACTION_ASK,
+    ACTION_DENY,
+    append_allow_rule,
+    rules_from_runtime,
+    suggest_rule,
+)
 from app.services.mcp_client import tool_qualified_name
 
 router = APIRouter(prefix="/mcp-servers", tags=["mcp"])
 
 
 def _owner(caller: Caller) -> str | None:
-    """归属口径与工作区/知识库/会话一致：普通成员只看自己的。"""
-    if caller.user is not None and not caller.is_admin:
-        return caller.user.id
-    return None
+    """归属口径与工作区/知识库/会话一致：普通成员只看自己的（``Caller.owner_id``）。"""
+    return caller.owner_id
 
 
 def _out(record) -> MCPServerOut:  # type: ignore[no-untyped-def]
@@ -176,27 +181,24 @@ def call_tool(
 ) -> MCPCallOut:
     """按策略闸调用。``ask`` 且未确认时回 409，界面确认后带 ``approved=true`` 重调。"""
     record = services.mcp.get(server_id, user_id=_owner(caller))
-    # **规则层对 MCP 工具同样生效**（用限定名匹配）：外部工具与本地命令是同一类
-    # "以用户名义执行的动作"，两处各写一套判定就会出现"这边能拦、那边拦不住"。
+    # **判定只有一处**（`MCPClientService.decide`）：会话里的工具闸与这个端点共用它，
+    # 两处各写一套就会出现"这边能拦、那边拦不住"。这里只做本端点特有的事：
+    # 拒绝时给 403、用户勾了"以后都允许"时把规则写进清单。
     qualified = tool_qualified_name(record.name, payload.tool)
-    rules = build_rule_set(
-        allow_text=services.runtime.get("sandbox.rules_allow"),
-        ask_text=services.runtime.get("sandbox.rules_ask"),
-        deny_text=services.runtime.get("sandbox.rules_deny"),
-        default=ACTION_ASK,
+    decision = services.mcp.decide(
+        record, payload.tool, rules=rules_from_runtime(services.runtime, source="外部工具")
     )
-    decision = rules.decide(qualified, "")
     if decision.action == ACTION_DENY:
-        raise ForbiddenError(f"这个外部工具被拒绝规则拦下：{decision.reason}")
+        raise ForbiddenError(f"这个外部工具被拦下：{decision.reason}")
     if payload.remember and decision.action == ACTION_ASK:
-        current = (services.runtime.get("sandbox.rules_allow") or "").rstrip()
-        line = suggest_rule(qualified, "").describe()
-        if line not in {item.strip() for item in current.splitlines()}:
-            # 显式拼接，不在源码里写转义换行（那样改一次就可能落进真换行，语法直接错）
-            merged = "\n".join(part for part in (current, line) if part)
-            services.runtime.set({"sandbox.rules_allow": merged})
+        append_allow_rule(services.runtime, suggest_rule(qualified, ""))
     text = services.mcp.call(
-        record, payload.tool, payload.arguments, approved=payload.approved
+        record,
+        payload.tool,
+        payload.arguments,
+        # 这一档是**这个端点特有**的：界面上确认过（``approved``）就算问过了。
+        # 会话那条链路没有这个往返，所以它那边 ``ask`` 只能不执行（见 agent_tools）。
+        approved=payload.approved or decision.action == ACTION_ALLOW,
     )
     return MCPCallOut(server_id=server_id, tool=payload.tool, text=text)
 
@@ -210,29 +212,18 @@ def list_all_tools(
 
     某个服务连不上时**跳过它并继续**：一个外部服务挂了不该让整张能力清单消失——
     那正是"接外部依赖"最不该有的耦合。
-    """
-    out: list[MCPToolOut] = []
-    for record in services.mcp.list(user_id=_owner(caller)):
-        if not record.enabled:
-            continue
-        try:
-            tools = services.mcp.list_tools(record)
-        except Exception as exc:
-            # 单独记一条日志，不向上抛：其余服务照常工作
-            import logging
 
-            logging.getLogger(__name__).warning(
-                "MCP 服务 %s 的工具清单取不到：%s", record.name, exc
-            )
-            continue
-        out.extend(
-            MCPToolOut(
-                name=item.name,
-                qualified=item.qualified,
-                description=item.description,
-                server_id=item.server_id,
-                server_name=item.server_name,
-            )
-            for item in tools
+    从缓存读（``available_tools``），**与对话那侧读的是同一份**：两处各自去连一遍
+    不但慢（stdio 会起子进程），还会出现"能力页显示有、对话里却调不动"这种
+    极其难查的不一致。
+    """
+    return [
+        MCPToolOut(
+            name=tool.name,
+            qualified=tool.qualified,
+            description=tool.description,
+            server_id=tool.server_id,
+            server_name=tool.server_name,
         )
-    return out
+        for _record, tool in services.mcp.available_tools(user_id=_owner(caller))
+    ]

@@ -120,7 +120,7 @@ def chat_once(
             model_pk=model_pk,
             thinking=thinking,
             thinking_effort=effort,
-            tools=tool_specs(),
+            tools=tool_specs(services, owner_id=caller.owner_id),
             runner=build_runner(
                 services,
                 caller,
@@ -306,7 +306,10 @@ def _events(
                 model_pk=model_pk,
                 thinking=thinking,
                 thinking_effort=effort,
-                tools=tool_specs(),
+                # **工具表含外部 MCP 服务的工具**（v0.20）：用户在能力页接进来的
+                # 服务，它们的工具与内置工具一起交给模型；能不能真的调起来由
+                # 执行器那一刻的准入策略决定（见 agent_tools._call_mcp）
+                tools=tool_specs(services, owner_id=caller.owner_id),
                 # 执行器带**调用者身份**与**这一轮允许查的库**：
                 # 关掉知识库开关之后，模型也不该能绕过它去检索（见 agent_tools.build_runner）
                 runner=build_runner(
@@ -543,12 +546,11 @@ def _memory_owner(caller: Caller) -> str | None:
     """这次问答该用**谁的记忆**（v0.15）。
 
     普通成员 → 自己的账号；管理员会话与 API Key 通道 → 共享桶（``None``）。
-    与知识库/会话/工作区的归属口径一致，也与 ``api/v1/memory.py::_scope`` 一致
-    ——两处必须同口径，否则"同一份记忆在设置页和对话里看到的不一样"。
+    判定本身在 ``Caller.owner_id``（同一个口径要供知识库/会话/工作区/能力用，
+    各自写一份迟早会分叉）；这里保留这个函数是因为它在对话链路里被调了多处，
+    名字比 ``caller.owner_id`` 更能说明"这是记忆归属"。
     """
-    if caller.user is not None and not caller.is_admin:
-        return caller.user.id
-    return None
+    return caller.owner_id
 
 
 def _require_conversation(services: Services, payload: ChatRequestIn, caller: Caller) -> None:

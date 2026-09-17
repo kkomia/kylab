@@ -36,7 +36,8 @@ from app.services.api_key import Caller
 from app.services.command_policy import (
     ACTION_ASK,
     ACTION_DENY,
-    build_rule_set,
+    append_allow_rule,
+    rules_from_runtime,
     suggest_rule,
     tool_arguments,
 )
@@ -155,14 +156,8 @@ def exec_command(
 
 
 def _rule_set(services: Services):  # type: ignore[no-untyped-def]
-    """按用户配的三张清单建规则集。"""
-    return build_rule_set(
-        allow_text=services.runtime.get("sandbox.rules_allow"),
-        ask_text=services.runtime.get("sandbox.rules_ask"),
-        deny_text=services.runtime.get("sandbox.rules_deny"),
-        default=ACTION_ASK,
-        source="s",
-    )
+    """按用户配的三张清单建规则集（构造共用 ``command_policy.rules_from_runtime``）。"""
+    return rules_from_runtime(services.runtime, source="s")
 
 
 def _decide(services: Services, tool: str, arguments: str):  # type: ignore[no-untyped-def]
@@ -170,16 +165,8 @@ def _decide(services: Services, tool: str, arguments: str):  # type: ignore[no-u
 
 
 def _remember_rule(services: Services, tool: str, arguments: str) -> None:
-    """把这次调用建议的规则追加到放行清单。"""
-    rule = suggest_rule(tool, arguments)
-    current = (services.runtime.get("sandbox.rules_allow") or "").rstrip()
-    line = rule.describe()
-    if line in {item.strip() for item in current.splitlines()}:
-        return
-    # 用 join 而不是在源码里写转义换行：那段多行字符串已经被我改坏过一次
-    # （字符串里落进了真换行，语法直接错），换成显式拼接就不再有这个风险
-    merged = "\n".join(part for part in (current, line) if part)
-    services.runtime.set({"sandbox.rules_allow": merged})
+    """把这次调用建议的规则追加到放行清单（合并去重共用 ``append_allow_rule``）。"""
+    append_allow_rule(services.runtime, suggest_rule(tool, arguments))
 
 
 def _paths(services: Services, payload: SandboxExecIn):  # type: ignore[no-untyped-def]

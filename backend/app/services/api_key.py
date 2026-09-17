@@ -76,6 +76,20 @@ class Caller:
             return ()
         return tuple(self.api_key.knowledge_base_ids)
 
+    @property
+    def owner_id(self) -> str | None:
+        """这一轮该按**谁**的归属去读写（知识库、会话、笔记、工作区、记忆、能力）。
+
+        普通成员 → 自己的账号；管理员会话与 API Key 通道 → ``None``（共享桶）。
+
+        口径写在这里、不写在各调用点：它已经有过三份副本（对话的记忆归属、
+        MCP 端点、工具执行器），而这三处必须**完全一致**——只要有一处判成了别人，
+        表现就是"同一份数据在两个页面里看到的不是同一份"，那种不一致极难查。
+        """
+        if self.user is not None and not self.is_admin:
+            return self.user.id
+        return None
+
 
 def resolve_caller(services: Services, token: str) -> Caller:
     """把一串凭据换成调用主体（v0.12）。

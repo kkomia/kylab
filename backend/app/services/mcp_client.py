@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.core.exceptions import (
@@ -35,9 +36,22 @@ from app.core.exceptions import (
     InvalidRequestError,
     NotFoundError,
 )
+from app.services.command_policy import (
+    ACTION_ALLOW,
+    ACTION_ASK,
+    ACTION_DENY,
+    Decision,
+    RuleSet,
+)
 from app.storage.base import MCPServerRecord, StoreBundle
 
-__all__ = ["POLICIES", "MCPClientService", "MCPTool", "tool_qualified_name"]
+__all__ = [
+    "POLICIES",
+    "MCPClientService",
+    "MCPTool",
+    "split_qualified",
+    "tool_qualified_name",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +65,51 @@ _TIMEOUT_SECONDS = 20.0
 #: 工具名前缀。见模块头：外部工具名我们无法约束，撞名会让"到底在调哪个"变得无解。
 TOOL_PREFIX = "mcp"
 
+#: 工具清单的缓存时长。**对话每一轮都要这张清单**（它要进工具表），
+#: 而拿清单 = 连一次那个服务（stdio 还要起子进程）。每轮现连是不可接受的：
+#: 一句话的成本会变成"起三个子进程 + 三次握手"。
+_CACHE_TTL_SECONDS = 300.0
+
+#: 连不上时的缓存时长。**失败也要缓存，但要短**：
+#: 不缓存的话，一个挂掉的服务会让每一轮对话都白等一个超时；
+#: 缓存太久的话，用户刚把它修好却还要等五分钟。
+_CACHE_FAIL_TTL_SECONDS = 60.0
+
 
 def tool_qualified_name(server_name: str, tool_name: str) -> str:
     """``mcp__<服务>__<工具>``。服务名里的下划线会与分隔符混淆，统一折成横线。"""
-    safe = "_".join(part for part in (server_name or "").replace("_", "-").split() if part)
-    return f"{TOOL_PREFIX}__{safe}__{tool_name}"
+    return f"{TOOL_PREFIX}__{normalized_server_name(server_name)}__{tool_name}"
+
+
+def normalized_server_name(server_name: str) -> str:
+    """服务名在限定名里的形态（见 :func:`tool_qualified_name`）。"""
+    return "_".join(part for part in (server_name or "").replace("_", "-").split() if part)
+
+
+def split_qualified(qualified: str) -> tuple[str, str] | None:
+    """``mcp__<服务>__<工具>`` → ``(服务名, 工具名)``；不是外部工具就回 ``None``。
+
+    **只切前两个分隔符**（``split(sep, 2)``）：工具名自己可能带 ``__``
+    （``mcp__github__create__issue`` 是"服务 github、工具 create__issue"），
+    按全部下划线切会把工具名切碎，然后我们会去找一个不存在的服务。
+    """
+    parts = (qualified or "").split("__", 2)
+    if len(parts) != 3 or parts[0] != TOOL_PREFIX or not parts[1] or not parts[2]:
+        return None
+    return parts[1], parts[2]
+
+
+@dataclass(frozen=True, slots=True)
+class _CachedTools:
+    """一份工具清单的缓存条目。``error`` 非空表示上次连失败了（``tools`` 必为空）。"""
+
+    tools: tuple[MCPTool, ...]
+    error: str
+    at: float
+
+    def fresh(self, now: float) -> bool:
+        ttl = _CACHE_FAIL_TTL_SECONDS if self.error else _CACHE_TTL_SECONDS
+        return (now - self.at) < ttl
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +121,13 @@ class MCPTool:
     description: str = ""
     server_id: str = ""
     server_name: str = ""
+    schema: dict[str, Any] = field(default_factory=dict)
+    """它的输入参数定义（MCP 的 ``inputSchema``）。
+
+    要带上是因为**对话那侧要把它原样交给模型**：不给的话模型只知道有这个工具、
+    不知道要传什么参数，于是每次调用都靠猜。能力页上不显示它，但它是
+    "这个工具能不能真的被用起来"的关键。
+    """
 
 
 class MCPClientService:
@@ -79,6 +140,10 @@ class MCPClientService:
 
     def __init__(self, stores: StoreBundle) -> None:
         self._stores = stores
+        #: 服务 id → 上次问到的工具清单。见 ``_CACHE_TTL_SECONDS`` 上的说明。
+        #: 进程内（不落库）：它是**缓存**，重启后重新发现一次是正确行为，
+        #: 而落库会引入"库里那份是旧的"这个新的不一致。
+        self._cache: dict[str, _CachedTools] = {}
 
     # ------------------------------------------------------------------ 登记
 
@@ -153,11 +218,101 @@ class MCPClientService:
             record.headers = {str(k): str(v) for k, v in fields["headers"].items()}
         if fields.get("enabled") is not None:
             record.enabled = bool(fields["enabled"])
-        return self._stores.meta.update_mcp_server(record)
+        saved = self._stores.meta.update_mcp_server(record)
+        # 改了配置（命令、地址、开关）工具清单就可能变了，缓存必须作废：
+        # 留着的话，用户改完 target 之后对话里用的还是旧服务的那张工具表
+        self.invalidate(saved.id)
+        return saved
 
     def delete(self, server_id: str, *, user_id: str | None) -> None:
         self.get(server_id, user_id=user_id)
         self._stores.meta.delete_mcp_server(server_id)
+        self.invalidate(server_id)
+
+    # -------------------------------------------------------------- 工具清单
+
+    def invalidate(self, server_id: str | None = None) -> None:
+        """作废缓存。``server_id`` 为空时全清（改全局策略、测试用）。"""
+        if server_id is None:
+            self._cache.clear()
+            return
+        self._cache.pop(server_id, None)
+
+    def cached_tools(self, record: MCPServerRecord) -> tuple[list[MCPTool], str]:
+        """这个服务的工具清单，**从不抛异常**：返回 ``(工具, 连不上的原因)``。
+
+        与 :meth:`list_tools` 的分工：那个是"我现在要问它一次"（探活、测试连接用，
+        失败就该报出来）；这个是"我要给模型一张工具表，拿不到就别挡道"。
+        两条路径要的东西正好相反，所以不合并成一个方法。
+        """
+        now = time.monotonic()
+        cached = self._cache.get(record.id)
+        if cached is not None and cached.fresh(now):
+            return list(cached.tools), cached.error
+        try:
+            tools = self.list_tools(record)
+        except Exception as exc:
+            # 兜住一切：上游异常类型不受我们控制（实测有 FileNotFoundError、
+            # MCPError、TimeoutError，还有 anyio 包出来的 ExceptionGroup）。
+            # 一个外部服务挂掉不该让整张工具表消失——那正是"接外部依赖"
+            # 最不该有的耦合。
+            reason = f"{type(exc).__name__}: {exc}"
+            self._cache[record.id] = _CachedTools(tools=(), error=reason, at=now)
+            logger.info("MCP 服务 %s 的工具清单取不到：%s", record.name, exc)
+            return [], reason
+        self._cache[record.id] = _CachedTools(tools=tuple(tools), error="", at=now)
+        return tools, ""
+
+    def available_tools(self, *, user_id: str | None) -> list[tuple[MCPServerRecord, MCPTool]]:
+        """**启用中**且能连上的服务所暴露的全部工具（带它们的服务）。
+
+        服务列表按调用方收口（``user_id``），所以"我能用的外部工具"与"我能看到的
+        MCP 服务"是同一批——不会出现"能力页里看不见、对话里却调得动"。
+        """
+        out: list[tuple[MCPServerRecord, MCPTool]] = []
+        for record in self.list(user_id=user_id):
+            if not record.enabled:
+                continue
+            tools, _reason = self.cached_tools(record)
+            out.extend((record, tool) for tool in tools)
+        return out
+
+    # ------------------------------------------------------------------ 判定
+
+    def decide(
+        self, record: MCPServerRecord, tool_name: str, *, rules: RuleSet | None = None
+    ) -> Decision:
+        """这次调用该放行、该问、还是该拒。**两个调用点共用这一处判定。**
+
+        判定顺序（与规则层同一条规矩：``deny > ask > allow``，越具体越说了算）：
+
+        1. 服务策略是 ``deny`` → 拒。**这一档是硬停**，命中的放行规则也不能把它掀开
+           ——否则"我在能力页把它关掉了"会被设置页里一条旧规则静默推翻；
+        2. **命中的规则** → 按它的档位。规则比服务那一栏更具体（能细到单个工具），
+           所以命中时它说了算：一条 ``mcp__web__search_web`` 的放行规则
+           就该让"整台服务需要确认"下的这一个工具直接通过，而不必把整台服务放开
+           ——这本就是最小权限的用法；
+        3. 没命中规则 → 回服务那一档（它是这里的"总开关"）；
+        4. 服务是 ``allow`` → 放行。
+
+        **只看"命中的规则"**，不看规则集的默认档：规则集没命中时它的默认值也是
+        ``ask``，把它当成一张 ask 规则用，会让"服务设成允许、清单一个字没写"
+        这个最常见的部署变成每次都要求确认——用户明明已经放行了。
+
+        为什么要合在一处而不是两个调用点各判一次：会话链路与 REST 端点各写一份的话，
+        迟早出现"这边拦得住、那边拦不住"，而用户以为自己已经禁掉了。
+        """
+        rule_decision = (
+            rules.decide(tool_qualified_name(record.name, tool_name), "") if rules else None
+        )
+        matched = rule_decision is not None and rule_decision.rule is not None
+        if record.policy == "deny":
+            return Decision(ACTION_DENY, reason=f"服务「{record.name}」的策略是拒绝调用")
+        if matched:
+            return rule_decision
+        if record.policy == "ask":
+            return Decision(ACTION_ASK, reason=f"服务「{record.name}」的策略是先确认")
+        return Decision(ACTION_ALLOW, reason="服务策略是放行，且没有命中任何规则")
 
     @staticmethod
     def _visible(record: MCPServerRecord, user_id: str | None) -> bool:
@@ -172,8 +327,14 @@ class MCPClientService:
     # ------------------------------------------------------------------ 调用
 
     def probe(self, server_id: str, *, user_id: str | None) -> tuple[bool, str, list[MCPTool]]:
-        """连通性 + 工具清单（「测试连接」用它）。失败**不抛错**，回一句人话。"""
+        """连通性 + 工具清单（「测试连接」用它）。失败**不抛错**，回一句人话。
+
+        它同时是**刷新缓存的入口**：用户在能力页点一下，就顺带把对话那侧看到的
+        工具表更新了。没有这一步，工具表只能等缓存自己过期（最多 5 分钟），
+        而"我刚点了测试连接、它明明有这些工具"是最容易让人以为坏了的空档。
+        """
         record = self.get(server_id, user_id=user_id)
+        now = time.monotonic()
         try:
             tools = self.list_tools(record)
         except Exception as exc:  # 刻意兜住一切，理由见下
@@ -186,8 +347,11 @@ class MCPClientService:
             # （`TimeoutError`）、以及 anyio 把它们包成的 `ExceptionGroup`。
             # 它们的共同点是"都不在 `KylabError` 体系里"——上游的异常类型
             # 不受我们控制，所以这里只能按"兜住一切"来写。
+            reason = f"{type(exc).__name__}: {exc}"
+            self._cache[record.id] = _CachedTools(tools=(), error=reason, at=now)
             logger.info("MCP 服务 %s 探活失败：%s", record.name, exc, exc_info=True)
-            return False, f"{type(exc).__name__}: {exc}", []
+            return False, reason, []
+        self._cache[record.id] = _CachedTools(tools=tuple(tools), error="", at=now)
         return True, f"连接正常，发现 {len(tools)} 个工具", tools
 
     def list_tools(self, record: MCPServerRecord) -> list[MCPTool]:
@@ -210,6 +374,7 @@ class MCPClientService:
                     description=str(getattr(item, "description", "") or ""),
                     server_id=record.id,
                     server_name=record.name,
+                    schema=_schema_of(item),
                 )
             )
         return tools
@@ -331,6 +496,19 @@ class _http_session:
     async def __aexit__(self, *exc: Any) -> None:
         await self._session.__aexit__(*exc)
         await self._streams.__aexit__(*exc)
+
+
+def _schema_of(item: Any) -> dict[str, Any]:
+    """外部工具的输入参数定义。
+
+    **必须是对象**：MCP 里叫 ``inputSchema``，但不少服务给的是 ``null`` 或者
+    干脆没有。原样传给模型侧会让整张工具表被拒（OpenAI 协议要求它是对象），
+    所以这里回退成一个空对象 schema——"参数随便传"，比"这张表用不了"好。
+    """
+    schema = getattr(item, "inputSchema", None)
+    if isinstance(schema, dict):
+        return schema
+    return {"type": "object", "properties": {}}
 
 
 def _flatten_result(result: Any) -> str:

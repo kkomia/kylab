@@ -14,30 +14,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.services import get_services
+from tests.conftest import FakeChatModel, install_fake_chat
 from tests.conftest import admin_client as admin_session
-from tests.conftest import bind_model
 
 KB_NAME = "对话留存测试库"
-
-
-class FakeChat:
-    """假的对话模型：不打网络，专注测落库。"""
-
-    def __init__(self, answer: str = "这是回答。[1]") -> None:
-        self.answer = answer
-
-    def complete(self, messages):  # type: ignore[no-untyped-def]
-        return self.answer
-
-    def stream(self, messages):  # type: ignore[no-untyped-def]
-        yield from self.answer
-
-    def stream_events(self, messages):  # type: ignore[no-untyped-def]
-        # Agent 工作流走 stream_events（正文与思考分开）；这里只吐正文
-        from app.services.llm import LLMDelta
-
-        for char in self.answer:
-            yield LLMDelta(text=char)
 
 
 @pytest.fixture(autouse=True)
@@ -45,13 +25,9 @@ def fake_llm():
     """把对话模型换成假的并配好 llm。
 
     否则 `/chat` 会先报「尚未配置对话模型」502——那样测的就成了错误映射，
-    而不是我们关心的落库行为。
+    而不是我们关心的落库行为。注册表与模型工厂都在 ``install_fake_chat`` 里配。
     """
-    from app.core.services import get_services
-
-    services = get_services()
-    bind_model(services.models, "chat", model_id="fake-model", capabilities=["chat"])
-    services.chat._chat_factory = lambda config: FakeChat()
+    install_fake_chat()
     yield
 
 
@@ -190,26 +166,19 @@ def test_history_comes_from_the_database_not_the_request(
     services.conversations.append(conv_id, role="assistant", content="库里的回答")
 
     seen: dict = {}
-    real = services.chat.answer_agent
+    # **盯 `agent_messages` 而不是旧链路的 `answer_agent`**：P0 起对话主流程是
+    # 工具循环，`answer_agent` 已经不在这条路上了（盯它等于盯一个没人调的函数，
+    # 用例会因为"历史没被记下来"而红，而真实行为其实是对的）。
+    # `agent_messages` 是那一轮提示词的唯一出口——历史有没有进去，这里看得最准。
+    real = services.chat.agent_messages
 
     def spy(  # type: ignore[no-untyped-def]
-        *, query, kb_ids, history=None, summary="", system_prompt=None, model_pk=None,
-        thinking=None, thinking_effort=None, top_k=None,
+        *, query, history=None, **kwargs
     ):
         seen["history"] = [(item.role, item.content) for item in (history or [])]
-        return real(
-            query=query,
-            kb_ids=kb_ids,
-            history=history,
-            summary=summary,
-            system_prompt=system_prompt,
-            model_pk=model_pk,
-            thinking=thinking,
-            thinking_effort=thinking_effort,
-            top_k=top_k,
-        )
+        return real(query=query, history=history, **kwargs)
 
-    services.chat.answer_agent = spy  # type: ignore[method-assign]
+    services.chat.agent_messages = spy  # type: ignore[method-assign]
     try:
         client.post(
             "/api/v1/chat",
@@ -222,7 +191,7 @@ def test_history_comes_from_the_database_not_the_request(
             }
     )
     finally:
-        services.chat.answer_agent = real  # type: ignore[method-assign]
+        services.chat.agent_messages = real  # type: ignore[method-assign]
 
     assert ("user", "库里的问题") in seen["history"]
     assert not any("假历史" in content for _, content in seen["history"])
@@ -349,7 +318,7 @@ def _capturing_chat() -> dict:
 
     def factory(config):  # type: ignore[no-untyped-def]
         seen["config"] = config
-        return FakeChat()
+        return FakeChatModel()
 
     services.chat._chat_factory = factory
     return seen

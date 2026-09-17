@@ -83,8 +83,23 @@ _LABELS = {
 
 
 def tool_label(name: str) -> str:
-    """工具名 → 界面上的中文步骤名。未知工具回退到原名（不隐藏它）。"""
-    return _LABELS.get(name, name)
+    """工具名 → 界面上的中文步骤名。
+
+    两类回退：
+
+    - **外部 MCP 工具**（``mcp__<服务>__<工具>``）→ ``外部工具：服务 · 工具``。
+      不显示成 ``mcp__tavily__search``：过程面板是给用户看的，限定名是协议层的东西，
+      而"哪个服务的哪个工具"才是他想知道的；
+    - 其余未知工具**回退到原名**（不隐藏它）：看得见一个陌生名字，
+      也比看不见它强——那意味着"有件事发生了但界面没说"。
+    """
+    known = _LABELS.get(name)
+    if known:
+        return known
+    parts = (name or "").split("__", 2)
+    if len(parts) == 3 and parts[0] == "mcp" and parts[1] and parts[2]:
+        return f"外部工具：{parts[1]} · {parts[2]}"
+    return name
 
 
 @dataclass(frozen=True, slots=True)
