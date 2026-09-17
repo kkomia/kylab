@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import API_VERSION, get_settings
 from app.core.exceptions import register_exception_handlers
-from app.core.logging import setup_logging
+from app.core.logging import add_file_handler, log_file_for, setup_logging
 from app.core.services import get_services
 from app.core.storage import close_stores
 from app.workers.queue_worker import TaskWorker
@@ -79,6 +79,14 @@ def create_app() -> FastAPI:
     """组装应用：配置、中间件、异常映射、路由、生命周期。"""
     settings = get_settings()
     setup_logging(settings.log_level)
+    # **文件日志在启动时挂上**（库代码不该决定往磁盘写什么）：
+    # 控制台日志活不过一次重启，而"昨晚那次为什么慢"只能从文件里翻。
+    # 路径不能拼错也没法失败退出——写不出来只影响日志，不该让服务起不来。
+    try:
+        location = add_file_handler(log_file_for(settings.data_dir))
+        logger.info("日志文件：%s", location)
+    except OSError:
+        logger.warning("日志文件建不出来，本次只输出到控制台", exc_info=True)
 
     app = FastAPI(
         title="KYLAB 知识库服务",

@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # 只为标注：chat.py 反过来要用这个模块（工具循环是它的主流程）
     from app.services.chat import SourceRef
 
+from app.core.logging import sanitize_log_value
 from app.services.agent import (
     DeltaEvent,
     DoneEvent,
@@ -236,7 +237,9 @@ class ToolLoop:
         try:
             outcome = self._runner(call.name, args)
         except Exception as exc:  # 工具是外部世界，什么都能抛
-            logger.info("工具 %s 执行失败：%s", call.name, exc)
+            # 异常文本里可能带着模型给的参数（多行 JSON）：不转义的话，一条日志会被
+            # 伪装成好几条，而多出来的那几行看起来像我们自己打的
+            logger.info("工具 %s 执行失败：%s", call.name, sanitize_log_value(exc))
             return ToolOutcome(content=f"工具执行失败：{exc}")
         return _truncate(outcome)
 

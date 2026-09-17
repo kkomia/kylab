@@ -649,3 +649,41 @@ def test_probe_on_a_disabled_layer_does_not_touch_the_network(
     # 一个没启用的层不存在"连不连得上"，界面因此只显示"未启用"而不是警示色。
     assert result.reachable is None
     assert result.detail == "未启用"
+
+
+def test_remember_keeps_the_sections_own_prose(tmp_path: Path) -> None:
+    """那条"记什么、别记什么"的说明**不能被第一条记忆挤掉**。
+
+    它是从 QwenPaw 的 MEMORY.md 照抄来的，里面有一条安全约定：
+    「除非明确要求，不要记录密码、令牌或其他敏感信息」。这条规矩写在**文件里**
+    才起作用（模型每轮都读到它），而第一版的重写逻辑只保留 `- ` 条目行——
+    第一条记忆落盘的那一刻，这段话就被静默删掉了，且**没人会再去重新发现它**。
+    """
+    service = _service(tmp_path)
+
+    service.remember("对方偏好简短的答复")
+
+    body = (tmp_path / "memory" / CORE_MEMORY_FILE).read_text(encoding="utf-8")
+    assert "不要记录密码、令牌或其他敏感信息" in body
+    assert "不要把每日流水或整段会话记录复制到这里" in body
+    # 条目本身也在，且没被当成"散文"留在上面
+    assert "- 对方偏好简短的答复" in body
+    # 再记一条：说明还在，条目累加
+    service.remember("项目代号叫 kylab")
+    body = (tmp_path / "memory" / CORE_MEMORY_FILE).read_text(encoding="utf-8")
+    assert "不要记录密码、令牌或其他敏感信息" in body
+    assert "- 对方偏好简短的答复" in body and "- 项目代号叫 kylab" in body
+
+
+def test_remember_does_not_rewrite_line_endings(tmp_path: Path) -> None:
+    """整份重写要**按字节写**：`write_text` 在 Windows 上会把换行改成 CRLF。
+
+    后果不只是"文件变脏"：这份文件每次都在被 read/compare（去重、注入），
+    换行在多轮之间来回翻会让 diff 与哈希都不稳定。
+    """
+    service = _service(tmp_path)
+    service.remember("第一条")
+
+    raw = (tmp_path / "memory" / CORE_MEMORY_FILE).read_bytes()
+
+    assert b"\r\n" not in raw

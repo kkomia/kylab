@@ -28,6 +28,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from app.core.logging import sanitize_log_value
 from app.mcp_server.tools import call_tool, tool_definitions
 from app.services.api_key import Caller
 from app.services.chat import SourceRef
@@ -335,7 +336,7 @@ def _call_mcp(
         text = services.mcp.call(record, tool, args, approved=True)
     except Exception as exc:
         # 与内置工具同一口径：失败**如实回到循环**，不包装成空结果
-        logger.info("外部工具 %s 调用失败：%s", qualified, exc)
+        logger.info("外部工具 %s 调用失败：%s", qualified, sanitize_log_value(exc))
         return ToolOutcome(content=f"调用外部工具失败：{exc}")
     clipped = text[:MAX_MCP_RESULT_CHARS]
     if len(text) > MAX_MCP_RESULT_CHARS:

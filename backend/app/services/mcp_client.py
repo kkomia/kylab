@@ -36,6 +36,7 @@ from app.core.exceptions import (
     InvalidRequestError,
     NotFoundError,
 )
+from app.core.logging import sanitize_log_value
 from app.services.command_policy import (
     ACTION_ALLOW,
     ACTION_ASK,
@@ -258,7 +259,9 @@ class MCPClientService:
             # 最不该有的耦合。
             reason = f"{type(exc).__name__}: {exc}"
             self._cache[record.id] = _CachedTools(tools=(), error=reason, at=now)
-            logger.info("MCP 服务 %s 的工具清单取不到：%s", record.name, exc)
+            logger.info(
+                "MCP 服务 %s 的工具清单取不到：%s", record.name, sanitize_log_value(exc)
+            )
             return [], reason
         self._cache[record.id] = _CachedTools(tools=tuple(tools), error="", at=now)
         return tools, ""

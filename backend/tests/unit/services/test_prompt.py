@@ -234,3 +234,65 @@ def test_persona_files_and_core_files_cannot_drift() -> None:
     from app.services import memory_files
 
     assert set(memory_files.CORE_FILES) == {name for name, _label in PERSONA_FILES}
+
+
+# --------------------------------------------------- 人设文件的模板（照抄 QwenPaw）
+
+
+def test_templates_are_qwenpaw_shaped_not_empty_skeletons(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """模板里要有**内容**，不能只是几个空标题。
+
+    空壳（`## 我是谁` / `## 我的准则`）看着整齐，但它对新 Agent 一点用没有：
+    它得先猜"这里该写什么"。QwenPaw 的那几份写的是**行为约束**
+    （别演、先自己查、对外谨慎对内大胆），每一条都能落成具体动作——
+    这正是抄它们的理由。
+    """
+    service = MemoryService(_FakeRuntime(True), tmp_path)  # type: ignore[arg-type]
+    service.seed_persona("u1")
+    texts = dict(service.persona_texts("u1"))
+
+    # 人格里那几条准则在
+    assert "真心帮忙" in texts[SOUL_FILE]
+    assert "先自己想办法" in texts[SOUL_FILE]
+    # 规程里要说清"先问一声"的边界，以及技能与检索该用哪个工具
+    assert "先问一声" in texts[AGENTS_FILE]
+    assert "list_skills" in texts[AGENTS_FILE] and "search" in texts[AGENTS_FILE]
+    # 资料文件留白（这是要人去填的）
+    assert "名字" in texts[PROFILE_FILE]
+
+
+def test_templates_carry_the_frontmatter_the_memory_layer_needs(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """三份文件都要带 `summary` 与 `read_when`。
+
+    这不是装饰：它是 ReMe 那一族的约定（记忆文件靠这两个字段被检索与按需读取）。
+    少了它，人设文件在检索那一侧就是"没有元数据的普通文件"。
+    """
+    service = MemoryService(_FakeRuntime(True), tmp_path)  # type: ignore[arg-type]
+    service.seed_persona("u1")
+
+    for name, text in service.persona_texts("u1"):
+        assert text.startswith("---\n"), name
+        head = text.split("---")[1]
+        assert "summary:" in head, name
+        assert "read_when:" in head, name
+
+
+def test_templates_have_no_emoji(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """**照抄不能把 emoji 一起抄进来**（这个项目禁 emoji）。
+
+    QwenPaw 的 AGENTS.md 里有整节表情回应的内容，SOUL/AGENTS 里也有表情符号；
+    它们的取向与我们的规范正好相反，所以抄的时候要剥掉。
+    这一条挡住的是"下次再照抄一版时把 emoji 带回来"——那时候
+    `scripts/scan_emoji.py` 才会红，而它在 CI 里、离改的人很远。
+    """
+    service = MemoryService(_FakeRuntime(True), tmp_path)  # type: ignore[arg-type]
+    service.seed_persona("u1")
+
+    for name, text in service.persona_texts("u1"):
+        for char in text:
+            code = ord(char)
+            assert not (
+                0x1F300 <= code <= 0x1FAFF  # 各种表情与符号
+                or 0x2600 <= code <= 0x27BF  # 杂项符号（含 ✅ ✗ ➜ 一类）
+                or code in {0xFE0F, 0x2B50, 0x2049, 0x203C}
+            ), f"{name} 里有 emoji：{char!r} (U+{code:04X})"
