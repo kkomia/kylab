@@ -12,8 +12,16 @@
  * - 服务配置（MinerU / PaddleOCR）
  * - 存储配置（只读）
  * - 系统与安全（只读）
+ * - **功能**（长期记忆 / 联网 / 沙箱执行…）：这一组**不是手写的菜单**，
+ *   而是"后端返回了、但上面几节没有专门渲染"的那些组，自动出现。
  *
  * 密钥永不回显明文：接口给掩码，输入框留空表示"不改动"。
+ *
+ * **为什么要有自动出现的那一组**：设置组由后端 `SETTING_GROUPS` 定义，
+ * 而菜单曾经是一张手写清单（向量化 / 对话模型 / MinerU / PaddleOCR）——
+ * 于是后端加一组（长期记忆、联网、沙箱执行）在界面上**根本没有入口**：
+ * 用户看到的是"哪里有长期记忆了？"，而别处的提示还写着"到设置里打开它"。
+ * 现在没有专门渲染的组会自动出现在「功能」下，**没有人需要记得去改菜单**。
  */
 import { computed, onMounted, ref, watch, type Component } from 'vue'
 
@@ -47,6 +55,7 @@ import IconLogout from '@/components/icons/IconLogout.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
 import IconServer from '@/components/icons/IconServer.vue'
+import IconSettings from '@/components/icons/IconSettings.vue'
 import IconShieldCheck from '@/components/icons/IconShieldCheck.vue'
 import IconSun from '@/components/icons/IconSun.vue'
 import IconUser from '@/components/icons/IconUser.vue'
@@ -76,7 +85,18 @@ const open = defineModel<boolean>('open', { required: true })
 const emit = defineEmits<{ logout: [] }>()
 
 type SectionKey =
-  'registry' | 'models' | 'llm' | 'services' | 'storage' | 'appearance' | 'users' | 'system'
+  | 'registry'
+  | 'models'
+  | 'llm'
+  | 'services'
+  | 'storage'
+  | 'appearance'
+  | 'users'
+  | 'system'
+  | 'features'
+
+/** 已经由上面那些"专门一节"渲染过的设置组；其余自动进「功能」。 */
+const RENDERED_GROUP_KEYS = new Set(['embedding', 'llm', 'chat', 'mineru', 'paddleocr'])
 
 /**
  * 左侧菜单（对齐 Kimi 桌面端 / wekora 的设置菜单）：
@@ -105,9 +125,11 @@ const SECTIONS: {
 ]
 
 /** 菜单分组。分组标题是唯一的小字——它标段落，不解释条目。 */
-const NAV_GROUPS: { label: string; keys: SectionKey[] }[] = [
+const NAV_GROUPS: { label: string; keys: SectionKey[]; dynamic?: boolean }[] = [
   { label: '模型', keys: ['registry', 'models', 'llm'] },
   { label: '服务', keys: ['services', 'storage'] },
+  // 后端那些"还没有专门一节"的组（长期记忆 / 联网 / 沙箱执行…）
+  { label: '功能', keys: [], dynamic: true },
   { label: '账户', keys: ['users', 'system'] },
   { label: '偏好', keys: ['appearance'] },
 ]
@@ -193,16 +215,40 @@ async function submitPasswordChange(): Promise<void> {
  * 也不要在成员登录的一瞬间把管理入口亮出来。
  */
 const canManageUsers = computed(() => isAdmin.value)
-const visibleSections = computed(() =>
-  SECTIONS.filter((item) => !item.adminOnly || canManageUsers.value),
+
+/**
+ * 后端返回、但上面几节没有专门渲染的设置组（长期记忆 / 联网 / 沙箱执行…）。
+ *
+ * **它是这一段的关键**：菜单原先是手写的，于是后端加一组就等于"界面上没有入口"——
+ * 用户的实际反馈就是一句"这哪里有长期记忆了？"，而记忆页与工具报错都还在
+ * 指引他"到「设置 → 长期记忆」打开"。这里改成按后端返回的组算，
+ * 以后加组的人不需要记得回来改菜单。
+ */
+const featureGroups = computed(() =>
+  (config.value?.groups ?? []).filter((item) => !RENDERED_GROUP_KEYS.has(item.key)),
 )
+
+const visibleSections = computed(() => {
+  const fixed = SECTIONS.filter((item) => !item.adminOnly || canManageUsers.value)
+  if (featureGroups.value.length === 0) return fixed.filter((item) => item.key !== 'features')
+  return fixed
+})
 /** 菜单按分组渲染：组成员被权限过滤掉（如成员的「用户」）后，空组不占位。 */
 const visibleGroups = computed(() =>
   NAV_GROUPS.map((group) => ({
     label: group.label,
-    items: visibleSections.value.filter((item) => group.keys.includes(item.key)),
+    items: group.dynamic
+      ? featureGroups.value.map((item) => ({
+          key: item.key as SectionKey,
+          label: item.label,
+          icon: IconSettings,
+        }))
+      : visibleSections.value.filter((item) => group.keys.includes(item.key)),
   })).filter((group) => group.items.length > 0),
 )
+
+/** 当前这一节对应哪个后端设置组（「功能」那几节是动态键，直接就是组 key）。 */
+const activeGroup = computed(() => group(section.value))
 
 const users = ref<RosterUser[]>([])
 const usersLoading = ref(false)
@@ -362,6 +408,9 @@ async function confirmDeleteUser(): Promise<void> {
 watch(section, (value) => {
   if (value === 'users') void loadUsers()
   if (value === 'storage') void loadStorage()
+  // 换一节就把编辑态收掉：留着的话，切到另一节会看到上一节的表单
+  editing.value = null
+  testResult.value = null
 })
 
 // ------------------------------------------------------------------ 存储维护（v17）
@@ -547,6 +596,46 @@ function selectLabel(groupKey: string, fieldKey: string, value: string): string 
 
 function secretSummary(groupKey: string, fieldKey: string): string {
   return isConfigured(groupKey, fieldKey) ? fieldValue(groupKey, fieldKey) : '未配置'
+}
+
+/**
+ * 动态那一节里，一个字段值的显示文案。
+ *
+ * 按类型分开写是因为它们**该说的话不一样**：布尔说"开启/关闭"（说成 true/false
+ * 等于没翻译），密钥说"已配置/未配置"（值本身是掩码，但"没配"要一眼看出），
+ * 其余取值本身。空值统一给个破折号——留空白会让人以为界面坏了。
+ */
+function fieldSummary(field: SettingGroup['fields'][number]): string {
+  if (field.type === 'bool') return field.value === 'true' ? '开启' : '关闭'
+  if (field.type === 'secret') return field.configured ? field.value : '未配置'
+  if (field.type === 'select') {
+    return field.options.find((option) => option.value === field.value)?.label ?? field.value
+  }
+  return field.value || '—'
+}
+
+/** 动态那一节的一句话说明（只给需要解释的几组写，其余不硬凑）。 */
+function groupTip(key: string): string {
+  const tips: Record<string, string> = {
+    memory:
+      '长期记忆要单独跑一个记忆服务（ReMe），而且它会调模型（捕获与整合）。' +
+      '关着也能用：那四份人设文件是磁盘上的普通文件，照常注入、也能记住东西；' +
+      '这道开关管的是另一半——过去的对话会不会被召回、会不会自动沉淀。',
+    web: '搜索需要一个服务商密钥（Tavily / 博查）。抓网页不需要密钥，但只访问公网地址。',
+    sandbox: '在你这台机器上执行命令。默认「先问」：这是权限最大的一个动作。',
+  }
+  return tips[key] ?? ''
+}
+
+/** 编辑态的那句提示（原来只写死了 llm 与"其它"两句，现在按组给）。 */
+function editHint(key: string): string {
+  const hints: Record<string, string> = {
+    llm: '推理模型打开深度思考后会更慢、更费 token。关掉它更快，但难题上的推导会浅一些。',
+    memory: '关掉之后：过去的对话不再被召回、也不会自动沉淀；人设文件与「记住」照常工作。',
+    web: '密钥只回显掩码。留空表示不改动；要清掉它请用下方「清除」入口。',
+    sandbox: '三张清单的语法照抄 Claude Code：Bash(git status:*) 这样写，拒绝优先于放行。',
+  }
+  return hints[key] ?? ''
 }
 
 /**
@@ -1004,6 +1093,98 @@ async function runTest(target: string): Promise<void> {
               <AppButton v-if="group('paddleocr')" @click="openEdit(group('paddleocr')!)">
                 编辑
               </AppButton>
+            </div>
+          </template>
+        </template>
+
+        <!--
+          功能（动态）：后端那些没有专门一节的设置组——长期记忆、联网、沙箱执行…
+          整块都是按字段渲染的，所以后端加一组、加一个字段，这里自动跟着变。
+        -->
+        <template v-else-if="activeGroup">
+          <template v-if="editing">
+            <h3 class="section-title">编辑 {{ editing.label }}</h3>
+            <div class="edit-form">
+              <template v-for="field in editing.fields" :key="field.key">
+                <!-- 布尔项不能走文本输入：里面的 "false" 是非空字符串，一不小心就写成了开启 -->
+                <label v-if="field.type === 'bool'" class="edit-check">
+                  <input
+                    type="checkbox"
+                    :checked="draft[field.key] === 'true'"
+                    @change="
+                      draft[field.key] = ($event.target as HTMLInputElement).checked
+                        ? 'true'
+                        : 'false'
+                    "
+                  />
+                  <span>{{ field.label }}</span>
+                </label>
+                <label v-else-if="field.type === 'select'" class="edit-field">
+                  <span class="edit-label">{{ field.label }}</span>
+                  <AppSelect
+                    v-model="draft[field.key]"
+                    :options="field.options"
+                    :aria-label="field.label"
+                  />
+                </label>
+                <label v-else class="edit-field">
+                  <span class="edit-label">
+                    {{ field.label }}
+                    <span v-if="field.type === 'secret' && field.configured" class="edit-current">
+                      当前 {{ field.value }}
+                    </span>
+                  </span>
+                  <AppInput
+                    v-model="draft[field.key]"
+                    :multiline="field.type === 'textarea'"
+                    :rows="5"
+                    :type="field.type === 'int' ? 'number' : 'text'"
+                    :placeholder="field.type === 'secret' ? '留空表示不改动' : ''"
+                  />
+                </label>
+              </template>
+              <p v-if="editHint(editing.key)" class="edit-hint">{{ editHint(editing.key) }}</p>
+
+              <div
+                v-if="testResult"
+                class="test-result"
+                :class="testResult.ok ? 'test-ok' : 'test-bad'"
+              >
+                <IconCheck v-if="testResult.ok" :size="14" />
+                <span>{{ testResult.detail }}</span>
+              </div>
+            </div>
+            <div class="edit-actions">
+              <AppButton @click="editing = null">返回</AppButton>
+              <AppButton variant="primary" :disabled="saving" @click="save">
+                {{ saving ? '保存中…' : '保存' }}
+              </AppButton>
+            </div>
+          </template>
+
+          <template v-else-if="activeGroup">
+            <h3 class="section-title">
+              {{ activeGroup.label }}
+              <InfoTip v-if="groupTip(activeGroup.key)" :text="groupTip(activeGroup.key)" />
+            </h3>
+            <div v-for="field in activeGroup.fields" :key="field.key" class="row">
+              <div class="row-main">
+                <span class="row-label">{{ field.label }}</span>
+                <span class="row-value">{{ fieldSummary(field) }}</span>
+              </div>
+              <StatusTag
+                v-if="field.type === 'bool'"
+                :tone="field.value === 'true' ? 'success' : 'neutral'"
+                :label="field.value === 'true' ? '已开启' : '未开启'"
+              />
+              <StatusTag
+                v-else-if="field.type === 'secret'"
+                :tone="field.configured ? 'success' : 'neutral'"
+                :label="field.configured ? '已配置' : '未配置'"
+              />
+            </div>
+            <div class="edit-actions">
+              <AppButton variant="primary" @click="openEdit(activeGroup)">编辑</AppButton>
             </div>
           </template>
         </template>

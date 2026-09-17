@@ -120,3 +120,103 @@ describe('SettingsModal 的默认模型下拉', () => {
     expect(labels()).toContain('小模型 · 测试源')
   })
 })
+
+/**
+ * **每一个后端设置组都要在界面上有入口**（实测报过来的 bug）。
+ *
+ * 用户的原话是"这哪里有长期记忆了？"：记忆页与工具报错都写着
+ * 「到「设置 → 长期记忆」打开」，而设置弹窗的菜单是一张**手写清单**
+ * （向量化 / 对话模型 / MinerU / PaddleOCR）——长期记忆、联网、沙箱执行
+ * 三组在后端有、在界面上没有，用户根本点不到。
+ *
+ * 这条用例喂进去一个"后端加了新组"的场景，断言它自动出现在菜单里：
+ * 以后加组的那个人的忘性，就是这条用例在替他兜。
+ */
+describe('设置菜单要覆盖后端返回的每一个组', () => {
+  const GROUPS = [
+    {
+      key: 'memory',
+      label: '长期记忆',
+      fields: [
+        {
+          key: 'memory.enabled',
+          label: '启用长期记忆',
+          type: 'bool',
+          value: 'false',
+          configured: false,
+          options: [],
+        },
+        {
+          key: 'memory.base_url',
+          label: '服务地址',
+          type: 'text',
+          value: 'http://127.0.0.1:2333',
+          configured: false,
+          options: [],
+        },
+      ],
+    },
+    {
+      key: 'web',
+      label: '联网',
+      fields: [
+        {
+          key: 'web.search_provider',
+          label: '搜索服务商',
+          type: 'text',
+          value: 'tavily',
+          configured: false,
+          options: [],
+        },
+        {
+          key: 'web.search_api_key',
+          label: '搜索 API 密钥',
+          type: 'secret',
+          value: '',
+          configured: false,
+          options: [],
+        },
+      ],
+    },
+    // 一个"将来才加的"组：没有任何专门渲染，也不该被漏掉
+    {
+      key: 'brand_new',
+      label: '将来才加的一组',
+      fields: [
+        {
+          key: 'brand_new.flag',
+          label: '某个开关',
+          type: 'bool',
+          value: 'true',
+          configured: false,
+          options: [],
+        },
+      ],
+    },
+  ]
+
+  it('后端有、界面没专门渲染的组自动出现在「功能」下，并带开关状态', async () => {
+    const { getSettings } = await import('@/api/settings')
+    vi.mocked(getSettings).mockResolvedValue({ groups: GROUPS } as never)
+
+    const wrapper = mount(SettingsModal, { props: { open: true } })
+    await flushPromises()
+
+    const nav = wrapper.text()
+    for (const group of GROUPS) {
+      expect(nav).toContain(group.label)
+    }
+    expect(wrapper.text()).toContain('功能')
+
+    // 点进去：字段与"开着没有"要看得见（布尔项说"已开启/未开启"，不显示 true/false）
+    await wrapper
+      .findAll('button')
+      .find((item) => item.text().includes('长期记忆'))
+      ?.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('启用长期记忆')
+    expect(wrapper.text()).toContain('未开启')
+    expect(wrapper.text()).toContain('http://127.0.0.1:2333')
+  })
+})
