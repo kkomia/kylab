@@ -30,11 +30,16 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.core.exceptions import NotFoundError
 from app.services.memory_files import parse_frontmatter
+from app.services.runtime_config import SETTING_GROUPS
 
 __all__ = ["SKILL_FILE", "SkillRecord", "SkillService"]
 
@@ -50,6 +55,14 @@ MAX_BODY_CHARS = 60_000
 
 #: 目录注入时最多带几条。装几百个技能时，目录本身也会变成负担。
 MAX_CATALOG = 60
+
+#: ``requires`` 里认识的四个键。**与 OpenClaw 的门控字段是同一批**
+#: （见《预装技能选型》§4.2）：它们都是"这个技能在这台机器上跑不跑得起来"的
+#: 客观条件，而不是"我们想不想让它跑"。
+REQUIRE_KEYS = ("config", "binaries", "env", "os")
+
+#: ``sys.platform`` → 写在技能里的平台名。
+_PLATFORMS = {"linux": "linux", "darwin": "darwin", "win32": "windows"}
 
 #: 疑似"试图操纵模型"的写法。命中**不足以判断恶意**（安全文档里也可能出现这些词），
 #: 所以处置是"不进目录 + 标出来给人看"，而不是拒绝加载或报错。
@@ -113,7 +126,20 @@ class SkillService:
     为省这点开销引入一套失效逻辑不划算。真到几百个技能时再加 mtime 缓存。
     """
 
-    def __init__(self, data_dir: Path, *, builtin_dir: Path | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        *,
+        builtin_dir: Path | None = None,
+        config_value: Callable[[str], str] | None = None,
+        binaries: Callable[[str], str | None] | None = None,
+    ) -> None:
+        #: 读一个运行期配置的值（``requires.config`` 用它判定）。
+        #: **不给就是"读不到"**，于是带 requires 的技能不出现——那一侧的默认必须是
+        #: "不宣称自己能跑"，反过来的话，一个没接配置的部署会把技能摆在目录里，
+        #: 模型照它做然后失败在最后一步。
+        self._config_value = config_value
+        self._binaries = binaries or shutil.which
         self._data_dir = data_dir
         # 仓库自带的技能目录：`backend/app/services/skills.py` 往上四层是仓库根。
         # 允许注入是为了测试能指到临时目录，而不是去猜相对层级。
@@ -161,7 +187,7 @@ class SkillService:
         lines = [f"- {item.name}：{item.description}".rstrip("：") for item in usable]
         return (
             "【可用技能】下面这些是本环境里可用的技能（名字：什么时候用）。"
-            "需要按某个技能的流程做事时，**先把它的正文读出来**（`use_skill`），"
+            "需要按某个技能的流程做事时，**先用 `read_skill` 把它的正文读出来**，"
             "不要只凭这一行描述就动手——细节在正文里。\n" + "\n".join(lines)
         )
 
@@ -221,6 +247,7 @@ class SkillService:
                 "没有它这个技能不会被触发"
             )
         flagged.extend(_scan(text))
+        flagged.extend(self._unmet(meta))
         return SkillRecord(
             name=name,
             description=description,
@@ -230,6 +257,107 @@ class SkillService:
             used_by_prompt=not flagged,
             flagged=tuple(flagged),
         )
+
+
+    def _unmet(self, meta: dict[str, Any]) -> list[str]:
+        """``requires`` 里**没满足**的那几项，回人话理由。
+
+        为什么用具名键而不是一句自由文本：这些是**可以自动判的客观条件**
+        （配置有没有值、命令在不在 PATH 上、平台对不对），而自由文本只能靠人读。
+        调研 §4.2 抄的就是这个做法——预装 ≠ 默认开启，没装依赖的用户
+        **根本看不到**那个技能，而不是看到一个点了就报错的技能。
+
+        处置与"疑似注入"完全一致（那条路也是 ``used_by_prompt=False`` + 理由）：
+        不进模型目录，但在界面里如实列出**并说明差什么**——静默藏掉会让用户
+        以为技能装失败了。
+        """
+        raw = meta.get("requires")
+        if not isinstance(raw, dict):
+            return []
+        reasons: list[str] = []
+        for key in REQUIRE_KEYS:
+            if key not in raw:
+                continue
+            if key == "config":
+                reasons.extend(self._unmet_config(raw["config"]))
+            elif key == "binaries":
+                reasons.extend(_unmet_binaries(raw["binaries"], self._binaries))
+            elif key == "env":
+                reasons.extend(_unmet_env(raw["env"]))
+            elif key == "os":
+                reasons.extend(_unmet_os(raw["os"]))
+        unknown = [key for key in raw if key not in REQUIRE_KEYS]
+        if unknown:
+            # 拼错的键（`require:` / `bins:`）**必须报出来**：不报的话，
+            # 那个条件等于没写，而写它的人以为已经门控住了
+            reasons.append(
+                f"requires 里有不认识的键：{'、'.join(sorted(unknown))}"
+                f"（只有 {'、'.join(REQUIRE_KEYS)}）"
+            )
+        return reasons
+
+    def _unmet_config(self, raw: Any) -> list[str]:
+        keys = [str(item) for item in _as_list(raw)]
+        missing = [
+            key for key in keys if not (self._config_value or (lambda _key: ""))(key).strip()
+        ]
+        if not missing:
+            return []
+        where = "、".join(_config_label(key) for key in missing)
+        return [f"需要先配置：{where}（这个技能要用的能力还没接上）"]
+
+
+def _as_list(raw: Any) -> list[Any]:
+    """``config: web.search_api_key`` 与 ``config: [a, b]`` 都认。
+
+    两种写法都收是有意的：只写一项时不必为其套一层列表（写技能的人会那么写），
+    而写成自由字符串又必须能按**单个键**解析——按字符拆会把键名拆碎。
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [item for item in raw if str(item).strip()]
+    text = str(raw).strip()
+    return [text] if text else []
+
+
+def _config_label(key: str) -> str:
+    """配置键 → 界面上的说法（``「设置 → 联网」里的「搜索 API 密钥」``）。
+
+    不写键名给用户看：``web.search_api_key`` 是代码里的东西，
+    而他要找的是界面上那个输入框。找不到就退回键名——**宁可难看也别编**。
+    """
+    for group in SETTING_GROUPS.values():
+        for field in group.get("fields", []):
+            if field.get("key") == key:
+                return f"「设置 → {group.get('label', '')}」里的「{field.get('label', key)}」"
+    return key
+
+
+def _unmet_binaries(raw: Any, which: Callable[[str], str | None]) -> list[str]:
+    missing = [str(name) for name in _as_list(raw) if not which(str(name))]
+    if not missing:
+        return []
+    return [f"需要这台机器上装了命令：{'、'.join(missing)}（没找到就说明这个技能跑不起来）"]
+
+
+def _unmet_env(raw: Any) -> list[str]:
+    import os
+
+    missing = [str(name) for name in _as_list(raw) if not os.environ.get(str(name))]
+    if not missing:
+        return []
+    return [f"需要环境变量：{'、'.join(missing)}"]
+
+
+def _unmet_os(raw: Any) -> list[str]:
+    wanted = {str(item).strip().lower() for item in _as_list(raw)}
+    if not wanted:
+        return []
+    current = _PLATFORMS.get(sys.platform, sys.platform)
+    if current in wanted:
+        return []
+    return [f"只在 {'、'.join(sorted(wanted))} 上用（当前是 {current}）"]
 
 
 def _scan(text: str) -> list[str]:

@@ -85,11 +85,22 @@ def test_disabled_recall_raises_instead_of_returning_empty(tmp_path: Path) -> No
     assert "设置" in message
 
 
-def test_disabled_remember_raises(tmp_path: Path) -> None:
+def test_remember_works_even_when_the_switch_is_off(tmp_path: Path) -> None:
+    """**「记住」不该被那道闸挡住**（v0.22 改）。
+
+    它写的是 ``MEMORY.md``，而那份文件不看开关、每轮都注入提示词——
+    写进去立即就有效，所以这里拒绝它等于凭空关掉一个能用的功能。
+    原先的报错还写着"请在设置里打开，并让记忆服务跑起来"，
+    那句话对 ``recall`` 成立、对这里**不成立**（这里根本不经过 ReMe）。
+
+    对照：``recall`` 在关着时仍然明确报错（它真需要 ReMe），见上一条用例。
+    """
     service = _service(tmp_path, **{"memory.enabled": "false"})
 
+    assert service.remember("用户偏好简短回答")["saved"] is True
+    assert "用户偏好简短回答" in service.core_text()
     with pytest.raises(InvalidRequestError):
-        service.remember("用户偏好简短回答")
+        service.recall("偏好")
 
 
 def test_core_text_is_empty_when_disabled_instead_of_raising(tmp_path: Path) -> None:
@@ -728,3 +739,14 @@ def test_untouched_legacy_templates_are_upgraded(tmp_path: Path) -> None:
     assert (workspace / PROFILE_FILE).exists()
     # 幂等：第二次没有可升级的
     assert service.seed_persona() == []
+
+
+def test_capture_still_needs_the_switch(tmp_path: Path) -> None:
+    """自动沉淀**仍然要开关**：它是一次真实的 LLM 调用（经由 ReMe），
+    不打招呼就烧 token 是这一层最不该有的默认。"""
+    service = _service(tmp_path, **{"memory.enabled": "false"})
+
+    with pytest.raises(InvalidRequestError, match="未启用"):
+        service.capture(
+            [{"role": "user", "name": "用户", "content": "你好"}], session_id="conv_1"
+        )

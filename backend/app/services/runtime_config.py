@@ -46,6 +46,8 @@ SECRET_KEYS = frozenset(
     {
         "mineru.token",
         "paddleocr.token",
+        # 联网搜索的密钥（v0.22）：与解析节点同一处置——只回显掩码
+        "web.search_api_key",
     }
 )
 
@@ -128,6 +130,26 @@ SETTING_GROUPS: dict[str, Any] = {
                 "key": "chat.compress_keep",
                 "label": "压缩时保留的最近消息条数",
                 "type": "int",
+            },
+        ],
+    },
+    # 联网（v0.22，见 services/web.py 的模块头）。
+    # **搜索需要一个服务商**：没有免密钥又稳定的通用搜索接口，所以它是一项配置。
+    # 没配时工具会明确说"去哪配"，而不是返回空结果——空结果会被模型读成
+    # "网上没有这件事"，那比报错坏得多。
+    # 抓网页（web_fetch）**不需要**这里的任何配置，它只认公网地址。
+    "web": {
+        "label": "联网",
+        "fields": [
+            {
+                "key": "web.search_provider",
+                "label": "搜索服务商（tavily / bocha）",
+                "type": "text",
+            },
+            {
+                "key": "web.search_api_key",
+                "label": "搜索 API 密钥",
+                "type": "secret",
             },
         ],
     },
@@ -250,6 +272,10 @@ DEFAULTS: dict[str, str] = {
     "sandbox.rules_allow": "",
     "sandbox.rules_ask": "",
     "sandbox.rules_deny": "",
+    "web.search_provider": "tavily",
+    # 留空 = 没配。**默认不填任何密钥**：预置一个"看起来能用"的值会让
+    # 用户以为联网已经开了，然后在第一次搜索时得到一个别人的额度错误。
+    "web.search_api_key": "",
     "memory.enabled": "false",
     # ReMe 的服务地址。它的接口是 `POST /<job 名>`（见设计文档 §3.1）。
     # **端口 2333 是实测出来的默认值**：`reme/constants.py` 里写着

@@ -952,3 +952,76 @@ def test_export_reports_a_missing_dependency_as_a_readable_sentence(
         )
     message = str(excinfo.value)
     assert "python-pptx" in message and "office" in message
+
+
+# ------------------------------------------------------- 联网（v0.22）
+
+
+def test_web_search_renders_numbered_results(
+    services: Services, admin: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """搜到的结果要**渲染成带编号的文本**：模型接下来要挑一条去抓，
+    而它挑的依据是编号与网址——JSON 字段名会把这件事弄糊。"""
+    from app.services.web import SearchHit
+
+    services.runtime.set({"web.search_api_key": "sk-test"})
+    hits = [
+        SearchHit(
+            title="要闻 A",
+            url="https://a.example.com",
+            snippet="摘要 A",
+            published="2026-09-17",
+        ),
+        SearchHit(title="要闻 B", url="https://b.example.com", snippet="摘要 B"),
+    ]
+    from app.services import web as web_service
+
+    monkeypatch.setattr(web_service, "search_web", lambda *a, **k: hits)
+
+    text = call_tool(services, "web_search", {"query": "今天"}, caller=admin)
+
+    assert "[1] 要闻 A（2026-09-17）" in text
+    assert "https://b.example.com" in text
+    assert "摘要 B" in text
+    assert "web_fetch" in text, "要告诉它下一步能做什么"
+
+
+def test_web_search_without_a_key_says_where_to_configure(
+    services: Services, admin: Caller
+) -> None:
+    """**没配密钥要说清去哪配**，不能返回空结果——空结果会被读成"网上没有"。"""
+    services.runtime.set({"web.search_api_key": ""})
+
+    with pytest.raises(InvalidRequestError) as excinfo:
+        call_tool(services, "web_search", {"query": "今天"}, caller=admin)
+
+    assert "设置" in str(excinfo.value)
+
+
+def test_web_fetch_returns_the_page_with_its_source(
+    services: Services, admin: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """抓回来的文本要**带上来源地址**：模型引用时能说清是哪一页。"""
+    from app.services import web as web_service
+
+    monkeypatch.setattr(
+        web_service, "fetch_url", lambda url, **k: ("今日要闻", "第一段正文。")
+    )
+
+    text = call_tool(services, "web_fetch", {"url": "https://news.example.com/a"}, caller=admin)
+
+    assert "今日要闻" in text and "第一段正文" in text
+    assert "https://news.example.com/a" in text
+
+
+def test_web_fetch_refuses_internal_addresses_before_any_request(
+    services: Services, admin: Caller
+) -> None:
+    """**内网地址在发请求之前就被拒**——不是拿到结果之后才检查。"""
+    with pytest.raises(InvalidRequestError, match=r"内网|本机"):
+        call_tool(
+            services,
+            "web_fetch",
+            {"url": "http://127.0.0.1:8000/api/v1/health"},
+            caller=admin,
+        )

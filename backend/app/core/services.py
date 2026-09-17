@@ -275,7 +275,12 @@ def build_services(
     # （指向那里等于绕过账号隔离，见 services/workspace.py 的第三道校验）
     workspace_service = WorkspaceService(bundle, resolved.data_dir)
     # 技能：扫描仓库自带 skills/ 与数据目录 data/skills/（见 services/skills.py）
-    skill_service = SkillService(resolved.data_dir)
+    # 技能的门控要读运行期配置（`requires.config`，见 services/skills.py）：
+    # 把"读一个配置键"的能力注进去，而不是把整个 runtime 塞给技能服务——
+    # 技能层只需要这一个动作，多了就说不清它到底依赖什么。
+    skill_service = SkillService(
+        resolved.data_dir, config_value=runtime.get
+    )
     # 技能市场（v0.16）：安装/卸载。**只写 data/skills/**——仓库自带的那份动不了
     skill_market_service = SkillMarketService(resolved.data_dir, skill_service)
     # MCP 客户端（v0.15）：连外部 MCP 服务，是「插件能力」的落点

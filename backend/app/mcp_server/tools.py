@@ -50,7 +50,7 @@ from typing import Any
 from app.core.exceptions import InvalidRequestError
 from app.core.services import Services
 from app.models.enums import DataSourceKind
-from app.services import office
+from app.services import office, web
 from app.services.api_key import WRITE, Caller
 from app.services.memory import DEFAULT_RECALL, MAX_RECALL
 
@@ -70,6 +70,11 @@ MAX_TOP_K = 20
 MAX_NOTE_PAGE = 50
 MAX_DOC_PAGE = 100
 DEFAULT_DOC_PAGE = 30
+#: 拼文本用的换行。**写成 chr(10) 而不是字面转义**：
+#: 这个文件里的多行字符串被 heredoc 吃掉过好几层转义（反斜杠 n 变成真换行、
+#: 字符串直接断行），而它只是「一个换行」，不值得每次都赌一遍引号与反斜杠。
+_NL = chr(10)
+
 #: 笔记摘录长度：正文可能很长，全量塞进上下文会把预算吃光。
 #: 需要读全文时它应该换用检索或直接在界面上看。
 NOTE_EXCERPT_CHARS = 200
@@ -91,6 +96,8 @@ TOOL_NAMES = (
     "export_document",
     "export_table",
     "export_deck",
+    "web_search",
+    "web_fetch",
 )
 
 
@@ -340,6 +347,42 @@ def tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["content"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "web_search",
+            "description": (
+                "**联网搜索**，回若干条结果（标题、网址、摘要）。"
+                "问的是「现在 / 最近 / 今天」这类**本地资料里不会有**的信息时用它；"
+                "拿到结果后通常还要用 web_fetch 打开其中一两页读正文"
+                "——摘要往往不够回答问题。"
+                "记忆与知识库只装「已经在你手里的东西」，装不了外面的世界。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "检索词"},
+                    "limit": {"type": "integer", "description": "最多几条（默认 5，上限 10）"},
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "web_fetch",
+            "description": (
+                "**抓一个网页并抽出正文**（回 Markdown）。"
+                "适合：对方给了一个网址要你看内容、搜索结果的某一页要读全文、"
+                "要核对某个说法。"
+                "只访问公网地址，内网与本机地址会被拒。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "http/https 地址"},
+                },
+                "required": ["url"],
                 "additionalProperties": False,
             },
         },
@@ -833,6 +876,45 @@ def _remember(services: Services, args: dict[str, Any], *, caller: Caller) -> di
     }
 
 
+# ------------------------------------------------------------------ 联网
+
+
+def _web_search(services: Services, args: dict[str, Any], *, caller: Caller) -> str:
+    """搜一次网。**结果渲染成带编号的文本**（与检索那份同理）：
+
+    模型接下来要挑一条去 :func:`_web_fetch`，而它挑的依据是编号与网址——
+    JSON 里的字段名会把这件事弄糊。返回文本而不是 dict，也顺带让
+    "标题 + 网址 + 摘要" 在上下文里是人读得懂的样子。
+    """
+    query = _require(args, "query")
+    limit = args.get("limit")
+    hits = web.search_web(
+        query,
+        api_key=services.runtime.get("web.search_api_key"),
+        provider=services.runtime.get("web.search_provider") or "tavily",
+        limit=int(limit) if isinstance(limit, int) else 5,
+    )
+    if not hits:
+        return f"没有搜到结果（检索词：{query}）。换个说法再试一次，或者直接抓一个你知道的网址。"
+    lines = [f"检索词：{query}，共 {len(hits)} 条："]
+    for index, hit in enumerate(hits, start=1):
+        where = f"（{hit.published}）" if hit.published else ""
+        lines.append(f"[{index}] {hit.title}{where}{_NL}{hit.url}{_NL}{hit.snippet}")
+    lines.append(f"{_NL}要读全文就用 web_fetch 打开其中的网址。")
+    return f"{_NL}{_NL}".join(lines)
+
+
+def _web_fetch(services: Services, args: dict[str, Any], *, caller: Caller) -> str:
+    """抓一页正文。
+
+    **以字符串回、不包成 JSON**：正文里的换行与引号在 JSON 里会变成一屏转义字符，
+    而这段文本是要给模型读的。来源地址写在第一行——它引用时能说清是哪一页。
+    """
+    url = _require(args, "url")
+    title, body = web.fetch_url(url)
+    return f"【{title}】{_NL}来源：{url}{_NL}{_NL}{body}"
+
+
 # ------------------------------------------------------------------ Office 产出
 
 
@@ -981,6 +1063,8 @@ _HANDLERS = {
     "list_notes": _list_notes,
     "recall": _recall,
     "remember": _remember,
+    "web_search": _web_search,
+    "web_fetch": _web_fetch,
     "export_document": _export_document,
     "export_table": _export_table,
     "export_deck": _export_deck,

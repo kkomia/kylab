@@ -45,6 +45,8 @@ _PARAMS: dict[str, tuple[str, ...]] = {
     "export_document": ("knowledge_base_id", "filename", "markdown", "title"),
     "export_table": ("knowledge_base_id", "filename", "rows", "sheet_name"),
     "export_deck": ("knowledge_base_id", "filename", "slides", "title"),
+    "web_search": ("query", "limit"),
+    "web_fetch": ("url",),
 }
 
 

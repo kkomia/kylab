@@ -80,6 +80,8 @@ _LABELS = {
     "export_document": "导出文档",
     "export_table": "导出表格",
     "export_deck": "导出幻灯",
+    "web_search": "联网搜索",
+    "web_fetch": "抓取网页",
     "list_skills": "查看技能目录",
     "read_skill": "读技能",
     "spawn_subagent": "派子 Agent",

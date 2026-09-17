@@ -717,8 +717,14 @@ class MemoryService:
         不这么做的话，同一件事会被记很多遍，而记忆越长越不像记忆、越像日志。
 
         返回 ``added`` 让调用方知道是真写进去了还是本来就有——模型据此不必重复记。
+
+        **不看``memory.enabled``那道闸**（v0.22 起，与那四份人设文件同一理由）：
+        它写的是 ``MEMORY.md``，而那份文件由我们直接读写、并且**无论开关如何都会注入
+        提示词**——也就是说写进去立即就有效。原先它在闸后面，于是关掉记忆服务时
+        "记住"这件事整个是死的，而报错还写着"请在设置里打开，并让记忆服务跑起来"
+        ——那句对 ``recall`` 成立，对这里**不成立**（这里根本不经过 ReMe）。
+        闸管的是另一半：过去的对话会不会被召回（``recall``）、会不会自动沉淀（``capture``）。
         """
-        self._require_enabled()
         text = " ".join(content.split()).strip()
         if not text:
             raise InvalidRequestError("缺少参数：content")

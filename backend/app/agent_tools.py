@@ -477,21 +477,33 @@ def _safe_attachment(directory: str, relative: str) -> Path | None:
 def _summary(name: str, payload: Any) -> str:
     """给过程面板一句人话。**只处理"结果里有条数"的那几个**，
     其余留给 `step_detail` 回退到结果开头——写死一堆猜的摘要不如不写。
+
+    **裸列表也要认**（v0.22）：`list_knowledge_bases` 返回的就是一个 list，
+    而第一版只处理 dict 里的 ``items``——于是那一行的回退路径把整个 JSON
+    原样显示出来了（实测截图：面板里是
+    ``[{"id": "kb_...", "name": "城市建成环境研究现状", "documents": 23…``）。
+    "结果里有几条"这件事，无论外面包没包一层都一样要说得出来。
+
+    ``items`` 只在这里算一次，**兜底那一条放在最后**：放在前面会把后面那些
+    更具体的措辞（"回忆到 N 条"）挡掉——摘要写"共 2 条"没错，但不如说清是什么。
     """
-    if name == "list_knowledge_bases" and isinstance(payload, dict):
-        items = payload.get("items")
-        if isinstance(items, list):
-            return f"共 {len(items)} 个知识库"
+    items = (
+        payload
+        if isinstance(payload, list)
+        else (payload.get("items") if isinstance(payload, dict) else None)
+    )
+    if name == "list_knowledge_bases" and isinstance(items, list):
+        return f"共 {len(items)} 个知识库"
     if name == "list_documents" and isinstance(payload, dict):
         total = payload.get("total")
         if isinstance(total, int):
             return f"共 {total} 篇文档"
     if name == "get_document_status" and isinstance(payload, dict):
         return f"当前阶段：{payload.get('stage') or '未知'}"
-    if name == "recall" and isinstance(payload, dict):
-        items = payload.get("items")
-        if isinstance(items, list):
-            return f"回忆到 {len(items)} 条"
+    if name == "recall" and isinstance(items, list):
+        return f"回忆到 {len(items)} 条"
+    if isinstance(items, list):
+        return f"共 {len(items)} 条"
     return ""
 
 

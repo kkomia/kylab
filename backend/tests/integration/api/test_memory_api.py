@@ -297,11 +297,24 @@ def test_remember_without_service_writes_local_file(client: TestClient, workspac
     assert "## 核心长期记忆" in content
 
 
-def test_remember_requires_enabled(client: TestClient, workspace) -> None:
-    """与 ``recall`` 同口径：关着时明确报错（见 ``_require_enabled``）。"""
-    response = client.post("/api/v1/memory/remember", json={"content": "x"})
-    assert response.status_code == 422
-    assert "未启用长期记忆" in response.json()["message"]
+def test_remember_does_not_require_the_switch(client: TestClient, workspace) -> None:
+    """**「记住」与 ``recall`` 不是同口径了**（v0.22 改）。
+
+    它写的是 ``MEMORY.md``，那份文件不看开关、每轮都注入——写进去立即有效。
+    原先它与 ``recall`` 共用 ``_require_enabled``，于是关掉记忆服务时
+    "记住"整个是死的，而报错还劝用户"把记忆服务跑起来"——
+    那句话对这里不成立（这里根本不经过 ReMe）。
+    对照：``recall`` 关着时仍然 422，见 ``test_recall_requires_enabled``。
+    """
+    # 夹具里已有一条「用户偏好先给结论」——用它会被去重，那测的是去重不是这道闸
+    response = client.post("/api/v1/memory/remember", json={"content": "项目代号叫 kylab"})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["saved"] is True
+    content = client.get("/api/v1/memory/files/MEMORY.md").json()["content"]
+    assert "项目代号叫 kylab" in content
+    # 夹具里手写的那条必须还在（只重建那一节，不是重写整份文件）
+    assert "用户偏好先给结论" in content
 
 
 def test_remember_rejects_too_long(client: TestClient, workspace) -> None:
