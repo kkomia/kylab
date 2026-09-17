@@ -1106,6 +1106,18 @@ const samplesLoading = ref(false)
 /** 有生成结果就用它，否则用静态兜底。 */
 const samples = computed(() => (suggested.value.length > 0 ? suggested.value : staticSamples.value))
 
+/**
+ * 要不要显示推荐问题（v0.19，用户指定）。
+ *
+ * **没有选中知识库时整块不显示**：推荐问题是"从库里的语料出题"抽出来的，
+ * 没有库就没有依据——那时给一排样例是在暗示"随便点一个"，点了也答不出东西。
+ * 关掉开关、或开着但一个库都没勾，都算"没选中"。
+ *
+ * 注意这与"库里有题但是空的"不同：那种情况仍然显示这块（下面会有静态兜底），
+ * 因为那时**确实**选定了范围，只是这个库还没出过题。
+ */
+const showSamples = computed(() => effectiveKbIds.value.length > 0)
+
 let samplesTimer: number | undefined
 
 /** 只在"空状态 + 至少选了一个库"时才去生成；有消息之后它是纯浪费。 */
@@ -1227,30 +1239,41 @@ function closeReader(): void {
              `pendingEntry` 期间不画：那时还没决定该显示哪条对话（见 resolvingEntry）。 -->
         <div v-else-if="messages.length === 0" class="welcome">
           <h1 class="welcome-title">Hi，我是 KYLAB，让你的知识触手可及</h1>
-          <div class="welcome-sub">
-            <span>你可以这样问我</span>
-            <button
-              type="button"
-              class="welcome-refresh"
-              aria-label="换一批示例问题"
-              title="换一批"
-              :disabled="samplesLoading"
-              @click="shuffleSamples"
-            >
-              <IconRefresh :size="14" />
-            </button>
-          </div>
-          <div class="samples" :class="{ 'samples-loading': samplesLoading }">
-            <button
-              v-for="sample in samples"
-              :key="sample"
-              type="button"
-              class="sample"
-              @click="useSample(sample)"
-            >
-              {{ sample }}
-            </button>
-          </div>
+          <!--
+            推荐问题整块**跟着"有没有选中知识库"出现/消失**（v0.19，用户指定）。
+            用 `<Transition>` 而不是 v-if 直接摘掉：勾上库的那一刻它才出现，
+            硬切会像"页面抖了一下"；这里给它一段淡入 + 轻微上浮，
+            并且**逐条错位**出现——一排同时亮起来更像加载动画。
+          -->
+          <Transition name="samples">
+            <div v-if="showSamples" class="welcome-samples">
+              <div class="welcome-sub">
+                <span>你可以这样问我</span>
+                <button
+                  type="button"
+                  class="welcome-refresh"
+                  aria-label="换一批示例问题"
+                  title="换一批"
+                  :disabled="samplesLoading"
+                  @click="shuffleSamples"
+                >
+                  <IconRefresh :size="14" />
+                </button>
+              </div>
+              <div class="samples" :class="{ 'samples-loading': samplesLoading }">
+                <button
+                  v-for="(sample, index) in samples"
+                  :key="sample"
+                  type="button"
+                  class="sample"
+                  :style="{ '--sample-index': index }"
+                  @click="useSample(sample)"
+                >
+                  {{ sample }}
+                </button>
+              </div>
+            </div>
+          </Transition>
           <!-- 一个库都没有时，提问无从谈起：指路比给一排点了没反应的样例好 -->
           <RouterLink v-if="store.items.length === 0" class="welcome-guide" to="/knowledge-bases">
             还没有知识库，先去建一个并上传文档
@@ -1754,6 +1777,54 @@ function closeReader(): void {
   font-weight: 600;
   letter-spacing: -0.01em;
   color: var(--text-primary);
+}
+
+/* 推荐问题的进出场（v0.19）。它出现的时机是"勾上知识库"，
+   所以动画要**明确是它自己出现了**，而不是整页重画：
+   容器淡入 + 轻微上浮（很快，120ms），每一条再各自错开 35ms 浮现。
+   错位是这里唯一"多做"的一点——一排同时亮起来读起来像加载动画。 */
+.samples-enter-active {
+  transition:
+    opacity 120ms var(--motion-ease),
+    transform 120ms var(--motion-ease);
+}
+
+.samples-leave-active {
+  transition: opacity 90ms var(--motion-ease);
+}
+
+.samples-enter-from,
+.samples-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.samples-enter-active .sample {
+  animation: sample-in 220ms var(--motion-ease) both;
+  /* 序号由模板写进 `--sample-index`：CSS 算不出"第几条"，而这是唯一需要它的地方 */
+  animation-delay: calc(var(--sample-index, 0) * 35ms);
+}
+
+@keyframes sample-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 尊重"减少动态效果"：整块直接出现，不做淡入与错位 */
+@media (prefers-reduced-motion: reduce) {
+  .samples-enter-active,
+  .samples-leave-active,
+  .samples-enter-active .sample {
+    transition: none;
+    animation: none;
+  }
 }
 
 .welcome-sub {

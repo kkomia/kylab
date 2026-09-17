@@ -583,4 +583,40 @@ describe('引用文档抽屉', () => {
     expect(loaded.wrapper.find('.chat').classes()).not.toContain('chat-centered')
     loaded.wrapper.unmount()
   })
+
+  it('推荐问题**只在选中知识库之后**才显示（关掉就整块消失）', async () => {
+    // 用户指定：没选中库时不显示推荐问题。那些问题是从库里语料出的题，
+    // 没有库就没有依据——摆一排样例等于暗示"随便点一个"，点了也答不出东西。
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    const { wrapper } = await mountAt('/chat')
+    await flushPromises()
+
+    // 开着且在库里：显示
+    expect(wrapper.find('.welcome-samples').exists()).toBe(true)
+    expect(wrapper.text()).toContain('你可以这样问我')
+
+    // 关掉开关（= 没选中任何库）：整块消失
+    await wrapper.find('.kb-switch').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.welcome-samples').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('你可以这样问我')
+
+    // 再打开：回来
+    await wrapper.find('.kb-switch').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.welcome-samples').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('开着但一个库都没勾：同样不显示推荐问题', async () => {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    const { wrapper } = await mountAt('/chat')
+    await flushPromises()
+
+    await wrapper.find('.tool-kb .tool-check input').setValue(false)
+    await flushPromises()
+
+    expect(wrapper.find('.welcome-samples').exists()).toBe(false)
+    wrapper.unmount()
+  })
 })
