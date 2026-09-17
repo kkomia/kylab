@@ -516,6 +516,11 @@ def _search(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
                 "score": round(hit.score, 4),
                 "page": hit.page,
                 "heading_path": hit.heading_path,
+                # `chunk_id` 与所属库是**给"要用这些片段做引用"的调用方**用的：
+                # 对话链路要把命中转成界面上的出处（`SourceRef` 要求 chunk_id），
+                # 没有它就只能给一个连不回原文的引用。对外部 MCP 客户端同样有用。
+                "chunk_id": hit.chunk_id,
+                "knowledge_base_id": hit.knowledge_base_id,
             }
             for hit in response.hits
         ],

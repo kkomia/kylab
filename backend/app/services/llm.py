@@ -46,11 +46,57 @@ class ChatError(UpstreamError):
 
 
 @dataclass(frozen=True, slots=True)
+class ToolCall:
+    """模型要求调用的一次工具。
+
+    ``arguments`` 保留**原始字符串**，不在这里解析成 dict：模型可能给出不完整或
+    不合法的 JSON（尤其是流式拼起来时），而"解析失败"要作为一次可上报的工具错误
+    回到循环里，而不是在构造消息时就抛。解析放在执行那一步（见 services/tool_loop.py）。
+    """
+
+    id: str
+    name: str
+    arguments: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolSpec:
+    """一个工具的定义（发给模型的 JSON Schema）。"""
+
+    name: str
+    description: str
+    parameters: dict
+
+
+@dataclass(frozen=True, slots=True)
+class LLMReply:
+    """一次非流式回复：正文与它要求的工具调用。
+
+    两者可能同时非空（模型先说一句再做），所以不是一个"二选一"的联合类型。
+    """
+
+    text: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+
+    @property
+    def wants_tools(self) -> bool:
+        return bool(self.tool_calls)
+
+
+@dataclass(frozen=True, slots=True)
 class ChatMessage:
-    """一条对话消息。"""
+    """一条对话消息。
+
+    ``tool_calls`` / ``tool_call_id`` 是工具循环要的两个附加位：
+    助手消息可以"带着一组工具调用"（此时 ``content`` 常为空），
+    而 ``role="tool"`` 的结果消息必须用 ``tool_call_id`` 指回是哪一次调用的结果
+    ——**少了它，OpenAI 兼容端点会直接 400**（工具结果必须与调用配对）。
+    """
 
     role: str
     content: str
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_call_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +214,25 @@ class OpenAICompatChat:
         self.last_usage = _usage_of(body)
         return _content_of(body)
 
+    def complete_with_tools(
+        self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]
+    ) -> LLMReply:
+        """一次非流式调用，**允许模型要求调用工具**（见 services/tool_loop.py）。
+
+        为什么工具循环这一步不走流式：它产出的是"调哪个工具、参数是什么"这种
+        结构化片段，流式拼装只会把"半截 JSON"这一种错误引入进来；而真正要给用户看的
+        是最后那段正文——那一段仍然走流式（``stream_events``）。
+        """
+        with self._open() as client:
+            response = client.post(
+                f"{self.config.base_url.rstrip('/')}/chat/completions",
+                headers=self._headers(),
+                json={**self._payload(messages, tools), "stream": False},
+            )
+        body = self._decode(response)
+        self.last_usage = _usage_of(body)
+        return _reply_of(body)
+
     def stream(self, messages: Sequence[ChatMessage]) -> Iterator[str]:
         """流式产出**正文**增量（SSE）。
 
@@ -229,12 +294,33 @@ class OpenAICompatChat:
             "Content-Type": "application/json",
         }
 
-    def _payload(self, messages: Sequence[ChatMessage]) -> dict:
+    def _payload(
+        self,
+        messages: Sequence[ChatMessage],
+        tools: Sequence[ToolSpec] | None = None,
+    ) -> dict:
         payload: dict = {
             "model": self.config.model_id,
-            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "messages": [_message_wire(m) for m in messages],
             "temperature": self.config.temperature,
         }
+        # `tools` 只在给了的时候发：不带工具的调用与以前**逐字节一样**
+        # （多发一个空数组会被某些端点当成"要求工具调用"而拒答）
+        if tools:
+            payload["tools"] = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": item.name,
+                        "description": item.description,
+                        "parameters": item.parameters,
+                    },
+                }
+                for item in tools
+            ]
+            # auto：由模型自己决定要不要调。**不设 required**——大多数对话没有工具可调，
+            # 强制调用会逼它为了"用一次工具"而瞎调一个
+            payload["tool_choice"] = "auto"
         # 长度上限**没显式给就不发**：把它交给模型自己（见 ``LLMConfig.max_tokens``）。
         # 发一个我们拍的数字，只会在某些模型上把回复预算掐死在思考阶段
         if self.config.max_tokens is not None:
@@ -335,6 +421,61 @@ def _empty_stream_hint(finish_reason: str) -> str:
         "模型没有返回任何正文（可能只返回了思考内容）。请把「深度思考」调低或关掉，"
         "或换一个非推理模型再试"
     )
+
+
+def _message_wire(message: ChatMessage) -> dict:
+    """把一条消息转成 OpenAI 兼容的线上形状。
+
+    **只有带工具位时才多发字段**：普通消息序列化出来与以前完全一样，
+    不会因为升级客户端而改变既有请求（`content` 为空的助手消息仍发空串，
+    而不是省略——省略会被某些端点当成非法消息）。
+    """
+    body: dict = {"role": message.role, "content": message.content}
+    if message.tool_calls:
+        body["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.name, "arguments": call.arguments},
+            }
+            for call in message.tool_calls
+        ]
+    if message.tool_call_id:
+        body["tool_call_id"] = message.tool_call_id
+    return body
+
+
+def _reply_of(body: dict) -> LLMReply:
+    """从非流式响应里取正文与工具调用。"""
+    choices = body.get("choices") or []
+    if not choices:
+        return LLMReply()
+    message = choices[0].get("message") or {}
+    calls: list[ToolCall] = []
+    for index, raw in enumerate(message.get("tool_calls") or []):
+        if not isinstance(raw, dict):
+            continue
+        function = raw.get("function") or {}
+        name = str(function.get("name") or "").strip()
+        if not name:
+            # 没名字的调用无法执行，丢掉比报错好：模型偶尔会吐一个空壳，
+            # 而它下一轮通常还会正常再调一次
+            continue
+        calls.append(
+            ToolCall(
+                # id 可能缺失（少数实现不给）：自己编一个稳定的，好让工具结果能配对
+                id=str(raw.get("id") or f"call_{index}"),
+                name=name,
+                arguments=str(function.get("arguments") or ""),
+            )
+        )
+    return LLMReply(text=_content_of_message(message), tool_calls=tuple(calls))
+
+
+def _content_of_message(message: dict) -> str:
+    """助手消息的正文。有些实现把 tool_calls 与空 content 一起发，空串是正常值。"""
+    content = message.get("content")
+    return content if isinstance(content, str) else ""
 
 
 def _chunk_of(line: str) -> tuple[str, str, str] | None:

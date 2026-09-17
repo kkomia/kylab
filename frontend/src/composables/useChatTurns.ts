@@ -62,7 +62,7 @@ export interface Turn {
 /** 过程面板里的一步。`icon` 是键，由页面映射成具体图标组件。 */
 export interface TraceStep {
   key: string
-  icon: 'search' | 'think' | 'build'
+  icon: 'search' | 'think' | 'build' | 'tool'
   label: string
   detail: string
   /** 这一步一个片段都没新增（只有检索步骤有）：界面上弱化它，别和"有收获"的轮次一样重。 */
@@ -127,6 +127,12 @@ export function traceSummary(message: Message): string {
     const phase = message.steps.at(-1)?.phase
     if (phase === 'intent') return '正在理解问题…'
     if (phase === 'rewrite') return '正在优化检索词…'
+    // 工具步要**说清在做什么**：这一步可能真的要跑几秒（检索、写文件、连外部服务），
+    // 只写"处理中"会让人以为卡住了。label 是后端给的中文名，直接用。
+    if (phase === 'tool') {
+      const label = message.steps.at(-1)?.label
+      return label ? `正在${label}…` : '正在调用工具…'
+    }
     return '正在检索知识库…'
   }
   if (message.sources.length === 0) return '检索完成 · 没有命中相关内容'
@@ -150,6 +156,8 @@ const STEP_ICONS: Record<string, TraceStep['icon']> = {
   rewrite: 'search',
   retrieve: 'search',
   answer: 'build',
+  // 工具调用（P0 起的主流程）：一次工具就是一步，名字由后端给（"检索知识库""写笔记"…）
+  tool: 'tool',
 }
 
 /**

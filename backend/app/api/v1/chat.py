@@ -27,6 +27,7 @@ from collections.abc import Iterator
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
+from app.agent_tools import build_runner, tool_specs
 from app.api.auth import check_kb_scope, require_read
 from app.api.v1.schemas import (
     ChatRequestIn,
@@ -37,11 +38,13 @@ from app.api.v1.schemas import (
 from app.core.services import Services, get_services
 from app.services.agent import (
     DeltaEvent,
+    DoneEvent,
     SourcesEvent,
     StepEvent,
     ThinkingEvent,
 )
 from app.services.api_key import Caller
+from app.services.chat import ChatTurn
 from app.services.llm import ChatError, ChatMessage
 from app.services.suggested_questions import (
     DEFAULT_LIMIT as SUGGESTED_DEFAULT_LIMIT,
@@ -110,16 +113,27 @@ def chat_once(
     history, summary, _ = _context(services, payload, model_pk)
 
     if _use_agent(services):
-        answer = services.chat.answer_agent(
-            query=payload.query,
-            kb_ids=payload.kb_ids,
-            skill_names=payload.skill_names,
-            history=history,
-            summary=summary,
+        # **与流式走同一条链路**（P0）：这个端点的文档里写着"逻辑与流式完全相同"，
+        # 而工具循环已经是流式那条路的主流程——这里不跟上的话，
+        # 同一句话从 `/chat` 问和从 `/chat/stream` 问会得到两种性质的回答
+        loop = services.chat.tool_loop(
             model_pk=model_pk,
             thinking=thinking,
             thinking_effort=effort,
-            top_k=payload.top_k,
+            tools=tool_specs(),
+            runner=build_runner(services, caller, kb_ids=payload.kb_ids),
+        )
+        answer = _collect(
+            loop.run(
+                messages=services.chat.agent_messages(
+                    query=payload.query,
+                    history=history,
+                    summary=summary,
+                    kb_ids=payload.kb_ids,
+                    skill_names=payload.skill_names,
+                    model_pk=model_pk,
+                )
+            )
         )
     else:
         sources = services.chat.retrieve_sources(
@@ -274,17 +288,28 @@ def _events(
 
     if _use_agent(services):
         try:
-            for event in chat.answer_agent_stream(
-                query=payload.query,
-                kb_ids=payload.kb_ids,
-                skill_names=payload.skill_names,
-                history=history,
-                summary=summary,
+            # **工具循环是主流程**（P0）：模型拿到 15 个工具，自己决定查什么、做什么。
+            # 知识库检索是其中一个工具（`search`），不再是每轮必经的阶段——
+            # 资料由它取回，而不是我们预先塞进提示词。
+            loop = chat.tool_loop(
                 model_pk=model_pk,
                 thinking=thinking,
                 thinking_effort=effort,
-                top_k=payload.top_k,
-                owner_id=_memory_owner(caller),
+                tools=tool_specs(),
+                # 执行器带**调用者身份**与**这一轮允许查的库**：
+                # 关掉知识库开关之后，模型也不该能绕过它去检索（见 agent_tools.build_runner）
+                runner=build_runner(services, caller, kb_ids=payload.kb_ids),
+            )
+            for event in loop.run(
+                messages=chat.agent_messages(
+                    query=payload.query,
+                    history=history,
+                    summary=summary,
+                    kb_ids=payload.kb_ids,
+                    skill_names=payload.skill_names,
+                    model_pk=model_pk,
+                    owner_id=_memory_owner(caller),
+                )
             ):
                 if isinstance(event, StepEvent):
                     yield _sse(
@@ -547,3 +572,19 @@ def _sources_out(sources) -> list[ChatSourceOut]:  # type: ignore[no-untyped-def
 
 
 __all__ = ["router"]
+
+
+def _collect(events: Iterator[object]) -> ChatTurn:
+    """把事件流收成一次问答（非流式端点用）。
+
+    与 ``ChatService.answer_agent`` 同一个收法：**最后一次 SourcesEvent 就是出处**，
+    ``DoneEvent`` 带的是后端拼好的全文（以它为准，避免个别增量丢失后正文与出处对不上）。
+    """
+    answer = ""
+    sources: list = []
+    for event in events:
+        if isinstance(event, SourcesEvent):
+            sources = list(event.sources)
+        elif isinstance(event, DoneEvent):
+            answer = event.answer
+    return ChatTurn(answer=answer, sources=sources)

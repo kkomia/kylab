@@ -57,6 +57,7 @@ import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
 import IconSearch from '@/components/icons/IconSearch.vue'
+import IconServer from '@/components/icons/IconServer.vue'
 import IconStop from '@/components/icons/IconStop.vue'
 import IconUpload from '@/components/icons/IconUpload.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -111,7 +112,12 @@ const LAST_EFFORT_KEY = 'kylab-last-thinking-effort'
  * 步骤图标：检索、思考、成稿。收在一张表里，模板用 `<component :is>` 取。
  * 图标映射留在页面而不是 `useChatTurns` 里——那是个纯逻辑模块，不该 import 一堆 .vue。
  */
-const STEP_ICONS = { search: IconSearch, think: IconRobot, build: IconCheck } as const
+const STEP_ICONS = {
+  search: IconSearch,
+  think: IconRobot,
+  build: IconCheck,
+  tool: IconServer,
+} as const
 
 const store = useKnowledgeBaseStore()
 const conversations = useConversationStore()
