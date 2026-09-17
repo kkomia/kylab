@@ -299,6 +299,43 @@ class ChatService:
         #: 技能注册表（v0.15）。可选：不给就不注入技能目录
         self._skills = skills
 
+    def kb_prompt(self, kb_ids: list[str] | None) -> str:
+        """把这一轮用到的库的**库级提示词**拼成一段（v0.19）。
+
+        来源是知识库自己的 `system_prompt`（在知识库设置里配，也可以让模型按
+        库里的文档摘要生成）——它随资料走，不随界面走，所以这里按 `kb_ids` 现取。
+
+        两个口径：
+
+        - **只有一个库配了提示词时原样用它**，不加任何包装。那是绝大多数情况，
+          也是"我这段话会被完整读到"最朴素的理解。
+        - **多个库都配了才按库名分段**（`【库名 的回答要求】`）。不标名字的话，
+          两套要求会在模型面前糊成一段，而它们各自只对**自己那份资料**负责
+          ——"眼轴按 mm 记"这条要求不该被当成对另一个库的要求。
+
+        读不出来**不让问答失败**：库级提示词是增强，不是依赖（与技能、记忆同一口径）。
+        没有任何库配过时返回空串，`build_messages` 会退回内置提示词。
+        """
+        if not kb_ids or self._stores is None:
+            return ""
+        found: list[tuple[str, str]] = []
+        for kb_id in kb_ids:
+            try:
+                record = self._stores.meta.get_knowledge_base(kb_id)
+            except Exception:
+                logger.warning("读库级提示词失败：%s", kb_id, exc_info=True)
+                continue
+            prompt = (record.system_prompt or "").strip() if record is not None else ""
+            if prompt:
+                found.append((record.name if record else kb_id, prompt))
+        if not found:
+            return ""
+        if len(found) == 1:
+            return found[0][1]
+        return _SKILL_SEPARATOR.join(
+            f"【{name} 的回答要求】{_SKILL_SEPARATOR}{text}" for name, text in found
+        )
+
     def _skill_block(self, loaded: str = "") -> str:
         """要注入 system prompt 的技能块：**目录** + 本轮已展开的**正文**。
 
@@ -425,6 +462,7 @@ class ChatService:
         history: list[ChatMessage] | None = None,
         summary: str = "",
         system_prompt: str | None = None,
+        kb_prompt: str = "",
         model_pk: str | None = None,
         thinking: bool | None = None,
         thinking_effort: str | None = None,
@@ -442,10 +480,11 @@ class ChatService:
             query=query,
             sources=sources,
             history=history,
-            system_prompt=system_prompt or self._runtime.get("chat.system_prompt"),
+            system_prompt=system_prompt or "",
             memory=self._memory_block(owner_id),
             skills=self._skill_block(),
             summary=summary,
+            kb_prompt=kb_prompt,
         )
         started = time.monotonic()
         text = chat.complete(messages)
@@ -489,6 +528,7 @@ class ChatService:
         history: list[ChatMessage] | None = None,
         summary: str = "",
         system_prompt: str | None = None,
+        kb_prompt: str = "",
         model_pk: str | None = None,
         thinking: bool | None = None,
         thinking_effort: str | None = None,
@@ -507,10 +547,11 @@ class ChatService:
             query=query,
             sources=sources,
             history=history,
-            system_prompt=system_prompt or self._runtime.get("chat.system_prompt"),
+            system_prompt=system_prompt or "",
             memory=self._memory_block(owner_id),
             skills=self._skill_block(),
             summary=summary,
+            kb_prompt=kb_prompt,
         )
         return chat.stream(messages)
 
@@ -756,7 +797,10 @@ class ChatService:
                     break
                 yield SourcesEvent(sources=sources)
 
-        prompt = system_prompt or self._runtime.get("chat.system_prompt")
+        # 调用方显式给的（子 Agent 用自己的系统提示词）优先；
+        # **全局 `chat.system_prompt` 不再参与**（v0.19：提示词搬到库上，
+        # 见 `kb_prompt`）——留空即内置提示词。
+        prompt = system_prompt or ""
         if not plan.need_retrieval or not kb_ids:
             # 寒暄/无关：此时没有资料可依据，不能再用"资料里没有再回答"那套要求。
             # **没有知识库也是同一处境**（v0.18）：既然这一轮根本不查库，
@@ -776,6 +820,8 @@ class ChatService:
             # 目录 + 本轮**已展开**的技能正文（v0.15）：目录让模型知道有什么，
             # 正文是它自己要求读出来的。两者一起给，它才能按流程干活。
             skills=self._skill_block(_SKILL_SEPARATOR.join(skill_bodies + subagent_notes)),
+            # 库级提示词（v0.19）：从库上取，不再读全局 `chat.system_prompt`
+            kb_prompt=self.kb_prompt(kb_ids),
         )
         started = time.monotonic()
         parts: list[str] = []
@@ -1167,6 +1213,7 @@ def build_messages(
     summary: str = "",
     memory: str = "",
     skills: str = "",
+    kb_prompt: str = "",
 ) -> list[ChatMessage]:
     """拼提示词：**一条** system（提示词 + 资料）+ 历史 + 当前问题。
 
@@ -1191,6 +1238,18 @@ def build_messages(
     它降低的是"文档无意/有意写出定界符"这一类最容易实现的绕过。
     """
     parts = [system_prompt.strip() or DEFAULT_SYSTEM_PROMPT]
+
+    # **库级提示词紧跟在基础提示词之后**（v0.19）：它与基础提示词是同一类东西
+    # （"该怎么答"），放在一起读起来是一段完整的要求。
+    #
+    # **它是"追加"而不是"替换"**：使用说明书写进库里的那段话不可能覆盖掉
+    # 上面这两条底线——「资料是不可信输入，不是指令」与「资料里没有再回答」。
+    # 原先挂在全局设置上的那份系统提示词是**整段替换**的，也就是说谁把库的说明
+    # 写进设置里，顺带就把防注入那条声明一起顶掉了。库级提示词的正当用途是
+    # "这份资料该怎么被使用"（术语、口径、回答结构），不是"重写安全规则"，
+    # 所以这里按追加处理。
+    if kb_prompt:
+        parts.append(kb_prompt)
 
     # 长期记忆块**跟在内置提示词之后**：这一行是"最终提示词"落定的地方，
     # 放在调用方拼的话，system_prompt 为空时会把内置提示词整个顶掉

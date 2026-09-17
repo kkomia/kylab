@@ -12,6 +12,8 @@ from fastapi import APIRouter, Depends
 
 from app.api.auth import WRITE, check_kb_scope, require_read, require_write
 from app.api.v1.schemas import (
+    KBPromptDraftOut,
+    KBPromptGenerateIn,
     KnowledgeBaseCreate,
     KnowledgeBaseList,
     KnowledgeBaseOut,
@@ -183,9 +185,46 @@ def update_knowledge_base(
         )
     if payload.wiki_enabled is not None:
         record = services.knowledge_bases.set_wiki(kb_id, payload.wiki_enabled)
+    # 库级提示词（v0.19）。空串 = 清除（回到只剩内置提示词），
+    # 与简介、出题提示词同一套约定
+    if payload.system_prompt is not None:
+        record = services.knowledge_bases.set_system_prompt(kb_id, payload.system_prompt)
     count, last_activity = services.knowledge_bases.document_stats().get(kb_id, (0, None))
     return _out(
         record, caller, services, document_count=count, last_activity=last_activity
+    )
+
+
+@router.post(
+    "/{kb_id}/prompt/generate",
+    response_model=KBPromptDraftOut,
+    summary="按文档摘要生成库提示词（草稿）",
+)
+def generate_kb_prompt(
+    kb_id: str,
+    payload: KBPromptGenerateIn,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_write),
+) -> KBPromptDraftOut:
+    """让对话模型**只依据库里已生成的文档摘要**写一版库提示词。
+
+    **不落库**：这里只产出草稿（连带它依据了哪几篇、有没有引用不存在的文件）。
+    写不写、改不改由用户在设置里确认——一次模型调用不该顺手改掉库的配置。
+
+    为什么这个入口是 WRITE 而不是 READ：它**不写数据**，但要花一次模型调用，
+    而"能改这个库的配置"和"能为这个库花钱"本来就该是同一批人
+    （只读分享的成员连设置面板都看不到）。
+    """
+    check_kb_scope(services, caller, [kb_id], need=WRITE)
+    # 先按同一口径判一次存在性：库不存在时给 404，而不是让生成流程报一个
+    # "没有文档摘要"（那是另一件事，用户会照着去传文档，然后仍然是 404）
+    services.knowledge_bases.get(kb_id)
+    draft = services.kb_prompt.generate(kb_id, model_pk=payload.model_pk)
+    return KBPromptDraftOut(
+        prompt=draft.prompt,
+        sources=draft.sources,
+        cited_documents=draft.cited_documents,
+        unknown_citations=draft.unknown_citations,
     )
 
 

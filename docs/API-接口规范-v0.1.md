@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **147** 条端点。
+共 **148** 条端点。
 
 ### `api-keys`
 
@@ -263,6 +263,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/knowledge-bases` | 创建知识库 |
 | `GET` | `/api/v1/knowledge-bases/{kb_id}` | 知识库详情 |
 | `PATCH` | `/api/v1/knowledge-bases/{kb_id}` | 修改知识库（名称 / 简介） |
+| `POST` | `/api/v1/knowledge-bases/{kb_id}/prompt/generate` | 按文档摘要生成库提示词（草稿） |
 
 ### `lifecycle`
 

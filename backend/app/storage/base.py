@@ -159,6 +159,15 @@ class KnowledgeBaseRecord:
     suggested_prompt: str = ""
     """自定义出题提示词。空串 = 用内置提示词（替换内置的**指令**那句，
     资料片段仍然由服务层附加）。"""
+    system_prompt: str = ""
+    """**库级提示词**（v0.19）：回答这个库的问题时，助手该怎么答。
+
+    从对话页搬过来的。那份"系统提示词"原先挂在全局设置 `chat.system_prompt` 上，
+    可它实质是**库的属性**——"这份资料该怎么被使用"随资料走，不随界面走。
+    "换个库看还留着上一个库的规矩"是那个设计解释不了的。
+
+    空串 = 用内置提示词（`services/chat.DEFAULT_SYSTEM_PROMPT`）；一轮里选了多个库时，
+    有提示词的按库名拼成一段（见 `ChatService._kb_prompt`）。"""
     owner_id: str | None = None
     """归属账号（v10）。``None`` = 账号体系启用前的老数据，
     由 setup 向导认领给首个管理员（`services/auth.py`）。"""
@@ -816,6 +825,10 @@ class MetaStore(ABC):
         只动开关，**不碰已有页面**——关掉只是"不再生成/不再展示"，
         页面留着（用户可能只是暂时不想看；真要清空有单独的删除接口）。
         """
+
+    @abstractmethod
+    def set_knowledge_base_prompt(self, kb_id: str, *, prompt: str) -> None:
+        """改这个库的**库级提示词**（v0.19）。只碰 `system_prompt` 一列。"""
 
     @abstractmethod
     def update_knowledge_base_embedding(

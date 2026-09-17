@@ -143,6 +143,7 @@ function kb(id: string, name: string): KnowledgeBase {
     suggested_count: 6,
     suggested_model_pk: null,
     suggested_prompt: '',
+    system_prompt: '',
     wiki_enabled: false,
     created_at: '2026-09-10T00:00:00Z',
     can_manage: true,
@@ -503,6 +504,20 @@ describe('引用文档抽屉', () => {
 
     const payload = chatStream.mock.calls.at(-1)?.[0] as { skill_names: string[] }
     expect(payload.skill_names).toEqual(['周报'])
+    wrapper.unmount()
+  })
+
+  it('输入框上不再有「提示词」入口（v0.19：它搬到知识库里了）', async () => {
+    // 用户要求：对话界面的提示词系统去掉，改由知识库设置。
+    // 这条钉的是"去掉"这件事本身——留着入口会让人以为还在这里配。
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    expect(wrapper.find('.prompt-link').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('提示词')
+    // 也确认工具条本身还在（别把整排控件一起删掉了）
+    expect(wrapper.find('.tool-kb').exists()).toBe(true)
     wrapper.unmount()
   })
 })

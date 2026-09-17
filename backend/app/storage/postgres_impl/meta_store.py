@@ -169,8 +169,8 @@ class PostgresMetaStore(MetaStore):
                     (id, name, description, embedding_model_id, embedding_dim, embedding_base_url,
                      chunk_strategy, chunk_size, chunk_overlap, owner_id, embedding_model_pk,
                      suggested_enabled, suggested_count, suggested_model_pk, suggested_prompt,
-                     wiki_enabled, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     system_prompt, wiki_enabled, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     record.id,
@@ -188,6 +188,7 @@ class PostgresMetaStore(MetaStore):
                     record.suggested_count,
                     record.suggested_model_pk,
                     record.suggested_prompt,
+                    record.system_prompt,
                     record.wiki_enabled,
                     _dump(record.created_at),
                     _dump(record.updated_at),
@@ -250,6 +251,19 @@ class PostgresMetaStore(MetaStore):
             conn.execute(
                 "UPDATE knowledge_bases SET wiki_enabled = %s, updated_at = %s WHERE id = %s",
                 (enabled, _dump(_now()), kb_id),
+            )
+
+    def set_knowledge_base_prompt(self, kb_id: str, *, prompt: str) -> None:
+        """只改库级提示词（v0.19）。
+
+        与出题提示词分成两个方法而不是一个 `set_knowledge_base_*`：它们是两件事
+        （一个管"怎么答"、一个管"怎么出题"），合成一个 setter 会逼调用方把另一边的
+        当前值也读出来再原样传回去——读-改-写，容易把别人的改动盖掉。
+        """
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE knowledge_bases SET system_prompt = %s, updated_at = %s WHERE id = %s",
+                (prompt, _dump(_now()), kb_id),
             )
 
     def storage_stats(self) -> dict:
@@ -3128,6 +3142,7 @@ class PostgresMetaStore(MetaStore):
             wiki_enabled=bool(row["wiki_enabled"]),
             suggested_model_pk=row["suggested_model_pk"],
             suggested_prompt=row["suggested_prompt"],
+            system_prompt=row["system_prompt"],
             owner_id=row["owner_id"],
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),

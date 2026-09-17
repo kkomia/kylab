@@ -36,6 +36,7 @@ from app.services.embedding.resolver import EmbeddingResolver
 from app.services.folder import FolderService
 from app.services.idempotency import IdempotencyService
 from app.services.ingest import IngestService
+from app.services.kb_prompt import KBPromptService
 from app.services.knowledge_base import KnowledgeBaseService
 from app.services.lifecycle import LifecycleService
 from app.services.llm import LLMUsage
@@ -126,6 +127,8 @@ class Services:
     """文档摘要（v25）：入库时生成，问答上下文与界面都用它。"""
     suggested_questions: SuggestedQuestionsService
     """示例问题：依据所选知识库的语料让对话模型生成开场问题（对话页空状态）。"""
+    kb_prompt: KBPromptService
+    """库级提示词生成（v0.19）：按库里的文档摘要让模型写一版提示词草稿。"""
     wiki: WikiService
     """知识库 Wiki：把已入库内容整理成带出处的百科式页面（v24）。"""
     webhooks: WebhookService
@@ -338,6 +341,8 @@ def build_services(
     )
     # Wiki 生成（v24）：规划主题 + 逐页写作，资料直接复用上面的混合检索
     wiki_service = WikiService(bundle, chat=chat_service, retrieval=retrieval)
+    kb_prompt_service = KBPromptService(bundle, chat_service)
+
 
     ingest = IngestService(
         bundle,
@@ -438,6 +443,7 @@ def build_services(
         notes=NotesService(bundle, ingest=ingest, documents=documents_service),
         note_ai=NoteAiService(chat_service),
         suggested_questions=questions_service,
+        kb_prompt=kb_prompt_service,
         summaries=summary_service,
         wiki=wiki_service,
         webhooks=webhooks,

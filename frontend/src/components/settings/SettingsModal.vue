@@ -570,15 +570,6 @@ async function testLlm(): Promise<void> {
   }
 }
 
-/** 「对话行为」一行里显示提示词的开头：它只是给个印象，完整内容在编辑态里。 */
-const PROMPT_SNIPPET = 40
-
-const promptSummary = computed(() => {
-  const value = fieldValue('chat', 'chat.system_prompt').trim()
-  if (!value) return '用内置提示词'
-  return value.length > PROMPT_SNIPPET ? `${value.slice(0, PROMPT_SNIPPET)}…` : value
-})
-
 function openEdit(target: SettingGroup): void {
   editing.value = target
   testResult.value = null
@@ -920,8 +911,13 @@ async function runTest(target: string): Promise<void> {
             <h3 class="section-title section-gap">对话行为</h3>
             <div class="row">
               <div class="row-main">
-                <span class="row-label">系统提示词</span>
-                <span class="row-value">{{ promptSummary }}</span>
+                <span class="row-label">检索与生成</span>
+                <!--
+                  提示词不再在这里配（v0.19）：它跟**知识库**绑定，
+                  去「知识库 → 设置 → 回答要求」里改。这里只留一句指路——
+                  用户按老印象来这里找，找不到会以为功能被删了。
+                -->
+                <span class="row-value">回答用的提示词在「知识库 → 设置」里配，每个库一份</span>
               </div>
               <span class="row-value tabular"
                 >带入 {{ fieldValue('chat', 'chat.top_k') || '—' }} 条资料</span

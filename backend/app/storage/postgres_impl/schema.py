@@ -25,7 +25,7 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 """应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
 
 **启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
@@ -163,6 +163,16 @@ MIGRATIONS: tuple[Migration, ...] = (
             CREATE INDEX idx_conversations_archived
                 ON conversations (archived_at, pinned DESC, updated_at DESC)
             """,
+        ),
+    ),
+    Migration(
+        version=8,
+        description="知识库提示词：回答这个库的问题时该怎么答，从对话页搬到库上（v0.19）",
+        statements=(
+            # **空串 = 用内置提示词**（`services/chat.build_messages` 在空的时候会退回
+            # `DEFAULT_SYSTEM_PROMPT`）。存量库全部落在"没配过"这一档，
+            # 行为与迁移前一致——这条迁移不该让任何一个既有库的答案变样。
+            "ALTER TABLE knowledge_bases ADD COLUMN system_prompt text NOT NULL DEFAULT ''",
         ),
     ),
 )

@@ -30,7 +30,6 @@ import {
 import { useRoute, useRouter } from 'vue-router'
 
 import {
-  DEFAULT_SYSTEM_PROMPT,
   chatStream,
   getSuggestedQuestions,
   isAbortError,
@@ -45,7 +44,6 @@ import {
 import { uploadDocument } from '@/api/documents'
 import { listSkills, type Skill } from '@/api/capabilities'
 import type { RegisteredModel } from '@/api/modelRegistry'
-import { getSettings, updateSettings } from '@/api/settings'
 import IconArrowUp from '@/components/icons/IconArrowUp.vue'
 import IconAi from '@/components/icons/IconAi.vue'
 import IconCopy from '@/components/icons/IconCopy.vue'
@@ -346,7 +344,6 @@ onMounted(async () => {
   if (store.items.length === 0) await store.load()
   // 默认全选：打开这一页的人多半就是要问遍手上的资料，让他先做一轮取消勾选是白费功夫
   selected.value = store.items.map((item) => item.id)
-  void loadPrompt()
   void loadModels()
   await enterChat()
   scheduleSamples()
@@ -1182,47 +1179,13 @@ function closeReader(): void {
   readerSource.value = null
 }
 
-const promptOpen = ref(false)
-const promptDraft = ref('')
-const promptConfigured = ref(false)
-const promptLoading = ref(false)
-const promptSaving = ref(false)
-
-async function loadPrompt(): Promise<void> {
-  promptLoading.value = true
-  try {
-    const config = await getSettings()
-    const field = config.groups
-      .find((group) => group.key === 'chat')
-      ?.fields.find((item) => item.key === 'chat.system_prompt')
-    promptDraft.value = field?.value ?? ''
-    promptConfigured.value = field?.configured ?? false
-  } catch {
-    // 提示词读不到不该挡住提问：编辑框留空即可，保存会由后端给出真正的错误
-    promptDraft.value = ''
-  } finally {
-    promptLoading.value = false
-  }
-}
-
-function openPrompt(): void {
-  promptOpen.value = true
-  if (!promptLoading.value) void loadPrompt()
-}
-
-async function savePrompt(): Promise<void> {
-  promptSaving.value = true
-  try {
-    await updateSettings([{ key: 'chat.system_prompt', value: promptDraft.value }])
-    promptConfigured.value = promptDraft.value.trim().length > 0
-    notifySuccess(promptConfigured.value ? '提示词已保存' : '已恢复内置提示词')
-    promptOpen.value = false
-  } catch (cause) {
-    notifyError(cause instanceof Error ? cause.message : '提示词保存失败')
-  } finally {
-    promptSaving.value = false
-  }
-}
+/*
+ * 这里原本是「提示词」那一套（弹窗 + 读写全局设置 `chat.system_prompt`）。
+ * v0.19 整块搬到**知识库**上：那段文字实质是"这份资料该怎么被使用"，
+ * 随资料走而不是随界面走——换个库还留着上一个库的规矩，是原先那个位置解释不了的。
+ * 现在它在「知识库 → 设置 → 回答要求」里配，也可以让模型按文档摘要生成一版。
+ * 对话页不再有提示词入口，也不再有"这段文字拼在最前面"这类只有实现者才关心的话。
+ */
 </script>
 
 <template>
@@ -1609,14 +1572,6 @@ async function savePrompt(): Promise<void> {
             />
           </div>
           <div class="composer-right">
-            <button
-              type="button"
-              class="prompt-link"
-              :title="promptConfigured ? '已自定义系统提示词' : '查看/修改系统提示词'"
-              @click="openPrompt"
-            >
-              {{ promptConfigured ? '提示词 · 已自定义' : '提示词' }}
-            </button>
             <span v-if="useKb && store.items.length && selected.length === 0" class="composer-warn">
               未选知识库
             </span>
@@ -1696,22 +1651,6 @@ async function savePrompt(): Promise<void> {
       :page="readerSource.page"
       @close="closeReader"
     />
-
-    <AppModal v-model:open="promptOpen" title="系统提示词" size="wide">
-      <p class="prompt-note">这段文字会拼在每轮提问的最前面。留空即恢复内置提示词。</p>
-      <AppInput v-model="promptDraft" multiline :rows="8" placeholder="留空使用内置提示词" />
-      <!-- 内置提示词是只读参考：不给出它，"自定义提示词"就变成盲改 -->
-      <details v-if="!promptDraft.trim()" class="prompt-builtin">
-        <summary>正在使用内置提示词，展开查看</summary>
-        <pre class="prompt-builtin-body">{{ DEFAULT_SYSTEM_PROMPT }}</pre>
-      </details>
-      <template #footer>
-        <AppButton @click="promptOpen = false">取消</AppButton>
-        <AppButton variant="primary" :disabled="promptSaving" @click="savePrompt">
-          {{ promptSaving ? '保存中…' : '保存' }}
-        </AppButton>
-      </template>
-    </AppModal>
   </div>
 </template>
 
@@ -2754,17 +2693,6 @@ async function savePrompt(): Promise<void> {
   margin-left: auto;
 }
 
-/* 提示词是低频入口：降级成纯文字，不跟「发送」抢视觉重量 */
-.prompt-link {
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.prompt-link:hover {
-  color: var(--text-primary);
-  text-decoration: underline;
-}
-
 .composer-warn {
   font-size: var(--text-micro-size);
   color: var(--status-warning);
@@ -2801,33 +2729,5 @@ async function savePrompt(): Promise<void> {
 
 .send-btn-stop:hover {
   background: var(--border);
-}
-
-.prompt-note {
-  margin: 0 0 var(--space-3);
-  font-size: var(--text-meta-size);
-  color: var(--text-secondary);
-}
-
-.prompt-builtin {
-  margin-top: var(--space-3);
-  font-size: var(--text-meta-size);
-  color: var(--text-secondary);
-}
-
-.prompt-builtin summary {
-  cursor: pointer;
-}
-
-.prompt-builtin-body {
-  margin: var(--space-2) 0 0;
-  padding: var(--space-3);
-  font-family: inherit;
-  font-size: var(--text-meta-size);
-  line-height: 1.6;
-  color: var(--text-secondary);
-  white-space: pre-wrap;
-  background: var(--bg-subtle);
-  border-radius: var(--radius-control);
 }
 </style>

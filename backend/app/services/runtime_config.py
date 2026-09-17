@@ -98,7 +98,6 @@ SETTING_GROUPS: dict[str, Any] = {
     "chat": {
         "label": "对话行为",
         "fields": [
-            {"key": "chat.system_prompt", "label": "系统提示词", "type": "textarea"},
             {"key": "chat.top_k", "label": "带入资料的条数", "type": "int"},
             {
                 "key": "chat.section_chars",
@@ -215,7 +214,6 @@ DEFAULTS: dict[str, str] = {
     # 思考**默认开**：主流模型默认都思考，这里的开关只用来"临时关掉"。
     "llm.enable_thinking": "true",
     "llm.thinking_effort": "medium",
-    "chat.system_prompt": "",  # 空则用 services/chat.py 的内置提示词
     "chat.top_k": "6",
     # 检索按块命中，但**喂给模型的是整段小节**（v17，见 services/chat.py
     # 的「小块检索、大块阅读」）：0 = 关闭，只给命中的那一块

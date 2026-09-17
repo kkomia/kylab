@@ -22,6 +22,7 @@ function kb(
     suggested_count: 6,
     suggested_model_pk: null,
     suggested_prompt: '',
+    system_prompt: '',
     wiki_enabled: false,
     created_at: '2026-09-10T00:00:00Z',
     can_manage: true,

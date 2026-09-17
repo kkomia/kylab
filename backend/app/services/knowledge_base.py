@@ -49,6 +49,10 @@ KB_NAME_MAX_CHARS = 120
 """与建库时的 schema 上限一致（``KnowledgeBaseCreate.name``）。"""
 
 KB_DESCRIPTION_MAX_CHARS = 200
+
+#: 库级提示词的长度上限（v0.19）。比出题提示词宽：它要写口径、术语、回答结构，
+#: 几句话装不下；但也得有个头——它会进每一轮的 system prompt，是按轮计费的。
+SYSTEM_PROMPT_MAX_CHARS = 4000
 """库简介上限。卡片上只显示两行，200 字足够写清"这个库是干什么的"。"""
 
 
@@ -94,6 +98,21 @@ def validate_suggested(count: int, prompt: str) -> tuple[int, str]:
     if len(cleaned) > SUGGESTED_PROMPT_MAX_CHARS:
         raise InvalidRequestError(f"出题提示词最多 {SUGGESTED_PROMPT_MAX_CHARS} 个字符")
     return count, cleaned
+
+
+def validate_system_prompt(prompt: str) -> str:
+    """校验库级提示词，返回规范化后的文本（v0.19）。
+
+    与出题提示词同一套口径：只 trim + 长度上限。它是给模型的自然语言，
+    除了长度没有别的可判定标准——**不要在这里做"像不像提示词"的启发式判断**，
+    那只会把某些写法正常的库挡在门外。
+
+    上限比出题提示词宽：库级提示词要写口径、术语、回答结构，几句话是不够的。
+    """
+    cleaned = (prompt or "").strip()
+    if len(cleaned) > SYSTEM_PROMPT_MAX_CHARS:
+        raise InvalidRequestError(f"库提示词最多 {SYSTEM_PROMPT_MAX_CHARS} 个字符")
+    return cleaned
 
 
 class KnowledgeBaseService:
@@ -186,6 +205,21 @@ class KnowledgeBaseService:
             return record
         self._stores.meta.set_knowledge_base_wiki(kb_id, enabled=enabled)
         record.wiki_enabled = enabled
+        return record
+
+    def set_system_prompt(self, kb_id: str, prompt: str) -> KnowledgeBaseRecord:
+        """改这个库的**库级提示词**（v0.19）。
+
+        只动这一段文本，不碰任何检索/切分参数：提示词影响的是"怎么答"，
+        与"检索出什么"是两件事，改一个不该顺带动另一个。
+        （对应地，它也不需要重新摄入——下一轮问答就会用上。）
+        """
+        record = self.get(kb_id)
+        cleaned = validate_system_prompt(prompt)
+        if cleaned == record.system_prompt:
+            return record
+        self._stores.meta.set_knowledge_base_prompt(kb_id, prompt=cleaned)
+        record.system_prompt = cleaned
         return record
 
     def _require_chat_model(self, model_pk: str) -> None:

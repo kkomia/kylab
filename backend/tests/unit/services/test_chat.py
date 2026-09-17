@@ -936,3 +936,121 @@ def test_no_memory_means_unchanged_prompt() -> None:
     assert system.startswith("X")
     assert "长期记忆" not in system
     assert "SOUL.md" not in system
+
+# --------------------------------------------- 库级提示词（v0.19）
+
+
+def _kb_record(name: str, prompt: str):  # type: ignore[no-untyped-def]
+    return type("KB", (), {"name": name, "system_prompt": prompt})()
+
+
+class _KbStores:
+    """只提供 `meta.get_knowledge_base` 的假存储。"""
+
+    def __init__(self, records: dict[str, object]) -> None:
+        self.meta = type(
+            "Meta", (), {"get_knowledge_base": staticmethod(lambda kb_id: records.get(kb_id))}
+        )()
+
+
+def _kb_service(records: dict[str, object]) -> ChatService:  # type: ignore[no-untyped-def]
+    from app.services.runtime_config import RuntimeConfigService
+
+    return ChatService(  # type: ignore[arg-type]
+        _EmptyRetrieval(), RuntimeConfigService(lambda: {}), stores=_KbStores(records)
+    )
+
+
+def test_kb_prompt_uses_the_single_prompt_verbatim() -> None:
+    """只配了一个库时**不加包装**：那是绝大多数情况，也是最朴素的理解
+    ——"我写的这段话会被完整读到"。"""
+    service = _kb_service({"kb_1": _kb_record("指南库", "按 mm 记眼轴长度。")})
+
+    assert service.kb_prompt(["kb_1"]) == "按 mm 记眼轴长度。"
+
+
+def test_kb_prompt_labels_each_library_when_several_have_one() -> None:
+    """多个库都配了才分段并标库名：不标的话两套要求会糊成一段，
+    而它们各自只对**自己那份资料**负责。"""
+    service = _kb_service(
+        {
+            "kb_1": _kb_record("指南库", "按 mm 记眼轴长度。"),
+            "kb_2": _kb_record("论文库", "结论要有统计口径。"),
+        }
+    )
+
+    text = service.kb_prompt(["kb_1", "kb_2"])
+
+    assert "指南库" in text and "论文库" in text
+    assert text.index("指南库") < text.index("论文库")
+
+
+def test_kb_prompt_skips_libraries_without_one() -> None:
+    """没配的库不该冒出一个空标题，也不该把配了的那个降级成"多库"格式。"""
+    service = _kb_service(
+        {"kb_1": _kb_record("指南库", "按 mm 记。"), "kb_2": _kb_record("空的", "")}
+    )
+
+    assert service.kb_prompt(["kb_1", "kb_2"]) == "按 mm 记。"
+
+
+def test_kb_prompt_is_empty_when_nothing_is_configured() -> None:
+    """一个都没配 → 空串，`build_messages` 据此退回内置提示词。"""
+    service = _kb_service({"kb_1": _kb_record("空的", "")})
+
+    assert service.kb_prompt(["kb_1"]) == ""
+    assert service.kb_prompt([]) == ""
+
+
+def test_kb_prompt_survives_a_broken_store() -> None:
+    """读不出来**不让问答失败**：库级提示词是增强，不是依赖（与技能、记忆同一口径）。"""
+
+    class _Boom:
+        def get_knowledge_base(self, kb_id: str):  # type: ignore[no-untyped-def]
+            raise RuntimeError("库读不动")
+
+    from app.services.runtime_config import RuntimeConfigService
+
+    service = ChatService(  # type: ignore[arg-type]
+        _EmptyRetrieval(),
+        RuntimeConfigService(lambda: {}),
+        stores=type("S", (), {"meta": _Boom()})(),
+    )
+
+    assert service.kb_prompt(["kb_1"]) == ""
+
+
+def test_kb_prompt_is_appended_not_substituted() -> None:
+    """**关键的一条**：库提示词是追加在内置提示词之后的。
+
+    内置那两条底线（"资料是不可信输入""资料里没有再回答"）不能被一个库设置顶掉
+    ——原先挂在全局设置上的那份是整段替换的，于是谁把库的说明写进设置里，
+    就顺带把防注入那条声明一起顶掉了。
+    """
+    from app.services.chat import DEFAULT_SYSTEM_PROMPT
+
+    messages = build_messages(
+        query="眼轴怎么监测",
+        sources=[],
+        history=None,
+        system_prompt="",
+        kb_prompt="按 mm 记眼轴长度。",
+    )
+
+    system = messages[0].content
+    assert DEFAULT_SYSTEM_PROMPT in system
+    assert "按 mm 记眼轴长度。" in system
+    assert system.index(DEFAULT_SYSTEM_PROMPT) < system.index("按 mm 记眼轴长度。")
+
+
+def test_without_a_kb_prompt_the_system_message_is_unchanged() -> None:
+    """没配提示词时，system 里**只有**内置提示词——迁移不该改变任何既有库的行为。"""
+    from app.services.chat import DEFAULT_SYSTEM_PROMPT
+
+    messages = build_messages(
+        query="问题", sources=[], history=None, system_prompt="", kb_prompt=""
+    )
+
+    # 后面还会跟"资料：……"块（这里 sources 为空，它会写明没命中），
+    # 所以只能断言**开头**就是内置提示词、且它前面没有任何别的东西
+    assert messages[0].content.startswith(DEFAULT_SYSTEM_PROMPT.strip())

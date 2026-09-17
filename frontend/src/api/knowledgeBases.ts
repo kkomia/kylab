@@ -25,6 +25,13 @@ export interface KnowledgeBase {
   /** 自定义出题提示词；空串 = 用内置提示词。 */
   suggested_prompt: string
   /**
+   * **库级提示词**（v0.19）：回答这个库的问题时的额外要求。
+   *
+   * 空串 = 只用内置提示词。它不是"替换内置提示词"，而是**追加**在内置那两条底线
+   * （资料是不可信输入、资料里没有再回答）之后——那些底线不该由一个库设置顶掉。
+   */
+  system_prompt: string
+  /**
    * 是否开启 Wiki（v24）。**默认关**：生成会把整库内容过一遍模型，要花钱与时间，
    * 所以建库/设置时由用户显式打开。关掉只是不再展示与生成，已有页面保留。
    */
@@ -87,6 +94,8 @@ export function updateKnowledgeBase(
     suggested_count?: number
     suggested_model_pk?: string | null
     suggested_prompt?: string
+    /** 库级提示词（v0.19）。空串 = 清除，回到只剩内置提示词。 */
+    system_prompt?: string
     /** 库形态（v24）：开启后可以在 Wiki 页面用已录入内容生成页面。 */
     wiki_enabled?: boolean
   },
@@ -168,3 +177,38 @@ export const SUGGESTED_COUNT_MIN = 1
 export const SUGGESTED_COUNT_MAX = 5
 export const SUGGESTED_COUNT_DEFAULT = 3
 export const SUGGESTED_PROMPT_MAX_CHARS = 2000
+
+/** 生成时用到的一篇文档摘要，以及它有没有被生成的文本引用。 */
+export interface KBPromptSource {
+  document_id: string
+  name: string
+  summary: string
+  /** 生成的提示词里有没有 `[来源: 这篇]`。false 不代表没用上（可能只提供了背景）。 */
+  cited: boolean
+}
+
+/** 按文档摘要生成的提示词**草稿**（不落库，用户确认后再 PATCH 保存）。 */
+export interface KBPromptDraft {
+  prompt: string
+  sources: KBPromptSource[]
+  cited_documents: number
+  /**
+   * 模型标了来源、但文件名不在给定清单里的那些。
+   *
+   * **这是"编造"的直接证据**（它引了一篇不存在的文件），界面据此提示核对后再保存。
+   */
+  unknown_citations: string[]
+}
+
+/**
+ * 让对话模型**只依据库里已生成的文档摘要**写一版库提示词（v0.19）。
+ *
+ * 不落库：返回草稿由用户过目、修改、再保存。它要花一次模型调用，
+ * 所以是写权限的接口（能改这个库配置的人才能为它花钱）。
+ */
+export function generateKBPrompt(kbId: string, modelPk?: string | null): Promise<KBPromptDraft> {
+  return request<KBPromptDraft>(`/knowledge-bases/${kbId}/prompt/generate`, {
+    method: 'POST',
+    body: JSON.stringify({ model_pk: modelPk ?? null }),
+  })
+}

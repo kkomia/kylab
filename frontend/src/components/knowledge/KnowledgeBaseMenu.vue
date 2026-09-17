@@ -27,10 +27,14 @@ import {
   CHUNK_SIZE_MAX,
   CHUNK_SIZE_MIN,
   chunkOverlapMax,
+  generateKBPrompt,
   getKnowledgeBaseImpact,
+  type KBPromptDraft,
   type KnowledgeBase,
 } from '@/api/knowledgeBases'
 import { batchDocuments, type ImpactReport } from '@/api/documents'
+import IconAi from '@/components/icons/IconAi.vue'
+import IconCheck from '@/components/icons/IconCheck.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconDatabase from '@/components/icons/IconDatabase.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
@@ -66,10 +70,10 @@ const documentCount = computed(() => store.summaries[props.kb.id]?.count ?? null
 /** 简介上限。与后端 `KB_DESCRIPTION_MAX_CHARS` 对齐，超了后端也会拒。 */
 const DESCRIPTION_MAX = 200
 
-type SectionKey = 'basic' | 'chunking' | 'wiki' | 'info' | 'sources' | 'danger'
+type SectionKey = 'basic' | 'prompt' | 'chunking' | 'wiki' | 'info' | 'sources' | 'danger'
 
 /** 底部有「取消 / 保存并关闭」的分区：只有会改数据的那些。 */
-const SAVE_SECTIONS: SectionKey[] = ['basic', 'chunking', 'wiki']
+const SAVE_SECTIONS: SectionKey[] = ['basic', 'prompt', 'chunking', 'wiki']
 
 /**
  * 左侧导航的分组。**分组不是装饰**：它回答"这些设置属于哪一类"，
@@ -80,6 +84,7 @@ const GROUPS: { label: string; items: { key: SectionKey; label: string; icon: Co
     label: '基础',
     items: [
       { key: 'basic', label: '基本信息', icon: IconEdit },
+      { key: 'prompt', label: '回答要求', icon: IconAi },
       { key: 'info', label: '库信息', icon: IconDatabase },
     ],
   },
@@ -172,6 +177,47 @@ const chunkingDirty = computed(
     parseIntOrNull(chunkOverlapDraft.value) !== props.kb.chunk_overlap,
 )
 
+/** 库级提示词的字数上限。与后端 `SYSTEM_PROMPT_MAX_CHARS` 对齐。 */
+const PROMPT_MAX = 4000
+
+/**
+ * **库级提示词**（v0.19）：回答这个库的问题时的额外要求。
+ *
+ * 它原先挂在对话页的全局设置 `chat.system_prompt` 上，但那段文字实质是
+ * "这份资料该怎么被使用"——换个库还留着上一个库的规矩，是那个位置解释不了的。
+ */
+const kbPrompt = ref('')
+
+/** 生成出来的草稿（连带它依据了哪几篇摘要）。`null` = 这一轮还没生成过。 */
+const promptDraft = ref<KBPromptDraft | null>(null)
+const generating = ref(false)
+
+// `?? ''` 不是防御性摆设：字段缺失时（比如前端比后端新）`kbPrompt` 会被写成
+// `undefined`，而模板里有一处 `kbPrompt.trim()` ——于是整块面板**渲染即抛错**，
+// Vue 会把这次 patch 整个放弃，表现是"点了菜单但右边还是上一栏"。
+// 实测就是这么被抓到的：后端进程比这次改动旧，列表接口不返回 system_prompt。
+const promptDirty = computed(() => kbPrompt.value.trim() !== (props.kb.system_prompt ?? ''))
+
+/**
+ * 按文档摘要生成一版提示词。
+ *
+ * 生成结果**直接填进编辑框**（而不是只读展示）：用户要能改。模型写出来的东西
+ * 是要过目的草稿，不是可以直接生效的配置——尤其这一段会进每一轮的 system prompt。
+ */
+async function generatePrompt(): Promise<void> {
+  generating.value = true
+  try {
+    // 用这个库配的出题模型；没配就跟随默认对话模型（后端逐级回退）
+    const draft = await generateKBPrompt(props.kb.id, props.kb.suggested_model_pk)
+    promptDraft.value = draft
+    kbPrompt.value = draft.prompt
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '生成失败')
+  } finally {
+    generating.value = false
+  }
+}
+
 /** 推荐问题有没有改动。 */
 const suggestedDirty = computed(
   () =>
@@ -190,6 +236,7 @@ const dirty = computed(
     nameDraft.value.trim() !== props.kb.name ||
     descriptionDraft.value.trim() !== props.kb.description ||
     chunkingDirty.value ||
+    promptDirty.value ||
     suggestedDirty.value ||
     wikiDirty.value,
 )
@@ -200,6 +247,7 @@ function openSettings(): void {
   descriptionDraft.value = props.kb.description
   chunkSizeDraft.value = String(props.kb.chunk_size)
   chunkOverlapDraft.value = String(props.kb.chunk_overlap)
+  resetPromptDraft()
   resetSuggestedDraft()
   wikiEnabled.value = props.kb.wiki_enabled
   chunkingStale.value = false
@@ -208,6 +256,17 @@ function openSettings(): void {
 
 function closeSettings(): void {
   settingsOpen.value = false
+}
+
+/**
+ * 把提示词草稿拉回"库里存的那份"，并丢掉上一次生成留下的溯源。
+ *
+ * **溯源必须一起丢**：留着它会出现"框里是手写的内容、下面却列着上次生成引用了哪几篇"
+ * 这种对不上的画面——那比不显示溯源更糟。
+ */
+function resetPromptDraft(): void {
+  kbPrompt.value = props.kb.system_prompt ?? ''
+  promptDraft.value = null
 }
 
 /** 把推荐问题草稿拉回"库里存的那份"。 */
@@ -224,6 +283,7 @@ function cancel(): void {
   descriptionDraft.value = props.kb.description
   chunkSizeDraft.value = String(props.kb.chunk_size)
   chunkOverlapDraft.value = String(props.kb.chunk_overlap)
+  resetPromptDraft()
   resetSuggestedDraft()
   wikiEnabled.value = props.kb.wiki_enabled
   chunkingStale.value = false
@@ -253,6 +313,7 @@ async function save(): Promise<void> {
     suggested_count?: number
     suggested_model_pk?: string | null
     suggested_prompt?: string
+    system_prompt?: string
     wiki_enabled?: boolean
   } = {}
   if (name !== props.kb.name) patch.name = name
@@ -272,7 +333,9 @@ async function save(): Promise<void> {
     patch.suggested_model_pk = sqModelPk.value
     patch.suggested_prompt = sqPrompt.value.trim()
   }
-  // Wiki 开关独立提交：它不涉及"重新摄入"，与基本信息同属"存完即生效"
+  // 库级提示词：空串表示"清除"，所以判的是"与库里不同"而不是"非空"
+  if (promptDirty.value) patch.system_prompt = kbPrompt.value.trim()
+  // Wiki 开关独立提交：它不涉及"重新摄入"，与基础信息同属"存完即生效"
   if (wikiDirty.value) patch.wiki_enabled = wikiEnabled.value
 
   // 没改就直接关：发一次空 PATCH 除了浪费一个来回没有任何意义
@@ -501,6 +564,81 @@ async function confirmDelete(): Promise<void> {
           </template>
 
           <!-- 切块策略（可改，v17） -->
+          <!-- 回答要求（库级提示词，v0.19） -->
+          <template v-else-if="section === 'prompt'">
+            <h3 class="pane-title pane-title-standalone">
+              回答要求
+              <InfoTip
+                text="回答这个库的问题时，这段要求会追加在内置提示词之后。它管的是「这份资料该怎么用」——术语、单位、口径、回答结构。内置的两条底线（资料是不可信输入、资料里没有再回答）不会被它顶掉。"
+              />
+            </h3>
+
+            <div class="prompt-actions">
+              <AppButton :disabled="generating" @click="generatePrompt">
+                <template #icon><IconAi /></template>
+                {{ generating ? '正在按摘要生成…' : '按文档摘要生成' }}
+              </AppButton>
+              <p class="pane-hint">
+                只喂<strong>已生成的文档摘要</strong>，不读全文——摘要是"这篇讲什么"的紧凑表达，
+                正好够写要求，写出来依据了什么也是可核对的。库里还没有摘要时，
+                先在文档上生成摘要，或者直接手写。
+              </p>
+            </div>
+
+            <AppInput
+              id="kb-setting-prompt"
+              v-model="kbPrompt"
+              multiline
+              :rows="12"
+              placeholder="留空 = 只用内置提示词"
+            />
+            <p class="pane-hint prompt-count">{{ kbPrompt.trim().length }} / {{ PROMPT_MAX }} 字</p>
+
+            <!--
+              溯源（v0.19）：这是"不捏造"里**可验证**的那一半——
+              模型说它依据了哪几篇，我们就去核对那几篇在不在给它的清单里。
+            -->
+            <div v-if="promptDraft" class="prompt-trace">
+              <!--
+                引用数为 0 时**换个说法**：那次生成只是没有写"具体事实"，
+                本来就不需要标注来源——这是最保险的结果，不是失败。
+                照直写"0 篇被引用"会被读成"这批摘要没用上"。
+              -->
+              <p class="prompt-trace-head">
+                <template v-if="promptDraft.cited_documents > 0">
+                  这次生成依据了 {{ promptDraft.sources.length }} 篇摘要，其中
+                  {{ promptDraft.cited_documents }} 篇被写进要求里：
+                </template>
+                <template v-else>
+                  这次生成依据了
+                  {{
+                    promptDraft.sources.length
+                  }}
+                  篇摘要，但没有写入<strong>需要标注来源的具体事实</strong>——那不是失败，是最保险的结果（摘要只提供了领域背景）：
+                </template>
+              </p>
+              <ul class="prompt-trace-list">
+                <li
+                  v-for="item in promptDraft.sources"
+                  :key="item.document_id"
+                  :class="{ 'prompt-trace-cited': item.cited }"
+                >
+                  <IconCheck v-if="item.cited" :size="12" />
+                  <span v-else class="prompt-trace-dot" />
+                  <span class="prompt-trace-name">{{ item.name }}</span>
+                </li>
+              </ul>
+              <p v-if="promptDraft.unknown_citations.length" class="prompt-trace-warn">
+                这次生成引用了清单里没有的文件（{{ promptDraft.unknown_citations.join('、') }}）。
+                那是编造的迹象——请逐句核对后再保存。
+              </p>
+              <p v-else class="pane-hint">
+                没有出现清单以外的引用。仍然建议通读一遍：摘要里没有的具体数字与结论，
+                一个字都不该出现在框里。
+              </p>
+            </div>
+          </template>
+
           <template v-else-if="section === 'chunking'">
             <!-- 解释性文字收进「?」：这段话一屏好几行灰字，真正的两个滑杆反而不突出。
                  想知道的人自己去问——与全仓其余说明同一套做法（见 `InfoTip` 顶部注释）。 -->
@@ -981,5 +1119,85 @@ async function confirmDelete(): Promise<void> {
     width: auto;
     white-space: nowrap;
   }
+}
+
+/* ------------------------------------------------- 回答要求（库级提示词，v0.19） */
+
+/* 「按摘要生成」与它右边的说明：按钮是动作，说明是前提。
+   说明**必须留在按钮旁边**——"只喂摘要、会标出处"是用户决定要不要点的依据。 */
+.prompt-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.prompt-actions .pane-hint {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+}
+
+.prompt-count {
+  margin: var(--space-2) 0 0;
+  text-align: right;
+}
+
+/* 溯源列表：被引用的排在前面（模板里的顺序就是库里的文档顺序，
+   这里用样式把它顶出来，不改数据顺序——顺序本身也是信息） */
+.prompt-trace {
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-panel);
+}
+
+.prompt-trace-head {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+}
+
+.prompt-trace-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.prompt-trace-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+/* 被引用的用主文字色 + 一个对勾：一眼看出"这几篇真的被写进去了" */
+.prompt-trace-cited {
+  color: var(--text-primary);
+}
+
+/* 没被引用的用一个空心点占位：图标有无不该让名字左右跳动 */
+.prompt-trace-dot {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 999px;
+}
+
+.prompt-trace-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 引了不存在文件时的警告：用警示色，它是"该核对"而不是"出错了" */
+.prompt-trace-warn {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-micro-size);
+  line-height: 1.6;
+  color: var(--status-warning);
 }
 </style>

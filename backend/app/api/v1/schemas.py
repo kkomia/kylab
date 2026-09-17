@@ -19,6 +19,9 @@ from app.services.chunking import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_OVERLAP,
 )
+from app.services.knowledge_base import (
+    SYSTEM_PROMPT_MAX_CHARS as KB_SYSTEM_PROMPT_MAX_CHARS,
+)
 from app.services.memory import MAX_ENTRY_CHARS as MAX_MEMORY_ENTRY_CHARS
 from app.services.memory import MAX_RECALL as MAX_MEMORY_RECALL
 from app.services.memory_files import MAX_WRITE_CHARS as MAX_MEMORY_FILE_CHARS
@@ -108,6 +111,52 @@ class KnowledgeBaseUpdate(BaseModel):
     suggested_prompt: str | None = Field(default=None, max_length=SUGGESTED_PROMPT_MAX_CHARS)
     wiki_enabled: bool | None = None
     """库形态（v24）：要不要生成 Wiki 页面。不传 = 不改。"""
+    system_prompt: str | None = Field(default=None, max_length=KB_SYSTEM_PROMPT_MAX_CHARS)
+    """**库级提示词**（v0.19）：回答这个库的问题时的额外要求。
+
+    从对话页搬过来的（原先挂在全局设置 `chat.system_prompt` 上）。空串是合法值
+    = 清除（回到只剩内置提示词），所以不加 min_length——与简介同一套约定。
+    它不是"替换内置提示词"，而是**追加**在内置那两条底线之后，
+    见 `services/chat.build_messages` 里的说明。
+    """
+
+
+class KBPromptGenerateIn(BaseModel):
+    """生成库提示词的入参（v0.19）。"""
+
+    model_pk: str | None = Field(
+        default=None,
+        description="用哪个对话模型来生成；留空用设置里的默认对话模型",
+    )
+
+
+class KBPromptSourceOut(BaseModel):
+    """生成时用到的某一篇文档摘要，以及它**有没有被生成的文本引用**。"""
+
+    model_config = _RECORD_CONFIG
+
+    document_id: str
+    name: str
+    summary: str
+    cited: bool = False
+    """生成的提示词里有没有 `[来源: 这篇]`。
+
+    ``False`` **不代表这篇没用上**——它可能只提供了背景，而没贡献具体事实。
+    界面据此把"被引用的"排在前面。"""
+
+
+class KBPromptDraftOut(BaseModel):
+    """生成结果。**不落库**：用户在设置里看着改完再保存。"""
+
+    model_config = _RECORD_CONFIG
+
+    prompt: str
+    sources: list[KBPromptSourceOut] = Field(default_factory=list)
+    cited_documents: int = 0
+    unknown_citations: list[str] = Field(default_factory=list)
+    """模型标了来源、但文件名不在给定清单里的那些。
+
+    **这是"编造"的直接证据**（它引了一篇不存在的文件），界面据此提示核对后再保存。"""
 
 
 class KnowledgeBaseOut(BaseModel):
@@ -129,6 +178,8 @@ class KnowledgeBaseOut(BaseModel):
     """出题模型。``None`` = 跟随对话页当前选的模型。"""
     suggested_prompt: str = ""
     """自定义出题提示词；空串 = 用内置提示词。"""
+    system_prompt: str = ""
+    """库级提示词；空串 = 只用内置提示词。界面在库设置里回显与编辑。"""
     wiki_enabled: bool = False
     """库形态（v24）：``False`` = 仅向量检索；``True`` = 向量检索 + Wiki 页面。
 
