@@ -1290,6 +1290,35 @@ class ChatService:
             bodies.append(f"【技能 {record.name} 的流程】{_SKILL_SEPARATOR}{body}")
         return _SKILL_SEPARATOR.join(bodies)
 
+    def run_subagent_text(
+        self,
+        *,
+        question: str,
+        kb_ids: list[str],
+        model_pk: str | None,
+        thinking: bool | None,
+        thinking_effort: str | None,
+    ) -> tuple[str, list[SourceRef]]:
+        """给工具循环用的子 Agent：**它自己解析这一轮的模型档位**。
+
+        为什么要这一层薄封装：`run_subagent` 要求调用方给一个已解析的 LLM 配置，
+        而工具执行器（`agent_tools.build_runner`）不该知道"模型档位怎么解析"这件事
+        ——它连 ChatService 都不认识。把解析收在这里，执行器只需要一个
+        "给我一个问题、还你结论与出处"的函数。
+        """
+        config = self._resolve_llm(model_pk, thinking, thinking_effort)
+        result = self.run_subagent(
+            subagent_service.SubAgentTask(
+                question=question, kb_ids=list(kb_ids), depth=0
+            ),
+            config=config,
+        )
+        # 停下来时如实说：把"预算用完"说成"查完了"，父 Agent 会拿半截结论当完整的用
+        answer = result.answer
+        if result.stopped_reason:
+            answer = f"{answer}\n\n（子 Agent 停止原因：{result.stopped_reason}）"
+        return answer, list(result.sources)
+
     def tool_loop(
         self,
         *,

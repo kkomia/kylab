@@ -247,3 +247,63 @@ def test_step_detail_prefers_the_human_summary() -> None:
     assert outcome.step_detail() == "共 3 个知识库"
     # 没有摘要时**回退到结果开头**（不如不显示）
     assert ToolOutcome(content="一段结果").step_detail() == "一段结果"
+
+# ------------------------------------------------------------------ 子 Agent（P1 补上）
+
+
+def test_spawn_subagent_is_offered_and_returned_with_sources() -> None:
+    """子 Agent 是工具之一：它自包含地跑，结论与出处回到父链路。
+
+    出处要带回来（`SourcesEvent`）：子 Agent 查到的原文同样是这次回答的依据，
+    丢了它，界面会显示"没有出处"而实际上是有的。
+    """
+    from app.agent_tools import build_runner
+
+    seen: list[str] = []
+
+    class _Services:
+        class skills:
+            @staticmethod
+            def list():  # type: ignore[no-untyped-def]
+                return []
+
+    runner = build_runner(
+        _Services(),  # type: ignore[arg-type]
+        None,  # type: ignore[arg-type]
+        kb_ids=["kb_1"],
+        subagent=lambda task: (seen.append(task), ("结论：是的", [_hit()]))[1],
+    )
+
+    outcome = runner("spawn_subagent", {"task": "这批文献的结论一致吗"})
+
+    assert seen == ["这批文献的结论一致吗"]
+    assert "结论：是的" in outcome.content
+    assert outcome.sources and outcome.sources[0].document_name == "指南.pdf"
+
+
+def test_spawn_subagent_says_so_when_unavailable() -> None:
+    """这一轮没有子 Agent 就**明说**：模型据此才该自己去查，而不是以为已经派人查过了。"""
+    from app.agent_tools import build_runner
+
+    runner = build_runner(_FakeServices(), None, kb_ids=["kb_1"])  # type: ignore[arg-type]
+
+    outcome = runner("spawn_subagent", {"task": "随便什么"})
+
+    assert "不可用" in outcome.content
+
+
+class _FakeServices:
+    """技能工具用到的最小形状。"""
+
+    class skills:
+        @staticmethod
+        def list():  # type: ignore[no-untyped-def]
+            return []
+
+
+def test_spawn_subagent_requires_a_task() -> None:
+    from app.agent_tools import build_runner
+
+    runner = build_runner(_FakeServices(), None)  # type: ignore[arg-type]
+
+    assert "task" in runner("spawn_subagent", {}).content

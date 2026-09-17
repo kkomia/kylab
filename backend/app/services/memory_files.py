@@ -228,10 +228,18 @@ def _relative(workspace: Path, target: Path) -> str:
     return target.resolve().relative_to(workspace.resolve()).as_posix()
 
 
+#: 核心文件：住在工作区根下、**靠注入生效、不进检索**的那几份。
+#:
+#: 人设四件套（P1 起）：人格、身份、操作规程、长期记忆。它们必须是同一份清单——
+#: 少列一个的后果是那份文件被当成普通文件（不进注入、还可能被检索进去），
+#: 而用户看到的现象是"我改了它，但助手好像没读到"。
+CORE_FILES: tuple[str, ...] = ("MEMORY.md", "SOUL.md", "PROFILE.md", "AGENTS.md")
+
+
 def classify(path: str) -> str:
-    """按位置分类。两个核心文件按**文件名**判（它们在根下，``head`` 会是空串），
+    """按位置分类。核心文件按**文件名**判（它们在根下，``head`` 会是空串），
     其余按顶层目录。"""
-    if Path(path).name in ("MEMORY.md", "SOUL.md"):
+    if Path(path).name in CORE_FILES:
         return CORE_KIND
     head = path.split("/", 1)[0] if "/" in path else ""
     return _TOP_LEVEL.get(head, OTHER_KIND)

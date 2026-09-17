@@ -121,7 +121,18 @@ def chat_once(
             thinking=thinking,
             thinking_effort=effort,
             tools=tool_specs(),
-            runner=build_runner(services, caller, kb_ids=payload.kb_ids),
+            runner=build_runner(
+                services,
+                caller,
+                kb_ids=payload.kb_ids,
+                subagent=lambda task: services.chat.run_subagent_text(
+                    question=task,
+                    kb_ids=payload.kb_ids,
+                    model_pk=model_pk,
+                    thinking=thinking,
+                    thinking_effort=effort,
+                ),
+            ),
         )
         answer = _collect(
             loop.run(
@@ -298,7 +309,20 @@ def _events(
                 tools=tool_specs(),
                 # 执行器带**调用者身份**与**这一轮允许查的库**：
                 # 关掉知识库开关之后，模型也不该能绕过它去检索（见 agent_tools.build_runner）
-                runner=build_runner(services, caller, kb_ids=payload.kb_ids),
+                runner=build_runner(
+                    services,
+                    caller,
+                    kb_ids=payload.kb_ids,
+                    # 子 Agent（P1 补上）：它自己解析这一轮的模型档位，
+                    # 执行器只管"给问题、拿结论与出处"
+                    subagent=lambda task: services.chat.run_subagent_text(
+                        question=task,
+                        kb_ids=payload.kb_ids,
+                        model_pk=model_pk,
+                        thinking=thinking,
+                        thinking_effort=effort,
+                    ),
+                ),
             )
             for event in loop.run(
                 messages=chat.agent_messages(

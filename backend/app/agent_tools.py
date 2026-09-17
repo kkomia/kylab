@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +42,25 @@ _SKILL_TOOLS: tuple[dict[str, Any], ...] = (
             "**当你不知道某类事该怎么做时先看它**——技能里往往是别人已经踩过坑的流程。"
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "spawn_subagent",
+        "description": (
+            "派一个子 Agent 去做一件**自包含**的事，把它的结论拿回来。"
+            "它看不到我们这段对话，所以任务描述要写全（问什么、依据什么）。"
+            "适合「需要啃一批资料才能得到一句话结论」的活；"
+            "**它没有派生能力、有轮次与时限**，简单的事自己做更快。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "要它回答的问题，自包含、具体",
+                }
+            },
+            "required": ["task"],
+        },
     },
     {
         "name": "read_skill",
@@ -95,6 +114,7 @@ def build_runner(
     caller: Caller,
     *,
     kb_ids: Sequence[str] | None = None,
+    subagent: Callable[[str], tuple[str, list[Any]]] | None = None,
 ) -> ToolRunner:
     """绑一个执行器。``kb_ids`` 是**这一轮允许查的库**（会话上选的那些）。
 
@@ -109,6 +129,23 @@ def build_runner(
     scope = [str(item) for item in (kb_ids or []) if str(item).strip()]
 
     def run(name: str, args: dict[str, Any]) -> ToolOutcome:
+        if name == "spawn_subagent":
+            task = str(args.get("task") or "").strip()
+            if not task:
+                return ToolOutcome(content="缺少参数：task")
+            if subagent is None:
+                # 明确说"这一轮没有"，而不是假装派了：模型据此才该自己去查
+                return ToolOutcome(content="子 Agent 在这一轮不可用，请自己查。")
+            try:
+                answer, sources = subagent(task)
+            except Exception as exc:
+                logger.info("子 Agent 失败：%s", exc)
+                return ToolOutcome(content=f"子 Agent 没跑成：{exc}")
+            return ToolOutcome(
+                content=answer or "（子 Agent 没有给出结论）",
+                sources=list(sources),
+                summary="子 Agent 回报了结论",
+            )
         if name == "list_skills":
             return ToolOutcome(content=_render_skills(services))
         if name == "read_skill":

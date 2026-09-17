@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.services.memory import (
     AGENTS_FILE,
     CORE_MEMORY_FILE,
@@ -185,3 +187,36 @@ def test_persona_is_empty_when_memory_is_off(tmp_path) -> None:  # type: ignore[
 
     assert service.persona_texts("u1") == []
     assert service.seed_persona("u1") == []
+
+def test_persona_files_are_listed_and_editable_through_the_memory_layer(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """人设文件的**编辑入口是白捡的**：它们落在记忆工作区里，而那一页本来就在列文件。
+
+    这条钉的是这个复用关系本身——如果哪天把核心文件从 ``scan`` 里排掉，
+    用户就再也改不了自己的人格了（而那是这一层存在的全部理由）。
+    """
+    from app.services import memory_files
+
+    service = MemoryService(_FakeRuntime(True), tmp_path)  # type: ignore[arg-type]
+    service.seed_persona("u1")
+
+    listed = {Path(item.path).name: item for item in memory_files.scan(service.workspace_for("u1"))}
+
+    assert set(listed) == {SOUL_FILE, PROFILE_FILE, AGENTS_FILE}
+    for name, item in listed.items():
+        # 核心文件：**不参与检索、但会被注入**——正是人设该有的两条属性
+        assert item.kind == "core", name
+        assert item.retrievable is False, name
+    # 改得动（走的是同一个安全路径解析）
+    memory_files.write_file(service.workspace_for("u1"), SOUL_FILE, "改过的人格")
+    assert (service.workspace_for("u1") / SOUL_FILE).read_text(encoding="utf-8") == "改过的人格"
+
+def test_persona_files_and_core_files_cannot_drift() -> None:
+    """两份清单必须一致：`memory.py` 决定"注入哪些"，`memory_files.py` 决定"哪些算核心"。
+
+    分成两处是**依赖方向**逼的（memory 依赖 memory_files，反过来会成环），
+    所以用这条用例把它们钉在一起——少列一个的后果是那份文件不进注入、
+    还可能被当成普通文件检索进去，而用户看到的现象只是"我改了它但好像没生效"。
+    """
+    from app.services import memory_files
+
+    assert set(memory_files.CORE_FILES) == {name for name, _label in PERSONA_FILES}
