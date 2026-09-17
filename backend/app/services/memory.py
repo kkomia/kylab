@@ -229,6 +229,51 @@ read_when:
 以上只是起点。摸索出什么管用之后，加上你自己的习惯与规矩，更新这份 `AGENTS.md`。
 """
 
+#: **v0.20 及以前的那三份模板**（空骨架），只给 :meth:`_upgrade_untouched_template`
+#: 做"这份文件是不是从来没被改过"的比对用。新装的实例不会写到它们，
+#: 升级完也就再也用不到了——留着是为了那些**已经在跑**的实例：
+#: 它们的文件是当时写下去的，改模板的这一步必须能认得出来。
+_LEGACY_TEMPLATES: dict[str, str] = {
+    SOUL_FILE: """---
+summary: "Agent 的人格：身份、准则与说话方式"
+read_when:
+  - 需要确认自己是谁、该怎么说话、哪些事不做
+---
+
+## 我是谁
+
+## 我的准则
+
+## 说话方式
+""",
+    PROFILE_FILE: """---
+summary: "身份与对方：我叫什么、对方是谁、偏好与习惯"
+read_when:
+  - 需要称呼对方、或想确认他的偏好与工作习惯
+---
+
+## 我的身份
+
+## 关于对方
+
+## 偏好与习惯
+""",
+    AGENTS_FILE: """---
+summary: "操作规程：这类活怎么干、哪些要先问、成果放哪"
+read_when:
+  - 开始一项任务前，想确认有没有既定做法
+---
+
+## 工作方式
+
+## 先问再做的情形
+
+## 成果放哪
+
+## 不要做的事
+""",
+}
+
 #: 一次召回最多取几条。与检索工具同一口径：给模型"够用"的几条，
 #: 而不是它说要多少就给多少（上下文预算是有限的）。
 MAX_RECALL = 20
@@ -465,6 +510,8 @@ class MemoryService:
         "他能看见、能编辑、还能用 git 管版本"的形态（QwenPaw 也是这么做的）。
 
         **只补缺的，绝不覆盖已存在的**：那可能已经是用户写了几天的东西。
+        唯一的例外是"还是我们当初写的那份、一个字没动过"的旧模板，
+        见 :meth:`_upgrade_untouched_template`。
         """
         created: list[str] = []
         for name, template in (
@@ -474,6 +521,7 @@ class MemoryService:
         ):
             path = self.workspace_for(user_id) / name
             if path.exists():
+                self._upgrade_untouched_template(path, name, template)
                 continue
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -485,6 +533,30 @@ class MemoryService:
                 continue
             created.append(name)
         return created
+
+    def _upgrade_untouched_template(self, path: Path, name: str, template: str) -> bool:
+        """把**从没被改过的旧模板**换成新模板；返回是否换了。
+
+        为什么需要这一步：v0.21 把三份模板换成了 QwenPaw 那套有内容的写法，
+        而 ``seed_persona`` 的原则是"已存在的一律不动"——于是**已经在用的部署
+        永远看不到新模板**，除非用户自己去删文件（而他并不知道该删）。
+
+        判据是**逐字节相同**：那意味着这份文件还是我们当初写下去的那一份，
+        用户一个字都没动（连换行都没动过）。差一个字节就不碰——那是他的东西，
+        哪怕他只是把标题改成了自己的话。宁可漏升级，不可误覆盖。
+        """
+        legacy = _LEGACY_TEMPLATES.get(name)
+        if legacy is None or legacy == template:
+            return False
+        try:
+            if path.read_text(encoding="utf-8") != legacy:
+                return False
+            path.write_bytes(template.encode("utf-8"))
+        except OSError:
+            logger.warning("人设模板升级失败：%s", path, exc_info=True)
+            return False
+        logger.info("人设模板已升级（这份文件一直是初始模板，没有人改过）：%s", path.name)
+        return True
 
     def persona_texts(self, user_id: str | None = None) -> list[tuple[str, str]]:
         """``[(文件名, 正文)]``，按 ``PERSONA_FILES`` 的顺序，空的跳过。

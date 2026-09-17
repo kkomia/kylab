@@ -22,7 +22,15 @@ from pathlib import Path
 import pytest
 
 from app.core.exceptions import InvalidRequestError, UpstreamError
-from app.services.memory import CORE_MEMORY_FILE, MemoryService, _hits_of, _normalize
+from app.services.memory import (
+    AGENTS_FILE,
+    CORE_MEMORY_FILE,
+    PROFILE_FILE,
+    SOUL_FILE,
+    MemoryService,
+    _hits_of,
+    _normalize,
+)
 
 
 class _FakeRuntime:
@@ -687,3 +695,36 @@ def test_remember_does_not_rewrite_line_endings(tmp_path: Path) -> None:
     raw = (tmp_path / "memory" / CORE_MEMORY_FILE).read_bytes()
 
     assert b"\r\n" not in raw
+
+
+def test_untouched_legacy_templates_are_upgraded(tmp_path: Path) -> None:
+    """**还在用旧模板的实例要能看到新模板**，改过的文件一个字也不动。
+
+    v0.21 把三份模板换成了 QwenPaw 那套有内容的写法，而 `seed_persona` 的原则是
+    "已存在的一律不动"——照字面执行的话，已经在跑的部署永远看不到新模板，
+    除非用户自己去删文件（而他并不知道该删）。
+
+    判据是**逐字节相同**：那才是"我们写下去之后没人动过"。所以第三条断言
+    （只改了一个标题的文件）与第二条（真正的旧模板）必须表现不同——
+    这是"宁可漏升级、不可误覆盖"的落点。
+    """
+    from app.services.memory import _LEGACY_TEMPLATES
+
+    workspace = tmp_path / "memory"
+    workspace.mkdir(parents=True)
+    (workspace / SOUL_FILE).write_bytes(_LEGACY_TEMPLATES[SOUL_FILE].encode("utf-8"))
+    (workspace / AGENTS_FILE).write_bytes(
+        _LEGACY_TEMPLATES[AGENTS_FILE].replace("## 工作方式", "## 我自己的工作方式").encode()
+    )
+    service = _service(tmp_path)
+
+    service.seed_persona()
+
+    # 旧模板 → 换成新的（有内容的那份）
+    assert "真心帮忙" in (workspace / SOUL_FILE).read_text(encoding="utf-8")
+    # 动过一个字的 → 原样不动
+    assert "我自己的工作方式" in (workspace / AGENTS_FILE).read_text(encoding="utf-8")
+    # 缺的那份照旧补上
+    assert (workspace / PROFILE_FILE).exists()
+    # 幂等：第二次没有可升级的
+    assert service.seed_persona() == []

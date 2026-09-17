@@ -47,6 +47,17 @@ parsers = [
     "pandas>=2.2",
     "markdown-it-py>=3.0",
 ]
+# Office 产出（v0.21，见 services/office.py 的方案 A 说明）。
+# **读**那半边不在这里：入库管线早已能解析这四种格式（local_office / Tabular /
+# local_pdf），这里补的是**产出**——agent 整理出的结论要能变成能发给别人的文件。
+# python-pptx 与 reportlab 是这一层仅有的两个新依赖；docx / xlsx 用 parsers
+# extra 里已有的 python-docx 与 openpyxl。
+office = [
+    "python-pptx>=1.0",
+    # PDF 产出。中文必须有一个 CJK 字体，reportlab 自带 CID 字体（STSong-Light）
+    # 不需要额外字体文件，所以没有其它 PDF 库的字体配置负担
+    "reportlab>=4.2",
+]
 # MCP 接入层（M4 起启用）
 mcp = [
     # **必须是 2.x**：本模块用的是 ``MCPServer``（1.x 里叫 ``FastMCP``，

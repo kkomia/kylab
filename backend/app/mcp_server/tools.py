@@ -50,6 +50,7 @@ from typing import Any
 from app.core.exceptions import InvalidRequestError
 from app.core.services import Services
 from app.models.enums import DataSourceKind
+from app.services import office
 from app.services.api_key import WRITE, Caller
 from app.services.memory import DEFAULT_RECALL, MAX_RECALL
 
@@ -87,6 +88,9 @@ TOOL_NAMES = (
     "list_notes",
     "recall",
     "remember",
+    "export_document",
+    "export_table",
+    "export_deck",
 )
 
 
@@ -336,6 +340,87 @@ def tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["content"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "export_document",
+            "description": (
+                "把整理好的正文**导出成一份真文件**（.docx 或 .pdf）并存进知识库。"
+                "正文用 Markdown（标题 #、要点 -、表格 | a | b |）。"
+                "**当对方要的是「一份报告 / 一份说明」时用它**——"
+                "只在对话里给一段 Markdown，他没法直接转发给别人。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "knowledge_base_id": {"type": "string", "description": "存到哪个库"},
+                    "filename": {
+                        "type": "string",
+                        "description": "文件名，扩展名决定格式：.docx 或 .pdf",
+                    },
+                    "markdown": {"type": "string", "description": "正文（Markdown）"},
+                    "title": {"type": "string", "description": "文档标题；留空则不加标题"},
+                },
+                "required": ["knowledge_base_id", "filename", "markdown"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "export_table",
+            "description": (
+                "把二维数据导出成 .xlsx 并存进知识库。"
+                "**当结果是「一张表」时用它**（清单、对照、逐项统计）——"
+                "表格塞进文档里就没法排序与计算了。"
+                "第一行当表头；数字直接给数字，不要给字符串。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "knowledge_base_id": {"type": "string", "description": "存到哪个库"},
+                    "filename": {"type": "string", "description": "文件名，扩展名用 .xlsx"},
+                    "rows": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {}},
+                        "description": "二维数组，第一行是表头",
+                    },
+                    "sheet_name": {"type": "string", "description": "工作表名；留空为 Sheet1"},
+                },
+                "required": ["knowledge_base_id", "filename", "rows"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "export_deck",
+            "description": (
+                "把要点导出成一份 .pptx 幻灯并存进知识库。"
+                "**当对方要「讲一遍」时用它**（汇报、方案、提纲）——"
+                "每页只放标题与要点，不要写成成段的文字。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "knowledge_base_id": {"type": "string", "description": "存到哪个库"},
+                    "filename": {"type": "string", "description": "文件名，扩展名用 .pptx"},
+                    "slides": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string", "description": "这一页的标题"},
+                                "bullets": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "这一页的要点",
+                                },
+                            },
+                            "required": ["title"],
+                        },
+                        "description": "按顺序的页面",
+                    },
+                    "title": {"type": "string", "description": "封面标题；留空则不要封面"},
+                },
+                "required": ["knowledge_base_id", "filename", "slides"],
                 "additionalProperties": False,
             },
         },
@@ -748,6 +833,140 @@ def _remember(services: Services, args: dict[str, Any], *, caller: Caller) -> di
     }
 
 
+# ------------------------------------------------------------------ Office 产出
+
+
+def _export_document(
+    services: Services, args: dict[str, Any], *, caller: Caller
+) -> dict[str, Any]:
+    """Markdown → .docx / .pdf → 存进知识库。"""
+    markdown = _require(args, "markdown")
+    if len(markdown) > office.MAX_CHARS:
+        raise InvalidRequestError(
+            f"正文太长（{len(markdown)} 字，上限 {office.MAX_CHARS}）。"
+            "这么长的材料更适合拆成几份，或者直接用 create_note 存成笔记"
+        )
+    kind = _suffix_of(_require(args, "filename"))
+    if kind not in ("docx", "pdf"):
+        raise InvalidRequestError(
+            f"export_document 只做 .docx 与 .pdf（收到 .{kind}）。"
+            "表格用 export_table，幻灯用 export_deck"
+        )
+    title = str(args.get("title") or "")
+    content = _build(
+        kind,
+        office.build_docx if kind == "docx" else office.build_pdf,
+        markdown,
+        title=title,
+    )
+    return _save_export(services, args, content, caller=caller, kind=kind)
+
+
+def _export_table(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
+    """二维数据 → .xlsx → 存进知识库。"""
+    raw = args.get("rows")
+    if not isinstance(raw, list) or not raw:
+        raise InvalidRequestError("rows 要是一个非空的二维数组（第一行是表头）")
+    rows = [list(row) if isinstance(row, list) else [row] for row in raw]
+    if len(rows) > office.MAX_ROWS:
+        raise InvalidRequestError(f"行数太多（{len(rows)}，上限 {office.MAX_ROWS}）")
+    if max(len(row) for row in rows) > office.MAX_COLUMNS:
+        raise InvalidRequestError(f"列数太多（上限 {office.MAX_COLUMNS}）")
+    kind = _suffix_of(_require(args, "filename"))
+    if kind != "xlsx":
+        raise InvalidRequestError(f"export_table 只做 .xlsx（收到 .{kind}）")
+    content = _build(
+        kind, office.build_xlsx, rows, sheet_name=str(args.get("sheet_name") or "Sheet1")
+    )
+    return _save_export(services, args, content, caller=caller, kind=kind)
+
+
+def _export_deck(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
+    """要点 → .pptx → 存进知识库。"""
+    raw = args.get("slides")
+    if not isinstance(raw, list) or not raw:
+        raise InvalidRequestError("slides 要是一个非空的数组（每项 {title, bullets}）")
+    if len(raw) > office.MAX_SLIDES:
+        raise InvalidRequestError(f"页数太多（{len(raw)}，上限 {office.MAX_SLIDES}）")
+    slides: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise InvalidRequestError("slides 里每一项都要是对象：{title, bullets}")
+        bullets = item.get("bullets") or []
+        if not isinstance(bullets, list):
+            raise InvalidRequestError("某一页的 bullets 不是数组")
+        slides.append(
+            {
+                "title": str(item.get("title") or ""),
+                "bullets": [str(text) for text in bullets[: office.MAX_BULLETS_PER_SLIDE]],
+            }
+        )
+    kind = _suffix_of(_require(args, "filename"))
+    if kind != "pptx":
+        raise InvalidRequestError(f"export_deck 只做 .pptx（收到 .{kind}）")
+    content = _build(kind, office.build_pptx, slides, title=str(args.get("title") or ""))
+    return _save_export(services, args, content, caller=caller, kind=kind)
+
+
+def _build(kind: str, builder: Any, *args: Any, **kwargs: Any) -> bytes:
+    """跑一次产出。
+
+    **依赖缺失先判、单独报**：它是"这台机器上做不到"（要装东西），
+    与"这份输入造不出来"是两回事。合成一句话的话，模型会去反复改内容，
+    而问题根本不在那里。
+    """
+    problem = office.missing_requirement(kind)
+    if problem:
+        raise InvalidRequestError(problem)
+    try:
+        return builder(*args, **kwargs)
+    except RuntimeError as exc:  # 产出过程中的内容问题（如 PDF 里出现非法标记）
+        raise InvalidRequestError(f"生成 {kind} 失败：{exc}") from exc
+
+
+def _save_export(
+    services: Services,
+    args: dict[str, Any],
+    content: bytes,
+    *,
+    caller: Caller,
+    kind: str,
+) -> dict[str, Any]:
+    """把产出当一次普通入库提交（与界面上传走**同一条链路**）。
+
+    不另开一条"写文档"的通道：那样库里会出现两种来源、两种格式，
+    而"这份文件是怎么来的"就再也说不清了。入库之后它同样可检索、可下载、可删。
+    """
+    kb_id = _require(args, "knowledge_base_id")
+    filename = _require(args, "filename")
+    services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
+    outcome = services.ingest.submit(
+        knowledge_base_id=kb_id,
+        filename=filename,
+        content=content,
+        uploaded_by=caller.user.id if caller.user is not None else None,
+    )
+    if not outcome.is_duplicate:
+        services.documents.enqueue_ingest(outcome.document.id)
+    return {
+        "document_id": outcome.document.id,
+        "name": outcome.document.name,
+        "size_bytes": len(content),
+        "format": kind,
+        "note": (
+            "内容与库里已有的一份文件完全相同，没有重复入库"
+            if outcome.is_duplicate
+            else "已存进知识库并开始处理。对方可以在文档列表里下载或看它"
+        ),
+    }
+
+
+def _suffix_of(filename: str) -> str:
+    """取扩展名（小写、不带点）。没有扩展名时回空串，由调用方给出可读的报错。"""
+    _, _, tail = (filename or "").rpartition(".")
+    return tail.strip().lower() if tail else ""
+
+
 _HANDLERS = {
     "list_knowledge_bases": _list_knowledge_bases,
     "create_knowledge_base": _create_knowledge_base,
@@ -762,6 +981,9 @@ _HANDLERS = {
     "list_notes": _list_notes,
     "recall": _recall,
     "remember": _remember,
+    "export_document": _export_document,
+    "export_table": _export_table,
+    "export_deck": _export_deck,
 }
 
 

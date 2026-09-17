@@ -42,6 +42,9 @@ _PARAMS: dict[str, tuple[str, ...]] = {
     "list_notes": ("query", "limit"),
     "recall": ("query", "limit"),
     "remember": ("content", "tags"),
+    "export_document": ("knowledge_base_id", "filename", "markdown", "title"),
+    "export_table": ("knowledge_base_id", "filename", "rows", "sheet_name"),
+    "export_deck": ("knowledge_base_id", "filename", "slides", "title"),
 }
 
 

@@ -296,18 +296,26 @@ def test_skill_frontmatter_is_parseable() -> None:
     assert "知识库" in description
 
 
-def test_skill_mentions_every_plan_tool() -> None:
-    """说明书要点到全部工具，漏一个模型就不知道它存在。
+def test_every_tool_is_mentioned_by_some_skill() -> None:
+    """**每个工具都要被某一份说明书点到**，漏掉的那个等于不存在。
 
-    工具清单会随版本增长（v0.12 补了 list_documents 与三个笔记工具），
-    所以这里比的是 ``TOOL_NAMES`` 而不是写死的数字——写数字的话每加一个工具
-    都要来改一次，而漏改的表现是"文档里悄悄少了一个工具"。
+    为什么不是"这一份要点到全部"：技能不止一份了（v0.21 起 Office 产出那一组
+    有自己的 `kylab-office-export`）。把导出工具塞进"查知识库"那份说明书里，
+    两边都会变糊；而"没有任何一份说明书提到它"仍然是真问题——
+    模型在工具表里能看到名字，却不知道什么时候该用、有什么边界。
+
+    工具清单会随版本增长，所以比的是 ``TOOL_NAMES`` 而不是写死的数字：
+    写数字的话每加一个工具都要来改一次，而漏改的表现是"文档里悄悄少了一个工具"。
     """
     from app.mcp_server.tools import TOOL_NAMES
 
-    text = (SCRIPT.parents[1] / "SKILL.md").read_text(encoding="utf-8")
+    root = SCRIPT.parents[1].parent  # skills/
+    manuals = list(root.glob("*/SKILL.md"))
+    assert manuals, "一份技能都没扫到，这条用例就没意义了"
+    text = "\n".join(path.read_text(encoding="utf-8") for path in manuals)
+
     missing = [name for name in TOOL_NAMES if name not in text]
-    assert not missing, f"SKILL.md 没提到这些工具：{missing}"
+    assert not missing, f"没有任何技能说明书提到这些工具：{missing}"
 
 
 def test_skill_does_not_claim_there_is_no_authentication() -> None:

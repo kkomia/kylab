@@ -755,3 +755,200 @@ def test_remember_writes_the_core_memory_file(services: Services, admin: Caller)
         assert "用户偏好简短回答" in services.memory.core_text()
     finally:
         services.runtime.set({"memory.enabled": "false"})
+
+
+# ------------------------------------------------------- Office 产出（v0.21）
+
+
+def test_export_document_writes_a_real_docx(services: Services, kb: str, admin: Caller) -> None:
+    """导出的是**真文件**：入库之后能被我们自己的解析器读回来。
+
+    这条是这一组里最要紧的：如果产出只是个"看起来像 docx 的字节串"，
+    用户拿它打不开——而那要等到他把文件发给别人才会发现。
+    """
+    from app.parsers.base import ProbeResult
+    from app.parsers.local_office import LocalOfficeParser
+
+    result = call_tool(
+        services,
+        "export_document",
+        {
+            "knowledge_base_id": kb,
+            "filename": "随访方案.docx",
+            "markdown": "# 一、监测频率\n\n每三个月测一次。\n\n- 首次建档全套\n",
+            "title": "近视防控随访",
+        },
+        caller=admin,
+    )
+
+    assert result["format"] == "docx" and result["size_bytes"] > 1000
+    stored = services.documents.get(result["document_id"])
+    assert stored.name == "随访方案.docx"
+    raw = services.documents.content(result["document_id"]).data
+    parsed = LocalOfficeParser().parse(
+        filename=stored.name,
+        mime_type=None,
+        content=raw,
+        probe=ProbeResult(kind="office", text_coverage=1.0),
+    )
+    assert "每三个月测一次" in parsed.markdown
+    assert "首次建档全套" in parsed.markdown
+
+
+def test_export_table_keeps_numbers_as_numbers(services: Services, kb: str, admin: Caller) -> None:
+    """表格里的数字要写成**数值**。
+
+    全写成文本的话，Excel 里的求和、排序、图表全部失效——而用户会以为是我们算错了。
+    """
+    import io
+
+    import openpyxl
+
+    result = call_tool(
+        services,
+        "export_table",
+        {
+            "knowledge_base_id": kb,
+            "filename": "随访记录.xlsx",
+            "rows": [["项目", "频率(月)", "次数"], ["眼轴", "3", 4]],
+            "sheet_name": "随访",
+        },
+        caller=admin,
+    )
+
+    assert result["format"] == "xlsx"
+    raw = services.documents.content(result["document_id"]).data
+    sheet = openpyxl.load_workbook(io.BytesIO(raw))["随访"]
+    assert [cell.value for cell in sheet[1]] == ["项目", "频率(月)", "次数"]
+    assert sheet.cell(row=2, column=2).value == 3, "纯数字的字符串要落成数值"
+    assert sheet.cell(row=2, column=3).value == 4
+
+
+def test_export_deck_builds_slides(services: Services, kb: str, admin: Caller) -> None:
+    """幻灯：封面 + 每页标题与要点，读回来能对上。"""
+    from app.parsers.base import ProbeResult
+    from app.parsers.local_office import LocalOfficeParser
+
+    result = call_tool(
+        services,
+        "export_deck",
+        {
+            "knowledge_base_id": kb,
+            "filename": "方案.pptx",
+            "title": "随访方案",
+            "slides": [{"title": "监测频率", "bullets": ["三个月一次", "首次全套"]}],
+        },
+        caller=admin,
+    )
+
+    raw = services.documents.content(result["document_id"]).data
+    parsed = LocalOfficeParser().parse(
+        filename="方案.pptx",
+        mime_type=None,
+        content=raw,
+        probe=ProbeResult(kind="office", text_coverage=1.0),
+    )
+    assert "随访方案" in parsed.markdown
+    assert "三个月一次" in parsed.markdown
+
+
+def test_export_pdf_is_a_readable_pdf(services: Services, kb: str, admin: Caller) -> None:
+    """PDF 要能抽出中文——报告lab 的默认字体不含汉字，配错的话是一页黑方块。"""
+    import io
+
+    from pypdf import PdfReader
+
+    result = call_tool(
+        services,
+        "export_document",
+        {
+            "knowledge_base_id": kb,
+            "filename": "随访.pdf",
+            "markdown": "## 一、监测频率\n\n每三个月测量一次眼轴长度。\n",
+        },
+        caller=admin,
+    )
+
+    raw = services.documents.content(result["document_id"]).data
+    text = "\n".join(page.extract_text() or "" for page in PdfReader(io.BytesIO(raw)).pages)
+    assert "每三个月测量一次眼轴长度" in text
+
+
+def test_export_refuses_a_wrong_extension(services: Services, kb: str, admin: Caller) -> None:
+    """格式由扩展名决定，**不猜**：给 .xlsx 走文档那条路就得当场说清。"""
+    with pytest.raises(InvalidRequestError, match=r"只做 \.docx 与 \.pdf"):
+        call_tool(
+            services,
+            "export_document",
+            {"knowledge_base_id": kb, "filename": "表.xlsx", "markdown": "x"},
+            caller=admin,
+        )
+    with pytest.raises(InvalidRequestError, match=r"只做 \.xlsx"):
+        call_tool(
+            services,
+            "export_table",
+            {"knowledge_base_id": kb, "filename": "表.csv", "rows": [["a"]]},
+            caller=admin,
+        )
+
+
+def test_export_enforces_the_limits_with_the_number_in_the_message(
+    services: Services, kb: str, admin: Caller
+) -> None:
+    """超限时报错要**带上实际数量与上限**：模型据此才知道该拆成几份。"""
+    from app.services import office
+
+    with pytest.raises(InvalidRequestError) as excinfo:
+        call_tool(
+            services,
+            "export_table",
+            {
+                "knowledge_base_id": kb,
+                "filename": "大表.xlsx",
+                "rows": [["h"]] * (office.MAX_ROWS + 1),
+            },
+            caller=admin,
+        )
+    assert str(office.MAX_ROWS) in str(excinfo.value)
+
+    with pytest.raises(InvalidRequestError, match=r"non-empty|非空"):
+        call_tool(
+            services, "export_deck", {"knowledge_base_id": kb, "filename": "空.pptx", "slides": []},
+            caller=admin,
+        )
+
+
+def test_export_needs_write_access(services: Services, kb: str, key_for) -> None:  # type: ignore[no-untyped-def]
+    """**只读凭据不能产出**：写文档与上传文档是同一档权限。"""
+    reader = key_for(kb_ids=[kb], permission=READ)
+
+    with pytest.raises(ForbiddenError):
+        call_tool(
+            services,
+            "export_document",
+            {"knowledge_base_id": kb, "filename": "报告.docx", "markdown": "内容"},
+            caller=reader,
+        )
+
+
+def test_export_reports_a_missing_dependency_as_a_readable_sentence(
+    services: Services, kb: str, admin: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """依赖没装**不是"服务内部错误"**，而是一句能照做的话。
+
+    工具报错是给模型读的：它需要"这件事现在做不到、原因是这个、要装什么"，
+    不然它只会换个参数反复重试同一条走不通的路。
+    """
+    from app.services import office
+
+    monkeypatch.setitem(office._REQUIREMENTS, "pptx", ("python-pptx", "不存在的模块名"))
+
+    with pytest.raises(InvalidRequestError) as excinfo:
+        call_tool(
+            services,
+            "export_deck",
+            {"knowledge_base_id": kb, "filename": "方案.pptx", "slides": [{"title": "a"}]},
+            caller=admin,
+        )
+    message = str(excinfo.value)
+    assert "python-pptx" in message and "office" in message
