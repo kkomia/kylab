@@ -36,6 +36,7 @@ from app.services.agent import (
     parse_plan,
 )
 from app.services.llm import ChatError, ChatMessage, LLMConfig, OpenAICompatChat
+from app.services.prompt import PromptContext, build_system_prompt
 from app.services.retrieval import RetrievalQuery, RetrievalService
 from app.services.runtime_config import RuntimeConfigService
 from app.services.thinking import normalize_effort
@@ -114,29 +115,35 @@ def build_agent_messages(
     history: list[ChatMessage] | None = None,
     summary: str = "",
     system_prompt: str = "",
-    memory: str = "",
+    persona: tuple[tuple[str, str], ...] = (),
     skills: str = "",
     kb_prompt: str = "",
 ) -> list[ChatMessage]:
-    """工具循环那条链路的提示词（P0）。
+    """工具循环那条链路的提示词（P0/P1）。
 
     **与 `build_messages` 的关键差别：这里没有「资料」块。**
     资料不再是预先塞进上下文的段落，而是模型自己用 `search` 取回来的工具结果。
     这是"知识库从框架降级成工具"在提示词这一层的落点——不预先给，它才需要动手要。
 
-    保留不变的三样：记忆、技能目录、库级提示词。它们都是"这个 agent 知道什么"
-    的一部分，与"这一轮检索到什么"不是一回事。
+    拼装交给 `services/prompt.py` 的贡献者表（P1）：顺序是数据，加一个来源不必
+    回头读整段。人设四份文件（人格 / 身份 / 规程 / 长期记忆）走 `persona` 那一条——
+    **`MEMORY.md` 就在里面**，所以这里不再单独收一个 memory 块（收两次会注入两遍）。
     """
-    parts = [system_prompt.strip() or AGENT_SYSTEM_PROMPT]
-    if kb_prompt:
-        parts.append(kb_prompt)
-    if memory:
-        parts.append(memory)
-    if skills:
-        parts.append(skills)
-    if summary:
-        parts.append("【此前对话的摘要】（用于保持上下文）\n" + neutralize(summary))
-    messages: list[ChatMessage] = [ChatMessage(role="system", content="\n\n".join(parts))]
+    messages: list[ChatMessage] = [
+        ChatMessage(
+            role="system",
+            content=build_system_prompt(
+                PromptContext(
+                    base=system_prompt or AGENT_SYSTEM_PROMPT,
+                    persona=persona,
+                    kb_prompt=kb_prompt,
+                    skills=skills,
+                    # 摘要同样是"数据"，打散定界符（它源自更早的用户输入与文档）
+                    summary=neutralize(summary),
+                )
+            ),
+        )
+    ]
     for item in history or []:
         messages.append(item)
     messages.append(ChatMessage(role="user", content=query))
@@ -1246,10 +1253,23 @@ class ChatService:
             history=history,
             summary=summary,
             system_prompt=system_prompt,
-            memory=self._memory_block(owner_id),
+            # 人设四份文件（含 MEMORY.md）统一由 persona 提供：
+            # 它们住在同一个目录（`data/memory/<账号>/`），也是用户能编辑的那份"人格"
+            persona=self._persona_texts(owner_id),
             skills=self._skill_block(self._pinned_bodies(skill_names)),
             kb_prompt=self.kb_prompt(kb_ids or []),
         )
+
+    def _persona_texts(self, owner_id: str | None) -> tuple[tuple[str, str], ...]:
+        """人设文件的正文（人格 / 身份 / 规程 / 长期记忆）。
+
+        **先把缺失的补齐**（`seed_persona`）：新账号第一次对话时就把模板落盘，
+        用户才知道"原来这三份东西是我的、可以改"——只存在代码里的默认值他看不见。
+        """
+        if self._memory is None:
+            return ()
+        self._memory.seed_persona(owner_id)
+        return tuple(self._memory.persona_texts(owner_id))
 
     def _pinned_bodies(self, skill_names: list[str] | None) -> str:
         """用户钉住的技能正文（v0.18 的能力，工具链路照旧有）。

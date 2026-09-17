@@ -66,6 +66,72 @@ CORE_MEMORY_FILE = "MEMORY.md"
 #: 人格文件。与记忆并列的第二类持久文件（见 ``soul_text`` 的说明）。
 SOUL_FILE = "SOUL.md"
 
+#: 操作规程（SOP）。与 SOUL.md（人格）、PROFILE.md（身份）并列的第三份人设文件。
+AGENTS_FILE = "AGENTS.md"
+
+#: 身份与用户资料。QwenPaw 里叫 PROFILE.md，语义一致：**我是谁 + 对方是谁**。
+PROFILE_FILE = "PROFILE.md"
+
+#: 注入 system prompt 的人设文件与**固定顺序**。
+#:
+#: 顺序不是随手排的，它决定模型读到它们的先后：先"我是谁"（人格）→ 再"对方是谁"（资料）
+#: → 再"这类活怎么干"（规程）→ 最后是"已知的事实"（长期记忆）。越靠前越像"身份"，
+#: 越靠后越像"数据"。QwenPaw 用同样的分法（只是它的默认顺序是 AGENTS/SOUL/PROFILE）。
+#:
+#: `MEMORY.md` 放在最后：它是**会过时的**那类，紧挨着它那句"与用户当前所说冲突时
+#: 以用户当下为准"一起读，才不会被当成事实基准。
+PERSONA_FILES: tuple[tuple[str, str], ...] = (
+    (SOUL_FILE, "人格"),
+    (PROFILE_FILE, "身份与对方"),
+    (AGENTS_FILE, "操作规程"),
+    (CORE_MEMORY_FILE, "长期记忆"),
+)
+
+#: 新建 `SOUL.md` 时的模板。照 QwenPaw 的两条约定：**由 Agent 自己进化**，
+#: 以及**改动要告知用户**（那是它的灵魂，对方该知道）。
+_SOUL_TEMPLATE = """---
+summary: "Agent 的人格：身份、准则与说话方式"
+read_when:
+  - 需要确认自己是谁、该怎么说话、哪些事不做
+---
+
+## 我是谁
+
+## 我的准则
+
+## 说话方式
+"""
+
+#: 新建 `PROFILE.md` 时的模板。
+_PROFILE_TEMPLATE = """---
+summary: "身份与对方：我叫什么、对方是谁、偏好与习惯"
+read_when:
+  - 需要称呼对方、或想确认他的偏好与工作习惯
+---
+
+## 我的身份
+
+## 关于对方
+
+## 偏好与习惯
+"""
+
+#: 新建 `AGENTS.md` 时的模板。写的是**怎么干活**，不是"是什么"。
+_AGENTS_TEMPLATE = """---
+summary: "操作规程：这类活怎么干、哪些要先问、成果放哪"
+read_when:
+  - 开始一项任务前，想确认有没有既定做法
+---
+
+## 工作方式
+
+## 先问再做的情形
+
+## 成果放哪
+
+## 不要做的事
+"""
+
 #: 一次召回最多取几条。与检索工具同一口径：给模型"够用"的几条，
 #: 而不是它说要多少就给多少（上下文预算是有限的）。
 MAX_RECALL = 20
@@ -274,6 +340,55 @@ class MemoryService:
             return (self.workspace_for(user_id) / SOUL_FILE).read_text(encoding="utf-8").strip()
         except OSError:
             return ""
+
+    def seed_persona(self, user_id: str | None = None) -> list[str]:
+        """把缺的人设文件补上模板，返回**这次新建了哪几个**。
+
+        为什么要落成文件而不是只存在代码里：这三份东西的价值恰恰在于**用户能改**——
+        人设、对方是谁、这类活怎么干，都是他比我清楚的事。文件是唯一一种
+        "他能看见、能编辑、还能用 git 管版本"的形态（QwenPaw 也是这么做的）。
+
+        **只补缺的，绝不覆盖已存在的**：那可能已经是用户写了几天的东西。
+        """
+        if not self.enabled:
+            return []
+        created: list[str] = []
+        for name, template in (
+            (SOUL_FILE, _SOUL_TEMPLATE),
+            (PROFILE_FILE, _PROFILE_TEMPLATE),
+            (AGENTS_FILE, _AGENTS_TEMPLATE),
+        ):
+            path = self.workspace_for(user_id) / name
+            if path.exists():
+                continue
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                # 按字节写：`write_text` 在 Windows 上会把换行改成 CRLF
+                # （与 memory_files 同一处踩过的坑）
+                path.write_bytes(template.encode("utf-8"))
+            except OSError:
+                logger.warning("人设文件写不出来：%s", path, exc_info=True)
+                continue
+            created.append(name)
+        return created
+
+    def persona_texts(self, user_id: str | None = None) -> list[tuple[str, str]]:
+        """``[(文件名, 正文)]``，按 ``PERSONA_FILES`` 的顺序，空的跳过。
+
+        **不在这里拼字符串**：拼装交给 `services/prompt.py` 的贡献者——
+        那里才知道"这一轮是工具循环还是检索链路""要不要带摘要"。
+        """
+        if not self.enabled:
+            return []
+        found: list[tuple[str, str]] = []
+        for name, _label in PERSONA_FILES:
+            try:
+                text = (self.workspace_for(user_id) / name).read_text(encoding="utf-8").strip()
+            except OSError:
+                continue
+            if text:
+                found.append((name, text))
+        return found
 
     def prompt_block(self, user_id: str | None = None) -> str:
         """拼成注入 system prompt 的**一个块**；两者都空时返回空串。
