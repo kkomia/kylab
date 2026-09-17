@@ -366,10 +366,7 @@ function messageOf(error: unknown): string {
 </script>
 
 <template>
-  <PageShell
-    title="记忆"
-    description="Agent 的长期记忆：工作区里一组可读、可改、可备份的 Markdown。它是「你说的」，与知识库里「文献说的」是两个池子。"
-  >
+  <PageShell title="记忆">
     <template #actions>
       <StatusTag
         :label="statusView.label"
@@ -585,11 +582,6 @@ function messageOf(error: unknown): string {
 
       <!-- ------------------------------------------------------------- 召回 -->
       <div v-else class="recall-tab">
-        <p class="recall-lead text-meta">
-          试一下"哪些记忆会被想起来"。<strong>只对每日现场与长期知识有效</strong>——
-          核心记忆走注入，不参与检索。
-        </p>
-
         <form class="recall-form" @submit.prevent="runRecall">
           <AppInput
             v-model="recallQuery"
@@ -984,7 +976,6 @@ function messageOf(error: unknown): string {
   gap: var(--space-4);
 }
 
-.recall-lead,
 .modal-lead {
   margin: 0;
   color: var(--text-secondary);

@@ -2,21 +2,19 @@
 import { computed, useSlots } from 'vue'
 
 /**
- * 页头（《前端设计规范》§5）：页标题 + 可选副标题 + 次要操作，下方 1px hairline。
+ * 页头（《前端设计规范》§5）：页标题 + 次要操作，下方 1px hairline。
  *
- * 副标题的取舍：**只在它真的提供信息时才写**（"3 个知识库 · 共 137 篇文档"这类
- * 从数据里算出来的话），不写"这里是全部知识库"这种把标题换个说法重复一遍的废话——
- * 那种每页一句的解释性灰字才是模板感的来源。
+ * **没有副标题**（v0.22，用户要求"所有类似这种的全部删除"）：那句灰色小字
+ * 解释"这一页是什么"，而标题、侧栏那一条与页面内容本身已经说清了——
+ * 它是每页最显眼的一行字，也是最像模板的一行字。
  */
 /**
  * ``title`` 可空（v0.22）：能力页要从标签开始、不要标题——它的名字左侧菜单里已经写着，
- * 页内再写一遍是重复。**没有标题、没有副标题、也没有动作时整块不渲染**，
+ * 页内再写一遍是重复。**没有标题也没有动作时整块不渲染**，
  * 否则会留下一条空页头加一条 hairline。
  */
-const props = defineProps<{ title?: string; description?: string }>()
-const hasHead = computed(
-  () => Boolean(props.title || props.description) || Boolean(useSlots().actions),
-)
+const props = defineProps<{ title?: string }>()
+const hasHead = computed(() => Boolean(props.title) || Boolean(useSlots().actions))
 </script>
 
 <template>
@@ -28,10 +26,6 @@ const hasHead = computed(
              放在右侧动作区会读成"页面的动作"，语义不同 -->
         <slot name="title-suffix" />
       </div>
-      <!-- 外层 p 提供排版，插槽内容可以是纯文本，也可以带 .sep 这类行内标记 -->
-      <p v-if="description || $slots.description" class="page-description">
-        <slot name="description">{{ description }}</slot>
-      </p>
     </div>
     <div class="page-head-actions">
       <slot name="actions" />
@@ -68,12 +62,5 @@ const hasHead = computed(
 
 .page-title {
   margin: 0;
-}
-
-.page-description {
-  margin: var(--space-2) 0 0;
-  max-width: 76ch;
-  font-size: var(--text-meta-size);
-  color: var(--text-secondary);
 }
 </style>

@@ -191,10 +191,7 @@ async function newConversation(): Promise<void> {
 </script>
 
 <template>
-  <PageShell
-    title="工作区"
-    description="一个工作区 = 一个项目目录 + 它用的知识库。会话挂在工作区下，Agent 的文件操作被约束在这个目录里。"
-  >
+  <PageShell title="工作区">
     <template #actions>
       <AppButton @click="startCreate">
         <template #icon><IconPlus :size="15" /></template>

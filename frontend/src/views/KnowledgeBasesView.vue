@@ -204,17 +204,8 @@ function openCreate(): void {
 const hasItems = computed(() => store.items.length > 0)
 const useCards = computed(() => store.items.length <= CARD_LIMIT)
 
-const summaryLine = computed(() => {
-  if (!hasItems.value) return undefined
-  const counts = Object.values(store.summaries)
-  if (counts.length === 0) return `${store.items.length} 个知识库`
-  // count 缺失按 0 算：直接相加会把 undefined 变成 NaN，页头上写"共 NaN 篇"（实测踩到）
-  const total = counts.reduce(
-    (sum, item) => sum + (Number.isFinite(item.count) ? item.count : 0),
-    0,
-  )
-  return `${store.items.length} 个知识库 · 共 ${total} 篇文档`
-})
+// 页头那句「N 个知识库 · 共 M 篇文档」的统计原先在这里算（v0.22 随页头副标题一起删）。
+// 每个库的篇数在下面的卡片上都有，汇总没必要占页头最显眼的一行。
 
 onMounted(() => {
   // 计数随列表一起回来，不必再单独拉一轮汇总
@@ -275,7 +266,7 @@ function statsOf(kbId: string) {
 </script>
 
 <template>
-  <PageShell title="知识库" :description="summaryLine">
+  <PageShell title="知识库">
     <template #actions>
       <AppButton variant="primary" :disabled="noEmbeddingModel" @click="openCreate">
         <template #icon><IconPlus /></template>

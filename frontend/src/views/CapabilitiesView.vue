@@ -386,13 +386,6 @@ function policyLabel(policy: MCPPolicy): string {
       <!-- ------------------------------------------------------------ 技能 -->
       <section v-if="tab === 'skills'" class="cap-col" role="tabpanel" aria-label="技能">
         <header class="panel-head">
-          <!-- **不写标题**：上面那个标签就叫「技能」。用户为"同一个词出现两次"说过一次，
-             而我这一版把它从页标题换成了小节标题——换个地方犯同一个错，这次删掉。
-             说明也只留一句：原先那句与一个 ⓘ 讲的是同一件事。 -->
-          <p class="panel-desc">
-            流程与 SOP：告诉 Agent「这类事该怎么做」。只有名字与描述会进提示词，
-            正文在它决定用这个技能时才读——所以装得多不等于上下文变长。点卡片看正文。
-          </p>
           <div class="panel-head-actions">
             <label class="panel-search">
               <IconSearch :size="15" />
@@ -465,11 +458,6 @@ function policyLabel(policy: MCPPolicy): string {
       <!-- ------------------------------------------------------------ 插件 -->
       <section v-else class="cap-col" role="tabpanel" aria-label="插件">
         <header class="panel-head">
-          <p class="panel-desc">
-            外部服务：接进来的工具会被 Agent 当成能力使用。每个插件都有一个准入策略，
-            默认「需要确认」——它不会静默地以你的名义调用，而是把「需要先确认」回给模型
-            并说明怎么放开。
-          </p>
           <div class="panel-head-actions">
             <label class="panel-search">
               <IconSearch :size="15" />
@@ -741,23 +729,16 @@ function policyLabel(policy: MCPPolicy): string {
 /* 内容头（照 Kimi 的插件页）：左边标题 + 一句说明，右边搜索与主操作。
    这一节原先只有一个 `h2 技能` 加一个按钮——标题重复了标签，而"这是什么"
    那句话没人说。 */
+/* 内容头：**只有右侧的搜索与主操作**（v0.22 起这里的解释性小字按用户要求全删了）。
+   所以它整行右对齐——没有左侧文字时留着 `space-between` 会让按钮贴两边。 */
 .panel-head {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  align-items: center;
+  justify-content: flex-end;
   gap: var(--space-4);
 }
 
 /* 说明占满一行：它是给这一节定性的那句话，不该挤在标题旁边 */
-.panel-desc {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  max-width: 76ch;
-  color: var(--text-secondary);
-  font-size: var(--text-meta-size);
-  line-height: var(--line-ui);
-}
 
 .panel-head-actions {
   display: flex;

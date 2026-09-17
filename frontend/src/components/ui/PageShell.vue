@@ -11,9 +11,19 @@
  */
 import PageHeader from '@/components/ui/PageHeader.vue'
 
-withDefaults(defineProps<{ title?: string; description?: string; narrow?: boolean }>(), {
+/**
+ * **没有 `description` 这个 prop**（v0.22，用户要求）。
+ *
+ * 原先每个页面都挂一句灰色小字解释"这一页是什么"，用户的原话是
+ * "所有类似这种的全部删除，一个不留"。理由站得住：页面标题、侧栏那一条、
+ * 以及页面里的内容本身已经说清了这是什么，那句解释把标题换个说法重复一遍，
+ * 而它是每页最显眼的一行字——**解释性文案是最像模板的东西**。
+ *
+ * 口子一并删掉而不是留着不用：留着就一定会有下一个页面把它写回来
+ * （这条不是猜的——上一轮我删了页标题，转头就在小节里写了一个同样的标题）。
+ */
+withDefaults(defineProps<{ title?: string; narrow?: boolean }>(), {
   title: undefined,
-  description: undefined,
   narrow: false,
 })
 </script>
@@ -24,12 +34,9 @@ withDefaults(defineProps<{ title?: string; description?: string; narrow?: boolea
       <slot name="breadcrumb" />
     </nav>
 
-    <PageHeader :title="title" :description="description">
+    <PageHeader :title="title">
       <template v-if="$slots['title-suffix']" #title-suffix>
         <slot name="title-suffix" />
-      </template>
-      <template v-if="$slots.description" #description>
-        <slot name="description" />
       </template>
       <template v-if="$slots.actions" #actions>
         <slot name="actions" />
