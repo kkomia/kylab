@@ -406,12 +406,15 @@ function messageOf(error: unknown): string {
       </AppButton>
     </template>
 
-    <!-- 没启用：说清"能用哪一半"。浏览与编辑不依赖服务，召回与沉淀才需要 -->
+    <!-- 没启用：说清"能用哪一半"。文件那一半完全不依赖服务，只有召回与沉淀需要 -->
     <div v-if="status && !status.enabled" class="notice">
       <IconAlert :size="15" />
       <p>
-        长期记忆没启用：<strong>文件可以照常浏览与编辑</strong>，但
-        <strong>不会被召回、也不会注入对话</strong>。到「设置 → 长期记忆」打开， 并让记忆服务在
+        记忆服务没启用：工作区里的文件<strong>照常注入对话</strong>，也能浏览与编辑——
+        人格（SOUL.md）、身份（PROFILE.md）、操作规程（AGENTS.md）、核心记忆（MEMORY.md）
+        都是磁盘上的普通文件，不依赖这个开关。没启用的只是另一半：
+        过去的对话<strong>不会被召回，也不会自动沉淀</strong>成新记忆。 到「设置 →
+        长期记忆」打开，并让记忆服务在
         <code>{{ status.base_url || '配置的地址' }}</code> 上跑起来。
       </p>
     </div>

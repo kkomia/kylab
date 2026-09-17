@@ -343,12 +343,24 @@ def test_prompt_block_is_empty_without_files(tmp_path: Path) -> None:
     assert _service(tmp_path).prompt_block() == ""
 
 
-def test_prompt_block_is_empty_when_disabled(tmp_path: Path) -> None:
+def test_prompt_block_still_works_when_disabled(tmp_path: Path) -> None:
+    """**关掉记忆服务，文件照旧注入**（这条原先断言的是相反的行为）。
+
+    那个开关管的是"过去的对话会不会被召回、会不会自动沉淀"，而
+    `MEMORY.md` / `SOUL.md` 是磁盘上的普通文件——`memory_files` 的模块头
+    自己就写着"看自己的文本文件不该先要求另一个进程活着"。
+
+    实测逼出来的：用户的实例上记忆服务是关的，于是人设既不播种也不注入，
+    整个功能是死的，界面上还写着"没启用"。
+    """
     service = _service(tmp_path, **{"memory.enabled": "false"})
     (tmp_path / "memory").mkdir(parents=True)
     (tmp_path / "memory" / CORE_MEMORY_FILE).write_text("- 有内容", encoding="utf-8")
 
-    assert service.prompt_block() == ""
+    block = service.prompt_block()
+
+    assert "有内容" in block
+    assert "长期记忆" in block
 
 
 # ----------------------------------------------------- 真实返回（从活服务抓的）

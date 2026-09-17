@@ -320,8 +320,6 @@ class MemoryService:
 
         未启用或文件还不存在时返回空串——注入是"有就带上"，缺了不该让对话失败。
         """
-        if not self.enabled:
-            return ""
         try:
             return self.core_file_for(user_id).read_text(encoding="utf-8").strip()
         except OSError:
@@ -334,8 +332,6 @@ class MemoryService:
         两条约定照抄 QwenPaw：**由 Agent 自己进化**，以及**改动要告知用户**
         （"这是你的灵魂，他们该知道"）——后一条是产品约定，写在设计文档里。
         """
-        if not self.enabled:
-            return ""
         try:
             return (self.workspace_for(user_id) / SOUL_FILE).read_text(encoding="utf-8").strip()
         except OSError:
@@ -350,8 +346,6 @@ class MemoryService:
 
         **只补缺的，绝不覆盖已存在的**：那可能已经是用户写了几天的东西。
         """
-        if not self.enabled:
-            return []
         created: list[str] = []
         for name, template in (
             (SOUL_FILE, _SOUL_TEMPLATE),
@@ -378,8 +372,6 @@ class MemoryService:
         **不在这里拼字符串**：拼装交给 `services/prompt.py` 的贡献者——
         那里才知道"这一轮是工具循环还是检索链路""要不要带摘要"。
         """
-        if not self.enabled:
-            return []
         found: list[tuple[str, str]] = []
         for name, _label in PERSONA_FILES:
             try:

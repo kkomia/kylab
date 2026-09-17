@@ -181,12 +181,26 @@ def test_persona_texts_are_per_account(tmp_path) -> None:  # type: ignore[no-unt
     assert not any(text == "甲的资料" for _name, text in service.persona_texts("u2"))
 
 
-def test_persona_is_empty_when_memory_is_off(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """记忆层关着时人设也不注入（它们住同一处、同一开关）。"""
+def test_persona_does_not_depend_on_the_memory_service_switch(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """**记忆服务关着，人设照样工作。**
+
+    这一条是实测逼出来的：人设原先跟 `core_text` / `soul_text` 共用同一道
+    `if not self.enabled` 闸门，而用户的实例上记忆服务是关的——于是人设文件
+    既不播种也不注入，功能整个是死的，界面上还写着"没启用"。
+
+    那四个文件是**磁盘上的普通文件**（`memory_files` 的模块头自己就写着
+    "看自己的文本文件不该先要求另一个进程活着"）。那个开关管的是另一半：
+    过去的对话会不会被召回、会不会自动沉淀。
+    """
     service = MemoryService(_FakeRuntime(False), tmp_path)  # type: ignore[arg-type]
 
-    assert service.persona_texts("u1") == []
-    assert service.seed_persona("u1") == []
+    assert service.seed_persona("u1") == [SOUL_FILE, PROFILE_FILE, AGENTS_FILE]
+    assert [name for name, _text in service.persona_texts("u1")] == [
+        SOUL_FILE,
+        PROFILE_FILE,
+        AGENTS_FILE,
+    ]
+    assert "【你的人格" in service.prompt_block("u1")
 
 def test_persona_files_are_listed_and_editable_through_the_memory_layer(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """人设文件的**编辑入口是白捡的**：它们落在记忆工作区里，而那一页本来就在列文件。

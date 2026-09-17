@@ -747,8 +747,11 @@ def test_remember_writes_the_core_memory_file(services: Services, admin: Caller)
         assert core.exists()
         body = core.read_text(encoding="utf-8")
         assert body.count("用户偏好简短回答") == 1
-        # 关掉之后注入路径应当立刻不再带上它（记忆是"有就带上"）
+        # 关掉那个开关之后，注入路径**照旧带上它**（这条原先断言的是相反的行为）：
+        # `MEMORY.md` 是磁盘上的普通文件，开关管的是"过去的对话会不会被召回、
+        # 会不会自动沉淀"，不是"这份文件要不要读"。实测逼出来的——用户的实例上
+        # 记忆服务是关的，于是人设与核心记忆既不播种也不注入，功能整个是死的。
         services.runtime.set({"memory.enabled": "false"})
-        assert services.memory.core_text() == ""
+        assert "用户偏好简短回答" in services.memory.core_text()
     finally:
         services.runtime.set({"memory.enabled": "false"})
