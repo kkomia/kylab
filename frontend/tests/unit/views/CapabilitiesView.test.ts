@@ -92,6 +92,17 @@ function mountView() {
   })
 }
 
+/**
+ * 切到「MCP 服务」那一页。
+ *
+ * v0.19 起技能与 MCP 是**两个标签**、一次只渲染一页（用户指定），
+ * 所以断言 MCP 内容的用例必须先点那一下——不点的话相关 DOM 根本不在。
+ */
+async function openMcp(wrapper: ReturnType<typeof mountView>): Promise<void> {
+  const tab = wrapper.findAll('.cap-tab').find((el) => el.text() === 'MCP 服务')!
+  await tab.trigger('click')
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   resetResizeObservers()
@@ -128,6 +139,7 @@ describe('CapabilitiesView', () => {
 
   it('MCP 服务显示策略档位，且凭据只显示「已配置」', async () => {
     const wrapper = mountView()
+    await openMcp(wrapper)
     await vi.waitFor(() => expect(wrapper.text()).toContain('本地工具'))
 
     // 策略默认 ask：这一层最要紧的默认，界面上必须看得见
@@ -144,6 +156,7 @@ describe('CapabilitiesView', () => {
       detail: 'FileNotFoundError: 系统找不到指定的文件',
     })
     const wrapper = mountView()
+    await openMcp(wrapper)
     await vi.waitFor(() => expect(wrapper.text()).toContain('本地工具'))
 
     const probeButton = wrapper.findAll('button').find((b) => b.text().includes('测试连接'))
@@ -159,6 +172,7 @@ describe('CapabilitiesView', () => {
   it('编辑时**不回填凭据**（回填会把掩码串写成真 key）', async () => {
     updateMCPServer.mockResolvedValue(SERVER)
     const wrapper = mountView()
+    await openMcp(wrapper)
     await vi.waitFor(() => expect(wrapper.text()).toContain('本地工具'))
 
     const editButton = wrapper.findAll('button').find((b) => b.text().includes('编辑'))
@@ -177,6 +191,22 @@ describe('CapabilitiesView', () => {
     const wrapper = mountView()
 
     await vi.waitFor(() => expect(wrapper.text()).toContain('还没有技能'))
+    // 两页各看一次：它们现在不在同一屏上（v0.19 起是两个标签）
+    await openMcp(wrapper)
     expect(wrapper.text()).toContain('还没有登记 MCP 服务')
+  })
+
+  it('技能与 MCP 是一次只看一页的两个标签', async () => {
+    const wrapper = mountView()
+    await vi.waitFor(() => expect(wrapper.text()).toContain('kylab-knowledge-base'))
+
+    // 默认在技能页：技能在、MCP 不在
+    expect(wrapper.findAll('.cap-tab').map((el) => el.text())).toEqual(['技能', 'MCP 服务'])
+    expect(wrapper.text()).toContain('kylab-knowledge-base')
+    expect(wrapper.text()).not.toContain('本地工具')
+
+    await openMcp(wrapper)
+    expect(wrapper.text()).toContain('本地工具')
+    expect(wrapper.text()).not.toContain('kylab-knowledge-base')
   })
 })

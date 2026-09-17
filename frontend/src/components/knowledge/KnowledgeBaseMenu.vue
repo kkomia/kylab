@@ -611,9 +611,7 @@ async function confirmDelete(): Promise<void> {
                 </template>
                 <template v-else>
                   这次生成依据了
-                  {{
-                    promptDraft.sources.length
-                  }}
+                  {{ promptDraft.sources.length }}
                   篇摘要，但没有写入<strong>需要标注来源的具体事实</strong>——那不是失败，是最保险的结果（摘要只提供了领域背景）：
                 </template>
               </p>

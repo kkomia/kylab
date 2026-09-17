@@ -48,7 +48,6 @@ import IconArrowUp from '@/components/icons/IconArrowUp.vue'
 import IconAi from '@/components/icons/IconAi.vue'
 import IconCopy from '@/components/icons/IconCopy.vue'
 import IconAlert from '@/components/icons/IconAlert.vue'
-import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import IconRegenerate from '@/components/icons/IconRegenerate.vue'
 import IconNote from '@/components/icons/IconNote.vue'
@@ -227,15 +226,32 @@ const visibleKbOptions = computed(() => {
   return kbOptions.value.filter((item) => item.label.toLocaleLowerCase().includes(keyword))
 })
 
-/** 关掉开关时触发器上写什么：状态要能一眼看出来，不能只靠勾选框的差异。 */
-const kbTriggerText = computed(() => {
-  if (!useKb.value) return '不使用知识库'
+/**
+ * 选库入口上写什么。
+ *
+ * 开关那件事由**开关本身**表达（v0.19 起它们是两个控件），所以这里只说"选了哪几个"。
+ */
+const kbPickText = computed(() => {
   // **还没加载完就说"还没有知识库"是假话**：库明明在，只是还没取回来。
   // 加载中报空会让用户以为自己的库丢了（实测确实会先闪一下这句）。
-  if (store.loading && store.items.length === 0) return '知识库'
+  if (store.loading && store.items.length === 0) return '读取中…'
   if (store.items.length === 0) return '还没有知识库'
-  return selected.value.length === 0 ? '未选库' : `知识库 ${selected.value.length} 个`
+  if (selected.value.length === 0) return '未选库'
+  if (selected.value.length === store.items.length) return `全部 ${selected.value.length} 个`
+  return `已选 ${selected.value.length} 个`
 })
+
+/**
+ * 技能子菜单**往右展开**（v0.19，用户指定）。
+ *
+ * 记的是「技能」那一行在浮层里的 offsetTop：子菜单是绝对定位的，
+ * 它的 offsetParent 正是那个浮层（`position: fixed` 是定位祖先），
+ * 于是这一个数字就能让它贴着那一行、又不跟着列表往下堆。
+ */
+const skillsFlyoutTop = ref('0px')
+
+/** 第一轮对话之前：欢迎层与输入卡片作为一组居中（Kimi 的形态）。 */
+const isWelcome = computed(() => messages.value.length === 0 && !pendingEntry.value)
 
 function toggleKbSwitch(): void {
   useKb.value = !useKb.value
@@ -280,9 +296,12 @@ async function loadSkills(): Promise<void> {
   }
 }
 
-function toggleSkillsPanel(): void {
+function toggleSkillsPanel(event: MouseEvent): void {
   skillsOpen.value = !skillsOpen.value
-  if (skillsOpen.value) void loadSkills()
+  if (!skillsOpen.value) return
+  const row = event.currentTarget as HTMLElement | null
+  if (row) skillsFlyoutTop.value = `${row.offsetTop}px`
+  void loadSkills()
 }
 
 function toggleSkill(name: string): void {
@@ -1189,7 +1208,7 @@ function closeReader(): void {
 </script>
 
 <template>
-  <div class="chat">
+  <div class="chat" :class="{ 'chat-centered': isWelcome }">
     <!-- 消息区自己滚：输入卡片要一直停在视野里，不能跟着回答一起被顶下去 -->
     <div ref="streamHost" class="chat-scroll" @scroll.passive="onStreamScroll">
       <div
@@ -1460,7 +1479,7 @@ function closeReader(): void {
                   type="button"
                   class="tool-item"
                   :aria-expanded="skillsOpen"
-                  @click="toggleSkillsPanel"
+                  @click="toggleSkillsPanel($event)"
                 >
                   <IconAi :size="15" />
                   <span>技能</span>
@@ -1471,7 +1490,12 @@ function closeReader(): void {
                   后端没有"关掉某个技能"的概念——技能由模型按需 `use_skill` 读，
                   钉住只是把"要读"这一步替它做了。措辞按这个语义写。
                 -->
-                <ul v-if="skillsOpen" class="tool-sub">
+                <!-- 往右飞出（用户指定）：它从属于上面那一行，不该把菜单撑长 -->
+                <ul
+                  v-if="skillsOpen"
+                  class="tool-sub tool-flyout"
+                  :style="{ top: skillsFlyoutTop }"
+                >
                   <li v-for="skill in skillOptions" :key="skill.name">
                     <label class="tool-check" :title="skill.description">
                       <input
@@ -1494,70 +1518,66 @@ function closeReader(): void {
             </RowMenu>
 
             <!--
-              「知识库」：一个开关 + 一个子菜单（v0.18，用户指定）。
-              **开关与选库是两件事**：关掉是"这一轮不查库"（纯对话），
-              开着才有"查哪几个"。所以它们在同一块里，但状态分开表达——
-              触发器上直接写清当前是"不使用知识库"还是"知识库 3 个"。
+              「知识库」**就是一个开关**（v0.19，用户指定）。
+              原先它是个"开关 + 选库"二合一的菜单：要先点开才知道这一轮到底查不查库，
+              而"查不查"比"查哪几个"高频得多，值得一步到位。
+              关掉 = 这一轮纯对话（不查库），开着才有右边那个选库入口。
             -->
-            <RowMenu
-              class="tool tool-kb"
-              :class="{ 'tool-off': !useKb }"
-              align="left"
-              label="使用知识库"
+            <button
+              type="button"
+              class="kb-switch"
+              role="switch"
+              :aria-checked="useKb"
+              :title="useKb ? '这一轮会查知识库' : '这一轮不查知识库，按纯对话回答'"
+              @click="toggleKbSwitch"
             >
+              <span class="kb-switch-track" :class="{ 'kb-switch-on': useKb }">
+                <span class="kb-switch-knob" />
+              </span>
+              <span class="kb-switch-text">知识库</span>
+            </button>
+
+            <!-- 选哪几个：**开着时才有这个入口**（关掉时它没有意义，摆着只是噪声） -->
+            <RowMenu v-if="useKb" class="tool tool-kb" align="left" label="选择要查的知识库">
               <template #trigger>
-                <IconLibrary :size="15" />
-                <span class="tool-trigger-text">{{ kbTriggerText }}</span>
+                <span class="tool-trigger-text">{{ kbPickText }}</span>
                 <IconChevronDown :size="13" />
               </template>
               <template #default>
-                <button
-                  type="button"
-                  class="tool-item tool-switch"
-                  role="switch"
-                  :aria-checked="useKb"
-                  @click="toggleKbSwitch"
-                >
-                  <span class="tool-switch-track" :class="{ 'tool-switch-on': useKb }">
-                    <span class="tool-switch-knob" />
-                  </span>
-                  <span>使用知识库</span>
-                </button>
-                <p class="tool-note tool-note-block">
-                  关掉就是纯对话：这一轮不查库，回答只按模型自己的知识来。
-                </p>
                 <input
-                  v-if="useKb && store.items.length > 8"
+                  v-if="store.items.length > 8"
                   v-model="kbFilter"
                   class="tool-filter"
                   type="search"
                   placeholder="筛选知识库"
                 />
-                <ul class="tool-sub" :class="{ 'tool-sub-muted': !useKb }">
+                <ul class="tool-sub tool-sub-flat">
                   <li v-for="item in visibleKbOptions" :key="item.value">
                     <label class="tool-check">
                       <input
                         type="checkbox"
                         :checked="selected.includes(item.value)"
-                        :disabled="!useKb"
                         @change="toggleKb(item.value)"
                       />
                       <span class="tool-check-name">{{ item.label }}</span>
                     </label>
                   </li>
                   <li v-if="store.items.length === 0" class="tool-note">
-                    还没有知识库。去「所有知识库」建一个，或先用纯对话。
+                    还没有知识库。去「所有知识库」建一个，或先关掉这个开关。
                   </li>
-                  <li v-else-if="useKb && visibleKbOptions.length === 0" class="tool-note">
+                  <li v-else-if="visibleKbOptions.length === 0" class="tool-note">
                     没有匹配的知识库。
                   </li>
                 </ul>
               </template>
             </RowMenu>
-
+          </div>
+          <div class="composer-right">
             <!--
               模型 + 思考 + 强度收在同一个入口里（见 ModelPicker 的注释）：
               三个控件并排时工具条比输入框还热闹，而它们回答的是同一个问题——这一轮怎么生成。
+              **放右侧**（v0.19 用户指定）：左边是"给这一轮什么"（附件/技能/知识库），
+              右边是"怎么生成 + 发出去"，两类动作各占一端，扫视时不用在中间找。
             -->
             <ModelPicker
               v-model="modelPk"
@@ -1570,8 +1590,6 @@ function closeReader(): void {
               :placeholder="modelPlaceholder"
               @update:effort="onEffortChange"
             />
-          </div>
-          <div class="composer-right">
             <span v-if="useKb && store.items.length && selected.length === 0" class="composer-warn">
               未选知识库
             </span>
@@ -1673,6 +1691,24 @@ function closeReader(): void {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* 第一轮对话之前：欢迎层与输入卡片**作为一组摆在屏幕中间**（Kimi 的形态）。
+   默认那套是"消息区撑满、输入框贴底"——那是有对话时的形态；
+   没有对话时贴底会让整屏下方堆着东西、上方全空。
+   做法是让滚动区的高度由内容决定（`flex: 0 1 auto`），
+   再让这一列居中，于是这两块一起落在中间。 */
+.chat-centered {
+  justify-content: center;
+}
+
+.chat-centered .chat-scroll {
+  flex: 0 1 auto;
+}
+
+/* 居中时下面不留那一大截内边距：它是给"贴底"时的呼吸感用的 */
+.chat-centered .chat-inner {
+  padding-bottom: 0;
 }
 
 /* 消息列与输入卡片**左右对齐**：两者都是同一条 960px 的居中窄列。
@@ -2644,9 +2680,28 @@ function closeReader(): void {
   border-color: var(--text-primary);
 }
 
-/* 开关：轨道 + 圆钮。用 `role="switch"` 的按钮而不是 `<input type=checkbox>` 加样式，
-   `aria-checked` 才是这个控件真正的语义（"开着的知识库"不是"勾选的项"）。 */
-.tool :deep(.tool-switch-track) {
+/* ------------------------------------------------- 「使用知识库」开关（v0.19）
+   它从菜单里搬到了工具条上，所以不再挂在 `.tool` 下面。
+
+   用 `role="switch"` 的按钮而不是 `<input type=checkbox>` 加样式：
+   `aria-checked` 才是这个控件真正的语义（"这一轮查不查库"不是"勾没勾某一项"）。 */
+.kb-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: var(--control-height);
+  padding: 0 var(--space-2);
+  background: var(--bg-subtle);
+  border: 1px solid transparent;
+  border-radius: var(--radius-row);
+  cursor: pointer;
+}
+
+.kb-switch:hover {
+  background: var(--bg-hover);
+}
+
+.kb-switch-track {
   position: relative;
   flex: 0 0 auto;
   width: 28px;
@@ -2656,11 +2711,12 @@ function closeReader(): void {
   transition: background var(--motion-fast) var(--motion-ease);
 }
 
-.tool :deep(.tool-switch-on) {
+/* 打开时轨道转墨色：这是"通/断"的状态色，不该用品牌蓝（规范 §7） */
+.kb-switch-on {
   background: var(--text-primary);
 }
 
-.tool :deep(.tool-switch-knob) {
+.kb-switch-knob {
   position: absolute;
   top: 2px;
   left: 2px;
@@ -2671,8 +2727,49 @@ function closeReader(): void {
   transition: transform var(--motion-fast) var(--motion-ease);
 }
 
-.tool :deep(.tool-switch-on .tool-switch-knob) {
+.kb-switch-on .kb-switch-knob {
   transform: translateX(12px);
+}
+
+.kb-switch-text {
+  font-size: var(--text-meta-size);
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.kb-switch-on .kb-switch-text {
+  color: var(--text-primary);
+}
+
+/* 选库那个入口现在是独立的浮层（下面没有从属的开关与说明），
+   所以去掉 `tool-sub` 为"子列表"加的上边框与缩进 */
+.tool :deep(.tool-sub-flat) {
+  padding-left: 0;
+  border-top: 0;
+}
+
+/* 技能子菜单**往右飞出**（v0.19，用户指定）：
+   它是浮层（`.menu-list` 是 `position: fixed`，是这里的定位祖先），
+   所以 `top` 由 JS 给（贴着「技能」那一行），`left: 100%` 就贴在右侧。 */
+.tool :deep(.tool-flyout) {
+  position: absolute;
+  left: calc(100% + var(--space-1));
+  width: 260px;
+  max-height: 280px;
+  margin: 0;
+  padding: var(--space-2);
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-popover);
+}
+
+/* 技能名可能很长（英文 slug），在 260px 里要能换行而不是撑破 */
+.tool :deep(.tool-flyout .tool-check-name) {
+  white-space: normal;
+  word-break: break-word;
 }
 
 /* 文件选择器只作为"点加号 → 弹出系统文件框"的落点，本身不显示 */

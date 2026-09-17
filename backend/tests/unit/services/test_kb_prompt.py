@@ -207,3 +207,28 @@ def test_format_placeholder_is_not_reported_as_a_fabricated_citation() -> None:
 
     assert draft.unknown_citations == []
     assert draft.sources[0].cited is True
+
+def test_wrong_list_number_is_still_the_same_document() -> None:
+    """**实测抓到的第二类假警报**：清单里的文件名带列表序号前缀（`8.Urban greenspace…`），
+    模型引用时常把那个数字写错一位（写成 `2.Urban greenspace…`）。
+
+    那**不是**编了另一篇，只是序号抄错了——只差序号不该算成"引用了不存在的文件"，
+    否则界面会对一个真实引用报"编造的迹象"。比对时剥掉开头的序号。
+    """
+    draft = _draft(
+        "见 [来源: 文献表格/2.Urban greenspace and visual acuity.pdf]。",
+        [("d1", "文献表格/8.Urban greenspace and visual acuity.pdf", "摘要")],
+    )
+
+    assert draft.unknown_citations == []
+    assert draft.sources[0].cited is True
+
+
+def test_a_genuinely_invented_file_is_still_reported() -> None:
+    """宽松匹配**不能宽到把编造也放过**：清单里压根没有这篇，就该报出来。"""
+    draft = _draft(
+        "按某标准执行 [来源: 我从没见过的指南.pdf]。",
+        [("d1", "文献表格/8.Urban greenspace.pdf", "摘要")],
+    )
+
+    assert draft.unknown_citations == ["我从没见过的指南.pdf"]

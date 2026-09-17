@@ -162,7 +162,8 @@ _META_PROMPT = """你是知识库的提示词工程师。
    被"顺手补一个像样的"：数字、阈值、比例、剂量、年份、机构名、期刊名、
    药物名、产品名、标准或法规编号。宁可少写一句，也不要写一个编出来的。
 3. 凡是写了具体事实的句子，**句尾标出它出自哪一篇**，格式为 `[来源: 文件名]`
-   （文件名照抄清单里的写法）。标不出来的事实，就删掉它。
+   （文件名**逐字照抄**清单里的写法，包括开头的序号——写了错别字或错序号，
+   就成了一次查不到出处的引用）。标不出来的事实，就删掉它。
    如果你需要在正文里**说明这个标注格式**，请照抄 `[来源: 文件名]` 这七个字
    （用「文件名」代表任意一篇），不要写成别的样子——这一串是约定的占位符。
 4. 摘要里不足以判断的方面，**直接不提**。不许用「通常」「一般来说」「一般建议」
@@ -192,6 +193,28 @@ def _build_user_prompt(docs: list[tuple[str, str, str]]) -> str:
     )
 
 
+#: 清单里的文件名常带"列表序号"前缀（`17.Association between… .pdf`、`3.城市建成环境…`）。
+#: 那是导入时按顺序编的，与标题本身无关——而模型引用时**经常把这个数字写错一位**
+#: （实测：把 `8.Urban greenspace…` 写成 `2.Urban greenspace…`）。
+#: 只差序号不算"引了另一篇"，所以比对时把它剥掉；
+#: 否则那条会落进 `unknown_citations`，界面就会对一个真实引用报"编造的迹象"。
+_LEADING_INDEX = re.compile(r"^\s*\d+\s*[.\-_、)）]\s*")
+
+
+def _match_key(name: str) -> str:
+    """比文件名用的归一化键：剥掉列表序号，压平空白与常见标点差异。
+
+    **序号可能在目录名之后**（实测这批是 `文献表格/8.Urban greenspace…`），
+    所以只对**最后一段文件名**剥序号，而不是整串的开头——
+    锚在整串开头的话 `文献表格/8.…` 里的 8 根本不会被处理。
+    """
+    head, sep, tail = name.strip().rpartition("/")
+    text = f"{head}{sep}{_LEADING_INDEX.sub('', tail)}"
+    text = text.casefold()
+    text = re.sub(r"\s+", " ", text)
+    return text.replace("：", ":").replace("，", ",").strip(" ._")
+
+
 def _clean(raw: str) -> str:
     """去掉模型习惯性加的外壳：整段代码块、开场的"好的，以下是为……"。
 
@@ -209,15 +232,19 @@ def _draft(prompt: str, docs: list[tuple[str, str, str]]) -> KBPromptDraft:
     """把 `[来源: 文件名]` 解析回文档，并揪出**指向不存在文件的引用**。"""
     cited_raw = [match.strip() for match in _CITATION.findall(prompt)]
     by_name = {name: name for _doc_id, name, _summary in docs}
-    # 文件名可能被模型稍作改动（补了扩展名、去了后缀），所以做一次宽松匹配：
-    # 完全相同 > 一份是另一份的前缀。都匹配不上才算"指向不存在文件"。
+    by_key = {_match_key(name): name for _doc_id, name, _summary in docs}
+    # 文件名可能被模型改过写法，所以分三层匹配，**越靠后越宽松**：
+    #   1. 完全相同；
+    #   2. 归一化后相同（去掉开头的列表序号、后缀、标点差异）；
+    #   3. 一方是另一方的前缀（模型把长标题截短了）。
+    # 都匹配不上才算"指向不存在文件"——那时它是真编了一篇。
     unknown: list[str] = []
     resolved: set[str] = set()
     for cited in cited_raw:
         # 格式占位符跳过：那是模型在**说明标注格式**，不是引了某篇
         if cited in _PLACEHOLDER_CITATIONS:
             continue
-        hit = by_name.get(cited)
+        hit = by_name.get(cited) or by_key.get(_match_key(cited))
         if hit is None:
             hit = next(
                 (name for name in by_name if name.startswith(cited) or cited.startswith(name)),

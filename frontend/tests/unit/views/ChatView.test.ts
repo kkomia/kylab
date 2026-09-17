@@ -395,11 +395,11 @@ describe('引用文档抽屉', () => {
 
     expect(wrapper.find('.composer-field').attributes('placeholder')).toContain('向知识库提问')
     // 默认全选：打开这一页的人多半就是要问遍手上的资料
-    expect(wrapper.find('.tool-kb .tool-trigger-text').text()).toBe('知识库 2 个')
+    expect(wrapper.find('.tool-kb .tool-trigger-text').text()).toBe('全部 2 个')
     wrapper.unmount()
   })
 
-  it('关掉开关：文案转成"不使用知识库"，且此时**没有选库也能发**', async () => {
+  it('关掉开关：变成纯对话，且此时**没有选库也能发**', async () => {
     listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
     const { wrapper } = await mountAt('/chat')
     await flushPromises()
@@ -407,32 +407,32 @@ describe('引用文档抽屉', () => {
     // 先取消勾选——模拟"开着但一个库都没选"这种发不出去的状态
     await wrapper.find('.tool-kb .tool-check input').setValue(false)
     await wrapper.find('.composer-field').setValue('随便聊聊')
-    const sendBtn = wrapper.find('.send-btn')
-    expect(sendBtn.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.send-btn').attributes('disabled')).toBeDefined()
 
     // 关掉开关之后同一个输入就该能发了
-    await wrapper.find('.tool-kb .tool-switch').trigger('click')
+    await wrapper.find('.kb-switch').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('.tool-kb .tool-trigger-text').text()).toBe('不使用知识库')
-    // 触发器上要能看出"关"这个状态：它会影响答案的性质，藏进菜单里等于没说
-    expect(wrapper.find('.tool-kb').classes()).toContain('tool-off')
+    expect(wrapper.find('.kb-switch').attributes('aria-checked')).toBe('false')
     expect(wrapper.find('.composer-field').attributes('placeholder')).toContain('纯对话')
     expect(wrapper.find('.send-btn').attributes('disabled')).toBeUndefined()
     wrapper.unmount()
   })
 
-  it('关掉开关之后选库框变成不可点（状态与操作要对得上）', async () => {
+  it('选库入口**只在开关打开时**才在（关掉时它没有意义）', async () => {
+    // 用户指定：知识库做成纯开关，"选哪几个"是开启之后才出现的小菜单。
+    // 关掉时留着它是噪声——那一步此刻改变不了任何结果。
     listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
     const { wrapper } = await mountAt('/chat')
     await flushPromises()
 
-    await wrapper.find('.tool-kb .tool-switch').trigger('click')
+    expect(wrapper.find('.tool-kb').exists()).toBe(true)
+    expect(wrapper.find('.kb-switch').attributes('aria-checked')).toBe('true')
+
+    await wrapper.find('.kb-switch').trigger('click')
     await flushPromises()
 
-    const box = wrapper.find('.tool-kb .tool-check input')
-    expect(box.attributes('disabled')).toBeDefined()
-    expect(wrapper.find('.tool-sub-muted').exists()).toBe(true)
+    expect(wrapper.find('.tool-kb').exists()).toBe(false)
     wrapper.unmount()
   })
   // 上面三条钉的是"界面状态对不对"，下面两条钉的是**发出去的东西对不对**——
@@ -449,7 +449,7 @@ describe('引用文档抽屉', () => {
     const { wrapper } = await mountAt('/chat/c1')
     await flushPromises()
 
-    await wrapper.find('.tool-kb .tool-switch').trigger('click')
+    await wrapper.find('.kb-switch').trigger('click')
     await wrapper.find('.composer-field').setValue('纯聊一句')
     await wrapper.find('.send-btn').trigger('click')
     await flushPromises()
@@ -519,5 +519,68 @@ describe('引用文档抽屉', () => {
     // 也确认工具条本身还在（别把整排控件一起删掉了）
     expect(wrapper.find('.tool-kb').exists()).toBe(true)
     wrapper.unmount()
+  })
+
+  // ------------------------------------------------- 输入框重排（v0.19）
+
+  it('模型选择在右端、知识库开关在左端', async () => {
+    // 用户指定：模型下拉放右侧。左边是"给这一轮什么"（附件/技能/知识库），
+    // 右边是"怎么生成 + 发出去"——两类动作各占一端，扫视时不用在中间找。
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    const { wrapper } = await mountAt('/chat')
+    await flushPromises()
+
+    expect(wrapper.find('.composer-right .pick-model').exists()).toBe(true)
+    expect(wrapper.find('.composer-left .pick-model').exists()).toBe(false)
+    expect(wrapper.find('.composer-left .kb-switch').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('技能子菜单往右飞出，不把菜单撑长', async () => {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    listSkills.mockResolvedValue({
+      items: [
+        {
+          name: '周报',
+          description: '写周报',
+          source: 'builtin',
+          path: '/skills/report',
+          directory: 'report',
+          used_by_prompt: true,
+          flagged: [],
+        },
+      ],
+      usable: 1,
+    })
+    const { wrapper } = await mountAt('/chat')
+    await flushPromises()
+
+    const skillsRow = wrapper.findAll('.tool-plus .tool-item')[1]
+    await skillsRow.trigger('click')
+    await flushPromises()
+
+    const flyout = wrapper.find('.tool-plus .tool-flyout')
+    expect(flyout.exists()).toBe(true)
+    // 贴着刚才那一行（top 由 JS 从 offsetTop 记下），而不是跟着列表往下堆
+    expect(flyout.attributes('style')).toContain('top:')
+    expect(flyout.text()).toContain('周报')
+    wrapper.unmount()
+  })
+
+  it('第一轮对话之前，欢迎层与输入框作为一组居中', async () => {
+    // 用户指定：没有对话时输入框在屏幕中间（照 Kimi 的第一轮）。
+    // 贴底会让整屏下方堆着东西、上方全空。
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    const empty = await mountAt('/chat')
+    await flushPromises()
+    expect(empty.wrapper.find('.chat').classes()).toContain('chat-centered')
+    empty.wrapper.unmount()
+
+    // 有对话之后回到"消息区撑满、输入框贴底"
+    getConversation.mockResolvedValue(chatDetail('c1'))
+    const loaded = await mountAt('/chat/c1')
+    await flushPromises()
+    expect(loaded.wrapper.find('.chat').classes()).not.toContain('chat-centered')
+    loaded.wrapper.unmount()
   })
 })

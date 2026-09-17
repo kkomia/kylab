@@ -49,6 +49,20 @@ import { useToast } from '@/composables/useToast'
 
 const { notifyError, notifySuccess } = useToast()
 
+/**
+ * 当前看的是哪一页（v0.19）。
+ *
+ * 用户指定：技能与 MCP 服务**做成两个菜单**，而不是并排两栏。
+ * 并排的代价是两栏各只剩一半宽——技能描述是整句文本，折行折得很碎；
+ * MCP 那边每条又带着策略与工具清单。而且这两件事本来就不需要同时看。
+ */
+const tab = ref<'skills' | 'mcp'>('skills')
+
+const CAP_TABS = [
+  { key: 'skills' as const, label: '技能' },
+  { key: 'mcp' as const, label: 'MCP 服务' },
+]
+
 const skills = ref<Skill[]>([])
 const skillsLoading = ref(true)
 const skillDetail = ref<SkillDetail | null>(null)
@@ -274,15 +288,27 @@ function policyLabel(policy: MCPPolicy): string {
         :tone="skills.length && !usableSkills ? 'warning' : 'neutral'"
       />
       <StatusTag :label="`MCP ${servers.length} 个服务`" tone="neutral" />
-      <AppButton @click="startCreate">
-        <template #icon><IconPlus :size="15" /></template>
-        登记 MCP 服务
-      </AppButton>
     </template>
+
+    <!-- 两个入口（用户指定，照 Kimi 的能力页）：上面开两个标签，一次只看一页 -->
+    <div class="cap-tabs" role="tablist" aria-label="能力">
+      <button
+        v-for="item in CAP_TABS"
+        :key="item.key"
+        type="button"
+        role="tab"
+        class="cap-tab"
+        :class="{ 'cap-tab-active': tab === item.key }"
+        :aria-selected="tab === item.key"
+        @click="tab = item.key"
+      >
+        {{ item.label }}
+      </button>
+    </div>
 
     <div class="cap-layout">
       <!-- ------------------------------------------------------------ 技能 -->
-      <section class="cap-col" aria-label="技能">
+      <section v-if="tab === 'skills'" class="cap-col" role="tabpanel" aria-label="技能">
         <header class="col-head">
           <h2>技能</h2>
           <InfoTip
@@ -325,12 +351,16 @@ function policyLabel(policy: MCPPolicy): string {
       </section>
 
       <!-- --------------------------------------------------------- MCP 服务 -->
-      <section class="cap-col" aria-label="MCP 服务">
+      <section v-else class="cap-col" role="tabpanel" aria-label="MCP 服务">
         <header class="col-head">
           <h2>MCP 服务</h2>
           <InfoTip
             text="外部服务会以你的名义执行动作，所以每条都有一个准入策略。默认「需要确认」：调用前会先弹一次确认，确认后才真的发出去。"
           />
+          <AppButton size="sm" @click="startCreate">
+            <template #icon><IconPlus :size="14" /></template>
+            登记服务
+          </AppButton>
         </header>
 
         <SkeletonBlock v-if="serversLoading" variant="list" :rows="3" />
@@ -493,9 +523,42 @@ function policyLabel(policy: MCPPolicy): string {
 </template>
 
 <style scoped>
+/* 标签栏：文字 + 选中态一条墨色下划线（Kimi 的能力页如此）。
+   **不用胶囊/填充底**：那与侧栏"当前在哪"的中性填充是两套语言，
+   而这里是"同一页里的两页"，下划线更轻，也更像分页。 */
+.cap-tabs {
+  display: flex;
+  gap: var(--space-5);
+  margin-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.cap-tab {
+  padding: var(--space-2) 0;
+  margin-bottom: -1px;
+  font-size: var(--text-body-size);
+  color: var(--text-secondary);
+  background: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+}
+
+.cap-tab:hover {
+  color: var(--text-primary);
+}
+
+.cap-tab-active {
+  font-weight: 600;
+  color: var(--text-primary);
+  border-bottom-color: var(--text-primary);
+}
+
+/* 一次只显示一页，所以是单栏：并排两栏时每栏只剩一半宽，
+   技能描述那种整句文本折行折得很碎 */
 .cap-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-5);
   align-items: start;
 }
