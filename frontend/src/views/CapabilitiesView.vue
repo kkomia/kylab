@@ -44,7 +44,6 @@ import AppModal from '@/components/ui/AppModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
-import InfoTip from '@/components/ui/InfoTip.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
@@ -387,16 +386,13 @@ function policyLabel(policy: MCPPolicy): string {
       <!-- ------------------------------------------------------------ 技能 -->
       <section v-if="tab === 'skills'" class="cap-col" role="tabpanel" aria-label="技能">
         <header class="panel-head">
-          <div class="panel-head-main">
-            <h2 class="panel-title">技能</h2>
-            <InfoTip
-              text="技能只有「名字 + 什么时候用」会进系统提示词，正文在模型决定用它时才读进来。所以装得多不等于上下文变长。点一张卡片看它的正文。"
-            />
-            <p class="panel-desc">
-              流程与 SOP：告诉
-              Agent「这类事该怎么做」。装得多不等于上下文变长——只有名字与描述会进提示词。
-            </p>
-          </div>
+          <!-- **不写标题**：上面那个标签就叫「技能」。用户为"同一个词出现两次"说过一次，
+             而我这一版把它从页标题换成了小节标题——换个地方犯同一个错，这次删掉。
+             说明也只留一句：原先那句与一个 ⓘ 讲的是同一件事。 -->
+          <p class="panel-desc">
+            流程与 SOP：告诉 Agent「这类事该怎么做」。只有名字与描述会进提示词，
+            正文在它决定用这个技能时才读——所以装得多不等于上下文变长。点卡片看正文。
+          </p>
           <div class="panel-head-actions">
             <label class="panel-search">
               <IconSearch :size="15" />
@@ -469,16 +465,11 @@ function policyLabel(policy: MCPPolicy): string {
       <!-- ------------------------------------------------------------ 插件 -->
       <section v-else class="cap-col" role="tabpanel" aria-label="插件">
         <header class="panel-head">
-          <div class="panel-head-main">
-            <h2 class="panel-title">插件</h2>
-            <InfoTip
-              text="插件会以你的名义执行动作，所以每个都有一个准入策略。默认「需要确认」：它不会静默执行，而是把「需要先确认」回给模型并说明怎么放开。"
-            />
-            <p class="panel-desc">
-              外部服务：接进来的工具会被 Agent
-              当成能力使用。默认「需要确认」——它不会静默以你的名义调用。
-            </p>
-          </div>
+          <p class="panel-desc">
+            外部服务：接进来的工具会被 Agent 当成能力使用。每个插件都有一个准入策略，
+            默认「需要确认」——它不会静默地以你的名义调用，而是把「需要先确认」回给模型
+            并说明怎么放开。
+          </p>
           <div class="panel-head-actions">
             <label class="panel-search">
               <IconSearch :size="15" />
@@ -757,23 +748,10 @@ function policyLabel(policy: MCPPolicy): string {
   gap: var(--space-4);
 }
 
-.panel-head-main {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.panel-title {
-  margin: 0;
-  font-size: var(--text-section-size);
-  font-weight: 600;
-}
-
 /* 说明占满一行：它是给这一节定性的那句话，不该挤在标题旁边 */
 .panel-desc {
-  flex-basis: 100%;
+  flex: 1;
+  min-width: 0;
   margin: 0;
   max-width: 76ch;
   color: var(--text-secondary);
