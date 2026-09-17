@@ -33,7 +33,9 @@ import IconAlert from '@/components/icons/IconAlert.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconServer from '@/components/icons/IconServer.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
+import IconEdit from '@/components/icons/IconEdit.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
+import IconSearch from '@/components/icons/IconSearch.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
 import IconTrash from '@/components/icons/IconTrash.vue'
 import AppButton from '@/components/ui/AppButton.vue'
@@ -43,6 +45,7 @@ import AppSelect from '@/components/ui/AppSelect.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
+import RowMenu from '@/components/ui/RowMenu.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
@@ -65,6 +68,18 @@ const CAP_TABS = [
   // 代码、接口与文档里仍是 MCP（那是它真实的东西），只改界面上这两个字。
   { key: 'mcp' as const, label: '插件' },
 ]
+
+/**
+ * 搜索与筛选（v0.22 重排）。
+ *
+ * **筛选按"用户会怎么找"来分**，不是按数据结构分：技能那边他分得清
+ * "哪些是我们随代码带的、哪些是他自己放的、哪个被拦下了"；插件那边只有
+ * "开着没开着"。数在标签上，省得点进去才发现是空的。
+ */
+const skillQuery = ref('')
+const skillFilter = ref<'all' | 'builtin' | 'user' | 'blocked'>('all')
+const serverQuery = ref('')
+const serverFilter = ref<'all' | 'enabled' | 'disabled'>('all')
 
 const skills = ref<Skill[]>([])
 const skillsLoading = ref(true)
@@ -115,6 +130,63 @@ const POLICY_OPTIONS = [
   { value: 'allow', label: '允许直接调用' },
   { value: 'deny', label: '拒绝调用' },
 ]
+
+/** 当前这一屏显示的技能：搜索词 + 筛选。搜索只看**名字与描述**——
+    技能正文不进列表（它有几百行，搜它是另一件事）。 */
+const visibleSkills = computed(() => {
+  const word = skillQuery.value.trim().toLowerCase()
+  return skills.value.filter((item) => {
+    if (skillFilter.value === 'builtin' && item.source !== 'builtin') return false
+    if (skillFilter.value === 'user' && item.source === 'builtin') return false
+    if (skillFilter.value === 'blocked' && item.used_by_prompt) return false
+    if (!word) return true
+    return `${item.name} ${item.description}`.toLowerCase().includes(word)
+  })
+})
+
+const SKILL_FILTERS = computed(() => [
+  { key: 'all' as const, label: '全部', count: skills.value.length },
+  {
+    key: 'builtin' as const,
+    label: '随代码发布',
+    count: skills.value.filter((item) => item.source === 'builtin').length,
+  },
+  {
+    key: 'user' as const,
+    label: '用户放入',
+    count: skills.value.filter((item) => item.source !== 'builtin').length,
+  },
+  {
+    key: 'blocked' as const,
+    label: '未进提示词',
+    count: skills.value.filter((item) => !item.used_by_prompt).length,
+  },
+])
+
+/** 插件同理：开着 / 停着。停用的插件不参与对话的工具表（见 services/skills 的说明）。 */
+const visibleServers = computed(() => {
+  const word = serverQuery.value.trim().toLowerCase()
+  return servers.value.filter((item) => {
+    if (serverFilter.value === 'enabled' && !item.enabled) return false
+    if (serverFilter.value === 'disabled' && item.enabled) return false
+    if (!word) return true
+    return `${item.name} ${item.target}`.toLowerCase().includes(word)
+  })
+})
+
+const SERVER_FILTERS = computed(() => [
+  { key: 'all' as const, label: '全部', count: servers.value.length },
+  {
+    key: 'enabled' as const,
+    label: '已启用',
+    count: servers.value.filter((item) => item.enabled).length,
+  },
+  {
+    key: 'disabled' as const,
+    label: '已停用',
+    count: servers.value.filter((item) => !item.enabled).length,
+  },
+])
 
 const usableSkills = computed(() => skills.value.filter((item) => item.used_by_prompt).length)
 
@@ -314,117 +386,205 @@ function policyLabel(policy: MCPPolicy): string {
     <div class="cap-layout">
       <!-- ------------------------------------------------------------ 技能 -->
       <section v-if="tab === 'skills'" class="cap-col" role="tabpanel" aria-label="技能">
-        <header class="col-head">
-          <h2>技能</h2>
-          <InfoTip
-            text="技能只有「名字 + 什么时候用」会进系统提示词，正文在模型决定用它时才读进来。所以装得多不等于上下文变长。"
-          />
-          <AppButton size="sm" @click="loadSkills">
-            <template #icon><IconRefresh :size="14" /></template>
-            重新扫描
-          </AppButton>
+        <header class="panel-head">
+          <div class="panel-head-main">
+            <h2 class="panel-title">技能</h2>
+            <InfoTip
+              text="技能只有「名字 + 什么时候用」会进系统提示词，正文在模型决定用它时才读进来。所以装得多不等于上下文变长。点一张卡片看它的正文。"
+            />
+            <p class="panel-desc">
+              流程与 SOP：告诉
+              Agent「这类事该怎么做」。装得多不等于上下文变长——只有名字与描述会进提示词。
+            </p>
+          </div>
+          <div class="panel-head-actions">
+            <label class="panel-search">
+              <IconSearch :size="15" />
+              <input
+                v-model="skillQuery"
+                type="search"
+                placeholder="搜索技能"
+                aria-label="搜索技能"
+              />
+            </label>
+            <AppButton variant="primary" size="sm" @click="loadSkills">
+              <template #icon><IconRefresh :size="14" /></template>
+              重新扫描
+            </AppButton>
+          </div>
         </header>
+
+        <div class="panel-filters" role="tablist" aria-label="技能筛选">
+          <button
+            v-for="item in SKILL_FILTERS"
+            :key="item.key"
+            type="button"
+            role="tab"
+            class="filter"
+            :class="{ 'filter-on': skillFilter === item.key }"
+            :aria-selected="skillFilter === item.key"
+            @click="skillFilter = item.key"
+          >
+            {{ item.label }}
+            <span class="filter-count tabular">{{ item.count }}</span>
+          </button>
+        </div>
 
         <SkeletonBlock v-if="skillsLoading" variant="list" :rows="3" />
         <EmptyState
-          v-else-if="!skills.length"
-          title="还没有技能"
-          hint="把带 SKILL.md 的目录放进仓库的 skills/ 或数据目录的 skills/，这里就会列出来。"
+          v-else-if="!visibleSkills.length"
+          :title="skills.length ? '没有匹配的技能' : '还没有技能'"
+          :hint="
+            skills.length
+              ? '换个关键词，或者把筛选切回「全部」。'
+              : '把带 SKILL.md 的目录放进仓库的 skills/ 或数据目录的 skills/，这里就会列出来。'
+          "
         />
-        <ul v-else class="skill-list">
-          <li v-for="skill in skills" :key="skill.name" class="skill">
-            <button type="button" class="skill-main" @click="openSkill(skill)">
-              <span class="skill-name">
-                <IconRobot :size="14" />
+        <ul v-else class="card-grid">
+          <li v-for="skill in visibleSkills" :key="skill.name" class="card">
+            <span class="card-icon"><IconRobot :size="18" /></span>
+            <div class="card-body">
+              <button type="button" class="card-title skill-main" @click="openSkill(skill)">
                 {{ skill.name }}
-              </span>
-              <span class="skill-desc">{{ skill.description || '（没有描述）' }}</span>
-            </button>
-            <div class="skill-meta">
-              <span class="chip">{{ skill.source === 'builtin' ? '随代码发布' : '用户放入' }}</span>
-              <span v-if="!skill.used_by_prompt" class="chip chip-warn">
-                <IconAlert :size="12" />
-                未进提示词
-              </span>
+              </button>
+              <p class="card-desc">{{ skill.description || '（没有描述）' }}</p>
+              <div class="card-meta">
+                <span class="chip">{{
+                  skill.source === 'builtin' ? '随代码发布' : '用户放入'
+                }}</span>
+                <span v-if="!skill.used_by_prompt" class="chip chip-warn">
+                  <IconAlert :size="12" />
+                  未进提示词
+                </span>
+              </div>
+              <!-- 被拦下的技能**要显示理由**：静默藏掉会让人以为技能没装上 -->
+              <ul v-if="skill.flagged.length" class="flags">
+                <li v-for="(reason, at) in skill.flagged" :key="at">{{ reason }}</li>
+              </ul>
             </div>
-            <!-- 被拦下的技能**要显示理由**：静默藏掉会让人以为技能没装上 -->
-            <ul v-if="skill.flagged.length" class="flags">
-              <li v-for="(reason, at) in skill.flagged" :key="at">{{ reason }}</li>
-            </ul>
           </li>
         </ul>
       </section>
 
       <!-- ------------------------------------------------------------ 插件 -->
       <section v-else class="cap-col" role="tabpanel" aria-label="插件">
-        <header class="col-head">
-          <h2>插件</h2>
-          <InfoTip
-            text="插件会以你的名义执行动作，所以每个都有一个准入策略。默认「需要确认」：它不会静默执行，而是把「需要先确认」回给模型并说明怎么放开。"
-          />
-          <AppButton size="sm" @click="startCreate">
-            <template #icon><IconPlus :size="14" /></template>
-            登记服务
-          </AppButton>
+        <header class="panel-head">
+          <div class="panel-head-main">
+            <h2 class="panel-title">插件</h2>
+            <InfoTip
+              text="插件会以你的名义执行动作，所以每个都有一个准入策略。默认「需要确认」：它不会静默执行，而是把「需要先确认」回给模型并说明怎么放开。"
+            />
+            <p class="panel-desc">
+              外部服务：接进来的工具会被 Agent
+              当成能力使用。默认「需要确认」——它不会静默以你的名义调用。
+            </p>
+          </div>
+          <div class="panel-head-actions">
+            <label class="panel-search">
+              <IconSearch :size="15" />
+              <input
+                v-model="serverQuery"
+                type="search"
+                placeholder="搜索插件"
+                aria-label="搜索插件"
+              />
+            </label>
+            <AppButton variant="primary" size="sm" @click="startCreate">
+              <template #icon><IconPlus :size="14" /></template>
+              新建插件
+            </AppButton>
+          </div>
         </header>
+
+        <div class="panel-filters" role="tablist" aria-label="插件筛选">
+          <button
+            v-for="item in SERVER_FILTERS"
+            :key="item.key"
+            type="button"
+            role="tab"
+            class="filter"
+            :class="{ 'filter-on': serverFilter === item.key }"
+            :aria-selected="serverFilter === item.key"
+            @click="serverFilter = item.key"
+          >
+            {{ item.label }}
+            <span class="filter-count tabular">{{ item.count }}</span>
+          </button>
+        </div>
 
         <SkeletonBlock v-if="serversLoading" variant="list" :rows="3" />
         <EmptyState
-          v-else-if="!servers.length"
-          title="还没有登记插件"
-          hint="登记之后，它的工具会被 Agent 当成能力使用（工具名一律带 mcp__ 前缀，避免与内置工具撞名）。"
-        >
-          <AppButton variant="primary" @click="startCreate">登记一个</AppButton>
-        </EmptyState>
-        <ul v-else class="server-list">
-          <li v-for="server in servers" :key="server.id" class="server">
-            <div class="server-head">
-              <span class="server-name">
-                <IconServer :size="14" />
-                {{ server.name }}
-              </span>
-              <StatusTag :label="policyLabel(server.policy)" :tone="policyTone(server.policy)" />
-              <StatusTag v-if="server.reachable === true" label="连接正常" tone="success" />
-              <StatusTag v-else-if="server.reachable === false" label="连不上" tone="warning" />
-              <span v-if="server.has_secrets" class="chip" title="凭据已配置（值不会回显）">
-                <IconCheck :size="12" />
-                凭据已配置
-              </span>
+          v-else-if="!visibleServers.length"
+          :title="servers.length ? '没有匹配的插件' : '还没有插件'"
+          :hint="
+            servers.length
+              ? '换个关键词，或者把筛选切回「全部」。'
+              : '登记之后，它的工具会被 Agent 当成能力使用（工具名一律带 mcp__ 前缀，避免与内置工具撞名）。'
+          "
+        />
+        <ul v-else class="card-grid">
+          <li v-for="server in visibleServers" :key="server.id" class="card">
+            <span class="card-icon"><IconServer :size="18" /></span>
+            <div class="card-body">
+              <span class="card-title">{{ server.name }}</span>
+              <p class="card-desc">
+                <span class="chip">{{ server.transport }}</span>
+                <code class="card-target">{{ server.target }}</code>
+              </p>
+              <div class="card-meta">
+                <StatusTag :label="policyLabel(server.policy)" :tone="policyTone(server.policy)" />
+                <StatusTag v-if="server.reachable === true" label="连接正常" tone="success" />
+                <StatusTag v-else-if="server.reachable === false" label="连不上" tone="warning" />
+                <span v-if="server.has_secrets" class="chip" title="凭据已配置（值不会回显）">
+                  <IconCheck :size="12" />
+                  凭据已配置
+                </span>
+                <span v-if="!server.enabled" class="chip">已停用</span>
+                <!-- 探活的结论写在卡片里（它是"这个插件现在什么状态"，不是一次操作的结果） -->
+                <button
+                  v-if="server.tools.length"
+                  type="button"
+                  class="chip chip-button"
+                  @click="expandedTools = expandedTools === server.id ? '' : server.id"
+                >
+                  {{ expandedTools === server.id ? '收起工具' : `工具 ${server.tools.length} 个` }}
+                </button>
+              </div>
+
+              <p v-if="server.detail" class="card-detail">{{ server.detail }}</p>
+
+              <ul v-if="expandedTools === server.id" class="tool-list">
+                <li v-for="tool in server.tools" :key="tool.qualified">
+                  <code>{{ tool.qualified }}</code>
+                  <span>{{ tool.description }}</span>
+                </li>
+              </ul>
             </div>
 
-            <p class="server-target">
-              <span class="chip">{{ server.transport }}</span>
-              <code>{{ server.target }}</code>
-              <code v-if="server.args.length">{{ server.args.join(' ') }}</code>
-            </p>
-
-            <p v-if="server.detail" class="server-detail">{{ server.detail }}</p>
-
-            <div class="server-actions">
-              <AppButton size="sm" :disabled="probing === server.id" @click="probe(server)">
-                <template #icon><IconRefresh :size="14" /></template>
-                {{ probing === server.id ? '连接中…' : '测试连接' }}
-              </AppButton>
-              <AppButton
-                v-if="server.tools.length"
-                size="sm"
-                @click="expandedTools = expandedTools === server.id ? '' : server.id"
-              >
-                {{ expandedTools === server.id ? '收起工具' : `工具 ${server.tools.length} 个` }}
-              </AppButton>
-              <AppButton size="sm" @click="startEdit(server)">编辑</AppButton>
-              <AppButton size="sm" variant="danger" @click="confirmTarget = server">
-                <template #icon><IconTrash :size="14" /></template>
-                删除
-              </AppButton>
-            </div>
-
-            <ul v-if="expandedTools === server.id" class="tool-list">
-              <li v-for="tool in server.tools" :key="tool.qualified">
-                <code>{{ tool.qualified }}</code>
-                <span>{{ tool.description }}</span>
-              </li>
-            </ul>
+            <!-- 动作收进「⋯」（照 Kimi 的卡片）：卡片本身回答"这是什么"，
+                 动作是次要的；摊在卡片上会让每一张都像一个小表单 -->
+            <RowMenu class="card-menu" :label="`${server.name} 的操作`" align="right">
+              <template #default="{ close }">
+                <button
+                  type="button"
+                  :disabled="probing === server.id"
+                  @click="(probe(server), close())"
+                >
+                  <IconRefresh :size="14" />
+                  {{ probing === server.id ? '连接中…' : '测试连接' }}
+                </button>
+                <button type="button" @click="(startEdit(server), close())">
+                  <IconEdit :size="14" /> 编辑
+                </button>
+                <button
+                  class="menu-item-danger"
+                  type="button"
+                  @click="((confirmTarget = server), close())"
+                >
+                  <IconTrash :size="14" /> 删除
+                </button>
+              </template>
+            </RowMenu>
           </li>
         </ul>
       </section>
@@ -572,8 +732,7 @@ function policyLabel(policy: MCPPolicy): string {
   border-bottom-color: var(--text-primary);
 }
 
-/* 一次只显示一页，所以是单栏：并排两栏时每栏只剩一半宽，
-   技能描述那种整句文本折行折得很碎 */
+/* 一次只显示一页（并排两栏时每栏只剩一半宽，技能描述那种整句文本折行折得很碎） */
 .cap-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -584,90 +743,255 @@ function policyLabel(policy: MCPPolicy): string {
 .cap-col {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-4);
   min-width: 0;
 }
 
-.col-head {
+/* 内容头（照 Kimi 的插件页）：左边标题 + 一句说明，右边搜索与主操作。
+   这一节原先只有一个 `h2 技能` 加一个按钮——标题重复了标签，而"这是什么"
+   那句话没人说。 */
+.panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.panel-head-main {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
-.col-head h2 {
+.panel-title {
   margin: 0;
   font-size: var(--text-section-size);
   font-weight: 600;
 }
 
-.skill-list,
-.server-list,
-.tool-list,
-.flags {
+/* 说明占满一行：它是给这一节定性的那句话，不该挤在标题旁边 */
+.panel-desc {
+  flex-basis: 100%;
+  margin: 0;
+  max-width: 76ch;
+  color: var(--text-secondary);
+  font-size: var(--text-meta-size);
+  line-height: var(--line-ui);
+}
+
+.panel-head-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* 搜索：图标嵌在框里。**不做成"点开才出现"**——它是这一屏唯一的检索入口，
+   藏起来就没人知道能搜 */
+.panel-search {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  height: var(--control-height);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-control);
+  background: var(--bg-surface);
+  color: var(--text-tertiary);
+}
+
+.panel-search:focus-within {
+  border-color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--text-primary);
+}
+
+.panel-search input {
+  width: 11rem;
+  border: none;
+  background: none;
+  color: var(--text-primary);
+  font-size: var(--text-meta-size);
+  outline: none;
+}
+
+.panel-search input::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* 去掉 type=search 的原生叉（与自绘的图标是两套样子） */
+.panel-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+/* 筛选胶囊（照 Kimi）：选中态是**深色填充**，其余是浅底。
+   计数放在标签后面——"点进去才发现是空的"是最没必要的一次点击 */
+.panel-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1-5);
+}
+
+.filter {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--hit-target);
+  padding: 0 var(--space-2);
+  border: none;
+  border-radius: var(--radius-pill);
+  background: var(--bg-group);
+  color: var(--text-secondary);
+  font-size: var(--text-meta-size);
+  cursor: pointer;
+  transition: var(--transition-ui);
+}
+
+.filter:hover {
+  color: var(--text-primary);
+}
+
+/* 选中态：墨色底 + 纸白字。**用 `--bg-surface` 而不是 `--bg-primary`**——
+   那个 token 不存在（第一版写的它，于是 `color` 整条失效、标签变成隐形；
+   浏览器不会为此报错，只有真看一眼才发现）。 */
+.filter-on {
+  background: var(--text-primary);
+  color: var(--bg-surface);
+}
+
+.filter-count {
+  color: var(--text-tertiary);
+  font-size: var(--text-c2-size);
+}
+
+.filter-on .filter-count {
+  color: var(--bg-surface);
+  opacity: 0.7;
+}
+
+/* 卡片两栏（照 Kimi 的插件页）：一栏在窄屏下会拉成一条很长的横带，
+   而每个技能/插件的描述本来就两三行，两栏正好 */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(22rem, 1fr));
+  gap: var(--space-3);
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.skill,
-.server {
+.card {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
+  align-items: flex-start;
+  gap: var(--space-3);
   padding: var(--space-3);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-panel);
   background: var(--bg-surface);
+  transition: var(--transition-ui);
 }
 
-.skill + .skill,
-.server + .server {
-  margin-top: var(--space-2);
+.card:hover {
+  border-color: var(--border-strong);
 }
 
-.skill-main {
+/* 图标方块：技能的来源与插件的类型都靠它一眼分开 */
+.card-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--radius-control);
+  background: var(--bg-group);
+  color: var(--text-secondary);
+}
+
+.card-body {
   display: flex;
+  flex: 1;
   flex-direction: column;
-  gap: var(--space-1);
-  width: 100%;
-  border: none;
-  background: none;
-  text-align: left;
-  cursor: pointer;
-  padding: 0;
+  gap: var(--space-1-5);
+  min-width: 0;
 }
 
-.skill-name,
-.server-name {
+.card-title {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1-5);
-  font-size: var(--text-meta-size);
+  padding: 0;
+  border: none;
+  background: none;
   color: var(--text-primary);
+  font-size: var(--text-body-size);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
 }
 
-.skill-desc {
+/* 描述**最多两行**：技能的描述是"什么时候该用它"的整句话，往往很长——
+   全铺出来会把卡片拉成一条，而它本来只是"这张卡是干什么的" */
+.card-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin: 0;
   color: var(--text-secondary);
   font-size: var(--text-micro-size);
   line-height: var(--line-ui);
+  word-break: break-word;
 }
 
-.skill-meta,
-.server-head,
-.server-actions,
-.server-target {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-  margin: 0;
-}
-
-.server-target code {
+.card-target {
   font-family: var(--font-mono);
   font-size: var(--text-c2-size);
   color: var(--text-tertiary);
   word-break: break-all;
+}
+
+.card-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1-5);
+  flex-wrap: wrap;
+}
+
+.card-detail {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-c2-size);
+  line-height: var(--line-ui);
+}
+
+/* 可点的胶囊（"工具 N 个"）：它是**展开**而不是动作，所以做成胶囊而不是按钮 */
+.chip-button {
+  border: none;
+  cursor: pointer;
+  transition: var(--transition-ui);
+}
+
+.chip-button:hover {
+  color: var(--text-primary);
+}
+
+/* 卡片右上角的「⋯」：默认不显形，悬停或键盘聚焦时出现
+   （与侧栏节标题那条同一处置：`opacity` 不挤动布局，且始终可 Tab） */
+.card-menu {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.card-menu :deep(.menu-trigger) {
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+.card:hover .card-menu :deep(.menu-trigger),
+.card-menu :deep(.menu-trigger:focus-visible) {
+  opacity: 1;
 }
 
 .chip {

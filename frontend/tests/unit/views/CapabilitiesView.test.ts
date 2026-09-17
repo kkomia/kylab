@@ -115,7 +115,7 @@ beforeEach(() => {
 describe('CapabilitiesView', () => {
   it('列出技能，并标出「可用 / 已拦下」', async () => {
     const wrapper = mountView()
-    await vi.waitFor(() => expect(wrapper.text()).toContain('kylab-knowledge-base'))
+    await vi.waitFor(() => expect(wrapper.text()).toContain(CLEAN_SKILL.name))
 
     expect(wrapper.text()).toContain('技能 1/2 可用')
     expect(wrapper.text()).toContain('未进提示词')
@@ -131,7 +131,7 @@ describe('CapabilitiesView', () => {
   it('点技能能读到正文（用户有权知道它教了模型什么）', async () => {
     getSkill.mockResolvedValue({ ...CLEAN_SKILL, body: '# 流程\n\n第一步：先看索引。' })
     const wrapper = mountView()
-    await vi.waitFor(() => expect(wrapper.text()).toContain('kylab-knowledge-base'))
+    await vi.waitFor(() => expect(wrapper.text()).toContain(CLEAN_SKILL.name))
 
     await wrapper.find('.skill-main').trigger('click')
 
@@ -195,20 +195,78 @@ describe('CapabilitiesView', () => {
     await vi.waitFor(() => expect(wrapper.text()).toContain('还没有技能'))
     // 两页各看一次：它们现在不在同一屏上（v0.19 起是两个标签）
     await openMcp(wrapper)
-    expect(wrapper.text()).toContain('还没有登记插件')
+    expect(wrapper.text()).toContain('还没有插件')
   })
 
   it('技能与插件是一次只看一页的两个标签', async () => {
     const wrapper = mountView()
-    await vi.waitFor(() => expect(wrapper.text()).toContain('kylab-knowledge-base'))
+    await vi.waitFor(() => expect(wrapper.text()).toContain(CLEAN_SKILL.name))
 
     // 默认在技能页：技能在、插件不在
     expect(wrapper.findAll('.cap-tab').map((el) => el.text())).toEqual(['技能', '插件'])
-    expect(wrapper.text()).toContain('kylab-knowledge-base')
+    expect(wrapper.text()).toContain(CLEAN_SKILL.name)
     expect(wrapper.text()).not.toContain('本地工具')
 
     await openMcp(wrapper)
     expect(wrapper.text()).toContain('本地工具')
     expect(wrapper.text()).not.toContain('kylab-knowledge-base')
+  })
+})
+
+/**
+ * 搜索与筛选（v0.22 重排）。
+ *
+ * 参考的是 Kimi Work 的插件页：内容头（标题 + 一句说明 + 搜索与主操作）、
+ * 一排带计数的筛选胶囊、两栏卡片。这一组钉住"那两个控件真的在筛"——
+ * 摆一个能输入但不筛的搜索框，比不摆更糟（用户会以为技能列表是空的）。
+ */
+describe('能力页的搜索与筛选', () => {
+  it('搜索按名字与描述筛，切筛选也筛', async () => {
+    listSkills.mockResolvedValue({
+      items: [
+        {
+          name: 'kylab-web',
+          description: '联网查资料',
+          path: '/skills/kylab-web/SKILL.md',
+          source: 'builtin',
+          directory: '/skills/kylab-web',
+          used_by_prompt: true,
+          flagged: [],
+        },
+        {
+          name: 'my-notes',
+          description: '整理笔记',
+          path: '/data/skills/my-notes/SKILL.md',
+          source: 'user',
+          directory: '/data/skills/my-notes',
+          used_by_prompt: true,
+          flagged: [],
+        },
+      ],
+    })
+    const wrapper = mountView()
+    await vi.waitFor(() => expect(wrapper.text()).toContain('kylab-web'))
+
+    // 搜索：只剩匹配的那一个
+    await wrapper.find('.panel-search input').setValue('笔记')
+    expect(wrapper.text()).toContain('my-notes')
+    expect(wrapper.text()).not.toContain('kylab-web')
+
+    // 清掉搜索，按来源筛
+    await wrapper.find('.panel-search input').setValue('')
+    const userFilter = wrapper.findAll('.filter').find((node) => node.text().includes('用户放入'))!
+    await userFilter.trigger('click')
+    expect(wrapper.text()).toContain('my-notes')
+    expect(wrapper.text()).not.toContain('kylab-web')
+  })
+
+  it('搜索没命中时给"换个词"而不是空白', async () => {
+    listSkills.mockResolvedValue({ items: [CLEAN_SKILL] })
+    const wrapper = mountView()
+    await vi.waitFor(() => expect(wrapper.text()).toContain(CLEAN_SKILL.name))
+
+    await wrapper.find('.panel-search input').setValue('没有这个东西')
+
+    expect(wrapper.text()).toContain('没有匹配的技能')
   })
 })
