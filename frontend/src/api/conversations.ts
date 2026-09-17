@@ -21,8 +21,12 @@ export interface ConversationSummary {
   thinking_effort: 'low' | 'medium' | 'high' | null
   /** 置顶（v17）。置顶的排在列表最前，且聊天不改变它的名次。 */
   pinned: boolean
-  /** 所属工作区（v0.15）；`null` = **未归档**，侧栏把它单独排一列。 */
+  /** 所属工作区（v0.15）；`null` = 未归档。 */
   workspace_id: string | null
+  /** 归档时间（v0.17）。非空 = 已归档——**归档不是删除**，内容还在，可随时取消。 */
+  archived_at?: string | null
+  /** 最近一条回答的开头（历史会话面板的两行预览）。只有带 `with_preview` 时才有。 */
+  preview?: string
   created_at: string | null
   updated_at: string | null
   message_count: number
@@ -55,12 +59,20 @@ export interface ConversationDetail extends ConversationSummary {
 export function listConversations(
   limit = 50,
   q?: string,
-  filter: { workspaceId?: string; ungrouped?: boolean } = {},
+  filter: {
+    workspaceId?: string
+    ungrouped?: boolean
+    archived?: boolean
+    withPreview?: boolean
+  } = {},
 ): Promise<{ items: ConversationSummary[] }> {
   const params = new URLSearchParams({ limit: String(limit) })
   if (q?.trim()) params.set('q', q.trim())
   if (filter.workspaceId) params.set('workspace_id', filter.workspaceId)
   if (filter.ungrouped) params.set('ungrouped', 'true')
+  if (filter.archived) params.set('archived', 'true')
+  // 预览要多一次查询，所以是**可选**的：侧栏不需要，历史面板需要
+  if (filter.withPreview) params.set('with_preview', 'true')
   return request(`/conversations?${params.toString()}`)
 }
 
@@ -95,7 +107,12 @@ export function getConversation(id: string): Promise<ConversationDetail> {
  */
 export function updateConversation(
   id: string,
-  patch: { title?: string; pinned?: boolean; workspace_id?: string | null },
+  patch: {
+    title?: string
+    pinned?: boolean
+    archived?: boolean
+    workspace_id?: string | null
+  },
 ): Promise<ConversationSummary> {
   return request(`/conversations/${id}`, {
     method: 'PATCH',

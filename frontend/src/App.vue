@@ -10,9 +10,10 @@
  * 2. **会话失效的统一出口**：`request()` 发现 401 会递增 relogin 信号，
  *    这里跳登录页并记住原地址。放在外壳而不是每个页面里，是因为任何请求都可能失效。
  */
-import { computed, onMounted, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import ConversationHistoryPanel from '@/components/layout/ConversationHistoryPanel.vue'
 import SideNav from '@/components/layout/SideNav.vue'
 import ToastStack from '@/components/ui/ToastStack.vue'
 import { initFontScale } from '@/composables/useFontScale'
@@ -47,6 +48,9 @@ onMounted(async () => {
 
 const { reloginCount } = useReloginPrompt()
 
+/** 历史会话面板的开合（侧栏「查看全部」触发）。 */
+const historyOpen = ref(false)
+
 watch(reloginCount, () => {
   if (isLoginPage.value) return
   void router.push({ name: 'login', query: { redirect: route.fullPath } })
@@ -55,10 +59,19 @@ watch(reloginCount, () => {
 
 <template>
   <div class="shell" :class="{ 'shell-bare': isLoginPage }">
-    <SideNav v-if="!isLoginPage" />
+    <SideNav v-if="!isLoginPage" @open-history="historyOpen = true" />
     <main class="content">
       <RouterView />
     </main>
+
+    <!--
+      历史会话面板（v0.17，照 Kimi 的做法）：由侧栏「对话」一节的「查看全部」打开。
+      **挂在 shell 这一层**而不是某个页面里：侧栏在每个页面都在，
+      从任何页面点「查看全部」都该能打开它。用 Teleport 是让 fixed 定位
+      不受 `.content` 的 overflow 影响（那正是"面板被裁一半"的常见成因）。
+    -->
+    <ConversationHistoryPanel :open="historyOpen" @close="historyOpen = false" />
+
     <ToastStack />
   </div>
 </template>

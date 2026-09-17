@@ -101,6 +101,7 @@ class ConversationService:
         q: str | None = None,
         workspace_id: str | None = None,
         ungrouped: bool = False,
+        archived: bool = False,
     ) -> list[ConversationRecord]:
         """置顶优先、其次最近更新（v17 起支持按标题搜索）。
 
@@ -116,6 +117,11 @@ class ConversationService:
         # `workspace_id` 点名某个工作区；`ungrouped` 要的是"未归档"那一栏
         # （`workspace_id IS NULL`）——两者互斥，同时给等于没有交集，直接返回空。
         def keep(item: ConversationRecord) -> bool:
+            # **归档是一道前置过滤**：默认视图里看不到归档的会话，
+            # 要看它们得显式要（`archived=True`）。与归属过滤分开写，
+            # 因为它们是两件不同的事（谁的 / 收没收起来）。
+            if (item.archived_at is not None) != archived:
+                return False
             if owner_id is not None and item.owner_id != owner_id:
                 return False
             if ungrouped:
@@ -124,8 +130,14 @@ class ConversationService:
                 return item.workspace_id == workspace_id
             return True
 
-        if owner_id is None and workspace_id is None and not ungrouped:
-            return self._stores.meta.list_conversations(limit=limit, q=q)
+        if owner_id is None and workspace_id is None and not ungrouped and not archived:
+            # 无过滤的快路径：SQL 里就把归档的排除掉，别拉回来再筛
+            records = [
+                item
+                for item in self._stores.meta.list_conversations(limit=limit, q=q)
+                if item.archived_at is None
+            ]
+            return records
         records = [
             item for item in self._stores.meta.list_conversations(limit=None, q=q) if keep(item)
         ]
@@ -161,6 +173,17 @@ class ConversationService:
         """删会话（消息由外键级联一并删掉）。"""
         self.get(conversation_id)
         self._stores.meta.delete_conversation(conversation_id)
+
+    def set_archived(self, conversation_id: str, archived: bool) -> ConversationRecord:
+        """归档 / 取消归档。**不是删除**：内容与引用都还在。
+        不推 ``updated_at``（与置顶/改名同理，见存储层协议）。"""
+        self.get(conversation_id)
+        self._stores.meta.set_conversation_archived(conversation_id, archived)
+        return self.get(conversation_id)
+
+    def previews(self, conversation_ids: list[str]) -> dict[str, str]:
+        """``会话 id → 最后一条回答``。历史会话面板的两行预览用它。"""
+        return self._stores.meta.last_assistant_previews(conversation_ids)
 
     def set_pinned(self, conversation_id: str, pinned: bool) -> ConversationRecord:
         """置顶 / 取消置顶。**不推 updated_at**（与改名同一套口径）：置顶是一次整理

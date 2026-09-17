@@ -524,6 +524,10 @@ class ConversationRecord:
     """该会话是否开启思考（v16）。``None`` = 跟随全局默认。"""
     thinking_effort: str | None = None
     """该会话的思考强度（v16，low/medium/high）。``None`` = 跟随全局默认。"""
+    archived_at: datetime | None = None
+    """归档时间（v0.17）。``None`` = 未归档——**归档不是删除**：
+    会话从列表里收起来，但内容与引用都还在，随时可以取消归档。
+    用时间戳而不是布尔："什么时候收起来的"本身有用（归档视图按它排序）。"""
     workspace_id: str | None = None
     """所属工作区（v0.15）。``None`` = **未归档**，侧栏把它单独排一列。
 
@@ -1449,6 +1453,21 @@ class MetaStore(ABC):
         self, *, limit: int | None = None, q: str | None = None
     ) -> list[ConversationRecord]:
         """**置顶优先，其次按最近更新倒序**；``q`` 按标题做包含匹配。"""
+        ...
+
+    @abstractmethod
+    def set_conversation_archived(self, conversation_id: str, archived: bool) -> None:
+        """归档 / 取消归档。**不推 ``updated_at``**：与置顶、改名同理——
+        归档是一次整理动作，不该把会话顶到"最近活动"的最前面。"""
+        ...
+
+    @abstractmethod
+    def last_assistant_previews(self, conversation_ids: Sequence[str]) -> dict[str, str]:
+        """``会话 id → 最后一条回答的原文``（历史会话面板的两行预览用它）。
+
+        **一次查完，不逐个查**：列表最多几十条，逐个查就是几十次往返。
+        实现上是一条 ``DISTINCT ON``，取每个会话最新的那条 assistant 消息。
+        """
         ...
 
     @abstractmethod

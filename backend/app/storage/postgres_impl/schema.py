@@ -25,7 +25,7 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 """应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
 
 **启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
@@ -148,6 +148,21 @@ MIGRATIONS: tuple[Migration, ...] = (
             )
             """,
             "CREATE INDEX idx_mcp_servers_owner ON mcp_servers (owner_id, updated_at DESC)",
+        ),
+    ),
+    Migration(
+        version=7,
+        description="会话归档：把不看了的会话收起来，而不是删掉（v0.17，照 Kimi 的历史会话）",
+        statements=(
+            # 用**时间戳**而不是布尔：归档这件事"什么时候做的"本身有用
+            # （归档视图按它排序），而布尔还得再加一列才行。
+            # `NULL` = 未归档，这也是默认值——存量会话全部落在"未归档"里。
+            "ALTER TABLE conversations ADD COLUMN archived_at timestamptz",
+            # 列表默认 `archived_at IS NULL`，这条索引直接服务它
+            """
+            CREATE INDEX idx_conversations_archived
+                ON conversations (archived_at, pinned DESC, updated_at DESC)
+            """,
         ),
     ),
 )

@@ -494,3 +494,79 @@ def test_rewind_without_a_question_is_422(client: TestClient) -> None:
 
     assert response.status_code == 422
     assert "没有可回退" in response.json()["message"]
+
+
+def test_archived_conversations_leave_the_default_list(client: TestClient) -> None:
+    """**归档不是删除**：它从默认列表里消失，但内容还在，能取消归档。
+
+    这条要用接口验，因为它是用户看得见的那半边：归档之后侧栏不该还挂着它。
+    """
+    first = client.post("/api/v1/conversations", json={"title": "要归档的", "kb_ids": []}).json()
+    second = client.post("/api/v1/conversations", json={"title": "留着的", "kb_ids": []}).json()
+
+    archived = client.patch(
+        f"/api/v1/conversations/{first['id']}", json={"archived": True}
+    ).json()
+    assert archived["archived_at"] is not None
+
+    default_ids = [item["id"] for item in client.get("/api/v1/conversations").json()["items"]]
+    assert first["id"] not in default_ids
+    assert second["id"] in default_ids
+
+    # 归档视图里看得到，而且**内容还在**（能取详情）
+    archived_ids = [
+        item["id"]
+        for item in client.get("/api/v1/conversations?archived=true").json()["items"]
+    ]
+    assert first["id"] in archived_ids
+    assert client.get(f"/api/v1/conversations/{first['id']}").status_code == 200
+
+    # 取消归档 → 回到默认列表
+    back = client.patch(
+        f"/api/v1/conversations/{first['id']}", json={"archived": False}
+    ).json()
+    assert back["archived_at"] is None
+    default_ids = [item["id"] for item in client.get("/api/v1/conversations").json()["items"]]
+    assert first["id"] in default_ids
+
+
+def test_archiving_does_not_touch_updated_at(client: TestClient) -> None:
+    """归档是一次整理动作，**不该把会话顶到"最近活动"的最前面**——
+    与改名/置顶同一条纪律（否则整理一遍列表，顺序就按整理时间乱掉了）。"""
+    older = client.post("/api/v1/conversations", json={"title": "早的", "kb_ids": []}).json()
+    newer = client.post("/api/v1/conversations", json={"title": "晚的", "kb_ids": []}).json()
+    before = client.get(f"/api/v1/conversations/{older['id']}").json()["updated_at"]
+
+    client.patch(f"/api/v1/conversations/{older['id']}", json={"archived": False})
+
+    after = client.get(f"/api/v1/conversations/{older['id']}").json()["updated_at"]
+    assert after == before
+    del newer
+
+
+def test_preview_returns_the_last_answer(client: TestClient) -> None:
+    """历史面板那两行预览给的是**最近一条回答**：回看时想认出的是"这次聊出了什么"，
+    而问题常常几条都长得像（"帮我看看这个"）。"""
+    conversation = client.post("/api/v1/conversations", json={"title": "带回答的"}).json()
+    services = get_services()
+    services.conversations.append(conversation["id"], role="user", content="问一句")
+    services.conversations.append(
+        conversation["id"], role="assistant", content="这是最近的一条回答"
+    )
+
+    body = client.get("/api/v1/conversations?with_preview=true").json()
+
+    row = next(item for item in body["items"] if item["id"] == conversation["id"])
+    assert row["preview"] == "这是最近的一条回答"
+
+
+def test_preview_is_opt_in(client: TestClient) -> None:
+    """预览要多一次查询，所以默认**不给**：侧栏每次渲染都要那份清单，
+    让侧栏为面板的需求付成本不划算。"""
+    conversation = client.post("/api/v1/conversations", json={"title": "x"}).json()
+    get_services().conversations.append(conversation["id"], role="assistant", content="回答")
+
+    body = client.get("/api/v1/conversations").json()
+
+    row = next(item for item in body["items"] if item["id"] == conversation["id"])
+    assert row["preview"] == ""

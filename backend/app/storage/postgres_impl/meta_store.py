@@ -2552,6 +2552,7 @@ class PostgresMetaStore(MetaStore):
             pinned=bool(row["pinned"]),
             # 旧库/未归档的会话这一列是 NULL —— 保持 None，不要折成空串
             workspace_id=row.get("workspace_id"),
+            archived_at=_load(row.get("archived_at")),
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
         )
@@ -2598,6 +2599,35 @@ class PostgresMetaStore(MetaStore):
                 "SELECT * FROM conversations WHERE id = %s", (conversation_id,)
             ).fetchone()
         return self._conversation_from_row(row) if row else None
+
+    def set_conversation_archived(self, conversation_id: str, archived: bool) -> None:
+        # 不推 updated_at：归类动作不该改变"最近活动"的名次（与置顶/改名同理）
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE conversations SET archived_at = CASE WHEN %s THEN now() ELSE NULL END"
+                " WHERE id = %s",
+                (archived, conversation_id),
+            )
+
+    def last_assistant_previews(self, conversation_ids: Sequence[str]) -> dict[str, str]:
+        """一次查完每个会话最后一条回答。``DISTINCT ON`` 是 PG 的写法：
+        按 ``conversation_id`` 分组取排序后的第一行。
+
+        **不拼占位符**：ids 走 ``= ANY(%s)`` 传成数组参数（psycopg3 直接把 list
+        适配成数组）。文件里其它批量查询是拼 ``"%s"`` 的，这里刻意不那么写——
+        没有插值就没有 S608 那一类告警，也少一层字符串构造。
+        """
+        if not conversation_ids:
+            return {}
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT ON (conversation_id) conversation_id, content"
+                " FROM chat_messages"
+                " WHERE conversation_id = ANY(%s) AND role = 'assistant'"
+                " ORDER BY conversation_id, created_at DESC",
+                (list(conversation_ids),),
+            ).fetchall()
+        return {row["conversation_id"]: row["content"] for row in rows}
 
     def set_conversation_workspace(
         self, conversation_id: str, workspace_id: str | None

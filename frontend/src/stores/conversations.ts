@@ -24,6 +24,10 @@ import {
 
 interface State {
   items: ConversationSummary[]
+  /** 历史会话面板用的那份清单：**带预览、可含归档**，与侧栏那份分开存。
+   *  分开的理由：预览要多一次查询，而侧栏每次渲染都要那份清单——
+   *  让侧栏为面板的需求付成本不划算。 */
+  detailItems: ConversationSummary[]
   loading: boolean
   error: string
   /** `items` 里是不是**未筛选**的完整清单。搜索过的子集不能拿来判断"最近一条"。 */
@@ -109,6 +113,7 @@ function summaryOf(detail: ConversationDetail): ConversationSummary {
 
 export const useConversationStore = defineStore('conversations', {
   state: (): State => ({
+    detailItems: [],
     items: [],
     loading: false,
     error: '',
@@ -157,6 +162,35 @@ export const useConversationStore = defineStore('conversations', {
     async setWorkspace(id: string, workspaceId: string | null): Promise<void> {
       const updated = await updateConversation(id, { workspace_id: workspaceId })
       this.items = this.items.map((item) => (item.id === id ? { ...item, ...updated } : item))
+    },
+
+    /**
+     * 历史会话面板的清单（`withPreview`，可选含归档）。
+     *
+     * **它只写 `detailItems`，不碰 `items`**：面板里的搜索/归档视图是面板自己的
+     * 过滤状态，写进侧栏那份会让侧栏跟着变成"只剩搜索结果"。
+     */
+    async loadDetailList(
+      options: { q?: string; archived?: boolean; withPreview?: boolean } = {},
+    ): Promise<void> {
+      const result = await listConversations(100, options.q, {
+        archived: options.archived,
+        withPreview: options.withPreview,
+      })
+      this.detailItems = result.items
+    },
+
+    /** 归档 / 取消归档（v0.17）。归档不是删除：内容与引用都还在。 */
+    async setArchived(id: string, archived: boolean): Promise<void> {
+      const updated = await updateConversation(id, { archived })
+      // 两份清单都就地更新：侧栏那份**移除**（归档了就不该再出现在侧栏），
+      // 面板那份按当前视图决定留不留（取消归档后还要能看见它）
+      this.items = archived
+        ? this.items.filter((item) => item.id !== id)
+        : this.items.map((item) => (item.id === id ? { ...item, ...updated } : item))
+      this.detailItems = this.detailItems.map((item) =>
+        item.id === id ? { ...item, ...updated } : item,
+      )
     },
 
     async rename(id: string, title: string): Promise<void> {

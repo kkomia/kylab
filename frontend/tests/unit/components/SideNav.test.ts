@@ -221,14 +221,39 @@ describe('SideNav（v0.15 信息架构）', () => {
     expect(search.element.closest('.ws-group')).toBeNull()
   })
 
-  it('「会话」是这一节的标签，工作区与未归档是同级分组', () => {
-    // 原先「工作区」是标题、而「未归档会话」是它下面的一行——层级不一致，
-    // 后者看起来像一个工作区。
+  it('「对话」是这一节的标签，工作区与未归档是同级分组', () => {
+    // 标签用 Kimi 的叫法「对话」（参考图里就是它）。原先这里叫「工作区」，
+    // 而「未归档会话」是它下面的一行——层级不一致，后者看起来像一个工作区。
     const wrapper = mountNav()
 
-    expect(wrapper.find('.section-label').text()).toBe('会话')
+    expect(wrapper.find('.section-label').text()).toBe('对话')
     // 两个分组行都是 .ws-item（同一层级、同一套样式）
     expect(wrapper.findAll('.ws-item').length).toBeGreaterThanOrEqual(1)
     expect(wrapper.text()).toContain('未归档会话')
+  })
+  it('节标题可折叠（参考图里 `对话 ⌄` 就是这个）', async () => {
+    const wrapper = mountNav()
+
+    expect(wrapper.find('.ws-list').isVisible()).toBe(true)
+
+    // **要 await**：`trigger` 自己是异步的，只 void 掉再手动 nextTick
+    // 有时序问题（第一版就是这么写的，于是断言看到的是折叠前的状态）
+    await wrapper.find('.section-toggle').trigger('click')
+
+    // **断言的是内联样式，不是 `isVisible()`**：这个环境下 jsdom 的
+    // `getComputedStyle` 对 `v-show` 设的 `display: none` 仍报 `block`
+    // （实测：style 属性是 display: none，computed 却是 block），
+    // 于是 `isVisible()` 会给出 false negative。
+    // 而 `v-show` 控制的就是那个内联样式，直接断言它既准确又不依赖 jsdom 的实现细节。
+    expect(wrapper.find('.ws-list').attributes('style')).toContain('display: none')
+  })
+
+  it('「查看全部」触发打开历史面板的事件', async () => {
+    // 面板挂在 App 外壳上（侧栏不自己渲染它），所以这里断言的是事件
+    const wrapper = mountNav()
+
+    await wrapper.find('.section-action').trigger('click')
+
+    expect(wrapper.emitted('openHistory')).toHaveLength(1)
   })
 })

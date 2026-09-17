@@ -33,7 +33,7 @@ from app.services.api_key import Caller
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
 
-def _summary(services: Services, record) -> ConversationOut:  # type: ignore[no-untyped-def]
+def _summary(services: Services, record, *, preview: str = "") -> ConversationOut:  # type: ignore[no-untyped-def]
     return ConversationOut(
         id=record.id,
         title=record.title,
@@ -43,6 +43,8 @@ def _summary(services: Services, record) -> ConversationOut:  # type: ignore[no-
         thinking_effort=record.thinking_effort,
         pinned=record.pinned,
         workspace_id=record.workspace_id,
+        archived_at=record.archived_at,
+        preview=preview,
         created_at=record.created_at,
         updated_at=record.updated_at,
         message_count=services.conversations.message_count(record.id),
@@ -78,6 +80,12 @@ def list_conversations(
     ungrouped: bool = Query(
         default=False, description="只看**未归档**的会话（不属于任何工作区）"
     ),
+    archived: bool = Query(
+        default=False, description="看**已归档**的会话（历史会话面板的归档视图）"
+    ),
+    with_preview: bool = Query(
+        default=False, description="是否带上最近一条回答的开头（历史会话面板的两行预览）"
+    ),
 ) -> ConversationListOut:
     # 成员只看到自己的会话（v10 私有隔离）：对话内容是私有数据，
     # 列表不按归属过滤就等于把别人的问题全部摊开
@@ -90,8 +98,16 @@ def list_conversations(
         q=q,
         workspace_id=workspace_id,
         ungrouped=ungrouped,
+        archived=archived,
     )
-    return ConversationListOut(items=[_summary(services, item) for item in records])
+    # 预览**一次查完**（一条 `DISTINCT ON`），不是逐个会话去查——
+    # 列表最多几十条，逐个查就是几十次往返。只有面板要它，所以做成了可选参数。
+    previews = (
+        services.conversations.previews([item.id for item in records]) if with_preview else {}
+    )
+    return ConversationListOut(
+        items=[_summary(services, item, preview=previews.get(item.id, "")) for item in records]
+    )
 
 
 @router.post(
@@ -168,7 +184,7 @@ def update_conversation(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
 ) -> ConversationOut:
-    """标题 / 置顶 / 归属都可选，只处理传了的那些；都为空时幂等。
+    """标题 / 置顶 / 归档 / 归属都可选，只处理传了的那些；都为空时幂等。
 
     **归属用 ``model_fields_set`` 判断是否传了**，不能只看 ``is not None``：
     "退回未归档"要传 ``workspace_id: null``，而那与"这个字段没传"在值上完全一样。
@@ -180,6 +196,8 @@ def update_conversation(
         record = services.conversations.rename(conversation_id, payload.title)
     if payload.pinned is not None:
         record = services.conversations.set_pinned(conversation_id, payload.pinned)
+    if payload.archived is not None:
+        record = services.conversations.set_archived(conversation_id, payload.archived)
     if "workspace_id" in payload.model_fields_set:
         services.workspaces.bind_conversation(
             conversation_id, payload.workspace_id, user_id=_caller_owner(caller)

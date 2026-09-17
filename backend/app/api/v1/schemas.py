@@ -791,6 +791,9 @@ class ConversationUpdateIn(BaseModel):
 
     title: str | None = Field(default=None, min_length=1, max_length=64)
     pinned: bool | None = None
+    archived: bool | None = None
+    """归档 / 取消归档（v0.17）。与 ``workspace_id`` 的区别是不需要哨兵：
+    它只有真/假两种意图，没有"不传"与"传空"的歧义。"""
     workspace_id: str | None = None
     """改归属：传工作区 id = 挂进去，传 ``null`` = 退回未归档。
 
@@ -831,7 +834,16 @@ class ConversationOut(BaseModel):
     pinned: bool = False
     """置顶（v17）。置顶的会话排在列表最前，且聊天不改变它的名次。"""
     workspace_id: str | None = None
-    """所属工作区（v0.15）；``None`` = 未归档，侧栏把它单独排一列。"""
+    """所属工作区（v0.15）；``None`` = 未归档。"""
+    archived_at: datetime | None = None
+    """归档时间（v0.17）。非空 = 已归档——**归档不是删除**：
+    默认列表里看不到它，但内容还在，随时可以取消归档。"""
+    preview: str = ""
+    """最近一条回答的开头一段（历史会话面板的两行预览）。
+
+    给回答而不是给提问：用户回看历史时想认出的是"这次聊出了什么"，
+    而问题往往几条都长得很像（"帮我看看这个"）。
+    """
     created_at: datetime | None = None
     updated_at: datetime | None = None
     message_count: int = 0

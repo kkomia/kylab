@@ -60,6 +60,8 @@ import { useStatsStore } from '@/stores/stats'
 import { useToast } from '@/composables/useToast'
 import { useTaskStore } from '@/stores/tasks'
 
+const emit = defineEmits<{ (event: 'openHistory'): void }>()
+
 const route = useRoute()
 const router = useRouter()
 const store = useKnowledgeBaseStore()
@@ -165,6 +167,9 @@ function onConversationIntent(id: string): void {
  * **默认都收起**：这两个子菜单的意义就是"把空间让给会话"，
  * 默认展开等于没改。会话所在的工作区会自动展开（见 `openWorkspaceIds` 的 watch）。
  */
+const sectionHovered = ref(false)
+/** 整节折叠（Kimi 的 `对话 ⌄`）。默认展开——它是这一栏的主体。 */
+const sectionCollapsed = ref(false)
 const knowledgeOpen = ref(false)
 const openWorkspaceIds = ref<string[]>([])
 const ungroupedOpen = ref(true)
@@ -558,8 +563,35 @@ async function onLogout(): Promise<void> {
 
            顺序上这一节在导航**之下**：导航是"去哪个功能区"，短且固定；
            会话清单会不断变长，放在导航之上就会把导航推走。 -->
-      <div class="workspace-head">
-        <p class="section-label">会话</p>
+      <!-- 节标题照 Kimi：`对话 ⌄` —— 点这儿折叠整节，鼠标移上来右侧出现「查看全部」。
+           「查看全部」在参考图里就是**悬停才出现**的次要动作，所以它默认 opacity:0；
+           但**始终可 Tab 到**（§8 禁止 hover-only 的关键操作）——聚焦时同样显形。 -->
+      <div
+        class="workspace-head"
+        @mouseenter="sectionHovered = true"
+        @mouseleave="sectionHovered = false"
+      >
+        <button
+          type="button"
+          class="section-toggle"
+          :aria-expanded="!sectionCollapsed"
+          @click="sectionCollapsed = !sectionCollapsed"
+        >
+          <span class="section-label">对话</span>
+          <IconChevronDown
+            class="section-chevron"
+            :class="{ collapsed: sectionCollapsed }"
+            :size="14"
+          />
+        </button>
+        <button
+          type="button"
+          class="section-action"
+          :class="{ 'section-action-visible': sectionHovered || sectionCollapsed }"
+          @click="emit('openHistory')"
+        >
+          查看全部
+        </button>
       </div>
 
       <p v-if="workspaces.error" class="side-note">{{ workspaces.error }}</p>
@@ -567,7 +599,10 @@ async function onLogout(): Promise<void> {
       <!-- 搜索放在这一节的**最上面**：它搜的是全部会话（后端按标题全局搜），
            位置就该在"全部会话"这个层级上。原先它嵌在「未归档会话」里面，
            看起来像只搜那一组。 -->
-      <div v-if="conversations.items.length > 0 || searchDraft" class="conv-search">
+      <div
+        v-if="!sectionCollapsed && (conversations.items.length > 0 || searchDraft)"
+        class="conv-search"
+      >
         <IconSearch class="conv-search-icon" :size="14" />
         <AppInput
           v-model="searchDraft"
@@ -587,7 +622,7 @@ async function onLogout(): Promise<void> {
         </button>
       </div>
 
-      <ul class="ws-list">
+      <ul v-show="!sectionCollapsed" class="ws-list">
         <li v-for="workspace in workspaces.items" :key="workspace.id" class="ws-group">
           <div class="ws-row">
             <button
@@ -1433,22 +1468,61 @@ async function onLogout(): Promise<void> {
   color: var(--text-primary);
 }
 
-.section-action {
+/* 节标题：「对话 ⌄」——标签与箭头合成一个可点的整块（点它折叠整节） */
+.section-toggle {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: var(--hit-target);
-  height: var(--hit-target);
+  gap: var(--space-1);
+  height: var(--nav-section-title-height);
+  padding: 0;
   border: none;
   background: none;
-  border-radius: var(--radius-control);
   color: var(--text-tertiary);
   cursor: pointer;
 }
 
-.section-action:hover {
-  background: var(--bg-active);
+.section-toggle:hover {
   color: var(--text-primary);
+}
+
+.section-chevron {
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+.section-chevron.collapsed {
+  transform: rotate(-90deg);
+}
+
+.section-action {
+  display: inline-flex;
+  align-items: center;
+  height: var(--hit-target);
+  padding: 0 var(--space-2);
+  border: none;
+  background: none;
+  border-radius: var(--radius-control);
+  /* 提示色而不是灰：参考图里「查看全部」比分组标签略深，是一个可点的动作 */
+  color: var(--text-secondary);
+  font-size: var(--text-meta-size);
+  cursor: pointer;
+  /* **默认不可见但占位**：用 opacity 而不是 display，避免出现时把标题挤动一下。
+     悬停显形是参考图的形态；同时它在 DOM 里始终可 Tab 到并即时显形。 */
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+.section-action-visible,
+.section-toggle:hover ~ .section-action {
+  opacity: 1;
+}
+
+.section-action:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.section-action:focus-visible {
+  opacity: 1;
 }
 
 .ws-list {
