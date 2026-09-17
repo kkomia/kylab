@@ -73,16 +73,40 @@ const dirty = computed(() => {
   )
 })
 
+/**
+ * 进来时选中哪个项目：``?focus=<id>`` > 第一个。
+ *
+ * ``focus`` 是侧栏「项目」菜单用的（v0.22）：菜单里点某个项目要**落在它身上**，
+ * 而不是落在列表第一个——"点谁进谁"是那个菜单存在的意义。
+ * 找不到那个 id（被删了、或链接过期）时**退回第一个**，不报错：
+ * 用户要的是"进项目页"，不是"看一条错误"。
+ */
+function initialSelection(): void {
+  const wanted = typeof route.query.focus === 'string' ? route.query.focus : ''
+  const target = wanted ? workspaces.items.find((item) => item.id === wanted) : undefined
+  if (target) select(target)
+  else if (workspaces.items.length) select(workspaces.items[0])
+}
+
 onMounted(async () => {
   await Promise.all([workspaces.load(), knowledgeBases.load().catch(() => undefined)])
   if (route.query.new === '1') startCreate()
-  else if (workspaces.items.length) select(workspaces.items[0])
+  else initialSelection()
 })
 
 watch(
   () => route.query.new,
   (value) => {
     if (value === '1') startCreate()
+  },
+)
+
+// 侧栏菜单再次点另一个项目时，路由只在 query 上变，组件不会重建——这里跟上
+watch(
+  () => route.query.focus,
+  (value) => {
+    const target = workspaces.items.find((item) => item.id === String(value ?? ''))
+    if (target) select(target)
   },
 )
 

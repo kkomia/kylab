@@ -2,22 +2,20 @@
 /**
  * 导航侧栏（《前端设计规范》§5）。
  *
- * 结构（v0.22）：产品名 → 新建会话 → 导航（笔记 / 记忆 / 能力 / 知识库▸）
- * → **项目** → **对话** → 页脚（账号 / 设置）。
+ * 结构（v0.22，照 Kimi Work 的侧栏条目）：产品名 → 新建会话 → 导航（笔记 / 记忆 /
+ * 能力 / 知识库▸）→ **项目 ›** → **对话 ›** → 页脚（账号 / 设置）。
  *
- * 下半栏的两节按用户指定重排过，三条都改变了原来的行为：
+ * Kimi Work 的官方口径（帮助中心《Kimi Work 产品介绍》）把 Work 模式侧栏列成一张
+ * 平铺的条目表：**「新建任务、看板、插件、技能、定时任务、WebBridge、项目、对话」**
+ * ——「项目」与「对话」是**两个并列的入口**，与看板/插件同级，**侧栏里不铺任何清单**。
+ * 点它们各自打开自己的菜单：项目打开项目菜单（项目列表 + 新建项目），
+ * 对话打开会话搜索菜单（搜索 + 全部 / 已归档）。
  *
- * 1. **项目排在对话之前**。项目是"在哪儿干活"（会一直用下去），对话是"刚刚问了什么"
- *    （临时的）——先项目后对话。
- * 2. **不再有「未归档会话」那一栏**。它原先是个常驻的平铺清单，而实测下来那里
- *    堆的全是随手问的"你好"（9 条里有 6 条），既占地方又读不出信息。
- *    对话现在**只在「对话」那条入口里管理**（搜索 + 全部/已归档两个视图）。
- * 3. **项目的增删查统一收在一个菜单里**（节标题右侧那个「管理」）：全部项目 / 新建项目，
- *    不必先想"这事是在侧栏还是在项目页"。
- *
- * 归档过的会话本来就不进侧栏（`setArchived` 会把它从那份清单里摘掉），
- * 要看它们去「对话」那条入口的「已归档」视图。"未归档"这个词以前有两层含义
- * （不属于任何项目 / 没归档），界面上只留后者。
+ * 前两版我做反了两处，记在这里以免再来一次：
+ *  1. 把「项目」做成一个**常驻展开的分组**（带项目行、可展开看会话、旁边还挂一个
+ *     「管理」菜单）——侧栏于是又变成一份会变长的清单，而 Kimi 那里它只是一行；
+ *  2. 给「对话」配了独立的节结构、条数与搜索标记——它同样只是一行。
+ * 判据很简单：**侧栏的位置留给"入口"，清单交给各自的菜单**。
  *
  * 页脚只留"入口"，不留"状态与开关"（第二轮评审批注 1/2/3）：
  * - 退出登录收进账号的二级菜单——它低频且不可逆，摊在页脚上误点代价高；
@@ -35,9 +33,6 @@ import { useRoute, useRouter } from 'vue-router'
 
 import IconChat from '@/components/icons/IconChat.vue'
 import IconChatNew from '@/components/icons/IconChatNew.vue'
-import IconEdit from '@/components/icons/IconEdit.vue'
-import IconPin from '@/components/icons/IconPin.vue'
-import IconTrash from '@/components/icons/IconTrash.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconDashboard from '@/components/icons/IconDashboard.vue'
@@ -48,7 +43,6 @@ import IconLogo from '@/components/icons/IconLogo.vue'
 import IconLogout from '@/components/icons/IconLogout.vue'
 import IconNote from '@/components/icons/IconNote.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
-import IconSearch from '@/components/icons/IconSearch.vue'
 import IconServer from '@/components/icons/IconServer.vue'
 import IconSettings from '@/components/icons/IconSettings.vue'
 import IconSidebar from '@/components/icons/IconSidebar.vue'
@@ -56,23 +50,17 @@ import IconSun from '@/components/icons/IconSun.vue'
 import IconTasks from '@/components/icons/IconTasks.vue'
 import IconUser from '@/components/icons/IconUser.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
-import AppButton from '@/components/ui/AppButton.vue'
-import AppInput from '@/components/ui/AppInput.vue'
-import AppModal from '@/components/ui/AppModal.vue'
-import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import { loadRoster, roster, setOperator } from '@/composables/useOperator'
 import { isAdmin, logout as logoutSession } from '@/composables/useSession'
 import { currentUser } from '@/composables/useSessionToken'
 import { useSidebar } from '@/composables/useSidebar'
 import { resolvedTheme, setTheme } from '@/composables/useTheme'
-import type { ConversationSummary } from '@/api/conversations'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 import { useModelRegistryStore } from '@/stores/modelRegistry'
 import { useWorkspaceStore } from '@/stores/workspaces'
 import { useStatsStore } from '@/stores/stats'
-import { useToast } from '@/composables/useToast'
 import { useTaskStore } from '@/stores/tasks'
 
 const emit = defineEmits<{ (event: 'openHistory'): void }>()
@@ -85,7 +73,6 @@ const workspaces = useWorkspaceStore()
 const taskStore = useTaskStore()
 const statsStore = useStatsStore()
 const modelStore = useModelRegistryStore()
-const { notifyError, notifySuccess } = useToast()
 
 /** 折叠为图标栏：纯显示偏好，落 localStorage（见 useSidebar）。 */
 const { collapsed, toggleSidebar } = useSidebar()
@@ -167,11 +154,6 @@ function onNavIntent(to: string): void {
   }
 }
 
-/** 悬停/聚焦某条历史会话：把它的正文先取回来（失败静默，见 store）。 */
-function onConversationIntent(id: string): void {
-  void conversations.prefetchDetail(id)
-}
-
 /**
  * 导航项顺序 = 使用频率（《界面信息架构草案》§1）。
  *
@@ -225,85 +207,29 @@ function onShortcut(event: KeyboardEvent): void {
   event.preventDefault()
   void router.push({ path: '/chat', query: { new: '1' } })
 }
-/** 项目那一节的折叠（默认展开：它是这一栏的主体，对话只是入口）。 */
-const projectsOpen = ref(true)
 const knowledgeOpen = ref(false)
-const openWorkspaceIds = ref<string[]>([])
-
-/** 按工作区把会话分好组。会话只有**一份**平铺清单，分组在这里做——
- *  两处各存一份，"把会话挪进工作区"就得改两个地方。 */
-const conversationsByWorkspace = computed(() => {
-  const groups = new Map<string, ConversationSummary[]>()
-  for (const item of conversations.items) {
-    if (!item.workspace_id) continue
-    const list = groups.get(item.workspace_id) ?? []
-    list.push(item)
-    groups.set(item.workspace_id, list)
-  }
-  return groups
-})
-
-/**
- * 不进项目、也没归档的会话数——「对话」那条入口右边那个数字。
- *
- * **只用来给入口一个"有多少条"的量感**，不再铺成清单：那份清单的绝大多数是
- * 随手问一句留下的（实测 9 条里 6 条标题是"你好"），铺在侧栏里既占地方，
- * 也让人看不出哪条是重要的。找它们去搜索面板。
- */
-const looseConversationCount = computed(
-  () => conversations.items.filter((item) => !item.workspace_id).length,
-)
 
 function toggleKnowledge(): void {
   knowledgeOpen.value = !knowledgeOpen.value
-}
-
-function toggleWorkspace(workspaceId: string): void {
-  openWorkspaceIds.value = openWorkspaceIds.value.includes(workspaceId)
-    ? openWorkspaceIds.value.filter((item) => item !== workspaceId)
-    : [...openWorkspaceIds.value, workspaceId]
-}
-
-function isWorkspaceOpen(workspaceId: string): boolean {
-  return openWorkspaceIds.value.includes(workspaceId)
-}
-
-/** 「新建工作区」：跳工作区页并让它直接把新建表单打开（`?new=1`）。 */
-function onNewWorkspace(): void {
-  void router.push({ path: '/workspaces', query: { new: '1' } })
 }
 
 function isKnowledgeActive(): boolean {
   return route.path.startsWith('/knowledge-bases') || route.path.startsWith('/kb/')
 }
 
-/** 在这个工作区里开一条新会话：带上工作区，**知识库范围由后端继承工作区的**
- *  （见 api/v1/conversations.py）。这就是"进入项目，资料范围就定了"。 */
-async function newConversationIn(workspaceId: string): Promise<void> {
-  const workspace = workspaces.byId.get(workspaceId)
-  try {
-    const record = await conversations.create([], null, undefined, workspaceId)
-    openWorkspaceIds.value = [...new Set([...openWorkspaceIds.value, workspaceId])]
-    await workspaces.refreshCounts()
-    await router.push(`/chat/${record.id}`)
-  } catch (error) {
-    notifyError(error instanceof Error ? error.message : '新建会话失败')
-    void workspace
-  }
+/** 「新建项目」：跳项目页并让它直接把新建表单打开（`?new=1`）。 */
+function onNewWorkspace(): void {
+  void router.push({ path: '/workspaces', query: { new: '1' } })
 }
 
-/** 把一个会话挪进工作区 / 退回未归档（会话行菜单里用）。 */
-async function moveConversation(
-  conversation: ConversationSummary,
-  workspaceId: string | null,
-): Promise<void> {
-  try {
-    await conversations.setWorkspace(conversation.id, workspaceId)
-    await workspaces.refreshCounts()
-    notifySuccess(workspaceId ? '已挪进工作区' : '已移出工作区')
-  } catch (error) {
-    notifyError(error instanceof Error ? error.message : '移动失败')
-  }
+/** 「全部项目」：项目页（项目卡的完整管理：改名、路径、绑定知识库）。 */
+function openProjects(): void {
+  void router.push('/workspaces')
+}
+
+/** 菜单里点某个项目：进项目页并**选中它**（`?focus=<id>`，见 WorkspacesView）。 */
+function openProject(workspaceId: string): void {
+  void router.push({ path: '/workspaces', query: { focus: workspaceId } })
 }
 
 const NAV_ITEMS = [
@@ -353,86 +279,7 @@ function isActive(to: string, exact: boolean): boolean {
  */
 const canOpenSettings = computed(() => isAdmin.value)
 
-/** 当前会话 id：从路径里取，用来高亮列表里那一条。 */
-const activeConversationId = computed(() => {
-  const matched = /^\/chat\/([^/]+)$/.exec(route.path)
-  return matched ? matched[1] : ''
-})
-
 // ---------------------------------------------------------------- 会话管理（v17）
-
-/** 标题上限，与后端 `ConversationUpdateIn.title`（64）对齐。 */
-const TITLE_MAX = 64
-
-/** 搜索词。**交给后端筛**：只筛已加载的前 50 条会搜不到更早的会话。 */
-
-const renameOpen = ref(false)
-const renameDraft = ref('')
-const renameTarget = ref<ConversationSummary | null>(null)
-const renaming = ref(false)
-
-function openRename(item: ConversationSummary): void {
-  renameTarget.value = item
-  renameDraft.value = item.title || ''
-  renameOpen.value = true
-}
-
-async function confirmRename(): Promise<void> {
-  const target = renameTarget.value
-  const title = renameDraft.value.trim()
-  if (!target) return
-  if (!title) {
-    notifyError('标题不能为空')
-    return
-  }
-  renaming.value = true
-  try {
-    await conversations.rename(target.id, title)
-    renameOpen.value = false
-    notifySuccess('已重命名')
-  } catch (error) {
-    notifyError(error instanceof Error ? error.message : '重命名失败')
-  } finally {
-    renaming.value = false
-  }
-}
-
-const deleteOpen = ref(false)
-const deleteTarget = ref<ConversationSummary | null>(null)
-const deleting = ref(false)
-
-function openDelete(item: ConversationSummary): void {
-  deleteTarget.value = item
-  deleteOpen.value = true
-}
-
-/**
- * 删除当前正在看的会话时**要把人送走**：留在 `/chat/{已删 id}` 上，
- * 对话页会去拉一个不存在的会话并报错——用户刚删完就看到红字，像是删坏了。
- */
-async function confirmDelete(): Promise<void> {
-  const target = deleteTarget.value
-  if (!target) return
-  deleting.value = true
-  try {
-    await conversations.remove(target.id)
-    deleteOpen.value = false
-    if (activeConversationId.value === target.id) await router.push('/chat')
-    notifySuccess('已删除对话')
-  } catch (error) {
-    notifyError(error instanceof Error ? error.message : '删除失败')
-  } finally {
-    deleting.value = false
-  }
-}
-
-async function togglePin(item: ConversationSummary): Promise<void> {
-  try {
-    await conversations.setPinned(item.id, !item.pinned)
-  } catch (error) {
-    notifyError(error instanceof Error ? error.message : '置顶失败')
-  }
-}
 
 /** 设置从页面收进弹窗：它是动作，做完就走（《界面信息架构草案》§1）。 */
 const settingsOpen = ref(false)
@@ -612,176 +459,58 @@ async function onLogout(): Promise<void> {
     </nav>
 
     <!--
-      下半栏（v0.22 重排）：**项目 → 对话**。
+      下半栏（v0.22，照 Kimi Work）：**两个入口，两条行**。
 
-      两节的定位不同，所以形态也不同：项目是持久的归类（一行一个，可展开看它的会话），
-      对话是临时的记录（一条入口，点开是搜索面板）。原先这里是一节「对话」下面挂着
-      「工作区 A / 工作区 B / 未归档会话」三个同层级分组——项目与临时会话混在一起，
-      而"未归档会话"那一栏实测堆的全是随手问的"你好"。
+      Kimi Work 把「项目」与「对话」与看板/插件并列成条目，**侧栏里不铺清单**；
+      点它们各自打开自己的菜单。这两行因此长成导航项的样子（右侧 `›` 表示"进去"），
+      而不是分组标题——它们不是容器，是门。
+
+      「对话」那一行原先还挂着"未归档会话"那张平铺清单（实测 9 条里 6 条是"你好"）：
+      对话是临时的，管理它的地方是搜索菜单，不是侧栏。
     -->
     <div v-if="!collapsed" class="side-section">
-      <!-- 项目：节标题右侧是**统一管理入口**（全部项目 / 新建项目） -->
-      <div class="workspace-head">
-        <button
-          type="button"
-          class="section-toggle"
-          :aria-expanded="projectsOpen"
-          @click="projectsOpen = !projectsOpen"
-        >
-          <span class="section-label">项目</span>
-          <IconChevronDown
-            class="section-chevron"
-            :class="{ collapsed: !projectsOpen }"
-            :size="14"
-          />
-        </button>
-        <RowMenu label="项目管理" align="right">
-          <template #trigger>
-            <span class="section-action section-action-visible">管理</span>
-          </template>
-          <template #default="{ close }">
-            <button type="button" @click="(router.push('/workspaces'), close())">
-              <IconFolder :size="14" /> 全部项目
+      <!-- 项目菜单：两个动作 + 最近的项目。列表摆在这里是为了"点一次就到"——
+           菜单里点得着那个项目，进项目页直接就选中它。 -->
+      <RowMenu class="side-entry-menu" label="项目" align="right">
+        <template #trigger>
+          <span class="nav-item side-entry side-entry-projects">
+            <IconFolder class="nav-icon" :size="16" />
+            <span class="nav-label">项目</span>
+            <IconChevronRight class="side-entry-chevron" :size="13" />
+          </span>
+        </template>
+        <template #default="{ close }">
+          <button type="button" @click="(onNewWorkspace(), close())">
+            <IconPlus :size="14" /> 新建项目
+          </button>
+          <button type="button" @click="(openProjects(), close())">
+            <IconLibrary :size="14" /> 全部项目
+          </button>
+          <template v-if="workspaces.items.length">
+            <p class="menu-sep">最近的项目</p>
+            <button
+              v-for="workspace in workspaces.items"
+              :key="workspace.id"
+              type="button"
+              @click="(openProject(workspace.id), close())"
+            >
+              <IconFolder :size="14" />
+              <span class="menu-grow">{{ workspace.name }}</span>
+              <span class="menu-count tabular">{{ workspace.conversation_count }}</span>
             </button>
-            <button type="button" @click="(onNewWorkspace(), close())">
-              <IconPlus :size="14" /> 新建项目
-            </button>
           </template>
-        </RowMenu>
-      </div>
+        </template>
+      </RowMenu>
+
+      <!-- 对话：打开搜索菜单（搜索 + 全部 / 已归档）。侧栏不列会话。 -->
+      <button type="button" class="nav-item side-entry side-entry-chat" @click="emit('openHistory')">
+        <IconChat class="nav-icon" :size="16" />
+        <span class="nav-label">对话</span>
+        <IconChevronRight class="side-entry-chevron" :size="13" />
+      </button>
 
       <p v-if="workspaces.error" class="side-note">{{ workspaces.error }}</p>
-
-      <ul v-show="projectsOpen" class="ws-list">
-        <li v-for="workspace in workspaces.items" :key="workspace.id" class="ws-group">
-          <div class="ws-row">
-            <button
-              type="button"
-              class="ws-item"
-              :aria-expanded="isWorkspaceOpen(workspace.id)"
-              :title="workspace.root_path"
-              @click="toggleWorkspace(workspace.id)"
-            >
-              <IconChevronDown
-                class="ws-chevron"
-                :class="{ collapsed: !isWorkspaceOpen(workspace.id) }"
-                :size="13"
-              />
-              <IconFolder :size="14" class="ws-icon" />
-              <span class="ws-name">{{ workspace.name }}</span>
-              <span class="ws-count tabular">{{ workspace.conversation_count }}</span>
-            </button>
-            <button
-              type="button"
-              class="ws-new"
-              :title="`在「${workspace.name}」里新开一条会话`"
-              @click="newConversationIn(workspace.id)"
-            >
-              <IconChatNew :size="14" />
-            </button>
-          </div>
-
-          <ul v-if="isWorkspaceOpen(workspace.id)" class="conv-list">
-            <li
-              v-for="item in conversationsByWorkspace.get(workspace.id) ?? []"
-              :key="item.id"
-              class="conv-row"
-            >
-              <RouterLink
-                class="conv-item conv-item-nested"
-                :class="{ 'conv-item-active': item.id === activeConversationId }"
-                :to="`/chat/${item.id}`"
-                :title="item.title || '未命名对话'"
-                @mouseenter="onConversationIntent(item.id)"
-                @focus="onConversationIntent(item.id)"
-              >
-                <IconPin v-if="item.pinned" class="conv-pin" :size="12" />
-                <span class="conv-title">{{ item.title || '未命名对话' }}</span>
-              </RouterLink>
-              <RowMenu class="conv-menu" :label="`${item.title || '未命名对话'} 的操作`">
-                <template #default="{ close }">
-                  <button type="button" @click="(togglePin(item), close())">
-                    <IconPin :size="14" /> {{ item.pinned ? '取消置顶' : '置顶' }}
-                  </button>
-                  <button type="button" @click="(openRename(item), close())">
-                    <IconEdit :size="14" /> 重命名
-                  </button>
-                  <button type="button" @click="(moveConversation(item, null), close())">
-                    <IconFolder :size="14" /> 移出项目
-                  </button>
-                  <button
-                    class="menu-item-danger"
-                    type="button"
-                    @click="(openDelete(item), close())"
-                  >
-                    <IconTrash :size="14" /> 删除
-                  </button>
-                </template>
-              </RowMenu>
-            </li>
-            <li
-              v-if="(conversationsByWorkspace.get(workspace.id) ?? []).length === 0"
-              class="conv-empty"
-            >
-              还没有会话
-            </li>
-          </ul>
-        </li>
-
-        <!-- 没有项目时给一句话（有项目时这里不占位）：项目那一节是空的话，
-             上面那个「管理 → 新建项目」不够显眼 -->
-        <li v-if="workspaces.items.length === 0" class="conv-empty">
-          还没有项目。项目决定"在哪儿干活"，会一直留着。
-        </li>
-      </ul>
     </div>
-
-    <!--
-      对话（v0.22）：**一条入口，不是一份清单**。
-      "我最近问了什么"由搜索面板回答（那里有搜索、时间分组、预览与已归档视图），
-      侧栏只留一个带搜索标记的入口。归档过的会话在那里看，从不进侧栏。
-    -->
-    <div v-if="!collapsed" class="side-section side-section-conversations">
-      <p v-if="conversations.error" class="side-note">{{ conversations.error }}</p>
-      <button type="button" class="conv-entry" @click="emit('openHistory')">
-        <IconChat class="conv-entry-icon" :size="15" />
-        <span class="conv-entry-label">对话</span>
-        <span v-if="looseConversationCount" class="conv-entry-count tabular">
-          {{ looseConversationCount }}
-        </span>
-        <IconSearch class="conv-entry-search" :size="14" />
-      </button>
-    </div>
-
-    <AppModal v-model:open="renameOpen" title="重命名对话">
-      <label class="field">
-        <span class="field-label">标题</span>
-        <AppInput
-          v-model="renameDraft"
-          :maxlength="TITLE_MAX"
-          placeholder="给这段对话起个名字"
-          @keyup.enter="confirmRename"
-        />
-        <p class="field-hint">{{ renameDraft.trim().length }} / {{ TITLE_MAX }}</p>
-      </label>
-      <template #footer>
-        <AppButton @click="renameOpen = false">取消</AppButton>
-        <AppButton variant="primary" :disabled="renaming" @click="confirmRename">
-          {{ renaming ? '保存中…' : '保存' }}
-        </AppButton>
-      </template>
-    </AppModal>
-
-    <ConfirmDialog
-      v-model:open="deleteOpen"
-      title="删除对话"
-      :lead="`确定删除「${deleteTarget?.title || '未命名对话'}」？`"
-      note="这段对话的全部消息会一并删掉，**不进退回收站**，无法恢复。"
-      confirm-label="删除"
-      :busy="deleting"
-      busy-label="删除中…"
-      @confirm="confirmDelete"
-    />
 
     <div class="sidebar-foot">
       <!--
@@ -1021,59 +750,6 @@ async function onLogout(): Promise<void> {
   border-top: 1px solid var(--border-hairline);
 }
 
-/* 「对话」那一条**不跟着项目清单滚**：它是固定入口，滚上去之后还要能点。
-   所以它自己 flex:0（不抢空间），而项目那一节 flex:1 承担滚动。 */
-.side-section-conversations {
-  flex: 0 0 auto;
-  overflow: visible;
-  padding-top: var(--space-2);
-}
-
-/* 对话入口：一行，左图标 + 标签 + 条数 + 右侧搜索标记（点它打开搜索面板）。
-   形态与导航项一致（40px 高、悬停填充）——它是"去某个地方"的入口，
-   而不是一个动作按钮。 */
-.conv-entry {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  height: var(--nav-height);
-  padding: 0 var(--space-1-5);
-  border: none;
-  background: none;
-  border-radius: var(--radius-nav);
-  color: var(--text-primary);
-  font-size: var(--text-body-size);
-  text-align: left;
-  cursor: pointer;
-  transition: var(--transition-ui);
-}
-
-.conv-entry:hover {
-  background: var(--bg-hover);
-}
-
-.conv-entry-icon {
-  flex-shrink: 0;
-  color: var(--text-secondary);
-}
-
-.conv-entry-label {
-  flex: 1;
-  min-width: 0;
-}
-
-.conv-entry-count {
-  color: var(--text-tertiary);
-  font-size: var(--text-micro-size);
-}
-
-/* 搜索标记用**次要色**：它提示"这里能搜"，而不是抢成一个独立按钮 */
-.conv-entry-search {
-  flex-shrink: 0;
-  color: var(--text-tertiary);
-}
-
 /* 「新建会话」用**和导航项一样的形态**（v0.17 改的）。
    原先它是一个 44px 的填充块按钮（`BgGp-Secondary` 底），而它正下方紧接着
    就是一堆长得完全不同的导航行——同一栏里两种按钮形态，用户得先分辨"哪个能点、
@@ -1291,172 +967,12 @@ async function onLogout(): Promise<void> {
   }
 }
 
-.section-label {
-  display: flex;
-  align-items: center;
-  height: var(--nav-section-title-height);
-  margin: 0;
-  padding: 0 var(--space-2);
-  font-size: var(--text-meta-size);
-  font-weight: 500;
-  color: var(--text-secondary);
-}
-
 /* 重命名弹窗里的一行提示：右对齐跟在输入框下面，与知识库设置里的计数同款 */
 .field-hint {
   margin: var(--space-2) 0 0;
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
   text-align: right;
-}
-
-/* 搜索框：与行同高、无边框感——它是列表的一部分，不是一个独立表单 */
-.conv-search {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 0 var(--space-2);
-  margin-bottom: var(--space-2);
-}
-
-.conv-search-icon {
-  flex: 0 0 auto;
-  color: var(--text-tertiary);
-}
-
-/* 输入框去掉自己的边框与底色：外层已经有视觉容器，再套一层框会显得很吵 */
-.conv-search :deep(.conv-search-input) {
-  flex: 1;
-  min-width: 0;
-  height: 28px;
-  padding: 0;
-  font-size: var(--text-micro-size);
-  background: transparent;
-  border: 0;
-}
-
-.conv-search :deep(.conv-search-input:hover),
-.conv-search :deep(.conv-search-input:focus) {
-  border: 0;
-  box-shadow: none;
-}
-
-.conv-search:focus-within {
-  background: var(--bg-hover);
-  border-radius: var(--radius-control);
-}
-
-.conv-search-clear {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  color: var(--text-tertiary);
-  border-radius: var(--radius-control);
-}
-
-.conv-search-clear:hover {
-  background: var(--bg-active);
-  color: var(--text-primary);
-}
-
-.conv-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-/* 每行是"链接 + 行菜单"：菜单绝对定位在右侧，不占标题宽度 */
-.conv-row {
-  position: relative;
-}
-
-.conv-row .conv-item {
-  /* 右侧留出菜单的位置，否则标题会压到它在下面 */
-  padding-right: var(--space-6);
-}
-
-/* 行菜单平时隐形，悬停/聚焦才出现。
-   **只有悬停/聚焦**——原来"当前会话也常驻显示"会让菜单与「N 条」同时出现、
-   在同一处叠着（用户报的"和列表有冲突"就是这个）。 */
-.conv-menu {
-  position: absolute;
-  top: 50%;
-  right: var(--space-1);
-  z-index: 1;
-  /* **垂直居中用负 margin，不用 `transform: translateY(-50%)`**：
-     带 transform 的元素会成为 fixed 定位后代的包含块，而菜单浮层正是 fixed
-     （见 RowMenu）。实测这一条会让浮层跑到视口外（left 变成 -988px）。
-     负 margin 的取值是触发器的一半高（--hit-target / 2） */
-  margin-top: calc(var(--hit-target) / -2);
-  opacity: 0;
-  transition: opacity var(--motion-fast) var(--motion-ease);
-}
-
-.conv-row:hover .conv-menu,
-.conv-row:focus-within .conv-menu,
-.conv-menu:focus-within {
-  opacity: 1;
-}
-
-/* 菜单出现时把「N 条」隐掉：两者在同一个位置，**先隐后现而不是叠在一起**。
-   条数没被删掉，移开鼠标就回来；行宽 231px，塞不下两个并排的元素 */
-.conv-meta {
-  transition: opacity var(--motion-fast) var(--motion-ease);
-}
-
-.conv-row:hover .conv-meta,
-.conv-row:focus-within .conv-meta {
-  opacity: 0;
-}
-
-/* 置顶标记：固定宽度，置顶与否不会让标题左右跳动。
-   颜色用三级灰而不是品牌色——它是"这条被钉住了"的状态标记，
-   不是"该点这里"的动作，抢品牌色会与主导航的强调打架。 */
-.conv-pin {
-  flex: 0 0 auto;
-  color: var(--text-tertiary);
-}
-
-.conv-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  /* 高 40px、圆角 12px（Kimi 的 `.next-sidebar-history-item` 实测值）。
-     此前 32px——同样一条标题在侧栏里多占一行的高度。 */
-  min-height: var(--nav-height);
-  padding: 0 var(--space-2);
-  font-size: var(--text-meta-size);
-  color: var(--text-primary);
-  text-decoration: none;
-  border-radius: var(--radius-nav);
-}
-
-.conv-item:hover {
-  background: var(--bg-hover);
-}
-
-/* 选中态与主导航同一套语言：**中性 alpha 底**（Kimi 也是 Fills-F2） */
-.conv-item-active {
-  background: var(--bg-selected);
-}
-
-/* 标题占满剩余宽度并省略：会话标题来自首轮提问，长度不可控 */
-.conv-title {
-  flex: 1;
-  overflow: hidden;
-  min-width: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.conv-meta {
-  flex: 0 0 auto;
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
 }
 
 .side-note {
@@ -1659,174 +1175,7 @@ async function onLogout(): Promise<void> {
   font-size: var(--text-micro-size);
 }
 
-/* 项目栏：标题（可折叠）+ 右侧的「管理」菜单。
-   「管理」**常驻可见**（`.section-action-visible`）：它是这一节唯一的增删查入口，
-   而 hover-only 的关键操作是规范里明确禁止的（§8）——它同时也在 DOM 里始终可 Tab。 */
-.workspace-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-}
-
-/* 节标题：「对话 ⌄」——标签与箭头合成一个可点的整块（点它折叠整节） */
-.section-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  height: var(--nav-section-title-height);
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--text-tertiary);
-  cursor: pointer;
-}
-
-.section-toggle:hover {
-  color: var(--text-primary);
-}
-
-.section-chevron {
-  transition: transform var(--motion-fast) var(--motion-ease);
-}
-
-.section-chevron.collapsed {
-  transform: rotate(-90deg);
-}
-
-.section-action {
-  display: inline-flex;
-  align-items: center;
-  height: var(--hit-target);
-  padding: 0 var(--space-2);
-  border: none;
-  background: none;
-  border-radius: var(--radius-control);
-  /* 提示色而不是灰：参考图里「查看全部」比分组标签略深，是一个可点的动作 */
-  color: var(--text-secondary);
-  font-size: var(--text-meta-size);
-  cursor: pointer;
-  /* **默认不可见但占位**：用 opacity 而不是 display，避免出现时把标题挤动一下。
-     悬停显形是参考图的形态；同时它在 DOM 里始终可 Tab 到并即时显形。 */
-  opacity: 0;
-  transition: opacity var(--motion-fast) var(--motion-ease);
-}
-
-.section-action-visible,
-.section-toggle:hover ~ .section-action {
-  opacity: 1;
-}
-
-.section-action:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.section-action:focus-visible {
-  opacity: 1;
-}
-
-.ws-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.ws-group + .ws-group {
-  margin-top: var(--space-0-5);
-}
-
-.ws-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-0-5);
-}
-
-/* 工作区行：与导航项同为 40px，但文字用次要色——它是"容器"，不是"目的地" */
-.ws-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  flex: 1;
-  min-width: 0;
-  height: var(--nav-height);
-  padding: 0 var(--space-1-5);
-  border: none;
-  background: none;
-  border-radius: var(--radius-nav);
-  color: var(--text-secondary);
-  font-size: var(--text-meta-size);
-  text-align: left;
-  cursor: pointer;
-  transition: var(--transition-ui);
-}
-
-.ws-item:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.ws-chevron {
-  flex-shrink: 0;
-  color: var(--text-tertiary);
-  transition: transform var(--motion-fast) var(--motion-ease);
-}
-
-.ws-chevron.collapsed {
-  transform: rotate(-90deg);
-}
-
-.ws-icon {
-  flex-shrink: 0;
-  color: var(--text-tertiary);
-}
-
-.ws-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.ws-count {
-  flex-shrink: 0;
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-/* 工作区行里的「新开一条会话」：悬停才显眼，但始终可点（§8 禁止项） */
-.ws-new {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--hit-target);
-  height: var(--hit-target);
-  flex-shrink: 0;
-  border: none;
-  background: none;
-  border-radius: var(--radius-control);
-  color: var(--text-tertiary);
-  cursor: pointer;
-  opacity: 0.7;
-}
-
-.ws-new:hover {
-  background: var(--bg-active);
-  color: var(--text-primary);
-  opacity: 1;
-}
-
 /* 工作区下的会话缩进一级，且不带"几条消息"——那一栏属于工作区，
    会话本身只需要标题（宽度本来就只有 240px）。 */
-.conv-item-nested {
-  padding-left: var(--space-6);
-}
 
-.conv-empty {
-  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-6);
-  color: var(--text-tertiary);
-  font-size: var(--text-micro-size);
-}
 </style>
