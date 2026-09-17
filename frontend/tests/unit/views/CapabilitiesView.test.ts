@@ -93,13 +93,15 @@ function mountView() {
 }
 
 /**
- * 切到「MCP 服务」那一页。
+ * 切到「插件」那一页。
  *
- * v0.19 起技能与 MCP 是**两个标签**、一次只渲染一页（用户指定），
- * 所以断言 MCP 内容的用例必须先点那一下——不点的话相关 DOM 根本不在。
+ * v0.19 起技能与插件是**两个标签**、一次只渲染一页（用户指定），
+ * 所以断言插件内容的用例必须先点那一下——不点的话相关 DOM 根本不在。
+ * 标签上的字是「插件」（v0.22 用户指定改名，协议上它仍是 MCP）——
+ * 改名后这几条用例靠这个帮助函数找到那个标签，所以只改这一处就够了。
  */
 async function openMcp(wrapper: ReturnType<typeof mountView>): Promise<void> {
-  const tab = wrapper.findAll('.cap-tab').find((el) => el.text() === 'MCP 服务')!
+  const tab = wrapper.findAll('.cap-tab').find((el) => el.text() === '插件')!
   await tab.trigger('click')
 }
 
@@ -137,7 +139,7 @@ describe('CapabilitiesView', () => {
     await vi.waitFor(() => expect(wrapper.text()).toContain('第一步：先看索引。'))
   })
 
-  it('MCP 服务显示策略档位，且凭据只显示「已配置」', async () => {
+  it('插件显示策略档位，且凭据只显示「已配置」', async () => {
     const wrapper = mountView()
     await openMcp(wrapper)
     await vi.waitFor(() => expect(wrapper.text()).toContain('本地工具'))
@@ -193,15 +195,15 @@ describe('CapabilitiesView', () => {
     await vi.waitFor(() => expect(wrapper.text()).toContain('还没有技能'))
     // 两页各看一次：它们现在不在同一屏上（v0.19 起是两个标签）
     await openMcp(wrapper)
-    expect(wrapper.text()).toContain('还没有登记 MCP 服务')
+    expect(wrapper.text()).toContain('还没有登记插件')
   })
 
-  it('技能与 MCP 是一次只看一页的两个标签', async () => {
+  it('技能与插件是一次只看一页的两个标签', async () => {
     const wrapper = mountView()
     await vi.waitFor(() => expect(wrapper.text()).toContain('kylab-knowledge-base'))
 
-    // 默认在技能页：技能在、MCP 不在
-    expect(wrapper.findAll('.cap-tab').map((el) => el.text())).toEqual(['技能', 'MCP 服务'])
+    // 默认在技能页：技能在、插件不在
+    expect(wrapper.findAll('.cap-tab').map((el) => el.text())).toEqual(['技能', '插件'])
     expect(wrapper.text()).toContain('kylab-knowledge-base')
     expect(wrapper.text()).not.toContain('本地工具')
 

@@ -11,7 +11,8 @@
  */
 import PageHeader from '@/components/ui/PageHeader.vue'
 
-withDefaults(defineProps<{ title: string; description?: string; narrow?: boolean }>(), {
+withDefaults(defineProps<{ title?: string; description?: string; narrow?: boolean }>(), {
+  title: undefined,
   description: undefined,
   narrow: false,
 })

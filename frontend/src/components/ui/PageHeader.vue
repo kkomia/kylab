@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { computed, useSlots } from 'vue'
+
 /**
  * 页头（《前端设计规范》§5）：页标题 + 可选副标题 + 次要操作，下方 1px hairline。
  *
@@ -6,14 +8,22 @@
  * 从数据里算出来的话），不写"这里是全部知识库"这种把标题换个说法重复一遍的废话——
  * 那种每页一句的解释性灰字才是模板感的来源。
  */
-defineProps<{ title: string; description?: string }>()
+/**
+ * ``title`` 可空（v0.22）：能力页要从标签开始、不要标题——它的名字左侧菜单里已经写着，
+ * 页内再写一遍是重复。**没有标题、没有副标题、也没有动作时整块不渲染**，
+ * 否则会留下一条空页头加一条 hairline。
+ */
+const props = defineProps<{ title?: string; description?: string }>()
+const hasHead = computed(
+  () => Boolean(props.title || props.description) || Boolean(useSlots().actions),
+)
 </script>
 
 <template>
-  <header class="page-head">
+  <header v-if="hasHead" class="page-head">
     <div class="page-head-main">
-      <div class="page-title-row">
-        <h1 class="page-title">{{ title }}</h1>
+      <div v-if="title || $slots['title-suffix']" class="page-title-row">
+        <h1 v-if="title" class="page-title">{{ title }}</h1>
         <!-- 紧贴标题的行内控件（如知识库的设置齿轮）。这类控件属于"这个对象本身"，
              放在右侧动作区会读成"页面的动作"，语义不同 -->
         <slot name="title-suffix" />

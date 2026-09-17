@@ -2,7 +2,22 @@
 /**
  * 导航侧栏（《前端设计规范》§5）。
  *
- * 结构：产品名 → 导航（对话 / 概览 / 知识库 / 任务中心）→ 对话列表 → 页脚（账号 / 设置）。
+ * 结构（v0.22）：产品名 → 新建会话 → 导航（笔记 / 记忆 / 能力 / 知识库▸）
+ * → **项目** → **对话** → 页脚（账号 / 设置）。
+ *
+ * 下半栏的两节按用户指定重排过，三条都改变了原来的行为：
+ *
+ * 1. **项目排在对话之前**。项目是"在哪儿干活"（会一直用下去），对话是"刚刚问了什么"
+ *    （临时的）——先项目后对话。
+ * 2. **不再有「未归档会话」那一栏**。它原先是个常驻的平铺清单，而实测下来那里
+ *    堆的全是随手问的"你好"（9 条里有 6 条），既占地方又读不出信息。
+ *    对话现在**只在「对话」那条入口里管理**（搜索 + 全部/已归档两个视图）。
+ * 3. **项目的增删查统一收在一个菜单里**（节标题右侧那个「管理」）：全部项目 / 新建项目，
+ *    不必先想"这事是在侧栏还是在项目页"。
+ *
+ * 归档过的会话本来就不进侧栏（`setArchived` 会把它从那份清单里摘掉），
+ * 要看它们去「对话」那条入口的「已归档」视图。"未归档"这个词以前有两层含义
+ * （不属于任何项目 / 没归档），界面上只留后者。
  *
  * 页脚只留"入口"，不留"状态与开关"（第二轮评审批注 1/2/3）：
  * - 退出登录收进账号的二级菜单——它低频且不可逆，摊在页脚上误点代价高；
@@ -18,6 +33,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import IconChat from '@/components/icons/IconChat.vue'
 import IconChatNew from '@/components/icons/IconChatNew.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
 import IconPin from '@/components/icons/IconPin.vue'
@@ -32,6 +48,7 @@ import IconLogo from '@/components/icons/IconLogo.vue'
 import IconLogout from '@/components/icons/IconLogout.vue'
 import IconNote from '@/components/icons/IconNote.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
+import IconSearch from '@/components/icons/IconSearch.vue'
 import IconServer from '@/components/icons/IconServer.vue'
 import IconSettings from '@/components/icons/IconSettings.vue'
 import IconSidebar from '@/components/icons/IconSidebar.vue'
@@ -178,8 +195,6 @@ function onConversationIntent(id: string): void {
  * **默认都收起**：这两个子菜单的意义就是"把空间让给会话"，
  * 默认展开等于没改。会话所在的工作区会自动展开（见 `openWorkspaceIds` 的 watch）。
  */
-const sectionHovered = ref(false)
-
 /*
  * 这里原本还有一个 `hoveredNav`（哪些项被悬停过）+ `enterNav()`，作用是"只给悬停过的项
  * 播离开动画"。v0.18 一并删掉了，因为**离开那段本身被砍了**（理由写在下方样式里：
@@ -210,11 +225,10 @@ function onShortcut(event: KeyboardEvent): void {
   event.preventDefault()
   void router.push({ path: '/chat', query: { new: '1' } })
 }
-/** 整节折叠（Kimi 的 `对话 ⌄`）。默认展开——它是这一栏的主体。 */
-const sectionCollapsed = ref(false)
+/** 项目那一节的折叠（默认展开：它是这一栏的主体，对话只是入口）。 */
+const projectsOpen = ref(true)
 const knowledgeOpen = ref(false)
 const openWorkspaceIds = ref<string[]>([])
-const ungroupedOpen = ref(true)
 
 /** 按工作区把会话分好组。会话只有**一份**平铺清单，分组在这里做——
  *  两处各存一份，"把会话挪进工作区"就得改两个地方。 */
@@ -229,9 +243,15 @@ const conversationsByWorkspace = computed(() => {
   return groups
 })
 
-/** 不属于任何工作区的会话（侧栏单独一栏，按最近更新排）。 */
-const ungroupedConversations = computed(() =>
-  conversations.items.filter((item) => !item.workspace_id),
+/**
+ * 不进项目、也没归档的会话数——「对话」那条入口右边那个数字。
+ *
+ * **只用来给入口一个"有多少条"的量感**，不再铺成清单：那份清单的绝大多数是
+ * 随手问一句留下的（实测 9 条里 6 条标题是"你好"），铺在侧栏里既占地方，
+ * 也让人看不出哪条是重要的。找它们去搜索面板。
+ */
+const looseConversationCount = computed(
+  () => conversations.items.filter((item) => !item.workspace_id).length,
 )
 
 function toggleKnowledge(): void {
@@ -592,60 +612,47 @@ async function onLogout(): Promise<void> {
     </nav>
 
     <!--
-      侧栏下半部分：**会话列表**。
-      这块位置最早是「最近文档」，后来换成一句指路的占位——因为用户在这一栏里真正
-      需要的不是"我最近传了什么"，而是"我最近问过什么"。对话留存做完之后，它终于有东西可放。
+      下半栏（v0.22 重排）：**项目 → 对话**。
+
+      两节的定位不同，所以形态也不同：项目是持久的归类（一行一个，可展开看它的会话），
+      对话是临时的记录（一条入口，点开是搜索面板）。原先这里是一节「对话」下面挂着
+      「工作区 A / 工作区 B / 未归档会话」三个同层级分组——项目与临时会话混在一起，
+      而"未归档会话"那一栏实测堆的全是随手问的"你好"。
     -->
     <div v-if="!collapsed" class="side-section">
-      <!-- 分区标题行只有路标，**动作另起一行**（Kimi 的结构）：
-           它把「新对话」做成一个整块的填充按钮（BgGp-Secondary + 12px 圆角 + 44px 高），
-           而不是挤在标题右边的一个文字链接——后者在视觉上像"次要入口"，
-           而新建对话是这一栏里最常用的动作。 -->
-      <!-- 会话区（v0.17 重排）——**它是一节「会话」，不是两节**：
-           工作区与会话是同一件事的两种归类（会话按工作区分组），所以「工作区 A」
-           与「未归档会话」是**同一层级的分组行**。原先「工作区」是分区标题、
-           而「未归档会话」是它下面的一行——层级不一致，后者看起来像一个工作区。
-
-           顺序上这一节在导航**之下**：导航是"去哪个功能区"，短且固定；
-           会话清单会不断变长，放在导航之上就会把导航推走。 -->
-      <!-- 节标题照 Kimi：`对话 ⌄` —— 点这儿折叠整节，鼠标移上来右侧出现「查看全部」。
-           「查看全部」在参考图里就是**悬停才出现**的次要动作，所以它默认 opacity:0；
-           但**始终可 Tab 到**（§8 禁止 hover-only 的关键操作）——聚焦时同样显形。 -->
-      <div
-        class="workspace-head"
-        @mouseenter="sectionHovered = true"
-        @mouseleave="sectionHovered = false"
-      >
+      <!-- 项目：节标题右侧是**统一管理入口**（全部项目 / 新建项目） -->
+      <div class="workspace-head">
         <button
           type="button"
           class="section-toggle"
-          :aria-expanded="!sectionCollapsed"
-          @click="sectionCollapsed = !sectionCollapsed"
+          :aria-expanded="projectsOpen"
+          @click="projectsOpen = !projectsOpen"
         >
-          <span class="section-label">对话</span>
+          <span class="section-label">项目</span>
           <IconChevronDown
             class="section-chevron"
-            :class="{ collapsed: sectionCollapsed }"
+            :class="{ collapsed: !projectsOpen }"
             :size="14"
           />
         </button>
-        <button
-          type="button"
-          class="section-action"
-          :class="{ 'section-action-visible': sectionHovered || sectionCollapsed }"
-          @click="emit('openHistory')"
-        >
-          查看全部
-        </button>
+        <RowMenu label="项目管理" align="right">
+          <template #trigger>
+            <span class="section-action section-action-visible">管理</span>
+          </template>
+          <template #default="{ close }">
+            <button type="button" @click="(router.push('/workspaces'), close())">
+              <IconFolder :size="14" /> 全部项目
+            </button>
+            <button type="button" @click="(onNewWorkspace(), close())">
+              <IconPlus :size="14" /> 新建项目
+            </button>
+          </template>
+        </RowMenu>
       </div>
 
       <p v-if="workspaces.error" class="side-note">{{ workspaces.error }}</p>
 
-      <!-- 搜索**不放在侧栏**（v0.17，用户指定）：侧栏条数有限、位置也窄，
-           而"找一条旧会话"是历史会话面板的活——那里有更大的窗口、时间分组与预览。
-           侧栏只负责"最近几条"。 -->
-
-      <ul v-show="!sectionCollapsed" class="ws-list">
+      <ul v-show="projectsOpen" class="ws-list">
         <li v-for="workspace in workspaces.items" :key="workspace.id" class="ws-group">
           <div class="ws-row">
             <button
@@ -700,7 +707,7 @@ async function onLogout(): Promise<void> {
                     <IconEdit :size="14" /> 重命名
                   </button>
                   <button type="button" @click="(moveConversation(item, null), close())">
-                    <IconFolder :size="14" /> 移出工作区
+                    <IconFolder :size="14" /> 移出项目
                   </button>
                   <button
                     class="menu-item-danger"
@@ -721,79 +728,29 @@ async function onLogout(): Promise<void> {
           </ul>
         </li>
 
-        <!-- 未归档会话：与工作区**同一层级的分组行**（v0.17 起层级一致；
-             原先它是「工作区」标题下的一行，看起来像一个工作区）。
-             不给它们自动建默认工作区——那会让"未归档"这个真实状态消失，
-             用户就分不清"特意放进去的"与"随手问的"。 -->
-        <li class="ws-group">
-          <button
-            type="button"
-            class="ws-item ws-item-plain"
-            :aria-expanded="ungroupedOpen"
-            @click="ungroupedOpen = !ungroupedOpen"
-          >
-            <IconChevronDown class="ws-chevron" :class="{ collapsed: !ungroupedOpen }" :size="13" />
-            <span class="ws-name">未归档会话</span>
-            <span class="ws-count tabular">{{ ungroupedConversations.length }}</span>
-          </button>
-
-          <p v-if="conversations.error" class="side-note">{{ conversations.error }}</p>
-          <p v-else-if="conversations.items.length === 0" class="side-note">
-            还没有对话。点最上面的「新建会话」开始，记录会出现在这里。
-          </p>
-          <ul v-else-if="ungroupedOpen" class="conv-list">
-            <li v-for="item in ungroupedConversations" :key="item.id" class="conv-row">
-              <RouterLink
-                class="conv-item"
-                :class="{ 'conv-item-active': item.id === activeConversationId }"
-                :to="`/chat/${item.id}`"
-                :title="item.title || '未命名对话'"
-                @mouseenter="onConversationIntent(item.id)"
-                @focus="onConversationIntent(item.id)"
-              >
-                <IconPin v-if="item.pinned" class="conv-pin" :size="12" />
-                <span class="conv-title">{{ item.title || '未命名对话' }}</span>
-                <span class="conv-meta tabular">{{ item.message_count }} 条</span>
-              </RouterLink>
-              <RowMenu class="conv-menu" :label="`${item.title || '未命名对话'} 的操作`">
-                <template #default="{ close }">
-                  <button type="button" @click="(togglePin(item), close())">
-                    <IconPin :size="14" /> {{ item.pinned ? '取消置顶' : '置顶' }}
-                  </button>
-                  <button type="button" @click="(openRename(item), close())">
-                    <IconEdit :size="14" /> 重命名
-                  </button>
-                  <button
-                    v-for="workspace in workspaces.items"
-                    :key="workspace.id"
-                    type="button"
-                    @click="(moveConversation(item, workspace.id), close())"
-                  >
-                    <IconFolder :size="14" /> 挪进「{{ workspace.name }}」
-                  </button>
-                  <button
-                    class="menu-item-danger"
-                    type="button"
-                    @click="(openDelete(item), close())"
-                  >
-                    <IconTrash :size="14" /> 删除
-                  </button>
-                </template>
-              </RowMenu>
-            </li>
-          </ul>
-        </li>
-
-        <!-- 「新建工作区」写成一行字，而不是标题右边一个裸 +：
-             裸 + 与最上面的「新对话」在视觉上是一类东西（都是"新建"），
-             而它们建的是两件不同的事（一个会话 / 一个工作区）。 -->
-        <li>
-          <button type="button" class="ws-add" @click="onNewWorkspace">
-            <IconPlus :size="14" />
-            <span>新建工作区</span>
-          </button>
+        <!-- 没有项目时给一句话（有项目时这里不占位）：项目那一节是空的话，
+             上面那个「管理 → 新建项目」不够显眼 -->
+        <li v-if="workspaces.items.length === 0" class="conv-empty">
+          还没有项目。项目决定"在哪儿干活"，会一直留着。
         </li>
       </ul>
+    </div>
+
+    <!--
+      对话（v0.22）：**一条入口，不是一份清单**。
+      "我最近问了什么"由搜索面板回答（那里有搜索、时间分组、预览与已归档视图），
+      侧栏只留一个带搜索标记的入口。归档过的会话在那里看，从不进侧栏。
+    -->
+    <div v-if="!collapsed" class="side-section side-section-conversations">
+      <p v-if="conversations.error" class="side-note">{{ conversations.error }}</p>
+      <button type="button" class="conv-entry" @click="emit('openHistory')">
+        <IconChat class="conv-entry-icon" :size="15" />
+        <span class="conv-entry-label">对话</span>
+        <span v-if="looseConversationCount" class="conv-entry-count tabular">
+          {{ looseConversationCount }}
+        </span>
+        <IconSearch class="conv-entry-search" :size="14" />
+      </button>
     </div>
 
     <AppModal v-model:open="renameOpen" title="重命名对话">
@@ -1062,6 +1019,59 @@ async function onLogout(): Promise<void> {
   padding: var(--space-3) var(--space-2) var(--space-2);
   overflow-y: auto;
   border-top: 1px solid var(--border-hairline);
+}
+
+/* 「对话」那一条**不跟着项目清单滚**：它是固定入口，滚上去之后还要能点。
+   所以它自己 flex:0（不抢空间），而项目那一节 flex:1 承担滚动。 */
+.side-section-conversations {
+  flex: 0 0 auto;
+  overflow: visible;
+  padding-top: var(--space-2);
+}
+
+/* 对话入口：一行，左图标 + 标签 + 条数 + 右侧搜索标记（点它打开搜索面板）。
+   形态与导航项一致（40px 高、悬停填充）——它是"去某个地方"的入口，
+   而不是一个动作按钮。 */
+.conv-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  height: var(--nav-height);
+  padding: 0 var(--space-1-5);
+  border: none;
+  background: none;
+  border-radius: var(--radius-nav);
+  color: var(--text-primary);
+  font-size: var(--text-body-size);
+  text-align: left;
+  cursor: pointer;
+  transition: var(--transition-ui);
+}
+
+.conv-entry:hover {
+  background: var(--bg-hover);
+}
+
+.conv-entry-icon {
+  flex-shrink: 0;
+  color: var(--text-secondary);
+}
+
+.conv-entry-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.conv-entry-count {
+  color: var(--text-tertiary);
+  font-size: var(--text-micro-size);
+}
+
+/* 搜索标记用**次要色**：它提示"这里能搜"，而不是抢成一个独立按钮 */
+.conv-entry-search {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
 }
 
 /* 「新建会话」用**和导航项一样的形态**（v0.17 改的）。
@@ -1649,36 +1659,15 @@ async function onLogout(): Promise<void> {
   font-size: var(--text-micro-size);
 }
 
-/* 工作区栏：标题 + 右侧「+」 */
+/* 项目栏：标题（可折叠）+ 右侧的「管理」菜单。
+   「管理」**常驻可见**（`.section-action-visible`）：它是这一节唯一的增删查入口，
+   而 hover-only 的关键操作是规范里明确禁止的（§8）——它同时也在 DOM 里始终可 Tab。 */
 .workspace-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
   margin-top: var(--space-3);
-}
-
-/* 「新建工作区」行：与分组行同高同缩进，读起来是清单的一部分 */
-.ws-add {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  width: 100%;
-  height: var(--nav-height);
-  padding: 0 var(--space-1-5);
-  border: none;
-  background: none;
-  border-radius: var(--radius-nav);
-  color: var(--text-tertiary);
-  font-size: var(--text-meta-size);
-  text-align: left;
-  cursor: pointer;
-  transition: var(--transition-ui);
-}
-
-.ws-add:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
 }
 
 /* 节标题：「对话 ⌄」——标签与箭头合成一个可点的整块（点它折叠整节） */
@@ -1776,10 +1765,6 @@ async function onLogout(): Promise<void> {
 .ws-item:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
-}
-
-.ws-item-plain {
-  flex: 1;
 }
 
 .ws-chevron {

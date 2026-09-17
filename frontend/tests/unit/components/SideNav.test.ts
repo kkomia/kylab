@@ -137,7 +137,12 @@ function mountNav() {
         AppModal: true,
         ConfirmDialog: true,
         SettingsModal: true,
-        RowMenu: { template: '<div><slot :close="() => {}" /></div>' },
+        // 桩要**同时渲染 trigger 与菜单项**：真的 RowMenu 两个都渲染，
+        // 只渲染菜单项的话，「管理」这个可见的入口在测试里等于不存在
+        // （第一版就是这样，于是那条断言只能去数菜单项）。
+        RowMenu: {
+          template: '<div><slot name="trigger" /><slot :close="() => {}" /></div>',
+        },
         AppInput: { template: '<input />', props: ['modelValue'] },
         AppButton: { template: '<button><slot /></button>' },
       },
@@ -208,14 +213,17 @@ describe('SideNav（v0.15 信息架构）', () => {
     expect(wrapper.text()).toContain('产品化')
   })
 
-  it('会话按工作区分组，未归档的单独一栏', async () => {
+  it('不再有「未归档会话」那一栏——对话只从搜索入口进（v0.22）', async () => {
     const wrapper = mountNav()
 
-    // 未归档那一栏默认展开：那是"随手问"落地的地方
-    expect(wrapper.text()).toContain('未归档会话')
-    expect(wrapper.text()).toContain('随手问的')
-    // 属于工作区的那条**不在**未归档里
-    expect(wrapper.find('.ws-list').text()).toContain('未归档会话')
+    // 用户实测：那一栏铺的全是随手问的"你好"（9 条里 6 条），既占地方又读不出信息。
+    // 现在不进项目的会话**只在「对话」那条入口里**（搜索面板有搜索、时间分组、
+    // 预览与已归档视图），侧栏不再铺一份。
+    expect(wrapper.text()).not.toContain('未归档会话')
+    // 那条会话（标题「随手问的」）也就不该出现在侧栏里
+    expect(wrapper.text()).not.toContain('随手问的')
+    // 但入口上的条数要数得出来——不然用户不知道有没有东西可找
+    expect(wrapper.find('.conv-entry-count').text()).toBe('1')
   })
 
   it('展开工作区能看到它下面的会话', async () => {
@@ -232,8 +240,8 @@ describe('SideNav（v0.15 信息架构）', () => {
     const html = wrapper.html()
 
     expect(html).toContain('新建会话')
-    // 它在会话节之前
-    expect(html.indexOf('新建会话')).toBeLessThan(html.indexOf('新建工作区'))
+    // 它在项目那一节之前（「新建项目」现在是项目节标题右边那个「管理」菜单里的一项）
+    expect(html.indexOf('新建会话')).toBeLessThan(html.indexOf('新建项目'))
     // **同形态**：它复用 .nav-item（不再是那个 44px 的填充块按钮）
     const button = wrapper.find('.new-chat')
     expect(button.classes()).toContain('nav-item')
@@ -297,16 +305,28 @@ describe('SideNav（v0.15 信息架构）', () => {
     expect(navLabels).toContain('笔记')
   })
 
-  it('「对话」是这一节的标签，工作区与未归档是同级分组', () => {
-    // 标签用 Kimi 的叫法「对话」（参考图里就是它）。原先这里叫「工作区」，
-    // 而「未归档会话」是它下面的一行——层级不一致，后者看起来像一个工作区。
+  it('下半栏是「项目 → 对话」两节，项目在前（v0.22）', () => {
+    // 用户指定：优先展示项目，然后才是对话。理由是两者的性质——
+    // 项目是"在哪儿干活"（会一直用下去），对话是"刚刚问了什么"（临时的）。
     const wrapper = mountNav()
 
-    expect(wrapper.find('.section-label').text()).toBe('对话')
-    // 两个分组行都是 .ws-item（同一层级、同一套样式）
-    expect(wrapper.findAll('.ws-item').length).toBeGreaterThanOrEqual(1)
-    expect(wrapper.text()).toContain('未归档会话')
+    const sections = wrapper.findAll('.side-section')
+    expect(sections).toHaveLength(2)
+    expect(sections[0].text()).toContain('项目')
+    expect(sections[1].text()).toContain('对话')
   })
+
+  it('项目的增删查收在一个「管理」菜单里', () => {
+    // 用户指定：项目通过一个菜单统一管理。原先"新建工作区"是清单末尾的一行、
+    // "全部项目"要靠点标题——同一件事的两个动作分在两个地方。
+    const wrapper = mountNav()
+
+    const menu = wrapper.find('.workspace-head').text()
+    expect(menu).toContain('管理')
+    expect(menu).toContain('全部项目')
+    expect(menu).toContain('新建项目')
+  })
+
   it('节标题可折叠（参考图里 `对话 ⌄` 就是这个）', async () => {
     const wrapper = mountNav()
 
@@ -324,12 +344,12 @@ describe('SideNav（v0.15 信息架构）', () => {
     expect(wrapper.find('.ws-list').attributes('style')).toContain('display: none')
   })
 
-  it('「查看全部」触发打开历史面板的事件', async () => {
-    // 面板挂在 App 外壳上（侧栏不自己渲染它），所以这里断言的是事件
+  it('「对话」那一条打开搜索面板（管理对话交给它）', async () => {
+    // 侧栏不再自己列会话，所以"找一条旧会话"只有这一条入口——它必须真的能开面板。
     const wrapper = mountNav()
 
-    await wrapper.find('.section-action').trigger('click')
+    await wrapper.find('.conv-entry').trigger('click')
 
-    expect(wrapper.emitted('openHistory')).toHaveLength(1)
+    expect(wrapper.emitted('openHistory')).toBeTruthy()
   })
 })

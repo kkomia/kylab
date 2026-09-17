@@ -6,7 +6,8 @@
  *
  * - **技能**：写在磁盘上的 `SKILL.md`（流程）。目录进系统提示词、正文按需展开，
  *   所以这里要能看正文——用户有权知道"它到底教了模型什么"。
- * - **MCP 服务**：外部工具（能力）。这里能登记、探活、看它有哪些工具、配策略闸。
+ * - **插件**（协议上是 MCP 服务，界面上叫插件）：外部工具（能力）。
+ *   这里能登记、探活、看它有哪些工具、配策略闸。
  *
  * 三处刻意的设计：
  *
@@ -52,7 +53,7 @@ const { notifyError, notifySuccess } = useToast()
 /**
  * 当前看的是哪一页（v0.19）。
  *
- * 用户指定：技能与 MCP 服务**做成两个菜单**，而不是并排两栏。
+ * 用户指定：技能与插件**做成两个菜单**，而不是并排两栏。
  * 并排的代价是两栏各只剩一半宽——技能描述是整句文本，折行折得很碎；
  * MCP 那边每条又带着策略与工具清单。而且这两件事本来就不需要同时看。
  */
@@ -60,7 +61,9 @@ const tab = ref<'skills' | 'mcp'>('skills')
 
 const CAP_TABS = [
   { key: 'skills' as const, label: '技能' },
-  { key: 'mcp' as const, label: 'MCP 服务' },
+  // **用户面前叫「插件」**（v0.22，用户指定）：MCP 是协议的名字，不是用户的事。
+  // 代码、接口与文档里仍是 MCP（那是它真实的东西），只改界面上这两个字。
+  { key: 'mcp' as const, label: '插件' },
 ]
 
 const skills = ref<Skill[]>([])
@@ -150,7 +153,7 @@ async function loadServers(): Promise<void> {
     const result = await listMCPServers()
     servers.value = result.items
   } catch (error) {
-    notifyError(error instanceof Error ? error.message : 'MCP 服务列表读取失败')
+    notifyError(error instanceof Error ? error.message : '插件列表读取失败')
   } finally {
     serversLoading.value = false
   }
@@ -278,32 +281,34 @@ function policyLabel(policy: MCPPolicy): string {
 </script>
 
 <template>
-  <PageShell
-    title="能力"
-    description="技能是「这类事该怎么做」的流程（磁盘上的 SKILL.md），MCP 是「能用哪些工具」（外部服务）。两者一起决定这个 Agent 会什么。"
-  >
-    <template #actions>
-      <StatusTag
-        :label="`技能 ${usableSkills}/${skills.length} 可用`"
-        :tone="skills.length && !usableSkills ? 'warning' : 'neutral'"
-      />
-      <StatusTag :label="`MCP ${servers.length} 个服务`" tone="neutral" />
-    </template>
-
-    <!-- 两个入口（用户指定，照 Kimi 的能力页）：上面开两个标签，一次只看一页 -->
-    <div class="cap-tabs" role="tablist" aria-label="能力">
-      <button
-        v-for="item in CAP_TABS"
-        :key="item.key"
-        type="button"
-        role="tab"
-        class="cap-tab"
-        :class="{ 'cap-tab-active': tab === item.key }"
-        :aria-selected="tab === item.key"
-        @click="tab = item.key"
-      >
-        {{ item.label }}
-      </button>
+  <!-- **没有页标题**（用户指定）：左侧菜单已经写着「能力」，页内再写一遍是重复；
+       而那句"技能是流程、插件是工具"的解释又是在把两个标签换个说法。
+       于是这一页直接从标签开始——上面一行放标签与状态，下面就是内容。 -->
+  <PageShell title="">
+    <!-- 两个入口（用户指定，照 Kimi 的能力页）：一次只看一页。
+         状态与标签同一行：它们回答的是同一个问题（"这里现在有什么、能用几个"） -->
+    <div class="cap-head">
+      <div class="cap-tabs" role="tablist" aria-label="能力">
+        <button
+          v-for="item in CAP_TABS"
+          :key="item.key"
+          type="button"
+          role="tab"
+          class="cap-tab"
+          :class="{ 'cap-tab-active': tab === item.key }"
+          :aria-selected="tab === item.key"
+          @click="tab = item.key"
+        >
+          {{ item.label }}
+        </button>
+      </div>
+      <div class="cap-head-status">
+        <StatusTag
+          :label="`技能 ${usableSkills}/${skills.length} 可用`"
+          :tone="skills.length && !usableSkills ? 'warning' : 'neutral'"
+        />
+        <StatusTag :label="`插件 ${servers.length} 个`" tone="neutral" />
+      </div>
     </div>
 
     <div class="cap-layout">
@@ -350,12 +355,12 @@ function policyLabel(policy: MCPPolicy): string {
         </ul>
       </section>
 
-      <!-- --------------------------------------------------------- MCP 服务 -->
-      <section v-else class="cap-col" role="tabpanel" aria-label="MCP 服务">
+      <!-- ------------------------------------------------------------ 插件 -->
+      <section v-else class="cap-col" role="tabpanel" aria-label="插件">
         <header class="col-head">
-          <h2>MCP 服务</h2>
+          <h2>插件</h2>
           <InfoTip
-            text="外部服务会以你的名义执行动作，所以每条都有一个准入策略。默认「需要确认」：调用前会先弹一次确认，确认后才真的发出去。"
+            text="插件会以你的名义执行动作，所以每个都有一个准入策略。默认「需要确认」：它不会静默执行，而是把「需要先确认」回给模型并说明怎么放开。"
           />
           <AppButton size="sm" @click="startCreate">
             <template #icon><IconPlus :size="14" /></template>
@@ -366,7 +371,7 @@ function policyLabel(policy: MCPPolicy): string {
         <SkeletonBlock v-if="serversLoading" variant="list" :rows="3" />
         <EmptyState
           v-else-if="!servers.length"
-          title="还没有登记 MCP 服务"
+          title="还没有登记插件"
           hint="登记之后，它的工具会被 Agent 当成能力使用（工具名一律带 mcp__ 前缀，避免与内置工具撞名）。"
         >
           <AppButton variant="primary" @click="startCreate">登记一个</AppButton>
@@ -443,10 +448,7 @@ function policyLabel(policy: MCPPolicy): string {
     </AppModal>
 
     <!-- ------------------------------------------------------------ 登记表单 -->
-    <AppModal
-      v-model:open="formOpen"
-      :title="editing ? `编辑「${editing.name}」` : '登记 MCP 服务'"
-    >
+    <AppModal v-model:open="formOpen" :title="editing ? `编辑「${editing.name}」` : '登记插件'">
       <p class="modal-lead text-meta">
         <template v-if="editing">
           凭据**不会回显**：只显示"已配过哪几个 key"。要改就在下面重填，
@@ -513,7 +515,7 @@ function policyLabel(policy: MCPPolicy): string {
 
     <ConfirmDialog
       v-model:open="confirmOpen"
-      title="删除这个 MCP 服务？"
+      title="删除这个插件？"
       :lead="`将删除登记信息「${confirmTarget?.name ?? ''}」。`"
       note="只删登记信息，不会去动那个服务本身，也不会删它的任何数据。"
       confirm-label="删除"
@@ -523,14 +525,30 @@ function policyLabel(policy: MCPPolicy): string {
 </template>
 
 <style scoped>
+/* 首行：标签（左）+ 状态（右）——页头去掉了，这一行就是页面的开头。
+   标签与状态同处一行是因为它们回答同一个问题："这里现在有什么、能用几个"。 */
+.cap-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.cap-head-status {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+
 /* 标签栏：文字 + 选中态一条墨色下划线（Kimi 的能力页如此）。
    **不用胶囊/填充底**：那与侧栏"当前在哪"的中性填充是两套语言，
    而这里是"同一页里的两页"，下划线更轻，也更像分页。 */
 .cap-tabs {
   display: flex;
   gap: var(--space-5);
-  margin-bottom: var(--space-4);
-  border-bottom: 1px solid var(--border-hairline);
 }
 
 .cap-tab {
