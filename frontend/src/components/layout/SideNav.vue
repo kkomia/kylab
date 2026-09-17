@@ -165,6 +165,12 @@ function onConversationIntent(id: string): void {
  * `KNOWLEDGE_GROUP` 与模板里的那段）。理由：知识库在侧栏占着一个顶级位置，
  * 却没承担该承担的导航——要进某个库还得先进"知识库"页再找。
  * 展开之后每个库一行，**点一次就到**。
+ *
+ * `motion` 是这个词条的**悬停动效族**（v0.18）。原先五项共用一个关键帧，
+ * 用户给的反馈是"太单一了，全部都是闪烁"——同一个动作在一栏里重复五次，
+ * 读起来不是"反馈"而是"整列在闪"。所以每项有自己的姿势，取的是**这个图标
+ * 画的是什么**该有的动作（气泡落下 / 便签放上 / 歪头正过来 / 通电弹一下 /
+ * 书脊滑进来）。关键帧与时长在下方样式里。
  */
 /**
  * 工作区与知识库子菜单的开合状态（v0.15）。
@@ -174,26 +180,19 @@ function onConversationIntent(id: string): void {
  */
 const sectionHovered = ref(false)
 
-/**
- * 图标动效的**重播键**（v0.17，照 kimi.com 的 AnimatedIcon）。
+/*
+ * 这里原本还有一个 `hoveredNav`（哪些项被悬停过）+ `enterNav()`，作用是"只给悬停过的项
+ * 播离开动画"。v0.18 一并删掉了，因为**离开那段本身被砍了**（理由写在下方样式里：
+ * 单元素上照抄 Kimi 的倒放会让图标永远停在收回去的姿态）。没有 leave 动画，
+ * 就没有"要不要允许播"这个问题，也不需要为它记状态。
  *
- * CSS 动画只在它"被挂上"的那一刻播一次；鼠标再次移上去时不会自动重播。
- * 换一个 `key` 会重建这个元素，于是动画重新开始——这是让"每次悬停都动一下"
- * 成立的最短路径（Kimi 的库也是这个路子：它给 enter 与 leave 各定义一份
- * **内容相同**的关键帧，靠切换类名来重播）。
+ * 连同它一起删掉的还有一个 `iconEpoch`：那是个自增数字，当 `:key` 挂在「新建会话」的
+ * 图标上，指望"换 key 就重建元素、动画于是重播"。**它是侧栏共用的**——悬停「笔记」
+ * 也会让它 +1，「新建会话」的图标跟着被重建、动画重播一遍，表现就是用户报的
+ * *"移动一个菜单，其他菜单也会跟着动"*。
+ * 这个 key 从来不需要：`:hover` 结束后规则不再匹配、动画被摘掉，下次悬停重新挂上
+ * 就是一次重播（重播的条件是**动画被摘掉再挂上**，不是元素换了）。
  */
-const iconEpoch = ref(0)
-
-/**
- * 悬停过的导航项。**只给它们播"离开"那段**：没悬停过的项不该在挂载时播
- * （那会变成整列图标一起动，像加载动画）。
- */
-const hoveredNav = ref<string[]>([])
-
-function enterNav(key: string): void {
-  iconEpoch.value += 1
-  if (!hoveredNav.value.includes(key)) hoveredNav.value = [...hoveredNav.value, key]
-}
 
 /**
  * `Ctrl/Cmd + K` = 新建会话。
@@ -291,11 +290,11 @@ const NAV_ITEMS = [
   // **没有「对话」这一项**：它与下面的会话列表、以及最上面的「新对话」是同一件事的
   // 三个入口，并排时用户会犹豫该点哪个。Kimi / ChatGPT / Claude 都没有它
   // ——**会话列表本身就是那个入口**。
-  { to: '/notes', label: '笔记', icon: IconNote, exact: false },
-  { to: '/memory', label: '记忆', icon: IconRobot, exact: false },
+  { to: '/notes', label: '笔记', icon: IconNote, exact: false, motion: 'rise' },
+  { to: '/memory', label: '记忆', icon: IconRobot, exact: false, motion: 'tilt' },
   // 能力的图标**不能用齿轮**：齿轮在账号菜单里是「设置」，同一个图标两种含义
   // 会让人以为这一项是设置（踩过：一眼看过去就是"两个设置"）。
-  { to: '/capabilities', label: '能力', icon: IconServer, exact: false },
+  { to: '/capabilities', label: '能力', icon: IconServer, exact: false, motion: 'spring' },
 ] as const
 
 /**
@@ -308,6 +307,9 @@ const NAV_ITEMS = [
 const KNOWLEDGE_GROUP = {
   label: '知识库',
   icon: IconLibrary,
+  // 这一项照抄 Kimi 的原样动作（右侧滑入 + 放大落定）：它是这一栏里唯一的
+  // **分组头**，动作也是"把一叠东西从右边推上来"，与它的语义对得上。
+  motion: 'slide',
   children: [
     { to: '/knowledge-bases', label: '所有知识库', icon: IconLibrary, exact: true },
     { to: '/', label: '概览', icon: IconDashboard, exact: true },
@@ -521,12 +523,10 @@ async function onLogout(): Promise<void> {
     <RouterLink
       v-if="!collapsed"
       class="nav-item new-chat"
-      :class="{ 'nav-item-hovered': hoveredNav.includes('__new__') }"
       :to="{ path: '/chat', query: { new: '1' } }"
       title="新建会话（Ctrl/Cmd + K）"
-      @mouseenter="enterNav('__new__')"
     >
-      <IconChatNew :key="iconEpoch" class="nav-icon" />
+      <IconChatNew class="nav-icon nav-motion-drop" />
       <span class="nav-label">新建会话</span>
       <!--
         快捷键提示（Kimi 的 `新建会话  Ctrl K`）。**显示它就必须真的能用**——
@@ -540,16 +540,13 @@ async function onLogout(): Promise<void> {
         v-for="item in NAV_ITEMS"
         :key="item.to"
         class="nav-item"
-        :class="{
-          'nav-item-active': isActive(item.to, item.exact),
-          'nav-item-hovered': hoveredNav.includes(item.to),
-        }"
+        :class="{ 'nav-item-active': isActive(item.to, item.exact) }"
         :to="item.to"
         :title="collapsed ? item.label : undefined"
-        @mouseenter="(onNavIntent(item.to), enterNav(item.to))"
+        @mouseenter="onNavIntent(item.to)"
         @focus="onNavIntent(item.to)"
       >
-        <component :is="item.icon" class="nav-icon" />
+        <component :is="item.icon" :class="['nav-icon', `nav-motion-${item.motion}`]" />
         <span class="nav-label">{{ item.label }}</span>
       </RouterLink>
 
@@ -562,16 +559,15 @@ async function onLogout(): Promise<void> {
         <button
           type="button"
           class="nav-item nav-item-group"
-          :class="{
-            'nav-item-active': isKnowledgeActive() && !knowledgeOpen,
-            'nav-item-hovered': hoveredNav.includes(KNOWLEDGE_GROUP.label),
-          }"
+          :class="{ 'nav-item-active': isKnowledgeActive() && !knowledgeOpen }"
           :aria-expanded="knowledgeOpen"
           :title="collapsed ? KNOWLEDGE_GROUP.label : undefined"
-          @mouseenter="enterNav(KNOWLEDGE_GROUP.label)"
           @click="toggleKnowledge"
         >
-          <component :is="KNOWLEDGE_GROUP.icon" class="nav-icon" />
+          <component
+            :is="KNOWLEDGE_GROUP.icon"
+            :class="['nav-icon', `nav-motion-${KNOWLEDGE_GROUP.motion}`]"
+          />
           <span class="nav-label">{{ KNOWLEDGE_GROUP.label }}</span>
           <IconChevronRight
             v-if="!collapsed"
@@ -1045,6 +1041,9 @@ async function onLogout(): Promise<void> {
      此前固定三级灰，于是"图标比文字浅一档"成了默认，
      而它在静止态本该和文字同色。 */
   color: currentColor;
+  /* 动效里有旋转与缩放，必须绕自身中心：SVG 根元素默认就是 50% 50%，
+     写出来是为了不让"旋转绕哪个点"变成一个要靠猜的前提。 */
+  transform-origin: center;
 }
 
 /* 选中项：**中性 alpha 底，不是品牌色底**（Kimi 的实测值）。
@@ -1074,8 +1073,13 @@ async function onLogout(): Promise<void> {
    这不只是"好看"：它把"新建会话"和"去某个地方"归成同一类东西——**都是侧栏里的一个入口**。
    填充块按钮的语义是"这一栏的主操作"，而主操作在菜单型侧栏里没有单独强调的必要。 */
 .new-chat {
-  margin-bottom: var(--space-2);
-  /* 图标与文字的位置和导航项完全对齐：左内边距由 .nav-item 决定 */
+  /* **左右各留 8px**（v0.18）——与 `.nav` 的内边距取值一致。
+     这一条是用户报的"新建会话为什么不跟其他菜单对齐"的答案：它是 `.sidebar` 的
+     **直接子元素**，`.nav` 上那层 `padding: 0 var(--space-2)` 管不到它，
+     于是它铺满整个侧栏宽度（x=0 / 宽 239），而它下面每一行都从 8px 开始。
+     同一栏里两条不同的起始线，看着就是"这一项没对齐"。
+     （它自己那一行内部本来就是对的：图标与文字都由 `.nav-item` 的内边距定位。） */
+  margin: 0 var(--space-2) var(--space-2);
 }
 
 /* 快捷键提示：`Ctrl K`（Kimi 的写法）。等宽字体 + 极轻的描边，
@@ -1101,44 +1105,135 @@ async function onLogout(): Promise<void> {
    对不齐的话，扫视时会看到两条错开的起始线。
    字号取 14（Kimi 的分区标题是 ui-B2），不再加宽字距：
    加字距是"小号全大写西文"的习惯，中文上加字距只是变稀，不增加区分度。 */
-/* ------------------------------------------------------------------ 图标动效
-   照 kimi.com 的 **AnimatedIcon** 抄的（v0.17）。抓的是它线上样式表里的关键帧：
+/* ------------------------------------------------------------------ 图标动效（v0.18）
+   照 kimi.com 的 **AnimatedIcon** 抄骨架，但**一项一个动作**，且**只在进入时播**。
 
-     @keyframes LeftBarAnimatedIcon-enter-…{
-       0%      translateX(62.97%) scale(.6)  opacity 0    stroke-opacity .2
-       8.333%  同位置                        opacity 1    stroke-opacity .2
-       41.667% translateX(59.01%) scale(1)                stroke-opacity 1
-       100%    translateX(52.083%) scale(1)               stroke-opacity 1
-     }
+   ## 每项一个动作（用户反馈："动效太单一了，全部都是闪烁"）
 
-   三处照抄、一处按我们的图标调整：
+   线上侧栏 16 个图标，**每个都有自己的动画**：它们的 SVG 里各带一份 SMIL 路径形变数据
+   （`<animate attributeName="d" values="…">`），互不重复。我第一版抄了它的
+   **关键帧数值**，却把同一份关键帧挂给了全部五项——所以"单一"。
+   **Kimi 的动效不单一，靠的不是那组 CSS 关键帧（那组本来就在各图标间共用），
+   而是每个图标各自的形变。** 我们没有逐图标的形变数据（那要按每个图形手描一整套
+   路径），所以改从**姿势**上区分：每项一个动效族，取"这个图标画的是什么"该有的动作
+   ——气泡自上落下、便签自下放上、记忆歪一头再正过来、能力上电弹一下，
+   知识库（分组头）照抄 Kimi 原样（右侧滑入 + 放大落定）。
 
-   - **位移**：它在 100% 时落在 52.083%（略偏左），起点 62.97% 比终点靠右约 11%
-     ——也就是"**从右侧滑进来并落定**"。这里换算成相对自身宽度的位移。
-   - **缩放** 0.6 → 1：小图放大到原位，是"落定"的观感来源。
-   - **描边由淡到实**（stroke-opacity .2 → 1）：我们的图标是填充式（见 IconBase），
-     所以等价的表达是 `opacity` 从 .2 到 1。
-   - **它的 `matrix(-1,0,0,-1)` 没有照搬**：那是 Lottie 导出时对美术稿做的翻转校正，
-     我们手写的 24×24 图标不需要它。
+   ## 姿势与时长的取值（从 Kimi 抄的）：`scale 0.6 → 1`、右侧约 11% 处滑入、**200ms**、
+   `linear`。时长以线上 phase 规则里的 `animation-duration:200ms!important` 为准
+   （SVG 内联样式里那个 0.5333s 会被它覆盖，我第一版只读到后者，写成了 0.5s）。
 
-   时长取 **0.5s**：线上的动画时长写在组件的内联样式里（来自 Lottie 资源本身），
-   CSS 里查不到，按它 12 帧的时间线（8.333% = 1/12）取一个常见帧率下的值。
+   ## 改掉的一处：8.333% 的硬闪
 
-   **enter 与 leave 各一份、内容相同**：Kimi 也是这么做的——两侧都播同一段，
-   于是"移上去动一下、移开又动一下"（它的 leave 关键帧与 enter 一字不差）。
+   Kimi 在 **8.333%（≈17ms）**就把 `opacity` 拉到 1，是一次硬闪；它那套图标是纯描边，
+   同一条动画还叠着 `stroke-opacity .2 → 1`（由淡到实），所以看着是"显形"。
+   我们的图标是填充式（见 IconBase），同样的 `opacity` 落上去就是**整块图形闪一下**，
+   正是用户说的"闪烁"。所以五项统一改成**在前 40% 内淡入**（≈80ms），
+   缩放与位移仍按 Kimi 的节奏走。
+
+   ## 为什么**没有**"离开"那一段（Kimi 有，这里砍掉了）
+
+   Kimi 的离开是"倒着播"：它的 enter / leave 关键帧逐字相同，靠
+   `[data-animation-phase=leave] { animation-direction: reverse }` 反向播放。
+   它之所以能这么做，是因为每个图标是**三层**结构——`idle` / `enter` / `leave`
+   三个 `<g>`，同一时刻只显示一层；离开播完把 phase 切回 `idle`，
+   于是**一直可见的 idle 那层**又露出来。
+
+   单个元素上照抄会出事，我实测踩到了：把倒放写成关键帧（`nav-*-out`）并沿用
+   `fill-mode: both`，动画结束后元素会**永久停在收回去的姿态**——悬停过一次的图标
+   就再也看不见了（实测 `opacity: 0`、`scale(0.6)`，五个图标的 marker 全部消失，
+   是截图才看出来、DOM 断言看不出来的那种）。当时的两个岔路：
+
+   - **不保留终态**（`fill: none`）：收回之后"啪"地弹回原状，等于又加一次闪；
+   - **补一层 idle**：为了一个悬停反馈引入三层结构与相位状态机，代价远超收益。
+
+   所以只留进入那一段。用户嫌的正是"闪"，砍掉离开是唯一两头都不亏的选择。
+   如果以后要 Kimi 那种"移开也动一下"，正确做法是补上它的三层结构，
+   而不是在单元素上硬凑。
 */
-@keyframes icon-settle-in {
+
+/* 新建会话：气泡落下来 */
+@keyframes nav-drop-in {
   0% {
-    transform: translateX(11%) scale(0.6);
-    opacity: 0.2;
+    transform: translateY(-6px) scale(0.6);
+    opacity: 0;
   }
 
-  8.333% {
-    transform: translateX(11%) scale(0.6);
+  45% {
+    transform: translateY(1px) scale(1);
     opacity: 1;
   }
 
-  41.667% {
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* 笔记：便签自下放上（末段那 1px 的回压是"按了一下"） */
+@keyframes nav-rise-in {
+  0% {
+    transform: translateY(6px) scale(0.65);
+    opacity: 0;
+  }
+
+  45% {
+    transform: translateY(-1px) scale(1);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* 记忆：歪一头，再正过来 */
+@keyframes nav-tilt-in {
+  0% {
+    transform: rotate(-12deg) scale(0.7);
+    opacity: 0;
+  }
+
+  45% {
+    transform: rotate(2deg) scale(1);
+    opacity: 1;
+  }
+
+  100% {
+    transform: rotate(0) scale(1);
+    opacity: 1;
+  }
+}
+
+/* 能力：上电弹一下（1.08 的过冲是"通了"的那一下）。
+   过冲上限受图标可见范围约束：图标内容约占 24 网格里的 2..22，
+   放大 1.08 后仍在 viewBox 内，不会被 SVG 根元素裁掉。 */
+@keyframes nav-spring-in {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+
+  45% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* 知识库：Kimi 原样（translate 11% → 1.5% → 0，scale 0.6 → 1） */
+@keyframes nav-slide-in {
+  0% {
+    transform: translateX(11%) scale(0.6);
+    opacity: 0;
+  }
+
+  45% {
     transform: translateX(1.5%) scale(1);
     opacity: 1;
   }
@@ -1149,47 +1244,39 @@ async function onLogout(): Promise<void> {
   }
 }
 
-/* 与上面内容相同，只是名字不同：**换名字是为了能重播**——
-   CSS 动画只在元素重新拿到这个 animation 时才开始，同名的话第二次悬停不会动。 */
-@keyframes icon-settle-out {
-  0% {
-    transform: translateX(11%) scale(0.6);
-    opacity: 0.2;
-  }
+/* 每项一条规则。
+   **动画名直接写在声明里，不要用 `var(--nav-motion)` 之类间接一层**：
+   scoped 样式里的 `@keyframes` 名字会被 Vue 改名（加哈希后缀，实测是
+   `nav-rise-in-acd85c5e`），而变量里的名字它看不见、改不到——动画会静默失效
+   （不报错，就是不动）。 */
 
-  8.333% {
-    transform: translateX(11%) scale(0.6);
-    opacity: 1;
-  }
-
-  41.667% {
-    transform: translateX(1.5%) scale(1);
-    opacity: 1;
-  }
-
-  100% {
-    transform: translateX(0) scale(1);
-    opacity: 1;
-  }
+/* `fill-mode: both` 在这里是安全的：终帧就是静止姿态（opacity 1 / scale 1 / 无位移），
+   所以悬停结束后元素停在原样，不会像上面说的那种"停在收回去的姿态"。 */
+.nav-item:hover .nav-motion-drop {
+  animation: nav-drop-in 200ms linear both;
 }
 
-/* 鼠标移上去播一次 */
-.nav-item:hover .nav-icon {
-  animation: icon-settle-in 0.5s var(--motion-ease) both;
+.nav-item:hover .nav-motion-rise {
+  animation: nav-rise-in 200ms linear both;
 }
 
-/* 光标离开时再播一次（与 Kimi 一致：它的 leave 关键帧与 enter 相同）。
-   **必须加 `.nav-item-hovered` 这个前提**：只写 `:not(:hover)` 的话，
-   页面一挂载时所有图标都处于"未悬停"状态，于是整列图标会一起播一遍
-   ——那看着像加载动画，而不是悬停反馈（写第一版时就是这么错的）。 */
-.nav-item-hovered:not(:hover) .nav-icon {
-  animation: icon-settle-out 0.5s var(--motion-ease) both;
+.nav-item:hover .nav-motion-tilt {
+  animation: nav-tilt-in 200ms linear both;
 }
 
-/* 动效不该在"减少动态效果"的系统设置下仍然播放（规范 §8 的无障碍底线） */
+.nav-item:hover .nav-motion-spring {
+  animation: nav-spring-in 200ms linear both;
+}
+
+.nav-item:hover .nav-motion-slide {
+  animation: nav-slide-in 200ms linear both;
+}
+
+/* 动效不该在"减少动态效果"的系统设置下仍然播放（规范 §8 的无障碍底线）。
+   **选择器要和上面同权重**（都是 0-3-0）才压得住——只写 `.nav-item .nav-icon`
+   是 0-2-0，会被 `:hover` 那条盖掉，等于这个设置从来没生效过。 */
 @media (prefers-reduced-motion: reduce) {
-  .nav-item .nav-icon,
-  .new-chat .nav-icon {
+  .nav-item:hover .nav-icon {
     animation: none;
   }
 }

@@ -94,7 +94,11 @@ vi.mock('vue-router', async () => {
   return {
     ...actual,
     useRoute: () => ({ path: '/chat', query: {} }),
-    useRouter: () => ({ push: routerPush }),
+    // `resolve` 是悬停预热（`preloadRoute`）用的：返回空 matched 就等于"这条路由没有
+    // 懒加载代码块可预热"，它会直接返回。**必须有这个方法**——否则一悬停导航项
+    // 就抛 "resolve is not a function"，而那种报错会被当成"测试自己在报错"
+    // （我加"悬停不牵动其他项"那条断言时就是这么被绊了一下的）。
+    useRouter: () => ({ push: routerPush, resolve: () => ({ matched: [] }) }),
   }
 })
 
@@ -246,6 +250,42 @@ describe('SideNav（v0.15 信息架构）', () => {
     expect(routerPush).toHaveBeenCalled()
     expect(JSON.stringify(routerPush.mock.calls.at(-1)?.[0])).toContain('new')
   })
+  // 用户报的两条（v0.18）："新建会话跟其他菜单有什么特殊性吗、为什么不跟其他菜单对齐"，
+  // 以及"hover 的动效几个菜单之间没有解耦，移动一个菜单，其他菜单也会跟着动"。
+  // 对齐那一条是纯 CSS（它缺的是 `.nav` 那层 8px 内边距），jsdom 不跑 scoped 样式，
+  // 断言不到，得在真浏览器里量（实测两边都是 x=8 / 宽 223）；下面这两条是**能被断言**的部分。
+  it('每个导航项的图标动效各有一套，不是共用一个', () => {
+    // 原先五项共用同一份关键帧，用户的原话是"动效太单一了全部都是闪烁"。
+    // 这条钉住"每项一个动效族"：五项各不相同。
+    const wrapper = mountNav()
+
+    // `wrapper.element` 在 VTU 的类型里是 untyped，直接 `querySelectorAll<T>` 会报
+    // "Untyped function calls may not accept type arguments"，所以先落成一个真元素。
+    const root = wrapper.element as HTMLElement
+    const motions = Array.from(root.querySelectorAll('.new-chat .nav-icon, nav.nav .nav-icon')).map(
+      (icon) => Array.from(icon.classList).find((name) => name.startsWith('nav-motion-')),
+    )
+
+    expect(motions).toHaveLength(5) // 新建会话 + 笔记 / 记忆 / 能力 + 知识库
+    expect(motions.filter(Boolean)).toHaveLength(5)
+    expect(new Set(motions).size).toBe(5)
+  })
+
+  it('悬停一项**不会**牵动其他项的图标', async () => {
+    // 回归：上一版用一个侧栏共享的自增计数器当 `:key` 挂在「新建会话」的图标上，
+    // 悬停「笔记」也会让它 +1 —— 那个图标被重建、动画跟着重播，
+    // 表现就是用户说的"移动一个菜单，其他菜单也会跟着动"。
+    // 断言方式是**节点同一性**：悬停别处之后，各图标还得是原来那个 DOM 节点。
+    const wrapper = mountNav()
+    const newChatIcon = wrapper.find('.new-chat .nav-icon').element
+    const notesIcon = wrapper.find('nav.nav > .nav-item .nav-icon').element
+
+    await wrapper.find('nav.nav > .nav-item').trigger('mouseenter')
+
+    expect(wrapper.find('.new-chat .nav-icon').element).toBe(newChatIcon)
+    expect(wrapper.find('nav.nav > .nav-item .nav-icon').element).toBe(notesIcon)
+  })
+
   it('导航里没有「对话」——它与会话列表、新对话是同一件事的三个入口', () => {
     // 这是这一轮去重的那一条：点「对话」是"回到最近一次对话"，而下面的列表
     // 也是"去某次对话"，两者并排时用户会犹豫该点哪个。
