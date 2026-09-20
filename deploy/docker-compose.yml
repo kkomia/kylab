@@ -105,7 +105,7 @@ services:
   backend:
     build:
       context: ../backend
-    image: kylab-backend:${KYLAB_VERSION:-0.1.0}
+    image: kylab-backend:${KYLAB_VERSION:-0.2.0}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -159,7 +159,7 @@ services:
   frontend:
     build:
       context: ../frontend
-    image: kylab-frontend:${KYLAB_VERSION:-0.1.0}
+    image: kylab-frontend:${KYLAB_VERSION:-0.2.0}
     restart: unless-stopped
     depends_on:
       backend:

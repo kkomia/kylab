@@ -6,7 +6,8 @@ import tseslint from 'typescript-eslint'
 import noEmojiRule from './eslint-rules/no-emoji.js'
 
 export default tseslint.config(
-  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', '*.min.js'] },
+  // schema.d.ts 是生成物（见 .prettierignore）：格式与命名都不由我们定
+  { ignores: ['dist/**', 'node_modules/**', 'coverage/**', '*.min.js', 'src/api/schema.d.ts'] },
 
   js.configs.recommended,
   ...tseslint.configs.recommended,

@@ -408,23 +408,27 @@ class ModelRegistryService:
 
         **未绑定不是错误**：调用方据此回退到 ``.env`` / 设置页那套配置。
         这正是"叠加层"的落点——升级不会让已有部署失效。
+
+        实现上是**一条 JOIN**（``resolve_model_binding``）而不是三次查询：这个方法在
+        每建一次 LLM 客户端的路径上，而一轮对话里每个工具步都要建一次——实测
+        20ms（三条查询）→ 7ms（一条）。也没在这里加缓存：注册表改动是低频动作，
+        而"改完读到旧值"这类窗口不值得为几毫秒去换。
         """
         if slot not in SLOTS:
             raise InvalidRequestError(f"未知的用途：{slot}")
+        found = self._stores.meta.resolve_model_binding(f"{BINDING_PREFIX}{slot}")
+        if found is not None:
+            return found
+        # 解不出来：要么本来就没绑，要么绑的模型/供应商已经不在了。
+        # 后者要留一条线索（前面那两种"不该发生，因为删的时候会解绑"的情形）。
         bound = self._stores.meta.get_setting(f"{BINDING_PREFIX}{slot}")
-        if not bound:
-            return None
-        model = self._stores.meta.get_registered_model(bound)
-        if model is None:
-            # 绑定指向一个已不存在的模型（不该发生，因为删除时会解绑）。
-            # 回退而不是抛错：让用户还能正常用，日志里留下线索。
-            logger.warning("用途 %s 绑定的模型 %s 已不存在，回退到设置页配置", slot, bound)
-            return None
-        provider = self._stores.meta.get_model_provider(model.provider_id)
-        if provider is None:
-            logger.warning("模型 %s 的供应商已不存在，回退到设置页配置", model.model_id)
-            return None
-        return provider, model
+        if bound:
+            logger.warning(
+                "用途 %s 绑定的模型 %s 已不存在（或它的供应商已不存在），回退到设置页配置",
+                slot,
+                bound,
+            )
+        return None
 
     # ------------------------------------------------------------------ 内部
 

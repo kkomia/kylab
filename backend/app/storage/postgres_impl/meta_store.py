@@ -52,11 +52,13 @@ from app.storage.base import (
     ApiKeyRecord,
     ChatMessageRecord,
     ChunkRecord,
+    ConversationArtifactRecord,
     ConversationRecord,
     DataSourceRecord,
     DocumentPartRecord,
     DocumentRecord,
     DocumentStageEventRecord,
+    DocumentStatRow,
     FolderRecord,
     IdempotencyRecord,
     ImageRecord,
@@ -71,6 +73,7 @@ from app.storage.base import (
     ShareRecord,
     TaskCounts,
     TaskRecord,
+    TaskStatRow,
     TrashRecord,
     UsageEventRecord,
     UserRecord,
@@ -125,6 +128,15 @@ def _placeholders(count: int) -> str:
     只由固定占位符拼成，不含任何外部值；真正的值一律走参数绑定。
     """
     return ",".join(["%s"] * count)
+
+
+#: 读 chunks 时**显式列出**的列。别写 `SELECT *`：那张表还有 `tokens_text`
+#: （与正文等长）和生成列 `tokens`（tsvector，通常比正文还大），而 `ChunkRecord`
+#: 一个都不用——检索与"补小节"都在热路径上，多传的就是 2–3 倍的字节。
+_CHUNK_COLUMNS = (
+    "chunk_id, document_id, knowledge_base_id, part_id, ordinal, text,"
+    " content_hash, heading_path, page, disabled, questions"
+)
 
 
 def _executemany(conn: Connection, sql: str, rows: Iterable[Sequence[object]]) -> None:
@@ -198,9 +210,7 @@ class PostgresMetaStore(MetaStore):
 
     def get_knowledge_base(self, kb_id: str) -> KnowledgeBaseRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM knowledge_bases WHERE id = %s", (kb_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM knowledge_bases WHERE id = %s", (kb_id,)).fetchone()
         return self._kb_from_row(row) if row else None
 
     def list_knowledge_bases(self) -> list[KnowledgeBaseRecord]:
@@ -280,9 +290,7 @@ class PostgresMetaStore(MetaStore):
         "我删了数据，库怎么没变小"这个问题已经够用——它要的是量级，不是账单。
         """
         with self._db.read() as conn:
-            size_row = conn.execute(
-                "SELECT pg_database_size(current_database()) AS n"
-            ).fetchone()
+            size_row = conn.execute("SELECT pg_database_size(current_database()) AS n").fetchone()
             rows = conn.execute(
                 "SELECT pg_total_relation_size(relid) AS size, n_live_tup, n_dead_tup"
                 " FROM pg_stat_user_tables"
@@ -322,9 +330,7 @@ class PostgresMetaStore(MetaStore):
                  GROUP BY knowledge_base_id
                 """
             ).fetchall()
-        return {
-            row["kb_id"]: (int(row["total"]), _load(row["last_update"])) for row in rows
-        }
+        return {row["kb_id"]: (int(row["total"]), _load(row["last_update"])) for row in rows}
 
     def update_knowledge_base_embedding(
         self, kb_id: str, *, model_id: str, dim: int, base_url: str | None
@@ -389,17 +395,14 @@ class PostgresMetaStore(MetaStore):
             # ``update_document_stage``，于是"已接收"在时间线上会是 0 次进入、0 耗时
             # ——恰恰把用户最想知道的**排队等待时间**漏掉了（用例抓到过）。
             conn.execute(
-                "INSERT INTO document_stage_events (document_id, stage, error)"
-                " VALUES (%s, %s, %s)",
+                "INSERT INTO document_stage_events (document_id, stage, error) VALUES (%s, %s, %s)",
                 (record.id, record.stage.value, record.error),
             )
         return record
 
     def get_document(self, document_id: str) -> DocumentRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM documents WHERE id = %s", (document_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM documents WHERE id = %s", (document_id,)).fetchone()
         return self._document_from_row(row) if row else None
 
     def get_documents_by_ids(self, document_ids: Sequence[str]) -> dict[str, DocumentRecord]:
@@ -536,8 +539,7 @@ class PostgresMetaStore(MetaStore):
         with self._db.session() as conn:
             try:
                 conn.execute(
-                    "INSERT INTO kb_folders (id, kb_id, name, created_at)"
-                    " VALUES (%s, %s, %s, %s)",
+                    "INSERT INTO kb_folders (id, kb_id, name, created_at) VALUES (%s, %s, %s, %s)",
                     (
                         record.id,
                         record.kb_id,
@@ -553,9 +555,7 @@ class PostgresMetaStore(MetaStore):
 
     def get_folder(self, folder_id: str) -> FolderRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM kb_folders WHERE id = %s", (folder_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM kb_folders WHERE id = %s", (folder_id,)).fetchone()
         return self._folder_from_row(row) if row else None
 
     def list_folders(self, kb_id: str) -> list[FolderRecord]:
@@ -571,9 +571,7 @@ class PostgresMetaStore(MetaStore):
     def rename_folder(self, folder_id: str, name: str) -> None:
         with self._db.session() as conn:
             try:
-                conn.execute(
-                    "UPDATE kb_folders SET name = %s WHERE id = %s", (name, folder_id)
-                )
+                conn.execute("UPDATE kb_folders SET name = %s WHERE id = %s", (name, folder_id))
             except psycopg.IntegrityError as exc:
                 raise ConflictError(f"目录已存在：{name}") from exc
 
@@ -627,9 +625,7 @@ class PostgresMetaStore(MetaStore):
         )
 
     @staticmethod
-    def _note_filters(
-        user_id: str | None, query: str | None, tag: str | None
-    ) -> tuple[str, list]:
+    def _note_filters(user_id: str | None, query: str | None, tag: str | None) -> tuple[str, list]:
         """拼 WHERE 子句。
 
         ``user_id=None`` 表示**不过滤归属**（管理员/API Key 通道要看全部，
@@ -696,7 +692,8 @@ class PostgresMetaStore(MetaStore):
                 ),
             )
             if record.tags:
-                _executemany(conn,
+                _executemany(
+                    conn,
                     "INSERT INTO note_tags (note_id, tag) VALUES (%s, %s)"
                     " ON CONFLICT (note_id, tag) DO NOTHING",
                     [(record.id, tag) for tag in record.tags],
@@ -761,7 +758,8 @@ class PostgresMetaStore(MetaStore):
             if tags is not None:
                 # 全量替换：标签是随笔记一起编辑的短列表，diff 没必要
                 conn.execute("DELETE FROM note_tags WHERE note_id = %s", (note_id,))
-                _executemany(conn,
+                _executemany(
+                    conn,
                     "INSERT INTO note_tags (note_id, tag) VALUES (%s, %s)"
                     " ON CONFLICT (note_id, tag) DO NOTHING",
                     [(note_id, tag) for tag in tags],
@@ -972,7 +970,8 @@ class PostgresMetaStore(MetaStore):
             # part_index) 会同时命中，所以正常重跑路径行为一致。
             # 若调用方用**新 id** 复用同一个 (document_id, part_index)，
             # PG 会抛唯一约束冲突而不是静默替换（见实现报告里的差异清单）。
-            _executemany(conn,
+            _executemany(
+                conn,
                 """
                 INSERT INTO document_parts
                     (id, document_id, part_index, page_start, page_end, stage, error)
@@ -1063,7 +1062,8 @@ class PostgresMetaStore(MetaStore):
             conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
             if not chunks:
                 return
-            _executemany(conn,
+            _executemany(
+                conn,
                 """
                 INSERT INTO chunks
                     (chunk_id, document_id, knowledge_base_id, part_id, ordinal, text,
@@ -1086,24 +1086,48 @@ class PostgresMetaStore(MetaStore):
                     for chunk in chunks
                 ],
             )
-            _executemany(conn,
+            _executemany(
+                conn,
                 "INSERT INTO chunk_images (chunk_id, image_id) VALUES (%s, %s)",
-                [
-                    (chunk.chunk_id, image_id)
-                    for chunk in chunks
-                    for image_id in chunk.image_ids
-                ],
+                [(chunk.chunk_id, image_id) for chunk in chunks for image_id in chunk.image_ids],
             )
 
     def iter_chunks(self, document_id: str, *, limit: int | None = None) -> Iterable[ChunkRecord]:
         # LIMIT 直接下推到 SQL：预览只要前几块，没必要把整份正文读出来再切
-        sql = "SELECT * FROM chunks WHERE document_id = %s ORDER BY ordinal"
+        sql = f"SELECT {_CHUNK_COLUMNS} FROM chunks WHERE document_id = %s ORDER BY ordinal"  # noqa: S608
         params: list[object] = [document_id]
         if limit is not None:
             sql += " LIMIT %s"
             params.append(max(0, limit))
         with self._db.read() as conn:
             rows = conn.execute(sql, params).fetchall()
+            images = self._images_by_chunk(conn, [row["chunk_id"] for row in rows])
+        return [
+            ChunkRecord(
+                chunk_id=row["chunk_id"],
+                document_id=row["document_id"],
+                knowledge_base_id=row["knowledge_base_id"],
+                part_id=row["part_id"],
+                ordinal=row["ordinal"],
+                text=row["text"],
+                content_hash=row["content_hash"],
+                heading_path=row["heading_path"],
+                page=row["page"],
+                image_ids=tuple(images.get(row["chunk_id"], ())),
+                disabled=bool(row["disabled"]),
+                questions=tuple(row["questions"]),
+            )
+            for row in rows
+        ]
+
+    def list_chunks_by_heading(self, document_id: str, heading_path: str) -> list[ChunkRecord]:
+        """同一小节的切块（见 base.py 的同名方法：为"补全整段小节"省掉读整篇）。"""
+        with self._db.read() as conn:
+            rows = conn.execute(
+                f"SELECT {_CHUNK_COLUMNS} FROM chunks"  # noqa: S608
+                " WHERE document_id = %s AND heading_path = %s ORDER BY ordinal",
+                (document_id, heading_path),
+            ).fetchall()
             images = self._images_by_chunk(conn, [row["chunk_id"] for row in rows])
         return [
             ChunkRecord(
@@ -1144,7 +1168,7 @@ class PostgresMetaStore(MetaStore):
         only_questions = " AND questions <> '[]'::jsonb" if with_questions_only else ""
         with self._db.read() as conn:
             rows = conn.execute(
-                "SELECT * FROM chunks "  # noqa: S608
+                f"SELECT {_CHUNK_COLUMNS} FROM chunks "  # noqa: S608
                 f"WHERE knowledge_base_id IN ({placeholders}) AND disabled = false"
                 f"{only_questions}"
                 " ORDER BY random() LIMIT %s",
@@ -1176,7 +1200,7 @@ class PostgresMetaStore(MetaStore):
 
         with self._db.read() as conn:
             rows = conn.execute(
-                "SELECT * FROM chunks "  # noqa: S608
+                f"SELECT {_CHUNK_COLUMNS} FROM chunks "  # noqa: S608
                 f"WHERE chunk_id IN ({placeholders})",
                 list(chunk_ids),
             ).fetchall()
@@ -1272,6 +1296,71 @@ class PostgresMetaStore(MetaStore):
         counted = {str(row["document_id"]): int(row["n"]) for row in rows}
         return {document_id: counted.get(document_id, 0) for document_id in wanted}
 
+    def list_document_stats(self, kb_ids: Sequence[str] | None = None) -> list[DocumentStatRow]:
+        """统计投影（见 base.py 的同名方法：驾驶舱用，一条查询取代 K+1 次）。"""
+        params: tuple[object, ...] = ()
+        where = ""
+        if kb_ids is not None:
+            wanted = list(dict.fromkeys(kb_ids))
+            if not wanted:
+                return []
+            where = f"WHERE d.knowledge_base_id IN ({_placeholders(len(wanted))})"
+            params = tuple(wanted)
+        with self._db.read() as conn:
+            # `GROUP BY d.id` 只按主键分组：其余 d.* 列由主键函数依赖决定，
+            # PG 允许这样写（不用把每一列都列进 GROUP BY）。
+            rows = conn.execute(
+                "SELECT d.id, d.knowledge_base_id, d.name, d.stage, d.source_kind,"  # noqa: S608
+                " d.size_bytes, d.created_at, d.updated_at, COUNT(c.chunk_id) AS chunks"
+                " FROM documents d"
+                " LEFT JOIN chunks c ON c.document_id = d.id"
+                f" {where}"
+                " GROUP BY d.id"
+                # 与 list_documents 同序：按插入序遍历聚合出来的结果与改动前逐字一致
+                " ORDER BY d.created_at DESC, d.id DESC",
+                params,
+            ).fetchall()
+        return [
+            DocumentStatRow(
+                id=str(row["id"]),
+                knowledge_base_id=str(row["knowledge_base_id"]),
+                name=str(row["name"]),
+                stage=str(row["stage"]),
+                source_kind=str(row["source_kind"]),
+                size_bytes=int(row["size_bytes"] or 0),
+                created_at=_load(row["created_at"]),
+                updated_at=_load(row["updated_at"]),
+                chunks=int(row["chunks"]),
+            )
+            for row in rows
+        ]
+
+    def list_task_stats(self, document_ids: Sequence[str] | None = None) -> list[TaskStatRow]:
+        """统计投影（见 base.py 的同名方法）。"""
+        params: tuple[object, ...] = ()
+        where = ""
+        if document_ids is not None:
+            wanted = list(dict.fromkeys(document_ids))
+            if not wanted:
+                return []
+            where = f"WHERE document_id IN ({_placeholders(len(wanted))})"
+            params = tuple(wanted)
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT state, document_id, created_at, updated_at FROM tasks"  # noqa: S608
+                f" {where}",
+                params,
+            ).fetchall()
+        return [
+            TaskStatRow(
+                state=str(row["state"]),
+                document_id=None if row["document_id"] is None else str(row["document_id"]),
+                created_at=_load(row["created_at"]),
+                updated_at=_load(row["updated_at"]),
+            )
+            for row in rows
+        ]
+
     def question_stats_by_documents(
         self, document_ids: Sequence[str]
     ) -> dict[str, tuple[int, int]]:
@@ -1360,7 +1449,8 @@ class PostgresMetaStore(MetaStore):
             if not pages:
                 return
             stamp = _dump(_now())
-            _executemany(conn,
+            _executemany(
+                conn,
                 "INSERT INTO wiki_pages"
                 " (id, kb_id, parent_id, level, ord, slug, title, brief, content_md,"
                 "  status, model, generated_at, created_at, updated_at)"
@@ -1386,7 +1476,8 @@ class PostgresMetaStore(MetaStore):
                 ],
             )
             if sources:
-                _executemany(conn,
+                _executemany(
+                    conn,
                     "INSERT INTO wiki_page_sources"
                     " (page_id, chunk_id, document_id, rank, heading_path, page)"
                     " VALUES (%s, %s, %s, %s, %s, %s)",
@@ -1413,9 +1504,7 @@ class PostgresMetaStore(MetaStore):
 
     def get_wiki_page(self, page_id: str) -> WikiPageRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM wiki_pages WHERE id = %s", (page_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM wiki_pages WHERE id = %s", (page_id,)).fetchone()
         return self._wiki_page_from_row(row) if row else None
 
     def list_wiki_sources(self, page_id: str) -> list[WikiSourceRecord]:
@@ -1454,7 +1543,8 @@ class PostgresMetaStore(MetaStore):
         if not records:
             return
         with self._db.session() as conn:
-            _executemany(conn,
+            _executemany(
+                conn,
                 """
                 INSERT INTO images (image_id, document_id, storage_path, page, bbox, caption)
                 VALUES (%s, %s, %s, %s, %s, %s)
@@ -1848,9 +1938,7 @@ class PostgresMetaStore(MetaStore):
 
     def get_data_source(self, source_id: str) -> DataSourceRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM data_sources WHERE id = %s", (source_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM data_sources WHERE id = %s", (source_id,)).fetchone()
         return self._data_source_from_row(row) if row else None
 
     def list_all_data_sources(self) -> list[DataSourceRecord]:
@@ -1958,9 +2046,7 @@ class PostgresMetaStore(MetaStore):
 
     def get_api_key_by_hash(self, key_hash: str) -> ApiKeyRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM api_keys WHERE key_hash = %s", (key_hash,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM api_keys WHERE key_hash = %s", (key_hash,)).fetchone()
         return self._api_key_from_row(row) if row else None
 
     def list_api_keys(self) -> list[ApiKeyRecord]:
@@ -2011,9 +2097,7 @@ class PostgresMetaStore(MetaStore):
 
     def get_idempotency_key(self, key: str) -> IdempotencyRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM idempotency_keys WHERE key = %s", (key,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM idempotency_keys WHERE key = %s", (key,)).fetchone()
         if not row:
             return None
         raw = row["response"]
@@ -2067,9 +2151,7 @@ class PostgresMetaStore(MetaStore):
         # 只删"还没挂上响应"的那种：已经成功过的键不能因为一次重放异常被放掉，
         # 那会让同一个键再被用来跑一遍业务。
         with self._db.session() as conn:
-            conn.execute(
-                "DELETE FROM idempotency_keys WHERE key = %s AND response IS NULL", (key,)
-            )
+            conn.execute("DELETE FROM idempotency_keys WHERE key = %s AND response IS NULL", (key,))
 
     # ------------------------------------------------------------------ 使用者名册
 
@@ -2112,13 +2194,14 @@ class PostgresMetaStore(MetaStore):
             # 管理员开通账号时，"用户名被占"与"花名册里有同名的人"是两种不同的处理。
             # 注意：这里已经在 session() 之外（事务已回滚），下面的读走独立连接。
             with self._db.read() as conn:
-                if conn.execute(
-                    "SELECT 1 FROM users WHERE id = %s", (record.id,)
-                ).fetchone():
+                if conn.execute("SELECT 1 FROM users WHERE id = %s", (record.id,)).fetchone():
                     raise ConflictError(f"使用者 id「{record.id}」已存在") from exc
-                if record.username and conn.execute(
-                    "SELECT 1 FROM users WHERE username = %s", (record.username,)
-                ).fetchone():
+                if (
+                    record.username
+                    and conn.execute(
+                        "SELECT 1 FROM users WHERE username = %s", (record.username,)
+                    ).fetchone()
+                ):
                     raise ConflictError(f"用户名「{record.username}」已被占用") from exc
             raise ConflictError(f"已经有叫「{record.name}」的使用者了") from exc
         return record
@@ -2154,12 +2237,8 @@ class PostgresMetaStore(MetaStore):
             conn.execute(
                 "UPDATE knowledge_bases SET owner_id = NULL WHERE owner_id = %s", (user_id,)
             )
-            conn.execute(
-                "UPDATE conversations SET owner_id = NULL WHERE owner_id = %s", (user_id,)
-            )
-            conn.execute(
-                "UPDATE api_keys SET created_by = NULL WHERE created_by = %s", (user_id,)
-            )
+            conn.execute("UPDATE conversations SET owner_id = NULL WHERE owner_id = %s", (user_id,))
+            conn.execute("UPDATE api_keys SET created_by = NULL WHERE created_by = %s", (user_id,))
             conn.execute("DELETE FROM users WHERE id = %s", (user_id,))
 
     def count_documents_by_user(self, user_id: str) -> int:
@@ -2173,9 +2252,7 @@ class PostgresMetaStore(MetaStore):
 
     def find_user_by_username(self, username: str) -> UserRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM users WHERE username = %s", (username,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM users WHERE username = %s", (username,)).fetchone()
         return self._user_from_row(row) if row else None
 
     def update_user_password(self, user_id: str, password_hash: str) -> None:
@@ -2186,9 +2263,7 @@ class PostgresMetaStore(MetaStore):
 
     def set_user_disabled(self, user_id: str, disabled: bool) -> None:
         with self._db.session() as conn:
-            conn.execute(
-                "UPDATE users SET disabled = %s WHERE id = %s", (disabled, user_id)
-            )
+            conn.execute("UPDATE users SET disabled = %s WHERE id = %s", (disabled, user_id))
 
     def claim_legacy_ownership(self, owner_id: str) -> dict[str, int]:
         with self._db.session() as conn:
@@ -2239,9 +2314,7 @@ class PostgresMetaStore(MetaStore):
 
     def get_session(self, session_id: str) -> SessionRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM sessions WHERE id = %s", (session_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM sessions WHERE id = %s", (session_id,)).fetchone()
         return self._session_from_row(row) if row else None
 
     def touch_session(
@@ -2262,9 +2335,7 @@ class PostgresMetaStore(MetaStore):
     ) -> int:
         with self._db.session() as conn:
             if except_session_id is None:
-                cursor = conn.execute(
-                    "DELETE FROM sessions WHERE user_id = %s", (user_id,)
-                )
+                cursor = conn.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))
             else:
                 cursor = conn.execute(
                     "DELETE FROM sessions WHERE user_id = %s AND id != %s",
@@ -2450,9 +2521,7 @@ class PostgresMetaStore(MetaStore):
 
     def list_model_providers(self) -> list[ModelProviderRecord]:
         with self._db.read() as conn:
-            rows = conn.execute(
-                "SELECT * FROM model_providers ORDER BY created_at, id"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM model_providers ORDER BY created_at, id").fetchall()
         return [self._provider_from_row(row) for row in rows]
 
     def update_model_provider(self, record: ModelProviderRecord) -> None:
@@ -2504,21 +2573,15 @@ class PostgresMetaStore(MetaStore):
                     ),
                 )
         except psycopg.IntegrityError as exc:
-            raise ConflictError(
-                f"该供应商下已经登记过模型 {record.model_id}"
-            ) from exc
+            raise ConflictError(f"该供应商下已经登记过模型 {record.model_id}") from exc
         return record
 
     def get_registered_model(self, model_pk: str) -> RegisteredModelRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM model_registry WHERE id = %s", (model_pk,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM model_registry WHERE id = %s", (model_pk,)).fetchone()
         return self._model_from_row(row) if row else None
 
-    def list_registered_models(
-        self, provider_id: str | None = None
-    ) -> list[RegisteredModelRecord]:
+    def list_registered_models(self, provider_id: str | None = None) -> list[RegisteredModelRecord]:
         sql = "SELECT * FROM model_registry"
         params: tuple[object, ...] = ()
         if provider_id is not None:
@@ -2550,6 +2613,30 @@ class PostgresMetaStore(MetaStore):
         with self._db.session() as conn:
             conn.execute("DELETE FROM model_registry WHERE id = %s", (model_pk,))
 
+    def resolve_model_binding(
+        self, key: str
+    ) -> tuple[ModelProviderRecord, RegisteredModelRecord] | None:
+        """一条 JOIN 解出绑定（见 base.py 的同名方法：这是热路径）。"""
+        with self._db.read() as conn:
+            # `to_jsonb` 是关键：两张表都有 id / name / created_at，直接 JOIN 出来列名会打架，
+            # 而转成 JSON 之后两个映射函数可以原样复用（它们只按键取值）。
+            row = conn.execute(
+                """
+                SELECT to_jsonb(m) AS model, to_jsonb(p) AS provider
+                  FROM app_settings s
+                  JOIN model_registry m ON m.id = s.value
+                  JOIN model_providers p ON p.id = m.provider_id
+                 WHERE s.key = %s
+                """,
+                (key,),
+            ).fetchone()
+        if row is None:
+            return None
+        return (
+            self._provider_from_row(row["provider"]),
+            self._model_from_row(row["model"]),
+        )
+
     # ------------------------------------------------------------------ 对话留存
 
     @staticmethod
@@ -2579,6 +2666,9 @@ class PostgresMetaStore(MetaStore):
             role=row["role"],
             content=row["content"],
             sources=tuple(row["sources"]),
+            # 老库里这两列刚补上，存量行是 '[]' / ''——与"这一轮没有过程"恰好同义
+            steps=tuple(row.get("steps") or ()),
+            thinking=row.get("thinking") or "",
             created_at=_load(row["created_at"]),
         )
 
@@ -2643,9 +2733,7 @@ class PostgresMetaStore(MetaStore):
             ).fetchall()
         return {row["conversation_id"]: row["content"] for row in rows}
 
-    def set_conversation_workspace(
-        self, conversation_id: str, workspace_id: str | None
-    ) -> None:
+    def set_conversation_workspace(self, conversation_id: str, workspace_id: str | None) -> None:
         # 不推 updated_at：见协议里那段说明（整理动作不该改变"最近活动"的名次）
         with self._db.session() as conn:
             conn.execute(
@@ -2679,16 +2767,12 @@ class PostgresMetaStore(MetaStore):
 
     def get_workspace(self, workspace_id: str) -> WorkspaceRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM workspaces WHERE id = %s", (workspace_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM workspaces WHERE id = %s", (workspace_id,)).fetchone()
         return self._workspace_from_row(row) if row else None
 
     def list_workspaces(self) -> list[WorkspaceRecord]:
         with self._db.read() as conn:
-            rows = conn.execute(
-                "SELECT * FROM workspaces ORDER BY updated_at DESC"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM workspaces ORDER BY updated_at DESC").fetchall()
         return [self._workspace_from_row(row) for row in rows]
 
     def update_workspace(self, record: WorkspaceRecord) -> WorkspaceRecord:
@@ -2753,16 +2837,12 @@ class PostgresMetaStore(MetaStore):
 
     def get_mcp_server(self, server_id: str) -> MCPServerRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM mcp_servers WHERE id = %s", (server_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM mcp_servers WHERE id = %s", (server_id,)).fetchone()
         return self._mcp_server_from_row(row) if row else None
 
     def list_mcp_servers(self) -> list[MCPServerRecord]:
         with self._db.read() as conn:
-            rows = conn.execute(
-                "SELECT * FROM mcp_servers ORDER BY updated_at DESC"
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM mcp_servers ORDER BY updated_at DESC").fetchall()
         return [self._mcp_server_from_row(row) for row in rows]
 
     def update_mcp_server(self, record: MCPServerRecord) -> MCPServerRecord:
@@ -2919,26 +2999,110 @@ class PostgresMetaStore(MetaStore):
         显式删消息而不是只靠外键级联（PG 的外键始终强制，级联也能删，
         但意图写在代码里比藏在 schema 里可读）。只删会话会留下一堆孤儿消息，
         而且它们会一直被 ``list_messages`` 之外的地方查到（例如按会话聚合的统计）。
+
+        **产物记录也在这里显式删**（同一条道理）。它们的文件本体由服务层先处理：
+        落在对象存储里的那份要删掉，落在工作区里的那些是用户项目里的真实文件，
+        不能跟着会话一起消失。
+        """
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM chat_messages WHERE conversation_id = %s", (conversation_id,))
+            conn.execute(
+                "DELETE FROM conversation_artifacts WHERE conversation_id = %s",
+                (conversation_id,),
+            )
+            conn.execute("DELETE FROM conversations WHERE id = %s", (conversation_id,))
+
+    # ------------------------------------------------------------ 会话产物（v0.26）
+
+    def create_artifact(self, record: ConversationArtifactRecord) -> ConversationArtifactRecord:
+        record.created_at = record.created_at or _now()
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO conversation_artifacts"
+                " (id, conversation_id, name, format, size_bytes, storage, location,"
+                "  workspace_id, owner_id, knowledge_base_id, document_id, created_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    record.id,
+                    record.conversation_id,
+                    record.name,
+                    record.format,
+                    record.size_bytes,
+                    record.storage,
+                    record.location,
+                    record.workspace_id,
+                    record.owner_id,
+                    record.knowledge_base_id,
+                    record.document_id,
+                    _dump(record.created_at),
+                ),
+            )
+        return record
+
+    def get_artifact(self, artifact_id: str) -> ConversationArtifactRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM conversation_artifacts WHERE id = %s", (artifact_id,)
+            ).fetchone()
+        return None if row is None else self._artifact_from_row(row)
+
+    def list_artifacts(self, conversation_id: str) -> list[ConversationArtifactRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM conversation_artifacts WHERE conversation_id = %s"
+                " ORDER BY created_at, id",
+                (conversation_id,),
+            ).fetchall()
+        return [self._artifact_from_row(row) for row in rows]
+
+    def mark_artifact_ingested(
+        self, artifact_id: str, *, knowledge_base_id: str, document_id: str
+    ) -> None:
+        """记下"这份产物进了哪个库"。
+
+        **只写这两个字段**，不动 ``location``：入库是**复制**一份进知识库
+        （原文进对象存储、切块、建索引），产物本身还在原处——
+        用户要的那份文件不该因为"顺便存了一份进库"而搬家。
         """
         with self._db.session() as conn:
             conn.execute(
-                "DELETE FROM chat_messages WHERE conversation_id = %s", (conversation_id,)
+                "UPDATE conversation_artifacts"
+                " SET knowledge_base_id = %s, document_id = %s WHERE id = %s",
+                (knowledge_base_id, document_id, artifact_id),
             )
-            conn.execute("DELETE FROM conversations WHERE id = %s", (conversation_id,))
+
+    @staticmethod
+    def _artifact_from_row(row: dict) -> ConversationArtifactRecord:
+        return ConversationArtifactRecord(
+            id=row["id"],
+            conversation_id=row["conversation_id"],
+            name=row["name"],
+            format=row["format"],
+            size_bytes=int(row["size_bytes"] or 0),
+            storage=row["storage"],
+            location=row["location"] or "",
+            workspace_id=row["workspace_id"],
+            owner_id=row["owner_id"],
+            knowledge_base_id=row["knowledge_base_id"],
+            document_id=row["document_id"],
+            created_at=row["created_at"],
+        )
 
     def append_message(self, record: ChatMessageRecord) -> ChatMessageRecord:
         record.created_at = record.created_at or _now()
         with self._db.session() as conn:
             conn.execute(
                 "INSERT INTO chat_messages"
-                " (id, conversation_id, role, content, sources, created_at)"
-                " VALUES (%s, %s, %s, %s, %s, %s)",
+                " (id, conversation_id, role, content, sources, steps, thinking, created_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     record.id,
                     record.conversation_id,
                     record.role,
                     record.content,
                     _json([dict(item) for item in record.sources]),
+                    _json([dict(item) for item in record.steps]),
+                    record.thinking,
                     _dump(record.created_at),
                 ),
             )
@@ -2951,8 +3115,7 @@ class PostgresMetaStore(MetaStore):
         # 不能完全等价于 rowid：UPDATE 会改变 ctid，但这张表不改消息内容。
         with self._db.read() as conn:
             rows = conn.execute(
-                "SELECT * FROM chat_messages WHERE conversation_id = %s"
-                " ORDER BY created_at, ctid",
+                "SELECT * FROM chat_messages WHERE conversation_id = %s ORDER BY created_at, ctid",
                 (conversation_id,),
             ).fetchall()
         return [self._message_from_row(row) for row in rows]
@@ -2987,16 +3150,12 @@ class PostgresMetaStore(MetaStore):
 
     def get_webhook(self, webhook_id: str) -> WebhookRecord | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT * FROM webhooks WHERE id = %s", (webhook_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM webhooks WHERE id = %s", (webhook_id,)).fetchone()
         return _webhook_of(row) if row else None
 
     def set_webhook_enabled(self, webhook_id: str, enabled: bool) -> WebhookRecord | None:
         with self._db.session() as conn:
-            conn.execute(
-                "UPDATE webhooks SET enabled = %s WHERE id = %s", (enabled, webhook_id)
-            )
+            conn.execute("UPDATE webhooks SET enabled = %s WHERE id = %s", (enabled, webhook_id))
         return self.get_webhook(webhook_id)
 
     def delete_webhook(self, webhook_id: str) -> None:
@@ -3073,9 +3232,7 @@ class PostgresMetaStore(MetaStore):
 
     def get_setting(self, key: str) -> str | None:
         with self._db.read() as conn:
-            row = conn.execute(
-                "SELECT value FROM app_settings WHERE key = %s", (key,)
-            ).fetchone()
+            row = conn.execute("SELECT value FROM app_settings WHERE key = %s", (key,)).fetchone()
         return row["value"] if row else None
 
     def get_settings(self, keys: Sequence[str]) -> dict[str, str]:

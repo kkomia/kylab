@@ -891,7 +891,7 @@ defineExpose({ load })
   grid-column: 1 / -1;
   margin: calc(-1 * var(--space-2)) 0 0;
   font-size: var(--text-micro-size);
-  line-height: 1.6;
+  line-height: var(--line-prose);
   color: var(--text-tertiary);
 }
 

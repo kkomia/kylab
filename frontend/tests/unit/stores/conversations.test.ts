@@ -38,6 +38,8 @@ function summary(id: string, extra: Partial<ConversationSummary> = {}): Conversa
     pinned: false,
     // 未归档（v0.15）：夹具默认放在"未归档"那一栏，与真实的新建行为一致
     workspace_id: null,
+    archived_at: null,
+    preview: '',
     created_at: '2026-09-01T00:00:00Z',
     updated_at: '2026-09-01T00:00:00Z',
     message_count: 2,
@@ -50,7 +52,7 @@ function detail(id: string, extra: Partial<ConversationDetail> = {}): Conversati
 }
 
 function stored(content: string): StoredMessage {
-  return { id: '', role: 'user', content, sources: [], created_at: null }
+  return { id: '', role: 'user', content, sources: [], steps: [], thinking: '', created_at: null }
 }
 
 beforeEach(() => {

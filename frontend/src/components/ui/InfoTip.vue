@@ -99,7 +99,7 @@ onBeforeUnmount(hide)
   width: 20px;
   height: 20px;
   color: var(--text-tertiary);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .info-tip-button:hover,
@@ -114,7 +114,7 @@ onBeforeUnmount(hide)
   display: block;
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-primary);
   background: var(--bg-surface);
   border: 1px solid var(--border);

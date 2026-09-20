@@ -161,6 +161,38 @@ pre {
   background: transparent;
 }
 
+/**
+ * 「用时才出现」的滚动条（v0.26，用户报的侧栏那一条）。
+ *
+ * 只把**滑块的颜色**在透明与正常之间切换，**条槽宽度一直不变**——
+ * 所以内容不会在它出现/消失时左右跳一下（那种跳动比一条静止的滚动条更烦人）。
+ * 何时出现、何时消失由 `useAutoHideScrollbar` 决定（滚动时、或鼠标移到条槽上；
+ * 停手 1.2 秒后自己灭掉），这里只管"亮成什么样"。
+ *
+ * 其余属性（`background-clip: content-box` 与那圈 4px 透明边框）从上面的全局规则
+ * 继承下来，这里不重复写：重复了就会有两种"胶囊宽度"，改一处忘一处。
+ */
+.scroll-quiet {
+  scrollbar-color: transparent transparent;
+}
+
+.scroll-quiet.is-scroll-visible {
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+.scroll-quiet::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.scroll-quiet.is-scroll-visible::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+}
+
+/* 抓住它的时候再深一档（与全局那条同一个反馈，只是压过上面的透明规则） */
+.scroll-quiet.is-scroll-visible::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
 :root {
   /* ---------------------------------------------------------------- 圆角
      按 Kimi 的尺度整体放大。它的实测值只有三处：聊天输入 24px、弹层 20px、
@@ -248,6 +280,9 @@ pre {
      长篇阅读面（文档正文、Wiki、命中引文）单独放宽，避免密到难读。 */
   --line-ui: 1.47;
   --line-prose: 1.7;
+  /* 代码块的行高：规范里只定了两档（UI 1.47 / 长文 1.7），而代码比正文更需要**紧凑对齐**
+   ——1.7 会让每行代码之间空得看不出成组。取 1.6 是原有取值，这里把它收到 token 里。 */
+  --line-code: 1.6;
 
   /* 阅读类内容限宽（文档正文、命中引文用） */
   --measure: 66ch;
@@ -295,16 +330,53 @@ pre {
   --icon-button-border-width: 0.5px;
 
   /* ---------------------------------------------------------------- 动效
-     Kimi 全站统一这一条 .15s ease（我们此前各组件各写各的，从 .12s 到 .2s 都有）。
-     抽成令牌之后，状态变化的手感是一致的。 */
+     **Kimi 只有两种速度**（实测，见《Kimi 界面逐处对照》§3）：
+       .15s             给"底色 / 字色的状态切换"——列表行、导航项、菜单项；
+       .3s ease-in-out  给"有体量的东西"——按钮、侧栏位移。
+     我们此前只有 .15s 一档，于是按钮的悬停与列表行的悬停同速，读起来"按钮太急"。
+     两档都抽成令牌，"这该用哪一档"就不再是每次现拍。 */
   --motion-fast: 0.15s;
+  --motion-slow: 0.3s;
   --motion-ease: ease;
+  --motion-ease-inout: ease-in-out;
+  /* 发送按钮自成一档：Kimi 的 `.send-button-container` 用的是这条贝塞尔，不是全站的
+     `ease`。它要的是"按下即走"，与底色切换不是一回事。 */
+  --motion-send: cubic-bezier(0.4, 0, 0.2, 1);
   --transition-ui:
     background-color var(--motion-fast) var(--motion-ease),
     color var(--motion-fast) var(--motion-ease), box-shadow var(--motion-fast) var(--motion-ease);
+  /* 按钮档：Kimi 的 `.kimi-button` / `.desktop-download-entry` 实测就是这个四元组 */
+  --transition-surface:
+    background-color var(--motion-slow) var(--motion-ease-inout),
+    box-shadow var(--motion-slow) var(--motion-ease-inout),
+    color var(--motion-slow) var(--motion-ease-inout),
+    opacity var(--motion-slow) var(--motion-ease-inout);
 
   /* 悬浮层：静态内容不用阴影，只有真正浮起来的才用 */
   --shadow-raised: 0 1px 2px rgb(0 0 0 / 4%);
+  /* 输入框那层阴影：Kimi 的 `.chat-editor-content` 实测 `0 5px 16px -4px`，
+     比 `--shadow-raised` 明显更"浮"——输入框是页面里唯一常驻的抬起面。 */
+  --shadow-input: 0 5px 16px -4px rgb(0 0 0 / 7%);
+
+  /* ------------------------------------------------------------ 弹层构造
+     Kimi 的菜单与弹窗都不靠描边分层，靠**底色差**（见《Kimi 界面逐处对照》§4/§5）：
+     菜单底是 `Bg-Tertiary`（深色下比画布亮两档）。所以这里要的是一个新名字，
+     而不是把 `--bg-surface` 复用到菜单上——后者在深色下比画布还暗。 */
+  --bg-menu: var(--Bg-Tertiary);
+  --menu-pad: var(--space-2);
+  --menu-item-height: 36px;
+  --menu-item-radius: var(--radius-control);
+  /* 菜单项的副标题小字：Kimi 的 `.desc` 实测 `13px/18px` + `Labels-Tertiary` + 上距 4px。
+     **13px 不在它的 ui-* 六档里**（T1 18 / T2 16 / B1 15 / B2 14 / C1 12 / C2 10），
+     是它样式表里单独写的一档；这里照抄这个值，并明说它不入字阶。 */
+  --text-aux-size: calc(13px * var(--font-scale));
+  --line-aux: 18px;
+
+  /* 头像占位：Kimi 的 `.not-login-icon` 实测 28×28 圆形 */
+  --avatar-size: 28px;
+
+  /* 侧栏页头：Kimi 的 `.sidebar-header` 实测高 56，与页面顶栏的 58 不是同一个数 */
+  --sidebar-header-height: 56px;
 }
 
 /* 数字一律等宽：分数、条数、页码要能沿一条竖轴对齐（§4） */
@@ -326,6 +398,39 @@ pre {
 .text-micro {
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
+}
+
+/**
+ * 菜单项 + 副标题小字：Kimi 的「标题 + 一行说明」两行菜单项。
+ *
+ * **这是全站唯一该有小字的地方**（《Kimi 界面逐处对照》§7）。Kimi 的小字只出现在
+ * "解释了选这个会得到什么"的位置——它的模型菜单每一项都是
+ * `K3 / 擅长对话与 Agent 任务，全能旗舰`；而侧栏导航、输入框、分区标题一律没有小字，
+ * 因为那些地方的界面自己已经说清楚了。
+ *
+ * 取值全部是实测：主行 `14px/20px` + `Labels-Primary`，副行 `13px/18px` +
+ * `Labels-Tertiary` + 上距 4px。**主行不压成二级灰**——那等于把两个层级合成一个。
+ *
+ * 用法（`<button>` 里包两层即可，容器只需 `display: block` / `flex-direction: column`）：
+ *   <button><span class="menu-item-title">K3</span><span class="menu-desc">擅长…</span></button>
+ *
+ * 目前没有调用方：我们的菜单项都只有一行，没有可作副标题的字段。
+ * 先把它落在 token 层，等哪一天菜单里有了"这个选项是干什么的"这类数据再用——
+ * 而不是先编一段说明文字去填满这个位置。
+ */
+.menu-item-title {
+  display: block;
+  font-size: var(--text-meta-size);
+  line-height: 20px;
+  color: var(--menu-item-text);
+}
+
+.menu-desc {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-aux-size);
+  line-height: var(--line-aux);
+  color: var(--menu-desc-text);
 }
 
 /**

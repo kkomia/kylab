@@ -228,7 +228,7 @@ defineExpose({ warm })
 }
 
 .editor-content :deep(.tiptap h1) {
-  font-size: 18px;
+  font-size: var(--text-page-title-size);
 }
 
 .editor-content :deep(.tiptap h2) {

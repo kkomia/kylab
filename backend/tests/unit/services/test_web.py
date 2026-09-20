@@ -19,6 +19,18 @@ import respx
 from app.core.exceptions import InvalidRequestError, UpstreamError
 from app.services import web
 
+
+@pytest.fixture
+def _services():
+    """真正的 Services（工具执行点要它）。
+
+    **本文件里只有这一组用例用得到它**：其余测的是 `web.py` 自己的函数。
+    """
+    from app.core.services import get_services
+
+    return get_services()
+
+
 # ------------------------------------------------------------------ 内网与协议
 
 
@@ -233,7 +245,9 @@ def test_search_parses_bocha_shape() -> None:
     respx.post("https://api.bochaai.com/v1/web-search").mock(
         return_value=httpx.Response(
             200,
-            json={"data": {"webPages": {"value": [{"name": "标题", "url": "https://x.example.com"}]}}},
+            json={
+                "data": {"webPages": {"value": [{"name": "标题", "url": "https://x.example.com"}]}}
+            },
         )
     )
 
@@ -282,3 +296,148 @@ def test_search_unknown_shape_returns_empty_not_an_error() -> None:
     )
 
     assert web.search_web("新闻", api_key="k") == []
+
+
+# ---------------------------------------------------------- 一次读多页（v0.26）
+
+
+def test_web_fetch_reads_several_pages_in_one_call(_services, monkeypatch) -> None:
+    """**一次调用可以读多页**（v0.26）。
+
+    实测一轮里模型连着抓十几页，每抓一页都要等一次模型往返——那条会话
+    10 次搜索 + 15 次抓取 = 25 个来回，占了一轮一百多秒里的大头。
+    把"读这几页"合成一次调用，省下的是往返，不是网络。
+    """
+    from app.services import tools
+    from app.services.api_key import Caller
+
+    called: list[str] = []
+
+    def fake_fetch(url: str, **kwargs: object) -> tuple[str, str]:
+        called.append(url)
+        return f"标题 {url}", f"正文 {url}"
+
+    monkeypatch.setattr(tools.web, "fetch_url", fake_fetch)
+    caller = Caller(is_admin=True)
+
+    text = tools.call_tool(
+        _services,
+        "web_fetch",
+        {"urls": ["https://a.example.com/1", "https://b.example.com/2"]},
+        caller=caller,
+    )
+
+    assert called == ["https://a.example.com/1", "https://b.example.com/2"]
+    # 每一页都带自己的来源，模型引用时说得清是哪一页
+    assert "来源：https://a.example.com/1" in text
+    assert "来源：https://b.example.com/2" in text
+
+
+def test_web_fetch_keeps_going_when_one_page_fails(_services, monkeypatch) -> None:
+    """一页失败**不拖垮整次调用**：那轮里抓 15 页有 2 页 403，
+    整次失败会让模型把"这两页读不到"误读成"这几页都一样"。"""
+    from app.core.exceptions import UpstreamError
+    from app.services import tools
+    from app.services.api_key import Caller
+
+    def fake_fetch(url: str, **kwargs: object) -> tuple[str, str]:
+        if "bad" in url:
+            raise UpstreamError("抓取失败：HTTP 403")
+        return "好页", "正文"
+
+    monkeypatch.setattr(tools.web, "fetch_url", fake_fetch)
+
+    text = tools.call_tool(
+        _services,
+        "web_fetch",
+        {"urls": ["https://bad.example.com/x", "https://good.example.com/y"]},
+        caller=Caller(is_admin=True),
+    )
+
+    assert "HTTP 403" in text and "来源：https://bad.example.com/x" in text
+    assert "正文" in text
+
+
+def test_web_fetch_caps_the_batch(_services, monkeypatch) -> None:
+    """一次最多 5 页：上限的理由是**上下文**（每页 3 万字），不是网络。"""
+    from app.core.exceptions import InvalidRequestError
+    from app.services import tools
+    from app.services.api_key import Caller
+
+    monkeypatch.setattr(tools.web, "fetch_url", lambda url, **kw: ("t", "b"))
+
+    with pytest.raises(InvalidRequestError, match="最多读 5 页"):
+        tools.call_tool(
+            _services,
+            "web_fetch",
+            {"urls": [f"https://x.example.com/{index}" for index in range(6)]},
+            caller=Caller(is_admin=True),
+        )
+
+
+def test_batch_fetch_refuses_internal_addresses_before_any_request(_services, monkeypatch) -> None:
+    """**一批里有一个非法地址，整批都不发出去**（v0.26）。
+
+    这条比单页时更要紧：合法的几个先被抓走，日志里看着像一次正常抓取，
+    而那个内网地址是夹在中间混出去试探的。所以校验放在循环**之前**，一次做完。
+    """
+    from app.core.exceptions import InvalidRequestError
+    from app.services import tools
+    from app.services.api_key import Caller
+
+    called: list[str] = []
+    monkeypatch.setattr(
+        tools.web, "fetch_url", lambda url, **kw: (called.append(url), ("t", "b"))[1]
+    )
+
+    with pytest.raises(InvalidRequestError):
+        tools.call_tool(
+            _services,
+            "web_fetch",
+            {"urls": ["https://ok.example.com/a", "http://127.0.0.1:8000/api/v1/health"]},
+            caller=Caller(is_admin=True),
+        )
+
+    assert called == []
+
+
+def test_batch_fetch_runs_pages_in_parallel(_services, monkeypatch) -> None:
+    """**一批里的几页是并行抓的**（v0.26）。
+
+    它们之间没有任何依赖，一页一页等就是白等：实测每页 0.4–1.2 秒，
+    三页串行 3 秒、并行 1.2 秒。模型被鼓励"一次给多个网址"，图的就是这个。
+
+    **判据是"同时在飞的有几个"，不是总耗时**：墙钟阈值在忙的机器上会假失败
+    （第一版就是那样，单独跑过、连起来跑红）。数并发数既直接又不受负载影响。
+    """
+    import threading
+    import time as clock
+
+    from app.services import tools
+    from app.services.api_key import Caller
+
+    lock = threading.Lock()
+    in_flight = 0
+    peak = 0
+
+    def slow_fetch(url: str, **kwargs: object) -> tuple[str, str]:
+        nonlocal in_flight, peak
+        with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        clock.sleep(0.05)
+        with lock:
+            in_flight -= 1
+        return "标题", "正文"
+
+    monkeypatch.setattr(tools.web, "fetch_url", slow_fetch)
+
+    text = tools.call_tool(
+        _services,
+        "web_fetch",
+        {"urls": [f"https://p{i}.example.com/" for i in range(4)]},
+        caller=Caller(is_admin=True),
+    )
+
+    assert text.count("来源：") == 4
+    assert peak > 1, "四页是串行抓的（同一时刻只有一页在飞）"

@@ -487,7 +487,7 @@ function statsOf(kbId: string) {
   margin: var(--space-4) 0 0;
   padding: var(--space-3) var(--space-4);
   font-size: var(--text-meta-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
   background: var(--bg-subtle);
   border: 1px solid var(--border-hairline);
@@ -497,7 +497,7 @@ function statsOf(kbId: string) {
 .modal-note {
   margin: 0;
   font-size: var(--text-meta-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
 }
 
@@ -653,7 +653,7 @@ function statsOf(kbId: string) {
   overflow: hidden;
   min-height: calc(var(--text-meta-size) * 1.7 * 2);
   font-size: var(--text-meta-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -755,7 +755,7 @@ function statsOf(kbId: string) {
 .field-hint {
   margin: var(--space-3) 0 0;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-tertiary);
 }
 
@@ -824,7 +824,7 @@ function statsOf(kbId: string) {
 
 .form-option-desc {
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
 }
 
@@ -851,7 +851,7 @@ function statsOf(kbId: string) {
 .advanced-note {
   margin: var(--space-3) 0 0;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-tertiary);
 }
 

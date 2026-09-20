@@ -38,12 +38,17 @@ from app.services.suggested_questions import (
     PROMPT_MAX_CHARS as SUGGESTED_PROMPT_MAX_CHARS,
 )
 
-_RECORD_CONFIG = ConfigDict(from_attributes=True)
+_RECORD_CONFIG = ConfigDict(from_attributes=True, use_attribute_docstrings=True)
 """记录类响应模型直接由服务/存储的记录对象构建。
 
 调用方写 ``DocumentOut.model_validate(record)``，字段名对不上会在改字段时立刻报错，
 比手写一遍 ``_to_out`` 映射少一处"加了字段忘了同步"的漏点。
 这也是协议层不 import ``app.storage`` 还能拼出响应的原因（工程规范 §3.3 L1）。
+
+``use_attribute_docstrings=True``（v0.2）：把**字段下面那段文档字符串**放进 OpenAPI 的
+description。不加它，前端的派生类型只能拿到字段名——而 `schema.d.ts` 是生成的，
+手写的字段说明会在迁移时丢掉。加上它，说明跟着契约走：后端写一处，
+生成的类型、Swagger、前端的 IDE 提示都有。
 """
 
 # --------------------------------------------------------------------- 知识库
@@ -918,6 +923,16 @@ class ChatMessageOut(BaseModel):
     role: str
     content: str
     sources: list[ChatSourceOut] = Field(default_factory=list)
+    steps: list[dict[str, object]] = Field(default_factory=list)
+    """当轮的过程步骤（工具调用、组织回答…，v0.25）。
+
+    与 ``sources`` 同为快照：回看旧回答时，当时调了哪些工具、每步拿到什么，
+    都该是当时的样子。老消息没有这一项，返回空列表。
+    """
+
+    thinking: str = ""
+    """当轮的思考过程全文（v0.25）。空串 = 这一轮没有思考。"""
+
     created_at: datetime | None = None
 
 
@@ -925,11 +940,88 @@ class ConversationDetailOut(ConversationOut):
     messages: list[ChatMessageOut] = Field(default_factory=list)
 
 
+class ConversationArtifactOut(BaseModel):
+    """会话产出的一份文件（v0.26）。
+
+    与 ``ChatStep.artifacts`` 是**同一个形状**（由 ``ArtifactService.describe``
+    生成），这不是巧合：步骤里那一份是流式当时的样子，这里这一份是**现在的样子**。
+    两者分叉的话，"刷新之后卡片突然显示已入库"就成了必然。
+    """
+
+    artifact_id: str
+    name: str
+    size_bytes: int = 0
+    format: str = ""
+    """扩展名小写（``docx`` / ``pdf`` / …），界面据此选图标。"""
+    storage: str = "object"
+    """``workspace``（落在工作区目录）或 ``object``（落在会话的临时区）。"""
+    where: str = ""
+    """给人看的那句话：「工作区「我的项目」」/「本会话」。"""
+    path: str | None = None
+    """工作区那份的绝对路径；对象存储那份没有。"""
+    knowledge_base_id: str | None = None
+    """进了哪个知识库。``None`` = 没进（默认），界面据此决定要不要给「存进知识库」。"""
+    document_id: str | None = None
+    created_at: datetime | None = None
+
+
+class ConversationArtifactListOut(BaseModel):
+    items: list[ConversationArtifactOut]
+
+
+class FileDownloadUrlOut(BaseModel):
+    """一条文件链接（预览与下载共用）。**相对路径**：对外域名只有部署时才知道。"""
+
+    url: str
+    expires_at: int
+    name: str
+
+
+class FileEntryOut(BaseModel):
+    """文件区里的一行（v0.26）。
+
+    ``key`` 是**在这个文件区里唯一指代它**的东西，界面拿它当不透明字符串用：
+    工作区模式是相对路径（``报告/初稿.docx``），临时区是产物 id。
+    """
+
+    key: str
+    name: str
+    is_dir: bool = False
+    size_bytes: int = 0
+    modified_at: datetime | None = None
+    kind: str = ""
+    """扩展名小写（``docx`` / ``md`` / ``png``…）或 ``dir``。**界面按它选渲染器**，
+    服务端算好——两处各算一遍迟早会分叉。"""
+
+
+class FileListingOut(BaseModel):
+    """一层目录（临时区是唯一的一层）。"""
+
+    mode: str
+    """``workspace``（能进子目录）/ ``object``（平铺的会话临时区）。"""
+    label: str
+    """给人看的那句话：「工作区「我的项目」」/「本会话」。"""
+    path: str = ""
+    parent: str | None = None
+    entries: list[FileEntryOut] = Field(default_factory=list)
+    truncated: bool = False
+    """条目被截断过。界面要如实说"只显示了前 N 项"——
+    否则"这个项目只有 300 个文件"与"我只给你看了 300 个"看起来一模一样。"""
+
+
+class IngestArtifactIn(BaseModel):
+    """把一份产物存进知识库。**库必须由调用方点明**——服务端不替他挑。"""
+
+    knowledge_base_id: str = Field(min_length=1, max_length=64)
+
+
 class StorageOverviewOut(BaseModel):
     """存储空间概览（v17，管理员）。
 
     ``data_bytes + free_bytes`` 就是数据库文件大小——拆成两个数是因为
-    "可回收"才是用户能动手改的那部分（删数据不会让文件变小，要 VACUUM）。
+    "可回收"才是用户能动手改的那部分：删掉的行留下**死元组**，
+    ``VACUUM (ANALYZE)`` 之后那部分空间才可被复用。
+    **文件本身不会因此变小**（那是 ``VACUUM FULL`` 的事，它要独占重写整库，本项目不做）。
     """
 
     model_config = _RECORD_CONFIG
@@ -1762,6 +1854,11 @@ class SkillOut(BaseModel):
 
     name: str
     description: str = ""
+    summary: str = ""
+    """**中文简介**（v0.28）。空 = 没有（随代码发布的、手放的技能都没有）。
+
+    它只是界面上的那一行说明：技能的 ``description`` 一个字都不改——
+    那是模型判断"何时该用"的触发文本（见 services/skill_blurb.py）。"""
     source: Literal["builtin", "user"] = "builtin"
     """``builtin`` = 随代码发布（仓库 ``skills/``）；``user`` = 数据目录里用户放的。"""
     path: str = ""
@@ -1813,6 +1910,113 @@ class SkillInstalledOut(BaseModel):
 
     items: dict[str, str] = Field(default_factory=dict)
     total: int = 0
+
+
+# --------------------------------------------------------------------- 技能源（v0.27）
+#
+# 与上面那组"市场"的区别：那组面向**一个源地址**（目录 / zip / catalog.json），
+# 这组面向**一个线上仓库**（浏览 → 看清单 → 按 SHA 装）。
+# 调研见《技能仓库与技能市场调研-v0.1》§4.6。
+
+
+class SkillSourceOut(BaseModel):
+    """一个可浏览的技能源（就是"一个 GitHub 仓库"）。"""
+
+    id: str
+    name: str
+    repo: str
+    """``owner/repo``。**与显示名分开**：名字会改，仓库地址不会。"""
+    ref: str = ""
+    """分支 / 标签。空 = 用仓库的默认分支。"""
+    subpath: str = ""
+    """只在这个子目录里找技能（空 = 全仓递归扫）。"""
+    builtin: bool = True
+    enabled: bool = True
+    why: str = ""
+    """为什么内置它（一句话）。空 = 用户自己加的源。"""
+
+
+class SkillSourceListOut(BaseModel):
+    items: list[SkillSourceOut] = Field(default_factory=list)
+
+
+class SkillSourceIn(BaseModel):
+    """添加一个自定义源。``repo`` 认 ``owner/repo`` 与 GitHub 的仓库 / 子目录 URL。"""
+
+    repo: str = Field(min_length=1, max_length=500)
+
+
+class SkillSourcePatchIn(BaseModel):
+    enabled: bool
+
+
+class MarketSkillOut(BaseModel):
+    """浏览结果里的一条（还没装）。"""
+
+    name: str
+    description: str = ""
+    summary: str = ""
+    """中文简介（v0.28）。空 = 没翻成，界面退回 ``description``。"""
+    path: str
+    """技能目录在仓库里的相对路径（安装时按它取文件）。"""
+    source_id: str = ""
+    repo: str = ""
+    installed: bool = False
+
+
+class SkillBrowseIn(BaseModel):
+    source_id: str = Field(min_length=1, max_length=120)
+    refresh: bool = False
+    """忽略缓存重新抓一次。**默认用缓存**：GitHub 匿名配额 60 次/小时。"""
+
+
+class SkillBrowseOut(BaseModel):
+    source: SkillSourceOut
+    items: list[MarketSkillOut] = Field(default_factory=list)
+    cached: bool = True
+    """这一份是不是缓存——界面上要说清楚"看到的是几小时前的清单"。"""
+
+
+class SkillFileOut(BaseModel):
+    """技能目录里的一个文件。``kind`` = doc / code / asset。"""
+
+    path: str
+    size: int = 0
+    kind: str = "doc"
+
+
+class SkillInspectIn(BaseModel):
+    source_id: str = Field(min_length=1, max_length=120)
+    path: str = Field(min_length=1, max_length=1000)
+
+
+class SkillBundleOut(BaseModel):
+    """**装之前**摊给用户看的那一份：文件清单 + 版本 + 体积。"""
+
+    source_id: str
+    repo: str
+    sha: str = ""
+    """40 位 commit SHA。安装按它取——分支会在两步之间变。"""
+    path: str
+    name: str
+    description: str = ""
+    ref: str = ""
+    license: str = ""
+    files: list[SkillFileOut] = Field(default_factory=list)
+    total_bytes: int = 0
+    summary: str = ""
+    """中文简介（v0.28）：装完会跟着记进安装清单，能力页上还能看到。"""
+    code_count: int = 0
+    """其中会被当作代码执行的文件数。装之前要显眼地提示。"""
+    truncated: bool = False
+    """仓库太大、GitHub 的文件树被截断：**清单可能不全**，界面要如实说。"""
+
+
+class SkillSourceInstallIn(BaseModel):
+    """从线上源安装：``source_id`` + 浏览结果里的 ``path``。"""
+
+    source_id: str = Field(min_length=1, max_length=120)
+    path: str = Field(min_length=1, max_length=1000)
 
 
 class SkillListOut(BaseModel):

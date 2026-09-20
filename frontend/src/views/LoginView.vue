@@ -197,7 +197,7 @@ async function submit(): Promise<void> {
 .login-hint {
   margin: var(--space-2) 0 0;
   font-size: var(--text-micro-size);
-  line-height: 1.6;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
 }
 
@@ -214,7 +214,7 @@ async function submit(): Promise<void> {
 .login-error {
   margin: 0;
   font-size: var(--text-micro-size);
-  line-height: 1.6;
+  line-height: var(--line-prose);
   color: var(--status-danger);
 }
 

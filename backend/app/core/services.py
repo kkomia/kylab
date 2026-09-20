@@ -23,6 +23,7 @@ from functools import lru_cache
 from app.core.config import Settings, get_settings
 from app.core.storage import build_stores
 from app.services.api_key import ApiKeyService
+from app.services.artifacts import ArtifactService
 from app.services.auth import AuthService
 from app.services.batch import DocumentBatchService
 from app.services.chat import ChatService
@@ -52,7 +53,9 @@ from app.services.retrieval import RetrievalService, build_reranker
 from app.services.retrieval.rerank import RerankProvider
 from app.services.runtime_config import RuntimeConfigService
 from app.services.share import ShareService
+from app.services.skill_blurb import SkillBlurbService
 from app.services.skill_market import SkillMarketService
+from app.services.skill_sources import SkillSourceService
 from app.services.skills import SkillService
 from app.services.sources import SourceService
 from app.services.stats import StatsService
@@ -119,6 +122,9 @@ class Services:
     """表格结构化副本：读写 CSV/Excel 的行列（M2 / T2.11）。"""
     conversations: ConversationService
     """对话留存：会话与消息的读写（§11.2）。"""
+    artifacts: ArtifactService
+    """会话产物（v0.26）：Agent 做出来的文件落在哪、什么时候进知识库。
+    与"文档"分开：产物先是文件，进知识库是它的一个可选去向。"""
     notes: NotesService
     """笔记：Markdown 事实源 + 加入知识库（v20）。"""
     note_ai: NoteAiService
@@ -139,8 +145,10 @@ class Services:
     workspaces: WorkspaceService
     skills: SkillService
     skill_market: SkillMarketService
+    skill_sources: SkillSourceService
+    """技能源（v0.27）：内置的 GitHub 仓库清单 + 自定义源，浏览/取文件。"""
     mcp: MCPClientService
-    """长期记忆的门面（§12.130）。默认关；关着时它的每个方法都明确报错。"""
+    """长期记忆的门面（设计见 `docs/记忆层设计-v0.1.md`）。默认关；关着时它的每个方法都明确报错。"""
     embedder: EmbeddingProvider
     reranker: RerankProvider
     worker: TaskWorker
@@ -257,9 +265,7 @@ class _RuntimeReranker(RerankProvider):
         return build_reranker(self._runtime).rerank(query, documents)
 
 
-def build_services(
-    settings: Settings | None = None, stores: StoreBundle | None = None
-) -> Services:
+def build_services(settings: Settings | None = None, stores: StoreBundle | None = None) -> Services:
     resolved = settings or get_settings()
     bundle = stores or build_stores(resolved)
 
@@ -278,11 +284,14 @@ def build_services(
     # 技能的门控要读运行期配置（`requires.config`，见 services/skills.py）：
     # 把"读一个配置键"的能力注进去，而不是把整个 runtime 塞给技能服务——
     # 技能层只需要这一个动作，多了就说不清它到底依赖什么。
-    skill_service = SkillService(
-        resolved.data_dir, config_value=runtime.get
-    )
+    skill_service = SkillService(resolved.data_dir, config_value=runtime.get)
     # 技能市场（v0.16）：安装/卸载。**只写 data/skills/**——仓库自带的那份动不了
     skill_market_service = SkillMarketService(resolved.data_dir, skill_service)
+    # 技能源（v0.27）：从 GitHub 仓库浏览技能。**出站只在这一层**——
+    # 前端永远不直接打 GitHub（匿名配额 60 次/小时，一分钟就能打爆，见该模块说明）
+    skill_source_service = SkillSourceService(
+        resolved.data_dir, token=resolved.github_token or ""
+    )
     # MCP 客户端（v0.15）：连外部 MCP 服务，是「插件能力」的落点
     mcp_service = MCPClientService(bundle)
     # 用量服务要**先建**：下面的 embedder 回调闭包引用了它
@@ -334,6 +343,10 @@ def build_services(
         # 正文由 `use_skill` 按需展开——见 services/skills.py 的模块头
         skills=skill_service,
     )
+    # 技能源的中文化（v0.28）：浏览器里那一屏是给中文用户看的，而技能描述基本都是英文。
+    # 在这里接上而不是在源服务里 new：源服务只认识一个"翻译函数"，
+    # 不该认识 ChatService（测试里注入一个 lambda 就够）。
+    skill_source_service.use_translator(SkillBlurbService(chat_service))
     questions_service = SuggestedQuestionsService(
         bundle, chat_service, batch_concurrency=resolved.questions_concurrency
     )
@@ -347,7 +360,6 @@ def build_services(
     # Wiki 生成（v24）：规划主题 + 逐页写作，资料直接复用上面的混合检索
     wiki_service = WikiService(bundle, chat=chat_service, retrieval=retrieval)
     kb_prompt_service = KBPromptService(bundle, chat_service)
-
 
     ingest = IngestService(
         bundle,
@@ -366,6 +378,9 @@ def build_services(
     # 与任务中心那一列必须是同一个结论，所以两处共用这一个实例
     observability = ObservabilityService(bundle, worker_lease_seconds=resolved.worker_lease_seconds)
     documents_service = DocumentService(bundle, observability=observability)
+    # 产物服务（v0.26）在建在这里：它要用摄入链路（复制一份进知识库）与文档服务
+    # （入库后排队解析），而这两样都在上面就绪了。
+    artifacts_service = ArtifactService(bundle, ingest=ingest, documents=documents_service)
     # 数据源要往摄入队列里塞任务，所以依赖 DocumentService（入队）与
     # IngestService（登记）两者——它们分工不同，见 services/sources.py
     sources_service = SourceService(bundle, ingest, documents_service)
@@ -445,6 +460,7 @@ def build_services(
         sources=sources_service,
         observability=observability,
         conversations=conversations_service,
+        artifacts=artifacts_service,
         notes=NotesService(bundle, ingest=ingest, documents=documents_service),
         note_ai=NoteAiService(chat_service),
         suggested_questions=questions_service,
@@ -469,6 +485,7 @@ def build_services(
         workspaces=workspace_service,
         skills=skill_service,
         skill_market=skill_market_service,
+        skill_sources=skill_source_service,
         mcp=mcp_service,
     )
 

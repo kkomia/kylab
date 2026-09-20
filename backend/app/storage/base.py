@@ -18,7 +18,36 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # **只在类型检查时导入**：窄协议模块反过来要在运行时导入本模块的记录类型，
+    # 真导入就成环。注解有 `from __future__ import annotations` 兜底，运行时不需要它。
+    from app.storage.repositories import (
+        ApiKeyRepo,
+        ChunkRepo,
+        ConversationRepo,
+        DataSourceRepo,
+        DocumentRepo,
+        FolderRepo,
+        IdempotencyRepo,
+        IdentityRepo,
+        ImageRepo,
+        KnowledgeBaseRepo,
+        MaintenanceRepo,
+        MCPServerRepo,
+        ModelRegistryRepo,
+        NoteRepo,
+        ParseResultRepo,
+        SettingsRepo,
+        ShareRepo,
+        TaskQueueRepo,
+        TrashRepo,
+        UsageRepo,
+        WebhookRepo,
+        WikiRepo,
+        WorkspaceRepo,
+    )
 
 from app.models.enums import (
     ApiKeyPermission,
@@ -32,8 +61,11 @@ from app.models.enums import (
 )
 
 __all__ = [
+    "ARTIFACT_IN_OBJECTS",
+    "ARTIFACT_IN_WORKSPACE",
     "ApiKeyRecord",
     "ChunkRecord",
+    "ConversationArtifactRecord",
     "DataSourceRecord",
     "DocumentPartRecord",
     "DocumentRecord",
@@ -72,6 +104,128 @@ class StoreBundle:
     tabular: TabularStore
     """表格结构化副本（DuckDB）。只有 CSV/Excel 会用，其余文档不碰它。"""
 
+    # ---- 按域切开的窄视图（v0.2，见 storage/repositories.py）----
+    #
+    # 它们**返回的是同一个 ``meta`` 实例**，只是按域收窄了类型：新代码依赖窄接口，
+    # "这个模块需要什么"在签名里读得出来；老代码走 `meta.*` 零改动。
+    # 这是拆 MetaStore 的第一步，不是行为变更——23 个域与 183 个方法的归属
+    # 见 repositories.py，`tests/unit/storage/test_repositories.py` 机械核对。
+
+    @property
+    def knowledge_bases(self) -> KnowledgeBaseRepo:
+        """知识库域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def documents(self) -> DocumentRepo:
+        """文档域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def folders(self) -> FolderRepo:
+        """目录域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def notes(self) -> NoteRepo:
+        """笔记域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def chunks(self) -> ChunkRepo:
+        """切块域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def images(self) -> ImageRepo:
+        """图片域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def parse_results(self) -> ParseResultRepo:
+        """解析产物域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def tasks(self) -> TaskQueueRepo:
+        """任务队列域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def data_sources(self) -> DataSourceRepo:
+        """数据源域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def api_keys(self) -> ApiKeyRepo:
+        """API Key 域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def webhooks(self) -> WebhookRepo:
+        """Webhook 域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def idempotency(self) -> IdempotencyRepo:
+        """幂等键域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def conversations(self) -> ConversationRepo:
+        """对话留存域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def workspaces(self) -> WorkspaceRepo:
+        """工作区域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def identity(self) -> IdentityRepo:
+        """身份域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def shares(self) -> ShareRepo:
+        """分享域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def usage(self) -> UsageRepo:
+        """用量域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def models(self) -> ModelRegistryRepo:
+        """模型注册域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def mcp_servers(self) -> MCPServerRepo:
+        """外部 MCP 服务域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def trash(self) -> TrashRepo:
+        """回收站视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def app_settings(self) -> SettingsRepo:
+        """设置（键值）域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def wiki(self) -> WikiRepo:
+        """Wiki 域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def maintenance(self) -> MaintenanceRepo:
+        """存储维护视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
 
 class StorageError(Exception):
     """存储层错误基类：让 services 不必 import 具体实现就能捕获。"""
@@ -101,9 +255,7 @@ TRASH = ".trash"
 常量，迟早会漂成 ``.trash`` 与 ``trash``。
 """
 
-SAFE_KEY_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
-)
+SAFE_KEY_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
 """存储 Key 与回收站 ID 允许的字符：它们会拼进文件路径，必须白名单化。"""
 
 
@@ -610,6 +762,66 @@ class ChatMessageRecord:
     role: str
     content: str
     sources: Sequence[dict[str, object]] = field(default_factory=tuple)
+    steps: Sequence[dict[str, object]] = field(default_factory=tuple)
+    """当轮的过程步骤（工具调用、组织回答…，v0.25）。
+
+    与 ``sources`` 一样是**快照**：回看一条旧回答时，当时调了哪些工具、
+    每一步拿到什么，都该是当时的样子。此前这两样只活在流式那几秒里，
+    离开页面就没了——而"这句答案是怎么来的"正是回来要找的东西。
+    """
+
+    thinking: str = ""
+    """当轮的思考过程全文（推理模型的 ``reasoning_content``，v0.25）。空串 = 没有思考。"""
+
+    created_at: datetime | None = None
+
+
+ARTIFACT_IN_WORKSPACE = "workspace"
+"""产物落在一份**真实目录**里（会话挂在某个工作区上）。用户打开自己的项目就看得见。"""
+
+ARTIFACT_IN_OBJECTS = "object"
+"""产物落在对象存储里、按会话分前缀（没挂工作区的会话）。
+
+**这是"临时"那一档**：它只许诺"这条会话里有效"，会话删了就连带清掉
+（见 ``ArtifactService.discard_for_conversation``）。
+"""
+
+
+@dataclass(slots=True)
+class ConversationArtifactRecord:
+    """会话产物（v0.26）：Agent 做出来的一份**文件**。
+
+    在这张表出现之前，导出类工具是"直接当一次入库提交"的——于是文件只有一个身份
+    （某个知识库里的一份文档），而"这条会话产出了什么"要靠翻文档列表猜。
+    实际后果用户撞上过：一个没挂工作区的会话要导出 docx，模型只好**挑一个语义最顺手的
+    知识库塞进去**（它塞进了「笔记」），因为那是当时唯一能写的地方。
+
+    两件事由此分开，这张表是分开的证据：
+
+    - ``storage``/``location`` 回答**它现在在哪**（工作区目录 / 对象存储的会话前缀）；
+    - ``document_id`` 回答**它有没有进知识库**，进的是哪个库。``None`` = 没进，
+      这是默认值——入库是一个**显式动作**（用户点了「存进知识库」，或他明确要求）。
+    """
+
+    id: str
+    conversation_id: str
+    name: str
+    """显示名（带扩展名）。用户看到的那个名字。"""
+    format: str
+    """扩展名小写（``docx`` / ``pdf`` / ``xlsx`` / ``pptx``），界面据此选图标。"""
+    size_bytes: int = 0
+    storage: str = ARTIFACT_IN_OBJECTS
+    location: str = ""
+    """真实落点：工作区那份是绝对路径，对象存储那份是 Key。**由服务层解释**——
+    存储层不知道工作区是什么，它只存字符串。"""
+    workspace_id: str | None = None
+    """挂在哪个工作区上（``None`` = 没挂，落在对象存储）。"""
+    owner_id: str | None = None
+    """归属账号，与知识库/会话同一套口径：``None`` = 管理员或 API Key 通道。"""
+    knowledge_base_id: str | None = None
+    """进了哪个知识库（``None`` = 还没入）。"""
+    document_id: str | None = None
+    """入库之后那份文档的 id（``None`` = 还没入）。界面据此给"去看这份文档"的入口。"""
     created_at: datetime | None = None
 
 
@@ -760,6 +972,42 @@ class VectorMatch:
     distance: float
 
 
+@dataclass(slots=True)
+class DocumentStatRow:
+    """统计用的一行文档**投影**（外加它的切块数）。
+
+    字段刻意是**裸字符串**而不是枚举：这一层的存在意义就是便宜——
+    上万行时把每个枚举值再转一遍是白花的 CPU，而聚合方（驾驶舱）只需要比较字符串。
+
+    `chunks` 由同一条 `LEFT JOIN ... GROUP BY` 带出来：
+    原先"先按库取全量文档、再拿全部 id 换一次巨型 IN"要两次往返。
+    """
+
+    id: str
+    knowledge_base_id: str
+    name: str
+    stage: str
+    source_kind: str
+    size_bytes: int
+    created_at: datetime | None
+    updated_at: datetime | None
+    chunks: int = 0
+
+
+@dataclass(slots=True)
+class TaskStatRow:
+    """统计用的一行任务**投影**。
+
+    任务表带 `payload`（jsonb）与 `error`（文本），`SELECT *` 读全表在任务多的时候
+    又慢又占内存——而统计只要状态、归属文档与两个时间戳。
+    """
+
+    state: str
+    document_id: str | None
+    created_at: datetime | None
+    updated_at: datetime | None
+
+
 # --------------------------------------------------------------------------- 接口
 
 
@@ -787,6 +1035,30 @@ class MetaStore(ABC):
         **为什么必须是一个批量方法**：知识库列表与侧栏都要显示"每个库多少篇"，
         逐个库调 ``list_documents`` 就是 N 次查询（而且是取全量文档再在 Python 里数）。
         这里下推到 SQL，只回一行一个库的聚合结果。
+        """
+
+    @abstractmethod
+    def list_document_stats(self, kb_ids: Sequence[str] | None = None) -> list[DocumentStatRow]:
+        """统计投影：每个文档一行（**带它的切块数**），一条查询拿全。
+
+        **为什么单独开一个方法**：驾驶舱原先按库逐个调 ``list_documents()``
+        （K 次查询，且 `SELECT *` 会把每篇的摘要一起搬回来），再拿全量 id 去
+        ``count_chunks_by_documents()`` 换一次巨型 `IN`。这里一条
+        ``LEFT JOIN … GROUP BY`` 同时给出聚合要的那几列与切块数，
+        大字段（`summary`、`content_hash`）一个都不取。
+
+        ``kb_ids`` 为 ``None`` 表示全部库；空序列表示"没有可见的库"（回空表，
+        而不是回全部——调用方是成员视角时那两者差别就是越权）。
+        顺序与 ``list_documents`` 一致（``created_at DESC, id DESC``），
+        这样按插入序遍历聚合出来的结果与改动前逐字一致。
+        """
+
+    @abstractmethod
+    def list_task_stats(self, document_ids: Sequence[str] | None = None) -> list[TaskStatRow]:
+        """统计投影：每个任务一行（状态 + 归属文档 + 两个时间戳）。
+
+        ``document_ids`` 为 ``None`` 表示不筛；空序列表示"没有可见的文档"→ 回空表
+        （成员视角的驾驶舱不能统计别人的任务，见 ``services/stats.py`` 的说明）。
         """
 
     @abstractmethod
@@ -1166,6 +1438,19 @@ class MetaStore(ABC):
         """
 
     @abstractmethod
+    def list_chunks_by_heading(self, document_id: str, heading_path: str) -> list[ChunkRecord]:
+        """某文档里**属于同一小节**（``heading_path`` 相同）的切块，按 ``ordinal`` 升序。
+
+        **为什么需要它**：回答里的"小块检索、大块阅读"要把命中的那一块补成整段小节。
+        原先的做法是把**整篇文档**的切块读进内存，再在 Python 里按小节名筛——
+        一篇上千块时，为了一段小节补全读了一千行。
+        小节名本身就是现成的过滤条件，下推到 SQL 之后只回这一节。
+
+        ``heading_path`` 为空（整篇没有标题的纯文本）时语义上没有"小节"，
+        调用方应当先判断（见 ``services/chat.py::_SectionReader``）。
+        """
+
+    @abstractmethod
     def get_chunks(self, chunk_ids: Sequence[str]) -> list[ChunkRecord]:
         """按 ID 批量取回 chunk。
 
@@ -1484,9 +1769,7 @@ class MetaStore(ABC):
         ...
 
     @abstractmethod
-    def set_conversation_workspace(
-        self, conversation_id: str, workspace_id: str | None
-    ) -> None:
+    def set_conversation_workspace(self, conversation_id: str, workspace_id: str | None) -> None:
         """把会话挂到某个工作区，或（``None``）退回未归档。
 
         **不推 ``updated_at``**：归类是一次整理动作，和改名/置顶同理——推了的话
@@ -1588,7 +1871,11 @@ class MetaStore(ABC):
 
     @abstractmethod
     def delete_conversation(self, conversation_id: str) -> None:
-        """删除会话**及其全部消息**（外键级联）。"""
+        """删除会话**及其全部消息**（外键级联），以及它的产物记录。
+
+        **只删记录，不删文件**：落在工作区里的产物是用户项目里的真实文件。
+        对象存储里那些临时产物由服务层在调用本方法之前清掉。
+        """
         ...
 
     @abstractmethod
@@ -1597,6 +1884,25 @@ class MetaStore(ABC):
     @abstractmethod
     def list_messages(self, conversation_id: str) -> list[ChatMessageRecord]:
         """按写入顺序返回——顺序就是对话顺序，所以按 created_at 排序。"""
+        ...
+
+    # ---- 会话产物（v0.26）----
+    @abstractmethod
+    def create_artifact(self, record: ConversationArtifactRecord) -> ConversationArtifactRecord: ...
+
+    @abstractmethod
+    def get_artifact(self, artifact_id: str) -> ConversationArtifactRecord | None: ...
+
+    @abstractmethod
+    def list_artifacts(self, conversation_id: str) -> list[ConversationArtifactRecord]:
+        """按产出顺序返回。"""
+        ...
+
+    @abstractmethod
+    def mark_artifact_ingested(
+        self, artifact_id: str, *, knowledge_base_id: str, document_id: str
+    ) -> None:
+        """记下这份产物进了哪个库、成了哪份文档。"""
         ...
 
     # ---- 使用者名册（调研报告 G6）----
@@ -1758,6 +2064,21 @@ class MetaStore(ABC):
     @abstractmethod
     def delete_registered_model(self, model_pk: str) -> None: ...
 
+    @abstractmethod
+    def resolve_model_binding(
+        self, key: str
+    ) -> tuple[ModelProviderRecord, RegisteredModelRecord] | None:
+        """按"绑定键"一次取到（供应商, 模型）；键不存在或指向已删除的行时返回 ``None``。
+
+        **为什么值得单开一个方法**：这是热路径——每建一次 LLM 客户端都要解一遍绑定，
+        而一轮对话里每个工具步都要建一次。分三次查（绑定 → 模型 → 供应商）实测约 20ms，
+        合成一条 JOIN 之后是它的三分之一，而且**不引入缓存**（没有"改完读到旧值"的窗口）。
+
+        ``key`` 由调用方给（形如 ``model.binding.chat``）：仓储只认"这个键的值指向哪一行"，
+        不解释键的语义。
+        """
+        ...
+
     # ---- 回收站 ----
     @abstractmethod
     def add_to_trash(self, record: TrashRecord) -> None: ...
@@ -1800,7 +2121,6 @@ class MetaStore(ABC):
         的同一套优先级补齐。
         """
 
-
     @abstractmethod
     def set_setting(self, key: str, value: str) -> None: ...
 
@@ -1824,9 +2144,7 @@ class VectorStore(ABC):
         """为知识库建向量分区；已存在且维度不一致时必须报错而不是静默写入。"""
 
     @abstractmethod
-    def upsert_vectors(
-        self, kb_id: str, *, items: Sequence[tuple[str, Sequence[float]]]
-    ) -> None:
+    def upsert_vectors(self, kb_id: str, *, items: Sequence[tuple[str, Sequence[float]]]) -> None:
         """写入/覆盖向量，``chunk_id`` 为主键。"""
 
     @abstractmethod
@@ -1917,9 +2235,7 @@ class TabularStore(ABC):
     def row_count(self, table: str) -> int: ...
 
     @abstractmethod
-    def read_rows(
-        self, table: str, *, limit: int = 50, offset: int = 0
-    ) -> list[list[str]]:
+    def read_rows(self, table: str, *, limit: int = 50, offset: int = 0) -> list[list[str]]:
         """按行列读一段，**按写入顺序返回**。
 
         DuckDB 不保证无 ``ORDER BY`` 时的行序，而"第 3 行"是用户能对照原文的说法，

@@ -244,6 +244,8 @@ class ConversationService:
         role: str,
         content: str,
         sources: list[dict[str, object]] | None = None,
+        steps: list[dict[str, object]] | None = None,
+        thinking: str = "",
     ) -> ChatMessageRecord:
         """追加一条消息，并把会话的 ``updated_at`` 推到现在。
 
@@ -258,6 +260,8 @@ class ConversationService:
                 role=role,
                 content=content,
                 sources=tuple(sources or ()),
+                steps=tuple(steps or ()),
+                thinking=thinking,
             )
         )
         self._stores.meta.touch_conversation(conversation_id)

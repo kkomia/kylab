@@ -25,6 +25,7 @@ whitelist 机制。这里做三件必须做的事，其余的（签名、评分�
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import logging
@@ -32,10 +33,14 @@ import shutil
 import urllib.error
 import urllib.request
 import zipfile
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError, UpstreamError
+from app.services.memory_files import parse_frontmatter
 from app.services.skills import SKILL_FILE, SkillService, _scan, normalize_name
 
 __all__ = ["CatalogEntry", "SkillMarketService"]
@@ -59,8 +64,55 @@ MAX_UNPACKED_BYTES = 32 * 1024 * 1024
 #: 条目数上限（同上，防"十万个空文件"这类）。
 MAX_ENTRIES = 500
 
-#: 单个技能目录里允许的文件名。**白名单**：技能是文本，不该带可执行文件进来。
-_ALLOWED_SUFFIXES = (".md", ".txt", ".json", ".yaml", ".yml", ".csv")
+#: 单个技能目录里允许的文件名。**白名单**，分三类，只有分类是给界面看的：
+#: 落盘时三类都收，拒绝的是列表之外的东西（``.exe``、``.dll``、``.so``……）。
+#:
+#: **v0.27 起允许代码文件**（在此之前只收文本）。改的原因是真实的技能包里
+#: ``scripts/`` 是常态：Anthropic 官方的 docx/pdf 技能就带着 Python 脚本，
+#: 而"只收 Markdown"的规则等于把最有用的一批技能挡在门外（调研 §1）。
+#: 换来的是三条更实在的防护：**装之前必须把文件清单摊给用户看**（含哪些是可执行代码）、
+#: 落盘前扫描（命中注入特征当场拒绝）、**绝不自动执行**——脚本会不会被跑，
+#: 由沙箱与工具策略决定，与"它在技能目录里"无关。
+TEXT_SUFFIXES = frozenset(
+    {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".toml", ".ini", ".xml", ".html", ".css"}
+)
+CODE_SUFFIXES = frozenset(
+    {
+        ".py",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".ps1",
+        ".js",
+        ".mjs",
+        ".cjs",
+        ".ts",
+        ".rb",
+        ".go",
+        ".rs",
+        ".java",
+        ".sql",
+    }
+)
+ASSET_SUFFIXES = frozenset(
+    {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".otf"}
+)
+ALLOWED_SUFFIXES = TEXT_SUFFIXES | CODE_SUFFIXES | ASSET_SUFFIXES
+
+#: 旧名字（这个模块里几处用它）。保留是因为"允许的后缀"这个说法在别处更自然。
+_ALLOWED_SUFFIXES = ALLOWED_SUFFIXES
+
+
+def kind_of(path: str) -> str:
+    """文件 → ``doc`` / ``code`` / ``asset``。**不认识的按 code 处理**：
+    装之前那一屏里，"这东西可能会被执行"多提醒一次，比少提醒一次便宜。
+    """
+    suffix = Path(path).suffix.casefold()
+    if suffix in TEXT_SUFFIXES:
+        return "doc"
+    if suffix in ASSET_SUFFIXES:
+        return "asset"
+    return "code"
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,14 +186,81 @@ class SkillMarketService:
         return out
 
     def installed(self) -> dict[str, str]:
-        """已装清单：``技能名 → 来源``。"""
-        try:
-            data = json.loads(self.installed_index.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+        """已装清单：``技能名 → 来源``。
+
+        兼容两代格式：v0.27 起每条是一个**记录**（来源、仓库、commit SHA、逐文件 hash），
+        而在此之前只是一行来源字符串。旧记录照样读得出来——它唯一的作用是
+        "知道这玩意儿哪来的"，为此让用户的既有安装失效不值得。
+        """
+        return {name: str(record.get("origin") or "") for name, record in self._records().items()}
+
+    def installed_records(self) -> dict[str, dict[str, Any]]:
+        """已装清单（详细版）：界面上要显示"来自哪个仓库的哪个版本"。"""
+        return self._records()
 
     # ------------------------------------------------------------------ 安装
+
+    def install_files(
+        self,
+        name: str,
+        files: Mapping[str, bytes],
+        *,
+        origin: str,
+        lock: Mapping[str, Any] | None = None,
+    ) -> str:
+        """装一份**已经取到手的文件集**（GitHub 源走这条路），返回落到的目录。
+
+        与 ``install`` 的分工：那个负责"从源里找出来"，这个负责"写下去"。
+        两份写入路径共用同一套防护（白名单、大小、扫描、失败清干净），
+        只是取文件的动作在外面做完了——**这样"浏览 → 看清单 → 下载 → 落盘"
+        四步里，中间那两步（用户确认）才有地方插进来**。
+
+        ``lock`` 是记进清单的版本信息（仓库、SHA、来源页面），装完之后
+        "这份技能是从哪个 commit 来的"永远答得出来。
+        """
+        clean = (name or "").strip()
+        if not clean:
+            raise InvalidRequestError("缺少参数：name")
+        target = self.install_root / _safe_dirname(clean)
+        if target.exists():
+            raise ConflictError(f"已经装过「{clean}」了。要更新请先卸载，或换个名字装成两份。")
+        if SKILL_FILE not in files:
+            raise InvalidRequestError(f"这不是一个技能：里面没有 {SKILL_FILE}")
+
+        try:
+            total = 0
+            for relative, blob in files.items():
+                safe = _safe_relative(relative)
+                if safe is None:
+                    raise InvalidRequestError(f"文件路径越界，已拒绝：{relative}")
+                if Path(safe).suffix.lower() not in ALLOWED_SUFFIXES:
+                    raise InvalidRequestError(
+                        f"技能里不收这类文件（{safe}）：可以是文本、脚本与资源，但不带二进制"
+                    )
+                total += len(blob)
+                if total > MAX_UNPACKED_BYTES:
+                    raise InvalidRequestError(f"技能内容超过 {MAX_UNPACKED_BYTES} 字节")
+                destination = target / safe
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(blob)
+
+            # 与另外两条安装路径同一个口径：装之前扫一遍，命中当场拒绝。
+            flags = _scan(self._read_skill_text(target))
+            if flags:
+                raise InvalidRequestError(
+                    f"「{clean}」没有通过安全检查，已拒绝安装：{'；'.join(flags)}"
+                )
+        except Exception:
+            shutil.rmtree(target, ignore_errors=True)
+            raise
+
+        self._remember(
+            clean,
+            origin,
+            extra={**(dict(lock or {})), "files": _digests(target)},
+        )
+        logger.info("技能已安装：%s ← %s", clean, origin)
+        return str(target)
 
     def install(self, name: str, *, source: str, catalog: str = "") -> str:
         """装一个技能，返回它落到的目录（绝对路径）。
@@ -149,52 +268,72 @@ class SkillMarketService:
         ``source`` 三形态都认，**按顺序判断**：先看是不是 URL，再看是不是 zip，
         最后当目录处理。判断顺序不能反：Windows 上 ``C:/x.zip`` 既像盘符路径
         又像 URL，先判 URL 会把它当 http 去请求。
+
+        读出来的东西一律交给 ``install_files`` 落盘——**写入只有一处实现**
+        （白名单、扫描、失败清干净），三条安装路径（目录 / zip / 上传）共用它。
         """
         clean = (name or "").strip()
         if not clean:
             raise InvalidRequestError("缺少参数：name")
-        target = self.install_root / _safe_dirname(clean)
-        if target.exists():
-            raise ConflictError(
-                f"已经装过「{clean}」了。要更新请先卸载，或换个名字装成两份。"
-            )
-
         payload, origin = self._resolve_source(name, source=source, catalog=catalog)
         if payload is None:
             raise NotFoundError(f"源里没有这个技能：{clean}（来自 {origin}）")
         raw_name, blob = payload
-
         # **按类型分派**，不能按"有没有 is_dir"猜：zip 形态的载荷是 ``bytes``，
         # 而 bytes 没有 is_dir（写这段时就是这么炸的）。目录走拷贝、字节走解压。
-        #
-        # **任何一步失败都要把已经落地的目录清掉**：半成品比"没装"更糟——
-        # 界面上它已经被扫进技能列表了，而缺了 references/ 的它是残的。
-        # 统一在一处兜住，而不是每个失败分支各写一遍 rmtree（那样迟早漏一个）。
-        try:
-            if isinstance(blob, Path):
-                self._copy_dir(blob, target)
-            else:
-                self._extract_zip(blob, target)
+        files = self._read_dir(blob) if isinstance(blob, Path) else self._read_zip(blob)
+        return self.install_files(clean, files, origin=f"{origin}#{raw_name}")
 
-            # **安装前扫描**（与扫描磁盘上已有技能共用同一套规则）：
-            # 命中就当场拒——安装是主动引入，所以处置是拒绝而不是标注。
-            flags = _scan(self._read_skill_text(target))
-            if flags:
-                raise InvalidRequestError(
-                    f"「{raw_name}」没有通过安全检查，已拒绝安装：{'；'.join(flags)}"
-                )
-        except Exception:
-            shutil.rmtree(target, ignore_errors=True)
-            raise
+    def install_archive(self, blob: bytes, *, origin: str) -> str:
+        """从**上传上来的一个 zip** 装技能（v0.28），返回落到的目录。
 
-        self._remember(clean, f"{origin}#{raw_name}")
-        logger.info("技能已安装：%s ← %s", clean, origin)
-        return str(target)
+        与 ``install_uploads`` 同一套：解出来的文件集交给 ``install_files``，
+        名字同样先看 ``SKILL.md`` 的 ``name``、再看 zip 里那一层顶层目录。
+        **返回技能名**（不是目录）。
+        """
+        files = _strip_common_root(self._read_zip(blob))
+        if not files:
+            raise InvalidRequestError("压缩包里没有可用的文件")
+        name = _skill_name(files) or _common_root(list(files))
+        if not name:
+            raise InvalidRequestError(
+                "认不出这个技能叫什么：请在压缩包里放一个带 name 的 SKILL.md，"
+                "或者让所有文件都在同一个顶层目录下（例如 my-skill/…）"
+            )
+        self.install_files(name, files, origin=origin)
+        # 返回**技能名**（与 install() 返回目录不同）：调用方接下来多半要去
+        # 技能注册表里把它读回来给界面，名字才是它要的东西
+        return name
+
+    def install_uploads(self, uploads: Sequence[tuple[str, bytes]], *, origin: str) -> str:
+        """从**界面上传上来的一批文件**装一个技能（v0.28），**返回技能名**。
+
+        ``uploads`` 是 ``[(相对路径, 内容)]``：选文件夹时浏览器给的就是这个形状
+        （每个文件带自己的 ``webkitRelativePath``），压缩包由调用方先解开。
+
+        技能名取 ``SKILL.md`` frontmatter 里的 ``name``（规范里它就等于目录名），
+        取不到再退到"这批文件的顶层目录名"。两者都没有就报错——
+        与其装成一个叫 ``skill`` 的东西，不如让用户把目录结构弄对。
+        """
+        files = _strip_common_root(
+            {_safe_relative(path) or "": blob for path, blob in uploads}
+        )
+        if not files:
+            raise InvalidRequestError("没有收到可用的文件")
+        name = _skill_name(files) or _common_root(list(files))
+        if not name:
+            raise InvalidRequestError(
+                "认不出这个技能叫什么：请在压缩包/文件夹里放一个带 name 的 SKILL.md，"
+                "或者让所有文件都在同一个顶层目录下（例如 my-skill/…）"
+            )
+        self.install_files(name, files, origin=origin)
+        # 返回名字（与 install() 返回目录不同，见 install_archive 的说明）
+        return name
 
     def uninstall(self, name: str) -> None:
         """卸载。**只能卸市场装的**（仓库自带的不在清单里，所以删不掉）。"""
         clean = (name or "").strip()
-        index = self.installed()
+        index = self._records()
         if clean not in index:
             raise NotFoundError(
                 f"「{clean}」不是从市场装的，不能在这里卸载。"
@@ -277,29 +416,29 @@ class SkillMarketService:
             raise InvalidRequestError(f"源超过 {MAX_DOWNLOAD_BYTES} 字节，已中止")
         return blob
 
-    def _copy_dir(self, source: Path, target: Path) -> None:
-        """拷一个本地技能目录。同样只允许白名单后缀——本地源也不该塞可执行文件。"""
-        target.mkdir(parents=True, exist_ok=True)
+    def _read_dir(self, source: Path) -> dict[str, bytes]:
+        """读一个本地技能目录（相对路径 → 内容）。只收白名单后缀：
+        本地源也不该塞二进制进来（``.exe`` / ``.dll`` 会被跳过并记一条日志）。"""
+        out: dict[str, bytes] = {}
         total = 0
-        for item in source.rglob("*"):
+        for item in sorted(source.rglob("*")):
             if item.is_dir() or item.is_symlink():
-                # **符号链接不拷**：它能把技能目录链到仓库外，而那正是
+                # **符号链接不读**：它能把技能目录链到仓库外，而那正是
                 # 我们要防的那类"看起来在目录里、其实在别处"
                 if item.is_symlink():
                     logger.warning("跳过符号链接：%s", item)
                 continue
-            if item.suffix.lower() not in _ALLOWED_SUFFIXES:
-                logger.warning("技能里只允许文本文件，跳过：%s", item)
+            if item.suffix.lower() not in ALLOWED_SUFFIXES:
+                logger.warning("技能里不收这类文件，跳过：%s", item)
                 continue
             total += item.stat().st_size
             if total > MAX_UNPACKED_BYTES:
                 raise InvalidRequestError(f"技能内容超过 {MAX_UNPACKED_BYTES} 字节")
-            destination = target / item.relative_to(source)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(item.read_bytes())
+            out[item.relative_to(source).as_posix()] = item.read_bytes()
+        return out
 
-    def _extract_zip(self, blob: bytes, target: Path) -> None:
-        """解压 zip。**三道防护**：路径穿越、符号链接、大小与条目数。"""
+    def _read_zip(self, blob: bytes) -> dict[str, bytes]:
+        """解开一个 zip（相对路径 → 内容）。**三道防护**：路径穿越、符号链接、大小与条目数。"""
         try:
             archive = zipfile.ZipFile(io.BytesIO(blob))
         except zipfile.BadZipFile as exc:
@@ -309,7 +448,7 @@ class SkillMarketService:
         if len(entries) > MAX_ENTRIES:
             raise InvalidRequestError(f"zip 里条目太多（{len(entries)}，上限 {MAX_ENTRIES}）")
 
-        target.mkdir(parents=True, exist_ok=True)
+        out: dict[str, bytes] = {}
         total = 0
         for info in entries:
             relative = _safe_relative(info.filename)
@@ -321,44 +460,127 @@ class SkillMarketService:
                 continue
             if _is_symlink(info):
                 raise InvalidRequestError(f"zip 里有符号链接，已拒绝：{info.filename}")
-            if Path(relative).suffix.lower() not in _ALLOWED_SUFFIXES:
+            if Path(relative).suffix.lower() not in ALLOWED_SUFFIXES:
                 raise InvalidRequestError(
-                    f"zip 里有非文本文件（{info.filename}）：技能只该带 Markdown 与数据"
+                    f"zip 里有不收的文件类型（{info.filename}）："
+                    "技能可以是文本、脚本与资源，但不该带二进制（见模块头）"
                 )
             total += info.file_size
             if total > MAX_UNPACKED_BYTES:
                 raise InvalidRequestError(
                     f"解压后超过 {MAX_UNPACKED_BYTES} 字节（zip 炸弹？），已中止"
                 )
-            destination = target / relative
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            destination.write_bytes(archive.read(info))
+            out[relative] = archive.read(info)
+        return out
 
     def _read_skill_text(self, target: Path) -> str:
-        """把技能目录里的文本拼起来做扫描。
+        """把技能目录里的**文本**拼起来做扫描（二进制跳过：读了也只是乱码）。
 
         **不止扫 SKILL.md**：references/ 里的内容同样会进模型上下文
-        （模型按需读它们），所以注入特征藏在那一层同样危险。
+        （模型按需读它们），``scripts/`` 里的代码同样会被模型读进去当例子，
+        所以注入特征藏在那一层同样危险。
         """
         parts: list[str] = []
         for item in sorted(target.rglob("*")):
-            if item.is_file() and item.suffix.lower() in _ALLOWED_SUFFIXES:
-                try:
-                    parts.append(item.read_text(encoding="utf-8", errors="replace"))
-                except OSError:
-                    continue
+            if not item.is_file():
+                continue
+            if item.suffix.lower() not in TEXT_SUFFIXES | CODE_SUFFIXES:
+                continue
+            try:
+                parts.append(item.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                continue
         return "\n".join(parts)
 
-    def _remember(self, name: str, origin: str) -> None:
-        index = self.installed()
-        index[name] = origin
+    def _records(self) -> dict[str, dict[str, Any]]:
+        """已装清单（内部形状）：``技能名 → {origin, repo, sha, …, files}``。
+
+        两代格式都读：v1 是 ``{"技能名": "来源字符串"}``，v2 是
+        ``{"技能名": {"origin": …, "repo": …}}``。读的时候统一成 v2，
+        写的时候一律写 v2（见 ``_write_index``）。
+        """
+        try:
+            data = json.loads(self.installed_index.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for name, record in data.items():
+            if isinstance(record, dict):
+                out[str(name)] = dict(record)
+            else:
+                out[str(name)] = {"origin": str(record)}
+        return out
+
+    def _remember(self, name: str, origin: str, *, extra: dict[str, Any] | None = None) -> None:
+        index = self._records()
+        index[name] = {"origin": origin, "installed_at": _now(), **(extra or {})}
         self._write_index(index)
 
-    def _write_index(self, index: dict[str, str]) -> None:
+    def _write_index(self, index: dict[str, Any]) -> None:
         self.install_root.mkdir(parents=True, exist_ok=True)
         self.installed_index.write_text(
             json.dumps(index, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
         )
+
+
+def _common_root(paths: Sequence[str]) -> str:
+    """这批文件的共同顶层目录名（没有共同顶层就空串）。
+
+    选文件夹上传时浏览器给的是 ``my-skill/…``；zip 也常常套一层同名目录。
+    两种情况都要**把那一层去掉**：技能目录里再套一层 ``my-skill/``，
+    扫出来的技能名与目录结构就都不对了。
+    """
+    tops = {path.split("/", 1)[0] for path in paths if path}
+    if len(tops) != 1:
+        return ""
+    only = tops.pop()
+    # 只有一层（所有文件都在根下）时它不是"顶层目录"，是文件名
+    return only if any("/" in path for path in paths) else ""
+
+
+def _strip_common_root(files: dict[str, bytes]) -> dict[str, bytes]:
+    """去掉共同的那一层顶层目录（见 ``_common_root``）。"""
+    root = _common_root(list(files))
+    if not root:
+        return files
+    prefix = f"{root}/"
+    return {path[len(prefix) :]: blob for path, blob in files.items() if path.startswith(prefix)}
+
+
+def _skill_name(files: Mapping[str, bytes]) -> str:
+    """``SKILL.md`` frontmatter 里的 ``name``（规范里它等于目录名）。读不到就空串。"""
+    raw = files.get(SKILL_FILE)
+    if raw is None:
+        return ""
+    text = raw.decode("utf-8", errors="replace")
+    meta, _body = parse_frontmatter(text)
+    return str(meta.get("name") or "").strip()
+
+
+def _digests(root: Path) -> dict[str, str]:
+    """落盘之后的文件 → 内容 hash（前 12 位）。
+
+    调研 §4.6 要的"锁文件"就是它：commit SHA 锁的是**上游那一版**，
+    而这份 hash 锁的是**我们磁盘上这一份**——两者都要记，
+    因为"上游的 commit 没变、本地文件被改过"是另一件要答得出来的事。
+    """
+    out: dict[str, str] = {}
+    for item in sorted(root.rglob("*")):
+        if not item.is_file():
+            continue
+        try:
+            out[item.relative_to(root).as_posix()] = hashlib.sha256(item.read_bytes()).hexdigest()[
+                :12
+            ]
+        except OSError:
+            continue
+    return out
+
+
+def _now() -> str:
+    return datetime.now(UTC).astimezone().isoformat(timespec="seconds")
 
 
 def _is_url(text: str) -> bool:

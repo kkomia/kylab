@@ -26,7 +26,8 @@ import pytest
 from app.core.exceptions import ForbiddenError, InvalidRequestError, NotFoundError
 from app.core.services import Services
 from app.mcp_server.auth import current_caller
-from app.mcp_server.tools import (
+from app.services.api_key import READ, WRITE, Caller
+from app.services.tools import (
     MAX_TOP_K,
     MAX_UPLOAD_BYTES,
     NOTE_EXCERPT_CHARS,
@@ -34,7 +35,6 @@ from app.mcp_server.tools import (
     call_tool,
     tool_definitions,
 )
-from app.services.api_key import READ, WRITE, Caller
 
 
 @pytest.fixture
@@ -1025,3 +1025,136 @@ def test_web_fetch_refuses_internal_addresses_before_any_request(
             {"url": "http://127.0.0.1:8000/api/v1/health"},
             caller=admin,
         )
+
+
+# ------------------------------------------- 产物的落点与显式入库（v0.26）
+
+
+def test_export_in_a_conversation_files_nothing(
+    services: Services, kb: str, admin: Caller
+) -> None:
+    """**这条是这次改动的核心**：对话里导出，知识库一份文档都不多。
+
+    改之前 `knowledge_base_id` 是必填的，模型只能替用户挑一个库——
+    实测它把 docx 塞进了「笔记」，并解释"你这边没有专门的工作区，我就选了最顺手的那个"。
+    """
+    from app.services.tools import ARTIFACT_KEY
+
+    conversation_id = services.conversations.create(title="导出短诗").id
+    before = services.documents.count_documents(kb)
+
+    result = call_tool(
+        services,
+        "export_document",
+        {"filename": "短诗.docx", "markdown": "# 短诗\n\n把一天过完了。\n"},
+        caller=admin,
+        conversation_id=conversation_id,
+    )
+
+    assert result["artifact_id"].startswith("art_")
+    assert result["saved_to"] == "本会话"
+    assert "没有进知识库" in result["note"]
+    assert services.documents.count_documents(kb) == before
+    # 界面那份（卡片）与给模型那份在同一个 dict 里，见 _save_export 的说明
+    assert result[ARTIFACT_KEY]["artifact_id"] == result["artifact_id"]
+
+
+def test_export_ignores_a_knowledge_base_id_from_the_model(
+    services: Services, kb: str, admin: Caller
+) -> None:
+    """即使模型自己填了 ``knowledge_base_id``，对话这条门也不入库。
+
+    参数在对话的 schema 里已经不列了，但**光不列不够**：模型会凭上下文猜出这个字段名
+    （它在别处见过）。所以这条断言的是"猜出来也没用"——落点由服务端决定。
+    """
+    conversation_id = services.conversations.create(title="再导出一次").id
+    before = services.documents.count_documents(kb)
+
+    call_tool(
+        services,
+        "export_document",
+        {
+            "knowledge_base_id": kb,
+            "filename": "短诗.docx",
+            "markdown": "把一天过完了。",
+        },
+        caller=admin,
+        conversation_id=conversation_id,
+    )
+
+    assert services.documents.count_documents(kb) == before
+
+
+def test_ingest_artifact_files_an_exported_file(
+    services: Services, kb: str, admin: Caller
+) -> None:
+    """用户说"存进知识库"之后走的那一步：同一个 artifact_id，进库。"""
+    from app.services.tools import ARTIFACT_KEY
+
+    conversation_id = services.conversations.create(title="入库").id
+    exported = call_tool(
+        services,
+        "export_document",
+        {"filename": "随访方案.docx", "markdown": "# 一、监测频率\n"},
+        caller=admin,
+        conversation_id=conversation_id,
+    )
+
+    result = call_tool(
+        services,
+        "ingest_artifact",
+        {"artifact_id": exported["artifact_id"], "knowledge_base_id": kb},
+        caller=admin,
+    )
+
+    document = services.documents.get(result["document_id"])
+    assert document.name == "随访方案.docx"
+    assert document.knowledge_base_id == kb
+    # 卡片按 artifact_id 合并，于是这一步跑完界面立刻显示"已存进知识库"
+    assert result[ARTIFACT_KEY]["artifact_id"] == exported["artifact_id"]
+    assert result[ARTIFACT_KEY]["knowledge_base_id"] == kb
+
+
+def test_export_without_a_conversation_still_needs_a_library(
+    services: Services, kb: str, admin: Caller
+) -> None:
+    """没有会话上下文的通道（外部 MCP、一次性脚本）保持老契约。
+
+    那条通道没有产物区，唯一的落点就是知识库；而且"外部客户端点名叫了哪个库"
+    本身就是显式的——这与对话里"模型替用户挑一个"是两回事。
+    """
+    result = call_tool(
+        services,
+        "export_document",
+        {"knowledge_base_id": kb, "filename": "外部.docx", "markdown": "正文"},
+        caller=admin,
+    )
+
+    assert services.documents.get(result["document_id"]).knowledge_base_id == kb
+
+    with pytest.raises(InvalidRequestError, match="knowledge_base_id"):
+        call_tool(
+            services,
+            "export_document",
+            {"filename": "外部.docx", "markdown": "正文"},
+            caller=admin,
+        )
+
+
+def test_dialogue_tool_schema_hides_the_library_parameter() -> None:
+    """对话那条门**不再向模型暴露** ``knowledge_base_id``。
+
+    留在 schema 里它就总有一天会被顺手填上——而那正是事故的成因。
+    外部门（MCP 的 ``tool_definitions``）必须原样保留：那是已发布的契约。
+    """
+    from app.services.agent_tools import tool_specs
+    from app.services.tools import tool_definitions
+
+    dialogue = {spec.name: spec.parameters for spec in tool_specs()}
+    for name in ("export_document", "export_table", "export_deck"):
+        assert "knowledge_base_id" not in dialogue[name]["properties"], name
+        # 必填表里也不能留着它（不然模型会以为"必须给一个库"）
+        assert "knowledge_base_id" not in dialogue[name].get("required", []), name
+
+    mcp = {item["name"]: item["inputSchema"] for item in tool_definitions()}
+    assert "knowledge_base_id" in mcp["export_document"]["properties"]

@@ -79,14 +79,31 @@ function scrollActiveIntoView(): void {
   }
 }
 
+/**
+ * 浮层该有多高：**量出来的自然高度，不是算出来的**。
+ *
+ * 原先这里是 `选项数 × 36 + 8`——8 是**一侧**的内边距，而浮层上下各有一份，
+ * 于是 `wanted` 永远比内容少 8px：内容明明放得下，`scrollHeight` 还是比
+ * `clientHeight` 大 8，滚动条**必然**出现（用户报的就是这个）。
+ *
+ * 直接量 `scrollHeight`：它天然含内边距与边框，也**不受已经应用的 `max-height` 影响**
+ * （它报的是内容的自然高度）。以后改内边距或选项高度，这里不用跟着改。
+ *
+ * 取不到元素时（首次同步调用、还没挂载）退回一个估算值——
+ * `show()` 里 `nextTick` 之后还会再调一次 `position()`，那时量得到真的。
+ */
+function naturalListHeight(fallbackCount: number): number {
+  const measured = list.value?.scrollHeight ?? 0
+  return measured > 0 ? measured : fallbackCount * 36 + 16
+}
+
 /** 贴着输入框放；下方空间不够且上方更宽裕时向上翻。 */
 function position(): void {
   const element = inputEl.value
   if (!element) return
   const rect = element.getBoundingClientRect()
   const gap = 4
-  const optionHeight = 36
-  const wanted = Math.min(280, filtered.value.length * optionHeight + 8)
+  const wanted = Math.min(280, naturalListHeight(filtered.value.length))
   const below = window.innerHeight - rect.bottom - gap
   const above = rect.top - gap
   const flip = below < Math.min(wanted, 160) && above > below

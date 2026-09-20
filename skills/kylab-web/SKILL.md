@@ -14,7 +14,7 @@ prices, releases, weather, a specific page — neither is a source. This skill i
 1. **`web_search`** — a query in, a numbered list of results out: title, URL, snippet.
    Snippets are **teasers, not answers**. They are often stale, truncated, or from a page
    that says the opposite of the question.
-2. **`web_fetch`** — open the one or two most promising URLs and read the actual page.
+2. **`web_fetch`** — open the most promising URLs and read the actual pages. **Pass several at once** (`urls`, up to 5): every extra call is another round trip through the model, and a research turn reads a dozen pages. A page that fails (403 / timeout) only fails that one — the rest still come back.
 
 Answering from snippets alone is the most common way to get this wrong: the snippet is
 chosen by a search engine for relevance, not for truth, and it has no context.

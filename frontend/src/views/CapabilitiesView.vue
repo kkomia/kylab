@@ -24,11 +24,15 @@ import {
   createMCPServer,
   deleteMCPServer,
   getSkill,
+  listInstalledSkills,
   listMCPServers,
   listSkills,
   probeMCPServer,
+  sourceLabel,
+  uninstallSkill,
   updateMCPServer,
 } from '@/api/capabilities'
+import SkillMarketDialog from '@/components/capabilities/SkillMarketDialog.vue'
 import IconAlert from '@/components/icons/IconAlert.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconServer from '@/components/icons/IconServer.vue'
@@ -36,10 +40,12 @@ import IconPlus from '@/components/icons/IconPlus.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconSearch from '@/components/icons/IconSearch.vue'
+import IconSettings from '@/components/icons/IconSettings.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
 import IconTrash from '@/components/icons/IconTrash.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
+import SettingGroupPanel from '@/components/settings/SettingGroupPanel.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
@@ -48,9 +54,20 @@ import RowMenu from '@/components/ui/RowMenu.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
+import { isAdmin } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
 
 const { notifyError, notifySuccess } = useToast()
+
+/**
+ * 能力设置弹窗（v0.26）：联网搜索与沙箱执行从「总设置 → 功能」搬到了这里。
+ *
+ * 它们的归属本来就是这一页——这一页回答的是"它现在能做什么"：
+ * 技能是流程、插件是外部工具，而**联网是内置的取数能力**、
+ * **执行策略是"允许它动手到什么程度"**。挂在总设置里时，
+ * 用户在这一页看到"还没有联网能力"，却不知道该去哪儿把它打开。
+ */
+const settingsOpen = ref(false)
 
 /**
  * 当前看的是哪一页（v0.19）。
@@ -76,7 +93,7 @@ const CAP_TABS = [
  * "开着没开着"。数在标签上，省得点进去才发现是空的。
  */
 const skillQuery = ref('')
-const skillFilter = ref<'all' | 'builtin' | 'user' | 'blocked'>('all')
+const skillFilter = ref<'all' | 'builtin' | 'market' | 'user' | 'blocked'>('all')
 const serverQuery = ref('')
 const serverFilter = ref<'all' | 'enabled' | 'disabled'>('all')
 
@@ -84,6 +101,23 @@ const skills = ref<Skill[]>([])
 const skillsLoading = ref(true)
 const skillDetail = ref<SkillDetail | null>(null)
 const detailLoading = ref(false)
+
+/**
+ * 从市场装的技能：`技能名 → 来源`（v0.27）。
+ *
+ * 卡片上要显示"来自哪个仓库"，详情里要给出「卸载」入口——而这两件事都取决于
+ * **它是不是市场装的**：仓库自带的技能卸不掉（那是我们随代码发布的版本），
+ * 用户自己放进目录的也不该从这里删。
+ */
+const installedSkills = ref<Record<string, string>>({})
+const marketOpen = ref(false)
+const uninstallTarget = ref<Skill | null>(null)
+const uninstallOpen = computed({
+  get: () => uninstallTarget.value !== null,
+  set: (value: boolean) => {
+    if (!value) uninstallTarget.value = null
+  },
+})
 /** 技能正文弹窗的开合。用可写计算属性接 `v-model:open`——关掉时顺手清掉正文，
     下次打开不会先闪一眼上一个技能的正文。 */
 const skillOpen = computed({
@@ -136,12 +170,29 @@ const visibleSkills = computed(() => {
   const word = skillQuery.value.trim().toLowerCase()
   return skills.value.filter((item) => {
     if (skillFilter.value === 'builtin' && item.source !== 'builtin') return false
-    if (skillFilter.value === 'user' && item.source === 'builtin') return false
+    if (skillFilter.value === 'market' && (item.source === 'builtin' || !isFromMarket(item))) {
+      return false
+    }
+    if (skillFilter.value === 'user' && (item.source === 'builtin' || isFromMarket(item))) {
+      return false
+    }
     if (skillFilter.value === 'blocked' && item.used_by_prompt) return false
     if (!word) return true
     return `${item.name} ${item.description}`.toLowerCase().includes(word)
   })
 })
+
+/** 这个技能是不是从市场（线上仓库）装的。清单只在管理员看过市场之后才有值。 */
+function isFromMarket(skill: Skill): boolean {
+  return skill.source !== 'builtin' && Boolean(installedSkills.value[skill.name])
+}
+
+/** 卡片来源那一行的说法：市场装的写仓库名，其余两种照旧。 */
+function sourceLabelOf(skill: Skill): string {
+  if (skill.source === 'builtin') return '随代码发布'
+  const origin = installedSkills.value[skill.name]
+  return origin ? `来自 ${sourceLabel(origin)}` : '手动放入'
+}
 
 const SKILL_FILTERS = computed(() => [
   { key: 'all' as const, label: '全部', count: skills.value.length },
@@ -151,9 +202,14 @@ const SKILL_FILTERS = computed(() => [
     count: skills.value.filter((item) => item.source === 'builtin').length,
   },
   {
+    key: 'market' as const,
+    label: '从市场装',
+    count: skills.value.filter((item) => item.source !== 'builtin' && isFromMarket(item)).length,
+  },
+  {
     key: 'user' as const,
-    label: '用户放入',
-    count: skills.value.filter((item) => item.source !== 'builtin').length,
+    label: '手动放入',
+    count: skills.value.filter((item) => item.source !== 'builtin' && !isFromMarket(item)).length,
   },
   {
     key: 'blocked' as const,
@@ -199,10 +255,39 @@ async function loadSkills(): Promise<void> {
   try {
     const result = await listSkills()
     skills.value = result.items
+    await loadInstalled()
   } catch (error) {
     notifyError(error instanceof Error ? error.message : '技能列表读取失败')
   } finally {
     skillsLoading.value = false
+  }
+}
+
+/**
+ * 读"哪些是市场装的"。
+ *
+ * 失败**不打扰用户**：这份清单只影响卡片上那行来源与「卸载」入口，
+ * 而技能列表本身已经拿到了——为它弹一个错误只会让人以为技能页坏了。
+ */
+async function loadInstalled(): Promise<void> {
+  try {
+    installedSkills.value = (await listInstalledSkills()).items
+  } catch {
+    installedSkills.value = {}
+  }
+}
+
+async function uninstallMarketSkill(): Promise<void> {
+  const target = uninstallTarget.value
+  uninstallTarget.value = null
+  if (!target) return
+  try {
+    await uninstallSkill(target.name)
+    skillDetail.value = null
+    await loadSkills()
+    notifySuccess(`已卸载「${target.name}」`)
+  } catch (error) {
+    notifyError(error instanceof Error ? error.message : '卸载失败')
   }
 }
 
@@ -379,24 +464,47 @@ function policyLabel(policy: MCPPolicy): string {
           :tone="skills.length && !usableSkills ? 'warning' : 'neutral'"
         />
         <StatusTag :label="`插件 ${servers.length} 个`" tone="neutral" />
+        <!-- 联网搜索与执行策略在这后面（v0.26 从总设置搬来的）。
+             **只给管理员**：后端 `/settings` 是管理员端点，与侧栏那个设置入口同一档。 -->
+        <AppButton v-if="isAdmin" @click="settingsOpen = true">
+          <template #icon><IconSettings :size="15" /></template>
+          设置
+        </AppButton>
       </div>
     </div>
 
     <div class="cap-layout">
       <!-- ------------------------------------------------------------ 技能 -->
       <section v-if="tab === 'skills'" class="cap-col" role="tabpanel" aria-label="技能">
-        <header class="panel-head">
-          <div class="panel-head-actions">
-            <label class="panel-search">
-              <IconSearch :size="15" />
-              <input
-                v-model="skillQuery"
-                type="search"
-                placeholder="搜索技能"
-                aria-label="搜索技能"
-              />
-            </label>
-            <AppButton variant="primary" size="sm" @click="loadSkills">
+        <header class="cap-toolbar">
+          <!--
+            搜索在左、动作在右（v0.25 调的）。
+
+            原先两个都靠右：**每一行都有自己的起始线**——上面那行「技能 / 插件」从左边起、
+            这一行从中间起、下面那行筛选胶囊又从左边起、卡片再从左边起。
+            一页里四条起始线，扫视时找不到可以停靠的竖轴。
+
+            搜索是这一屏的检索入口，它与下方的清单同属"内容"，
+            所以贴到左边那条线上；「重新扫描」是动作，留在右边。
+          -->
+          <label class="panel-search">
+            <IconSearch :size="15" />
+            <input
+              v-model="skillQuery"
+              type="search"
+              placeholder="搜索技能"
+              aria-label="搜索技能"
+            />
+          </label>
+          <!-- 「逛市场」放在动作组最前（它是这一页最主要的"添置东西"的入口），
+               而「重新扫描」留在最后：那是本地目录变了之后的补救动作。
+               **只给管理员**：安装是往提示词里加东西，后端也要求管理员。 -->
+          <div class="panel-actions">
+            <AppButton v-if="isAdmin" variant="primary" size="sm" @click="marketOpen = true">
+              <template #icon><IconPlus :size="14" /></template>
+              浏览市场
+            </AppButton>
+            <AppButton size="sm" @click="loadSkills">
               <template #icon><IconRefresh :size="14" /></template>
               重新扫描
             </AppButton>
@@ -436,11 +544,15 @@ function policyLabel(policy: MCPPolicy): string {
               <button type="button" class="card-title skill-main" @click="openSkill(skill)">
                 {{ skill.name }}
               </button>
-              <p class="card-desc">{{ skill.description || '（没有描述）' }}</p>
+              <!-- 中文优先（v0.28）：技能描述基本都是英文，而这一页是给中文用户看的 -->
+              <p class="card-desc">{{ skill.summary || skill.description || '（没有描述）' }}</p>
               <div class="card-meta">
-                <span class="chip">{{
-                  skill.source === 'builtin' ? '随代码发布' : '用户放入'
-                }}</span>
+                <!-- 来源那一行**要说得出"从哪儿来的"**：市场装的写仓库名，
+                    而这件事同时决定了它能不能在这里卸载（见 uninstallTarget） -->
+                <span v-if="isFromMarket(skill)" class="chip chip-source">
+                  {{ sourceLabelOf(skill) }}
+                </span>
+                <span v-else class="chip">{{ sourceLabelOf(skill) }}</span>
                 <span v-if="!skill.used_by_prompt" class="chip chip-warn">
                   <IconAlert :size="12" />
                   未进提示词
@@ -457,22 +569,21 @@ function policyLabel(policy: MCPPolicy): string {
 
       <!-- ------------------------------------------------------------ 插件 -->
       <section v-else class="cap-col" role="tabpanel" aria-label="插件">
-        <header class="panel-head">
-          <div class="panel-head-actions">
-            <label class="panel-search">
-              <IconSearch :size="15" />
-              <input
-                v-model="serverQuery"
-                type="search"
-                placeholder="搜索插件"
-                aria-label="搜索插件"
-              />
-            </label>
-            <AppButton variant="primary" size="sm" @click="startCreate">
-              <template #icon><IconPlus :size="14" /></template>
-              新建插件
-            </AppButton>
-          </div>
+        <header class="cap-toolbar">
+          <!-- 与技能那一页同一条起始线（见上面的说明） -->
+          <label class="panel-search">
+            <IconSearch :size="15" />
+            <input
+              v-model="serverQuery"
+              type="search"
+              placeholder="搜索插件"
+              aria-label="搜索插件"
+            />
+          </label>
+          <AppButton variant="primary" size="sm" @click="startCreate">
+            <template #icon><IconPlus :size="14" /></template>
+            新建插件
+          </AppButton>
         </header>
 
         <div class="panel-filters" role="tablist" aria-label="插件筛选">
@@ -492,13 +603,17 @@ function policyLabel(policy: MCPPolicy): string {
         </div>
 
         <SkeletonBlock v-if="serversLoading" variant="list" :rows="3" />
+        <!-- 空态说"这里现在是什么、点了会发生什么"，**不说工具名怎么拼**（v0.25 改的）。
+             原先那句是「…工具名一律带 mcp__ 前缀，避免与内置工具撞名」——
+             `mcp__` 是内部命名约定，用户既看不懂也不因它做决定；
+             真正要说的是"登记完就能被 Agent 用上"。 -->
         <EmptyState
           v-else-if="!visibleServers.length"
           :title="servers.length ? '没有匹配的插件' : '还没有插件'"
           :hint="
             servers.length
               ? '换个关键词，或者把筛选切回「全部」。'
-              : '登记之后，它的工具会被 Agent 当成能力使用（工具名一律带 mcp__ 前缀，避免与内置工具撞名）。'
+              : '登记一个 MCP 服务，它的工具就能在对话里被 Agent 直接调用。'
           "
         />
         <ul v-else class="card-grid">
@@ -580,8 +695,22 @@ function policyLabel(policy: MCPPolicy): string {
         这就是模型按需读进来的**正文**。frontmatter（名字与描述）不在这里——
         那一行会进系统提示词，正文只在它决定用这个技能时才读。
       </p>
+      <!-- 来源与卸载入口（v0.27）：从市场装的技能要能在这里卸掉，
+           而"从哪儿装的"是用户决定要不要卸的依据 -->
+      <p v-if="skillDetail && isFromMarket(skillDetail)" class="skill-origin">
+        <span class="chip">{{ sourceLabelOf(skillDetail) }}</span>
+        <span class="text-meta">从市场装的，可以在这里卸载（随代码发布的那些卸不掉）</span>
+      </p>
       <pre class="skill-body">{{ skillDetail?.body ?? '' }}</pre>
       <template #footer>
+        <AppButton
+          v-if="skillDetail && isFromMarket(skillDetail)"
+          class="footer-left"
+          @click="uninstallTarget = skillDetail"
+        >
+          <template #icon><IconTrash :size="14" /></template>
+          卸载
+        </AppButton>
         <AppButton @click="skillOpen = false">关闭</AppButton>
       </template>
     </AppModal>
@@ -660,18 +789,62 @@ function policyLabel(policy: MCPPolicy): string {
       confirm-label="删除"
       @confirm="removeServer"
     />
+
+    <!-- 技能市场（v0.27）：从线上仓库浏览技能并安装。
+         装完要把本地技能列表与"哪些是市场装的"都刷一遍 -->
+    <SkillMarketDialog v-model:open="marketOpen" @installed="loadSkills" />
+
+    <ConfirmDialog
+      v-model:open="uninstallOpen"
+      title="卸载这个技能？"
+      :lead="`将删掉「${uninstallTarget?.name ?? ''}」的全部文件（它的脚本、参考文档一起）。`"
+      note="只删本地这份，不会去动它在 GitHub 上的仓库。要用的时候可以再从市场装回来。"
+      confirm-label="卸载"
+      @confirm="uninstallMarketSkill"
+    />
   </PageShell>
+
+  <!-- 能力设置：联网搜索 + 沙箱执行。两组一起给，它们回答的是同一个问题
+       （"它能自己去做哪些事、做到什么程度"） -->
+  <AppModal v-model:open="settingsOpen" title="能力设置">
+    <SettingGroupPanel :keys="['web', 'sandbox']" />
+  </AppModal>
 </template>
 
 <style scoped>
 /* 首行：标签（左）+ 状态（右）——页头去掉了，这一行就是页面的开头。
    标签与状态同处一行是因为它们回答同一个问题："这里现在有什么、能用几个"。 */
+/* 技能详情里的来源那一行（v0.27）：从市场装的技能要能在这儿卸掉，
+   而"从哪儿装的"正是用户决定要不要卸的依据 */
+.skill-origin {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+}
+
+/* 卸载放在页脚左侧（与「关闭」分开）：它是破坏性动作，不该贴着主按钮 */
+.footer-left {
+  margin-right: auto;
+}
+
+/* 市场来源的胶囊：比"随代码发布"那类更显眼一点——它是"这东西是别人写的" */
+.chip-source {
+  color: var(--text-secondary);
+}
+
 .cap-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
   border-bottom: 1px solid var(--border-hairline);
+  /* 与下面那条工具行留出间距（v0.25 加的）。
+     原先这里是 0——标签栏的下划线紧贴着搜索框的上沿。搜索靠右时看不出来
+     （两者不同列）；v0.25 把搜索挪回左边之后，它**正好落在「技能」的正下方**，
+     读起来像"这个搜索框属于技能这一页"。而它属于两页共有，
+     所以两页都得与它分开。 */
+  margin-bottom: var(--space-3);
 }
 
 .cap-head-status {
@@ -726,25 +899,35 @@ function policyLabel(policy: MCPPolicy): string {
   min-width: 0;
 }
 
-/* 内容头（照 Kimi 的插件页）：左边标题 + 一句说明，右边搜索与主操作。
-   这一节原先只有一个 `h2 技能` 加一个按钮——标题重复了标签，而"这是什么"
-   那句话没人说。 */
-/* 内容头：**只有右侧的搜索与主操作**（v0.22 起这里的解释性小字按用户要求全删了）。
-   所以它整行右对齐——没有左侧文字时留着 `space-between` 会让按钮贴两边。 */
-.panel-head {
+/* 工具行：**搜索在左、动作在右**（v0.25 调的）。
+
+   原先两个都靠右，于是这一页有**四条起始线**：标签行从左、工具行从中间、
+   筛选胶囊从左、卡片从左。扫视时找不到一根可以停靠的竖轴，
+   而"对齐"这件事在扫视里就是那条竖轴。
+
+   搜索是检索入口，与下面的清单同属"内容"，贴左边那条线；
+   「重新扫描」「新建插件」是动作，留在右边。
+
+   **这一类名必须叫 `cap-toolbar` 而不是 `panel-head`**（v0.25 改的）：
+   `base.css` 里 `.panel-head` 是**列表面板的表头**（高 36px、`--bg-subtle` 底、
+   下边框），三处清单共用。这里的工具行借用了同一个类名，于是白捡了表头那三样，
+   在页面上表现成**一条 979px 宽的灰带只放了 324px 的内容**——
+   左边 654px 全是空的灰。scoped 样式管不住全局类名，改底色只是把症状按下去，
+   下一次有人再调 `.panel-head` 又会漏进来；**换个名字才是根治**。 */
+.cap-toolbar {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: var(--space-4);
 }
 
-/* 说明占满一行：它是给这一节定性的那句话，不该挤在标题旁边 */
-
-.panel-head-actions {
+/* 动作组：一条工具行里可能有不止一个动作（技能那边就是「浏览市场」+「重新扫描」），
+   它们属于同一类（都是对这一屏的操作），所以自己成组、内部等距 */
+.panel-actions {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1-5);
 }
 
 /* 搜索：图标嵌在框里。**不做成"点开才出现"**——它是这一屏唯一的检索入口，
@@ -811,22 +994,26 @@ function policyLabel(policy: MCPPolicy): string {
   color: var(--text-primary);
 }
 
-/* 选中态：墨色底 + 纸白字。**用 `--bg-surface` 而不是 `--bg-primary`**——
-   那个 token 不存在（第一版写的它，于是 `color` 整条失效、标签变成隐形；
-   浏览器不会为此报错，只有真看一眼才发现）。 */
+/* 选中态：**中性 alpha 填充，不是墨色填充**（v0.25 改的）。
+   墨色（`--text-primary`）在全站的语义是"动作"——主按钮的底就是它。
+   一个"当前在看哪一档"的筛选胶囊用它，读起来像一颗被按下去的主按钮，
+   而它只是一个状态。规范 §7 的纪律是**动作靠墨色、状态靠中性 alpha**，
+   侧栏当前项、下拉当前项、卡片选中项走的都是这一条。
+   同一页里那个「技能 / 插件」的当前项用的是**下划线**，两者语义不同
+   （切一整页 vs 筛一个子集），所以不强行统一成同一个记号。 */
 .filter-on {
-  background: var(--text-primary);
-  color: var(--bg-surface);
+  background: var(--bg-selected);
+  color: var(--text-primary);
 }
 
 .filter-count {
   color: var(--text-tertiary);
-  font-size: var(--text-c2-size);
+  font-size: var(--text-micro-size);
 }
 
+/* 选中态的计数跟着标签走主色，但压一档不透明度——它是标签的附注，不是第二个标题 */
 .filter-on .filter-count {
-  color: var(--bg-surface);
-  opacity: 0.7;
+  color: var(--text-secondary);
 }
 
 /* 卡片两栏（照 Kimi 的插件页）：一栏在窄屏下会拉成一条很长的横带，
@@ -891,7 +1078,12 @@ function policyLabel(policy: MCPPolicy): string {
 }
 
 /* 描述**最多两行**：技能的描述是"什么时候该用它"的整句话，往往很长——
-   全铺出来会把卡片拉成一条，而它本来只是"这张卡是干什么的" */
+   全铺出来会把卡片拉成一条，而它本来只是"这张卡是干什么的"。
+
+   字号取 `--text-aux-size`（13px/18px）而不是 12px（v0.25 改的）：
+   它是卡片里唯一的正文，压在 15px 的标题下面；12px 时两者的落差大到
+   "标题是标题、描述是脚注"，而它其实是这张卡的主要内容。
+   13/18 这一档与菜单项的副标题同一口径（Kimi 的 `.desc` 实测值）。 */
 .card-desc {
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -899,14 +1091,14 @@ function policyLabel(policy: MCPPolicy): string {
   overflow: hidden;
   margin: 0;
   color: var(--text-secondary);
-  font-size: var(--text-micro-size);
-  line-height: var(--line-ui);
+  font-size: var(--text-aux-size);
+  line-height: var(--line-aux);
   word-break: break-word;
 }
 
 .card-target {
   font-family: var(--font-mono);
-  font-size: var(--text-c2-size);
+  font-size: var(--text-micro-size);
   color: var(--text-tertiary);
   word-break: break-all;
 }
@@ -921,7 +1113,7 @@ function policyLabel(policy: MCPPolicy): string {
 .card-detail {
   margin: 0;
   color: var(--text-tertiary);
-  font-size: var(--text-c2-size);
+  font-size: var(--text-micro-size);
   line-height: var(--line-ui);
 }
 
@@ -960,7 +1152,7 @@ function policyLabel(policy: MCPPolicy): string {
   padding: 0 var(--space-1);
   border-radius: var(--radius-badge);
   background: var(--bg-group);
-  font-size: var(--text-c2-size);
+  font-size: var(--text-micro-size);
   color: var(--text-secondary);
 }
 
@@ -977,7 +1169,7 @@ function policyLabel(policy: MCPPolicy): string {
   border-radius: var(--radius-row);
   background: var(--status-warning-soft);
   color: var(--text-primary);
-  font-size: var(--text-c2-size);
+  font-size: var(--text-micro-size);
   line-height: var(--line-ui);
 }
 
@@ -993,7 +1185,7 @@ function policyLabel(policy: MCPPolicy): string {
   gap: var(--space-0-5);
   padding: var(--space-1-5) 0;
   border-top: 1px solid var(--border-hairline);
-  font-size: var(--text-c2-size);
+  font-size: var(--text-micro-size);
   color: var(--text-secondary);
 }
 

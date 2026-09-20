@@ -27,7 +27,6 @@ from collections.abc import Iterator
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
-from app.agent_tools import build_runner, tool_specs
 from app.api.auth import check_kb_scope, require_read
 from app.api.v1.schemas import (
     ChatRequestIn,
@@ -43,6 +42,7 @@ from app.services.agent import (
     StepEvent,
     ThinkingEvent,
 )
+from app.services.agent_tools import build_runner, tool_specs
 from app.services.api_key import Caller
 from app.services.chat import ChatTurn
 from app.services.llm import ChatError, ChatMessage
@@ -120,11 +120,21 @@ def chat_once(
             model_pk=model_pk,
             thinking=thinking,
             thinking_effort=effort,
-            tools=tool_specs(services, owner_id=caller.owner_id),
+            tools=tool_specs(
+                services,
+                owner_id=caller.owner_id,
+                # 这一轮允许查的库（空 = 用户关掉了知识库开关）：
+                # 关掉时知识库那一侧的工具**整个不出现**，免得模型每轮
+                # 先去列库、再检索一次被拒（见 agent_tools._KB_TOOLS）
+                kb_ids=payload.kb_ids,
+            ),
             runner=build_runner(
                 services,
                 caller,
                 kb_ids=payload.kb_ids,
+                # 这一轮在哪条会话里——产物（导出类工具）据此决定落在工作区目录
+                # 还是会话的临时位置（v0.26）
+                conversation_id=payload.conversation_id,
                 subagent=lambda task: services.chat.run_subagent_text(
                     question=task,
                     kb_ids=payload.kb_ids,
@@ -161,9 +171,7 @@ def chat_once(
             thinking=thinking,
             thinking_effort=effort,
         )
-    _record_turn(
-        services, payload, answer=answer.answer, sources=answer.sources, caller=caller
-    )
+    _record_turn(services, payload, answer=answer.answer, sources=answer.sources, caller=caller)
     return ChatResponseOut(answer=answer.answer, sources=_sources_out(answer.sources))
 
 
@@ -283,6 +291,10 @@ def _events(
     """
     chat = services.chat
     collected: list[str] = []
+    # 过程快照：与回答一起落库（v0.25）。只活在内存里、结束时一次性写——
+    # 边流边写会让每一拍都多一次 UPDATE，而回看要的是最终那一份
+    step_log: list[dict[str, object]] = []
+    thinking_parts: list[str] = []
     sources: list = []
     # 上下文（含压缩）对两条链路都适用：Agent 关掉时同样需要"摘要 + 最近原文"
     history, summary, compressed = _context(services, payload, model_pk)
@@ -310,13 +322,22 @@ def _events(
                 # **工具表含外部 MCP 服务的工具**（v0.20）：用户在能力页接进来的
                 # 服务，它们的工具与内置工具一起交给模型；能不能真的调起来由
                 # 执行器那一刻的准入策略决定（见 agent_tools._call_mcp）
-                tools=tool_specs(services, owner_id=caller.owner_id),
+                tools=tool_specs(
+                    services,
+                    owner_id=caller.owner_id,
+                    # 这一轮允许查的库（空 = 用户关掉了知识库开关）：
+                    # 关掉时知识库那一侧的工具**整个不出现**，免得模型每轮
+                    # 先去列库、再检索一次被拒（见 agent_tools._KB_TOOLS）
+                    kb_ids=payload.kb_ids,
+                ),
                 # 执行器带**调用者身份**与**这一轮允许查的库**：
                 # 关掉知识库开关之后，模型也不该能绕过它去检索（见 agent_tools.build_runner）
                 runner=build_runner(
                     services,
                     caller,
                     kb_ids=payload.kb_ids,
+                    # 产物（导出类工具）落在哪：见 services/artifacts.py
+                    conversation_id=payload.conversation_id,
                     # 子 Agent（P1 补上）：它自己解析这一轮的模型档位，
                     # 执行器只管"给问题、拿结论与出处"
                     subagent=lambda task: services.chat.run_subagent_text(
@@ -340,6 +361,31 @@ def _events(
                 )
             ):
                 if isinstance(event, StepEvent):
+                    # 同一份数据也攒起来落库（见 `_record_turn`）。
+                    # **只攒完成态**：`running` 那条是给界面"这一步开始了"用的，
+                    # 存下来只会在回看时多出一行没有结论的步骤。
+                    # 唯一的例外是「组织回答」——它只有 `running` 一条（完成由
+                    # DoneEvent 表达），不带上它，回看时就少最后那一行。
+                    if event.status != "running" or event.phase == "answer":
+                        step_log.append(
+                            {
+                                "phase": event.phase,
+                                "label": event.label,
+                                "detail": event.detail,
+                                "status": event.status,
+                                # 工具名落在快照里：回看历史时同样要按它选图标、
+                                # 把同类调用并成一组（v0.26）
+                                **({"tool": event.tool} if event.tool else {}),
+                                **({"added": event.added} if event.added is not None else {}),
+                                **({"args": event.args} if event.args else {}),
+                                **({"result": event.result} if event.result else {}),
+                                **(
+                                    {"artifacts": [dict(a) for a in event.artifacts]}
+                                    if event.artifacts
+                                    else {}
+                                ),
+                            }
+                        )
                     yield _sse(
                         {
                             "type": "step",
@@ -347,10 +393,25 @@ def _events(
                             "label": event.label,
                             "detail": event.detail,
                             "status": event.status,
+                            # 工具名（v0.26）：界面按它选图标、把同类调用并成一组。
+                            # 非工具步骤没有，所以空就不发这个键
+                            **({"tool": event.tool} if event.tool else {}),
                             # 两个都是"可选补充"，只在有意义时发（v25）：
                             # degraded 让界面给重试入口，added 让界面说清这轮找到了几条新资料
                             **({"degraded": True} if event.degraded else {}),
                             **({"added": event.added} if event.added is not None else {}),
+                            # 入参与原文（v0.25）：界面默认不展开，点开才看。
+                            # 空串就**不发这个键**——每一条步骤都带两个空字段，
+                            # 一个二十步的长会话会白扛几十 KB
+                            **({"args": event.args} if event.args else {}),
+                            **({"result": event.result} if event.result else {}),
+                            # 这一步产出的文件（导出类工具）：界面拿它挂文件卡片。
+                            # 空就不发这个键，理由同上面两条
+                            **(
+                                {"artifacts": [dict(a) for a in event.artifacts]}
+                                if event.artifacts
+                                else {}
+                            ),
                         }
                     )
                 elif isinstance(event, SourcesEvent):
@@ -362,6 +423,9 @@ def _events(
                         }
                     )
                 elif isinstance(event, ThinkingEvent):
+                    # 顺手攒一份全文：落库时要把它存下来，否则用户离开这一页再回来
+                    # 就只剩一句"已生成回答"（v0.25）
+                    thinking_parts.append(event.text)
                     yield _sse({"type": "thinking", "text": event.text})
                 elif isinstance(event, DeltaEvent):
                     collected.append(event.text)
@@ -421,7 +485,15 @@ def _events(
     # 这条判断必须真的写出来——v0.12 之前只有注释、没有 if，于是流"正常结束但一个字都没吐"
     # 时照样落了一条空回答（实测：推理模型的思考吃光预算时就是这样）。
     if answer:
-        _record_turn(services, payload, answer=answer, sources=sources, caller=caller)
+        _record_turn(
+            services,
+            payload,
+            answer=answer,
+            sources=sources,
+            steps=step_log,
+            thinking="".join(thinking_parts),
+            caller=caller,
+        )
     else:
         logger.warning("对话流没有产出任何正文，本轮不落库：query=%r", payload.query[:80])
     yield _sse({"type": "done", "answer": answer})
@@ -511,7 +583,14 @@ def _maybe_capture_memory(
 
 
 def _record_turn(  # type: ignore[no-untyped-def]
-    services: Services, payload: ChatRequestIn, *, answer: str, sources, caller: Caller
+    services: Services,
+    payload: ChatRequestIn,
+    *,
+    answer: str,
+    sources,
+    steps: list[dict[str, object]] | None = None,
+    thinking: str = "",
+    caller: Caller,
 ) -> None:
     """把这一轮写进会话（仅在指定了 ``conversation_id`` 时）。
 
@@ -522,14 +601,16 @@ def _record_turn(  # type: ignore[no-untyped-def]
         return
     conversation_id = payload.conversation_id
     try:
-        services.conversations.append(
-            conversation_id, role="user", content=payload.query
-        )
+        services.conversations.append(conversation_id, role="user", content=payload.query)
         services.conversations.append(
             conversation_id,
             role="assistant",
             content=answer,
             sources=[item.model_dump(mode="json") for item in _sources_out(sources)],
+            # 过程与回答一起存：回看一条旧回答时，"它是怎么来的"和"它说了什么"
+            # 同样重要（v0.25）
+            steps=list(steps or ()),
+            thinking=thinking,
         )
         services.conversations.ensure_title(conversation_id, payload.query)
     except Exception:
@@ -604,7 +685,7 @@ __all__ = ["router"]
 def _collect(events: Iterator[object]) -> ChatTurn:
     """把事件流收成一次问答（非流式端点用）。
 
-    与 ``ChatService.answer_agent`` 同一个收法：**最后一次 SourcesEvent 就是出处**，
+    收法：**最后一次 SourcesEvent 就是出处**，
     ``DoneEvent`` 带的是后端拼好的全文（以它为准，避免个别增量丢失后正文与出处对不上）。
     """
     answer = ""

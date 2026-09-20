@@ -62,7 +62,7 @@ const emit = defineEmits<{ confirm: [] }>()
 .confirm-note {
   margin: var(--space-3) 0 0;
   font-size: var(--text-meta-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
 }
 </style>

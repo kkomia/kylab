@@ -872,7 +872,7 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   background: var(--bg-subtle);
   border: 1px solid var(--border-hairline);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
 }
 
@@ -1050,7 +1050,7 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   background: var(--bg-subtle);
   border: 1px solid var(--border-hairline);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .tag-remove {
@@ -1062,12 +1062,12 @@ onBeforeUnmount(() => {
   /* 这个 × 是**固定 14px 的圆钮**里的一枚符号（不是正文字），所以字号不跟
      `--font-scale` 走：它一旦放大就会从 14px 的钮里溢出来，钮又不能再大
      （标签胶囊只有 24px 高）。全站唯一一处刻意脱离字阶的地方，在这里写明。 */
-  font-size: 12px;
+  font-size: var(--text-micro-size);
   line-height: 1;
   color: var(--text-tertiary);
   background: transparent;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
 }
 
@@ -1084,7 +1084,7 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   background: transparent;
   border: 1px dashed var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   outline: none;
 }
 

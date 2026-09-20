@@ -3,7 +3,12 @@
  * 工作区页（v0.15，设计见 `docs/Agent-工作区与能力层设计-v0.1.md`）。
  *
  * 工作区 = **Agent 的项目**：一个用户指定的根目录 + 一组知识库。
- * 左列清单、右侧表单，与笔记/记忆那两页同一套版式（列表 → 编辑都在本页）。
+ * 左列清单、右侧编辑选中的那一个。
+ *
+ * **新建改到弹窗里了**（v0.25）：原先它是本页的一个"新建态"（`?new=1`），
+ * 右列那套表单从"改现有的"切成"填新的"。三个问题：要离开你在的地方、
+ * 表头那颗「保存」同时管着两件事、空表单常驻右侧。现在这一页只负责
+ * **浏览与编辑**，新建是 `WorkspaceCreateDialog` 一件事。理由写在那个组件里。
  *
  * 这一页里有两处刻意的措辞，都值得留着：
  *
@@ -28,6 +33,8 @@ import EmptyState from '@/components/ui/EmptyState.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
+import WorkspaceCreateDialog from '@/components/workspaces/WorkspaceCreateDialog.vue'
+import WorkspaceKbPicker from '@/components/workspaces/WorkspaceKbPicker.vue'
 import { useToast } from '@/composables/useToast'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
@@ -41,7 +48,6 @@ const knowledgeBases = useKnowledgeBaseStore()
 const conversations = useConversationStore()
 
 const activeId = ref('')
-/** 新建态：表单是空的，但字段与编辑态共用同一份 ref（两套表单会各自漂）。 */
 const creating = ref(false)
 const saving = ref(false)
 
@@ -63,7 +69,6 @@ const confirmDelete = ref(false)
 const active = computed(() => workspaces.items.find((item) => item.id === activeId.value) ?? null)
 const dirty = computed(() => {
   const current = active.value
-  if (creating.value) return Boolean(form.value.name.trim() && form.value.root_path.trim())
   if (!current) return false
   return (
     form.value.name !== current.name ||
@@ -90,14 +95,17 @@ function initialSelection(): void {
 
 onMounted(async () => {
   await Promise.all([workspaces.load(), knowledgeBases.load().catch(() => undefined)])
-  if (route.query.new === '1') startCreate()
+  // `?new=1` 打开新建弹窗——侧栏的「新建项目」走这条（见 SideNav）。
+  // **仍然走路由**：侧栏与这一页之间不必再架一份共享状态，
+  // 而"链接能直达新建"本身也是有用的（书签、从别处跳过来）。
+  if (route.query.new === '1') creating.value = true
   else initialSelection()
 })
 
 watch(
   () => route.query.new,
   (value) => {
-    if (value === '1') startCreate()
+    if (value === '1') creating.value = true
   },
 )
 
@@ -125,34 +133,33 @@ function select(workspace: Workspace): void {
   }
 }
 
-function startCreate(): void {
-  creating.value = true
-  activeId.value = ''
-  form.value = { name: '', root_path: '', description: '', kb_ids: [] }
+/** 建完：选中它，并把 `?new=1` 从地址里摘掉（否则刷新会又弹一次）。 */
+async function onCreated(workspace: Workspace): Promise<void> {
+  select(workspace)
+  notifySuccess('工作区已创建')
+  if (route.query.new === '1') await router.replace({ path: '/workspaces' })
 }
 
-function toggleKb(kbId: string): void {
-  const current = form.value.kb_ids
-  form.value.kb_ids = current.includes(kbId)
-    ? current.filter((item) => item !== kbId)
-    : [...current, kbId]
-}
+/**
+ * 弹窗关掉（取消 / Esc）而什么都没建时，**替用户落在一个地方**。
+ *
+ * 典型路径是侧栏点「新建项目」→ 想想又关掉：这时他人在工作区页上、右列却是空的，
+ * 看着像"这一页坏了"。落到第一项上，与直接进这一页时看到的一样。
+ */
+watch(creating, (isOpen) => {
+  if (isOpen || active.value || !workspaces.items.length) return
+  select(workspaces.items[0])
+})
 
 async function save(): Promise<void> {
   if (saving.value) return
+  const target = active.value
+  if (!target) return
   saving.value = true
   try {
-    if (creating.value) {
-      const created = await workspaces.create(form.value)
-      creating.value = false
-      select(created)
-      notifySuccess('工作区已创建')
-      if (route.query.new === '1') await router.replace({ path: '/workspaces' })
-    } else if (active.value) {
-      const updated = await workspaces.update(active.value.id, form.value)
-      select(updated)
-      notifySuccess('已保存')
-    }
+    const updated = await workspaces.update(target.id, form.value)
+    select(updated)
+    notifySuccess('已保存')
   } catch (error) {
     // 后端的校验文案是这一层最主要的产出（路径不存在、指向数据目录、是文件系统根），
     // 原样透出来——换成"保存失败"就把唯一有用的信息丢了
@@ -171,7 +178,10 @@ async function remove(): Promise<void> {
     await conversations.load()
     notifySuccess('工作区已删除，里面的会话已退回未归档')
     if (workspaces.items.length) select(workspaces.items[0])
-    else startCreate()
+    else {
+      activeId.value = ''
+      form.value = { name: '', root_path: '', description: '', kb_ids: [] }
+    }
   } catch (error) {
     notifyError(error instanceof Error ? error.message : '删除失败')
   }
@@ -193,16 +203,27 @@ async function newConversation(): Promise<void> {
 <template>
   <PageShell title="工作区">
     <template #actions>
-      <AppButton @click="startCreate">
+      <AppButton @click="creating = true">
         <template #icon><IconPlus :size="15" /></template>
         新建工作区
       </AppButton>
-      <AppButton variant="primary" :disabled="!dirty || saving" @click="save">
+      <AppButton v-if="active" variant="primary" :disabled="!dirty || saving" @click="save">
         {{ saving ? '保存中…' : '保存' }}
       </AppButton>
     </template>
 
     <SkeletonBlock v-if="workspaces.loading && !workspaces.items.length" variant="list" :rows="4" />
+
+    <!-- 清单为空时**不要**摆那个两栏骨架：左列 300px 里塞一段三行的空态文案会挤成
+        一行一个残句，右列再补一句"左边还没有可编辑的工作区"就是同一件事说两遍。
+         空态铺满整幅，只在有空态这一种情况。 -->
+    <EmptyState
+      v-else-if="!workspaces.items.length"
+      title="还没有工作区"
+      hint="建一个，把项目目录和它用的知识库绑在一起；在这个工作区里开的会话会自动带上这些库。"
+    >
+      <AppButton variant="primary" @click="creating = true">新建工作区</AppButton>
+    </EmptyState>
 
     <div v-else class="ws-layout">
       <aside class="ws-list" aria-label="工作区清单">
@@ -224,18 +245,10 @@ async function newConversation(): Promise<void> {
             </button>
           </li>
         </ul>
-
-        <EmptyState
-          v-if="!workspaces.items.length && !creating"
-          title="还没有工作区"
-          hint="建一个，把项目目录和它用的知识库绑在一起；在这个工作区里开的会话会自动带上这些库。"
-        >
-          <AppButton variant="primary" @click="startCreate">新建工作区</AppButton>
-        </EmptyState>
       </aside>
 
-      <section class="ws-form" aria-label="工作区设置">
-        <h2 class="form-title">{{ creating ? '新建工作区' : (active?.name ?? '未选择') }}</h2>
+      <section v-if="active" class="ws-form" aria-label="工作区设置">
+        <h2 class="form-title">{{ active.name }}</h2>
 
         <label class="field">
           <span class="field-label">名字</span>
@@ -246,14 +259,10 @@ async function newConversation(): Promise<void> {
           <span class="field-label">
             根目录
             <InfoTip
-              text="这是 Agent 文件操作的边界：它能读写的位置被约束在这个目录之内。请指向一个真实存在的项目目录，不要指向数据目录或系统根——服务端会拒绝后者。"
+              text="这是 Agent 文件操作的边界：它能读写的位置被约束在这个目录之内。请填一个**已存在的绝对路径**——不存在的路径会被服务端拒绝（不会替你建一个空目录），数据目录与文件系统根也会被拒绝。"
             />
           </span>
           <AppInput v-model="form.root_path" placeholder="例如：E:/code/my-project" />
-          <span class="text-micro">
-            必须是<strong>已存在</strong>的目录（绝对路径）。它决定 Agent 能碰哪儿——
-            不存在的路径会被拒绝，而不是建一个空目录。
-          </span>
         </label>
 
         <label class="field">
@@ -261,30 +270,9 @@ async function newConversation(): Promise<void> {
           <AppInput v-model="form.description" placeholder="这个项目是做什么的" />
         </label>
 
-        <div class="field">
-          <span class="field-label">
-            绑定的知识库
-            <InfoTip
-              text="绑定的库会被这个工作区里的新会话自动继承：进入项目，资料范围就定了，不必每次重勾。知识库与记忆仍是两个池子，检索结果不会混。"
-            />
-          </span>
-          <p v-if="!knowledgeBases.items.length" class="text-micro">还没有知识库可绑。</p>
-          <ul v-else class="kb-picks">
-            <li v-for="kb in knowledgeBases.items" :key="kb.id">
-              <button
-                type="button"
-                class="kb-pick"
-                :class="{ on: form.kb_ids.includes(kb.id) }"
-                @click="toggleKb(kb.id)"
-              >
-                <span class="kb-pick-name">{{ kb.name }}</span>
-                <span v-if="form.kb_ids.includes(kb.id)" class="kb-pick-mark">已绑定</span>
-              </button>
-            </li>
-          </ul>
-        </div>
+        <WorkspaceKbPicker v-model="form.kb_ids" :items="knowledgeBases.items" />
 
-        <div v-if="!creating && active" class="form-actions">
+        <div class="form-actions">
           <AppButton variant="primary" @click="newConversation">
             <template #icon><IconChevronRight :size="14" /></template>
             在这个工作区新开会话
@@ -295,7 +283,19 @@ async function newConversation(): Promise<void> {
           </AppButton>
         </div>
       </section>
+
+      <!-- 清单非空但没选中（典型是 `?new=1` 进来又关掉弹窗）：右列给一句话，
+           不摆一张空表单。空表单看起来像"这里可以填"，但我们没有"临时填一张"这回事。 -->
+      <section v-else class="ws-blank" aria-label="工作区设置">
+        <p class="text-meta">点左边的一项来编辑，或用上方的「新建工作区」建一个。</p>
+      </section>
     </div>
+
+    <WorkspaceCreateDialog
+      v-model:open="creating"
+      :knowledge-bases="knowledgeBases.items"
+      @created="onCreated"
+    />
 
     <ConfirmDialog
       v-model:open="confirmDelete"
@@ -390,49 +390,17 @@ async function newConversation(): Promise<void> {
   min-width: 0;
 }
 
+/* 没选中时的右列：一句话，不摆空表单。用 `align-self` 让它贴顶而不是被
+   grid 拉成整行高等高（那会让这句话悬在中间） */
+.ws-blank {
+  align-self: start;
+  min-width: 0;
+}
+
 .form-title {
   margin: 0;
   font-size: var(--text-section-size);
   font-weight: 600;
-}
-
-.kb-picks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.kb-pick {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  height: var(--control-height);
-  padding: 0 var(--space-3);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-pill);
-  background: none;
-  color: var(--text-secondary);
-  font-size: var(--text-meta-size);
-  cursor: pointer;
-  transition: var(--transition-ui);
-}
-
-.kb-pick:hover {
-  background: var(--bg-hover);
-}
-
-.kb-pick.on {
-  background: var(--bg-selected);
-  color: var(--text-primary);
-  border-color: transparent;
-}
-
-.kb-pick-mark {
-  font-size: var(--text-c2-size);
-  color: var(--text-tertiary);
 }
 
 .form-actions {

@@ -25,7 +25,7 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
 """应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
 
 **启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
@@ -74,8 +74,7 @@ MIGRATIONS: tuple[Migration, ...] = (
             " ON parse_results (parser_name, created_at)",
             # ② 阶段事件表只增不减（每次重试/重新摄入都追加），要按时间做保留期清理，
             #    没有 entered_at 索引时那条 DELETE 也是全表扫。
-            "CREATE INDEX idx_document_stage_events_entered"
-            " ON document_stage_events (entered_at)",
+            "CREATE INDEX idx_document_stage_events_entered ON document_stage_events (entered_at)",
             # ③ 队列深度改成一条 `GROUP BY state, kind` 聚合（不再把整表行搬到 Python）；
             #    这个索引让那次聚合走 index-only scan，不必读堆里的每一行。
             "CREATE INDEX idx_tasks_state_kind ON tasks (state, kind)",
@@ -173,6 +172,52 @@ MIGRATIONS: tuple[Migration, ...] = (
             # `DEFAULT_SYSTEM_PROMPT`）。存量库全部落在"没配过"这一档，
             # 行为与迁移前一致——这条迁移不该让任何一个既有库的答案变样。
             "ALTER TABLE knowledge_bases ADD COLUMN system_prompt text NOT NULL DEFAULT ''",
+        ),
+    ),
+    Migration(
+        version=9,
+        description="把过程存下来：工具步骤与思考过程随消息落库（v0.25）",
+        statements=(
+            # **为什么落库**：这两样原先只活在流式那几秒里。用户看着它们跑，
+            # 一旦离开这一页再回来（或者刷新），过程就只剩一句"已生成回答"——
+            # 而"这句答案是怎么来的"恰恰是他回来要找的东西。
+            #
+            # 与 `sources` 同一个道理：`sources` 早就落库了（"当时依据的是哪几段，
+            # 事后回看必须还是那几段"），步骤与思考是同一类快照。
+            "ALTER TABLE chat_messages ADD COLUMN steps jsonb NOT NULL DEFAULT '[]'::jsonb",
+            "ALTER TABLE chat_messages ADD COLUMN thinking text NOT NULL DEFAULT ''",
+        ),
+    ),
+    Migration(
+        version=10,
+        description="会话产物：导出文件先落盘、入库变成一个显式动作（v0.26）",
+        statements=(
+            # 这张表回答两个原先答不出来的问题：
+            # ① "这条会话产出了哪些文件"（此前只能翻文档列表猜）；
+            # ② "它现在在哪、有没有进知识库"——storage/location 是前者，
+            #    document_id 是后者，而后者默认为 NULL（不进）。
+            #
+            # `ON DELETE CASCADE` 只清记录：**文件本体由服务层决定**。
+            # 落在工作区里的那些是他项目里的真实文件，删会话不该动它们。
+            """
+            CREATE TABLE conversation_artifacts (
+                id                text PRIMARY KEY,
+                conversation_id   text NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
+                name              text NOT NULL,
+                format            text NOT NULL,
+                size_bytes        bigint NOT NULL DEFAULT 0,
+                storage           text NOT NULL,
+                location          text NOT NULL DEFAULT '',
+                workspace_id      text,
+                owner_id          text,
+                knowledge_base_id text,
+                document_id       text,
+                created_at        timestamptz NOT NULL DEFAULT now()
+            )
+            """,
+            # 读取形状只有一种：某条会话的产物、按先后。索引就照这个形状建。
+            "CREATE INDEX idx_conversation_artifacts_conv"
+            " ON conversation_artifacts (conversation_id, created_at)",
         ),
     ),
 )

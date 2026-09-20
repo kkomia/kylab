@@ -29,8 +29,9 @@ def _doc(
     days_ago: int = 0,
     name="a.pdf",
     size=100,
+    created: datetime | None = None,
 ):
-    created = datetime.now(UTC) - timedelta(days=days_ago)
+    stamp = created if created is not None else datetime.now(UTC) - timedelta(days=days_ago)
     return store.create_document(
         DocumentRecord(
             id=doc_id,
@@ -40,10 +41,28 @@ def _doc(
             content_hash=f"hash-{doc_id}",
             stage=stage,
             size_bytes=size,
-            created_at=created,
-            updated_at=created,
+            created_at=stamp,
+            updated_at=stamp,
         )
     )
+
+
+def test_recent_documents_counts_by_local_day(store, bundle) -> None:
+    """窗口边界按**本地日**算，不是 UTC 日。
+
+    构造"本地今天 00:30"这个时刻——在 UTC+8 它落在 UTC 的昨天。窗口取 1 天
+    （``since`` = 今天）时，按 UTC 日会把它算到窗口外，于是界面显示"近 1 天入库 0"
+    而用户明明刚上传；热力图同一屏用的却是本地日，两处口径不一致会自相矛盾。
+    这就是 `local_day` 注释里记过的那个坑（只在凌晨那几小时出现，白天开发看不到）。
+    """
+    _kb(store)
+    local_early = datetime.now().astimezone().replace(hour=0, minute=30, second=0, microsecond=0)
+    _doc(store, "doc_1", "kb_1", created=local_early.astimezone(UTC))
+
+    stats = StatsService(bundle).dashboard(window_days=1)
+
+    assert stats.recent_documents == 1
+    assert stats.activity[-1].documents == 1  # 热力图上也是今天
 
 
 def test_dashboard_counts_scale(store, bundle) -> None:

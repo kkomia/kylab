@@ -45,6 +45,14 @@ function makeLoad(overrides: Partial<SystemLoad> = {}): SystemLoad {
 }
 
 describe('LoadPanel', () => {
+  /**
+   * 第 n 个仪表格（面板改成"一排仪表"之后，断言经常要限定在某一格里——
+   * 整段文本里混着五格的数字，`not.toContain` 这类否定断言尤其容易被别的格污染）。
+   */
+  function gaugeAt(wrapper: ReturnType<typeof mount>, index: number) {
+    return wrapper.findAll('.gauge')[index]
+  }
+
   it('CPU 与内存都显示数值与总量', () => {
     const wrapper = mount(LoadPanel, { props: { load: makeLoad() } })
 
@@ -60,8 +68,10 @@ describe('LoadPanel', () => {
 
     expect(wrapper.text()).toContain('采样中')
     expect(wrapper.text()).toContain('8 核')
-    // 0% 会被读成"机器很空闲"，这是最误导的答案
-    expect(wrapper.text()).not.toContain('0%')
+    // 0% 会被读成"机器很空闲"，这是最误导的答案。
+    // **断言限定在 CPU 那一格**（v0.25 收紧）：额度那一格的 0% 是**真的 0%**
+    // （0 / 1000 页），拿整段文本去断言 `not.toContain('0%')` 会把那个合法值一起算进来。
+    expect(gaugeAt(wrapper, 0).text()).not.toContain('0%')
   })
 
   it('槽位与队列深度一起读：在跑 / 上限 + 排队条数与最久等待', () => {

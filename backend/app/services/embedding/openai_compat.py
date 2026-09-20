@@ -10,6 +10,7 @@ from collections.abc import Sequence
 
 import httpx
 
+from app.core.http import shared_client
 from app.services.embedding.base import EmbeddingError, EmbeddingProvider, l2_normalize
 
 DEFAULT_TIMEOUT_SECONDS = 60.0
@@ -57,15 +58,15 @@ class OpenAICompatEmbedder(EmbeddingProvider):
         payload = {"model": self.model_id, "input": batch}
         headers = {"Authorization": f"Bearer {self._api_key}"}
 
-        if self._client is not None:
-            response = self._client.post(
-                f"{self.base_url}/embeddings", json=payload, headers=headers
-            )
-        else:
-            with httpx.Client(timeout=self._timeout) as client:
-                response = client.post(
-                    f"{self.base_url}/embeddings", json=payload, headers=headers
-                )
+        # 客户端**共享**（见 app/core/http.py）：摄入一篇文档按 batch 会调好几次，
+        # 每次新建客户端就是每次重新握手。超时仍在这里给。
+        client = self._client or shared_client()
+        response = client.post(
+            f"{self.base_url}/embeddings",
+            json=payload,
+            headers=headers,
+            timeout=self._timeout,
+        )
 
         if response.status_code != 200:
             body = response.text[:_MAX_ERROR_BODY]

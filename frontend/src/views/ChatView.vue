@@ -26,6 +26,7 @@ import {
   onMounted,
   ref,
   watch,
+  type Component,
 } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -33,15 +34,21 @@ import {
   chatStream,
   getSuggestedQuestions,
   isAbortError,
+  type ChatArtifact,
   type ChatHistoryMessage,
   type ChatSource,
+  type ChatStep,
 } from '@/api/chat'
 import {
+  ingestArtifact,
+  listArtifacts,
   rewindConversation,
+  type ConversationArtifact,
   type ConversationDetail,
   type StoredMessage,
 } from '@/api/conversations'
 import { uploadDocument } from '@/api/documents'
+import { formatBytes } from '@/composables/useFormat'
 import { listSkills, type Skill } from '@/api/capabilities'
 import type { RegisteredModel } from '@/api/modelRegistry'
 import IconArrowUp from '@/components/icons/IconArrowUp.vue'
@@ -54,18 +61,29 @@ import IconNote from '@/components/icons/IconNote.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
+import IconDownload from '@/components/icons/IconDownload.vue'
+import IconExternalLink from '@/components/icons/IconExternalLink.vue'
+import IconFolder from '@/components/icons/IconFolder.vue'
+import IconGlobe from '@/components/icons/IconGlobe.vue'
+import IconInbox from '@/components/icons/IconInbox.vue'
+import IconLibrary from '@/components/icons/IconLibrary.vue'
+import IconLogo from '@/components/icons/IconLogo.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
 import IconSearch from '@/components/icons/IconSearch.vue'
 import IconServer from '@/components/icons/IconServer.vue'
 import IconStop from '@/components/icons/IconStop.vue'
+import IconTasks from '@/components/icons/IconTasks.vue'
 import IconUpload from '@/components/icons/IconUpload.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import ModelPicker from '@/components/ui/ModelPicker.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
+import LinkText from '@/components/ui/LinkText.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
+import LiveLine from '@/components/chat/LiveLine.vue'
+import TraceStepRow from '@/components/chat/TraceStepRow.vue'
 
 /**
  * 引用文档抽屉（从右侧滑出）。
@@ -76,15 +94,25 @@ import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 const DocumentDrawer = defineAsyncComponent(
   () => import('@/components/knowledge/DocumentDrawer.vue'),
 )
+
+/**
+ * 文件抽屉（v0.26）：预览产物、浏览工作区/会话临时区的文件。
+ *
+ * 同样异步：它带着 Office 预览与 PDF iframe 那一套（三个引擎加起来近 900KB），
+ * 不点开就一分钱不花。
+ */
+const FileDrawer = defineAsyncComponent(() => import('@/components/files/FileDrawer.vue'))
 import { renderAnswerWithCitations } from '@/composables/useMarkdown'
 import {
   buildTurns,
   isTraceOpen,
+  liveLine,
   makeMessage,
   mergeStep,
+  replyArtifacts,
   sourcePreview,
   sourceWhere,
-  traceSteps,
+  traceEntries,
   traceSummary,
   wasDegraded,
   THINKING_EFFORTS,
@@ -112,12 +140,32 @@ const LAST_EFFORT_KEY = 'kylab-last-thinking-effort'
  * 步骤图标：检索、思考、成稿。收在一张表里，模板用 `<component :is>` 取。
  * 图标映射留在页面而不是 `useChatTurns` 里——那是个纯逻辑模块，不该 import 一堆 .vue。
  */
-const STEP_ICONS = {
-  search: IconSearch,
+/**
+ * 过程面板的**图标表**（v0.26 按类别分开）。
+ *
+ * 键是 `TraceStep.icon` 那个类别（见 `useChatTurns` 的 `TraceIcon`），
+ * 值在这里——**只有这个文件 import 图标组件**，逻辑层不认识它们。
+ *
+ * 改之前所有工具都画同一个服务器方块：七个联网搜索、两个抓网页，
+ * 那一列全是同一个图形，扫过去等于没有信息。
+ */
+const STEP_ICONS: Record<string, Component> = {
   think: IconRobot,
-  build: IconCheck,
+  search: IconSearch,
+  web: IconGlobe,
+  fetch: IconExternalLink,
+  library: IconLibrary,
+  note: IconNote,
+  memory: IconInbox,
+  file: IconDownload,
+  // 技能是「流程 / 说明书」（读 SKILL.md），子 Agent 是「另一个智能体」——
+  // 两者都跟「思考」沾边，所以不再让它们共用 IconRobot，免得三行长一个样
+  skill: IconTasks,
+  agent: IconAi,
+  mcp: IconServer,
   tool: IconServer,
-} as const
+  build: IconCheck,
+}
 
 const store = useKnowledgeBaseStore()
 const conversations = useConversationStore()
@@ -466,7 +514,14 @@ function applyDetail(detail: ConversationDetail): void {
   messages.value = detail.messages.map((item) =>
     makeMessage(item.role === 'user' ? 'user' : 'assistant', item.content, {
       sources: item.sources,
-      // 回放：这一轮当时用哪档思考没有存，别猜
+      // 过程与思考**都要还原**（v0.25）：不然用户离开这一页再回来，
+      // 只剩一句"已生成回答"——而"这句答案是怎么来的"正是他回来要找的东西
+      // 后端的 `steps` 是 `dict[str, object]`（协议层故意不收紧：它是**快照**，
+      // 字段随版本加过好几次，老消息里就是少几个键）。这里显式转一次，
+      // 读的时候一律按可选取值——见 `TraceStep` 里那些 `?`
+      steps: (item.steps ?? []) as unknown as ChatStep[],
+      thinkingText: item.thinking ?? '',
+      // 这一轮当时用哪档思考仍然没存（那是会话级偏好，不在消息上），别猜
       thinking: null,
     }),
   )
@@ -481,6 +536,27 @@ function applyDetail(detail: ConversationDetail): void {
   if (detail.thinking_effort) thinkingEffort.value = detail.thinking_effort
   stick.value = true
   void scrollToBottom()
+  // 产物的**当前状态**要另外问一次（v0.26）：步骤里存的是流式当时的样子，
+  // 而"这份文件后来进了哪个库"是之后发生的事。不问的话，卡片上的
+  // "已存进知识库"在刷新之后就退回"存进知识库"了。
+  void refreshArtifacts(detail.id)
+}
+
+/**
+ * 把这条会话的产物**现在的样子**合并进各步骤的卡片。
+ *
+ * 一次请求，按 `artifact_id` 对齐；步骤里没出现过的不补（那些产物属于被回退掉的
+ * 轮次，界面不该凭空多出一张卡片）。失败就静默——卡片退回快照那份仍然可用，
+ * 为一条后台刷新把整页报红不值当。
+ */
+async function refreshArtifacts(id: string): Promise<void> {
+  try {
+    const { items } = await listArtifacts(id)
+    if (conversationId.value !== id) return
+    for (const item of items) mergeArtifact(fromStored(item))
+  } catch {
+    // 见上：这是锦上添花的一次刷新
+  }
 }
 
 /**
@@ -548,40 +624,23 @@ const history = computed<ChatHistoryMessage[]>(() =>
     .map((item) => ({ role: item.role, content: item.text })),
 )
 
-async function send(): Promise<void> {
-  if (!canSend.value || sending.value) return
-  const text = query.value.trim()
-  if (text.length === 0) {
-    notifyWarning('请输入问题')
-    return
-  }
-  // 先算历史：这条提问还没进 messages，不能把自己也算成上下文
-  const context = history.value
-  const model = modelPk.value || undefined
-
-  // 新对话：第一句话落下去之前先建会话，拿到 id 再提问。
-  // 反过来（先问再建）会丢掉这一轮的落库——后端要靠 conversation_id 才知道往哪写。
-  let target = conversationId.value
-  if (!target) {
-    try {
-      const created = await conversations.create(effectiveKbIds.value, modelPk.value || null, {
-        thinking: thinkingOn.value,
-        thinking_effort: thinkingEffort.value,
-      })
-      target = created.id
-      // **先登记再改路径**：改路径会立刻触发一次会话回放（见 streamingConversationId），
-      // 登记晚一步，那一次就已经把界面清空了
-      streamingConversationId = target
-      // 用 replace 而不是 push：用户按"新对话"只是想换个会话，
-      // 在历史里留一条空的 /chat 没有任何意义，返回时会看到一片空白
-      await router.replace(`/chat/${target}`)
-    } catch (cause) {
-      streamingConversationId = ''
-      notifyError(cause instanceof Error ? cause.message : '无法新建对话')
-      return
-    }
-  }
-
+/**
+ * 跑一轮流式问答：追加"提问 + 占位回答"两条消息，再把增量**就地**打进占位那条。
+ *
+ * **`send` 与 `regenerate` 共用这一份**。它们原先各抄了一遍（`resend` 的注释甚至
+ * 写着"与 `send()` 共用同一套流式处理"，实际并没有）——于是"新增一种事件"
+ * 要在两处同时改，漏一处就是同一句回答在两条入口里表现不同，
+ * 而这种差别只在用户恰好走那条入口时才暴露。
+ *
+ * `conversationId` 由调用方给：`send` 可能要先建会话（还要改路由），
+ * 重新生成则一定已有会话——那两件事留在各自那一边，这里只管跑流。
+ */
+async function streamTurn(
+  text: string,
+  context: ChatHistoryMessage[],
+  model: string | undefined,
+  conversationId: string,
+): Promise<void> {
   messages.value = [
     ...messages.value,
     makeMessage('user', text),
@@ -592,7 +651,6 @@ async function send(): Promise<void> {
     }),
   ]
   const index = messages.value.length - 1
-  query.value = ''
   sending.value = true
   // 新问题一定要回到最新一行：用户刚按下发送，接下来的字就是他等着看的东西，
   // 哪怕他上一轮往上翻过旧回答。watch 的 flush: 'post' 会处理这次滚动
@@ -611,13 +669,13 @@ async function send(): Promise<void> {
     // 「停止」按钮因此从第一个字开始就是活的
     const handle = await chatStream(
       // 带上 conversation_id 之后，历史由后端从库里取——所以 context 传不传都一样，
-      // 留着是为了"没会话"那条路径（此处不会走到，但接口本身支持无状态调用）
+      // 留着是为了"没会话"那条路径（见 api/chat.ts 的说明）
       {
         query: text,
         kb_ids: effectiveKbIds.value,
         skill_names: pinnedSkills.value,
         history: context,
-        conversation_id: target,
+        conversation_id: conversationId,
         model_pk: model,
         thinking: thinkingOn.value,
         thinking_effort: thinkingEffort.value,
@@ -653,6 +711,44 @@ async function send(): Promise<void> {
   }
 }
 
+async function send(): Promise<void> {
+  if (!canSend.value || sending.value) return
+  const text = query.value.trim()
+  if (text.length === 0) {
+    notifyWarning('请输入问题')
+    return
+  }
+  // 先算历史：这条提问还没进 messages，不能把自己也算成上下文
+  const context = history.value
+  const model = modelPk.value || undefined
+
+  // 新对话：第一句话落下去之前先建会话，拿到 id 再提问。
+  // 反过来（先问再建）会丢掉这一轮的落库——后端要靠 conversation_id 才知道往哪写。
+  let target = conversationId.value
+  if (!target) {
+    try {
+      const created = await conversations.create(effectiveKbIds.value, modelPk.value || null, {
+        thinking: thinkingOn.value,
+        thinking_effort: thinkingEffort.value,
+      })
+      target = created.id
+      // **先登记再改路径**：改路径会立刻触发一次会话回放（见 streamingConversationId），
+      // 登记晚一步，那一次就已经把界面清空了
+      streamingConversationId = target
+      // 用 replace 而不是 push：用户按"新对话"只是想换个会话，
+      // 在历史里留一条空的 /chat 没有任何意义，返回时会看到一片空白
+      await router.replace(`/chat/${target}`)
+    } catch (cause) {
+      streamingConversationId = ''
+      notifyError(cause instanceof Error ? cause.message : '无法新建对话')
+      return
+    }
+  }
+
+  query.value = ''
+  await streamTurn(text, context, model, target)
+}
+
 /**
  * 本地消息 → 库里的形状。
  *
@@ -667,6 +763,10 @@ function persistedMessages(): StoredMessage[] {
       role: item.role,
       content: item.text,
       sources: item.sources,
+      // 本地缓存也带上过程与思考：缓存与网络两条路的口径要一致，
+      // 否则"刚从这一页切走再切回来"与"刷新"会看到两种过程面板（v0.25）
+      steps: item.steps,
+      thinking: item.thinkingText,
       created_at: null,
     }))
 }
@@ -723,12 +823,37 @@ function onStreamScroll(): void {
 
 // 只在跟随状态下自动滚到底；flush: 'post' 让它在内容写入 DOM 之后执行，
 // 顺带省掉一次 nextTick。往上翻看旧回答时，新字不该把视图拽走
+/**
+ * 这一个"内容指纹"里**必须包含过程步骤**（v0.25 修）。
+ *
+ * 改之前只算了 `messages.length + 正文长度 + 思考长度`，于是工具每输出一行
+ * （步骤追加、某一步从 `running` 变成带 `detail`/`args`/`result` 的完成态），
+ * 内容长了、视图没动——实测"输出满一屏之后就再也看不到最新的输出了"，
+ * 而那时用户什么都没做，没理由取消跟随。
+ *
+ * 步骤是**就地更新**的（`mergeStep` 把同一个 key 的那条替换掉），所以不能只看条数：
+ * 同一步从"正在检索"变成"命中 8 段"时条数没变而文本变了。
+ * 这里把每条的可见文本长度加起来当指纹——它变了就说明有东西落进了画面。
+ */
+function streamFingerprint(): number {
+  const last = messages.value.at(-1)
+  if (!last) return 0
+  const steps = last.steps.reduce(
+    (sum, step) =>
+      sum +
+      step.label.length +
+      step.detail.length +
+      (step.args?.length ?? 0) +
+      (step.result?.length ?? 0),
+    0,
+  )
+  return messages.value.length + last.text.length + last.thinkingText.length + steps
+}
+
+// 只在跟随状态下自动滚到底；flush: 'post' 让它在内容写入 DOM 之后执行，
+// 顺带省掉一次 nextTick。往上翻看旧回答时，新字不该把视图拽走
 watch(
-  () =>
-    messages.value.length +
-    (messages.value.at(-1)?.text.length ?? 0) +
-    // 思考也在长，它流出来时同样要跟着滚，否则面板里的思考会停在开头
-    (messages.value.at(-1)?.thinkingText.length ?? 0),
+  streamFingerprint,
   () => {
     if (stick.value) scrollToBottom()
   },
@@ -749,6 +874,154 @@ const turns = computed<Turn[]>(() => buildTurns(messages.value))
 /** 出错的那一轮没有过程可讲，只报错。 */
 function hasTrace(message: Message): boolean {
   return message.error.length === 0
+}
+
+/**
+ * 某一步的原文是否已展开。
+ *
+ * **默认收起**（与整块过程面板相反）：这一步是"想深究的人才点"，
+ * 而入参与返回动辄上千字——默认铺开会把过程面板变成一屏 JSON，
+ * 那正是我们要摆脱的东西。
+ */
+const openSteps = ref(new Set<string>())
+
+/**
+ * 哪几"组"（同类工具合并出来的那一行）是展开的（v0.26）。
+ *
+ * 与 `openSteps` **分开两张表**：一个是"看某一步的原文"，一个是"看这一组都有哪些调用"，
+ * 两者同时开着是正常的（展开一组、再展开其中一次）。合成一张的话，
+ * 收起一组就得连带把里面每一次的展开态一起清掉。
+ */
+const openGroups = ref(new Set<string>())
+
+function isGroupOpen(key: string): boolean {
+  return openGroups.value.has(key)
+}
+
+function toggleGroup(key: string): void {
+  const next = new Set(openGroups.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  openGroups.value = next
+}
+
+/**
+ * 打开文件抽屉：``key`` 为空就是浏览文件区，给了就直接预览那一份（v0.26）。
+ *
+ * **产物卡片点开走这里，而不是直接下载**：用户想知道"它做出来的是个什么"，
+ * 而下载是"我要拿走它"——两件事，前者先发生。下载在抽屉里一步可达。
+ */
+const fileDrawer = ref<{ key: string | null; nonce: number } | null>(null)
+
+function openFiles(key: string | null = null): void {
+  if (!conversationId.value) return
+  // `nonce` 让"抽屉已经开着"时再点一次也能真的重来一遍：
+  // 只改 `key` 的话，从目录里点「浏览文件」（key 从 null 到 null）不会触发任何变化，
+  // 用户看到的是**什么都没发生**——而他刚刚明明点了一下。
+  fileDrawer.value = { key, nonce: Date.now() }
+}
+
+/** 正在挑知识库的那份产物（点「存进知识库」之后）。``null`` = 弹窗没开。 */
+const ingestTarget = ref<ChatArtifact | null>(null)
+const ingestKbId = ref('')
+const ingesting = ref(false)
+
+/**
+ * 「存进知识库」。
+ *
+ * **这个按钮是"显式"二字最实在的落点**：模型那把 `ingest_artifact` 工具要靠
+ * 描述约束它别自作主张，而用户自己点一下不需要任何约束——它就是他本人的意思。
+ */
+async function confirmIngest(): Promise<void> {
+  const file = ingestTarget.value
+  const id = conversationId.value
+  if (!file || !id || !ingestKbId.value) return
+  ingesting.value = true
+  try {
+    const updated = await ingestArtifact(id, file.artifact_id, ingestKbId.value)
+    mergeArtifact(fromStored(updated))
+    ingestTarget.value = null
+    notifySuccess(`已存进知识库「${kbName(updated.knowledge_base_id ?? '')}」`)
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '入库失败')
+  } finally {
+    ingesting.value = false
+  }
+}
+
+/**
+ * 库里那个名字。**查不到就给空串，不编一个"知识库"出来**。
+ *
+ * 库是可以被删的，而卡片上那句话会一直留着——兜底成"已存进知识库「知识库」"
+ * 读起来像个坏掉的模板（实测见过）。空串让模板退化成"已存进知识库"，
+ * 少一句名字，但每句都是真的。
+ */
+function kbName(kbId?: string): string {
+  return store.items.find((item) => item.id === kbId)?.name ?? ''
+}
+
+function openIngest(file: ChatArtifact): void {
+  ingestTarget.value = file
+  // 预选当前会话范围里的第一个库——**预选不等于替他决定**：弹窗在那儿、
+  // 库名看得见，他点了确认才算数
+  ingestKbId.value = file.knowledge_base_id || effectiveKbIds.value[0] || store.items[0]?.id || ''
+  // **每次都刷一遍清单**（不只是空的时候）：这个弹窗的全部意义就是"让你挑一个库"，
+  // 而清单可能已经变了（刚建过一个库、或者模型刚建过）。给一份过期的清单让他挑，
+  // 比多一次请求糟得多。
+  void store.load()
+}
+
+/**
+ * 把一份产物**最新的样子**合并回它所在的步骤（按 `artifact_id`）。
+ *
+ * 界面上的卡片是从步骤快照渲染的，而快照是流式当时写下的。入库发生在之后，
+ * 不合并的话，卡片上那句"已存进知识库"要等到刷新页面才出现——
+ * 而它恰恰是用户点完按钮最想看到的一句反馈。
+ *
+ * **只在已有的卡片上改，不新增**：列表接口会带回这条会话的全部产物，
+ * 包括被「重新生成」回退掉的那几轮——凭空多出来的卡片会让人以为文件还在。
+ */
+function mergeArtifact(patch: Partial<ChatArtifact> & { artifact_id: string }): void {
+  for (const message of messages.value) {
+    for (const step of message.steps) {
+      if (!step.artifacts) continue
+      step.artifacts = step.artifacts.map((item) =>
+        item.artifact_id === patch.artifact_id ? { ...item, ...patch } : item,
+      )
+    }
+  }
+}
+
+/**
+ * 接口返回的产物 → 步骤快照里那份的形状。
+ *
+ * 差别只在空值：后端（Pydantic）把没入库的字段序列化成 ``null``，
+ * 而快照里那些键**根本不存在**。不归一的话，`{...item, ...patch}` 会把
+ * 原本有值的键覆盖成 null（`null` 与 `undefined` 在展开时都是"有值"）。
+ */
+function fromStored(item: ConversationArtifact): Partial<ChatArtifact> & { artifact_id: string } {
+  return {
+    artifact_id: item.artifact_id,
+    name: item.name,
+    size_bytes: item.size_bytes,
+    format: item.format,
+    storage: item.storage,
+    where: item.where,
+    ...(item.path ? { path: item.path } : {}),
+    ...(item.knowledge_base_id ? { knowledge_base_id: item.knowledge_base_id } : {}),
+    ...(item.document_id ? { document_id: item.document_id } : {}),
+  }
+}
+
+function isStepOpen(key: string): boolean {
+  return openSteps.value.has(key)
+}
+
+function toggleStep(key: string): void {
+  const next = new Set(openSteps.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  openSteps.value = next
 }
 
 function toggleTrace(turn: Turn): void {
@@ -842,7 +1115,7 @@ async function regenerate(turnIndex: number): Promise<void> {
     await rewindConversation(id, 1)
     // 本地同步回退：把这一轮从界面上摘掉（连同它后面的所有轮次）
     messages.value = messages.value.slice(0, turnIndex * 2)
-    await resend(query, context, model, id)
+    await streamTurn(query, context, model, id)
   } catch (cause) {
     notifyError(cause instanceof Error ? cause.message : '重新生成失败')
     // 回退可能已经成功、重发失败：以库里的状态为准重新装载，别让界面与库里错位
@@ -852,84 +1125,119 @@ async function regenerate(turnIndex: number): Promise<void> {
   }
 }
 
-/**
- * 按给定的一句提问重新发一轮（重新生成用）。
- *
- * 与 `send()` 共用同一套流式处理，但不走"新建会话"那条分支——会话已经存在，
- * 也不该再改路由。
- */
-async function resend(
-  text: string,
-  context: ChatHistoryMessage[],
-  model: string | undefined,
-  id: string,
-): Promise<void> {
-  messages.value = [
-    ...messages.value,
-    makeMessage('user', text),
-    makeMessage('assistant', '', {
-      streaming: true,
-      thinking: { enabled: thinkingOn.value, effort: thinkingEffort.value },
-    }),
-  ]
-  const index = messages.value.length - 1
-  sending.value = true
-  stick.value = true
-  void scrollToBottom()
-  const patch = (part: Partial<Message>): void => {
-    const current = messages.value[index]
-    if (current) Object.assign(current, part)
-  }
-  try {
-    const handle = await chatStream(
-      {
-        query: text,
-        kb_ids: effectiveKbIds.value,
-        skill_names: pinnedSkills.value,
-        history: context,
-        conversation_id: id,
-        model_pk: model,
-        thinking: thinkingOn.value,
-        thinking_effort: thinkingEffort.value,
-      },
-      {
-        onStep: (step) => patch({ steps: mergeStep(messages.value[index]?.steps ?? [], step) }),
-        onSources: (items) => patch({ sources: items }),
-        onThinking: (chunk) =>
-          patch({ thinkingText: (messages.value[index]?.thinkingText ?? '') + chunk }),
-        onDelta: (delta) => patch({ text: (messages.value[index]?.text ?? '') + delta }),
-        onDone: (answer) => {
-          patch({ text: answer, streaming: false })
-          finish()
-        },
-        onError: (message) => {
-          patch({ error: message, streaming: false })
-          finish()
-        },
-      },
-    )
-    stream.value = handle
-    if (unmounted) {
-      handle.abort()
-      finish()
-    }
-  } catch (cause) {
-    if (!isAbortError(cause)) {
-      patch({ error: cause instanceof Error ? cause.message : '对话失败', streaming: false })
-    }
-    finish()
-  }
-}
-
 /** 正在闪的引用（`"${turn}:${index}"`）。点行内徽标时用它把视线引过去。 */
 const flashCite = ref('')
 let flashTimer: number | undefined
 
 function onReplyClick(event: MouseEvent, index: number): void {
+  const target = event.target instanceof Element ? event.target : null
+  if (target && target.closest('[data-copy-code], [data-copy-table], [data-download-table]')) {
+    event.preventDefault()
+    void handleBlockAction(target)
+    return
+  }
   const chip = citeChipOf(event.target)
   if (!chip) return
   event.preventDefault()
   void revealSource(index, chip)
+}
+
+/* ---------------------------------------------------------------- 代码块 / 表格的按钮
+   这两个按钮是 `v-html` 渲染出来的（`useMarkdown` 里拼的字符串），**绑不上 Vue 事件**。
+   给每块代码渲染后再遍历一遍 DOM 挂监听也不划算——回答是流式的，每来一段就要重挂。
+   所以走**事件委托**：判断点在谁身上，再从 DOM 里取内容。
+   它挂在 `.turn` 的 click 上（`onReplyClick`）——那本来就是这一块唯一的委托入口。 */
+
+const copiedBlock = ref('') // 刚复制过的那一块，用于把图标换成"已复制"
+let copiedBlockTimer = 0
+
+/** 复制成功的反馈与消息级的复制按钮同一套：短暂显示、之后自己消失。 */
+function flashBlock(el: Element): void {
+  const key = Math.random().toString(36).slice(2)
+  el.setAttribute('data-copied', key)
+  copiedBlock.value = key
+  window.clearTimeout(copiedBlockTimer)
+  copiedBlockTimer = window.setTimeout(() => {
+    el.removeAttribute('data-copied')
+    if (copiedBlock.value === key) copiedBlock.value = ''
+  }, 1600)
+}
+
+/**
+ * 表格 → CSV。
+ *
+ * **必须带 BOM**：Excel 打开不带 BOM 的 UTF-8 CSV 会把中文读成乱码，
+ * 而"导出给别人用 Excel 打开"正是这个按钮唯一的用途。
+ * 字段里的引号按 CSV 规矩翻倍，含逗号/引号/换行的字段整体加引号。
+ */
+function tableToCsv(table: HTMLTableElement): string {
+  const cellText = (cell: Element) => (cell.textContent ?? '').replace(/\s+/g, ' ').trim()
+  const rows = Array.from(table.querySelectorAll('tr')).map((row) =>
+    Array.from(row.querySelectorAll('th, td')).map((cell) => {
+      const value = cellText(cell)
+      return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value
+    }),
+  )
+  return rows.map((row) => row.join(',')).join('\r\n')
+}
+
+function downloadTable(el: Element): void {
+  const table = el.closest('.md-table-block')?.querySelector('table')
+  if (!table) return
+  // BOM + CSV。文件名给一个能认出来的默认值，用户不用改名就能存下多张
+  const blob = new Blob(['﻿' + tableToCsv(table)], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `表格-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.csv`
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
+/**
+ * 代码块 / 表格上的按钮。返回 `true` 表示这一下已经被处理掉了。
+ *
+ * 代码块里**没有**"下载"：代码下载成 .txt 不如直接复制——真正想要文件的人
+ * 要的是"存成一个能跑的脚本"，那需要知道扩展名与编码，属于另一个决定。
+ */
+async function handleBlockAction(target: Element): Promise<boolean> {
+  const copyCode = target.closest('[data-copy-code]')
+  if (copyCode) {
+    // 只取 `pre` 的文本：语言名在头部带里，不该被带进剪贴板
+    const code = copyCode.closest('.md-code')?.querySelector('pre')?.innerText ?? ''
+    try {
+      await navigator.clipboard.writeText(code)
+      flashBlock(copyCode)
+    } catch {
+      notifyError('复制失败，请手动选中后复制')
+    }
+    return true
+  }
+  const copyTable = target.closest('[data-copy-table]')
+  if (copyTable) {
+    const table = copyTable.closest('.md-table-block')?.querySelector('table')
+    if (!table) return true
+    try {
+      // 表格进剪贴板用**制表符分隔**而不是 CSV：粘进 Excel / 飞书表格时
+      // 它会被直接拆成单元格，而 CSV 粘过去是一整行纯文本
+      const rows = Array.from(table.querySelectorAll('tr')).map((row) =>
+        Array.from(row.querySelectorAll('th, td'))
+          .map((cell) => (cell.textContent ?? '').replace(/\s+/g, ' ').trim())
+          .join('\t'),
+      )
+      await navigator.clipboard.writeText(rows.join('\n'))
+      flashBlock(copyTable)
+    } catch {
+      notifyError('复制失败，请手动选中后复制')
+    }
+    return true
+  }
+  const download = target.closest('[data-download-table]')
+  if (download) {
+    downloadTable(download)
+    return true
+  }
+  return false
 }
 
 /** 键盘与鼠标走同一条路：徽标是 `role="button"`，Enter / 空格都得能用。 */
@@ -1240,11 +1548,24 @@ function closeReader(): void {
           <SkeletonBlock variant="list" :rows="4" />
         </div>
 
-        <!-- 空状态：居中问候 + 示例问题（参考 WeKnora 的欢迎层）。
+        <!-- 空状态：品牌标 + 示例问题（参考 Kimi 的欢迎层：一行大标识、不说话）。
              有消息之后整块消失，让位给正文——它不是常驻装饰。
              `pendingEntry` 期间不画：那时还没决定该显示哪条对话（见 resolvingEntry）。 -->
         <div v-else-if="messages.length === 0" class="welcome">
-          <h1 class="welcome-title">Hi，我是 KYLAB，让你的知识触手可及</h1>
+          <!--
+            **字标替掉了原来那句「Hi，我是 KYLAB，让你的知识触手可及」**（v0.25，
+            用户指定：把侧栏的字标搬到这里）。两处理由：
+
+            1. 那句话是**自我介绍**，而进入这一页的人已经知道自己在用什么——
+               它占着整页最贵的一块位置说一件已知的事。Kimi 的空态只有一个 KIMI 字标。
+            2. 侧栏那一格只有 24px 宽，字标在那里既读不出来、又跟导航抢宽度。
+               字标挪到这里，侧栏只留烧瓶，两边都松了。
+
+            下面那行标语留着：它是品牌定位，不是"这一页是什么"的解释性小字
+            （规范 §5.1 禁的是后者）。嫌多的话说一声，删掉就是一行的事。
+          -->
+          <IconLogo :size="34" />
+          <p class="welcome-tagline">让你的知识触手可及</p>
           <!--
             推荐问题整块**跟着"有没有选中知识库"出现/消失**（v0.19，用户指定）。
             用 `<Transition>` 而不是 v-if 直接摘掉：勾上库的那一刻它才出现，
@@ -1310,153 +1631,259 @@ function closeReader(): void {
           </div>
 
           <div v-if="turn.reply" class="reply">
-            <p v-if="turn.reply.error" class="reply-error">{{ turn.reply.error }}</p>
+            <!-- 头像在左边那条沟槽里；正文与它下面的动作都归右边那一列 -->
+            <span class="reply-avatar" aria-hidden="true">
+              <IconLogo variant="mark" :size="22" />
+            </span>
+            <div class="reply-body">
+              <p v-if="turn.reply.error" class="reply-error">{{ turn.reply.error }}</p>
 
-            <template v-else>
-              <!-- 依据摘要：这一行的数字就是"这句回答有没有出处"的答案。
+              <template v-else>
+                <!-- 依据摘要：这一行的数字就是"这句回答有没有出处"的答案。
                    展开才是过程与来源 -->
-              <button
-                v-if="hasTrace(turn.reply)"
-                type="button"
-                class="trace-head"
-                :aria-expanded="isTraceOpen(turn.reply)"
-                @click="toggleTrace(turn)"
-              >
-                <IconChevronRight
-                  class="trace-caret"
-                  :class="{ 'trace-caret-open': isTraceOpen(turn.reply) }"
-                  :size="14"
-                />
-                <span class="trace-summary">{{ traceSummary(turn.reply) }}</span>
-              </button>
+                <button
+                  v-if="hasTrace(turn.reply)"
+                  type="button"
+                  class="trace-head"
+                  :aria-expanded="isTraceOpen(turn.reply)"
+                  @click="toggleTrace(turn)"
+                >
+                  <IconChevronRight
+                    class="trace-caret"
+                    :class="{ 'trace-caret-open': isTraceOpen(turn.reply) }"
+                    :size="14"
+                  />
+                  <!-- 流式时这一行是**滚动的实时状态**（v0.27，照 DeepSeek 的 harness）：
+                       工具在跑就报工具名，思考在写就给它最新的那一截，
+                       始终只占一行——见 `liveLine`。 -->
+                  <LiveLine
+                    v-if="turn.reply.streaming"
+                    class="trace-summary trace-live"
+                    :text="liveLine(turn.reply)"
+                  />
+                  <span v-else class="trace-summary">{{ traceSummary(turn.reply) }}</span>
+                </button>
 
-              <div v-show="isTraceOpen(turn.reply)" class="trace">
-                <!-- 过程时间线：只列真发生过的步骤 -->
-                <ol class="steps">
-                  <li
-                    v-for="step in traceSteps(turn)"
-                    :key="step.key"
-                    class="step"
-                    :class="{ 'step-empty': step.empty }"
-                  >
-                    <span class="step-icon">
-                      <component :is="STEP_ICONS[step.icon]" :size="13" />
-                    </span>
-                    <div class="step-body">
-                      <p class="step-label">{{ step.label }}</p>
-                      <p v-if="step.detail" class="step-detail">{{ step.detail }}</p>
-                    </div>
-                  </li>
-                </ol>
+                <!--
+                折叠区用 `v-if` 而不是 `v-show`：这一块装着步骤、思考全文与每条出处的
+                正文预览，`v-show` 会让**每一轮**的这些都留在文档里——聊到几十轮时
+                它们只是被 CSS 藏起来，DOM 节点、文本与布局开销一直在。
+                没有 `v-show` 就没有关闭动画的损失：这块本来就没有过渡（只有标题上
+                那个箭头的 transform）。
+              -->
+                <div v-if="isTraceOpen(turn.reply)" class="trace">
+                  <!-- 过程时间线：只列真发生过的步骤 -->
+                  <!--
+                    过程时间线：只列真发生过的步骤。
 
-                <!-- 思考过程（推理模型的 reasoning_content）：过程的一部分，收在面板里。
+                    **同类工具并成一行**（v0.26，用户要求"参考 Web Search 的做法"）：
+                    实测一个回合里联网搜索 7 次 + 抓取网页 2 次（交替出现），
+                    不并就是九行几乎一样的东西，扫过去只看到"它查了很多次"。
+                    并完两行，点开才是每一次的结论与原文——**合并的是入口，不是信息**。
+                    分组规则在 `traceEntries` 里（只并同一块内、按首次出现排、
+                    只调用一次的不并）。
+                  -->
+                  <ol class="steps">
+                    <template v-for="entry in traceEntries(turn)" :key="entry.key">
+                      <!-- 一组：一个入口 + 次数，点开看这一组的每一次调用 -->
+                      <li v-if="entry.kind === 'group'" class="step step-group">
+                        <span class="step-icon">
+                          <component :is="STEP_ICONS[entry.icon]" :size="13" />
+                        </span>
+                        <div class="step-body">
+                          <button
+                            type="button"
+                            class="step-label step-toggle"
+                            :aria-expanded="isGroupOpen(entry.key)"
+                            @click="toggleGroup(entry.key)"
+                          >
+                            {{ entry.label }}
+                            <span class="step-count">{{ entry.steps.length }} 次</span>
+                            <IconChevronDown
+                              class="step-caret"
+                              :class="{ 'step-caret-open': isGroupOpen(entry.key) }"
+                              :size="12"
+                            />
+                          </button>
+                          <ol v-if="isGroupOpen(entry.key)" class="steps steps-nested">
+                            <TraceStepRow
+                              v-for="child in entry.steps"
+                              :key="child.key"
+                              :step="child"
+                              :open="isStepOpen(child.key)"
+                              :icons="STEP_ICONS"
+                              variant="child"
+                              @toggle="toggleStep(child.key)"
+                            />
+                          </ol>
+                        </div>
+                      </li>
+
+                      <!-- 单独一步：绝大多数工具只调一次，那一档不该多一层点击 -->
+                      <TraceStepRow
+                        v-else
+                        :step="entry.step"
+                        :open="isStepOpen(entry.step.key)"
+                        :icons="STEP_ICONS"
+                        @toggle="toggleStep(entry.step.key)"
+                      />
+                    </template>
+                  </ol>
+
+                  <!-- 思考过程（推理模型的 reasoning_content）：过程的一部分，收在面板里。
                      它可能很长，所以限高滚动，不挤占正文的位置。 -->
-                <div v-if="turn.reply.thinkingText" class="thinking">
-                  <p class="thinking-label">
-                    <span
-                      v-if="turn.reply.streaming && !turn.reply.text"
-                      class="thinking-dot"
-                      aria-hidden="true"
-                    />
-                    思考过程
-                  </p>
-                  <p class="thinking-text">{{ turn.reply.thinkingText }}</p>
-                </div>
+                  <div v-if="turn.reply.thinkingText && !turn.reply.streaming" class="thinking">
+                    <p class="thinking-label">
+                      <span
+                        v-if="turn.reply.streaming && !turn.reply.text"
+                        class="thinking-dot"
+                        aria-hidden="true"
+                      />
+                      思考过程
+                    </p>
+                    <!-- 思考过程里也常带网址（它读过的那些页）：与过程、正文同一套口径，
+                         能点就点。`max-height` 那些样式在 `.thinking-text` 上，
+                         而 LinkText 的根是 span —— 样式里补了 `display: block`。 -->
+                    <LinkText class="thinking-text" :text="turn.reply.thinkingText" />
+                  </div>
 
-                <!-- 逐条出处：行内徽标点进来会滚到对应这一条 -->
-                <ol v-if="turn.reply.sources.length" class="cites">
-                  <li
-                    v-for="source in turn.reply.sources"
-                    :key="source.chunk_id"
-                    class="cite"
-                    :class="{ 'cite-flash': flashCite === `${turnIndex}:${source.index}` }"
-                    :data-source="source.index"
-                  >
-                    <div class="cite-head">
-                      <span class="cite-index tabular">[{{ source.index }}]</span>
-                      <!-- 点文件名在**右侧抽屉**里打开原文，带着页码落到那一页
+                  <!-- 逐条出处：行内徽标点进来会滚到对应这一条 -->
+                  <ol v-if="turn.reply.sources.length" class="cites">
+                    <li
+                      v-for="source in turn.reply.sources"
+                      :key="source.chunk_id"
+                      class="cite"
+                      :class="{ 'cite-flash': flashCite === `${turnIndex}:${source.index}` }"
+                      :data-source="source.index"
+                    >
+                      <div class="cite-head">
+                        <span class="cite-index tabular">[{{ source.index }}]</span>
+                        <!-- 点文件名在**右侧抽屉**里打开原文，带着页码落到那一页
                            （PDF 走 #page=N）。不做成链接跳转：离开对话会丢掉
                            正在读的回答，而看出处本来是顺手一瞥的动作 -->
-                      <button type="button" class="cite-title" @click="openReader(source)">
-                        {{ source.document_name }}
-                      </button>
-                      <span v-if="sourceWhere(source)" class="cite-where">{{
-                        sourceWhere(source)
-                      }}</span>
-                      <!-- 预览只显示 120 字（见 CITE_PREVIEW_CHARS）：给一个就地看全的入口，
+                        <button type="button" class="cite-title" @click="openReader(source)">
+                          {{ source.document_name }}
+                        </button>
+                        <span v-if="sourceWhere(source)" class="cite-where">{{
+                          sourceWhere(source)
+                        }}</span>
+                        <!-- 预览只显示 120 字（见 CITE_PREVIEW_CHARS）：给一个就地看全的入口，
                            否则用户得跳去文档页再自己找回来 -->
-                      <button type="button" class="cite-more" @click="openSource(source)">
-                        看全文
-                      </button>
-                    </div>
-                    <p class="cite-preview">{{ sourcePreview(source) }}</p>
-                  </li>
-                </ol>
-              </div>
+                        <button type="button" class="cite-more" @click="openSource(source)">
+                          看全文
+                        </button>
+                      </div>
+                      <p class="cite-preview">{{ sourcePreview(source) }}</p>
+                    </li>
+                  </ol>
+                </div>
 
-              <!--
+                <!--
                 回答是模型写的 Markdown。这里用 v-html 是刻意的：renderAnswerWithCitations 会先转义
                 全部 HTML，再只还原它自己识别出的标记（tests/unit/composables/useMarkdown.test.ts
                 里有对应的注入用例）。换成插值就等于把 ** 和 - 原样摆给用户看。
                 它同时把 `[1]` 标号换成可点击的徽标——点一下能落到那条出处。
               -->
-              <!-- eslint-disable vue/no-v-html -->
-              <div
-                class="reply-text"
-                :class="{ 'reply-text-streaming': turn.reply.streaming }"
-                v-html="renderAnswerWithCitations(turn.reply.text, turn.reply.sources)"
-              />
-              <!-- eslint-enable vue/no-v-html -->
+                <!-- eslint-disable vue/no-v-html -->
+                <div
+                  class="reply-text"
+                  :class="{ 'reply-text-streaming': turn.reply.streaming }"
+                  v-html="renderAnswerWithCitations(turn.reply.text, turn.reply.sources)"
+                />
+                <!-- eslint-enable vue/no-v-html -->
 
-              <!--
-                降级提示（v25）：这一轮少了意图识别与检索词改写（规划调用失败），
-                所以要**如实说出来并给一个重试入口**——否则用户只会觉得"这次答得差"，
+                <!--
+                降级提示（v25 起；v0.2 把口径从"规划失败"改成工具循环的"步数用尽"）：
+                **没按设计走完**是这一轮唯一的降级情形——它还想继续查，但工具步数用完了。
+                所以要如实说出来并给一个重试入口：否则用户只会觉得"这次答得差"，
                 却不知道是链路退化了、也不知道能不能再要一次。
                 重试就是重发同一句提问（复用 `regenerate`），所以只在最后一轮给按钮。
               -->
-              <p v-if="!turn.reply.streaming && wasDegraded(turn.reply)" class="reply-degraded">
-                <IconAlert :size="13" />
-                这次没走多轮检索（规划调用失败，直接按原问题检索了一遍）。
-                <button
-                  v-if="turnIndex === turns.length - 1 && !sending"
-                  type="button"
-                  class="degraded-retry"
-                  :disabled="regenerating"
-                  @click="regenerate(turnIndex)"
-                >
-                  {{ regenerating ? '重试中…' : '重试' }}
-                </button>
-              </p>
+                <p v-if="!turn.reply.streaming && wasDegraded(turn.reply)" class="reply-degraded">
+                  <IconAlert :size="13" />
+                  这次没跑完（工具步数用尽，它是按当时拿到的资料作答的）。
+                  <button
+                    v-if="turnIndex === turns.length - 1 && !sending"
+                    type="button"
+                    class="degraded-retry"
+                    :disabled="regenerating"
+                    @click="regenerate(turnIndex)"
+                  >
+                    {{ regenerating ? '重试中…' : '重试' }}
+                  </button>
+                </p>
 
-              <!-- 消息级操作：复制永远可用；重新生成只给**最后一轮**——
+                <!--
+                  **交付物**（v0.26）：这一轮产出的文件摆在这里，正文之后、动作之前。
+                  改之前它们挂在各自那一步下面——交付物出现在过程面板**中间**，
+                  要往下翻十来步工具调用才看得到，而面板一收起卡片就跟着没了。
+                  交付物是这个回合的**结果**，不是过程的中间产物。
+                -->
+                <ul v-if="replyArtifacts(turn).length" class="deliverables">
+                  <li v-for="file in replyArtifacts(turn)" :key="file.artifact_id" class="artifact">
+                    <span class="artifact-icon">{{ file.format.toUpperCase() }}</span>
+                    <button
+                      type="button"
+                      class="artifact-main"
+                      @click="openFiles(file.artifact_id)"
+                    >
+                      <span class="artifact-body">
+                        <span class="artifact-name">{{ file.name }}</span>
+                        <span class="artifact-meta tabular">
+                          {{ formatBytes(file.size_bytes) }}
+                          <template v-if="file.where"> · {{ file.where }}</template>
+                        </span>
+                      </span>
+                      <span class="artifact-action">预览</span>
+                    </button>
+                    <button
+                      v-if="!file.knowledge_base_id"
+                      type="button"
+                      class="artifact-kb"
+                      @click="openIngest(file)"
+                    >
+                      存进知识库
+                    </button>
+                    <span v-else class="artifact-kb-done" :title="kbName(file.knowledge_base_id)">
+                      已存进知识库{{
+                        kbName(file.knowledge_base_id)
+                          ? `「${kbName(file.knowledge_base_id)}」`
+                          : ''
+                      }}
+                    </span>
+                  </li>
+                </ul>
+
+                <!-- 消息级操作：复制永远可用；重新生成只给**最后一轮**——
                    重生成中间那轮要先回退掉它之后的全部对话，那不是用户点这个按钮的意思 -->
-              <div v-if="!turn.reply.streaming" class="reply-actions">
-                <button
-                  type="button"
-                  class="msg-action"
-                  @click="copyMessage(turnIndex, turn.reply)"
-                >
-                  <IconCopy :size="13" />
-                  {{ copiedKey === `${turnIndex}:assistant` ? '已复制' : '复制' }}
-                </button>
-                <!-- 存为笔记：问答是笔记最自然的来源之一（对标 ima 的"存为笔记"）。
+                <div v-if="!turn.reply.streaming" class="reply-actions">
+                  <button
+                    type="button"
+                    class="msg-action"
+                    @click="copyMessage(turnIndex, turn.reply)"
+                  >
+                    <IconCopy :size="13" />
+                    {{ copiedKey === `${turnIndex}:assistant` ? '已复制' : '复制' }}
+                  </button>
+                  <!-- 存为笔记：问答是笔记最自然的来源之一（对标 ima 的"存为笔记"）。
                      笔记本身可以再一键加入知识库，于是"问答 → 笔记 → 语料"闭环 -->
-                <button type="button" class="msg-action" @click="saveAsNote(turnIndex, turn)">
-                  <IconNote :size="13" />
-                  {{ savedTurns.has(turnIndex) ? '已存为笔记' : '存为笔记' }}
-                </button>
-                <button
-                  v-if="turnIndex === turns.length - 1 && !sending"
-                  type="button"
-                  class="msg-action"
-                  :disabled="regenerating"
-                  @click="regenerate(turnIndex)"
-                >
-                  <IconRegenerate :size="13" />
-                  {{ regenerating ? '生成中…' : '重新生成' }}
-                </button>
-              </div>
-            </template>
+                  <button type="button" class="msg-action" @click="saveAsNote(turnIndex, turn)">
+                    <IconNote :size="13" />
+                    {{ savedTurns.has(turnIndex) ? '已存为笔记' : '存为笔记' }}
+                  </button>
+                  <button
+                    v-if="turnIndex === turns.length - 1 && !sending"
+                    type="button"
+                    class="msg-action"
+                    :disabled="regenerating"
+                    @click="regenerate(turnIndex)"
+                  >
+                    <IconRegenerate :size="13" />
+                    {{ regenerating ? '生成中…' : '重新生成' }}
+                  </button>
+                </div>
+              </template>
+            </div>
           </div>
         </div>
       </div>
@@ -1503,6 +1930,12 @@ function closeReader(): void {
                 <button type="button" class="tool-item" @click="fileInput?.click()">
                   <IconUpload :size="15" />
                   <span>添加文件和图片</span>
+                </button>
+                <!-- 浏览这一条会话的文件区（工作区目录 / 临时区）：与"添加"是两件事——
+                     一个是往这一轮里塞素材，一个是看已经在那儿的文件 -->
+                <button type="button" class="tool-item" @click="openFiles()">
+                  <IconFolder :size="15" />
+                  <span>浏览文件</span>
                 </button>
                 <button
                   type="button"
@@ -1689,6 +2122,54 @@ function closeReader(): void {
       </template>
     </AppModal>
 
+    <!--
+      存进知识库（v0.26）：**一定要经过这一步，不让服务端替他挑库**。
+      库里只有一个时也不是一键入库——"放进哪个库"是用户的事，
+      而这个弹窗就是他回答这件事的地方，成本只有一次点击。
+    -->
+    <AppModal
+      :open="ingestTarget !== null"
+      title="存进知识库"
+      @update:open="(value: boolean) => !value && (ingestTarget = null)"
+    >
+      <p v-if="ingestTarget" class="ingest-note">
+        把「{{ ingestTarget.name }}」存一份到知识库，之后它就能被检索到。
+        <span class="ingest-hint"
+          >原文件仍然在{{ ingestTarget.where || '原处' }}，不会被搬走。</span
+        >
+      </p>
+      <ul v-if="store.items.length" class="ingest-picks">
+        <li v-for="kb in store.items" :key="kb.id">
+          <button
+            type="button"
+            class="ingest-pick"
+            :class="{ on: ingestKbId === kb.id }"
+            :aria-pressed="ingestKbId === kb.id"
+            @click="ingestKbId = kb.id"
+          >
+            {{ kb.name }}
+          </button>
+        </li>
+      </ul>
+      <p v-else class="ingest-note">还没有知识库。先去「知识库」建一个，再回来存。</p>
+      <template #footer>
+        <AppButton @click="ingestTarget = null">取消</AppButton>
+        <AppButton variant="primary" :disabled="!ingestKbId || ingesting" @click="confirmIngest">
+          {{ ingesting ? '存入中…' : '存进这个库' }}
+        </AppButton>
+      </template>
+    </AppModal>
+
+    <!-- 文件抽屉：产物预览 + 文件区浏览（工作区目录 / 会话临时区）。
+         `:key` 绑会话 id：换一条会话就整个重来（文件区是按会话划的） -->
+    <FileDrawer
+      v-if="fileDrawer && conversationId"
+      :key="`${conversationId}-${fileDrawer.nonce}`"
+      :conversation-id="conversationId"
+      :initial-key="fileDrawer.key"
+      @close="fileDrawer = null"
+    />
+
     <!-- 引用文档抽屉：右侧滑出、盖在对话上。`:key` 绑文档 id——换一份文档时
          重新播放入场动画并把上一份的切块/预览状态彻底重置 -->
     <DocumentDrawer
@@ -1700,6 +2181,8 @@ function closeReader(): void {
     />
   </div>
 </template>
+
+<style scoped src="src/components/chat/trace-row.css"></style>
 
 <style scoped>
 /* 整页占满内容区：中间滚动、底部固定输入卡片。
@@ -1777,12 +2260,13 @@ function closeReader(): void {
   text-align: center;
 }
 
-.welcome-title {
-  margin: 0;
-  font-size: var(--text-page-title-size);
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--text-primary);
+/* 字标下的标语：比正文小一档、用二级灰。它是品牌定位，不是要点，
+   所以不抢字标的注意力；与字标的间距比块间距离（16px）小一档，
+   让两者读成一个整体而不是两行独立文字。 */
+.welcome-tagline {
+  margin: calc(var(--space-3) * -1) 0 0;
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
 }
 
 /* 推荐问题的进出场（v0.19）。它出现的时机是"勾上知识库"，
@@ -1881,7 +2365,7 @@ function closeReader(): void {
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border-hairline);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .sample:hover {
@@ -1902,6 +2386,35 @@ function closeReader(): void {
 
 .turn + .turn {
   margin-top: var(--space-6);
+}
+
+/* 助手消息的**头像沟槽**（v0.25）：回答左侧留一条 40px 的竖栏放头像。
+   为什么要有：没有头像时，"谁在说这句话"只能靠位置与排版去猜——
+   用户来回几条之后就分不清哪段是回答、哪段是自己引用的原文。
+   Kimi 也是这么排的（它的头像是 56px 的动态图形，沟槽 60px）。
+   用**烧瓶**而不是写 "KYLAB"：侧栏顶部已经是那只烧瓶，同一套标识才立得住。 */
+.reply {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+
+.reply-avatar {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  color: var(--Always-White);
+  background: var(--accent);
+  border-radius: var(--radius-pill);
+}
+
+/* 正文与它下面那一排动作都占右边那一列 */
+.reply-body {
+  flex: 1;
+  min-width: 0;
 }
 
 /* 提问：右对齐气泡。整块换底色在"对话"这个语境里是成熟产品的通例——
@@ -1966,7 +2479,7 @@ function closeReader(): void {
   gap: var(--space-1);
   margin: var(--space-2) 0 0;
   font-size: var(--text-micro-size);
-  line-height: 1.6;
+  line-height: var(--line-prose);
   color: var(--status-warning);
 }
 
@@ -1986,11 +2499,175 @@ function closeReader(): void {
   cursor: default;
 }
 
-/* 没有新增资料的检索轮次：压暗一档。它和"找到了新东西"的那几轮价值不同，
-   一样重会让人以为每一轮都有收获 */
-.step-empty .step-label,
-.step-empty .step-detail {
+/* 交付物卡片（v0.25 起，v0.26 从步骤里搬到正文后面）。
+   **不做成图标按钮**：文件是"结果"，不是"操作"——它该占一条完整的行，
+   把文件名与大小摆出来（用户要先确认这是不是他要的那份，才谈得上下载）。 */
+.artifacts {
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* v0.26：卡片成了**一个框里两件事**（下载 / 存进知识库），所以外框在 li 上，
+   里面那个 `.artifact-main` 才是原来的整块可点区域。合起来看还是一行卡片，
+   但下载与入库不再互相抢点击区。 */
+.artifact {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  max-width: 460px;
+  min-height: 48px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-row);
+  background: var(--bg-subtle);
+  color: var(--text-primary);
+  transition: var(--transition-ui);
+}
+
+.artifact:hover {
+  background: var(--bg-group);
+  border-color: var(--border-strong);
+}
+
+.artifact-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* 「存进知识库」是**次要动作**：一个字重、一层底色，不与「下载」抢注意力。
+   它是这一版把"入库显式化"落到手上的那个按钮，所以必须看得见、点得到。 */
+.artifact-kb {
+  flex: 0 0 auto;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-control);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--text-micro-size);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: var(--transition-ui);
+}
+
+.artifact-kb:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 入库之后那句话**不可点**：它是状态，不是入口。再用按钮的样子画，
+   用户会去点它，然后什么都不会发生。 */
+.artifact-kb-done {
+  flex: 0 0 auto;
+  max-width: 160px;
+  overflow: hidden;
   color: var(--text-tertiary);
+  font-size: var(--text-micro-size);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 「存进知识库」弹窗：一句话交代 + 一列库名。
+   库名用胶囊（与工作区弹窗里的知识库勾选同一套观感），选中靠底色不靠描边。 */
+.ingest-note {
+  margin: 0 0 var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-meta-size);
+  line-height: var(--line-ui);
+}
+
+.ingest-hint {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--text-tertiary);
+  font-size: var(--text-micro-size);
+}
+
+.ingest-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ingest-pick {
+  height: var(--control-height);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-pill);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--text-meta-size);
+  cursor: pointer;
+  transition: var(--transition-ui);
+}
+
+.ingest-pick:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 选中态去掉描边、换底色：描边 + 底色同时出现会读成"按钮被按下"，
+   而这里表达的是**状态**（与工作区弹窗里的知识库勾选同一口径）。 */
+.ingest-pick.on {
+  border-color: transparent;
+  background: var(--bg-selected);
+  color: var(--text-primary);
+}
+
+/* 格式角标：`DOCX` / `XLSX`。用文字而不是图标——五种格式画五个图标，
+   读者还得先学会那套图标；三个字母他本来就认识。 */
+.artifact-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-control);
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  font-size: var(--text-c2-size);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.artifact-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-0-5);
+  min-width: 0;
+}
+
+.artifact-name {
+  overflow: hidden;
+  font-size: var(--text-meta-size);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.artifact-meta {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.artifact-action {
+  flex: 0 0 auto;
+  font-size: var(--text-meta-size);
+  color: var(--accent-text);
 }
 
 .reply-actions {
@@ -2027,6 +2704,9 @@ function closeReader(): void {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
+  /* 让里面那一行实时状态能撑开、也能被裁：不给上限时它是 inline-flex，
+     内容只会把按钮越撑越宽，`overflow: hidden` 永远不生效 */
+  max-width: 100%;
   margin: 0 0 var(--space-2) calc(-1 * var(--space-2));
   padding: var(--space-1) var(--space-2);
   font-size: var(--text-micro-size);
@@ -2037,6 +2717,13 @@ function closeReader(): void {
 .trace-head:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
+}
+
+/* 实时状态那一行：**一行，最多这么宽**（v0.27）。
+   比正文窄一档是有意的——它是一句过程播报，不该和正文抢同一条右边界。 */
+.trace-live {
+  max-width: min(34rem, 100%);
+  color: var(--text-secondary);
 }
 
 .trace-caret {
@@ -2071,47 +2758,25 @@ function closeReader(): void {
   background: var(--border);
 }
 
-.step {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
+/* 嵌套的那一层（一组展开后的每一次调用）**不画第二根竖线**：
+   它挂在外面那条时间轴上，再画一根会变成"两套并列的时间线"。 */
+.steps-nested {
+  margin: var(--space-2) 0 0;
 }
 
-.step + .step {
-  margin-top: var(--space-3);
+.steps-nested::before {
+  display: none;
 }
 
-.step-icon {
-  position: relative;
-  z-index: 1;
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 21px;
-  height: 21px;
-  color: var(--text-tertiary);
-  background: var(--bg-canvas);
-  border: 1px solid var(--border);
-  border-radius: 999px;
+/* 一组被点开时，上面那一行也要跟着亮一档：用户在看的正是那一行的内容 */
+.step-group .step-toggle[aria-expanded='true'] {
+  color: var(--text-primary);
 }
 
-.step-body {
-  min-width: 0;
-  padding-top: 1px;
-}
-
-.step-label {
-  margin: 0;
-  font-size: var(--text-micro-size);
-  color: var(--text-secondary);
-}
-
-.step-detail {
-  margin: var(--space-pair) 0 0;
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-  overflow-wrap: anywhere;
+/* 「N 次」：合并的**全部理由**就是它，所以它得看得见。
+   用弱一档的字色与小一号的字——它是量词，不是标签的一部分。 */
+.step-count {
+  color: var(--text-quaternary);
 }
 
 /* 思考过程：它是"过程"不是"结果"，用弱化的底色与文字，别和正文抢视线。
@@ -2136,17 +2801,19 @@ function closeReader(): void {
 .thinking-dot {
   width: 6px;
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--accent);
   animation: thinking-pulse 1.1s ease-in-out infinite;
 }
 
 .thinking-text {
+  /* LinkText 的根是 span：这里要的是**一块可滚动的区域**，所以显式声明块级 */
+  display: block;
   max-height: 220px;
   margin: 0;
   overflow-y: auto;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -2290,43 +2957,106 @@ function closeReader(): void {
   border-left: 3px solid var(--border);
 }
 
-/* 代码块：**横向滚动而不是折行**——折行会让缩进与对齐失真，
-   而代码恰恰靠缩进读结构 */
-.reply-text :deep(.md-pre) {
-  position: relative;
+/* ---------------------------------------------------------------- 代码块与表格
+   **两段式**（v0.25，照 Kimi 的对话页）：头部带（语言名 + 动作按钮）+ 内容区。
+   改之前代码块是一个整块，语言名用 `::before` 绝对定位在右上角——
+   代码一长就从它底下穿过去，像两样东西叠在一起；而且整块没有复制入口。
+   表格则是一个光秃秃的表格，没有圆角、没有头部带、没有复制/下载。
+
+   取值都从 Kimi 的对话页量出来（深色）：
+     - 容器：圆角 12、描边 1px `Separators-S1`
+     - 头部带：高 42、`padding 5px 12px`、底色比内容**暗一档**
+     - 语言名：14px/20 **600**、主文字色（它在头部带里是标题，不是脚注）
+     - 动作按钮：32×32、圆角 8、图标 20、默认三级灰、悬停给底色
+     - 代码区：`padding 16px`、等宽 14px/21px、底色比头部带亮一档
+   **头部带 sticky**：长代码块滚到中间时，语言名与复制按钮仍然在手边。 */
+.reply-text :deep(.md-code),
+.reply-text :deep(.md-table-block) {
   margin: var(--space-3) 0;
-  padding: var(--space-3);
-  overflow-x: auto;
-  font-size: var(--text-micro-size);
-  line-height: 1.6;
+  overflow: hidden;
   background: var(--bg-subtle);
   border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-control);
+  /* 12 而不是 `--radius-panel` 的 16：Kimi 的代码块与表格都是 12
+     （量的是 `.segment-code` 与 `.table-container`） */
+  border-radius: var(--radius-row);
+}
+
+.reply-text :deep(.md-code-head) {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 42px;
+  padding: 5px 12px;
+  background: var(--bg-group);
+  /* 头部带压在内容上：滚动时它不能跟着走 */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+/* 语言名吃掉剩余宽度：动作按钮因此被推到最右，不必再写 `margin-left: auto` */
+.reply-text :deep(.md-code-lang) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-meta-size);
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-text :deep(.md-icon-btn) {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition-surface);
+}
+
+.reply-text :deep(.md-icon-btn:hover) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+/* 复制成功：图标换成对勾。**用背景图而不是换 DOM**——按钮是 v-html 出来的，
+   换内容要重新解析整段 HTML，而这是每点一次都要发生的事 */
+.reply-text :deep(.md-icon-btn[data-copied]) {
+  color: var(--status-success);
+  background: var(--bg-hover);
+}
+
+/* 代码区：**横向滚动而不是折行**——折行会让缩进与对齐失真，
+   而代码恰恰靠缩进读结构。头部带既已独立，这里就不必再躲着语言名了。 */
+.reply-text :deep(.md-pre) {
+  margin: 0;
+  padding: var(--space-4);
+  overflow-x: auto;
+  font-size: var(--text-meta-size);
+  line-height: var(--line-code);
+  background: var(--bg-subtle);
 }
 
 .reply-text :deep(.md-pre code) {
   padding: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
+  font-size: inherit;
   background: none;
-}
-
-/* 语言名贴在右上角：读者一眼知道这是什么语言，而不必去数关键字 */
-.reply-text :deep(.md-pre[data-lang]::before) {
-  content: attr(data-lang);
-  position: absolute;
-  top: 0;
-  right: 0;
-  padding: var(--space-pair) var(--space-2);
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-  background: var(--bg-active);
-  border-bottom-left-radius: var(--radius-control);
 }
 
 /* 表格：窄列里必须能横向滚，否则宽表会把整页撑破 */
 .reply-text :deep(.md-table-wrap) {
-  margin: var(--space-3) 0;
   overflow-x: auto;
+  border-top: 1px solid var(--border-hairline);
 }
 
 .reply-text :deep(.md-table) {
@@ -2338,13 +3068,18 @@ function closeReader(): void {
 .reply-text :deep(.md-table td) {
   padding: var(--space-2) var(--space-3);
   text-align: left;
-  border: 1px solid var(--border-hairline);
+  /* 表格自己的边框交给单元格：外框已经由 `.md-table-block` 给了，
+     再画一圈是两道线叠在一起 */
+  border-bottom: 1px solid var(--border-hairline);
 }
 
 .reply-text :deep(.md-table th) {
   font-weight: 600;
   color: var(--text-primary);
-  background: var(--bg-subtle);
+}
+
+.reply-text :deep(.md-table tr:last-child td) {
+  border-bottom: none;
 }
 
 .reply-text :deep(.md-hr) {
@@ -2532,7 +3267,7 @@ function closeReader(): void {
   color: var(--text-secondary);
   background: var(--bg-surface);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   box-shadow: var(--shadow-popover);
   transform: translateX(-50%);
 }
@@ -2547,14 +3282,19 @@ function closeReader(): void {
   max-width: var(--chat-measure);
   margin: 0 auto;
   padding: var(--space-3) var(--space-4) var(--space-2);
-  background: var(--bg-surface);
+  /* **抬起来的一层，比画布亮**：深色下 Kimi 的 `.chat-editor-content` 实测 `#1f1f1f`，
+     而画布是 `#181817`。此前用 `--bg-surface`（`#121212`）——那比画布还暗，
+     读起来是"凹进去的一块"。方向反了：输入框是页面里唯一常驻的抬起面，
+     它必须比底亮。`--bg-group` 就是这一档（`BgGp-Secondary`）。 */
+  background: var(--bg-group);
   /* 圆角取 Kimi 的 `--chat-input-radius`（24px），比面板那一档更圆——
-     输入框是"手里的东西"，圆到接近胶囊才符合它的体量。
-     **不画描边**：Kimi 的输入卡片靠"底色抬起来"表达边界，线会让它变成又一个表单项。
-     改为一层极淡的浮起阴影，在暖底上足以划出边界，又不喧哗。 */
-  border: 0;
+     输入框是"手里的东西"，圆到接近胶囊才符合它的体量。 */
+  border: 1px solid var(--border-subtle);
   border-radius: var(--chat-input-radius);
-  box-shadow: var(--shadow-raised);
+  /* 阴影也换到它自己那一档（Kimi 实测 `0 5px 16px -4px` / 7%）：
+     `--shadow-raised`（`0 1px 2px` / 4%）是给"几乎没离开纸面"的东西用的，
+     对输入框太轻，抬不起 130px 的一块。 */
+  box-shadow: var(--shadow-input);
 }
 
 /* 聚焦环**只画一圈，画在卡片上**（v0.18 修）。
@@ -2784,7 +3524,7 @@ function closeReader(): void {
   width: 28px;
   height: 16px;
   background: var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   transition: background var(--motion-fast) var(--motion-ease);
 }
 
@@ -2800,7 +3540,7 @@ function closeReader(): void {
   width: 12px;
   height: 12px;
   background: var(--bg-surface);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   transition: transform var(--motion-fast) var(--motion-ease);
 }
 
@@ -2835,11 +3575,10 @@ function closeReader(): void {
   width: 260px;
   max-height: 280px;
   margin: 0;
-  padding: var(--space-2);
+  padding: var(--menu-pad);
   overflow-y: auto;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-overlay);
+  background: var(--bg-menu);
+  border-radius: var(--radius-panel);
   box-shadow: var(--shadow-popover);
 }
 
@@ -2882,8 +3621,13 @@ function closeReader(): void {
   height: var(--icon-button-height);
   color: var(--button-primary-text);
   background: var(--button-primary-bg);
-  border-radius: var(--radius-pill);
-  transition: var(--transition-ui);
+  /* 圆角取 Kimi 的 `--radius-send`（22px，实测自 `.send-button-container`），
+     不是 999px：36px 的方块上两者看起来都是圆，但 22px 在按钮被拉宽时
+     仍是一个"圆角方块"，999px 会变成胶囊——语义不同。 */
+  border-radius: var(--radius-send);
+  /* 它自成一档：Kimi 的发送键用 `background-color .15s cubic-bezier(.4,0,.2,1)`，
+     不是全站的 ease。按下即走，不要"缓入"。 */
+  transition: background-color var(--motion-fast) var(--motion-send);
 }
 
 .send-btn:hover:not(:disabled) {

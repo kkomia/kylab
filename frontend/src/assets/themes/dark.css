@@ -159,6 +159,15 @@
   --border-hairline: var(--Separators-S1);
   --border: var(--Separators-S1);
   --border-strong: var(--Separators-S1-active);
+  /* 发丝线：Kimi 实测两档强度——6% 只够"看出边界"（`.chat-editor-content` 的输入框），
+     12% 才够"看出这是一块"（`.new-chat-btn` 的填充块）。后者就是上面的
+     `--border-hairline`（`Separators-S1` = 12%），前者另立一档。 */
+  --border-subtle: rgb(255 255 255 / 6%);
+
+  /* 菜单项的主行用 Primary、副标题用 Tertiary——Kimi 的 `.name` / `.desc` 实测如此。
+     它不把主行压到二级灰：那等于把"两个层级"合成一个。 */
+  --menu-item-text: var(--Labels-Primary);
+  --menu-desc-text: var(--Labels-Tertiary);
 
   --meter-track: var(--Fills-F3);
   --separator: var(--text-tertiary);
@@ -194,7 +203,13 @@
   --button-primary-bg-hover: var(--Labels-Primary-hover);
   --button-primary-text: var(--Bg-Primary);
 
-  --button-disabled-bg: var(--Bg-Secondary);
+  /* 禁用态：**主按钮禁用时是 `Fills-F3`，不是 `Bg-Secondary`**。
+     Kimi 的 `.km-button-primary[disabled]` 实测底 `rgba(255,255,255,.18)`——
+     正是 `Fills-F3`（`#ffffff2e` = 18%）；文字 `rgba(255,255,255,.26)` 正是
+     `Labels-Quaternary`（`#ffffff42`）。
+     用 `#1f1f1f` 的问题是它在深色下几乎与画布同色，禁用态看起来像"按钮不见了"，
+     而 Kimi 的禁用是"还看得见，但明显是死的"。 */
+  --button-disabled-bg: var(--Fills-F3);
   --button-disabled-text: var(--Labels-Quaternary);
   --button-disabled-border: var(--Separators-S1);
 

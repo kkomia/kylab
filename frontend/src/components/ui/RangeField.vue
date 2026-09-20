@@ -142,7 +142,7 @@ function onInput(event: Event): void {
   height: 3px;
   margin-top: -1.5px;
   background: var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .range-input {

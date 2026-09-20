@@ -13,12 +13,15 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, File, Query, UploadFile, status
+from fastapi.responses import Response
 
-from app.api.auth import require_read, require_write
+from app.api.auth import require_read, require_write, signing_secret
 from app.api.v1.schemas import (
     ChatMessageOut,
     ChatSourceOut,
+    ConversationArtifactListOut,
+    ConversationArtifactOut,
     ConversationCreateIn,
     ConversationDetailOut,
     ConversationListOut,
@@ -26,11 +29,25 @@ from app.api.v1.schemas import (
     ConversationRewindIn,
     ConversationRewindOut,
     ConversationUpdateIn,
+    FileDownloadUrlOut,
+    FileEntryOut,
+    FileListingOut,
+    IngestArtifactIn,
 )
+from app.core.config import Settings, get_settings
+from app.core.exceptions import NotFoundError, PayloadTooLargeError, UnauthorizedError
 from app.core.services import Services, get_services
-from app.services.api_key import Caller
+from app.core.signing import SigningError, verify_resource
+from app.services.api_key import WRITE, Caller
+from app.services.artifacts import file_signature_resource, split_filename
+from app.services.documents import media_type_of
+from app.services.ingest import content_disposition
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
+
+#: 单个文件的上传上限。与文档上传同一个数：两者都是"用户往我们的存储里放东西"，
+#: 两个不同的上限只会让人猜"为什么这里能传、那里不能"。
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
 def _summary(services: Services, record, *, preview: str = "") -> ConversationOut:  # type: ignore[no-untyped-def]
@@ -74,12 +91,8 @@ def list_conversations(
     caller: Annotated[Caller, Depends(require_read)],
     limit: int = Query(default=50, ge=1, le=200),
     q: str | None = Query(default=None, description="按标题搜索（包含匹配）"),
-    workspace_id: str | None = Query(
-        default=None, description="只看这个工作区下的会话（v0.15）"
-    ),
-    ungrouped: bool = Query(
-        default=False, description="只看**未归档**的会话（不属于任何工作区）"
-    ),
+    workspace_id: str | None = Query(default=None, description="只看这个工作区下的会话（v0.15）"),
+    ungrouped: bool = Query(default=False, description="只看**未归档**的会话（不属于任何工作区）"),
     archived: bool = Query(
         default=False, description="看**已归档**的会话（历史会话面板的归档视图）"
     ),
@@ -131,9 +144,7 @@ def create_conversation(
         # 校验可见性（越权 404），并在调用方没指定库时**继承工作区的库**：
         # 这就是"知识库与 Agent 天生融合"落到行为上的样子——进入项目，
         # 资料范围就定了（见 docs/Agent-工作区与能力层设计-v0.1.md §5）
-        workspace = services.workspaces.get(
-            payload.workspace_id, user_id=_caller_owner(caller)
-        )
+        workspace = services.workspaces.get(payload.workspace_id, user_id=_caller_owner(caller))
         if not kb_ids:
             kb_ids = list(workspace.kb_ids)
     record = services.conversations.create(
@@ -166,6 +177,8 @@ def get_conversation(
             role=item.role,
             content=item.content,
             sources=[ChatSourceOut.model_validate(src) for src in item.sources],
+            steps=[dict(step) for step in item.steps],
+            thinking=item.thinking,
             created_at=item.created_at,
         )
         for item in services.conversations.messages(conversation_id)
@@ -241,4 +254,245 @@ def delete_conversation(
     caller: Annotated[Caller, Depends(require_write)],
 ) -> None:
     _get_visible(services, caller, conversation_id)
+    # **先清临时产物，再删会话**：清的时候要知道这条会话有哪些产物（记录随会话一起
+    # 删掉之后就查不到了）。工作区里的那些一份都不动——它们在用户的目录里。
+    services.artifacts.discard_for_conversation(conversation_id)
     services.conversations.delete(conversation_id)
+
+
+# ---------------------------------------------------------------- 会话产物（v0.26）
+
+
+def _get_artifact(services: Services, caller: Caller, conversation_id: str, artifact_id: str):  # type: ignore[no-untyped-def]
+    """取一份产物，**先确认它属于这条会话**。
+
+    不确认的话，``/conversations/A/artifacts/B`` 能拿到别的会话里的 B——
+    权限判定（``_get_visible``）过的是 A，而返回的是 B 的内容。
+    """
+    _get_visible(services, caller, conversation_id)
+    record = services.artifacts.get(artifact_id)
+    if record.conversation_id != conversation_id:
+        # 404 而不是 403：不暴露"这份产物在别处存在"
+        raise NotFoundError(f"产物不存在：{artifact_id}")
+    return record
+
+
+@router.get(
+    "/{conversation_id}/artifacts",
+    response_model=ConversationArtifactListOut,
+    summary="这条会话产出的文件",
+)
+def list_artifacts(
+    conversation_id: str,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_read)],
+) -> ConversationArtifactListOut:
+    """界面上那几张文件卡片的**当前状态**。
+
+    步骤里那份快照是流式当时的样子（"刚导出"），这里的是现在的样子（可能已经入库）。
+    回看历史会话时以这一份为准，否则刷新一下卡片就退回"未入库"了。
+    """
+    _get_visible(services, caller, conversation_id)
+    return ConversationArtifactListOut(
+        items=[
+            ConversationArtifactOut.model_validate(services.artifacts.describe(record))
+            for record in services.artifacts.list_for_conversation(conversation_id)
+        ]
+    )
+
+
+@router.get(
+    "/{conversation_id}/files",
+    response_model=FileListingOut,
+    summary="这条会话的文件区（工作区目录 / 会话临时区）",
+)
+def list_files(
+    conversation_id: str,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_read)],
+    path: str = Query(default="", description="要列哪个子目录（只在工作区模式下有意义）"),
+) -> FileListingOut:
+    """文件面板的内容：**一条会话恰好有一个文件区**。
+
+    挂了工作区就是那个真实目录（能进子目录）；没挂就是会话自己的临时区（平铺）。
+    哪一种是服务端算的，界面不需要知道，也不该问——
+    这与"产物落在哪"用的是同一份判断（``ArtifactService.spot_for``）。
+    """
+    _get_visible(services, caller, conversation_id)
+    listing = services.artifacts.list_files(conversation_id, path)
+    return FileListingOut(
+        mode=listing.mode,
+        label=listing.label,
+        path=listing.path,
+        parent=listing.parent,
+        truncated=listing.truncated,
+        entries=[
+            FileEntryOut(
+                key=item.key,
+                name=item.name,
+                is_dir=item.is_dir,
+                size_bytes=item.size_bytes,
+                modified_at=item.modified_at,
+                kind=item.kind,
+            )
+            for item in listing.entries
+        ],
+    )
+
+
+@router.post(
+    "/{conversation_id}/files",
+    response_model=FileEntryOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="往文件区里放一份文件",
+)
+async def upload_file(
+    conversation_id: str,
+    file: Annotated[UploadFile, File(...)],
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_write)],
+    path: str = Query(default="", description="放进哪个子目录（只在工作区模式下有意义）"),
+) -> FileEntryOut:
+    """界面上的"上传"。
+
+    **同名不覆盖**：退到 ``名字 (2).ext``。与产物落盘同一套规矩——
+    用户目录里那个文件可能比这次上传的重要得多。
+    """
+    _get_visible(services, caller, conversation_id)
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise PayloadTooLargeError(f"文件超过 {MAX_UPLOAD_BYTES // (1024 * 1024)}MB 上限")
+    entry = services.artifacts.write_file(
+        conversation_id,
+        path=path,
+        filename=file.filename or "未命名",
+        content=content,
+    )
+    return FileEntryOut(
+        key=entry.key,
+        name=entry.name,
+        is_dir=entry.is_dir,
+        size_bytes=entry.size_bytes,
+        modified_at=entry.modified_at,
+        kind=entry.kind,
+    )
+
+
+@router.get(
+    "/{conversation_id}/files/download-url",
+    response_model=FileDownloadUrlOut,
+    summary="签发文件链接（预览 / 下载共用）",
+)
+def file_download_url(
+    conversation_id: str,
+    services: Annotated[Services, Depends(get_services)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    caller: Annotated[Caller, Depends(require_read)],
+    key: str = Query(..., description="文件区里的 key（工作区是相对路径，临时区是产物 id）"),
+    disposition: str = Query(
+        default="attachment",
+        pattern="^(attachment|inline)$",
+        description="inline 供页面内预览（PDF / 图片 / Office）；其余类型服务端强制 attachment",
+    ),
+) -> FileDownloadUrlOut:
+    """签发一条短期链接。**与文档下载同一套签名**，理由也一样：预览与下载按钮带不了头。"""
+    # 取一次内容只为确认"这份文件真的读得到"：读不到就别签发一条注定 404 的链接
+    _, name = services.artifacts.read_file(conversation_id, key)
+    secret = signing_secret(settings, services)
+    if not secret:
+        raise UnauthorizedError(
+            "尚未配置下载签名密钥：请配置 KYLAB_URL_SIGNING_SECRET，"
+            "或先完成首次初始化（会生成一条并落库）"
+        )
+    url, expires_at = services.artifacts.file_url(
+        conversation_id, key, secret=secret, inline=disposition == "inline"
+    )
+    return FileDownloadUrlOut(url=url, expires_at=expires_at, name=name)
+
+
+#: 可以 ``inline`` 呈现的种类。**按后缀判，不按上传方声明的类型判**——
+#: 后者是用户可以随便写的，拿它当开关等于让上传者决定"能不能在我们站点的
+#: origin 下渲染它"（一份 SVG 能带 ``<script>``，那就是存储型 XSS）。
+INLINE_SAFE_KINDS = frozenset({"pdf", "png", "jpg", "jpeg", "gif", "webp", "bmp", "avif"})
+
+
+@router.get(
+    "/{conversation_id}/files/content",
+    summary="按签名取文件内容（预览 / 下载共用）",
+    response_class=Response,
+    responses={200: {"content": {"application/octet-stream": {}}, "description": "文件内容"}},
+)
+def download_file_content(
+    conversation_id: str,
+    services: Annotated[Services, Depends(get_services)],
+    settings: Annotated[Settings, Depends(get_settings)],
+    key: str = Query(..., description="文件区里的 key"),
+    expires: int = Query(..., description="签发时给出的到期时间戳"),
+    signature: str = Query(..., description="签发时给出的签名"),
+    disposition: str = Query(
+        default="attachment",
+        pattern="^(attachment|inline)$",
+        description="inline 供页面内预览；只有白名单里的类型才会真的内联",
+    ),
+) -> Response:
+    """**刻意不挂鉴权依赖**：这个 URL 要能直接在浏览器里打开（``<iframe>`` / ``<img>``）。
+
+    它的授权凭据是 URL 里的签名，而签名绑定了"哪条会话、哪份文件、什么时候过期"——
+    比一个长期令牌更窄。缺了签名或签名对不上都取不到内容。
+    """
+    secret = signing_secret(settings, services)
+    if not secret:
+        raise UnauthorizedError("尚未配置下载签名密钥，无法校验下载链接")
+    try:
+        verify_resource(
+            file_signature_resource(conversation_id, key),
+            signature,
+            expires,
+            secret,
+        )
+    except SigningError as exc:
+        raise UnauthorizedError(f"文件链接无效：{exc}") from exc
+
+    content, name = services.artifacts.read_file(conversation_id, key)
+    kind = split_filename(name)[1]
+    inline = disposition == "inline" and kind in INLINE_SAFE_KINDS
+    return Response(
+        content=content,
+        media_type=media_type_of(name, None),
+        headers={
+            "Content-Disposition": content_disposition(
+                name, disposition="inline" if inline else "attachment"
+            ),
+            # 内容类型是按后缀推的，不让浏览器再嗅探一遍（与文档下载同一条）
+            "X-Content-Type-Options": "nosniff",
+            "Content-Length": str(len(content)),
+        },
+    )
+
+
+@router.post(
+    "/{conversation_id}/artifacts/{artifact_id}/ingest",
+    response_model=ConversationArtifactOut,
+    summary="把一份产物存进知识库（显式动作）",
+)
+def ingest_artifact(
+    conversation_id: str,
+    artifact_id: str,
+    payload: IngestArtifactIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_write)],
+) -> ConversationArtifactOut:
+    """用户点了卡片上那个「存进知识库」时走的路径。
+
+    与模型那把 ``ingest_artifact`` 工具同一个服务方法——**两条入口，一个动作**：
+    分开实现的话，"点按钮入的库"与"跟它说一句入的库"迟早会有两套行为。
+    """
+    record = _get_artifact(services, caller, conversation_id, artifact_id)
+    # 入库要**写**权限，且落在这个库的范围内（与工具那条入口同一句判定）
+    services.api_keys.check_access(caller, need=WRITE, kb_ids=[payload.knowledge_base_id])
+    services.artifacts.ingest(
+        record,
+        knowledge_base_id=payload.knowledge_base_id,
+        uploaded_by=caller.user.id if caller.user is not None else None,
+    )
+    return ConversationArtifactOut.model_validate(services.artifacts.describe(record))

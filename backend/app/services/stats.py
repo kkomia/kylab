@@ -8,12 +8,16 @@
   现在是**数出来的**，不是估的；
 - **切块按所属文档的创建时间归日**：`chunks` 表没有自己的时间戳，
   但"某天入库的文档带来多少块"才是用户关心的口径，这个近似是准的；
-- **聚合在 Python 里做，不用 SQL**：先说清楚实情——`MetaStore` 目前只有
-  "取全量文档/任务"这类仓储方法，没有按日聚合的接口，所以这里是把
-  `list_documents()` / `list_tasks()` 的结果用 `Counter` 分组。
-  局域网知识库的量级（几千份文档）下这不构成性能问题。
-  真到了需要下推的时候，正确做法是在 `storage/` 加一个按日聚合的仓储方法
-  （分层纪律：services 不许写 SQL），而不是在这里拼查询。
+- **查询下推、聚合留在 Python**：这一版把原来的 `K+1` 次查询（按库逐个取全量文档
+  + 一次巨型 `IN` + 全表任务）换成**两条投影查询**
+  （`list_document_stats` / `list_task_stats`：只取聚合要的那几列，
+  文档那条还用一条 `LEFT JOIN` 把切块数一起带出来）。
+  分布统计（按阶段 / 后缀 / 来源）与按日序列仍在 Python 里算——
+  **没有把 `GROUP BY 日` 下推到 SQL**，原因是"日"是**本地日历日**：
+  下推就得把应用时区的偏移传进 SQL，而 `local_day()` 的注释记着这个口径踩过的坑
+  （UTC 日期与本地日期在 UTC+8 有 8 小时不重合，界面会显示"今天入库 0"）。
+  口径只留一处比少一次往返重要。
+  剩余代价是 Python 侧对几列做 `Counter`，一万篇文档是毫秒级。
 """
 
 from __future__ import annotations
@@ -104,51 +108,55 @@ class StatsService:
         if kb_ids is not None:
             visible = set(kb_ids)
             knowledge_bases = [kb for kb in knowledge_bases if kb.id in visible]
-        documents = [doc for kb in knowledge_bases for doc in meta.list_documents(kb.id)]
-        tasks = meta.list_tasks()
-        if kb_ids is not None:
-            # 任务没有直接挂库：经 document 绕一道。没有文档的任务（数据源拉取）
-            # 在成员视角下隐藏——它属于管理员关心的全局运维面
-            visible_docs = {doc.id for doc in documents}
-            tasks = [
-                task
-                for task in tasks
-                if task.document_id is not None and task.document_id in visible_docs
-            ]
 
-        chunk_counts = meta.count_chunks_by_documents([doc.id for doc in documents])
-        total_chunks = sum(chunk_counts.values())
+        # **两条投影查询**取代原来的 K+1 次（按库逐个取全量文档、再换一次巨型 IN）
+        # 与"全表任务"：见 storage/base.py 里两个方法的说明。
+        #
+        # 走**窄视图**（`documents` / `tasks`）而不是 `meta`：这一节只碰这两个域，
+        # 签名里就看得出来——这是拆 MetaStore 的第一步（见 storage/repositories.py）。
+        # `list_knowledge_bases` 仍在 `meta` 上：知识库域还没切出来。
+        documents = self._stores.documents.list_document_stats(
+            [kb.id for kb in knowledge_bases]
+        )
+        # 任务没有直接挂库：经 document 绕一道。没有文档的任务（数据源拉取）
+        # 在成员视角下隐藏——它属于管理员关心的全局运维面
+        tasks = self._stores.tasks.list_task_stats(
+            None if kb_ids is None else [doc.id for doc in documents]
+        )
 
-        activity = _build_activity(documents, chunk_counts, tasks, since=since, today=today)
+        activity = _build_activity(documents, tasks, since=since, today=today)
 
         return DashboardStats(
             generated_at=datetime.now(),
             window_days=window_days,
             total_knowledge_bases=len(knowledge_bases),
             total_documents=len(documents),
-            total_chunks=total_chunks,
-            indexed_documents=sum(1 for d in documents if d.stage.value in ("indexed", "enriched")),
-            failed_documents=sum(1 for d in documents if d.stage.value == "failed"),
-            running_tasks=sum(1 for t in tasks if t.state.value in ("pending", "running")),
-            failed_tasks=sum(1 for t in tasks if t.state.value == "failed"),
+            total_chunks=sum(doc.chunks for doc in documents),
+            indexed_documents=sum(1 for doc in documents if doc.stage in ("indexed", "enriched")),
+            failed_documents=sum(1 for doc in documents if doc.stage == "failed"),
+            running_tasks=sum(1 for task in tasks if task.state in ("pending", "running")),
+            failed_tasks=sum(1 for task in tasks if task.state == "failed"),
             storage_bytes=sum(doc.size_bytes for doc in documents),
+            # 用 `local_day` 而不是 `created_at.date()`：后者是 UTC 日期，
+            # 在 UTC+8 的早上会把"今天入库的"算成昨天——那正是这个模块
+            # 记过的坑（见 `local_day`），而热力图同一屏里用的是本地日，
+            # 两处口径不一致时界面会自相矛盾（"近 7 天入库 3" 而热力图上今天为空）
             recent_documents=sum(
-                1 for doc in documents if doc.created_at and doc.created_at.date() >= since
+                1
+                for doc in documents
+                if doc.created_at is not None and local_day(doc.created_at) >= since
             ),
             activity=activity,
-            by_stage=_count_by(documents, lambda d: d.stage.value),
+            by_stage=_count_by(documents, lambda d: d.stage),
             by_suffix=_count_by(documents, lambda d: _suffix_of(d.name)),
-            by_source_kind=_count_by(documents, lambda d: d.source_kind.value),
-            knowledge_bases=[
-                _kb_row(kb, documents, chunk_counts) for kb in knowledge_bases
-            ],
+            by_source_kind=_count_by(documents, lambda d: d.source_kind),
+            knowledge_bases=[_kb_row(kb, documents) for kb in knowledge_bases],
         )
 
 
 def _kb_row(
     kb: KnowledgeBaseRecord,
     documents: list,
-    chunk_counts: dict[str, int],
 ) -> KbStatRow:
     mine = [doc for doc in documents if doc.knowledge_base_id == kb.id]
     stamps = [doc.updated_at for doc in mine if doc.updated_at]
@@ -158,7 +166,7 @@ def _kb_row(
         embedding_model_id=kb.embedding_model_id,
         embedding_dim=kb.embedding_dim,
         documents=len(mine),
-        chunks=sum(chunk_counts.get(doc.id, 0) for doc in mine),
+        chunks=sum(doc.chunks for doc in mine),
         last_activity=max(stamps) if stamps else None,
     )
 
@@ -181,7 +189,6 @@ def local_day(stamp: datetime) -> date:
 
 def _build_activity(
     documents: list,
-    chunk_counts: dict[str, int],
     tasks: list,
     *,
     since: date,
@@ -200,7 +207,7 @@ def _build_activity(
         if day < since:
             continue
         documents_by_day[day] += 1
-        chunks_by_day[day] += chunk_counts.get(doc.id, 0)
+        chunks_by_day[day] += doc.chunks
 
     tasks_by_day: Counter[date] = Counter()
     for task in tasks:

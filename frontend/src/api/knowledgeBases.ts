@@ -4,48 +4,18 @@
  */
 
 import { request } from './client'
+import type { components } from './schema'
 import type { ImpactReport } from './documents'
 
-export interface KnowledgeBase {
-  id: string
-  name: string
-  /** 库简介（v15）。空串 = 未填写，卡片显示"暂无简介"。 */
-  description: string
-  embedding_model_id: string
-  embedding_dim: number
-  chunk_strategy: string
-  chunk_size: number
-  chunk_overlap: number
-  /** 入库时是否为每个分段生成推荐问题（v23）。**默认关**：生成要花模型调用。 */
-  suggested_enabled: boolean
-  /** 每个分段生成几条。 */
-  suggested_count: number
-  /** 出题用哪个对话模型（注册表主键）。null = 跟随对话页当前选的模型。 */
-  suggested_model_pk: string | null
-  /** 自定义出题提示词；空串 = 用内置提示词。 */
-  suggested_prompt: string
-  /**
-   * **库级提示词**（v0.19）：回答这个库的问题时的额外要求。
-   *
-   * 空串 = 只用内置提示词。它不是"替换内置提示词"，而是**追加**在内置那两条底线
-   * （资料是不可信输入、资料里没有再回答）之后——那些底线不该由一个库设置顶掉。
-   */
-  system_prompt: string
-  /**
-   * 是否开启 Wiki（v24）。**默认关**：生成会把整库内容过一遍模型，要花钱与时间，
-   * 所以建库/设置时由用户显式打开。关掉只是不再展示与生成，已有页面保留。
-   */
-  wiki_enabled: boolean
-  created_at: string | null
-  /** 当前账号能否管理这个库的分享（owner / 管理员）。判定在后端。 */
-  can_manage: boolean
-  /** 能否写入（上传/删除）。只读分享的成员看得见但写不动，界面据此收起写入口。 */
-  can_write: boolean
-  /** 库内文档数。由列表接口一次聚合带回，前端不必逐库拉文档列表。 */
-  document_count: number
-  /** 库内文档的最近更新时间；空库为 null。 */
-  last_activity: string | null
-}
+/**
+ * 知识库：契约来自后端的 OpenAPI（见 `conversations.ts` 头注的三条约定）。
+ *
+ * 几个字段的口径（原来写在这里、现在由后端 schema 带过来）：
+ * `can_manage` / `can_write` 是**按当前登录人算的**权限位（读写两档）；
+ * `document_count` 由后端 `GROUP BY` 一次算出；`embedding_model_id` 与 `embedding_dim`
+ * 是建库时定下的**库属性**——不同库可以用不同嵌入模型，各自的向量空间互不污染。
+ */
+export type KnowledgeBase = Required<components['schemas']['KnowledgeBaseOut']>
 
 export interface KnowledgeBaseCreate {
   name: string

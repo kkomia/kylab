@@ -172,3 +172,24 @@ def test_injected_client_is_reused() -> None:
         with httpx.Client() as client:
             vectors = _embedder(client=client).embed(["甲"])
     assert len(vectors) == 1
+
+
+def test_no_client_is_built_per_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """不注入 client 时走**进程级共享**的那个（见 ``app/core/http.py``）。
+
+    摄入一篇文档按 batch 会调好几次 embedding，以前每次调用都新建客户端——
+    那就是每次重新握手。判据是硬的：把 ``httpx.Client`` 换成"一构造就炸"的替身。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _response([{"index": 0, "embedding": [1.0, 0.0, 0.0, 0.0]}])
+
+    fake = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr("app.services.embedding.openai_compat.shared_client", lambda: fake)
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise AssertionError("不该每次调用都新建 httpx.Client（见 app/core/http.py）")
+
+    monkeypatch.setattr(httpx, "Client", explode)
+
+    assert len(_embedder().embed(["甲"])) == 1

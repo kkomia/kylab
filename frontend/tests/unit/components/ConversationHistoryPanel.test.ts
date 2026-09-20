@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -227,5 +227,31 @@ describe('ConversationHistoryPanel', () => {
     await wrapper.find('.close').trigger('click')
 
     expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+})
+
+describe('关闭手势（v0.26）', () => {
+  it('Esc 收起：盖住内容区的浮层不该只剩"去右上角找 ×"', async () => {
+    listConversations.mockResolvedValue({ items: [] })
+    const wrapper = mount(ConversationHistoryPanel, { props: { open: true } })
+    await flushPromises()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+
+    expect(wrapper.emitted('close')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('关着的时候按 Esc **不发出** close：这个组件常驻在 App 里', async () => {
+    // `v-if` 在 Teleport 内部，组件本身一直挂着；不加这道判断的话，
+    // 别处（比如设置弹窗）按 Esc 会顺带 emit 一次没人要的 close
+    listConversations.mockResolvedValue({ items: [] })
+    const wrapper = mount(ConversationHistoryPanel, { props: { open: false } })
+    await flushPromises()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+
+    expect(wrapper.emitted('close')).toBeUndefined()
+    wrapper.unmount()
   })
 })

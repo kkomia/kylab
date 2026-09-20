@@ -34,6 +34,53 @@ function escapeHtml(text: string): string {
 const SAFE_LINK = /^(https?:\/\/|mailto:)/i
 
 /**
+ * 正文里的**裸链接**（v0.26）。
+ *
+ * 模型经常直接把网址写在正文里（"来源：https://…"、搜索结果那一段），
+ * 而 Markdown 的 `[文字](链接)` 只有它主动写出来才有——那种情况下用户只能手抄。
+ *
+ * 只认 `http(s)://` 与 `www.` 开头：**不猜邮箱、不猜裸域名**。
+ * 猜错一个（把 `README.md` 认成网址）比漏掉几个糟得多，而漏掉的那些还能手抄。
+ *
+ * 两条边界都是踩出来的：
+ * - **前面只要不是字母数字**（`[^\w/@]`）就算开头。原先写的是"前面必须是空白或左括号"，
+ *   于是"来源：https://…"里的网址根本不匹配——那个全角冒号不在白名单里，
+ *   而这恰恰是模型最常见的写法；
+ * - **网址体里不许出现中文标点**。"……详见 https://a.com。另外……"这种句子里，
+ *   句号后面紧跟的是下一个句子，不排除的话整个"https://a.com。另外"会被当成一个网址。
+ */
+const BARE_URL = /(^|[^\w/@])((?:https?:\/\/|www\.)[^\s<>()（）「」『』【】"'。，、；：！？…]+)/g
+
+/**
+ * 网址**末尾不该跟着的字符**：句号、逗号、中文标点、右括号。
+ *
+ * 必须剥掉：模型写的是"…详见 https://example.com/a。"，那个句号属于句子。
+ * 括号一律剥（`(a)` 里那个本该属于网址）——中文语境里右括号跟着网址几乎总是句法括号，
+ * 剥错了只是让链接短一点，不剥则会让链接点开 404。
+ */
+const URL_TAIL = /[.,;:!?，。、；：！？）)】」』"']+$/
+
+/** 一个外链。`rel` 与 `target` 与 Markdown 那条规则**完全一致**——两处不能有两种开法。 */
+function anchor(href: string, label: string): string {
+  return `<a class="md-link" href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`
+}
+
+/** 裸链接 → `<a>`。**只处理已经被转义过的文本**（调用点在 `inline` 里）。 */
+function linkify(html: string): string {
+  return html.replace(BARE_URL, (match, prefix: string, url: string, offset: number) => {
+    // **被裁断的网址不做链接**：紧跟一个省略号就说明它只剩半截
+    // （工具结果那一行由后端裁到 120 字）。链过去是个不存在的地址，
+    // 而用户会以为是自己网络的问题——那比"不能点"糟得多。
+    if (html[offset + match.length] === '…') return match
+    const trimmed = url.replace(URL_TAIL, '')
+    const tail = url.slice(trimmed.length)
+    // `www.` 开头的补上协议：不带协议的 href 会被当成站内相对路径
+    const href = trimmed.startsWith('www.') ? `https://${trimmed}` : trimmed
+    return `${prefix}${anchor(href, trimmed)}${tail}`
+  })
+}
+
+/**
  * 行内标记：`代码`、**加粗**、[文字](链接)。
  *
  * 顺序要紧：**先换代码**，否则代码里的 `**` 会被当加粗；
@@ -41,14 +88,76 @@ const SAFE_LINK = /^(https?:\/\/|mailto:)/i
  * 先处理加粗会让链接语法被拆开，反而识别不出来。实测那一版就是这样。
  */
 function inline(text: string): string {
-  return escapeHtml(text)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
+  // **摘出来再放回去**：裸链接那一步是正则扫全文的，会把两样东西误伤——
+  // ① 代码段里的网址（那是字面量，点了就跑偏了）；② 已经生成好的
+  // `href="…"`（在属性里再插一层 `<a>`，整段 HTML 就烂了）。
+  // 用占位符把它们先藏起来，最后原样放回。
+  const stash: string[] = []
+  const keep = (html: string): string => {
+    stash.push(html)
+    return `\u0000${stash.length - 1}\u0000`
+  }
+
+  const html = escapeHtml(text)
+    .replace(/`([^`]+)`/g, (_match, code: string) => keep(`<code>${code}</code>`))
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, label: string, href: string) => {
       // 链接是模型写的外部内容：只放行 http(s)/mailto，其余原样留着（可读、不可点）
       if (!SAFE_LINK.test(href)) return match
-      return `<a class="md-link" href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`
+      return keep(anchor(href, label))
     })
+
+  // 占位符用 **NUL**：它是唯一一个不可能出现在正文里的字符，换别的都得先证明
+  // "用户不会正好写这个"。下面那条 lint 规则正是为了挡控制字符——这里是刻意用的。
+  // eslint-disable-next-line no-control-regex -- 见上
+  const placeholder = /\u0000(\d+)\u0000/g
+  return linkify(html).replace(placeholder, (_match, index: string) => stash[Number(index)])
+}
+
+/**
+ * 代码块与表格右上角那两个按钮的图标。
+ *
+ * **为什么把 SVG 写成字符串**：这段 HTML 是 `v-html` 出来的，模板里的
+ * `<IconCopy>` 组件在这里用不上。三个图标都取自仓库里的图标集（同一份路径），
+ * 免得"回答里的复制按钮"和"消息上的复制按钮"画得不一样。
+ */
+const ICON_COPY =
+  '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M7 6V3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-3v3a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1zm2 0h8a1 1 0 0 1 1 1v9h2V4H9zM5 8v10h10V8z"/></svg>'
+const ICON_DOWNLOAD =
+  '<svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true"><path d="M13 3v10.586l3.293-3.293 1.414 1.414L12 17.414 6.293 11.707 7.707 10.293 11 13.586V3zM5 19h14v2H5z"/></svg>'
+
+/**
+ * 代码块与表格的**两段式容器**（头部带 + 内容区）。
+ *
+ * 头部带里的按钮由 ChatView 用**事件委托**接（`[data-copy-code]` /
+ * `[data-copy-table]` / `[data-download-table]`）：`v-html` 出来的节点绑不上 Vue 事件，
+ * 而给每块代码单独挂监听又要在渲染后遍历一遍 DOM。
+ *
+ * 头部**不参与复制**：`data-copy-code` 的处理器从 `closest('.md-code')` 里
+ * 只取 `pre` 的文本，所以语言名不会被带进剪贴板。
+ */
+function codeBlockHtml(lang: string, code: string): string {
+  const label = lang ? `<span class="md-code-lang">${escapeHtml(lang)}</span>` : '<span></span>'
+  return (
+    `<div class="md-code">` +
+    `<div class="md-code-head">${label}` +
+    `<button type="button" class="md-icon-btn" data-copy-code aria-label="复制代码" title="复制">${ICON_COPY}</button>` +
+    `</div>` +
+    `<pre class="md-pre"><code>${escapeHtml(code)}</code></pre>` +
+    `</div>`
+  )
+}
+
+function tableBlockHtml(head: string, body: string): string {
+  return (
+    `<div class="md-table-block">` +
+    `<div class="md-code-head"><span class="md-code-lang">表格</span>` +
+    `<button type="button" class="md-icon-btn" data-copy-table aria-label="复制表格" title="复制">${ICON_COPY}</button>` +
+    `<button type="button" class="md-icon-btn" data-download-table aria-label="下载表格" title="下载 CSV">${ICON_DOWNLOAD}</button>` +
+    `</div>` +
+    `<div class="md-table-wrap"><table class="md-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>` +
+    `</div>`
+  )
 }
 
 /** 表格分隔行：`| --- | :--: |`。用来把"表头 + 分隔行"认成一张表。 */
@@ -211,7 +320,14 @@ function splitBlocks(text: string): Block[] {
   return blocks
 }
 
-function renderBlock(block: Block): string {
+/**
+ * ``plain``：渲染成**只读**的 HTML（文件预览用）。
+ *
+ * 对话里的答案要能复制代码、下载表格，那两个按钮的点击由对话页的事件委托接住；
+ * 而文件预览里没有那条委托（也不该有——预览是"看"，不是"操作这份内容"）。
+ * 所以同一套解析、两种收尾：``plain`` 只出内容，不出按钮。
+ */
+function renderBlock(block: Block, plain = false): string {
   if (block.kind === 'heading') {
     // 同时给 h 标签与类名：h 标签让浏览器/辅助技术知道层级，类名让样式能一致地管
     return `<h${block.level} class="md-h md-h${block.level}">${inline(block.text)}</h${block.level}>`
@@ -230,10 +346,11 @@ function renderBlock(block: Block): string {
     return `<blockquote class="md-quote">${body}</blockquote>`
   }
   if (block.kind === 'code') {
-    // 语言名放 data 属性、样式里用 ::before 显示：不必额外包一层元素，
-    // 也避免把语言名混进可复制的代码文本里
-    const lang = block.lang ? ` data-lang="${escapeHtml(block.lang)}"` : ''
-    return `<pre class="md-pre"${lang}><code>${escapeHtml(block.code)}</code></pre>`
+    // 语言名与复制按钮都在**头部带**上（v0.25，照 Kimi 的对话页）：
+    // 原先语言名是绝对定位在右上角的，代码一长就从它底下穿过去，
+    // 像两样东西叠在一起；而且整块没有复制入口。
+    if (plain) return `<pre class="md-pre"><code>${escapeHtml(block.code)}</code></pre>`
+    return codeBlockHtml(block.lang, block.code)
   }
   if (block.kind === 'table') {
     const head = block.header.map((cell) => `<th>${inline(cell)}</th>`).join('')
@@ -245,37 +362,101 @@ function renderBlock(block: Block): string {
             .join('')}</tr>`,
       )
       .join('')
+    if (plain) {
+      return `<table class="md-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`
+    }
     // 外层套一个可横向滚动的容器：宽表格在窄列里必须能滚，否则会把整页撑破
-    return `<div class="md-table-wrap"><table class="md-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`
+    return tableBlockHtml(head, body)
   }
   if (block.kind === 'hr') return '<hr class="md-hr" />'
   return `<p class="md-p">${block.lines.map(inline).join('<br />')}</p>`
 }
 
 /**
- * 把回答文本转成可安全 `v-html` 的 HTML。
+ * 两层缓存。**建它们时的理由（"流式重解析是性能热点"）经实测被削弱了**，
+ * 数字记在这里，免得后来者按错误的量级继续加复杂度：
  *
- * **结果按文本缓存**。原先这里不缓存，理由是"流式期间会被反复调用，回答只有几百字"——
- * 那个理由只算了单条消息，漏掉了真实调用方式：模板里是
- * `v-html="renderAnswerMarkdown(message.text)"` 逐条内联，**组件每次重渲染都会
- * 把所有历史消息重算一遍**。流式时每个 token 触发一次重渲染，于是一轮回答的总
- * 解析量随消息数×token 数增长（长会话越聊越卡）。
+ * - **文本级**（`HTML_CACHE`）：模板里是 `v-html="renderAnswerMarkdown(...)"` 逐条内联，
+ *   组件每次重渲染都会把所有历史消息重算一遍。按文本缓存后历史消息全部命中——
+ *   这一层的收益是实的，长会话下每拍省掉 N 条消息的解析。
+ * - **块级**（`BLOCK_CACHE`）：流式时文本级缓存必然落空（每个 tick 的前缀都是新文本），
+ *   于是每拍把**已累积的全文**重新解析一遍，总解析量随回答长度平方增长。
+ *   加块缓存后追加文本只重算末尾那个块。
  *
- * 加上缓存后：正在流式的那一条每 token 命中不到缓存（只解析一条），
- * 其余历史消息全部命中，总开销回到"每条解析一次"。
- * 文本就是缓存键，没有失效问题——同文本必然同输出。
+ * 对照实测（2026-09-17，同一段 1400 字回答 + 60 条历史的模拟，取 3 次最小值）：
+ * 单条回答流式 140 拍 **6.0ms → 4.6ms（1.3x）**、400 拍 **12.4ms → 7.7ms（1.6x）**；
+ * 长会话那一组（每拍再渲染 60 条历史）**1.0x，没有可测差异**。
+ *
+ * 所以：形状是 O(n²)，**绝对量是毫秒级**——分散在几百帧里，每帧 0.1ms 量级，
+ * 不是用户能感知的瓶颈。每帧真正的大头在 `v-html` 让浏览器重建 DOM，
+ * 那一项与这里无关。这两层缓存当作"顺手做对"即可，不要再当热点优化。
+ *
+ * 键都是**内容本身**，所以同内容必然同输出：缓存只允许更快，不允许改变结果。
  */
 const HTML_CACHE = new Map<string, string>()
-/** 上限只是防"聊一整天"把内存撑大；超出直接清空，命中率下降但不会漏结果。 */
+/** 只防"聊一整天"把内存撑大，不是性能旋钮（淘汰策略见 `putCapped`）。 */
 const HTML_CACHE_LIMIT = 300
+
+const BLOCK_CACHE = new Map<string, string>()
+/** 块比整条消息小得多，可以多留一些。 */
+const BLOCK_CACHE_LIMIT = 2000
+
+/**
+ * 超过上限时淘汰**最旧的一条**，而不是清空整张表。
+ *
+ * 原先写的是"满了清空"。它的代价不在内存，在**下一次渲染**：清空之后
+ * 紧接着的那次重渲染要把整条会话的所有消息重新解析一遍，表现成一个尖峰而不是
+ * 平摊的开销。淘汰一条没有这个悬崖，代价只是命中率略低。
+ * （实测差距在毫秒级、长会话那一组测不出来——这是一次正确性之外的"做得更像样"。）
+ */
+function putCapped(cache: Map<string, string>, limit: number, key: string, value: string): void {
+  if (!cache.has(key) && cache.size >= limit) {
+    // Map 的迭代顺序就是插入顺序：第一个即最旧的
+    const oldest = cache.keys().next()
+    if (!oldest.done) cache.delete(oldest.value)
+  }
+  cache.set(key, value)
+}
+
+/**
+ * 把一段 Markdown 渲染成**只读** HTML（文件预览用）。
+ *
+ * 与 `renderAnswerMarkdown` 同一套解析，只是不挂复制 / 下载按钮——
+ * 那些按钮的点击由对话页的事件委托接住，而预览里没有那条委托，
+ * 按钮会变成"点了没反应"的假控件。
+ *
+ * 不走缓存：它用在文件预览里，一次只渲染一份，没有"每个 tick 重算历史"那种模式。
+ */
+export function renderPlainMarkdown(text: string): string {
+  if (!text) return ''
+  return splitBlocks(text)
+    .map((block) => renderBlock(block, true))
+    .join('')
+}
 
 export function renderAnswerMarkdown(text: string): string {
   if (!text) return ''
   const cached = HTML_CACHE.get(text)
   if (cached !== undefined) return cached
-  const html = splitBlocks(text).map(renderBlock).join('')
-  if (HTML_CACHE.size >= HTML_CACHE_LIMIT) HTML_CACHE.clear()
-  HTML_CACHE.set(text, html)
+
+  const blocks = splitBlocks(text)
+  const last = blocks.length - 1
+  const html = blocks
+    .map((block, index) => {
+      // 末尾块每个 tick 都在变，缓存它等于往表里灌垃圾
+      if (index === last) return renderBlock(block)
+      // 键用 JSON 而不是拼接：拼接少一次序列化，但分隔符一旦与文本里的字符撞上
+      // 就是**两块共用一份 HTML**——缓存串味是正确性问题，不值得为这点开销冒险
+      const key = JSON.stringify(block)
+      const hit = BLOCK_CACHE.get(key)
+      if (hit !== undefined) return hit
+      const rendered = renderBlock(block)
+      putCapped(BLOCK_CACHE, BLOCK_CACHE_LIMIT, key, rendered)
+      return rendered
+    })
+    .join('')
+
+  putCapped(HTML_CACHE, HTML_CACHE_LIMIT, text, html)
   return html
 }
 
@@ -315,8 +496,7 @@ export function renderAnswerWithCitations(
 
   const html = decorateCitations(renderAnswerMarkdown(text), known)
 
-  if (CITATION_CACHE.size >= HTML_CACHE_LIMIT) CITATION_CACHE.clear()
-  CITATION_CACHE.set(key, html)
+  putCapped(CITATION_CACHE, HTML_CACHE_LIMIT, key, html)
   return html
 }
 

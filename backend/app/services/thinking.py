@@ -32,9 +32,11 @@ from typing import Any
 __all__ = [
     "DEFAULT_EFFORT",
     "DIALECTS",
+    "ECHO_DIALECTS",
     "EFFORTS",
     "build_thinking_payload",
     "detect_dialect",
+    "echoes_reasoning",
     "normalize_effort",
 ]
 
@@ -66,6 +68,26 @@ def normalize_effort(value: object, default: str = DEFAULT_EFFORT) -> str:
     """把任意来源的强度值收进三档；不认识就退回默认值。"""
     text = str(value or "").strip().lower()
     return text if text in EFFORTS else default
+
+
+#: 哪些方言**要求把上一轮的推理原样回传**（不带就整条请求 400）。
+#:
+#: **实测（2026-09-19，api.deepseek.com / deepseek-flash）**：思考模式下，凡是带
+#: ``tool_calls`` 的助手消息，只要缺 ``reasoning_content`` 这个**字段**就 400
+#: （``The `reasoning_content` in the thinking mode must be passed back to the API.``）；
+#: 补一个空串就 200（同一条请求原样重放，只加这一个字段，两次都能复现）。
+#: 也就是说它要的不是内容，是"字段在"——**每一个**带工具调用的助手消息都要有，
+#: 只补前几条、漏掉最后一条同样 400（实测）。
+#:
+#: 代价对比很悬殊：多发一个字段的成本是零，不回传的成本是整轮对话直接失败
+#: （工具已经调完了，用户只看到一句 400）。所以宁可宽一点——但**只限有证据的方言**：
+#: 未知供应商多发字段可能被打成 400（见模块头那条"宁可开关无效，也不要请求非法"）。
+ECHO_DIALECTS = frozenset({"deepseek"})
+
+
+def echoes_reasoning(base_url: str, model_id: str, dialect: str | None = None) -> bool:
+    """这个端点要不要把助手消息里的推理回传给下一轮请求（见 ``ECHO_DIALECTS``）。"""
+    return detect_dialect(base_url, model_id, dialect) in ECHO_DIALECTS
 
 
 def detect_dialect(base_url: str, model_id: str, override: str | None = None) -> str:

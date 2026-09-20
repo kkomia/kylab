@@ -27,19 +27,15 @@
  * 3. **归档不是删除**：它是"收起来"，所以菜单里写「归档」而不是「删除」，
  *    且归档视图里能一键取消。
  */
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import type { ConversationSummary } from '@/api/conversations'
-import IconArchive from '@/components/icons/IconArchive.vue'
 import IconClose from '@/components/icons/IconClose.vue'
-import IconEdit from '@/components/icons/IconEdit.vue'
 import IconPin from '@/components/icons/IconPin.vue'
 import IconSearch from '@/components/icons/IconSearch.vue'
-import IconTrash from '@/components/icons/IconTrash.vue'
-import AppInput from '@/components/ui/AppInput.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
-import RowMenu from '@/components/ui/RowMenu.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
+import ConversationRowMenu from '@/components/layout/ConversationRowMenu.vue'
 import { useToast } from '@/composables/useToast'
 import { useConversationStore } from '@/stores/conversations'
 
@@ -47,16 +43,13 @@ const props = defineProps<{ open: boolean }>()
 const emit = defineEmits<{ (event: 'close'): void }>()
 
 const conversations = useConversationStore()
-const { notifyError, notifySuccess } = useToast()
+const { notifyError } = useToast()
 
 const searchDraft = ref('')
 const search = ref('')
 /** 归档视图：看"收起来"的那些。Kimi 的面板里也有这一档。 */
 const archivedView = ref(false)
 const loading = ref(false)
-const renameOpen = ref(false)
-const renameTarget = ref<ConversationSummary | null>(null)
-const renameDraft = ref('')
 
 /**
  * 取数：面板**自己按需拉一份带预览的清单**，不复用侧栏那份。
@@ -96,6 +89,21 @@ watch(
 )
 
 watch(archivedView, () => void load())
+
+/**
+ * Esc 收起：与原生 `<dialog>` 和两个抽屉同一套手势（v0.26）。
+ *
+ * 它是一块盖住内容区的浮层，用户要关掉它不该只剩"去右上角找那个 ×"。
+ * 挂在 window 上而不是根元素上：焦点可能在搜索框里，根元素收不到那次 keydown。
+ * **开着才处理**——这个组件常驻在 App 里（`v-if` 在 Teleport 内部），
+ * 不加这道判断的话，关着的时候按 Esc 也会 emit 一次。
+ */
+function onKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && props.open) emit('close')
+}
+
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
 
 let timer: number | undefined
 function onSearchInput(): void {
@@ -171,54 +179,6 @@ function previewOf(item: ConversationSummary): string {
     .replace(/\s+/g, ' ')
     .trim()
 }
-
-async function togglePin(item: ConversationSummary): Promise<void> {
-  try {
-    await conversations.setPinned(item.id, !item.pinned)
-    await load()
-  } catch (error) {
-    notifyError(error instanceof Error ? error.message : '操作失败')
-  }
-}
-
-function openRename(item: ConversationSummary): void {
-  renameTarget.value = item
-  renameDraft.value = item.title || ''
-  renameOpen.value = true
-}
-
-async function submitRename(): Promise<void> {
-  const target = renameTarget.value
-  renameOpen.value = false
-  if (!target) return
-  try {
-    await conversations.rename(target.id, renameDraft.value)
-    await load()
-  } catch (error) {
-    notifyError(error instanceof Error ? error.message : '重命名失败')
-  }
-}
-
-async function toggleArchive(item: ConversationSummary): Promise<void> {
-  const next = !item.archived_at
-  try {
-    await conversations.setArchived(item.id, next)
-    await load()
-    notifySuccess(next ? '已归档' : '已取消归档')
-  } catch (error) {
-    notifyError(error instanceof Error ? error.message : '操作失败')
-  }
-}
-
-async function remove(item: ConversationSummary): Promise<void> {
-  try {
-    await conversations.remove(item.id)
-    await load()
-    notifySuccess('已删除')
-  } catch (error) {
-    notifyError(error instanceof Error ? error.message : '删除失败')
-  }
-}
 </script>
 
 <template>
@@ -289,37 +249,12 @@ async function remove(item: ConversationSummary): Promise<void> {
                   <span class="entry-preview">{{ previewOf(item) || '（还没有回答）' }}</span>
                 </RouterLink>
 
-                <RowMenu class="entry-menu" :label="`${item.title || '未命名对话'} 的操作`">
-                  <template #default="{ close }">
-                    <button type="button" @click="(togglePin(item), close())">
-                      <IconPin :size="14" /> {{ item.pinned ? '取消置顶' : '置顶' }}
-                    </button>
-                    <button type="button" @click="(openRename(item), close())">
-                      <IconEdit :size="14" /> 重命名
-                    </button>
-                    <button type="button" @click="(toggleArchive(item), close())">
-                      <IconArchive :size="14" /> {{ item.archived_at ? '取消归档' : '归档' }}
-                    </button>
-                    <button class="menu-item-danger" type="button" @click="(remove(item), close())">
-                      <IconTrash :size="14" /> 删除
-                    </button>
-                  </template>
-                </RowMenu>
+                <!-- 与侧栏**同一个组件**（v0.25 抽出去的）：
+                     五个动作、重命名与删除的弹窗都在它里面，两处不会再分叉 -->
+                <ConversationRowMenu class="entry-menu" :item="item" @changed="load" />
               </li>
             </ul>
           </section>
-        </div>
-      </div>
-
-      <!-- 重命名：与侧栏共用同一个动作，所以不在这里另开一套接口 -->
-      <div v-if="renameOpen" class="rename-backdrop" @click.self="renameOpen = false">
-        <div class="rename-card">
-          <p class="rename-title">重命名会话</p>
-          <AppInput v-model="renameDraft" aria-label="会话标题" @keydown.enter="submitRename" />
-          <div class="rename-actions">
-            <button type="button" @click="renameOpen = false">取消</button>
-            <button type="button" class="primary" @click="submitRename">保存</button>
-          </div>
         </div>
       </div>
     </section>
@@ -393,7 +328,7 @@ async function remove(item: ConversationSummary): Promise<void> {
   height: 48px;
   padding-left: 46px;
   border: 0;
-  border-radius: 10px;
+  border-radius: var(--radius-control);
   background: var(--bg-subtle);
   font-size: var(--text-body-size);
 }
@@ -499,6 +434,9 @@ async function remove(item: ConversationSummary): Promise<void> {
   align-items: baseline;
   justify-content: space-between;
   gap: var(--space-4);
+  /* 给右上角那个「⋯」腾地方：它浮在 8..32px 那一片，而时间标签本来正好铺到
+     12px 处，两者会叠在一起（与侧栏同一处问题，v0.25）。 */
+  padding-right: var(--hit-target);
 }
 
 .entry-title {
@@ -506,7 +444,7 @@ async function remove(item: ConversationSummary): Promise<void> {
   align-items: center;
   gap: var(--space-1-5);
   min-width: 0;
-  font-size: 16px;
+  font-size: var(--text-section-size);
   font-weight: 500;
   color: var(--text-primary);
   overflow: hidden;
@@ -522,7 +460,7 @@ async function remove(item: ConversationSummary): Promise<void> {
 /* 右侧那列日期与标题同字号（参考图里「星期一」看起来和标题一样大） */
 .entry-time {
   flex-shrink: 0;
-  font-size: 16px;
+  font-size: var(--text-section-size);
   color: var(--text-tertiary);
 }
 
@@ -539,64 +477,23 @@ async function remove(item: ConversationSummary): Promise<void> {
 }
 
 /* 行菜单：悬停/聚焦才显示，但**始终可 Tab 到**（规范 §8 禁止 hover-only 的关键操作） */
-.entry-menu {
+/* 必须用 `:deep()`（实测踩到，这是个安静的坑）。
+   `.entry-menu` 是传给 `ConversationRowMenu` 的 class，而那个组件的根是**多节点**
+   （菜单 + 重命名弹窗），Vue 于是**不会**把本组件的 scope 属性交给它的根元素——
+   元素上只有 RowMenu 与 ConversationRowMenu 两层的 `data-v`。
+   所以 `.entry-menu[data-v-本组件]` 永远匹配不到，整条规则默默失效：
+   「⋯」回到文档流里，每条记录下面多出一行孤零零的点，而 `:hover` 那条也轮不到。
+   `:deep()` 把 scope 属性挪到 `.entry` 上（它确实带着本组件的 id），
+   这才选得中。侧栏那条同样的问题，是同一手法解决的（见 SideNav.vue）。 */
+.entry :deep(.entry-menu) {
   position: absolute;
   top: var(--space-2);
   right: var(--space-2);
   opacity: 0;
 }
 
-.entry:hover .entry-menu,
-.entry:focus-within .entry-menu {
+.entry:hover :deep(.entry-menu),
+.entry:focus-within :deep(.entry-menu) {
   opacity: 1;
-}
-
-/* 重命名：一个轻量内联弹层（不走 AppModal，因为它会把整个页面压暗，
-   而这里只想在原地改个字） */
-.rename-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--overlay-scrim);
-}
-
-.rename-card {
-  width: min(420px, 90vw);
-  padding: var(--space-5);
-  background: var(--modal-bg);
-  border-radius: var(--radius-overlay);
-  box-shadow: var(--shadow-popover);
-}
-
-.rename-title {
-  margin: 0 0 var(--space-3);
-  font-size: var(--text-section-size);
-  font-weight: 600;
-}
-
-.rename-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
-}
-
-.rename-actions button {
-  height: var(--control-height);
-  padding: 0 var(--space-4);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-control);
-  background: none;
-  color: var(--text-primary);
-  cursor: pointer;
-}
-
-.rename-actions .primary {
-  border-color: transparent;
-  background: var(--button-primary-bg);
-  color: var(--button-primary-text);
 }
 </style>

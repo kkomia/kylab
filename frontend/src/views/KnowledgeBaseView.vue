@@ -30,6 +30,8 @@ import {
   type ImpactReport,
   type DocumentPart,
   type DocumentSummary,
+  type DocumentBatchAction,
+  type DocumentBatchResult,
 } from '@/api/documents'
 import { createFolder, deleteFolder, listFolders, renameFolder, type Folder } from '@/api/folders'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
@@ -489,36 +491,80 @@ function requestBatchDelete(): void {
 }
 
 /**
- * 批量动作。**部分失败是正常结果**，所以按后端逐条回的成败分别处理：
- * 全成 → 清空选择；有失败 → 把失败的那几条留在选中态，用户可以重试或看原因。
+ * 跑一次批量动作并**按逐条结果报账**。
+ *
+ * 原先四处（删除/重建、批量出题、单篇出题、停用/恢复）各抄了一遍同一个骨架：
+ * 守卫 → 置忙 → 调接口 → 刷新 → 按"全成 / 部分失败"两套口径报账 → 复位。
+ * 差别只有三处：动作名、刷新哪一份列表、文案怎么说——所以收成一个函数。
+ *
+ * **文案仍由调用方给**（`success` / `partial`）：措辞是产品口径，
+ * 抽象不该把它吞掉，否则四个入口会被"统一"成同一句话，丢掉各自要说的信息
+ * （出题要说"已排队"、停用要说"的检索"、删除要说"哪几篇失败"）。
+ *
+ * 为什么"部分失败"要单独一条路：批量里"10 篇删掉 9 篇"是**正常结果**，
+ * 后端也因此不 reject，而是逐条回成败。只报一个总数等于让人自己去猜哪篇没成。
  */
-async function runBatch(action: 'delete' | 'reprocess'): Promise<void> {
-  if (selectedCount.value === 0 || batchRunning.value) return
-  batchDeleteOpen.value = false
+async function runBatchAction(
+  action: DocumentBatchAction,
+  options: {
+    /** 默认文案里的动词：「已{verb} N 篇」「{verb}：N 篇成功…」 */
+    verb: string
+    success?: (result: DocumentBatchResult) => string
+    partial?: (result: DocumentBatchResult, firstError: string) => string
+    /** 用哪一批 id（默认取选中项）；单篇动作走这条 */
+    ids?: string[]
+    /** `all = true` 表示整库（改切分参数后的整库重跑） */
+    all?: boolean
+    /** 刷新哪一份：`all` = 概览 + 列表（默认），`list` = 只刷列表 */
+    refresh?: 'all' | 'list'
+    /** 成功后清空选中（这批已经处理完了） */
+    clearOnSuccess?: boolean
+    /** 失败后只保留失败项（方便直接重试） */
+    keepFailed?: boolean
+  },
+): Promise<void> {
+  const ids = options.ids ?? [...selected.value]
+  if (ids.length === 0 || batchRunning.value) return
   batchRunning.value = true
-  const ids = [...selected.value]
-  const verb = action === 'delete' ? '删除' : '重新摄入'
   try {
-    const result = await batchDocuments(kbId.value, action, ids)
-    await refreshAll()
-    void store.refreshSummaries()
+    const result = await batchDocuments(kbId.value, action, ids, null, options.all ?? false)
+    if (options.refresh === 'list') {
+      await refresh()
+    } else {
+      await refreshAll()
+      void store.refreshSummaries()
+    }
+
     if (result.failed === 0) {
-      selected.value = []
-      notifySuccess(`已${verb} ${result.succeeded} 篇`)
+      if (options.clearOnSuccess) selected.value = []
+      notifySuccess(options.success?.(result) ?? `已${options.verb} ${result.succeeded} 篇`)
       return
     }
-    // 有失败：说清成功/失败各几篇，并把第一条失败原因带出来——只报总数等于让人自己找
-    const firstError = result.items.find((item) => !item.ok)?.error
+
+    const firstError = result.items.find((item) => !item.ok)?.error ?? ''
     notifyError(
-      `${verb}：${result.succeeded} 篇成功、${result.failed} 篇失败` +
-        (firstError ? `（${firstError}）` : ''),
+      options.partial?.(result, firstError) ??
+        `${options.verb}：${result.succeeded} 篇成功、${result.failed} 篇失败` +
+          (firstError ? `（${firstError}）` : ''),
     )
-    selected.value = result.items.filter((item) => !item.ok).map((item) => item.document_id)
+    if (options.keepFailed) {
+      selected.value = result.items.filter((item) => !item.ok).map((item) => item.document_id)
+    }
   } catch (cause) {
-    notifyError(cause instanceof Error ? cause.message : `批量${verb}失败`)
+    notifyError(cause instanceof Error ? cause.message : `批量${options.verb}失败`)
   } finally {
     batchRunning.value = false
   }
+}
+
+/** 删除 / 重新摄入。 */
+async function runBatch(action: 'delete' | 'reprocess'): Promise<void> {
+  batchDeleteOpen.value = false
+  await runBatchAction(action, {
+    verb: action === 'delete' ? '删除' : '重新摄入',
+    clearOnSuccess: true,
+    keepFailed: true,
+  })
 }
 
 /**
@@ -529,66 +575,35 @@ async function runBatch(action: 'delete' | 'reprocess'): Promise<void> {
  * 列表靠 `questions_pending` 轮询刷新（出题不改文档阶段，`hasActive` 看不到它）。
  */
 async function runBatchQuestions(): Promise<void> {
-  if (selectedCount.value === 0 || batchRunning.value) return
-  batchRunning.value = true
-  try {
-    const result = await batchDocuments(kbId.value, 'questions', [...selected.value])
-    await refresh()
-    if (result.failed === 0) {
-      notifySuccess(`已排队为 ${result.succeeded} 篇生成问题，完成后列表会自动刷新`)
-      return
-    }
-    const firstError = result.items.find((item) => !item.ok)?.error
-    notifyError(
+  await runBatchAction('questions', {
+    verb: '生成问题',
+    refresh: 'list',
+    success: (result) => `已排队为 ${result.succeeded} 篇生成问题，完成后列表会自动刷新`,
+    partial: (result, firstError) =>
       `生成问题：${result.succeeded} 篇已排队、${result.failed} 篇未排队` +
-        (firstError ? `（${firstError}）` : ''),
-    )
-  } catch (cause) {
-    notifyError(cause instanceof Error ? cause.message : '生成问题失败')
-  } finally {
-    batchRunning.value = false
-  }
+      (firstError ? `（${firstError}）` : ''),
+  })
 }
 
 /** 单篇「生成问题」（行菜单）：与批量同一条路，只是目标只有这一篇。 */
 async function onQuestionsClick(close: () => void, document: DocumentSummary): Promise<void> {
   close()
-  try {
-    const result = await batchDocuments(kbId.value, 'questions', [document.id])
-    await refresh()
-    if (result.failed === 0) {
-      notifySuccess('已排队生成问题，完成后列表会自动刷新')
-      return
-    }
-    notifyError(result.items[0]?.error || '生成问题失败')
-  } catch (cause) {
-    notifyError(cause instanceof Error ? cause.message : '生成问题失败')
-  }
+  await runBatchAction('questions', {
+    ids: [document.id],
+    verb: '生成问题',
+    refresh: 'list',
+    success: () => '已排队生成问题，完成后列表会自动刷新',
+    partial: (_result, firstError) => firstError || '生成问题失败',
+  })
 }
 
 /** 停用 / 恢复检索（批量）：与删除/重建同一条逐条回成败的路径。 */
 async function runBatchToggleDisabled(action: 'enable' | 'disable'): Promise<void> {
-  if (selectedCount.value === 0 || batchRunning.value) return
-  batchRunning.value = true
-  const ids = [...selected.value]
   const verb = action === 'disable' ? '停用' : '恢复'
-  try {
-    const result = await batchDocuments(kbId.value, action, ids)
-    await refresh()
-    if (result.failed === 0) {
-      notifySuccess(`已${verb} ${result.succeeded} 篇的检索`)
-      return
-    }
-    const firstError = result.items.find((item) => !item.ok)?.error
-    notifyError(
-      `${verb}：${result.succeeded} 篇成功、${result.failed} 篇失败` +
-        (firstError ? `（${firstError}）` : ''),
-    )
-  } catch (cause) {
-    notifyError(cause instanceof Error ? cause.message : `批量${verb}失败`)
-  } finally {
-    batchRunning.value = false
-  }
+  await runBatchAction(action, {
+    verb,
+    success: (result) => `已${verb} ${result.succeeded} 篇的检索`,
+  })
 }
 
 /** 单篇停用 / 恢复（行菜单）。 */
@@ -1704,7 +1719,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
 .delete-note {
   margin: 0;
   font-size: var(--text-meta-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
 }
 
@@ -1718,7 +1733,7 @@ function onReprocessClick(close: () => void, document: DocumentSummary): void {
   margin: 0 0 var(--space-4);
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-meta-size);
-  line-height: 1.6;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
   background: var(--bg-subtle);
   border-radius: var(--radius-control);

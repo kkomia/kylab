@@ -562,7 +562,7 @@ watch(
   height: 13px;
   border: 2px solid var(--accent-soft);
   border-top-color: var(--accent);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   animation: ai-spin 0.7s linear infinite;
 }
 

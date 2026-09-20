@@ -132,6 +132,27 @@ def test_injected_client_is_used() -> None:
     assert ranked == [(0, 0.5)]
 
 
+def test_no_client_is_built_per_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """不注入 client 时走**进程级共享**的那个（见 ``app/core/http.py``）。
+
+    检索链路上每次 rerank 都新建客户端，等于每次都重新握手。
+    判据是硬的：把 ``httpx.Client`` 换成"一构造就炸"的替身。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"results": [{"index": 0, "relevance_score": 0.9}]})
+
+    fake = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr("app.services.retrieval.rerank.shared_client", lambda: fake)
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise AssertionError("不该每次调用都新建 httpx.Client（见 app/core/http.py）")
+
+    monkeypatch.setattr(httpx, "Client", explode)
+
+    assert _reranker().rerank(query="q", documents=["甲"], top_n=1) == [(0, 0.9)]
+
+
 # --------------------------------------------------------------------- 工厂
 
 

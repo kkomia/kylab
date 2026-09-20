@@ -6,15 +6,15 @@
  */
 
 import { request } from './client'
+import type { components } from './schema'
 
-export interface Folder {
-  id: string
-  kb_id: string
-  name: string
-  /** 目录里的文档数，由后端 GROUP BY 一次算出。 */
-  document_count: number
-  created_at: string | null
-}
+/**
+ * 目录：**契约来自后端的 OpenAPI**（见 `./schema.d.ts` 与 `conversations.ts` 头注
+ * 里那三条约定：`Required<…>` 包一层、该收窄的显式收窄、写清为什么）。
+ *
+ * `document_count` 由后端 `GROUP BY` 一次算出，不是前端数的。
+ */
+export type Folder = Required<components['schemas']['FolderOut']>
 
 export function listFolders(kbId: string): Promise<{ items: Folder[] }> {
   return request(`/knowledge-bases/${kbId}/folders`)

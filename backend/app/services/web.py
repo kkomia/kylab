@@ -36,6 +36,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.core.exceptions import InvalidRequestError, UpstreamError
+from app.core.http import shared_client
 from app.parsers.html_format import extract_article
 
 __all__ = [
@@ -62,6 +63,13 @@ MAX_HITS = 10
 MAX_SNIPPET_CHARS = 500
 
 _TIMEOUT_SECONDS = 20.0
+
+#: 搜索接口的超时**比抓网页短**（v0.26）。
+#:
+#: 抓一页可能要等一个大文件下完，20 秒合理；而搜索是一个回 JSON 的接口——
+#: 实测 Tavily 中位 2.2 秒、最慢 3.7 秒，20 秒只会在它真的挂了时白等二十秒
+#: （那轮会话里就有一条 `搜索失败：The read operation timed out`，20 秒换回一行报错）。
+_SEARCH_TIMEOUT_SECONDS = 10.0
 
 #: 抓取 UA。与数据源连接器同一口径：不少站点对 httpx 默认 UA 直接 403。
 _USER_AGENT = "kylab/0.1 (+agent web tool)"
@@ -168,8 +176,9 @@ def fetch_url(url: str, *, limit: int = MAX_FETCH_CHARS) -> tuple[str, str]:
     """
     target = check_public_url(url)
     try:
-        with httpx.Client(timeout=_TIMEOUT_SECONDS, follow_redirects=False) as client:
-            text, final_url = _get_with_checks(client, target)
+        # 共享客户端 + **不跟随重定向**（与以前逐字一致：httpx 默认就是不跟随，
+        # 而 `_get_with_checks` 自己按跳校验地址）
+        text, final_url = _get_with_checks(shared_client(), target)
     except httpx.HTTPError as exc:
         raise UpstreamError(f"抓取失败：{exc}") from exc
 
@@ -185,9 +194,7 @@ def fetch_url(url: str, *, limit: int = MAX_FETCH_CHARS) -> tuple[str, str]:
     body = markdown.strip()
     if len(body) > limit:
         body = body[:limit] + f"\n\n（正文过长已截断，以上是前 {limit} 字）"
-    logger.info(
-        "抓取 %s（%s）：%d 字", final_url, content_type or "text", len(body)
-    )
+    logger.info("抓取 %s（%s）：%d 字", final_url, content_type or "text", len(body))
     return title, body
 
 
@@ -199,7 +206,13 @@ def _get_with_checks(client: httpx.Client, target: str) -> tuple[str, str]:
     """
     current = target
     for _ in range(_MAX_REDIRECTS + 1):
-        with client.stream("GET", current, headers={"User-Agent": _USER_AGENT}) as response:
+        with client.stream(
+            "GET",
+            current,
+            headers={"User-Agent": _USER_AGENT},
+            # 超时按调用点给：共享客户端自带的那个只是兜底（见 app/core/http.py）
+            timeout=_TIMEOUT_SECONDS,
+        ) as response:
             if response.is_redirect:
                 location = response.headers.get("location") or ""
                 if not location:
@@ -295,16 +308,13 @@ def search_web(
     count = max(1, min(int(limit), MAX_HITS))
     payload = _search_payload(name, text, api_key.strip(), count)
     try:
-        with httpx.Client(timeout=_TIMEOUT_SECONDS) as client:
-            response = client.post(spec["url"], json=payload)
+        response = shared_client().post(spec["url"], json=payload, timeout=_SEARCH_TIMEOUT_SECONDS)
     except httpx.HTTPError as exc:
         raise UpstreamError(f"搜索失败：{exc}") from exc
     if response.status_code >= 400:
         # 把状态码与响应体前一段带出来：401 是密钥错、429 是额度，
         # 这两类模型改不了但**用户能**——所以话要说全
-        raise UpstreamError(
-            f"搜索服务返回 {response.status_code}：{response.text[:200]}"
-        )
+        raise UpstreamError(f"搜索服务返回 {response.status_code}：{response.text[:200]}")
     try:
         body = response.json()
     except ValueError as exc:
@@ -341,9 +351,7 @@ def _hits_of(body: dict, provider: str) -> list[SearchHit]:
             SearchHit(
                 title=str(page.get("title") or url),
                 url=url,
-                snippet=str(page.get("content") or page.get("snippet") or "")[
-                    :MAX_SNIPPET_CHARS
-                ],
+                snippet=str(page.get("content") or page.get("snippet") or "")[:MAX_SNIPPET_CHARS],
                 published=str(page.get("published_date") or page.get("datePublished") or ""),
             )
         )

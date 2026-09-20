@@ -45,14 +45,16 @@ import base64
 import binascii
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from app.core.exceptions import InvalidRequestError
+from app.core.exceptions import InvalidRequestError, UpstreamError
 from app.core.services import Services
 from app.models.enums import DataSourceKind
 from app.services import office, web
 from app.services.api_key import WRITE, Caller
 from app.services.memory import DEFAULT_RECALL, MAX_RECALL
+from app.storage.base import ARTIFACT_IN_WORKSPACE
 
 __all__ = ["TOOL_NAMES", "call_tool", "tool_definitions"]
 
@@ -96,6 +98,7 @@ TOOL_NAMES = (
     "export_document",
     "export_table",
     "export_deck",
+    "ingest_artifact",
     "web_search",
     "web_fetch",
 )
@@ -372,32 +375,49 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "web_fetch",
             "description": (
-                "**抓一个网页并抽出正文**（回 Markdown）。"
+                "**抓网页并抽出正文**（回 Markdown）。"
                 "适合：对方给了一个网址要你看内容、搜索结果的某一页要读全文、"
                 "要核对某个说法。"
+                "**要读多页就一次给完**（最多 5 个），别一个一个来——"
+                "每多一次调用就多一个来回，而一轮里你可能要读十几页。"
+                "个别地址抓不到（403、超时）只影响那一条，其余照常返回。"
                 "只访问公网地址，内网与本机地址会被拒。"
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "http/https 地址"},
+                    "urls": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "一次要读的多个地址（最多 5 个）；与 url 二选一",
+                    },
                 },
-                "required": ["url"],
                 "additionalProperties": False,
             },
         },
         {
             "name": "export_document",
             "description": (
-                "把整理好的正文**导出成一份真文件**（.docx 或 .pdf）并存进知识库。"
+                "把整理好的正文**导出成一份真文件**（.docx 或 .pdf）。"
                 "正文用 Markdown（标题 #、要点 -、表格 | a | b |）。"
                 "**当对方要的是「一份报告 / 一份说明」时用它**——"
                 "只在对话里给一段 Markdown，他没法直接转发给别人。"
+                "文件落在**这条会话的产物区**（会话挂了工作区就落进那个目录），"
+                "界面上会挂一张可下载的卡片。"
+                "**它不会进知识库**——那是另一件事，对方明确要求时才调 ingest_artifact。"
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "knowledge_base_id": {"type": "string", "description": "存到哪个库"},
+                    "knowledge_base_id": {
+                        "type": "string",
+                        "description": (
+                            "存到哪个库。**只在没有会话上下文的那条通道上要求**"
+                            "（外部 MCP 客户端、一次性脚本）；对话里不要传，"
+                            "产物会自己落到该落的地方"
+                        ),
+                    },
                     "filename": {
                         "type": "string",
                         "description": "文件名，扩展名决定格式：.docx 或 .pdf",
@@ -405,22 +425,26 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "markdown": {"type": "string", "description": "正文（Markdown）"},
                     "title": {"type": "string", "description": "文档标题；留空则不加标题"},
                 },
-                "required": ["knowledge_base_id", "filename", "markdown"],
+                "required": ["filename", "markdown"],
                 "additionalProperties": False,
             },
         },
         {
             "name": "export_table",
             "description": (
-                "把二维数据导出成 .xlsx 并存进知识库。"
+                "把二维数据导出成 .xlsx。"
                 "**当结果是「一张表」时用它**（清单、对照、逐项统计）——"
                 "表格塞进文档里就没法排序与计算了。"
                 "第一行当表头；数字直接给数字，不要给字符串。"
+                "文件落在这条会话的产物区，**不进知识库**（要入用 ingest_artifact）。"
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "knowledge_base_id": {"type": "string", "description": "存到哪个库"},
+                    "knowledge_base_id": {
+                        "type": "string",
+                        "description": "同 export_document：只有没有会话上下文的通道才需要",
+                    },
                     "filename": {"type": "string", "description": "文件名，扩展名用 .xlsx"},
                     "rows": {
                         "type": "array",
@@ -429,21 +453,25 @@ def tool_definitions() -> list[dict[str, Any]]:
                     },
                     "sheet_name": {"type": "string", "description": "工作表名；留空为 Sheet1"},
                 },
-                "required": ["knowledge_base_id", "filename", "rows"],
+                "required": ["filename", "rows"],
                 "additionalProperties": False,
             },
         },
         {
             "name": "export_deck",
             "description": (
-                "把要点导出成一份 .pptx 幻灯并存进知识库。"
+                "把要点导出成一份 .pptx 幻灯。"
                 "**当对方要「讲一遍」时用它**（汇报、方案、提纲）——"
                 "每页只放标题与要点，不要写成成段的文字。"
+                "文件落在这条会话的产物区，**不进知识库**（要入用 ingest_artifact）。"
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "knowledge_base_id": {"type": "string", "description": "存到哪个库"},
+                    "knowledge_base_id": {
+                        "type": "string",
+                        "description": "同 export_document：只有没有会话上下文的通道才需要",
+                    },
                     "filename": {"type": "string", "description": "文件名，扩展名用 .pptx"},
                     "slides": {
                         "type": "array",
@@ -463,11 +491,43 @@ def tool_definitions() -> list[dict[str, Any]]:
                     },
                     "title": {"type": "string", "description": "封面标题；留空则不要封面"},
                 },
-                "required": ["knowledge_base_id", "filename", "slides"],
+                "required": ["filename", "slides"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "ingest_artifact",
+            "description": (
+                "把**刚才导出的那个文件**存进知识库（之后能被检索、出现在文档列表里）。"
+                "**只在对方明确要求时调**——「存进知识库」「放进资料库」「以后能查到」"
+                "这类话。导出的文件默认**不**进库，那是他的选择，不是默认。"
+                "对方没指定哪个库、你也拿不准时，先用 list_knowledge_bases 看有哪些，"
+                "或者直接问他——**不要替他挑一个**。"
+                "artifact_id 就用导出那一步返回的那个。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "artifact_id": {
+                        "type": "string",
+                        "description": "导出类工具返回的那个 artifact_id",
+                    },
+                    "knowledge_base_id": {
+                        "type": "string",
+                        "description": "存进哪个库（对方指定或确认过的那个）",
+                    },
+                },
+                "required": ["artifact_id", "knowledge_base_id"],
                 "additionalProperties": False,
             },
         },
     ]
+
+
+#: 需要"这一轮在哪条会话里"的工具（v0.26）——导出类的产物要落到会话的临时位置
+#: 或它所属工作区的目录里。**只有这三个**：其余工具与"在哪条会话里"无关，
+#: 给它们一律加一个用不上的参数，会让"哪些工具依赖会话上下文"在签名里读不出来。
+_CONTEXTUAL_TOOLS = frozenset({"export_document", "export_table", "export_deck"})
 
 
 def call_tool(
@@ -476,17 +536,23 @@ def call_tool(
     arguments: dict[str, Any] | None,
     *,
     caller: Caller,
+    conversation_id: str | None = None,
 ) -> Any:
     """执行一个工具。**未知工具报错而不是返回空**——静默失败会让模型
     以为"查到了但没有结果"，然后基于错误前提继续推理。
 
     ``caller`` 是必填的（见模块头）：调用方从 ``auth.current_caller()`` 取，
     拿不到就会在那里抛 401，而不是走到这里变成匿名调用。
+
+    ``conversation_id`` 只有对话这条链路给得出（外部 MCP 客户端与一次性脚本
+    没有会话）——它决定产物落在哪儿，见 :func:`_save_export`。
     """
     args = arguments or {}
     handler = _HANDLERS.get(name)
     if handler is None:
         raise InvalidRequestError(f"未知的工具：{name}（可用：{'、'.join(TOOL_NAMES)}）")
+    if name in _CONTEXTUAL_TOOLS:
+        return handler(services, args, caller=caller, conversation_id=conversation_id)
     return handler(services, args, caller=caller)
 
 
@@ -544,9 +610,7 @@ def _create_knowledge_base(
     return {"id": record.id, "name": record.name}
 
 
-def _upload_document(
-    services: Services, args: dict[str, Any], *, caller: Caller
-) -> dict[str, Any]:
+def _upload_document(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
     kb_id = _require(args, "knowledge_base_id")
     filename = _require(args, "filename")
     raw = _require(args, "content_base64")
@@ -590,9 +654,7 @@ def _upload_document(
     }
 
 
-def _add_data_source(
-    services: Services, args: dict[str, Any], *, caller: Caller
-) -> dict[str, Any]:
+def _add_data_source(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
     kb_id = _require(args, "knowledge_base_id")
     kind = _require(args, "kind").lower()
     url = _require(args, "url")
@@ -681,23 +743,15 @@ def _get_document_status(
         "chunks": services.documents.chunk_count(record.id),
         "error": record.error,
         "searchable": record.stage.value == "indexed",
-        "note": (
-            "已可检索"
-            if record.stage.value == "indexed"
-            else "尚未完成处理，此时检索不到它"
-        ),
+        "note": ("已可检索" if record.stage.value == "indexed" else "尚未完成处理，此时检索不到它"),
     }
 
 
-def _delete_document(
-    services: Services, args: dict[str, Any], *, caller: Caller
-) -> dict[str, Any]:
+def _delete_document(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
     document_id = _require(args, "document_id")
     record = services.documents.get(document_id)
     # 删除是写操作：只读分享拿到的库不能删
-    services.api_keys.check_access(
-        caller, need=WRITE, kb_ids=[record.knowledge_base_id]
-    )
+    services.api_keys.check_access(caller, need=WRITE, kb_ids=[record.knowledge_base_id])
     entry = services.lifecycle.delete_document(document_id)
     return {
         "document_id": document_id,
@@ -786,9 +840,7 @@ def _list_notes(services: Services, args: dict[str, Any], *, caller: Caller) -> 
     }
 
 
-def _list_documents(
-    services: Services, args: dict[str, Any], *, caller: Caller
-) -> dict[str, Any]:
+def _list_documents(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
     kb_id = _require(args, "knowledge_base_id")
     services.api_keys.check_access(caller, kb_ids=[kb_id])
     limit = max(1, min(int(args.get("limit") or DEFAULT_DOC_PAGE), MAX_DOC_PAGE))
@@ -837,9 +889,7 @@ def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
                 "path": item.path,
                 # 行号是"渐进式展开"的入口：片段不够时按它去读全文
                 "lines": (
-                    f"{item.start_line}-{item.end_line}"
-                    if item.start_line is not None
-                    else None
+                    f"{item.start_line}-{item.end_line}" if item.start_line is not None else None
                 ),
                 "score": round(item.score, 4) if item.score is not None else None,
             }
@@ -904,24 +954,89 @@ def _web_search(services: Services, args: dict[str, Any], *, caller: Caller) -> 
     return f"{_NL}{_NL}".join(lines)
 
 
+#: 一次最多读几页。**上限存在的理由是上下文**，不是网络：
+#: 每页正文上限 3 万字，五页就是十五万字的工具结果，够把预算吃光。
+MAX_FETCH_URLS = 5
+
+
 def _web_fetch(services: Services, args: dict[str, Any], *, caller: Caller) -> str:
-    """抓一页正文。
+    """抓网页正文（**一次可以给多个网址**，v0.26）。
 
     **以字符串回、不包成 JSON**：正文里的换行与引号在 JSON 里会变成一屏转义字符，
-    而这段文本是要给模型读的。来源地址写在第一行——它引用时能说清是哪一页。
+    而这段文本是要给模型读的。来源地址写在每一页的开头——它引用时能说清是哪一页。
+
+    **为什么要支持一次给多个**：实测一轮里模型会连着抓十几页，而每抓一页就要
+    等一次模型往返（那条会话里 10 次搜索 + 15 次抓取 = 25 个来回，占了一轮
+    一百多秒里的大头；相比之下 Tavily 一次 2 秒根本不算慢）。
+    把"读这几页"合成一次调用，省下的是往返，不是网络。
+
+    一页失败**不拖垮整次调用**：403/超时是常事（实测抓 15 页里有 2 页 403），
+    把失败原因就地写在那一条下面，模型据此换一个来源——而不是整轮重来。
     """
-    url = _require(args, "url")
-    title, body = web.fetch_url(url)
-    return f"【{title}】{_NL}来源：{url}{_NL}{_NL}{body}"
+    urls: list[str] = []
+    single = str(args.get("url") or "").strip()
+    if single:
+        urls.append(single)
+    raw = args.get("urls")
+    if isinstance(raw, list):
+        urls.extend(str(item).strip() for item in raw if str(item).strip())
+    if not urls:
+        raise InvalidRequestError("缺少参数：url（或用 urls 一次给多个）")
+    # 去重但保序：模型偶尔把同一个地址写两遍，抓两次纯属浪费
+    unique = list(dict.fromkeys(urls))
+    if len(unique) > MAX_FETCH_URLS:
+        raise InvalidRequestError(
+            f"一次最多读 {MAX_FETCH_URLS} 页（收到 {len(unique)} 个）。先读这几页，看完再要下一批"
+        )
+
+    # **先把每一个地址过一遍再发请求**（与单页时同一条纪律）：内网 / 本机 / 云元数据
+    # 地址要挡在发出去之前，而不是"发完再看结果"。放在循环外还有一个好处——
+    # 一批里有一个非法地址时，其余几个也不会被先抓走（那等于用合法的几个
+    # 把非法那个夹带出去，日志里看还像是正常抓取）。
+    for url in unique:
+        web.check_public_url(url)
+
+    # **并行抓**（v0.26）：这几页之间没有任何依赖，一页一页等就是白等。
+    # 每页 0.4–1.2 秒（实测），三页串行 3 秒、并行 1.2 秒；而模型之所以被鼓励
+    # 一次给多个网址，图的就是这个——一个来回里把几页都拿回来。
+    #
+    # `web.fetch_url` 是**无状态的纯函数**（共享的 httpx 客户端本身线程安全），
+    # 所以并发在这里是安全的；这也是不在工具循环那一层并发的原因：
+    # 那边有共享的"来源账本"与 MCP 会话，动它们要另说。
+    chunks: list[str] = []
+    with ThreadPoolExecutor(max_workers=MAX_FETCH_URLS) as pool:
+        futures = [pool.submit(_fetch_one, url) for url in unique]
+        for future in futures:
+            chunks.append(future.result())
+    return f"{_NL}{_NL}".join(chunks)
+
+
+def _fetch_one(url: str) -> str:
+    """抓一页，把结果（或失败原因）渲染成一段文本。
+
+    **只有上游的毛病就地降级**（403 / 超时 / 不是网页）——那是常事，
+    实测抓 15 页有 2 页 403，一页读不到不该让整批白跑。
+    `InvalidRequestError`（内网地址、参数非法）不走这里：那是策略拒绝，
+    调用方在上面已经逐条拦过了。
+    """
+    try:
+        title, body = web.fetch_url(url)
+        return f"【{title}】{_NL}来源：{url}{_NL}{_NL}{body}"
+    except UpstreamError as exc:
+        return f"【这一页没抓成】{_NL}来源：{url}{_NL}{_NL}{exc}"
 
 
 # ------------------------------------------------------------------ Office 产出
 
 
 def _export_document(
-    services: Services, args: dict[str, Any], *, caller: Caller
+    services: Services,
+    args: dict[str, Any],
+    *,
+    caller: Caller,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Markdown → .docx / .pdf → 存进知识库。"""
+    """Markdown → .docx / .pdf → 落成一份文件（见 :func:`_save_export`）。"""
     markdown = _require(args, "markdown")
     if len(markdown) > office.MAX_CHARS:
         raise InvalidRequestError(
@@ -941,11 +1056,19 @@ def _export_document(
         markdown,
         title=title,
     )
-    return _save_export(services, args, content, caller=caller, kind=kind)
+    return _save_export(
+        services, args, content, caller=caller, kind=kind, conversation_id=conversation_id
+    )
 
 
-def _export_table(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
-    """二维数据 → .xlsx → 存进知识库。"""
+def _export_table(
+    services: Services,
+    args: dict[str, Any],
+    *,
+    caller: Caller,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """二维数据 → .xlsx → 落成一份文件。"""
     raw = args.get("rows")
     if not isinstance(raw, list) or not raw:
         raise InvalidRequestError("rows 要是一个非空的二维数组（第一行是表头）")
@@ -960,11 +1083,19 @@ def _export_table(services: Services, args: dict[str, Any], *, caller: Caller) -
     content = _build(
         kind, office.build_xlsx, rows, sheet_name=str(args.get("sheet_name") or "Sheet1")
     )
-    return _save_export(services, args, content, caller=caller, kind=kind)
+    return _save_export(
+        services, args, content, caller=caller, kind=kind, conversation_id=conversation_id
+    )
 
 
-def _export_deck(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
-    """要点 → .pptx → 存进知识库。"""
+def _export_deck(
+    services: Services,
+    args: dict[str, Any],
+    *,
+    caller: Caller,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """要点 → .pptx → 落成一份文件。"""
     raw = args.get("slides")
     if not isinstance(raw, list) or not raw:
         raise InvalidRequestError("slides 要是一个非空的数组（每项 {title, bullets}）")
@@ -987,7 +1118,9 @@ def _export_deck(services: Services, args: dict[str, Any], *, caller: Caller) ->
     if kind != "pptx":
         raise InvalidRequestError(f"export_deck 只做 .pptx（收到 .{kind}）")
     content = _build(kind, office.build_pptx, slides, title=str(args.get("title") or ""))
-    return _save_export(services, args, content, caller=caller, kind=kind)
+    return _save_export(
+        services, args, content, caller=caller, kind=kind, conversation_id=conversation_id
+    )
 
 
 def _build(kind: str, builder: Any, *args: Any, **kwargs: Any) -> bytes:
@@ -1013,14 +1146,51 @@ def _save_export(
     *,
     caller: Caller,
     kind: str,
+    conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    """把产出当一次普通入库提交（与界面上传走**同一条链路**）。
+    """把产出**落成一个文件**（v0.26）。
 
-    不另开一条"写文档"的通道：那样库里会出现两种来源、两种格式，
-    而"这份文件是怎么来的"就再也说不清了。入库之后它同样可检索、可下载、可删。
+    改之前这里是"直接当一次入库提交"：文件唯一的身份是"某个知识库里的一份文档"，
+    而 `knowledge_base_id` 是必填的。于是没挂工作区的会话要导出 docx 时，模型
+    只能**替用户挑一个语义上最顺手的库**——实测它挑中了「笔记」，并在回答里说明
+    "你这边没有专门的工作区，我就选了最顺手的那个"。这不是模型的错：它没有别的落点。
+
+    现在两件事分开：
+
+    - **落盘**：挂在工作的会话落进工作区目录（用户打开项目就看得见），
+      没挂的落进对象存储里按会话分的临时前缀；
+    - **入库**：另一个工具 ``ingest_artifact``，只在对方明确要求时才调。
+
+    没有会话上下文时（外部 MCP 客户端、一次性脚本）仍然要求 ``knowledge_base_id``：
+    那条通道没有产物区，而且"外部客户端点名叫了哪个库"本身就是显式的。
     """
-    kb_id = _require(args, "knowledge_base_id")
     filename = _require(args, "filename")
+    if conversation_id:
+        record = services.artifacts.save(
+            conversation_id=conversation_id,
+            filename=filename,
+            content=content,
+            kind=kind,
+            owner_id=caller.owner_id,
+        )
+        label = services.artifacts.label_for(record)
+        saved: dict[str, Any] = {
+            "artifact_id": record.id,
+            "name": record.name,
+            "size_bytes": record.size_bytes,
+            "format": kind,
+            "saved_to": label,
+            "note": (
+                f"文件已经生成，落在{label}，对方在对话里就能下载。"
+                "**它没有进知识库**——那是另一件事，等他明确要求时再调 ingest_artifact"
+            ),
+        }
+        if record.storage == ARTIFACT_IN_WORKSPACE:
+            # 只有工作区那份的路径对模型有用：它下一步可能要去改这个文件
+            saved["path"] = record.location
+        return {**saved, ARTIFACT_KEY: services.artifacts.describe(record)}
+
+    kb_id = _require(args, "knowledge_base_id")
     services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
     outcome = services.ingest.submit(
         knowledge_base_id=kb_id,
@@ -1040,7 +1210,56 @@ def _save_export(
             if outcome.is_duplicate
             else "已存进知识库并开始处理。对方可以在文档列表里下载或看它"
         ),
+        # 界面用的那一份：`ToolOutcome.artifacts` 会把它原样带到前端，在那里挂成
+        # 一张可点的文件卡片。**与给模型看的字段放在同一个 dict 里**是有意的：
+        # 它们本来就是同一件事，分成两份迟早会一处改了另一处没改。
+        ARTIFACT_KEY: {
+            "artifact_id": outcome.document.id,
+            "name": outcome.document.name,
+            "size_bytes": len(content),
+            "format": kind,
+            "storage": "document",
+            "where": "知识库",
+            "knowledge_base_id": kb_id,
+            "document_id": outcome.document.id,
+        },
     }
+
+
+def _ingest_artifact(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
+    """把**已经导出**的那份文件存进知识库（显式动作，v0.26）。
+
+    与 ``upload_document`` 的分工：那个是"别处来的一份文件，入我的库"，
+    这个是"刚才我给你做的那个文件，也存一份进库"——后者不需要把内容再传一遍，
+    因为文件已经在服务器上了（工作区目录或对象存储里）。
+    """
+    artifact_id = _require(args, "artifact_id")
+    kb_id = _require(args, "knowledge_base_id")
+    services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
+    record = services.artifacts.get(artifact_id)
+    document_id, is_duplicate = services.artifacts.ingest(
+        record,
+        knowledge_base_id=kb_id,
+        uploaded_by=caller.user.id if caller.user is not None else None,
+    )
+    return {
+        "document_id": document_id,
+        "name": record.name,
+        "knowledge_base_id": kb_id,
+        "note": (
+            "库里已经有一份内容完全相同的文件，没有重复入库"
+            if is_duplicate
+            else "已存进知识库并开始处理。它现在可被检索，也能在文档列表里下载"
+        ),
+        # 同一张卡片换成"已入库"的状态：界面按 artifact_id 合并，
+        # 于是这一步跑完，卡片上立刻多出"已存进知识库「X」"
+        ARTIFACT_KEY: services.artifacts.describe(record),
+    }
+
+
+#: 工具结果里那个"给界面用"的键。`agent_tools.py` 的执行器按它摘出 `artifacts`，
+#: 之后这个键会**从回给模型的文本里去掉**——模型不需要看一份自己的结果的副本。
+ARTIFACT_KEY = "__artifact__"
 
 
 def _suffix_of(filename: str) -> str:
@@ -1068,6 +1287,7 @@ _HANDLERS = {
     "export_document": _export_document,
     "export_table": _export_table,
     "export_deck": _export_deck,
+    "ingest_artifact": _ingest_artifact,
 }
 
 

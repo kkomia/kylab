@@ -180,7 +180,7 @@ async function revoke(share: Share): Promise<void> {
 .share-lead {
   margin: 0 0 var(--space-4);
   font-size: var(--text-meta-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
 }
 

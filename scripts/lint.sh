@@ -38,7 +38,7 @@ step() {
 
 step "ruff" sh -c "cd '$ROOT/backend' && uv run ruff check app/ tests/"
 step "emoji 扫描（后端）" "$PY" "$ROOT/scripts/scan_emoji.py" "$ROOT/backend/app"
-step "结构性规范（分层 / 测试位置 / 界面文案）" "$PY" "$ROOT/scripts/check_layering.py" "$ROOT"
+step "结构性规范（分层 / 测试位置 / 界面文案 / 版本号）" "$PY" "$ROOT/scripts/check_layering.py" "$ROOT"
 # 同步《API 接口规范》的端点清单：它是从真实 OpenAPI 生成的，
 # 跑这一步之后文档里的清单必然与代码一致（T4.9）
 # 这一步要 import app（进而 import duckdb），所以**必须用 venv 的解释器**：
@@ -49,8 +49,12 @@ VENV_PY="$ROOT/backend/.venv/Scripts/python.exe"
 [ -x "$VENV_PY" ] || VENV_PY="$ROOT/backend/.venv/bin/python"
 if [ -x "$VENV_PY" ]; then
     step "同步 API 接口规范" "$VENV_PY" "$ROOT/scripts/gen_api_spec.py"
+    # 前端类型与后端 schema 的契约核对（T4.9 的姊妹项）：**不一致就红**，
+    # 不像上面那条把文档改掉——类型参与编译，静默重写等于把"契约变了"藏起来。
+    step "核对 API 类型（前端 ← OpenAPI）" "$VENV_PY" "$ROOT/scripts/gen_api_types.py" --check
 else
     echo "==> 同步 API 接口规范（跳过：找不到 venv 解释器）"
+    echo "==> 核对 API 类型（跳过：找不到 venv 解释器）"
 fi
 
 if [ -f "$ROOT/frontend/package.json" ]; then

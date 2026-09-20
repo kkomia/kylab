@@ -166,10 +166,9 @@ def test_history_comes_from_the_database_not_the_request(
     services.conversations.append(conv_id, role="assistant", content="库里的回答")
 
     seen: dict = {}
-    # **盯 `agent_messages` 而不是旧链路的 `answer_agent`**：P0 起对话主流程是
-    # 工具循环，`answer_agent` 已经不在这条路上了（盯它等于盯一个没人调的函数，
-    # 用例会因为"历史没被记下来"而红，而真实行为其实是对的）。
-    # `agent_messages` 是那一轮提示词的唯一出口——历史有没有进去，这里看得最准。
+    # **盯 `agent_messages`**：对话主流程是工具循环（§12.153 起），
+    # 而 `agent_messages` 是那一轮提示词的唯一出口——历史有没有进去，这里看得最准。
+    # （旧链路的 `answer_agent` 已随工具循环的收尾一并删除，见 §12.172。）
     real = services.chat.agent_messages
 
     def spy(  # type: ignore[no-untyped-def]
@@ -539,3 +538,203 @@ def test_preview_is_opt_in(client: TestClient) -> None:
 
     row = next(item for item in body["items"] if item["id"] == conversation["id"])
     assert row["preview"] == ""
+
+
+# ------------------------------------------------------------------ 会话产物（v0.26）
+
+
+def _artifact(services, conversation_id: str, *, name: str = "短诗.docx"):  # type: ignore[no-untyped-def]
+    return services.artifacts.save(
+        conversation_id=conversation_id,
+        filename=name,
+        content=b"poem-bytes",
+        kind="docx",
+    )
+
+
+def test_listing_artifacts_says_where_the_file_is(client: TestClient) -> None:
+    """卡片的状态以这条接口为准：流式当时那份快照说不清"它后来进没进库"。"""
+    services = get_services()
+    conversation = client.post("/api/v1/conversations", json={"title": "产物"}).json()
+    record = _artifact(services, conversation["id"])
+
+    body = client.get(f"/api/v1/conversations/{conversation['id']}/artifacts").json()
+
+    assert [item["artifact_id"] for item in body["items"]] == [record.id]
+    assert body["items"][0]["where"] == "本会话"
+    # 没入库就不给 knowledge_base_id——界面据此决定给不给「存进知识库」
+    assert body["items"][0]["knowledge_base_id"] is None
+
+
+def test_artifact_of_another_conversation_is_not_reachable(client: TestClient) -> None:
+    """`/conversations/A/artifacts/B` 不能拿到别的会话里的 B。
+
+    权限判定过的是 A，而返回的是 B 的内容——不校验归属就能这样绕过去。
+    """
+    services = get_services()
+    first = client.post("/api/v1/conversations", json={"title": "a"}).json()
+    second = client.post("/api/v1/conversations", json={"title": "b"}).json()
+    record = _artifact(services, second["id"])
+
+    response = client.get(f"/api/v1/conversations/{first['id']}/artifacts/{record.id}/download-url")
+
+    assert response.status_code == 404
+
+
+def test_download_url_round_trip(client: TestClient) -> None:
+    """签发 → 用签名取内容。**签名端点不带鉴权头**（下载与预览按钮带不了头）。"""
+    services = get_services()
+    conversation = client.post("/api/v1/conversations", json={"title": "下载"}).json()
+    record = _artifact(services, conversation["id"])
+
+    issued = client.get(
+        f"/api/v1/conversations/{conversation['id']}/files/download-url",
+        params={"key": record.id},
+    )
+    assert issued.status_code == 200, issued.text
+    url = issued.json()["url"]
+
+    fetched = client.get(url)
+    assert fetched.status_code == 200
+    assert fetched.content == b"poem-bytes"
+
+
+def test_tampered_signature_is_rejected(client: TestClient) -> None:
+    services = get_services()
+    conversation = client.post("/api/v1/conversations", json={"title": "改签名"}).json()
+    record = _artifact(services, conversation["id"])
+    url = client.get(
+        f"/api/v1/conversations/{conversation['id']}/files/download-url",
+        params={"key": record.id},
+    ).json()["url"]
+
+    response = client.get(url.split("&signature=")[0] + "&signature=deadbeef")
+
+    assert response.status_code == 401
+
+
+def test_ingest_endpoint_is_the_click_that_files_it(client: TestClient, kb_id: str) -> None:
+    """卡片上那个按钮走的就是这条。**库由请求体点明**，服务端不替他挑。"""
+    services = get_services()
+    conversation = client.post("/api/v1/conversations", json={"title": "入库"}).json()
+    record = _artifact(services, conversation["id"])
+
+    body = client.post(
+        f"/api/v1/conversations/{conversation['id']}/artifacts/{record.id}/ingest",
+        json={"knowledge_base_id": kb_id},
+    ).json()
+
+    assert body["knowledge_base_id"] == kb_id and body["document_id"]
+    assert services.documents.get(body["document_id"]).name == "短诗.docx"
+
+
+def test_deleting_a_conversation_clears_its_temporary_files(client: TestClient) -> None:
+    """删会话要连**对象存储里那份临时文件**一起清掉，否则桶会只增不减。"""
+    from app.core.storage import get_stores
+
+    services = get_services()
+    conversation = client.post("/api/v1/conversations", json={"title": "删掉"}).json()
+    record = _artifact(services, conversation["id"])
+    assert get_stores().objects.exists(record.location)
+
+    assert client.delete(f"/api/v1/conversations/{conversation['id']}").status_code == 204
+
+    assert not get_stores().objects.exists(record.location)
+
+
+# ------------------------------------------------------------------ 文件区（v0.26）
+
+
+def test_file_area_of_a_bare_conversation_lists_its_artifacts(client: TestClient) -> None:
+    """没挂工作区的会话也有文件区：临时区里就是这条会话的产物。"""
+    services = get_services()
+    conversation = client.post("/api/v1/conversations", json={"title": "文件"}).json()
+    _artifact(services, conversation["id"])
+
+    body = client.get(f"/api/v1/conversations/{conversation['id']}/files").json()
+
+    assert body["mode"] == "object"
+    assert body["label"] == "本会话"
+    assert [item["name"] for item in body["entries"]] == ["短诗.docx"]
+    assert body["entries"][0]["kind"] == "docx"
+
+
+def test_upload_then_download_round_trip(client: TestClient) -> None:
+    """上传 → 列表里看得到 → 签名链接取回同一份字节。"""
+    conversation = client.post("/api/v1/conversations", json={"title": "上传"}).json()
+    base = f"/api/v1/conversations/{conversation['id']}/files"
+
+    created = client.post(
+        base, files={"file": ("笔记.txt", b"hello file", "text/plain")}
+    )
+    assert created.status_code == 201, created.text
+    key = created.json()["key"]
+
+    listing = client.get(base).json()
+    assert [item["name"] for item in listing["entries"]] == ["笔记.txt"]
+
+    url = client.get(f"{base}/download-url", params={"key": key}).json()["url"]
+    fetched = client.get(url)
+    assert fetched.status_code == 200 and fetched.content == b"hello file"
+
+
+def test_inline_disposition_is_only_honoured_for_safe_kinds(client: TestClient) -> None:
+    """``disposition=inline`` 由调用方给，所以**不能**由它决定能不能内联渲染。
+
+    真正决定的是服务端按后缀复核的那张白名单——一份能带 ``<script>`` 的 SVG
+    内联在本站 origin 下就是存储型 XSS。
+    """
+    conversation = client.post("/api/v1/conversations", json={"title": "内联"}).json()
+    base = f"/api/v1/conversations/{conversation['id']}/files"
+    key = client.post(
+        base, files={"file": ("图.svg", b"<svg/>", "image/svg+xml")}
+    ).json()["key"]
+
+    url = client.get(
+        f"{base}/download-url", params={"key": key, "disposition": "inline"}
+    ).json()["url"]
+
+    response = client.get(url)
+    assert response.status_code == 200
+    assert response.headers["content-disposition"].startswith("attachment")
+
+
+def test_file_listing_refuses_another_conversations_key(client: TestClient) -> None:
+    """文件区是按会话划的：拿别的会话的 key 来签链接，签不出来。"""
+    services = get_services()
+    first = client.post("/api/v1/conversations", json={"title": "a"}).json()
+    second = client.post("/api/v1/conversations", json={"title": "b"}).json()
+    record = _artifact(services, second["id"])
+
+    response = client.get(
+        f"/api/v1/conversations/{first['id']}/files/download-url", params={"key": record.id}
+    )
+
+    assert response.status_code == 404
+
+
+def test_workspace_backed_conversation_browses_the_real_directory(
+    client: TestClient, tmp_path
+) -> None:
+    """挂了工作区就是那个真实目录，能进子目录、能上传进子目录。"""
+    services = get_services()
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "章节").mkdir()
+    (root / "章节" / "一.md").write_text("正文", encoding="utf-8")
+    workspace = services.workspaces.create(name="我的项目", root_path=str(root), user_id=None)
+    conversation = client.post(
+        "/api/v1/conversations", json={"title": "工作区的", "workspace_id": workspace.id}
+    ).json()
+    base = f"/api/v1/conversations/{conversation['id']}/files"
+
+    listing = client.get(base).json()
+    assert listing["mode"] == "workspace" and listing["label"] == "工作区「我的项目」"
+    assert [item["name"] for item in listing["entries"]] == ["章节"]
+
+    inner = client.get(base, params={"path": "章节"}).json()
+    assert inner["path"] == "章节" and inner["parent"] == ""
+    assert inner["entries"][0]["kind"] == "md"
+
+    client.post(base, params={"path": "章节"}, files={"file": ("二.md", b"x", "text/markdown")})
+    assert (root / "章节" / "二.md").read_bytes() == b"x"

@@ -65,3 +65,26 @@ export function resizeTo(width: number, height = 400): void {
 export function resetResizeObservers(): void {
   registrations.length = 0
 }
+
+/**
+ * `HTMLDialogElement` 的开关（v0.25 提到全局）。
+ *
+ * **jsdom 不实现原生 `<dialog>` 的 `showModal()` / `close()`**，而 `AppModal`
+ * 正是靠它们进出 top-layer。缺了它，任何挂载 `AppModal` 的用例都会抛
+ * "element.showModal is not a function"。
+ *
+ * 原先三个用例文件各抄了一份（ChatView / KnowledgeBaseView / 别处），
+ * 而 `SettingsModal.test.ts` 没有——它一直是靠一个巧合在跑：`AppModal` 只在
+ * `open` **变化**时才调 `showModal()`，而那些用例挂载时 `open` 就已经是真，
+ * watcher 从不触发，于是那道调用从没发生过。`AppModal` 补上"挂载时同步一次"
+ * 之后（为了让 `<AppModal v-if="X" v-model:open="X">` 能打开），这个巧合就没了。
+ *
+ * 放到全局：**让 jsdom 里挂载任何弹窗的行为都一致**，不再依赖各文件记不记得抄。
+ */
+HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement): void {
+  this.open = true
+}
+
+HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement): void {
+  this.open = false
+}

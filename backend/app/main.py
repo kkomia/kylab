@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.router import api_router
 from app.core.config import API_VERSION, get_settings
 from app.core.exceptions import register_exception_handlers
+from app.core.http import close_shared_client
 from app.core.logging import add_file_handler, log_file_for, setup_logging
 from app.core.services import get_services
 from app.core.storage import close_stores
@@ -51,6 +52,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
             await asyncio.gather(*worker_tasks, return_exceptions=True)
         # 释放 PG 连接池：进程级资源，不还回去会拖住连接直到进程被回收
         close_stores()
+        # 出站 HTTP 客户端同理（见 core/http.py）：连接池也是进程级资源
+        close_shared_client()
 
 
 async def _run_worker(worker: TaskWorker, stop: asyncio.Event) -> None:

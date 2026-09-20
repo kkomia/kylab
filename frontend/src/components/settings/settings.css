@@ -1,0 +1,341 @@
+/*
+ * 设置里**每一节共用**的样式（全局，但限定在 `.settings-scope` 之内）。
+ *
+ * 为什么不做成 scoped：这些规则是给"设置里的一节"用的，而每一节都可以是
+ * 独立组件——scoped 样式只作用于本组件的元素，子组件里那些类名就匹配不到了。
+ * 复制一份到每个子组件能work，但那是把同一套间距/字阶抄成 N 份，改一处要改 N 处。
+ *
+ * 用**祖先类名做命名空间**（`.settings-scope .row {...}`）而不是改类名：
+ * 类名一个没动，模板与测试都不用改；规则只在设置弹窗内生效，不污染全局。
+ * 弹窗外壳自己的那几条（`.settings` / `.settings-nav` / `.nav-*` / `.settings-body`）
+ * 留在组件里——它们只作用于这个组件自己的元素。
+ */
+
+/* 字号档位：四个并排的按钮。
+   每一档都把实际 px 写在下面——"大 / 更大"这种词单独放着没法让人判断合不合适，
+   给出数字才可选。 */
+
+.settings-scope .scale-picker {
+  display: grid;
+  gap: var(--space-2);
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  margin-top: var(--space-3);
+}
+
+.settings-scope .scale-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-pair);
+  padding: var(--space-3);
+  text-align: left;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+}
+
+.settings-scope .scale-option:hover {
+  background: var(--bg-hover);
+}
+
+.settings-scope .scale-option-active {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.settings-scope .scale-label {
+  font-size: var(--text-body-size);
+}
+
+.settings-scope .scale-size {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.settings-scope .section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-section-size);
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+/* 一个分组里放第二块内容时用它拉开：块与块之间的间距要大于块内的行距，
+   否则「对话模型」与「对话行为」会读起来像同一张表 */
+
+.settings-scope .section-gap {
+  margin-top: var(--space-6);
+}
+
+/* 一行配置：左说明、右状态与动作 */
+
+.settings-scope .row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+/* 「选默认模型」这一块：标签 + 状态一行，选择器独占一行。
+   选择器比按钮宽得多，塞进 .row 的右侧会被压成一条窄缝——所以它不进 .row */
+
+.settings-scope .slot-field {
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.settings-scope .slot-field + .slot-field {
+  border-top: none;
+}
+
+.settings-scope .slot-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.settings-scope .slot-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-body-size);
+  color: var(--text-primary);
+}
+
+/* 选中模型的"身份证"：名称 · 维度 · 供应商。光看选择器里的短标签不够确认 */
+
+.settings-scope .slot-value {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.settings-scope .row-static {
+  padding: var(--space-3) var(--space-4);
+}
+
+.settings-scope .row-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.settings-scope .row-label {
+  font-size: var(--text-body-size);
+  color: var(--text-primary);
+}
+
+.settings-scope .row-value {
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.settings-scope .row-note {
+  margin: var(--space-2) 0 0;
+  max-width: 64ch;
+  font-size: var(--text-micro-size);
+  line-height: var(--line-prose);
+  color: var(--text-tertiary);
+}
+
+/* 账号区里"（登录名）"这类补充信息：比主值再退一档，不与名字抢注意力 */
+
+.settings-scope .row-sub {
+  color: var(--text-tertiary);
+}
+
+/* 修改密码表单：控件成组走全局 .field（评审 §2.1） */
+
+.settings-scope .password-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+
+.settings-scope .form-error {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-micro-size);
+  color: var(--status-danger);
+}
+
+.settings-scope .password-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+/* 分组标题 + 右侧动作（与「模型注册 → 供应商」同一套排法）：
+   标题在左、动作在右，两者顶对齐——标题是两行的，居中对齐会显得飘 */
+
+.settings-scope .section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+/* 开通账号：标签列固定宽，控件列吃剩余——四行标签才会左边对齐 */
+
+.settings-scope .create-card {
+  margin-top: var(--space-3);
+  padding: var(--space-4);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-panel);
+}
+
+.settings-scope .create-grid {
+  display: grid;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  grid-template-columns: 88px minmax(0, 1fr);
+}
+
+/* 成员与名册：一行一个人，操作在右端 */
+
+.settings-scope .user-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.settings-scope .user-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.settings-scope .user-row:last-child {
+  border-bottom: none;
+}
+
+.settings-scope .user-main {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-pair);
+}
+
+.settings-scope .user-name {
+  overflow: hidden;
+  font-size: var(--text-body-size);
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-scope .user-meta {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.settings-scope .user-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--space-1);
+}
+
+/* 嵌套弹窗的引导句（重置/删除）：与分享弹窗同一套语气 */
+
+.settings-scope .share-lead {
+  margin: 0 0 var(--space-4);
+  font-size: var(--text-meta-size);
+  line-height: var(--line-prose);
+  color: var(--text-secondary);
+}
+
+.settings-scope .text-warn {
+  color: var(--status-warning);
+}
+
+.settings-scope .error-line {
+  margin: 0 0 var(--space-3);
+  color: var(--status-danger);
+}
+
+/* 编辑态 */
+
+.settings-scope .edit-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.settings-scope .edit-field {
+  display: block;
+}
+
+/* 复选框与它的说明同一行：说明是"这项是什么"，离得太远就变成两条信息 */
+
+.settings-scope .edit-check {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--hit-target);
+  font-size: var(--text-meta-size);
+  color: var(--text-primary);
+}
+
+.settings-scope .edit-check input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--text-secondary);
+}
+
+.settings-scope .edit-label {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+  font-size: var(--text-micro-size);
+  color: var(--text-secondary);
+}
+
+.settings-scope .edit-current {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-scope .edit-hint {
+  margin: 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.settings-scope .edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.settings-scope .test-result {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-meta-size);
+  border-radius: var(--radius-control);
+}
+
+.settings-scope .test-ok {
+  color: var(--status-success);
+  background: var(--bg-subtle);
+}
+
+.settings-scope .test-bad {
+  color: var(--status-danger);
+  background: var(--danger-soft);
+}

@@ -51,6 +51,24 @@ const { reloginCount } = useReloginPrompt()
 /** 历史会话面板的开合（侧栏「查看全部」触发）。 */
 const historyOpen = ref(false)
 
+/**
+ * 换页就把它关掉（v0.26，用户报的 bug："看了历史会话之后点其他菜单没反应"）。
+ *
+ * 它是一块**盖住内容区的浮层**（`inset: 0 0 0 var(--sidebar-width)`），
+ * 而侧栏故意留在它左边——这样用户能一边翻历史一边切页。代价是：
+ * 不主动关的话，点了「笔记」路由确实变了，可内容区上还压着历史会话那一屏，
+ * 用户看到的就是"点了没反应，切不过去"。**浮层没关，等于菜单没坏但用不了。**
+ *
+ * 挂在路由上而不是逐个菜单去关：`fullPath` 一变就关，拖住的是"任何一次跳转"，
+ * 以后新加的页面不用记得这一条。
+ */
+watch(
+  () => route.fullPath,
+  () => {
+    historyOpen.value = false
+  },
+)
+
 watch(reloginCount, () => {
   if (isLoginPage.value) return
   void router.push({ name: 'login', query: { redirect: route.fullPath } })

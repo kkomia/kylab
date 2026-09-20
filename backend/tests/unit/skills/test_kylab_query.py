@@ -307,7 +307,7 @@ def test_every_tool_is_mentioned_by_some_skill() -> None:
     工具清单会随版本增长，所以比的是 ``TOOL_NAMES`` 而不是写死的数字：
     写数字的话每加一个工具都要来改一次，而漏改的表现是"文档里悄悄少了一个工具"。
     """
-    from app.mcp_server.tools import TOOL_NAMES
+    from app.services.tools import TOOL_NAMES
 
     root = SCRIPT.parents[1].parent  # skills/
     manuals = list(root.glob("*/SKILL.md"))

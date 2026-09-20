@@ -334,3 +334,43 @@ def test_broken_excel_gives_a_readable_error() -> None:
         parse_tabular(filename="坏.xlsx", content="这不是 xlsx".encode())
 
     assert "Excel" in str(excinfo.value)
+
+
+def test_the_duckdb_connection_is_never_used_from_two_threads_at_once(
+    tabular_store,  # type: ignore[no-untyped-def]
+) -> None:
+    """表格副本的 DuckDB 连接**不是线程安全的**，所以它必须串行用（v0.27）。
+
+    在此之前它只在"一次请求一个连接"的假设下被调用；工具循环现在会把同一批里的
+    几次调用**并发**跑（比如一次导出表格 + 一次读表），两个线程同时用同一个连接
+    轻则报错、重则串了结果。这条用例同时钉两件事：
+
+    1. **不炸**：几个线程反复读写同一张表，一个异常都不该有；
+    2. **不自锁**：`read_rows` 内部要调 `columns` → `table_exists`，几个公开方法
+       互相嵌套——用普通 `Lock` 会在这里把自己锁死（所以实现里用的是 `RLock`）。
+       真锁死了这条用例会**挂住**而不是红，这正是不用等它红的原因。
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    store = tabular_store
+    rows = [[f"值{i}"] for i in range(50)]
+    store.write_table(table="doc_conc", columns=["列"], rows=rows)
+
+    start = threading.Barrier(4)
+    failures: list[BaseException] = []
+
+    def hammer() -> None:
+        try:
+            start.wait(timeout=10)
+            for _ in range(15):
+                assert store.row_count("doc_conc") == 50
+                assert store.columns("doc_conc") == ["列"]
+                assert store.read_rows("doc_conc", limit=50)[0] == ["值0"]
+        except BaseException as exc:
+            failures.append(exc)
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(lambda _: hammer(), range(4)))
+
+    assert failures == []

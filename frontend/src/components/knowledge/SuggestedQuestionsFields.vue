@@ -167,7 +167,7 @@ const COUNT_MARKS = [
 .suggested-hint {
   margin: 0;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-tertiary);
 }
 

@@ -22,6 +22,8 @@ const createMCPServer = vi.fn()
 const updateMCPServer = vi.fn()
 const deleteMCPServer = vi.fn()
 const probeMCPServer = vi.fn()
+const listInstalledSkills = vi.fn()
+const uninstallSkill = vi.fn()
 const notifyError = vi.fn()
 const notifySuccess = vi.fn()
 
@@ -33,12 +35,24 @@ vi.mock('@/api/capabilities', () => ({
   updateMCPServer: (...a: unknown[]) => updateMCPServer(...a),
   deleteMCPServer: (...a: unknown[]) => deleteMCPServer(...a),
   probeMCPServer: (...a: unknown[]) => probeMCPServer(...a),
+  listInstalledSkills: (...a: unknown[]) => listInstalledSkills(...a),
+  uninstallSkill: (...a: unknown[]) => uninstallSkill(...a),
+  sourceLabel: (origin: string) => origin.replace(/^github:([^@]+)@.*$/, '$1'),
   listAllMCPTools: vi.fn().mockResolvedValue([]),
 }))
 
 vi.mock('@/composables/useToast', () => ({
   useToast: () => ({ notifyError, notifySuccess, notify: vi.fn(), notifyWarning: vi.fn() }),
 }))
+
+// 能力设置那个入口只给管理员（后端 /settings 是管理员端点）。
+// **必须是真 ref**：模板里的 `v-if="isAdmin"` 只对 ref 自动解包，
+// 换成 `{ value: true }` 永远是 truthy，那条"成员看不到"就会假通过。
+vi.mock('@/composables/useSession', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/composables/useSession')>()
+  const { ref } = await import('vue')
+  return { ...actual, isAdmin: ref(true) }
+})
 
 const CLEAN_SKILL = {
   name: 'kylab-knowledge-base',
@@ -84,7 +98,16 @@ function mountView() {
         // 两个插槽都要转出去：弹窗里既有正文（技能流程、表单字段）也有页脚按钮。
         // 只转 footer 的话，技能正文与输入框根本不会渲染——而"表单里是不是空的"
         // 正是下面要断言的东西（踩过：漏转默认插槽让两条用例假失败）
-        AppModal: { template: '<div class="modal"><slot /><slot name="footer" /></div>' },
+        AppModal: {
+          props: ['open', 'title'],
+          template:
+            '<div class="modal" v-if="open === undefined || open"><slot /><slot name="footer" /></div>',
+        },
+        SettingGroupPanel: {
+          name: 'SettingGroupPanel',
+          props: { keys: { type: Array, default: () => [] } },
+          template: '<div class="panel-stub" />',
+        },
         InfoTip: true,
         SkeletonBlock: true,
       },
@@ -108,6 +131,8 @@ async function openMcp(wrapper: ReturnType<typeof mountView>): Promise<void> {
 beforeEach(() => {
   vi.clearAllMocks()
   resetResizeObservers()
+  // 「哪些是市场装的」：默认没有。它在卡片上只是一行来源，不影响别的断言
+  listInstalledSkills.mockResolvedValue({ items: {}, total: 0 })
   listSkills.mockResolvedValue({ items: [CLEAN_SKILL, FLAGGED_SKILL], usable: 1 })
   listMCPServers.mockResolvedValue({ items: [SERVER] })
 })
@@ -254,7 +279,7 @@ describe('能力页的搜索与筛选', () => {
 
     // 清掉搜索，按来源筛
     await wrapper.find('.panel-search input').setValue('')
-    const userFilter = wrapper.findAll('.filter').find((node) => node.text().includes('用户放入'))!
+    const userFilter = wrapper.findAll('.filter').find((node) => node.text().includes('手动放入'))!
     await userFilter.trigger('click')
     expect(wrapper.text()).toContain('my-notes')
     expect(wrapper.text()).not.toContain('kylab-web')
@@ -268,5 +293,35 @@ describe('能力页的搜索与筛选', () => {
     await wrapper.find('.panel-search input').setValue('没有这个东西')
 
     expect(wrapper.text()).toContain('没有匹配的技能')
+  })
+})
+
+describe('能力页的设置入口（v0.26）', () => {
+  it('管理员能看到「设置」，点开是联网与沙箱两组', async () => {
+    // 联网是内置的取数能力、执行策略回答的是"允许它动手到什么程度"——
+    // 它们本来就是这一页的问题，原先却挂在「总设置 → 功能」里。
+    const wrapper = mountView()
+    await vi.waitFor(() => expect(wrapper.text()).toContain(CLEAN_SKILL.name))
+
+    const button = wrapper.findAll('button').find((item) => item.text().includes('设置'))
+    expect(button).toBeTruthy()
+    expect(wrapper.findComponent({ name: 'SettingGroupPanel' }).exists()).toBe(false)
+
+    await button!.trigger('click')
+
+    expect(wrapper.findComponent({ name: 'SettingGroupPanel' }).props('keys')).toEqual([
+      'web',
+      'sandbox',
+    ])
+  })
+
+  it('成员看不到这个入口', async () => {
+    const session = await import('@/composables/useSession')
+    ;(session.isAdmin as unknown as { value: boolean }).value = false
+    const wrapper = mountView()
+    await vi.waitFor(() => expect(wrapper.text()).toContain(CLEAN_SKILL.name))
+
+    const button = wrapper.findAll('button').find((item) => item.text().includes('设置'))
+    expect(button).toBeUndefined()
   })
 })

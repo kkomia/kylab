@@ -22,8 +22,16 @@ const getConversation = vi.fn()
 // 固定返回空列表就测不到"选了库"那一档
 const listKnowledgeBases = vi.fn()
 const createConversation = vi.fn()
+const rewindConversation = vi.fn()
 const chatStream = vi.fn()
 const listSkills = vi.fn()
+// 产物的三条接口（v0.26）：卡片要能知道"文件现在在哪、进没进库"，
+// 下载走签名链接，入库要经过「存进知识库」那个弹窗
+const listArtifacts = vi.fn()
+const ingestArtifact = vi.fn()
+const listFiles = vi.fn()
+const getFileUrl = vi.fn()
+const downloadFile = vi.fn()
 
 vi.mock('@/api/conversations', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/conversations')>()
@@ -32,8 +40,15 @@ vi.mock('@/api/conversations', async (importOriginal) => {
     listConversations: (...args: unknown[]) => listConversations(...args),
     getConversation: (...args: unknown[]) => getConversation(...args),
     createConversation: (...args: unknown[]) => createConversation(...args),
+    rewindConversation: (...args: unknown[]) => rewindConversation(...args),
     updateConversation: vi.fn(),
     deleteConversation: vi.fn(),
+    listArtifacts: (...args: unknown[]) => listArtifacts(...args),
+    listFiles: (...args: unknown[]) => listFiles(...args),
+    uploadFile: vi.fn(),
+    getFileUrl: (...args: unknown[]) => getFileUrl(...args),
+    downloadFile: (...args: unknown[]) => downloadFile(...args),
+    ingestArtifact: (...args: unknown[]) => ingestArtifact(...args),
   }
 })
 
@@ -111,6 +126,8 @@ function summary(id: string, extra: Partial<ConversationSummary> = {}): Conversa
     pinned: false,
     // 未归档（v0.15）：夹具默认放在"未归档"那一栏，与真实的新建行为一致
     workspace_id: null,
+    archived_at: null,
+    preview: '',
     created_at: '2026-09-01T00:00:00Z',
     updated_at: '2026-09-01T00:00:00Z',
     message_count: 2,
@@ -122,8 +139,24 @@ function chatDetail(id: string): ConversationDetail {
   return {
     ...summary(id),
     messages: [
-      { id: 'm1', role: 'user', content: '你好', sources: [], created_at: null },
-      { id: 'm2', role: 'assistant', content: '这是回答', sources: [], created_at: null },
+      {
+        id: 'm1',
+        role: 'user',
+        content: '你好',
+        sources: [],
+        steps: [],
+        thinking: '',
+        created_at: null,
+      },
+      {
+        id: 'm2',
+        role: 'assistant',
+        content: '这是回答',
+        sources: [],
+        steps: [],
+        thinking: '',
+        created_at: null,
+      },
     ],
   }
 }
@@ -158,12 +191,22 @@ function detailWithSource(id: string): ConversationDetail {
   return {
     ...summary(id),
     messages: [
-      { id: 'm1', role: 'user', content: '眼轴怎么监测', sources: [], created_at: null },
+      {
+        id: 'm1',
+        role: 'user',
+        content: '眼轴怎么监测',
+        sources: [],
+        steps: [],
+        thinking: '',
+        created_at: null,
+      },
       {
         id: 'm2',
         role: 'assistant',
         content: '眼轴是主要参数[1]。',
         created_at: null,
+        steps: [],
+        thinking: '',
         sources: [
           {
             index: 1,
@@ -184,6 +227,32 @@ function detailWithSource(id: string): ConversationDetail {
 
 let pinia: Pinia
 
+/**
+ * 展开过程面板。
+ *
+ * v0.2 起折叠区是 `v-if` 而不是 `v-show`：折叠时步骤、思考与出处**不在 DOM 里**
+ * （长会话不再拖着每一轮的这些节点）。所以要点出处的用例得先点开标题那一下。
+ */
+/**
+ * 确保过程面板是展开的。
+ *
+ * **幂等**——v0.25 起它默认就是展开的（照 Kimi：过程常驻在正文里），
+ * 无条件点一下标题反而会把它收起来，于是后面找 `.cite-title` 的用例全落空。
+ */
+async function expandTrace(wrapper: VueWrapper): Promise<void> {
+  const head = wrapper.find('.trace-head')
+  if (head.attributes('aria-expanded') === 'true') return
+  await head.trigger('click')
+  await flushPromises()
+}
+
+/** 加号菜单里的一项（按文字找）。 */
+function toolItem(wrapper: VueWrapper, label: string) {
+  const found = wrapper.findAll('.tool-plus .tool-item').find((node) => node.text().includes(label))
+  if (!found) throw new Error(`加号菜单里没有「${label}」`)
+  return found
+}
+
 async function mountAt(path: string): Promise<{ wrapper: VueWrapper; router: Router }> {
   const router = createRouter({
     history: createMemoryHistory(),
@@ -197,16 +266,6 @@ async function mountAt(path: string): Promise<{ wrapper: VueWrapper; router: Rou
   const wrapper = mount(ChatView, { global: { plugins: [pinia, router] } })
   return { wrapper, router }
 }
-
-// jsdom 没有实现原生 <dialog> 的 showModal/close，而 AppModal 正是靠它们进出 top-layer
-beforeEach(() => {
-  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) {
-    this.open = true
-  }
-  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) {
-    this.open = false
-  }
-})
 
 beforeEach(() => {
   pinia = createPinia()
@@ -224,6 +283,17 @@ beforeEach(() => {
   // 不清成空会让后面的用例落到"最近一条会话"上——那时发送**不会新建会话**，
   // 于是断言新建参数就随用例顺序飘（这条也是这么被抓出来的）
   listConversations.mockResolvedValue([])
+  // 默认"这条会话没有产物"：多数用例不关心卡片，不清的话上一个用例的产物会漏过来
+  listArtifacts.mockResolvedValue({ items: [] })
+  // 文件抽屉一挂上就会列一次文件区
+  listFiles.mockResolvedValue({
+    mode: 'object',
+    label: '本会话',
+    path: '',
+    parent: null,
+    entries: [],
+    truncated: false,
+  })
   getDocument.mockImplementation(async (id: string) => ({
     id,
     knowledge_base_id: 'kb_1',
@@ -310,6 +380,56 @@ describe('会话正文', () => {
     wrapper.unmount()
   })
 
+  it('过程面板默认展开；**用户收起后**它退出 DOM（不是只被 CSS 藏起来）', async () => {
+    // v0.25 起默认展开（照 Kimi：过程是答案的一部分，不该在用户想看时消失），
+    // 所以"折叠着不进 DOM"这条契约改成了"**用户收起之后**不进 DOM"。
+    // 后半句仍要钉住：这一块装着步骤、思考全文与每条出处的正文预览，
+    // 用 `v-show` 的话收起来也照样留在文档里——DOM 节点、文本与布局开销一直在。
+    const store = useConversationStore()
+    store.rememberDetail(detailWithSource('c1'))
+
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    expect(wrapper.findAll('.cite-preview')).toHaveLength(1)
+
+    // 点标题收起 → 整块离开 DOM
+    await wrapper.find('.trace-head').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.cite-preview')).toHaveLength(0)
+
+    // 再点回来还在
+    await wrapper.find('.trace-head').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.cite-preview')).toHaveLength(1)
+
+    wrapper.unmount()
+  })
+
+  it('重新生成：先退回一轮，再原样重发那句提问（与 send 共用同一条流式链路）', async () => {
+    const store = useConversationStore()
+    store.rememberDetail(detailWithSource('c1'))
+    rewindConversation.mockResolvedValue(undefined)
+    chatStream.mockResolvedValue({ abort: vi.fn() })
+
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    const button = wrapper.findAll('button').find((item) => item.text().includes('重新生成'))
+    expect(button).toBeTruthy()
+    await button!.trigger('click')
+    await flushPromises()
+
+    // 服务端先退回（接口失败时不该先清本地），本地消息跟着回退
+    expect(rewindConversation).toHaveBeenCalledWith('c1', 1)
+    expect(wrapper.findAll('.turn')).toHaveLength(1) // 退回后重新追加了"提问 + 占位回答"
+
+    const [payload] = chatStream.mock.calls[0]
+    expect(payload.query).toBe('眼轴怎么监测')
+    expect(payload.conversation_id).toBe('c1')
+    wrapper.unmount()
+  })
+
   it('未命中缓存：先骨架屏，内容到达后换成消息', async () => {
     let resolveDetail!: (value: ConversationDetail) => void
     getConversation.mockReturnValue(
@@ -339,6 +459,7 @@ describe('引用文档抽屉', () => {
     const { wrapper, router } = await mountAt('/chat/c1')
     await flushPromises()
 
+    await expandTrace(wrapper)
     await wrapper.find('.cite-title').trigger('click')
 
     await vi.waitFor(() => expect(wrapper.find('.doc-drawer').exists()).toBe(true))
@@ -355,6 +476,7 @@ describe('引用文档抽屉', () => {
     const { wrapper, router } = await mountAt('/chat/c1')
     await flushPromises()
 
+    await expandTrace(wrapper)
     await wrapper.find('.cite-more').trigger('click')
     await flushPromises()
     const action = wrapper.findAll('button').find((button) => button.text().includes('查看文档'))
@@ -372,6 +494,7 @@ describe('引用文档抽屉', () => {
     store.rememberDetail(detailWithSource('c1'))
     const { wrapper } = await mountAt('/chat/c1')
     await flushPromises()
+    await expandTrace(wrapper)
     await wrapper.find('.cite-title').trigger('click')
     await vi.waitFor(() => expect(wrapper.find('.doc-drawer').exists()).toBe(true))
 
@@ -490,8 +613,10 @@ describe('引用文档抽屉', () => {
     const { wrapper } = await mountAt('/chat/c1')
     await flushPromises()
 
-    // 展开「加号 → 技能」，勾上周报
-    await wrapper.findAll('.tool-plus .tool-item')[1].trigger('click')
+    // 展开「加号 → 技能」，勾上周报。
+    // **按文字找，不按下标**：「浏览文件」是后加的一项，按下标写会在它加进来那天
+    // 静默指到别的条目上（这一条就是这么被抓出来的）
+    await toolItem(wrapper, '技能').trigger('click')
     await flushPromises()
     expect(wrapper.findAll('.tool-plus .tool-check-name').map((node) => node.text())).toEqual([
       '周报',
@@ -504,6 +629,46 @@ describe('引用文档抽屉', () => {
 
     const payload = chatStream.mock.calls.at(-1)?.[0] as { skill_names: string[] }
     expect(payload.skill_names).toEqual(['周报'])
+    wrapper.unmount()
+  })
+
+  it('流式期间：思考只占一行（滚动的那一行），全文等这一轮结束再给', async () => {
+    // 用户要求"参考 DeepSeek 的 harness"：干活的过程只占一行，最新吐出来的字
+    // 从右边进来、旧的往左滚出去——一轮里想了几千字，屏幕上始终只有一行在滚。
+    // 思考全文不丢：这一轮结束后它还在过程面板里（下面那条断言）。
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    let handlers: {
+      onThinking: (chunk: string) => void
+      onDone: (answer: string) => void
+    } | null = null
+    chatStream.mockImplementation((_payload: unknown, h: never) => {
+      handlers = h
+      return Promise.resolve({ abort: vi.fn() })
+    })
+
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+    await wrapper.find('.composer-field').setValue('查一下')
+    await wrapper.find('.send-btn').trigger('click')
+    await flushPromises()
+
+    handlers!.onThinking('让我先看看这个库里有什么')
+    handlers!.onThinking('，再确认一下版本号')
+    await flushPromises()
+
+    const live = wrapper.find('.trace-live')
+    expect(live.exists()).toBe(true)
+    // 贴的是**最新那一截**（不是"思考过程"四个字，也不是开头）
+    expect(live.text()).toContain('再确认一下版本号')
+    // 流式期间不铺开整块思考：那一行已经说了它在想什么
+    expect(wrapper.find('.thinking').exists()).toBe(false)
+
+    handlers!.onDone('答完了')
+    await flushPromises()
+
+    expect(wrapper.find('.trace-live').exists()).toBe(false)
+    expect(wrapper.find('.thinking').text()).toContain('让我先看看这个库里有什么')
     wrapper.unmount()
   })
 
@@ -555,8 +720,7 @@ describe('引用文档抽屉', () => {
     const { wrapper } = await mountAt('/chat')
     await flushPromises()
 
-    const skillsRow = wrapper.findAll('.tool-plus .tool-item')[1]
-    await skillsRow.trigger('click')
+    await toolItem(wrapper, '技能').trigger('click')
     await flushPromises()
 
     const flyout = wrapper.find('.tool-plus .tool-flyout')
@@ -617,6 +781,481 @@ describe('引用文档抽屉', () => {
     await flushPromises()
 
     expect(wrapper.find('.welcome-samples').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+describe('产出物卡片（v0.26）', () => {
+  /** 一条回答里挂着一张文件卡片：导出类工具跑完之后的样子。 */
+  function detailWithArtifact(id: string, artifact: Record<string, unknown>): ConversationDetail {
+    return {
+      ...summary(id),
+      messages: [
+        {
+          id: 'm1',
+          role: 'user',
+          content: '写一首四句的短诗，导出成 docx',
+          sources: [],
+          steps: [],
+          thinking: '',
+          created_at: null,
+        },
+        {
+          id: 'm2',
+          role: 'assistant',
+          content: '已经导出。',
+          sources: [],
+          thinking: '',
+          created_at: null,
+          steps: [
+            { phase: 'intent', label: '理解问题', detail: '', status: 'done' },
+            {
+              phase: 'tool',
+              label: '导出文档',
+              detail: '已生成',
+              status: 'done',
+              artifacts: [
+                {
+                  artifact_id: 'art_1',
+                  name: '短诗.docx',
+                  size_bytes: 36864,
+                  format: 'docx',
+                  storage: 'object',
+                  where: '本会话',
+                  ...artifact,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+  }
+
+  it('卡片写明文件落在哪，并给「存进知识库」的入口', async () => {
+    getConversation.mockResolvedValue(detailWithArtifact('c1', {}))
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    const card = wrapper.find('.artifact')
+    expect(card.text()).toContain('短诗.docx')
+    // 落点要说人话：用户要知道文件去哪了，"本会话"与"工作区「X」"是两种处境
+    expect(card.text()).toContain('本会话')
+    expect(wrapper.find('.artifact-kb').text()).toBe('存进知识库')
+    expect(wrapper.find('.artifact-kb-done').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('已入库的卡片显示"已存进知识库"，不再给按钮', async () => {
+    getConversation.mockResolvedValue(
+      detailWithArtifact('c2', { knowledge_base_id: 'kb_1', document_id: 'doc_1' }),
+    )
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '资料库')] })
+    const { wrapper } = await mountAt('/chat/c2')
+    await flushPromises()
+
+    expect(wrapper.find('.artifact-kb').exists()).toBe(false)
+    expect(wrapper.find('.artifact-kb-done').text()).toContain('资料库')
+    wrapper.unmount()
+  })
+
+  it('列表接口说的算：快照里没入库、现在入了，卡片跟着变', async () => {
+    // 步骤快照是流式当时写下的，而入库发生在之后——不以列表为准的话，
+    // 刷新一次卡片就退回"存进知识库"了
+    getConversation.mockResolvedValue(detailWithArtifact('c3', {}))
+    listArtifacts.mockResolvedValue({
+      items: [
+        {
+          artifact_id: 'art_1',
+          name: '短诗.docx',
+          size_bytes: 36864,
+          format: 'docx',
+          storage: 'object',
+          where: '本会话',
+          path: null,
+          knowledge_base_id: 'kb_1',
+          document_id: 'doc_1',
+          created_at: null,
+        },
+      ],
+    })
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '资料库')] })
+    const { wrapper } = await mountAt('/chat/c3')
+    await flushPromises()
+
+    expect(wrapper.find('.artifact-kb-done').text()).toContain('资料库')
+    wrapper.unmount()
+  })
+
+  it('点「存进知识库」：先挑库，确认后才真的入库', async () => {
+    getConversation.mockResolvedValue(detailWithArtifact('c4', {}))
+    listKnowledgeBases.mockResolvedValue({
+      items: [kb('kb_1', '资料库'), kb('kb_2', '笔记')],
+    })
+    ingestArtifact.mockResolvedValue({
+      artifact_id: 'art_1',
+      name: '短诗.docx',
+      size_bytes: 36864,
+      format: 'docx',
+      storage: 'object',
+      where: '本会话',
+      path: null,
+      knowledge_base_id: 'kb_2',
+      document_id: 'doc_9',
+      created_at: null,
+    })
+    const { wrapper } = await mountAt('/chat/c4')
+    await flushPromises()
+
+    await wrapper.find('.artifact-kb').trigger('click')
+    await flushPromises()
+
+    // 弹窗里能看见库名（两个都在），默认选中第一个
+    const picks = wrapper.findAll('.ingest-pick')
+    expect(picks.map((item) => item.text())).toEqual(['资料库', '笔记'])
+    expect(picks[0].attributes('aria-pressed')).toBe('true')
+
+    // 选第二个再确认——**"放进哪个库"是用户的事**，所以这一步不能省
+    await picks[1].trigger('click')
+    await flushPromises()
+    expect(picks[1].attributes('aria-pressed')).toBe('true')
+    expect(ingestArtifact).not.toHaveBeenCalled()
+
+    const confirm = wrapper.findAll('button').find((item) => item.text().includes('存进这个库'))
+    await confirm!.trigger('click')
+    await flushPromises()
+
+    // 点的是「笔记」——就存进「笔记」，服务端不会替他改主意
+    expect(ingestArtifact).toHaveBeenCalledWith('c4', 'art_1', 'kb_2')
+    // 卡片当场换成已入库：用户点完按钮最想看到的就是这一句反馈
+    expect(wrapper.find('.artifact-kb-done').text()).toContain('笔记')
+    wrapper.unmount()
+  })
+
+  it('点卡片是**预览**（打开文件抽屉），不是直接下载', async () => {
+    getConversation.mockResolvedValue(detailWithArtifact('c5', {}))
+    const { wrapper } = await mountAt('/chat/c5')
+    await flushPromises()
+
+    expect(wrapper.find('.drawer-backdrop').exists()).toBe(false)
+    await wrapper.find('.artifact-main').trigger('click')
+
+    // 抽屉开了，并且直接落在这份文件上（不是先给一份目录让人自己找）。
+    // `waitFor` 而不是一次 flush：抽屉是**异步组件**，动态 import 要多等一拍
+    await vi.waitFor(() => expect(wrapper.find('.drawer-backdrop').exists()).toBe(true))
+    expect(wrapper.findComponent({ name: 'FileDrawer' }).props('initialKey')).toBe('art_1')
+    wrapper.unmount()
+  })
+
+  it('加号菜单里的「浏览文件」直接进目录，不带具体文件', async () => {
+    getConversation.mockResolvedValue(detailWithArtifact('c6', {}))
+    const { wrapper } = await mountAt('/chat/c6')
+    await flushPromises()
+
+    await toolItem(wrapper, '浏览文件').trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('.drawer-backdrop').exists()).toBe(true))
+
+    expect(wrapper.findComponent({ name: 'FileDrawer' }).props('initialKey')).toBeNull()
+    // 浏览态列的是文件区（一次请求），预览态才去签名取内容
+    expect(listFiles).toHaveBeenCalledWith('c6', '')
+    wrapper.unmount()
+  })
+})
+
+describe('过程面板：同类工具合并（v0.26）', () => {
+  /** 一次工具调用。`tool` 是后端给的原始工具名——分组与图标都按它来。 */
+  function toolCall(tool: string, label: string, detail: string) {
+    return { phase: 'tool', tool, label, detail, status: 'done' }
+  }
+
+  function detailWithToolCalls(id: string, steps: unknown[]): ConversationDetail {
+    return {
+      ...summary(id),
+      messages: [
+        {
+          id: 'm1',
+          role: 'user',
+          content: '查一下',
+          sources: [],
+          steps: [],
+          thinking: '',
+          created_at: null,
+        },
+        {
+          id: 'm2',
+          role: 'assistant',
+          content: '查到了。',
+          sources: [],
+          thinking: '',
+          created_at: null,
+          steps: steps as never,
+        },
+      ],
+    }
+  }
+
+  it('九行并成两行：入口上写着次数，点开才是每一次', async () => {
+    getConversation.mockResolvedValue(
+      detailWithToolCalls('c7', [
+        toolCall('web_search', '联网搜索', '查 A'),
+        toolCall('web_fetch', '抓取网页', '读 A'),
+        toolCall('web_search', '联网搜索', '查 B'),
+        toolCall('web_search', '联网搜索', '查 C'),
+        toolCall('web_fetch', '抓取网页', '读 B'),
+      ]),
+    )
+    const { wrapper } = await mountAt('/chat/c7')
+    await flushPromises()
+
+    const groups = wrapper.findAll('.step-group')
+    expect(groups).toHaveLength(2)
+    expect(groups[0].text()).toContain('联网搜索')
+    expect(groups[0].text()).toContain('3 次')
+    expect(groups[1].text()).toContain('2 次')
+
+    // 收起时**看不到**那几次的具体内容——这正是合并的意义
+    expect(groups[0].text()).not.toContain('查 A')
+
+    await groups[0].find('.step-toggle').trigger('click')
+    await flushPromises()
+
+    expect(groups[0].text()).toContain('查 A')
+    // 组内每一条都还是完整的一步：带自己的工具名与原文入口
+    expect(groups[0].findAll('.step-child')).toHaveLength(3)
+    wrapper.unmount()
+  })
+
+  it('只调一次的工具不并：不该为了统一多给一层点击', async () => {
+    getConversation.mockResolvedValue(
+      detailWithToolCalls('c8', [
+        toolCall('web_search', '联网搜索', '查 A'),
+        toolCall('remember', '记住', '记了一条'),
+      ]),
+    )
+    const { wrapper } = await mountAt('/chat/c8')
+    await flushPromises()
+
+    expect(wrapper.findAll('.step-group')).toHaveLength(0)
+    expect(wrapper.text()).toContain('联网搜索')
+    expect(wrapper.text()).toContain('记住')
+    wrapper.unmount()
+  })
+
+  it('同类工具画同一个图标，不同类的不一样', async () => {
+    getConversation.mockResolvedValue(
+      detailWithToolCalls('c9', [
+        toolCall('web_search', '联网搜索', '查 A'),
+        toolCall('remember', '记住', '记了一条'),
+        toolCall('export_document', '导出文档', '已生成'),
+      ]),
+    )
+    const { wrapper } = await mountAt('/chat/c9')
+    await flushPromises()
+
+    // 改之前这里三行画的是同一个方块——扫过去等于没有信息
+    const shapes = wrapper.findAll('.steps .step .step-icon svg').map((node) => node.html())
+    expect(new Set(shapes).size).toBe(3)
+    wrapper.unmount()
+  })
+})
+
+describe('过程里的网址也是链接（v0.26）', () => {
+  it('搜索结果那一行的网址可点，且不带句读', async () => {
+    getConversation.mockResolvedValue({
+      ...summary('c10'),
+      messages: [
+        {
+          id: 'm1',
+          role: 'user',
+          content: '查一下',
+          sources: [],
+          steps: [],
+          thinking: '',
+          created_at: null,
+        },
+        {
+          id: 'm2',
+          role: 'assistant',
+          content: '查到了。',
+          sources: [],
+          thinking: '',
+          created_at: null,
+          steps: [
+            {
+              phase: 'tool',
+              tool: 'web_search',
+              label: '联网搜索',
+              detail:
+                '检索词：高德 ETA，共 2 条： [1] 高德技术 https://amap.com/a。 [2] 博客 https://blog.example.com/b，',
+              status: 'done',
+            },
+          ] as never,
+        },
+      ],
+    })
+    const { wrapper } = await mountAt('/chat/c10')
+    await flushPromises()
+
+    const links = wrapper.findAll('.step-detail a')
+    expect(links.map((node) => node.attributes('href'))).toEqual([
+      'https://amap.com/a',
+      'https://blog.example.com/b',
+    ])
+    // 中文句读留在正文里，不跟着进 href
+    expect(wrapper.find('.step-detail').text()).toContain('。')
+    wrapper.unmount()
+  })
+})
+
+describe('交付物摆在正文之后（v0.26）', () => {
+  function detailWithPpt(id: string): ConversationDetail {
+    return {
+      ...summary(id),
+      messages: [
+        {
+          id: 'm1',
+          role: 'user',
+          content: '做个 ppt',
+          sources: [],
+          steps: [],
+          thinking: '',
+          created_at: null,
+        },
+        {
+          id: 'm2',
+          role: 'assistant',
+          content: '做好了。',
+          sources: [],
+          thinking: '',
+          created_at: null,
+          steps: [
+            {
+              phase: 'tool',
+              tool: 'web_search',
+              label: '联网搜索',
+              detail: '共 6 条',
+              status: 'done',
+            },
+            {
+              phase: 'tool',
+              tool: 'export_deck',
+              label: '导出幻灯',
+              detail: '已生成「攻略.pptx」（45 KB）',
+              status: 'done',
+              artifacts: [
+                {
+                  artifact_id: 'art_1',
+                  name: '攻略.pptx',
+                  size_bytes: 46153,
+                  format: 'pptx',
+                  storage: 'object',
+                  where: '本会话',
+                },
+              ],
+            },
+            { phase: 'answer', label: '组织回答', detail: '共 708 字', status: 'done' },
+          ] as never,
+        },
+      ],
+    }
+  }
+
+  it('卡片挂在正文之后，**不在过程面板里**', async () => {
+    // 改之前它挂在那一步下面：交付物出现在过程**中间**，要往下翻十来步才看得到，
+    // 而面板一收起卡片就跟着没了。交付物是这个回合的结果，不是过程的中间产物。
+    getConversation.mockResolvedValue(detailWithPpt('c11'))
+    const { wrapper } = await mountAt('/chat/c11')
+    await flushPromises()
+
+    const card = wrapper.find('.deliverables .artifact')
+    expect(card.exists()).toBe(true)
+    expect(card.text()).toContain('攻略.pptx')
+
+    // 不在步骤列表里
+    expect(wrapper.find('.steps .artifact').exists()).toBe(false)
+
+    // 位置：正文之后、动作之前
+    const html = wrapper.find('.reply-body').html()
+    expect(html.indexOf('reply-text')).toBeLessThan(html.indexOf('deliverables'))
+    expect(html.indexOf('deliverables')).toBeLessThan(html.indexOf('reply-actions'))
+    wrapper.unmount()
+  })
+
+  it('把过程面板收起来，卡片仍然在', async () => {
+    getConversation.mockResolvedValue(detailWithPpt('c12'))
+    const { wrapper } = await mountAt('/chat/c12')
+    await flushPromises()
+
+    await wrapper.find('.trace-head').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.steps').exists()).toBe(false)
+    expect(wrapper.find('.deliverables .artifact').exists()).toBe(true)
+    wrapper.unmount()
+  })
+})
+
+describe('结论那一行不铺 JSON（v0.26）', () => {
+  it('老快照里的原始 JSON 不显示，人话摘要照常显示', async () => {
+    // 老快照（v0.26 之前存的）里，导出/记住这两步的结论就是结果开头的 JSON。
+    // 后端已经给它们补了摘要，这一条挡的是**已经存在库里的那些**。
+    getConversation.mockResolvedValue({
+      ...summary('c13'),
+      messages: [
+        {
+          id: 'm1',
+          role: 'user',
+          content: '做个 ppt',
+          sources: [],
+          steps: [],
+          thinking: '',
+          created_at: null,
+        },
+        {
+          id: 'm2',
+          role: 'assistant',
+          content: '做好了。',
+          sources: [],
+          thinking: '',
+          created_at: null,
+          steps: [
+            // 被裁到 120 字，**解析不了**——所以判据必须是结构而不是 JSON.parse
+            {
+              phase: 'tool',
+              tool: 'export_deck',
+              label: '导出幻灯',
+              detail:
+                '{"artifact_id": "art_89cb41c4a654", "name": "酒馆战棋S14上分攻略_2026年9月.pptx", "saved_to…',
+              status: 'done',
+            },
+            {
+              phase: 'tool',
+              tool: 'remember',
+              label: '记住',
+              detail: '{"saved": true, "entries": 1, "note": "已写入核心长期记忆…',
+              status: 'done',
+            },
+            {
+              phase: 'tool',
+              tool: 'web_search',
+              label: '联网搜索',
+              detail: '检索词：酒馆战棋，共 8 条：[1]…',
+              status: 'done',
+            },
+          ] as never,
+        },
+      ],
+    })
+    const { wrapper } = await mountAt('/chat/c13')
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).not.toContain('artifact_id')
+    expect(text).not.toContain('"saved"')
+    // 人话那一条照常
+    expect(text).toContain('检索词：酒馆战棋')
+    // 标签还在：那一步确实发生过
+    expect(text).toContain('导出幻灯')
     wrapper.unmount()
   })
 })

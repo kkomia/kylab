@@ -284,7 +284,7 @@ async function confirmRemove(): Promise<void> {
   margin: var(--space-1) 0 var(--space-3);
   max-width: 62ch;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-tertiary);
 }
 

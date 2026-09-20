@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **148** 条端点。
+共 **162** 条端点。
 
 ### `api-keys`
 
@@ -208,6 +208,12 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `DELETE` | `/api/v1/conversations/{conversation_id}` | 删除会话（连同全部消息） |
 | `GET` | `/api/v1/conversations/{conversation_id}` | 会话详情 |
 | `PATCH` | `/api/v1/conversations/{conversation_id}` | 修改会话（标题 / 置顶） |
+| `GET` | `/api/v1/conversations/{conversation_id}/artifacts` | 这条会话产出的文件 |
+| `POST` | `/api/v1/conversations/{conversation_id}/artifacts/{artifact_id}/ingest` | 把一份产物存进知识库（显式动作） |
+| `GET` | `/api/v1/conversations/{conversation_id}/files` | 这条会话的文件区（工作区目录 / 会话临时区） |
+| `POST` | `/api/v1/conversations/{conversation_id}/files` | 往文件区里放一份文件 |
+| `GET` | `/api/v1/conversations/{conversation_id}/files/content` | 按签名取文件内容（预览 / 下载共用） |
+| `GET` | `/api/v1/conversations/{conversation_id}/files/download-url` | 签发文件链接（预览 / 下载共用） |
 | `POST` | `/api/v1/conversations/{conversation_id}/rewind` | 回退最近 N 轮问答（「重新生成」用） |
 
 ### `data-sources`
@@ -381,9 +387,17 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 |------|------|------|
 | `GET` | `/api/v1/skills` | 技能列表 |
 | `POST` | `/api/v1/skills/market` | 浏览一个源的技能索引 |
+| `POST` | `/api/v1/skills/market/browse` | 浏览一个源里的技能 |
+| `POST` | `/api/v1/skills/market/inspect` | 看一个技能的文件清单 |
 | `POST` | `/api/v1/skills/market/install` | 安装一个技能 |
+| `POST` | `/api/v1/skills/market/install-source` | 从线上源安装一个技能 |
 | `GET` | `/api/v1/skills/market/installed` | 已从市场装的技能 |
 | `DELETE` | `/api/v1/skills/market/installed/{name}` | 卸载一个技能 |
+| `GET` | `/api/v1/skills/market/sources` | 技能源列表 |
+| `POST` | `/api/v1/skills/market/sources` | 添加一个技能源 |
+| `DELETE` | `/api/v1/skills/market/sources/{source_id}` | 删除一个自定义源 |
+| `PATCH` | `/api/v1/skills/market/sources/{source_id}` | 启用 / 停用一个源 |
+| `POST` | `/api/v1/skills/market/upload` | 上传一个技能（文件夹或压缩包） |
 | `GET` | `/api/v1/skills/{name}` | 技能详情（含正文） |
 
 ### `stats`

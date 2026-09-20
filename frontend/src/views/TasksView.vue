@@ -207,6 +207,11 @@ onMounted(() => {
   // 知识库下拉的选项来自 store；侧栏通常已在加载，这里**不等它**——
   // 等的代价是把任务列表的首屏拖到列表请求之后
   if (store.items.length === 0) void store.load()
+  // 任务列表也补一次：它的两条来源是"侧栏预取"与"有任务在跑时的轮询"，
+  // 偏偏漏了"直接进这一页、而队列正空闲"——那时列表会是空的（侧栏预取失败时更明显，
+  // 且没有重试）。`load()` 自带 in-flight 去重，预取在飞时不会打第二次请求；
+  // 而按 store 的约定，**真正进入页面**就该照常加载、也照常报错（预取才静默）。
+  void taskStore.load()
 })
 
 /**
@@ -224,6 +229,27 @@ async function refresh(): Promise<void> {
 }
 
 usePolling(refresh, { active: running, intervalMs: POLL_INTERVAL_MS })
+
+/**
+ * 首屏读一次负载面板。
+ *
+ * **为什么不是 `onMounted` 里直接调**：`refreshLoad` 开头就 `if (!isAdmin) return`
+ * ——负载面板是管理员专属，这个判断本身没错；但**会话恢复是异步的**，挂载那一刻
+ * `isAdmin` 还是 false，直接调等于什么都没做（我第一版就是这么修的，实测面板照旧
+ * 停在"读取中…"）。所以挂在 `isAdmin` 上：会话一就绪就取一次，立刻已经是 true 的
+ * 情况由 `immediate` 覆盖。
+ *
+ * 顺带修掉一个更隐蔽的：`usePolling` **只在"有任务在跑"时轮询**（空闲不发请求是有意的，
+ * 见 §12.116），可它连带把"首次读取"也省掉了——联调实测：空闲队列下 /tasks/load
+ * 一次都没被请求过，面板永远空着，得手动点刷新才出数字。
+ */
+watch(
+  isAdmin,
+  (value) => {
+    if (value) void refreshLoad()
+  },
+  { immediate: true },
+)
 
 function documentName(task: TaskSummary): string {
   if (!task.document_id) return '—'
@@ -782,7 +808,7 @@ function openDocument(documentId: string): void {
   max-height: 240px;
   overflow: auto;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-primary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;

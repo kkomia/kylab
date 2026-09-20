@@ -12,7 +12,14 @@ import json
 import httpx
 import pytest
 
-from app.services.llm import ChatError, ChatMessage, LLMConfig, OpenAICompatChat
+from app.services.llm import (
+    ChatError,
+    ChatMessage,
+    LLMConfig,
+    OpenAICompatChat,
+    ToolCall,
+    ToolSpec,
+)
 
 _MESSAGES = [ChatMessage(role="user", content="你好")]
 
@@ -122,6 +129,41 @@ def _delta(text: str, finish: str | None = None) -> dict:
     return {"choices": [{"delta": {"content": text}, "finish_reason": finish}]}
 
 
+# ------------------------------------------------- 出站客户端（共享，见 core/http.py）
+
+
+def test_no_client_is_built_per_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """不注入 client 时走**进程级共享**的那个。
+
+    以前这里是 `httpx.Client(timeout=...)`，用完即关——一轮默认的 Agent 对话要发出
+    十几次模型调用，那就是十几次 TCP + TLS 握手（内网 5–20ms、公网 100–300ms，
+    全是白花的固定开销）。
+
+    判据是硬的：把 `httpx.Client` 换成"一构造就炸"的替身，
+    被测代码只要自己新建，这条用例立刻红。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"role": "assistant", "content": "好"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            },
+        )
+
+    fake = httpx.Client(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr("app.services.llm.shared_client", lambda: fake)
+
+    def explode(*args: object, **kwargs: object) -> None:
+        raise AssertionError("不该每次调用都新建 httpx.Client（见 app/core/http.py）")
+
+    monkeypatch.setattr(httpx, "Client", explode)
+
+    # 不注入 client：走共享那条路
+    assert OpenAICompatChat(_config()).complete(_MESSAGES) == "好"
+
+
 def test_payload_omits_max_tokens_unless_explicitly_set() -> None:
     """**默认不发长度上限**：上限是模型自己的事。
 
@@ -168,3 +210,119 @@ def test_stream_raises_without_length_reason_too() -> None:
     with pytest.raises(ChatError) as caught:
         list(OpenAICompatChat(_config(), client=client).stream(_MESSAGES))
     assert "没有返回任何正文" in str(caught.value)
+
+
+# ------------------------------------------------- 思考的回传（v0.27 实测的 400）
+
+
+_TOOL_SPEC = ToolSpec(name="search", description="查", parameters={"type": "object"})
+
+_TOOL_MESSAGES = [
+    ChatMessage(role="user", content="查一下"),
+    ChatMessage(
+        role="assistant",
+        content="",
+        tool_calls=(ToolCall(id="c1", name="search", arguments="{}"),),
+        reasoning="先想清楚要查什么。",
+    ),
+    ChatMessage(role="tool", content="结果", tool_call_id="c1"),
+]
+
+
+def _capture_tools(config: LLMConfig, messages=None):  # type: ignore[no-untyped-def]
+    """跑一次 complete_with_tools，返回（实际发出去的请求体, 解析出来的回复）。"""
+    captured: dict = {}
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning_content": "端点的思考",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "search", "arguments": "{}"},
+                        }
+                    ],
+                }
+            }
+        ]
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        return httpx.Response(200, json=body)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    reply = OpenAICompatChat(config, client=client).complete_with_tools(
+        messages or _TOOL_MESSAGES, [_TOOL_SPEC]
+    )
+    return captured, reply
+
+
+def test_deepseek_thinking_echoes_the_reasoning_back() -> None:
+    """思考模式下，带工具调用的助手消息**必须把推理传回去**。
+
+    实测（2026-09-19，api.deepseek.com / deepseek-flash）：缺 ``reasoning_content``
+    这个字段整条请求 400（"must be passed back to the API"），补空串就 200。
+    这条链路在**工具循环**上：一次工具调用就多一轮请求，而每一轮都要把上一轮的
+    助手消息发出去——不补这个字段的话，用户看到的是"工具都调完了、然后对话失败"。
+    """
+    captured, _ = _capture_tools(_config(enable_thinking=True))
+
+    assistant = captured["messages"][1]
+    assert assistant["reasoning_content"] == "先想清楚要查什么。"
+    # 字段只加在带工具调用的助手消息上：系统 / 用户 / 工具结果都没有推理
+    assert "reasoning_content" not in captured["messages"][0]
+    assert "reasoning_content" not in captured["messages"][2]
+
+
+def test_an_empty_reasoning_is_still_sent() -> None:
+    """没有推理时**也要发这个字段**（空串合法）。
+
+    端点要的是"字段在"：**每一个**带工具调用的助手消息都得有，
+    只补前几条、漏掉最后一条同样 400（实测）。而"带着工具调用却没有推理"的消息
+    是会出现的——模型某一轮就是没给 ``reasoning_content``，或者这条消息是从
+    别处拼进来的；补一个空串的成本是零，漏掉的成本是整轮对话失败。
+    """
+    messages = [
+        _TOOL_MESSAGES[0],
+        ChatMessage(
+            role="assistant",
+            content="",
+            tool_calls=(ToolCall(id="c1", name="search", arguments="{}"),),
+        ),
+        _TOOL_MESSAGES[2],
+    ]
+
+    captured, _ = _capture_tools(_config(enable_thinking=True), messages)
+
+    assert captured["messages"][1]["reasoning_content"] == ""
+
+
+def test_no_reasoning_field_when_thinking_is_off_or_the_dialect_differs() -> None:
+    """**只对认这个字段的方言发**：思考关着时不需要，别的供应商也没有证据要它。
+
+    给不认识的端点多发一个字段是有代价的（可能被严格网关打成 400），
+    而这条要求只有 DeepSeek 实测过（见 thinking.ECHO_DIALECTS）。
+    """
+    off, _ = _capture_tools(_config(enable_thinking=False))
+    assert "reasoning_content" not in off["messages"][1]
+
+    other, _ = _capture_tools(
+        _config(base_url="https://api.siliconflow.cn/v1", model_id="Qwen/Qwen3.5-4B")
+    )
+    assert "reasoning_content" not in other["messages"][1]
+
+
+def test_the_reply_carries_the_reasoning_for_the_next_round() -> None:
+    """解析侧：``reasoning_content`` 要留在 ``LLMReply`` 上，工具循环才带得回去。
+
+    丢了它不会当场报错——错在下一轮请求上，而那时离起因已经很远了。
+    """
+    _, reply = _capture_tools(_config(enable_thinking=True))
+
+    assert reply.reasoning == "端点的思考"
+    assert reply.wants_tools

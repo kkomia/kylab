@@ -1,4 +1,10 @@
 <script setup lang="ts">
+import AppearanceSection from '@/components/settings/AppearanceSection.vue'
+import SettingGroupPanel from '@/components/settings/SettingGroupPanel.vue'
+// 分节共用的样式：命名空间是 `.settings-scope`（见那个文件的头注），
+// 现在有两个宿主——这个弹窗与模块页里的 `SettingGroupPanel`，样式只有一套。
+import '@/components/settings/settings.css'
+import StorageSection from '@/components/settings/StorageSection.vue'
 /**
  * 设置弹窗（《前端设计规范》§5、《界面信息架构草案》§3）。
  *
@@ -26,7 +32,6 @@
 import { computed, onMounted, ref, watch, type Component } from 'vue'
 
 import { MIN_PASSWORD_CHARS } from '@/api/auth'
-import { compactStorage, getStorageOverview, type StorageOverview } from '@/api/maintenance'
 import { fetchHealth, type HealthResponse } from '@/api/health'
 import { bindSlot, type RegisteredModel, type Slot } from '@/api/modelRegistry'
 import {
@@ -61,19 +66,14 @@ import IconSun from '@/components/icons/IconSun.vue'
 import IconUser from '@/components/icons/IconUser.vue'
 import ModelRegistryPanel from '@/components/settings/ModelRegistryPanel.vue'
 import AppButton from '@/components/ui/AppButton.vue'
-import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
-import { formatBytes } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
-import { useFontScale } from '@/composables/useFontScale'
 import { changeOwnPassword, isAdmin } from '@/composables/useSession'
 import { currentUser } from '@/composables/useSessionToken'
-import { setTheme, themeMode, type ThemeMode } from '@/composables/useTheme'
-import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 import { useModelRegistryStore } from '@/stores/modelRegistry'
 
 const open = defineModel<boolean>('open', { required: true })
@@ -97,6 +97,22 @@ type SectionKey =
 
 /** 已经由上面那些"专门一节"渲染过的设置组；其余自动进「功能」。 */
 const RENDERED_GROUP_KEYS = new Set(['embedding', 'llm', 'chat', 'mineru', 'paddleocr'])
+
+/**
+ * **已经有自己家的**设置组（v0.26）：它们从总设置里搬走了，只在模块页出现。
+ *
+ * 判断标准是"这条设置在说谁"：长期记忆说的是记忆页那一摊，联网与执行策略说的是
+ * 能力页那一摊。挂在总设置里的代价很具体——记忆页上写着"记忆服务未启用"，
+ * 而开关在另一个菜单的第九项里，用户按指引找过去还得先猜它在哪一组。
+ *
+ * **这一组不是"藏起来"而是"搬家"**：两份都在的话，两处会长得不一样、说得不一样，
+ * 那就是两个真相。所以要搬就搬干净。
+ *
+ * 为什么 `chat` 没搬（虽然它里面也有像能力开关的项）：「对话行为」那一组在后端是
+ * **一个组**，里面混着三种语义——检索条数（更像知识库）、上下文窗口与压缩（更像对话）、
+ * 工具循环开关（更像能力）。整组搬去哪边都不对，拆开要先动后端的 `SETTING_GROUPS`。
+ */
+const MODULE_GROUP_KEYS = new Set(['memory', 'web', 'sandbox'])
 
 /**
  * 左侧菜单（对齐 Kimi 桌面端 / wekora 的设置菜单）：
@@ -134,7 +150,6 @@ const NAV_GROUPS: { label: string; keys: SectionKey[]; dynamic?: boolean }[] = [
   { label: '偏好', keys: ['appearance'] },
 ]
 
-const store = useKnowledgeBaseStore()
 const { notifySuccess, notifyError } = useToast()
 
 /** 打开设置落在「模型」——它是配置模型的主路径（供应商 → 模型 → 用途）。 */
@@ -146,19 +161,6 @@ const loadError = ref('')
 /** 后端鉴权状态。这个端点本身不鉴权，所以拿不到也不该让设置页报错。 */
 const authStatus = ref<AuthStatus | null>(null)
 /** 令牌输入框的草稿（保存前不落到存储里）。 */
-
-// 字号是本地偏好，不进后端：直接读 composable，不做 save 流程
-const { scale: fontScale, options: fontOptions, setFontScale } = useFontScale()
-const currentScaleHint = computed(
-  () => fontOptions.find((item) => item.name === fontScale.value)?.hint ?? '',
-)
-
-/** 主题三档（第二轮评审批注 2）：与字号同样用卡片式选择器，放在「外观」里。 */
-const THEME_OPTIONS: { name: ThemeMode; label: string; hint: string }[] = [
-  { name: 'system', label: '跟随系统', hint: '随设备明暗自动切换' },
-  { name: 'light', label: '浅色', hint: '始终使用纸白' },
-  { name: 'dark', label: '深色', hint: '始终使用近黑' },
-]
 
 /**
  * 修改自己的密码（v10 账号体系）。
@@ -225,7 +227,9 @@ const canManageUsers = computed(() => isAdmin.value)
  * 以后加组的人不需要记得回来改菜单。
  */
 const featureGroups = computed(() =>
-  (config.value?.groups ?? []).filter((item) => !RENDERED_GROUP_KEYS.has(item.key)),
+  (config.value?.groups ?? []).filter(
+    (item) => !RENDERED_GROUP_KEYS.has(item.key) && !MODULE_GROUP_KEYS.has(item.key),
+  ),
 )
 
 const visibleSections = computed(() => {
@@ -407,51 +411,10 @@ async function confirmDeleteUser(): Promise<void> {
 /** 切到用户分组就拉一次；用户可能在别处（另一个标签页）新建过账号。 */
 watch(section, (value) => {
   if (value === 'users') void loadUsers()
-  if (value === 'storage') void loadStorage()
   // 换一节就把编辑态收掉：留着的话，切到另一节会看到上一节的表单
   editing.value = null
   testResult.value = null
 })
-
-// ------------------------------------------------------------------ 存储维护（v17）
-
-const storage = ref<StorageOverview | null>(null)
-const storageError = ref('')
-const storageLoading = ref(false)
-const compacting = ref(false)
-const compactConfirmOpen = ref(false)
-
-async function loadStorage(): Promise<void> {
-  storageLoading.value = true
-  try {
-    storage.value = await getStorageOverview()
-    storageError.value = ''
-  } catch (error) {
-    // 权限不足或后端不可达都不该把设置页弄崩：这一块单独显示原因
-    storageError.value = error instanceof Error ? error.message : '读取存储信息失败'
-  } finally {
-    storageLoading.value = false
-  }
-}
-
-/**
- * 整理存储。**先确认再动手**：VACUUM 会重写整个数据库文件，
- * 大库要几十秒，期间写请求会被 SQLite 挡住。
- */
-async function runCompact(): Promise<void> {
-  compacting.value = true
-  try {
-    const before = storage.value?.free_bytes ?? 0
-    storage.value = await compactStorage()
-    compactConfirmOpen.value = false
-    const freed = before - storage.value.free_bytes
-    notifySuccess(freed > 0 ? `已回收 ${formatBytes(freed)}` : '存储已整理')
-  } catch (error) {
-    notifyError(error instanceof Error ? error.message : '整理失败')
-  } finally {
-    compacting.value = false
-  }
-}
 
 /** 正在编辑的分组（null = 仍在浏览态）。 */
 const editing = ref<SettingGroup | null>(null)
@@ -599,46 +562,6 @@ function secretSummary(groupKey: string, fieldKey: string): string {
 }
 
 /**
- * 动态那一节里，一个字段值的显示文案。
- *
- * 按类型分开写是因为它们**该说的话不一样**：布尔说"开启/关闭"（说成 true/false
- * 等于没翻译），密钥说"已配置/未配置"（值本身是掩码，但"没配"要一眼看出），
- * 其余取值本身。空值统一给个破折号——留空白会让人以为界面坏了。
- */
-function fieldSummary(field: SettingGroup['fields'][number]): string {
-  if (field.type === 'bool') return field.value === 'true' ? '开启' : '关闭'
-  if (field.type === 'secret') return field.configured ? field.value : '未配置'
-  if (field.type === 'select') {
-    return field.options.find((option) => option.value === field.value)?.label ?? field.value
-  }
-  return field.value || '—'
-}
-
-/** 动态那一节的一句话说明（只给需要解释的几组写，其余不硬凑）。 */
-function groupTip(key: string): string {
-  const tips: Record<string, string> = {
-    memory:
-      '长期记忆要单独跑一个记忆服务（ReMe），而且它会调模型（捕获与整合）。' +
-      '关着也能用：那四份人设文件是磁盘上的普通文件，照常注入、也能记住东西；' +
-      '这道开关管的是另一半——过去的对话会不会被召回、会不会自动沉淀。',
-    web: '搜索需要一个服务商密钥（Tavily / 博查）。抓网页不需要密钥，但只访问公网地址。',
-    sandbox: '在你这台机器上执行命令。默认「先问」：这是权限最大的一个动作。',
-  }
-  return tips[key] ?? ''
-}
-
-/** 编辑态的那句提示（原来只写死了 llm 与"其它"两句，现在按组给）。 */
-function editHint(key: string): string {
-  const hints: Record<string, string> = {
-    llm: '推理模型打开深度思考后会更慢、更费 token。关掉它更快，但难题上的推导会浅一些。',
-    memory: '关掉之后：过去的对话不再被召回、也不会自动沉淀；人设文件与「记住」照常工作。',
-    web: '密钥只回显掩码。留空表示不改动；要清掉它请用下方「清除」入口。',
-    sandbox: '三张清单的语法照抄 Claude Code：Bash(git status:*) 这样写，拒绝优先于放行。',
-  }
-  return hints[key] ?? ''
-}
-
-/**
  * 浏览态的对话模型连通性测试。
  *
  * 与编辑态的 `testResult` 分开：编辑态测的是"输入框里这一份"，浏览态测的是
@@ -711,7 +634,10 @@ async function runTest(target: string): Promise<void> {
 
 <template>
   <AppModal v-model:open="open" size="wide" height="tall" title="设置">
-    <div class="settings">
+    <!-- `settings-scope` 是"设置里每一节共用样式"的命名空间（见 settings.css）。
+         它现在有两个宿主：这个弹窗，以及模块页里的 `SettingGroupPanel`——
+         分节样式只有一套，两处长得一样。 -->
+    <div class="settings settings-scope">
       <!-- 左：分组菜单（Kimi / wekora 式：分组标题 + 图标 + 单行标签） -->
       <nav class="settings-nav" aria-label="设置分组">
         <template v-for="navGroup in visibleGroups" :key="navGroup.label">
@@ -1098,241 +1024,25 @@ async function runTest(target: string): Promise<void> {
         </template>
 
         <!--
-          功能（动态）：后端那些没有专门一节的设置组——长期记忆、联网、沙箱执行…
-          整块都是按字段渲染的，所以后端加一组、加一个字段，这里自动跟着变。
+          功能（动态）：后端那些"没有专门归属"的设置组，在这里自动出现。
+
+          **它是这一段的关键**：菜单原先是手写的，于是后端加一组就等于"界面上没有入口"——
+          用户的实际反馈就是一句"这哪里有长期记忆了？"，而记忆页与工具报错都还在
+          指引他"到「设置 → 长期记忆」打开"。现在按后端返回的组算，
+          以后加组的人不需要记得回来改菜单。
+
+          已经各有归属的那几组不在这里（v0.26）：长期记忆在**记忆页**、
+          联网与沙箱执行在**能力页**。渲染的活交给 `SettingGroupPanel`，
+          与模块页共用同一个组件——同一组设置在两处长得不一样是不能接受的。
         -->
-        <template v-else-if="activeGroup">
-          <template v-if="editing">
-            <h3 class="section-title">编辑 {{ editing.label }}</h3>
-            <div class="edit-form">
-              <template v-for="field in editing.fields" :key="field.key">
-                <!-- 布尔项不能走文本输入：里面的 "false" 是非空字符串，一不小心就写成了开启 -->
-                <label v-if="field.type === 'bool'" class="edit-check">
-                  <input
-                    type="checkbox"
-                    :checked="draft[field.key] === 'true'"
-                    @change="
-                      draft[field.key] = ($event.target as HTMLInputElement).checked
-                        ? 'true'
-                        : 'false'
-                    "
-                  />
-                  <span>{{ field.label }}</span>
-                </label>
-                <label v-else-if="field.type === 'select'" class="edit-field">
-                  <span class="edit-label">{{ field.label }}</span>
-                  <AppSelect
-                    v-model="draft[field.key]"
-                    :options="field.options"
-                    :aria-label="field.label"
-                  />
-                </label>
-                <label v-else class="edit-field">
-                  <span class="edit-label">
-                    {{ field.label }}
-                    <span v-if="field.type === 'secret' && field.configured" class="edit-current">
-                      当前 {{ field.value }}
-                    </span>
-                  </span>
-                  <AppInput
-                    v-model="draft[field.key]"
-                    :multiline="field.type === 'textarea'"
-                    :rows="5"
-                    :type="field.type === 'int' ? 'number' : 'text'"
-                    :placeholder="field.type === 'secret' ? '留空表示不改动' : ''"
-                  />
-                </label>
-              </template>
-              <p v-if="editHint(editing.key)" class="edit-hint">{{ editHint(editing.key) }}</p>
-
-              <div
-                v-if="testResult"
-                class="test-result"
-                :class="testResult.ok ? 'test-ok' : 'test-bad'"
-              >
-                <IconCheck v-if="testResult.ok" :size="14" />
-                <span>{{ testResult.detail }}</span>
-              </div>
-            </div>
-            <div class="edit-actions">
-              <AppButton @click="editing = null">返回</AppButton>
-              <AppButton variant="primary" :disabled="saving" @click="save">
-                {{ saving ? '保存中…' : '保存' }}
-              </AppButton>
-            </div>
-          </template>
-
-          <template v-else-if="activeGroup">
-            <h3 class="section-title">
-              {{ activeGroup.label }}
-              <InfoTip v-if="groupTip(activeGroup.key)" :text="groupTip(activeGroup.key)" />
-            </h3>
-            <div v-for="field in activeGroup.fields" :key="field.key" class="row">
-              <div class="row-main">
-                <span class="row-label">{{ field.label }}</span>
-                <span class="row-value">{{ fieldSummary(field) }}</span>
-              </div>
-              <StatusTag
-                v-if="field.type === 'bool'"
-                :tone="field.value === 'true' ? 'success' : 'neutral'"
-                :label="field.value === 'true' ? '已开启' : '未开启'"
-              />
-              <StatusTag
-                v-else-if="field.type === 'secret'"
-                :tone="field.configured ? 'success' : 'neutral'"
-                :label="field.configured ? '已配置' : '未配置'"
-              />
-            </div>
-            <div class="edit-actions">
-              <AppButton variant="primary" @click="openEdit(activeGroup)">编辑</AppButton>
-            </div>
-          </template>
-        </template>
+        <SettingGroupPanel v-else-if="activeGroup" :keys="[activeGroup.key]" />
 
         <!-- 存储配置（只读） -->
-        <template v-else-if="section === 'storage'">
-          <h3 class="section-title">
-            存储配置
-            <InfoTip
-              text="全内嵌存储，无需外部服务。数据目录由环境变量 KYLAB_DATA_DIR 决定，改后需重启后端。"
-            />
-          </h3>
-          <div class="row row-static">
-            <div class="row-main">
-              <span class="row-label">元数据</span>
-              <span class="row-value">SQLite（WAL，含运行期配置与任务队列）</span>
-            </div>
-          </div>
-          <div class="row row-static">
-            <div class="row-main">
-              <span class="row-label">向量</span>
-              <span class="row-value">sqlite-vec，按知识库分区，维度随库</span>
-            </div>
-          </div>
-          <div class="row row-static">
-            <div class="row-main">
-              <span class="row-label">全文检索</span>
-              <span class="row-value">FTS5 + jieba 分词</span>
-            </div>
-          </div>
-          <div class="row row-static">
-            <div class="row-main">
-              <span class="row-label">原文与图片</span>
-              <span class="row-value">本地文件系统，按内容 hash 寻址</span>
-            </div>
-          </div>
-          <div class="row row-static">
-            <div class="row-main">
-              <span class="row-label">知识库数量</span>
-              <span class="row-value tabular">{{ store.items.length }}</span>
-            </div>
-          </div>
-
-          <h3 class="section-title section-gap">空间占用</h3>
-          <p v-if="storageError" class="error-line">{{ storageError }}</p>
-          <template v-else-if="storage">
-            <div class="row row-static">
-              <div class="row-main">
-                <span class="row-label">数据库文件</span>
-                <span class="row-value tabular">{{ formatBytes(storage.file_bytes) }}</span>
-              </div>
-            </div>
-            <div class="row row-static">
-              <div class="row-main">
-                <span class="row-label">
-                  其中可回收
-                  <InfoTip
-                    text="SQLite 删数据不会让文件变小：删掉的页留在库里等复用，只有「整理存储」才会真正还给磁盘。"
-                  />
-                </span>
-                <span class="row-value tabular">{{ formatBytes(storage.free_bytes) }}</span>
-              </div>
-            </div>
-            <div class="row row-static">
-              <div class="row-main">
-                <span class="row-label">
-                  向量分区
-                  <InfoTip text="每个知识库一个向量分区；分区只要写入第一个向量就会预分配 4MB。" />
-                </span>
-                <span class="row-value tabular">{{ storage.partitions }}</span>
-              </div>
-            </div>
-            <p v-if="storage.orphans.length" class="orphan-note">
-              发现 {{ storage.orphans.length }} 个无主的向量分区（知识库已删除、表还留在库里）。
-              「整理存储」会把它们清掉。
-            </p>
-            <div class="row">
-              <div class="row-main">
-                <span class="row-label">整理存储</span>
-                <span class="row-hint">
-                  清理无主分区并回收空闲页。会重写数据库文件，大库需要几十秒；期间不要做其他写操作。
-                </span>
-              </div>
-              <AppButton
-                :disabled="compacting || storageLoading"
-                @click="compactConfirmOpen = true"
-              >
-                {{ compacting ? '整理中…' : '整理存储' }}
-              </AppButton>
-            </div>
-          </template>
-          <p v-else class="row-hint">{{ storageLoading ? '正在读取存储信息…' : '' }}</p>
-        </template>
+        <!-- 存储配置（只读 + 整理） -->
+        <StorageSection v-else-if="section === 'storage'" />
 
         <!-- 外观（本地偏好，不进后端） -->
-        <template v-else-if="section === 'appearance'">
-          <h3 class="section-title">
-            外观
-            <InfoTip text="主题与字号只影响这一台机器的浏览器，存在本地，不写进知识库配置。" />
-          </h3>
-
-          <div class="row row-static">
-            <div class="row-main">
-              <span class="row-label">主题</span>
-              <span class="row-value">
-                {{ THEME_OPTIONS.find((item) => item.name === themeMode)?.hint ?? '' }}
-              </span>
-            </div>
-          </div>
-
-          <div class="scale-picker" role="group" aria-label="主题">
-            <button
-              v-for="item in THEME_OPTIONS"
-              :key="item.name"
-              class="scale-option"
-              :class="{ 'scale-option-active': themeMode === item.name }"
-              type="button"
-              :aria-pressed="themeMode === item.name"
-              @click="setTheme(item.name)"
-            >
-              <span class="scale-label">{{ item.label }}</span>
-              <span class="scale-size">{{ item.hint }}</span>
-            </button>
-          </div>
-
-          <h3 class="section-title section-gap">正文字号</h3>
-          <div class="row row-static">
-            <div class="row-main">
-              <span class="row-label">字号档位</span>
-              <span class="row-value">{{ currentScaleHint }}</span>
-            </div>
-          </div>
-
-          <div class="scale-picker" role="group" aria-label="正文字号">
-            <button
-              v-for="item in fontOptions"
-              :key="item.name"
-              class="scale-option"
-              :class="{ 'scale-option-active': fontScale === item.name }"
-              type="button"
-              :aria-pressed="fontScale === item.name"
-              @click="setFontScale(item.name)"
-            >
-              <span class="scale-label">{{ item.label }}</span>
-              <span class="scale-size tabular">{{ item.bodySize }}px</span>
-            </button>
-          </div>
-        </template>
+        <AppearanceSection v-else-if="section === 'appearance'" />
 
         <!-- 用户（v10）：开通账号与成员管理。仅管理员可见 -->
         <template v-else-if="section === 'users'">
@@ -1581,17 +1291,6 @@ async function runTest(target: string): Promise<void> {
       </template>
     </AppModal>
   </AppModal>
-
-  <ConfirmDialog
-    v-model:open="compactConfirmOpen"
-    title="整理存储"
-    lead="清理无主向量分区并回收空闲页？"
-    note="只清理无主数据，不动文档、切块与向量。库大时 VACUUM 要几十秒，期间避免其他写操作。"
-    confirm-label="开始整理"
-    :busy="compacting"
-    busy-label="整理中…"
-    @confirm="runCompact"
-  />
 </template>
 
 <style scoped>
@@ -1613,46 +1312,6 @@ async function runTest(target: string): Promise<void> {
   gap: var(--space-1);
   padding-right: var(--space-4);
   border-right: 1px solid var(--border-hairline);
-}
-
-/* 字号档位：四个并排的按钮。
-   每一档都把实际 px 写在下面——"大 / 更大"这种词单独放着没法让人判断合不合适，
-   给出数字才可选。 */
-.scale-picker {
-  display: grid;
-  gap: var(--space-2);
-  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
-  margin-top: var(--space-3);
-}
-
-.scale-option {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-pair);
-  padding: var(--space-3);
-  text-align: left;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-control);
-}
-
-.scale-option:hover {
-  background: var(--bg-hover);
-}
-
-.scale-option-active {
-  color: var(--accent-text);
-  background: var(--accent-soft);
-  border-color: var(--accent);
-}
-
-.scale-label {
-  font-size: var(--text-body-size);
-}
-
-.scale-size {
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
 }
 
 /* 菜单项：图标 + 单行标签。**不再有第二行小字**——
@@ -1712,282 +1371,6 @@ async function runTest(target: string): Promise<void> {
 .settings-body {
   overflow-y: auto;
   padding-right: var(--space-1);
-}
-
-.section-title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin: 0 0 var(--space-2);
-  font-size: var(--text-section-size);
-  font-weight: 600;
-  letter-spacing: -0.005em;
-}
-
-/* 一个分组里放第二块内容时用它拉开：块与块之间的间距要大于块内的行距，
-   否则「对话模型」与「对话行为」会读起来像同一张表 */
-.section-gap {
-  margin-top: var(--space-6);
-}
-
-/* 一行配置：左说明、右状态与动作 */
-.row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) 0;
-  border-bottom: 1px solid var(--border-hairline);
-}
-
-/* 「选默认模型」这一块：标签 + 状态一行，选择器独占一行。
-   选择器比按钮宽得多，塞进 .row 的右侧会被压成一条窄缝——所以它不进 .row */
-.slot-field {
-  padding: var(--space-3) 0;
-  border-bottom: 1px solid var(--border-hairline);
-}
-
-.slot-field + .slot-field {
-  border-top: none;
-}
-
-.slot-head {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
-}
-
-.slot-label {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--text-body-size);
-  color: var(--text-primary);
-}
-
-/* 选中模型的"身份证"：名称 · 维度 · 供应商。光看选择器里的短标签不够确认 */
-.slot-value {
-  margin: var(--space-2) 0 0;
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.row-static {
-  padding: var(--space-3) var(--space-4);
-}
-
-.row-main {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.row-label {
-  font-size: var(--text-body-size);
-  color: var(--text-primary);
-}
-
-.row-value {
-  font-size: var(--text-meta-size);
-  color: var(--text-secondary);
-  overflow-wrap: anywhere;
-}
-
-.row-note {
-  margin: var(--space-2) 0 0;
-  max-width: 64ch;
-  font-size: var(--text-micro-size);
-  line-height: 1.7;
-  color: var(--text-tertiary);
-}
-
-/* 账号区里"（登录名）"这类补充信息：比主值再退一档，不与名字抢注意力 */
-.row-sub {
-  color: var(--text-tertiary);
-}
-
-/* 修改密码表单：控件成组走全局 .field（评审 §2.1） */
-.password-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  margin-top: var(--space-3);
-}
-
-.form-error {
-  margin: var(--space-2) 0 0;
-  font-size: var(--text-micro-size);
-  color: var(--status-danger);
-}
-
-.password-actions {
-  display: flex;
-  gap: var(--space-2);
-  margin-top: var(--space-3);
-}
-
-/* 分组标题 + 右侧动作（与「模型注册 → 供应商」同一套排法）：
-   标题在左、动作在右，两者顶对齐——标题是两行的，居中对齐会显得飘 */
-.section-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-/* 开通账号：标签列固定宽，控件列吃剩余——四行标签才会左边对齐 */
-.create-card {
-  margin-top: var(--space-3);
-  padding: var(--space-4);
-  background: var(--bg-subtle);
-  border-radius: var(--radius-panel);
-}
-
-.create-grid {
-  display: grid;
-  align-items: center;
-  gap: var(--space-2) var(--space-3);
-  grid-template-columns: 88px minmax(0, 1fr);
-}
-
-/* 成员与名册：一行一个人，操作在右端 */
-.user-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.user-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-3) 0;
-  border-bottom: 1px solid var(--border-hairline);
-}
-
-.user-row:last-child {
-  border-bottom: none;
-}
-
-.user-main {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-pair);
-}
-
-.user-name {
-  overflow: hidden;
-  font-size: var(--text-body-size);
-  color: var(--text-primary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.user-meta {
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.user-actions {
-  display: flex;
-  flex: 0 0 auto;
-  gap: var(--space-1);
-}
-
-/* 嵌套弹窗的引导句（重置/删除）：与分享弹窗同一套语气 */
-.share-lead {
-  margin: 0 0 var(--space-4);
-  font-size: var(--text-meta-size);
-  line-height: 1.7;
-  color: var(--text-secondary);
-}
-
-.text-warn {
-  color: var(--status-warning);
-}
-
-.error-line {
-  margin: 0 0 var(--space-3);
-  color: var(--status-danger);
-}
-
-/* 编辑态 */
-.edit-form {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
-}
-
-.edit-field {
-  display: block;
-}
-
-/* 复选框与它的说明同一行：说明是"这项是什么"，离得太远就变成两条信息 */
-.edit-check {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--hit-target);
-  font-size: var(--text-meta-size);
-  color: var(--text-primary);
-}
-
-.edit-check input[type='checkbox'] {
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  accent-color: var(--text-secondary);
-}
-
-.edit-label {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
-  font-size: var(--text-micro-size);
-  color: var(--text-secondary);
-}
-
-.edit-current {
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-}
-
-.edit-hint {
-  margin: 0;
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.edit-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-2);
-}
-
-.test-result {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-meta-size);
-  border-radius: var(--radius-control);
-}
-
-.test-ok {
-  color: var(--status-success);
-  background: var(--bg-subtle);
-}
-
-.test-bad {
-  color: var(--status-danger);
-  background: var(--danger-soft);
 }
 
 @media (max-width: 720px) {

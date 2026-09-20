@@ -22,7 +22,8 @@ from dataclasses import dataclass
 import httpx
 
 from app.core.exceptions import UpstreamError
-from app.services.thinking import DEFAULT_EFFORT, build_thinking_payload
+from app.core.http import shared_client
+from app.services.thinking import DEFAULT_EFFORT, build_thinking_payload, echoes_reasoning
 
 __all__ = ["ChatError", "ChatMessage", "LLMConfig", "LLMDelta", "OpenAICompatChat"]
 
@@ -78,6 +79,14 @@ class LLMReply:
     text: str = ""
     tool_calls: tuple[ToolCall, ...] = ()
 
+    reasoning: str = ""
+    """模型这一轮的思考（``reasoning_content``），**要原样带回下一轮请求**。
+
+    留它不是因为我们想显示它（显示那条走流式，见 ``LLMDelta.reasoning``），
+    而是有些端点在思考模式下**强制要求**：带工具调用的助手消息若不把这个字段
+    传回去，下一轮直接 400（实测记录见 ``thinking.ECHO_DIALECTS``）。
+    """
+
     @property
     def wants_tools(self) -> bool:
         return bool(self.tool_calls)
@@ -91,12 +100,18 @@ class ChatMessage:
     助手消息可以"带着一组工具调用"（此时 ``content`` 常为空），
     而 ``role="tool"`` 的结果消息必须用 ``tool_call_id`` 指回是哪一次调用的结果
     ——**少了它，OpenAI 兼容端点会直接 400**（工具结果必须与调用配对）。
+
+    ``reasoning`` 是第三个附加位，**只有工具循环那条路用得到**：它是"这一轮的思考"，
+    要随助手消息回到下一轮请求里（见 ``LLMReply.reasoning`` 与
+    ``thinking.ECHO_DIALECTS``）。``None`` 表示这条消息不该带这个字段——
+    普通消息（用户、系统、工具结果）本来就没有推理，多发一个空字段只是噪声。
     """
 
     role: str
     content: str
     tool_calls: tuple[ToolCall, ...] = ()
     tool_call_id: str | None = None
+    reasoning: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +221,8 @@ class OpenAICompatChat:
                 f"{self.config.base_url.rstrip('/')}/chat/completions",
                 headers=self._headers(),
                 json={**self._payload(messages), "stream": False},
+                # 超时按调用点给：共享客户端自带的那个只是兜底（见 app/core/http.py）
+                timeout=self._timeout,
             )
         body = self._decode(response)
         # 记下这一轮的 token 用量，供调用方取（见 ``last_usage``）。
@@ -228,6 +245,7 @@ class OpenAICompatChat:
                 f"{self.config.base_url.rstrip('/')}/chat/completions",
                 headers=self._headers(),
                 json={**self._payload(messages, tools), "stream": False},
+                timeout=self._timeout,
             )
         body = self._decode(response)
         self.last_usage = _usage_of(body)
@@ -262,6 +280,7 @@ class OpenAICompatChat:
             f"{self.config.base_url.rstrip('/')}/chat/completions",
             headers=self._headers(),
             json={**self._payload(messages), "stream": True},
+            timeout=self._timeout,
         ) as response:
             if response.status_code != 200:
                 response.read()
@@ -283,10 +302,14 @@ class OpenAICompatChat:
     # ------------------------------------------------------------------ 内部
 
     def _open(self) -> httpx.Client:
-        """复用外部传入的 client（测试用），否则每次新建。"""
-        if self._client is not None:
-            return _ReusedClient(self._client)
-        return httpx.Client(timeout=self._timeout)
+        """拿一个客户端：注入的优先（测试用），否则是**进程级共享**的那个。
+
+        两者都不在这里关闭——注入的那个属于调用方，共享的那个属于整个进程。
+        以前是"没注入就每次新建、`with` 退出时关掉"，那正是每次调用都要重新握手的来源
+        （见 ``app/core/http.py``）。所以返回的仍是 ``_ReusedClient`` 这层壳：
+        它的 ``__exit__`` 什么都不做。
+        """
+        return _ReusedClient(self._client or shared_client())
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -299,9 +322,15 @@ class OpenAICompatChat:
         messages: Sequence[ChatMessage],
         tools: Sequence[ToolSpec] | None = None,
     ) -> dict:
+        # 思考模式下有些端点要求把推理回传（见 thinking.ECHO_DIALECTS）：
+        # **只在这次请求开着思考、且方言认这个字段时**才发——思考关着时端点不认这个
+        # 要求（实测 200），而给不认识的端点多发字段是有风险的（见 thinking 模块头）。
+        echo = self.config.enable_thinking and echoes_reasoning(
+            self.config.base_url, self.config.model_id, self.config.thinking_dialect
+        )
         payload: dict = {
             "model": self.config.model_id,
-            "messages": [_message_wire(m) for m in messages],
+            "messages": [_message_wire(m, echo_reasoning=echo) for m in messages],
             "temperature": self.config.temperature,
         }
         # `tools` 只在给了的时候发：不带工具的调用与以前**逐字节一样**
@@ -423,12 +452,15 @@ def _empty_stream_hint(finish_reason: str) -> str:
     )
 
 
-def _message_wire(message: ChatMessage) -> dict:
+def _message_wire(message: ChatMessage, *, echo_reasoning: bool = False) -> dict:
     """把一条消息转成 OpenAI 兼容的线上形状。
 
     **只有带工具位时才多发字段**：普通消息序列化出来与以前完全一样，
     不会因为升级客户端而改变既有请求（`content` 为空的助手消息仍发空串，
     而不是省略——省略会被某些端点当成非法消息）。
+
+    ``echo_reasoning`` 见 ``thinking.ECHO_DIALECTS``：它是**端点级别的开关**，
+    不是消息自己的属性——所以由调用方按这一轮的配置算好，这里只管把字段补上。
     """
     body: dict = {"role": message.role, "content": message.content}
     if message.tool_calls:
@@ -440,6 +472,10 @@ def _message_wire(message: ChatMessage) -> dict:
             }
             for call in message.tool_calls
         ]
+        if echo_reasoning:
+            # 端点要的是"字段在"，不是"内容对"：没有推理时**也必须发空串**
+            # （实测缺字段 400、空串 200；只补一部分消息同样 400）
+            body["reasoning_content"] = message.reasoning or ""
     if message.tool_call_id:
         body["tool_call_id"] = message.tool_call_id
     return body
@@ -469,7 +505,13 @@ def _reply_of(body: dict) -> LLMReply:
                 arguments=str(function.get("arguments") or ""),
             )
         )
-    return LLMReply(text=_content_of_message(message), tool_calls=tuple(calls))
+    return LLMReply(
+        text=_content_of_message(message),
+        tool_calls=tuple(calls),
+        # 思考原样带回去（见 ``LLMReply.reasoning``）：工具循环会把这一轮要求调工具的
+        # 助手消息再发出去，而端点要它带着 reasoning_content
+        reasoning=str(message.get("reasoning_content") or ""),
+    )
 
 
 def _content_of_message(message: dict) -> str:

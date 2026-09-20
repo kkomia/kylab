@@ -37,11 +37,15 @@ step() {
 
 step "ruff" sh -c "cd '$ROOT/backend' && uv run ruff check app/ tests/"
 step "emoji 扫描（后端）" "$PY" "$ROOT/scripts/scan_emoji.py" "$ROOT/backend/app"
-step "结构性规范（分层 / 测试位置 / 界面文案）" "$PY" "$ROOT/scripts/check_layering.py" "$ROOT"
+step "结构性规范（分层 / 测试位置 / 界面文案 / 版本号）" "$PY" "$ROOT/scripts/check_layering.py" "$ROOT"
 if [ -x "$VENV_PY" ]; then
     step "同步 API 接口规范" "$VENV_PY" "$ROOT/scripts/gen_api_spec.py"
+    # 前端类型与后端 schema 的契约核对：改后端的人最该跑它——schema 动了而前端
+    # 那座城市没跟上时，这里会直接红（见 scripts/gen_api_types.py 的说明）
+    step "核对 API 类型（前端 ← OpenAPI）" "$VENV_PY" "$ROOT/scripts/gen_api_types.py" --check
 else
     echo "==> 同步 API 接口规范（跳过：找不到 venv 解释器）"
+    echo "==> 核对 API 类型（跳过：找不到 venv 解释器）"
 fi
 if [ -z "${KYLAB_TEST_DATABASE_URL:-}" ]; then
     echo "!! 未设置 KYLAB_TEST_DATABASE_URL"

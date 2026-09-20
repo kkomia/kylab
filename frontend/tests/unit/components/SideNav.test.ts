@@ -220,7 +220,8 @@ describe('SideNav（v0.15 信息架构）', () => {
     const adds = wrapper.findAll('.side-add')
     expect(adds).toHaveLength(2)
     expect(adds[0].attributes('aria-label')).toBe('新建项目')
-    expect(adds[1].attributes('aria-label')).toBe('新建会话')
+    // 「对话」节那颗 v0.25 换成了「查看全部会话」（见下面那条用例）
+    expect(adds[1].attributes('aria-label')).toBe('查看全部会话')
   })
 
   it('不再有「未归档会话」那一栏，但两节各自铺自己的清单（v0.22）', () => {
@@ -234,8 +235,10 @@ describe('SideNav（v0.15 信息架构）', () => {
     expect(wrapper.text()).toContain('工作区里的会话')
     // 对话那一节：没归项目的会话
     expect(wrapper.text()).toContain('随手问的')
-    // 找旧会话的入口仍在（搜索 + 已归档都在面板里）
-    expect(wrapper.text()).toContain('查看全部会话')
+    // 找旧会话的入口仍在（搜索 + 已归档都在面板里），只是不再占清单里的一行
+    expect(
+      wrapper.findAll('.side-add').some((node) => node.attributes('aria-label') === '查看全部会话'),
+    ).toBe(true)
   })
 
   it('项目行直接进项目（带 focus），会话行直接进会话', () => {
@@ -251,23 +254,30 @@ describe('SideNav（v0.15 信息架构）', () => {
     expect(wrapper.text()).toContain('全部项目')
   })
 
-  it('「新建会话」常驻最上面，且与导航项**同一套形态**', () => {
+  it('「新建会话」常驻最上面，是侧栏里唯一有底有框的那一颗', () => {
     const wrapper = mountNav()
     const html = wrapper.html()
 
     expect(html).toContain('新建会话')
     // 它在项目那一节之前（「新建项目」现在是项目节标题右边那个「管理」菜单里的一项）
     expect(html.indexOf('新建会话')).toBeLessThan(html.indexOf('新建项目'))
-    // **同形态**：它复用 .nav-item（不再是那个 44px 的填充块按钮）
+    // **几何复用 .nav-item（40px 行、圆角 12、图标+文字），但形态自己加一层底与框**。
+    // 这条 v0.17 曾反着钉过（"与导航项同一套形态、不再填充"），v0.24 按 kimi.com
+    // 对话页的实测改回来：它的侧栏里唯一有底有框的就是这一颗。
+    // jsdom 不跑 scoped 样式，所以这里只钉类名，填充与描边在真浏览器里量。
     const button = wrapper.find('.new-chat')
     expect(button.classes()).toContain('nav-item')
+    expect(button.classes()).toContain('new-chat')
   })
 
   it('快捷键提示写了就真的能用（Ctrl/Cmd+K）', async () => {
     // 界面上摆一个按不出来的快捷键，比不摆更糟——所以这条要钉住
     const wrapper = mountNav()
 
-    expect(wrapper.find('.shortcut').text()).toContain('Ctrl K')
+    // **两枚独立的小片**（Kimi 的写法），不是一个 `Ctrl K` 字符串：
+    // 分开才能各自有底色和 4px 圆角，间距由容器的 gap 给。
+    const chips = wrapper.findAll('.shortcut kbd')
+    expect(chips.map((chip) => chip.text())).toEqual(['Ctrl', 'K'])
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }))
     await wrapper.vm.$nextTick()
@@ -324,11 +334,28 @@ describe('SideNav（v0.15 信息架构）', () => {
   it('「查看全部会话」打开搜索面板（搜索与已归档都在那里）', async () => {
     // 侧栏只铺最近几条；"找一条旧会话"仍然只有这一个入口——
     // 它必须真的能开面板，否则那些会话就再也找不着了。
+    //
+    // v0.25 它从清单**最底下那颗文字行**搬到了「对话」节的标题行上（悬停显形），
+    // 与项目那一节的加号同一套手势：会话一多，埋在清单末尾就要滚到底才看得见。
     const wrapper = mountNav()
 
-    const more = wrapper.findAll('.side-more').find((node) => node.text().includes('查看全部'))
+    const more = wrapper
+      .findAll('.side-add')
+      .find((node) => node.attributes('aria-label') === '查看全部会话')
+    expect(more).toBeTruthy()
     await more!.trigger('click')
 
     expect(wrapper.emitted('openHistory')).toBeTruthy()
+  })
+
+  it('「新建会话」在侧栏里只有一个入口（最上面那颗）', async () => {
+    // 原先「对话」节的标题行上还挂着一颗"新建会话"，与最上面那颗**是同一件事**。
+    // 同一栏里两个入口做同一件事，多出来的那个只会让人犹豫点哪个。
+    const wrapper = mountNav()
+
+    const labels = wrapper.findAll('.side-add').map((node) => node.attributes('aria-label'))
+    expect(labels.filter((label) => label === '新建会话')).toHaveLength(0)
+    // 最上面那颗还在，并且是链接（不是 .side-add）
+    expect(wrapper.find('.new-chat').text()).toContain('新建会话')
   })
 })

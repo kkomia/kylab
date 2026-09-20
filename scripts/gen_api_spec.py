@@ -12,8 +12,18 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
+import tempfile
 from pathlib import Path
+
+
+# **别把仓库根的 ``data/`` 当数据目录**：门禁从仓库根执行本脚本，而
+# ``KYLAB_DATA_DIR`` 的默认值是**相对路径** ``./data``——于是 ``create_app()``
+# 挂的日志会落到 ``<仓库根>/data/logs``，多跑几次就在仓库里长出一个数据目录
+# （历史上那份 ``data/kylab.db`` 就是这么来的，直到存储换 PostgreSQL 才成死文件）。
+# 本脚本只读 OpenAPI，不需要真实数据目录，显式指到临时目录即可。
+os.environ["KYLAB_DATA_DIR"] = tempfile.mkdtemp(prefix="kylab-openapi-")
 
 ROOT = Path(__file__).resolve().parents[1]
 

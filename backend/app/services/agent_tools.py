@@ -1,6 +1,6 @@
 """Agent 的工具集：给模型看的规格 + 执行器（P0）。
 
-与 `app/mcp_server/tools.py` 的关系是**同一份实现、两个门**：对外 MCP 客户端调
+与 `app/services/tools.py` 的关系是**同一份实现、两个门**：对外 MCP 客户端调
 `call_tool`，对内由 `services/tool_loop.py` 调这里的 runner。所以"知识库降级成一个工具"
 几乎是免费的——`search` 早就是那 13 个工具之一，只是以前的对话循环没走它。
 
@@ -23,13 +23,13 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from app.core.logging import sanitize_log_value
-from app.mcp_server.tools import call_tool, tool_definitions
 from app.services.api_key import Caller
 from app.services.chat import SourceRef
 from app.services.command_policy import (
@@ -41,6 +41,7 @@ from app.services.command_policy import (
 from app.services.llm import ToolSpec
 from app.services.mcp_client import normalized_server_name, split_qualified
 from app.services.tool_loop import ToolOutcome, ToolRunner
+from app.services.tools import ARTIFACT_KEY, call_tool, tool_definitions
 
 __all__ = ["build_runner", "tool_specs"]
 
@@ -103,7 +104,37 @@ _SKILL_TOOLS: tuple[dict[str, Any], ...] = (
 )
 
 
-def tool_specs(services: Any = None, *, owner_id: str | None = None) -> list[ToolSpec]:
+#: **知识库这一侧**的工具（v0.27）。
+#:
+#: 用户把会话上的知识库开关关掉时（这一轮的 ``kb_ids`` 为空），这些工具
+#: **一个都不出现在工具表里**。改之前只是"检索会被拒绝"——工具照给，
+#: 于是模型每轮都先 `list_knowledge_bases` 看一眼、再 `search` 一次，
+#: 拿到一句"这一轮没有可查的知识库"，两个来回就这么花掉了
+#: （用户报的现象："没开知识库，但每轮都去知识库检索"）。
+#:
+#: 边界**只画在知识库上**：记忆（`recall` / `remember`）与笔记（`create_note` /
+#: `list_notes`）不属于这一侧——用户点名说过"这里的知识库不包括 agent 记忆"。
+#: 而"把笔记加入知识库"（`attach_note_to_kb`）与"把产物存进知识库"
+#: （`ingest_artifact`）**算**这一侧：它们动的是知识库。
+_KB_TOOLS = frozenset(
+    {
+        "search",
+        "list_knowledge_bases",
+        "create_knowledge_base",
+        "list_documents",
+        "get_document_status",
+        "delete_document",
+        "upload_document",
+        "add_data_source",
+        "attach_note_to_kb",
+        "ingest_artifact",
+    }
+)
+
+
+def tool_specs(
+    services: Any = None, *, owner_id: str | None = None, kb_ids: Sequence[str] | None = None
+) -> list[ToolSpec]:
     """这一轮提供给模型的全部工具：内置 → 技能 → 外部 MCP 服务。
 
     ``services`` 给不给决定后两段在不在：
@@ -115,15 +146,23 @@ def tool_specs(services: Any = None, *, owner_id: str | None = None) -> list[Too
 
     外部那一段走**缓存**（见 ``MCPClientService.cached_tools``），所以这句话
     不便宜但也不贵：它是每轮一次的内存查找，不是每轮一次握手。
+
+    ``kb_ids`` 是**这一轮允许查的库**（会话上选的那些）。为空 = 用户关掉了
+    知识库开关，那就**别把知识库那一侧的工具摆给它**（见 ``_KB_TOOLS``）——
+    给了又拒，只会白花两个来回（模型先看一眼有哪些库，再检索一次被拒）。
+    **不传**（None）按"没有知识库"处理：与 ``build_runner`` 同一口径——
+    没有范围就是查不了，那么工具表里也不该有它。
     """
+    scope = [str(item) for item in (kb_ids or []) if str(item).strip()]
     specs = [
         ToolSpec(
             name=item["name"],
             description=str(item.get("description") or ""),
             # MCP 叫 inputSchema，OpenAI 叫 parameters——同一个东西，这里翻一次名
-            parameters=item.get("inputSchema") or {"type": "object", "properties": {}},
+            parameters=_dialogue_parameters(item),
         )
         for item in tool_definitions()
+        if scope or item["name"] not in _KB_TOOLS
     ]
     specs.extend(
         ToolSpec(
@@ -136,6 +175,32 @@ def tool_specs(services: Any = None, *, owner_id: str | None = None) -> list[Too
     if services is not None:
         specs.extend(_mcp_specs(services, owner_id))
     return specs
+
+
+#: 在**对话这条门**上不收 ``knowledge_base_id`` 的工具（v0.26）。
+#:
+#: 外部门（MCP）保持原契约：那条通道没有会话，产物唯一的落点就是知识库，
+#: 而且"外部客户端点名叫了哪个库"这件事本身就是显式的。
+#: 对话这条门不一样：产物先落盘，入库是另一个动作。**参数留在这里过不了日子**——
+#: 它是可选的，模型就会在某些时候顺手填上；而它一旦被填上，
+#: 它就会重新开始替用户挑库（这正是"把 docx 塞进「笔记」"的成因）。
+_DIALOGUE_DROPS_KB = frozenset({"export_document", "export_table", "export_deck"})
+
+
+def _dialogue_parameters(item: dict[str, Any]) -> dict[str, Any]:
+    """把内置工具的 schema 调成**对话这条门**该有的样子。
+
+    目前只有一件事：导出类工具不再向模型暴露 ``knowledge_base_id``。
+    """
+    schema = item.get("inputSchema") or {"type": "object", "properties": {}}
+    if item["name"] not in _DIALOGUE_DROPS_KB:
+        return schema
+    properties = {
+        key: value
+        for key, value in (schema.get("properties") or {}).items()
+        if key != "knowledge_base_id"
+    }
+    return {**schema, "properties": properties}
 
 
 def _mcp_specs(services: Any, owner_id: str | None) -> list[ToolSpec]:
@@ -176,9 +241,14 @@ def build_runner(
     caller: Caller,
     *,
     kb_ids: Sequence[str] | None = None,
+    conversation_id: str | None = None,
     subagent: Callable[[str], tuple[str, list[Any]]] | None = None,
 ) -> ToolRunner:
     """绑一个执行器。``kb_ids`` 是**这一轮允许查的库**（会话上选的那些）。
+
+    ``conversation_id`` 决定**产物落在哪儿**（v0.26，见 ``services/artifacts.py``）：
+    挂在工作的会话落进工作区目录，没挂的落进对象存储里按会话分的临时前缀。
+    没有它（外部 MCP 客户端、一次性脚本）时导出类工具只剩"直接入库"那一条路。
 
     范围规则（三条，都与"关掉知识库开关就该真的查不到"一致）：
 
@@ -198,12 +268,29 @@ def build_runner(
     于是答案里的 [1][2] 指向的东西与用户看到的对不上。
     累计并**重新编号**必须在渲染资料之前做（内容与界面必须是同一套号），
     所以它在这里而不是在工具循环里。
+
+    **账本是共享可变状态，所以要加锁**（v0.27）：工具循环会把同一批里的几次调用
+    并发跑（见 ``tool_loop._execute_batch``），而两个检索线程同时进 ``_absorb``
+    会抢同一个编号——两边都读到"账本里有 3 条"，各自从 4 开始编，于是同一段资料
+    拿到同一个号、或者一条编号谁也没占。去重、顺延编号、取快照这三件事
+    因此都在同一把锁里做完。
     """
     scope = [str(item) for item in (kb_ids or []) if str(item).strip()]
     # 有些调用点（子 Agent 的测试、脚本）没有凭据主体，那就是**共享桶**
     # （``None``），与"管理员/API Key 通道"同一档——不是错误，不给它编一个身份。
     owner_id = caller.owner_id if caller is not None else None
     book: list[SourceRef] = []
+    book_lock = threading.Lock()
+
+    def _record(incoming: Sequence[SourceRef]) -> list[SourceRef]:
+        """把一批新资料并进账本，返回**真正新增**的那些（编号已排好）。"""
+        with book_lock:
+            return _absorb(book, list(incoming))
+
+    def _snapshot() -> list[SourceRef]:
+        """当前账本的副本。**与 ``_record`` 同一把锁**：读的时候可能正有人在写。"""
+        with book_lock:
+            return list(book)
 
     def run(name: str, args: dict[str, Any]) -> ToolOutcome:
         if name.startswith("mcp__"):
@@ -220,12 +307,12 @@ def build_runner(
             except Exception as exc:
                 logger.info("子 Agent 失败：%s", exc)
                 return ToolOutcome(content=f"子 Agent 没跑成：{exc}")
-            refs = _renumber(list(sources), offset=len(book))
-            book.extend(refs)
+            refs = _record(list(sources))
             return ToolOutcome(
                 content=answer or "（子 Agent 没有给出结论）",
-                sources=list(book),
+                sources=_snapshot(),
                 summary="子 Agent 回报了结论",
+                added=len(refs),
             )
         if name == "list_skills":
             return ToolOutcome(content=_render_skills(services))
@@ -251,24 +338,46 @@ def build_runner(
             # 靠 chunk_id 做二次读取）。
             kb_ids = [str(item) for item in (scoped.get("knowledge_base_ids") or [])]
             services.api_keys.check_access(caller, kb_ids=kb_ids)
-            refs = _renumber(
+            refs = _record(
                 services.chat.retrieve_sources(
                     query=str(scoped.get("query") or ""),
                     kb_ids=kb_ids,
                     top_k=_int_or_none(scoped.get("top_k")),
-                ),
-                offset=len(book),
+                )
             )
-            book.extend(refs)
+            if refs:
+                content = _render_sources(refs)
+                summary = f"命中 {len(refs)} 段原文"
+            else:
+                # 两种情况要分开说：库里真没有，与"命中的前面都给过了"。
+                # 都回 `_render_sources([])` 那句"没有命中任何片段"，模型会把后者
+                # 读成前者，于是放弃换角度的尝试——而它其实只是重复查了同一处。
+                content = (
+                    "这一次没有新增片段：命中的内容前面已经给过（或这个库里没有相关的）。"
+                    "请基于已有资料作答；还要查就换一个角度或关键词。"
+                )
+                summary = "没有新的片段"
             return ToolOutcome(
-                content=_render_sources(refs),
+                content=content,
                 # **累计列表**（协议约定：多轮检索多次发出，始终是累计的）：
                 # 只发这一批的话，先查到的那些资料会在界面上消失
-                sources=list(book),
-                summary=f"命中 {len(refs)} 段原文",
+                sources=_snapshot(),
+                summary=summary,
+                added=len(refs),
             )
-        payload = call_tool(services, name, args, caller=caller)
-        return ToolOutcome(content=_render(payload), summary=_summary(name, payload))
+        payload = call_tool(services, name, args, caller=caller, conversation_id=conversation_id)
+        # 产出物**先摘走、再渲染**：那个键是给界面用的，模型不该看到一份
+        # 自己结果的副本（它会照着复述，白占上下文）。顺序不能反。
+        artifacts: list[dict[str, object]] = []
+        if isinstance(payload, dict) and ARTIFACT_KEY in payload:
+            raw = payload.pop(ARTIFACT_KEY)
+            if isinstance(raw, dict):
+                artifacts = [dict(raw)]
+        return ToolOutcome(
+            content=_render(payload),
+            summary=_summary(name, payload),
+            artifacts=artifacts,
+        )
 
     return run
 
@@ -407,10 +516,33 @@ def _renumber(refs: Sequence[SourceRef], *, offset: int) -> list[SourceRef]:
     **那段**原文。所以编号一旦重排，渲染给模型的文本与发给界面的出处必须是
     同一次重排的结果——这也是它只能发生在渲染之前的原因。
     """
-    return [
-        replace(ref, index=offset + position)
-        for position, ref in enumerate(refs, start=1)
-    ]
+    return [replace(ref, index=offset + position) for position, ref in enumerate(refs, start=1)]
+
+
+def _absorb(book: list[SourceRef], incoming: Sequence[SourceRef]) -> list[SourceRef]:
+    """把一批新资料并进这一轮的账本，返回**真正新增**的那些（已接着现有编号排好）。
+
+    去重按 ``chunk_id``：一轮里可以查好几次，换了检索词但落点相同是常事。
+    不去重的话同一段会占两个引用号——界面上两条一模一样的出处，
+    而模型可能各引一次，读者会以为那是两份不同的资料。
+
+    **先到的那条保留原编号，不因为"这次分数更高"替换**：编号在第一次检索时就已经
+    渲染给模型了（``[n]`` 写在工具结果里），重排会让它先前写下的引用指向别处。
+    代价是同一段保留的分数未必是最高那次——分数只用于排序与阈值过滤，
+    不影响引用关系，所以这个取舍是划算的。
+
+    返回值同时也是"这一步新增了几段"的口径（`ToolOutcome.added`）。
+    """
+    known = {item.chunk_id for item in book}
+    fresh: list[SourceRef] = []
+    for ref in incoming:
+        if ref.chunk_id in known:
+            continue
+        known.add(ref.chunk_id)
+        fresh.append(ref)
+    refs = _renumber(fresh, offset=len(book))
+    book.extend(refs)
+    return refs
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -502,6 +634,39 @@ def _summary(name: str, payload: Any) -> str:
         return f"当前阶段：{payload.get('stage') or '未知'}"
     if name == "recall" and isinstance(items, list):
         return f"回忆到 {len(items)} 条"
+    if name == "list_notes" and isinstance(payload, dict):
+        total = payload.get("total")
+        if isinstance(total, int):
+            return f"共 {total} 条笔记"
+    if name in ("export_document", "export_table", "export_deck") and isinstance(payload, dict):
+        # 这一条原先没人写，于是过程面板里**把整个 JSON 铺了出来**
+        # （实测截图：`{"artifact_id": "art_89cb…", "name": "酒馆战棋S14上分攻略….pptx"…`）
+        size = payload.get("size_bytes")
+        size_text = f"（{int(size) // 1024} KB）" if isinstance(size, int) else ""
+        return f"已生成「{payload.get('name') or '文件'}」{size_text}"
+    if name == "ingest_artifact" and isinstance(payload, dict):
+        return f"已存进知识库：{payload.get('name') or ''}".rstrip("：")
+    if name == "remember" and isinstance(payload, dict):
+        # 那三段 note 是**给模型看的操作说明**，不是给用户看的结论——
+        # 原来它整段出现在过程面板里，用户读到的是"一条只记一句可复用的事实"
+        return "已写入长期记忆" if payload.get("saved") else "这条已经在长期记忆里了"
+    if name == "create_note" and isinstance(payload, dict):
+        return f"已存为笔记「{payload.get('title') or ''}」"
+    if name == "attach_note_to_kb" and isinstance(payload, dict):
+        return "已把笔记加入知识库"
+    if name == "create_knowledge_base" and isinstance(payload, dict):
+        return f"已新建知识库「{payload.get('name') or ''}」"
+    if name == "upload_document" and isinstance(payload, dict):
+        suffix = "（库里已有同样的内容）" if payload.get("is_duplicate") else ""
+        return f"已上传「{payload.get('name') or ''}」{suffix}"
+    if name == "add_data_source" and isinstance(payload, dict):
+        return f"已登记数据源「{payload.get('name') or ''}」"
+    if name == "delete_document" and isinstance(payload, dict):
+        return "已删除这份文档（7 天内可恢复）"
+    if name == "search" and isinstance(payload, dict):
+        hits = payload.get("hits")
+        if isinstance(hits, list):
+            return f"命中 {len(hits)} 段原文" if hits else "没有命中任何片段"
     if isinstance(items, list):
         return f"共 {len(items)} 条"
     return ""

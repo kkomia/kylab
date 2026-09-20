@@ -105,6 +105,10 @@ function summaryOf(detail: ConversationDetail): ConversationSummary {
     thinking: detail.thinking,
     thinking_effort: detail.thinking_effort,
     pinned: detail.pinned,
+    // 这两个字段后端**总会**带（`preview` 没要求时是空串、`archived_at` 是 null），
+    // 所以类型上是必填——`Required<ConversationOut>` 就是按这个事实收的
+    archived_at: detail.archived_at,
+    preview: detail.preview,
     created_at: detail.created_at,
     updated_at: detail.updated_at,
     message_count: detail.message_count,

@@ -1,6 +1,6 @@
 [project]
 name = "kylab-backend"
-version = "0.1.0"
+version = "0.2.0"
 description = "KYLAB 知识库后端服务：FastAPI + MCP Server（架构设计 v0.2 §2.1）"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,8 +12,8 @@ dependencies = [
     "httpx>=0.27",
     # FastAPI 的文件上传（multipart/form-data）依赖它，属于核心能力
     "python-multipart>=0.0.9",
-    # 存储与检索是核心能力（M1 起），不再放进 extras
-    "sqlite-vec>=0.1.6",
+    # 存储与检索是核心能力（M1 起），不再放进 extras。
+    # `sqlite-vec` 已于 v0.12 随 SQLite 一起删除，别再加回来：向量走 pgvector（HNSW）。
     "jieba>=0.42",
     # 目标存储：PostgreSQL。psycopg3 同时支持同步/异步，这里用同步以保持
     # storage 层接口不变（详见 storage/postgres_impl/connection.py 的说明）；

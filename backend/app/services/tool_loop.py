@@ -1,16 +1,16 @@
 """工具循环：一轮对话的**主流程**（P0）。
 
-这是把"知识库检索框架"换成"个人 Agent 框架"的那一处改动。两条链路的分野：
+这是把"知识库检索框架"换成"个人 Agent 框架"的那一处改动。与它对照的旧链路
+（`ChatService.answer_agent_stream`：先判定意图 → 改写检索词 → 检索若干轮 →
+把资料塞进提示词 → 作答，资料是**预设进提示词**的，模型唯一能做的动作是"再检索一次"）
+在 v0.2 已整体删除，那次对照留在 git 历史与《开发计划》§12.172 里。
 
-- **旧链路**（`ChatService.answer_agent_stream` 的检索分支）：先判定意图 → 改写检索词 →
-  检索若干轮 → 把资料塞进提示词 → 作答。资料是**预设进提示词**的，模型只能"读"；
-  它能做的唯一动作就是"再检索一次"。
 - **这条链路**：给模型一批工具（原生 tool calling），它自己决定查什么、做什么、
   要不要查第二次；**资料是它取回来的工具结果**，不是我们塞给它的上下文。
 
 四个设计取舍：
 
-1. **工具集与内置 MCP 服务共用一份实现**（`app/mcp_server/tools.py`）。13 个内置工具
+1. **工具集与内置 MCP 服务共用一份实现**（`app/services/tools.py`）。13 个内置工具
    对外走 MCP、对内由这里调用——一处实现两个门。所以"知识库降级成工具"几乎是免费的：
    `search` 早就是其中一个工具了，只是以前对话循环没走它。
 2. **工具那几步不走流式**：它们产出的是"调哪个工具、参数是什么"这种结构化片段，
@@ -18,9 +18,20 @@
    请求，换来的是正文与思考照旧逐字出来，而这两块正是用户真正在看的东西。
 3. **事件形状与旧链路一致**（StepEvent / SourcesEvent / ThinkingEvent / DeltaEvent /
    DoneEvent）：协议层与界面不用为这次换框架改动，出处（SourcesEvent）也照旧发——
-   用了资料就该给出处，这一点不因框架变化而丢。
+   用了资料就该给出处，这一点不因框架变化而丢。**旧链路删除后，"一致"的对象没有了，
+   但这五个事件类型本身是现行契约**（`services/agent.py`），由本模块产出、
+   由 `api/v1/chat.py` 翻成 SSE。
 4. **工具报错如实回到循环**：不吞、不伪造结果。模型看到错误才能改路子；
    把失败包装成"空结果"会让它以为查过了没有，然后基于错误前提继续推理。
+5. **一批里的几件事并发跑**（v0.27）：模型会把互不依赖的调用放在同一条消息里
+   （见 ``services/chat.py`` 的系统提示词第 2 条），等它们的常常是同一个网络。
+   串行执行时一批三页网页就是三页之和。事件与消息的顺序仍然确定：
+   **running 全发 → 并发执行 → 结果按调用顺序回灌**（见 ``_execute_batch``）。
+6. **思考一路开着**（v0.27 试过关掉，撤了）：选工具那一步是这条链路上次数最多的模型
+   调用，实测关掉能让单次往返从 1.18s 降到 0.68s——但多步循环里真正决定快慢与好坏的是
+   "下一步做什么、能不能几件事一起发、这条路走不通换哪条"，那些判断都出在思考里。
+   厂商的协议也是这个意思：思考模式下带工具调用的助手消息要带着推理往后传
+   （见 ``llm.ChatMessage.reasoning``），关掉等于每轮把它的计划擦一次。
 """
 
 from __future__ import annotations
@@ -28,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -50,14 +62,27 @@ logger = logging.getLogger(__name__)
 
 #: 一轮里最多几步工具调用。
 #:
-#: 为什么是 6：常见的一轮是"查库 → 补查一次 → 作答"（2–3 步）。给到 6 是留出
-#: 写笔记、看技能、派子 Agent 的组合空间，同时挡住"模型反复调同一个工具"那种死循环
-#: ——每一步都是一次真实请求，没有上限就会一直烧下去。
-DEFAULT_MAX_STEPS = 6
+#: **v0.25 从 6 提到 30**。原注释的理由是"常见的一轮是 2–3 步，给 6 足够"——
+#: 那是在只有检索一个工具的时候估的。现在一轮里可能有联网搜索、抓网页、读笔记、
+#: 查文档状态、派子 Agent 的组合，实测**正常提问就会撞到 6**，
+#: 撞上之后界面会说"工具步数用尽，按现有资料作答"——用户看到的是一个突然变差的回答。
+#:
+#: 30 是"实际用不到、但也不会失控"的量级：真正的一轮长这样也不会超过十几步，
+#: 而它仍然挡得住"模型反复调同一个工具"那种死循环（每一步都是一次真实请求，
+#: 没有上限就会一直烧下去）。**上限本身不能取消**，这是钱的问题，不是洁癖。
+#: 需要更高就把 `ToolLoop(max_steps=...)` 传大——组合根在 `services/chat.py`。
+DEFAULT_MAX_STEPS = 30
 
 #: 单个工具结果的字符上限。超了截断并**明确告诉模型被截了**：
 #: 悄悄截断会让它以为"这就是全部"，而截断常常正好丢在它要的那一段之后。
 MAX_RESULT_CHARS = 12000
+
+#: 一次工具调用**发给界面的**原文上限（入参与结果各一份）。
+#:
+#: 远小于 `MAX_RESULT_CHARS`（给模型的 12000）：那个是模型的上下文预算，
+#: 而这个只是"用户点开看一眼这一步调了什么"。12000 字塞进 SSE 会让长会话的
+#: 事件流大出一个量级，而没人会读完它——截断处如实标注。
+MAX_STEP_PREVIEW_CHARS = 2000
 
 #: 工具名 → 中文步骤名（过程面板显示的就是它）。
 #:
@@ -80,12 +105,30 @@ _LABELS = {
     "export_document": "导出文档",
     "export_table": "导出表格",
     "export_deck": "导出幻灯",
+    "ingest_artifact": "存进知识库",
     "web_search": "联网搜索",
     "web_fetch": "抓取网页",
     "list_skills": "查看技能目录",
     "read_skill": "读技能",
     "spawn_subagent": "派子 Agent",
 }
+
+
+#: 同一批里最多同时跑几个工具。
+#:
+#: 与 ``services/tools.py`` 里"``web_fetch`` 一次最多 5 个网址"同一个量级——
+#: 那个数是提示词里写给模型看的，批次也就这么大。**不是无限**：抓网页那个工具
+#: 自己还会并发（最多 5），两层乘起来就是 25 个同时飞的请求，而它们背后是同一台
+#: 机器、同一个出口。超过这个数的批次分两波跑，慢一点，但不会把网络打满。
+MAX_PARALLEL_TOOLS = 5
+
+
+def _clip(text: str, limit: int) -> str:
+    """按字符截断并**如实标注**——不说的话，用户会以为工具只返回了这么多。"""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n…（共 {len(text)} 字，已截断）"
 
 
 def tool_label(name: str) -> str:
@@ -118,12 +161,29 @@ class ToolOutcome:
     sources: list[SourceRef] = field(default_factory=list)
     """检索类工具带回的出处。只有它会让界面多出一排引用。"""
 
+    artifacts: list[dict[str, object]] = field(default_factory=list)
+    """这一步**产出的文件**（导出类工具）。空 = 这一步没产出文件。
+
+    与 ``sources`` 对称：一个是读到了什么，一个是产出了什么。
+    界面拿它挂文件卡片（可点、可下载），而不是只在步骤说明里写一句
+    "已存进知识库"——那句话没有落点，用户还得自己去列表里找。
+    """
+
     summary: str = ""
     """过程面板上的那一行说明（人话）。
 
     **与 `content` 分开**：`content` 是给模型的结构化结果（常常是 JSON），
     直接显示会把界面变成一屏转义字符。工具自己最清楚"这次拿到了什么"，
     所以摘要由它给（如「23 篇文档」「命中 8 段」）。
+    """
+
+    added: int | None = None
+    """这一步带回的**新增**资料条数（``None`` = 这不是检索类调用）。
+
+    **"新增"是相对这一轮已经给过的那些算的**，所以"又查了一次但什么都没多出来"
+    是 ``0`` 而不是别的数——界面靠它把那一步显示成"这轮没找到新资料"。
+    由执行器算而不是循环自己比：只有它知道这一批里哪些是刚去重过的
+    （见 ``app/services/agent_tools.py::_absorb``）。
     """
 
     def step_detail(self, limit: int = 120) -> str:
@@ -180,9 +240,10 @@ class ToolLoop:
 
         for step in range(self._max_steps):
             try:
-                reply: LLMReply = self._client_factory().complete_with_tools(
-                    messages, self._tools
-                )
+                # 选工具这一轮**与作答用同一个客户端、同一档思考**：多步循环里
+                # "下一步做什么、能不能几件事一起发、失败了换哪条路"都出在这几次调用上，
+                # 关掉思考省下的那点往返会在这里加倍还回去（§12.199 试过、撤了）。
+                reply: LLMReply = self._client_factory().complete_with_tools(messages, self._tools)
             except ChatError:
                 # 模型不可用**必须如实抛**：静默收尾会变成一条空回答
                 raise
@@ -193,33 +254,71 @@ class ToolLoop:
                 return
 
             messages.append(
-                ChatMessage(role="assistant", content=reply.text, tool_calls=reply.tool_calls)
+                ChatMessage(
+                    role="assistant",
+                    content=reply.text,
+                    tool_calls=reply.tool_calls,
+                    # **思考要跟着这条消息回去**：端点（DeepSeek 实测）在思考模式下
+                    # 要求带工具调用的助手消息把 reasoning_content 传回来，
+                    # 缺这个字段的那一轮请求直接 400——那时工具都调完了，
+                    # 用户只看到一句失败（见 llm.ChatMessage.reasoning）
+                    reasoning=reply.reasoning,
+                )
             )
             last = step == self._max_steps - 1
-            for call in reply.tool_calls:
+            calls = list(reply.tool_calls)
+            # 先把这一批的 `running` **全发出去**，再执行。
+            #
+            # 并发之后"一条 running 紧跟一条 done"不再成立（谁先跑完谁先回），
+            # 而界面把 `done` 合进"同名的第一条 running"（见前端 `mergeStep`）——
+            # 事件顺序乱了就会出现错位的步骤行。所以顺序在这里定死：
+            # **running 按调用顺序发全 → 执行 → done 也按调用顺序发**。
+            # 用户看到的是"这几件事同时在跑"，而不是几行闪来闪去的占位。
+            for call in calls:
+                # `tool` 是**原始工具名**（不是人话标签）：界面按它选图标、把同类调用并成
+                # 一组。放在这里而不是让界面猜 label——label 是给人看的，会被改写
                 yield StepEvent(
-                    phase="tool", label=tool_label(call.name), status="running"
+                    phase="tool", label=tool_label(call.name), tool=call.name, status="running"
                 )
-                outcome = self._execute(call, last=last)
-                if outcome.sources:
-                    yield SourcesEvent(sources=outcome.sources)
+            outcomes = self._execute_batch(calls, last=last)
+            merged = _merge_sources(outcomes)
+            if merged:
+                # **一批只发一条累计的出处**，而不是每条调用各发一条。
+                # 发多条时"最后发的那条"未必是最全的那条（并发下先跑完的可能先发），
+                # 界面只认最后一次，于是后发的那条会把先查到的资料盖掉——
+                # 正是账本当初要解决的问题（见 agent_tools.build_runner）。
+                yield SourcesEvent(sources=merged)
+            for call, outcome in zip(calls, outcomes, strict=True):
+                # 顺序必须与 `tool_calls` 一致：OpenAI 兼容端点要求每条调用都有结果，
+                # 而"结果与调用怎么配对"靠的是 tool_call_id，不是顺序——但保持同序
+                # 仍然是对端最容易处理的那种形状（也便于人读日志）。
                 messages.append(
-                    ChatMessage(
-                        role="tool", content=outcome.content, tool_call_id=call.id
-                    )
+                    ChatMessage(role="tool", content=outcome.content, tool_call_id=call.id)
                 )
                 yield StepEvent(
                     phase="tool",
                     label=tool_label(call.name),
+                    tool=call.name,
                     detail=outcome.step_detail(),
+                    added=outcome.added,
+                    # 入参与原文：界面默认只看 `detail` 那一行结论，
+                    # 点开才看这两个（v0.25，照 Kimi 的"可以看每个工具调用的内容"）
+                    args=_clip(call.arguments, MAX_STEP_PREVIEW_CHARS),
+                    result=_clip(outcome.content, MAX_STEP_PREVIEW_CHARS),
+                    artifacts=tuple(outcome.artifacts),
                 )
 
         # 步数用完还没收口：**如实说**，让模型基于已有信息作答，
-        # 而不是把"没跑完"包装成"跑完了"
+        # 而不是把"没跑完"包装成"跑完了"。
+        #
+        # `degraded=True` 就是这件事：这一轮**没按设计走完**（它还想继续查，
+        # 但没机会了）。界面据此给出重试入口——"这次答得浅"与"链路退化了，
+        # 你可以再要一次"对用户是两件事，不说清楚他只会觉得模型不行。
         yield StepEvent(
             phase="tool",
             label="工具步数已达上限",
             detail=f"本轮最多 {self._max_steps} 步，按现有信息作答",
+            degraded=True,
         )
         yield from self._answer(messages)
 
@@ -248,6 +347,33 @@ class ToolLoop:
             return ToolOutcome(content=f"工具执行失败：{exc}")
         return _truncate(outcome)
 
+    def _execute_batch(self, calls: Sequence[ToolCall], *, last: bool) -> list[ToolOutcome]:
+        """执行**同一批**调用：互不依赖的几件事**并发**跑，返回顺序与传入一致。
+
+        为什么并发（v0.27 实测的账）：模型现在会在一批里同时要三页网页、两个方向的
+        检索——它自己说了这几件事互不依赖。串行执行时，一批三页网页的墙钟时间
+        就是三页之和（实测抓页 0.4–1.2s/页），而它们之间**没有任何共享状态**，
+        等的是同一个网络。一轮里 27 次调用、平均每批 2 个，省下来的是这个量级。
+
+        三件事同时成立才敢这么做：
+
+        1. **顺序在 ``run`` 里定死**（running 全发 → 执行 → done 按调用顺序发），
+           并发只发生在"执行"这一段，事件流与消息顺序都还是确定的；
+        2. **共享状态各自加锁**：来源账本（``agent_tools.build_runner`` 的 ``book``）
+           与表格副本的 DuckDB 连接。没有这两处，两个检索线程会抢同一个编号、
+           两条 SQL 会同时用同一个连接；
+        3. **每条调用各自开 session**：外部 MCP 工具走 ``asyncio.run``（每次新建事件
+           循环）、检索与抓网页走线程安全的连接池/共享 HTTP 客户端。
+           **反过来说**：往这条路上加工具时要问一句"它在两个线程里同时跑会怎样"。
+
+        单条调用不走线程池：那是常态，为它建池是白付一层开销（也少一处可出错的地方）。
+        """
+        if last or len(calls) <= 1:
+            return [self._execute(call, last=last) for call in calls]
+        with ThreadPoolExecutor(max_workers=min(len(calls), MAX_PARALLEL_TOOLS)) as pool:
+            # `map` **保序返回**：谁先跑完不影响结果顺序，也就影响不到事件与消息的顺序
+            return list(pool.map(lambda call: self._execute(call, last=False), calls))
+
     def _answer(self, messages: list[ChatMessage]) -> Iterator[object]:
         """流式产出正文与思考（与旧链路的收尾完全一致）。
 
@@ -265,6 +391,24 @@ class ToolLoop:
                 parts.append(delta.text)
                 yield DeltaEvent(text=delta.text)
         yield DoneEvent(answer="".join(parts))
+
+
+def _merge_sources(outcomes: Sequence[ToolOutcome]) -> list[SourceRef]:
+    """把一批调用各自的出处快照并成**一份**（按 ``chunk_id`` 去重，按编号排序）。
+
+    每一条快照都是"那一刻的账本"（``agent_tools.build_runner`` 的 ``book``，
+    它是累计的），所以并集就是"这批跑完之后账本里的全部"。为什么不直接用最后
+    一条快照：并发下"最后一条"是按**调用顺序**排的，而它对应的那次执行未必是最晚
+    跑完的——按调用顺序取最后一条，会把最晚跑完那次带回来的资料丢掉。
+
+    编号（``index``）在账本里是唯一的（去重 + 顺延编号都在锁里做），
+    所以排序就是"编号升序"，与渲染给模型的 [n] 一一对应。
+    """
+    merged: dict[str, SourceRef] = {}
+    for outcome in outcomes:
+        for ref in outcome.sources:
+            merged.setdefault(ref.chunk_id, ref)
+    return sorted(merged.values(), key=lambda ref: ref.index)
 
 
 def _parse_arguments(raw: str) -> dict[str, Any]:
@@ -301,4 +445,5 @@ def _truncate(outcome: ToolOutcome) -> ToolOutcome:
     return ToolOutcome(
         content=f"{keep}\n\n（结果过长已截断，以上是前 {MAX_RESULT_CHARS} 字）",
         sources=outcome.sources,
+        added=outcome.added,
     )

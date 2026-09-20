@@ -1,6 +1,6 @@
 """外部 MCP 服务接进对话工具表（v0.20）。
 
-镜像同构：``app/agent_tools.py`` 的 ``tool_specs`` / ``_call_mcp`` → 本文件。
+镜像同构：``app/services/agent_tools.py`` 的 ``tool_specs`` / ``_call_mcp`` → 本文件。
 
 这一组盯的是**四件容易做错的事**，它们各自都能让"接了外部服务"变成一句空话
 或者一个坑：
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.agent_tools import MAX_MCP_RESULT_CHARS, _call_mcp, build_runner, tool_specs
+from app.services.agent_tools import MAX_MCP_RESULT_CHARS, _call_mcp, build_runner, tool_specs
 from app.services.api_key import Caller
 from app.services.mcp_client import MCPClientService, MCPTool
 from app.services.tool_loop import tool_label
@@ -123,11 +123,7 @@ def _discover(monkeypatch, mapping: dict[str, object]) -> None:
 
 
 def _member(user_id: str = "u1") -> Caller:
-    return Caller(
-        user=UserRecord(
-            id=user_id, name=user_id, username=user_id, password_hash="x"
-        )
-    )
+    return Caller(user=UserRecord(id=user_id, name=user_id, username=user_id, password_hash="x"))
 
 
 # ------------------------------------------------------------------ 工具表
@@ -137,12 +133,51 @@ def test_plain_specs_are_builtin_and_skills_only() -> None:
     """不给 services 时行为与 P0 一致：内置 + 技能，**一个外部工具都没有**。
 
     这条是给单测与纯规格检查留的入口，也保证"没接外部服务"的部署拿到的表不变。
+    **不传 `kb_ids` 就没有知识库那一侧的工具**（见下一条），这里用一个库来
+    看完整的表。
     """
-    names = [spec.name for spec in tool_specs()]
+    names = [spec.name for spec in tool_specs(kb_ids=["kb_1"])]
 
     assert "search" in names
     assert "list_skills" in names
     assert not [name for name in names if name.startswith("mcp__")]
+
+
+def test_knowledge_tools_disappear_when_the_switch_is_off() -> None:
+    """关掉知识库开关（这一轮没有可查的库）→ **知识库那一侧的工具一个都不给**。
+
+    改之前只是"检索会被拒绝"，工具照给：于是模型每轮都先 `list_knowledge_bases`
+    看一眼、再 `search` 一次拿到"这一轮没有可查的知识库"——两个来回白花
+    （用户报的"没开知识库，但每轮都去知识库检索"）。**给了又拒，不如不给。**
+
+    边界只画在知识库上：记忆（recall / remember）与笔记（create_note / list_notes）
+    不属于这一侧，用户点名说过"这里的知识库不包括 agent 记忆"。
+    """
+    names = {spec.name for spec in tool_specs(kb_ids=[])}
+
+    for gone in (
+        "search",
+        "list_knowledge_bases",
+        "list_documents",
+        "get_document_status",
+        "delete_document",
+        "upload_document",
+        "add_data_source",
+        "create_knowledge_base",
+        "attach_note_to_kb",
+        "ingest_artifact",
+    ):
+        assert gone not in names, f"{gone} 不该在关掉知识库时出现"
+    # 记忆与笔记照旧；联网与技能也不受影响
+    assert {"recall", "remember", "create_note", "list_notes", "web_search", "list_skills"} <= names
+
+
+def test_no_kb_ids_at_all_is_treated_as_no_knowledge_base() -> None:
+    """**不传**（单测、脚本）按"没有知识库"处理——与 ``build_runner`` 同一口径：
+    没有范围就是查不了，那么工具表里也不该有它。"""
+    names = {spec.name for spec in tool_specs()}
+
+    assert "search" not in names
 
 
 def test_external_tools_join_the_table_with_their_schema(monkeypatch) -> None:
@@ -383,7 +418,7 @@ def test_step_summary_handles_the_bare_list_shape() -> None:
     原因是摘要只处理了 dict 里的 `items`，而工具返回的是 list——
     于是回退路径把结构化结果原样倒给了用户。
     """
-    from app.agent_tools import _summary
+    from app.services.agent_tools import _summary
 
     payload = [
         {"id": "kb_1", "name": "城市建成环境研究现状", "documents": 23},
@@ -396,3 +431,36 @@ def test_step_summary_handles_the_bare_list_shape() -> None:
     # **具体的措辞不能被兜底那条抢掉**
     assert _summary("recall", {"items": [1, 2, 3]}) == "回忆到 3 条"
     assert _summary("list_documents", {"total": 23}) == "共 23 篇文档"
+
+
+def test_step_summary_never_dumps_raw_json() -> None:
+    """过程面板那一行**不能是 JSON**（v0.26 用户报的"工具调用的 UI 排版很有问题"）。
+
+    实测那条会话里，`导出幻灯` 与 `记住` 两步的结论是两段原始 JSON
+    （`{"artifact_id": "art_89cb…", "name": …}`），在面板里占了好几行。
+    根因是 `_summary` 只给"结果里有条数"的那几个写了摘要，其余**回退到结果开头**——
+    而那些工具回的正是 dict。
+    """
+    from app.services.agent_tools import _summary
+
+    assert _summary(
+        "export_deck", {"artifact_id": "art_1", "name": "攻略.pptx", "size_bytes": 46153}
+    ) == ("已生成「攻略.pptx」（45 KB）")
+    assert (
+        _summary("export_document", {"name": "方案.docx", "size_bytes": 2048})
+        == "已生成「方案.docx」（2 KB）"
+    )
+    assert _summary(
+        "remember",
+        {"saved": True, "entries": 1, "note": "已写入核心长期记忆，之后的对话会带上它。"},
+    ) == ("已写入长期记忆")
+    assert _summary("remember", {"saved": False, "entries": 0}) == "这条已经在长期记忆里了"
+    assert (
+        _summary("create_note", {"note_id": "n1", "title": "会议纪要"}) == "已存为笔记「会议纪要」"
+    )
+    assert _summary("upload_document", {"name": "报表.xlsx", "is_duplicate": True}) == (
+        "已上传「报表.xlsx」（库里已有同样的内容）"
+    )
+    assert _summary("list_notes", {"total": 3, "notes": []}) == "共 3 条笔记"
+    assert _summary("search", {"query": "眼轴", "hits": [{}, {}]}) == "命中 2 段原文"
+    assert _summary("search", {"query": "眼轴", "hits": []}) == "没有命中任何片段"

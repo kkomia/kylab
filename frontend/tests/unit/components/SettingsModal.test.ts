@@ -202,21 +202,30 @@ describe('设置菜单要覆盖后端返回的每一个组', () => {
     const wrapper = mount(SettingsModal, { props: { open: true } })
     await flushPromises()
 
-    const nav = wrapper.text()
-    for (const group of GROUPS) {
-      expect(nav).toContain(group.label)
-    }
     expect(wrapper.text()).toContain('功能')
+    expect(wrapper.text()).toContain('将来才加的一组')
 
     // 点进去：字段与"开着没有"要看得见（布尔项说"已开启/未开启"，不显示 true/false）
     await wrapper
       .findAll('button')
-      .find((item) => item.text().includes('长期记忆'))
+      .find((item) => item.text().includes('将来才加的一组'))
       ?.trigger('click')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('启用长期记忆')
-    expect(wrapper.text()).toContain('未开启')
-    expect(wrapper.text()).toContain('http://127.0.0.1:2333')
+    expect(wrapper.text()).toContain('某个开关')
+    expect(wrapper.text()).toContain('已开启')
+  })
+
+  it('已经有自己家的组**不在这里**（v0.26 搬去了对应页面）', async () => {
+    // 长期记忆在记忆页、联网与沙箱在能力页。两份都在的话，两处会长得不一样、
+    // 说得不一样——那就是两个真相。所以要搬就搬干净。
+    const { getSettings } = await import('@/api/settings')
+    vi.mocked(getSettings).mockResolvedValue({ groups: GROUPS } as never)
+
+    const wrapper = mount(SettingsModal, { props: { open: true } })
+    await flushPromises()
+
+    expect(wrapper.text()).not.toContain('长期记忆')
+    expect(wrapper.text()).not.toContain('联网')
   })
 })

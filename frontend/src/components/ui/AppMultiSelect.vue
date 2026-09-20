@@ -428,7 +428,7 @@ onBeforeUnmount(() => bindGlobal(false))
   height: 16px;
   color: var(--bg-surface);
   border: 1px solid var(--border-strong);
-  border-radius: 4px;
+  border-radius: var(--radius-badge);
 }
 
 .multi-box-on {

@@ -5,21 +5,21 @@
  */
 
 import { request } from './client'
+import type { components } from './schema'
 
+/** 界面支持的形式。后端将来加种类时，见下面 `kind` 的处理。 */
 export type SourceKind = 'rss' | 'html'
 
-export interface DataSource {
-  id: string
-  knowledge_base_id: string
-  kind: SourceKind | string
-  name: string
-  url: string
-  max_items: number | null
-  enabled: boolean
-  /** 上次拉取拿到的 ETag，用于条件 GET。 */
-  etag: string | null
-  last_pulled_at: string | null
-}
+type DataSourceOut = Required<components['schemas']['DataSourceOut']>
+
+/**
+ * 数据源：契约来自后端的 OpenAPI。
+ *
+ * `kind` **显式放宽成 `string`**：后端加一种数据源（比如 WebDAV）时，
+ * 老前端不该因为"读到一个没见过的 kind"而崩——它只需要显示一个名字。
+ * 收窄成 `SourceKind` 会让新种类在上线那天变成类型错误，而那时前端还没发版。
+ */
+export type DataSource = Omit<DataSourceOut, 'kind'> & { kind: SourceKind | string }
 
 export interface SyncResult {
   task_id: string | null

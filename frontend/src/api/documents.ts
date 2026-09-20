@@ -5,91 +5,39 @@
  */
 
 import { request, upload } from './client'
+import type { components } from './schema'
 
-export type DocumentStage =
-  | 'uploaded'
-  | 'probing'
-  | 'parsing'
-  | 'parsed'
-  | 'chunking'
-  | 'chunked'
-  | 'embedding'
-  | 'indexed'
-  | 'enriching'
-  | 'enriched'
-  | 'failed'
-  | 'canceled'
+/**
+ * 处理阶段与来源：**取值直接取后端 schema**（`./schema.d.ts`）。
+ *
+ * 以前这两个联合类型是手抄的，值集合与后端一一对应——但"对应"靠的是人记得同步。
+ * 别名之后后端加一个阶段，前端的 `switch`/映射表会立刻提示漏了分支，
+ * 而不是安静地把新阶段显示成空白。
+ */
+export type DocumentStage = components['schemas']['DocumentStage']
+export type DataSourceKind = components['schemas']['DataSourceKind']
 
-export type DataSourceKind = 'upload' | 'directory' | 'webdav' | 'html' | 'rss'
+type DocumentOut = Required<components['schemas']['DocumentOut']>
+type DocumentProgressOut = Required<components['schemas']['DocumentProgressOut']>
 
-export interface DocumentSummary {
-  id: string
-  knowledge_base_id: string
-  name: string
-  source_kind: DataSourceKind
-  stage: DocumentStage
-  size_bytes: number
-  mime_type: string | null
-  page_count: number | null
-  is_split: boolean
-  error: string | null
-  chunk_count: number
-  /** 上传者 id（G6）。null = 未记录（系统摄入或名册启用前的老数据）。 */
-  uploaded_by: string | null
-  /** 上传者名字，由后端解析好——前端拿 id 还得再查一次名册。 */
-  uploaded_by_name: string
-  /** 所在目录（v13）。null = 未归档（根目录）。 */
-  folder_id: string | null
-  /** 停用（v14）：不参与检索（两条通道都过滤），其余一切保留。 */
-  disabled: boolean
-  /** 各分段已生成问题的**总条数**（v24）。0 = 还没出过题。 */
-  question_count: number
-  /** 有题的分段数。配合 `chunk_count` 显示"几段里有几段出了题"。 */
-  questioned_chunk_count: number
-  /** 还有出题任务在排队/在跑（v24）。列表据此显示"生成中…"并继续轮询。 */
-  questions_pending: boolean
-  /**
-   * 原件能不能在这页里渲染（pdf / image / docx / pptx / excel）。
-   *
-   * 由后端判断（见 `content_kind`）：前端不该为了"该不该渲染"去猜文件后缀。
-   * 详情页据此决定首页先取「原文版式」还是「解析文本」。
-   */
+/**
+ * 列表行上的文档：契约来自后端的 OpenAPI（见 `conversations.ts` 头注的三条约定）。
+ *
+ * `original_kind` **显式收窄**：schema 里它是 `string`（后端按 content-kind 判的），
+ * 而界面只认那几种渲染器。收窄在这里是有用的——`PreviewKind` 是"这页能不能渲染"
+ * 的判断依据，放成 string 会让每个用它的地方自己再判一遍。
+ */
+export type DocumentSummary = Omit<DocumentOut, 'original_kind'> & {
   original_kind: PreviewKind
-  /**
-   * 入库时生成的文档摘要（v25）。
-   *
-   * **它主要是给问答上下文省 token 的**（按文档带一行背景，就不必把每段命中都
-   * 补成整个小节）；在界面上它顺带是一句有用的说明——抽屉里显示，列表行当悬浮提示。
-   * 空串 = 还没生成（老文档会由后台补）。
-   */
-  summary: string
-  /** 分段进度摘要（§12.115）。列表行的进度条吃它；完整那棵树在 `getTimeline`。 */
-  progress: DocumentProgress | null
-  created_at: string | null
-  updated_at: string | null
 }
 
 /**
- * 列表行上那条分段进度所需要的信息（§12.115）。
+ * 列表行上那条分段进度所需要的信息（§12.115）——契约同样来自后端。
  *
- * **没有百分比**：6 个环节的耗时极不均（解析几分钟、切分几秒），百分比只会编出
- * 一个对不上的数字——"第 3/6 步 · 解析内容 · 已用 2 分 14 秒"每一项都能对上事实。
+ * 字段含义（为什么**没有百分比**、`stalled` 为什么是最可信的那条判据等）
+ * 写在 `./schema.d.ts` 里带过来的说明中，后端改一处两边都变。
  */
-export interface DocumentProgress {
-  status: 'running' | 'done' | 'failed' | 'canceled'
-  /** 当前第几步（1-based）。失败时是**停下那一步**，所以能读出"炸在哪"。 */
-  step_index: number
-  step_total: number
-  step_label: string
-  /** 当前这一步已花的时间。跑着时每次轮询都在涨——这是"还在动"的证据。 */
-  elapsed_ms: number
-  /** 整条流水线累计（含重试与重新摄入）。 */
-  total_ms: number
-  /** **当前这一步**重试过几次（已经走过去的不算，那是历史不是现状）。 */
-  retries: number
-  /** 执行租约已过期 = 没有 worker 在续约。唯一能确定说"卡住"的情形。 */
-  stalled: boolean
-}
+export type DocumentProgress = DocumentProgressOut
 
 export interface DocumentPart {
   id: string

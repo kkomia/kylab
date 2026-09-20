@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import contextlib
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -108,13 +109,8 @@ SETTING_GROUPS: dict[str, Any] = {
             },
             {
                 "key": "chat.agent_enabled",
-                "label": "启用 Agent 多轮检索",
+                "label": "启用工具循环",
                 "type": "bool",
-            },
-            {
-                "key": "chat.agent_max_rounds",
-                "label": "Agent 最多检索轮数",
-                "type": "int",
             },
             {
                 "key": "chat.context_window",
@@ -247,11 +243,10 @@ DEFAULTS: dict[str, str] = {
     # 入库时给每篇文档生成摘要（v25）。它是**省 token 的机制**而不是锦上添花：
     # 一次提问复用一篇摘要，能省掉成倍的资料 token。关掉它只会让问答更贵。
     "ingest.summary_enabled": "true",
-    # Agent 工作流（v20，见 services/agent.py）：意图识别 + 检索词改写 + 多轮检索。
-    # 默认开；关掉就退回"原问题单轮检索"的老链路。轮数上限 1~5，默认 3——
-    # 每多一轮都是一次真实检索加一次模型调用，3 轮是成本与召回的折中。
+    # 对话主流程（见 services/tool_loop.py）：默认走工具循环，知识库检索、联网、
+    # Office 导出、子 Agent 都是其中的工具。关掉就退回"原问题单轮检索"的旧路径
+    # （services/chat.py::answer_stream）——那条路径还在，用于排查与省钱。
     "chat.agent_enabled": "true",
-    "chat.agent_max_rounds": "3",
     # 上下文压缩（v20.1，见 services/chat.py::prepare_context）：
     # 占用达到阈值就把更早的对话折成摘要，避免长会话撑爆窗口或悄悄失忆。
     # 窗口做成本设置项是因为**没有统一的 API 能查到模型的真实窗口**。
@@ -296,6 +291,28 @@ DEFAULTS: dict[str, str] = {
     # 这里如实写明它服务谁，请求别的账号的记忆会被**明确拒绝**而不是返回别人的片段。
     "memory.service_scope": "shared",
 }
+
+
+#: 可以被缓存复用的键：本模块自己认识的那些（默认值表 ∪ 设置页字段）。
+#:
+#: **只缓存这些**是刻意的：``app_settings`` 表同时被别的服务当日志式的键值仓用
+#: （``document.<id>.original_path``、``trash.<id>.name``……），那些键按实体生成、
+#: 由各自的写入方**直接**落库、不经过本服务的 ``set()``——缓存它们，就会在写入后
+#: 最多两秒内读到旧值，而这类"偶尔读到旧值"的 bug 极难复现。
+_CACHEABLE_KEYS = frozenset(DEFAULTS) | frozenset(
+    field["key"] for spec in SETTING_GROUPS.values() for field in spec["fields"]
+)
+
+#: 设置读取的缓存有效期（秒）。
+#:
+#: 一次读取的固定开销实测约 6ms（PG 自己只花 2ms，其余是连接池借还 + 往返），
+#: 而它在**每次请求**的路径上：一轮对话要读十几次（每建一次 LLM 客户端读一次快照，
+#: 每轮再读 top_k / section_chars / material_chars），设置页打开一次
+#: ``describe()`` 要读几十个键。
+#:
+#: 2 秒只为吃掉"同一轮里反复读同样的键"，短到改完设置立刻看得见；
+#: 何况本进程写设置时（``set``）会**主动清空**缓存——"改完马上看"这条路径根本不走 TTL。
+_CACHE_TTL_SECONDS = 2.0
 
 
 def mask_secret(value: str) -> str:
@@ -371,6 +388,9 @@ class RuntimeConfigService:
         self._registry = registry
         """模型注册器（G1）。**可选**：没有它时全部走 .env / 设置页那套，
         所以既有部署与既有测试不受影响——注册器是叠加层，不是替换。"""
+        #: 设置值的短 TTL 缓存（键 → (读入时刻, 库里的值或 None)）。
+        #: 见 ``_CACHE_TTL_SECONDS`` 与 ``_CACHEABLE_KEYS``。
+        self._cache: dict[str, tuple[float, str | None]] = {}
 
     # ------------------------------------------------------------------ 读写
 
@@ -385,14 +405,51 @@ class RuntimeConfigService:
         return self._settings.data_dir
 
     def get(self, key: str) -> str:
-        """取一个键的最终值：数据库 > .env 引导值 > 代码默认值。"""
-        stored = self._stores.meta.get_setting(key)
+        """取一个键的最终值：数据库 > .env 引导值 > 代码默认值。
+
+        热路径上的键走**短 TTL 缓存**（见 ``_CACHE_TTL_SECONDS``）。
+        """
+        stored = self._cached(key)
         if stored is not None:
             return stored
         boot = self._bootstrap_value(key)
         if boot:
             return boot
         return DEFAULTS.get(key, "")
+
+    # ------------------------------------------------------------------ 缓存
+
+    def _many_cached(self, keys: Sequence[str]) -> dict[str, str]:
+        """库里的值（**只含确实存在的键**）；可缓存的键走短 TTL 缓存。
+
+        `None`（库里没有这一项）也会被记住：否则"没配过的键"每次都白查一遍，
+        而设置页打开的 ``describe()`` 里大半都是这种键。
+        """
+        now = time.monotonic()
+        found: dict[str, str] = {}
+        pending: list[str] = []
+        for key in keys:
+            cached = self._cache.get(key) if key in _CACHEABLE_KEYS else None
+            if cached is not None and now - cached[0] <= _CACHE_TTL_SECONDS:
+                if cached[1] is not None:
+                    found[key] = cached[1]
+                continue
+            pending.append(key)
+
+        if not pending:
+            return found
+        stored = self._stores.meta.get_settings(pending)
+        for key in pending:
+            value = stored.get(key)
+            if key in _CACHEABLE_KEYS:
+                self._cache[key] = (now, value)
+            if value is not None:
+                found[key] = value
+        return found
+
+    def _cached(self, key: str) -> str | None:
+        """单个键的库值（可能确实没有这一项 → ``None``）。"""
+        return self._many_cached([key]).get(key)
 
     def get_many(self, keys: Sequence[str]) -> dict[str, str]:
         """一次取多个键，**一条 SQL**（§12.116）。
@@ -405,11 +462,14 @@ class RuntimeConfigService:
 
         返回值保证**包含每个请求的键**：调用方按 ``values[key]`` 取，不必写兜底。
         优先级与 ``get`` 完全一致（库 > 引导值 > 默认值）——两条路径不能有第二种答案。
+
+        可缓存的键走短 TTL 缓存（见 ``_CACHE_TTL_SECONDS``）：这个方法在热路径上，
+        而一次查询的固定开销（连接池借还 + 往返）比 PG 自己花的还多。
         """
         ordered = list(dict.fromkeys(keys))
         if not ordered:
             return {}
-        stored = self._stores.meta.get_settings(ordered)
+        stored = self._many_cached(ordered)
         return {
             key: (
                 stored[key]
@@ -454,6 +514,8 @@ class RuntimeConfigService:
             if key in SECRET_KEYS and "…" in text:
                 continue
             self._stores.meta.set_setting(key, text)
+        # 写完立刻清缓存：否则"改完马上看"会读到最多两秒前的旧值（见 _CACHE_TTL_SECONDS）
+        self._cache.clear()
 
     def describe(self) -> dict[str, Any]:
         """给前端的配置视图：分组、字段、掩码后的值、是否已配置。"""

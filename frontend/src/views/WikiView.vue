@@ -856,7 +856,7 @@ button.nav-caret:hover {
   padding: var(--space-3);
   overflow-x: auto;
   font-size: var(--text-micro-size);
-  line-height: 1.6;
+  line-height: var(--line-code);
   background: var(--bg-subtle);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-control);

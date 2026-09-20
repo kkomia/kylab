@@ -77,14 +77,31 @@ function scrollActiveIntoView(): void {
   }
 }
 
+/**
+ * 浮层该有多高：**量出来的自然高度，不是算出来的**。
+ *
+ * 原先这里是 `选项数 × 36 + 8`——8 是**一侧**的内边距，而浮层上下各有一份，
+ * 于是 `wanted` 永远比内容少 8px：内容明明放得下，`scrollHeight` 还是比
+ * `clientHeight` 大 8，滚动条**必然**出现（用户报的就是这个）。
+ *
+ * 直接量 `scrollHeight`：它天然含内边距与边框，也**不受已经应用的 `max-height` 影响**
+ * （它报的是内容的自然高度）。以后改内边距或选项高度，这里不用跟着改。
+ *
+ * 取不到元素时（首次同步调用、还没挂载）退回一个估算值——
+ * `show()` 里 `nextTick` 之后还会再调一次 `position()`，那时量得到真的。
+ */
+function naturalListHeight(fallbackCount: number): number {
+  const measured = list.value?.scrollHeight ?? 0
+  return measured > 0 ? measured : fallbackCount * 36 + 16
+}
+
 /** 贴着触发器放；下方空间不够且上方更宽裕时向上翻。 */
 function position(): void {
   const element = trigger.value
   if (!element) return
   const rect = element.getBoundingClientRect()
   const gap = 4
-  const optionHeight = 36
-  const wanted = Math.min(280, props.options.length * optionHeight + 8)
+  const wanted = Math.min(280, naturalListHeight(props.options.length))
   const below = window.innerHeight - rect.bottom - gap
   const above = rect.top - gap
   const flip = below < Math.min(wanted, 160) && above > below
@@ -357,16 +374,16 @@ onBeforeUnmount(() => bindGlobal(false))
 }
 
 /* 浮层：Teleport 到 body，但元素仍带本组件的 scope 属性，所以 scoped 样式够用
-   （不必再写一份全局样式）。z-index 要压过弹窗内容。 */
+   （不必再写一份全局样式）。z-index 要压过弹窗内容。
+   弹层构造照 Kimi 的 `.kimi-menu`：底 `Bg-Tertiary`、圆角 16、内边距 8、无边框。 */
 .select-pop {
   z-index: 60;
   margin: 0;
-  padding: var(--space-1);
+  padding: var(--menu-pad);
   overflow-y: auto;
   list-style: none;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-overlay);
+  background: var(--bg-menu);
+  border-radius: var(--radius-panel);
   box-shadow: var(--shadow-popover);
 }
 
@@ -375,12 +392,14 @@ onBeforeUnmount(() => bindGlobal(false))
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  min-height: 36px;
-  padding: 0 var(--space-3);
-  font-size: var(--text-body-size);
-  color: var(--text-primary);
-  border-radius: var(--radius-row);
+  min-height: var(--menu-item-height);
+  padding: 0 var(--space-2);
+  font-size: var(--text-meta-size);
+  line-height: 20px;
+  color: var(--menu-item-text);
+  border-radius: var(--menu-item-radius);
   cursor: pointer;
+  transition: var(--transition-ui);
 }
 
 .select-option-active {

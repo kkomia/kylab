@@ -143,7 +143,7 @@ const ratio = computed(() => {
   flex: 1;
   min-width: 0;
   overflow: hidden;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   /* 空槽：未走到的那几段。没有它，"共 6 段、走到第 3 段"就只剩文字在撑 */
   background: var(--meter-track);
 }
@@ -151,7 +151,7 @@ const ratio = computed(() => {
 .segment-fill {
   display: block;
   height: 100%;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   transition: width 240ms ease;
 }
 

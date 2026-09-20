@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 import httpx
 
+from app.core.http import shared_client
 from app.services.runtime_config import RuntimeConfigService
 
 logger = logging.getLogger(__name__)
@@ -91,15 +92,15 @@ class OpenAICompatReranker(RerankProvider):
         headers = {"Authorization": f"Bearer {self._api_key}"}
 
         try:
-            if self._client is not None:
-                response = self._client.post(
-                    f"{self.base_url}/rerank", json=payload, headers=headers
-                )
-            else:
-                with httpx.Client(timeout=self._timeout) as client:
-                    response = client.post(
-                        f"{self.base_url}/rerank", json=payload, headers=headers
-                    )
+            # 客户端**共享**（见 app/core/http.py）：检索链路上每次 rerank 都新建客户端，
+            # 等于每次都重新握手。超时仍按调用点给。
+            client = self._client or shared_client()
+            response = client.post(
+                f"{self.base_url}/rerank",
+                json=payload,
+                headers=headers,
+                timeout=self._timeout,
+            )
         except httpx.HTTPError as exc:
             raise RerankError(f"rerank 端点不可达：{exc}") from exc
 

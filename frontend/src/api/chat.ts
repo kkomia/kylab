@@ -12,30 +12,20 @@
  */
 
 import { API_BASE, authHeaders, handleUnauthorized, request, type ApiErrorBody } from './client'
+import type { components } from './schema'
 import { createDisplayPacer } from '@/composables/displayPacer'
 
-export interface ChatSource {
-  index: number
-  chunk_id: string
-  document_id: string
-  document_name: string
-  heading_path: string | null
-  page: number | null
-  score: number
-  preview: string
-  /**
-   * 出处所属知识库：界面用它把引用直连到库页的文档抽屉。
-   *
-   * 可以是空串——历史会话里存的旧快照没有这个字段。所以用之前要判空，
-   * 空了就退回 `/documents/:id` 那条转发路径。
-   */
-  knowledge_base_id: string
-  /**
-   * 这篇文档的摘要（v25）。**它进了提示词**（同一篇文档只带一次"文档背景"行），
-   * 在这里回给前端是为了可核对：用户能看见模型拿到了什么背景，
-   * 而不是只能猜"它为什么这么答"。空串 = 这篇还没生成摘要；
-   * **也可以是 undefined**——历史会话里存的旧快照没有这个字段。
-   */
+type ChatSourceOut = components['schemas']['ChatSourceOut']
+
+/**
+ * 一处引用的出处：契约来自后端的 OpenAPI（见 `conversations.ts` 头注的三条约定）。
+ *
+ * `document_summary` **显式留成可选**（`Required<…>` 之外唯一的例外）：schema 描述的是
+ * **当前版本**的响应形状，而历史会话里存的引用快照是**当年写下的**——v25 之前那些
+ * 没有这个字段，所以用它之前仍要判空。
+ * `knowledge_base_id` 则可能是**空串**（更早的快照），界面据此退回 `/documents/:id`。
+ */
+export type ChatSource = Required<Omit<ChatSourceOut, 'document_summary'>> & {
   document_summary?: string
 }
 
@@ -43,6 +33,15 @@ export interface ChatHistoryMessage {
   role: 'user' | 'assistant'
   content: string
 }
+
+/**
+ * 思考强度三档（wire 上的取值）。
+ *
+ * **定义在契约层而不是 composable 里**：它既是请求参数的取值范围、也是响应字段的
+ * （`ConversationOut.thinking_effort`），两边都要用；而 api 层不该反向 import
+ * `composables/`。界面那份带标签的列表（`THINKING_EFFORTS`）仍留在 useChatTurns。
+ */
+export type ThinkingEffort = 'low' | 'medium' | 'high'
 
 export interface ChatPayload {
   query: string
@@ -87,10 +86,46 @@ export interface ChatPayload {
    */
   thinking?: boolean
   /** 这一轮的思考强度；留空逐级回退到会话、再回退到设置页。 */
-  thinking_effort?: 'low' | 'medium' | 'high'
+  thinking_effort?: ThinkingEffort
 }
 
 /** Agent 工作流里的一个步骤（后端 ``StepEvent``）。 */
+/**
+ * 一次工具调用**产出的文件**（v0.25；v0.26 起带上了它的落点）。
+ *
+ * 导出类工具（docx / xlsx / pptx / pdf）原本只在步骤说明里写一句"已存进知识库"，
+ * 界面上**没有可点的东西**——用户想下载还得自己去文档列表里找。
+ * 带上这几个字段之后，这一步下面能挂一张卡片，点开就是下载。
+ *
+ * v0.26 补的是"它现在在哪、有没有进库"：这一步以前**只能**通向知识库
+ * （导出工具的实现就是一次入库），于是没挂工作区的会话要导文件时，
+ * 模型只能替用户挑一个语义最顺手的库——实测它把 docx 塞进了「笔记」。
+ * 现在落点由后端决定（工作区目录 / 会话的临时区），入库是另一个显式动作。
+ */
+export interface ChatArtifact {
+  /**
+   * 产物的 id（v0.26）。
+   *
+   * 与 `document_id` 是两回事：**这份文件**和**它在知识库里的那份文档**。
+   * 没入库时 `document_id` 是空的，而卡片仍然要能下载——所以卡片的键必须是它。
+   */
+  artifact_id: string
+  name: string
+  size_bytes: number
+  /** 扩展名（`docx` / `xlsx` / `pptx` / `pdf`），用来选图标。 */
+  format: string
+  /** 落在哪儿：`workspace`（工作区目录）/ `object`（会话临时区）/ `document`（直接进的库）。 */
+  storage?: string
+  /** 给人看的那句话：「工作区「我的项目」」/「本会话」。 */
+  where?: string
+  /** 工作区那份的绝对路径（用户要去那儿拿）。对象存储那份没有。 */
+  path?: string
+  /** 进了哪个知识库。**空 = 还没入**（默认），界面据此给「存进知识库」的入口。 */
+  knowledge_base_id?: string
+  /** 入库之后那份文档的 id；空 = 还没入。 */
+  document_id?: string
+}
+
 export interface ChatStep {
   /** intent / rewrite / retrieve / answer */
   phase: string
@@ -106,6 +141,27 @@ export interface ChatStep {
   degraded?: boolean
   /** 这一步带来的**新增**资料条数（只有检索步骤有）。0 表示换了个问法也没挖出新东西。 */
   added?: number
+  /**
+   * 模型给这个工具的**原始入参**（JSON 字符串，v0.25）。
+   *
+   * 与 `detail` 的分工：`detail` 是**结论**（「命中 8 段」），这两个是**原文**。
+   * 界面默认只显示结论，用户点开某一步才看原文——
+   * 否则"检索知识库"这一步说不清查的是什么词、为什么没命中。
+   * 空串表示这一步没有可看的原文（如"组织回答"），此时界面不给展开入口。
+   */
+  args?: string
+  /** 工具返回的正文（v0.25，后端已按 2000 字截断并标注）。 */
+  result?: string
+  /** 这一步**产出的文件**（v0.25，导出类工具）。界面据此挂文件卡片。 */
+  artifacts?: ChatArtifact[]
+  /**
+   * 这一步调的是**哪个工具**（v0.26，原始名如 `web_search`）。
+   *
+   * 界面拿它做两件事：**挑图标**、**把同类的连续调用并成一组**。
+   * 不拿 `label` 顶替：那是给人看的中文，会被改写；`phase` 也不行——
+   * 所有工具调用的 phase 都是 `tool`。非工具步骤没有这个键。
+   */
+  tool?: string
 }
 
 /** 服务端事件（后端 api/v1/chat.py 的事件形状）。 */
@@ -118,6 +174,12 @@ export type ChatStreamEvent =
       status: string
       degraded?: boolean
       added?: number
+      /** 入参与原文（v0.25）：空串时后端不发这个键，见 `ChatStep` 的说明 */
+      args?: string
+      result?: string
+      artifacts?: ChatArtifact[]
+      /** 工具名（v0.26）：同上，非工具步骤不发这个键 */
+      tool?: string
     }
   | { type: 'sources'; items: ChatSource[] }
   | { type: 'thinking'; text: string }
@@ -320,6 +382,12 @@ async function pump(
         // 新增条数让"这一轮有没有挖到新东西"可见（v25）
         ...(event.degraded ? { degraded: event.degraded } : {}),
         ...(event.added === undefined ? {} : { added: event.added }),
+        // 入参与原文（v0.25）：后端空串时**不发这个键**，这里也就不会带上——
+        // 界面靠"有没有这两个字段"决定给不给展开入口
+        ...(event.args ? { args: event.args } : {}),
+        ...(event.result ? { result: event.result } : {}),
+        ...(event.artifacts ? { artifacts: event.artifacts } : {}),
+        ...(event.tool ? { tool: event.tool } : {}),
       })
       return
     }

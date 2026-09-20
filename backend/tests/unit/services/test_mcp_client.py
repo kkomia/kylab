@@ -111,6 +111,21 @@ def test_ask_policy_needs_approval_and_says_why() -> None:
     assert "外部服务" in message
 
 
+def _stub_run(value: str):  # type: ignore[no-untyped-def]
+    """替掉 ``_run``（真实现里是 ``asyncio.run``，单测不发网络）。
+
+    **替身必须把协程关掉**：拿到就丢弃会留下
+    ``RuntimeWarning: coroutine ... was never awaited``，而那正是"创建了协程却没跑"
+    这类真 bug 的告警——被测试替身的噪音淹掉之后，真出现时就没人看得见了。
+    """
+
+    def run(coro):  # type: ignore[no-untyped-def]
+        coro.close()
+        return value
+
+    return run
+
+
 def test_ask_policy_proceeds_when_approved(monkeypatch: pytest.MonkeyPatch) -> None:
     """确认之后要真的发出去（否则确认框是个摆设）。"""
     service, meta = _service()
@@ -118,7 +133,7 @@ def test_ask_policy_proceeds_when_approved(monkeypatch: pytest.MonkeyPatch) -> N
         id="mcp_1", name="x", transport="stdio", target="python", policy="ask"
     )
     meta.records["mcp_1"] = record
-    monkeypatch.setattr(service, "_run", lambda coro: "工具返回的文本")
+    monkeypatch.setattr(service, "_run", _stub_run("工具返回的文本"))
 
     assert service.call(record, "tool", {}, approved=True) == "工具返回的文本"
 
@@ -129,7 +144,7 @@ def test_allow_policy_calls_directly(monkeypatch: pytest.MonkeyPatch) -> None:
         id="mcp_1", name="x", transport="stdio", target="python", policy="allow"
     )
     meta.records["mcp_1"] = record
-    monkeypatch.setattr(service, "_run", lambda coro: "ok")
+    monkeypatch.setattr(service, "_run", _stub_run("ok"))
 
     assert service.call(record, "tool", {}) == "ok"
 
@@ -211,7 +226,7 @@ def test_lists_tools_from_a_real_stdio_server() -> None:
     tools = service.list_tools(_kylab_mcp_record())
 
     names = {item.name for item in tools}
-    # 这几个是 KYLAB MCP 服务端确实暴露的工具（见 app/mcp_server/tools.py）
+    # 这几个是 KYLAB MCP 服务端确实暴露的工具（见 app/services/tools.py）
     assert {"search", "list_knowledge_bases", "recall"} <= names
     # 限定名要带上服务名前缀
     assert all(item.qualified.startswith("mcp__kylab-self__") for item in tools)
@@ -449,3 +464,37 @@ def test_available_tools_skips_disabled_and_broken_services(
     names = [tool.server_name for _r, tool in service.available_tools(user_id=None)]
 
     assert names == ["good"]
+
+
+# ------------------------------------------------------- 并发（v0.27）
+
+
+def test_two_calls_from_two_threads_each_get_their_own_event_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同一批里的几次外部工具调用会**并发**发出，所以每次调用必须各有一条事件循环。
+
+    这一层能并发的前提就在 `_run` 上：它每次 `asyncio.run`（新建循环、跑完就关），
+    而不是大家共用一个。共用的后果不是"慢一点"，是第二次调用直接撞上
+    "循环已在运行"——那种错误只有在真并发时才出现，平时看不出来。
+    """
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    service, record = _service_with("allow")
+    seen: list[str] = []
+
+    async def fake_call(record_, tool, arguments):  # type: ignore[no-untyped-def]
+        seen.append(tool)
+        await asyncio.sleep(0.15)  # 让两次调用真的重叠
+        return f"{tool} 的结果"
+
+    monkeypatch.setattr(service, "_a_call", fake_call)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(lambda tool: service.call(record, tool, {}, approved=True), ["a", "b"])
+        )
+
+    assert sorted(results) == ["a 的结果", "b 的结果"]
+    assert sorted(seen) == ["a", "b"]

@@ -196,13 +196,32 @@ describe('shortDocumentName（引用徽标上的短名）', () => {
 })
 
 describe('块级增强（v17）', () => {
-  it('围栏代码块：内容原样保留，语言名进 data-lang', () => {
+  it('围栏代码块：内容原样保留，语言名在头部带里、不在代码里', () => {
     const html = renderAnswerMarkdown('```python\nprint("hi")\n```')
 
-    expect(html).toContain('<pre class="md-pre" data-lang="python">')
+    // v0.25：语言名从 `<pre data-lang>` 挪到了头部带的一个 span 里
+    // （原先用 `::before` 绝对定位在右上角，代码一长就从它底下穿过去）
+    expect(html).toContain('<span class="md-code-lang">python</span>')
+    expect(html).toContain('<pre class="md-pre"><code>')
     expect(html).toContain('print(&quot;hi&quot;)')
     // 代码块内部不再做行内标记：`**` 与反引号在代码里就是字面量
     expect(html).not.toContain('<strong>')
+  })
+
+  it('代码块带复制按钮；语言名在 `<pre>` **之外**，不会被复制进去', () => {
+    const html = renderAnswerMarkdown('```bash\nls -la\n```')
+
+    expect(html).toContain('data-copy-code')
+    expect(html.indexOf('md-code-lang')).toBeLessThan(html.indexOf('<pre'))
+  })
+
+  it('表格带复制与下载，且整体是一个有头部的块（圆角与描边才有地方挂）', () => {
+    const html = renderAnswerMarkdown('| A | B |\n| --- | --- |\n| 1 | 2 |')
+
+    expect(html).toContain('md-table-block')
+    expect(html).toContain('data-copy-table')
+    expect(html).toContain('data-download-table')
+    expect(html).toContain('<span class="md-code-lang">表格</span>')
   })
 
   it('代码块里的 HTML 被转义（不能让模型用代码块注入标签）', () => {
@@ -216,7 +235,7 @@ describe('块级增强（v17）', () => {
     // 否则代码会先以纯文本闪一下，再在闭合时"跳"成代码块
     const html = renderAnswerMarkdown('```js\nconst a = 1')
 
-    expect(html).toContain('<pre class="md-pre" data-lang="js">')
+    expect(html).toContain('<span class="md-code-lang">js</span>')
     expect(html).toContain('const a = 1')
   })
 
@@ -278,6 +297,42 @@ describe('块级增强（v17）', () => {
   })
 })
 
+describe('缓存分层（流式渲染的开销，v0.2）', () => {
+  it('逐字流式追加：每一步都是该前缀的正确输出', () => {
+    // 块级缓存的前提是"追加只会改动末尾那个块"。逐步断言把这个前提钉住——
+    // 中途任何一步错了，都说明缓存复用了不该复用的块。
+    expect(renderAnswerMarkdown('# 标题')).toBe('<h2 class="md-h md-h2">标题</h2>')
+    expect(renderAnswerMarkdown('# 标题\n\n- 一')).toBe(
+      '<h2 class="md-h md-h2">标题</h2><ul class="md-ul"><li>一</li></ul>',
+    )
+    expect(renderAnswerMarkdown('# 标题\n\n- 一\n- 二')).toBe(
+      '<h2 class="md-h md-h2">标题</h2><ul class="md-ul"><li>一</li><li>二</li></ul>',
+    )
+  })
+
+  it('块被别的文本喂过之后，各文本结果互不影响（块键不许串味）', () => {
+    const first = renderAnswerMarkdown('甲\n\n乙\n\n- 丙')
+    // 前缀相同、尾块不同：块缓存最容易在这里串味
+    renderAnswerMarkdown('甲\n\n丁')
+    renderAnswerMarkdown('甲\n\n乙\n\n- 戊')
+    const again = renderAnswerMarkdown('甲\n\n乙\n\n- 丙')
+
+    expect(again).toBe(first)
+    expect(again).toContain('丙')
+    expect(again).not.toContain('戊')
+  })
+
+  it('文本级缓存被挤掉之后重建，结果仍与首次完全一致', () => {
+    // 上限是 300：灌满把目标挤出去，逼下一次渲染走块级缓存重建那条路。
+    // 淘汰写错（或块键串味）都会让这一条红。
+    const target = '甲\n\n乙\n\n| 列 | 值 |\n| --- | --- |\n| 1 | 2 |\n\n```js\nconst a = 1\n```'
+    const first = renderAnswerMarkdown(target)
+    for (let i = 0; i < 400; i += 1) renderAnswerMarkdown(`噪声 ${i}\n\n第二段 ${i}`)
+
+    expect(renderAnswerMarkdown(target)).toBe(first)
+  })
+})
+
 describe('引用徽标不碰代码（v17）', () => {
   const sources = [{ index: 1, document_name: '指南.pdf', heading_path: null, page: null }]
 
@@ -294,5 +349,79 @@ describe('引用徽标不碰代码（v17）', () => {
 
     expect(html).toContain('a[1]')
     expect(html.match(/data-cite-index/g)).toHaveLength(1)
+  })
+})
+
+describe('正文里的裸链接（v0.26）', () => {
+  it('直接写在正文里的网址变成可点的链接', () => {
+    // 模型常这么写：Markdown 的 `[文字](链接)` 只有它主动写才有，其余只能手抄
+    const html = renderAnswerMarkdown('来源：https://www.cnblogs.com/amap_tech/p/17533047.html')
+
+    expect(html).toContain('class="md-link"')
+    expect(html).toContain('href="https://www.cnblogs.com/amap_tech/p/17533047.html"')
+    expect(html).toContain('target="_blank"')
+    expect(html).toContain('rel="noopener noreferrer"')
+  })
+
+  it('句子末尾的句号、逗号、中文标点**不属于网址**', () => {
+    // 不剥的话链接点开就是 404，而用户完全看不出为什么
+    const html = renderAnswerMarkdown(
+      '详见 https://example.com/a。另外 https://example.com/b, 也在。',
+    )
+
+    expect(html).toContain('href="https://example.com/a"')
+    expect(html).not.toContain('href="https://example.com/a。"')
+    expect(html).toContain('href="https://example.com/b"')
+    // 剥下来的句号还在正文里，只是不在链接里
+    expect(html).toContain('>。')
+  })
+
+  it('`www.` 开头补上协议：不带协议的 href 会被当成站内相对路径', () => {
+    const html = renderAnswerMarkdown('看 www.example.com/x')
+
+    expect(html).toContain('href="https://www.example.com/x"')
+    // 显示的还是原样那一段，不凭空多出一个 https://
+    expect(html).toContain('>www.example.com/x</a>')
+  })
+
+  it('代码段里的网址**保持字面量**：那是代码，点了就跑偏了', () => {
+    const html = renderAnswerMarkdown('用 `curl https://api.example.com/v1` 调它')
+
+    expect(html).toContain('<code>curl https://api.example.com/v1</code>')
+    expect(html).not.toContain('md-link')
+  })
+
+  it('已经写好的 Markdown 链接不会被再包一层（那会把 href 撕开）', () => {
+    const html = renderAnswerMarkdown('[文档](https://example.com/doc)')
+
+    expect(html.match(/<a /g)).toHaveLength(1)
+    expect(html).toContain('>文档</a>')
+  })
+
+  it('javascript: 之类的伪协议不会因为"像网址"而被放行', () => {
+    // 裸链接只认 http(s):// 与 www. 开头，所以这条本来就是安全的；
+    // 这条用例钉的是**别哪天为了"更聪明"把它放宽**
+    const html = renderAnswerMarkdown('点 javascript:alert(1) 试试')
+
+    expect(html).not.toContain('<a ')
+  })
+})
+
+describe('裁断的网址不给链接（v0.26）', () => {
+  it('拖着省略号的网址保持纯文本：点过去是个不存在的地址', () => {
+    // 工具结果那一行由后端裁到 120 字，一条长结果里的网址大多只剩半截。
+    // 做成链接比不给链接更糟——用户会以为是自己网络的问题。
+    const html = renderAnswerMarkdown('来源：https://www.cnblogs.com/amap_tech/p/175330…')
+
+    expect(html).not.toContain('md-link')
+    expect(html).toContain('https://www.cnblogs.com/amap_tech/p/175330…')
+  })
+
+  it('两种结尾分得开：句号是句法的（剥掉照链），省略号是裁断的（不链）', () => {
+    const html = renderAnswerMarkdown('见 https://example.com/a。再看 https://example.com/b…')
+
+    expect(html).toContain('href="https://example.com/a"')
+    expect(html).not.toContain('href="https://example.com/b"')
+    expect(html).toContain('https://example.com/b…')
   })
 })

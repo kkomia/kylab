@@ -251,7 +251,7 @@ onMounted(() => {
   margin: 0;
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
   background: var(--status-warning-soft);
   border-radius: var(--radius-control);
@@ -343,7 +343,7 @@ onMounted(() => {
   max-height: 200px;
   overflow: auto;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-primary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -354,7 +354,7 @@ onMounted(() => {
 .progress-note {
   margin: 0;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-tertiary);
 }
 </style>

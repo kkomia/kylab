@@ -4,11 +4,16 @@ import type { ChatSource, ChatStep } from '@/api/chat'
 import {
   buildTurns,
   isTraceOpen,
+  LIVE_TAIL_CHARS,
+  liveLine,
   makeMessage,
   mergeStep,
   sourcePreview,
   sourceWhere,
   THINKING_EFFORTS,
+  replyArtifacts,
+  stepIcon,
+  traceEntries,
   traceSteps,
   traceSummary,
   wasDegraded,
@@ -74,6 +79,48 @@ describe('buildTurns', () => {
     expect(turns).toHaveLength(2)
     expect(turns[1].user).toBeNull()
     expect(turns[1].reply?.text).toBe('再来一段')
+  })
+})
+
+describe('liveLine：流式期间那一行实时状态', () => {
+  it('正在跑的工具优先：说"正在抓取网页…"而不是贴思考片段', () => {
+    const line = liveLine(
+      message('assistant', {
+        streaming: true,
+        thinkingText: '我想想，先看看这一页讲了什么……',
+        steps: [{ phase: 'tool', label: '抓取网页', detail: '', status: 'running' }],
+      }),
+    )
+
+    expect(line).toBe('正在抓取网页…')
+  })
+
+  it('思考中贴的是**最新的那一截**，不是开头', () => {
+    const thinking = `${'前面的话。'.repeat(40)}最后一句才是重点。`
+    const line = liveLine(message('assistant', { streaming: true, thinkingText: thinking }))
+
+    expect(line.startsWith('…')).toBe(true)
+    expect(line.endsWith('最后一句才是重点。')).toBe(true)
+    expect(line.length).toBeLessThanOrEqual(LIVE_TAIL_CHARS + 1)
+  })
+
+  it('短思考原样给，不加省略号', () => {
+    expect(
+      liveLine(message('assistant', { streaming: true, thinkingText: ' 先确认  它的定位 ' })),
+    ).toBe('先确认 它的定位')
+  })
+
+  it('正文开始吐字之后**不再抢这一行**：回到原来的摘要措辞', () => {
+    // 注意力已经在正文上了，这一行只是角落里的过程播报
+    const line = liveLine(
+      message('assistant', { streaming: true, text: '答案是……', thinkingText: '很长很长的思考' }),
+    )
+
+    expect(line).toBe('正在处理…')
+  })
+
+  it('这一轮结束（不流式）时没有实时行——那一行是"正在发生"才有的', () => {
+    expect(liveLine(message('assistant', { streaming: false, thinkingText: '想过' }))).toBe('')
   })
 })
 
@@ -238,15 +285,40 @@ describe('Agent 步骤（v20）', () => {
 
     expect(merged).toHaveLength(2)
   })
+
+  it('mergeStep：一批并发调用（先全 running、再按序 done）逐条配对', () => {
+    // 后端把同一批里的调用**并发**跑，事件顺序因此被定死成"running 全发 →
+    // done 按调用顺序回"（见 services/tool_loop.py）。界面靠"同名的第一条 running"
+    // 配对，所以这里必须一条不差地对上——配错了，用户点开某一步看到的是另一步的入参。
+    const running = () => step('tool', { label: '联网搜索', tool: 'web_search', status: 'running' })
+    let steps: ChatStep[] = [running(), running(), running()]
+    steps = mergeStep(
+      steps,
+      step('tool', { label: '联网搜索', tool: 'web_search', detail: '第一条' }),
+    )
+    steps = mergeStep(
+      steps,
+      step('tool', { label: '联网搜索', tool: 'web_search', detail: '第二条' }),
+    )
+    steps = mergeStep(
+      steps,
+      step('tool', { label: '联网搜索', tool: 'web_search', detail: '第三条' }),
+    )
+
+    expect(steps).toHaveLength(3)
+    expect(steps.map((item) => item.detail)).toEqual(['第一条', '第二条', '第三条'])
+    expect(steps.map((item) => item.status)).toEqual(['done', 'done', 'done'])
+  })
 })
 
 describe('isTraceOpen', () => {
-  it('流式中还没吐字时默认展开——那几秒它就是进度条', () => {
+  it('默认展开（还没吐字时也一样）', () => {
     expect(isTraceOpen(message('assistant', { streaming: true }))).toBe(true)
   })
 
-  it('第一个字到了就自动收起，把地方让给正文', () => {
-    expect(isTraceOpen(message('assistant', { streaming: true, text: '开始写了' }))).toBe(false)
+  it('吐了字也不收起——过程是答案的一部分，不该在用户想看的时候消失', () => {
+    expect(isTraceOpen(message('assistant', { streaming: true, text: '开始写了' }))).toBe(true)
+    expect(isTraceOpen(message('assistant', { text: '写完了' }))).toBe(true)
   })
 
   it('用户点过之后完全听用户的（不受流式状态影响）', () => {
@@ -278,13 +350,13 @@ describe('THINKING_EFFORTS', () => {
 })
 
 describe('降级与"这一轮没找到新东西"（v25）', () => {
-  it('reports a degraded planning step', () => {
+  it('认出降级的那一步（工具步数用尽）', () => {
     const message = makeMessage('assistant', '答', {
       steps: [
         {
-          phase: 'intent',
-          label: '理解问题',
-          detail: '规划不可用',
+          phase: 'tool',
+          label: '工具步数已达上限',
+          detail: '本轮最多 6 步，按现有信息作答',
           status: 'done',
           degraded: true,
         },
@@ -296,7 +368,7 @@ describe('降级与"这一轮没找到新东西"（v25）', () => {
 
   it('is not degraded on a normal run', () => {
     const message = makeMessage('assistant', '答', {
-      steps: [{ phase: 'intent', label: '理解问题', detail: '意图：查事实', status: 'done' }],
+      steps: [{ phase: 'tool', label: '检索知识库', detail: '命中 8 段原文', status: 'done' }],
     })
 
     expect(wasDegraded(message)).toBe(false)
@@ -350,5 +422,206 @@ describe('降级与"这一轮没找到新东西"（v25）', () => {
 
     expect(steps[0].label).toBe('检索知识库')
     expect(steps[0].detail).toContain('1 个片段')
+  })
+})
+
+describe('同类工具合并（v0.26）', () => {
+  /** 一次工具调用：`tool` 是后端给的原始工具名，分组按它来。 */
+  function call(tool: string, label: string, detail: string): ChatStep {
+    return step('tool', { tool, label, detail })
+  }
+
+  function turnWith(steps: ChatStep[]) {
+    return {
+      user: message('user', { text: '问' }),
+      reply: message('assistant', { text: '答', steps }),
+    }
+  }
+
+  it('同一个块里同一种工具并成一组，**保持首次出现的顺序**', () => {
+    // 实测的形态：联网搜索 7 次、抓取网页 2 次，交替出现
+    const entries = traceEntries(
+      turnWith([
+        step('intent', { label: '理解问题' }),
+        call('web_search', '联网搜索', '查 A'),
+        call('web_fetch', '抓取网页', '读 A'),
+        call('web_search', '联网搜索', '查 B'),
+        call('web_fetch', '抓取网页', '读 B'),
+        call('web_search', '联网搜索', '查 C'),
+      ]),
+    )
+
+    expect(entries.map((entry) => entry.kind)).toEqual(['step', 'group', 'group'])
+    const first = entries[1]
+    expect(first.kind === 'group' && first.label).toBe('联网搜索')
+    expect(first.kind === 'group' && first.steps.map((item) => item.detail)).toEqual([
+      '查 A',
+      '查 B',
+      '查 C',
+    ])
+    const second = entries[2]
+    expect(second.kind === 'group' && second.steps).toHaveLength(2)
+  })
+
+  it('只调一次的不并：一组只有一个成员时，"点开看全部"是个空动作', () => {
+    const entries = traceEntries(
+      turnWith([call('web_search', '联网搜索', '查 A'), call('list_notes', '查看笔记', '2 条')]),
+    )
+
+    expect(entries.map((entry) => entry.kind)).toEqual(['step', 'step'])
+  })
+
+  it('非工具步骤是分界：跨过它不合并（否则"什么时候做的"就讲乱了）', () => {
+    const entries = traceEntries(
+      turnWith([
+        call('web_search', '联网搜索', '查 A'),
+        call('web_search', '联网搜索', '查 B'),
+        step('compress', { label: '压缩上下文' }),
+        call('web_search', '联网搜索', '查 C'),
+        call('web_search', '联网搜索', '查 D'),
+      ]),
+    )
+
+    expect(entries.map((entry) => entry.kind)).toEqual(['group', 'step', 'group'])
+  })
+
+  it('同一块里混着两种工具：各成一组，按**首次出现**排，组内保序', () => {
+    const entries = traceEntries(
+      turnWith([
+        call('web_search', '联网搜索', '查 A'),
+        call('search', '检索知识库', '命中 1 段'),
+        call('web_search', '联网搜索', '查 B'),
+        call('search', '检索知识库', '命中 2 段'),
+      ]),
+    )
+
+    expect(entries.map((entry) => (entry.kind === 'group' ? entry.tool : 'single'))).toEqual([
+      'web_search',
+      'search',
+    ])
+    const first = entries[0]
+    expect(first.kind === 'group' && first.steps.map((item) => item.detail)).toEqual([
+      '查 A',
+      '查 B',
+    ])
+    const second = entries[1]
+    expect(second.kind === 'group' && second.steps.map((item) => item.detail)).toEqual([
+      '命中 1 段',
+      '命中 2 段',
+    ])
+  })
+
+  it('每一条都带着它的工具名：图标靠它选，分组也靠它', () => {
+    const steps = traceSteps(
+      turnWith([
+        call('web_search', '联网搜索', ''),
+        call('export_document', '导出文档', ''),
+        call('remember', '记住', ''),
+      ]),
+    )
+
+    expect(steps.map((item) => item.tool)).toEqual(['web_search', 'export_document', 'remember'])
+  })
+})
+
+describe('工具图标分类（v0.26）', () => {
+  it('按"它对外做的那件事"分类，同类工具同一个图标', () => {
+    expect(stepIcon({ phase: 'tool', tool: 'web_search' })).toBe('web')
+    expect(stepIcon({ phase: 'tool', tool: 'web_fetch' })).toBe('fetch')
+    expect(stepIcon({ phase: 'tool', tool: 'search' })).toBe('search')
+    expect(stepIcon({ phase: 'tool', tool: 'recall' })).toBe('search')
+    expect(stepIcon({ phase: 'tool', tool: 'export_table' })).toBe('file')
+    expect(stepIcon({ phase: 'tool', tool: 'create_note' })).toBe('note')
+  })
+
+  it('认不出的工具走中性图标，不硬塞一个像样的', () => {
+    // 外部 MCP 工具各自是另一家的东西，我们不知道该怎么画
+    expect(stepIcon({ phase: 'tool', tool: 'mcp__tavily__search' })).toBe('mcp')
+    expect(stepIcon({ phase: 'tool', tool: '某个新工具' })).toBe('tool')
+  })
+
+  it('非工具步骤仍按 phase 走', () => {
+    expect(stepIcon({ phase: 'intent' })).toBe('think')
+    expect(stepIcon({ phase: 'answer' })).toBe('build')
+  })
+})
+
+describe('老快照的兜底（v0.26）', () => {
+  /** v0.26 之前存下的步骤：只有中文标签，没有工具名。 */
+  function legacy(label: string, detail = '') {
+    return step('tool', { label, detail })
+  }
+
+  it('没有工具名时按标签合并——已经存在的对话也要受益', () => {
+    // 用户手上正开着的就是这种数据；"只对新对话生效"等于告诉他没修好
+    const entries = traceEntries({
+      user: message('user', { text: '问' }),
+      reply: message('assistant', {
+        text: '答',
+        steps: [legacy('联网搜索', '查 A'), legacy('联网搜索', '查 B'), legacy('抓取网页', '读 A')],
+      }),
+    })
+
+    expect(entries.map((entry) => entry.kind)).toEqual(['group', 'step'])
+    const first = entries[0]
+    expect(first.kind === 'group' && first.label).toBe('联网搜索')
+    expect(first.kind === 'group' && first.steps).toHaveLength(2)
+  })
+
+  it('图标也认那批老标签，认不出才退回中性图标', () => {
+    expect(stepIcon({ phase: 'tool', label: '联网搜索' })).toBe('web')
+    expect(stepIcon({ phase: 'tool', label: '抓取网页' })).toBe('fetch')
+    // 后端哪天改了措辞，匹配不上就退中性图标——**这是降级，不是显示错的东西**
+    expect(stepIcon({ phase: 'tool', label: '某个改过名的步骤' })).toBe('tool')
+  })
+
+  it('非工具步骤不进分组：它们没有 group 键', () => {
+    const entries = traceEntries({
+      user: message('user', { text: '问' }),
+      reply: message('assistant', {
+        text: '答',
+        steps: [step('intent', { label: '理解问题' }), step('compress', { label: '压缩上下文' })],
+      }),
+    })
+
+    expect(entries.map((entry) => entry.kind)).toEqual(['step', 'step'])
+  })
+})
+
+describe('一轮产出的文件（v0.26）', () => {
+  function withArtifact(artifactId: string) {
+    return {
+      artifact_id: artifactId,
+      name: `${artifactId}.pptx`,
+      size_bytes: 10,
+      format: 'pptx',
+    }
+  }
+
+  it('把各步的产物收成一份，按产出先后、按 id 去重', () => {
+    const turn = {
+      user: message('user', { text: '做个 ppt' }),
+      reply: message('assistant', {
+        text: '做好了',
+        steps: [
+          step('tool', { phase: 'tool', label: '导出幻灯', artifacts: [withArtifact('art_1')] }),
+          step('tool', { phase: 'tool', label: '记住', artifacts: [] }),
+          // 同一个文件在"入库"那一步又被提到一次：只该有一张卡片
+          step('tool', { phase: 'tool', label: '存进知识库', artifacts: [withArtifact('art_1')] }),
+          step('tool', { phase: 'tool', label: '导出表格', artifacts: [withArtifact('art_2')] }),
+        ],
+      }),
+    }
+
+    expect(replyArtifacts(turn).map((item) => item.artifact_id)).toEqual(['art_1', 'art_2'])
+  })
+
+  it('没有产物就是空数组，界面据此不画那一块', () => {
+    const turn = {
+      user: message('user', { text: '你好' }),
+      reply: message('assistant', { text: '你好' }),
+    }
+
+    expect(replyArtifacts(turn)).toEqual([])
   })
 })

@@ -94,7 +94,8 @@ class MaintenanceService:
     def compact(self) -> StorageOverview:
         """丢掉无主分区并 VACUUM，返回整理**之后**的概览。
 
-        **VACUUM 会重写整个库文件**，几 GB 的库要几十秒并需要等量临时空间。
+        ``VACUUM (ANALYZE)`` 会重写**含死元组的堆表页**（不是整个库文件——
+        那是 ``VACUUM FULL``，要等量临时空间，本项目不用它），几 GB 的库仍可能要几十秒。
         所以它只能是用户点出来的动作；这里也不加锁——SQLite 自己会挡住并发写，
         真撞上时错误原样抛出（比"静默排队"好排查）。
         """

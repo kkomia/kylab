@@ -19,7 +19,7 @@ import argparse
 import asyncio
 import logging
 
-from app.mcp_server.tools import TOOL_NAMES, call_tool
+from app.services.tools import TOOL_NAMES, call_tool
 
 __all__ = ["build_server", "main", "serve_http", "serve_stdio"]
 
@@ -45,8 +45,9 @@ _PARAMS: dict[str, tuple[str, ...]] = {
     "export_document": ("knowledge_base_id", "filename", "markdown", "title"),
     "export_table": ("knowledge_base_id", "filename", "rows", "sheet_name"),
     "export_deck": ("knowledge_base_id", "filename", "slides", "title"),
+    "ingest_artifact": ("artifact_id", "knowledge_base_id"),
     "web_search": ("query", "limit"),
-    "web_fetch": ("url",),
+    "web_fetch": ("url", "urls"),
 }
 
 
@@ -64,14 +65,17 @@ def build_server():  # type: ignore[no-untyped-def]
 
     from mcp.server.mcpserver import MCPServer
 
+    from app.core.config import get_settings
     from app.core.exceptions import KylabError
     from app.core.services import get_services
     from app.mcp_server.auth import CallerMiddleware, current_caller
-    from app.mcp_server.tools import tool_definitions
+    from app.services.tools import tool_definitions
 
     server = MCPServer(
         name="kylab",
-        version="0.1.0",
+        # 取自 Settings，不再手写：手写的那个只会在发版时漏改（v0.1.0→0.2.0 前，
+        # 这里与 pyproject / package.json / Settings 是四处各自为政的版本号）
+        version=get_settings().app_version,
         instructions=(
             "kylab 知识库。核心能力是检索原文：search 返回带出处的原文片段，"
             "不是生成的回答。先 list_knowledge_bases 确认有哪些库，再按库检索"

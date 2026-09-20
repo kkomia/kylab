@@ -199,6 +199,13 @@
   --border-hairline: var(--Separators-S1);
   --border: var(--Separators-S1);
   --border-strong: var(--Separators-S1-active);
+  /* 发丝线：与深色同为 6%，只是翻转基底——Kimi 浅色的 `.chat-editor-content`
+     描边实测就是 `rgba(0,0,0,.06)`，与深色的 `rgba(255,255,255,.06)` 对称。 */
+  --border-subtle: rgb(0 0 0 / 6%);
+
+  /* 菜单项的主行用 Primary、副标题用 Tertiary——Kimi 的 `.name` / `.desc` 实测如此 */
+  --menu-item-text: var(--Labels-Primary);
+  --menu-desc-text: var(--Labels-Tertiary);
 
   /* 进度条空槽：用 F3（压纸白 ≈ #d9d9d9）。原先那档太浅，
      而"共 6 段、走到第 3 段"这条信息不能只靠文字撑。 */
@@ -246,7 +253,10 @@
   --button-primary-text: var(--Bg-Primary);
 
   /* 禁用态仍用实色，不用 opacity：半透明会把前景与背景一起推向对方 */
-  --button-disabled-bg: var(--Bg-Secondary);
+  /* 禁用态：**主按钮禁用时是 `Fills-F3`，不是 `Bg-Secondary`**（与深色同构）。
+     Kimi 的 `.km-button-primary[disabled]` 实测底 18% 白 / 文字 26% 白（深色）；
+     浅色翻转基底，同一档 alpha 落在 `#00000026`。 */
+  --button-disabled-bg: var(--Fills-F3);
   --button-disabled-text: var(--Labels-Quaternary);
   --button-disabled-border: var(--Separators-S1);
 

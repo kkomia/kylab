@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "kylab"
-    app_version: str = "0.1.0"
+    app_version: str = "0.2.0"
     host: str = "127.0.0.1"
     port: int = 8000
     log_level: str = "INFO"
@@ -112,6 +112,12 @@ class Settings(BaseSettings):
     # 云端解析节点（M2 启用）
     mineru_token: str | None = None
     paddleocr_token: str | None = None
+    github_token: str | None = None
+    """浏览 GitHub 上的技能源时用的 token（可选）。
+
+    **不给也能用**：看公开仓库不需要认证，只是匿名配额是 60 次/小时/IP。
+    给了就提到 5000 次/小时——常逛技能市场时值得配一个只读的细粒度 token。
+    """
     questions_concurrency: int = 4
     """分段出题同时发几批（默认 4）。
 

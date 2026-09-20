@@ -57,7 +57,7 @@ const icon = computed(() => (props.running ? RUNNING_ICON : ICONS[props.tone]))
   padding: 0 var(--space-2);
   font-size: var(--text-micro-size);
   white-space: nowrap;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .status-icon {

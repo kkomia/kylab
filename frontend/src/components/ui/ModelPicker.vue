@@ -387,7 +387,7 @@ onBeforeUnmount(() => bindGlobal(false))
   padding: 0;
   background: var(--bg-hover);
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   cursor: pointer;
 }
 

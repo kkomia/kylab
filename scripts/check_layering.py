@@ -1,12 +1,13 @@
-"""仓库结构性规范自动核查：分层纪律、测试位置、脚本编码、界面文案。
+"""仓库结构性规范自动核查：分层纪律、测试位置、脚本编码、界面文案、版本号。
 
-对应《项目工程规范 v0.3》§3.3（分层纪律）、§5.1（测试存放铁律）与 §6（脚本约定），
-以及《前端设计规范》§5.1（界面里不写解释性小字）。
+对应《项目工程规范 v0.3》§3.3（分层纪律）、§5.1（测试存放铁律）与 §6（脚本约定）、
+《前端设计规范》§5.1（界面里不写解释性小字），以及 CHANGELOG「附：版本号约定」。
 这些约束靠人工 review 容易漏，故做成机械检查接入 CI：
 ``L1`` 协议层越界、``L2`` 业务层直连数据库/SQL、``L3`` 解析器互引、
-``L4`` 解析器反向依赖业务层、``A1`` 异步端点里没有 await（假异步，会按住事件循环）、
+``L4`` 解析器反向依赖业务层、``L5`` 业务层依赖协议层、``L6`` app 根下的游离模块、
+``A1`` 异步端点里没有 await（假异步，会按住事件循环）、
 ``T1`` 测试位置、``S1`` .ps1 缺少 UTF-8 BOM、``U1`` 界面里的解释性小字、
-``PARSE`` 语法错误。
+``V1`` 手写版本号不一致、``PARSE`` 语法错误。
 
 用法：python scripts/check_layering.py [仓库根目录，默认当前目录]
 退出码：0 = 通过；1 = 发现违规。
@@ -66,6 +67,26 @@ PARSER_SHARED = {
 # 这种更严重的反向依赖直接通过——依赖方向反了，插件就没法脱离业务层复用。
 PARSER_FORBIDDEN = ("app.services", "app.api", "app.mcp_server", "app.workers")
 PARSER_MSG = "解析器是插件层，不得反向依赖业务层（services）或协议层（api/mcp/workers）"
+
+# L5：业务层不得依赖协议适配层。
+#
+# 起因：`app/agent_tools.py`（当时在 app 根）import 了 `app.mcp_server.tools`，
+# 而协议层（api）又 import 这个根模块——方向成了"协议层 → 业务实现 → 另一个协议层"。
+# 共用实现只能住在 services/ 里（两个门都往下依赖它），反过来就是循环的形状。
+SERVICE_FORBIDDEN_LAYERS = ("app.api", "app.mcp_server")
+SERVICE_LAYER_MSG = "业务层不得依赖协议适配层（api / mcp_server）；共用实现要放在 services/ 里"
+
+# L6：`app/` 根下只允许 main.py 与 __init__.py——每个模块都必须属于一个分层。
+#
+# 起因与 L5 同：`app/agent_tools.py` 住在 app 根，既不匹配 `app.api` / `app.services`，
+# 也不匹配任何禁止前缀，于是 L1–L4 一条都不作用于它。**一个不被任何规则覆盖的文件，
+# 等于分层纪律对它不存在**：它 import 谁都不会红——而那块代码恰好管着工具准入与会话
+# 范围收口，是全项目最需要护栏的地方。规则靠"命名空间白名单"而不是"记得加清单"。
+APP_ROOT_ALLOWED = {"__init__", "main"}
+APP_ROOT_MSG = (
+    "app/ 根下不得放游离模块（只允许 main.py 与 __init__.py）："
+    "请归入 api/ services/ storage/ parsers/ workers/ core/ models/ pipeline/ 之一"
+)
 
 # A1：协议层的 `async def` 端点**必须真的 await 点什么**。
 #
@@ -218,6 +239,13 @@ def check_layer_rules(path: Path, root: Path, tree: ast.AST) -> list[Violation]:
                 uses_storage and not allowed_storage
             ):
                 violations.append(Violation("L2", display, lineno, f"{SERVICE_MSG}（import {target}）"))
+            if any(
+                target == layer or target.startswith(f"{layer}.")
+                for layer in SERVICE_FORBIDDEN_LAYERS
+            ):
+                violations.append(
+                    Violation("L5", display, lineno, f"{SERVICE_LAYER_MSG}（import {target}）")
+                )
 
         if in_layer(module, PARSER_LAYER):
             parts = target.split(".")
@@ -395,6 +423,134 @@ def check_ps1_bom(root: Path) -> list[Violation]:
     return violations
 
 
+# ---------------------------------------------------------------- 版本号一致性（V1）
+#
+# 版本号是**多处手写副本**：pyproject、package.json、Settings.app_version，
+# 加上 compose 的默认标签（backend / frontend 各一处）。MCP Server 原本也是手写副本，
+# v0.2.0 起改为读 Settings。
+#
+# 这条约定一直写在 CHANGELOG 的「附：版本号约定」里，但**没有任何检查**——
+# 于是 0.1.0 → 0.2.0 那次升级才发现实际有六处，而文档说的是三处
+# （见《开发计划》§12.171）。手写约定不加机械核查的失效方式，与 §12.32 记的"文档绿着撒谎"
+# 一模一样，故补这条 V1。
+
+VERSION_MSG = "手写版本号必须一致（约定见 CHANGELOG「附：版本号约定」）"
+
+
+def _quoted_after(text: str, marker: str) -> str | None:
+    """``marker`` 之后第一对双引号里的内容；找不到返回 None。"""
+    start = text.find(marker)
+    if start < 0:
+        return None
+    rest = text[start + len(marker) :]
+    end = rest.find('"')
+    return rest[:end] if end >= 0 else None
+
+
+def version_sources(root: Path) -> dict[str, set[str]]:
+    """各处手写版本号 → 读到的一个或多个值。
+
+    一份文件里出现多次就有多个值（compose 有两处默认标签），**两个都要对**——
+    只取第一个的话，改一处漏一处照样绿。
+
+    文件不存在就跳过：这个脚本要能在只检出部分目录时跑，否则会误报。
+    用 ``errors="replace"`` 读：被存成别的编码的文件不该让整条规则崩掉。
+    """
+
+    def read(relative: str) -> str | None:
+        path = root / relative
+        if not path.exists():
+            return None
+        return path.read_text(encoding="utf-8", errors="replace")
+
+    found: dict[str, set[str]] = {}
+
+    for relative, marker in (
+        ("backend/pyproject.toml", 'version = "'),
+        ("frontend/package.json", '"version": "'),
+        ("backend/app/core/config.py", 'app_version: str = "'),
+    ):
+        text = read(relative)
+        if text is None:
+            continue
+        value = _quoted_after(text, marker)
+        if value:
+            found[relative] = {value}
+
+    compose = read("deploy/docker-compose.yml")
+    if compose is not None:
+        marker = "${KYLAB_VERSION:-"
+        values: set[str] = set()
+        cursor = 0
+        while True:
+            index = compose.find(marker, cursor)
+            if index < 0:
+                break
+            cursor = index + len(marker)
+            end = compose.find("}", cursor)
+            if end < 0:
+                break
+            values.add(compose[cursor:end])
+        if values:
+            found["deploy/docker-compose.yml"] = values
+
+    return found
+
+
+def check_app_root_modules(root: Path) -> list[Violation]:
+    """L6：``app/`` 根下只允许 ``main.py`` 与 ``__init__.py``（见 ``APP_ROOT_MSG``）。
+
+    与其它规则不同，这条查的是"文件在不在规则覆盖范围内"——它不解析 import，
+    只看目录。所以它对新增文件立刻生效，不需要有人记得去补一份清单。
+    """
+    app_dir = root / "backend" / "app"
+    if not app_dir.exists():
+        return []
+    return [
+        Violation("L6", path.relative_to(root), 1, APP_ROOT_MSG)
+        for path in sorted(app_dir.glob("*.py"))
+        if path.stem not in APP_ROOT_ALLOWED
+    ]
+
+
+def check_version_consistency(root: Path) -> list[Violation]:
+    """V1：各处手写版本号必须一致。基准取 `backend/pyproject.toml`。"""
+    found = version_sources(root)
+    if not found:
+        return []
+
+    reference = (
+        "backend/pyproject.toml" if "backend/pyproject.toml" in found else sorted(found)[0]
+    )
+    own = found[reference]
+    if len(own) != 1:
+        # 同一份文件里自相矛盾（典型：compose 两处默认标签只改了一处）
+        return [
+            Violation(
+                "V1",
+                Path(reference),
+                1,
+                f"{VERSION_MSG}：同一份文件里出现多个版本号：{'、'.join(sorted(own))}",
+            )
+        ]
+    expected = next(iter(own))
+
+    picture = "；".join(
+        f"{name}={'、'.join(sorted(values))}" for name, values in sorted(found.items())
+    )
+    return [
+        Violation(
+            "V1",
+            Path(name),
+            1,
+            f"{VERSION_MSG}：期望 {expected}（取自 {reference}），此处是 "
+            f"{'、'.join(sorted(values))}。全仓实读：{picture}",
+        )
+        for name, values in sorted(found.items())
+        if values != {expected}
+    ]
+
+
 def main() -> int:
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     backend_app = root / "backend" / "app"
@@ -426,14 +582,19 @@ def main() -> int:
                 violations.extend(check_ui_copy(path))
 
     violations.extend(check_ps1_bom(root))
+    violations.extend(check_version_consistency(root))
+    violations.extend(check_app_root_modules(root))
 
     for violation in violations:
         print(violation)
 
     if violations:
-        print(f"\n共发现 {len(violations)} 处结构性违规，违反《项目工程规范》§3.3 / §5.1 与脚本编码约定。")
+        print(
+            f"\n共发现 {len(violations)} 处违规，违反《项目工程规范》§3.3 / §5.1、"
+            f"脚本编码约定、界面文案条款或 CHANGELOG「附：版本号约定」。"
+        )
         return 1
-    print("分层纪律、测试位置、脚本编码与界面文案检查通过。")
+    print("分层纪律、测试位置、脚本编码、界面文案与版本号检查通过。")
     return 0
 
 

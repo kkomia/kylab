@@ -1,0 +1,80 @@
+/*
+ * 过程面板里**一行**的外壳样式（v0.27 抽成单独一份）。
+ *
+ * 为什么单独一层文件：这一行的标记有两个渲染位置——单步（`TraceStepRow.vue`）
+ * 与"同类工具并成的一组"的表头（`ChatView.vue` 的 `.step-group`）。
+ * v0.26 把单步的样式连着标记一起搬进组件时，**组那一行没有跟着搬**，
+ * 于是它的图标掉成没有圆底的小图标、标签的起始线也比上下几行靠左
+ * （用户报的"UI 排版有问题"，截图里「联网搜索 12 次」那一行就是）。
+ *
+ * 治法是**只有一份外壳**：两个组件都用 `<style scoped src>` 引进来，
+ * 各自只留自己那点差异（单步有 `.step-detail` / `.step-raw`，
+ * 组有 `.step-count`，组内的一次调用有 `.step-child`）。
+ */
+.step {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+
+.step + .step {
+  margin-top: var(--space-3);
+}
+
+/* 图标位：21px 的圆底，**圆心正落在时间轴那条竖线上**（`.steps::before` 的 left:10px）。
+   它同时是"这一行是什么"的第一眼线索，所以背景取画布色挡住竖线。 */
+.step-icon {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  color: var(--text-tertiary);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+}
+
+.step-body {
+  min-width: 0;
+  padding-top: 1px;
+}
+
+.step-label {
+  margin: 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-secondary);
+}
+
+/* 可点的那一步：标签本身就是按钮。**不加下划线也不加底色**——
+   整块过程面板里已经有"有没有收获"的层级（`.step-empty` 的弱化），
+   再给每行加一个可点的装饰，这一列会变成一排按钮。
+   能点的线索由右侧那个小箭头给，悬停时标签提亮。 */
+.step-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  transition: var(--transition-ui);
+}
+
+.step-toggle:hover {
+  color: var(--text-primary);
+}
+
+.step-caret {
+  flex: 0 0 auto;
+  color: var(--text-quaternary);
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+.step-caret-open {
+  transform: rotate(180deg);
+}

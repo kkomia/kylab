@@ -8,6 +8,9 @@
  * 2. 键盘：方向键移动高亮、Enter 选中、Esc 关闭，且**焦点始终留在触发器上**
  *    （WAI-ARIA combobox 的 activedescendant 模式，屏幕阅读器与键盘共用一份状态）；
  * 3. 选中的那一项带勾选标记——这是"当前值是哪个"的唯一视觉线索。
+ * 4. **浮层高度不能比内容矮**（v0.25 加的，用户报"明明显示完了还有滚动条"）：
+ *    原先算的是 `选项数 × 36 + 8`，8 是**一侧**的内边距，而上下各有一份——
+ *    于是永远矮 8px，滚动条必然出现。
  */
 import { mount } from '@vue/test-utils'
 import { h } from 'vue'
@@ -21,6 +24,17 @@ const OPTIONS = [
   { value: 'write', label: '可写' },
 ]
 
+/** 与组件里的估算口径一致：选项 36px + **上下**各 8px 内边距。 */
+const OPTION_HEIGHT = 36
+const POP_PADDING_VERTICAL = 8 * 2
+
+function popMaxHeight(wrapper: ReturnType<typeof mountSelect>): number {
+  const style = wrapper.find('.select-pop').attributes('style') ?? ''
+  const match = /max-height:\s*([\d.]+)px/.exec(style)
+  expect(match, `浮层内联样式里没有 max-height：${style}`).toBeTruthy()
+  return Number(match![1])
+}
+
 function mountSelect(value = '') {
   return mount(AppSelect, {
     props: { options: OPTIONS, modelValue: value, ariaLabel: '档位' },
@@ -29,6 +43,30 @@ function mountSelect(value = '') {
 }
 
 describe('AppSelect', () => {
+  it('展开后的 max-height 不小于内容高度（否则内容放得下也会出滚动条）', async () => {
+    // jsdom 没有布局，`scrollHeight` 恒为 0，所以走的是估算分支——
+    // 而正是那条估算分支写着 `+ 8`。这条用例钉的就是它。
+    const wrapper = mountSelect('read')
+    await wrapper.find('.select-trigger').trigger('click')
+
+    const content = OPTIONS.length * OPTION_HEIGHT + POP_PADDING_VERTICAL
+    expect(popMaxHeight(wrapper)).toBeGreaterThanOrEqual(content)
+  })
+
+  it('选项多到超过上限时仍然夹在 280px（那时滚动条是该有的）', async () => {
+    const many = Array.from({ length: 30 }, (_, index) => ({
+      value: `v${index}`,
+      label: `选项 ${index}`,
+    }))
+    const wrapper = mount(AppSelect, {
+      props: { options: many, modelValue: 'v0', ariaLabel: '档位' },
+      attachTo: document.body,
+    })
+    await wrapper.find('.select-trigger').trigger('click')
+
+    expect(popMaxHeight(wrapper)).toBe(280)
+  })
+
   it('默认关闭，触发器显示当前选项的文案', () => {
     const wrapper = mountSelect('read')
 

@@ -746,7 +746,7 @@ const stage = computed(() =>
   margin: 0 0 var(--space-3);
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-meta-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
   background: var(--bg-subtle);
   border-radius: var(--radius-control);
@@ -1020,7 +1020,7 @@ const stage = computed(() =>
   padding: var(--space-3);
   overflow-x: auto;
   font-size: var(--text-micro-size);
-  line-height: 1.6;
+  line-height: var(--line-code);
   background: var(--bg-subtle);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-control);
@@ -1195,7 +1195,7 @@ const stage = computed(() =>
 .preview-text {
   margin: 0;
   font-size: var(--text-meta-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-primary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1214,7 +1214,7 @@ const stage = computed(() =>
   gap: var(--space-1);
   align-items: baseline;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-tertiary);
 }
 
@@ -1264,7 +1264,7 @@ const stage = computed(() =>
   padding: var(--space-3);
   font-family: inherit;
   font-size: var(--text-meta-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-primary);
   background: var(--bg-surface);
   border: 1px solid var(--border-strong);

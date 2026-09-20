@@ -463,7 +463,7 @@ watch(open, (isOpen) => {
 .dropzone-hint {
   max-width: 56ch;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-tertiary);
 }
 
@@ -476,7 +476,7 @@ watch(open, (isOpen) => {
 .scope {
   margin: var(--space-3) 0 0;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
 }
 

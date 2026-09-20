@@ -44,11 +44,13 @@ import IconFile from '@/components/icons/IconFile.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
+import IconSettings from '@/components/icons/IconSettings.vue'
 import IconSearch from '@/components/icons/IconSearch.vue'
 import IconTrash from '@/components/icons/IconTrash.vue'
 import MemoryGraph from '@/components/memory/MemoryGraph.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
+import SettingGroupPanel from '@/components/settings/SettingGroupPanel.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import EmptyState from '@/components/ui/EmptyState.vue'
@@ -57,12 +59,16 @@ import PageShell from '@/components/ui/PageShell.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
+import { isAdmin } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
 import { formatBytes, formatDate } from '@/composables/useFormat'
 
 type Tab = 'files' | 'graph' | 'recall'
 
 const { notifyError, notifySuccess } = useToast()
+
+/** 记忆设置弹窗（v0.26）：长期记忆那一组从总设置搬到了这里。 */
+const settingsOpen = ref(false)
 
 const overview = ref<MemoryOverview | null>(null)
 const loading = ref(true)
@@ -373,6 +379,16 @@ function messageOf(error: unknown): string {
         :tone="statusView.tone"
         :title="status?.detail || undefined"
       />
+      <!--
+        「设置」就在这一页（v0.26）：开关与服务地址原先挂在「总设置 → 功能 → 长期记忆」，
+        而这一页顶着一句"记忆服务未启用"——同一个东西的说明和开关隔着两个菜单，
+        用户按指引找过去还得先猜它在哪一组。
+        **只给管理员**，与侧栏那个设置入口同一档：后端 `/settings` 是管理员端点。
+      -->
+      <AppButton v-if="isAdmin" @click="settingsOpen = true">
+        <template #icon><IconSettings :size="15" /></template>
+        设置
+      </AppButton>
       <AppButton v-if="status?.enabled" @click="reindex">
         <template #icon><IconRefresh :size="15" /></template>
         重建索引
@@ -698,6 +714,11 @@ function messageOf(error: unknown): string {
       @confirm="confirm.kind === 'delete' ? doDelete() : onDiscard()"
     />
   </PageShell>
+
+  <!-- 记忆的设置：只有一组（长期记忆），所以是一个小弹窗而不是一整页 -->
+  <AppModal v-model:open="settingsOpen" title="记忆设置">
+    <SettingGroupPanel :keys="['memory']" />
+  </AppModal>
 </template>
 
 <style scoped>

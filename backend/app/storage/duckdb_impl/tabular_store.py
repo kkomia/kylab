@@ -18,6 +18,7 @@ SQL 的参数占位符只用于值，标识符必须拼进语句文本。所以�
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -52,6 +53,14 @@ class DuckDbTabularStore(TabularStore):
         # 单连接仍然够用：表格副本是写入少、读取少的旁路数据，
         # 而 DuckDB 的多连接要走同样的文件锁，收益不抵复杂度。
         self._conn: duckdb.DuckDBPyConnection | None = None
+        #: **单连接 = 单线程用**。DuckDB 的连接不是线程安全的（它有自己的执行状态），
+        #: 而工具循环会把同一批里的几次导出**并发**跑（v0.27）——两个线程同时用
+        #: 同一个连接，轻则报错重则串了结果。所以这里串行化：读写都进这把锁。
+        #:
+        #: 用 ``RLock`` 而不是 ``Lock``：``read_rows`` 内部要调 ``columns`` →
+        #: ``table_exists``，几个公开方法自己会互相调用，普通锁会**自己把自己锁死**。
+        #: 表格副本是导出路径上的旁路数据，锁的争用远小于它旁边那次真正的 IO。
+        self._lock = threading.RLock()
 
     def _connection(self) -> duckdb.DuckDBPyConnection:
         """取连接，第一次调用时才真正打开文件。"""
@@ -69,79 +78,86 @@ class DuckDbTabularStore(TabularStore):
         if not columns:
             return 0
 
-        # DROP + CREATE 而不是 CREATE OR REPLACE：后者在列数变化时报错，
-        # 而"重跑时列变了"是正常情况（用户改了源文件）
-        self._connection().execute(f'DROP TABLE IF EXISTS "{table}"')
-        # 先建表再 INSERT，并显式声明 VARCHAR——避免 DuckDB 自己推断类型
-        column_defs = ", ".join(f'{_quote(name)} VARCHAR' for name in columns)
-        self._connection().execute(
-            f'CREATE TABLE "{table}" ({_ORDINAL} BIGINT, {column_defs})'
-        )
-
-        if rows:
-            placeholders = ", ".join("?" for _ in range(len(columns) + 1))
-            payload = [
-                [index, *[_text(cell) for cell in row[: len(columns)]]]
-                for index, row in enumerate(rows)
-            ]
-            self._connection().executemany(
-                f'INSERT INTO "{table}" VALUES ({placeholders})',  # noqa: S608
-                payload,
+        with self._lock:
+            # DROP + CREATE 而不是 CREATE OR REPLACE：后者在列数变化时报错，
+            # 而"重跑时列变了"是正常情况（用户改了源文件）
+            self._connection().execute(f'DROP TABLE IF EXISTS "{table}"')
+            # 先建表再 INSERT，并显式声明 VARCHAR——避免 DuckDB 自己推断类型
+            column_defs = ", ".join(f'{_quote(name)} VARCHAR' for name in columns)
+            self._connection().execute(
+                f'CREATE TABLE "{table}" ({_ORDINAL} BIGINT, {column_defs})'
             )
+
+            if rows:
+                placeholders = ", ".join("?" for _ in range(len(columns) + 1))
+                payload = [
+                    [index, *[_text(cell) for cell in row[: len(columns)]]]
+                    for index, row in enumerate(rows)
+                ]
+                self._connection().executemany(
+                    f'INSERT INTO "{table}" VALUES ({placeholders})',  # noqa: S608
+                    payload,
+                )
 
         return len(rows)
 
     def drop_table(self, table: str) -> None:
         _require_safe(table)
-        self._connection().execute(f'DROP TABLE IF EXISTS "{table}"')
+        with self._lock:
+            self._connection().execute(f'DROP TABLE IF EXISTS "{table}"')
 
     # ------------------------------------------------------------------ 读
 
     def table_exists(self, table: str) -> bool:
         _require_safe(table)
-        row = self._connection().execute(
-            "SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table]
-        ).fetchone()
+        with self._lock:
+            row = self._connection().execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table]
+            ).fetchone()
         return row is not None
 
     def columns(self, table: str) -> list[str]:
         _require_safe(table)
-        if not self.table_exists(table):
-            return []
-        described = self._connection().execute(f'DESCRIBE "{table}"').fetchall()
+        with self._lock:
+            if not self.table_exists(table):
+                return []
+            described = self._connection().execute(f'DESCRIBE "{table}"').fetchall()
         # 第一列是内部行号，不属于用户看到的数据
         return [row[0] for row in described if row[0] != _ORDINAL]
 
     def row_count(self, table: str) -> int:
         _require_safe(table)
-        if not self.table_exists(table):
-            return 0
-        row = self._connection().execute(
-            f'SELECT COUNT(*) FROM "{table}"'  # noqa: S608
-        ).fetchone()
+        with self._lock:
+            if not self.table_exists(table):
+                return 0
+            row = self._connection().execute(
+                f'SELECT COUNT(*) FROM "{table}"'  # noqa: S608
+            ).fetchone()
         return int(row[0]) if row else 0
 
     def read_rows(self, table: str, *, limit: int = 50, offset: int = 0) -> list[list[str]]:
         _require_safe(table)
-        names = self.columns(table)
-        if not names:
-            return []
-        selected = ", ".join(_quote(name) for name in names)
-        # **按内部行号排序**：DuckDB 不保证无 ORDER BY 的行序，
-        # 而用户说的"第 3 行"必须与源文件一致
-        rows = self._connection().execute(
-            f'SELECT {selected} FROM "{table}" ORDER BY {_ORDINAL} LIMIT ? OFFSET ?',  # noqa: S608
-            [limit, offset],
-        ).fetchall()
+        with self._lock:
+            names = self.columns(table)
+            if not names:
+                return []
+            selected = ", ".join(_quote(name) for name in names)
+            # **按内部行号排序**：DuckDB 不保证无 ORDER BY 的行序，
+            # 而用户说的"第 3 行"必须与源文件一致
+            rows = self._connection().execute(
+                f'SELECT {selected} FROM "{table}" ORDER BY {_ORDINAL} LIMIT ? OFFSET ?',  # noqa: S608
+                [limit, offset],
+            ).fetchall()
         return [[_text(cell) for cell in row] for row in rows]
 
     # ------------------------------------------------------------------ 生命周期
 
     def close(self) -> None:
         # 没打开过就不用关（延迟打开之后这是常态：多数进程从没碰过表格副本）
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn is not None:
+                self._conn.close()
+                self._conn = None
 
 
 def _quote(name: str) -> str:

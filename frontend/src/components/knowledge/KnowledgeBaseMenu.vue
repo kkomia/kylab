@@ -926,7 +926,7 @@ async function confirmDelete(): Promise<void> {
 .pane-desc {
   margin: 0 0 var(--space-5);
   font-size: var(--text-meta-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
 }
 
@@ -964,7 +964,7 @@ async function confirmDelete(): Promise<void> {
 .pane-hint {
   margin: var(--space-2) 0 0;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-tertiary);
 }
 
@@ -1044,7 +1044,7 @@ async function confirmDelete(): Promise<void> {
   flex: 1 1 260px;
   margin: 0;
   font-size: var(--text-micro-size);
-  line-height: 1.7;
+  line-height: var(--line-prose);
   color: var(--text-secondary);
 }
 
@@ -1182,7 +1182,7 @@ async function confirmDelete(): Promise<void> {
   width: 12px;
   height: 12px;
   border: 1.5px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .prompt-trace-name {
@@ -1195,7 +1195,7 @@ async function confirmDelete(): Promise<void> {
 .prompt-trace-warn {
   margin: var(--space-3) 0 0;
   font-size: var(--text-micro-size);
-  line-height: 1.6;
+  line-height: var(--line-prose);
   color: var(--status-warning);
 }
 </style>

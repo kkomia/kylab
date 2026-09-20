@@ -31,9 +31,11 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import ConversationRowMenu from '@/components/layout/ConversationRowMenu.vue'
 import IconChatNew from '@/components/icons/IconChatNew.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
+import IconClock from '@/components/icons/IconClock.vue'
 import IconDashboard from '@/components/icons/IconDashboard.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
 import IconFolderPlus from '@/components/icons/IconFolderPlus.vue'
@@ -49,6 +51,7 @@ import IconSun from '@/components/icons/IconSun.vue'
 import IconTasks from '@/components/icons/IconTasks.vue'
 import IconUser from '@/components/icons/IconUser.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
+import { useAutoHideScrollbar } from '@/composables/useAutoHideScrollbar'
 import { loadRoster, roster, setOperator } from '@/composables/useOperator'
 import { isAdmin, logout as logoutSession } from '@/composables/useSession'
 import { currentUser } from '@/composables/useSessionToken'
@@ -75,6 +78,10 @@ const modelStore = useModelRegistryStore()
 
 /** 折叠为图标栏：纯显示偏好，落 localStorage（见 useSidebar）。 */
 const { collapsed, toggleSidebar } = useSidebar()
+
+/** 滚动的那一层（项目 + 对话两节）。滚动条按"用时才出现"显示，见那个 composable。 */
+const sideScroll = ref<HTMLElement | null>(null)
+useAutoHideScrollbar(sideScroll)
 
 onMounted(async () => {
   // `load()` 一次就带回每个库的文档数（后端 GROUP BY），不再逐库拉文档列表
@@ -274,11 +281,6 @@ function showAll(workspaceId: string): void {
   expandedProjects.value = [...new Set([...expandedProjects.value, workspaceId])]
 }
 
-/** 对话那一节标题右边那个加号：与最上面的「新建会话」是同一件事。 */
-function newConversation(): void {
-  void router.push({ path: '/chat', query: { new: '1' } })
-}
-
 /** 「新建项目」：跳项目页并让它直接把新建表单打开（`?new=1`）。 */
 function onNewWorkspace(): void {
   void router.push({ path: '/workspaces', query: { new: '1' } })
@@ -423,12 +425,16 @@ async function onLogout(): Promise<void> {
 
 <template>
   <aside class="sidebar" :class="{ 'sidebar-collapsed': collapsed }">
-    <!-- 字标自带 "KYLAB" 字样，不再并排写一遍品牌名（重复反而削弱标识性）。
-         右侧是折叠开关：折叠后字标收起，只留这颗面板图标。
-         **字标与文字都不用 v-if 摘掉**——`v-if` 是瞬时的，没法过渡；
+    <!-- 品牌位只放**那只实验烧瓶**（v0.25，用户指定）：完整的 "KYLAB" 字标挪到
+         了对话页的空态上（那里空间够、也没有别的东西跟它抢）。
+         侧栏这一格只有 24px 宽的位置，字标在这么小的地方既读不出来、
+         又跟下方的导航抢宽度；而烧瓶本身已经认得出来，Kimi 的侧栏也只放一个 K。
+
+         右侧是折叠开关：折叠后烧瓶收起，只留那颗面板图标。
+         **两者都不用 v-if 摘掉**——`v-if` 是瞬时的，没法过渡；
          改用 max-width 收缩（见下方样式），宽度动画才连得上。 -->
     <div class="brand">
-      <span class="brand-mark"><IconLogo :size="24" /></span>
+      <span class="brand-mark"><IconLogo variant="mark" :size="22" /></span>
       <button
         class="collapse-toggle"
         type="button"
@@ -460,8 +466,15 @@ async function onLogout(): Promise<void> {
       <!--
         快捷键提示（Kimi 的 `新建会话  Ctrl K`）。**显示它就必须真的能用**——
         界面上写着一个按不出来的快捷键，比不写更糟。所以下面绑了全局 keydown。
+
+        **两枚独立的小片**，不是一个 `Ctrl K` 字符串：Kimi 的实测是一枚 `Ctrl`
+        （30×20）+ 一枚 `K`（20×20），各自有自己的底色和 4px 圆角。
+        两枚的间距由容器的 `gap` 给，不靠字符串里的空格。
       -->
-      <kbd class="shortcut">Ctrl K</kbd>
+      <span class="shortcut" aria-hidden="true">
+        <kbd>Ctrl</kbd>
+        <kbd>K</kbd>
+      </span>
     </RouterLink>
 
     <nav class="nav" aria-label="主导航">
@@ -531,7 +544,10 @@ async function onLogout(): Promise<void> {
       - 标题下面直接铺清单（默认展开）：项目那一节是「项目 + 它的会话」，
         对话那一节是没归项目的会话。
     -->
-    <div v-if="!collapsed" class="side-section">
+    <!-- 侧栏这一栏的滚动条**用时才出现**（v0.26，用户报的）：它一直在那儿时，
+         那条灰竖线是在回答"你还能往下滚"——而那个问题只在鼠标进到这一栏时才存在。
+         `scroll-quiet` 给出"默认看不见"的样子，出现与消失的时机见那个 composable。 -->
+    <div v-if="!collapsed" ref="sideScroll" class="side-section scroll-quiet">
       <!-- ------------------------------------------------------------ 项目 -->
       <div class="side-head">
         <button
@@ -571,13 +587,16 @@ async function onLogout(): Promise<void> {
             </button>
           </li>
           <li v-for="item in shownConversations(workspace.id)" :key="item.id" class="side-sub-row">
-            <RouterLink
-              class="side-row side-row-sub"
-              :to="`/chat/${item.id}`"
-              :title="item.title || '未命名对话'"
-            >
-              <span class="side-row-name">{{ item.title || '未命名对话' }}</span>
-            </RouterLink>
+            <div class="side-row-wrap">
+              <RouterLink
+                class="side-row side-row-sub"
+                :to="`/chat/${item.id}`"
+                :title="item.title || '未命名对话'"
+              >
+                <span class="side-row-name">{{ item.title || '未命名对话' }}</span>
+              </RouterLink>
+              <ConversationRowMenu :item="item" />
+            </div>
           </li>
           <!-- 超出上限就先收起，点「展开」再看——一屏放不下的清单会把下面那一节推走 -->
           <li v-if="hiddenCount(workspace.id) > 0" :key="`${workspace.id}-more`">
@@ -590,9 +609,7 @@ async function onLogout(): Promise<void> {
             </button>
           </li>
         </template>
-        <li v-if="!workspaces.items.length" class="side-empty">
-          还没有项目。项目决定"在哪儿干活"，会一直留着。
-        </li>
+        <li v-if="!workspaces.items.length" class="side-empty">还没有项目</li>
         <li v-else>
           <button type="button" class="side-row side-more" @click="openProjects">全部项目</button>
         </li>
@@ -609,30 +626,41 @@ async function onLogout(): Promise<void> {
           <span class="side-title">对话</span>
           <IconChevronDown class="side-chevron" :class="{ collapsed: !chatsOpen }" :size="13" />
         </button>
+        <!--
+          「查看全部会话」（v0.25 换的，用户指定）：这一格原先是一个"新建会话"的加号，
+          与最上面那颗「新建会话」**是同一件事**——同一栏里两个入口做同一件事，
+          多出来的那个只会让人犹豫点哪个。而"找一条旧会话"（面板里有搜索 + 全部 +
+          已归档）原先埋在清单**最底下**那颗"查看全部会话"文字行里，
+          会话一多就要滚到底才看得见。
+
+          两头一换，两个动作各归其位：新建在最上面（最高频、且已经带了快捷键），
+          查找在这一节的标题行上（鼠标移上来才出现，与项目那一节同一套手势）。
+        -->
         <button
           type="button"
           class="side-add"
-          title="新建会话（Ctrl/Cmd + K）"
-          aria-label="新建会话"
-          @click="newConversation"
+          title="查看全部会话"
+          aria-label="查看全部会话"
+          @click="emit('openHistory')"
         >
-          <IconChatNew :size="15" />
+          <IconClock :size="15" />
         </button>
       </div>
 
       <ul v-show="chatsOpen" class="side-list">
         <li v-for="item in shownLoose" :key="item.id">
-          <RouterLink class="side-row" :to="`/chat/${item.id}`" :title="item.title || '未命名对话'">
-            <span class="side-row-name">{{ item.title || '未命名对话' }}</span>
-          </RouterLink>
+          <div class="side-row-wrap">
+            <RouterLink
+              class="side-row"
+              :to="`/chat/${item.id}`"
+              :title="item.title || '未命名对话'"
+            >
+              <span class="side-row-name">{{ item.title || '未命名对话' }}</span>
+            </RouterLink>
+            <ConversationRowMenu :item="item" />
+          </div>
         </li>
-        <li v-if="!looseConversations.length" class="side-empty">还没有对话。点上面的加号开始。</li>
-        <!-- 「找一条旧会话」仍然只有这一个入口（搜索 + 全部 / 已归档都在面板里） -->
-        <li>
-          <button type="button" class="side-row side-more" @click="emit('openHistory')">
-            查看全部会话
-          </button>
-        </li>
+        <li v-if="!looseConversations.length" class="side-empty">还没有对话</li>
       </ul>
     </div>
 
@@ -645,7 +673,14 @@ async function onLogout(): Promise<void> {
       -->
       <details ref="accountMenu" class="account">
         <summary class="account-row">
-          <IconUser class="account-icon" />
+          <!--
+            **头像是一个 28px 的圆**，不是一枚线稿图标（Kimi 的 `.not-login-icon`
+            实测 28×28 圆形）。差别不只是大小：圆是"这里将来会是你的一张脸"，
+            而一枚灰色小人图标读起来像"一个叫『用户』的入口"。
+          -->
+          <span class="account-avatar" aria-hidden="true">
+            <IconUser :size="16" />
+          </span>
           <span class="account-name" :title="identityName">{{ identityName }}</span>
           <span v-if="identityRole" class="account-role">{{ identityRole }}</span>
           <IconChevronDown class="account-caret" :size="14" />
@@ -687,21 +722,25 @@ async function onLogout(): Promise<void> {
   background: var(--bg-canvas);
   border-right: 1px solid var(--border-hairline);
   overflow: hidden;
-  /* 折叠过渡：宽度与 flex-basis 一起动，内容区平滑让出 / 收回空间 */
+  /* 折叠过渡：宽度与 flex-basis 一起动，内容区平滑让出 / 收回空间。
+     时长取 Kimi 的 300ms ease-in-out（它折叠的是 `transform`，我们折叠的是宽度——
+     聊天应用必须让内容区真的让出空间，不能只把侧栏推走。时长与缓动对齐，
+     手法保留）。 */
   transition:
-    width 180ms ease,
-    flex-basis 180ms ease;
+    width var(--motion-slow) var(--motion-ease-inout),
+    flex-basis var(--motion-slow) var(--motion-ease-inout);
 }
 
-/* 品牌行：高度定在 56px。折叠开关是绝对定位的（不参与撑高），
+/* 品牌行：高度 56px（Kimi 的 `.sidebar-header` 实测 15/10/9/16 内边距 + 高 56，
+   与页面顶栏的 58 不是同一个数）。折叠开关是绝对定位的（不参与撑高），
    不写 min-height 的话字标一收起行高就塌，下方导航会突然上移。 */
 .brand {
   position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  min-height: var(--header-height);
-  padding: var(--space-3) var(--space-4) var(--space-2);
+  min-height: var(--sidebar-header-height);
+  padding: 15px var(--space-4) 9px;
   color: var(--text-primary);
 }
 
@@ -711,8 +750,8 @@ async function onLogout(): Promise<void> {
   overflow: hidden;
   max-width: 200px;
   transition:
-    max-width 180ms ease,
-    opacity 120ms ease;
+    max-width var(--motion-slow) var(--motion-ease-inout),
+    opacity var(--motion-fast) var(--motion-ease);
 }
 
 .sidebar-collapsed .brand-mark {
@@ -813,7 +852,10 @@ async function onLogout(): Promise<void> {
   min-height: var(--nav-height);
   padding: 0 var(--space-2);
   overflow: hidden;
-  font-size: var(--text-body-size);
+  /* **14px/20px，不是正文的 15px**：Kimi 的 `.next-sidebar-nav-item` 实测如此。
+     侧栏是并列的短标签，不是要读的正文；用正文字号会让整栏胖一号、行距也散。 */
+  font-size: var(--text-meta-size);
+  line-height: 20px;
   /* 静止态就用主文字色（Kimi 如此）。此前用二级灰，
      五个入口读起来像"次要信息"，而它们是主导航。 */
   color: var(--text-primary);
@@ -821,18 +863,19 @@ async function onLogout(): Promise<void> {
   border-radius: var(--radius-nav);
   /* gap 与内边距一起过渡：折叠时图标是"滑"到中间的，不是跳过去的 */
   transition:
-    gap 180ms ease,
-    padding 180ms ease;
+    gap var(--motion-slow) var(--motion-ease-inout),
+    padding var(--motion-slow) var(--motion-ease-inout);
 }
 
-/* 标签用 max-width 收起（v-if 摘掉就没动画了）：折叠态收到 0 并淡出 */
+/* 标签用 max-width 收起（v-if 摘掉就没动画了）：折叠态收到 0 并淡出。
+   时长与侧栏宽度一致，否则文字会在栏还没收完时先消失。 */
 .nav-label {
   overflow: hidden;
   white-space: nowrap;
   max-width: 200px;
   transition:
-    max-width 180ms ease,
-    opacity 120ms ease;
+    max-width var(--motion-slow) var(--motion-ease-inout),
+    opacity var(--motion-fast) var(--motion-ease);
 }
 
 .sidebar-collapsed .nav-label {
@@ -847,6 +890,13 @@ async function onLogout(): Promise<void> {
 
 .nav-icon {
   flex: 0 0 auto;
+  /* **尺寸由 token 说了算**：Kimi 的导航图标实测 18×18，而 `IconBase` 的默认
+     `size` 是 16——模板里那十几个 `<IconXxx />` 都没传 size，于是
+     `--nav-icon-size` 定义了却从来没生效过（实测图标一直是 16）。
+     在这里用 CSS 定尺寸，比逐处改模板更靠得住：SVG 的 width/height 属性会被
+     作者的 CSS 覆盖，模板不用动。 */
+  width: var(--nav-icon-size);
+  height: var(--nav-icon-size);
   /* 跟随条目文字色（Kimi 的 `__icon-wrapper` 就是 currentColor）。
      此前固定三级灰，于是"图标比文字浅一档"成了默认，
      而它在静止态本该和文字同色。 */
@@ -865,13 +915,17 @@ async function onLogout(): Promise<void> {
 }
 
 /* 侧栏下半部分：会话列表。flex:1 占住剩余高度，
-   底部的主题/设置始终贴在窗口底部，不随列表长短上下浮动 */
+   底部的主题/设置始终贴在窗口底部，不随列表长短上下浮动。
+
+   **上沿没有分隔线**（v0.24 去掉的）：Kimi 的侧栏里一条分割线都没有——
+   区块之间靠 `.next-sidebar__body` 的 `gap: 12px` 分开。原先这里有一条
+   `border-top`，与页脚那条加起来是两道横线横穿整栏，是"侧栏看起来碎"的主因。
+   分隔的活交给留白(`.side-head` 的 `margin-top`)与背景差。 */
 .side-section {
   flex: 1;
   min-height: 0;
-  padding: var(--space-3) var(--space-2) var(--space-2);
+  padding: 0 var(--space-2) var(--space-2);
   overflow-y: auto;
-  border-top: 1px solid var(--border-hairline);
 }
 
 /* 节标题行：`项目 ⌄` + 右侧**悬停才出现**的"新建"按钮（Kimi Work 的形态）。
@@ -896,7 +950,9 @@ async function onLogout(): Promise<void> {
   background: none;
   color: var(--text-tertiary);
   font-size: var(--text-meta-size);
+  line-height: 20px;
   cursor: pointer;
+  transition: var(--transition-ui);
 }
 
 .side-toggle:hover {
@@ -948,6 +1004,47 @@ async function onLogout(): Promise<void> {
   list-style: none;
 }
 
+/* 会话行 + 它的「⋯」：外层只负责"把菜单压在行右端"。
+   **菜单不能放进 RouterLink 里**——`<details>` 套在链接里，点菜单会先触发跳转。
+   它是链接的**兄弟**，绝对定位浮在行的右侧。 */
+.side-row-wrap {
+  position: relative;
+}
+
+/* 「⋯」默认隐形，鼠标移到这一行（或键盘 Tab 到它）才显形（v0.25）。
+   与「项目」那一节的加号同一套手势：**列表里每一行都挂一个常驻的「⋯」，
+   整栏会变成一列按钮**，而它只是"整理这一行"的次要动作。
+   隐形不等于不可达：`opacity: 0` 的元素仍可聚焦，`:focus-visible` 会把它显出来
+   （规范 §8 禁止"只有 hover 才够得着"的关键操作）。 */
+.side-row-wrap :deep(.row-menu) {
+  position: absolute;
+  top: 50%;
+  right: var(--space-1-5);
+  display: flex;
+  margin-top: calc(var(--hit-target) / -2);
+  opacity: 0;
+  transition: opacity var(--motion-fast) var(--motion-ease);
+}
+
+.side-row-wrap:hover :deep(.row-menu),
+.side-row-wrap :deep(.row-menu:focus-within),
+.side-row-wrap :deep(.menu[open]) {
+  opacity: 1;
+}
+
+/* 菜单浮层自己要吃满不透明度：父层的 `opacity` 会**整片**作用于浮层（它是子元素），
+   而浮层是 `position: fixed` 的独立表面——0.0 的父层会让它一起淡掉。
+   所以在打开时把父层推到 1（上面那条规则已经做了），这里不必再改。 */
+
+/* 标题要给「⋯」腾地方（v0.25 修）。「⋯」浮在行右端 6..30px 这一片，
+   而标题原先一直铺到 6px 处——**省略号正好被压在「⋯」底下**（用户报的"重叠"）。
+   让位的宽度 = 按钮 24 + 右间距 6 + 4px 呼吸缝。
+   **常驻让位，不是 hover 时才让**：跟着 hover 变的话，鼠标扫过一列时
+   每一行的省略位置都会跳一下。代价是标题少显示两个字，那比抖动划算。 */
+.side-row-wrap > .side-row {
+  padding-right: calc(var(--hit-target) + var(--space-1-5) + var(--space-1));
+}
+
 .side-row {
   display: flex;
   align-items: center;
@@ -961,6 +1058,7 @@ async function onLogout(): Promise<void> {
   background: none;
   color: var(--text-primary);
   font-size: var(--text-meta-size);
+  line-height: 20px;
   text-align: left;
   text-decoration: none;
   cursor: pointer;
@@ -1005,47 +1103,66 @@ async function onLogout(): Promise<void> {
   color: var(--text-tertiary);
 }
 
-/* 空态：一行灰字，高度与行一致（免得清单塌成一条缝） */
+/* 空态：一行灰字，与行同高（免得清单塌成一条缝）。
+   **一句话说"现在是什么状态"，不说"你该怎么做"**：Kimi 的对话分区空态是
+   「登录以同步历史会话」——一行状态。原先我们写的是「还没有对话。点上面的加号开始。」
+   两行，把状态和操作指引挤在一起，反而把这个分区抬高了一倍。 */
 .side-empty {
   padding: var(--space-2) var(--space-1-5);
   color: var(--text-tertiary);
   font-size: var(--text-meta-size);
-  line-height: 1.5;
+  line-height: 20px;
 }
 
-/* 「新建会话」用**和导航项一样的形态**（v0.17 改的）。
-   原先它是一个 44px 的填充块按钮（`BgGp-Secondary` 底），而它正下方紧接着
-   就是一堆长得完全不同的导航行——同一栏里两种按钮形态，用户得先分辨"哪个能点、
-   哪个是链接"。现在它复用 `.nav-item`（40px 高、图标 + 文字、同样的悬停填充），
-   只在最右端多一枚快捷键提示。
+/* 「新建会话」是**侧栏里唯一有底有框的一颗**（v0.24 改回）。
 
-   这不只是"好看"：它把"新建会话"和"去某个地方"归成同一类东西——**都是侧栏里的一个入口**。
-   填充块按钮的语义是"这一栏的主操作"，而主操作在菜单型侧栏里没有单独强调的必要。 */
+   上一版把它改成"和导航项一样的形态"（透明行），理由写在这儿：同一栏里两种
+   按钮形态，用户得先分辨哪个能点。本轮按 kimi.com 对话页的实测改回来——
+   它的侧栏里唯一有底有框的就是这一颗，其余全是透明的行。
+   也就是说它对"哪个是主操作"的回答不是"都不强调"，而是**只强调一个**；
+   而且它靠的是位置（第一行）+ 底色 + 边框三重信号，不靠让别的项变淡。
+
+   形态取值全部是实测：底 `#1f1f1f`（`BgGp-Secondary`，比画布亮一档）、
+   1px `Separators-S1` 描边、圆角 12、高 44、文字 **500 字重**。
+   **左右各留 8px**——与 `.nav` 的内边距取值一致（它是 `.sidebar` 的直接子元素，
+   `.nav` 上那层 padding 管不到它）。 */
 .new-chat {
-  /* **左右各留 8px**（v0.18）——与 `.nav` 的内边距取值一致。
-     这一条是用户报的"新建会话为什么不跟其他菜单对齐"的答案：它是 `.sidebar` 的
-     **直接子元素**，`.nav` 上那层 `padding: 0 var(--space-2)` 管不到它，
-     于是它铺满整个侧栏宽度（x=0 / 宽 239），而它下面每一行都从 8px 开始。
-     同一栏里两条不同的起始线，看着就是"这一项没对齐"。
-     （它自己那一行内部本来就是对的：图标与文字都由 `.nav-item` 的内边距定位。） */
   margin: 0 var(--space-2) var(--space-2);
+  background: var(--bg-group);
+  border: 1px solid var(--border-hairline);
+  font-weight: 500;
+  transition: var(--transition-surface);
 }
 
-/* 快捷键提示：`Ctrl K`（Kimi 的写法）。等宽字体 + 极轻的描边，
-   一眼看出是"按键"而不是文字。 */
+.new-chat:hover {
+  background: var(--bg-group);
+  /* 悬停不改底色，只把边框提到 `-active` 那档：块按钮已经有底了，
+     再叠一层填充会变成"两块颜色拼在一起"，而边框加深是它自己的语言。 */
+  border-color: var(--border-strong);
+}
+
+/* 快捷键提示：`Ctrl` `K` 两枚小片（Kimi 的写法）。
+   **不是等宽字体、不是 10px**：实测它的 `.meta` 是 UI 字体的 14px、
+   `Fills-F2` 底、无边框、`padding: 0 4px`、高 20、圆角 4。
+   此前我们做成了 10px 等宽 + 1px 描边——那是"代码片段"的形态，不是"按键"。 */
 .shortcut {
+  display: inline-flex;
+  gap: var(--space-1);
   margin-left: auto;
-  padding: 0 var(--space-1-5);
-  min-width: 20px;
-  height: 20px;
+}
+
+.shortcut kbd {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--border-hairline);
+  min-width: 20px;
+  height: 20px;
+  padding: 0 var(--space-1);
+  background: var(--Fills-F2);
   border-radius: var(--radius-badge);
   color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: var(--text-c2-size);
+  font-family: inherit;
+  font-size: var(--text-meta-size);
   line-height: 1;
 }
 
@@ -1241,25 +1358,32 @@ async function onLogout(): Promise<void> {
 .side-note {
   margin: var(--space-2);
   font-size: var(--text-micro-size);
-  line-height: 1.6;
+  line-height: var(--line-prose);
   color: var(--text-tertiary);
 }
 
+/* 页脚：**没有上分隔线**（v0.24 去掉的），内边距 8px。
+   这是本轮"左下侧边栏"那组问题里最要紧的两条：
+   1. 原先的 `border-top` 横穿整栏，加上 `.side-section` 那条一共两道，
+      侧栏被切成三段；Kimi 的侧栏里一条分割线都没有，靠留白分块。
+   2. 原先的内边距是 `12px 16px`，于是账号那个盒子从 x=16 起、宽 207，
+      而它上面每一行导航都从 x=8 起、宽 223——**同一栏里两条起始线**。
+      改成 8px 之后全栏共用一条起始线。 */
 .sidebar-foot {
   /* margin-top: auto 让页脚始终贴底：折叠态下会话列表整段隐藏，
      flex:1 的撑高元素没了，不写这句页脚会跑到导航正下方。 */
   margin-top: auto;
-  padding: var(--space-3) var(--space-4);
-  border-top: 1px solid var(--border-hairline);
+  padding: var(--space-2);
 }
 
 /* 账号区：一行摘要，点开是向上的二级菜单（设置 / 切换主题 / 退出登录）。
-   页脚现在**只有这一行**——使用者下拉与独立的「设置」按钮都已收进菜单。 */
+   页脚现在**只有这一行**——使用者下拉与独立的「设置」按钮都已收进菜单。
+
+   **容器本身完全透明**（无填充、无边框、无圆角）：Kimi 的 `.user-area` 实测如此，
+   底色只在悬停/展开时出现。原先它常驻一个 `bg-surface` 填充 + 1px 描边，
+   于是它成了整条侧栏里最重的一块——而它承载的信息（我是谁）恰恰是最不需要强调的。 */
 .account {
   position: relative;
-  background: var(--bg-surface);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-control);
 }
 
 .account-row {
@@ -1267,10 +1391,14 @@ async function onLogout(): Promise<void> {
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
+  /* 44px：Kimi 的 `.user-area` 实测高 44，与上面 40px 的导航行刻意不同——
+     它是"一块"而不是"一行"。 */
+  min-height: 44px;
   padding: var(--space-2);
-  border-radius: var(--radius-control);
+  border-radius: var(--radius-nav);
   cursor: pointer;
   list-style: none;
+  transition: var(--transition-ui);
 }
 
 .account-row::-webkit-details-marker {
@@ -1282,9 +1410,17 @@ async function onLogout(): Promise<void> {
   background: var(--bg-hover);
 }
 
-.account-icon {
+/* 头像占位：28px 圆 + 二级灰的小人 */
+.account-avatar {
+  display: inline-flex;
   flex: 0 0 auto;
-  color: var(--text-tertiary);
+  align-items: center;
+  justify-content: center;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  background: var(--bg-selected);
+  border-radius: var(--radius-pill);
+  color: var(--text-secondary);
 }
 
 /* 名字吃掉剩余宽度（同样给角色与折叠箭头让位）。
@@ -1294,13 +1430,14 @@ async function onLogout(): Promise<void> {
   overflow: hidden;
   max-width: 200px;
   font-size: var(--text-meta-size);
+  line-height: 20px;
   font-weight: 500;
   color: var(--text-primary);
   text-overflow: ellipsis;
   white-space: nowrap;
   transition:
-    max-width 180ms ease,
-    opacity 120ms ease;
+    max-width var(--motion-slow) var(--motion-ease-inout),
+    opacity var(--motion-fast) var(--motion-ease);
 }
 
 .account-role {
@@ -1311,8 +1448,8 @@ async function onLogout(): Promise<void> {
   color: var(--text-tertiary);
   white-space: nowrap;
   transition:
-    max-width 180ms ease,
-    opacity 120ms ease;
+    max-width var(--motion-slow) var(--motion-ease-inout),
+    opacity var(--motion-fast) var(--motion-ease);
 }
 
 .account-caret {
@@ -1321,21 +1458,22 @@ async function onLogout(): Promise<void> {
   max-width: 16px;
   color: var(--text-tertiary);
   transition:
-    max-width 180ms ease,
-    opacity 120ms ease;
+    max-width var(--motion-slow) var(--motion-ease-inout),
+    opacity var(--motion-fast) var(--motion-ease);
 }
 
-/* 菜单向上弹出：它就挂在页脚底部，向下会出到屏幕外 */
+/* 菜单向上弹出：它就挂在页脚底部，向下会出到屏幕外。
+   尺寸照 Kimi 的 `.kimi-menu` 实测：底 `Bg-Tertiary`（深色下比画布亮两档）、
+   圆角 16、内边距 8、**无边框**（分层靠底色差，不靠描边）。 */
 .account-pop {
   position: absolute;
   right: 0;
   bottom: calc(100% + var(--space-1));
   left: 0;
   z-index: 20;
-  padding: var(--space-1);
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
+  padding: var(--menu-pad);
+  background: var(--bg-menu);
+  border-radius: var(--radius-panel);
   box-shadow: var(--shadow-popover);
 }
 
@@ -1344,12 +1482,14 @@ async function onLogout(): Promise<void> {
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  min-height: 30px;
+  min-height: var(--menu-item-height);
   padding: 0 var(--space-2);
   font-size: var(--text-meta-size);
-  color: var(--text-secondary);
+  line-height: 20px;
+  color: var(--menu-item-text);
   text-align: left;
-  border-radius: var(--radius-control);
+  border-radius: var(--menu-item-radius);
+  transition: var(--transition-ui);
 }
 
 .account-pop button:hover:not(:disabled) {

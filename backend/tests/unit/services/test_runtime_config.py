@@ -222,3 +222,99 @@ def test_max_tokens_is_no_longer_a_setting(runtime: RuntimeConfigService) -> Non
         for field in group["fields"]
     )
     assert runtime.llm().max_tokens is None
+
+
+# ------------------------------------------------------------------ 读取缓存
+
+
+def _count_reads(bundle, monkeypatch):  # type: ignore[no-untyped-def]
+    """把仓储的批量读取包一层计数：用来断言"第二次真的没查库"。"""
+    calls: list[list[str]] = []
+    original = bundle.meta.get_settings
+
+    def spy(keys):  # type: ignore[no-untyped-def]
+        calls.append(list(keys))
+        return original(keys)
+
+    monkeypatch.setattr(bundle.meta, "get_settings", spy)
+    return calls
+
+
+def test_repeated_reads_hit_the_cache(runtime, bundle, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """同一个键连着读两次，只查一次库。
+
+    一次读取的固定开销实测约 6ms（PG 自己只花 2ms，其余是连接池借还 + 往返），
+    而它在每次请求的路径上——一轮对话要读十几次设置。
+    """
+    calls = _count_reads(bundle, monkeypatch)
+
+    assert runtime.get_int("chat.top_k") == runtime.get_int("chat.top_k")
+    assert len(calls) == 1
+
+
+def test_a_key_that_is_not_in_the_database_is_remembered_too(
+    runtime, bundle, monkeypatch  # type: ignore[no-untyped-def]
+) -> None:
+    """"库里没有这一项"也要记住。
+
+    否则"没配过的键"每次都白查一遍——而设置页打开的 ``describe()`` 里大半都是这种键。
+    """
+    calls = _count_reads(bundle, monkeypatch)
+
+    assert runtime.get("mineru.token") == ""
+    assert runtime.get("mineru.token") == ""
+
+    assert len(calls) == 1
+
+
+def test_many_reads_share_one_query(runtime, bundle, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """``get_many`` 只发一条 SQL（§12.116 的口径），且第二次不再发。"""
+    keys = ["chat.top_k", "chat.section_chars", "chat.material_chars"]
+    calls = _count_reads(bundle, monkeypatch)
+
+    runtime.get_many(keys)
+    runtime.get_many(keys)
+
+    assert len(calls) == 1
+    assert sorted(calls[0]) == sorted(keys)
+
+
+def test_set_clears_the_cache_immediately(runtime, bundle, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """写完立刻读得到新值：``set`` 主动清缓存，"改完马上看"不走 TTL。"""
+    calls = _count_reads(bundle, monkeypatch)
+
+    runtime.get("chat.top_k")
+    runtime.set({"chat.top_k": "9"})
+
+    assert runtime.get_int("chat.top_k") == 9
+    # 首次读一次 + set 清掉之后再读一次
+    assert len(calls) == 2
+
+
+def test_keys_written_by_other_services_are_never_cached(
+    runtime, bundle, monkeypatch  # type: ignore[no-untyped-def]
+) -> None:
+    """按实体生成的键（``document.<id>.*`` / ``trash.<id>.*``）**不进缓存**。
+
+    它们的写入方（摄入、回收站）直接落库、不经过本服务的 ``set()``；
+    缓存了就会在写入后读到旧值，而"偶尔读到旧值"这种 bug 极难复现。
+    """
+    calls = _count_reads(bundle, monkeypatch)
+    key = "document.doc_1.original_path"
+
+    runtime.get(key)
+    runtime.get(key)
+
+    assert len(calls) == 2
+
+
+def test_entries_expire_after_the_ttl(runtime, bundle, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """过了 TTL 要重新查库——这一层的作用是"同一轮里反复读"，不是"永不更新"。"""
+    calls = _count_reads(bundle, monkeypatch)
+    # 取负数而不是 0：0 会让"同一时刻的两次读"仍算命中，用例会偶然变红
+    monkeypatch.setattr("app.services.runtime_config._CACHE_TTL_SECONDS", -1.0)
+
+    runtime.get("chat.top_k")
+    runtime.get("chat.top_k")
+
+    assert len(calls) == 2

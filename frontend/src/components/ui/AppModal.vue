@@ -6,7 +6,7 @@
  * 用原生 `<dialog>`：焦点陷阱、Esc 关闭、惰性背景由浏览器负责，
  * 自己实现这三件事很容易漏掉键盘可达性（§8 必须项）。
  */
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import IconClose from '@/components/icons/IconClose.vue'
 import { popTopLayerHost, pushTopLayerHost } from '@/composables/useTopLayer'
@@ -38,7 +38,8 @@ withDefaults(
 
 const dialog = ref<HTMLDialogElement | null>(null)
 
-watch(open, (isOpen) => {
+/** 把 `open` 的状态落到原生 `<dialog>` 上。挂载时与每次变化都走这一条。 */
+function syncOpen(isOpen: boolean): void {
   const element = dialog.value
   if (!element) return
   if (isOpen && !element.open) {
@@ -47,7 +48,24 @@ watch(open, (isOpen) => {
     pushTopLayerHost(element)
   }
   if (!isOpen && element.open) element.close()
-})
+}
+
+watch(open, syncOpen)
+
+/**
+ * **挂载时补一次**（v0.25）。
+ *
+ * 上面那个 watcher 不是 `immediate`，也**不能是**：`immediate` 的回调在 setup 期间跑，
+ * 那时 `dialog` 这个模板 ref 还是 null，等于什么都没做。
+ *
+ * 于是 `<AppModal v-if="X" v-model:open="X">`（弹窗只在需要时渲染、渲染出来就已经是
+ * 打开状态）这个写法**永远打不开**：watcher 没有可观察的变化，`showModal()` 从没被调到，
+ * 界面表现是"点了菜单项什么都不发生"。
+ *
+ * 改成在 `onMounted` 里补一次同步，两种写法就都对了——把弹窗的挂载时机交给调用方
+ * 是合理的诉求（一屏几十行时不该给每行都挂三个 `<dialog>`），组件这边不该有暗坑。
+ */
+onMounted(() => syncOpen(open.value))
 
 function close(): void {
   open.value = false
@@ -97,13 +115,17 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* 弹窗靠**两层底色差**分层，不靠描边（《Kimi 界面逐处对照》§5）：
+   Kimi 的外壳是画布色 `#181817`、内卡是 `#121212`，两层都没有边框也没有投影。
+   我们反过来（单层 `#121212` + 1px 描边 + 投影）——去掉描边与投影之后，
+   "比画布深一档"这个色差本来就在，层级不会丢，而弹窗边上少了一圈硬线。 */
 .modal {
   padding: 0;
   color: var(--text-primary);
   background: var(--bg-surface);
-  border: 1px solid var(--border);
+  border: none;
   border-radius: var(--radius-overlay);
-  box-shadow: var(--shadow-popover);
+  box-shadow: none;
 }
 
 .modal-md {
@@ -142,7 +164,20 @@ onBeforeUnmount(() => {
   height: 88vh;
 }
 
-.modal-h-hug .modal-body {
+/* **三档高度都要让内容区自己滚**（v0.27 修）。
+
+原先只给 `hug` 写了 `overflow-y: auto`，`tall`/`full` 靠 `flex: 1 1 auto` +
+`min-height: 0` 撑——实测那样**内容区根本不滚**：内容比它高时（技能市场 20 条，
+2226px 塞进 581px），溢出的部分按 `overflow: visible` 画到外面，
+真正滚起来的是 `<dialog>` 自己（UA 的 `overflow: auto`），于是**标题栏与底部按钮
+跟着一起滚走**——而"滚动条只出现在内容区、标题栏与底部按钮始终贴住上下边"
+正是这个组件把高度分三档的理由。
+
+判据（真浏览器量出来的）：`body.scrollTop = 400` 之后仍是 0，
+而 `dialog.scrollHeight > dialog.clientHeight`。 */
+.modal-h-hug .modal-body,
+.modal-h-tall .modal-body,
+.modal-h-full .modal-body {
   overflow-y: auto;
 }
 
@@ -150,6 +185,13 @@ onBeforeUnmount(() => {
   background: var(--overlay-scrim);
 }
 
+/* 头部带：**宽/高弹窗用 72px，小弹窗仍用紧凑档**。
+
+   72px 是 Kimi 的 `.login-desktop-cn__header` 实测值（左内边距 24）——那是一块
+   667px 宽的弹窗。差的不只是数字：72px 让标题与内容之间隔开一层，53px 会让标题
+   像正文的第一个字段。但同一条规律反过来说也成立——480px 宽的确认框上顶一条
+   72px 的带子，头会占掉弹窗的三分之一。Kimi 的小弹窗我没量到，所以**不猜**：
+   有实测的那一档照抄，没实测的那一档保持原样。 */
 .modal-head {
   display: flex;
   flex: 0 0 auto;
@@ -158,6 +200,13 @@ onBeforeUnmount(() => {
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
+}
+
+.modal-wide .modal-head,
+.modal-h-tall .modal-head,
+.modal-h-full .modal-head {
+  min-height: 72px;
+  padding: 0 var(--space-6);
 }
 
 /* 弹层标题与内容区小标题同级：都是 15px，不再各写一个字号 */

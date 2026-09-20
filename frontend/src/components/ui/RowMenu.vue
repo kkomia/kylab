@@ -195,23 +195,30 @@ onBeforeUnmount(() => {
   visibility: hidden;
   z-index: 30;
   min-width: 168px;
-  padding: var(--space-1);
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-overlay);
+  /* 弹层构造照 Kimi 的 `.kimi-menu` 实测：底 `Bg-Tertiary`（深色下比画布亮两档，
+     浅色下是纯白）、圆角 16、内边距 8、**无边框**——分层靠底色差，不靠描边。
+     详见《Kimi 界面逐处对照》§4。 */
+  padding: var(--menu-pad);
+  background: var(--bg-menu);
+  border-radius: var(--radius-panel);
   box-shadow: var(--shadow-popover);
 }
 
 /* 菜单项统一在这里定，调用方只写语义类（menu-item-danger / disabled）。
    纯文字、无图标——菜单里再塞图标会让一列方块看起来比它承载的操作更重。 */
 .menu-list :deep(button) {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   width: 100%;
-  padding: var(--space-2) var(--space-3);
+  min-height: var(--menu-item-height);
+  padding: 0 var(--space-2);
   font-size: var(--text-meta-size);
-  color: var(--text-primary);
+  line-height: 20px;
+  color: var(--menu-item-text);
   text-align: left;
-  border-radius: var(--radius-control);
+  border-radius: var(--menu-item-radius);
+  transition: var(--transition-ui);
 }
 
 .menu-list :deep(button:hover:not(:disabled)) {
