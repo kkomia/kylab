@@ -1,4 +1,4 @@
-"""记忆工作区的**文件层**（v0.14 三期，见 ``docs/记忆层设计-v0.1.md`` §3）。
+"""记忆工作区的**文件层**（v0.14 三期，见 ``docs/设计/记忆层设计-v0.1.md`` §3）。
 
 记忆就是一堆带 frontmatter 与 wikilink 的普通 Markdown（ReMe 的主张：
 *Memory as File, File as Memory*）。三期要让人**看得见、改得动**这些文件，

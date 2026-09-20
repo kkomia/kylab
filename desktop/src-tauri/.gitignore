@@ -1,0 +1,5 @@
+# 编译产物（几百 MB，永不入库）
+/target/
+
+# tauri-build 每次编译都会重新生成；capabilities 里的 $schema 指向它，缺了不影响构建
+/gen/schemas

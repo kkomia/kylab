@@ -69,6 +69,31 @@ describe('api/client', () => {
     expect(headers.Authorization).toBe('Bearer kylab_st_abc')
   })
 
+  it('**FormData 请求不自己写 Content-Type**（上传全靠这一条）', async () => {
+    // 手写 `application/json` 会让后端解析不出任何字段——实测的表现是
+    // `422 {"message": "file: Field required"}`，看着像"请求里没带文件"。
+    // 浏览器的规矩：`FormData` 的 Content-Type（带 boundary）只能由它自己写，
+    // 而**作者显式设过的那个头它不会覆盖**。
+    const calls: RequestInit[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        calls.push(init)
+        return jsonResponse(200, { ok: true })
+      }),
+    )
+
+    const form = new FormData()
+    form.append('file', new Blob(['x']), 'a.png')
+    await request('/auth/avatar', { method: 'POST', body: form })
+    await request('/auth/login', { method: 'POST', body: JSON.stringify({}) })
+
+    const headersOf = (init: RequestInit) => (init.headers ?? {}) as Record<string, string>
+    expect(headersOf(calls[0])['Content-Type']).toBeUndefined()
+    // JSON 那条路照旧带上（后端也靠它认 body）
+    expect(headersOf(calls[1])['Content-Type']).toBe('application/json')
+  })
+
   it('没有令牌时不加 Authorization 头', async () => {
     const fetchMock = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
       async () => jsonResponse(200, { ok: true }),

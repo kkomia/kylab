@@ -149,7 +149,7 @@ SETTING_GROUPS: dict[str, Any] = {
             },
         ],
     },
-    # 沙箱执行（v0.16，见 docs/Agent-工作区与能力层设计-v0.1.md §4）。
+    # 沙箱执行（v0.16，见 docs/设计/Agent-工作区与能力层设计-v0.1.md §4）。
     # **默认 ask**：这是权限最大的一个动作（在用户的机器上执行代码），
     # 默认放行是这一层最不该有的默认。四档：allow / ask / deny / sandbox。
     "sandbox": {
@@ -184,7 +184,7 @@ SETTING_GROUPS: dict[str, Any] = {
             },
         ],
     },
-    # 记忆（v0.14，见 docs/记忆层设计-v0.1.md）。
+    # 记忆（v0.14，见 docs/设计/记忆层设计-v0.1.md）。
     # **默认关**：启用它等于多跑一个进程（ReMe）且会调 LLM（捕获与整合都要），
     # 升级之后默默开始烧 token 是最不该有的默认。
     "memory": {

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="color-scheme" content="light dark" />
+    <title>连接到 KYLAB</title>
+    <link rel="stylesheet" href="shell.css" />
+  </head>
+  <body>
+    <main class="card">
+      <div class="brand" id="brand"></div>
+
+      <form class="form" id="form" novalidate>
+        <div class="field">
+          <label class="label" for="address">服务器地址</label>
+          <input
+            id="address"
+            class="input"
+            type="text"
+            inputmode="url"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="http://192.168.1.10:8000"
+          />
+        </div>
+
+        <!-- 连接中的状态：自动连接与手动连接共用这一行 -->
+        <p class="status" id="status" role="status" hidden></p>
+        <!-- 失败原因：**说清是哪一种失败**（连不上 / 不是 KYLAB / 版本不配） -->
+        <p class="error" id="error" role="alert" hidden></p>
+
+        <button class="submit" id="submit" type="submit">连接并进入</button>
+      </form>
+
+      <div class="recent" id="recent" hidden>
+        <p class="recent-title">最近使用</p>
+        <ul class="recent-list" id="recent-list"></ul>
+      </div>
+
+      <p class="footer"><span id="version"></span></p>
+    </main>
+    <script src="shell.js"></script>
+  </body>
+</html>

@@ -52,6 +52,7 @@ from app.storage.base import (
     NoteRecord,
     ParseResultRecord,
     RegisteredModelRecord,
+    ScheduledTaskRecord,
     SessionRecord,
     ShareRecord,
     TaskCounts,
@@ -82,6 +83,7 @@ __all__ = [
     "ModelRegistryRepo",
     "NoteRepo",
     "ParseResultRepo",
+    "ScheduleRepo",
     "SettingsRepo",
     "ShareRepo",
     "TaskQueueRepo",
@@ -579,6 +581,48 @@ class WorkspaceRepo(Protocol):
 
 
 @runtime_checkable
+class ScheduleRepo(Protocol):
+    """定时任务域（v0.33）：到点自动跑一轮问答的那些事。
+
+    调度状态（``next_run_at`` / ``enabled`` / ``last_*``）与任务本体放在同一个域：
+    它们由同一个动作改写（"认领一次运行"），拆成两个域会让那次 CAS 变成跨域的两步。
+    """
+
+    def create_scheduled_task(self, record: ScheduledTaskRecord) -> ScheduledTaskRecord: ...
+
+    def get_scheduled_task(self, scheduled_id: str) -> ScheduledTaskRecord | None: ...
+
+    def list_scheduled_tasks(self) -> list[ScheduledTaskRecord]: ...
+
+    def update_scheduled_task(self, record: ScheduledTaskRecord) -> ScheduledTaskRecord: ...
+
+    def delete_scheduled_task(self, scheduled_id: str) -> None: ...
+
+    def due_scheduled_tasks(
+        self, *, now: datetime, limit: int = 10
+    ) -> list[ScheduledTaskRecord]: ...
+
+    def arm_scheduled_task(
+        self,
+        scheduled_id: str,
+        *,
+        expected_next_run_at: datetime | None,
+        next_run_at: datetime | None,
+        enabled: bool,
+    ) -> bool: ...
+
+    def finish_scheduled_run(
+        self,
+        scheduled_id: str,
+        *,
+        status: str,
+        error: str | None,
+        last_run_at: datetime,
+        conversation_id: str | None = None,
+    ) -> None: ...
+
+
+@runtime_checkable
 class IdentityRepo(Protocol):
     r"""身份域：使用者名册与登录会话。
 
@@ -601,6 +645,8 @@ class IdentityRepo(Protocol):
     def update_user_password(self, user_id: str, password_hash: str) -> None: ...
 
     def set_user_disabled(self, user_id: str, disabled: bool) -> None: ...
+
+    def set_user_avatar(self, user_id: str, avatar_key: str) -> None: ...
 
     def claim_legacy_ownership(self, owner_id: str) -> dict[str, int]: ...
 

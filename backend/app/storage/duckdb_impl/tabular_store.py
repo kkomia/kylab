@@ -83,10 +83,8 @@ class DuckDbTabularStore(TabularStore):
             # 而"重跑时列变了"是正常情况（用户改了源文件）
             self._connection().execute(f'DROP TABLE IF EXISTS "{table}"')
             # 先建表再 INSERT，并显式声明 VARCHAR——避免 DuckDB 自己推断类型
-            column_defs = ", ".join(f'{_quote(name)} VARCHAR' for name in columns)
-            self._connection().execute(
-                f'CREATE TABLE "{table}" ({_ORDINAL} BIGINT, {column_defs})'
-            )
+            column_defs = ", ".join(f"{_quote(name)} VARCHAR" for name in columns)
+            self._connection().execute(f'CREATE TABLE "{table}" ({_ORDINAL} BIGINT, {column_defs})')
 
             if rows:
                 placeholders = ", ".join("?" for _ in range(len(columns) + 1))
@@ -111,9 +109,11 @@ class DuckDbTabularStore(TabularStore):
     def table_exists(self, table: str) -> bool:
         _require_safe(table)
         with self._lock:
-            row = self._connection().execute(
-                "SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table]
-            ).fetchone()
+            row = (
+                self._connection()
+                .execute("SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table])
+                .fetchone()
+            )
         return row is not None
 
     def columns(self, table: str) -> list[str]:
@@ -130,9 +130,13 @@ class DuckDbTabularStore(TabularStore):
         with self._lock:
             if not self.table_exists(table):
                 return 0
-            row = self._connection().execute(
-                f'SELECT COUNT(*) FROM "{table}"'  # noqa: S608
-            ).fetchone()
+            row = (
+                self._connection()
+                .execute(
+                    f'SELECT COUNT(*) FROM "{table}"'  # noqa: S608
+                )
+                .fetchone()
+            )
         return int(row[0]) if row else 0
 
     def read_rows(self, table: str, *, limit: int = 50, offset: int = 0) -> list[list[str]]:
@@ -144,11 +148,51 @@ class DuckDbTabularStore(TabularStore):
             selected = ", ".join(_quote(name) for name in names)
             # **按内部行号排序**：DuckDB 不保证无 ORDER BY 的行序，
             # 而用户说的"第 3 行"必须与源文件一致
-            rows = self._connection().execute(
-                f'SELECT {selected} FROM "{table}" ORDER BY {_ORDINAL} LIMIT ? OFFSET ?',  # noqa: S608
-                [limit, offset],
-            ).fetchall()
+            rows = (
+                self._connection()
+                .execute(
+                    f'SELECT {selected} FROM "{table}" ORDER BY {_ORDINAL} LIMIT ? OFFSET ?',  # noqa: S608
+                    [limit, offset],
+                )
+                .fetchall()
+            )
         return [[_text(cell) for cell in row] for row in rows]
+
+    def list_tables(self) -> list[str]:
+        with self._lock:
+            rows = (
+                self._connection()
+                .execute(
+                    "SELECT table_name FROM information_schema.tables"
+                    " WHERE table_schema = 'main' ORDER BY table_name"
+                )
+                .fetchall()
+            )
+        return [str(row[0]) for row in rows]
+
+    def run_select(self, sql: str, *, max_rows: int) -> tuple[list[str], list[list[str]]]:
+        """跑一条只读 SQL（校验在服务层，见协议里的说明）。
+
+        两处刻意的做法：
+
+        - **外面再包一层 LIMIT**：模型写的查询可能没有 LIMIT（"这个月一共多少"
+          这类聚合本来也不需要），而"把整张表捞进内存再丢掉"是白付的代价。
+          包一层还有第二个好处——它让 LIMIT 在 DuckDB 的流水线里能提前停下；
+        - **列名从 ``description`` 取**：聚合列的名字是引擎算出来的
+          （``sum(金额)`` / ``count(*)``），我们自己拼不出来。
+
+        "有没有被截断"由调用方按"回来的是不是满的"判断（见 ``services/tabular``）——
+        多取一条来探边界会让"最多回 N 行"这句话变成 N+1 行，那正是第一版踩的坑。
+        """
+        limit = max(1, int(max_rows))
+        with self._lock:
+            cursor = self._connection().execute(
+                f"SELECT * FROM ({sql}) AS __kylab_q LIMIT {limit}"  # noqa: S608
+            )
+            columns = [item[0] for item in (cursor.description or ())]
+            rows = cursor.fetchall()
+        return columns, [[_text(cell) for cell in row] for row in rows]
+
 
     # ------------------------------------------------------------------ 生命周期
 

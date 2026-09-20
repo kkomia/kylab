@@ -1,4 +1,4 @@
-"""技能注册表（v0.15，设计见 ``docs/Agent-工作区与能力层设计-v0.1.md`` §6.1）。
+"""技能注册表（v0.15，设计见 ``docs/设计/Agent-工作区与能力层设计-v0.1.md`` §6.1）。
 
 **技能 = 磁盘上一个带 frontmatter 的 ``SKILL.md``**（与 QwenPaw / Claude Code 同格式，
 仓库里自带的那份 ``skills/kylab-knowledge-base/SKILL.md`` 就是）。它不是代码插件，

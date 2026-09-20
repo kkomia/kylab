@@ -97,9 +97,7 @@ class LocalOfficeParser(ParserProvider):
             raise ParseError(f"文件内容为空：{filename or '(未命名)'}")
         suffix = suffix_of(filename)
         try:
-            markdown = (
-                self._docx(content) if suffix == ".docx" else self._pptx(content)
-            )
+            markdown = self._docx(content) if suffix == ".docx" else self._pptx(content)
         except ParseError:
             raise
         except (KeyError, zipfile.BadZipFile, ElementTree.ParseError) as exc:

@@ -39,6 +39,7 @@ if TYPE_CHECKING:
         ModelRegistryRepo,
         NoteRepo,
         ParseResultRepo,
+        ScheduleRepo,
         SettingsRepo,
         ShareRepo,
         TaskQueueRepo,
@@ -75,6 +76,7 @@ __all__ = [
     "MetaStore",
     "ObjectStore",
     "ParseResultRecord",
+    "ScheduledTaskRecord",
     "SearchHit",
     "SessionRecord",
     "ShareRecord",
@@ -179,6 +181,11 @@ class StoreBundle:
     @property
     def workspaces(self) -> WorkspaceRepo:
         """工作区域视图（`meta` 的窄类型）。"""
+        return self.meta  # type: ignore[return-value]
+
+    @property
+    def schedules(self) -> ScheduleRepo:
+        """定时任务域视图（`meta` 的窄类型）。"""
         return self.meta  # type: ignore[return-value]
 
     @property
@@ -704,7 +711,7 @@ class ConversationRecord:
 class MCPServerRecord:
     """一个外部 MCP 服务（v0.15）：插件能力的落点。
 
-    见 ``docs/Agent-工作区与能力层设计-v0.1.md`` §6.2。``env`` / ``headers`` 里
+    见 ``docs/设计/Agent-工作区与能力层设计-v0.1.md`` §6.2。``env`` / ``headers`` 里
     可能带凭据——**接口绝不回显它们的值**，只回"配过没有"。
     """
 
@@ -726,10 +733,71 @@ class MCPServerRecord:
 
 
 @dataclass(slots=True)
+class ScheduledTaskRecord:
+    """定时任务（v0.33）：到点替用户做一件事。
+
+    见 ``docs/设计/Agent-工作区与能力层设计-v0.1.md`` §6.6。它回答的是
+    "有没有哪件事是**到点就该做**、而我不想每次自己去问一遍"——
+    每天早晨把昨天的日志汇总、每周一把上周的周报底稿准备好。
+
+    三处刻意的形状：
+
+    - **两种时间**（``kind``）：``cron`` = 反复发生（5 字段表达式，按**服务器本地时间**
+      解释），``once`` = 就跑一次（``run_at``）。不做"每 N 分钟"这种第三种形态——
+      那用 ``*/N * * * *`` 表达得出来，多一种形态只会多一处要维护的语义；
+    - **结果落进一条会话**（``conversation_id``）：每次运行都是那个会话里的一轮问答，
+      所以"上周它都跑了些什么、结论是什么"就是翻会话记录——不另造一套"运行历史"
+      的存储与界面。首次运行时才建这条会话（没跑过的任务不该先占一个会话）；
+    - ``next_run_at`` 是**调度侧唯一的游标**：它同时承担"下次什么时候跑"与
+      "这一次有没有人认领"（见 ``MetaStore.arm_scheduled_task`` 的 CAS）。
+    """
+
+    id: str
+    """``sched_<hex>``。"""
+
+    name: str
+    """给人看的名字，同时会成为那条会话的标题。"""
+
+    prompt: str
+    """到点要问的那句话（它就是每次运行的用户消息）。"""
+
+    kind: str
+    """``cron`` 或 ``once``。"""
+
+    cron: str = ""
+    """5 字段 cron 表达式（``kind='cron'`` 时有效）：分 时 日 月 周。"""
+
+    run_at: datetime | None = None
+    """一次性任务的执行时刻（``kind='once'``）。"""
+
+    next_run_at: datetime | None = None
+    """下次该跑的时刻（`timestamptz`）。``None`` = 不会再跑（已停用或一次性已跑完）。"""
+
+    enabled: bool = True
+    kb_ids: Sequence[str] = field(default_factory=tuple)
+    """运行时的检索范围。**独立于用户当时的会话**：这一步决定"它去哪儿找资料"，
+    不勾库就是一次不查资料的运行。"""
+
+    model_pk: str | None = None
+    thinking: bool | None = None
+    thinking_effort: str | None = None
+    conversation_id: str | None = None
+    owner_id: str | None = None
+    last_run_at: datetime | None = None
+    last_status: str = ""
+    """``ok`` / ``failed``，或空串（还没跑过）。"""
+
+    last_error: str = ""
+    run_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
 class WorkspaceRecord:
     """工作区（v0.15）：Agent 的"在哪儿干活"。
 
-    见 ``docs/Agent-工作区与能力层设计-v0.1.md`` §3。与**沙箱**是两个概念：
+    见 ``docs/设计/Agent-工作区与能力层设计-v0.1.md`` §3。与**沙箱**是两个概念：
     工作区是长期、用户拥有、`root_path` 是他自己的目录；沙箱是一次性的试错空间。
     """
 
@@ -847,6 +915,12 @@ class UserRecord:
     disabled: bool = False
     """被管理员禁用的账号：登录拒绝，既有 session 在下次校验时失效。"""
     created_at: datetime | None = None
+    avatar_key: str = ""
+    """头像在对象存储里的 key（v0.29）。空 = 没有头像，界面用名字生成默认头像。
+
+    **只存 key**：头像是一张图，塞进这张表会让每次读账号都拖着一份二进制，
+    而账号是每个页面都要读一次的东西（见 ``services/avatars.py``）。
+    """
 
 
 @dataclass(slots=True)
@@ -1777,7 +1851,7 @@ class MetaStore(ABC):
         """
         ...
 
-    # ---- 工作区（v0.15；见 docs/Agent-工作区与能力层设计-v0.1.md §3）----
+    # ---- 工作区（v0.15；见 docs/设计/Agent-工作区与能力层设计-v0.1.md §3）----
     @abstractmethod
     def create_workspace(self, record: WorkspaceRecord) -> WorkspaceRecord: ...
 
@@ -1796,6 +1870,70 @@ class MetaStore(ABC):
     def delete_workspace(self, workspace_id: str) -> None:
         """删工作区。**里面的会话退回未归档**（外键是 ON DELETE SET NULL），
         不是跟着一起删——会话里有用户问过的内容，误删不可恢复。"""
+        ...
+
+    # ---- 定时任务（v0.33；见 docs/设计/Agent-工作区与能力层设计-v0.1.md §6.6）----
+    @abstractmethod
+    def create_scheduled_task(self, record: ScheduledTaskRecord) -> ScheduledTaskRecord: ...
+
+    @abstractmethod
+    def get_scheduled_task(self, scheduled_id: str) -> ScheduledTaskRecord | None: ...
+
+    @abstractmethod
+    def list_scheduled_tasks(self) -> list[ScheduledTaskRecord]:
+        """按"下次该跑的时间"排序（``None`` 排最后），其次按创建时间倒序。
+
+        归属过滤在服务层做（存储层不认识调用者身份），与工作区 / MCP 服务同一口径。
+        """
+        ...
+
+    @abstractmethod
+    def update_scheduled_task(self, record: ScheduledTaskRecord) -> ScheduledTaskRecord: ...
+
+    @abstractmethod
+    def delete_scheduled_task(self, scheduled_id: str) -> None: ...
+
+    @abstractmethod
+    def due_scheduled_tasks(self, *, now: datetime, limit: int = 10) -> list[ScheduledTaskRecord]:
+        """到点该跑的那些（``enabled`` 且 ``next_run_at <= now``），按时间正序。
+
+        **只查不算**：真正"认领"要过 :meth:`arm_scheduled_task`——
+        查与认领分成两步是有意的，认领那一步是带条件的 UPDATE（见它的说明）。
+        """
+        ...
+
+    @abstractmethod
+    def arm_scheduled_task(
+        self,
+        scheduled_id: str,
+        *,
+        expected_next_run_at: datetime | None,
+        next_run_at: datetime | None,
+        enabled: bool,
+    ) -> bool:
+        """认领一次运行：**把下次时间推到下一回**，条件是目前还停在 ``expected_next_run_at``。
+
+        返回 ``False`` = 有人先认领了（另一个 worker 或另一次扫描），这次别再跑。
+
+        为什么要 CAS 而不是"先查后写"：多个 worker 会同时扫到同一条到点的任务，
+        而"跑两次"的代价不是重复一次查询——它会重复**一次完整的问答与工具调用**
+        （真花钱），并在会话里留下两条一模一样的记录。判据只能落在一条
+        ``UPDATE ... WHERE next_run_at = 期望值`` 上（与任务队列的
+        ``FOR UPDATE SKIP LOCKED`` 同一个思路：让数据库来裁决谁先）。
+        """
+        ...
+
+    @abstractmethod
+    def finish_scheduled_run(
+        self,
+        scheduled_id: str,
+        *,
+        status: str,
+        error: str | None,
+        last_run_at: datetime,
+        conversation_id: str | None = None,
+    ) -> None:
+        """记一次运行的结果（状态 / 错误 / 时间，首次运行时把会话 id 落下来）。"""
         ...
 
     # ---- MCP 服务（v0.15）----
@@ -1943,6 +2081,15 @@ class MetaStore(ABC):
 
     @abstractmethod
     def set_user_disabled(self, user_id: str, disabled: bool) -> None: ...
+
+    @abstractmethod
+    def set_user_avatar(self, user_id: str, avatar_key: str) -> None:
+        """换 / 清空头像（v0.29）。传空串 = 清空。
+
+        只动这一列：头像的换与清不该走"整条账号更新"——那条路要重算用户名唯一性、
+        要处理口令字段，而这里只是换一张图。
+        """
+        ...
 
     @abstractmethod
     def claim_legacy_ownership(self, owner_id: str) -> dict[str, int]:
@@ -2240,5 +2387,26 @@ class TabularStore(ABC):
 
         DuckDB 不保证无 ``ORDER BY`` 时的行序，而"第 3 行"是用户能对照原文的说法，
         所以实现里另外记行号并据此排序。
+        """
+        ...
+
+    @abstractmethod
+    def list_tables(self) -> list[str]:
+        """所有表格副本的表名（= ``document_id``），按名字排序。
+
+        存在的理由：SQL 工具要先知道**有哪些表**才能把范围讲清楚
+        （见 ``services/tabular_sql.check_tables``）。没有它，调用方只能逐个文档
+        问一遍 ``table_exists``，而那是 N 次查询。
+        """
+        ...
+
+    @abstractmethod
+    def run_select(self, sql: str, *, max_rows: int) -> tuple[list[str], list[list[str]]]:
+        """跑一条**已经校验过的**只读 SQL，返回 ``(列名, 行)``。
+
+        **校验不在这里**（见 ``services/tabular_sql.validate_select``）：仓储是
+        通用的存取层，把"允许什么样的 SQL"这条产品规则放进来，等于让它同时承担
+        业务判断。这里只多做一件事——**把结果截到 ``max_rows``**：取回一百万行是
+        资源问题，不该指望每个调用方都记得加 LIMIT。
         """
         ...

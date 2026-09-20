@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -72,6 +73,21 @@ logger = logging.getLogger(__name__)
 #: 没有上限就会一直烧下去）。**上限本身不能取消**，这是钱的问题，不是洁癖。
 #: 需要更高就把 `ToolLoop(max_steps=...)` 传大——组合根在 `services/chat.py`。
 DEFAULT_MAX_STEPS = 30
+
+#: 一轮的**墙钟上限**（秒）。与步数上限是两道独立的闸（子 Agent 里那两道同源，见
+#: `services/subagent.py` 的 `MAX_SECONDS`）：
+#:
+#: - **步数**挡的是"来回很多次"——每一次都真实花钱；
+#: - **时间**挡的是"某一步卡很久"——一次工具调用慢下来（抓一个不响应的网页、
+#:   外部 MCP 卡在网络上、模型端排队），步数一动不动地耗着，而用户那边只能看着转圈。
+#:   没有这道闸时，最坏情况是 `步数 × 单次超时`：30 步 × 120 秒不是理论值，
+#:   而是"每次调用都接近超时"时真会发生的事。
+#:
+#: 300 秒是"认真查一轮够用、不正常的一轮会被拦住"的量级：正常一轮（联网搜几次 +
+#: 抓两三个网页 + 派一个子 Agent）实测在 1~2 分钟内；子 Agent 自己有 90 秒的上限，
+#: 所以这道闸主要是兜"主循环一步一步慢慢挪"和"工具卡住"。
+#: **它不替代工具的自身超时**（那是每个工具自己的事，见 `llm.DEFAULT_TIMEOUT_SECONDS`）。
+DEFAULT_MAX_SECONDS = 300.0
 
 #: 单个工具结果的字符上限。超了截断并**明确告诉模型被截了**：
 #: 悄悄截断会让它以为"这就是全部"，而截断常常正好丢在它要的那一段之后。
@@ -111,6 +127,17 @@ _LABELS = {
     "list_skills": "查看技能目录",
     "read_skill": "读技能",
     "spawn_subagent": "派子 Agent",
+    # 这台机器上的能力（v0.33）：文件、执行、表格、定时任务。
+    # 名字要说清**它替我做了什么**（"读文件"而不是 "read_file"）：过程面板是给用户看的，
+    # 而他对这几个动作的第一反应是"它在我电脑上干什么了"
+    "list_files": "查看文件",
+    "read_file": "读文件",
+    "search_files": "在文件里搜",
+    "run_command": "执行命令",
+    "list_tables": "查看表格",
+    "query_table": "查表格",
+    "schedule_task": "挂定时任务",
+    "list_scheduled_tasks": "查看定时任务",
 }
 
 
@@ -208,11 +235,18 @@ class ToolLoop:
         tools: Sequence[ToolSpec],
         runner: ToolRunner,
         max_steps: int = DEFAULT_MAX_STEPS,
+        max_seconds: float = DEFAULT_MAX_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._client_factory = client_factory
         self._tools = list(tools)
         self._runner = runner
         self._max_steps = max(1, max_steps)
+        # 至少给 1 秒：0 或负数会让每一轮一进来就"时间已用尽"，
+        # 那不是"关掉这道闸"，而是"把工具整个关掉"——想关就传一个大数
+        self._max_seconds = max(1.0, max_seconds)
+        # 时钟可注入：用例不必真的 sleep 到超时（也就能测"跨过上限的那一步")
+        self._clock = clock
 
     @property
     def tools(self) -> list[ToolSpec]:
@@ -238,7 +272,18 @@ class ToolLoop:
             yield from self._answer(messages)
             return
 
+        # 墙钟从**这一轮开始**算，不从对象构造算：`ToolLoop` 可能被复用，
+        # 而"这一轮用了多久"才是用户能感知的那个量
+        started_at = self._clock()
+
         for step in range(self._max_steps):
+            if self._expired(started_at):
+                # 时间到：不再开新的一轮 LLM 调用（它自己也要时间），
+                # 直接收尾作答。**与步数用尽走同一条降级路径**——用户看到的东西一样，
+                # 只是原因不同（见下面那条 StepEvent 的措辞）。
+                yield self._timeout_step(started_at)
+                yield from self._answer(messages)
+                return
             try:
                 # 选工具这一轮**与作答用同一个客户端、同一档思考**：多步循环里
                 # "下一步做什么、能不能几件事一起发、失败了换哪条路"都出在这几次调用上，
@@ -266,6 +311,13 @@ class ToolLoop:
                 )
             )
             last = step == self._max_steps - 1
+            # 两道闸共用"这一批不执行"这条路，但**理由要分开告诉模型**：
+            # 它下一轮得知道是"步数没了"还是"时间没了"（两者的应对不一样）
+            stop: str | None = None
+            if last:
+                stop = "本轮工具步数已用完"
+            elif self._expired(started_at):
+                stop = "本轮时间已用尽"
             calls = list(reply.tool_calls)
             # 先把这一批的 `running` **全发出去**，再执行。
             #
@@ -280,7 +332,7 @@ class ToolLoop:
                 yield StepEvent(
                     phase="tool", label=tool_label(call.name), tool=call.name, status="running"
                 )
-            outcomes = self._execute_batch(calls, last=last)
+            outcomes = self._execute_batch(calls, stop=stop)
             merged = _merge_sources(outcomes)
             if merged:
                 # **一批只发一条累计的出处**，而不是每条调用各发一条。
@@ -324,16 +376,31 @@ class ToolLoop:
 
     # ------------------------------------------------------------------ 内部
 
-    def _execute(self, call: ToolCall, *, last: bool) -> ToolOutcome:
+    def _expired(self, started_at: float) -> bool:
+        """这一轮是否已经用满墙钟（见 `DEFAULT_MAX_SECONDS`）。"""
+        return self._clock() - started_at >= self._max_seconds
+
+    def _timeout_step(self, started_at: float) -> StepEvent:
+        """时间到的那一步。措辞与步数用尽**分开**：用户看到"慢"和"多"要能区分——
+        前者是这次的网络/服务慢，后者是这题要查的东西太多，下一步该做的事不一样。"""
+        used = round(self._clock() - started_at)
+        return StepEvent(
+            phase="tool",
+            label="本轮时间已用尽",
+            detail=f"本轮最多 {int(self._max_seconds)} 秒，已用 {used} 秒，按现有信息作答",
+            degraded=True,
+        )
+
+    def _execute(self, call: ToolCall, *, stop: str | None) -> ToolOutcome:
         """执行一次调用。**所有失败都变成回给模型的文本**，不往上抛。
 
         抛出去会让整轮失败；而工具失败（参数不对、库里没有、服务连不上）
         通常是**模型能自己纠正**的——把它当结果回给它，它下一轮换个法子。
         """
-        if last:
-            # 最后一步还调工具：不执行了，直接告诉它没机会了，
+        if stop is not None:
+            # 最后一步还调工具（或时间已经用完）：不执行了，直接告诉它没机会了，
             # 省下一次真实调用（它通常只是想再确认一遍）
-            return ToolOutcome(content="（本轮工具步数已用完，请直接给出回答）")
+            return ToolOutcome(content=f"（{stop}，请直接给出回答）")
         try:
             args = _parse_arguments(call.arguments)
         except ValueError as exc:
@@ -347,7 +414,7 @@ class ToolLoop:
             return ToolOutcome(content=f"工具执行失败：{exc}")
         return _truncate(outcome)
 
-    def _execute_batch(self, calls: Sequence[ToolCall], *, last: bool) -> list[ToolOutcome]:
+    def _execute_batch(self, calls: Sequence[ToolCall], *, stop: str | None) -> list[ToolOutcome]:
         """执行**同一批**调用：互不依赖的几件事**并发**跑，返回顺序与传入一致。
 
         为什么并发（v0.27 实测的账）：模型现在会在一批里同时要三页网页、两个方向的
@@ -368,11 +435,11 @@ class ToolLoop:
 
         单条调用不走线程池：那是常态，为它建池是白付一层开销（也少一处可出错的地方）。
         """
-        if last or len(calls) <= 1:
-            return [self._execute(call, last=last) for call in calls]
+        if stop is not None or len(calls) <= 1:
+            return [self._execute(call, stop=stop) for call in calls]
         with ThreadPoolExecutor(max_workers=min(len(calls), MAX_PARALLEL_TOOLS)) as pool:
             # `map` **保序返回**：谁先跑完不影响结果顺序，也就影响不到事件与消息的顺序
-            return list(pool.map(lambda call: self._execute(call, last=False), calls))
+            return list(pool.map(lambda call: self._execute(call, stop=None), calls))
 
     def _answer(self, messages: list[ChatMessage]) -> Iterator[object]:
         """流式产出正文与思考（与旧链路的收尾完全一致）。

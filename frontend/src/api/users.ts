@@ -19,6 +19,8 @@ export interface RosterUser {
   note: string
   created_at: string | null
   document_count: number
+  /** 头像链接（签名 URL，v0.29）。空 = 用名字生成的默认头像。 */
+  avatar_url: string
   username: string | null
   role: UserRole
   disabled: boolean

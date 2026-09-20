@@ -25,6 +25,7 @@ from app.core.storage import build_stores
 from app.services.api_key import ApiKeyService
 from app.services.artifacts import ArtifactService
 from app.services.auth import AuthService
+from app.services.avatars import AvatarService
 from app.services.batch import DocumentBatchService
 from app.services.chat import ChatService
 from app.services.chunk import ChunkService
@@ -52,6 +53,8 @@ from app.services.parser_router import ParserRouter
 from app.services.retrieval import RetrievalService, build_reranker
 from app.services.retrieval.rerank import RerankProvider
 from app.services.runtime_config import RuntimeConfigService
+from app.services.schedule_runner import run_scheduled_task
+from app.services.schedules import ScheduleService
 from app.services.share import ShareService
 from app.services.skill_blurb import SkillBlurbService
 from app.services.skill_market import SkillMarketService
@@ -106,6 +109,8 @@ class Services:
     """使用者名册：记录"是谁传的"，不参与鉴权（调研报告 G6）。"""
     auth: AuthService
     """账号引导、登录与会话校验（v10：名册升级为账号体系）。"""
+    avatars: AvatarService
+    """用户头像（v0.29）：图片在对象存储、库里只留 key，链接走签名。"""
     shares: ShareService
     """知识库分享：owner 把库授给其他成员，读/写两档（v10）。"""
     lifecycle: LifecycleService
@@ -148,7 +153,13 @@ class Services:
     skill_sources: SkillSourceService
     """技能源（v0.27）：内置的 GitHub 仓库清单 + 自定义源，浏览/取文件。"""
     mcp: MCPClientService
-    """长期记忆的门面（设计见 `docs/记忆层设计-v0.1.md`）。默认关；关着时它的每个方法都明确报错。"""
+    schedules: ScheduleService
+    """定时任务（v0.33）：到点替用户跑一轮问答。
+
+    执行体见 ``services/schedule_runner.py``。"""
+    """长期记忆的门面（设计见 `docs/设计/记忆层设计-v0.1.md`）。
+
+    默认关；关着时它的每个方法都明确报错。"""
     embedder: EmbeddingProvider
     reranker: RerankProvider
     worker: TaskWorker
@@ -294,6 +305,9 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     )
     # MCP 客户端（v0.15）：连外部 MCP 服务，是「插件能力」的落点
     mcp_service = MCPClientService(bundle)
+    # 定时任务（v0.33）：只做"到点入队"，跑问答的那一步在 schedule_runner 里
+    # （它要一整套 Services，而这里还没有那个对象——见下面那个"槽"）
+    schedule_service = ScheduleService(bundle)
     # 用量服务要**先建**：下面的 embedder 回调闭包引用了它
     usage = UsageService(bundle)
 
@@ -418,6 +432,14 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     lifecycle_service = LifecycleService(bundle, notifier=webhooks.emit)
     folders_service = FolderService(bundle)
 
+    # 定时任务的执行体需要一个**装配好的 Services**（工具表、执行器、会话……都从它上面取），
+    # 而 Services 要到这一行之下才存在。用一格可变的"槽"接住它：回调在应用起来之后
+    # 才会被调用，那时槽里一定有值（不是懒加载的托词——这条链路上没有第二个时机）。
+    runner_slot: list[Services] = []
+
+    def _run_scheduled(scheduled_id: str) -> str:
+        return run_scheduled_task(runner_slot[0], scheduled_id)
+
     workers = _build_workers(
         resolved.worker_concurrency,
         bundle=bundle,
@@ -428,9 +450,11 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         wiki=wiki_service,
         summaries=summary_service,
         memory=memory_service,
+        schedules=schedule_service,
+        run_scheduled=_run_scheduled,
     )
 
-    return Services(
+    services = Services(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder, models=registry),
         documents=documents_service,
         folders=folders_service,
@@ -452,6 +476,7 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         usage=usage,
         users=UserService(bundle),
         auth=AuthService(bundle),
+        avatars=AvatarService(bundle),
         shares=ShareService(bundle),
         lifecycle=lifecycle_service,
         batch=DocumentBatchService(bundle, documents_service, lifecycle_service, folders_service),
@@ -487,7 +512,12 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         skill_market=skill_market_service,
         skill_sources=skill_source_service,
         mcp=mcp_service,
+        schedules=schedule_service,
     )
+    # 槽里放进刚装好的这一份：定时任务的执行体从这一刻起可用
+    # （`_run_scheduled` 只在 worker 领到 SCHEDULED 任务时被调用，那时这里早已填上）
+    runner_slot.append(services)
+    return services
 
 
 def _build_workers(
@@ -501,6 +531,8 @@ def _build_workers(
     wiki: WikiService,
     summaries: DocumentSummaryService,
     memory: MemoryService,
+    schedules: ScheduleService,
+    run_scheduled: Callable[[str], object],
 ) -> list[TaskWorker]:
     """按 ``KYLAB_WORKER_CONCURRENCY`` 造 N 个消费者。
 
@@ -534,6 +566,10 @@ def _build_workers(
             ),
             # 补文档摘要（v25）：空闲时一小批一小批地补，不需要用户点任何东西
             summarize_gap=summaries.summarize_missing,
+            # 定时任务（v0.33）：到点入队 + 到点执行。**两个回调分工明确**——
+            # 调度侧只扫描与入队（快、独立循环），执行侧才跑问答（慢、在消费者线程里）
+            due_schedules=schedules.enqueue_due,
+            run_scheduled=run_scheduled,
         )
         for index in range(count)
     ]

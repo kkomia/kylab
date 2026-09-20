@@ -100,6 +100,15 @@ class TaskKind(StrEnum):
     （ReMe 默认每累计 5 个用户回合沉淀一次，节流由入队那头控制。）
     """
 
+    SCHEDULED = "scheduled"
+    """到点替用户做一件事（v0.33）：payload 里是 ``scheduled_id``。
+
+    **它是"定时任务"这个产品面的执行体**：调度侧到点把这条任务放进队列，
+    真正干活的是 worker——于是"跑得慢、失败要重试、进程崩了要回收"全部复用
+    任务队列已有的那一套（租约、心跳、指数退避），而不是在调度那一侧再实现一遍。
+    payload 里的 ``manual=True`` 表示这是用户点了「立即跑一次」。
+    """
+
 
 class TaskState(StrEnum):
     """任务状态。

@@ -69,6 +69,7 @@ from app.storage.base import (
     NoteRecord,
     ParseResultRecord,
     RegisteredModelRecord,
+    ScheduledTaskRecord,
     SessionRecord,
     ShareRecord,
     TaskCounts,
@@ -2155,6 +2156,10 @@ class PostgresMetaStore(MetaStore):
 
     # ------------------------------------------------------------------ 使用者名册
 
+    def set_user_avatar(self, user_id: str, avatar_key: str) -> None:
+        with self._db.session() as conn:
+            conn.execute("UPDATE users SET avatar_key = %s WHERE id = %s", (avatar_key, user_id))
+
     @staticmethod
     def _user_from_row(row: dict) -> UserRecord:
         return UserRecord(
@@ -2166,6 +2171,7 @@ class PostgresMetaStore(MetaStore):
             role=UserRole(row["role"]),
             disabled=bool(row["disabled"]),
             created_at=_load(row["created_at"]),
+            avatar_key=row["avatar_key"] or "",
         )
 
     def create_user(self, record: UserRecord) -> UserRecord:
@@ -2805,6 +2811,193 @@ class PostgresMetaStore(MetaStore):
                 (workspace_id,),
             ).fetchone()
         return int(row["total"]) if row else 0
+
+    # ---- 定时任务（v0.33）----
+
+    def create_scheduled_task(self, record: ScheduledTaskRecord) -> ScheduledTaskRecord:
+        now = _now()
+        record.created_at = record.created_at or now
+        record.updated_at = record.updated_at or now
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO scheduled_tasks"
+                " (id, name, prompt, kind, cron, run_at, next_run_at, enabled, kb_ids,"
+                "  model_pk, thinking, thinking_effort, conversation_id, owner_id,"
+                "  last_run_at, last_status, last_error, run_count, created_at, updated_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,"
+                "         %s, %s, %s, %s, %s, %s)",
+                (
+                    record.id,
+                    record.name,
+                    record.prompt,
+                    record.kind,
+                    record.cron,
+                    _dump(record.run_at),
+                    _dump(record.next_run_at),
+                    record.enabled,
+                    _json(list(record.kb_ids)),
+                    record.model_pk,
+                    record.thinking,
+                    record.thinking_effort,
+                    record.conversation_id,
+                    record.owner_id,
+                    _dump(record.last_run_at),
+                    record.last_status,
+                    record.last_error,
+                    record.run_count,
+                    _dump(record.created_at),
+                    _dump(record.updated_at),
+                ),
+            )
+        return record
+
+    def get_scheduled_task(self, scheduled_id: str) -> ScheduledTaskRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM scheduled_tasks WHERE id = %s", (scheduled_id,)
+            ).fetchone()
+        return self._scheduled_from_row(row) if row else None
+
+    def list_scheduled_tasks(self) -> list[ScheduledTaskRecord]:
+        # 待跑的排前面、按时间正序；跑完/停用的（``next_run_at IS NULL``）沉到最后，
+        # 内部按最近更新倒序——用户找的多半是"下次什么时候跑"，而不是"去年跑过什么"
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM scheduled_tasks ORDER BY next_run_at ASC NULLS LAST, updated_at DESC"
+            ).fetchall()
+        return [self._scheduled_from_row(row) for row in rows]
+
+    def update_scheduled_task(self, record: ScheduledTaskRecord) -> ScheduledTaskRecord:
+        record.updated_at = _now()
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE scheduled_tasks SET name = %s, prompt = %s, kind = %s, cron = %s,"
+                " run_at = %s, next_run_at = %s, enabled = %s, kb_ids = %s, model_pk = %s,"
+                " thinking = %s, thinking_effort = %s, conversation_id = %s,"
+                " last_run_at = %s, last_status = %s, last_error = %s, run_count = %s,"
+                " updated_at = %s WHERE id = %s",
+                (
+                    record.name,
+                    record.prompt,
+                    record.kind,
+                    record.cron,
+                    _dump(record.run_at),
+                    _dump(record.next_run_at),
+                    record.enabled,
+                    _json(list(record.kb_ids)),
+                    record.model_pk,
+                    record.thinking,
+                    record.thinking_effort,
+                    record.conversation_id,
+                    _dump(record.last_run_at),
+                    record.last_status,
+                    record.last_error,
+                    record.run_count,
+                    _dump(record.updated_at),
+                    record.id,
+                ),
+            )
+        return record
+
+    def delete_scheduled_task(self, scheduled_id: str) -> None:
+        # 只删这条调度：**已经跑出来的会话不删**（那是用户问过的内容，
+        # 与"删工作区不删会话"同一条纪律）
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM scheduled_tasks WHERE id = %s", (scheduled_id,))
+
+    def due_scheduled_tasks(self, *, now: datetime, limit: int = 10) -> list[ScheduledTaskRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM scheduled_tasks"
+                " WHERE enabled AND next_run_at IS NOT NULL AND next_run_at <= %s"
+                " ORDER BY next_run_at ASC LIMIT %s",
+                (_dump(now), max(1, limit)),
+            ).fetchall()
+        return [self._scheduled_from_row(row) for row in rows]
+
+    def arm_scheduled_task(
+        self,
+        scheduled_id: str,
+        *,
+        expected_next_run_at: datetime | None,
+        next_run_at: datetime | None,
+        enabled: bool,
+    ) -> bool:
+        """认领一次运行（CAS）。**判定写进 WHERE**，不靠"先读后写"——
+        两个 worker 同时扫到同一条时，只有一条 UPDATE 能改到行（见协议里的说明）。"""
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                "UPDATE scheduled_tasks SET next_run_at = %s, enabled = %s, updated_at = %s"
+                " WHERE id = %s AND next_run_at IS NOT DISTINCT FROM %s",
+                (
+                    _dump(next_run_at),
+                    enabled,
+                    _dump(_now()),
+                    scheduled_id,
+                    # `IS NOT DISTINCT FROM`：``next_run_at`` 可能是 NULL，
+                    # 而 SQL 里 `NULL = NULL` 不成立——用 `=` 的话
+                    # 一次性任务的认领永远改不到行（那条路径正是从 NULL 认领）
+                    _dump(expected_next_run_at),
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def finish_scheduled_run(
+        self,
+        scheduled_id: str,
+        *,
+        status: str,
+        error: str | None,
+        last_run_at: datetime,
+        conversation_id: str | None = None,
+    ) -> None:
+        """记一次运行的结果。
+
+        ``conversation_id`` **用 COALESCE 而不是直接覆盖**：它只在第一次运行时为空，
+        之后每次都传同一个值；万一某次调用忘了带，COALESCE 拦住的是"任务与它
+        那条会话失联"（那种状态在界面上表现为"跑过但看不到结果"）。
+        """
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE scheduled_tasks SET last_run_at = %s, last_status = %s,"
+                " last_error = %s, run_count = run_count + 1, updated_at = %s,"
+                " conversation_id = COALESCE(%s, conversation_id)"
+                " WHERE id = %s",
+                (
+                    _dump(last_run_at),
+                    status,
+                    error or "",
+                    _dump(_now()),
+                    conversation_id,
+                    scheduled_id,
+                ),
+            )
+
+    @staticmethod
+    def _scheduled_from_row(row: dict) -> ScheduledTaskRecord:
+        return ScheduledTaskRecord(
+            id=row["id"],
+            name=row["name"],
+            prompt=row["prompt"],
+            kind=row["kind"],
+            cron=row["cron"],
+            run_at=_load(row["run_at"]),
+            next_run_at=_load(row["next_run_at"]),
+            enabled=bool(row["enabled"]),
+            kb_ids=tuple(row["kb_ids"]),
+            model_pk=row["model_pk"],
+            # 可空列：``None`` = 跟随会话/全局默认，不要折成 False
+            thinking=None if row["thinking"] is None else bool(row["thinking"]),
+            thinking_effort=row["thinking_effort"],
+            conversation_id=row["conversation_id"],
+            owner_id=row["owner_id"],
+            last_run_at=_load(row["last_run_at"]),
+            last_status=row["last_status"],
+            last_error=row["last_error"],
+            run_count=int(row["run_count"]),
+            created_at=_load(row["created_at"]),
+            updated_at=_load(row["updated_at"]),
+        )
 
     # ---- MCP 服务 ----
 

@@ -82,17 +82,23 @@ async function unwrap<T>(response: Response, options: RequestOptions): Promise<T
   return (await response.json()) as T
 }
 
-/** 带统一错误处理的 JSON 请求。 */
+/** 带统一错误处理的请求（JSON 为默认，但**不覆盖 multipart**）。 */
 export async function request<T>(
   path: string,
   init?: RequestInit,
   options: RequestOptions = {},
 ): Promise<T> {
+  // **`FormData` 的 Content-Type 必须由浏览器自己写**：它要带 `boundary`，
+  // 而手写一个 `application/json` 会让后端解析不出任何字段——实测的表现是
+  // `422 {"message": "file: Field required"}`，看着像"请求里没带文件"，
+  // 其实是头不对（浏览器**不会**覆盖作者显式设置的那个头）。
+  // 所有上传（文档、会话文件、技能、头像）都走这条路，所以判断放在这一处。
+  const multipart = typeof FormData !== 'undefined' && init?.body instanceof FormData
   return unwrap<T>(
     await fetch(`${API_BASE}${path}`, {
       ...init,
       headers: {
-        'Content-Type': 'application/json',
+        ...(multipart ? {} : { 'Content-Type': 'application/json' }),
         ...authHeaders(),
         ...(init?.headers ?? {}),
       },

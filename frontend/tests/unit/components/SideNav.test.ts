@@ -2,7 +2,9 @@ import { mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import AvatarDialog from '@/components/settings/AvatarDialog.vue'
 import SideNav from '@/components/layout/SideNav.vue'
+import { currentUser } from '@/composables/useSessionToken'
 import { resetResizeObservers } from '../../setup'
 
 /**
@@ -117,7 +119,20 @@ vi.mock('@/composables/useSession', () => ({
   isAdmin: () => true,
   logout: vi.fn(),
 }))
-vi.mock('@/composables/useSessionToken', () => ({ currentUser: { value: { name: '演示' } } }))
+// 真 ref：用例要能改它（头像那几条就是这么验的）。
+// 用 `{ value: … }` 那种字面量会在"改完看不到变化"上骗过测试。
+vi.mock('@/composables/useSessionToken', async () => {
+  const { ref } = await import('vue')
+  return {
+    currentUser: ref({
+      id: 'user_1',
+      username: 'kkomia',
+      name: '小又',
+      role: 'admin',
+      avatar_url: '',
+    }),
+  }
+})
 vi.mock('@/composables/useToast', () => ({
   useToast: () => ({ notifyError: vi.fn(), notifySuccess: vi.fn(), notify: vi.fn() }),
 }))
@@ -357,5 +372,43 @@ describe('SideNav（v0.15 信息架构）', () => {
     expect(labels.filter((label) => label === '新建会话')).toHaveLength(0)
     // 最上面那颗还在，并且是链接（不是 .side-add）
     expect(wrapper.find('.new-chat').text()).toContain('新建会话')
+  })
+})
+
+describe('侧栏账户区的头像（v0.29）', () => {
+  it('没设过头像时用名字生成的那张，而不是一枚灰色小人', () => {
+    // 「一个叫『用户』的入口」与「这是某某」读起来是两件事——
+    // 而这是用户唯一每天都会看到的那块身份区
+    const wrapper = mountNav()
+
+    const avatar = wrapper.find('.account-row .avatar')
+    expect(avatar.exists()).toBe(true)
+    expect(avatar.text()).toBe('小')
+  })
+
+  it('设过头像就渲染成图', () => {
+    currentUser.value = {
+      id: 'user_1',
+      username: 'kkomia',
+      name: '小又',
+      role: 'admin',
+      avatar_url: '/api/v1/avatars/user_1?signature=x',
+    }
+
+    const wrapper = mountNav()
+
+    expect(wrapper.find('.account-row img').attributes('src')).toContain('/api/v1/avatars/user_1')
+  })
+
+  it('账户菜单里有「头像」这一项（点开是换头像的弹窗）', async () => {
+    const wrapper = mountNav()
+    expect(wrapper.findComponent(AvatarDialog).props('open')).toBe(false)
+
+    const item = wrapper.findAll('button').find((node) => node.text() === '头像')
+    expect(item).toBeTruthy()
+    await item!.trigger('click')
+
+    // 弹窗自己那层 `<dialog>` 在测试里被桩掉了，所以看的是它的开合状态
+    expect(wrapper.findComponent(AvatarDialog).props('open')).toBe(true)
   })
 })

@@ -241,7 +241,7 @@ FOOTER = """
 
 
 def main() -> int:
-    target = ROOT / "docs" / "API-接口规范-v0.1.md"
+    target = ROOT / "docs" / "规范" / "API-接口规范-v0.1.md"
     content = HEADER + _route_tables() + FOOTER
     io.open(target, "w", encoding="utf-8").write(content)
     print("已写入", target)

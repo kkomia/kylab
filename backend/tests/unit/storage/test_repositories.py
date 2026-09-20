@@ -43,6 +43,7 @@ VIEW_NAMES = {
     "ConversationRepo": "conversations",
     "WorkspaceRepo": "workspaces",
     "IdentityRepo": "identity",
+    "ScheduleRepo": "schedules",
     "ShareRepo": "shares",
     "UsageRepo": "usage",
     "ModelRegistryRepo": "models",

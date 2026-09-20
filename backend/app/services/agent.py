@@ -29,6 +29,7 @@ __all__ = [
     "SourcesEvent",
     "StepEvent",
     "ThinkingEvent",
+    "step_snapshot",
 ]
 
 
@@ -49,14 +50,18 @@ class StepEvent:
     degraded: bool = False
     """这一步**没按设计跑成**，走了降级路径。
 
-    **目前没有生产者**：唯一会置位它的是旧的多轮检索链路（它会在"规划不可用"时
-    退回单轮检索），那条链路已随工具循环删除。字段本身、API 层的转发
-    （``api/v1/chat.py``）与前端的重试入口都还在——收口它要同时动 wire contract
-    与界面，那是另一次决定，不在这轮代码清理里顺手做（见《开发计划》§12.172）。
+    现在的生产者是工具循环的两道闸（``tool_loop.py``）：步数用尽与整轮墙钟用尽
+    都会发一条 ``degraded=True`` 的步骤，用户据此看到"这次没跑完"，
+    也据此拿到「继续」（接着做，见 ``services/resume.py``）。
+    界面那条横幅的措辞取自 ``detail``（不写死），所以两种原因的文案各说各的。
     """
     added: int | None = None
-    """本步带来的**新增**资料条数（只有检索步骤有）。同样是旧链路的遗留字段，
-    现状与 ``degraded`` 相同：没有生产者，保留待与前端一并收口。"""
+    """本步带来的**新增**资料条数（只有检索类步骤有）。
+
+    由检索工具自己算（相对"这一轮已经给过的那些"），界面靠它把那一步显示成
+    「这轮没找到新资料」——**"又查了一次但什么都没多出来"与"查到了新东西"
+    对用户是两件不同的事**，而只看「命中 8 段」看不出来（见 ``agent_tools._absorb``）。
+    """
 
     args: str = ""
     """模型给这个工具的**原始入参**（JSON 字符串，v0.25）。
@@ -123,3 +128,38 @@ class DoneEvent:
     """回答结束，带后端拼装好的全文。"""
 
     answer: str
+
+
+def step_snapshot(event: StepEvent) -> dict[str, object] | None:
+    """把一条步骤事件收成**落库的快照**；``running`` 的那条返回 ``None``（不入库）。
+
+    这段映射原先写在 ``api/v1/chat.py`` 的 ``_TurnSink`` 里。搬到服务层是因为
+    **定时任务那条链路也要落同一份快照**（它没有 SSE，但会话里的过程面板要看的东西
+    一模一样），而复制一份必然分叉——分叉的表现是"定时任务的会话里步骤显示不全"，
+    那种不一致极难被注意到。
+
+    两处刻意的取舍：
+
+    - **``running`` 不入库**，只有「组织回答」例外：其余步骤都会跟着一条 ``done``，
+      存下 running 只会在回看时多出一行没有结论的步骤；而「组织回答」的完成由
+      ``DoneEvent`` 表达，不带上它就少了最后那一行；
+    - **空字段不写键**（而不是写空值）：快照是每一轮都存一遍的东西，
+      省下的键在长对话里是真金白银，而"缺省即空"在读取侧是一句话的事。
+    """
+    if event.status == "running" and event.phase != "answer":
+        return None
+    return {
+        "phase": event.phase,
+        "label": event.label,
+        "detail": event.detail,
+        "status": event.status,
+        # 降级标记要落库（v0.32）：它原来只发给流，于是刷新一次页面，
+        # "这次没跑完"的提示与「继续」按钮就一起消失了
+        **({"degraded": True} if event.degraded else {}),
+        # 工具名落在快照里：回看历史时同样要按它选图标、把同类调用并成一组
+        **({"tool": event.tool} if event.tool else {}),
+        **({"added": event.added} if event.added is not None else {}),
+        **({"args": event.args} if event.args else {}),
+        **({"result": event.result} if event.result else {}),
+        **({"artifacts": [dict(item) for item in event.artifacts]} if event.artifacts else {}),
+    }

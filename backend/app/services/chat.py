@@ -898,6 +898,8 @@ class ChatService:
         thinking_effort: str | None,
         tools: list,  # type: ignore[type-arg]
         runner,  # type: ignore[no-untyped-def]
+        max_steps: int | None = None,
+        max_seconds: float | None = None,
     ) -> ToolLoop:
         """建一个工具循环。
 
@@ -911,10 +913,18 @@ class ChatService:
         拿它换零点几秒不划算，而关掉之后模型连自己上一轮想过什么都看不见
         （见 `tool_loop` 模块头第 6 条与《开发计划》§12.199）。
         """
+        extra: dict[str, object] = {}
+        # 预算只由调用方在**续跑**时抬高（见 services/resume.py 的三个常量）：
+        # 默认值留在 ToolLoop 自己那里，这里不复制一份
+        if max_steps is not None:
+            extra["max_steps"] = max_steps
+        if max_seconds is not None:
+            extra["max_seconds"] = max_seconds
         return ToolLoop(
             client_factory=lambda: self._build_chat(model_pk, thinking, thinking_effort),
             tools=list(tools),
             runner=runner,
+            **extra,  # type: ignore[arg-type]
         )
 
     def ask_raw(self, messages: list[ChatMessage], *, model_pk: str | None = None) -> str:

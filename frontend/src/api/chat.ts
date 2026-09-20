@@ -278,6 +278,46 @@ export async function chatStream(
   signal?: AbortSignal,
   options: { smooth?: boolean } = {},
 ): Promise<ChatStreamHandle> {
+  return postStream(`${API_BASE}/chat/stream`, payload, handlers, signal, options)
+}
+
+/**
+ * **续跑上一轮**（v0.32）：端点不同、请求体里没有 query——问题在会话里，不在这里。
+ *
+ * 与 `chatStream` 共用同一条读取链路（连节流都同一套）：续跑吐出来的事件形状
+ * 与正常提问**完全一致**，所以前端只需要换一个调用入口，界面那条"边流边长"
+ * 的路径一行都不用改。
+ */
+export async function resumeStream(
+  conversationId: string,
+  payload: ResumePayload,
+  handlers: ChatHandlers,
+  signal?: AbortSignal,
+  options: { smooth?: boolean } = {},
+): Promise<ChatStreamHandle> {
+  return postStream(
+    `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/resume`,
+    payload,
+    handlers,
+    signal,
+    options,
+  )
+}
+
+/** 续跑的请求体。**没有 query**：问题在会话里，模型档位与库范围也取会话已存的。 */
+export interface ResumePayload {
+  /** 输入框里钉住的技能（不入库，所以要从界面带上）。 */
+  skill_names?: string[]
+}
+
+/** SSE 请求的公共部分：建连、转发取消、把读取交给 `pump`。 */
+async function postStream(
+  url: string,
+  payload: unknown,
+  handlers: ChatHandlers,
+  signal: AbortSignal | undefined,
+  options: { smooth?: boolean },
+): Promise<ChatStreamHandle> {
   const smooth = options.smooth ?? true
   const controller = new AbortController()
   // 外部 signal 先于本次请求被取消时，abort() 不会再触发事件，这里补一次转发
@@ -289,7 +329,7 @@ export async function chatStream(
 
   let response: Response
   try {
-    response = await fetch(`${API_BASE}/chat/stream`, {
+    response = await fetch(url, {
       method: 'POST',
       // **凭据必须自己带上**：这条链路绕过了 client.request（响应是 SSE 不是 JSON），
       // 而 authHeaders 是唯一知道令牌在哪的地方。漏了它，表现是对话页永远回

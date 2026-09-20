@@ -863,3 +863,100 @@ def test_the_assistant_message_carries_the_selection_reasoning() -> None:
     # 工具结果那条不该带（它不是模型想出来的东西）
     tool_message = next(m for m in client.answer_messages or [] if m.role == "tool")
     assert tool_message.reasoning is None
+
+# ------------------------------------------------------------------ 墙钟闸（§12.211）
+
+
+class _Clock:
+    """可推进的假时钟。用例不必真的 sleep 到超时，也就能稳定停在"跨过上限那一步"。"""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_wall_clock_expiry_says_so_and_answers_with_what_it_has() -> None:
+    """时间到 → **如实说、按现有信息作答**，与步数用尽走同一条降级路径。
+
+    这道闸挡的是"某一步卡很久"：下面这个 runner 一跑就吃掉 30 秒，步数一动不动地耗着。
+    两者分开成两道闸的理由见 `tool_loop.DEFAULT_MAX_SECONDS`。
+    """
+    always = LLMReply(tool_calls=(ToolCall(id="c", name="search", arguments="{}"),))
+    clock = _Clock()
+    ran: list[str] = []
+
+    def slow_tool(name: str, args: dict) -> ToolOutcome:  # type: ignore[type-arg]
+        ran.append(name)
+        clock.now += 30.0  # 这一步自己很慢
+        return ToolOutcome("x")
+
+    loop, client = _loop(
+        [always, always, always], runner=slow_tool, max_seconds=10.0, clock=clock
+    )
+
+    events = list(loop.run(messages=[]))
+
+    timeout = next(s for s in _steps(events) if s.label == "本轮时间已用尽")
+    assert timeout.degraded is True
+    assert "最多 10 秒" in (timeout.detail or "")
+    # 慢工具只跑了一次：时间到之后**没有再开新的一轮 LLM 调用**
+    assert ran == ["search"]
+    assert len(client.calls) == 1
+    assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
+    # 与"步数用尽"是**两条不同的提示**：用户看到"慢"和看到"多"，下一步该做的事不一样
+    assert not any(s.label == "工具步数已达上限" for s in _steps(events))
+
+
+def test_expired_clock_blocks_the_batch_before_it_runs() -> None:
+    """模型自己"想"超时了：这一批工具**不执行**，把"没时间了"回给它。
+
+    省下的是真实调用——而模型下一轮照样得给出回答（`_answer` 兜底）。
+    """
+    always = LLMReply(tool_calls=(ToolCall(id="c", name="search", arguments="{}"),))
+    clock = _Clock()
+    ran: list[str] = []
+
+    class _SlowModel(_FakeClient):
+        def complete_with_tools(self, messages, tools):  # type: ignore[no-untyped-def]
+            clock.now += 30.0
+            return super().complete_with_tools(messages, tools)
+
+    client = _SlowModel([always, always])
+    loop = ToolLoop(
+        client_factory=lambda: client,
+        tools=[SEARCH],
+        runner=lambda name, args: (ran.append(name), ToolOutcome("x"))[1],
+        max_seconds=10.0,
+        clock=clock,
+    )
+
+    messages = []
+    events = list(loop.run(messages=messages))
+
+    assert ran == [], "超时之后这一批工具不该真的跑"
+    # 回给模型的是"没时间了"这句话，而不是任何一个工具结果——它下一轮据此直接作答
+    tool_messages = [m for m in messages if getattr(m, "role", "") == "tool"]
+    assert len(tool_messages) == 1
+    assert "时间已用尽" in (tool_messages[0].content or "")
+    timeout = next(s for s in _steps(events) if s.label == "本轮时间已用尽")
+    assert timeout.degraded is True
+
+
+def test_zero_budget_is_clamped_not_a_way_to_disable_tools() -> None:
+    """`max_seconds=0` 被夹到 1 秒：**它不等于"关掉这道闸"**，而等于"关掉所有工具"。
+
+    想关就传一个大数。这条钉住那个夹取，免得有人照着"0 = 不限制"的直觉去用。
+    """
+    always = LLMReply(tool_calls=(ToolCall(id="c", name="search", arguments="{}"),))
+    ran: list[str] = []
+    loop, _ = _loop(
+        [always, LLMReply(text="")],
+        runner=lambda name, args: (ran.append(name), ToolOutcome("x"))[1],
+        max_seconds=0.0,
+    )
+
+    list(loop.run(messages=[]))
+
+    assert ran == ["search"], "夹到 1 秒之后，第一次调用仍该执行"

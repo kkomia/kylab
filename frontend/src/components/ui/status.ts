@@ -46,6 +46,12 @@ const TASK_KINDS: Record<string, string> = {
   chunk: '切分',
   embed: '向量化',
   questions: '出题',
+  // 定时任务（v0.33）跑出来的也是队列任务，会出现在这一页的列表里——
+  // 漏了它那一行会显示成英文的 "scheduled"，而它旁边全是中文
+  scheduled: '定时任务',
+  fetch_source: '拉取数据源',
+  wiki: '生成 Wiki',
+  memory: '记忆沉淀',
 }
 
 /**

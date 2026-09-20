@@ -119,8 +119,7 @@ class KBPromptService:
         docs = self._summaries(kb_id)
         if not docs:
             raise InvalidRequestError(
-                "这个库还没有可用的文档摘要：先上传并解析文档，摘要生成之后再来，"
-                "或者直接手写提示词"
+                "这个库还没有可用的文档摘要：先上传并解析文档，摘要生成之后再来，或者直接手写提示词"
             )
         raw = self._chat.ask_raw(
             [

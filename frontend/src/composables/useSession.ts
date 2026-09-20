@@ -15,11 +15,13 @@ import { computed } from 'vue'
 
 import {
   changePassword as apiChangePassword,
+  clearAvatar as apiClearAvatar,
   getAuthBootstrapStatus,
   login as apiLogin,
   logout as apiLogout,
   me as apiMe,
   setup as apiSetup,
+  uploadAvatar as apiUploadAvatar,
   type AuthBootstrapStatus,
   type LoginResult,
 } from '@/api/auth'
@@ -110,6 +112,20 @@ export function changeOwnPassword(
   newPassword: string,
 ): Promise<{ revoked_sessions: number }> {
   return apiChangePassword(oldPassword, newPassword)
+}
+
+/**
+ * 换一张头像 / 去掉头像（v0.29）。
+ *
+ * 动作放这里而不是组件里：`currentUser` 是这一层管的状态，
+ * 而"换完头像界面上要立刻变"靠的就是把接口返回的那份写回去。
+ */
+export async function setAvatar(file: File): Promise<void> {
+  currentUser.value = await apiUploadAvatar(file)
+}
+
+export async function removeAvatar(): Promise<void> {
+  currentUser.value = await apiClearAvatar()
 }
 
 export const isLoggedIn = computed(() => currentUser.value !== null)

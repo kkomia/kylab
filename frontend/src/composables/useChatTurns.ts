@@ -86,6 +86,10 @@ export type TraceIcon =
   | 'skill'
   | 'agent'
   | 'mcp'
+  | 'fs'
+  | 'shell'
+  | 'table'
+  | 'schedule'
   | 'tool'
   | 'build'
 
@@ -245,13 +249,25 @@ export function traceSummary(message: Message): string {
 }
 
 /**
- * 这一轮里有没有走过降级路径（目前只有"工具步数用尽"一种：它还想继续查但没机会了）。
+ * 这一轮里有没有走过降级路径（工具循环用尽了某一道闸：步数，或 v0.32 起的整轮墙钟）。
  *
  * 放在这里而不是页面上现算：历史回放（后端只存正文）拿不到步骤，那时它就该是 false，
  * 页面不必自己判断"有没有 steps"。
  */
 export function wasDegraded(message: Message): boolean {
   return message.steps.some((step) => step.degraded === true)
+}
+
+/**
+ * 降级的原因是**服务端给的**，不在前端写死。
+ *
+ * 这条原来写的是"工具步数用尽"——加上第二道闸（整轮墙钟）之后它就会说错话：
+ * 撞时间的用户会被告知是步数的事，而他下一步该做的完全不同（过一会儿重发 vs 缩小问题范围）。
+ * 所以取那条降级步骤的 `detail`——后端拼的就是给人看的一句话，原因只有一处真相。
+ */
+export function degradedReason(message: Message): string {
+  const step = message.steps.find((item) => item.degraded === true)
+  return step?.detail?.trim() || '按当时拿到的资料作答'
 }
 
 /** Agent 步骤的阶段 → 图标键。 */
@@ -278,6 +294,10 @@ const STEP_ICONS: Record<string, TraceIcon> = {
  * | `note` | `create_note` / `list_notes` / `attach_note_to_kb` | 笔记载体 |
  * | `memory` | `remember` | 长期记忆 |
  * | `file` | 导出四件套 + `ingest_artifact` | 都产出一份文件 |
+ * | `fs` | `list_files` / `read_file` / `search_files` | 都在**用户自己的目录**里翻东西 |
+ * | `shell` | `run_command` | 唯一一个"真的在这台机器上跑东西"的动作，单独一类 |
+ * | `table` | `list_tables` / `query_table` | 表格副本上的结构化查询（不是检索） |
+ * | `schedule` | `schedule_task` / `list_scheduled_tasks` | 到点自动跑的事 |
  * | `skill` / `agent` | 技能与子 Agent | 能力层，不是数据层 |
  *
  * 没列到的一律落到 `tool`（服务器的方块）——**外部的 MCP 工具**走的也是这一档：
@@ -306,6 +326,14 @@ const TOOL_ICONS: Record<string, TraceIcon> = {
   list_skills: 'skill',
   read_skill: 'skill',
   spawn_subagent: 'agent',
+  list_files: 'fs',
+  read_file: 'fs',
+  search_files: 'fs',
+  run_command: 'shell',
+  list_tables: 'table',
+  query_table: 'table',
+  schedule_task: 'schedule',
+  list_scheduled_tasks: 'schedule',
 }
 
 /**

@@ -33,6 +33,7 @@ import { useRoute, useRouter } from 'vue-router'
 import {
   chatStream,
   getSuggestedQuestions,
+  resumeStream,
   isAbortError,
   type ChatArtifact,
   type ChatHistoryMessage,
@@ -60,10 +61,13 @@ import IconRegenerate from '@/components/icons/IconRegenerate.vue'
 import IconNote from '@/components/icons/IconNote.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
+import IconClock from '@/components/icons/IconClock.vue'
+import IconDatabase from '@/components/icons/IconDatabase.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconDownload from '@/components/icons/IconDownload.vue'
 import IconExternalLink from '@/components/icons/IconExternalLink.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
+import IconFormatCode from '@/components/icons/IconFormatCode.vue'
 import IconGlobe from '@/components/icons/IconGlobe.vue'
 import IconInbox from '@/components/icons/IconInbox.vue'
 import IconLibrary from '@/components/icons/IconLibrary.vue'
@@ -102,6 +106,7 @@ const DocumentDrawer = defineAsyncComponent(
  * 不点开就一分钱不花。
  */
 const FileDrawer = defineAsyncComponent(() => import('@/components/files/FileDrawer.vue'))
+import { copyText, selectNode } from '@/composables/clipboard'
 import { renderAnswerWithCitations } from '@/composables/useMarkdown'
 import {
   buildTurns,
@@ -114,6 +119,7 @@ import {
   sourceWhere,
   traceEntries,
   traceSummary,
+  degradedReason,
   wasDegraded,
   THINKING_EFFORTS,
   type Message,
@@ -163,6 +169,12 @@ const STEP_ICONS: Record<string, Component> = {
   skill: IconTasks,
   agent: IconAi,
   mcp: IconServer,
+  // 这台机器上的能力（v0.33）：文件夹 = 在用户自己的目录里翻东西，
+  // 代码块 = 跑命令，数据库 = 表格副本上的查询，时钟 = 定时任务
+  fs: IconFolder,
+  shell: IconFormatCode,
+  table: IconDatabase,
+  schedule: IconClock,
   tool: IconServer,
   build: IconCheck,
 }
@@ -1045,17 +1057,16 @@ let copiedTimer: number | undefined
  */
 async function copyMessage(turnIndex: number, message: Message): Promise<void> {
   const key = `${turnIndex}:${message.role}`
-  try {
-    await navigator.clipboard.writeText(message.text)
+  if (await copyText(message.text)) {
     copiedKey.value = key
     window.clearTimeout(copiedTimer)
     copiedTimer = window.setTimeout(() => {
       if (copiedKey.value === key) copiedKey.value = ''
     }, 1600)
-  } catch {
-    // 剪贴板不可用（非 https、权限被拒）：如实说，别假装复制成功
-    notifyError('复制失败，请手动选中后复制')
+    return
   }
+  // 连兜底那条路都没成：如实说，别假装复制成功
+  notifyError('复制失败，请手动选中后复制')
 }
 
 const regenerating = ref(false)
@@ -1123,6 +1134,84 @@ async function regenerate(turnIndex: number): Promise<void> {
   } finally {
     regenerating.value = false
   }
+}
+
+const resuming = ref(false)
+
+/**
+ * **继续**上一轮（v0.32）：接着把没做完的那一轮做完，而不是重发一遍。
+ *
+ * 与「重新生成」的区别是这一件事：`regenerate` 会**先回退一轮再重发**，
+ * 于是已经查到的资料、已经写了一半的正文全都丢掉重来（那是真花钱的）；
+ * 续跑把那些交给模型接着用，用户看到的是**同一轮被补完**。
+ *
+ * 界面上因此只做两件事：把这条回答的正文与错误清掉（步骤留着——服务端会把
+ * 上一轮那些步骤与这一轮新的拼在一起，客户端这边保持同一形状），
+ * 然后把事件打进**同一条消息**（不是新开一条）。
+ */
+async function resumeTurn(turnIndex: number): Promise<void> {
+  const turn = turns.value[turnIndex]
+  const id = conversationId.value
+  const reply = turn?.reply
+  if (!reply || !id || resuming.value || sending.value || regenerating.value) return
+  // 端点续的是**最后一轮**（会话里最后一条回答）：不是最后一轮就不该有这个按钮，
+  // 真点了也不装作能续
+  if (turnIndex !== turns.value.length - 1) return
+  const index = messages.value.indexOf(reply)
+  if (index < 0) return
+
+  resuming.value = true
+  patchMessage(index, { text: '', error: '', streaming: true })
+  try {
+    const handle = await resumeStream(
+      id,
+      { skill_names: pinnedSkills.value },
+      {
+        onStep: (step) =>
+          patchMessage(index, { steps: mergeStep(messages.value[index]?.steps ?? [], step) }),
+        onSources: (items) => patchMessage(index, { sources: items }),
+        onThinking: (chunk) =>
+          patchMessage(index, {
+            thinkingText: (messages.value[index]?.thinkingText ?? '') + chunk,
+          }),
+        onDelta: (delta) =>
+          patchMessage(index, { text: (messages.value[index]?.text ?? '') + delta }),
+        onDone: (answer) => {
+          patchMessage(index, { text: answer, streaming: false })
+          finish()
+        },
+        onError: (message) => {
+          patchMessage(index, { error: message, streaming: false })
+          finish()
+        },
+      },
+    )
+    stream.value = handle
+    if (unmounted) {
+      handle.abort()
+      finish()
+    }
+  } catch (cause) {
+    if (!isAbortError(cause)) {
+      patchMessage(index, {
+        error: cause instanceof Error ? cause.message : '续跑失败',
+        streaming: false,
+      })
+    }
+    finish()
+  }
+}
+
+/**
+ * 改某一条消息（按索引就地改）。
+ *
+ * `streamTurn` 里那份 `patch` 是它自己的闭包（绑定"这一轮新建的那条"），
+ * 而续跑要改的是**已经存在**的那条，所以这里按索引来。
+ */
+function patchMessage(index: number, part: Partial<Message>): void {
+  const current = messages.value[index]
+  if (!current) return
+  Object.assign(current, part)
 }
 
 /** 正在闪的引用（`"${turn}:${index}"`）。点行内徽标时用它把视线引过去。 */
@@ -1195,6 +1284,28 @@ function downloadTable(el: Element): void {
 }
 
 /**
+ * 代码块 / 表格的复制。
+ *
+ * 两道兜底写在 `composables/clipboard.ts` 里（异步 API 失焦就失败，退到
+ * `execCommand`）；这里只管两件收场的事：成功换对勾，失败**替用户选中**。
+ *
+ * 选中之后这一下的结局就定了——复制是浏览器自己的本地操作，不再经过任何权限，
+ * 用户按一下 Ctrl+C 必然拿到。所以提示语说的是"已替你选中"，而不是
+ * "请手动选中后复制"：后者是把用户刚才白做的那件事原样退回给他。
+ */
+async function copyBlock(text: string, node: Element | null, button: Element): Promise<void> {
+  if (await copyText(text)) {
+    flashBlock(button)
+    return
+  }
+  if (selectNode(node)) {
+    notifyWarning('已替你选中，按 Ctrl+C 复制')
+    return
+  }
+  notifyError('复制失败，请手动选中后复制')
+}
+
+/**
  * 代码块 / 表格上的按钮。返回 `true` 表示这一下已经被处理掉了。
  *
  * 代码块里**没有**"下载"：代码下载成 .txt 不如直接复制——真正想要文件的人
@@ -1203,33 +1314,25 @@ function downloadTable(el: Element): void {
 async function handleBlockAction(target: Element): Promise<boolean> {
   const copyCode = target.closest('[data-copy-code]')
   if (copyCode) {
-    // 只取 `pre` 的文本：语言名在头部带里，不该被带进剪贴板
-    const code = copyCode.closest('.md-code')?.querySelector('pre')?.innerText ?? ''
-    try {
-      await navigator.clipboard.writeText(code)
-      flashBlock(copyCode)
-    } catch {
-      notifyError('复制失败，请手动选中后复制')
-    }
+    // 只取 `pre` 的文本：语言名在头部带里，不该被带进剪贴板。
+    // 用 `textContent` 而不是 `innerText`：要的是**原文**，而 `innerText` 是
+    // 渲染结果的视图（受 `display` 影响、按排版归一空白）。代码块要的就是原文。
+    const pre = copyCode.closest('.md-code')?.querySelector('pre') ?? null
+    await copyBlock(pre?.textContent ?? '', pre, copyCode)
     return true
   }
   const copyTable = target.closest('[data-copy-table]')
   if (copyTable) {
     const table = copyTable.closest('.md-table-block')?.querySelector('table')
     if (!table) return true
-    try {
-      // 表格进剪贴板用**制表符分隔**而不是 CSV：粘进 Excel / 飞书表格时
-      // 它会被直接拆成单元格，而 CSV 粘过去是一整行纯文本
-      const rows = Array.from(table.querySelectorAll('tr')).map((row) =>
-        Array.from(row.querySelectorAll('th, td'))
-          .map((cell) => (cell.textContent ?? '').replace(/\s+/g, ' ').trim())
-          .join('\t'),
-      )
-      await navigator.clipboard.writeText(rows.join('\n'))
-      flashBlock(copyTable)
-    } catch {
-      notifyError('复制失败，请手动选中后复制')
-    }
+    // 表格进剪贴板用**制表符分隔**而不是 CSV：粘进 Excel / 飞书表格时
+    // 它会被直接拆成单元格，而 CSV 粘过去是一整行纯文本
+    const rows = Array.from(table.querySelectorAll('tr')).map((row) =>
+      Array.from(row.querySelectorAll('th, td'))
+        .map((cell) => (cell.textContent ?? '').replace(/\s+/g, ' ').trim())
+        .join('\t'),
+    )
+    await copyBlock(rows.join('\n'), table, copyTable)
     return true
   }
   const download = target.closest('[data-download-table]')
@@ -1559,7 +1662,7 @@ function closeReader(): void {
             1. 那句话是**自我介绍**，而进入这一页的人已经知道自己在用什么——
                它占着整页最贵的一块位置说一件已知的事。Kimi 的空态只有一个 KIMI 字标。
             2. 侧栏那一格只有 24px 宽，字标在那里既读不出来、又跟导航抢宽度。
-               字标挪到这里，侧栏只留烧瓶，两边都松了。
+               字标挪到这里，侧栏只留行星标，两边都松了。
 
             下面那行标语留着：它是品牌定位，不是"这一页是什么"的解释性小字
             （规范 §5.1 禁的是后者）。嫌多的话说一声，删掉就是一行的事。
@@ -1795,22 +1898,39 @@ function closeReader(): void {
                 <!--
                 降级提示（v25 起；v0.2 把口径从"规划失败"改成工具循环的"步数用尽"）：
                 **没按设计走完**是这一轮唯一的降级情形——它还想继续查，但工具步数用完了。
-                所以要如实说出来并给一个重试入口：否则用户只会觉得"这次答得差"，
-                却不知道是链路退化了、也不知道能不能再要一次。
-                重试就是重发同一句提问（复用 `regenerate`），所以只在最后一轮给按钮。
+                所以要如实说出来并给出口。**两个出口是两件不同的事**（v0.32）：
+
+                - 「继续」= 接着做（`resumeStream`）：上一轮查到的资料、写了一半的正文
+                  都交给模型接着用。绝大多数情况下这是用户想要的那个；
+                - 「重试」= 从头再来（`regenerate`）：回退一轮、重发同一句提问。
+                  模型走岔了路时才该用它——那次查的东西全部作废。
+
+                两个都只在最后一轮给：续跑端点认的就是"会话里最后一条回答"。
               -->
                 <p v-if="!turn.reply.streaming && wasDegraded(turn.reply)" class="reply-degraded">
                   <IconAlert :size="13" />
-                  这次没跑完（工具步数用尽，它是按当时拿到的资料作答的）。
-                  <button
-                    v-if="turnIndex === turns.length - 1 && !sending"
-                    type="button"
-                    class="degraded-retry"
-                    :disabled="regenerating"
-                    @click="regenerate(turnIndex)"
-                  >
-                    {{ regenerating ? '重试中…' : '重试' }}
-                  </button>
+                  这次没跑完（{{ degradedReason(turn.reply) }}）。
+                  <template v-if="turnIndex === turns.length - 1 && !sending">
+                    <button
+                      type="button"
+                      class="degraded-retry degraded-primary"
+                      :disabled="resuming || regenerating"
+                      :title="'接着用已经查到的资料继续做'"
+                      @click="resumeTurn(turnIndex)"
+                    >
+                      {{ resuming ? '继续中…' : '继续' }}
+                    </button>
+                    <span class="degraded-sep">·</span>
+                    <button
+                      type="button"
+                      class="degraded-retry"
+                      :disabled="resuming || regenerating"
+                      :title="'丢掉这次的过程，重新问一遍'"
+                      @click="regenerate(turnIndex)"
+                    >
+                      {{ regenerating ? '重试中…' : '重试' }}
+                    </button>
+                  </template>
                 </p>
 
                 <!--
@@ -2392,7 +2512,7 @@ function closeReader(): void {
    为什么要有：没有头像时，"谁在说这句话"只能靠位置与排版去猜——
    用户来回几条之后就分不清哪段是回答、哪段是自己引用的原文。
    Kimi 也是这么排的（它的头像是 56px 的动态图形，沟槽 60px）。
-   用**烧瓶**而不是写 "KYLAB"：侧栏顶部已经是那只烧瓶，同一套标识才立得住。 */
+   用**行星标**而不是写死文字：侧栏顶部已经是那颗行星，同一套标识才立得住。 */
 .reply {
   display: flex;
   gap: var(--space-3);
@@ -2483,7 +2603,17 @@ function closeReader(): void {
   color: var(--status-warning);
 }
 
-/* 「重试」是个文字按钮：它是一句话里的动作，做成实心按钮会把提示的权重抬得过高 */
+/* 「继续」与「重试」都是文字按钮：它们是一句话里的动作，做成实心按钮会把提示的
+   权重抬得过高。两者之间**只差一个加粗**——「继续」是大多数人要的那一个，
+   但也不该重到压过提示本身 */
+.degraded-primary {
+  font-weight: 600;
+}
+
+.degraded-sep {
+  color: var(--text-tertiary);
+}
+
 .degraded-retry {
   padding: 0 var(--space-1);
   font-size: inherit;

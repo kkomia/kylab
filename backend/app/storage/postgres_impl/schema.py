@@ -25,7 +25,7 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 12
 """应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
 
 **启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
@@ -95,7 +95,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         description="工作区（Agent 的项目）：会话挂到工作区下，知识库范围跟着工作区走（v0.15）",
         statements=(
             # 工作区 = Agent 的"在哪干活"。`root_path` 是用户指定的真实目录
-            # （见 docs/Agent-工作区与能力层设计-v0.1.md §3.2）。沙箱与它是两个概念，
+            # （见 docs/设计/Agent-工作区与能力层设计-v0.1.md §3.2）。沙箱与它是两个概念，
             # 所以这里**没有** sandbox 字段。
             """
             CREATE TABLE workspaces (
@@ -218,6 +218,61 @@ MIGRATIONS: tuple[Migration, ...] = (
             # 读取形状只有一种：某条会话的产物、按先后。索引就照这个形状建。
             "CREATE INDEX idx_conversation_artifacts_conv"
             " ON conversation_artifacts (conversation_id, created_at)",
+        ),
+    ),
+    Migration(
+        version=11,
+        description="用户头像：只存对象存储的 key（v0.29）",
+        statements=(
+            # 只加一个 key 列：图片本体在对象存储里（见 services/avatars.py
+            # 模块头的两条理由——账号是每个页面都读的东西；内容寻址的 key
+            # 让换头像天然避开 <img> 的缓存）。
+            "ALTER TABLE users ADD COLUMN avatar_key text NOT NULL DEFAULT ''",
+        ),
+    ),
+    Migration(
+        version=12,
+        description="定时任务：到点替用户跑一轮问答（v0.33）",
+        statements=(
+            # 这张表回答"有没有哪件事是到点就该做、而我不想每次自己去问一遍"。
+            #
+            # 三处刻意的形状（与 ``base.ScheduledTaskRecord`` 的说明一一对应）：
+            # ① 两种时间形态（cron / 一次）各占一列，而不是塞进一个含糊的字段；
+            # ② `next_run_at` 同时承担"下次什么时候跑"与"这一次有没有人认领"——
+            #    认领走一条带条件的 UPDATE（见 meta_store.arm_scheduled_task）；
+            # ③ 结果不另存一套"运行历史"：每次运行就是那条会话里的一轮问答，
+            #    这里只留最近一次的结论（状态 / 错误 / 时间）。
+            #
+            # `conversation_id` 是 ON DELETE SET NULL：用户删掉那条会话**不等于**
+            # 取消这个任务——下一轮它会重新建一条（比"任务悄悄没了"好得多）。
+            """
+            CREATE TABLE scheduled_tasks (
+                id              text PRIMARY KEY,
+                name            text NOT NULL,
+                prompt          text NOT NULL,
+                kind            text NOT NULL,
+                cron            text NOT NULL DEFAULT '',
+                run_at          timestamptz,
+                next_run_at     timestamptz,
+                enabled         boolean NOT NULL DEFAULT true,
+                kb_ids          jsonb NOT NULL DEFAULT '[]'::jsonb,
+                model_pk        text,
+                thinking        boolean,
+                thinking_effort text,
+                conversation_id text REFERENCES conversations (id) ON DELETE SET NULL,
+                owner_id        text,
+                last_run_at     timestamptz,
+                last_status     text NOT NULL DEFAULT '',
+                last_error      text NOT NULL DEFAULT '',
+                run_count       integer NOT NULL DEFAULT 0,
+                created_at      timestamptz NOT NULL DEFAULT now(),
+                updated_at      timestamptz NOT NULL DEFAULT now()
+            )
+            """,
+            # 扫描形状只有一种：**启用的、到点的、按时间正序**。部分索引正好对上它
+            # （停用的那些永远不进这个索引，而它们通常不少——跑完的一次性任务、
+            # 用户临时关掉的周期性任务）。
+            "CREATE INDEX idx_scheduled_tasks_due ON scheduled_tasks (next_run_at) WHERE enabled",
         ),
     ),
 )

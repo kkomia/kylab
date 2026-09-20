@@ -747,6 +747,23 @@ class ChatRequestIn(BaseModel):
     )
 
 
+class ChatResumeIn(BaseModel):
+    """续跑上一轮的请求体。**没有 query**——问题在会话里，不在这次请求里。
+
+    这一轮的模型档位、思考档位、库范围都取**会话已存的**（续跑是"接着同一轮做"，
+    不是新一轮提问，所以不给它换模型的机会）。唯一从界面来的是钉住的技能：
+    它存在输入框的偏好里、不入库，而续跑同样需要那几个技能在场。
+    """
+
+    skill_names: list[str] = Field(
+        default_factory=list,
+        description="本轮钉住的技能名（与提问时同一份，来自输入框「加号 → 技能」）",
+    )
+    model_pk: str | None = Field(default=None, description="留空用会话已存的；一般不必给")
+    thinking: bool | None = Field(default=None, description="留空用会话已存的")
+    thinking_effort: Literal["low", "medium", "high"] | None = Field(default=None)
+
+
 class ChatSourceOut(BaseModel):
     """回答引用的原文出处。带 preview，界面点开就能看到依据。"""
 
@@ -1309,6 +1326,8 @@ class UserOut(BaseModel):
     created_at: datetime | None = None
     document_count: int = 0
     """这个人传过多少文档——删他之前要能说清"会影响什么"。"""
+    avatar_url: str = ""
+    """头像链接（签名 URL，v0.29）。空 = 没有头像 → 界面用名字生成默认头像。"""
 
 
 class UserListOut(BaseModel):
@@ -2171,4 +2190,85 @@ class MemoryProbeOut(BaseModel):
 class MemoryActionOut(BaseModel):
     """无返回值的动作（重建索引）统一用它回一句人话。"""
 
+    detail: str = ""
+
+
+# ------------------------------------------------------------------ 定时任务（v0.33）
+
+
+class ScheduledTaskCreateIn(BaseModel):
+    """新建一条定时任务。见《Agent-工作区与能力层设计》§6.6。"""
+
+    name: str = Field(min_length=1, max_length=80)
+    """叫什么（同时会成为它那条会话的标题）。"""
+    prompt: str = Field(min_length=1, max_length=4000)
+    """**到点要问它的那句话**——它就是每次运行的用户消息，写具体一点：
+    "把昨天的构建日志汇总成三条结论"比"看看日志"得到的东西有用得多。"""
+    kind: Literal["cron", "once"] = "cron"
+    cron: str = Field(default="", max_length=120)
+    """5 字段表达式（分 时 日 月 周），按**服务器时区**解释。例：``0 9 * * *``。"""
+    run_at: datetime | None = None
+    """一次性任务的时刻。**不带时区的按服务器本地时间解释**
+    （界面上的 datetime-local 就是这个形状）。"""
+    kb_ids: list[str] = Field(default_factory=list)
+    """到点检索哪些库。留空 = 不查资料（只靠模型自己的知识与工具）。"""
+    model_pk: str | None = None
+    thinking: bool | None = None
+    thinking_effort: str | None = None
+
+
+class ScheduledTaskUpdateIn(BaseModel):
+    """改一条。**只改传进来的字段**（``None`` = 不动）。"""
+
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    prompt: str | None = Field(default=None, min_length=1, max_length=4000)
+    kind: Literal["cron", "once"] | None = None
+    cron: str | None = Field(default=None, max_length=120)
+    run_at: datetime | None = None
+    kb_ids: list[str] | None = None
+    enabled: bool | None = None
+    model_pk: str | None = None
+
+
+class ScheduledTaskOut(BaseModel):
+    model_config = _RECORD_CONFIG
+
+    id: str
+    name: str
+    prompt: str
+    kind: Literal["cron", "once"]
+    cron: str = ""
+    run_at: datetime | None = None
+    next_run_at: datetime | None = None
+    enabled: bool = True
+    kb_ids: list[str] = Field(default_factory=list)
+    model_pk: str | None = None
+    thinking: bool | None = None
+    thinking_effort: str | None = None
+    conversation_id: str | None = None
+    """结果落在哪条会话里（首次运行后才会有）。界面据此给"看跑过的结果"一个落点。"""
+    last_run_at: datetime | None = None
+    last_status: str = ""
+    """``ok`` / ``degraded`` / ``failed`` / 空串（还没跑过）。
+    ``degraded`` = 跑完了但没跑完（撞上步数或时间闸，可以在那条会话里点「继续」）。"""
+    last_error: str = ""
+    run_count: int = 0
+    schedule_text: str = ""
+    """给人看的一句话（"每天 09:00" / "2026-09-21 09:00 跑一次"）。由服务端生成——
+    界面自己把 cron 翻成人话，就得再维护一份解析。"""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ScheduledTaskListOut(BaseModel):
+    items: list[ScheduledTaskOut] = Field(default_factory=list)
+    timezone: str = ""
+    """当前服务器时区（如 ``CST UTC+08:00``）。cron 按它解释，
+    所以界面必须显示出来——否则"每天 9 点"是哪个 9 点就成了猜。"""
+
+
+class ScheduledTaskRunOut(BaseModel):
+    """「立即跑一次」的结果：任务已经入队。"""
+
+    task_id: str
     detail: str = ""

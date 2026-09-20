@@ -50,6 +50,8 @@ import IconSidebar from '@/components/icons/IconSidebar.vue'
 import IconSun from '@/components/icons/IconSun.vue'
 import IconTasks from '@/components/icons/IconTasks.vue'
 import IconUser from '@/components/icons/IconUser.vue'
+import AppAvatar from '@/components/ui/AppAvatar.vue'
+import AvatarDialog from '@/components/settings/AvatarDialog.vue'
 import SettingsModal from '@/components/settings/SettingsModal.vue'
 import { useAutoHideScrollbar } from '@/composables/useAutoHideScrollbar'
 import { loadRoster, roster, setOperator } from '@/composables/useOperator'
@@ -379,6 +381,17 @@ function closeAccountMenu(): void {
  * 那不是一种身份，写个名字只会让人以为登录被吞了。
  */
 const identityName = computed(() => currentUser.value?.name ?? '')
+
+/**
+ * 换头像（v0.29）。动作在 `useSession`，这里只管开合——换完 `currentUser`
+ * 会被写回，侧栏那一块自己就变了（头像与名字都从它来）。
+ */
+const avatarOpen = ref(false)
+
+function openAvatar(): void {
+  if (accountMenu.value) accountMenu.value.open = false
+  avatarOpen.value = true
+}
 const identityRole = computed(() => (currentUser.value ? (isAdmin.value ? '管理员' : '成员') : ''))
 
 /** 主题菜单项：点一下切到**另一边**，所以文案要说清切过去是哪个。 */
@@ -425,12 +438,12 @@ async function onLogout(): Promise<void> {
 
 <template>
   <aside class="sidebar" :class="{ 'sidebar-collapsed': collapsed }">
-    <!-- 品牌位只放**那只实验烧瓶**（v0.25，用户指定）：完整的 "KYLAB" 字标挪到
+    <!-- 品牌位只放**那颗环行星**（v0.31 换的新标）：完整的 "kylab" 字标挪到
          了对话页的空态上（那里空间够、也没有别的东西跟它抢）。
          侧栏这一格只有 24px 宽的位置，字标在这么小的地方既读不出来、
-         又跟下方的导航抢宽度；而烧瓶本身已经认得出来，Kimi 的侧栏也只放一个 K。
+         又跟下方的导航抢宽度；而行星标本身已经认得出来，Kimi 的侧栏也只放一个 K。
 
-         右侧是折叠开关：折叠后烧瓶收起，只留那颗面板图标。
+         右侧是折叠开关：折叠后行星标收起，只留那颗面板图标。
          **两者都不用 v-if 摘掉**——`v-if` 是瞬时的，没法过渡；
          改用 max-width 收缩（见下方样式），宽度动画才连得上。 -->
     <div class="brand">
@@ -678,14 +691,19 @@ async function onLogout(): Promise<void> {
             实测 28×28 圆形）。差别不只是大小：圆是"这里将来会是你的一张脸"，
             而一枚灰色小人图标读起来像"一个叫『用户』的入口"。
           -->
-          <span class="account-avatar" aria-hidden="true">
-            <IconUser :size="16" />
-          </span>
+          <!-- 有头像就显示图，没有就用名字生成的那张（见 AppAvatar）：
+               一块 28px 的圆是"这是谁"，而不是"一个叫『用户』的入口" -->
+          <AppAvatar :name="identityName" :url="currentUser?.avatar_url ?? ''" />
           <span class="account-name" :title="identityName">{{ identityName }}</span>
           <span v-if="identityRole" class="account-role">{{ identityRole }}</span>
           <IconChevronDown class="account-caret" :size="14" />
         </summary>
         <div class="account-pop">
+          <!-- 「头像」只给真账号（API Key 通道没有身份可改） -->
+          <button v-if="currentUser" type="button" @click="openAvatar">
+            <IconUser :size="14" />
+            <span>头像</span>
+          </button>
           <button v-if="canOpenSettings" type="button" @click="onOpenSettings">
             <IconSettings :size="14" />
             <span>设置</span>
@@ -710,6 +728,11 @@ async function onLogout(): Promise<void> {
     </div>
 
     <SettingsModal v-model:open="settingsOpen" @logout="onLogout" />
+    <AvatarDialog
+      v-model:open="avatarOpen"
+      :name="identityName"
+      :url="currentUser?.avatar_url ?? ''"
+    />
   </aside>
 </template>
 
@@ -1411,18 +1434,6 @@ async function onLogout(): Promise<void> {
 }
 
 /* 头像占位：28px 圆 + 二级灰的小人 */
-.account-avatar {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: var(--avatar-size);
-  height: var(--avatar-size);
-  background: var(--bg-selected);
-  border-radius: var(--radius-pill);
-  color: var(--text-secondary);
-}
-
 /* 名字吃掉剩余宽度（同样给角色与折叠箭头让位）。
    `max-width` + `overflow: hidden` 是为折叠过渡：折叠态收到 0 而不是 display:none */
 .account-name {

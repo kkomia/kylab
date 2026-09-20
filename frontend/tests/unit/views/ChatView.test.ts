@@ -10,11 +10,12 @@
  */
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia, type Pinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 
 import type { ConversationDetail, ConversationSummary } from '@/api/conversations'
 import type { KnowledgeBase } from '@/api/knowledgeBases'
+import { resetToasts, useToast } from '@/composables/useToast'
 
 const listConversations = vi.fn()
 const getConversation = vi.fn()
@@ -24,6 +25,7 @@ const listKnowledgeBases = vi.fn()
 const createConversation = vi.fn()
 const rewindConversation = vi.fn()
 const chatStream = vi.fn()
+const resumeStream = vi.fn()
 const listSkills = vi.fn()
 // 产物的三条接口（v0.26）：卡片要能知道"文件现在在哪、进没进库"，
 // 下载走签名链接，入库要经过「存进知识库」那个弹窗
@@ -57,6 +59,7 @@ vi.mock('@/api/chat', async (importOriginal) => {
   return {
     ...actual,
     chatStream: (...args: unknown[]) => chatStream(...args),
+    resumeStream: (...args: unknown[]) => resumeStream(...args),
     getSuggestedQuestions: vi.fn().mockResolvedValue({ questions: [] }),
   }
 })
@@ -253,7 +256,18 @@ function toolItem(wrapper: VueWrapper, label: string) {
   return found
 }
 
-async function mountAt(path: string): Promise<{ wrapper: VueWrapper; router: Router }> {
+/**
+ * @param attachTo 把组件挂进 `document.body`。
+ *
+ * **只有要断言浏览器选区（`document.getSelection()`）的用例需要它**：默认挂载是
+ * 挂在一个游离的 div 上，而 jsdom 会**静默丢弃**根不在文档里的选区
+ * （`addRange` 之后 `rangeCount` 直接变 0，`toString()` 是空串）。
+ * 真实浏览器不这样——这条纯粹是 jsdom 的脾气，但"选中了"这件事只有在这儿才测得出来。
+ */
+async function mountAt(
+  path: string,
+  attachTo = false,
+): Promise<{ wrapper: VueWrapper; router: Router }> {
   const router = createRouter({
     history: createMemoryHistory(),
     routes: [
@@ -263,7 +277,10 @@ async function mountAt(path: string): Promise<{ wrapper: VueWrapper; router: Rou
   })
   await router.push(path)
   await router.isReady()
-  const wrapper = mount(ChatView, { global: { plugins: [pinia, router] } })
+  const wrapper = mount(ChatView, {
+    ...(attachTo ? { attachTo: document.body } : {}),
+    global: { plugins: [pinia, router] },
+  })
   return { wrapper, router }
 }
 
@@ -403,6 +420,79 @@ describe('会话正文', () => {
     await flushPromises()
     expect(wrapper.findAll('.cite-preview')).toHaveLength(1)
 
+    wrapper.unmount()
+  })
+
+  it('降级横幅给两个出口：「继续」接着做、「重试」从头来', async () => {
+    // 这一轮是降级收尾的（工具循环撞了上限）
+    const degraded = detailWithSource('c30')
+    degraded.messages[1].steps = [
+      {
+        phase: 'tool',
+        label: '本轮时间已用尽',
+        detail: '本轮最多 300 秒，已用 312 秒，按现有信息作答',
+        status: 'done',
+        degraded: true,
+      },
+    ] as never
+    useConversationStore().rememberDetail(degraded)
+    resumeStream.mockResolvedValue({ abort: vi.fn() })
+
+    const { wrapper } = await mountAt('/chat/c30')
+    await flushPromises()
+
+    const banner = wrapper.find('.reply-degraded')
+    expect(banner.exists()).toBe(true)
+    // 提示里的原因来自服务端，前端不写死（两种原因的措辞不同）
+    expect(banner.text()).toContain('本轮最多 300 秒，已用 312 秒')
+
+    const resume = wrapper.findAll('button').find((item) => item.text() === '继续')
+    expect(resume).toBeTruthy()
+    await resume!.trigger('click')
+    await flushPromises()
+
+    // **续跑不碰 rewind**：那是"重试"做的事，续跑接着做
+    expect(rewindConversation).not.toHaveBeenCalled()
+    const [id, payload] = resumeStream.mock.calls[0]
+    expect(id).toBe('c30')
+    expect(payload).toMatchObject({ skill_names: [] })
+    wrapper.unmount()
+  })
+
+  it('续跑的事件打进同一条消息，不新开一条回答', async () => {
+    const degraded = detailWithSource('c31')
+    degraded.messages[1].steps = [
+      {
+        phase: 'tool',
+        label: '工具步数已达上限',
+        detail: '本轮最多 1 步',
+        status: 'done',
+        degraded: true,
+      },
+    ] as never
+    useConversationStore().rememberDetail(degraded)
+
+    // 假实现：立刻回一段正文，模拟"这次跑完了"
+    resumeStream.mockImplementation(
+      async (_id: string, _payload: unknown, handlers: { onDelta?: (t: string) => void }) => {
+        handlers.onDelta?.('补完的正文')
+        return { abort: vi.fn() }
+      },
+    )
+
+    const { wrapper } = await mountAt('/chat/c31')
+    await flushPromises()
+    const before = wrapper.findAll('.turn').length
+
+    await wrapper
+      .findAll('button')
+      .find((item) => item.text() === '继续')!
+      .trigger('click')
+    await flushPromises()
+
+    // 轮次没有多出来：续跑是同一条回答被补完
+    expect(wrapper.findAll('.turn')).toHaveLength(before)
+    expect(wrapper.text()).toContain('补完的正文')
     wrapper.unmount()
   })
 
@@ -1256,6 +1346,149 @@ describe('结论那一行不铺 JSON（v0.26）', () => {
     expect(text).toContain('检索词：酒馆战棋')
     // 标签还在：那一步确实发生过
     expect(text).toContain('导出幻灯')
+    wrapper.unmount()
+  })
+})
+
+/* ------------------------------------------------------------ 代码块 / 表格的复制（§12.205）
+
+   用户实测：点代码块的复制按钮，弹出的全是"复制失败"。根因是异步剪贴板要求
+   文档聚焦（`NotAllowedError: Document is not focused.`），而失焦是常态。
+   这两条用例盯的是**兜底真的接上了**——组件的接线（成功打勾 / 失败替用户选中）
+   单独在 `composables/clipboard.test.ts` 里测不到。 */
+
+/** 一段带围栏代码块与表格的回答。 */
+function detailWithBlocks(id: string): ConversationDetail {
+  return {
+    ...summary(id),
+    messages: [
+      {
+        id: 'm1',
+        role: 'user',
+        content: '怎么核对镜像架构',
+        sources: [],
+        steps: [],
+        thinking: '',
+        created_at: null,
+      },
+      {
+        id: 'm2',
+        role: 'assistant',
+        thinking: '',
+        sources: [],
+        steps: [],
+        created_at: null,
+        content:
+          '拉之前先核一下：\n\n' +
+          '```bash\ndocker manifest inspect dbeaver/cloudbeaver:latest | grep architecture\n```\n\n' +
+          '| 架构 | 机器 |\n| --- | --- |\n| arm64 | 鲲鹏 |\n',
+      },
+    ],
+  }
+}
+
+describe('代码块与表格的复制按钮', () => {
+  /** 换掉 `navigator.clipboard`（jsdom 里本来没有它）。 */
+  function stubClipboard(writeText: () => Promise<void>): void {
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+  }
+
+  afterEach(() => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    Object.defineProperty(document, 'execCommand', {
+      value: undefined,
+      configurable: true,
+      writable: true,
+    })
+    // 挂到 body 上的那个用例留下的 DOM（含它设置的选区）
+    document.body.innerHTML = ''
+    resetToasts()
+  })
+
+  it('剪贴板正常时复制代码块：只取 pre 的文本（不带语言名），按钮变成已复制', async () => {
+    getConversation.mockResolvedValue(detailWithBlocks('c20'))
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    stubClipboard(writeText)
+
+    const { wrapper } = await mountAt('/chat/c20')
+    await flushPromises()
+
+    const button = wrapper.find('[data-copy-code]')
+    expect(button.exists()).toBe(true)
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(writeText).toHaveBeenCalledWith(
+      'docker manifest inspect dbeaver/cloudbeaver:latest | grep architecture',
+    )
+    // "已复制"的反馈走属性（图标是背景图切的，不换 DOM）
+    expect(button.attributes('data-copied')).toBeTruthy()
+    wrapper.unmount()
+  })
+
+  it('剪贴板失焦（真实报错）时复制仍然成功——退回 execCommand 那条路', async () => {
+    getConversation.mockResolvedValue(detailWithBlocks('c21'))
+    stubClipboard(() =>
+      Promise.reject(new DOMException('Document is not focused.', 'NotAllowedError')),
+    )
+    const legacy = vi.fn(() => true)
+    Object.defineProperty(document, 'execCommand', {
+      value: legacy,
+      configurable: true,
+      writable: true,
+    })
+
+    const { wrapper } = await mountAt('/chat/c21')
+    await flushPromises()
+
+    await wrapper.find('[data-copy-code]').trigger('click')
+    await flushPromises()
+
+    expect(legacy).toHaveBeenCalledWith('copy')
+    expect(useToast().toasts.value).toHaveLength(0)
+    expect(wrapper.find('[data-copy-code]').attributes('data-copied')).toBeTruthy()
+    wrapper.unmount()
+  })
+
+  it('两条路都断了：把代码替用户选中，并说清按 Ctrl+C 就行', async () => {
+    getConversation.mockResolvedValue(detailWithBlocks('c22'))
+    stubClipboard(() =>
+      Promise.reject(new DOMException('Document is not focused.', 'NotAllowedError')),
+    )
+    Object.defineProperty(document, 'execCommand', {
+      value: vi.fn(() => false),
+      configurable: true,
+      writable: true,
+    })
+
+    const { wrapper } = await mountAt('/chat/c22', true)
+    await flushPromises()
+
+    await wrapper.find('[data-copy-code]').trigger('click')
+    await flushPromises()
+
+    // 选中是真的（复制从此刻起是本地操作，用户按 Ctrl+C 必然拿到）
+    expect(document.getSelection()?.toString()).toBe(
+      'docker manifest inspect dbeaver/cloudbeaver:latest | grep architecture',
+    )
+    expect(useToast().toasts.value.map((toast) => toast.message)).toContain(
+      '已替你选中，按 Ctrl+C 复制',
+    )
+    wrapper.unmount()
+  })
+
+  it('表格复制给的是制表符分隔：粘进表格工具会拆成单元格', async () => {
+    getConversation.mockResolvedValue(detailWithBlocks('c23'))
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    stubClipboard(writeText)
+
+    const { wrapper } = await mountAt('/chat/c23')
+    await flushPromises()
+
+    await wrapper.find('[data-copy-table]').trigger('click')
+    await flushPromises()
+
+    expect(writeText).toHaveBeenCalledWith('架构\t机器\narm64\t鲲鹏')
     wrapper.unmount()
   })
 })

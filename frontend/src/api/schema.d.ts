@@ -131,6 +131,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 换一张头像（上传图片）
+         * @description 只认图片（按**魔数**认，不看声明的 content-type）。返回更新后的账号。
+         */
+        post: operations["upload_avatar_api_v1_auth_avatar_post"];
+        /**
+         * 去掉头像
+         * @description 回到"用名字生成的默认头像"。没有头像时也成功——它要的是结果，不是过程。
+         */
+        delete: operations["clear_avatar_api_v1_auth_avatar_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/password": {
         parameters: {
             query?: never;
@@ -628,6 +652,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 续跑上一轮（工具循环没跑完时）
+         * @description **接着上一轮继续做**，而不是重发一遍（v0.32，见 ``services/resume.py``）。
+         *
+         *     什么时候有得续：上一轮是**降级收尾**的（工具步数或整轮墙钟用尽了）。
+         *     那时候模型还想查，只是没机会了——这里把已拿到的材料交回给它、把出处接上、
+         *     再给一点预算，让它把话说完。用户看到的是同一个回合被补完，而不是两条回答。
+         *
+         *     契约与「重新生成」一致：**要么能续、要么报错**（422），不静默做别的事。
+         *     找不到可续的回答时宁可让前端把「继续」按钮藏起来，也不要在这里悄悄换个行为。
+         *
+         *     库范围、模型档位、思考档位**取会话已存的**——续跑是接着同一轮做，
+         *     不是新一轮提问；只有钉住的技能从界面来（它不入库，见 ``ChatResumeIn``）。
+         */
+        post: operations["resume_turn_api_v1_conversations__conversation_id__resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat": {
         parameters: {
             query?: never;
@@ -852,6 +906,74 @@ export interface paths {
          *     下一个阶段边界停手，所以**不是立刻中断**，云端解析仍会跑完当前那次调用。
          */
         post: operations["cancel_tasks_api_v1_tasks_cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scheduled-tasks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 定时任务列表
+         * @description 成员只看自己的；管理员会话与 API Key 通道看全部（与工作区/能力同一口径）。
+         */
+        get: operations["list_scheduled_tasks_api_v1_scheduled_tasks_get"];
+        put?: never;
+        /**
+         * 新建定时任务
+         * @description 建一条。时间字段的校验（cron 语法、过去的时刻、字段范围）由服务层做，
+         *     报错直接回给用户看——所以措辞是照着"怎么改对"写的。
+         */
+        post: operations["create_scheduled_task_api_v1_scheduled_tasks_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/scheduled-tasks/{scheduled_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * 删定时任务
+         * @description **已经跑出来的会话不删**（与"删工作区不删会话"同一条纪律）。
+         */
+        delete: operations["delete_scheduled_task_api_v1_scheduled_tasks__scheduled_id__delete"];
+        options?: never;
+        head?: never;
+        /** 改定时任务 */
+        patch: operations["update_scheduled_task_api_v1_scheduled_tasks__scheduled_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/scheduled-tasks/{scheduled_id}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 立即跑一次
+         * @description 入队一次运行，**不动下次时间**（手动跑不改变周期）。
+         *
+         *     返回的是队列任务 id：界面可以顺着它去任务列表里看这一轮跑到哪一步了。
+         */
+        post: operations["run_scheduled_task_now_api_v1_scheduled_tasks__scheduled_id__run_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1595,6 +1717,23 @@ export interface paths {
         post?: never;
         /** 删除使用者（其文档保留，归属置空） */
         delete: operations["delete_user_api_v1_users__user_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/avatars/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 取一张头像（签名链接） */
+        get: operations["get_avatar_api_v1_avatars__user_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2703,6 +2842,11 @@ export interface components {
             name: string;
             /** Role */
             role: string;
+            /**
+             * Avatar Url
+             * @default
+             */
+            avatar_url: string;
         };
         /**
          * ActivityPointOut
@@ -2824,6 +2968,14 @@ export interface components {
             models: components["schemas"]["AvailableModelOut"][];
             /** Count */
             count: number;
+        };
+        /** Body_upload_avatar_api_v1_auth_avatar_post */
+        Body_upload_avatar_api_v1_auth_avatar_post: {
+            /**
+             * File
+             * @description 图片；前端会先缩到 256px 再传
+             */
+            file: string;
         };
         /** Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post */
         Body_upload_document_api_v1_knowledge_bases__kb_id__documents_post: {
@@ -2953,6 +3105,33 @@ export interface components {
             answer: string;
             /** Sources */
             sources?: components["schemas"]["ChatSourceOut"][];
+        };
+        /**
+         * ChatResumeIn
+         * @description 续跑上一轮的请求体。**没有 query**——问题在会话里，不在这次请求里。
+         *
+         *     这一轮的模型档位、思考档位、库范围都取**会话已存的**（续跑是"接着同一轮做"，
+         *     不是新一轮提问，所以不给它换模型的机会）。唯一从界面来的是钉住的技能：
+         *     它存在输入框的偏好里、不入库，而续跑同样需要那几个技能在场。
+         */
+        ChatResumeIn: {
+            /**
+             * Skill Names
+             * @description 本轮钉住的技能名（与提问时同一份，来自输入框「加号 → 技能」）
+             */
+            skill_names?: string[];
+            /**
+             * Model Pk
+             * @description 留空用会话已存的；一般不必给
+             */
+            model_pk?: string | null;
+            /**
+             * Thinking
+             * @description 留空用会话已存的
+             */
+            thinking?: boolean | null;
+            /** Thinking Effort */
+            thinking_effort?: ("low" | "medium" | "high") | null;
         };
         /**
          * ChatSourceOut
@@ -5337,6 +5516,153 @@ export interface components {
              */
             workdir: string;
         };
+        /**
+         * ScheduledTaskCreateIn
+         * @description 新建一条定时任务。见《Agent-工作区与能力层设计》§6.6。
+         */
+        ScheduledTaskCreateIn: {
+            /** Name */
+            name: string;
+            /** Prompt */
+            prompt: string;
+            /**
+             * Kind
+             * @default cron
+             * @enum {string}
+             */
+            kind: "cron" | "once";
+            /**
+             * Cron
+             * @default
+             */
+            cron: string;
+            /** Run At */
+            run_at?: string | null;
+            /** Kb Ids */
+            kb_ids?: string[];
+            /** Model Pk */
+            model_pk?: string | null;
+            /** Thinking */
+            thinking?: boolean | null;
+            /** Thinking Effort */
+            thinking_effort?: string | null;
+        };
+        /** ScheduledTaskListOut */
+        ScheduledTaskListOut: {
+            /** Items */
+            items?: components["schemas"]["ScheduledTaskOut"][];
+            /**
+             * Timezone
+             * @default
+             */
+            timezone: string;
+        };
+        /** ScheduledTaskOut */
+        ScheduledTaskOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Prompt */
+            prompt: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "cron" | "once";
+            /**
+             * Cron
+             * @default
+             */
+            cron: string;
+            /** Run At */
+            run_at?: string | null;
+            /** Next Run At */
+            next_run_at?: string | null;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /** Kb Ids */
+            kb_ids?: string[];
+            /** Model Pk */
+            model_pk?: string | null;
+            /** Thinking */
+            thinking?: boolean | null;
+            /** Thinking Effort */
+            thinking_effort?: string | null;
+            /**
+             * Conversation Id
+             * @description 结果落在哪条会话里（首次运行后才会有）。界面据此给"看跑过的结果"一个落点。
+             */
+            conversation_id?: string | null;
+            /** Last Run At */
+            last_run_at?: string | null;
+            /**
+             * Last Status
+             * @description ``ok`` / ``degraded`` / ``failed`` / 空串（还没跑过）。
+             *     ``degraded`` = 跑完了但没跑完（撞上步数或时间闸，可以在那条会话里点「继续」）。
+             * @default
+             */
+            last_status: string;
+            /**
+             * Last Error
+             * @default
+             */
+            last_error: string;
+            /**
+             * Run Count
+             * @default 0
+             */
+            run_count: number;
+            /**
+             * Schedule Text
+             * @description 给人看的一句话（"每天 09:00" / "2026-09-21 09:00 跑一次"）。由服务端生成——
+             *     界面自己把 cron 翻成人话，就得再维护一份解析。
+             * @default
+             */
+            schedule_text: string;
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * ScheduledTaskRunOut
+         * @description 「立即跑一次」的结果：任务已经入队。
+         */
+        ScheduledTaskRunOut: {
+            /** Task Id */
+            task_id: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+        };
+        /**
+         * ScheduledTaskUpdateIn
+         * @description 改一条。**只改传进来的字段**（``None`` = 不动）。
+         */
+        ScheduledTaskUpdateIn: {
+            /** Name */
+            name?: string | null;
+            /** Prompt */
+            prompt?: string | null;
+            /** Kind */
+            kind?: ("cron" | "once") | null;
+            /** Cron */
+            cron?: string | null;
+            /** Run At */
+            run_at?: string | null;
+            /** Kb Ids */
+            kb_ids?: string[] | null;
+            /** Enabled */
+            enabled?: boolean | null;
+            /** Model Pk */
+            model_pk?: string | null;
+        };
         /** SearchHitOut */
         SearchHitOut: {
             /** Chunk Id */
@@ -6083,7 +6409,7 @@ export interface components {
          * @description 任务类型。每个摄入阶段与数据源动作都是独立任务，便于按阶段重试。
          * @enum {string}
          */
-        TaskKind: "probe" | "parse" | "chunk" | "embed" | "enrich" | "delete" | "fetch_source" | "questions" | "wiki" | "memory";
+        TaskKind: "probe" | "parse" | "chunk" | "embed" | "enrich" | "delete" | "fetch_source" | "questions" | "wiki" | "memory" | "scheduled";
         /** TaskList */
         TaskList: {
             /** Items */
@@ -6458,6 +6784,12 @@ export interface components {
              * @default 0
              */
             document_count: number;
+            /**
+             * Avatar Url
+             * @description 头像链接（签名 URL，v0.29）。空 = 没有头像 → 界面用名字生成默认头像。
+             * @default
+             */
+            avatar_url: string;
         };
         /**
          * UserPasswordIn
@@ -6897,6 +7229,72 @@ export interface operations {
         };
     };
     me_api_v1_auth_me_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_avatar_api_v1_auth_avatar_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_avatar_api_v1_auth_avatar_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    clear_avatar_api_v1_auth_avatar_delete: {
         parameters: {
             query?: never;
             header?: {
@@ -7961,6 +8359,41 @@ export interface operations {
             };
         };
     };
+    resume_turn_api_v1_conversations__conversation_id__resume_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatResumeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     chat_once_api_v1_chat_post: {
         parameters: {
             query?: never;
@@ -8317,6 +8750,173 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TaskCancelOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_scheduled_tasks_api_v1_scheduled_tasks_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduledTaskListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_scheduled_task_api_v1_scheduled_tasks_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduledTaskCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduledTaskOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_scheduled_task_api_v1_scheduled_tasks__scheduled_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                scheduled_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_scheduled_task_api_v1_scheduled_tasks__scheduled_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                scheduled_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduledTaskUpdateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduledTaskOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_scheduled_task_now_api_v1_scheduled_tasks__scheduled_id__run_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                scheduled_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ScheduledTaskRunOut"];
                 };
             };
             /** @description Validation Error */
@@ -10126,6 +10726,42 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_avatar_api_v1_avatars__user_id__get: {
+        parameters: {
+            query?: {
+                /** @description 到期时间戳；由签发方给出 */
+                expires?: number;
+                /** @description 签名；见 core/signing.py */
+                signature?: string;
+            };
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
             };
             /** @description Validation Error */
             422: {

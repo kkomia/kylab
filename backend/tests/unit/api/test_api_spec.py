@@ -1,6 +1,6 @@
 """《API 接口规范》与真实 OpenAPI 的一致性（T4.9）。
 
-镜像同构：``scripts/gen_api_spec.py`` + ``docs/API-接口规范-v0.1.md`` → 本文件。
+镜像同构：``scripts/gen_api_spec.py`` + ``docs/规范/API-接口规范-v0.1.md`` → 本文件。
 
 **T4.9 的验收条件就是"与 OpenAPI 自动生成结果一致"**，所以这条测试就是验收本身：
 它从真实应用抽一遍 OpenAPI，再与文档里的端点表逐条比对。
@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[4]
-SPEC = ROOT / "docs" / "API-接口规范-v0.1.md"
+SPEC = ROOT / "docs" / "规范" / "API-接口规范-v0.1.md"
 
 #: 文档里端点表的一行：| `GET` | `/api/v1/health` | 说明 |
 _ROW = re.compile(r"(?m)^\|\s*`([A-Z]+)`\s*\|\s*`([^`]+)`\s*\|")

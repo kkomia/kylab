@@ -19,6 +19,14 @@ export interface Account {
   username: string
   name: string
   role: UserRole
+  /**
+   * 头像链接（后端签发的**签名 URL**，v0.29）。空 = 没有头像。
+   *
+   * 它是个会过期的链接：`<img src>` 带不了 Authorization 头，所以"你有权取这张图"
+   * 这件事被编码进 URL 本身（与文件预览同一套）。过期了图会 401——
+   * 界面那份退回"用名字生成的默认头像"（见 `AppAvatar`）。
+   */
+  avatar_url: string
 }
 
 export interface LoginResult {
@@ -75,6 +83,23 @@ export function changePassword(
     },
     { authFailure: 'throw' },
   )
+}
+
+/**
+ * 换头像：上传一张图片，返回更新后的账号。
+ *
+ * **图片在前端先缩到 256px 再传**（见 `AppAvatarDialog`）：服务端不装成像库
+ * （这个项目到目前一张图都不处理），它只守"是不是图、有多大"两条。
+ */
+export function uploadAvatar(file: File): Promise<Account> {
+  const body = new FormData()
+  body.append('file', file)
+  return request<Account>('/auth/avatar', { method: 'POST', body }, { authFailure: 'throw' })
+}
+
+/** 去掉头像，回到"用名字生成的那张"。没有头像时也成功。 */
+export function clearAvatar(): Promise<Account> {
+  return request<Account>('/auth/avatar', { method: 'DELETE' }, { authFailure: 'throw' })
 }
 
 /** 口令下限与后端 `services/auth.py` 的 `MIN_PASSWORD_CHARS` 对齐。 */

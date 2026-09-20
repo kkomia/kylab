@@ -123,8 +123,7 @@ def _test_embedding(services: Services) -> TestConnectionOut:
         return TestConnectionOut(
             ok=False,
             detail=(
-                f"模型实际输出 {actual} 维，设置里写的是 {config.dim} 维；"
-                "维度不符会污染向量空间"
+                f"模型实际输出 {actual} 维，设置里写的是 {config.dim} 维；维度不符会污染向量空间"
             ),
         )
     return TestConnectionOut(

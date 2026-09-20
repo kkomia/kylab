@@ -18,6 +18,7 @@ import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconFile from '@/components/icons/IconFile.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import LoadPanel from '@/components/tasks/LoadPanel.vue'
+import SchedulePanel from '@/components/tasks/SchedulePanel.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 import AppModal from '@/components/ui/AppModal.vue'
@@ -35,6 +36,21 @@ import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
 import { useTaskStore } from '@/stores/tasks'
 
 const POLL_INTERVAL_MS = 2000
+
+/**
+ * 页内分段（v0.33）：流水线任务 / 定时任务。
+ *
+ * **为什么是同一页的两段，而不是新开一页**：它们是同一件事的两个时间态——
+ * "正在跑的事"与"到点要跑的事"。分成两页会让"我那个定时任务跑了吗"
+ * 变成要跳页找的问题（与记忆页三块用分段控件同一个理由）。
+ * 走分段而不是路由：切来切去不该产生历史记录，刷新后停在哪一屏也不该成问题。
+ */
+const view = ref<'tasks' | 'schedules'>('tasks')
+
+const VIEWS = [
+  { value: 'tasks', label: '流水线任务' },
+  { value: 'schedules', label: '定时任务' },
+]
 
 const store = useKnowledgeBaseStore()
 const taskStore = useTaskStore()
@@ -297,249 +313,304 @@ function openDocument(documentId: string): void {
 <template>
   <PageShell title="任务中心">
     <template #actions>
-      <StatusTag v-if="running" tone="info" label="有任务在跑，自动刷新中" />
-      <AppButton @click="refresh">
-        <template #icon><IconRefresh /></template>
-        刷新
-      </AppButton>
+      <!-- 只有流水线那一段归这两个按钮管：定时任务有它自己的刷新（在面板里） -->
+      <template v-if="view === 'tasks'">
+        <StatusTag v-if="running" tone="info" label="有任务在跑，自动刷新中" />
+        <AppButton @click="refresh">
+          <template #icon><IconRefresh /></template>
+          刷新
+        </AppButton>
+      </template>
     </template>
 
-    <!--
+    <!-- 分段：两个时间态（正在跑 / 到点要跑），不跳页 -->
+    <div class="views" role="tablist" aria-label="任务视图">
+      <button
+        v-for="item in VIEWS"
+        :key="item.value"
+        role="tab"
+        type="button"
+        :aria-selected="view === item.value"
+        :class="{ on: view === item.value }"
+        @click="view = item.value as 'tasks' | 'schedules'"
+      >
+        {{ item.label }}
+      </button>
+    </div>
+
+    <SchedulePanel v-if="view === 'schedules'" />
+
+    <template v-else>
+      <!--
       运行负载（§12.115）。**放在最上面**：它解释的是"为什么后台慢"，
       而那正是用户打开这一页时的问题——排在列表下方的话，他要先翻过几十行任务才看得到。
       管理员专属（端点对成员是 403）。
     -->
-    <LoadPanel v-if="isAdmin" :load="load" :live="running" />
+      <LoadPanel v-if="isAdmin" :load="load" :live="running" />
 
-    <p v-if="error" class="error-line">{{ error }}</p>
-    <SkeletonBlock v-if="loading" variant="list" :rows="5" />
+      <p v-if="error" class="error-line">{{ error }}</p>
+      <SkeletonBlock v-if="loading" variant="list" :rows="5" />
 
-    <EmptyState
-      v-else-if="tasks.length === 0"
-      title="还没有任务"
-      hint="上传文档后会在这里看到探测、解析、切分、向量化各步骤的进展。"
-    />
+      <EmptyState
+        v-else-if="tasks.length === 0"
+        title="还没有任务"
+        hint="上传文档后会在这里看到探测、解析、切分、向量化各步骤的进展。"
+      />
 
-    <template v-else>
-      <!-- 筛选：库 / 状态 / 健康。任务量级在几百以内，客户端过滤即可 -->
-      <div class="toolbar">
-        <div class="filter-select">
-          <AppSelect v-model="kbFilter" :options="KB_OPTIONS" aria-label="按知识库筛选" />
-        </div>
-        <div class="filter-select">
-          <AppSelect v-model="stateFilter" :options="STATE_OPTIONS" aria-label="按状态筛选" />
-        </div>
-        <div class="filter-select">
-          <AppSelect v-model="healthFilter" :options="HEALTH_OPTIONS" aria-label="按健康筛选" />
-        </div>
-        <!-- 已取消默认不显示（见 `showCanceled`）：给一个显式开关，并如实说藏了多少条 -->
-        <label class="canceled-toggle">
-          <input v-model="showCanceled" type="checkbox" />
-          <span>显示已取消</span>
-        </label>
-        <span v-if="hiddenCanceled > 0" class="toolbar-note">
-          已隐藏 {{ hiddenCanceled }} 条已取消
-        </span>
-        <AppButton v-if="hasFilter" size="sm" variant="subtle" @click="clearFilters">
-          清除筛选
-        </AppButton>
-        <!-- 唯一能真正"给队列踩刹车"的地方：几十条 pending 堵着时，
+      <template v-else>
+        <!-- 筛选：库 / 状态 / 健康。任务量级在几百以内，客户端过滤即可 -->
+        <div class="toolbar">
+          <div class="filter-select">
+            <AppSelect v-model="kbFilter" :options="KB_OPTIONS" aria-label="按知识库筛选" />
+          </div>
+          <div class="filter-select">
+            <AppSelect v-model="stateFilter" :options="STATE_OPTIONS" aria-label="按状态筛选" />
+          </div>
+          <div class="filter-select">
+            <AppSelect v-model="healthFilter" :options="HEALTH_OPTIONS" aria-label="按健康筛选" />
+          </div>
+          <!-- 已取消默认不显示（见 `showCanceled`）：给一个显式开关，并如实说藏了多少条 -->
+          <label class="canceled-toggle">
+            <input v-model="showCanceled" type="checkbox" />
+            <span>显示已取消</span>
+          </label>
+          <span v-if="hiddenCanceled > 0" class="toolbar-note">
+            已隐藏 {{ hiddenCanceled }} 条已取消
+          </span>
+          <AppButton v-if="hasFilter" size="sm" variant="subtle" @click="clearFilters">
+            清除筛选
+          </AppButton>
+          <!-- 唯一能真正"给队列踩刹车"的地方：几十条 pending 堵着时，
              逐篇取消文档是做不到的（用户反馈） -->
-        <AppButton
-          v-if="pendingCount > 0"
-          size="sm"
-          variant="subtle"
-          :disabled="canceling"
-          @click="cancelOpen = true"
-        >
-          <template #icon><IconStop /></template>
-          取消排队中的任务（{{ pendingCount }}）
-        </AppButton>
-        <span class="toolbar-count tabular">{{ visibleTasks.length }} / {{ tasks.length }} 项</span>
-      </div>
-
-      <div class="panel">
-        <div class="panel-head list-head" aria-hidden="true">
-          <span class="head-task">任务</span>
-          <span class="head-status">状态</span>
-          <span class="head-health">健康</span>
-          <span class="head-attempts">尝试次数</span>
-          <span class="head-time">更新时间</span>
+          <AppButton
+            v-if="pendingCount > 0"
+            size="sm"
+            variant="subtle"
+            :disabled="canceling"
+            @click="cancelOpen = true"
+          >
+            <template #icon><IconStop /></template>
+            取消排队中的任务（{{ pendingCount }}）
+          </AppButton>
+          <span class="toolbar-count tabular"
+            >{{ visibleTasks.length }} / {{ tasks.length }} 项</span
+          >
         </div>
 
-        <!-- 筛选后可能为空：这不是"没有任务"，要给出与全局空态不同的文案 -->
-        <p v-if="visibleTasks.length === 0" class="muted filter-empty">
-          没有符合筛选条件的任务。换个条件，或点右上角「清除筛选」。
-        </p>
+        <div class="panel">
+          <div class="panel-head list-head" aria-hidden="true">
+            <span class="head-task">任务</span>
+            <span class="head-status">状态</span>
+            <span class="head-health">健康</span>
+            <span class="head-attempts">尝试次数</span>
+            <span class="head-time">更新时间</span>
+          </div>
 
-        <ul v-else class="task-rows">
-          <li v-for="task in pagedTasks" :key="task.id" class="task-row-group">
-            <div class="task-row panel-row">
-              <IconFile class="row-icon" />
-              <span class="row-kind">{{ taskKindLabel(task.kind) }}</span>
+          <!-- 筛选后可能为空：这不是"没有任务"，要给出与全局空态不同的文案 -->
+          <p v-if="visibleTasks.length === 0" class="muted filter-empty">
+            没有符合筛选条件的任务。换个条件，或点右上角「清除筛选」。
+          </p>
 
-              <!--
+          <ul v-else class="task-rows">
+            <li v-for="task in pagedTasks" :key="task.id" class="task-row-group">
+              <div class="task-row panel-row">
+                <IconFile class="row-icon" />
+                <span class="row-kind">{{ taskKindLabel(task.kind) }}</span>
+
+                <!--
                 整行可点是这里最要紧的交互：任务名只有十几个字宽，
                 而"看失败原因"是这一页唯一的深层动作，命中区不该只有一个词那么大。
                 里面是个真 button，所以 Tab 能到、回车能开（§8 键盘可达）。
               -->
-              <button
-                class="row-main"
-                type="button"
-                :aria-label="`查看任务详情：${taskKindLabel(task.kind)} ${documentName(task)}`"
-                @click="detail = task"
-              >
-                <span class="row-name">{{ documentName(task) }}</span>
-                <!--
+                <button
+                  class="row-main"
+                  type="button"
+                  :aria-label="`查看任务详情：${taskKindLabel(task.kind)} ${documentName(task)}`"
+                  @click="detail = task"
+                >
+                  <span class="row-name">{{ documentName(task) }}</span>
+                  <!--
                   招人注意的那一格：失败与卡住/逾期都要露头，而平时它完全不占视觉重量。
                   用文字而不是只靠状态色——"红点"在黑白截图里就不见了。
                 -->
-                <span v-if="needsAttention(task)" class="row-attention">
-                  {{ attentionText(task) }}
-                  <IconChevronRight :size="12" />
-                </span>
-              </button>
+                  <span v-if="needsAttention(task)" class="row-attention">
+                    {{ attentionText(task) }}
+                    <IconChevronRight :size="12" />
+                  </span>
+                </button>
 
-              <StatusTag
-                class="row-status"
-                :label="taskStateView(task.state).label"
-                :tone="taskStateView(task.state).tone"
-                :running="task.state === 'running'"
-              />
-              <!-- 健康列的文字用后端给的 label：它是判定结论，前端再翻译一遍就有两套说法。
+                <StatusTag
+                  class="row-status"
+                  :label="taskStateView(task.state).label"
+                  :tone="taskStateView(task.state).tone"
+                  :running="task.state === 'running'"
+                />
+                <!-- 健康列的文字用后端给的 label：它是判定结论，前端再翻译一遍就有两套说法。
                    终态（done）与状态列语义重复，退成弱文字；只有"需要看"的判据才配胶囊 -->
-              <StatusTag
-                v-if="task.health !== 'done'"
-                class="row-health"
-                :label="task.health_label"
-                :tone="taskHealthTone(task.health)"
-              />
-              <span v-else class="row-health-done">{{ task.health_label }}</span>
-              <span class="row-attempts">{{ attemptText(task) }}</span>
-              <span class="row-time">{{ formatDate(task.updated_at) }}</span>
-            </div>
-          </li>
-        </ul>
-      </div>
+                <StatusTag
+                  v-if="task.health !== 'done'"
+                  class="row-health"
+                  :label="task.health_label"
+                  :tone="taskHealthTone(task.health)"
+                />
+                <span v-else class="row-health-done">{{ task.health_label }}</span>
+                <span class="row-attempts">{{ attemptText(task) }}</span>
+                <span class="row-time">{{ formatDate(task.updated_at) }}</span>
+              </div>
+            </li>
+          </ul>
+        </div>
 
-      <!--
+        <!--
         分页（§12.117）。任务列表原先一次铺满：几百条任务时既滚不到底、也看不清
         "最近发生了什么"。**总数常显、只藏翻页控件**，与文档列表同一套口径。
       -->
-      <div v-if="visibleTasks.length > 0" class="pager">
-        <span class="pager-total">共 {{ visibleTasks.length }} 项</span>
-        <div v-if="pageCount > 1" class="pager-controls">
-          <AppButton size="sm" variant="subtle" :disabled="page <= 1" @click="goToPage(page - 1)">
-            <template #icon><IconChevronLeft :size="14" /></template>
-            上一页
-          </AppButton>
-          <span class="pager-page tabular">第 {{ page }} / {{ pageCount }} 页</span>
-          <AppButton
-            size="sm"
-            variant="subtle"
-            :disabled="page >= pageCount"
-            @click="goToPage(page + 1)"
-          >
-            下一页
-            <template #icon><IconChevronRight :size="14" /></template>
-          </AppButton>
+        <div v-if="visibleTasks.length > 0" class="pager">
+          <span class="pager-total">共 {{ visibleTasks.length }} 项</span>
+          <div v-if="pageCount > 1" class="pager-controls">
+            <AppButton size="sm" variant="subtle" :disabled="page <= 1" @click="goToPage(page - 1)">
+              <template #icon><IconChevronLeft :size="14" /></template>
+              上一页
+            </AppButton>
+            <span class="pager-page tabular">第 {{ page }} / {{ pageCount }} 页</span>
+            <AppButton
+              size="sm"
+              variant="subtle"
+              :disabled="page >= pageCount"
+              @click="goToPage(page + 1)"
+            >
+              下一页
+              <template #icon><IconChevronRight :size="14" /></template>
+            </AppButton>
+          </div>
         </div>
-      </div>
-    </template>
+      </template>
 
-    <!--
+      <!--
       任务详情（M6 收集阶段收口）。
       **为什么必须有个弹窗而不是 title 属性**：失败原因常常是一整段
       （含上游 URL、错误码、JSON 片段），`title` 一移开鼠标就没了，
       也没法选中复制去查——而"拿这段去搜"正是用户下一步要做的事。
     -->
-    <AppModal
-      :open="detail !== null"
-      title="任务详情"
-      @update:open="(value: boolean) => !value && (detail = null)"
-    >
-      <template v-if="detail">
-        <dl class="detail">
-          <div>
-            <dt>任务</dt>
-            <dd>{{ taskKindLabel(detail.kind) }} · {{ documentName(detail) }}</dd>
-          </div>
-          <div>
-            <dt>状态</dt>
-            <dd>{{ taskStateView(detail.state).label }}</dd>
-          </div>
-          <div>
-            <dt>健康</dt>
-            <dd>{{ detail.health_label }}</dd>
-          </div>
-          <div>
-            <dt>尝试次数</dt>
-            <dd class="tabular">{{ attemptText(detail) }}</dd>
-          </div>
-          <div>
-            <dt>创建</dt>
-            <dd>{{ formatDate(detail.created_at) }}</dd>
-          </div>
-          <div>
-            <dt>更新</dt>
-            <dd>{{ formatDate(detail.updated_at) }}</dd>
-          </div>
-          <div v-if="detail.lease_expires_at">
-            <dt>租约到期</dt>
-            <dd>{{ formatDate(detail.lease_expires_at) }}</dd>
-          </div>
-        </dl>
+      <AppModal
+        :open="detail !== null"
+        title="任务详情"
+        @update:open="(value: boolean) => !value && (detail = null)"
+      >
+        <template v-if="detail">
+          <dl class="detail">
+            <div>
+              <dt>任务</dt>
+              <dd>{{ taskKindLabel(detail.kind) }} · {{ documentName(detail) }}</dd>
+            </div>
+            <div>
+              <dt>状态</dt>
+              <dd>{{ taskStateView(detail.state).label }}</dd>
+            </div>
+            <div>
+              <dt>健康</dt>
+              <dd>{{ detail.health_label }}</dd>
+            </div>
+            <div>
+              <dt>尝试次数</dt>
+              <dd class="tabular">{{ attemptText(detail) }}</dd>
+            </div>
+            <div>
+              <dt>创建</dt>
+              <dd>{{ formatDate(detail.created_at) }}</dd>
+            </div>
+            <div>
+              <dt>更新</dt>
+              <dd>{{ formatDate(detail.updated_at) }}</dd>
+            </div>
+            <div v-if="detail.lease_expires_at">
+              <dt>租约到期</dt>
+              <dd>{{ formatDate(detail.lease_expires_at) }}</dd>
+            </div>
+          </dl>
 
-        <!-- 原因单独成块：它是这个弹窗里唯一需要**读**的东西，其余都是核对用的元数据 -->
-        <template v-if="detail.error || detail.health_detail">
-          <h3 class="detail-heading">
-            {{ detail.state === 'failed' ? '失败原因' : '健康判据说明' }}
-          </h3>
-          <!-- 用户选它就是想去搜、去贴给别人看，所以这里必须是可选中的文本 -->
-          <pre class="detail-error">{{ detail.error || detail.health_detail }}</pre>
+          <!-- 原因单独成块：它是这个弹窗里唯一需要**读**的东西，其余都是核对用的元数据 -->
+          <template v-if="detail.error || detail.health_detail">
+            <h3 class="detail-heading">
+              {{ detail.state === 'failed' ? '失败原因' : '健康判据说明' }}
+            </h3>
+            <!-- 用户选它就是想去搜、去贴给别人看，所以这里必须是可选中的文本 -->
+            <pre class="detail-error">{{ detail.error || detail.health_detail }}</pre>
+          </template>
+
+          <p class="detail-id">
+            任务 ID <code>{{ detail.id }}</code
+            >。排查日志时用它去搜。
+          </p>
         </template>
 
-        <p class="detail-id">
-          任务 ID <code>{{ detail.id }}</code
-          >。排查日志时用它去搜。
-        </p>
-      </template>
+        <template #footer>
+          <AppButton @click="detail = null">关闭</AppButton>
+          <AppButton
+            v-if="canCancel(detail)"
+            variant="danger"
+            :disabled="canceling"
+            @click="detail && runCancel([detail.id])"
+          >
+            取消这个任务
+          </AppButton>
+          <AppButton
+            v-if="detail?.document_id"
+            variant="primary"
+            @click="openDocument(detail.document_id)"
+          >
+            打开文档
+          </AppButton>
+        </template>
+      </AppModal>
 
-      <template #footer>
-        <AppButton @click="detail = null">关闭</AppButton>
-        <AppButton
-          v-if="canCancel(detail)"
-          variant="danger"
-          :disabled="canceling"
-          @click="detail && runCancel([detail.id])"
-        >
-          取消这个任务
-        </AppButton>
-        <AppButton
-          v-if="detail?.document_id"
-          variant="primary"
-          @click="openDocument(detail.document_id)"
-        >
-          打开文档
-        </AppButton>
-      </template>
-    </AppModal>
-
-    <!-- 批量撤下要二次确认：这是"把几十篇的处理全叫停"，点错了代价不小。
+      <!-- 批量撤下要二次确认：这是"把几十篇的处理全叫停"，点错了代价不小。
          文案里说清"文档不会被删/不会变状态"，因为那正是用户担心的 -->
-    <ConfirmDialog
-      v-model:open="cancelOpen"
-      title="取消排队中的任务"
-      :lead="`撤下 ${pendingCount} 个还在排队的任务？`"
-      note="只是不再处理：文档与已入库内容都保留，之后可重新上传或点「重新摄入」。正在执行的任务不在此列。"
-      confirm-label="撤下"
-      :busy="canceling"
-      @confirm="runCancel()"
-    />
+      <ConfirmDialog
+        v-model:open="cancelOpen"
+        title="取消排队中的任务"
+        :lead="`撤下 ${pendingCount} 个还在排队的任务？`"
+        note="只是不再处理：文档与已入库内容都保留，之后可重新上传或点「重新摄入」。正在执行的任务不在此列。"
+        confirm-label="撤下"
+        :busy="canceling"
+        @confirm="runCancel()"
+      />
+    </template>
   </PageShell>
 </template>
 
 <style scoped>
+/* 分段控件（与记忆页同一套观感）：一行胶囊，选中那个加底色 */
+.views {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--surface-muted, rgba(0, 0, 0, 0.04));
+  margin-bottom: 4px;
+}
+
+.views button {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 12px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.views button:hover {
+  color: var(--text);
+}
+
+.views button.on {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
 .error-line {
   margin: 0 0 var(--space-4);
   color: var(--status-danger);

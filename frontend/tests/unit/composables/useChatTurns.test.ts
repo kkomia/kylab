@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ChatSource, ChatStep } from '@/api/chat'
 import {
+  degradedReason,
   buildTurns,
   isTraceOpen,
   LIVE_TAIL_CHARS,
@@ -364,6 +365,30 @@ describe('降级与"这一轮没找到新东西"（v25）', () => {
     })
 
     expect(wasDegraded(message)).toBe(true)
+  })
+
+  it('把服务端给的原因原样带出来，不在前端写死', () => {
+    // v0.32 起降级有两种原因（步数用尽 / 整轮时间用尽），提示语由服务端拼好——
+    // 前端再写一句"工具步数用尽"的话，撞时间的用户会被告知是步数的事
+    const steps = makeMessage('assistant', '答', {
+      steps: [
+        {
+          phase: 'tool',
+          label: '本轮时间已用尽',
+          detail: '本轮最多 300 秒，已用 312 秒，按现有信息作答',
+          status: 'done',
+          degraded: true,
+        },
+      ],
+    })
+    expect(degradedReason(steps)).toBe('本轮最多 300 秒，已用 312 秒，按现有信息作答')
+
+    // detail 为空（老会话存下来的、或将来某条新路径忘了拼）——退化成一句不撒谎的话，
+    // 而不是在界面上显示出空白
+    const bare = makeMessage('assistant', '答', {
+      steps: [{ phase: 'tool', label: '降级', detail: '', status: 'done', degraded: true }],
+    })
+    expect(degradedReason(bare)).toBe('按当时拿到的资料作答')
   })
 
   it('is not degraded on a normal run', () => {

@@ -52,6 +52,7 @@ import InfoTip from '@/components/ui/InfoTip.vue'
 import RangeField from '@/components/ui/RangeField.vue'
 import SuggestedQuestionsFields from '@/components/knowledge/SuggestedQuestionsFields.vue'
 import { SUGGESTED_COUNT_DEFAULT } from '@/api/knowledgeBases'
+import { copyText } from '@/composables/clipboard'
 import { chunkingErrorOf, parseIntOrNull } from '@/composables/useChunking'
 import { formatBytes } from '@/composables/useFormat'
 import { useToast } from '@/composables/useToast'
@@ -412,12 +413,12 @@ function onEnter(event: KeyboardEvent): void {
 
 /** 复制知识库 ID：给 API 集成用（对接时要拿它指定库）。 */
 async function copyId(): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(props.kb.id)
+  if (await copyText(props.kb.id)) {
     notifySuccess('知识库 ID 已复制')
-  } catch {
-    notifyError('复制失败，请手动选中复制')
+    return
   }
+  // 这里没有可选的节点——ID 本身就在这段文字里，用户手选即可
+  notifyError('复制失败，请手动选中复制')
 }
 
 /** 打开这个库的 Wiki 页面（应用内跳转，不留在这个弹窗里）。 */

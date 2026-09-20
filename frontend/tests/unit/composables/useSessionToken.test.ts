@@ -43,7 +43,13 @@ describe('useSessionToken', () => {
 
   it('清除会话会同时清掉当前账号', () => {
     setSessionToken('kylab_st_abc')
-    currentUser.value = { id: 'user_1', username: 'admin', name: '管理员', role: 'admin' }
+    currentUser.value = {
+      id: 'user_1',
+      username: 'admin',
+      name: '管理员',
+      role: 'admin',
+      avatar_url: '',
+    }
 
     clearSessionToken()
 

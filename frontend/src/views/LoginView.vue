@@ -156,8 +156,6 @@ async function submit(): Promise<void> {
         </AppButton>
       </form>
     </div>
-
-    <p class="login-foot">本地优先 · 数据不出机器</p>
   </div>
 </template>
 
@@ -221,11 +219,5 @@ async function submit(): Promise<void> {
 /* 占满整列由 AppButton 的 block 负责；这里只留与上方字段的间距 */
 .login-submit {
   margin-top: var(--space-1);
-}
-
-.login-foot {
-  margin: 0;
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
 }
 </style>

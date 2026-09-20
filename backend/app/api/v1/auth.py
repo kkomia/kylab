@@ -19,10 +19,11 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, UploadFile
 from pydantic import BaseModel, Field
 
-from app.api.auth import CallerDep
+from app.api.auth import CallerDep, signing_secret
+from app.core.config import get_settings
 from app.core.exceptions import UnauthorizedError
 from app.core.services import Services, get_services
 from app.services.auth import MIN_PASSWORD_CHARS
@@ -59,6 +60,12 @@ class AccountOut(BaseModel):
     username: str
     name: str
     role: str
+    avatar_url: str = ""
+    """头像链接（签名 URL，v0.29）。空 = 没有头像 → 界面用名字生成默认头像。
+
+    **为什么是签名链接而不是裸路径**：``<img src>`` 带不了 Authorization 头，
+    而用户 id 是可枚举的（``user_xxx``）——不签名的话，一个 id 就能把别人的脸
+    拉下来（见 ``services/avatars.py``）。"""
 
 
 class LoginOut(BaseModel):
@@ -68,12 +75,14 @@ class LoginOut(BaseModel):
     user: AccountOut
 
 
-def _account_out(user) -> AccountOut:  # type: ignore[no-untyped-def]
+def _account_out(services: Services, user) -> AccountOut:  # type: ignore[no-untyped-def]
+    url, _expires = services.avatars.url_for(user, secret=signing_secret(get_settings(), services))
     return AccountOut(
         id=user.id,
         username=user.username or "",
         name=user.name,
         role=user.role.value,
+        avatar_url=url,
     )
 
 
@@ -103,7 +112,7 @@ def setup(
     result = services.auth.setup(
         username=payload.username, password=payload.password, name=payload.name
     )
-    return LoginOut(token=result.token, user=_account_out(result.user))
+    return LoginOut(token=result.token, user=_account_out(services, result.user))
 
 
 @router.post("/login", response_model=LoginOut, summary="登录（用户名 + 密码）")
@@ -113,7 +122,7 @@ def login(
 ) -> LoginOut:
     """换一条会话令牌（7 天滑动续期）。连续失败会被限流（服务层）。"""
     result = services.auth.login(username=payload.username, password=payload.password)
-    return LoginOut(token=result.token, user=_account_out(result.user))
+    return LoginOut(token=result.token, user=_account_out(services, result.user))
 
 
 @router.post("/logout", status_code=204, summary="退出登录（吊销当前会话）")
@@ -128,11 +137,49 @@ def logout(
 
 
 @router.get("/me", response_model=AccountOut, summary="当前登录账号")
-def me(caller: CallerDep) -> AccountOut:
+def me(
+    caller: CallerDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> AccountOut:
     """前端启动时用它恢复身份。API Key 通道没有账号，回 401。"""
     if caller.user is None:
         raise UnauthorizedError("当前凭据不是登录会话")
-    return _account_out(caller.user)
+    return _account_out(services, caller.user)
+
+
+# ---------------------------------------------------------------------- 头像（v0.29）
+#
+# 三件事都只作用于**自己**：头像是个人的，管理员改别人的头像没有正当理由
+# （名册那边的用户管理是另一件事：停用、改密、删账号）。
+#
+# 图片本体不走这里，走 `GET /avatars/{user_id}`（带签名的链接，见 services/avatars.py）——
+# `<img src>` 带不了 Authorization 头。
+
+
+@router.post("/avatar", response_model=AccountOut, summary="换一张头像（上传图片）")
+async def upload_avatar(
+    file: Annotated[UploadFile, File(description="图片；前端会先缩到 256px 再传")],
+    caller: CallerDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> AccountOut:
+    """只认图片（按**魔数**认，不看声明的 content-type）。返回更新后的账号。"""
+    if caller.user is None:
+        raise UnauthorizedError("当前凭据不是登录会话，不能设置头像")
+    services.avatars.save(caller.user.id, await file.read())
+    fresh = services.users.get(caller.user.id)
+    return _account_out(services, fresh)
+
+
+@router.delete("/avatar", response_model=AccountOut, summary="去掉头像")
+def clear_avatar(
+    caller: CallerDep,
+    services: Annotated[Services, Depends(get_services)],
+) -> AccountOut:
+    """回到"用名字生成的默认头像"。没有头像时也成功——它要的是结果，不是过程。"""
+    if caller.user is None:
+        raise UnauthorizedError("当前凭据不是登录会话，不能设置头像")
+    services.avatars.clear(caller.user.id)
+    return _account_out(services, services.users.get(caller.user.id))
 
 
 class PasswordChangeIn(BaseModel):

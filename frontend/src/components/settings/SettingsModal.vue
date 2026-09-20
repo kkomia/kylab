@@ -70,6 +70,7 @@ import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import AppSelect from '@/components/ui/AppSelect.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
+import AppAvatar from '@/components/ui/AppAvatar.vue'
 import StatusTag from '@/components/ui/StatusTag.vue'
 import { useToast } from '@/composables/useToast'
 import { changeOwnPassword, isAdmin } from '@/composables/useSession'
@@ -1104,6 +1105,8 @@ async function runTest(target: string): Promise<void> {
           </p>
           <ul v-else class="user-list">
             <li v-for="person in users" :key="person.id" class="user-row">
+              <!-- 名册里也带头像（v0.29）：人靠脸认，尤其名字都是中文短名时 -->
+              <AppAvatar :name="person.name" :url="person.avatar_url" :size="32" />
               <span class="user-main">
                 <span class="user-name">{{ person.name }}</span>
                 <span class="user-meta">

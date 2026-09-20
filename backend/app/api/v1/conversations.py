@@ -143,7 +143,7 @@ def create_conversation(
     if payload.workspace_id is not None:
         # 校验可见性（越权 404），并在调用方没指定库时**继承工作区的库**：
         # 这就是"知识库与 Agent 天生融合"落到行为上的样子——进入项目，
-        # 资料范围就定了（见 docs/Agent-工作区与能力层设计-v0.1.md §5）
+        # 资料范围就定了（见 docs/设计/Agent-工作区与能力层设计-v0.1.md §5）
         workspace = services.workspaces.get(payload.workspace_id, user_id=_caller_owner(caller))
         if not kb_ids:
             kb_ids = list(workspace.kb_ids)

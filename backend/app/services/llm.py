@@ -275,13 +275,16 @@ class OpenAICompatChat:
         """
         produced = False
         finish_reason = ""
-        with self._open() as client, client.stream(
-            "POST",
-            f"{self.config.base_url.rstrip('/')}/chat/completions",
-            headers=self._headers(),
-            json={**self._payload(messages), "stream": True},
-            timeout=self._timeout,
-        ) as response:
+        with (
+            self._open() as client,
+            client.stream(
+                "POST",
+                f"{self.config.base_url.rstrip('/')}/chat/completions",
+                headers=self._headers(),
+                json={**self._payload(messages), "stream": True},
+                timeout=self._timeout,
+            ) as response,
+        ):
             if response.status_code != 200:
                 response.read()
                 raise ChatError(_error_hint(response))

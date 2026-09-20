@@ -4,9 +4,9 @@
 # 仍未经"一键起"实测。但其中的 postgres 服务**已按这一份定义在真实部署服务器上
 # 跑通**（同一个镜像 pgvector/pgvector:pg17-trixie，kylab-postgres 健康，
 # PG 17.11 + pgvector 0.8.6，schema 由应用自检引导成功，HNSW + KNN 实测可用），
-# 见 docs/部署与运行-v0.1.md。minio 相关 service 与整体编排仍待实测。
+# 见 docs/归档/部署与运行-v0.1.md。minio 相关 service 与整体编排仍待实测。
 #
-# 本地开发仍可走 venv + 脚本那条路线（见 docs/部署与运行-v0.1.md）。
+# 本地开发仍可走 venv + 脚本那条路线（见 docs/归档/部署与运行-v0.1.md）。
 #
 # schema 由 **应用** 在启动时拥有（单一属主，避免两个真相来源）。现在可直接用
 # 应用自带的自检入口引导/校验，不必手工 psql：
@@ -115,6 +115,10 @@ services:
     environment:
       # 数据都落在挂载卷里，容器重建不丢
       KYLAB_DATA_DIR: /data
+      # **时区显式设出来**（v0.33）：定时任务的 cron 按服务器本地时间解释，
+      # 而容器默认是 UTC——不设这一行，"每天 9 点的早报"会在北京时间 17 点跑，
+      # 而这种现象几乎不会被归因到"容器的时区"。换别的时区改这一行即可。
+      TZ: ${TZ:-Asia/Shanghai}
       # ---- 存储后端 ----
       # 库与对象存储只走内网服务名；宿主机不暴露端口
       KYLAB_DATABASE_URL: postgresql://${KYLAB_PG_USER:-kylab}:${KYLAB_PG_PASSWORD:-kylab-dev-secret}@postgres:5432/${KYLAB_PG_DB:-kylab}
@@ -128,7 +132,7 @@ services:
       # ---- 应用 ----
       # 鉴权**永远生效**（v0.11 起没有开关）。首次打开时访问界面会进
       # 「创建管理员账号」向导；在此之前业务接口一律 401。
-      # 忘记密码没有 HTTP 应急入口，见 docs/部署与运行-v0.1.md 的恢复路径。
+      # 忘记密码没有 HTTP 应急入口，见 docs/归档/部署与运行-v0.1.md 的恢复路径。
       # 签名下载链接用；不设则后端**拒绝签发**（而不是发一条无效链接）。
       # 不设也行：首次 setup 会自动生成一条并落库。
       KYLAB_URL_SIGNING_SECRET: ${KYLAB_URL_SIGNING_SECRET:-}

@@ -32,6 +32,16 @@ DEFAULT_MAX_BACKOFF = 60.0
 DEFAULT_MAINTAIN_INTERVAL = 3600.0
 """空闲维护间隔（秒）。一小时一次：清理是"防表无限长大"，不必更勤。"""
 
+DEFAULT_SCHEDULE_INTERVAL = 20.0
+"""扫一遍"有没有定时任务到点"的间隔（秒）。
+
+**为什么单独一条循环、而不是挂在空闲分支上**：定时任务要的是"到点就跑"，
+而挂在空闲分支上意味着"队列一直忙 → 它一直不跑"（实测过同一个形状的坑：
+租约回收挂在空闲分支上时，队列忙起来就永远不回收，见 ``_reclaim_loop``）。
+20 秒是"分钟级精度"与"扫描开销"之间的折中：cron 的最小粒度就是分钟，
+再密也快不了一秒，而每次扫描只是一条带索引的 SELECT。
+"""
+
 DEFAULT_SUMMARY_INTERVAL = 30.0
 """补文档摘要的间隔（秒）。
 
@@ -74,6 +84,9 @@ class TaskWorker:
         compile_wiki: Callable[[str], object] | None = None,
         summarize_gap: Callable[[], object] | None = None,
         capture_memory: Callable[[list[dict[str, str]], str, str], object] | None = None,
+        run_scheduled: Callable[[str], object] | None = None,
+        due_schedules: Callable[[], object] | None = None,
+        schedule_interval: float = DEFAULT_SCHEDULE_INTERVAL,
     ) -> None:
         if lease_seconds <= 0:
             raise ValueError("租约时长必须为正")
@@ -103,6 +116,12 @@ class TaskWorker:
         # 补文档摘要（v25）。同样是可选回调：不接上就没有这个动作，
         # 而不是"静默什么都不做"——它由组合根显式传入。
         self._summarize_gap = summarize_gap
+        #: 定时任务的**执行体**（v0.33）：到这个 id 去问一趟。
+        self._run_scheduled = run_scheduled
+        #: 定时任务的**调度体**：扫一遍到点的、认领并放进队列（见 ``_schedule_loop``）。
+        self._due_schedules = due_schedules
+        self._schedule_interval = schedule_interval
+        self._last_schedule = 0.0
         self._summary_interval = DEFAULT_SUMMARY_INTERVAL
         self._last_summary = 0.0
         self._last_maintain = 0.0
@@ -190,6 +209,7 @@ class TaskWorker:
             async with asyncio.TaskGroup() as group:
                 group.create_task(self._consume_loop(stopping))
                 group.create_task(self._beat_loop(stopping))
+                group.create_task(self._schedule_loop(stopping))
                 group.create_task(self._reclaim_loop(stopping))
         finally:
             await self._drain_thread()
@@ -232,6 +252,37 @@ class TaskWorker:
             self._reclaim_expired(force=True)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stopping.wait(), timeout=self._reclaim_interval)
+    async def _schedule_loop(self, stopping: asyncio.Event) -> None:
+        """到点就把定时任务放进队列，**独立成一条循环**（v0.33）。
+
+        与 ``_reclaim_loop`` 同一条理由：它做的事（"这条到点了没有"）与手上
+        有没有活干**无关**。挂在空闲分支上的话，一个长时间摄入就能让
+        "每天 9 点"变成"9 点之后的某个时刻，取决于当时队列忙不忙"。
+
+        它只做**入队**（一条 SQL + 一次 CAS），不跑问答——真正的执行在消费者那侧，
+        于是"跑得慢"不会把调度也堵住。异常一律吞掉：调度失败不该带走消费者
+        （下一轮还会再扫一遍，那时重试是免费的）。
+        """
+        while not stopping.is_set() and not self._lease_lost.is_set():
+            self._enqueue_due_schedules(force=True)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stopping.wait(), timeout=self._schedule_interval)
+
+    def _enqueue_due_schedules(self, *, force: bool = False) -> None:
+        if self._due_schedules is None:
+            return
+        now = time.monotonic()
+        if not force and now - self._last_schedule < self._schedule_interval:
+            return
+        self._last_schedule = now
+        try:
+            count = self._due_schedules()
+        except Exception:
+            logger.warning("扫描定时任务失败，跳过本轮", exc_info=True)
+            return
+        if count:
+            logger.info("定时任务入队 %d 条", count)
+
 
     def _reclaim_expired(self, *, force: bool = False) -> None:
         """把租约过期、还写着 ``running`` 的任务回收掉（回到队列或判失败）。
@@ -380,6 +431,17 @@ class TaskWorker:
             # 事后也无从推断这条记忆该落到谁名下。空串 = 共享桶。
             user_id = str(task.payload.get("user_id") or "")
             self._capture_memory(messages, session_id, user_id)
+        if task.kind is TaskKind.SCHEDULED:
+            # 定时任务（v0.33）：payload 里是 scheduled_id，没有 document_id。
+            # 与其它分支一样**没接线就明确报错**，不静默跳过——跳过会让"到点了
+            # 什么都没发生"变成一个查不出原因的现象
+            if self._run_scheduled is None:
+                raise NotImplementedError("定时任务尚未接线")
+            scheduled_id = str(task.payload.get("scheduled_id") or "")
+            if not scheduled_id:
+                raise ValueError(f"任务 {task.id} 缺少 scheduled_id")
+            self._run_scheduled(scheduled_id)
+            return
             return
         if task.kind is TaskKind.QUESTIONS:
             # 补出题不走摄入阶段机（文档已 indexed，只读现有块），所以**不能**

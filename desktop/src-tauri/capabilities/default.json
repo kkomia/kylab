@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "本地配置页要用的权限。**故意没有 remote 段**：远端页面（NAS 上的 KYLAB）调不到任何 Tauri 命令——壳把界面交给它，但不给它特权。",
+  "windows": ["main", "connect"],
+  "permissions": ["core:default", "opener:default"]
+}

@@ -1,4 +1,4 @@
-"""子 Agent 派生（v0.16，设计见 ``docs/Agent-工作区与能力层设计-v0.1.md`` §6.3）。
+"""子 Agent 派生（v0.16，设计见 ``docs/设计/Agent-工作区与能力层设计-v0.1.md`` §6.3）。
 
 QwenPaw 的 "Sub-agents at runtime"：一个 Agent 可以**派一个独立的子 Agent**去干
 一件自成体系的事，拿回结论继续干自己的。它有用的地方很具体：

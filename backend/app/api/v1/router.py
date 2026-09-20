@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from app.api.v1 import (
     api_keys,
     auth,
+    avatars,
     chat,
     chunks,
     conversations,
@@ -25,6 +26,7 @@ from app.api.v1 import (
     model_registry,
     notes,
     sandbox,
+    schedules,
     search,
     settings,
     shares,
@@ -51,12 +53,17 @@ api_router.include_router(chat.router)
 api_router.include_router(settings.router)
 api_router.include_router(stats.router)
 api_router.include_router(tasks.router)
+# 定时任务（v0.33）：界面上归在任务中心那一页里（分段），但它是独立的一组端点
+api_router.include_router(schedules.router)
 api_router.include_router(api_keys.router)
 api_router.include_router(conversations.router)
 api_router.include_router(notes.router)
 api_router.include_router(chunks.router)
 api_router.include_router(model_registry.router)
 api_router.include_router(users.router)
+# 头像图片（v0.29）：**不鉴权、只认签名**——`<img src>` 带不了 Authorization 头，
+# 而签名绑定了"哪个用户的哪张图"（见 api/v1/avatars.py）
+api_router.include_router(avatars.router)
 api_router.include_router(lifecycle.router)
 api_router.include_router(data_sources.router)
 api_router.include_router(shares.router)

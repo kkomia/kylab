@@ -14,7 +14,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, status
 
-from app.api.auth import require_admin, require_read
+from app.api.auth import require_admin, require_read, signing_secret
 from app.api.v1.schemas import (
     UserCreateIn,
     UserDisabledIn,
@@ -22,6 +22,7 @@ from app.api.v1.schemas import (
     UserOut,
     UserPasswordIn,
 )
+from app.core.config import get_settings
 from app.core.exceptions import InvalidRequestError
 from app.core.services import Services, get_services
 from app.models.enums import UserRole
@@ -32,7 +33,11 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 
 def _out(services: Services, record) -> UserOut:  # type: ignore[no-untyped-def]
+    avatar_url, _expires = services.avatars.url_for(
+        record, secret=signing_secret(get_settings(), services)
+    )
     return UserOut(
+        avatar_url=avatar_url,
         id=record.id,
         name=record.name,
         note=record.note,

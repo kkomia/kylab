@@ -29,6 +29,7 @@ T2.11 的做法是**双写**：
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
 from app.core.exceptions import InvalidRequestError
 from app.parsers.tabular_format import (
@@ -39,11 +40,13 @@ from app.parsers.tabular_format import (
     parse_tabular,
     rows_to_text,
 )
+from app.services.tabular_sql import check_tables, validate_select
 from app.storage.base import StoreBundle
 
 __all__ = [
     "MAX_COLUMNS",
     "MAX_ROWS",
+    "MAX_SQL_ROWS",
     "TABULAR_EXTENSIONS",
     "TabularParse",
     "TabularService",
@@ -52,6 +55,11 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+#: SQL 一次最多回多少行。**这不是"能取多少"的上限，而是"进上下文"的上限**：
+#: 结果会原样进模型的上下文，几百行明细既贵又没用——要精确的答案该让 SQL
+#: 自己算出来（sum / count / group by），而不是把明细拉回来让模型数。
+MAX_SQL_ROWS = 500
 
 
 class TabularService:
@@ -106,4 +114,72 @@ class TabularService:
             "columns": self._stores.tabular.columns(table),
             "rows": self._stores.tabular.read_rows(table, limit=safe_limit, offset=max(0, offset)),
             "total": self._stores.tabular.row_count(table),
+        }
+
+    # ------------------------------------------------------- SQL（v0.33，给 Agent）
+
+    def tables(self, *, kb_ids: Sequence[str] | None = None) -> list[dict[str, object]]:
+        """有结构化副本的表格文档（可按库范围过滤）。
+
+        表名就是 ``document_id``，所以"库里有哪些表"这件事只能靠
+        **两份数据对起来**：副本库里的表名列表 ∩ 这些文档的所属库。反过来
+        （先列文档再逐个问 table_exists）是 N 次查询，而这一份是两次。
+        """
+        names = self._stores.tabular.list_tables()
+        if not names:
+            return []
+        documents = self._stores.meta.get_documents_by_ids(names)
+        scope = {str(item) for item in (kb_ids or [])} if kb_ids is not None else None
+        items: list[dict[str, object]] = []
+        for name in names:
+            record = documents.get(name)
+            if record is None:
+                # 表在、文档没了：摄入被中途取消/文档被删而副本还没清掉。
+                # 这种表**不进列表**——模型看到它、查它，会得到一份没有来源的数据
+                continue
+            if scope is not None and record.knowledge_base_id not in scope:
+                continue
+            items.append(
+                {
+                    "document_id": record.id,
+                    "name": record.name,
+                    "knowledge_base_id": record.knowledge_base_id,
+                    "columns": self._stores.tabular.columns(name),
+                    "rows": self._stores.tabular.row_count(name),
+                }
+            )
+        return items
+
+    def query_sql(
+        self, *, sql: str, kb_ids: Sequence[str] | None = None, limit: int = 100
+    ) -> dict[str, object]:
+        """跑一条**只读** SQL（校验与范围判定见 ``services/tabular_sql.py``）。
+
+        返回形状与 ``query_rows`` 保持一致（columns / rows / total），
+        界面与调用方不必区分"按文档读"与"按 SQL 查"。
+        """
+        allowed_items = self.tables(kb_ids=kb_ids)
+        allowed = {str(item["document_id"]) for item in allowed_items}
+        if not allowed:
+            raise InvalidRequestError(
+                "这一轮没有可查的表格（知识库关着、没选库，或者那些库里没有 CSV / Excel）。"
+                "表格文档要先入库处理完才能被查询"
+            )
+        text = validate_select(sql)
+        check_tables(text, known=self._stores.tabular.list_tables(), allowed=allowed)
+        safe_limit = max(1, min(MAX_SQL_ROWS, limit))
+        columns, rows = self._stores.tabular.run_select(text, max_rows=safe_limit)
+        return {
+            "sql": text,
+            "columns": columns,
+            "rows": rows,
+            "total": len(rows),
+            "truncated": len(rows) >= safe_limit,
+            "tables": [
+                {"document_id": item["document_id"], "name": item["name"]} for item in allowed_items
+            ],
+            "note": (
+                f"最多回 {safe_limit} 行，可能还有更多——要精确的值请让 SQL 自己算出"
+                "一行（sum / count / group by），而不是把明细拉回来再数"
+            ),
         }

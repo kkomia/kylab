@@ -1,0 +1,25 @@
+[package]
+name = "kylab-desktop"
+version = "0.1.0"
+description = "KYLAB 桌面壳：连到 NAS 上的服务，壳里没有服务端"
+authors = ["KYLAB"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# 壳只做三件事：开窗、记住地址、探活。所以依赖就三个：
+# tauri（窗口与 IPC）、ureq（探活要发一个 HTTP 请求）、serde/serde_json（配置文件与探针响应）。
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

@@ -20,9 +20,10 @@ Agent 工作流（v20）默认开启，可用设置项 ``chat.agent_enabled`` �
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -31,20 +32,25 @@ from app.api.auth import check_kb_scope, require_read
 from app.api.v1.schemas import (
     ChatRequestIn,
     ChatResponseOut,
+    ChatResumeIn,
     ChatSourceOut,
     SuggestedQuestionsOut,
 )
+from app.core.exceptions import InvalidRequestError
 from app.core.services import Services, get_services
+from app.services import resume as resume_service
 from app.services.agent import (
     DeltaEvent,
     DoneEvent,
     SourcesEvent,
     StepEvent,
     ThinkingEvent,
+    step_snapshot,
 )
 from app.services.agent_tools import build_runner, tool_specs
 from app.services.api_key import Caller
-from app.services.chat import ChatTurn
+from app.services.chat import ChatTurn, SourceRef
+from app.services.conversation import LastTurn
 from app.services.llm import ChatError, ChatMessage
 from app.services.suggested_questions import (
     DEFAULT_LIMIT as SUGGESTED_DEFAULT_LIMIT,
@@ -55,6 +61,7 @@ from app.services.suggested_questions import (
 from app.services.suggested_questions import (
     MIN_QUESTIONS as SUGGESTED_MIN,
 )
+from app.services.tool_loop import DEFAULT_MAX_SECONDS, DEFAULT_MAX_STEPS
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +105,71 @@ def chat_stream(
     )
 
 
+@router.post(
+    "/conversations/{conversation_id}/resume",
+    summary="续跑上一轮（工具循环没跑完时）",
+    response_class=StreamingResponse,
+)
+def resume_turn(
+    conversation_id: str,
+    payload: ChatResumeIn,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
+) -> StreamingResponse:
+    """**接着上一轮继续做**，而不是重发一遍（v0.32，见 ``services/resume.py``）。
+
+    什么时候有得续：上一轮是**降级收尾**的（工具步数或整轮墙钟用尽了）。
+    那时候模型还想查，只是没机会了——这里把已拿到的材料交回给它、把出处接上、
+    再给一点预算，让它把话说完。用户看到的是同一个回合被补完，而不是两条回答。
+
+    契约与「重新生成」一致：**要么能续、要么报错**（422），不静默做别的事。
+    找不到可续的回答时宁可让前端把「继续」按钮藏起来，也不要在这里悄悄换个行为。
+
+    库范围、模型档位、思考档位**取会话已存的**——续跑是接着同一轮做，
+    不是新一轮提问；只有钉住的技能从界面来（它不入库，见 ``ChatResumeIn``）。
+    """
+    if caller.user is not None and not caller.is_admin:
+        conversation = services.conversations.get_for_owner(conversation_id, caller.user.id)
+    else:
+        conversation = services.conversations.get(conversation_id)
+    check_kb_scope(services, caller, conversation.kb_ids)
+
+    turn = services.conversations.last_turn(conversation_id)
+    if turn is None:
+        raise InvalidRequestError("这段对话里没有可续的回答")
+    reason = resume_service.degraded_reason(turn.steps)
+    if not reason:
+        raise InvalidRequestError("这一轮是正常跑完的，没有可续的地方")
+
+    # 档位取**会话已存的**，界面给了就用界面的（与 `_effective_*` 同一套优先级）
+    model_pk = payload.model_pk or conversation.model_pk
+    thinking = payload.thinking if payload.thinking is not None else conversation.thinking
+    effort = payload.thinking_effort or conversation.thinking_effort
+    # **先把那条没做完的回答删掉**：新的回答会顶替它（同一个问题不该挂两条答案，
+    # 理由见 services/conversation.drop_answer）。这一步在流开始之前做——
+    # 失败了要当场 4xx/5xx，而不是"流里报个错、库里还留着旧的"。
+    services.conversations.drop_answer(conversation_id, answer_id=turn.answer_id)
+
+    return StreamingResponse(
+        _resume_events(
+            services,
+            conversation_id=conversation_id,
+            # 库范围取**会话已存的**：续跑是接着同一轮做，不是新一轮提问
+            kb_ids=conversation.kb_ids,
+            payload=payload,
+            question=turn.question,
+            previous=turn,
+            reason=reason,
+            model_pk=model_pk,
+            thinking=thinking,
+            effort=effort,
+            caller=caller,
+        ),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
+
+
 @router.post("/chat", response_model=ChatResponseOut, summary="快速检索问答（一次性）")
 def chat_once(
     payload: ChatRequestIn,
@@ -116,33 +188,14 @@ def chat_once(
         # **与流式走同一条链路**（P0）：这个端点的文档里写着"逻辑与流式完全相同"，
         # 而工具循环已经是流式那条路的主流程——这里不跟上的话，
         # 同一句话从 `/chat` 问和从 `/chat/stream` 问会得到两种性质的回答
-        loop = services.chat.tool_loop(
+        loop = _agent_loop(
+            services,
+            caller,
+            kb_ids=payload.kb_ids,
+            conversation_id=payload.conversation_id,
             model_pk=model_pk,
             thinking=thinking,
-            thinking_effort=effort,
-            tools=tool_specs(
-                services,
-                owner_id=caller.owner_id,
-                # 这一轮允许查的库（空 = 用户关掉了知识库开关）：
-                # 关掉时知识库那一侧的工具**整个不出现**，免得模型每轮
-                # 先去列库、再检索一次被拒（见 agent_tools._KB_TOOLS）
-                kb_ids=payload.kb_ids,
-            ),
-            runner=build_runner(
-                services,
-                caller,
-                kb_ids=payload.kb_ids,
-                # 这一轮在哪条会话里——产物（导出类工具）据此决定落在工作区目录
-                # 还是会话的临时位置（v0.26）
-                conversation_id=payload.conversation_id,
-                subagent=lambda task: services.chat.run_subagent_text(
-                    question=task,
-                    kb_ids=payload.kb_ids,
-                    model_pk=model_pk,
-                    thinking=thinking,
-                    thinking_effort=effort,
-                ),
-            ),
+            effort=effort,
         )
         answer = _collect(
             loop.run(
@@ -272,6 +325,169 @@ def _effective_thinking(
     return thinking, effort
 
 
+class _TurnSink:
+    """把工具循环的事件摊成 SSE，同时攒下**落库要用的快照**。
+
+    两条链路共用它：正常提问（``_events``）与续跑（``_resume_events``）。
+    抽出来的理由很实在——这套映射里有好几处"踩过才知道"的细节
+    （`running` 的步骤不入快照、`degraded` 要落库、空字段不发键省带宽、
+    思考要攒全文否则刷新后只剩一句"已生成回答"）。**复制一份就一定会分叉**。
+
+    它只管攒与发，不管收尾：`done` 事件与落库由调用方在循环结束后统一做，
+    这样两处的口径不可能不一致。
+    """
+
+    def __init__(self) -> None:
+        self.steps: list[dict[str, object]] = []
+        self.thinking: list[str] = []
+        self.deltas: list[str] = []
+        self.sources: list = []
+
+    @property
+    def answer(self) -> str:
+        return "".join(self.deltas)
+
+    def feed(self, event: object) -> Iterator[str]:
+        if isinstance(event, StepEvent):
+            # 快照的收法在服务层（``agent.step_snapshot``）：定时任务那条链路
+            # 也要落同一份，两处各写一份必然分叉（见那个函数的说明）
+            snapshot = step_snapshot(event)
+            if snapshot is not None:
+                self.steps.append(snapshot)
+            yield _sse(
+                {
+                    "type": "step",
+                    "phase": event.phase,
+                    "label": event.label,
+                    "detail": event.detail,
+                    "status": event.status,
+                    # 工具名（v0.26）：界面按它选图标、把同类调用并成一组。
+                    # 非工具步骤没有，所以空就不发这个键
+                    **({"tool": event.tool} if event.tool else {}),
+                    # 两个都是"可选补充"，只在有意义时发（v25）：
+                    # degraded 让界面给续跑/重试入口，added 让界面说清这轮找了几条新资料
+                    **({"degraded": True} if event.degraded else {}),
+                    **({"added": event.added} if event.added is not None else {}),
+                    # 入参与原文（v0.25）：界面默认不展开，点开才看。
+                    # 空串就**不发这个键**——每一条步骤都带两个空字段，
+                    # 一个二十步的长会话会白扛几十 KB
+                    **({"args": event.args} if event.args else {}),
+                    **({"result": event.result} if event.result else {}),
+                    **(
+                        {"artifacts": [dict(a) for a in event.artifacts]} if event.artifacts else {}
+                    ),
+                }
+            )
+        elif isinstance(event, SourcesEvent):
+            self.sources = event.sources
+            yield _sse(
+                {
+                    "type": "sources",
+                    "items": [item.model_dump() for item in _sources_out(self.sources)],
+                }
+            )
+        elif isinstance(event, ThinkingEvent):
+            # 顺手攒一份全文：落库时要把它存下来，否则用户离开这一页再回来
+            # 就只剩一句"已生成回答"（v0.25）
+            self.thinking.append(event.text)
+            yield _sse({"type": "thinking", "text": event.text})
+        elif isinstance(event, DeltaEvent):
+            self.deltas.append(event.text)
+            yield _sse({"type": "delta", "text": event.text})
+        # DoneEvent 不在这里发：收尾统一放在循环外，保证 done 里的全文
+        # 与落库用的 answer 是同一个字符串
+
+
+def _source_from_snapshot(item: dict[str, object]) -> SourceRef:
+    """把落库的出处快照（``ChatSourceOut`` 的 dict）还原成 ``SourceRef``。
+
+    **按字段名过滤**而不是直接 ``SourceRef(**item)``：快照里可能带着
+    ``SourceRef`` 没有的键（前端模型加的展示字段），直接展开会在某天多一个字段时
+    炸在续跑这条路上——而那是一条"偶尔才走一次"的路，炸了很难被发现。
+    """
+    allowed = {field.name for field in dataclasses.fields(SourceRef)}
+    return SourceRef(**{key: value for key, value in item.items() if key in allowed})
+
+
+def _resume_steps(
+    previous: Sequence[dict[str, object]], fresh: Sequence[dict[str, object]], *, reason: str
+) -> list[dict[str, object]]:
+    """续跑这一轮的过程快照：**上一轮那些 + 一条"继续"标记 + 这一轮新的**。
+
+    为什么不只留新的：过程面板是"这一轮是怎么来的"。只看新的那半段，
+    用户会看到"它一步都没查就回答了"——而事实是查过了，只是在上半场。
+    那条标记把两半接上，也顺手回答了"为什么会有两段"。
+    """
+    marker: dict[str, object] = {
+        "phase": "tool",
+        "label": "继续上一轮",
+        "detail": f"上一次停下来是因为：{reason}",
+        "status": "done",
+    }
+    return [*previous, marker, *fresh]
+
+
+def _agent_loop(
+    services: Services,
+    caller: Caller,
+    *,
+    kb_ids: Sequence[str] | None,
+    conversation_id: str | None,
+    model_pk: str | None,
+    thinking: bool | None,
+    effort: str | None,
+    seed_sources: Sequence[SourceRef] = (),
+    max_steps: int | None = None,
+    max_seconds: float | None = None,
+):
+    """建这一轮的工具循环（工具表 + 执行器 + 预算）。
+
+    **提问与续跑共用它**：两处都要"内置工具 + 技能 + 外部 MCP，执行器带调用者身份
+    与这一轮的库范围"，复制一份就一定会分叉（续跑那条路少接一个工具，
+    表现是"续跑之后它忽然不会用某个工具了"，极难排查）。
+
+    ``seed_sources`` 只有续跑用：把上一轮已经拿到的出处接进来源账本
+    （见 ``services/resume.py`` 模块头——编号必须与交给模型的说明一致）。
+    """
+    return services.chat.tool_loop(
+        model_pk=model_pk,
+        thinking=thinking,
+        thinking_effort=effort,
+        # **工具表含外部 MCP 服务的工具**（v0.20）：用户在能力页接进来的
+        # 服务，它们的工具与内置工具一起交给模型；能不能真的调起来由
+        # 执行器那一刻的准入策略决定（见 agent_tools._call_mcp）
+        tools=tool_specs(
+            services,
+            owner_id=caller.owner_id,
+            # 这一轮允许查的库（空 = 用户关掉了知识库开关）：
+            # 关掉时知识库那一侧的工具**整个不出现**，免得模型每轮
+            # 先去列库、再检索一次被拒（见 agent_tools._KB_TOOLS）
+            kb_ids=kb_ids,
+        ),
+        # 执行器带**调用者身份**与**这一轮允许查的库**：
+        # 关掉知识库开关之后，模型也不该能绕过它去检索（见 agent_tools.build_runner）
+        runner=build_runner(
+            services,
+            caller,
+            kb_ids=kb_ids,
+            # 产物（导出类工具）落在哪：见 services/artifacts.py
+            conversation_id=conversation_id,
+            # 子 Agent（P1 补上）：它自己解析这一轮的模型档位，
+            # 执行器只管"给问题、拿结论与出处"
+            subagent=lambda task: services.chat.run_subagent_text(
+                question=task,
+                kb_ids=kb_ids,
+                model_pk=model_pk,
+                thinking=thinking,
+                thinking_effort=effort,
+            ),
+            seed_sources=seed_sources,
+        ),
+        max_steps=max_steps,
+        max_seconds=max_seconds,
+    )
+
+
 def _events(
     services: Services,
     payload: ChatRequestIn,
@@ -290,9 +506,10 @@ def _events(
     前端不必关心走的是哪条。
     """
     chat = services.chat
-    collected: list[str] = []
-    # 过程快照：与回答一起落库（v0.25）。只活在内存里、结束时一次性写——
+    # 过程快照与正文都攒在 sink 里：**只活在内存里、结束时一次性写**——
     # 边流边写会让每一拍都多一次 UPDATE，而回看要的是最终那一份
+    sink = _TurnSink()
+    collected: list[str] = []
     step_log: list[dict[str, object]] = []
     thinking_parts: list[str] = []
     sources: list = []
@@ -310,44 +527,21 @@ def _events(
         )
 
     if _use_agent(services):
+        # **工具循环是主流程**（P0）：模型拿到十几个工具（内置 + 技能 + 外部 MCP 服务），
+        # 自己决定查什么、做什么；知识库检索是其中一个工具（`search`），
+        # 不再是每轮必经的阶段——资料由它取回，而不是我们预先塞进提示词。
+        #
+        # 事件怎么摊成 SSE、快照怎么攒，全在 `_TurnSink` 里（与续跑共用一份：
+        # 那段映射里有好几处踩过才知道的细节，复制一份就一定会分叉）。
         try:
-            # **工具循环是主流程**（P0）：模型拿到十几个工具（内置 + 技能 + 外部 MCP 服务），
-            # 自己决定查什么、做什么。外部那一段见 agent_tools._call_mcp 的准入策略。
-            # 知识库检索是其中一个工具（`search`），不再是每轮必经的阶段——
-            # 资料由它取回，而不是我们预先塞进提示词。
-            loop = chat.tool_loop(
+            loop = _agent_loop(
+                services,
+                caller,
+                kb_ids=payload.kb_ids,
+                conversation_id=payload.conversation_id,
                 model_pk=model_pk,
                 thinking=thinking,
-                thinking_effort=effort,
-                # **工具表含外部 MCP 服务的工具**（v0.20）：用户在能力页接进来的
-                # 服务，它们的工具与内置工具一起交给模型；能不能真的调起来由
-                # 执行器那一刻的准入策略决定（见 agent_tools._call_mcp）
-                tools=tool_specs(
-                    services,
-                    owner_id=caller.owner_id,
-                    # 这一轮允许查的库（空 = 用户关掉了知识库开关）：
-                    # 关掉时知识库那一侧的工具**整个不出现**，免得模型每轮
-                    # 先去列库、再检索一次被拒（见 agent_tools._KB_TOOLS）
-                    kb_ids=payload.kb_ids,
-                ),
-                # 执行器带**调用者身份**与**这一轮允许查的库**：
-                # 关掉知识库开关之后，模型也不该能绕过它去检索（见 agent_tools.build_runner）
-                runner=build_runner(
-                    services,
-                    caller,
-                    kb_ids=payload.kb_ids,
-                    # 产物（导出类工具）落在哪：见 services/artifacts.py
-                    conversation_id=payload.conversation_id,
-                    # 子 Agent（P1 补上）：它自己解析这一轮的模型档位，
-                    # 执行器只管"给问题、拿结论与出处"
-                    subagent=lambda task: services.chat.run_subagent_text(
-                        question=task,
-                        kb_ids=payload.kb_ids,
-                        model_pk=model_pk,
-                        thinking=thinking,
-                        thinking_effort=effort,
-                    ),
-                ),
+                effort=effort,
             )
             for event in loop.run(
                 messages=chat.agent_messages(
@@ -360,78 +554,7 @@ def _events(
                     owner_id=_memory_owner(caller),
                 )
             ):
-                if isinstance(event, StepEvent):
-                    # 同一份数据也攒起来落库（见 `_record_turn`）。
-                    # **只攒完成态**：`running` 那条是给界面"这一步开始了"用的，
-                    # 存下来只会在回看时多出一行没有结论的步骤。
-                    # 唯一的例外是「组织回答」——它只有 `running` 一条（完成由
-                    # DoneEvent 表达），不带上它，回看时就少最后那一行。
-                    if event.status != "running" or event.phase == "answer":
-                        step_log.append(
-                            {
-                                "phase": event.phase,
-                                "label": event.label,
-                                "detail": event.detail,
-                                "status": event.status,
-                                # 工具名落在快照里：回看历史时同样要按它选图标、
-                                # 把同类调用并成一组（v0.26）
-                                **({"tool": event.tool} if event.tool else {}),
-                                **({"added": event.added} if event.added is not None else {}),
-                                **({"args": event.args} if event.args else {}),
-                                **({"result": event.result} if event.result else {}),
-                                **(
-                                    {"artifacts": [dict(a) for a in event.artifacts]}
-                                    if event.artifacts
-                                    else {}
-                                ),
-                            }
-                        )
-                    yield _sse(
-                        {
-                            "type": "step",
-                            "phase": event.phase,
-                            "label": event.label,
-                            "detail": event.detail,
-                            "status": event.status,
-                            # 工具名（v0.26）：界面按它选图标、把同类调用并成一组。
-                            # 非工具步骤没有，所以空就不发这个键
-                            **({"tool": event.tool} if event.tool else {}),
-                            # 两个都是"可选补充"，只在有意义时发（v25）：
-                            # degraded 让界面给重试入口，added 让界面说清这轮找到了几条新资料
-                            **({"degraded": True} if event.degraded else {}),
-                            **({"added": event.added} if event.added is not None else {}),
-                            # 入参与原文（v0.25）：界面默认不展开，点开才看。
-                            # 空串就**不发这个键**——每一条步骤都带两个空字段，
-                            # 一个二十步的长会话会白扛几十 KB
-                            **({"args": event.args} if event.args else {}),
-                            **({"result": event.result} if event.result else {}),
-                            # 这一步产出的文件（导出类工具）：界面拿它挂文件卡片。
-                            # 空就不发这个键，理由同上面两条
-                            **(
-                                {"artifacts": [dict(a) for a in event.artifacts]}
-                                if event.artifacts
-                                else {}
-                            ),
-                        }
-                    )
-                elif isinstance(event, SourcesEvent):
-                    sources = event.sources
-                    yield _sse(
-                        {
-                            "type": "sources",
-                            "items": [item.model_dump() for item in _sources_out(sources)],
-                        }
-                    )
-                elif isinstance(event, ThinkingEvent):
-                    # 顺手攒一份全文：落库时要把它存下来，否则用户离开这一页再回来
-                    # 就只剩一句"已生成回答"（v0.25）
-                    thinking_parts.append(event.text)
-                    yield _sse({"type": "thinking", "text": event.text})
-                elif isinstance(event, DeltaEvent):
-                    collected.append(event.text)
-                    yield _sse({"type": "delta", "text": event.text})
-                # DoneEvent 不在这里发：收尾统一放在循环外，保证 done 里的全文
-                # 与落库用的 answer 是同一个字符串
+                yield from sink.feed(event)
         except ChatError as exc:
             yield _sse({"type": "error", "message": str(exc)})
             return
@@ -439,6 +562,10 @@ def _events(
             logger.exception("对话流异常")
             yield _sse({"type": "error", "message": f"对话失败：{exc}"})
             return
+        sources = sink.sources
+        step_log = sink.steps
+        thinking_parts = sink.thinking
+        collected = sink.deltas
     else:
         try:
             sources = chat.retrieve_sources(
@@ -496,6 +623,108 @@ def _events(
         )
     else:
         logger.warning("对话流没有产出任何正文，本轮不落库：query=%r", payload.query[:80])
+    yield _sse({"type": "done", "answer": answer})
+
+
+def _resume_events(
+    services: Services,
+    *,
+    conversation_id: str,
+    payload: ChatResumeIn,
+    kb_ids: Sequence[str],
+    question: str,
+    previous: LastTurn,
+    reason: str,
+    model_pk: str | None,
+    thinking: bool | None,
+    effort: str | None,
+    caller: Caller,
+) -> Iterator[str]:
+    """把一次续跑摊成一串 SSE（事件形状与 ``_events`` 完全一致，前端不必区分）。
+
+    与正常提问的三处差别，每一处都有理由：
+
+    1. **不落库提问**：问题上一轮就在库里了，这次只是接着做（落第二遍会出现
+       同一条提问挂两次）；
+    2. **上下文里去掉这一轮的提问**：`prepare_context` 从库里读历史，而那条提问
+       已经在库里了，再把它当 `query` 传一遍就会重复一次（模型尤其容易被
+       重复的同一句问话带偏）；
+    3. **预算抬高 + 出处接上**：见 ``services/resume.py``。
+    """
+    chat = services.chat
+    sink = _TurnSink()
+    # 上一轮的出处还原成对象：**既要接进账本，也要先当作这一轮已有的出处**——
+    # 续跑一次都没检索（材料够了直接收尾）时，答案里的 [n] 仍然要有对应的出处记录
+    seeds = [_source_from_snapshot(item) for item in previous.sources]
+    sink.sources = list(seeds)
+
+    # 历史里去掉这一轮的提问（它在库里，由 `question` 显式带进来）
+    context_payload = ChatRequestIn(query=question, conversation_id=conversation_id)
+    history, summary, _ = _context(services, context_payload, model_pk)
+    if history and history[-1].role == "user" and history[-1].content == question:
+        history = history[:-1]
+
+    note = resume_service.resume_note(
+        resume_service.ResumeMaterial(
+            question=question,
+            answer=previous.answer,
+            steps=previous.steps,
+            sources=previous.sources,
+        ),
+        reason=reason,
+    )
+
+    try:
+        loop = _agent_loop(
+            services,
+            caller,
+            kb_ids=kb_ids,
+            conversation_id=conversation_id,
+            model_pk=model_pk,
+            thinking=thinking,
+            effort=effort,
+            seed_sources=seeds,
+            max_steps=DEFAULT_MAX_STEPS + resume_service.RESUME_EXTRA_STEPS,
+            max_seconds=DEFAULT_MAX_SECONDS + resume_service.RESUME_EXTRA_SECONDS,
+        )
+        for event in loop.run(
+            messages=chat.agent_messages(
+                # 提问 + 交接说明合成一个用户消息（而不是发两条相邻的 user：
+                # 有些端点对连续同角色消息的处理方式不一致，而这里没有任何理由冒那个险）
+                query=f"{question}\n\n{note}",
+                history=history,
+                summary=summary,
+                kb_ids=kb_ids,
+                skill_names=payload.skill_names,
+                model_pk=model_pk,
+                owner_id=_memory_owner(caller),
+            )
+        ):
+            yield from sink.feed(event)
+    except ChatError as exc:
+        yield _sse({"type": "error", "message": str(exc)})
+        return
+    except Exception as exc:
+        logger.exception("续跑流异常")
+        yield _sse({"type": "error", "message": f"续跑失败：{exc}"})
+        return
+
+    answer = sink.answer
+    if answer:
+        try:
+            services.conversations.append(
+                conversation_id,
+                role="assistant",
+                content=answer,
+                sources=[item.model_dump() for item in _sources_out(sink.sources)],
+                steps=_resume_steps(previous.steps, sink.steps, reason=reason),
+                thinking="".join(sink.thinking),
+            )
+        except Exception:
+            # 与 `_record_turn` 同一条取舍：落库失败不该让用户丢掉**已经付过费**的回答
+            logger.exception("续跑落库失败：%s", conversation_id)
+    else:
+        logger.warning("续跑没有产出正文：conversation=%s", conversation_id)
     yield _sse({"type": "done", "answer": answer})
 
 

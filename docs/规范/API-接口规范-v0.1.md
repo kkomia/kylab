@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **162** 条端点。
+共 **171** 条端点。
 
 ### `api-keys`
 
@@ -171,12 +171,20 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
+| `DELETE` | `/api/v1/auth/avatar` | 去掉头像 |
+| `POST` | `/api/v1/auth/avatar` | 换一张头像（上传图片） |
 | `POST` | `/api/v1/auth/login` | 登录（用户名 + 密码） |
 | `POST` | `/api/v1/auth/logout` | 退出登录（吊销当前会话） |
 | `GET` | `/api/v1/auth/me` | 当前登录账号 |
 | `POST` | `/api/v1/auth/password` | 修改自己的密码 |
 | `POST` | `/api/v1/auth/setup` | 首次初始化：创建管理员账号 |
 | `GET` | `/api/v1/auth/status` | 认证状态（是否需初始化） |
+
+### `avatars`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/avatars/{user_id}` | 取一张头像（签名链接） |
 
 ### `chat`
 
@@ -185,6 +193,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/chat` | 快速检索问答（一次性） |
 | `POST` | `/api/v1/chat/stream` | 快速检索问答（流式） |
 | `GET` | `/api/v1/chat/suggested-questions` | 推荐问题（取自入库时为各分段生成的问题） |
+| `POST` | `/api/v1/conversations/{conversation_id}/resume` | 续跑上一轮（工具循环没跑完时） |
 
 ### `chunks`
 
@@ -358,6 +367,16 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/sandbox` | 这台机器上的隔离能力 |
 | `POST` | `/api/v1/sandbox/exec` | 在隔离里执行一条命令 |
 | `POST` | `/api/v1/sandbox/plan` | 看这条命令会被怎么隔离 |
+
+### `scheduled-tasks`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/scheduled-tasks` | 定时任务列表 |
+| `POST` | `/api/v1/scheduled-tasks` | 新建定时任务 |
+| `DELETE` | `/api/v1/scheduled-tasks/{scheduled_id}` | 删定时任务 |
+| `PATCH` | `/api/v1/scheduled-tasks/{scheduled_id}` | 改定时任务 |
+| `POST` | `/api/v1/scheduled-tasks/{scheduled_id}/run` | 立即跑一次 |
 
 ### `search`
 
