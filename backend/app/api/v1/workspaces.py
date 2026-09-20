@@ -12,12 +12,15 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 
-from app.api.auth import require_read, require_write
+from app.api.auth import require_admin, require_read, require_write
 from app.api.v1.schemas import (
+    DirectoryEntryOut,
+    WorkspaceBrowseOut,
     WorkspaceCreateIn,
     WorkspaceListOut,
     WorkspaceOut,
@@ -60,8 +63,38 @@ def list_workspaces(
     caller: Annotated[Caller, Depends(require_read)],
 ) -> WorkspaceListOut:
     views = services.workspaces.list(user_id=_owner(caller))
-    return WorkspaceListOut(
-        items=[_out(view.record, view.conversation_count) for view in views]
+    return WorkspaceListOut(items=[_out(view.record, view.conversation_count) for view in views])
+
+
+@router.get(
+    "/browse",
+    response_model=WorkspaceBrowseOut,
+    summary="浏览服务器上的目录（选工作区根目录用）",
+)
+def browse_directories(
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_admin)],
+    path: str | None = Query(default=None, description="要看哪个目录；留空 = 从家目录开始"),
+) -> WorkspaceBrowseOut:
+    """**管理员专属**：它列的是**服务器上**的目录树。
+
+    这条与"设置页只认管理员"同一档：目录名本身就是信息（谁的项目叫什么、
+    备份放在哪、有哪些账号的家目录），而成员建工作区本来就只需要填一个路径。
+    换句话说是**不给它扩权**——能浏览不改变"能不能当工作区"的判定，
+    那条判定只有一份（``workspaces.root_path_problem``）。
+
+    只列**目录**；数据目录会出现在列表里但标着不可选与原因（不藏起来：
+    静默省略会让人以为"这里没有它"，而他找的可能正是它旁边那个）。
+    """
+    view = services.workspaces.browse(path)
+    return WorkspaceBrowseOut(
+        path=view.path,
+        current=DirectoryEntryOut(**asdict(view.current)),
+        parent=view.parent,
+        # `dataclasses.asdict` 而不是 `vars`：`DirectoryEntry` 是 slots 数据类，没有 `__dict__`
+        entries=[DirectoryEntryOut(**asdict(item)) for item in view.entries],
+        roots=[DirectoryEntryOut(**asdict(item)) for item in view.roots],
+        note=view.note,
     )
 
 

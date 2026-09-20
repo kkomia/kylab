@@ -33,8 +33,10 @@ import EmptyState from '@/components/ui/EmptyState.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
 import PageShell from '@/components/ui/PageShell.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
+import DirectoryPickerDialog from '@/components/workspaces/DirectoryPickerDialog.vue'
 import WorkspaceCreateDialog from '@/components/workspaces/WorkspaceCreateDialog.vue'
 import WorkspaceKbPicker from '@/components/workspaces/WorkspaceKbPicker.vue'
+import { isAdmin } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
 import { useConversationStore } from '@/stores/conversations'
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBases'
@@ -50,6 +52,8 @@ const conversations = useConversationStore()
 const activeId = ref('')
 const creating = ref(false)
 const saving = ref(false)
+/** 目录选择器（管理员专属，见 DirectoryPickerDialog）。 */
+const picking = ref(false)
 
 /**
  * 表单自己的形状：与 ``WorkspacePayload`` 的区别是**所有字段都必填**。
@@ -255,15 +259,22 @@ async function newConversation(): Promise<void> {
           <AppInput v-model="form.name" placeholder="例如：知识库产品化" />
         </label>
 
-        <label class="field">
+        <div class="field">
           <span class="field-label">
             根目录
             <InfoTip
-              text="这是 Agent 文件操作的边界：它能读写的位置被约束在这个目录之内。请填一个**已存在的绝对路径**——不存在的路径会被服务端拒绝（不会替你建一个空目录），数据目录与文件系统根也会被拒绝。"
+              text="这是 Agent 文件操作的边界：它能读写的位置被约束在这个目录之内。要给一个**服务器上已存在**的目录——不存在的路径会被拒绝（不会替你建一个空目录），数据目录与文件系统根也会被拒绝。"
             />
           </span>
-          <AppInput v-model="form.root_path" placeholder="例如：E:/code/my-project" />
-        </label>
+          <div class="path-row">
+            <AppInput
+              v-model="form.root_path"
+              :placeholder="isAdmin ? '点右边的「浏览…」挑一个' : '例如：/volume1/my-project'"
+            />
+            <!-- 目录浏览管理员专属（列的是服务器上的目录树），与端点判定一致 -->
+            <AppButton v-if="isAdmin" @click="picking = true">浏览…</AppButton>
+          </div>
+        </div>
 
         <label class="field">
           <span class="field-label">描述（可选）</span>
@@ -295,6 +306,13 @@ async function newConversation(): Promise<void> {
       v-model:open="creating"
       :knowledge-bases="knowledgeBases.items"
       @created="onCreated"
+    />
+
+    <!-- 编辑表单里的「浏览…」用它；新建弹窗有自己的那一个 -->
+    <DirectoryPickerDialog
+      v-model:open="picking"
+      :start="form.root_path"
+      @pick="form.root_path = $event"
     />
 
     <ConfirmDialog

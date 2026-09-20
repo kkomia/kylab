@@ -1780,6 +1780,40 @@ class WorkspaceListOut(BaseModel):
     items: list[WorkspaceOut] = Field(default_factory=list)
 
 
+class DirectoryEntryOut(BaseModel):
+    """目录浏览里的一行：一个子目录，或一个"起点"。"""
+
+    name: str
+    path: str
+    selectable: bool = True
+    """能不能直接拿它当工作区。**与建工作区时同一份判定**（``root_path_problem``），
+    所以界面上灰掉的那些，点"选择"也一定建不出来。"""
+    reason: str = ""
+    """不能选的原因（原样显示给用户）。"""
+
+
+class WorkspaceBrowseOut(BaseModel):
+    """浏览服务器目录的结果（``GET /workspaces/browse``，v0.35）。
+
+    **为什么这件事在服务端做**：工作区根目录是**服务器上**的路径（后端跑在 NAS 上），
+    而浏览器既拿不到、也不该拿到服务器上的绝对路径——客户端的目录选择器指向的是
+    另一台机器。所以"选择"只能是"服务端列给你看"。"""
+
+    path: str
+    current: DirectoryEntryOut
+    """**当前这一层自己**（名字 + 能不能选 + 不能选的原因）。
+
+    服务端给而不是让界面自己判：那条判定只有一份，界面再猜一次就会出现
+    "按钮亮着、点了却建不出来"。"""
+    parent: str | None = None
+    """上一级；已经在最上层时为 ``None``（界面把"上一级"置灰）。"""
+    entries: list[DirectoryEntryOut] = Field(default_factory=list)
+    roots: list[DirectoryEntryOut] = Field(default_factory=list)
+    """起点（家目录 / 盘符 / 已有工作区的目录）：路径很深时不用从根一路点下来。"""
+    note: str = ""
+    """一句人话说明（"共有 N 个，只列了前 M 个"这类）。空串 = 没什么要说的。"""
+
+
 # ------------------------------------------------------------------ MCP（v0.15）
 
 

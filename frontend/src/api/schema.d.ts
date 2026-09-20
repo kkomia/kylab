@@ -2336,6 +2336,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/browse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 浏览服务器上的目录（选工作区根目录用）
+         * @description **管理员专属**：它列的是**服务器上**的目录树。
+         *
+         *     这条与"设置页只认管理员"同一档：目录名本身就是信息（谁的项目叫什么、
+         *     备份放在哪、有哪些账号的家目录），而成员建工作区本来就只需要填一个路径。
+         *     换句话说是**不给它扩权**——能浏览不改变"能不能当工作区"的判定，
+         *     那条判定只有一份（``workspaces.root_path_problem``）。
+         *
+         *     只列**目录**；数据目录会出现在列表里但标着不可选与原因（不藏起来：
+         *     静默省略会让人以为"这里没有它"，而他找的可能正是它旁边那个）。
+         */
+        get: operations["browse_directories_api_v1_workspaces_browse_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspace_id}": {
         parameters: {
             query?: never;
@@ -3576,6 +3604,26 @@ export interface components {
             etag?: string | null;
             /** Last Pulled At */
             last_pulled_at?: string | null;
+        };
+        /**
+         * DirectoryEntryOut
+         * @description 目录浏览里的一行：一个子目录，或一个"起点"。
+         */
+        DirectoryEntryOut: {
+            /** Name */
+            name: string;
+            /** Path */
+            path: string;
+            /**
+             * Selectable
+             * @default true
+             */
+            selectable: boolean;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
         };
         /**
          * DocumentBatchIn
@@ -7020,6 +7068,30 @@ export interface components {
             heading_path?: string | null;
             /** Page */
             page?: number | null;
+        };
+        /**
+         * WorkspaceBrowseOut
+         * @description 浏览服务器目录的结果（``GET /workspaces/browse``，v0.35）。
+         *
+         *     **为什么这件事在服务端做**：工作区根目录是**服务器上**的路径（后端跑在 NAS 上），
+         *     而浏览器既拿不到、也不该拿到服务器上的绝对路径——客户端的目录选择器指向的是
+         *     另一台机器。所以"选择"只能是"服务端列给你看"。
+         */
+        WorkspaceBrowseOut: {
+            /** Path */
+            path: string;
+            current: components["schemas"]["DirectoryEntryOut"];
+            /** Parent */
+            parent?: string | null;
+            /** Entries */
+            entries?: components["schemas"]["DirectoryEntryOut"][];
+            /** Roots */
+            roots?: components["schemas"]["DirectoryEntryOut"][];
+            /**
+             * Note
+             * @default
+             */
+            note: string;
         };
         /**
          * WorkspaceCreateIn
@@ -11953,6 +12025,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkspaceOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    browse_directories_api_v1_workspaces_browse_get: {
+        parameters: {
+            query?: {
+                /** @description 要看哪个目录；留空 = 从家目录开始 */
+                path?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkspaceBrowseOut"];
                 };
             };
             /** @description Validation Error */

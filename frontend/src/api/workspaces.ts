@@ -32,6 +32,40 @@ export function listWorkspaces(): Promise<{ items: Workspace[] }> {
   return request<{ items: Workspace[] }>('/workspaces')
 }
 
+/** 目录浏览里的一行：一个子目录，或一个"起点"。 */
+export interface DirectoryEntry {
+  name: string
+  path: string
+  /** 能不能直接拿它当工作区。**与建工作区时同一份判定**，所以灰掉的也建不出来。 */
+  selectable: boolean
+  /** 不能选的原因（原样显示）。 */
+  reason: string
+}
+
+export interface WorkspaceBrowse {
+  path: string
+  /** **当前这一层自己**（名字 + 能不能选 + 不能选的原因）。服务端给，界面不自己判。 */
+  current: DirectoryEntry
+  /** 上一级；已经在最上层时为 null。 */
+  parent: string | null
+  entries: DirectoryEntry[]
+  /** 起点（家目录 / 盘符 / 已有工作区的目录）。 */
+  roots: DirectoryEntry[]
+  note: string
+}
+
+/**
+ * 列服务器上的目录（选工作区根目录用，v0.35）。
+ *
+ * **服务端的活**：工作区根目录是**服务器上**的路径，而浏览器里的目录选择器给的是
+ * 客户端本机的东西——指向的是另一台机器。所以"选择"只能是"服务端列给你看"。
+ * 管理员专属（成员建工作区只需填路径）。
+ */
+export function browseDirectories(path?: string): Promise<WorkspaceBrowse> {
+  const query = path ? `?path=${encodeURIComponent(path)}` : ''
+  return request<WorkspaceBrowse>(`/workspaces/browse${query}`)
+}
+
 export function createWorkspace(payload: WorkspacePayload): Promise<Workspace> {
   return request<Workspace>('/workspaces', {
     method: 'POST',

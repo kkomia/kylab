@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **171** 条端点。
+共 **172** 条端点。
 
 ### `api-keys`
 
@@ -476,6 +476,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 |------|------|------|
 | `GET` | `/api/v1/workspaces` | 工作区列表 |
 | `POST` | `/api/v1/workspaces` | 新建工作区（指定根目录） |
+| `GET` | `/api/v1/workspaces/browse` | 浏览服务器上的目录（选工作区根目录用） |
 | `DELETE` | `/api/v1/workspaces/{workspace_id}` | 删除工作区（里面的会话退回未归档） |
 | `GET` | `/api/v1/workspaces/{workspace_id}` | 工作区详情 |
 | `PATCH` | `/api/v1/workspaces/{workspace_id}` | 改工作区 |

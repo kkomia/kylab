@@ -78,9 +78,7 @@ def test_workspace_crud_roundtrip(client: TestClient, tmp_path: Path) -> None:
     listed = client.get("/api/v1/workspaces").json()["items"]
     assert [item["id"] for item in listed] == [workspace["id"]]
 
-    updated = client.patch(
-        f"/api/v1/workspaces/{workspace['id']}", json={"name": "改名了"}
-    ).json()
+    updated = client.patch(f"/api/v1/workspaces/{workspace['id']}", json={"name": "改名了"}).json()
     assert updated["name"] == "改名了"
     # 只改传了的字段：根目录不该被动过
     assert updated["root_path"] == workspace["root_path"]
@@ -98,9 +96,7 @@ def test_workspace_crud_roundtrip(client: TestClient, tmp_path: Path) -> None:
 def test_workspace_rejects_bad_root(client: TestClient, root: str, why: str) -> None:
     """**路径不存在要当场拒**（而不是建一个空目录）：否则"工作区建好了却什么都读不到"
     会变成一个要查很久的现象。"""
-    response = client.post(
-        "/api/v1/workspaces", json={"name": "x", "root_path": root}
-    )
+    response = client.post("/api/v1/workspaces", json={"name": "x", "root_path": root})
     assert response.status_code == 422, response.text
     assert why in response.json()["message"]
 
@@ -109,11 +105,60 @@ def test_workspace_rejects_the_data_directory(client: TestClient) -> None:
     """指向数据目录 = 绕过全部账号隔离。**这是工作区这一层最要紧的一条**：
     `data/` 看起来只是个普通目录。"""
     data_dir = get_services().workspaces._data_dir
-    response = client.post(
-        "/api/v1/workspaces", json={"name": "x", "root_path": str(data_dir)}
-    )
+    response = client.post("/api/v1/workspaces", json={"name": "x", "root_path": str(data_dir)})
     assert response.status_code == 422
     assert "数据目录" in response.json()["message"]
+
+
+def test_browse_lists_server_directories(client: TestClient, tmp_path: Path) -> None:
+    """目录浏览（v0.35）：界面"选一个目录当工作区"靠它。
+
+    **为什么这件事在服务端做**：工作区根目录是服务器上的路径，而浏览器里的目录选择器
+    给的是客户端本机的东西——指向的是另一台机器。
+    """
+    home = tmp_path / "proj"
+    (home / "sub").mkdir(parents=True)
+    (home / "loose.txt").write_text("x", encoding="utf-8")
+
+    body = client.get("/api/v1/workspaces/browse", params={"path": str(home)}).json()
+    assert body["path"] == str(home.resolve())
+    assert body["parent"] == str(tmp_path.resolve())
+    # 只列目录：工作区根必须是目录，把文件列出来只会让人点错
+    assert [item["name"] for item in body["entries"]] == ["sub"]
+    assert body["entries"][0]["selectable"] is True
+    assert all("path" in item and "reason" in item for item in body["entries"])
+    # 当前这一层自己也要给可选性（界面的"选这个目录"靠它）
+    assert body["current"]["path"] == str(home.resolve())
+    assert body["current"]["selectable"] is True
+    # 起点：路径很深时不用从根一路点下来
+    assert body["roots"]
+
+
+def test_browse_marks_the_data_directory_unselectable(client: TestClient) -> None:
+    """数据目录**列出来但点不动**（标着原因）。判定与建工作区同一份——
+    灰掉的一定也建不出来，不会出现"能选但建失败"。"""
+    data_dir = get_services().workspaces._data_dir
+    body = client.get("/api/v1/workspaces/browse", params={"path": str(data_dir.parent)}).json()
+    entry = next(item for item in body["entries"] if item["path"] == str(data_dir.resolve()))
+    assert entry["selectable"] is False
+    assert "数据目录" in entry["reason"]
+
+
+def test_browse_rejects_a_file_and_says_where_it_lives(client: TestClient, tmp_path: Path) -> None:
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    target = folder / "a.md"
+    target.write_text("x", encoding="utf-8")
+    response = client.get("/api/v1/workspaces/browse", params={"path": str(target)})
+    assert response.status_code == 422
+    assert str(folder.resolve()) in response.json()["message"]
+
+
+def test_browse_is_admin_only(client: TestClient, member_token: str) -> None:
+    """**管理员专属**：目录名本身就是信息（谁的项目叫什么、备份在哪），
+    而成员建工作区只需要填一个路径——不为了顺手而扩权。"""
+    response = client.get("/api/v1/workspaces/browse", headers=_as(member_token))
+    assert response.status_code == 403
 
 
 def test_workspace_binds_knowledge_bases(client: TestClient, tmp_path: Path) -> None:
@@ -456,9 +501,7 @@ def test_sandbox_exec_respects_deny_policy(client: TestClient) -> None:
         json={"values": [{"key": "sandbox.exec_policy", "value": "deny"}]},
     )
 
-    response = client.post(
-        "/api/v1/sandbox/exec", json={"argv": ["ls"], "approved": True}
-    )
+    response = client.post("/api/v1/sandbox/exec", json={"argv": ["ls"], "approved": True})
 
     assert response.status_code == 403
     assert "拒绝" in response.json()["message"]
@@ -469,6 +512,7 @@ def test_sandbox_exec_rejects_an_empty_command(client: TestClient) -> None:
 
 
 # ------------------------------------------------------------- 准入规则（v0.17）
+
 
 def _set_rules(client: TestClient, **values: str) -> None:
     response = client.patch(
@@ -542,11 +586,7 @@ def test_remember_writes_a_word_prefix_rule(client: TestClient) -> None:
     # 设置的读回形状是 `groups[].fields[]`（**不是** `values`）——
     # 密钥那一类只给掩码，这里读的是明文配置项
     view = client.get("/api/v1/settings").json()
-    values = {
-        field["key"]: field["value"]
-        for group in view["groups"]
-        for field in group["fields"]
-    }
+    values = {field["key"]: field["value"] for group in view["groups"] for field in group["fields"]}
     assert values["sandbox.rules_allow"].strip() == "Bash(git:*)"
 
 
@@ -559,11 +599,7 @@ def test_remember_does_not_duplicate(client: TestClient) -> None:
     )
 
     view = client.get("/api/v1/settings").json()
-    values = {
-        field["key"]: field["value"]
-        for group in view["groups"]
-        for field in group["fields"]
-    }
+    values = {field["key"]: field["value"] for group in view["groups"] for field in group["fields"]}
     assert values["sandbox.rules_allow"].count("Bash(git:*)") == 1
 
 

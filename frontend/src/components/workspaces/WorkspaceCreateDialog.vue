@@ -23,11 +23,13 @@
 import { ref, watch } from 'vue'
 
 import type { Workspace } from '@/api/workspaces'
+import DirectoryPickerDialog from '@/components/workspaces/DirectoryPickerDialog.vue'
 import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
 import WorkspaceKbPicker from '@/components/workspaces/WorkspaceKbPicker.vue'
+import { isAdmin } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
 import { useWorkspaceStore } from '@/stores/workspaces'
 
@@ -47,6 +49,7 @@ const rootPath = ref('')
 const description = ref('')
 const kbIds = ref<string[]>([])
 const saving = ref(false)
+const picking = ref(false)
 
 /** 每次打开都从空白开始：上一次的残值会让人以为"它记住了"，其实只是没清。 */
 watch(open, (isOpen) => {
@@ -89,15 +92,23 @@ async function submit(): Promise<void> {
         <AppInput v-model="name" placeholder="例如：知识库产品化" />
       </label>
 
-      <label class="field">
+      <div class="field">
         <span class="field-label">
           根目录
           <InfoTip
-            text="这是 Agent 文件操作的边界：它能读写的位置被约束在这个目录之内。请填一个**已存在的绝对路径**——不存在的路径会被服务端拒绝（不会替你建一个空目录），数据目录与文件系统根也会被拒绝。"
+            text="这是 Agent 文件操作的边界：它能读写的位置被约束在这个目录之内。要给一个**服务器上已存在**的目录——不存在的路径会被拒绝（不会替你建一个空目录），数据目录与文件系统根也会被拒绝。"
           />
         </span>
-        <AppInput v-model="rootPath" placeholder="例如：E:/code/my-project" />
-      </label>
+        <div class="path-row">
+          <AppInput
+            v-model="rootPath"
+            :placeholder="isAdmin ? '点右边的「浏览…」挑一个' : '例如：/volume1/my-project'"
+          />
+          <!-- 目录浏览**管理员专属**（它列的是服务器上的目录树）。
+               成员直接填路径——与端点那边的判定一致，不做无用的请求 -->
+          <AppButton v-if="isAdmin" @click="picking = true">浏览…</AppButton>
+        </div>
+      </div>
 
       <label class="field">
         <span class="field-label">描述（可选）</span>
@@ -106,6 +117,8 @@ async function submit(): Promise<void> {
 
       <WorkspaceKbPicker v-model="kbIds" :items="props.knowledgeBases" />
     </div>
+
+    <DirectoryPickerDialog v-model:open="picking" :start="rootPath" @pick="rootPath = $event" />
 
     <template #footer>
       <AppButton @click="open = false">取消</AppButton>
@@ -121,5 +134,16 @@ async function submit(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+}
+
+/* 路径输入 + 「浏览…」：输入框吃掉剩余宽度，按钮不缩 */
+.path-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.path-row > :first-child {
+  flex: 1;
+  min-width: 0;
 }
 </style>
