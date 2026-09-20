@@ -6,7 +6,8 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Push-Location (Join-Path $root 'backend')
 try {
-    uv sync
+    # **--all-extras 不是可选的**：裸 `uv sync` 会把 extras 卸掉，而后端启动时要 import duckdb
+    uv sync --all-extras
     uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 }
 finally {
