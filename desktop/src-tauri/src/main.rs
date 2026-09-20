@@ -40,6 +40,69 @@ const SETTINGS_WINDOW: &str = "connect";
 /// 长住的那扇窗。
 const MAIN_WINDOW: &str = "main";
 
+/// 默认窗口宽度的上下限（逻辑像素）。
+///
+/// **1488 是实测出来的门槛**，不是拍的：笔记页编辑器里那行工具栏（标题 + 字符数 +
+/// AI / 导出 / 删除）在 1280 的视口下折成两行（高 77px），到 1488 才是一行（45px）。
+/// 窗口宽度**就是**视口宽度（壳里没有别的横条），所以这个数直接当默认宽度的下限：
+/// **默认打开的那一屏不该有一处排版是坏的**。屏幕放不下时退到"屏幕宽 - 8"——
+/// 几乎占满，但不贴死到边（贴死会让人以为窗口最大化了）。
+const NOTES_TOOLBAR_MIN_WIDTH: f64 = 1488.0;
+/// 宽度上限：**别一开就铺满大屏**（2560 的屏上铺满会显得空，而再宽也不会更好）。
+const WINDOW_MAX_WIDTH: f64 = 1680.0;
+/// 高度按 16:10 从宽度推（1280×800、1440×900、1680×1050 都是这一档），
+/// 然后再夹进工作区。比写死一个高度好：宽高比例一致，换屏之后观感不变。
+const WINDOW_RATIO: f64 = 0.625;
+/// 窗口相对工作区留的边。合起来是"别忘了还有任务栏与标题栏"。
+const WINDOW_WIDTH_FRACTION: f64 = 0.92;
+const WINDOW_HEIGHT_MARGIN: f64 = 48.0;
+/// 兜底的小窗下限：屏幕上真的只有几百像素高时（不常见），也别算出个负高度。
+const WINDOW_MIN_HEIGHT: f64 = 400.0;
+/// 小屏上"几乎占满"时留的那一条缝。
+const SCREEN_EDGE_GAP: f64 = 8.0;
+
+/// 默认窗口大小：**问显示器要，而不是写死一个数字**。
+///
+/// 原来写死 1280×800，结果笔记页一进去编辑器只剩 668px，那行工具栏折成两行
+/// （实测：1280 下 77px 高，1488 下 45px）。而窗口大小是第一眼的观感，
+/// "打开就有一处排版是坏的"最不该发生。
+///
+/// 三件事一起做：**取工作区的 92%**（不是整块屏——任务栏与标题栏要留位置）、
+/// **按 16:10 推高度**、**夹进上下限**。显示器问不到时回落到 1440×900
+/// （"大屏常见、窄屏也不离谱"的一档），而不是回落到出问题的那个 1280。
+fn default_window_size(app: &AppHandle) -> (f64, f64) {
+    // 工作区是物理像素，而 `inner_size` 要逻辑像素——**必须过一遍 scale_factor**，
+    // 否则在 125% / 225% 缩放的机器上会开出一个超出屏幕的窗口（这台开发机就是 225%）
+    let area = app.primary_monitor().ok().flatten().map(|monitor| {
+        let scale = monitor.scale_factor();
+        let work = monitor.work_area();
+        (
+            f64::from(work.size.width) / scale,
+            f64::from(work.size.height) / scale,
+        )
+    });
+    window_size_for(area)
+}
+
+/// 上面那个的**纯函数部分**：与显示器无关，所以能写成断言。
+fn window_size_for(area: Option<(f64, f64)>) -> (f64, f64) {
+    let Some((area_width, area_height)) = area else {
+        return (1440.0, 900.0);
+    };
+
+    // 下限**也夹进工作区**：小屏（1280×680 那种）上不能因为"门槛是 1488"
+    // 就硬开一个比屏幕还宽的窗——那时宁可窄一点，也不要露出一截在屏幕外
+    let floor = NOTES_TOOLBAR_MIN_WIDTH.min(area_width - SCREEN_EDGE_GAP);
+    let width = (area_width * WINDOW_WIDTH_FRACTION)
+        .clamp(floor, WINDOW_MAX_WIDTH)
+        .floor();
+    // 高度同理：**上限也要夹**，否则一块 600 高的屏上会开出 640 高的窗
+    // （下限 640 那条是"别算出个扁窗"，它不能反过来撑破屏幕）
+    let max_height = (area_height - WINDOW_HEIGHT_MARGIN).max(WINDOW_MIN_HEIGHT);
+    let height = (width * WINDOW_RATIO).min(max_height).floor();
+    (width, height)
+}
+
 /// 壳的状态：内存里的配置 + 它落在哪个目录。
 struct Shell {
     dir: std::path::PathBuf,
@@ -403,10 +466,14 @@ fn main() {
 
             let handle = app.handle().clone();
             let external_handle = app.handle().clone();
+            let (width, height) = default_window_size(app.handle());
             WebviewWindowBuilder::new(app, MAIN_WINDOW, WebviewUrl::App(PAGE.into()))
                 .title("KYLAB")
-                .inner_size(1280.0, 800.0)
-                .min_inner_size(960.0, 600.0)
+                .inner_size(width, height)
+                // 下限**比默认小一大截**：用户自己把窗口拖窄是他的选择
+                // （拖到 900 以下时笔记页本来就有单列布局，那是设计过的状态），
+                // 但默认不该一开就是"已经有一处排版坏了"的宽度（见 default_window_size）
+                .min_inner_size(1024.0, 680.0)
                 .center()
                 // Linux/Windows 上页面默认拿不到剪贴板，要显式开
                 // （复制按钮是这个项目里天天用的东西，见开发计划 §12.205）
@@ -423,4 +490,50 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("KYLAB 桌面壳启动失败");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::window_size_for;
+
+    /// 这台开发机：3840 宽的屏按 225% 缩放 → 工作区约 1707×910 逻辑像素。
+    #[test]
+    fn a_scaled_big_screen_gets_a_size_that_fits_its_work_area() {
+        let (width, height) = window_size_for(Some((1707.0, 910.0)));
+        assert!(width < 1707.0, "宽度要留边：{width}");
+        assert!(height < 910.0, "高度要留出任务栏：{height}");
+        assert!(width >= 1488.0, "这台机器的默认宽度必须够笔记页一行放下：{width}");
+    }
+
+    /// **比 16:10 推出来的高度更高的屏**上也别超出去：高度是夹进工作区的。
+    #[test]
+    fn height_never_exceeds_the_work_area() {
+        let (_, height) = window_size_for(Some((2560.0, 700.0)));
+        assert!(height <= 700.0 - 48.0, "{height}");
+    }
+
+    /// 大屏上取上限（别一开就铺满），小屏上**不超出去**（宁可窄，也不要露在屏幕外）。
+    #[test]
+    fn the_cap_and_the_floor_both_hold() {
+        assert_eq!(window_size_for(Some((2560.0, 1400.0))).0, 1680.0);
+        let (small_w, small_h) = window_size_for(Some((1280.0, 680.0)));
+        assert!(small_w <= 1280.0 && small_h <= 680.0, "{small_w}x{small_h}");
+        let (tiny_w, tiny_h) = window_size_for(Some((1024.0, 600.0)));
+        assert!(tiny_w <= 1024.0 && tiny_h <= 600.0, "{tiny_w}x{tiny_h}");
+    }
+
+    /// 问不到显示器时回落到 1440×900，**不是**回落到出问题的那个 1280。
+    #[test]
+    fn without_a_monitor_it_falls_back_to_a_sane_default() {
+        assert_eq!(window_size_for(None), (1440.0, 900.0));
+    }
+
+    /// 回归钉子：默认宽度必须 ≥1488（笔记页那行工具栏不折行的门槛）。
+    #[test]
+    fn the_default_barely_clears_the_notes_toolbar_threshold() {
+        for area in [1600.0, 1920.0, 2560.0] {
+            let (width, _) = window_size_for(Some((area, 1040.0)));
+            assert!(width >= 1488.0, "{area} 宽的屏上默认只有 {width}");
+        }
+    }
 }
