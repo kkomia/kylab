@@ -16,7 +16,8 @@ WORKDIR /app
 # **索引源可覆盖**（v0.41）：默认仍是官方 PyPI（行为与以前逐字一致），
 # 但国内机器上从 files.pythonhosted.org 拉 wheel 可能慢到不可用——
 # 实测某次构建 `uv sync` 跑满 700 秒仍卡在下载里。构建时给
-# `--build-arg UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` 即可换源。
+# `--build-arg UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple` 即可换源
+# （清华源在并发下载时会对 cli 返 403，实测；别照抄它）。
 # 注意它只影响**构建期**的依赖下载，与运行期无关。
 ARG UV_INDEX_URL=https://pypi.org/simple
 ENV UV_INDEX_URL=${UV_INDEX_URL}

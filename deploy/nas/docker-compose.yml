@@ -38,9 +38,11 @@ services:
       context: ../src/backend
       args:
         # 从 files.pythonhosted.org 拉 wheel 在这台机器上慢到不可用（实测一次构建
-        # 在下载里卡了 700 秒），所以构建期走国内镜像。换成官方源：
+        # 卡在下载里 700 秒），所以构建期走国内镜像。
+        # **用阿里云而不是清华**：清华对"并发拉几十个包"会 403（反爬；单请求是 200，
+        # 实测），而 uv 默认就是并发下载。换成官方源：
         #   KYLAB_UV_INDEX_URL=https://pypi.org/simple docker compose build
-        UV_INDEX_URL: ${KYLAB_UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        UV_INDEX_URL: ${KYLAB_UV_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
     image: kylab-backend:0.2.0
     container_name: kylab-app-backend
     restart: unless-stopped
