@@ -14,10 +14,17 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 const browseDirectories = vi.fn()
+const createDirectory = vi.fn()
+const renameDirectory = vi.fn()
 
 vi.mock('@/api/workspaces', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/workspaces')>()
-  return { ...actual, browseDirectories: (...args: unknown[]) => browseDirectories(...args) }
+  return {
+    ...actual,
+    browseDirectories: (...args: unknown[]) => browseDirectories(...args),
+    createDirectory: (...args: unknown[]) => createDirectory(...args),
+    renameDirectory: (...args: unknown[]) => renameDirectory(...args),
+  }
 })
 
 import type { WorkspaceBrowse } from '@/api/workspaces'
@@ -50,6 +57,8 @@ async function mountPicker(payload: WorkspaceBrowse = view()) {
 
 beforeEach(() => {
   browseDirectories.mockReset()
+  createDirectory.mockReset()
+  renameDirectory.mockReset()
 })
 
 describe('目录选择器', () => {
@@ -143,5 +152,107 @@ describe('目录选择器', () => {
   it('空目录说清是空的', async () => {
     const wrapper = await mountPicker(view({ entries: [] }))
     expect(wrapper.text()).toContain('没有子目录')
+  })
+})
+
+describe('新建与改名（v0.36）', () => {
+  it('「新建文件夹」建完**直接进去**（建它就是为了用它）', async () => {
+    createDirectory.mockResolvedValue({
+      name: '新项目',
+      path: 'C:\\Users\\me\\新项目',
+      selectable: true,
+      reason: '',
+    })
+    const wrapper = await mountPicker()
+    await wrapper
+      .findAll('button')
+      .find((item) => item.text().includes('新建文件夹'))!
+      .trigger('click')
+    const input = wrapper.find('input[aria-label="新文件夹名"]')
+    await input.setValue('新项目')
+    await wrapper
+      .findAll('button')
+      .find((item) => item.text() === '建')!
+      .trigger('click')
+    await flushPromises()
+    expect(createDirectory).toHaveBeenCalledWith('C:\\Users\\me', '新项目')
+    // 建完落在新建的那个目录里
+    expect(browseDirectories).toHaveBeenLastCalledWith('C:\\Users\\me\\新项目')
+  })
+
+  it('名字为空时「建」是灰的', async () => {
+    const wrapper = await mountPicker()
+    await wrapper
+      .findAll('button')
+      .find((item) => item.text().includes('新建文件夹'))!
+      .trigger('click')
+    const build = wrapper.findAll('button').find((item) => item.text() === '建')!
+    expect(build.attributes('disabled')).toBeDefined()
+  })
+
+  it('重名时把服务端那句话显示出来，输入框还在（改完能接着试）', async () => {
+    createDirectory.mockRejectedValue(new Error('「新项目」已经存在了，换一个名字'))
+    const wrapper = await mountPicker()
+    await wrapper
+      .findAll('button')
+      .find((item) => item.text().includes('新建文件夹'))!
+      .trigger('click')
+    await wrapper.find('input[aria-label="新文件夹名"]').setValue('新项目')
+    await wrapper
+      .findAll('button')
+      .find((item) => item.text() === '建')!
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('已经存在了')
+    expect(wrapper.find('input[aria-label="新文件夹名"]').exists()).toBe(true)
+  })
+
+  it('Esc 取消输入，什么都不建', async () => {
+    const wrapper = await mountPicker()
+    await wrapper
+      .findAll('button')
+      .find((item) => item.text().includes('新建文件夹'))!
+      .trigger('click')
+    await wrapper.find('input[aria-label="新文件夹名"]').trigger('keyup.esc')
+    expect(wrapper.find('input[aria-label="新文件夹名"]').exists()).toBe(false)
+    expect(createDirectory).not.toHaveBeenCalled()
+  })
+
+  it('改名走 PATCH，改完留在原地刷新', async () => {
+    renameDirectory.mockResolvedValue({
+      name: 'proj2',
+      path: 'C:\\Users\\me\\proj2',
+      selectable: true,
+      reason: '',
+    })
+    const wrapper = await mountPicker()
+    await wrapper.find('button[aria-label="把「proj」改名"]').trigger('click')
+    const input = wrapper.find('input[aria-label="把「proj」改名"]')
+    expect((input.element as HTMLInputElement).value).toBe('proj')
+    await input.setValue('proj2')
+    await wrapper
+      .findAll('button')
+      .find((item) => item.text() === '改')!
+      .trigger('click')
+    await flushPromises()
+    expect(renameDirectory).toHaveBeenCalledWith('C:\\Users\\me\\proj', 'proj2')
+    // 留在原来这一层（改的是这一行，不是"进去"）
+    expect(browseDirectories).toHaveBeenLastCalledWith('C:\\Users\\me')
+  })
+
+  it('改名被拒时显示原因（比如它是个工作区的根目录）', async () => {
+    renameDirectory.mockRejectedValue(
+      new Error('「proj」是工作区「老项目」的根目录，改名会让那条工作区失联'),
+    )
+    const wrapper = await mountPicker()
+    await wrapper.find('button[aria-label="把「proj」改名"]').trigger('click')
+    await wrapper.find('input[aria-label="把「proj」改名"]').setValue('proj2')
+    await wrapper
+      .findAll('button')
+      .find((item) => item.text() === '改')!
+      .trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('工作区')
+    expect(wrapper.text()).toContain('失联')
   })
 })

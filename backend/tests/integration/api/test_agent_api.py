@@ -154,6 +154,79 @@ def test_browse_rejects_a_file_and_says_where_it_lives(client: TestClient, tmp_p
     assert str(folder.resolve()) in response.json()["message"]
 
 
+def test_create_and_rename_directories(client: TestClient, tmp_path: Path) -> None:
+    """在服务器上建目录 / 改名（v0.36）：选择器里那两个动作。
+
+    **这是"在服务器上写东西"**，所以比浏览严一档：只建一层、重名当场拒、
+    数据目录里不建；改名只改名不搬位置，且四类目录会被拒。
+    """
+    folder = tmp_path / "proj"
+    folder.mkdir()
+
+    created = client.post("/api/v1/workspaces/dirs", json={"parent": str(folder), "name": "新项目"})
+    assert created.status_code == 201, created.text
+    entry = created.json()
+    assert entry["name"] == "新项目"
+    assert entry["selectable"] is True
+    assert (folder / "新项目").is_dir()
+
+    renamed = client.patch(
+        "/api/v1/workspaces/dirs", json={"path": entry["path"], "name": "正式项目"}
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["name"] == "正式项目"
+    assert (folder / "正式项目").is_dir() and not (folder / "新项目").exists()
+
+    # 落盘的结果在浏览里看得见（界面刷新那一步靠它）
+    listing = client.get("/api/v1/workspaces/browse", params={"path": str(folder)}).json()
+    assert [item["name"] for item in listing["entries"]] == ["正式项目"]
+
+
+def test_create_refuses_a_bad_name(client: TestClient, tmp_path: Path) -> None:
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    response = client.post("/api/v1/workspaces/dirs", json={"parent": str(folder), "name": "a/b"})
+    assert response.status_code == 422
+    assert "不能有这些字符" in response.json()["message"]
+
+
+def test_rename_refuses_a_workspace_root(client: TestClient, tmp_path: Path) -> None:
+    """工作区的根目录不能改名——改了那条工作区就失联了。"""
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    created = client.post(
+        "/api/v1/workspaces", json={"name": "项目", "root_path": str(folder)}
+    ).json()
+    assert created["id"]
+    response = client.patch("/api/v1/workspaces/dirs", json={"path": str(folder), "name": "proj2"})
+    assert response.status_code == 422
+    assert "工作区" in response.json()["message"]
+    assert folder.is_dir(), "被拒时不该动到目录"
+
+
+def test_directory_writes_are_admin_only(
+    client: TestClient, member_token: str, tmp_path: Path
+) -> None:
+    folder = tmp_path / "proj"
+    folder.mkdir()
+    assert (
+        client.post(
+            "/api/v1/workspaces/dirs",
+            json={"parent": str(folder), "name": "x"},
+            headers=_as(member_token),
+        ).status_code
+        == 403
+    )
+    assert (
+        client.patch(
+            "/api/v1/workspaces/dirs",
+            json={"path": str(folder), "name": "y"},
+            headers=_as(member_token),
+        ).status_code
+        == 403
+    )
+
+
 def test_browse_is_admin_only(client: TestClient, member_token: str) -> None:
     """**管理员专属**：目录名本身就是信息（谁的项目叫什么、备份在哪），
     而成员建工作区只需要填一个路径——不为了顺手而扩权。"""

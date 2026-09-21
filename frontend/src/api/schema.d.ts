@@ -2364,6 +2364,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/workspaces/dirs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 在服务器上新建一个目录（选工作区时用）
+         * @description **这是"在服务器上写东西"**，比浏览严一档（与浏览同一道管理员闸）：
+         *
+         *     只建一层、重名当场拒（不覆盖也不合并）、数据目录里不建。名字按**可移植的那一套**
+         *     校验——目录名常要在 Windows 与 NAS 之间互拷，而在 Linux 上合法的 `a:b`
+         *     到了 Windows 上根本建不出来。
+         */
+        post: operations["create_directory_api_v1_workspaces_dirs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 给服务器上的目录改名（选工作区时用）
+         * @description 只改名不搬位置。四类目录会被拒，各自都有具体理由（见服务层）：
+         *
+         *     文件系统根、数据目录及其内部、**包含数据目录的那个目录**（改了服务端就找不到
+         *     自己的库了）、以及**某个工作区的根目录**（改了那条工作区就失联）。
+         */
+        patch: operations["rename_directory_api_v1_workspaces_dirs_patch"];
+        trace?: never;
+    };
     "/api/v1/workspaces/{workspace_id}": {
         parameters: {
             query?: never;
@@ -3606,6 +3637,16 @@ export interface components {
             last_pulled_at?: string | null;
         };
         /**
+         * DirectoryCreateIn
+         * @description 在服务器上新建一个目录（``POST /workspaces/dirs``，v0.36）。
+         */
+        DirectoryCreateIn: {
+            /** Parent */
+            parent: string;
+            /** Name */
+            name: string;
+        };
+        /**
          * DirectoryEntryOut
          * @description 目录浏览里的一行：一个子目录，或一个"起点"。
          */
@@ -3624,6 +3665,16 @@ export interface components {
              * @default
              */
             reason: string;
+        };
+        /**
+         * DirectoryRenameIn
+         * @description 给服务器上的一个目录改名（``PATCH /workspaces/dirs``，v0.36）。**只改名，不搬位置**。
+         */
+        DirectoryRenameIn: {
+            /** Path */
+            path: string;
+            /** Name */
+            name: string;
         };
         /**
          * DocumentBatchIn
@@ -12059,6 +12110,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WorkspaceBrowseOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_directory_api_v1_workspaces_dirs_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DirectoryCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectoryEntryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_directory_api_v1_workspaces_dirs_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DirectoryRenameIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DirectoryEntryOut"];
                 };
             };
             /** @description Validation Error */

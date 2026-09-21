@@ -202,3 +202,119 @@ def test_browsing_into_the_data_directory_is_allowed(service: WorkspaceService) 
     view = service.browse(str(data_dir))
     assert view.path == str(data_dir.resolve())
     assert all(item.selectable is False for item in view.entries)
+
+
+# ------------------------------------------------------------------ 建目录
+
+
+def test_create_makes_one_directory_and_describes_it(
+    service: WorkspaceService, tmp_path: Path
+) -> None:
+    entry = service.create_directory(parent=str(tmp_path / "home" / "proj"), name="  新项目  ")
+    assert entry.name == "新项目"  # 首尾空格会被清掉（不然盘上的名字不是他写的那个）
+    assert entry.path == str((tmp_path / "home" / "proj" / "新项目").resolve())
+    assert entry.selectable is True
+    assert (tmp_path / "home" / "proj" / "新项目").is_dir()
+
+
+def test_create_refuses_an_existing_name(service: WorkspaceService, tmp_path: Path) -> None:
+    """重名**当场拒**：不覆盖也不合并——两种"顺手"都可能毁掉已有目录。"""
+    with pytest.raises(InvalidRequestError, match="已经存在"):
+        service.create_directory(parent=str(tmp_path / "home" / "proj"), name="a")
+
+
+def test_create_does_not_make_parents(service: WorkspaceService, tmp_path: Path) -> None:
+    """只建一层：名字里带路径分隔符是歧义，拒掉让他分两步做。"""
+    with pytest.raises(InvalidRequestError, match="不能有这些字符"):
+        service.create_directory(parent=str(tmp_path / "home"), name="x/y")
+
+
+def test_create_refuses_inside_the_data_directory(
+    service: WorkspaceService, data_dir: Path
+) -> None:
+    with pytest.raises(InvalidRequestError, match="数据目录里不建文件夹"):
+        service.create_directory(parent=str(data_dir), name="新库")
+
+
+@pytest.mark.parametrize(
+    ("name", "why"),
+    [
+        ("con", "保留"),
+        ("NUL.txt", "保留"),
+        (".hidden", "以点开头"),
+        ("trailing.", "以点开头或结尾"),
+        ("a:b", "不能有这些字符"),
+        ("x" * 81, "最多 80"),
+    ],
+)
+def test_bad_names_are_refused_with_a_reason(
+    service: WorkspaceService, tmp_path: Path, name: str, why: str
+) -> None:
+    """名字按**可移植的那一套**校验：目录常要在 Windows 与 NAS 之间互拷。"""
+    with pytest.raises(InvalidRequestError, match=why):
+        service.create_directory(parent=str(tmp_path / "home" / "proj"), name=name)
+
+
+# ------------------------------------------------------------------ 改目录名
+
+
+def test_rename_moves_the_name_only(service: WorkspaceService, tmp_path: Path) -> None:
+    before = tmp_path / "home" / "proj" / "a"
+    (before / "inner.txt").write_text("x", encoding="utf-8")
+    entry = service.rename_directory(path=str(before), name="alpha")
+    after = tmp_path / "home" / "proj" / "alpha"
+    assert entry.path == str(after.resolve())
+    assert after.is_dir()
+    assert (after / "inner.txt").is_file(), "内容要跟着走"
+    assert not before.exists()
+
+
+def test_rename_to_the_same_name_is_a_no_op(service: WorkspaceService, tmp_path: Path) -> None:
+    """名字没变时当作成功（幂等）：界面上点了两下不该报错。"""
+    target = tmp_path / "home" / "proj" / "a"
+    entry = service.rename_directory(path=str(target), name="a")
+    assert entry.path == str(target.resolve())
+
+
+def test_rename_refuses_an_existing_name(service: WorkspaceService, tmp_path: Path) -> None:
+    with pytest.raises(InvalidRequestError, match="已经存在"):
+        service.rename_directory(path=str(tmp_path / "home" / "proj" / "a"), name="b")
+
+
+def test_rename_refuses_the_filesystem_root(service: WorkspaceService, tmp_path: Path) -> None:
+    with pytest.raises(InvalidRequestError, match="文件系统根目录不能改名"):
+        service.rename_directory(path=str(Path(tmp_path.anchor)), name="disk")
+
+
+def test_rename_refuses_the_data_directory(service: WorkspaceService, data_dir: Path) -> None:
+    with pytest.raises(InvalidRequestError, match="数据目录"):
+        service.rename_directory(path=str(data_dir), name="data2")
+    with pytest.raises(InvalidRequestError, match="数据目录"):
+        service.rename_directory(path=str(data_dir / "inside"), name="inside2")
+
+
+def test_rename_refuses_a_directory_that_contains_the_data_directory(tmp_path: Path) -> None:
+    """**最容易漏的一条**：它是数据目录的祖先，改了名字服务端就找不到自己的库了。
+
+    开发机上很常见——数据目录就在仓库里（`backend/data`）。
+    """
+    holder = tmp_path / "holder"
+    (holder / "data").mkdir(parents=True)
+    service = WorkspaceService(_FakeStores(_FakeMeta()), holder / "data")
+    with pytest.raises(InvalidRequestError, match="里面有服务端的数据目录"):
+        service.rename_directory(path=str(holder), name="holder2")
+
+
+def test_rename_refuses_a_workspace_root(service: WorkspaceService, tmp_path: Path) -> None:
+    """改了它，那条工作区就指向一个不存在的位置——表现为"突然什么都读不到"。"""
+    root = tmp_path / "home" / "proj" / "b"
+    service._stores.meta.records = [
+        WorkspaceRecord(id="ws_1", name="老项目", root_path=str(root))
+    ]
+    with pytest.raises(InvalidRequestError, match="工作区「老项目」"):
+        service.rename_directory(path=str(root), name="b2")
+
+
+def test_rename_a_file_is_refused(service: WorkspaceService, tmp_path: Path) -> None:
+    with pytest.raises(InvalidRequestError, match="不是目录"):
+        service.rename_directory(path=str(tmp_path / "home" / "loose.txt"), name="x")

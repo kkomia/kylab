@@ -1792,6 +1792,24 @@ class DirectoryEntryOut(BaseModel):
     """不能选的原因（原样显示给用户）。"""
 
 
+class DirectoryCreateIn(BaseModel):
+    """在服务器上新建一个目录（``POST /workspaces/dirs``，v0.36）。"""
+
+    parent: str = Field(min_length=1, max_length=1000)
+    """建在哪一层（绝对路径，来自浏览接口给的 ``path``）。"""
+    name: str = Field(min_length=1, max_length=80)
+    """新目录名。**只建一层**：名字里带分隔符会当场被拒，不替你递归造父目录。"""
+
+
+class DirectoryRenameIn(BaseModel):
+    """给服务器上的一个目录改名（``PATCH /workspaces/dirs``，v0.36）。**只改名，不搬位置**。"""
+
+    path: str = Field(min_length=1, max_length=1000)
+    """要改名的那个目录（绝对路径）。"""
+    name: str = Field(min_length=1, max_length=80)
+    """新名字。"""
+
+
 class WorkspaceBrowseOut(BaseModel):
     """浏览服务器目录的结果（``GET /workspaces/browse``，v0.35）。
 

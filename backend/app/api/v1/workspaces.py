@@ -19,7 +19,9 @@ from fastapi import APIRouter, Depends, Query, status
 
 from app.api.auth import require_admin, require_read, require_write
 from app.api.v1.schemas import (
+    DirectoryCreateIn,
     DirectoryEntryOut,
+    DirectoryRenameIn,
     WorkspaceBrowseOut,
     WorkspaceCreateIn,
     WorkspaceListOut,
@@ -96,6 +98,46 @@ def browse_directories(
         roots=[DirectoryEntryOut(**asdict(item)) for item in view.roots],
         note=view.note,
     )
+
+
+@router.post(
+    "/dirs",
+    response_model=DirectoryEntryOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="在服务器上新建一个目录（选工作区时用）",
+)
+def create_directory(
+    payload: DirectoryCreateIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_admin)],
+) -> DirectoryEntryOut:
+    """**这是"在服务器上写东西"**，比浏览严一档（与浏览同一道管理员闸）：
+
+    只建一层、重名当场拒（不覆盖也不合并）、数据目录里不建。名字按**可移植的那一套**
+    校验——目录名常要在 Windows 与 NAS 之间互拷，而在 Linux 上合法的 `a:b`
+    到了 Windows 上根本建不出来。
+    """
+    entry = services.workspaces.create_directory(parent=payload.parent, name=payload.name)
+    return DirectoryEntryOut(**asdict(entry))
+
+
+@router.patch(
+    "/dirs",
+    response_model=DirectoryEntryOut,
+    summary="给服务器上的目录改名（选工作区时用）",
+)
+def rename_directory(
+    payload: DirectoryRenameIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_admin)],
+) -> DirectoryEntryOut:
+    """只改名不搬位置。四类目录会被拒，各自都有具体理由（见服务层）：
+
+    文件系统根、数据目录及其内部、**包含数据目录的那个目录**（改了服务端就找不到
+    自己的库了）、以及**某个工作区的根目录**（改了那条工作区就失联）。
+    """
+    entry = services.workspaces.rename_directory(path=payload.path, name=payload.name)
+    return DirectoryEntryOut(**asdict(entry))
 
 
 @router.post(

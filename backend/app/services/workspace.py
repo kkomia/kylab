@@ -30,6 +30,7 @@ from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.storage.base import StoreBundle, WorkspaceRecord
 
 __all__ = [
+    "MAX_DIRECTORY_NAME_CHARS",
     "BrowseView",
     "DirectoryEntry",
     "WorkspaceService",
@@ -239,6 +240,97 @@ class WorkspaceService:
             reason=problem or "",
         )
 
+    # ------------------------------------------------------- 建 / 改目录名
+
+    def create_directory(self, *, parent: str, name: str) -> DirectoryEntry:
+        """在 ``parent`` 下新建一个目录，返回它的描述。
+
+        **这是"在服务器上写东西"**，所以比浏览严一档：只建**一层**（不替你递归造父目录——
+        那等于按一个手滑的名字造出一串目录）、重名当场拒（不覆盖、不合并不提示）、
+        名字按可移植的那一套校验（见 :func:`_clean_directory_name`）。
+        数据目录里不建：那里是服务端自己的数据，不是放项目的地方。
+        """
+        target = self._writable_parent(parent)
+        clean = _clean_directory_name(name)
+        created = target / clean
+        if created.exists():
+            raise InvalidRequestError(f"「{clean}」已经存在了，换一个名字")
+        try:
+            created.mkdir()
+        except OSError as exc:
+            raise InvalidRequestError(f"建不了这个目录：{exc}") from exc
+        return self._describe(created)
+
+    def rename_directory(self, *, path: str, name: str) -> DirectoryEntry:
+        """把一个目录改名（**只改名字，不搬位置**）。
+
+        四条拒绝，逐条都有具体理由：
+
+        - **文件系统根**：`/` 或 `C:\\` 不能改名（那是整台机器的根）；
+        - **数据目录及其内部**：服务端自己的数据，改名等于把它弄丢；
+        - **包含数据目录的目录**（它是数据目录的祖先）：改了名字，运行中的服务就找不到
+          自己的库了——这一条最容易漏，而在开发机上很常见（数据目录就在仓库里）；
+        - **某个工作区的根目录**：改了名字那条工作区记录就指向一个不存在的位置，
+          表现为"这个工作区突然什么都读不到"。先在界面上把工作区改掉或删掉再来改。
+        """
+        clean = _clean_directory_name(name)
+        source = self._renameable(path)
+        target = source.parent / clean
+        if target == source:
+            return self._describe(source)  # 名字没变：当作成功（幂等）
+        if target.exists():
+            raise InvalidRequestError(f"「{clean}」已经存在了，换一个名字")
+        try:
+            source.rename(target)
+        except OSError as exc:
+            raise InvalidRequestError(f"改不了名字：{exc}") from exc
+        return self._describe(target)
+
+    def _writable_parent(self, parent: str) -> Path:
+        """新建目录时的父目录：必须在、必须是目录、不能在数据目录里。"""
+        target = self._browse_root(parent)
+        guarded = self._data_dir.resolve()
+        if target == guarded or target.is_relative_to(guarded):
+            raise InvalidRequestError(
+                "数据目录里不建文件夹：那里是服务端自己的数据（数据库、原件、记忆），"
+                "不是放项目的地方"
+            )
+        return target
+
+    def _renameable(self, path: str) -> Path:
+        """要改名的那个目录：存在、是目录、且不属于上面那四条里的任何一条。"""
+        text = (path or "").strip()
+        if not text:
+            raise InvalidRequestError("缺少参数：path（要改名的目录）")
+        try:
+            source = Path(text).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise InvalidRequestError(f"这个路径不存在或不可访问：{text}") from exc
+        if not source.is_dir():
+            raise InvalidRequestError(f"这是一个文件，不是目录：{text}")
+
+        if source.parent == source:
+            raise InvalidRequestError("文件系统根目录不能改名")
+        guarded = self._data_dir.resolve()
+        if source == guarded or source.is_relative_to(guarded):
+            raise InvalidRequestError("数据目录（或它里面的目录）不能改名：那是服务端自己的数据")
+        if guarded.is_relative_to(source):
+            raise InvalidRequestError(
+                f"「{source.name}」里面有服务端的数据目录，改名之后服务就找不到自己的库了。"
+                "要改的话先把数据目录挪到别处（`KYLAB_DATA_DIR`）"
+            )
+        for record in self._stores.meta.list_workspaces():
+            try:
+                root = Path(record.root_path).resolve()
+            except (OSError, RuntimeError):
+                continue
+            if root == source:
+                raise InvalidRequestError(
+                    f"「{source.name}」是工作区「{record.name}」的根目录，改名会让那条工作区失联。"
+                    "先在界面上改那个工作区（或删掉它），再来改目录名"
+                )
+        return source
+
     def _browse_root(self, path: str | None) -> Path:
         """把请求的路径解析成一个**可以列**的目录。
 
@@ -425,3 +517,47 @@ class WorkspaceService:
         if user_id is None:
             return True
         return record.owner_id == user_id
+
+
+#: 目录名里不允许出现的字符。取的是**跨平台的那一套**：Windows 禁 `< > : " / \ | ? *`，
+#: Linux 只禁 `/` 与 NUL——但一个在 Linux 上合法的名字（`a:b`）到了 Windows 上就建不出来，
+#: 而工作区目录经常是要两边互拷的。所以按严格的那一档拒。
+_BAD_NAME_CHARS = frozenset('<>:"/\\|?*')
+
+#: Windows 的保留设备名（大小写不敏感，带扩展名也算：`CON.txt` 同样打不开）。
+_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    *(f"com{index}" for index in range(1, 10)),
+    *(f"lpt{index}" for index in range(1, 10)),
+}
+
+MAX_DIRECTORY_NAME_CHARS = 80
+
+
+def _clean_directory_name(raw: str) -> str:
+    """校验一个目录名，返回清洗后的名字。
+
+    **只校验名字，不碰路径**：分隔符一律拒（`a/b` 这种"顺手带上路径"的写法在这里
+    是歧义——它到底是想建 `b`，还是想建 `a/b`？拒掉，让它分两步做）。
+    首尾的空格与点也要拒：Windows 会静默把它们去掉，于是"我建的名字"与
+    "盘上的名字"不是同一个——那种不一致事后极难查。
+    """
+    name = (raw or "").strip()
+    if not name:
+        raise InvalidRequestError("缺少参数：name（文件夹名）")
+    if len(name) > MAX_DIRECTORY_NAME_CHARS:
+        raise InvalidRequestError(f"名字最多 {MAX_DIRECTORY_NAME_CHARS} 个字")
+    if any(char in _BAD_NAME_CHARS for char in name):
+        raise InvalidRequestError(f"名字里不能有这些字符：{' '.join(sorted(_BAD_NAME_CHARS))}")
+    # 开头/结尾的点要拒：**`.` 与 `..` 在路径里不是名字、是导航**（见 sandbox.sandbox_for
+    # 里同一个坑），而 `x.` 这种在 Windows 上会被静默改成 `x`——盘上的名字就不是你写的那个
+    if name.startswith(".") or name.endswith("."):
+        raise InvalidRequestError("名字不能以点开头或结尾（. 与 .. 在路径里是导航，不是名字）")
+    if any(ord(char) < 32 for char in name):
+        raise InvalidRequestError("名字里不能有控制字符")
+    if name.split(".")[0].casefold() in _RESERVED_NAMES:
+        raise InvalidRequestError(f"「{name}」是系统保留的名字（Windows 上打不开），换一个")
+    return name

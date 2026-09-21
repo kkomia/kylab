@@ -66,6 +66,22 @@ export function browseDirectories(path?: string): Promise<WorkspaceBrowse> {
   return request<WorkspaceBrowse>(`/workspaces/browse${query}`)
 }
 
+/** 在服务器上新建一个目录（只建一层，重名会被拒）。 */
+export function createDirectory(parent: string, name: string): Promise<DirectoryEntry> {
+  return request<DirectoryEntry>('/workspaces/dirs', {
+    method: 'POST',
+    body: JSON.stringify({ parent, name }),
+  })
+}
+
+/** 给服务器上的目录改名（**只改名，不搬位置**）。 */
+export function renameDirectory(path: string, name: string): Promise<DirectoryEntry> {
+  return request<DirectoryEntry>('/workspaces/dirs', {
+    method: 'PATCH',
+    body: JSON.stringify({ path, name }),
+  })
+}
+
 export function createWorkspace(payload: WorkspacePayload): Promise<Workspace> {
   return request<Workspace>('/workspaces', {
     method: 'POST',
