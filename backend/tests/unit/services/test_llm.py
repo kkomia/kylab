@@ -320,36 +320,52 @@ _TOOL_MESSAGES = [
 
 
 def _capture_tools(config: LLMConfig, messages=None):  # type: ignore[no-untyped-def]
-    """跑一次 complete_with_tools，返回（实际发出去的请求体, 解析出来的回复）。"""
+    """跑一次带工具表的**流式**调用，返回（实际发出去的请求体, 收到的增量）。
+
+    工具循环每一步都是流式（v0.40 起），所以检查"请求里带了什么"也从这条路走。
+    """
     captured: dict = {}
-    body = {
-        "choices": [
-            {
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "reasoning_content": "端点的思考",
-                    "tool_calls": [
-                        {
-                            "id": "c1",
-                            "type": "function",
-                            "function": {"name": "search", "arguments": "{}"},
-                        }
-                    ],
+    # 端点的返回形状：先思考，再一串工具调用碎片（``id`` 只在第一块里）
+    chunks = [
+        {"choices": [{"delta": {"reasoning_content": "端点的思考"}, "finish_reason": None}]},
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "c1",
+                                "function": {"name": "search", "arguments": ""},
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
                 }
-            }
-        ]
-    }
+            ]
+        },
+        {
+            "choices": [
+                {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "{}"}}]},
+                 "finish_reason": "tool_calls"}
+            ]
+        },
+    ]
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured.update(json.loads(request.content))
-        return httpx.Response(200, json=body)
+        nl = chr(10)
+        body = "".join(f"data: {json.dumps(c)}{nl}{nl}" for c in chunks)
+        body += f"data: [DONE]{nl}{nl}"
+        return httpx.Response(200, content=body.encode("utf-8"))
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
-    reply = OpenAICompatChat(config, client=client).complete_with_tools(
-        messages or _TOOL_MESSAGES, [_TOOL_SPEC]
+    deltas = list(
+        OpenAICompatChat(config, client=client).stream_events(
+            messages or _TOOL_MESSAGES, [_TOOL_SPEC]
+        )
     )
-    return captured, reply
+    return captured, deltas
 
 
 def test_deepseek_thinking_echoes_the_reasoning_back() -> None:
@@ -407,12 +423,17 @@ def test_no_reasoning_field_when_thinking_is_off_or_the_dialect_differs() -> Non
     assert "reasoning_content" not in other["messages"][1]
 
 
-def test_the_reply_carries_the_reasoning_for_the_next_round() -> None:
-    """解析侧：``reasoning_content`` 要留在 ``LLMReply`` 上，工具循环才带得回去。
+def test_the_reasoning_and_the_calls_come_out_of_the_stream() -> None:
+    """解析侧：流式要**同时**把 ``reasoning_content`` 与工具调用碎片交出来。
 
-    丢了它不会当场报错——错在下一轮请求上，而那时离起因已经很远了。
+    思考丢了不会当场报错——错在下一轮请求上（端点要它回传），而那时离起因已经很远；
+    工具调用碎片丢了的后果更直接：那一步的工具根本不会执行，
+    模型看到的是"我说了要查，但没人去查"。
     """
-    _, reply = _capture_tools(_config(enable_thinking=True))
+    _, deltas = _capture_tools(_config(enable_thinking=True))
 
-    assert reply.reasoning == "端点的思考"
-    assert reply.wants_tools
+    assert "".join(d.reasoning for d in deltas) == "端点的思考"
+    fragments = [fragment for delta in deltas for fragment in delta.tool_calls]
+    assert len(fragments) == 2, "碎片原样转出（拼装是工具循环的事）"
+    calls = assemble_tool_calls(fragments)
+    assert [(call.id, call.name, call.arguments) for call in calls] == [("c1", "search", "{}")]

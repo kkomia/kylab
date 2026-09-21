@@ -804,7 +804,7 @@ def test_agent_prompt_allows_batching_independent_calls() -> None:
 def test_the_whole_tool_loop_keeps_the_users_thinking_setting(
     runtime, bind_slot  # type: ignore[no-untyped-def]
 ) -> None:
-    """工具循环**全程**按用户选的思考档位，包括挑工具那一步（v0.27 试过拆开，撤了）。
+    """工具循环**每一步**都按用户选的思考档位（v0.27 试过拆开，撤了）。
 
     拆开试过：选工具那一步不思考能让单次往返从 1.18s 降到 0.68s（同一模型、同一批
     工具、各 4 次）。撤掉的理由不是"感觉不好"，而是那条改动**只量了耗时、没量决策**：
@@ -812,23 +812,20 @@ def test_the_whole_tool_loop_keeps_the_users_thinking_setting(
     全出在思考里；而厂商的协议也是这个意思（思考模式下带工具调用的助手消息要带着推理
     往后传，见 `llm.ChatMessage.reasoning`）——关掉等于每轮把它的计划擦一次。
 
-    这条用例守着"不拆"：两处调用拿到的都是用户那一档。
+    这条用例守着"不拆"。**v0.40 起"挑工具"与"作答"合成了一次调用**，
+    所以这里记的是"每一步拿到的档位"，而不是两种角色。
     """
-    from app.services.llm import LLMDelta, LLMReply, ToolSpec
+    from app.services.llm import LLMDelta, ToolSpec
 
-    used: list[tuple[str, bool]] = []
+    used: list[bool] = []
 
     class _Chat:
         def __init__(self, config) -> None:  # type: ignore[no-untyped-def]
             self._config = config
 
-        def complete_with_tools(self, messages, tools):  # type: ignore[no-untyped-def]
-            used.append(("挑工具", self._config.enable_thinking))
-            return LLMReply(text="")  # 不调工具：紧接着就去作答
-
         def stream_events(self, messages, tools=None):  # type: ignore[no-untyped-def]
-            used.append(("作答", self._config.enable_thinking))
-            yield LLMDelta(text="答")
+            used.append(self._config.enable_thinking)
+            yield LLMDelta(text="答")  # 一步作答（不调工具）
 
     service = ChatService(_EmptyRetrieval(), runtime, chat_factory=lambda config: _Chat(config))  # type: ignore[arg-type]
     bind_slot("chat", model_id="m", capabilities=["chat"])
@@ -842,7 +839,7 @@ def test_the_whole_tool_loop_keeps_the_users_thinking_setting(
     )
     list(loop.run(messages=[]))
 
-    assert used == [("挑工具", True), ("作答", True)]
+    assert used == [True]
 
 
 def test_no_kb_round_says_so_in_the_prompt(runtime, bind_slot) -> None:  # type: ignore[no-untyped-def]

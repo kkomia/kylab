@@ -94,9 +94,14 @@ class ToolSpec:
 
 @dataclass(frozen=True, slots=True)
 class LLMReply:
-    """一次非流式回复：正文与它要求的工具调用。
+    """一次模型回复：正文、它要求的工具调用、以及它的思考。
 
-    两者可能同时非空（模型先说一句再做），所以不是一个"二选一"的联合类型。
+    三者可能同时非空（模型先说一句再做），所以不是一个"二选一"的联合类型。
+
+    **产出者只有一处**：工具循环那一步（``tool_loop._answer``）把流式增量拼成这个形状
+    ——正文与思考是攒出来的字符串，工具调用由 :func:`assemble_tool_calls` 按 ``index``
+    拼回完整调用。v0.40 之前这里还有一条非流式产线（``complete_with_tools``），
+    合并"选工具"与"作答"两次调用之后就没人用了，已删除。
     """
 
     text: str = ""
@@ -255,26 +260,6 @@ class OpenAICompatChat:
         # 而绝大多数调用方并不关心用量。
         self.last_usage = _usage_of(body)
         return _content_of(body)
-
-    def complete_with_tools(
-        self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec]
-    ) -> LLMReply:
-        """一次非流式调用，**允许模型要求调用工具**（见 services/tool_loop.py）。
-
-        为什么工具循环这一步不走流式：它产出的是"调哪个工具、参数是什么"这种
-        结构化片段，流式拼装只会把"半截 JSON"这一种错误引入进来；而真正要给用户看的
-        是最后那段正文——那一段仍然走流式（``stream_events``）。
-        """
-        with self._open() as client:
-            response = client.post(
-                f"{self.config.base_url.rstrip('/')}/chat/completions",
-                headers=self._headers(),
-                json={**self._payload(messages, tools), "stream": False},
-                timeout=self._timeout,
-            )
-        body = self._decode(response)
-        self.last_usage = _usage_of(body)
-        return _reply_of(body)
 
     def stream(self, messages: Sequence[ChatMessage]) -> Iterator[str]:
         """流式产出**正文**增量（SSE）。
@@ -520,40 +505,6 @@ def _message_wire(message: ChatMessage, *, echo_reasoning: bool = False) -> dict
     if message.tool_call_id:
         body["tool_call_id"] = message.tool_call_id
     return body
-
-
-def _reply_of(body: dict) -> LLMReply:
-    """从非流式响应里取正文与工具调用。"""
-    choices = body.get("choices") or []
-    if not choices:
-        return LLMReply()
-    message = choices[0].get("message") or {}
-    calls: list[ToolCall] = []
-    for index, raw in enumerate(message.get("tool_calls") or []):
-        if not isinstance(raw, dict):
-            continue
-        function = raw.get("function") or {}
-        call = _call_or_none(
-            index=index,
-            ident=str(raw.get("id") or ""),
-            name=str(function.get("name") or ""),
-            arguments=str(function.get("arguments") or ""),
-        )
-        if call is not None:
-            calls.append(call)
-    return LLMReply(
-        text=_content_of_message(message),
-        tool_calls=tuple(calls),
-        # 思考原样带回去（见 ``LLMReply.reasoning``）：工具循环会把这一轮要求调工具的
-        # 助手消息再发出去，而端点要它带着 reasoning_content
-        reasoning=str(message.get("reasoning_content") or ""),
-    )
-
-
-def _content_of_message(message: dict) -> str:
-    """助手消息的正文。有些实现把 tool_calls 与空 content 一起发，空串是正常值。"""
-    content = message.get("content")
-    return content if isinstance(content, str) else ""
 
 
 @dataclass(frozen=True, slots=True)

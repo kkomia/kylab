@@ -13,12 +13,14 @@
 1. **工具集与内置 MCP 服务共用一份实现**（`app/services/tools.py`）。13 个内置工具
    对外走 MCP、对内由这里调用——一处实现两个门。所以"知识库降级成工具"几乎是免费的：
    `search` 早就是其中一个工具了，只是以前对话循环没走它。
-2. **工具那几步不走流式**：它们产出的是"调哪个工具、参数是什么"这种结构化片段，
-   流式拼装只会引入"半截 JSON"这一类错误。**最后那段正文仍然流式**——代价是收尾多一次
-   请求，换来的是正文与思考照旧逐字出来，而这两块正是用户真正在看的东西。
-   **收尾那一次也带着工具表**（v0.34）：它只是想"再查一次"时给得出结构化调用，
-   而不是把调用标记写进正文（见 ``_answer``）。那里的碎片拼接由
-   ``llm.assemble_tool_calls`` 负责，参数照旧原样交给执行那一步去解析。
+2. **每一步都是一次流式调用，且都带着工具表**（v0.40 合并；v0.34 先给收尾带上）。
+   从前是"非流式选工具 + 流式作答"两次：实测（2026-09-21，一轮三步）
+   4.44 秒那次只为了决定还要不要调工具，紧接着 4.09 秒又把同一份上下文重想一遍。
+   合成一次之后每轮少一跳。代价是工具参数也可能来自**流式拼装**——
+   碎片由 ``llm.assemble_tool_calls`` 按 ``index`` 拼回完整字符串再交给执行那一步，
+   拼坏了照样按"不是合法 JSON"回给模型（那条路本来就有）。
+   另一处变化：**思考现在每一步都会流给界面**（以前只有作答那一步的），
+   过程面板因此显示的是"整轮的想法"，而不只是收尾那一次。
 3. **事件形状与旧链路一致**（StepEvent / SourcesEvent / ThinkingEvent / DeltaEvent /
    DoneEvent）：协议层与界面不用为这次换框架改动，出处（SourcesEvent）也照旧发——
    用了资料就该给出处，这一点不因框架变化而丢。**旧链路删除后，"一致"的对象没有了，
@@ -59,7 +61,6 @@ from app.services.agent import (
     ThinkingEvent,
 )
 from app.services.llm import (
-    ChatError,
     ChatMessage,
     LLMReply,
     ToolCall,
@@ -231,20 +232,6 @@ class ToolOutcome:
         return text[:limit] + ("…" if len(text) > limit else "")
 
 
-@dataclass(frozen=True, slots=True)
-class _AnswerOutcome:
-    """收尾那一步（流式作答）的结果（见 ``ToolLoop._answer``）。
-
-    ``tool_calls`` 非空 = **模型在这一步又要求调工具**：那它就不是在作答，
-    由 ``run`` 当一次普通工具步骤接过去继续跑。正文与思考一起带出来是因为
-    下一步要把这条助手消息重新发出去——端点（DeepSeek 实测）要求带工具调用的
-    助手消息带着 ``reasoning_content``，而流式那一步的思考只有这里留了一份
-    （``ThinkingEvent`` 发出去就没了）。
-    """
-
-    text: str = ""
-    reasoning: str = ""
-    tool_calls: tuple[ToolCall, ...] = ()
 
 
 #: 执行一个工具：``(工具名, 参数字典) -> ToolOutcome``。
@@ -311,40 +298,24 @@ class ToolLoop:
                 yield self._timeout_step(started_at)
                 yield from self._answer(messages)
                 return
-            try:
-                # 选工具这一轮**与作答用同一个客户端、同一档思考**：多步循环里
-                # "下一步做什么、能不能几件事一起发、失败了换哪条路"都出在这几次调用上，
-                # 关掉思考省下的那点往返会在这里加倍还回去（§12.199 试过、撤了）。
-                reply: LLMReply = self._client_factory().complete_with_tools(messages, self._tools)
-            except ChatError:
-                # 模型不可用**必须如实抛**：静默收尾会变成一条空回答
-                raise
-            if not reply.wants_tools:
-                # 它决定直接答了。**这一步的正文不直接用**——正文那段要流式出来
-                # （见模块头第 2 条），所以再走一次流式调用。
-                #
-                # **那一次也带着工具表**（v0.34）：走到这里只说明"这一次调用没给
-                # 结构化 tool_calls"，不代表它不想再查。不带工具表时它会把调用
-                # **写进正文**（实测 DeepSeek Flash），而那种标记我们既不执行、
-                # 又会原样糊在界面上。带着工具表，它想接着查就给得出结构化调用，
-                # 这里收到就按一次普通工具步骤继续跑，而不是当成回答。
-                outcome = yield from self._answer(messages, tools=self._tools)
-                if not outcome.tool_calls:
-                    return
-                yield from self._perform(
-                    messages,
-                    text=outcome.text,
-                    reasoning=outcome.reasoning,
-                    calls=outcome.tool_calls,
-                    stop=self._stop_reason(step, started_at),
-                )
-                continue
-
+            # **每一步就是一次流式调用**（v0.40）：它要么给出一批工具调用、
+            # 要么给出正文，一次说清。以前分成"非流式选工具 + 流式作答"两次——
+            # 实测（2026-09-21，一轮三步）那两次做的是同一件事：
+            # 4.44 秒那次只为了"决定还要不要调工具"（思考 1258 字），
+            # 紧接着 4.09 秒又把同一份上下文重想一遍才作答。
+            # 合成一次之后每轮少一跳，且模型每次都能在同一口气里"边想边说"。
+            #
+            # 代价是"工具参数也可能来自流式拼装"——那正是 v0.38 铺好的路
+            # （`llm.assemble_tool_calls`），拼坏了由 `_parse_arguments`
+            # 按"不是合法 JSON"回给模型，那条路本来就有。
+            outcome = yield from self._answer(messages, tools=self._tools)
+            if not outcome.wants_tools:
+                return
             yield from self._perform(
                 messages,
-                text=reply.text,
-                reasoning=reply.reasoning,
-                calls=reply.tool_calls,
+                text=outcome.text,
+                reasoning=outcome.reasoning,
+                calls=outcome.tool_calls,
                 stop=self._stop_reason(step, started_at),
             )
 
@@ -432,10 +403,10 @@ class ToolLoop:
     def _answer(
         self, messages: list[ChatMessage], *, tools: Sequence[ToolSpec] | None = None
     ) -> Iterator[object]:
-        """流式产出正文与思考；**返回值**是这一步的结果（见 `_AnswerOutcome`）。
+        """流式跑**一步**：产出思考与正文，**返回值**是这一步的结果（``LLMReply``）。
 
-        ``tools`` 非空时这次请求带着工具表（见 ``run`` 里那段说明）：模型想接着查
-        就给得出结构化调用，而不是把标记写进正文。拼装碎片用 ``assemble_tool_calls``，
+        ``tools`` 非空时这次请求带着工具表（见 ``run`` 里那段说明）：模型想调工具
+        就给得出结构化调用，而不是把标记写进正文。碎片拼装用 ``assemble_tool_calls``，
         与执行之间没有别的加工——参数照样原样交给 ``_parse_arguments``。
 
         **"组织回答"这一步必须发出来**：它是真实发生的动作；少了它，一轮
@@ -443,9 +414,10 @@ class ToolLoop:
         退回一条兜底（历史上那套"检索 + 生成"两步），于是凭空画出一条"检索知识库"，
         用户看到的现象就是"我明明没开知识库，它为什么去检索了"（实测报过来的就是这个）。
 
-        **只想调工具的那一轮不发它、也不发 `DoneEvent`**：那一步不是回答（正文是空的），
-        发了会让界面上多一条"组织回答"、而回答本身还没有。它在被 ``run`` 当工具步骤
-        接过去继续跑（见 ``run``）。所以这一步的事件是**攒够正文才发**的。
+        **什么时候发它：第一段正文到达时**。光有思考不算——每一步都会流式吐思考
+        （v0.40 起），而下一步往往是"我先查一下"然后再调工具：那种步骤不是回答，
+        不该在过程面板里留下一条"组织回答"。只想调工具的那一轮也不发 `DoneEvent`，
+        它被 ``run`` 当工具步骤接过去继续跑。
         """
         parts: list[str] = []
         reasoning_parts: list[str] = []
@@ -458,9 +430,7 @@ class ToolLoop:
                 reasoning_parts.append(delta.reasoning)
             if delta.text:
                 parts.append(delta.text)
-            if not started and (delta.text or delta.reasoning):
-                # 第一个可见增量到了才开始报"组织回答"：只是工具调用的那一轮
-                # 从头到尾没有正文，就不该在过程面板上留下一步回答
+            if not started and delta.text:
                 yield StepEvent(phase="answer", label="组织回答", status="running")
                 started = True
             if delta.reasoning:
@@ -471,10 +441,13 @@ class ToolLoop:
         calls = assemble_tool_calls(fragments) if fragments else ()
         if not calls:
             yield DoneEvent(answer="".join(parts))
-        return _AnswerOutcome(
+        return LLMReply(
             text="".join(parts),
-            reasoning="".join(reasoning_parts),
             tool_calls=calls,
+            # 思考原样带回去：下一步要把这条助手消息重新发出去，而端点
+            # （DeepSeek 实测）要求带工具调用的助手消息带着 reasoning_content
+            # ——流式那一步的思考只有这里留了一份（``ThinkingEvent`` 发出去就没了）
+            reasoning="".join(reasoning_parts),
         )
 
     def _stop_reason(self, step: int, started_at: float) -> str | None:

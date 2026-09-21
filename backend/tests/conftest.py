@@ -25,7 +25,7 @@ from app.core.config import get_settings
 from app.core.services import reset_services
 from app.core.storage import reset_stores
 from app.models.enums import DataSourceKind, DocumentStage
-from app.services.llm import ChatError, LLMDelta, LLMReply, ToolCall
+from app.services.llm import ChatError, LLMDelta, LLMReply, ToolCall, ToolCallDelta
 from app.services.model_registry import ModelRegistryService
 from app.services.runtime_config import RuntimeConfigService
 from app.storage.base import (
@@ -388,9 +388,10 @@ def document(store: MetaStore, kb: KnowledgeBaseRecord) -> DocumentRecord:
 class FakeChatModel:
     """假的对话模型：不打网络，按字符吐正文。
 
-    ``complete_with_tools`` 是工具循环真正会调的那个（``services/tool_loop.py``）：
-    没给 ``script`` 时它回一条"不调工具"的回复，于是循环直接进入作答；
-    给了就按顺序取用——**一轮里它可能被问好几次**（每次工具调用之后再问一遍）。
+    ``stream_events`` 是工具循环真正会调的那一个（``services/tool_loop.py``）：
+    **每一步都是一次流式调用**（v0.40 起），剧本就在这里消费——
+    给了 ``script`` 就按顺序取用（哪一步要工具就吐工具调用碎片），
+    没给就一直吐 ``answer``，于是循环直接进入作答。
 
     ``complete`` / ``stream`` 留给还没换框架的旁路（编排、摘要一类）。
     """
@@ -419,17 +420,29 @@ class FakeChatModel:
             raise self.error
         yield from self.answer
 
-    def complete_with_tools(self, messages, tools):  # type: ignore[no-untyped-def]
-        self.seen_tools = [item.name for item in tools]
-        if self.error:
-            raise self.error
-        if self._script:
-            return self._script.pop(0)
-        return LLMReply(text="")
-
     def stream_events(self, messages, tools=None):  # type: ignore[no-untyped-def]
+        """**每一步都是一次流式调用**（v0.40），剧本在这里消费。
+
+        哪一步要工具就吐那一批工具调用的碎片（真实端点会把一个参数切成几十块，
+        这里一块给完——"切几块"是传输细节，用例要表达的是"这一步要调什么"）。
+        """
+        self.seen_tools = [item.name for item in (tools or [])]
         if self.error:
             raise self.error
+        reply = self._script.pop(0) if self._script else None
+        if reply is not None:
+            if reply.reasoning:
+                yield LLMDelta(reasoning=reply.reasoning)
+            for index, call in enumerate(reply.tool_calls):
+                yield LLMDelta(
+                    tool_calls=(
+                        ToolCallDelta(
+                            index=index, id=call.id, name=call.name, arguments=call.arguments
+                        ),
+                    )
+                )
+            if reply.tool_calls:
+                return
         for char in self.answer:
             yield LLMDelta(text=char)
 

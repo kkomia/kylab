@@ -37,42 +37,70 @@ def _hit(index: int = 1) -> SourceRef:
     )
 
 
-class _FakeClient:
-    """按剧本走：每次 ``complete_with_tools`` 取一条预置回复。
+def _fragments_of(reply: LLMReply) -> list[ToolCallDelta]:
+    """把"这一步要调这些工具"翻译成流式碎片（v0.40 起每一步都是流式调用）。
 
-    ``stream_scripts`` 给**收尾那一步**（流式）排剧本：每一条是那次流要吐的
-    工具调用碎片列表（空 = 正常作答，吐 ``answer``）。按调用顺序取，用完就回落到
-    正常作答——收尾那一步现在可能被叫两次（第一次吐出调用、继续跑之后再答一次）。
+    一次调用给一块碎片：真实端点会把参数切成几十块（实测 38 块），
+    但"切成几块"是传输细节，用例要表达的是"这一步要求调哪几个工具"。
+    """
+    return [
+        ToolCallDelta(index=index, id=call.id, name=call.name, arguments=call.arguments)
+        for index, call in enumerate(reply.tool_calls)
+    ]
+
+
+class _FakeClient:
+    """按剧本走：**每一步**（流式调用）取一条预置剧本。
+
+    ``stream_scripts`` 每一条是那一次流要吐的工具调用碎片；空列表 = 正常作答，
+    吐 ``answer``。不传 ``stream_scripts`` 时按 ``replies`` 自动翻译
+    （见 ``_fragments_of``）——用例仍然写"这一步要检索、那一步作答"，
+    而不用管碎片怎么切。
     """
 
     def __init__(
         self,
-        replies: list[LLMReply],
+        replies: list[LLMReply] | None = None,
         answer: str = "答案",
         *,
         stream_scripts: list[list[ToolCallDelta]] | None = None,
     ) -> None:
-        self._replies = list(replies)
         self._answer = answer
-        self._stream_scripts = [list(item) for item in (stream_scripts or [])]
+        # 显式给碎片就用碎片；否则用 ``LLMReply`` 剧本（连 reasoning 一起翻译）
+        self._script: list = (  # type: ignore[type-arg]
+            [list(item) for item in stream_scripts]
+            if stream_scripts is not None
+            else list(replies or [])
+        )
+        self._scripted = bool(self._script)
         self.calls: list[list] = []  # type: ignore[type-arg]
         self.answer_messages: list | None = None
         self.answer_tools: list | None = None
 
-    def complete_with_tools(self, messages, tools):  # type: ignore[no-untyped-def]
-        self.calls.append(list(messages))
-        if not self._replies:
-            raise AssertionError("剧本里的回复用完了")
-        return self._replies.pop(0)
-
     def stream_events(self, messages, tools=None):  # type: ignore[no-untyped-def]
+        self.calls.append(list(messages))
         self.answer_messages = list(messages)
         self.answer_tools = list(tools or [])
-        fragments = self._stream_scripts.pop(0) if self._stream_scripts else []
+        if self._script:
+            item = self._script.pop(0)
+        elif self._scripted:
+            # 排过剧本就**不许默默兜底**：剧本短了多半是用例写错了
+            # （比如少排了"模型决定作答"那一步），静默兜底会让它绿得没有意义
+            raise AssertionError("剧本里的回复用完了")
+        else:
+            item = []
+        if isinstance(item, LLMReply):
+            if item.reasoning:
+                yield LLMDelta(reasoning=item.reasoning)
+            fragments = _fragments_of(item)
+            text = "" if fragments else (item.text or self._answer)
+        else:
+            fragments = item
+            text = "" if item else self._answer
         for fragment in fragments:
             yield LLMDelta(tool_calls=(fragment,))
-        if not fragments:
-            yield LLMDelta(text=self._answer)
+        if text:
+            yield LLMDelta(text=text)
 
 
 def _loop(
@@ -125,12 +153,12 @@ def test_the_answering_step_carries_the_tool_table() -> None:
     assert [spec.name for spec in client.answer_tools or []] == ["search"]
 
 
-def test_tool_calls_streamed_while_answering_are_executed_not_shown() -> None:
-    """收尾那一步流式拼出来的调用**照常执行**，而不是当成回答显示出来。
+def test_every_step_is_one_streamed_call_and_its_calls_run() -> None:
+    """**一步 = 一次模型调用**（v0.40），流式拼出来的调用照常执行、不当成回答显示。
 
-    这是修复的另一半：带着工具表之后，模型想接着查就给得出结构化调用
-    （碎片横跨几块，``id`` 只在第一块里）。它该被当成一次普通工具步骤接过去，
-    然后回到循环里继续——而不是把标记当作答案发出去。
+    合并之前"选工具"与"作答"是两次调用：同一步里模型先想一遍要不要调工具
+    （实测 4.44 秒），再被问一遍才作答（4.09 秒）。现在一次说清，
+    碎片横跨几块也要拼回完整参数（``id`` 只在第一块里）。
     """
     calls: list[tuple[str, dict]] = []  # type: ignore[type-arg]
 
@@ -139,15 +167,15 @@ def test_tool_calls_streamed_while_answering_are_executed_not_shown() -> None:
         return ToolOutcome(content="[1] 结果")
 
     loop, client = _loop(
-        # 第一条：选工具那一步说"我不调工具"（这就是走到收尾的原因）
-        # 第二条：收尾那次工具跑完之后再问一次 → 这回它答了
+        # 两步：第一步要工具（参数切成两块），第二步作答
         [LLMReply(), LLMReply()],
         runner=runner,
         stream_scripts=[
             [
                 ToolCallDelta(index=0, id="c1", name="search", arguments='{"query":'),
                 ToolCallDelta(index=0, arguments='"眼轴"}'),
-            ]
+            ],
+            [],  # 第二步：作答
         ],
     )
 
@@ -155,6 +183,8 @@ def test_tool_calls_streamed_while_answering_are_executed_not_shown() -> None:
 
     # 执行了，参数是碎片拼出来的
     assert calls == [("search", {"query": "眼轴"})]
+    # 两步就两次模型调用（合并的意义就在这个数上：以前是三次——选工具、选工具、作答）
+    assert len(client.calls) == 2
     # 调用与结果配对回灌（助手那条带着 tool_calls，结果用 tool_call_id 指回去）
     assistant = [m for m in client.calls[-1] if m.role == "assistant"]
     assert assistant and assistant[0].tool_calls[0].id == "c1"
@@ -213,7 +243,10 @@ def test_without_tools_it_just_answers() -> None:
     events = list(loop.run(messages=[]))
 
     assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
-    assert client.calls == []
+    # 只调了一次（就是作答），而且**一次都没声明工具表**——
+    # 空工具表不该发出去，那会被某些端点读成"要求工具调用"（见 llm._payload）
+    assert len(client.calls) == 1
+    assert client.answer_tools == []
 
 
 # ------------------------------------------------------------------ 失败要与模型对话
@@ -265,7 +298,10 @@ def test_step_budget_says_so_instead_of_pretending() -> None:
     不说清楚他只会觉得模型不行。
     """
     always = LLMReply(tool_calls=(ToolCall(id="c", name="search", arguments="{}"),))
-    loop, _ = _loop([always, always, always], runner=lambda n, a: ToolOutcome("x"), max_steps=2)
+    # 两步都用掉 + 最后那次"按现有信息作答"（终端那一步不带工具，见 run）
+    loop, _ = _loop(
+        [always, always, LLMReply()], runner=lambda n, a: ToolOutcome("x"), max_steps=2
+    )
 
     events = list(loop.run(messages=[]))
 
@@ -971,18 +1007,17 @@ def test_wall_clock_expiry_says_so_and_answers_with_what_it_has() -> None:
         clock.now += 30.0  # 这一步自己很慢
         return ToolOutcome("x")
 
-    loop, client = _loop(
-        [always, always, always], runner=slow_tool, max_seconds=10.0, clock=clock
-    )
+    loop, client = _loop([always, LLMReply()], runner=slow_tool, max_seconds=10.0, clock=clock)
 
     events = list(loop.run(messages=[]))
 
     timeout = next(s for s in _steps(events) if s.label == "本轮时间已用尽")
     assert timeout.degraded is True
     assert "最多 10 秒" in (timeout.detail or "")
-    # 慢工具只跑了一次：时间到之后**没有再开新的一轮 LLM 调用**
+    # 慢工具只跑了一次：时间到之后**没有再开新的一轮工具调用**
+    # （第二次模型调用是收尾作答，它**不带工具表**——那正是"不再开新的一轮"的判据）
     assert ran == ["search"]
-    assert len(client.calls) == 1
+    assert client.answer_tools == []
     assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
     # 与"步数用尽"是**两条不同的提示**：用户看到"慢"和看到"多"，下一步该做的事不一样
     assert not any(s.label == "工具步数已达上限" for s in _steps(events))
@@ -998,9 +1033,9 @@ def test_expired_clock_blocks_the_batch_before_it_runs() -> None:
     ran: list[str] = []
 
     class _SlowModel(_FakeClient):
-        def complete_with_tools(self, messages, tools):  # type: ignore[no-untyped-def]
+        def stream_events(self, messages, tools=None):  # type: ignore[no-untyped-def]
             clock.now += 30.0
-            return super().complete_with_tools(messages, tools)
+            yield from super().stream_events(messages, tools)
 
     client = _SlowModel([always, always])
     loop = ToolLoop(
