@@ -1,0 +1,91 @@
+# kylab 应用层（后端 + 前端），部署在 NAS 上（2026-09-21）。
+#
+# 位置：服务器 /vol1/1000/docker/kylab/app/docker-compose.yml
+#
+# ## 与 deploy/docker-compose.yml 的关系
+#
+# 那一份是**干净机器一键起**的四件套（连 PG 与 MinIO 一起建）。这一份**不含存储层**：
+# 这台 NAS 上 PostgreSQL 与 MinIO 早就跑着了，各自有自己的目录与管理方式：
+#
+#   kylab-postgres  → /vol1/1000/docker/kylab/docker-compose.yml（宿主机 54321→5432）
+#   kylab-minio     → 1Panel 装的（/vol1/1000/docker/1panel/data/1panel/apps/minio/minio/，9000/9001）
+#
+# 两个容器都在 **1panel-network** 上，所以这里只加入同一个网络、按容器名连过去：
+# 不改它们的配置，也不占宿主机端口（PG/MinIO 的端口一个都不碰）。
+#
+# ## 两个刻意的决定
+#
+# 1. **项目名是 kylab-app，不是 kylab**。compose 按项目名管理容器，与存储层同名的话
+#    `docker compose up` 会把对方那份的容器当成"多余的"停掉。
+# 2. **后端以宿主机用户（uid 1000）跑，而不是镜像里的 10001**。镜像默认那个 uid
+#    需要 `chown 10001` 才能写 bind mount，而这台机器上 sudo 要另一个密码；
+#    换成 yumao 自己的 uid 后 `/data` 直接可写，数据文件在 NAS 上也是你熟悉的那个属主
+#    （备份、在文件管理器里看都方便）。**仍然是非 root**，镜像那条纪律没被破坏。
+#
+# ## 与开发环境共用同一套存储
+#
+# 用户的要求是"pg 和 minio 配置跟现在保持一致"，所以这一份连的就是开发时那套
+# （同一个库 kylab、同一个桶 kylab、同一对凭据）。**后果要清楚**：
+# 这台 NAS 上的实例与开发机上的实例看到的是**同一份数据**。
+# 两边都开着 `KYLAB_RUN_WORKER=true` 也不会重复处理任务（队列靠租约认领），
+# 但若你想让部署实例单独一份数据，改 `KYLAB_PG_DB` 与 `KYLAB_S3_BUCKET` 即可
+# （那两个库/桶要先建好）。
+name: kylab-app
+
+services:
+  backend:
+    build:
+      context: ../../src/backend
+    image: kylab-backend:0.2.0
+    container_name: kylab-app-backend
+    restart: unless-stopped
+    user: "1000:1001"
+    environment:
+      # 数据落在宿主机目录里：DuckDB 表格副本 + 日志 + 未配 S3 时的原件回退
+      KYLAB_DATA_DIR: /data
+      # 非 root 且 HOME 指向镜像里那个 10001 的家目录时，任何"往家目录写"都会失败；
+      # 指到我们自己的可写目录，省得以后为某个库的缓存目录再查一遍
+      HOME: /data
+      # 定时任务的 cron 按这个时区解释（容器默认 UTC，"每天 9 点"会变成北京时间 17 点）
+      TZ: ${TZ:-Asia/Shanghai}
+      # ---- 存储（与开发环境同一套，见文件头）----
+      KYLAB_DATABASE_URL: postgresql://kylab:${KYLAB_PG_PASSWORD}@kylab-postgres:5432/kylab
+      KYLAB_S3_ENDPOINT: http://kylab-minio:9000
+      KYLAB_S3_ACCESS_KEY: ${KYLAB_S3_ACCESS_KEY}
+      KYLAB_S3_SECRET_KEY: ${KYLAB_S3_SECRET_KEY}
+      KYLAB_S3_BUCKET: ${KYLAB_S3_BUCKET:-kylab}
+      KYLAB_S3_REGION: ${KYLAB_S3_REGION:-us-east-1}
+      # 容器内网互通走 http
+      KYLAB_S3_SECURE: "false"
+      # ---- 应用 ----
+      # 内嵌消费线程：**必须开着**，否则上传的文档只会排队
+      KYLAB_RUN_WORKER: "true"
+      # 界面走 nginx 同源反代，这里只是给"绕过反代直连后端"留的口子
+      KYLAB_CORS_ORIGINS: ${KYLAB_CORS_ORIGINS:-http://192.168.31.18:8081}
+      KYLAB_LOG_LEVEL: ${KYLAB_LOG_LEVEL:-INFO}
+      # 留空则由首次 setup 自动生成一条并落库（库里已经有就用库里的）
+      KYLAB_URL_SIGNING_SECRET: ${KYLAB_URL_SIGNING_SECRET:-}
+    volumes:
+      - /vol1/1000/docker/kylab/data:/data
+    networks:
+      - 1panel-network
+
+  frontend:
+    build:
+      context: ../../src/frontend
+    image: kylab-frontend:0.2.0
+    container_name: kylab-app-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        # 等后端健康再起 nginx：否则首屏先看到一个 502，用户以为部署失败
+        condition: service_healthy
+    ports:
+      # 8080/8000 在这台机器上都被别的应用占了（1panel、doc2md），所以用 8081
+      - "${KYLAB_HTTP_PORT:-8081}:80"
+    networks:
+      - 1panel-network
+
+networks:
+  1panel-network:
+    external: true
