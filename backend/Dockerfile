@@ -27,7 +27,10 @@ ENV UV_INDEX_URL=${UV_INDEX_URL}
 # **`--all-extras` 是必需的，不是可选的**：`app/core/storage.py` 无条件构造 DuckDB
 # 表格副本，少了 `tabular` 这个 extra，容器连 `import app.main` 都过不去（启动即崩）；
 # 解析层（pypdf/pymupdf/python-docx/openpyxl）是上传→入库的主链路，镜像里也必须有。
-COPY pyproject.toml uv.lock* ./
+# **README.md 也必须拷进来**：`pyproject.toml` 里写着 `readme = "README.md"`，
+# 而 hatchling 在"装项目自身"那一步要读它——没有它整步崩在
+# `OSError: Readme file does not exist: README.md`（2026-09-21 在 NAS 上首次实测到）。
+COPY pyproject.toml uv.lock* README.md ./
 RUN uv sync --no-install-project --no-dev --all-extras
 
 COPY app ./app
