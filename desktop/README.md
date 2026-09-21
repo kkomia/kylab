@@ -49,11 +49,28 @@ cargo run --release    # 快得多，推荐
 
 ```powershell
 cd desktop
-pnpm dlx @tauri-apps/cli@latest build      # 产物在 src-tauri/target/release/bundle/
+pnpm dlx @tauri-apps/cli@latest build      # 或者 npx @tauri-apps/cli@latest build
 ```
 
-Windows 上默认出 `.msi` / `.exe` 安装包，WebView2 用 `downloadBootstrapper`
-（**不额外增加安装包体积**：Win10 1803+ 与 Win11 随系统自带，只有很老的机器才需要联网装一次）。
+产物（v0.1.0 首次构建，2026-09-21）：
+
+| 文件 | 大小 | 给谁用 |
+| --- | --- | --- |
+| `src-tauri/target/release/kylab-desktop.exe` | 7.7 MB | **绿色版**：拷过去双击就能跑，不写注册表 |
+| `src-tauri/target/release/bundle/nsis/KYLAB_0.1.0_x64-setup.exe` | 2.1 MB | 双击安装（简体中文 / English，按系统语言自动选） |
+| `src-tauri/target/release/bundle/msi/KYLAB_0.1.0_x64_zh-CN.msi` | 3.2 MB | 给要批量部署 / 走组策略的场合 |
+
+三处刻意的设置：
+
+- **WebView2 用 `downloadBootstrapper`**（**不额外增加安装包体积**：Win10 1803+ 与
+  Win11 随系统自带，只有很老的机器才需要联网装一次）；
+- **安装包语言显式写了**（`wix.language: zh-CN`、`nsis.languages: [SimpChinese, English]`）：
+  不写的话 WiX 按构建机的 locale 出 en-US 的安装向导——产品是中文的，
+  安装向导却是一屏英文，那是最容易被拍下来的一处不一致；
+- **版本号只有一个来源**：`tauri.conf.json` 的 `version`（与 `Cargo.toml` 一致）。
+  它是**壳自己的版本流**（现在 0.1.0），与后端/前端的 `0.2.0` 不是一条线——
+  壳一改就是一次壳的发布，服务端升级不需要重新发壳（见本文开头的三条约定）。
+
 三平台各自的依赖与坑见调研文档 §3.2。
 
 ## 壳把什么放在哪儿
