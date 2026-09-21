@@ -427,7 +427,7 @@ class FakeChatModel:
             return self._script.pop(0)
         return LLMReply(text="")
 
-    def stream_events(self, messages):  # type: ignore[no-untyped-def]
+    def stream_events(self, messages, tools=None):  # type: ignore[no-untyped-def]
         if self.error:
             raise self.error
         for char in self.answer:

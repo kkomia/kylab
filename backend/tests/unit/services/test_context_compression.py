@@ -27,7 +27,7 @@ class _SummaryChat:
             raise self.error
         return self.summary
 
-    def stream_events(self, messages):  # type: ignore[no-untyped-def]
+    def stream_events(self, messages, tools=None):  # type: ignore[no-untyped-def]
         from app.services.llm import LLMDelta
 
         yield LLMDelta(text="答")

@@ -16,6 +16,9 @@
 2. **工具那几步不走流式**：它们产出的是"调哪个工具、参数是什么"这种结构化片段，
    流式拼装只会引入"半截 JSON"这一类错误。**最后那段正文仍然流式**——代价是收尾多一次
    请求，换来的是正文与思考照旧逐字出来，而这两块正是用户真正在看的东西。
+   **收尾那一次也带着工具表**（v0.34）：它只是想"再查一次"时给得出结构化调用，
+   而不是把调用标记写进正文（见 ``_answer``）。那里的碎片拼接由
+   ``llm.assemble_tool_calls`` 负责，参数照旧原样交给执行那一步去解析。
 3. **事件形状与旧链路一致**（StepEvent / SourcesEvent / ThinkingEvent / DeltaEvent /
    DoneEvent）：协议层与界面不用为这次换框架改动，出处（SourcesEvent）也照旧发——
    用了资料就该给出处，这一点不因框架变化而丢。**旧链路删除后，"一致"的对象没有了，
@@ -55,7 +58,15 @@ from app.services.agent import (
     StepEvent,
     ThinkingEvent,
 )
-from app.services.llm import ChatError, ChatMessage, LLMReply, ToolCall, ToolSpec
+from app.services.llm import (
+    ChatError,
+    ChatMessage,
+    LLMReply,
+    ToolCall,
+    ToolCallDelta,
+    ToolSpec,
+    assemble_tool_calls,
+)
 
 __all__ = ["DEFAULT_MAX_STEPS", "ToolLoop", "tool_label"]
 
@@ -220,6 +231,22 @@ class ToolOutcome:
         return text[:limit] + ("…" if len(text) > limit else "")
 
 
+@dataclass(frozen=True, slots=True)
+class _AnswerOutcome:
+    """收尾那一步（流式作答）的结果（见 ``ToolLoop._answer``）。
+
+    ``tool_calls`` 非空 = **模型在这一步又要求调工具**：那它就不是在作答，
+    由 ``run`` 当一次普通工具步骤接过去继续跑。正文与思考一起带出来是因为
+    下一步要把这条助手消息重新发出去——端点（DeepSeek 实测）要求带工具调用的
+    助手消息带着 ``reasoning_content``，而流式那一步的思考只有这里留了一份
+    （``ThinkingEvent`` 发出去就没了）。
+    """
+
+    text: str = ""
+    reasoning: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+
+
 #: 执行一个工具：``(工具名, 参数字典) -> ToolOutcome``。
 #: 由组合根绑定（见 ``api``/``core.services``），循环自己不认识 Services。
 ToolRunner = Callable[[str, dict[str, Any]], ToolOutcome]
@@ -294,71 +321,32 @@ class ToolLoop:
                 raise
             if not reply.wants_tools:
                 # 它决定直接答了。**这一步的正文不直接用**——正文那段要流式出来
-                # （见模块头第 2 条），所以再走一次流式调用
-                yield from self._answer(messages)
-                return
+                # （见模块头第 2 条），所以再走一次流式调用。
+                #
+                # **那一次也带着工具表**（v0.34）：走到这里只说明"这一次调用没给
+                # 结构化 tool_calls"，不代表它不想再查。不带工具表时它会把调用
+                # **写进正文**（实测 DeepSeek Flash），而那种标记我们既不执行、
+                # 又会原样糊在界面上。带着工具表，它想接着查就给得出结构化调用，
+                # 这里收到就按一次普通工具步骤继续跑，而不是当成回答。
+                outcome = yield from self._answer(messages, tools=self._tools)
+                if not outcome.tool_calls:
+                    return
+                yield from self._perform(
+                    messages,
+                    text=outcome.text,
+                    reasoning=outcome.reasoning,
+                    calls=outcome.tool_calls,
+                    stop=self._stop_reason(step, started_at),
+                )
+                continue
 
-            messages.append(
-                ChatMessage(
-                    role="assistant",
-                    content=reply.text,
-                    tool_calls=reply.tool_calls,
-                    # **思考要跟着这条消息回去**：端点（DeepSeek 实测）在思考模式下
-                    # 要求带工具调用的助手消息把 reasoning_content 传回来，
-                    # 缺这个字段的那一轮请求直接 400——那时工具都调完了，
-                    # 用户只看到一句失败（见 llm.ChatMessage.reasoning）
-                    reasoning=reply.reasoning,
-                )
+            yield from self._perform(
+                messages,
+                text=reply.text,
+                reasoning=reply.reasoning,
+                calls=reply.tool_calls,
+                stop=self._stop_reason(step, started_at),
             )
-            last = step == self._max_steps - 1
-            # 两道闸共用"这一批不执行"这条路，但**理由要分开告诉模型**：
-            # 它下一轮得知道是"步数没了"还是"时间没了"（两者的应对不一样）
-            stop: str | None = None
-            if last:
-                stop = "本轮工具步数已用完"
-            elif self._expired(started_at):
-                stop = "本轮时间已用尽"
-            calls = list(reply.tool_calls)
-            # 先把这一批的 `running` **全发出去**，再执行。
-            #
-            # 并发之后"一条 running 紧跟一条 done"不再成立（谁先跑完谁先回），
-            # 而界面把 `done` 合进"同名的第一条 running"（见前端 `mergeStep`）——
-            # 事件顺序乱了就会出现错位的步骤行。所以顺序在这里定死：
-            # **running 按调用顺序发全 → 执行 → done 也按调用顺序发**。
-            # 用户看到的是"这几件事同时在跑"，而不是几行闪来闪去的占位。
-            for call in calls:
-                # `tool` 是**原始工具名**（不是人话标签）：界面按它选图标、把同类调用并成
-                # 一组。放在这里而不是让界面猜 label——label 是给人看的，会被改写
-                yield StepEvent(
-                    phase="tool", label=tool_label(call.name), tool=call.name, status="running"
-                )
-            outcomes = self._execute_batch(calls, stop=stop)
-            merged = _merge_sources(outcomes)
-            if merged:
-                # **一批只发一条累计的出处**，而不是每条调用各发一条。
-                # 发多条时"最后发的那条"未必是最全的那条（并发下先跑完的可能先发），
-                # 界面只认最后一次，于是后发的那条会把先查到的资料盖掉——
-                # 正是账本当初要解决的问题（见 agent_tools.build_runner）。
-                yield SourcesEvent(sources=merged)
-            for call, outcome in zip(calls, outcomes, strict=True):
-                # 顺序必须与 `tool_calls` 一致：OpenAI 兼容端点要求每条调用都有结果，
-                # 而"结果与调用怎么配对"靠的是 tool_call_id，不是顺序——但保持同序
-                # 仍然是对端最容易处理的那种形状（也便于人读日志）。
-                messages.append(
-                    ChatMessage(role="tool", content=outcome.content, tool_call_id=call.id)
-                )
-                yield StepEvent(
-                    phase="tool",
-                    label=tool_label(call.name),
-                    tool=call.name,
-                    detail=outcome.step_detail(),
-                    added=outcome.added,
-                    # 入参与原文：界面默认只看 `detail` 那一行结论，
-                    # 点开才看这两个（v0.25，照 Kimi 的"可以看每个工具调用的内容"）
-                    args=_clip(call.arguments, MAX_STEP_PREVIEW_CHARS),
-                    result=_clip(outcome.content, MAX_STEP_PREVIEW_CHARS),
-                    artifacts=tuple(outcome.artifacts),
-                )
 
         # 步数用完还没收口：**如实说**，让模型基于已有信息作答，
         # 而不是把"没跑完"包装成"跑完了"。
@@ -441,23 +429,133 @@ class ToolLoop:
             # `map` **保序返回**：谁先跑完不影响结果顺序，也就影响不到事件与消息的顺序
             return list(pool.map(lambda call: self._execute(call, stop=None), calls))
 
-    def _answer(self, messages: list[ChatMessage]) -> Iterator[object]:
-        """流式产出正文与思考（与旧链路的收尾完全一致）。
+    def _answer(
+        self, messages: list[ChatMessage], *, tools: Sequence[ToolSpec] | None = None
+    ) -> Iterator[object]:
+        """流式产出正文与思考；**返回值**是这一步的结果（见 `_AnswerOutcome`）。
+
+        ``tools`` 非空时这次请求带着工具表（见 ``run`` 里那段说明）：模型想接着查
+        就给得出结构化调用，而不是把标记写进正文。拼装碎片用 ``assemble_tool_calls``，
+        与执行之间没有别的加工——参数照样原样交给 ``_parse_arguments``。
 
         **"组织回答"这一步必须发出来**：它是真实发生的动作；少了它，一轮
         "没调工具、直接回答"的消息在界面上会变成**零步骤**——而界面在零步骤时会
         退回一条兜底（历史上那套"检索 + 生成"两步），于是凭空画出一条"检索知识库"，
         用户看到的现象就是"我明明没开知识库，它为什么去检索了"（实测报过来的就是这个）。
+
+        **只想调工具的那一轮不发它、也不发 `DoneEvent`**：那一步不是回答（正文是空的），
+        发了会让界面上多一条"组织回答"、而回答本身还没有。它在被 ``run`` 当工具步骤
+        接过去继续跑（见 ``run``）。所以这一步的事件是**攒够正文才发**的。
         """
-        yield StepEvent(phase="answer", label="组织回答", status="running")
         parts: list[str] = []
-        for delta in self._client_factory().stream_events(messages):
+        reasoning_parts: list[str] = []
+        fragments: list[ToolCallDelta] = []
+        started = False
+        for delta in self._client_factory().stream_events(messages, tools):
+            if delta.tool_calls:
+                fragments.extend(delta.tool_calls)
+            if delta.reasoning:
+                reasoning_parts.append(delta.reasoning)
+            if delta.text:
+                parts.append(delta.text)
+            if not started and (delta.text or delta.reasoning):
+                # 第一个可见增量到了才开始报"组织回答"：只是工具调用的那一轮
+                # 从头到尾没有正文，就不该在过程面板上留下一步回答
+                yield StepEvent(phase="answer", label="组织回答", status="running")
+                started = True
             if delta.reasoning:
                 yield ThinkingEvent(text=delta.reasoning)
             if delta.text:
-                parts.append(delta.text)
                 yield DeltaEvent(text=delta.text)
-        yield DoneEvent(answer="".join(parts))
+
+        calls = assemble_tool_calls(fragments) if fragments else ()
+        if not calls:
+            yield DoneEvent(answer="".join(parts))
+        return _AnswerOutcome(
+            text="".join(parts),
+            reasoning="".join(reasoning_parts),
+            tool_calls=calls,
+        )
+
+    def _stop_reason(self, step: int, started_at: float) -> str | None:
+        """这一步的调用该不该真的执行（见 ``_execute`` 的 ``stop``）。
+
+        两道闸共用"这一批不执行"这条路，但**理由要分开告诉模型**：
+        它下一轮得知道是"步数没了"还是"时间没了"（两者的应对不一样）。
+        """
+        if step == self._max_steps - 1:
+            return "本轮工具步数已用完"
+        if self._expired(started_at):
+            return "本轮时间已用尽"
+        return None
+
+    def _perform(
+        self,
+        messages: list[ChatMessage],
+        *,
+        text: str,
+        reasoning: str,
+        calls: Sequence[ToolCall],
+        stop: str | None,
+    ) -> Iterator[object]:
+        """把一批调用跑掉：助手消息入队 → 执行 → 结果按序回灌。
+
+        **两种来路共用这一份**（v0.34）：选工具那一步给的调用，与收尾那一步
+        流式拼出来的调用。它们的区别只在"怎么拿到调用"，之后的账（消息顺序、
+        出处合并、事件顺序）必须一模一样——各写一份必然会漂。
+        """
+        messages.append(
+            ChatMessage(
+                role="assistant",
+                content=text,
+                tool_calls=tuple(calls),
+                # **思考要跟着这条消息回去**：端点（DeepSeek 实测）在思考模式下
+                # 要求带工具调用的助手消息把 reasoning_content 传回来，
+                # 缺这个字段的那一轮请求直接 400——那时工具都调完了，
+                # 用户只看到一句失败（见 llm.ChatMessage.reasoning）
+                reasoning=reasoning,
+            )
+        )
+        # 先把这一批的 `running` **全发出去**，再执行。
+        #
+        # 并发之后"一条 running 紧跟一条 done"不再成立（谁先跑完谁先回），
+        # 而界面把 `done` 合进"同名的第一条 running"（见前端 `mergeStep`）——
+        # 事件顺序乱了就会出现错位的步骤行。所以顺序在这里定死：
+        # **running 按调用顺序发全 → 执行 → done 也按调用顺序发**。
+        # 用户看到的是"这几件事同时在跑"，而不是几行闪来闪去的占位。
+        for call in calls:
+            # `tool` 是**原始工具名**（不是人话标签）：界面按它选图标、把同类调用并成
+            # 一组。放在这里而不是让界面猜 label——label 是给人看的，会被改写
+            yield StepEvent(
+                phase="tool", label=tool_label(call.name), tool=call.name, status="running"
+            )
+        outcomes = self._execute_batch(calls, stop=stop)
+        merged = _merge_sources(outcomes)
+        if merged:
+            # **一批只发一条累计的出处**，而不是每条调用各发一条。
+            # 发多条时"最后发的那条"未必是最全的那条（并发下先跑完的可能先发），
+            # 界面只认最后一次，于是后发的那条会把先查到的资料盖掉——
+            # 正是账本当初要解决的问题（见 agent_tools.build_runner）。
+            yield SourcesEvent(sources=merged)
+        for call, outcome in zip(calls, outcomes, strict=True):
+            # 顺序必须与 `tool_calls` 一致：OpenAI 兼容端点要求每条调用都有结果，
+            # 而"结果与调用怎么配对"靠的是 tool_call_id，不是顺序——但保持同序
+            # 仍然是对端最容易处理的那种形状（也便于人读日志）。
+            messages.append(
+                ChatMessage(role="tool", content=outcome.content, tool_call_id=call.id)
+            )
+            yield StepEvent(
+                phase="tool",
+                label=tool_label(call.name),
+                tool=call.name,
+                detail=outcome.step_detail(),
+                added=outcome.added,
+                # 入参与原文：界面默认只看 `detail` 那一行结论，
+                # 点开才看这两个（v0.25，照 Kimi 的"可以看每个工具调用的内容"）
+                args=_clip(call.arguments, MAX_STEP_PREVIEW_CHARS),
+                result=_clip(outcome.content, MAX_STEP_PREVIEW_CHARS),
+                artifacts=tuple(outcome.artifacts),
+            )
 
 
 def _merge_sources(outcomes: Sequence[ToolOutcome]) -> list[SourceRef]:

@@ -826,7 +826,7 @@ def test_the_whole_tool_loop_keeps_the_users_thinking_setting(
             used.append(("挑工具", self._config.enable_thinking))
             return LLMReply(text="")  # 不调工具：紧接着就去作答
 
-        def stream_events(self, messages):  # type: ignore[no-untyped-def]
+        def stream_events(self, messages, tools=None):  # type: ignore[no-untyped-def]
             used.append(("作答", self._config.enable_thinking))
             yield LLMDelta(text="答")
 

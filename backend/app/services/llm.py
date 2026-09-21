@@ -25,7 +25,15 @@ from app.core.exceptions import UpstreamError
 from app.core.http import shared_client
 from app.services.thinking import DEFAULT_EFFORT, build_thinking_payload, echoes_reasoning
 
-__all__ = ["ChatError", "ChatMessage", "LLMConfig", "LLMDelta", "OpenAICompatChat"]
+__all__ = [
+    "ChatError",
+    "ChatMessage",
+    "LLMConfig",
+    "LLMDelta",
+    "OpenAICompatChat",
+    "ToolCallDelta",
+    "assemble_tool_calls",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +65,21 @@ class ToolCall:
 
     id: str
     name: str
+    arguments: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCallDelta:
+    """流式响应里一次工具调用的**碎片**（v0.34）。
+
+    同一个 ``index`` 的若干块按到达顺序拼起来才是完整调用：``id`` 与 ``name``
+    通常只在第一块里，``arguments`` 是**逐字符切开**的 JSON（一个参数值可能横跨几块）。
+    所以单块不能解析，完整调用由 :func:`assemble_tool_calls` 在流结束后拼。
+    """
+
+    index: int
+    id: str = ""
+    name: str = ""
     arguments: str = ""
 
 
@@ -156,11 +179,13 @@ class LLMDelta:
     **思考与正文分开**：推理模型把思考写在 ``reasoning_content`` 里，它与 ``content``
     是同一条流里的两个字段，可能交替出现。界面要把它们分成两个区域显示
     （思考是过程、正文是结果），所以从这一层就分开，而不是在上层再拆字符串。
-    两者都为空（例如只带 ``finish_reason`` 的收尾块）时，这一块直接跳过。
+    三者都为空（例如只带 ``finish_reason`` 的收尾块）时，这一块直接跳过。
     """
 
     text: str = ""
     reasoning: str = ""
+    tool_calls: tuple[ToolCallDelta, ...] = ()
+    """这一块里的工具调用碎片（见 ``ToolCallDelta``）；空元组 = 这一块不含工具调用。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,15 +288,25 @@ class OpenAICompatChat:
             if delta.text:
                 yield delta.text
 
-    def stream_events(self, messages: Sequence[ChatMessage]) -> Iterator[LLMDelta]:
+    def stream_events(
+        self, messages: Sequence[ChatMessage], tools: Sequence[ToolSpec] | None = None
+    ) -> Iterator[LLMDelta]:
         """流式产出增量，**正文与思考分开**（推理模型的 ``reasoning_content`` 单独成块）。
+
+        **可以带工具表**（v0.34）：收尾那次作答也把工具发出去——走到那里不等于
+        "模型已经不想用工具了"，而不带工具表时它会**把调用写进正文**
+        （实测 DeepSeek Flash：同一个请求带 tools 回结构化 ``tool_calls``，
+        去掉 tools 就把 ``<｜｜DSML｜｜ invoke …>`` 写进 content，见
+        ``tool_loop._answer``）。带工具时这一路只负责**原样转出碎片**
+        （``LLMDelta.tool_calls``），拼装与执行在工具循环那边。
 
         **一个字正文都没吐出来就报错**，不能静默收尾：静默的后果是上层存下一条空回答，
         用户看到"只有问题、没有回答"，却拿不到任何可处置的线索（实测过：推理模型的
         思考把预算吃光时就是这个现象，而且时好时坏）。非流式那条路一直有这道判断——
         两条路必须一个口径。
 
-        注意判断只看正文：思考再多也不算"有回答"。
+        判断的口径：**正文与工具调用都算"产出了"**——只想调工具的那一轮正文是空的，
+        那不是空回答；只有思考不算。
         """
         produced = False
         finish_reason = ""
@@ -281,7 +316,7 @@ class OpenAICompatChat:
                 "POST",
                 f"{self.config.base_url.rstrip('/')}/chat/completions",
                 headers=self._headers(),
-                json={**self._payload(messages), "stream": True},
+                json={**self._payload(messages, tools), "stream": True},
                 timeout=self._timeout,
             ) as response,
         ):
@@ -292,13 +327,16 @@ class OpenAICompatChat:
                 chunk = _chunk_of(line)
                 if chunk is None:
                     continue
-                text, reasoning, reason = chunk
-                if reason:
-                    finish_reason = reason
-                if text:
+                if chunk.finish_reason:
+                    finish_reason = chunk.finish_reason
+                if chunk.text or chunk.tool_calls:
                     produced = True
-                if text or reasoning:
-                    yield LLMDelta(text=text, reasoning=reasoning)
+                if chunk.text or chunk.reasoning or chunk.tool_calls:
+                    yield LLMDelta(
+                        text=chunk.text,
+                        reasoning=chunk.reasoning,
+                        tool_calls=chunk.tool_calls,
+                    )
         if not produced:
             raise ChatError(_empty_stream_hint(finish_reason))
 
@@ -495,19 +533,14 @@ def _reply_of(body: dict) -> LLMReply:
         if not isinstance(raw, dict):
             continue
         function = raw.get("function") or {}
-        name = str(function.get("name") or "").strip()
-        if not name:
-            # 没名字的调用无法执行，丢掉比报错好：模型偶尔会吐一个空壳，
-            # 而它下一轮通常还会正常再调一次
-            continue
-        calls.append(
-            ToolCall(
-                # id 可能缺失（少数实现不给）：自己编一个稳定的，好让工具结果能配对
-                id=str(raw.get("id") or f"call_{index}"),
-                name=name,
-                arguments=str(function.get("arguments") or ""),
-            )
+        call = _call_or_none(
+            index=index,
+            ident=str(raw.get("id") or ""),
+            name=str(function.get("name") or ""),
+            arguments=str(function.get("arguments") or ""),
         )
+        if call is not None:
+            calls.append(call)
     return LLMReply(
         text=_content_of_message(message),
         tool_calls=tuple(calls),
@@ -523,13 +556,26 @@ def _content_of_message(message: dict) -> str:
     return content if isinstance(content, str) else ""
 
 
-def _chunk_of(line: str) -> tuple[str, str, str] | None:
-    """从一行 SSE 里取出（正文增量，思考增量，结束原因）。
+@dataclass(frozen=True, slots=True)
+class _Chunk:
+    """SSE 一行的解析结果（见 ``_chunk_of``）。"""
+
+    text: str = ""
+    reasoning: str = ""
+    finish_reason: str = ""
+    tool_calls: tuple[ToolCallDelta, ...] = ()
+
+
+def _chunk_of(line: str) -> _Chunk | None:
+    """从一行 SSE 里取出（正文增量，思考增量，结束原因，工具调用碎片）。
 
     非数据行与 ``[DONE]`` 返回 ``None``。**结束原因也要取**：它是判断
     "为什么一个字都没出来"的唯一依据（``length`` = 被长度上限截断）。
     **思考增量单独取**：推理模型把它写在 ``delta.reasoning_content``，
     界面要把它与正文分两个区域显示（见 ``LLMDelta``）。
+
+    工具调用碎片（``delta.tool_calls``）**原样转出、不在这里拼**：每块只带一部分
+    （见 ``ToolCallDelta``），拼装要有"整条流"的视野，放在 ``assemble_tool_calls``。
     """
     if not line or not line.startswith("data:"):
         return None
@@ -540,11 +586,91 @@ def _chunk_of(line: str) -> tuple[str, str, str] | None:
         body = json.loads(payload)
         choice = body["choices"][0]
         delta = choice.get("delta", {}) or {}
-        text = delta.get("content") or ""
-        reasoning = delta.get("reasoning_content") or ""
-        return str(text), str(reasoning), str(choice.get("finish_reason") or "")
+        return _Chunk(
+            text=str(delta.get("content") or ""),
+            reasoning=str(delta.get("reasoning_content") or ""),
+            finish_reason=str(choice.get("finish_reason") or ""),
+            tool_calls=_call_deltas(delta.get("tool_calls")),
+        )
     except (KeyError, IndexError, TypeError, ValueError):
         return None
+
+
+def _call_deltas(raw_calls: object) -> tuple[ToolCallDelta, ...]:
+    """取这一块里的工具调用碎片。
+
+    **单块坏掉不能丢整行**：正文与碎片常常同在一块里，为一段拼不起来的碎片
+    把正文也丢掉，等于让回答凭空少一句。所以这里逐块容错，坏的那块跳过。
+    """
+    if not isinstance(raw_calls, list):
+        return ()
+    fragments: list[ToolCallDelta] = []
+    for raw in raw_calls:
+        if not isinstance(raw, dict):
+            continue
+        function = raw.get("function") or {}
+        try:
+            index = int(raw.get("index") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        fragments.append(
+            ToolCallDelta(
+                index=index,
+                id=str(raw.get("id") or ""),
+                name=str(function.get("name") or ""),
+                arguments=str(function.get("arguments") or ""),
+            )
+        )
+    return tuple(fragments)
+
+
+def assemble_tool_calls(fragments: Sequence[ToolCallDelta]) -> tuple[ToolCall, ...]:
+    """把流式碎片按 ``index`` 拼成完整调用（见 ``ToolCallDelta``）。
+
+    **容错与非流式那条路同一套**（``_reply_of``）：没名字的丢掉——无法执行，
+    而模型下一轮通常还会正常再调一次；缺 id 的自己编一个稳定的，好让工具结果配对。
+
+    参数是碎片拼起来的，这里**不判断 JSON 合不合法**：那是执行那一步的事，
+    拼坏了会作为"工具参数不是合法 JSON"回给模型让它自己改
+    （见 ``tool_loop._parse_arguments``）。
+    """
+    order: list[int] = []
+    grouped: dict[int, list[ToolCallDelta]] = {}
+    for fragment in fragments:
+        if fragment.index not in grouped:
+            grouped[fragment.index] = []
+            order.append(fragment.index)
+        grouped[fragment.index].append(fragment)
+
+    calls: list[ToolCall] = []
+    for index in order:
+        parts = grouped[index]
+        call = _call_or_none(
+            index=index,
+            ident=next((item.id for item in parts if item.id), ""),
+            name=next((item.name for item in parts if item.name.strip()), ""),
+            arguments="".join(item.arguments for item in parts),
+        )
+        if call is not None:
+            calls.append(call)
+    return tuple(calls)
+
+
+def _call_or_none(*, index: int, ident: str, name: str, arguments: str) -> ToolCall | None:
+    """拼一次调用，**两条路（流式拼接 / 非流式直读）共用这一份容错**。
+
+    两处各写一份必然相漂，而它们该给出的是同一个判断：没名字的调用无法执行，
+    丢掉比报错好（模型偶尔会吐一个空壳，而它下一轮通常还会正常再调一次）；
+    id 可能缺失（少数实现不给），自己编一个稳定的，好让工具结果能配对。
+    """
+    cleaned = name.strip()
+    if not cleaned:
+        return None
+    return ToolCall(
+        id=ident or f"call_{index}",
+        name=cleaned,
+        arguments=arguments,
+    )
 
 
 def _error_hint(response: httpx.Response) -> str:

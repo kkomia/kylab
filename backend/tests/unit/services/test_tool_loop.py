@@ -21,7 +21,7 @@ import pytest
 from app.services.agent import DeltaEvent, DoneEvent, SourcesEvent, StepEvent
 from app.services.agent_tools import _scope_search
 from app.services.chat import SourceRef
-from app.services.llm import LLMDelta, LLMReply, ToolCall, ToolSpec
+from app.services.llm import LLMDelta, LLMReply, ToolCall, ToolCallDelta, ToolSpec
 from app.services.tool_loop import ToolLoop, ToolOutcome, _parse_arguments, _truncate
 
 SEARCH = ToolSpec(name="search", description="查", parameters={"type": "object"})
@@ -38,13 +38,26 @@ def _hit(index: int = 1) -> SourceRef:
 
 
 class _FakeClient:
-    """按剧本走：每次 ``complete_with_tools`` 取一条预置回复。"""
+    """按剧本走：每次 ``complete_with_tools`` 取一条预置回复。
 
-    def __init__(self, replies: list[LLMReply], answer: str = "答案") -> None:
+    ``stream_scripts`` 给**收尾那一步**（流式）排剧本：每一条是那次流要吐的
+    工具调用碎片列表（空 = 正常作答，吐 ``answer``）。按调用顺序取，用完就回落到
+    正常作答——收尾那一步现在可能被叫两次（第一次吐出调用、继续跑之后再答一次）。
+    """
+
+    def __init__(
+        self,
+        replies: list[LLMReply],
+        answer: str = "答案",
+        *,
+        stream_scripts: list[list[ToolCallDelta]] | None = None,
+    ) -> None:
         self._replies = list(replies)
         self._answer = answer
+        self._stream_scripts = [list(item) for item in (stream_scripts or [])]
         self.calls: list[list] = []  # type: ignore[type-arg]
         self.answer_messages: list | None = None
+        self.answer_tools: list | None = None
 
     def complete_with_tools(self, messages, tools):  # type: ignore[no-untyped-def]
         self.calls.append(list(messages))
@@ -52,13 +65,24 @@ class _FakeClient:
             raise AssertionError("剧本里的回复用完了")
         return self._replies.pop(0)
 
-    def stream_events(self, messages):  # type: ignore[no-untyped-def]
+    def stream_events(self, messages, tools=None):  # type: ignore[no-untyped-def]
         self.answer_messages = list(messages)
-        yield LLMDelta(text=self._answer)
+        self.answer_tools = list(tools or [])
+        fragments = self._stream_scripts.pop(0) if self._stream_scripts else []
+        for fragment in fragments:
+            yield LLMDelta(tool_calls=(fragment,))
+        if not fragments:
+            yield LLMDelta(text=self._answer)
 
 
-def _loop(replies: list[LLMReply], runner, **kwargs) -> tuple[ToolLoop, _FakeClient]:  # type: ignore[no-untyped-def]
-    client = _FakeClient(replies)
+def _loop(
+    replies: list[LLMReply],
+    runner,
+    *,
+    stream_scripts: list[list[ToolCallDelta]] | None = None,
+    **kwargs,  # type: ignore[no-untyped-def]
+) -> tuple[ToolLoop, _FakeClient]:
+    client = _FakeClient(replies, stream_scripts=stream_scripts)
     return (
         ToolLoop(client_factory=lambda: client, tools=[SEARCH], runner=runner, **kwargs),
         client,
@@ -84,6 +108,61 @@ def test_model_can_answer_without_any_tool() -> None:
     assert [e.text for e in events if isinstance(e, DeltaEvent)] == ["答案"]
     assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
     assert len(client.calls) == 1
+
+
+def test_the_answering_step_carries_the_tool_table() -> None:
+    """**收尾那一步也把工具表发出去**（v0.34）。
+
+    原先不带，理由是"走到这里模型已经决定作答了"。那个假设对**会把调用写进正文**的
+    模型不成立：实测 DeepSeek Flash 在同一个请求上，带 tools 回结构化 ``tool_calls``、
+    去掉 tools 就把 ``<｜｜DSML｜｜ invoke …>`` 写进 content——我们既不执行它，
+    还把它原样糊在界面上（用户报的就是这个）。
+    """
+    loop, client = _loop([LLMReply()], runner=lambda name, args: ToolOutcome("x"))
+
+    list(loop.run(messages=[]))
+
+    assert [spec.name for spec in client.answer_tools or []] == ["search"]
+
+
+def test_tool_calls_streamed_while_answering_are_executed_not_shown() -> None:
+    """收尾那一步流式拼出来的调用**照常执行**，而不是当成回答显示出来。
+
+    这是修复的另一半：带着工具表之后，模型想接着查就给得出结构化调用
+    （碎片横跨几块，``id`` 只在第一块里）。它该被当成一次普通工具步骤接过去，
+    然后回到循环里继续——而不是把标记当作答案发出去。
+    """
+    calls: list[tuple[str, dict]] = []  # type: ignore[type-arg]
+
+    def runner(name: str, args: dict) -> ToolOutcome:  # type: ignore[type-arg]
+        calls.append((name, args))
+        return ToolOutcome(content="[1] 结果")
+
+    loop, client = _loop(
+        # 第一条：选工具那一步说"我不调工具"（这就是走到收尾的原因）
+        # 第二条：收尾那次工具跑完之后再问一次 → 这回它答了
+        [LLMReply(), LLMReply()],
+        runner=runner,
+        stream_scripts=[
+            [
+                ToolCallDelta(index=0, id="c1", name="search", arguments='{"query":'),
+                ToolCallDelta(index=0, arguments='"眼轴"}'),
+            ]
+        ],
+    )
+
+    events = list(loop.run(messages=[]))
+
+    # 执行了，参数是碎片拼出来的
+    assert calls == [("search", {"query": "眼轴"})]
+    # 调用与结果配对回灌（助手那条带着 tool_calls，结果用 tool_call_id 指回去）
+    assistant = [m for m in client.calls[-1] if m.role == "assistant"]
+    assert assistant and assistant[0].tool_calls[0].id == "c1"
+    assert [m.tool_call_id for m in client.calls[-1] if m.role == "tool"] == ["c1"]
+    # 界面：工具步骤 + 最后那一次作答；**那段标记没有作为正文出现过**
+    assert [s.label for s in _steps(events)] == ["检索知识库", "检索知识库", "组织回答"]
+    assert [e.text for e in events if isinstance(e, DeltaEvent)] == ["答案"]
+    assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
 
 
 def test_tool_call_runs_and_its_result_goes_back_to_the_model() -> None:

@@ -18,7 +18,9 @@ from app.services.llm import (
     LLMConfig,
     OpenAICompatChat,
     ToolCall,
+    ToolCallDelta,
     ToolSpec,
+    assemble_tool_calls,
 )
 
 _MESSAGES = [ChatMessage(role="user", content="你好")]
@@ -180,6 +182,94 @@ def test_stream_passes_through_content_deltas() -> None:
     client = _stream_client([_delta("你"), _delta("好"), _delta("", "stop")])
     chunks = list(OpenAICompatChat(_config(), client=client).stream(_MESSAGES))
     assert chunks == ["你", "好"]
+
+
+def test_stream_events_carry_tool_call_fragments() -> None:
+    """流式里的工具调用**原样转出**，而且不算"空回答"（v0.34）。
+
+    收尾那一步现在也带着工具表：模型除了作答，还可能在这一步要求继续调工具。
+    那种响应的正文是空的——按老口径（只看正文）会被判成"模型没有返回任何正文"
+    直接报错，而它其实满载信息。
+    """
+    chunk = {
+        "choices": [
+            {
+                "delta": {
+                    "tool_calls": [
+                        {"index": 0, "id": "c1", "function": {"name": "search", "arguments": "{}"}}
+                    ]
+                },
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    client = _stream_client([chunk])
+    deltas = list(OpenAICompatChat(_config(), client=client).stream_events(_MESSAGES))
+
+    assert len(deltas) == 1
+    assert deltas[0].tool_calls[0].name == "search"
+    assert deltas[0].text == ""
+
+
+def test_a_broken_fragment_does_not_take_the_text_with_it() -> None:
+    """同一块里碎片坏掉时，**正文不能跟着丢**——它们常常同在一块里。"""
+    chunk = {
+        "choices": [
+            {
+                "delta": {"content": "我先看看。", "tool_calls": ["坏掉的形状"]},
+                "finish_reason": None,
+            }
+        ]
+    }
+    client = _stream_client([chunk])
+    deltas = list(OpenAICompatChat(_config(), client=client).stream_events(_MESSAGES))
+
+    assert [item.text for item in deltas] == ["我先看看。"]
+    assert deltas[0].tool_calls == ()
+
+
+def test_stream_asks_for_the_tool_table_only_when_given() -> None:
+    """流式请求**给了工具表才发 tools**：没给时请求体与以前逐字节一样。"""
+    seen: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        nl = chr(10)
+        return httpx.Response(
+            200, content=f"data: {json.dumps(_delta('好'))}{nl}{nl}data: [DONE]{nl}{nl}".encode()
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    chat = OpenAICompatChat(_config(), client=client)
+    chat_spec = ToolSpec(name="search", description="查", parameters={"type": "object"})
+
+    list(chat.stream_events(_MESSAGES))
+    list(chat.stream_events(_MESSAGES, [chat_spec]))
+
+    assert "tools" not in seen[0]
+    assert seen[1]["tools"][0]["function"]["name"] == "search"
+    assert seen[1]["tool_choice"] == "auto"
+
+
+def test_fragments_assemble_across_chunks() -> None:
+    """碎片按 ``index`` 拼：``arguments`` 是**逐字符切开**的 JSON，``id`` 只在第一块。
+
+    容错与非流式那条路一致：没名字的丢掉（没法执行，模型下一轮通常还会再调一次），
+    缺 id 的自己编一个稳定的（好让工具结果配对）。
+    """
+    fragments = [
+        ToolCallDelta(index=0, id="c1", name="search", arguments='{"que'),
+        ToolCallDelta(index=0, arguments='ry":"眼轴"}'),
+        ToolCallDelta(index=1, name="web_fetch", arguments="{}"),  # 没 id
+        ToolCallDelta(index=2, id="c3", arguments="{}"),  # 没名字：丢掉
+    ]
+
+    calls = assemble_tool_calls(fragments)
+
+    assert [(c.id, c.name, c.arguments) for c in calls] == [
+        ("c1", "search", '{"query":"眼轴"}'),
+        ("call_1", "web_fetch", "{}"),
+    ]
 
 
 def test_stream_raises_when_not_a_single_character_came_back() -> None:
