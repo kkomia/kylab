@@ -52,6 +52,13 @@ RUN useradd --create-home --uid 10001 kylab
 WORKDIR /app
 COPY --from=builder --chown=kylab:kylab /app /app
 
+# **代码在镜像里必须对任何 uid 可读**（2026-09-21 NAS 上实测踩到）：
+# COPY 会把源文件的 mode 原样带进来，而某些文件系统（这台 NAS 的 /vol1 就是）
+# 把文件报成 000——构建阶段以 root 跑所以看不出来，一旦运行期换了 uid
+# （`user:` 覆盖成宿主用户），读源码就是 `PermissionError: [Errno 13]`。
+# 这条与"以哪个 uid 运行"解耦：镜像内部的可读性不该依赖源文件系统。
+RUN chmod -R a+rX /app
+
 # 数据目录（SQLite + 向量分区 + 对象存储）挂在这里，见 compose 的卷
 RUN mkdir -p /data && chown kylab:kylab /data
 VOLUME ["/data"]
