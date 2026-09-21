@@ -137,11 +137,22 @@ function select(workspace: Workspace): void {
   }
 }
 
-/** 建完：选中它，并把 `?new=1` 从地址里摘掉（否则刷新会又弹一次）。 */
+/**
+ * 建完：选中它、把 `?new=1` 从地址里摘掉（否则返回时会又弹一次），
+ * **然后直接在里面开一个会话进去**（v0.41）。
+ *
+ * 为什么要开:建一个工作区的目的就是"在这儿干活"，而空的右栏还不是干活的地方——
+ * 用户接下来要做的第一件事必然是"新建会话"。让他少点一次，也少一次"我刚建的东西
+ * 到底成没成"的犹疑（点进去看到的对话页本身就是凭据）。
+ *
+ * 先 `replace` 再进对话页：顺序反了的话历史里会留下一条带 `?new=1` 的工作区记录，
+ * 从对话页返回就又把弹窗弹出来。
+ */
 async function onCreated(workspace: Workspace): Promise<void> {
   select(workspace)
-  notifySuccess('工作区已创建')
   if (route.query.new === '1') await router.replace({ path: '/workspaces' })
+  notifySuccess('工作区已创建')
+  await newConversation()
 }
 
 /**
@@ -302,11 +313,7 @@ async function newConversation(): Promise<void> {
       </section>
     </div>
 
-    <WorkspaceCreateDialog
-      v-model:open="creating"
-      :knowledge-bases="knowledgeBases.items"
-      @created="onCreated"
-    />
+    <WorkspaceCreateDialog v-model:open="creating" @created="onCreated" />
 
     <!-- 编辑表单里的「浏览…」用它；新建弹窗有自己的那一个 -->
     <DirectoryPickerDialog

@@ -52,13 +52,13 @@ cd desktop
 pnpm dlx @tauri-apps/cli@latest build      # 或者 npx @tauri-apps/cli@latest build
 ```
 
-产物（v0.1.0 首次构建，2026-09-21）：
+产物（v0.1.0；下表是 v0.41 换图标那次重建的数字）：
 
 | 文件 | 大小 | 给谁用 |
 | --- | --- | --- |
 | `src-tauri/target/release/kylab-desktop.exe` | 7.7 MB | **绿色版**：拷过去双击就能跑，不写注册表 |
-| `src-tauri/target/release/bundle/nsis/KYLAB_0.1.0_x64-setup.exe` | 2.1 MB | 双击安装（简体中文 / English，按系统语言自动选） |
-| `src-tauri/target/release/bundle/msi/KYLAB_0.1.0_x64_zh-CN.msi` | 3.2 MB | 给要批量部署 / 走组策略的场合 |
+| `src-tauri/target/release/bundle/nsis/KYLAB_0.1.0_x64-setup.exe` | 2.2 MB | 双击安装（简体中文 / English，按系统语言自动选） |
+| `src-tauri/target/release/bundle/msi/KYLAB_0.1.0_x64_zh-CN.msi` | 3.3 MB | 给要批量部署 / 走组策略的场合 |
 
 三处刻意的设置：
 
@@ -72,6 +72,34 @@ pnpm dlx @tauri-apps/cli@latest build      # 或者 npx @tauri-apps/cli@latest b
   壳一改就是一次壳的发布，服务端升级不需要重新发壳（见本文开头的三条约定）。
 
 三平台各自的依赖与坑见调研文档 §3.2。
+
+### 图标怎么来的（改图标看这一节）
+
+图标**不是**用 `tauri icon` 从一张源图缩出来的，而是 `scripts/make-icons.py` **逐尺寸画**的
+（用后端 venv 里的 Pillow）：
+
+```powershell
+backend/.venv/Scripts/python.exe desktop/scripts/make-icons.py
+```
+
+三个原因，每个都对应一处曾经的毛病：
+
+1. **细笔画在小尺寸会糊成一团**。品牌标的外圆是 5.5/299、环是 2.2/299——等比缩到 32px，
+   外圆只剩 0.6px。网页那边早就有对策（`IconLogo.vue` 给每根线一个**渲染像素下限**：
+   外圆与小圆 1.15px、环 0.8px），图标这边照搬同一条规则，所以**每个尺寸各画一张**，
+   不是从一张大图缩下来的。
+2. **画布要按真实墨迹居中**。标是横宽形（环的尖端伸出 SVG 的 `viewBox` 之外），
+   照 `viewBox` 摆会偏右——旧那版 512 图里左边留白 104px、右边只有 30px。
+3. **`bundle.icon` 的第一项决定托盘与任务栏用哪张**（`App::default_window_icon()` 按这个
+   列表取）。原先第一项是 32x32.png，系统缩放 125%/150% 时 Windows 要 40/48px，
+   于是把 32px 放大——这就是"图标糊"的直接原因。现在列表以大图打头
+   （`128x128@2x.png` = 256、`icon.png` = 1024），并且产出一张**多帧 .ico**（16→256，
+   帧用 BMP 存而不是 PNG：ICO 里的 PNG 帧官方只保证 256 那一档，小尺寸走老式位图最稳），
+   Windows 按 DPI 取最合适的一帧。
+
+改完要**重新构建**才会生效（图标是编译期嵌进 exe 的）：`npx @tauri-apps/cli@latest build`。
+
+外观与产品同一份几何（`src/logo.svg` / `IconLogo.vue` 的 mark 档），**只修清晰度与居中**。
 
 ## 壳把什么放在哪儿
 
@@ -94,13 +122,16 @@ desktop/
 │   ├── shell.css            # 取值抄自《前端设计规范》的令牌，深浅色跟随系统
 │   ├── shell.js             # 三态：首次使用 / 自动连接 / 连不上（也能在浏览器里预览）
 │   └── logo.svg             # 品牌标（或行星标，与 IconLogo.vue 同一份几何）
+├── scripts/
+│   └── make-icons.py        # 生成图标：逐尺寸光学校正（见「图标怎么来的」）
 └── src-tauri/
     ├── src/
     │   ├── main.rs          # 窗口、托盘、导航白名单、IPC 命令
     │   ├── config.rs        # config.json 的读写（含"地址只由用户主动改"这条纪律）
     │   ├── probe.rs         # 探活：规范化地址 + 问 /api/v1/health + 认身份
     │   └── logfile.rs       # 日志（时间戳自己算，不引 chrono）
-    └── icons/               # 图标：品牌蓝圆角方 + 白色行星标（与前端同一份几何）
+    └── icons/               # 图标（白底 + 深色环行星，与前端同一份几何）：16→1024 的 PNG
+                             # + 多帧 icon.ico；由 scripts/make-icons.py 生成
 ```
 
 ## 改这个壳

@@ -13,7 +13,8 @@ import { resetResizeObservers } from '../../setup'
  * 1. 根目录是"Agent 能碰哪儿"的边界——服务端的拒绝文案必须**原样透出来**
  *    （换成"保存失败"就把唯一有用的信息丢了）；
  * 2. 删除确认里必须写明"**会话不会被删**"——那是用户最担心的一件事；
- * 3. 绑定知识库是"进入项目，资料范围就定了"的落点，勾选要真的进请求体。
+ * 3. 绑定知识库是"进入项目，资料范围就定了"的落点——但它只出现在**工作区自己的设置**里，
+ *    新建弹窗不问（v0.41）。
  *
  * v0.25 新增一条：**新建是弹窗，不是把整页切成新建态**——
  * 它钉住的是"建一个的时候，你所在的那一页没有被清空"。
@@ -186,30 +187,40 @@ describe('WorkspacesView', () => {
     )
   })
 
-  it('绑定的知识库会跟着表单一起提交', async () => {
+  it('新建弹窗**不问**知识库，请求体里也就没有它（v0.41）', async () => {
+    // 绑哪些库是建成之后的事（在工作区自己的设置里改）。摆在新建弹窗里等于逼用户
+    // 先做一个还没到做的决定——这条钉住"别再加回来"。
     createWorkspace.mockResolvedValue({ ...WORKSPACE, id: 'ws_new' })
     const wrapper = mountView()
     await vi.waitFor(() => expect(wrapper.text()).toContain('产品化'))
 
     await clickButton(wrapper, '新建工作区')!.trigger('click')
     const dialog = wrapper.find('.ws-create')
-    await dialog.findAll('input')[0].setValue('带库的')
+    expect(dialog.find('.kb-pick').exists()).toBe(false)
+
+    await dialog.findAll('input')[0].setValue('干净新建')
     await dialog.findAll('input')[1].setValue('E:/code/x')
-    await dialog.find('.kb-pick').trigger('click') // 勾第一个库
     await clickButton(wrapper, '创建工作区')!.trigger('click')
 
     await vi.waitFor(() => expect(createWorkspace).toHaveBeenCalled())
     expect(createWorkspace.mock.calls[0][0]).toMatchObject({
-      name: '带库的',
+      name: '干净新建',
       root_path: 'E:/code/x',
-      kb_ids: ['kb_1'],
     })
+    expect(createWorkspace.mock.calls[0][0]).not.toHaveProperty('kb_ids')
   })
 
-  it('建好后选中它，并把 `?new=1` 从地址里摘掉', async () => {
-    // 不摘的话，刷新一次又会弹出来（"我明明建完了"）
+  it('建好后选中它、摘掉 `?new=1`，并直接在里面开一个会话进去', async () => {
+    // 摘 query：不摘的话返回一次又会弹出来（"我明明建完了"）。
+    // 开会话：建工作区的目的就是"在这儿干活"，空右栏还不是干活的地方（v0.41）。
     routeQuery = { new: '1' }
     createWorkspace.mockResolvedValue({ ...WORKSPACE, id: 'ws_new', name: '新的' })
+    convCreate.mockResolvedValue({ id: 'conv_new' })
+    // 开完会话会刷新计数（那一步重新拉清单），所以清单里得有这个新建的：
+    // 真服务端会给，替身也得给——否则测出来的是"本地列表把它弄丢了"这个假象
+    listWorkspaces.mockResolvedValue({
+      items: [WORKSPACE, { ...WORKSPACE, id: 'ws_new', name: '新的' }],
+    })
     const wrapper = mountView()
     await vi.waitFor(() => expect(wrapper.find('.ws-create').exists()).toBe(true))
 
@@ -222,6 +233,9 @@ describe('WorkspacesView', () => {
     await vi.waitFor(() =>
       expect(wrapper.find('.ws-form').findAll('input')[0].element.value).toBe('新的'),
     )
+    // 会话建在**新工作区**里，然后进对话页
+    expect(convCreate.mock.calls[0][3]).toBe('ws_new')
+    expect(routerPush).toHaveBeenCalledWith('/chat/conv_new')
   })
 
   it('删除确认里写明会话不会被删', async () => {

@@ -14,11 +14,18 @@
  * "独立页"：同样专注，但不占一次导航。Kimi Work / Kimi Code 没有公开 web 应用
  * （都是桌面端），所以参考的是 kimi.com 自己那一处，见对照文档 §9。
  *
+ * ## 为什么这里**不问**绑不绑知识库（v0.41 去掉的）
+ *
+ * 绑哪些库是工作区**建成之后**的事：它回答的是"这个项目去哪儿找资料"，
+ * 而刚建的那一刻用户手上往往还没有这个判断（多数人是先建一个空项目再往里放东西）。
+ * 摆在这里等于逼他做一个还没到做的决定，做错了还得回头改。
+ * 现在它只在工作区自己的设置里（右栏那组「知识库」），改完当场生效。
+ *
  * ## 为什么弹窗自己调接口
  *
  * 它是一次完整的"填 → 校验 → 建"的动作。让调用方先接住表单再转手提交，
  * 会让"提交中"这个状态散到两处（弹窗的按钮要显示"创建中…"，页面也要知道）。
- * 建完只往外抛一个 `created`，调用方负责选中它。
+ * 建完只往外抛一个 `created`，调用方负责选中它（并直接开一个新会话进去）。
  */
 import { ref, watch } from 'vue'
 
@@ -28,16 +35,11 @@ import AppButton from '@/components/ui/AppButton.vue'
 import AppInput from '@/components/ui/AppInput.vue'
 import AppModal from '@/components/ui/AppModal.vue'
 import InfoTip from '@/components/ui/InfoTip.vue'
-import WorkspaceKbPicker from '@/components/workspaces/WorkspaceKbPicker.vue'
 import { isAdmin } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
 import { useWorkspaceStore } from '@/stores/workspaces'
 
 const open = defineModel<boolean>('open', { required: true })
-
-const props = defineProps<{
-  knowledgeBases: { id: string; name: string }[]
-}>()
 
 const emit = defineEmits<{ created: [workspace: Workspace] }>()
 
@@ -47,7 +49,6 @@ const { notifyError } = useToast()
 const name = ref('')
 const rootPath = ref('')
 const description = ref('')
-const kbIds = ref<string[]>([])
 const saving = ref(false)
 const picking = ref(false)
 
@@ -57,7 +58,6 @@ watch(open, (isOpen) => {
   name.value = ''
   rootPath.value = ''
   description.value = ''
-  kbIds.value = []
 })
 
 const ready = () => Boolean(name.value.trim() && rootPath.value.trim())
@@ -70,7 +70,6 @@ async function submit(): Promise<void> {
       name: name.value.trim(),
       root_path: rootPath.value.trim(),
       description: description.value.trim(),
-      kb_ids: kbIds.value,
     })
     open.value = false
     emit('created', created)
@@ -114,8 +113,6 @@ async function submit(): Promise<void> {
         <span class="field-label">描述（可选）</span>
         <AppInput v-model="description" placeholder="这个项目是做什么的" />
       </label>
-
-      <WorkspaceKbPicker v-model="kbIds" :items="props.knowledgeBases" />
     </div>
 
     <DirectoryPickerDialog v-model:open="picking" :start="rootPath" @pick="rootPath = $event" />
