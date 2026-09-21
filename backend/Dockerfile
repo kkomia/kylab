@@ -13,6 +13,14 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
+# **索引源可覆盖**（v0.41）：默认仍是官方 PyPI（行为与以前逐字一致），
+# 但国内机器上从 files.pythonhosted.org 拉 wheel 可能慢到不可用——
+# 实测某次构建 `uv sync` 跑满 700 秒仍卡在下载里。构建时给
+# `--build-arg UV_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` 即可换源。
+# 注意它只影响**构建期**的依赖下载，与运行期无关。
+ARG UV_INDEX_URL=https://pypi.org/simple
+ENV UV_INDEX_URL=${UV_INDEX_URL}
+
 # 先只拷依赖清单再装：源码改动不会让依赖层失效，重复构建能命中缓存
 #
 # **`--all-extras` 是必需的，不是可选的**：`app/core/storage.py` 无条件构造 DuckDB

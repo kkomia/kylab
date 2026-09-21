@@ -36,6 +36,11 @@ services:
   backend:
     build:
       context: ../src/backend
+      args:
+        # 从 files.pythonhosted.org 拉 wheel 在这台机器上慢到不可用（实测一次构建
+        # 在下载里卡了 700 秒），所以构建期走国内镜像。换成官方源：
+        #   KYLAB_UV_INDEX_URL=https://pypi.org/simple docker compose build
+        UV_INDEX_URL: ${KYLAB_UV_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
     image: kylab-backend:0.2.0
     container_name: kylab-app-backend
     restart: unless-stopped
