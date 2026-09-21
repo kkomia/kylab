@@ -35,7 +35,7 @@ name: kylab-app
 services:
   backend:
     build:
-      context: ../../src/backend
+      context: ../src/backend
     image: kylab-backend:0.2.0
     container_name: kylab-app-backend
     restart: unless-stopped
@@ -72,7 +72,7 @@ services:
 
   frontend:
     build:
-      context: ../../src/frontend
+      context: ../src/frontend
     image: kylab-frontend:0.2.0
     container_name: kylab-app-frontend
     restart: unless-stopped
