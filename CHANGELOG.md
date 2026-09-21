@@ -92,6 +92,14 @@
   随之删掉非流式的 `complete_with_tools` / `_reply_of`（没有用户了）；
   代价写在明处：工具参数现在也走流式拼装（拼坏按"不是合法 JSON"回给模型），
   且**每一步的思考都会流给界面**——过程面板显示的是整轮的想法。
+- **NAS 上真部署了一次前后端**（v0.41，[§12.223](docs/计划与记录/开发计划-v0.1.md)）：
+  在 `/vol1/1000/docker/kylab/{src,app,data}` 落地，复用既有 PG/MinIO（配置不变、
+  不改它们的容器、不占它们的端口），应用层单独一份 compose（`deploy/nas/`）。
+  **"容器路线未验证"这句话到此为止**——真跑一遍踩到四个问题，三个在仓库里、都已修：
+  compose 的 build context 写错层级、`uv sync` 从 files.pythonhosted.org 拉 wheel
+  卡死 700 秒（Dockerfile 新增 `UV_INDEX_URL` 口子）、**Dockerfile 漏拷 `README.md`**
+  导致 hatchling 装项目自身失败、镜像里源文件 mode 000 让非 root 运行期读不了代码
+  （新增 `chmod -R a+rX /app`）。
 - **开发环境不再"静默成功"**（v0.37）：Windows 上第二个后端实例能绑上同一个端口
   （SO_REUSEADDR），于是会出现"两个后端同时在跑、请求落到跑旧代码的那个"，
   界面上报 `Method Not Allowed`——看着像代码坏了。现在两个启动脚本都会先探端口、
