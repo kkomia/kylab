@@ -356,17 +356,25 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "web_search",
             "description": (
-                "**联网搜索**，回若干条结果（标题、网址、摘要）。"
+                "**联网搜索**：回若干条结果（标题、网址、摘要），"
+                "并**顺带读回前两条的正文开头**（每条 2000 字）"
+                "——多数情况这些就够回答了，不必再抓一遍。"
                 "问的是「现在 / 最近 / 今天」这类**本地资料里不会有**的信息时用它；"
-                "拿到结果后通常还要用 web_fetch 打开其中一两页读正文"
-                "——摘要往往不够回答问题。"
+                "确需整页原文时再用 web_fetch 打开对应的网址（它一次能给 5 个）。"
                 "记忆与知识库只装「已经在你手里的东西」，装不了外面的世界。"
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "检索词"},
-                    "limit": {"type": "integer", "description": "最多几条（默认 5，上限 10）"},
+                    "limit": {"type": "integer", "description": "最多几条（默认 8，上限 10）"},
+                    "read_top": {
+                        "type": "integer",
+                        "description": (
+                            "顺带读回前几条的正文开头（默认 2，最多 3）。"
+                            "只想要链接、或要自己挑着抓时传 0"
+                        ),
+                    },
                 },
                 "required": ["query"],
                 "additionalProperties": False,
@@ -929,12 +937,41 @@ def _remember(services: Services, args: dict[str, Any], *, caller: Caller) -> di
 # ------------------------------------------------------------------ 联网
 
 
+#: 搜索时**顺带抓回前几条的正文开头**（v0.39）。
+#:
+#: 为什么值得：本地抓页极快（实测两页并行 **0.34 秒**），而**每多一次模型往返是
+#: 1.2–4.4 秒**（同一轮实测：一轮 17.8 秒里有 11.3 秒花在 4 次模型调用上）。
+#: 搜完之后模型总要挑一两条读正文，那一跳就是要一次往返；把前两条的开头直接附在
+#: 结果里，常见情况（摘要不够回答、正文开头就够判断）就不用再走那一跳。
+#:
+#: 只给**开头**而不是全文：全文由 `web_fetch` 负责（它一次能给 5 个网址）。
+#: 这里的目标是"少一跳"，不是"把网页都塞进上下文"。
+SEARCH_FETCH_TOP = 2
+SEARCH_FETCH_CHARS = 2000
+
+#: 顺带抓那两页的**墙钟预算**（秒）。比 `web_fetch` 的 20 秒紧得多。
+#:
+#: 实测（2026-09-21）：多数页面 0.2–0.7 秒，但**有的一直慢慢吐字节**——
+#: 某新闻站首页抓了 33 秒（8 条结果里最慢的三条是 25/24/23 秒）。
+#: 那种页面在这里是灾难性的：一次搜索为了某一页的开头等三十秒，
+#: 比它想省下的那次模型往返（1.2–4.4 秒）贵一个量级。
+#: 宁可这一页读不到（就写成"这一页没读成"，模型可以去 web_fetch 单独读它）。
+SEARCH_FETCH_TIMEOUT = 5.0
+
+#: 模型最多能顺带读几条（再多就是它在替我们做批量抓取，那件事交给 web_fetch）。
+MAX_SEARCH_FETCH_TOP = 3
+
+
 def _web_search(services: Services, args: dict[str, Any], *, caller: Caller) -> str:
     """搜一次网。**结果渲染成带编号的文本**（与检索那份同理）：
 
     模型接下来要挑一条去 :func:`_web_fetch`，而它挑的依据是编号与网址——
     JSON 里的字段名会把这件事弄糊。返回文本而不是 dict，也顺带让
     "标题 + 网址 + 摘要" 在上下文里是人读得懂的样子。
+
+    **前几条的正文开头一起带回来**（``read_top``，默认 2，见 ``SEARCH_FETCH_TOP``）：
+    搜索之后单独再抓一页，代价不是那 0.2 秒的网络，而是**整整一次模型往返**
+    （1.2–4.4 秒，实测）。常见的那一跳在这里省掉。
     """
     query = _require(args, "query")
     limit = args.get("limit")
@@ -942,7 +979,7 @@ def _web_search(services: Services, args: dict[str, Any], *, caller: Caller) -> 
         query,
         api_key=services.runtime.get("web.search_api_key"),
         provider=services.runtime.get("web.search_provider") or "tavily",
-        limit=int(limit) if isinstance(limit, int) else 5,
+        limit=int(limit) if isinstance(limit, int) else 8,
     )
     if not hits:
         return f"没有搜到结果（检索词：{query}）。换个说法再试一次，或者直接抓一个你知道的网址。"
@@ -950,8 +987,57 @@ def _web_search(services: Services, args: dict[str, Any], *, caller: Caller) -> 
     for index, hit in enumerate(hits, start=1):
         where = f"（{hit.published}）" if hit.published else ""
         lines.append(f"[{index}] {hit.title}{where}{_NL}{hit.url}{_NL}{hit.snippet}")
+    read_top = _read_top(args)
+    if read_top:
+        excerpts = _search_excerpts(hits, read_top)
+        if excerpts:
+            header = (
+                f"【前 {read_top} 条的正文开头】"
+                f"（每条最多 {SEARCH_FETCH_CHARS} 字；要读全文用 web_fetch）"
+            )
+            lines.append(f"{header}{_NL}{_NL}" + f"{_NL}{_NL}".join(excerpts))
     lines.append(f"{_NL}要读全文就用 web_fetch 打开其中的网址。")
     return f"{_NL}{_NL}".join(lines)
+
+
+def _read_top(args: dict[str, Any]) -> int:
+    """这一轮顺带读前几条的正文（``read_top``，缺省 ``SEARCH_FETCH_TOP``）。
+
+    模型可以传 0 关掉（只想要链接时没必要抓），也可以调到 3；再多不给——
+    那已经是替它做批量抓取，而 `web_fetch` 一次能给 5 个网址、还能并行。
+    """
+    value = args.get("read_top")
+    if not isinstance(value, int) or isinstance(value, bool):
+        return SEARCH_FETCH_TOP
+    return max(0, min(value, MAX_SEARCH_FETCH_TOP))
+
+
+def _search_excerpts(hits: list[web.SearchHit], count: int) -> list[str]:
+    """**并发**抓前 ``count`` 条的正文开头（见 ``SEARCH_FETCH_TOP``）。
+
+    一页读不到（403 / 超时 / 不是网页）只影响那一条，就地写成一行说明：
+    与 `web_fetch` 同一条纪律——上游的毛病不该让整次搜索白跑。
+    """
+    targets = [hit.url for hit in hits[:count]]
+    if not targets:
+        return []
+    with ThreadPoolExecutor(max_workers=len(targets)) as pool:
+        return list(pool.map(_excerpt_one, targets))
+
+
+def _excerpt_one(url: str) -> str:
+    """抓一页的开头，渲染成"标题 + 正文节选"；失败就给一行原因。
+
+    预算比 `web_fetch` 短（见 ``SEARCH_FETCH_TIMEOUT``）：这里等的是"顺手多给一点"，
+    不该让一整次搜索为某一页卡住。
+    """
+    try:
+        title, body = web.fetch_url(
+            url, limit=SEARCH_FETCH_CHARS, timeout=SEARCH_FETCH_TIMEOUT
+        )
+    except (UpstreamError, InvalidRequestError) as exc:
+        return f"【这一页没读成】{url}{_NL}{exc}"
+    return f"【{title}】{url}{_NL}{body}"
 
 
 #: 一次最多读几页。**上限存在的理由是上下文**，不是网络：

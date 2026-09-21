@@ -212,6 +212,34 @@ def test_fetch_truncates_long_pages_and_says_so() -> None:
     assert len(body) < web.MAX_FETCH_CHARS + 200
 
 
+def test_a_page_that_keeps_dribbling_is_given_up_on() -> None:
+    """**一直慢慢吐字节的页面要有墙钟闸门**（v0.39）。
+
+    httpx 的 ``timeout`` 是"每次读操作"的上限，页面只要持续吐一点就能把它一直刷新——
+    实测某新闻站首页抓了 **33 秒**（8 条结果里最慢的三条是 25/24/23 秒）。
+    所以真正管用的是这里这道"整页墙钟"，而不是那个 per-op 超时。
+    """
+    ticks = iter([0.0, 0.0, 999.0])  # 第三块时已经远超 deadline
+
+    class _Dribbling:
+        encoding = "utf-8"
+
+        @staticmethod
+        def iter_bytes():  # type: ignore[no-untyped-def]
+            for _ in range(3):
+                yield "<p>一点点</p>".encode()
+
+    import app.services.web as web_module
+
+    original = web_module.time.monotonic
+    web_module.time.monotonic = lambda: next(ticks)  # type: ignore[assignment]
+    try:
+        with pytest.raises(UpstreamError, match="读得太慢"):
+            web._read_capped(_Dribbling(), deadline=10.0, timeout=10.0)  # type: ignore[arg-type]
+    finally:
+        web_module.time.monotonic = original  # type: ignore[assignment]
+
+
 # ------------------------------------------------------------------ 搜索
 
 

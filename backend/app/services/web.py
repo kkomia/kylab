@@ -30,6 +30,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import socket
+import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -59,17 +60,27 @@ MAX_FETCH_BYTES = 2 * 1024 * 1024
 MAX_FETCH_CHARS = 30_000
 
 #: 搜索结果条数上限与单条摘要长度。
+#:
+#: 摘要上限从 500 提到 1200（v0.39）：**Tavily 原生就给 560–1390 字**，
+#: 500 那道刀口把 5 条里的 4 条切掉了（实测）——那是白扔的材料。
+#: 而条数对延迟没有影响：同一查询 `max_results=5` 与 `10` 都是 1.2–2.2 秒
+#: （各两次实测）。材料多给一点，模型就少一次"没看清、再搜一遍/再抓一页"的往返。
 MAX_HITS = 10
-MAX_SNIPPET_CHARS = 500
+MAX_SNIPPET_CHARS = 1200
 
 _TIMEOUT_SECONDS = 20.0
 
-#: 搜索接口的超时**比抓网页短**（v0.26）。
+#: 搜索接口的超时（v0.26 起；v0.39 从 10 秒放宽到 20，与抓页齐平）。
 #:
-#: 抓一页可能要等一个大文件下完，20 秒合理；而搜索是一个回 JSON 的接口——
-#: 实测 Tavily 中位 2.2 秒、最慢 3.7 秒，20 秒只会在它真的挂了时白等二十秒
-#: （那轮会话里就有一条 `搜索失败：The read operation timed out`，20 秒换回一行报错）。
-_SEARCH_TIMEOUT_SECONDS = 10.0
+#: 原来定 10 秒的账是"搜索是回 JSON 的接口，Tavily 中位 2.2 秒，20 秒只会在它挂了时白等"。
+#: 2026-09-21 复测把这条账推翻了：同一个查询、同一份代码，
+#: **6 次实测是 2.55 / 3.28 / 3.58 / 3.84 / 11.38 / 12.36 秒**（中位 3.84、最慢 12.36），
+#: 而同一条请求**绕过我们全部代码**直发也只要 4.30–7.75 秒、DNS 只要 0–16 毫秒——
+#: 也就是说慢在 provider 与到它的链路，跟我们的解析、条数、渲染都无关。
+#: 10 秒的闸门会**误杀活着但慢的搜索**：那一刀砍掉的不只是这 10 秒，
+#: 还有模型接下来那一轮（它会换个词重搜或干脆放弃）。
+#: 所以放宽到与抓页同一个预算；一道更粗的闸在工具循环那边（一轮 300 秒墙钟）。
+_SEARCH_TIMEOUT_SECONDS = 20.0
 
 #: 抓取 UA。与数据源连接器同一口径：不少站点对 httpx 默认 UA 直接 403。
 _USER_AGENT = "kylab/0.1 (+agent web tool)"
@@ -169,16 +180,22 @@ def _ip_is_public(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> boo
     )
 
 
-def fetch_url(url: str, *, limit: int = MAX_FETCH_CHARS) -> tuple[str, str]:
+def fetch_url(
+    url: str, *, limit: int = MAX_FETCH_CHARS, timeout: float = _TIMEOUT_SECONDS
+) -> tuple[str, str]:
     """抓一个网页，回 ``(标题, Markdown 正文)``。
 
     只做"取回并变成可读文本"，不做摘要（那是模型的事）、不落库（那是另一个动作）。
+
+    ``timeout`` 是**这一页的墙钟上限**，不是"每次读写操作的上限"——两者不一样，
+    见 ``_read_capped``。搜索顺带抓节选用的是一个更短的预算（5 秒）：
+    一次搜索不该为了某一页的开头等上二十秒。
     """
     target = check_public_url(url)
     try:
         # 共享客户端 + **不跟随重定向**（与以前逐字一致：httpx 默认就是不跟随，
         # 而 `_get_with_checks` 自己按跳校验地址）
-        text, final_url = _get_with_checks(shared_client(), target)
+        text, final_url = _get_with_checks(shared_client(), target, timeout=timeout)
     except httpx.HTTPError as exc:
         raise UpstreamError(f"抓取失败：{exc}") from exc
 
@@ -198,12 +215,18 @@ def fetch_url(url: str, *, limit: int = MAX_FETCH_CHARS) -> tuple[str, str]:
     return title, body
 
 
-def _get_with_checks(client: httpx.Client, target: str) -> tuple[str, str]:
+def _get_with_checks(client: httpx.Client, target: str, *, timeout: float) -> tuple[str, str]:
     """手工跟重定向，**每一跳都重新校验地址**。
 
     不用 ``follow_redirects=True`` 就是因为那样没有"每一跳"这个位置：
     公网地址 302 到 ``http://127.0.0.1:8000`` 是最常见的绕过手法。
+
+    ``timeout`` 同时用作 httpx 的单次操作超时与**整页的墙钟上限**：后者才是真的闸门
+    （前者会被"一直慢慢吐字节"的页面反复重置，实测一页能拖到 33 秒，
+    见 ``_read_capped``）。整个抓取共用一个 deadline，重定向也算在里面——
+    跟五跳就是五次机会，不该变成五倍的等待。
     """
+    deadline = time.monotonic() + timeout
     current = target
     for _ in range(_MAX_REDIRECTS + 1):
         with client.stream(
@@ -211,7 +234,7 @@ def _get_with_checks(client: httpx.Client, target: str) -> tuple[str, str]:
             current,
             headers={"User-Agent": _USER_AGENT},
             # 超时按调用点给：共享客户端自带的那个只是兜底（见 app/core/http.py）
-            timeout=_TIMEOUT_SECONDS,
+            timeout=timeout,
         ) as response:
             if response.is_redirect:
                 location = response.headers.get("location") or ""
@@ -227,13 +250,20 @@ def _get_with_checks(client: httpx.Client, target: str) -> tuple[str, str]:
                     f"这个地址返回的是 {content_type.split(';')[0]}，不是网页正文。"
                     "要把它收进知识库请用 upload_document / 数据源"
                 )
-            body = _read_capped(response)
+            body = _read_capped(response, deadline=deadline, timeout=timeout)
             return body, current
     raise UpstreamError(f"重定向次数过多（超过 {_MAX_REDIRECTS} 次）")
 
 
-def _read_capped(response: httpx.Response) -> str:
-    """按上限读，**边读边停**：等整个响应下完再截断，等于把那个大文件也下载了。"""
+def _read_capped(response: httpx.Response, *, deadline: float, timeout: float) -> str:
+    """按上限读，**边读边停**：等整个响应下完再截断，等于把那个大文件也下载了。
+
+    **两道闸**：字节数（`MAX_FETCH_BYTES`）与墙钟（``deadline``）。
+    墙钟这道是必须的：httpx 的 ``timeout`` 是**每次读操作**的上限，一个页只要
+    一直慢慢吐字节就能把它无限刷新——实测某新闻站首页抓了 **33 秒**（2026-09-21，
+    8 条结果里最慢的三条是 25/24/23 秒）。那种页面在搜索顺带抓节选时是灾难：
+    一次搜索为了某一页的开头等三十秒，比它想省下的那次模型往返（1.2–4.4 秒）贵得多。
+    """
     chunks: list[bytes] = []
     total = 0
     for chunk in response.iter_bytes():
@@ -242,6 +272,10 @@ def _read_capped(response: httpx.Response) -> str:
         if total >= MAX_FETCH_BYTES:
             logger.info("响应超过 %d 字节，提前停止读取", MAX_FETCH_BYTES)
             break
+        if time.monotonic() > deadline:
+            # **不返回半截正文**：读了一半的页面看起来像完整的，而模型不会去猜
+            # "后面是不是被截了"。抛出去，由调用方就地写一行"这一页没读成"。
+            raise UpstreamError(f"这一页读得太慢（超过 {timeout:g} 秒），已放弃")
     raw = b"".join(chunks)
     encoding = response.encoding or "utf-8"
     try:
@@ -285,7 +319,7 @@ SEARCH_PROVIDERS = {
 
 
 def search_web(
-    query: str, *, api_key: str, provider: str = "tavily", limit: int = 5
+    query: str, *, api_key: str, provider: str = "tavily", limit: int = 8
 ) -> list[SearchHit]:
     """搜一次网，回若干条结果。
 

@@ -977,6 +977,8 @@ def test_web_search_renders_numbered_results(
     from app.services import web as web_service
 
     monkeypatch.setattr(web_service, "search_web", lambda *a, **k: hits)
+    # 顺带抓正文那一步也要挡掉：不挡就是真发请求（域名是编的，会让用例看网络脸色）
+    monkeypatch.setattr(web_service, "fetch_url", lambda url, **k: ("", "正文"))
 
     text = call_tool(services, "web_search", {"query": "今天"}, caller=admin)
 
@@ -984,6 +986,174 @@ def test_web_search_renders_numbered_results(
     assert "https://b.example.com" in text
     assert "摘要 B" in text
     assert "web_fetch" in text, "要告诉它下一步能做什么"
+
+
+def test_web_search_asks_for_eight_results_by_default(
+    services: Services, admin: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """不给 limit 时按 **8 条**要（v0.39，此前是 5）。
+
+    条数对延迟没有影响（实测同一查询 5 条与 10 条都是 1.2–2.2 秒），
+    而多几条就少一次"没看清、再搜一遍"的往返。
+    """
+    from app.services import web as web_service
+
+    services.runtime.set({"web.search_api_key": "sk-test"})
+    seen: dict = {}
+
+    def fake_search(query, **kwargs):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(web_service, "search_web", fake_search)
+
+    call_tool(services, "web_search", {"query": "今天"}, caller=admin)
+
+    assert seen["limit"] == 8
+
+
+def test_web_search_brings_back_the_top_pages_openings(
+    services: Services, admin: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**搜索顺带把前两条的正文开头抓回来**（v0.39）。
+
+    搜索之后单独再抓一页，代价不是那 0.2 秒网络，而是整整一次模型往返
+    （实测 1.2–4.4 秒）——常见的那一跳在这里省掉。
+    """
+    from app.services import web as web_service
+    from app.services.tools import SEARCH_FETCH_CHARS
+
+    services.runtime.set({"web.search_api_key": "sk-test"})
+    hits = [
+        web_service.SearchHit(title="甲", url="https://a.example.com", snippet="摘要甲"),
+        web_service.SearchHit(title="乙", url="https://b.example.com", snippet="摘要乙"),
+        web_service.SearchHit(title="丙", url="https://c.example.com", snippet="摘要丙"),
+    ]
+    asked: list[tuple[str, int]] = []
+
+    monkeypatch.setattr(web_service, "search_web", lambda *a, **k: hits)
+
+    def fake_fetch(url, **kwargs):  # type: ignore[no-untyped-def]
+        asked.append((url, kwargs["limit"]))
+        return (f"{url} 的标题", "这是开头。")
+
+    monkeypatch.setattr(web_service, "fetch_url", fake_fetch)
+
+    text = call_tool(services, "web_search", {"query": "今天"}, caller=admin)
+
+    # 只读前两条，且按节选的字数上限去抓
+    assert [url for url, _ in asked] == ["https://a.example.com", "https://b.example.com"]
+    assert {limit for _, limit in asked} == {SEARCH_FETCH_CHARS}
+    assert "【前 2 条的正文开头】" in text
+    assert "这是开头。" in text
+    assert "https://c.example.com" in text, "第三条只有链接与摘要"
+
+
+def test_web_search_gives_the_excerpts_a_short_budget(
+    services: Services, admin: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """顺带抓的那两页用**更短的墙钟预算**（v0.39）。
+
+    实测多数页面 0.2–0.7 秒，但有的一直慢慢吐字节（最慢的抓了 33 秒）。
+    一次搜索为了某一页的开头等三十秒，比它想省下的那次模型往返（1.2–4.4 秒）贵得多——
+    所以宁可这一页读不到，也不能拖住整次搜索。
+    """
+    from app.services import web as web_service
+    from app.services.tools import SEARCH_FETCH_TIMEOUT
+
+    services.runtime.set({"web.search_api_key": "sk-test"})
+    hits = [web_service.SearchHit(title="甲", url="https://a.example.com", snippet="摘要")]
+    seen: dict = {}
+
+    monkeypatch.setattr(web_service, "search_web", lambda *a, **k: hits)
+
+    def fake_fetch(url, **kwargs):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        return ("标题", "开头")
+
+    monkeypatch.setattr(web_service, "fetch_url", fake_fetch)
+
+    call_tool(services, "web_search", {"query": "今天"}, caller=admin)
+
+    assert seen["timeout"] == SEARCH_FETCH_TIMEOUT
+    assert SEARCH_FETCH_TIMEOUT < 20, "要比 web_fetch 的整页预算紧得多"
+
+
+def test_web_search_read_top_zero_only_returns_links(
+    services: Services, admin: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``read_top: 0`` = 只想要链接，一条都不抓（它想自己挑着抓）。"""
+    from app.services import web as web_service
+
+    services.runtime.set({"web.search_api_key": "sk-test"})
+    hits = [web_service.SearchHit(title="甲", url="https://a.example.com", snippet="摘要")]
+
+    monkeypatch.setattr(web_service, "search_web", lambda *a, **k: hits)
+
+    def explode(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("read_top=0 时不该去抓任何一页")
+
+    monkeypatch.setattr(web_service, "fetch_url", explode)
+
+    text = call_tool(services, "web_search", {"query": "今天", "read_top": 0}, caller=admin)
+
+    assert "正文开头" not in text
+
+
+def test_web_search_read_top_is_capped(
+    services: Services, admin: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """顺带读的上限是 3：再多就是替它做批量抓取，而 web_fetch 一次能给 5 个网址。"""
+    from app.services import web as web_service
+    from app.services.tools import MAX_SEARCH_FETCH_TOP
+
+    services.runtime.set({"web.search_api_key": "sk-test"})
+    hits = [
+        web_service.SearchHit(title=f"第{i}", url=f"https://x{i}.example.com", snippet="摘要")
+        for i in range(1, 6)
+    ]
+    asked: list[str] = []
+
+    monkeypatch.setattr(web_service, "search_web", lambda *a, **k: hits)
+
+    def fake_fetch(url, **kwargs):  # type: ignore[no-untyped-def]
+        asked.append(url)
+        return ("标题", "开头")
+
+    monkeypatch.setattr(web_service, "fetch_url", fake_fetch)
+
+    call_tool(services, "web_search", {"query": "今天", "read_top": 99}, caller=admin)
+
+    assert len(asked) == MAX_SEARCH_FETCH_TOP
+
+
+def test_web_search_keeps_the_results_when_a_page_cannot_be_read(
+    services: Services, admin: Caller, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """一页读不到（403 / 超时）**只影响那一条**，搜索结果照样给出来。"""
+    from app.core.exceptions import UpstreamError
+    from app.services import web as web_service
+
+    services.runtime.set({"web.search_api_key": "sk-test"})
+    hits = [
+        web_service.SearchHit(title="甲", url="https://a.example.com", snippet="摘要甲"),
+        web_service.SearchHit(title="乙", url="https://b.example.com", snippet="摘要乙"),
+    ]
+
+    monkeypatch.setattr(web_service, "search_web", lambda *a, **k: hits)
+
+    def fake_fetch(url, **kwargs):  # type: ignore[no-untyped-def]
+        if "a.example" in url:
+            raise UpstreamError("抓取失败：HTTP 403")
+        return ("乙的标题", "乙的开头。")
+
+    monkeypatch.setattr(web_service, "fetch_url", fake_fetch)
+
+    text = call_tool(services, "web_search", {"query": "今天"}, caller=admin)
+
+    assert "摘要甲" in text and "摘要乙" in text, "两条结果都还在"
+    assert "【这一页没读成】" in text and "HTTP 403" in text
+    assert "乙的开头。" in text
 
 
 def test_web_search_without_a_key_says_where_to_configure(
