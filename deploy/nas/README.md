@@ -34,6 +34,14 @@ docker compose ps                   # 状态（backend 应显示 healthy）
 docker compose down                 # 停掉（**不动存储层**）
 ```
 
+构建很慢（`uv sync`）时不要挂在 SSH 会话上：服务器上有一个 `app/build.sh`，
+它把构建放到脱离会话的后台跑、日志落 `app/build.log`：
+
+```bash
+cd /vol1/1000/docker/kylab/app && setsid nohup ./build.sh > build.log 2>&1 < /dev/null &
+tail -f build.log        # 另开一个会话看进度
+```
+
 升级：把新源码替换 `/vol1/1000/docker/kylab/src/`，再 `docker compose up -d --build`。
 
 界面：`http://192.168.31.18:8081`（首次打开会让你创建管理员账号）。
