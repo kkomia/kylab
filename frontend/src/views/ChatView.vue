@@ -31,10 +31,7 @@ import {
 import { useRoute, useRouter } from 'vue-router'
 
 import {
-  chatStream,
   getSuggestedQuestions,
-  resumeStream,
-  isAbortError,
   type ChatArtifact,
   type ChatHistoryMessage,
   type ChatSource,
@@ -88,6 +85,14 @@ import LinkText from '@/components/ui/LinkText.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import LiveLine from '@/components/chat/LiveLine.vue'
 import TraceStepRow from '@/components/chat/TraceStepRow.vue'
+import {
+  abortLiveTurn,
+  clearLiveTurn,
+  liveTurnState,
+  liveTurnState as live,
+  startChatTurn,
+  startResumeTurn,
+} from '@/composables/useLiveTurn'
 
 /**
  * 引用文档抽屉（从右侧滑出）。
@@ -113,7 +118,6 @@ import {
   isTraceOpen,
   liveLine,
   makeMessage,
-  mergeStep,
   replyArtifacts,
   sourcePreview,
   sourceWhere,
@@ -192,7 +196,6 @@ const messages = ref<Message[]>([])
 const query = ref('')
 const sending = ref(false)
 /** 当前这条流的取消句柄（null = 没有在跑的流）。 */
-const stream = ref<{ abort: () => void } | null>(null)
 /** 组件是否已卸载：句柄到手时若人已经走了，这条流要立刻掐掉。 */
 let unmounted = false
 const streamHost = ref<HTMLElement | null>(null)
@@ -508,18 +511,57 @@ watch([conversationId, wantsNew], () => {
 })
 
 /**
- * 正在流式写入哪条会话（空 = 没有）。
+ * 把"正在流式的那一轮"**镜像**进本组件的消息数组（v0.41）。
  *
- * 为什么需要它：**新建会话的第一句**会先建会话、再 `router.replace` 到 `/chat/:id`，
- * 而"路径参数变了"就会触发 `loadConversation`。此刻库里还没有这一轮的任何消息
- * ——落库要等回答流完——于是"按库里内容重画"会把刚追加的提问与空回答块一起抹掉，
- * 连流式回来的字也无处可写（`patch` 找不到那条消息）。实测：界面直接弹回欢迎页，
- * 会话里 0 条，用户以为"问了个寂寞"。
+ * 这一轮的真身在 `useLiveTurn` 里（模块作用域，切页不丢）。本组件只负责把它画出来：
  *
- * 所以正在流式的会话，回放只认本地状态；等这一轮结束（`finish`）再交还给库里。
- * 用普通变量而不是 ref：它只在异步流程里读写，不参与渲染。
+ * - **`append` 且画面上没有那一对**（例如用户离开页面后流还在跑，回来时组件是新挂载的、
+ *   库里又还没有这一轮）→ 用 `live` 里的提问与已流出的字**补出一对**；
+ *   库里没有它的原因是落库发生在流跑完之后，所以不能等库。
+ * - 其余情况只管把最后一条助手消息的字段刷成最新值。
+ *
+ * `patch`（续跑）不补新的一对：那条回答在库里存在，补了会凭空多出一轮。
  */
-let streamingConversationId = ''
+function syncLive(): void {
+  const state = live.value
+  if (!state || state.conversationId !== conversationId.value) return
+
+  const last = messages.value.at(-1)
+  const hasPlaceholder = last?.role === 'assistant' && last.streaming === true
+  if (!hasPlaceholder) {
+    if (state.mode !== 'append' || !state.streaming) return
+    messages.value = [
+      ...messages.value,
+      makeMessage('user', state.query),
+      makeMessage('assistant', state.text, { streaming: true, thinking: state.thinking }),
+    ]
+  }
+
+  const target = messages.value.at(-1)
+  if (!target || target.role !== 'assistant') return
+  // 就地改字段而不是整数组替换：整数组替换会让每来一个 delta 就重建整个消息流
+  Object.assign(target, {
+    text: state.text,
+    thinkingText: state.thinkingText,
+    steps: state.steps,
+    sources: state.sources,
+    streaming: state.streaming,
+    error: state.error,
+  })
+}
+
+watch(live, syncLive, { deep: true, immediate: true })
+
+/** 「停止」按钮与输入框的禁用态：跟着**这一条会话**上的那一轮走（离开页面再回来也要对）。 */
+watch(
+  live,
+  () => {
+    sending.value = Boolean(
+      live.value?.streaming && live.value.conversationId === conversationId.value,
+    )
+  },
+  { deep: true, immediate: true },
+)
 
 /** 把一份会话详情铺进界面（缓存与网络两条路都走它，口径才不会分叉）。 */
 function applyDetail(detail: ConversationDetail): void {
@@ -545,6 +587,8 @@ function applyDetail(detail: ConversationDetail): void {
   if (detail.model_pk) modelPk.value = detail.model_pk
   // 会话当时的思考偏好（v16）：`null` = 当时跟随全局，保持当前默认即可
   if (detail.thinking !== null) thinkingOn.value = detail.thinking
+  // 库里那份画完了，再把"正在流的那一轮"补上去（没有它时这是个空操作）
+  syncLive()
   if (detail.thinking_effort) thinkingEffort.value = detail.thinking_effort
   stick.value = true
   void scrollToBottom()
@@ -587,8 +631,11 @@ async function loadConversation(): Promise<void> {
     scheduleSamples()
     return
   }
-  // 这一轮的回答还在路上，本地就是最新的——别用库里的旧快照盖掉它
-  if (id === streamingConversationId) return
+  // 这一轮还在写（无论本组件在不在），库里都没有它——画完历史之后由 `syncLive`
+  // 把那一对补回来；但要是它**已经写完了**（用户离开这一页期间跑完的），
+  // 那就是库里的版本最新（后端在流结束时落库），把它忘掉、按库重画。
+  // 这一条替代了 v0.41 之前那个 `streamingConversationId` 局部变量。
+  if (live.value?.conversationId === id && !live.value.streaming) clearLiveTurn()
 
   const cached = conversations.cachedDetail(id)
   if (cached) {
@@ -620,9 +667,10 @@ watch(
 )
 
 onBeforeUnmount(() => {
-  // 人已经离开这一页，流再跑下去只是烧 token
+  // **不再 abort**（v0.41）：流归 `useLiveTurn` 管，人走了它照跑——
+  // 用户切去别的页面再回来，这一轮还在（甚至是完整的）。
+  // 这里只收掉本组件自己的定时器与"别再改路径"的守卫。
   unmounted = true
-  stream.value?.abort()
   window.clearTimeout(samplesTimer)
   window.clearTimeout(flashTimer)
   window.clearTimeout(copiedTimer)
@@ -662,65 +710,33 @@ async function streamTurn(
       thinking: { enabled: thinkingOn.value, effort: thinkingEffort.value },
     }),
   ]
-  const index = messages.value.length - 1
   sending.value = true
   // 新问题一定要回到最新一行：用户刚按下发送，接下来的字就是他等着看的东西，
   // 哪怕他上一轮往上翻过旧回答。watch 的 flush: 'post' 会处理这次滚动
   stick.value = true
   void scrollToBottom()
 
-  const patch = (part: Partial<Message>): void => {
-    const current = messages.value[index]
-    if (!current) return
-    // 就地改字段而不是整数组替换：整数组替换会让每来一个 delta 就重建整个消息流
-    Object.assign(current, part)
-  }
-
-  try {
-    // 这一步在响应头到达时就返回，之后正文全走 handlers：
-    // 「停止」按钮因此从第一个字开始就是活的
-    const handle = await chatStream(
-      // 带上 conversation_id 之后，历史由后端从库里取——所以 context 传不传都一样，
-      // 留着是为了"没会话"那条路径（见 api/chat.ts 的说明）
-      {
-        query: text,
-        kb_ids: effectiveKbIds.value,
-        skill_names: pinnedSkills.value,
-        history: context,
-        conversation_id: conversationId,
-        model_pk: model,
-        thinking: thinkingOn.value,
-        thinking_effort: thinkingEffort.value,
-      },
-      {
-        onStep: (step) => patch({ steps: mergeStep(messages.value[index]?.steps ?? [], step) }),
-        onSources: (items) => patch({ sources: items }),
-        onThinking: (chunk) =>
-          patch({ thinkingText: (messages.value[index]?.thinkingText ?? '') + chunk }),
-        onDelta: (delta) => patch({ text: (messages.value[index]?.text ?? '') + delta }),
-        // done 带的是后端拼好的全文，以它为准，避免个别 delta 丢失后正文与引用对不上
-        onDone: (answer) => {
-          patch({ text: answer, streaming: false })
-          finish()
-        },
-        onError: (message) => {
-          patch({ error: message, streaming: false })
-          finish()
-        },
-      },
-    )
-    stream.value = handle
-    // 请求建立得快的时候组件可能已经卸载了，此时不该再留着这条流
-    if (unmounted) {
-      handle.abort()
-      finish()
-    }
-  } catch (cause) {
-    if (!isAbortError(cause)) {
-      patch({ error: cause instanceof Error ? cause.message : '对话失败', streaming: false })
-    }
-    finish()
-  }
+  // 流**不在这里持有**（v0.41）：状态与连接交给 `useLiveTurn`，本组件只做镜像
+  // （见 `syncLive`）。这样用户切去别的页面时这一轮照跑，回来还能接着看。
+  await startChatTurn(
+    // 带上 conversation_id 之后，历史由后端从库里取——所以 context 传不传都一样，
+    // 留着是为了"没会话"那条路径（见 api/chat.ts 的说明）
+    {
+      query: text,
+      kb_ids: effectiveKbIds.value,
+      skill_names: pinnedSkills.value,
+      history: context,
+      conversation_id: conversationId,
+      model_pk: model,
+      thinking: thinkingOn.value,
+      thinking_effort: thinkingEffort.value,
+    },
+    {
+      conversationId,
+      query: text,
+      thinking: { enabled: thinkingOn.value, effort: thinkingEffort.value },
+    },
+  )
 }
 
 async function send(): Promise<void> {
@@ -744,14 +760,10 @@ async function send(): Promise<void> {
         thinking_effort: thinkingEffort.value,
       })
       target = created.id
-      // **先登记再改路径**：改路径会立刻触发一次会话回放（见 streamingConversationId），
-      // 登记晚一步，那一次就已经把界面清空了
-      streamingConversationId = target
       // 用 replace 而不是 push：用户按"新对话"只是想换个会话，
       // 在历史里留一条空的 /chat 没有任何意义，返回时会看到一片空白
       await router.replace(`/chat/${target}`)
     } catch (cause) {
-      streamingConversationId = ''
       notifyError(cause instanceof Error ? cause.message : '无法新建对话')
       return
     }
@@ -783,27 +795,41 @@ function persistedMessages(): StoredMessage[] {
     }))
 }
 
-/** 一轮结束：收掉「停止」，把输入权还给用户。 */
-function finish(): void {
-  sending.value = false
-  stream.value = null
-  // 这一轮写完了，库里已经有完整记录，回放重新以库为准
-  streamingConversationId = ''
+/**
+ * 这一轮结束了：把界面交还给库里那份（v0.41）。
+ *
+ * **由"当时正看着这条会话的组件"接手**，而不是"发起这一轮的那个组件"：
+ * 用户切走之后发起者已经不在画面上了（它手里的 `conversationId` 甚至是空的，
+ * 收尾会被静默跳过——实测踩到）。所以这里对一个**只在挂载期间有效**的 watcher 负责，
+ * 见下面 `watch(() => liveTurnState.value?.streaming, ...)`。
+ *
+ * 没人在看的时候（用户切走了）什么都不用做：那一轮后端照样写完并落库，
+ * 下次挂载会按库里的版本重画（见 `loadConversation` 里"已经写完就忘掉活轮"那一条）。
+ */
+function settleTurn(): void {
   if (!conversationId.value) return
   const id = conversationId.value
-  // 先用本地这份覆盖缓存：后端同刻刚写完，"聊完切走再切回"才不会看到上一版
+  // 先把本地这份（含刚流完的正文与过程）覆盖进缓存：后端同刻刚写完，
+  // "聊完切走再切回"才不会看到上一版
   conversations.rememberDetailMessages(id, persistedMessages())
   // 再让后端校准一次（标题是首轮才生成的、条数与时间也变了），
   // 一次请求同时更新缓存与侧栏那一条
   void conversations.refreshDetail(id)
 }
 
+/** 流从"在跑"变成"没在跑"的那一刻，由**当前挂载的**这个组件收尾。 */
+watch(
+  () => liveTurnState.value?.streaming,
+  (streaming, was) => {
+    if (was === true && streaming === false) settleTurn()
+  },
+)
+
 /** 用户点了「停止」：已经流出来的部分留着，它仍然是有用的。 */
 function stop(): void {
-  stream.value?.abort()
-  const last = messages.value.at(-1)
-  if (last?.role === 'assistant') last.streaming = false
-  finish()
+  // 只叫停：状态与收尾都跟着 `useLiveTurn` 走（`streaming` 变假 → 上面的 watcher 收尾），
+  // 已经流出来的部分留着——它仍然是有用的
+  abortLiveTurn()
 }
 
 function nearBottom(host: HTMLElement): boolean {
@@ -923,14 +949,21 @@ function toggleGroup(key: string): void {
  * **产物卡片点开走这里，而不是直接下载**：用户想知道"它做出来的是个什么"，
  * 而下载是"我要拿走它"——两件事，前者先发生。下载在抽屉里一步可达。
  */
-const fileDrawer = ref<{ key: string | null; nonce: number } | null>(null)
+const fileDrawer = ref<{
+  key: string | null
+  /** 产物那份的名字与格式：key 是 artifact_id 时抽屉猜不出扩展名（见 `openFiles`） */
+  seed: { name: string; kind: string } | null
+  nonce: number
+} | null>(null)
 
-function openFiles(key: string | null = null): void {
+function openFiles(key: string | null = null, seed?: { name: string; kind: string }): void {
   if (!conversationId.value) return
   // `nonce` 让"抽屉已经开着"时再点一次也能真的重来一遍：
   // 只改 `key` 的话，从目录里点「浏览文件」（key 从 null 到 null）不会触发任何变化，
   // 用户看到的是**什么都没发生**——而他刚刚明明点了一下。
-  fileDrawer.value = { key, nonce: Date.now() }
+  // 名字与格式跟着 key 一起带过去：产物在临时区的 key 是 artifact_id，
+  // 抽屉光看它猜不出该用哪个渲染器（见 FileDrawer.initialEntry）
+  fileDrawer.value = { key, seed: seed ?? null, nonce: Date.now() }
 }
 
 /** 正在挑知识库的那份产物（点「存进知识库」之后）。``null`` = 弹窗没开。 */
@@ -1162,44 +1195,14 @@ async function resumeTurn(turnIndex: number): Promise<void> {
 
   resuming.value = true
   patchMessage(index, { text: '', error: '', streaming: true })
-  try {
-    const handle = await resumeStream(
-      id,
-      { skill_names: pinnedSkills.value },
-      {
-        onStep: (step) =>
-          patchMessage(index, { steps: mergeStep(messages.value[index]?.steps ?? [], step) }),
-        onSources: (items) => patchMessage(index, { sources: items }),
-        onThinking: (chunk) =>
-          patchMessage(index, {
-            thinkingText: (messages.value[index]?.thinkingText ?? '') + chunk,
-          }),
-        onDelta: (delta) =>
-          patchMessage(index, { text: (messages.value[index]?.text ?? '') + delta }),
-        onDone: (answer) => {
-          patchMessage(index, { text: answer, streaming: false })
-          finish()
-        },
-        onError: (message) => {
-          patchMessage(index, { error: message, streaming: false })
-          finish()
-        },
-      },
-    )
-    stream.value = handle
-    if (unmounted) {
-      handle.abort()
-      finish()
-    }
-  } catch (cause) {
-    if (!isAbortError(cause)) {
-      patchMessage(index, {
-        error: cause instanceof Error ? cause.message : '续跑失败',
-        streaming: false,
-      })
-    }
-    finish()
-  }
+  // 与发送同一条纪律（v0.41）：流归 `useLiveTurn` 管，切页不丢。
+  // `mode: 'patch'` 表示改的是**这一条已有的回答**，回来重放时不该补新的一轮。
+  await startResumeTurn(
+    id,
+    { skill_names: pinnedSkills.value },
+    { thinking: { enabled: thinkingOn.value, effort: thinkingEffort.value } },
+  )
+  resuming.value = false
 }
 
 /**
@@ -1359,6 +1362,34 @@ function citeChipOf(target: EventTarget | null): number | null {
 }
 
 /**
+ * 出处列表默认只铺**前几条**（v0.41，用户报的第 13 条）。
+ *
+ * 原来它是整段铺开的：一次检索命中上百个片段时，回答下面会接一条比回答还长的
+ * 出处墙——用户的原话是"导致很长的会话"。**不是把它藏起来**：
+ * 前几条照旧永远显示（回答有没有依据是这一页存在的理由），多出来的折成一行
+ * 「还有 N 条」，要看再点开。点行内徽标 [n] 落到折叠区里的那一条时会自动展开
+ * （见 `revealSource`），否则会滚到一个不存在的节点上。
+ */
+const CITE_FOLD_LIMIT = 3
+const expandedCites = ref<Set<number>>(new Set())
+
+function citesExpanded(turnIndex: number): boolean {
+  return expandedCites.value.has(turnIndex)
+}
+
+function toggleCites(turnIndex: number): void {
+  const next = new Set(expandedCites.value)
+  if (next.has(turnIndex)) next.delete(turnIndex)
+  else next.add(turnIndex)
+  expandedCites.value = next
+}
+
+/** 这一轮眼下要渲染哪几条出处。 */
+function shownSources(turnIndex: number, sources: ChatSource[]): ChatSource[] {
+  return citesExpanded(turnIndex) ? sources : sources.slice(0, CITE_FOLD_LIMIT)
+}
+
+/**
  * 点行内引用徽标：展开过程面板 → 滚到那一条出处 → 闪一下。
  *
  * 三步缺一不可：只展开不滚，用户还得自己在面板里找"3 是哪个"；
@@ -1369,6 +1400,8 @@ async function revealSource(turnIndex: number, sourceIndex: number): Promise<voi
   const turn = turns.value[turnIndex]
   if (!turn?.reply || !Number.isInteger(sourceIndex)) return
   turn.reply.traceOpen = true
+  // 那一条可能在折叠区里：不先展开就会滚到一个不存在的节点上（点了像没反应）
+  if (!citesExpanded(turnIndex)) toggleCites(turnIndex)
   flashCite.value = `${turnIndex}:${sourceIndex}`
   await nextTick()
   const host = streamHost.value
@@ -1853,7 +1886,7 @@ function closeReader(): void {
                   <!-- 逐条出处：行内徽标点进来会滚到对应这一条 -->
                   <ol v-if="turn.reply.sources.length" class="cites">
                     <li
-                      v-for="source in turn.reply.sources"
+                      v-for="source in shownSources(turnIndex, turn.reply.sources)"
                       :key="source.chunk_id"
                       class="cite"
                       :class="{ 'cite-flash': flashCite === `${turnIndex}:${source.index}` }"
@@ -1877,6 +1910,20 @@ function closeReader(): void {
                         </button>
                       </div>
                       <p class="cite-preview">{{ sourcePreview(source) }}</p>
+                    </li>
+                    <!-- 多出来的折成一行：点开才铺（命中上百条时那段墙比回答还长） -->
+                    <li v-if="turn.reply.sources.length > CITE_FOLD_LIMIT" class="cite-fold">
+                      <button
+                        type="button"
+                        class="cite-fold-toggle"
+                        @click="toggleCites(turnIndex)"
+                      >
+                        {{
+                          citesExpanded(turnIndex)
+                            ? '收起出处'
+                            : `还有 ${turn.reply.sources.length - CITE_FOLD_LIMIT} 条出处`
+                        }}
+                      </button>
                     </li>
                   </ol>
                 </div>
@@ -1938,14 +1985,22 @@ function closeReader(): void {
                   改之前它们挂在各自那一步下面——交付物出现在过程面板**中间**，
                   要往下翻十来步工具调用才看得到，而面板一收起卡片就跟着没了。
                   交付物是这个回合的**结果**，不是过程的中间产物。
+
+                  **流式中先不摆**（v0.41，用户报的第 5 条）：导出那一步一跑完，
+                  卡片就冒出来了，而正文还在一个字一个字地出——看起来像"回答还没写完，
+                  东西就先交了"。现在等这一轮收尾（`streaming` 变假）再一起交付；
+                  过程面板里那一步照旧写着「导出文档 · 已导出」，中间状态并不丢。
                 -->
-                <ul v-if="replyArtifacts(turn).length" class="deliverables">
+                <ul
+                  v-if="replyArtifacts(turn).length && !turn.reply.streaming"
+                  class="deliverables"
+                >
                   <li v-for="file in replyArtifacts(turn)" :key="file.artifact_id" class="artifact">
                     <span class="artifact-icon">{{ file.format.toUpperCase() }}</span>
                     <button
                       type="button"
                       class="artifact-main"
-                      @click="openFiles(file.artifact_id)"
+                      @click="openFiles(file.artifact_id, { name: file.name, kind: file.format })"
                     >
                       <span class="artifact-body">
                         <span class="artifact-name">{{ file.name }}</span>
@@ -2287,6 +2342,11 @@ function closeReader(): void {
       :key="`${conversationId}-${fileDrawer.nonce}`"
       :conversation-id="conversationId"
       :initial-key="fileDrawer.key"
+      :initial-entry="
+        fileDrawer.seed && fileDrawer.key
+          ? { key: fileDrawer.key, name: fileDrawer.seed.name, kind: fileDrawer.seed.kind }
+          : null
+      "
       @close="fileDrawer = null"
     />
 
@@ -2631,11 +2691,17 @@ function closeReader(): void {
 
 /* 交付物卡片（v0.25 起，v0.26 从步骤里搬到正文后面）。
    **不做成图标按钮**：文件是"结果"，不是"操作"——它该占一条完整的行，
-   把文件名与大小摆出来（用户要先确认这是不是他要的那份，才谈得上下载）。 */
-.artifacts {
+   把文件名与大小摆出来（用户要先确认这是不是他要的那份，才谈得上下载）。
+
+   宽度与正文对齐（v0.41）：这一块与 `.reply-text` 用同一个 `--measure`，
+   卡片铺满它。**类名这里曾经写错过**——模板上是 `.deliverables`，CSS 写的是
+   `.artifacts`，于是这段（含 `list-style: none` 与宽度）一直没生效，
+   卡片比正文窄一截、还带列表圆点（用户报的"卡片与文段宽度对齐"）。 */
+.deliverables {
   margin: var(--space-2) 0 0;
   padding: 0;
   list-style: none;
+  max-width: var(--measure);
 }
 
 /* v0.26：卡片成了**一个框里两件事**（下载 / 存进知识库），所以外框在 li 上，
@@ -2646,7 +2712,6 @@ function closeReader(): void {
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  max-width: 460px;
   min-height: 48px;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-hairline);
@@ -3327,6 +3392,25 @@ function closeReader(): void {
   color: var(--text-secondary);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+}
+
+/* 折叠那一行：与出处同宽的一行安静按钮——它是"还有更多"的入口，
+   不该抢走前几条出处的注意力 */
+.cite-fold {
+  margin-top: var(--space-1);
+}
+
+.cite-fold-toggle {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-control);
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+  transition: var(--transition-ui);
+}
+
+.cite-fold-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 /* "看全文"是低频动作：字号与颜色都压到最低，只在悬停时给下划线 */

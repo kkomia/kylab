@@ -54,45 +54,50 @@ const detailIsRawJson = computed(() => /^\s*\{\s*"[\w.]+"\s*:/.test(props.step.d
       <component :is="icons[step.icon]" :size="13" />
     </span>
     <div class="step-body">
-      <!--
-        **组内的一次调用不再重复工具名**（v0.26）：外面那一行已经写着「联网搜索 8 次」，
-        里面八行各再写一遍「联网搜索」只是把同一个词印八次。这里直接给**结果本身**
-        （detail：查的什么词、命中几条），要展开原文就点左边那个箭头。
-        没有 detail 的（少数工具不给自己的人话摘要）才退回显示标签。
-      -->
-      <button
-        v-if="hasDetail && variant === 'child'"
-        type="button"
-        class="step-child-toggle"
-        :aria-expanded="open"
-        :aria-label="`${step.label}的原文`"
-        @click="emit('toggle')"
-      >
-        <IconChevronDown class="step-caret" :class="{ 'step-caret-open': open }" :size="12" />
-      </button>
+      <!-- **第一行**：箭头/标签 + 结论。展开的原文是它的**下一块**（v0.41 之前两者并排，
+           长结论一换行就被「入参/返回」压住——用户截图报的就是这个）。
+           这样分还有一个好处：原文占满整列宽度，JSON 与网页正文都读得顺。 -->
+      <div class="step-line">
+        <!--
+          **组内的一次调用不再重复工具名**（v0.26）：外面那一行已经写着「联网搜索 8 次」，
+          里面八行各再写一遍「联网搜索」只是把同一个词印八次。这里直接给**结果本身**
+          （detail：查的什么词、命中几条），要展开原文就点左边那个箭头。
+          没有 detail 的（少数工具不给自己的人话摘要）才退回显示标签。
+        -->
+        <button
+          v-if="hasDetail && variant === 'child'"
+          type="button"
+          class="step-child-toggle"
+          :aria-expanded="open"
+          :aria-label="`${step.label}的原文`"
+          @click="emit('toggle')"
+        >
+          <IconChevronDown class="step-caret" :class="{ 'step-caret-open': open }" :size="12" />
+        </button>
 
-      <!--
+        <!--
         有原文的那一步是**可点的**（v0.25，照 Kimi）：默认只显示 `detail` 那一行结论
         （「命中 8 段」），点开才看模型传了什么参数、工具返回了什么。只给结论的话，
         用户没法判断"检索知识库"这次查的是什么词、为什么没命中。
       -->
-      <button
-        v-else-if="hasDetail"
-        type="button"
-        class="step-label step-toggle"
-        :aria-expanded="open"
-        @click="emit('toggle')"
-      >
-        {{ step.label }}
-        <IconChevronDown class="step-caret" :class="{ 'step-caret-open': open }" :size="12" />
-      </button>
-      <p v-else-if="!(variant === 'child' && step.detail)" class="step-label">
-        {{ step.label }}
-      </p>
-      <!-- 结论里全是网址（搜索结果的 [1] … https://…）：**渲染成可点的链接**（v0.26）。
-           这些是工具的原始摘要、不是 Markdown，所以走 `LinkText` 而不是 Markdown 渲染器——
-           套一层 Markdown 会把摘要里的 `*`、`_`、`|` 当成标记吃掉。 -->
-      <LinkText v-if="step.detail && !detailIsRawJson" class="step-detail" :text="step.detail" />
+        <button
+          v-else-if="hasDetail"
+          type="button"
+          class="step-label step-toggle"
+          :aria-expanded="open"
+          @click="emit('toggle')"
+        >
+          {{ step.label }}
+          <IconChevronDown class="step-caret" :class="{ 'step-caret-open': open }" :size="12" />
+        </button>
+        <p v-else-if="!(variant === 'child' && step.detail)" class="step-label">
+          {{ step.label }}
+        </p>
+        <!-- 结论里全是网址（搜索结果的 [1] … https://…）：**渲染成可点的链接**（v0.26）。
+             这些是工具的原始摘要、不是 Markdown，所以走 `LinkText` 而不是 Markdown 渲染器——
+             套一层 Markdown 会把摘要里的 `*`、`_`、`|` 当成标记吃掉。 -->
+        <LinkText v-if="step.detail && !detailIsRawJson" class="step-detail" :text="step.detail" />
+      </div>
 
       <!-- 入参与返回是**原始载荷**（JSON / 工具正文），所以走等宽 `<pre>`，
            但里面的网址同样要能点（v0.26）——搜索结果的**完整地址只在这一层**，
@@ -128,6 +133,12 @@ const detailIsRawJson = computed(() => /^\s*\{\s*"[\w.]+"\s*:/.test(props.step.d
   color: var(--text-tertiary);
 }
 
+/* 第一行：图标位之外的那条线（箭头/标签 + 结论）。
+   **展开的原文不是它的一部分**——原文是下面独立的一块（见 `.step-raw`）。 */
+.step-line {
+  min-width: 0;
+}
+
 .step-detail {
   /* `LinkText` 的根是个 `<span>`，而这里要的是**独占一行**（标签可能是 inline-flex 的按钮）。
      不给 `display: block` 的话，结论会跟在标签后面同一行上。 */
@@ -138,18 +149,8 @@ const detailIsRawJson = computed(() => /^\s*\{\s*"[\w.]+"\s*:/.test(props.step.d
   overflow-wrap: anywhere;
 }
 
-/* 可点的那一步：标签本身就是按钮。**不加下划线也不加底色**——
-   整块过程面板里已经有"有没有收获"的层级（`.step-empty` 的弱化），
-   再给每行加一个可点的装饰，这一列会变成一排按钮。
-
-
-
-
 /* 原文（入参 / 返回）：**限高滚动**。它动辄上千字，全铺出来会把过程面板
    变成一屏 JSON——那正是这一轮要摆脱的东西。 */
-/* 原文（入参 / 返回）：**限高滚动**。它动辄上千字，全铺出来会把过程面板
-   变成一屏 JSON——那正是这一轮要摆脱的东西。 */
-
 .step-raw {
   margin: var(--space-1) 0 0;
 }
@@ -182,16 +183,22 @@ const detailIsRawJson = computed(() => /^\s*\{\s*"[\w.]+"\s*:/.test(props.step.d
 
 /* 组内那一次的布局：箭头（可点）+ 结果。**箭头在左**，
    与上面那一行的图标位对齐——一列竖着看下来是一条线。 */
-.step-child .step-body {
+.step-child .step-line {
   display: flex;
   align-items: flex-start;
   gap: var(--space-1);
 }
 
+/* 组内那一次的结论**只占一行**（v0.41）：它是"查的什么词 + 命中几条 + 第一条的标题与网址"，
+   放开了就是两三行，一屏里十几次调用会把这栏糊成一面墙（用户截图里的样子）。
+   完整内容一个字不少——在展开的「返回」里。 */
 .step-child .step-detail {
-  margin-top: 0;
   flex: 1;
   min-width: 0;
+  margin-top: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .step-child-toggle {
@@ -213,11 +220,10 @@ const detailIsRawJson = computed(() => /^\s*\{\s*"[\w.]+"\s*:/.test(props.step.d
   background: var(--bg-hover);
 }
 
-/* 展开的原文（入参 / 返回）在孩子里也要占满右边那一列，不能被箭头挤成窄条 */
+/* 展开的原文在孩子里**占满整列**（它已经是 `.step-line` 的下一块，
+   不再是同一行里的兄弟——见模板里那段注释）。 */
 .step-child .step-raw {
-  flex: 1;
-  min-width: 0;
-  margin-top: 0;
+  margin-top: var(--space-1);
 }
 
 .step-dot {

@@ -88,3 +88,16 @@ HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogEleme
 HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement): void {
   this.open = false
 }
+
+/**
+ * **jsdom 不实现 `scrollIntoView`**（连空函数都没有，属性直接不存在）。
+ *
+ * 点行内引用徽标那一步会调它（把视线滚到对应的出处），于是任何走到那条路的用例
+ * 都会以"未处理拒绝"的形态把整套测试判红——而这跟被测代码没关系。
+ * 与上面几条同一个处置：**在全局补一次**，别让每个用例自己记得。
+ *
+ * 注意它只是个空实现：这个桩**测不了**"有没有真的滚过去"，想验滚动位置得在真浏览器里做。
+ */
+if (typeof Element.prototype.scrollIntoView !== 'function') {
+  Element.prototype.scrollIntoView = function scrollIntoView(): void {}
+}

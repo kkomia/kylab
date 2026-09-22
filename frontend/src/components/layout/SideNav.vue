@@ -102,6 +102,10 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onShortcut)
+  // **预热那一枪也要撤回**：它在回调里碰四个 store，组件没了（退出登录、
+  // 或测试里换了替身）还去跑，轻则白做、重则抛 `xxx is not a function`
+  // ——这个定时器以前没撤，`pnpm test` 里以"未处理异常"的形态冒出来过。
+  cancelTaskPrefetch()
 })
 
 /**
@@ -127,8 +131,27 @@ function scheduleTaskPrefetch(): void {
       requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number
     }
   ).requestIdleCallback
-  if (typeof idle === 'function') idle(run, { timeout: 1500 })
-  else window.setTimeout(run, 1200)
+  if (typeof idle === 'function') {
+    idleHandle = idle(run, { timeout: 1500 })
+    idleIsTimeout = false
+  } else {
+    idleHandle = window.setTimeout(run, 1200)
+    idleIsTimeout = true
+  }
+}
+
+/// 预热那一枪的句柄与"它是 idle 还是 timeout"（两者的取消函数不同）
+let idleHandle: number | null = null
+let idleIsTimeout = false
+
+/** 撤回还没跑的那一枪（见 `onBeforeUnmount`）。 */
+function cancelTaskPrefetch(): void {
+  if (idleHandle === null) return
+  const cancelIdle = (window as Window & { cancelIdleCallback?: (handle: number) => void })
+    .cancelIdleCallback
+  if (!idleIsTimeout && typeof cancelIdle === 'function') cancelIdle(idleHandle)
+  else window.clearTimeout(idleHandle)
+  idleHandle = null
 }
 
 /**

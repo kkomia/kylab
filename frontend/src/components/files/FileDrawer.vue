@@ -40,6 +40,15 @@ const props = defineProps<{
   conversationId: string
   /** 一打开就预览这份（从产物卡片点进来时给）。不给就是直接看目录。 */
   initialKey?: string | null
+  /**
+   * 那份文件的**名字与种类**（v0.41）。
+   *
+   * 为什么必须由调用方给：产物在临时区的 key 就是 `artifact_id`——一串没有后缀的
+   * 标识符。只按下标猜扩展名，`FilePreview` 会判成"没有可用的渲染器"，
+   * 于是点「预览」得到一句「这个格式不能在这里预览」，而同一份文件从工作区
+   * （那边列表里有真名字）点开却好好的（用户报的就是这个）。
+   */
+  initialEntry?: { key: string; name: string; kind: string } | null
 }>()
 
 const emit = defineEmits<{ close: [] }>()
@@ -92,15 +101,17 @@ async function openInitial(): Promise<void> {
     previewing.value = entry
     return
   }
-  // 不在当前这一层（工作区里的子目录）——构造一份最小条目直接预览：
-  // 预览只用到 key / name / kind，而这三样调用方都给了
+  // 不在当前这一层（工作区里的子目录）——构造一份最小条目直接预览。
+  // **名字与格式优先用调用方给的那份**：产物在临时区的 key 是 artifact_id，
+  // 从它身上猜不出扩展名（见 `initialEntry` 的说明）
+  const seed = props.initialEntry?.key === key ? props.initialEntry : null
   previewing.value = {
     key,
-    name: key.split('/').pop() || key,
+    name: seed?.name || key.split('/').pop() || key,
     is_dir: false,
     size_bytes: 0,
     modified_at: null,
-    kind: (key.split('.').pop() || '').toLowerCase(),
+    kind: seed?.kind || (key.split('.').pop() || '').toLowerCase(),
   }
 }
 

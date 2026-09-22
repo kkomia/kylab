@@ -115,6 +115,7 @@ vi.mock('@/api/documents', async (importOriginal) => {
   }
 })
 
+import { clearLiveTurn, liveTurnState } from '@/composables/useLiveTurn'
 import { clearConversationDetailCache, useConversationStore } from '@/stores/conversations'
 import ChatView from '@/views/ChatView.vue'
 
@@ -288,6 +289,11 @@ beforeEach(() => {
   pinia = createPinia()
   setActivePinia(pinia)
   clearConversationDetailCache()
+  // **「正在流的那一轮」是模块级状态**（v0.41 起流归 `useLiveTurn` 管，见那个模块的头注释）：
+  // 它不随组件卸载消失，所以用例之间会互相传染——上一轮用例把某一轮留在"流式中"，
+  // 下一个用例一挂载就被它判成"sending"，发送直接 early-return，看起来像功能坏了。
+  // 与 localStorage 同一类问题：**应用级状态，用例里必须自己清**。
+  clearLiveTurn()
   vi.clearAllMocks()
   // 「使用知识库」与钉住的技能是**落 localStorage 的偏好**，而 jsdom 的 localStorage
   // 在同一个文件里的用例之间是共享的——不清就会出现"上一个用例把开关关了，
@@ -762,6 +768,131 @@ describe('引用文档抽屉', () => {
     wrapper.unmount()
   })
 
+  it('流式中切走再回来：这一轮还在（v0.41，用户报的第 4 条）', async () => {
+    // 用户报的现象：回答写到一半切去笔记页，回来这一轮就没了。
+    // 根因是"流的所有权跟着页面走"——卸载时 abort、消息数组又是组件局部的。
+    // 现在流归 `useLiveTurn`（模块作用域），页面来去自由。
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    const abort = vi.fn()
+    let handlers: {
+      onThinking: (chunk: string) => void
+      onDelta: (chunk: string) => void
+      onDone: (answer: string) => void
+    } | null = null
+    chatStream.mockImplementation((_payload: unknown, h: never) => {
+      handlers = h
+      return Promise.resolve({ abort })
+    })
+
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+    await wrapper.find('.composer-field').setValue('查一下')
+    await wrapper.find('.send-btn').trigger('click')
+    await flushPromises()
+    handlers!.onThinking('先看看库里有什么')
+    handlers!.onDelta('半截回答')
+    await flushPromises()
+    expect(wrapper.text()).toContain('半截回答')
+
+    // **离开这一页**：不该掐掉流（掐掉的话后端那一轮也白跑了）
+    wrapper.unmount()
+    expect(abort).not.toHaveBeenCalled()
+
+    // 人走了，字还在进（服务端照跑，模块照收）
+    handlers!.onDelta('，继续写')
+    await flushPromises()
+
+    // 回来：这一轮仍在画面上，且带着离开期间流出来的那部分
+    const again = await mountAt('/chat/c1')
+    await flushPromises()
+    expect(again.wrapper.text()).toContain('半截回答')
+    expect(again.wrapper.text()).toContain('继续写')
+
+    // 这一轮写完（后端此刻才落库）：再回来就是**库里那份**，不再挂临时的那一轮。
+    // 替身要在 `onDone` **之前**就跟上——真服务端在这一刻已经有这条消息了，
+    // 而收尾那一跳（`finish` → `refreshDetail`）会拿它把缓存校准一次。
+    const stored = chatDetail('c1')
+    getConversation.mockResolvedValue({
+      ...stored,
+      kb_ids: ['kb_1'],
+      messages: [stored.messages[0], { ...stored.messages[1], content: '半截回答，继续写。' }],
+    })
+    handlers!.onDone('半截回答，继续写。')
+    await flushPromises()
+    // 探针：模块收到 done 了吗
+    expect(liveTurnState.value).toMatchObject({ streaming: false, text: '半截回答，继续写。' })
+    expect(again.wrapper.text()).toContain('半截回答，继续写。')
+    again.wrapper.unmount()
+    const third = await mountAt('/chat/c1')
+    await flushPromises()
+    expect(third.wrapper.text()).toContain('半截回答，继续写。')
+    // 而且**没有多出一轮**：临时那一轮该被忘掉（否则回来会看到两份回答）
+    expect(third.wrapper.findAll('.turn')).toHaveLength(1)
+    third.wrapper.unmount()
+  })
+
+  it('出处很多时只铺前几条，其余折成一行「还有 N 条」（v0.41，第 13 条）', async () => {
+    // 用户报的现象：一次检索命中上百个片段，回答下面接了一条比回答还长的出处墙。
+    // 现在的规矩：**前几条永远显示**（有没有依据是这一页存在的理由），多出来的折起来。
+    const many = detailWithSource('c50')
+    const first = many.messages[1].sources[0]
+    many.messages[1].sources = Array.from({ length: 12 }, (_, i) => ({
+      ...first,
+      index: i + 1,
+      chunk_id: `chunk${i + 1}`,
+      document_name: `资料${i + 1}.pdf`,
+    }))
+    getConversation.mockResolvedValue(many)
+
+    const { wrapper } = await mountAt('/chat/c50')
+    await flushPromises()
+
+    const before = wrapper.findAll('.cite')
+    expect(before).toHaveLength(3)
+    expect(wrapper.text()).toContain('资料3.pdf')
+    expect(wrapper.text()).not.toContain('资料4.pdf')
+    expect(wrapper.find('.cite-fold-toggle').text()).toContain('还有 9 条出处')
+
+    await wrapper.find('.cite-fold-toggle').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.cite')).toHaveLength(12)
+    expect(wrapper.text()).toContain('资料12.pdf')
+    expect(wrapper.find('.cite-fold-toggle').text()).toContain('收起出处')
+
+    await wrapper.find('.cite-fold-toggle').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.cite')).toHaveLength(3)
+    wrapper.unmount()
+  })
+
+  it('点行内徽标落到折叠区里的那一条时，先把出处展开（否则滚到不存在的节点）', async () => {
+    const many = detailWithSource('c51')
+    const first = many.messages[1].sources[0]
+    many.messages[1].content = '结论在这里[8]。'
+    many.messages[1].sources = Array.from({ length: 10 }, (_, i) => ({
+      ...first,
+      index: i + 1,
+      chunk_id: `chunk${i + 1}`,
+      document_name: `资料${i + 1}.pdf`,
+    }))
+    getConversation.mockResolvedValue(many)
+
+    const { wrapper } = await mountAt('/chat/c51')
+    await flushPromises()
+
+    // 第 8 条默认在折叠区里
+    expect(wrapper.find('[data-source="8"]').exists()).toBe(false)
+    const chip = wrapper.find('[data-cite-index="8"]')
+    expect(chip.exists()).toBe(true)
+    await chip.trigger('click')
+    await flushPromises()
+
+    // 展开之后它才在 DOM 里（滚动那一步才有落点）
+    expect(wrapper.find('[data-source="8"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('输入框上不再有「提示词」入口（v0.19：它搬到知识库里了）', async () => {
     // 用户要求：对话界面的提示词系统去掉，改由知识库设置。
     // 这条钉的是"去掉"这件事本身——留着入口会让人以为还在这里配。
@@ -1034,6 +1165,14 @@ describe('产出物卡片（v0.26）', () => {
     // `waitFor` 而不是一次 flush：抽屉是**异步组件**，动态 import 要多等一拍
     await vi.waitFor(() => expect(wrapper.find('.drawer-backdrop').exists()).toBe(true))
     expect(wrapper.findComponent({ name: 'FileDrawer' }).props('initialKey')).toBe('art_1')
+    // **名字与格式也要一起给**（v0.41）：产物在临时区的 key 就是 artifact_id，
+    // 抽屉光看它猜不出扩展名 → 预览会判成"没有可用的渲染器"，用户看到"无法预览"
+    // （而从工作区点开同一份却正常，因为那边列表里有真名字）。用户报的就是这个。
+    expect(wrapper.findComponent({ name: 'FileDrawer' }).props('initialEntry')).toMatchObject({
+      key: 'art_1',
+      name: '短诗.docx',
+      kind: 'docx',
+    })
     wrapper.unmount()
   })
 

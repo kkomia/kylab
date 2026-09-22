@@ -107,9 +107,16 @@ vi.mock('vue-router', async () => {
 vi.mock('@/stores/conversations', () => ({ useConversationStore: () => conversations }))
 vi.mock('@/stores/workspaces', () => ({ useWorkspaceStore: () => workspaces }))
 vi.mock('@/stores/knowledgeBases', () => ({ useKnowledgeBaseStore: () => knowledgeBases }))
-vi.mock('@/stores/tasks', () => ({ useTaskStore: () => ({ load: vi.fn() }) }))
-vi.mock('@/stores/stats', () => ({ useStatsStore: () => ({ load: vi.fn() }) }))
-vi.mock('@/stores/modelRegistry', () => ({ useModelRegistryStore: () => ({ load: vi.fn() }) }))
+// 替身要认下 store 的**整个接口**：侧栏挂载后会安排一次「空闲预热」，那一枪在用例
+// 结束之后才响，替身少一个方法就会以「未处理异常」的形态把整套测试判红
+// （与功能无关，但门禁真的会因此返回非零——这里就是被它咬到之后补的）。
+vi.mock('@/stores/tasks', () => ({ useTaskStore: () => ({ load: vi.fn(), prefetch: vi.fn() }) }))
+vi.mock('@/stores/stats', () => ({
+  useStatsStore: () => ({ load: vi.fn(), prefetch: vi.fn() }),
+}))
+vi.mock('@/stores/modelRegistry', () => ({
+  useModelRegistryStore: () => ({ load: vi.fn(), prefetch: vi.fn() }),
+}))
 vi.mock('@/composables/useOperator', () => ({
   loadRoster: vi.fn(),
   roster: { value: [] },
