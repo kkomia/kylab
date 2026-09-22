@@ -465,7 +465,21 @@ watch(
   height: 100%;
 }
 
+/* 工具栏吸顶：正文再长也不必滚回顶部去点格式按钮。
+ *
+ * 滚动容器**不是 `.editor-body`**（它 `height: auto`、随内容长高，本身不滚），
+ * 而是外层布局的 `main.content`（`overflow-y: auto`，见 App.vue）。
+ * 所以这里用 `sticky`：相对最近的可滚动祖先吸附，而 `.toolbar` 到 `main.content`
+ * 之间（`.notes-page` / `.notes-layout` / `.notes-pane` / `.note-editor`）都没有
+ * `overflow: hidden` 之类的裁剪，不会被剪掉。
+ *
+ * `z-index` 是必需的：正文在换笔记时带 `opacity` 过渡，那个不透明度会让
+ * `.editor-body` 自成一个层叠上下文；不给一个正的层级，它就会盖在工具栏上。
+ * 背景必须是不透明色（`--bg-surface` 两套主题都是实色），否则滚动时正文会透出来。 */
 .toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
   flex-wrap: wrap;
   align-items: center;

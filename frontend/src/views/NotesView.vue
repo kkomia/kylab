@@ -15,6 +15,8 @@ import { useRoute, useRouter } from 'vue-router'
 import type { Note, NoteAiAction, NoteListItem } from '@/api/notes'
 import { aiTransform } from '@/api/notes'
 import IconCheck from '@/components/icons/IconCheck.vue'
+import IconChevronLeft from '@/components/icons/IconChevronLeft.vue'
+import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconPin from '@/components/icons/IconPin.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
@@ -85,6 +87,43 @@ const deleteOpen = ref(false)
 const deleting = ref(false)
 
 const editorRef = ref<InstanceType<typeof NoteEditor> | null>(null)
+
+/**
+ * 列表折叠（本机偏好）。
+ *
+ * 与侧栏折叠同一类东西——**"这台机器怎么显示"**，所以落 `localStorage`，
+ * 不进后端设置；换台机器该重新选。
+ *
+ * 折叠态做成一条窄导轨而不是整列消失：**回来的入口必须留在原地**，
+ * 否则想看列表就得先猜"从哪儿能把它叫回来"。
+ */
+const NOTES_LIST_COLLAPSED_STORAGE_KEY = 'kylab-notes-list-collapsed'
+
+function readListCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(NOTES_LIST_COLLAPSED_STORAGE_KEY) === '1'
+  } catch {
+    // 隐私模式下 localStorage 不可读：退化成"展开"
+    return false
+  }
+}
+
+/** 初值就来自存储：**刷新之后保持折叠**，而不是先展开再收起来（那会闪一下）。 */
+const listCollapsed = ref(readListCollapsed())
+
+function setListCollapsed(next: boolean): void {
+  listCollapsed.value = next
+  try {
+    if (next) window.localStorage.setItem(NOTES_LIST_COLLAPSED_STORAGE_KEY, '1')
+    else window.localStorage.removeItem(NOTES_LIST_COLLAPSED_STORAGE_KEY)
+  } catch {
+    // 存不上就只在本次会话生效
+  }
+}
+
+function toggleListCollapsed(): void {
+  setListCollapsed(!listCollapsed.value)
+}
 
 const kbOptions = computed(() => kbs.items.map((kb) => ({ value: kb.id, label: kb.name })))
 const activeKbName = computed(() => kbs.byId(draft.value?.kb_id ?? '')?.name ?? '')
@@ -582,70 +621,88 @@ onBeforeUnmount(() => {
   <!-- 刻意不用 PageShell：这一页的第一屏应当是"列表头 + 编辑器工具栏"，
        而不是通用页头（大标题 + 说明）。工具型界面里那两行只是占地方。 -->
   <div class="notes-page">
-    <div class="notes-layout">
+    <div class="notes-layout" :class="{ 'list-collapsed': listCollapsed }">
       <aside class="notes-list">
         <div class="list-head">
-          <p class="list-title">
-            全部<span class="list-count tabular">{{ store.total }}</span>
-          </p>
-          <button type="button" class="icon-action" title="新建笔记" @click="createNew">
-            <IconPlus :size="16" />
-          </button>
-        </div>
-
-        <div class="search-box">
-          <IconSearch :size="14" class="search-icon" />
-          <AppInput v-model="searchInput" placeholder="搜索标题与正文" aria-label="搜索笔记" />
-        </div>
-
-        <div v-if="store.tags.length" class="tag-bar">
+          <template v-if="!listCollapsed">
+            <p class="list-title">
+              全部<span class="list-count tabular">{{ store.total }}</span>
+            </p>
+            <button type="button" class="icon-action" title="新建笔记" @click="createNew">
+              <IconPlus :size="16" />
+            </button>
+          </template>
+          <!-- 折叠开关：箭头指向"列表会往哪边收"，展开态在右、折叠态独居导轨中央 -->
           <button
-            v-for="item in store.tags"
-            :key="item.tag"
             type="button"
-            class="tag-chip"
-            :class="{ 'tag-on': store.activeTag === item.tag }"
-            @click="toggleTag(item.tag)"
+            class="icon-action collapse-toggle"
+            :title="listCollapsed ? '展开列表' : '折叠列表'"
+            :aria-label="listCollapsed ? '展开笔记列表' : '折叠笔记列表'"
+            :aria-expanded="!listCollapsed"
+            @click="toggleListCollapsed"
           >
-            {{ item.tag }}<span class="tag-count tabular">{{ item.count }}</span>
+            <IconChevronRight v-if="listCollapsed" :size="16" />
+            <IconChevronLeft v-else :size="16" />
           </button>
         </div>
 
-        <p v-if="store.error" class="list-hint list-error">{{ store.error }}</p>
-        <EmptyState
-          v-else-if="!store.loading && !store.items.length"
-          title="还没有笔记"
-          hint="点右上角的 + 写第一条"
-        />
-        <div v-else class="note-groups">
-          <section v-for="group in groups" :key="group.label" class="note-group">
-            <p class="group-label">{{ group.label }}</p>
-            <ul class="note-items">
-              <li v-for="item in group.items" :key="item.id">
-                <RouterLink
-                  class="note-item"
-                  :class="{ 'note-item-active': item.id === draft?.id }"
-                  :to="`/notes/${item.id}`"
-                  @pointerenter="onNoteHover(item.id)"
-                  @pointerdown="onNoteHover(item.id)"
-                  @focus="onNoteHover(item.id)"
-                >
-                  <span class="note-item-title">
-                    <IconPin v-if="item.pinned" :size="12" class="pin-icon" />
-                    {{ item.title || '未命名笔记' }}
-                  </span>
-                  <span class="note-item-meta">
-                    <span class="note-item-preview">{{ item.preview || '（空）' }}</span>
-                    <span class="note-item-tail">
-                      <IconLibrary v-if="item.doc_id" :size="12" title="已加入知识库" />
-                      <span class="tabular">{{ shortDate(item) }}</span>
+        <!-- 折叠后整块列表**移出 DOM**（不只是 CSS 藏起来）：导轨里再养着搜索框
+             与上百行列表没有意义，而且它们还得继续跟着 store 变化重渲染 -->
+        <template v-if="!listCollapsed">
+          <div class="search-box">
+            <IconSearch :size="14" class="search-icon" />
+            <AppInput v-model="searchInput" placeholder="搜索标题与正文" aria-label="搜索笔记" />
+          </div>
+
+          <div v-if="store.tags.length" class="tag-bar">
+            <button
+              v-for="item in store.tags"
+              :key="item.tag"
+              type="button"
+              class="tag-chip"
+              :class="{ 'tag-on': store.activeTag === item.tag }"
+              @click="toggleTag(item.tag)"
+            >
+              {{ item.tag }}<span class="tag-count tabular">{{ item.count }}</span>
+            </button>
+          </div>
+
+          <p v-if="store.error" class="list-hint list-error">{{ store.error }}</p>
+          <EmptyState
+            v-else-if="!store.loading && !store.items.length"
+            title="还没有笔记"
+            hint="点右上角的 + 写第一条"
+          />
+          <div v-else class="note-groups">
+            <section v-for="group in groups" :key="group.label" class="note-group">
+              <p class="group-label">{{ group.label }}</p>
+              <ul class="note-items">
+                <li v-for="item in group.items" :key="item.id">
+                  <RouterLink
+                    class="note-item"
+                    :class="{ 'note-item-active': item.id === draft?.id }"
+                    :to="`/notes/${item.id}`"
+                    @pointerenter="onNoteHover(item.id)"
+                    @pointerdown="onNoteHover(item.id)"
+                    @focus="onNoteHover(item.id)"
+                  >
+                    <span class="note-item-title">
+                      <IconPin v-if="item.pinned" :size="12" class="pin-icon" />
+                      {{ item.title || '未命名笔记' }}
                     </span>
-                  </span>
-                </RouterLink>
-              </li>
-            </ul>
-          </section>
-        </div>
+                    <span class="note-item-meta">
+                      <span class="note-item-preview">{{ item.preview || '（空）' }}</span>
+                      <span class="note-item-tail">
+                        <IconLibrary v-if="item.doc_id" :size="12" title="已加入知识库" />
+                        <span class="tabular">{{ shortDate(item) }}</span>
+                      </span>
+                    </span>
+                  </RouterLink>
+                </li>
+              </ul>
+            </section>
+          </div>
+        </template>
       </aside>
 
       <section class="notes-pane">
@@ -778,6 +835,22 @@ onBeforeUnmount(() => {
   align-items: start;
 }
 
+/* 折叠态：列表收成一条窄导轨（44 = 28px 的按钮 + 两侧各 8px 内边距），
+   省下来的这一栏**整份给正文**——这正是折叠要买的东西。 */
+.notes-layout.list-collapsed {
+  grid-template-columns: 44px minmax(0, 1fr);
+}
+
+.notes-layout.list-collapsed .notes-list {
+  gap: 0;
+  align-items: center;
+  padding: var(--space-2) 0;
+}
+
+.notes-layout.list-collapsed .list-head {
+  justify-content: center;
+}
+
 /* ------------------------------------------------ 列表：扁平 + 时间分组 */
 .notes-list {
   display: flex;
@@ -837,6 +910,12 @@ onBeforeUnmount(() => {
 .icon-action-danger:hover {
   color: var(--status-danger);
   background: var(--danger-soft);
+}
+
+/* 折叠开关比旁边的动作安静一档：它是版式开关，不是"对这条笔记做什么"。
+   必须写在 `.icon-action` 之后——同为单类选择器，靠顺序才能盖过它的次级文字色 */
+.collapse-toggle {
+  color: var(--text-tertiary);
 }
 
 .search-box {
@@ -1120,6 +1199,21 @@ onBeforeUnmount(() => {
 @media (max-width: 900px) {
   .notes-layout {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 单栏下没有"另一栏"可以接收空间，折叠于是只能收成一条**横向**细条：
+     留一条窄列反而既占宽度又什么也放不下 */
+  .notes-layout.list-collapsed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .notes-layout.list-collapsed .notes-list {
+    flex-direction: row;
+    padding: var(--space-1) var(--space-4);
+  }
+
+  .notes-layout.list-collapsed .list-head {
+    justify-content: flex-start;
   }
 
   .notes-list {
