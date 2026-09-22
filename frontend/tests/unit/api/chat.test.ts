@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   chatOnce,
   chatStream,
+  decideApproval,
   isAbortError,
   type ChatHandlers,
   type ChatPayload,
@@ -299,10 +300,115 @@ describe('chatStream', () => {
     }
   })
 
+  it('approval 事件带齐确认条要显示的东西，并且立刻派发', async () => {
+    // 这一条是"后端停下来问了"的唯一信号：漏掉它界面上会什么都没有，
+    // 而那一轮在后端一直等到超时（用户看到的就是"卡住了"）
+    const body = events([
+      {
+        type: 'approval',
+        approval_id: 'ap_1',
+        tool: 'run_command',
+        label: '执行命令',
+        args: 'git status --short',
+        detail: '在 bwrap 隔离里执行；已断网',
+        rule: 'Bash(git:*)',
+        timeout_seconds: 120,
+      },
+      { type: 'done', answer: '' },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sseResponse([body])),
+    )
+
+    const seen: unknown[] = []
+    await chatStream({ query: 'q', kb_ids: [] }, { onApproval: (approval) => seen.push(approval) })
+
+    expect(seen).toEqual([
+      {
+        approval_id: 'ap_1',
+        tool: 'run_command',
+        label: '执行命令',
+        args: 'git status --short',
+        detail: '在 bwrap 隔离里执行；已断网',
+        rule: 'Bash(git:*)',
+        timeout_seconds: 120,
+      },
+    ])
+  })
+
+  it('approval 事件里后端没给的可选字段补成空，界面不必到处判空', async () => {
+    const body = events([
+      { type: 'approval', approval_id: 'ap_2', tool: 'run_command', label: '执行命令', args: 'ls' },
+      { type: 'done', answer: '' },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sseResponse([body])),
+    )
+
+    let got: { detail: string; rule: string; timeout_seconds: number } | null = null
+    await chatStream(
+      { query: 'q', kb_ids: [] },
+      {
+        onApproval: (approval) => {
+          got = approval
+        },
+      },
+    )
+
+    expect(got).toEqual({
+      approval_id: 'ap_2',
+      tool: 'run_command',
+      label: '执行命令',
+      args: 'ls',
+      detail: '',
+      rule: '',
+      timeout_seconds: 0,
+    })
+  })
+
   it('isAbortError 只认 AbortError', () => {
     expect(isAbortError(Object.assign(new Error('x'), { name: 'AbortError' }))).toBe(true)
     expect(isAbortError(new Error('x'))).toBe(false)
     expect(isAbortError(null)).toBe(false)
+  })
+})
+
+describe('decideApproval', () => {
+  it('POST 到那条确认的端点，并把决定原样放进请求体', async () => {
+    // 端点是**按 id 拼出来的**：拼错了等于把决定发给一条不存在的确认（回 409），
+    // 而界面上看起来只是"点了没反应"
+    let url = ''
+    let body = ''
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, init: RequestInit) => {
+        url = input
+        body = String(init.body)
+        return new Response(JSON.stringify({ accepted: true, detail: '' }), { status: 200 })
+      }),
+    )
+
+    const result = await decideApproval('ap 1/2', 'allow_always')
+
+    expect(url).toBe('/api/v1/chat/approvals/ap%201%2F2')
+    expect(JSON.parse(body)).toEqual({ decision: 'allow_always' })
+    expect(result.accepted).toBe(true)
+  })
+
+  it('409（已经超时或点过一次）如实抛出后端那句话，不谎报"已执行"', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ code: 'conflict', message: '这条确认已经失效了' }), {
+            status: 409,
+          }),
+      ),
+    )
+
+    await expect(decideApproval('ap_1', 'allow_once')).rejects.toThrow('这条确认已经失效了')
   })
 })
 

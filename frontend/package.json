@@ -1,7 +1,7 @@
 {
   "name": "kylab-frontend",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "KYLAB 知识库 Web 控制台（Vue 3 + Vite）",
   "scripts": {

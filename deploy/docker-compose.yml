@@ -109,7 +109,7 @@ services:
       # 仓库根那份 .dockerignore 负责挡住 .venv / node_modules / .git。
       context: ..
       dockerfile: backend/Dockerfile
-    image: kylab-backend:${KYLAB_VERSION:-0.2.0}
+    image: kylab-backend:${KYLAB_VERSION:-0.1.1}
     restart: unless-stopped
     depends_on:
       postgres:
@@ -184,7 +184,7 @@ services:
   frontend:
     build:
       context: ../frontend
-    image: kylab-frontend:${KYLAB_VERSION:-0.2.0}
+    image: kylab-frontend:${KYLAB_VERSION:-0.1.1}
     restart: unless-stopped
     depends_on:
       backend:

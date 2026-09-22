@@ -101,3 +101,37 @@ HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement): voi
 if (typeof Element.prototype.scrollIntoView !== 'function') {
   Element.prototype.scrollIntoView = function scrollIntoView(): void {}
 }
+
+/**
+ * **jsdom 的 `Range` 没有 `getClientRects` / `getBoundingClientRect`**，两个方法都不存在。
+ *
+ * 而 ProseMirror 把光标滚进视野时要量"光标所在那一段文字"的矩形
+ * （`coordsAtPos` → `singleRect(textRange(...))`），走的就是这两个方法。
+ * 缺了它们，`.focus()`（任何带 `scrollIntoView` 的命令）会在 **rAF 回调里**
+ * 抛 `TypeError: target.getClientRects is not a function`——异步抛出，用例本身照样过，
+ * 但整套测试会多一条"未处理错误"（v0.1.1 给笔记截图粘贴加用例时踩到）。
+ * 与上面几条同一个处置：**在全局补一次**，别让每个用例自己记得。
+ *
+ * 空矩形是这个环境下唯一诚实的答案：真的量出位置得有布局引擎。
+ * 于是"滚过去了没有"仍然测不了（同 `scrollIntoView` 那条注记）。
+ */
+const ZERO_RECT = {
+  x: 0,
+  y: 0,
+  top: 0,
+  right: 0,
+  bottom: 0,
+  left: 0,
+  width: 0,
+  height: 0,
+  toJSON: () => ({}),
+} as DOMRect
+
+if (typeof Range.prototype.getClientRects !== 'function') {
+  Range.prototype.getClientRects = function getClientRects(): DOMRectList {
+    return Object.assign([], { item: () => null }) as unknown as DOMRectList
+  }
+  Range.prototype.getBoundingClientRect = function getBoundingClientRect(): DOMRect {
+    return ZERO_RECT
+  }
+}

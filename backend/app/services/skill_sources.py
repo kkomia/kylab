@@ -961,15 +961,35 @@ def _files_under(entries: list[dict[str, Any]], directory: str) -> list[list[Any
 
 
 def _kind_of(path: str) -> str:
-    suffix = Path(path).suffix.casefold()
+    """这一条是**什么性质**（浏览清单上给用户看的提示）。
+
+    ``.rels`` 这类**点文件**要特别当心：``Path('.rels').suffix`` 是空串，
+    于是它落进"不认识 → 当代码看"那一支，界面上把 OOXML 的关系表标成
+    "可能会被执行的代码"。那两个口径（这里与 ``skill_market.suffix_of``）
+    必须一致，否则同一份文件在两个页面上的说法不一样。
+    """
+    suffix = _suffix_of(path)
     if suffix in _CODE_SUFFIXES:
         return "code"
     if suffix in _ASSET_SUFFIXES:
         return "asset"
-    if suffix in _DOC_SUFFIXES:
+    if suffix in _DOC_SUFFIXES or suffix in _RELS_SUFFIXES:
         return "doc"
     # 不认识的（.jsonl、无后缀的脚本……）**当代码看**：宁可多提醒一次
     return "code"
+
+
+def _suffix_of(path: str) -> str:
+    """取扩展名；**点文件取整个名字**（``.rels`` 的 suffix 是空串，那是踩过的坑）。"""
+    name = path.strip().rsplit("/", 1)[-1]
+    if name.startswith(".") and name.count(".") == 1:
+        return name.casefold()
+    return Path(name).suffix.casefold()
+
+
+#: OOXML 的关系表：纯 XML 文本，但点文件的"后缀"是它整个名字
+#: （见 ``_suffix_of``）——不单列一份的话会被当代码（与 ``skill_market`` 的口径打架）。
+_RELS_SUFFIXES = frozenset({".rels"})
 
 
 def _quota_left(response: httpx.Response) -> str:

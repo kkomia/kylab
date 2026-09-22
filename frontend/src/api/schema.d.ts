@@ -682,6 +682,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat/approvals/{approval_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 对一条待确认的工具调用做出决定（允许一次 / 这类都允许 / 拒绝）
+         * @description 把用户在确认条上点的那一下，交给**正在等它的那个执行器**（v0.41）。
+         *
+         *     与 `/chat/stream` 的关系是这条协议的全部要点：那条流**还开着**、停在
+         *     ``approvals.ApprovalRegistry.wait`` 上（见 ``services/approvals.py``），
+         *     这一条请求只是把决定送回它手里。所以这里有两件事不能做：
+         *
+         *     - **不能等**：这一阻塞，那一头就没人叫醒了；
+         *     - **失效必须回话**（409）：超时之后（默认 120 秒）那一头已经按"没有回应"
+         *       往下跑了；这时回一句"已记录"，用户就会以为命令执行了——那是最不能有的一种错觉。
+         *
+         *     门槛取 ``require_admin``，与那个动作本身同一档（``agent_exec`` 的闸 1）：
+         *     点这一下等于同意"在这台机器上执行代码"。成员账号根本不会收到这条询问
+         *     （命令在执行前就被权限闸拦掉了），所以这里的门槛与它能答的东西是对齐的。
+         */
+        post: operations["decide_approval_api_v1_chat_approvals__approval_id__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat": {
         parameters: {
             query?: never;
@@ -2354,6 +2386,9 @@ export interface paths {
          *
          *     只列**目录**；数据目录会出现在列表里但标着不可选与原因（不藏起来：
          *     静默省略会让人以为"这里没有它"，而他找的可能正是它旁边那个）。
+         *
+         *     **每一行都带上"能不能在它里面新建目录 / 能不能改名"**（v0.41）：区域外是只读浏览，
+         *     而"不能建"的原因要摆在用户要点的那一行旁边，不是等他点完新建再报错。
          */
         get: operations["browse_directories_api_v1_workspaces_browse_get"];
         put?: never;
@@ -2377,9 +2412,11 @@ export interface paths {
          * 在服务器上新建一个目录（选工作区时用）
          * @description **这是"在服务器上写东西"**，比浏览严一档（与浏览同一道管理员闸）：
          *
-         *     只建一层、重名当场拒（不覆盖也不合并）、数据目录里不建。名字按**可移植的那一套**
-         *     校验——目录名常要在 Windows 与 NAS 之间互拷，而在 Linux 上合法的 `a:b`
-         *     到了 Windows 上根本建不出来。
+         *     只建一层、重名当场拒（不覆盖也不合并）、名字按**可移植的那一套**校验——目录名常要在
+         *     Windows 与 NAS 之间互拷，而在 Linux 上合法的 `a:b` 到了 Windows 上根本建不出来。
+         *
+         *     **只建在「工作区」区域里**（v0.41）：判定与浏览时标 ``creatable`` 的是同一份，
+         *     所以界面上灰着的那些位置，这里也一定拒——反过来，亮着的一定建得出来。
          */
         post: operations["create_directory_api_v1_workspaces_dirs_post"];
         delete?: never;
@@ -2389,8 +2426,8 @@ export interface paths {
          * 给服务器上的目录改名（选工作区时用）
          * @description 只改名不搬位置。四类目录会被拒，各自都有具体理由（见服务层）：
          *
-         *     文件系统根、数据目录及其内部、**包含数据目录的那个目录**（改了服务端就找不到
-         *     自己的库了）、以及**某个工作区的根目录**（改了那条工作区就失联）。
+         *     文件系统根、**「工作区」区域本身**、**区域外的任何目录**（区域外只读浏览）、
+         *     以及**某个工作区的根目录**（改了那条工作区就失联）。
          */
         patch: operations["rename_directory_api_v1_workspaces_dirs_patch"];
         trace?: never;
@@ -3075,6 +3112,35 @@ export interface components {
             elapsed_ms: number;
         };
         /**
+         * ChatApprovalIn
+         * @description 对一条待确认的工具调用做出决定（v0.41）。
+         *
+         *     **只有三个取值**，都是用户在确认条上明确点出来的：允许一次 / 这类都允许 / 拒绝。
+         *     "超时"与"这条链路没人可问"不是请求参数——它们是执行侧自己的结论，
+         *     不该能从外面伪造（伪造了就等于给了一条绕过"等用户点头"的路）。
+         */
+        ChatApprovalIn: {
+            /**
+             * Decision
+             * @description 允许一次 / 这类都允许（写进放行清单）/ 拒绝
+             * @enum {string}
+             */
+            decision: "allow_once" | "allow_always" | "deny";
+        };
+        /**
+         * ChatApprovalOut
+         * @description 决定有没有真的交到那一头。
+         */
+        ChatApprovalOut: {
+            /** Accepted */
+            accepted: boolean;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+        };
+        /**
          * ChatHistoryIn
          * @description 历史消息：只带 role 与 content，不落库（会话持久化不在本轮范围）。
          */
@@ -3649,6 +3715,10 @@ export interface components {
         /**
          * DirectoryEntryOut
          * @description 目录浏览里的一行：一个子目录，或一个"起点"。
+         *
+         *     **三对字段**（v0.41）：能不能选、能不能在它里面新建目录、能不能给它改名——
+         *     各带各的原因。合成一个 ``reason`` 会让人分不清"不能选"还是"不能建"，
+         *     而这两件事的下一步动作不一样（换一个目录 vs 换一个地方动手）。
          */
         DirectoryEntryOut: {
             /** Name */
@@ -3665,6 +3735,26 @@ export interface components {
              * @default
              */
             reason: string;
+            /**
+             * Creatable
+             * @default true
+             */
+            creatable: boolean;
+            /**
+             * Create Reason
+             * @default
+             */
+            create_reason: string;
+            /**
+             * Renamable
+             * @default true
+             */
+            renamable: boolean;
+            /**
+             * Rename Reason
+             * @default
+             */
+            rename_reason: string;
         };
         /**
          * DirectoryRenameIn
@@ -4238,17 +4328,12 @@ export interface components {
             /** Sources */
             sources?: components["schemas"]["KBPromptSourceOut"][];
             /**
-             * Cited Documents
-             * @default 0
-             */
-            cited_documents: number;
-            /**
-             * Unknown Citations
-             * @description 模型标了来源、但文件名不在给定清单里的那些。
+             * Filename Style Citations
+             * @description 这段提示词里仍在要求把文件名写进正文的地方（旧口径，v0.41 起改成编号式引用）。
              *
-             *     **这是"编造"的直接证据**（它引了一篇不存在的文件），界面据此提示核对后再保存。
+             *     非空 = 模型没听那句"别把文件名写进正文"，界面据此提示核对。
              */
-            unknown_citations?: string[];
+            filename_style_citations?: string[];
         };
         /**
          * KBPromptGenerateIn
@@ -7143,6 +7228,11 @@ export interface components {
              * @default
              */
             note: string;
+            /**
+             * Area
+             * @default
+             */
+            area: string;
         };
         /**
          * WorkspaceCreateIn
@@ -8505,6 +8595,43 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_approval_api_v1_chat_approvals__approval_id__post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatApprovalIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatApprovalOut"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -12092,7 +12219,7 @@ export interface operations {
     browse_directories_api_v1_workspaces_browse_get: {
         parameters: {
             query?: {
-                /** @description 要看哪个目录；留空 = 从家目录开始 */
+                /** @description 要看哪个目录；留空 = 落在「工作区」区域 */
                 path?: string | null;
             };
             header?: {

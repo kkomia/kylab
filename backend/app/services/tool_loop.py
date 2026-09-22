@@ -54,12 +54,14 @@ if TYPE_CHECKING:  # 只为标注：chat.py 反过来要用这个模块（工具
 
 from app.core.logging import sanitize_log_value
 from app.services.agent import (
+    ApprovalEvent,
     DeltaEvent,
     DoneEvent,
     SourcesEvent,
     StepEvent,
     ThinkingEvent,
 )
+from app.services.approvals import UNAVAILABLE, ApprovalRegistry, ApprovalRequest
 from app.services.llm import (
     ChatMessage,
     LLMReply,
@@ -225,6 +227,15 @@ class ToolOutcome:
     （见 ``app/services/agent_tools.py::_absorb``）。
     """
 
+    approval: ApprovalRequest | None = None
+    """这条调用**在等用户点头**（``ask`` 档，v0.41）。
+
+    执行器给的（见 ``agent_exec._awaiting``）：非空表示"还没有执行，先问一下"。
+    循环拿它发一条 ``ApprovalEvent``、停下来等人回答，拿到决定之后带着
+    ``approval=…`` 把这条**重跑一遍**——执行与"没批准时怎么回话"都还是执行器说了算，
+    循环只负责"把问题送到界面上、把答案带回来"。
+    """
+
     def step_detail(self, limit: int = 120) -> str:
         """过程面板的那一行：优先用工具给的摘要，没有才回退到结果开头。"""
         text = self.summary or " ".join(self.content.split())
@@ -234,9 +245,13 @@ class ToolOutcome:
 
 
 
-#: 执行一个工具：``(工具名, 参数字典) -> ToolOutcome``。
+#: 执行一个工具：``(工具名, 参数字典[, approval=…]) -> ToolOutcome``。
 #: 由组合根绑定（见 ``api``/``core.services``），循环自己不认识 Services。
-ToolRunner = Callable[[str, dict[str, Any]], ToolOutcome]
+#:
+#: ``approval`` **只在"这一批里有调用在等用户点头"时传**（见 ``_perform``）：
+#: 它是那条调用的审批结论。这一层不把它做成必填参数，是为了让"不管审批"的执行器
+#: （子 Agent、测试里的假执行器）保持原样——它们根本不会遇到需要审批的调用。
+ToolRunner = Callable[..., ToolOutcome]
 
 
 class ToolLoop:
@@ -248,6 +263,7 @@ class ToolLoop:
         client_factory: Callable[[], Any],
         tools: Sequence[ToolSpec],
         runner: ToolRunner,
+        approvals: ApprovalRegistry | None = None,
         max_steps: int = DEFAULT_MAX_STEPS,
         max_seconds: float = DEFAULT_MAX_SECONDS,
         clock: Callable[[], float] = time.monotonic,
@@ -255,6 +271,10 @@ class ToolLoop:
         self._client_factory = client_factory
         self._tools = list(tools)
         self._runner = runner
+        # ``approvals`` 非空 = 这条链路**有界面可以问**（对话页）。
+        # 为空 = 没有人可以问（定时任务、脚本、单测）：那种链路上"停下来问"
+        # 只会白等一个 120 秒，所以按"没批准"当场回给模型（见 ``_resolve_approvals``）。
+        self._approvals = approvals
         self._max_steps = max(1, max_steps)
         # 至少给 1 秒：0 或负数会让每一轮一进来就"时间已用尽"，
         # 那不是"关掉这道闸"，而是"把工具整个关掉"——想关就传一个大数
@@ -350,11 +370,15 @@ class ToolLoop:
             degraded=True,
         )
 
-    def _execute(self, call: ToolCall, *, stop: str | None) -> ToolOutcome:
+    def _execute(
+        self, call: ToolCall, *, stop: str | None, approval: str | None = None
+    ) -> ToolOutcome:
         """执行一次调用。**所有失败都变成回给模型的文本**，不往上抛。
 
         抛出去会让整轮失败；而工具失败（参数不对、库里没有、服务连不上）
         通常是**模型能自己纠正**的——把它当结果回给它，它下一轮换个法子。
+
+        ``approval`` 非空时那次调用带的是**审批结论**（见 ``_perform`` 的第二遍）。
         """
         if stop is not None:
             # 最后一步还调工具（或时间已经用完）：不执行了，直接告诉它没机会了，
@@ -365,7 +389,11 @@ class ToolLoop:
         except ValueError as exc:
             return ToolOutcome(content=f"工具参数不是合法 JSON：{exc}")
         try:
-            outcome = self._runner(call.name, args)
+            outcome = (
+                self._runner(call.name, args, approval=approval)
+                if approval is not None
+                else self._runner(call.name, args)
+            )
         except Exception as exc:  # 工具是外部世界，什么都能抛
             # 异常文本里可能带着模型给的参数（多行 JSON）：不转义的话，一条日志会被
             # 伪装成好几条，而多出来的那几行看起来像我们自己打的
@@ -373,7 +401,13 @@ class ToolLoop:
             return ToolOutcome(content=f"工具执行失败：{exc}")
         return _truncate(outcome)
 
-    def _execute_batch(self, calls: Sequence[ToolCall], *, stop: str | None) -> list[ToolOutcome]:
+    def _execute_batch(
+        self,
+        calls: Sequence[ToolCall],
+        *,
+        stop: str | None,
+        approvals: Sequence[str | None] | None = None,
+    ) -> list[ToolOutcome]:
         """执行**同一批**调用：互不依赖的几件事**并发**跑，返回顺序与传入一致。
 
         为什么并发（v0.27 实测的账）：模型现在会在一批里同时要三页网页、两个方向的
@@ -393,12 +427,25 @@ class ToolLoop:
            **反过来说**：往这条路上加工具时要问一句"它在两个线程里同时跑会怎样"。
 
         单条调用不走线程池：那是常态，为它建池是白付一层开销（也少一处可出错的地方）。
+
+        ``approvals`` 与 ``calls`` **一一对应**（第二遍重跑待确认的那几条时才传，
+        见 ``_perform``）。**等待绝不在这里发生**：这个池里的线程一旦阻塞在"等人回答"上，
+        生成器就再也吐不出那条询问事件了——那条死锁的形状记在 ``agent_tools._call_mcp``。
         """
+        decisions = list(approvals) if approvals is not None else [None] * len(calls)
         if stop is not None or len(calls) <= 1:
-            return [self._execute(call, stop=stop) for call in calls]
+            return [
+                self._execute(call, stop=stop, approval=decisions[index])
+                for index, call in enumerate(calls)
+            ]
         with ThreadPoolExecutor(max_workers=min(len(calls), MAX_PARALLEL_TOOLS)) as pool:
             # `map` **保序返回**：谁先跑完不影响结果顺序，也就影响不到事件与消息的顺序
-            return list(pool.map(lambda call: self._execute(call, stop=None), calls))
+            return list(
+                pool.map(
+                    lambda pair: self._execute(pair[0], stop=None, approval=pair[1]),
+                    list(zip(calls, decisions, strict=True)),
+                )
+            )
 
     def _answer(
         self, messages: list[ChatMessage], *, tools: Sequence[ToolSpec] | None = None
@@ -509,7 +556,11 @@ class ToolLoop:
             # 发多条时"最后发的那条"未必是最全的那条（并发下先跑完的可能先发），
             # 界面只认最后一次，于是后发的那条会把先查到的资料盖掉——
             # 正是账本当初要解决的问题（见 agent_tools.build_runner）。
+            #
+            # 放在"问用户"**之前**发：等待可能持续到超时，而这一批里别的调用
+            # （检索、抓网页）已经跑完的东西没有理由跟着一起等。
             yield SourcesEvent(sources=merged)
+        outcomes = yield from self._resolve_approvals(calls, outcomes)
         for call, outcome in zip(calls, outcomes, strict=True):
             # 顺序必须与 `tool_calls` 一致：OpenAI 兼容端点要求每条调用都有结果，
             # 而"结果与调用怎么配对"靠的是 tool_call_id，不是顺序——但保持同序
@@ -529,6 +580,72 @@ class ToolLoop:
                 result=_clip(outcome.content, MAX_STEP_PREVIEW_CHARS),
                 artifacts=tuple(outcome.artifacts),
             )
+
+
+    def _resolve_approvals(
+        self, calls: Sequence[ToolCall], outcomes: list[ToolOutcome]
+    ) -> Iterator[object]:
+        """把这一批里**在等用户点头**的那几条问出来、等回答案，再重跑一遍。
+
+        **"先发再等"是这段代码的全部要点**（v0.41）：``yield ApprovalEvent(...)``
+        先把询问交给上层（生成器在这里让出控制权，SSE 那一层把它写进响应流），
+        等**下一次被恢复**时才阻塞等人回答。反过来（先阻塞、再 yield）界面根本收不到
+        那个询问，两边一起等死——那条死锁的形状记在 ``agent_tools._call_mcp`` 里，
+        也正是这一档长期以来只能"拒绝并说清"的原因。
+
+        一次只问一条：确认条对应**一个动作**，同时摆三条要用户点三次的东西，
+        界面与判断都会复杂一截，而"一批里同时要跑两条命令"本来就少见。
+
+        问完之后的执行走 `_execute_batch`（几条都已拿到决定，可以照旧并发）——
+        顺序仍然是"按调用顺序回灌结果"，与没有审批时一模一样。
+        """
+        pending: list[tuple[int, ApprovalRequest]] = []
+        for index, outcome in enumerate(outcomes):
+            if outcome.approval is not None:
+                pending.append((index, outcome.approval))
+        if not pending:
+            return outcomes
+        if self._approvals is None:
+            # **没有人可以问**（定时任务、脚本、单测）：不登记、也不发事件，
+            # 直接按"没批准"重跑一遍——回给模型的仍是那句"要先确认 + 怎么放开"。
+            # 在这里等满 120 秒是白等：那条链路上没有界面。
+            resolved = list(outcomes)
+            for index, _ in pending:
+                resolved[index] = self._execute(calls[index], stop=None, approval=UNAVAILABLE)
+            return resolved
+
+        # 先按顺序**一条条问**：每一条都是"发出询问 → 停住等回答"，
+        # 所以下面这个循环会在 `wait` 里真的阻塞（生成器的线程，不是工具线程池）
+        decisions: dict[int, str] = {}
+        for index, request in pending:
+            yield _approval_event(request)
+            decisions[index] = self._approvals.wait(request.approval_id)
+        resolved = list(outcomes)
+        second = self._execute_batch(
+            [calls[index] for index, _ in pending],
+            stop=None,
+            approvals=[decisions.get(index, UNAVAILABLE) for index, _ in pending],
+        )
+        for (index, _), outcome in zip(pending, second, strict=True):
+            resolved[index] = outcome
+        return resolved
+
+
+def _approval_event(request: ApprovalRequest) -> ApprovalEvent:
+    """把一条待确认翻成发给界面的事件。
+
+    **不做任何加工**：要执行什么、同意之后会写下哪条规则，都是执行器说清的
+    （见 ``agent_exec._awaiting``）——界面只负责显示与回传那个 id。
+    """
+    return ApprovalEvent(
+        approval_id=request.approval_id,
+        tool=request.tool,
+        label=request.label,
+        args=request.args,
+        detail=request.detail,
+        rule=request.rule,
+        timeout_seconds=request.timeout_seconds,
+    )
 
 
 def _merge_sources(outcomes: Sequence[ToolOutcome]) -> list[SourceRef]:

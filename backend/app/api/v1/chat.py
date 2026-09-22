@@ -28,18 +28,21 @@ from collections.abc import Iterator, Sequence
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
-from app.api.auth import check_kb_scope, require_read
+from app.api.auth import check_kb_scope, require_admin, require_read
 from app.api.v1.schemas import (
+    ChatApprovalIn,
+    ChatApprovalOut,
     ChatRequestIn,
     ChatResponseOut,
     ChatResumeIn,
     ChatSourceOut,
     SuggestedQuestionsOut,
 )
-from app.core.exceptions import InvalidRequestError
+from app.core.exceptions import ConflictError, InvalidRequestError
 from app.core.services import Services, get_services
 from app.services import resume as resume_service
 from app.services.agent import (
+    ApprovalEvent,
     DeltaEvent,
     DoneEvent,
     SourcesEvent,
@@ -168,6 +171,39 @@ def resume_turn(
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
+
+
+@router.post(
+    "/chat/approvals/{approval_id}",
+    response_model=ChatApprovalOut,
+    summary="对一条待确认的工具调用做出决定（允许一次 / 这类都允许 / 拒绝）",
+)
+def decide_approval(
+    approval_id: str,
+    payload: ChatApprovalIn,
+    services: Services = Depends(get_services),
+    _: Caller = Depends(require_admin),
+) -> ChatApprovalOut:
+    """把用户在确认条上点的那一下，交给**正在等它的那个执行器**（v0.41）。
+
+    与 `/chat/stream` 的关系是这条协议的全部要点：那条流**还开着**、停在
+    ``approvals.ApprovalRegistry.wait`` 上（见 ``services/approvals.py``），
+    这一条请求只是把决定送回它手里。所以这里有两件事不能做：
+
+    - **不能等**：这一阻塞，那一头就没人叫醒了；
+    - **失效必须回话**（409）：超时之后（默认 120 秒）那一头已经按"没有回应"
+      往下跑了；这时回一句"已记录"，用户就会以为命令执行了——那是最不能有的一种错觉。
+
+    门槛取 ``require_admin``，与那个动作本身同一档（``agent_exec`` 的闸 1）：
+    点这一下等于同意"在这台机器上执行代码"。成员账号根本不会收到这条询问
+    （命令在执行前就被权限闸拦掉了），所以这里的门槛与它能答的东西是对齐的。
+    """
+    if not services.approvals.decide(approval_id, payload.decision):
+        raise ConflictError(
+            "这条确认已经失效了（等太久超时，或者已经点过一次）。"
+            "这一轮会按「没有批准」处理；让它重来一次，它会再问你一遍。"
+        )
+    return ChatApprovalOut(accepted=True, detail="已交给正在等它的那一步")
 
 
 @router.post("/chat", response_model=ChatResponseOut, summary="快速检索问答（一次性）")
@@ -386,6 +422,25 @@ class _TurnSink:
                     "items": [item.model_dump() for item in _sources_out(self.sources)],
                 }
             )
+        elif isinstance(event, ApprovalEvent):
+            # **问用户**（v0.41）：这一条发出去之后，循环那边就停在 `wait` 上了
+            # （见 tool_loop._resolve_approvals），所以它必须**原样、立刻**发出去——
+            # 攒着不发等于让两边一起等死。
+            #
+            # 不进 `self.steps`：过程快照是"这一轮做过什么"，而这是一句还没被回答的问题。
+            # 落进库的话，回看历史时会冒出一条永远等不到人点的确认。
+            yield _sse(
+                {
+                    "type": "approval",
+                    "approval_id": event.approval_id,
+                    "tool": event.tool,
+                    "label": event.label,
+                    "args": event.args,
+                    "detail": event.detail,
+                    "rule": event.rule,
+                    "timeout_seconds": event.timeout_seconds,
+                }
+            )
         elif isinstance(event, ThinkingEvent):
             # 顺手攒一份全文：落库时要把它存下来，否则用户离开这一页再回来
             # 就只剩一句"已生成回答"（v0.25）
@@ -464,6 +519,11 @@ def _agent_loop(
             # 先去列库、再检索一次被拒（见 agent_tools._KB_TOOLS）
             kb_ids=kb_ids,
         ),
+        # **这一轮有界面可以问**（v0.41）：`ask` 档的工具调用（目前是 run_command）
+        # 挂进这张登记表，由循环发一条 approval 事件、停在那里等人回答；
+        # 用户的决定从 `POST /chat/approvals/{id}` 交回来（见 services/approvals.py）。
+        # 定时任务那条链路不传它——那里没有人回答，等满超时是白等。
+        approvals=services.approvals,
         # 执行器带**调用者身份**与**这一轮允许查的库**：
         # 关掉知识库开关之后，模型也不该能绕过它去检索（见 agent_tools.build_runner）
         runner=build_runner(

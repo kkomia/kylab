@@ -829,7 +829,7 @@ wheels = [
 
 [[package]]
 name = "kylab-backend"
-version = "0.2.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "argon2-cffi" },

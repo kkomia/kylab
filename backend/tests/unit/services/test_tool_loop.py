@@ -18,8 +18,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from app.services.agent import DeltaEvent, DoneEvent, SourcesEvent, StepEvent
+from app.services import approvals as approval_service
+from app.services.agent import ApprovalEvent, DeltaEvent, DoneEvent, SourcesEvent, StepEvent
 from app.services.agent_tools import _scope_search
+from app.services.approvals import ApprovalRegistry
 from app.services.chat import SourceRef
 from app.services.llm import LLMDelta, LLMReply, ToolCall, ToolCallDelta, ToolSpec
 from app.services.tool_loop import ToolLoop, ToolOutcome, _parse_arguments, _truncate
@@ -1074,3 +1076,189 @@ def test_zero_budget_is_clamped_not_a_way_to_disable_tools() -> None:
     list(loop.run(messages=[]))
 
     assert ran == ["search"], "夹到 1 秒之后，第一次调用仍该执行"
+
+
+# ------------------------------------------------------------------ 审批：停下来问用户（v0.41）
+
+
+def _approval_runner(registry, seen: list):  # type: ignore[no-untyped-def]
+    """一个"需要用户点头"的执行器。
+
+    第一遍（``approval=None``）**不执行**，只登记一条待确认——真实那条链路里
+    这一步在 ``agent_exec._awaiting``；第二遍带着决定回来，它才真的干活。
+    这样一个假执行器就能把"循环要先发事件、再等、再重跑"整条路测出来。
+    """
+
+    def runner(name: str, args: dict, *, approval: str | None = None) -> ToolOutcome:  # type: ignore[type-arg]
+        seen.append(approval)
+        if approval is None:
+            request = registry.open(
+                tool="run_command", label="执行命令", args="ls -la", rule="Bash(ls:*)"
+            )
+            return ToolOutcome(content="（在等确认）", summary="等待确认", approval=request)
+        if approval == approval_service.ALLOW_ONCE:
+            return ToolOutcome(content="退出码：0\nhello", summary="跑完了")
+        return ToolOutcome(content=f"没有执行（{approval}）", summary="没有执行（策略拦下）")
+
+    return runner
+
+
+def test_the_loop_really_waits_for_the_users_answer() -> None:
+    """**这是第 6 条的核心**：事件先送到界面上，然后循环**真的停在那里**等人回答。
+
+    三件事一起钉住，缺一条这条路就不成立：
+
+    1. ``approval`` 事件在**阻塞之前**就交出来了（否则界面根本收不到那个询问，
+       两边一起等死——老注释里记的就是这个形状）；
+    2. 决定没来之前循环一步都不往前走（再取一个事件会阻塞住）；
+    3. 拿到 ``allow_once`` 之后**带着它重跑**，结果照常回灌给模型。
+    """
+    registry = ApprovalRegistry(timeout=5)
+    seen: list[str | None] = []
+    loop, _client = _loop(
+        [LLMReply(tool_calls=(ToolCall(id="c1", name="run_command", arguments="{}"),)), LLMReply()],
+        runner=_approval_runner(registry, seen),
+        approvals=registry,
+    )
+    messages: list = []
+    iterator = loop.run(messages=messages)
+
+    events: list[object] = []
+    while True:
+        event = next(iterator)
+        events.append(event)
+        if isinstance(event, ApprovalEvent):
+            break
+
+    # 1. 询问已经交出来了，而且带着界面要显示的东西
+    approval = next(e for e in events if isinstance(e, ApprovalEvent))
+    assert approval.tool == "run_command"
+    assert approval.args == "ls -la"
+    assert approval.rule == "Bash(ls:*)"
+    assert approval.label == "执行命令"
+    assert approval.timeout_seconds == 5
+    # 界面顺序：先是一条 running 的工具步骤，然后才是这个询问
+    assert [s.status for s in _steps(events)] == ["running"]
+
+    # 2. **这一刻它在等人**：再取一个事件会一直阻塞（用另一个线程观察）
+    box: dict[str, object] = {}
+
+    def pull() -> None:
+        box["event"] = next(iterator)
+
+    puller = threading.Thread(target=pull, daemon=True)
+    puller.start()
+    puller.join(0.2)
+    assert puller.is_alive(), "收到回答之前循环不该往下走"
+    assert seen == [None], "还没批准，不该重跑"
+
+    # 3. 从**另一个线程**交决定（真实链路里那是 FastAPI 的另一个请求线程）
+    assert registry.decide(approval.approval_id, approval_service.ALLOW_ONCE) is True
+    puller.join(5)
+    assert not puller.is_alive()
+
+    events.append(box["event"])  # type: ignore[arg-type]
+    events.extend(iterator)
+
+    assert seen == [None, approval_service.ALLOW_ONCE]
+    tool_messages = [m for m in messages if getattr(m, "role", "") == "tool"]
+    assert len(tool_messages) == 1
+    assert "hello" in (tool_messages[0].content or ""), "执行结果要回到循环里"
+    # done 那条步骤给的是**真实结果**，不是"在等确认"
+    assert _steps(events)[-2].detail == "跑完了"
+
+
+def test_a_denied_call_comes_back_as_the_executor_wrote_it() -> None:
+    """拒绝：循环把 ``deny`` 带回去重跑，执行器写的那句话原样回到模型手里。
+
+    循环**不自己编**"用户拒绝了"这类话：措辞在执行器那一处（那里才知道
+    当前策略、怎么放开、要建议哪条规则），两处各写一份必然会漂。
+    """
+    registry = ApprovalRegistry(timeout=5)
+    seen: list[str | None] = []
+    loop, _client = _loop(
+        [LLMReply(tool_calls=(ToolCall(id="c1", name="run_command", arguments="{}"),)), LLMReply()],
+        runner=_approval_runner(registry, seen),
+        approvals=registry,
+    )
+    messages: list = []
+    iterator = loop.run(messages=messages)
+    approval = next(e for e in iterator if isinstance(e, ApprovalEvent))
+    registry.decide(approval.approval_id, approval_service.DENY)
+    list(iterator)
+
+    assert seen == [None, approval_service.DENY]
+    tool_messages = [m for m in messages if getattr(m, "role", "") == "tool"]
+    assert "没有执行（deny）" in (tool_messages[0].content or "")
+
+
+def test_a_timeout_reaches_the_model_as_no_answer() -> None:
+    """等到超时：按"没批准"重跑，而且**回给模型的是执行器说的"没有回应"**。"""
+    registry = ApprovalRegistry(timeout=0.05)
+    seen: list[str | None] = []
+    loop, _client = _loop(
+        [LLMReply(tool_calls=(ToolCall(id="c1", name="run_command", arguments="{}"),)), LLMReply()],
+        runner=_approval_runner(registry, seen),
+        approvals=registry,
+    )
+    messages: list = []
+    list(loop.run(messages=messages))
+
+    assert seen == [None, approval_service.TIMEOUT]
+    tool_messages = [m for m in messages if getattr(m, "role", "") == "tool"]
+    assert "没有执行（timeout）" in (tool_messages[0].content or "")
+
+
+def test_without_a_ui_it_does_not_wait_a_second() -> None:
+    """没有人可以问的链路（定时任务）：**不发事件、也不等**，直接按"没批准"重跑。
+
+    在这里等满 120 秒是白等：那条链路上没有界面，而它占着的是一个消费者线程。
+    """
+    seen: list[str | None] = []
+    registry = ApprovalRegistry(timeout=5)
+    loop, _client = _loop(
+        [LLMReply(tool_calls=(ToolCall(id="c1", name="run_command", arguments="{}"),)), LLMReply()],
+        runner=_approval_runner(registry, seen),
+        # approvals 不传 = 这一轮没有界面可以问
+    )
+    messages: list = []
+    events = list(loop.run(messages=messages))
+
+    assert [e for e in events if isinstance(e, ApprovalEvent)] == []
+    assert seen == [None, approval_service.UNAVAILABLE]
+    tool_messages = [m for m in messages if getattr(m, "role", "") == "tool"]
+    assert "没有执行（unavailable）" in (tool_messages[0].content or "")
+
+
+def test_the_question_is_asked_one_at_a_time() -> None:
+    """一批里两条都要点头时**一条条问**：确认条对应一个动作，不是一个清单。
+
+    顺序也必须定死（先问第一条、再问第二条），否则用户看到的"这是哪一条"会错位。
+    """
+    registry = ApprovalRegistry(timeout=5)
+    loop, _client = _loop(
+        [
+            LLMReply(
+                tool_calls=(
+                    ToolCall(id="c1", name="run_command", arguments='{"command":"a"}'),
+                    ToolCall(id="c2", name="run_command", arguments='{"command":"b"}'),
+                )
+            ),
+            LLMReply(),
+        ],
+        runner=_approval_runner(registry, []),
+        approvals=registry,
+    )
+    asked: list[str] = []
+    iterator = loop.run(messages=[])
+    while True:
+        try:
+            event = next(iterator)
+        except StopIteration:
+            break
+        if isinstance(event, ApprovalEvent):
+            asked.append(event.approval_id)
+            assert len(asked) <= 2
+            registry.decide(event.approval_id, approval_service.ALLOW_ONCE)
+    assert len(asked) == 2
+    assert asked[0] != asked[1]

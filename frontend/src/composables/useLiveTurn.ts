@@ -28,6 +28,7 @@ import {
   chatStream,
   isAbortError,
   resumeStream,
+  type ChatApproval,
   type ChatHandlers,
   type ChatPayload,
   type ChatSource,
@@ -55,6 +56,14 @@ export interface LiveTurnState {
   streaming: boolean
   /** 失败原因（空 = 没失败）。抛在模块里而不是组件里——切页之后也要看得见。 */
   error: string
+  /**
+   * 后端在等用户点头的那一条（v0.41，`ask` 档的工具执行）。空 = 没有在等的。
+   *
+   * **和流一样放在模块里**：它也是一个"还没结束的状态"。放在组件里的话，
+   * 用户切走再回来（组件重建）就看不到这条确认了——而后端还在等，
+   * 那一轮会一直卡到超时。
+   */
+  approval: ChatApproval | null
 }
 
 /** 模块作用域：组件挂载/卸载都不影响它。**整个应用只有这一份「正在流的那一轮」**。 */
@@ -72,7 +81,12 @@ let handle: ChatStreamHandle | null = null
  */
 function endStream(): void {
   const state = liveTurnState.value
-  if (state) state.streaming = false
+  if (state) {
+    state.streaming = false
+    // 这一轮已经结束了，那条确认条也就不用摆了：后端等到超时之后自己就往下跑了
+    // （见 services/approvals.py），留在界面上只会让用户点了却拿到 409
+    state.approval = null
+  }
   handle = null
 }
 
@@ -115,6 +129,9 @@ async function begin(
       onThinking: (chunk) => {
         if (liveTurnState.value) liveTurnState.value.thinkingText += chunk
       },
+      onApproval: (approval) => {
+        if (liveTurnState.value) liveTurnState.value.approval = approval
+      },
       onDelta: (delta) => {
         if (liveTurnState.value) liveTurnState.value.text += delta
       },
@@ -145,6 +162,7 @@ function makeState(
     sources: [],
     streaming: true,
     error: '',
+    approval: null,
   }
 }
 
@@ -179,6 +197,17 @@ export function startResumeTurn(
 /** 用户点了「停止」。 */
 export function abortLiveTurn(): void {
   handle?.abort()
+}
+
+/**
+ * 那条确认已经有结论了（用户点了按钮，或它已经失效）：把确认条收起来。
+ *
+ * **只收界面**，决定本身由组件 POST 给后端（`api/chat.ts::decideApproval`）——
+ * 两者分开是因为它们会各自失败：POST 失败时后端还在等，而"收起"这件事
+ * 已经不该再等了（那一头会等到超时）。所以先收起来、再把失败如实说出来。
+ */
+export function settleLiveApproval(): void {
+  if (liveTurnState.value) liveTurnState.value.approval = null
 }
 
 /** 这一轮已经交付给库了（或用户换了会话）：忘掉它。 */

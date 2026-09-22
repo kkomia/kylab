@@ -1,6 +1,6 @@
 [project]
 name = "kylab-backend"
-version = "0.2.0"
+version = "0.1.1"
 description = "KYLAB 知识库后端服务：FastAPI + MCP Server（架构设计 v0.2 §2.1）"
 readme = "README.md"
 requires-python = ">=3.11"

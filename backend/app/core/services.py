@@ -23,6 +23,7 @@ from functools import lru_cache
 from app.core.config import Settings, get_settings
 from app.core.storage import build_stores
 from app.services.api_key import ApiKeyService
+from app.services.approvals import ApprovalRegistry
 from app.services.artifacts import ArtifactService
 from app.services.auth import AuthService
 from app.services.avatars import AvatarService
@@ -170,6 +171,16 @@ class Services:
 
     默认空列表是为了让"手工构造 Services 的测试"不必挨个补参数——
     但它**必须包含 ``worker``**（见 ``build_services``）。"""
+    approvals: ApprovalRegistry = field(default_factory=ApprovalRegistry)
+    """对话里的待确认登记表（v0.41，见 ``services/approvals.py``）。
+
+    ``ask`` 档的工具调用挂在这里等用户点头：**执行器登记、工具循环等、端点交决定**，
+    三方在不同线程上，所以它必须与那一轮对话共用同一份实例。
+    ``get_services()`` 是进程级单例，于是"同一个进程里的那两个请求"天然看到同一张表。
+
+    用 ``default_factory`` 而不是在组合根里 new 一遍：手工构造 Services 的地方
+    （测试、脚本）不必为它加参数，而"每个 Services 自带一张空表"比"忘了传就崩"稳。
+    """
 
 
 class _RuntimeEmbedder(EmbeddingProvider):

@@ -83,6 +83,8 @@ import ModelPicker from '@/components/ui/ModelPicker.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import LinkText from '@/components/ui/LinkText.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
+import ApprovalBar from '@/components/chat/ApprovalBar.vue'
+import ExecPolicyControl from '@/components/chat/ExecPolicyControl.vue'
 import LiveLine from '@/components/chat/LiveLine.vue'
 import TraceStepRow from '@/components/chat/TraceStepRow.vue'
 import {
@@ -90,6 +92,7 @@ import {
   clearLiveTurn,
   liveTurnState,
   liveTurnState as live,
+  settleLiveApproval,
   startChatTurn,
   startResumeTurn,
 } from '@/composables/useLiveTurn'
@@ -562,6 +565,18 @@ watch(
   },
   { deep: true, immediate: true },
 )
+
+/**
+ * 这一条会话上**在等用户点头**的那一次工具调用（v0.41）。
+ *
+ * 与 `sending` 同一个理由要看会话：确认条属于"这一轮"，切走再回来（组件重建）
+ * 也还要摆出来——后端一直在等，界面不显示的话它只能等到超时。
+ */
+const pendingApproval = computed(() => {
+  const state = live.value
+  if (!state || state.conversationId !== conversationId.value) return null
+  return state.approval
+})
 
 /** 把一份会话详情铺进界面（缓存与网络两条路都走它，口径才不会分叉）。 */
 function applyDetail(detail: ConversationDetail): void {
@@ -2079,6 +2094,14 @@ function closeReader(): void {
       >
         <IconChevronDown :size="18" />
       </button>
+      <!-- 后端在等用户点头（v0.41）：**紧挨着输入框、在它上面**——
+           这一条不是"对话内容"，而是"轮到你说一句话"，所以它跟输入框在一起，
+           而不是飘在消息流里跟着滚走 -->
+      <ApprovalBar
+        v-if="pendingApproval"
+        :approval="pendingApproval"
+        @settled="settleLiveApproval"
+      />
       <div class="composer">
         <AppInput
           id="chat-query"
@@ -2153,6 +2176,13 @@ function closeReader(): void {
                 </ul>
               </template>
             </RowMenu>
+
+            <!--
+              「执行策略」（v0.41）：与知识库开关挨着——它管的是"这一轮让它做什么"
+              这一类事。**它不是一个开关而是一个入口**：三档的名字必须看得见
+              （"允许"与"拒绝"在用户眼里完全是两件事，用一个开关表示等于让他猜）。
+            -->
+            <ExecPolicyControl />
 
             <!--
               「知识库」**就是一个开关**（v0.19，用户指定）。

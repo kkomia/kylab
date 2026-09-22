@@ -164,6 +164,32 @@ export interface ChatStep {
   tool?: string
 }
 
+/**
+ * 一次工具调用**在等用户点头**（v0.41，后端的 ``ApprovalEvent``）。
+ *
+ * `ask` 档下后端会停下来问：这条事件发出来之后，那一轮就停在那里等人回答
+ * （见后端 `services/approvals.py`）。界面据此弹一条确认条，
+ * 用户点的那一下走 `decideApproval`——**它与那条还开着的流是两条并行请求**。
+ */
+export interface ChatApproval {
+  approval_id: string
+  /** 原始工具名（目前只有 `run_command`），用来选图标。 */
+  tool: string
+  /** 标题（「执行命令」）：与过程面板那一行同一句话。 */
+  label: string
+  /** 要执行什么——就是那一行命令，界面要原样摆出来给用户核对。 */
+  args: string
+  /** 补一句上下文（在什么隔离里跑、断没断网）。 */
+  detail: string
+  /** 点「这类都允许」会写进放行清单的那行规则（不先给用户看就是盲签）。 */
+  rule: string
+  /** 等多久算没有回应；到点后端按拒绝处理。 */
+  timeout_seconds: number
+}
+
+/** 用户能做的三个决定（与后端 `ChatApprovalIn` 的取值一一对应）。 */
+export type ApprovalDecision = 'allow_once' | 'allow_always' | 'deny'
+
 /** 服务端事件（后端 api/v1/chat.py 的事件形状）。 */
 export type ChatStreamEvent =
   | {
@@ -181,6 +207,16 @@ export type ChatStreamEvent =
       /** 工具名（v0.26）：同上，非工具步骤不发这个键 */
       tool?: string
     }
+  | {
+      type: 'approval'
+      approval_id: string
+      tool: string
+      label: string
+      args: string
+      detail?: string
+      rule?: string
+      timeout_seconds?: number
+    }
   | { type: 'sources'; items: ChatSource[] }
   | { type: 'thinking'; text: string }
   | { type: 'delta'; text: string }
@@ -197,6 +233,11 @@ export interface ChatHandlers {
   onDelta?: (text: string) => void
   onDone?: (answer: string) => void
   onError?: (message: string) => void
+  /**
+   * 后端在等用户点头（v0.41）。**收到它之后那一轮就停住了**，
+   * 所以在它被回答之前不会再有任何事件——界面必须把确认条摆出来。
+   */
+  onApproval?: (approval: ChatApproval) => void
 }
 
 /**
@@ -436,6 +477,21 @@ async function pump(
       else handlers.onThinking?.(event.text)
       return
     }
+    if (event.type === 'approval') {
+      // **不走任何节流**：这条一发出，后端那一头就停住等回答了
+      // （见 services/approvals.py）。晚一步显示，也只是晚一步让人看见
+      // "它在等我"，所以这里立刻交给界面
+      handlers.onApproval?.({
+        approval_id: event.approval_id,
+        tool: event.tool,
+        label: event.label,
+        args: event.args,
+        detail: event.detail ?? '',
+        rule: event.rule ?? '',
+        timeout_seconds: event.timeout_seconds ?? 0,
+      })
+      return
+    }
     if (event.type === 'delta') {
       answer += event.text
       if (pacer) pacer.pushText(event.text)
@@ -521,6 +577,25 @@ async function pump(
     // 提前退出（含取消）时释放底层连接，否则这一条流会一直挂在后端
     void reader.cancel().catch(() => undefined)
   }
+}
+
+/**
+ * 对一条待确认的工具调用做出决定（v0.41，后端 `POST /chat/approvals/{id}`）。
+ *
+ * **它与那条还开着的 `/chat/stream` 是两条并行的请求**：流停在后端的 `wait` 上，
+ * 这一条只是把用户在确认条上点的那一下送过去（所以回的是 JSON，不是流）。
+ *
+ * 409 是**正常的一种结果**：等太久已经超时、或者已经点过一次——后端那一头
+ * 早就按"没有批准"往下跑了。界面据后端的文案如实说，不要谎报"已执行"。
+ */
+export function decideApproval(
+  approvalId: string,
+  decision: ApprovalDecision,
+): Promise<{ accepted: boolean; detail: string }> {
+  return request(`/chat/approvals/${encodeURIComponent(approvalId)}`, {
+    method: 'POST',
+    body: JSON.stringify({ decision }),
+  })
 }
 
 /** 一次性问答：脚本与自测用，与流式同一条链路。 */

@@ -24,6 +24,7 @@ if TYPE_CHECKING:  # 只为类型标注；运行时不需要，避免与 chat.py
     from app.services.chat import SourceRef
 
 __all__ = [
+    "ApprovalEvent",
     "DeltaEvent",
     "DoneEvent",
     "SourcesEvent",
@@ -121,6 +122,33 @@ class DeltaEvent:
     """正文增量。"""
 
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalEvent:
+    """一次工具调用**在等用户点头**（v0.41，``ask`` 档）。
+
+    它不是"一个步骤"，而是问题：界面据此弹一条确认条，用户点的那一下走
+    ``POST /api/v1/chat/approvals/{approval_id}``。发出去之后这一轮**会停在那里**
+    （见 ``tool_loop._perform``）——**先发再等**是这条协议的全部要点。
+
+    服务层与界面之间只传这七个字段：界面不解析参数、不查策略，
+    要展示什么、同意之后会写下哪条规则，都由执行器在这里说清。
+    """
+
+    approval_id: str
+    tool: str
+    """原始工具名（界面按它选图标，与 ``StepEvent.tool`` 同一套）。"""
+    label: str
+    """标题（「执行命令」）——与过程面板那一行同一句话。"""
+    args: str
+    """要执行什么：就是用户看到的那一行命令。"""
+    detail: str = ""
+    """补一句上下文（在什么隔离里跑、断没断网）。"""
+    rule: str = ""
+    """「这类都允许」会写进放行清单的那行规则：不先给用户看，那个按钮就是盲签。"""
+    timeout_seconds: float = 0.0
+    """等多久算没有回应（界面据此说清"再不来就按拒绝处理"）。"""
 
 
 @dataclass(frozen=True, slots=True)

@@ -49,7 +49,7 @@ services:
         # 实测），而 uv 默认就是并发下载。换成官方源：
         #   KYLAB_UV_INDEX_URL=https://pypi.org/simple docker compose build
         UV_INDEX_URL: ${KYLAB_UV_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
-    image: kylab-backend:0.2.0
+    image: kylab-backend:0.1.1
     container_name: kylab-app-backend
     restart: unless-stopped
     user: "1000:1001"
@@ -104,7 +104,7 @@ services:
   frontend:
     build:
       context: ../src/frontend
-    image: kylab-frontend:0.2.0
+    image: kylab-frontend:0.1.1
     container_name: kylab-app-frontend
     restart: unless-stopped
     depends_on:

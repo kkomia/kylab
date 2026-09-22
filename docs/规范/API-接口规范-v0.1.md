@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **174** 条端点。
+共 **175** 条端点。
 
 ### `api-keys`
 
@@ -191,6 +191,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `POST` | `/api/v1/chat` | 快速检索问答（一次性） |
+| `POST` | `/api/v1/chat/approvals/{approval_id}` | 对一条待确认的工具调用做出决定（允许一次 / 这类都允许 / 拒绝） |
 | `POST` | `/api/v1/chat/stream` | 快速检索问答（流式） |
 | `GET` | `/api/v1/chat/suggested-questions` | 推荐问题（取自入库时为各分段生成的问题） |
 | `POST` | `/api/v1/conversations/{conversation_id}/resume` | 续跑上一轮（工具循环没跑完时） |

@@ -20,6 +20,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 
 from app.services import subagent as subagent_service
+from app.services.approvals import ApprovalRegistry
 from app.services.llm import ChatError, ChatMessage, LLMConfig, OpenAICompatChat
 from app.services.prompt import PromptContext, build_system_prompt
 from app.services.retrieval import RetrievalQuery, RetrievalService
@@ -898,6 +899,7 @@ class ChatService:
         thinking_effort: str | None,
         tools: list,  # type: ignore[type-arg]
         runner,  # type: ignore[no-untyped-def]
+        approvals: ApprovalRegistry | None = None,
         max_steps: int | None = None,
         max_seconds: float | None = None,
     ) -> ToolLoop:
@@ -906,6 +908,10 @@ class ChatService:
         模型客户端**按这一轮的档位现建**（与检索链路同一个 `_build_chat`）：
         换模型、开关思考都只影响这一轮，不必重建 ChatService。
         工具与执行器由调用方给——它们需要 `Services` 与调用者身份，而那是 api 层才有的。
+
+        ``approvals`` 非空 = 这一轮**有界面可以问**（``ask`` 档的工具调用要在那里
+        停下来等人点头，见 ``tool_loop._resolve_approvals``）。不传的调用点
+        （定时任务那条链路）保持"拒绝并说清"的旧行为——那里没有人回答。
 
         **工具循环全程用用户选定的档位**（v0.27 试过"选工具那一步不思考"，撤了）：
         实测关掉确实能让单次往返从 1.18s 降到 0.68s，但多步循环里"下一步做什么、
@@ -924,6 +930,7 @@ class ChatService:
             client_factory=lambda: self._build_chat(model_pk, thinking, thinking_effort),
             tools=list(tools),
             runner=runner,
+            approvals=approvals,
             **extra,  # type: ignore[arg-type]
         )
 

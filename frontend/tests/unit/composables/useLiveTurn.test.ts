@@ -5,6 +5,7 @@ import {
   abortLiveTurn,
   clearLiveTurn,
   liveTurnState,
+  settleLiveApproval,
   startChatTurn,
   startResumeTurn,
 } from '@/composables/useLiveTurn'
@@ -112,5 +113,51 @@ describe('useLiveTurn', () => {
 
     expect(liveTurnState.value).toMatchObject({ mode: 'patch', conversationId: 'c9' })
     expect(liveTurnState.value?.text).toBe('补完的正文')
+  })
+
+  it('待确认存在模块状态里：切页回来（组件重建）那条确认还在', async () => {
+    // 它和流一样是"还没结束的状态"：放在组件里的话，用户切走再回来就看不到这条确认了，
+    // 而后端一直在等（见 services/approvals.py）——那一轮会一直卡到超时
+    const box = capture()
+    await startChatTurn(
+      { query: '问', kb_ids: [], conversation_id: 'c1' },
+      { conversationId: 'c1', query: '问', thinking: null },
+    )
+
+    box.handlers!.onApproval!({
+      approval_id: 'ap_1',
+      tool: 'run_command',
+      label: '执行命令',
+      args: 'ls',
+      detail: '',
+      rule: 'Bash(ls:*)',
+      timeout_seconds: 120,
+    })
+
+    expect(liveTurnState.value?.approval?.approval_id).toBe('ap_1')
+    // 决定交出去之后收起（组件点完按钮调它）
+    settleLiveApproval()
+    expect(liveTurnState.value?.approval).toBeNull()
+  })
+
+  it('这一轮结束时确认条一起收：后端到点会自己按"没有回应"往下跑', async () => {
+    const box = capture()
+    await startChatTurn(
+      { query: '问', kb_ids: [], conversation_id: 'c1' },
+      { conversationId: 'c1', query: '问', thinking: null },
+    )
+    box.handlers!.onApproval!({
+      approval_id: 'ap_1',
+      tool: 'run_command',
+      label: '执行命令',
+      args: 'ls',
+      detail: '',
+      rule: 'Bash(ls:*)',
+      timeout_seconds: 120,
+    })
+
+    box.handlers!.onDone!('答完了')
+
+    expect(liveTurnState.value?.approval).toBeNull()
   })
 })

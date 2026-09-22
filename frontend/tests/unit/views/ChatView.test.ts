@@ -26,6 +26,8 @@ const createConversation = vi.fn()
 const rewindConversation = vi.fn()
 const chatStream = vi.fn()
 const resumeStream = vi.fn()
+// 确认条上的三个按钮走它（v0.41）：点完要 POST 到那条确认的端点
+const decideApproval = vi.fn()
 const listSkills = vi.fn()
 // 产物的三条接口（v0.26）：卡片要能知道"文件现在在哪、进没进库"，
 // 下载走签名链接，入库要经过「存进知识库」那个弹窗
@@ -60,6 +62,7 @@ vi.mock('@/api/chat', async (importOriginal) => {
     ...actual,
     chatStream: (...args: unknown[]) => chatStream(...args),
     resumeStream: (...args: unknown[]) => resumeStream(...args),
+    decideApproval: (...args: unknown[]) => decideApproval(...args),
     getSuggestedQuestions: vi.fn().mockResolvedValue({ questions: [] }),
   }
 })
@@ -1629,5 +1632,92 @@ describe('代码块与表格的复制按钮', () => {
 
     expect(writeText).toHaveBeenCalledWith('架构\t机器\narm64\t鲲鹏')
     wrapper.unmount()
+  })
+})
+
+describe('执行确认条（v0.41，用户报的第 6 条）', () => {
+  /**
+   * 用户报的现象：`ask` 档下**界面上什么都没有**，直接就是"没有执行（策略拦下）"。
+   * 现在后端会停下来问，界面上就欠一条确认条——它必须**紧挨着输入框**出现，
+   * 因为这一刻用户要做的事就是"回它一句"。
+   */
+  type Handlers = {
+    onApproval: (approval: unknown) => void
+    onDone: (answer: string) => void
+  }
+
+  let handlers: Handlers | null = null
+
+  const APPROVAL = {
+    approval_id: 'ap_1',
+    tool: 'run_command',
+    label: '执行命令',
+    args: 'git status --short',
+    detail: '在 bwrap 隔离里执行；已断网',
+    rule: 'Bash(git:*)',
+    timeout_seconds: 120,
+  }
+
+  beforeEach(() => {
+    handlers = null
+    // 带一个库：不然"开着知识库却一个都没勾"时发送按钮是灰的，流根本起不来
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    chatStream.mockImplementation((_payload: unknown, h: never) => {
+      handlers = h
+      return Promise.resolve({ abort: vi.fn() })
+    })
+  })
+
+  /** 发一轮提问，然后让后端"停下来问"。 */
+  async function askAndWait(wrapper: VueWrapper): Promise<void> {
+    await wrapper.find('.composer-field').setValue('看看目录')
+    await wrapper.find('.send-btn').trigger('click')
+    await flushPromises()
+    handlers!.onApproval(APPROVAL)
+    await flushPromises()
+  }
+
+  it('确认条出现在输入框上方，带着要执行的命令原文', async () => {
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+    await askAndWait(wrapper)
+
+    const bar = wrapper.find('.approval')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain('执行命令')
+    expect(bar.text()).toContain('git status --short')
+    // 紧挨着输入框（同一个容器里、在它之前）——不是飘在消息流里跟着滚走
+    expect(bar.element.nextElementSibling?.classList.contains('composer')).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('点「允许一次」POST 到那条确认，然后收起', async () => {
+    decideApproval.mockResolvedValue({ accepted: true, detail: '' })
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+    await askAndWait(wrapper)
+
+    const button = wrapper.findAll('.approval button').find((item) => item.text() === '允许一次')!
+    await button.trigger('click')
+    await flushPromises()
+
+    expect(decideApproval).toHaveBeenCalledWith('ap_1', 'allow_once')
+    expect(wrapper.find('.approval').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('切走再回来，确认条还在（后端一直在等）', async () => {
+    const first = await mountAt('/chat/c1')
+    await flushPromises()
+    await askAndWait(first.wrapper)
+    expect(first.wrapper.find('.approval').exists()).toBe(true)
+
+    first.wrapper.unmount()
+    const again = await mountAt('/chat/c1')
+    await flushPromises()
+
+    expect(again.wrapper.find('.approval').exists()).toBe(true)
+    again.wrapper.unmount()
   })
 })

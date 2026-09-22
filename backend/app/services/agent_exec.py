@@ -9,12 +9,22 @@
 | 策略 | ``command_policy`` 的规则 + ``sandbox.exec_policy`` 总开关 | 拒绝，并说明怎么放开 |
 | 内核隔离 | ``isolation.detect()`` / ``run_isolated`` | 拒绝——**不回退成裸跑** |
 
-**与端点唯一实质的差别：``ask`` 这一档在这里是"拒绝并说清"而不是"停下来问"。**
-对话是一条**拉取式**的生成器：事件由上层一个个取走，"问用户"要求在这一步先把
-已发生的事件送出去、再阻塞等人回答，拉取式做不到（实测过那个死锁的形状，
-见 ``agent_tools._call_mcp`` 里同一段说明）。所以这里的取舍与外部工具那层一致：
-**宁可"这轮用不了、并说清怎么打开"，也不要静默执行**——用户给过的"允许"才是允许，
-我们不会替他点这个头。默认档就是 ``ask``，所以"接上就能跑命令"这件事不会发生。
+**``ask`` 这一档在这里是"真的会问"**（v0.41）。端点那条路一次请求就是一次执行，
+所以它那里的 ask 是"回 409，界面确认后带 ``approved`` 重调"；对话是一条连续链路，
+没有第二次请求可以承载那个决定，于是这里的 ask 走
+``services/approvals``：登记一条待确认，由工具循环把它发到界面上（SSE）、
+**停下来等**（见 ``tool_loop._perform``），拿到决定之后带着 ``approval=…``
+把这一步重跑一遍。三条边界：
+
+- **先发事件、再阻塞**：等待发生在生成器**被恢复之后**——反过来的话界面根本收不到
+  那个询问，两边一起等死（那条死锁的形状记在 ``agent_tools._call_mcp`` 的说明里）；
+- **等不到按"没批准"处理**（``approvals.TIMEOUT``），并**如实告诉模型"对方没有回应"**：
+  说成"对方拒绝了"会让它以为对方看过并否了，下一轮的措辞就说错话；
+- **没有人可以问的链路上仍然是"拒绝并说清"**（定时任务走 ``approvals.UNAVAILABLE``）：
+  那条链路没有界面，等满 120 秒只会白占一个消费者线程。
+
+默认档就是 ``ask``，所以"接上就能跑命令"这件事仍然不会发生——用户点过的那一下
+才是允许；而"这轮用不了"的出路（改总开关、加放行规则）照旧写进回给模型的话里。
 """
 
 from __future__ import annotations
@@ -27,12 +37,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from app.core.exceptions import InvalidRequestError
+from app.services import approvals as approval_service
 from app.services import isolation as isolation_service
 from app.services.agent_files import Roots, describe_roots, resolve_roots
 from app.services.api_key import Caller
+from app.services.approvals import ApprovalRequest
 from app.services.command_policy import (
     ACTION_ALLOW,
+    ACTION_ASK,
     ACTION_DENY,
+    append_allow_rule,
     rules_from_runtime,
     suggest_rule,
     tool_arguments,
@@ -76,6 +90,13 @@ class ExecOutcome:
     ran: bool = False
     """是否真的起了进程。``False`` 时 ``exit_code`` 无意义。"""
     exit_code: int | None = None
+    approval: ApprovalRequest | None = None
+    """这条命令**在等用户点头**（``ask`` 档，v0.41）。
+
+    非空时这一轮**什么都没跑**：工具循环拿它发一条 approval 事件、停下来等人回答，
+    拿到决定之后再带着 ``approval=…`` 把这一步重跑一遍（见 ``tool_loop._perform``）。
+    所以 ``text`` 在这个阶段只是一句占位——它不会成为回给模型的那句话。
+    """
 
 
 def _detect(*, force: bool = False) -> isolation_service.Isolation:
@@ -96,8 +117,18 @@ def run_command(
     *,
     conversation_id: str | None,
     args: dict[str, object],
+    approval: str | None = None,
 ) -> ExecOutcome:
-    """跑一条命令（或说清为什么不跑）。"""
+    """跑一条命令（或说清为什么不跑）。
+
+    ``approval`` 是**工具循环带回来的那个决定**（``services/approvals`` 里的取值）：
+
+    - ``None`` = 还没有人问过，而这一档又需要问 → 登记一条待确认，这次不执行；
+    - ``allow_once`` / ``allow_always`` = 对方点了同意 → 照跑（后者顺手写下放行规则）；
+    - ``deny`` / ``timeout`` / ``unavailable`` = 没拿到许可 → 不跑，并说清是哪一种。
+
+    **没见过的取值一律当"没许可"**：这条路上放行必须是明确的，不能靠"没匹配上"。
+    """
     argv = _argv_of(args)
     timeout = _timeout_of(args)
     allow_network = bool(args.get("allow_network") is True)
@@ -117,9 +148,8 @@ def run_command(
 
     # 闸 2：策略。deny 优先（规则或总开关），命中 allow 才是放行；
     # 没命中规则就用总开关——与端点的判定顺序逐条对齐（那里有两段说明为什么）。
-    decision = rules_from_runtime(services.runtime, source="执行").decide(
-        "Bash", tool_arguments(argv)
-    )
+    arguments = tool_arguments(argv)
+    decision = rules_from_runtime(services.runtime, source="执行").decide("Bash", arguments)
     global_mode = services.runtime.get("sandbox.exec_policy") or POLICY_ASK
     if decision.action == ACTION_DENY:
         return _refused(f"这条命令被拒绝规则拦下：{decision.reason}。换一条路，不要重试这条。")
@@ -132,16 +162,17 @@ def run_command(
     # 少了这半句，"总开关设成允许"这件事会变成 no-op——用户改完照样被拒，
     # 而界面上写着"允许"，那种不一致最难查（第一版就是这么错的，用例抓住了）。
     mode = decision.action if decision.rule is not None else global_mode
-    if mode != ACTION_ALLOW:
-        rule = suggest_rule("Bash", tool_arguments(argv)).describe()
-        return _refused(
-            "执行需要对方先确认，**这一轮没有执行**。"
-            "请如实告诉对方：要让我跑命令，得先把「设置 → 沙箱执行」的策略改成「允许」，"
-            f"或者在放行清单里加一行 `{rule}`（加完只放行这一族命令，其它仍然要确认）。"
-            "**不要假装执行过，也不要凭猜测编造命令的输出。**"
-        )
+    rule = suggest_rule("Bash", arguments).describe()
+    if mode not in (ACTION_ALLOW, ACTION_ASK):
+        # ``sandbox`` 那一档（以及任何没见过的取值）在这里**与今天一样不放行**。
+        # 端点那条路把 sandbox 当"照跑"，两处的口径本来就不一致——那是策略层
+        # 该单独定的一件事，不该由"把 ask 做成真的会问"这一次改动顺手改掉。
+        return _needs_confirm(rule)
 
     # 闸 3：内核隔离。没有可用后端就**拒绝**，不回退成裸跑（见 isolation 模块头）。
+    #
+    # **它排在"问用户"之前**：隔离不可用时这条命令根本没有跑起来的可能，
+    # 先问等于让对方白点一次（点完他还是看到这句）。三道闸一道没少，只是换了个顺序。
     found = _detect()
     if not found.available:
         return ExecOutcome(
@@ -154,6 +185,20 @@ def run_command(
             ),
             summary="这台机器没有隔离，拒绝执行",
         )
+
+    if mode == ACTION_ALLOW:
+        pass  # 规则命中或总开关放行：不必问
+    elif approval in (approval_service.ALLOW_ONCE, approval_service.ALLOW_ALWAYS):
+        if approval == approval_service.ALLOW_ALWAYS:
+            # 「这类都允许」：把建议的那条规则写进放行清单，**之后同类调用不再问**。
+            # 先写再跑：这一次跑失败了也不该让"以后都允许"这一下白点
+            append_allow_rule(services.runtime, suggest_rule("Bash", arguments))
+    elif approval is None:
+        return _awaiting(
+            services, arguments=arguments, rule=rule, found=found, allow_network=allow_network
+        )
+    else:
+        return _not_approved(approval, rule)
 
     roots = resolve_roots(services, conversation_id=conversation_id, caller=caller)
     box, root = _roots_for_run(services, roots, conversation_id)
@@ -236,6 +281,79 @@ def _timeout_of(args: dict[str, object]) -> float:
 
 def _refused(reason: str) -> ExecOutcome:
     return ExecOutcome(ok=False, ran=False, text=reason, summary="没有执行（策略拦下）")
+
+
+def _how_to_open(rule: str) -> str:
+    """**每条"没执行"的回话都要带上这两条出路。**
+
+    只说"不允许"的报错等于没说：模型只能反复重试同一件事，而界面上的用户
+    根本不知道要去改哪个设置（这一条是从第一版就有的口径）。
+    """
+    return (
+        "要让我跑命令，得先把「设置 → 沙箱执行」的策略改成「允许」，"
+        f"或者在放行清单里加一行 `{rule}`（加完只放行这一族命令，其它仍然要确认）。"
+    )
+
+
+def _needs_confirm(rule: str) -> ExecOutcome:
+    """没拿到许可、也没处去问时的那句回话（``sandbox`` 档与"没有人可问"的链路共用）。"""
+    return _refused(
+        "执行需要对方先确认，**这一轮没有执行**。"
+        f"请如实告诉对方：{_how_to_open(rule)}"
+        "**不要假装执行过，也不要凭猜测编造命令的输出。**"
+    )
+
+
+def _not_approved(approval: str, rule: str) -> ExecOutcome:
+    """对方没给许可：不执行，并**说清是哪一种"没给"**。
+
+    三种必须分开说，因为模型下一轮该讲的话不一样：拒绝了（别再提这条命令）、
+    没有回应（可以说"刚才那条我没等到你确认"）、没有人可以问（定时任务那条链路，
+    得让用户自己知道"它跑不了"）。混成一句"被策略拦下"就全错了。
+    """
+    if approval == approval_service.DENY:
+        head = "对方**拒绝**了这次执行"
+    elif approval == approval_service.TIMEOUT:
+        head = "**对方一直没有回应**（等到超时），按没有批准处理"
+    else:
+        head = "这条链路上没有人可以确认（这条链路没有界面可问）"
+    return _refused(
+        f"{head}，**这一轮没有执行**。不要重试这条命令，也不要假装执行过。{_how_to_open(rule)}"
+    )
+
+
+def _awaiting(
+    services: Services,
+    *,
+    arguments: str,
+    rule: str,
+    found: isolation_service.Isolation,
+    allow_network: bool,
+) -> ExecOutcome:
+    """登记一条待确认，**这次不执行任何东西**。
+
+    真正的执行发生在拿到决定之后（工具循环会带着 ``approval=…`` 再调一次），
+    所以这里返回的 ``text`` 只是一句占位——它不会成为回给模型的那句话。
+    """
+    request = services.approvals.open(
+        tool="run_command",
+        # 标题与过程面板用的是同一句话（见 tool_loop._LABELS）：用户在确认条上看到的
+        # 与那一行步骤是同一个动作，两处措辞不同会让人以为是两件事
+        label="执行命令",
+        args=arguments,
+        detail=(
+            f"在 {found.backend} 隔离里执行；cwd 是这次会话的沙箱目录；"
+            f"{'允许联网' if allow_network else '已断网'}"
+        ),
+        rule=rule,
+    )
+    return ExecOutcome(
+        ok=False,
+        ran=False,
+        text="（这条命令在等对方确认，拿到决定之前没有执行。）",
+        summary="等待确认",
+        approval=request,
+    )
 
 
 def _summary(result: isolation_service.ExecutionResult) -> str:

@@ -530,7 +530,10 @@ def build_runner(
             )
         return _roots_cache[0]
 
-    def run(name: str, args: dict[str, Any]) -> ToolOutcome:
+    def run(name: str, args: dict[str, Any], *, approval: str | None = None) -> ToolOutcome:
+        """``approval`` 只有 ``run_command`` 用得上（v0.41）：``ask`` 档下工具循环
+        会先把这条命令**问成一条待确认**（执行器登记、循环发事件并等人回答），
+        拿到决定之后带着它把这一条重跑一遍——见 ``tool_loop._resolve_approvals``。"""
         if name.startswith("mcp__"):
             return _call_mcp(services, name, args, owner_id=owner_id)
         if name == "spawn_subagent":
@@ -559,8 +562,12 @@ def build_runner(
         if name in _FILE_TOOLS:
             return _run_file_tool(name, _roots(), args)
         if name == "run_command":
-            outcome = run_command(services, caller, conversation_id=conversation_id, args=args)
-            return ToolOutcome(content=outcome.text, summary=outcome.summary)
+            outcome = run_command(
+                services, caller, conversation_id=conversation_id, args=args, approval=approval
+            )
+            return ToolOutcome(
+                content=outcome.text, summary=outcome.summary, approval=outcome.approval
+            )
         if name == "list_tables":
             return _list_tables(services, scope)
         if name == "query_table":
