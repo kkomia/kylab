@@ -14,7 +14,7 @@
 import type { Editor } from '@tiptap/core'
 import { nextTick, ref, shallowRef, watch } from 'vue'
 
-import { uploadNoteImage, type NoteAiAction } from '@/api/notes'
+import { uploadNoteImage, type NoteAiAction, type NoteImage } from '@/api/notes'
 import IconAi from '@/components/icons/IconAi.vue'
 import IconFormatBold from '@/components/icons/IconFormatBold.vue'
 import IconFormatBulletList from '@/components/icons/IconFormatBulletList.vue'
@@ -140,29 +140,65 @@ function pickImage(): void {
   fileInput.value?.click()
 }
 
-/** 选图 → 上传到后端 → 以带签名的地址插入。图片标签带不了鉴权头，所以必须签名地址。 */
-async function onFileChange(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = '' // 允许连续选同一张
-  const current = instance.value
-  if (!file || !current) return
+/**
+ * MIME → 后缀。
+ *
+ * 剪贴板里的图常常**没有文件名**（截图工具给的是空串或 "blob"），而后端按后缀判
+ * 白名单，不补一个必然被"不支持的图片格式"挡回来——这条路径的真实拦路虎就是它。
+ */
+const SUFFIX_BY_TYPE: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/bmp': '.bmp',
+}
+
+/** 给没有后缀的图按 MIME 补一个后缀；已经有后缀（哪怕是别的）就不动，让后端去判。 */
+function withSuffixFromType(file: File): File {
+  const suffix = SUFFIX_BY_TYPE[file.type.toLowerCase()]
+  if (!suffix || /\.[a-z0-9]{2,5}$/i.test(file.name)) return file
+  const base = file.name.trim() || '粘贴的图片'
+  return new File([file], `${base}${suffix}`, { type: file.type })
+}
+
+/**
+ * 图片上传的**唯一通道**：工具栏选图与正文粘贴都走它。
+ *
+ * 失败时返回 null（并弹提示）而**不是**抛异常：调用方据此什么都不插——
+ * 半截内容（比如 data URL）留在正文里比"没插上"更糟。
+ */
+async function uploadImageForEditor(file: File): Promise<NoteImage | null> {
   if (!props.noteId) {
     emit('notify', { type: 'error', message: '笔记还没保存，先等一下再插图' })
-    return
+    return null
   }
   uploading.value = true
   try {
-    const image = await uploadNoteImage(props.noteId, file)
-    current.chain().focus().setImage({ src: image.url, alt: image.alt }).run()
+    return await uploadNoteImage(props.noteId, withSuffixFromType(file))
   } catch (cause) {
     emit('notify', {
       type: 'error',
       message: cause instanceof Error ? cause.message : '图片上传失败',
     })
+    return null
   } finally {
     uploading.value = false
   }
+}
+
+/** 选图 → 上传到后端 → 以带签名的地址插入。图片标签带不了鉴权头，所以必须签名地址。 */
+async function onFileChange(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = '' // 允许连续选同一张
+  if (!file) return
+  const image = await uploadImageForEditor(file)
+  // 上传期间笔记可能已经切走（画布换的是文档、实例还在），所以落图前重取一次实例
+  const current = instance.value
+  if (!image || !current || current.isDestroyed) return
+  current.chain().focus().setImage({ src: image.url, alt: image.alt }).run()
 }
 
 /** 选定 AI 动作后交给页面执行（页面负责先保存，再替换正文）。 */
@@ -396,6 +432,9 @@ watch(
       </div>
 
       <div class="toolbar-right">
+        <!-- 上传中要有可见反馈：从"粘/选"到图片落进正文之间有一段时间，
+             只把按钮置灰的话，用户会以为这次粘贴没被受理 -->
+        <span v-if="uploading" class="upload-hint" role="status">图片上传中…</span>
         <!-- 保存状态放在最左：它是"这条笔记当前的状态"，比任何动作都更该先被看到 -->
         <slot name="status" />
         <!-- AI 处理：星芒图标 + 三档动作下拉。放在格式工具栏与右侧动作之间——
@@ -448,6 +487,7 @@ watch(
           :model-value="modelValue"
           :editable="editable"
           :note-id="noteId"
+          :upload-image="uploadImageForEditor"
           @update:model-value="emit('update:modelValue', $event)"
           @ready="onReady"
           @change="onCanvasChange"
@@ -553,6 +593,13 @@ watch(
 
 .file-input {
   display: none;
+}
+
+/* 上传中的可见反馈（粘贴图片这条路尤其需要：没有它，等待期里界面毫无动静） */
+.upload-hint {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+  white-space: nowrap;
 }
 
 /* AI 入口：星芒 + 短标签，用强调色与普通格式按钮区分开 */

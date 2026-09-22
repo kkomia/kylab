@@ -64,6 +64,27 @@ def test_list_preview_strips_markdown_markers(client: TestClient) -> None:
     assert "重点内容" in item["preview"]
 
 
+def test_list_preview_drops_image_and_its_size_marker(client: TestClient) -> None:
+    """配图**连同尺寸后缀**一起丢。
+
+    前端拖拽缩放后，图片在正文里是 ``![图](url){width=460}``（见
+    frontend/src/components/notes/noteImage.ts）。只丢图片语法的话，每条缩过图的
+    笔记，列表预览末尾都会挂一段 ``{width=460}``——那是给编辑器看的，不是内容。
+    """
+    body = (
+        "看图\n\n"
+        "![图](/api/v1/notes/n1/images/a.png?expires=1&signature=x){width=460}\n\n"
+        "图后面的正文"
+    )
+    client.post("/api/v1/notes", json={"title": "T", "content_md": body})
+
+    preview = client.get("/api/v1/notes").json()["items"][0]["preview"]
+
+    assert "{width" not in preview
+    assert "images/a.png" not in preview
+    assert "看图" in preview and "图后面的正文" in preview
+
+
 def test_unknown_note_is_404(client: TestClient) -> None:
     assert client.get("/api/v1/notes/note_missing").status_code == 404
 

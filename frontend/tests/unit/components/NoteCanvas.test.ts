@@ -125,4 +125,51 @@ describe('NoteCanvas', () => {
 
     wrapper.unmount()
   })
+
+  it('拖右下角改图片尺寸：宽高进节点属性，尺寸随正文（Markdown）往返', async () => {
+    const { wrapper, editor } = await mountCanvas('![图](https://example.test/a.png)', 'a')
+    const image = wrapper.get('.tiptap img').element as HTMLImageElement
+
+    // jsdom 没有布局引擎，offsetWidth/Height 恒为 0，而缩放正是靠它们算尺寸并在
+    // 松手时落库；按我们的 CSS 规则喂一份：宽度取内联样式，高度跟宽度与原图比例
+    // （`.editor-content [data-resize-wrapper] img { height: auto !important }`）。
+    // 同一条模拟用在 NoteEditor.test.ts 的拖拽用例里。
+    const renderedWidth = (): number => Math.round(parseFloat(image.style.width) || 400)
+    Object.defineProperty(image, 'offsetWidth', { configurable: true, get: renderedWidth })
+    Object.defineProperty(image, 'offsetHeight', {
+      configurable: true,
+      get: () => Math.round((renderedWidth() * 300) / 400),
+    })
+
+    const handle = wrapper.get('[data-resize-handle="bottom-right"]').element as HTMLElement
+    const fire = (type: string, x: number): void => {
+      const target: EventTarget = type === 'mousedown' ? handle : document
+      target.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: 300 }),
+      )
+    }
+    fire('mousedown', 400)
+    fire('mousemove', 460) // 往右拖 60px
+    fire('mouseup', 460)
+    await flushPromises()
+
+    const node = editor.state.doc.firstChild
+    expect(node?.attrs.width).toBe(460)
+    // 高度按原图比例算出来（400x300 的图拖到 460 宽 → 345 高），不会被拖变形
+    expect(node?.attrs.height).toBe(345)
+
+    // 尺寸写进正文：Markdown 是唯一事实源，写的就是上面那个宽度
+    const saved = String(wrapper.emitted('update:modelValue')?.at(-1)?.[0] ?? '')
+    expect(saved).toBe('![图](https://example.test/a.png){width=460}')
+
+    wrapper.unmount()
+
+    // 用这份正文重新装载（等价于刷新/切走再回来）：尺寸还在
+    // （从 HTML 属性解析回来时 Tiptap 会顺手转成数字，所以这里是 460 而不是 '460'）
+    const reopened = await mountCanvas(saved, 'a')
+    expect(reopened.editor.state.doc.firstChild?.attrs.width).toBe(460)
+    expect(reopened.wrapper.find('[data-resize-container]').exists()).toBe(true)
+
+    reopened.wrapper.unmount()
+  })
 })

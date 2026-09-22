@@ -33,15 +33,22 @@ interface State {
   activeTag: string
 }
 
-/** 把 Markdown 压成列表用的一句预览（与后端 `_preview` 同一口径）。 */
-function plainPreview(markdown: string): string {
+/**
+ * 把 Markdown 压成列表用的一句预览（与后端 `_preview` 同一口径）。
+ *
+ * 导出只为用例：它是纯函数，但**每次自动保存都会重算一遍预览**
+ * （`save` → `toListItem`），口径错了界面上立刻看得见。
+ */
+export function plainPreview(markdown: string): string {
   const lines = markdown
     .split(/\r?\n/)
     .map((line) => line.replace(/^\s*(?:[-*+]\s*\[[ xX]\]|[#>]+|[-*+]|\d+[.)])\s*/, '').trim())
     .filter(Boolean)
   const body = lines
     .join(' ')
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
+    // 图片连同**尺寸后缀**一起丢掉（`![alt](src){width=460}`，见
+    // components/notes/noteImage.ts）：只丢图片语法的话，预览里会剩下 `{width=460}`
+    .replace(/!\[[^\]]*\]\([^)]*\)(?:\{width=\d+(?:\s+height=\d+)?\})?/g, '')
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
     .replace(/\*\*|__|`{1,3}/g, '')
     .trim()

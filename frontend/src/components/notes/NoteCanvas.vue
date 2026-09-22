@@ -21,17 +21,29 @@ import { createDocument } from '@tiptap/core'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { TaskItem } from '@tiptap/extension-task-item'
 import { TaskList } from '@tiptap/extension-task-list'
-import Image from '@tiptap/extension-image'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { EditorState } from '@tiptap/pm/state'
+import type { EditorView } from '@tiptap/pm/view'
 import StarterKit from '@tiptap/starter-kit'
 import { EditorContent, useEditor } from '@tiptap/vue-3'
 import { watch } from 'vue'
 import { Markdown } from 'tiptap-markdown'
 
+import NoteImage from '@/components/notes/noteImage'
+
 const props = withDefaults(
-  defineProps<{ modelValue: string; editable?: boolean; noteId?: string }>(),
-  { editable: true, noteId: undefined },
+  defineProps<{
+    modelValue: string
+    editable?: boolean
+    noteId?: string
+    /**
+     * 粘贴图片时把文件交出去上传，成功回一个可直接当 `<img src>` 的地址。
+     * 没有这个回调就不接管粘贴（保持默认粘贴行为）——画布本身不必知道
+     * 笔记接口、登录凭据与提示机制。
+     */
+    uploadImage?: (file: File) => Promise<{ url: string; alt?: string } | null>
+  }>(),
+  { editable: true, noteId: undefined, uploadImage: undefined },
 )
 const emit = defineEmits<{
   'update:modelValue': [value: string]
@@ -55,10 +67,22 @@ const editor = useEditor({
     Placeholder.configure({ placeholder: '记录点什么… 选中文字后可用上方工具栏格式化' }),
     TaskList,
     TaskItem.configure({ nested: true }),
-    // 配图：地址是带签名的相对链接，正文里存的就是它（Markdown 里是 ![](...)）
-    Image.configure({ inline: false, allowBase64: false }),
+    // 配图：地址是带签名的相对链接，正文里存的就是它（Markdown 里是 ![](...)）。
+    // resize 打开**右下角一个**手柄：只留一个角、且平时透明（见样式），
+    // 拖拽时按原图比例缩放——不给正文铺一圈常驻边框。
+    NoteImage.configure({
+      inline: false,
+      allowBase64: false,
+      resize: {
+        enabled: true,
+        directions: ['bottom-right'],
+        minWidth: 48,
+        alwaysPreserveAspectRatio: true,
+      },
+    }),
     Markdown.configure({ html: false, linkify: true, breaks: false }),
   ],
+  editorProps: { handlePaste },
   onUpdate: ({ editor: instance }) => {
     lastEmitted = markdownOf(instance)
     emit('update:modelValue', lastEmitted)
@@ -67,6 +91,61 @@ const editor = useEditor({
     emit('change')
   },
 })
+
+/** 剪贴板里的图片文件：优先看 `files`，没有再看 `items`（截图工具常只塞后者）。 */
+function imageFilesOf(data: DataTransfer | null): File[] {
+  if (!data) return []
+  const files = Array.from(data.files ?? []).filter((file) => file.type.startsWith('image/'))
+  if (files.length) return files
+  return Array.from(data.items ?? [])
+    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => file !== null)
+}
+
+/**
+ * 粘贴图片：**接管**这次粘贴，走与「插入图片」按钮同一条上传链路。
+ *
+ * 为什么在这里接管而不是把文件往上抛：`handlePaste` 只能**同步**地认领这次粘贴
+ * （返回 true 才算接管），而上传是异步的；插入位置必须在认领的那一刻记下来，
+ * 否则上传期间用户挪了光标，图会插到别处。上传与提示仍归上层（`uploadImage`）。
+ *
+ * 失败时**什么都不插**：宁可什么都没有，也不要把半截内容（比如 data URL）留在正文里。
+ */
+function handlePaste(_view: EditorView, event: ClipboardEvent): boolean {
+  const upload = props.uploadImage
+  const files = imageFilesOf(event.clipboardData)
+  // 只读笔记不接管：`insertContentAt` 是命令，绕得过 contenteditable，
+  // 接管了就会往只读文档里插东西
+  if (!upload || files.length === 0 || !editor.value?.isEditable) return false
+  const at = editor.value.state.selection.from
+  void insertImages(files, at, upload)
+  return true
+}
+
+/** 逐张上传再插入；多张时后一张接在前一张之后（都插在当初那个粘贴位置）。 */
+async function insertImages(
+  files: File[],
+  at: number,
+  upload: (file: File) => Promise<{ url: string; alt?: string } | null>,
+): Promise<void> {
+  let position = at
+  for (const file of files) {
+    const image = await upload(file)
+    const instance = editor.value
+    // 上传期间编辑器可能已经销毁（切走、关页）：到这里为止，别再碰它
+    if (!instance || instance.isDestroyed) return
+    if (!image) continue
+    // 位置可能已被这段时间里的编辑推远：夹在文档长度内，别抛 RangeError
+    const pos = Math.max(0, Math.min(position, instance.state.doc.content.size))
+    instance
+      .chain()
+      .insertContentAt(pos, { type: 'image', attrs: { src: image.url, alt: image.alt } })
+      .focus()
+      .run()
+    position = pos + 1 // 图片节点在文档里占一位
+  }
+}
 
 /**
  * markdown → 文档的缓存。key 是 markdown 原文，value 是解析好的 ProseMirror 文档。
@@ -303,9 +382,62 @@ defineExpose({ warm })
   border-radius: var(--radius-control);
 }
 
-.editor-content :deep(.tiptap img.ProseMirror-selectednode) {
+/* 图片外面是 ResizableNodeView 生成的「容器 + 包裹层 + 手柄」，这里只补两件事：
+   包裹层别超栏宽，以及手柄的"安静"样子。 */
+.editor-content :deep([data-resize-wrapper]) {
+  max-width: 100%;
+}
+
+/* 高度永远跟宽度与图片自身比例走。
+ *
+ * ResizableNodeView 拖拽时会往图片上写**内联** width/height，而宽度会被上面的
+ * `max-width: 100%` 截住、高度不会——于是"往右拖出栏宽"会把图压扁，而且
+ * mouseup 落库读的是 offsetWidth/offsetHeight，压扁的比例会被写进正文。
+ * 让高度始终由宽度决定，截断就看不出、存下来的也是真实比例。
+ * 内联样式只能靠 `!important` 压过，这是它的唯一用途，不是随手加的。 */
+.editor-content :deep([data-resize-wrapper] img) {
+  height: auto !important;
+}
+
+/* 手柄：平时完全透明，鼠标进到图上或正在拖拽时才现出一个 11px 的小圆点。
+   `transform` 把它挪到角上（ResizableNodeView 已给 right/bottom: 0）。 */
+.editor-content :deep([data-resize-handle]) {
+  width: 11px;
+  height: 11px;
+  background: var(--accent);
+  border: 1.5px solid var(--bg-surface);
+  border-radius: var(--radius-pill);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.editor-content :deep([data-resize-handle='bottom-right']) {
+  transform: translate(50%, 50%);
+  cursor: nwse-resize;
+}
+
+.editor-content :deep([data-resize-container]:hover [data-resize-handle]),
+.editor-content :deep([data-resize-state='true'] [data-resize-handle]) {
+  opacity: 1;
+}
+
+/* 只读时把手柄藏掉：ResizableNodeView 要**收到一次 update**（文档有改动）才摘手柄，
+   而只读笔记可能一直不产生 update——手柄留在图上，拖了还会改文档。
+   直接看编辑器自己的 contenteditable 属性最可靠。 */
+.editor-content :deep(.tiptap[contenteditable='false'] [data-resize-handle]) {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .editor-content :deep([data-resize-handle]) {
+    transition: none;
+  }
+}
+
+.editor-content :deep([data-resize-container].ProseMirror-selectednode) {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
+  border-radius: var(--radius-control);
 }
 
 .editor-content :deep(.tiptap p.is-editor-empty:first-child::before) {

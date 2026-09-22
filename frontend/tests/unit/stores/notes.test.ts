@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { NoteListItem } from '@/api/notes'
-import { latestNoteId } from '@/stores/notes'
+import { latestNoteId, plainPreview } from '@/stores/notes'
 
 function item(id: string, updatedAt: string | null, pinned = false): NoteListItem {
   return {
@@ -45,5 +45,31 @@ describe('latestNoteId', () => {
     const items = [item('a', '2026-09-13T00:00:00Z'), item('b', '2026-09-13T00:00:00Z')]
 
     expect(latestNoteId(items)).toBe('a')
+  })
+})
+
+describe('plainPreview', () => {
+  it('配图连尺寸后缀一起丢掉，预览里不漏出 {width=…}', () => {
+    // 正文里的样子来自编辑器拖拽缩放（见 components/notes/noteImage.ts）
+    const body = [
+      '看图',
+      '',
+      '![图](/api/v1/notes/n1/images/a.png?expires=1&signature=x){width=460}',
+      '',
+      '图后面的正文',
+    ].join('\n')
+
+    const preview = plainPreview(body)
+
+    expect(preview).not.toContain('{width')
+    expect(preview).not.toContain('images/a.png')
+    expect(preview).toContain('看图')
+    expect(preview).toContain('图后面的正文')
+  })
+
+  it('没有尺寸的普通配图照旧丢掉', () => {
+    expect(plainPreview('前\n\n![图](https://example.test/a.png)\n\n后')).not.toContain(
+      'example.test',
+    )
   })
 })
