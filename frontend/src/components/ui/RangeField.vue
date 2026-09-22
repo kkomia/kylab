@@ -6,21 +6,26 @@
  * 该填多少，滑杆把**范围**和**常用值落在哪**直接画出来——轨道上每个刻度点都是
  * 一个常用值，点下面是它的数值。
  *
- * 五个刻意的约定：
+ * 六个刻意的约定：
  * 1. **刻度点 = 常用值**：`marks` 传进来，越界的自动丢掉（重叠的上限跟着块长变，
  *    传进来的 256 在块长 128 时必须消失，否则点会画到轨道外面去）。
  * 2. **默认值那个点画成强调色**（`primary`）：用户一眼看到"常态在哪、我现在离它多远"。
  *    点用 `pointer-events: none`——它只是路标，**绝不能挡住拖动**（挡住比没有点更糟）。
  *    "跳到某个点"不需要额外逻辑：范围线性，拖到点上就是那个值。
  * 3. **右侧常驻读数**：滑杆藏了精度，没有读数就只能靠猜。刻度点标的是常用值，
- *    读数标的是当前值——两件事，缺一不可。
+ *    读数标的是当前值——两件事，缺一不可。传 `editable-value` 时读数变成数字框：
+ *    滑杆负责"大概在哪"，要用精确值时不必再跟指针手感较劲（见第 6 条）。
  * 4. **轨道自己画**（`::before`），不去改原生 `::-webkit-slider-runnable-track`：
  *    原生 track 的盒模型各浏览器不一样，改出来的线与滑块中心常差一两个像素。
  *    自己画就能用同一个 `--range-thumb` 把线、点、滑块三者对齐。
  * 5. **值到位置的换算是"滑块中心"**：滑块中心走的是 `[半滑块, 宽度 − 半滑块]`，
  *    直接按百分比铺点会在两端差半个滑块（约 7px）。
+ * 6. **吸附只认指针拖动**（`snap-to-marks`）：指针滑到刻度附近就吸过去，键盘**不吸**。
+ *    键盘的每一步本来就是精确的 1，一吸就出事——站在 1024 上按方向键得到 1025，
+ *    又被吸回 1024，用户再也走不出这个刻度。同理，数字框也**不吸附**：
+ *    手打 1000 是明确的意图，替用户改成 1024 是自作主张。
  */
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const model = defineModel<number>({ required: true })
 
@@ -37,8 +42,23 @@ const props = withDefaults(
     marks?: { value: number; primary?: boolean }[]
     /** 外层没有 `<label for>` 时，给读屏器的名字。 */
     ariaLabel?: string
+    /** 拖动时靠近 `marks` 就吸附过去。键盘与数字框不受影响（见顶部注释第 6 条）。 */
+    snapToMarks?: boolean
+    /** 右侧读数改成可输入的数字框（默认只读展示）。 */
+    editableValue?: boolean
+    /** 数字框的名字：外层 `<label for>` 指的是滑杆，管不到这个框。 */
+    valueLabel?: string
   }>(),
-  { step: 1, id: undefined, marks: () => [], ariaLabel: undefined },
+  // 可选属性显式给 undefined 默认值：Vue 语义上一样，但能让 lint 配置看清"这是刻意的可选"
+  {
+    step: 1,
+    id: undefined,
+    marks: () => [],
+    ariaLabel: undefined,
+    snapToMarks: false,
+    editableValue: false,
+    valueLabel: undefined,
+  },
 )
 
 /** 刻度点 + 它的落点。位置与 `--range-thumb` 同一个口径，改滑块尺寸时不会错位。 */
@@ -55,8 +75,72 @@ const items = computed(() =>
     }),
 )
 
+/**
+ * 吸附的"磁力半径"：量程的 3%。摊到约 400px 宽的轨道上就是 ±12px——手能感觉到，
+ * 又不至于把刻度之间的值整段吃掉（块长吸到 1024 之后，900 这种中间值照样拖得到）。
+ */
+const SNAP_RATIO = 0.03
+
+/**
+ * 指针正按在滑杆上。**只有指针拖动才吸附**——见顶部注释第 6 条：键盘一吸就锁死在刻度上。
+ *
+ * 复位挂 `pointerup / pointercancel / blur` 三个事件：原生 range 拖动时浏览器会
+ * 隐式捕获指针，在轨道外面松手也能收到 `pointerup`；万一某个环境漏了，退化的结果
+ * 也只是"键盘跟着吸附"，不会卡住不能动。
+ */
+const dragging = ref(false)
+
+/** 靠近某个刻度就返回那个刻度，否则原样返回。 */
+function snapped(value: number): number {
+  if (!props.snapToMarks || !dragging.value) return value
+  const radius = (props.max - props.min) * SNAP_RATIO
+  let nearest = value
+  let distance = Number.POSITIVE_INFINITY
+  for (const item of items.value) {
+    const gap = Math.abs(item.value - value)
+    if (gap < distance) {
+      distance = gap
+      nearest = item.value
+    }
+  }
+  return distance <= radius ? nearest : value
+}
+
 function onInput(event: Event): void {
-  model.value = Number((event.target as HTMLInputElement).value)
+  const raw = Number((event.target as HTMLInputElement).value)
+  model.value = snapped(raw)
+}
+
+/**
+ * 数字框里的**原始文本**。必须有一份自己的草稿：输入过程中允许暂时非法
+ * （打「1024」时先出现的是「1」），直接写回 `model` 等于把中间态当真值抛给父组件——
+ * 分块那两处会顺手把重叠压回上限，"1" 这一下就把设置改掉了。
+ */
+const numberDraft = ref(String(model.value))
+/** 正在这个框里打字：此时从外面（拖滑杆）来的变化不回写草稿，否则会把正在打的字冲掉。 */
+const editing = ref(false)
+
+watch(model, (value) => {
+  if (!editing.value) numberDraft.value = String(value)
+})
+
+/**
+ * 失焦 / 回车才提交。**能解析就按 `[min, max]` 夹一下**，与滑杆的原生夹取同一套边界
+ * （`max` 传进来的就是这道参数的上限，比如块重叠的上限跟着块长走）——用户看到的
+ * 永远是落在范围内的数，不把非法值留在框里，也不为它发明一条新的报错；
+ * 解析不出来（清空、乱敲）就回显当前值，等于这次输入没发生。
+ */
+function commitNumber(): void {
+  editing.value = false
+  const text = numberDraft.value.trim()
+  const parsed = text === '' ? Number.NaN : Number(text)
+  if (!Number.isFinite(parsed)) {
+    numberDraft.value = String(model.value)
+    return
+  }
+  const value = Math.min(props.max, Math.max(props.min, Math.round(parsed)))
+  model.value = value
+  numberDraft.value = String(value)
 }
 </script>
 
@@ -75,6 +159,10 @@ function onInput(event: Event): void {
             :value="model"
             :aria-label="ariaLabel"
             @input="onInput"
+            @pointerdown="dragging = true"
+            @pointerup="dragging = false"
+            @pointercancel="dragging = false"
+            @blur="dragging = false"
           />
           <!-- 刻度点与数值都只铺不点：见顶部注释第 2 条，绝不能挡住拖动 -->
           <span
@@ -96,7 +184,23 @@ function onInput(event: Event): void {
           >{{ mark.value }}</span
         >
       </div>
-      <output class="range-value tabular">{{ model }}</output>
+      <input
+        v-if="editableValue"
+        :id="id ? `${id}-value` : undefined"
+        class="range-value range-number tabular"
+        type="number"
+        :min="min"
+        :max="max"
+        :step="step"
+        :value="numberDraft"
+        :aria-label="valueLabel"
+        @input="numberDraft = ($event.target as HTMLInputElement).value"
+        @focus="editing = true"
+        @change="commitNumber"
+        @blur="commitNumber"
+        @keydown.enter.prevent="commitNumber"
+      />
+      <output v-else class="range-value tabular">{{ model }}</output>
     </div>
   </div>
 </template>
@@ -221,5 +325,33 @@ function onInput(event: Event): void {
   font-size: var(--text-meta-size);
   text-align: right;
   color: var(--text-primary);
+}
+
+/* 可编辑的读数：**给它一个框**。一行纯文本右对齐时没人知道那里能改，
+   用户报的正是"右侧数字不能直接编辑"。边框与聚焦口径与 AppInput 一致，
+   免得同一个弹窗里两种输入框长得不一样。 */
+.range-number {
+  box-sizing: border-box;
+  /* 8ch：4 位数 + 原生步进按钮的宽度。写死宽度是为了拖动滑杆时读数变化
+     不会推着轨道左右跳（与上面 `min-width` 同一个理由） */
+  width: 8ch;
+  height: var(--control-height);
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: var(--text-meta-size);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  outline: none;
+  transition: var(--transition-ui);
+}
+
+.range-number:hover {
+  border-color: var(--text-quaternary);
+}
+
+.range-number:focus {
+  border-color: var(--text-primary);
+  box-shadow: inset 0 0 0 1px var(--text-primary);
 }
 </style>

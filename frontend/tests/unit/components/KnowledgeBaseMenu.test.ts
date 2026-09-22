@@ -175,6 +175,23 @@ describe('KnowledgeBaseMenu 切块策略（v17）', () => {
     return wrapper
   }
 
+  /**
+   * 模拟指针拖动。吸附**只在指针拖动时**生效（键盘的每一步本来就是精确的 1，
+   * 一吸就再也走不出刻度），所以这里必须先把按下这件事告诉控件。
+   * 用原生事件而不是 `trigger('pointerdown')`：jsdom 的 PointerEvent 时有时无。
+   */
+  function startDrag(input: { element: Element }) {
+    input.element.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+  }
+
+  function endDrag(input: { element: Element }) {
+    input.element.dispatchEvent(new Event('pointerup', { bubbles: true }))
+  }
+
+  function inputValue(wrapper: Awaited<ReturnType<typeof mountMenu>>, selector: string) {
+    return (wrapper.find(selector).element as HTMLInputElement).value
+  }
+
   it('切块这一栏是可编辑的，预填当前值，且底部有保存', async () => {
     const wrapper = await openChunking(await mountMenu())
 
@@ -256,6 +273,134 @@ describe('KnowledgeBaseMenu 切块策略（v17）', () => {
     expect(wrapper.find('.nav-item-active').text()).toBe('切块策略')
     expect(wrapper.find('.callout').classes()).toContain('callout-strong')
     expect(wrapper.text()).toContain('已有文档还是按旧的切块参数、也没有问题')
+  })
+
+  // ------------------------------------------------ 吸附与可输入（用户报的第 11 条）
+
+  it('拖动滑杆时吸附到最近的常用档：停在 1024 不再靠手感', async () => {
+    const wrapper = await openChunking(await mountMenu())
+    const input = wrapper.find('#kb-chunk-size')
+
+    startDrag(input)
+    // 1000 离刻度 1024 只有 24，在磁力半径（量程的 3%，约 58）以内
+    await input.setValue('1000')
+    expect(inputValue(wrapper, '#kb-chunk-size')).toBe('1024')
+
+    // 磁力只覆盖刻度附近：900 离最近的刻度 124，拖到哪就是哪
+    await input.setValue('900')
+    expect(inputValue(wrapper, '#kb-chunk-size')).toBe('900')
+    endDrag(input)
+
+    // 吸附的结果就是要保存的值（不是只有画面上的滑块跳了一下）
+    startDrag(input)
+    await input.setValue('1000')
+    endDrag(input)
+    await saveButton(wrapper).trigger('click')
+    await flushPromises()
+
+    expect(kbApi.updateKnowledgeBase).toHaveBeenCalledWith('kb_1', { chunk_size: 1024 })
+  })
+
+  it('块重叠也吸附：30 落到刻度 32 上', async () => {
+    const wrapper = await openChunking(await mountMenu())
+    const overlap = wrapper.find('#kb-chunk-overlap')
+
+    startDrag(overlap)
+    await overlap.setValue('30')
+    endDrag(overlap)
+
+    // 量程 0–256 时磁力半径约 8：30 与 32 只差 2
+    expect(inputValue(wrapper, '#kb-chunk-overlap')).toBe('32')
+  })
+
+  it('键盘不受吸附影响：方向键那一格一格照样走得动', async () => {
+    const wrapper = await openChunking(await mountMenu())
+
+    // 没有指针按下（键盘/程序设值）：1000 就是 1000。
+    // 若这里也被吸成 1024，焦点停在刻度上时按方向键会被反复拽回去，永远走不出这个刻度
+    await wrapper.find('#kb-chunk-size').setValue('1000')
+    expect(inputValue(wrapper, '#kb-chunk-size')).toBe('1000')
+  })
+
+  it('右侧数字可以直接输入：回车生效并回显', async () => {
+    const wrapper = await openChunking(await mountMenu())
+    const box = wrapper.find('#kb-chunk-size-value')
+
+    expect(inputValue(wrapper, '#kb-chunk-size-value')).toBe('512')
+
+    // 输入过程中不夹取（"1" 是 "1024" 的前半截），也不动手改别的参数
+    await box.setValue('1000')
+    expect(inputValue(wrapper, '#kb-chunk-overlap')).toBe('64')
+
+    // 回车：先把这个数落到草稿上回显，紧接着弹窗那条"回车保存"的老规矩把它一起提交
+    await box.trigger('keydown.enter')
+    expect(inputValue(wrapper, '#kb-chunk-size-value')).toBe('1000')
+    await flushPromises()
+
+    expect(kbApi.updateKnowledgeBase).toHaveBeenCalledWith('kb_1', { chunk_size: 1000 })
+  })
+
+  it('数字框里超出范围的值，失焦时按现有上下限纠正并回显', async () => {
+    const wrapper = await openChunking(await mountMenu())
+    const box = wrapper.find('#kb-chunk-size-value')
+
+    // 失焦提交（不牵扯弹窗的回车保存）：5000 被夹到上限 2048
+    await box.setValue('5000')
+    await box.trigger('blur')
+
+    // 与滑杆的原生夹取同一套边界（128–2048）：框里不留非法值，也就不会出现
+    // "读数 5000、轨道却停在 2048"的分裂画面
+    expect(inputValue(wrapper, '#kb-chunk-size-value')).toBe('2048')
+    expect(inputValue(wrapper, '#kb-chunk-size')).toBe('2048')
+  })
+
+  it('数字框回显 1000 这类非档位值：吸附只认拖动，不替手打的数做主', async () => {
+    const wrapper = await openChunking(await mountMenu())
+    const box = wrapper.find('#kb-chunk-size-value')
+
+    await box.setValue('1000')
+    await box.trigger('blur')
+
+    expect(inputValue(wrapper, '#kb-chunk-size-value')).toBe('1000')
+    expect(inputValue(wrapper, '#kb-chunk-size')).toBe('1000')
+  })
+
+  it('数字框清空或乱敲：回显当前值，等于这次输入没发生', async () => {
+    const wrapper = await openChunking(await mountMenu())
+    const box = wrapper.find('#kb-chunk-size-value')
+
+    await box.setValue('')
+    await box.trigger('blur')
+    expect(inputValue(wrapper, '#kb-chunk-size-value')).toBe('512')
+
+    // 保存按钮仍然是禁用的：没改动就不许发空 PATCH
+    expect(saveButton(wrapper).attributes('disabled')).toBeDefined()
+  })
+
+  it('用数字框改块长，重叠超过新上限时照旧被压回（与滑杆同一套规则）', async () => {
+    const wrapper = await openChunking(await mountMenu())
+
+    await wrapper.find('#kb-chunk-overlap-value').setValue('256')
+    await wrapper.find('#kb-chunk-overlap-value').trigger('keydown.enter')
+    expect(inputValue(wrapper, '#kb-chunk-overlap-value')).toBe('256')
+
+    // 块长 128 时重叠上限 64
+    await wrapper.find('#kb-chunk-size-value').setValue('128')
+    await wrapper.find('#kb-chunk-size-value').trigger('keydown.enter')
+
+    expect(inputValue(wrapper, '#kb-chunk-overlap-value')).toBe('64')
+    expect(wrapper.find('#kb-chunk-overlap').attributes('max')).toBe('64')
+  })
+
+  it('数字框改块重叠：超过上限的值回车时被夹到上限', async () => {
+    const wrapper = await openChunking(await mountMenu())
+    const box = wrapper.find('#kb-chunk-overlap-value')
+
+    // 块长 512 时上限是 256
+    await box.setValue('300')
+    await box.trigger('keydown.enter')
+
+    expect(inputValue(wrapper, '#kb-chunk-overlap-value')).toBe('256')
   })
 
   it('「重新摄入全部文档」走 all=true，由服务端解析全集', async () => {

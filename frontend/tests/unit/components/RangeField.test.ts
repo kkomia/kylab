@@ -123,4 +123,71 @@ describe('RangeField', () => {
     expect(wrapper.find('.range-mark-label').exists()).toBe(false)
     expect(wrapper.find('.range-col-marked').exists()).toBe(false)
   })
+
+  // ------------------------------------------------ 吸附与数字框（v0.1.1，用户报的第 11 条）
+
+  it('开了吸附：指针拖到刻度附近吸过去，离得远的值原样保留', async () => {
+    const wrapper = mountRange({ snapToMarks: true, marks: MARKS, modelValue: 500 })
+    const input = wrapper.get('input')
+
+    input.element.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    // 量程 128–2048 的 3% ≈ 58：490 离 512 只有 22
+    ;(input.element as HTMLInputElement).value = '490'
+    await input.trigger('input')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([512])
+
+    // 700 离最近的刻度 188，不吸——否则刻度之间就没有可选的值了
+    ;(input.element as HTMLInputElement).value = '700'
+    await input.trigger('input')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([700])
+  })
+
+  it('吸附只认指针：键盘那一步不能被吸回刻度（否则永远走不出 1024）', async () => {
+    const wrapper = mountRange({ snapToMarks: true, marks: MARKS, modelValue: 1024 })
+    const input = wrapper.get('input')
+
+    // 键盘改值不会先有 pointerdown：1025 就是 1025
+    ;(input.element as HTMLInputElement).value = '1025'
+    await input.trigger('input')
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([1025])
+  })
+
+  it('默认仍是只读读数；开了 editable-value 才给数字框', () => {
+    expect(mountRange().find('output').exists()).toBe(true)
+
+    const wrapper = mountRange({ editableValue: true, valueLabel: '块长（字符）' })
+    expect(wrapper.find('output').exists()).toBe(false)
+    const box = wrapper.get('input[type="number"]')
+    expect((box.element as HTMLInputElement).value).toBe('512')
+    expect(box.attributes('aria-label')).toBe('块长（字符）')
+  })
+
+  it('数字框失焦才提交：过程中允许暂时非法，出界按 [min, max] 夹回并回显', async () => {
+    const wrapper = mountRange({ editableValue: true })
+    const box = wrapper.get('input[type="number"]')
+
+    // 打到一半的越界值不该抛给父组件（父组件会顺手夹范围、压重叠，等于替用户改了设置）
+    ;(box.element as HTMLInputElement).value = '50'
+    await box.trigger('input')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+
+    ;(box.element as HTMLInputElement).value = '5000'
+    await box.trigger('input')
+    await box.trigger('blur')
+
+    expect(wrapper.emitted('update:modelValue')?.at(-1)).toEqual([2048])
+    expect((box.element as HTMLInputElement).value).toBe('2048')
+  })
+
+  it('数字框清空或乱敲：回显当前值，不改模型', async () => {
+    const wrapper = mountRange({ editableValue: true })
+    const box = wrapper.get('input[type="number"]')
+
+    ;(box.element as HTMLInputElement).value = ''
+    await box.trigger('input')
+    await box.trigger('blur')
+
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    expect((box.element as HTMLInputElement).value).toBe('512')
+  })
 })

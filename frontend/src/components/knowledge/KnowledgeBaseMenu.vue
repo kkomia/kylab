@@ -644,18 +644,24 @@ async function confirmDelete(): Promise<void> {
             <h3 class="pane-title pane-title-standalone">
               切块与出题
               <InfoTip
-                text="块太大：一段里混着好几件事，命中后给模型的上下文会跑题。块太小：句子被切断。中文资料里 512 约一到两段话；重叠留一点，跨块的句子才不会被截断。轨道上的点是常用值，强调色是默认值。"
+                text="块太大：一段里混着好几件事，命中后给模型的上下文会跑题。块太小：句子被切断。中文资料里 512 约一到两段话；重叠留一点，跨块的句子才不会被截断。轨道上的点是常用值，强调色是默认值；拖到刻度附近会自动吸附，右侧的数字也可以直接输入。"
               />
             </h3>
 
             <div class="field">
               <label class="field-label" for="kb-chunk-size">块长（字符）</label>
+              <!-- `snap-to-marks`：1024 这种常用值靠手感停不住，拖到附近就吸附；
+                   `editable-value`：要精确值时直接打字（吸附只管拖动，手打的数不会被改）。
+                   两者都以本组件已有的 CHUNK_SIZE_MIN/MAX 与 CHUNK_SIZE_MARKS 为准 -->
               <RangeField
                 id="kb-chunk-size"
                 v-model="chunkSizeNumber"
                 :min="CHUNK_SIZE_MIN"
                 :max="CHUNK_SIZE_MAX"
                 :marks="CHUNK_SIZE_MARKS"
+                snap-to-marks
+                editable-value
+                value-label="块长（字符）"
               />
             </div>
 
@@ -667,6 +673,9 @@ async function confirmDelete(): Promise<void> {
                 :min="0"
                 :max="chunkOverlapCap"
                 :marks="CHUNK_OVERLAP_MARKS"
+                snap-to-marks
+                editable-value
+                value-label="块重叠（字符）"
               />
               <!-- 这一行留着：上限是个**跟着块长变的数**，工具提示里写不死 -->
               <p class="pane-hint">上限 {{ chunkOverlapCap }}（块长的一半）。</p>
