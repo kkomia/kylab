@@ -46,6 +46,37 @@ def test_database_beats_env_and_defaults(bundle) -> None:  # type: ignore[no-unt
     assert runtime.get("embedding.batch_size") == "4"
 
 
+def test_memory_keys_can_be_preset_from_env(bundle) -> None:  # type: ignore[no-untyped-def]
+    """记忆的开关 / 服务地址 / 落点也能从 ``.env`` 预设（v0.1.1）。
+
+    为什么值得这三项有一条路：容器部署要在 compose 里一次写清"记忆落在哪、
+    要不要开"，而不是让用户先去界面上找开关。而在这之前 ``_bootstrap_value``
+    的映射表里没有它们——写进 .env 是**静默无效**的（这比没有更糟）。
+    """
+    settings = Settings(  # type: ignore[call-arg]
+        memory_enabled=True,
+        memory_base_url="http://reme:2333",
+        memory_workspace="memo",
+    )
+    runtime = RuntimeConfigService(bundle, settings)
+
+    assert runtime.get_bool("memory.enabled") is True
+    assert runtime.get("memory.base_url") == "http://reme:2333"
+    assert runtime.get("memory.workspace") == "memo"
+
+
+def test_memory_defaults_stay_when_the_env_says_nothing(bundle) -> None:  # type: ignore[no-untyped-def]
+    """没给引导值时**沿用代码默认**：开关仍是关、地址仍是 127.0.0.1:2333。
+
+    这一条是"别把默认开关改了"的守门：默认开等于部署升级之后多跑一个进程
+    并且开始烧 token（捕获要调 LLM）。"""
+    runtime = RuntimeConfigService(bundle, Settings())  # type: ignore[call-arg]
+
+    assert runtime.get("memory.enabled") == DEFAULTS["memory.enabled"] == "false"
+    assert runtime.get("memory.base_url") == DEFAULTS["memory.base_url"]
+    assert runtime.get("memory.workspace") == DEFAULTS["memory.workspace"]
+
+
 def test_empty_value_falls_back_to_the_default(runtime: RuntimeConfigService) -> None:
     """写空 = "没设过"：**类型化读取器**（get_int/_as_float 等）据此回落默认值。
 

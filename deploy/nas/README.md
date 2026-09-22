@@ -44,6 +44,18 @@ tail -f build.log        # 另开一个会话看进度
 
 升级：把新源码替换 `/vol1/1000/docker/kylab/src/`，再 `docker compose up -d --build`。
 
+构建完可以就地验两件事（v0.1.1，见《开发计划》§12.224 第 9、12 条）：
+
+```bash
+# 1) 镜像里真的带了仓库自带的 5 个技能（走 KYLAB_SKILLS_DIR=/app/skills，见 backend/Dockerfile）
+docker compose exec -T backend python -c "from pathlib import Path; from app.services.skills import SkillService; print(sorted(r.name for r in SkillService(Path('/data')).list() if r.source=='builtin'))"
+#    期望：['kylab-delegate', 'kylab-knowledge-base', 'kylab-memory', 'kylab-office-export', 'kylab-web']
+
+# 2) 记忆/人设模板已经在数据目录里铺好（启动时幂等补的，落在挂载卷上）
+ls -l /vol1/1000/docker/kylab/data/memory
+#    期望：AGENTS.md / MEMORY.md / PROFILE.md / SOUL.md
+```
+
 界面：`http://192.168.31.18:8081`（首次打开会让你创建管理员账号）。
 接口文档：`http://192.168.31.18:8081/api/v1/docs`；健康检查：`/api/v1/health`（不鉴权）。
 

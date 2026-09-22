@@ -26,6 +26,19 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     services = get_services()
 
+    # 记忆/人设文件（v0.1.1）：**启动时幂等铺一遍**，不等"第一次对话"。
+    # 新容器里还没有任何对话，这是唯一能让「记忆」页一打开就有东西可看的时机
+    # （浏览/编辑那几个文件本来就不受 memory.enabled 那道闸管，见 services/memory.py）。
+    # 只补共享桶（data/memory/）：按账号的工作区在各自第一次对话时补。
+    # 写不出来只警告不拦启动——与上面那条日志处理器同一个口径。
+    try:
+        created = services.memory.seed_persona()
+    except OSError:
+        logger.warning("记忆/人设模板建不出来：%s", services.memory.workspace, exc_info=True)
+    else:
+        if created:
+            logger.info("记忆/人设模板已就位：%s", "、".join(created))
+
     stop = asyncio.Event()
     worker_tasks: list[asyncio.Task[None]] = []
     if settings.run_worker:

@@ -503,21 +503,30 @@ class MemoryService:
             return ""
 
     def seed_persona(self, user_id: str | None = None) -> list[str]:
-        """把缺的人设文件补上模板，返回**这次新建了哪几个**。
+        """把缺的人设/记忆文件补上模板，返回**这次新建了哪几个**。
 
-        为什么要落成文件而不是只存在代码里：这三份东西的价值恰恰在于**用户能改**——
-        人设、对方是谁、这类活怎么干，都是他比我清楚的事。文件是唯一一种
-        "他能看见、能编辑、还能用 git 管版本"的形态（QwenPaw 也是这么做的）。
+        为什么要落成文件而不是只存在代码里：这几份东西的价值恰恰在于**用户能改**——
+        人格、对方是谁、这类活怎么干、什么值得长期留下，都是他比我清楚的事。
+        文件是唯一一种"他能看见、能编辑、还能用 git 管版本"的形态
+        （QwenPaw 也是这么做的）。
 
         **只补缺的，绝不覆盖已存在的**：那可能已经是用户写了几天的东西。
         唯一的例外是"还是我们当初写的那份、一个字没动过"的旧模板，
         见 :meth:`_upgrade_untouched_template`。
+
+        ``MEMORY.md`` 也在这四份里（v0.1.1）：它原先只在第一次 ``remember`` 时
+        才被写出来，于是新部署的「记忆」页上看不到它、也没法先去编辑它——
+        而它恰恰是这一层最该被用户看见的那份文件（容器里尤其明显：
+        新实例还没对话过，页面就该有东西可看）。写它用的是 ``_TEMPLATE`` 的
+        空条目版本，与 ``_write_entries`` 在"文件不存在"时的兜底**逐字一致**，
+        所以第一条记忆落盘时不会因为"文件长什么样"而走另一条分支。
         """
         created: list[str] = []
         for name, template in (
             (SOUL_FILE, _SOUL_TEMPLATE),
             (PROFILE_FILE, _PROFILE_TEMPLATE),
             (AGENTS_FILE, _AGENTS_TEMPLATE),
+            (CORE_MEMORY_FILE, _TEMPLATE.format(entries="")),
         ):
             path = self.workspace_for(user_id) / name
             if path.exists():

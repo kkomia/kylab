@@ -162,6 +162,27 @@ class Settings(BaseSettings):
     llm_thinking_effort: str = "medium"
     """思考强度（low / medium / high），同样按方言翻译或丢弃。"""
 
+    # ---- 长期记忆（v0.1.1）------------------------------------------------
+    #
+    # 这里的三项**只是 .env 引导值**：记忆的开关、服务地址与落点本来由运行期配置
+    # （数据库 ``app_settings`` / 设置页）持有，加这一层是为了让**容器部署**能在
+    # compose 里一次写清（deploy/ 下两份 compose 就是这么用的），而不是让用户
+    # 先去界面上找开关。优先级仍是"库 > 这里 > 代码默认"，
+    # 见 services/runtime_config.py 的三层优先级。
+    #
+    # 默认值一律留 ``None``（= 没设），这样不设时**回落到代码默认**而不是
+    # 在配置层再抄一份——两处各写一份默认值迟早会分叉。
+    memory_enabled: bool | None = None
+    """是否启用长期记忆。**默认（代码里的）是关**：开着它等于多跑一个 ReMe 进程、
+    且自动沉淀要调 LLM，升级之后默默开始烧 token 是最不该有的默认。
+    注意开关管的是"召回与自动沉淀"；``MEMORY.md`` / 人设那几份文件的读写
+    与注入不受它影响（见 services/memory.py）。"""
+    memory_base_url: str | None = None
+    """记忆服务（ReMe）地址。不设时用代码默认 ``http://127.0.0.1:2333``。"""
+    memory_workspace: str | None = None
+    """记忆工作区目录，**相对数据目录**。不设时用代码默认 ``memory``，
+    于是容器里是挂载卷下的 ``/data/memory``。"""
+
     @property
     def cors_origin_list(self) -> list[str]:
         """把逗号分隔的 CORS 白名单拆成列表。"""

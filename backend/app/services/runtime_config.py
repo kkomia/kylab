@@ -714,6 +714,12 @@ class RuntimeConfigService:
             "llm.temperature": settings.llm_temperature,
             "llm.enable_thinking": settings.llm_enable_thinking,
             "llm.thinking_effort": settings.llm_thinking_effort,
+            # 长期记忆（v0.1.1）：容器部署要在 .env/compose 里一次写清"开关 /
+            # 服务地址 / 落点"，而这些键原先在映射表里没有——写进 .env 也**不生效**。
+            # 三项默认都是 None（没设），于是不设时照旧回落到 DEFAULTS。
+            "memory.enabled": settings.memory_enabled,
+            "memory.base_url": settings.memory_base_url,
+            "memory.workspace": settings.memory_workspace,
         }
         value = mapping.get(key)
         return "" if value is None else str(value)

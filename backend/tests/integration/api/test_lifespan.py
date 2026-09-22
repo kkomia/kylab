@@ -4,6 +4,9 @@
 
 v0.12 起存储是 PostgreSQL，所以"就绪"看的是 **schema 版本**（SQLite 时代看的是
 ``kylab.db`` 文件在不在）。守的东西没变：启动即就绪。
+
+v0.1.1 起还守着"记忆/人设文件在启动时就铺好"（§12.224 第 12 条）：容器里的验收
+是"新实例起来后「记忆」页就可写"，而那时还没有任何对话。
 """
 
 from pathlib import Path
@@ -13,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import get_settings
 from app.core.storage import STORAGE_SUBDIRS, reset_stores
+from app.services.memory import AGENTS_FILE, CORE_MEMORY_FILE, PROFILE_FILE, SOUL_FILE
 
 
 def _assert_storage_ready(pg_database) -> None:
@@ -65,6 +69,32 @@ def test_docs_and_openapi_are_versioned(wired_app) -> None:
         assert client.get("/api/v1/docs").status_code == 200
         paths = client.get("/api/v1/openapi.json").json()["paths"]
     assert all(path.startswith("/api/v1") for path in paths)
+
+
+def test_lifespan_lays_down_the_memory_templates(wired_app, pg_database) -> None:
+    """启动时把记忆/人设文件**幂等**铺好（v0.1.1，§12.224 第 12 条）。
+
+    容器里的验收是"新实例起来后「记忆」页就可写"——而新实例还没有任何对话，
+    所以这件事只能发生在启动时（原先要等第一次对话或第一次 ``remember``，
+    在那之前页面上什么都没有）。落点在数据目录下：容器里就是挂载卷里的
+    ``/data/memory``，与其余数据一起持久化。
+
+    第二次启动**不许覆盖用户改过的内容**——那份文件可能已经是他写了几天的东西。
+    """
+    app, data_dir = wired_app
+    workspace = data_dir / "memory"
+    expected = {SOUL_FILE, PROFILE_FILE, AGENTS_FILE, CORE_MEMORY_FILE}
+
+    with TestClient(app):
+        assert {item.name for item in workspace.iterdir()} == expected
+        # 这条测试里 memory.enabled 是**默认的关**：文件那一半不看那道闸
+        # （见 services/memory.py），因此上面的断言同时守住了这一点
+
+    (workspace / SOUL_FILE).write_bytes("我自己写的人格".encode())
+
+    with TestClient(app):
+        assert (workspace / SOUL_FILE).read_text(encoding="utf-8") == "我自己写的人格"
+        assert (workspace / CORE_MEMORY_FILE).exists()
 
 
 def test_data_directory_is_respected(monkeypatch, tmp_path, pg_database) -> None:

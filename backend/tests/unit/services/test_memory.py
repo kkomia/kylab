@@ -750,3 +750,57 @@ def test_capture_still_needs_the_switch(tmp_path: Path) -> None:
         service.capture(
             [{"role": "user", "name": "用户", "content": "你好"}], session_id="conv_1"
         )
+
+
+# ------------------------------------------------- 铺模板（v0.1.1，§12.224 第 12 条）
+#
+# 容器里"长期记忆不生效"里属于**文件那一半**的验收是：新实例起来后
+# 「记忆」页就可写、重启后内容还在。所以模板要一次性铺全（含 MEMORY.md）、
+# 幂等、且**不看 memory.enabled**——那开关管的是召回与自动沉淀，不是这几个文件。
+
+
+def test_seed_persona_lays_down_all_four_files(tmp_path: Path) -> None:
+    """四份都铺：SOUL / PROFILE / AGENTS / **MEMORY.md**（最后一份是 v0.1.1 加的）。
+
+    没有 MEMORY.md 的话，新部署的「记忆」页上看不到核心记忆文件——而它恰恰是
+    这一层最该被用户看见、拿去改的那份（原先它只在第一次 ``remember`` 时才出现）。
+    """
+    service = _service(tmp_path)
+
+    created = service.seed_persona()
+
+    assert sorted(created) == sorted([SOUL_FILE, PROFILE_FILE, AGENTS_FILE, CORE_MEMORY_FILE])
+    # 幂等：第二次一个都不新建
+    assert service.seed_persona() == []
+    body = (tmp_path / "memory" / CORE_MEMORY_FILE).read_text(encoding="utf-8")
+    assert "## 核心长期记忆" in body
+    assert "## 工具设置" in body and "## 重要决策与经验" in body
+
+
+def test_the_memory_file_is_seeded_even_when_the_switch_is_off(tmp_path: Path) -> None:
+    """**关着也铺**：容器里"记忆页可写"不该依赖用户先去设置页把开关打开
+    （浏览与编辑那几个文件本来就不走那道闸，见 ``services/memory.py`` 的说明）。"""
+    service = _service(tmp_path, **{"memory.enabled": "false"})
+
+    created = service.seed_persona()
+
+    assert CORE_MEMORY_FILE in created
+    assert (tmp_path / "memory" / CORE_MEMORY_FILE).exists()
+
+
+def test_remember_writes_into_the_seeded_memory_file(tmp_path: Path) -> None:
+    """先铺模板、再记住：第一条记忆要落进那一节，模板的说明与其余小节都还在。
+
+    这条钉的是"新加的铺模板"与既有的重写逻辑**接得上**——铺下去的那份必须与
+    ``_write_entries`` 在"文件不存在"时的兜底一致，否则第一条记忆落盘会走另一条
+    分支，很容易把那段"别记密码/令牌"的说明或「工具设置」那几节弄丢。
+    """
+    service = _service(tmp_path)
+    service.seed_persona()
+
+    service.remember("设备名是 nas")
+
+    body = (tmp_path / "memory" / CORE_MEMORY_FILE).read_text(encoding="utf-8")
+    assert "- 设备名是 nas" in body
+    assert "不要记录密码、令牌或其他敏感信息" in body
+    assert "## 工具设置" in body and "## 重要决策与经验" in body

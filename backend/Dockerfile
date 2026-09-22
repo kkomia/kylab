@@ -2,6 +2,15 @@
 #
 # 两阶段构建：构建期需要编译工具链（部分依赖带原生扩展），运行期不需要——
 # 把它们留在运行镜像里会让攻击面与体积都白白变大。
+#
+# **构建上下文是源码树的根，不是 backend/**（v0.1.1）：镜像里要装仓库自带的
+# ``skills/``（见下面那条 COPY），而 COPY 只能从上下文里取文件。所以两份
+# compose 里 backend.build 的 context 都指到"包含 backend/ 的那一层"
+# （开发机上就是仓库根，NAS 上是解开的 ``src/``），dockerfile 指到
+# ``backend/Dockerfile``；仓库根那份 ``.dockerignore`` 挡住
+# .venv / node_modules / .git 这三大块（不挡的话每次构建白传几百 MB）。
+# 没有用 compose 的 ``additional_contexts``：那要 BuildKit 加较新的 compose，
+# 而部署机（NAS）上的版本我没法在本地验证；普通 context 到处都能用。
 FROM python:3.12-slim AS builder
 
 # uv 装依赖比 pip 快一个数量级，也是本项目开发期用的工具，口径一致
@@ -30,10 +39,12 @@ ENV UV_INDEX_URL=${UV_INDEX_URL}
 # **README.md 也必须拷进来**：`pyproject.toml` 里写着 `readme = "README.md"`，
 # 而 hatchling 在"装项目自身"那一步要读它——没有它整步崩在
 # `OSError: Readme file does not exist: README.md`（2026-09-21 在 NAS 上首次实测到）。
-COPY pyproject.toml uv.lock* README.md ./
+#
+# 路径带 ``backend/`` 前缀是因为上下文是仓库根（见文件头）。
+COPY backend/pyproject.toml backend/uv.lock* backend/README.md ./
 RUN uv sync --no-install-project --no-dev --all-extras
 
-COPY app ./app
+COPY backend/app ./app
 RUN uv sync --no-dev --all-extras
 
 
@@ -51,6 +62,19 @@ RUN useradd --create-home --uid 10001 kylab
 
 WORKDIR /app
 COPY --from=builder --chown=kylab:kylab /app /app
+
+# 仓库自带的技能（``skills/kylab-*`` 五个）放进镜像：没有它，容器里的
+# 「能力 → 技能」一个预装技能都看不到（§12.224 第 9 条）。
+#
+# **落点是 /app/skills，不是"按代码位置推出来"的 /skills**：原先的发现逻辑只按
+# ``Path(__file__).resolve().parents[3] / "skills"`` 找，容器里代码在
+# /app/app/services，往上四层是 `/`——那里没有 skills。现在技能目录优先读
+# KYLAB_SKILLS_DIR（下面那条 ENV 钉死它），推断那条只留给开发布局。
+# 顺带：放在 /app 下才吃得到下面那条 ``chmod -R a+rX /app``——COPY 会把源文件的
+# mode 原样带进来，而这台 NAS 的 /vol1 把文件报成 000（§12.223 第 4 条），
+# 落在 chmod 之后就没有人再给它补可读位了。所以**这两行的顺序不能换**。
+COPY --chown=kylab:kylab skills ./skills
+ENV KYLAB_SKILLS_DIR=/app/skills
 
 # **代码在镜像里必须对任何 uid 可读**（2026-09-21 NAS 上实测踩到）：
 # COPY 会把源文件的 mode 原样带进来，而某些文件系统（这台 NAS 的 /vol1 就是）

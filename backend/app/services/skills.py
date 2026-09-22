@@ -18,6 +18,16 @@
 - 仓库自带 ``skills/``：随代码走，如 ``kylab-knowledge-base``；
 - 数据目录 ``data/skills/``：用户自己放、或以后从市场装的。
 
+仓库自带那一份的**位置**有三种来源，优先级从高到低（v0.1.1）：
+
+1. 构造时显式注入（测试与工具用：断言的对象不该被"机器上恰好设了环境变量"改掉）；
+2. ``KYLAB_SKILLS_DIR`` 环境变量——**部署路径靠它**，镜像里由 Dockerfile 的 ENV 钉死；
+3. ``Path(__file__).resolve().parents[3] / "skills"``——只对开发布局成立
+   （``backend/app/services/skills.py`` 往上四层是仓库根），**兜底用**。
+   容器里代码在 ``/app/app/services``，往上四层是 ``/``，数出来的目录并不存在
+   （§12.224 第 9 条：这就是容器里一个预装技能都看不见的原因）。
+   所以"数层数"不能是唯一的路，才加了第 2 条。
+
 **安全**：技能是"会进模型上下文、并且能影响它怎么行动"的文本，所以它是注入面。
 QwenPaw 为此有 Skill Scanner。这里做**最小必要**的两条：
 可疑指令（"忽略之前的指令"这类）与疑似凭据（``sk-`` 开头的长串）会被标出来，
@@ -29,6 +39,7 @@ QwenPaw 为此有 Skill Scanner。这里做**最小必要**的两条：
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import sys
@@ -41,12 +52,15 @@ from app.core.exceptions import NotFoundError
 from app.services.memory_files import parse_frontmatter
 from app.services.runtime_config import SETTING_GROUPS
 
-__all__ = ["SKILL_FILE", "SkillRecord", "SkillService"]
+__all__ = ["BUILTIN_DIR_ENV", "SKILL_FILE", "SkillRecord", "SkillService"]
 
 logger = logging.getLogger(__name__)
 
 #: 技能文件名。大写是这一族的约定（Claude Code / QwenPaw 都是 `SKILL.md`）。
 SKILL_FILE = "SKILL.md"
+
+#: "随代码发布的那批技能在哪"的环境变量。见模块头的三种来源。
+BUILTIN_DIR_ENV = "KYLAB_SKILLS_DIR"
 
 #: 描述的长度上限（注入目录时每行就该短）。
 MAX_DESCRIPTION_CHARS = 400
@@ -118,6 +132,27 @@ def normalize_name(raw: str) -> str:
     return " ".join((raw or "").split()).strip().casefold()
 
 
+def _builtin_dir_from_env() -> Path | None:
+    """读 ``KYLAB_SKILLS_DIR``；没设或只是空白就返回 ``None``（= 交给下一条路）。
+
+    目录不存在时**只警告不报错**：技能是增强不是依赖，少一批技能不该让服务起不来。
+    但警告不能省——这条路径配错的表现就是"内置技能一个都不出现"，而那看起来
+    和"仓库本来就没带技能"一模一样，没有一行日志根本查不到。
+    """
+    raw = (os.environ.get(BUILTIN_DIR_ENV) or "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_dir():
+        logger.warning("%s 指向的目录不存在：%s（内置技能会一个都扫不到）", BUILTIN_DIR_ENV, path)
+    return path
+
+
+def _repo_skills_dir() -> Path:
+    """按代码位置推仓库自带的 ``skills/``（只对开发布局成立，见模块头）。"""
+    return Path(__file__).resolve().parents[3] / "skills"
+
+
 class SkillService:
     """扫描并读取技能。**无状态**：每次调用重新扫磁盘。
 
@@ -141,9 +176,10 @@ class SkillService:
         self._config_value = config_value
         self._binaries = binaries or shutil.which
         self._data_dir = data_dir
-        # 仓库自带的技能目录：`backend/app/services/skills.py` 往上四层是仓库根。
-        # 允许注入是为了测试能指到临时目录，而不是去猜相对层级。
-        self._builtin_dir = builtin_dir or Path(__file__).resolve().parents[3] / "skills"
+        # 仓库自带的技能目录（三种来源见模块头）：显式注入 > KYLAB_SKILLS_DIR >
+        # 按代码位置推。显式注入排最前是为了测试与工具能指到临时目录——
+        # 断言的对象不该被"机器上恰好设了环境变量"改掉。
+        self._builtin_dir = builtin_dir or _builtin_dir_from_env() or _repo_skills_dir()
 
     # ------------------------------------------------------------------ 读
 

@@ -13,12 +13,18 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
 
 from app.core.exceptions import NotFoundError
-from app.services.skills import MAX_DESCRIPTION_CHARS, SKILL_FILE, SkillService
+from app.services.skills import (
+    BUILTIN_DIR_ENV,
+    MAX_DESCRIPTION_CHARS,
+    SKILL_FILE,
+    SkillService,
+)
 
 
 def _write_skill(
@@ -346,3 +352,82 @@ def test_a_single_config_key_can_be_written_without_a_list(tmp_path: Path) -> No
     service = _gated_service(tmp_path, config={"web.search_api_key": "x"})
 
     assert service.get("one").used_by_prompt is True
+
+
+# ------------------------------------------- 自带技能目录从哪来（v0.1.1，§12.224 第 9 条）
+#
+# 这一组钉住"仓库自带的技能在哪"的三条来源。原先只有一条（按代码位置往上数四层），
+# 而它在容器里数出来是 `/`——镜像里没有 `/skills`，于是部署后一个预装技能都看不见。
+# 现在部署路径由 KYLAB_SKILLS_DIR 负责（镜像里由 Dockerfile 的 ENV 钉死），
+# 数层数只留作开发期的兜底。
+
+
+def test_env_var_says_where_the_bundled_skills_are(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """给了 ``KYLAB_SKILLS_DIR`` 就听它的（容器里的路径就是这么指过去的）。"""
+    from_env = tmp_path / "image-skills"
+    _write_skill(from_env, "from-image")
+    monkeypatch.setenv(BUILTIN_DIR_ENV, str(from_env))
+
+    items = SkillService(tmp_path / "data").list()
+
+    assert [(item.name, item.source) for item in items] == [("from-image", "builtin")]
+
+
+def test_repo_skills_are_found_without_env_or_injection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """不给参数、也没有环境变量时按代码位置推：开发布局下就是仓库自带的 ``skills/``。
+
+    这条同时是"仓库那 5 个技能真的能被扫到"的验收——开发机走的是这条推断，
+    容器走的是上一测试那条环境变量。**技能增减时同步改这份清单**：
+    它钉的就是"随代码发布的那一批"这个口径。
+    """
+    monkeypatch.delenv(BUILTIN_DIR_ENV, raising=False)
+
+    names = {
+        item.name for item in SkillService(tmp_path / "data").list() if item.source == "builtin"
+    }
+
+    assert names == {
+        "kylab-delegate",
+        "kylab-knowledge-base",
+        "kylab-memory",
+        "kylab-office-export",
+        "kylab-web",
+    }
+
+
+def test_explicit_injection_beats_the_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """显式注入排在最前：否则机器上恰好设了环境变量就会改掉测试的断言对象。"""
+    _write_skill(tmp_path / "env-skills", "from-env")
+    monkeypatch.setenv(BUILTIN_DIR_ENV, str(tmp_path / "env-skills"))
+    injected = tmp_path / "injected"
+    _write_skill(injected, "from-injection")
+
+    items = _service(tmp_path, builtin=injected).list()
+
+    assert [item.name for item in items] == ["from-injection"]
+
+
+def test_a_missing_env_dir_warns_but_still_serves_user_skills(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """环境变量指向一个不存在的目录：**警告 + 照常返回用户技能**，不抛错。
+
+    这条路径配错的表现就是"内置技能一个都不出现"——和"仓库本来就没带技能"
+    长得一模一样，所以必须留一行日志。而技能是增强不是依赖：少一批不该让
+    整个技能列表（乃至服务启动）失败。
+    """
+    monkeypatch.setenv(BUILTIN_DIR_ENV, str(tmp_path / "not-there"))
+    _write_skill(tmp_path / "data" / "skills", "user-skill")
+
+    with caplog.at_level(logging.WARNING, logger="app.services.skills"):
+        items = SkillService(tmp_path / "data").list()
+
+    assert [(item.name, item.source) for item in items] == [("user-skill", "user")]
+    assert BUILTIN_DIR_ENV in caplog.text
+    assert "not-there" in caplog.text

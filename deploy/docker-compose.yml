@@ -104,7 +104,11 @@ services:
 
   backend:
     build:
-      context: ../backend
+      # **上下文是仓库根**（v0.1.1）：镜像里要装仓库自带的 skills/，
+      # 而 COPY 只能从上下文里取文件（见 backend/Dockerfile 的说明）。
+      # 仓库根那份 .dockerignore 负责挡住 .venv / node_modules / .git。
+      context: ..
+      dockerfile: backend/Dockerfile
     image: kylab-backend:${KYLAB_VERSION:-0.2.0}
     restart: unless-stopped
     depends_on:
@@ -140,6 +144,23 @@ services:
       KYLAB_CORS_ORIGINS: ${KYLAB_CORS_ORIGINS:-http://localhost:8080}
       # 内嵌消费线程：**单容器部署要留着它**，否则上传后没人处理队列
       KYLAB_RUN_WORKER: ${KYLAB_RUN_WORKER:-true}
+      # 仓库自带的技能在镜像里（/app/skills，5 个 kylab-*），镜像里已把这个变量
+      # 设成它。这里显式写出来是为了**可覆盖**：想让技能目录指向别处（挂一份
+      # 自己的、或复现"技能列表是空的"这类问题时换个目录）改这一行即可。
+      KYLAB_SKILLS_DIR: ${KYLAB_SKILLS_DIR:-/app/skills}
+      # ---- 长期记忆 ----
+      # 记忆与人设文件（MEMORY.md / SOUL.md / PROFILE.md / AGENTS.md）落在
+      # KYLAB_DATA_DIR 下的 memory/ 里（容器里是挂载卷的 /data/memory），
+      # 应用**启动时就幂等铺好模板**；那四个文件的浏览与编辑不受开关影响。
+      # 开关管的是另一半：过去的对话会不会被召回、会不会自动沉淀——那要 ReMe
+      # （记忆服务）在 KYLAB_MEMORY_BASE_URL 上活着，而这份 compose 里没有它，
+      # 所以默认仍是关（打开只会得到一句"连不上"）。要真用起来：另起一个 ReMe，
+      # 把地址指过去，再在「设置 → 长期记忆」里打开。
+      # 这三项是 .env 引导值：网页上改过之后以库里的值为准（见
+      # services/runtime_config.py 的三层优先级）。
+      KYLAB_MEMORY_ENABLED: ${KYLAB_MEMORY_ENABLED:-false}
+      KYLAB_MEMORY_BASE_URL: ${KYLAB_MEMORY_BASE_URL:-http://127.0.0.1:2333}
+      KYLAB_MEMORY_WORKSPACE: ${KYLAB_MEMORY_WORKSPACE:-memory}
     volumes:
       - kylab-data:/data
     # 不直接对外暴露 8000：统一从 nginx 进，避免绕过反代后

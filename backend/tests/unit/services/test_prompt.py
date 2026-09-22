@@ -155,12 +155,18 @@ def test_persona_files_have_a_fixed_order() -> None:
 
 
 def test_seeding_writes_templates_then_leaves_them_alone(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """首次对话把缺的补上，**已存在的绝不覆盖**（那可能是用户写了几天的东西）。"""
+    """首次对话把缺的补上，**已存在的绝不覆盖**（那可能是用户写了几天的东西）。
+
+    四份都补——``MEMORY.md`` 从 v0.1.1 起也在这份清单里
+    （原先它要等第一次 ``remember`` 才出现，新部署的「记忆」页因此看不到它）。
+    """
     service = MemoryService(_FakeRuntime(True), tmp_path)  # type: ignore[arg-type]
 
     created = service.seed_persona("u1")
 
-    assert sorted(created) == sorted([SOUL_FILE, PROFILE_FILE, AGENTS_FILE])
+    assert sorted(created) == sorted(
+        [SOUL_FILE, PROFILE_FILE, AGENTS_FILE, CORE_MEMORY_FILE]
+    )
     # 第二次不再新建
     assert service.seed_persona("u1") == []
     # 用户改过的内容不会被覆盖
@@ -194,15 +200,24 @@ def test_persona_does_not_depend_on_the_memory_service_switch(tmp_path) -> None:
     """
     service = MemoryService(_FakeRuntime(False), tmp_path)  # type: ignore[arg-type]
 
-    assert service.seed_persona("u1") == [SOUL_FILE, PROFILE_FILE, AGENTS_FILE]
+    assert service.seed_persona("u1") == [
+        SOUL_FILE,
+        PROFILE_FILE,
+        AGENTS_FILE,
+        CORE_MEMORY_FILE,
+    ]
     assert [name for name, _text in service.persona_texts("u1")] == [
         SOUL_FILE,
         PROFILE_FILE,
         AGENTS_FILE,
+        CORE_MEMORY_FILE,
     ]
     assert "【你的人格" in service.prompt_block("u1")
 
-def test_persona_files_are_listed_and_editable_through_the_memory_layer(tmp_path) -> None:  # type: ignore[no-untyped-def]
+
+def test_persona_files_are_listed_and_editable_through_the_memory_layer(
+    tmp_path,
+) -> None:  # type: ignore[no-untyped-def]
     """人设文件的**编辑入口是白捡的**：它们落在记忆工作区里，而那一页本来就在列文件。
 
     这条钉的是这个复用关系本身——如果哪天把核心文件从 ``scan`` 里排掉，
@@ -215,7 +230,7 @@ def test_persona_files_are_listed_and_editable_through_the_memory_layer(tmp_path
 
     listed = {Path(item.path).name: item for item in memory_files.scan(service.workspace_for("u1"))}
 
-    assert set(listed) == {SOUL_FILE, PROFILE_FILE, AGENTS_FILE}
+    assert set(listed) == {SOUL_FILE, PROFILE_FILE, AGENTS_FILE, CORE_MEMORY_FILE}
     for name, item in listed.items():
         # 核心文件：**不参与检索、但会被注入**——正是人设该有的两条属性
         assert item.kind == "core", name
