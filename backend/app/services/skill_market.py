@@ -25,6 +25,7 @@ whitelist 机制。这里做三件必须做的事，其余的（签名、评分�
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import io
 import json
@@ -73,8 +74,32 @@ MAX_ENTRIES = 500
 #: 换来的是三条更实在的防护：**装之前必须把文件清单摊给用户看**（含哪些是可执行代码）、
 #: 落盘前扫描（命中注入特征当场拒绝）、**绝不自动执行**——脚本会不会被跑，
 #: 由沙箱与工具策略决定，与"它在技能目录里"无关。
+#:
+#: **v0.1.1 起扩展名只是快路径，判"是不是二进制"看内容**（``is_allowed``）：
+#: 白名单命中就收，命中不了的去读文件开头（``looks_like_text``），含 NUL 或不是
+#: UTF-8 才拒。只看扩展名会漏掉一整类**真·文本**文件——OOXML 的
+#: ``templates/minimal_xlsx/_rels/.rels`` 就是纯 XML，却因为后缀不在表里，
+#: 让整个技能包被判成"带了二进制"而拒收（用户实测报的就是这条）。
 TEXT_SUFFIXES = frozenset(
-    {".md", ".txt", ".json", ".yaml", ".yml", ".csv", ".toml", ".ini", ".xml", ".html", ".css"}
+    {
+        ".md",
+        ".txt",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".csv",
+        ".toml",
+        ".ini",
+        ".xml",
+        ".html",
+        ".css",
+        # OOXML 的关系表：`_rels/.rels`、`xl/_rels/workbook.xml.rels` 都是纯 XML 文本，
+        # 而 `.rels` 这种"整名就是扩展名"的点文件以前会被判成不明类型（见 suffix_of），
+        # 于是带 Office 模板的技能包一律装不上（用户报的就是这条）。
+        # 内容判定本来也会放过它，列进来是为了省一次读盘，也为了让 ``kind_of``
+        # 把它归为文本而不是"可能会被执行的代码"。
+        ".rels",
+    }
 )
 CODE_SUFFIXES = frozenset(
     {
@@ -97,17 +122,108 @@ CODE_SUFFIXES = frozenset(
 ASSET_SUFFIXES = frozenset(
     {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".woff", ".woff2", ".ttf", ".otf"}
 )
+#: 白名单 = **快路径**：命中它就不必读内容，直接收。资源类（图片、字体）本来
+#: 就是二进制，内容判定会把它们全判成二进制，所以也必须在这里——"看内容"是
+#: 给不认识的后缀兜底的，不是拿来否定已知类型的。
 ALLOWED_SUFFIXES = TEXT_SUFFIXES | CODE_SUFFIXES | ASSET_SUFFIXES
 
-#: 旧名字（这个模块里几处用它）。保留是因为"允许的后缀"这个说法在别处更自然。
+#: 旧名字（迁移前的地方可能还在 import 它）。新代码用 ``ALLOWED_SUFFIXES``——
+#: 它现在只是"快路径"的白名单，最终判据在 ``is_allowed``（看内容）。
 _ALLOWED_SUFFIXES = ALLOWED_SUFFIXES
+
+#: 判"是不是文本"时只看开头这么多字节。
+#:
+#: 二进制判据（NUL 字节、非法 UTF-8 序列）在文件头就会出现：PE/ELF 的魔数、
+#: zip 的局部文件头、图片的 IHDR 都在前几十字节里；反过来，没有哪种文本格式是
+#: "开头几 KB 干净、之后才蹦出 NUL"的。截断取样还避免为判一个文件把整份读进内存。
+SNIFF_BYTES = 8 * 1024
+
+#: 明确的可执行/二进制扩展名：**不看内容，直接拒**。
+#:
+#: 只看内容不够——两字节的 ``MZ``（PE 文件头）是合法 UTF-8、也不含 NUL，
+#: 光按内容判会把一个 ``.exe`` 当成文本放行（用例 ``payload.exe = b"MZ"`` 钉的就是这条）。
+#: 而这类文件在技能包里没有正当用途，所以用扩展名硬拒，与内容判定叠加。
+BINARY_SUFFIXES = frozenset(
+    {
+        # 可执行文件、动态库、安装包
+        ".exe",
+        ".dll",
+        ".so",
+        ".dylib",
+        ".com",
+        ".msi",
+        ".scr",
+        ".sys",
+        # 目标码与静态库
+        ".bin",
+        ".o",
+        ".obj",
+        ".a",
+        ".lib",
+        # 其它运行时产物（字节码、容器、原生扩展）
+        ".class",
+        ".jar",
+        ".pyc",
+        ".wasm",
+        ".node",
+    }
+)
+
+
+def suffix_of(path: str) -> str:
+    """取一个路径的后缀（小写、带点），**点文件取整名**。
+
+    `Path(".rels").suffix` 是**空串**——Python 把开头的点当成"隐藏文件"，
+    而不是扩展名。技能包里这种文件是真实存在的：OOXML 的 `_rels/.rels`
+    就是纯文本 XML，不认它就会把好好的技能包判成"带了二进制"而整包拒收
+    （v0.1.0 部署体验里报的那条）。
+    """
+    name = Path(path).name
+    suffix = Path(name).suffix
+    if suffix:
+        return suffix.casefold()
+    return name.casefold() if name.startswith(".") else ""
+
+
+def looks_like_text(blob: bytes) -> bool:
+    """内容是不是文本：**含 NUL、或开头无法按 UTF-8 解码的，算二进制**。
+
+    判据与 ``app.parsers.probe._printable_ratio`` 的第一层一致（能 UTF-8 解码
+    且不含 NUL 就是文本），但不做它的"可打印比例"兜底：技能包要回答的是
+    "这堆字节能不能当文本落盘、进模型上下文"，宁可少收也不放二进制进来。
+    """
+    prefix = blob[:SNIFF_BYTES]
+    if b"\x00" in prefix:
+        return False
+    try:
+        # 增量解码器：取样窗口可能把一个多字节字符劈成两半，它会把没读完的那截
+        # 留在缓冲里，而不是当成非法序列（用严格 decode 会把好端端的 UTF-8 判成二进制）
+        codecs.getincrementaldecoder("utf-8")().decode(prefix, final=False)
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
+def is_allowed(path: str, head: bytes) -> bool:
+    """这个文件收不收。**三条安装路径（上传 / 本地目录 / zip）共用这一处**：
+    分开写迟早会漂移，而漂移的那一处正是"哪条路能塞进二进制"。
+
+    ``head`` 只需是文件开头的一段（调用方给 ``SNIFF_BYTES`` 即可）。
+    """
+    suffix = suffix_of(path)
+    if suffix in BINARY_SUFFIXES:
+        # 硬拒：``MZ`` 这种文件头是合法 UTF-8，只看内容会漏
+        return False
+    if suffix in ALLOWED_SUFFIXES:
+        return True
+    return looks_like_text(head)
 
 
 def kind_of(path: str) -> str:
     """文件 → ``doc`` / ``code`` / ``asset``。**不认识的按 code 处理**：
     装之前那一屏里，"这东西可能会被执行"多提醒一次，比少提醒一次便宜。
     """
-    suffix = Path(path).suffix.casefold()
+    suffix = suffix_of(path)
     if suffix in TEXT_SUFFIXES:
         return "doc"
     if suffix in ASSET_SUFFIXES:
@@ -233,7 +349,8 @@ class SkillMarketService:
                 safe = _safe_relative(relative)
                 if safe is None:
                     raise InvalidRequestError(f"文件路径越界，已拒绝：{relative}")
-                if Path(safe).suffix.lower() not in ALLOWED_SUFFIXES:
+                # 取到手的字节就在眼前，判定直接看内容（扩展名只当快路径）
+                if not is_allowed(safe, blob):
                     raise InvalidRequestError(
                         f"技能里不收这类文件（{safe}）：可以是文本、脚本与资源，但不带二进制"
                     )
@@ -417,8 +534,9 @@ class SkillMarketService:
         return blob
 
     def _read_dir(self, source: Path) -> dict[str, bytes]:
-        """读一个本地技能目录（相对路径 → 内容）。只收白名单后缀：
-        本地源也不该塞二进制进来（``.exe`` / ``.dll`` 会被跳过并记一条日志）。"""
+        """读一个本地技能目录（相对路径 → 内容）。收不收与另外两条路同一个判据
+        （``is_allowed``）：本地源也不该塞二进制进来（``.exe`` / ``.dll`` 会被
+        跳过并记一条日志），而纯文本的 ``_rels/.rels`` 不该被当成二进制。"""
         out: dict[str, bytes] = {}
         total = 0
         for item in sorted(source.rglob("*")):
@@ -428,7 +546,10 @@ class SkillMarketService:
                 if item.is_symlink():
                     logger.warning("跳过符号链接：%s", item)
                 continue
-            if item.suffix.lower() not in ALLOWED_SUFFIXES:
+            # 先只读开头一段再决定：为一个注定要拒的文件把整份读进内存不值得
+            with item.open("rb") as handle:
+                head = handle.read(SNIFF_BYTES)
+            if not is_allowed(item.name, head):
                 logger.warning("技能里不收这类文件，跳过：%s", item)
                 continue
             total += item.stat().st_size
@@ -460,7 +581,11 @@ class SkillMarketService:
                 continue
             if _is_symlink(info):
                 raise InvalidRequestError(f"zip 里有符号链接，已拒绝：{info.filename}")
-            if Path(relative).suffix.lower() not in ALLOWED_SUFFIXES:
+            # 与上传、本地目录同一个判据；同样先只读开头一段（8KB，不受
+            # 解压后大小影响），免得为判一个 zip 炸弹先把整份解出来
+            with archive.open(info) as handle:
+                head = handle.read(SNIFF_BYTES)
+            if not is_allowed(relative, head):
                 raise InvalidRequestError(
                     f"zip 里有不收的文件类型（{info.filename}）："
                     "技能可以是文本、脚本与资源，但不该带二进制（见模块头）"
@@ -484,12 +609,21 @@ class SkillMarketService:
         for item in sorted(target.rglob("*")):
             if not item.is_file():
                 continue
-            if item.suffix.lower() not in TEXT_SUFFIXES | CODE_SUFFIXES:
+            if suffix_of(item.name) in ASSET_SUFFIXES:
+                # 图片字体是已知的二进制，不必读一遍只为判它不是文本
+                # （大图读进内存再扔掉，纯属浪费）
                 continue
             try:
-                parts.append(item.read_text(encoding="utf-8", errors="replace"))
+                blob = item.read_bytes()
             except OSError:
                 continue
+            # 与"收不收"同一个判据：是文本才读来扫。**不能只按扩展名筛**——
+            # `.rels` 这类点文件的后缀是空的（见 suffix_of），而它恰恰是
+            # 会被模型读进上下文的文本；同理，无后缀的脚本也要扫。
+            if not looks_like_text(blob):
+                continue
+            # errors=replace 兜底：取样只看开头，文件尾部仍可能有坏字节
+            parts.append(blob.decode("utf-8", errors="replace"))
         return "\n".join(parts)
 
     def _records(self) -> dict[str, dict[str, Any]]:
