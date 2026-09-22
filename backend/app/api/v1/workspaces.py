@@ -76,7 +76,7 @@ def list_workspaces(
 def browse_directories(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_admin)],
-    path: str | None = Query(default=None, description="要看哪个目录；留空 = 从家目录开始"),
+    path: str | None = Query(default=None, description="要看哪个目录；留空 = 落在「工作区」区域"),
 ) -> WorkspaceBrowseOut:
     """**管理员专属**：它列的是**服务器上**的目录树。
 
@@ -87,6 +87,9 @@ def browse_directories(
 
     只列**目录**；数据目录会出现在列表里但标着不可选与原因（不藏起来：
     静默省略会让人以为"这里没有它"，而他找的可能正是它旁边那个）。
+
+    **每一行都带上"能不能在它里面新建目录 / 能不能改名"**（v0.41）：区域外是只读浏览，
+    而"不能建"的原因要摆在用户要点的那一行旁边，不是等他点完新建再报错。
     """
     view = services.workspaces.browse(path)
     return WorkspaceBrowseOut(
@@ -97,6 +100,7 @@ def browse_directories(
         entries=[DirectoryEntryOut(**asdict(item)) for item in view.entries],
         roots=[DirectoryEntryOut(**asdict(item)) for item in view.roots],
         note=view.note,
+        area=view.area,
     )
 
 
@@ -113,9 +117,11 @@ def create_directory(
 ) -> DirectoryEntryOut:
     """**这是"在服务器上写东西"**，比浏览严一档（与浏览同一道管理员闸）：
 
-    只建一层、重名当场拒（不覆盖也不合并）、数据目录里不建。名字按**可移植的那一套**
-    校验——目录名常要在 Windows 与 NAS 之间互拷，而在 Linux 上合法的 `a:b`
-    到了 Windows 上根本建不出来。
+    只建一层、重名当场拒（不覆盖也不合并）、名字按**可移植的那一套**校验——目录名常要在
+    Windows 与 NAS 之间互拷，而在 Linux 上合法的 `a:b` 到了 Windows 上根本建不出来。
+
+    **只建在「工作区」区域里**（v0.41）：判定与浏览时标 ``creatable`` 的是同一份，
+    所以界面上灰着的那些位置，这里也一定拒——反过来，亮着的一定建得出来。
     """
     entry = services.workspaces.create_directory(parent=payload.parent, name=payload.name)
     return DirectoryEntryOut(**asdict(entry))
@@ -133,9 +139,8 @@ def rename_directory(
 ) -> DirectoryEntryOut:
     """只改名不搬位置。四类目录会被拒，各自都有具体理由（见服务层）：
 
-    文件系统根、数据目录及其内部、**包含数据目录的那个目录**（改了服务端就找不到
-    自己的库了）、以及**某个工作区的根目录**（改了那条工作区就失联）。
-    """
+    文件系统根、**「工作区」区域本身**、**区域外的任何目录**（区域外只读浏览）、
+    以及**某个工作区的根目录**（改了那条工作区就失联）。"""
     entry = services.workspaces.rename_directory(path=payload.path, name=payload.name)
     return DirectoryEntryOut(**asdict(entry))
 

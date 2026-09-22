@@ -9,6 +9,14 @@
  * 给的是一个句柄——两者指向的都是**另一台机器**。所以"选择"只能是"服务端列给你看"，
  * 走 `GET /workspaces/browse`（管理员专属）。
  *
+ * ## 先看到"哪儿能建"，再动手（v0.41）
+ *
+ * 旧版给人的体感是"显示了又不给建"：目录列了满屏，点开"新建文件夹"才报错
+ * （容器里除了数据目录几乎处处只读）。现在**能不能建 / 能不能改名直接标在行上**
+ * （`creatable` / `renamable` + 原因，判定与真去动手时同一份），
+ * 灰掉的那颗按钮旁边就摆着为什么；能建的地方集中在一处——服务端给的**专用区域**
+ * （`area`，默认就落在它里面），起点里也排第一。
+ *
  * ## 四条交互约定
  *
  * 1. **点一行 = 进去**，不是"选中"：目录树里"进下一层"才是最常用的动作，
@@ -25,9 +33,9 @@
  *
  * ## 建 / 改都在服务器上，所以拒得比浏览多
  *
- * 服务端那边有四条拒绝（文件系统根、数据目录及其内部、**包含数据目录的那个目录**、
- * **某个工作区的根目录**），每条都带具体理由，原样显示在这里——
- * 界面不自己判，也就不会出现"按钮亮着、点了却报错"。
+ * 服务端那边的规则都在 `services/workspace.py` 里（文件系统根、数据目录、
+ * **区域外的任何目录**、区域本身、以及某个工作区的根目录），每条都带具体理由，
+ * 原样显示在这里——界面不自己判，也就不会出现"按钮亮着、点了却报错"。
  */
 import { computed, ref, watch } from 'vue'
 
@@ -48,7 +56,7 @@ import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 const open = defineModel<boolean>('open', { required: true })
 
 const props = defineProps<{
-  /** 打开时从哪儿起步（一般是当前填着的路径）；空则从服务端的默认（家目录）开始。 */
+  /** 打开时从哪儿起步（一般是当前填着的路径）；空则落在服务端的专用区域。 */
   start?: string
 }>()
 
@@ -70,6 +78,18 @@ const actionError = ref('')
 const current = computed(() => view.value)
 /** 当前这一层自己能不能选：**服务端说了算**（`current`），界面不自己判。 */
 const currentEntry = computed<DirectoryEntry | null>(() => current.value?.current ?? null)
+
+/**
+ * 当前这一层能不能新建目录：同样**服务端说了算**（`current.creatable`）。
+ * （"能不能给某个目录改名"是逐行判的，见列表里那个图标。）
+ *
+ * 判据写成 `!== false`（而不是 `=== true`）：字段是 v0.41 才加的，
+ * 万一界面比后端先上（发版中间那一刻），旧响应里没有这个字段——
+ * 那时宁可按旧行为放行（点了由后端拒，报错原样显示），也不要凭空把按钮锁死。
+ */
+const canCreate = computed(() => Boolean(current.value) && currentEntry.value?.creatable !== false)
+/** 现在站的这一层就是专用区域吗：是的话给一句"这里可以新建"的说明。 */
+const isArea = computed(() => Boolean(current.value) && current.value?.path === current.value?.area)
 
 async function load(path?: string): Promise<void> {
   loading.value = true
@@ -194,6 +214,12 @@ function pick(): void {
       <SkeletonBlock v-if="loading" variant="list" :rows="4" />
 
       <template v-else-if="current">
+        <p v-if="isArea" class="area-hint">
+          <IconFolderPlus :size="13" />
+          这是「工作区」区域：服务器上专门放工作区的地方，也是唯一能新建文件夹的地方。
+          在里面建一个，再选中它。
+        </p>
+
         <div class="list-head">
           <button
             type="button"
@@ -206,12 +232,23 @@ function pick(): void {
           </button>
           <span v-if="current.note" class="note">{{ current.note }}</span>
           <!-- 新建就在这里（不再弹第二个框）：它建的是"当前这一层"下的目录，
-               而"当前这一层"就写在上面那一行 -->
-          <button type="button" class="new-dir" :disabled="busy" @click="startCreate">
+               而"当前这一层"就写在上面那一行。
+               区域外**灰着**——服务端早说了哪儿能建（creatable + 原因），
+               不让用户点了才发现建不了 -->
+          <button
+            type="button"
+            class="new-dir"
+            :disabled="busy || !canCreate"
+            :title="canCreate ? '' : currentEntry?.create_reason"
+            @click="startCreate"
+          >
             <IconFolderPlus :size="14" />
             新建文件夹
           </button>
         </div>
+
+        <!-- "为什么不能建"就摆在刚灰掉的那颗按钮下面，而不是等点下去才说 -->
+        <p v-if="!canCreate" class="why-line">{{ currentEntry?.create_reason }}</p>
 
         <!-- 新建：内联一行输入（Enter 确认、Esc 取消） -->
         <div v-if="creating" class="edit-row">
@@ -257,13 +294,28 @@ function pick(): void {
             <template v-else>
               <button type="button" class="dir" :title="entry.path" @click="enter(entry)">
                 <span class="dir-name">{{ entry.name }}</span>
+                <!-- 能不能建、能不能选**都标在行上**：进去之后是什么情况，站在外面就知道。
+                     "只读"只说一遍（省得每行都拖一句长话），完整原因在 title 里 -->
+                <span
+                  v-if="entry.creatable === false"
+                  class="dir-flag"
+                  :title="entry.create_reason"
+                >
+                  只读
+                </span>
                 <span v-if="!entry.selectable" class="dir-why">{{ entry.reason }}</span>
               </button>
-              <!-- 悬停才出现（与侧栏那个「新建」同一个手法）：一行一个图标会把列表压得很吵 -->
+              <!-- 悬停才出现（与侧栏那个「新建」同一个手法）：一行一个图标会把列表压得很吵。
+                   改不了名时**灰着并说明原因**（比如它是某个工作区的根目录）——
+                   与"能不能建"同一套做法，不让用户点了才知道 -->
               <button
                 type="button"
                 class="row-action"
-                :aria-label="`把「${entry.name}」改名`"
+                :disabled="entry.renamable === false"
+                :aria-label="
+                  entry.renamable === false ? entry.rename_reason : `把「${entry.name}」改名`
+                "
+                :title="entry.renamable === false ? entry.rename_reason : `把「${entry.name}」改名`"
                 @click="startRename(entry)"
               >
                 <IconEdit :size="13" />
@@ -319,6 +371,26 @@ function pick(): void {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1);
+}
+
+/* 专用区域的说明条：这里是唯一能新建的地方，值得一句话说清它是干什么的 */
+.area-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 10px;
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+  background: var(--surface-muted, rgba(0, 0, 0, 0.04));
+  border-radius: var(--radius-sm, 6px);
+}
+
+/* 不能建的原因：紧跟在灰掉的那颗按钮下面，而不是等用户点下去才说 */
+.why-line {
+  margin: 0;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
 }
 
 .root {
@@ -466,6 +538,16 @@ function pick(): void {
   white-space: nowrap;
 }
 
+/* 「只读」这个小标：说清"进到这一层也建不了"，但不必每行拖一句长话 */
+.dir-flag {
+  flex-shrink: 0;
+  padding: 0 6px;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+}
+
 .row-action {
   flex-shrink: 0;
   display: inline-flex;
@@ -487,6 +569,13 @@ function pick(): void {
 
 .row-action:hover {
   color: var(--text);
+}
+
+/* 不能改名时**照样显示**（灰着 + title 里写着原因）：藏起来用户就只剩"为什么没有
+   改名按钮"这一个问题了 */
+.row-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
 }
 
 .empty,
