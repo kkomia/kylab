@@ -223,8 +223,7 @@ def generate_kb_prompt(
     return KBPromptDraftOut(
         prompt=draft.prompt,
         sources=draft.sources,
-        cited_documents=draft.cited_documents,
-        unknown_citations=draft.unknown_citations,
+        filename_style_citations=draft.filename_style_citations,
     )
 
 

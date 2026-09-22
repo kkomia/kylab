@@ -148,26 +148,29 @@ export const SUGGESTED_COUNT_MAX = 5
 export const SUGGESTED_COUNT_DEFAULT = 3
 export const SUGGESTED_PROMPT_MAX_CHARS = 2000
 
-/** 生成时用到的一篇文档摘要，以及它有没有被生成的文本引用。 */
+/**
+ * 生成时用到的一篇文档摘要（**只作展示**：让用户看见这段提示词依据了什么）。
+ *
+ * v0.41 起没有"这篇有没有被引用"这个字段了：引用口径改成编号式（`[1]` `[2]`，
+ * 与检索结果对应）之后，逐篇归属不可知——与其留一个永远为假的勾，不如删掉。
+ */
 export interface KBPromptSource {
   document_id: string
   name: string
   summary: string
-  /** 生成的提示词里有没有 `[来源: 这篇]`。false 不代表没用上（可能只提供了背景）。 */
-  cited: boolean
 }
 
 /** 按文档摘要生成的提示词**草稿**（不落库，用户确认后再 PATCH 保存）。 */
 export interface KBPromptDraft {
   prompt: string
   sources: KBPromptSource[]
-  cited_documents: number
   /**
-   * 模型标了来源、但文件名不在给定清单里的那些。
+   * 这段提示词里**仍在要求把文件名写进正文**的地方（旧口径）。
    *
-   * **这是"编造"的直接证据**（它引了一篇不存在的文件），界面据此提示核对后再保存。
+   * 非空 = 模型没听那句"别把文件名写进正文"。它会与系统提示词第 5 条打架，
+   * 而正文里铺一串文件名正是"回答一大半都是引用"的来源——界面据此提示核对后再保存。
    */
-  unknown_citations: string[]
+  filename_style_citations: string[]
 }
 
 /**

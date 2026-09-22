@@ -34,7 +34,6 @@ import {
 } from '@/api/knowledgeBases'
 import { batchDocuments, type ImpactReport } from '@/api/documents'
 import IconAi from '@/components/icons/IconAi.vue'
-import IconCheck from '@/components/icons/IconCheck.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconDatabase from '@/components/icons/IconDatabase.vue'
 import IconEdit from '@/components/icons/IconEdit.vue'
@@ -596,44 +595,30 @@ async function confirmDelete(): Promise<void> {
             <p class="pane-hint prompt-count">{{ kbPrompt.trim().length }} / {{ PROMPT_MAX }} 字</p>
 
             <!--
-              溯源（v0.19）：这是"不捏造"里**可验证**的那一半——
-              模型说它依据了哪几篇，我们就去核对那几篇在不在给它的清单里。
+              溯源（v0.19；口径在 v0.41 变过）：这一段是"不捏造"里**可验证**的那一半。
+              原先核的是"模型说它依据了哪几篇、那几篇在不在清单里"——那时要求它逐句写
+              `[来源: 文件名]`，所以可核。改成编号式引用（`[1]` `[2]`，与检索结果对应）
+              之后逐篇归属就不可知了，于是这里只展示**依据了哪些摘要**，
+              不再逐篇声称"这篇被引用了"（那个永远是假的勾比不显示更糟）。
             -->
             <div v-if="promptDraft" class="prompt-trace">
-              <!--
-                引用数为 0 时**换个说法**：那次生成只是没有写"具体事实"，
-                本来就不需要标注来源——这是最保险的结果，不是失败。
-                照直写"0 篇被引用"会被读成"这批摘要没用上"。
-              -->
               <p class="prompt-trace-head">
-                <template v-if="promptDraft.cited_documents > 0">
-                  这次生成依据了 {{ promptDraft.sources.length }} 篇摘要，其中
-                  {{ promptDraft.cited_documents }} 篇被写进要求里：
-                </template>
-                <template v-else>
-                  这次生成依据了
-                  {{ promptDraft.sources.length }}
-                  篇摘要，但没有写入<strong>需要标注来源的具体事实</strong>——那不是失败，是最保险的结果（摘要只提供了领域背景）：
-                </template>
+                这次生成依据了 {{ promptDraft.sources.length }} 篇摘要：
               </p>
               <ul class="prompt-trace-list">
-                <li
-                  v-for="item in promptDraft.sources"
-                  :key="item.document_id"
-                  :class="{ 'prompt-trace-cited': item.cited }"
-                >
-                  <IconCheck v-if="item.cited" :size="12" />
-                  <span v-else class="prompt-trace-dot" />
+                <li v-for="item in promptDraft.sources" :key="item.document_id">
+                  <span class="prompt-trace-dot" />
                   <span class="prompt-trace-name">{{ item.name }}</span>
                 </li>
               </ul>
-              <p v-if="promptDraft.unknown_citations.length" class="prompt-trace-warn">
-                这次生成引用了清单里没有的文件（{{ promptDraft.unknown_citations.join('、') }}）。
-                那是编造的迹象——请逐句核对后再保存。
+              <p v-if="promptDraft.filename_style_citations.length" class="prompt-trace-warn">
+                这段提示词里还在要求把文件名写进正文（{{
+                  promptDraft.filename_style_citations.join('、')
+                }}）。它会和系统提示词的编号式引用打架——建议改成 `[1]` `[2]` 再保存。
               </p>
               <p v-else class="pane-hint">
-                没有出现清单以外的引用。仍然建议通读一遍：摘要里没有的具体数字与结论，
-                一个字都不该出现在框里。
+                引用口径是编号式（`[1]` `[2]`，与检索结果对应），正文里不写文件名。
+                仍然建议通读一遍：摘要里没有的具体数字与结论，一个字都不该出现在框里。
               </p>
             </div>
           </template>
@@ -1182,10 +1167,6 @@ async function confirmDelete(): Promise<void> {
 }
 
 /* 被引用的用主文字色 + 一个对勾：一眼看出"这几篇真的被写进去了" */
-.prompt-trace-cited {
-  color: var(--text-primary);
-}
-
 /* 没被引用的用一个空心点占位：图标有无不该让名字左右跳动 */
 .prompt-trace-dot {
   flex: 0 0 auto;

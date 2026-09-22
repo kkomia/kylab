@@ -488,15 +488,14 @@ describe('回答要求（库级提示词）', () => {
     expect(saveButton(wrapper).attributes('disabled')).toBeDefined()
   })
 
-  it('按摘要生成：草稿填进编辑框，并把**用了哪几篇**列出来（溯源）', async () => {
+  it('按摘要生成：草稿填进编辑框，并把**依据了哪几篇**列出来（溯源）', async () => {
     vi.mocked(kbApi.generateKBPrompt).mockResolvedValue({
-      prompt: '你是干眼领域的助手。分级按严重程度 [来源: 共识.pdf]。',
+      prompt: '你是干眼领域的助手。引用用编号 [1] [2]，不要把文件名写进正文。',
       sources: [
-        { document_id: 'd1', name: '共识.pdf', summary: '讲分级', cited: true },
-        { document_id: 'd2', name: '另一篇.pdf', summary: '讲治疗', cited: false },
+        { document_id: 'd1', name: '共识.pdf', summary: '讲分级' },
+        { document_id: 'd2', name: '另一篇.pdf', summary: '讲治疗' },
       ],
-      cited_documents: 1,
-      unknown_citations: [],
+      filename_style_citations: [],
     })
     const wrapper = await mountMenu()
     await openPromptSection(wrapper)
@@ -510,16 +509,20 @@ describe('回答要求（库级提示词）', () => {
     expect((box.element as HTMLTextAreaElement).value).toContain('你是干眼领域的助手')
     // 溯源：依据了哪几篇、哪几篇被写进去了
     expect(wrapper.text()).toContain('依据了 2 篇摘要')
-    expect(wrapper.text()).toContain('1 篇被写进要求里')
-    expect(wrapper.findAll('.prompt-trace-cited').map((el) => el.text())).toEqual(['共识.pdf'])
+    // v0.41 起不再逐篇声称"被引用"（编号式引用之后那件事不可知）——
+    // 只列依据了哪些摘要，且**没有**任何"被写进要求里"的说法
+    expect(wrapper.findAll('.prompt-trace-list li').map((el) => el.text())).toEqual([
+      '共识.pdf',
+      '另一篇.pdf',
+    ])
+    expect(wrapper.text()).not.toContain('被写进要求里')
   })
 
-  it('引用了清单里没有的文件：明确提示要核对（那是编造的迹象）', async () => {
+  it('生成里还在要求写文件名：明确提示要改成编号式（它会和系统提示词打架）', async () => {
     vi.mocked(kbApi.generateKBPrompt).mockResolvedValue({
-      prompt: '按某标准执行 [来源: 不存在的指南.pdf]。',
-      sources: [{ document_id: 'd1', name: '共识.pdf', summary: '讲分级', cited: false }],
-      cited_documents: 0,
-      unknown_citations: ['不存在的指南.pdf'],
+      prompt: '按某标准执行 [来源: 共识.pdf]。',
+      sources: [{ document_id: 'd1', name: '共识.pdf', summary: '讲分级' }],
+      filename_style_citations: ['共识.pdf'],
     })
     const wrapper = await mountMenu()
     await openPromptSection(wrapper)
@@ -530,16 +533,15 @@ describe('回答要求（库级提示词）', () => {
 
     const warn = wrapper.find('.prompt-trace-warn')
     expect(warn.exists()).toBe(true)
-    expect(warn.text()).toContain('不存在的指南.pdf')
-    expect(warn.text()).toContain('编造')
+    expect(warn.text()).toContain('共识.pdf')
+    expect(warn.text()).toContain('编号式引用')
   })
 
   it('关掉再打开设置：上一次生成的溯源不会留着（否则框与溯源对不上）', async () => {
     vi.mocked(kbApi.generateKBPrompt).mockResolvedValue({
-      prompt: '你是助手，按资料回答，不要编造，标出出处。',
-      sources: [{ document_id: 'd1', name: '共识.pdf', summary: '讲分级', cited: true }],
-      cited_documents: 1,
-      unknown_citations: [],
+      prompt: '你是助手，按资料回答，不要编造，引用用编号。',
+      sources: [{ document_id: 'd1', name: '共识.pdf', summary: '讲分级' }],
+      filename_style_citations: [],
     })
     const wrapper = await mountMenu()
     await openPromptSection(wrapper)

@@ -18,12 +18,15 @@
    数字、阈值、比例、年份、机构名、药物与产品名、标准编号都点名列出，
    因为这正是模型最容易"顺手补一个像样的"的地方。
 3. **不捏造**：宁可少写，也不许用"通常""一般来说"把不知道的东西说圆。
-4. **可溯源**：写了具体事实的句子必须标 `[来源: 文件名]`。这段话生成之后，
-   这里会**把标记解析出来**，告诉界面哪几篇被引用了、有没有引用到不存在的文件
-   （后者是"编造"的直接证据，见 `unknown_citations`）。
+4. **可溯源**：回答要按编号引用（`[1]` `[2]`），并且**不把文件名写进正文**。
+   这段话生成之后，这里会扫一遍它有没有**还在要求写文件名**（那是旧口径，
+   与系统提示词第 5 条"不要把文件名写进正文"直接打架，见 `filename_style_citations`）。
 
 第 4 条是这套设计里唯一不是"告诉模型要诚实"的部分：**它是可验证的**。
-模型说它依据了哪几篇，我们就去核对那几篇在不在给定的清单里。
+（v0.41 起验证的对象变了：原来要求它逐句标 `[来源: 文件名]`，于是我们还能核对
+"它说的那几篇在不在清单里"；改成编号式引用之后**逐篇归属不再可知**——
+所以那个"哪几篇被写进要求里"的勾选**删掉**了，而不是留一个永远为假的字段。
+留着的这条告警是：它到底有没有听那句"别把文件名写进正文"。）
 
 ## 边界
 
@@ -65,32 +68,34 @@ MAX_SUMMARY_CHARS = 600
 #: 生成结果短于这个长度就当作没生成出来（模型有时会回一句"好的"或空串）。
 MIN_PROMPT_CHARS = 30
 
-#: `[来源: 文件名]` 的解析。中英文冒号都收——模型两种都会写。
-_CITATION = re.compile(r"\[来源[:：]\s*([^\]]+?)\s*\]")
+#: 旧口径 `[来源: 文件名]` 的解析（v0.41 起它成了**告警**而不是"引用"）。
+#: 中英文冒号都收——模型两种都会写。
+_FILENAME_CITATION = re.compile(r"\[来源[:：]\s*([^\]]+?)\s*\]")
 
 #: 这几个是**格式占位符**，不算引用。
 #:
 #: 实测（拿 20 篇真实摘要跑出来的那份）踩到的：生成的提示词里有一句
 #: "每处具体事实后以 `[来源: 文件名]` 标注出处"——模型在**说明标注格式**，
-#: 而解析器把「文件名」当成了一个来源，于是它进了 `unknown_citations`，
+#: 而解析器把「文件名」当成了一个来源，于是它进了告警清单，
 #: 界面就会对一次完全正常的生成报"引用了清单里没有的文件，那是编造的迹象"。
 #: **假警报比不报警更糟**：它会让用户学会忽略这个提示，于是真出现编造时也没人看。
 #:
 #: 之所以敢用白名单，是因为这个格式是**我们在元提示词里定死的**
-#: （见 `_META_PROMPT` 第 3 条要求它照抄 `[来源: 文件名]`），不是要猜的量。
+#: （旧口径的元提示词里定死了这个写法），不是要猜的量。
 _PLACEHOLDER_CITATIONS = frozenset({"文件名", "文档名", "filename", "文档"})
 
 
 @dataclass(frozen=True)
 class KBPromptSource:
-    """生成时用到的某一篇文档的摘要，以及**它有没有被引用**。"""
+    """生成时用到的一篇文档摘要（**只作展示**：让用户看见这段提示词依据了什么）。
+
+    v0.41 起不再有"这篇有没有被引用"这个字段——引用改成编号式之后，
+    逐篇归属不可知，见模块头第 4 条。
+    """
 
     document_id: str
     name: str
     summary: str
-    #: 生成的提示词里有没有 `[来源: 这篇]`。`False` 不代表它没用上
-    #: ——摘要可能只是提供了背景，而没有贡献具体事实。
-    cited: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,11 +106,9 @@ class KBPromptDraft:
     sources: list[KBPromptSource] = field(default_factory=list)
     #: 模型标了来源、但那个文件名**不在我们给的清单里**。这是"编造"的直接证据，
     #: 界面据此提示"这次生成有可疑引用，请核对后再保存"。
-    unknown_citations: list[str] = field(default_factory=list)
+    filename_style_citations: list[str] = field(default_factory=list)
 
-    @property
-    def cited_documents(self) -> int:
-        return sum(1 for item in self.sources if item.cited)
+
 
 
 class KBPromptService:
@@ -160,11 +163,11 @@ _META_PROMPT = """你是知识库的提示词工程师。
 2. **摘要里没有的具体事实，一个字都不许写**。特别点名这几类，它们最容易
    被"顺手补一个像样的"：数字、阈值、比例、剂量、年份、机构名、期刊名、
    药物名、产品名、标准或法规编号。宁可少写一句，也不要写一个编出来的。
-3. 凡是写了具体事实的句子，**句尾标出它出自哪一篇**，格式为 `[来源: 文件名]`
-   （文件名**逐字照抄**清单里的写法，包括开头的序号——写了错别字或错序号，
-   就成了一次查不到出处的引用）。标不出来的事实，就删掉它。
-   如果你需要在正文里**说明这个标注格式**，请照抄 `[来源: 文件名]` 这七个字
-   （用「文件名」代表任意一篇），不要写成别的样子——这一串是约定的占位符。
+3. 在「回答要求」那一节里写明**引用要用编号**：句尾标 `[1]` `[2]` 这样的编号，
+   编号与检索结果里的编号一一对应；**不要把文件名、页码写进正文**
+   （正文里出现一串文件名会把回答本身淹掉——这是这套提示词里唯一一条
+   关于"长什么样"的要求，其余四节都只谈内容）。
+   如果你需要在正文里**说明这个格式**，就照抄 `[1]` 这两个字符当例子。
 4. 摘要里不足以判断的方面，**直接不提**。不许用「通常」「一般来说」「一般建议」
    这类措辞把不知道的东西说圆——那是把不确定性伪装成了结论。
 5. 语气专业、克制。这段文字是写给系统看的，不是写给最终用户看的。
@@ -196,7 +199,7 @@ def _build_user_prompt(docs: list[tuple[str, str, str]]) -> str:
 #: 那是导入时按顺序编的，与标题本身无关——而模型引用时**经常把这个数字写错一位**
 #: （实测：把 `8.Urban greenspace…` 写成 `2.Urban greenspace…`）。
 #: 只差序号不算"引了另一篇"，所以比对时把它剥掉；
-#: 否则那条会落进 `unknown_citations`，界面就会对一个真实引用报"编造的迹象"。
+#: 否则那条会被当成"还在要求写文件名"，界面就对一个正常的生成报出无谓的告警。
 _LEADING_INDEX = re.compile(r"^\s*\d+\s*[.\-_、)）]\s*")
 
 
@@ -228,33 +231,22 @@ def _clean(raw: str) -> str:
 
 
 def _draft(prompt: str, docs: list[tuple[str, str, str]]) -> KBPromptDraft:
-    """把 `[来源: 文件名]` 解析回文档，并揪出**指向不存在文件的引用**。"""
-    cited_raw = [match.strip() for match in _CITATION.findall(prompt)]
-    by_name = {name: name for _doc_id, name, _summary in docs}
-    by_key = {_match_key(name): name for _doc_id, name, _summary in docs}
-    # 文件名可能被模型改过写法，所以分三层匹配，**越靠后越宽松**：
-    #   1. 完全相同；
-    #   2. 归一化后相同（去掉开头的列表序号、后缀、标点差异）；
-    #   3. 一方是另一方的前缀（模型把长标题截短了）。
-    # 都匹配不上才算"指向不存在文件"——那时它是真编了一篇。
-    unknown: list[str] = []
-    resolved: set[str] = set()
-    for cited in cited_raw:
-        # 格式占位符跳过：那是模型在**说明标注格式**，不是引了某篇
-        if cited in _PLACEHOLDER_CITATIONS:
-            continue
-        hit = by_name.get(cited) or by_key.get(_match_key(cited))
-        if hit is None:
-            hit = next(
-                (name for name in by_name if name.startswith(cited) or cited.startswith(name)),
-                None,
-            )
-        if hit is None:
-            unknown.append(cited)
-        else:
-            resolved.add(hit)
+    """把生成的提示词收成草稿：摘要清单 + 一句"它有没有还在要求写文件名"。
+
+    v0.41 起不再逐篇判断"用没用上"（编号式引用之后那件事不可知，见模块头第 4 条）。
+    现在扫的是**旧口径残留**：`[来源: 某文件名]` 这种要求还在的话，
+    它会和系统提示词第 5 条"不要把文件名写进正文"打架，值得在界面上提一句。
+    """
+    leftovers = [
+        match.strip()
+        for match in _FILENAME_CITATION.findall(prompt)
+        # 格式占位符跳过：那是模型在**说明标注格式**，不是真要求写文件名
+        if match.strip() not in _PLACEHOLDER_CITATIONS
+    ]
     sources = [
-        KBPromptSource(document_id=doc_id, name=name, summary=summary, cited=name in resolved)
+        KBPromptSource(document_id=doc_id, name=name, summary=summary)
         for doc_id, name, summary in docs
     ]
-    return KBPromptDraft(prompt=prompt, sources=sources, unknown_citations=unknown)
+    return KBPromptDraft(
+        prompt=prompt, sources=sources, filename_style_citations=leftovers
+    )

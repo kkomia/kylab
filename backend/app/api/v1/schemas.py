@@ -157,8 +157,11 @@ class KBPromptDraftOut(BaseModel):
 
     prompt: str
     sources: list[KBPromptSourceOut] = Field(default_factory=list)
-    cited_documents: int = 0
-    unknown_citations: list[str] = Field(default_factory=list)
+    filename_style_citations: list[str] = Field(default_factory=list)
+    """这段提示词里仍在要求把文件名写进正文的地方（旧口径，v0.41 起改成编号式引用）。
+
+    非空 = 模型没听那句"别把文件名写进正文"，界面据此提示核对。
+    """
     """模型标了来源、但文件名不在给定清单里的那些。
 
     **这是"编造"的直接证据**（它引了一篇不存在的文件），界面据此提示核对后再保存。"""
@@ -762,6 +765,28 @@ class ChatResumeIn(BaseModel):
     model_pk: str | None = Field(default=None, description="留空用会话已存的；一般不必给")
     thinking: bool | None = Field(default=None, description="留空用会话已存的")
     thinking_effort: Literal["low", "medium", "high"] | None = Field(default=None)
+
+
+class ChatApprovalIn(BaseModel):
+    """对一条待确认的工具调用做出决定（v0.41）。
+
+    **只有三个取值**，都是用户在确认条上明确点出来的：允许一次 / 这类都允许 / 拒绝。
+    "超时"与"这条链路没人可问"不是请求参数——它们是执行侧自己的结论，
+    不该能从外面伪造（伪造了就等于给了一条绕过"等用户点头"的路）。
+    """
+
+    decision: Literal["allow_once", "allow_always", "deny"] = Field(
+        description="允许一次 / 这类都允许（写进放行清单）/ 拒绝"
+    )
+
+
+class ChatApprovalOut(BaseModel):
+    """决定有没有真的交到那一头。"""
+
+    accepted: bool
+    """``True`` = 正在等的那次执行已经收到它，会立刻接着往下跑。"""
+    detail: str = ""
+    """给人看的一句话（没送到时说清为什么）。"""
 
 
 class ChatSourceOut(BaseModel):
@@ -1781,7 +1806,11 @@ class WorkspaceListOut(BaseModel):
 
 
 class DirectoryEntryOut(BaseModel):
-    """目录浏览里的一行：一个子目录，或一个"起点"。"""
+    """目录浏览里的一行：一个子目录，或一个"起点"。
+
+    **三对字段**（v0.41）：能不能选、能不能在它里面新建目录、能不能给它改名——
+    各带各的原因。合成一个 ``reason`` 会让人分不清"不能选"还是"不能建"，
+    而这两件事的下一步动作不一样（换一个目录 vs 换一个地方动手）。"""
 
     name: str
     path: str
@@ -1790,6 +1819,18 @@ class DirectoryEntryOut(BaseModel):
     所以界面上灰掉的那些，点"选择"也一定建不出来。"""
     reason: str = ""
     """不能选的原因（原样显示给用户）。"""
+    creatable: bool = True
+    """能不能在**它里面**新建目录（判定在 ``workspace.create_problem``）。
+
+    只有专用区域（``<data_dir>/workspaces``）里为真——容器里除了数据目录几乎处处只读，
+    与其让用户逐个试，不如把"能建"标在还能建的那一处、把"不能建"的原因标在别的行上。
+    界面据此把"新建文件夹"灰掉并把 ``create_reason`` 摆出来。"""
+    create_reason: str = ""
+    """不能在它里面新建目录的原因（原样显示）。"""
+    renamable: bool = True
+    """能不能给它改名（判定在 ``workspace.rename_problem``）。"""
+    rename_reason: str = ""
+    """不能改名的原因（原样显示）。"""
 
 
 class DirectoryCreateIn(BaseModel):
@@ -1819,17 +1860,23 @@ class WorkspaceBrowseOut(BaseModel):
 
     path: str
     current: DirectoryEntryOut
-    """**当前这一层自己**（名字 + 能不能选 + 不能选的原因）。
+    """**当前这一层自己**（名字 + 能不能选 + 不能选的原因 + 能不能建 + 不能建的原因）。
 
-    服务端给而不是让界面自己判：那条判定只有一份，界面再猜一次就会出现
+    服务端给而不是让界面自己判：那几条判定只有一份，界面再猜一次就会出现
     "按钮亮着、点了却建不出来"。"""
     parent: str | None = None
     """上一级；已经在最上层时为 ``None``（界面把"上一级"置灰）。"""
     entries: list[DirectoryEntryOut] = Field(default_factory=list)
     roots: list[DirectoryEntryOut] = Field(default_factory=list)
-    """起点（家目录 / 盘符 / 已有工作区的目录）：路径很深时不用从根一路点下来。"""
+    """起点（**专用区域** / 家目录 / 盘符 / 已有工作区的目录）：路径很深时不用从根一路点下来。"""
     note: str = ""
     """一句人话说明（"共有 N 个，只列了前 M 个"这类）。空串 = 没什么要说的。"""
+    area: str = ""
+    """专用可写区域（``<data_dir>/workspaces``）：选择器的默认落脚点，也是唯一能
+    新建/改名目录的地方。
+
+    界面用它认出"现在站的这一层就是区域"（给一句"在这里可以新建"的提示）。
+    由服务端给而不是前端拼：数据目录在哪只有服务端知道。"""
 
 
 # ------------------------------------------------------------------ MCP（v0.15）

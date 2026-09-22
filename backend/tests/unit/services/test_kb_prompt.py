@@ -39,8 +39,12 @@ def test_meta_prompt_requires_citations_and_forbids_vagueness() -> None:
     """**可溯源 + 不许把不知道的说圆**：两条都要在提示词里，缺一条就守不住。"""
     text = module._META_PROMPT
 
-    # 引用格式要写死，否则解析端拿不到东西可查
-    assert "[来源: 文件名]" in text
+    # 引用格式要写死（v0.41 起是**编号式**：与系统提示词第 5 条同一个口径，
+    # 与检索结果里的 [n] 一一对应）
+    assert "[1]" in text
+    assert "不要把文件名" in text
+    # 旧口径必须**不再出现**——它正是"回答里塞满文件名"的来源
+    assert "[来源: 文件名]" not in text
     # 「通常」「一般来说」这类措辞是把不确定性伪装成结论，必须禁
     assert "「通常」" in text and "「一般来说」" in text
     # 五节结构：没有结构就没有"专业"可言
@@ -77,42 +81,39 @@ def test_clean_keeps_content_that_merely_contains_a_fence() -> None:
 # ------------------------------------------------------------------ 引用解析（溯源）
 
 
-def test_draft_marks_which_summaries_were_cited() -> None:
-    prompt = "你是干眼领域的助手。干眼按严重程度分级 [来源: 共识.pdf]。"
+def test_draft_keeps_the_summary_list_without_claiming_attribution() -> None:
+    """草稿带上"依据了哪些摘要"（供界面展示），但**不再逐篇声称它被引用**。
+
+    v0.41 改了引用口径：原来要求模型逐句写 `[来源: 文件名]`，那时还能核对
+    "它说的那几篇在不在清单里"；改成编号式引用之后逐篇归属不可知——
+    所以那个字段被删掉了，而不是留一个永远为假的勾。
+    """
+    prompt = "回答要求：句尾标 [1] [2]，不要把文件名写进正文。"
     draft = _draft(prompt, [("d1", "共识.pdf", "摘要一"), ("d2", "另一篇.pdf", "摘要二")])
 
     assert draft.prompt == prompt
-    assert [(item.name, item.cited) for item in draft.sources] == [
-        ("共识.pdf", True),
-        ("另一篇.pdf", False),
-    ]
-    assert draft.cited_documents == 1
-    assert draft.unknown_citations == []
+    assert [item.name for item in draft.sources] == ["共识.pdf", "另一篇.pdf"]
+    assert not hasattr(draft, "cited_documents")
+    assert draft.filename_style_citations == []
 
 
-def test_draft_flags_citations_to_documents_that_do_not_exist() -> None:
-    """**这是"不捏造"可验证的那一半**：模型引了一篇没给它的文件，必须被记下来。"""
-    prompt = "按某标准执行 [来源: 我从没见过的指南.pdf]。"
-    draft = _draft(prompt, [("d1", "共识.pdf", "摘要一")])
+def test_draft_flags_a_prompt_that_still_demands_filenames() -> None:
+    """**可验证的那一半换了对象**：现在扫的是"它还在不在要求把文件名写进正文"。
 
-    assert draft.unknown_citations == ["我从没见过的指南.pdf"]
-    assert draft.cited_documents == 0
+    留着旧口径的提示词会和系统提示词第 5 条打架——正文里铺一串文件名，
+    正是用户报的"回答一大半都是引用"。界面据此提示核对后再保存。
+    """
+    prompt = "回答要求：每处具体事实后以 [来源: 共识.pdf] 标注出处。"
+    draft = _draft(prompt, [("d1", "共识.pdf", "摘要")])
 
-
-def test_draft_matches_citations_loosely_on_the_name() -> None:
-    """文件名被模型写长/写短一点（补了扩展名、丢了后缀）不该算成"不存在"。"""
-    draft = _draft("见 [来源: 共识]。", [("d1", "共识.pdf", "摘要")])
-
-    assert draft.unknown_citations == []
-    assert draft.sources[0].cited is True
+    assert draft.filename_style_citations == ["共识.pdf"]
 
 
 def test_draft_reads_both_colon_styles() -> None:
-    """中英文冒号模型两种都会写，只认一种就会把真实引用误判成编造。"""
-    draft = _draft("甲 [来源：共识.pdf]，乙 [来源: 共识.pdf]。", [("d1", "共识.pdf", "摘要")])
+    """中英文冒号模型两种都会写，只认一种就会漏掉一半的旧口径残留。"""
+    draft = _draft("甲 [来源：共识.pdf]，乙 [来源: 另一篇.pdf]。", [("d1", "共识.pdf", "摘要")])
 
-    assert draft.unknown_citations == []
-    assert draft.sources[0].cited is True
+    assert draft.filename_style_citations == ["共识.pdf", "另一篇.pdf"]
 
 
 # ------------------------------------------------------------------ 服务层
@@ -197,38 +198,12 @@ def test_generate_truncates_long_summaries() -> None:
     assert "字" * module.MAX_SUMMARY_CHARS in sent
     assert "字" * (module.MAX_SUMMARY_CHARS + 1) not in sent
 
-def test_format_placeholder_is_not_reported_as_a_fabricated_citation() -> None:
-    """**实测抓到的假警报**：模型在正文里说明标注格式时照抄了 `[来源: 文件名]`，
-    原先会被当成"引了一篇不存在的文件"，界面据此提示"那是编造的迹象"。
-    一次完全正常的生成不该被这样报警——假警报会让用户学会忽略这个提示。
+def test_format_placeholder_is_not_reported_as_a_leftover() -> None:
+    """**实测抓到的假警报**：模型在说明标注格式时会照抄 `[来源: 文件名]` 这种占位写法，
+    那是"在讲格式"，不是"要求把真文件名写进正文"——不该报警。
+    假警报会让用户学会忽略这个提示，于是真出问题时也没人看。
     """
-    prompt = "回答要求：每处具体事实后以 [来源: 文件名] 标注出处。依据是 [来源: 共识.pdf]。"
+    prompt = "回答要求：每处具体事实后以 [来源: 文件名] 标注出处。"
     draft = _draft(prompt, [("d1", "共识.pdf", "摘要")])
 
-    assert draft.unknown_citations == []
-    assert draft.sources[0].cited is True
-
-def test_wrong_list_number_is_still_the_same_document() -> None:
-    """**实测抓到的第二类假警报**：清单里的文件名带列表序号前缀（`8.Urban greenspace…`），
-    模型引用时常把那个数字写错一位（写成 `2.Urban greenspace…`）。
-
-    那**不是**编了另一篇，只是序号抄错了——只差序号不该算成"引用了不存在的文件"，
-    否则界面会对一个真实引用报"编造的迹象"。比对时剥掉开头的序号。
-    """
-    draft = _draft(
-        "见 [来源: 文献表格/2.Urban greenspace and visual acuity.pdf]。",
-        [("d1", "文献表格/8.Urban greenspace and visual acuity.pdf", "摘要")],
-    )
-
-    assert draft.unknown_citations == []
-    assert draft.sources[0].cited is True
-
-
-def test_a_genuinely_invented_file_is_still_reported() -> None:
-    """宽松匹配**不能宽到把编造也放过**：清单里压根没有这篇，就该报出来。"""
-    draft = _draft(
-        "按某标准执行 [来源: 我从没见过的指南.pdf]。",
-        [("d1", "文献表格/8.Urban greenspace.pdf", "摘要")],
-    )
-
-    assert draft.unknown_citations == ["我从没见过的指南.pdf"]
+    assert draft.filename_style_citations == []
