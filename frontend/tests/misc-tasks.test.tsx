@@ -37,7 +37,7 @@ import {
   updateScheduledTask,
   type ScheduledTask,
 } from '@/api/schedules'
-import { cancelTasks, getTaskLoad, listTasks, type TaskSummary } from '@/api/tasks'
+import { cancelTasks, getTaskLoad, listTasks, type SystemLoad, type TaskSummary } from '@/api/tasks'
 import { renderMisc } from '@/features/misc/testing/harness'
 import { resetToasts } from '@/features/misc/shared/toast'
 import { TasksPage, tasksRefetchInterval } from '@/features/misc/tasks/TasksPage'
@@ -95,19 +95,76 @@ function task(overrides: Partial<TaskSummary> = {}): TaskSummary {
   }
 }
 
-/**
- * 页签当前态的两个可见抓手。
- *
- * jsdom 不算样式（`vite.config.ts` 里 `test.css: false`），所以这里钉住的是**那两处钩子**：
- * 白底分段在不在、字色字重按不按当前项给——评审 T1 的缺陷正是"两边一模一样"，
- * 而"一模一样"在 DOM 上就是这两处没区别。`misc-memory.test.tsx` 里有一份同样的辅助。
- */
-function segmentState(trigger: HTMLElement) {
-  const pill = trigger.querySelector('[data-slot="segment-current"]')?.className ?? ''
-  const label = trigger.querySelector('[data-slot="segment-label"]')?.className ?? ''
+function systemLoad(overrides: Partial<SystemLoad> = {}): SystemLoad {
   return {
-    pillShown: !pill.includes('opacity-0'),
-    emphasized: label.includes('text-text-primary') && label.includes('font-medium'),
+    hardware: {
+      cpu_percent: 12,
+      cpu_count: 8,
+      memory_used_bytes: 8 * 1024 ** 3,
+      memory_total_bytes: 16 * 1024 ** 3,
+      memory_percent: 50,
+      process_rss_bytes: 1024 ** 3,
+    },
+    queue: {
+      running: 0,
+      pending: 2,
+      slots: 1,
+      pending_by_kind: {},
+      oldest_pending_seconds: null,
+      stalled: 0,
+      overdue: 0,
+    },
+    quota: {
+      parser_name: 'mineru',
+      configured: true,
+      pages_used: 0,
+      calls: 0,
+      daily_quota: 1000,
+      remaining: 1000,
+      exhausted: false,
+    },
+    sampled_at: '2026-09-23T10:00:00Z',
+    ...overrides,
+  }
+}
+
+/** 进管理员视角：运行负载面板是管理员专属（端点在成员那里是 403）。 */
+function asAdmin() {
+  useSessionStore.setState({
+    token: 'st',
+    currentUser: { id: 'u1', username: 'admin', name: '管理员', role: 'admin', avatar_url: '' },
+  })
+}
+
+/** 某个环上画了几笔：只有轨道（1）还是有进度弧（2）。 */
+function ringStrokes(panel: HTMLElement, name: string): number {
+  return within(panel).getByRole('img', { name }).querySelectorAll('circle').length
+}
+
+/**
+ * 页签当前态的抓手。
+ *
+ * 上一轮这里钉的是那对**垫 span**（`data-slot="segment-current"` / `segment-label"`）：
+ * 当时 `tokens.css` 的元素重置没进 `@layer`，压掉了原语自带的
+ * `data-[state=active]:bg-surface` / `px-3` / `font-medium`，只能把底与字手写进 span。
+ * 根因修掉之后垫层退回原语，于是这里改钉**原语自己的钩子**：
+ *
+ * - 两个触发的类名**逐字相同**（差别只在 Radix 给的 `data-state`）——当前态不再靠
+ *   "给当前项多加几个类"实现，谁再手写一套就会在这里挂掉；
+ * - 白底、字色、框内距都在原语的类里（评审 T1 的病正是这几条被吃掉）。
+ *
+ * jsdom 不算样式（`vite.config.ts` 里 `test.css: false`），"当前项真的白底"由真浏览器
+ * 截图作证（`.shots/batch2/11-tasks.png`），这里守的是"别再手写一遍"。
+ */
+function tabShape(trigger: HTMLElement) {
+  const cls = trigger.className
+  return {
+    activeStyles:
+      cls.includes('data-[state=active]:bg-surface') &&
+      cls.includes('data-[state=active]:text-text-primary'),
+    padded: cls.includes('px-3'),
+    // 垫层已退回原语：触发按钮里不再有那个绝对定位的 span
+    patched: trigger.querySelector('[data-slot="segment-current"]') !== null,
   }
 }
 
@@ -200,21 +257,24 @@ describe('任务中心', () => {
     expect(healthCells).toEqual(['—', '已失败', '已取消'])
   })
 
-  it('页签的当前项有可见的当前态，另一项保持弱化（语义态仍由 Radix 给）', async () => {
+  it('页签就是原语本身：当前态由 @/ui/tabs 自带的类画出来，不再垫 span（评审 T1）', async () => {
     renderMisc(<TasksPage />)
     const pipeline = await screen.findByRole('tab', { name: '流水线任务' })
     const schedules = screen.getByRole('tab', { name: '定时任务' })
 
-    // 评审 T1 只缺视觉：aria-selected 与键盘本来就是对的，这一条不许改坏
+    // 语义态仍由 Radix 给（T1 只缺视觉，这一条不许改坏）
     expect(pipeline).toHaveAttribute('aria-selected', 'true')
     expect(schedules).toHaveAttribute('aria-selected', 'false')
-    expect(segmentState(pipeline)).toEqual({ pillShown: true, emphasized: true })
-    expect(segmentState(schedules)).toEqual({ pillShown: false, emphasized: false })
+    // 两个触发**同一个形状**：类名逐字相同，当前态由 `data-state` + 原语的类决定
+    expect(pipeline.className).toBe(schedules.className)
+    expect(tabShape(pipeline)).toEqual({ activeStyles: true, padded: true, patched: false })
+    expect(tabShape(schedules)).toEqual({ activeStyles: true, padded: true, patched: false })
 
     // 切过去之后当前态跟着走（同一个钩子，不另写一套）
     await userEvent.click(schedules)
-    expect(segmentState(schedules)).toEqual({ pillShown: true, emphasized: true })
-    expect(segmentState(pipeline)).toEqual({ pillShown: false, emphasized: false })
+    expect(schedules).toHaveAttribute('aria-selected', 'true')
+    expect(pipeline).toHaveAttribute('aria-selected', 'false')
+    expect(tabShape(schedules).patched).toBe(false)
   })
 
   it('点开详情用 pre 显示失败原文（可选中复制，而不是 title 属性）', async () => {
@@ -286,50 +346,100 @@ describe('任务中心', () => {
   })
 
   it('管理员才看得到运行负载面板（端点在成员那里是 403）', async () => {
-    getTaskLoadMock.mockResolvedValue({
-      hardware: {
-        cpu_percent: null,
-        cpu_count: 8,
-        memory_used_bytes: 1024,
-        memory_total_bytes: 2048,
-        memory_percent: 50,
-        process_rss_bytes: null,
-      },
-      queue: {
-        running: 0,
-        pending: 0,
-        slots: 1,
-        pending_by_kind: {},
-        oldest_pending_seconds: null,
-        stalled: 0,
-        overdue: 0,
-      },
-      quota: {
-        parser_name: 'mineru',
-        configured: false,
-        pages_used: 0,
-        calls: 0,
-        daily_quota: 0,
-        remaining: 0,
-        exhausted: false,
-      },
-      sampled_at: '2026-09-23T10:00:00Z',
-    })
+    getTaskLoadMock.mockResolvedValue(
+      systemLoad({
+        hardware: {
+          cpu_percent: null,
+          cpu_count: 8,
+          memory_used_bytes: 1024,
+          memory_total_bytes: 2048,
+          memory_percent: 50,
+          process_rss_bytes: null,
+        },
+        queue: {
+          running: 0,
+          pending: 0,
+          slots: 1,
+          pending_by_kind: {},
+          oldest_pending_seconds: null,
+          stalled: 0,
+          overdue: 0,
+        },
+        quota: {
+          parser_name: 'mineru',
+          configured: false,
+          pages_used: 0,
+          calls: 0,
+          daily_quota: 0,
+          remaining: 0,
+          exhausted: false,
+        },
+      }),
+    )
 
     const { unmount } = renderMisc(<TasksPage />)
     await screen.findByText('手册.pdf')
     expect(screen.queryByLabelText('运行负载')).not.toBeInTheDocument()
     unmount()
 
-    useSessionStore.setState({
-      token: 'st',
-      currentUser: { id: 'u1', username: 'admin', name: '管理员', role: 'admin', avatar_url: '' },
-    })
+    asAdmin()
     renderMisc(<TasksPage />)
 
     expect(await screen.findByLabelText('运行负载')).toBeInTheDocument()
     // CPU 的 null 显示"—"而不是 0%（后端首次采样没有差值可算）
     expect(await screen.findByText('8 核 · 采样中')).toBeInTheDocument()
+  })
+
+  it('运行负载：五个读数是同一种控件，环里的读数进得了名字（评审 T4）', async () => {
+    asAdmin()
+    getTaskLoadMock.mockResolvedValue(systemLoad())
+
+    renderMisc(<TasksPage />)
+    const panel = await screen.findByLabelText('运行负载')
+    // 面板先按骨架画出来，数据是异步到的：等一个"只有拿到数据才会有"的读数
+    expect(await within(panel).findByRole('img', { name: 'CPU 使用率 12%' })).toBeInTheDocument()
+
+    // 五个读数一种控件：都是环（此前 3 个环 + 一个空环替身 + 一个纯数字）
+    expect(within(panel).getAllByRole('img')).toHaveLength(5)
+    // `role="img"` 会把环里的 `<text>` 当装饰，读数必须写进名字里才算数
+    expect(within(panel).getByRole('img', { name: '并发槽位占用 0/1' })).toBeInTheDocument()
+    expect(within(panel).getByRole('img', { name: '云端解析今日页数 0%' })).toBeInTheDocument()
+    expect(
+      within(panel).getByRole('img', { name: '本进程常驻内存占机器内存 6.3%' }),
+    ).toBeInTheDocument()
+
+    // 环里写了「在跑 / 槽位」，下面那行就只剩队列深度：同一个数不写两遍
+    const details = [...panel.querySelectorAll('.m-gauge-detail')].map((cell) => cell.textContent)
+    expect(details[2]).toBe('排队 2 条')
+    // 本进程那格的原始值：分母写在明处，比例才读得出大小
+    expect(details[4]).toBe('1.0 GB / 16.0 GB')
+  })
+
+  it('0 值的环只留轨道，不画弧（评审 T5：0 / 1000 页 却有一段实心蓝弧）', async () => {
+    asAdmin()
+    getTaskLoadMock.mockResolvedValue(
+      systemLoad({
+        hardware: {
+          cpu_percent: null,
+          cpu_count: 8,
+          memory_used_bytes: 8 * 1024 ** 3,
+          memory_total_bytes: 16 * 1024 ** 3,
+          memory_percent: 50,
+          process_rss_bytes: null,
+        },
+      }),
+    )
+
+    renderMisc(<TasksPage />)
+    const panel = await screen.findByLabelText('运行负载')
+    expect(await within(panel).findByRole('img', { name: '内存使用量 50%' })).toBeInTheDocument()
+
+    // 0 / 1000 页：一段弧都没有（`strokeDasharray="0 C"` 配圆头会画成一个圆点）
+    expect(ringStrokes(panel, '云端解析今日页数 0%')).toBe(1)
+    // CPU 首次采样没有差值：一样只有轨道，环里写"—"，名字里就不带读数了
+    expect(ringStrokes(panel, 'CPU 使用率')).toBe(1)
+    // 有进度的仍是"轨道 + 弧"两笔（内存 50%）
+    expect(ringStrokes(panel, '内存使用量 50%')).toBe(2)
   })
 })
 

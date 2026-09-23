@@ -20,9 +20,16 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { chatStream, decideApproval, listCommands, type ChatHandlers } from '@/api/chat'
+import {
+  chatStream,
+  decideApproval,
+  getSuggestedQuestions,
+  listCommands,
+  type ChatHandlers,
+} from '@/api/chat'
 import { clearLiveAnchors, clearLiveTurn } from '@/features/chat/model/liveTurn'
 import { ChatPage } from '@/features/chat/ChatPage'
+import { useWorkspaceStore } from '@/features/layout/workspaces'
 
 vi.mock('@/api/chat', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/chat')>()
@@ -702,6 +709,144 @@ describe('出处列表与交付物（§6 的两条）', () => {
         source_ref: 'c1',
       }),
     )
+  })
+})
+
+/**
+ * 第二批评审（v0.28）在对话页上**看得见**的那几件：抬头、正文节奏的锚点、
+ * 发送键的禁用态、欢迎态的推荐问题、联网编号的落点。
+ *
+ * 这一层能验的是**结构与文案**（jsdom 不跑 CSS）：所以断言落在"有几个节点、
+ * 谁的类名管什么、点下去做了什么"。像素级的对齐与颜色由 `.shots/batch2/` 的
+ * 复看截图核对（这一批的验收里写着这三张图）。
+ */
+describe('抬头（会话标题 + 所属项目）', () => {
+  it('标题常驻在消息区之上；新会话还没有标题就不占那一条', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '这些资料的结论是什么？'), stored('assistant', '反复提到同一件事。')]),
+    )
+    const { unmount } = renderPage()
+
+    expect(await screen.findByText('一条会话')).toBeInTheDocument()
+    unmount()
+
+    // `?new=1` 那种新会话：没有会话 id → 没有标题 → 抬头整条不画（不占位）
+    vi.mocked(getConversation).mockResolvedValue(detail([]))
+    renderPage('/chat/')
+    await screen.findByPlaceholderText(/回车发送/)
+    expect(screen.queryByText('一条会话')).toBeNull()
+  })
+
+  it('会话挂在项目下时，项目名跟在标题后面（名字来自壳那份工作区清单）', async () => {
+    vi.mocked(getConversation).mockResolvedValue({
+      ...detail([stored('user', '问一句'), stored('assistant', '答一句')]),
+      workspace_id: 'w1',
+    })
+    // 壳（侧栏）启动时就加载了这份清单，这里只是把它摆成"已经加载好"的样子：
+    // 对话页**不为这一行名字另发一次请求**（它只从既有数据里查）
+    useWorkspaceStore.setState({
+      items: [{ id: 'w1', name: '闲聊' } as never],
+      loaded: true,
+    })
+    renderPage()
+
+    expect(await screen.findByText('一条会话')).toBeInTheDocument()
+    expect(await screen.findByText('闲聊')).toBeInTheDocument()
+  })
+})
+
+describe('发送键的禁用态', () => {
+  it('空输入时按住不动，且**是灰化的**（不是把品牌色减到半透明）', async () => {
+    renderPage()
+    const send = await screen.findByRole('button', { name: '发送' })
+
+    expect(send).toBeDisabled()
+    // 颜色类名是这一条唯一的机器可验形式：jsdom 不算样式，取值在 tokens 里
+    expect(send.className).toContain('disabled:bg-[var(--button-disabled-bg)]')
+    expect(send.className).toContain('disabled:text-[var(--button-disabled-text)]')
+    // 形状：圆形（`--radius-send` 在 32px 的方块上就是一个圆）
+    expect(send.className).toContain('rounded-[var(--radius-send)]')
+  })
+})
+
+describe('欢迎态的推荐问题（A5）', () => {
+  it('一条一行、左对齐；被写成一行两条的会自动拆开', async () => {
+    vi.mocked(getSuggestedQuestions).mockResolvedValue({
+      questions: [
+        '视力恢复的机制是什么？',
+        // 模型把两条写成一行（中间一个全角空格）——后端按行取，于是一条里含两条
+        'Jorizzo 研究的是哪种联合阻塞？　相机暗箱中的图像投影到哪里？',
+      ],
+      generated: true,
+    })
+    renderPage('/chat/')
+
+    // 先等后端那一批到手（它没到之前界面铺的是内置静态样例——那是另一条兜底）
+    await screen.findByRole('button', { name: '视力恢复的机制是什么？' })
+    const list = screen.getByTestId('suggestion-list')
+    const chips = within(list).getAllByRole('button')
+    // 三条：两条各自成条 + 那一行拆成两条
+    expect(chips.map((item) => item.textContent)).toEqual([
+      '视力恢复的机制是什么？',
+      'Jorizzo 研究的是哪种联合阻塞？',
+      '相机暗箱中的图像投影到哪里？',
+    ])
+    // 一列（不是自动折行的一排），每一条占满整行且文字左对齐
+    expect(list.className).toContain('flex-col')
+    expect(chips[0].className).toContain('w-full')
+    expect(chips[0].className).toContain('text-left')
+  })
+
+  it('点一条就把这一句填进输入框（可以改了再发）', async () => {
+    vi.mocked(getSuggestedQuestions).mockResolvedValue({
+      questions: ['视力恢复的机制是什么？'],
+      generated: true,
+    })
+    renderPage('/chat/')
+    const user = userEvent.setup()
+
+    const chip = await screen.findByRole('button', { name: '视力恢复的机制是什么？' })
+    await user.click(chip)
+
+    expect(await screen.findByPlaceholderText(/回车发送/)).toHaveValue('视力恢复的机制是什么？')
+  })
+})
+
+describe('联网编号的落点（A6）', () => {
+  it('跑过联网搜索时，对不上出处的编号是**有说明的非链接**；没跑过就原样留着', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([
+        stored('user', '今天的热点'),
+        stored('assistant', '详见 [6][2]。', {
+          steps: [
+            {
+              phase: 'tool',
+              label: '联网搜索',
+              detail: '搜到 8 条',
+              status: 'done',
+              tool: 'web_search',
+            },
+          ],
+        }),
+      ]),
+    )
+    const { unmount } = renderPage()
+
+    await screen.findByTestId('reply-text')
+    const chips = await screen.findAllByTitle('联网搜索结果，见过程面板')
+    expect(chips).toHaveLength(2)
+    // 不是链接、也点不动（没有 data-cite-index 的委托落点）
+    expect(chips[0].tagName).toBe('SPAN')
+    expect(chips[0]).not.toHaveAttribute('data-cite-index')
+    unmount()
+
+    // 没跑联网搜索：同样的正文里那些编号照旧是纯文本，不编一个来源给它
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '今天的热点'), stored('assistant', '详见 [6][2]。')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+    expect(screen.queryByTitle('联网搜索结果，见过程面板')).toBeNull()
   })
 })
 

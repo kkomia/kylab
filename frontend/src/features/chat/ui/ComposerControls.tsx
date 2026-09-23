@@ -5,8 +5,11 @@
  * **右边是"怎么生成 + 发出去"**（上下文仪表、模型与思考、发送/停止）。
  * 两类动作各占一端，扫视时不用在中间找。
  *
- * 所有控件共用一个高度（`--control-height`）：同一行里差几个像素，用户一眼就看出
- * "大小不一"——旧前端为这件事专门加了那个令牌，这里跟着用。
+ * 所有控件共用一个高度（`--control-height`）**与一种形状**（胶囊 + 浅底）：
+ * 同一行里差几个像素、或者一个是实心胶囊一个是裸文字，用户一眼就看出"大小不一"——
+ * 旧前端为高度这件事专门加了那个令牌；v0.28 的第二批评审（A4）把**形状**也收齐了：
+ * 原先「加号 / 执行策略 / 模式 / 选库」是 12px 圆角的浅底块，而「知识库」开关是
+ * 一颗**没有容器的裸开关**（`border-radius: 0`、无底色），一行里两种形态。
  */
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { Bot, Check, ChevronDown, ChevronRight, Folder, Plus, Sparkles, Upload } from 'lucide-react'
@@ -14,13 +17,16 @@ import { useState } from 'react'
 
 import { formatCount } from '@/lib/format'
 
+import { CONTROL_TRIGGER } from './DropdownShell'
 import { useChat } from '../runtime/ChatProvider'
 
-/** 触发器与菜单里那几个控件共用的一族类名（高度、留白、悬停）。 */
-const TRIGGER =
-  'inline-flex h-[var(--control-height)] cursor-pointer items-center gap-[var(--space-1-5)] ' +
-  'rounded-[var(--radius-row)] border border-transparent bg-[var(--bg-subtle)] px-[var(--space-2)] ' +
-  'text-[length:var(--text-meta-size)] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] data-[state=open]:bg-[var(--bg-hover)] data-[state=open]:text-[var(--text-primary)]'
+/**
+ * 触发器与菜单里那几个控件共用的一族类名。
+ *
+ * **取值只有一处**：`DropdownShell` 的 `CONTROL_TRIGGER`（薄壳那一份也要它，
+ * 两处各写一遍正是"一行四个控件四种形状"的来源）。这里只是给它一个短名字。
+ */
+const TRIGGER = CONTROL_TRIGGER
 const CONTENT =
   'z-50 min-w-[220px] overflow-hidden rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-menu)] p-[var(--space-2)] shadow-[var(--shadow-popover)]'
 const ITEM =
@@ -142,7 +148,9 @@ export function KnowledgeBaseControl() {
         aria-checked={chat.useKb}
         aria-label="使用知识库"
         title={chat.useKb ? '这一轮会查知识库' : '这一轮不查知识库，按纯对话回答'}
-        className="inline-flex h-[var(--control-height)] cursor-pointer items-center gap-[var(--space-2)] px-[var(--space-1)] text-[length:var(--text-meta-size)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+        // 与左右邻居同一个容器（等高、胶囊、浅底）：它原先是一颗**裸开关**——
+        // `border-radius: 0`、没有底色，一行里就它没有形状（A4）
+        className={`${TRIGGER} gap-[var(--space-2)]`}
         onClick={chat.toggleKbSwitch}
       >
         <span

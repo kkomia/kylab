@@ -14,10 +14,14 @@
  *
  * 视觉上刻意只留一条窄列：登录页没有可"扫视比较"的内容，
  * 界面越像一份表越好——品牌名、标题、两个字段、一个按钮。
+ *
+ * **品牌位改用字标**（界面评审 L3/L4：此前三处三种标识——登录页那个"箭头插进方括号"
+ * 的图标（语义接近"退出"）、侧栏的环行星、欢迎态的「kylab」字标）。现在统一到仓库里
+ * **已有的**字标组件（`chat/ui/Logo` 的 `wordmark`，与欢迎态同一个），
+ * 登录页只放它，不再有第二个图形标。
  */
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { LogIn, ShieldCheck } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router'
 
 import { getAuthBootstrapStatus, login, me, setup, MIN_PASSWORD_CHARS } from '@/api/auth'
@@ -25,6 +29,7 @@ import { clearSessionToken, setSessionToken, useSessionStore } from '@/lib/sessi
 
 import { Button } from '@/ui/button'
 import { Input } from '@/ui/input'
+import { Logo } from '@/features/chat/ui/Logo'
 import { Field } from '../shared/composites'
 
 /** 登录后回到用户原本想去的页面（守卫在 query 里带了 redirect）。 */
@@ -112,16 +117,20 @@ export function LoginPage() {
   return (
     <div className="m-login">
       <div className="m-login-panel">
-        <div className="m-login-brand">
-          {isSetup ? <ShieldCheck size={32} /> : <LogIn size={32} />}
+        {/* 字标跟正文色（`Logo` 里全是 `currentColor`），不另给品牌色——
+            它在三处（登录页 / 侧栏 / 欢迎态）必须是同一个东西 */}
+        <div className="flex items-center text-text-primary">
+          <Logo variant="wordmark" size={34} />
         </div>
 
         <h1 className="m-login-title">{isSetup ? '创建管理员账号' : '登录'}</h1>
-        <p className="m-login-hint">
-          {isSetup
-            ? '第一次使用：创建管理员账号即可进入。已有的知识库会归到这个账号名下。'
-            : '用管理员为你开通的账号登录。'}
-        </p>
+        {/* 登录态**没有**标题下那行说明（规范 §5.1 删的就是这一类"这一页是什么"的小字）：
+            "账号要管理员开通"是失败时才需要知道的事，所以它并进下面的错误提示里。 */}
+        {isSetup && (
+          <p className="m-login-hint">
+            第一次使用：创建管理员账号即可进入。已有的知识库会归到这个账号名下。
+          </p>
+        )}
 
         <form
           className="m-form"
@@ -182,6 +191,13 @@ export function LoginPage() {
           {localError && (
             <p className="m-login-error" role="alert">
               {localError}
+              {/* 本产品不开放注册：**登录失败时**才把"账号从哪来"说清楚
+                  （原来是标题下的一行常驻说明，规范 §5.1 那一类）。 */}
+              {!isSetup && (
+                <span className="mt-1 block text-text-secondary">
+                  账号由管理员在设置里开通，请联系管理员。
+                </span>
+              )}
             </p>
           )}
 

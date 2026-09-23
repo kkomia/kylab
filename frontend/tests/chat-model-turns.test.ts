@@ -25,6 +25,8 @@ import {
   sourceWhere,
   THINKING_EFFORTS,
   TRACE_PAGE_SIZE,
+  thinkingParagraphs,
+  usedWebSearch,
   replyArtifacts,
   stepIcon,
   traceEntries,
@@ -805,5 +807,86 @@ describe('一轮产出的文件（v0.26）', () => {
     }
 
     expect(replyArtifacts(turn)).toEqual([])
+  })
+})
+
+/**
+ * 思考正文按段切开（v0.28，第二批评审 A3）。
+ *
+ * 界面把思考正文渲染成 `white-space: pre-wrap` 的一块——空行就是一个**整行高**的空档
+ * （12px 字号下 19px），比正文的段距（12px）还松，主次是反的。切开之后每段占一行、
+ * 段距由界面给（`--space-2`），过程才真的比答案紧。
+ */
+describe('thinkingParagraphs：思考正文按空行切段', () => {
+  it('连续空行切段，段内换行原样留着', () => {
+    expect(thinkingParagraphs('先看问题\n再想一步\n\n第二段\n\n\n第三段')).toEqual([
+      '先看问题\n再想一步',
+      '第二段',
+      '第三段',
+    ])
+  })
+
+  it('只吃段与段之间的空行，段首的缩进不动（思考里常有对齐过的列表）', () => {
+    expect(thinkingParagraphs('  缩进过的第一段\n\n  - 一条\n  - 两条')).toEqual([
+      '  缩进过的第一段',
+      '  - 一条\n  - 两条',
+    ])
+  })
+
+  it('空串与纯空白给出空数组——界面据此不画那一块', () => {
+    expect(thinkingParagraphs('')).toEqual([])
+    expect(thinkingParagraphs('\n\n  \n')).toEqual([])
+  })
+
+  it('没有空行时就是一段（一个字都不改）', () => {
+    expect(thinkingParagraphs('一句话的思考。')).toEqual(['一句话的思考。'])
+  })
+})
+
+/**
+ * 这一轮跑过联网搜索没有（v0.28，第二批评审 A6）。
+ *
+ * 正文里对不上出处的 `[6][2]` 怎么画，全看这个判据：跑过联网搜索 → 给一句
+ * "见过程面板"的说明（那些编号指的是那一次搜索的返回，它本身是带编号的）；
+ * 没跑过 → 什么都不说，不替模型编一个来源。
+ */
+describe('usedWebSearch：这一轮跑过联网搜索没有', () => {
+  it('认工具名（v0.26 起的步骤）', () => {
+    const reply = message('assistant', {
+      text: '看[1]',
+      steps: [step('tool', { phase: 'tool', label: '联网搜索', tool: 'web_search' })],
+    })
+
+    expect(usedWebSearch(reply)).toBe(true)
+  })
+
+  it('老快照没有工具名时认后端当时发的标签', () => {
+    const reply = message('assistant', {
+      text: '看[1]',
+      steps: [step('tool', { phase: 'tool', label: '联网搜索' })],
+    })
+
+    expect(usedWebSearch(reply)).toBe(true)
+  })
+
+  it('只查了知识库（或什么都没调）时是 false', () => {
+    expect(
+      usedWebSearch(
+        message('assistant', {
+          text: '看[1]',
+          steps: [step('tool', { phase: 'tool', label: '检索知识库', tool: 'search' })],
+        }),
+      ),
+    ).toBe(false)
+    expect(usedWebSearch(message('assistant', { text: '直接答' }))).toBe(false)
+  })
+
+  it('非工具步骤上的同名标签不算（不许把"思考"里的一行字当成联网）', () => {
+    const reply = message('assistant', {
+      text: '看[1]',
+      steps: [step('intent', { phase: 'intent', label: '联网搜索', tool: 'web_search' })],
+    })
+
+    expect(usedWebSearch(reply)).toBe(false)
   })
 })

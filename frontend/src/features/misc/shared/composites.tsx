@@ -595,18 +595,26 @@ export function RingGauge({
         stroke="var(--meter-track)"
         strokeWidth={stroke}
       />
-      <circle
-        cx={size / 2}
-        cy={size / 2}
-        r={radius}
-        fill="none"
-        stroke={color}
-        strokeWidth={stroke}
-        strokeLinecap="round"
-        strokeDasharray={`${circumference * clamped} ${circumference}`}
-        // 从 12 点方向顺时针画：起点转到正上方，进度才是"从满往里缺"的读法
-        transform={`rotate(-90 ${size / 2} ${size / 2})`}
-      />
+      {/*
+        **0 值不画弧**：`strokeDasharray="0 C"` 配圆头（`strokeLinecap="round"`）不是"什么都没有"，
+        而是一个实心圆点——评审 T5 实测「0 / 1000 页」的环上就挂着这么一段蓝弧，
+        图形与读数直接矛盾（CPU 首次采样拿不到差值时同理）。
+        没有进度就是没有进度：0 只留轨道。
+      */}
+      {clamped > 0 && (
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke={color}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={`${circumference * clamped} ${circumference}`}
+          // 从 12 点方向顺时针画：起点转到正上方，进度才是"从满往里缺"的读法
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      )}
       <text
         x="50%"
         y="53%"

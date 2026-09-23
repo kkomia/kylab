@@ -22,6 +22,9 @@
  */
 import { Toaster } from 'sonner'
 
+// 回答正文的排版（`md-p` / `md-ul` / `md-cite` 那一族，渲染器一直在发这些类名）。
+// 挂在页面这一层而不是某个组件里：消息列表、过程面板、出处列表都要它
+import './ui/chat.css'
 import { ChatProvider } from './runtime/ChatProvider'
 import { ChatRuntime } from './runtime/ChatRuntime'
 import { ChatThread } from './ui/ChatThread'
@@ -33,8 +36,11 @@ export function ChatPage() {
   return (
     <ChatProvider>
       <ChatRuntime>
-        {/* 整页占满内容区：中间滚动、底部固定输入卡片。**对话页没有页头**——
-            侧栏已经写着"对话"，再顶一个同名标题只是重复 */}
+        {/* 整页占满内容区：中间滚动、底部固定输入卡片。
+            **页头只有一条低权重的会话条**（`ChatHeader`：会话标题 + 项目名，44px）——
+            它不重复侧栏的"对话"，只回答"我现在在哪条会话里"；这是 2026-09-24 界面评审
+            对着 DeepSeek / Kimi 补上的（原先完全无页头，长会话里滚动后不知道在哪）。
+            会话条本身在 `ChatThread` 里、不随消息滚走。 */}
         <div className="flex h-dvh flex-col bg-[var(--bg-canvas)] text-[var(--text-primary)]">
           <ChatThread />
           <Composer />

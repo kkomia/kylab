@@ -238,6 +238,26 @@ function tailOf(text: string, limit: number): string {
   return flat.length > limit ? `…${flat.slice(-limit)}` : flat
 }
 
+/**
+ * 思考正文**按段切开**（v0.28，第二批评审 A3）。
+ *
+ * 为什么要在界面上切：思考正文是一整串带换行的纯文本，而它渲染成 `white-space:
+ * pre-wrap` 的一段——空行就是一个**整行高**的空档（实测 12px 字号下 19px），
+ * 比正文的段距（`--space-3`，12px）还松。过程比答案还疏，主次是反的。
+ *
+ * 切法只有一条：**连续两个以上的换行**分段。段内的单个换行原样留着
+ * （`pre-wrap` 会照排），段首的缩进也不动——思考里常有对齐过的列表，
+ * 归一空白会把它们揉成一团。
+ *
+ * 返回的每一段都是**原文**，一个字符都没改（只吃掉了段与段之间的空行）。
+ */
+export function thinkingParagraphs(text: string): string[] {
+  return text
+    .split(/\n{2,}/)
+    .map((part) => part.replace(/^\n+/, '').replace(/\n+$/, ''))
+    .filter((part) => part.trim() !== '')
+}
+
 /** 摘要行：一眼回答"这句话有没有出处"。 */
 export function traceSummary(message: Message): string {
   if (message.streaming && message.sources.length === 0) {
@@ -316,6 +336,26 @@ const TOOL_MARKUP_PATTERNS: RegExp[] = [
 
 export function hasToolCallMarkup(text: string): boolean {
   return TOOL_MARKUP_PATTERNS.some((pattern) => pattern.test(text))
+}
+
+/**
+ * 这一轮**跑过联网搜索**没有（v0.28，第二批评审 A6）。
+ *
+ * 用它来回答一个具体的问题：正文里那些**对不上出处**的 `[6][2]` 该怎么说。
+ *
+ * 联网搜索的返回**是带编号的**（后端 `services/tools.py` 的 `_web_search`：
+ * `[1] 标题 / 网址 / 摘要` 一条一行，就在这一步的「返回」里）——所以正文里那些编号
+ * 有出处可指，指的**不是**知识库的出处，而是过程面板里那一次搜索的返回。
+ * 于是：跑过联网搜索 → 那些编号渲染成"有说明的非链接"（"见过程面板"）；
+ * 没跑过 → 什么都不说（模型凭空写的编号，我们不替它编一个来源）。
+ *
+ * 判据认**工具名**（`tool`）与**老快照的中文标签**两样，与 `stepIcon` 的兜底同一口径：
+ * v0.26 之前落库的步骤没有 `tool`，只有后端当时发的中文标签「联网搜索」。
+ */
+export function usedWebSearch(message: Message): boolean {
+  return message.steps.some(
+    (step) => step.phase === 'tool' && (step.tool === 'web_search' || step.label === '联网搜索'),
+  )
 }
 
 /** Agent 步骤的阶段 → 图标键。 */

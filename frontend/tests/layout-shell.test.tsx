@@ -178,6 +178,33 @@ describe('侧栏导航', () => {
     expect(overview).toHaveAttribute('aria-current', 'page')
   })
 
+  it('收起的知识库组也有归属：停在概览 / 任务中心上时组头亮，展开后轮到子项亮', async () => {
+    const user = userEvent.setup()
+    useSessionStore.setState({ currentUser: account('member') })
+    renderShell('/tasks')
+
+    // 组是收起的：此刻唯一的"你在这一组里"的信号是组头本身
+    const group = await screen.findByRole('button', { name: '知识库' })
+    expect(group).toHaveAttribute('aria-expanded', 'false')
+    expect(group.className).toContain('bg-[var(--bg-selected)]')
+
+    await user.click(group)
+    // 展开之后由子项自己说（组头让位，两处不同时亮）
+    expect(group.className).not.toContain('bg-[var(--bg-selected)]')
+    expect(screen.getByRole('link', { name: '任务中心' })).toHaveAttribute('aria-current', 'page')
+  })
+
+  it('能力页在主导航里有归属：当前项标 aria-current 并带选中底', async () => {
+    useSessionStore.setState({ currentUser: account('member') })
+    renderShell('/capabilities')
+
+    const nav = await screen.findByRole('navigation', { name: '主导航' })
+    const link = within(nav).getByRole('link', { name: '能力' })
+    expect(link).toHaveAttribute('aria-current', 'page')
+    expect(link.className).toContain('bg-[var(--bg-selected)]')
+    expect(within(nav).getByRole('link', { name: '笔记' })).not.toHaveAttribute('aria-current')
+  })
+
   it('新建会话入口指向 /chat?new=1，并带快捷键提示', async () => {
     useSessionStore.setState({ currentUser: account('member') })
     renderShell('/notes')

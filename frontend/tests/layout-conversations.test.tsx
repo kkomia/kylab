@@ -114,7 +114,7 @@ function account(role: 'admin' | 'member' = 'admin'): Account {
   return { id: 'u1', username: 'you', name: '小又', role, avatar_url: '' }
 }
 
-function renderShell() {
+function renderShell(initialPath = '/notes') {
   // 侧栏/面板里有"划过就预取会话正文"（`prefetchConversationDetail`），它要一个
   // QueryClient —— 真实应用里由 `App` 提供，夹具里补一个（retry 关掉，失败即时可见）
   const queryClient = new QueryClient({
@@ -122,11 +122,13 @@ function renderShell() {
   })
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/notes']}>
+      <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route element={<AppShell />}>
             <Route path="/notes" element={<div>笔记页</div>} />
             <Route path="/chat/:conversationId?" element={<div>对话页</div>} />
+            {/* 工作区那一页：侧栏的项目行 / 「全部项目」要按 `?focus=` 认出当前项 */}
+            <Route path="/workspaces" element={<div>工作区页</div>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -171,7 +173,66 @@ describe('侧栏的会话分区', () => {
   it('一条会话都没有时说一句状态，不给操作指引', async () => {
     renderShell()
     expect(await screen.findByText('还没有对话')).toBeInTheDocument()
-    expect(screen.getByText('还没有项目')).toBeInTheDocument()
+    expect(await screen.findByText('还没有项目')).toBeInTheDocument()
+  })
+
+  it('当前会话有选中态：只有那一条标 aria-current，普通项保持正文色', async () => {
+    listConversationsMock.mockResolvedValue({
+      items: [
+        conversation({ id: 'c1', title: '会话 A' }),
+        conversation({ id: 'c2', title: '会话 B' }),
+      ],
+    })
+    renderShell('/chat/c1')
+
+    const current = await screen.findByRole('link', { name: '会话 A' })
+    const other = screen.getByRole('link', { name: '会话 B' })
+    // 选中态：语义（aria-current）+ 视觉（`--bg-selected` 底）两处一起，缺一不可
+    expect(current).toHaveAttribute('aria-current', 'page')
+    expect(current.className).toContain('bg-[var(--bg-selected)]')
+    expect(other).not.toHaveAttribute('aria-current')
+    expect(other.className).not.toContain('bg-[var(--bg-selected)]')
+    // 普通项是**正文色**（列表项不该有"点了会跳走"的链接观感）
+    expect(other.className).toContain('text-text-primary')
+  })
+
+  it('项目下的会话：默认降一档灰，当前那条提回正文色并加选中底', async () => {
+    listWorkspacesMock.mockResolvedValue({ items: [workspace({ id: 'w1' })] })
+    listConversationsMock.mockResolvedValue({
+      items: [
+        conversation({ id: 'c1', title: '会话 A', workspace_id: 'w1' }),
+        conversation({ id: 'c2', title: '会话 B', workspace_id: 'w1' }),
+      ],
+    })
+    renderShell('/chat/c1')
+
+    const current = await screen.findByRole('link', { name: '会话 A' })
+    const other = screen.getByRole('link', { name: '会话 B' })
+    expect(current).toHaveAttribute('aria-current', 'page')
+    expect(current.className).toContain('bg-[var(--bg-selected)]')
+    expect(current.className).not.toContain('text-text-secondary')
+    expect(other).not.toHaveAttribute('aria-current')
+    expect(other.className).toContain('text-text-secondary')
+  })
+
+  it('项目区的当前项：`?focus=` 亮那个项目，「全部项目」亮没有 focus 的那一页', async () => {
+    listWorkspacesMock.mockResolvedValue({ items: [workspace({ id: 'w1', name: '合同整理' })] })
+    const first = renderShell('/workspaces?focus=w1')
+
+    const focused = await screen.findByRole('button', { name: /合同整理/ })
+    expect(focused).toHaveAttribute('aria-current', 'page')
+    expect(focused.className).toContain('bg-[var(--bg-selected)]')
+    const allProjects = screen.getByRole('button', { name: '全部项目' })
+    expect(allProjects).not.toHaveAttribute('aria-current')
+    expect(allProjects.className).not.toContain('bg-[var(--bg-selected)]')
+
+    // `/workspaces` 本身（全部项目）：亮的是那一行，项目行不再亮
+    first.unmount()
+    renderShell('/workspaces')
+    const allProjects2 = await screen.findByRole('button', { name: '全部项目' })
+    expect(allProjects2).toHaveAttribute('aria-current', 'page')
+    expect(allProjects2.className).toContain('bg-[var(--bg-selected)]')
+    expect(screen.getByRole('button', { name: /合同整理/ })).not.toHaveAttribute('aria-current')
   })
 
   it('归档之后那条会话立刻从侧栏消失（归档不是删除）', async () => {

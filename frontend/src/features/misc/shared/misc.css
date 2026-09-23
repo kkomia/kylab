@@ -591,56 +591,23 @@ button.m-card-title:hover {
   color: var(--text-secondary);
 }
 
+/**
+ * 次级读数（"16 核" / "0 / 1000 页" / "185.9 MB / 31.8 GB"）。
+ *
+ * 用 **secondary** 而不是 tertiary：评审 T7 实测这行 12px 灰字只有 3.4:1，
+ * 而 tertiary 在浅色下就是 3.35:1（`themes/light.css` 文件头写明了这一点）。
+ * 这一行是"这个数是多少"，属于要被读到内容，不是可以弱的脚注——
+ * 提一档到 secondary（浅色 5.68:1 / 深色 4.7:1，都过 AA）。
+ */
 .m-gauge-detail {
   min-width: 0;
   font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
 }
 
 .m-gauge-detail strong {
   font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.m-gauge-figure {
-  font-size: var(--text-section-size);
-  font-weight: 600;
   color: var(--text-primary);
-}
-
-.m-gauge-blank {
-  font-size: var(--text-section-size);
-  color: var(--text-quaternary);
-}
-
-.m-slots {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
-  justify-content: center;
-  max-width: 100%;
-}
-
-.m-slot {
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-control);
-}
-
-.m-slot-busy-accent {
-  background: var(--accent);
-  border-color: transparent;
-}
-
-.m-slot-busy-warning {
-  background: var(--status-warning);
-  border-color: transparent;
-}
-
-.m-slot-busy-danger {
-  background: var(--status-danger);
-  border-color: transparent;
 }
 
 .m-load-note,
@@ -2408,9 +2375,31 @@ button.m-card-title:hover {
   padding: 0 var(--space-4);
 }
 
-.m-head-task {
-  flex: 1;
+/**
+ * 任务表的表头格子**与行内格子同宽**（评审 T3）。
+ *
+ * 此前表头只有 5 格：`.m-head-task` 用 `flex: 1` + `padding-left: 16px + gap`
+ * 一口气横跨了"图标 + 类型 + 标题"三段，于是「任务」两个字正好落在每行的类型标签
+ * 「解析」上面；「状态」那格又因为列宽对不上，比下面徽章的左边缘多出 30px。
+ *
+ * 现在两边列宽同源：
+ *   类型列 = 图标 16 + gap 12 + 标签 56 = 84px（下面这格用左内边距让出图标那一段）
+ *   标题列 = `flex: 1`，与 `.m-row-main` 共用同一套负外边距 + 内边距（命中区外扩，列不动）
+ *   状态 84 / 健康 92 / 尝试次数 100 / 更新时间 120 —— 行与表头引用同一批值
+ *   （行那侧是 `.m-col-status` / `.m-col-health` / `.m-row-attempts` / `.m-row-time`）。
+ */
+.m-head-kind {
+  flex: 0 0 84px;
   padding-left: calc(16px + var(--space-3));
+}
+
+.m-head-task {
+  /* 与 `.m-row-main` 同一套盒子：负外边距把命中区向两侧各扩 8px，
+     内边距再把文字拉回列的原点——所以「任务」压在标题那一列上，不是类型列上。 */
+  flex: 1;
+  min-width: 0;
+  margin: 0 calc(-1 * var(--space-2));
+  padding: 0 var(--space-2);
 }
 
 .m-row-icon {

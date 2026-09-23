@@ -7,8 +7,9 @@
  *    不是信息——点开才是每一次的结论与原文）；
  * 2. **大输出的两级懒加载**：一轮几十次工具调用时先画前 20 条（`TRACE_PAGE_SIZE`），
  *    这一行如实报出"画了多少 / 一共多少"；单条原文再切到 600 字（见 `TraceStepRow`）；
- * 3. **思考过程**：推理模型的 `reasoning_content`，它是过程的一部分，收在面板里，
- *    限高滚动，不挤占正文；
+ * 3. **思考过程**：推理模型的 `reasoning_content`，它是过程的一部分，收在面板里、
+ *    **按段排开**，并且长得与正文明显不同（缩进 + 底色 + 更小字号 + 更紧段距，
+ *    v0.28 第二批评审 A3）——读者要一眼看得出"这是过程，不是答案"；
  * 4. **逐条出处**：默认只铺前 3 条，多出来的折成一行——一次命中上百个片段时，
  *    它会长成一面比回答还长的墙（用户报的"很长的会话"）。行内徽标 `[n]` 点进来时
  *    会自动展开（见 `revealSource`），否则会滚到一个不存在的节点上。
@@ -24,6 +25,7 @@ import {
   liveLine,
   sourcePreview,
   sourceWhere,
+  thinkingParagraphs,
   traceSummary,
   type Turn,
   type TraceEntry,
@@ -37,7 +39,8 @@ import {
   STEP_BODY,
   STEP_ROW,
   STEP_TOGGLE,
-  RAW_BODY,
+  THINK_BLOCK,
+  THINK_PARAGRAPH,
   caretClass,
   stepIconClass,
 } from './traceStyles'
@@ -217,12 +220,24 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
             </div>
           ) : null}
 
+          {/*
+            思考过程：**按段切开的整块**（不是一整串 pre-wrap 的文本）。
+            样子与正文刻意拉开距离（缩进、底色、左侧一道线、更小的字号与更紧的段距），
+            因为它讲的是"这一步怎么想出来的"，不是答案本身。
+            **默认仍然展开**（v0.25 照 Kimi 的那次选择：过程常驻在正文里，
+            见 `isTraceOpen`）、也**不给折叠开关**——这里只改它长什么样。
+          */}
           {reply.thinkingText ? (
             <div className="mt-[var(--space-4)]">
               <p className="m-0 text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
                 思考过程
               </p>
-              <LinkText className={`${RAW_BODY} mt-[var(--space-1)]`} text={reply.thinkingText} />
+              <div className={THINK_BLOCK} data-testid="thinking-block">
+                {thinkingParagraphs(reply.thinkingText).map((paragraph, index) => (
+                  // 段落是**同一段文本按空行切出来的**，没有稳定 id；下标即位置
+                  <LinkText key={index} className={THINK_PARAGRAPH} text={paragraph} />
+                ))}
+              </div>
             </div>
           ) : null}
 

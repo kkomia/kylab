@@ -13,7 +13,7 @@
  */
 import { TASKS_QUERY_KEY } from '@/features/misc/queryKeys'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, FileText, RefreshCw } from 'lucide-react'
 import { useNavigate } from 'react-router'
@@ -91,6 +91,13 @@ export function TasksPage() {
   const [detail, setDetail] = useState<TaskSummary | null>(null)
   const [cancelOpen, setCancelOpen] = useState(false)
   const [canceling, setCanceling] = useState(false)
+  /**
+   * 列表滚到底了没有（决定底部那层渐隐出不出现）。
+   * 初值是 `true`：首帧还没量过，宁可不显示——一层渐隐压在最后一行上，
+   * 比"该出现时晚半帧"要误导得多。
+   */
+  const [listAtEnd, setListAtEnd] = useState(true)
+  const listRef = useRef<HTMLDivElement | null>(null)
 
   const isAdmin = useSessionStore((store) => store.currentUser?.role === 'admin')
   const knowledgeBases = useKnowledgeBases()
@@ -169,6 +176,22 @@ export function TasksPage() {
     setPage((current) => Math.min(current, pageCount))
   }, [pageCount])
 
+  /**
+   * 换页之后把列表滚回顶部：停在上一页的滚动位置上，第一行会像是被跳过了。
+   * **只挂在 `page` 上**——挂 `visibleTasks` 的话，轮询期间任务一变就把用户从
+   * 正在看的那几行上拽回顶部。
+   */
+  useEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = 0
+  }, [page])
+
+  /** 换页或换筛选之后重新量一次列表的滚动位置：内容换了，渐隐该不该出现也跟着变。 */
+  useEffect(() => {
+    const element = listRef.current
+    if (!element) return
+    setListAtEnd(scrolledToEnd(element))
+  }, [page, visibleTasks])
+
   const pendingCount = tasks.filter((task) => task.state === 'pending').length
 
   /**
@@ -230,47 +253,23 @@ export function TasksPage() {
       }
     >
       {/*
-        页签的**当前态**为什么不是 `<SegmentedControl>`（同一个 `@/ui/tabs` 原语、同一个形状，
-        只是把底与字放进了按钮内部）：`tokens.css` 里那条**无 `@layer`** 的
-        `button { background: none; font: inherit }` 按层叠规则压过 `@layer utilities` 里的
-        `bg-*` / `font-*`，所以 `@/ui/tabs` 自带的 `data-[state=active]:bg-surface` 一点没生效
-        ——评审 T1 实测当前项与另一项同为透明底、400 字重。span 不受那条重置影响，
-        于是"浅灰轨道 + 白色当前项"这个原语本来的形态在这里才真的画出来。
-        （`styles/tokens.css` 与 `ui/` 原语本轮不动，见《界面优化计划》§3 的共享面约定。）
+        页签就是 `@/ui/tabs` 原语本身，一块补丁都不加。
+
+        上一轮这里垫过一对 span（绝对定位的白底 + 手写 `px-3`）：当时 `tokens.css` 的元素重置
+        没进 `@layer`，按层叠规则压过 `@layer utilities`，原语自带的
+        `data-[state=active]:bg-surface` / `px-3` / `font-medium` 全被吃掉（评审 T1 实测两项一样）。
+        根因已修（重置已收进 `@layer base`），垫层随之删掉——当前态现在由**原语自己**画出来：
+        `--bg-subtle` 轨道上浮起白色当前项（当前项墨色 `--text-primary`、另一项次级灰
+        `--text-secondary`，两边同为 500 字重，差别在**底色 + 字色**，悬停时字色也转墨色）。
+        `misc/memory`、`misc/capabilities` 的页签是同一个形状（同一原语、同样不加类）。
       */}
       <Tabs value={view} onValueChange={(next) => setView(next as TaskView)}>
-        <TabsList aria-label="任务视图" className="h-9 p-0.5">
-          {VIEWS.map((item) => {
-            const current = item.value === view
-            return (
-              <TabsTrigger key={item.value} value={item.value} className="h-8">
-                {/* 白底分段。`data-slot` 与 `misc/memory/MemoryPage.tsx` 的同名钩子一致
-                    （同类控件同一形状），也是用例的抓手——jsdom 不算样式，只能钉住这两个元素。 */}
-                <span
-                  aria-hidden="true"
-                  data-slot="segment-current"
-                  className={
-                    current
-                      ? 'absolute inset-0 rounded-control bg-surface transition-opacity'
-                      : 'absolute inset-0 rounded-control opacity-0 transition-opacity'
-                  }
-                />
-                {/* 字色与字重同理只能写在 span 上：当前项 Primary + 500，另一项 Secondary。
-                    `px-3` 也是补回来的——原语的 `px-3 py-1` 与 `background` 死在同一条重置上，
-                    少了它两个分段会**贴着**（当前项的白底看起来像给文字刷了一块底，而不是一个分段）。 */}
-                <span
-                  data-slot="segment-label"
-                  className={
-                    current
-                      ? 'relative px-3 text-[length:var(--text-meta-size)] font-medium text-text-primary'
-                      : 'relative px-3 text-[length:var(--text-meta-size)] text-text-secondary'
-                  }
-                >
-                  {item.label}
-                </span>
-              </TabsTrigger>
-            )
-          })}
+        <TabsList aria-label="任务视图">
+          {VIEWS.map((item) => (
+            <TabsTrigger key={item.value} value={item.value}>
+              {item.label}
+            </TabsTrigger>
+          ))}
         </TabsList>
       </Tabs>
       {view === 'schedules' ? (
@@ -352,7 +351,18 @@ export function TasksPage() {
               </div>
 
               <div className="panel">
+                {/*
+                  表头**逐格对着行内的格子**（评审 T3：原表头 5 格、行内 7 件，且「任务」还带
+                  `padding-left: 16px + gap` 去让图标，于是它正好压在每行的类型标签「解析」上，
+                  「状态」也比徽章左边缘多出 30px）。
+                  现在两边共用同一套列宽：类型列（图标 16 + gap 12 + 标签 56 = 84）、
+                  标题列（`flex: 1`，与 `.m-row-main` 同一套负外边距 + 内边距）、
+                  状态 84 / 健康 92 / 尝试次数 100 / 更新时间 120——列宽只有一处定义。
+                  类型列给了表头「类型」而不是留白：这一列有内容（解析 / 切分 / 向量化），
+                  没有表头的话读者只能靠猜它与标题的关系。
+                */}
                 <div className="panel-head m-list-head" aria-hidden="true">
+                  <span className="m-head-kind">类型</span>
                   <span className="m-head-task">任务</span>
                   <span className="m-head-col-status">状态</span>
                   <span className="m-head-col-health">健康</span>
@@ -365,45 +375,75 @@ export function TasksPage() {
                     没有符合筛选条件的任务。换个条件，或点右上角「清除筛选」。
                   </p>
                 ) : (
-                  <ul className="m-list">
-                    {pagedTasks.map((task) => (
-                      <li key={task.id} className="m-list-item">
-                        <div className="m-task-row panel-row">
-                          <FileText className="m-row-icon" size={16} />
-                          <span className="m-row-kind">{taskKindLabel(task.kind)}</span>
+                  /*
+                    列表有**确定的高度上限**（8 行 ≈ `--row-height * 8`）并自己滚动
+                    （评审 T6：此前整页滚，第 13 行被视口从中间切断，翻页器落到折线以下——
+                    "还有多少"看不出来）。定高之后：表头留在面板里不动、翻页器回到首屏、
+                    "共 N 项 / 第几页"常显；行数不足 8 行时容器按内容收缩，不留一块空白。
+                    行内是按钮（可聚焦），键盘 Tab 到没露出来的那几行时浏览器会自己把这一格
+                    滚进来，所以这个滚动容器不需要 `tabIndex` 去抢一个焦点位（§8）。
+                    底部那层渐隐只在**下面确实还有没露出来的行**时出现。
+                  */
+                  <div className="relative">
+                    <div
+                      ref={listRef}
+                      onScroll={(event) => setListAtEnd(scrolledToEnd(event.currentTarget))}
+                      className="max-h-[calc(var(--row-height)*8)] overflow-y-auto"
+                    >
+                      <ul className="m-list">
+                        {pagedTasks.map((task) => (
+                          <li key={task.id} className="m-list-item">
+                            <div className="m-task-row panel-row">
+                              <FileText className="m-row-icon" size={16} />
+                              <span className="m-row-kind">{taskKindLabel(task.kind)}</span>
 
-                          {/*
-                          整行可点是这里最要紧的交互：任务名只有十几个字宽，
-                          而"看失败原因"是这一页唯一的深层动作，命中区不该只有一个词那么大。
-                          里面是个真 button，所以 Tab 能到、回车能开（§8 键盘可达）。
-                          */}
-                          <button
-                            type="button"
-                            className="m-row-main"
-                            aria-label={`查看任务详情：${taskKindLabel(task.kind)} ${documentName(task)}`}
-                            onClick={() => setDetail(task)}
-                          >
-                            <span className="m-row-name">{documentName(task)}</span>
-                            {needsAttention(task) && (
-                              <span className="m-row-attention">
-                                {attentionText(task)}
-                                <ChevronRight size={12} />
+                              {/*
+                              整行可点是这里最要紧的交互：任务名只有十几个字宽，
+                              而"看失败原因"是这一页唯一的深层动作，命中区不该只有一个词那么大。
+                              里面是个真 button，所以 Tab 能到、回车能开（§8 键盘可达）。
+                              */}
+                              <button
+                                type="button"
+                                className="m-row-main"
+                                aria-label={`查看任务详情：${taskKindLabel(task.kind)} ${documentName(task)}`}
+                                onClick={() => setDetail(task)}
+                              >
+                                <span className="m-row-name">{documentName(task)}</span>
+                                {needsAttention(task) && (
+                                  <span className="m-row-attention">
+                                    {attentionText(task)}
+                                    <ChevronRight size={12} />
+                                  </span>
+                                )}
+                              </button>
+
+                              {/*
+                                状态与健康各自包在**固定列宽**里（`.m-col-status` 84 / `.m-col-health` 92，
+                                与表头同宽）：徽章宽度随文案变（「执行中」比「已完成」多一个脉动点），
+                                不固定列宽的话后面的列会跟着徽章一起左右挪，表头永远对不上。
+                              */}
+                              <span className="m-col-status">
+                                <StatusTag
+                                  label={taskStateView(task.state).label}
+                                  tone={taskStateView(task.state).tone}
+                                  live={task.state === 'running'}
+                                />
                               </span>
-                            )}
-                          </button>
-
-                          <StatusTag
-                            label={taskStateView(task.state).label}
-                            tone={taskStateView(task.state).tone}
-                            live={task.state === 'running'}
-                          />
-                          {healthCell(task)}
-                          <span className="m-row-attempts">{attemptText(task)}</span>
-                          <span className="m-row-time">{formatDate(task.updated_at)}</span>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
+                              <span className="m-col-health">{healthCell(task)}</span>
+                              <span className="m-row-attempts">{attemptText(task)}</span>
+                              <span className="m-row-time">{formatDate(task.updated_at)}</span>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    {!listAtEnd && (
+                      <div
+                        aria-hidden="true"
+                        className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-[var(--bg-surface)] to-transparent"
+                      />
+                    )}
+                  </div>
                 )}
               </div>
 
@@ -552,6 +592,14 @@ export function TasksPage() {
 
 function hasActive(items: TaskSummary[] | undefined): boolean {
   return (items ?? []).some((task) => task.state === 'pending' || task.state === 'running')
+}
+
+/**
+ * 滚动容器到底了没有。留 4px 容差：浏览器在小数行高/缩放下报的 `scrollHeight`
+ * 常比"最后一行正好露完"多零点几像素，不留容差会让渐隐在到底之后还赖着不走。
+ */
+function scrolledToEnd(element: HTMLElement): boolean {
+  return element.scrollTop + element.clientHeight >= element.scrollHeight - 4
 }
 
 /**

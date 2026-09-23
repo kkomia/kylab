@@ -65,6 +65,7 @@ import {
   type TracePage,
   type Turn,
 } from '@/features/chat/model/turns'
+import { splitSuggestions } from '@/features/chat/model/suggestions'
 
 import { liveActions, useLiveTurnState, type LiveThinking, type LiveTurnState } from './liveAdapter'
 import { notifyError, notifySuccess, notifyWarning } from './notify'
@@ -1302,7 +1303,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   // ---------------------------------------------------------------- 欢迎层的示例问题
 
   const suggestions = useMemo(() => {
-    const generated = suggestedQuery.data?.questions ?? []
+    // `splitSuggestions` 只为排版服务：模型偶尔把两条问题写成一行（中间一个全角空格），
+    // 后端按行取，于是那一行就是"一条"——拆开是为了让每条占一行，一个字都不改它。
+    // （`片段N` 那种前缀属于**模型写下的内容**，这一层不动，理由见 `model/suggestions.ts`）
+    const generated = splitSuggestions(suggestedQuery.data?.questions ?? [])
     if (generated.length > 0) return generated.slice(0, SAMPLE_COUNT)
     return Array.from(
       { length: Math.min(SAMPLE_COUNT, STATIC_SAMPLES.length) },

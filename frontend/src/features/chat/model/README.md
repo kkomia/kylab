@@ -74,7 +74,14 @@ renderPlainMarkdown(text) // 只读：不挂复制 / 下载按钮（文件预览
 - 代码高亮用的是 highlight.js 的类名（`hljs` / `hljs-keyword`…），要上色得引一份主题
   （或按《前端设计规范》自己写 `--hljs-*` 到类名的映射）；
 - 这一层**不引任何 CSS**，class 名与旧实现完全一致（`md-p` / `md-h2` / `md-ul` /
-  `md-code` / `md-table-block` / `md-cite` …），旧样式表可以直接搬。
+  `md-code` / `md-table-block` / `md-cite` …）。**这一族类名的样式现在在
+  `ui/chat.css`**（v0.28 补齐）：迁移时旧样式表没跟着搬，于是 `md-p` 是 `margin: 0`、
+  `md-ul` 连条目符号都没有（Tailwind 的 preflight 把 `ul/ol` 的符号也去掉了）——
+  长回答读成一整块文字墙，列表退化成几行普通文字。取值与知识库那份
+  （`knowledge.css` 的 `.kb-md-*`）同一套口径，两页之间不该有两种段距。
+- `citeFallback`（`Answer` 的入参）给的是"对不上出处的编号"那句说明：给了就把那些
+  编号渲染成**不可点**的虚线标记（`md-cite-plain` + `title`），没给就原样留着。
+  对话页只在**这一轮确实跑过联网搜索**时给（见 `turns.ts` 的 `usedWebSearch`）。
 
 ---
 

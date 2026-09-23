@@ -208,6 +208,54 @@ describe('renderAnswerWithCitations', () => {
     )
   })
 
+  /**
+   * **联网那一档**（v0.28，第二批评审 A6）。
+   *
+   * 联网搜索的返回本身带编号（后端 `_web_search` 的 `[1] 标题 / 网址 / 摘要`），
+   * 但它**不是出处**：没有文档名、没有页码、也不在检索结果里。所以那些编号既不能
+   * 接成"点开看原文"的徽标（点了没有实体可去），也不该继续做裸数字——
+   * 给一枚**有说明的非链接**：看得出它不归知识库那一路管，说明指向过程面板。
+   */
+  describe('对不上的编号：给一句说明的非链接（联网那一档）', () => {
+    const fallback = { title: '联网搜索结果，见过程面板' }
+
+    it('做成 span + title，而不是可点的徽标（没有对应实体就不装作有）', () => {
+      const markup = html(
+        createElement(Answer, { text: '据搜索结果[6][2]', citeFallback: fallback }),
+      )
+
+      expect(markup).toContain('md-cite-plain')
+      expect(markup).toContain('title="联网搜索结果，见过程面板"')
+      // 不可点：没有 data-cite-index（旧的事件委托接不到它）、不是按钮、不进 tab 序
+      expect(markup).not.toContain('data-cite-index')
+      expect(markup).not.toContain('role="button"')
+      expect(markup).not.toContain('tabindex')
+      expect(markup).not.toContain('<a ')
+    })
+
+    it('真有出处的编号照旧是可点徽标，两者混在一组里都不丢', () => {
+      const markup = html(
+        createElement(Answer, {
+          text: '混合[1,9]',
+          sources,
+          citeFallback: fallback,
+        }),
+      )
+
+      // [1] 有出处 → 可点徽标；[9] 没有 → 非链接（但字还在）
+      expect(markup).toContain('data-cite-index="1"')
+      expect(markup).toContain('md-cite-plain')
+      expect(markup).toContain('[9]')
+    })
+
+    it('没给说明时行为不变：对不上的编号原样留着（不猜它从哪来）', () => {
+      const markup = html(createElement(Answer, { text: '凭空引用[7]', sources }))
+
+      expect(markup).toContain('[7]')
+      expect(markup).not.toContain('md-cite-plain')
+    })
+  })
+
   it('模型写进 title 的引号/尖括号被转义，不能逃出属性', () => {
     const markup = html(
       renderAnswerWithCitations('见[1]', [

@@ -98,25 +98,24 @@ type CapTab = (typeof CAP_TABS)[number]['value']
  * 分区导航（技能 / 插件 / 插件包）——这一页唯一的导航，当前档必须一眼看得出来。
  *
  * 语义与键盘交给 `@/ui/tabs`（Radix）：`role="tablist"` / `role="tab"`、`aria-selected`、
- * 左右方向键 + roving tabindex 都是它给的。
+ * 左右方向键 + roving tabindex 都是它给的。**视觉也交给它**：槽用 `--bg-subtle`、
+ * 当前项用 `--bg-surface` 靠底色差表示选中（原语自带的
+ * `data-[state=active]:bg-surface` / `data-[state=active]:text-text-primary`）。
  *
- * **当前态的视觉垫在内层 `span` 上，不在触发按钮上**——这是被一条全局规则逼出来的写法：
- * `tokens.css` 里那条**未分层**的 `button { padding: 0; background: none; color: inherit;
- * font: inherit; border: none }` 按 CSS 的分层规则**压过 `@layer utilities` 里的全部工具类**
- * （未分层 > 分层，与优先级无关）。实测三个页签因此渲染成一串纯文本：`px-3` 归零、
- * `data-[state=active]:bg-surface` 不生效，两档截图逐像素相同（评审 G1）。
- * `span` 不在那条规则的范围里，所以把分段的白底/字色/内边距放在它上面。
- * 等那条归零规则收进 `@layer base`（令牌批次），这几层 span 可以收回触发按钮本身。
+ * 这里一度在触发按钮里**再垫一层 `span`** 画当前态：当时 `tokens.css` 的元素重置
+ * 还没收进 `@layer base`，那条未分层的 `button { padding: 0; background: none; … }`
+ * 压过了 `@layer utilities` 里的全部工具类（未分层 > 分层，与优先级无关），
+ * 于是 `px-3` 归零、白底不生效，三个页签渲染成一串纯文本（评审 G1）。
+ * 根因修好（`tokens.css` §元素重置已入 `@layer base`）之后那层垫法已删——
+ * 现在两档的差别就是**原语自己**画出来的，与任务页/记忆页同一个形状。
  */
 function CapabilityTabs({ value, onChange }: { value: CapTab; onChange: (next: CapTab) => void }) {
   return (
     <Tabs value={value} onValueChange={(next) => onChange(next as CapTab)}>
-      <TabsList aria-label="能力" className="h-9 p-0.5">
+      <TabsList aria-label="能力">
         {CAP_TABS.map((item) => (
-          <TabsTrigger key={item.value} value={item.value} className="group/tab h-8">
-            <span className="flex h-7 items-center rounded-control px-3 text-[length:var(--text-meta-size)] font-medium whitespace-nowrap text-text-secondary transition-colors group-hover/tab:text-text-primary group-data-[state=active]/tab:bg-surface group-data-[state=active]/tab:text-text-primary">
-              {item.label}
-            </span>
+          <TabsTrigger key={item.value} value={item.value}>
+            {item.label}
           </TabsTrigger>
         ))}
       </TabsList>
@@ -504,55 +503,64 @@ export function CapabilitiesPage() {
             />
           )}
 
+          {/* 技能卡是**紧凑网格**（评审 G2）：一列 130px 大卡时，900px 的屏只能看到 5 张，
+              而每张卡上那三行英文原文读不完就被截断——密度低、重点也看不出来。
+              现在每张卡只回答"叫什么、干什么、能不能用"，其余进详情弹窗（点名字打开）。 */}
           {visibleSkills.length > 0 && (
-            <ul className="m-cards">
+            <ul className="grid grid-cols-1 gap-[var(--space-2-5)] sm:grid-cols-2 xl:grid-cols-3">
               {visibleSkills.map((skill) => (
-                <li key={skill.name} className="m-card">
-                  <span className="m-card-icon">
-                    <Sparkles size={18} />
+                <li
+                  key={skill.name}
+                  className="flex items-start gap-[var(--space-2-5)] rounded-[var(--radius-row)] border border-[var(--border-hairline)] bg-surface px-[var(--space-3)] py-[var(--space-2-5)]"
+                >
+                  <span className="pt-[var(--space-0-5)] text-text-tertiary" aria-hidden="true">
+                    <Sparkles size={16} />
                   </span>
-                  <div className="m-card-body">
-                    <button
-                      type="button"
-                      className="m-card-title"
-                      onClick={() => void openSkill(skill)}
-                    >
-                      {skill.name}
-                    </button>
-                    {/* 中文优先（v0.28）：技能描述基本都是英文，而这一页是给中文用户看的 */}
-                    <p className="m-card-desc">
-                      {skill.summary || skill.description || '（没有描述）'}
-                    </p>
-                    <div className="m-card-meta">
-                      {/* 来源那一行**要说得出"从哪儿来的"**：市场装的写仓库名，
-                          而这件事同时决定了它能不能在这里卸载 */}
-                      <Badge variant={isFromMarket(skill) ? 'default' : 'secondary'}>
-                        {sourceLabelOf(skill)}
-                      </Badge>
-                      {/* 「被丢弃」与「被拦下」是两件事：前者是 frontmatter 不合规
-                          （缺 name/description、描述超长），整个技能不加载；
-                          后者是能用但这一轮不给模型看。标签分开写，理由在下面那段里 */}
+                  <div className="flex min-w-0 flex-1 flex-col gap-[var(--space-0-5)]">
+                    <div className="flex min-w-0 items-center gap-[var(--space-2)]">
+                      {/* 名字（技能标识，通常是目录名）是卡上唯一可点的东西：整张卡不做成
+                          按钮，否则「复制名字」「选中摘要」这些基本操作都会变得别扭 */}
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 truncate text-left text-[length:var(--text-meta-size)] font-medium text-text-primary hover:text-accent"
+                        onClick={() => void openSkill(skill)}
+                      >
+                        {skill.name}
+                      </button>
+                      {/*
+                        「被丢弃」与「被拦下」是两件事：前者是 frontmatter 不合规
+                        （缺 name/description、描述超长），整个技能不加载；
+                        后者是能用但这一轮不给模型看。标签分开写，理由在下面那行里。
+                        能用的也标一下：同一列里"哪些不算数"要一眼扫得出来。
+                      */}
                       {skill.discarded ? (
                         <Badge variant="warning">
                           <AlertCircle size={12} />
                           已丢弃
                         </Badge>
+                      ) : skill.used_by_prompt ? (
+                        <Badge variant="secondary">可用</Badge>
                       ) : (
-                        !skill.used_by_prompt && (
-                          <Badge variant="warning">
-                            <AlertCircle size={12} />
-                            未进提示词
-                          </Badge>
-                        )
+                        <Badge variant="warning">
+                          <AlertCircle size={12} />
+                          未进提示词
+                        </Badge>
                       )}
                     </div>
+                    {/* 中文优先（v0.28）：技能描述基本都是英文，而这一页是给中文用户看的。
+                     **一行**，多的部分进详情弹窗——卡片的宽度不该由最长的那条描述决定 */}
+                    <p className="truncate text-[length:var(--text-micro-size)] text-text-secondary">
+                      {skill.summary || skill.description || '（没有描述）'}
+                    </p>
                     {/* 被拦下的技能**要显示理由**：静默藏掉会让人以为技能没装上 */}
                     {skill.flagged.length > 0 && (
-                      <ul className="m-flags">
+                      <p className="flex flex-wrap gap-x-[var(--space-2)] text-[length:var(--text-micro-size)] text-status-warning">
                         {skill.flagged.map((reason, at) => (
-                          <li key={at}>{reason}</li>
+                          <span key={at} className="truncate">
+                            {reason}
+                          </span>
                         ))}
-                      </ul>
+                      </p>
                     )}
                   </div>
                 </li>
@@ -741,14 +749,30 @@ export function CapabilitiesPage() {
                   ))}
                 </ul>
               )}
-              {/* 来源与卸载入口：从市场装的技能要能在这里卸掉，
-                  而"从哪儿装的"是用户决定要不要卸的依据 */}
-              {skillDetail && isFromMarket(skillDetail) && (
+              {/* 来源：卡片上已经不摆它了（那是每张卡都重复的同一条噪音，评审 G2），
+                  但"从哪儿来的"仍要说得出——它同时决定了能不能在这里卸载 */}
+              {skillDetail && (
                 <p className="m-detail-meta">
-                  <Badge variant="secondary">{sourceLabelOf(skillDetail)}</Badge>
-                  <span className="text-meta">
-                    从市场装的，可以在这里卸载（随代码发布的那些卸不掉）
-                  </span>
+                  <Badge variant={isFromMarket(skillDetail) ? 'default' : 'secondary'}>
+                    {sourceLabelOf(skillDetail)}
+                  </Badge>
+                  {isFromMarket(skillDetail) && (
+                    <span className="text-meta">
+                      从市场装的，可以在这里卸载（随代码发布的那些卸不掉）
+                    </span>
+                  )}
+                </p>
+              )}
+              {/* 完整描述（卡片上只有一行，长的进这里）：中文简介优先，
+                  它下面是 `description`——那段是模型判断"何时该用"的原文 */}
+              {skillDetail && (skillDetail.summary || skillDetail.description) && (
+                <p className="mb-[var(--space-3)] text-[length:var(--text-meta-size)] leading-[var(--line-prose)] text-text-secondary">
+                  {skillDetail.summary || skillDetail.description}
+                </p>
+              )}
+              {skillDetail?.summary && skillDetail.description && (
+                <p className="mb-[var(--space-3)] text-[length:var(--text-micro-size)] leading-[var(--line-prose)] text-text-tertiary">
+                  {skillDetail.description}
                 </p>
               )}
               {/* 正文按 markdown 渲染（复用知识域的渲染件）：`SKILL.md` 是文档，

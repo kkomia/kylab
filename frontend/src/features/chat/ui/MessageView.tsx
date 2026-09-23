@@ -13,6 +13,7 @@ import {
   degradedReason,
   hasToolCallMarkup,
   replyArtifacts,
+  usedWebSearch,
   wasDegraded,
   type Turn,
 } from '@/features/chat/model/turns'
@@ -75,6 +76,14 @@ function AssistantMessage({
   const saved = chat.savedTurns.includes(turnIndex)
   const degraded = !message.streaming && wasDegraded(message)
   const rawTools = hasToolCallMarkup(message.text)
+  /**
+   * 正文里对不上出处的编号怎么画（A6）。
+   *
+   * 这一轮**跑过联网搜索**时给一句说明：那些编号指的就是过程面板里那次搜索的返回
+   * （`web_search` 的返回本身是 `[1] … [N]` 带编号的，见 `usedWebSearch`）。
+   * 没跑过就什么都不说——模型凭空写的编号，我们不给它编一个来源。
+   */
+  const citeFallback = usedWebSearch(message) ? { title: '联网搜索结果，见过程面板' } : undefined
 
   return (
     <div className="flex items-start gap-[var(--space-3)]">
@@ -115,6 +124,7 @@ function AssistantMessage({
                 className="mt-[var(--space-3)] max-w-[var(--measure)] text-[length:var(--text-body-size)] leading-[var(--line-prose)] text-[var(--text-primary)]"
                 text={message.text}
                 sources={message.sources}
+                citeFallback={citeFallback}
                 onCite={(sourceIndex) => chat.revealSource(turnIndex, sourceIndex)}
               />
             )}

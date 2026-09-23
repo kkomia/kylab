@@ -467,15 +467,29 @@ const CITE_RE = /\[(\d+(?:\s*[,，]\s*\d+)*)\]/g
  * 只替换**确实存在对应出处**的编号：模型偶尔会写 `[7]` 而检索只给了 6 条，
  * 那种天上掉下来的编号必须原样留着——做成一个点了没反应的徽标比不替换更糟。
  * 组里有一个对不上就整组不换（`[3, 9]` 换一半会把原意读歪）。
+ *
+ * `options.fallback` 是**给"对不上的编号"的一句说明**（v0.28，第二批评审 A6）。给了它
+ * 之后，对不上的编号会渲染成一枚**不可点**的虚线标记，`title` 就是那句话；没给则照旧
+ * 原样留着。两条边界：**不伪造出处**（联网结果没有文档名/页码，做不成出处），
+ * **不把没有对应实体的编号做成可点**（点了没反应的徽标比不替换更糟）。
  */
-function rehypeCitations(options: { sources: readonly CitationSource[] }) {
+export interface CiteFallback {
+  /** 悬停说明，例如「联网搜索结果，见过程面板」。 */
+  title: string
+}
+
+function rehypeCitations(options: { sources: readonly CitationSource[]; fallback?: CiteFallback }) {
   const known = new Map(options.sources.map((source) => [source.index, source]))
   return (tree: HastRoot): void => {
-    mapTextChildren(tree, [], (value) => citationPieces(value, known))
+    mapTextChildren(tree, [], (value) => citationPieces(value, known, options.fallback))
   }
 }
 
-function citationPieces(value: string, known: Map<number, CitationSource>): HastNode[] | null {
+function citationPieces(
+  value: string,
+  known: Map<number, CitationSource>,
+  fallback?: CiteFallback,
+): HastNode[] | null {
   CITE_RE.lastIndex = 0
   if (!CITE_RE.test(value)) return null
   CITE_RE.lastIndex = 0
@@ -489,9 +503,13 @@ function citationPieces(value: string, known: Map<number, CitationSource>): Hast
         .split(/[,，]/)
         .map((item) => Number(item.trim()))
         .filter((item) => Number.isInteger(item))
-      // 组里有一个对不上就整组不换：`[3, 9]` 换一半会把原意读歪
-      if (numbers.length === 0 || numbers.some((item) => !known.has(item))) return [text(part)]
-      return numbers.map((item) => citationChip(known.get(item)!))
+      if (numbers.length === 0) return [text(part)]
+      // 没有兜底说明时：组里有一个对不上就整组不换（`[3, 9]` 换一半会把原意读歪）
+      if (!fallback && numbers.some((item) => !known.has(item))) return [text(part)]
+      // 走到这里：要么每个编号都有出处，要么有兜底说明接住对不上的那些
+      return numbers.map((item) =>
+        known.has(item) ? citationChip(known.get(item)!) : plainCitationChip(item, fallback!),
+      )
     })
 }
 
@@ -545,6 +563,25 @@ function citationChip(source: CitationSource): HastElement {
         text(shortDocumentName(source.document_name)),
       ]),
     ],
+  )
+}
+
+/**
+ * **对不上出处的编号**（v0.28）：一枚不可点的标记 + 一句说明。
+ *
+ * 为什么不做成链接：它背后没有实体（联网搜索的结果不是"出处"——没有文档名、没有页码、
+ * 也不在检索结果里），点开只能是空动作。做成 `<span>` 而不是 `<a role="button">`，
+ * 键盘与读屏都不会把它当成控件；`title` 里那句"见过程面板"才是它给出的**下一步**
+ * （过程面板里确实列着那一次的搜索返回，编号就在里面）。
+ */
+function plainCitationChip(index: number, fallback: CiteFallback): HastElement {
+  return element(
+    'span',
+    {
+      className: ['md-cite', 'md-cite-plain'],
+      title: fallback.title,
+    },
+    [text(`[${index}]`)],
   )
 }
 
@@ -989,13 +1026,19 @@ const PLAIN_COMPONENTS = {
 interface RenderOptions {
   sources?: readonly CitationSource[]
   plain?: boolean
+  /** 对不上的编号怎么画（给了才画成"有说明的非链接"）。 */
+  fallback?: CiteFallback
 }
 
 function renderMarkdown(text: string, options: RenderOptions = {}): ReactNode {
   if (!text) return null
   const sources = options.sources ?? []
   const plain = options.plain === true
-  const key = `${text}\u0000${sourcesSignature(sources)}\u0000${plain ? 'plain' : 'rich'}`
+  const fallback = options.fallback
+  // 说明文案进缓存键：同一段正文在两轮里（一轮有联网、一轮没有）输出不同
+  const key = `${text}\u0000${sourcesSignature(sources)}\u0000${plain ? 'plain' : 'rich'}\u0000${
+    fallback?.title ?? ''
+  }`
   const cached = ELEMENT_CACHE.get(key)
   if (cached !== undefined) return cached
 
@@ -1006,12 +1049,13 @@ function renderMarkdown(text: string, options: RenderOptions = {}): ReactNode {
     rehypeTrimBlocks,
     rehypeBareUrls,
   ]
-  // 出处那一步要参数，所以单独推：它只在有出处时才挂（没有就不再扫一遍文本）
-  if (sources.length) {
-    const citations: [typeof rehypeCitations, { sources: readonly CitationSource[] }] = [
-      rehypeCitations,
-      { sources },
-    ]
+  // 出处那一步要参数，所以单独推：只在**有出处、或有兜底说明**时才挂
+  // （两样都没有就不再扫一遍文本——扫描是逐文本节点的，没必要白跑）
+  if (sources.length || fallback) {
+    const citations: [
+      typeof rehypeCitations,
+      { sources: readonly CitationSource[]; fallback?: CiteFallback },
+    ] = [rehypeCitations, { sources, fallback }]
     rehypePlugins.push(citations)
   }
   rehypePlugins.push(
@@ -1121,6 +1165,12 @@ export interface AnswerProps extends MarkdownActions {
   text: string
   /** 出处：给了就渲染 `[N]` 徽标。 */
   sources?: readonly CitationSource[]
+  /**
+   * 对不上的编号怎么画（v0.28）。给了它就渲染成**有说明的非链接**，
+   * 没给就照旧原样留在正文里——调用方只在**真的知道那些编号从哪来**时才给
+   * （对话页：这一轮确实跑过联网搜索，过程面板里列着那几次的返回）。
+   */
+  citeFallback?: CiteFallback
   /** 只读（文件预览）：不挂复制 / 下载按钮。 */
   plain?: boolean
   /** 挂在最外层容器上的类名（对话页用它接自己的排版）。给了才包一层 `div`。 */
@@ -1137,6 +1187,7 @@ export interface AnswerProps extends MarkdownActions {
 export function Answer({
   text,
   sources = [],
+  citeFallback,
   plain = false,
   className,
   onOpenSource,
@@ -1149,7 +1200,7 @@ export function Answer({
     () => ({ onOpenSource, onCopyCode, onCopyTable, onDownloadTable }),
     [onOpenSource, onCopyCode, onCopyTable, onDownloadTable],
   )
-  const content = renderMarkdown(text, { sources, plain })
+  const content = renderMarkdown(text, { sources, plain, fallback: citeFallback })
   if (!content) return null
   const filled = createElement(ActionsContext.Provider, { value: actions }, content)
   if (!className) return filled

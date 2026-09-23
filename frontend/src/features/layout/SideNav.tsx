@@ -53,7 +53,13 @@
  * 3. **设置入口只给管理员**，且放在账号的二级菜单里：退出登录低频且不可逆、
  *    主题属于"这台机器怎么显示"，摊在页脚上都不合适；
  * 4. **会话行的「⋯」与节标题右侧的加号都是"悬停才显形、但始终可 Tab 到"**
- *    （规范 §8 禁止"只有 hover 才够得着"的关键操作）。
+ *    （规范 §8 禁止"只有 hover 才够得着"的关键操作）；
+ * 5. **"我在哪"整栏只有一种样子**：当前会话 / 当前项目 / 当前导航项都加
+ *    `--bg-selected` 底（= `Fills-F2`，规范 §7 的取值：中性 alpha 填充，不用品牌色底、
+ *    也没有左侧指示条），并各自带上 `aria-current="page"`。会话行静止态是**正文色**
+ *    （项目下的那层降一档灰）：会话行是列表项，不是"点了会跳走的链接"。
+ *    **当前会话是原先最容易丢的一项**——它挂着「⋯」菜单与预取，却一直没有任何
+ *    "就是这条"的标记（界面评审 C13）。
  *
  * ## 全局快捷键（`chat.new` / `layout.toggleSidebar`）
  *
@@ -70,7 +76,7 @@
  * 于是"按 Ctrl+B"和"点那颗折叠按钮"最终落到同一个状态上。
  */
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router'
+import { Link, useLocation, useMatch, useNavigate, useSearchParams } from 'react-router'
 
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -124,6 +130,23 @@ const NAV_ROW =
 /** 会话 / 项目那些行：同高同圆角，只是没有图标位。 */
 const SIDE_ROW =
   'ly-side-row box-border flex h-[var(--nav-height)] w-full items-center gap-2 rounded-[var(--radius-nav)] px-1.5 text-left text-[length:var(--text-meta-size)] leading-5 text-text-primary no-underline transition-colors hover:bg-[var(--bg-hover)]'
+
+/**
+ * 会话 / 项目行的类名。
+ *
+ * **当前那一行**（正开着的会话、正停着的项目）加 `--bg-selected` 底——与主导航的
+ * 当前项同一个取值，于是"侧栏里的当前位置"整栏只有一种样子（规范 §7：当前项用
+ * 中性 alpha 填充，不用品牌色底、也没有左侧指示条）。
+ * 项目下的会话默认降一档灰（层级靠缩进 + 色，不靠加边框），**当前那条提回正文色**：
+ * 选中底要在一眼扫过去时读得出来，降档只该作用在"不是这里"的行上。
+ */
+function sideRow({
+  sub = false,
+  current = false,
+}: { sub?: boolean; current?: boolean } = {}): string {
+  if (current) return `${SIDE_ROW}${sub ? ' pl-6' : ''} bg-[var(--bg-selected)]`
+  return sub ? `${SIDE_ROW} pl-6 text-text-secondary` : SIDE_ROW
+}
 
 /** 节标题行上那个动作按钮：默认隐形（`.ly-side-add`），悬停/聚焦才显形。 */
 const SIDE_ADD =
@@ -191,11 +214,14 @@ const KNOWLEDGE_GROUP = {
 function ConversationRow({
   item,
   sub = false,
+  current = false,
   onChanged,
 }: {
   item: ConversationSummary
   /** 项目下的会话：缩进一级、字色降一档（层级靠缩进 + 色，不靠加边框）。 */
   sub?: boolean
+  /** 就是当前打开的那条（`/chat/:id`）：加选中底，并标进语义里。 */
+  current?: boolean
   onChanged?: () => void
 }) {
   const title = item.title || '未命名对话'
@@ -204,8 +230,10 @@ function ConversationRow({
     <div className="ly-side-row-wrap">
       <Link
         to={`/chat/${item.id}`}
-        className={sub ? `${SIDE_ROW} pl-6 text-text-secondary` : SIDE_ROW}
+        className={sideRow({ sub, current })}
         title={title}
+        /* 当前那条会话标在语义上（辅助技术与用例都靠它读） */
+        aria-current={current ? 'page' : undefined}
         /* 划过就预取正文（旧 `SideNav.vue` 的悬停预取口径）**并把对话页的代码拉下来**：
            点进去既不必等往返、也不必等 chunk */
         onMouseEnter={() => {
@@ -232,6 +260,21 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const location = useLocation()
   const navigate = useNavigate()
   const { collapsed, toggleSidebar } = useSidebar()
+  const [searchParams] = useSearchParams()
+
+  /**
+   * 当前打开的是哪条会话（`/chat/<id>`；裸 `/chat` 与 `/chat?new=1` 没有 id）。
+   *
+   * 走 `useMatch` 而不是自己切 pathname：参数由路由解码，也不必再写一份
+   * `/chat/` 前缀判断（那份判断迟早会和路由表分叉）。
+   */
+  const conversationId = useMatch('/chat/:conversationId')?.params.conversationId ?? null
+  /**
+   * 当前停在哪一页工作区（`/workspaces?focus=<id>`）。
+   * 只在工作区那一页上算：`?focus=` 是那一页的定位参数，别的地方带着它不算数。
+   */
+  const onWorkspaces = location.pathname === '/workspaces'
+  const focusedWorkspaceId = onWorkspaces ? searchParams.get('focus') : null
 
   const conversations = useConversationStore((state) => state.items)
   const loadConversations = useConversationStore((state) => state.load)
@@ -295,8 +338,16 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
     return exact ? location.pathname === to : location.pathname.startsWith(to)
   }
 
+  /**
+   * 「知识库」这一组里的当前项。
+   *
+   * **按组里那三个子项自己算**（`isActive`），外加库详情 / Wiki（`/kb/:id`，它们不在
+   * 侧栏里单列）——手写一条条前缀的那一版漏了 `/` 与 `/tasks`：站在概览或任务中心时
+   * 整组一声不响（默认又是收起的），用户看不出自己在哪一节里。
+   */
   const knowledgeActive =
-    location.pathname.startsWith('/knowledge-bases') || location.pathname.startsWith('/kb/')
+    KNOWLEDGE_GROUP.children.some((item) => isActive(item.to, item.exact)) ||
+    location.pathname.startsWith('/kb/')
 
   // 会话只有**一份**平铺清单，分组在这里做（两处各存一份的话，
   // "把某条会话挪进工作区"就得同时改两个地方）
@@ -454,7 +505,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                     aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
                     className={
                       isActive(item.to, item.exact)
-                        ? 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control bg-[var(--bg-hover)] px-2 text-[length:var(--text-meta-size)] text-text-primary no-underline'
+                        ? 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control bg-[var(--bg-selected)] px-2 text-[length:var(--text-meta-size)] text-text-primary no-underline'
                         : 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control px-2 text-[length:var(--text-meta-size)] text-text-secondary no-underline transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary'
                     }
                   >
@@ -517,9 +568,16 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
             {workspaces.map((workspace) => (
               <Fragment key={workspace.id}>
                 <li>
+                  {/* 项目行也是"能停住的一页"（`/workspaces?focus=<id>`）：停在这一页上时
+                      它就该像导航项一样亮起来——项目节此前一整片都没有当前项。 */}
                   <button
                     type="button"
-                    className={`${SIDE_ROW} cursor-pointer border-0 bg-transparent`}
+                    className={
+                      workspace.id === focusedWorkspaceId
+                        ? `${SIDE_ROW} cursor-pointer border-0 bg-[var(--bg-selected)]`
+                        : `${SIDE_ROW} cursor-pointer border-0 bg-transparent`
+                    }
+                    aria-current={workspace.id === focusedWorkspaceId ? 'page' : undefined}
                     title={workspace.root_path}
                     onClick={() => void navigate(`/workspaces?focus=${workspace.id}`)}
                   >
@@ -536,7 +594,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                 </li>
                 {shownConversations(workspace.id).map((item) => (
                   <li key={item.id}>
-                    <ConversationRow item={item} sub />
+                    <ConversationRow item={item} sub current={item.id === conversationId} />
                   </li>
                 ))}
                 {/* 超出上限就先收起，点「展开」再看——一屏放不下的清单会把下面那一节推走 */}
@@ -563,9 +621,16 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
               </li>
             ) : (
               <li>
+                {/* 「全部项目」是这一节的收尾入口（`/workspaces` 本身）：停在那一页上就亮它，
+                    带着 `?focus=` 时亮的是上面那个具体的项目行——两处互斥，不会同时亮。 */}
                 <button
                   type="button"
-                  className={`${SIDE_ROW} cursor-pointer border-0 bg-transparent text-text-tertiary`}
+                  className={
+                    onWorkspaces && !focusedWorkspaceId
+                      ? `${SIDE_ROW} cursor-pointer border-0 bg-[var(--bg-selected)]`
+                      : `${SIDE_ROW} cursor-pointer border-0 bg-transparent text-text-tertiary`
+                  }
+                  aria-current={onWorkspaces && !focusedWorkspaceId ? 'page' : undefined}
                   onClick={() => void navigate('/workspaces')}
                 >
                   全部项目
@@ -610,7 +675,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
           <ul className="m-0 list-none p-0" hidden={!chatsOpen}>
             {looseConversations.slice(0, CHAT_PREVIEW).map((item) => (
               <li key={item.id}>
-                <ConversationRow item={item} />
+                <ConversationRow item={item} current={item.id === conversationId} />
               </li>
             ))}
             {looseConversations.length === 0 && (

@@ -393,11 +393,16 @@ export function MemoryPage() {
       ) : (
         <>
           {/*
-            页签的**当前态**：与 `misc/tasks/TasksPage.tsx` 是同一种处理（同一个 `@/ui/tabs`
-            原语、同一形状、同名的 `data-slot` 钩子）。底与字写在按钮**内部**的 span 上，
-            因为 `tokens.css` 那条无 `@layer` 的 `button { background: none; font: inherit }`
-            会压过 `@layer utilities` 里的 `bg-*` / `font-*`——原语自带的
-            `data-[state=active]:bg-surface` 正是这样被吃掉的（评审 M5）。
+            页签的**当前态交给 `@/ui/tabs` 自己**（与 `misc/tasks/TasksPage.tsx` 同一个原语、
+            同一个形状）：槽是 `--bg-subtle`、当前项是 `--bg-surface`，靠原语自带的
+            `data-[state=active]:bg-surface` 画出来。
+
+            这里一度在按钮里**再垫一层 span** 画白底（评审 M5 时 `px-3` 与
+            `data-[state=active]:bg-surface` 都渲染不出来）。根因不在原语：当时
+            `tokens.css` 的元素重置没进 `@layer base`，那条未分层的
+            `button { padding: 0; background: none; font: inherit }` 压过了
+            `@layer utilities` 里的全部工具类（未分层 > 分层，与优先级无关）。
+            根因已修（`tokens.css` §元素重置收进 `@layer base`），垫层随之删掉。
           */}
           <Tabs
             value={tab}
@@ -407,40 +412,18 @@ export function MemoryPage() {
               if (nextTab === 'graph') setGraphWanted(true)
             }}
           >
-            <TabsList aria-label="记忆视图" className="h-9 p-0.5">
-              {tabItems.map((item) => {
-                const current = item.value === tab
-                return (
-                  <TabsTrigger key={item.value} value={item.value} className="h-8">
-                    <span
-                      aria-hidden="true"
-                      data-slot="segment-current"
-                      className={
-                        current
-                          ? 'absolute inset-0 rounded-control bg-surface transition-opacity'
-                          : 'absolute inset-0 rounded-control opacity-0 transition-opacity'
-                      }
-                    />
-                    {/* `px-3` 与原语的 `px-3 py-1` 同级——它和 `background` 死在同一条重置上，
-                        少了它两个分段会贴着；计数放进同一个 span，间距仍由 `gap-1.5` 给 */}
-                    <span
-                      data-slot="segment-label"
-                      className={
-                        current
-                          ? 'relative inline-flex items-center gap-1.5 px-3 text-[length:var(--text-meta-size)] font-medium text-text-primary'
-                          : 'relative inline-flex items-center gap-1.5 px-3 text-[length:var(--text-meta-size)] text-text-secondary'
-                      }
-                    >
-                      {item.label}
-                      {item.count !== undefined && (
-                        <span className="text-[length:var(--text-micro-size)] text-text-tertiary tabular-nums">
-                          {item.count}
-                        </span>
-                      )}
+            <TabsList aria-label="记忆视图">
+              {tabItems.map((item) => (
+                <TabsTrigger key={item.value} value={item.value}>
+                  {item.label}
+                  {/* 文件数仍挂在那一档上；间距由原语触发按钮自己的 `gap-1.5` 给 */}
+                  {item.count !== undefined && (
+                    <span className="text-[length:var(--text-micro-size)] text-text-tertiary tabular-nums">
+                      {item.count}
                     </span>
-                  </TabsTrigger>
-                )
-              })}
+                  )}
+                </TabsTrigger>
+              ))}
             </TabsList>
           </Tabs>
 

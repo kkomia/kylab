@@ -15,7 +15,11 @@ import { useCallback } from 'react'
 
 import { copyText } from '@/lib/clipboard'
 import type { ChatSource } from '@/api/chat'
-import { AnswerMarkdown, type MarkdownTable } from '@/features/chat/model/markdown'
+import {
+  AnswerMarkdown,
+  type CiteFallback,
+  type MarkdownTable,
+} from '@/features/chat/model/markdown'
 
 import { notifyError, notifyWarning } from '../runtime/notify'
 
@@ -24,6 +28,12 @@ export interface AnswerTextProps {
   sources: ChatSource[]
   /** 点行内徽标 `[n]`：展开过程面板 → 滚到那一条出处 → 闪一下。 */
   onCite: (sourceIndex: number) => void
+  /**
+   * 查不到对应出处的编号怎么画（v0.28）。这一轮跑过联网搜索时给一句说明，
+   * 那些编号就渲染成"有说明的非链接"而不是裸数字（见 `model/markdown.tsx` 的
+   * `CiteFallback`）。没给就照旧原样留着。
+   */
+  citeFallback?: CiteFallback
   className?: string
 }
 
@@ -43,7 +53,7 @@ function toCsv(table: MarkdownTable): string {
   return rows.join('\r\n')
 }
 
-export function AnswerText({ text, sources, onCite, className }: AnswerTextProps) {
+export function AnswerText({ text, sources, onCite, citeFallback, className }: AnswerTextProps) {
   const copyBlock = useCallback(async (body: string, what: string) => {
     if (await copyText(body)) return
     // 连兜底那条路都没成：如实说，别假装复制成功
@@ -65,10 +75,13 @@ export function AnswerText({ text, sources, onCite, className }: AnswerTextProps
   }, [])
 
   return (
-    <div data-testid="reply-text" className={className}>
+    // `md-body`：正文排版的根（段距 / 列表符号 / 小标题那几条在 `chat.css` 里）。
+    // 它只是**作用域**，不是布局——行宽与字号仍由调用方给的 `className` 说了算
+    <div data-testid="reply-text" className={`md-body ${className ?? ''}`}>
       <AnswerMarkdown
         text={text}
         sources={sources}
+        citeFallback={citeFallback}
         onOpenSource={onCite}
         onCopyCode={(code) => void copyBlock(code, '代码')}
         // 表格进剪贴板用**制表符分隔**而不是 CSV：粘进 Excel / 飞书表格时

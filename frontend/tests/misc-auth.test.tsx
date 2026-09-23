@@ -6,8 +6,9 @@
  * 2. 密码下限与后端 `MIN_PASSWORD_CHARS` 对齐，两次不一致要**在本地就拦住**；
  * 3. 登录成功后令牌立刻写进 `lib/session`（下一次请求就带上，不必刷新页面）。
  */
-import { screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/auth', () => ({
@@ -57,6 +58,15 @@ describe('登录页', () => {
     expect(screen.queryByLabelText('显示名')).not.toBeInTheDocument()
   })
 
+  it('品牌位是字标（与侧栏/欢迎态同一个），标题下没有解释性小字', async () => {
+    renderMisc(<LoginPage />)
+
+    // 字标用仓库里那个 `Logo`：可读名就是它自带的产品名
+    expect(await screen.findByRole('img', { name: 'KYLAB 知识库' })).toBeInTheDocument()
+    // 规范 §5.1：标题下那行"用管理员为你开通的账号登录。"已删
+    expect(screen.queryByText(/用管理员为你开通的账号登录/)).not.toBeInTheDocument()
+  })
+
   it('needs_setup 时变成首次设置：补显示名与确认密码，并在本地拦住两次不一致', async () => {
     statusMock.mockResolvedValue({ needs_setup: true })
 
@@ -96,6 +106,35 @@ describe('登录页', () => {
     expect(useSessionStore.getState().token).toBe('')
   })
 
+  it('登录失败时才说明"账号要管理员开通"（原来那行常驻说明搬到了这里）', async () => {
+    loginMock.mockRejectedValueOnce(new Error('用户名或密码不正确'))
+
+    renderMisc(<LoginPage />)
+    // 还没提交：这句话不该在页面上
+    expect(await screen.findByRole('heading', { name: '登录' })).toBeInTheDocument()
+    expect(screen.queryByText(/账号由管理员在设置里开通/)).not.toBeInTheDocument()
+
+    await userEvent.type(screen.getByLabelText('用户名'), 'admin')
+    await userEvent.type(screen.getByLabelText('密码'), 'whatever1')
+    await userEvent.click(screen.getByRole('button', { name: '登录' }))
+
+    expect(await screen.findByText(/账号由管理员在设置里开通/)).toBeInTheDocument()
+  })
+
+  it('首次设置（needs_setup）不背登录那套提示：导语仍在，错误里不出现"管理员开通"', async () => {
+    statusMock.mockResolvedValue({ needs_setup: true })
+
+    renderMisc(<LoginPage />)
+    expect(await screen.findByRole('heading', { name: '创建管理员账号' })).toBeInTheDocument()
+    expect(screen.getByText(/第一次使用：创建管理员账号即可进入/)).toBeInTheDocument()
+
+    await userEvent.type(screen.getByLabelText(/用户名/), 'admin')
+    await userEvent.click(screen.getByRole('button', { name: '创建并进入' }))
+
+    expect(await screen.findByText('请填写密码')).toBeInTheDocument()
+    expect(screen.queryByText(/账号由管理员在设置里开通/)).not.toBeInTheDocument()
+  })
+
   it('登录成功后令牌与账号立刻落进 session（下一次请求就带上新凭据）', async () => {
     loginMock.mockResolvedValue({
       token: 'kylab_st_xyz',
@@ -114,10 +153,28 @@ describe('登录页', () => {
 })
 
 describe('404', () => {
-  it('给出明确的出口（回到概览），而不是一片空白', () => {
+  it('一句标题 + 两个出口，不再有第二行同义标题', () => {
     renderMisc(<NotFoundPage />)
 
     expect(screen.getByRole('heading', { name: '页面不存在' })).toBeInTheDocument()
+    // 原来那句空态标题「没有找到这个地址」与页标题说同一件事：合并之后不再出现
+    expect(screen.queryByText('没有找到这个地址')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: '回到概览' })).toHaveAttribute('href', '/')
+    // 第二条出路：从哪儿点错的就退回哪儿
+    expect(screen.getByRole('button', { name: '返回上一页' })).toBeInTheDocument()
+  })
+
+  it('「返回上一页」真的退回上一个地址', async () => {
+    render(
+      <MemoryRouter initialEntries={['/', '/no-such-page']} initialIndex={1}>
+        <Routes>
+          <Route path="/" element={<div>概览页</div>} />
+          <Route path="*" element={<NotFoundPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: '返回上一页' }))
+    expect(await screen.findByText('概览页')).toBeInTheDocument()
   })
 })

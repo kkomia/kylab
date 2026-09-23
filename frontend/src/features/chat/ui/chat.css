@@ -1,0 +1,352 @@
+/**
+ * 对话页正文（回答的 Markdown）与过程面板里那几块的排版。
+ *
+ * **为什么要有这个文件**：渲染器（`model/markdown.tsx`）一直在发 `md-p` / `md-ul` /
+ * `md-h2` / `md-cite` 这一族类名，而 React 版**一份样式都没有**——旧 Vue 那张样式表
+ * 迁移时没搬过来。后果不是"少了一点装饰"，是排版散了：
+ *
+ * - 段落 `margin: 0`（Tailwind preflight 的 `p { margin: 0 }`）→ 长回答是一整块文字墙，
+ *   段与段之间没有任何间隔；
+ * - 列表连符号都没了（preflight 的 `ol, ul { list-style: none; padding: 0 }`）→
+ *   Markdown 的条目退化成"缩进都没有的连续几行"；
+ * - 小标题与正文同字号、同间距 → "文档优先"在回答里读不出来。
+ *
+ * **取值全部来自 `src/styles/tokens.css`**（间距只用 `--space-*` 阶梯、字号只用
+ * `--text-*`、圆角只用 `--radius-*`），并与知识库那一份（`knowledge.css` 的 `.kb-md-*`）
+ * **同一套口径**——同一份 Markdown 在两个页面里不该有两种段距。
+ *
+ * 两条工程约束：
+ * 1. **规则写在 `@layer components` 里**。层外的样式会压过 Tailwind 的
+ *    `@layer utilities`（与令牌那条同一条 CSS 规则，见 `tokens.css` 头部那段），
+ *    而这个文件里的元素恰恰可能被调用方加工具类（`AnswerText` 的 className 就落在
+ *    同一个容器上）。进 components 层，工具类仍然说了算；
+ * 2. **只认 `.md-*` 与 `.md-body` 作用域**：这一族类名只有对话页的 Markdown 渲染器
+ *    会发出来（文件预览自己有一套 `.kylab-md-*`），所以不会外溢到别的页面。
+ */
+
+@layer components {
+  /* ---------------------------------------------------------------- 正文骨架 */
+
+  /* 行宽上限由调用方给（`--measure`，见 `MessageView` 的 className），这里只管节奏 */
+  .md-body {
+    font-size: var(--text-body-size);
+    line-height: var(--line-prose);
+    color: var(--text-primary);
+  }
+
+  /* 首尾不残留外边距：回答下面紧接着就是「复制 / 存为笔记」那一行 */
+  .md-body > :first-child {
+    margin-top: 0;
+  }
+
+  .md-body > :last-child {
+    margin-bottom: 0;
+  }
+
+  /* ---------------------------------------------------------------- 段落 */
+
+  /*
+   * **间距的记法**：块级元素一律只写**下边距**，相邻两块之间的间隔由外边距折叠
+   * 取大者（同一块 `.md-body` 是块级容器，折叠照常发生）。这样"段与段"
+   * "列表与段""代码块与段"只有一处定义——每对相邻元素各写一条 `A + B` 规则的话，
+   * `ul` 后面跟 `p` 这种组合必然被漏掉（实测漏过一次：列表与下一段贴在一起）。
+   *
+   * **段落间距是这一批修改里最要紧的一条**：原先 `p` 是 `margin: 0`，
+   * 一段一段连着读下来是一整块文字墙（长回答尤其明显）。
+   */
+  .md-p {
+    margin: 0 0 var(--space-3);
+    white-space: pre-wrap;
+  }
+
+  /* ---------------------------------------------------------------- 小标题 */
+
+  /* 上距远大于下距：小标题属于**它下面那一段**，而不是上面那一段的结尾
+     （与上一块的 12px 折叠之后取 20px）。与知识库正文（`.kb-md-h`）同一组取值。 */
+  .md-h {
+    margin: var(--space-5) 0 var(--space-2);
+    font-size: var(--text-section-size);
+    font-weight: 600;
+    line-height: 1.4;
+    color: var(--text-primary);
+  }
+
+  /* 渲染器把 h1 夹到 h2、h5/h6 夹到 h4（见 `HEADING_CLASS`），所以这三档够用 */
+  .md-h4 {
+    font-size: var(--text-body-size);
+  }
+
+  /* ---------------------------------------------------------------- 列表 */
+
+  /*
+   * 符号必须**显式还原**：Tailwind 的 preflight 把 `ul/ol` 的符号一并去掉了
+   * （`list-style: none; padding: 0`），于是 Markdown 的有序/无序列表在界面上
+   * 只是"几行普通文字"，条目之间的层级与"这是第几步"全丢了。
+   * `padding-left` 在还原符号之后就是那条**悬挂缩进**：符号挂在文字左侧，
+   * 折行回到条目的左边界。知识库那份（`ul.kb-md-list`）踩过同一个坑。
+   */
+  .md-ul,
+  .md-ol {
+    margin: 0 0 var(--space-3);
+    padding-left: var(--space-5);
+  }
+
+  ul.md-ul {
+    list-style: disc;
+  }
+
+  ol.md-ol {
+    list-style: decimal;
+  }
+
+  /* 条目之间留半档：多行条目（回答里很常见）不给间距会连成一段 */
+  .md-ul > li + li,
+  .md-ol > li + li {
+    margin-top: var(--space-2);
+  }
+
+  /* 嵌套一层：符号换样式，间距收紧一档（内层列表不再各带一份下边距） */
+  .md-ul ul,
+  .md-ol ol,
+  .md-ul ol,
+  .md-ol ul {
+    margin: var(--space-1) 0 0;
+  }
+
+  ul.md-ul ul.md-ul {
+    list-style: circle;
+  }
+
+  /*
+   * GFM 的宽松列表会给条目里的文字包一层 `<p>`：那一层**不该再带下边距**——
+   * 条目之间的间隔由 `li + li` 管（8px），包一层段落就等于每条后面再多 12px，
+   * 列表会散成互不相干的行。条目内部的多个段落之间给半档。
+   */
+  .md-ul .md-p,
+  .md-ol .md-p {
+    margin-bottom: 0;
+  }
+
+  .md-ul .md-p + .md-p,
+  .md-ol .md-p + .md-p {
+    margin-top: var(--space-2);
+  }
+
+  /* 条目里的行内代码跟着小一号，免得撑破悬挂缩进 */
+  .md-ul code,
+  .md-ol code {
+    font-size: 0.92em;
+  }
+
+  /* ---------------------------------------------------------------- 引用 / 分隔线 */
+
+  .md-quote {
+    margin: 0 0 var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    color: var(--text-secondary);
+    border-left: 3px solid var(--border);
+  }
+
+  /* 引用块有内边距，里面最后一段的下边距**不会**折叠出去——要显式归零，
+     否则引用块底部会多出一截空白 */
+  .md-quote > :last-child {
+    margin-bottom: 0;
+  }
+
+  .md-hr {
+    margin: var(--space-5) 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+  }
+
+  /* ---------------------------------------------------------------- 行内元素 */
+
+  .md-link {
+    color: var(--accent-text);
+    text-decoration: none;
+  }
+
+  .md-link:hover {
+    text-decoration: underline;
+  }
+
+  /* 行内代码：远处（正文里）只有"这是个代码"这一层信息，所以只给底色与等宽字 */
+  .md-body code {
+    padding: 1px var(--space-1);
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    background: var(--bg-subtle);
+    border-radius: var(--radius-badge);
+  }
+
+  /* 代码块里的 code 不重复给底色：那一层的底在 `.md-pre` 上 */
+  .md-pre code {
+    padding: 0;
+    font-size: inherit;
+    background: none;
+    border-radius: 0;
+  }
+
+  /*
+   * 行内引用徽标（`[1]` → 文档短名）。形态与知识库那份（`.kb-cite`）一致：
+   * 同一个东西在两个页面里长得不一样，是"两处各写一套"留下的最容易看出来的疤。
+   */
+  .md-cite {
+    display: inline-flex;
+    align-items: center;
+    max-width: 8.5em;
+    height: 16px;
+    margin: 0 2px;
+    padding: 0 5px;
+    font-size: var(--text-micro-size);
+    line-height: 1;
+    color: var(--text-tertiary);
+    vertical-align: -2px;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-control);
+  }
+
+  .md-cite-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 可点的那一版（真查出处的）才给悬停反馈 */
+  a.md-cite {
+    cursor: pointer;
+  }
+
+  a.md-cite:hover {
+    color: var(--text-secondary);
+    background: var(--bg-hover);
+  }
+
+  /*
+   * **对不上出处的编号**（v0.28，第二批评审 A6）。
+   *
+   * 模型在联网搜索之后常写 `[6][2]` 这类编号，而那些编号在知识库那一路**没有对应
+   * 实体**（联网结果不是出处：没进检索、没有文档名与页码）。原先它们原样留在正文里
+   * （裸 `[6]`），与周围的可点徽标混在一起，读者分不出哪个能点。
+   *
+   * 这里把它画成一枚**明确不可点**的标记：中性色、虚线边、`cursor: help`，
+   * 说明在 `title` 里（"联网搜索结果，见过程面板"）。**不伪造出处、不做成链接**——
+   * 点开一个不存在的实体的代价，比"看得出它点不了"大得多。
+   */
+  .md-cite-plain {
+    color: var(--text-quaternary);
+    cursor: help;
+    background: none;
+    border-style: dashed;
+  }
+
+  /* 悬停不加任何变化：它不是可点的东西 */
+  span.md-cite-plain:hover {
+    color: var(--text-quaternary);
+    background: none;
+  }
+
+  /* ---------------------------------------------------------------- 代码块 */
+
+  /* 两段式容器：头部带（语言名 + 复制）+ 代码本体（旧 `codeBlockHtml` 的形状） */
+  .md-code {
+    margin: 0 0 var(--space-3);
+    overflow: hidden;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-control);
+  }
+
+  .md-code-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    height: var(--row-height-compact);
+    padding: 0 var(--space-2) 0 var(--space-3);
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  .md-code-lang {
+    font-family: var(--font-mono);
+    font-size: var(--text-micro-size);
+    color: var(--text-tertiary);
+  }
+
+  /* 头部带上的图标按钮：24px 的命中区（`--hit-target`），悬停才给底色 */
+  .md-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--hit-target);
+    height: var(--hit-target);
+    color: var(--text-tertiary);
+    cursor: pointer;
+    background: none;
+    border: 0;
+    border-radius: var(--radius-control);
+    transition: var(--transition-ui);
+  }
+
+  .md-icon-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .md-pre {
+    margin: 0;
+    padding: var(--space-3);
+    overflow-x: auto;
+    font-size: var(--text-micro-size);
+    line-height: var(--line-code);
+    color: var(--text-primary);
+  }
+
+  /* ---------------------------------------------------------------- 表格 */
+
+  .md-table-block {
+    margin: 0 0 var(--space-3);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-control);
+    overflow: hidden;
+  }
+
+  /* 宽表格在窄列里要能滚，否则会把整页撑破 */
+  .md-table-wrap {
+    overflow-x: auto;
+  }
+
+  .md-table {
+    width: 100%;
+    font-size: var(--text-meta-size);
+    border-collapse: collapse;
+  }
+
+  .md-table th,
+  .md-table td {
+    padding: var(--space-2) var(--space-3);
+    text-align: left;
+    border: 1px solid var(--border-hairline);
+  }
+
+  .md-table th {
+    font-weight: 600;
+    background: var(--bg-subtle);
+  }
+
+  /* 外框已经由 `.md-table-block` 给了，单元格只留内部那些线 */
+  .md-table th:first-child,
+  .md-table td:first-child {
+    border-left: 0;
+  }
+
+  .md-table th:last-child,
+  .md-table td:last-child {
+    border-right: 0;
+  }
+
+  .md-table tr:last-child td {
+    border-bottom: 0;
+  }
+}

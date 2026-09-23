@@ -56,8 +56,18 @@ function mentionFilterOf(text: string): string | null {
   return head
 }
 
+/**
+ * 发送 / 停止那一个圆形按钮（v0.19 起同一个位置、同一种形状）。
+ *
+ * **禁用态是"灰化"而不是"半透明"**（v0.28，第二批评审 A4）：原先只有
+ * `disabled:opacity-40`——蓝底减到四成淡蓝，在浅色下仍像一颗能按的按钮，
+ * 而它其实是**空输入时按不动**的那一个状态。这里改用全站主按钮的禁用口径
+ * （`--button-disabled-bg` / `--button-disabled-text`，`src/ui/button.tsx` 同款，
+ * 取值来自 Kimi 的 `.km-button-primary[disabled]` 实测）：底与字一起退成灰，
+ * "现在不能发"一眼能看出来，也不必自己造色值。
+ */
 const SEND_BUTTON =
-  'inline-flex h-[var(--control-height)] w-[var(--control-height)] shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-send)] bg-[var(--accent)] text-[var(--Always-White)] disabled:cursor-default disabled:opacity-40'
+  'inline-flex h-[var(--control-height)] w-[var(--control-height)] shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-send)] bg-[var(--accent)] text-[var(--Always-White)] [transition:var(--transition-ui)] disabled:cursor-default disabled:bg-[var(--button-disabled-bg)] disabled:text-[var(--button-disabled-text)]'
 
 export function Composer() {
   const chat = useChat()

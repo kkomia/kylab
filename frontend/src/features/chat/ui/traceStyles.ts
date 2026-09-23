@@ -83,6 +83,26 @@ export const RAW_BODY =
   'leading-[var(--line-code)] text-[var(--text-secondary)] whitespace-pre-wrap ' +
   '[overflow-wrap:anywhere]'
 
+/**
+ * 思考正文那一块（v0.28，第二批评审 A3）。
+ *
+ * 三件事要同时成立，才读得出一句"这是过程、不是答案"：
+ *
+ * 1. **它得是一个块**。原先思考正文直接套 `RAW_BODY`（给工具原文用的那一族），
+ *    而承载它的是 `LinkText` 的 `<span>`——`span` 是 inline，`max-height` /
+ *    `overflow` 在 inline 上**不生效**，背景也只跟着每一行文字跑，看起来像被荧光笔
+ *    划过的几行，而不是一块内容；
+ * 2. **缩进 + 独立底色 + 左侧一道线**：与正文（同一列、无底色的纯文字）分开；
+ * 3. **比正文更紧**：字号 `--text-micro-size`（12，正文 15）、行高 `--line-code`（1.6，
+ *    正文 1.7），段与段之间 `--space-2`（8px，正文 `--space-3` 12px）。
+ *    段落由 `thinkingParagraphs` 切开后逐段排——原先靠空行的整行空档撑着，
+ *    过程比答案还疏。
+ */
+export const THINK_BLOCK = `mt-[var(--space-2)] flex flex-col gap-[var(--space-2)] rounded-[var(--radius-control)] border-l-2 border-[var(--border-strong)] bg-[var(--bg-subtle)] py-[var(--space-2)] pr-[var(--space-3)] pl-[var(--space-3)]`
+
+/** 思考正文的**一段**：`pre-wrap` 保住段内的换行，`min-w-0` 让长串能断行。 */
+export const THINK_PARAGRAPH = `block min-w-0 text-[length:var(--text-micro-size)] leading-[var(--line-code)] text-[var(--text-secondary)] whitespace-pre-wrap [overflow-wrap:anywhere]`
+
 export const RAW_NOTE =
   'ml-[var(--space-2)] text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]'
 

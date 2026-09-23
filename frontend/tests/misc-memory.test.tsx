@@ -98,16 +98,24 @@ function overview(overrides: Partial<MemoryOverview> = {}): MemoryOverview {
 }
 
 /**
- * 页签当前态的两个可见抓手（与 `misc-tasks.test.tsx` 里的那份一致）。
+ * 页签当前态的抓手。
  *
- * jsdom 不算样式，所以钉的是那两处钩子：白底分段在不在、字色字重按不按当前项给。
+ * jsdom 不算样式，能钉住的只有"谁来画"：Radix 给触发按钮的 `data-state`，
+ * 以及**原语自己**那两条当前态（`data-[state=active]:bg-surface` / 主字色）
+ * 是否在按钮的 className 里；再确认按钮内**没有**第一批那层临时垫底
+ * `span[data-slot=segment-current]`（它只是绕开病根的补丁，根因修好后不该回来）。
+ * 真实的底色差由浏览器截图核对（`.shots/batch2/12-memory.png`）。
  */
-function segmentState(trigger: HTMLElement) {
-  const pill = trigger.querySelector('[data-slot="segment-current"]')?.className ?? ''
-  const label = trigger.querySelector('[data-slot="segment-label"]')?.className ?? ''
+function tabState(trigger: HTMLElement) {
   return {
-    pillShown: !pill.includes('opacity-0'),
-    emphasized: label.includes('text-text-primary') && label.includes('font-medium'),
+    active: trigger.getAttribute('data-state') === 'active',
+    // 原语那条当前态规则确实在按钮上（画不画由 `data-state` 决定，所以这条对两档都成立）
+    activeRulePresent:
+      trigger.className.includes('data-[state=active]:bg-surface') &&
+      trigger.className.includes('data-[state=active]:text-text-primary'),
+    // 分段自己的内边距：第一批它和 `background` 一起被那条未分层重置压成 0，两段贴着
+    padded: trigger.className.includes('px-3'),
+    patched: trigger.querySelector('[data-slot="segment-current"]') !== null,
   }
 }
 
@@ -150,7 +158,7 @@ describe('记忆页', () => {
     ).toBeInTheDocument()
   })
 
-  it('页签的当前项有可见的当前态（文件那一档的计数照旧），另一项保持弱化', async () => {
+  it('页签的当前态由原语自己画（白底 + 主字色跟着 data-state 走），不再垫 span', async () => {
     renderMisc(<MemoryPage />)
     const files = await screen.findByRole('tab', { name: /文件/ })
     const recall = screen.getByRole('tab', { name: '召回' })
@@ -160,12 +168,23 @@ describe('记忆页', () => {
     expect(recall).toHaveAttribute('aria-selected', 'false')
     // 文件数仍挂在那一档上（换掉 SegmentedControl 不能把这个丢了）
     expect(files).toHaveTextContent('3')
-    expect(segmentState(files)).toEqual({ pillShown: true, emphasized: true })
-    expect(segmentState(recall)).toEqual({ pillShown: false, emphasized: false })
+    expect(tabState(files)).toEqual({
+      active: true,
+      activeRulePresent: true,
+      padded: true,
+      patched: false,
+    })
+    expect(tabState(recall)).toEqual({
+      active: false,
+      activeRulePresent: true,
+      padded: true,
+      patched: false,
+    })
 
     await userEvent.click(recall)
-    expect(segmentState(recall)).toEqual({ pillShown: true, emphasized: true })
-    expect(segmentState(files)).toEqual({ pillShown: false, emphasized: false })
+    expect(recall).toHaveAttribute('data-state', 'active')
+    expect(files).toHaveAttribute('data-state', 'inactive')
+    expect(tabState(recall).patched).toBe(false)
   })
 
   it('改了草稿点保存：把**原文**交给接口，并按返回内容刷新编辑器', async () => {

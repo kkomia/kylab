@@ -20,6 +20,7 @@ import { ThreadPrimitive, useAuiState } from '@assistant-ui/react'
 
 import { buildTurns } from '@/features/chat/model/turns'
 
+import { ChatHeader } from './ChatHeader'
 import { MessageView } from './MessageView'
 import { Welcome } from './Welcome'
 import { useChat, type ChatMessage } from '../runtime/ChatProvider'
@@ -68,6 +69,9 @@ export function ChatThread() {
       className="relative flex h-full flex-col"
       data-running={isRunning ? 'true' : 'false'}
     >
+      {/* 抬头**在视口之外**（不跟着消息滚走）：常驻的"这是哪条会话、属于哪个项目"。
+          它同时给消息区一条上边界——原先正文直接贴在窗口顶端 */}
+      <ChatHeader />
       <ThreadPrimitive.Viewport className="min-h-0 flex-1 overflow-y-auto" aria-label="对话内容">
         {/* 正文列：**与输入卡片同一条 768px 的居中窄列**（`--chat-measure`），内边距照旧
             `ChatView.vue` 的 `.chat-inner`（`space-6 / gutter / space-4`）；空态那一条把

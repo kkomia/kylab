@@ -12,9 +12,13 @@
  *
  * 用法与"哪儿与旧实现不一样"写在同目录的 `README.md` 里。
  * 这一层不认识任何页面组件；反过来，页面只该通过这里拿对话的数据与渲染。
+ *
+ * `suggestions.ts` 没有对应的旧模块（v0.28 新增）：旧前端的推荐问题直接铺在
+ * `ChatView.vue` 的模板里，而"两条问题被模型写成一行"这件事要按纯规则拆开、要能单测。
  */
 
 export * from './turns'
 export * from './liveTurn'
 export * from './latex'
 export * from './markdown'
+export * from './suggestions'

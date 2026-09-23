@@ -7,6 +7,11 @@
  * 2. **推荐问题整块跟着"有没有选中知识库"出现/消失**：没有库就没有依据，
  *    给一排点了答不上的样例是在骗人；
  * 3. **一个库都没有时指路**，而不是给一排点了没反应的样例。
+ *
+ * 推荐问题那一块的排布（v0.28，第二批评审 A5）：**一列，每行一条，左对齐**。
+ * 改之前是"居中 + 自动折行"的一堆胶囊——四条问题被折成四行、每行左起点都不一样
+ * （居中把每条的长度差摊到了两端），看起来像四句散落的灰字，而它们其实是**可以点的
+ * 入口**。一条一行之后：起点对齐、一眼数得清有几条、点哪一条不会点错。
  */
 import { RefreshCw } from 'lucide-react'
 
@@ -26,7 +31,13 @@ export function Welcome() {
       </p>
 
       {chat.showSuggestions ? (
-        <div className="flex flex-col items-center gap-[var(--space-2)]">
+        /**
+         * 一条一行、左对齐、整列与消息列同宽（`--chat-measure`）：
+         * 推荐问题是**入口**，不是装饰——一排居中的散句读起来像"随便看看"，
+         * 而左对齐的等宽行读起来像一份清单（`text-left` 是必须的：这一层上面是
+         * `text-center`，不写回来的话每一条问题都会在框里居中）。
+         */
+        <div className="mt-[var(--space-2)] flex w-full max-w-[var(--chat-measure)] flex-col items-stretch gap-[var(--space-2)] text-left">
           <div className="inline-flex items-center gap-[var(--space-1)] text-[length:var(--text-meta-size)] text-[var(--text-tertiary)]">
             <span>你可以这样问我</span>
             <button
@@ -41,15 +52,16 @@ export function Welcome() {
             </button>
           </div>
           <div
-            className={`flex max-w-[860px] flex-wrap justify-center gap-[var(--space-2)] ${
-              chat.suggestionsLoading ? 'opacity-50' : ''
-            }`}
+            data-testid="suggestion-list"
+            className={`flex flex-col gap-[var(--space-2)] ${chat.suggestionsLoading ? 'opacity-50' : ''}`}
           >
             {chat.suggestions.map((sample) => (
               <button
                 key={sample}
                 type="button"
-                className="cursor-pointer rounded-[var(--radius-pill)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-[var(--space-4)] py-[var(--space-2)] text-[length:var(--text-meta-size)] text-[var(--text-secondary)] hover:border-[var(--border-strong)] hover:text-[var(--text-primary)]"
+                // 有边框、有底色、悬停变深：它是**能点的**（改之前与页面上的普通灰字
+                // 没有区别，全靠"猜"才知道能按）
+                className="w-full cursor-pointer rounded-[var(--radius-panel)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-[var(--space-4)] py-[var(--space-3)] text-left text-[length:var(--text-meta-size)] text-[var(--text-secondary)] [transition:var(--transition-ui)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                 onClick={() => chat.useSample(sample)}
               >
                 {sample}
