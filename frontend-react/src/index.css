@@ -1,0 +1,43 @@
+@import 'tailwindcss';
+
+/*
+ * Tailwind v4 的入口。
+ *
+ * **设计令牌不归 Tailwind 管**：`--radius-*` / `--space-*` / `--text-*` / 颜色这些
+ * 仍然是 `src/styles/tokens.css` 里那份（从旧前端原样搬来，两套前端共享同一份取值）。
+ * 这里只做一件事：把那份令牌**映射成 Tailwind 的 theme**，让新组件能写
+ * `bg-surface` / `text-secondary` / `rounded-row` 这类类名，而取值只有一处。
+ *
+ * `@theme inline` 是刻意的：值必须**引用** CSS 变量（inline）而不是把当前值烤死，
+ * 否则亮/暗主题切换时 Tailwind 生成的工具类不会跟着变。
+ */
+@theme inline {
+  --color-canvas: var(--bg-canvas);
+  --color-surface: var(--bg-surface);
+  --color-surface-raised: var(--bg-surface-raised);
+  --color-elevated: var(--bg-elevated);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-text-quaternary: var(--text-quaternary);
+  --color-accent: var(--accent);
+  --color-accent-text: var(--accent-text);
+  --color-accent-soft: var(--accent-soft);
+  --color-status-warning: var(--status-warning);
+  --color-status-danger: var(--status-danger);
+  --color-status-success: var(--status-success);
+
+  --radius-control: var(--radius-control);
+  --radius-row: var(--radius-row);
+  --radius-card: var(--radius-card);
+  --radius-pill: var(--radius-pill);
+
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-mono);
+
+  --text-micro: var(--text-micro-size);
+  --text-meta: var(--text-meta-size);
+  --text-body: var(--text-body-size);
+}

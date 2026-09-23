@@ -56,3 +56,6 @@ Thumbs.db
 # ---- npm 的锁文件：本仓库用 pnpm（pnpm-lock.yaml），
 #      误用 npm install 时不希望它被提交（工程规范 §6）----
 package-lock.json
+
+# 迁移期：上游参考仓库的浅克隆缓存（只读参考，不进版本库）
+.cache/

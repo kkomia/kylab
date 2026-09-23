@@ -17,7 +17,11 @@
 用法::
 
     python scripts/gen_api_types.py --check   # 门禁：不一致就红
-    python scripts/gen_api_types.py --write   # 开发：更新生成物
+    python scripts/gen_api_types.py --write   # 开发：更新生成物（默认写到旧前端）
+
+React 迁移期（§12.230）新增 ``--target {frontend|react|both}``：两套前端共用同一份
+OpenAPI，各写一份生成物。默认 ``frontend``——不传参数时行为与迁移前**逐字节相同**，
+老门禁不会因为多了一套前端而变化。
 """
 
 from __future__ import annotations
@@ -38,8 +42,23 @@ from pathlib import Path
 os.environ["KYLAB_DATA_DIR"] = tempfile.mkdtemp(prefix="kylab-openapi-")
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGET = ROOT / "frontend" / "src" / "api" / "schema.d.ts"
-CLI = ROOT / "frontend" / "node_modules" / "openapi-typescript" / "bin" / "cli.js"
+
+#: 两套前端各自的生成物落点（迁移期共存，见 §12.230）
+TARGETS = {
+    "frontend": ROOT / "frontend" / "src" / "api" / "schema.d.ts",
+    "react": ROOT / "frontend-react" / "src" / "api" / "schema.d.ts",
+}
+
+#: openapi-typescript 的 CLI：优先用旧前端的 node_modules（它一直在），
+#: 新前端里也有一份时就近用——两处都指向同一个包，选谁不影响输出。
+CLI = next(
+    path
+    for path in (
+        ROOT / "frontend" / "node_modules" / "openapi-typescript" / "bin" / "cli.js",
+        ROOT / "frontend-react" / "node_modules" / "openapi-typescript" / "bin" / "cli.js",
+    )
+    if path.exists()
+)
 
 # ``app`` 包在 ``backend/`` 下：门禁从 backend/ 调本脚本时它天然可导入，
 # 从仓库根调就不是——显式补上，别让调用方记住这件事（同 gen_api_spec.py）。
@@ -85,33 +104,55 @@ def _generate(spec: dict, out: Path) -> str:
     return out.read_text(encoding="utf-8")
 
 
+def _selected() -> list[str]:
+    """``--target`` 选了哪几套前端（默认只选旧前端：门禁行为一个字不变）。"""
+    for index, item in enumerate(sys.argv):
+        if item == "--target":
+            wanted = sys.argv[index + 1] if index + 1 < len(sys.argv) else "frontend"
+        elif item.startswith("--target="):
+            wanted = item.split("=", 1)[1]
+        else:
+            continue
+        if wanted == "both":
+            return ["frontend", "react"]
+        if wanted not in TARGETS:
+            raise SystemExit(f"--target 只认 frontend / react / both，收到 {wanted!r}")
+        return [wanted]
+    return ["frontend"]
+
+
 def main() -> int:
     check = "--check" in sys.argv
     write = "--write" in sys.argv
     if not check and not write:
         print(__doc__.split("用法::")[1].strip())
         return 2
+    targets = _selected()
 
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp) / "schema.d.ts"
         generated = HEADER + _generate(_openapi(), scratch)
 
-    current = TARGET.read_text(encoding="utf-8") if TARGET.exists() else ""
-    if generated == current:
-        print(f"API 类型是最新的：{TARGET.relative_to(ROOT)}")
-        return 0
-
-    if write:
-        TARGET.write_text(generated, encoding="utf-8")
-        print(f"已更新 {TARGET.relative_to(ROOT)}（{len(generated.splitlines())} 行）")
-        return 0
-
-    print(
-        f"API 类型与后端的 OpenAPI 不一致：{TARGET.relative_to(ROOT)}\n"
-        "后端改了 schema（加字段 / 改必填 / 动枚举）而生成物没跟上。\n"
-        "跑 `python scripts/gen_api_types.py --write` 更新，再按提示改用到它的接口文件。"
-    )
-    return 1
+    failed: list[str] = []
+    for name in targets:
+        target = TARGETS[name]
+        current = target.read_text(encoding="utf-8") if target.exists() else ""
+        if generated == current:
+            print(f"API 类型是最新的：{target.relative_to(ROOT)}")
+            continue
+        if write:
+            target.write_text(generated, encoding="utf-8")
+            print(f"已更新 {target.relative_to(ROOT)}（{len(generated.splitlines())} 行）")
+            continue
+        detail = target.relative_to(ROOT)
+        print(
+            f"API 类型与后端的 OpenAPI 不一致：{detail}",
+            "后端改了 schema（加字段 / 改必填 / 动枚举）而生成物没跟上。",
+            "跑 python scripts/gen_api_types.py --write [--target react|both] 更新，",
+            "再按提示改用到它的接口文件。",
+        )
+        failed.append(name)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

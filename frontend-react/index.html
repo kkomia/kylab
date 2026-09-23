@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>KYLAB 知识库</title>
+    <script>
+      // 首屏前定主题与字号，避免深浅切换、字号跳变闪烁（与旧前端逐字一致：
+      // 这份内联脚本是"用户看到的第一个像素"的一部分，两套前端要表现相同）
+      ;(function () {
+        try {
+          var saved = localStorage.getItem('kylab-theme')
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+          document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light')
+        } catch (error) {
+          document.documentElement.dataset.theme = 'light'
+        }
+        try {
+          var sizes = { small: 14, medium: 15, large: 16.5, xlarge: 18 }
+          var pick = localStorage.getItem('kylab-font-scale')
+          var bodySize = sizes[pick] || sizes.medium
+          document.documentElement.style.setProperty('--font-scale', String(bodySize / 15))
+        } catch (error) {
+          document.documentElement.style.setProperty('--font-scale', '1')
+        }
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

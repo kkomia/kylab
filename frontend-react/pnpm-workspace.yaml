@@ -1,0 +1,9 @@
+# 只有这一个包（不是 monorepo）：这份文件的作用是给 pnpm 两个开关。
+#
+# `allowBuilds.esbuild`：vite 依赖 esbuild 的安装脚本（它要落平台二进制）。
+# pnpm 默认拦下所有安装脚本（供应链防护），**必须显式放行**，否则 vite 起不来——
+# 症状是"pnpm install 成功、pnpm dev 报找不到 esbuild 二进制"。
+allowBuilds:
+  esbuild: true
+minimumReleaseAgeExclude:
+  - prettier@3.9.9
