@@ -96,6 +96,37 @@ describe('ApprovalBar', () => {
     expect(wrapper.emitted('settled')).toHaveLength(1)
   })
 
+  it('拒绝时填的理由跟着决定一起送出去（P2-1）', async () => {
+    const wrapper = mount(ApprovalBar, { props: { approval: approval() } })
+
+    // 理由输入框就摆在这一条上：填一句给模型的话是"拒绝"的搭档动作
+    await wrapper.find('#kylab-approval-reason').setValue('这条别动生产库')
+    const button = wrapper.findAll('button').find((item) => item.text() === '拒绝')!
+    await button.trigger('click')
+
+    expect(decideApproval).toHaveBeenCalledWith('ap_1', 'deny', '这条别动生产库')
+  })
+
+  it('**不填理由时调用形状与以前逐字相同**（两个参数）', async () => {
+    const wrapper = mount(ApprovalBar, { props: { approval: approval() } })
+
+    const button = wrapper.findAll('button').find((item) => item.text() === '拒绝')!
+    await button.trigger('click')
+
+    expect(decideApproval).toHaveBeenCalledWith('ap_1', 'deny')
+  })
+
+  it('理由只在「拒绝」上发：允许那两档不带它', async () => {
+    const wrapper = mount(ApprovalBar, { props: { approval: approval() } })
+
+    await wrapper.find('#kylab-approval-reason').setValue('顺便提一句')
+    const allow = wrapper.findAll('button').find((item) => item.text() === '允许一次')!
+    await allow.trigger('click')
+
+    // 放行与"我给模型留句话"是两件事：混在一起模型下一轮会读错（见后端 _with_reason）
+    expect(decideApproval).toHaveBeenCalledWith('ap_1', 'allow_once')
+  })
+
   it('后端没给规则/超时（老版本事件）时不摆那两句话，也不报错', () => {
     const wrapper = mount(ApprovalBar, {
       props: { approval: approval({ rule: '', timeout_seconds: 0, detail: '' }) },

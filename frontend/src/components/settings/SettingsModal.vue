@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import AppearanceSection from '@/components/settings/AppearanceSection.vue'
 import SettingGroupPanel from '@/components/settings/SettingGroupPanel.vue'
+import ShortcutsSection from '@/components/settings/ShortcutsSection.vue'
 // 分节共用的样式：命名空间是 `.settings-scope`（见那个文件的头注），
 // 现在有两个宿主——这个弹窗与模块页里的 `SettingGroupPanel`，样式只有一套。
 import '@/components/settings/settings.css'
@@ -56,6 +57,7 @@ import IconChat from '@/components/icons/IconChat.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconDatabase from '@/components/icons/IconDatabase.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
+import IconKey from '@/components/icons/IconKey.vue'
 import IconLogout from '@/components/icons/IconLogout.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
@@ -92,6 +94,7 @@ type SectionKey =
   | 'services'
   | 'storage'
   | 'appearance'
+  | 'shortcuts'
   | 'users'
   | 'system'
   | 'features'
@@ -139,6 +142,8 @@ const SECTIONS: {
   { key: 'users', label: '用户', icon: IconUser, adminOnly: true },
   { key: 'system', label: '系统与安全', icon: IconShieldCheck },
   { key: 'appearance', label: '外观', icon: IconSun },
+  // 快捷键也是本机偏好（存 localStorage，不进后端），与外观同一档
+  { key: 'shortcuts', label: '快捷键', icon: IconKey },
 ]
 
 /** 菜单分组。分组标题是唯一的小字——它标段落，不解释条目。 */
@@ -148,7 +153,7 @@ const NAV_GROUPS: { label: string; keys: SectionKey[]; dynamic?: boolean }[] = [
   // 后端那些"还没有专门一节"的组（长期记忆 / 联网 / 沙箱执行…）
   { label: '功能', keys: [], dynamic: true },
   { label: '账户', keys: ['users', 'system'] },
-  { label: '偏好', keys: ['appearance'] },
+  { label: '偏好', keys: ['appearance', 'shortcuts'] },
 ]
 
 const { notifySuccess, notifyError } = useToast()
@@ -1044,6 +1049,9 @@ async function runTest(target: string): Promise<void> {
 
         <!-- 外观（本地偏好，不进后端） -->
         <AppearanceSection v-else-if="section === 'appearance'" />
+
+        <!-- 快捷键（本地偏好，不进后端，P2-1） -->
+        <ShortcutsSection v-else-if="section === 'shortcuts'" />
 
         <!-- 用户（v10）：开通账号与成员管理。仅管理员可见 -->
         <template v-else-if="section === 'users'">

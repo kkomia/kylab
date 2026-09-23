@@ -1240,8 +1240,9 @@ describe('产出物卡片（v0.26）', () => {
 
 describe('过程面板：同类工具合并（v0.26）', () => {
   /** 一次工具调用。`tool` 是后端给的原始工具名——分组与图标都按它来。 */
-  function toolCall(tool: string, label: string, detail: string) {
-    return { phase: 'tool', tool, label, detail, status: 'done' }
+  /** ``kind`` 留空 = 老快照（P2-1 之前落库的步骤没有它，界面按工具名兜）。 */
+  function toolCall(tool: string, label: string, detail: string, kind?: string) {
+    return { phase: 'tool', tool, label, detail, status: 'done', ...(kind ? { kind } : {}) }
   }
 
   function detailWithToolCalls(id: string, steps: unknown[]): ConversationDetail {
@@ -1317,21 +1318,149 @@ describe('过程面板：同类工具合并（v0.26）', () => {
     wrapper.unmount()
   })
 
-  it('同类工具画同一个图标，不同类的不一样', async () => {
+  it('**同 kind 的两个工具名长得一样**，不同 kind 才不一样（P2-1）', async () => {
     getConversation.mockResolvedValue(
       detailWithToolCalls('c9', [
-        toolCall('web_search', '联网搜索', '查 A'),
-        toolCall('remember', '记住', '记了一条'),
-        toolCall('export_document', '导出文档', '已生成'),
+        toolCall('web_search', '联网搜索', '查 A', 'search'),
+        toolCall('web_fetch', '抓取网页', '读 A', 'search'),
+        toolCall('read_file', '读文件', '读了 12 行', 'read'),
+        toolCall('remember', '记住', '记了一条', 'write'),
       ]),
     )
     const { wrapper } = await mountAt('/chat/c9')
     await flushPromises()
 
-    // 改之前这里三行画的是同一个方块——扫过去等于没有信息
-    const shapes = wrapper.findAll('.steps .step .step-icon svg').map((node) => node.html())
-    expect(new Set(shapes).size).toBe(3)
+    // 这一条钉的是 P2-1 的验收①：卡片的样子**由 kind 决定，不由工具名决定**——
+    // 上面两个名字不同、kind 都是 search，画出来必须一模一样
+    const icons = wrapper.findAll('.steps .step .step-icon svg').map((node) => node.html())
+    expect(icons).toHaveLength(4)
+    expect(icons[0]).toBe(icons[1])
+    expect(new Set(icons).size).toBe(3)
+
+    // 配色也按 kind（同一类的两行同色）：`.step-kind-*` 是那一档的类
+    const kinds = wrapper.findAll('.steps .step').map((node) => node.attributes('class'))
+    expect(kinds[0]).toContain('step-kind-search')
+    expect(kinds[1]).toContain('step-kind-search')
+    expect(kinds[2]).toContain('step-kind-read')
+    expect(kinds[3]).toContain('step-kind-write')
+    // 原始 kind 也带在 `data-kind` 上：样式之外要看它的地方（用例、调试）认这个
+    expect(wrapper.findAll('.steps .step').map((node) => node.attributes('data-kind'))).toEqual([
+      'search',
+      'search',
+      'read',
+      'write',
+    ])
     wrapper.unmount()
+  })
+})
+
+describe('过程面板的两级懒加载（P2-1）', () => {
+  /** 一次工具调用（名字各不相同：同名会被并成一组，条数就上不去）。 */
+  function oneCall(index: number) {
+    return {
+      phase: 'tool',
+      tool: `tool_${index}`,
+      label: `动作${index}`,
+      detail: `第 ${index} 次`,
+      status: 'done',
+      kind: 'read',
+    }
+  }
+
+  function detailWithSteps(id: string, steps: unknown[]): ConversationDetail {
+    return {
+      ...summary(id),
+      messages: [
+        {
+          id: 'm1',
+          role: 'user',
+          content: '查一下',
+          sources: [],
+          steps: [],
+          thinking: '',
+          created_at: null,
+        },
+        {
+          id: 'm2',
+          role: 'assistant',
+          content: '查到了。',
+          sources: [],
+          thinking: '',
+          created_at: null,
+          steps: steps as never,
+        },
+      ],
+    }
+  }
+
+  it('超过 N 条时只画前 N 条，并如实报出「当前已显示 X/Y 条工具调用」', async () => {
+    getConversation.mockResolvedValue(
+      detailWithSteps(
+        'c10',
+        Array.from({ length: 30 }, (_, index) => oneCall(index)),
+      ),
+    )
+    const { wrapper } = await mountAt('/chat/c10')
+    await flushPromises()
+
+    expect(wrapper.findAll('.steps .step')).toHaveLength(20)
+    expect(wrapper.find('.trace-more').text()).toContain('当前已显示 20/30 条工具调用')
+    // 后面那几条确实没画进 DOM（这是懒加载的意义：不是藏起来，而是不建节点）
+    expect(wrapper.text()).not.toContain('动作25')
+
+    await wrapper.find('.trace-more-btn').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.steps .step')).toHaveLength(30)
+    // 全都在了，那一行就撤掉（它说的"已显示 30/30"没有信息）
+    expect(wrapper.find('.trace-more').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('没超过 N 条时不摆那一行（多一行字是噪声）', async () => {
+    getConversation.mockResolvedValue(
+      detailWithSteps(
+        'c11',
+        Array.from({ length: 3 }, (_, index) => oneCall(index)),
+      ),
+    )
+    const { wrapper } = await mountAt('/chat/c11')
+    await flushPromises()
+
+    expect(wrapper.findAll('.steps .step')).toHaveLength(3)
+    expect(wrapper.find('.trace-more').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+describe('输入框的发送/换行走快捷键注册表（P2-1）', () => {
+  it('把发送键改成 Ctrl+回车之后：单独按回车就**不再发送**（改绑定真的生效）', async () => {
+    // 这是验收④里"能改"的端到端那一半：改完不是只改了设置页的字，
+    // 输入框的行为跟着变（否则那一页就是个摆设）
+    const { setBinding, resetAllShortcuts } = await import('@/composables/useShortcuts')
+    setBinding('chat.send', 0, 'Mod+Enter')
+
+    try {
+      listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+      getConversation.mockResolvedValue({ ...chatDetail('c12'), kb_ids: ['kb_1'] })
+      chatStream.mockResolvedValue({ abort: vi.fn() })
+      const { wrapper } = await mountAt('/chat/c12')
+      await flushPromises()
+
+      await wrapper.find('.composer-field').setValue('你好')
+      await wrapper.find('.composer-field').trigger('keydown', { key: 'Enter' })
+      await flushPromises()
+      // 回车不再是发送键了：没发请求
+      expect(chatStream).not.toHaveBeenCalled()
+
+      // 新的发送键：Ctrl+回车
+      await wrapper.find('.composer-field').trigger('keydown', { key: 'Enter', ctrlKey: true })
+      await flushPromises()
+      expect(chatStream).toHaveBeenCalled()
+      wrapper.unmount()
+    } finally {
+      resetAllShortcuts()
+    }
   })
 })
 

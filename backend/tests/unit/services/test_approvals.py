@@ -141,3 +141,57 @@ def test_the_three_decisions_are_the_only_public_vocabulary() -> None:
     assert approval_service.DECISIONS == (ALLOW_ONCE, ALLOW_ALWAYS, DENY)
     assert TIMEOUT not in approval_service.DECISIONS
     assert approval_service.UNAVAILABLE not in approval_service.DECISIONS
+
+
+def test_the_deny_reason_travels_with_the_decision() -> None:
+    """拒绝时用户填的那句话**跟着决定一起回来**（P2-1，照 ZCode 的确认弹窗）。
+
+    它是这个输入框的全部价值所在：工具循环拿它拼进回灌给模型的文本，
+    下一轮模型据此改路子（见 ``tool_loop._with_reason``）。
+    """
+    registry = ApprovalRegistry(timeout=5)
+    request = registry.open(tool="run_command", label="执行命令", args="ls")
+    worker = threading.Thread(
+        target=lambda: (time.sleep(0.05), registry.decide(request.approval_id, DENY, "先别动")),
+        daemon=True,
+    )
+    worker.start()
+
+    answer = registry.wait_decision(request.approval_id)
+    worker.join(2)
+
+    assert answer.decision == DENY
+    assert answer.reason == "先别动"
+
+
+def test_a_reason_is_flattened_and_capped() -> None:
+    """那句话会被**压成一行、限长**：它随后要进提示词，多行会让"一句理由"
+    在模型眼里变成几条并列的指令（见 ``_clean_reason``）。"""
+    registry = ApprovalRegistry(timeout=5)
+    request = registry.open(tool="run_command", label="执行命令", args="ls")
+    long_reason = "别在\n生产库上跑\t这条\n" + "很长" * 400
+    assert registry.decide(request.approval_id, DENY, long_reason) is True
+
+    answer = registry.wait_decision(request.approval_id)
+    assert "\n" not in answer.reason
+    assert "\t" not in answer.reason
+    assert len(answer.reason) <= approval_service.MAX_REASON_CHARS
+
+
+def test_without_a_reason_nothing_changes() -> None:
+    """不填理由：取值与老调用方（``wait``）拿到的完全是老样子。"""
+    registry = ApprovalRegistry(timeout=5)
+    request = registry.open(tool="run_command", label="执行命令", args="ls")
+    assert registry.decide(request.approval_id, DENY) is True
+
+    assert registry.wait(request.approval_id) == DENY
+
+
+def test_a_whitespace_only_reason_counts_as_empty() -> None:
+    """"什么都没填"与"填了几个空格"是同一件事，都归空串——
+    否则回灌文本里会多出一句"理由是："，后面什么都没有。"""
+    registry = ApprovalRegistry(timeout=5)
+    request = registry.open(tool="run_command", label="执行命令", args="ls")
+    registry.decide(request.approval_id, DENY, "   \n ")
+
+    assert registry.wait_decision(request.approval_id).reason == ""

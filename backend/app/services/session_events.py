@@ -160,6 +160,10 @@ _SNAPSHOT_KEYS = (
     "status",
     "degraded",
     "tool",
+    # 语义种类（P2-1）：与 ``tool`` 一样是"界面渲染这一步要用到的东西"。
+    # 少写它，投影出来的快照就与 ``agent.step_snapshot`` 差一个键——
+    # 那条验收（投影 == 快照）会当场红，这正是这份并列清单存在的意义
+    "kind",
     "added",
     "args",
     "result",

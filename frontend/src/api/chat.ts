@@ -167,6 +167,17 @@ export interface ChatStep {
    * 所有工具调用的 phase 都是 `tool`。非工具步骤没有这个键。
    */
   tool?: string
+  /**
+   * 这一步的**语义种类**（P2-1，后端的 `services/tool_meta.kind_of`）。
+   *
+   * 取值是固定枚举：`read` / `search` / `write` / `delete` / `exec` / `skill` /
+   * `session` / `message` / `tool`。**图标与配色按它选**，`tool` 只用于显示与分组
+   * ——加一个工具时界面一个字都不用改（照 ZCode 的（kind, status, input, output））。
+   *
+   * 老快照（P2-1 之前落库的）没有这个键：那种数据由 `useChatTurns.stepIcon`
+   * 按当时的工具名兜一次，兜不到就画中性图标。
+   */
+  kind?: string
 }
 
 /**
@@ -304,6 +315,8 @@ export type ChatStreamEvent = SeqStamp &
         artifacts?: ChatArtifact[]
         /** 工具名（v0.26）：同上，非工具步骤不发这个键 */
         tool?: string
+        /** 语义种类（P2-1）：与 `ChatStep.kind` 同一个枚举，同上，没有就不发 */
+        kind?: string
       }
     | {
         type: 'approval'
@@ -840,14 +853,21 @@ async function pump(
  *
  * 409 是**正常的一种结果**：等太久已经超时、或者已经点过一次——后端那一头
  * 早就按"没有批准"往下跑了。界面据后端的文案如实说，不要谎报"已执行"。
+ *
+ * `reason`（P2-1）：拒绝时用户在确认条上写的那句给模型的话。有了它，
+ * **下一轮模型才能据此改路子**，而不是把同一条命令原样再试一次（调研报告 §2.5 第 5 条）。
  */
 export function decideApproval(
   approvalId: string,
   decision: ApprovalDecision,
+  reason = '',
 ): Promise<{ accepted: boolean; detail: string }> {
+  // `reason`（P2-1）：拒绝时用户填的那句给模型的话。**空就不发这个键**——
+  // 请求体与加这个输入框之前逐字相同，后端"没填理由"那条路也就无从分叉。
+  const trimmed = reason.trim()
   return request(`/chat/approvals/${encodeURIComponent(approvalId)}`, {
     method: 'POST',
-    body: JSON.stringify({ decision }),
+    body: JSON.stringify(trimmed ? { decision, reason: trimmed } : { decision }),
   })
 }
 

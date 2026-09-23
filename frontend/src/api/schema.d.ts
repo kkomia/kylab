@@ -745,6 +745,10 @@ export interface paths {
          *     门槛取 ``require_admin``，与那个动作本身同一档（``agent_exec`` 的闸 1）：
          *     点这一下等于同意"在这台机器上执行代码"。成员账号根本不会收到这条询问
          *     （命令在执行前就被权限闸拦掉了），所以这里的门槛与它能答的东西是对齐的。
+         *
+         *     ``reason``（P2-1）：拒绝时用户可以捎一句给模型的话。它与决定**同一次请求**
+         *     送进去（见 ``ChatApprovalIn`` 的说明），到 ``approvals`` 那一层被收成一行、
+         *     限长，再由 ``tool_loop._with_reason`` 拼进回灌给模型的工具结果。
          */
         post: operations["decide_approval_api_v1_chat_approvals__approval_id__post"];
         delete?: never;
@@ -3341,6 +3345,12 @@ export interface components {
              * @enum {string}
              */
             decision: "allow_once" | "allow_always" | "deny";
+            /**
+             * Reason
+             * @description 拒绝时给模型的一句理由（P2-1，可空）。它会拼进回灌给模型的工具结果（「对方拒绝了这次执行，理由是：…」），让下一轮模型据此改路子，而不是把同一条命令原样再试一次；留空则与加这个字段之前完全一样。
+             * @default
+             */
+            reason: string;
         };
         /**
          * ChatApprovalOut

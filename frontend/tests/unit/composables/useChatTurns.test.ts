@@ -5,6 +5,9 @@ import {
   degradedReason,
   buildTurns,
   isTraceOpen,
+  readTraceOpenMemory,
+  writeTraceOpenMemory,
+  resultPreview,
   LIVE_TAIL_CHARS,
   liveLine,
   makeMessage,
@@ -12,12 +15,15 @@ import {
   sourcePreview,
   sourceWhere,
   THINKING_EFFORTS,
+  TRACE_PAGE_SIZE,
   replyArtifacts,
   stepIcon,
   traceEntries,
+  tracePage,
   traceSteps,
   traceSummary,
   wasDegraded,
+  RESULT_PREVIEW_CHARS,
   type Message,
   type ThinkingEffort,
 } from '@/composables/useChatTurns'
@@ -328,6 +334,104 @@ describe('isTraceOpen', () => {
   })
 })
 
+describe('过程面板的收起态可记忆（P2-1）', () => {
+  it('没表过态时默认仍是展开（v0.25 的选择不改）', () => {
+    window.localStorage.clear()
+    expect(readTraceOpenMemory()).toBeUndefined()
+    // 兜底值仍是 true：**"过程常驻在正文里"是刻意的决定**，这次不推翻它
+    expect(isTraceOpen(message('assistant'), readTraceOpenMemory() ?? true)).toBe(true)
+  })
+
+  it('用户收起过之后，新的一轮就按收起画（刷新也还在）', () => {
+    writeTraceOpenMemory(false)
+    expect(readTraceOpenMemory()).toBe(false)
+    expect(isTraceOpen(message('assistant'), readTraceOpenMemory() ?? true)).toBe(false)
+  })
+
+  it('**这一轮自己点开的态优先**：全局记忆不覆盖用户当场的那一下', () => {
+    writeTraceOpenMemory(false)
+    const opened = message('assistant', { traceOpen: true })
+    expect(isTraceOpen(opened, readTraceOpenMemory() ?? true)).toBe(true)
+    window.localStorage.clear()
+  })
+})
+
+describe('大输出两级懒加载（P2-1）', () => {
+  /** 30 次调用、每次不同工具名（同名会被并成一组，那样条数就上不去）。 */
+  function manySteps(count: number) {
+    return Array.from({ length: count }, (_, index) =>
+      step('tool', {
+        label: `工具${index}`,
+        tool: `tool_${index}`,
+        kind: 'read',
+        detail: `第 ${index} 次`,
+      }),
+    )
+  }
+
+  function turnWithSteps(steps: ChatStep[]) {
+    return { user: message('user', { text: '问' }), reply: message('assistant', { steps }) }
+  }
+
+  it('超过 N 条时先只给前 N 条，并说清"已显示 X/Y"', () => {
+    const page = tracePage(turnWithSteps(manySteps(30)))
+
+    expect(page.total).toBe(30)
+    expect(page.shown).toBe(TRACE_PAGE_SIZE)
+    expect(page.hidden).toBe(30 - TRACE_PAGE_SIZE)
+    expect(page.entries).toHaveLength(TRACE_PAGE_SIZE)
+  })
+
+  it('没超过 N 条就全画，也不摆那行计数（多一行字是噪声）', () => {
+    const page = tracePage(turnWithSteps(manySteps(3)))
+
+    expect(page.shown).toBe(3)
+    expect(page.total).toBe(3)
+    expect(page.hidden).toBe(0)
+  })
+
+  it('「加载更多」就是**把 limit 调大**（数据一条不少，只是先不画）', () => {
+    const turn = turnWithSteps(manySteps(50))
+    const first = tracePage(turn, TRACE_PAGE_SIZE)
+    const second = tracePage(turn, TRACE_PAGE_SIZE * 2)
+
+    expect(second.shown).toBe(TRACE_PAGE_SIZE * 2)
+    expect(second.entries.slice(0, TRACE_PAGE_SIZE)).toEqual(first.entries)
+    // 翻到头之后 shown 就停在总数上，那行计数与按钮随之消失
+    const last = tracePage(turn, TRACE_PAGE_SIZE * 10)
+    expect(last.shown).toBe(50)
+    expect(last.hidden).toBe(0)
+  })
+
+  it('计数按**工具调用**算，不按行数（并成一行的那 30 次仍是 30 条）', () => {
+    // 同名调用会被并成一个入口（v0.26），但它代表的是**它里面那几次**——
+    // 按行报数会说成"1 条"，那是个假数字（界面上的措辞是"条工具调用"）
+    const steps = Array.from({ length: 30 }, (_, index) =>
+      step('tool', {
+        label: '联网搜索',
+        tool: 'web_search',
+        kind: 'search',
+        detail: `查 ${index}`,
+      }),
+    )
+    const page = tracePage(turnWithSteps(steps))
+
+    expect(page.entries).toHaveLength(1)
+    expect(page.total).toBe(30)
+    expect(page.shown).toBe(30)
+    expect(page.hidden).toBe(0)
+  })
+
+  it('单条返回超长时先只给预览，并报出"仅预览 x/y 字"', () => {
+    const long = 'x'.repeat(RESULT_PREVIEW_CHARS + 1000)
+
+    expect(resultPreview(long)).toHaveLength(RESULT_PREVIEW_CHARS)
+    // 短结果不给预览（调用方据此不给那个按钮）
+    expect(resultPreview('短')).toBeNull()
+    expect(resultPreview('')).toBeNull()
+  })
+})
+
 describe('出处排版', () => {
   it('章节与页码可能缺，缺了就不占位', () => {
     expect(sourceWhere(source(1))).toBe('')
@@ -549,19 +653,25 @@ describe('同类工具合并（v0.26）', () => {
   })
 })
 
-describe('工具图标分类（v0.26）', () => {
-  it('按"它对外做的那件事"分类，同类工具同一个图标', () => {
-    expect(stepIcon({ phase: 'tool', tool: 'web_search' })).toBe('web')
-    expect(stepIcon({ phase: 'tool', tool: 'web_fetch' })).toBe('fetch')
-    expect(stepIcon({ phase: 'tool', tool: 'search' })).toBe('search')
-    expect(stepIcon({ phase: 'tool', tool: 'recall' })).toBe('search')
-    expect(stepIcon({ phase: 'tool', tool: 'export_table' })).toBe('file')
-    expect(stepIcon({ phase: 'tool', tool: 'create_note' })).toBe('note')
+describe('步骤图标＝语义种类（P2-1）', () => {
+  it('后端给了 kind 就用它——**同类工具同一个图标，与工具名无关**', () => {
+    // 这一条是 P2-1 的验收①：卡片的样子由 kind 决定（照 ZCode 的四元组）
+    expect(stepIcon({ phase: 'tool', tool: 'web_search', kind: 'search' })).toBe('search')
+    expect(stepIcon({ phase: 'tool', tool: 'search', kind: 'search' })).toBe('search')
+    expect(stepIcon({ phase: 'tool', tool: 'read_file', kind: 'read' })).toBe('read')
+    expect(stepIcon({ phase: 'tool', tool: 'list_notes', kind: 'read' })).toBe('read')
+    expect(stepIcon({ phase: 'tool', tool: 'create_note', kind: 'write' })).toBe('write')
+    expect(stepIcon({ phase: 'tool', tool: 'run_command', kind: 'exec' })).toBe('exec')
+    expect(stepIcon({ phase: 'tool', tool: 'delete_document', kind: 'delete' })).toBe('delete')
+  })
+
+  it('kind 是词表外的取值（后端加了新档）当没有，不崩', () => {
+    expect(stepIcon({ phase: 'tool', tool: 'web_search', kind: 'brand-new' })).toBe('search')
   })
 
   it('认不出的工具走中性图标，不硬塞一个像样的', () => {
     // 外部 MCP 工具各自是另一家的东西，我们不知道该怎么画
-    expect(stepIcon({ phase: 'tool', tool: 'mcp__tavily__search' })).toBe('mcp')
+    expect(stepIcon({ phase: 'tool', tool: 'mcp__tavily__search' })).toBe('tool')
     expect(stepIcon({ phase: 'tool', tool: '某个新工具' })).toBe('tool')
   })
 
@@ -594,10 +704,25 @@ describe('老快照的兜底（v0.26）', () => {
   })
 
   it('图标也认那批老标签，认不出才退回中性图标', () => {
-    expect(stepIcon({ phase: 'tool', label: '联网搜索' })).toBe('web')
-    expect(stepIcon({ phase: 'tool', label: '抓取网页' })).toBe('fetch')
+    // 联网搜索与抓取网页现在同归 search（P2-1 按语义种类画，不再一个找、一个取）
+    expect(stepIcon({ phase: 'tool', label: '联网搜索' })).toBe('search')
+    expect(stepIcon({ phase: 'tool', label: '抓取网页' })).toBe('search')
+    expect(stepIcon({ phase: 'tool', label: '读文件' })).toBe('read')
     // 后端哪天改了措辞，匹配不上就退中性图标——**这是降级，不是显示错的东西**
     expect(stepIcon({ phase: 'tool', label: '某个改过名的步骤' })).toBe('tool')
+  })
+
+  it('老快照按工具名翻译成种类，新数据与它同档（迁移期两批数据长得一样）', () => {
+    // P2-1 之前落库的步骤只有工具名，没有 kind：这里按工具名翻译一次，
+    // 于是**同一轮里新旧两批数据画出来是同一个样子**（不然刷新前后会变脸）
+    expect(stepIcon({ phase: 'tool', tool: 'web_fetch' })).toBe('search')
+    expect(stepIcon({ phase: 'tool', tool: 'recall' })).toBe('search')
+    expect(stepIcon({ phase: 'tool', tool: 'read_file' })).toBe('read')
+    expect(stepIcon({ phase: 'tool', tool: 'export_table' })).toBe('write')
+    expect(stepIcon({ phase: 'tool', tool: 'spawn_subagent' })).toBe('session')
+    expect(stepIcon({ phase: 'tool', tool: 'list_skills' })).toBe('skill')
+    expect(stepIcon({ phase: 'tool', tool: 'run_command' })).toBe('exec')
+    expect(stepIcon({ phase: 'tool', tool: 'delete_document' })).toBe('delete')
   })
 
   it('非工具步骤不进分组：它们没有 group 键', () => {

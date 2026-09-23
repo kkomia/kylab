@@ -737,6 +737,55 @@ def test_step_events_carry_the_raw_tool_name() -> None:
     assert all(name in ("web_search", "web_fetch") for name in names)
 
 
+def test_step_events_carry_the_semantic_kind() -> None:
+    """步骤事件还要带**语义种类**（P2-1，照 ZCode 的工具卡四元组）。
+
+    界面按它选图标与配色，工具名只用于显示。两个名字不同、种类相同的工具
+    **必须给同一个 kind**——这正是"同 kind 的卡片长得一样"那条验收的落点。
+    """
+    from app.services.llm import ToolCall
+    from app.services.tool_loop import ToolOutcome
+
+    def runner(name: str, args: dict[str, object]) -> ToolOutcome:
+        return ToolOutcome(content="好", summary="查了")
+
+    loop, _ = _loop(
+        [
+            LLMReply(
+                tool_calls=(
+                    ToolCall(id="c1", name="web_search", arguments="{}"),
+                    ToolCall(id="c2", name="read_file", arguments="{}"),
+                )
+            ),
+            LLMReply(text="答"),
+        ],
+        runner=runner,
+    )
+
+    events = list(loop.run(messages=[]))
+    tool_steps = [step for step in _steps(events) if step.phase == "tool"]
+
+    # running 与 done 两条都要带：界面先按 running 画出占位，再按 done 更新那一行
+    assert [step.status for step in tool_steps] == ["running", "running", "done", "done"]
+    assert {step.kind for step in tool_steps if step.tool == "web_search"} == {"search"}
+    assert {step.kind for step in tool_steps if step.tool == "read_file"} == {"read"}
+    # 非工具步骤（组织回答）没有种类：它不该被画成某一种工具卡
+    assert [step.kind for step in _steps(events) if step.phase == "answer"] == [""]
+
+
+def test_the_snapshot_carries_the_kind_for_history_replay() -> None:
+    """快照里也要有 kind（P2-1）：不然刷一次页面，那一列就退回"按工具名猜"。"""
+    from app.services.agent import step_snapshot
+
+    event = StepEvent(phase="tool", label="联网搜索", tool="web_search", kind="search")
+    snapshot = step_snapshot(event)
+    assert snapshot is not None
+    assert snapshot["kind"] == "search"
+    # 老步骤（没有 kind）不该凭空多一个键：读取侧按"缺省即空"处理
+    plain = StepEvent(phase="tool", label="联网搜索", tool="web_search")
+    assert "kind" not in (step_snapshot(plain) or {})
+
+
 # ------------------------------------------------------------------ 并发（v0.27）
 
 
@@ -1274,6 +1323,53 @@ def test_a_denied_call_comes_back_as_the_executor_wrote_it() -> None:
     assert seen == [None, approval_service.DENY]
     tool_messages = [m for m in messages if getattr(m, "role", "") == "tool"]
     assert "没有执行（deny）" in (tool_messages[0].content or "")
+
+
+def test_a_deny_reason_reaches_the_model() -> None:
+    """拒绝时用户填的那句话**要拼进回灌给模型的文本**（P2-1，照 ZCode）。
+
+    没有它，模型只知道"被拒了"，下一轮多半把同一条命令原样再试一次；
+    有了它才知道该换哪条路——这也是这个输入框存在的全部理由（调研报告 §2.5 第 5 条）。
+    """
+    registry = ApprovalRegistry(timeout=5)
+    seen: list[str | None] = []
+    loop, _client = _loop(
+        [LLMReply(tool_calls=(ToolCall(id="c1", name="run_command", arguments="{}"),)), LLMReply()],
+        runner=_approval_runner(registry, seen),
+        approvals=registry,
+    )
+    messages: list = []
+    iterator = loop.run(messages=messages)
+    approval = next(e for e in iterator if isinstance(e, ApprovalEvent))
+    registry.decide(approval.approval_id, approval_service.DENY, "先别动生产库，用测试库那条")
+    list(iterator)
+
+    tool_messages = [m for m in messages if getattr(m, "role", "") == "tool"]
+    content = tool_messages[0].content or ""
+    # 结论在前（模型第一眼要看到"没执行"），理由跟着
+    assert "对方拒绝了这次执行，理由是：先别动生产库，用测试库那条" in content
+    # 执行器写的那句话**一个字都没被替换掉**（我们只是往后追加了一段）
+    assert "没有执行（deny）" in content
+
+
+def test_an_empty_deny_reason_changes_nothing() -> None:
+    """不填理由 = 与加这个输入框**之前完全一样**（P2-1 验收的"不填"那一半）。"""
+    registry = ApprovalRegistry(timeout=5)
+    seen: list[str | None] = []
+    loop, _client = _loop(
+        [LLMReply(tool_calls=(ToolCall(id="c1", name="run_command", arguments="{}"),)), LLMReply()],
+        runner=_approval_runner(registry, seen),
+        approvals=registry,
+    )
+    messages: list = []
+    iterator = loop.run(messages=messages)
+    approval = next(e for e in iterator if isinstance(e, ApprovalEvent))
+    # 界面传空串（用户没填）——回灌文本必须与老行为逐字相同
+    registry.decide(approval.approval_id, approval_service.DENY, "   ")
+    list(iterator)
+
+    tool_messages = [m for m in messages if getattr(m, "role", "") == "tool"]
+    assert (tool_messages[0].content or "") == "没有执行（deny）"
 
 
 def test_a_timeout_reaches_the_model_as_no_answer() -> None:

@@ -62,18 +62,15 @@ import IconAlert from '@/components/icons/IconAlert.vue'
 import IconPlus from '@/components/icons/IconPlus.vue'
 import IconRegenerate from '@/components/icons/IconRegenerate.vue'
 import IconNote from '@/components/icons/IconNote.vue'
+import IconFile from '@/components/icons/IconFile.vue'
+import IconEdit from '@/components/icons/IconEdit.vue'
+import IconTrash from '@/components/icons/IconTrash.vue'
+import IconChat from '@/components/icons/IconChat.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
-import IconClock from '@/components/icons/IconClock.vue'
-import IconDatabase from '@/components/icons/IconDatabase.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
-import IconDownload from '@/components/icons/IconDownload.vue'
-import IconExternalLink from '@/components/icons/IconExternalLink.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
 import IconFormatCode from '@/components/icons/IconFormatCode.vue'
-import IconGlobe from '@/components/icons/IconGlobe.vue'
-import IconInbox from '@/components/icons/IconInbox.vue'
-import IconLibrary from '@/components/icons/IconLibrary.vue'
 import IconLogo from '@/components/icons/IconLogo.vue'
 import IconRefresh from '@/components/icons/IconRefresh.vue'
 import IconRobot from '@/components/icons/IconRobot.vue'
@@ -132,18 +129,23 @@ import {
   isTraceOpen,
   liveLine,
   makeMessage,
+  readTraceOpenMemory,
   replyArtifacts,
   sourcePreview,
   sourceWhere,
-  traceEntries,
+  tracePage,
   traceSummary,
+  writeTraceOpenMemory,
   degradedReason,
   wasDegraded,
   THINKING_EFFORTS,
+  TRACE_PAGE_SIZE,
   type Message,
   type ThinkingEffort,
+  type TracePage,
   type Turn,
 } from '@/composables/useChatTurns'
+import { matchShortcut } from '@/composables/useShortcuts'
 import { useToast } from '@/composables/useToast'
 import { useConversationStore } from '@/stores/conversations'
 import { useNoteStore } from '@/stores/notes'
@@ -174,27 +176,24 @@ const LAST_EFFORT_KEY = 'kylab-last-thinking-effort'
  * 那一列全是同一个图形，扫过去等于没有信息。
  */
 const STEP_ICONS: Record<string, Component> = {
+  // 非工具步骤两档
   think: IconRobot,
-  search: IconSearch,
-  web: IconGlobe,
-  fetch: IconExternalLink,
-  library: IconLibrary,
-  note: IconNote,
-  memory: IconInbox,
-  file: IconDownload,
-  // 技能是「流程 / 说明书」（读 SKILL.md），子 Agent 是「另一个智能体」——
-  // 两者都跟「思考」沾边，所以不再让它们共用 IconRobot，免得三行长一个样
-  skill: IconTasks,
-  agent: IconAi,
-  mcp: IconServer,
-  // 这台机器上的能力（v0.33）：文件夹 = 在用户自己的目录里翻东西，
-  // 代码块 = 跑命令，数据库 = 表格副本上的查询，时钟 = 定时任务
-  fs: IconFolder,
-  shell: IconFormatCode,
-  table: IconDatabase,
-  schedule: IconClock,
-  tool: IconServer,
   build: IconCheck,
+  // 工具步骤：**键就是语义种类**（后端 `tool_meta.kind_of` 给的，P2-1）。
+  // 配色在同一档类的 `.step-kind-*`（见 trace-row.css）——
+  // 这张表只说"画哪张图"，颜色交给样式，两处各管一件。
+  read: IconFile,
+  search: IconSearch,
+  // 「写入/产出」用笔（建笔记、上传、导出都是"往里放东西"）；
+  // 交付物的那张卡片另在正文后面，不靠这个图标承担
+  write: IconEdit,
+  delete: IconTrash,
+  exec: IconFormatCode,
+  skill: IconTasks,
+  session: IconAi,
+  message: IconChat,
+  // 认不出来的（外部 MCP 工具）：中性一档，不猜
+  tool: IconServer,
 }
 
 const store = useKnowledgeBaseStore()
@@ -1235,10 +1234,39 @@ function onComposerKeydown(event: KeyboardEvent): void {
       return
     }
   }
-  if (event.key === 'Enter' && !event.shiftKey) {
+  // 菜单都关着的时候：交给**快捷键注册表**（P2-1）。
+  //
+  // 改之前这里是写死的 `Enter && !shiftKey`。现在"哪组键发送、哪组键换行"由用户在
+  // 设置里定（默认仍是回车发送、Shift+回车换行，见 useShortcuts 的命令表）。
+  // 没匹配上的键**一律不动**：交给浏览器，也就是输入框原生的输入与换行——
+  // 这正是"把发送键改成 Ctrl+回车"之后，单独按回车仍然能换行的原因。
+  const action = matchShortcut(event, 'composer')
+  if (action === 'chat.send') {
     event.preventDefault()
     void send()
+    return
   }
+  if (action === 'chat.newline') {
+    event.preventDefault()
+    insertLineBreak(event)
+  }
+}
+
+/**
+ * 在光标处插一个换行（`chat.newline` 那一条）。
+ *
+ * 为什么要自己插而不是"不拦着让浏览器插"：默认绑定（Shift+回车）确实原生就能换行，
+ * 但用户完全可能把它改成别的（Ctrl+J 之类）——那时不拦着就等于"改了不生效"，
+ * 而界面上的提示会说能用。`setRangeText` 之后**手动派发一个 input 事件**：
+ * v-model 认的是它。
+ */
+function insertLineBreak(event: KeyboardEvent): void {
+  const field = event.target as HTMLTextAreaElement | null
+  if (!field || typeof field.setRangeText !== 'function') return
+  const start = field.selectionStart ?? field.value.length
+  const end = field.selectionEnd ?? start
+  field.setRangeText('\n', start, end, 'end')
+  field.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
 /**
@@ -1502,6 +1530,28 @@ function toggleGroup(key: string): void {
 }
 
 /**
+ * 每一轮"多画了几页"（P2-1 的第一级懒加载，见 `TRACE_PAGE_SIZE`）。
+ *
+ * 按**轮次下标**记而不是按内容：内容会随流式增长，记内容就要跟着它一起搬。
+ * 收起面板再打开时这一份不清——用户点过「加载更多」，再看一眼不该又缩回去。
+ */
+const traceExtraPages = ref(new Map<number, number>())
+
+/** 这一轮**这一屏**要画什么（条目、已显示、总数、还剩多少）。 */
+function traceView(turnIndex: number, turn: Turn): TracePage {
+  // 模板里会调两次（一次画条目、一次画那行计数）：都是纯计算，而且
+  // 同一轮里最多几十步——为省这点开销再引入一层缓存，得不偿失
+  const pages = 1 + (traceExtraPages.value.get(turnIndex) ?? 0)
+  return tracePage(turn, TRACE_PAGE_SIZE * pages)
+}
+
+function showMoreTrace(turnIndex: number): void {
+  const next = new Map(traceExtraPages.value)
+  next.set(turnIndex, (next.get(turnIndex) ?? 0) + 1)
+  traceExtraPages.value = next
+}
+
+/**
  * 打开文件抽屉：``key`` 为空就是浏览文件区，给了就直接预览那一份（v0.26）。
  *
  * **产物卡片点开走这里，而不是直接下载**：用户想知道"它做出来的是个什么"，
@@ -1627,10 +1677,28 @@ function toggleStep(key: string): void {
   openSteps.value = next
 }
 
+/**
+ * 过程面板的**默认展开态**（P2-1）：记的是"用户上一次把面板收起来还是打开"。
+ *
+ * 之所以要有它，而不是把面板改成默认折叠：调研报告抄的是 DSH 的"过程折叠、
+ * 最终答案常显"，但那会推翻 v0.25 那次刻意选择（用户当时要的是**照 Kimi**：
+ * 过程常驻在正文里）。所以这里只做一半：**默认不变（展开）**，
+ * 用户自己收起过之后就按他那一档来（`写进 localStorage`，刷新与切会话都还在）。
+ */
+const traceOpenMemory = ref<boolean | undefined>(readTraceOpenMemory())
+
+/** 面板此刻该不该展开：这一轮自己的态优先，其次才是"用户上次那一档"。 */
+function traceOpened(message: Message): boolean {
+  return isTraceOpen(message, traceOpenMemory.value ?? true)
+}
+
 function toggleTrace(turn: Turn): void {
   const message = turn.reply
   if (!message) return
-  message.traceOpen = !isTraceOpen(message)
+  message.traceOpen = !traceOpened(message)
+  // **收起态可记忆**：点这一下的意思不只是"这一轮收起来"，还有"以后别默认摊开"
+  traceOpenMemory.value = message.traceOpen
+  writeTraceOpenMemory(message.traceOpen)
 }
 
 // ------------------------------------------------------- 消息操作（v17）
@@ -2339,12 +2407,12 @@ function closeReader(): void {
                   v-if="hasTrace(turn.reply)"
                   type="button"
                   class="trace-head"
-                  :aria-expanded="isTraceOpen(turn.reply)"
+                  :aria-expanded="traceOpened(turn.reply)"
                   @click="toggleTrace(turn)"
                 >
                   <IconChevronRight
                     class="trace-caret"
-                    :class="{ 'trace-caret-open': isTraceOpen(turn.reply) }"
+                    :class="{ 'trace-caret-open': traceOpened(turn.reply) }"
                     :size="14"
                   />
                   <!-- 流式时这一行是**滚动的实时状态**（v0.27，照 DeepSeek 的 harness）：
@@ -2365,7 +2433,7 @@ function closeReader(): void {
                 没有 `v-show` 就没有关闭动画的损失：这块本来就没有过渡（只有标题上
                 那个箭头的 transform）。
               -->
-                <div v-if="isTraceOpen(turn.reply)" class="trace">
+                <div v-if="traceOpened(turn.reply)" class="trace">
                   <!-- 过程时间线：只列真发生过的步骤 -->
                   <!--
                     过程时间线：只列真发生过的步骤。
@@ -2378,9 +2446,13 @@ function closeReader(): void {
                     只调用一次的不并）。
                   -->
                   <ol class="steps">
-                    <template v-for="entry in traceEntries(turn)" :key="entry.key">
+                    <template v-for="entry in traceView(turnIndex, turn).entries" :key="entry.key">
                       <!-- 一组：一个入口 + 次数，点开看这一组的每一次调用 -->
-                      <li v-if="entry.kind === 'group'" class="step step-group">
+                      <li
+                        v-if="entry.kind === 'group'"
+                        class="step step-group"
+                        :class="`step-kind-${entry.icon}`"
+                      >
                         <span class="step-icon">
                           <component :is="STEP_ICONS[entry.icon]" :size="13" />
                         </span>
@@ -2423,6 +2495,34 @@ function closeReader(): void {
                       />
                     </template>
                   </ol>
+
+                  <!--
+                    **大输出的第一级懒加载**（P2-1，照 ZCode 的 `{shown}/{total} 条`）：
+                    一轮里几十次工具调用时，面板先只画前 20 条（见 `TRACE_PAGE_SIZE`），
+                    这一行如实报出"画了多少 / 一共多少"，点开才继续画。
+
+                    计数与按钮**都在那一行里**：只给"加载更多"而不说什么进度，
+                    用户不知道后面还有多少（可能是 2 条，也可能是 200 条）。
+                  -->
+                  <div v-if="traceView(turnIndex, turn).hidden > 0" class="trace-more">
+                    <!-- 「X/Y 条工具调用」是照 ZCode 的写法；`total` 为 0 的那一档
+                         （这一轮没有工具调用、但步骤很多）如实换个说法，不印 0/0 -->
+                    <span
+                      v-if="traceView(turnIndex, turn).total > 0"
+                      class="trace-more-count tabular"
+                    >
+                      当前已显示 {{ traceView(turnIndex, turn).shown }}/{{
+                        traceView(turnIndex, turn).total
+                      }}
+                      条工具调用
+                    </span>
+                    <span v-else class="trace-more-count">
+                      还有 {{ traceView(turnIndex, turn).hidden }} 段过程没显示
+                    </span>
+                    <button type="button" class="trace-more-btn" @click="showMoreTrace(turnIndex)">
+                      加载更多
+                    </button>
+                  </div>
 
                   <!-- 思考过程（推理模型的 reasoning_content）：过程的一部分，收在面板里。
                      它可能很长，所以限高滚动，不挤占正文的位置。 -->
@@ -3618,6 +3718,36 @@ function closeReader(): void {
 
 .steps-nested::before {
   display: none;
+}
+
+/*
+ * 「当前已显示 X/Y 条工具调用」+「加载更多」（P2-1）。它是时间线的**收尾那一行**：
+ * 左边留出图标位那 33px（21px 的圆底 + 12px 的 gap），与上面每行的正文对齐——
+ * 对不齐的话，这一行看起来像不属于这条时间线。
+ */
+.trace-more {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-4);
+  padding-left: calc(21px + var(--space-3));
+}
+
+.trace-more-count {
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+/* 一个**轻按钮**（不是主按钮）：它是"再看看"，不是这一步该做的事 */
+.trace-more-btn {
+  padding: 0;
+  font-size: var(--text-micro-size);
+  color: var(--accent-text);
+  transition: var(--transition-ui);
+}
+
+.trace-more-btn:hover {
+  text-decoration: underline;
 }
 
 /* 一组被点开时，上面那一行也要跟着亮一档：用户在看的正是那一行的内容 */

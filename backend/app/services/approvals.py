@@ -36,8 +36,10 @@ __all__ = [
     "DECISIONS",
     "DEFAULT_TIMEOUT_SECONDS",
     "DENY",
+    "MAX_REASON_CHARS",
     "TIMEOUT",
     "UNAVAILABLE",
+    "ApprovalDecision",
     "ApprovalRegistry",
     "ApprovalRequest",
 ]
@@ -49,6 +51,11 @@ ALLOW_ONCE = "allow_once"
 ALLOW_ALWAYS = "allow_always"
 DENY = "deny"
 DECISIONS = (ALLOW_ONCE, ALLOW_ALWAYS, DENY)
+
+#: 拒绝理由的字数上限（P2-1）。**这一句是要进提示词的**，不设上限等于开了一个
+#: 从确认条直达模型上下文的输入口。500 字够说清"为什么不行、换哪条路"，
+#: 又不至于让用户把一整段需求贴进来（那件事该在主输入框里做）。
+MAX_REASON_CHARS = 500
 
 #: 内部取值：**不是用户选的**，是"等不到人"的两种情形。
 #:
@@ -84,6 +91,22 @@ class ApprovalRequest:
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
 
 
+@dataclass(frozen=True, slots=True)
+class ApprovalDecision:
+    """一个决定的**完整形状**：取值 + 用户捎带的那句话（P2-1）。
+
+    为什么把理由单独装一层而不是拼进取值字符串（``"deny:理由"``）：
+    取值是**执行器要判等的枚举**（``agent_exec`` 里一串 ``==``），往它里面塞内容
+    迟早会有人写出"没匹配上于是当成没批准"这类错；而理由只是给人/给模型的一句话。
+    分开之后，取值这一列永远是三个之一（或 ``timeout`` / ``unavailable``）。
+    """
+
+    decision: str
+    reason: str = ""
+    """拒绝时用户填的那句话（可空）。**空的含义是"就像以前一样"**：
+    回给模型的文本一个字不变，所以"不填"这条路上没有任何新增的差异。"""
+
+
 @dataclass(slots=True)
 class _Pending:
     """一条待确认的运行时状态。``event`` 是那句"等人的"——谁决定谁 set。"""
@@ -92,6 +115,8 @@ class _Pending:
     expires_at: float
     event: threading.Event = field(default_factory=threading.Event)
     decision: str = TIMEOUT
+    #: 用户随决定捎带的那句话（P2-1）。见 ``ApprovalDecision.reason``。
+    reason: str = ""
 
 
 class ApprovalRegistry:
@@ -144,12 +169,19 @@ class ApprovalRegistry:
 
         调用方必须是"能把事件先送出去"的那个线程（生成器线程），
         见模块头第 1 条——从工具线程里调它会死锁。
+
+        只要取值（老调用方），理由走 ``wait_decision``——两条路都只是同一个
+        等待窗口的读法，不该各自等一次。
         """
+        return self.wait_decision(approval_id).decision
+
+    def wait_decision(self, approval_id: str) -> ApprovalDecision:
+        """同上，但把**用户捎带的那句话**一起带回来（P2-1，工具循环用它）。"""
         with self._lock:
             item = self._items.get(approval_id)
         if item is None:
             # 没有这条（id 不对，或者已经被处理掉了）：按没批准处理，不放行
-            return TIMEOUT
+            return ApprovalDecision(TIMEOUT)
         remaining = item.expires_at - time.monotonic()
         if remaining > 0 and not item.event.wait(remaining):
             logger.info(
@@ -159,13 +191,17 @@ class ApprovalRegistry:
             )
         with self._lock:
             self._items.pop(approval_id, None)
-        return item.decision
+        return ApprovalDecision(item.decision, item.reason)
 
-    def decide(self, approval_id: str, decision: str) -> bool:
+    def decide(self, approval_id: str, decision: str, reason: str = "") -> bool:
         """交一个决定回来；**返回是否真的送到了**。
 
         已经超时（或已经处理过）时返回 ``False``：端点据此告诉用户"这条已经失效"，
         而不是回一句"已记录"让他以为命令跑了——而那边其实早就按超时处理完了。
+
+        ``reason``（P2-1）：拒绝时用户填的那句给模型的话。它被**压成一行并限长**
+        （见 ``MAX_REASON_CHARS``）——它随后会进提示词，而多行文本会让"一句理由"
+        在模型的眼里变成好几条指令。
         """
         if decision not in DECISIONS:
             return False
@@ -174,6 +210,7 @@ class ApprovalRegistry:
             if item is None or time.monotonic() >= item.expires_at:
                 return False
             item.decision = decision
+            item.reason = _clean_reason(reason)
             item.event.set()
         return True
 
@@ -182,3 +219,14 @@ class ApprovalRegistry:
         expired = [key for key, item in self._items.items() if now >= item.expires_at]
         for key in expired:
             self._items.pop(key, None)
+
+
+def _clean_reason(reason: str) -> str:
+    """把用户填的那句话收成一行、限长（P2-1）。
+
+    两件事都不能省：**换行压成空格**（它随后会进提示词，多行会让一句话看起来
+    像几条并列的指令）、**超长截断**（见 ``MAX_REASON_CHARS``）。
+    空白（"什么都没填"）与没填是同一件事，都归空串。
+    """
+    text = " ".join(str(reason or "").split())
+    return text[:MAX_REASON_CHARS]

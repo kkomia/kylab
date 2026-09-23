@@ -226,6 +226,57 @@ def test_deny_keeps_the_turn_going_without_running(  # type: ignore[no-untyped-d
     assert [event["type"] for event in events][-1] == "done"
 
 
+def test_a_deny_reason_reaches_the_model(  # type: ignore[no-untyped-def]
+    client: TestClient, monkeypatch, fast_timeout
+) -> None:
+    """拒绝时填的理由**真的到了模型那一侧**（P2-1，验收③）。
+
+    这一条是那个输入框存在的全部意义：只拒绝的话，模型只会把同一条命令换个说法再试；
+    带上"为什么不行"它才知道下一步该往哪走（调研报告 §2.5 第 5 条）。
+    断言落在**发给模型的工具消息**上，而不是我们自己的某个中间变量上——
+    中间变量对了、回灌时丢了，用户看到的现象一模一样。
+    """
+    calls = _install_runnable(monkeypatch)
+    fake = install_fake_chat("那我换个办法", script=[_run_command_call("rm -rf /"), LLMReply()])
+    conversation_id = _open_conversation(client)
+
+    services = get_services()
+    opened = []
+    ready = threading.Event()
+    original_open = services.approvals.open
+
+    def spy(**kwargs):  # type: ignore[no-untyped-def]
+        request = original_open(**kwargs)
+        opened.append(request)
+        ready.set()
+        return request
+
+    monkeypatch.setattr(services.approvals, "open", spy)
+    box: dict[str, object] = {}
+
+    def stream() -> None:
+        box["response"] = client.post(
+            "/api/v1/chat/stream",
+            json={"query": "删掉它", "conversation_id": conversation_id, "kb_ids": []},
+        )
+
+    worker = threading.Thread(target=stream, daemon=True)
+    worker.start()
+    assert ready.wait(10)
+    decided = client.post(
+        f"/api/v1/chat/approvals/{opened[0].approval_id}",
+        json={"decision": "deny", "reason": "这台机器上别碰删除命令"},
+    )
+    assert decided.status_code == 200, decided.text
+    worker.join(15)
+    assert not worker.is_alive()
+
+    assert calls == [], "拒绝了就不该起进程"
+    tool_messages = [item for item in fake.seen_messages if item.role == "tool"]
+    assert tool_messages, "工具结果要回到模型手里"
+    assert "对方拒绝了这次执行，理由是：这台机器上别碰删除命令" in (tool_messages[-1].content or "")
+
+
 def test_a_stale_decision_is_refused_not_acknowledged(client: TestClient, fast_timeout) -> None:  # type: ignore[no-untyped-def]
     """失效的确认**回 409**：绝不能回一句"已记录"——那会让用户以为命令执行了。"""
     response = client.post("/api/v1/chat/approvals/some-stale-id", json={"decision": "allow_once"})

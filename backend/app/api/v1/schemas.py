@@ -778,6 +778,15 @@ class ChatApprovalIn(BaseModel):
     decision: Literal["allow_once", "allow_always", "deny"] = Field(
         description="允许一次 / 这类都允许（写进放行清单）/ 拒绝"
     )
+    reason: str = Field(
+        default="",
+        max_length=500,
+        description=(
+            "拒绝时给模型的一句理由（P2-1，可空）。它会拼进回灌给模型的工具结果"
+            "（「对方拒绝了这次执行，理由是：…」），让下一轮模型据此改路子，"
+            "而不是把同一条命令原样再试一次；留空则与加这个字段之前完全一样。"
+        ),
+    )
 
 
 class ChatApprovalOut(BaseModel):

@@ -344,8 +344,12 @@ def decide_approval(
     门槛取 ``require_admin``，与那个动作本身同一档（``agent_exec`` 的闸 1）：
     点这一下等于同意"在这台机器上执行代码"。成员账号根本不会收到这条询问
     （命令在执行前就被权限闸拦掉了），所以这里的门槛与它能答的东西是对齐的。
+
+    ``reason``（P2-1）：拒绝时用户可以捎一句给模型的话。它与决定**同一次请求**
+    送进去（见 ``ChatApprovalIn`` 的说明），到 ``approvals`` 那一层被收成一行、
+    限长，再由 ``tool_loop._with_reason`` 拼进回灌给模型的工具结果。
     """
-    if not services.approvals.decide(approval_id, payload.decision):
+    if not services.approvals.decide(approval_id, payload.decision, payload.reason):
         raise ConflictError(
             "这条确认已经失效了（等太久超时，或者已经点过一次）。"
             "这一轮会按「没有批准」处理；让它重来一次，它会再问你一遍。"
@@ -816,6 +820,11 @@ class _TurnSink:
                     # 工具名（v0.26）：界面按它选图标、把同类调用并成一组。
                     # 非工具步骤没有，所以空就不发这个键
                     **({"tool": event.tool} if event.tool else {}),
+                    # 语义种类（P2-1）：**图标与配色的依据是它，不是工具名**——
+                    # 加一个工具时界面一个字都不用改（照 ZCode 的四元组）。
+                    # 老的步骤（P2-1 之前落库的快照）没有这个键，界面按旧的
+                    # 工具名映射兜底（见 useChatTurns 的 stepIcon）
+                    **({"kind": event.kind} if event.kind else {}),
                     # 两个都是"可选补充"，只在有意义时发（v25）：
                     # degraded 让界面给续跑/重试入口，added 让界面说清这轮找了几条新资料
                     **({"degraded": True} if event.degraded else {}),

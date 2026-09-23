@@ -71,7 +71,9 @@ from app.services.agent import (
 )
 from app.services.approvals import (
     ALLOW_ONCE,
+    DENY,
     UNAVAILABLE,
+    ApprovalDecision,
     ApprovalRegistry,
     ApprovalRequest,
 )
@@ -84,7 +86,7 @@ from app.services.llm import (
     ToolSpec,
     assemble_tool_calls,
 )
-from app.services.tool_meta import meta_of, parallel_groups
+from app.services.tool_meta import kind_of, meta_of, parallel_groups
 
 __all__ = ["DEFAULT_MAX_STEPS", "ToolLoop", "tool_label"]
 
@@ -714,8 +716,16 @@ class ToolLoop:
         for call in calls:
             # `tool` 是**原始工具名**（不是人话标签）：界面按它选图标、把同类调用并成
             # 一组。放在这里而不是让界面猜 label——label 是给人看的，会被改写
+            #
+            # `kind` 是**语义种类**（P2-1，照 ZCode 的四元组）：图标与配色按它选，
+            # 工具名只用来显示。两处都给：`tool` 是"这是什么工具"（分组、回看对账），
+            # `kind` 是"它属于哪一类"（长什么样、什么颜色）。
             yield StepEvent(
-                phase="tool", label=tool_label(call.name), tool=call.name, status="running"
+                phase="tool",
+                label=tool_label(call.name),
+                tool=call.name,
+                kind=kind_of(call.name),
+                status="running",
             )
         outcomes = self._execute_batch(calls, stop=stop)
         merged = _merge_sources(outcomes)
@@ -740,6 +750,7 @@ class ToolLoop:
                 phase="tool",
                 label=tool_label(call.name),
                 tool=call.name,
+                kind=kind_of(call.name),
                 detail=outcome.step_detail(),
                 added=outcome.added,
                 # 入参与原文：界面默认只看 `detail` 那一行结论，
@@ -764,6 +775,10 @@ class ToolLoop:
         一次只问一条：确认条对应**一个动作**，同时摆三条要用户点三次的东西，
         界面与判断都会复杂一截，而"一批里同时要跑两条命令"本来就少见。
 
+        **拒绝时可以捎带一句给模型的话**（P2-1，照 ZCode 的"拒绝理由输入框"）：
+        那句话拼进回灌文本（见 `_with_reason`），下一轮模型据此改路子——
+        否则它只知道"被拒了"，多半会把同一条命令原样再试一次。
+
         问完之后的执行走 `_execute_batch`（几条都已拿到决定，可以照旧并发）——
         顺序仍然是"按调用顺序回灌结果"，与没有审批时一模一样。
         """
@@ -784,18 +799,18 @@ class ToolLoop:
 
         # 先按顺序**一条条问**：每一条都是"发出询问 → 停住等回答"，
         # 所以下面这个循环会在 `wait` 里真的阻塞（生成器的线程，不是工具线程池）
-        decisions: dict[int, str] = {}
+        answers: dict[int, ApprovalDecision] = {}
         for index, request in pending:
             yield _approval_event(request)
-            decisions[index] = self._approvals.wait(request.approval_id)
+            answers[index] = self._approvals.wait_decision(request.approval_id)
         resolved = list(outcomes)
         second = self._execute_batch(
             [calls[index] for index, _ in pending],
             stop=None,
-            approvals=[decisions.get(index, UNAVAILABLE) for index, _ in pending],
+            approvals=[answers[index].decision for index, _ in pending],
         )
         for (index, _), outcome in zip(pending, second, strict=True):
-            resolved[index] = outcome
+            resolved[index] = _with_reason(outcome, answers[index])
         return resolved
 
 
@@ -813,6 +828,35 @@ def _approval_event(request: ApprovalRequest) -> ApprovalEvent:
         detail=request.detail,
         rule=request.rule,
         timeout_seconds=request.timeout_seconds,
+    )
+
+
+def _with_reason(outcome: ToolOutcome, answer: ApprovalDecision) -> ToolOutcome:
+    """拒绝时把用户填的那句话**拼进回灌给模型的文本**（P2-1，照 ZCode）。
+
+    为什么在循环这一层拼、而不是在执行器里：执行器（``agent_exec._not_approved``）
+    只认识"三个取值之一"这件事实，而**这句话是用户说的**，与"为什么没执行"的
+    政策口径无关。放在这里，任何"要问用户的工具"都自动具备这条能力，
+    而不必各自再写一遍。
+
+    两处刻意的限定：
+
+    - **只在拒绝档拼**。用户在"允许"上捎一句话，意思是"顺便提一句"，
+      把它写成"对方拒绝了这次执行"是假的；而放行的理由对模型也没有可操作的下一步；
+    - **空理由一个字节都不加**：这是"不填理由"那条路上的验收——
+      与加这个输入框之前完全一样（用例钉住这一条）。
+
+    措辞照 ZCode 的确认弹窗：先说"对方拒绝了这次执行"，再给理由——
+    模型看到的第一句必须是**结论**，它才知道下一步不能再走这条。
+    """
+    if answer.decision != DENY or not answer.reason:
+        return outcome
+    return ToolOutcome(
+        content=f"{outcome.content}\n（对方拒绝了这次执行，理由是：{answer.reason}）",
+        sources=outcome.sources,
+        artifacts=outcome.artifacts,
+        summary=outcome.summary,
+        added=outcome.added,
     )
 
 

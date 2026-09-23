@@ -40,10 +40,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 __all__ = [
+    "KINDS",
     "RISKS",
     "SCOPES",
     "TOOL_META",
     "ToolMeta",
+    "kind_of",
     "meta_of",
     "parallel_groups",
 ]
@@ -53,6 +55,43 @@ SCOPES: tuple[str, ...] = ("none", "session", "workspace", "system", "network")
 
 #: 风险分级（照 ZCode 的 ``riskLevel``；``critical`` 留给"不可逆的外部动作"）。
 RISKS: tuple[str, ...] = ("low", "medium", "high", "critical")
+
+#: 工具卡的**语义种类**（P2-1，照 ZCode 的固定枚举，见调研报告 §2.5 第 1 条）。
+#:
+#: ZCode 的工具卡只认``（kind, status, input, output）``四元组，kind 是**类别**
+#: 而不是工具名——所以它加几十个工具不用动界面。我们照这条：
+#: 种类在这里定、随 ``StepEvent.kind`` 发给界面，界面按它选图标与配色，
+#: **工具名只用来显示**（那一行的中文标签）。
+#:
+#: 九档，对应"这件事对用户是什么"（前八档照 ZCode 的枚举，``tool`` 是补的那一档）：
+#:
+#: | kind | 是什么 |
+#: | --- | --- |
+#: | ``read`` | 读一眼：列清单、看状态、读文件 |
+#: | ``search`` | 找东西：检索、联网搜、抓网页、在文件里搜 |
+#: | ``write`` | 写入/产出：建库、上传、写笔记、导出、挂定时任务 |
+#: | ``delete`` | 删除/覆盖（不可逆） |
+#: | ``exec`` | 在这台机器上跑东西 |
+#: | ``skill`` | 技能目录与技能正文 |
+#: | ``session`` | 动的是这一轮的会话上下文（子 Agent、会话内的产物） |
+#: | ``message`` | 消息/回复（**今天没有内置工具用它**：留给"发消息"那一类） |
+#: | ``tool`` | 认不出来的（外部 MCP 工具）：中性一档，不猜 |
+#:
+#: ``tool`` 这一档是**我们补的第九个取值**（八档之外），理由是一条实测过的坑：
+#: 未知工具的元数据是 fail-closed（``_UNKNOWN``，按"动整台机器"算），
+#: 把它画成 ``exec`` 会让界面上一个只读的 MCP 工具看起来像"在跑命令"——
+#: 策略上的保守是对的，**显示上的保守不能靠同一档**。
+KINDS: tuple[str, ...] = (
+    "read",
+    "search",
+    "write",
+    "delete",
+    "exec",
+    "skill",
+    "session",
+    "message",
+    "tool",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,12 +200,76 @@ TOOL_META: dict[str, ToolMeta] = {
 #: 为什么不去读 MCP 的 ``annotations``（DSH 是用 ``idempotentHint`` 反推的）：
 #: 我们这边的客户端目前**没有把 annotations 带上来**，凭工具名猜并发安全是在赌。
 #: 等 MCP 客户端把 annotations 透出来，再按 DSH 那条做（见调研报告 §2.2）。
+#:
+#: **它不参与种类推导**：``kind_of`` 对没在表里的名字直接给 ``tool``
+#: （策略上按"动整台机器"算是对的，显示上画成"执行"是错的，见 ``KINDS``）。
 _UNKNOWN = ToolMeta()
 
 
 def meta_of(name: str) -> ToolMeta:
     """取一个工具的元数据；**不认识就按最保守的算**（fail-closed）。"""
     return TOOL_META.get(str(name or ""), _UNKNOWN)
+
+
+#: 六字段**分不出来**的那几个：种类在这里显式指名（P2-1）。
+#:
+#: 为什么需要这张表：``read_only`` / ``side_effect_scope`` / ``destructive``
+#: 回答的是"动不动东西、动了什么"，而"读一眼"与"找东西"在它们眼里是同一档
+#: （都是只读、影响面 none）——那个区别是**语义**，不是策略，元数据里没有它的位置。
+#: 所以这几条按名字指名，**仍然写在这一张表旁边**（不在前端，也不另起一份
+#: 名字→样子的映射）：界面对工具名一无所知，它只认 ``kind``。
+#:
+#: 导出三件套同理：它们的 scope 是 ``session``（产物落在这一轮的会话里），
+#: 按元数据推会得到 ``session``；但用户看到的是"它做出来一份东西"，
+#: 归 ``write`` 才与"建笔记、上传文档"是同一件事（ZCode 把这类单列成"任务输出"，
+#: 我们的八档里没有那一档，收进 ``write``；真正的那份文件由产物卡片单独承担）。
+_KIND_OVERRIDES: dict[str, str] = {
+    # 从"已有的东西里找一段"——与 read（列清单、看状态）不是一回事
+    "search": "search",
+    "recall": "search",
+    "search_files": "search",
+    # 技能是能力层的一档（ZCode 的枚举里也单列）
+    "list_skills": "skill",
+    "read_skill": "skill",
+    # 产出交付物（见上面那段）
+    "export_document": "write",
+    "export_table": "write",
+    "export_deck": "write",
+}
+
+
+def _derive_kind(meta: ToolMeta) -> str:
+    """按元数据推种类（推导规则，顺序即优先级）。
+
+    顺序是有讲究的：``run_command`` 同时是 ``destructive`` 与 ``system``——
+    先看影响面，它才是"执行"；``delete_document`` 是 ``workspace`` + ``destructive``，
+    落到"删除"。反过来（先看 destructive）会把命令画成删除，
+    而"删了一份文档"与"在这台机器上跑了一条命令"对用户是两件事。
+    """
+    if meta.side_effect_scope == "system":
+        return "exec"
+    if meta.destructive:
+        return "delete"
+    if meta.read_only:
+        return "search" if meta.side_effect_scope == "network" else "read"
+    if meta.side_effect_scope == "session":
+        return "session"
+    return "write"
+
+
+def kind_of(name: str) -> str:
+    """工具名 → 语义种类（P2-1）。**界面拿到的就是它，不再自己按名字分类。**
+
+    与 ``meta_of`` 一样对未知工具 fail-closed，但兜的那一档不同：``tool``
+    （中性图标），不是按"动整台机器"推出来的 ``exec``——见 ``KINDS`` 最后一条。
+    """
+    tool = str(name or "")
+    if tool not in TOOL_META:
+        return "tool"
+    explicit = _KIND_OVERRIDES.get(tool)
+    if explicit is not None:
+        return explicit
+    return _derive_kind(TOOL_META[tool])
 
 
 def parallel_groups(calls: list[str]) -> list[list[int]]:

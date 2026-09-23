@@ -58,6 +58,7 @@ import { loadRoster, roster, setOperator } from '@/composables/useOperator'
 import { isAdmin, logout as logoutSession } from '@/composables/useSession'
 import { currentUser } from '@/composables/useSessionToken'
 import { useSidebar } from '@/composables/useSidebar'
+import { bindingParts, bindingsOf, isTypingTarget, matchShortcut } from '@/composables/useShortcuts'
 import { resolvedTheme, setTheme } from '@/composables/useTheme'
 import type { ConversationSummary } from '@/api/conversations'
 import { useConversationStore } from '@/stores/conversations'
@@ -223,21 +224,33 @@ function onNavIntent(to: string): void {
  */
 
 /**
- * `Ctrl/Cmd + K` = 新建会话。
+ * 全局快捷键（P2-1，照 ZCode 的注册表）。
  *
- * 提示写了就要能用：界面上摆一个按不出来的快捷键，比不摆更糟。
- * 只在**非输入态**触发——用户正在输入框里敲字时，Ctrl+K 该归输入框
- * （那是很多编辑器的删行快捷键）。
+ * 原先这里是写死的 `Ctrl/Cmd + K`，而它的提示（侧栏那颗 `Ctrl K` 小片）是另一处
+ * 手写的字符串——两处各写一份，用户改不了，也没人保证它们对得上。
+ * 现在两组键都来自 `useShortcuts` 的命令表：**新建会话**与**切换侧栏**。
+ *
+ * 两条规矩：
+ *
+ * 1. **只处理 `global` 作用域**：输入框里的那些（回车发送）归 `ChatView`，
+ *    在这里也处理一遍会让一次回车干两件事；
+ * 2. **敲字的地方不抢**（`isTypingTarget`）：`Ctrl+K` 在很多编辑器里是删行、
+ *    `Cmd+B` 在笔记页是加粗——这条判断原本就是为 Ctrl+K 写的，现在收进注册表一处。
  */
 function onShortcut(event: KeyboardEvent): void {
-  if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'k') return
-  const target = event.target as HTMLElement | null
-  if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) {
+  if (isTypingTarget(event)) return
+  const action = matchShortcut(event, 'global')
+  if (!action) return
+  event.preventDefault()
+  if (action === 'chat.new') {
+    void router.push({ path: '/chat', query: { new: '1' } })
     return
   }
-  event.preventDefault()
-  void router.push({ path: '/chat', query: { new: '1' } })
+  if (action === 'layout.toggleSidebar') toggleSidebar()
 }
+
+/** 「新建会话」现在绑的是哪几组键（提示与绑定同源，见上面那段说明）。 */
+const newChatKeys = computed(() => bindingParts(bindingsOf('chat.new')[0] ?? ''))
 const knowledgeOpen = ref(false)
 
 function toggleKnowledge(): void {
@@ -495,7 +508,7 @@ async function onLogout(): Promise<void> {
       v-if="!collapsed"
       class="nav-item new-chat"
       :to="{ path: '/chat', query: { new: '1' } }"
-      title="新建会话（Ctrl/Cmd + K）"
+      :title="`新建会话（${newChatKeys.join(' + ')}）`"
     >
       <IconChatNew class="nav-icon nav-motion-drop" />
       <span class="nav-label">新建会话</span>
@@ -503,13 +516,15 @@ async function onLogout(): Promise<void> {
         快捷键提示（Kimi 的 `新建会话  Ctrl K`）。**显示它就必须真的能用**——
         界面上写着一个按不出来的快捷键，比不写更糟。所以下面绑了全局 keydown。
 
+        小片的内容**从注册表读**（P2-1）：用户把这条改成别的键之后，这里跟着变——
+        写死 `Ctrl K` 的话，改完绑定界面就在说假话。
+
         **两枚独立的小片**，不是一个 `Ctrl K` 字符串：Kimi 的实测是一枚 `Ctrl`
         （30×20）+ 一枚 `K`（20×20），各自有自己的底色和 4px 圆角。
         两枚的间距由容器的 `gap` 给，不靠字符串里的空格。
       -->
       <span class="shortcut" aria-hidden="true">
-        <kbd>Ctrl</kbd>
-        <kbd>K</kbd>
+        <kbd v-for="(part, index) in newChatKeys" :key="index">{{ part }}</kbd>
       </span>
     </RouterLink>
 

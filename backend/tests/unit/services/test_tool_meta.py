@@ -104,3 +104,64 @@ def test_run_command_always_needs_approval() -> None:
 def test_grouping_shape(names: list[str], expected: list[list[int]]) -> None:
     """分组的形状（组序 = 调用序，组内可并发，独占各成一组）。"""
     assert parallel_groups(names) == expected
+
+
+# --------------------------------------------------------- 语义种类（P2-1，界面用）
+
+
+def test_every_builtin_tool_has_a_kind_from_the_vocabulary() -> None:
+    """种类是**界面渲染的唯一依据**（P2-1，照 ZCode 的（kind, status, input, output））。
+
+    取值必须落在词表里：拼错一个（``reads``）在界面上只表现为"那一行退回中性图标"，
+    不报错、不崩——正是那种没人会注意到的坏。
+    """
+    from app.services.tool_meta import KINDS, kind_of
+
+    for name in _builtin_names():
+        assert kind_of(name) in KINDS, f"{name} 的种类不在词表里：{kind_of(name)}"
+
+
+def test_two_tools_of_the_same_kind_are_the_same_kind() -> None:
+    """**同一类的两个工具，种类必须一样**——界面按种类画，于是它们长得一样。
+
+    这是 P2-1 的验收①：卡片的样子不再取决于工具名。
+    """
+    from app.services.tool_meta import kind_of
+
+    # 读文件 / 看笔记 / 查表格：都是"看一眼"，画同一张卡
+    assert {kind_of(name) for name in ("read_file", "list_notes", "query_table")} == {"read"}
+    # 写笔记 / 上传文档：都是"往里写"
+    assert {kind_of(name) for name in ("create_note", "upload_document")} == {"write"}
+    # 检索知识库 / 联网搜索 / 抓网页：都是"找东西"
+    assert {kind_of(name) for name in ("search", "web_search", "web_fetch")} == {"search"}
+
+
+def test_the_kind_is_derived_from_the_policy_fields() -> None:
+    """推导规则对得上那三个字段（不然"从元数据推"就只是一句口号）。"""
+    from app.services.tool_meta import kind_of, meta_of
+
+    # 动整台机器的 = 执行；删除类最显眼；写读按影响面与 destructive 分
+    assert kind_of("run_command") == "exec"
+    assert meta_of("run_command").side_effect_scope == "system"
+    assert kind_of("delete_document") == "delete"
+    assert meta_of("delete_document").destructive is True
+    assert kind_of("upload_document") == "write"
+    assert meta_of("upload_document").read_only is False
+    assert kind_of("read_file") == "read"
+    assert meta_of("read_file").read_only is True
+    # 动的是这一轮的会话（子 Agent），不是工作区
+    assert kind_of("spawn_subagent") == "session"
+
+
+def test_an_unknown_tool_is_drawn_neutrally_not_as_exec() -> None:
+    """未知工具（外部 MCP）：策略上 fail-closed，**显示上不能画成"执行"**。
+
+    它的元数据是"可能动整台机器"，照那条推会得到一个"在这台机器上跑命令"的图标——
+    而用户看到的可能只是一个只读的 MCP 工具，那一行就成了假话。
+    """
+    from app.services.tool_meta import KINDS, kind_of
+
+    assert kind_of("mcp__whatever__do_something") == "tool"
+    assert "tool" in KINDS
+    # 空名字同样落这一档（不抛）
+    assert kind_of("") == "tool"

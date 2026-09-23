@@ -9,9 +9,10 @@
  * 图标由调用方给的 `iconClass` 映射决定：**这一层不 import 图标组件**，
  * 它只认 `step.icon` 那个类别键；映射表在 `ChatView`（图标都在那儿 import）。
  */
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 
 import type { TraceStep } from '@/composables/useChatTurns'
+import { resultPreview } from '@/composables/useChatTurns'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import LinkText from '@/components/ui/LinkText.vue'
 
@@ -45,10 +46,37 @@ const hasDetail = computed(() => Boolean(props.step.args || props.step.result))
  * 原始载荷没丢——点开这一步的「入参 / 返回」就是它。
  */
 const detailIsRawJson = computed(() => /^\s*\{\s*"[\w.]+"\s*:/.test(props.step.detail || ''))
+
+/**
+ * **超长返回先只给预览**（P2-1，照 ZCode 的两级懒加载 `previewBytes/fullBytes`）。
+ *
+ * 后端已经把结果裁到 2000 字（那是给"点开看"的预算），但一屏里连着展开十条
+ * 就是两万字的 `<pre>`——真要点开的那一条反而要找半天。这里再切到 600 字：
+ * 够判断"它拿回来的是什么"，其余由「加载全部」给。
+ *
+ * 预览态**只活在这一次渲染里**（组件本地状态）：收起这一行再打开，
+ * 又回到"先给预览"——不做记忆，因为记忆下来的后果是"下次点开直接铺两万字"，
+ * 那正是这一刀要避免的事。
+ */
+const fullResult = ref(false)
+
+/** 超长时的那一段预览；`null` = 不用预览（短结果原样显示，也不多一个按钮）。 */
+const preview = computed(() => (props.step.result ? resultPreview(props.step.result) : null))
+
+const shownResult = computed(() =>
+  preview.value !== null && !fullResult.value ? preview.value : (props.step.result ?? ''),
+)
 </script>
 
 <template>
-  <li class="step" :class="{ 'step-empty': step.empty, 'step-child': variant === 'child' }">
+  <li
+    class="step"
+    :class="[
+      `step-kind-${step.icon}`,
+      { 'step-empty': step.empty, 'step-child': variant === 'child' },
+    ]"
+    :data-kind="step.kind"
+  >
     <span v-if="variant === 'child'" class="step-dot" aria-hidden="true" />
     <span v-else class="step-icon">
       <component :is="icons[step.icon]" :size="13" />
@@ -108,8 +136,23 @@ const detailIsRawJson = computed(() => /^\s*\{\s*"[\w.]+"\s*:/.test(props.step.d
           <pre class="step-raw-body"><LinkText :text="step.args" /></pre>
         </template>
         <template v-if="step.result">
-          <p class="step-raw-label">返回</p>
-          <pre class="step-raw-body"><LinkText :text="step.result" /></pre>
+          <p class="step-raw-label">
+            返回
+            <!-- 只给了预览时**如实标出来**（照 ZCode 的 `xx/x 字`）：不标的话，
+                 用户会以为这就是工具返回的全部，而截断处常在他要的那一段之前 -->
+            <span v-if="preview !== null" class="step-raw-note tabular">
+              仅预览 {{ preview.length }}/{{ step.result.length }} 字
+            </span>
+          </p>
+          <pre class="step-raw-body"><LinkText :text="shownResult" /></pre>
+          <button
+            v-if="preview !== null"
+            type="button"
+            class="step-raw-more"
+            @click="fullResult = !fullResult"
+          >
+            {{ fullResult ? '收起，只看预览' : `加载全部（${step.result.length} 字）` }}
+          </button>
         </template>
       </div>
     </div>
@@ -159,6 +202,24 @@ const detailIsRawJson = computed(() => /^\s*\{\s*"[\w.]+"\s*:/.test(props.step.d
   margin: var(--space-2) 0 var(--space-1);
   font-size: var(--text-micro-size);
   color: var(--text-quaternary);
+}
+
+/* "仅预览 x/y 字"与「加载全部」：同一档小字，跟在标签右边 / 正文下面 */
+.step-raw-note {
+  margin-left: var(--space-2);
+  color: var(--text-quaternary);
+}
+
+.step-raw-more {
+  margin-top: var(--space-1);
+  padding: 0;
+  font-size: var(--text-micro-size);
+  color: var(--accent-text);
+  transition: var(--transition-ui);
+}
+
+.step-raw-more:hover {
+  text-decoration: underline;
 }
 
 .step-raw-body {

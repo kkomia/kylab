@@ -65,33 +65,28 @@ export interface Turn {
 
 /** 过程面板里的一步。`icon` 是键，由页面映射成具体图标组件。 */
 /**
+ * 工具的**语义种类**（P2-1）。与后端 `services/tool_meta.KINDS` 是**同一份枚举**
+ * （那边一处定义、随 `StepEvent.kind` 发过来），这里只是它的类型。
+ */
+export type ToolKind =
+  'read' | 'search' | 'write' | 'delete' | 'exec' | 'skill' | 'session' | 'message' | 'tool'
+
+/**
  * 步骤图标键。
  *
- * **是"类别"不是"工具名"**：界面按它选图标（映射表在 `ChatView`，因为那里才有
- * 图标组件），而同类工具该长同一个样子——七个 `web_search` 调用画七个图标，
- * 只会让那一列看起来在抖。分组同理（见 `traceEntries`）。
+ * 工具步骤的键**就是它的种类**（`ToolKind`），非工具步骤只有两档：
+ * `think`（深度思考）、`build`（组织回答）。
+ *
+ * 为什么不再按工具名分类（v0.26 那张 `TOOL_ICONS` 干的就是这件事）：
+ * 那张表只有界面知道，加一个工具的人不记得改它，那一行就悄悄退化成中性方块；
+ * 而 ZCode 的工具卡只认（kind, status, input, output）四元组——
+ * **工具名只用于显示**。所以种类由后端从工具元数据推出来（见 `tool_meta.kind_of`），
+ * 界面按它选图标与配色，加几十个工具都不用动这一层。
  *
  * 这一层不认识 Vue 组件，所以这里只给键；**别让它 import 图标**，
  * 那样这个纯逻辑模块就得拖着一堆 .vue 才能跑单测。
  */
-export type TraceIcon =
-  | 'think'
-  | 'search'
-  | 'web'
-  | 'fetch'
-  | 'library'
-  | 'note'
-  | 'memory'
-  | 'file'
-  | 'skill'
-  | 'agent'
-  | 'mcp'
-  | 'fs'
-  | 'shell'
-  | 'table'
-  | 'schedule'
-  | 'tool'
-  | 'build'
+export type TraceIcon = ToolKind | 'think' | 'build'
 
 export interface TraceStep {
   key: string
@@ -115,6 +110,15 @@ export interface TraceStep {
    * 那种情况下的兜底见 `group`。
    */
   tool?: string
+  /**
+   * 这一步的**语义种类**（P2-1，后端给的）。
+   *
+   * 与 `icon` 的分工：`icon` 是"画哪张图"（工具步骤就等于 kind，加思考/回答两档），
+   * 这个是**原始的那一档**——配色、`data-kind` 这类要看它的地方用它，
+   * 而画图统一走 `icon`（一个字段一处真相）。
+   * 老快照没有它（那时只有工具名），此时它是 `undefined`。
+   */
+  kind?: ToolKind
   /**
    * **分组的键**（v0.26）：同类工具并成一个入口时按它归并。
    *
@@ -281,104 +285,130 @@ const STEP_ICONS: Record<string, TraceIcon> = {
 }
 
 /**
- * 工具名 → 图标类别（v0.26）。
+ * 步骤 → 图标键（P2-1）。
  *
- * 改之前所有工具都画同一个"服务器"图标——七个联网搜索、两个抓网页，
- * 那一列全是同一个方块，扫过去等于没有信息。这里按**它对外做的那件事**分类：
+ * 三步，顺序就是优先级：
  *
- * | 类别 | 谁 | 为什么是这一类 |
- * | --- | --- | --- |
- * | `search` | `search` / `recall` | 都是"从已有的东西里找一段" |
- * | `web` / `fetch` | `web_search` / `web_fetch` | 一个在公网上找，一个把某一页取回来 |
- * | `library` | 知识库与文档的增删查 | 都动的是"库里有什么" |
- * | `note` | `create_note` / `list_notes` / `attach_note_to_kb` | 笔记载体 |
- * | `memory` | `remember` | 长期记忆 |
- * | `file` | 导出四件套 + `ingest_artifact` | 都产出一份文件 |
- * | `fs` | `list_files` / `read_file` / `search_files` | 都在**用户自己的目录**里翻东西 |
- * | `shell` | `run_command` | 唯一一个"真的在这台机器上跑东西"的动作，单独一类 |
- * | `table` | `list_tables` / `query_table` | 表格副本上的结构化查询（不是检索） |
- * | `schedule` | `schedule_task` / `list_scheduled_tasks` | 到点自动跑的事 |
- * | `skill` / `agent` | 技能与子 Agent | 能力层，不是数据层 |
- *
- * 没列到的一律落到 `tool`（服务器的方块）——**外部的 MCP 工具**走的也是这一档：
- * 它们各自是另一家的东西，我们不知道该怎么画，用一个中性图标比猜一个更像样。
+ * 1. **后端给的种类**（`step.kind`）——新数据一律走这条；
+ * 2. **老快照兜底**（P2-1 之前落库的步骤没有 `kind`）：按当时的工具名/中文标签
+ *    查一次表。这张表**只对那批数据有效**，不给新数据用——它是"让已经存在的
+ *    对话也能画对"的一次性翻译，见下面 `LEGACY_*` 的说明；
+ * 3. 都没有就按 `phase`（非工具步骤：理解问题 / 组织回答）。
  */
-const TOOL_ICONS: Record<string, TraceIcon> = {
+export function stepIcon(step: {
+  phase: string
+  tool?: string
+  label?: string
+  kind?: string
+}): TraceIcon {
+  if (isToolKind(step.kind)) return step.kind
+  if (step.tool) {
+    // 老快照（v0.26 起有 tool，P2-1 起才有 kind）：按工具名翻译成种类
+    if (step.tool.startsWith('mcp__')) return 'tool'
+    return LEGACY_TOOL_KINDS[step.tool] ?? 'tool'
+  }
+  if (step.phase === 'tool' && step.label) {
+    return LEGACY_LABEL_KINDS[step.label] ?? 'tool'
+  }
+  return STEP_ICONS[step.phase] ?? 'search'
+}
+
+/** 后端给的 kind 是不是词表里的取值（老快照没有它、拼错的也当没有）。 */
+function isToolKind(value: string | undefined): value is ToolKind {
+  return typeof value === 'string' && (TOOL_KINDS as readonly string[]).includes(value)
+}
+
+/** 种类的词表（与后端 `tool_meta.KINDS` 同一份；这里只做校验用）。 */
+const TOOL_KINDS: readonly ToolKind[] = [
+  'read',
+  'search',
+  'write',
+  'delete',
+  'exec',
+  'skill',
+  'session',
+  'message',
+  'tool',
+]
+
+/**
+ * **老快照的兜底翻译**：工具名 → 种类（只对 P2-1 之前落库的步骤有效）。
+ *
+ * 后端 `tool_meta.kind_of` 才是真源；这里是它的一份"当时的样子"——
+ * 新数据永远走 `step.kind`，所以**这张表不会再长**（不加新工具）。
+ * 查不到就画中性图标：老数据画得糙一点是可接受的降级，新数据画错才是 bug。
+ */
+const LEGACY_TOOL_KINDS: Record<string, ToolKind> = {
   search: 'search',
   recall: 'search',
-  web_search: 'web',
-  web_fetch: 'fetch',
-  list_knowledge_bases: 'library',
-  create_knowledge_base: 'library',
-  list_documents: 'library',
-  get_document_status: 'library',
-  delete_document: 'library',
-  upload_document: 'library',
-  add_data_source: 'library',
-  attach_note_to_kb: 'library',
-  create_note: 'note',
-  list_notes: 'note',
-  remember: 'memory',
-  export_document: 'file',
-  export_table: 'file',
-  export_deck: 'file',
-  ingest_artifact: 'file',
+  web_search: 'search',
+  web_fetch: 'search',
+  search_files: 'search',
   list_skills: 'skill',
   read_skill: 'skill',
-  spawn_subagent: 'agent',
-  list_files: 'fs',
-  read_file: 'fs',
-  search_files: 'fs',
-  run_command: 'shell',
-  list_tables: 'table',
-  query_table: 'table',
-  schedule_task: 'schedule',
-  list_scheduled_tasks: 'schedule',
+  spawn_subagent: 'session',
+  run_command: 'exec',
+  delete_document: 'delete',
+  list_knowledge_bases: 'read',
+  list_documents: 'read',
+  get_document_status: 'read',
+  list_notes: 'read',
+  list_files: 'read',
+  read_file: 'read',
+  list_tables: 'read',
+  query_table: 'read',
+  list_scheduled_tasks: 'read',
+  // 写入 / 产出那批（与后端 `_KIND_OVERRIDES` 同口径：导出的产物算"做出来一份东西"）
+  create_knowledge_base: 'write',
+  upload_document: 'write',
+  add_data_source: 'write',
+  create_note: 'write',
+  attach_note_to_kb: 'write',
+  remember: 'write',
+  export_document: 'write',
+  export_table: 'write',
+  export_deck: 'write',
+  ingest_artifact: 'write',
+  schedule_task: 'write',
 }
 
 /**
- * 老快照（v0.26 之前）的兜底：那时步骤里只有中文标签，没有工具名。
+ * 老快照里连工具名都没有的那一档（v0.26 之前）：键是**当时写下的中文标签**。
  *
- * **键是当时写下的标签**，所以它只对那批数据有效——后端哪天改了某个标签的措辞，
- * 这里就匹配不上，那些老步骤退回中性图标。**这是可接受的降级**：
- * 它只影响历史回放的图标，不影响任何新数据，也不会显示错的东西。
+ * 后端哪天改了某个标签的措辞，这里就匹配不上，那些老步骤退回中性图标。
+ * **这是可接受的降级**：它只影响历史回放的图标，不影响任何新数据。
  */
-const LEGACY_LABEL_ICONS: Record<string, TraceIcon> = {
-  联网搜索: 'web',
-  抓取网页: 'fetch',
+const LEGACY_LABEL_KINDS: Record<string, ToolKind> = {
+  联网搜索: 'search',
+  抓取网页: 'search',
   检索知识库: 'search',
   回忆: 'search',
-  查看知识库: 'library',
-  新建知识库: 'library',
-  查看文档列表: 'library',
-  查询文档状态: 'library',
-  删除文档: 'library',
-  上传文档: 'library',
-  添加数据源: 'library',
-  把笔记加入知识库: 'library',
-  写笔记: 'note',
-  查看笔记: 'note',
-  记住: 'memory',
-  导出文档: 'file',
-  导出表格: 'file',
-  导出幻灯: 'file',
-  存进知识库: 'file',
+  查看知识库: 'read',
+  查看文档列表: 'read',
+  查询文档状态: 'read',
+  查看笔记: 'read',
   查看技能目录: 'skill',
   读技能: 'skill',
-  '派子 Agent': 'agent',
-}
-
-/** 这一步该画哪个图标：先看工具名，再看老快照的标签，最后按 phase。 */
-export function stepIcon(step: { phase: string; tool?: string; label?: string }): TraceIcon {
-  if (step.tool) {
-    // `mcp__服务__工具`：外部工具统一画"服务器"，那正是它在我们这边的身份
-    if (step.tool.startsWith('mcp__')) return 'mcp'
-    return TOOL_ICONS[step.tool] ?? 'tool'
-  }
-  if (step.phase === 'tool' && step.label) {
-    return LEGACY_LABEL_ICONS[step.label] ?? 'tool'
-  }
-  return STEP_ICONS[step.phase] ?? 'search'
+  '派子 Agent': 'session',
+  删除文档: 'delete',
+  执行命令: 'exec',
+  新建知识库: 'write',
+  上传文档: 'write',
+  添加数据源: 'write',
+  写笔记: 'write',
+  把笔记加入知识库: 'write',
+  记住: 'write',
+  导出文档: 'write',
+  导出表格: 'write',
+  导出幻灯: 'write',
+  存进知识库: 'write',
+  查看文件: 'read',
+  读文件: 'read',
+  在文件里搜: 'search',
+  查看表格: 'read',
+  查表格: 'read',
+  挂定时任务: 'write',
+  查看定时任务: 'read',
 }
 
 /**
@@ -481,6 +511,90 @@ export function traceEntries(turn: Turn): TraceEntry[] {
   return entries
 }
 
+/**
+ * 过程面板**一屏先画几条**（P2-1，照 ZCode 的两级懒加载）。
+ *
+ * 取 20：一屏（常见窗口高度）大约放得下十五到二十行，再往下用户要的就不是
+ * "每一步都摊开"而是结论了。而长回合的量级是真的（实测一轮里几十次工具调用是常事：
+ * 联网搜 7 次 + 抓网页 9 次 + 读文件十几次），全画出来会把这一页的 DOM
+ * 撑成几百个节点，滚动与流式更新都跟着变卡。
+ *
+ * 计数单位是**条目**（一行一步，或一行一组），与界面上那行「当前已显示 X/Y」一致。
+ */
+export const TRACE_PAGE_SIZE = 20
+
+/**
+ * 单条原文（入参 / 返回）默认给多少字（P2-1）。
+ *
+ * 后端已经把这两样各裁到 2000 字（`tool_loop.MAX_STEP_PREVIEW_CHARS`），
+ * 这里再切一刀是**给眼睛**切的：600 字大约十来行，够看出"它到底返回了什么"，
+ * 再长就该由用户自己点开（ZCode 的 `previewBytes/fullBytes` 是同一个意思）。
+ */
+export const RESULT_PREVIEW_CHARS = 600
+
+/** 一屏里先画哪几条、还剩多少条（P2-1 的两级懒加载里的第一级）。 */
+export interface TracePage {
+  /** 这一轮要渲染的条目（截断后）。 */
+  entries: TraceEntry[]
+  /** 已经显示出来的**工具调用**条数（一组算它里面那几次，见 `tracePage`）。 */
+  shown: number
+  /** 这一轮的工具调用总数。 */
+  total: number
+  /** 还有多少**条目**没画（0 = 全都在）。切的是条目，计数给的是调用。 */
+  hidden: number
+}
+
+/**
+ * 把一轮的条目按"先画前 N 条"切一刀（P2-1）。
+ *
+ * **切的是渲染，不是数据**：整轮的事件、快照一条不少（它们在后端与消息里），
+ * 这里只决定"这一屏先画多少"——所以点「加载更多」是零成本的，也不会丢信息。
+ *
+ * 两处口径是刻意的：
+ *
+ * - **切按条目**：一屏放得下的是"行"，而一组（同类工具合并的那一行）本身就是一行；
+ * - **报数按调用**：界面上写的是「X/Y 条工具调用」，而合并后的那一行代表的是
+ *   它里面那几次（ZCode 报的也是调用数）。按条目报数会在"搜了 30 次并成一行"时
+ *   说成"1 条"，那是个假数字。
+ */
+export function tracePage(turn: Turn, limit = TRACE_PAGE_SIZE): TracePage {
+  const entries = traceEntries(turn)
+  const total = countCalls(entries)
+  if (limit <= 0 || entries.length <= limit) {
+    return { entries, shown: total, total, hidden: 0 }
+  }
+  const visible = entries.slice(0, limit)
+  return {
+    entries: visible,
+    shown: countCalls(visible),
+    total,
+    hidden: entries.length - limit,
+  }
+}
+
+/** 这些条目一共代表几次工具调用（非工具步骤不算——那不是"工具调用"）。 */
+function countCalls(entries: TraceEntry[]): number {
+  let count = 0
+  for (const entry of entries) {
+    if (entry.kind === 'group') count += entry.steps.length
+    else if (entry.step.tool) count += 1
+  }
+  return count
+}
+
+/**
+ * 单条原文的预览（P2-1 的第二级懒加载）：超长时先给前面一段。
+ *
+ * 返回 `null` 表示"不用预览，原样显示"——调用方据此决定要不要给「加载全部」。
+ * 判据用**字符数**而不是渲染后的行数：字符数是后端与界面都握得住的那个量
+ * （后端那一刀也按字符），两处口径一致才不会出现"看起来没超、其实超了"。
+ */
+export function resultPreview(text: string, limit = RESULT_PREVIEW_CHARS): string | null {
+  const body = text || ''
+  if (body.length <= limit) return null
+  return body.slice(0, limit)
+}
+
 /** 一个块内按工具名分组：按首次出现的顺序排，**只留两成员以上的**。 */
 function groupBlock(block: TraceStep[]): TraceEntry[] {
   const order: string[] = []
@@ -534,6 +648,9 @@ function agentTraceSteps(message: Message): TraceStep[] {
   const steps: TraceStep[] = message.steps.map((step, index) => ({
     key: `${step.phase}-${index}`,
     icon: stepIcon(step),
+    // 原始种类：工具步骤与 icon 同值，但"原始的那一档"单独留一份——
+    // 配色与 `data-kind` 认它、画图认 icon（老快照没有它，于是 undefined）
+    kind: isToolKind(step.kind) ? step.kind : undefined,
     tool: step.tool,
     // 老快照没有 `tool`：退回当时的标签，好让**已经存在的对话**也能合并
     group: step.phase === 'tool' ? step.tool || step.label : undefined,
@@ -618,10 +735,44 @@ function answerDetail(message: Message): string {
  *
  * 代价是每一轮都多占几行。可接受：那些行本身就是"这句回答是怎么来的"，
  * 而收起来的信息等于没有。
+ *
+ * **P2-1 的取舍**：调研报告里还有一条"过程折叠、最终答案常显"（DSH 的做法），
+ * 这里**刻意不做成默认**——默认折叠会推翻 v0.25 那次选择（用户当时要的就是
+ * "过程常驻在正文里"）。改成**收起状态可记忆**：用户自己收起过，之后新出现的回合
+ * 就按收起画（`fallback`），而**没表过态的默认仍是展开**。
+ * 一个是"我们替你决定收起来"，一个是"记住你上次那一下"，两件事不能混。
  */
-export function isTraceOpen(message: Message): boolean {
+export function isTraceOpen(message: Message, fallback = true): boolean {
   if (message.traceOpen !== undefined) return message.traceOpen
-  return true
+  return fallback
+}
+
+/** 过程面板收起态的本机记忆（P2-1）。键与侧栏折叠同一族（`kylab-*`）。 */
+export const TRACE_OPEN_STORAGE_KEY = 'kylab-trace-open'
+
+/**
+ * 上一次用户把过程面板**收起/展开**之后选的那一档。
+ *
+ * 只在用户明确点过之后才有值：没点过 = `undefined`（默认展开，与 v0.25 一样）。
+ * 读不到 localStorage（隐私模式）就当没记过——**不因为读不到就改变默认**。
+ */
+export function readTraceOpenMemory(): boolean | undefined {
+  try {
+    const raw = window.localStorage.getItem(TRACE_OPEN_STORAGE_KEY)
+    if (raw === null) return undefined
+    return raw === '1'
+  } catch {
+    return undefined
+  }
+}
+
+/** 记下用户这一次的选择（`undefined` = 忘掉它，回到"默认展开"）。 */
+export function writeTraceOpenMemory(open: boolean): void {
+  try {
+    window.localStorage.setItem(TRACE_OPEN_STORAGE_KEY, open ? '1' : '0')
+  } catch {
+    // 存不上就只在本次会话生效（与 useSidebar 同一条）
+  }
 }
 
 /** 引用一行："文档名 › 章节（第 N 页）"——章节与页码可能缺，缺了就不占位。 */

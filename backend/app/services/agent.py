@@ -102,6 +102,22 @@ class StepEvent:
     两个方向不同，所以是两个字段而不是一个。
     """
 
+    kind: str = ""
+    """这一步的**语义种类**（P2-1，照 ZCode 的工具卡四元组）。
+
+    取值是固定枚举（``read`` / ``search`` / ``write`` / ``delete`` / ``exec`` /
+    ``skill`` / ``session`` / ``message`` / ``tool``，定义在
+    ``services/tool_meta.py`` 一处），**从工具元数据的三个字段推出来**：
+    界面按它选图标与配色，于是"加一个工具"不再需要动界面
+    （改之前前端的 `TOOL_ICONS` 是一张工具名→图标的表，加工具的人不记得改它，
+    那一行就退化成中性方块）。
+
+    为什么不让界面自己按 ``tool`` 分类：``tool`` 是**显示名**（会改名、会被外部
+    MCP 造出任意名字），而种类是语义；两者放在一起，改名的代价就是"图标悄悄变错"。
+
+    非工具步骤（理解问题、组织回答）是空串。
+    """
+
 
 @dataclass(frozen=True, slots=True)
 class SourcesEvent:
@@ -186,6 +202,9 @@ def step_snapshot(event: StepEvent) -> dict[str, object] | None:
         **({"degraded": True} if event.degraded else {}),
         # 工具名落在快照里：回看历史时同样要按它选图标、把同类调用并成一组
         **({"tool": event.tool} if event.tool else {}),
+        # 种类（P2-1）：回看历史时同样是**界面选图标与配色的依据**。
+        # 不落库的话，刷一次页面之后那一列就退回"按工具名猜"——正是这次要拆掉的东西
+        **({"kind": event.kind} if event.kind else {}),
         **({"added": event.added} if event.added is not None else {}),
         **({"args": event.args} if event.args else {}),
         **({"result": event.result} if event.result else {}),
