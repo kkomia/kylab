@@ -163,3 +163,33 @@ frontend-react/
 - 计划文档：本文（`docs/计划与记录/React-迁移计划-v0.1.md`）；
 - 评估依据：`docs/调研/前端技术栈与-chat-UI-重做评估-v0.1.md`；
 - 进度记录：开发计划 §12.230（每完成一个阶段回填一行，含提交号）。
+
+---
+
+## 9. 进度（回填）
+
+| 阶段 | 状态 | 提交 | 证据 |
+| --- | --- | --- | --- |
+| **P0 脚手架** | 完成 | `a93d052` | `frontend-react/` 四门禁自足跑绿（构建 167ms）；api 层 25 个文件 + 设计令牌原样搬；`gen_api_types.py --target`、`scripts/check-react.sh` |
+| **P1 对话页** | 完成（首版） | `ea0425c` | assistant-ui `useExternalStoreRuntime` 自管网络；过程面板/出处/交付物/审批/命令/提及/上下文仪表/重连全在；回合模型与常驻流从 Vue 逐条搬（旧 145 条逻辑用例 → 新 176 条） |
+| **P2 应用壳** | 完成（首版） | `ea0425c` | 路由与旧 vue-router 逐条对应 + 登录守卫 + 标题映射 + 全局 Toaster；19 个 shadcn 原语 vendor 进 `src/ui`（令牌化） |
+| **P3 知识库域** | 完成（首版） | `ea0425c` | 列表/详情/Wiki/文档详情 + 抽屉/上传/分享/数据源/时间线/库内检索；75 条用例 |
+| **P4 笔记 + 其余** | 完成（首版） | `ea0425c` | 笔记 tiptap React（84 条用例）；任务/记忆/工作区/能力/设置/驾驶舱/登录/404（50 条用例）；Office 预览三套渲染器（27 条用例） |
+| **P5 切换** | 未开始 | — | 需要：逐页浏览器对照（同一条会话/同一份数据）、nginx 路径分流、删 `frontend/`、`check-frontend.sh` 改指向 |
+
+**当前门禁**：`scripts/check-react.sh` 全绿（lint / tsc / **434 条用例** / 构建 / emoji / API 契约）；
+旧前端与后端的门禁**不受影响**（本计划第 1 节的纪律：两套互不当对方的红灯）。
+
+**下一步（P5 之前必须做的事）**：
+
+1. **人工对照**：同一条会话、同一份笔记、同一个库，在两套前端里逐页截图比对——
+   这是 §0 验收第 2 条，**目前一次都没做过**（各域报告只做了代码级对照）；
+2. **`src/ui` 原语替换**：知识库域自带的 `primitives.tsx`（占位实现）与 misc 域的 `shared/ui.tsx`
+   应在对照通过后替换成 `src/ui/*`（shadcn），去掉两份手写外壳；
+3. **缺失原语**：`src/ui` 还差 10 个（alert-dialog / checkbox / radio-group / context-menu /
+   avatar / progress / collapsible / command / drawer / resizable）——依赖已装，照 `src/ui/README.md` 补；
+4. **快捷键注册表**：chat 域只接了 Enter/Shift+Enter；`useShortcuts` 注册表在 misc 域已搬，
+   两处要合起来接（设置里的快捷键面板 → 对话页真实生效）；
+5. **抽屉**：对话页的出处抽屉/产物抽屉现在就地弹窗（旧版是右侧抽屉），
+   `src/ui/sheet` 已就绪，接线后替换；
+6. **剩余依赖**：`remark-math`（可选，替换 chat 域自写的 `rehypeInlineMath`）。
