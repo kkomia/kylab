@@ -171,6 +171,11 @@ cd /vol1/1000/docker/kylab/app && docker compose build frontend && docker compos
 # 核对：curl -s http://127.0.0.1:8081/ | grep -o 'id="app"'   # 回到旧版
 ```
 
+`<旧提交>` 取 `git log agent -1 --format=%H -- frontend`（2026-09-23 核过：`bf92dee`，
+它的 `frontend/` 里有 **153 个 `.vue`**、含 `views/ChatView.vue`，而且**自带
+`Dockerfile` 与 `nginx.conf`**——所以 archive 过去 `docker compose build frontend` 就能直接重建，
+不需要另外补任何文件）。
+
 从本机做也行（与部署对称）：`git archive --format=tar <旧提交> frontend | ssh yumao@192.168.31.18 "tar -x -C /vol1/1000/docker/kylab/src --overwrite && cd /vol1/1000/docker/kylab/app && docker compose build frontend && docker compose up -d frontend"`。
 旧前端的最后一个提交在 `agent` 分支上（`git log agent -1 -- frontend` 可取到哈希）。
 **后端不用回滚**：这一批没动它（`docker compose build frontend` 也只重建前端）。
