@@ -49,7 +49,11 @@ import {
   type MemoryFile,
   type MemoryFileDetail,
 } from '@/api/memory'
-import { formatBytes, formatDate } from '@/lib/format'
+import { Markdown } from '@/features/knowledge/markdown'
+// 阅读视角复用本仓那份 Markdown 渲染（与能力页的技能正文同一处），
+// 它的排版类 `kb-md-*` 在知识库域的样式表里——本页是懒加载路由，得自己带上
+import '@/features/knowledge/knowledge.css'
+import { formatBytes, formatDate, formatRelativeTime } from '@/lib/format'
 import { useSessionStore } from '@/lib/session'
 
 import { SettingGroupPanel } from '../settings/SettingGroupPanel'
@@ -102,6 +106,28 @@ const TABS = [
   { value: 'recall' as const, label: '召回' },
 ]
 
+/** 右栏的两种形态：读（渲染后的正文）与改（原文）。 */
+type EditorView = 'read' | 'edit'
+
+/** 这一份记忆怎么生效：每轮注入 / 可被召回 / 只是文本。列表行右侧那枚标记用它。 */
+function effectOf(item: MemoryFile): string {
+  if (item.injected) return '每轮注入'
+  if (item.retrievable) return '可召回'
+  return '不参与'
+}
+
+/**
+ * 阅读视角的正文：**掐掉开头那段 frontmatter**。
+ *
+ * `---` 在 Markdown 里是分割线，整份原文直接渲染的话，`summary: …` 与 `read_when: - …`
+ * 会变成正文里的一段——那是这份记忆的元数据，不是它要说的事。编辑视角仍用原文
+ * （逐字还原，frontmatter 在里面）。
+ */
+function bodyOf(content: string): string {
+  const frontmatter = /^\s*---\r?\n[\s\S]*?\r?\n---[ \t]*(\r?\n|$)/
+  return content.replace(frontmatter, '')
+}
+
 export function MemoryPage() {
   const queryClient = useQueryClient()
   const isAdmin = useSessionStore((store) => store.currentUser?.role === 'admin')
@@ -111,6 +137,8 @@ export function MemoryPage() {
   const [detail, setDetail] = useState<MemoryFileDetail | null>(null)
   const [draft, setDraft] = useState('')
   const [detailLoading, setDetailLoading] = useState(false)
+  /** 右栏形态：默认**读**（渲染后的正文），编辑才切成原文。 */
+  const [view, setView] = useState<EditorView>('read')
   /** 保存失败的原因原样留在编辑器上方：**不能默默丢掉用户刚写的东西**。 */
   const [saveError, setSaveError] = useState('')
   const [filter, setFilter] = useState('')
@@ -302,15 +330,6 @@ export function MemoryPage() {
     void openFile(path)
   }
 
-  /** 当前文件在"能不能被召回"这条轴上的位置，用一句人话讲清。 */
-  const retrievalNote = !detail
-    ? ''
-    : detail.injected
-      ? '每轮对话都会把它整份注入上下文（不参与检索，所以搜不到是正常的）。'
-      : detail.retrievable
-        ? '会被「召回」（记忆检索）找到。保存后索引由记忆服务自动跟上，约几秒。'
-        : '这个位置的文件既不注入也不参与检索，只是一份可编辑的文本。'
-
   const statusView = !status
     ? { label: '读取中', tone: 'neutral' as const }
     : !status.enabled
@@ -471,19 +490,38 @@ export function MemoryPage() {
                                     ? 'm-file-item m-file-item-on'
                                     : 'm-file-item'
                                 }
+                                /* 完整路径仍拿得到：第二行换了摘要之后，它是鼠标下的那一条 */
+                                title={item.path}
                                 onClick={() => openFromList(item.path)}
                               >
-                                <span className="m-file-title">{item.title}</span>
-                                <span className="m-file-path">{item.path}</span>
+                                <span className="m-file-head">
+                                  <span className="m-file-title">{item.title}</span>
+                                  {/* 改动时间放在行右端：找"刚改过的那份"时不用逐个点开 */}
+                                  <span className="m-file-time tabular">
+                                    {formatRelativeTime(item.modified_at)}
+                                  </span>
+                                </span>
+                                {/*
+                                  第二行**不再是同一句话的第二遍**：核心文件的 `title`
+                                  就是 `path`（AGENTS.md / AGENTS.md / 1.4 KB），
+                                  整行里同一个名字写了两遍。有摘要给摘要；没摘要就只在
+                                  "路径与标题不同"时给路径——两个都不一样才留空。
+                                */}
+                                {item.summary ? (
+                                  <span className="m-file-summary">{item.summary}</span>
+                                ) : item.path !== item.title ? (
+                                  <span className="m-file-path">{item.path}</span>
+                                ) : null}
                                 <span className="m-file-meta">
+                                  {/* 生效标记：这一份怎么被用上。原先只有"不参与"与每日的
+                                      整合状态有标记，核心与长期知识那两行是空的——一列里
+                                      有的有、有的没有，读起来像没渲染出来。 */}
+                                  <Badge variant="secondary">{effectOf(item)}</Badge>
                                   {item.kind === 'daily' ? (
                                     <Badge variant={item.consolidated ? 'secondary' : 'warning'}>
                                       {item.consolidated ? '已整合' : '待整合'}
                                     </Badge>
-                                  ) : (
-                                    !item.retrievable &&
-                                    !item.injected && <Badge variant="secondary">不参与</Badge>
-                                  )}
+                                  ) : null}
                                   <span className="tabular">{formatBytes(item.size_bytes)}</span>
                                 </span>
                               </button>
@@ -514,7 +552,16 @@ export function MemoryPage() {
                   <>
                     <header className="m-editor-head">
                       <div className="m-editor-title">
-                        <h2>{detail.title}</h2>
+                        <h2>
+                          {detail.title}
+                          {/*
+                            「这一份怎么生效」按《前端设计规范》§5.1 收进 ⓘ：原先它是一行
+                            常驻小字（"每轮对话都会把它整份注入上下文…"）。机制说一遍就够，
+                            而**这一份具体怎么生效**由列表行右侧那枚标记逐行承担
+                            （`effectOf`）——那句话与标记本来就是同一件事的两种说法。
+                          */}
+                          <InfoTip text="记忆分两路生效：核心文件（MEMORY.md / SOUL.md）每轮整份注入上下文，不参与检索（所以搜不到是正常的）；每日现场与长期知识进检索索引，由召回工具按需取片段。其余位置的文件既不注入也不参与检索，只是一份可编辑的文本。" />
+                        </h2>
                         {/* 核心文件的标题就是文件名（MEMORY.md），再摆一行路径是重复的 */}
                         {detail.path !== detail.title && (
                           <code className="m-file-path">{detail.path}</code>
@@ -522,6 +569,17 @@ export function MemoryPage() {
                       </div>
                       <div className="m-page-actions">
                         {dirty && <span className="text-micro">未保存</span>}
+                        {/* 右栏默认是**读**（渲染后的正文），编辑才切回原文的 textarea：
+                            进来看到的应该是"这份记忆说了什么"，而不是 `---` 与 `##`。
+                            编辑态仍是逐字还原的原文本（frontmatter 在里面，富文本会
+                            "顺手格式化"掉用户的排版）。 */}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setView(view === 'read' ? 'edit' : 'read')}
+                        >
+                          {view === 'read' ? '编辑' : '阅读'}
+                        </Button>
                         {dirty && (
                           <Button size="sm" onClick={() => setDraft(detail.content)}>
                             还原
@@ -538,25 +596,28 @@ export function MemoryPage() {
                       </div>
                     </header>
 
-                    <p className="m-editor-note text-micro">
-                      {retrievalNote}
-                      <InfoTip text="记忆分两路生效：核心文件（MEMORY.md / SOUL.md）每轮整份注入上下文；每日现场与长期知识进检索索引，由召回工具按需取片段。其余位置的文件只是可编辑文本。" />
-                    </p>
-
                     {saveError && (
                       <Notice tone="error" icon={<AlertCircle size={15} />}>
                         {saveError}（你的改动还在编辑器里，可以再存一次）
                       </Notice>
                     )}
 
-                    <textarea
-                      className="m-editor-body"
-                      spellCheck={false}
-                      aria-label="记忆文件正文"
-                      value={draft}
-                      onChange={(event) => setDraft(event.target.value)}
-                      onKeyDown={onEditorKeydown}
-                    />
+                    {view === 'read' ? (
+                      /* 与笔记页共用同一种"读"：正文按 Markdown 渲染（只读长文的线宽口径），
+                         没有引用角标、没有双链——记忆里没有出处这个概念 */
+                      <div className="m-editor-read">
+                        <Markdown text={bodyOf(draft)} />
+                      </div>
+                    ) : (
+                      <textarea
+                        className="m-editor-body"
+                        spellCheck={false}
+                        aria-label="记忆文件正文"
+                        value={draft}
+                        onChange={(event) => setDraft(event.target.value)}
+                        onKeyDown={onEditorKeydown}
+                      />
+                    )}
 
                     <footer className="m-editor-foot text-micro">
                       <span className="tabular">

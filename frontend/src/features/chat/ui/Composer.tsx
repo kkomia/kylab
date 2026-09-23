@@ -251,12 +251,18 @@ export function Composer() {
       onDrop={onDrop}
     >
       {/*
-        「回到最新」浮标：往上翻旧回答时出现（**贴底时 assistant-ui 自己渲染成空**，
-        所以这里不用自己判"有没有贴底"）。挂在输入卡片上沿，不跟着内容滚走。
+        「回到最新」浮标：往上翻旧回答时出现。挂在输入卡片上沿，不跟着内容滚走。
+
+        **贴底时它靠 `disabled:hidden` 消失**（第三批评审 A①，实测修正）：本版
+        assistant-ui 的回调在贴底时返回 `null`，而 `createActionButton` 把 `null`
+        接成 `disabled`——**按钮仍在文档里、仍然可见**，只是点不动。于是那枚只有图标
+        的箭头一直挂在最后一条消息的操作行右边，看着像个没用的残留；点它（此时必然
+        贴底）又什么都不会发生。库给的状态钩子就是 `disabled`，用一条工具类接上，
+        这一段就回到上面那句原本的意图：**只在能起作用时才出现**。
       */}
       {chat.messages.length > 0 ? (
         <ThreadPrimitive.ScrollToBottom
-          className="absolute -top-[calc(var(--space-8)+var(--space-2))] left-1/2 z-[2] inline-flex h-[var(--control-height)] w-[var(--control-height)] -translate-x-1/2 cursor-pointer items-center justify-center rounded-[var(--radius-pill)] border border-[var(--border)] bg-[var(--bg-surface)] text-[var(--text-secondary)] shadow-[var(--shadow-raised)]"
+          className="absolute -top-[calc(var(--space-8)+var(--space-2))] left-1/2 z-[2] inline-flex h-[var(--control-height)] w-[var(--control-height)] -translate-x-1/2 cursor-pointer items-center justify-center rounded-[var(--radius-pill)] border border-[var(--border)] bg-[var(--bg-surface)] text-[var(--text-secondary)] shadow-[var(--shadow-raised)] disabled:hidden"
           aria-label="回到最新"
           title="回到最新"
         >
@@ -359,8 +365,27 @@ export function Composer() {
           onKeyDown={onKeyDown}
         />
 
+        {/*
+          控制行的**预算**与**放不下时的退路**（第三批评审 A②，实测修正）。
+
+          原先它在中档字号、1440 的窗口下就折成两行：「选库」整格掉到第二行，而超出
+          只有十几像素（卡片内宽 742，那一行要 751）——折出来的第二行不是排版意图，
+          是"放不下"的副作用，还把卡片从 98 撑到 134（实测）。两处收窄之后默认档一行
+          放得下，还留 ~30px：胶囊的横内边距 12→8（`DropdownShell` 的 `CONTROL_TRIGGER`，
+          一处取值六个胶囊同时跟上）、仪表那一格只放比率（`ContextGauge`，见那里的说明）。
+
+          放不下时的退路分两层，**顺序不能反**：
+          1. **左组折行**（`flex-wrap` 留着）：加号 / 执行策略 / 模式 / 知识库 / 选库
+              是"这一轮给什么"，字数少、整格移动不丢词——折行比把它们的标签截短可读；
+          2. **右组不折，读数那一格出省略号**（`min-w-0` + `truncate`）：上下文读数 /
+              模型 / 发送是"怎么生成、发出去"，读数截短可认（完整数字在悬停与菜单里），
+              而发送键与那条细占用条是钉住的（`shrink-0`）——它们被压扁就什么都不剩了。
+
+          于是：默认字号一行；字号调到「更大」或窗口很窄时，是**左组折行、右组完整**，
+          没有哪一格的字会被压成两行（那正是这张卡片这一轮要修的毛病）。
+        */}
         <div className="flex items-center justify-between gap-[var(--space-2)]">
-          <div className="flex flex-wrap items-center gap-[var(--space-1)]">
+          <div className="flex min-w-0 flex-wrap items-center gap-[var(--space-1)]">
             {/* 「加号」：附件与技能都收在这里 */}
             <PlusMenu
               onPickFiles={() => fileInput.current?.click()}
@@ -372,17 +397,18 @@ export function Composer() {
             <KnowledgeBaseControl />
           </div>
 
-          <div className="flex items-center gap-[var(--space-2)]">
+          <div className="flex min-w-0 items-center gap-[var(--space-2)]">
             {/* 上下文仪表摆在这一端：它与模型/思考档是同一类信息（"还能问多长"） */}
             <ContextGauge />
             <ModelPicker />
+            {/* 这两句是行内附注，也**不许折行**（同上：整行只有一行） */}
             {chat.useKb && chat.kbs.length > 0 && chat.selectedKbIds.length === 0 ? (
-              <span className="text-[length:var(--text-micro-size)] text-[var(--status-warning)]">
+              <span className="truncate text-[length:var(--text-micro-size)] text-[var(--status-warning)]">
                 未选知识库
               </span>
             ) : null}
             {chat.uploading ? (
-              <span className="text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
+              <span className="truncate text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
                 正在上传…
               </span>
             ) : null}

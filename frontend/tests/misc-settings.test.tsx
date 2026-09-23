@@ -302,6 +302,27 @@ describe('设置弹窗', () => {
     expect(screen.queryByText('长期记忆')).not.toBeInTheDocument()
   })
 
+  it('内容区有页面级标题（左侧选中项的名字），灰字说明收进 ⓘ', async () => {
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await screen.findByText('深度求索')
+
+    // 「模型注册」这一节原先只有一行灰字可认路：标题缺位（评审 §设置-1）
+    expect(screen.getByRole('heading', { name: '模型注册' })).toBeInTheDocument()
+    // 那行灰字改成标题旁的问号（§5.1 的小字纪律）
+    expect(screen.queryByText(/一个供应商 = 一个接口地址/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '说明' })).toBeInTheDocument()
+  })
+
+  it('模型行：没绑用途的写「未指定」，角色标记用中性标签（不再是绿色胶囊）', async () => {
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await screen.findByText('深度求索')
+
+    // m3 的 bound_slots 是空的——这一格不能留白
+    expect(screen.getByText('未指定')).toBeInTheDocument()
+    const role = screen.getByText('用于嵌入')
+    expect(role).toHaveAttribute('data-variant', 'secondary')
+  })
+
   it('绑定槽位走 bindSlot（不是改设置字段）', async () => {
     renderMisc(<SettingsModal open onClose={() => undefined} />)
     await userEvent.click(await screen.findByRole('button', { name: /向量化/ }))

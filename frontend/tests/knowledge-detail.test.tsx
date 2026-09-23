@@ -73,16 +73,19 @@ vi.mock('@/api/modelRegistry', async (importOriginal) => ({
 import {
   batchDocuments,
   deleteDocument,
+  getDocument,
   getDocumentImpact,
   listDocumentParts,
   listDocuments,
   setDocumentDisabled,
 } from '@/api/documents'
-import { listFolders } from '@/api/folders'
+import { createFolder, listFolders } from '@/api/folders'
 import { listKnowledgeBases } from '@/api/knowledgeBases'
 
 const listDocsMock = vi.mocked(listDocuments)
 const listFoldersMock = vi.mocked(listFolders)
+const createFolderMock = vi.mocked(createFolder)
+const docMock = vi.mocked(getDocument)
 const batchMock = vi.mocked(batchDocuments)
 const deleteMock = vi.mocked(deleteDocument)
 const impactMock = vi.mocked(getDocumentImpact)
@@ -302,7 +305,8 @@ describe('文档列表', () => {
       expect(listCall).not.toHaveProperty('stage')
     })
 
-    await user.type(screen.getByLabelText('搜索文件名'), '白皮书')
+    // 就地的那个入口按 §工作台 "过滤" 口径命名（与开弹层的「按内容检索」区分开）
+    await user.type(screen.getByLabelText('按文件名过滤'), '白皮书')
     // 防抖 300ms 之后才发请求
     await waitFor(() => expect(calledWith((filter) => filter.q === '白皮书')).toBe(true), {
       timeout: 2000,
@@ -325,6 +329,44 @@ describe('文档列表', () => {
     await waitFor(() =>
       expect(listDocsMock).toHaveBeenCalledWith('kb-1', { folderId: 'f-1', limit: 20, offset: 0 }),
     )
+  })
+
+  it('还没有目录时目录栏摊成一行（不再常驻 216px），「新建目录」是按钮形态', async () => {
+    listFoldersMock.mockResolvedValue({ items: [] })
+    const { container } = renderView()
+    await screen.findByText('说明书.pdf')
+
+    // 「全部文档 / 未归档」此刻筛的是同一批文档——整栏不渲染，列表拿回那 216px
+    expect(container.querySelector('.kb-tree-flat')).not.toBeNull()
+    expect(container.querySelector('.kb-tree-list')).toBeNull()
+    expect(screen.queryByText('全部文档')).not.toBeInTheDocument()
+    expect(screen.getByText('还没有目录')).toBeInTheDocument()
+
+    // 建目录的入口还在，而且是"图标 + 文字"的按钮（原先是 24px 的一颗「+」）
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '新建目录' }))
+    await user.type(screen.getByLabelText('目录名'), '合同')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(createFolderMock).toHaveBeenCalledWith('kb-1', '合同'))
+  })
+
+  it('抽屉开着时：底下一层轻遮罩，当前那一行有选中态（`--bg-selected` 那一档）', async () => {
+    const opened = makeDoc({ id: 'doc-2', name: '白皮书.docx' })
+    mockList([makeDoc(), opened])
+    docMock.mockResolvedValue(opened)
+    const { container } = renderView('/kb/kb-1?doc=doc-2')
+    await screen.findByText('说明书.pdf')
+
+    // 遮罩与抽屉是两层：遮罩在下（z-index 小一档），点它收起
+    expect(container.querySelector('.kb-drawer-scrim')).not.toBeNull()
+    expect(container.querySelector('.kb-drawer')).not.toBeNull()
+
+    // 抽屉里那一篇在列表里留着选中态；另一行没有
+    const rows = [...container.querySelectorAll('.kb-doc-row')]
+    const on = rows.filter((row) => row.classList.contains('kb-doc-row-on'))
+    expect(on).toHaveLength(1)
+    expect(on[0].textContent).toContain('白皮书.docx')
+    expect(container.querySelector('.kb-row-name-link[aria-current="page"]')).not.toBeNull()
   })
 
   it('分页：上一页/下一页按页码禁用，翻页只换内容不清空勾选', async () => {
@@ -542,7 +584,7 @@ describe('单篇动作', () => {
     expect(await screen.findByText(/只读权限/)).toBeInTheDocument()
     expect(screen.queryByRole('checkbox', { name: /全选本页/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /上传文档/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '在此库检索' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '按内容检索' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '说明书.pdf 的操作' })).toBeInTheDocument()
   })
 })

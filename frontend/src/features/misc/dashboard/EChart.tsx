@@ -81,21 +81,77 @@ function tokens() {
   }
 }
 
-function blend(from: string, to: string, ratio: number): string {
-  const parse = (hex: string): [number, number, number] | null => {
-    const match = hex.trim().match(/^#([0-9a-f]{6})$/i)
-    if (!match) return null
-    const value = parseInt(match[1], 16)
-    return [(value >> 16) & 255, (value >> 8) & 255, value & 255]
+/**
+ * 解析一个 CSS 颜色成 `[r, g, b, alpha]`。
+ *
+ * **必须认带 alpha 的写法**：主题里的文字令牌全是 `#ffffff8f` / `#000000e6`
+ * 这类 8 位十六进制（Kimi 的 alpha 族），只认 6 位的话 `color-mix` 会静默退回
+ * 第一个入参——热力图空格子于是拿到一个近白的实色（踩过：深色下整片格子发白）。
+ * `transparent` 是关键字，不是颜色函数，单独放一条。
+ */
+function parseColor(value: string): [number, number, number, number] | null {
+  const text = value.trim().toLowerCase()
+  if (text === 'transparent') return [0, 0, 0, 0]
+  const hex = text.match(/^#([0-9a-f]{3,8})$/i)
+  if (hex) {
+    const digits = hex[1]
+    const expand = (part: string) => parseInt(part.length === 1 ? part + part : part, 16)
+    if (digits.length === 3 || digits.length === 4) {
+      return [
+        expand(digits[0]),
+        expand(digits[1]),
+        expand(digits[2]),
+        digits.length === 4 ? expand(digits[3]) / 255 : 1,
+      ]
+    }
+    if (digits.length === 6 || digits.length === 8) {
+      const value6 = digits.slice(0, 6)
+      return [
+        parseInt(value6.slice(0, 2), 16),
+        parseInt(value6.slice(2, 4), 16),
+        parseInt(value6.slice(4, 6), 16),
+        digits.length === 8 ? parseInt(digits.slice(6, 8), 16) / 255 : 1,
+      ]
+    }
+    return null
   }
-  const a = parse(from)
-  const b = parse(to)
+  const fn = text.match(/^rgba?\(([^)]+)\)$/)
+  if (fn) {
+    const parts = fn[1].split(/[\s,/]+/).filter(Boolean)
+    if (parts.length < 3) return null
+    const channel = (part: string) =>
+      part.endsWith('%') ? (Number(part.slice(0, -1)) / 100) * 255 : Number(part)
+    return [
+      channel(parts[0]),
+      channel(parts[1]),
+      channel(parts[2]),
+      parts[3] ? Number(parts[3]) : 1,
+    ]
+  }
+  return null
+}
+
+/**
+ * `color-mix(in srgb, from ratio%, to)`——**按 CSS 的口径算**（预乘 alpha）。
+ *
+ * 不做预乘的话，"把 10% 的近白混进深色卡底"这种表达式会算出一个完全不透明的
+ * 中间色，而 CSS 给的是"10% 的近白叠在卡底上"——两者在深浅主题里差着好几档明度。
+ * 混完 alpha 不到 1 就输出 `rgba()`：canvas 认它，叠在卡片底上也正是设计想要的效果。
+ */
+function blend(from: string, to: string, ratio: number): string {
+  const a = parseColor(from)
+  const b = parseColor(to)
   if (!a || !b) return from
+  const alpha = ratio * a[3] + (1 - ratio) * b[3]
+  if (alpha <= 0) return 'transparent'
   const channel = (index: number) =>
-    Math.round(a[index] * ratio + b[index] * (1 - ratio))
-      .toString(16)
-      .padStart(2, '0')
-  return `#${channel(0)}${channel(1)}${channel(2)}`
+    Math.round((ratio * a[index] * a[3] + (1 - ratio) * b[index] * b[3]) / alpha)
+  // 不透明时仍给 `#rrggbb`：这是这个函数一直以来的输出形态（用例里钉着），
+  // 只有真的带上了 alpha 才换成 `rgba()`。
+  const hex = (index: number) => channel(index).toString(16).padStart(2, '0')
+  return alpha >= 0.999
+    ? `#${hex(0)}${hex(1)}${hex(2)}`
+    : `rgba(${channel(0)}, ${channel(1)}, ${channel(2)}, ${alpha.toFixed(3)})`
 }
 
 function resolveColor(value: string): string {
@@ -195,14 +251,29 @@ export function EChart({
     return () => observer.disconnect()
   }, [])
 
-  /** 按容器宽度选一个能放下全部列、又不超过上限的格子边长。 */
+  /**
+   * 左侧留给轴标签的那一条（周几标签）。
+   *
+   * 它必须从"可用宽度"里扣掉：格子边长是按容器宽度反推的，不扣就多算一条标签的宽，
+   * 于是网格画出来比容器窄一截、右边空出一片（界面评审 D4：卡片右侧约 1/3 是空白）。
+   */
+  const gridLeft = useMemo(
+    () => Number((option.grid as { left?: number } | undefined)?.left ?? 0) || 0,
+    [option.grid],
+  )
+
+  /**
+   * 按容器宽度选一个能放下全部列、又不超过上限的格子边长。
+   *
+   * 只扣**左侧轴标签**那一条（绘图区宽 = 列数 × 边长，缝隙是画在格子内部的边框，
+   * 不占额外宽度）。此前这里还扣了一遍"格间缝隙"——那是给"没扣 left"打的补丁，
+   * 两笔一起扣的结果是格子比容器小一圈、右边空出三分之一（界面评审 D4）。
+   */
   const cellSize = useMemo(() => {
     if (!squareCells || squareCells.columns <= 0 || available <= 0) return 0
-    // 先扣掉格间缝隙，剩下的才是格子本身——否则最后一列会被挤出绘图区
-    const forCells = available - (squareCells.columns - 1) * (squareCells.gap ?? 0)
-    const fitted = Math.floor(forCells / squareCells.columns)
+    const fitted = Math.floor((available - gridLeft) / squareCells.columns)
     return Math.max(squareCells.minSize ?? 8, Math.min(squareCells.maxSize ?? 16, fitted))
-  }, [squareCells, available])
+  }, [squareCells, available, gridLeft])
 
   /** 高度：普通图表用传入值；正方形单元按"行数 × 边长"算，再加坐标轴与边距。 */
   const boxHeight = useMemo(() => {
@@ -220,10 +291,14 @@ export function EChart({
         ...item,
         cellSize,
         // 格间缝隙：**必须用底色画**。用 transparent 或透明边框挡不住相邻格子的填充，
-        // 整块热力图会糊成一个实心矩形（踩过，量了像素才看出来）
+        // 整块热力图会糊成一个实心矩形（踩过，量了像素才看出来）。
+        //
+        // "底色"是**卡片底**（`--bg-surface`）而不是画布底：热力图住在 `.panel` 里，
+        // 深色下画布（#181817）比卡片（#121212）还亮、又和空格子（#232326）挨得极近，
+        // 缝隙于是把整片网格糊成一团——这正是"深色下整块消失"的另一半原因（界面评审 D2）。
         itemStyle: {
           borderWidth: gap,
-          borderColor: 'var(--bg-canvas)',
+          borderColor: 'var(--bg-surface)',
           borderRadius: 3,
           ...((item.itemStyle as Record<string, unknown>) ?? {}),
         },

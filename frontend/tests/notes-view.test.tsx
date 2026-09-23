@@ -242,6 +242,33 @@ describe('笔记页：列表', () => {
     await waitFor(() => expect(listNotes).toHaveBeenLastCalledWith({ limit: 100 }))
   })
 
+  it('标签按"时间 / 来源 / 状态"分三组（三种语义不再混在一排）', async () => {
+    listNoteTags.mockResolvedValue({
+      items: [
+        { tag: '2026-09', count: 3 },
+        { tag: 'AI日报', count: 2 },
+        { tag: '已核实', count: 1 },
+      ],
+    })
+    renderPage('/notes/n1')
+
+    await screen.findByRole('button', { name: /2026-09/ })
+    // 三组的小标题按语义顺序出现；空的那一组不占位置
+    const labels = [...document.querySelectorAll('.tag-group-label')].map((n) => n.textContent)
+    expect(labels).toEqual(['时间', '来源', '状态'])
+
+    const groups = [...document.querySelectorAll('.tag-group')]
+    expect(groups[0].querySelector('.tag-chip')?.textContent).toContain('2026-09')
+    expect(groups[1].querySelector('.tag-chip')?.textContent).toContain('AI日报')
+    expect(groups[2].querySelector('.tag-chip')?.textContent).toContain('已核实')
+    // 计数与标签之间有分隔记号：`2026-09` 后面直接跟一个 `3` 会被读成"2026-09-3"
+    expect(groups[0].querySelector('.tag-chip')?.textContent).toContain('· 3')
+
+    // 分组只影响显示，过滤仍然是"点哪个筛哪个"
+    fireEvent.click(screen.getByRole('button', { name: /2026-09/ }))
+    await waitFor(() => expect(listNotes).toHaveBeenLastCalledWith({ tag: '2026-09', limit: 100 }))
+  })
+
   it('搜索：输入后防抖 300ms 才落到过滤条件上（不会每敲一个字发一次）', async () => {
     renderPage('/notes/n1')
     const search = screen.getByLabelText('搜索笔记')

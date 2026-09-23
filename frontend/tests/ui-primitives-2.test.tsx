@@ -11,6 +11,8 @@
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath, URL as NodeURL } from 'node:url'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -361,5 +363,106 @@ describe('ui 原语（第二批）', () => {
     expect(handle).toHaveAttribute('data-slot', 'resizable-handle')
     expect(handle).toHaveAttribute('tabindex', '0')
     expect(handle.className).toContain('after:absolute')
+  })
+})
+
+/* ---------------------------------------------------------------- 基础层护栏
+ *
+ * 这一批（第三批 A）动的是 `tokens.css` 与 `misc.css` 两个全局文件，两件事都能被
+ * **源码级**钉住，而且都踩过坑、值得护栏：
+ *
+ * 1. **分层**。未分层的规则永远压过 `@layer utilities`（与优先级无关），而这批把
+ *    `misc.css` 的 364 条 `.m-*` 收进了 `@layer components`；同时 `tokens.css` 与
+ *    `misc.css` 都必须先声明同一句**层级顺序**——层的顺序由"名字第一次出现的位置"决定，
+ *    而两者谁先被浏览器看到并不固定（开发环境里 `misc.css` 就先于 `tokens.css`）。
+ *    少了任何一半，`components` 会落到 `base` 底下，preflight 的 `*{margin:0;padding:0}`
+ *    会把整份 `.m-*` 吃掉（实测：页标题退回 15px、卡片内边距归零）。
+ *    jsdom 不应用样式表，这类契约只能在源码上量——与 `notes*.test.tsx` 读 `notes.css`
+ *    是同一条路。
+ *
+ * 2. **搜索框的两种容器**。`.m-toolbar-search` 在 row 工具栏、column 侧栏、块级弹窗
+ *    三处复用，宽度只能写成 `flex-basis`（`flex-basis` 的轴向跟容器走，到了 column 里
+ *    会变成"240px 高"，还压掉 `height`），块级那处又会因为多一个 `width` 缩成 240px。
+ *    两处各自的解都钉住，免得下次"统一一下"又把这版修回去。
+ */
+function styleSource(relative: string): string {
+  return readFileSync(fileURLToPath(new NodeURL(relative, import.meta.url)), 'utf8')
+}
+
+/** 去掉块注释：中文注释里有括号与 `@layer` 字样，不该参与判断。 */
+function withoutComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
+/** 某个选择器的声明块正文（源码里第一条同名规则）。 */
+function ruleBody(source: string, selector: string): string {
+  const found = [...withoutComments(source).matchAll(/([^{}]+)\{([^{}]*)\}/g)].find(
+    (rule) => (rule[1] ?? '').trim() === selector,
+  )
+  expect(found, `没在样式源码里找到 ${selector}`).toBeTruthy()
+  return (found?.[2] ?? '').replace(/\s+/g, ' ')
+}
+
+describe('基础层：分层与搜索框结构护栏', () => {
+  const ORDER = '@layer theme, base, components, utilities;'
+
+  it('misc.css 与 tokens.css 都先声明同一句层级顺序', () => {
+    for (const file of ['../src/features/misc/shared/misc.css', '../src/styles/tokens.css']) {
+      const head = withoutComments(styleSource(file)).replace(/\s+/g, ' ').trim()
+      const at = head.indexOf(ORDER)
+      expect(at, `${file} 缺少层级顺序声明`).toBeGreaterThanOrEqual(0)
+      // 而且必须在**第一个开层块之前**：晚于它就没有排序作用了
+      // （`[^{};]` 里的分号是必要的：少了它，这句顺序声明自己会被当成开层块）
+      const firstBlock = head.search(/@layer [^{};]*\{/)
+      expect(firstBlock, `${file} 里一句开层块都没找到`).toBeGreaterThanOrEqual(0)
+      expect(at, `${file} 的顺序声明必须排在第一个 @layer 块之前`).toBeLessThan(firstBlock)
+    }
+  })
+
+  it('misc.css 的规则全部在 @layer components 里（层外只剩 @keyframes）', () => {
+    const source = withoutComments(styleSource('../src/features/misc/shared/misc.css'))
+    // 扫一遍大括号：每一次"深度 0 → 1"都是一条顶层构造，它只能是这两者之一
+    const topLevel: string[] = []
+    let depth = 0
+    for (let i = 0; i < source.length; i += 1) {
+      const ch = source[i]
+      if (ch === '{') {
+        if (depth === 0) {
+          const before = source.slice(Math.max(0, i - 40), i)
+          topLevel.push(before.split(/[;}]/).pop()?.trim().replace(/\s+/g, ' ') ?? '')
+        }
+        depth += 1
+      } else if (ch === '}') {
+        depth -= 1
+      }
+    }
+    expect(depth).toBe(0)
+    expect(topLevel).toHaveLength(2)
+    expect(topLevel[0]).toContain('@keyframes m-pulse')
+    expect(topLevel[1]).toBe('@layer components')
+  })
+
+  it('.m-toolbar-search：宽度只在 flex-basis 上，column 里另由容器规则说清楚', () => {
+    const source = styleSource('../src/features/misc/shared/misc.css')
+    const base = ruleBody(source, '.m-toolbar-search')
+    expect(base).toContain('flex: 0 1 240px')
+    // 多一个 `width` 就会把块级那处（技能市场弹窗的搜索框）缩成 240px
+    expect(base).not.toMatch(/(?:^|[;\s])width:/)
+    const column = ruleBody(source, '.m-side-col > .m-toolbar-search')
+    expect(column).toContain('flex: 0 0 auto')
+    expect(column).toContain('align-self: stretch')
+  })
+
+  it('两套主题的三级灰/四级灰都指向达标档，而不是 Kimi 原值', () => {
+    for (const [file, tert, quat] of [
+      ['../src/styles/themes/light.css', '#0000008c', '#00000070'],
+      ['../src/styles/themes/dark.css', '#ffffff85', '#ffffff5c'],
+    ]) {
+      const source = withoutComments(styleSource(file))
+      expect(source, `${file} 三级灰没走达标档`).toContain(`--Labels-Tertiary-text: ${tert}`)
+      expect(source, `${file} 四级灰没走达标档`).toContain(`--Labels-Quaternary-text: ${quat}`)
+      expect(source).toContain('--text-tertiary: var(--Labels-Tertiary-text)')
+      expect(source).toContain('--text-quaternary: var(--Labels-Quaternary-text)')
+    }
   })
 })

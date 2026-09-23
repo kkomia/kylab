@@ -153,8 +153,10 @@ export function KnowledgeBaseControl() {
         className={`${TRIGGER} gap-[var(--space-2)]`}
         onClick={chat.toggleKbSwitch}
       >
+        {/* `shrink-0`：滑块的子元素是绝对定位的，min-content 是 0——不钉住的话
+            整行挤的时候它会被压成一条缝，而不是像文字那样出省略号（第三批 A②） */}
         <span
-          className={`relative inline-block h-[16px] w-[28px] rounded-[var(--radius-pill)] transition-colors [transition:var(--transition-ui)] ${
+          className={`relative inline-block h-[16px] w-[28px] shrink-0 rounded-[var(--radius-pill)] transition-colors [transition:var(--transition-ui)] ${
             chat.useKb ? 'bg-[var(--accent)]' : 'bg-[var(--bg-active)]'
           }`}
         >
@@ -164,7 +166,10 @@ export function KnowledgeBaseControl() {
             }`}
           />
         </span>
-        <span>知识库</span>
+        {/* `truncate`：这一格的字不许折成两行——胶囊是定高的，折行会里外溢出去
+            （字号调到「更大」时实测：3 行字从 32px 的胶囊里漏出来）。挤得厉害时
+            它和别的标签一样出省略号（第三批 A②） */}
+        <span className="truncate">知识库</span>
       </button>
 
       {chat.useKb ? (
@@ -314,15 +319,22 @@ export function ModelPicker() {
 }
 
 /**
- * 上下文仪表：输入框旁边一个**能核对**的读数，「上下文已用 X / Y」，
- * 点开看到按来源分解，里面那个「压缩」走既有那条 `/compact` 链路（界面不另造一套压缩）。
+ * 上下文仪表：输入框旁边一个**能核对**的读数，点开看到按来源分解，
+ * 里面那个「压缩」走既有那条 `/compact` 链路（界面不另造一套压缩）。
  *
  * 三条纪律（旧 `ContextGauge` 逐条搬）：
- * 1. **数字全部来自接口**（`used` / `total` / `share` 一个都不在这里算）——
+ * 1. **数字全部来自接口**（`used` / `total` / `ratio` / `share` 一个都不在这里算）——
  *    估算口径在服务端那一处，界面再算一遍必然分叉，而仪表上最忌讳的正是
  *    "分解条加起来不等于总数"；
  * 2. **只读**：调它不会触发压缩，所以随时可以刷新；
  * 3. **是估算就说出来**：`estimated` 与后端那句 `note` 原样显示，不把估算画成账单。
+ *
+ * **行上只放比率，精确数字在 `title` 与展开的菜单里**（第三批评审 A②）：那一行的宽度
+ * 是硬预算（卡片 768 − 左右内边距 = 742），而「上下文已用 12,345 / 128,000」光文字就要
+ * 176px——把整行顶出去、让「选库」折到第二行。比率是**有界**的：「上下文已用 100%」105px，
+ * 窗口再窄、字号再调、上下文窗口再大都不会把行撑破。而"还能问多长"本来就是这一格要回答的
+ * 问题，右边那条细占用条画的是同一个比率；要核对绝对数字（含按来源分解与自动压缩阈值）
+ * 就点开它——菜单里一字不少。
  */
 export function ContextGauge() {
   const chat = useChat()
@@ -335,17 +347,24 @@ export function ContextGauge() {
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
-        <button type="button" className={TRIGGER} aria-label="上下文用量" title="上下文用量">
-          <span className="inline-flex items-center gap-[var(--space-1-5)]">
-            <span className="tabular">
-              {error
-                ? '上下文读数不可用'
-                : usage
-                  ? `上下文已用 ${formatCount(usage.used)} / ${formatCount(usage.total)}`
-                  : '正在读上下文…'}
+        <button
+          type="button"
+          // `min-w-0`：放不下时让这一格里的字出现省略号，而不是把整行顶出去
+          className={`${TRIGGER} min-w-0`}
+          aria-label="上下文用量"
+          // 精确到个位数的读数放悬停里（行上只放比率，见上面那段说明）
+          title={
+            usage
+              ? `上下文已用 ${formatCount(usage.used)} / ${formatCount(usage.total)} tokens（${percent}%）`
+              : '上下文用量'
+          }
+        >
+          <span className="inline-flex min-w-0 items-center gap-[var(--space-1-5)]">
+            <span className="tabular truncate">
+              {error ? '上下文读数不可用' : usage ? `上下文已用 ${percent}%` : '正在读上下文…'}
             </span>
-            {/* 一圈很细的占用条：它替掉"再去点开看一眼"的那一步 */}
-            <span className="inline-block h-[4px] w-[28px] overflow-hidden rounded-[2px] bg-[var(--bg-active)]">
+            {/* 一圈很细的占用条：它替掉"再去点开看一眼"那一步（不许被压扁） */}
+            <span className="inline-block h-[4px] w-[28px] shrink-0 overflow-hidden rounded-[2px] bg-[var(--bg-active)]">
               <span
                 className="block h-full bg-[var(--text-tertiary)]"
                 style={{ width: `${percent}%` }}

@@ -396,6 +396,11 @@
 }
 
 .kb-card {
+  /* 左边那一列（字母块 36px + 间距）的宽度。主体与脚注都让出这一段，
+     全卡只剩**一条左基准**——原先标题在 337、正文与脚注在 291，差着那枚字母块。
+     分隔线仍是贯穿的（`border` 画在 border box 上，不受 padding 影响）。 */
+  --kb-card-indent: calc(36px + var(--space-3));
+
   display: flex;
   height: 100%;
   flex-direction: column;
@@ -477,6 +482,7 @@
   flex-direction: column;
   gap: var(--space-2);
   padding-top: var(--space-3);
+  padding-left: var(--kb-card-indent);
   border-top: 1px solid var(--border-hairline);
 }
 
@@ -508,20 +514,20 @@
   -webkit-line-clamp: 2;
 }
 
-.kb-description-empty {
-  color: var(--text-tertiary);
-}
-
 .kb-card-foot {
   margin-top: auto;
+  /* 右侧让出那颗菜单的体积，脚注文案长了也不会被压到它下面 */
+  padding-right: var(--control-height);
+  padding-left: var(--kb-card-indent);
   font-size: var(--text-micro-size);
   color: var(--text-tertiary);
 }
 
+/* 卡片的管理入口：与脚注同一行的右手边（原先钉在右上角，压着标题那一行） */
 .kb-menu-corner {
   position: absolute;
-  top: var(--space-2);
   right: var(--space-2);
+  bottom: var(--space-3);
 }
 
 .kb-rows {
@@ -615,6 +621,55 @@
   flex: 0 0 200px;
   padding-right: var(--space-4);
   border-right: 1px solid var(--border-hairline);
+}
+
+/**
+ * **还没有目录**时的形态：目录那一栏摊成列表上方的一行。
+ *
+ * 纵向栏（200px + 一条分隔线）在没有目录时只说得出一句"还没有目录"——「全部文档」
+ * 与「未归档」筛的是同一批文档，等于用一整栏换一句空态。摊平之后七列的表拿回这 216px，
+ * 「目录 / 还没有目录 / 新建目录」三件事还都在原位（建目录的入口不能因为"还没有目录"
+ * 而消失）。目录一旦建出来，这一栏立刻回到纵向形态。
+ */
+.kb-body-flat {
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.kb-tree-flat {
+  flex: 0 0 auto;
+  padding: 0;
+  border-right: none;
+}
+
+/* 摊平后头部自己就是整行：目录 / 状态 / 动作从左到右排开 */
+.kb-tree-flat .kb-tree-head {
+  justify-content: flex-start;
+  gap: var(--space-3);
+  padding: 0;
+}
+
+/* 摊平后这一行只有三件事，挨着排——不推开（1131px 宽的一行里，
+   把按钮甩到最右端会与"目录"隔着一千多像素，读起来像两个控件） */
+.kb-tree-flat .kb-tree-empty {
+  flex: 0 1 auto;
+  padding: 0;
+}
+
+/* 摊平后表单是横的一行（纵向栏里那套列布局在这里会占掉半个屏幕） */
+.kb-tree-flat .kb-tree-form {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) 0 0;
+}
+
+.kb-tree-flat .kb-tree-form > * {
+  flex: 0 1 260px;
+}
+
+.kb-tree-flat .kb-tree-form-actions {
+  flex: 0 0 auto;
 }
 
 .kb-doc-area {
@@ -733,6 +788,22 @@
   margin-bottom: var(--space-3);
 }
 
+/**
+ * 筛选那一组：输入框与两个下拉**等距**，读完是"这几件是同一件事"。
+ *
+ * `flex: 1 1 auto` 不是为了好看：它是 wrap 容器，浏览器按"最大行"算它的基准宽度
+ * （实测 458px），而三个控件加起来 496px——差 38px 就会把「全部来源」折到第二行，
+ * 于是"等距"看着像"第三个走丢了"。给它富余宽度，折行只在真的放不下时发生。
+ */
+.kb-filters {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
 .kb-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
@@ -765,8 +836,10 @@
   transform: translateY(-50%);
 }
 
+/* **按内容定宽**：原先写死 148px，而里面的下拉自己只占 ~116px，多出来的 32px
+   让"输入框→状态"看着 4px、"状态→来源"看着 33px——间距不均是那个空盒子造出来的 */
 .kb-filter {
-  flex: 0 0 148px;
+  flex: 0 0 auto;
 }
 
 /* ------------------------------------------------------------ 批量动作条 */
@@ -825,6 +898,11 @@
 
 .kb-doc-row {
   padding: 0 var(--space-4);
+}
+
+/* 抽屉里正开着的那一篇：与左栏当前项同一档底色（`--bg-selected` 是全站唯一的选中底） */
+.kb-doc-row-on {
+  background: var(--bg-selected);
 }
 
 .kb-col-check {
@@ -1050,6 +1128,36 @@
 }
 
 /* ------------------------------------------------------------ 抽屉 */
+
+/**
+ * 抽屉的轻遮罩。**比弹窗那层更轻**（弹窗 `--overlay-scrim` 是 40%，这里借同一枚令牌
+ * 压到 12%）：列表还要看得见——抽屉是"从列表里点开看一眼"，不是把列表关掉。
+ * 它只解决一件事：底下那行文件名被从中间切断时，用户读到的应该是"这是背景"，
+ * 而不是"排版坏了"。z-index 比抽屉小一档，点它收起（Esc 那条路在组件里）。
+ */
+.kb-drawer-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 49;
+  opacity: 0.3;
+  background: var(--overlay-scrim);
+  transition: opacity 180ms ease-out;
+  animation: kb-scrim-in 180ms ease-out;
+}
+
+.kb-drawer-scrim-closing {
+  opacity: 0;
+}
+
+@keyframes kb-scrim-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 0.3;
+  }
+}
 
 .kb-drawer {
   position: fixed;

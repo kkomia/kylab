@@ -203,13 +203,15 @@ export function KnowledgeBasesView() {
           {store.items.map((kb) => (
             <li key={kb.id} className="kb-card-item">
               <Link className="kb-card" to={`/kb/${kb.id}`}>
+                {/* 标题行只留**这个名字**：嵌入模型串原先也挂在这里，而它由供应商与
+                    库形态决定，同一批库里多半是同一个串（四张卡四个一样的 BAAI/bge-m3）。
+                    逐库看它该去详情/设置（「知识库设置 → 基本」里就有），卡片上不放。 */}
                 <span className="kb-card-head">
                   <span className="kb-mark" aria-hidden="true">
                     {initial(kb.name)}
                   </span>
                   <span className="kb-card-title">
                     <span className="kb-name">{kb.name}</span>
-                    <span className="kb-model">{kb.embedding_model_id}</span>
                   </span>
                 </span>
 
@@ -221,21 +223,16 @@ export function KnowledgeBasesView() {
                     </span>
                     <span className="kb-doc-unit">篇文档</span>
                   </span>
-                  {/* 空简介不留空白：写"暂无简介"，让人知道这里是"没填"而不是"没加载出来" */}
-                  <span
-                    className={['kb-description', kb.description ? '' : 'kb-description-empty']
-                      .filter(Boolean)
-                      .join(' ')}
-                  >
-                    {kb.description || '暂无简介'}
-                  </span>
+                  {/* 没写简介就整行不渲染：「暂无简介」是替一个空字段占的一行字 */}
+                  {kb.description ? <span className="kb-description">{kb.description}</span> : null}
                 </span>
 
                 <span className="kb-card-foot">
                   最近更新 {formatRelativeTime(store.summaries[kb.id]?.updatedAt ?? null)}
                 </span>
               </Link>
-              {/* 管理入口挂在卡片右上角：写权限才有（与后端"删库属于写"一致） */}
+              {/* 管理入口收在**卡片右下角**（与脚注同一行）：写权限才有（与后端"删库属于写"一致）。
+                  原先钉在右上角——那是整张卡最显要的右手位，还压着标题那一行。 */}
               {kb.can_write ? <KnowledgeBaseSettings kb={kb} className="kb-menu-corner" /> : null}
             </li>
           ))}

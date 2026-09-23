@@ -299,6 +299,20 @@ export function DocumentDrawer({
 
   return (
     <>
+      {/*
+        **轻遮罩**：抽屉是浮在列表之上的一层，底下那张表还在（文件名被从中间切断）。
+        加一层浅遮罩把"下面是背景、这里是当前这一份"说清楚——不把它压暗的话，
+        切断的文件名会被读成排版坏了。取值是既有的 `--overlay-scrim` 借 opacity
+        调轻（弹窗那层是 40%，这里 12% 就够，列表还要看得见）。
+        点遮罩收起（Esc 那条路已经在上面挂着）。
+      */}
+      <div
+        className={['kb-drawer-scrim', closing ? 'kb-drawer-scrim-closing' : '']
+          .filter(Boolean)
+          .join(' ')}
+        aria-hidden="true"
+        onClick={requestClose}
+      />
       <aside
         className={['kb-drawer', closing ? 'kb-drawer-closing' : ''].filter(Boolean).join(' ')}
         role="dialog"

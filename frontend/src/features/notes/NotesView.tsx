@@ -50,9 +50,11 @@ import {
   rememberBody,
   shortDate,
   snapshotOf,
+  tagKindOf,
   useNotesStore,
   writeListCollapsed,
   type NoteBody,
+  type TagKind,
 } from './store'
 import './notes.css'
 
@@ -82,6 +84,16 @@ const SEARCH_DEBOUNCE_MS = 300
 
 /** 页面只关心这些字段：缓存里的正文、服务端详情、草稿都满足这个形状。 */
 type Draft = NoteBody
+
+/**
+ * 标签云的三组（界面评审 N4）。顺序即语义顺序：**先时间、再来源、最后状态**——
+ * 时间最像"这批笔记的坐标"，来源是主体，状态是补充。
+ */
+const TAG_GROUPS: { kind: TagKind; label: string }[] = [
+  { kind: 'time', label: '时间' },
+  { kind: 'source', label: '来源' },
+  { kind: 'status', label: '状态' },
+]
 
 function errorText(cause: unknown, fallback: string): string {
   return cause instanceof Error ? cause.message : fallback
@@ -552,6 +564,14 @@ export function NotesView() {
   }
 
   const groups = useMemo(() => groupNotes(items), [items])
+  /** 标签按语义分三组；空的那组不占位置（没有状态标签时就只有两行）。 */
+  const tagGroups = useMemo(() => {
+    const buckets: Record<TagKind, typeof tags> = { time: [], source: [], status: [] }
+    for (const item of tags) buckets[tagKindOf(item.tag)].push(item)
+    return TAG_GROUPS.map((group) => ({ ...group, items: buckets[group.kind] })).filter(
+      (group) => group.items.length > 0,
+    )
+  }, [tags])
   const activeKbName = kbOptions.find((option) => option.value === draft?.kb_id)?.label ?? ''
 
   const saveLabel =
@@ -618,18 +638,29 @@ export function NotesView() {
 
               {tags.length > 0 && (
                 <div className="tag-bar">
-                  {tags.map((item) => (
-                    <button
-                      key={item.tag}
-                      type="button"
-                      className={`tag-chip${activeTag === item.tag ? ' tag-on' : ''}`}
-                      onClick={() =>
-                        setFilter(searchInput.trim(), activeTag === item.tag ? '' : item.tag)
-                      }
-                    >
-                      {item.tag}
-                      <span className="tag-count tabular">{item.count}</span>
-                    </button>
+                  {tagGroups.map((group) => (
+                    <div key={group.kind} className="tag-group">
+                      <span className="tag-group-label">{group.label}</span>
+                      <span className="tag-group-items">
+                        {group.items.map((item) => (
+                          <button
+                            key={item.tag}
+                            type="button"
+                            className={`tag-chip${activeTag === item.tag ? ' tag-on' : ''}`}
+                            onClick={() =>
+                              setFilter(searchInput.trim(), activeTag === item.tag ? '' : item.tag)
+                            }
+                          >
+                            {item.tag}
+                            {/* 计数前面要有一个记号：`2026-09` 后面直接跟一个 `3`，
+                                读起来是"2026-09-3"（界面评审 N4 就是这么读的——
+                                它以为日期被截断了，其实那是**标签 + 计数**两个东西）。
+                                `·` 是仓库里既有的分隔符（用量行也用它），不新增词汇。 */}
+                            <span className="tag-count tabular">· {item.count}</span>
+                          </button>
+                        ))}
+                      </span>
+                    </div>
                   ))}
                 </div>
               )}

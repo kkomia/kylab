@@ -133,6 +133,31 @@ function clickTool(title: string): void {
   fireEvent.click(screen.getByTitle(title))
 }
 
+/**
+ * 「段落样式」下拉里选一项（正文 / 一级标题 / 二级标题）。
+ *
+ * 这三项此前是工具栏上三枚并列的按钮，其中"正文"在任何普通段落里都是亮的——
+ * 工具栏上于是常亮一枚说不清语义的蓝按钮（界面评审 N2）。现在它们收进下拉，
+ * 触发器上写的是**当前**样式，所以用例要先开菜单再点项。
+ */
+async function chooseBlock(title: string): Promise<void> {
+  const user = userEvent.setup()
+  await user.click(screen.getByLabelText('段落样式'))
+  await user.click(await screen.findByRole('menuitemcheckbox', { name: title }))
+}
+
+/** 「更多」下拉里的一项（引用 / 代码块 / 链接 / 插入图片）——低频项收在这里（N1）。 */
+async function openMore(): Promise<void> {
+  const user = userEvent.setup()
+  await user.click(screen.getByLabelText('更多'))
+}
+
+async function clickMore(title: string): Promise<void> {
+  await openMore()
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('menuitem', { name: title }))
+}
+
 const lastChain = (): string[] => state.chains.at(-1) ?? []
 
 describe('笔记编辑器：工具栏命令', () => {
@@ -151,17 +176,29 @@ describe('笔记编辑器：工具栏命令', () => {
     expect(lastChain()).toEqual(['focus', 'redo'])
   })
 
-  it('段落与两级标题发的是 setParagraph / toggleHeading', () => {
+  it('段落样式下拉：触发器写当前样式，选中态落在菜单项上', async () => {
     renderEditor({}, { active: ['heading:{"level":1}'] })
 
-    // 激活态由编辑器说了算：一级标题亮着
-    expect(screen.getByTitle('一级标题').className).toContain('tool-on')
+    // 触发器写的是"当前是什么"（语义），不是一枚亮着的模式开关——工具栏上不再有常亮蓝底
+    expect(screen.getByLabelText('段落样式').textContent).toContain('一级标题')
+    expect(screen.getByLabelText('段落样式').className).not.toContain('tool-on')
 
-    clickTool('正文')
+    const user = userEvent.setup()
+    await user.click(screen.getByLabelText('段落样式'))
+    const items = await screen.findAllByRole('menuitemcheckbox')
+    const checked = items.filter((item) => item.getAttribute('aria-checked') === 'true')
+    expect(checked.map((item) => item.textContent)).toEqual(['一级标题'])
+    await user.keyboard('{Escape}')
+  })
+
+  it('段落与两级标题发的是 setParagraph / toggleHeading', async () => {
+    renderEditor()
+
+    await chooseBlock('正文')
     expect(lastChain()).toEqual(['focus', 'setParagraph'])
-    clickTool('一级标题')
+    await chooseBlock('一级标题')
     expect(lastChain()).toEqual(['focus', 'toggleHeading([{"level":1}])'])
-    clickTool('二级标题')
+    await chooseBlock('二级标题')
     expect(lastChain()).toEqual(['focus', 'toggleHeading([{"level":2}])'])
   })
 
@@ -178,7 +215,7 @@ describe('笔记编辑器：工具栏命令', () => {
     expect(lastChain()).toEqual(['focus', 'toggleStrike'])
   })
 
-  it('三种列表与引用/代码块各自发 toggle*', () => {
+  it('三种列表与引用/代码块各自发 toggle*（后两项在「更多」里，功能一个不少）', async () => {
     renderEditor()
 
     clickTool('无序列表')
@@ -187,9 +224,9 @@ describe('笔记编辑器：工具栏命令', () => {
     expect(lastChain()).toEqual(['focus', 'toggleOrderedList'])
     clickTool('待办清单')
     expect(lastChain()).toEqual(['focus', 'toggleTaskList'])
-    clickTool('引用')
+    await clickMore('引用')
     expect(lastChain()).toEqual(['focus', 'toggleBlockquote'])
-    clickTool('代码块')
+    await clickMore('代码块')
     expect(lastChain()).toEqual(['focus', 'toggleCodeBlock'])
   })
 
@@ -200,7 +237,7 @@ describe('笔记编辑器：工具栏命令', () => {
 
     renderEditor()
 
-    clickTool('链接')
+    await clickMore('链接')
     expect(prompt).toHaveBeenCalled()
     expect(lastChain()).toEqual([
       'focus',
@@ -209,7 +246,7 @@ describe('笔记编辑器：工具栏命令', () => {
     ])
 
     prompt.mockReturnValue('')
-    clickTool('链接')
+    await clickMore('链接')
     // 留空 = 取消这次设置：没有再发出第二条命令（链长不变）
     expect(state.chains).toHaveLength(1)
 
@@ -217,9 +254,9 @@ describe('笔记编辑器：工具栏命令', () => {
     await user.click(document.body)
   })
 
-  it('只读态（isActive link）时链接按钮发 unsetLink', () => {
+  it('只读态（isActive link）时链接按钮发 unsetLink', async () => {
     renderEditor({}, { active: ['link'] })
-    clickTool('链接')
+    await clickMore('链接')
     expect(lastChain()).toEqual(['focus', 'unsetLink'])
   })
 })
@@ -259,8 +296,11 @@ describe('笔记编辑器：插入图片按钮', () => {
     await waitFor(() => expect(wire.notices).toHaveLength(1))
     expect(wire.notices[0]).toEqual({ type: 'error', message: '笔记还没保存，先等一下再插图' })
     expect(uploadNoteImage).not.toHaveBeenCalled()
-    // 工具栏的图片按钮也该是禁用的，提示"保存后才能插入图片"
-    expect(screen.getByTitle('保存后才能插入图片')).toBeDisabled()
+    // 「更多」里那一项也该是禁用的，提示"保存后才能插入图片"
+    // 菜单项是 div（Radix 不给它 `disabled` 属性），禁用态由 `aria-disabled` 表达——
+    // `toBeDisabled()` 只认 `disabled` 属性，这里按 aria 断言
+    await openMore()
+    expect(await screen.findByTitle('保存后才能插入图片')).toHaveAttribute('aria-disabled', 'true')
   })
 })
 

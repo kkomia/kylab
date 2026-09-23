@@ -4,10 +4,16 @@
  * 与浅色同构，逐项对应；两套 theme 的层级方向一致（深色下"抬起来的那层更亮"，
  * 不是把浅色反相）。标签同样是 alpha 白灰阶：浅色是黑透明、深色是白透明。
  *
- * 与浅色唯一的差别：**深色下不需要"语义色文字档"**。
- * Kimi 的深色色值本身对比度就够（蓝 5.08:1、红 5.32:1、绿 7.67:1、
- * 橙 8.64:1、黄 12.28:1），所以 --status-* 与 --accent-text 直接用原值。
- * 浅色那边因为底色太亮，才需要压深一档——那条说明写在 light.css 里。
+ * 与浅色的差别：**语义色**（红/绿/橙/黄）深色下的原值本身就达标，不必另开文字档
+ * （Kimi 的蓝 5.08:1、红 5.32:1、绿 7.67:1、橙 8.64:1、黄 12.28:1）。
+ *
+ * **但"达标"要按它落在哪一层底上算，2026-09-24 第三批 A 实测下来有两处不够**：
+ *  - 品牌蓝当文字：5.08:1 是"页面底"上的数；顶栏（`Bg-Secondary` #1f1f1f）4.72:1，
+ *    菜单底（`Bg-Tertiary` #292929）只有 **4.16:1**——而 13–14px 的门槛是 4.5:1。
+ *    浅色那边"蓝字要压深"的老规矩，在深色这边是"蓝字要提亮"，同样是对 Kimi 原值的
+ *    必要偏离，见下面第二节的 `--Colors-KMBlue-text`。
+ *  - 中性灰（三级灰 0.42 白、四级灰 0.26 白）：页面底 4.08:1 / 2.35:1，
+ *    同样不够，另开 `--Labels-Tertiary-text` / `--Labels-Quaternary-text`。
  */
 
 [data-theme='dark'] {
@@ -135,8 +141,28 @@
   --Always-TransparencyTagFill: #454545b3;
 
   /* ================================================================
-   * 二、KYLAB 别名
-   * 语义色直接用 Kimi 原值——深色下它们都已达标，无需另开文字档。
+   * 二、文字档：深色下的必要偏离（色相不变，只提亮）
+   *
+   * 深色这边的偏离比浅色少——语义色原值达标（见文件头），只有蓝色与中性灰需要一档：
+   *
+   *   蓝字档 #3194ff（= 本文件既有的 `Colors-KMBlue-active` 那一档）
+   *     菜单底 4.72 / 顶栏底 4.79 / 页面底 5.76 / 面板底 5.92
+   *   三级灰 #ffffff85   最不利底（侧栏快捷键徽章：Fills-F2 叠在浅灰底上的 #353535）4.60
+   *                      页面底 5.5 / 浅灰底 5.6 / 菜单底 5.5
+   *   四级灰 #ffffff5c   面板底 3.34 / 页面底 3.35 / 浅灰底 3.44
+   *
+   * 三级灰取 ≥4.5:1（13–14px 正文口径：导航与顶栏的次级文字、列表日期与计数），
+   * 且按**最不利底色**取值（`Ctrl K` 那种快捷键徽章：底比页面底亮两档）；
+   * 四级灰取 ≥3:1（占位文字）。Kimi 的原值都留在第一节，供对照与回溯。
+   * ================================================================ */
+  --Colors-KMBlue-text: #3194ff;
+
+  /* 中性灰的达标档：与浅色同构，只是方向相反（提亮） */
+  --Labels-Tertiary-text: #ffffff85;
+  --Labels-Quaternary-text: #ffffff5c;
+
+  /* ================================================================
+   * 三、KYLAB 别名
    * ================================================================ */
 
   --bg-canvas: var(--Bg-GroundPC);
@@ -153,8 +179,9 @@
 
   --text-primary: var(--Labels-Primary);
   --text-secondary: var(--Labels-Secondary);
-  --text-tertiary: var(--Labels-Tertiary);
-  --text-quaternary: var(--Labels-Quaternary);
+  /* 三级灰与四级灰指向**达标档**（第一、二节里的实测值写在第二节注释里） */
+  --text-tertiary: var(--Labels-Tertiary-text);
+  --text-quaternary: var(--Labels-Quaternary-text);
 
   --border-hairline: var(--Separators-S1);
   --border: var(--Separators-S1);
@@ -165,30 +192,40 @@
   --border-subtle: rgb(255 255 255 / 6%);
 
   /* 菜单项的主行用 Primary、副标题用 Tertiary——Kimi 的 `.name` / `.desc` 实测如此。
-     它不把主行压到二级灰：那等于把"两个层级"合成一个。 */
+     它不把主行压到二级灰：那等于把"两个层级"合成一个。**副标题走达标档**：
+     那行是 13px 的说明文字（"选它会得到什么"），属于要被读到的口径。 */
   --menu-item-text: var(--Labels-Primary);
-  --menu-desc-text: var(--Labels-Tertiary);
+  --menu-desc-text: var(--Labels-Tertiary-text);
 
   --meter-track: var(--Fills-F3);
   --separator: var(--text-tertiary);
 
+  /* 品牌色：与浅色同构的两档分工——填充用 `--accent`，文字用 `--accent-text`
+     （深色下是**提亮**到 #3194ff，见第二节）。`--accent-soft` 是它的 10% 底。 */
   --accent: var(--Colors-KMBlue);
   --accent-hover: var(--Colors-KMBlue-hover);
-  --accent-text: var(--Colors-KMBlue);
+  --accent-text: var(--Colors-KMBlue-text);
   --accent-soft: var(--Others-KMBlue10);
-  --accent-selected: var(--Others-TextSelected);
+
+  /* 选中底与选中描边：与浅色同构，走中性 Fills 阶梯，不用 Kimi 的冷蓝
+     `Others-TextSelected`（原值保留在第一节）。理由写在 light.css 同一处。 */
+  --accent-selected: var(--Fills-F3);
+
   --accent-2: var(--Colors-Purple);
   --accent-2-text: var(--Colors-Purple);
   --accent-2-soft: #a16bff1a;
 
-  /* 徽章：深色下 Kimi 的原色本身就达标（5.08:1 起），直接用原值 */
+  /* 徽章：蓝字 + 蓝的 10% 底。字色用**提亮档**——原色 #1a88ff 落在浅灰底上
+     只有 4.16–4.82:1，而徽标文字是 12px 正文口径。 */
   --badge-bg: var(--Others-KMBlue10);
-  --badge-text: var(--Colors-KMBlue);
+  --badge-text: var(--Colors-KMBlue-text);
 
   --status-success: var(--Colors-PositiveGreen);
   --status-warning: var(--Colors-Orange);
   --status-danger: var(--Colors-Red);
-  --status-info: var(--Colors-KMBlue);
+  /* info 用**蓝字档**：与浅色同构（浅色那边也是 `Colors-KMBlue-text`）。
+     knowledge 域还把它当分段进度条的填充用，两套主题同源、深浅只差明度。 */
+  --status-info: var(--Colors-KMBlue-text);
   --danger-soft: var(--Others-LightRedBg);
 
   --status-success-soft: var(--Others-LightGreenBg);

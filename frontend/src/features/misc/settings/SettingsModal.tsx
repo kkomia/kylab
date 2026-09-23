@@ -29,7 +29,7 @@ import {
   LogOut,
   Moon,
   Server,
-  Settings2,
+  Settings,
   Sparkles,
   UserPlus,
   Users,
@@ -262,7 +262,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           ? featureGroups.map((group) => ({
               key: `feature:${group.key}` as SectionKey,
               label: group.label,
-              icon: Settings2,
+              // 齿轮 = 设置（与账号菜单里那一项同一颗）。原来用的「双滑杆」在全站
+              // 只在这一处出现，读不出"这是一组设置"，也是评审说的那颗"圆点折线"。
+              icon: Settings,
             }))
           : visibleSections.filter((entry) => item.keys.includes(entry.key)),
     }))
@@ -453,7 +455,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       <div className="m-settings-layout">
         <nav className="m-settings-nav" aria-label="设置分组">
           {navGroups.map((navGroup) => (
-            <div key={navGroup.label}>
+            <div key={navGroup.label} className="m-nav-block">
               <p className="m-nav-group">{navGroup.label}</p>
               {navGroup.items.map((item) => (
                 <button

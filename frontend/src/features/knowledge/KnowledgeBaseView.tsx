@@ -738,6 +738,11 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
         ? '这个目录里还没有文档'
         : '这个知识库里还没有文档'
 
+  /**
+   * 这个库有没有目录。**它决定目录那一栏是纵向栏还是列表上方的一行**：没有目录时
+   * 「全部文档」与「未归档」筛的是同一批文档，那一栏便只剩一句「还没有目录」。
+   */
+  const hasFolders = folders.length > 0
   /** 上传目标目录：只有选中了具体目录时才带上（"全部/未归档"都算根目录）。 */
   const uploadFolderId = activeFolder && activeFolder !== ROOT_FILTER ? activeFolder : undefined
   const foldersTotal = folders.reduce((sum, folder) => sum + (folder.document_count ?? 0), 0)
@@ -799,145 +804,152 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
         </p>
       ) : null}
 
-      {/* 目录树：**贯穿整个内容高度的侧栏**，不是浮在旁边的一个方块 */}
-      <div className="kb-body">
+      {/*
+        目录树：**贯穿整个内容高度的侧栏**，不是浮在旁边的一个方块。
+
+        但**没有目录时不摆这一栏**（`hasFolders`）：此刻它只说得出一句「还没有目录」，
+        却常驻 200px 加一条分隔线，把本来就挤的七列表再压窄一档。这时它摊成列表上方的
+        一行（`.kb-tree-flat`）——「目录 / 还没有目录 / 新建目录」三件事仍然都在原位，
+        少掉的只是那一整栏空白。目录一旦建出来，纵向栏立刻回来。
+      */}
+      <div className={hasFolders ? 'kb-body' : 'kb-body kb-body-flat'}>
         {knowledgeBase ? (
-          <aside className="kb-tree" aria-label="目录">
+          <aside className={hasFolders ? 'kb-tree' : 'kb-tree kb-tree-flat'} aria-label="目录">
             <div className="kb-tree-head">
               <span>目录</span>
+              {hasFolders ? null : <span className="kb-tree-empty">还没有目录</span>}
+              {/* 「+」原来是一颗 24px 的纯图标按钮：点不准，也读不出它是"新建目录"
+                  （同一个「+」在本页还指"新建知识库"）。所以给按钮形态：图标 + 文字。 */}
               {knowledgeBase.can_write ? (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  aria-label="新建目录"
-                  title="新建目录"
-                  onClick={startCreateFolder}
-                >
+                <Button variant="ghost" size="sm" onClick={startCreateFolder}>
                   <Plus aria-hidden="true" />
+                  新建目录
                 </Button>
               ) : null}
             </div>
 
-            <ul className="kb-tree-list">
-              <li>
-                <div
-                  className={['kb-tree-row', activeFolder === '' ? 'kb-tree-row-on' : '']
-                    .filter(Boolean)
-                    .join(' ')}
-                >
-                  <button
-                    type="button"
-                    className="kb-tree-caret"
-                    aria-expanded={treeOpen}
-                    aria-label={treeOpen ? '收起目录' : '展开目录'}
-                    onClick={() => setTreeOpen((value) => !value)}
+            {/* 没有目录时这一列不渲染：此刻「全部文档」「未归档」筛的是同一批文档
+                （数字在下面的分页器上仍有），整列只说得出一句"还没有目录" */}
+            {hasFolders ? (
+              <ul className="kb-tree-list">
+                <li>
+                  <div
+                    className={['kb-tree-row', activeFolder === '' ? 'kb-tree-row-on' : '']
+                      .filter(Boolean)
+                      .join(' ')}
                   >
-                    {treeOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  </button>
-                  <button
-                    type="button"
-                    className="kb-tree-node"
-                    aria-current={activeFolder === '' ? 'true' : undefined}
-                    onClick={() => setActiveFolder('')}
-                  >
-                    <Inbox size={14} />
-                    <span className="kb-tree-label">全部文档</span>
-                    {totalCount !== null ? (
-                      <span className="kb-tree-count tabular">{totalCount}</span>
-                    ) : null}
-                  </button>
-                </div>
+                    <button
+                      type="button"
+                      className="kb-tree-caret"
+                      aria-expanded={treeOpen}
+                      aria-label={treeOpen ? '收起目录' : '展开目录'}
+                      onClick={() => setTreeOpen((value) => !value)}
+                    >
+                      {treeOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                    </button>
+                    <button
+                      type="button"
+                      className="kb-tree-node"
+                      aria-current={activeFolder === '' ? 'true' : undefined}
+                      onClick={() => setActiveFolder('')}
+                    >
+                      <Inbox size={14} />
+                      <span className="kb-tree-label">全部文档</span>
+                      {totalCount !== null ? (
+                        <span className="kb-tree-count tabular">{totalCount}</span>
+                      ) : null}
+                    </button>
+                  </div>
 
-                {treeOpen ? (
-                  <ul className="kb-tree-children">
-                    <li>
-                      <div
-                        className={[
-                          'kb-tree-row',
-                          activeFolder === ROOT_FILTER ? 'kb-tree-row-on' : '',
-                        ]
-                          .filter(Boolean)
-                          .join(' ')}
-                      >
-                        {/* 占位：让未归档与目录项的文字起点对齐 */}
-                        <span className="kb-tree-caret" aria-hidden="true" />
-                        <button
-                          type="button"
-                          className="kb-tree-node"
-                          aria-current={activeFolder === ROOT_FILTER ? 'true' : undefined}
-                          onClick={() => setActiveFolder(ROOT_FILTER)}
-                        >
-                          <FolderIcon size={14} />
-                          <span className="kb-tree-label">未归档</span>
-                          {unfiledCount !== null ? (
-                            <span className="kb-tree-count tabular">{unfiledCount}</span>
-                          ) : null}
-                        </button>
-                      </div>
-                    </li>
-
-                    {folders.map((folder) => (
-                      <li key={folder.id}>
+                  {treeOpen ? (
+                    <ul className="kb-tree-children">
+                      <li>
                         <div
                           className={[
                             'kb-tree-row',
-                            activeFolder === folder.id ? 'kb-tree-row-on' : '',
+                            activeFolder === ROOT_FILTER ? 'kb-tree-row-on' : '',
                           ]
                             .filter(Boolean)
                             .join(' ')}
                         >
+                          {/* 占位：让未归档与目录项的文字起点对齐 */}
                           <span className="kb-tree-caret" aria-hidden="true" />
                           <button
                             type="button"
                             className="kb-tree-node"
-                            aria-current={activeFolder === folder.id ? 'true' : undefined}
-                            title={folder.name}
-                            onClick={() => setActiveFolder(folder.id)}
+                            aria-current={activeFolder === ROOT_FILTER ? 'true' : undefined}
+                            onClick={() => setActiveFolder(ROOT_FILTER)}
                           >
                             <FolderIcon size={14} />
-                            <span className="kb-tree-label">{folder.name}</span>
-                            <span className="kb-tree-count tabular">{folder.document_count}</span>
+                            <span className="kb-tree-label">未归档</span>
+                            {unfiledCount !== null ? (
+                              <span className="kb-tree-count tabular">{unfiledCount}</span>
+                            ) : null}
                           </button>
-                          {knowledgeBase.can_write ? (
-                            /* 行菜单：`@/ui/dropdown-menu`（Radix）。与旧 `RowMenu` 的行为差异：
+                        </div>
+                      </li>
+
+                      {folders.map((folder) => (
+                        <li key={folder.id}>
+                          <div
+                            className={[
+                              'kb-tree-row',
+                              activeFolder === folder.id ? 'kb-tree-row-on' : '',
+                            ]
+                              .filter(Boolean)
+                              .join(' ')}
+                          >
+                            <span className="kb-tree-caret" aria-hidden="true" />
+                            <button
+                              type="button"
+                              className="kb-tree-node"
+                              aria-current={activeFolder === folder.id ? 'true' : undefined}
+                              title={folder.name}
+                              onClick={() => setActiveFolder(folder.id)}
+                            >
+                              <FolderIcon size={14} />
+                              <span className="kb-tree-label">{folder.name}</span>
+                              <span className="kb-tree-count tabular">{folder.document_count}</span>
+                            </button>
+                            {knowledgeBase.can_write ? (
+                              /* 行菜单：`@/ui/dropdown-menu`（Radix）。与旧 `RowMenu` 的行为差异：
                                菜单走 Portal 渲染到 body（旧实现是行内绝对定位）、打开时焦点进菜单、
                                关掉后还给触发器；菜单项是 `[role=menuitem]` 的 div 不是 `<button>`，
                                选中后菜单自动关闭（旧实现的 `close()` 因此消失）。 */
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label={`${folder.name} 的操作`}
-                                  title={`${folder.name} 的操作`}
-                                >
-                                  <MoreHorizontal aria-hidden="true" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuItem onSelect={() => startRenameFolder(folder)}>
-                                  <Pencil aria-hidden="true" />
-                                  重命名
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  variant="destructive"
-                                  onSelect={() => setFolderDeleteTarget(folder)}
-                                >
-                                  <Trash2 aria-hidden="true" />
-                                  删除目录
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          ) : null}
-                        </div>
-                      </li>
-                    ))}
-
-                    {folders.length === 0 ? <li className="kb-tree-empty">还没有目录</li> : null}
-                  </ul>
-                ) : null}
-              </li>
-            </ul>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    aria-label={`${folder.name} 的操作`}
+                                    title={`${folder.name} 的操作`}
+                                  >
+                                    <MoreHorizontal aria-hidden="true" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem onSelect={() => startRenameFolder(folder)}>
+                                    <Pencil aria-hidden="true" />
+                                    重命名
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    variant="destructive"
+                                    onSelect={() => setFolderDeleteTarget(folder)}
+                                  >
+                                    <Trash2 aria-hidden="true" />
+                                    删除目录
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            ) : null}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+                </li>
+              </ul>
+            ) : null}
 
             {/* 新建/重命名共用一个表单：靠 folderEditingId 区分两种模式 */}
             {folderFormOpen ? (
@@ -970,84 +982,97 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
         ) : null}
 
         <section className="kb-doc-area">
-          {/* 工具栏：搜索/筛选与库级动作**同一行**，都在列表正上方 */}
+          {/*
+            工具栏：**筛选是一组、库级动作是一组**。分组不是为了好看——原先三个筛选
+            各自是 `.kb-toolbar` 的直接子元素，而 `.kb-filter` 盒子留了 148px 的定宽
+            （里面的下拉自己只占 ~116px），于是"输入框→状态"看着 4px、"状态→来源"看着
+            33px。归组之后组内一律 `--space-2` 等距，读到的是"这四个是一回事"。
+
+            两个入口的**词也分开**：就地筛列表那一个是「按文件名过滤」（过滤，改的是
+            当前列表），开弹层做语义检索那一个是「按内容检索」（检索，另开一个面）。
+            两个都叫"搜索"时，用户点哪个都像抽签。
+          */}
           <div className="kb-toolbar">
-            <div className="kb-search-box">
-              <Search className="kb-search-icon" size={16} aria-hidden="true" />
-              <Input
-                value={searchDraft}
-                placeholder="搜索文件名…"
-                aria-label="搜索文件名"
-                onChange={(event) => setSearchDraft(event.target.value)}
-              />
+            <div className="kb-filters">
+              <div className="kb-search-box">
+                <Search className="kb-search-icon" size={16} aria-hidden="true" />
+                <Input
+                  value={searchDraft}
+                  placeholder="按文件名过滤…"
+                  aria-label="按文件名过滤"
+                  onChange={(event) => setSearchDraft(event.target.value)}
+                />
+              </div>
+              <div className="kb-filter">
+                <Select
+                  value={stageFilter || ALL_STAGES}
+                  onValueChange={(value) => {
+                    setStageFilter(value === ALL_STAGES ? '' : value)
+                    setPage(1)
+                    setSelected([])
+                  }}
+                >
+                  <SelectTrigger aria-label="按状态筛选">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {STAGE_FILTER_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="kb-filter">
+                <Select
+                  value={sourceFilter || ALL_SOURCES}
+                  onValueChange={(value) => {
+                    setSourceFilter(value === ALL_SOURCES ? '' : value)
+                    setPage(1)
+                    setSelected([])
+                  }}
+                >
+                  <SelectTrigger aria-label="按来源筛选">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {SOURCE_FILTER_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {hasFilter ? (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    setSearchDraft('')
+                    setSearchQuery('')
+                    setStageFilter('')
+                    setSourceFilter('')
+                    setPage(1)
+                    setSelected([])
+                  }}
+                >
+                  清除筛选
+                </Button>
+              ) : null}
             </div>
-            <div className="kb-filter">
-              <Select
-                value={stageFilter || ALL_STAGES}
-                onValueChange={(value) => {
-                  setStageFilter(value === ALL_STAGES ? '' : value)
-                  setPage(1)
-                  setSelected([])
-                }}
-              >
-                <SelectTrigger aria-label="按状态筛选">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STAGE_FILTER_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="kb-filter">
-              <Select
-                value={sourceFilter || ALL_SOURCES}
-                onValueChange={(value) => {
-                  setSourceFilter(value === ALL_SOURCES ? '' : value)
-                  setPage(1)
-                  setSelected([])
-                }}
-              >
-                <SelectTrigger aria-label="按来源筛选">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SOURCE_FILTER_OPTIONS.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {hasFilter ? (
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => {
-                  setSearchDraft('')
-                  setSearchQuery('')
-                  setStageFilter('')
-                  setSourceFilter('')
-                  setPage(1)
-                  setSelected([])
-                }}
-              >
-                清除筛选
-              </Button>
-            ) : null}
 
             <div className="kb-toolbar-actions">
+              {/* 与「按文件名过滤」区分开：这一颗开的是检索面板（语义 + BM25），
+                  查的是库里的正文，不是当前这一页的文件名 */}
               <Button
                 variant="secondary"
                 disabled={documents.length === 0}
                 onClick={() => setSearchOpen(true)}
               >
                 <Search aria-hidden="true" />
-                在此库检索
+                按内容检索
               </Button>
               {/* Wiki 入口只在库形态选了「向量检索 + Wiki」时出现 */}
               {knowledgeBase?.wiki_enabled ? (
@@ -1222,7 +1247,18 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                     const stage = documentStageView(document.stage)
                     return (
                       <li key={document.id} className="kb-doc-group">
-                        <div className="kb-doc-row panel-row">
+                        {/* 抽屉里正开着的那一篇在列表里留一个选中态：抽屉盖住列表时
+                            它是"我点的是哪一行"的唯一线索（`--bg-selected`，与左栏
+                            当前项同一档底色） */}
+                        <div
+                          className={[
+                            'kb-doc-row',
+                            'panel-row',
+                            openDocumentId === document.id ? 'kb-doc-row-on' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ')}
+                        >
                           {knowledgeBase?.can_write ? (
                             <span className="kb-col-check">
                               <Checkbox
@@ -1257,6 +1293,7 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                               className="kb-row-name-link"
                               to={documentLink(document.id)}
                               title={rowTitle(document)}
+                              aria-current={openDocumentId === document.id ? 'page' : undefined}
                             >
                               <span className="kb-row-name-text">{document.name}</span>
                             </Link>

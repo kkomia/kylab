@@ -25,10 +25,21 @@
  * **用途约束**（不改任何色值）：正文/表单标签/表头/按钮文字一律 Primary 或 Secondary；
  * Tertiary 只给可略过的元信息；Quaternary 只给禁用态与占位符。
  *
+ * **2026-09-24 第三批 A 起，中性灰不再照抄**：实测下来这两档不达标的地方恰恰是
+ * "要被读到的"文本（列表摘要与日期、任务表的次级读数、侧栏计数、图注、占位文字），
+ * 而"用途约束"在真实页面里守不住——这些位置本来就是正文口径的 12–14px。
+ * 所以新增 `--Labels-Tertiary-text` / `--Labels-Quaternary-text` 两个**达标档**
+ * （同色相，只压深；见下面第二节），别名 `--text-tertiary` / `--text-quaternary`
+ * 指向它们；Kimi 的原值仍留在第一节，供对照与回溯。
+ * **一处已知代价**：三级灰提到 4.5+ 之后与二级灰（0.6）的层级差从 0.15 收到 0.05，
+ * 两级在同一屏上会靠得比较近——下一轮若要把层级重新拉开，方向是把二级灰也往上抬，
+ * 而不是把三级灰压回去（那会把可读性又还回去）。
+ *
  * 还有一处**唯一的增补**：Kimi 把品牌蓝只当填充用（按钮底、气泡底，上面压白字），
  * 所以它没有"蓝字"这一档。而 #1783ff 当文字只有 3.52:1，不合格。
- * 因此多出 --accent-text（同色相压深到 4.52:1）。语义色同理：深色主题下
- * Kimi 的原值本身就达标（5.08:1 起），浅色下才需要压深，所以这一组偏离只在本文件。
+ * 因此多出 --accent-text（同色相压深，见第二节：白底 5.37:1、徽标底 4.75:1）。
+ * 语义色同理：深色主题下 Kimi 的原值本身就达标（5.08:1 起），浅色下才需要压深，
+ * 所以这一组偏离只在本文件。
  */
 
 [data-theme='light'] {
@@ -157,15 +168,35 @@
   --Always-TransparencyTagFill: #454545b3;
 
   /* ================================================================
-   * 二、语义色的文字档（浅色下的必要偏离，色相不变）
+   * 二、文字档：浅色下的必要偏离（色相不变，只调明度）
    * 实测：原填充色当文字全部不合格（1.39:1 ~ 3.75:1），压深后均 ≥4.5:1。
+   * 蓝字档第二轮（第三批 A）又压深了一小档：`--accent-text` 还要当**徽标字**用，
+   * 而徽标底下垫着蓝的 10% 底，上一版在那个底上只有 4.17:1。现值实测：
+   *   白底 5.37 / 暖白底 5.16 / 徽标底 4.75
    * ================================================================ */
-  --Colors-KMBlue-text: #006eed;
+  --Colors-KMBlue-text: #0065dd;
   --Colors-Red-text: #e90014;
   --Colors-PositiveGreen-text: #0f853a;
   --Colors-Orange-text: #a96300;
   --Colors-Yellow-text: #8e6f00;
   --Colors-Purple-text: #8a4afa;
+
+  /**
+   * 中性灰的达标档（第三批 A）。两档都是"只压深、不加色相"，与上面语义色同一做法。
+   *
+   * 为什么必须动：三级灰/四级灰在浅色下最弱，而它们落在的正是要被读到的位置——
+   * 笔记列表的摘要与日期（3.15–3.27:1）、侧栏与任务表的次级读数（3.31–3.4:1）、
+   * 列表头的计数与「＋」（约 2:1）、输入框占位文字（2.11:1）。
+   * 压深后的实测值（`.shots/audit-round-c.cjs`，两套主题逐页跑）：
+   *
+   *   三级灰 #0000008c：白底 4.76 / 暖白底 4.68 / 浅灰底 4.63 / 选中底 4.56
+   *   四级灰 #00000070：白底 3.23 / 暖白底 3.17 / 浅灰底 3.19
+   *
+   * 取的是"最不利底色上仍达标"的那一档：三级灰按 ≥4.5:1（13–14px 正文口径），
+   * 四级灰按 ≥3:1（占位文字，WCAG 对占位符的要求与图标同档）。
+   */
+  --Labels-Tertiary-text: #0000008c;
+  --Labels-Quaternary-text: #00000070;
 
   /* ================================================================
    * 三、KYLAB 别名——组件只认这些名字
@@ -192,9 +223,9 @@
 
   --text-primary: var(--Labels-Primary);
   --text-secondary: var(--Labels-Secondary);
-  /* 三级灰只有 3.35:1，用途约束见文件头 */
-  --text-tertiary: var(--Labels-Tertiary);
-  --text-quaternary: var(--Labels-Quaternary);
+  /* 三级灰与四级灰指向**达标档**（第三节那两档的实测值写在第二节注释里） */
+  --text-tertiary: var(--Labels-Tertiary-text);
+  --text-quaternary: var(--Labels-Quaternary-text);
 
   --border-hairline: var(--Separators-S1);
   --border: var(--Separators-S1);
@@ -203,21 +234,36 @@
      描边实测就是 `rgba(0,0,0,.06)`，与深色的 `rgba(255,255,255,.06)` 对称。 */
   --border-subtle: rgb(0 0 0 / 6%);
 
-  /* 菜单项的主行用 Primary、副标题用 Tertiary——Kimi 的 `.name` / `.desc` 实测如此 */
+  /* 菜单项的主行用 Primary、副标题用 Tertiary——Kimi 的 `.name` / `.desc` 实测如此。
+     **副标题走达标档**：那行是 13px 的说明文字（"选它会得到什么"），属于要被读到的口径。 */
   --menu-item-text: var(--Labels-Primary);
-  --menu-desc-text: var(--Labels-Tertiary);
+  --menu-desc-text: var(--Labels-Tertiary-text);
 
   /* 进度条空槽：用 F3（压纸白 ≈ #d9d9d9）。原先那档太浅，
      而"共 6 段、走到第 3 段"这条信息不能只靠文字撑。 */
   --meter-track: var(--Fills-F3);
   --separator: var(--text-tertiary);
 
-  /* 品牌色：靛蓝 → Kimi 亮蓝。--accent-text 是唯一的增补档（见文件头） */
+  /* 品牌色：靛蓝 → Kimi 亮蓝。两档分工——`--accent` 是**填充**（进度条、环形图、
+     勾选框、小面积强调），`--accent-text` 是**文字**（同色相压深，实测白底 5.38:1、
+     徽标底 4.75:1，见第二节）。
+     `--accent-soft` 是它的 10% 底，仍属品牌色这一族，不是"另一种蓝"。 */
   --accent: var(--Colors-KMBlue);
   --accent-hover: var(--Colors-KMBlue-hover);
   --accent-text: var(--Colors-KMBlue-text);
   --accent-soft: var(--Others-KMBlue10);
-  --accent-selected: var(--Others-TextSelected);
+
+  /**
+   * 选中底与选中描边（文本选中、词条聚焦、选中项）。
+   *
+   * 第三批 A 把它从 Kimi 的 `Others-TextSelected`（#1783ff33，冷蓝）**换成中性的
+   * `Fills-F3`**：评审的跨页共性问题 3 说"蓝色有四套取值，而全站底色是暖中性"。
+   * 现在品牌蓝只剩两个身份——`--accent`（填充）与 `--accent-text`（文字），
+   * 选中一律走中性的 Fills 阶梯（与 `--bg-selected` 同源，只是档位更重一点，
+   * 因为它还要当文本选中底与描边）。Kimi 的 `--Others-TextSelected` 原值保留在第一节。
+   */
+  --accent-selected: var(--Fills-F3);
+
   --accent-2: var(--Colors-Purple);
   --accent-2-text: var(--Colors-Purple-text);
   --accent-2-soft: #985ffb1a;

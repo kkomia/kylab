@@ -23,16 +23,15 @@
 import type { Editor } from '@tiptap/core'
 import {
   Bold,
+  ChevronDown,
   Code,
-  Heading1,
-  Heading2,
+  Ellipsis,
   Image as ImageIcon,
   Italic,
   Link as LinkIcon,
   List,
   ListOrdered,
   ListTodo,
-  Pilcrow,
   Quote,
   Redo,
   Sparkles,
@@ -53,6 +52,7 @@ import {
 import { uploadNoteImage, type NoteAiAction, type NoteImage } from '@/api/notes'
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
@@ -100,6 +100,78 @@ const SUFFIX_BY_TYPE: Record<string, string> = {
   'image/gif': '.gif',
   'image/webp': '.webp',
   'image/bmp': '.bmp',
+}
+
+/**
+ * 工具栏各按钮的激活/可用态：读的是**当前**文档与选区。
+ *
+ * 提到模块级是为了让"块级样式下拉"那张表（`BLOCK_STYLES`）能拿到它的类型——
+ * 表里每一项的 `isActive` 都是"这份状态里的某一位"，两处取值口径不会各写一遍。
+ * Tiptap 实例不在 React 的响应式图里，所以这里只是**纯函数**，调用方每次渲染现读。
+ */
+function activeStateOf(current: Editor | null) {
+  if (!current || current.isDestroyed) {
+    return {
+      paragraph: false,
+      h1: false,
+      h2: false,
+      bold: false,
+      italic: false,
+      underline: false,
+      strike: false,
+      bullet: false,
+      ordered: false,
+      task: false,
+      quote: false,
+      code: false,
+      link: false,
+      canUndo: false,
+      canRedo: false,
+    }
+  }
+  return {
+    paragraph: current.isActive('paragraph'),
+    h1: current.isActive('heading', { level: 1 }),
+    h2: current.isActive('heading', { level: 2 }),
+    bold: current.isActive('bold'),
+    italic: current.isActive('italic'),
+    underline: current.isActive('underline'),
+    strike: current.isActive('strike'),
+    bullet: current.isActive('bulletList'),
+    ordered: current.isActive('orderedList'),
+    task: current.isActive('taskList'),
+    quote: current.isActive('blockquote'),
+    code: current.isActive('codeBlock'),
+    link: current.isActive('link'),
+    canUndo: current.can().undo(),
+    canRedo: current.can().redo(),
+  }
+}
+
+type ToolbarState = ReturnType<typeof activeStateOf>
+
+/** 「段落样式」下拉的三项：标题是给用户与用例看的同一份口径。 */
+const BLOCK_STYLES = [
+  {
+    title: '正文',
+    isActive: (state: ToolbarState) => state.paragraph,
+    apply: (editor: Editor) => editor.chain().focus().setParagraph().run(),
+  },
+  {
+    title: '一级标题',
+    isActive: (state: ToolbarState) => state.h1,
+    apply: (editor: Editor) => editor.chain().focus().toggleHeading({ level: 1 }).run(),
+  },
+  {
+    title: '二级标题',
+    isActive: (state: ToolbarState) => state.h2,
+    apply: (editor: Editor) => editor.chain().focus().toggleHeading({ level: 2 }).run(),
+  },
+] as const
+
+/** 触发器上写的是**当前是什么**，不是"可以变成什么"——这正是它此前缺的那点语义。 */
+function blockLabel(state: ToolbarState): string {
+  return BLOCK_STYLES.find((style) => style.isActive(state))?.title ?? '正文'
 }
 
 /** 给没有后缀的图按 MIME 补一个后缀；已经有后缀（哪怕是别的）就不动，让后端去判。 */
@@ -168,47 +240,7 @@ export function NoteEditor({
   )
 
   /** 各按钮的激活/可用态：每次渲染现读，读到的是**当前**文档与选区。 */
-  function activeState() {
-    const current = instanceRef.current
-    if (!current || current.isDestroyed) {
-      return {
-        paragraph: false,
-        h1: false,
-        h2: false,
-        bold: false,
-        italic: false,
-        underline: false,
-        strike: false,
-        bullet: false,
-        ordered: false,
-        task: false,
-        quote: false,
-        code: false,
-        link: false,
-        canUndo: false,
-        canRedo: false,
-      }
-    }
-    return {
-      paragraph: current.isActive('paragraph'),
-      h1: current.isActive('heading', { level: 1 }),
-      h2: current.isActive('heading', { level: 2 }),
-      bold: current.isActive('bold'),
-      italic: current.isActive('italic'),
-      underline: current.isActive('underline'),
-      strike: current.isActive('strike'),
-      bullet: current.isActive('bulletList'),
-      ordered: current.isActive('orderedList'),
-      task: current.isActive('taskList'),
-      quote: current.isActive('blockquote'),
-      code: current.isActive('codeBlock'),
-      link: current.isActive('link'),
-      canUndo: current.can().undo(),
-      canRedo: current.can().redo(),
-    }
-  }
-
-  const active = activeState()
+  const active = activeStateOf(instanceRef.current)
 
   function run(action: (editor: Editor) => void): void {
     const current = instanceRef.current
@@ -338,39 +370,38 @@ export function NoteEditor({
         <span className="tool-sep" aria-hidden="true" />
 
         <div className="tool-group">
-          <button
-            type="button"
-            className={`tool${active.paragraph ? ' tool-on' : ''}`}
-            title="正文"
-            onClick={() => run((editor) => editor.chain().focus().setParagraph().run())}
-          >
-            <Pilcrow size={15} />
-          </button>
-          <button
-            type="button"
-            className={`tool${active.h1 ? ' tool-on' : ''}`}
-            title="一级标题"
-            onClick={() =>
-              run((editor) => editor.chain().focus().toggleHeading({ level: 1 }).run())
-            }
-          >
-            <Heading1 size={15} />
-          </button>
-          <button
-            type="button"
-            className={`tool${active.h2 ? ' tool-on' : ''}`}
-            title="二级标题"
-            onClick={() =>
-              run((editor) => editor.chain().focus().toggleHeading({ level: 2 }).run())
-            }
-          >
-            <Heading2 size={15} />
-          </button>
-        </div>
+          {/* 块级样式是**选择器**，不是一个能"按下去/弹起来"的开关：此前它写成三枚互斥的
+              按钮，其中"正文"在任何普通段落里都亮着（`isActive('paragraph')` 为真），
+              于是工具栏上永远挂着一枚蓝色的"选中"按钮——用户看到的是一枚说不清语义的
+              模式开关（界面评审 N2）。改成下拉之后，触发器上写的就是**当前块级样式**
+              （正文 / 一级标题 / 二级标题），选中态落在菜单项上，工具栏上不再有常亮的蓝底；
+              顺带把三个按钮压成一个，正是 N1 要的"压到 2–3 组"。 */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="tool tool-style"
+                title="段落样式"
+                aria-label="段落样式"
+              >
+                <span className="tool-style-text">{blockLabel(active)}</span>
+                <ChevronDown size={13} aria-hidden="true" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" sideOffset={4} className="min-w-[132px]">
+              {BLOCK_STYLES.map((style) => (
+                <DropdownMenuCheckboxItem
+                  key={style.title}
+                  title={style.title}
+                  checked={style.isActive(active)}
+                  onSelect={() => run(style.apply)}
+                >
+                  {style.title}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
 
-        <span className="tool-sep" aria-hidden="true" />
-
-        <div className="tool-group">
           <button
             type="button"
             className={`tool${active.bold ? ' tool-on' : ''}`}
@@ -403,11 +434,9 @@ export function NoteEditor({
           >
             <Strikethrough size={15} />
           </button>
-        </div>
-
-        <span className="tool-sep" aria-hidden="true" />
-
-        <div className="tool-group">
+          {/* 行内标记与列表**同一组**：它们都是"给这段文字排版"，中间那条竖线只会在
+              7 枚按钮里再切一刀、把分组数推到 4（界面评审 N1：压到 2–3 组）。
+              现在全条只有两条线：历史 ｜ 排版 ｜ 更多。 */}
           <button
             type="button"
             className={`tool${active.bullet ? ' tool-on' : ''}`}
@@ -436,40 +465,51 @@ export function NoteEditor({
 
         <span className="tool-sep" aria-hidden="true" />
 
+        {/* 低频的四项收进「更多」：引用 / 代码块 / 链接 / 插入图片。
+            它们都是"偶尔用一次"的动作，摆在工具栏上占掉的是最常点的那几枚按钮的宽度
+            （界面评审 N1）。功能一个不少，只是多一层。 */}
         <div className="tool-group">
-          <button
-            type="button"
-            className={`tool${active.quote ? ' tool-on' : ''}`}
-            title="引用"
-            onClick={() => run((editor) => editor.chain().focus().toggleBlockquote().run())}
-          >
-            <Quote size={15} />
-          </button>
-          <button
-            type="button"
-            className={`tool${active.code ? ' tool-on' : ''}`}
-            title="代码块"
-            onClick={() => run((editor) => editor.chain().focus().toggleCodeBlock().run())}
-          >
-            <Code size={15} />
-          </button>
-          <button
-            type="button"
-            className={`tool${active.link ? ' tool-on' : ''}`}
-            title="链接"
-            onClick={toggleLink}
-          >
-            <LinkIcon size={15} />
-          </button>
-          <button
-            type="button"
-            className="tool"
-            disabled={uploading || !noteId}
-            title={noteId ? '插入图片' : '保存后才能插入图片'}
-            onClick={pickImage}
-          >
-            <ImageIcon size={15} />
-          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button type="button" className="tool" title="更多" aria-label="更多">
+                <Ellipsis size={15} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" sideOffset={4} className="min-w-[148px]">
+              <DropdownMenuItem
+                title="引用"
+                className={active.quote ? 'tool-menu-on' : undefined}
+                onSelect={() => run((editor) => editor.chain().focus().toggleBlockquote().run())}
+              >
+                <Quote size={15} />
+                引用
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                title="代码块"
+                className={active.code ? 'tool-menu-on' : undefined}
+                onSelect={() => run((editor) => editor.chain().focus().toggleCodeBlock().run())}
+              >
+                <Code size={15} />
+                代码块
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                title="链接"
+                className={active.link ? 'tool-menu-on' : undefined}
+                onSelect={toggleLink}
+              >
+                <LinkIcon size={15} />
+                链接
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                title={noteId ? '插入图片' : '保存后才能插入图片'}
+                disabled={uploading || !noteId}
+                onSelect={pickImage}
+              >
+                <ImageIcon size={15} />
+                {uploading ? '图片上传中…' : '插入图片'}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         <div className="toolbar-right">

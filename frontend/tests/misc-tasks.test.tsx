@@ -211,7 +211,7 @@ describe('任务中心', () => {
     expect(screen.getByText('查看失败原因')).toBeInTheDocument()
   })
 
-  it('成功行的「健康」不再复述状态词，但失败/已取消仍逐字给后端标签（评审 T2）', async () => {
+  it('终态行的「健康」只在有新判断时写词：成功/已取消是不带词的记号，失败仍是「已失败」（评审 T2 / 第三批 A②）', async () => {
     listTasksMock.mockResolvedValue({
       items: [
         task({
@@ -245,16 +245,20 @@ describe('任务中心', () => {
 
     // 按列表范围查：筛选下拉的兜底原生 select 里也有同名的选项
     const rows = screen.getByRole('list')
-    // 同一行不再出现两个「已完成」——只留状态列徽章那一个
+    // 两列说的不是一件事，但**同词的行不能出现两遍**：
+    // 已完成 / 已取消 各只留状态列徽章那一个（健康列复述的那份已经收掉）
     expect(within(rows).getAllByText('已完成')).toHaveLength(1)
-    // 不写词的那一格仍有名字：列头是 aria-hidden 的，读屏器只能靠这个标记
-    expect(within(rows).getByLabelText('健康')).toBeInTheDocument()
+    expect(within(rows).getAllByText('已取消')).toHaveLength(1)
+    // 失败行两列分别是「失败」与「已失败」——这里说的不是同一件事，所以两个字都在
+    expect(within(rows).getByText('已失败')).toBeInTheDocument()
+    // 不写词的那两格仍有名字：列头是 aria-hidden 的，读屏器只能靠这个标记
+    expect(within(rows).getAllByLabelText('健康')).toHaveLength(2)
     // 健康列三格的内容（这一档的弱文字单元格就是 `.m-row-health-done`）：
-    // 成功行只有一个不带词的记号，失败/取消行照旧写后端标签
+    // 成功与已取消都退成同一个中性记号，只有失败那格逐字写后端标签
     const healthCells = [...rows.querySelectorAll('.m-row-health-done')].map(
       (cell) => cell.textContent,
     )
-    expect(healthCells).toEqual(['—', '已失败', '已取消'])
+    expect(healthCells).toEqual(['—', '已失败', '—'])
   })
 
   it('页签就是原语本身：当前态由 @/ui/tabs 自带的类画出来，不再垫 span（评审 T1）', async () => {

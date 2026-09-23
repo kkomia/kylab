@@ -630,30 +630,41 @@ function attemptText(task: TaskSummary): string {
 /**
  * 健康列这一格的内容。
  *
- * **只有"成功"这一档不写字**：后端在 `succeeded` 那档给的 label 正是「已完成」，
- * 与左边状态列逐字相同——同一行两个徽章说同一件事，一个字的新判断都没有（评审 T2）。
- * 所以那一档退成一个不带词的中性标记。
+ * **两列说的是两件事**：状态列说"这个任务处在哪个状态"（排队中 / 执行中 / 已完成 /
+ * 失败 / 已取消），健康列说"**这一轮还在不在动**"（后端按租约续没续、排了多久算出来的
+ * 判定：执行中 / 排队中 / 可能卡住 / 长时间未执行 / 已结束）。所以：
  *
- * 判定必须按 `state === 'succeeded'`：**失败与已取消同样落在 `health === 'done'`**
- * （后端把三种都算终态），而它们的 label（已失败 / 已取消）恰恰是这一列存在的意义
- * ——失败要有可读的文字出口，不能跟着一起吞掉。
+ * 1. **还没结束的那几档照字写**（`health !== 'done'`）。它们正是健康列存在的理由
+ *    ——"执行中"与"可能卡住"看起来一样，健康列负责分开它们——而且这四个值就是
+ *    上面「按健康筛选」的选项，筛了却在行上看不到那个词，筛选结果就没法核对；
+ * 2. **终态这一档（`done`）只在它带来新判断时写词**。已经结束了，健康列没有"还在不在动"
+ *    可说；此时后端给的 label 若与状态列**逐字相同**（`succeeded`→已完成、`canceled`→
+ *    已取消），写出来就是同一行两个徽章说同一件事、一个字的新判断都没有（评审 T2 与
+ *    第三批 A②），退成不带词的中性标记；
+ * 3. **`failed` 是终态里唯一的例外**：状态列写「失败」（这件事没成），健康列写「已失败」
+ *    （这一轮**已经结束**，不必再等）——两处不是同一句话，它是有效信息，留着。
+ *
+ * 判定按 `state` 点名而不是"看 label 长什么样"：后端换文案时这里的取舍会重新被看见，
+ * 而不会跟着一起变。
  *
  * 标记不带词，但不能没有名字：列头是 `aria-hidden` 的，读屏器只能靠 `aria-label`
  * 知道这一格是什么。`role="img"` 是让那个名字真的被读出来——`generic` 角色上的
  * `aria-label` 按 ARIA 规范不参与命名。
  */
 function healthCell(task: TaskSummary) {
-  if (task.state === 'succeeded' && task.health === 'done') {
-    return (
-      <span className="m-row-health-done" role="img" aria-label="健康">
-        —
-      </span>
-    )
-  }
-  // 其余各档逐字显示后端给的标签（执行中 / 排队中 / 可能卡住 / 长时间未执行 / 已失败 / 已取消）
   if (task.health === 'done') {
+    // 这两档的后端 label 与状态列逐字相同（已完成 / 已取消），复述而已
+    if (task.state === 'succeeded' || task.state === 'canceled') {
+      return (
+        <span className="m-row-health-done" role="img" aria-label="健康">
+          —
+        </span>
+      )
+    }
+    // 其余终态：失败（已失败）——状态列说的是"没成"，这里说的是"这一轮结束了"
     return <span className="m-row-health-done">{task.health_label}</span>
   }
+  // 还在动的那四档：逐字显示后端给的判定结论（前端不再翻译一遍）
   return <StatusTag label={task.health_label} tone={taskHealthTone(task.health)} />
 }
 

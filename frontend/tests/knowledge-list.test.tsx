@@ -138,16 +138,28 @@ afterEach(() => {
 })
 
 describe('知识库列表', () => {
-  it('渲染卡片：名称、嵌入模型、文档数与最近更新都来自列表接口一次带回', async () => {
-    listMock.mockResolvedValue({ items: [makeKB()] })
+  it('渲染卡片：名称、文档数与最近更新都来自列表接口一次带回；模型串与空简介不上卡', async () => {
+    listMock.mockResolvedValue({
+      items: [
+        makeKB(),
+        makeKB({ id: 'kb-2', name: '没有简介的库', description: '', document_count: 3 }),
+      ],
+    })
     renderView()
 
     expect(await screen.findByText('产品手册')).toBeInTheDocument()
-    expect(screen.getByText('bge-m3')).toBeInTheDocument()
-    expect(screen.getByText('7')).toBeInTheDocument()
+    expect(screen.getByText('没有简介的库')).toBeInTheDocument()
+    expect(screen.getAllByText('7')).toHaveLength(1)
     // 汇总（文档数 / 最近更新）来自同一个响应，不再逐库拉一次文档列表
     expect(listMock).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('link', { name: /产品手册/ })).toHaveAttribute('href', '/kb/kb-1')
+
+    // 嵌入模型串**不在卡片上**：它由供应商与库形态决定，同批库里是同一个串
+    //（四张卡四个 bge-m3），逐库看它去「知识库设置 → 基本」
+    expect(screen.queryByText('bge-m3')).not.toBeInTheDocument()
+    // 没写简介就整行不渲染（原先摆一句「暂无简介」替空字段占一行）
+    expect(screen.getByText('说明书与常见问题')).toBeInTheDocument()
+    expect(screen.queryByText('暂无简介')).not.toBeInTheDocument()
   })
 
   it('空库给空状态，且**只有页头那一个**新建入口', async () => {

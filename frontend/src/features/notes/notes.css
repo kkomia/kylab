@@ -137,7 +137,31 @@
   pointer-events: none;
 }
 
+/* 标签条按语义分三层：**时间 / 来源 / 状态**。
+ *
+ * 此前是"一锅 chip 平铺三行"：日期型（`2026-09`）、来源型（`AI日报`）、状态型（`已核实`）
+ * 混在一排，要逐行读才知道能筛什么（界面评审 N4）。分组的判据是标签的**形状**
+ * （见 `tagKindOf`），不猜后端语义、也不改标签本身。
+ * 竖排三层：每层一行小标题 + 若干 chip，行内照旧自动换行。 */
 .tag-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.tag-group {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.tag-group-label {
+  flex: 0 0 auto;
+  font-size: var(--text-micro-size);
+  color: var(--text-tertiary);
+}
+
+.tag-group-items {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
@@ -478,11 +502,38 @@
   background: var(--accent-soft);
 }
 
+/* 分组竖线：**必须看得见**。
+ *
+ * 此前取 `--border`（Separators-S1，约 12% 的黑），压在白底上只有 1.28:1——
+ * 分组等于没分，用户只能靠"点点看"（界面评审 N1）。改用 `--separator`
+ * （主题里就是 `--text-tertiary` 那一档：白底 4.7:1、深色 5.7:1），
+ * 两条线把 16 个图标切成"历史 ｜ 排版 ｜ 更多"三段，一眼能看出分组。
+ * 高度只有 16px、宽 1px，压得住工具栏的整体观感。 */
 .tool-sep {
   width: 1px;
   height: 16px;
-  margin: 0 var(--space-1);
-  background: var(--border);
+  margin: 0 var(--space-2);
+  background: var(--separator);
+}
+
+/* 「段落样式」下拉的触发器：它是一个**选择器**，长相就该与图标按钮不同——
+  文字 + 下拉箭头，宽度随当前样式的名字走。 */
+.tool-style {
+  width: auto;
+  gap: var(--space-1);
+  padding: 0 var(--space-2);
+  color: var(--text-secondary);
+}
+
+.tool-style-text {
+  font-size: var(--text-micro-size);
+  white-space: nowrap;
+}
+
+/* 下拉里的"当前项"：与工具栏上的 `tool-on` 同一套强调色，但**不再常亮**——
+   亮只亮在真正被选中的那一项上（界面评审 N2）。 */
+.tool-menu-on {
+  color: var(--accent-text);
 }
 
 .toolbar-right {

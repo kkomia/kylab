@@ -45,6 +45,7 @@ import {
   ConfirmDialog,
   EmptyState,
   Field,
+  InfoTip,
   OptionSelect,
   SkeletonBlock,
   StatusTag,
@@ -326,12 +327,17 @@ export function ModelRegistryPanel() {
 
   return (
     <div className="m-block">
+      {/*
+        **内容区的页面级标题**：左侧导航选中的是「模型注册」，而正文第一行原先是
+        「供应商 + 一句灰字」——标题缺位时，用户只能靠那行灰字认路。这里补上导航项
+        的名字，那行灰字按《前端设计规范》§5.1 收进 ⓘ（"一个供应商 = 一个接口地址
+        + 一把凭据"属于要阐述的说明，不是标题）。
+      */}
+      <h3 className="m-section-title">模型注册</h3>
       <div className="m-block-head">
         <h3 className="m-block-title">
           供应商
-          <span className="text-hint">
-            一个供应商 = 一个接口地址 + 一把凭据；同一个地址下可以登记多个模型。
-          </span>
+          <InfoTip text="一个供应商 = 一个接口地址 + 一把凭据；同一个地址下可以登记多个模型。" />
         </h3>
         <Button onClick={() => setAddingProvider((value) => !value)}>
           <Plus size={14} />
@@ -639,10 +645,20 @@ export function ModelRegistryPanel() {
                       ))}
                     </span>
                   </div>
-                  {/* 正被哪些用途用着：一眼能看出"删了会影响什么" */}
-                  {model.bound_slots.map((slot) => (
-                    <StatusTag key={slot} tone="success" label={`用于${slotLabel(slot)}`} />
-                  ))}
+                  {/*
+                    正被哪些用途用着：一眼能看出"删了会影响什么"。
+                    两处口径：
+                    1. 这一格说的是**这个模型的角色**，不是"一切正常"——原先借 success
+                       的绿胶囊当角色色，于是同一张卡里绿色同时表示"已连接""已选定"
+                       与"正被某用途使用"，三种意思一件颜色；
+                    2. 没有任何用途的模型**显式写「未指定」**，不留空位：一列里几行有
+                       标记、几行空白，空白会被读成"没渲染出来"。
+                  */}
+                  {model.bound_slots.length > 0
+                    ? model.bound_slots.map((slot) => (
+                        <StatusTag key={slot} tone="neutral" label={`用于${slotLabel(slot)}`} />
+                      ))
+                    : [<StatusTag key="unbound" tone="neutral" label="未指定" />]}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button

@@ -25,12 +25,21 @@ import { formatBytes, formatCount, formatRelativeTime } from '@/lib/format'
 
 import { documentStageView } from '../shared/status'
 import { EmptyState, ErrorLine, PageShell, SkeletonBlock, StatusTag } from '../shared/composites'
-import { ActivityHeatmap } from './ActivityHeatmap'
+import { ActivityHeatmap, HeatLegend } from './ActivityHeatmap'
 
 const EChart = lazy(() => import('./EChart').then((module) => ({ default: module.EChart })))
 
-/** 格子边长上限：12px 与参考图同档；宽度不够时按列数自动缩小。 */
-const MAX_CELL = 14
+/**
+ * 格子边长上限：宽度不够时按列数自动缩小，够宽就吃满一行的宽度。
+ *
+ * 这个上限**必须跟着卡片宽度走**：365 天是 53 列，上限定死在 14px 时网格只画到
+ * 卡片的三分之二，右边空出一大片（界面评审 D4：约 360px 空白）。20px 之下
+ * 53 列刚好铺满一行，卡片也不再是一块"半截图 + 半截空"。
+ */
+const MAX_CELL = 20
+
+/** 趋势图 x 轴最多留几个日期标签（27 个标签会糊成一条，界面评审 D6）。 */
+const MAX_TREND_LABELS = 7
 
 const METRIC_LABELS = {
   documents: '入库文档',
@@ -59,6 +68,16 @@ export function checkableTrend(
     values.push(slice.reduce((sum, point) => sum + point[metric], 0))
   }
   return { labels, values }
+}
+
+/**
+ * x 轴日期标签的抽稀步长（ECharts 的 `axisLabel.interval`，0 = 全标）。
+ *
+ * 抽的是**标签**不是数据：折线仍按每个点画，只是不再给每一列配一行日期——
+ * 27 个 "09-25" 挨在一起会糊成一条灰带，反而读不出任何一天（界面评审 D6）。
+ */
+export function trendLabelInterval(count: number): number {
+  return Math.max(0, Math.ceil(count / MAX_TREND_LABELS) - 1)
 }
 
 export function DashboardPage() {
@@ -92,49 +111,74 @@ export function DashboardPage() {
   const figureSlots = (() => {
     if (!data) {
       return [
-        { label: '知识库', value: '—', note: '相互隔离的检索范围', ready: false },
-        { label: '文档', value: '—', note: '正在统计…', ready: false },
-        { label: '切块', value: '—', note: '向量化的最小单位', ready: false },
-        { label: '原文体积', value: '—', note: '不含向量与索引', ready: false },
-        { label: '索引完成率', value: '—', note: '正在统计…', ready: false },
-        { label: `近 ${windowDays} 天入库`, value: '—', note: '正在统计…', ready: false },
+        { label: '知识库', value: '—', note: '相互隔离的检索范围', ready: false, wide: false },
+        { label: '文档与索引', value: '—', note: '正在统计…', ready: false, wide: true },
+        { label: '切块', value: '—', note: '向量化的最小单位', ready: false, wide: false },
+        { label: '原文体积', value: '—', note: '不含向量与索引', ready: false, wide: false },
+        {
+          label: `近 ${windowDays} 天入库`,
+          value: '—',
+          note: '正在统计…',
+          ready: false,
+          wide: false,
+        },
       ]
     }
-    const indexedRate = data.total_documents
-      ? Math.round((data.indexed_documents / data.total_documents) * 100)
-      : 0
+    /**
+     * 文档与索引合成一张卡（界面评审 D8）。
+     *
+     * 此前"文档 60 / 已索引 60 篇 / 占全部 60 篇"把同一件事在首屏最强的三个位置说三遍，
+     * 而第二张卡的主数字与第三张卡的注解其实都是**同一个数**。合成一张之后：
+     * 主数字只留文档总数，注解只说索引的**状态**——失败和待索引都报"还差多少"，
+     * 数字只在真的不等于总数时才出现，于是它既不是重复、也能一眼看出有没有活没干完。
+     */
+    const indexNote =
+      data.total_documents === 0
+        ? '还没有文档'
+        : data.failed_documents > 0
+          ? `${formatCount(data.failed_documents)} 篇失败`
+          : data.indexed_documents < data.total_documents
+            ? `${formatCount(data.total_documents - data.indexed_documents)} 篇待索引`
+            : '全部已索引'
+    // 窗口外的旧文档：注解报"窗口外的篇数"而不是"占全部 n 篇"——
+    // 后者与主数字重复（界面评审 D8），前者是真信息
+    const olderDocuments = Math.max(0, data.total_documents - data.recent_documents)
     return [
       {
         label: '知识库',
-        value: String(data.total_knowledge_bases),
+        value: formatCount(data.total_knowledge_bases),
         note: '相互隔离的检索范围',
         ready: true,
+        wide: false,
       },
       {
-        label: '文档',
-        value: String(data.total_documents),
-        note: `已索引 ${data.indexed_documents} 篇`,
+        label: '文档与索引',
+        value: formatCount(data.total_documents),
+        note: indexNote,
         ready: true,
+        wide: true,
       },
-      { label: '切块', value: String(data.total_chunks), note: '向量化的最小单位', ready: true },
+      {
+        label: '切块',
+        value: formatCount(data.total_chunks),
+        note: '向量化的最小单位',
+        ready: true,
+        wide: false,
+      },
       {
         label: '原文体积',
         value: formatBytes(data.storage_bytes),
         note: '不含向量与索引',
         ready: true,
-      },
-      {
-        label: '索引完成率',
-        value: `${indexedRate}%`,
-        note: data.failed_documents > 0 ? `${data.failed_documents} 篇失败` : '没有失败文档',
-        ready: true,
+        wide: false,
       },
       {
         label: `近 ${windowDays} 天入库`,
         // 注释必须与**主数字同义**：任务在跑的信息属于任务中心，不该蹭这张卡
-        value: String(data.recent_documents),
-        note: data.total_documents > 0 ? `占全部 ${data.total_documents} 篇` : '还没有文档',
+        value: formatCount(data.recent_documents),
+        note: olderDocuments > 0 ? `${formatCount(olderDocuments)} 篇更早入库` : '全部在窗口内',
         ready: true,
+        wide: false,
       },
     ]
   })()
@@ -147,7 +191,13 @@ export function DashboardPage() {
       animationDuration: 300,
       grid: { left: 44, right: 12, top: 16, bottom: 24 },
       tooltip: { trigger: 'axis' },
-      xAxis: { type: 'category', data: labels, boundaryGap: false },
+      xAxis: {
+        type: 'category',
+        data: labels,
+        boundaryGap: false,
+        // 抽稀只作用于标签：数据点一个不少，折线形状不变
+        axisLabel: { interval: trendLabelInterval(labels.length) },
+      },
       yAxis: { type: 'value', minInterval: 1 },
       series: [
         {
@@ -169,7 +219,9 @@ export function DashboardPage() {
       .slice(0, 8)
     return {
       animationDuration: 300,
-      grid: { left: 76, right: 24, top: 8, bottom: 8 },
+      // 右侧那 40px 是给条形末端的数值标签留的：标签画在绘图区**外面**，
+      // 留 24px 时它顶到卡片边框只剩 2–6px，右侧看起来像溢出了（界面评审 D10）
+      grid: { left: 76, right: 40, top: 8, bottom: 8 },
       tooltip: { trigger: 'item' },
       xAxis: { type: 'value', minInterval: 1 },
       yAxis: {
@@ -239,7 +291,7 @@ export function DashboardPage() {
       {/* 一、结论：六个大数 */}
       <ul className="m-figures">
         {figureSlots.map((item) => (
-          <li key={item.label} className="m-figure">
+          <li key={item.label} className={item.wide ? 'm-figure m-figure-wide' : 'm-figure'}>
             <span className="m-figure-label">{item.label}</span>
             <span
               className={
@@ -258,7 +310,12 @@ export function DashboardPage() {
       <div className="panel m-card-block">
         <div className="m-block-head">
           <span className="m-block-title">近 {summary?.window_days ?? windowDays} 天入库节奏</span>
-          <span className="m-block-hint">颜色越深表示当天入库越多</span>
+          {/* 图例要带**色阶样本**：只有一句"越深越多"的话，深色下既看不出网格在哪，
+              也不知道最深是哪一档（界面评审 D2）。方块与图上的分档同源（HEAT_STEPS） */}
+          <span className="m-block-hint m-heat-legend">
+            <HeatLegend />
+            颜色越深表示当天入库越多
+          </span>
         </div>
         {summary ? (
           <ActivityHeatmap activity={summary.activity} maxCell={MAX_CELL} />

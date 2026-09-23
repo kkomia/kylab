@@ -167,6 +167,29 @@ export function shortDate(item: NoteListItem): string {
   return `${date.getMonth() + 1}/${date.getDate()}`
 }
 
+/** 标签的三种语义（界面评审 N4）。 */
+export type TagKind = 'time' | 'source' | 'status'
+
+/** 日期型：`2026`、`2026-09`、`2026-09-22`（分隔符也允许 `/` 与 `.`）。 */
+const TIME_TAG = /^\d{4}(?:[-/.]\d{1,2}){0,2}$/
+
+/** 状态型：中文里这类标签都以"已/待/未/正在"起头（已核实 / 待校对 / 未归档 / 草稿）。 */
+const STATUS_TAG = /^(?:已|待|未|正在|草稿)/
+
+/**
+ * 标签归到哪一类——**只看标签本身长什么样**，不猜后端语义。
+ *
+ * 界面评审 N4 指出标签云把"时间 / 来源 / 状态"三种语义混在一排；靠一个词表去猜
+ * 来源型是不可能的（用户想写什么就写什么），但日期与状态有稳定的形状：
+ * 日期是数字与分隔符、状态是那四个前缀之一，其余一律算"来源/主题"。
+ * 这个判据只影响**显示分组**，不改标签的取值，也不影响过滤（点哪个还是筛哪个）。
+ */
+export function tagKindOf(tag: string): TagKind {
+  if (TIME_TAG.test(tag.trim())) return 'time'
+  if (STATUS_TAG.test(tag.trim())) return 'status'
+  return 'source'
+}
+
 /* --------------------------------------------------------------- UI 状态 */
 
 interface NotesUiState {

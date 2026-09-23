@@ -66,7 +66,16 @@ export function ChatThread() {
 
   return (
     <ThreadPrimitive.Root
-      className="relative flex h-full flex-col"
+      /*
+        `min-h-0 flex-1`：这一列**必须能让位**（第三批评审 A P0，实测修正）。
+        原先是 `h-full`——它把这一列钉在容器高度上，而 `h-dvh` 那一列的另一个孩子
+        是输入卡片：只要会话里有一点内容，这一列的"内容最小高度"就超过了容器高度，
+        于是它再也不能压缩，**输入卡片被整个挤出视口**（测：窗口 900 时卡片在
+        y=900~1054，`main.scrollHeight` = 1054，想打字得先把页面滚一下）。
+        换成 `flex-1`（`flex: 1 1 0%`）+ `min-h-0` 之后，视口自己滚（它本来就有
+        `min-h-0 flex-1 overflow-y-auto`），输入卡片常驻在视口底部。
+      */
+      className="relative flex min-h-0 flex-1 flex-col"
       data-running={isRunning ? 'true' : 'false'}
     >
       {/* 抬头**在视口之外**（不跟着消息滚走）：常驻的"这是哪条会话、属于哪个项目"。

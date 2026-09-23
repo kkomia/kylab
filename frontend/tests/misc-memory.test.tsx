@@ -144,7 +144,7 @@ beforeEach(() => {
 })
 
 describe('记忆页', () => {
-  it('按固定顺序分组，并默认打开核心记忆（说明走"注入"那一支）', async () => {
+  it('按固定顺序分组，并默认打开核心记忆；右栏先给渲染后的正文', async () => {
     renderMisc(<MemoryPage />)
 
     expect(await screen.findByText('核心（每轮注入）')).toBeInTheDocument()
@@ -152,10 +152,46 @@ describe('记忆页', () => {
     expect(screen.getByText('长期知识（可召回）')).toBeInTheDocument()
 
     // 首次进入默认打开核心记忆（它是这一页最该被看见的一份）
-    expect(await screen.findByLabelText('记忆文件正文')).toHaveValue('# 核心\n\n- 偏好简洁')
-    expect(
-      screen.getByText(/每轮对话都会把它整份注入上下文（不参与检索，所以搜不到是正常的）/),
-    ).toBeInTheDocument()
+    const editor = await screen.findByLabelText('记忆编辑器')
+    // **读**是默认：标题渲染成标题、行内标记不再以 `#`/`-` 的原文出现
+    expect(within(editor).getByRole('heading', { name: '核心' })).toBeInTheDocument()
+    expect(within(editor).getByText('偏好简洁')).toBeInTheDocument()
+    // 原文那套东西（textarea）这时候不该在 DOM 里
+    expect(screen.queryByLabelText('记忆文件正文')).not.toBeInTheDocument()
+  })
+
+  it('切到编辑态才给原文的 textarea（逐字还原，frontmatter 在里面）', async () => {
+    renderMisc(<MemoryPage />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '编辑' }))
+
+    expect(screen.getByLabelText('记忆文件正文')).toHaveValue('# 核心\n\n- 偏好简洁')
+    // 切回阅读：正文又按 Markdown 渲染
+    await user.click(screen.getByRole('button', { name: '阅读' }))
+    expect(screen.queryByLabelText('记忆文件正文')).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '核心' })).toBeInTheDocument()
+  })
+
+  it('列表行：标题即路径时不再写第二遍，改动时间在右端，生效标记逐行都有', async () => {
+    renderMisc(<MemoryPage />)
+
+    // 核心文件：`title` 就是 `path`（MEMORY.md）——整行里这个名字只该出现一次
+    const core = await screen.findByRole('button', { name: /MEMORY\.md/ })
+    expect(within(core).getAllByText('MEMORY.md')).toHaveLength(1)
+    // 右端那一格是改动时间（不是空、也不是拿不到时间时的占位破折号）
+    const time = core.querySelector('.m-file-time')
+    expect(time?.textContent?.trim()).not.toBe('')
+    expect(time?.textContent).not.toBe('—')
+    // 生效标记：核心 = 每轮注入；每日/长期 = 可召回（原先这两类这一格是空的）
+    expect(within(core).getByText('每轮注入')).toBeInTheDocument()
+    const daily = screen.getByRole('button', { name: /每日 · 09-22/ })
+    expect(within(daily).getByText('可召回')).toBeInTheDocument()
+    // 每日的整合状态与它并存（两件事，两枚标记）
+    expect(within(daily).getByText('待整合')).toBeInTheDocument()
+    // 有摘要给摘要；没有摘要且标题即路径时不渲染第二行（这里是日期文件：路径与标题不同）
+    const digest = screen.getByRole('button', { name: /结论/ })
+    expect(within(digest).getByText('digest/personal/结论.md')).toBeInTheDocument()
+    expect(within(digest).getByText('可召回')).toBeInTheDocument()
   })
 
   it('页签的当前态由原语自己画（白底 + 主字色跟着 data-state 走），不再垫 span', async () => {
@@ -189,6 +225,8 @@ describe('记忆页', () => {
 
   it('改了草稿点保存：把**原文**交给接口，并按返回内容刷新编辑器', async () => {
     renderMisc(<MemoryPage />)
+    // 编辑器是阅读优先：进编辑态才拿到原文的 textarea
+    await userEvent.click(await screen.findByRole('button', { name: '编辑' }))
     const editor = await screen.findByLabelText('记忆文件正文')
 
     await userEvent.clear(editor)
@@ -202,6 +240,7 @@ describe('记忆页', () => {
 
   it('有未保存改动时切文件先弹确认，放弃之后才真的切过去', async () => {
     renderMisc(<MemoryPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '编辑' }))
     const editor = await screen.findByLabelText('记忆文件正文')
     await userEvent.type(editor, '\n- 新增一行')
 
@@ -214,12 +253,14 @@ describe('记忆页', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: '放弃改动' }))
 
     await waitFor(() => expect(getMemoryFileMock).toHaveBeenCalledWith('daily/2026-09-22.md'))
-    expect(await screen.findByText(/会被「召回」（记忆检索）找到/)).toBeInTheDocument()
+    // 真的切过去了：编辑器里换成了那一份的正文
+    expect(await screen.findByLabelText('记忆文件正文')).toHaveValue('正文')
   })
 
   it('保存失败时草稿仍留在编辑器里，并把原因摆在上方', async () => {
     writeMemoryFileMock.mockRejectedValueOnce(new Error('磁盘只读'))
     renderMisc(<MemoryPage />)
+    await userEvent.click(await screen.findByRole('button', { name: '编辑' }))
     const editor = await screen.findByLabelText('记忆文件正文')
 
     await userEvent.type(editor, 'x')

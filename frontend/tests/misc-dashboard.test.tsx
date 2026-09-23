@@ -9,7 +9,7 @@
  * `EChart` 在这里被替掉：jsdom 没有 canvas，真去 init 会直接把用例打挂。
  * 图表本身的"按需异步加载"由结构保证（`React.lazy` + 本文件只关心数据）。
  */
-import { screen, waitFor } from '@testing-library/react'
+import { cleanup, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -21,17 +21,26 @@ vi.mock('@/api/stats', () => ({
 vi.mock('@/features/misc/dashboard/EChart', () => ({
   EChart: ({ option }: { option: Record<string, unknown> }) => {
     const series = (option.series as { type?: string }[] | undefined)?.[0]
+    const xAxis = option.xAxis as
+      { data?: unknown[]; axisLabel?: { interval?: number } } | undefined
     return (
       <div
         data-testid={`chart-${series?.type ?? 'unknown'}`}
         data-series={JSON.stringify(series ?? {})}
+        data-labels={JSON.stringify(xAxis?.data ?? [])}
+        data-interval={String(xAxis?.axisLabel?.interval ?? '')}
       />
     )
   },
 }))
 
 import { getDashboard, getUsage, type Dashboard } from '@/api/stats'
-import { checkableTrend, DashboardPage } from '@/features/misc/dashboard/DashboardPage'
+import {
+  checkableTrend,
+  DashboardPage,
+  trendLabelInterval,
+} from '@/features/misc/dashboard/DashboardPage'
+import { HEAT_STEPS } from '@/features/misc/dashboard/ActivityHeatmap'
 import { renderMisc } from '@/features/misc/testing/harness'
 import { resetToasts } from '@/features/misc/shared/toast'
 
@@ -119,15 +128,61 @@ beforeEach(() => {
 })
 
 describe('驾驶舱', () => {
-  it('六个大数按"结论在前"排列，并给出索引完成率与失败篇数', async () => {
+  it('大数按"结论在前"排列：文档与索引合并成一张卡，索引状态只说一次', async () => {
     renderMisc(<DashboardPage />)
 
     expect(await screen.findByText('产品手册')).toBeInTheDocument()
-    expect(screen.getByText('90%')).toBeInTheDocument()
+    // 文档与索引：主数字是文档总数，注解只说索引的**状态**（失败 / 待索引 / 已索引的百分比）
+    expect(screen.getByText('文档与索引')).toBeInTheDocument()
     expect(screen.getByText('1 篇失败')).toBeInTheDocument()
-    expect(screen.getByText('近 365 天入库')).toBeInTheDocument()
+    // 原来那张"索引完成率"卡已经并进去了：同一件事不再占两个首屏位置
+    expect(screen.queryByText('索引完成率')).toBeNull()
+    // 「近 365 天入库」的注解报**窗口外**的篇数，不再复述总文档数（10 - 4 = 6）
+    expect(screen.getByText('6 篇更早入库')).toBeInTheDocument()
+    expect(screen.queryByText('占全部 10 篇')).toBeNull()
     // 知识库规模表的最近活动走相对时间
     expect(screen.getByText(/天前|小时前|刚刚|2026-/)).toBeInTheDocument()
+  })
+
+  it('文档与索引：没有失败时注解报"还差多少"，全都索完才说"全部已索引"', async () => {
+    getDashboardMock.mockResolvedValue(
+      dashboard({ total_documents: 10, indexed_documents: 7, failed_documents: 0 }),
+    )
+    renderMisc(<DashboardPage />)
+    expect(await screen.findByText('3 篇待索引')).toBeInTheDocument()
+
+    cleanup()
+    getDashboardMock.mockResolvedValue(
+      dashboard({ total_documents: 10, indexed_documents: 10, failed_documents: 0 }),
+    )
+    renderMisc(<DashboardPage />)
+    expect(await screen.findByText('全部已索引')).toBeInTheDocument()
+    expect(screen.queryByText('0%')).toBeNull()
+  })
+
+  it('大数走千分位（四位数以上不分位读不出量级）', async () => {
+    getDashboardMock.mockResolvedValue(
+      dashboard({ total_chunks: 21606, total_documents: 1200, indexed_documents: 1200 }),
+    )
+
+    renderMisc(<DashboardPage />)
+
+    expect(await screen.findByText('21,606')).toBeInTheDocument()
+    expect(screen.getByText('1,200')).toBeInTheDocument()
+    // 原样输出（不带分隔符）的形态一个都不该在
+    expect(screen.queryByText('21606')).toBeNull()
+    expect(screen.queryByText('1200')).toBeNull()
+  })
+
+  it('热力图图例给出 4 级色阶样本（此前只有一句"越深越多"，没有任何样本）', async () => {
+    renderMisc(<DashboardPage />)
+
+    await screen.findByText('产品手册')
+    const swatches = document.querySelectorAll('.m-heat-swatch')
+    expect(swatches).toHaveLength(HEAT_STEPS.length)
+    // 最浅那一档是**低透明度 token**（空格子），不是实色
+    expect(HEAT_STEPS[0]).toContain('color-mix')
+    expect((swatches[0] as HTMLElement).style.background).toContain('color-mix')
   })
 
   it('用量三态分开说：估算 token 单独标注，别拿它精确对账', async () => {
@@ -171,6 +226,20 @@ describe('驾驶舱', () => {
       'href',
       '/knowledge-bases',
     )
+  })
+
+  it('趋势 x 轴标签抽稀：27 个标签糊成一条，最多留 7 个', async () => {
+    renderMisc(<DashboardPage />)
+
+    const chart = await screen.findByTestId('chart-line')
+    const labels = JSON.parse(chart.getAttribute('data-labels') ?? '[]') as string[]
+    const interval = Number(chart.getAttribute('data-interval'))
+    // 两天数据（各一个点）本来就不挤，不抽
+    expect(labels).toHaveLength(2)
+    expect(interval).toBe(0)
+    // 抽稀步长：27 个标签 → 每 4 个显一个（7 个）
+    expect(trendLabelInterval(27)).toBe(3)
+    expect(trendLabelInterval(7)).toBe(0)
   })
 
   it('窗口超过 60 天时按周聚合（折线不该全是锯齿）', () => {

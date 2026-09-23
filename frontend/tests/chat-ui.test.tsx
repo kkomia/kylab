@@ -502,6 +502,78 @@ describe('降级与"工具标记"两种异常收尾', () => {
 })
 
 describe('停止与回到最新', () => {
+  /**
+   * 第三批评审 A①：那个"无标签的孤立「∨」"就是这枚浮标。
+   *
+   * 它的名字与用途本来就有（`aria-label` / `title` 都是「回到最新」），真正坏掉的是
+   * **出现时机**：本版 assistant-ui 在贴底时让回调返回 `null`，而 `createActionButton`
+   * 把 `null` 接成 `disabled`——按钮不会被摘掉，于是那枚图标一直挂在最后一条消息的
+   * 操作行右边，点它（此时必然贴底）又什么都不会发生。
+   *
+   * jsdom 不算样式（`vite.config.ts` 里 `test.css: false`），"贴底时真的看不见"由真浏览器
+   * 截图作证（`.shots/batch3/02-chat.png` 无、`02-chat-scrolled-up.png` 有）；
+   * 这里守的是那个状态钩子别被删掉——它就是「只在能起作用时才出现」本身。
+   */
+  it('「回到最新」浮标带名字，且用库给的状态钩子在贴底时不出现', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    // 名字一直在（`aria-label` + `title` 各一份）：它从来不是"无标签的图标"
+    const jump = screen.getByRole('button', { name: '回到最新' })
+    expect(jump).toHaveAttribute('title', '回到最新')
+    // 库的"贴底"状态发生在 `disabled` 上，这一条工具类把它接成"不出现"
+    expect(jump.className).toContain('disabled:hidden')
+  })
+
+  /**
+   * 第三批评审 A（P0）：**输入卡片在有消息的会话里整块在折叠线以下**——想打字得先滚一下页面。
+   *
+   * 根因是这一列原来写死 `h-full`：它被钉在容器高度上，只要会话里有内容，这一列的
+   * "内容最小高度"就超过容器，于是再也不肯让位，把输入卡片顶出视口（实测 900 的窗口：
+   * 卡片落在 y=900..1054，`main.scrollHeight` 1054）。改成 `flex-1 + min-h-0` 之后，
+   * 视口自己滚（`overflow-y-auto`）、输入卡片常驻底部。
+   *
+   * jsdom 不算版面，所以"卡片真的在视口里"由真浏览器量测作证
+   * （`.shots/batch3/measure-layout.json`：900/700/1200 三档 composer 的 bottom 都等于窗口高、
+   * `main.scrollHeight == main.clientHeight`）；这里守的是那两个类别被改回去——
+   * 它们就是"这一列可以让位"本身（与 `misc-tasks` 里钉 `tabShape` 同一个手法）。
+   */
+  it('对话列可以被压缩（flex-1 + min-h-0），输入卡片在它之后、常驻在视口里', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    const thread = document.querySelector('[data-running]') as HTMLElement
+    expect(thread.className).toContain('min-h-0')
+    expect(thread.className).toContain('flex-1')
+    // `h-full` 是那个病本身：它让这一列钉死在容器高度上、不给输入卡片让位
+    expect(thread.className).not.toContain('h-full')
+    // 输入卡片是它的**下一个兄弟**（同一列里紧跟着），所以"视口滚、卡片固定"
+    const composer = document.querySelector('#chat-query')
+    expect(thread.nextElementSibling?.contains(composer)).toBe(true)
+  })
+
+  it('输入卡片控制行的预算是"一行"：胶囊横内边距收窄、那一格只放比率', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    // 上下文那一格：行上放比率（有界，不会把整行顶出去），精确数字在 title 里
+    const gauge = screen.getByRole('button', { name: '上下文用量' })
+    expect(gauge).toHaveTextContent('上下文已用 0%')
+    expect(gauge).toHaveAttribute('title', '上下文已用 0 / 0 tokens（0%）')
+    // 左组与右组都带 `min-w-0`：放不下时按"字省"（省号）而不是整格换行/撑破卡片
+    const left = gauge.parentElement?.previousElementSibling as HTMLElement
+    expect(left.className).toContain('min-w-0')
+  })
+
   it('流式期间发送键变成停止，点了之后这一轮在本页收口', async () => {
     const box = capture()
     renderPage()
