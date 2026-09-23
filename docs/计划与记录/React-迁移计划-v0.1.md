@@ -276,6 +276,11 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
   含义有两条：**升级不丢任何本地偏好**；而且会话令牌键没变，浏览器里已登录的会话切过去
   仍然有效（部署核对里"登录一次"那条多半会直接过）。键常量在 chat 域与 misc/layout 域
   各有一份是有意的（chat 不 import misc 的实现，分层约定），两处注释都写着"共用、键名一字不差"。
+  ④ **URL 形态与快捷键**：两边都是 **history 模式**（旧 `createWebHistory()` ↔ 新 `BrowserRouter`），
+  所以用户手里的 `/kb/xxx`、`/chat/xxx` 书签**照常可用**，不需要改成 hash 形态；
+  快捷键命令表也是同样四条（`chat.send` = Enter / Mod+Enter、`chat.newline` = Shift+Enter、
+  `chat.new` = Mod+K、`layout.toggleSidebar` = Mod+B），**默认键一个没动**，加上 ③ 里
+  `kylab-shortcuts` 这个覆盖键也没变，于是用户自己改过的键位同样活着。
 
 ### 10.2 NAS 产物的本机预检（都做了）
 
