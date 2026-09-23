@@ -70,6 +70,7 @@ from app.services.llm import (
     ToolSpec,
     assemble_tool_calls,
 )
+from app.services.tool_meta import parallel_groups
 
 __all__ = ["DEFAULT_MAX_STEPS", "ToolLoop", "tool_label"]
 
@@ -408,25 +409,25 @@ class ToolLoop:
         stop: str | None,
         approvals: Sequence[str | None] | None = None,
     ) -> list[ToolOutcome]:
-        """执行**同一批**调用：互不依赖的几件事**并发**跑，返回顺序与传入一致。
+        """执行**同一批**调用：能并发的并发，返回顺序与传入一致。
 
-        为什么并发（v0.27 实测的账）：模型现在会在一批里同时要三页网页、两个方向的
-        检索——它自己说了这几件事互不依赖。串行执行时，一批三页网页的墙钟时间
-        就是三页之和（实测抓页 0.4–1.2s/页），而它们之间**没有任何共享状态**，
-        等的是同一个网络。一轮里 27 次调用、平均每批 2 个，省下来的是这个量级。
+        为什么并发（v0.27 实测的账）：模型会在一批里同时要三页网页、两个方向的检索
+        ——它自己说了这几件事互不依赖。串行执行时，一批三页网页的墙钟时间就是三页之和
+        （实测抓页 0.4–1.2s/页），而它们之间**没有共享状态**，等的是同一个网络。
 
-        三件事同时成立才敢这么做：
+        **但"一批"不等于"都安全"**（v0.42 改）：原先这里把整批一律并发，
+        于是"导出文档 + 写笔记 + 上传文档"这种组合也在赌它们之间没有共享状态——
+        而那个赌注是隐式的，加写类工具的人根本不知道自己被并发调用。
+        现在按 ``tool_meta.parallel_groups`` 分组：
 
-        1. **顺序在 ``run`` 里定死**（running 全发 → 执行 → done 按调用顺序发），
-           并发只发生在"执行"这一段，事件流与消息顺序都还是确定的；
-        2. **共享状态各自加锁**：来源账本（``agent_tools.build_runner`` 的 ``book``）
-           与表格副本的 DuckDB 连接。没有这两处，两个检索线程会抢同一个编号、
-           两条 SQL 会同时用同一个连接；
-        3. **每条调用各自开 session**：外部 MCP 工具走 ``asyncio.run``（每次新建事件
-           循环）、检索与抓网页走线程安全的连接池/共享 HTTP 客户端。
-           **反过来说**：往这条路上加工具时要问一句"它在两个线程里同时跑会怎样"。
+        - 只读且声明可并发的（检索、抓网页、读文件……）连成一组并发跑；
+        - **独占调用各成一组**，天然是屏障：它前后的两组不会跨过它并发
+          （"它自己会改文件"，两边的读结果不可能互相作数）——照 DSH 的 exclusive 语义；
+        - 没声明元数据的工具（外部 MCP、以后新加的）**按独占算**（fail-closed）：
+          最坏是慢一点，不是坏数据。
 
-        单条调用不走线程池：那是常态，为它建池是白付一层开销（也少一处可出错的地方）。
+        三件事仍然成立：**顺序在 ``run`` 里定死**（running 全发 → 执行 → done 按序发）；
+        **共享状态各自加锁**（来源账本、DuckDB 连接）；**每条调用各自开 session**。
 
         ``approvals`` 与 ``calls`` **一一对应**（第二遍重跑待确认的那几条时才传，
         见 ``_perform``）。**等待绝不在这里发生**：这个池里的线程一旦阻塞在"等人回答"上，
@@ -438,14 +439,25 @@ class ToolLoop:
                 self._execute(call, stop=stop, approval=decisions[index])
                 for index, call in enumerate(calls)
             ]
-        with ThreadPoolExecutor(max_workers=min(len(calls), MAX_PARALLEL_TOOLS)) as pool:
-            # `map` **保序返回**：谁先跑完不影响结果顺序，也就影响不到事件与消息的顺序
-            return list(
-                pool.map(
-                    lambda pair: self._execute(pair[0], stop=None, approval=pair[1]),
-                    list(zip(calls, decisions, strict=True)),
+        outcomes: list[ToolOutcome] = []
+        for group in parallel_groups([call.name for call in calls]):
+            if len(group) == 1:
+                # 独占（或本来就只有一个）：不走线程池——为一条调用建池是白付开销，
+                # 而且它紧接着的那一组要等它跑完（屏障语义）
+                index = group[0]
+                outcomes.append(self._execute(calls[index], stop=None, approval=decisions[index]))
+                continue
+            with ThreadPoolExecutor(max_workers=min(len(group), MAX_PARALLEL_TOOLS)) as pool:
+                # `map` **保序返回**：谁先跑完不影响结果顺序，也就影响不到事件与消息的顺序
+                outcomes.extend(
+                    pool.map(
+                        lambda index: self._execute(
+                            calls[index], stop=None, approval=decisions[index]
+                        ),
+                        group,
+                    )
                 )
-            )
+        return outcomes
 
     def _answer(
         self, messages: list[ChatMessage], *, tools: Sequence[ToolSpec] | None = None

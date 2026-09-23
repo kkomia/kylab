@@ -792,6 +792,89 @@ def test_one_batch_runs_at_the_same_time_but_comes_back_in_order() -> None:
     ]
 
 
+def test_an_exclusive_tool_is_a_barrier_in_the_batch() -> None:
+    """**独占调用把它前后的并发隔开**（v0.42，抄 DSH 的 exclusive 语义）。
+
+    原先这一层把整批一律并发——"导出文档 + 写笔记 + 读三页网页"也会一起跑，
+    而那是在赌它们之间没有共享状态。现在按 ``tool_meta`` 分组：
+    只读且声明可并发的连成一组，独占的（写笔记、执行命令、没声明的外部工具）**各成一组**，
+    它前后那两组不会跨过它并发。
+
+    判据是**时间区间**（谁和谁重叠），不是"看起来串行"：`create_note` 在跑的那段时间里，
+    没有任何 `read_file` 也在跑。
+    """
+    guard = threading.Lock()
+    spans: list[tuple[str, float, float]] = []
+
+    def runner(name: str, args: dict) -> ToolOutcome:  # type: ignore[type-arg]
+        started = time.monotonic()
+        time.sleep(0.1)  # 真调用是网络往返；这里为了让重叠看得出来
+        with guard:
+            spans.append((name, started, time.monotonic()))
+        return ToolOutcome(content="结果")
+
+    loop, _ = _batch_loop(
+        [
+            ToolCall(id="c0", name="read_file", arguments='{"path": "a.md"}'),
+            ToolCall(id="c1", name="read_file", arguments='{"path": "b.md"}'),
+            # 写类：独占（它会被前后的读操作夹住）
+            ToolCall(id="c2", name="create_note", arguments='{"content": "x"}'),
+            ToolCall(id="c3", name="read_file", arguments='{"path": "c.md"}'),
+            ToolCall(id="c4", name="read_file", arguments='{"path": "d.md"}'),
+        ],
+        runner,
+    )
+
+    list(loop.run(messages=[]))
+
+    by_name = {}
+    for name, start, end in spans:
+        by_name.setdefault(name, []).append((start, end))
+    expose = by_name["create_note"][0]
+    assert len(by_name["read_file"]) == 4
+    overlapped = [
+        item for item in by_name["read_file"] if item[0] < expose[1] and expose[0] < item[1]
+    ]
+    assert overlapped == [], "独占调用跑的时候，读操作不该还在跑"
+    # 前后两组各自并发过（不是"整批串行"）：两组里都出现过重叠
+    before = sorted(item for item in by_name["read_file"] if item[1] <= expose[0])
+    after = sorted(item for item in by_name["read_file"] if item[0] >= expose[1])
+    assert len(before) == 2 and len(after) == 2
+    assert before[1][0] < before[0][1], "前一组应当并发"
+    assert after[1][0] < after[0][1], "后一组应当并发"
+
+
+def test_an_unknown_tool_is_treated_as_exclusive() -> None:
+    """没声明元数据的工具（外部 MCP、以后新加的）**按独占算**——fail-closed。
+
+    宁可慢一点，也不要"加了个写类工具、而它恰好在被并发调用"这种事无声发生。
+    """
+    guard = threading.Lock()
+    spans: list[tuple[str, float, float]] = []
+
+    def runner(name: str, args: dict) -> ToolOutcome:  # type: ignore[type-arg]
+        started = time.monotonic()
+        time.sleep(0.08)
+        with guard:
+            spans.append((name, started, time.monotonic()))
+        return ToolOutcome(content="结果")
+
+    loop, _ = _batch_loop(
+        [
+            ToolCall(id="c0", name="mcp__some__write", arguments="{}"),
+            ToolCall(id="c1", name="mcp__some__write", arguments="{}"),
+        ],
+        runner,
+    )
+
+    list(loop.run(messages=[]))
+
+    # **判区间是否重叠**，不要排序后比（Windows 的 monotonic 分辨率约 15ms，
+    # 两次调用可能落在同一刻，排序就变成了随机）
+    a, b = spans  # (名字, 开始, 结束)
+    assert not (a[1] < b[2] and b[1] < a[2]), "未声明的外部工具不该并发"
+
+
 def test_a_single_call_does_not_pay_for_a_pool() -> None:
     """一条调用是常态：为它建线程池是白付一层开销（也少一处可出错的地方）。
 
