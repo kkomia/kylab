@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# 前端门禁（**只改前端时跑这一个**）：eslint + prettier + vue-tsc + vitest + 生产构建 + emoji
+# 前端门禁（**只改前端时跑这一个**）：eslint + prettier + tsc + vitest + 生产构建 + emoji
 #
 # 用法：sh scripts/check-frontend.sh
 #

@@ -1,4 +1,4 @@
-﻿# 前端门禁（**只改前端时跑这一个**）：eslint + prettier + vue-tsc + vitest + 生产构建 + emoji
+﻿# 前端门禁（**只改前端时跑这一个**）：eslint + prettier + tsc + vitest + 生产构建 + emoji
 #
 # 用法：powershell -ExecutionPolicy Bypass -File scripts\check-frontend.ps1
 #
@@ -23,7 +23,7 @@ function Invoke-Step {
 }
 
 Invoke-Step 'eslint + prettier' 'pnpm' @('--dir', "$root/frontend", 'lint')
-Invoke-Step '类型检查（vue-tsc）' 'pnpm' @('--dir', "$root/frontend", 'typecheck')
+Invoke-Step '类型检查（tsc）' 'pnpm' @('--dir', "$root/frontend", 'typecheck')
 Invoke-Step '前端单测（vitest）' 'pnpm' @('--dir', "$root/frontend", 'test')
 Invoke-Step '生产构建' 'pnpm' @('--dir', "$root/frontend", 'build')
 Invoke-Step 'emoji 扫描（前端）' 'python' @("$root/scripts/scan_emoji.py", "$root/frontend/src")
