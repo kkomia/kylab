@@ -45,7 +45,7 @@ function note(message) {
   }
 }
 
-/** 品牌标：与产品同一份 SVG（`logo.svg` 就是从 IconLogo.vue 的 mark 档取的）。 */
+/** 品牌标：与产品同一份 SVG（`logo.svg` 就是从 `chat/ui/Logo.tsx` 的 mark 档取的）。 */
 async function loadBrand() {
   try {
     const response = await fetch('logo.svg')

@@ -93,7 +93,7 @@ body {
   box-shadow: 0 12px 32px #0000000f;
 }
 
-/* 品牌标：与产品同一个 SVG（见 logo.svg 与 frontend/src/components/icons/IconLogo.vue） */
+/* 品牌标：与产品同一个 SVG（见 logo.svg 与 frontend/src/features/chat/ui/Logo.tsx） */
 .brand {
   display: grid;
   place-items: center;

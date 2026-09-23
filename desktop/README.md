@@ -85,7 +85,7 @@ backend/.venv/Scripts/python.exe desktop/scripts/make-icons.py
 三个原因，每个都对应一处曾经的毛病：
 
 1. **细笔画在小尺寸会糊成一团**。品牌标的外圆是 5.5/299、环是 2.2/299——等比缩到 32px，
-   外圆只剩 0.6px。网页那边早就有对策（`IconLogo.vue` 给每根线一个**渲染像素下限**：
+   外圆只剩 0.6px。网页那边早就有对策（`frontend/src/features/chat/ui/Logo.tsx` 给每根线一个**渲染像素下限**：
    外圆与小圆 1.15px、环 0.8px），图标这边照搬同一条规则，所以**每个尺寸各画一张**，
    不是从一张大图缩下来的。
 2. **画布要按真实墨迹居中**。标是横宽形（环的尖端伸出 SVG 的 `viewBox` 之外），
@@ -99,7 +99,7 @@ backend/.venv/Scripts/python.exe desktop/scripts/make-icons.py
 
 改完要**重新构建**才会生效（图标是编译期嵌进 exe 的）：`npx @tauri-apps/cli@latest build`。
 
-外观与产品同一份几何（`src/logo.svg` / `IconLogo.vue` 的 mark 档），**只修清晰度与居中**。
+外观与产品同一份几何（`src/logo.svg` / `Logo.tsx` 的 mark 档），**只修清晰度与居中**。
 
 ## 壳把什么放在哪儿
 
@@ -121,7 +121,7 @@ desktop/
 │   ├── index.html
 │   ├── shell.css            # 取值抄自《前端设计规范》的令牌，深浅色跟随系统
 │   ├── shell.js             # 三态：首次使用 / 自动连接 / 连不上（也能在浏览器里预览）
-│   └── logo.svg             # 品牌标（或行星标，与 IconLogo.vue 同一份几何）
+│   └── logo.svg             # 品牌标（或行星标，与 Logo.tsx 同一份几何）
 ├── scripts/
 │   └── make-icons.py        # 生成图标：逐尺寸光学校正（见「图标怎么来的」）
 └── src-tauri/

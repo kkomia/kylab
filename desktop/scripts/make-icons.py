@@ -9,7 +9,7 @@
 `tauri icon` 只做一件事：把**一张**源图缩成各个尺寸。而这颗标的问题恰恰在那个"缩"上：
 
 1. **笔画太细，缩到小尺寸会糊成一团**。品牌标的外圆是 5.5/299、环是 2.2/299
-   （见 `frontend/src/components/icons/IconLogo.vue` 与 `desktop/src/logo.svg`）——
+   （见 `frontend/src/features/chat/ui/Logo.tsx` 与 `desktop/src/logo.svg`）——
    等比缩到 32px，外圆只剩 0.6px、环 0.24px，渲染出来是一片淡灰。
    网页那边早就解决了这件事：**给每根线一个"渲染像素下限"**（外圆与小圆 1.15px、
    环 0.8px），尺寸越小相对笔宽越粗，64px 以上自然回到原设计比例。
@@ -35,14 +35,14 @@ from PIL import Image, ImageDraw
 
 ICON_DIR = pathlib.Path(__file__).resolve().parent.parent / "src-tauri" / "icons"
 
-#: 标的几何，单位与 `frontend/src/components/icons/IconLogo.vue`（mark 档）一致。
+#: 标的几何，单位与 `frontend/src/features/chat/ui/Logo.tsx`（mark 档）一致。
 OUTER = {"cx": 182.5, "cy": 148.5, "r": 145.75, "w": 5.5}
 RING = {"cx": 185.5, "cy": 155.5, "rx": 192.0, "ry": 44.0, "deg": -18.5, "w": 2.2}
 MOON = {"cx": 318.5, "cy": 147.0, "r": 13.75, "w": 5.5}
 
 #: 光学校正：每根线的**渲染像素下限**。
 #:
-#: 数值比 `IconLogo.vue` 那套（1.15 / 0.8）**再粗一档**，因为场合不同：
+#: 数值比 `frontend/src/features/chat/ui/Logo.tsx` 那套（1.15 / 0.8）**再粗一档**，因为场合不同：
 #: 那边是界面里 22–34px 的标（旁边有文字、背景是页面），这里是 16–48px 的图标
 #: （孤立地摆在任务栏/开始菜单上，用户扫一眼就要认出它）。
 #: 实测（新旧并排看）：按 1.15/0.8 出来的 32px 比旧那版**细**——旧的是"粗+锯齿"

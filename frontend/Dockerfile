@@ -1,9 +1,9 @@
-# 新前端（React）的镜像——与 `frontend/Dockerfile` 同构，只换了包管理器（pnpm）。
+# 前端镜像（React 19 + Vite + pnpm）——部署侧两份 compose 都用它：
+# `deploy/docker-compose.yml`（干净机器四件套，`context: ../frontend`）与
+# `deploy/nas/docker-compose.yml`（NAS 应用层，`context: ../src/frontend`）。
 #
 # 走 pnpm 的理由：本目录的依赖树按 pnpm 解析（`pnpm-workspace.yaml` 里给 esbuild
-# 放行安装脚本，缺了它 vite 起不来）；与两个前端共存的过渡期保持一致。
-# P5 切换时 `deploy/docker-compose.yml` 只需把 `context: ../frontend` 改成
-# `../frontend-react`、镜像名改 `kylab-web`。
+# 放行安装脚本，缺了它 vite 起不来）。
 FROM node:22-slim AS builder
 
 # npm 源**可参数化**，默认官方源（行为不变）。

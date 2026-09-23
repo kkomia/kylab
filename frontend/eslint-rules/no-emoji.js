@@ -1,11 +1,13 @@
 /**
  * 自定义 ESLint 规则：kylab/no-emoji
  *
- * 依据《前端设计规范 v0.3》§3（图标系统）与 §8（禁止项）、
- * 《项目工程规范 v0.3》§4.3（风格纪律）：
- * **禁止 emoji 出现在任何源码字符串中**，图标只能引 components/icons/ 下的内联 SVG。
+ * 依据《前端设计规范 v0.14》§3（图标系统）与 §8（禁止项）、
+ * 《项目工程规范 v0.5》§4.3（风格纪律）：
+ * **禁止 emoji 出现在任何源码字符串中**；图标只用依赖里的两套图标库
+ * （`lucide-react` 为主、`@remixicon/react` 用于侧栏导航与品牌位）与
+ * `features/layout/icons.tsx` 里那几个手绘内联 SVG。
  *
- * 检查范围：字符串字面量、模板字符串、Vue 模板文本。
+ * 检查范围：字符串字面量、模板字符串、JSX 文本。
  * 不检查注释——禁令针对 UI 呈现，注释不进入界面。
  */
 
@@ -50,7 +52,7 @@ const noEmojiRule = {
     schema: [],
     messages: {
       noEmoji:
-        '禁止使用 emoji（{{char}}，U+{{code}}）。图标请用 components/icons/ 下的内联 SVG，见《前端设计规范》§3。',
+        '禁止使用 emoji（{{char}}，U+{{code}}）。图标请用 lucide-react / @remixicon/react，见《项目工程规范 v0.5》§4.3。',
     },
   },
 
