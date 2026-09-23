@@ -18,7 +18,10 @@
  * - `append`：新起一轮（发送、重新生成）——需要一对"提问 + 占位回答"；
  * - `patch`：续写最后一条回答（续跑）——只改那一条，不新增；
  * - `recover`：**刷新之后接回来的那一轮**（P2-2）——它的提问不在手上（问题随
- *   落库才有，而这一轮还在跑），所以只补回答那一条，见 `ChatView.syncLive`。
+ *   落库才有，而这一轮还在跑），所以只补回答那一条，见 `ChatView.syncLive`；
+ * - `command`：**一条斜杠命令**（P1-2）——它可能只是"一句系统回话"（`/help`），
+ *   也可能真的要过一次模型（带参数的 `/plan`、自定义命令），所以**先不建气泡**，
+ *   等真出了内容再按 `append` 那支补出来（见 `startCommandTurn`）。
  *
  * 分开的理由是**回到页面时的重放**：`append` 的那一轮在库里还没有（落库要等流跑完），
  * 必须由镜像把那一对补回画面上；`patch` 的那条在库里已经存在（只是内容旧），
@@ -45,6 +48,7 @@ import {
   openLiveTurn,
   resumeStream,
   type ChatApproval,
+  type ChatCommandResult,
   type ChatDoneInfo,
   type ChatHandlers,
   type ChatPayload,
@@ -56,8 +60,9 @@ import {
 } from '@/api/chat'
 import { mergeStep } from '@/composables/useChatTurns'
 
-/** `append` = 新起一轮；`patch` = 续写最后一条回答；`recover` = 刷新后接回来的那一轮。 */
-export type LiveMode = 'append' | 'patch' | 'recover'
+/** `append` = 新起一轮；`patch` = 续写最后一条回答；`recover` = 刷新后接回来的那一轮；
+ *  `command` = 一条斜杠命令（有没有回答要等结果，见 `startCommandTurn`）。 */
+export type LiveMode = 'append' | 'patch' | 'recover' | 'command'
 
 export interface LiveTurnState {
   conversationId: string
@@ -419,6 +424,39 @@ export function startChatTurn(
 ): Promise<void> {
   return begin(makeState(meta.conversationId, 'append', meta.query, meta.thinking), (handlers) =>
     chatStream(payload, handlers),
+  )
+}
+
+/**
+ * 一条斜杠命令：**走正常那一轮，是不是"只回一句"由结果说了算**（P1-2）。
+ *
+ * 为什么不能照菜单里的 `short_circuit` 先分流：那个标记是**表级**的保守口径，而
+ * `/plan` 是"看有没有参数"的两面派——`/plan <描述>` 在后端与 `/skill` 同一条改写路
+ * （描述当这一轮的提示、要过一次模型、会留下回答）。照表级标记把它当"只回一句"的话，
+ * 那条回答只落库、不进画面，用户得刷新才看得见（这条修的就是它）。
+ *
+ * 两条路合成一条的办法是 `mode: 'command'` 那个镜像规则：**先不建气泡**
+ * （`/help` 这类不该在对话流里留下提问与空回答），一旦真出了内容（步骤 / 出处 / 正文）
+ * 就按普通一轮补出"提问 + 回答"——于是"有回答就照常渲染、没有才当系统提示"这件事
+ * 只由一个判据决定（见 `ChatView.syncLive`）。
+ *
+ * `onCommand` 由调用方给：那条回话是**系统的回话**，归界面那一层显示
+ * （它不进这一轮的状态：命令是瞬时的，不需要跟着切页活着）。
+ */
+export function startCommandTurn(
+  payload: ChatPayload,
+  meta: {
+    conversationId: string
+    /** 用户敲的那一行（`/plan 帮我做个 X`）——出回答时要作为提问补在对话里。 */
+    query: string
+    thinking: { enabled: boolean; effort: ThinkingEffort } | null
+  },
+  onCommand: (result: ChatCommandResult) => void,
+): Promise<void> {
+  return begin(makeState(meta.conversationId, 'command', meta.query, meta.thinking), (handlers) =>
+    // 覆盖而不是另造一份：命令那一轮与普通一轮收到的是**同一批事件**
+    // （改写类命令在后端就是正常那一轮），只有"回话怎么显示"这一件不同
+    chatStream(payload, { ...handlers, onCommand }),
   )
 }
 

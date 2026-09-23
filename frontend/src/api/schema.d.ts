@@ -897,9 +897,11 @@ export interface paths {
          *        ——``builtin`` / ``user`` / ``repo``），其余字段是顺带给出的排错信息；
          *     2. **被遮蔽的与加载失败的都在列表里**（``shadowed_by`` / ``error``，与插件列表
          *        同一套做法）：静默藏掉会让用户以为文件没生效，而原因只有这里知道；
-         *     3. **``short_circuit`` 决定界面往哪条路发**：为真的是 ``/help`` ``/mode`` 这一类，
-         *        界面发出去之后**不建回答气泡**（后端不会产生回答）；为假的是改写类，
-         *        界面按普通一轮处理（``/skill`` 与自定义 md 命令会走模型）。
+         *     3. **``short_circuit`` 只是"这条通常要不要模型"的说明**：为真的是 ``/help`` ``/mode``
+         *        这一类，为假的是改写类（``/skill`` 与自定义 md 命令）。**界面不据它分流**
+         *        ——它是**表级**的保守口径，判不出 ``/plan`` 这种"看有没有参数"的两面派；
+         *        真正的判据是这一轮的结果（见 ``_CommandResult.short_circuit`` 与前端
+         *        ``ChatView.commandProducedContent``）。
          */
         get: operations["list_commands_api_v1_chat_commands_get"];
         put?: never;

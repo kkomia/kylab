@@ -46,6 +46,7 @@ import threading
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from queue import Empty, Queue
+from typing import NamedTuple
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -1985,10 +1986,12 @@ def _plan_command(services: Services, payload: ChatRequestIn) -> _CommandResult 
     四种结局，每一种都有明确去处：
 
     1. **不是命令** → ``None``（普通提问，一切照旧）；
-    2. **短路类内置**（``/help`` ``/new`` ``/stop`` ``/mode`` ``/compact``）→
-       在这里执行完，协议层按"一条 ``command`` + 一条 ``done``"回给界面；
-    3. **改写类**（``/skill`` 与全部自定义 md）→ 返回渲染好的 ``prompt``，调用方
-       拿它当这一轮的提示**继续往下走那条正常链路**（ZCode：``/skill`` 会重写下一条 prompt）；
+    2. **短路类内置**（``/help`` ``/new`` ``/stop`` ``/mode`` ``/model`` ``/compact``
+       与**不带描述的** ``/plan``）→ 在这里执行完，协议层按"一条 ``command`` + 一条
+       ``done``"回给界面；
+    3. **改写类**（``/skill``、**带描述的** ``/plan`` 与全部自定义 md）→ 返回渲染好的
+       ``prompt``，调用方拿它当这一轮的提示**继续往下走那条正常链路**
+       （ZCode：``/skill`` 会重写下一条 prompt）；
     4. **认不出的** → 照 DSH 的「``/`` 行永不静默降级为普通 prompt」回一句"没有这个命令"
        （静默发给模型的话，用户以为自己在用命令，模型却在猜他想说什么）。
 
@@ -2077,6 +2080,10 @@ def _dispatch_builtin(
         return _stop_turn(services, payload)
     if record.name == commands.NAME_MODE:
         return _switch_mode(services, payload, parsed)
+    if record.name == commands.NAME_MODEL:
+        return _switch_model(services, payload, parsed)
+    if record.name == commands.NAME_PLAN:
+        return _enter_plan_mode(services, payload, parsed)
     return _CommandResult(name=record.name, ok=False, text=f"/{record.name} 还没有实现。")
 
 
@@ -2195,6 +2202,198 @@ def _stop_turn(services: Services, payload: ChatRequestIn) -> _CommandResult:
     )
 
 
+#: ``/model`` 的用法那一行（列清单、认不出名字、没有会话时都要说一遍）。
+_MODEL_USAGE = "/model <模型名>：模型 ID（形如 gpt-4o）或 pk（mdl_ 开头那个）都认。"
+
+
+class _ModelChoice(NamedTuple):
+    """``/model`` 清单里的一行：**三个名字都要留着**。
+
+    ``pk`` 是写进会话记录的那一个（界面传下来的是它）；``model_id`` 是用户手打的那一个
+    （``gpt-4o`` 这种，他多半不知道 pk）；``label`` 是给人看的那个（可能是"另一家"）。
+    只留两个的话，配过 label 的模型就会"显示得出来、却打不进去"——这条用例踩过一次。
+    """
+
+    pk: str
+    model_id: str
+    label: str
+
+
+def _chat_models(services: Services) -> list[_ModelChoice]:
+    """可选的对话模型。
+
+    **筛选口径与前端 ModelPicker 逐字一致**（``stores/modelRegistry.ts`` 的
+    ``chatModels`` getter：供应商启用 + 能力为空或含 ``chat``）。两处各筛一份的话，
+    "界面上选得到、命令里列不出来"这种不一致迟早出现。
+    """
+    enabled = {item.id for item in services.models.list_providers() if item.enabled}
+    options: list[_ModelChoice] = []
+    for model in services.models.list_models():
+        if model.provider_id not in enabled:
+            continue
+        # 空 ``capabilities`` = "没声明"（旧数据），与前端同一个宽容口径
+        if model.capabilities and "chat" not in model.capabilities:
+            continue
+        options.append(
+            _ModelChoice(pk=model.id, model_id=model.model_id, label=model.label or model.model_id)
+        )
+    return options
+
+
+def _model_label(services: Services, model_pk: str) -> str:
+    """一个 pk 的显示名；查不到回空串。
+
+    **不把"查不到"编成一句话在这里说**：调用方才知道该说"你打的名字不认识"还是
+    "这个模型已经不在注册表里了"。
+    """
+    if not model_pk:
+        return ""
+    try:
+        model = services.models.get_model(model_pk)
+    except NotFoundError:
+        return ""
+    return model.label or model.model_id
+
+
+def _current_model(services: Services, payload: ChatRequestIn) -> tuple[str, bool]:
+    """这条会话现在用哪个模型，以及它是**跟来的**还是**自己选的**。
+
+    优先级与 ``_effective_model`` 一致：**请求里的 > 会话已存的 > 全局默认**。
+    前两者是这条会话自己的选择；最后那个（注册表里绑定给 ``chat`` 用途的）是"跟随"，
+    回话里必须把这两者分开说——不说的话，用户会以为自己选过了，其实是在跟。
+    """
+    if payload.model_pk:
+        return payload.model_pk, False
+    if payload.conversation_id:
+        try:
+            stored = services.conversations.get(payload.conversation_id).model_pk
+        except Exception:
+            # 读不出来（不存在 / 越主）就当没选：``_require_conversation`` 已经挡过一道
+            logger.info("读会话的模型失败：%s", payload.conversation_id, exc_info=True)
+            stored = None
+        if stored:
+            return stored, False
+    return str(services.models.bindings().get("chat", "")), True
+
+
+def _match_model(
+    options: list[_ModelChoice], wanted: str
+) -> tuple[str, list[_ModelChoice]]:
+    """按名字找一个模型：``(命中的 pk, 同级的其它候选)``；没命中时第一项是空串。
+
+    三级，先精确后宽容——用户手打的多半是**模型 ID**，而界面传下来的是 **pk**，
+    两个都要认：pk → 模型 ID → ID/显示名（忽略大小写）。同级命中多个时**不替用户猜**
+    （同一个模型 ID 挂在两家供应商名下是真会发生的），把候选回给他。
+    """
+    for matched in (
+        [item for item in options if item.pk == wanted],
+        [item for item in options if item.model_id == wanted],
+        [item for item in options if wanted.lower() in (item.model_id.lower(), item.label.lower())],
+    ):
+        if len(matched) == 1:
+            return matched[0].pk, []
+        if len(matched) > 1:
+            return "", matched
+    return "", []
+
+
+def _choice_line(choice: _ModelChoice, *, current: bool) -> str:
+    """清单里的一行：显示名 + **两个能用来指定的名字** + 是不是现在这个。"""
+    names = f"{choice.model_id}，{choice.pk}"
+    return f"- {choice.label}（{names}）{' ← 现在这个' if current else ''}"
+
+
+def _models_text(
+    services: Services, current: str, followed: bool, options: list[_ModelChoice]
+) -> str:
+    """``/model`` 不带参数时回的那段：**现在用哪个 + 可选清单 + 怎么切**。
+
+    "现在"分三种说清楚：会话自己选的 / 跟随全局默认的 / 一个都没有的（走设置页那套）。
+    再加一条：当前那个**已经不在可选清单里**时（供应商停用或模型被删）点一句——
+    不说的话，用户会以为它仍然是可选项。
+    """
+    label = _model_label(services, current)
+    if not current:
+        head = "这条会话还没选模型：跟随设置页那套配置（注册表里也没绑定 chat 用途）。"
+    elif followed:
+        head = f"现在跟随全局默认：「{label or current}」（{current}）。"
+    else:
+        head = f"现在这条会话用的是「{label or current}」（{current}）。"
+    lines = [head]
+    if options:
+        lines.append("可选的对话模型：")
+        lines.extend(_choice_line(item, current=item.pk == current) for item in options)
+    else:
+        lines.append("还没有登记过任何能对话的模型（设置页 → 模型注册器里加一个）。")
+    if current and current not in {item.pk for item in options}:
+        lines.append(f"注意：「{current}」不在可选清单里（供应商停用或模型已删），换一个吧。")
+    lines.append(_MODEL_USAGE)
+    return "\n".join(lines)
+
+
+def _switch_model(
+    services: Services, payload: ChatRequestIn, parsed: commands.ParsedCommand
+) -> _CommandResult:
+    """``/model [模型名]``：看或换**这条会话**的对话模型（照 QwenPaw 的 ``/model``）。
+
+    不带参数列清单；带参数就切。**写用的是 ``ConversationService.set_model``**——
+    界面上换模型走的是 ``_effective_model`` → 同一个方法，所以"界面换的"与"命令换的"
+    落在会话记录同一栏里，不会出现两处各记一份、以谁为准说不清。
+
+    切换只写会话记录、**不写注册表的槽位绑定**：``/model`` 是"这条会话用哪个"，
+    改全局默认是设置页的事（注册表那套是"没选时跟谁"）。
+    """
+    current, followed = _current_model(services, payload)
+    options = _chat_models(services)
+    pieces = parsed.args.split()
+    if not pieces:
+        return _CommandResult(
+            name="model", text=_models_text(services, current, followed, options)
+        )
+    wanted = pieces[0]
+    found, candidates = _match_model(options, wanted)
+    if not found:
+        if candidates:
+            names = "、".join(item.pk for item in candidates)
+            return _CommandResult(
+                name="model",
+                ok=False,
+                text=f"有多个模型叫「{wanted}」：{names}。用 pk 指定其中一个。\n{_MODEL_USAGE}",
+            )
+        return _CommandResult(
+            name="model",
+            ok=False,
+            text=f"没有叫「{wanted}」的对话模型。\n"
+            + _models_text(services, current, followed, options),
+        )
+    if found == current and not followed:
+        return _CommandResult(
+            name="model", text=f"这条会话已经在用「{_model_label(services, found)}」了，没有改动。"
+        )
+    if not payload.conversation_id:
+        # 模型是**随会话保存**的：没有会话就没有可写的地方，如实说（与 /compact 同一口径）
+        return _CommandResult(
+            name="model",
+            ok=False,
+            text="没有会话可写：模型选择是随会话保存的，先在对话页里提问再换，或者在输入框右侧选。",
+        )
+    try:
+        services.conversations.set_model(payload.conversation_id, found)
+    except Exception as exc:
+        logger.warning("写会话模型失败：%s", payload.conversation_id, exc_info=True)
+        return _CommandResult(name="model", ok=False, text=f"没能写进这条会话：{exc}")
+    label = _model_label(services, found) or found
+    return _CommandResult(
+        name="model",
+        text=f"这条会话的模型已换成「{label}」（{found}）。下一轮用它。",
+        # **界面据此把选择器同步过去**：输入框右侧那个 ModelPicker 与界面自己切的
+        # 模型是同一份值，不带回来的话它显示的还是旧模型，而下一条消息会照它把旧模型
+        # 再写回会话（``_effective_model`` 以请求里的为准）——刚切的那次就白切了。
+        # 从文案里认 pk 是不行的（那一句是给人读的，措辞随时会改）。
+        action={"kind": "model", "model_pk": found},
+    )
+
+
 def _switch_mode(
     services: Services, payload: ChatRequestIn, parsed: commands.ParsedCommand
 ) -> _CommandResult:
@@ -2264,6 +2463,53 @@ def _record_mode_change(
         logger.warning("写 mode/changed 事件失败：%s", conversation_id, exc_info=True)
     # 顺手同步观测表：下一轮就不会再补一条重复的 settings 来源事件
     services.commands.mode_watch.note(conversation_id, mode)
+
+
+def _enter_plan_mode(
+    services: Services, payload: ChatRequestIn, parsed: commands.ParsedCommand
+) -> _CommandResult:
+    """``/plan [描述]``：``/mode plan`` 的**语义化入口**（照 QwenPaw 的 ``/plan``）。
+
+    两件事，顺序不能换：**先切档**（写设置 + 记 ``mode/changed``，与 ``/mode`` 共用
+    ``_record_mode_change``——另写一份的话，"从哪一档切过来的 previousMode"会有两种口径）
+    → 再看有没有描述：
+
+    - **有描述**：那段描述就是**这一轮的提示**（与 ``/skill`` 同一条改写法），于是这一轮
+      照常过模型、照常留回答；plan 档的门闸会把写类工具拦下并把"为什么"回灌给模型
+      （见 ``services/plan_gate.py``），所以它先给的是计划、等的是对方那句确认。
+    - **没有描述**：当场答一句（不碰模型）——它就是 ``/mode plan``，不需要为一次切档
+      花一次模型调用。
+
+    已经在 plan 档时**不重复记事件**（``/mode`` 也是这个口径：没改动就没有事件），
+    但描述照样当提示——"再规划一次"是个合理用法。
+    """
+    wanted = parsed.args.strip()
+    current = services.chat.current_mode()
+    switched = current != modes.MODE_PLAN
+    if switched:
+        services.runtime.set({"chat.mode": modes.MODE_PLAN})
+        if payload.conversation_id:
+            _record_mode_change(
+                services, payload.conversation_id, previous=current, mode=modes.MODE_PLAN
+            )
+    definition = modes.MODE_DEFS[modes.MODE_PLAN]
+    if wanted:
+        # 切档已经生效，这一轮开跑时读到的就是 plan（``_events`` 里那一次 `current_mode`）
+        return _CommandResult(name="plan", prompt=wanted)
+    head = (
+        f"已切到「{definition.label}」档（{modes.MODE_PLAN}）：{definition.hint}。{definition.detail}"
+        if switched
+        else f"已经是「{definition.label}」档了。"
+    )
+    return _CommandResult(
+        name="plan",
+        text=f"{head}\n带上描述直接开始：/plan <描述>（描述会作为这一轮的提示，模型先给计划）。",
+        action={
+            "kind": "mode",
+            "mode": modes.MODE_PLAN,
+            "previousMode": current,
+        },
+    )
 
 
 def _note_turn_mode(
@@ -2350,9 +2596,11 @@ def list_commands(
        ——``builtin`` / ``user`` / ``repo``），其余字段是顺带给出的排错信息；
     2. **被遮蔽的与加载失败的都在列表里**（``shadowed_by`` / ``error``，与插件列表
        同一套做法）：静默藏掉会让用户以为文件没生效，而原因只有这里知道；
-    3. **``short_circuit`` 决定界面往哪条路发**：为真的是 ``/help`` ``/mode`` 这一类，
-       界面发出去之后**不建回答气泡**（后端不会产生回答）；为假的是改写类，
-       界面按普通一轮处理（``/skill`` 与自定义 md 命令会走模型）。
+    3. **``short_circuit`` 只是"这条通常要不要模型"的说明**：为真的是 ``/help`` ``/mode``
+       这一类，为假的是改写类（``/skill`` 与自定义 md 命令）。**界面不据它分流**
+       ——它是**表级**的保守口径，判不出 ``/plan`` 这种"看有没有参数"的两面派；
+       真正的判据是这一轮的结果（见 ``_CommandResult.short_circuit`` 与前端
+       ``ChatView.commandProducedContent``）。
     """
     items = services.commands.list()
     return CommandListOut(

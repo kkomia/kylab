@@ -2252,9 +2252,13 @@ class CommandOut(BaseModel):
     argument_hint: str = ""
     """自定义命令 frontmatter 里的 ``argument-hint``（照 ZCode）。"""
     short_circuit: bool = True
-    """**这条要不要模型**：为真的是 ``/help`` ``/mode`` 这一类——后端直接执行、
-    不产生回答，界面据此**不建回答气泡**；为假的是改写类（``/skill`` 与自定义
-    md 命令），界面按普通一轮处理。"""
+    """**这条通常要不要模型**：为真的是 ``/help`` ``/mode`` 这一类。
+
+    **界面不拿它分流**（见 ``_CommandResult.short_circuit`` 与前端 ``ChatView.runCommand``）：
+    它是**表级**的保守口径，而 ``/plan`` 是"看有没有参数"的两面派——不带描述时只是切档，
+    带上描述时那段描述就是这一轮的提示。真正的判据是**这一轮的结果**：出了内容
+    （步骤 / 出处 / 正文）就按普通一轮渲染，没出才算"只回一句系统提示"。
+    """
     shadowed_by: str = ""
     """**被谁遮蔽**（空 = 没被遮蔽）：同名时内置 > 用户 > 仓库，first match wins。
     被遮蔽的**仍然在列表里**（照插件列表的做法）——静默藏掉会让人以为文件没生效。"""

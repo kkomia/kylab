@@ -221,7 +221,14 @@ export interface ChatCommand {
   group: 'builtin' | 'user' | 'repo'
   details: string[]
   argument_hint: string
-  /** 这条要不要模型：为真的（`/help` `/mode` 这类）**不产生回答气泡**，见 `onCommand`。 */
+  /**
+   * 这条**通常**要不要模型：为真的是 `/help` `/mode` 这一类通例。
+   *
+   * **界面不拿它当分流依据**（`ChatView.runCommand` 里写着理由）：它是**表级**的
+   * 保守口径，而 `/plan` 是"看有没有参数"的两面派——不带描述时只是切档，
+   * 带上描述时那段描述就是这一轮的提示（要过一次模型、会留下回答）。
+   * 判据始终是**这一轮的结果**：有回答就按普通一轮渲染，没有才当"只回一句系统提示"。
+   */
   short_circuit: boolean
   shadowed_by: string
   error: string
@@ -275,15 +282,34 @@ export async function listCommands(): Promise<ChatCommand[]> {
 /**
  * 一条命令执行完的回话（后端那条 ``command`` 事件，P1-2）。
  *
- * **它不是回答**：`done` 里的 `answer` 是空串，界面不该为它建一个回答气泡——
- * 这就是「命令不进模型历史」在界面上的样子。`action` 是界面要顺手做的事
- * （开新会话 / 停掉这一轮 / 切了某一档）。
+ * **它自己不是回答**：短路类命令的 `done` 里 `answer` 是空串，界面为它只摆一小块
+ * 回话（不建回答气泡）——这就是「命令不进模型历史」在界面上的样子。
+ *
+ * 但**收到它不代表这一轮没有回答**：改写类命令（`/skill`、带参数的 `/plan`、
+ * 自定义 md 命令）会在后面照常吐 step / delta / done，界面按普通一轮渲染。
+ * 所以分流看结果，不看这条事件在不在（见 `ChatView.runCommand`）。
+ *
+ * `action` 是界面要顺手做的事（开新会话 / 停掉这一轮 / 切了某一档 / 换了模型）。
  */
 export interface ChatCommandResult {
   name: string
   text: string
   ok: boolean
-  action?: { kind: string; conversation_id?: string; mode?: string; previousMode?: string }
+  action?: {
+    kind: string
+    conversation_id?: string
+    mode?: string
+    previousMode?: string
+    /**
+     * 换了模型时**会话现在用的那个 pk**（`/model <名字>`，后端 `_switch_model`）。
+     *
+     * 界面据此把输入框右侧的 ModelPicker 同步过去：它是 `v-model` 绑在
+     * ChatView 的 `modelPk` 上的，不同步的话它显示的还是旧模型，而下一条消息
+     * 会照它把旧模型写回会话——刚切的那次就白切了（用户手打的是模型 ID，
+     * 而这里给的是 pk，两者不是同一个字符串）。
+     */
+    model_pk?: string
+  }
 }
 
 /**
@@ -347,8 +373,9 @@ export type ChatStreamEvent = SeqStamp &
       }
     | { type: 'error'; message: string }
     /**
-     * 一条斜杠命令的回话（P1-2）。**它替代了整轮回答**：这一轮没有 step / delta，
-     * 也不会有消息落库（后端在进模型之前就把它答掉了）。
+     * 一条斜杠命令的回话（P1-2）。**它不一定是这一轮的全部**：短路类命令到此为止
+     * （后端在进模型之前就把它答掉了，没有 step / delta，也不落消息），
+     * 而改写类命令后面还会照常来 step / delta / done（见 `ChatCommandResult`）。
      */
     | {
         type: 'command'
@@ -409,10 +436,12 @@ export interface ChatHandlers {
    */
   onApproval?: (approval: ChatApproval) => void
   /**
-   * 这一轮是**一条命令**（P1-2）：回话只有这一条 + 一条空的 `done`。
+   * 这一轮是**一条命令**（P1-2）：回话走这一条。
    *
-   * 与 `onDelta` 分开是刻意的：命令不是模型写的，界面不该把它当回答渲染
-   * （不建气泡、不进历史），而 `done` 的 `answer` 是空串。
+   * 与 `onDelta` 分开是刻意的：命令的回话不是模型写的，界面不该把它当回答渲染
+   * （不建气泡、不进历史）。**但它不排除后面还有回答**——改写类命令（`/skill`、
+   * 带参数的 `/plan`、自定义 md 命令）随后照常走 `onStep` / `onDelta` / `onDone`，
+   * 所以"有没有回答"要看结果，不能看这条回调在不在（见 `ChatView.runCommand`）。
    */
   onCommand?: (result: ChatCommandResult) => void
 }

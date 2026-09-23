@@ -103,7 +103,9 @@ import {
   liveTurnState as live,
   settleLiveApproval,
   startChatTurn,
+  startCommandTurn,
   startResumeTurn,
+  type LiveTurnState,
 } from '@/composables/useLiveTurn'
 
 /**
@@ -784,6 +786,42 @@ watch([conversationId, wantsNew], () => {
 })
 
 /**
+ * 一条斜杠命令**有没有真的产出内容**（P1-2）。
+ *
+ * 判据就是任务里那句话：**看结果里有没有正文/回答**——命令的表级 `short_circuit`
+ * 只说明"通常不产生回答"，而 `/plan <描述>`、自定义命令会照常过模型并留下回答。
+ *
+ * 四样都算内容，各有理由：
+ *
+ * - **过程与出处**：改写类命令那一轮就是普通一轮，先到的是步骤（"理解问题"之类），
+ *   这一步就该把气泡建出来了，不然正文要等到第一段 delta 才出现；
+ * - **正文**：唯一要排除的是**补发的收口**（`recovered`）——缓冲里已经没有这一轮时，
+ *   后端那条 done 带的是**库里最后一条回答**（`_finished_payload` 的退让顺序），
+ *   它不是这一轮产出的东西，照它建气泡会凭空多出一轮看过的回答。
+ *   （正在流时来的 `done` 没有 `recovered`，那一条带的就是这一轮自己的答复。）
+ * - **错误**：一次失败（没配模型、命令名认不出…）也得让用户看见原因，
+ *   否则敲完 `/plan ...` 屏幕上什么都不会发生。
+ */
+function commandProducedContent(state: LiveTurnState): boolean {
+  return (
+    state.steps.length > 0 ||
+    state.sources.length > 0 ||
+    state.error.length > 0 ||
+    (state.text.length > 0 && !state.recovered)
+  )
+}
+
+/**
+ * 命令那一轮的气泡**建过没有**（`syncLive` 用它守住"只建一次"）。
+ *
+ * 为什么不能看"画面上有没有这一对"：一条命令可能整个流都在一个微任务里跑完
+ * （`done` 一到，`streaming` 立刻翻假），也可能在流开始之前就被后端挡下来
+ * （422，比如这条会话的模型没配好）——两种都得画一次，所以"还没收尾"不足为凭。
+ * 按 live 状态对象认：换了一轮就是新对象（`useLiveTurn.makeState`），计数自然重来。
+ */
+let commandPairDrawn: object | null = null
+
+/**
  * 把"正在流式的那一轮"**镜像**进本组件的消息数组（v0.41）。
  *
  * 这一轮的真身在 `useLiveTurn` 里（模块作用域，切页不丢）。本组件只负责把它画出来：
@@ -791,6 +829,9 @@ watch([conversationId, wantsNew], () => {
  * - **`append` 且画面上没有那一对**（例如用户离开页面后流还在跑，回来时组件是新挂载的、
  *   库里又还没有这一轮）→ 用 `live` 里的提问与已流出的字**补出一对**；
  *   库里没有它的原因是落库发生在流跑完之后，所以不能等库。
+ * - **`command`（P1-2，一条斜杠命令）**：同上，但**要等真有内容**才补——命令可能只是
+ *   一句系统的回话（`/help`、`/model`），那不该在对话流里留下气泡；而带参数的 `/plan`
+ *   与自定义命令会照常过模型、照常吐正文，那时它就是一次普通问答（见 `runCommand`）。
  * - **`recover`（P2-2，刷新之后接回来的那一轮）**：只补回答那一条，而且**只有正文到了才补**。
  *   两条依据：正文增量**不补发**（见后端 `live_turns`），所以"有正文"就等于"这一轮还活着"；
  *   而提问在这一刻还没落库（它随回答一起写），补不出来——等这一轮写完，`settleTurn`
@@ -810,10 +851,28 @@ function syncLive(): void {
   const last = messages.value.at(-1)
   const hasPlaceholder = last?.role === 'assistant' && last.streaming === true
   if (!hasPlaceholder) {
-    // 收尾了、画面上又还没有它：**什么都不补**——库里那份才是权威
-    // （重连到一条早已跑完的会话时走的就是这一支）
-    if (!state.streaming) return
-    if (state.mode === 'append') {
+    if (state.mode === 'command') {
+      // 一条斜杠命令：**真有内容才画**，而且只画一次（见上面两个函数）。
+      // 这里不看"还在流里"：它可能整个流都在一个微任务里跑完，也可能一上来就被
+      // 后端 422 挡下——两种都得在画面上留下东西，不然用户敲完 `/plan ...` 什么都看不到。
+      // 已经画过的那一次之后，后面的状态变更走下面那段"只刷字段"。
+      if (commandPairDrawn === state || !commandProducedContent(state)) return
+      commandPairDrawn = state
+      messages.value = [
+        ...messages.value,
+        makeMessage('user', state.query),
+        // 用 state 自己的收尾标记：命令可能在"还没有内容"时就失败/收尾了，
+        // 那时补出来的这一条不该是一个永远转圈的气泡
+        makeMessage('assistant', state.text, {
+          streaming: state.streaming,
+          thinking: state.thinking,
+        }),
+      ]
+    } else if (!state.streaming) {
+      // 收尾了、画面上又还没有它：**什么都不补**——库里那份才是权威
+      // （重连到一条早已跑完的会话时走的就是这一支）
+      return
+    } else if (state.mode === 'append') {
       messages.value = [
         ...messages.value,
         makeMessage('user', state.query),
@@ -1116,10 +1175,11 @@ async function send(): Promise<void> {
 
 // ------------------------------------------------------------- 斜杠命令（P1-2）
 //
-// 三件事分开：**菜单**（打 `/` 弹出，见 SlashMenu.vue）、**分流**（短路类走
-// `runCommand`、改写类走普通那一轮）、**回话**（`commandResult` 那一小块面板）。
-// 分流必须与后端一致，所以菜单里的 `short_circuit` 就是唯一依据——
-// 后端认不出某条命令时**也**不会有模型调用，所以"不在菜单里"按短路类处理（见下）。
+// 三件事分开：**菜单**（打 `/` 弹出，见 SlashMenu.vue）、**这一轮怎么跑**
+// （走正常那一轮，见 `runCommand`）、**回话**（`commandResult` 那一小块面板）。
+// 分流**不看菜单里的 `short_circuit`**：那是表级的保守口径，判不出 `/plan <描述>`
+// 这种"看有没有参数"的两面派——真正的判据是这一轮的结果（有没有内容），
+// 见 `runCommand` 与 `syncLive`。
 
 /** 命令清单（懒加载：不敲 `/` 就不请求）。 */
 const commands = ref<ChatCommand[]>([])
@@ -1271,58 +1331,63 @@ function insertLineBreak(event: KeyboardEvent): void {
 }
 
 /**
- * 跑一条命令：**它就是一轮请求，只是后端不会产生回答**。
+ * 跑一条命令：**它就是一轮请求，只是后端可能不产生回答**。
  *
  * 与 `streamTurn` 的两处差别，都是有意的：
- * 1. **不插"提问 + 空回答"那两条消息**——命令不进模型历史，也不该在对话流里留下气泡
- *    （ZCode / DSH 都是这个观感：命令的回话是系统的回话，不是助手说的话）；
- * 2. **不走 `useLiveTurn`**（那一套是给"切页也不丢的回答"用的）：命令是瞬时的，
- *    几十毫秒就回来了，为它维护一份跨页状态只是把简单的事复杂化。
+ * 1. **不预先插"提问 + 空回答"那两条消息**——命令可能只是一句系统的回话
+ *    （`/help`、`/model`），那不该在对话流里留下气泡（ZCode / DSH 都是这个观感）；
+ * 2. **这一轮还在跑时不走常驻链路**——那一格只放"当前这一轮"，
+ *    接管它会把正在写的那条回答从画面上抹掉（见下面对 `sending` 的那一支）。
  *
- * 后端认出它是**改写类**时（`/skill`、自定义 md 命令），这条路会收到正常那一轮的
- * step/delta 事件——所以这里按"有没有 command 事件"决定怎么收尾：
- * 收到了就显示回话面板，什么都没收到就什么也不做（真正的内容由 useLiveTurn 那条
- * 常驻链路照旧呈现）。分流的依据来自菜单的 `short_circuit`，与后端同一份数据。
+ * 分流**按结果**，不按菜单里的 `short_circuit`：那个标记是表级的保守口径，
+ * 而 `/plan <描述>` 与 `/skill` 同属改写类（描述就是这一轮的提示、要过一次模型、
+ * 会留下回答）——照表级标记把它当"只回一句"的话，回答只落库、不进画面，
+ * 用户得刷新才看得见。所以这里统一带上 `onCommand`（供"只回一句"那条路显示回话）
+ * 走正常那一轮，由 `syncLive` 按"有没有内容"决定建不建气泡。
  */
 async function runCommand(text: string, target: string, model: string | undefined): Promise<void> {
-  // **先确保菜单到手**，再决定走哪条路：分流依据是后端给的 `short_circuit`，
-  // 而用户完全可能把一整条命令粘进来（那时菜单一次都没弹过、清单也还没取）。
-  await loadCommands()
-  const name = text.slice(1).split(/\s+/)[0]?.toLowerCase() ?? ''
-  const known = commands.value.find((item) => item.name === name)
-  // 清单空 = 后端没有这个端点（旧版本）：那它也没有命令这一层，
+  // **先确保菜单到手**：清单空 = 后端没有命令这一层（旧版本），
   // 按普通一轮发出去才是对的（反过来的话，用户会得到一条空回答）。
+  await loadCommands()
   if (commands.value.length === 0) {
     await streamTurn(text, history.value, model, target)
     return
   }
-  // **改写类**（菜单里说它要模型）：按普通一轮发出去，走 `useLiveTurn` 那条常驻链路
-  if (known && !known.short_circuit) {
-    await streamTurn(text, history.value, model, target)
-    return
+  const payload = {
+    query: text,
+    kb_ids: effectiveKbIds.value,
+    conversation_id: target,
+    model_pk: model,
   }
-  // 短路类与**认不出的命令**（可能只是打错了）都走这里：后端不会为它们调模型，
-  // 回一句"没有这个命令"或命令的回话——那一轮没有回答，也就不该建回答气泡。
+  // 短路类那些命令的回话（`/help` 的清单、`/compact` 压了多少、`/model` 换了哪个）
   commandResult.value = null
+  const onCommand = (result: ChatCommandResult): void => {
+    commandResult.value = result
+    handleCommandAction(result, target)
+  }
   try {
-    await chatStream(
-      {
-        query: text,
-        kb_ids: effectiveKbIds.value,
-        conversation_id: target,
-        model_pk: model,
-      },
-      {
-        onCommand: (result) => {
-          commandResult.value = result
-          handleCommandAction(result)
+    if (sending.value) {
+      // **这一轮还在跑**（`/stop` 恰恰只在这个窗口里有意义）：此时不能接管常驻链路
+      // ——那一格只放"当前这一轮"，换了它会把正在写的那条回答从画面上抹掉。
+      // 所以这里走直连那条路，回话照旧显示；代价是这一条命令若其实是改写类
+      // （带参数的 `/plan`），回答仍要等下次读会话才见——但"跑着一轮时再派一轮"
+      // 本来就是后端不支持的事（同一条会话上会有两个 turn 同时跑）。
+      await chatStream(payload, {
+        onCommand,
+        onError: (message) => notifyError(message),
+      })
+    } else {
+      // 正常那条路：与普通提问同一套（切页不丢、断线可重连、回答就地渲染）
+      await startCommandTurn(
+        payload,
+        {
+          conversationId: target,
+          query: text,
+          thinking: { enabled: thinkingOn.value, effort: thinkingEffort.value },
         },
-        // 解析不了就当"没有回话"：报错的那一轮后端会经 `onError` 说清楚
-        onError: (message) => {
-          notifyError(message)
-        },
-      },
-    )
+        onCommand,
+      )
+    }
     // 命令可能在服务端改了东西（切档、压缩、新建会话），刷一次侧栏与缓存
     void conversations.load()
   } catch (cause) {
@@ -1331,7 +1396,7 @@ async function runCommand(text: string, target: string, model: string | undefine
 }
 
 /** 命令回话里那几个"顺手要做的事"（后端 `action`，见 `_CommandResult`）。 */
-function handleCommandAction(result: ChatCommandResult): void {
+function handleCommandAction(result: ChatCommandResult, target: string): void {
   const action = result.action
   if (!action) return
   if (action.kind === 'conversation' && action.conversation_id) {
@@ -1348,6 +1413,18 @@ function handleCommandAction(result: ChatCommandResult): void {
     // 模式被命令改了：输入框那一排的控件要跟着显示新档，否则它显示的还是旧档
     // （它自己挂在 `onMounted` 上读一次，见 ModePicker 的注释）
     window.dispatchEvent(new CustomEvent('kylab:mode-changed', { detail: action.mode }))
+    return
+  }
+  if (action.kind === 'model' && action.model_pk) {
+    // `/model <名字>`：输入框右侧那个选择器的值就是 `modelPk`（模板里的 v-model）。
+    // 不同步的话它显示的还是旧模型，而下一条消息会照它把旧模型写回会话
+    // （后端 `_effective_model` 以请求里的 `model_pk` 为准）——刚切的那次就白切了。
+    modelPk.value = action.model_pk
+    // 缓存里那份会话详情还带着旧模型：切走再回来 `applyDetail` 会拿它把选择盖回去，
+    // 所以让后端校准一次（这一次请求同时把侧栏那条也更新掉）。
+    if (target) void conversations.refreshDetail(target)
+    // **不需要广播**（`/mode` 那条要，因为它改的是 ModePicker 自己读一次的设置）：
+    // 模型只有这一处显示，写的就是它 v-model 绑着的那一个值。
   }
 }
 

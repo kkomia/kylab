@@ -24,11 +24,13 @@ ZCode                自定义命令 = 一个 md 文件，**文件名即命令�
 **命令分两类**，这个区分是这一模块对协议层最重要的一句话：
 
 - **短路类**（``short_circuit=True``）：``/help`` ``/new`` ``/stop`` ``/mode``
-  ``/compact``。它们**不进模型**、**不产生 assistant 消息**——由协议层直接执行
-  并把结果回给界面（QwenPaw 那套优先级 0/10/20/30 要的就是这个）。
-- **改写类**（``short_circuit=False``）：``/skill`` 与全部自定义 md 命令。
-  它们把渲染后的正文**当作这一轮的提示**（ZCode：``/skill`` 会重写下一条 prompt），
-  所以还是要过一次模型、还是会留下回答；进历史的也只是渲染后的正文。
+  ``/model`` ``/compact``。它们**不进模型**、**不产生 assistant 消息**——由协议层
+  直接执行并把结果回给界面（QwenPaw 那套优先级 0/10/20/30 要的就是这个）。
+- **改写类**（``short_circuit=False``）：``/skill``、``/plan <描述>`` 与全部自定义
+  md 命令。它们把渲染后的正文**当作这一轮的提示**（ZCode：``/skill`` 会重写下一条
+  prompt），所以还是要过一次模型、还是会留下回答；进历史的也只是渲染后的正文。
+  ``/plan`` 是**看有没有参数的两面派**（不带描述时就是 ``/mode plan``），
+  真正决定走哪条路的见 ``CommandDef.short_circuit`` 那一段说明。
 
 **参数语义就两条**（ZCode 第 3 条：省掉大量「命令没收到参数」的困惑）：
 ``$ARGUMENTS``（全部参数原样）与 ``$1``…``$N``（按空白切分后的第 N 个）。
@@ -61,7 +63,9 @@ __all__ = [
     "NAME_COMPACT",
     "NAME_HELP",
     "NAME_MODE",
+    "NAME_MODEL",
     "NAME_NEW",
+    "NAME_PLAN",
     "NAME_SKILL",
     "NAME_STOP",
     "USER_ARGUMENTS_LABEL",
@@ -156,8 +160,15 @@ class CommandDef:
     def short_circuit(self) -> bool:
         """是否**不进模型**（见模块头"命令分两类"）。
 
-        内置的六条里只有 ``/skill`` 不短路（它的正文就是这一轮的提示）；
+        内置的八条里只有 ``/skill`` 不短路（它的正文就是这一轮的提示）；
         自定义命令一律不短路。
+
+        ``/plan`` 是**看有没有参数的两面派**：不带描述时就是 ``/mode plan``（不碰模型），
+        带上描述时那段描述是这一轮的提示（与 ``/skill`` 同一条路）。所以这个**表级**
+        标记给的是保守口径（"不带参数时不产生回答"，菜单据此不建气泡），而**这一次**
+        到底走哪条路由 ``api/v1/chat.py`` 的 ``_CommandResult.short_circuit`` 决定
+        ——它看的是这次的结果带没带 ``prompt``。两处都留着是刻意的：菜单只拿得到表，
+        真正的分流必须在拿到结果之后。
         """
         return self.is_builtin and self.name != "skill"
 
@@ -232,6 +243,31 @@ BUILTIN_COMMANDS: tuple[CommandDef, ...] = (
         ),
     ),
     CommandDef(
+        name="model",
+        summary="看这条会话用的对话模型，或者换一个",
+        usage="/model [模型名]",
+        details=(
+            "不带参数时列出**可选的对话模型**，并标出这条会话现在用的是哪一个"
+            "（筛选口径与输入框右侧那个 ModelPicker 一致：供应商启用、能力为空或含 chat）。",
+            "带参数时把**这条会话**换成它：模型 ID（形如 gpt-4o）或清单里那个 pk 都认，",
+            "认不出来时把可选清单回给你。",
+            "写的是会话记录里那一栏（`ConversationService.set_model`）——与在界面上换模型",
+            "是同一条链路，不是另存一份。",
+        ),
+    ),
+    CommandDef(
+        name="plan",
+        summary="切到计划档；带上描述就直接开始规划",
+        usage="/plan [描述]",
+        details=(
+            "不带参数就是 `/mode plan` 的语义化入口：切到 plan 档，并在会话日志里记一条",
+            "`mode/changed`（source=command）。这一档下没给出计划、对方没确认之前，",
+            "会改动东西的工具一律不执行（只读的照跑，见 services/plan_gate.py）。",
+            "带上描述时那一段描述**当作这一轮的提示**（与 /skill 同一条改写法）：",
+            "模型先给计划、等你确认，所以这一轮照常过模型、也照常有回答。",
+        ),
+    ),
+    CommandDef(
         name="skill",
         summary="把某个技能的正文注入这一轮（并可选地带上任务）",
         usage="/skill <技能名> [任务]",
@@ -244,9 +280,13 @@ BUILTIN_COMMANDS: tuple[CommandDef, ...] = (
 )
 """内置命令表。
 
-计划的 §12.225 里还列了 ``/model`` 与 ``/plan``，本轮**只落这六条**：``/mode plan``
-已经覆盖了"切到计划档"，而 ``/model`` 那件事在输入框右侧那个 ModelPicker 里更好用
-——它要选的是一个注册模型，不是一个字符串。
+``/model`` 与 ``/plan`` 是**补**进来的那两条（开发计划 §12.225 P1-2 点名、第一轮漏掉）：
+``/model`` 照 QwenPaw 的 ``/model`` 与 ZCode 的 ``CommandUiSpec.popupSelect``
+（"命令弹一个选择列表"→ 我们没有那层 UI 协议，等价物就是"不带参数列清单、带参数切"），
+``/plan`` 照 QwenPaw 的 ``/plan``（``/mode plan`` 的语义化入口，顺带把描述当这一轮的提示）。
+上一轮只落六条的理由是"`/mode plan` 已经覆盖了切计划档、选模型在 ModelPicker 里更好用"；
+现在的结论是**它们不是重复**：少一次"先敲 `/mode plan` 再重新说一遍任务"的往返，
+而且脚本/MCP 那条没有界面的路上，`/model` 是唯一能换模型的地方。
 """
 
 #: 内置命令的名字。**常量一处定义**：协议层按名字分流（``/help`` 列什么、
@@ -257,6 +297,8 @@ NAME_COMPACT = "compact"
 NAME_NEW = "new"
 NAME_STOP = "stop"
 NAME_MODE = "mode"
+NAME_MODEL = "model"
+NAME_PLAN = "plan"
 NAME_SKILL = "skill"
 
 _BUILTIN_BY_NAME = {item.name: item for item in BUILTIN_COMMANDS}

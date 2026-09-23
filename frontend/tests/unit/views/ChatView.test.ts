@@ -52,6 +52,9 @@ const getFileUrl = vi.fn()
 const downloadFile = vi.fn()
 // 附件上传（「加号 → 添加文件」与拖拽那条"添加附件"共用它）
 const uploadDocument = vi.fn()
+// 模型注册表（v12）：输入框右侧那个 ModelPicker 的可选项来自它。
+// 默认空（"还没配可对话的模型"），要测"换了模型之后选择器跟不跟"的用例自己给值
+const getRegistry = vi.fn()
 
 vi.mock('@/api/conversations', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/conversations')>()
@@ -109,7 +112,7 @@ vi.mock('@/api/modelRegistry', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/modelRegistry')>()
   return {
     ...actual,
-    getRegistry: vi.fn().mockResolvedValue({ providers: [], models: [], slots: [] }),
+    getRegistry: (...args: unknown[]) => getRegistry(...args),
   }
 })
 
@@ -218,6 +221,60 @@ function kb(id: string, name: string): KnowledgeBase {
     document_count: 1,
     last_activity: null,
   }
+}
+
+/**
+ * 一份最小的模型注册表：两个**可对话**的模型（同一家启用的供应商）。
+ *
+ * 口径与 `stores/modelRegistry.chatModels` 一致（供应商启用 + 能力含 chat），
+ * 所以两份都在选择器里列得出来——`/model` 那条用例要的正是"从甲换成乙"。
+ */
+const REGISTRY = {
+  providers: [
+    {
+      id: 'prov_1',
+      kind: 'openai',
+      name: '示例供应商',
+      base_url: 'https://example.com/v1',
+      enabled: true,
+      created_at: null,
+      updated_at: null,
+      api_key_configured: true,
+      api_key_hint: '…abcd',
+      model_count: 2,
+    },
+  ],
+  models: [
+    {
+      id: 'mdl_a',
+      provider_id: 'prov_1',
+      provider_name: '示例供应商',
+      provider_kind: 'openai',
+      model_id: 'a-model',
+      label: '甲模型',
+      dim: null,
+      capabilities: ['chat'],
+      options: {},
+      created_at: null,
+      updated_at: null,
+      bound_slots: [],
+    },
+    {
+      id: 'mdl_b',
+      provider_id: 'prov_1',
+      provider_name: '示例供应商',
+      provider_kind: 'openai',
+      model_id: 'b-model',
+      label: '乙模型',
+      dim: null,
+      capabilities: ['chat'],
+      options: {},
+      created_at: null,
+      updated_at: null,
+      bound_slots: [],
+    },
+  ],
+  slots: [],
 }
 
 /** 带一条出处的会话：用来测"点文件名 → 右侧抽屉"。 */
@@ -347,6 +404,9 @@ beforeEach(() => {
   listConversations.mockResolvedValue([])
   // 默认「还没有取到命令清单」：不敲 `/` 就不会请求它（懒加载）
   listCommands.mockResolvedValue([])
+  // 默认「注册表里一个可对话的模型都没有」（选择器因此是禁用的占位态）：
+  // 要测模型选择器的用例自己给一份注册表
+  getRegistry.mockResolvedValue({ providers: [], models: [], slots: [] })
   // 默认"这条会话上没有在跑的一轮"（重连那条路接不上）：挂载时它会被问一次，
   // 拒掉之后画面上什么都不会多出来——与引入重连之前的行为一致
   openLiveTurn.mockRejectedValue(new Error('这条会话上没有在跑的一轮'))
@@ -2078,7 +2138,7 @@ describe('斜杠命令（P1-2）', () => {
 
   it('输入框里已经是这条命令时，回车就是**执行**：短路命令不建回答气泡', async () => {
     const { wrapper } = await mountWithCommands()
-    // 后端回一条 command 事件（它替代了整轮回答）
+    // 后端回一条 command 事件 + 一条空 done（短路类命令就是这一对：它没进模型）
     chatStream.mockImplementation(
       async (
         _payload: unknown,
@@ -2106,23 +2166,90 @@ describe('斜杠命令（P1-2）', () => {
     expect(payload.conversation_id).toBe('c1')
     // 回话摆在输入框上面，**不是一条助手消息**
     expect(wrapper.find('.command-result').text()).toContain('可用命令：/mode、/compact')
-    // 没多出提问、也没多出回答：这一轮**没有进对话流**（对照下面那条改写类的用例）
+    // 没多出提问、也没多出回答：这一轮**没有内容**，于是当"只回一句系统提示"处理
+    // （判据是结果，不是菜单里的 `short_circuit`——对照下面 `/plan <描述>` 那条）
     expect(wrapper.findAll('.ask-text').map((node) => node.text())).toEqual(['你好'])
     expect(wrapper.findAll('.reply')).toHaveLength(1)
-    // 也不走"正在流的那一轮"那条链路（命令是瞬时的，见 runCommand 的注释）：
-    // 交给它的处理函数里没有过程/正文那几回调，只有命令那一个
-    const handlers = chatStream.mock.calls.at(-1)?.[1] as {
-      onCommand?: unknown
-      onStep?: unknown
-    }
-    expect(handlers.onCommand).toBeTypeOf('function')
-    expect(handlers.onStep).toBeUndefined()
     wrapper.unmount()
   })
 
-  it('改写类命令（/skill、自定义 md）走普通那一轮：要有回答气泡', async () => {
+  it('带参数的 /plan：回答照常出现在对话气泡里，不用刷新', async () => {
+    // `/plan` 是**看有没有参数的两面派**：不带描述时只是切档（真的不产生回答），
+    // 带上描述时那段描述就是这一轮的提示——后端照常过模型、照常把回答落库。
+    // 而菜单里那个 `short_circuit` 是**表级的保守口径**（true），照它分流的话
+    // 这一轮的回答只落库、不进画面，用户得刷新才看得见。所以判据只能是结果。
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    listCommands.mockResolvedValue([
+      {
+        name: 'plan',
+        summary: '切到计划档；带上描述就直接开始规划',
+        usage: '/plan [描述]',
+        group: 'builtin',
+        details: [],
+        argument_hint: '[描述]',
+        short_circuit: true,
+        shadowed_by: '',
+        error: '',
+        path: '',
+      },
+    ])
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    chatStream.mockImplementation(
+      async (
+        _payload: unknown,
+        handlers: {
+          onStep?: (step: ChatStep) => void
+          onDelta?: (text: string) => void
+          onDone?: (answer: string, info: { recovered: boolean; detail: string }) => void
+        },
+      ) => {
+        handlers.onStep?.({
+          phase: 'intent',
+          label: '理解目标',
+          detail: '要做一个 X',
+          status: 'done',
+        })
+        handlers.onDelta?.('第一步：把 X 的目标写下来')
+        handlers.onDone?.('第一步：把 X 的目标写下来。', { recovered: false, detail: '' })
+        return { abort: vi.fn() }
+      },
+    )
+
+    await wrapper.find('.composer-field').setValue('/plan 帮我做个 X')
+    await flushPromises()
+    await wrapper.find('.composer-field').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    await flushPromises()
+
+    // 提问与回答都在对话里（与普通提问同一处置）
+    expect(wrapper.findAll('.ask-text').map((node) => node.text())).toEqual([
+      '你好',
+      '/plan 帮我做个 X',
+    ])
+    expect(wrapper.findAll('.reply').at(-1)?.text()).toContain('第一步：把 X 的目标写下来。')
+    // 它**不是**"只回一句系统提示"：那一小块回话面板不该出现
+    expect(wrapper.find('.command-result').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('自定义命令（/skill、自定义 md）也是同一条路：有回答就是回答气泡', async () => {
     const { wrapper } = await mountWithCommands()
-    chatStream.mockResolvedValue({ abort: vi.fn() })
+    chatStream.mockImplementation(
+      async (
+        _payload: unknown,
+        handlers: {
+          onDelta?: (text: string) => void
+          onDone?: (answer: string, info: { recovered: boolean; detail: string }) => void
+        },
+      ) => {
+        handlers.onDelta?.('已按流程发版')
+        handlers.onDone?.('已按流程发版。', { recovered: false, detail: '' })
+        return { abort: vi.fn() }
+      },
+    )
 
     await wrapper.find('.composer-field').setValue('/deploy 1.2.0')
     await flushPromises()
@@ -2130,17 +2257,79 @@ describe('斜杠命令（P1-2）', () => {
     expect(wrapper.find('.slash-menu').exists()).toBe(false)
     await wrapper.find('.composer-field').trigger('keydown', { key: 'Enter' })
     await flushPromises()
+    await flushPromises()
 
     const payload = chatStream.mock.calls.at(-1)?.[0] as { query: string }
     expect(payload.query).toBe('/deploy 1.2.0')
-    // 这一轮**按普通一轮处理**（走 `useLiveTurn` 那条常驻链路，于是会有回答气泡），
-    // 因为后端判定它是改写类命令、会过一次模型——分流依据是菜单里的 `short_circuit`
-    const handlers = chatStream.mock.calls.at(-1)?.[1] as {
-      onCommand?: unknown
-      onStep?: unknown
-    }
-    expect(handlers.onStep).toBeTypeOf('function')
-    expect(handlers.onCommand).toBeUndefined()
+    expect(wrapper.findAll('.reply').at(-1)?.text()).toContain('已按流程发版。')
+    expect(wrapper.find('.command-result').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('`/model <名字>` 之后：选择器跟着换成新模型，下一条消息带的也是它', async () => {
+    // 旧实现里命令切完模型，输入框右侧那个 ModelPicker 还拿着旧值——下一条消息
+    // 照它把旧模型写回去（后端 `_effective_model` 以请求里的 `model_pk` 为准），
+    // 刚切的那次就白切了。后端把选中的 pk 放在 `action` 里带回来，界面据此同步。
+    getRegistry.mockResolvedValue(REGISTRY)
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'], model_pk: 'mdl_a' })
+    listCommands.mockResolvedValue([
+      {
+        name: 'model',
+        summary: '看这条会话用的对话模型，或者换一个',
+        usage: '/model [模型名]',
+        group: 'builtin',
+        details: [],
+        argument_hint: '[模型名]',
+        short_circuit: true,
+        shadowed_by: '',
+        error: '',
+        path: '',
+      },
+    ])
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+    expect(wrapper.find('.mp-text').text()).toBe('甲模型')
+
+    chatStream.mockImplementation(
+      async (
+        _payload: unknown,
+        handlers: {
+          onCommand?: (result: unknown) => void
+          onDone?: (answer: string, info: { recovered: boolean; detail: string }) => void
+        },
+      ) => {
+        handlers.onCommand?.({
+          name: 'model',
+          text: '这条会话的模型已换成「乙模型」（mdl_b）。下一轮用它。',
+          ok: true,
+          action: { kind: 'model', model_pk: 'mdl_b' },
+        })
+        handlers.onDone?.('', { recovered: false, detail: '' })
+        return { abort: vi.fn() }
+      },
+    )
+    // 后端此刻已经把会话记录改掉了（`set_model`）：回给界面的详情该带着新模型
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'], model_pk: 'mdl_b' })
+
+    await wrapper.find('.composer-field').setValue('/model 乙模型')
+    await flushPromises()
+    await wrapper.find('.composer-field').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    await flushPromises()
+
+    // 选择器显示的是新模型（它之前一直显示"甲模型"）
+    expect(wrapper.find('.mp-text').text()).toBe('乙模型')
+    // 缓存里那份会话详情也要跟上：切走再回来 `applyDetail` 会拿它把选择盖回去
+    expect(useConversationStore().cachedDetail('c1')?.model_pk).toBe('mdl_b')
+
+    // 下一条消息带的是**新**模型——这条才是用户真正会踩到的后果
+    chatStream.mockResolvedValue({ abort: vi.fn() })
+    await wrapper.find('.composer-field').setValue('再问一句')
+    await wrapper.find('.send-btn').trigger('click')
+    await flushPromises()
+    const payload = chatStream.mock.calls.at(-1)?.[0] as { model_pk?: string }
+    expect(payload.model_pk).toBe('mdl_b')
     wrapper.unmount()
   })
 

@@ -74,13 +74,23 @@ def test_an_unknown_slash_line_is_still_a_command() -> None:
 # --------------------------------------------------------------------- 内置表
 
 
-def test_the_builtin_table_covers_the_six_commands_of_this_round() -> None:
-    """内置六条：``/help`` ``/compact`` ``/new`` ``/stop`` ``/mode`` ``/skill``。
+def test_the_builtin_table_covers_the_eight_commands_of_this_round() -> None:
+    """内置八条：``/help`` ``/compact`` ``/new`` ``/stop`` ``/mode`` ``/model``
+    ``/plan`` ``/skill``。
 
     每条都要有 ``summary``（菜单那一行）与 ``usage``（``/help <命令>`` 的用法行）
     ——ZCode 那张表就是这四个字段，缺一个界面上就会少一句话。
     """
-    assert builtin_names() == ("help", "compact", "new", "stop", "mode", "skill")
+    assert builtin_names() == (
+        "help",
+        "compact",
+        "new",
+        "stop",
+        "mode",
+        "model",
+        "plan",
+        "skill",
+    )
     for record in BUILTIN_COMMANDS:
         assert record.summary, record.name
         assert record.usage.startswith(f"/{record.name}"), record.name
@@ -88,12 +98,17 @@ def test_the_builtin_table_covers_the_six_commands_of_this_round() -> None:
 
 
 def test_only_skill_is_not_short_circuited_among_builtins() -> None:
-    """六条里只有 ``/skill`` 要过模型（它重写这一轮的提示，照 ZCode）。
+    """八条里只有 ``/skill`` 是**表级**的改写类（它重写这一轮的提示，照 ZCode）。
 
     这一条直接决定界面往哪条路发：短路类不建回答气泡，改写类按普通一轮处理。
+
+    ``/plan`` 的名字在这份名单里是**保守口径**：它不带描述时就是 ``/mode plan``
+    （不碰模型），带上描述时那次的结果自带 ``prompt``、由协议层按改写类接着跑
+    ——真正分流的判据是 ``api/v1/chat.py`` 的 ``_CommandResult.short_circuit``，
+    那个只能拿到结果之后才说得准（见 ``CommandDef.short_circuit`` 的说明）。
     """
     short = {record.name for record in BUILTIN_COMMANDS if record.short_circuit}
-    assert short == {"help", "compact", "new", "stop", "mode"}
+    assert short == {"help", "compact", "new", "stop", "mode", "model", "plan"}
 
 
 def test_modes_text_lists_all_four_modes() -> None:

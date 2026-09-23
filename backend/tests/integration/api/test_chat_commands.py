@@ -12,7 +12,10 @@
    它是**改写类**：要过一次模型，提示里是渲染后的正文；
 4. 切模式写 ``mode/changed``（带 previousMode），而**在会话外改的档**由下一轮补记
    （source="settings"）；
-5. 系统提示词里出现**当前档与它的语义**（P1-1 遗留 #7，抄"先告知"那条）。
+5. 系统提示词里出现**当前档与它的语义**（P1-1 遗留 #7，抄"先告知"那条）；
+6. 补上的那两条（§12.225 P1-2 点名、第一轮漏掉）：``/model`` **列清单 / 切这条会话
+   的模型**（写的是会话记录那一栏，与 ModelPicker 同一条链路）、``/plan`` 切档
+   （``mode/changed`` 带 source=command）**并把描述当作这一轮的提示**。
 """
 
 from __future__ import annotations
@@ -234,10 +237,15 @@ def test_the_commands_endpoint_lists_builtins_and_custom_ones(client: TestClient
     # 同名的两条（生效的 + 被遮蔽的）里取**生效的那条**——菜单也是这么挑的
     usable = [item for item in body["items"] if not item["shadowed_by"] and not item["error"]]
     items = {item["name"]: item for item in usable}
-    assert {"help", "compact", "new", "stop", "mode", "skill"} <= set(items)
+    assert {"help", "compact", "new", "stop", "mode", "model", "plan", "skill"} <= set(items)
     assert items["help"]["group"] == "builtin"
     assert items["help"]["short_circuit"] is True
     assert items["skill"]["short_circuit"] is False
+    # 补上的两条也在菜单里（`/model` 不产生回答；`/plan` 的表级标记是保守口径，
+    # 见 CommandDef.short_circuit）
+    assert items["model"]["short_circuit"] is True
+    assert items["model"]["usage"] == "/model [模型名]"
+    assert items["plan"]["usage"] == "/plan [描述]"
     assert items["deploy"]["group"] == "user"
     assert items["deploy"]["summary"] == "发版"
     # 同名时内置生效，用户那份**仍然列出来并写明被谁遮蔽**（照插件列表的做法）
@@ -479,3 +487,243 @@ def test_turn_start_carries_the_mode(client: TestClient, kb_id: str) -> None:
     )
     starts = _events(client, conversation_id, "turn/start")
     assert starts and starts[0]["payload"]["mode"] == "build"
+
+
+# --------------------------------------------------------------------- /model
+
+
+def _add_model(
+    *,
+    model_id: str,
+    label: str = "",
+    capabilities: list[str] | None = None,
+    provider_enabled: bool = True,
+) -> str:
+    """再登记一个模型（带它自己的供应商），返回 pk。
+
+    走的是注册表正经的那两个入口（``create_provider`` / ``register_model``）——
+    与设置页里手动加一个模型是同一条路，所以"命令认不认这个模型"验的正是真实数据。
+    """
+    services = get_services()
+    provider = services.models.create_provider(
+        kind="llm" if capabilities != ["embedding"] else "embedding",
+        name=f"供应商-{model_id}",
+        base_url=f"https://{model_id}.example.com/v1",
+        api_key="sk-extra",
+        enabled=provider_enabled,
+    )
+    model = services.models.register_model(
+        provider_id=provider.id,
+        model_id=model_id,
+        label=label,
+        capabilities=list(capabilities) if capabilities is not None else ["chat"],
+    )
+    return model.id
+
+
+def test_model_lists_the_choices_and_marks_the_current_one(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/model``：列出**可选的对话模型**并标出当前这个，自己**不碰模型**。
+
+    清单口径与 ModelPicker 一致：不能对话的、供应商停用的都不出现；
+    当前那个的来源（会话自己选的 vs 跟随全局默认）要说出来——不说的话，
+    用户会以为自己选过了，其实是在跟。
+    """
+    install_fake_chat()  # 它顺手把 fake-model 绑给 chat 用途（"全局默认"就是它）
+    _no_model(monkeypatch)
+    other = _add_model(model_id="m-other", label="另一家")
+    # 这两条都**不该**出现在清单里（下面按名字断言）：不能对话的、供应商停用的
+    _add_model(model_id="m-embed", capabilities=["embedding"])
+    _add_model(model_id="m-off", provider_enabled=False)
+    conversation_id = _conversation(client, kb_id)
+
+    events = _parse_sse(
+        client.post(
+            "/api/v1/chat/stream",
+            json={"query": "/model", "kb_ids": [kb_id], "conversation_id": conversation_id},
+        ).text
+    )
+    command = _event(events, "command")
+    assert command["ok"] is True
+    assert "fake-model" in command["text"] and other in command["text"]
+    assert "跟随全局默认" in command["text"], "会话没选时当前那个是**跟来的**"
+    assert "← 现在这个" in command["text"]
+    # 不能对话的 / 供应商停用的都不在清单里（与界面那个下拉同一口径）
+    assert "m-embed" not in command["text"] and "m-off" not in command["text"]
+    assert "/model <模型名>" in command["text"], "要说明怎么切"
+    # 命令不进模型历史，也不产生回答
+    assert _messages(client, conversation_id) == []
+    assert _event(events, "done")["answer"] == ""
+
+
+def test_model_switches_this_conversation(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/model <名字>``：把**这条会话**切成它——写的是会话记录那一栏。
+
+    与界面上换模型（``_effective_model`` → ``ConversationService.set_model``）
+    是同一条写路径；注册表里那个"全局默认"**不动**（那件事在设置页）。
+    名字给 pk 或模型 ID 都认，且**认得出"已经是它了"**（不假装改了什么）。
+    """
+    _no_model(monkeypatch)
+    install_fake_chat()
+    services = get_services()
+    conversation_id = _conversation(client, kb_id)
+    other = _add_model(model_id="m-other", label="另一家")
+    bound = services.models.bindings()["chat"]
+
+    def _run(query: str) -> dict:  # type: ignore[type-arg]
+        return _event(
+            _parse_sse(
+                client.post(
+                    "/api/v1/chat/stream",
+                    json={"query": query, "kb_ids": [kb_id], "conversation_id": conversation_id},
+                ).text
+            ),
+            "command",
+        )
+
+    # 界面传下来的是 pk
+    command = _run(f"/model {other}")
+    assert command["ok"] is True and "已换成" in command["text"]
+    assert client.get(f"/api/v1/conversations/{conversation_id}").json()["model_pk"] == other
+    # **动作里带着切完之后那个 pk**：界面据此把模型选择器同步过去，
+    # 否则它显示的还是旧模型，下一条消息会把旧模型写回来（`_effective_model`）
+    assert command["action"] == {"kind": "model", "model_pk": other}
+    # 用户手打的多半是**模型 ID**：两个都认，且这一条能认出"已经是它了"
+    again = _run("/model m-other")
+    assert again["ok"] is True and "已经在用" in again["text"]
+    assert client.get(f"/api/v1/conversations/{conversation_id}").json()["model_pk"] == other
+    # 全局默认没被动过：/model 管的是"这条会话用哪个"
+    assert services.models.bindings()["chat"] == bound
+    # 命令自己也留一条日志（DSH：写 session log 但不进模型历史）
+    logged = _events(client, conversation_id, "command")
+    assert [item["payload"]["name"] for item in logged] == ["model", "model"]
+    assert _messages(client, conversation_id) == []
+
+
+def test_model_with_an_unknown_name_lists_the_choices(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/model 乱写``：**把可选清单回给你**，并且什么都不改（没写进会话）。"""
+    install_fake_chat()
+    _no_model(monkeypatch)
+    other = _add_model(model_id="m-other")
+    conversation_id = _conversation(client, kb_id)
+
+    command = _event(
+        _parse_sse(
+            client.post(
+                "/api/v1/chat/stream",
+                json={
+                    "query": "/model 没这个模型",
+                    "kb_ids": [kb_id],
+                    "conversation_id": conversation_id,
+                },
+            ).text
+        ),
+        "command",
+    )
+    assert command["ok"] is False
+    assert "没有叫「没这个模型」的对话模型" in command["text"]
+    assert "fake-model" in command["text"] and other in command["text"], "清单要可见"
+    assert client.get(f"/api/v1/conversations/{conversation_id}").json()["model_pk"] is None
+
+
+def test_model_without_a_conversation_says_so(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """没有会话时**如实说**：模型是随会话保存的，没有会话就没有可写的地方。"""
+    install_fake_chat()
+    _no_model(monkeypatch)
+    other = _add_model(model_id="m-other")
+
+    command = _event(
+        _parse_sse(
+            client.post(
+                "/api/v1/chat/stream", json={"query": f"/model {other}", "kb_ids": [kb_id]}
+            ).text
+        ),
+        "command",
+    )
+    assert command["ok"] is False and "没有会话可写" in command["text"]
+
+
+# --------------------------------------------------------------------- /plan
+def test_plan_switches_the_mode_and_records_the_event(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/plan``（不带描述）：就是 ``/mode plan``——切档 + 一条 ``mode/changed``，
+    而且**不碰模型**（切一次档不该为它花一次调用）。"""
+    _no_model(monkeypatch)
+    conversation_id = _conversation(client, kb_id)
+
+    events = _parse_sse(
+        client.post(
+            "/api/v1/chat/stream",
+            json={"query": "/plan", "kb_ids": [kb_id], "conversation_id": conversation_id},
+        ).text
+    )
+    command = _event(events, "command")
+    assert command["ok"] is True
+    assert command["action"]["mode"] == "plan" and command["action"]["previousMode"] == "build"
+    assert "计划" in command["text"] and "/plan <描述>" in command["text"]
+    assert get_services().chat.current_mode() == "plan"
+    assert _messages(client, conversation_id) == []
+
+    changes = _events(client, conversation_id, "mode/changed")
+    assert len(changes) == 1, "切档必须留下一条 mode/changed"
+    assert changes[0]["payload"] == {
+        "previousMode": "build",
+        "mode": "plan",
+        "source": "command",
+    }
+    # 已经在 plan 档：**不重复记事件**（与 /mode 同一口径），但照样回一句
+    again = _event(
+        _parse_sse(
+            client.post(
+                "/api/v1/chat/stream",
+                json={"query": "/plan", "kb_ids": [kb_id], "conversation_id": conversation_id},
+            ).text
+        ),
+        "command",
+    )
+    assert again["ok"] is True and "已经是" in again["text"]
+    assert len(_events(client, conversation_id, "mode/changed")) == 1
+
+
+def test_plan_with_a_description_uses_it_as_this_turn_prompt(
+    client: TestClient, kb_id: str
+) -> None:
+    """``/plan 帮我做个 X``：描述就是**这一轮的提示**（照 ``/skill`` 那条改写法）。
+
+    所以它不再是短路类：模型收到的是那句描述（不是"``/plan`` 帮我做个 X"整行），
+    这一轮照常有回答、照常落消息；而这一轮**就是以 plan 档开跑的**
+    （门闸因而从这一轮起就管着写类工具，见 services/plan_gate.py）。
+    """
+    fake = install_fake_chat("先做 A，再做 B。要我开始吗？[1]")
+    conversation_id = _conversation(client, kb_id)
+
+    events = _parse_sse(
+        client.post(
+            "/api/v1/chat/stream",
+            json={
+                "query": "/plan 帮我做个 X",
+                "kb_ids": [kb_id],
+                "conversation_id": conversation_id,
+            },
+        ).text
+    )
+    assert _event(events, "done")["answer"] == "先做 A，再做 B。要我开始吗？[1]"
+    assert "帮我做个 X" in fake.seen_messages[-1].content, "描述要作为这一轮的提示交给模型"
+    assert get_services().chat.current_mode() == "plan"
+    # 这一轮开跑时读到的就是 plan（turn/start 带着它）
+    starts = _events(client, conversation_id, "turn/start")
+    assert starts and starts[0]["payload"]["mode"] == "plan"
+    changes = _events(client, conversation_id, "mode/changed")
+    assert changes and changes[-1]["payload"]["source"] == "command"
+    # 用户敲的那一行仍然作为"他问了什么"落进消息，回答也在（它是改写类，不是短路类）
+    stored = _messages(client, conversation_id)
+    assert stored[0]["content"] == "/plan 帮我做个 X"
+    assert stored[-1]["role"] == "assistant"
