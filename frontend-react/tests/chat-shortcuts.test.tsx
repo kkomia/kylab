@@ -24,7 +24,6 @@ import {
   isTypingTarget,
   matchChatShortcut,
   SHORTCUTS_STORAGE_KEY,
-  SIDEBAR_COLLAPSED_STORAGE_KEY,
 } from '@/features/chat/runtime/shortcutPrefs'
 import { ChatPage } from '@/features/chat/ChatPage'
 import { clearLiveTurn } from '@/features/chat/model/liveTurn'
@@ -299,57 +298,8 @@ describe('输入框：发送键与换行键跟着绑定走', () => {
   })
 })
 
-describe('全局：新建会话与切换侧栏', () => {
-  it('`chat.new` 默认 Ctrl+K：跳到"显式新建"（`/chat?new=1`）', async () => {
-    renderPage()
-    const user = userEvent.setup()
-    await screen.findByPlaceholderText(/回车发送/)
-    expect(screen.getByTestId('location')).toHaveTextContent('/chat/c1')
-
-    await user.keyboard('{Control>}k{/Control}')
-
-    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/chat?new=1'))
-  })
-
-  it('`layout.toggleSidebar` 默认 Ctrl+B：翻转侧栏偏好（存储 + 一条事件）', async () => {
-    const toggled = vi.fn()
-    window.addEventListener('kylab:sidebar-toggle', toggled)
-    renderPage()
-    const user = userEvent.setup()
-    await screen.findByPlaceholderText(/回车发送/)
-
-    await user.keyboard('{Control>}b{/Control}')
-    // 存储：`'1'` = 收起（与旧 `useSidebar` 同一枚键、同一个值）
-    expect(window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY)).toBe('1')
-    expect(toggled).toHaveBeenCalledTimes(1)
-
-    await user.keyboard('{Control>}b{/Control}')
-    expect(window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY)).toBeNull()
-    expect(toggled).toHaveBeenCalledTimes(2)
-    window.removeEventListener('kylab:sidebar-toggle', toggled)
-  })
-
-  it('全局那两条在输入框里让路（Ctrl+K 是编辑器的地盘，不抢）', async () => {
-    renderPage()
-    const user = userEvent.setup()
-    const field = await screen.findByPlaceholderText(/回车发送/)
-
-    await user.click(field)
-    await user.keyboard('{Control>}k{/Control}')
-
-    expect(screen.getByTestId('location')).toHaveTextContent('/chat/c1')
-  })
-
-  it('改全局绑定：`chat.new` 换成 Ctrl+Shift+N 之后，Ctrl+K 不再是新建', async () => {
-    storeBindings({ 'chat.new': ['Mod+Shift+N'] })
-    renderPage()
-    const user = userEvent.setup()
-    await screen.findByPlaceholderText(/回车发送/)
-
-    await user.keyboard('{Control>}k{/Control}')
-    expect(screen.getByTestId('location')).toHaveTextContent('/chat/c1')
-
-    await user.keyboard('{Control>}{Shift>}n{/Shift}{/Control}')
-    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/chat?new=1'))
-  })
-})
+// 说明：这一节原来钉的是「对话页自己注册的两条全局快捷键」。
+// 壳（`features/layout`）落地之后，注册处搬到了侧栏那个宿主（同一批 id、同一份存储契约），
+// 这里的三条随之删除——同样的行为由 `tests/layout-shell.test.tsx` 覆盖：
+//   「Ctrl/Cmd+K 新建会话：跳到 /chat?new=1」「敲字的地方不抢」「切换侧栏偏好」
+// 留在这里会变成两份真相（一份测的是已经不存在的监听）。

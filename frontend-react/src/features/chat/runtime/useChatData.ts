@@ -17,6 +17,7 @@ import {
   listConversations,
   listFiles,
   type ConversationDetail,
+  type ConversationFileListing,
 } from '@/api/conversations'
 import { getRegistry, type RegisteredModel } from '@/api/modelRegistry'
 import { listKnowledgeBases, type KnowledgeBase } from '@/api/knowledgeBases'
@@ -111,13 +112,26 @@ export function useConversations(limit = 50) {
   })
 }
 
-/** 这条会话的文件区（`@` 提及的文件那一类）。 */
-export function useConversationFiles(conversationId: string, enabled: boolean) {
+/**
+ * 这条会话文件区里的**某一层**（`path` 为空 = 根那一层）。
+ *
+ * 返回**整份 listing** 而不是只给 `entries`：抽屉要用 `path` / `parent` 画面包屑与
+ * 「上一级」、用 `label` 给根那一段起名、用 `truncated` 说明"只给你看了前 300 项"——
+ * 这几件事本来就是同一个回答的几半，拆开传只会让"哪一层"多一个来源。
+ * `@` 提及只取 `entries`（见 `ChatProvider`）。
+ *
+ * 按 `path` 分开缓存：进子目录再退回来不该重跑一次请求。
+ *
+ * **`staleTime` 是 0（每层都当"可能已经变了"）**：文件区是这条会话里**一起在长**的东西
+ * ——Agent 刚导出一份、自己刚传完一个，随手再打开抽屉就该看见它。旧 `FileDrawer`
+ * 每次打开与每次换目录都重读一遍，这里用同一个口径；react-query 会把并发的同 key
+ * 请求合成一条，所以"重读"不会变成重复往返。
+ */
+export function useConversationFiles(conversationId: string, enabled: boolean, path = '') {
   return useQuery({
-    queryKey: ['chat', 'files', conversationId],
-    queryFn: async () => (await listFiles(conversationId)).entries,
+    queryKey: ['chat', 'files', conversationId, path],
+    queryFn: (): Promise<ConversationFileListing> => listFiles(conversationId, path),
     enabled: enabled && Boolean(conversationId),
-    staleTime: 15_000,
   })
 }
 

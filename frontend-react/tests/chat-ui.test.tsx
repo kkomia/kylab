@@ -611,6 +611,80 @@ describe('出处列表与交付物（§6 的两条）', () => {
     )
   })
 
+  it('产物卡片的「预览」开的是**文件区抽屉**，直落这一份（不再开新标签页）', async () => {
+    const { getFileUrl, listFiles } = await import('@/api/conversations')
+    // 产物在临时区里的 key 就是 `artifact_id`——**没有后缀**，所以抽屉要直落它，
+    // 只能靠调用方一起给的名字与格式（`FileDrawer.initialEntry` 那一段的由来）
+    const artifact = {
+      artifact_id: 'art1',
+      name: '季度报告.pdf',
+      size_bytes: 2048,
+      format: 'pdf',
+      storage: 'object',
+      where: '本会话',
+      path: '',
+      knowledge_base_id: '',
+      document_id: '',
+    }
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([
+        stored('user', '导出一份'),
+        stored('assistant', '已导出。', {
+          steps: [
+            {
+              phase: 'tool',
+              label: '导出文档',
+              detail: '已导出',
+              status: 'done',
+              tool: 'export_document',
+              kind: 'write',
+              artifacts: [artifact],
+            },
+          ],
+        }),
+      ]),
+    )
+    // 这一份**不在当前这一层**（工作区里的子目录），列表里找不到——正好走 seed 那条兜底
+    vi.mocked(listFiles).mockResolvedValue({
+      mode: 'workspace',
+      label: '工作区「我的项目」',
+      path: '',
+      parent: null,
+      entries: [
+        {
+          key: 'other.md',
+          name: 'other.md',
+          is_dir: false,
+          size_bytes: 1,
+          modified_at: null,
+          kind: 'md',
+        },
+      ],
+      truncated: false,
+    })
+    vi.mocked(getFileUrl).mockResolvedValue({
+      url: '/api/v1/conversations/c1/files/download-url?sign=art',
+      expires_at: 0,
+      name: '季度报告.pdf',
+    })
+    renderPage()
+
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '预览' }))
+
+    // 抽屉开着，标题行就是这份产物（预览态），PDF 那一档指向**换回来的签名链接**
+    const drawer = await screen.findByRole('dialog')
+    expect(within(drawer).getByText('季度报告.pdf')).toBeInTheDocument()
+    const frame = await within(drawer).findByTitle('季度报告.pdf')
+    expect(frame.tagName).toBe('IFRAME')
+    expect(frame).toHaveAttribute('src', '/api/v1/conversations/c1/files/download-url?sign=art')
+    // 换链接用的就是产物那个 key（`artifact_id`），而且要 inline
+    expect(getFileUrl).toHaveBeenCalledWith('c1', 'art1', 'inline')
+    // 回到目录：列的是这一层真实的东西（产物那一份只出现在预览里）
+    await user.click(within(drawer).getByRole('button', { name: '回到文件列表' }))
+    expect(await within(drawer).findByText('other.md')).toBeInTheDocument()
+  })
+
   it('「存为笔记」把这一轮问答存成一条笔记（标题是提问、正文是回答）', async () => {
     const { createNote } = await import('@/api/notes')
     vi.mocked(getConversation).mockResolvedValue(
@@ -783,7 +857,8 @@ describe('两个抽屉（引用原文 / 产物与文件）', () => {
 
     const drawer = await screen.findByRole('dialog', { name: /产物与文件/ })
     expect(await within(drawer).findByText('季度报告.docx')).toBeInTheDocument()
-    expect(listFiles).toHaveBeenCalledWith('c1')
+    // 打开就取**根那一层**（`path` 为空 = 文件区的根，旧 `FileDrawer` 的 `load('')`）
+    expect(listFiles).toHaveBeenCalledWith('c1', '')
   })
 
   it('开抽屉不动底下对话的滚动位置（用户看到的那一句还在原处）', async () => {

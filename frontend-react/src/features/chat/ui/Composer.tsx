@@ -67,7 +67,6 @@ export function Composer() {
   const mentionHandle = useRef<MenuHandle | null>(null)
   const [slashDismissed, setSlashDismissed] = useState(false)
   const [mentionDismissed, setMentionDismissed] = useState(false)
-  const [filesOpen, setFilesOpen] = useState(false)
 
   const slashFilter = slashFilterOf(chat.query)
   const mentionFilter = mentionFilterOf(chat.query)
@@ -319,11 +318,18 @@ export function Composer() {
         ) : null}
       </div>
 
-      {/* 拖拽提示：**两句不同的文案**就是这个功能的一半 */}
+      {/*
+        拖拽提示：**两句不同的文案**就是这个功能的一半。
+
+        `relative z-[60]` 是为了**文件抽屉开着的时候也看得见它**：从文件区里把一份文件
+        拖出来时，抽屉（z-50 的浮层 + 遮罩）正盖在对话上，而这条提示长在输入卡片这一侧——
+        不抬到它上面，用户眼里就是"拖了但什么都没说"（旧版那层遮罩同样压得住这条提示，
+        但那会儿文件区的行本来也拖不到输入框里，见 `Sheets.tsx` 的 `onDragStart`）。
+      */}
       {chat.dropKind ? (
         <div
           role="status"
-          className="mx-auto mb-[var(--space-2)] w-full max-w-[var(--chat-input-max-width)] rounded-[var(--radius-panel)] border border-dashed border-[var(--accent)] bg-[var(--accent-soft)] px-[var(--space-4)] py-[var(--space-3)] text-center text-[length:var(--text-meta-size)] text-[var(--text-primary)]"
+          className="relative z-[60] mx-auto mb-[var(--space-2)] w-full max-w-[var(--chat-input-max-width)] rounded-[var(--radius-panel)] border border-dashed border-[var(--accent)] bg-[var(--accent-soft)] px-[var(--space-4)] py-[var(--space-3)] text-center text-[length:var(--text-meta-size)] text-[var(--text-primary)]"
         >
           {chat.dropKind === 'reference' ? '松开以引用此文件' : '松开以添加附件'}
         </div>
@@ -346,7 +352,7 @@ export function Composer() {
             {/* 「加号」：附件与技能都收在这里 */}
             <PlusMenu
               onPickFiles={() => fileInput.current?.click()}
-              onBrowseFiles={() => setFilesOpen(true)}
+              onBrowseFiles={() => chat.openFiles()}
             />
             {/* 「执行策略」与「Agent 模式」并排：两件都是"这一轮它有多放手" */}
             <ExecPolicyControl />
@@ -416,11 +422,18 @@ export function Composer() {
 
       {/*
         「浏览文件」打开的是**抽屉**（产物与上传的文件都落在文件区里）。
+        开着与"直落哪一份"都在 `ChatProvider` 里（`filesOpen` / `filesSeed`）：
+        产物卡片上的「预览」也要开这一个抽屉，而它在消息流里，够不着这里的内部 state。
         `key` 绑会话 id：换一条会话就整个重来——文件区是按会话划的，
         旧 `FileDrawer` 也是这么绑的（`:key="conversationId"`）
       */}
-      {filesOpen ? (
-        <FilesSheet key={chat.conversationId} onClose={() => setFilesOpen(false)} />
+      {chat.filesOpen ? (
+        <FilesSheet
+          key={chat.conversationId}
+          initialKey={chat.filesSeed?.key ?? null}
+          initialEntry={chat.filesSeed}
+          onClose={chat.closeFiles}
+        />
       ) : null}
     </div>
   )

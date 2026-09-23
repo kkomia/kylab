@@ -21,6 +21,7 @@ import { ensureAuthStatus, restoreSession } from '@/lib/sessionActions'
 import { hasCredential, sessionToken, useSessionStore } from '@/lib/session'
 import { loadRoster } from '@/lib/operator'
 import { ChatPage } from '@/features/chat/ChatPage'
+import { AppShell } from '@/features/layout'
 
 const KnowledgeBasesView = lazy(() =>
   import('@/features/knowledge').then((m) => ({ default: m.KnowledgeBasesView })),
@@ -74,6 +75,7 @@ const queryClient = new QueryClient({
 const TITLES: Array<[RegExp, string]> = [
   [/^\/login/, '登录'],
   [/^\/($|\?)/, '概览'],
+  [/^\/dashboard/, '概览'],
   [/^\/knowledge-bases/, '知识库'],
   [/^\/kb\/[^/]+\/wiki/, 'Wiki'],
   [/^\/kb\//, '文档列表'],
@@ -156,23 +158,28 @@ export function App() {
         <AuthGate>
           <Suspense fallback={<div className="h-dvh bg-canvas" />}>
             <Routes>
+              {/* 登录页在壳外：它没有侧栏（旧前端 `/login` 也是独立一页） */}
               <Route path="/login" element={<LoginPage />} />
-              <Route path="/" element={<Navigate to="/chat" replace />} />
-              <Route path="/chat/:conversationId?" element={<ChatPage />} />
-              <Route path="/knowledge-bases" element={<KnowledgeBasesView />} />
-              <Route path="/kb/:kbId" element={<KnowledgeBaseView />} />
-              <Route path="/kb/:kbId/wiki" element={<WikiView />} />
-              <Route path="/documents/:documentId" element={<DocumentView />} />
-              <Route path="/notes/:noteId?" element={<NotesView />} />
-              <Route path="/tasks" element={<TasksPage />} />
-              <Route path="/memory" element={<MemoryPage />} />
-              <Route path="/workspaces" element={<WorkspacesPage />} />
-              <Route path="/capabilities" element={<CapabilitiesPage />} />
-              <Route path="/dashboard" element={<DashboardPage />} />
-              {/* 旧地址保留成重定向，免得旧书签变 404（与旧前端同一处置） */}
-              <Route path="/search" element={<Navigate to="/knowledge-bases" replace />} />
-              <Route path="/settings" element={<Navigate to="/dashboard" replace />} />
-              <Route path="*" element={<NotFoundPage />} />
+              {/* 其余全在壳里：侧栏 + 内容区 + 历史会话面板（`features/layout`） */}
+              <Route element={<AppShell />}>
+                {/* 落地页与旧前端一致：`/` 是**概览**（驾驶舱），不是对话页 */}
+                <Route path="/" element={<DashboardPage />} />
+                <Route path="/dashboard" element={<Navigate to="/" replace />} />
+                <Route path="/chat/:conversationId?" element={<ChatPage />} />
+                <Route path="/knowledge-bases" element={<KnowledgeBasesView />} />
+                <Route path="/kb/:kbId" element={<KnowledgeBaseView />} />
+                <Route path="/kb/:kbId/wiki" element={<WikiView />} />
+                <Route path="/documents/:documentId" element={<DocumentView />} />
+                <Route path="/notes/:noteId?" element={<NotesView />} />
+                <Route path="/tasks" element={<TasksPage />} />
+                <Route path="/memory" element={<MemoryPage />} />
+                <Route path="/workspaces" element={<WorkspacesPage />} />
+                <Route path="/capabilities" element={<CapabilitiesPage />} />
+                {/* 旧地址保留成重定向，免得旧书签变 404（与旧前端同一处置） */}
+                <Route path="/search" element={<Navigate to="/knowledge-bases" replace />} />
+                <Route path="/settings" element={<Navigate to="/" replace />} />
+                <Route path="*" element={<NotFoundPage />} />
+              </Route>
             </Routes>
           </Suspense>
         </AuthGate>

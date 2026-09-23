@@ -79,7 +79,6 @@ import {
   writePinnedSkills,
   writeStored,
 } from './prefs'
-import { isTypingTarget, matchChatShortcut, toggleSidebarPreference } from './shortcutPrefs'
 import {
   useChatCommands,
   useChatModels,
@@ -250,6 +249,28 @@ export interface ChatApi {
   activeSource: ChatSource | null
   openSource: (source: ChatSource) => void
   closeSource: () => void
+
+  /**
+   * 文件区抽屉（产物与文件）。
+   *
+   * 状态落在 provider 上而不是 `Composer` 里，因为**它有两个入口**：输入卡片的
+   * 「加号 → 浏览文件」，与产物卡片上的「预览」——后者在消息流里，够不着
+   * `Composer` 的内部状态（旧 `ChatView` 的 `fileDrawer` 也是页面级的：
+   * 它要同时表达"开着"与"直落哪一份"）。
+   */
+  filesOpen: boolean
+  /**
+   * 打开文件区时**要直落的那一份**（产物卡片点「预览」给的就是它）。
+   *
+   * `key` 是这份文件在文件区里的 key——产物在临时区的 key 就是 `artifact_id`，
+   * **没有后缀**，光看它猜不出该用哪个渲染器，所以名字与格式由调用方一起给
+   * （旧 `FileDrawer` 的 `initialEntry` 就是为这一段存在的，那里的注释写着用户报的
+   * 那个 bug：同一份文件从产物卡片点开说"不能预览"，从工作区点开却好好的）。
+   */
+  filesSeed: { key: string; name: string; kind: string } | null
+  openFiles: (seed?: { key: string; name: string; kind: string } | null) => void
+  closeFiles: () => void
+
   ingestTarget: ChatArtifact | null
   ingestKbId: string
   setIngestKbId: (value: string) => void
@@ -448,9 +469,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     readTraceOpenMemory(),
   )
 
-  // 出处原文弹窗 / 存进知识库弹窗 / 拖拽落法
+  // 出处原文弹窗 / 文件区抽屉 / 存进知识库弹窗 / 拖拽落法
   const [sourceOpen, setSourceOpen] = useState(false)
   const [activeSource, setActiveSource] = useState<ChatSource | null>(null)
+  const [filesOpen, setFilesOpen] = useState(false)
+  const [filesSeed, setFilesSeed] = useState<{ key: string; name: string; kind: string } | null>(
+    null,
+  )
   const [ingestTarget, setIngestTarget] = useState<ChatArtifact | null>(null)
   const [ingestKbId, setIngestKbId] = useState('')
   const [ingesting, setIngesting] = useState(false)
@@ -692,41 +717,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     void navigate(`/chat/${latestId}`, { replace: true })
   }, [conversationId, wantsNew, latestId, navigate])
 
-  // ---------------------------------------------------------------- 全局快捷键
-
-  /**
-   * 全局作用域的两条（`chat.new` / `layout.toggleSidebar`，迁移计划 §9 下一步第 4 条）。
-   *
-   * 三条规矩与旧版 `SideNav` 那份逐字一致：
-   *
-   * 1. **只处理 `global` 作用域**：输入框里那两条（回车发送 / 换行）归 `Composer`
-   *    那个处理函数，在这里也处理一遍会让一次回车干两件事；
-   * 2. **敲字的地方不抢**（`isTypingTarget`）：`Ctrl/Cmd+K` 在很多编辑器里是删行、
-   *    `Cmd+B` 在笔记页是加粗——输入框里是编辑器的地盘；
-   * 3. **绑定从注册表那份存储里读**（`runtime/shortcutPrefs`，键 `kylab-shortcuts`）：
-   *    设置页里改完，这里当场就照新的来。
-   *
-   * 挂在对话页（而不是壳上）：React 的壳还没有侧栏那两件东西，而这一页正是
-   * "新建会话"与"收侧栏看对话"发生的地方。挂到壳上是主控接线时的事（那两条 id 不变）。
-   */
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (isTypingTarget(event)) return
-      const action = matchChatShortcut(event, 'global')
-      if (!action) return
-      event.preventDefault()
-      if (action === 'chat.new') {
-        // 与侧栏那颗「新对话」同一个入口：`?new=1` 表示"显式新建"
-        void navigate('/chat?new=1')
-        return
-      }
-      // layout.toggleSidebar：侧栏还没落地，先把偏好翻过来（存储 + 事件两条约定，
-      // 见 `shortcutPrefs.toggleSidebarPreference`）
-      toggleSidebarPreference()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [navigate])
+  // 全局快捷键（`chat.new` / `layout.toggleSidebar`）由**壳**注册
+  // （`features/layout/SideNav` 的全局快捷键宿主，见 `runtime/shortcutPrefs.ts` 的模块头）：
+  // 这一页不再自己挂 window keydown —— 两份监听会双触发（侧栏收起来又立刻打开）。
+  // 输入框里的那两条（回车发送 / 换行）仍归 `Composer`，作用域是 local，不在此列。
 
   // ---------------------------------------------------------------- 发送链路
 
@@ -1200,7 +1194,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const mentionItems = useMemo<MentionItem[]>(
     () => [
-      ...(filesQuery.data ?? []).map((file) => ({
+      ...(filesQuery.data?.entries ?? []).map((file) => ({
         kind: 'file' as const,
         // **引用的是它在文件区里的 key（路径）**，不是显示用的短名字
         value: file.key,
@@ -1501,6 +1495,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setSourceOpen(true)
     },
     closeSource: () => setSourceOpen(false),
+    filesOpen,
+    filesSeed,
+    openFiles: (seed = null) => {
+      setFilesSeed(seed)
+      setFilesOpen(true)
+    },
+    closeFiles: () => setFilesOpen(false),
     ingestTarget,
     ingestKbId,
     setIngestKbId,

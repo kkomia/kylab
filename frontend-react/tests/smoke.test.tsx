@@ -83,9 +83,25 @@ vi.mock('@/api/modelRegistry', async (importOriginal) => {
   return { ...actual, getRegistry: vi.fn(async () => ({ providers: [], models: [], slots: [] })) }
 })
 
+// 壳（侧栏）一挂载就要这三样：会话清单、项目清单、名册
+vi.mock('@/api/stats', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/stats')>()
+  return { ...actual, getDashboard: vi.fn(async () => ({ cards: [], activity: [], trends: [] })) }
+})
+
+vi.mock('@/api/workspaces', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/workspaces')>()
+  return { ...actual, listWorkspaces: vi.fn(async () => ({ items: [] })) }
+})
+
+vi.mock('@/api/users', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/api/users')>()
+  return { ...actual, listUsers: vi.fn(async () => ({ items: [] })) }
+})
+
 describe('应用壳', () => {
   beforeEach(() => {
-    window.history.pushState({}, '', '/chat')
+    window.history.pushState({}, '', '/')
     // 两头都要写：localStorage 那行走的是真实持久化路径，
     // `setSessionToken` 让**已经加载过**的会话 store 跟上
     // （store 在模块加载时读一次 localStorage，而测试是先 import 再 beforeEach）
@@ -93,7 +109,16 @@ describe('应用壳', () => {
     setSessionToken('kylab_st_smoke')
   })
 
-  it('带凭据时放行到对话页', async () => {
+  it('带凭据时放行，并落在壳里（侧栏主导航在）', async () => {
+    render(<App />)
+
+    await waitFor(() => {
+      expect(screen.getByRole('navigation', { name: '主导航' })).toBeInTheDocument()
+    })
+  })
+
+  it('`/chat` 落在对话页（壳的内容区里）', async () => {
+    window.history.pushState({}, '', '/chat')
     render(<App />)
 
     await waitFor(() => {
@@ -110,6 +135,7 @@ describe('应用壳', () => {
     await waitFor(() => {
       expect(window.location.pathname).toBe('/login')
     })
-    expect(window.location.search).toContain('redirect=%2Fchat')
+    // 落地页是概览（`/`），所以 redirect 记的是它
+    expect(window.location.search).toContain('redirect=%2F')
   })
 })

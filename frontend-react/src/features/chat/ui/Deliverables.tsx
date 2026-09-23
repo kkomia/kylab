@@ -9,28 +9,24 @@
  * 一个字一个字地出——看起来像"回答还没写完，东西就先交了"。现在等这一轮收尾再交付；
  * 过程面板里那一步照旧写着「导出文档 · 已导出」，中间状态并不丢。
  */
-import { getFileUrl } from '@/api/conversations'
 import { formatBytes } from '@/lib/format'
 import type { ChatArtifact } from '@/api/chat'
 
-import { notifyError } from '../runtime/notify'
-import { useChat } from '../runtime/ChatProvider'
+import { useChat, type ChatApi } from '../runtime/ChatProvider'
 
 /**
- * 打开产物（**预览**）。
+ * 打开产物（**预览**）：开文件区抽屉，并**直落这一份**。
  *
- * 旧前端点开的是右侧的文件抽屉（`FileDrawer`，属于知识库域）。抽屉在 React 这边
- * 还没落地，所以这一步先做**等价且可用**的事：换一条签名 URL、在新标签页里内联打开
- * （PDF / 图片 / 纯文本能直接看），换不到链接就退回下载。
- * 抽屉接线之后这里换成打开抽屉即可——**动作的落点**只在这一个函数里。
+ * 旧前端点开的就是右侧的文件抽屉（`FileDrawer` 的 `initialKey` / `initialEntry`），
+ * 这里现在也是了——不再换一条签名链接丢到新标签页里（那会让人离开对话上下文，
+ * 而 Office 三件套还得靠浏览器的下载行为）。
+ *
+ * `name` 与 `kind` **必须跟着 key 一起给**：产物在临时区的 key 就是 `artifact_id`，
+ * 一串没有后缀的标识符，抽屉光看它猜不出该用哪个渲染器——不给的话，同一份文件
+ * 从产物卡片点开说"不能预览"，从文件区列表点开却好好的（旧版用户报的就是这个）。
  */
-async function openArtifact(conversationId: string, file: ChatArtifact): Promise<void> {
-  try {
-    const { url } = await getFileUrl(conversationId, file.artifact_id, 'inline')
-    window.open(url, '_blank', 'noopener')
-  } catch (cause) {
-    notifyError(cause)
-  }
+function openArtifact(chat: ChatApi, file: ChatArtifact): void {
+  chat.openFiles({ key: file.artifact_id, name: file.name, kind: file.format })
 }
 
 export function Deliverables({ files }: { files: ChatArtifact[] }) {
@@ -50,7 +46,7 @@ export function Deliverables({ files }: { files: ChatArtifact[] }) {
           <button
             type="button"
             className="min-w-0 flex-1 cursor-pointer text-left"
-            onClick={() => void openArtifact(chat.conversationId, file)}
+            onClick={() => openArtifact(chat, file)}
           >
             <span className="block truncate text-[length:var(--text-meta-size)] text-[var(--text-primary)]">
               {file.name}
@@ -63,7 +59,7 @@ export function Deliverables({ files }: { files: ChatArtifact[] }) {
           <button
             type="button"
             className="shrink-0 cursor-pointer text-[length:var(--text-micro-size)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-            onClick={() => void openArtifact(chat.conversationId, file)}
+            onClick={() => openArtifact(chat, file)}
           >
             预览
           </button>
