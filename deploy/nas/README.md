@@ -168,6 +168,18 @@ ls -l /vol1/1000/docker/kylab/data/memory
 **部署后核对 5 条**（`deploy-from-windows.sh` 只做了第 1、2 条的机器可判部分，
 剩下三条要人眼过一下——它们是"页面能开"之后最容易漏的）：
 
+**这一张表的前两条（外加两条）有脚本了**——在本机跑：
+
+```bash
+sh deploy/nas/verify-deployed-frontend.sh              # 默认 192.168.31.18:8081
+sh deploy/nas/verify-deployed-frontend.sh 别的地址 8081
+```
+
+它判五件：首页 200 / 挂载点是 `id="root"` 而不是 `id="app"` / `/api/v1/health` 是 ok /
+index.html 引用的每个 `/assets/...` 都 200（防"dist 传了一半"）/**线上入口文件名与本机
+`frontend/dist` 里那份一致**（证明"线上跑的就是本机验过的那份"；本机没构建过就跳过这条）。
+任一条不过退出码 1 并指出是哪条。人眼那三条（登录 / 发一句看流式与出处 / 翻文档与笔记）它替不了。
+
 | # | 怎么核 | 期望 |
 | --- | --- | --- |
 | 1 | `curl -s http://127.0.0.1:8081/ \| grep -o 'id="root"'` | 打到 `id="root"`（React 版；旧 Vue 是 `id="app"`） |
