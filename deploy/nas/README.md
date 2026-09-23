@@ -46,7 +46,21 @@ tail -f build.log        # 另开一个会话看进度
 
 ### 前端换成 React 版之后（P5，开发计划 §12.234/§12.236）
 
-**从这台 Windows 直接部署（两条命令，全程只输一次密码）**——在仓库目录里用 Git Bash 跑：
+**从这台 Windows 直接部署（一条命令，只问一次密码）**——在仓库目录里用 Git Bash 跑：
+
+```bash
+sh deploy/nas/deploy-from-windows.sh            # 默认 react 分支、默认 NAS 地址
+sh deploy/nas/deploy-from-windows.sh react 192.168.31.18   # 也可以显式给
+```
+
+它把下面那两条 ssh 合成**一次连接**（所以只问一次密码），并在传之前先自证
+"这次要传的确实是新前端"（`frontend/src/features` 在不在）——传一份旧的过去再构建，
+最后只会得到一个老界面，而那种失败最难看出来（页面 200、没有报错）。跑完它自己
+curl NAS 并认 `#root`/`#app`。
+
+<details>
+<summary>展开：手工的两条命令（脚本做的就是这两步）</summary>
+
 
 ```bash
 # ① 把 react 分支的源码推到 NAS 的 src/（archive 覆盖；NAS 上那份本来就不是 git 检出）
@@ -59,6 +73,8 @@ ssh kkomia@192.168.31.18   "cd /vol1/1000/docker/kylab/app && sh /vol1/1000/dock
 两条都会在**你这边的终端**里问 NAS 的密码（OpenSSH 的交互式认证，密码不经我的脚本、也不落地）。
 第 ② 条的输出会打印 `首页 HTTP：200` 与 `已确认是 React 前端（挂载点 #root）`。
 源码用 archive 覆盖是刻意的：NAS 的 `src/` 从来不是 git 检出，"git pull" 那条路在那边不存在。
+
+</details>
 
 **NAS 上一条命令的版本**（已经登录在 NAS 上时）：`sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react`
 
