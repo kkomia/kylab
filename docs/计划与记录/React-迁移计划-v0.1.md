@@ -269,6 +269,13 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
   `kind`（界面只能按工具名兜底，新加的工具在"正在跑的那一轮"里画中性图标、刷新后才对），
   按后端真实事件补齐。**其余上百个接口调用一字未改**——"直接抄、不重复造轮子"这条，
   在最大的一块（4,015 行）上是有账可查的。
+  ③ **持久化状态**：把两边所有 `localStorage` 键逐条对过，**八条键名一字不差**——
+  `kylab-theme`（主题）、`kylab-font-scale`（字号）、`kylab-shortcuts`（快捷键覆盖）、
+  `kylab-sidebar-collapsed`（侧栏折叠）、`kylab-notes-list-collapsed`（笔记列表折叠）、
+  `kylab-trace-open`（过程面板展开）、`kylab-operator-id`、`kylab-session-token`（会话令牌）。
+  含义有两条：**升级不丢任何本地偏好**；而且会话令牌键没变，浏览器里已登录的会话切过去
+  仍然有效（部署核对里"登录一次"那条多半会直接过）。键常量在 chat 域与 misc/layout 域
+  各有一份是有意的（chat 不 import misc 的实现，分层约定），两处注释都写着"共用、键名一字不差"。
 
 ### 10.2 NAS 产物的本机预检（都做了）
 
