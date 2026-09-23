@@ -220,7 +220,8 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
   旧 Vue 在 `agent` 分支（`git checkout agent -- frontend` 取回）；`react` 领先 `agent` 14 个提交、
   领先 `main` **112** 个。**合并预检**：`git merge-tree --write-tree main react` **退出 0、零冲突**
   （`react` 从 `agent` 切、`agent` 是 `main` 的后代），并进 `main` 是快进式——风险在部署不在合并。
-- **门禁（合并树上）**：前端 `scripts/check-frontend.sh` 全绿 —— **519 条用例** + 构建 + emoji +
+- **门禁（合并树上）**：前端 `scripts/check-frontend.sh` 全绿 —— **523 条用例**
+  （§12.251 补了图表基座 3 条：切主题重画、`var()` 与 `color-mix()` 解析）+ 构建 + emoji +
   分层与文案与版本号；后端 **2881 通过 / 9 跳过**；`scripts/lint.sh` 全过。
 - **审计缺口清零**：[完整性审计](../调研/React-迁移完整性审计-v0.1.md) 第一档 5 条（壳接线、401、
   会话管理、文件抽屉四件事、落地页口径）与第二档 2 条（通知条关闭按钮、悬停/聚焦预热）**全部补完**；
@@ -232,6 +233,11 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
   正文列宽回 66ch（实测 **533.672px**）——五处都在浏览器里量过、与旧值一致。
 - **两处口径**（按主流实现自收）：公式边界用 **GitHub 口径**（`$` 与内容之间不留空格，
   于是 `$5 到 $10` 不再被当公式排）；文件抽屉内嵌预览经核实**本来就已具备**。
+- **规范文档按规矩升版**（§12.251）：`项目工程规范` **v0.4 → v0.5**（只重写 §4 前端部分：
+  目录树 / 命名表 / 图标与颜色纪律各一处）、`部署与运行` **v0.2 → v0.3**（适用行 +
+  §3 追加"NAS 上已是 React，判据是挂载点 `#root`"）；旧版进 `docs/归档/` 并在头部标注被取代，
+  活指针（`README.md` / `README.en.md` / `docs/README.md` / 调研的"关联"行）跟着换——
+  **没有就地改任何已提交的规范内容**（这是《项目工程规范》§2 自己的规矩）。
 
 ### 10.2 NAS 产物的本机预检（都做了）
 
