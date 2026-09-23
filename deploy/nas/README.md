@@ -46,7 +46,21 @@ tail -f build.log        # 另开一个会话看进度
 
 ### 前端换成 React 版之后（P5，开发计划 §12.234/§12.236）
 
-**一条命令的版本**（推荐）：`sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react`
+**从这台 Windows 直接部署（两条命令，全程只输一次密码）**——在仓库目录里用 Git Bash 跑：
+
+```bash
+# ① 把 react 分支的源码推到 NAS 的 src/（archive 覆盖；NAS 上那份本来就不是 git 检出）
+git archive --format=tar react | ssh kkomia@192.168.31.18   "mkdir -p /vol1/1000/docker/kylab/src && tar -x -C /vol1/1000/docker/kylab/src --overwrite"
+
+# ② 在 NAS 上跑升级脚本（只重建前端 + 核对 #root）
+ssh kkomia@192.168.31.18   "cd /vol1/1000/docker/kylab/app && sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react"
+```
+
+两条都会在**你这边的终端**里问 NAS 的密码（OpenSSH 的交互式认证，密码不经我的脚本、也不落地）。
+第 ② 条的输出会打印 `首页 HTTP：200` 与 `已确认是 React 前端（挂载点 #root）`。
+源码用 archive 覆盖是刻意的：NAS 的 `src/` 从来不是 git 检出，"git pull" 那条路在那边不存在。
+
+**NAS 上一条命令的版本**（已经登录在 NAS 上时）：`sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react`
 
 它先看源码形态（这台 NAS 的 `src/` 是 **`git archive` 解开的、不含 `.git`**，
 所以"先 pull 再构建"在这里会失败）：
