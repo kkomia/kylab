@@ -38,16 +38,15 @@
  */
 import { useEffect, useState } from 'react'
 import {
-  Archive,
-  ArchiveRestore,
-  Ellipsis,
-  Folder,
-  FolderInput,
-  Pencil,
-  Pin,
-  PinOff,
-  Trash2,
-} from 'lucide-react'
+  RiArchiveLine,
+  RiDeleteBinLine,
+  RiEditLine,
+  RiFolderLine,
+  RiInboxUnarchiveLine,
+  RiMoreLine,
+  RiPushpin2Line,
+  RiUnpinLine,
+} from '@remixicon/react'
 import { toast } from 'sonner'
 
 import type { ConversationSummary } from '@/api/conversations'
@@ -201,26 +200,34 @@ export function ConversationRowMenu({
             aria-label={`${name} 的操作`}
             title={`${name} 的操作`}
           >
-            <Ellipsis size={ICON} />
+            <RiMoreLine size={ICON} aria-hidden="true" />
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align={align} className="w-40">
           <DropdownMenuItem onSelect={() => void togglePin()}>
-            {item.pinned ? <PinOff size={ICON} /> : <Pin size={ICON} />}
+            {item.pinned ? (
+              <RiUnpinLine size={ICON} aria-hidden="true" />
+            ) : (
+              <RiPushpin2Line size={ICON} aria-hidden="true" />
+            )}
             {item.pinned ? '取消置顶' : '置顶'}
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={openRename}>
-            <Pencil size={ICON} /> 重命名
+            <RiEditLine size={ICON} aria-hidden="true" /> 重命名
           </DropdownMenuItem>
           {/* 「移至项目」在**已经在某个项目里**时也留着（那时它能改投别处），
               只有"一个项目都没有"才藏起来——点开一个空列表比没有这一项更让人困惑 */}
           {workspacesLoaded && workspaces.length > 0 && (
             <DropdownMenuItem onSelect={() => setMoving(true)}>
-              <FolderInput size={ICON} /> 移至项目
+              <RiFolderLine size={ICON} aria-hidden="true" /> 移至项目
             </DropdownMenuItem>
           )}
           <DropdownMenuItem onSelect={() => void toggleArchive()}>
-            {item.archived_at ? <ArchiveRestore size={ICON} /> : <Archive size={ICON} />}
+            {item.archived_at ? (
+              <RiInboxUnarchiveLine size={ICON} aria-hidden="true" />
+            ) : (
+              <RiArchiveLine size={ICON} aria-hidden="true" />
+            )}
             {item.archived_at ? '取消归档' : '归档'}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -228,7 +235,7 @@ export function ConversationRowMenu({
             className="text-status-danger focus:bg-[var(--danger-soft)] focus:text-status-danger [&_svg]:text-status-danger"
             onSelect={() => setConfirmingDelete(true)}
           >
-            <Trash2 size={ICON} /> 删除
+            <RiDeleteBinLine size={ICON} aria-hidden="true" /> 删除
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -279,7 +286,7 @@ export function ConversationRowMenu({
                     className={workspace.id === item.workspace_id ? MOVE_ROW_CURRENT : MOVE_ROW}
                     onClick={() => void moveTo(workspace.id)}
                   >
-                    <Folder size={15} />
+                    <RiFolderLine size={15} aria-hidden="true" />
                     <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
                     {workspace.id === item.workspace_id && (
                       <span className="text-[length:var(--text-micro-size)] text-text-tertiary">
@@ -292,7 +299,7 @@ export function ConversationRowMenu({
               {item.workspace_id && (
                 <li>
                   <button type="button" className={MOVE_ROW} onClick={() => void moveTo(null)}>
-                    <Folder size={15} />
+                    <RiFolderLine size={15} aria-hidden="true" />
                     <span className="min-w-0 flex-1 truncate">移出项目</span>
                   </button>
                 </li>

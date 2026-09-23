@@ -233,7 +233,9 @@ export function Composer() {
 
   return (
     <div
-      className="relative w-full px-[var(--page-gutter)] pb-[var(--space-4)]"
+      /* 下内边距取 `space-5`：旧 `.composer-wrap { padding: 0 var(--page-gutter) var(--space-5) }`
+         ——它是输入卡片与窗口底边之间那截呼吸感（"回到最新"浮标也按它定位）。 */
+      className="relative w-full px-[var(--page-gutter)] pb-[var(--space-5)]"
       onDragOver={onDragOver}
       onDragLeave={onDragLeave}
       onDrop={onDrop}
@@ -268,7 +270,7 @@ export function Composer() {
         <div
           data-testid="command-result"
           role="status"
-          className="mx-auto mb-[var(--space-2)] flex w-full max-w-[var(--chat-input-max-width)] flex-col gap-[var(--space-1)] rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-subtle)] px-[var(--space-4)] py-[var(--space-3)]"
+          className="mx-auto mb-[var(--space-2)] flex w-full max-w-[var(--chat-measure)] flex-col gap-[var(--space-1)] rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-subtle)] px-[var(--space-4)] py-[var(--space-3)]"
         >
           <div className="flex items-center justify-between">
             <span className="font-mono text-[length:var(--text-meta-size)] text-[var(--text-secondary)]">
@@ -291,9 +293,9 @@ export function Composer() {
       ) : null}
 
       {/* 两个菜单浮在输入卡片上方，**不抢焦点**（键盘由输入框那一侧转发） */}
-      <div className="mx-auto w-full max-w-[var(--chat-input-max-width)]">
+      <div className="mx-auto w-full max-w-[var(--chat-measure)]">
         {mentionVisible ? (
-          <div className="absolute bottom-[calc(100%-var(--space-4))] left-[var(--page-gutter)] right-[var(--page-gutter)] mx-auto max-w-[var(--chat-input-max-width)]">
+          <div className="absolute bottom-[calc(100%-var(--space-4))] left-[var(--page-gutter)] right-[var(--page-gutter)] mx-auto max-w-[var(--chat-measure)]">
             <MentionMenu
               items={chat.mentionItems}
               filter={mentionFilter ?? ''}
@@ -307,7 +309,7 @@ export function Composer() {
           </div>
         ) : null}
         {slashVisible ? (
-          <div className="absolute bottom-[calc(100%-var(--space-4))] left-[var(--page-gutter)] right-[var(--page-gutter)] mx-auto max-w-[var(--chat-input-max-width)]">
+          <div className="absolute bottom-[calc(100%-var(--space-4))] left-[var(--page-gutter)] right-[var(--page-gutter)] mx-auto max-w-[var(--chat-measure)]">
             <SlashMenu
               items={chat.commands}
               filter={slashFilter ?? ''}
@@ -329,13 +331,13 @@ export function Composer() {
       {chat.dropKind ? (
         <div
           role="status"
-          className="relative z-[60] mx-auto mb-[var(--space-2)] w-full max-w-[var(--chat-input-max-width)] rounded-[var(--radius-panel)] border border-dashed border-[var(--accent)] bg-[var(--accent-soft)] px-[var(--space-4)] py-[var(--space-3)] text-center text-[length:var(--text-meta-size)] text-[var(--text-primary)]"
+          className="relative z-[60] mx-auto mb-[var(--space-2)] w-full max-w-[var(--chat-measure)] rounded-[var(--radius-panel)] border border-dashed border-[var(--accent)] bg-[var(--accent-soft)] px-[var(--space-4)] py-[var(--space-3)] text-center text-[length:var(--text-meta-size)] text-[var(--text-primary)]"
         >
           {chat.dropKind === 'reference' ? '松开以引用此文件' : '松开以添加附件'}
         </div>
       ) : null}
 
-      <div className="mx-auto flex w-full max-w-[var(--chat-input-max-width)] flex-col gap-[var(--space-1)] rounded-[var(--radius-input)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-[var(--space-3)] py-[var(--space-2)] shadow-[var(--shadow-input)]">
+      <div className="mx-auto flex w-full max-w-[var(--chat-measure)] flex-col gap-[var(--space-1)] rounded-[var(--radius-input)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-[var(--space-3)] py-[var(--space-2)] shadow-[var(--shadow-input)]">
         <textarea
           id="chat-query"
           ref={field}

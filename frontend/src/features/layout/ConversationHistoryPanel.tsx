@@ -33,7 +33,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
-import { Pin, Search, X } from 'lucide-react'
+import { RiCloseLine, RiPushpin2Line, RiSearchLine } from '@remixicon/react'
 import { toast } from 'sonner'
 
 import type { ConversationSummary } from '@/api/conversations'
@@ -226,7 +226,7 @@ export function ConversationHistoryPanel({
         className="absolute top-4 right-5 inline-flex size-9 items-center justify-center rounded-[var(--radius-icon-button)] text-text-secondary transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary"
         onClick={onClose}
       >
-        <X size={20} />
+        <RiCloseLine size={20} aria-hidden="true" />
       </button>
 
       <div className="max-w-[940px] pt-[52px] pr-6 pb-16 pl-[clamp(48px,12%,190px)]">
@@ -234,7 +234,7 @@ export function ConversationHistoryPanel({
 
         {/* 搜索框：**填充底、无边框**（参考图里它是一块浅灰），高 48px、圆角 10px */}
         <div className="relative mb-4 flex items-center">
-          <Search
+          <RiSearchLine
             size={18}
             className="pointer-events-none absolute left-4 text-text-tertiary"
             aria-hidden="true"
@@ -253,7 +253,7 @@ export function ConversationHistoryPanel({
               className="absolute right-3 inline-flex size-6 items-center justify-center rounded-control text-text-tertiary transition-colors hover:text-text-primary"
               onClick={clearSearch}
             >
-              <X size={16} />
+              <RiCloseLine size={16} aria-hidden="true" />
             </button>
           )}
         </div>
@@ -314,7 +314,11 @@ export function ConversationHistoryPanel({
                         <span className="flex items-baseline justify-between gap-4 pr-6">
                           <span className="inline-flex min-w-0 items-center gap-1.5 overflow-hidden text-[length:var(--text-section-size)] font-medium text-ellipsis whitespace-nowrap text-text-primary">
                             {item.pinned && (
-                              <Pin size={13} className="shrink-0 text-text-tertiary" />
+                              <RiPushpin2Line
+                                size={13}
+                                className="shrink-0 text-text-tertiary"
+                                aria-hidden="true"
+                              />
                             )}
                             {item.title || '未命名对话'}
                           </span>

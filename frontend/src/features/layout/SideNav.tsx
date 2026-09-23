@@ -4,13 +4,40 @@
  * 结构（v0.22，照 Kimi Work 的侧栏条目）：
  *
  * ```
- * 品牌位（烧瓶标 + 折叠开关）
+ * 品牌位（环行星标 + 折叠开关）
  * 新建会话（`/chat?new=1`，带快捷键提示）
  * 主导航：笔记 / 记忆 / 能力 / 知识库▸（所有知识库 / 概览 / 任务中心）
  * 项目节：项目行（带条数）+ 各自的项目内会话（超过 5 条先收起）+ 全部项目
  * 对话节：没归项目的会话（前 8 条）+ 查看全部会话
  * 页脚：账号（头像 + 名字 → 向上展开的菜单）
  * ```
+ *
+ * ## 图标：Remix Icon（与旧版同一套）
+ *
+ * 侧栏 / 用户区 / 导航这一片的图标**一律取 Remix Icon 集合**（`@remixicon/react`），
+ * 与旧前端 `components/icons/*.vue` 逐枚对应——那些 Vue 文件的注释里都写着
+ * "源：Remix 图标集合 `xxx-line`"，这里用的是**同一个集合、同一份路径数据**
+ * （`@remixicon/react` 的 `d` 与旧内联 SVG 逐字节相同）：
+ *
+ * | 位置 | 图标 | 旧文件 |
+ * | --- | --- | --- |
+ * | 笔记 | `sticky-note-line` | `IconNote.vue` |
+ * | 记忆 | `robot-line` | `IconRobot.vue` |
+ * | 能力 | `server-line` | `IconServer.vue` |
+ * | 知识库 / 所有知识库 | `book-2-line` | `IconLibrary.vue` |
+ * | 概览 | `dashboard-line` | `IconDashboard.vue` |
+ * | 任务中心 | `task-line` | `IconTasks.vue` |
+ * | 项目 / 移至项目 | `folder-line` | `IconFolder.vue` |
+ * | 新建项目 | `folder-add-line` | `IconFolderPlus.vue`（自绘） |
+ * | 查看全部会话 | `time-line` | `IconClock.vue` |
+ * | 分节箭头 / 组内箭头 | `arrow-down-s-line` / `arrow-right-s-line` | `IconChevronDown/Right.vue` |
+ * | 品牌标 | 环行星（自绘） | `IconLogo.vue`（React 版在 `chat/ui/Logo.tsx`） |
+ * | 折叠开关 / 新建会话 | 自绘 | `IconSidebar.vue` / `IconChatNew.vue`（见 `./icons.tsx`） |
+ *
+ * 三枚"自绘"不是随手换的例外：`IconChatNew` 与 `IconSidebar` 的注释都写了来源
+ * （开放集里没有"圆角气泡 + 时钟"这个造型；折叠开关是用户给的 iconfont 原稿），
+ * 所以它们**照搬旧 SVG** 放在 `./icons.tsx`；品牌标不是 UI 图标（它要能被认出来），同理另放一处。
+ * **页面内部的图标不在这里**（表格行、按钮里的那些不在本次范围内，见对照记录 §3）。
  *
  * ## 侧栏的位置留给"入口"，清单留给各自的菜单
  *
@@ -45,22 +72,20 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
 import {
-  Bot,
-  ChevronDown,
-  ChevronRight,
-  Clock,
-  FlaskConical,
-  Folder,
-  FolderPlus,
-  LayoutDashboard,
-  Library,
-  ListTodo,
-  MessageSquarePlus,
-  PanelLeft,
-  Server,
-  StickyNote,
-} from 'lucide-react'
+  RiArrowDownSLine,
+  RiArrowRightSLine,
+  RiBook2Line,
+  RiDashboardLine,
+  RiFolderAddLine,
+  RiFolderLine,
+  RiRobotLine,
+  RiServerLine,
+  RiStickyNoteLine,
+  RiTaskLine,
+  RiTimeLine,
+} from '@remixicon/react'
 
+import { Logo } from '@/features/chat/ui/Logo'
 import {
   bindingParts,
   bindingsOf,
@@ -72,6 +97,7 @@ import type { ConversationSummary } from '@/api/conversations'
 
 import { AccountMenu } from './AccountMenu'
 import { ConversationRowMenu } from './ConversationRowMenu'
+import { IconChatNew, IconSidebar } from './icons'
 import { useConversationStore } from './conversations'
 import { ensureWorkspacesLoaded, useWorkspaceStore } from './workspaces'
 import { useAutoHideScrollbar } from './useAutoHideScrollbar'
@@ -109,11 +135,11 @@ const SIDE_ADD =
  * 该有的动作（便签自下放上 / 记忆歪一头再正过来 / 能力上电弹一下 / 书脊滑进来）。
  */
 const NAV_ITEMS = [
-  { to: '/notes', label: '笔记', icon: StickyNote, exact: false, motion: 'rise' },
-  { to: '/memory', label: '记忆', icon: Bot, exact: false, motion: 'tilt' },
+  { to: '/notes', label: '笔记', icon: RiStickyNoteLine, exact: false, motion: 'rise' },
+  { to: '/memory', label: '记忆', icon: RiRobotLine, exact: false, motion: 'tilt' },
   // 能力的图标**不能用齿轮**：齿轮在账号菜单里是「设置」，同一个图标两种含义会让人
   // 以为这一项是设置（旧版踩过：一眼看过去就是"两个设置"）
-  { to: '/capabilities', label: '能力', icon: Server, exact: false, motion: 'spring' },
+  { to: '/capabilities', label: '能力', icon: RiServerLine, exact: false, motion: 'spring' },
 ] as const
 
 /**
@@ -125,14 +151,14 @@ const NAV_ITEMS = [
  */
 const KNOWLEDGE_GROUP = {
   label: '知识库',
-  icon: Library,
+  icon: RiBook2Line,
   motion: 'slide',
   children: [
-    { to: '/knowledge-bases', label: '所有知识库', icon: Library, exact: true },
+    { to: '/knowledge-bases', label: '所有知识库', icon: RiBook2Line, exact: true },
     // 「概览」= 驾驶舱，住 `/`（与旧前端一致：落地页就是概览，书签不用改）。
     // `/dashboard` 只是同一页的旧入口，在新路由表里是一条重定向。
-    { to: '/', label: '概览', icon: LayoutDashboard, exact: true },
-    { to: '/tasks', label: '任务中心', icon: ListTodo, exact: false },
+    { to: '/', label: '概览', icon: RiDashboardLine, exact: true },
+    { to: '/tasks', label: '任务中心', icon: RiTaskLine, exact: false },
   ],
 } as const
 
@@ -276,14 +302,15 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
       }
       aria-label="侧栏"
     >
-      {/* 品牌位只放那只烧瓶（v0.31 换的新标）：完整的字标挪到了对话页的空态上——
-          这一格只有 24px 宽的位置，字标在这么小的地方既读不出来、又跟下方的导航抢宽度。
-          右侧是折叠开关：折叠后烧瓶收起，只留那颗面板图标。
+      {/* 品牌位只放那颗**环行星**（v0.31 换的新标）：完整的 "kylab" 字标挪到了对话页的
+          空态上——这一格只有 24px 宽的位置，字标在这么小的地方既读不出来、又跟下方的
+          导航抢宽度；而行星标本身已经认得出来（旧版的口径：侧栏只留行星标）。
+          右侧是折叠开关：折叠后行星标收起，只留那颗面板图标。
           **两者都不用条件渲染摘掉**——摘掉是瞬时的、没法过渡；改用 max-width 收缩
           （`.ly-collapsible`），宽度动画才连得上。 */}
       <div className="relative flex min-h-[var(--sidebar-header-height)] items-center gap-2 pt-[15px] pr-4 pb-[9px] pl-4 text-text-primary">
         <span className="ly-collapsible flex">
-          <FlaskConical size={22} aria-hidden="true" />
+          <Logo variant="mark" size={22} />
         </span>
         <button
           type="button"
@@ -293,7 +320,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
           title={collapsed ? '展开侧栏' : '收缩侧栏'}
           onClick={toggleSidebar}
         >
-          <PanelLeft size={17} />
+          <IconSidebar size={17} />
         </button>
       </div>
 
@@ -305,7 +332,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
           className="ly-nav-item mx-2 mb-2 flex min-h-11 items-center gap-1.5 overflow-hidden rounded-[var(--radius-nav)] border border-[var(--border-hairline)] bg-[var(--bg-group)] px-2 text-[length:var(--text-meta-size)] leading-5 font-medium text-text-primary no-underline transition-colors hover:border-[var(--border-strong)]"
           title={`新建会话（${newChatKeys.join(' + ')}）`}
         >
-          <MessageSquarePlus size={18} className="ly-nav-motion-drop shrink-0" aria-hidden="true" />
+          <IconChatNew size={18} className="ly-nav-motion-drop shrink-0" />
           <span className="ly-collapsible">新建会话</span>
           {/* 快捷键提示：**显示它就必须真的能用**，所以它与上面那段 window 监听
               是同一条绑定（都读注册表）。两枚独立的小片，不是一个 `Ctrl K` 字符串。 */}
@@ -366,7 +393,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
             />
             <span className="ly-collapsible">{KNOWLEDGE_GROUP.label}</span>
             {!collapsed && (
-              <ChevronRight
+              <RiArrowRightSLine
                 size={13}
                 aria-hidden="true"
                 className={
@@ -417,7 +444,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
               onClick={() => setProjectsOpen((open) => !open)}
             >
               <span>项目</span>
-              <ChevronDown
+              <RiArrowDownSLine
                 size={13}
                 aria-hidden="true"
                 className={
@@ -434,7 +461,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
               aria-label="新建项目"
               onClick={() => void navigate('/workspaces?new=1')}
             >
-              <FolderPlus size={15} />
+              <RiFolderAddLine size={15} aria-hidden="true" />
             </button>
           </div>
 
@@ -455,7 +482,11 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                     title={workspace.root_path}
                     onClick={() => void navigate(`/workspaces?focus=${workspace.id}`)}
                   >
-                    <Folder size={15} className="shrink-0 text-text-secondary" aria-hidden="true" />
+                    <RiFolderLine
+                      size={15}
+                      className="shrink-0 text-text-secondary"
+                      aria-hidden="true"
+                    />
                     <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
                     <span className="tabular shrink-0 text-[length:var(--text-micro-size)] text-text-tertiary">
                       {workspace.conversation_count}
@@ -511,7 +542,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
               onClick={() => setChatsOpen((open) => !open)}
             >
               <span>对话</span>
-              <ChevronDown
+              <RiArrowDownSLine
                 size={13}
                 aria-hidden="true"
                 className={
@@ -531,7 +562,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
               aria-label="查看全部会话"
               onClick={onOpenHistory}
             >
-              <Clock size={15} />
+              <RiTimeLine size={15} aria-hidden="true" />
             </button>
           </div>
 

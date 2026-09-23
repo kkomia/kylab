@@ -363,10 +363,22 @@
 
 /* ------------------------------------------------------------ 知识库列表（卡片 / 行） */
 
+/* 知识库列表 / Wiki 的页头：标题 + 右侧的页面动作（`h1` 带 `flex: 1`，
+   于是动作被推到右端——那两页的动作确实是"页面级"的）。 */
 .kb-head-actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+
+/* 知识库**详情**的页头：标题与它的行内控件（设置齿轮）同处一行、**紧贴标题**。
+   旧 `PageHeader.vue` 的 `title-suffix` 槽就是这个语义——它那条 `.page-title-row`
+   也是 `display: flex; align-items: center; gap: var(--space-1)`（齿轮属于"这个库本身"，
+   摆到最右端会被读成"页面的动作"，见对照记录 §3 第 3 条）。 */
+.kb-title-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
 }
 
 /* `auto-fit` 而不是 `auto-fill`：后者会保留空轨道，两个库时右边留一大片空白 */
@@ -426,10 +438,13 @@
   border-radius: var(--radius-row);
 }
 
+/* 行首那枚字母块：**24px 里放的是 B2（14px）**，不是 C1——
+   旧 `KnowledgeBasesView.vue` 的 `.kb-mark-sm` 写的是 `--text-meta-size`
+   （对照记录 §3 第 2 条的"单元格字号"）。小一档在 24px 的方块里看着偏空。 */
 .kb-mark-sm {
   width: 24px;
   height: 24px;
-  font-size: var(--text-micro-size);
+  font-size: var(--text-meta-size);
   border-radius: var(--radius-control);
 }
 
@@ -778,6 +793,24 @@
 }
 
 /* ------------------------------------------------------------ 文档清单 */
+
+/* ------------------------------------------------------------ 文档清单
+ *
+ * 行高与单元格字号**逐值对过旧 `KnowledgeBaseView.vue`**（对照记录 §3 第 2 条），
+ * 结论是这一块本来就已经一致，两处都写下来免得下次再对一遍：
+ *
+ * | 取值 | 旧（`KnowledgeBaseView.vue`） | 新 |
+ * | --- | --- | --- |
+ * | 数据行高 | `.doc-row.panel-row` → `.panel-row { min-height: var(--row-height) }` = **44px** | 同（`.kb-doc-row.panel-row`） |
+ * | 表头行高 / 字号 | `.panel-head` = **36px / C1 12px** | 同（tokens.css 的 `.panel-head`） |
+ * | 文件名 / 单元格 | `.row-name` 继承正文 **B1 15px（行高 22.05px）** | 同（`.kb-row-name-link`） |
+ * | 数字/问题/大小/时间列 | `.row-number` 等 = **B2 14px（行高 20.58px）** | 同（`.kb-col-*`） |
+ * | 上传者列 | `.row-uploader` = **C1 12px** | 同（`.kb-col-uploader`） |
+ * | 子文件行 | `.part-row { height: var(--row-height-compact) }` = **32px** | 同（`.kb-part`） |
+ *
+ * 逐条量过一遍（1440 与 1100 两个宽度、行高与单元格字号都取计算值）：**逐值相同**，
+ * 所以这一块没有改动——旧版这几处本来就走的是同一份令牌，没有写死的值。
+ */
 
 .kb-doc-head,
 .kb-doc-row {

@@ -84,7 +84,7 @@ export function ApprovalBar({
   return (
     <div
       data-testid="approval-bar"
-      className="mx-auto mb-[var(--space-2)] flex w-full max-w-[var(--chat-input-max-width)] flex-col gap-[var(--space-2)] rounded-[var(--radius-panel)] border border-[var(--border-strong)] bg-[var(--bg-subtle)] px-[var(--space-4)] py-[var(--space-3)]"
+      className="mx-auto mb-[var(--space-2)] flex w-full max-w-[var(--chat-measure)] flex-col gap-[var(--space-2)] rounded-[var(--radius-panel)] border border-[var(--border-strong)] bg-[var(--bg-subtle)] px-[var(--space-4)] py-[var(--space-3)]"
     >
       <div className="flex flex-wrap items-baseline gap-[var(--space-3)]">
         <span className="text-[length:var(--text-meta-size)] font-semibold text-[var(--text-primary)]">

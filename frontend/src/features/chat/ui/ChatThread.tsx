@@ -69,11 +69,15 @@ export function ChatThread() {
       data-running={isRunning ? 'true' : 'false'}
     >
       <ThreadPrimitive.Viewport className="min-h-0 flex-1 overflow-y-auto" aria-label="对话内容">
+        {/* 正文列：**与输入卡片同一条 768px 的居中窄列**（`--chat-measure`），内边距照旧
+            `ChatView.vue` 的 `.chat-inner`（`space-6 / gutter / space-4`）；空态那一条把
+            **下内边距归零**（旧 `.chat-centered .chat-inner { padding-bottom: 0 }`）——
+            空态下半屏不留贴底用的那截呼吸感。 */}
         <div
           className={
             chat.welcome
-              ? 'mx-auto flex min-h-full w-full max-w-[calc(var(--chat-input-max-width)+2*var(--page-gutter))] flex-col items-center justify-center px-[var(--page-gutter)] py-[var(--space-4)]'
-              : 'mx-auto w-full max-w-[calc(var(--chat-input-max-width)+2*var(--page-gutter))] px-[var(--page-gutter)] pt-[var(--space-6)] pb-[var(--space-4)]'
+              ? 'mx-auto flex min-h-full w-full max-w-[calc(var(--chat-measure)+2*var(--page-gutter))] flex-col items-center justify-center px-[var(--page-gutter)] pt-[var(--space-6)] pb-0'
+              : 'mx-auto w-full max-w-[calc(var(--chat-measure)+2*var(--page-gutter))] px-[var(--page-gutter)] pt-[var(--space-6)] pb-[var(--space-4)]'
           }
         >
           {chat.messages.length === 0 && chat.pendingEntry ? (

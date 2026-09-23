@@ -190,6 +190,29 @@ afterEach(() => {
   resetRegistryCache()
 })
 
+describe('页头', () => {
+  it('设置齿轮**贴在标题右侧**（同一行），不是页面右上角', async () => {
+    renderView()
+
+    const title = await screen.findByRole('heading', { level: 1, name: '产品手册' })
+    // 与标题同处一行的那个容器：旧 `PageHeader.vue` 的 `title-suffix` 槽就是这个位置
+    // （"这类控件属于这个对象本身，放在右侧动作区会读成页面的动作"）。
+    // 给的 `h1` 一旦带上 `flex: 1`，齿轮就会被推到页面右缘——对照记录 §3 第 3 条。
+    const row = title.parentElement as HTMLElement
+    expect(row.className).toContain('kb-title-row')
+    expect(within(row).getByRole('button', { name: '产品手册 的设置' })).toBeInTheDocument()
+    expect(row.style.flex).toBe('')
+  })
+
+  it('只读分享的库没有设置齿轮（与旧版同一条 `can_write` 判定）', async () => {
+    listKbMock.mockResolvedValue({ items: [makeKB({ can_write: false, can_manage: false })] })
+    renderView()
+
+    const title = await screen.findByRole('heading', { level: 1, name: '产品手册' })
+    expect(within(title.parentElement as HTMLElement).queryByRole('button')).toBeNull()
+  })
+})
+
 describe('文档列表', () => {
   it('渲染行：名称、状态、切块数与大小都在一行里，分页参数下推给后端', async () => {
     const { container } = renderView()

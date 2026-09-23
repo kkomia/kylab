@@ -290,6 +290,14 @@ pre {
   /* ------------------------------------------------------------ 布局骨架 */
   --header-height: 58px;
   --chat-input-max-width: 768px;
+  /* 对话页的**列宽口径**：消息列与输入卡片共用同一条 768px 的居中窄列。
+     旧前端把它定义在对话页自己身上（`ChatView.vue` 的
+     `.chat { --chat-measure: var(--chat-input-max-width) }`，注释写明
+     "此前是 960px：对话是阅读型界面，行太长会让人看丢行"）。
+     收到令牌这一层是因为用它的不止输入框：整页那个宽盒是
+     `calc(var(--chat-measure) + 2 * var(--page-gutter))`（含左右各一条 gutter），
+     消息列、输入卡片、待批准条、命令回话都从它里头对齐。 */
+  --chat-measure: var(--chat-input-max-width);
   --chat-input-radius: var(--radius-input);
   /* **侧栏固定 240px**：Kimi 的实测值是写死的 240（`.sidebar-shell .sidebar`、
      `.next-sidebar`、`.sidebar-slot--fixed` 三处一致），不随视口变。

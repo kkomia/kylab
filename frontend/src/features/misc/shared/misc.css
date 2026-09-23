@@ -1085,14 +1085,21 @@ button.m-card-title:hover {
   border-radius: var(--radius-panel);
 }
 
+/* 数字用**大号单层灰**，标签在上、注解在下——取值逐条照旧 `DashboardView.vue` 的
+   `.figure-label` / `.figure-value` / `.figure-note`（对照记录 §3 第 2 条）：
+   label 与 note 都是 C1（12px），只有数字是 T1（18px）那一档，
+   并且**带 `line-height: 1.15` 与 `letter-spacing: -0.015em`**——
+   大号数字的默认行距会把它自己在卡片里"撑松"，那两个字距/行距的调整正是它紧凑的原因。 */
 .m-figure-label {
   font-size: var(--text-micro-size);
   color: var(--text-secondary);
 }
 
 .m-figure-value {
-  font-size: var(--text-figure-size);
+  font-size: var(--text-page-title-size);
   font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.015em;
   color: var(--text-primary);
 }
 
@@ -1101,7 +1108,7 @@ button.m-card-title:hover {
 }
 
 .m-figure-note {
-  font-size: var(--text-c2-size);
+  font-size: var(--text-micro-size);
   color: var(--text-tertiary);
 }
 

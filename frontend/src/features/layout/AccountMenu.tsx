@@ -34,7 +34,14 @@
  * 3. 跳登录页。
  */
 import { useState } from 'react'
-import { ChevronDown, LogOut, Moon, Settings, Sun, UserRound } from 'lucide-react'
+import {
+  RiArrowDownSLine,
+  RiLogoutBoxRLine,
+  RiMoonLine,
+  RiSettings3Line,
+  RiSunLine,
+  RiUserLine,
+} from '@remixicon/react'
 import { useNavigate } from 'react-router'
 
 import { AvatarDialog } from '@/features/misc/settings/AvatarDialog'
@@ -147,7 +154,11 @@ export function AccountMenu() {
                 {identityRole}
               </span>
             )}
-            <ChevronDown className="ly-collapsible size-3.5 shrink-0 text-text-tertiary" />
+            <RiArrowDownSLine
+              className="ly-collapsible shrink-0 text-text-tertiary"
+              size={14}
+              aria-hidden="true"
+            />
           </button>
         </DropdownMenuTrigger>
         {/* 向上弹：它挂在页脚底部，向下会出到屏幕外 */}
@@ -155,17 +166,21 @@ export function AccountMenu() {
           {/* 「头像」只给真账号 */}
           {currentUser && (
             <DropdownMenuItem onSelect={() => setAvatarOpen(true)}>
-              <UserRound size={ICON} /> 头像
+              <RiUserLine size={ICON} aria-hidden="true" /> 头像
             </DropdownMenuItem>
           )}
           {/* 设置只给管理员：后端对成员一律 403，摆一个点进去只会报错的入口比不显示更糟 */}
           {isAdmin && (
             <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
-              <Settings size={ICON} /> 设置
+              <RiSettings3Line size={ICON} aria-hidden="true" /> 设置
             </DropdownMenuItem>
           )}
           <DropdownMenuItem onSelect={onToggleTheme}>
-            {dark ? <Sun size={ICON} /> : <Moon size={ICON} />}
+            {dark ? (
+              <RiSunLine size={ICON} aria-hidden="true" />
+            ) : (
+              <RiMoonLine size={ICON} aria-hidden="true" />
+            )}
             {dark ? '切换为浅色' : '切换为深色'}
           </DropdownMenuItem>
           {/* 退出登录只在真有账号时给：没有会话就没有可退的东西 */}
@@ -177,7 +192,8 @@ export function AccountMenu() {
                 disabled={loggingOut}
                 onSelect={() => void onLogout()}
               >
-                <LogOut size={ICON} /> {loggingOut ? '正在退出…' : '退出登录'}
+                <RiLogoutBoxRLine size={ICON} aria-hidden="true" />{' '}
+                {loggingOut ? '正在退出…' : '退出登录'}
               </DropdownMenuItem>
             </>
           )}

@@ -40,15 +40,21 @@
 | **设置弹窗** | 通过 | 账号菜单四项（头像/设置/切换为浅色/退出登录）；设置九个分区：模型注册 / 向量化 / 对话模型 / 服务配置 / 存储配置 / 用户 / 系统与安全 / 外观 / 快捷键 |
 | **窄屏 900×600**（对话页） | 通过 | 输入区在、侧栏在、**无横向溢出**（`scrollWidth == innerWidth`） |
 
-## 3. 暂不改的观感差异（要不要跟旧版对齐由用户拍）
+## 3. 五处观感差异：**已按旧版逐处对齐**（§12.236）
 
-| # | 差异 | 说明 |
-| --- | --- | --- |
-| 1 | **导航图标**：旧版是地球仪 / 文件夹 / 库 / 能力那套，新版是烧瓶 / 文件 / 库 / 能力 / 仪表 | 图标语义接近，但第一眼不同；要"像素级抄袭"就得按旧版逐个换回（`lucide` 里有对应图标） |
-| 2 | **行高与字号**：新版表格行、正文段落都略松 | 新版走 `--line-prose`/`--text-body-size` 的令牌，旧版有几处写死值；要一致得逐处对 |
-| 3 | **知识库详情页头齿轮**：旧版贴在标题右侧，新版在更远的右上角 | 位置差异 |
-| 4 | 目录树「全部文档」前的图标、状态标签的圆角（旧版胶囊 → 新版 4px 方角，按 `--radius-badge` 的注解做的） | 见 `src/ui/README.md` §4「有意偏离」 |
-| 5 | 对话页正文列的宽度（`--chat-measure`） | 两版取值不同，行宽看起来差一点点 |
+旧前端的源码从 `agent` 分支 `git show` 取（工作区已删），每条都对着旧文件的实际取值改，
+改完在浏览器里量过：
+
+| # | 差异 | 旧值（出处） | 新值（实测） |
+| --- | --- | --- | --- |
+| 1 | **侧栏 / 用户区 / 导航图标** | Remix Icon 那套：`sticky-note-line` / `robot-line` / `server-line` / `book-2-line` / `dashboard-line` / `task-line` / `folder-line` / `time-line` / `user-line` / `sun-line` / `logout-box-r-line` / `settings-3-line`；「新建会话」与折叠开关是**自绘**（`IconChatNew.vue` / `IconSidebar.vue`） | 装官方包 `@remixicon/react@4.9.0` 用同名组件；两枚自绘的**原样搬**成 `features/layout/icons.tsx`（几何与线宽一字未改）。实测侧栏 5 枚图标都是 `remixicon` 类、18px；页面内部那批图标（旧版也不是 Remix）**没动** |
+| 2 | **行高与字号** | 概览六个大数：value `--text-page-title-size`(18px) + `line-height:1.15` + `letter-spacing:-0.015em`，note `--text-micro-size`(12px)（`DashboardView.vue:584-597`）；表格行高 44 / 表头 36 / 数字列 14 / 上传者 12（`base.css:530-541` 等） | 大数实测 18px / 20.7px / -0.27px ✓；表格**本来就与旧版逐值相同**（两个宽度下都量过），真差只有行首字母块（12 → **14px**，已改） |
+| 3 | **知识库页头齿轮** | 贴标题右缘、gap `var(--space-1)`=4px（旧 `KnowledgeBaseView.vue:1049` + `PageHeader` 的 `title-suffix` 槽；注释写着"这类控件属于这个对象本身"） | 实测标题右缘 363 → 齿轮左 367，**gap 4px** ✓；权限判定与旧版一致（`can_write`，另「分享」仍是 `can_manage`） |
+| 4 | **状态标签圆角** | 胶囊：`height:22px; padding:0 var(--space-2); font-size:12px; border-radius:var(--radius-pill)`（`StatusTag.vue:52-60`） | `@/ui/badge` 加 `shape="pill"` 变体（默认仍是 4px 方角，没全局改）；两处 `StatusTag` 用它，实测 **22px / 999px** ✓。筛选胶囊本来就是胶囊（未改）；13 处来源/版本类 `Badge` 旧版本就是方角（未改） |
+| 5 | **对话正文列宽** | `.reply-text { max-width: var(--measure) }` = 66ch，本机 15px 字体下**533.67px**（`ChatView.vue:3938`） | 正文段落实测 `max-width: 533.672px`、渲染宽 534px ✓；交付物卡片与报错那句也补了同一个上限；`--chat-measure` 令牌在 `tokens.css` 里留了同名一份（旧版定义在对话页的 `.chat` 上） |
+
+**没动、也不建议动的**（写在这里免得下次重复讨论）：概览大数卡片的底色/内边距（新版用抬起面是有意的层级设计）、
+对话里出处摘要的字号（12px vs 旧 14px，属另一条轴）、页面内部那批 lucide 图标（旧版也不是 Remix）。
 
 ## 4. 还没做的对照
 

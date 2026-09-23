@@ -81,7 +81,7 @@ function AssistantMessage({
       <AssistantAvatar />
       <div className="min-w-0 flex-1">
         {message.error ? (
-          <p className="m-0 text-[length:var(--text-body-size)] text-[var(--status-danger)]">
+          <p className="m-0 max-w-[var(--measure)] text-[length:var(--text-body-size)] text-[var(--status-danger)]">
             {message.error}
           </p>
         ) : (
@@ -102,14 +102,17 @@ function AssistantMessage({
                 </p>
                 <div
                   data-testid="reply-raw-tools"
-                  className="mt-[var(--space-2)] font-mono text-[length:var(--text-micro-size)] whitespace-pre-wrap text-[var(--text-secondary)] [overflow-wrap:anywhere]"
+                  className="mt-[var(--space-2)] max-w-[var(--measure)] font-mono text-[length:var(--text-micro-size)] whitespace-pre-wrap text-[var(--text-secondary)] [overflow-wrap:anywhere]"
                 >
                   {message.text}
                 </div>
               </>
             ) : (
+              /* `max-w-[var(--measure)]`：旧 `.reply-text { max-width: var(--measure) }`
+                 ——正文列是 768px，但**行宽**另有 66ch 的上限（阅读型界面的口径），
+                 照旧版补齐（对照记录 §3 第 5 条）。 */
               <AnswerText
-                className="mt-[var(--space-3)] text-[length:var(--text-body-size)] leading-[var(--line-prose)] text-[var(--text-primary)]"
+                className="mt-[var(--space-3)] max-w-[var(--measure)] text-[length:var(--text-body-size)] leading-[var(--line-prose)] text-[var(--text-primary)]"
                 text={message.text}
                 sources={message.sources}
                 onCite={(sourceIndex) => chat.revealSource(turnIndex, sourceIndex)}

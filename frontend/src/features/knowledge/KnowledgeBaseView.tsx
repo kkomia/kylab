@@ -755,9 +755,13 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
 
   return (
     <div className="page-shell">
-      <div className="kb-head-actions">
-        <h1 style={{ flex: 1 }}>{knowledgeBase?.name ?? '知识库'}</h1>
-        {/* 设置齿轮贴在标题右侧：它是"这个库本身"的入口，不是页面的动作 */}
+      {/* 页头：标题 + **紧贴标题的**设置齿轮。
+          旧前端把它放在 `PageHeader` 的 `title-suffix` 槽里，注释写明理由：
+          "它是'这个库本身'的入口，不是页面的动作"——放进右侧动作区会被读成后者。
+          所以这里也**不给 h1 `flex: 1`**：那会把齿轮推到页面的右缘去
+          （对照记录 §3 第 3 条）。齿轮的显示条件与旧版一致：`can_write`。 */}
+      <div className="kb-title-row">
+        <h1>{knowledgeBase?.name ?? '知识库'}</h1>
         {knowledgeBase?.can_write ? (
           <KnowledgeBaseSettings kb={knowledgeBase} onChanged={onKbChanged} />
         ) : null}

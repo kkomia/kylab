@@ -38,10 +38,10 @@ export type StatusTone = 'neutral' | 'success' | 'warning' | 'danger' | 'info'
  * neutral = `bg-subtle` + 三级灰、info = 蓝（`--badge-bg` / `--badge-text`）、
  * success / warning / danger = 各自的 `--status-*-soft` 底 + 达标字色。
  *
- * **两处有意的观感变化**（`@/ui` 层的既定取值，不是这里改的）：
- * 1. 形状从胶囊（`--radius-pill`）变成 4px 方角——`tokens.css` 对 `--radius-badge` 的注解
- *    写明"Kimi 的 badge 一律 4px 方角，胶囊是最像生成式设计的一种做法"；
- * 2. 高度从 22px 变成 Badge 自己的 `py-0.5 + 12px 字`（同一档）。
+ * **形状取胶囊**（`shape="pill"`）：旧 `StatusTag.vue` 的 `.status` 明确写着
+ * `height: 22px; padding: 0 var(--space-2); border-radius: var(--radius-pill)`——
+ * 状态标签本来就不是"徽章"（`@/ui/badge` 的默认形状 4px 方角留给卡片里的 `chip`）。
+ * 这里换的是**形状**，颜色仍走 Badge 的变体（同一个 `@/ui/badge`，一处取值）。
  */
 const TONE_VARIANT: Record<
   StatusTone,
@@ -64,7 +64,7 @@ interface StatusTagProps {
 
 export function StatusTag({ label, tone = 'neutral', running = false, title }: StatusTagProps) {
   return (
-    <Badge variant={running ? 'ghost' : TONE_VARIANT[tone]} title={title}>
+    <Badge shape="pill" variant={running ? 'ghost' : TONE_VARIANT[tone]} title={title}>
       <span
         className={['size-1.5 shrink-0 rounded-pill bg-current', running && 'kb-dot-running']
           .filter(Boolean)

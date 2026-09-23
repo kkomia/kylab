@@ -44,6 +44,26 @@ tail -f build.log        # 另开一个会话看进度
 
 升级：把新源码替换 `/vol1/1000/docker/kylab/src/`，再 `docker compose up -d --build`。
 
+### 前端换成 React 版之后（P5，开发计划 §12.234/§12.236）
+
+**compose 与路径都不用改**（迁移时就是按"新前端接管 `frontend/`"做的：
+`context: ../frontend`、镜像名 `kylab-frontend`、`frontend/nginx.conf` 与 `Dockerfile` 都还在原位）。
+只要源码换到含 P5 的那个提交，然后**只重建前端**这一个服务：
+
+```bash
+cd /vol1/1000/docker/kylab/src && git fetch && git checkout react && git pull
+cd /vol1/1000/docker/kylab/app
+docker compose build frontend          # 只重建前端（后端不动，几秒到一分钟）
+docker compose up -d frontend
+curl -s -o /dev/null -w '%{http_code}
+' http://127.0.0.1:8081/   # 期望 200
+```
+
+镜像里的构建要点（排查用）：前端镜像用 **pnpm**（`corepack enable` + `packageManager: pnpm@11.21.0`
+钉版本），`.dockerignore` 排掉了 `node_modules`——**别把它删掉**：pnpm 装的是平台相关依赖
+（esbuild 的 win32 二进制、`@tailwindcss/oxide-win32`），带进 Linux 镜像会以"本机能建、镜像里报平台错"收场。
+`docker compose logs -f frontend` 看 nginx 日志；构建慢就照上面那节用 `app/build.sh` 脱会话跑。
+
 构建完可以就地验两件事（v0.1.1，见《开发计划》§12.224 第 9、12 条）：
 
 ```bash

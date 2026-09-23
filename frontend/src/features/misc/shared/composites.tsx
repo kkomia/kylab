@@ -292,6 +292,11 @@ const TAG_VARIANTS = {
 /**
  * 状态标签：`@/ui/badge` 的组合，只负责把**语义色**映射到徽章变体上。
  * `live` 的脉动圆点仍然带着文字（状态要"图标 + 文字"双编码，颜色只是加速识别）。
+ *
+ * **形状取胶囊**（`shape="pill"`）：旧 `StatusTag.vue` 的 `.status` 是
+ * `height: 22px; padding: 0 var(--space-2); border-radius: var(--radius-pill)`。
+ * Badge 默认那个 4px 方角是给卡片里的 `chip` 的（旧 `.chip` 也是方角），
+ * 两者本来就是两种东西——所以形状做成变体，不动默认值（见对照记录 §3 第 4 条）。
  */
 export function StatusTag({
   label,
@@ -306,7 +311,7 @@ export function StatusTag({
   title?: string
 }) {
   return (
-    <Badge variant={TAG_VARIANTS[tone]} title={title}>
+    <Badge shape="pill" variant={TAG_VARIANTS[tone]} title={title}>
       {live && <span className="m-dot m-dot-live" aria-hidden="true" />}
       {label}
     </Badge>

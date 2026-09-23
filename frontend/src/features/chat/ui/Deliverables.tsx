@@ -33,8 +33,11 @@ export function Deliverables({ files }: { files: ChatArtifact[] }) {
   const chat = useChat()
   if (files.length === 0) return null
 
+  // 交付物卡片与正文**同一条行宽**（旧 `.deliverables { max-width: var(--measure) }`，
+  // 旧注释原话："这一块与 .reply-text 用同一个 --measure，卡片铺满它"）。
+  // 给正文加了限宽却不给卡片加，卡片就会比它下面那段字宽出一截。
   return (
-    <ul className="m-0 mt-[var(--space-4)] flex list-none flex-col gap-[var(--space-2)] p-0">
+    <ul className="m-0 mt-[var(--space-4)] flex max-w-[var(--measure)] list-none flex-col gap-[var(--space-2)] p-0">
       {files.map((file) => (
         <li
           key={file.artifact_id}
