@@ -74,8 +74,18 @@ git archive --format=tar "$BRANCH" | ssh $SSH_OPTS "$TARGET" \
   "mkdir -p $SRC && tar -x -C $SRC --overwrite && cd $APP && sh $SRC/deploy/nas/update-frontend.sh $BRANCH"
 
 echo "== 2/3 从本机核对首页"
-code=$(curl -s -o /dev/null -w '%{http_code}' "http://$HOST:8081/" || true)
-echo "   http://$HOST:8081/ → HTTP $code"
+# 远端脚本已经等过一次（最多 45 秒），这里再等 30 秒是给**网络/反代**留的余量：
+# 只 curl 一次的话，刚 `up -d` 完的那一两秒会被判成"部署失败"，那是假失败。
+# 按**真实时间**算（Windows 上被拒的连接一次要 ~3.5 秒，按轮次算就不准了）。
+start=$(date +%s)
+code=000
+while [ "$(( $(date +%s) - start ))" -lt 30 ]; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "http://$HOST:8081/" || true)
+  [ "$code" = "200" ] && break
+  sleep 1
+done
+elapsed=$(( $(date +%s) - start ))
+echo "   http://$HOST:8081/ → HTTP $code（等了 ${elapsed} 秒）"
 [ "$code" = "200" ] || { echo "!! 不是 200：看 NAS 上 docker compose logs -f frontend"; exit 1; }
 
 echo "== 3/3 认一下跑的是哪一版（React 的挂载点是 #root，旧 Vue 是 #app）"

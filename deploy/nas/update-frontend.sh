@@ -64,11 +64,21 @@ docker compose build frontend
 
 echo "== 3/4 重启前端容器"
 docker compose up -d frontend
-sleep 3
+
+# 等首页真的能出：**最多 45 秒**（按真实时间算，不是按轮次——Windows 上被拒的连接
+# 一次要 ~3.5 秒，按轮次算会把 45 轮拖成两三分钟）。容器刚被替换的那几百毫秒里 curl
+# 会被拒，那不是"部署失败"——只 curl 一次的话，会让人以为没成、白白再跑一遍（这台机器的盘还慢）。
+start=$(date +%s)
+code=000
+while [ "$(( $(date +%s) - start ))" -lt 45 ]; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:8081/ || true)
+  [ "$code" = "200" ] && break
+  sleep 1
+done
+elapsed=$(( $(date +%s) - start ))
 
 echo "== 4/4 核对"
-code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/ || true)
-echo "   首页 HTTP：$code"
+echo "   首页 HTTP：$code（等了 ${elapsed} 秒）"
 [ "$code" = "200" ] || { echo "!! 首页不是 200；看 docker compose logs -f frontend"; exit 1; }
 if curl -s http://127.0.0.1:8081/ | grep -q 'id="root"'; then
   echo "   已确认是 React 前端（挂载点 #root）"
