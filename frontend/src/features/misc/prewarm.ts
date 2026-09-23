@@ -9,21 +9,23 @@
  * 1. **只在空闲时做**（`requestIdleCallback`，没有就退化成 `setTimeout(0)`）：
  *    预热不能跟首屏抢带宽与主线程；
  * 2. **失败静默**：预热不是功能。真正进页该报的错由那一页自己报；
- * 3. **键与页面共用同一份常量/函数**（`TASKS_QUERY_KEY` / `SCHEDULES_QUERY_KEY` /
- *    `DASHBOARD_WINDOW_DAYS` 都是从页面模块 import 的），所以预热拉回来的就是
- *    页面要用的那一份缓存——键改名了这里跟着改。
+ * 3. **键与页面共用同一份常量**：都从 `queryKeys.ts` 取（纯值模块）。**不能从页面模块
+ *    import**——那会让那两个页面的动态 import 失效（构建期 `INEFFECTIVE_DYNAMIC_IMPORT`，
+ *    两页被打进主 chunk，首屏白白变大；实测踩到过）。
  *
- * 与页面的关系是**单向的**：这里 import 页面模块的常量与 api，页面不 import 这个文件
- * （避免"预热反过来把页面模块拖进首屏"）。
+ * 与页面的关系是**单向的**：这里 import 纯值常量与 api，页面不 import 这个文件。
  */
 import type { QueryClient } from '@tanstack/react-query'
 
 import { getDashboard, getUsage } from '@/api/stats'
 import { listScheduledTasks } from '@/api/schedules'
 import { listTasks } from '@/api/tasks'
-import { DASHBOARD_WINDOW_DAYS, USAGE_WINDOW_DAYS } from '@/features/misc/dashboard/DashboardPage'
-import { SCHEDULES_QUERY_KEY } from '@/features/misc/tasks/SchedulePanel'
-import { TASKS_QUERY_KEY } from '@/features/misc/tasks/TasksPage'
+import {
+  DASHBOARD_WINDOW_DAYS,
+  SCHEDULES_QUERY_KEY,
+  TASKS_QUERY_KEY,
+  USAGE_WINDOW_DAYS,
+} from '@/features/misc/queryKeys'
 
 /** 空闲时拉回"最可能被点的两页"的数据。调用方只管调，不等它。 */
 export function prewarmMisc(client: QueryClient): void {

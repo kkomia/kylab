@@ -13,6 +13,7 @@
  * 都用 `React.lazy`——静态 import 会让驾驶舱首屏必须先下完这个包；异步化之后
  * 数字卡片与骨架先画出来，图表包到了再补上。
  */
+import { DASHBOARD_WINDOW_DAYS, USAGE_WINDOW_DAYS } from '@/features/misc/queryKeys'
 import { lazy, Suspense, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router'
@@ -28,8 +29,6 @@ import { ActivityHeatmap } from './ActivityHeatmap'
 
 const EChart = lazy(() => import('./EChart').then((module) => ({ default: module.EChart })))
 
-export const DASHBOARD_WINDOW_DAYS = 365
-export const USAGE_WINDOW_DAYS = 30
 /** 格子边长上限：12px 与参考图同档；宽度不够时按列数自动缩小。 */
 const MAX_CELL = 14
 

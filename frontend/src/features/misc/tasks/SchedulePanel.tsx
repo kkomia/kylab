@@ -8,6 +8,8 @@
  *    三种状态分开显示，第三种带原因；
  * 3. **「立即跑一次」是主要的确认手段**：挂完一条任务，最想确认的是"它会跑成什么样"。
  */
+import { SCHEDULES_QUERY_KEY } from '@/features/misc/queryKeys'
+
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Clock, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
@@ -33,8 +35,6 @@ import {
   type TagTone,
 } from '../shared/composites'
 import { ScheduleDialog } from './ScheduleDialog'
-
-export const SCHEDULES_QUERY_KEY = ['scheduled-tasks'] as const
 
 /** 上一次运行的结论：三种状态分开说（"跑完了但没跑完"既不是成功也不是失败）。 */
 function lastRunTone(status: string): TagTone {

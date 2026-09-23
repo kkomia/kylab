@@ -11,6 +11,8 @@
  * 缓存口径与旧 store 一致：**列表整份缓存在 query 里**，筛选/分页都在客户端做
  * （任务量级在几百以内）；轮询期间旧数据继续显示，不闪骨架屏。
  */
+import { TASKS_QUERY_KEY } from '@/features/misc/queryKeys'
+
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, FileText, RefreshCw } from 'lucide-react'
@@ -43,7 +45,6 @@ const POLL_INTERVAL_MS = 2000
 /** 任务列表原先一次铺满（几百条时滚不到底），与文档列表同一套口径。 */
 const PAGE_SIZE = 20
 
-export const TASKS_QUERY_KEY = ['tasks', 'list'] as const
 const TASK_LOAD_QUERY_KEY = ['tasks', 'load'] as const
 
 const VIEWS = [
