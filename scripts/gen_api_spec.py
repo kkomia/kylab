@@ -215,6 +215,13 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 **失败必须走流内事件，不能靠 HTTP 状态码**：流一旦开始发送，状态码已经发出去了。
 非流式的 `POST /chat` 逻辑完全相同，给脚本与 MCP 用。
 
+**事件带 `seq`，一轮不跟着连接走**（P2-2）：`seq` 就是这条会话事件日志里的编号
+（`GET /conversations/{id}/events` 的同一个 `seq`）。带 `conversation_id` 的一轮跑在
+后台任务里，**客户端断开不取消它**（取消只有 `/stop` 一条路）；断线回来用
+`GET /chat/turns/{conversation_id}/live?after=<最后收到的 seq>` 补发没看到的事件并接着流，
+那一轮已经跑完时，补发完会给一条带 `recovered` 与说明的 `done`（里面是完整答复）。
+不带 `conversation_id` 的调用没有可补发的地方，事件里不带 `seq`，仍然是断开即结束。
+
 ---
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）

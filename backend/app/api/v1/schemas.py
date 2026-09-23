@@ -1010,6 +1010,51 @@ class SessionEventListOut(BaseModel):
     items: list[SessionEventOut] = Field(default_factory=list)
 
 
+class ContextUsageItemOut(BaseModel):
+    """上下文用量分解里的**一项来源**（P1-3，抄 ZCode 的 ``chat.contextUsage.breakdown``）。
+
+    ``kind`` 是稳定取值（``messages`` / ``system_prompt`` / ``skills`` / ``tools`` /
+    ``memory`` / ``other``），``label`` 是界面上显示的那几个字——**界面不要自己翻译
+    ``kind``**：分解的口径是服务端定的（比如"记忆与人设"包含哪几份文件），
+    两处各写一份迟早会对不上。
+    """
+
+    model_config = _RECORD_CONFIG
+
+    kind: str
+    """来源：消息 / 系统提示词 / 技能目录 / 工具定义 / 记忆与人设 / 其它。"""
+    label: str
+    """给人看的中文名。"""
+    chars: int = 0
+    """这一来源的字符数（估算所依据的那个数）。"""
+    tokens: int = 0
+    """按字符数估的 token（见 ``estimated``）。"""
+    share: float = 0.0
+    """占**已用**的比例（0~1）。界面画分解条用它，比每次自己除一遍稳。"""
+
+
+class ContextUsageOut(BaseModel):
+    """这一轮上下文的占用与分解（P1-3 的仪表）。
+
+    **是估算**：按字符数算（中日韩 1 字 ≈ 1 token、其余 4 字符 ≈ 1，刻意偏高），
+    真实用量只有端点返回的 ``usage`` 才知道。所以 ``estimated`` 恒为真、
+    ``note`` 里写明这句话——仪表上不能把估算画成账单。
+    """
+
+    items: list[ContextUsageItemOut] = Field(default_factory=list)
+    used: int = 0
+    """各项之和（token，估算）。**与 ``items`` 的 ``tokens`` 求和相等**（有用例钉住）。"""
+    total: int = 0
+    """上下文窗口（token，设置项 ``chat.context_window``）。"""
+    ratio: float = 0.0
+    """``used / total``（0~1）。"""
+    compress_at: int = 0
+    """触发自动压缩的阈值（百分比，设置项 ``chat.compress_at``）。界面画那条线要用它。"""
+    estimated: bool = True
+    """恒为真：这些数字是**按字符数估的**，不是分词器给的。"""
+    note: str = ""
+
+
 class ConversationArtifactOut(BaseModel):
     """会话产出的一份文件（v0.26）。
 

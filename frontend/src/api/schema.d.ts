@@ -652,6 +652,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat/turns/{conversation_id}/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 接上这条会话正在跑（或刚跑完）的那一轮
+         * @description **重连锚点**（P2-2 的后半，抄 ZCode 的 ``stream_recovery_anchor_*``）。
+         *
+         *     为什么要有这个端点：一轮开始之后就跑在后台任务里（见 ``services/live_turns``），
+         *     客户端断开只是少了一个订阅者。切页、断网、手机锁屏回来之后，前端拿
+         *     "上一条收到的事件 seq"调这里，就能把没看到的那几条补回来**接着流**，
+         *     而不是等到那一轮跑完再刷新一次整条会话。
+         *
+         *     三种结局，前端都能收口：
+         *
+         *     1. **还在跑**：补发 ``seq > after`` 的那些，然后挂到同一个后台任务上继续收
+         *        （事件带 ``seq``，下次断线再拿它来补）；
+         *     2. **已经跑完**：补发完再给一条 ``done``（带 ``recovered`` 与一句说明）——
+         *        "这一轮已收尾"这句话必须说出来，否则前端会一直等下去；
+         *        正文增量补不出来（那是流内的东西，不进缓冲），所以那条 done 带着
+         *        **这一轮的完整答复**（后端拼好的全文，与 ``/chat/stream`` 收尾那条同一个形状）。
+         *     3. **缓冲区里已经没有它**（跑完很久、或服务重启过）：给一条带说明的 done，
+         *        并顺手带上库里最后那条回答——前端据此收口，要完整过程再去读会话消息
+         *        （``GET /conversations/{id}`` 是持久的那条路）。
+         *
+         *     归属判定与既有的会话端点**同一套**（成员越主 404，不暴露存在性）。
+         */
+        get: operations["live_turn_api_v1_chat_turns__conversation_id__live_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/resume": {
         parameters: {
             query?: never;
@@ -733,6 +772,42 @@ export interface paths {
          *     （事件、快照、思考都是它攒的），差别只剩"怎么把事件发出去"。
          */
         post: operations["chat_once_api_v1_chat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/chat/context-usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 上下文用量（按来源分解，估算）
+         * @description 这一轮上下文**被什么占着**（P1-3 的仪表，照 ZCode 的 ``chat.contextUsage.breakdown``）。
+         *
+         *     为什么值得有：用户看到"它怎么变笨了 / 怎么变慢了"，能回答的一句话是
+         *     "上下文里 60% 是技能目录"。按来源分解比一个百分比有用得多，
+         *     也是"装了多少技能、给了多少工具"这件事第一次变得可核对。
+         *
+         *     三件事按顺序说清：
+         *
+         *     1. **算的是这一轮真会发出去的那一份**：历史（摘要 + 摘要之后的消息）、
+         *        基础提示词 + 当前模式那段 + 库级提示词、技能目录、工具表、人设文件，
+         *        外加框架开销那一项。工具表由协议层现拼（要调用者身份与这一轮的库范围）。
+         *     2. **只读**：调它**不会**触发压缩（``prepare_context`` 那条路才会），
+         *        所以它可以被界面随时刷新。
+         *     3. **是估算**：按字符数算（刻意偏高），``estimated`` 恒真、``note`` 里写着这句话
+         *        ——真实的用量只有模型端点返回的 ``usage`` 才知道。
+         *
+         *     归属判定与既有的会话端点同一套（成员越主 404，不暴露存在性）。
+         */
+        get: operations["context_usage_api_v1_chat_context_usage_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3575,6 +3650,87 @@ export interface components {
              * @default
              */
             path: string;
+        };
+        /**
+         * ContextUsageItemOut
+         * @description 上下文用量分解里的**一项来源**（P1-3，抄 ZCode 的 ``chat.contextUsage.breakdown``）。
+         *
+         *     ``kind`` 是稳定取值（``messages`` / ``system_prompt`` / ``skills`` / ``tools`` /
+         *     ``memory`` / ``other``），``label`` 是界面上显示的那几个字——**界面不要自己翻译
+         *     ``kind``**：分解的口径是服务端定的（比如"记忆与人设"包含哪几份文件），
+         *     两处各写一份迟早会对不上。
+         */
+        ContextUsageItemOut: {
+            /**
+             * Kind
+             * @description 来源：消息 / 系统提示词 / 技能目录 / 工具定义 / 记忆与人设 / 其它。
+             */
+            kind: string;
+            /**
+             * Label
+             * @description 给人看的中文名。
+             */
+            label: string;
+            /**
+             * Chars
+             * @description 这一来源的字符数（估算所依据的那个数）。
+             * @default 0
+             */
+            chars: number;
+            /**
+             * Tokens
+             * @description 按字符数估的 token（见 ``estimated``）。
+             * @default 0
+             */
+            tokens: number;
+            /**
+             * Share
+             * @description 占**已用**的比例（0~1）。界面画分解条用它，比每次自己除一遍稳。
+             * @default 0
+             */
+            share: number;
+        };
+        /**
+         * ContextUsageOut
+         * @description 这一轮上下文的占用与分解（P1-3 的仪表）。
+         *
+         *     **是估算**：按字符数算（中日韩 1 字 ≈ 1 token、其余 4 字符 ≈ 1，刻意偏高），
+         *     真实用量只有端点返回的 ``usage`` 才知道。所以 ``estimated`` 恒为真、
+         *     ``note`` 里写明这句话——仪表上不能把估算画成账单。
+         */
+        ContextUsageOut: {
+            /** Items */
+            items?: components["schemas"]["ContextUsageItemOut"][];
+            /**
+             * Used
+             * @default 0
+             */
+            used: number;
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Ratio
+             * @default 0
+             */
+            ratio: number;
+            /**
+             * Compress At
+             * @default 0
+             */
+            compress_at: number;
+            /**
+             * Estimated
+             * @default true
+             */
+            estimated: boolean;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
         };
         /** ConversationArtifactListOut */
         ConversationArtifactListOut: {
@@ -8969,6 +9125,40 @@ export interface operations {
             };
         };
     };
+    live_turn_api_v1_chat_turns__conversation_id__live_get: {
+        parameters: {
+            query?: {
+                /** @description 已经看过的事件 seq：只补发它之后的。新连接给 0（整圈都补给它） */
+                after?: number;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     resume_turn_api_v1_conversations__conversation_id__resume_post: {
         parameters: {
             query?: never;
@@ -9063,6 +9253,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatResponseOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    context_usage_api_v1_chat_context_usage_get: {
+        parameters: {
+            query: {
+                /** @description 要算哪条会话的上下文；必填 */
+                conversation_id: string;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContextUsageOut"];
                 };
             };
             /** @description Validation Error */

@@ -127,8 +127,10 @@ def test_the_stream_asks_then_waits_then_runs(  # type: ignore[no-untyped-def]
     emitted = threading.Event()
     real_sse = chat_api._sse
 
-    def spy_sse(payload: dict):  # type: ignore[type-arg]
-        text = real_sse(payload)
+    def spy_sse(payload: dict, **kwargs):  # type: ignore[type-arg]
+        # ``**kwargs`` 收下 ``seq``（P2-2 起，带会话那条流会给每条事件编号）：
+        # 这条用例认的是"那条询问被序列化出去了"，编号是顺带的东西
+        text = real_sse(payload, **kwargs)
         if payload.get("type") == "approval":
             emitted.set()
         return text

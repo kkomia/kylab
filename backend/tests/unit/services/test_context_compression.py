@@ -3,7 +3,12 @@
 镜像同构：``app/services/chat.py::prepare_context`` → 本文件。
 """
 
-from app.services.chat import ChatService, estimate_tokens
+from app.services.chat import (
+    TOOL_RESULT_PLACEHOLDER,
+    ChatService,
+    estimate_tokens,
+    prune_tool_results,
+)
 from app.services.conversation import ConversationService
 from app.services.llm import ChatMessage
 
@@ -181,3 +186,104 @@ def test_prepare_context_rejects_marker_gone(
     prepared = service.prepare_context(conversation_id=conv.id, query="q")
 
     assert len(prepared.history) == 2
+
+
+# ------------------------------------------------- 两级压缩（P1-3）
+
+
+def test_prune_tool_results_clears_the_older_ones_and_keeps_the_recent_n() -> None:
+    """**第一级压缩**：较早的工具结果换成占位符，最近 ``keep`` 条原样留着。
+
+    抄的是 DSH 的 ``tool-result-pruner``（先单独剪工具结果）与 ZCode 的
+    microcompact（``[Old tool result content cleared]``，保留最近 5 条那个量级）。
+    """
+    body = "记" * 300  # 超过 PRUNE_MIN_CHARS，够长才值得剪
+    messages = [
+        ChatMessage(role="user", content="问题"),
+        *[
+            ChatMessage(role="tool", content=f"{body}{index}", tool_call_id=f"call_{index}")
+            for index in range(7)
+        ],
+    ]
+
+    pruned = prune_tool_results(messages)
+
+    assert pruned == 2, "7 条里剪掉最早的 2 条（保留最近 PRUNE_KEEP_TOOL_RESULTS 条）"
+    tools = [item for item in messages if item.role == "tool"]
+    assert [item.content for item in tools[:2]] == [TOOL_RESULT_PLACEHOLDER] * 2
+    assert all(item.content != TOOL_RESULT_PLACEHOLDER for item in tools[2:])
+    # **只换内容，不删消息**：配对信息一个字都不能动（少了它端点直接 400）
+    assert [item.tool_call_id for item in tools] == [f"call_{index}" for index in range(7)]
+    assert len(messages) == 8
+
+
+def test_prune_tool_results_leaves_short_ones_and_other_roles_alone() -> None:
+    """短结果不剪（省不下多少，而它常常就是关键结论）；非工具消息一律不碰。"""
+    long_body = "记" * 300
+    messages = [
+        ChatMessage(role="user", content="问" * 500),
+        ChatMessage(role="tool", content="已保存：note_1", tool_call_id="call_1"),
+        ChatMessage(role="tool", content=long_body, tool_call_id="call_2"),
+        ChatMessage(role="tool", content=long_body, tool_call_id="call_3"),
+        ChatMessage(role="assistant", content="答" * 500),
+    ]
+
+    assert prune_tool_results(messages, keep=1) == 1, "只剪够长的那一条"
+    assert messages[1].content == "已保存：note_1"
+    assert messages[2].content == TOOL_RESULT_PLACEHOLDER
+    assert messages[3].content == long_body
+    assert messages[0].content == "问" * 500 and messages[4].content == "答" * 500
+    # 再跑一遍是幂等的（占位符不算"还能剪"）
+    assert prune_tool_results(messages, keep=1) == 0
+
+
+def test_the_free_level_runs_before_the_paid_one(
+    bundle, runtime, bind_slot
+) -> None:  # type: ignore[no-untyped-def]
+    """两级压缩的**顺序与代价**：第一级不叫模型，第二级只在窗口超阈值时才叫。
+
+    这一条的判据是"模型被调了几次"（``_SummaryChat.received``）：窗口够大时
+    一次都没有（阈值内不压缩），窗口压小之后**恰好一次**（那句摘要是花出去的钱）。
+    第一级（``prune_tool_results``）在两种情形下都不会产生任何调用——
+    它是纯字符串替换，这正是"先剪再摘要"这个顺序的意义。
+    """
+    conversations = ConversationService(bundle)
+    conv = conversations.create(owner_id="u1")
+    _seed(conversations, conv.id, turns=6, size=120)
+    bind_slot("chat", model_id="m", capabilities=["chat"])
+    summarizer = _SummaryChat("要点")
+    service = _service(runtime, conversations, summarizer)
+
+    runtime.set({"chat.context_window": "65536", "chat.compress_at": "70"})
+    assert service.prepare_context(conversation_id=conv.id, query="q").compressed is False
+    assert summarizer.received == [], "没超阈值就不该花那次摘要调用"
+
+    runtime.set({"chat.context_window": "1000", "chat.compress_at": "70"})
+    assert service.prepare_context(conversation_id=conv.id, query="q").compressed is True
+    assert len(summarizer.received) == 1, "超了阈值才走第二级（一次摘要调用）"
+
+    # 第一级是免费的：剪掉一条工具结果，模型调用数**一条都不涨**
+    messages = [
+        ChatMessage(role="tool", content="记" * 300, tool_call_id=f"c{index}")
+        for index in range(6)
+    ]
+    assert prune_tool_results(messages) == 1
+    assert messages[0].content == TOOL_RESULT_PLACEHOLDER
+    assert len(summarizer.received) == 1, "剪枝不花模型调用（这就是先剪后摘要的意义）"
+
+
+def test_prune_tool_results_is_a_no_op_when_there_are_fewer_than_keep() -> None:
+    """结果比 ``keep`` 还少时**一条都不剪**。
+
+    这条是那个踩过的坑的回归点：``positions[: len(positions) - keep]`` 在数量不够时
+    得到的是**负下标**，而负下标在切片里是"从末尾数"——于是写法看着像"剪前面的"、
+    实际剪掉了**末尾**那几条（正好是最该留的）。用例只有一条，判据也只有一条。
+    """
+    body = "记" * 300
+    messages = [
+        ChatMessage(role="tool", content=f"{body}{index}", tool_call_id=f"c{index}")
+        for index in range(3)
+    ]
+
+    assert prune_tool_results(messages) == 0
+    assert all(item.content != TOOL_RESULT_PLACEHOLDER for item in messages)

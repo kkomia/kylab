@@ -12,11 +12,12 @@ LLM 只出现在这一层，并且**强制带引用**——回答必须能回到
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import re
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 
 from app.core.exceptions import InvalidRequestError
@@ -34,10 +35,15 @@ __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
     "MATERIAL_BEGIN",
     "MATERIAL_END",
+    "PRUNE_KEEP_TOOL_RESULTS",
+    "TOOL_RESULT_PLACEHOLDER",
     "ChatService",
     "ChatTurn",
+    "ContextPart",
+    "ContextUsage",
     "SourceRef",
     "neutralize",
+    "prune_tool_results",
 ]
 
 logger = logging.getLogger(__name__)
@@ -53,6 +59,91 @@ DEFAULT_COMPRESS_KEEP = 6
 SYSTEM_PROMPT_TOKEN_ALLOWANCE = 1200
 #: 摘要长度上限（字）。摘要要短才有意义，否则等于没压。
 SUMMARY_MAX_CHARS = 1200
+
+# ---- 两级压缩（P1-3，抄 DSH 的 tool-result-pruner + ZCode 的 microcompact）----
+#
+# 调研报告 §2.8 的抄点第 4 条：**两级压缩——先剪旧工具结果（占位符标注），
+# 不够再整段摘要——成本差一个数量级**。顺序不能反：先花那笔钱，就永远不会
+# 去做免费的这一步。两级在这份代码里各有明确的函数与常量：
+#
+# ================  ================================  ==================================
+# 级别              函数 / 常量                       什么时候发生
+# ================  ================================  ==================================
+# 第一级（免费）     ``prune_tool_results``            **工具循环里的每一次模型调用之前**
+#                   ``PRUNE_KEEP_TOOL_RESULTS``       （见 ``_PruningChat``）：
+#                   ``PRUNE_MIN_CHARS``               换成占位符，不花一次调用
+#                   ``TOOL_RESULT_PLACEHOLDER``
+# 第二级（要花钱）   ``summarize_history``             **一轮开始时窗口超阈值**
+#                   ``DEFAULT_COMPRESS_AT``           （见 ``prepare_context``）：
+#                   ``DEFAULT_COMPRESS_KEEP``         把更早的对话折成摘要
+#                   ``SUMMARY_MAX_CHARS``
+# ================  ================================  ==================================
+#
+# **第一级的落点在工具循环，不在会话历史里**（这与 ZCode 那种"历史里带着工具结果"
+# 的形状不同，是有原因的）：KYLAB 的 ``chat_messages`` 只存 user / assistant 两条
+# 正文（见 ``ConversationService.record_turn``），工具结果活在一轮之内的那个
+# messages 列表里——而那里恰好是上下文涨得最快的地方：一轮最多 30 步、
+# 每步结果封顶 12000 字，跑满时那是 36 万字（≈12 万 token），
+# 比整段会话历史大一个数量级。所以第一级剪的是**这一轮里较早的那些工具结果**，
+# 第二级管的仍是**跨轮的历史窗口**。
+
+#: 第一级压缩的占位符（照 ZCode 的 ``"[Old tool result content cleared]"``）。
+#: 说清"这里原本有东西、是被清理掉的"——直接删掉整条消息的话，
+#: 模型会以为自己没调过那个工具，而 OpenAI 兼容端点还要求调用与结果成对（直接 400）。
+TOOL_RESULT_PLACEHOLDER = "（这条工具结果已清理以节省上下文）"
+
+#: 第一级压缩**保留最近几条工具结果原文**（ZCode 的 microcompact 是 5 条那个量级，
+#: 见调研报告 §2.8）。为什么留：最新那几条正是"它刚刚查到的东西"，
+#: 下一步的判断几乎全靠它们；更早的结果已经变成了结论、写进了正文。
+PRUNE_KEEP_TOOL_RESULTS = 5
+
+#: 第一级压缩的长度门槛（字）：**短结果不剪**。
+#: 阈值与 ZCode 的 microcompact 同一个量级（那儿是 256 字）：一条 200 字的结果
+#: 剪掉只省下 200 字，而它往往就是"已保存 / 命中 3 条"这种关键结论。
+PRUNE_MIN_CHARS = 256
+
+
+def prune_tool_results(
+    messages: list[ChatMessage],
+    *,
+    keep: int = PRUNE_KEEP_TOOL_RESULTS,
+    min_chars: int = PRUNE_MIN_CHARS,
+) -> int:
+    """**第一级压缩**：把较早的工具结果换成占位符，返回剪掉几条。
+
+    抄 DSH 的 ``dsh-compaction-tool-result-pruner``（"先单独剪工具结果"，
+    见调研报告 §2.8）与 ZCode 的 microcompact（``[Old tool result content cleared]``
+    + 保留最近 5 条那个量级）。
+
+    三条纪律，每一条都对应一种会让对话坏掉的做法：
+
+    1. **只换内容，不删消息**：``role="tool"`` 那条要留在原地、``tool_call_id``
+       也不能动——OpenAI 兼容端点要求"每条工具调用都有结果"，删掉直接 400
+       （QwenPaw 那条教训的另一面，见 ``session_events`` 的模块头）。
+    2. **保留最近 ``keep`` 条**：指代几乎总指向刚刚那几次调用，而更早的结果
+       已经变成结论写进了正文。
+    3. **短结果不剪**（``min_chars``）：剪掉一条 200 字的结果只省下 200 字，
+       而它常常正是"已保存 / 命中 3 条"这种关键结论——省的钱不值那个信息。
+
+    **就地改**（``messages[i] = ...``，``ChatMessage`` 是 frozen 的，换的是列表里的那一格）：
+    调用方手里那份列表会**当场变短**，于是同一段上下文在一轮里被反复用时
+    （工具循环每一步都带全部历史）不会每次重新剪一遍。
+    """
+    positions = [index for index, item in enumerate(messages) if item.role == "tool"]
+    # **负数要显式挡住**：``positions[: len - keep]`` 在"结果比 keep 还少"时得到的是
+    # 负下标，而负下标在切片里是"从末尾数"——那会变成**从前面剪掉几条**，
+    # 正好把该留的那几条剪了（实测踩过：5 条以内的结果被剪成占位符）
+    cut = len(positions) - max(0, keep)
+    victims = positions[:cut] if cut > 0 else []
+    pruned = 0
+    for index in victims:
+        message = messages[index]
+        if message.content == TOOL_RESULT_PLACEHOLDER or len(message.content) < min_chars:
+            continue
+        messages[index] = dataclasses.replace(message, content=TOOL_RESULT_PLACEHOLDER)
+        pruned += 1
+    return pruned
+
 
 #: 压缩提示词。要求保留可核对的硬信息（数字、结论、待办），丢掉客套与重复。
 COMPRESS_PROMPT = (
@@ -357,11 +448,107 @@ class PreparedContext:
     ``summary`` 是更早对话折成的摘要（没有则为空串），``history`` 是需要原样带上的近期消息。
     ``compressed`` 为真表示**这一轮刚做过一次压缩**——协议层据此给界面发一条进度事件，
     否则用户会看到"回答突然变慢"却不知道中间发生了一次额外的模型调用。
+
+    **它只反映第二级（摘要）**：第一级（剪旧工具结果）发生在工具循环里，
+    既不花模型调用也不改变语义，不在这里报告（见 ``prune_tool_results``）。
     """
 
     history: list[ChatMessage] = field(default_factory=list)
     summary: str = ""
     compressed: bool = False
+
+
+# ---- 上下文用量（P1-3 的仪表，抄 ZCode 的 ``chat.contextUsage.breakdown``）----
+#
+# 调研报告 §2.5：ZCode 的上下文仪表是**按来源分解**的——用户想知道的不只是
+# "占了多少"，而是"**什么占的**"（系统提示词写太长？技能装太多？还是历史堆着）。
+# 六个来源与它的分解口径一一对应，最后一项"其它"装框架开销（角色标记、分隔符）。
+
+#: 来源的 kind（进 API 的稳定取值；顺序即展示顺序）。
+USAGE_MESSAGES = "messages"
+USAGE_SYSTEM_PROMPT = "system_prompt"
+USAGE_SKILLS = "skills"
+USAGE_TOOLS = "tools"
+USAGE_MEMORY = "memory"
+USAGE_OTHER = "other"
+
+#: 每条消息的框架开销（token）：``{"role": "user", "content": ...}`` 那一圈角色标签
+#: 与分隔符。真实分词器会给每个消息多算几个特殊 token，这里按 4 估。
+MESSAGE_FRAMING_TOKENS = 4
+#: 定界符一类的固定开销（token）：资料块的 ``<<<资料 开始/结束>>>``、
+#: 摘要块的标题、工具表那一层 JSON 的括号。给一个固定额度，宁可高估。
+FIXED_FRAMING_TOKENS = 64
+
+
+@dataclass(frozen=True, slots=True)
+class ContextPart:
+    """用量分解里的一项（一个来源）。"""
+
+    kind: str
+    label: str
+    chars: int
+    tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class ContextUsage:
+    """这一轮上下文占用的分解（都是**估算**，见 ``estimate_tokens``）。"""
+
+    parts: tuple[ContextPart, ...]
+    used: int
+    total: int
+    #: 触发第二级压缩的阈值（百分比，设置项 ``chat.compress_at``）。
+    #: 界面画那条线要用它——不然用户只知道"占了多少"，不知道"离自动压缩还有多远"。
+    compress_at: int
+
+    @property
+    def ratio(self) -> float:
+        """已用 / 窗口（0~1）。窗口配成 0 时按"没有窗口"算，返回 0。"""
+        return self.used / self.total if self.total > 0 else 0.0
+
+
+class _PruningChat:
+    """把**第一级压缩**挂在每一次模型调用之前的薄壳（P1-3）。
+
+    为什么是这一层：工具结果是在**循环跑的过程里**才长出来的
+    （``tool_loop._perform`` 往同一个 ``messages`` 列表追加 ``role="tool"``），
+    所以"每一步都看到最新那一份"只有客户端这一层做得到（那一轮的工具循环
+    不认识 ChatService，见 ``tool_loop`` 的模块头）。包在这里还有两个白捡的好处：
+
+    - **就地换掉**之后，循环手里那份列表**真的短了**（它每一步都重发同一份），
+      于是省下的 token 是从下一步起就生效的，不是只在这一次请求里；
+    - 它是 fail-open 的：剪枝只是字符串替换，出了任何意外都不该让一次问答失败。
+
+    其它能力（``last_usage`` 等）原样透给内层——用量统计读的就是那个属性
+    （见 ``ChatService._record_usage``）。
+    """
+
+    def __init__(self, inner: object) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    def complete(self, messages: list[ChatMessage]):  # type: ignore[no-untyped-def]
+        self._prune(messages)
+        return self._inner.complete(messages)  # type: ignore[attr-defined]
+
+    def stream(self, messages: list[ChatMessage]):  # type: ignore[no-untyped-def]
+        self._prune(messages)
+        return self._inner.stream(messages)  # type: ignore[attr-defined]
+
+    def stream_events(self, messages: list[ChatMessage], tools=None):  # type: ignore[no-untyped-def]
+        self._prune(messages)
+        return self._inner.stream_events(messages, tools)  # type: ignore[attr-defined]
+
+    def _prune(self, messages: list[ChatMessage]) -> None:
+        try:
+            pruned = prune_tool_results(messages)
+        except Exception:  # 剪枝是优化：它自己坏了不该把这一轮问答拖垮
+            logger.warning("第一级压缩（剪旧工具结果）失败，本步不剪", exc_info=True)
+            return
+        if pruned:
+            logger.info("第一级压缩：剪掉 %d 条较早的工具结果", pruned)
 
 
 class ChatService:
@@ -742,14 +929,22 @@ class ChatService:
     def prepare_context(
         self, *, conversation_id: str, query: str, model_pk: str | None = None
     ) -> PreparedContext:
-        """取本轮要带的上下文；**占用超过阈值时先把更早的对话折成摘要**。
+        """取本轮要带的上下文；**占用超过阈值时先剪旧工具结果，不够再折成摘要**。
 
         与 `conversations.history()` 的区别：那个固定只取最近 6 条，等于把更早的
         内容直接丢掉（用户以为"它还记着"，实际早忘了）。这里改成"摘要 + 最近若干条原文"，
         阈值内不压缩，越过阈值才压——长会话因此不会撑爆窗口，也不会悄悄失忆。
 
+        **两级是有顺序的**（P1-3，抄 DSH 的 tool-result-pruner → 再摘要）：
+        第一级是纯字符串替换（``prune_tool_results``，不花钱），第二级是一次额外的
+        模型调用。先花那笔钱就永远不会去做免费的这一步。
+
         压缩是**旁路**：摘要调用失败时退回"只带最近若干条原文"，绝不让一次优化
         把整轮问答搞失败（真正的模型不可用会在下面作答时如实抛出）。
+
+        **这里是第二级（摘要）**：第一级（剪旧工具结果，``prune_tool_results``）
+        在工具循环里每一步之前就做过了，不花模型调用——所以走到这里，
+        说明免费的已经做完了（见模块头那张两级的表）。
         """
         if self._conversations is None:
             return PreparedContext()
@@ -774,7 +969,7 @@ class ChatService:
         if not older:
             return PreparedContext(history=_to_chat(pending), summary=summary, compressed=False)
         try:
-            new_summary = self._summarize(summary, older, model_pk)
+            new_summary = self.summarize_history(summary, older, model_pk)
         except Exception:
             logger.warning("上下文压缩失败，退回最近若干条原文", exc_info=True)
             return PreparedContext(history=_to_chat(recent), summary=summary, compressed=False)
@@ -784,7 +979,7 @@ class ChatService:
     def compact(self, *, conversation_id: str, model_pk: str | None = None) -> int:
         """**立刻**把"还没进摘要"的对话压成摘要，返回压掉几条消息（P1-2 的 ``/compact``）。
 
-        走的是自动压缩那条链路的**同一个函数**（``_summarize`` + ``set_summary``，
+        走的是自动压缩那条链路的**同一个函数**（``summarize_history`` + ``set_summary``，
         与 ``prepare_context`` 里那段一模一样）：两边各写一份的话，"手动压完再自动压"
         会得到两种口径的摘要，而摘要写进库之后没人能看出是哪一种写的。
 
@@ -804,14 +999,22 @@ class ChatService:
         pending = _after_marker(records, upto)
         if not pending:
             return 0
-        new_summary = self._summarize(summary, pending, model_pk)
+        new_summary = self.summarize_history(summary, pending, model_pk)
         self._conversations.set_summary(conversation_id, new_summary, pending[-1].id)
         return len(pending)
 
-    def _summarize(
+    def summarize_history(
         self, summary: str, messages: list, model_pk: str | None
     ) -> str:
-        """把旧对话（含已有摘要）压成一段新摘要。"""
+        """**第二级压缩**：把更早的对话（含已有摘要）折成一段新摘要。
+
+        抄的是三家共同的"到阈值就整段摘要"（调研报告 §2.8 的抄点第 4 条的后半）。
+        与第一级的差别就是**它要花一次模型调用**——所以它只在
+        "窗口确实超了阈值、而第一级又省不下来"时才发生（见 ``prepare_context``）。
+
+        两个调用点共用它：自动压缩（``prepare_context``）与 ``/compact``
+        （``compact``）。两边各写一份的话，"手动压完再自动压"会得到两种口径的摘要。
+        """
         config = self._resolve_llm(model_pk, thinking=False)
         chat = self._planner_chat(config)
         system = COMPRESS_PROMPT
@@ -829,6 +1032,83 @@ class ChatService:
 
     def llm_config(self, model_pk: str | None = None) -> LLMConfig:
         return self._runtime.llm_for(model_pk)
+
+    # ------------------------------------------------- 上下文用量（P1-3 的仪表）
+
+    def context_usage(
+        self,
+        *,
+        conversation_id: str,
+        owner_id: str | None = None,
+        tools: Sequence[object] = (),
+    ) -> ContextUsage:
+        """这一轮上下文**按来源**的占用（抄 ZCode 的 ``chat.contextUsage.breakdown``）。
+
+        六项与"这一轮实际拼进请求里的东西"一一对应，一项都不编：
+
+        ===============  ==========================================================
+        ``messages``     会话里这一轮要带的历史（摘要 + 摘要之后的消息）
+        ``system_prompt`` 基础提示词 + 当前模式那一段 + 库级提示词（没有库时的说明）
+        ``skills``       技能目录（P0-3 的渐进披露那一份；**正文不在里面**）
+        ``tools``        工具表（名字 + 描述 + 参数 schema），由调用方传进来
+        ``memory``       人设四份文件（含 ``MEMORY.md``）
+        ``other``        框架开销：每条消息的角色标记与定界符一类的固定额度
+        ===============  ==========================================================
+
+        **单位是估算的 token**（``estimate_tokens``：中日韩 1 字 ≈ 1 token、其余 4 字符 ≈ 1，
+        刻意偏高），所以响应里同时给 ``chars`` 与 ``tokens``——界面要如实说这是估算，
+        而不是拿它当账单。真实的用量只有端点返回的 ``usage`` 才知道（那条路记在观测表里，
+        见 ``services/usage.py``）。
+
+        ``tools`` 由协议层给（工具表要调用者身份与这一轮允许的库才能拼出来，
+        见 ``_agent_loop``）；不给就按 0 算，而不是编一个数字——
+        仪表里"工具 0"与"没统计工具"是两件事，前者会让人以为没给工具。
+        """
+        conversation = (
+            self._conversations.get(conversation_id) if self._conversations is not None else None
+        )
+        kb_ids = [str(item) for item in (conversation.kb_ids if conversation else ()) if item]
+        summary, upto = ("", None)
+        pending: list = []
+        if self._conversations is not None:
+            # **不触发压缩**：这是只读仪表，调它不该产生一次摘要调用、
+            # 也不该改库里的摘要标记（那是 prepare_context 的事）
+            records = self._conversations.messages(conversation_id)
+            summary, upto = self._conversations.summary(conversation_id)
+            pending = _after_marker(records, upto)
+
+        base = AGENT_SYSTEM_PROMPT
+        base = f"{base}\n\n{self.mode_block()}"
+        if not kb_ids:
+            base = f"{base}\n\n{NO_KB_NOTE}"
+
+        messages_text = [summary, *[item.content for item in pending]]
+        system_text = [base, self.kb_prompt(kb_ids)]
+        skill_text = [self._skill_block()]
+        tool_text = [_tool_spec_text(item) for item in tools]
+        memory_text = [text for _, text in self._persona_texts(owner_id)]
+
+        parts = [
+            _usage_part(USAGE_MESSAGES, "消息", messages_text),
+            _usage_part(USAGE_SYSTEM_PROMPT, "系统提示词", system_text),
+            _usage_part(USAGE_SKILLS, "技能目录", skill_text),
+            _usage_part(USAGE_TOOLS, "工具定义", tool_text),
+            _usage_part(USAGE_MEMORY, "记忆与人设", memory_text),
+        ]
+        # 「其它」= 框架开销（角色标记、定界符）——**同样是算出来的**，不是凑数：
+        # 消息条数决定前一项，固定额度那部分是资料块与工具表外面的那层包装
+        framing = FIXED_FRAMING_TOKENS + MESSAGE_FRAMING_TOKENS * (len(messages_text) + 1)
+        parts.append(ContextPart(kind=USAGE_OTHER, label="其它", chars=0, tokens=framing))
+
+        window = self._runtime.get_int("chat.context_window") or DEFAULT_CONTEXT_WINDOW
+        percent = self._runtime.get_int("chat.compress_at") or DEFAULT_COMPRESS_AT
+        used = sum(item.tokens for item in parts)
+        return ContextUsage(
+            parts=tuple(parts),
+            used=used,
+            total=max(1, window),
+            compress_at=max(1, min(percent, 95)),
+        )
 
     # -------------------------------------------------------- 工具循环（P0）
 
@@ -1026,7 +1306,11 @@ class ChatService:
         if max_seconds is not None:
             extra["max_seconds"] = max_seconds
         return ToolLoop(
-            client_factory=lambda: self._build_chat(model_pk, thinking, thinking_effort),
+            # **每一步的模型调用都先做第一级压缩**（P1-3）：工具结果是在循环跑的过程里
+            # 长出来的，只有客户端这一层能"每次都看到最新那份"（见 ``_PruningChat``）
+            client_factory=lambda: _PruningChat(
+                self._build_chat(model_pk, thinking, thinking_effort)
+            ),
             tools=list(tools),
             runner=runner,
             approvals=approvals,
@@ -1193,6 +1477,33 @@ def build_messages(
         messages.append(item)
     messages.append(ChatMessage(role="user", content=query))
     return messages
+
+
+def _usage_part(kind: str, label: str, texts: Sequence[str]) -> ContextPart:
+    """用量分解的一项：把这一来源的几段文本拼起来，按字符数估 token。
+
+    **拼起来再估**（而不是各段估完相加）：``estimate_tokens`` 对每段都会 +1，
+    段一多就虚高；先拼成"模型实际读到的那一段"再估，数量级才对得上。
+    """
+    body = "\n".join(item for item in texts if item)
+    return ContextPart(kind=kind, label=label, chars=len(body), tokens=estimate_tokens(body))
+
+
+def _tool_spec_text(spec: object) -> str:
+    """工具表里**一条工具在请求里占的那段文本**：名字 + 描述 + 参数 schema。
+
+    三样都要算：真实请求里工具表是一整段 JSON（``llm`` 那边按这套形状发出去），
+    只算描述会漏掉占据大半的参数 schema——而"工具加多了上下文就涨"这件事
+    恰恰主要来自那一部分。
+    """
+    name = str(getattr(spec, "name", ""))
+    description = str(getattr(spec, "description", ""))
+    parameters = getattr(spec, "parameters", None) or {}
+    try:
+        schema = json.dumps(parameters, ensure_ascii=False)
+    except (TypeError, ValueError):  # 参数里有不可序列化的东西时如实退化成 repr
+        schema = str(parameters)
+    return f"{name}\n{description}\n{schema}"
 
 
 def estimate_tokens(text: str) -> int:

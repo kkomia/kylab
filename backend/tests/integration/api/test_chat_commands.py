@@ -386,12 +386,16 @@ def test_stop_says_so_when_nothing_is_running(
 def test_stop_really_stops_a_running_turn(client: TestClient, kb_id: str) -> None:
     """``/stop`` 把**正在跑的那一轮**叫停（P1-2：「停止也要是一等命令」）。
 
-    后端能停后端的那一半：正在跑的那条流在**下一次拿到事件时**看到停止标记、
+    后端能停后端的那一半：正在跑的那一轮在**下一次拿到事件时**看到停止标记、
     自己收工并补一条 ``interrupted``（从外面掐线程会让这一轮没有任何收尾）。
 
     **直接驱动那个生成器**就是"另一个请求正在跑"在服务端的形状
-    （与 ``test_chat_api`` 里"客户端断开"那条同一手法）：手上有生成器，
+    （与 ``test_chat_api`` 里那条同一手法）：手上有生成器，
     就能在一次事件之后停下来、从另一个请求发 ``/stop``、再让它接着跑。
+
+    P2-2 之后这条路**更要紧**了：客户端断开不再取消那一轮，``/stop`` 成了
+    唯一的取消入口（那一轮跑在后台线程里，见 ``services/live_turns``）。
+    这里测的正是"标记 + 协作式收尾"这一半——它与线程是谁起的无关。
     """
     from app.api.v1 import chat as chat_api
     from app.api.v1.schemas import ChatRequestIn
@@ -415,9 +419,16 @@ def test_stop_really_stops_a_running_turn(client: TestClient, kb_id: str) -> Non
     )
     assert command["ok"] is True and command["action"]["kind"] == "stop_turn"
 
-    rest = "".join(stream)
-    assert '"type": "done"' in rest, "被叫停的那条流也要正常收尾（发一条 done）"
-    assert "戊" not in rest and "己" not in rest, "叫停之后不该再有新的字流出来"
+    rest = list(stream)
+    assert any(item.payload.get("type") == "done" for item in rest), (
+        "被叫停的那条流也要正常收尾（发一条 done）"
+    )
+    emitted = "".join(
+        str(item.payload.get("text", ""))
+        for item in rest
+        if item.payload.get("type") == "delta"
+    )
+    assert "戊" not in emitted and "己" not in emitted, "叫停之后不该再有新的字流出来"
 
     # 日志：补一条 interrupted（"哪些调用没有结果"那份名单也在这里）
     kinds = [item["kind"] for item in _events(client, conversation_id)]

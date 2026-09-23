@@ -22,6 +22,19 @@ Agent 工作流（v20）默认开启，可用设置项 ``chat.agent_enabled`` �
 ``turn/end`` 逐个进 ``session_events`` 表，词表与投影在 ``services/session_events.py``。
 消息里那份 ``steps`` 快照**形状不变**（老读法不受影响），但它从此是日志的投影：
 ``GET /conversations/{id}/events`` 读的是原始事件，回看时算出来的过程面板与它等价。
+
+**一轮跑在后台任务里，不跟着连接走**（P2-2 的后半，抄 ZCode 的重连锚点与
+QwenPaw 的"后台 run + 环形缓冲 + reconnect 重放"）：``/chat/stream`` 一开头就把
+这一轮交给 ``services/live_turns`` 的后台线程，响应体只是**它的一个订阅者**。
+于是客户端断开不再取消那一轮（取消只有 ``/stop`` 一个入口），
+断了之后可以 ``GET /chat/turns/{id}/live?after=<seq>`` 把没看到的事件补回来、
+接着流，或者（那一轮已经跑完时）拿到一条收口的 ``done``。
+事件带的 ``seq`` **就是** ``session_events`` 里的那个编号（种子取自库里当前最大的
+seq，见 ``services/live_turns`` 的模块头），所以"补发"与"读日志"是同一套位置。
+
+事件形状新增一位 ``seq``（可缺省）：不带会话的调用（脚本、MCP 的 ``history`` 那条路）
+没有可补发的地方，那些响应里就不带它。前端只认自己认识的 ``type``，
+多一个键不会有影响（见 ``frontend/src/api/chat.ts`` 的 ``emit``）。
 """
 
 from __future__ import annotations
@@ -47,13 +60,15 @@ from app.api.v1.schemas import (
     ChatSourceOut,
     CommandListOut,
     CommandOut,
+    ContextUsageItemOut,
+    ContextUsageOut,
     SessionEventListOut,
     SessionEventOut,
     SuggestedQuestionsOut,
 )
 from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
 from app.core.services import Services, get_services
-from app.services import commands, modes
+from app.services import commands, live_turns, modes
 from app.services import resume as resume_service
 from app.services.agent import (
     ApprovalEvent,
@@ -68,6 +83,7 @@ from app.services.agent_tools import build_runner, tool_specs
 from app.services.api_key import Caller
 from app.services.chat import ChatTurn, SourceRef
 from app.services.conversation import LastTurn
+from app.services.live_turns import LiveEmit
 from app.services.llm import ChatError, ChatMessage
 from app.services.session_events import (
     KIND_ERROR,
@@ -157,9 +173,75 @@ def chat_stream(
     # **在流开始前把模型校验掉**：坏 pk 应当是 422，而不是流内的一条 error 事件
     # （流一旦开始，状态码已经发出去了）。没配任何模型不算错，交由流内报可读文案。
     services.chat.llm_config(model_pk)
+    if not payload.conversation_id:
+        # **不带会话的调用**（脚本、MCP 的 history 那条路）：没有会话就没有可补发
+        # 的地方，也没有可落的日志，所以照旧跟着这条连接走（断开即结束）。
+        # 这也让这条链路的老行为与老用例一个字不变。
+        return StreamingResponse(
+            # 套一层心跳（P2-2）：流里长时间没事件时也要有字节出去，见 SSE_PING_SECONDS
+            _with_pings(
+                _sse_stream(_events(services, payload, model_pk, thinking, effort, caller, plan))
+            ),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS,
+        )
+    # **带会话的调用：一轮转成后台任务**（P2-2，抄 QwenPaw 的"后台 run + 环形缓冲"）。
+    # 这一行之后，客户端断开只是少一个订阅者，不再是"取消那一轮"
+    # （取消只有 /stop 一个入口，见 ``_turn_events`` 里那个协作式检查）。
+    turn = _start_live_turn(
+        services,
+        payload.conversation_id,
+        _events(services, payload, model_pk, thinking, effort, caller, plan),
+    )
     return StreamingResponse(
-        # 套一层心跳（P2-2）：流里长时间没事件时也要有字节出去，见 SSE_PING_SECONDS
-        _with_pings(_events(services, payload, model_pk, thinking, effort, caller, plan)),
+        _live_stream(services, payload.conversation_id, turn, after=0),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
+
+
+@router.get(
+    "/chat/turns/{conversation_id}/live",
+    summary="接上这条会话正在跑（或刚跑完）的那一轮",
+    response_class=StreamingResponse,
+)
+def live_turn(
+    conversation_id: str,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
+    after: int = Query(
+        default=0,
+        ge=0,
+        description=(
+            "已经看过的事件 seq：只补发它之后的。新连接给 0（整圈都补给它）"
+        ),
+    ),
+) -> StreamingResponse:
+    """**重连锚点**（P2-2 的后半，抄 ZCode 的 ``stream_recovery_anchor_*``）。
+
+    为什么要有这个端点：一轮开始之后就跑在后台任务里（见 ``services/live_turns``），
+    客户端断开只是少了一个订阅者。切页、断网、手机锁屏回来之后，前端拿
+    "上一条收到的事件 seq"调这里，就能把没看到的那几条补回来**接着流**，
+    而不是等到那一轮跑完再刷新一次整条会话。
+
+    三种结局，前端都能收口：
+
+    1. **还在跑**：补发 ``seq > after`` 的那些，然后挂到同一个后台任务上继续收
+       （事件带 ``seq``，下次断线再拿它来补）；
+    2. **已经跑完**：补发完再给一条 ``done``（带 ``recovered`` 与一句说明）——
+       "这一轮已收尾"这句话必须说出来，否则前端会一直等下去；
+       正文增量补不出来（那是流内的东西，不进缓冲），所以那条 done 带着
+       **这一轮的完整答复**（后端拼好的全文，与 ``/chat/stream`` 收尾那条同一个形状）。
+    3. **缓冲区里已经没有它**（跑完很久、或服务重启过）：给一条带说明的 done，
+       并顺手带上库里最后那条回答——前端据此收口，要完整过程再去读会话消息
+       （``GET /conversations/{id}`` 是持久的那条路）。
+
+    归属判定与既有的会话端点**同一套**（成员越主 404，不暴露存在性）。
+    """
+    _require_visible_conversation(services, conversation_id, caller)
+    turn = live_turns.shared_hub().current(conversation_id)
+    return StreamingResponse(
+        _live_stream(services, conversation_id, turn, after=after),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -210,24 +292,29 @@ def resume_turn(
     # 失败了要当场 4xx/5xx，而不是"流里报个错、库里还留着旧的"。
     services.conversations.drop_answer(conversation_id, answer_id=turn.answer_id)
 
-    return StreamingResponse(
-        # 续跑同样套心跳：这条路更容易长时间没事件（它往往要跑不少工具步）
-        _with_pings(
-            _resume_events(
-                services,
-                conversation_id=conversation_id,
-                # 库范围取**会话已存的**：续跑是接着同一轮做，不是新一轮提问
-                kb_ids=conversation.kb_ids,
-                payload=payload,
-                question=turn.question,
-                previous=turn,
-                reason=reason,
-                model_pk=model_pk,
-                thinking=thinking,
-                effort=effort,
-                caller=caller,
-            )
+    # 续跑**与正常提问同一处置**（P2-2）：它也跑在后台任务里，断开可以重连补发。
+    # 两条路各写一套的话，"续跑时断开"会退回到 v0.41 之前那个行为——
+    # 而续跑恰恰是最容易断的一种（它本来就要跑不少工具步）。
+    live = _start_live_turn(
+        services,
+        conversation_id,
+        _resume_events(
+            services,
+            conversation_id=conversation_id,
+            # 库范围取**会话已存的**：续跑是接着同一轮做，不是新一轮提问
+            kb_ids=conversation.kb_ids,
+            payload=payload,
+            question=turn.question,
+            previous=turn,
+            reason=reason,
+            model_pk=model_pk,
+            thinking=thinking,
+            effort=effort,
+            caller=caller,
         ),
+    )
+    return StreamingResponse(
+        _live_stream(services, conversation_id, live, after=0),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -360,6 +447,68 @@ def chat_once(
         events=sink.events,
     )
     return ChatResponseOut(answer=answer.answer, sources=_sources_out(answer.sources))
+
+
+@router.get(
+    "/chat/context-usage",
+    response_model=ContextUsageOut,
+    summary="上下文用量（按来源分解，估算）",
+)
+def context_usage(
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
+    conversation_id: str = Query(description="要算哪条会话的上下文；必填"),
+) -> ContextUsageOut:
+    """这一轮上下文**被什么占着**（P1-3 的仪表，照 ZCode 的 ``chat.contextUsage.breakdown``）。
+
+    为什么值得有：用户看到"它怎么变笨了 / 怎么变慢了"，能回答的一句话是
+    "上下文里 60% 是技能目录"。按来源分解比一个百分比有用得多，
+    也是"装了多少技能、给了多少工具"这件事第一次变得可核对。
+
+    三件事按顺序说清：
+
+    1. **算的是这一轮真会发出去的那一份**：历史（摘要 + 摘要之后的消息）、
+       基础提示词 + 当前模式那段 + 库级提示词、技能目录、工具表、人设文件，
+       外加框架开销那一项。工具表由协议层现拼（要调用者身份与这一轮的库范围）。
+    2. **只读**：调它**不会**触发压缩（``prepare_context`` 那条路才会），
+       所以它可以被界面随时刷新。
+    3. **是估算**：按字符数算（刻意偏高），``estimated`` 恒真、``note`` 里写着这句话
+       ——真实的用量只有模型端点返回的 ``usage`` 才知道。
+
+    归属判定与既有的会话端点同一套（成员越主 404，不暴露存在性）。
+    """
+    _require_visible_conversation(services, conversation_id, caller)
+    conversation = services.conversations.get(conversation_id)
+    usage = services.chat.context_usage(
+        conversation_id=conversation_id,
+        owner_id=caller.owner_id,
+        # 工具表与那一轮给模型的一模一样：同一处拼装（``_agent_loop``），
+        # 两处各拼一份的话，仪表会显示一套、模型拿到另一套
+        tools=tool_specs(
+            services, owner_id=caller.owner_id, kb_ids=list(conversation.kb_ids)
+        ),
+    )
+    return ContextUsageOut(
+        items=[
+            ContextUsageItemOut(
+                kind=part.kind,
+                label=part.label,
+                chars=part.chars,
+                tokens=part.tokens,
+                share=(part.tokens / usage.used) if usage.used else 0.0,
+            )
+            for part in usage.parts
+        ],
+        used=usage.used,
+        total=usage.total,
+        ratio=round(usage.ratio, 4),
+        compress_at=usage.compress_at,
+        estimated=True,
+        note=(
+            "按字符数估算：中日韩 1 字约 1 token、其余 4 字符约 1 token（偏高一点），"
+            "不是分词器给的准确值；真实用量看每次调用返回的 usage。"
+        ),
+    )
 
 
 @router.get(
@@ -498,7 +647,8 @@ def _effective_thinking(
 
 
 class _TurnSink:
-    """把工具循环的事件摊成 SSE，同时攒下**落库要用的快照**。
+    """把工具循环的事件摊成**要发出去的那一条条**（``live_turns.LiveEmit``），
+    同时攒下**落库要用的快照**。
 
     两条链路共用它：正常提问（``_events``）与续跑（``_resume_events``）。
     抽出来的理由很实在——这套映射里有好几处"踩过才知道"的细节
@@ -508,6 +658,12 @@ class _TurnSink:
     它只管攒与发，不管收尾：`done` 事件与落库由调用方在循环结束后统一做，
     这样两处的口径不可能不一致。
 
+    **产出的是载荷而不是拼好的 SSE 串**（P2-2 起）：一条载荷要能被两处消费——
+    直播那一侧要给它编上 ``seq`` 再序列化（见 ``live_turns``），
+    不带会话那条路则直接发出去（``_sse_stream``）。序列化只有 ``_sse`` 一处，
+    所以"带 seq 的那份"与"不带的那份"形状不可能分叉。
+    里面的 ``log_index`` 说明这条载荷对应本轮第几条会话事件（1 起，``None`` = 不落库）。
+
     **P0-2 起它还顺手攒一份会话事件日志**：同一批事件按 kind 记进
     ``self.events``（词表见 ``services/session_events.py``），收尾时与消息
     **同一个事务**落库。快照照旧攒（老读法一个字不变），但它从此是那份日志的
@@ -515,11 +671,12 @@ class _TurnSink:
 
     刻意**不记**的几样，各有理由：
 
-    - 正文增量（``delta``）：它就是答案本身，已经随消息落库；
-    - 出处（``sources``）：同上，而且是**累计**语义（每次检索都重发一遍全量）；
+    - 正文增量（``delta``）：它就是答案本身，已经随消息落库，而且收尾那条
+      ``done`` 带着全文——所以它也**不进直播缓冲**（最多的一种事件，进缓冲只会挤掉别人）；
+    - 出处（``sources``）：不进日志（消息里另存快照），但**进缓冲**——补发时它是必要的；
     - 待确认（``approval``）：词表里没有它，而且它"还没被回答"——审批自己有
-      登记表（``services/approvals.py``）。等 P1-1 的模式闸落地再按 ZCode 的
-      ``approval/*`` 补一对审计事件；
+      登记表（``services/approvals.py``）。它同样进缓冲：断在一条待确认上的人
+      回来必须重新看到那句询问；
     - 压缩那一步（``_events`` 里直接发的那条 step）：它是给界面看的一句提示，
       不进消息快照，记进日志会让"投影等于快照"这条验收当场不成立。
     """
@@ -538,6 +695,9 @@ class _TurnSink:
         #: 当前这段连续思考的 payload。同一次思考在日志里只占一条：增量拼进来，
         #: 每来一块写一行会让长会话的日志膨胀几十倍，而那些行在投影里没有区别。
         self._thinking_draft: dict[str, object] | None = None
+        #: 那一段思考**在直播缓冲里的那条**（P2-2）。后续增量同时拼进它，
+        #: 于是重连补发的人拿到的是完整思考，而正在看的人收到的仍是逐段增量。
+        self._thinking_emit: LiveEmit | None = None
         #: **已开始、还没有结果**的调用（``running`` 有、``done`` 没等到）。
         #: 中断时它就是要补进 ``interrupted.payload.unpaired`` 的那份名单。
         self._pending_calls: list[dict[str, object]] = []
@@ -628,10 +788,11 @@ class _TurnSink:
                 del self._pending_calls[index]
                 return
 
-    def feed(self, event: object) -> Iterator[str]:
+    def feed(self, event: object) -> Iterator[LiveEmit]:
         # 换了一种事件就意味着这段思考结束了：下一条思考增量的到来会开新的一段
         if not isinstance(event, ThinkingEvent):
             self._thinking_draft = None
+            self._thinking_emit = None
 
         if isinstance(event, StepEvent):
             # 快照的收法在服务层（``agent.step_snapshot``）：定时任务那条链路
@@ -643,7 +804,9 @@ class _TurnSink:
             # 复用 step_snapshot），所以"日志投影 == 快照"不是靠约定而是靠同一份代码
             self.events.append(step_event_draft(event))
             self._track_call(event)
-            yield _sse(
+            # ``log_index`` = 它刚写进日志的那条是第几条（1 起）：
+            # 后台那一条据此算出与 ``session_events`` **同一个** seq（见 live_turns）
+            yield LiveEmit(
                 {
                     "type": "step",
                     "phase": event.phase,
@@ -665,11 +828,15 @@ class _TurnSink:
                     **(
                         {"artifacts": [dict(a) for a in event.artifacts]} if event.artifacts else {}
                     ),
-                }
+                },
+                log_index=len(self.events),
             )
         elif isinstance(event, SourcesEvent):
             self.sources = event.sources
-            yield _sse(
+            # 出处不带 ``log_index``：它不落库（消息里另存一份快照）。
+            # 但它**要进缓冲**——重连的人指着那条确认在哪几段上，
+            # 补发时把它一并带上（同一个 payload 对象，界面那侧是累计语义，重复无害）
+            yield LiveEmit(
                 {
                     "type": "sources",
                     "items": [item.model_dump() for item in _sources_out(self.sources)],
@@ -680,9 +847,12 @@ class _TurnSink:
             # （见 tool_loop._resolve_approvals），所以它必须**原样、立刻**发出去——
             # 攒着不发等于让两边一起等死。
             #
+            # 进缓冲是 P2-2 补的：断在一个待确认上的人回来时必须重新看到这条询问，
+            # 否则那一头等满超时、这一头永远不知道发生过什么。
+            #
             # 不进 `self.steps`：过程快照是"这一轮做过什么"，而这是一句还没被回答的问题。
             # 落进库的话，回看历史时会冒出一条永远等不到人点的确认。
-            yield _sse(
+            yield LiveEmit(
                 {
                     "type": "approval",
                     "approval_id": event.approval_id,
@@ -705,11 +875,27 @@ class _TurnSink:
                 draft = thinking_draft()
                 self.events.append(draft)
                 self._thinking_draft = draft.payload
+                payload: dict[str, object] = {"type": "thinking", "text": event.text}
+                emit = LiveEmit(payload, log_index=len(self.events))
+                # 缓冲里那条留着：后面的增量**拼进它**（``live_turns`` 的
+                # ``publish`` 存的就是这个 dict），于是重连补发时拿到的是完整思考，
+                # 而当前正在看的人收到的仍是逐段的增量
+                self._thinking_emit = emit
+                yield emit
+                return
             self._thinking_draft["text"] = f"{self._thinking_draft['text']}{event.text}"
-            yield _sse({"type": "thinking", "text": event.text})
+            if self._thinking_emit is not None:
+                # 第一条那条**也**要跟着长：它已经在缓冲里了（引用同一个 dict）
+                text = self._thinking_emit.payload.get("text")
+                self._thinking_emit.payload["text"] = f"{text}{event.text}"
+            # 后续增量只发给正在看的人（``keep=False``）：每条都进缓冲的话，
+            # 一段长思考就能把整圈挤掉（见 ``live_turns.LiveEmit``）
+            yield LiveEmit({"type": "thinking", "text": event.text}, keep=False)
         elif isinstance(event, DeltaEvent):
             self.deltas.append(event.text)
-            yield _sse({"type": "delta", "text": event.text})
+            # 正文增量**不进缓冲**：它的内容由收尾那条 ``done`` 带着全文兜底，
+            # 而它是最多的一种事件（一段 2000 字的回答就是两千条）
+            yield LiveEmit({"type": "delta", "text": event.text}, keep=False)
         # DoneEvent 不在这里发：收尾统一放在循环外，保证 done 里的全文
         # 与落库用的 answer 是同一个字符串
 
@@ -830,7 +1016,7 @@ def _events(
     effort: str | None,
     caller: Caller,
     plan: _CommandResult | None = None,
-) -> Iterator[str]:
+) -> Iterator[LiveEmit]:
     """流式问答的**收尾**：建 sink、记 ``turn/start``、把断开也记进日志（P0-2）。
 
     这一层刻意薄：它只做"这一轮从哪开始、到哪结束"。正文那一段在
@@ -841,10 +1027,12 @@ def _events(
     （``/skill`` 与自定义 md 命令）。原始那一行（``/xxx args``）只作为"用户敲了什么"
     留在消息与日志里。
 
-    ``GeneratorExit`` 是这里唯一必须拦的东西：用户在流式期间点停止、或者直接
-    关掉页面时，Starlette 会 close 掉这个生成器，异常从 ``yield from`` 那里穿上来。
+    ``GeneratorExit`` 是这里唯一必须拦的东西：**不带会话**那条路（脚本、MCP）
+    仍然跟着连接走，Starlette 在客户端断开时会 close 掉这个生成器。
     不接住的话，库里就只剩半截（QwenPaw 那条教训：中断不补齐，
     下一轮与回看都说不清"当时停在哪一步"）。
+    带会话那条路由 ``live_turns`` 在后台跑完，正常走到生成器末尾——
+    **断开不再触发这里**，那正是 P2-2 要的。
     """
     sink = _TurnSink()
     # **这一轮的档**（P1-1 遗留 #6）：在 turn/start 之前先看它换过没有
@@ -881,8 +1069,8 @@ def _turn_events(
     effort: str | None,
     caller: Caller,
     plan: _CommandResult | None = None,
-) -> Iterator[str]:
-    """把一次问答摊成一串 SSE 事件。
+) -> Iterator[LiveEmit]:
+    """把一次问答摊成一串事件（``LiveEmit``：载荷 + 它在会话日志里的位置）。
 
     任何异常都在**流内**报出去（``type=error``）而不是靠 HTTP 状态码：
     流一旦开始发送，状态码已经发出去了，改不了——这也是最容易漏的一处。
@@ -909,7 +1097,9 @@ def _turn_events(
     # 上下文（含压缩）对两条链路都适用：Agent 关掉时同样需要"摘要 + 最近原文"
     history, summary, compressed = _context(services, payload, model_pk)
     if compressed:
-        yield _sse(
+        # 不进日志（它是给界面看的一句提示，见 ``_TurnSink`` 的说明），
+        # 但**进缓冲**：重连补发的人也该看到"这一轮中间压过一次上下文"
+        yield LiveEmit(
             {
                 "type": "step",
                 "phase": "compress",
@@ -966,7 +1156,14 @@ def _turn_events(
                 # interrupted（含"哪些调用没有结果"），与用户点停止那条路同一处置
                 sink.mark_interrupted(reason="用户用 /stop 停止")
                 _flush_events(services, payload.conversation_id, sink)
-                yield _sse({"type": "done", "answer": sink.answer})
+                # ``log_index`` 取收尾那一刻的日志条数：它**是游标**——
+                # "到这儿为止（含这一轮的最后一条）都已经看过了"（见 ``_last_event_seq``
+                # 同一套口径），重连时按它补发不会漏也不会重
+                yield LiveEmit(
+                    {"type": "done", "answer": sink.answer},
+                    log_index=len(sink.events),
+                    terminal=True,
+                )
                 return
         except ChatError as exc:
             yield _fail(services, payload.conversation_id, sink, str(exc))
@@ -992,7 +1189,7 @@ def _turn_events(
         # 用 pydantic 序列化而不是 ``s.__dict__``：
         # SourceRef 是 slots=True 的 dataclass，**没有 __dict__**，
         # 取它会在流式刚发第一个事件时就抛 AttributeError、把连接截断（踩过）。
-        yield _sse(
+        yield LiveEmit(
             {
                 "type": "sources",
                 "items": [item.model_dump() for item in _sources_out(sources)],
@@ -1010,7 +1207,8 @@ def _turn_events(
                 owner_id=_memory_owner(caller),
             ):
                 collected.append(delta)
-                yield _sse({"type": "delta", "text": delta})
+                # 与工具循环那条路同一处置：正文增量不进缓冲（收尾那条 done 带全文）
+                yield LiveEmit({"type": "delta", "text": delta}, keep=False)
         except ChatError as exc:
             yield _fail(services, payload.conversation_id, sink, str(exc))
             return
@@ -1045,7 +1243,11 @@ def _turn_events(
         logger.warning("对话流没有产出任何正文，本轮不落库：query=%r", payload.query[:80])
         sink.close_turn(status=TURN_EMPTY, answer="")
         _flush_events(services, payload.conversation_id, sink)
-    yield _sse({"type": "done", "answer": answer})
+    # 收尾那条：``log_index`` 是**游标**（这一轮最后一条日志事件的编号），
+    # ``terminal`` 让后台那一条记住它——重连收口时原样再发一遍
+    yield LiveEmit(
+        {"type": "done", "answer": answer}, log_index=len(sink.events), terminal=True
+    )
 
 
 def _resume_events(
@@ -1061,8 +1263,8 @@ def _resume_events(
     thinking: bool | None,
     effort: str | None,
     caller: Caller,
-) -> Iterator[str]:
-    """把一次续跑摊成一串 SSE（事件形状与 ``_events`` 完全一致，前端不必区分）。
+) -> Iterator[LiveEmit]:
+    """把一次续跑摊成一串事件（形状与 ``_events`` 完全一致，前端不必区分）。
 
     与正常提问的三处差别，每一处都有理由：
 
@@ -1124,7 +1326,7 @@ def _resume_turn_events(
     thinking: bool | None,
     effort: str | None,
     caller: Caller,
-) -> Iterator[str]:
+) -> Iterator[LiveEmit]:
     """续跑的主体（与 ``_events`` 的收尾分开，理由同 ``_turn_events``）。"""
     chat = services.chat
     # 上一轮的出处还原成对象：**既要接进账本，也要先当作这一轮已有的出处**——
@@ -1204,7 +1406,10 @@ def _resume_turn_events(
         logger.warning("续跑没有产出正文：conversation=%s", conversation_id)
         sink.close_turn(status=TURN_EMPTY, answer="")
         _flush_events(services, conversation_id, sink)
-    yield _sse({"type": "done", "answer": answer})
+    # 与 ``_turn_events`` 的收尾同一条：``log_index`` 是游标，``terminal`` 供重连收口
+    yield LiveEmit(
+        {"type": "done", "answer": answer}, log_index=len(sink.events), terminal=True
+    )
 
 
 def _use_agent(services: Services) -> bool:
@@ -1216,8 +1421,204 @@ def _use_agent(services: Services) -> bool:
     return services.runtime.get_bool("chat.agent_enabled", default=True)
 
 
-def _sse(payload: dict) -> str:
-    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+def _sse(payload: dict, *, seq: int | None = None) -> str:
+    """一条 SSE 事件（``seq`` 非空时带上它，见 ``live_turns``）。
+
+    ``seq`` 是**会话事件日志里的编号**：前端拿"最后收到的那个 seq"当重连锚点，
+    见 ``GET /chat/turns/{id}/live``。不带会话的调用没有可补发的地方，也就没有它。
+    """
+    body = payload if seq is None else {**payload, "seq": seq}
+    return f"data: {json.dumps(body, ensure_ascii=False)}\n\n"
+
+
+def _sse_stream(emits: Iterator[LiveEmit]) -> Iterator[str]:
+    """把一串载荷序列化出去（**不编号**那条路：不带会话的调用）。
+
+    ``finally`` 里显式关掉内层生成器：``_events`` 靠 ``GeneratorExit`` 那条路
+    补 ``interrupted``（P0-2 的验收之一），而"外层被 close、内层等 GC"是靠不住的
+    ——CPython 之外没有谁保证它当场发生。
+    """
+    try:
+        for emit in emits:
+            yield _sse(emit.payload)
+    finally:
+        close = getattr(emits, "close", None)
+        if callable(close):
+            close()
+
+
+def _last_event_seq(services: Services, conversation_id: str) -> int:
+    """这条会话在事件日志里的**最大 seq**（0 = 一条都还没有）。
+
+    它是直播缓冲那一套编号的种子（见 ``live_turns`` 模块头"为什么 seq 要种子"）。
+    **每次开一轮现读一次**：``/mode`` 与各种斜杠命令会在会话里插事件，
+    拿进程内上一次的水位当种子迟早会算错号；而这条读按会话走，开一轮一次，
+    与那一轮的检索 + 模型调用相比可以忽略。
+
+    读不出来（会话刚被删、库抖了一下）时返回 0：那会让缓冲的编号从头数，
+    结果只是"补发时多补几条"，而**不会**漏——这个取舍是刻意的。
+    """
+    try:
+        events = services.conversations.session_events(conversation_id)
+    except Exception:
+        logger.warning("读会话最大事件编号失败，缓冲从 0 编号：%s", conversation_id, exc_info=True)
+        return 0
+    return events[-1].seq if events else 0
+
+
+def _start_live_turn(
+    services: Services, conversation_id: str, source: Iterator[LiveEmit]
+) -> live_turns.LiveTurn:
+    """把一轮交给后台任务（P2-2），返回那个 ``LiveTurn``。
+
+    提问与续跑共用这一处，四件事的顺序不能换：
+
+    1. **登记"这条会话上有一轮在跑"**（``TurnControl.begin``）：在起线程**之前**做，
+       否则用户在那几毫秒里发 ``/stop`` 会被回一句"没有在跑的一轮"——
+       而 P2-2 之后 ``/stop`` 是唯一的取消入口，它答错一次就等于那一轮没法停。
+       （``_events`` 自己还会再 begin 一次；那次会清掉刚设上的停止标记，
+       窗口是从这里到线程真正开跑之间那一瞬。）
+    2. **读编号种子**：这一轮的事件 seq 从库里当前的最大 seq 往下数（见 ``live_turns``）。
+    3. ``hub.begin`` 登记进直播表（重连那条路靠它找到这一轮）。
+    4. ``hub.run`` 起后台线程——**从这一刻起，客户端断开不再取消它**。
+    """
+    services.commands.turns.begin(conversation_id)
+    hub = live_turns.shared_hub()
+    turn = hub.begin(conversation_id, base_seq=_last_event_seq(services, conversation_id))
+    hub.run(turn, source)
+    return turn
+
+
+def _live_stream(
+    services: Services,
+    conversation_id: str,
+    turn: live_turns.LiveTurn | None,
+    *,
+    after: int,
+) -> Iterator[str]:
+    """重连那条流：**补发 + 接着流**，或者**补发 + 收口**（P2-2 的后半）。
+
+    这个生成器就是"一个订阅者"的全部：它被 close 掉（客户端断开）时只做一件事
+    ——退订（``finally``）。那一轮在另一个线程里照跑，取消只有 ``/stop`` 一条路。
+
+    顺序上有一处不能换：**先 ``subscribe`` 再 ``replay``**。反过来时，
+    "读快照"与"登记订阅"之间发出来的事件两边都不在，直接丢了；先订阅的代价是
+    那一段窗口里的事件会来两次，由 ``LiveEvent.index`` 对 ``cutoff`` 去重
+    （见 ``live_turns.LiveTurn.replay`` 的返回值）。
+
+    收口那条（``done``）刻意带上 ``recovered`` 与一句说明：前端据此知道
+    "这一轮已经跑完了，别再等增量"，同时 ``done`` 里仍是**完整答复**，
+    所以它连刷新会话都不必（见 ``_finished_payload``）。
+    """
+    if turn is None:
+        # 缓冲里没有它：跑完很久（超了 LIVE_FINISHED_KEEP_SECONDS）、服务重启过、
+        # 或者这条会话根本没跑过。不能说"没有这回事"——前端要的是一句能收口的话。
+        yield _sse(
+            _finished_payload(
+                services,
+                conversation_id,
+                note=(
+                    "这条会话当前没有在跑的一轮（可能已经收尾，或者服务重启过）。"
+                    "上面这份是它最后一条回答；要看完整过程请刷新会话。"
+                ),
+            )
+        )
+        return
+
+    queue = turn.subscribe()
+    terminal_sent = False
+    try:
+        replayed, cutoff = turn.replay(after)
+        for event in replayed:
+            payload = event.payload
+            if event.terminal:
+                # **补发到的那条收尾**也要带上"这一轮已收尾"那句话：重连的人
+                # 与一路看着的人处境不同——他可能只看到半截，得知道不必再等
+                terminal_sent = True
+                payload = _noted_finish(payload)
+            yield _sse(payload, seq=event.seq)
+        if turn.finished:
+            # 已经跑完：补发完就给一条收口的 done（它已经含全文，不必再翻库）
+            if not terminal_sent:
+                yield _sse(_finished_payload(services, conversation_id, turn=turn))
+            return
+        while True:
+            try:
+                item = queue.get(timeout=SSE_PING_SECONDS)
+            except Empty:
+                yield _ping()
+                continue
+            if live_turns.is_end(item):
+                # 那一轮结束了但收尾那条没送到（只可能是队列被挤过）：
+                # 该收的口一定要收到，否则前端一直转圈
+                if not terminal_sent:
+                    yield _sse(_finished_payload(services, conversation_id, turn=turn))
+                return
+            event = item
+            if event.index <= cutoff:
+                # 补发时已经发过（订阅与快照之间那一小段窗口）
+                continue
+            yield _sse(event.payload, seq=event.seq)
+            if event.terminal:
+                return
+    finally:
+        turn.unsubscribe(queue)
+
+
+def _noted_finish(payload: dict, note: str = "") -> dict:
+    """给收尾那条补一句"这一轮已收尾"（补发场景才加；直播那条不加）。
+
+    **为什么非要这一句**：重连的人与一路看着的人处境不同——他手里可能是半截状态，
+    而"到此为止、不会再有东西来了"只有服务端知道。少了它，前端会一直等下去
+    （ZCode 的重连锚点那套同样是"补发 + 一个明确的收尾"）。
+
+    ``recovered`` 是个显式标记：前端据此知道这份收尾是**补发**来的
+    （正文增量不会重放，所以界面上的正文可能不完整——完整那份就在 ``answer`` 里）。
+    """
+    noted = dict(payload)
+    noted["recovered"] = True
+    noted["detail"] = note or (
+        "这一轮已经收尾了：补发到此为止（正文增量不重发，这里给的是完整答复）。"
+    )
+    return noted
+
+
+def _finished_payload(
+    services: Services,
+    conversation_id: str,
+    *,
+    turn: live_turns.LiveTurn | None = None,
+    note: str = "",
+) -> dict:
+    """收口那条 ``done``：说清"这一轮已收尾"，并尽量带上**完整答复**。
+
+    抄的是 ZCode 的"断流之后按锚点续"里那个收尾语义：续不上的人最需要知道的
+    是"到此为止、这就是全部"，而不是一个空响应。
+
+    来源按可靠度依次退让：这一轮自己的收尾载荷（``done`` 带全文）→
+    ``done`` 之外的（``error``）原样带上 → 库里最后一条回答（服务重启过时只能这样）。
+    """
+    terminal = turn.terminal if turn is not None else None
+    if terminal and terminal.get("type") in ("done", "error"):
+        payload = dict(terminal)
+    else:
+        payload = {"type": "done", "answer": _last_answer(services, conversation_id)}
+    return _noted_finish(payload, note)
+
+
+def _last_answer(services: Services, conversation_id: str) -> str:
+    """库里最后那条回答的正文（读不出来就空串）。
+
+    只给"缓冲里已经没有那一轮"的情形兜底：那时候连它结束在哪都不知道，
+    而会话消息是**持久**的那条路（``/conversations/{id}``）——能顺手带上来，
+    就不必让前端为了收口再多跑一趟。
+    """
+    try:
+        turn = services.conversations.last_turn(conversation_id)
+    except Exception:
+        logger.info("读最后一条回答失败：%s", conversation_id, exc_info=True)
+        return ""
+    return turn.answer if turn is not None else ""
 
 
 def _ping() -> str:
@@ -1235,6 +1636,11 @@ def _ping() -> str:
 
 def _with_pings(events: Iterator[str]) -> Iterator[str]:
     """把一条事件流包成"空闲就发心跳"的那条流（P2-2）。
+
+    **现在只有不带会话那条路用它**（``_sse_stream``）：带会话的调用走
+    ``live_turns``——那一轮自己在后台线程里跑，心跳由订阅者那侧的空闲超时发出来
+    （见 ``_live_stream``）。两处的判据是同一个（``SSE_PING_SECONDS``），
+    但驱动方式不同：这里要另起一个线程去推它，那里本来就是"等一条、发一条"。
 
     **为什么必须另起一个线程**：这条流是同步生成器，"模型说一句我们发一句"，
     它一次 ``next()`` 可能阻塞几十秒（等首字、跑一个抓网页的工具、派子 Agent）。
@@ -1439,16 +1845,23 @@ def _flush_events(services: Services, conversation_id: str | None, sink: _TurnSi
         logger.exception("会话事件落库失败：%s", conversation_id)
 
 
-def _fail(services: Services, conversation_id: str | None, sink: _TurnSink, message: str) -> str:
-    """流内失败的收尾：把 ``error`` + ``turn/end`` 记进日志，并给出要发的那条 SSE。
+def _fail(
+    services: Services, conversation_id: str | None, sink: _TurnSink, message: str
+) -> LiveEmit:
+    """流内失败的收尾：把 ``error`` + ``turn/end`` 记进日志，并给出要发的那条事件。
 
-    返回值就是客户端看到的那条 ``type=error``——**顺序不能反**：
+    返回值就是客户端看到的那个 ``type=error``——**顺序不能反**：
     先记日志再返回，日志里才不会有"没有结尾的一轮"。
+
+    ``log_index`` 取收尾那一刻的日志条数（游标口径，见 ``_events`` 的收尾），
+    ``terminal=True`` 让后台那一条记住它：重连收口时把这条错误原样再发一遍。
     """
     sink.note_error(message)
     sink.close_turn(status=TURN_ERROR, answer="")
     _flush_events(services, conversation_id, sink)
-    return _sse({"type": "error", "message": message})
+    return LiveEmit(
+        {"type": "error", "message": message}, log_index=len(sink.events), terminal=True
+    )
 
 
 def _record_interruption(services: Services, conversation_id: str | None, sink: _TurnSink) -> None:

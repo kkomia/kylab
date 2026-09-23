@@ -7,6 +7,7 @@
 """
 
 import io
+import itertools
 import json
 import time
 
@@ -18,6 +19,7 @@ from app.services.chat import SourceRef
 from app.services.session_events import SessionEvent, steps_from_events
 from tests.conftest import (
     FakeChatModel,
+    LLMReply,
     bind_model,
     install_fake_chat,
     search_tool_call,
@@ -511,14 +513,17 @@ def test_events_can_be_filtered_by_kind(client: TestClient, kb_id: str) -> None:
 def test_stopping_mid_stream_records_what_had_no_result(
     client: TestClient, kb_id: str
 ) -> None:
-    """用户中途停止 / 断开：补一条 ``interrupted``，并说清**哪些调用没有结果**。
+    """一轮没跑完就被放弃：补一条 ``interrupted``，并说清**哪些调用没有结果**。
 
     抄的是 QwenPaw 那条教训（调研报告 §2.1：中断时给未完成的调用补结果，
     否则下一轮消息不成对）。我们不存在 tool 消息配对问题，但"停在了半截的哪一步"
     仍然必须留下来——否则回看时会以为那一轮什么都没做。
 
-    **直接 close 那个生成器**就是"客户端断开"在服务端的形状
-    （Starlette 在连接断掉时会 close 掉它，异常从 ``yield from`` 那里穿上来）。
+    **这条例的是生成器那一层的收尾**：close 掉那个生成器 = "这一轮被放弃"在
+    服务端的形状。P2-2 之后带会话的那条路**不再因为客户端断开就 close 它**
+    （那一轮跑在后台任务里，断开只是少一个订阅者，见
+    ``tests/integration/api/test_chat_live.py``），但这条收尾仍然在：
+    不带会话的调用照旧跟着连接走，后台任务遇到意外时也要靠它补上最后一笔。
     """
     from app.api.v1 import chat as chat_api
     from app.api.v1.schemas import ChatRequestIn
@@ -531,8 +536,8 @@ def test_stopping_mid_stream_records_what_had_no_result(
     payload = ChatRequestIn(query="问题", kb_ids=[kb_id], conversation_id=conversation_id)
     stream = chat_api._events(get_services(), payload, None, None, None, Caller(is_admin=True))
     first = next(stream)
-    assert '"type": "step"' in first, "先让流真的开始发（这时工具调用已经发出去了）"
-    stream.close()  # 客户端断开
+    assert first.payload["type"] == "step", "先让流真的开始发（这时工具调用已经发出去了）"
+    stream.close()  # 这一轮被放弃（v0.41 之前：客户端断开就是这个形状）
 
     events = _events(client, conversation_id)
     assert [item["kind"] for item in events] == ["turn/start", "tool_call", "interrupted"]
@@ -735,3 +740,108 @@ def test_a_disconnect_still_reaches_the_inner_stream() -> None:
     assert closed == ["closed"], "断开必须能传到内层生成器（否则中断记录就丢了）"
 
 
+
+
+# ------------------------------------------- 两级压缩的第一级（P1-3）
+
+def test_the_first_level_of_compression_happens_inside_the_turn(
+    client: TestClient, kb_id: str
+) -> None:
+    """**第一级压缩（剪旧工具结果）在工具循环里就生效**（P1-3）。
+
+    判据是"模型最后那次调用看到的是什么"：较早的工具结果已经换成了占位符，
+    最近 ``PRUNE_KEEP_TOOL_RESULTS`` 条仍是原文。抄的是 DSH 的 tool-result-pruner
+    与 ZCode 的 microcompact——**免费的那一级先做**，而且从下一步起就生效
+    （它就地把循环手里那份 messages 换掉，不是只在某一次请求里生效）。
+    """
+    from app.services.chat import PRUNE_KEEP_TOOL_RESULTS, TOOL_RESULT_PLACEHOLDER
+
+    steps = 7
+    script = [search_tool_call(f"问题{index}", call_id=f"c{index}") for index in range(steps)]
+    script.append(LLMReply())  # 最后一次：不调工具，直接作答
+    chat = install_fake_chat("答案", script=script)
+
+    # 每次检索都回一段**互不相同**的长原文：相同的 chunk_id 会被来源账本判成
+    # "这一批没有新增"，于是回给模型的是一句短话——那就没得剪了（测了个空）
+    counter = itertools.count(1)
+
+    def fake_sources(*, query: str, kb_ids: list[str], top_k=None, reader=None):  # type: ignore[no-untyped-def]
+        index = next(counter)
+        return [
+            SourceRef(
+                index=1,
+                chunk_id=f"c{index}",
+                document_id=f"d{index}",
+                document_name=f"文档{index}.pdf",
+                preview="原文" * 200,
+            )
+        ]
+
+    get_services().chat.retrieve_sources = fake_sources  # type: ignore[method-assign]
+    conversation_id = _conversation(client)
+
+    client.post(
+        "/api/v1/chat/stream",
+        json={"query": "问题", "kb_ids": [kb_id], "conversation_id": conversation_id},
+    )
+
+    seen = [item for item in chat.seen_messages if item.role == "tool"]
+    assert len(seen) == steps, "每一步的结果都要回到上下文里"
+    cleared = steps - PRUNE_KEEP_TOOL_RESULTS
+    assert [item.content for item in seen[:cleared]] == [TOOL_RESULT_PLACEHOLDER] * cleared
+    assert all(item.content != TOOL_RESULT_PLACEHOLDER for item in seen[-PRUNE_KEEP_TOOL_RESULTS:])
+    # 配对没坏：每条工具结果仍指着它的那次调用（丢了 tool_call_id 端点会 400）
+    assert [item.tool_call_id for item in seen] == [f"c{index}" for index in range(steps)]
+
+
+# ------------------------------------------------- 上下文用量（P1-3 的仪表）
+
+def test_context_usage_breaks_down_by_source_and_adds_up(
+    client: TestClient, kb_id: str
+) -> None:
+    """``GET /chat/context-usage``：按来源分解，**各项之和 == used**（P1-3 的验收⑤）。
+
+    这一条同时钉住"它真的算了"：消息那一项来自这条会话的历史、工具那一项来自
+    这一轮真给出去的那张表（不是编一个数字），而六项加起来必须等于 ``used``——
+    分解与总数对不上的仪表比没有仪表更糟。
+    """
+    install_fake_chat("答案", script=[search_tool_call("问题")])
+    _install_fake_sources()
+    conversation_id = _conversation(client)
+    message = client.post(
+        "/api/v1/chat/stream",
+        json={"query": "问题", "kb_ids": [kb_id], "conversation_id": conversation_id},
+    )
+    assert message.status_code == 200
+
+    usage = client.get(f"/api/v1/chat/context-usage?conversation_id={conversation_id}").json()
+
+    assert [item["kind"] for item in usage["items"]] == [
+        "messages",
+        "system_prompt",
+        "skills",
+        "tools",
+        "memory",
+        "other",
+    ]
+    assert sum(item["tokens"] for item in usage["items"]) == usage["used"]
+    assert usage["used"] > 0 and usage["total"] > 0 and 0 < usage["ratio"] <= 1
+    assert usage["ratio"] == pytest.approx(usage["used"] / usage["total"], abs=1e-4)
+    assert usage["compress_at"] > 0
+    # **是估算，而且要如实说**（界面上不能把估算画成账单）
+    assert usage["estimated"] is True and "估算" in usage["note"]
+
+    by_kind = {item["kind"]: item for item in usage["items"]}
+    assert by_kind["messages"]["chars"] >= len("问题"), "历史那一条真的被算进去了"
+    assert by_kind["tools"]["tokens"] > 0, "工具表是这一轮真给出去的那一张"
+    assert by_kind["system_prompt"]["tokens"] > 0
+    for item in usage["items"]:
+        assert item["share"] == pytest.approx(item["tokens"] / usage["used"], abs=1e-6)
+
+
+def test_context_usage_needs_a_known_conversation(client: TestClient) -> None:
+    """缺参数 422、会话不存在 404（与既有的按会话读的端点同一套归属判定）。"""
+    assert client.get("/api/v1/chat/context-usage").status_code == 422
+    assert (
+        client.get("/api/v1/chat/context-usage?conversation_id=conv_不存在").status_code == 404
+    )
