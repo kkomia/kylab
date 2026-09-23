@@ -498,3 +498,16 @@ describe('历史会话面板的开合', () => {
     expect(screen.queryByRole('dialog', { name: '历史会话' })).not.toBeInTheDocument()
   })
 })
+
+describe('启动后空闲预热（旧 SideNav 的 idle 预热口径）', () => {
+  it('挂载后在空闲时预热任务列表与概览统计（各一次）', async () => {
+    useSessionStore.setState({ currentUser: account('member') })
+    const prewarm = vi.spyOn(await import('@/features/misc/prewarm'), 'prewarmMisc')
+    renderShell('/notes')
+
+    // `onIdle` 在 jsdom 里退化成 `setTimeout(0)`：等它跑
+    await waitFor(() => expect(prewarm).toHaveBeenCalledTimes(1))
+
+    prewarm.mockRestore()
+  })
+})

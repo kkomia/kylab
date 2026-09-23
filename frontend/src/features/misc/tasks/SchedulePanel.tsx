@@ -34,7 +34,7 @@ import {
 } from '../shared/composites'
 import { ScheduleDialog } from './ScheduleDialog'
 
-const SCHEDULES_QUERY_KEY = ['scheduled-tasks'] as const
+export const SCHEDULES_QUERY_KEY = ['scheduled-tasks'] as const
 
 /** 上一次运行的结论：三种状态分开说（"跑完了但没跑完"既不是成功也不是失败）。 */
 function lastRunTone(status: string): TagTone {

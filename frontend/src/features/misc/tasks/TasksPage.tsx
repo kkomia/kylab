@@ -43,7 +43,7 @@ const POLL_INTERVAL_MS = 2000
 /** 任务列表原先一次铺满（几百条时滚不到底），与文档列表同一套口径。 */
 const PAGE_SIZE = 20
 
-const TASKS_QUERY_KEY = ['tasks', 'list'] as const
+export const TASKS_QUERY_KEY = ['tasks', 'list'] as const
 const TASK_LOAD_QUERY_KEY = ['tasks', 'load'] as const
 
 const VIEWS = [
