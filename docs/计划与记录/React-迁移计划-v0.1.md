@@ -300,6 +300,22 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
    所以桌面端**不需要任何改动**，NAS 一重建它就跟着换成 React 版。
 5. 锁文件含 `@esbuild/linux-x64`、`@tailwindcss/oxide-linux-x64-gnu`（容器里装得上）；
    本机那两个 win32 包被 `.dockerignore` 排掉，不会带进 Linux 构建。
+6. **真浏览器逐面核对（2026-09-23，只读：不点改数据的按钮、不发消息）**：九条路由（概览 /
+   对话 / 知识库列表与详情 / 笔记 / 任务 / 能力 / 记忆 / 工作区 / Wiki）都渲染出**真实内容**；
+   docx 预览渲染出正文（`.kylab-docx-wrapper`）、PDF 走 `<iframe>` 指向签名原件；
+   笔记编辑器（tiptap）`.ProseMirror` 可编辑且工具栏齐全；Wiki 有 9 个真实子页与 `?page=` 深链。
+
+**核页面时的四条量法纪律**（都是这一轮真踩出来的"假缺陷"，记下来省得下次再踩）：
+
+1. 判"页面有没有东西"用**无障碍树快照**，**不要**用 `document.body.innerText`——在应用内浏览器
+   面板里它对同一张已经画好的页面读出 `0`；
+2. `domcontentloaded` **早于**"这一页画出来了"：本机实测每页要 **0.5–1.5 秒**（懒加载 chunk +
+   首屏数据），**立刻读会把九条路由全读成 0**；
+3. 查第三方库渲染出的 DOM 要用**本仓的类名**：docx-preview 上游是 `.docx-wrapper`，
+   本仓前缀成了 `.kylab-docx-wrapper`；查不到先怀疑选择器；
+4. 接口字段名去**代码里查**：笔记正文是 `content_md`，不是 `body`（凭记忆猜会得到"正文是空的"）。
+   ——四条的共同点：**"疑似缺陷"先当成自己的量法问题去证伪**；这一轮四次全是量法错，页面都是好的。
+
 
 ### 10.2.1 发版口径：**没动版本号，也没写 CHANGELOG**
 
