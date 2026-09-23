@@ -326,7 +326,10 @@ def check_ui_copy(path: Path) -> list[Violation]:
     例外靠 `UI_COPY_ALLOWED` 显式列（默认是空的）：留一个例外就得写清理由，
     不然它会长成一条通道。
     """
-    if path.suffix not in (".vue", ".ts"):
+    # 后缀里必须有 `.tsx`：P5 之后组件全是 `.tsx`，而这条规则盯的正是组件里的文案——
+    # 只认 `.vue` / `.ts` 的话，规则会因为"什么都没扫到"而永远绿（Vue 时代的写法，
+    # 与旧 `\b` 那次静默失效是同一类错误：**看不出异常，其实没在干活**）。
+    if path.suffix not in (".ts", ".tsx"):
         return []
     text = path.read_text(encoding="utf-8", errors="replace")
     found: list[Violation] = []
@@ -345,10 +348,15 @@ def check_ui_copy(path: Path) -> list[Violation]:
 
 
 def _class_names(line: str) -> list[str]:
-    """这一行里 `class="…"` 写到的类名（`class=` 后紧跟引号，与模板一致）。"""
+    """这一行里 `class="…"` / `className="…"` 写到的类名。
+
+    两种写法都要认：React（P5 之后）是 `className=`，Vue 时代是 `class=`。
+    只认其中一种，另一半的违规就永远查不出来。
+    """
     names: list[str] = []
-    for chunk in line.split('class="')[1:]:
-        names.extend(chunk.split('"')[0].split())
+    for token in ('className="', 'class="'):
+        for chunk in line.split(token)[1:]:
+            names.extend(chunk.split('"')[0].split())
     return names
 
 
