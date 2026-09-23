@@ -46,6 +46,12 @@ tail -f build.log        # 另开一个会话看进度
 
 ### 前端换成 React 版之后（P5，开发计划 §12.234/§12.236）
 
+**一条命令的版本**（推荐）：`sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react`
+——它做四件事：切分支并 `pull`、**只重建 frontend**、`up -d frontend`、核对首页 200 并确认
+页面挂载点是 `#root`（React）而不是 `#app`（旧 Vue）。下面那三步是它展开后的手工版。
+
+
+
 **compose 与路径都不用改**（迁移时就是按"新前端接管 `frontend/`"做的：
 `context: ../frontend`、镜像名 `kylab-frontend`、`frontend/nginx.conf` 与 `Dockerfile` 都还在原位）。
 只要源码换到含 P5 的那个提交，然后**只重建前端**这一个服务：

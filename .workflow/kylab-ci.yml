@@ -13,7 +13,7 @@
 #
 # 依赖的三个工具及其安装方式（写在这里免得下次再猜）：
 #   node    执行器自带（build@nodejs 指定版本）
-#   pnpm    `npm install -g pnpm@10`——**不用 corepack enable**：
+#   pnpm    `npm install -g pnpm@11`——**不用 corepack enable**：
 #           它要写 node 的安装目录，容器里常因权限失败
 #   uv      `pip install uv`——`scripts/lint.sh` 里写的是 `uv run ruff`，
 #           所以 uv 是**必需**的，不是可选优化
@@ -54,7 +54,7 @@ stages:
           - '# ---- 工具准备 ----'
           - python3 --version || python --version
           - node --version
-          - npm install -g pnpm@10
+          - npm install -g pnpm@11
           - pnpm --version
           - python3 -m pip install --quiet uv || python -m pip install --quiet uv
           - uv --version
@@ -67,7 +67,7 @@ stages:
           - '# ---- 前端依赖 ----'
           - pnpm --dir frontend install --frozen-lockfile
           - ''
-          - '# ---- 规范检查：ruff / emoji×2 / 分层 / eslint+prettier / vue-tsc ----'
+          - '# ---- 规范检查：ruff / emoji×2 / 分层 / eslint+prettier / tsc ----'
           - sh scripts/lint.sh
           - ''
           - '# ---- 后端测试 + 前端测试 + 前端生产构建 ----'

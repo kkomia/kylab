@@ -95,7 +95,7 @@ jobs:
         working-directory: frontend
         run: pnpm lint
 
-      - name: 类型检查（vue-tsc）
+      - name: 类型检查（tsc）
         working-directory: frontend
         run: pnpm typecheck
 
