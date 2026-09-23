@@ -17,6 +17,12 @@ import type { ConversationDetail, ConversationSummary } from '@/api/conversation
 import type { KnowledgeBase } from '@/api/knowledgeBases'
 import { resetToasts, useToast } from '@/composables/useToast'
 
+// 「执行策略」与「Agent 模式」这两个控件读写运行期配置（v0.41 / v0.43）：
+// 声明在用例顶部的假函数，`useToast` 与 `useSession` 同理
+const getSettings = vi.fn()
+const updateSettings = vi.fn()
+const getChatMode = vi.fn()
+const setChatMode = vi.fn()
 const listConversations = vi.fn()
 const getConversation = vi.fn()
 // 知识库清单要能被单个用例改写：v0.18 的「使用知识库」开关会按库数显示不同文案，
@@ -71,8 +77,12 @@ vi.mock('@/api/settings', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/settings')>()
   return {
     ...actual,
-    getSettings: vi.fn().mockResolvedValue({ groups: [] }),
-    updateSettings: vi.fn(),
+    getSettings: (...args: unknown[]) => getSettings(...args),
+    updateSettings: (...args: unknown[]) => updateSettings(...args),
+    // 「Agent 模式」读写的两个调用也会被页面里的控件用到（v0.43）：
+    // 这里替换掉它们，用例才拿得到"切档时调的到底是什么"
+    getChatMode: (...args: unknown[]) => getChatMode(...args),
+    setChatMode: (...args: unknown[]) => setChatMode(...args),
   }
 })
 
@@ -119,6 +129,7 @@ vi.mock('@/api/documents', async (importOriginal) => {
 })
 
 import { clearLiveTurn, liveTurnState } from '@/composables/useLiveTurn'
+import { currentUser } from '@/composables/useSessionToken'
 import { clearConversationDetailCache, useConversationStore } from '@/stores/conversations'
 import ChatView from '@/views/ChatView.vue'
 
@@ -305,6 +316,12 @@ beforeEach(() => {
   window.localStorage.clear()
   listKnowledgeBases.mockResolvedValue({ items: [] })
   listSkills.mockResolvedValue({ items: [], usable: 0 })
+  // 默认"这一排里没有配置项可显示"：两个控件（执行策略 / Agent 模式）读不到就**不画**，
+  // 于是其余用例的 DOM 与引入它们之前一模一样（要测它们的用例自己给值）
+  getSettings.mockResolvedValue({ groups: [] })
+  updateSettings.mockResolvedValue({ updated: 0, rejected: [] })
+  getChatMode.mockResolvedValue({ mode: '', options: [] })
+  setChatMode.mockResolvedValue({ updated: 1, rejected: [] })
   // 默认"手上一条会话都没有"：`listConversations` 的实现是会被 `mockClear` 留下的，
   // 不清成空会让后面的用例落到"最近一条会话"上——那时发送**不会新建会话**，
   // 于是断言新建参数就随用例顺序飘（这条也是这么被抓出来的）
@@ -1719,5 +1736,93 @@ describe('执行确认条（v0.41，用户报的第 6 条）', () => {
 
     expect(again.wrapper.find('.approval').exists()).toBe(true)
     again.wrapper.unmount()
+  })
+})
+
+/**
+ * 输入框那一排的「Agent 模式」（v0.43，§12.225 的 P1-1）。
+ *
+ * 这一条只管**挂上去了、切档打的是对的接口**——控件自己的四档与文案在
+ * `tests/unit/components/ModePicker.test.ts`。放在这里是因为"挂在哪一排、
+ * 与谁并排"是这一页的事：它必须和「执行策略」在同一行（两件都是"这一轮它有多放手"）。
+ */
+describe('Agent 模式入口', () => {
+  /** 后端给的候选（`getChatMode` 的形状；取值是权威，括号里是那句人话）。 */
+  const MODES = [
+    { value: 'build', label: '构建（变更前确认）' },
+    { value: 'edit', label: '编辑（自动编辑）' },
+    { value: 'plan', label: '计划（先给计划再动手）' },
+    { value: 'yolo', label: '全放行（少确认全放行）' },
+  ]
+
+  /** 管理员才看得见这一排里的两个入口（它们背后都是管理员端点）。 */
+  function beAdmin() {
+    currentUser.value = {
+      id: 'user_1',
+      username: 'admin',
+      name: '管理员',
+      role: 'admin',
+      avatar_url: '',
+    }
+  }
+
+  beforeEach(() => {
+    currentUser.value = null
+  })
+
+  it('挂在输入框那一排（与执行策略并排），切档调的是 chat.mode', async () => {
+    beAdmin()
+    getChatMode.mockResolvedValue({ mode: 'build', options: MODES })
+    // 「执行策略」也在这一排（它读的是同一份设置的另一个分组）：给上它才有得比
+    getSettings.mockResolvedValue({
+      groups: [
+        {
+          key: 'sandbox',
+          label: '沙箱执行',
+          fields: [
+            {
+              key: 'sandbox.exec_policy',
+              label: '总开关',
+              type: 'select',
+              value: 'ask',
+              configured: true,
+              options: [],
+            },
+          ],
+        },
+      ],
+    } as never)
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    // 挂上了：这一排里出现了当前档，而且**与「执行策略」是同一个容器里的兄弟**
+    // （两个都管"这一轮它有多放手"，分开放等于让用户在两个地方找同一件事）
+    const picker = wrapper.find('.tool-mode')
+    expect(picker.exists()).toBe(true)
+    expect(picker.text()).toContain('模式·构建')
+    expect(picker.element.parentElement?.querySelector('.tool-policy')).not.toBeNull()
+
+    await wrapper.find('.tool-mode summary').trigger('click')
+    const plan = wrapper
+      .findAll('.tool-mode button')
+      .find((button) => button.text().includes('计划'))!
+    await plan.trigger('click')
+    await flushPromises()
+
+    // **打的是写设置那两个调用里的哪一个**：`setChatMode` 最终 PATCH 的键是
+    // `chat.mode`（那条在 `tests/unit/api/settings.test.ts` 里钉着）——
+    // 这里只管"页面切换时真的调了它"，而不是只在本地改了个数
+    expect(setChatMode).toHaveBeenCalledWith('plan')
+    expect(wrapper.find('.tool-mode').text()).toContain('模式·计划')
+    wrapper.unmount()
+  })
+
+  it('非管理员看不见这个入口（它背后是管理员端点）', async () => {
+    getChatMode.mockResolvedValue({ mode: 'build', options: MODES })
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    expect(wrapper.find('.tool-mode').exists()).toBe(false)
+    wrapper.unmount()
   })
 })

@@ -60,6 +60,41 @@ export function updateSettings(
   return request('/settings', { method: 'PATCH', body: JSON.stringify({ values }) })
 }
 
+/**
+ * 「Agent 模式」这一项的键（后端 `chat.mode`）。
+ *
+ * 四档枚举（`plan / build / edit / yolo`）与每档的语义由后端定，
+ * 见 `backend/app/services/modes.py`：**这里不另起名字、也不另定取值**。
+ */
+export const CHAT_MODE_KEY = 'chat.mode'
+
+export interface ChatModeView {
+  /** 当前档；空串 = 后端没给这一项（那种情况不显示控件，见 ModePicker）。 */
+  mode: string
+  /** 后端登记的四档（取值 + 展示名）。界面按它排列，不自己硬编码顺序。 */
+  options: SettingFieldOption[]
+}
+
+/**
+ * 读当前 Agent 模式与四档候选：**走的就是设置页那一个接口**。
+ *
+ * 为什么不另开一个 `GET /chat/mode`：模式是运行期配置里的一项，与
+ * `sandbox.exec_policy` 完全同构（见 `ExecPolicyControl` 的说明——两处各存一份，
+ * 显示的档与引擎用的档迟早会不一致）。
+ */
+export async function getChatMode(): Promise<ChatModeView> {
+  const view = await getSettings()
+  const field = view.groups
+    .find((group) => group.key === 'chat')
+    ?.fields.find((item) => item.key === CHAT_MODE_KEY)
+  return { mode: field?.value ?? '', options: field?.options ?? [] }
+}
+
+/** 写当前 Agent 模式：改的就是设置页那一项（下一轮生效，不必重启）。 */
+export function setChatMode(value: string): Promise<SettingsPatchResult> {
+  return updateSettings([{ key: CHAT_MODE_KEY, value }])
+}
+
 /** 连通性测试：embedding / mineru / paddleocr。刻意做得很轻，不消耗解析额度。 */
 export function testConnection(target: string): Promise<TestConnectionResult> {
   return request(`/settings/test/${target}`, { method: 'POST' })

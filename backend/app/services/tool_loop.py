@@ -37,6 +37,13 @@
    "下一步做什么、能不能几件事一起发、这条路走不通换哪条"，那些判断都出在思考里。
    厂商的协议也是这个意思：思考模式下带工具调用的助手消息要带着推理往后传
    （见 ``llm.ChatMessage.reasoning``），关掉等于每轮把它的计划擦一次。
+7. **执行前过一道模式闸**（v0.43，P1-1，照抄 ZCode 的四档 + QwenPaw 的计划门闸）：
+   当前档由 ``services/modes`` 判定、`plan` 档的门闸状态由 ``services/plan_gate`` 持有。
+   **被拦的调用不执行**，而是把"为什么被拦 + 怎么办"当成工具结果回灌给模型——
+   与 ``agent_exec`` 里"策略拦下"完全同一个形状（连步骤总结的措辞都对齐：
+   「没有执行（…拦下）」），所以界面、快照、事件流都不必为它新增分支。
+   **工具表不变**：四档下交给模型的工具一模一样，变的只是"这一步允不允许执行"
+   （见 ``modes`` 模块头的第 1 条规矩）。
 """
 
 from __future__ import annotations
@@ -53,6 +60,7 @@ if TYPE_CHECKING:  # 只为标注：chat.py 反过来要用这个模块（工具
     from app.services.chat import SourceRef
 
 from app.core.logging import sanitize_log_value
+from app.services import modes, plan_gate
 from app.services.agent import (
     ApprovalEvent,
     DeltaEvent,
@@ -61,8 +69,14 @@ from app.services.agent import (
     StepEvent,
     ThinkingEvent,
 )
-from app.services.approvals import UNAVAILABLE, ApprovalRegistry, ApprovalRequest
+from app.services.approvals import (
+    ALLOW_ONCE,
+    UNAVAILABLE,
+    ApprovalRegistry,
+    ApprovalRequest,
+)
 from app.services.llm import (
+    ChatError,
     ChatMessage,
     LLMReply,
     ToolCall,
@@ -70,7 +84,7 @@ from app.services.llm import (
     ToolSpec,
     assemble_tool_calls,
 )
-from app.services.tool_meta import parallel_groups
+from app.services.tool_meta import meta_of, parallel_groups
 
 __all__ = ["DEFAULT_MAX_STEPS", "ToolLoop", "tool_label"]
 
@@ -107,6 +121,17 @@ DEFAULT_MAX_SECONDS = 300.0
 #: 单个工具结果的字符上限。超了截断并**明确告诉模型被截了**：
 #: 悄悄截断会让它以为"这就是全部"，而截断常常正好丢在它要的那一段之后。
 MAX_RESULT_CHARS = 12000
+
+#: 一轮里最多重试几次**流式失败**（P2-2，见 ``_answer``）。
+#:
+#: 抄的是 ZCode 那条"可重试错误白名单"（调研报告 §2.1 第 3 条）：网络抖一下不该
+#: 把整轮毁掉。但**上限是 1**，而且要满足"还没往界面吐任何正文"（见 ``_answer``）：
+#:
+#: - 重试是"抖一下"的补救，不是"端点一直坏着"的续命。那种情况如实失败更好——
+#:   界面据此给出重试入口，而不是我们在这里悄悄烧调用（每一步都是真金白银）；
+#: - 已经吐了正文再重试，用户会看到回答被写两遍（或者前半段凭空消失）。
+#:   那道判断在 ``_answer`` 里，不在这里。
+MAX_STREAM_RETRIES = 1
 
 #: 一次工具调用**发给界面的**原文上限（入参与结果各一份）。
 #:
@@ -267,6 +292,8 @@ class ToolLoop:
         approvals: ApprovalRegistry | None = None,
         max_steps: int = DEFAULT_MAX_STEPS,
         max_seconds: float = DEFAULT_MAX_SECONDS,
+        mode: str | None = None,
+        gate: plan_gate.PlanGate | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._client_factory = client_factory
@@ -282,6 +309,16 @@ class ToolLoop:
         self._max_seconds = max(1.0, max_seconds)
         # 时钟可注入：用例不必真的 sleep 到超时（也就能测"跨过上限的那一步")
         self._clock = clock
+        #: 这一轮的模式档（P1-1）。不传 = 默认档（``build``）：
+        #: 子 Agent、脚本、单测这些调用点不必知道有"模式"这回事，
+        #: 而默认档的行为与引入模式之前**完全一样**（放行，该问的照问）。
+        self._mode = modes.coerce(mode) if mode is not None else modes.DEFAULT_MODE
+        #: ``plan`` 档的计划门闸。为空 = 按"还没有计划"算（fail-closed，
+        #: 与 ``tool_meta`` 那条"未声明一律独占"同一口径）：计划档下宁可不写。
+        self._gate = gate
+        #: 这一轮还剩几次"流中断重试"（见 ``MAX_STREAM_RETRIES``）。
+        #: 在 ``run`` 里每一轮重新给满，不是构造时定死——对象可能被复用几轮。
+        self._stream_retries_left = MAX_STREAM_RETRIES
 
     @property
     def tools(self) -> list[ToolSpec]:
@@ -307,9 +344,17 @@ class ToolLoop:
             yield from self._answer(messages)
             return
 
+        # 这一轮开始：把当前档告诉计划门闸（不在 ``plan`` 档就把上一段的"已给计划"清掉，
+        # 见 ``plan_gate.PlanGate.sync_mode``）。放在这里而不是构造时：`ToolLoop`
+        # 可能被复用几轮，而档是每轮都可能变的
+        if self._gate is not None:
+            self._gate.sync_mode(self._mode)
+
         # 墙钟从**这一轮开始**算，不从对象构造算：`ToolLoop` 可能被复用，
         # 而"这一轮用了多久"才是用户能感知的那个量
         started_at = self._clock()
+        # 重试预算同理，**每一轮重新给满**（见 ``MAX_STREAM_RETRIES``）
+        self._stream_retries_left = MAX_STREAM_RETRIES
 
         for step in range(self._max_steps):
             if self._expired(started_at):
@@ -331,6 +376,9 @@ class ToolLoop:
             # 按"不是合法 JSON"回给模型，那条路本来就有。
             outcome = yield from self._answer(messages, tools=self._tools)
             if not outcome.wants_tools:
+                # **这一轮以正文收尾**：``plan`` 档下就算"计划已经给了"
+                # （见 ``plan_gate`` 模块头"什么时候算已给出计划"）。
+                self._note_plan(outcome.text)
                 return
             yield from self._perform(
                 messages,
@@ -356,6 +404,49 @@ class ToolLoop:
 
     # ------------------------------------------------------------------ 内部
 
+    def _note_plan(self, text: str) -> None:
+        """计划档下"它把计划说出来了"这一步（见 ``plan_gate`` 模块头）。
+
+        三个条件缺一不可：有门闸、当前是 ``plan`` 档、**正文非空**。
+        空正文不算计划——那是端点抽风，不是它给了个"什么都不做"的计划。
+        """
+        if self._gate is None or self._mode != modes.MODE_PLAN or not text.strip():
+            return
+        self._gate.note_plan(text)
+
+    def _plan_given(self) -> bool:
+        """这一轮计划阶段里，计划给了没有。
+
+        **没有门闸按"没给"算**（fail-closed）：没有会话上下文时（脚本、外部 MCP、
+        子 Agent）宁可多拦一次，也不能默认放行——放行的方向是不可逆的那一边。
+        """
+        if self._gate is None:
+            return False
+        return self._gate.plan_given
+
+    def _blocked_by_mode(self, call: ToolCall) -> ToolOutcome | None:
+        """模式闸：这一步允不允许执行；不允许就给出**要回灌给模型的那段话**。
+
+        形状与 ``agent_exec._refused`` 完全一致（``content`` = 理由，``summary`` =
+        「没有执行（…拦下）」），所以事件、快照、界面都不必为它新增分支。
+
+        ``plan`` 档之外的档**不会**走到这里返回非空（``modes.allows`` 一律放行）：
+        它们的差别在"要不要问一句"，那件事在 ``_execute`` 里用审批表达。
+        """
+        meta = meta_of(call.name)
+        allowed, reason = modes.allows(
+            meta,
+            self._mode,
+            plan_given=self._plan_given(),
+            tool=call.name,
+            tool_label=tool_label(call.name),
+        )
+        if allowed:
+            return None
+        return ToolOutcome(
+            content=reason, summary=f"没有执行（{modes.label_of(self._mode)}档拦下）"
+        )
+
     def _expired(self, started_at: float) -> bool:
         """这一轮是否已经用满墙钟（见 `DEFAULT_MAX_SECONDS`）。"""
         return self._clock() - started_at >= self._max_seconds
@@ -380,7 +471,18 @@ class ToolLoop:
         通常是**模型能自己纠正**的——把它当结果回给它，它下一轮换个法子。
 
         ``approval`` 非空时那次调用带的是**审批结论**（见 ``_perform`` 的第二遍）。
+
+        两处顺序是有讲究的：
+
+        1. **模式闸排在参数解析之前**：被模式拦下时，"参数是不是合法 JSON"根本不影响
+           结论，而这句理由比"参数不合法"重要得多——先说重要的那句。
+        2. **模式闸也排在 ``stop`` 之前**：``stop``（步数/时间用尽）那句是"没机会了，
+           直接作答"，而模式拦下那句要的是"换个做法：先给计划"。两句的下一步不同，
+           谁在更前面就以谁为准——模式是**这一轮能不能做**，比"还来不来得及"更根本。
         """
+        blocked = self._blocked_by_mode(call)
+        if blocked is not None:
+            return blocked
         if stop is not None:
             # 最后一步还调工具（或时间已经用完）：不执行了，直接告诉它没机会了，
             # 省下一次真实调用（它通常只是想再确认一遍）
@@ -389,10 +491,14 @@ class ToolLoop:
             args = _parse_arguments(call.arguments)
         except ValueError as exc:
             return ToolOutcome(content=f"工具参数不是合法 JSON：{exc}")
+        decision = self._approval_for(call, approval)
         try:
+            # ``approval`` 只在**有结论**时传（见 ``ToolRunner`` 的说明）：
+            # 不管审批的执行器（子 Agent、测试里的假执行器）签名里没有它，
+            # 多发一个 None 会让它们 TypeError
             outcome = (
-                self._runner(call.name, args, approval=approval)
-                if approval is not None
+                self._runner(call.name, args, approval=decision)
+                if decision is not None
                 else self._runner(call.name, args)
             )
         except Exception as exc:  # 工具是外部世界，什么都能抛
@@ -401,6 +507,28 @@ class ToolLoop:
             logger.info("工具 %s 执行失败：%s", call.name, sanitize_log_value(exc))
             return ToolOutcome(content=f"工具执行失败：{exc}")
         return _truncate(outcome)
+
+    def _approval_for(self, call: ToolCall, approval: str | None) -> str | None:
+        """这一条调用带不带审批结论。
+
+        除了"上一遍问回来的那个决定"（``_resolve_approvals``），**模式**也会给结论：
+        ``edit`` / ``yolo`` 档下需要点头的调用直接带上"同意一次"，
+        于是它不必停下来等人（见 ``modes.auto_approves``）。
+
+        **一律传 ``allow_once``**，不传"以后都允许"：后者会往放行清单里写一条规则
+        （见 ``agent_exec``），而"我顺手切了一档"不该悄悄改掉那张清单——
+        想写规则就在确认条上点那个按钮，那是明确的一次动作。
+
+        **免问不等于越过拒绝**：显式的拒绝规则与「沙箱执行 → 拒绝」总开关在
+        ``agent_exec`` 里排在审批之前，模式改不动它们。
+        """
+        if approval is not None:
+            return approval
+        meta = meta_of(call.name)
+        if meta.needs_approval and modes.auto_approves(meta, self._mode):
+            logger.info("模式 %s 免去了 %s 的确认", self._mode, call.name)
+            return ALLOW_ONCE
+        return None
 
     def _execute_batch(
         self,
@@ -477,25 +605,53 @@ class ToolLoop:
         （v0.40 起），而下一步往往是"我先查一下"然后再调工具：那种步骤不是回答，
         不该在过程面板里留下一条"组织回答"。只想调工具的那一轮也不发 `DoneEvent`，
         它被 ``run`` 当工具步骤接过去继续跑。
+
+        **流中断时在这一轮里重试一次**（P2-2，见 ``MAX_STREAM_RETRIES``）。两个前提
+        缺一不可，它们是这段代码存在的全部理由：
+
+        - 这次失败**是可重试的那一类**（``ChatError.retryable``：空闲超时、限流、
+          5xx、超时、连接错误）。401、参数错误这些重试一百次也一样，当场失败；
+        - **还没往界面吐过任何正文**。吐过了就不能重试——重试会把正文再写一遍
+          （用户看到同一句话出现两次），而"把已经发出的字收回来"是做不到的。
+          只吐了思考不算"吐过正文"：思考是过程，重试时把它丢掉重来，界面上多
+          一小段思考，代价远小于整轮失败。
+
+        重试要**发一条步骤让用户看得见**：他不知道流断了，只会以为模型卡住了；
+        那条步骤也是"这一轮为什么慢了一点"的唯一痕迹（它同样进会话事件日志）。
         """
-        parts: list[str] = []
-        reasoning_parts: list[str] = []
-        fragments: list[ToolCallDelta] = []
-        started = False
-        for delta in self._client_factory().stream_events(messages, tools):
-            if delta.tool_calls:
-                fragments.extend(delta.tool_calls)
-            if delta.reasoning:
-                reasoning_parts.append(delta.reasoning)
-            if delta.text:
-                parts.append(delta.text)
-            if not started and delta.text:
-                yield StepEvent(phase="answer", label="组织回答", status="running")
-                started = True
-            if delta.reasoning:
-                yield ThinkingEvent(text=delta.reasoning)
-            if delta.text:
-                yield DeltaEvent(text=delta.text)
+        while True:
+            parts: list[str] = []
+            reasoning_parts: list[str] = []
+            fragments: list[ToolCallDelta] = []
+            started = False
+            try:
+                for delta in self._client_factory().stream_events(messages, tools):
+                    if delta.tool_calls:
+                        fragments.extend(delta.tool_calls)
+                    if delta.reasoning:
+                        reasoning_parts.append(delta.reasoning)
+                    if delta.text:
+                        parts.append(delta.text)
+                    if not started and delta.text:
+                        yield StepEvent(phase="answer", label="组织回答", status="running")
+                        started = True
+                    if delta.reasoning:
+                        yield ThinkingEvent(text=delta.reasoning)
+                    if delta.text:
+                        yield DeltaEvent(text=delta.text)
+                break
+            except ChatError as exc:
+                if started or not exc.retryable or self._stream_retries_left <= 0:
+                    raise
+                self._stream_retries_left -= 1
+                # 这一趟攒下的东西**全部丢掉再重来**：正文一个字都还没发（上一条判断），
+                # 而拼到一半的工具调用碎片绝不能接着拼——把两趟拼起来会得到一段
+                # 谁也不认识的 JSON，模型据此执行的是个错东西
+                yield StepEvent(
+                    phase="tool",
+                    label="流中断，正在重试",
+                    detail=_clip(str(exc), 120),
+                )
 
         calls = assemble_tool_calls(fragments) if fragments else ()
         if not calls:

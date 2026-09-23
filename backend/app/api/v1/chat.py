@@ -29,7 +29,9 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import threading
 from collections.abc import Iterator, Sequence
+from queue import Empty, Queue
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
@@ -104,6 +106,21 @@ SSE_HEADERS = {
     "X-Accel-Buffering": "no",
 }
 
+#: SSE 心跳间隔（秒）。
+#:
+#: **为什么要有它**（P2-2，抄 ZCode 的长连接处置）：这条流经常**几十秒没有任何字节**
+#: ——等端点出第一个字（推理模型首字延迟实测可到十几秒）、跑一个抓网页的工具、
+#: 派一个子 Agent，那些时间里模型那边一切正常，而我们一个事件都发不出来。
+#: 问题是"长时间没有数据"这件事在中间层看起来与"连接死了"一模一样：nginx 的
+#: ``proxy_read_timeout`` 默认 60 秒就会把上游读断、浏览器与部分企业代理也有各自的
+#: 空闲上限。被掐掉时用户看到的是"回答写到一半没了"，而那一刻模型还在正常生成
+#: ——**报错指不到真正的病因**（看起来像模型坏了）。
+#: 每 15 秒一个极小的心跳：对应用语义没有任何影响（见 ``_ping``），
+#: 对中间层来说这条连接一直在动。
+#:
+#: 15 秒是"远小于最常见的 60 秒反代超时、又不会把空闲流刷成噪声"的量级。
+SSE_PING_SECONDS = 15.0
+
 
 @router.post(
     "/chat/stream",
@@ -125,7 +142,8 @@ def chat_stream(
     # （流一旦开始，状态码已经发出去了）。没配任何模型不算错，交由流内报可读文案。
     services.chat.llm_config(model_pk)
     return StreamingResponse(
-        _events(services, payload, model_pk, thinking, effort, caller),
+        # 套一层心跳（P2-2）：流里长时间没事件时也要有字节出去，见 SSE_PING_SECONDS
+        _with_pings(_events(services, payload, model_pk, thinking, effort, caller)),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -177,19 +195,22 @@ def resume_turn(
     services.conversations.drop_answer(conversation_id, answer_id=turn.answer_id)
 
     return StreamingResponse(
-        _resume_events(
-            services,
-            conversation_id=conversation_id,
-            # 库范围取**会话已存的**：续跑是接着同一轮做，不是新一轮提问
-            kb_ids=conversation.kb_ids,
-            payload=payload,
-            question=turn.question,
-            previous=turn,
-            reason=reason,
-            model_pk=model_pk,
-            thinking=thinking,
-            effort=effort,
-            caller=caller,
+        # 续跑同样套心跳：这条路更容易长时间没事件（它往往要跑不少工具步）
+        _with_pings(
+            _resume_events(
+                services,
+                conversation_id=conversation_id,
+                # 库范围取**会话已存的**：续跑是接着同一轮做，不是新一轮提问
+                kb_ids=conversation.kb_ids,
+                payload=payload,
+                question=turn.question,
+                previous=turn,
+                reason=reason,
+                model_pk=model_pk,
+                thinking=thinking,
+                effort=effort,
+                caller=caller,
+            )
         ),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
@@ -709,6 +730,10 @@ def _agent_loop(
         model_pk=model_pk,
         thinking=thinking,
         thinking_effort=effort,
+        # 会话 id：只用来取那条会话的**计划门闸**（P1-1 的 `plan` 档要记
+        # "本会话给没给过计划"，见 services/plan_gate.py）。模式档本身从运行期配置读，
+        # 不从这里传——那条路上只有一个读点，见 services/chat.tool_loop 的说明
+        conversation_id=conversation_id,
         # **工具表含外部 MCP 服务的工具**（v0.20）：用户在能力页接进来的
         # 服务，它们的工具与内置工具一起交给模型；能不能真的调起来由
         # 执行器那一刻的准入策略决定（见 agent_tools._call_mcp）
@@ -1099,6 +1124,79 @@ def _use_agent(services: Services) -> bool:
 
 def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _ping() -> str:
+    """一条心跳（P2-2，见 ``SSE_PING_SECONDS``）。
+
+    **它不带 ``data:`` 行**，与别的 SSE 事件不同，这是刻意的：前端把每一条
+    ``data:`` 都当成一条消息去认 ``type``，而它只认识 done / error / step / …
+    那几种——多出一个陌生的 type 会落到"其余都当错误"那条分支上
+    （``frontend/src/api/chat.ts`` 的 ``emit``）。心跳是**给连接看的，不是给界面看的**，
+    所以它连 data 都没有；按 SSE 规范，data 为空的事件不会派发给 EventSource，
+    浏览器那边同样什么都不会发生。
+    """
+    return "event: ping\n\n"
+
+
+def _with_pings(events: Iterator[str]) -> Iterator[str]:
+    """把一条事件流包成"空闲就发心跳"的那条流（P2-2）。
+
+    **为什么必须另起一个线程**：这条流是同步生成器，"模型说一句我们发一句"，
+    它一次 ``next()`` 可能阻塞几十秒（等首字、跑一个抓网页的工具、派子 Agent）。
+    在同一根线里等就没法在等待期间发出任何字节——而那正是会被中间层掐掉的事
+    （见 ``SSE_PING_SECONDS``）。所以内层生成器在**它自己的线程**里跑，
+    本生成器只做一件简单的事：队列里有事件就发，超时没动静就发一个心跳。
+
+    两处细节各有原因，改的时候别省：
+
+    - **断开时（本生成器被 close）由那个线程去关内层生成器**：GeneratorExit 会沿着
+      ``_events`` 的 ``except GeneratorExit`` 把 ``interrupted`` 补进会话事件日志
+      （P0-2 那条验收）。从本线程直接 ``close()`` 不行——生成器可能正在那个线程里
+      执行，那会抛 "generator already executing"。所以本线程只置一个停止标记，
+      由那边**在两次 next 之间**自己收工（正在跑的那一步会跑完，那正是"停在哪一步"
+      要记的东西；不会等到整轮结束——``stop`` 在每次取到事件后都要检查一次）。
+    - **内层抛出的异常原样带回本线程再抛**：它的类型是上层分支的依据
+      （``_turn_events`` 的 ``except ChatError``），在别的线程里抛会被解释成
+      "这一层自己崩了"，用户拿到的文案也就成了 500 那套。
+    """
+    queue: Queue[tuple[str, object]] = Queue()
+    stop = threading.Event()
+
+    def pump() -> None:
+        try:
+            for item in events:
+                if stop.is_set():
+                    break
+                queue.put(("event", item))
+        except BaseException as exc:
+            # 连 BaseException 一起接：这里的职责只是**原样搬运**，判断留给消费侧
+            # （``_turn_events`` 的 except 分支）；漏掉一类异常会让流莫名其妙地断死
+            queue.put(("error", exc))
+        finally:
+            try:
+                events.close()
+            except Exception:  # 收尾失败不该盖过已经发生的那件事（成功或失败）
+                logger.exception("关闭对话流失败")
+            queue.put(("end", None))
+
+    worker = threading.Thread(target=pump, name="chat-sse-heartbeat", daemon=True)
+    worker.start()
+    try:
+        while True:
+            try:
+                kind, payload = queue.get(timeout=SSE_PING_SECONDS)
+            except Empty:
+                yield _ping()
+                continue
+            if kind == "event":
+                yield payload  # type: ignore[misc]
+            elif kind == "end":
+                return
+            else:
+                raise payload  # type: ignore[misc]
+    finally:
+        stop.set()
 
 
 def _context(

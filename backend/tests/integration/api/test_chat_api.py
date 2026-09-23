@@ -8,6 +8,7 @@
 
 import io
 import json
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -656,3 +657,81 @@ def test_the_non_streaming_endpoint_records_events_too(client: TestClient, kb_id
             for item in logged
         ]
     ) == steps
+
+
+# ------------------------------------------------- 流式健壮性：心跳（P2-2）
+
+
+def test_a_quiet_stream_gets_a_ping_so_the_connection_is_not_dropped(
+    client: TestClient, kb_id: str, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """流里长时间没有事件时要发**心跳**（P2-2）。
+
+    为什么非有不可：这条流经常几十秒没有任何字节（等端点出第一个字、跑一个抓网页的
+    工具、派子 Agent），而那在中间层看起来与"连接死了"一模一样——nginx 的
+    ``proxy_read_timeout`` 默认 60 秒就把上游读断了。被掐掉时用户看到的是"回答写到
+    一半没了"，而模型那边一切正常（见 ``chat.SSE_PING_SECONDS``）。
+
+    心跳间隔在这里被压到 0.05 秒：真等 15 秒的用例没人会跑，而被测的判据是
+    "静默期里有没有字节出去"，与那个数字无关。
+    """
+    from app.api.v1 import chat as chat_api
+    from app.services.llm import LLMDelta
+
+    monkeypatch.setattr(chat_api, "SSE_PING_SECONDS", 0.05)
+    chat = install_fake_chat("甲乙")
+
+    def quiet_stream(messages, tools=None):  # type: ignore[no-untyped-def]
+        # 第一段正文先到，然后**静默 0.3 秒**（真实现里那是模型在想、或者工具在跑）
+        yield LLMDelta(text="甲")
+        time.sleep(0.3)
+        yield LLMDelta(text="乙")
+
+    monkeypatch.setattr(chat, "stream_events", quiet_stream)
+
+    text = client.post("/api/v1/chat/stream", json={"query": "问题", "kb_ids": [kb_id]}).text
+
+    assert "event: ping" in text, "静默期里必须有心跳字节出去"
+    # 心跳出现在**那两段正文之间**：说明它真是"空闲时补的"，不是流末尾附送的
+    assert text.index("event: ping") < text.index('"text": "乙"')
+    # 而且它不打扰正文：回答照旧完整
+    events = _parse_sse(text)
+    assert [e for e in events if e["type"] == "done"][-1]["answer"] == "甲乙"
+    # **心跳对界面不可见**：它连 data 行都没有，所以那条已知事件类型之外不会多出东西
+    # （前端把不认识的 data 当成错误，见 chat._ping 的说明）
+    assert {e["type"] for e in events} <= {"step", "sources", "delta", "thinking", "done"}
+
+
+def test_a_disconnect_still_reaches_the_inner_stream() -> None:
+    """套上心跳之后，"客户端断开"**仍然要能收尾内层流**（P2-2 的回归点）。
+
+    心跳必须另起一个线程跑内层生成器（见 ``chat._with_pings``：同一根线里等不到
+    空闲期），于是断开这件事变成了"消费侧置停止标记、生产侧在两次 next 之间
+    自己关掉内层生成器"。这条链路要是断了，表现是**静默的**——不报错，只是
+    "用户停在半截"的那条记录（``interrupted``，P0-2 的验收）不再进日志。
+    """
+    from app.api.v1 import chat as chat_api
+
+    closed: list[str] = []
+
+    def events():  # type: ignore[no-untyped-def]
+        try:
+            yield 'data: {"type": "step"}\n\n'
+            while True:  # 一直有东西可发：模拟"这一轮还在跑"
+                time.sleep(0.01)
+                yield 'data: {"type": "delta", "text": "字"}\n\n'
+        finally:
+            # 内层生成器的收尾（真实链路里那是 ``_events`` 补一条 interrupted）
+            closed.append("closed")
+
+    stream = chat_api._with_pings(events())
+    assert next(stream).startswith("data:"), "流真的开起来了"
+    stream.close()  # 客户端断开
+
+    # 收尾发生在**那个线程**里（真实链路里它还要写一次库）：给它一点时间
+    deadline = time.monotonic() + 2.0
+    while not closed and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert closed == ["closed"], "断开必须能传到内层生成器（否则中断记录就丢了）"
+
+

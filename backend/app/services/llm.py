@@ -16,7 +16,8 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 
 import httpx
@@ -26,6 +27,8 @@ from app.core.http import shared_client
 from app.services.thinking import DEFAULT_EFFORT, build_thinking_payload, echoes_reasoning
 
 __all__ = [
+    "RETRYABLE_REASONS",
+    "STREAM_IDLE_TIMEOUT_SECONDS",
     "ChatError",
     "ChatMessage",
     "LLMConfig",
@@ -40,6 +43,31 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 120.0
 """比 embedding 宽：生成一段答案比算一次向量慢得多。"""
 
+STREAM_IDLE_TIMEOUT_SECONDS = 30.0
+"""流式响应里**两块之间**最多等多久（秒），超了就当场断掉。
+
+抄的是 ZCode 的 ``MODEL_STREAM_IDLE_TIMEOUT``（见《Agent 与对话架构对标调研 v0.1》
+§2.1："差 30 秒没事件就断"）。**为什么需要它**：原先只有"整次调用 120 秒"那一道
+上限，它管的是"这一趟总共别太久"，管不了"端点在中间卡死"——实测遇到的卡法就是
+连接还在、token 也偶尔来一点，最后 120 秒到了才失败，用户盯着一个不动的光标
+等了两分钟，而那一刻他手里没有任何可处置的线索。30 秒是"思考再久也不至于这么久"
+的量级：推理模型的首字延迟实测在 10 秒内，一旦开始吐 token，块间隔都在毫秒级。
+
+它**不算"整次调用"的长度**：一轮长回答分几十块来，每块都不超过这个间隔就一直是活的，
+所以正常的长回答不会被它误伤。
+"""
+
+#: 可重试的失败原因（**白名单**）。照 ZCode 的可重试集合：``stream_idle_timeout`` /
+#: ``rate_limited`` / ``server_error`` / ``network_error`` / ``timeout``
+#: （调研报告 §2.1 第 3 条）。
+#:
+#: 为什么是白名单而不是黑名单：新出现一种失败时默认落到"不可重试"那一侧——
+#: 把 401（密钥错）或参数错误重试一次，只是把同一个错再犯一遍，还白花一次调用；
+#: 而漏掉一种本该重试的抖动，代价只是"这次没救回来、用户再点一次"。
+RETRYABLE_REASONS = frozenset(
+    {"stream_idle_timeout", "rate_limited", "server_error", "network_error", "timeout"}
+)
+
 _MAX_ERROR_BODY = 300
 
 
@@ -48,10 +76,25 @@ class ChatError(UpstreamError):
 
     继承 ``UpstreamError`` 而不是自己一套：协议层就不必逐个接口写 try/except，
     统一异常处理器会把它映射成 502 + 可读文案（换 key / 换模型 / 稍后重试）。
+
+    **P2-2 起它多带一个"能不能重试"**：``reason`` 是失败原因（取值见
+    ``RETRYABLE_REASONS``），``retryable`` 由它算出来。分类在这一层、重试在上层——
+    这一层只知道"这次失败是什么"，不知道该重试几次、还能不能重试（已经吐了一半
+    正文的时候重试会把回答写两份），那些是策略，见 ``tool_loop._answer``。
     """
 
     code = "chat_error"
     message = "对话模型调用失败"
+
+    def __init__(self, message: str | None = None, *, reason: str = "") -> None:
+        super().__init__(message)
+        #: 失败原因（分类用，见 ``RETRYABLE_REASONS``）。空串 = 没归类，按不可重试算。
+        self.reason = reason
+
+    @property
+    def retryable(self) -> bool:
+        """这次失败**再试一次有没有意义**（白名单判定，见 ``RETRYABLE_REASONS``）。"""
+        return self.reason in RETRYABLE_REASONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,23 +280,36 @@ class OpenAICompatChat:
         *,
         client: httpx.Client | None = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        idle_timeout: float = STREAM_IDLE_TIMEOUT_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = config
         self._client = client
         self._timeout = timeout
+        # 空闲上限**可以单独给**（见 ``STREAM_IDLE_TIMEOUT_SECONDS``）：它是流的判据，
+        # 与"整次调用多久算太久"是两件事，混成一个数就必然有一头不合适。
+        self._idle_timeout = idle_timeout
+        # 时钟可注入：用例不必真的等 30 秒（见 tests/unit/services/test_llm.py）
+        self._clock = clock
 
     # ------------------------------------------------------------------ 接口
 
     def complete(self, messages: Sequence[ChatMessage]) -> str:
         """一次性拿完整回答。"""
         with self._open() as client:
-            response = client.post(
-                f"{self.config.base_url.rstrip('/')}/chat/completions",
-                headers=self._headers(),
-                json={**self._payload(messages), "stream": False},
-                # 超时按调用点给：共享客户端自带的那个只是兜底（见 app/core/http.py）
-                timeout=self._timeout,
-            )
+            try:
+                response = client.post(
+                    f"{self.config.base_url.rstrip('/')}/chat/completions",
+                    headers=self._headers(),
+                    json={**self._payload(messages), "stream": False},
+                    # 超时按调用点给：共享客户端自带的那个只是兜底（见 app/core/http.py）
+                    timeout=self._timeout,
+                )
+            except httpx.TransportError as exc:
+                # 连不上 / 中途断开 / 超时都归到**可重试**那一类（见 RETRYABLE_REASONS）。
+                # 不包的话它们会以 httpx 的原始异常穿到协议层，被当成 500
+                # "服务内部错误"——而它其实是一次外部服务的抖动，处置方式完全不同。
+                raise _transport_error(exc) from exc
         body = self._decode(response)
         # 记下这一轮的 token 用量，供调用方取（见 ``last_usage``）。
         # 放在这里而不是让 complete 换返回值：那会改掉所有调用方的签名，
@@ -292,6 +348,15 @@ class OpenAICompatChat:
 
         判断的口径：**正文与工具调用都算"产出了"**——只想调工具的那一轮正文是空的，
         那不是空回答；只有思考不算。
+
+        **P2-2 起两道新的判定都在这里**（都不在这层重试，只分类，见 ``ChatError``）：
+
+        - **空闲超时**：两块之间超过 ``STREAM_IDLE_TIMEOUT_SECONDS`` 就当场断掉，
+          抛 ``reason="stream_idle_timeout"``。两道保险——HTTP 那一层的读超时
+          （``timeout=`` 里的 ``read``）先叫醒真卡住的 socket，下面那个墙钟检查管
+          假客户端与"块到了但间隔过长"；少了后者，那些卡法要等到整次调用的 120 秒。
+        - **连接层失败**：超时/断开都翻成带分类的 ``ChatError``，而不是让 httpx 的
+          原始异常穿上去（到了协议层就成了一句"服务内部错误"）。
         """
         produced = False
         finish_reason = ""
@@ -302,26 +367,43 @@ class OpenAICompatChat:
                 f"{self.config.base_url.rstrip('/')}/chat/completions",
                 headers=self._headers(),
                 json={**self._payload(messages, tools), "stream": True},
-                timeout=self._timeout,
+                # 读超时按**空闲**给：httpx 的 read 超时就是"两次读到数据之间"的上限，
+                # 正好是我们要的那条判据（connect/write/pool 仍是 120 秒那只）
+                timeout=httpx.Timeout(self._timeout, read=self._idle_timeout),
             ) as response,
         ):
             if response.status_code != 200:
                 response.read()
-                raise ChatError(_error_hint(response))
-            for line in response.iter_lines():
-                chunk = _chunk_of(line)
-                if chunk is None:
-                    continue
-                if chunk.finish_reason:
-                    finish_reason = chunk.finish_reason
-                if chunk.text or chunk.tool_calls:
-                    produced = True
-                if chunk.text or chunk.reasoning or chunk.tool_calls:
-                    yield LLMDelta(
-                        text=chunk.text,
-                        reasoning=chunk.reasoning,
-                        tool_calls=chunk.tool_calls,
-                    )
+                raise _status_error(response)
+            last_seen = self._clock()
+            try:
+                for line in response.iter_lines():
+                    now = self._clock()
+                    if now - last_seen >= self._idle_timeout:
+                        raise ChatError(
+                            _idle_hint(now - last_seen), reason="stream_idle_timeout"
+                        )
+                    last_seen = now
+                    chunk = _chunk_of(line)
+                    if chunk is None:
+                        continue
+                    if chunk.finish_reason:
+                        finish_reason = chunk.finish_reason
+                    if chunk.text or chunk.tool_calls:
+                        produced = True
+                    if chunk.text or chunk.reasoning or chunk.tool_calls:
+                        yield LLMDelta(
+                            text=chunk.text,
+                            reasoning=chunk.reasoning,
+                            tool_calls=chunk.tool_calls,
+                        )
+            except httpx.ReadTimeout as exc:
+                # 真卡住时是它先把我们叫醒（见上面的 read 超时）
+                raise ChatError(
+                    _idle_hint(self._idle_timeout), reason="stream_idle_timeout"
+                ) from exc
+            except httpx.TransportError as exc:
+                raise _transport_error(exc) from exc
         if not produced:
             raise ChatError(_empty_stream_hint(finish_reason))
 
@@ -396,7 +478,7 @@ class OpenAICompatChat:
 
     def _decode(self, response: httpx.Response) -> dict:
         if response.status_code != 200:
-            raise ChatError(_error_hint(response))
+            raise _status_error(response)
         try:
             return response.json()
         except ValueError as exc:
@@ -476,6 +558,51 @@ def _empty_stream_hint(finish_reason: str) -> str:
         "模型没有返回任何正文（可能只返回了思考内容）。请把「深度思考」调低或关掉，"
         "或换一个非推理模型再试"
     )
+
+
+def _idle_hint(waited: float) -> str:
+    """流空闲超时（见 ``STREAM_IDLE_TIMEOUT_SECONDS``）时的可处置提示。
+
+    **把等待时长说出来**：用户那一刻看到的是"写了一半不动了"，他需要知道
+    这是我们主动断的、断了多久，而不是"模型还在想"。
+    """
+    return (
+        f"对话流中断：{int(waited)} 秒没有收到任何数据（上限 "
+        f"{int(STREAM_IDLE_TIMEOUT_SECONDS)} 秒）。常见原因是网络抖动或端点排队，"
+        "可以重试；一直这样请检查接口地址或换个模型"
+    )
+
+
+def _status_reason(status: int) -> str:
+    """HTTP 状态码 → 失败原因（取值见 ``RETRYABLE_REASONS``；空串 = 不可重试）。
+
+    分类照 ZCode 的口径：**429（限流）与 5xx（端点自己出错）可重试**，
+    401/404/参数错误不可重试——后三者重试一千次结果一样，只会把同一个错再犯一遍。
+    408 也算超时那一类（端点自己说"我没等到请求"）。
+    """
+    if status == 429:
+        return "rate_limited"
+    if status == 408:
+        return "timeout"
+    if 500 <= status < 600:
+        return "server_error"
+    return ""
+
+
+def _status_error(response: httpx.Response) -> ChatError:
+    """非 200 的响应 → **带分类**的 ``ChatError``（文案仍是 ``_error_hint`` 那份）。"""
+    return ChatError(_error_hint(response), reason=_status_reason(response.status_code))
+
+
+def _transport_error(exc: httpx.TransportError) -> ChatError:
+    """连接层失败 → 带分类的 ``ChatError``。
+
+    超时（``TimeoutException`` 那一族）与"连不上 / 中途断开"分开写：它们对用户是
+    两件事（一个是慢，一个是没通上），而两者都进可重试白名单。
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        return ChatError(f"对话端点超时：{exc}", reason="timeout")
+    return ChatError(f"对话端点连不上或中途断开：{exc}", reason="network_error")
 
 
 def _message_wire(message: ChatMessage, *, echo_reasoning: bool = False) -> dict:

@@ -19,6 +19,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+from app.services import plan_gate
 from app.services import subagent as subagent_service
 from app.services.approvals import ApprovalRegistry
 from app.services.llm import ChatError, ChatMessage, LLMConfig, OpenAICompatChat
@@ -911,6 +912,8 @@ class ChatService:
         approvals: ApprovalRegistry | None = None,
         max_steps: int | None = None,
         max_seconds: float | None = None,
+        conversation_id: str | None = None,
+        mode: str | None = None,
     ) -> ToolLoop:
         """建一个工具循环。
 
@@ -921,6 +924,11 @@ class ChatService:
         ``approvals`` 非空 = 这一轮**有界面可以问**（``ask`` 档的工具调用要在那里
         停下来等人点头，见 ``tool_loop._resolve_approvals``）。不传的调用点
         （定时任务那条链路）保持"拒绝并说清"的旧行为——那里没有人回答。
+
+        ``mode`` / ``conversation_id`` 是 v0.43（P1-1）新加的：前者是这一轮的
+        Agent 模式档（不传就从运行期配置读 ``chat.mode``——**这是唯一的读点**，
+        所以输入框上改一下下一轮就生效，不必重启），后者只是用来取那条会话的
+        计划门闸（`plan` 档要记"本会话给没给过计划"，见 ``services/plan_gate.py``）。
 
         **工具循环全程用用户选定的档位**（v0.27 试过"选工具那一步不思考"，撤了）：
         实测关掉确实能让单次往返从 1.18s 降到 0.68s，但多步循环里"下一步做什么、
@@ -940,6 +948,11 @@ class ChatService:
             tools=list(tools),
             runner=runner,
             approvals=approvals,
+            # 模式档：不传就从运行期配置读（**唯一的读点**，见上面那段说明）。
+            # 归一化交给 `modes.coerce`：设置页里是自由文本，写错了回默认档而不是炸整轮
+            mode=mode if mode is not None else self._runtime.get("chat.mode"),
+            # 计划门闸按会话取：同一条会话的几轮共享一份"给没给过计划"
+            gate=plan_gate.gate_for(conversation_id),
             **extra,  # type: ignore[arg-type]
         )
 

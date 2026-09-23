@@ -13,6 +13,8 @@ import httpx
 import pytest
 
 from app.services.llm import (
+    RETRYABLE_REASONS,
+    STREAM_IDLE_TIMEOUT_SECONDS,
     ChatError,
     ChatMessage,
     LLMConfig,
@@ -437,3 +439,160 @@ def test_the_reasoning_and_the_calls_come_out_of_the_stream() -> None:
     assert len(fragments) == 2, "碎片原样转出（拼装是工具循环的事）"
     calls = assemble_tool_calls(fragments)
     assert [(call.id, call.name, call.arguments) for call in calls] == [("c1", "search", "{}")]
+
+
+# ------------------------------------------------- 流空闲超时与失败分类（P2-2）
+
+
+class _Clock:
+    """可推进的假时钟：用例不必真的等 30 秒。"""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def _gapped_client(clock: _Clock, *, gaps: list[float], chunks: list[dict]) -> httpx.Client:
+    """一个"每块之间停一会儿"的假端点（用假时钟记，不真 sleep）。
+
+    ``gaps[i]`` 是**读到第 i 块之前**经过的时长。被测的判据正是"两块之间隔了多久"，
+    所以这里把时间推进放在"吐那一块"的那一刻——与真实端点上一块晚到的形状一致。
+    """
+
+    class _Stream(httpx.SyncByteStream):
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            nl = chr(10)
+            for gap, chunk in zip(gaps, chunks, strict=True):
+                clock.now += gap
+                yield f"data: {json.dumps(chunk)}{nl}{nl}".encode()
+            yield f"data: [DONE]{nl}{nl}".encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_Stream())
+
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def _idle_chat(clock: _Clock, client: httpx.Client) -> OpenAICompatChat:
+    return OpenAICompatChat(_config(), client=client, clock=clock)
+
+
+def test_a_stream_that_goes_quiet_for_the_idle_timeout_is_cut_off() -> None:
+    """**两块之间**超过空闲上限就当场断（P2-2，照 ZCode 的 ``MODEL_STREAM_IDLE_TIMEOUT``）。
+
+    没有这道判定时的实测形状：连接还在、token 也偶尔来一点，于是要等到整次调用的
+    120 秒才失败——用户盯着一个不动的光标等了两分钟，而那一刻他手里没有任何线索。
+
+    这里给的是"第一块到了、第二块隔了 31 秒"：31 >= 30 当场断。
+    """
+    clock = _Clock()
+    client = _gapped_client(
+        clock, gaps=[0.0, STREAM_IDLE_TIMEOUT_SECONDS + 1.0], chunks=[_delta("你"), _delta("好")]
+    )
+
+    seen: list[str] = []
+    with pytest.raises(ChatError) as caught:
+        for delta in _idle_chat(clock, client).stream_events(_MESSAGES):
+            seen.append(delta.text)
+
+    assert caught.value.reason == "stream_idle_timeout"
+    assert caught.value.retryable is True
+    # 已经交出去的那一块仍然算数（上层据此判断"还能不能重试"，见 tool_loop._answer）
+    assert seen == ["你"]
+    # 文案要给出"下一步做什么"，而且说清等了多久
+    assert "31 秒" in str(caught.value)
+    assert "重试" in str(caught.value)
+
+
+def test_a_stream_that_keeps_producing_is_not_cut_off() -> None:
+    """一直在吐 token 的流**不受这道闸影响**（哪怕它整体很长）。
+
+    上限管的是"两块之间"，不是"整次调用"：一轮长回答就是几十块拼起来的，
+    每块都很快——把它误判成断流的话，长回答会稳定地在中间被砍掉。
+    """
+    clock = _Clock()
+    client = _gapped_client(
+        clock,
+        # 每块之间都停 29 秒（刚好在上限之内），一共三块
+        gaps=[0.0, STREAM_IDLE_TIMEOUT_SECONDS - 1.0, STREAM_IDLE_TIMEOUT_SECONDS - 1.0],
+        chunks=[_delta("甲"), _delta("乙"), _delta("丙")],
+    )
+
+    deltas = list(_idle_chat(clock, client).stream_events(_MESSAGES))
+
+    assert "".join(item.text for item in deltas) == "甲乙丙"
+
+
+@pytest.mark.parametrize(
+    ("status", "retryable"),
+    [
+        (429, True),   # 限流：等一会儿就是好了
+        (500, True),   # 端点自己出错
+        (503, True),   # 同上（网关那一层）
+        (401, False),  # 密钥不对：重试一百次也一样，只会白花一次调用
+        (404, False),  # 地址或模型名写错
+        (400, False),  # 请求格式不对
+    ],
+)
+def test_http_failures_are_classified_by_whether_a_retry_can_help(
+    status: int, retryable: bool
+) -> None:
+    """429/5xx 判可重试、401/404/参数错误不可重试（P2-2 的白名单）。
+
+    分类在这一层、**重试不在这层**：它只回答"值不值得再试"，具体重试几次、
+    能不能重试（已经吐了一半正文的时候不行）是上层的策略（见 ``tool_loop._answer``）。
+    """
+    client = _stream_client([], status=status)
+
+    with pytest.raises(ChatError) as caught:
+        list(OpenAICompatChat(_config(), client=client).stream_events(_MESSAGES))
+
+    assert caught.value.retryable is retryable
+    assert (caught.value.reason in RETRYABLE_REASONS) is retryable
+    # 非流式那条路同一套判定（两条路必须一个口径）
+    with pytest.raises(ChatError) as caught_once:
+        OpenAICompatChat(_config(), client=client).complete(_MESSAGES)
+    assert caught_once.value.retryable is retryable
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (httpx.ConnectError("连不上"), "network_error"),
+        (httpx.ReadTimeout("读超时"), "timeout"),
+        (httpx.RemoteProtocolError("流到一半断了"), "network_error"),
+    ],
+)
+def test_transport_failures_come_out_classified_and_retryable(
+    error: httpx.TransportError, reason: str
+) -> None:
+    """连接层的失败（超时 / 连不上 / 中途断开）都归到可重试那一类。
+
+    不包的话它们以 httpx 的原始异常穿到协议层，被当成 500"服务内部错误"——
+    而它其实是一次外部抖动，处置方式（再试一次 vs 去设置页改配置）完全不同。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise error
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(ChatError) as caught:
+        OpenAICompatChat(_config(), client=client).complete(_MESSAGES)
+
+    assert caught.value.reason == reason
+    assert caught.value.retryable is True
+
+
+def test_an_unclassified_failure_is_not_retryable() -> None:
+    """没归类的失败**默认不可重试**（白名单语义）。
+
+    反过来的话，一个我们没想过的失败会被反复重试——而"新出现一种失败"正是最不该
+    自动重试的时候（不知道它重试会发生什么）。
+    """
+    assert ChatError("说不清是什么").retryable is False
+    assert ChatError("限流").retryable is False  # 只有 reason 才决定，不看文案
+    assert ChatError("限流", reason="rate_limited").retryable is True
+

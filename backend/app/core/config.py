@@ -183,6 +183,15 @@ class Settings(BaseSettings):
     """记忆工作区目录，**相对数据目录**。不设时用代码默认 ``memory``，
     于是容器里是挂载卷下的 ``/data/memory``。"""
 
+    # ---- agent 模式（P1-1）------------------------------------------------
+    #
+    # 与记忆那三项同一条口径：这里**只是 .env 引导值**，真正的值在运行期配置
+    # （``app_settings`` 的 ``chat.mode``——输入框那一排的控件改的就是它）。
+    # 加这一层是为了让容器部署能在 compose 里一次写清"这个部署默认用哪一档"。
+    chat_mode: str | None = None
+    """Agent 模式四档 ``plan / build / edit / yolo``（枚举与语义见 ``services/modes.py``，
+    照 ZCode 抄的）。不设时用代码默认 ``build``（与 ZCode 的默认档一致）。"""
+
     @property
     def cors_origin_list(self) -> list[str]:
         """把逗号分隔的 CORS 白名单拆成列表。"""

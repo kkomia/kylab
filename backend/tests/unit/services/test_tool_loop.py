@@ -19,11 +19,12 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from app.services import approvals as approval_service
+from app.services import modes, plan_gate
 from app.services.agent import ApprovalEvent, DeltaEvent, DoneEvent, SourcesEvent, StepEvent
 from app.services.agent_tools import _scope_search
 from app.services.approvals import ApprovalRegistry
 from app.services.chat import SourceRef
-from app.services.llm import LLMDelta, LLMReply, ToolCall, ToolCallDelta, ToolSpec
+from app.services.llm import ChatError, LLMDelta, LLMReply, ToolCall, ToolCallDelta, ToolSpec
 from app.services.tool_loop import ToolLoop, ToolOutcome, _parse_arguments, _truncate
 
 SEARCH = ToolSpec(name="search", description="查", parameters={"type": "object"})
@@ -1345,3 +1346,395 @@ def test_the_question_is_asked_one_at_a_time() -> None:
             registry.decide(event.approval_id, approval_service.ALLOW_ONCE)
     assert len(asked) == 2
     assert asked[0] != asked[1]
+
+
+# ------------------------------------------------------------------ 模式闸（v0.43，P1-1）
+
+
+WRITE = ToolSpec(name="create_note", description="写笔记", parameters={"type": "object"})
+COMMAND = ToolSpec(name="run_command", description="跑命令", parameters={"type": "object"})
+
+
+def _mode_loop(
+    replies: list[LLMReply],
+    runner,
+    *,
+    tools: list[ToolSpec] | None = None,
+    mode: str = "plan",
+    gate=None,  # type: ignore[no-untyped-def]
+    **kwargs,  # type: ignore[no-untyped-def]
+) -> tuple[ToolLoop, _FakeClient]:
+    """按模式建一个循环：工具表就是"读 + 写 + 执行"三类的代表。"""
+    client = _FakeClient(replies)
+    return (
+        ToolLoop(
+            client_factory=lambda: client,
+            tools=tools if tools is not None else [SEARCH, WRITE, COMMAND],
+            runner=runner,
+            mode=mode,
+            gate=gate,
+            **kwargs,
+        ),
+        client,
+    )
+
+
+def test_plan_mode_blocks_a_write_and_feeds_the_reason_back_to_the_model() -> None:
+    """``plan`` 档的核心（P1-1）：没出计划前写类**不执行**，理由回到模型手里。
+
+    三件事一起钉住：
+
+    1. **执行器一次都没被叫到**（不是"执行了但结果被丢掉"——那更危险）；
+    2. 回灌的那条 tool 消息里带着"为什么被拦 + 怎么办"（没有它，模型只会重试）；
+    3. 步骤的结论是「没有执行（计划档拦下）」，与 ``agent_exec`` 那句
+       「没有执行（策略拦下）」同一个形状——界面与快照都不必为模式新增分支。
+    """
+    ran: list[str] = []
+    loop, _client = _mode_loop(
+        [LLMReply(tool_calls=(ToolCall(id="c1", name="create_note", arguments="{}"),)), LLMReply()],
+        runner=lambda name, args: (ran.append(name), ToolOutcome("写好了"))[1],
+    )
+    messages: list = []
+
+    events = list(loop.run(messages=messages))
+
+    assert ran == [], "被模式拦下的调用一次都不该执行"
+    tool_messages = [m for m in messages if getattr(m, "role", "") == "tool"]
+    assert len(tool_messages) == 1
+    reason = tool_messages[0].content or ""
+    assert "「计划」档" in reason
+    assert "先给出计划、等对方确认" in reason
+    assert "create_note" in reason and "写笔记" in reason
+    # 取 **done 那条**：同名步骤有两条（running 先发，见 ``_perform``），
+    # 结论在第二条上——第一条的 detail 是空的（"这件事开始了"，还没结果）
+    done = [s for s in _steps(events) if s.tool == "create_note" and s.status == "done"]
+    assert [s.detail for s in done] == ["没有执行（计划档拦下）"]
+
+
+def test_plan_mode_lets_read_only_tools_run() -> None:
+    """只读工具在 ``plan`` 档照跑：不给它读，它连计划都写不出来。"""
+    ran: list[str] = []
+    loop, _client = _mode_loop(
+        [
+            LLMReply(
+                tool_calls=(
+                    ToolCall(id="c1", name="search", arguments="{}"),
+                    ToolCall(id="c2", name="create_note", arguments="{}"),
+                )
+            ),
+            LLMReply(),
+        ],
+        runner=lambda name, args: (ran.append(name), ToolOutcome("结果"))[1],
+    )
+
+    events = list(loop.run(messages=[]))
+
+    assert ran == ["search"], "一批里读的照跑、写的被拦"
+    detail = next(
+        s for s in _steps(events) if s.tool == "create_note" and s.status == "done"
+    ).detail
+    assert detail == "没有执行（计划档拦下）"
+
+
+def test_the_plan_gate_opens_after_the_model_answers_with_text() -> None:
+    """门闸的开关：**这一轮以正文收尾** = 计划已经交出来了（QwenPaw 的门闸）。
+
+    第一轮它直接答（那就是计划），第二轮同一档下写类就放行了——
+    而"同一轮里先写一段计划、紧接着调写类工具"**不算**：那时候对方还没看到，
+    更没确认（这条用例的第一轮就是那个形状：正文与写类调用同一步里来，写类仍然被拦）。
+    """
+    plan_gate.reset_all()
+    gate = plan_gate.gate_for("c1")
+    ran: list[str] = []
+    runner = lambda name, args: (ran.append(name), ToolOutcome("写好了"))[1]  # noqa: E731
+
+    # 第一轮：它一边写计划正文、一边就调写类工具 —— 拦
+    first, _ = _mode_loop(
+        [
+            LLMReply(
+                text="我打算这样做：……",
+                tool_calls=(ToolCall(id="c1", name="create_note", arguments="{}"),),
+            ),
+            LLMReply(text="计划：先看 A、再写 B。"),
+        ],
+        runner,
+        gate=gate,
+    )
+    list(first.run(messages=[]))
+
+    assert ran == []
+    assert gate.plan_given is True, "这一轮以正文收尾，计划算给出来了"
+
+    # 第二轮：对方确认之后（他的下一条消息）接着做，写类放行
+    second, _ = _mode_loop(
+        [LLMReply(tool_calls=(ToolCall(id="c2", name="create_note", arguments="{}"),)), LLMReply()],
+        runner,
+        gate=gate,
+    )
+    list(second.run(messages=[]))
+
+    assert ran == ["create_note"]
+
+
+def test_leaving_plan_mode_clears_the_gate_through_the_loop() -> None:
+    """循环每轮开始时同步档位：切到 ``build`` 之后，上一段计划不该还算数。"""
+    plan_gate.reset_all()
+    gate = plan_gate.gate_for("c1")
+    gate.note_plan("计划：做 A")
+    ran: list[str] = []
+    loop, _ = _mode_loop(
+        [LLMReply(tool_calls=(ToolCall(id="c1", name="create_note", arguments="{}"),)), LLMReply()],
+        runner=lambda name, args: (ran.append(name), ToolOutcome("写好了"))[1],
+        mode="build",
+        gate=gate,
+    )
+
+    list(loop.run(messages=[]))
+
+    assert ran == ["create_note"]
+    assert gate.plan_given is False
+
+
+def test_the_tool_table_is_identical_in_all_four_modes() -> None:
+    """**模式不改工具清单**（§2.6 第 1 条，验收 ③）。
+
+    四档下：交给模型的工具表一模一样、``loop.tools`` 一模一样。
+    变的只有"这一步允不允许执行"——否则每加一档都要去改所有工具的可用性，
+    模式与工具会互相锁死（ZCode 那句 ``allow(tool, …, "mode.yolo", …)`` 说的就是这个）。
+    """
+    seen: dict[str, list[str]] = {}
+    for mode in modes.MODES:
+        loop, client = _mode_loop(
+            [LLMReply(text="答")], runner=lambda name, args: ToolOutcome("x"), mode=mode
+        )
+        list(loop.run(messages=[]))
+        seen[mode] = [spec.name for spec in client.answer_tools or []]
+
+    assert len({tuple(names) for names in seen.values()}) == 1
+    assert seen["plan"] == ["search", "create_note", "run_command"]
+
+
+def test_yolo_answers_the_approval_prompt_itself_and_edit_does_not() -> None:
+    """``edit`` / ``yolo`` 的差别在"要不要问一句"（``modes.auto_approves``）：
+
+    - ``build``：停下来问（现状，``ApprovalEvent`` 发出去）；
+    - ``edit``：执行命令的影响面在整台机器上，**照问**；
+    - ``yolo``：不再问，执行器直接拿到 ``allow_once``（ZCode：yolo 绕过确认）。
+
+    **免问不等于越过拒绝**：显式的拒绝规则与「拒绝执行」总开关在 ``agent_exec``
+    里排在审批之前（那三道闸不归模式管），这条用例只管"问不问"。
+    """
+    registry = ApprovalRegistry(timeout=5)
+
+    def run_with(mode: str) -> tuple[list[str | None], int]:
+        seen: list[str | None] = []
+        loop, _client = _mode_loop(
+            [
+                LLMReply(tool_calls=(ToolCall(id="c1", name="run_command", arguments="{}"),)),
+                LLMReply(),
+            ],
+            runner=_approval_runner(registry, seen),
+            mode=mode,
+            approvals=registry,
+        )
+        iterator = loop.run(messages=[])
+        asked = 0
+        while True:
+            try:
+                event = next(iterator)
+            except StopIteration:
+                break
+            if isinstance(event, ApprovalEvent):
+                asked += 1
+                registry.decide(event.approval_id, approval_service.ALLOW_ONCE)
+        return seen, asked
+
+    build_seen, build_asked = run_with("build")
+    assert build_seen == [None, approval_service.ALLOW_ONCE]
+    assert build_asked == 1
+
+    edit_seen, edit_asked = run_with("edit")
+    assert edit_seen == [None, approval_service.ALLOW_ONCE]
+    assert edit_asked == 1, "执行命令在 edit 档仍然要问"
+
+    yolo_seen, yolo_asked = run_with("yolo")
+    assert yolo_seen == [approval_service.ALLOW_ONCE], "yolo 档不再问，直接带同意跑"
+    assert yolo_asked == 0
+
+
+# ------------------------------------------------------------------ 流中断重试（P2-2）
+
+
+class _FlakyClient:
+    """前 ``fail_times`` 次调用直接失败，之后正常作答的假客户端。
+
+    ``text_before`` 是失败**之前已经吐出去**的正文：非空就是"已经往界面吐过字了"
+    那种失败——这一组用例里最要紧的一条就是它不能被重试（见 ``_answer``）。
+    """
+
+    def __init__(
+        self,
+        fail_with: Exception,
+        *,
+        answer: str = "答案",
+        text_before: str = "",
+        fail_times: int = 1,
+    ) -> None:
+        self._fail_with = fail_with
+        self._answer = answer
+        self._text_before = text_before
+        self._fail_times = fail_times
+        self.calls: list[list] = []  # type: ignore[type-arg]
+
+    def stream_events(self, messages, tools=None):  # type: ignore[no-untyped-def]
+        self.calls.append(list(messages))
+        if len(self.calls) <= self._fail_times:
+            if self._text_before:
+                yield LLMDelta(text=self._text_before)
+            raise self._fail_with
+        yield LLMDelta(text=self._answer)
+
+
+def _flaky_loop(client: _FlakyClient, runner=None):  # type: ignore[no-untyped-def]
+    return ToolLoop(
+        client_factory=lambda: client,
+        tools=[SEARCH],
+        runner=runner or (lambda name, args: ToolOutcome("x")),
+    )
+
+
+def _idle_error() -> ChatError:
+    return ChatError(
+        "对话流中断：31 秒没有收到任何数据（上限 30 秒）。常见原因是网络抖动或端点排队，可以重试",
+        reason="stream_idle_timeout",
+    )
+
+
+def test_a_retryable_failure_before_any_text_is_retried_once() -> None:
+    """可重试的流失败在**同一轮里**重试一次就继续（P2-2，照 ZCode 的白名单）。
+
+    没有这一段时的形状是：网络抖一下，整轮报废——用户拿到的是一句错误，
+    而他明明什么都没做错。重试上限是 1：重试是"抖一下"的补救，不是"端点一直坏着"
+    的续命（那种情况如实失败更好，界面据此给重试入口，而不是我们悄悄烧调用）。
+    """
+    client = _FlakyClient(_idle_error())
+
+    events = list(_flaky_loop(client).run(messages=[]))
+
+    assert len(client.calls) == 2, "重试一次，不多不少"
+    assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
+
+
+def test_the_retry_is_visible_as_a_step() -> None:
+    """重试要**看得见**：用户不知道流断了，只会以为模型卡住了。
+
+    这条步骤同样进会话事件日志与步骤快照（它由 ``StepEvent`` 走那条共用映射），
+    所以刷新页面之后"这一轮为什么慢了几秒"仍然答得出来。
+    """
+    client = _FlakyClient(_idle_error())
+
+    steps = _steps(list(_flaky_loop(client).run(messages=[])))
+
+    retry = next(s for s in steps if s.label == "流中断，正在重试")
+    assert retry.phase == "tool"
+    assert "31 秒" in retry.detail, "为什么重试要说清楚（原因来自那条 ChatError）"
+    assert retry.degraded is False, "重试成功的一轮不是降级，不该叫用户去重试"
+    # 它排在"组织回答"之前，而且只有一条（不是每一趟都发一条）
+    labels = [s.label for s in steps]
+    assert labels.count("流中断，正在重试") == 1
+    assert labels.index("流中断，正在重试") < labels.index("组织回答")
+
+
+def test_a_failure_after_the_text_started_is_not_retried() -> None:
+    """**已经吐过正文就不再重试**：如实失败，别把回答写两份。
+
+    用户已经看到"前半"，重试要么让它重复出现、要么让前半凭空消失——两者都比
+    "这次失败了"更糟。所以这道判断与"能不能重试"是**两个前提**，缺一不可。
+    """
+    client = _FlakyClient(
+        ChatError("对话端点连不上或中途断开", reason="network_error"),
+        answer="后半",
+        text_before="前半",
+    )
+    loop = _flaky_loop(client)
+
+    seen: list[object] = []
+    with pytest.raises(ChatError):
+        for event in loop.run(messages=[]):
+            seen.append(event)
+
+    assert len(client.calls) == 1, "吐过正文的失败不许重试"
+    # 已经交出去的正文只有一份（没有重复，也没有回退）
+    assert [e.text for e in seen if isinstance(e, DeltaEvent)] == ["前半"]
+
+
+def test_a_non_retryable_failure_is_not_retried() -> None:
+    """不可重试的失败（401、参数错误……）**一次都不重试**：重试只会把同一个错再犯一遍。"""
+    client = _FlakyClient(ChatError("对话端点鉴权失败（401）：请检查 API Key。"))
+
+    with pytest.raises(ChatError):
+        list(_flaky_loop(client).run(messages=[]))
+
+    assert len(client.calls) == 1
+
+
+def test_the_retry_budget_is_one_for_the_whole_turn() -> None:
+    """重试预算按**一轮**算（不是每一步一次）：端点一直坏着时不许一路重试下去。
+
+    每一步都是一次真实调用，按步给预算等于"30 步 × 每次重试"——那是拿钱在赌
+    端点会自己好。
+    """
+    client = _FlakyClient(ChatError("对话端点限流", reason="rate_limited"), fail_times=2)
+
+    with pytest.raises(ChatError):
+        list(_flaky_loop(client).run(messages=[]))
+
+    assert len(client.calls) == 2, "第一次失败重试一次，第二次失败就如实报出去"
+
+
+def test_the_failed_attempts_tool_fragments_do_not_leak_into_the_retry() -> None:
+    """第一趟吐到一半的工具调用碎片**绝不能接着拼**。
+
+    拼起来会是一段谁也不认识的 JSON（``{"query":{"query": "眼轴"}``），于是这一步
+    变成"工具参数不是合法 JSON"回给模型——那看起来只是模型又手滑了一次，
+    真正的原因（我们没把两趟之间的账清干净）永远不会有人发现。
+    """
+
+    class _HalfCallClient:
+        """第一趟：吐半截碎片然后断流；第二趟：给完整调用；第三趟：作答。"""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stream_events(self, messages, tools=None):  # type: ignore[no-untyped-def]
+            self.calls += 1
+            if self.calls == 1:
+                yield LLMDelta(
+                    tool_calls=(
+                        ToolCallDelta(index=0, id="c1", name="search", arguments='{"query":'),
+                    )
+                )
+                raise _idle_error()
+            if self.calls == 2:
+                yield LLMDelta(
+                    tool_calls=(
+                        ToolCallDelta(
+                            index=0, id="c2", name="search", arguments='{"query": "眼轴"}'
+                        ),
+                    )
+                )
+                return
+            yield LLMDelta(text="答案")
+
+    ran: list[tuple[str, dict]] = []  # type: ignore[type-arg]
+    client = _HalfCallClient()
+    loop = ToolLoop(
+        client_factory=lambda: client,
+        tools=[SEARCH],
+        runner=lambda name, args: (ran.append((name, args)), ToolOutcome("结果"))[1],
+    )
+
+    list(loop.run(messages=[]))
+
+    assert ran == [("search", {"query": "眼轴"})], "参数来自第二趟，第一趟的碎片已经丢掉"
+

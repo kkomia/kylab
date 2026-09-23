@@ -29,6 +29,7 @@ from app.core.config import Settings
 from app.core.exceptions import InvalidRequestError
 from app.parsers.mineru_cloud import MinerUConfig
 from app.parsers.paddleocr_api import PaddleOCRConfig
+from app.services import modes
 from app.services.llm import LLMConfig
 from app.services.thinking import normalize_effort
 from app.storage.base import StoreBundle
@@ -111,6 +112,17 @@ SETTING_GROUPS: dict[str, Any] = {
                 "key": "chat.agent_enabled",
                 "label": "启用工具循环",
                 "type": "bool",
+            },
+            {
+                "key": "chat.mode",
+                "label": "Agent 模式",
+                "type": "select",
+                # 四档的取值与文案**只有一处来源**（services/modes.py，照 ZCode 的枚举
+                # 与 UI 文案）：在这里再抄一份，界面上的名字与引擎判定的档迟早会对不上
+                "options": [
+                    {"value": item["name"], "label": f"{item['label']}（{item['hint']}）"}
+                    for item in modes.describe()
+                ],
             },
             {
                 "key": "chat.context_window",
@@ -247,6 +259,10 @@ DEFAULTS: dict[str, str] = {
     # Office 导出、子 Agent 都是其中的工具。关掉就退回"原问题单轮检索"的旧路径
     # （services/chat.py::answer_stream）——那条路径还在，用于排查与省钱。
     "chat.agent_enabled": "true",
+    # Agent 模式四档（v0.43，P1-1，见 services/modes.py）。**默认 build**：
+    # 与 ZCode 的默认档一致（"变更前确认"）——"没问就动了东西"是最让人意外的默认，
+    # 而四档里只有它不改变引入模式之前的行为。
+    "chat.mode": modes.DEFAULT_MODE,
     # 上下文压缩（v20.1，见 services/chat.py::prepare_context）：
     # 占用达到阈值就把更早的对话折成摘要，避免长会话撑爆窗口或悄悄失忆。
     # 窗口做成本设置项是因为**没有统一的 API 能查到模型的真实窗口**。
@@ -720,6 +736,9 @@ class RuntimeConfigService:
             "memory.enabled": settings.memory_enabled,
             "memory.base_url": settings.memory_base_url,
             "memory.workspace": settings.memory_workspace,
+            # Agent 模式（P1-1）同一套口径：容器部署可以在 compose 里一次写清
+            # "这一部署默认用哪一档"（``KYLAB_CHAT_MODE``），网页上改的仍然覆盖它。
+            "chat.mode": settings.chat_mode,
         }
         value = mapping.get(key)
         return "" if value is None else str(value)

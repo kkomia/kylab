@@ -86,6 +86,7 @@ import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import ApprovalBar from '@/components/chat/ApprovalBar.vue'
 import ExecPolicyControl from '@/components/chat/ExecPolicyControl.vue'
 import LiveLine from '@/components/chat/LiveLine.vue'
+import ModePicker from '@/components/chat/ModePicker.vue'
 import TraceStepRow from '@/components/chat/TraceStepRow.vue'
 import {
   abortLiveTurn,
@@ -2183,6 +2184,12 @@ function closeReader(): void {
               （"允许"与"拒绝"在用户眼里完全是两件事，用一个开关表示等于让他猜）。
             -->
             <ExecPolicyControl />
+
+            <!--
+              「Agent 模式」四档（v0.43，P1-1）：与「执行策略」并排——两件都是
+              "这一轮它有多放手"，而且被拦下的那一刻用户正看着这段对话（见 ModePicker）。
+            -->
+            <ModePicker />
 
             <!--
               「知识库」**就是一个开关**（v0.19，用户指定）。
