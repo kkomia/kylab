@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import httpx
 
@@ -34,8 +36,10 @@ __all__ = [
     "LLMConfig",
     "LLMDelta",
     "OpenAICompatChat",
+    "TextToolCalls",
     "ToolCallDelta",
     "assemble_tool_calls",
+    "split_text_tool_calls",
 ]
 
 logger = logging.getLogger(__name__)
@@ -749,6 +753,140 @@ def _call_or_none(*, index: int, ident: str, name: str, arguments: str) -> ToolC
         name=cleaned,
         arguments=arguments,
     )
+
+
+class TextToolCalls(NamedTuple):
+    """从正文里剥出来的工具调用标记（见 :func:`split_text_tool_calls`）。
+
+    ``found`` 是**单独一位**，不能只靠 ``names`` 推：认不出名字的标记一样是标记
+    （它是模型写出来的调用，只是形状不在我们认识的几种里），照旧得从回答里去掉。
+    """
+
+    text: str
+    """剥掉标记、收拾过空白之后的正文。"""
+    names: tuple[str, ...]
+    """它想调用哪些工具（认不出来就是空元组）。**只用于措辞**，不做执行。"""
+    found: bool
+    """正文里到底有没有标记。"""
+
+
+#: 正文里那些"本该是工具调用"的标记：**每族一对**（整块 + 孤立的标签）。
+#:
+#: 为什么需要这一层（§12.219 的 §5 那条敞口）：收尾那一步有两条路**不带工具表**
+#: ——超时与步数用尽（时间/额度已经花光，再补一轮请求与闸门本身的意思相反），
+#: 而"不带工具表 + 上下文还在催它去查"时，模型只剩"把调用写进正文"这一条路
+#: （实测 DeepSeek Flash：同一个请求带 tools 回结构化 ``tool_calls``，去掉 tools
+#: 就写进 content）。那段标记于是被当成回答**落库并显示**——用户看到的就是
+#: "回答里冒出一段 `<tool_call>` / DSML 标记"，还挂着复制、存为笔记的按钮。
+#:
+#: "一对"是实测逼出来的：一族的**收尾标签可能比开头多**（DeepSeek 会同时写
+#: `<｜tool▁call▁end｜>` 与 `<｜tool▁calls▁end｜>`、DSML 那族还有 ``invoke`` 这种
+#: 中间标签），只按"第一个收尾"配对会留下一截孤立的标签在正文里。所以整块剥完之后，
+#: **该族的孤立标签**再清一遍——**只在这一族真的出现过一整块时才做**：正常回答里
+#: 引用这个标签（"``<tool_call>`` 是什么意思"）不该被当成标记剪掉（见下面最后一族
+#: 的说明与 ``test_a_truncated_block_still_counts_but_a_quotation_does_not``）。
+_TEXT_CALL_MARKERS: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
+    (
+        # 1) 闭合的 `<tool_call>…</tool_call>`（Qwen 系；块里可能是 ``{"name": …}``，
+        #    也可能是"名字裸写一行 + 一段 JSON"）
+        re.compile(r"<tool_calls?\s*>.*?</tool_calls?\s*>", re.DOTALL | re.IGNORECASE),
+        re.compile(r"</?tool_calls?\s*>", re.IGNORECASE),
+    ),
+    (
+        # 2) **没有收尾标签**的 `<tool_call>`（被 max_tokens 截断，或模型只写了一半）：
+        #    只有"标签后面紧跟着调用载荷"才算——一段 JSON，或"一个工具名 + 一段 JSON"。
+        #    这一条同时也是防误伤的那条：回答里引用这个标签时后面跟的是标点或中文，
+        #    不满足"名字 / 花括号"，于是不会被剪掉。
+        re.compile(
+            r"<tool_calls?\s*>\s*(?:\{.*|[A-Za-z_][\w.]*\s*\{.*)\Z",
+            re.DOTALL | re.IGNORECASE,
+        ),
+        re.compile(r"</?tool_calls?\s*>", re.IGNORECASE),
+    ),
+    (
+        # 3) DeepSeek 的特殊 token 被当正文吐出来（begin / end 那一对成对出现）：
+        #    `...` 里是工具名与参数，竖线可能是全角 `｜` 也可能是半角，
+        #    中间那个是 `▁`；都按"像就行"匹配
+        re.compile(
+            r"<[｜|]{1,2}\s*tool[▁_ ]?calls?[▁_ ]?begin[｜|]{1,2}>.*?"
+            r"(?:<[｜|]{1,2}\s*tool[▁_ ]?calls?[▁_ ]?end[｜|]{1,2}>|\Z)",
+            re.DOTALL | re.IGNORECASE,
+        ),
+        re.compile(r"<[｜|]{1,2}\s*tool[▁_ ]?calls?[▁_ ]?(?:begin|end)?[｜|]{1,2}>", re.IGNORECASE),
+    ),
+    (
+        # 4) DSML（DeepSeek 的另一套方言）：`<｜｜DSML｜｜ invoke name="…">` 那一族
+        re.compile(
+            r"<[｜|]{1,2}\s*/?\s*DSML[｜|]{1,2}[^>]*>.*?"
+            r"(?:</?\s*[｜|]{1,2}\s*/?\s*DSML[｜|]{1,2}[^>]*>|\Z)",
+            re.DOTALL | re.IGNORECASE,
+        ),
+        re.compile(r"</?\s*[｜|]{1,2}\s*/?\s*DSML[｜|]{1,2}[^>]*>", re.IGNORECASE),
+    ),
+    (
+        # 5) `<function=名字>{…}</function>`（早期 Qwen 与一些兼容端点的写法）
+        re.compile(
+            r"<function\s*(?:=[^>]*|name\s*=\s*[\"'][^\"']*[\"'][^>]*)>.*?"
+            r"(?:</function\s*>|\Z)",
+            re.DOTALL | re.IGNORECASE,
+        ),
+        re.compile(r"</?function\s*[^>]*>", re.IGNORECASE),
+    ),
+)
+
+
+def split_text_tool_calls(text: str) -> TextToolCalls:
+    """把正文里混进来的工具调用标记**剥掉**（见 :data:`_TEXT_CALL_MARKERS`）。
+
+    只做两件事：认出标记、把工具名报出来给上面写措辞用。**不执行**——这一层的调用
+    出现在"已经没有工具表"的那几条收尾路上（超时 / 步数用尽 / 这条链路本来就没有
+    工具），补一轮执行与那两道闸的意思相反；要接着做是用户点「继续」的事。
+
+    没命中时原样返回（``found=False``、``text`` 与入参逐字节相同），调用方据此
+    什么都不做——这条函数不能成为"每次回答都要过一遍、顺手改点标点"的那种加工。
+    """
+    names: list[str] = []
+
+    def _drop(block: re.Match[str]) -> str:
+        names.extend(_names_in(block.group(0)))
+        return ""
+
+    cleaned = text
+    for block, leftover in _TEXT_CALL_MARKERS:
+        if block.search(cleaned) is None:
+            continue
+        cleaned = block.sub(_drop, cleaned)
+        # 配对的整块剥掉之后，同族**孤立的标签**再清一遍（一族的收尾标签可能比开头多，
+        # 见 :data:`_TEXT_CALL_MARKERS` 里那段说明）。**只在这一族真的出现过一块时才做**
+        # ——回答里引用这个标签（"``<tool_call>`` 是什么意思"）不该被当成标记剪掉。
+        cleaned = leftover.sub("", cleaned)
+    if cleaned == text:
+        return TextToolCalls(text=text, names=(), found=False)
+    return TextToolCalls(text=_tidy_text(cleaned), names=tuple(dict.fromkeys(names)), found=True)
+
+
+def _names_in(block: str) -> tuple[str, ...]:
+    """从一段标记里认出它想调用哪些工具（认不出就空——那份信息只用于措辞）。
+
+    三种写法都来自真实输出：``{"name": "web_search"}``（JSON）、
+    ``name="web_search"``（DSML 的 ``invoke`` / ``parameter``）、
+    以及 ``<tool_call>web_search`` 之后才跟 JSON 的"名字裸写在开头"。
+    """
+    found = re.findall(r'["\']name["\']\s*:\s*["\']([^"\']+)["\']', block)
+    found += re.findall(r'\bname\s*=\s*["\']([^"\']+)["\']', block)
+    head = re.match(r"\s*<tool_call>\s*([A-Za-z_][\w.]*)", block, re.IGNORECASE)
+    if head is not None:
+        found.insert(0, head.group(1))
+    return tuple(item.strip() for item in found if item.strip())
+
+
+def _tidy_text(text: str) -> str:
+    """剥掉标记之后收拾空白：连续空行折成一个，首尾空白去掉。
+
+    不收拾的话，被剥掉的那一块在回答中间留一大段空白——那不是模型写的停顿，
+    是我们自己剥出来的，用户看到的是一条回答中间空了好几行。
+    """
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def _error_hint(response: httpx.Response) -> str:

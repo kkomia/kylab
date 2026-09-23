@@ -23,6 +23,7 @@ from app.services.llm import (
     ToolCallDelta,
     ToolSpec,
     assemble_tool_calls,
+    split_text_tool_calls,
 )
 
 _MESSAGES = [ChatMessage(role="user", content="你好")]
@@ -595,4 +596,82 @@ def test_an_unclassified_failure_is_not_retryable() -> None:
     assert ChatError("说不清是什么").retryable is False
     assert ChatError("限流").retryable is False  # 只有 reason 才决定，不看文案
     assert ChatError("限流", reason="rate_limited").retryable is True
+
+
+# ------------------------------------------- 正文里的工具调用标记（§12.227）
+
+
+def test_a_tool_call_block_is_stripped_and_named() -> None:
+    """闭合的 `<tool_call>{…}</tool_call>`：正文留下人话，标记去掉，工具名报出来。
+
+    这就是 §12.219 里那 5 条消息的形状：正文**整条**是标记（模型想继续查，
+    而收尾那一步没带工具表）。工具名只用于措辞（"它想调用 web_fetch"），
+    解析它不是为了执行——那几条路上已经没有可执行的额度了。
+    """
+    text = (
+        "NVIDIA 那边我还想再核一眼。\n"
+        '<tool_call>\n{"name": "web_fetch", "arguments": {"url": "https://example.com"}}\n</tool_call>'
+    )
+
+    result = split_text_tool_calls(text)
+
+    assert result.found is True
+    assert result.text == "NVIDIA 那边我还想再核一眼。"
+    assert result.names == ("web_fetch",)
+
+
+def test_the_qwen_style_name_plus_json_is_recognized() -> None:
+    """Qwen 那种"名字裸写一行 + 一段 JSON"：工具名也要认得出来。"""
+    result = split_text_tool_calls('<tool_call>web_search\n{"query": "眼轴"}\n</tool_call>')
+
+    assert result.names == ("web_search",)
+    assert result.text == ""
+
+
+def test_deepseek_special_tokens_and_dsml_are_both_stripped() -> None:
+    """另外两族：DeepSeek 的特殊 token（`<｜tool▁calls▁begin｜>…`）与 DSML。
+
+    特殊 token 那一族**认不出名字**（里面没有 JSON、也没有 ``name=``）——
+    但认不出名字**照样是标记**：`found` 是单独一位，就是为了这种情况。
+    """
+    tokens = (
+        "我查一下。\n<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>web_search\n"
+        "<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+    )
+    dsml = '…\n<|DSML| tool_calls>\n<|DSML| invoke name="web_fetch">\n</|DSML|>'
+
+    special = split_text_tool_calls(tokens)
+    marked = split_text_tool_calls(dsml)
+
+    assert special.found is True and special.text == "我查一下。"
+    assert special.names == (), "形状里没有名字：认不出名字也算命中"
+    assert marked.found is True and marked.text == "…"
+    assert marked.names == ("web_fetch",)
+
+
+def test_a_truncated_block_still_counts_but_a_quotation_does_not() -> None:
+    """截断的（没有收尾标签）算标记；**引用**这个标签的正常回答不算。
+
+    这条界线是刻意的：模型只写了一半时后面跟的是调用载荷（花括号或工具名），
+    而用户问"``<tool_call>`` 是什么意思"时，那后面跟的是标点、中文或行内代码——
+    按载荷那条判据分得开，于是不会把一段正常回答从中间剪掉。
+    """
+    truncated = '先看一眼。\n<tool_call>{"name": "search", "arguments": {"query": '
+    quoted = "那个 `<tool_call>` 标签是模型想调工具时写出来的。"
+
+    cut = split_text_tool_calls(truncated)
+    kept = split_text_tool_calls(quoted)
+
+    assert cut.found is True and cut.text == "先看一眼。"
+    assert kept.found is False, "引用不是调用"
+    assert kept.text == quoted, "没命中就要**逐字节原样**返回：这层不该顺手改标点"
+
+
+def test_a_plain_answer_is_untouched() -> None:
+    """没标记时原样返回——这条函数不能成为"每次回答都要过一遍"的加工。"""
+    text = "眼轴长度是 24mm 上下，个体差异比年龄影响更大。"
+
+    result = split_text_tool_calls(text)
+
+    assert (result.text, result.names, result.found) == (text, (), False)
 

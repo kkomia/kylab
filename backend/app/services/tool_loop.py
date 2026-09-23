@@ -88,7 +88,14 @@ from app.services.llm import (
 )
 from app.services.tool_meta import kind_of, meta_of, parallel_groups
 
-__all__ = ["DEFAULT_MAX_STEPS", "ToolLoop", "tool_label"]
+__all__ = [
+    "DEFAULT_MAX_STEPS",
+    "MARKER_ONLY_ANSWER",
+    "MARKER_STEP_LABEL",
+    "ToolLoop",
+    "text_marker_step",
+    "tool_label",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +197,49 @@ _LABELS = {
 #: 自己还会并发（最多 5），两层乘起来就是 25 个同时飞的请求，而它们背后是同一台
 #: 机器、同一个出口。超过这个数的批次分两波跑，慢一点，但不会把网络打满。
 MAX_PARALLEL_TOOLS = 5
+
+#: 整段正文就是一块工具标记（剥完什么都不剩）时**顶上回答的那句话**。
+#:
+#: 为什么不能交空回答：界面上那是个空气泡，而落库那一步的判据是"``answer`` 非空"
+#: （见 ``api/v1/chat._events``）——空回答会让**整轮**从会话里消失，用户回头看不到
+#: "我问过、它没答"这件事。所以留一句人话，把"这次为什么没有回答"说在明处；
+#: 「继续」那个出口由 :func:`text_marker_step` 的 ``degraded`` 带出来。
+#:
+#: 定在这里而不是协议层：它是**回答的措辞**，与下面那条步骤是同一件事的两半。
+MARKER_ONLY_ANSWER = (
+    "（这一轮没有可读的回答：模型把工具调用写进了正文，而这一轮已经没有可用的工具表"
+    "——可以用下面的「继续」把它接着做完。）"
+)
+
+#: 那条说明步骤的标签。协议层按它认出"这一轮已经说过标记的事了"（见 ``chat._clean_answer``），
+#: 免得两条链路各说一遍。
+MARKER_STEP_LABEL = "模型把工具调用写进了正文"
+
+
+def text_marker_step(names: Sequence[str], *, had_tools: bool = False) -> StepEvent:
+    """正文里剥出工具调用标记时补的那一步（见 ``llm.split_text_tool_calls``）。
+
+    **``degraded=True``**：这一轮没按设计走完——它还想查，只是没有可用的调用路
+    （步数/时间已用尽、这条链路本来就没有工具，或者它有工具表却没走接口）。
+    界面据此把「继续 / 重试」两个出口摆出来（见 ``ChatView`` 的 ``.reply-degraded``），
+    而 ``detail`` 就是那里显示的原因（一句话由服务端给，前端不在本地写死，
+    见 ``useChatTurns.degradedReason``）。
+
+    ``had_tools`` 只影响措辞：**不能对用户说错话**——带了工具表的那一步说
+    "没有可用的工具表"是假的，而这句话正是他要据以判断"再点一次有没有用"的东西。
+    """
+    wanted = "、".join(names) if names else "某个工具"
+    why = (
+        "它想调用{wanted}，却没有给出结构化调用；那段标记已从回答里去掉"
+        if had_tools
+        else "它想调用{wanted}，而这一轮已经没有可用的工具表；那段标记已从回答里去掉"
+    )
+    return StepEvent(
+        phase="answer",
+        label=MARKER_STEP_LABEL,
+        detail=why.format(wanted=wanted),
+        degraded=True,
+    )
 
 
 def _clip(text: str, limit: int) -> str:

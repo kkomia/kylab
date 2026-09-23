@@ -2910,3 +2910,54 @@ describe('停止（P2-2）', () => {
     wrapper.unmount()
   })
 })
+
+/**
+ * 模型把工具调用写进正文的那种老消息（§12.227）。
+ *
+ * 后端从 §12.227 起在落库与显示之前就把标记剥掉（见 `llm.split_text_tool_calls`），
+ * 所以**新回答不会走到这里**；这一层守的是修复之前落库的那几条（实测 5 条）与
+ * 将来某个没见过的形状——它们不该被当成人话读下去，也不该走 Markdown 渲染。
+ */
+describe('正文里的工具调用标记（§12.227）', () => {
+  it('不当回答渲染：加一行说明，原文按原文排版', async () => {
+    const marker =
+      '<tool_call>\n{"name": "web_search", "arguments": {"query": "眼轴"}}\n</tool_call>'
+    getConversation.mockResolvedValue({
+      ...chatDetail('c1'),
+      messages: [
+        ...chatDetail('c1').messages.slice(0, 1),
+        { ...chatDetail('c1').messages[1]!, content: marker },
+      ],
+    })
+
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    // 那一行说明在（用户得知道这不是回答）
+    expect(wrapper.find('.reply-raw-tools').text()).toContain('工具调用标记')
+    // 原文照旧可见，但走的是"原始文本"那一版式：**Markdown 正文那一份不渲染了**
+    // （`.reply-text` 只剩 raw 那一份，见模板里 v-if / v-else 那两支）
+    expect(wrapper.find('.reply-text-raw-tools').text()).toContain('<tool_call>')
+    expect(wrapper.findAll('.reply-text')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('正常回答照旧走 Markdown：不误伤引用了这个标签的回答', async () => {
+    const quoted = '那个 `<tool_call>` 标签是模型想调工具时写的。'
+    getConversation.mockResolvedValue({
+      ...chatDetail('c1'),
+      messages: [
+        ...chatDetail('c1').messages.slice(0, 1),
+        { ...chatDetail('c1').messages[1]!, content: quoted },
+      ],
+    })
+
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    expect(wrapper.find('.reply-raw-tools').exists()).toBe(false)
+    expect(wrapper.find('.reply-text-raw-tools').exists()).toBe(false)
+    expect(wrapper.find('.reply-text').text()).toContain('标签是模型想调工具时写的')
+    wrapper.unmount()
+  })
+})

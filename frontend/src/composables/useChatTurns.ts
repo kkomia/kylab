@@ -274,6 +274,38 @@ export function degradedReason(message: Message): string {
   return step?.detail?.trim() || '按当时拿到的资料作答'
 }
 
+/**
+ * 这段回答里有没有"模型把工具调用写进正文"的标记（§12.227）。
+ *
+ * 后端在收尾那几条**不带工具表**的路上会把这类标记剥掉（`llm.split_text_tool_calls`），
+ * 新的回答因此不该再出现。这一层守的是**已经落库的老消息**——修复之前存下的那些
+ * （实测有 5 条），以及将来某个我们没见过的形状：它们不该被当成人话读下去。
+ *
+ * **只判有没有、不改文本**：原文照旧显示，只是加一行说明并把它按原文排版。
+ * 就地"清洗"会把当时真实返回的东西改掉，而回看时"它到底写了什么"正是要问的事。
+ *
+ * 形状与后端那份对齐（三族：`<tool_call>`、DeepSeek 的特殊 token、DSML；
+ * 外加 `<function=…>`），**连"要多像才算"也对齐**：`<tool_call>` 单独出现不算，
+ * 得有闭合标签、或标签后面紧跟着调用载荷——因为问"`<tool_call>` 是什么意思"的
+ * 回答里就会引用这个标签，把它当标记渲染成"原文 + 说明"是把正常回答弄脏了。
+ */
+const TOOL_MARKUP_PATTERNS: RegExp[] = [
+  // 闭合的一块
+  /<tool_calls?\s*>[\s\S]*?<\/tool_calls?\s*>/i,
+  // 没有收尾标签（被截断）：标签后面**紧跟**一段 JSON，或"一个工具名 + JSON"
+  /<tool_calls?\s*>\s*(?:\{|[A-Za-z_][\w.]*\s*\{)/i,
+  // DeepSeek 的特殊 token（全角竖线 + `▁`，半角也认）
+  /<[｜|]{1,2}\s*tool[▁_ ]?calls?[▁_ ]?(?:begin|end)?[｜|]{1,2}>/i,
+  // DSML 那一族
+  /<[｜|]{1,2}\s*\/?\s*DSML[｜|]?/i,
+  // `<function=名字>` / `<function name="名字">`
+  /<function\s*(?:=[^>]*|name\s*=\s*["'][^"']*["'][^>]*)>/i,
+]
+
+export function hasToolCallMarkup(text: string): boolean {
+  return TOOL_MARKUP_PATTERNS.some((pattern) => pattern.test(text))
+}
+
 /** Agent 步骤的阶段 → 图标键。 */
 const STEP_ICONS: Record<string, TraceIcon> = {
   intent: 'think',

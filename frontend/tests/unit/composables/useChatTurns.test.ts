@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChatSource, ChatStep } from '@/api/chat'
 import {
   degradedReason,
+  hasToolCallMarkup,
   buildTurns,
   isTraceOpen,
   readTraceOpenMemory,
@@ -501,6 +502,29 @@ describe('降级与"这一轮没找到新东西"（v25）', () => {
     })
 
     expect(wasDegraded(message)).toBe(false)
+  })
+
+  it('认出"模型把工具调用写进正文"的老消息（§12.227）', () => {
+    // 后端从 §12.227 起会把这类标记剥掉，所以新回答不该再出现；这一层守的是
+    // **修复之前落库的那些**（实测 5 条）与将来某个没见过的形状——它们不该被当人话读
+    const shapes = [
+      '<tool_call>\n{"name": "web_search"}\n</tool_call>',
+      '先查一下。\n<tool_call>web_search\n{"query": "眼轴"}',
+      '<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>web_search<｜tool▁call▁end｜>',
+      '<|DSML| invoke name="web_fetch">',
+      '<function=web_search>{"query": "眼轴"}</function>',
+    ]
+    for (const text of shapes) {
+      expect(hasToolCallMarkup(text), text).toBe(true)
+    }
+  })
+
+  it('正常回答不误伤：引用这个标签、或普通带尖括号的正文照旧是回答', () => {
+    // 假阳性只是多一行说明，假阴性是用户又把那段标记当成了回答；但也不能反过来
+    // 把正常回答标成标记——问"<tool_call> 是什么"的那种回答里就会出现这个标签
+    expect(hasToolCallMarkup('那个 `<tool_call>` 标签是模型想调工具时写的。')).toBe(false)
+    expect(hasToolCallMarkup('眼轴长度是 24mm 上下。')).toBe(false)
+    expect(hasToolCallMarkup('')).toBe(false)
   })
 
   it('marks a round that added nothing as empty', () => {

@@ -140,6 +140,7 @@ import {
   traceSummary,
   writeTraceOpenMemory,
   degradedReason,
+  hasToolCallMarkup,
   wasDegraded,
   THINKING_EFFORTS,
   TRACE_PAGE_SIZE,
@@ -2672,11 +2673,28 @@ function closeReader(): void {
               -->
                 <!-- eslint-disable vue/no-v-html -->
                 <div
+                  v-if="!hasToolCallMarkup(turn.reply.text)"
                   class="reply-text"
                   :class="{ 'reply-text-streaming': turn.reply.streaming }"
                   v-html="renderAnswerWithCitations(turn.reply.text, turn.reply.sources)"
                 />
                 <!-- eslint-enable vue/no-v-html -->
+
+                <!--
+                  模型把工具调用写进正文（§12.219 报的那个现象）：**不当回答渲染**。
+
+                  新回答由后端在收尾那几条不带工具表的路上剥掉（`llm.split_text_tool_calls`），
+                  这里守的是**修复之前落库的老消息**与将来某个没见过的形状。所以
+                  原文照旧显示（只是按原文排版、不走 Markdown：它不是回答，是一段原始输出），
+                  上面加一行说明——把"这段不是人话"这件事说在明处，而不是让用户自己猜。
+                -->
+                <template v-else>
+                  <p class="reply-raw-tools">
+                    <IconAlert :size="13" />
+                    这一段是模型写出来的工具调用标记，没有执行。
+                  </p>
+                  <div class="reply-text reply-text-raw-tools">{{ turn.reply.text }}</div>
+                </template>
 
                 <!--
                 降级提示（v25 起；v0.2 把口径从"规划失败"改成工具循环的"步数用尽"）：
@@ -3498,6 +3516,26 @@ function closeReader(): void {
   font-size: var(--text-micro-size);
   line-height: var(--line-prose);
   color: var(--status-warning);
+}
+
+/* 正文里混着工具调用标记时的那行说明（§12.227，与降级提示同一档：一句警示 + 图标）。
+   在这行之下，那段标记按**原文**排版（`.reply-text-raw-tools`），不走 Markdown。 */
+.reply-raw-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-micro-size);
+  line-height: var(--line-prose);
+  color: var(--status-warning);
+}
+
+.reply-text-raw-tools {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
 }
 
 /* 「继续」与「重试」都是文字按钮：它们是一句话里的动作，做成实心按钮会把提示的

@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from app.core.services import get_services
 from app.services.chat import SourceRef
 from app.services.session_events import SessionEvent, steps_from_events
+from app.services.tool_loop import MARKER_STEP_LABEL
 from tests.conftest import (
     FakeChatModel,
     LLMReply,
@@ -662,6 +663,119 @@ def test_the_non_streaming_endpoint_records_events_too(client: TestClient, kb_id
             for item in logged
         ]
     ) == steps
+
+
+# ----------------------------------- 正文里的工具调用标记（§12.227）
+
+#: 模型把工具调用写进正文的那种回复（§12.219 实测的形状：正文里混着标记）。
+#: 会走到这条路上的情形：收尾那两条路不带工具表（步数 / 时间用尽），
+#: 以及"Agent 关掉"那条链路根本没有工具表。
+MARKER_ANSWER = (
+    "我还想再核一眼 NVIDIA 的文档。\n"
+    '<tool_call>\n{"name": "web_search", "arguments": {"query": "NVIDIA 规格"}}\n</tool_call>'
+)
+
+
+def _event(items: list[dict], kind: str) -> dict:
+    """流里第一条某类事件（找不到就当场炸在这条用例上，比返回 None 好读）。"""
+    return next(item for item in items if item["type"] == kind)
+
+
+def _ask(client: TestClient, conversation_id: str, kb_id: str, query: str) -> list[dict]:
+    return _parse_sse(
+        client.post(
+            "/api/v1/chat/stream",
+            json={"query": query, "kb_ids": [kb_id], "conversation_id": conversation_id},
+        ).text
+    )
+
+
+def test_markup_in_the_answer_is_stripped_before_it_is_stored(
+    client: TestClient, kb_id: str
+) -> None:
+    """**不执行、也不当回答**：那段标记既不该进库里，也不该出现在 ``done`` 里。
+
+    这条钉的是 §12.219 §5 那条敞口（收尾那两条路不带工具表，模型只剩"写进正文"
+    一条路）。此前那段标记被原样存下来、显示出来，还挂着"复制 / 存为笔记"。
+    """
+    install_fake_chat(MARKER_ANSWER)
+    conversation_id = _conversation(client)
+
+    events = _ask(client, conversation_id, kb_id, "NVIDIA 的规格是什么")
+
+    # 收尾那条带的是**剥干净**的正文（人话留着）
+    assert _event(events, "done")["answer"] == "我还想再核一眼 NVIDIA 的文档。"
+    # 库里那份与它逐字相同——"屏幕上干净、库里脏"是这一层最要防的偏差
+    stored = client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"][-1]
+    assert stored["content"] == "我还想再核一眼 NVIDIA 的文档。"
+    # 补了一条说明：它想调什么、为什么没调成（界面据此摆出「继续 / 重试」）
+    notice = next(
+        item
+        for item in events
+        if item["type"] == "step" and item["label"] == MARKER_STEP_LABEL
+    )
+    assert notice["degraded"] is True
+    assert "web_search" in notice["detail"]
+    # 这一轮因此是**降级**的（不是正常收口）：用户得知道这次没跑完
+    ends = _events(client, conversation_id, "?kinds=turn/end")
+    assert ends and ends[-1]["payload"]["status"] == "degraded"
+
+
+def test_a_markup_only_answer_still_leaves_a_readable_turn(
+    client: TestClient, kb_id: str
+) -> None:
+    """整条正文都是标记时**不能交空回答**：给一句人话，而且这一轮照旧落库。
+
+    空回答的后果是**整轮消失**（落库那条判据是"``answer`` 非空"），用户回头看会话
+    连"我问过、它没答"都看不到——比看到一句"这次没有可读的回答"糟得多。
+    """
+    install_fake_chat('<tool_call>{"name": "search", "arguments": {}}</tool_call>')
+    conversation_id = _conversation(client)
+
+    events = _ask(client, conversation_id, kb_id, "查一下")
+
+    answer = _event(events, "done")["answer"]
+    assert "tool_call" not in answer and answer.strip(), "剥空之后要有话说，不是空气泡"
+    stored = client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"][-1]
+    assert stored["content"] == answer
+
+
+def test_the_non_streaming_endpoint_strips_it_too(client: TestClient, kb_id: str) -> None:
+    """``/chat`` 那条路（脚本、MCP 走它）同样要剥——两个端点的口径必须一致。"""
+    install_fake_chat(MARKER_ANSWER)
+    conversation_id = _conversation(client)
+
+    body = client.post(
+        "/api/v1/chat",
+        json={
+            "query": "NVIDIA 的规格是什么",
+            "kb_ids": [kb_id],
+            "conversation_id": conversation_id,
+        },
+    ).json()
+
+    assert body["answer"] == "我还想再核一眼 NVIDIA 的文档。"
+    stored = client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"][-1]
+    assert stored["content"] == "我还想再核一眼 NVIDIA 的文档。"
+    ends = _events(client, conversation_id, "?kinds=turn/end")
+    assert ends[-1]["payload"]["status"] == "degraded"
+
+
+def test_the_non_agent_path_strips_it_as_well(client: TestClient, kb_id: str) -> None:
+    """Agent 关掉那条链路也过这一关：**它根本没有工具表**（§12.219 里"另外两例"）。
+
+    这条链路是"检索 + 生成"，模型一开始就没有工具可调，而提示词/上下文催它去查时
+    同样会写标记——所以剥的地方在协议层（两条链路共用），不在工具循环里。
+    """
+    get_services().runtime.set({"chat.agent_enabled": False})
+    install_fake_chat(MARKER_ANSWER)
+    conversation_id = _conversation(client)
+
+    events = _ask(client, conversation_id, kb_id, "NVIDIA 的规格是什么")
+
+    assert _event(events, "done")["answer"] == "我还想再核一眼 NVIDIA 的文档。"
+    stored = client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"][-1]
+    assert stored["content"] == "我还想再核一眼 NVIDIA 的文档。"
 
 
 # ------------------------------------------------- 流式健壮性：心跳（P2-2）

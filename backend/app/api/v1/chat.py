@@ -85,7 +85,7 @@ from app.services.api_key import Caller
 from app.services.chat import ChatTurn, SourceRef
 from app.services.conversation import LastTurn
 from app.services.live_turns import LiveEmit
-from app.services.llm import ChatError, ChatMessage
+from app.services.llm import ChatError, ChatMessage, split_text_tool_calls
 from app.services.session_events import (
     KIND_ERROR,
     KIND_INTERRUPTED,
@@ -112,7 +112,13 @@ from app.services.suggested_questions import (
 from app.services.suggested_questions import (
     MIN_QUESTIONS as SUGGESTED_MIN,
 )
-from app.services.tool_loop import DEFAULT_MAX_SECONDS, DEFAULT_MAX_STEPS
+from app.services.tool_loop import (
+    DEFAULT_MAX_SECONDS,
+    DEFAULT_MAX_STEPS,
+    MARKER_ONLY_ANSWER,
+    MARKER_STEP_LABEL,
+    text_marker_step,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -358,6 +364,36 @@ def decide_approval(
     return ChatApprovalOut(accepted=True, detail="已交给正在等它的那一步")
 
 
+def _clean_answer(
+    sink: _TurnSink, answer: str, *, had_tools: bool
+) -> tuple[str, StepEvent | None]:
+    """正文里的工具调用标记**在这里收口**（§12.227）：剥掉、必要时补一句人话与一条说明。
+
+    返回 ``(要落库也要显示的那段正文, 要不要补一条说明)``——那条说明由调用方喂给
+    ``sink``（**喂法各条链路不同**：流式那条要 yield 出去，非流式那条只收进 sink）。
+
+    为什么收在协议层：**"这一轮回答的是什么"就在这一层定**（收尾那条 ``done`` 带的是
+    这里的 answer，消息里存的也是它）。散到产生正文的那几处（``tool_loop._answer``、
+    ``chat.answer``）各写一份的话，同一条口径就有四份，而"库里干净、屏幕上脏"
+    这种偏差正是从这种分散里长出来的。
+
+    那几种标记为什么会出现：收尾那两条路（时间 / 步数用尽）与"这条链路本来就没有
+    工具"都**不带工具表**，而上下文还在催它去查时，模型只剩"把调用写进正文"一条路
+    （§12.219 实测 5 例）。``had_tools`` 只影响措辞——不能对用户说错话。
+    """
+    marker = split_text_tool_calls(answer)
+    if not marker.found:
+        return answer, None
+    # 剥完什么都不剩时给一句人话：空回答会让**整轮**从会话里消失
+    # （落库的判据是 answer 非空，见 `_events` 里那段说明），
+    # 用户回头连"我问过、它没答"都看不到
+    cleaned = marker.text or MARKER_ONLY_ANSWER
+    # 已经说过就不再补（工具循环那条路会自己发一条同样的说明，见 `tool_loop.text_marker_step`）：
+    # 同一个现象说两遍，用户会以为出了两次问题
+    already = any(step.get("label") == MARKER_STEP_LABEL for step in sink.steps)
+    return cleaned, None if already else text_marker_step(marker.names, had_tools=had_tools)
+
+
 @router.post("/chat", response_model=ChatResponseOut, summary="快速检索问答（一次性）")
 def chat_once(
     payload: ChatRequestIn,
@@ -438,6 +474,15 @@ def chat_once(
                 thinking=thinking,
                 thinking_effort=effort,
             )
+        # 正文里的工具调用标记在这里收口（§12.227，理由见 `_clean_answer`）
+        cleaned, notice = _clean_answer(
+            sink, answer.answer, had_tools=_use_agent(services)
+        )
+        if notice is not None:
+            # 这条链路没有流：事件不发出去，但**要收进 sink**（快照与日志由此而来）
+            for _ in sink.feed(notice):
+                pass
+        answer = ChatTurn(answer=cleaned, sources=answer.sources)
     finally:
         services.commands.turns.end(payload.conversation_id)
     sink.close_turn(status=_turn_status(sink.steps), answer=answer.answer)
@@ -1228,6 +1273,15 @@ def _turn_events(
             return
 
     answer = "".join(collected)
+    # 正文里的工具调用标记在这里收口（§12.227，理由见 `_clean_answer`）：
+    # 两条链路都要过——工具循环在收尾那两条路上不带工具表、而"Agent 关掉"那条链路
+    # 根本没有工具表，模型在两种情形下都只剩"把调用写进正文"一条路
+    answer, marker_notice = _clean_answer(sink, answer, had_tools=_use_agent(services))
+    if marker_notice is not None:
+        yield from sink.feed(marker_notice)
+        # 落库与状态**都按 sink 里那份**：`sink.feed` 刚把那条说明收进 steps 与日志
+        # （非 Agent 那条链路的 `step_log` 到此为止还是空的，见上面它没有工具循环）
+        step_log = sink.steps
     # 只在**回答确实产出了**之后落库：失败的那一轮不留下半截记录，
     # 否则回看时会出现"问了但没答"的空档，而用户无从判断当时发生了什么。
     # 这条判断必须真的写出来——v0.12 之前只有注释、没有 if，于是流"正常结束但一个字都没吐"
