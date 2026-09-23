@@ -19,6 +19,7 @@ from app.services.llm import (
     ChatMessage,
     LLMConfig,
     OpenAICompatChat,
+    TextMarkerFilter,
     ToolCall,
     ToolCallDelta,
     ToolSpec,
@@ -675,3 +676,73 @@ def test_a_plain_answer_is_untouched() -> None:
 
     assert (result.text, result.names, result.found) == (text, (), False)
 
+
+
+# -------------------------------- 流式过滤器：正文增量里也不该出现标记（§12.228）
+
+
+def _streamed(chunks: list[str]) -> tuple[str, TextMarkerFilter]:
+    """按给定的分块喂一遍，返回（发出去的那段正文, 过滤器）。"""
+    marker = TextMarkerFilter()
+    shown = "".join(marker.feed(chunk) for chunk in chunks)
+    return shown + marker.flush(), marker
+
+
+def test_a_marker_split_across_chunks_never_leaves_the_filter() -> None:
+    """**分块切开的标记**也要扣住：真实流里一个标签会跨好几块（v0.34 实测）。
+
+    这条钉的是 §12.219 §5 那条敞口的"屏幕那一半"：正文增量是边到边发的，
+    只在收尾处剥等于"库里干净、屏幕上脏过"——实测那 5 条消息的正文整条都是标记，
+    于是"闪一下"几乎等于整段回答。
+    """
+    shown, marker = _streamed(
+        [
+            "我还想再核一眼。",
+            "\n<tool_",
+            'call>\n{"name": "web_search",',
+            ' "args": {}}\n</tool_',
+            "call>",
+        ]
+    )
+
+    assert shown == "我还想再核一眼。", "标记一个字都不该发出去"
+    assert marker.dropped is True
+    assert marker.names == ["web_search"], "认出的工具名要留着（说明里要用）"
+
+
+def test_a_marker_in_the_middle_leaves_the_prose_around_it() -> None:
+    """夹在人话里的标记：**两边的正文照旧发**，只有标记那块消失。"""
+    shown, marker = _streamed(
+        ["先查一下。\n<tool_call>web_search\n", '{"query": "x"}\n</tool_call>\n', "然后再回答。"]
+    )
+
+    assert shown == "先查一下。\n然后再回答。"
+    assert marker.dropped is True
+
+
+def test_a_marker_that_never_closes_is_dropped_at_flush() -> None:
+    """被 max_tokens 截断（收尾标签永远不来）：流结束时按完整口径吃掉。"""
+    shown, marker = _streamed(["先看一眼。\n<tool_call>", '{"name": "search", "arguments": {'])
+
+    assert shown == "先看一眼。"
+    assert marker.dropped is True
+    assert marker.names == ["search"]
+
+
+def test_prose_is_not_held_back_or_altered() -> None:
+    """**扣住正常回答是这个文件最不该犯的错**：三种"看着像其实不是"的正文都要照原样过。
+
+    - 孤零零的 `<`（数学比较、C++ 都在这里）；
+    - 引用这个标签的正常句子（后面跟的是中文，不是载荷）；
+    - 含尖括号的普通正文。
+    """
+    for text in (
+        "a < b 且 c > d，都是比较。",
+        "那个 `<tool_call>` 标签是模型想调工具时写的。",
+        "把 <div> 换个名字。",
+        "",
+    ):
+        shown, marker = _streamed(list(text))
+
+        assert shown == text, text
+        assert marker.dropped is False

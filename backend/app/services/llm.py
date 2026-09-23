@@ -36,10 +36,12 @@ __all__ = [
     "LLMConfig",
     "LLMDelta",
     "OpenAICompatChat",
+    "TextMarkerFilter",
     "TextToolCalls",
     "ToolCallDelta",
     "assemble_tool_calls",
     "split_text_tool_calls",
+    "tidy_text",
 ]
 
 logger = logging.getLogger(__name__)
@@ -770,7 +772,8 @@ class TextToolCalls(NamedTuple):
     """正文里到底有没有标记。"""
 
 
-#: 正文里那些"本该是工具调用"的标记：**每族一对**（整块 + 孤立的标签）。
+#: 正文里那些"本该是工具调用"的标记：**每族一对**（整块 + 孤立的标签），
+#: 到这儿为止都要求**收尾标签必须在**。
 #:
 #: 为什么需要这一层（§12.219 的 §5 那条敞口）：收尾那一步有两条路**不带工具表**
 #: ——超时与步数用尽（时间/额度已经花光，再补一轮请求与闸门本身的意思相反），
@@ -783,20 +786,57 @@ class TextToolCalls(NamedTuple):
 #: `<｜tool▁call▁end｜>` 与 `<｜tool▁calls▁end｜>`、DSML 那族还有 ``invoke`` 这种
 #: 中间标签），只按"第一个收尾"配对会留下一截孤立的标签在正文里。所以整块剥完之后，
 #: **该族的孤立标签**再清一遍——**只在这一族真的出现过一整块时才做**：正常回答里
-#: 引用这个标签（"``<tool_call>`` 是什么意思"）不该被当成标记剪掉（见下面最后一族
-#: 的说明与 ``test_a_truncated_block_still_counts_but_a_quotation_does_not``）。
-_TEXT_CALL_MARKERS: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
+#: 引用这个标签（"``<tool_call>`` 是什么意思"）不该被当成标记剪掉（见
+#: :data:`_TEXT_CALL_OPEN` 的说明与那条"截断 vs 引用"的用例）。
+_CLOSED_MARKERS: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
     (
-        # 1) 闭合的 `<tool_call>…</tool_call>`（Qwen 系；块里可能是 ``{"name": …}``，
+        # 1) `<tool_call>…</tool_call>`（Qwen 系；块里可能是 ``{"name": …}``，
         #    也可能是"名字裸写一行 + 一段 JSON"）
         re.compile(r"<tool_calls?\s*>.*?</tool_calls?\s*>", re.DOTALL | re.IGNORECASE),
         re.compile(r"</?tool_calls?\s*>", re.IGNORECASE),
     ),
     (
-        # 2) **没有收尾标签**的 `<tool_call>`（被 max_tokens 截断，或模型只写了一半）：
-        #    只有"标签后面紧跟着调用载荷"才算——一段 JSON，或"一个工具名 + 一段 JSON"。
-        #    这一条同时也是防误伤的那条：回答里引用这个标签时后面跟的是标点或中文，
-        #    不满足"名字 / 花括号"，于是不会被剪掉。
+        # 2) DeepSeek 的特殊 token 被当正文吐出来（begin / end 那一对成对出现）：
+        #    中间是工具名与参数，竖线可能是全角 `｜` 也可能是半角，
+        #    那个窄空格是 `▁`；都按"像就行"匹配
+        re.compile(
+            r"<[｜|]{1,2}\s*tool[▁_ ]?calls?[▁_ ]?begin[｜|]{1,2}>.*?"
+            r"<[｜|]{1,2}\s*tool[▁_ ]?calls?[▁_ ]?end[｜|]{1,2}>",
+            re.DOTALL | re.IGNORECASE,
+        ),
+        re.compile(r"<[｜|]{1,2}\s*tool[▁_ ]?calls?[▁_ ]?(?:begin|end)?[｜|]{1,2}>", re.IGNORECASE),
+    ),
+    (
+        # 3) DSML（DeepSeek 的另一套方言）：`<｜｜DSML｜｜ invoke name="…">` 那一族
+        re.compile(
+            r"<[｜|]{1,2}\s*/?\s*DSML[｜|]{1,2}[^>]*>.*?"
+            r"</?\s*[｜|]{1,2}\s*/?\s*DSML[｜|]{1,2}[^>]*>",
+            re.DOTALL | re.IGNORECASE,
+        ),
+        re.compile(r"</?\s*[｜|]{1,2}\s*/?\s*DSML[｜|]{1,2}[^>]*>", re.IGNORECASE),
+    ),
+    (
+        # 4) `<function=名字>{…}</function>`（早期 Qwen 与一些兼容端点的写法）
+        re.compile(
+            r"<function\s*(?:=[^>]*|name\s*=\s*[\"'][^\"']*[\"'][^>]*)>.*?</function\s*>",
+            re.DOTALL | re.IGNORECASE,
+        ),
+        re.compile(r"</?function\s*[^>]*>", re.IGNORECASE),
+    ),
+)
+
+#: **收尾标签可能永远不来**的那些（被 max_tokens 截断，或模型只写了一半）。
+#:
+#: 与 :data:`_CLOSED_MARKERS` 分开是因为**时机不同**，这一点是踩出来的：
+#: 流式那一层每收到一块就得判一次，而"到这段文字结束"在流里等于"到目前收到的为止"
+#: ——按它当场吃掉，后面紧接着到的载荷碎片（``,"arguments": …}`` 那种）就会被当成
+#: 正文漏出去。所以这一组**只在"这一趟文字已经结束"时才敢用**（一次性剥的那条路、
+#: 以及流式那层的 ``flush``）。
+#:
+#: "标签后面**必须**紧跟调用载荷"在这里是一半判据、也是防误伤的那条：回答里引用
+#: 这个标签时后面跟的是标点或中文，不满足"名字 / 花括号"，于是不会被剪掉。
+_TEXT_CALL_OPEN: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
+    (
         re.compile(
             r"<tool_calls?\s*>\s*(?:\{.*|[A-Za-z_][\w.]*\s*\{.*)\Z",
             re.DOTALL | re.IGNORECASE,
@@ -804,30 +844,22 @@ _TEXT_CALL_MARKERS: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
         re.compile(r"</?tool_calls?\s*>", re.IGNORECASE),
     ),
     (
-        # 3) DeepSeek 的特殊 token 被当正文吐出来（begin / end 那一对成对出现）：
-        #    `...` 里是工具名与参数，竖线可能是全角 `｜` 也可能是半角，
-        #    中间那个是 `▁`；都按"像就行"匹配
         re.compile(
-            r"<[｜|]{1,2}\s*tool[▁_ ]?calls?[▁_ ]?begin[｜|]{1,2}>.*?"
-            r"(?:<[｜|]{1,2}\s*tool[▁_ ]?calls?[▁_ ]?end[｜|]{1,2}>|\Z)",
+            r"<[｜|]{1,2}\s*tool[▁_ ]?calls?[▁_ ]?begin[｜|]{1,2}>.*\Z",
             re.DOTALL | re.IGNORECASE,
         ),
         re.compile(r"<[｜|]{1,2}\s*tool[▁_ ]?calls?[▁_ ]?(?:begin|end)?[｜|]{1,2}>", re.IGNORECASE),
     ),
     (
-        # 4) DSML（DeepSeek 的另一套方言）：`<｜｜DSML｜｜ invoke name="…">` 那一族
         re.compile(
-            r"<[｜|]{1,2}\s*/?\s*DSML[｜|]{1,2}[^>]*>.*?"
-            r"(?:</?\s*[｜|]{1,2}\s*/?\s*DSML[｜|]{1,2}[^>]*>|\Z)",
+            r"<[｜|]{1,2}\s*/?\s*DSML[｜|]{1,2}[^>]*>.*\Z",
             re.DOTALL | re.IGNORECASE,
         ),
         re.compile(r"</?\s*[｜|]{1,2}\s*/?\s*DSML[｜|]{1,2}[^>]*>", re.IGNORECASE),
     ),
     (
-        # 5) `<function=名字>{…}</function>`（早期 Qwen 与一些兼容端点的写法）
         re.compile(
-            r"<function\s*(?:=[^>]*|name\s*=\s*[\"'][^\"']*[\"'][^>]*)>.*?"
-            r"(?:</function\s*>|\Z)",
+            r"<function\s*(?:=[^>]*|name\s*=\s*[\"'][^\"']*[\"'][^>]*)>.*\Z",
             re.DOTALL | re.IGNORECASE,
         ),
         re.compile(r"</?function\s*[^>]*>", re.IGNORECASE),
@@ -836,7 +868,7 @@ _TEXT_CALL_MARKERS: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...] = (
 
 
 def split_text_tool_calls(text: str) -> TextToolCalls:
-    """把正文里混进来的工具调用标记**剥掉**（见 :data:`_TEXT_CALL_MARKERS`）。
+    """把正文里混进来的工具调用标记**剥掉**（两组标记见 :data:`_CLOSED_MARKERS`）。
 
     只做两件事：认出标记、把工具名报出来给上面写措辞用。**不执行**——这一层的调用
     出现在"已经没有工具表"的那几条收尾路上（超时 / 步数用尽 / 这条链路本来就没有
@@ -845,6 +877,21 @@ def split_text_tool_calls(text: str) -> TextToolCalls:
     没命中时原样返回（``found=False``、``text`` 与入参逐字节相同），调用方据此
     什么都不做——这条函数不能成为"每次回答都要过一遍、顺手改点标点"的那种加工。
     """
+    return _strip_families(text, (*_CLOSED_MARKERS, *_TEXT_CALL_OPEN))
+
+
+def _strip_families(
+    text: str,
+    families: tuple[tuple[re.Pattern[str], re.Pattern[str]], ...],
+    *,
+    tidy: bool = True,
+) -> TextToolCalls:
+    """按给定的一族族规则剥一遍（见 :func:`split_text_tool_calls`）。
+
+    ``tidy=False`` 给流式那层用：它剥掉的只是**中间**的一块，剩下的那段还要接着
+    往下发，收拾空白会把两块正文之间的那个换行也吃掉（一次性剥那条路不存在这个问题
+    ——它看到的是整篇）。真正的收拾留到收尾（``_clean_answer`` 的 ``tidy_text``）。
+    """
     names: list[str] = []
 
     def _drop(block: re.Match[str]) -> str:
@@ -852,17 +899,21 @@ def split_text_tool_calls(text: str) -> TextToolCalls:
         return ""
 
     cleaned = text
-    for block, leftover in _TEXT_CALL_MARKERS:
+    for block, leftover in families:
         if block.search(cleaned) is None:
             continue
         cleaned = block.sub(_drop, cleaned)
         # 配对的整块剥掉之后，同族**孤立的标签**再清一遍（一族的收尾标签可能比开头多，
-        # 见 :data:`_TEXT_CALL_MARKERS` 里那段说明）。**只在这一族真的出现过一块时才做**
+        # 见 :data:`_CLOSED_MARKERS` 里那段说明）。**只在这一族真的出现过一块时才做**
         # ——回答里引用这个标签（"``<tool_call>`` 是什么意思"）不该被当成标记剪掉。
         cleaned = leftover.sub("", cleaned)
     if cleaned == text:
         return TextToolCalls(text=text, names=(), found=False)
-    return TextToolCalls(text=_tidy_text(cleaned), names=tuple(dict.fromkeys(names)), found=True)
+    return TextToolCalls(
+        text=tidy_text(cleaned) if tidy else cleaned,
+        names=tuple(dict.fromkeys(names)),
+        found=True,
+    )
 
 
 def _names_in(block: str) -> tuple[str, ...]:
@@ -880,7 +931,159 @@ def _names_in(block: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in found if item.strip())
 
 
-def _tidy_text(text: str) -> str:
+#: 标记**开头**的那几种写法（小写）。流式过滤靠它判断"这段还可能是标记的开头"
+#: （见 :class:`TextMarkerFilter`）。
+_MARKER_OPENERS = ("<tool_call", "<tool_calls", "<｜", "<|", "<function")
+
+#: ``<tool_call>`` 这类标签后面**必须**跟的东西：一段 JSON，或"一个工具名 + 一段 JSON"。
+#: 回答里引用这个标签时（"``<tool_call>`` 是模型想调工具时写的"）后面跟的是标点或中文，
+#: 于是不会被当成标记——这条与 :data:`_TEXT_CALL_MARKERS` 最后一族是同一个判据。
+_PAYLOAD_HINT = re.compile(r"(?:\{|[A-Za-z_][\w.]*\s*\{)")
+
+#: 一个**还没写完**的工具名（"web_sea" 这种，后面还等着 `{`）。
+_NAME_TAIL = re.compile(r"^[A-Za-z_][\w.]*\s*$")
+
+#: 收尾时要一起带走的空白（见 :class:`TextMarkerFilter` 的 `_gap`）。
+_BLANKS = " \t\r\n"
+
+#: 扣留的上限（字符）：超过它就不再扣着——我们认识的标记没有这个长度，
+#: 再扣下去只会让一段正常回答迟迟不显示。
+MARKER_HOLD_LIMIT = 4000
+
+
+class TextMarkerFilter:
+    """流式正文的**标记过滤器**（§12.228）：边收边把"本该是工具调用"的标记丢掉。
+
+    为什么要在**流**这一层也做一遍（协议层已经会剥掉收尾那条全文了）：正文增量是
+    **边到边发**的，而用户看的就是增量——只在收尾处剥，等于"库里干净、屏幕上脏过"，
+    实测那 5 条消息的正文**整条**都是标记，于是"闪一下"几乎等于整段回答。
+    已经发出去的字收不回来（见 ``tool_loop._answer`` 里"吐过了就不能重试"那段），
+    所以只能在这层**先不发**。
+
+    三档处置（``_pending`` 里逐块判）：
+
+    - **丢掉**：认得出的整块标记（与 :func:`split_text_tool_calls` 同一份判据，
+      含"人话里夹着标记"的那种——标记丢、人话放行）；
+    - **扣住**：这段还可能是标记的开头（"<tool_ca" 这种半截，或 ``<tool_call>`` 之后
+      载荷还没到）——等下一块再判，最多扣 :data:`MARKER_HOLD_LIMIT` 个字符；
+    - **放行**：不是标记（``<b>`` 这种、或引用这个标签的正常句子），照常发。
+
+    丢掉的东西**不静默**：``dropped`` / ``names`` 由调用方读走，用来补一条说明
+    （见 ``tool_loop.text_marker_step``）——"我们压掉了模型的一段输出"必须让人知道。
+    """
+
+    def __init__(self) -> None:
+        self._pending = ""
+        #: 上一段末尾**还没定**的空白：跟着下一块走——是标记就一起丢，是人话就补回去
+        #: （见 `_drain`；不这么做的话，标记前面那个换行会留在回答末尾）
+        self._gap = ""
+        self.dropped = False
+        self.names: list[str] = []
+
+    @property
+    def removed(self) -> TextToolCalls:
+        """它丢掉了什么（``text`` 恒为空——丢掉的都没有留下来的部分）。"""
+        return TextToolCalls(text="", names=tuple(dict.fromkeys(self.names)), found=self.dropped)
+
+    def feed(self, chunk: str) -> str:
+        """喂一个增量，返回**这一段里该显示的部分**（可能为空串）。"""
+        self._pending += chunk
+        return self._drain()
+
+    def flush(self) -> str:
+        """流结束了：把还扣着的那段定下来（按**完整**口径——含"被截断的那族"标记）。"""
+        rest, self._pending = self._pending, ""
+        judged = _strip_families(rest, (*_CLOSED_MARKERS, *_TEXT_CALL_OPEN), tidy=False)
+        if judged.found:
+            self._note(judged)
+            return judged.text
+        # 不是标记：`_gap` 里记着的那点空白（见 `_drain`）跟着它一起放行
+        return self._emit_gap() + rest
+
+    def _drain(self) -> str:
+        out: list[str] = []
+        while self._pending:
+            index = self._pending.find("<")
+            if index < 0:
+                # 这一段里没有标记的开头可言：整段放行。**末尾的空白留在 `_gap` 里**
+                # ——紧跟其后的很可能就是一块标记，而标记前面那点空白该跟着它一起消失
+                # （一次性剥的那条路是 `tidy_text` 收的；流里得提前留一手，
+                # 否则回答末尾会多出一个换行）
+                body = self._pending.rstrip(_BLANKS)
+                out.append(self._emit_gap() + body)
+                self._gap = self._pending[len(body) :]
+                self._pending = ""
+                break
+            prefix = self._pending[:index]
+            body = prefix.rstrip(_BLANKS)
+            if body:
+                # `<` 之前确实有人话：那部分与后面的标记无关，放行
+                out.append(self._emit_gap() + body)
+            # 前缀里剩下的空白（可能还带着更早扣下的那点）**先记着**——
+            # 它正好在标记前面，那块要是标记，它就跟着一起走（见下面两个分支）
+            self._gap += prefix[len(body) :]
+            self._pending = self._pending[index:]
+            # **只用闭合的那组**：流还没完，"到这段结束"不能当收尾（见 `_TEXT_CALL_OPEN`）
+            judged = _strip_families(self._pending, _CLOSED_MARKERS, tidy=False)
+            if judged.found:
+                self._note(judged)
+                self._gap = ""  # 标记前面那点空白跟着它一起走
+                out.append(judged.text)
+                self._pending = ""
+                break
+            if len(self._pending) <= MARKER_HOLD_LIMIT and _may_be_marker(self._pending):
+                break  # 还可能是标记的一段：扣着，等下一块
+            # 不是标记：`_gap` 还回去，这个 `<` 当普通字符放行，再看它后面还有没有
+            out.append(self._emit_gap() + "<")
+            self._pending = self._pending[1:]
+        return "".join(out)
+
+    def _emit_gap(self) -> str:
+        """`_gap` 里那点空白**该放行了**（不是标记前面那段）。"""
+        gap, self._gap = self._gap, ""
+        return gap
+
+    def _note(self, judged: TextToolCalls) -> None:
+        self.dropped = True
+        self.names.extend(judged.names)
+
+
+def _may_be_marker(text: str) -> bool:
+    """这段（以 ``<`` 开头）还可能是**一段标记的开头**吗（见 :class:`TextMarkerFilter`）。
+
+    两档都算"可能"：还没写出完整的开头（"<tool_ca"）、或已经写出开头但后面还没出现
+    "它不是标记"的证据（载荷、或内层标签）。一旦后面跟的是人话，就当场判定"这是引用"，
+    于是那段回答一个字都不必被扣着——**扣住正常回答是这个文件最不该犯的错**。
+    """
+    lowered = text.lower()
+    if any(opener.startswith(lowered) for opener in _MARKER_OPENERS):
+        return True
+    for opener in _MARKER_OPENERS:
+        if not lowered.startswith(opener):
+            continue
+        close = text.find(">")
+        if close < 0:
+            return True  # 标签还没写完
+        return _may_be_payload(text[close + 1 :].lstrip())
+    return False
+
+
+def _may_be_payload(head: str) -> bool:
+    """标签后面这段还可能是"调用载荷"的开头吗（见 :func:`_may_be_marker`）。
+
+    **要按"还没写完"来判**：流里 "web_search" 是先到 "w"、再到 "we" 的，
+    拿"完整的载荷"去比会在第一个字符上就判成"不是标记"，那段标记就漏出去了。
+    所以只有"已经不可能再变成载荷"（出现了中文、标点这类不是名字也不是花括号的字符）
+    才说不像。
+    """
+    if not head or head.startswith("<"):
+        return True  # 载荷还没到；或这一族的内层标签（DeepSeek 会写两层）
+    if _PAYLOAD_HINT.match(head):
+        return True  # 载荷已经在眼前了
+    return bool(_NAME_TAIL.match(head))  # 名字写了一半，还在等那个 `{`
+
+
+def tidy_text(text: str) -> str:
     """剥掉标记之后收拾空白：连续空行折成一个，首尾空白去掉。
 
     不收拾的话，被剥掉的那一块在回答中间留一大段空白——那不是模型写的停顿，

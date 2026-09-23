@@ -81,6 +81,7 @@ from app.services.llm import (
     ChatError,
     ChatMessage,
     LLMReply,
+    TextMarkerFilter,
     ToolCall,
     ToolCallDelta,
     ToolSpec,
@@ -670,27 +671,36 @@ class ToolLoop:
 
         重试要**发一条步骤让用户看得见**：他不知道流断了，只会以为模型卡住了；
         那条步骤也是"这一轮为什么慢了一点"的唯一痕迹（它同样进会话事件日志）。
+
+        **正文过一个标记过滤器**（§12.228，见 ``llm.TextMarkerFilter``）：模型把工具调用
+        写进正文时，那段不该出现在用户眼前——增量是边到边发的，收尾处再剥只是
+        "库里干净、屏幕上脏过"。过滤器扣住的正是"还可能是标记"的那几块。
         """
         while True:
             parts: list[str] = []
             reasoning_parts: list[str] = []
             fragments: list[ToolCallDelta] = []
             started = False
+            # **每趟重试都新建一个**：这一趟扣下的东西随失败一起丢掉（上面那段说明），
+            # 带着上一趟的缓冲重来，拼出来的正文就多了半截标记
+            marker = TextMarkerFilter()
             try:
                 for delta in self._client_factory().stream_events(messages, tools):
                     if delta.tool_calls:
                         fragments.extend(delta.tool_calls)
                     if delta.reasoning:
                         reasoning_parts.append(delta.reasoning)
-                    if delta.text:
-                        parts.append(delta.text)
-                    if not started and delta.text:
-                        yield StepEvent(phase="answer", label="组织回答", status="running")
-                        started = True
+                    # 正文先过过滤器：`shown` 才是该发出去的那部分（可能为空——
+                    # 那说明这一块还扣着，或者它就是一段标记）
+                    shown = marker.feed(delta.text) if delta.text else ""
+                    if shown:
+                        parts.append(shown)
+                        if not started:
+                            yield StepEvent(phase="answer", label="组织回答", status="running")
+                            started = True
+                        yield DeltaEvent(text=shown)
                     if delta.reasoning:
                         yield ThinkingEvent(text=delta.reasoning)
-                    if delta.text:
-                        yield DeltaEvent(text=delta.text)
                 break
             except ChatError as exc:
                 if started or not exc.retryable or self._stream_retries_left <= 0:
@@ -705,9 +715,34 @@ class ToolLoop:
                     detail=_clip(str(exc), 120),
                 )
 
+        # 流结束了：把还扣着的那段定下来（截断的标记在这里才认得出）
+        tail = marker.flush()
+        if tail:
+            parts.append(tail)
+            if not started:
+                yield StepEvent(phase="answer", label="组织回答", status="running")
+                started = True
+            yield DeltaEvent(text=tail)
         calls = assemble_tool_calls(fragments) if fragments else ()
         if not calls:
-            yield DoneEvent(answer="".join(parts))
+            text = "".join(parts)
+            if marker.dropped:
+                # 这一轮剥掉过标记，**如实说一句**（见 `text_marker_step`）：
+                # 用户得知道这段回答为什么短、以及「继续」能把这一轮接着做完
+                yield text_marker_step(marker.names, had_tools=bool(tools))
+                if not text:
+                    # **剥空**的（不是"模型本来一个字都没吐"——那种要原样留空，
+                    # 由上层判成失败，见 ``schedule_runner`` 里"没有产出正文"那条）：
+                    # 不能交空回答——界面上是个空气泡，落库那条判断还会让整轮消失。
+                    # 顶上的这句人话**也要发成增量**：收尾那条的全文与落库用的字符串
+                    # 必须是同一个（Agent 关掉那条链路就是按增量拼回答的）
+                    text = MARKER_ONLY_ANSWER
+                    if not started:
+                        yield StepEvent(phase="answer", label="组织回答", status="running")
+                        started = True
+                    yield DeltaEvent(text=text)
+                    parts.append(text)
+            yield DoneEvent(answer=text)
         return LLMReply(
             text="".join(parts),
             tool_calls=calls,

@@ -705,6 +705,10 @@ def test_markup_in_the_answer_is_stripped_before_it_is_stored(
 
     # 收尾那条带的是**剥干净**的正文（人话留着）
     assert _event(events, "done")["answer"] == "我还想再核一眼 NVIDIA 的文档。"
+    # **增量里也不能有**（§12.228）：正文是边到边发的，用户看的就是增量——
+    # 只在收尾处剥等于"库里干净、屏幕上脏过"
+    shown = "".join(item["text"] for item in events if item["type"] == "delta")
+    assert "tool_call" not in shown
     # 库里那份与它逐字相同——"屏幕上干净、库里脏"是这一层最要防的偏差
     stored = client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"][-1]
     assert stored["content"] == "我还想再核一眼 NVIDIA 的文档。"
@@ -776,6 +780,9 @@ def test_the_non_agent_path_strips_it_as_well(client: TestClient, kb_id: str) ->
     assert _event(events, "done")["answer"] == "我还想再核一眼 NVIDIA 的文档。"
     stored = client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"][-1]
     assert stored["content"] == "我还想再核一眼 NVIDIA 的文档。"
+    # 增量里同样不该出现（这条链路在协议层挂着过滤器，见 `llm.TextMarkerFilter`）
+    shown = "".join(item["text"] for item in events if item["type"] == "delta")
+    assert "tool_call" not in shown
 
 
 # ------------------------------------------------- 流式健壮性：心跳（P2-2）

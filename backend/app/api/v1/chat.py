@@ -85,7 +85,14 @@ from app.services.api_key import Caller
 from app.services.chat import ChatTurn, SourceRef
 from app.services.conversation import LastTurn
 from app.services.live_turns import LiveEmit
-from app.services.llm import ChatError, ChatMessage, split_text_tool_calls
+from app.services.llm import (
+    ChatError,
+    ChatMessage,
+    TextMarkerFilter,
+    TextToolCalls,
+    split_text_tool_calls,
+    tidy_text,
+)
 from app.services.session_events import (
     KIND_ERROR,
     KIND_INTERRUPTED,
@@ -365,7 +372,7 @@ def decide_approval(
 
 
 def _clean_answer(
-    sink: _TurnSink, answer: str, *, had_tools: bool
+    sink: _TurnSink, answer: str, *, had_tools: bool, dropped: TextToolCalls | None = None
 ) -> tuple[str, StepEvent | None]:
     """正文里的工具调用标记**在这里收口**（§12.227）：剥掉、必要时补一句人话与一条说明。
 
@@ -380,18 +387,27 @@ def _clean_answer(
     那几种标记为什么会出现：收尾那两条路（时间 / 步数用尽）与"这条链路本来就没有
     工具"都**不带工具表**，而上下文还在催它去查时，模型只剩"把调用写进正文"一条路
     （§12.219 实测 5 例）。``had_tools`` 只影响措辞——不能对用户说错话。
+
+    ``dropped`` 是**流式过滤器**已经扣掉的那一份（§12.228）：扣掉的字不会出现在
+    ``answer`` 里，所以"要不要补说明"得看它，不能只看 ``answer`` 里还剩什么。
     """
     marker = split_text_tool_calls(answer)
-    if not marker.found:
+    streamed = dropped or TextToolCalls(text="", names=(), found=False)
+    if not (marker.found or streamed.found):
         return answer, None
+    # 命中的那一份剥出来的正文；标记是**流式那层**扣掉的时候（它的输出里已经没有它们）
+    # 只剩收拾一下空白——标记前面那点空白本该随它一起走，不收拾的话回答末尾会多一个换行
+    # （一次性剥的那条路走的是同一个 `tidy_text`，两处口径一致）
+    cleaned = marker.text if marker.found else tidy_text(answer)
     # 剥完什么都不剩时给一句人话：空回答会让**整轮**从会话里消失
     # （落库的判据是 answer 非空，见 `_events` 里那段说明），
     # 用户回头连"我问过、它没答"都看不到
-    cleaned = marker.text or MARKER_ONLY_ANSWER
+    cleaned = cleaned or MARKER_ONLY_ANSWER
+    names = marker.names or streamed.names
     # 已经说过就不再补（工具循环那条路会自己发一条同样的说明，见 `tool_loop.text_marker_step`）：
     # 同一个现象说两遍，用户会以为出了两次问题
     already = any(step.get("label") == MARKER_STEP_LABEL for step in sink.steps)
-    return cleaned, None if already else text_marker_step(marker.names, had_tools=had_tools)
+    return cleaned, None if already else text_marker_step(names, had_tools=had_tools)
 
 
 @router.post("/chat", response_model=ChatResponseOut, summary="快速检索问答（一次性）")
@@ -1147,6 +1163,10 @@ def _turn_events(
     step_log: list[dict[str, object]] = []
     thinking_parts: list[str] = []
     sources: list = []
+    # 正文里的工具调用标记过滤器（§12.228）：**非 Agent 那条链路**用它扣下还没确定
+    # 是不是标记的那几块（Agent 那条链路在工具循环里自己有一份，见 ``tool_loop._answer``）。
+    # 收尾时它把自己丢掉了什么报出来，用来补那条说明
+    marker_stream = TextMarkerFilter()
     # 交给模型的这一轮的提示（改写类命令就是命令渲染出来的正文，见上面）
     prompt_query = plan.prompt if plan is not None and plan.prompt else payload.query
     # 上下文（含压缩）对两条链路都适用：Agent 关掉时同样需要"摘要 + 最近原文"
@@ -1261,9 +1281,15 @@ def _turn_events(
                 thinking_effort=effort,
                 owner_id=_memory_owner(caller),
             ):
-                collected.append(delta)
+                # 正文先过标记过滤器（§12.228）：这段标记**不该发出去**——增量是
+                # 边到边发的，发出去就收不回来了（见 ``llm.TextMarkerFilter``）。
+                # 扣着的那部分在流结束后由 `flush()` 定下来
+                shown = marker_stream.feed(delta)
+                if not shown:
+                    continue
+                collected.append(shown)
                 # 与工具循环那条路同一处置：正文增量不进缓冲（收尾那条 done 带全文）
-                yield LiveEmit({"type": "delta", "text": delta}, keep=False)
+                yield LiveEmit({"type": "delta", "text": shown}, keep=False)
         except ChatError as exc:
             yield _fail(services, payload.conversation_id, sink, str(exc))
             return
@@ -1271,12 +1297,20 @@ def _turn_events(
             logger.exception("对话流异常")
             yield _fail(services, payload.conversation_id, sink, f"对话失败：{exc}")
             return
+        tail = marker_stream.flush()
+        if tail:
+            collected.append(tail)
+            yield LiveEmit({"type": "delta", "text": tail}, keep=False)
 
     answer = "".join(collected)
     # 正文里的工具调用标记在这里收口（§12.227，理由见 `_clean_answer`）：
     # 两条链路都要过——工具循环在收尾那两条路上不带工具表、而"Agent 关掉"那条链路
-    # 根本没有工具表，模型在两种情形下都只剩"把调用写进正文"一条路
-    answer, marker_notice = _clean_answer(sink, answer, had_tools=_use_agent(services))
+    # 根本没有工具表，模型在两种情形下都只剩"把调用写进正文"一条路。
+    # `marker_stream` 是上面那条链路自己扣下的（Agent 那条链路在工具循环里扣，
+    # 由它自己发说明步骤——所以这里按标签去重，不重复说）
+    answer, marker_notice = _clean_answer(
+        sink, answer, had_tools=_use_agent(services), dropped=marker_stream.removed
+    )
     if marker_notice is not None:
         yield from sink.feed(marker_notice)
         # 落库与状态**都按 sink 里那份**：`sink.feed` 刚把那条说明收进 steps 与日志
