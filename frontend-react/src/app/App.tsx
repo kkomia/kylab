@@ -117,6 +117,15 @@ function AuthGate({ children }: { children: React.ReactNode }) {
         })
         return
       }
+      // **恢复身份**：令牌可能还在但过期/被吊销（改密、管理员踢掉）。
+      // 不验一次的话，侧栏账号区会空着（`currentUser` 一直是 null）、
+      // 而每个请求各报一次 401。`restoreSession` 失败会清令牌，下一次渲染就落到登录页
+      if (!(await restoreSession())) {
+        navigate(`/login?redirect=${encodeURIComponent(location.pathname + location.search)}`, {
+          replace: true,
+        })
+        return
+      }
       setReady(true)
     })()
     return () => {

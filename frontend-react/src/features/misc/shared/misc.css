@@ -1065,7 +1065,9 @@ button.m-card-title:hover {
 
 .m-figures {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  /* 六个大数：**3 列 × 2 行**（旧前端的口径，见 DashboardView.vue 的 `.figures`）。
+     写成 6 列会让数字挤成一条、字号显得更小，第一眼就不像同一页。 */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-3);
   margin: 0;
   padding: 0;
@@ -2656,7 +2658,8 @@ button.m-card-title:hover {
 
 @media (max-width: 960px) {
   .m-figures {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    /* 桌面 3 列 → 窄屏 2 列（与旧前端一致：960 是它的断点） */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .m-gauges {

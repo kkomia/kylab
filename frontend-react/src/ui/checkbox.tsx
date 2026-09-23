@@ -21,7 +21,7 @@ function Checkbox({ className, ...props }: React.ComponentProps<typeof CheckboxP
     <CheckboxPrimitive.Root
       data-slot="checkbox"
       className={cn(
-        'peer size-4 shrink-0 rounded-[var(--radius-badge)] border border-border transition-[color,background-color,border-color] disabled:cursor-not-allowed disabled:border-[var(--button-disabled-border)] disabled:bg-[var(--button-disabled-bg)] aria-invalid:border-status-danger data-[state=checked]:border-[var(--accent)] data-[state=checked]:bg-[var(--accent)] data-[state=checked]:text-[var(--Always-White)]',
+        'peer size-4 shrink-0 rounded-[var(--radius-badge)] border border-[var(--border-strong)] transition-[color,background-color,border-color] disabled:cursor-not-allowed disabled:border-[var(--button-disabled-border)] disabled:bg-[var(--button-disabled-bg)] aria-invalid:border-status-danger data-[state=checked]:border-[var(--accent)] data-[state=checked]:bg-[var(--accent)] data-[state=checked]:text-[var(--Always-White)]',
         className,
       )}
       {...props}
