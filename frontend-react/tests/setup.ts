@@ -32,3 +32,29 @@ if (!window.matchMedia) {
     })),
   )
 }
+
+// ------------------------------------------------------------------ 其它 jsdom 缺口
+//
+// 这三件是各域报告里点名要的（ProseMirror 的聚焦、表格/图表的滚动、Radix 的指针捕获），
+// 放在**全局**一份，别再让每个测试文件各带一份兜底副本。
+
+if (!Range.prototype.getClientRects) {
+  Range.prototype.getClientRects = () =>
+    ({
+      length: 0,
+      item: () => null,
+      [Symbol.iterator]: function* () {},
+    }) as unknown as DOMRectList
+}
+if (!Range.prototype.getBoundingClientRect) {
+  Range.prototype.getBoundingClientRect = () =>
+    ({ x: 0, y: 0, width: 0, height: 0, top: 0, right: 0, bottom: 0, left: 0 }) as DOMRect
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = vi.fn()
+}
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false
+  Element.prototype.setPointerCapture = vi.fn()
+  Element.prototype.releasePointerCapture = vi.fn()
+}

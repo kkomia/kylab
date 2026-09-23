@@ -719,6 +719,11 @@ async function pump(
         ...(event.result ? { result: event.result } : {}),
         ...(event.artifacts ? { artifacts: event.artifacts } : {}),
         ...(event.tool ? { tool: event.tool } : {}),
+        // **语义种类也要转发**（`kind`）：界面按它选图标与配色（P2-1 的四元组）。
+        // 旧 Vue 实现漏了这一行——直播里的工具步骤拿不到 `kind`，只能按工具名兜底，
+        // 于是新加的工具在"正在跑的那一轮"里画中性图标、刷新（读历史快照）之后才对。
+        // 迁移时按后端真实事件补齐（`chat.py` 的 step 事件是带 kind 的）。
+        ...(event.kind ? { kind: event.kind } : {}),
       })
       return
     }

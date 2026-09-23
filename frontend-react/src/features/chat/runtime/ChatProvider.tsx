@@ -1,0 +1,1480 @@
+/**
+ * 对话页的**页面状态与动作**（旧 `ChatView.vue` 里除模板之外的那一半）。
+ *
+ * 三件事只在这一处发生，界面（`ui/**`）只读它、只调它：
+ *
+ * 1. **消息数组**：`Message[]` 是唯一真相，平铺一条条（与后端存的一致），
+ *    展示分组交给 `buildTurns`；
+ * 2. **常驻流的镜像**：`model/liveTurn` 里那一轮的状态（正文/思考/步骤/出处/确认）
+ *    被"倒"进消息数组（旧 `ChatView.syncLive` 那条规则，逐条照搬）；
+ * 3. **发送链路**：建会话 → 斜杠命令分流 → 起一轮（全部走我们自己的 SSE，
+ *    assistant-ui 一个字节都不碰）。
+ *
+ * 为什么状态放在 React 里而不是模块作用域：旧前端的消息数组是组件局部的，常驻流
+ * 才是模块级的（切页不丢）。这一层保持同一分工——**页面状态随页面走，
+ * 流的状态随应用走**（后者在 `model/liveTurn` 里）。
+ */
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
+import { useQueryClient } from '@tanstack/react-query'
+import { useNavigate, useParams, useSearchParams } from 'react-router'
+
+import {
+  chatStream,
+  listCommands,
+  type ChatApproval,
+  type ChatArtifact,
+  type ChatCommand,
+  type ChatCommandResult,
+  type ChatHistoryMessage,
+  type ChatSource,
+  type ChatStep,
+  type ThinkingEffort,
+} from '@/api/chat'
+import {
+  createConversation,
+  ingestArtifact,
+  listArtifacts,
+  rewindConversation,
+  type ConversationArtifact,
+  type ConversationDetail,
+} from '@/api/conversations'
+import { uploadDocument } from '@/api/documents'
+import type { KnowledgeBase } from '@/api/knowledgeBases'
+import { createNote } from '@/api/notes'
+import type { RegisteredModel } from '@/api/modelRegistry'
+import { copyText } from '@/lib/clipboard'
+import { formatBytes } from '@/lib/format'
+
+import {
+  buildTurns,
+  makeMessage,
+  readTraceOpenMemory,
+  tracePage,
+  TRACE_PAGE_SIZE,
+  writeTraceOpenMemory,
+  type Message,
+  type TracePage,
+  type Turn,
+} from '@/features/chat/model/turns'
+
+import { liveActions, useLiveTurnState, type LiveThinking, type LiveTurnState } from './liveAdapter'
+import { notifyError, notifySuccess, notifyWarning } from './notify'
+import {
+  KB_SWITCH_KEY,
+  LAST_EFFORT_KEY,
+  LAST_MODEL_KEY,
+  LAST_THINKING_KEY,
+  readPinnedSkills,
+  readStored,
+  readStoredEffort,
+  writePinnedSkills,
+  writeStored,
+} from './prefs'
+import {
+  useChatCommands,
+  useChatModels,
+  useConversationDetail,
+  useConversations,
+  useConversationFiles,
+  useKnowledgeBases,
+  useSkills,
+  useContextUsage,
+  useSuggestedQuestions,
+} from './useChatData'
+
+/** 会话里带入模型的历史轮数上限：无边界地带上全部历史，提示词会先被自己挤爆。 */
+const HISTORY_LIMIT = 6
+/** 示例问题一次显示几个。一屏放得下五六个，再多就变成一堵墙。 */
+const SAMPLE_COUNT = 5
+
+/**
+ * 静态样例：**语料生成拿不到时的兜底**。
+ *
+ * 写死的问题和用户的语料无关，点进去往往答不上来，所以它只做兜底；
+ * 真正展示的是后端依据所选库的原文生成的建议。
+ */
+const STATIC_SAMPLES = [
+  '这些资料里反复提到的关键结论是什么？',
+  '把几份文档的主要观点对比一下。',
+  '有哪些明确的数字或阈值？分别出自哪里？',
+  '关于这个问题，资料里有相互矛盾的说法吗？',
+  '按资料的说法，第一步应该做什么？',
+  '有没有提到适用范围或前提条件？',
+  '最近入库的文档都讲了什么？',
+  '哪些结论有原文明确支持，哪些只是推测？',
+] as const
+
+/**
+ * 界面里的消息：模型层那份 `Message` 加上一个**稳定的 id**。
+ *
+ * 为什么要 id：assistant-ui 的消息列表靠它做 key 与"这一条是哪一条"，
+ * 而我们自己的镜像（把流的状态打进最后一条）也要能认出它。
+ */
+export interface ChatMessage extends Message {
+  id: string
+}
+
+let messageSeq = 0
+function makeChatMessage(
+  role: ChatMessage['role'],
+  text: string,
+  extra: Partial<Message> = {},
+): ChatMessage {
+  messageSeq += 1
+  return { ...makeMessage(role, text, extra), id: `m${messageSeq}` }
+}
+
+/** `@` 提及里的一条候选（三类共用一个形状，见 `ui/Menus.tsx`）。 */
+export interface MentionItem {
+  kind: 'file' | 'skill' | 'session'
+  /** 插进输入框的引用文本（不含前导的 `@`）。 */
+  value: string
+  label: string
+  detail: string
+  isDir?: boolean
+}
+
+type UsageQuery = ReturnType<typeof useContextUsage>
+
+export interface ChatApi {
+  // —— 会话
+  conversationId: string
+  messages: ChatMessage[]
+  turns: Turn[]
+  /** 还没决定这一页显示什么（解析入口或回放会话）：画骨架屏，不画欢迎层。 */
+  pendingEntry: boolean
+  /** 第一轮对话之前：欢迎层与输入卡片作为一组居中。 */
+  welcome: boolean
+  sending: boolean
+
+  // —— 流上两条"停在这里等用户"的东西
+  pendingApproval: ChatApproval | null
+  /** 那条确认已经有结论了：把它收起来（决定本身由 `ApprovalBar` POST 给后端）。 */
+  dismissApproval: () => void
+  commandResult: ChatCommandResult | null
+  dismissCommandResult: () => void
+
+  // —— 输入
+  query: string
+  setQuery: (value: string) => void
+  canSend: boolean
+  send: () => void
+  stop: () => void
+
+  // —— 知识库与技能
+  kbs: KnowledgeBase[]
+  kbLoading: boolean
+  useKb: boolean
+  toggleKbSwitch: () => void
+  selectedKbIds: string[]
+  toggleKb: (id: string) => void
+  kbPickText: string
+  pinnedSkills: string[]
+  toggleSkill: (name: string) => void
+  skills: { name: string; summary: string; description: string }[]
+  skillsLoading: boolean
+  uploadFiles: (files: File[]) => void
+  uploading: boolean
+
+  // —— 模型与思考
+  models: RegisteredModel[]
+  modelOptions: { value: string; label: string }[]
+  modelPk: string
+  setModelPk: (value: string) => void
+  modelPlaceholder: string
+  modelsLoaded: boolean
+  thinkingOn: boolean
+  setThinkingOn: (value: boolean) => void
+  thinkingEffort: ThinkingEffort
+  setThinkingEffort: (value: string) => void
+
+  // —— 命令与提及
+  commands: ChatCommand[]
+  loadCommands: () => void
+  mentionItems: MentionItem[]
+  mentionLoading: boolean
+  loadMentions: () => void
+  applyMention: (item: MentionItem) => void
+  insertReference: (value: string) => void
+  mentionToken: (value: string) => string
+
+  // —— 结构化问答（`/plan` 这类命令的写法见 `ui/SlashMenu`）
+  commandsLoading: boolean
+  applyCommand: (command: ChatCommand) => void
+
+  // —— 上下文仪表
+  contextUsage: UsageQuery
+  compressContext: () => void
+
+  // —— 欢迎层
+  suggestions: string[]
+  suggestionsLoading: boolean
+  showSuggestions: boolean
+  shuffleSuggestions: () => void
+  useSample: (question: string) => void
+
+  // —— 过程面板
+  traceOpen: (message: Message) => boolean
+  toggleTrace: (message: Message) => void
+  traceView: (turnIndex: number, turn: Turn) => TracePage
+  showMoreTrace: (turnIndex: number) => void
+  isStepOpen: (key: string) => boolean
+  toggleStep: (key: string) => void
+  isGroupOpen: (key: string) => boolean
+  toggleGroup: (key: string) => void
+  citesExpanded: (turnIndex: number) => boolean
+  toggleCites: (turnIndex: number) => void
+  flashCite: string
+  revealSource: (turnIndex: number, sourceIndex: number) => void
+  copiedKey: string
+  copyMessage: (turnIndex: number, message: Message) => void
+  savedTurns: number[]
+  saveAsNote: (turnIndex: number, turn: Turn) => void
+  regenerating: boolean
+  regenerate: (turnIndex: number) => void
+  resuming: boolean
+  resumeTurn: (turnIndex: number) => void
+
+  // —— 出处原文与交付物
+  sourceOpen: boolean
+  activeSource: ChatSource | null
+  openSource: (source: ChatSource) => void
+  closeSource: () => void
+  ingestTarget: ChatArtifact | null
+  ingestKbId: string
+  setIngestKbId: (value: string) => void
+  openIngest: (file: ChatArtifact) => void
+  closeIngest: () => void
+  confirmIngest: () => void
+  ingesting: boolean
+  kbName: (kbId?: string) => string
+
+  // —— 拖拽的两种落法
+  dropKind: 'attach' | 'reference' | null
+  setDropKind: (value: 'attach' | 'reference' | null) => void
+}
+
+const ChatContext = createContext<ChatApi | null>(null)
+
+export function useChat(): ChatApi {
+  const value = useContext(ChatContext)
+  if (!value) throw new Error('useChat 必须在 <ChatProvider> 里用')
+  return value
+}
+
+/** 这一条消息的 id（界面里的消息一定有；模型层那份类型没有这个字段）。 */
+function idOf(message: Message): string {
+  return (message as ChatMessage).id ?? ''
+}
+
+/**
+ * 把一份会话详情铺进界面（缓存与网络两条路都走它，口径才不会分叉）。
+ *
+ * 三个"都要还原"：
+ * - **过程与思考**（v0.25）：不然离开这一页再回来，只剩一句"已生成回答"；
+ * - **库范围**：回放时沿用，否则多轮上下文会指向上一次没查的库；
+ * - **模型与思考档**（v12/v16）：为空则保持当前默认。
+ */
+function messagesFromDetail(detail: ConversationDetail): ChatMessage[] {
+  return detail.messages.map((item) =>
+    makeChatMessage(item.role === 'user' ? 'user' : 'assistant', item.content, {
+      sources: item.sources,
+      // 后端的 `steps` 是"快照"（字段随版本加过好几次），读的时候一律按可选取值
+      steps: (item.steps ?? []) as unknown as ChatStep[],
+      thinkingText: item.thinking ?? '',
+      // 这一轮当时用哪档思考没存（那是会话级偏好），不猜
+      thinking: null,
+    }),
+  )
+}
+
+/** 接口返回的产物 → 步骤快照里那份的形状（空值归一，理由见旧 `ChatView.fromStored`）。 */
+function fromStored(item: ConversationArtifact): Partial<ChatArtifact> & { artifact_id: string } {
+  return {
+    artifact_id: item.artifact_id,
+    name: item.name,
+    size_bytes: item.size_bytes,
+    format: item.format,
+    storage: item.storage,
+    where: item.where,
+    ...(item.path ? { path: item.path } : {}),
+    ...(item.knowledge_base_id ? { knowledge_base_id: item.knowledge_base_id } : {}),
+    ...(item.document_id ? { document_id: item.document_id } : {}),
+  }
+}
+
+/** 选库入口上写什么（开关那件事由开关本身表达，这里只说"选了哪几个"）。 */
+function pickText(loading: boolean, total: number, selected: number): string {
+  // **还没加载完就说"还没有知识库"是假话**：库明明在，只是还没取回来
+  if (loading && total === 0) return '读取中…'
+  if (total === 0) return '还没有知识库'
+  if (selected === 0) return '未选库'
+  if (selected === total) return `全部 ${selected} 个`
+  return `已选 ${selected} 个`
+}
+
+/**
+ * 一条斜杠命令**有没有真的产出内容**（P1-2）。
+ *
+ * 判据就是任务里那句话：**看结果里有没有正文/回答**——命令的表级 `short_circuit`
+ * 只说明"通常不产生回答"，而 `/plan <描述>`、自定义命令会照常过模型并留下回答。
+ * 唯一要排除的是**补发的收口**（`recovered`）：那条 `done` 带的是库里最后一条回答，
+ * 不是这一轮产出的东西，照它建气泡会凭空多出一轮看过的回答。
+ */
+function commandProducedContent(state: LiveTurnState): boolean {
+  return (
+    state.steps.length > 0 ||
+    state.sources.length > 0 ||
+    state.error.length > 0 ||
+    (state.text.length > 0 && !state.recovered)
+  )
+}
+
+/**
+ * 把"正在流式的那一轮"**镜像**进本页的消息数组（旧 `ChatView.syncLive`，逐条照搬）。
+ *
+ * 规则四支：
+ * - **`command`（一条斜杠命令）**：真有内容才补出"提问 + 回答"，而且只补一次——
+ *   命令可能只是系统的回话（`/help`），那不该在对话流里留下气泡；
+ * - **`append`（新起一轮）且画面上没有那一对**（用户离开期间流还在跑，回来时组件是新挂载的）
+ *   → 用 live 里的提问与已经流出的字补出一对；
+ * - **`recover`（刷新之后接回来的那一轮）**：只补回答那一条，而且**只有正文到了才补**
+ *   （正文增量不补发，"有正文"就等于"这一轮还活着"；提问随落库才有，补不出来）；
+ * - 其余只管把最后一条助手消息的字段刷成最新值。
+ */
+function mirrorLive(
+  prev: ChatMessage[],
+  state: LiveTurnState,
+  drawn: WeakSet<object>,
+): ChatMessage[] {
+  const last = prev.at(-1)
+  const hasPlaceholder = last?.role === 'assistant' && last.streaming === true
+  let next = prev
+
+  if (!hasPlaceholder) {
+    if (state.mode === 'command') {
+      if (drawn.has(state) || !commandProducedContent(state)) return prev
+      drawn.add(state)
+      next = [
+        ...prev,
+        makeChatMessage('user', state.query),
+        makeChatMessage('assistant', state.text, {
+          streaming: state.streaming,
+          thinking: state.thinking,
+        }),
+      ]
+    } else if (!state.streaming) {
+      // 收尾了、画面上又还没有它：什么都不补——库里那份才是权威
+      return prev
+    } else if (state.mode === 'append') {
+      next = [
+        ...prev,
+        makeChatMessage('user', state.query),
+        makeChatMessage('assistant', state.text, { streaming: true, thinking: state.thinking }),
+      ]
+    } else if (state.mode === 'recover' && state.text.length > 0) {
+      next = [
+        ...prev,
+        makeChatMessage('assistant', state.text, { streaming: true, thinking: state.thinking }),
+      ]
+    } else {
+      return prev
+    }
+  }
+
+  const target = next.at(-1)
+  if (!target || target.role !== 'assistant') return next
+  return next.map((item) =>
+    item.id === target.id
+      ? {
+          ...item,
+          text: state.text,
+          thinkingText: state.thinkingText,
+          steps: state.steps,
+          sources: state.sources,
+          streaming: state.streaming,
+          error: state.error,
+        }
+      : item,
+  )
+}
+
+export function ChatProvider({ children }: { children: ReactNode }) {
+  const params = useParams<{ conversationId?: string }>()
+  const [searchParams] = useSearchParams()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+
+  /**
+   * 当前会话 id。**以路径为唯一来源**，不做本地副本：侧栏点、前进/后退、
+   * 直接打开链接三种入口都会改路径，自己再存一份就得在三处同步。
+   */
+  const conversationId = params.conversationId ?? ''
+  /** 显式新建（侧栏「新对话」带来的 `?new=1`）：`/chat` 表示"回到最近一次"。 */
+  const wantsNew = Boolean(searchParams.get('new'))
+
+  const live = useLiveTurnState()
+
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [query, setQueryState] = useState('')
+  const [resolvingEntry, setResolvingEntry] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
+  const [resuming, setResuming] = useState(false)
+  const [copiedKey, setCopiedKey] = useState('')
+  const [savedTurns, setSavedTurns] = useState<number[]>([])
+  const [commandResult, setCommandResult] = useState<ChatCommandResult | null>(null)
+  const [flashCite, setFlashCite] = useState('')
+  const [sampleOffset, setSampleOffset] = useState(0)
+
+  // 过程面板的展开态：两张表分开（"看某一步的原文"与"看这一组有哪些调用"同时开着是正常的）
+  const [openSteps, setOpenSteps] = useState<ReadonlySet<string>>(new Set())
+  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set())
+  const [traceExtraPages, setTraceExtraPages] = useState<ReadonlyMap<number, number>>(new Map())
+  const [expandedCites, setExpandedCites] = useState<ReadonlySet<number>>(new Set())
+  /** 某一轮自己的展开态（点过就按点的那一档，`undefined` = 跟随"上次那一档"）。 */
+  const [traceOpenIds, setTraceOpenIds] = useState<Record<string, boolean>>({})
+  const [traceOpenMemory, setTraceOpenMemory] = useState<boolean | undefined>(() =>
+    readTraceOpenMemory(),
+  )
+
+  // 出处原文弹窗 / 存进知识库弹窗 / 拖拽落法
+  const [sourceOpen, setSourceOpen] = useState(false)
+  const [activeSource, setActiveSource] = useState<ChatSource | null>(null)
+  const [ingestTarget, setIngestTarget] = useState<ChatArtifact | null>(null)
+  const [ingestKbId, setIngestKbId] = useState('')
+  const [ingesting, setIngesting] = useState(false)
+  const [dropKind, setDropKind] = useState<'attach' | 'reference' | null>(null)
+
+  // —— 本机偏好（与旧前端同一批键） ——
+  const [useKb, setUseKb] = useState(() => readStored(KB_SWITCH_KEY) !== '0')
+  const [selectedKbIds, setSelectedKbIds] = useState<string[]>([])
+  const [pinnedSkills, setPinnedSkills] = useState<string[]>(() => readPinnedSkills())
+  const [modelPk, setModelPkState] = useState(() => readStored(LAST_MODEL_KEY))
+  const [thinkingOn, setThinkingOnState] = useState(() => readStored(LAST_THINKING_KEY) !== 'false')
+  const [thinkingEffort, setThinkingEffortState] = useState<ThinkingEffort>(() =>
+    readStoredEffort(),
+  )
+  const [wantSkills, setWantSkills] = useState(false)
+  const [wantCommands, setWantCommands] = useState(false)
+  const [wantConvFiles, setWantConvFiles] = useState(false)
+
+  // —— 服务端状态 ——
+  const kbsQuery = useKnowledgeBases()
+  const modelsQuery = useChatModels()
+  const commandsQuery = useChatCommands(wantCommands)
+  const skillsQuery = useSkills(wantSkills)
+  const detailQuery = useConversationDetail(conversationId)
+  const conversationsQuery = useConversations()
+  const filesQuery = useConversationFiles(conversationId, wantConvFiles)
+  const usageQuery = useContextUsage(conversationId)
+
+  const kbs = useMemo(() => kbsQuery.data ?? [], [kbsQuery.data])
+  const registry = modelsQuery.data
+  const models = useMemo(() => registry?.models ?? [], [registry])
+  const commands = useMemo(() => commandsQuery.data ?? [], [commandsQuery.data])
+  const skills = useMemo(() => skillsQuery.data ?? [], [skillsQuery.data])
+
+  /** 这一轮真正发出去的库范围：开关关掉就是空（后端据此跳过检索，就是一轮纯对话）。 */
+  const effectiveKbIds = useMemo(() => (useKb ? selectedKbIds : []), [useKb, selectedKbIds])
+
+  const suggestedQuery = useSuggestedQuestions(
+    effectiveKbIds,
+    messages.length === 0 && effectiveKbIds.length > 0,
+  )
+
+  // 库清单到位后**默认全选**：打开这一页的人多半就是要问遍手上的资料
+  const kbSeeded = useRef(false)
+  useEffect(() => {
+    if (kbSeeded.current || kbs.length === 0) return
+    kbSeeded.current = true
+    setSelectedKbIds(kbs.map((item) => item.id))
+  }, [kbs])
+
+  /** 选一个默认模型：会话已存 > 本地上次 > 注册表里绑定给 chat 的 > 第一个可用。 */
+  useEffect(() => {
+    if (!registry) return
+    setModelPkState((current) => {
+      if (current && registry.models.some((item) => item.id === current)) return current
+      const remembered = readStored(LAST_MODEL_KEY)
+      const candidate = [registry.defaultPk, remembered].find(
+        (value) => value && registry.models.some((item) => item.id === value),
+      )
+      return candidate ?? registry.models[0]?.id ?? ''
+    })
+  }, [registry])
+
+  const setModelPk = useCallback((value: string) => {
+    setModelPkState(value)
+    if (value) writeStored(LAST_MODEL_KEY, value)
+  }, [])
+
+  const setThinkingOn = useCallback((value: boolean) => {
+    setThinkingOnState(value)
+    writeStored(LAST_THINKING_KEY, value ? 'true' : 'false')
+  }, [])
+
+  const setThinkingEffort = useCallback((value: string) => {
+    const next: ThinkingEffort = value === 'low' || value === 'high' ? value : 'medium'
+    setThinkingEffortState(next)
+    writeStored(LAST_EFFORT_KEY, next)
+  }, [])
+
+  // ---------------------------------------------------------------- 常驻流的镜像
+
+  /**
+   * 流的状态**每一个可见字段**的指纹。
+   *
+   * 为什么不直接依赖 `live` 这个对象：那一层可能就地改字段（旧 Vue 的响应式就是这么做的），
+   * 对象引用不一定变。指纹变了就说明"画面上该动"——这正是旧 `ChatView` 的
+   * `streamFingerprint` 用来决定滚动的那一招，这里把它用在镜像上，更稳。
+   */
+  const liveFingerprint = useMemo(() => {
+    if (!live) return ''
+    const steps = live.steps.reduce(
+      (sum, step) =>
+        sum +
+        step.label.length +
+        step.detail.length +
+        (step.args?.length ?? 0) +
+        (step.result?.length ?? 0),
+      0,
+    )
+    return [
+      live.conversationId,
+      live.mode,
+      live.query,
+      live.text.length,
+      live.thinkingText.length,
+      live.steps.length,
+      steps,
+      live.sources.length,
+      live.streaming,
+      live.error,
+      live.recovered,
+      live.approval?.approval_id ?? '',
+    ].join('|')
+  }, [live])
+
+  const liveRef = useRef(live)
+  liveRef.current = live
+  /** 命令那一轮的气泡建过没有（按 live 状态对象认：换一轮就是新对象）。 */
+  const commandPairDrawn = useRef<WeakSet<object>>(new WeakSet())
+  /** 已经倒进消息里的那一份指纹（据此跳过没变化的重复计算）。 */
+  const appliedFingerprint = useRef('')
+
+  useEffect(() => {
+    const state = liveRef.current
+    if (!state || state.conversationId !== conversationId) return
+    if (appliedFingerprint.current === liveFingerprint) return
+    appliedFingerprint.current = liveFingerprint
+    setMessages((prev) => mirrorLive(prev, state, commandPairDrawn.current))
+  }, [liveFingerprint, conversationId])
+
+  /**
+   * 流从"在跑"变成"没在跑"：**由当前挂载着的这一页收尾**（旧 `settleTurn`）。
+   *
+   * 用户自己按的「停止」是例外：被停掉的那一轮不在库里（后端只在跑完时落库），
+   * 所以不回源去盖掉它；上下文仪表仍然要刷新（它读的是接口，不影响这些收尾）。
+   */
+  const wasStreaming = useRef(false)
+  const usageRefetch = usageQuery.refetch
+  const detailRefetch = detailQuery.refetch
+  useEffect(() => {
+    const streaming = Boolean(live?.streaming)
+    const settled = wasStreaming.current && !streaming
+    wasStreaming.current = streaming
+    if (!settled || !conversationId) return
+    void usageRefetch()
+    if (live?.stopped) return
+    void detailRefetch()
+  }, [live?.streaming, live?.stopped, conversationId, detailRefetch, usageRefetch])
+
+  // ---------------------------------------------------------------- 会话装载
+
+  const appliedDetail = useRef('')
+
+  /**
+   * 把这条会话的产物**现在的样子**合并进各步骤的卡片（按 `artifact_id` 对齐）。
+   *
+   * 只在已有的卡片上改，**不新增**：列表接口会带回这条会话的全部产物，
+   * 包括被「重新生成」回退掉的那几轮——凭空多出来的卡片会让人以为文件还在。
+   */
+  const refreshArtifacts = useCallback(async (id: string) => {
+    try {
+      const { items } = await listArtifacts(id)
+      setMessages((prev) =>
+        prev.map((message) => ({
+          ...message,
+          steps: message.steps.map((step) =>
+            step.artifacts
+              ? {
+                  ...step,
+                  artifacts: step.artifacts.map((file) => {
+                    const fresh = items.find((item) => item.artifact_id === file.artifact_id)
+                    return fresh ? { ...file, ...fromStored(fresh) } : file
+                  }),
+                }
+              : step,
+          ),
+        })),
+      )
+    } catch {
+      // 锦上添花的一次刷新：拿不到就退回快照那份（卡片仍然可用）
+    }
+  }, [])
+
+  const detail = detailQuery.data
+  useEffect(() => {
+    if (!detail || detail.id !== conversationId) return
+    if (appliedDetail.current === detail.id) return
+    appliedDetail.current = detail.id
+    // 这一轮还在写（无论本页在不在），库里都没有它——画完历史之后由镜像补回来；
+    // 但要是它**已经写完了**（用户离开期间跑完的），库里那份才是权威
+    const current = liveRef.current
+    if (current?.conversationId === detail.id && !current.streaming) liveActions.clearLiveTurn()
+    setMessages(messagesFromDetail(detail))
+    if (detail.kb_ids.length) {
+      setSelectedKbIds((prev) => {
+        const kept = detail.kb_ids.filter((id) => kbs.some((item) => item.id === id))
+        return kept.length ? kept : prev
+      })
+    }
+    if (detail.model_pk) setModelPk(detail.model_pk)
+    if (detail.thinking !== null) setThinkingOn(detail.thinking)
+    if (detail.thinking_effort) setThinkingEffortState(detail.thinking_effort)
+    // 产物的**当前状态**要另外问一次：步骤里存的是流式当时的样子
+    void refreshArtifacts(detail.id)
+    void liveActions.attachLiveTurn(detail.id)
+  }, [detail, conversationId, kbs, setModelPk, setThinkingOn, refreshArtifacts])
+
+  /** 换会话：清掉页面上一切"属于上一条"的东西。 */
+  useEffect(() => {
+    setMessages([])
+    setOpenSteps(new Set())
+    setOpenGroups(new Set())
+    setTraceExtraPages(new Map())
+    setExpandedCites(new Set())
+    setTraceOpenIds({})
+    setCommandResult(null)
+    setCopiedKey('')
+    setSavedTurns([])
+    setDropKind(null)
+    setWantConvFiles(false)
+    appliedFingerprint.current = ''
+  }, [conversationId, wantsNew])
+
+  /**
+   * 停在 `/chat`（没有 id）时该显示什么：最近一次对话，或者空态。
+   *
+   * 解析期间**不画欢迎层**（`resolvingEntry`）：先画再跳的话，用户还是会看到
+   * "一屏新对话一闪而过"。用 `replace` 而不是 `push`：历史里不该留下中间那个空的 `/chat`。
+   */
+  const entryToken = useRef(0)
+  const latestId = conversationsQuery.data?.[0]?.id ?? ''
+  useEffect(() => {
+    if (conversationId || wantsNew) return
+    if (!latestId) return
+    const token = ++entryToken.current
+    setResolvingEntry(true)
+    if (token !== entryToken.current) return
+    setResolvingEntry(false)
+    void navigate(`/chat/${latestId}`, { replace: true })
+  }, [conversationId, wantsNew, latestId, navigate])
+
+  // ---------------------------------------------------------------- 发送链路
+
+  const turns = useMemo(() => buildTurns(messages), [messages])
+  const sending = Boolean(live?.streaming && live.conversationId === conversationId)
+  const pendingEntry = resolvingEntry || detailQuery.isLoading
+
+  /**
+   * 这一条会话上**在等用户点头**的那一次工具调用。看会话是刻意的：确认条属于"这一轮"，
+   * 切走再回来也还要摆出来——后端一直在等，界面不显示的话它只能等到超时。
+   */
+  const pendingApproval = useMemo(
+    () => (live && live.conversationId === conversationId ? live.approval : null),
+    [live, conversationId],
+  )
+
+  const history = useMemo<ChatHistoryMessage[]>(
+    () =>
+      messages
+        // 失败或没吐字的助手消息不进历史：模型看到空的上一轮会更离谱
+        .filter((item) => item.role === 'user' || (item.text.length > 0 && !item.error))
+        .slice(-HISTORY_LIMIT)
+        .map((item) => ({ role: item.role, content: item.text })),
+    [messages],
+  )
+
+  /**
+   * 跑一轮流式问答：追加"提问 + 占位回答"两条，再把增量**就地**打进占位那条。
+   * `send` 与 `regenerate` **共用这一份**（旧前端踩过"两处各抄一遍"的坑）。
+   */
+  const streamTurn = useCallback(
+    async (
+      text: string,
+      context: ChatHistoryMessage[],
+      model: string | undefined,
+      target: string,
+    ) => {
+      setMessages((prev) => [
+        ...prev,
+        makeChatMessage('user', text),
+        makeChatMessage('assistant', '', {
+          streaming: true,
+          // 记下这一轮实际发出去的思考档：过程面板要如实显示"这一步做没做"
+          thinking: { enabled: thinkingOn, effort: thinkingEffort },
+        }),
+      ])
+      const thinking: LiveThinking = { enabled: thinkingOn, effort: thinkingEffort }
+      await liveActions.startChatTurn(
+        {
+          query: text,
+          kb_ids: effectiveKbIds,
+          skill_names: pinnedSkills,
+          history: context,
+          conversation_id: target,
+          model_pk: model,
+          thinking: thinkingOn,
+          thinking_effort: thinkingEffort,
+        },
+        { conversationId: target, query: text, thinking },
+      )
+    },
+    [effectiveKbIds, pinnedSkills, thinkingEffort, thinkingOn],
+  )
+
+  /**
+   * 命令回话里那几个"顺手要做的事"（后端 `action`）。
+   * 放在 `runCommand` 之前定义：它要在两处被调到（常驻链路与流式期间那条直连链路）。
+   */
+  const handleCommandAction = useCallback(
+    (result: ChatCommandResult): void => {
+      const action = result.action
+      if (!action) return
+      if (action.kind === 'conversation' && action.conversation_id) {
+        // `/new`：切到新会话（replace，不该在历史里留一条旧会话）
+        void navigate(`/chat/${action.conversation_id}`, { replace: true })
+        return
+      }
+      if (action.kind === 'stop_turn') {
+        liveActions.abortLiveTurn()
+        return
+      }
+      if (action.kind === 'mode') {
+        // 模式被命令改了：那一排的控件要跟着显示新档
+        window.dispatchEvent(new CustomEvent('kylab:mode-changed', { detail: action.mode }))
+        return
+      }
+      if (action.kind === 'model' && action.model_pk) {
+        // `/model <名字>`：不同步的话它显示的还是旧模型，而下一条消息会照它把旧模型写回会话。
+        // 缓存里那份会话详情还带着旧模型，所以让后端校准一次
+        setModelPk(action.model_pk)
+        void detailRefetch()
+      }
+    },
+    [detailRefetch, navigate, setModelPk],
+  )
+
+  const conversationsRefetch = conversationsQuery.refetch
+
+  /**
+   * 跑一条命令：**它就是一轮请求，只是后端可能不产生回答**。
+   *
+   * 分流**按结果**，不按菜单里的 `short_circuit`：那个标记是表级的保守口径，
+   * 而 `/plan <描述>` 与 `/skill` 同属改写类（描述就是这一轮的提示、要过一次模型、
+   * 会留下回答）。所以这里统一带上 `onCommand` 走正常那一轮，由镜像按"有没有内容"
+   * 决定建不建气泡。
+   */
+  const runCommand = useCallback(
+    async (text: string, target: string, model: string | undefined) => {
+      // **先确保菜单到手**（要真的等一下）：清单空 = 后端没有命令这一层（旧版本），
+      // 按普通一轮发出去才是对的（反过来的话，用户会得到一条空回答。
+      // 第一次敲 `/plan` 时清单还没请求过，读 hook 上那份会读到 undefined——
+      // 于是"带参数的 /plan"就会被当成普通提问，正是这条分支要修的 bug）
+      setWantCommands(true)
+      let list: ChatCommand[] = commandsQuery.data ?? []
+      if (list.length === 0 && !commandsQuery.data) {
+        list = await queryClient.fetchQuery<ChatCommand[]>({
+          queryKey: ['chat', 'commands'],
+          queryFn: () => listCommands(),
+          staleTime: Infinity,
+        })
+      }
+      if (list.length === 0) {
+        await streamTurn(text, history, model, target)
+        return
+      }
+      const payload = {
+        query: text,
+        kb_ids: effectiveKbIds,
+        conversation_id: target,
+        model_pk: model,
+      }
+      setCommandResult(null)
+      const onCommand = (result: ChatCommandResult): void => {
+        setCommandResult(result)
+        handleCommandAction(result)
+      }
+      try {
+        if (sending) {
+          // 这一轮还在跑（`/stop` 恰恰只在这个窗口里有意义）：走直连那条路，
+          // 不接管常驻链路（那一格只放"当前这一轮"）
+          await chatStream(payload, {
+            onCommand,
+            onError: (message) => notifyError(new Error(message)),
+          })
+        } else {
+          await liveActions.startCommandTurn(
+            payload,
+            {
+              conversationId: target,
+              query: text,
+              thinking: { enabled: thinkingOn, effort: thinkingEffort },
+            },
+            onCommand,
+          )
+        }
+        void conversationsRefetch()
+      } catch (cause) {
+        notifyError(cause instanceof Error ? cause : new Error('命令没跑起来'))
+      }
+    },
+    [
+      commandsQuery.data,
+      conversationsRefetch,
+      queryClient,
+      effectiveKbIds,
+      handleCommandAction,
+      history,
+      sending,
+      streamTurn,
+      thinkingEffort,
+      thinkingOn,
+    ],
+  )
+
+  const canSend =
+    (!useKb || selectedKbIds.length > 0) &&
+    query.trim().length > 0 &&
+    !detailQuery.isLoading &&
+    !resolvingEntry
+
+  const send = useCallback(async () => {
+    const text = query.trim()
+    if (text.length === 0) return
+    // **命令在流式期间也放行**：`/stop` 存在的意义就是"这一轮还在跑的时候把它停下"。
+    // 普通提问仍然不许插队（后端没有"往跑着的一轮里插话"这条路）
+    const isCommand = text.startsWith('/')
+    if (sending && !isCommand) {
+      notifyWarning('这一轮还在跑：等它结束再发，或者用 /stop 停下')
+      return
+    }
+    if (!isCommand && !canSend) return
+    // 先算历史：这条提问还没进 messages，不能把自己也算成上下文
+    const context = history
+    const model = modelPk || undefined
+
+    // 新对话：第一句话落下去之前先建会话，拿到 id 再提问。
+    // 反过来（先问再建）会丢掉这一轮的落库
+    let target = conversationId
+    if (!target) {
+      try {
+        const created = await createConversation(effectiveKbIds, modelPk || null, {
+          thinking: thinkingOn,
+          thinking_effort: thinkingEffort,
+        })
+        target = created.id
+        void navigate(`/chat/${target}`, { replace: true })
+      } catch (cause) {
+        notifyError(cause)
+        return
+      }
+    }
+
+    setQueryState('')
+    if (text.startsWith('/')) {
+      await runCommand(text, target, model)
+      return
+    }
+    await streamTurn(text, context, model, target)
+  }, [
+    canSend,
+    conversationId,
+    effectiveKbIds,
+    history,
+    modelPk,
+    navigate,
+    query,
+    runCommand,
+    sending,
+    streamTurn,
+    thinkingEffort,
+    thinkingOn,
+  ])
+
+  /**
+   * 用户点了「停止」。
+   *
+   * 两件事，各有各的必要：
+   * 1. **本页不再等它**（`abortLiveTurn`）：已经流出来的正文与过程留着，它仍然有用；
+   * 2. **让后端也停下**（`/stop` 命令）：这一轮在后端是后台任务，断开订阅不会取消它。
+   *    清单还没到手时不发——后端没有命令这一层的话，它会被当成一句普通提问发给模型。
+   */
+  const commandsRef = commandsQuery.data
+  const stop = useCallback(() => {
+    const target = conversationId
+    liveActions.abortLiveTurn()
+    if (target && (commandsRef?.length ?? 0) > 0) {
+      void chatStream(
+        { query: '/stop', kb_ids: [], conversation_id: target },
+        {
+          onCommand: (result) => handleCommandAction(result),
+          onError: (message) => notifyError(new Error(message)),
+        },
+      ).catch(() => undefined)
+    }
+  }, [commandsRef, conversationId, handleCommandAction])
+
+  // ---------------------------------------------------------------- 过程面板与消息动作
+
+  const traceOpen = useCallback(
+    (message: Message) => {
+      const own = traceOpenIds[idOf(message)]
+      if (own !== undefined) return own
+      return traceOpenMemory ?? true
+    },
+    [traceOpenIds, traceOpenMemory],
+  )
+
+  const toggleTrace = useCallback(
+    (message: Message) => {
+      const next = !traceOpen(message)
+      setTraceOpenIds((prev) => ({ ...prev, [idOf(message)]: next }))
+      // **收起态可记忆**：点这一下的意思不只是"这一轮收起来"，还有"以后别默认摊开"
+      setTraceOpenMemory(next)
+      writeTraceOpenMemory(next)
+    },
+    [traceOpen],
+  )
+
+  const traceView = useCallback(
+    (turnIndex: number, turn: Turn): TracePage => {
+      const pages = 1 + (traceExtraPages.get(turnIndex) ?? 0)
+      return tracePage(turn, TRACE_PAGE_SIZE * pages)
+    },
+    [traceExtraPages],
+  )
+
+  const copyMessage = useCallback(async (turnIndex: number, message: Message) => {
+    const key = `${turnIndex}:${message.role}`
+    // 复制的是**原文**（Markdown 源文本）而不是渲染后的文字：带 `**` 与 `[1]` 的原文
+    // 在其它 Markdown 环境里仍然成立
+    if (await copyText(message.text)) {
+      setCopiedKey(key)
+      window.setTimeout(() => setCopiedKey((current) => (current === key ? '' : current)), 1600)
+      return
+    }
+    notifyError(new Error('复制失败，请手动选中后复制'))
+  }, [])
+
+  const saveAsNote = useCallback(
+    async (turnIndex: number, turn: Turn) => {
+      const question = (turn.user?.text ?? '').trim()
+      const answer = (turn.reply?.text ?? '').trim()
+      if (!answer) {
+        notifyWarning('这条回答还没有内容')
+        return
+      }
+      try {
+        await createNote({
+          title: question.slice(0, 80) || '来自对话的笔记',
+          // 正文只放回答：提问已经在标题里了
+          content_md: answer,
+          source_kind: 'chat',
+          source_ref: conversationId || null,
+        })
+        setSavedTurns((prev) => (prev.includes(turnIndex) ? prev : [...prev, turnIndex]))
+        notifySuccess('已存为笔记，可在侧栏「笔记」里查看')
+      } catch (cause) {
+        notifyError(cause)
+      }
+    },
+    [conversationId],
+  )
+
+  /**
+   * 重新生成最后一条回答：先把会话退回到提问之前（后端删掉那一轮），再原样重发。
+   * 回退是**服务端已删、本地才跟上**的顺序（反过来在接口失败时会错位）。
+   */
+  const regenerate = useCallback(
+    async (turnIndex: number) => {
+      const turn = turns[turnIndex]
+      const id = conversationId
+      if (!turn?.user || !id || regenerating || sending) return
+      const text = turn.user.text
+      const context = history
+      const model = modelPk || undefined
+      setRegenerating(true)
+      try {
+        await rewindConversation(id, 1)
+        setMessages((prev) => prev.slice(0, turnIndex * 2))
+        await streamTurn(text, context, model, id)
+      } catch (cause) {
+        notifyError(cause)
+        void detailRefetch()
+      } finally {
+        setRegenerating(false)
+      }
+    },
+    [conversationId, detailRefetch, history, modelPk, regenerating, sending, streamTurn, turns],
+  )
+
+  /**
+   * **继续**上一轮：接着把没做完的那一轮做完，而不是重发一遍。
+   *
+   * 与「重新生成」的区别：续跑把已经查到的资料、已经写了一半的正文交给模型接着用
+   * （那是真花钱的东西），用户看到的是**同一轮被补完**。
+   */
+  const resumeTurn = useCallback(
+    async (turnIndex: number) => {
+      const turn = turns[turnIndex]
+      const id = conversationId
+      const reply = turn?.reply
+      if (!reply || !id || resuming || sending || regenerating) return
+      // 端点续的是**最后一轮**：不是最后一轮就不该有这个按钮
+      if (turnIndex !== turns.length - 1) return
+      setResuming(true)
+      const replyId = idOf(reply)
+      setMessages((prev) =>
+        prev.map((item) =>
+          item.id === replyId ? { ...item, text: '', error: '', streaming: true } : item,
+        ),
+      )
+      try {
+        await liveActions.startResumeTurn(
+          id,
+          { skill_names: pinnedSkills },
+          { thinking: { enabled: thinkingOn, effort: thinkingEffort } },
+        )
+      } finally {
+        setResuming(false)
+      }
+    },
+    [
+      conversationId,
+      pinnedSkills,
+      regenerating,
+      resuming,
+      sending,
+      thinkingEffort,
+      thinkingOn,
+      turns,
+    ],
+  )
+
+  /** 点行内引用徽标：展开过程面板 → 滚到那一条出处 → 闪一下（三步缺一不可）。 */
+  const revealSource = useCallback((turnIndex: number, sourceIndex: number) => {
+    setExpandedCites((prev) => {
+      const next = new Set(prev)
+      next.add(turnIndex)
+      return next
+    })
+    setFlashCite(`${turnIndex}:${sourceIndex}`)
+    window.setTimeout(() => {
+      const node = document.querySelector(
+        `[data-turn="${turnIndex}"] [data-source="${sourceIndex}"]`,
+      )
+      node?.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+    }, 0)
+    window.setTimeout(
+      () => setFlashCite((current) => (current === `${turnIndex}:${sourceIndex}` ? '' : current)),
+      1400,
+    )
+  }, [])
+
+  // ---------------------------------------------------------------- 输入区的那些开关
+
+  const toggleSkill = useCallback((name: string) => {
+    setPinnedSkills((prev) => {
+      const next = prev.includes(name) ? prev.filter((item) => item !== name) : [...prev, name]
+      writePinnedSkills(next)
+      return next
+    })
+  }, [])
+
+  const toggleKb = useCallback((kbId: string) => {
+    setSelectedKbIds((prev) =>
+      prev.includes(kbId) ? prev.filter((item) => item !== kbId) : [...prev, kbId],
+    )
+  }, [])
+
+  const toggleKbSwitch = useCallback(() => {
+    setUseKb((prev) => {
+      writeStored(KB_SWITCH_KEY, prev ? '0' : '1')
+      return !prev
+    })
+  }, [])
+
+  const kbsRefetch = kbsQuery.refetch
+
+  /**
+   * 附件上传：附件在 KYLAB 里就是**知识库文档**（没有"只挂在这一轮消息上"的附件），
+   * 所以必须有一个落点：优先用当前勾选的第一个库；一个都没有时**明确拒绝并说明**。
+   */
+  const uploadFiles = useCallback(
+    (files: File[]) => {
+      if (files.length === 0) return
+      const targetId = useKb ? (selectedKbIds[0] ?? kbs[0]?.id) : undefined
+      if (!targetId) {
+        notifyWarning(
+          useKb ? '先在「知识库」里选一个库，文件才有地方放' : '打开「知识库」开关后再传文件',
+        )
+        return
+      }
+      const name = kbs.find((item) => item.id === targetId)?.name ?? ''
+      setUploading(true)
+      void (async () => {
+        try {
+          for (const file of files) await uploadDocument(targetId, file)
+          notifySuccess(`已把 ${files.length} 个文件传给「${name}」，入库后就能被引用`)
+          void kbsRefetch()
+        } catch (cause) {
+          notifyError(cause)
+        } finally {
+          setUploading(false)
+        }
+      })()
+    },
+    [kbs, kbsRefetch, selectedKbIds, useKb],
+  )
+
+  // —— `@` 提及：候选来自这条会话的文件区 + 技能 + 会话列表
+
+  const mentionItems = useMemo<MentionItem[]>(
+    () => [
+      ...(filesQuery.data ?? []).map((file) => ({
+        kind: 'file' as const,
+        // **引用的是它在文件区里的 key（路径）**，不是显示用的短名字
+        value: file.key,
+        label: file.name,
+        detail: file.is_dir ? '目录' : formatBytes(file.size_bytes),
+        isDir: file.is_dir,
+      })),
+      ...skills.map((skill) => ({
+        kind: 'skill' as const,
+        value: skill.name,
+        label: skill.name,
+        detail: skill.summary || skill.description,
+      })),
+      ...(conversationsQuery.data ?? []).map((item) => ({
+        kind: 'session' as const,
+        value: item.title,
+        label: item.title,
+        detail: '会话',
+      })),
+    ],
+    [conversationsQuery.data, filesQuery.data, skills],
+  )
+
+  const loadMentions = useCallback(() => {
+    setWantSkills(true)
+    setWantConvFiles(true)
+  }, [])
+
+  /** 打 `/` 的那一刻就把清单取回来（之后每次打开是内存里的）。 */
+  const loadCommands = useCallback(() => setWantCommands(true), [])
+
+  /**
+   * 一条引用在输入框里的写法（照 DSH 的 grammar）：**带空白的值用双引号包起来**——
+   * 不加引号的路径在模型那边会被当成两段，而用户看到的是一个名字里有空格的普通文件。
+   */
+  const mentionToken = useCallback(
+    (value: string) => (/\s/.test(value) ? `@${JSON.stringify(value)}` : `@${value}`),
+    [],
+  )
+
+  const setQuery = useCallback((value: string) => {
+    setQueryState(value)
+    setWantCommands(value.startsWith('/') && !value.includes('\n'))
+    if (value.lastIndexOf('@') >= 0) setWantSkills(true)
+  }, [])
+
+  /**
+   * 选中一条候选：**只把引用插进输入框**（"不预读"那一半）。
+   *
+   * 读什么、读哪一段由模型决定（它手上有 `read_file` / `read_skill` / 会话工具）——
+   * 界面在这里替它读一遍，用户既看不见自己付了多少上下文，也拿不回"我只要它看结论"这个选择。
+   */
+  const applyMention = useCallback(
+    (item: MentionItem) => {
+      setQueryState((current) => {
+        const at = current.lastIndexOf('@')
+        if (at < 0) return current
+        return `${current.slice(0, at)}${mentionToken(item.value)} `
+      })
+    },
+    [mentionToken],
+  )
+
+  /** 拖拽那条路进来的引用：接在**现有内容后面**（拖进来时没有 `@` 可以替换）。 */
+  const insertReference = useCallback(
+    (value: string) => {
+      setQueryState((current) => {
+        const glue = current.length > 0 && !/\s$/.test(current) ? ' ' : ''
+        return `${current}${glue}${mentionToken(value)} `
+      })
+    },
+    [mentionToken],
+  )
+
+  /**
+   * 选中一条命令：**能补完就补完，补不了就执行**。
+   *
+   * - 还要参数的（`/mode `、`/skill <技能名>`）：把 `/名字 ` 插进输入框，光标留给参数；
+   * - 不要参数的（`/help`、`/new`）：输入框里已经是这条命令了，于是**再按一次回车就是执行**
+   *   ——遇到"没有变化"时直接发送，避免"按了回车什么都没发生"。
+   */
+  const applyCommand = useCallback(
+    (command: ChatCommand) => {
+      const needsArgs =
+        Boolean(command.argument_hint) || command.usage.trim() !== `/${command.name}`
+      const text = needsArgs ? `/${command.name} ` : `/${command.name}`
+      if (query.trim() === text.trim()) {
+        void send()
+        return
+      }
+      setQueryState(text)
+    },
+    [query, send],
+  )
+
+  const compressContext = useCallback(() => {
+    const target = conversationId
+    if (!target) {
+      notifyWarning('这条会话还没建起来，没有可压缩的上下文')
+      return
+    }
+    void runCommand('/compact', target, modelPk || undefined).then(() => usageQuery.refetch())
+  }, [conversationId, modelPk, runCommand, usageQuery])
+
+  // ---------------------------------------------------------------- 欢迎层的示例问题
+
+  const suggestions = useMemo(() => {
+    const generated = suggestedQuery.data?.questions ?? []
+    if (generated.length > 0) return generated.slice(0, SAMPLE_COUNT)
+    return Array.from(
+      { length: Math.min(SAMPLE_COUNT, STATIC_SAMPLES.length) },
+      (_, index) => STATIC_SAMPLES[(sampleOffset + index) % STATIC_SAMPLES.length],
+    )
+  }, [sampleOffset, suggestedQuery.data])
+
+  /** 点示例问题：填进输入框；能发就直接发——这一步本来就是"照着问"。 */
+  const useSample = useCallback(
+    (question: string) => {
+      setQueryState(question)
+      if (canSend && !sending) {
+        // 用刚填进去的那一句发（state 还没生效，不能走 `send`）
+        void (async () => {
+          const target = conversationId
+          if (!target) return
+          await streamTurn(question, history, modelPk || undefined, target)
+        })()
+      }
+    },
+    [canSend, conversationId, history, modelPk, sending, streamTurn],
+  )
+
+  const shuffleSuggestions = useCallback(() => {
+    if ((suggestedQuery.data?.questions.length ?? 0) > 0) {
+      void suggestedQuery.refetch()
+      return
+    }
+    setSampleOffset((prev) => (prev + SAMPLE_COUNT) % STATIC_SAMPLES.length)
+  }, [suggestedQuery])
+
+  // ---------------------------------------------------------------- 交付物
+
+  const kbName = useCallback(
+    (kbId?: string) => kbs.find((item) => item.id === kbId)?.name ?? '',
+    [kbs],
+  )
+
+  const openIngest = useCallback(
+    (file: ChatArtifact) => {
+      setIngestTarget(file)
+      // 预选不等于替他决定：弹窗在那儿、库名看得见，他点了确认才算数
+      setIngestKbId(file.knowledge_base_id || effectiveKbIds[0] || kbs[0]?.id || '')
+      void kbsRefetch()
+    },
+    [effectiveKbIds, kbs, kbsRefetch],
+  )
+
+  const confirmIngest = useCallback(async () => {
+    const file = ingestTarget
+    const id = conversationId
+    if (!file || !id || !ingestKbId) return
+    setIngesting(true)
+    try {
+      const updated = await ingestArtifact(id, file.artifact_id, ingestKbId)
+      const patch = fromStored(updated)
+      setMessages((prev) =>
+        prev.map((message) => ({
+          ...message,
+          steps: message.steps.map((step) =>
+            step.artifacts
+              ? {
+                  ...step,
+                  artifacts: step.artifacts.map((item) =>
+                    item.artifact_id === patch.artifact_id ? { ...item, ...patch } : item,
+                  ),
+                }
+              : step,
+          ),
+        })),
+      )
+      setIngestTarget(null)
+      notifySuccess(`已存进知识库「${kbName(updated.knowledge_base_id ?? '')}」`)
+    } catch (cause) {
+      notifyError(cause)
+    } finally {
+      setIngesting(false)
+    }
+  }, [conversationId, ingestKbId, ingestTarget, kbName])
+
+  const api: ChatApi = {
+    conversationId,
+    messages,
+    turns,
+    pendingEntry,
+    welcome: messages.length === 0 && !pendingEntry,
+    sending,
+    pendingApproval,
+    dismissApproval: () => liveActions.settleLiveApproval(),
+    commandResult,
+    dismissCommandResult: () => setCommandResult(null),
+    query,
+    setQuery,
+    canSend,
+    send: () => void send(),
+    stop,
+    kbs,
+    kbLoading: kbsQuery.isLoading,
+    useKb,
+    toggleKbSwitch,
+    selectedKbIds,
+    toggleKb,
+    kbPickText: pickText(kbsQuery.isLoading, kbs.length, selectedKbIds.length),
+    pinnedSkills,
+    toggleSkill,
+    skills,
+    skillsLoading: skillsQuery.isLoading,
+    uploadFiles,
+    uploading,
+    models,
+    modelOptions: models.map((model) => ({
+      value: model.id,
+      label: model.label || model.model_id,
+    })),
+    modelPk,
+    setModelPk,
+    // **加载中与"没配置"必须分开说**：注册表回来之前显示"未配置对话模型"会闪一下一个并不成立的状态
+    modelPlaceholder: !registry ? '默认模型' : models.length === 0 ? '未配置对话模型' : '默认模型',
+    modelsLoaded: Boolean(registry),
+    thinkingOn,
+    setThinkingOn,
+    thinkingEffort,
+    setThinkingEffort,
+    commands,
+    loadCommands,
+    commandsLoading: commandsQuery.isLoading,
+    applyCommand,
+    mentionItems,
+    mentionLoading: wantConvFiles && filesQuery.isLoading,
+    loadMentions,
+    applyMention,
+    insertReference,
+    mentionToken,
+    contextUsage: usageQuery,
+    compressContext,
+    suggestions,
+    suggestionsLoading: suggestedQuery.isFetching,
+    // 没有选中知识库时**整块不显示**：推荐问题是"从库里的语料出题"抽出来的，
+    // 没有库就没有依据——那时给一排样例是在暗示"随便点一个"，点了也答不出东西
+    showSuggestions: effectiveKbIds.length > 0,
+    shuffleSuggestions,
+    useSample,
+    traceOpen,
+    toggleTrace,
+    traceView,
+    showMoreTrace: (turnIndex) =>
+      setTraceExtraPages((prev) => {
+        const next = new Map(prev)
+        next.set(turnIndex, (next.get(turnIndex) ?? 0) + 1)
+        return next
+      }),
+    isStepOpen: (key) => openSteps.has(key),
+    toggleStep: (key) =>
+      setOpenSteps((prev) => {
+        const next = new Set(prev)
+        if (next.has(key)) next.delete(key)
+        else next.add(key)
+        return next
+      }),
+    isGroupOpen: (key) => openGroups.has(key),
+    toggleGroup: (key) =>
+      setOpenGroups((prev) => {
+        const next = new Set(prev)
+        if (next.has(key)) next.delete(key)
+        else next.add(key)
+        return next
+      }),
+    citesExpanded: (turnIndex) => expandedCites.has(turnIndex),
+    toggleCites: (turnIndex) =>
+      setExpandedCites((prev) => {
+        const next = new Set(prev)
+        if (next.has(turnIndex)) next.delete(turnIndex)
+        else next.add(turnIndex)
+        return next
+      }),
+    flashCite,
+    revealSource,
+    copiedKey,
+    copyMessage: (turnIndex, message) => void copyMessage(turnIndex, message),
+    savedTurns,
+    saveAsNote: (turnIndex, turn) => void saveAsNote(turnIndex, turn),
+    regenerating,
+    regenerate: (turnIndex) => void regenerate(turnIndex),
+    resuming,
+    resumeTurn: (turnIndex) => void resumeTurn(turnIndex),
+    sourceOpen,
+    activeSource,
+    openSource: (source) => {
+      setActiveSource(source)
+      setSourceOpen(true)
+    },
+    closeSource: () => setSourceOpen(false),
+    ingestTarget,
+    ingestKbId,
+    setIngestKbId,
+    openIngest,
+    closeIngest: () => setIngestTarget(null),
+    confirmIngest: () => void confirmIngest(),
+    ingesting,
+    kbName,
+    dropKind,
+    setDropKind,
+  }
+
+  return <ChatContext.Provider value={api}>{children}</ChatContext.Provider>
+}

@@ -1,0 +1,389 @@
+/**
+ * 输入卡片（旧 `ChatView.vue` 的 `.composer-wrap` + `.composer`）。
+ *
+ * 五件事都收在这一个容器上，各有各的理由：
+ *
+ * 1. **拖拽落点**：拖进来的东西有**两种落法**，文案与结果都不同——
+ *    "松开以添加附件"是上传，"松开以引用此文件"是插一条引用（照 ZCode）。判据只有
+ *    `dataTransfer.types`：`getData` 在 dragover 阶段读不到（浏览器出于安全只在 drop 时给），
+ *    所以那一刻分不出"文件还是目录"，两种都按同一句"引用"文案说；
+ * 2. **两个菜单 + 键盘**：焦点自始至终在输入框里，菜单不抢焦点——所以 ↑↓ / 回车 / Esc
+ *    全绑在 textarea 上，菜单只把"当前高亮"与"选中动作"交回来；
+ * 3. **发送与停止同位置**：切到"停止"时按钮不跳动，用户不必重新找它；
+ * 4. **审批条与命令回话贴在卡片上沿**：它们不是"对话内容"，而是"轮到你说一句话"
+ *    或者"系统对你刚敲的那句话的回话"，所以跟输入框在一起，不跟着消息流滚走；
+ * 5. **「回到最新」浮标**也挂在卡片上沿（assistant-ui 的视口状态决定它出现与否）。
+ */
+import { ThreadPrimitive } from '@assistant-ui/react'
+import { ArrowUp, ChevronDown, Square, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+
+import { FILE_DRAG_TYPE } from '../runtime/prefs'
+import { useChat, type MentionItem } from '../runtime/ChatProvider'
+import { ApprovalBar } from './ApprovalBar'
+import { ContextGauge, KnowledgeBaseControl, ModelPicker, PlusMenu } from './ComposerControls'
+import { FilesDialog } from './Dialogs'
+import { ExecPolicyControl } from './ExecPolicyControl'
+import { MentionMenu, SlashMenu, type MenuHandle } from './Menus'
+import { ModePicker } from './ModePicker'
+
+/** 输入框里现在是不是在打一条命令：`/` 开头**且还没打空格**（打了空格就是在写参数了）。 */
+function slashFilterOf(text: string): string | null {
+  if (!text.startsWith('/') || text.includes('\n')) return null
+  const head = text.slice(1)
+  if (head.includes(' ')) return null
+  return head
+}
+
+/**
+ * 输入框里现在正在打的引用过滤词（`@` 之后那一段）；没在打就是 `null`。
+ *
+ * 两条判据与 DSH 的 `@` grammar 对齐：
+ * - **`@` 之后不能有空白**：打了空格说明这一句已经写下去了（与 `/` 菜单同一条口径）；
+ * - **邮箱里的 `@` 不触发**：前一个字符是 ASCII 词字符（`foo@bar.com`）就不算——
+ *   中文里没有空格分隔，所以只排 ASCII，`看看@报告.md` 仍然要能弹。
+ *
+ * 取**最后一个** `@`：用户在句子里插一句引用时，最近的这个才是他正在打的。
+ */
+function mentionFilterOf(text: string): string | null {
+  const at = text.lastIndexOf('@')
+  if (at < 0) return null
+  const head = text.slice(at + 1)
+  if (head.includes('\n') || /\s/.test(head)) return null
+  const previous = at > 0 ? text[at - 1] : ''
+  if (previous && /[A-Za-z0-9._-]/.test(previous)) return null
+  return head
+}
+
+const SEND_BUTTON =
+  'inline-flex h-[var(--control-height)] w-[var(--control-height)] shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-send)] bg-[var(--accent)] text-[var(--Always-White)] disabled:cursor-default disabled:opacity-40'
+
+export function Composer() {
+  const chat = useChat()
+  const field = useRef<HTMLTextAreaElement>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const slashHandle = useRef<MenuHandle | null>(null)
+  const mentionHandle = useRef<MenuHandle | null>(null)
+  const [slashDismissed, setSlashDismissed] = useState(false)
+  const [mentionDismissed, setMentionDismissed] = useState(false)
+  const [filesOpen, setFilesOpen] = useState(false)
+
+  const slashFilter = slashFilterOf(chat.query)
+  const mentionFilter = mentionFilterOf(chat.query)
+  /** 用户按 Esc 关掉之后，这一条输入里不再弹（改了内容再弹，见下面那个 effect）。 */
+  useEffect(() => {
+    setSlashDismissed(false)
+    setMentionDismissed(false)
+    if (slashFilter !== null) chat.loadCommands()
+    if (mentionFilter !== null) chat.loadMentions()
+    // 只在"过滤词"这一层变化时重置：query 每次按键都变，但菜单该不该弹看的是过滤词。
+    // 两个 loader 是稳定的（provider 里 useCallback 过），所以这句不会每次渲染都跑——
+    // 否则用户按 Esc 关掉菜单后，紧接着一次渲染又会把它弹回来。
+    // `chat` 这个对象故意不进依赖：它每次渲染都是新的，进去就等于"每次渲染都重置菜单"。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [slashFilter, mentionFilter, chat.loadCommands, chat.loadMentions])
+
+  const slashVisible = slashFilter !== null && !slashDismissed && chat.commands.length > 0
+  const mentionVisible = mentionFilter !== null && !mentionDismissed && chat.mentionItems.length > 0
+
+  /**
+   * 输入框上的键盘：菜单开着时先归菜单（↑↓ 选择、回车选中、Esc 关掉），
+   * 其余情况才是"回车发送、Shift + 回车换行"。
+   *
+   * **`@` 菜单排在 `/` 之前**：同一个 token 里不可能同时在打命令，两个菜单也不会同时开着
+   * （判据互斥），而先问引用那个更贴用户当下的动作。
+   */
+  function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
+    if (mentionVisible) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        mentionHandle.current?.move(event.key === 'ArrowDown' ? 1 : -1)
+        return
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        // 有过匹配才算"选中"：一条都没匹配上时回车要落到发送上
+        if ((mentionHandle.current?.count() ?? 0) > 0) {
+          event.preventDefault()
+          mentionHandle.current?.pickActive()
+          return
+        }
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setMentionDismissed(true)
+        return
+      }
+    }
+    if (slashVisible) {
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        slashHandle.current?.move(event.key === 'ArrowDown' ? 1 : -1)
+        return
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        // **有过一条匹配才算"选中"**：一条都没匹配上时回车要落到"执行"上，
+        // 否则用户打完整条命令再按回车会石沉大海
+        if ((slashHandle.current?.count() ?? 0) > 0) {
+          event.preventDefault()
+          slashHandle.current?.pickActive()
+          return
+        }
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setSlashDismissed(true)
+        return
+      }
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      chat.send()
+    }
+  }
+
+  /** 插完引用把焦点与光标交回输入框末尾（用户接着就能往下打）。 */
+  function focusComposerEnd(): void {
+    window.setTimeout(() => {
+      const node = field.current
+      if (!node) return
+      node.focus()
+      node.setSelectionRange(node.value.length, node.value.length)
+    }, 0)
+  }
+
+  // —— 拖拽：先判这一拖是哪一种，再把它写成对应那一句文案
+  function onDragOver(event: React.DragEvent): void {
+    const types = Array.from(event.dataTransfer?.types ?? [])
+    const reference = types.includes(FILE_DRAG_TYPE)
+    const files = types.includes('Files')
+    if (!reference && !files) return
+    // 不 preventDefault 浏览器就不会派发 drop（默认动作是"打开这个文件"）
+    event.preventDefault()
+    chat.setDropKind(reference ? 'reference' : 'attach')
+  }
+
+  /** 拖出输入框（含拖到子元素上）：`relatedTarget` 还在里面就不算离开，免得文案闪。 */
+  function onDragLeave(event: React.DragEvent): void {
+    const host = event.currentTarget as HTMLElement
+    const next = event.relatedTarget as Node | null
+    if (next && host.contains(next)) return
+    chat.setDropKind(null)
+  }
+
+  /**
+   * 松手：**两种落法在这里分开**。
+   *
+   * - 工作区里的文件/目录 → 插一条**引用**（不读、也不上传）；
+   * - 其余（从资源管理器拖进来的文件）→ 走**既有上传链路**（和「加号 → 添加文件」同一件事）。
+   */
+  function onDrop(event: React.DragEvent): void {
+    chat.setDropKind(null)
+    const transfer = event.dataTransfer
+    if (!transfer) return
+    const payload = transfer.getData(FILE_DRAG_TYPE)
+    if (payload) {
+      try {
+        const info = JSON.parse(payload) as { key?: string; name?: string }
+        const value = info.key || info.name || ''
+        if (value) {
+          chat.insertReference(value)
+          focusComposerEnd()
+        }
+      } catch {
+        // 坏 payload（别的应用恰好写了同一个类型）当没发生：它本来就只是一条便利
+      }
+      return
+    }
+    chat.uploadFiles(Array.from(transfer.files ?? []))
+  }
+
+  const placeholder = chat.useKb
+    ? '向知识库提问…（回车发送，Shift + 回车换行）'
+    : '纯对话，不查知识库…（回车发送，Shift + 回车换行）'
+
+  return (
+    <div
+      className="relative w-full px-[var(--page-gutter)] pb-[var(--space-4)]"
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {/*
+        「回到最新」浮标：往上翻旧回答时出现（**贴底时 assistant-ui 自己渲染成空**，
+        所以这里不用自己判"有没有贴底"）。挂在输入卡片上沿，不跟着内容滚走。
+      */}
+      {chat.messages.length > 0 ? (
+        <ThreadPrimitive.ScrollToBottom
+          className="absolute -top-[calc(var(--space-8)+var(--space-2))] left-1/2 z-[2] inline-flex h-[var(--control-height)] w-[var(--control-height)] -translate-x-1/2 cursor-pointer items-center justify-center rounded-[var(--radius-pill)] border border-[var(--border)] bg-[var(--bg-surface)] text-[var(--text-secondary)] shadow-[var(--shadow-raised)]"
+          aria-label="回到最新"
+          title="回到最新"
+        >
+          <ChevronDown size={18} />
+        </ThreadPrimitive.ScrollToBottom>
+      ) : null}
+
+      {/*
+        后端在等用户点头：**紧挨着输入框、在它上面**——这一条不是"对话内容"，
+        而是"轮到你说一句话"，所以它跟输入框在一起，而不是飘在消息流里跟着滚走。
+      */}
+      {chat.pendingApproval ? (
+        <ApprovalBar approval={chat.pendingApproval} onSettled={() => chat.dismissApproval()} />
+      ) : null}
+
+      {/*
+        命令的回话：也贴在输入卡片上沿。**它不是一条助手回答**——后端那一路不产生回答，
+        消息也不落库（带参数的 `/plan` 例外，那种会照常建气泡，见 `mirrorLive`）。
+      */}
+      {chat.commandResult ? (
+        <div
+          data-testid="command-result"
+          role="status"
+          className="mx-auto mb-[var(--space-2)] flex w-full max-w-[var(--chat-input-max-width)] flex-col gap-[var(--space-1)] rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-subtle)] px-[var(--space-4)] py-[var(--space-3)]"
+        >
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-[length:var(--text-meta-size)] text-[var(--text-secondary)]">
+              /{chat.commandResult.name}
+            </span>
+            <button
+              type="button"
+              className="inline-flex h-[22px] w-[22px] cursor-pointer items-center justify-center rounded-[var(--radius-control)] text-[var(--text-tertiary)] hover:bg-[var(--bg-hover)]"
+              aria-label="收起"
+              title="收起"
+              onClick={chat.dismissCommandResult}
+            >
+              <X size={13} />
+            </button>
+          </div>
+          <pre className="m-0 font-mono text-[length:var(--text-micro-size)] whitespace-pre-wrap text-[var(--text-secondary)]">
+            {chat.commandResult.text}
+          </pre>
+        </div>
+      ) : null}
+
+      {/* 两个菜单浮在输入卡片上方，**不抢焦点**（键盘由输入框那一侧转发） */}
+      <div className="mx-auto w-full max-w-[var(--chat-input-max-width)]">
+        {mentionVisible ? (
+          <div className="absolute bottom-[calc(100%-var(--space-4))] left-[var(--page-gutter)] right-[var(--page-gutter)] mx-auto max-w-[var(--chat-input-max-width)]">
+            <MentionMenu
+              items={chat.mentionItems}
+              filter={mentionFilter ?? ''}
+              loading={chat.mentionLoading}
+              handleRef={mentionHandle}
+              onPick={(item: MentionItem) => {
+                chat.applyMention(item)
+                focusComposerEnd()
+              }}
+            />
+          </div>
+        ) : null}
+        {slashVisible ? (
+          <div className="absolute bottom-[calc(100%-var(--space-4))] left-[var(--page-gutter)] right-[var(--page-gutter)] mx-auto max-w-[var(--chat-input-max-width)]">
+            <SlashMenu
+              items={chat.commands}
+              filter={slashFilter ?? ''}
+              handleRef={slashHandle}
+              onPick={chat.applyCommand}
+            />
+          </div>
+        ) : null}
+      </div>
+
+      {/* 拖拽提示：**两句不同的文案**就是这个功能的一半 */}
+      {chat.dropKind ? (
+        <div
+          role="status"
+          className="mx-auto mb-[var(--space-2)] w-full max-w-[var(--chat-input-max-width)] rounded-[var(--radius-panel)] border border-dashed border-[var(--accent)] bg-[var(--accent-soft)] px-[var(--space-4)] py-[var(--space-3)] text-center text-[length:var(--text-meta-size)] text-[var(--text-primary)]"
+        >
+          {chat.dropKind === 'reference' ? '松开以引用此文件' : '松开以添加附件'}
+        </div>
+      ) : null}
+
+      <div className="mx-auto flex w-full max-w-[var(--chat-input-max-width)] flex-col gap-[var(--space-1)] rounded-[var(--radius-input)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-[var(--space-3)] py-[var(--space-2)] shadow-[var(--shadow-input)]">
+        <textarea
+          id="chat-query"
+          ref={field}
+          rows={2}
+          className="max-h-[240px] min-h-[44px] w-full resize-none border-none bg-transparent text-[length:var(--text-body-size)] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-quaternary)]"
+          placeholder={placeholder}
+          value={chat.query}
+          onChange={(event) => chat.setQuery(event.target.value)}
+          onKeyDown={onKeyDown}
+        />
+
+        <div className="flex items-center justify-between gap-[var(--space-2)]">
+          <div className="flex flex-wrap items-center gap-[var(--space-1)]">
+            {/* 「加号」：附件与技能都收在这里 */}
+            <PlusMenu
+              onPickFiles={() => fileInput.current?.click()}
+              onBrowseFiles={() => setFilesOpen(true)}
+            />
+            {/* 「执行策略」与「Agent 模式」并排：两件都是"这一轮它有多放手" */}
+            <ExecPolicyControl />
+            <ModePicker />
+            <KnowledgeBaseControl />
+          </div>
+
+          <div className="flex items-center gap-[var(--space-2)]">
+            {/* 上下文仪表摆在这一端：它与模型/思考档是同一类信息（"还能问多长"） */}
+            <ContextGauge />
+            <ModelPicker />
+            {chat.useKb && chat.kbs.length > 0 && chat.selectedKbIds.length === 0 ? (
+              <span className="text-[length:var(--text-micro-size)] text-[var(--status-warning)]">
+                未选知识库
+              </span>
+            ) : null}
+            {chat.uploading ? (
+              <span className="text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
+                正在上传…
+              </span>
+            ) : null}
+            {/* 发送 / 停止是**同一个位置、同一个形状**的图标按钮 */}
+            {chat.sending ? (
+              <button
+                type="button"
+                className={SEND_BUTTON}
+                aria-label="停止生成"
+                title="停止生成"
+                onClick={chat.stop}
+              >
+                <Square size={14} fill="currentColor" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className={SEND_BUTTON}
+                aria-label="发送"
+                title="发送"
+                disabled={!chat.canSend}
+                onClick={chat.send}
+              >
+                <ArrowUp size={17} />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/*
+        「添加文件和图片」的实际落点。**藏起来的 `<input type=file>` 而不是自绘按钮**：
+        文件选择器必须由真实的用户手势触发，而原生 input 自带键盘可达与系统对话框。
+      */}
+      <input
+        ref={fileInput}
+        className="hidden"
+        type="file"
+        multiple
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={(event) => {
+          const input = event.target
+          const files = Array.from(input.files ?? [])
+          input.value = ''
+          chat.uploadFiles(files)
+        }}
+      />
+
+      {filesOpen ? <FilesDialog onClose={() => setFilesOpen(false)} /> : null}
+    </div>
+  )
+}

@@ -1,4 +1,5 @@
 @import 'tailwindcss';
+@import 'tw-animate-css';
 
 /*
  * Tailwind v4 的入口。
@@ -6,7 +7,7 @@
  * **设计令牌不归 Tailwind 管**：`--radius-*` / `--space-*` / `--text-*` / 颜色这些
  * 仍然是 `src/styles/tokens.css` 里那份（从旧前端原样搬来，两套前端共享同一份取值）。
  * 这里只做一件事：把那份令牌**映射成 Tailwind 的 theme**，让新组件能写
- * `bg-surface` / `text-secondary` / `rounded-row` 这类类名，而取值只有一处。
+ * `bg-canvas` / `text-secondary` / `rounded-row` 这类类名，而取值只有一处。
  *
  * `@theme inline` 是刻意的：值必须**引用** CSS 变量（inline）而不是把当前值烤死，
  * 否则亮/暗主题切换时 Tailwind 生成的工具类不会跟着变。
@@ -14,8 +15,12 @@
 @theme inline {
   --color-canvas: var(--bg-canvas);
   --color-surface: var(--bg-surface);
-  --color-surface-raised: var(--bg-surface-raised);
-  --color-elevated: var(--bg-elevated);
+  --color-subtle: var(--bg-subtle);
+  --color-hover: var(--bg-hover);
+  --color-selected: var(--bg-selected);
+  --color-menu: var(--bg-menu);
+  --color-overlay: var(--bg-overlay);
+  --color-scrim: var(--scrim);
   --color-border: var(--border);
   --color-border-strong: var(--border-strong);
   --color-text-primary: var(--text-primary);
@@ -31,13 +36,28 @@
 
   --radius-control: var(--radius-control);
   --radius-row: var(--radius-row);
-  --radius-card: var(--radius-card);
+  --radius-panel: var(--radius-panel);
+  --radius-overlay: var(--radius-overlay);
+  --radius-badge: var(--radius-badge);
   --radius-pill: var(--radius-pill);
 
   --font-sans: var(--font-ui);
   --font-mono: var(--font-mono);
 
-  --text-micro: var(--text-micro-size);
-  --text-meta: var(--text-meta-size);
-  --text-body: var(--text-body-size);
+  /* 字号不走 `--text-*` 那个命名（会与 tokens.css 里同名的辅助类撞车、被它抢走，
+     见 `src/ui/README.md` 的两个真坑）：组件里一律写
+     `text-[length:var(--text-meta-size)]`，Tailwind 只当它是任意值。 */
 }
+
+/*
+ * 高度链：旧前端的令牌里写的是 `#app`，React 挂在 `#root`。
+ * 少了这一条，`height:100%` 的页面（笔记两栏、对话页）会退化成内容高——
+ * 表现是"两列各自滚动"变成"共用一条滚动条"（笔记域踩过一次）。
+ */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* KaTeX 的样式表在 `main.tsx` 里引（它自己带字体文件，交给打包器处理）。 */

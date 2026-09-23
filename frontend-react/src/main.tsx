@@ -9,6 +9,9 @@ import { createRoot } from 'react-dom/client'
 
 import { App } from '@/app/App'
 import '@/styles/tokens.css'
+// 公式与代码高亮的样式：由**应用层**引（渲染层只管产出 class 名，见 chat/model/README.md）
+import 'katex/dist/katex.min.css'
+import 'highlight.js/styles/github.css'
 import '@/styles/themes/light.css'
 import '@/styles/themes/dark.css'
 import './index.css'

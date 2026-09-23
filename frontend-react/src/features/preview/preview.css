@@ -1,0 +1,461 @@
+/**
+ * 预览域样式（旧前端 `OfficePreview.vue` / `FilePreview.vue` 的 `<style scoped>` 合体）。
+ *
+ * 三条纪律与其余各域一致：
+ * 1. **颜色、间距、圆角一律引用 `tokens.css` / `themes/*.css` 的变量**，这里不出现
+ *    色值与裸像素（结构常量如行号列宽、表头高度除外——它们属于布局骨架）；
+ * 2. 类名统一 `kylab-` 前缀：docx-preview 会写 `.docx-wrapper`、pptx-preview 会写
+ *    `.pptx-preview-wrapper`、本文件里的类名与它们**不重名**，谁覆盖谁一眼看得出来；
+ * 3. 三个库都自带样式，其中两个**带灰底/黑底**（见下面各自的段落）——这是本文件存在
+ *    的主要理由，覆盖处都写了为什么。
+ */
+
+/* ---------------------------------------------------------------- 通用说明文字 */
+
+.kylab-preview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 160px;
+}
+
+.kylab-note {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: var(--text-meta-size);
+}
+
+/* 失败态显红：与"还在加载"是两件事，不能只是同一句话换个词 */
+.kylab-note[data-tone='bad'] {
+  color: var(--status-danger);
+}
+
+/* 「这个格式不能在这里预览」：不假装能预览，但也别让用户以为出错了 */
+.kylab-none {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-8) var(--space-4);
+  color: var(--text-tertiary);
+  text-align: center;
+}
+
+.kylab-none-icon {
+  color: var(--text-quaternary);
+}
+
+.kylab-none-title {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-body-size);
+}
+
+.kylab-none-note {
+  margin: 0;
+  font-size: var(--text-meta-size);
+}
+
+/* ---------------------------------------------------------------- 纯文本与代码 */
+
+/* 文本与代码：等宽、可横向滚、**保留空白**。
+   `pre-wrap` 而不是 `pre`：一行的长句子在窄抽屉里应当折行，而不是逼人横向拖
+   （旧 `FilePreview.vue` 同一条）。 */
+.kylab-text {
+  margin: 0;
+  max-height: 60vh;
+  padding: var(--space-3);
+  overflow: auto;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-row);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta-size);
+  line-height: var(--line-prose);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ---------------------------------------------------------------- Markdown */
+
+.kylab-md {
+  color: var(--text-primary);
+  font-size: var(--text-body-size);
+  line-height: var(--line-prose);
+  word-break: break-word;
+}
+
+.kylab-md > :first-child {
+  margin-top: 0;
+}
+
+.kylab-md h1,
+.kylab-md h2,
+.kylab-md h3,
+.kylab-md h4,
+.kylab-md h5,
+.kylab-md h6 {
+  margin: var(--space-5) 0 var(--space-2);
+  line-height: 1.35;
+}
+
+.kylab-md h1 {
+  font-size: var(--text-page-title-size);
+}
+
+.kylab-md h2 {
+  font-size: var(--text-section-size);
+}
+
+.kylab-md h3,
+.kylab-md h4,
+.kylab-md h5,
+.kylab-md h6 {
+  font-size: var(--text-body-size);
+}
+
+.kylab-md p,
+.kylab-md ul,
+.kylab-md ol,
+.kylab-md blockquote,
+.kylab-md table {
+  margin: 0 0 var(--space-3);
+}
+
+.kylab-md ul,
+.kylab-md ol {
+  padding-left: var(--space-6);
+}
+
+.kylab-md blockquote {
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-secondary);
+}
+
+.kylab-md hr {
+  margin: var(--space-5) 0;
+  border: none;
+  border-top: 1px solid var(--border-hairline);
+}
+
+.kylab-md pre {
+  margin: 0 0 var(--space-3);
+  padding: var(--space-3);
+  overflow-x: auto;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-row);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta-size);
+  line-height: var(--line-prose);
+}
+
+.kylab-md code {
+  padding: 2px 5px;
+  background: var(--bg-group);
+  border-radius: var(--radius-control);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+.kylab-md pre code {
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font-size: inherit;
+}
+
+/* 表格**独立成块**：宽表格在窄抽屉里必须能横向滚，否则会把整页撑破 */
+.kylab-md table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-row);
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: var(--text-meta-size);
+}
+
+.kylab-md th,
+.kylab-md td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border-hairline);
+  text-align: left;
+}
+
+.kylab-md th {
+  background: var(--bg-group);
+  font-weight: 500;
+}
+
+.kylab-md tr:last-child td {
+  border-bottom: none;
+}
+
+.kylab-md img {
+  max-width: 100%;
+  border-radius: var(--radius-row);
+}
+
+.kylab-md a {
+  color: var(--accent-text);
+}
+
+/* ---------------------------------------------------------------- 图片与 PDF */
+
+.kylab-image {
+  display: block;
+  max-width: 100%;
+  border-radius: var(--radius-row);
+}
+
+/* PDF 占满抽屉的高度：它是"一页一页翻"的东西，给个 400px 的框等于让人在一条缝里读。
+   高度用 vh 是因为抽屉自己就是视口高的一部分（旧 `FilePreview.vue` 同一条）。 */
+.kylab-pdf {
+  width: 100%;
+  height: calc(100vh - 180px);
+  min-height: 420px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-row);
+}
+
+/* ---------------------------------------------------------------- Office 外框 */
+
+/* 三个 Office 预览共用一层"纸面"外框：背景、发丝边框、圆角都走令牌 */
+.kylab-office {
+  width: 100%;
+  max-height: 70vh;
+  min-height: 200px;
+  padding: var(--space-3);
+  overflow: auto;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-row);
+}
+
+/* ---------------------------------------------------------------- docx-preview */
+
+/*
+ * docx-preview 的默认样式写死了 `.docx-wrapper { background: gray }` 与
+ * `section.docx { background: white; box-shadow: ... }`（v0.4.1 的 renderDefaultStyle），
+ * 而且它是把 `<style>` **注入到我们给的容器里**——同一份文档里，那条规则在 DOM 里
+ * 排在后面。所以这里的覆盖**靠更高的特异性**（`.kylab-docx-pane .kylab-docx-wrapper`
+ * 是两段类名，库那条是一段），而不是靠先后顺序。
+ *
+ * 之所以要覆盖而不是照单全收：灰底 + 白纸的观感是为"独立网页"设计的，
+ * 放进深色主题的抽屉里就是一块刺眼的白。纸张本身仍是一页一页的（版式不受影响），
+ * 只是底色与描边走我们的令牌。
+ */
+.kylab-docx-pane .kylab-docx-wrapper {
+  display: flex;
+  flex-flow: column;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 0;
+  background: transparent;
+}
+
+.kylab-docx-pane .kylab-docx-wrapper > section.kylab-docx {
+  margin-bottom: 0;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-control);
+  box-shadow: none;
+}
+
+/* 正文默认色跟着主题走。文档自己带的颜色是**行内样式**，仍然盖得住这一条
+   ——版式忠实于原件，只有"没指定颜色"的部分才跟主题。 */
+.kylab-docx-pane .kylab-docx {
+  color: var(--text-primary);
+}
+
+/* ---------------------------------------------------------------- pptx-preview */
+
+/*
+ * pptx-preview 把 `.pptx-preview-wrapper` 的底色与宽度写成**行内样式**
+ * （`style.setProperty('background', '#000')` 等，见 v1.0.7 的 `_renderWrapper`），
+ * 行内样式只有 `!important` 盖得住——这是本文件里唯一用 `!important` 的地方。
+ * 不盖的话，浅色主题里会突然出现一整块黑舞台。
+ */
+.kylab-pptx-pane .pptx-preview-wrapper {
+  background: transparent !important;
+  margin: 0 !important;
+}
+
+.kylab-pptx-pane .pptx-preview-slide-wrapper {
+  margin: 0 auto var(--space-4);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+
+/* 最后一页不留一条多余的间距 */
+.kylab-pptx-pane .pptx-preview-slide-wrapper:last-child {
+  margin-bottom: 0;
+}
+
+/* ---------------------------------------------------------------- 表格（exceljs） */
+
+.kylab-sheet {
+  display: flex;
+  flex-direction: column;
+  min-height: 200px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-row);
+}
+
+/* 工作表标签：多 sheet 的切换就靠它。横向可滚——一张工作簿十几个 sheet 是常事。 */
+.kylab-sheet-tabs {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  overflow-x: auto;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-hairline);
+  border-radius: var(--radius-row) var(--radius-row) 0 0;
+}
+
+.kylab-sheet-tab {
+  flex: 0 0 auto;
+  height: var(--control-height);
+  padding: 0 var(--space-3);
+  color: var(--text-secondary);
+  font-size: var(--text-meta-size);
+  white-space: nowrap;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.kylab-sheet-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.kylab-sheet-tab[aria-selected='true'] {
+  color: var(--accent-text);
+  background: var(--accent-soft);
+}
+
+.kylab-sheet-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 表格视口：表头与行号在里面 `position: sticky`（见下），所以滚动条是这一层 */
+.kylab-sheet-viewport {
+  max-height: 62vh;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.kylab-sheet-grid {
+  display: grid;
+  width: max-content;
+  font-size: var(--text-meta-size);
+  line-height: var(--line-ui);
+}
+
+/*
+ * 表头（列字母）与行号**都由自己的类名管定位**，网格模板由组件按虚拟化结果算：
+ * - 列头：`position: sticky; top: 0`，在流里，所以粘得住（绝对定位的元素粘不住）；
+ * - 行号：`position: sticky; left: 0`，同理。
+ * 两者都吃 `z-index`，避免被后来渲染的单元格压住。
+ */
+.kylab-sheet-cell,
+.kylab-sheet-colhead,
+.kylab-sheet-rowhead,
+.kylab-sheet-corner {
+  box-sizing: border-box;
+  border-right: 1px solid var(--border-hairline);
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.kylab-sheet-corner,
+.kylab-sheet-colhead {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* 结构常量（表头高度）：不参与间距节奏，只跟格子对齐有关，所以不走 --space-* */
+  height: 24px;
+  padding: 0 var(--space-1-5);
+  overflow: hidden;
+  color: var(--text-tertiary);
+  background: var(--bg-group);
+  user-select: none;
+}
+
+.kylab-sheet-corner {
+  left: 0;
+  z-index: 4;
+}
+
+.kylab-sheet-rowhead {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-tertiary);
+  background: var(--bg-group);
+  user-select: none;
+}
+
+.kylab-sheet-cell {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding: 0 var(--space-1-5);
+  overflow: hidden;
+  color: var(--text-primary);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 公式格：显示的是**文件里缓存的计算结果**（exceljs 不求值），左上角点一下能看到公式 */
+.kylab-sheet-fx {
+  flex: 0 0 auto;
+  margin-right: var(--space-1);
+  color: var(--text-quaternary);
+  font-size: var(--text-micro-size);
+}
+
+.kylab-sheet-fx-label {
+  margin-left: var(--space-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 竖向占位（虚拟化留下的空档）：不画任何线，也不吃掉事件 */
+.kylab-sheet-spacer {
+  grid-column: 1 / -1;
+}
+
+/* 横向占位：只是**占住宽度**，不跨列——它老老实实待在"行号"与"可见列"之间
+   （与上一行的 `.kylab-sheet-spacer` 是两件事：那个要跨满一整行） */
+.kylab-sheet-gap {
+  min-width: 0;
+  pointer-events: none;
+}
+
+/* 截断提示（行/列太多时）：贴在表的下方，说清"你看到的不是全部" */
+.kylab-sheet-note {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--text-tertiary);
+  font-size: var(--text-micro-size);
+  border-top: 1px solid var(--border-hairline);
+}
