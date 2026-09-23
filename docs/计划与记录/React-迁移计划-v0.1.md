@@ -199,20 +199,61 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
 [React-迁移完整性审计 v0.1](../调研/React-迁移完整性审计-v0.1.md)（22 条缺口 → 已清第一档 5 条）。
 **门禁**：`scripts/check-react.sh` 全绿，**510 条用例**（468 → 510）。
 
-**下一步（P5 之前必须做的事）**：
+**下一步**：见 §10 —— 代码侧已无待办，唯一没做的是 **NAS 上重建前端镜像**
+（本机没有任何登录入口，需要用户跑一条命令，或给公钥/密钥后由助手代做）。
 
-1. **人工对照**：同一条会话、同一份笔记、同一个库，在两套前端里逐页截图比对——
-   这是 §0 验收第 2 条，**目前一次都没做过**（各域报告只做了代码级对照）。
-   **卡点**：本机 dev 库 `users` 表里 `kkomia` / `yumao` 两个 admin 账号都在且未停用，
-   但记录里的旧口令已被后端判"用户名或密码不正确"——需要用户给一个能进后台的会话
-   （或用户自己在两个前端里各登一次做对照）；
-   审计报告 §6 第二档还留着几条"需要对照时一起看"的项（对话域逐按钮核对、预热缺失、
-   通知条关闭按钮等），逐条记在那份文档里；
-2. **`src/ui` 原语替换**：知识库域自带的 `primitives.tsx`（占位实现）与 misc 域的 `shared/ui.tsx`
-   应在对照通过后替换成 `src/ui/*`（shadcn），去掉两份手写外壳；
-3. **侧栏（壳）还没做**：`layout.toggleSidebar` / `chat.new` 的快捷键已接在对话页，
-   等壳里的侧栏读同一个存储键（`kylab-sidebar-collapsed`）并监听 `kylab:sidebar-toggle`
-   ——契约写在 `chat/runtime/shortcutPrefs.ts` 模块头，搬到壳上时 id 不变；
-4. **两处口径要用户拍**：① `remark-math` 把"`$5 到 $10`"按公式排（标准口径的代价，
-   缓解写法是 `\$5`）；② 对话页的文件抽屉仍是"文件区列表 + 签名 URL 预览"，
-   旧版的内嵌预览与子目录进出属知识库域的 `FilePreview`，要不要接由对照结果定。
+## 10. 收尾状态（2026-09-23）
+
+### 10.1 代码侧：完成
+
+- **迁移**：`frontend/` 就是 React 版（`git rm -r frontend` + `git mv frontend-react frontend`，`5632c2b`）。
+  旧 Vue 在 `agent` 分支（`git checkout agent -- frontend` 取回）；`react` 领先 `agent` 14 个提交、
+  领先 `main` **112** 个。**合并预检**：`git merge-tree --write-tree main react` **退出 0、零冲突**
+  （`react` 从 `agent` 切、`agent` 是 `main` 的后代），并进 `main` 是快进式——风险在部署不在合并。
+- **门禁（合并树上）**：前端 `scripts/check-frontend.sh` 全绿 —— **519 条用例** + 构建 + emoji +
+  分层与文案与版本号；后端 **2881 通过 / 9 跳过**；`scripts/lint.sh` 全过。
+- **审计缺口清零**：[完整性审计](../调研/React-迁移完整性审计-v0.1.md) 第一档 5 条（壳接线、401、
+  会话管理、文件抽屉四件事、落地页口径）与第二档 2 条（通知条关闭按钮、悬停/聚焦预热）**全部补完**；
+  只剩"启动后 idle 预热"这类进一步优化，写在审计 §6。
+- **观感对齐**（用户口径"按旧版逐处对齐"）：导航图标换回 **Remix Icon**；概览大数回
+  18px / 1.15 / -0.015em；知识库页头齿轮贴回标题（gap 4px）；状态标签回胶囊（22px）；
+  正文列宽回 66ch（实测 **533.672px**）——五处都在浏览器里量过、与旧值一致。
+- **两处口径**（按主流实现自收）：公式边界用 **GitHub 口径**（`$` 与内容之间不留空格，
+  于是 `$5 到 $10` 不再被当公式排）；文件抽屉内嵌预览经核实**本来就已具备**。
+
+### 10.2 NAS 产物的本机预检（都做了）
+
+1. `vite preview` 加 `/api` 反代（与 nginx 同形），用**生产构建** `dist/`（6.5 MB / 87 个资源）实跑：
+   首页 200、挂载点 `#root`、经反代 `/api/v1/health` 200、四个主资源全 200。
+2. **生产构建 + 真实会话逐页实测**：给预览端口注入现有会话令牌（只读核对、核完即清），
+   概览（真实统计）/ 知识库详情（31 篇文档、目录树、工具栏）/ 笔记（真实列表）/ 任务中心
+   （真实任务行）/ 能力（7 个技能 + 五档筛选）全部正常，侧栏**13 条真实会话**都在，挂载点 `#root`。
+   ——**NAS 上要跑的那份 dist 与本机验过的是同一份。**
+3. 锁文件含 `@esbuild/linux-x64`、`@tailwindcss/oxide-linux-x64-gnu`（容器里装得上）；
+   本机那两个 win32 包被 `.dockerignore` 排掉，不会带进 Linux 构建。
+
+### 10.3 唯一没做完的一步：NAS 上重建前端镜像
+
+**现状实测**：`http://192.168.31.18:8081/` 200，但 HTML 里是 **`id="app"`（旧 Vue）**；
+后端 `/api/v1/health` = `version 0.1.1` 健康。
+
+**本机入口已逐条试尽**（记在这里免得重复查）：`~/.ssh/` 只有 `config` 与 `known_hosts`、
+无任何登录私钥；`ssh-add -l` 无 agent；本机唯一那把 `~/.ollama/id_ed25519` 试过被拒；
+NAS 的 Docker 远程 API（2375/2376）**未开放**；本机**无 docker**（无法先在本机建一遍镜像）；
+仓库文档里**没有**登录凭据/密钥入口（规范明确"任何 token 不落库"）。
+
+**给用户的两条路**（`deploy/nas/README.md` 里有，密码只在用户终端里输）：
+
+```bash
+# A. 从这台 Windows 直接部署（两条命令；NAS 的 src/ 不是 git 检出，所以用 archive 覆盖）
+git archive --format=tar react | ssh kkomia@192.168.31.18   "mkdir -p /vol1/1000/docker/kylab/src && tar -x -C /vol1/1000/docker/kylab/src --overwrite"
+ssh kkomia@192.168.31.18   "cd /vol1/1000/docker/kylab/app && sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react"
+
+# B. 已经登录在 NAS 上时，一条命令
+sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react
+```
+
+脚本带**四道守卫**（都用临时目录模拟验证过）：源码是新前端才继续；还是旧 Vue 就**拒绝构建**
+并打印三条换源码的路子（退出码 2）；`app/docker-compose.yml` 不在就提示路径不对（2）；
+用不了 docker 就把 `sudo sh <脚本> react` 那行打出来（3）。构建走 **npmmirror**
+（`NPM_REGISTRY` + `COREPACK_NPM_REGISTRY`，与后端那份 `UV_INDEX_URL` 同一个理由）。
