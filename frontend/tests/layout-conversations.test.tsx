@@ -14,6 +14,7 @@
  */
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -55,6 +56,7 @@ vi.mock('@/features/misc/settings/AvatarDialog', () => ({ AvatarDialog: () => nu
 
 import {
   deleteConversation,
+  getConversation,
   listConversations,
   updateConversation,
   type ConversationSummary,
@@ -113,15 +115,22 @@ function account(role: 'admin' | 'member' = 'admin'): Account {
 }
 
 function renderShell() {
+  // 侧栏/面板里有"划过就预取会话正文"（`prefetchConversationDetail`），它要一个
+  // QueryClient —— 真实应用里由 `App` 提供，夹具里补一个（retry 关掉，失败即时可见）
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
   return render(
-    <MemoryRouter initialEntries={['/notes']}>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route path="/notes" element={<div>笔记页</div>} />
-          <Route path="/chat/:conversationId?" element={<div>对话页</div>} />
-        </Route>
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={['/notes']}>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="/notes" element={<div>笔记页</div>} />
+            <Route path="/chat/:conversationId?" element={<div>对话页</div>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -477,5 +486,33 @@ describe('预览的 Markdown 压平（纯函数口径）', () => {
     expect(previewOf(conversation({ preview: '![图](a.png) 正文' }))).toBe('正文')
     expect(previewOf(conversation({ preview: '# 标题\n\n- 一\n- 二' }))).toBe('标题 一 二')
     expect(previewOf(conversation({ preview: '**粗** 与 _斜_' }))).toBe('粗 与 斜')
+  })
+})
+
+describe('悬停预热（审计 F18：旧版"点进去就有"，新版补回来）', () => {
+  it('划过导航项就预载那一页的代码', async () => {
+    const user = userEvent.setup()
+    const preload = vi.spyOn(await import('@/app/routes'), 'preloadPage')
+    renderShell()
+
+    await user.hover(await screen.findByRole('link', { name: '笔记' }))
+    expect(preload).toHaveBeenCalledWith('notes')
+
+    preload.mockRestore()
+  })
+
+  it('划过会话行就预取那条会话的正文（点进去不必等一次往返）', async () => {
+    const user = userEvent.setup()
+    listConversationsMock.mockResolvedValue({
+      items: [conversation({ id: 'c9', title: '青光眼是啥' })],
+    })
+    renderShell()
+
+    const row = await screen.findByRole('link', { name: /青光眼是啥/ })
+    expect(vi.mocked(getConversation)).not.toHaveBeenCalled() // 划过之前不拉
+
+    await user.hover(row)
+
+    await waitFor(() => expect(vi.mocked(getConversation)).toHaveBeenCalledWith('c9'))
   })
 })

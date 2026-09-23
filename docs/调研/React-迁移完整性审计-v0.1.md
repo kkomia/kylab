@@ -166,8 +166,12 @@ layout 两个文件 **35**（实测全绿），按文件归属拆到各域。
 
 **第二档：观感与体验退化（不补也能用，但要知情）**
 
-6. 通知条的关闭按钮（F19，一行）。
-7. hover/idle 预热与会话正文缓存（F18）——"点进去先空白一下"的来源。
+6. ~~通知条的关闭按钮（F19，一行）~~ → **已补**（`@/ui/sonner` 开 `closeButton`，§12.241）。
+7. ~~hover/idle 预热与会话正文缓存（F18）~~ → **已补**（导航项 hover/focus 预载路由 chunk：
+   `app/routes.ts` 的 `PAGES` + `preloadPage`，与 `React.lazy` 共用同一批 import 函数；
+   会话行 hover/focus 预取正文：`chat/runtime/useChatData.prefetchConversationDetail`
+   与 `useConversationDetail` 同一个 queryKey。两条都有用例钉住，§12.241）。
+   **仍留的**：启动后的 idle 预热（任务/统计/注册表）与"只预取正文不预取整页"的进一步优化。
 8. 侧栏滚动条自动隐藏（F17，随 1 一起落地）。
 
 **第三档：工程与部署（不影响用户，但决定"切得成不成"）**

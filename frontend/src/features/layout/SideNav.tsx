@@ -71,6 +71,11 @@
  */
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router'
+
+import { useQueryClient } from '@tanstack/react-query'
+
+import { preloadPage, type PageName } from '@/app/routes'
+import { prefetchConversationDetail } from '@/features/chat/runtime/useChatData'
 import {
   RiArrowDownSLine,
   RiArrowRightSLine,
@@ -135,11 +140,25 @@ const SIDE_ADD =
  * 该有的动作（便签自下放上 / 记忆歪一头再正过来 / 能力上电弹一下 / 书脊滑进来）。
  */
 const NAV_ITEMS = [
-  { to: '/notes', label: '笔记', icon: RiStickyNoteLine, exact: false, motion: 'rise' },
-  { to: '/memory', label: '记忆', icon: RiRobotLine, exact: false, motion: 'tilt' },
+  {
+    to: '/notes',
+    label: '笔记',
+    icon: RiStickyNoteLine,
+    exact: false,
+    motion: 'rise',
+    page: 'notes',
+  },
+  { to: '/memory', label: '记忆', icon: RiRobotLine, exact: false, motion: 'tilt', page: 'memory' },
   // 能力的图标**不能用齿轮**：齿轮在账号菜单里是「设置」，同一个图标两种含义会让人
   // 以为这一项是设置（旧版踩过：一眼看过去就是"两个设置"）
-  { to: '/capabilities', label: '能力', icon: RiServerLine, exact: false, motion: 'spring' },
+  {
+    to: '/capabilities',
+    label: '能力',
+    icon: RiServerLine,
+    exact: false,
+    motion: 'spring',
+    page: 'capabilities',
+  },
 ] as const
 
 /**
@@ -154,11 +173,17 @@ const KNOWLEDGE_GROUP = {
   icon: RiBook2Line,
   motion: 'slide',
   children: [
-    { to: '/knowledge-bases', label: '所有知识库', icon: RiBook2Line, exact: true },
+    {
+      to: '/knowledge-bases',
+      label: '所有知识库',
+      icon: RiBook2Line,
+      exact: true,
+      page: 'knowledgeBases',
+    },
     // 「概览」= 驾驶舱，住 `/`（与旧前端一致：落地页就是概览，书签不用改）。
     // `/dashboard` 只是同一页的旧入口，在新路由表里是一条重定向。
-    { to: '/', label: '概览', icon: RiDashboardLine, exact: true },
-    { to: '/tasks', label: '任务中心', icon: RiTaskLine, exact: false },
+    { to: '/', label: '概览', icon: RiDashboardLine, exact: true, page: 'dashboard' },
+    { to: '/tasks', label: '任务中心', icon: RiTaskLine, exact: false, page: 'tasks' },
   ],
 } as const
 
@@ -174,12 +199,16 @@ function ConversationRow({
   onChanged?: () => void
 }) {
   const title = item.title || '未命名对话'
+  const queryClient = useQueryClient()
   return (
     <div className="ly-side-row-wrap">
       <Link
         to={`/chat/${item.id}`}
         className={sub ? `${SIDE_ROW} pl-6 text-text-secondary` : SIDE_ROW}
         title={title}
+        /* 划过就预取正文（旧 `SideNav.vue` 的悬停预取口径）：点进去不必等一次往返 */
+        onMouseEnter={() => prefetchConversationDetail(queryClient, item.id)}
+        onFocus={() => prefetchConversationDetail(queryClient, item.id)}
       >
         <span className="min-w-0 flex-1 truncate">{title}</span>
       </Link>
@@ -353,6 +382,8 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
         {NAV_ITEMS.map((item) => (
           <Link
             key={item.to}
+            onMouseEnter={() => preloadPage(item.page as PageName)}
+            onFocus={() => preloadPage(item.page as PageName)}
             to={item.to}
             // 选中态用**中性 alpha 底**（不是品牌色底，Kimi 的实测值），而且是类名不是内联样式：
             // 内联样式会压过 `:hover`，鼠标划过当前项就没了反馈

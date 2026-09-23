@@ -8,7 +8,7 @@
  * "读什么、什么时候读"。**写操作不经过它**（那些是「一轮对话」的一部分，
  * 见 `ChatProvider`）。
  */
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, type QueryClient } from '@tanstack/react-query'
 
 import { listSkills, type Skill } from '@/api/capabilities'
 import { getSuggestedQuestions, listCommands, type ChatCommand } from '@/api/chat'
@@ -95,6 +95,26 @@ export function useSkills(enabled: boolean) {
 }
 
 /** 会话详情（消息、库范围、模型、思考偏好）。 */
+/**
+ * 预热某条会话的正文（旧 `SideNav.vue` 的悬停预取口径）。
+ *
+ * 给**侧栏/历史面板**用：鼠标划过会话行时先拉一次，点进去就是热的
+ * （不然每次都要等一次往返，观感上是"点进去先空白一下"——审计 F18）。
+ *
+ * 与 `useConversationDetail` **共用同一个 queryKey**：这是这条助手唯一的约定，
+ * 改了键必须两处一起改（同文件相邻，不容易漏）。
+ * 失败静默：预热不是功能，真正进页该报的错由那一页自己报。
+ */
+export function prefetchConversationDetail(client: QueryClient, conversationId: string): void {
+  if (!conversationId) return
+  void client
+    .prefetchQuery({
+      queryKey: ['chat', 'conversation', conversationId],
+      queryFn: (): Promise<ConversationDetail> => getConversation(conversationId),
+    })
+    .catch(() => undefined)
+}
+
 export function useConversationDetail(conversationId: string) {
   return useQuery({
     queryKey: ['chat', 'conversation', conversationId],

@@ -31,6 +31,7 @@
  * - 列表里的「⋯」用 `@/ui/dropdown-menu`（Radix），Esc / 点外部 / 翻向都由它管，
  *   不必再照抄旧版 `RowMenu` 里那几段手写定位。
  */
+import { useQueryClient } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { RiCloseLine, RiPushpin2Line, RiSearchLine } from '@remixicon/react'
@@ -40,6 +41,7 @@ import type { ConversationSummary } from '@/api/conversations'
 import { Input } from '@/ui/input'
 import { Skeleton } from '@/ui/skeleton'
 
+import { prefetchConversationDetail } from '@/features/chat/runtime/useChatData'
 import { ConversationRowMenu } from './ConversationRowMenu'
 import { useConversationStore } from './conversations'
 
@@ -104,6 +106,7 @@ export function ConversationHistoryPanel({
   /** 面板左侧要让给侧栏的宽度（折叠态是 60px）。 */
   sidebarWidth: string
 }) {
+  const queryClient = useQueryClient()
   const loadDetailList = useConversationStore((state) => state.loadDetailList)
   const detailItems = useConversationStore((state) => state.detailItems)
 
@@ -310,6 +313,8 @@ export function ConversationHistoryPanel({
                         to={`/chat/${item.id}`}
                         className="flex flex-col gap-2 py-[14px] pr-3 pl-2 text-text-primary no-underline"
                         onClick={onClose}
+                        onMouseEnter={() => prefetchConversationDetail(queryClient, item.id)}
+                        onFocus={() => prefetchConversationDetail(queryClient, item.id)}
                       >
                         <span className="flex items-baseline justify-between gap-4 pr-6">
                           <span className="inline-flex min-w-0 items-center gap-1.5 overflow-hidden text-[length:var(--text-section-size)] font-medium text-ellipsis whitespace-nowrap text-text-primary">

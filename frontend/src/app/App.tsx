@@ -21,44 +21,23 @@ import { ensureAuthStatus, restoreSession } from '@/lib/sessionActions'
 import { hasCredential, sessionToken, useSessionStore } from '@/lib/session'
 import { loadRoster } from '@/lib/operator'
 import { ChatPage } from '@/features/chat/ChatPage'
+import { PAGES } from '@/app/routes'
 import { AppShell } from '@/features/layout'
 
-const KnowledgeBasesView = lazy(() =>
-  import('@/features/knowledge').then((m) => ({ default: m.KnowledgeBasesView })),
-)
-const KnowledgeBaseView = lazy(() =>
-  import('@/features/knowledge').then((m) => ({ default: m.KnowledgeBaseView })),
-)
-const WikiView = lazy(() => import('@/features/knowledge').then((m) => ({ default: m.WikiView })))
-const DocumentView = lazy(() =>
-  import('@/features/knowledge').then((m) => ({ default: m.DocumentView })),
-)
-const NotesView = lazy(() =>
-  import('@/features/notes/NotesView').then((m) => ({ default: m.NotesView })),
-)
-const LoginPage = lazy(() =>
-  import('@/features/misc/auth/LoginPage').then((m) => ({ default: m.LoginPage })),
-)
-const TasksPage = lazy(() =>
-  import('@/features/misc/tasks/TasksPage').then((m) => ({ default: m.TasksPage })),
-)
-const MemoryPage = lazy(() =>
-  import('@/features/misc/memory/MemoryPage').then((m) => ({ default: m.MemoryPage })),
-)
-const WorkspacesPage = lazy(() =>
-  import('@/features/misc/workspaces/WorkspacesPage').then((m) => ({ default: m.WorkspacesPage })),
-)
-const CapabilitiesPage = lazy(() =>
-  import('@/features/misc/capabilities/CapabilitiesPage').then((m) => ({
-    default: m.CapabilitiesPage,
-  })),
-)
-const DashboardPage = lazy(() =>
-  import('@/features/misc/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })),
-)
-const NotFoundPage = lazy(() =>
-  import('@/features/misc/auth/NotFoundPage').then((m) => ({ default: m.NotFoundPage })),
-)
+// 懒加载的**入口函数**都在 `app/routes.ts` 里（侧栏的 hover 预热要用同一批函数，
+// 同一个函数引用 React 才会复用同一个 chunk）。
+const KnowledgeBasesView = lazy(PAGES.knowledgeBases)
+const KnowledgeBaseView = lazy(PAGES.knowledgeBase)
+const WikiView = lazy(PAGES.wiki)
+const DocumentView = lazy(PAGES.document)
+const NotesView = lazy(PAGES.notes)
+const LoginPage = lazy(PAGES.login)
+const TasksPage = lazy(PAGES.tasks)
+const MemoryPage = lazy(PAGES.memory)
+const WorkspacesPage = lazy(PAGES.workspaces)
+const CapabilitiesPage = lazy(PAGES.capabilities)
+const DashboardPage = lazy(PAGES.dashboard)
+const NotFoundPage = lazy(PAGES.notFound)
 
 const queryClient = new QueryClient({
   defaultOptions: {

@@ -52,6 +52,10 @@ const Toaster = ({ className, ...props }: ToasterProps) => {
     <Sonner
       theme={theme}
       position="top-center"
+      // 关闭按钮：旧 `ToastStack.vue` 每条通知都带一个「关闭通知」（可点、可键盘到），
+      // sonner 默认不给——不开的话用户只能等它自己消失（默认 4 秒），
+      // 长一点的提示（"上传失败：…"）还没读完就没了。
+      closeButton
       className={cn('toaster group', className)}
       icons={{
         success: <CircleCheckIcon className="size-4 text-status-success" />,

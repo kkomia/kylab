@@ -14,6 +14,7 @@
  */
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -89,24 +90,31 @@ function LocationProbe() {
 }
 
 function renderShell(initialPath = '/notes') {
+  // 侧栏/面板里有"划过就预取会话正文"（`prefetchConversationDetail`），它要一个
+  // QueryClient —— 真实应用里由 `App` 提供，夹具里补一个（retry 关掉，失败即时可见）
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
   return render(
-    <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route path="/" element={<div>概览页</div>} />
-          <Route path="/notes" element={<div>笔记页</div>} />
-          <Route path="/memory" element={<div>记忆页</div>} />
-          <Route path="/capabilities" element={<div>能力页</div>} />
-          <Route path="/knowledge-bases" element={<div>知识库列表页</div>} />
-          <Route path="/kb/:kbId" element={<div>知识库详情页</div>} />
-          <Route path="/dashboard" element={<div>概览页</div>} />
-          <Route path="/tasks" element={<div>任务中心页</div>} />
-          <Route path="/workspaces" element={<LocationProbe />} />
-          <Route path="/chat/:conversationId?" element={<LocationProbe />} />
-        </Route>
-        <Route path="/login" element={<LocationProbe />} />
-      </Routes>
-    </MemoryRouter>,
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route path="/" element={<div>概览页</div>} />
+            <Route path="/notes" element={<div>笔记页</div>} />
+            <Route path="/memory" element={<div>记忆页</div>} />
+            <Route path="/capabilities" element={<div>能力页</div>} />
+            <Route path="/knowledge-bases" element={<div>知识库列表页</div>} />
+            <Route path="/kb/:kbId" element={<div>知识库详情页</div>} />
+            <Route path="/dashboard" element={<div>概览页</div>} />
+            <Route path="/tasks" element={<div>任务中心页</div>} />
+            <Route path="/workspaces" element={<LocationProbe />} />
+            <Route path="/chat/:conversationId?" element={<LocationProbe />} />
+          </Route>
+          <Route path="/login" element={<LocationProbe />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
