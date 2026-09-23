@@ -330,11 +330,20 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
 **现状实测**：`http://192.168.31.18:8081/` 200，但 HTML 里是 **`id="app"`（旧 Vue）**；
 后端 `/api/v1/health` = `version 0.1.1` 健康。
 
-**本机入口已逐条试尽**（记在这里免得重复查）：`~/.ssh/` 只有 `config` 与 `known_hosts`、
-无任何登录私钥；`ssh-add -l` 无 agent；本机唯一那把 `~/.ollama/id_ed25519` 试过被拒；
-NAS 的 Docker 远程 API（2375/2376）**未开放**；本机**无 docker**（无法先在本机建一遍镜像）；
-仓库文档里**没有**登录凭据/密钥入口（规范明确"任何 token 不落库"）；SMB（445）**开着**，
-但那只到文件层——重建镜像仍要 NAS 上的 docker，跳不过登录。
+**本机入口已逐条试尽**（记在这里免得重复查，2026-09-23 又补齐了三条）：
+
+- `~/.ssh/` 只有 `config` 与 `known_hosts`、**无任何登录私钥**；`ssh-add -l` 无 agent；
+  本机唯一那把 `~/.ollama/id_ed25519` 试过被拒；
+- **`~/.ssh/config` 里只配了 `192.168.31.16`**（那台是照片共享盘，`User kkomia`、
+  `ForwardAgent yes`），**`192.168.31.18` 一个字都没有**；
+- **Windows 凭据库里没有指向 .18 的条目**（只看到 `192.168.31.85`（SSMS）、`XIAOXINNAS`、
+  `192.168.31.16`）——也就是说"现有密钥/配置/已存凭据"这三条路对 .18 全是空的；
+- NAS 的 Docker 远程 API（2375/2376）**未开放**；本机**无 docker**（无法先在本机建一遍镜像）；
+- 仓库文档里**没有**登录凭据/密钥入口（规范明确"任何 token 不落库"）；
+- SMB（445）**开着**，但那只到文件层——重建镜像仍要 NAS 上的 docker，跳不过登录。
+
+于是"免密"只剩一条路：**装一次公钥**（`deploy/nas/install-ssh-key.sh`，见 §12.260），
+或者用户自己双击 `deploy/nas/deploy-from-windows.cmd` 输一次密码。
 
 **SSH 用户是 `yumao`，不能省**（2026-09-23 复查发现的一处真缺陷）：脚本原先写的是
 `ssh "$HOST"`，而本机 `ssh -G 192.168.31.18` 解析出的用户是 **「小又」**（这台 Windows 的登录名），
