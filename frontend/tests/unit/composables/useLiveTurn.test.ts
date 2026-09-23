@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { chatStream, resumeStream, type ChatHandlers } from '@/api/chat'
+import { chatStream, openLiveTurn, resumeStream, type ChatHandlers } from '@/api/chat'
 import {
   abortLiveTurn,
+  attachLiveTurn,
+  clearLiveAnchors,
   clearLiveTurn,
+  liveAnchor,
   liveTurnState,
   settleLiveApproval,
   startChatTurn,
@@ -11,15 +14,24 @@ import {
 } from '@/composables/useLiveTurn'
 
 /**
- * 「正在流的那一轮」（v0.41）。
+ * 「正在流的那一轮」（v0.41）+「断线重连」（P2-2，开发计划 §12.225）。
  *
  * 这一层存在的理由（用户报的第 4 条）：流不能跟着页面走。所以这里钉三件事——
  * **事件写进模块状态**、**句柄在模块手里**（组件走了也能叫停）、
- * **结束/失败一定会通知调用方**（`onSettled`，组件靠它收尾）。
+ * **结束/失败一定会通知调用方**。
+ *
+ * P2-2 起再加三件（后端在 `services/live_turns.py` 那一半是"跑在后台 + 环形缓冲"）：
+ * **锚点**（最后收到的 seq）、**接回来**（`attachLiveTurn` 用锚点补发 + 接着流）、
+ * **收口**（`done(recovered)` 之后不再等，正文以后端给的全文为准）。
  */
 vi.mock('@/api/chat', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/chat')>()
-  return { ...actual, chatStream: vi.fn(), resumeStream: vi.fn() }
+  return {
+    ...actual,
+    chatStream: vi.fn(),
+    resumeStream: vi.fn(),
+    openLiveTurn: vi.fn(),
+  }
 })
 
 /** 抓走 handlers，测试自己按需要推事件——与真实链路同一形状。 */
@@ -39,9 +51,35 @@ function capture(): { handlers: ChatHandlers | null; abort: ReturnType<typeof vi
   return box
 }
 
+/** 重连那条路（`openLiveTurn`）：抓 handlers，并记下每次调的 `(会话, 锚点)`。 */
+function captureLive(): {
+  handlers: ChatHandlers | null
+  abort: ReturnType<typeof vi.fn>
+  calls: [string, number][]
+} {
+  const box: {
+    handlers: ChatHandlers | null
+    abort: ReturnType<typeof vi.fn>
+    calls: [string, number][]
+  } = { handlers: null, abort: vi.fn(), calls: [] }
+  vi.mocked(openLiveTurn).mockImplementation(async (id, after, handlers) => {
+    box.calls.push([id, after])
+    box.handlers = handlers
+    return { abort: box.abort }
+  })
+  return box
+}
+
+/** 空事件的 done（直播那条路不带 recovered / detail）。 */
+const liveDone = { recovered: false, detail: '' }
+
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(openLiveTurn).mockReset()
   clearLiveTurn()
+  // 锚点也是模块作用域的（它**故意**不随状态清空，见那个模块的说明）：
+  // 用例之间必须自己清，否则上一条用例读到 20 会让下一条的重连带着 20 去补
+  clearLiveAnchors()
 })
 
 describe('useLiveTurn', () => {
@@ -75,7 +113,7 @@ describe('useLiveTurn', () => {
 
     // 结束只翻状态——收尾（写缓存、让后端校准）由**当前挂载的组件**看见这个翻转之后做，
     // 见 ChatView 里那个 watcher：曾经这里存过一个"发起者"的回调，用户切走后它会静默跳过
-    box.handlers!.onDone!('半截，写完了。')
+    box.handlers!.onDone!('半截，写完了。', liveDone)
     expect(liveTurnState.value).toMatchObject({ text: '半截，写完了。', streaming: false })
   })
 
@@ -91,18 +129,26 @@ describe('useLiveTurn', () => {
     expect(liveTurnState.value).toMatchObject({ error: '模型不可用', streaming: false })
   })
 
-  it('句柄在模块手里：abort 调的是那一条流，且不会把它当成失败', async () => {
+  it('句柄在模块手里：abort 调的是那一条流，把它收口但不当成失败', async () => {
     const box = capture()
 
     await startChatTurn(
       { query: '问', kb_ids: [], conversation_id: 'c1' },
       { conversationId: 'c1', query: '问', thinking: null },
     )
+    box.handlers!.onDelta!('半截正文')
     abortLiveTurn()
 
     expect(box.abort).toHaveBeenCalledTimes(1)
     // 停止不算失败：已经流出来的部分留着，错误栏也不该冒出红字
-    expect(liveTurnState.value?.error).toBe('')
+    expect(liveTurnState.value).toMatchObject({
+      error: '',
+      text: '半截正文',
+      // **界面要收口**：P2-2 之后断开连接不再取消那一轮，所以"不再等它"是这一侧的决定；
+      // `stopped` 那个标记还顺带把重连关掉了（用户刚说过不看了）
+      streaming: false,
+      stopped: true,
+    })
   })
 
   it('续跑是 patch 落法：不补新的一轮（重放时要靠 mode 区分）', async () => {
@@ -156,8 +202,202 @@ describe('useLiveTurn', () => {
       timeout_seconds: 120,
     })
 
-    box.handlers!.onDone!('答完了')
+    box.handlers!.onDone!('答完了', liveDone)
 
     expect(liveTurnState.value?.approval).toBeNull()
+  })
+})
+
+describe('重连锚点与接回来（P2-2）', () => {
+  it('锚点跟着事件走：最后收到的那个 seq 就是下次重连的 after', async () => {
+    const box = capture()
+    await startChatTurn(
+      { query: '问', kb_ids: [], conversation_id: 'c1' },
+      { conversationId: 'c1', query: '问', thinking: null },
+    )
+
+    box.handlers!.onSeq!(4)
+    box.handlers!.onSeq!(9)
+    expect(liveAnchor('c1')).toBe(9)
+    // 别的会话各记各的（锚点是**按会话**的：重连问的是"这条会话我读到哪了"）
+    expect(liveAnchor('c2')).toBe(0)
+  })
+
+  it('挂载时接回来：补发的事件按同一套 handler 落进状态，接着流的新事件照旧进来', async () => {
+    const box = captureLive()
+
+    await attachLiveTurn('c1')
+    // 刷新之后锚点没了（模块作用域不持久化）→ `after=0`，把这一圈都补给我
+    expect(box.calls).toEqual([['c1', 0]])
+    expect(liveTurnState.value).toMatchObject({
+      conversationId: 'c1',
+      mode: 'recover',
+      // **第一条事件之前不算"在跑"**：多数打开会话的时刻根本没有在跑的一轮，
+      // 这个窗口里先亮成流式中的话，输入框会闪一下「停止」
+      streaming: false,
+    })
+
+    // 补发的三条：一条步骤（带编号）、一段**合并过的**思考（带编号）、出处（没有编号）
+    box.handlers!.onSeq!(12)
+    box.handlers!.onStep!({
+      phase: 'tool',
+      label: '检索知识库',
+      detail: '命中 2 段',
+      status: 'done',
+    } as never)
+    box.handlers!.onThinking!('先看看库里有什么', { logSeq: 13 })
+    box.handlers!.onSeq!(13)
+    box.handlers!.onSources!([{ index: 1, chunk_id: 'k1' } as never])
+
+    expect(liveTurnState.value).toMatchObject({ streaming: true, mode: 'recover' })
+    expect(liveTurnState.value?.steps).toHaveLength(1)
+    expect(liveTurnState.value?.thinkingText).toBe('先看看库里有什么')
+    expect(liveTurnState.value?.sources).toHaveLength(1)
+
+    // **接着流**：正文增量照常到（补发里没有 delta——它是"这一轮还活着"的证据）
+    box.handlers!.onDelta!('半截正文')
+    expect(liveTurnState.value?.text).toBe('半截正文')
+
+    // 同一次思考的后继增量（不带编号）追加；而**重发的那一段合并文本**（同编号）替换
+    // ——不认段号的话，断线之前那半段会显示两遍
+    box.handlers!.onThinking!('，再查一遍')
+    expect(liveTurnState.value?.thinkingText).toBe('先看看库里有什么，再查一遍')
+    box.handlers!.onThinking!('先看看库里有什么，再查一遍', { logSeq: 13 })
+    expect(liveTurnState.value?.thinkingText).toBe('先看看库里有什么，再查一遍')
+
+    // 再接一次时锚点已经是补发到的那一条：只补之后的（不重复给整圈）
+    expect(liveAnchor('c1')).toBe(13)
+  })
+
+  it('补发到一条**已经收尾**的轮次：done(recovered) 收口，正文以全文为准（不追加）', async () => {
+    const box = captureLive()
+    await attachLiveTurn('c1')
+
+    box.handlers!.onSeq!(20)
+    box.handlers!.onStep!({
+      phase: 'tool',
+      label: '导出文档',
+      detail: '已导出',
+      status: 'done',
+    } as never)
+    // 断线前已经收到过一段（补发不会重发它）
+    box.handlers!.onDelta!('半截')
+    box.handlers!.onDone!('这是完整答复。', {
+      recovered: true,
+      detail: '这一轮已经收尾了：补发到此为止（正文增量不重发，这里给的是完整答复）。',
+    })
+
+    expect(liveTurnState.value).toMatchObject({
+      text: '这是完整答复。',
+      streaming: false,
+      recovered: true,
+    })
+    // 收口之后不再挂着任何东西（界面据此停止等待）
+    expect(liveTurnState.value?.error).toBe('')
+  })
+
+  it('真断线：按锚点接回来（after=最后收到的 seq），新事件继续进来', async () => {
+    vi.useFakeTimers()
+    try {
+      const first = capture()
+      const live = captureLive()
+      await startChatTurn(
+        { query: '问', kb_ids: [], conversation_id: 'c1' },
+        { conversationId: 'c1', query: '问', thinking: null },
+      )
+      first.handlers!.onSeq!(7)
+      first.handlers!.onDelta!('前半段')
+
+      // 流断了（既不是 done / error，也不是用户取消）
+      first.handlers!.onDropped!('对话中断')
+      // 还没收摊：正等着接回来
+      expect(liveTurnState.value?.streaming).toBe(true)
+      expect(liveTurnState.value?.error).toBe('')
+
+      await vi.advanceTimersByTimeAsync(1000)
+      // **带着锚点**去补：不是重新要整条会话
+      expect(live.calls).toEqual([['c1', 7]])
+
+      // 补发的那几条 + 接着流的正文
+      live.handlers!.onSeq!(9)
+      live.handlers!.onStep!({
+        phase: 'tool',
+        label: '联网搜索',
+        detail: '8 条',
+        status: 'done',
+      } as never)
+      live.handlers!.onDelta!('后半段')
+      expect(liveTurnState.value).toMatchObject({ text: '前半段后半段', streaming: true })
+      expect(liveTurnState.value?.steps).toHaveLength(1)
+
+      live.handlers!.onDone!('前半段后半段', liveDone)
+      expect(liveTurnState.value).toMatchObject({ text: '前半段后半段', streaming: false })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('接不上：试够次数才如实报错（不假装还在跑）', async () => {
+    vi.useFakeTimers()
+    try {
+      const first = capture()
+      vi.mocked(openLiveTurn).mockRejectedValue(new Error('网络不通'))
+      await startChatTurn(
+        { query: '问', kb_ids: [], conversation_id: 'c1' },
+        { conversationId: 'c1', query: '问', thinking: null },
+      )
+
+      first.handlers!.onDropped!('对话中断')
+      // 每一轮重连自己又失败一次 → 再排一次，直到预算用尽
+      for (let round = 0; round < 6; round += 1) await vi.advanceTimersByTimeAsync(1000)
+
+      expect(liveTurnState.value).toMatchObject({ streaming: false, error: '网络不通' })
+      expect(vi.mocked(openLiveTurn).mock.calls.length).toBeLessThanOrEqual(4)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('用户按了「停止」之后不重连（他刚说过不看了）', async () => {
+    vi.useFakeTimers()
+    try {
+      const first = capture()
+      const live = captureLive()
+      await startChatTurn(
+        { query: '问', kb_ids: [], conversation_id: 'c1' },
+        { conversationId: 'c1', query: '问', thinking: null },
+      )
+      abortLiveTurn()
+      // 那条流随后报"断了"（用户自己断的，服务端看起来也是断线）——不该接回来
+      first.handlers!.onDropped!('对话中断')
+      await vi.advanceTimersByTimeAsync(3000)
+      expect(live.calls).toEqual([])
+      expect(liveTurnState.value?.stopped).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('挂载时接不上：画面上什么都不留（不留一个假的"在跑"）', async () => {
+    vi.mocked(openLiveTurn).mockRejectedValue(new Error('这条会话上没有在跑的一轮'))
+    await attachLiveTurn('c1')
+    expect(liveTurnState.value).toBeNull()
+  })
+
+  it('手上那条流还在跑时，不重复建连（挂载与切回会话会前后脚都问一次）', async () => {
+    const box = captureLive()
+    await attachLiveTurn('c1')
+    box.handlers!.onDelta!('在跑的正文')
+    await attachLiveTurn('c1')
+    expect(box.calls).toHaveLength(1)
+  })
+
+  it('手上跑着**别的**会话：不抢它的位置（这一格只放当前那一轮）', async () => {
+    const box = captureLive()
+    await attachLiveTurn('c1')
+    box.handlers!.onDelta!('c1 的正文')
+    await attachLiveTurn('c2')
+    expect(box.calls).toEqual([['c1', 0]])
+    expect(liveTurnState.value?.conversationId).toBe('c1')
   })
 })

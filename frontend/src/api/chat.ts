@@ -275,60 +275,121 @@ export interface ChatCommandResult {
   action?: { kind: string; conversation_id?: string; mode?: string; previousMode?: string }
 }
 
+/**
+ * 一条事件可能带着它在**会话事件日志里的编号**（P2-2 的重连锚点）。
+ *
+ * 后端只在带会话那条路上编这个号（`_sse` 的 `seq=`），且与 `session_events`
+ * **同一套编号**——所以"我收到了到 N 为止"与"按日志读到第 N 条"是同一件事，
+ * 断线之后拿它去 `GET /chat/turns/{id}/live?after=N` 就能把没看到的补回来。
+ * 不带会话的调用没有可补发的地方，也就没有这个键。
+ */
+export interface SeqStamp {
+  seq?: number
+}
+
 /** 服务端事件（后端 api/v1/chat.py 的事件形状）。 */
-export type ChatStreamEvent =
-  | {
-      type: 'step'
-      phase: string
-      label: string
-      detail: string
-      status: string
-      degraded?: boolean
-      added?: number
-      /** 入参与原文（v0.25）：空串时后端不发这个键，见 `ChatStep` 的说明 */
-      args?: string
-      result?: string
-      artifacts?: ChatArtifact[]
-      /** 工具名（v0.26）：同上，非工具步骤不发这个键 */
-      tool?: string
-    }
-  | {
-      type: 'approval'
-      approval_id: string
-      tool: string
-      label: string
-      args: string
-      detail?: string
-      rule?: string
-      timeout_seconds?: number
-    }
-  | { type: 'sources'; items: ChatSource[] }
-  | { type: 'thinking'; text: string }
-  | { type: 'delta'; text: string }
-  | { type: 'done'; answer: string }
-  | { type: 'error'; message: string }
-  /**
-   * 一条斜杠命令的回话（P1-2）。**它替代了整轮回答**：这一轮没有 step / delta，
-   * 也不会有消息落库（后端在进模型之前就把它答掉了）。
-   */
-  | {
-      type: 'command'
-      name: string
-      text: string
-      ok: boolean
-      action?: ChatCommandResult['action']
-    }
+export type ChatStreamEvent = SeqStamp &
+  (
+    | {
+        type: 'step'
+        phase: string
+        label: string
+        detail: string
+        status: string
+        degraded?: boolean
+        added?: number
+        /** 入参与原文（v0.25）：空串时后端不发这个键，见 `ChatStep` 的说明 */
+        args?: string
+        result?: string
+        artifacts?: ChatArtifact[]
+        /** 工具名（v0.26）：同上，非工具步骤不发这个键 */
+        tool?: string
+      }
+    | {
+        type: 'approval'
+        approval_id: string
+        tool: string
+        label: string
+        args: string
+        detail?: string
+        rule?: string
+        timeout_seconds?: number
+      }
+    | { type: 'sources'; items: ChatSource[] }
+    | { type: 'thinking'; text: string }
+    | { type: 'delta'; text: string }
+    | {
+        type: 'done'
+        answer: string
+        /**
+         * 这条收尾是**重连补发**来的（P2-2，后端 `_noted_finish`）。
+         *
+         * 它同时意味着两件事：这一轮**已经跑完**（不会再有任何事件），
+         * 而正文增量**不会重发**——所以 `answer` 是这一轮的完整答复，
+         * 界面以它为准收口（见 `useLiveTurn` 的 `finishWith`）。
+         */
+        recovered?: boolean
+        /** 后端给的那句说明（「这一轮已经收尾了：补发到此为止…」）。 */
+        detail?: string
+      }
+    | { type: 'error'; message: string }
+    /**
+     * 一条斜杠命令的回话（P1-2）。**它替代了整轮回答**：这一轮没有 step / delta，
+     * 也不会有消息落库（后端在进模型之前就把它答掉了）。
+     */
+    | {
+        type: 'command'
+        name: string
+        text: string
+        ok: boolean
+        action?: ChatCommandResult['action']
+      }
+  )
+
+/** `done` 那一条带回来的两件事（见 `ChatStreamEvent` 里 `done` 的说明）。 */
+export interface ChatDoneInfo {
+  /** 这份收尾是补发来的（这一轮早就跑完了，正文增量不会重发）。 */
+  recovered: boolean
+  /** 后端给的那句说明；直播那条 done 没有它。 */
+  detail: string
+}
 
 export interface ChatHandlers {
   /** 依据先到：用户不必等模型写完就知道"它拿到了什么"。 */
   onSources?: (items: ChatSource[]) => void
   /** Agent 工作流的进度（理解问题、优化检索词、第 N 轮检索…）。 */
   onStep?: (step: ChatStep) => void
-  /** 思考过程增量（推理模型的 reasoning_content），与正文分开。 */
-  onThinking?: (text: string) => void
+  /**
+   * 思考过程增量（推理模型的 reasoning_content），与正文分开。
+   *
+   * `options.logSeq` **只有一段思考的第一条才有**：同一次连续思考在服务端的直播
+   * 缓冲与会话日志里都只占一条（后续增量拼进它，见 `live_turns.LiveEmit`），
+   * 所以重连补发时拿到的是这一段**合并后的全文**，编号还是那一个。
+   * 界面据此知道"这是新的一段"（也就能把那一段**替换**掉，而不是把补发来的
+   * 全文再追加一遍——见 `useLiveTurn` 的 `pushThinking`）。
+   */
+  onThinking?: (text: string, options?: { logSeq: number }) => void
   onDelta?: (text: string) => void
-  onDone?: (answer: string) => void
+  onDone?: (answer: string, info: ChatDoneInfo) => void
   onError?: (message: string) => void
+  /**
+   * 这条事件在**会话日志里的编号**（P2-2）。每收到一条带编号的都会回调一次，
+   * 界面记下最后那个当重连锚点（`GET /chat/turns/{id}/live?after=`）。
+   *
+   * 它排在对应事件的回调**之后**：锚点的语义是"我已经处理到这儿了"，
+   * 抢在事件之前记，断在刚收到一半时就会漏掉那一条。
+   */
+  onSeq?: (seq: number) => void
+  /**
+   * **流断了**（P2-2）：既不是 `done` / `error`，也不是用户主动取消——
+   * 网络抖了、代理把连接掐了、或者服务重启了。
+   *
+   * 与 `onError` 分开是刻意的：断流的正解是**接回来**（拿最后收到的 seq 调
+   * `/chat/turns/{id}/live`，那一轮在后端照跑，见 `live_turns`），
+   * 而不是像真失败那样收摊。没给这个回调的调用方（脚本、命令那条短路链路）
+   * 仍然按老样子收 `onError`。
+   */
+  onDropped?: (reason: string) => void
   /**
    * 后端在等用户点头（v0.41）。**收到它之后那一轮就停住了**，
    * 所以在它被回答之前不会再有任何事件——界面必须把确认条摆出来。
@@ -422,7 +483,39 @@ export async function chatStream(
   signal?: AbortSignal,
   options: { smooth?: boolean } = {},
 ): Promise<ChatStreamHandle> {
-  return postStream(`${API_BASE}/chat/stream`, payload, handlers, signal, options)
+  return openStream(`${API_BASE}/chat/stream`, handlers, { signal, body: payload, ...options })
+}
+
+/**
+ * **重连锚点**（P2-2）：接上这条会话正在跑（或刚跑完）的那一轮。
+ *
+ * 抄的是 ZCode 的 `stream_recovery_anchor_*` 与 QwenPaw 的"后台 run + 环形缓冲重放"
+ * （调研报告 §2.1 / §2.5，开发计划 §12.225 的 P2-2）：
+ *
+ * - `after` = **最后收到的那个 seq**（每条事件带的，见 `SeqStamp`）。后端只补发它
+ *   之后的，所以补发与实时收到的是**同一套事件**，界面用同一套 handler 处理即可；
+ * - 那一轮还在跑：补发完**接着流**，后面的事件照常到；
+ * - 那一轮已经跑完：补发完给一条带 `recovered` 的 `done`，界面据此收口
+ *   （正文增量不重发，那条 done 里是完整答复）。
+ *
+ * `after=0`（不传）等于"整圈都补给我"：刷新页面之后锚点没了，重建的办法就是它
+ * （见 `useLiveTurn` 的 `attachLiveTurn`）。
+ */
+export async function openLiveTurn(
+  conversationId: string,
+  after: number,
+  handlers: ChatHandlers,
+  signal?: AbortSignal,
+  options: { smooth?: boolean } = {},
+): Promise<ChatStreamHandle> {
+  // 查询串自己拼而不是用 URLSearchParams：`after` 是个非负整数，
+  // 拼错的唯一可能是"传进来一个负数"，后端会 422——比静默当 0 强
+  const query = after > 0 ? `?after=${Math.floor(after)}` : ''
+  return openStream(
+    `${API_BASE}/chat/turns/${encodeURIComponent(conversationId)}/live${query}`,
+    handlers,
+    { signal, ...options },
+  )
 }
 
 /**
@@ -439,12 +532,14 @@ export async function resumeStream(
   signal?: AbortSignal,
   options: { smooth?: boolean } = {},
 ): Promise<ChatStreamHandle> {
-  return postStream(
+  return openStream(
     `${API_BASE}/conversations/${encodeURIComponent(conversationId)}/resume`,
-    payload,
     handlers,
-    signal,
-    options,
+    {
+      signal,
+      body: payload,
+      ...options,
+    },
   )
 }
 
@@ -455,13 +550,17 @@ export interface ResumePayload {
 }
 
 /** SSE 请求的公共部分：建连、转发取消、把读取交给 `pump`。 */
-async function postStream(
+async function openStream(
   url: string,
-  payload: unknown,
   handlers: ChatHandlers,
-  signal: AbortSignal | undefined,
-  options: { smooth?: boolean },
+  options: {
+    /** 请求体：给了就是一次 `POST`（JSON），不给就是 `GET`（重连那条路）。 */
+    body?: unknown
+    signal?: AbortSignal
+    smooth?: boolean
+  } = {},
 ): Promise<ChatStreamHandle> {
+  const { body, signal } = options
   const smooth = options.smooth ?? true
   const controller = new AbortController()
   // 外部 signal 先于本次请求被取消时，abort() 不会再触发事件，这里补一次转发
@@ -474,12 +573,15 @@ async function postStream(
   let response: Response
   try {
     response = await fetch(url, {
-      method: 'POST',
+      method: body === undefined ? 'GET' : 'POST',
       // **凭据必须自己带上**：这条链路绕过了 client.request（响应是 SSE 不是 JSON），
       // 而 authHeaders 是唯一知道令牌在哪的地方。漏了它，表现是对话页永远回
       // 「缺少凭据」，别的页面却一切正常（实测踩过）。
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify(payload),
+      headers:
+        body === undefined
+          ? { ...authHeaders() }
+          : { 'Content-Type': 'application/json', ...authHeaders() },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       signal: controller.signal,
     })
   } catch (error) {
@@ -520,6 +622,8 @@ async function pump(
   let answer = ''
   /** done 里的拼装全文，以它为准；排空后据此交付。 */
   let finalAnswer: string | null = null
+  /** done 带回来的那两件事（`recovered` / `detail`）：排空后与全文一起交付。 */
+  let finalInfo: ChatDoneInfo = { recovered: false, detail: '' }
   const decoder = new TextDecoder()
   let buffer = ''
 
@@ -529,7 +633,7 @@ async function pump(
         onText: (chunk) => handlers.onDelta?.(chunk),
         onSources: (items) => handlers.onSources?.(items),
         onDrained: () => {
-          if (finalAnswer !== null) handlers.onDone?.(finalAnswer)
+          if (finalAnswer !== null) handlers.onDone?.(finalAnswer, finalInfo)
         },
       })
     : null
@@ -549,7 +653,8 @@ async function pump(
     thinkingPacer?.stop()
   }
 
-  const emit = (event: ChatStreamEvent): void => {
+  /** 把一条事件交给界面（不含锚点那一步，见下面的 `emit`）。 */
+  const dispatch = (event: ChatStreamEvent): void => {
     if (event.type === 'sources') {
       if (pacer) pacer.setSources(event.items)
       else handlers.onSources?.(event.items)
@@ -576,7 +681,13 @@ async function pump(
       return
     }
     if (event.type === 'thinking') {
-      if (thinkingPacer) thinkingPacer.pushText(event.text)
+      if (typeof event.seq === 'number') {
+        // **一段思考的第一条**（它带编号，后继增量不带，见 `ChatHandlers.onThinking`）。
+        // 先把节流器里上一段还没放完的字落地（顺序不能乱），这一段就带着段号
+        // 直接交给界面——段号是它区别于"同段增量"的唯一凭据，节流层存不下它。
+        thinkingPacer?.flush()
+        handlers.onThinking?.(event.text, { logSeq: event.seq })
+      } else if (thinkingPacer) thinkingPacer.pushText(event.text)
       else handlers.onThinking?.(event.text)
       return
     }
@@ -615,18 +726,30 @@ async function pump(
     delivered = true
     if (event.type === 'done') {
       finalAnswer = event.answer
+      finalInfo = { recovered: event.recovered === true, detail: event.detail ?? '' }
       // 思考先落地（它是已完成的过程），再让正文按自己的节奏收尾
       if (thinkingPacer) {
         thinkingPacer.flush()
         thinkingPacer.stop()
       }
       if (pacer) pacer.finish(event.answer)
-      else handlers.onDone?.(event.answer)
+      else handlers.onDone?.(event.answer, finalInfo)
     } else {
       // 报错时把已经收到、还没显示的字先亮完，否则它们会凭空消失
       flushAll()
       handlers.onError?.(event.message)
     }
+  }
+
+  /**
+   * 一条完整事件：先交给界面，再报锚点（顺序见 `ChatHandlers.onSeq`）。
+   *
+   * 锚点只认**数字**：后端不给 `seq` 的那几种（正文增量、出处、待确认）不参与
+   * 编号，它们在重连时是按位置一起补发的，不需要自己的号。
+   */
+  const emit = (event: ChatStreamEvent): void => {
+    dispatch(event)
+    if (typeof event.seq === 'number') handlers.onSeq?.(event.seq)
   }
 
   const drain = (text: string): void => {
@@ -653,6 +776,23 @@ async function pump(
     if (!delivered) handlers.onError?.(message)
   }
 
+  /**
+   * 流断了（既没有 done/error，也不是用户取消）。
+   *
+   * **给了 `onDropped` 就交给它**（它会拿锚点接回来，见 `useLiveTurn`——
+   * P2-2 之后后端那一轮不归连接管，断开只是少一个订阅者，正确反应是接回来而不是收摊）；
+   * 没给的调用方（脚本、命令那条短路链路）仍然当失败处理。
+   */
+  const dropped = (reason: string): void => {
+    if (delivered) return
+    if (handlers.onDropped) {
+      flushAll()
+      handlers.onDropped(reason)
+      return
+    }
+    fail(reason)
+  }
+
   try {
     for (;;) {
       const { done, value } = await reader.read()
@@ -661,9 +801,9 @@ async function pump(
     }
     drain(decoder.decode())
     if (!delivered) {
-      // 流干净地结束了，却既没有 done 也没有 error。
-      // 静默收场会显示成"空回答"，用户会读成"知识库里没有"，所以必须说出来；
-      // 已经吐了一半的则当作完成——那半段仍然是有用的回答。
+      // 流干净地结束了，却既没有 done 也没有 error。已经吐了一半的当作完成
+      // ——那半段仍然是有用的回答（后端落库了，刷新也拿得到全文）；
+      // 一个字都没有的则算**断了**：静默收场会显示成"空回答"。
       if (answer) {
         finalAnswer = answer
         if (thinkingPacer) {
@@ -671,10 +811,9 @@ async function pump(
           thinkingPacer.stop()
         }
         if (pacer) pacer.finish(answer)
-        else handlers.onDone?.(answer)
+        else handlers.onDone?.(answer, finalInfo)
       } else {
-        flushAll()
-        fail('对话没有返回任何内容，请重试')
+        dropped('对话没有返回任何内容，请重试')
       }
     }
   } catch (error) {
@@ -684,7 +823,7 @@ async function pump(
       flushAll()
     } else {
       flushAll()
-      fail(error instanceof Error ? error.message : '对话中断')
+      dropped(error instanceof Error ? error.message : '对话中断')
     }
   } finally {
     signal?.removeEventListener('abort', forward)
@@ -750,4 +889,70 @@ export function getSuggestedQuestions(
   const params = new URLSearchParams({ kb_ids: kbIds.join(',') })
   if (options.limit) params.set('limit', String(options.limit))
   return request<SuggestedQuestions>(`/chat/suggested-questions?${params.toString()}`)
+}
+
+/**
+ * 上下文分解里的一项来源（P1-3，后端 `GET /chat/context-usage` 的 `items[]`）。
+ *
+ * `label` 是**后端给的中文名**，界面直接用、不自己翻译 `kind`：分解的口径是
+ * 服务端定的（"记忆与人设"具体包含哪几份文件，只有那边知道），两处各写一份
+ * 迟早会对不上（schema 的说明里写着同一条）。
+ */
+export interface ContextUsagePart {
+  /** 稳定取值：`messages` / `system_prompt` / `skills` / `tools` / `memory` / `other`。 */
+  kind: string
+  label: string
+  chars: number
+  tokens: number
+  /** 占**已用**的比例（0~1）。画分解条用它，比每次自己除一遍稳。 */
+  share: number
+}
+
+/**
+ * 这一轮上下文的占用与分解（P1-3 的仪表，抄 ZCode 的 `chat.contextUsage.breakdown`）。
+ *
+ * `used` / `total` / `share` 这几个数**全部来自接口**：界面一次都不自己算
+ * （估算口径在服务端那一处，界面再算一遍必然分叉——而仪表上最忌讳的就是
+ * "分解条加起来不等于总数"）。`estimated` 恒真、`note` 里写着那句话，
+ * 所以界面上也不能把它画成账单。
+ */
+export interface ContextUsage {
+  items: ContextUsagePart[]
+  used: number
+  total: number
+  ratio: number
+  /** 自动压缩的触发点（token 数）：仪表上画一条刻度，让"离压缩还有多远"看得见。 */
+  compress_at: number
+  estimated: boolean
+  note: string
+}
+
+/**
+ * 读一次上下文用量（**只读**：调它不会触发压缩，所以界面可以随时刷新它）。
+ *
+ * 失败**如实抛**：仪表是"这个数现在是多少"的入口，拿不到就显示"读不到"，
+ * 不要拿 0 冒充（那与"上下文是空的"看起来一模一样，而两者要做的事完全不同）。
+ */
+export async function getContextUsage(conversationId: string): Promise<ContextUsage> {
+  const params = new URLSearchParams({ conversation_id: conversationId })
+  const raw = await request<components['schemas']['ContextUsageOut']>(
+    `/chat/context-usage?${params.toString()}`,
+  )
+  return {
+    // 与 `listFiles` 同一套归一化：schema 里这些字段都有默认值，
+    // 直接当必有的用会在缺字段时变成 `undefined`（界面显示成 NaN）
+    items: (raw.items ?? []).map((item) => ({
+      kind: item.kind,
+      label: item.label,
+      chars: item.chars ?? 0,
+      tokens: item.tokens ?? 0,
+      share: item.share ?? 0,
+    })),
+    used: raw.used ?? 0,
+    total: raw.total ?? 0,
+    ratio: raw.ratio ?? 0,
+    compress_at: raw.compress_at ?? 0,
+    estimated: raw.estimated ?? true,
+    note: raw.note ?? '',
+  }
 }

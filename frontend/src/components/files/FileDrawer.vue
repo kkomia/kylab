@@ -146,6 +146,29 @@ function openEntry(entry: ConversationFile): void {
   previewing.value = entry
 }
 
+/**
+ * 把这一行**拖进对话输入框**（P1-3）。
+ *
+ * 拖拽的两种落法是这个功能最容易漏掉的一处（照 ZCode）：从资源管理器拖一份文件进
+ * 对话页是"**添加附件**"（它会上传、成为库里的文档），而拖这里已经在文件区里的那份是
+ * "**引用此文件**"（只往输入框里插一条 `@路径`，内容一个字都不读）。
+ *
+ * 两者在浏览器看来都是 `Files`，所以这里要**写一个自定义类型**把"这是文件区里的文件"
+ * 这件事带过去——对话页那一侧按它分流（见 `ChatView.FILE_DRAG_TYPE`）。
+ * `text/plain` 也一起给上：拖到别的应用（编辑器、聊天窗口）时至少落下一个路径，
+ * 而不是一个谁都看不懂的 MIME。
+ */
+function onDragStart(event: DragEvent, entry: ConversationFile): void {
+  const transfer = event.dataTransfer
+  if (!transfer) return
+  transfer.setData(
+    'application/x-kylab-file',
+    JSON.stringify({ key: entry.key, name: entry.name, is_dir: entry.is_dir }),
+  )
+  transfer.setData('text/plain', entry.key)
+  transfer.effectAllowed = 'copy'
+}
+
 async function download(entry: ConversationFile): Promise<void> {
   try {
     await downloadFile(props.conversationId, entry.key)
@@ -241,7 +264,8 @@ async function onPick(event: Event): Promise<void> {
           </p>
           <ul v-else class="file-list">
             <li v-for="entry in listing.entries" :key="entry.key">
-              <div class="file-row">
+              <!-- 可拖：拖进对话页的输入框就是一条引用（见 `onDragStart`） -->
+              <div class="file-row" draggable="true" @dragstart="onDragStart($event, entry)">
                 <button type="button" class="file-main" @click="openEntry(entry)">
                   <span class="file-icon">
                     <IconFolder v-if="entry.is_dir" :size="16" />

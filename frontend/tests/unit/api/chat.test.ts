@@ -4,8 +4,10 @@ import {
   chatOnce,
   chatStream,
   decideApproval,
+  getContextUsage,
   isAbortError,
   listCommands,
+  openLiveTurn,
   type ChatCommandResult,
   type ChatHandlers,
   type ChatPayload,
@@ -377,6 +379,193 @@ describe('chatStream', () => {
   })
 })
 
+describe('重连锚点（P2-2）', () => {
+  it('每一件带编号的事件都报一次锚点，且**排在那一件之后**', async () => {
+    // 顺序不是小事：锚点的语义是"我已经处理到这儿了"。抢在事件之前记，
+    // 断在刚收到一半时就会漏掉那一条（下次重连从更早的位置开始，重复一小段）
+    const body = events([
+      { type: 'sources', items: [source(1)] },
+      { type: 'thinking', text: '想', seq: 11 },
+      { type: 'step', phase: 'tool', label: '检索知识库', detail: '', status: 'done', seq: 12 },
+      { type: 'delta', text: '答' },
+      { type: 'done', answer: '答', seq: 13 },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sseResponse([body])),
+    )
+
+    const order: string[] = []
+    await noPace(
+      { query: 'q', kb_ids: [] },
+      {
+        onSeq: (seq) => order.push(`seq:${seq}`),
+        onStep: () => order.push('step'),
+        onDone: () => order.push('done'),
+      },
+    )
+    await settle()
+
+    // 出处与正文增量没有编号（它们按位置跟着补发，不需要自己的号）
+    expect(order).toEqual(['seq:11', 'step', 'seq:12', 'done', 'seq:13'])
+  })
+
+  it('一段思考的第一条带 logSeq，后继增量不带（界面靠它认段）', async () => {
+    const body = events([
+      { type: 'thinking', text: '先看看', seq: 3 },
+      { type: 'thinking', text: '库里有什么' },
+      { type: 'done', answer: '', seq: 4 },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sseResponse([body])),
+    )
+
+    const seen: (number | undefined)[] = []
+    const texts: string[] = []
+    await noPace(
+      { query: 'q', kb_ids: [] },
+      {
+        onThinking: (text, options) => {
+          texts.push(text)
+          seen.push(options?.logSeq)
+        },
+      },
+    )
+
+    expect(texts).toEqual(['先看看', '库里有什么'])
+    expect(seen).toEqual([3, undefined])
+  })
+
+  it('done 带回来的 recovered / detail 原样交给界面（补发收口那一句）', async () => {
+    const body = events([
+      {
+        type: 'done',
+        answer: '答案在这里',
+        recovered: true,
+        detail: '这一轮已经收尾了：补发到此为止（正文增量不重发，这里给的是完整答复）。',
+        seq: 9,
+      },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sseResponse([body])),
+    )
+
+    let got: { answer: string; recovered: boolean; detail: string } | null = null
+    await noPace(
+      { query: 'q', kb_ids: [] },
+      {
+        onDone: (answer, info) =>
+          (got = { answer, recovered: info.recovered, detail: info.detail }),
+      },
+    )
+
+    expect(got).toEqual({
+      answer: '答案在这里',
+      recovered: true,
+      detail: '这一轮已经收尾了：补发到此为止（正文增量不重发，这里给的是完整答复）。',
+    })
+  })
+
+  it('流断了走 onDropped（交给调用方接回来），没给它的调用方仍然收 onError', async () => {
+    // 「断了」与「失败了」是两件事：P2-2 之后后端那一轮不归连接管，
+    // 断流的正解是拿锚点接回来，而不是像真失败那样收摊
+    const encoder = new TextEncoder()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(events([{ type: 'delta', text: '半截' }])))
+            controller.error(new Error('连接被重置'))
+          },
+        })
+        return new Response(stream, { status: 200 })
+      }),
+    )
+
+    const dropped: string[] = []
+    const errors: string[] = []
+    await noPace({ query: 'q', kb_ids: [] }, { onDropped: (reason) => dropped.push(reason) })
+    await settle()
+    expect(dropped).toEqual(['连接被重置'])
+    expect(errors).toEqual([])
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.error(new Error('连接被重置'))
+          },
+        })
+        return new Response(stream, { status: 200 })
+      }),
+    )
+    await noPace({ query: 'q', kb_ids: [] }, { onError: (message) => errors.push(message) })
+    await settle()
+    expect(errors).toEqual(['连接被重置'])
+  })
+})
+
+describe('openLiveTurn（P2-2 的重连端点）', () => {
+  it('GET 到那条会话的 live 端点，锚点进 after，凭据照样带上', async () => {
+    setSessionToken('tok_live')
+    let url = ''
+    let init: RequestInit = {}
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string, options: RequestInit) => {
+        url = input
+        init = options
+        return sseResponse([events([{ type: 'done', answer: '好', seq: 5 }])])
+      }),
+    )
+
+    const seen: number[] = []
+    await openLiveTurn('c 1/2', 42, { onSeq: (seq) => seen.push(seq) }, undefined, {
+      smooth: false,
+    })
+    await settle()
+
+    expect(url).toBe('/api/v1/chat/turns/c%201%2F2/live?after=42')
+    expect(init.method).toBe('GET')
+    // 这条链路同样绕过了 client.request，令牌得自己加
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok_live')
+    expect(seen).toEqual([5])
+    clearSessionToken()
+  })
+
+  it('锚点是 0 时不带 after（后端默认整圈补发）', async () => {
+    let url = ''
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        url = input
+        return sseResponse([events([{ type: 'done', answer: '' }])])
+      }),
+    )
+
+    await openLiveTurn('c1', 0, {}, undefined, { smooth: false })
+    expect(url).toBe('/api/v1/chat/turns/c1/live')
+  })
+
+  it('端点报错时抛出后端那句文案（接不上的原因要看得见）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ code: 'not_found', message: '会话不存在' }), {
+            status: 404,
+          }),
+      ),
+    )
+
+    await expect(openLiveTurn('c1', 0, {})).rejects.toThrow('会话不存在')
+  })
+})
+
 describe('decideApproval', () => {
   it('POST 到那条确认的端点，并把决定原样放进请求体', async () => {
     // 端点是**按 id 拼出来的**：拼错了等于把决定发给一条不存在的确认（回 409），
@@ -521,5 +710,55 @@ describe('斜杠命令（P1-2）', () => {
     )
 
     await expect(listCommands()).resolves.toEqual([])
+  })
+})
+
+describe('上下文用量（P1-3 的仪表）', () => {
+  it('按来源分解：分解项与总数都取接口给的，一个都不自己算', async () => {
+    let url = ''
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        url = input
+        return new Response(
+          JSON.stringify({
+            items: [
+              { kind: 'messages', label: '对话消息', chars: 1200, tokens: 400, share: 0.5 },
+              { kind: 'skills', label: '技能目录', chars: 600, tokens: 200, share: 0.25 },
+            ],
+            used: 800,
+            total: 32000,
+            ratio: 0.025,
+            compress_at: 25600,
+            estimated: true,
+            note: '按字符数估算：中日韩 1 字约 1 token…',
+          }),
+          { status: 200 },
+        )
+      }),
+    )
+
+    const usage = await getContextUsage('c 1')
+
+    expect(url).toBe('/api/v1/chat/context-usage?conversation_id=c+1')
+    expect(usage.used).toBe(800)
+    expect(usage.total).toBe(32000)
+    expect(usage.compress_at).toBe(25600)
+    expect(usage.items.map((item) => [item.kind, item.label, item.tokens, item.share])).toEqual([
+      ['messages', '对话消息', 400, 0.5],
+      ['skills', '技能目录', 200, 0.25],
+    ])
+    // 估算这件事由接口说了算（界面上要把它照原样说出来）
+    expect(usage.estimated).toBe(true)
+    expect(usage.note).toContain('估算')
+  })
+
+  it('读不到就如实抛：不拿 0 冒充（那与"上下文是空的"看起来一模一样）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ message: '会话不存在' }), { status: 404 })),
+    )
+
+    await expect(getContextUsage('c1')).rejects.toThrow('会话不存在')
   })
 })

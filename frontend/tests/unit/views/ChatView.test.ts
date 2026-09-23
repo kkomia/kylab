@@ -13,6 +13,7 @@ import { createPinia, setActivePinia, type Pinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 
+import type { ChatHandlers, ChatStep } from '@/api/chat'
 import type { ConversationDetail, ConversationSummary } from '@/api/conversations'
 import type { KnowledgeBase } from '@/api/knowledgeBases'
 import { resetToasts, useToast } from '@/composables/useToast'
@@ -32,6 +33,12 @@ const createConversation = vi.fn()
 const rewindConversation = vi.fn()
 const chatStream = vi.fn()
 const resumeStream = vi.fn()
+// 重连那条路（P2-2）：挂载时页面会问一句"这条会话有没有在跑的一轮"，
+// 拿到之后**接着补发流**。默认拒掉（等于"没有在跑的一轮"），
+// 其余用例的 DOM 与引入重连之前一模一样；要测重连的用例自己给实现。
+const openLiveTurn = vi.fn()
+// 上下文仪表读的那一份（P1-3）：默认"还没有会话"式的空读数，用例自己给值
+const getContextUsage = vi.fn()
 // 确认条上的三个按钮走它（v0.41）：点完要 POST 到那条确认的端点
 const decideApproval = vi.fn()
 const listSkills = vi.fn()
@@ -43,6 +50,8 @@ const ingestArtifact = vi.fn()
 const listFiles = vi.fn()
 const getFileUrl = vi.fn()
 const downloadFile = vi.fn()
+// 附件上传（「加号 → 添加文件」与拖拽那条"添加附件"共用它）
+const uploadDocument = vi.fn()
 
 vi.mock('@/api/conversations', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/conversations')>()
@@ -69,8 +78,10 @@ vi.mock('@/api/chat', async (importOriginal) => {
     ...actual,
     chatStream: (...args: unknown[]) => chatStream(...args),
     resumeStream: (...args: unknown[]) => resumeStream(...args),
+    openLiveTurn: (...args: unknown[]) => openLiveTurn(...args),
     decideApproval: (...args: unknown[]) => decideApproval(...args),
     getSuggestedQuestions: vi.fn().mockResolvedValue({ questions: [] }),
+    getContextUsage: (...args: unknown[]) => getContextUsage(...args),
     // 「/」命令菜单读的那一份（P1-2）：用例自己给值，别让它去打真网络
     listCommands: (...args: unknown[]) => listCommands(...args),
   }
@@ -119,6 +130,8 @@ vi.mock('@/api/documents', async (importOriginal) => {
   return {
     ...actual,
     getDocument: (...args: unknown[]) => getDocument(...args),
+    // 「添加附件」那条路（P1-3 拖拽的一半）：用例要看得见"到底传没传"
+    uploadDocument: (...args: unknown[]) => uploadDocument(...args),
     listDocumentChunks: vi.fn().mockResolvedValue({ items: [], total: 0 }),
     getDocumentPreview: vi.fn().mockResolvedValue({
       kind: 'markdown',
@@ -131,7 +144,7 @@ vi.mock('@/api/documents', async (importOriginal) => {
   }
 })
 
-import { clearLiveTurn, liveTurnState } from '@/composables/useLiveTurn'
+import { clearLiveAnchors, clearLiveTurn, liveTurnState } from '@/composables/useLiveTurn'
 import { currentUser } from '@/composables/useSessionToken'
 import { clearConversationDetailCache, useConversationStore } from '@/stores/conversations'
 import ChatView from '@/views/ChatView.vue'
@@ -311,6 +324,9 @@ beforeEach(() => {
   // 下一个用例一挂载就被它判成"sending"，发送直接 early-return，看起来像功能坏了。
   // 与 localStorage 同一类问题：**应用级状态，用例里必须自己清**。
   clearLiveTurn()
+  // 锚点也是模块作用域的（它故意不随状态清空，见 useLiveTurn 的说明）：
+  // 不清的话上一条用例读到的 seq 会被下一条用例的重连带进去
+  clearLiveAnchors()
   vi.clearAllMocks()
   // 「使用知识库」与钉住的技能是**落 localStorage 的偏好**，而 jsdom 的 localStorage
   // 在同一个文件里的用例之间是共享的——不清就会出现"上一个用例把开关关了，
@@ -331,6 +347,12 @@ beforeEach(() => {
   listConversations.mockResolvedValue([])
   // 默认「还没有取到命令清单」：不敲 `/` 就不会请求它（懒加载）
   listCommands.mockResolvedValue([])
+  // 默认"这条会话上没有在跑的一轮"（重连那条路接不上）：挂载时它会被问一次，
+  // 拒掉之后画面上什么都不会多出来——与引入重连之前的行为一致
+  openLiveTurn.mockRejectedValue(new Error('这条会话上没有在跑的一轮'))
+  // 默认"上下文读不到"：仪表自己的用例会给值（其余用例不关心它显示了什么）
+  getContextUsage.mockRejectedValue(new Error('读不到上下文用量'))
+  uploadDocument.mockResolvedValue({ id: 'doc_1' })
   // 默认"这条会话没有产物"：多数用例不关心卡片，不清的话上一个用例的产物会漏过来
   listArtifacts.mockResolvedValue({ items: [] })
   // 文件抽屉一挂上就会列一次文件区
@@ -761,7 +783,7 @@ describe('引用文档抽屉', () => {
     getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
     let handlers: {
       onThinking: (chunk: string) => void
-      onDone: (answer: string) => void
+      onDone: (answer: string, info: { recovered: boolean; detail: string }) => void
     } | null = null
     chatStream.mockImplementation((_payload: unknown, h: never) => {
       handlers = h
@@ -785,7 +807,7 @@ describe('引用文档抽屉', () => {
     // 流式期间不铺开整块思考：那一行已经说了它在想什么
     expect(wrapper.find('.thinking').exists()).toBe(false)
 
-    handlers!.onDone('答完了')
+    handlers!.onDone('答完了', { recovered: false, detail: '' })
     await flushPromises()
 
     expect(wrapper.find('.trace-live').exists()).toBe(false)
@@ -803,7 +825,7 @@ describe('引用文档抽屉', () => {
     let handlers: {
       onThinking: (chunk: string) => void
       onDelta: (chunk: string) => void
-      onDone: (answer: string) => void
+      onDone: (answer: string, info: { recovered: boolean; detail: string }) => void
     } | null = null
     chatStream.mockImplementation((_payload: unknown, h: never) => {
       handlers = h
@@ -843,7 +865,7 @@ describe('引用文档抽屉', () => {
       kb_ids: ['kb_1'],
       messages: [stored.messages[0], { ...stored.messages[1], content: '半截回答，继续写。' }],
     })
-    handlers!.onDone('半截回答，继续写。')
+    handlers!.onDone('半截回答，继续写。', { recovered: false, detail: '' })
     await flushPromises()
     // 探针：模块收到 done 了吗
     expect(liveTurnState.value).toMatchObject({ streaming: false, text: '半截回答，继续写。' })
@@ -1931,10 +1953,13 @@ describe('斜杠命令（P1-2）', () => {
     chatStream.mockImplementation(
       async (
         _payload: unknown,
-        handlers: { onCommand?: (result: unknown) => void; onDone?: (answer: string) => void },
+        handlers: {
+          onCommand?: (result: unknown) => void
+          onDone?: (answer: string, info: { recovered: boolean; detail: string }) => void
+        },
       ) => {
         handlers.onCommand?.({ name: 'help', text: '可用命令：/mode、/compact', ok: true })
-        handlers.onDone?.('')
+        handlers.onDone?.('', { recovered: false, detail: '' })
         return { abort: vi.fn() }
       },
     )
@@ -1996,7 +2021,13 @@ describe('斜杠命令（P1-2）', () => {
     const listen = (event: Event) => seen.push((event as CustomEvent).detail)
     window.addEventListener('kylab:mode-changed', listen)
     chatStream.mockImplementation(
-      async (_payload: unknown, handlers: { onCommand?: (result: unknown) => void }) => {
+      async (
+        _payload: unknown,
+        handlers: {
+          onCommand?: (result: unknown) => void
+          onDone?: (answer: string, info: { recovered: boolean; detail: string }) => void
+        },
+      ) => {
         handlers.onCommand?.({
           name: 'mode',
           text: '已切到「计划」档',
@@ -2055,6 +2086,509 @@ describe('斜杠命令（P1-2）', () => {
     await flushPromises()
 
     expect(wrapper.find('.slash-menu').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+/**
+ * 断线重连（P2-2，§12.225）。
+ *
+ * 后端那一半是"一轮跑在后台线程里 + 按会话的环形缓冲"（`services/live_turns.py`），
+ * 这一页要做的只有两件事：**挂载时用锚点接回来**，以及**把补发的事件按同一套规则
+ * 合进消息**。所以这几条用例盯的是"合进去之后画面对不对"——
+ * 不重复（补发到一条已经落库的轮次时不会再长出一轮）、不丢（补发的过程与后续正文都在）。
+ */
+describe('断线重连（P2-2）', () => {
+  /** 抓走重连那条流（`openLiveTurn`）的 handlers：补发与后续事件都由用例自己推。 */
+  function captureLive(): { handlers: ChatHandlers | null; calls: [string, number][] } {
+    const box: { handlers: ChatHandlers | null; calls: [string, number][] } = {
+      handlers: null,
+      calls: [],
+    }
+    openLiveTurn.mockImplementation(async (id: string, after: number, handlers: ChatHandlers) => {
+      box.calls.push([id, after])
+      box.handlers = handlers
+      return { abort: vi.fn() }
+    })
+    return box
+  }
+
+  function step(label: string, detail: string, tool: string): ChatStep {
+    return { phase: 'tool', label, detail, status: 'done', tool }
+  }
+
+  it('挂载时接回那一轮：补发的过程与新正文合进消息，收尾以全文为准', async () => {
+    const store = useConversationStore()
+    store.rememberDetail(chatDetail('c1'))
+    const live = captureLive()
+
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    // 刷新之后锚点是空的（模块作用域不持久化）→ 整圈补给我
+    expect(live.calls).toEqual([['c1', 0]])
+
+    // 补发的：步骤 + 一段**合并过**的思考（编号 12）+ 出处
+    live.handlers!.onSeq!(11)
+    live.handlers!.onStep!(step('联网搜索', '命中 8 条', 'web_search'))
+    live.handlers!.onThinking!('先查一下眼轴的最新指标', { logSeq: 12 })
+    live.handlers!.onSeq!(12)
+    await flushPromises()
+
+    // 正文还没到：这一轮的过程先不往消息里补（补发里没有正文增量，
+    // 没有正文就说明这一轮在画面上还没开始——见 `syncLive` 的 recover 那条）
+    expect(wrapper.findAll('.turn')).toHaveLength(1)
+
+    // **接着流**：正文增量到了 → 补出回答那一条（提问补不出来：它随落库才有）
+    live.handlers!.onDelta!('眼轴长度是主要监测指标')
+    await flushPromises()
+    expect(wrapper.findAll('.turn')).toHaveLength(2)
+    expect(wrapper.text()).toContain('眼轴长度是主要监测指标')
+
+    // 收尾：正文以后端那条 done 的全文为准（不是把增量再拼一遍）
+    live.handlers!.onDone!('眼轴长度是主要监测指标。', { recovered: false, detail: '' })
+    await flushPromises()
+    expect(wrapper.text()).toContain('眼轴长度是主要监测指标。')
+    expect(liveTurnState.value?.streaming).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('补发到一条**已经跑完、也已经落库**的轮次：不重复长出一轮回答，界面照样收口', async () => {
+    const store = useConversationStore()
+    // 库里那份的最后一条回答已经在了（"这是回答"）
+    store.rememberDetail(chatDetail('c1'))
+    const live = captureLive()
+
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+    expect(wrapper.findAll('.turn')).toHaveLength(1)
+
+    // 那一轮刚跑完（还在缓冲保留期内）：补发里全是过程事件（正文增量不重发），
+    // 最后一条 done 带着 recovered 与完整答复
+    live.handlers!.onSeq!(30)
+    live.handlers!.onStep!(step('导出文档', '已导出', 'export_document'))
+    live.handlers!.onDone!('这是回答', {
+      recovered: true,
+      detail: '这一轮已经收尾了：补发到此为止（正文增量不重发，这里给的是完整答复）。',
+    })
+    await flushPromises()
+
+    // **不重复**：这一轮早就落库了，画面上还是那一轮
+    expect(wrapper.findAll('.turn')).toHaveLength(1)
+    expect(wrapper.text().match(/这是回答/g)).toHaveLength(1)
+    // **收口**：不再显示"停止"，也不再等任何东西
+    expect(wrapper.find('.send-btn-stop').exists()).toBe(false)
+    expect(wrapper.find('.send-btn').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('重连接不上（没有在跑的一轮）：画面上什么都不多出来，也不弹红字', async () => {
+    const store = useConversationStore()
+    store.rememberDetail(chatDetail('c1'))
+    openLiveTurn.mockRejectedValue(new Error('这条会话上没有在跑的一轮'))
+
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    expect(wrapper.findAll('.turn')).toHaveLength(1)
+    expect(wrapper.find('.send-btn-stop').exists()).toBe(false)
+    expect(liveTurnState.value).toBeNull()
+    wrapper.unmount()
+  })
+})
+
+/**
+ * 上下文添加（P1-3，§12.225）。
+ *
+ * 三件事各自钉一条：**`@` 统一搜索**（三类候选、插进去的是引用）、
+ * **拖拽的两种落法**（文案与结果都不同）、**上下文仪表**（数字来自接口）。
+ */
+describe('上下文添加：@ 统一搜索（P1-3）', () => {
+  const SKILL = {
+    name: '周报助手',
+    description: '把一周的记录整理成周报',
+    summary: '',
+    source: 'user' as const,
+    path: '',
+    directory: '',
+    used_by_prompt: true,
+    flagged: [],
+    discarded: false,
+  }
+
+  async function mountWithContext() {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    listFiles.mockResolvedValue({
+      mode: 'workspace',
+      label: '工作区',
+      path: '',
+      parent: null,
+      truncated: false,
+      entries: [
+        {
+          key: 'reports/眼轴.md',
+          name: '眼轴.md',
+          is_dir: false,
+          size_bytes: 1200,
+          modified_at: null,
+          kind: 'text',
+        },
+        {
+          key: 'reports',
+          name: 'reports',
+          is_dir: true,
+          size_bytes: 0,
+          modified_at: null,
+          kind: 'dir',
+        },
+      ],
+    })
+    listSkills.mockResolvedValue({ items: [SKILL], usable: 1 })
+    listConversations.mockResolvedValue({ items: [summary('c9', { title: '上周的讨论' })] })
+    const mounted = await mountAt('/chat/c1')
+    await flushPromises()
+    return mounted
+  }
+
+  /** 输入框里正在打的那个 `@` 之后的那一段（用例里就是把整条输入设过去）。 */
+  async function typeMention(wrapper: VueWrapper, text: string): Promise<void> {
+    await wrapper.find('.composer-field').setValue(text)
+    await flushPromises()
+  }
+
+  function fieldValue(wrapper: VueWrapper): string {
+    return (wrapper.find('.composer-field').element as HTMLTextAreaElement).value
+  }
+
+  it('打「@」弹出三类候选：文件 / 技能 / 会话', async () => {
+    const { wrapper } = await mountWithContext()
+    await typeMention(wrapper, '看看 @')
+
+    expect(wrapper.findAll('.mention-group').map((node) => node.text())).toEqual([
+      '文件',
+      '技能',
+      '会话',
+    ])
+    // 目录不算候选（它不能被引用：模型读不出一个目录的内容）——
+    // 但它在列表里跟着一等文件一起被过滤出来时也不该挡路，这里只断言文件那条在
+    expect(wrapper.find('.mention-menu').text()).toContain('眼轴.md')
+    expect(wrapper.find('.mention-menu').text()).toContain('周报助手')
+    expect(wrapper.find('.mention-menu').text()).toContain('上周的讨论')
+    wrapper.unmount()
+  })
+
+  it('选中文件：插进输入框的是**引用**（@路径），不是它的内容', async () => {
+    const { wrapper } = await mountWithContext()
+    await typeMention(wrapper, '看看 @眼')
+
+    const item = wrapper.findAll('.mention-item').find((node) => node.text().includes('眼轴.md'))
+    expect(item).toBeTruthy()
+    await item!.trigger('click')
+    await flushPromises()
+
+    expect(fieldValue(wrapper)).toBe('看看 @reports/眼轴.md ')
+    // 菜单收起、**没有发任何请求**：引用不预读（照 DSH 的那条）
+    expect(wrapper.find('.mention-menu').exists()).toBe(false)
+    expect(chatStream).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('选中技能与会话：插的是名字，会话引用也只是一条题目', async () => {
+    const { wrapper } = await mountWithContext()
+
+    await typeMention(wrapper, '@周报')
+    await wrapper
+      .findAll('.mention-item')
+      .find((node) => node.text().includes('周报助手'))!
+      .trigger('click')
+    await flushPromises()
+    expect(fieldValue(wrapper)).toBe('@周报助手 ')
+
+    await typeMention(wrapper, '@上周')
+    await wrapper
+      .findAll('.mention-item')
+      .find((node) => node.text().includes('上周的讨论'))!
+      .trigger('click')
+    await flushPromises()
+    expect(fieldValue(wrapper)).toBe('@上周的讨论 ')
+    wrapper.unmount()
+  })
+
+  it('带空白的路径按 DSH 的 grammar 加引号（否则模型会把它读成两个词）', async () => {
+    const { wrapper } = await mountWithContext()
+    listFiles.mockResolvedValue({
+      mode: 'workspace',
+      label: '工作区',
+      path: '',
+      parent: null,
+      truncated: false,
+      entries: [
+        {
+          key: 'reports/年度 报告.md',
+          name: '年度 报告.md',
+          is_dir: false,
+          size_bytes: 10,
+          modified_at: null,
+          kind: 'text',
+        },
+      ],
+    })
+    // 换一条会话让文件清单重取（`loadMentionFiles` 按会话缓存）
+    getConversation.mockResolvedValue({ ...chatDetail('c2'), kb_ids: ['kb_1'] })
+    const again = await mountAt('/chat/c2')
+    await flushPromises()
+    await typeMention(again.wrapper, '@年度')
+    await again.wrapper
+      .findAll('.mention-item')
+      .find((node) => node.text().includes('年度 报告.md'))!
+      .trigger('click')
+    await flushPromises()
+
+    expect(fieldValue(again.wrapper)).toBe('@\u0022reports/年度 报告.md\u0022 ')
+    wrapper.unmount()
+    again.wrapper.unmount()
+  })
+})
+
+describe('上下文添加：拖拽的两种落法（P1-3）', () => {
+  async function mountComposer() {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    const mounted = await mountAt('/chat/c1')
+    await flushPromises()
+    return mounted
+  }
+
+  it('拖 OS 文件：文案是「松开以添加附件」，松手走**上传**', async () => {
+    const { wrapper } = await mountComposer()
+    const zone = wrapper.find('.composer-wrap')
+
+    await zone.trigger('dragover', { dataTransfer: { types: ['Files'] } })
+    expect(wrapper.find('.drop-hint').text()).toBe('松开以添加附件')
+
+    const file = new File(['x'], '报告.pdf', { type: 'application/pdf' })
+    await zone.trigger('drop', {
+      dataTransfer: { types: ['Files'], files: [file], getData: () => '' },
+    })
+    await flushPromises()
+
+    // 落法是**上传**（和其它附件同一条链路：附件 = 知识库文档）
+    expect(uploadDocument).toHaveBeenCalledTimes(1)
+    expect(uploadDocument.mock.calls[0]?.[0]).toBe('kb_1')
+    // 输入框里一个字都没多（它是素材，不是引用）
+    expect((wrapper.find('.composer-field').element as HTMLTextAreaElement).value).toBe('')
+    expect(wrapper.find('.drop-hint').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('拖工作区里的文件：文案是「松开以引用此文件」，松手只插一条**引用**（不上传）', async () => {
+    const { wrapper } = await mountComposer()
+    const zone = wrapper.find('.composer-wrap')
+
+    await zone.trigger('dragover', {
+      dataTransfer: { types: ['Files', 'application/x-kylab-file'] },
+    })
+    expect(wrapper.find('.drop-hint').text()).toBe('松开以引用此文件')
+
+    await zone.trigger('drop', {
+      dataTransfer: {
+        types: ['Files', 'application/x-kylab-file'],
+        files: [],
+        getData: (type: string) =>
+          type === 'application/x-kylab-file'
+            ? JSON.stringify({ key: 'reports/眼轴.md', name: '眼轴.md', is_dir: false })
+            : '',
+      },
+    })
+    await flushPromises()
+
+    // 落法是**引用**：进输入框一条 `@路径`，**不读内容、也不上传**
+    expect((wrapper.find('.composer-field').element as HTMLTextAreaElement).value).toBe(
+      '@reports/眼轴.md ',
+    )
+    expect(uploadDocument).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('两种落法的文案不同（这是这个功能的一半）', async () => {
+    const { wrapper } = await mountComposer()
+    const zone = wrapper.find('.composer-wrap')
+
+    await zone.trigger('dragover', { dataTransfer: { types: ['Files'] } })
+    const attach = wrapper.find('.drop-hint').text()
+    await zone.trigger('dragleave', { relatedTarget: null })
+    await zone.trigger('dragover', {
+      dataTransfer: { types: ['Files', 'application/x-kylab-file'] },
+    })
+    const reference = wrapper.find('.drop-hint').text()
+
+    expect(attach).toBe('松开以添加附件')
+    expect(reference).toBe('松开以引用此文件')
+    expect(attach).not.toBe(reference)
+    wrapper.unmount()
+  })
+})
+
+describe('上下文仪表（P1-3）', () => {
+  const USAGE = {
+    items: [
+      { kind: 'messages', label: '对话消息', chars: 1200, tokens: 400, share: 0.5 },
+      { kind: 'skills', label: '技能目录', chars: 600, tokens: 200, share: 0.25 },
+      { kind: 'tools', label: '工具定义', chars: 600, tokens: 200, share: 0.25 },
+    ],
+    used: 800,
+    total: 32000,
+    ratio: 0.025,
+    compress_at: 25600,
+    estimated: true,
+    note: '按字符数估算：中日韩 1 字约 1 token、其余 4 字符约 1 token（偏高一点）。',
+  }
+
+  async function mountGauge() {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    getContextUsage.mockResolvedValue(USAGE)
+    const mounted = await mountAt('/chat/c1')
+    await flushPromises()
+    return mounted
+  }
+
+  it('显示「上下文已用 X / Y」，点开是按来源分解——数字全部来自接口', async () => {
+    const { wrapper } = await mountGauge()
+
+    expect(getContextUsage).toHaveBeenCalledWith('c1')
+    expect(wrapper.find('.gauge-value').text()).toBe('上下文已用 800 / 32,000')
+
+    await wrapper.find('.gauge .menu-trigger').trigger('click')
+    await flushPromises()
+
+    // 三项来源都摆出来，名字用**后端给的 label**（界面不翻译 kind）
+    expect(wrapper.findAll('.gauge-item-label').map((node) => node.text())).toEqual([
+      '对话消息',
+      '技能目录',
+      '工具定义',
+    ])
+    // 分解条的宽度就是接口给的 share（不是前端除出来的——那样迟早对不上总数）
+    expect(wrapper.findAll('.gauge-item-bar-fill').map((node) => node.attributes('style'))).toEqual(
+      ['width: 50%;', 'width: 25%;', 'width: 25%;'],
+    )
+    // 估算与压缩阈值照原样说出来
+    expect(wrapper.find('.gauge-panel').text()).toContain('按字符数估算')
+    expect(wrapper.find('.gauge-panel').text()).toContain('25,600')
+    wrapper.unmount()
+  })
+
+  it('读不到读数时如实说，不拿 0 冒充', async () => {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    getContextUsage.mockRejectedValue(new Error('会话不存在'))
+
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    expect(wrapper.find('.gauge-value').text()).toBe('上下文读数不可用')
+    await wrapper.find('.gauge .menu-trigger').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.gauge-panel').text()).toContain('会话不存在')
+    wrapper.unmount()
+  })
+
+  it('「压缩」走既有那条 /compact 链路，压完把读数重新拉一次', async () => {
+    listCommands.mockResolvedValue([
+      {
+        name: 'compact',
+        summary: '把较早的对话压成摘要',
+        usage: '/compact',
+        group: 'builtin',
+        details: [],
+        argument_hint: '',
+        short_circuit: true,
+        shadowed_by: '',
+        error: '',
+        path: '',
+      },
+    ])
+    chatStream.mockImplementation(
+      async (
+        _payload: unknown,
+        handlers: {
+          onCommand?: (result: unknown) => void
+          onDone?: (answer: string, info: { recovered: boolean; detail: string }) => void
+        },
+      ) => {
+        handlers.onCommand?.({
+          name: 'compact',
+          text: '已把 3 条较早的消息压成摘要；之后的问答仍记得它们，但上下文短了。',
+          ok: true,
+        })
+        handlers.onDone?.('', { recovered: false, detail: '' })
+        return { abort: vi.fn() }
+      },
+    )
+
+    const { wrapper } = await mountGauge()
+    await wrapper.find('.gauge .menu-trigger').trigger('click')
+    await flushPromises()
+
+    await wrapper.find('.gauge-compress').trigger('click')
+    await flushPromises()
+
+    // 走的是命令那条路（后端在进模型之前短路），不是界面自己另造一套压缩
+    const payload = chatStream.mock.calls.at(-1)?.[0] as {
+      query: string
+      conversation_id: string
+    }
+    expect(payload.query).toBe('/compact')
+    expect(payload.conversation_id).toBe('c1')
+    // 后端那句回话照原样显示（它是"压了多少"的唯一真相）
+    expect(wrapper.find('.command-result').text()).toContain('已把 3 条较早的消息压成摘要')
+    // 压完重读一次读数（上下文真的短了）
+    expect(getContextUsage.mock.calls.length).toBeGreaterThanOrEqual(2)
+    wrapper.unmount()
+  })
+})
+
+/**
+ * 「停止」（P2-2 之后它只是"本页不再等"）。
+ *
+ * 后端那一轮跑在**另一个线程**里（见 `services/live_turns.py`）：掐掉这条连接只是
+ * 少一个订阅者，那一轮照跑照落库。所以界面这边必须自己收口，否则"停止"点下去，
+ * 输入框会一直停在"流式中"（那正是这次要修的那类观感）。真正把那一轮停下是
+ * `/stop`（后端唯一的取消入口）。
+ */
+describe('停止（P2-2）', () => {
+  it('点「停止」：界面立刻收口、正文与过程都留着，也不去回源盖掉屏幕上这半截', async () => {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    const abort = vi.fn()
+    let handlers: ChatHandlers | null = null
+    chatStream.mockImplementation((_payload: unknown, h: ChatHandlers) => {
+      handlers = h
+      return Promise.resolve({ abort })
+    })
+
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+    await wrapper.find('.composer-field').setValue('问一句')
+    await wrapper.find('.send-btn').trigger('click')
+    await flushPromises()
+    handlers!.onDelta!('半截回答')
+    await flushPromises()
+    expect(wrapper.find('.send-btn-stop').exists()).toBe(true)
+    const fetched = getConversation.mock.calls.length
+
+    await wrapper.find('.send-btn-stop').trigger('click')
+    await flushPromises()
+
+    expect(abort).toHaveBeenCalledTimes(1)
+    // 收口：发送按钮回来了（不然这一页会一直卡在"流式中"）
+    expect(wrapper.find('.send-btn-stop').exists()).toBe(false)
+    expect(wrapper.find('.send-btn').exists()).toBe(true)
+    // 已经流出来的正文留着（后端那句"会留着"说的就是屏幕上这一份）
+    expect(wrapper.text()).toContain('半截回答')
+    // **不回源**：被停掉的那一轮不在库里，回源会把屏幕上这半截抹掉
+    expect(getConversation.mock.calls.length).toBe(fetched)
     wrapper.unmount()
   })
 })

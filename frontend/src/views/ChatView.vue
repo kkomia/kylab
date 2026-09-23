@@ -44,9 +44,11 @@ import {
 import {
   ingestArtifact,
   listArtifacts,
+  listFiles,
   rewindConversation,
   type ConversationArtifact,
   type ConversationDetail,
+  type ConversationFile,
   type StoredMessage,
 } from '@/api/conversations'
 import { uploadDocument } from '@/api/documents'
@@ -88,13 +90,16 @@ import RowMenu from '@/components/ui/RowMenu.vue'
 import LinkText from '@/components/ui/LinkText.vue'
 import SkeletonBlock from '@/components/ui/SkeletonBlock.vue'
 import ApprovalBar from '@/components/chat/ApprovalBar.vue'
+import ContextGauge from '@/components/chat/ContextGauge.vue'
 import ExecPolicyControl from '@/components/chat/ExecPolicyControl.vue'
 import LiveLine from '@/components/chat/LiveLine.vue'
+import MentionMenu, { type MentionItem } from '@/components/chat/MentionMenu.vue'
 import ModePicker from '@/components/chat/ModePicker.vue'
 import SlashMenu from '@/components/chat/SlashMenu.vue'
 import TraceStepRow from '@/components/chat/TraceStepRow.vue'
 import {
   abortLiveTurn,
+  attachLiveTurn,
   clearLiveTurn,
   liveTurnState,
   liveTurnState as live,
@@ -416,6 +421,17 @@ async function onFilesPicked(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files ?? [])
   input.value = '' // 同一个文件连选两次也要能触发 change
+  await uploadPicked(files)
+}
+
+/**
+ * **上传**（既有那条链路：附件 = 知识库文档）。
+ *
+ * 从 `onFilesPicked` 里拆出来是为了给拖拽那条路共用：拖进来的 OS 文件走的是
+ * **同一件事**（P1-3 的"两种落法"里"添加附件"那一半），两处各写一份的话，
+ * "传给哪个库""失败怎么报"迟早分叉。
+ */
+async function uploadPicked(files: File[]): Promise<void> {
   if (files.length === 0) return
   const target = attachTarget.value
   if (!target) {
@@ -435,6 +451,254 @@ async function onFilesPicked(event: Event): Promise<void> {
   } finally {
     uploading.value = false
   }
+}
+
+// --------------------------------------------------- 上下文添加（P1-3）
+//
+// 这一节是 §12.225 的 P1-3 在界面上的落点，三件事各自对应调研报告里的一条：
+//
+// 1. **`@` 统一搜索**（ZCode 的多分类 + DSH 的"只引用不预读"）：一个 `@` 弹出
+//    文件 / 技能 / 会话三类，选中只把**引用**插进输入框，内容一个字都不读；
+// 2. **严格区分"上传附件"与"引用工作区文件"**（ZCode）：这是最容易被漏掉、
+//    体验影响又最大的一处——拖 OS 文件是"给它素材"，拖工作区里的文件是
+//    "让它自己去看那份"，两者的落法（上传 vs 插引用）与文案都不同；
+// 3. **上下文仪表**（ZCode 的 `chat.contextUsage.breakdown`）：见 `ContextGauge`。
+
+// —— ① `@` 统一搜索
+
+/** 文件那一类的候选：这条会话的文件区（懒加载，见 `loadMentionFiles`）。 */
+const mentionFiles = ref<ConversationFile[]>([])
+const mentionFilesLoaded = ref(false)
+const mentionMenu = ref<InstanceType<typeof MentionMenu> | null>(null)
+/** 用户按 Esc 关掉之后，这一条输入里不再弹（改了内容再弹）。 */
+const mentionDismissed = ref(false)
+
+/**
+ * 输入框里现在正在打的引用过滤词（`@` 之后那一段）；没在打就是 `null`。
+ *
+ * 两条判据与 DSH 的 `@` grammar 对齐（调研报告 §2.8）：
+ *
+ * - **`@` 之后不能有空白**：打了空格说明这一句已经写下去了（与 `/` 菜单同一条口径）；
+ * - **邮箱里的 `@` 不触发**：前一个字符是 ASCII 词字符（`foo@bar.com`）就不算——
+ *   中文里没有空格分隔，所以只排 ASCII，`看看@报告.md` 仍然要能弹。
+ *
+ * 取**最后一个** `@`：用户在句子里插一句引用时，最近的这个才是他正在打的。
+ */
+const mentionFilter = computed<string | null>(() => {
+  const text = query.value
+  const at = text.lastIndexOf('@')
+  if (at < 0) return null
+  const head = text.slice(at + 1)
+  if (head.includes('\n') || /\s/.test(head)) return null
+  const previous = at > 0 ? text[at - 1] : ''
+  if (previous && /[A-Za-z0-9._-]/.test(previous)) return null
+  return head
+})
+
+/** 三类的候选池：文件来自这条会话的文件区，技能来自既有技能接口，会话来自会话列表。 */
+const mentionItems = computed<MentionItem[]>(() => [
+  ...mentionFiles.value.map((file) => ({
+    kind: 'file' as const,
+    // **引用的是它在文件区里的 key（路径）**，不是显示用的短名字：
+    // 工作区模式下它就是相对路径（能进子目录、同名也不会混），
+    // 而模型手上那些 `read_file` / `list_files` 认的正是这个 key
+    value: file.key,
+    label: file.name,
+    detail: file.is_dir ? '目录' : formatBytes(file.size_bytes),
+    isDir: file.is_dir,
+  })),
+  ...skillOptions.value.map((skill) => ({
+    kind: 'skill' as const,
+    // 技能引用的是**名字**（与 `/skill <名字>` 同一个标识）
+    value: skill.name,
+    label: skill.name,
+    detail: skill.summary || skill.description,
+  })),
+  ...conversations.items.map((item) => ({
+    kind: 'session' as const,
+    value: item.title,
+    label: item.title,
+    detail: '会话',
+  })),
+])
+
+async function loadMentionFiles(): Promise<void> {
+  const id = conversationId.value
+  if (!id || mentionFilesLoaded.value) return
+  mentionFilesLoaded.value = true
+  try {
+    const listing = await listFiles(id)
+    mentionFiles.value = listing.entries
+  } catch {
+    // 文件清单拿不到就少一类候选：菜单是顺手入口，不该把对话页变成错误提示
+    // （与 `listCommands` 同一条处置）
+  }
+}
+
+/** 打 `@` 的那一刻把三类候选凑齐：文件要一次请求，技能与会话本来就有缓存。 */
+function loadMentions(): void {
+  void loadMentionFiles()
+  void loadSkills()
+  if (conversations.items.length === 0) void conversations.load()
+}
+
+watch(mentionFilter, (value) => {
+  if (value !== null) loadMentions()
+})
+
+// 换了会话就重新读文件区（每条会话的文件区是它自己的）
+watch(conversationId, () => {
+  mentionFiles.value = []
+  mentionFilesLoaded.value = false
+  mentionDismissed.value = false
+})
+
+// 改内容就允许再弹（与 `/` 菜单同一条）
+watch(query, () => {
+  mentionDismissed.value = false
+})
+
+const mentionVisible = computed(
+  () => mentionFilter.value !== null && !mentionDismissed.value && mentionItems.value.length > 0,
+)
+
+/**
+ * 一条引用在输入框里的写法（照 DSH 的 `dsh-file-reference` grammar）。
+ *
+ * 带空白的值用**双引号**包起来：`@"我的 报告.md"`。不加引号的路径在模型那边
+ * 会被当成两段（而用户看到的是一个名字里有空格的普通文件），
+ * 那条 grammar 就是为这件事定的。
+ */
+function mentionToken(value: string): string {
+  return /\s/.test(value) ? `@${JSON.stringify(value)}` : `@${value}`
+}
+
+/**
+ * 选中一条候选：**只把引用插进输入框**（P1-3 的"不预读"那一半，也是最要紧的一半）。
+ *
+ * 读什么、读哪一段由模型决定（它手上有 `read_file` / `read_skill` / 会话工具）——
+ * 界面在这里替它读一遍，用户既看不见自己付了多少上下文，也拿不回"我只要它看结论"这个选择。
+ *
+ * 落点就是那个 `@` 开头的那一段（`mentionFilter` 认出来的那个），把它整段替换掉。
+ */
+function applyMention(item: MentionItem): void {
+  const text = query.value
+  const at = text.lastIndexOf('@')
+  if (at < 0) return
+  mentionDismissed.value = true
+  query.value = `${text.slice(0, at)}${mentionToken(item.value)} `
+  focusComposerEnd()
+}
+
+/** 拖拽那条路进来的引用：接在**现有内容后面**（拖进来时没有 `@` 可以替换）。 */
+function insertReference(value: string): void {
+  const current = query.value
+  const glue = current.length > 0 && !/\s$/.test(current) ? ' ' : ''
+  query.value = `${current}${glue}${mentionToken(value)} `
+  focusComposerEnd()
+}
+
+/** 插完引用把焦点与光标交回输入框末尾（用户接着就能往下打）。 */
+function focusComposerEnd(): void {
+  void nextTick(() => {
+    const field = document.getElementById('chat-query') as HTMLTextAreaElement | null
+    if (!field) return
+    field.focus()
+    field.setSelectionRange(field.value.length, field.value.length)
+  })
+}
+
+// —— ② 拖拽的两种落法（附件 vs 引用）
+
+/**
+ * 工作区文件/目录拖拽时带的自定义类型（`FileDrawer` 的行上写的）。
+ *
+ * **必须是一个自定义 MIME**：OS 拖进来的文件与工作区里的文件都是 `Files`，
+ * 只有"谁写的这个 payload"能区分它们——而这两种拖拽要做的事完全不同。
+ * 名字用 `application/x-kylab-file`（照 DSH 的 `application/x-dsh-file` 命名法）。
+ */
+const FILE_DRAG_TYPE = 'application/x-kylab-file'
+
+/** 正在拖什么：`null` = 没有在拖；两种落法各有各的文案（见 `dropHint`）。 */
+const dropKind = ref<'attach' | 'reference' | null>(null)
+
+/** 落法的那句话（ZCode 的两句文案，一字不改地照抄）。 */
+const dropHint = computed(() =>
+  dropKind.value === 'reference' ? '松开以引用此文件' : '松开以添加附件',
+)
+
+function dragKinds(event: DragEvent): string[] {
+  return Array.from(event.dataTransfer?.types ?? [])
+}
+
+/**
+ * 拖到了输入框上：**先判这一拖是哪一种**，再把它写成对应那一句文案。
+ *
+ * 判据只有 `dataTransfer.types`——`getData` 在 dragover 阶段读不到（浏览器
+ * 出于安全只在 drop 时给），所以"文件还是目录"这一刻分不出来，
+ * 两种都按同一句"引用"文案说（目录也一样是引用）。
+ */
+function onComposerDragOver(event: DragEvent): void {
+  const types = dragKinds(event)
+  const reference = types.includes(FILE_DRAG_TYPE)
+  const files = types.includes('Files')
+  if (!reference && !files) return
+  // 不 preventDefault 浏览器就不会派发 drop（默认动作是"打开这个文件"）
+  event.preventDefault()
+  dropKind.value = reference ? 'reference' : 'attach'
+}
+
+/** 拖出输入框（含拖到子元素上）：`relatedTarget` 还在里面就不算离开，免得文案闪。 */
+function onComposerDragLeave(event: DragEvent): void {
+  const host = event.currentTarget as HTMLElement | null
+  const next = event.relatedTarget as Node | null
+  if (host && next && host.contains(next)) return
+  dropKind.value = null
+}
+
+/**
+ * 松手：**两种落法在这里分开**（照 ZCode 的"上传 vs 引用"）。
+ *
+ * - 工作区里的文件/目录 → 插一条**引用**（不读、也不上传）；
+ * - 其余（从资源管理器拖进来的文件）→ 走**既有上传链路**（和「加号 → 添加文件」同一件事）。
+ */
+async function onComposerDrop(event: DragEvent): Promise<void> {
+  dropKind.value = null
+  const transfer = event.dataTransfer
+  if (!transfer) return
+  const payload = transfer.getData(FILE_DRAG_TYPE)
+  if (payload) {
+    try {
+      const info = JSON.parse(payload) as { key?: string; name?: string }
+      const value = info.key || info.name || ''
+      if (value) insertReference(value)
+    } catch {
+      // 坏 payload（别的应用恰好写了同一个类型）当没发生：它本来就只是一条便利
+    }
+    return
+  }
+  await uploadPicked(Array.from(transfer.files ?? []))
+}
+
+// —— ③ 上下文仪表
+
+/** 仪表（`ContextGauge`）：它有自己的一次请求，这里只负责在恰当的时机让它重读。 */
+const contextGauge = ref<InstanceType<typeof ContextGauge> | null>(null)
+
+/**
+ * 「压缩」按钮：走**既有那条压缩链路**——`/compact` 命令（服务端 `ChatService.compact`，
+ * 第一级先剪旧工具结果、不够再摘要）。界面不另造一套压缩，理由与 `/help` 那两个
+ * 入口共用一份清单同一条：两处各写一份语义，"按钮压的"与"命令压的"迟早不一样。
+ */
+function compressContext(): void {
+  const target = conversationId.value
+  if (!target) {
+    notifyWarning('这条会话还没建起来，没有可压缩的上下文')
+    return
+  }
+  void runCommand('/compact', target, modelPk.value || undefined).then(() => {
+    contextGauge.value?.refresh()
+  })
 }
 
 onMounted(async () => {
@@ -527,7 +791,15 @@ watch([conversationId, wantsNew], () => {
  * - **`append` 且画面上没有那一对**（例如用户离开页面后流还在跑，回来时组件是新挂载的、
  *   库里又还没有这一轮）→ 用 `live` 里的提问与已流出的字**补出一对**；
  *   库里没有它的原因是落库发生在流跑完之后，所以不能等库。
+ * - **`recover`（P2-2，刷新之后接回来的那一轮）**：只补回答那一条，而且**只有正文到了才补**。
+ *   两条依据：正文增量**不补发**（见后端 `live_turns`），所以"有正文"就等于"这一轮还活着"；
+ *   而提问在这一刻还没落库（它随回答一起写），补不出来——等这一轮写完，`settleTurn`
+ *   会按库里那份重画，问题自己就出现了。
  * - 其余情况只管把最后一条助手消息的字段刷成最新值。
+ *
+ * 最后这条规则顺手解决了"补发到一个**已经收尾、也已经落库**的轮次"这件事：
+ * 那种补发里全是 step / 出处（有编号）而没有正文，于是**一个字都不会多出来**
+ * （不会凭空多出一轮已经看过的回答）；收口那条 `done(recovered)` 只翻 `streaming`。
  *
  * `patch`（续跑）不补新的一对：那条回答在库里存在，补了会凭空多出一轮。
  */
@@ -538,12 +810,23 @@ function syncLive(): void {
   const last = messages.value.at(-1)
   const hasPlaceholder = last?.role === 'assistant' && last.streaming === true
   if (!hasPlaceholder) {
-    if (state.mode !== 'append' || !state.streaming) return
-    messages.value = [
-      ...messages.value,
-      makeMessage('user', state.query),
-      makeMessage('assistant', state.text, { streaming: true, thinking: state.thinking }),
-    ]
+    // 收尾了、画面上又还没有它：**什么都不补**——库里那份才是权威
+    // （重连到一条早已跑完的会话时走的就是这一支）
+    if (!state.streaming) return
+    if (state.mode === 'append') {
+      messages.value = [
+        ...messages.value,
+        makeMessage('user', state.query),
+        makeMessage('assistant', state.text, { streaming: true, thinking: state.thinking }),
+      ]
+    } else if (state.mode === 'recover' && state.text.length > 0) {
+      messages.value = [
+        ...messages.value,
+        makeMessage('assistant', state.text, { streaming: true, thinking: state.thinking }),
+      ]
+    } else {
+      return
+    }
   }
 
   const target = messages.value.at(-1)
@@ -560,6 +843,24 @@ function syncLive(): void {
 }
 
 watch(live, syncLive, { deep: true, immediate: true })
+
+/**
+ * 页面挂载（或切到某条会话）时**接回那一轮**（P2-2 的重连）。
+ *
+ * 刷新是这里要治的那个场景：v0.41 让流不跟着组件走，但刷新会把这一页整个重建，
+ * 于是"回答写到一半刷新一下"仍然没了。现在后端按会话留着那一轮的环形缓冲
+ * （见 `services/live_turns.py`），所以挂载时用锚点问一次就能接上。
+ *
+ * 两件事顺序不能换：**先把库里的历史铺进界面**（`applyDetail` / 缓存那条路），
+ * 再接回来——反过来的话，`recover` 那条镜像规则会先看到"画面上有一轮在流"。
+ *
+ * 失败不打扰用户：接不上说明这条会话当前没有在跑的一轮（或者网络不通），
+ * 两种都不该把对话页变成错误提示。
+ */
+function attachLive(id: string): void {
+  if (!id) return
+  void attachLiveTurn(id)
+}
 
 /** 「停止」按钮与输入框的禁用态：跟着**这一条会话**上的那一轮走（离开页面再回来也要对）。 */
 watch(
@@ -661,6 +962,7 @@ async function loadConversation(): Promise<void> {
   const cached = conversations.cachedDetail(id)
   if (cached) {
     applyDetail(cached)
+    attachLive(id)
     return
   }
 
@@ -670,6 +972,7 @@ async function loadConversation(): Promise<void> {
     // 取回来的路上用户可能又切走了：别把旧会话的内容盖到新选的这条上
     if (conversationId.value !== id) return
     applyDetail(detail)
+    attachLive(id)
   } catch (cause) {
     if (conversationId.value !== id) return
     notifyError(cause instanceof Error ? cause.message : '会话加载失败')
@@ -884,8 +1187,32 @@ function applyCommand(command: ChatCommand): void {
  *
  * 焦点**自始至终在输入框里**（菜单不抢焦点）：所以这几件事必须写在这里，
  * 而不是挂在菜单组件上——那会让用户打一半字发现焦点跑了。
+ *
+ * **`@` 菜单排在 `/` 之前**（P1-3）：同一个 `@` token 里不可能同时在打命令，
+ * 两个菜单也不会同时开着（判据互斥），而先问引用那个更贴用户当下的动作。
  */
 function onComposerKeydown(event: KeyboardEvent): void {
+  if (mentionVisible.value) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      mentionMenu.value?.move(event.key === 'ArrowDown' ? 1 : -1)
+      return
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      // 有过匹配才算"选中"：一条都没匹配上时回车要落到发送上
+      // （与 `/` 菜单同一条，见下面那段注释）
+      if (mentionMenu.value?.flat.length) {
+        event.preventDefault()
+        mentionMenu.value.pickActive()
+        return
+      }
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      mentionDismissed.value = true
+      return
+    }
+  }
   if (menuVisible.value) {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
@@ -1027,9 +1354,18 @@ function persistedMessages(): StoredMessage[] {
  *
  * 没人在看的时候（用户切走了）什么都不用做：那一轮后端照样写完并落库，
  * 下次挂载会按库里的版本重画（见 `loadConversation` 里"已经写完就忘掉活轮"那一条）。
+ *
+ * **用户自己按的「停止」是例外**（P2-2）：被停掉的那一轮**不在库里**
+ * （后端只在跑完时落库，`/stop` 那条路只往日志里补一条 `interrupted`），
+ * 所以既不能把本地这半截写进缓存、也不能回源去盖掉它——后端那句
+ * "已经流出来的正文会留着"说的就是屏幕上这一份。
  */
 function settleTurn(): void {
   if (!conversationId.value) return
+  // 这一轮刚把话说完，上下文也跟着长了一截：仪表的读数该跟着动。
+  // 它只读接口、不影响下面这些收尾，所以放在最前面（被停掉的那一轮也一样要刷）
+  contextGauge.value?.refresh()
+  if (live.value?.stopped) return
   const id = conversationId.value
   // 先把本地这份（含刚流完的正文与过程）覆盖进缓存：后端同刻刚写完，
   // "聊完切走再切回"才不会看到上一版
@@ -2286,9 +2622,21 @@ function closeReader(): void {
       </div>
     </div>
 
-    <!-- 输入卡片：参考 WeKnora——一个大圆角框，范围与模型都收在框内底部。
-         我们的"模式"等价物是**知识库范围**：它决定这一问依据什么，空选就没有依据。 -->
-    <div class="composer-wrap">
+    <!--
+      输入卡片：参考 WeKnora——一个大圆角框，范围与模型都收在框内底部。
+      我们的"模式"等价物是**知识库范围**：它决定这一问依据什么，空选就没有依据。
+
+      拖拽落点也在这个容器上（P1-3）：拖进来的东西有**两种落法**，文案与结果都不同
+      （见 `onComposerDragOver` 与 `onComposerDrop`）——"添加附件"是上传，
+      "引用此文件"是插一条引用。挂在容器上而不是那个小输入框上：
+      拖拽时手在抖，落点大一圈成功率差很多。
+    -->
+    <div
+      class="composer-wrap"
+      @dragover="onComposerDragOver"
+      @dragleave="onComposerDragLeave"
+      @drop.prevent="onComposerDrop"
+    >
       <!-- 往上翻旧回答时出现：一键回到最新一行（各家对话产品的通用件）。
            挂在输入卡片上沿而不是消息区里——它要一直浮在手边，不跟着内容滚走 -->
       <button
@@ -2342,6 +2690,28 @@ function closeReader(): void {
           :filter="slashFilter ?? ''"
           @pick="applyCommand"
         />
+      </div>
+      <!--
+        「@」上下文菜单（P1-3）：与 `/` 菜单同一个位置、同一套键盘约定。
+        三类候选（文件 / 技能 / 会话）来自同一个搜索框——这是 ZCode 的"多分类统一搜索"
+        那一半；插进输入框的只是一条**引用**，那是 DSH 的"只引用不预读"那一半。
+      -->
+      <div v-if="mentionVisible" class="slash-layer">
+        <MentionMenu
+          ref="mentionMenu"
+          :items="mentionItems"
+          :filter="mentionFilter ?? ''"
+          :loading="!mentionFilesLoaded"
+          @pick="applyMention"
+        />
+      </div>
+      <!--
+        拖拽提示（P1-3）：**两句不同的文案**就是这个功能的一半——
+        "松开以添加附件" = 它会成为这个库里的文档；"松开以引用此文件" = 它只是被提一句，
+        内容一个字都不读。ZCode 把这两件事分开说，我们照抄。
+      -->
+      <div v-if="dropKind" class="drop-hint" :class="`drop-hint-${dropKind}`" role="status">
+        {{ dropHint }}
       </div>
       <div class="composer">
         <AppInput
@@ -2486,6 +2856,17 @@ function closeReader(): void {
             </RowMenu>
           </div>
           <div class="composer-right">
+            <!--
+              上下文仪表（P1-3）：摆在这一端（"怎么生成"那一侧）——它与模型/思考档
+              是同一类信息：用户看它是为了判断"还能问多长"，而不是决定这一轮给什么。
+              点开是**按来源分解**（数字全来自 `GET /chat/context-usage`），
+              里面那个「压缩」按钮走的是既有那条 `/compact` 链路。
+            -->
+            <ContextGauge
+              ref="contextGauge"
+              :conversation-id="conversationId || null"
+              @compress="compressContext"
+            />
             <!--
               模型 + 思考 + 强度收在同一个入口里（见 ModelPicker 的注释）：
               三个控件并排时工具条比输入框还热闹，而它们回答的是同一个问题——这一轮怎么生成。
@@ -3741,6 +4122,36 @@ function closeReader(): void {
   position: relative;
   flex: 0 0 auto;
   padding: 0 var(--page-gutter) var(--space-5);
+}
+
+/* 拖拽落点上的那句话（P1-3）：**两种落法两句文案**，颜色也分开——
+   上传是"往这一轮里加东西"（中性），引用是"指一份东西给它看"（信息色）。
+   盖住整张输入卡片：拖拽时手在抖，落点大一圈成功率差很多。 */
+.drop-hint {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  inset: 0 var(--page-gutter) var(--space-5);
+  font-size: var(--text-body-size);
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border: 2px dashed var(--border-strong);
+  border-radius: var(--radius-panel);
+  /* 提示层不该吃鼠标事件：它一出现就压在输入框上，
+     而拖拽的目标判定由 `.composer-wrap` 那一层负责（事件从底下冒泡上来） */
+  pointer-events: none;
+}
+
+.drop-hint-attach {
+  border-color: var(--text-tertiary);
+}
+
+.drop-hint-reference {
+  color: var(--text-primary);
+  background: var(--bg-active);
+  border-color: var(--text-secondary);
 }
 
 /* 「回到最新」浮标：贴在输入卡片上沿正中，浮在内容之上。
