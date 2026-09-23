@@ -68,6 +68,7 @@ import IconTrash from '@/components/icons/IconTrash.vue'
 import IconChat from '@/components/icons/IconChat.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
 import IconChevronDown from '@/components/icons/IconChevronDown.vue'
+import IconClose from '@/components/icons/IconClose.vue'
 import IconChevronRight from '@/components/icons/IconChevronRight.vue'
 import IconFolder from '@/components/icons/IconFolder.vue'
 import IconFormatCode from '@/components/icons/IconFormatCode.vue'
@@ -2774,7 +2775,9 @@ function closeReader(): void {
             title="收起"
             @click="commandResult = null"
           >
-            ✕
+            <!-- 图标一律走 components/icons（门禁禁止把符号字面量写进界面）：
+                 原先这里直接写了个叉号字符，被 scripts/scan_emoji.py 拦下 -->
+            <IconClose :size="13" />
           </button>
         </div>
         <pre class="command-text">{{ commandResult.text }}</pre>
