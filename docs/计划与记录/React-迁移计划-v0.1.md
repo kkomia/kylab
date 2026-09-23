@@ -234,7 +234,12 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
 3. **懒加载在生产产物上也验过**（§12.248 的拆分之后）：生产构建首屏是概览、**不含对话页**
    （`chatLoaded:false`，13 条真实会话在侧栏），点进一条会话后 `thread`/`composer` 都在
    ——说明打包后的 `ChatPage-*.js` 能在真实浏览器里正常按需拉起（dev 与 prod 各验一次）。
-4. 锁文件含 `@esbuild/linux-x64`、`@tailwindcss/oxide-linux-x64-gnu`（容器里装得上）；
+4. **桌面壳（Tauri）核查过**：`desktop/src/shell.js` 只驱动它自己的本地配置页
+   （`form`/`address`/`status`/`recent` 这些 id 都在 `desktop/src/` 里），不碰 SPA 的 DOM；
+   `desktop/src-tauri/src/main.rs` 是 `Url::parse(探测到的地址)` → `window.navigate(url)`，
+   **按 URL 加载、与前端框架无关**（`WebviewUrl::App(...)` 只用于本地配置页与「更换服务器」窗）。
+   所以桌面端**不需要任何改动**，NAS 一重建它就跟着换成 React 版。
+5. 锁文件含 `@esbuild/linux-x64`、`@tailwindcss/oxide-linux-x64-gnu`（容器里装得上）；
    本机那两个 win32 包被 `.dockerignore` 排掉，不会带进 Linux 构建。
 
 ### 10.2.1 发版口径：**没动版本号，也没写 CHANGELOG**
