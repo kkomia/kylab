@@ -47,8 +47,22 @@ tail -f build.log        # 另开一个会话看进度
 ### 前端换成 React 版之后（P5，开发计划 §12.234/§12.236）
 
 **一条命令的版本**（推荐）：`sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react`
-——它做四件事：切分支并 `pull`、**只重建 frontend**、`up -d frontend`、核对首页 200 并确认
-页面挂载点是 `#root`（React）而不是 `#app`（旧 Vue）。下面那三步是它展开后的手工版。
+
+它先看源码形态（这台 NAS 的 `src/` 是 **`git archive` 解开的、不含 `.git`**，
+所以"先 pull 再构建"在这里会失败）：
+- `src/frontend/src/features/` 在 → 是新前端，继续；**顺便**发现 `.git` 才做 `fetch/pull`（加分项，不是前提）；
+- 还是 `src/views/ChatView.vue`（旧 Vue）→ **不构建**，直接打印三条换源码的路子（本机 archive 过去 /
+  NAS 上 clone / 只覆盖 `frontend/` 这一棵）并退出码 2 —— 免得白构建一次却发现界面还是老的；
+- 两者都不是 → 提示路径不对，退出码 2。
+
+源码 OK 之后做三件事：**只重建 frontend**（后端不重建）→ `up -d frontend` →
+核对首页 200 **并认一次 `#root`/`#app`**（镜像没真换掉时页面会安静地还是旧版）。
+
+> 构建走的是 **npmmirror**（`deploy/nas/docker-compose.yml` 给前端构建传了
+> `NPM_REGISTRY`，与后端那份 `UV_INDEX_URL` 同一个理由：这台机器到境外带宽极差）。
+> 换机器部署时不用改 Dockerfile——它默认仍是官方源。
+
+下面那三步是它展开后的手工版。
 
 
 

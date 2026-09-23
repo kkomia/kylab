@@ -104,6 +104,10 @@ services:
   frontend:
     build:
       context: ../src/frontend
+      args:
+        # 与后端那份 `UV_INDEX_URL` 同一个理由（§12.223）：这台机器到境外带宽极差，
+        # 走国内镜像站。默认仍写官方源，换机器时不用改 Dockerfile。
+        NPM_REGISTRY: https://registry.npmmirror.com
     image: kylab-frontend:0.1.1
     container_name: kylab-app-frontend
     restart: unless-stopped
