@@ -79,7 +79,14 @@ const noEmojiRule = {
       TemplateElement(node) {
         check(node, node.value.raw)
       },
-      // Vue 模板里的纯文本节点（由 vue-eslint-parser 提供）
+      // JSX 里直接写的文字（`<span>🎉 完成</span>`）。
+      // **这条以前没有**：规则只认字面量与模板串，于是"直接写在标签里的 emoji"
+      // 只能靠 `scripts/scan_emoji.py` 那层兜底——编辑器里当时是看不见的。
+      JSXText(node) {
+        check(node, node.value)
+      },
+      // Vue 模板里的纯文本节点（由 vue-eslint-parser 提供）。
+      // 本仓前端已无 `.vue`，留着是为了规则本身仍可复用到别处。
       VText(node) {
         check(node, node.value)
       },

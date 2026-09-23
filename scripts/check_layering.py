@@ -105,7 +105,9 @@ ASYNC_MSG = (
 
 # T1：测试代码绝不进入源码目录
 SOURCE_ROOTS = ("backend/app", "frontend/src")
-TEST_FILE_RE = re.compile(r"^(test_.*\.py|.*_test\.py|.*\.test\.ts|.*\.spec\.ts)$")
+# 后缀要跟着前端走：P5 之后组件测试是 `.test.tsx` / `.spec.tsx`（Vue 时代只有 `.ts`）。
+# 与 U1 那次是同一类漏：只认老后缀，规则对新写法视而不见。
+TEST_FILE_RE = re.compile(r"^(test_.*\.py|.*_test\.py|.*\.(test|spec)\.tsx?)$")
 
 # SQL 语句起始关键字：业务层源码中的这类字符串字面量视为直接写 SQL。
 #

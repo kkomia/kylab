@@ -105,3 +105,30 @@ def test_clean_tsx_is_clean(checker: ModuleType, tmp_path: Path) -> None:
         '<PageShell title="概览" tools={<Button>刷新</Button>}>\n  <List />\n</PageShell>\n',
     )
     assert checker.check_ui_copy(path) == []
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["Foo.test.tsx", "Foo.spec.tsx", "Foo.test.ts", "Foo.spec.ts", "test_x.py", "x_test.py"],
+)
+def test_t1_flags_test_files_inside_source_roots(
+    checker: ModuleType, tmp_path: Path, name: str
+) -> None:
+    """T1：源码目录里出现测试文件要报——**`.tsx` 那也是测试文件**。
+
+    这条正则原来只认 `.test.ts`（Vue 时代的写法），于是 `Foo.test.tsx` 放进
+    `frontend/src/` 不会被拦——与 U1 那次后缀漏网是同一个病。
+    """
+    src = tmp_path / "frontend" / "src" / "features" / "chat"
+    src.mkdir(parents=True)
+    path = src / name
+    path.write_text("export {}\n", encoding="utf-8")
+    assert [item.rule for item in checker.check_test_placement(path, tmp_path)] == ["T1"]
+
+
+def test_t1_ignores_tests_outside_source_roots(checker: ModuleType, tmp_path: Path) -> None:
+    outside = tmp_path / "frontend" / "tests"
+    outside.mkdir(parents=True)
+    path = outside / "chat-ui.test.tsx"
+    path.write_text("export {}\n", encoding="utf-8")
+    assert checker.check_test_placement(path, tmp_path) == []
