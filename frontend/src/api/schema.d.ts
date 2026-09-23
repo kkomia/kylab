@@ -801,6 +801,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat/commands": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 可用命令（内置 + 自定义，被遮蔽的也在里面）
+         * @description 斜杠命令的目录：前端那个 ``/`` 菜单就吃这一份（P1-2 第 4 条）。
+         *
+         *     三条与界面直接相关的约定：
+         *
+         *     1. **``{name, summary, usage, group}`` 四个字段是给菜单的**（``group`` 就是发现源
+         *        ——``builtin`` / ``user`` / ``repo``），其余字段是顺带给出的排错信息；
+         *     2. **被遮蔽的与加载失败的都在列表里**（``shadowed_by`` / ``error``，与插件列表
+         *        同一套做法）：静默藏掉会让用户以为文件没生效，而原因只有这里知道；
+         *     3. **``short_circuit`` 决定界面往哪条路发**：为真的是 ``/help`` ``/mode`` 这一类，
+         *        界面发出去之后**不建回答气泡**（后端不会产生回答）；为假的是改写类，
+         *        界面按普通一轮处理（``/skill`` 与自定义 md 命令会走模型）。
+         */
+        get: operations["list_commands_api_v1_chat_commands_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/settings": {
         parameters: {
             query?: never;
@@ -3468,6 +3498,83 @@ export interface components {
         ChunkUpdateIn: {
             /** Text */
             text: string;
+        };
+        /**
+         * CommandListOut
+         * @description ``GET /api/v1/chat/commands`` 的返回：菜单 + 两条发现源。
+         */
+        CommandListOut: {
+            /** Items */
+            items?: components["schemas"]["CommandOut"][];
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * User Dir
+             * @default
+             */
+            user_dir: string;
+            /**
+             * Builtin Dir
+             * @default
+             */
+            builtin_dir: string;
+        };
+        /**
+         * CommandOut
+         * @description 一条斜杠命令（照 ZCode 的内置表 + ``commands/*.md`` 自定义命令）。
+         *
+         *     前四个字段 ``{name, summary, usage, group}`` 就是前端那个 ``/`` 菜单吃的东西
+         *     （``details`` 给 ``/help <命令名>`` 展开用；``shadowed_by`` / ``error`` 是排错用的）。
+         */
+        CommandOut: {
+            /** Name */
+            name: string;
+            /**
+             * Summary
+             * @default
+             */
+            summary: string;
+            /**
+             * Usage
+             * @default
+             */
+            usage: string;
+            /**
+             * Group
+             * @default builtin
+             * @enum {string}
+             */
+            group: "builtin" | "user" | "repo";
+            /** Details */
+            details?: string[];
+            /**
+             * Argument Hint
+             * @default
+             */
+            argument_hint: string;
+            /**
+             * Short Circuit
+             * @default true
+             */
+            short_circuit: boolean;
+            /**
+             * Shadowed By
+             * @default
+             */
+            shadowed_by: string;
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /**
+             * Path
+             * @default
+             */
+            path: string;
         };
         /** ConversationArtifactListOut */
         ConversationArtifactListOut: {
@@ -6195,8 +6302,8 @@ export interface components {
          *     在这里再包一层"好看的形状"只会让日志与它的读取方变成两件事。
          *
          *     ``kind`` 是**词表**取值（``turn/start``、``turn/end``、``step``、
-         *     ``tool_call``、``thinking``、``error``、``interrupted``），
-         *     定义在 ``services/session_events.py`` 一处。
+         *     ``tool_call``、``thinking``、``error``、``interrupted``、``mode/changed``、
+         *     ``command``），定义在 ``services/session_events.py`` 一处。
          */
         SessionEventOut: {
             /** Id */
@@ -8972,7 +9079,7 @@ export interface operations {
     conversation_events_api_v1_conversations__conversation_id__events_get: {
         parameters: {
             query?: {
-                /** @description 逗号分隔的事件类型（turn/start、turn/end、step、tool_call、thinking、error、interrupted）；留空返回全部 */
+                /** @description 逗号分隔的事件类型（turn/start、turn/end、step、tool_call、thinking、error、interrupted、mode/changed、command）；留空返回全部 */
                 kinds?: string;
             };
             header?: {
@@ -9028,6 +9135,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SuggestedQuestionsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_commands_api_v1_chat_commands_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandListOut"];
                 };
             };
             /** @description Validation Error */

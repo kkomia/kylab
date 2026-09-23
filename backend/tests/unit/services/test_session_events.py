@@ -15,8 +15,10 @@ from __future__ import annotations
 from app.services.agent import StepEvent, step_snapshot
 from app.services.session_events import (
     EVENT_KINDS,
+    KIND_COMMAND,
     KIND_ERROR,
     KIND_INTERRUPTED,
+    KIND_MODE_CHANGED,
     KIND_STEP,
     KIND_THINKING,
     KIND_TOOL_CALL,
@@ -24,7 +26,9 @@ from app.services.session_events import (
     TURN_STATUSES,
     EventDraft,
     SessionEvent,
+    command_draft,
     interrupted_payload,
+    mode_changed_draft,
     step_event_draft,
     steps_from_events,
     thinking_draft,
@@ -38,10 +42,12 @@ def _tool(call_id: str = "c1") -> StepEvent:
 
 
 def test_the_word_table_is_the_trimmed_zcode_enum() -> None:
-    """词表**只有这七个**（照调研报告 §2.1 的枚举裁到我们有的）。
+    """词表**只有这九个**（照调研报告 §2.1 的枚举裁到我们有的）。
 
     多一个少一个都是设计变更：多出来的 kind 没有生产者（读的人会以为漏了），
     少一个则会让某条链路悄悄退回"不记日志"。
+    ``mode/changed``（P1-1 遗留 #6）与 ``command``（P1-2）是后来补的两条：
+    前者抄 ZCode 的 ``SessionModeChanged``，后者抄 DSH 的"命令写 session log"。
     """
     assert EVENT_KINDS == (
         "turn/start",
@@ -51,10 +57,45 @@ def test_the_word_table_is_the_trimmed_zcode_enum() -> None:
         "thinking",
         "error",
         "interrupted",
+        "mode/changed",
+        "command",
     )
     assert frozenset({KIND_STEP, KIND_TOOL_CALL}) == STEP_KINDS
     # 终止原因是枚举（调研报告 §2.1 第 2 条）：四个取值，没有"其他"
     assert set(TURN_STATUSES) == {"ok", "degraded", "error", "empty"}
+
+
+def test_turn_start_carries_the_mode_and_nothing_extra_when_absent() -> None:
+    """``turn/start`` 带上这一轮的档；没给时不写这个键（照快照那套"空字段不留键"）。
+
+    ``mode`` 是 ``ModeWatch`` 判定"档换过了没有"的基线（见 services/commands），
+    所以它必须真的落在事件里，而不是只活在内存里。
+    """
+    draft = turn_start_draft(query="问题", model_pk="m1", mode="plan")
+    assert draft.payload["mode"] == "plan"
+    assert "mode" not in turn_start_draft(query="问题", model_pk=None).payload
+
+
+def test_mode_changed_payload_is_the_zcode_shape() -> None:
+    """``mode/changed`` 的三个字段（P1-1 遗留 #6）。
+
+    "从哪一档换到哪一档、谁切的"缺一不可：只有"现在是 yolo"回答不了
+    "它是什么时候开始不问我的"（调研报告 §2.6 抄点第 4 条）。
+    """
+    draft = mode_changed_draft(previous_mode="build", mode="yolo", source="command")
+    assert draft.kind == KIND_MODE_CHANGED
+    assert draft.payload == {"previousMode": "build", "mode": "yolo", "source": "command"}
+
+
+def test_command_draft_keeps_only_what_is_needed() -> None:
+    """``command`` 只留"敲了哪条、带什么参数、结果是什么"（P1-2，DSH 那一半）。"""
+    draft = command_draft(name="mode", args="plan", result="已切到「计划」档", ok=True)
+    assert draft.kind == KIND_COMMAND
+    assert draft.payload["name"] == "mode"
+    assert draft.payload["args"] == "plan"
+    assert draft.payload["ok"] is True
+    # 空字段不留键：一条没有参数的命令不必给日志加一个空串
+    assert "args" not in command_draft(name="help").payload
 
 
 def test_a_tool_step_is_recorded_as_a_tool_call_not_as_two_events() -> None:

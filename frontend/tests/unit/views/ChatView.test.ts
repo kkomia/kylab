@@ -37,6 +37,7 @@ const decideApproval = vi.fn()
 const listSkills = vi.fn()
 // 产物的三条接口（v0.26）：卡片要能知道"文件现在在哪、进没进库"，
 // 下载走签名链接，入库要经过「存进知识库」那个弹窗
+const listCommands = vi.fn()
 const listArtifacts = vi.fn()
 const ingestArtifact = vi.fn()
 const listFiles = vi.fn()
@@ -70,6 +71,8 @@ vi.mock('@/api/chat', async (importOriginal) => {
     resumeStream: (...args: unknown[]) => resumeStream(...args),
     decideApproval: (...args: unknown[]) => decideApproval(...args),
     getSuggestedQuestions: vi.fn().mockResolvedValue({ questions: [] }),
+    // 「/」命令菜单读的那一份（P1-2）：用例自己给值，别让它去打真网络
+    listCommands: (...args: unknown[]) => listCommands(...args),
   }
 })
 
@@ -326,6 +329,8 @@ beforeEach(() => {
   // 不清成空会让后面的用例落到"最近一条会话"上——那时发送**不会新建会话**，
   // 于是断言新建参数就随用例顺序飘（这条也是这么被抓出来的）
   listConversations.mockResolvedValue([])
+  // 默认「还没有取到命令清单」：不敲 `/` 就不会请求它（懒加载）
+  listCommands.mockResolvedValue([])
   // 默认"这条会话没有产物"：多数用例不关心卡片，不清的话上一个用例的产物会漏过来
   listArtifacts.mockResolvedValue({ items: [] })
   // 文件抽屉一挂上就会列一次文件区
@@ -1823,6 +1828,233 @@ describe('Agent 模式入口', () => {
     await flushPromises()
 
     expect(wrapper.find('.tool-mode').exists()).toBe(false)
+    wrapper.unmount()
+  })
+})
+
+describe('斜杠命令（P1-2）', () => {
+  const COMMANDS = [
+    {
+      name: 'help',
+      summary: '列出所有命令',
+      usage: '/help [命令名]',
+      group: 'builtin',
+      details: [],
+      argument_hint: '[命令名]',
+      short_circuit: true,
+      shadowed_by: '',
+      error: '',
+      path: '',
+    },
+    {
+      name: 'mode',
+      summary: '切 Agent 模式',
+      usage: '/mode [plan|build|edit|yolo]',
+      group: 'builtin',
+      details: [],
+      argument_hint: '',
+      short_circuit: true,
+      shadowed_by: '',
+      error: '',
+      path: '',
+    },
+    {
+      name: 'deploy',
+      summary: '发版（你放的）',
+      usage: '/deploy <版本号>',
+      group: 'user',
+      details: [],
+      argument_hint: '<版本号>',
+      short_circuit: false,
+      shadowed_by: '',
+      error: '',
+      path: '/data/commands/deploy.md',
+    },
+  ]
+
+  async function mountWithCommands(path = '/chat/c1') {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    listCommands.mockResolvedValue(COMMANDS)
+    const mounted = await mountAt(path)
+    await flushPromises()
+    return mounted
+  }
+
+  it('打「/」弹出菜单；上下键选择、回车把它补进输入框', async () => {
+    const { wrapper } = await mountWithCommands()
+
+    expect(wrapper.find('.slash-menu').exists()).toBe(false)
+    await wrapper.find('.composer-field').setValue('/')
+    await flushPromises()
+
+    const items = wrapper.findAll('.slash-item .slash-usage')
+    expect(items.map((node) => node.text())).toEqual([
+      '/help [命令名]',
+      '/mode [plan|build|edit|yolo]',
+      '/deploy <版本号>',
+    ])
+    // 分组标题按发现源来（内置 / 你放的）
+    expect(wrapper.findAll('.slash-group').map((node) => node.text())).toEqual([
+      '内置',
+      '自定义（你放的）',
+    ])
+
+    // ↓ 一下：高亮走到 `/mode`；回车把它补进输入框（还要参数，光标留给参数）
+    await wrapper.find('.composer-field').trigger('keydown', { key: 'ArrowDown' })
+    await wrapper.find('.composer-field').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+
+    expect((wrapper.find('.composer-field').element as HTMLTextAreaElement).value).toBe('/mode ')
+    expect(wrapper.find('.slash-menu').exists()).toBe(false)
+    // **它没有发请求**：选中只是补完，执行是再按一次回车
+    expect(chatStream).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('点击菜单里的一条：同样只是补完（不替用户按下发送）', async () => {
+    const { wrapper } = await mountWithCommands()
+    await wrapper.find('.composer-field').setValue('/dep')
+    await flushPromises()
+
+    await wrapper.findAll('.slash-item')[0]?.trigger('click')
+    await flushPromises()
+
+    expect((wrapper.find('.composer-field').element as HTMLTextAreaElement).value).toBe('/deploy ')
+    expect(chatStream).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('输入框里已经是这条命令时，回车就是**执行**：短路命令不建回答气泡', async () => {
+    const { wrapper } = await mountWithCommands()
+    // 后端回一条 command 事件（它替代了整轮回答）
+    chatStream.mockImplementation(
+      async (
+        _payload: unknown,
+        handlers: { onCommand?: (result: unknown) => void; onDone?: (answer: string) => void },
+      ) => {
+        handlers.onCommand?.({ name: 'help', text: '可用命令：/mode、/compact', ok: true })
+        handlers.onDone?.('')
+        return { abort: vi.fn() }
+      },
+    )
+
+    await wrapper.find('.composer-field').setValue('/help')
+    await flushPromises()
+    // 菜单开着时回车走"选中"；输入框里已经是它了，于是这一次回车直接执行
+    await wrapper.find('.composer-field').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    await flushPromises()
+
+    // 请求确实发出去了（`/` 开头的输入由后端判定，见 services/commands.parse）
+    const payload = chatStream.mock.calls.at(-1)?.[0] as { query: string; conversation_id: string }
+    expect(payload.query).toBe('/help')
+    expect(payload.conversation_id).toBe('c1')
+    // 回话摆在输入框上面，**不是一条助手消息**
+    expect(wrapper.find('.command-result').text()).toContain('可用命令：/mode、/compact')
+    // 没多出提问、也没多出回答：这一轮**没有进对话流**（对照下面那条改写类的用例）
+    expect(wrapper.findAll('.ask-text').map((node) => node.text())).toEqual(['你好'])
+    expect(wrapper.findAll('.reply')).toHaveLength(1)
+    // 也不走"正在流的那一轮"那条链路（命令是瞬时的，见 runCommand 的注释）：
+    // 交给它的处理函数里没有过程/正文那几回调，只有命令那一个
+    const handlers = chatStream.mock.calls.at(-1)?.[1] as {
+      onCommand?: unknown
+      onStep?: unknown
+    }
+    expect(handlers.onCommand).toBeTypeOf('function')
+    expect(handlers.onStep).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('改写类命令（/skill、自定义 md）走普通那一轮：要有回答气泡', async () => {
+    const { wrapper } = await mountWithCommands()
+    chatStream.mockResolvedValue({ abort: vi.fn() })
+
+    await wrapper.find('.composer-field').setValue('/deploy 1.2.0')
+    await flushPromises()
+    // 菜单此时不弹（已经打了空格，是在写参数）
+    expect(wrapper.find('.slash-menu').exists()).toBe(false)
+    await wrapper.find('.composer-field').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+
+    const payload = chatStream.mock.calls.at(-1)?.[0] as { query: string }
+    expect(payload.query).toBe('/deploy 1.2.0')
+    // 这一轮**按普通一轮处理**（走 `useLiveTurn` 那条常驻链路，于是会有回答气泡），
+    // 因为后端判定它是改写类命令、会过一次模型——分流依据是菜单里的 `short_circuit`
+    const handlers = chatStream.mock.calls.at(-1)?.[1] as {
+      onCommand?: unknown
+      onStep?: unknown
+    }
+    expect(handlers.onStep).toBeTypeOf('function')
+    expect(handlers.onCommand).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('命令改了模式时广播出去（输入框那一排的控件要跟着换档）', async () => {
+    const { wrapper } = await mountWithCommands()
+    const seen: unknown[] = []
+    const listen = (event: Event) => seen.push((event as CustomEvent).detail)
+    window.addEventListener('kylab:mode-changed', listen)
+    chatStream.mockImplementation(
+      async (_payload: unknown, handlers: { onCommand?: (result: unknown) => void }) => {
+        handlers.onCommand?.({
+          name: 'mode',
+          text: '已切到「计划」档',
+          ok: true,
+          action: { kind: 'mode', mode: 'plan', previousMode: 'build' },
+        })
+        return { abort: vi.fn() }
+      },
+    )
+
+    await wrapper.find('.composer-field').setValue('/mode plan')
+    await flushPromises()
+    await wrapper.find('.send-btn').trigger('click')
+    await flushPromises()
+    await flushPromises()
+
+    expect(seen).toEqual(['plan'])
+    window.removeEventListener('kylab:mode-changed', listen)
+    wrapper.unmount()
+  })
+
+  it('流式期间也能打 /stop——这条命令存在的意义就是"把跑着的那一轮停下"', async () => {
+    const { wrapper } = await mountWithCommands()
+    // 让这一轮一直"在跑"：handlers 不回调，`streaming` 就一直为真
+    chatStream.mockResolvedValue({ abort: vi.fn() })
+    await wrapper.find('.composer-field').setValue('先问一句')
+    await wrapper.find('.send-btn').trigger('click')
+    await flushPromises()
+    expect(liveTurnState.value?.streaming).toBe(true)
+
+    // 输入框**没有被禁用**（禁掉的话 /stop 永远打不出来），发新提问则会被劝住
+    expect(wrapper.find('.composer-field').attributes('disabled')).toBeUndefined()
+    await wrapper.find('.composer-field').setValue('再问一句')
+    await wrapper.find('.send-btn').trigger('click')
+    await flushPromises()
+    expect(chatStream).toHaveBeenCalledTimes(1)
+
+    await wrapper.find('.composer-field').setValue('/stop')
+    await flushPromises()
+    await wrapper.find('.composer-field').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+
+    const payload = chatStream.mock.calls.at(-1)?.[0] as { query: string }
+    expect(payload.query).toBe('/stop')
+    wrapper.unmount()
+  })
+
+  it('菜单取不到时不弹（旧后端没有这个端点，也不该把对话页变成错误提示）', async () => {
+    listKnowledgeBases.mockResolvedValue({ items: [kb('kb_1', '指南库')] })
+    getConversation.mockResolvedValue({ ...chatDetail('c1'), kb_ids: ['kb_1'] })
+    listCommands.mockResolvedValue([])
+    const { wrapper } = await mountAt('/chat/c1')
+    await flushPromises()
+
+    await wrapper.find('.composer-field').setValue('/')
+    await flushPromises()
+
+    expect(wrapper.find('.slash-menu').exists()).toBe(false)
     wrapper.unmount()
   })
 })

@@ -991,8 +991,8 @@ class SessionEventOut(BaseModel):
     在这里再包一层"好看的形状"只会让日志与它的读取方变成两件事。
 
     ``kind`` 是**词表**取值（``turn/start``、``turn/end``、``step``、
-    ``tool_call``、``thinking``、``error``、``interrupted``），
-    定义在 ``services/session_events.py`` 一处。
+    ``tool_call``、``thinking``、``error``、``interrupted``、``mode/changed``、
+    ``command``），定义在 ``services/session_events.py`` 一处。
     """
 
     model_config = _RECORD_CONFIG
@@ -2174,6 +2174,51 @@ class SkillListOut(BaseModel):
     items: list[SkillOut] = Field(default_factory=list)
     usable: int = 0
     """其中真正会进模型目录的条数——界面上一眼看出"装了 N 个，能用 M 个"。"""
+
+
+# ------------------------------------------------------------------ 斜杠命令（P1-2）
+
+
+class CommandOut(BaseModel):
+    """一条斜杠命令（照 ZCode 的内置表 + ``commands/*.md`` 自定义命令）。
+
+    前四个字段 ``{name, summary, usage, group}`` 就是前端那个 ``/`` 菜单吃的东西
+    （``details`` 给 ``/help <命令名>`` 展开用；``shadowed_by`` / ``error`` 是排错用的）。
+    """
+
+    name: str
+    summary: str = ""
+    """一句话：这条命令是干什么的（菜单那一行）。"""
+    usage: str = ""
+    """怎么用（形如 ``/mode [plan|build|edit|yolo]``）。"""
+    group: Literal["builtin", "user", "repo"] = "builtin"
+    """发现源，菜单按它分组：**内置 / 你放的（数据目录 commands/）/ 随代码发布**。"""
+    details: list[str] = Field(default_factory=list)
+    """展开说明（``/help <命令名>`` 用它，与菜单同一份数据）。"""
+    argument_hint: str = ""
+    """自定义命令 frontmatter 里的 ``argument-hint``（照 ZCode）。"""
+    short_circuit: bool = True
+    """**这条要不要模型**：为真的是 ``/help`` ``/mode`` 这一类——后端直接执行、
+    不产生回答，界面据此**不建回答气泡**；为假的是改写类（``/skill`` 与自定义
+    md 命令），界面按普通一轮处理。"""
+    shadowed_by: str = ""
+    """**被谁遮蔽**（空 = 没被遮蔽）：同名时内置 > 用户 > 仓库，first match wins。
+    被遮蔽的**仍然在列表里**（照插件列表的做法）——静默藏掉会让人以为文件没生效。"""
+    error: str = ""
+    """加载失败的原因（人话）。空 = 没问题。失败的也留在列表里，带原因。"""
+    path: str = ""
+    """md 文件的绝对路径（内置命令为空）。排错时要能找到它。"""
+
+
+class CommandListOut(BaseModel):
+    """``GET /api/v1/chat/commands`` 的返回：菜单 + 两条发现源。"""
+
+    items: list[CommandOut] = Field(default_factory=list)
+    total: int = 0
+    user_dir: str = ""
+    builtin_dir: str = ""
+    """两条发现源——**放进 ``user_dir`` 的 md 文件就是一个命令**（零注册、零重启）。
+    空串 = 这个目录不存在，扫描时跳过。"""
 
 
 # ------------------------------------------------------------------ 插件包（v0.43）

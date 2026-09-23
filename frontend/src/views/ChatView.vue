@@ -31,8 +31,12 @@ import {
 import { useRoute, useRouter } from 'vue-router'
 
 import {
+  chatStream,
   getSuggestedQuestions,
+  listCommands,
   type ChatArtifact,
+  type ChatCommand,
+  type ChatCommandResult,
   type ChatHistoryMessage,
   type ChatSource,
   type ChatStep,
@@ -87,6 +91,7 @@ import ApprovalBar from '@/components/chat/ApprovalBar.vue'
 import ExecPolicyControl from '@/components/chat/ExecPolicyControl.vue'
 import LiveLine from '@/components/chat/LiveLine.vue'
 import ModePicker from '@/components/chat/ModePicker.vue'
+import SlashMenu from '@/components/chat/SlashMenu.vue'
 import TraceStepRow from '@/components/chat/TraceStepRow.vue'
 import {
   abortLiveTurn,
@@ -756,10 +761,19 @@ async function streamTurn(
 }
 
 async function send(): Promise<void> {
-  if (!canSend.value || sending.value) return
+  if (!canSend.value) return
   const text = query.value.trim()
   if (text.length === 0) {
     notifyWarning('请输入问题')
+    return
+  }
+  // **命令在流式期间也放行**（P1-2）：`/stop` 存在的意义就是"这一轮还在跑的时候把它停下"
+  // ——把输入框在流式期间整段禁掉，这条命令就永远打不出来（"停止也要是一等命令"）。
+  // 普通提问仍然不许插队：后端没有"往跑着的一轮里插话"这条路，静默吞掉更糟，
+  // 所以留着文本并说清为什么。
+  const isCommand = text.startsWith('/')
+  if (sending.value && !isCommand) {
+    notifyWarning('这一轮还在跑：等它结束再发，或者用 /stop 停下')
     return
   }
   // 先算历史：这条提问还没进 messages，不能把自己也算成上下文
@@ -786,7 +800,199 @@ async function send(): Promise<void> {
   }
 
   query.value = ''
+  closeSlash()
+  // 以 `/` 开头的输入**先当成命令**（P1-2，照 DSH 的"`/` 行永不静默降级"）：
+  // 短路类的由后端直接答掉、不建回答气泡；改写类的（`/skill` 与自定义 md 命令）
+  // 渲染出这一轮的提示后照常走模型——那两条路怎么分，后端的 `short_circuit` 说了算。
+  if (text.startsWith('/')) {
+    await runCommand(text, target, model)
+    return
+  }
   await streamTurn(text, context, model, target)
+}
+
+// ------------------------------------------------------------- 斜杠命令（P1-2）
+//
+// 三件事分开：**菜单**（打 `/` 弹出，见 SlashMenu.vue）、**分流**（短路类走
+// `runCommand`、改写类走普通那一轮）、**回话**（`commandResult` 那一小块面板）。
+// 分流必须与后端一致，所以菜单里的 `short_circuit` 就是唯一依据——
+// 后端认不出某条命令时**也**不会有模型调用，所以"不在菜单里"按短路类处理（见下）。
+
+/** 命令清单（懒加载：不敲 `/` 就不请求）。 */
+const commands = ref<ChatCommand[]>([])
+const commandsLoaded = ref(false)
+const slashMenu = ref<InstanceType<typeof SlashMenu> | null>(null)
+/** 最新的那条命令回话（`null` = 没显示）。 */
+const commandResult = ref<ChatCommandResult | null>(null)
+
+/** 输入框里现在是不是在打一条命令：`/` 开头**且还没打空格**（打了空格就是在写参数了）。 */
+const slashFilter = computed(() => {
+  const text = query.value
+  if (!text.startsWith('/') || text.includes('\n')) return null
+  const head = text.slice(1)
+  if (head.includes(' ')) return null
+  return head
+})
+
+const slashOpen = computed(() => slashFilter.value !== null && commands.value.length > 0)
+
+async function loadCommands(): Promise<void> {
+  if (commandsLoaded.value) return
+  commands.value = await listCommands()
+  commandsLoaded.value = true
+}
+
+/** 打 `/` 的那一刻就把清单取回来（之后每次打开是内存里的）。 */
+watch(slashFilter, (value) => {
+  if (value !== null) void loadCommands()
+})
+
+function closeSlash(): void {
+  // 关掉的办法是让过滤条件不成立——`query` 由输入框持有，这里只清空下拉
+  slashDismissed.value = true
+}
+
+/** 用户按 Esc 关掉菜单之后，这一条输入里不再弹（改了内容再弹，见 watch）。 */
+const slashDismissed = ref(false)
+watch(query, () => {
+  slashDismissed.value = false
+})
+
+const menuVisible = computed(() => slashOpen.value && !slashDismissed.value)
+
+/**
+ * 选中一条命令：**能补完就补完，补不了就执行**。
+ *
+ * - 还要参数的（`/mode `、`/skill <技能名>`）：把 `/名字 ` 插进输入框，光标留给参数；
+ * - 不要参数的（`/help`、`/new`）：输入框里已经是这条命令了，于是**再按一次回车就是执行**
+ *   ——`applyCommand` 遇到"没有变化"时直接发送，避免"按了回车什么都没发生"。
+ */
+function applyCommand(command: ChatCommand): void {
+  const needsArgs = Boolean(command.argument_hint) || command.usage.trim() !== `/${command.name}`
+  const text = needsArgs ? `/${command.name} ` : `/${command.name}`
+  slashDismissed.value = true
+  if (query.value.trim() === text.trim()) {
+    void send()
+    return
+  }
+  query.value = text
+}
+
+/**
+ * 输入框上的键盘：菜单开着时先归菜单（↑↓ 选择、回车选中、Esc 关掉），
+ * 其余情况才是"回车发送"。
+ *
+ * 焦点**自始至终在输入框里**（菜单不抢焦点）：所以这几件事必须写在这里，
+ * 而不是挂在菜单组件上——那会让用户打一半字发现焦点跑了。
+ */
+function onComposerKeydown(event: KeyboardEvent): void {
+  if (menuVisible.value) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      slashMenu.value?.move(event.key === 'ArrowDown' ? 1 : -1)
+      return
+    }
+    if (event.key === 'Enter' && !event.shiftKey) {
+      // **有过一条匹配才算"选中"**：一条都没匹配上时回车要落到"执行"上，
+      // 否则用户打完整条命令再按回车会石沉大海（后端那句"没有这个命令"就见不着了）
+      const menu = slashMenu.value
+      if (menu && menu.flat.length > 0) {
+        event.preventDefault()
+        menu.pickActive()
+        return
+      }
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      slashDismissed.value = true
+      return
+    }
+  }
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault()
+    void send()
+  }
+}
+
+/**
+ * 跑一条命令：**它就是一轮请求，只是后端不会产生回答**。
+ *
+ * 与 `streamTurn` 的两处差别，都是有意的：
+ * 1. **不插"提问 + 空回答"那两条消息**——命令不进模型历史，也不该在对话流里留下气泡
+ *    （ZCode / DSH 都是这个观感：命令的回话是系统的回话，不是助手说的话）；
+ * 2. **不走 `useLiveTurn`**（那一套是给"切页也不丢的回答"用的）：命令是瞬时的，
+ *    几十毫秒就回来了，为它维护一份跨页状态只是把简单的事复杂化。
+ *
+ * 后端认出它是**改写类**时（`/skill`、自定义 md 命令），这条路会收到正常那一轮的
+ * step/delta 事件——所以这里按"有没有 command 事件"决定怎么收尾：
+ * 收到了就显示回话面板，什么都没收到就什么也不做（真正的内容由 useLiveTurn 那条
+ * 常驻链路照旧呈现）。分流的依据来自菜单的 `short_circuit`，与后端同一份数据。
+ */
+async function runCommand(text: string, target: string, model: string | undefined): Promise<void> {
+  // **先确保菜单到手**，再决定走哪条路：分流依据是后端给的 `short_circuit`，
+  // 而用户完全可能把一整条命令粘进来（那时菜单一次都没弹过、清单也还没取）。
+  await loadCommands()
+  const name = text.slice(1).split(/\s+/)[0]?.toLowerCase() ?? ''
+  const known = commands.value.find((item) => item.name === name)
+  // 清单空 = 后端没有这个端点（旧版本）：那它也没有命令这一层，
+  // 按普通一轮发出去才是对的（反过来的话，用户会得到一条空回答）。
+  if (commands.value.length === 0) {
+    await streamTurn(text, history.value, model, target)
+    return
+  }
+  // **改写类**（菜单里说它要模型）：按普通一轮发出去，走 `useLiveTurn` 那条常驻链路
+  if (known && !known.short_circuit) {
+    await streamTurn(text, history.value, model, target)
+    return
+  }
+  // 短路类与**认不出的命令**（可能只是打错了）都走这里：后端不会为它们调模型，
+  // 回一句"没有这个命令"或命令的回话——那一轮没有回答，也就不该建回答气泡。
+  commandResult.value = null
+  try {
+    await chatStream(
+      {
+        query: text,
+        kb_ids: effectiveKbIds.value,
+        conversation_id: target,
+        model_pk: model,
+      },
+      {
+        onCommand: (result) => {
+          commandResult.value = result
+          handleCommandAction(result)
+        },
+        // 解析不了就当"没有回话"：报错的那一轮后端会经 `onError` 说清楚
+        onError: (message) => {
+          notifyError(message)
+        },
+      },
+    )
+    // 命令可能在服务端改了东西（切档、压缩、新建会话），刷一次侧栏与缓存
+    void conversations.load()
+  } catch (cause) {
+    notifyError(cause instanceof Error ? cause.message : '命令没跑起来')
+  }
+}
+
+/** 命令回话里那几个"顺手要做的事"（后端 `action`，见 `_CommandResult`）。 */
+function handleCommandAction(result: ChatCommandResult): void {
+  const action = result.action
+  if (!action) return
+  if (action.kind === 'conversation' && action.conversation_id) {
+    // `/new`：切到新会话（`replace` 而不是 `push`——这里不该在历史里留一条旧会话）
+    void router.replace(`/chat/${action.conversation_id}`)
+    return
+  }
+  if (action.kind === 'stop_turn') {
+    // 后端已经在它那一头叫停了；这里顺手把本页这条流也断掉（谁先到不影响结果）
+    abortLiveTurn()
+    return
+  }
+  if (action.kind === 'mode') {
+    // 模式被命令改了：输入框那一排的控件要跟着显示新档，否则它显示的还是旧档
+    // （它自己挂在 `onMounted` 上读一次，见 ModePicker 的注释）
+    window.dispatchEvent(new CustomEvent('kylab:mode-changed', { detail: action.mode }))
+  }
 }
 
 /**
@@ -2103,16 +2309,49 @@ function closeReader(): void {
         :approval="pendingApproval"
         @settled="settleLiveApproval"
       />
+      <!--
+        命令的回话（P1-2）：也贴在输入卡片上沿。
+
+        **它不是一条助手回答**——后端那一路根本不产生回答（`done.answer` 是空串），
+        消息也不落库。摆在这里正好：它是"系统对刚才那句话的回话"，
+        与输入框是一回事，而不是对话内容的一部分（与 ApprovalBar 同一个位置理由）。
+      -->
+      <div v-if="commandResult" class="command-result" role="status">
+        <div class="command-head">
+          <span class="command-name">/{{ commandResult.name }}</span>
+          <button
+            type="button"
+            class="command-close"
+            aria-label="收起"
+            title="收起"
+            @click="commandResult = null"
+          >
+            ✕
+          </button>
+        </div>
+        <pre class="command-text">{{ commandResult.text }}</pre>
+      </div>
+      <!--
+        「/」命令菜单（P1-2）：浮在输入卡片上方，**不抢焦点**
+        （键盘由输入框那一侧转发，见 `onComposerKeydown`）。
+      -->
+      <div v-if="menuVisible" class="slash-layer">
+        <SlashMenu
+          ref="slashMenu"
+          :items="commands"
+          :filter="slashFilter ?? ''"
+          @pick="applyCommand"
+        />
+      </div>
       <div class="composer">
         <AppInput
           id="chat-query"
           v-model="query"
           multiline
           :rows="2"
-          :disabled="sending"
           class="composer-field"
           :placeholder="composerPlaceholder"
-          @keydown.enter.exact.prevent="send"
+          @keydown="onComposerKeydown"
         />
         <div class="composer-foot">
           <div class="composer-left">
@@ -3526,6 +3765,75 @@ function closeReader(): void {
 .to-bottom:hover {
   color: var(--text-primary);
   border-color: var(--border-strong);
+}
+
+/* ---- 命令的回话与「/」菜单（P1-2） ----
+   两块都贴在输入卡片上沿（`bottom: 100%`）：它们属于"输入这件事"，
+   不属于对话内容——`/help` 的回话不是助手对你说的一句话。 */
+
+.command-result {
+  position: absolute;
+  right: var(--page-gutter);
+  bottom: 100%;
+  left: var(--page-gutter);
+  max-width: var(--chat-measure);
+  margin: 0 auto var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-row);
+  box-shadow: var(--shadow-popover);
+}
+
+.command-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.command-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-meta-size);
+  color: var(--text-secondary);
+}
+
+.command-close {
+  padding: 0 var(--space-1);
+  font-size: var(--text-meta-size);
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.command-close:hover {
+  color: var(--text-primary);
+}
+
+/* 回话可能有好几行（`/help` 那份清单、`/mode` 的四档），所以用 pre-wrap 保住换行；
+   再长就自己滚，不把输入框顶上半天 */
+.command-text {
+  max-height: 30vh;
+  margin: var(--space-1) 0 0;
+  overflow-y: auto;
+  font-family: inherit;
+  font-size: var(--text-meta-size);
+  line-height: 1.6;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 菜单层：与输入卡片同宽、贴着它往上长 */
+.slash-layer {
+  position: absolute;
+  right: var(--page-gutter);
+  bottom: 100%;
+  left: var(--page-gutter);
+  z-index: 2;
+  max-width: var(--chat-measure);
+  margin: 0 auto var(--space-2);
 }
 
 .composer {

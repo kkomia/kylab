@@ -19,6 +19,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 
 from app.core.config import Settings, get_settings
 from app.core.storage import build_stores
@@ -30,6 +31,7 @@ from app.services.avatars import AvatarService
 from app.services.batch import DocumentBatchService
 from app.services.chat import ChatService
 from app.services.chunk import ChunkService
+from app.services.commands import CommandService
 from app.services.conversation import ConversationService
 from app.services.documents import DocumentService
 from app.services.embedding import build_embedder
@@ -177,6 +179,11 @@ class Services:
 
     默认空列表是为了让"手工构造 Services 的测试"不必挨个补参数——
     但它**必须包含 ``worker``**（见 ``build_services``）。"""
+    commands: CommandService = field(default_factory=lambda: CommandService(Path("data")))
+    """斜杠命令（v0.44，P1-2）：内置表 + ``commands/*.md`` 自定义命令。
+
+    **默认值给的是"只认内置命令"的那一份**（空数据目录 + 仓库自带目录）：手工构造
+    ``Services`` 的测试不必为它造一个目录，而内置那六条正是大多数用例要用到的。"""
     approvals: ApprovalRegistry = field(default_factory=ApprovalRegistry)
     """对话里的待确认登记表（v0.41，见 ``services/approvals.py``）。
 
@@ -363,6 +370,10 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     # （SuggestedQuestionsService → ChatService）。反过来建的话 IngestService
     # 只能拿到 None，"上传即出题"就永远不生效。
     conversations_service = ConversationService(bundle)
+    # 斜杠命令（v0.44，P1-2）：扫数据目录与仓库自带的 `commands/`（放进来一个 md 文件
+    # 就是一条命令）。`conversations` 只用来读"这条会话上一轮的档"——模式观测的基线
+    # （见 services/commands.ModeWatch），进程内不重复读。
+    commands_service = CommandService(resolved.data_dir, conversations=conversations_service)
     chat_service = ChatService(
         retrieval,
         runtime,
@@ -532,6 +543,7 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         skill_market=skill_market_service,
         skill_sources=skill_source_service,
         plugins=plugins_service,
+        commands=commands_service,
         mcp=mcp_service,
         schedules=schedule_service,
     )

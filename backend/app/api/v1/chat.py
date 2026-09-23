@@ -31,6 +31,7 @@ import json
 import logging
 import threading
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from queue import Empty, Queue
 
 from fastapi import APIRouter, Depends, Query
@@ -44,12 +45,15 @@ from app.api.v1.schemas import (
     ChatResponseOut,
     ChatResumeIn,
     ChatSourceOut,
+    CommandListOut,
+    CommandOut,
     SessionEventListOut,
     SessionEventOut,
     SuggestedQuestionsOut,
 )
-from app.core.exceptions import ConflictError, InvalidRequestError
+from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
 from app.core.services import Services, get_services
+from app.services import commands, modes
 from app.services import resume as resume_service
 from app.services.agent import (
     ApprovalEvent,
@@ -74,7 +78,9 @@ from app.services.session_events import (
     TURN_ERROR,
     TURN_OK,
     EventDraft,
+    command_draft,
     interrupted_payload,
+    mode_changed_draft,
     step_event_draft,
     thinking_draft,
     turn_end_draft,
@@ -136,6 +142,16 @@ def chat_stream(
     check_kb_scope(services, caller, payload.kb_ids)
     _require_conversation(services, payload, caller)
     _warn_on_scope_drift(services, payload)
+    # **命令先于模型**（P1-2，照 QwenPaw 的"进 LLM 之前短路"）：
+    # 这一段排在 `llm_config` 校验之前是刻意的——`/help` 与 `/mode` 不该因为
+    # "还没配对话模型"而报错，它们根本不需要模型。
+    plan = _plan_command(services, payload)
+    if plan is not None and plan.short_circuit:
+        return StreamingResponse(
+            _with_pings(_command_events(services, payload, plan)),
+            media_type="text/event-stream",
+            headers=SSE_HEADERS,
+        )
     model_pk = _effective_model(services, payload)
     thinking, effort = _effective_thinking(services, payload)
     # **在流开始前把模型校验掉**：坏 pk 应当是 422，而不是流内的一条 error 事件
@@ -143,7 +159,7 @@ def chat_stream(
     services.chat.llm_config(model_pk)
     return StreamingResponse(
         # 套一层心跳（P2-2）：流里长时间没事件时也要有字节出去，见 SSE_PING_SECONDS
-        _with_pings(_events(services, payload, model_pk, thinking, effort, caller)),
+        _with_pings(_events(services, payload, model_pk, thinking, effort, caller, plan)),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
@@ -266,59 +282,72 @@ def chat_once(
     check_kb_scope(services, caller, payload.kb_ids)
     _require_conversation(services, payload, caller)
     _warn_on_scope_drift(services, payload)
+    # **命令同样先于模型**（P1-2）：脚本、MCP 通道也要能用 `/help` `/mode` `/stop`
+    # ——"停止与审批要是一等命令"（调研报告 §2.7 抄点第 5 条）说的就是没有前端按钮
+    # 的那条路也得跑通。短路类命令不消耗模型调用、不落消息，答案就是命令那段话。
+    plan = _plan_command(services, payload)
+    if plan is not None and plan.short_circuit:
+        _record_command(services, payload, plan)
+        return ChatResponseOut(answer=plan.text, sources=[])
     model_pk = _effective_model(services, payload)
     thinking, effort = _effective_thinking(services, payload)
     history, summary, _ = _context(services, payload, model_pk)
+    prompt_query = plan.prompt if plan is not None and plan.prompt else payload.query
     sink = _TurnSink()
-    sink.start_turn(query=payload.query, model_pk=model_pk)
-
-    if _use_agent(services):
-        # **与流式走同一条链路**（P0）：这个端点的文档里写着"逻辑与流式完全相同"，
-        # 而工具循环已经是流式那条路的主流程——这里不跟上的话，
-        # 同一句话从 `/chat` 问和从 `/chat/stream` 问会得到两种性质的回答
-        loop = _agent_loop(
-            services,
-            caller,
-            kb_ids=payload.kb_ids,
-            conversation_id=payload.conversation_id,
-            model_pk=model_pk,
-            thinking=thinking,
-            effort=effort,
-        )
-        answer_text = ""
-        for event in loop.run(
-            messages=services.chat.agent_messages(
-                query=payload.query,
+    mode = services.chat.current_mode()
+    _note_turn_mode(services, sink, payload.conversation_id, mode)
+    sink.start_turn(query=payload.query, model_pk=model_pk, mode=mode)
+    services.commands.turns.begin(payload.conversation_id)
+    try:
+        if _use_agent(services):
+            # **与流式走同一条链路**（P0）：这个端点的文档里写着"逻辑与流式完全相同"，
+            # 而工具循环已经是流式那条路的主流程——这里不跟上的话，
+            # 同一句话从 `/chat` 问和从 `/chat/stream` 问会得到两种性质的回答
+            loop = _agent_loop(
+                services,
+                caller,
+                kb_ids=payload.kb_ids,
+                conversation_id=payload.conversation_id,
+                model_pk=model_pk,
+                thinking=thinking,
+                effort=effort,
+            )
+            answer_text = ""
+            for event in loop.run(
+                messages=services.chat.agent_messages(
+                    query=prompt_query,
+                    history=history,
+                    summary=summary,
+                    kb_ids=payload.kb_ids,
+                    skill_names=payload.skill_names,
+                    model_pk=model_pk,
+                )
+            ):
+                if isinstance(event, DoneEvent):
+                    # 收尾那条带的是后端拼好的全文，**以它为准**（避免个别增量丢失后
+                    # 正文与出处对不上）——与流式那条路同一个口径
+                    answer_text = event.answer
+                # 事件不发出去（这里没有流），但要**收进 sink**：快照与日志都由此而来
+                for _ in sink.feed(event):
+                    pass
+            answer = ChatTurn(answer=answer_text or sink.answer, sources=list(sink.sources))
+        else:
+            sources = services.chat.retrieve_sources(
+                query=prompt_query,
+                kb_ids=payload.kb_ids,
+                top_k=payload.top_k or services.runtime.get_int("chat.top_k") or 6,
+            )
+            answer = services.chat.answer(
+                query=prompt_query,
+                sources=sources,
                 history=history,
                 summary=summary,
-                kb_ids=payload.kb_ids,
-                skill_names=payload.skill_names,
                 model_pk=model_pk,
+                thinking=thinking,
+                thinking_effort=effort,
             )
-        ):
-            if isinstance(event, DoneEvent):
-                # 收尾那条带的是后端拼好的全文，**以它为准**（避免个别增量丢失后
-                # 正文与出处对不上）——与流式那条路同一个口径
-                answer_text = event.answer
-            # 事件不发出去（这里没有流），但要**收进 sink**：快照与日志都由此而来
-            for _ in sink.feed(event):
-                pass
-        answer = ChatTurn(answer=answer_text or sink.answer, sources=list(sink.sources))
-    else:
-        sources = services.chat.retrieve_sources(
-            query=payload.query,
-            kb_ids=payload.kb_ids,
-            top_k=payload.top_k or services.runtime.get_int("chat.top_k") or 6,
-        )
-        answer = services.chat.answer(
-            query=payload.query,
-            sources=sources,
-            history=history,
-            summary=summary,
-            model_pk=model_pk,
-            thinking=thinking,
-            thinking_effort=effort,
-        )
+    finally:
+        services.commands.turns.end(payload.conversation_id)
     sink.close_turn(status=_turn_status(sink.steps), answer=answer.answer)
     _record_turn(
         services,
@@ -346,7 +375,7 @@ def conversation_events(
         default="",
         description=(
             "逗号分隔的事件类型（turn/start、turn/end、step、tool_call、"
-            "thinking、error、interrupted）；留空返回全部"
+            "thinking、error、interrupted、mode/changed、command）；留空返回全部"
         ),
     ),
 ) -> SessionEventListOut:
@@ -518,16 +547,35 @@ class _TurnSink:
         return "".join(self.deltas)
 
     def start_turn(
-        self, *, query: str, model_pk: str | None, resume_reason: str | None = None
+        self,
+        *,
+        query: str,
+        model_pk: str | None,
+        resume_reason: str | None = None,
+        mode: str | None = None,
     ) -> None:
         """这一轮开始（``turn/start``）。
 
         **在流开始之前**就记下：之后无论正常收尾、失败还是被中断，
         日志的第一条都是"这一轮要做什么"，不会出现"有步骤、不知道在答什么"。
+
+        ``mode``（P1-1）：这一轮是哪一档开跑的。它同时是"档换过了没有"的基线
+        （见 ``_note_turn_mode`` 与 ``services/commands.ModeWatch``）。
         """
         self.events.append(
-            turn_start_draft(query=query, model_pk=model_pk, resume_reason=resume_reason)
+            turn_start_draft(
+                query=query, model_pk=model_pk, resume_reason=resume_reason, mode=mode
+            )
         )
+
+    def note_mode_change(self, *, previous: str, mode: str, source: str) -> None:
+        """这一轮开始前档换过了：补一条 ``mode/changed``（P1-1 遗留 #6）。
+
+        由 ``_note_turn_mode`` 调用（进来的顺序在 ``turn/start`` 之前），
+        ``/mode`` 那条**在会话里当场切**的路不走这里——它自己写、立刻写
+        （见 ``_record_mode_change``）。
+        """
+        self.events.append(mode_changed_draft(previous_mode=previous, mode=mode, source=source))
 
     def close_turn(self, *, status: str, answer: str) -> None:
         """这一轮有结论了（``turn/end``）。
@@ -781,6 +829,7 @@ def _events(
     thinking: bool | None,
     effort: str | None,
     caller: Caller,
+    plan: _CommandResult | None = None,
 ) -> Iterator[str]:
     """流式问答的**收尾**：建 sink、记 ``turn/start``、把断开也记进日志（P0-2）。
 
@@ -788,13 +837,22 @@ def _events(
     ``_turn_events`` 里，两条链路（正常提问 / 续跑）共用同一份收尾，
     于是不可能出现"一条链路记日志、另一条不记"。
 
+    ``plan``（P1-2）：输入是**改写类**命令时，它的 ``prompt`` 就是这一轮的提示
+    （``/skill`` 与自定义 md 命令）。原始那一行（``/xxx args``）只作为"用户敲了什么"
+    留在消息与日志里。
+
     ``GeneratorExit`` 是这里唯一必须拦的东西：用户在流式期间点停止、或者直接
     关掉页面时，Starlette 会 close 掉这个生成器，异常从 ``yield from`` 那里穿上来。
     不接住的话，库里就只剩半截（QwenPaw 那条教训：中断不补齐，
     下一轮与回看都说不清"当时停在哪一步"）。
     """
     sink = _TurnSink()
-    sink.start_turn(query=payload.query, model_pk=model_pk)
+    # **这一轮的档**（P1-1 遗留 #6）：在 turn/start 之前先看它换过没有
+    mode = services.chat.current_mode()
+    _note_turn_mode(services, sink, payload.conversation_id, mode)
+    sink.start_turn(query=payload.query, model_pk=model_pk, mode=mode)
+    # 这一轮的停止登记（P1-2 的 /stop）：从这一刻起"这条会话上有一轮在跑"
+    services.commands.turns.begin(payload.conversation_id)
     try:
         yield from _turn_events(
             services,
@@ -804,10 +862,13 @@ def _events(
             thinking=thinking,
             effort=effort,
             caller=caller,
+            plan=plan,
         )
     except GeneratorExit:
         _record_interruption(services, payload.conversation_id, sink)
         raise
+    finally:
+        services.commands.turns.end(payload.conversation_id)
 
 
 def _turn_events(
@@ -819,6 +880,7 @@ def _turn_events(
     thinking: bool | None,
     effort: str | None,
     caller: Caller,
+    plan: _CommandResult | None = None,
 ) -> Iterator[str]:
     """把一次问答摊成一串 SSE 事件。
 
@@ -828,6 +890,10 @@ def _turn_events(
     两条链路：Agent 工作流（默认，见 ``services/agent.py``）与单轮检索（``chat.agent_enabled``
     关掉时）。两条都会把 ``sources`` 与 ``delta`` 用同一套事件形状发出去，
     前端不必关心走的是哪条。
+
+    ``plan``（P1-2）：非空且带 ``prompt`` 时，这一轮问模型的**是那条命令渲染出来的正文**
+    （``/skill`` 的流程、自定义命令的模板），而 ``payload.query``（用户敲的那一行）
+    照旧作为"他问了什么"落进消息与日志——回看时看得出他用了哪条命令。
     """
     chat = services.chat
     # 过程快照与正文都攒在 sink 里：**只活在内存里、结束时一次性写**——
@@ -838,6 +904,8 @@ def _turn_events(
     step_log: list[dict[str, object]] = []
     thinking_parts: list[str] = []
     sources: list = []
+    # 交给模型的这一轮的提示（改写类命令就是命令渲染出来的正文，见上面）
+    prompt_query = plan.prompt if plan is not None and plan.prompt else payload.query
     # 上下文（含压缩）对两条链路都适用：Agent 关掉时同样需要"摘要 + 最近原文"
     history, summary, compressed = _context(services, payload, model_pk)
     if compressed:
@@ -868,9 +936,10 @@ def _turn_events(
                 thinking=thinking,
                 effort=effort,
             )
-            for event in loop.run(
+            stopped = False
+            run = loop.run(
                 messages=chat.agent_messages(
-                    query=payload.query,
+                    query=prompt_query,
                     history=history,
                     summary=summary,
                     kb_ids=payload.kb_ids,
@@ -878,8 +947,27 @@ def _turn_events(
                     model_pk=model_pk,
                     owner_id=_memory_owner(caller),
                 )
-            ):
-                yield from sink.feed(event)
+            )
+            try:
+                for event in run:
+                    yield from sink.feed(event)
+                    # **/stop 的落点**（P1-2）：在两次事件之间看一眼有没有人叫停
+                    # （见 services/commands.TurnControl：停止是协作式的，
+                    # 从外面掐线程会让这一轮没有任何收尾）
+                    if services.commands.turns.stop_requested(payload.conversation_id):
+                        stopped = True
+                        break
+            finally:
+                # 收掉那一头的生成器：它可能还停在 `yield` 上（那些还没跑完的
+                # 工具调用会跑完当前这一步，这正是"停在哪一步"要记的东西）
+                run.close()
+            if stopped:
+                # **如实收尾**：已经流出来的正文留着（它仍然有用），过程日志补一条
+                # interrupted（含"哪些调用没有结果"），与用户点停止那条路同一处置
+                sink.mark_interrupted(reason="用户用 /stop 停止")
+                _flush_events(services, payload.conversation_id, sink)
+                yield _sse({"type": "done", "answer": sink.answer})
+                return
         except ChatError as exc:
             yield _fail(services, payload.conversation_id, sink, str(exc))
             return
@@ -894,7 +982,7 @@ def _turn_events(
     else:
         try:
             sources = chat.retrieve_sources(
-                query=payload.query,
+                query=prompt_query,
                 kb_ids=payload.kb_ids,
                 top_k=payload.top_k,
             )
@@ -912,7 +1000,7 @@ def _turn_events(
         )
         try:
             for delta in chat.answer_stream(
-                query=payload.query,
+                query=prompt_query,
                 sources=sources,
                 history=history,
                 summary=summary,
@@ -990,11 +1078,15 @@ def _resume_events(
     "这一轮为什么接着做"在日志里必须看得出来，否则回看时会以为用户又问了一遍。
     """
     sink = _TurnSink()
-    sink.start_turn(query=question, model_pk=model_pk, resume_reason=reason)
+    # 与正常提问同一处置：先看档换过没有（P1-1 遗留 #6），再开这一轮
+    mode = services.chat.current_mode()
+    _note_turn_mode(services, sink, conversation_id, mode)
+    sink.start_turn(query=question, model_pk=model_pk, resume_reason=reason, mode=mode)
     # **那条「继续上一轮」的标记也进日志**：消息里的 steps 是"上一轮 + 标记 +
     # 这一轮"（见 ``_resume_steps``），日志若只记新的一半，投影就对不上了
     # ——而"投影等于快照"正是这条链路要守的东西。
     sink.events.append(EventDraft(kind=KIND_STEP, payload=_resume_marker(reason)))
+    services.commands.turns.begin(conversation_id)
     try:
         yield from _resume_turn_events(
             services,
@@ -1014,6 +1106,8 @@ def _resume_events(
         # 与 ``_events`` 同一处置：续跑跑到一半被停止 / 断开的，同样要补齐
         _record_interruption(services, conversation_id, sink)
         raise
+    finally:
+        services.commands.turns.end(conversation_id)
 
 
 def _resume_turn_events(
@@ -1432,6 +1526,433 @@ def _warn_on_scope_drift(services: Services, payload: ChatRequestIn) -> None:
 
 def _sources_out(sources) -> list[ChatSourceOut]:  # type: ignore[no-untyped-def]
     return [ChatSourceOut.model_validate(source) for source in sources]
+
+
+# ------------------------------------------------------------------ 斜杠命令（P1-2）
+#
+# 这一节是 P1-2 在协议层的落点：**以 ``/`` 开头的输入在进模型之前就被认出来**
+# （QwenPaw 的"三类命令进 LLM 之前短路"），短路类命令**不建工具循环、不落消息**
+# （DSH 的"命令执行写 session log 但不进模型历史"）。判定与词表都在
+# ``services/commands.py``，这里只负责"拿服务把命令执行掉、把结果摊成一条事件"。
+
+
+@dataclass(slots=True)
+class _CommandResult:
+    """一条命令的结论：**要么直接答掉**（短路类），**要么给出这一轮的提示**（改写类）。"""
+
+    name: str
+    text: str = ""
+    """回给用户看的那段话（界面按普通文本渲染，**不进模型上下文**）。"""
+    ok: bool = True
+    """失败也走这条事件（``ok=False``）：命令的报错是**回话**，不是 HTTP 500——
+    它跟"模型没配好"那种环境故障不是一回事，用户要的就是那句解释。"""
+    action: dict[str, object] | None = None
+    """界面要顺手做的事（开新会话 / 切到某档 / 停掉这一轮）。"""
+    prompt: str = ""
+    """**改写类**命令渲染出来的这一轮提示（非空 = 接着走正常那条链路）。"""
+
+    @property
+    def short_circuit(self) -> bool:
+        """这一条要不要模型（空的 ``prompt`` 就是短路类，见模块头那两条）。"""
+        return not self.prompt
+
+
+def _plan_command(services: Services, payload: ChatRequestIn) -> _CommandResult | None:
+    """这一轮的输入是命令吗；是的话**当场把它办掉**（返回 ``None`` = 不是命令）。
+
+    四种结局，每一种都有明确去处：
+
+    1. **不是命令** → ``None``（普通提问，一切照旧）；
+    2. **短路类内置**（``/help`` ``/new`` ``/stop`` ``/mode`` ``/compact``）→
+       在这里执行完，协议层按"一条 ``command`` + 一条 ``done``"回给界面；
+    3. **改写类**（``/skill`` 与全部自定义 md）→ 返回渲染好的 ``prompt``，调用方
+       拿它当这一轮的提示**继续往下走那条正常链路**（ZCode：``/skill`` 会重写下一条 prompt）；
+    4. **认不出的** → 照 DSH 的「``/`` 行永不静默降级为普通 prompt」回一句"没有这个命令"
+       （静默发给模型的话，用户以为自己在用命令，模型却在猜他想说什么）。
+
+    **本函数不碰模型**（除了 ``/compact`` 那一次摘要调用，那是压缩链路本身）：
+    短路的意义就是"这一步不该花钱"。
+    """
+    parsed = commands.parse(payload.query)
+    if parsed is None:
+        return None
+    record = services.commands.find(parsed.name)
+    if record is None:
+        return _unknown_command(services, parsed.name)
+    if record.short_circuit:
+        return _dispatch_builtin(services, payload, record, parsed)
+    return _rewrite_prompt(services, record, parsed)
+
+
+def _rewrite_prompt(
+    services: Services, record: commands.CommandDef, parsed: commands.ParsedCommand
+) -> _CommandResult:
+    """改写类命令：把正文渲染成**这一轮的提示**。
+
+    ``/skill`` 的正文由 ``ChatService.skill_prompt`` 渲染（它要读技能注册表），
+    自定义命令走 ``commands.render``（``$ARGUMENTS`` / ``$1..$N`` 与那条兜底追加）。
+    技能名打错时**在这里就回一句**（而不是让整轮 404）：用户敲的是命令，
+    他要的是"这个技能名不对"，不是一次 HTTP 报错。
+    """
+    if record.name == commands.NAME_SKILL:
+        pieces = parsed.args.split(maxsplit=1)
+        if not pieces:
+            return _CommandResult(
+                name="skill",
+                ok=False,
+                text="用法：/skill <技能名> [任务]。技能名在「能力」页里能看到。",
+            )
+        try:
+            prompt = services.chat.skill_prompt(pieces[0], pieces[1] if len(pieces) > 1 else "")
+        except NotFoundError as exc:
+            return _CommandResult(name="skill", ok=False, text=f"读不到这个技能：{exc}")
+        return _CommandResult(name="skill", prompt=prompt)
+    return _CommandResult(name=record.name, prompt=commands.render(record, parsed.args))
+
+
+def _unknown_command(services: Services, name: str) -> _CommandResult:
+    """认不出的命令：**如实说没有**，并给两个最可能的自救（``/help``、被遮蔽的原因）。
+
+    被遮蔽的（``shadowed_by``）与加载失败的（``error``）在这里分开说：它们
+    "文件在、命令不生效"的原因完全不同，混成一句"没有这个命令"会让用户
+    去翻一个明明在那儿的文件。
+    """
+    existing = services.commands.any_named(name)
+    if existing is not None and existing.shadowed_by:
+        return _CommandResult(
+            name=name,
+            ok=False,
+            text=(
+                f"命令 /{name} 被 /{existing.shadowed_by} 遮蔽了：同名时**内置 > 用户 > 仓库**，"
+                f"所以生效的是 /{existing.shadowed_by}。要用你放的那一份，先把它改个名字。"
+            ),
+        )
+    if existing is not None and existing.error:
+        return _CommandResult(
+            name=name, ok=False, text=f"命令 /{name} 没被加载：{existing.error}"
+        )
+    return _CommandResult(
+        name=name,
+        ok=False,
+        text=f"没有这个命令：/{name}。敲 /help 看全部可用命令。",
+    )
+
+
+def _dispatch_builtin(
+    services: Services,
+    payload: ChatRequestIn,
+    record: commands.CommandDef,
+    parsed: commands.ParsedCommand,
+) -> _CommandResult:
+    """执行一条短路类内置命令。**每一分支都必须自己回答"没有会话时怎么办"。**"""
+    if record.name == commands.NAME_HELP:
+        return _help(services, parsed)
+    if record.name == commands.NAME_COMPACT:
+        return _compact(services, payload)
+    if record.name == commands.NAME_NEW:
+        return _new_conversation(services, payload)
+    if record.name == commands.NAME_STOP:
+        return _stop_turn(services, payload)
+    if record.name == commands.NAME_MODE:
+        return _switch_mode(services, payload, parsed)
+    return _CommandResult(name=record.name, ok=False, text=f"/{record.name} 还没有实现。")
+
+
+def _help(services: Services, parsed: commands.ParsedCommand) -> _CommandResult:
+    """``/help``：没参数列全部，带参数展开一条。
+
+    **与前端那个 ``/`` 菜单读同一份数据**（``services.commands``）——两处各写一份
+    清单的话，"菜单里点得到、``/help`` 里查不到"这种不一致迟早出现。
+    """
+    wanted = parsed.args.split()[0].lstrip("/") if parsed.args.split() else ""
+    if wanted:
+        record = services.commands.any_named(wanted)
+        if record is None:
+            return _CommandResult(name="help", ok=False, text=f"没有这个命令：/{wanted}")
+        lines = [f"/{record.name} — {record.summary}"]
+        if record.usage:
+            lines.append(f"用法：{record.usage}")
+        lines.extend(record.details)
+        if record.name == commands.NAME_MODE:
+            lines.append(commands.modes_text())
+        if record.shadowed_by:
+            lines.append(f"注意：这一条正被 /{record.shadowed_by} 遮蔽（同名取优先级最高的那条）。")
+        if record.error:
+            lines.append(f"注意：这一条没有加载成功——{record.error}")
+        if record.source != "builtin" and record.path:
+            lines.append(f"文件：{record.path}")
+        return _CommandResult(name="help", text="\n".join(lines))
+    lines = ["可用命令（内置 + 自定义）："]
+    for record in services.commands.catalog():
+        usage = record.usage or f"/{record.name}"
+        lines.append(f"{usage} — {record.summary}")
+    return _CommandResult(name="help", text="\n".join(lines))
+
+
+def _compact(services: Services, payload: ChatRequestIn) -> _CommandResult:
+    """``/compact``：**现在就把上下文压掉**（走的是自动压缩那条链路的同一个函数）。"""
+    if not payload.conversation_id:
+        return _CommandResult(
+            name="compact", ok=False, text="/compact 需要一条会话：先在这里问一句再压。"
+        )
+    try:
+        count = services.chat.compact(
+            conversation_id=payload.conversation_id, model_pk=payload.model_pk
+        )
+    except Exception as exc:
+        # 失败**如实说**（自动压缩那条路是吞掉的，这里不能吞：用户点了一下，
+        # 回"已压缩"而其实没压是最糟的一种回话）
+        logger.warning("手动压缩失败：%s", payload.conversation_id, exc_info=True)
+        return _CommandResult(name="compact", ok=False, text=f"压缩失败：{exc}")
+    if count == 0:
+        return _CommandResult(name="compact", text="没有可压缩的内容：这条会话的对话都已进摘要。")
+    return _CommandResult(
+        name="compact",
+        text=f"已把 {count} 条较早的消息压成摘要；之后的问答仍记得它们，但上下文短了。",
+    )
+
+
+def _new_conversation(services: Services, payload: ChatRequestIn) -> _CommandResult:
+    """``/new``：开一条新会话（**当前这条不删**，只是不再是当前会话）。
+
+    库范围、模型、思考档、归属账号**都取当前这条会话的**：用户敲 ``/new`` 是"换个话题"，
+    不是"把这一轮的选择也重置掉"，更不是"换个人"。
+    """
+    kb_ids = list(payload.kb_ids)
+    model_pk = payload.model_pk
+    thinking = payload.thinking
+    effort = payload.thinking_effort
+    owner_id: str | None = None
+    if payload.conversation_id:
+        try:
+            current = services.conversations.get(payload.conversation_id)
+            kb_ids = list(current.kb_ids) or kb_ids
+            model_pk = model_pk or current.model_pk
+            thinking = thinking if thinking is not None else current.thinking
+            effort = effort or current.thinking_effort
+            owner_id = current.owner_id
+        except Exception:
+            # 当前这条读不出来（不存在 / 越主）：那就不继承，照请求里给的建
+            logger.info("新建会话时读不到当前会话：%s", payload.conversation_id, exc_info=True)
+    record = services.conversations.create(
+        kb_ids=kb_ids,
+        owner_id=owner_id,
+        model_pk=model_pk,
+        thinking=thinking,
+        thinking_effort=effort,
+    )
+    return _CommandResult(
+        name="new",
+        text="已新建会话。当前这条留在历史里，随时可以回去。",
+        action={"kind": "conversation", "conversation_id": record.id},
+    )
+
+
+def _stop_turn(services: Services, payload: ChatRequestIn) -> _CommandResult:
+    """``/stop``：把这一轮叫停（P1-2 的"停止也要是一等命令"）。
+
+    **后端能停后端的那一半**：这一轮正在另一个请求里跑（SSE 那条流），
+    这里给它挂一个停止标记，那条流在**下一次拿到事件时**收工并补一条 ``interrupted``
+    （见 ``_turn_events`` 里那个检查）。界面同时会自己 abort（``action`` 那一项），
+    两条路都到达同一处——比谁先到不影响结果。
+
+    没有在跑的一轮时**如实回一句**：假装停了一下比不回答更糟。
+    """
+    if not payload.conversation_id:
+        return _CommandResult(name="stop", ok=False, text="这条会话上没有在跑的一轮。")
+    if not services.commands.turns.request_stop(payload.conversation_id):
+        return _CommandResult(
+            name="stop",
+            ok=False,
+            text="这条会话上没有在跑的一轮（可能已经跑完了，或者它刚被别处停掉）。",
+        )
+    return _CommandResult(
+        name="stop",
+        text="已请求停止；已经流出来的正文会留着，过程日志里补一条「被中断」。",
+        action={"kind": "stop_turn"},
+    )
+
+
+def _switch_mode(
+    services: Services, payload: ChatRequestIn, parsed: commands.ParsedCommand
+) -> _CommandResult:
+    """``/mode [计划档名]``：切 Agent 模式（不带参数就报当前档）。
+
+    三件事按顺序做，顺序不能换：**先读旧档**（写入之后就没有"旧档"了）→ 写设置 →
+    记账（会话事件 + 观测表）。漏掉记账的话，下一轮会再补一条重复的 ``mode/changed``。
+    """
+    current = services.chat.current_mode()
+    pieces = parsed.args.split()
+    if not pieces:
+        label = modes.MODE_DEFS[current].label
+        return _CommandResult(
+            name="mode",
+            text=(
+                f"现在是「{label}」档（{current}）。\n{commands.modes_text()}\n"
+                "切换：/mode plan|build|edit|yolo"
+            ),
+        )
+    wanted = pieces[0].lower()
+    if wanted not in commands.MODE_VALUES:
+        return _CommandResult(
+            name="mode",
+            ok=False,
+            text=(
+                f"不认识的档：{wanted}。可用的是 {'、'.join(commands.MODE_VALUES)}。\n"
+                f"{commands.modes_text()}"
+            ),
+        )
+    if wanted == current:
+        return _CommandResult(
+            name="mode", text=f"已经是「{modes.MODE_DEFS[wanted].label}」档了，没有改动。"
+        )
+    services.runtime.set({"chat.mode": wanted})
+    if payload.conversation_id:
+        _record_mode_change(services, payload.conversation_id, previous=current, mode=wanted)
+    return _CommandResult(
+        name="mode",
+        text=(
+            f"已切到「{modes.MODE_DEFS[wanted].label}」档（{wanted}）："
+            f"{modes.MODE_DEFS[wanted].hint}。下一轮生效。"
+        ),
+        action={"kind": "mode", "mode": wanted, "previousMode": current},
+    )
+
+
+def _record_mode_change(
+    services: Services, conversation_id: str, *, previous: str, mode: str
+) -> None:
+    """把一次**在会话里当场切的**模式切换写进会话日志（``source="command"``）。
+
+    抄的是 ZCode 的 ``SessionModeChanged``（调研报告 §2.6 抄点第 4 条）：
+    带 ``previousMode`` 的事件让"它是什么时候开始不问我的"可查、可撤销、可供界面动画。
+
+    best-effort：日志写不进去不该让"切模式"这件已经生效的事回一个失败。
+    """
+    try:
+        services.conversations.append_events(
+            conversation_id,
+            [
+                mode_changed_draft(
+                    previous_mode=previous, mode=mode, source=commands.MODE_SOURCE_COMMAND
+                )
+            ],
+        )
+    except Exception:
+        logger.warning("写 mode/changed 事件失败：%s", conversation_id, exc_info=True)
+    # 顺手同步观测表：下一轮就不会再补一条重复的 settings 来源事件
+    services.commands.mode_watch.note(conversation_id, mode)
+
+
+def _note_turn_mode(
+    services: Services, sink: _TurnSink, conversation_id: str | None, mode: str
+) -> None:
+    """**这一轮开始时**看档换过没有，换过就补一条 ``mode/changed``（P1-1 遗留 #6）。
+
+    设置页与输入框那一排的控件改档时手里**没有会话**（模式是应用级配置），所以在那些
+    地方写不出事件；这里用"上一轮是哪一档"作基线把它补上（``source="settings"``）。
+    基线来自 ``ModeWatch``（首次遇到一条会话时从日志里读一次），见
+    ``services/commands.ModeWatch``。
+
+    加在 ``turn/start`` **之前**：事件的顺序就是"先换了档，这一轮才以新档开跑"。
+    """
+    previous = services.commands.mode_watch.observe(conversation_id or "", mode)
+    if previous:
+        sink.note_mode_change(previous=previous, mode=mode, source=commands.MODE_SOURCE_SETTINGS)
+
+
+def _command_events(
+    services: Services, payload: ChatRequestIn, result: _CommandResult
+) -> Iterator[str]:
+    """短路类命令的事件流：**一条 ``command`` + 一条 ``done``**，没有别的。
+
+    形状刻意与正常那一轮一致（同样以 ``done`` 收尾）：前端那条读流的循环只有一份，
+    命令只是"内容不同的一次流"。``done`` 的 ``answer`` 是**空串**——命令不产生回答，
+    界面据此不建 assistant 气泡；消息也不会落库，这条路根本不碰 ``_record_turn``
+    （这就是"不进模型历史"）。
+    """
+    _record_command(services, payload, result)
+    event: dict[str, object] = {
+        "type": "command",
+        "name": result.name,
+        "text": result.text,
+        "ok": result.ok,
+    }
+    if result.action:
+        event["action"] = dict(result.action)
+    yield _sse(event)
+    yield _sse({"type": "done", "answer": ""})
+
+
+def _record_command(services: Services, payload: ChatRequestIn, result: _CommandResult) -> None:
+    """把这一条命令记进会话日志（DSH 的「命令执行写 session log 但不进模型历史」）。
+
+    只写 ``command`` 这一条事件：它**不是一轮问答**，所以没有 ``turn/start`` /
+    ``turn/end`` 把它包起来（那两条的含义是"这一轮问的是什么、怎么结束的"，
+    套在这里会让回看的人以为模型回答过什么）。没有会话（无状态调用）时不记——没地方记。
+    """
+    if not payload.conversation_id:
+        return
+    parsed = commands.parse(payload.query)
+    try:
+        services.conversations.append_events(
+            payload.conversation_id,
+            [
+                command_draft(
+                    name=result.name,
+                    args=parsed.args if parsed else "",
+                    result=result.text,
+                    ok=result.ok,
+                )
+            ],
+        )
+    except Exception:
+        # best-effort：日志写不进去不该让用户拿不到那句回答
+        logger.warning("写 command 事件失败：%s", payload.conversation_id, exc_info=True)
+
+
+@router.get(
+    "/chat/commands",
+    response_model=CommandListOut,
+    summary="可用命令（内置 + 自定义，被遮蔽的也在里面）",
+)
+def list_commands(
+    services: Services = Depends(get_services),
+    _: Caller = Depends(require_read),
+) -> CommandListOut:
+    """斜杠命令的目录：前端那个 ``/`` 菜单就吃这一份（P1-2 第 4 条）。
+
+    三条与界面直接相关的约定：
+
+    1. **``{name, summary, usage, group}`` 四个字段是给菜单的**（``group`` 就是发现源
+       ——``builtin`` / ``user`` / ``repo``），其余字段是顺带给出的排错信息；
+    2. **被遮蔽的与加载失败的都在列表里**（``shadowed_by`` / ``error``，与插件列表
+       同一套做法）：静默藏掉会让用户以为文件没生效，而原因只有这里知道；
+    3. **``short_circuit`` 决定界面往哪条路发**：为真的是 ``/help`` ``/mode`` 这一类，
+       界面发出去之后**不建回答气泡**（后端不会产生回答）；为假的是改写类，
+       界面按普通一轮处理（``/skill`` 与自定义 md 命令会走模型）。
+    """
+    items = services.commands.list()
+    return CommandListOut(
+        items=[
+            CommandOut(
+                name=item.name,
+                summary=item.summary,
+                usage=item.usage or f"/{item.name}",
+                group=item.source,
+                details=list(item.details),
+                argument_hint=item.argument_hint,
+                short_circuit=item.short_circuit,
+                shadowed_by=item.shadowed_by,
+                error=item.error,
+                path=item.path,
+            )
+            for item in items
+        ],
+        total=len(items),
+        user_dir=str(services.commands.user_dir),
+        builtin_dir=str(services.commands.builtin_dir),
+    )
 
 
 __all__ = ["router"]

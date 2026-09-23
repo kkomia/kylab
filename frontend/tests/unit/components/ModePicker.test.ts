@@ -160,3 +160,20 @@ describe('ModePicker', () => {
     expect(wrapper.text()).toBe('')
   })
 })
+
+describe('别处改了档（P1-2 的 `/mode` 命令）', () => {
+  it('收到广播就跟着显示新档，不再打一次设置端点', async () => {
+    // 模式有三条改法：这个控件、设置页、输入框里的 `/mode`。前两条的显示是自洽的，
+    // 第三条发生在这个控件之外——不通知的话它显示的还是旧档，
+    // 而那正是这个控件存在的意义（"我明明切到全放行了"）。
+    const wrapper = await mounted('build')
+    getChatMode.mockClear()
+
+    window.dispatchEvent(new CustomEvent('kylab:mode-changed', { detail: 'yolo' }))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('模式·全放行')
+    // 值就在事件里，不必再问一次后端（多一个往返还会让标签先回旧值再跳新值）
+    expect(getChatMode).not.toHaveBeenCalled()
+  })
+})

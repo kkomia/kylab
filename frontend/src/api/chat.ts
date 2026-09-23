@@ -195,6 +195,86 @@ export interface ChatApproval {
 /** 用户能做的三个决定（与后端 `ChatApprovalIn` 的取值一一对应）。 */
 export type ApprovalDecision = 'allow_once' | 'allow_always' | 'deny'
 
+/**
+ * 一条斜杠命令（P1-2）。**菜单与 `/help` 读的是后端同一份数据**
+ * （`GET /api/v1/chat/commands`，见 `listCommands`）。
+ *
+ * `group` 就是发现源，菜单按它分组：内置 / 你放的（`data/commands/`）/ 随代码发布。
+ * 被遮蔽的（`shadowed_by`）与加载失败的（`error`）**也在列表里**——
+ * 静默藏掉会让人以为文件没生效，而原因只有后端知道。
+ */
+export interface ChatCommand {
+  name: string
+  summary: string
+  usage: string
+  group: 'builtin' | 'user' | 'repo'
+  details: string[]
+  argument_hint: string
+  /** 这条要不要模型：为真的（`/help` `/mode` 这类）**不产生回答气泡**，见 `onCommand`。 */
+  short_circuit: boolean
+  shadowed_by: string
+  error: string
+  path: string
+}
+
+/** 命令目录（`GET /api/v1/chat/commands`）。 */
+export interface ChatCommandList {
+  items: ChatCommand[]
+  total: number
+  user_dir: string
+  builtin_dir: string
+}
+
+/** 把契约里的可空字段收成必有的（`Required<>` 只在顶层生效，这里逐字段收窄）。 */
+function normalizeCommand(raw: components['schemas']['CommandOut']): ChatCommand {
+  return {
+    name: raw.name,
+    summary: raw.summary ?? '',
+    usage: raw.usage ?? '',
+    group: raw.group ?? 'builtin',
+    details: raw.details ?? [],
+    argument_hint: raw.argument_hint ?? '',
+    short_circuit: raw.short_circuit ?? true,
+    shadowed_by: raw.shadowed_by ?? '',
+    error: raw.error ?? '',
+    path: raw.path ?? '',
+  }
+}
+
+/**
+ * 读一次命令目录（前端输入框里那个 `/` 菜单吃它）。
+ *
+ * **失败不抛**：菜单是顺手的入口，后端旧版本没有这个端点时不该把对话页变成错误提示
+ * （同 `ModePicker` 的处置）——返回空列表，界面只少一个菜单。
+ */
+export async function listCommands(): Promise<ChatCommand[]> {
+  try {
+    const body = await request<{
+      items?: components['schemas']['CommandOut'][]
+    }>('/chat/commands')
+    // 只留**能用的**那批（被遮蔽的与坏掉的在列表端点里仍可见，见插件列表那套做法）
+    return (body.items ?? [])
+      .map(normalizeCommand)
+      .filter((item) => !item.shadowed_by && !item.error)
+  } catch {
+    return []
+  }
+}
+
+/**
+ * 一条命令执行完的回话（后端那条 ``command`` 事件，P1-2）。
+ *
+ * **它不是回答**：`done` 里的 `answer` 是空串，界面不该为它建一个回答气泡——
+ * 这就是「命令不进模型历史」在界面上的样子。`action` 是界面要顺手做的事
+ * （开新会话 / 停掉这一轮 / 切了某一档）。
+ */
+export interface ChatCommandResult {
+  name: string
+  text: string
+  ok: boolean
+  action?: { kind: string; conversation_id?: string; mode?: string; previousMode?: string }
+}
+
 /** 服务端事件（后端 api/v1/chat.py 的事件形状）。 */
 export type ChatStreamEvent =
   | {
@@ -227,6 +307,17 @@ export type ChatStreamEvent =
   | { type: 'delta'; text: string }
   | { type: 'done'; answer: string }
   | { type: 'error'; message: string }
+  /**
+   * 一条斜杠命令的回话（P1-2）。**它替代了整轮回答**：这一轮没有 step / delta，
+   * 也不会有消息落库（后端在进模型之前就把它答掉了）。
+   */
+  | {
+      type: 'command'
+      name: string
+      text: string
+      ok: boolean
+      action?: ChatCommandResult['action']
+    }
 
 export interface ChatHandlers {
   /** 依据先到：用户不必等模型写完就知道"它拿到了什么"。 */
@@ -243,6 +334,13 @@ export interface ChatHandlers {
    * 所以在它被回答之前不会再有任何事件——界面必须把确认条摆出来。
    */
   onApproval?: (approval: ChatApproval) => void
+  /**
+   * 这一轮是**一条命令**（P1-2）：回话只有这一条 + 一条空的 `done`。
+   *
+   * 与 `onDelta` 分开是刻意的：命令不是模型写的，界面不该把它当回答渲染
+   * （不建气泡、不进历史），而 `done` 的 `answer` 是空串。
+   */
+  onCommand?: (result: ChatCommandResult) => void
 }
 
 /**
@@ -494,6 +592,17 @@ async function pump(
         detail: event.detail ?? '',
         rule: event.rule ?? '',
         timeout_seconds: event.timeout_seconds ?? 0,
+      })
+      return
+    }
+    if (event.type === 'command') {
+      // **不走节流、也不进正文**：命令的回话是"系统的回话"，
+      // 晚一步显示没有任何好处，而混进 answer 会让它变成一条"回答"
+      handlers.onCommand?.({
+        name: event.name,
+        text: event.text,
+        ok: event.ok,
+        ...(event.action ? { action: event.action } : {}),
       })
       return
     }

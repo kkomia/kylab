@@ -19,7 +19,8 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
-from app.services import plan_gate
+from app.core.exceptions import InvalidRequestError
+from app.services import modes, plan_gate
 from app.services import subagent as subagent_service
 from app.services.approvals import ApprovalRegistry
 from app.services.llm import ChatError, ChatMessage, LLMConfig, OpenAICompatChat
@@ -780,6 +781,33 @@ class ChatService:
         self._conversations.set_summary(conversation_id, new_summary, older[-1].id)
         return PreparedContext(history=_to_chat(recent), summary=new_summary, compressed=True)
 
+    def compact(self, *, conversation_id: str, model_pk: str | None = None) -> int:
+        """**立刻**把"还没进摘要"的对话压成摘要，返回压掉几条消息（P1-2 的 ``/compact``）。
+
+        走的是自动压缩那条链路的**同一个函数**（``_summarize`` + ``set_summary``，
+        与 ``prepare_context`` 里那段一模一样）：两边各写一份的话，"手动压完再自动压"
+        会得到两种口径的摘要，而摘要写进库之后没人能看出是哪一种写的。
+
+        与自动压缩的两点差别，都是这一条命令存在的理由：
+
+        - **不等阈值**：自动压缩只在占用越过 ``chat.compress_at`` 时发生，而用户想压
+          常常有别的理由（准备换个更小的模型、这一轮塞了很多资料、就是嫌它慢）；
+        - **失败如实抛**（自动那条路是吞掉并退回最近历史）：用户点了一下、
+          什么都没发生却回了"已压缩"是最糟的一种回话。
+
+        没有可压的消息时返回 ``0``（调用方据此如实回一句"没什么可压的"，不假装做了事）。
+        """
+        if self._conversations is None:
+            raise InvalidRequestError("这条链路不带会话，没有可压缩的上下文")
+        records = self._conversations.messages(conversation_id)
+        summary, upto = self._conversations.summary(conversation_id)
+        pending = _after_marker(records, upto)
+        if not pending:
+            return 0
+        new_summary = self._summarize(summary, pending, model_pk)
+        self._conversations.set_summary(conversation_id, new_summary, pending[-1].id)
+        return len(pending)
+
     def _summarize(
         self, summary: str, messages: list, model_pk: str | None
     ) -> str:
@@ -828,6 +856,8 @@ class ChatService:
         """
         scope = [str(item) for item in (kb_ids or []) if str(item).strip()]
         base = system_prompt or AGENT_SYSTEM_PROMPT
+        # 当前档与它的语义（P1-1 遗留 #7，v0.44）：**先说清楚**，别等它撞上来
+        base = f"{base}\n\n{self.mode_block()}"
         if not scope:
             base = f"{base}\n\n{NO_KB_NOTE}"
         return build_agent_messages(
@@ -840,6 +870,39 @@ class ChatService:
             persona=self._persona_texts(owner_id),
             skills=self._skill_block(self._pinned_bodies(skill_names)),
             kb_prompt=self.kb_prompt(scope),
+        )
+
+    def current_mode(self) -> str:
+        """当前 Agent 模式档（``plan`` / ``build`` / ``edit`` / ``yolo``，P1-1）。
+
+        读点就这一处（``chat.mode`` 的设置值经 ``modes.coerce`` 归一）：
+        系统提示词（``mode_block``）、会话事件（``mode/changed`` 的 previousMode）、
+        ``/mode`` 那条命令的"现在是什么档"全部问它。散着读会出现"提示词说 build、
+        闸门按 plan 判"这种只有用户被拦下时才发现的错。
+        """
+        return modes.coerce(self._runtime.get("chat.mode"))
+
+    def mode_block(self) -> str:
+        """当前 Agent 模式与它的语义，**要拼进系统提示词的那一段**（P1-1 遗留 #7）。
+
+        抄的是"先告知"而不是只有 QwenPaw 的"拦下并回灌"（调研报告 §2.6）：
+        拦下并回灌是**兜底**（模型不知道这一档的规矩时它一定会撞一次），
+        而这一句是**预防**——写清楚现在哪一档、这一档允许什么，那一撞大多不会发生。
+        两者不冲突，都在：``tool_loop`` 那边仍然拦（并且把理由回灌），这里负责先说。
+
+        档从 ``chat.mode`` 现读（``tool_loop`` 那处是同一个读点）：所以 ``/mode``
+        或设置页改一下，**下一轮**的提示词与闸门就都是新档，不必重启。
+
+        最后一句话是刻意的：四档下交给模型的工具表**一模一样**（``modes`` 模块头的
+        第 1 条规矩），不说清楚的话，它被拦下时会以为"这个工具没给我 / 环境坏了"，
+        然后换个名字重试——那正是最费钱的一种反应。
+        """
+        name = modes.coerce(self._runtime.get("chat.mode"))
+        item = modes.MODE_DEFS[name]
+        return (
+            f"【当前模式】{item.label}（{name}）：{item.hint}。{item.detail}\n"
+            "这一档由用户选定，**只影响权限判定，不影响你能用哪些工具**："
+            "被拦下的调用会把原因交回给你，照原因调整做法，不要换个名字重试。"
         )
 
     def _persona_texts(self, owner_id: str | None) -> tuple[tuple[str, str], ...]:
@@ -865,12 +928,31 @@ class ChatService:
             if not name or self._skills is None:
                 continue
             try:
-                record, body = self._skills.read(name)
+                bodies.append(self.skill_prompt(name))
             except Exception:
                 logger.info("钉住的技能读不出来：%s", name, exc_info=True)
                 continue
-            bodies.append(f"【技能 {record.name} 的流程】{_SKILL_SEPARATOR}{body}")
         return _SKILL_SEPARATOR.join(bodies)
+
+    def skill_prompt(self, name: str, task: str = "") -> str:
+        """一个技能的正文渲染成**这一轮的提示**（P1-2 的 ``/skill`` 用它）。
+
+        抄 ZCode 的 ``/skill [<name> [task]]``：那条命令"会**重写下一条 prompt**
+        强制先加载技能"（调研报告 §2.7 第 1 条）。所以它和钉住技能是同一件事
+        ——区别只在"谁决定"：钉住是用户在输入框里勾的（每轮都在），
+        这一条是他当场敲的（只这一轮）。
+
+        **读不出来就抛**（``NotFoundError``）：与钉住的处置相反，这里是有来由的——
+        钉住那一路是"尽量生效"，而 ``/skill`` 是用户明确点名的一次动作，
+        技能名打错却静默什么都没发生，他只会以为"这个技能不好使"。
+        """
+        if self._skills is None:
+            raise InvalidRequestError("技能功能没有接入，暂时用不了 /skill")
+        record, body = self._skills.read(name)
+        text = f"【技能 {record.name} 的流程】{_SKILL_SEPARATOR}{body}"
+        if task.strip():
+            return f"{text}{_SKILL_SEPARATOR}用户任务：{task.strip()}"
+        return f"{text}{_SKILL_SEPARATOR}请按上面的流程开始；需要我提供什么就先问。"
 
     def run_subagent_text(
         self,

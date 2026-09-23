@@ -409,13 +409,19 @@ class FakeChatModel:
         self._script = list(script or [])
         #: 最近一次拿到的工具名（用例据此断言"该给的工具都给了"）
         self.seen_tools: list[str] = []
+        #: **最近一次**拿到的消息。用例据此断言提示词里有什么（当前模式、
+        #: 命令渲染出来的正文……）——留最后一次的那一份：工具循环里消息是逐步
+        #: 加长的，最后那次带的是最全的一版。
+        self.seen_messages: list = []  # type: ignore[type-arg]
 
     def complete(self, messages):  # type: ignore[no-untyped-def]
+        self.seen_messages = list(messages)
         if self.error:
             raise self.error
         return self.answer
 
     def stream(self, messages):  # type: ignore[no-untyped-def]
+        self.seen_messages = list(messages)
         if self.error:
             raise self.error
         yield from self.answer
@@ -427,6 +433,7 @@ class FakeChatModel:
         这里一块给完——"切几块"是传输细节，用例要表达的是"这一步要调什么"）。
         """
         self.seen_tools = [item.name for item in (tools or [])]
+        self.seen_messages = list(messages)
         if self.error:
             raise self.error
         reply = self._script.pop(0) if self._script else None

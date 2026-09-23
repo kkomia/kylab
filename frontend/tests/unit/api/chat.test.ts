@@ -5,6 +5,8 @@ import {
   chatStream,
   decideApproval,
   isAbortError,
+  listCommands,
+  type ChatCommandResult,
   type ChatHandlers,
   type ChatPayload,
   type ChatSource,
@@ -426,5 +428,98 @@ describe('chatOnce', () => {
 
     expect(result.answer).toBe('回答')
     expect(result.sources[0].document_name).toBe('文档1.pdf')
+  })
+})
+
+describe('斜杠命令（P1-2）', () => {
+  it('command 事件走 onCommand 单独派发，**不进正文**', async () => {
+    // 命令的回话不是"助手说的话"：混进 answer 会让它变成一条回答，
+    // 而"命令不进模型历史"这件事在界面上就靠这条分派来体现
+    const body = events([
+      { type: 'command', name: 'help', text: '可用命令：/mode…', ok: true },
+      { type: 'done', answer: '' },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sseResponse([body])),
+    )
+
+    const commands: ChatCommandResult[] = []
+    const deltas: string[] = []
+    let done: string | null = null
+    await noPace(
+      { query: '/help', kb_ids: [] },
+      {
+        onCommand: (result) => commands.push(result),
+        onDelta: (text) => deltas.push(text),
+        onDone: (answer) => {
+          done = answer
+        },
+      },
+    )
+
+    expect(commands).toEqual([{ name: 'help', text: '可用命令：/mode…', ok: true }])
+    expect(deltas).toEqual([])
+    // 收尾仍然是 done，但**答案为空**——界面据此不建气泡
+    expect(done).toBe('')
+  })
+
+  it('command 事件里的 action 原样带出来（界面据此开新会话 / 停掉这一轮）', async () => {
+    const body = events([
+      {
+        type: 'command',
+        name: 'mode',
+        text: '已切到「计划」档',
+        ok: true,
+        action: { kind: 'mode', mode: 'plan', previousMode: 'build' },
+      },
+      { type: 'done', answer: '' },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sseResponse([body])),
+    )
+
+    const commands: ChatCommandResult[] = []
+    await noPace({ query: '/mode plan', kb_ids: [] }, { onCommand: (item) => commands.push(item) })
+
+    expect(commands[0]?.action).toEqual({ kind: 'mode', mode: 'plan', previousMode: 'build' })
+  })
+
+  it('listCommands 只留能用的那批（被遮蔽的与坏掉的不进菜单）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              items: [
+                { name: 'help', summary: '列出命令', usage: '/help', group: 'builtin' },
+                { name: 'deploy', summary: '发版', usage: '/deploy', group: 'user' },
+                // 被内置的同名命令遮蔽：列表端点里看得到（排错用），但菜单里不该出现
+                { name: 'mode', usage: '/mode', group: 'user', shadowed_by: 'mode' },
+                // 文件名不合法被丢弃：同样只留在列表里
+                { name: 'bash_tool', usage: '/bash_tool', group: 'user', error: '命令名不合法' },
+              ],
+            }),
+            { status: 200 },
+          ),
+      ),
+    )
+
+    const items = await listCommands()
+
+    expect(items.map((item) => item.name)).toEqual(['help', 'deploy'])
+    expect(items[0]?.short_circuit).toBe(true)
+    expect(items[0]?.group).toBe('builtin')
+  })
+
+  it('命令端点读不到时返回空列表（菜单是顺手入口，不该把对话页变成错误提示）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({ message: '没有这个端点' }), { status: 404 })),
+    )
+
+    await expect(listCommands()).resolves.toEqual([])
   })
 })

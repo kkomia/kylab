@@ -25,7 +25,7 @@
  * 所以正在跑的这一轮不会中途换档——那是刻意的，否则一轮里前几步宽松后几步严格，
  * 回看时说不清是按哪一档跑的。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { getChatMode, setChatMode } from '@/api/settings'
 import IconCheck from '@/components/icons/IconCheck.vue'
@@ -33,6 +33,16 @@ import IconChevronDown from '@/components/icons/IconChevronDown.vue'
 import RowMenu from '@/components/ui/RowMenu.vue'
 import { isAdmin } from '@/composables/useSession'
 import { useToast } from '@/composables/useToast'
+
+/**
+ * 别处改了模式时广播的事件名（P1-2 的 ``/mode`` 命令用它，见 ChatView）。
+ *
+ * 为什么用事件而不是 props：模式只有这一个控件在显示，而改它的路有三条
+ * （这个控件、设置页、输入框里的 `/mode`）。前两条的显示是自洽的，
+ * 第三条发生在这个控件之外——不通知的话，它显示的还是旧档，
+ * 而那正是这个文件开头警告过的"我明明切到全放行了，它怎么还问我"。
+ */
+const MODE_CHANGED_EVENT = 'kylab:mode-changed'
 
 /**
  * 每一档的短名字与那一句人话（**没有这一档就退化成后端给的展示名**）。
@@ -64,7 +74,27 @@ const current = computed(() => options.value.find((item) => item.value === mode.
 const label = computed(() => current.value?.label ?? mode.value ?? '')
 
 onMounted(async () => {
+  window.addEventListener(MODE_CHANGED_EVENT, onModeChanged)
   if (!isAdmin.value) return
+  await refresh()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener(MODE_CHANGED_EVENT, onModeChanged)
+})
+
+/**
+ * 别处（`/mode` 命令）改了档：**跟着显示新档**。
+ *
+ * 不重新请求：那条命令就是在这里改的，值已经在事件里带回来了；再打一次
+ * `/settings` 只是多一个往返，还会让标签闪一下（先回旧值再跳新值）。
+ */
+function onModeChanged(event: Event): void {
+  const detail = (event as CustomEvent<string>).detail
+  if (typeof detail === 'string' && detail) mode.value = detail
+}
+
+async function refresh(): Promise<void> {
   try {
     const view = await getChatMode()
     if (!view.mode || view.options.length === 0) {
@@ -83,7 +113,7 @@ onMounted(async () => {
     // 读不到就**不显示这个控件**：它是顺手的入口，不值得为它把对话页变成错误提示
     mode.value = null
   }
-})
+}
 
 /**
  * 菜单里点了一项：**先收起菜单，再改配置**。

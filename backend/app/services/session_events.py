@@ -13,14 +13,14 @@
 拍下的快照**，于是每一处要用它的地方都得自己想办法（续跑要把两轮拼起来、
 压缩要另存一份 upto 标记）。日志一旦存在，这些都能现算。
 
-**词的来源与裁剪**：ZCode 的枚举里与我们有关的只有七种，逐个对应如下
-（其余如 ``CompactBoundary`` / ``CheckpointCreated`` / ``ModeChanged``
-留给对应的后续项：P1-3 压缩、P1-1 模式）：
+**词的来源与裁剪**：ZCode 的枚举里与我们有关的逐个对应如下
+（``CompactBoundary`` / ``CheckpointCreated`` 留给对应的后续项：P1-3 压缩）：
 
 ===================  ==========================================  ==============================
 kind                 什么时候写                                  抄的是 ZCode 的哪一处
 ===================  ==========================================  ==============================
-``turn/start``       一轮问答开始（问题、模型档、是不是续跑）    ``Turn{Started,InputReceived}``
+``turn/start``       一轮问答开始（问题、模型档、当前模式、       ``Turn{Started,InputReceived}``
+                     是不是续跑）
 ``turn/end``         这一轮收尾（成功 / 降级 / 出错）           ``Turn{Complete,Error}``
 ``step``             非工具的一步（组织回答那一步）             步骤序列
 ``tool_call``        一次工具调用；**同一调用两条**：            ``ToolCall{Started}`` +
@@ -29,7 +29,14 @@ kind                 什么时候写                                  抄的是 
 ``thinking``         模型的一段连续思考（增量拼成一条）         ``Model{Streaming}``
 ``error``            这一轮失败的那句话                          ``Model{Error}`` / ``Turn{Error}``
 ``interrupted``      用户在流式期间停止 / 断开                  QwenPaw 的中断补齐（见下）
+``mode/changed``     Agent 模式换了一档（带 previousMode）      ``SessionModeChanged``
+``command``          一条斜杠命令被执行（不进模型历史）         DSH「命令执行写 session log」
 ===================  ==========================================  ==============================
+
+**后两条是 P1-1 与 P1-2 的落点**：``mode/changed`` 抄 ZCode 的 ``SessionModeChanged``
+（payload 带 ``previousMode`` 与 ``source``，见 ``mode_changed_draft``）；
+``command`` 抄 DSH §2.7 的「命令执行**写 session log** 但不进模型历史」——
+所以命令那一笔记在这里，而不是在 ``chat_messages`` 里多一条消息。
 
 **QwenPaw 那条教训**（调研报告 §2.1「中断时给每个未完成 tool_use 伪造结果」）：
 中断不补收尾的话，下一轮的消息不成对（OpenAI 兼容端点直接 400）。我们的
@@ -52,8 +59,10 @@ from app.services.agent import StepEvent, step_snapshot
 
 __all__ = [
     "EVENT_KINDS",
+    "KIND_COMMAND",
     "KIND_ERROR",
     "KIND_INTERRUPTED",
+    "KIND_MODE_CHANGED",
     "KIND_STEP",
     "KIND_THINKING",
     "KIND_TOOL_CALL",
@@ -67,7 +76,9 @@ __all__ = [
     "TURN_STATUSES",
     "EventDraft",
     "SessionEvent",
+    "command_draft",
     "interrupted_payload",
+    "mode_changed_draft",
     "step_event_draft",
     "steps_from_events",
     "thinking_draft",
@@ -88,6 +99,10 @@ KIND_TOOL_CALL = "tool_call"
 KIND_THINKING = "thinking"
 KIND_ERROR = "error"
 KIND_INTERRUPTED = "interrupted"
+KIND_MODE_CHANGED = "mode/changed"
+"""Agent 模式换了一档（P1-1 遗留 #6，抄 ZCode 的 ``SessionModeChanged``）。"""
+KIND_COMMAND = "command"
+"""一条斜杠命令被执行（P1-2，抄 DSH 的"命令写 session log"）。"""
 
 #: 全部合法的 kind。**顺序即词表顺序**，端点报错时按它列给调用方。
 EVENT_KINDS: tuple[str, ...] = (
@@ -98,6 +113,8 @@ EVENT_KINDS: tuple[str, ...] = (
     KIND_THINKING,
     KIND_ERROR,
     KIND_INTERRUPTED,
+    KIND_MODE_CHANGED,
+    KIND_COMMAND,
 )
 
 #: 投影成 ``steps`` 时要读的 kind。工具调用也是"一步"——它在快照里与普通步骤
@@ -191,20 +208,61 @@ def turn_start_draft(
     query: str,
     model_pk: str | None,
     resume_reason: str | None = None,
+    mode: str | None = None,
 ) -> EventDraft:
     """``turn/start``：这一轮要做什么。
 
     带上 ``query`` 是照 ZCode 的 ``Turn/InputReceived``——日志要能独立回答
     "这一轮是什么问题"，而不是逼读的人去 ``chat_messages`` 里按时间找配对。
     ``resume_reason`` 非空表示这是**接着上一轮做**（续跑那条路）。
+
+    ``mode``（P1-1，v0.44 补）：这一轮是以**哪一档**开跑的。它是 ``ModeWatch``
+    判定"档换过了没有"的基线——上一档就是日志里最后一条 ``turn/start`` 的这一个字段
+    （见 ``services/commands.ModeWatch``）：会话日志因此自己就能回答
+    "这条会话什么时候换的档"，不必另立一张表。
     """
     payload: dict[str, object] = {"query": query}
     if model_pk:
         payload["model_pk"] = model_pk
+    if mode:
+        payload["mode"] = mode
     if resume_reason:
         payload["resume"] = True
         payload["resume_reason"] = resume_reason
     return EventDraft(kind=KIND_TURN_START, payload=payload)
+
+
+def mode_changed_draft(*, previous_mode: str, mode: str, source: str) -> EventDraft:
+    """``mode/changed``：Agent 模式换了一档（P1-1 遗留 #6）。
+
+    抄的是 ZCode 的 ``SessionModeChanged``：**事件里必须带得动"从哪一档换到哪一档"**，
+    否则它只能说明"现在是 yolo"，而回看的人要问的恰恰是"它是**什么时候**开始不问我的"
+    （撤销与审计都靠这一条，见调研报告 §2.6 的抄点第 4 条）。
+
+    ``source`` 是**切在哪儿**（``commands.MODE_SOURCE_COMMAND`` / ``..._SETTINGS``）：
+    它在会话里当场切的、还是在设置页改完下一轮才被观测到，这两件事对排错完全不同。
+    """
+    return EventDraft(
+        kind=KIND_MODE_CHANGED,
+        payload={"previousMode": previous_mode, "mode": mode, "source": source},
+    )
+
+
+def command_draft(*, name: str, args: str = "", result: str = "", ok: bool = True) -> EventDraft:
+    """``command``：一条斜杠命令被执行（P1-2）。
+
+    抄 DSH 的"命令执行**写 session log** 但不进模型历史"（调研报告 §2.7）：
+    ``chat_messages`` 里**不留**这一轮的痕迹（命令不是一轮问答），但"这个人当时
+    敲了 ``/mode yolo``"必须能查得到——它解释了后面那几轮为什么一路不问。
+
+    ``result`` 只存命令回显的那段话（人读的），**不进模型上下文**。
+    """
+    payload: dict[str, object] = {"name": name, "ok": ok}
+    if args:
+        payload["args"] = args
+    if result:
+        payload["result"] = result
+    return EventDraft(kind=KIND_COMMAND, payload=payload)
 
 
 def turn_end_draft(*, status: str, answer_chars: int, steps: int) -> EventDraft:
