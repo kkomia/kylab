@@ -73,8 +73,10 @@ _SKILL_TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "list_skills",
         "description": (
-            "列出这台机器上可用的技能（SOP 文档）。"
-            "**当你不知道某类事该怎么做时先看它**——技能里往往是别人已经踩过坑的流程。"
+            "列出这台机器上的技能（SOP 文档）**安装与可用状态**。"
+            "**可用技能的名字、描述与文件位置每一轮已经在你的系统提示词里**（"
+            "「可用技能」那一段），所以平时不必调它；"
+            "只有要确认「某个技能为什么不可用」（被安全扫描拦下、依赖没满足、或被丢弃）时才看。"
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
@@ -100,13 +102,14 @@ _SKILL_TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "read_skill",
         "description": (
-            "读一个技能的正文（它的流程与注意事项）。"
+            "读一个技能的正文（它的流程与注意事项）——**正文不在提示词里，只能这样取**。"
+            "技能名用系统提示词「可用技能」那一段里的名字（每行开头的那个）。"
             "带 `file` 参数时读该技能的附属文件（脚本、模板、参考）。"
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
-                "name": {"type": "string", "description": "技能名，来自 list_skills"},
+                "name": {"type": "string", "description": "技能名，来自系统提示词的技能目录"},
                 "file": {
                     "type": "string",
                     "description": "附属文件的相对路径；省略则读 SKILL.md 正文",
@@ -1057,14 +1060,27 @@ _NO_KB_SCOPE = (
 
 
 def _render_skills(services: Any) -> str:
+    """列全部技能（这是"想看全部字段"时才调的——目录每轮已经在提示词里了）。
+
+    两种"不可用"要**分开说**（v0.43）：`discarded` 是没通过格式校验的
+    （缺字段、描述超 1024——照 ZCode 的规则丢弃），`used_by_prompt=False`
+    是别的缘故（例如同名被更高优先级的技能遮蔽）。混成一句"被拦下"，
+    用户没法知道该改什么。
+    """
     records = services.skills.list()
     if not records:
         return "这台机器上还没有安装技能。"
     lines = []
     for record in records:
-        usable = "可用" if record.used_by_prompt else "被拦下（不进提示词，读了也不该照做）"
+        if getattr(record, "discarded", False):
+            reason = str(getattr(record, "flagged", "") or "没通过格式校验")
+            usable = f"已丢弃（{reason}）"
+        elif record.used_by_prompt:
+            usable = "可用"
+        else:
+            usable = "被同名技能遮蔽（不进提示词）"
         lines.append(f"- {record.name}（{usable}）：{record.description}")
-    return "可用技能：\n" + "\n".join(lines)
+    return "全部技能：\n" + "\n".join(lines)
 
 
 def _read_skill(services: Any, args: dict[str, Any]) -> str:

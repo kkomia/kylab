@@ -509,6 +509,31 @@ def test_skills_lists_the_repo_skill(client: TestClient) -> None:
     assert entry["source"] == "builtin"
     assert entry["used_by_prompt"] is True
     assert entry["description"]
+    # P0-3：每一行都要带"是不是被丢弃了"，能力页靠它把坏技能单独标出来
+    assert entry["discarded"] is False
+
+
+def test_a_broken_skill_is_listed_with_its_reason(client: TestClient, tmp_path) -> None:
+    """坏技能（frontmatter 缺 description）**照样在列表里**，但要标成已丢弃并给出理由。
+
+    这条走的是完整链路（真磁盘 → 服务 → 接口 → 界面用的字段）：
+    校验在前置做了，可界面必须还看得见它，否则用户只会看到"我明明放进去了，
+    怎么没有"（见 ``api/v1/skills.py`` 的说明）。
+    """
+    directory = tmp_path / "data" / "skills" / "broken"
+    directory.mkdir(parents=True)
+    (directory / "SKILL.md").write_text("---\nname: broken\n---\n\n正文\n", encoding="utf-8")
+
+    body = client.get("/api/v1/skills").json()
+    entry = next(item for item in body["items"] if item["name"] == "broken")
+
+    assert entry["discarded"] is True
+    assert entry["used_by_prompt"] is False
+    assert "description" in entry["flagged"][0]
+    # 详情页读得出来（人要能核对它到底写了什么），理由也照旧带着
+    detail = client.get("/api/v1/skills/broken").json()
+    assert detail["discarded"] is True
+    assert detail["body"].strip() == "正文"
 
 
 def test_skill_detail_returns_the_body(client: TestClient) -> None:

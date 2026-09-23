@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from app.core.services import get_services
 from app.services.chat import SourceRef
+from app.services.session_events import SessionEvent, steps_from_events
 from tests.conftest import (
     FakeChatModel,
     bind_model,
@@ -398,3 +399,260 @@ def test_the_model_can_answer_without_any_tool(client: TestClient, kb_id: str) -
     # 只有"组织回答"这一步，没有工具那一步
     assert [e["label"] for e in steps] == ["组织回答"]
     assert not [e for e in events if e["type"] == "sources"]
+
+
+# ------------------------------------------------------- 会话事件日志（P0-2）
+
+
+def _events(client: TestClient, conversation_id: str, query: str = "") -> list[dict]:
+    """读这条会话的事件日志（``?kinds=`` 直接拼在 ``query`` 里）。"""
+    response = client.get(f"/api/v1/conversations/{conversation_id}/events{query}")
+    assert response.status_code == 200, response.text
+    return response.json()["items"]
+
+
+def _conversation(client: TestClient) -> str:
+    return client.post("/api/v1/conversations", json={}).json()["id"]
+
+
+def test_a_turn_leaves_a_complete_contiguous_event_log(client: TestClient, kb_id: str) -> None:
+    """一轮正常问答之后：事件齐全、``seq`` 连续、``turn/start`` 在前、``turn/end`` 在最后。
+
+    这是对"会话 = 只追加事件日志"最直白的一条验收（P0-2 第 6 条）：
+    顺序与编号是回放、续跑、压缩全都依赖的东西，错一处就往后再错一片。
+    """
+    install_fake_chat("甲乙", script=[search_tool_call("问题")])
+    _install_fake_sources()
+    conversation_id = _conversation(client)
+
+    client.post(
+        "/api/v1/chat/stream",
+        json={"query": "问题", "kb_ids": [kb_id], "conversation_id": conversation_id},
+    )
+
+    events = _events(client, conversation_id)
+    kinds = [item["kind"] for item in events]
+    assert kinds[0] == "turn/start", "第一件事必须是「这一轮要做什么」"
+    assert kinds[-1] == "turn/end", "最后一件事必须是这一轮怎么结束的"
+    # 工具调用两条（running 是「开始」、done 带结果）+ 组织回答那一步
+    assert kinds.count("tool_call") == 2
+    assert kinds.count("step") == 1
+    # seq 连续：从 1 开始、逐个加一（P0-2 的"只追加"在编号上的样子）
+    assert [item["seq"] for item in events] == list(range(1, len(events) + 1))
+    assert events[0]["payload"]["query"] == "问题"
+    assert events[-1]["payload"] == {"status": "ok", "answer_chars": 2, "steps": 2}
+
+
+def test_the_steps_snapshot_is_the_projection_of_the_event_log(
+    client: TestClient, kb_id: str
+) -> None:
+    """**P0-2 的核心验收**：从事件重建的步骤快照 == ``chat_messages.steps``。
+
+    两者不是"应该一致"，而是**同一次投影**：写侧与读侧共用
+    ``agent.step_snapshot`` 那一份映射（见 ``services/session_events``）。
+    这条用例把它钉在真库上——只跑单元测试的话，"事件真的是按那份形状写进去的"
+    仍然只是假设。
+    """
+    install_fake_chat("甲乙", script=[search_tool_call("问题")])
+    _install_fake_sources()
+    conversation_id = _conversation(client)
+
+    client.post(
+        "/api/v1/chat/stream",
+        json={"query": "问题", "kb_ids": [kb_id], "conversation_id": conversation_id},
+    )
+
+    detail = client.get(f"/api/v1/conversations/{conversation_id}").json()
+    stored_steps = detail["messages"][-1]["steps"]
+    assert stored_steps, "这一轮调过工具，快照里必须有内容（否则这条用例测了个空）"
+
+    events = _events(client, conversation_id)
+    rebuilt = steps_from_events(
+        [
+            SessionEvent(
+                id=item["id"],
+                seq=item["seq"],
+                kind=item["kind"],
+                payload=item["payload"],
+                created_at=None,
+            )
+            for item in events
+        ]
+    )
+    assert rebuilt == stored_steps
+
+
+def test_events_can_be_filtered_by_kind(client: TestClient, kb_id: str) -> None:
+    """``?kinds=`` 只返回那几种；**拼错的 kind 报 422**（不静默返回空列表）。
+
+    静默返回空会让调用方以为"这条会话没有这类事件"——而真正的原因是自己拼错了，
+    这个端点是给人读日志、给脚本筛"只看中断"用的，说清楚比宽容有用。
+    """
+    install_fake_chat("答案", script=[search_tool_call("问题")])
+    _install_fake_sources()
+    conversation_id = _conversation(client)
+    client.post(
+        "/api/v1/chat/stream",
+        json={"query": "问题", "kb_ids": [kb_id], "conversation_id": conversation_id},
+    )
+
+    only = _events(client, conversation_id, "?kinds=turn/start,turn/end")
+    assert [item["kind"] for item in only] == ["turn/start", "turn/end"]
+    # 过滤不改变编号：seq 还是它们在整份日志里的位置（首尾两条）
+    everything = _events(client, conversation_id)
+    assert [item["seq"] for item in only] == [everything[0]["seq"], everything[-1]["seq"]]
+
+    bad = client.get(f"/api/v1/conversations/{conversation_id}/events?kinds=nope")
+    assert bad.status_code == 422
+    assert "nope" in bad.json()["message"]
+
+
+def test_stopping_mid_stream_records_what_had_no_result(
+    client: TestClient, kb_id: str
+) -> None:
+    """用户中途停止 / 断开：补一条 ``interrupted``，并说清**哪些调用没有结果**。
+
+    抄的是 QwenPaw 那条教训（调研报告 §2.1：中断时给未完成的调用补结果，
+    否则下一轮消息不成对）。我们不存在 tool 消息配对问题，但"停在了半截的哪一步"
+    仍然必须留下来——否则回看时会以为那一轮什么都没做。
+
+    **直接 close 那个生成器**就是"客户端断开"在服务端的形状
+    （Starlette 在连接断掉时会 close 掉它，异常从 ``yield from`` 那里穿上来）。
+    """
+    from app.api.v1 import chat as chat_api
+    from app.api.v1.schemas import ChatRequestIn
+    from app.services.api_key import Caller
+
+    install_fake_chat("甲", script=[search_tool_call("问题")])
+    _install_fake_sources()
+    conversation_id = _conversation(client)
+
+    payload = ChatRequestIn(query="问题", kb_ids=[kb_id], conversation_id=conversation_id)
+    stream = chat_api._events(get_services(), payload, None, None, None, Caller(is_admin=True))
+    first = next(stream)
+    assert '"type": "step"' in first, "先让流真的开始发（这时工具调用已经发出去了）"
+    stream.close()  # 客户端断开
+
+    events = _events(client, conversation_id)
+    assert [item["kind"] for item in events] == ["turn/start", "tool_call", "interrupted"]
+    interrupted = events[-1]["payload"]
+    assert interrupted["unpaired"] == [{"tool": "search", "label": "检索知识库"}]
+    # 半截的回答不留消息（与"失败的一轮不留半截记录"同一口径），但日志留下来了
+    assert client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"] == []
+
+    # 还能接着问下一轮：编号从上次的 max 继续，不会重号
+    install_fake_chat("答案")
+    client.post(
+        "/api/v1/chat/stream",
+        json={"query": "再问", "kb_ids": [kb_id], "conversation_id": conversation_id},
+    )
+    after = _events(client, conversation_id)
+    assert [item["seq"] for item in after] == list(range(1, len(after) + 1))
+    assert [item["kind"] for item in after][3:] == ["turn/start", "step", "turn/end"]
+
+
+def test_events_of_someone_elses_conversation_are_404() -> None:
+    """成员的会话守卫与既有的会话端点**同一套**（越主 404，不暴露存在性）。
+
+    单独造一个成员的客户端：这个端点是"按会话读"，漏一次归属判定就等于
+    把别人的整段过程（工具参数、原文、思考）摊开。
+    """
+    from app.core.config import get_settings
+    from app.core.security import hash_password
+    from app.main import create_app
+    from app.models.enums import UserRole
+    from app.storage.base import UserRecord
+    from tests.conftest import login_admin
+
+    get_settings.cache_clear()
+    with TestClient(create_app()) as client:
+        # 走产品上真实的那条路（setup/登录），令牌进 client.headers
+        login_admin(client)
+        client.post("/api/v1/knowledge-bases", json={"name": "库"})
+        conversation_id = _conversation(client)
+        get_services().auth._stores.meta.create_user(
+            UserRecord(
+                id="user_member",
+                name="成员",
+                username="member",
+                password_hash=hash_password("member pass 123"),
+                role=UserRole.MEMBER,
+            )
+        )
+        member = client.post(
+            "/api/v1/auth/login", json={"username": "member", "password": "member pass 123"}
+        ).json()
+
+        response = client.get(
+            f"/api/v1/conversations/{conversation_id}/events",
+            headers={"Authorization": f"Bearer {member['token']}"},
+        )
+        assert response.status_code == 404
+    get_settings.cache_clear()
+
+
+def test_a_failed_turn_is_recorded_as_error_and_turn_end(client: TestClient, kb_id: str) -> None:
+    """流里失败的那一轮：**不留消息，但要留日志**（``error`` + ``turn/end``）。
+
+    按 v0.12 起的取舍，失败的一轮不写半截记录（"问了但没答"的空档最难解释）。
+    可"当时为什么没答出来"恰恰是回看时要问的——这句话只有日志答得出来。
+    """
+    install_fake_chat(error="模型暂时不可用")
+    conversation_id = _conversation(client)
+
+    response = client.post(
+        "/api/v1/chat/stream",
+        json={"query": "问题", "kb_ids": [kb_id], "conversation_id": conversation_id},
+    )
+    events = _parse_sse(response.text)
+    assert events[-1]["type"] == "error", "失败照旧在流内报（状态码已经发出去了）"
+
+    logged = _events(client, conversation_id)
+    assert [item["kind"] for item in logged] == ["turn/start", "error", "turn/end"]
+    assert logged[1]["payload"]["message"] == "模型暂时不可用"
+    assert logged[2]["payload"]["status"] == "error"
+    # 没有回答就没有消息（与"不留半截记录"同一口径）
+    assert client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"] == []
+
+
+def test_the_non_streaming_endpoint_records_events_too(client: TestClient, kb_id: str) -> None:
+    """``/chat``（一次性）也记日志：两个端点同一条链路，过程不该一个有记录一个没有。
+
+    这条端点的文档写着"逻辑与流式完全相同"，而 v0.43 之前它**连步骤都不落库**
+    ——同一句话从两个端点问，会话里的过程面板一个有内容一个空着。
+    """
+    install_fake_chat("甲乙", script=[search_tool_call("问题")])
+    _install_fake_sources()
+    conversation_id = _conversation(client)
+
+    assert (
+        client.post(
+            "/api/v1/chat",
+            json={"query": "问题", "kb_ids": [kb_id], "conversation_id": conversation_id},
+        ).status_code
+        == 200
+    )
+
+    logged = _events(client, conversation_id)
+    assert [item["kind"] for item in logged] == [
+        "turn/start",
+        "tool_call",
+        "tool_call",
+        "step",
+        "turn/end",
+    ]
+    assert [item["seq"] for item in logged] == list(range(1, len(logged) + 1))
+    # 消息里的快照也是这一份投影
+    steps = client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"][-1]["steps"]
+    assert steps_from_events(
+        [
+            SessionEvent(
+                id=item["id"],
+                seq=item["seq"],
+                kind=item["kind"],
+                payload=item["payload"],
+                created_at=None,
+            )
+            for item in logged
+        ]
+    ) == steps

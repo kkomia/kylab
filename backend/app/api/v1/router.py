@@ -25,6 +25,7 @@ from app.api.v1 import (
     memory,
     model_registry,
     notes,
+    plugins,
     sandbox,
     schedules,
     search,
@@ -77,6 +78,9 @@ api_router.include_router(memory.router)
 api_router.include_router(workspaces.router)
 # 技能（v0.15）：磁盘上的 SKILL.md，目录进提示词、正文按需展开
 api_router.include_router(skills.router)
+# 插件包（v0.43）：插件 = 一个目录 + plugin.json，目录即本地市场；
+# 与上面那组「插件」（MCP 服务）是两件事——那是外部服务，这是磁盘上的能力包
+api_router.include_router(plugins.router)
 # MCP 客户端（v0.15）：接外部工具进来（此前只有服务端的一半）
 api_router.include_router(mcp_servers.router)
 # 沙箱执行（v0.16）：内核级隔离 + 策略闸（管理员专属）

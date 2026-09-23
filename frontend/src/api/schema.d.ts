@@ -726,8 +726,46 @@ export interface paths {
         /**
          * 快速检索问答（一次性）
          * @description 非流式版本：给脚本、MCP 与自动化测试用，逻辑与流式完全相同。
+         *
+         *     P0-2 起这条链路也记事件日志：它此前只把答案与出处落库、
+         *     **过程一个字都不存**——于是同一句话从 `/chat` 问和从 `/chat/stream` 问，
+         *     会话里的过程面板一个有内容一个空着。现在两条路共用 ``_TurnSink`` 那一份映射
+         *     （事件、快照、思考都是它攒的），差别只剩"怎么把事件发出去"。
          */
         post: operations["chat_once_api_v1_chat_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 会话事件日志（只追加，按 seq 正序）
+         * @description 这条会话的**事件日志**——"当时到底发生了什么"的原始记录（P0-2）。
+         *
+         *     与 ``GET /conversations/{id}`` 的分工：那个端点返回消息（含 ``steps`` 快照，
+         *     是**回看时要显示的东西**），这个返回**只追加的原始事件**（流式过程中的每一步、
+         *     每一次工具调用、中断与失败）。两者是"投影"与"事实"的关系——快照的每一条
+         *     都能在日志里找到出处（``services/session_events.steps_from_events``
+         *     就是那条换算，端到端用例比对了两者相等）。
+         *
+         *     **落在 chat.py 而不是 conversations.py**：事件的写入在对话链路里
+         *     （``_TurnSink``），读写放一处，那一侧改动时不会漏掉另一侧。
+         *     归属判定与既有的会话端点**同一套**（成员越主 404，不暴露存在性）。
+         *
+         *     ``kinds`` 里出现词表之外的取值会 **422**：这个端点是给人读日志、给脚本做
+         *     "只看中断"这类筛选用的，拼错了却拿到空列表会让人以为"这条会话没有这类事件"。
+         */
+        get: operations["conversation_events_api_v1_conversations__conversation_id__events_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2494,6 +2532,10 @@ export interface paths {
         /**
          * 技能详情（含正文）
          * @description 连正文一起给：界面上要能读它（这也是用户核对"这个技能到底教了模型什么"的地方）。
+         *
+         *     **被丢弃的技能这里也读得出来**（``allow_discarded=True``）：模型那条路
+         *     （``read_skill`` 工具）读不到，但人要看的就是"它到底写了什么、为什么被丢掉"
+         *     ——详情页是排错的地方，藏起来等于让人只能去翻磁盘。
          */
         get: operations["get_skill_api_v1_skills__name__get"];
         put?: never;
@@ -2730,6 +2772,74 @@ export interface paths {
          *     于是"这份技能是哪个版本、有没有被改过"永远答得出来。
          */
         post: operations["install_from_source_api_v1_skills_market_install_source_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/plugins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 插件列表
+         * @description **每次都重新扫磁盘**（与技能同一条理由）：用户可能刚往插件目录里丢了一个。
+         *
+         *     ``user_dir`` / ``builtin_dir`` 一起回给界面：它们是这一页的"市场在哪"——
+         *     用户要能看见该把目录放到哪儿，而不是读文档才知道。
+         */
+        get: operations["list_plugins_api_v1_plugins_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/plugins/{plugin_id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 启用一个插件
+         * @description ``plugin_id`` 就是插件的 ``name``（manifest 里那个，ZCode / QwenPaw 同源）。
+         *
+         *     内置插件启用时会**解除屏蔽**——启用的意思就是"随代码发布的那份我又要了"。
+         */
+        post: operations["enable_plugin_api_v1_plugins__plugin_id__enable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/plugins/{plugin_id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 停用一个插件
+         * @description **不碰插件目录**：停用只写一条状态（内置的另记一条屏蔽标记，照 ZCode）。
+         *
+         *     于是"停用"永远可逆，也不会把用户自己放进来的东西删掉——
+         *     卸载是用户在文件系统里的事。
+         */
+        post: operations["disable_plugin_api_v1_plugins__plugin_id__disable_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5384,6 +5494,140 @@ export interface components {
             revoked_sessions: number;
         };
         /**
+         * PluginComponentOut
+         * @description 插件提供的一样东西（四类能力面之一）。
+         *
+         *     照 QwenPaw 的 ``register(api)`` 四类收窄而来（provider / 生命周期 hook /
+         *     控制命令 / 工具配置），见 `docs/设计/插件与技能-v0.1.md` §3。
+         */
+        PluginComponentOut: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "skill" | "command" | "hook" | "tool";
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Path
+             * @default
+             */
+            path: string;
+            /**
+             * Status
+             * @default
+             */
+            status: string;
+        };
+        /** PluginListOut */
+        PluginListOut: {
+            /** Items */
+            items?: components["schemas"]["PluginOut"][];
+            /**
+             * Total
+             * @default 0
+             */
+            total: number;
+            /**
+             * Enabled
+             * @default 0
+             */
+            enabled: number;
+            /**
+             * Failed
+             * @default 0
+             */
+            failed: number;
+            /**
+             * User Dir
+             * @default
+             */
+            user_dir: string;
+            /**
+             * Builtin Dir
+             * @default
+             */
+            builtin_dir: string;
+        };
+        /**
+         * PluginOut
+         * @description 一个插件（本地市场里的一条）。
+         *
+         *     **加载失败的也在列表里**（``loaded=false`` 且 ``error`` 非空），照 DSH
+         *     "失败的 preset 也列出"：静默藏掉会让用户以为插件没装上。
+         */
+        PluginOut: {
+            /** Name */
+            name: string;
+            /**
+             * Version
+             * @default 0.0.0
+             */
+            version: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Author
+             * @default
+             */
+            author: string;
+            /**
+             * Homepage
+             * @default
+             */
+            homepage: string;
+            /**
+             * Source
+             * @default user
+             * @enum {string}
+             */
+            source: "builtin" | "user";
+            /**
+             * Path
+             * @default
+             */
+            path: string;
+            /**
+             * Manifest Path
+             * @default
+             */
+            manifest_path: string;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+            /**
+             * Blocked
+             * @default false
+             */
+            blocked: boolean;
+            /**
+             * Loaded
+             * @default true
+             */
+            loaded: boolean;
+            /**
+             * Error
+             * @default
+             */
+            error: string;
+            /** Components */
+            components?: components["schemas"]["PluginComponentOut"][];
+            /** Kinds */
+            kinds?: string[];
+            /** User Config */
+            user_config?: string[];
+        };
+        /**
          * PresetModelOut
          * @description 预设里的一条模型建议。
          */
@@ -5936,6 +6180,42 @@ export interface components {
              */
             embedding_is_development: boolean;
         };
+        /** SessionEventListOut */
+        SessionEventListOut: {
+            /** Items */
+            items?: components["schemas"]["SessionEventOut"][];
+        };
+        /**
+         * SessionEventOut
+         * @description 会话日志里的一条事件（P0-2，只追加）。
+         *
+         *     抄的是 ZCode 的会话事件日志（开发计划 §12.225）：会话是一串不可变事件，
+         *     消息里的 ``steps`` 是它的投影。字段刻意贴着存储的列（``seq`` / ``kind`` /
+         *     ``payload``）——读的人要能照着日志判断"当时到底发生了什么"，
+         *     在这里再包一层"好看的形状"只会让日志与它的读取方变成两件事。
+         *
+         *     ``kind`` 是**词表**取值（``turn/start``、``turn/end``、``step``、
+         *     ``tool_call``、``thinking``、``error``、``interrupted``），
+         *     定义在 ``services/session_events.py`` 一处。
+         */
+        SessionEventOut: {
+            /** Id */
+            id: number;
+            /**
+             * Seq
+             * @description **会话内**单调递增的序号。同一条会话不会出现两个相同的 ``seq``
+             *     （表上有唯一约束），所以它同时是"事件只追加"的判据。
+             */
+            seq: number;
+            /** Kind */
+            kind: string;
+            /** Payload */
+            payload?: {
+                [key: string]: unknown;
+            };
+            /** Created At */
+            created_at?: string | null;
+        };
         /** SettingFieldOptionOut */
         SettingFieldOptionOut: {
             /** Value */
@@ -6145,7 +6425,7 @@ export interface components {
              * @default builtin
              * @enum {string}
              */
-            source: "builtin" | "user";
+            source: "builtin" | "user" | "agents";
             /**
              * Path
              * @default
@@ -6163,6 +6443,11 @@ export interface components {
             used_by_prompt: boolean;
             /** Flagged */
             flagged?: string[];
+            /**
+             * Discarded
+             * @default false
+             */
+            discarded: boolean;
             /**
              * Body
              * @default
@@ -6291,7 +6576,7 @@ export interface components {
              * @default builtin
              * @enum {string}
              */
-            source: "builtin" | "user";
+            source: "builtin" | "user" | "agents";
             /**
              * Path
              * @default
@@ -6309,6 +6594,11 @@ export interface components {
             used_by_prompt: boolean;
             /** Flagged */
             flagged?: string[];
+            /**
+             * Discarded
+             * @default false
+             */
+            discarded: boolean;
         };
         /**
          * SkillSourceIn
@@ -8666,6 +8956,42 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatResponseOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    conversation_events_api_v1_conversations__conversation_id__events_get: {
+        parameters: {
+            query?: {
+                /** @description 逗号分隔的事件类型（turn/start、turn/end、step、tool_call、thinking、error、interrupted）；留空返回全部 */
+                kinds?: string;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionEventListOut"];
                 };
             };
             /** @description Validation Error */
@@ -12878,6 +13204,103 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SkillOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_plugins_api_v1_plugins_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    enable_plugin_api_v1_plugins__plugin_id__enable_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                plugin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    disable_plugin_api_v1_plugins__plugin_id__disable_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                plugin_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginOut"];
                 };
             };
             /** @description Validation Error */

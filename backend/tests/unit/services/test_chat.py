@@ -782,6 +782,44 @@ def test_pinned_skills_get_expanded_without_spending_the_skill_budget(runtime, b
     assert "竞品分析 的正文" in blob
 
 
+def test_the_skill_catalog_is_injected_but_not_its_bodies(
+    tmp_path, runtime, bind_slot
+) -> None:
+    """技能**目录每个请求都注入**，正文一个字都不进提示词（P0-3）。
+
+    这条用真的 `SkillService`（不是假对象）走一遍：以前模型得先调 `list_skills`
+    才知道有什么技能，而它经常不调；现在目录自己就在 system 消息里。
+    两条断言缺一不可——只注目录不注正文是**渐进披露的全部收益**所在，
+    如果哪天有人把正文也拼进来，这里会立刻红。
+    """
+    from app.services.skills import SKILL_FILE, SkillService
+
+    builtin = tmp_path / "builtin"
+    directory = builtin / "weekly"
+    directory.mkdir(parents=True)
+    (directory / SKILL_FILE).write_text(
+        "---\nname: weekly\ndescription: 用户要周报时用\n---\n\n"
+        "# 流程\n\n正文关键字：先拉数据再写成三段。\n",
+        encoding="utf-8",
+    )
+    service = ChatService(
+        _EmptyRetrieval(),
+        runtime,
+        skills=SkillService(
+            tmp_path / "data", builtin_dir=builtin, agents_dir=tmp_path / "no-agents"
+        ),
+    )
+    bind_slot("chat", model_id="m", capabilities=["chat"])
+
+    messages = service.agent_messages(query="问题", kb_ids=["kb_1"])
+    blob = "\n".join(str(getattr(m, "content", m)) for m in messages)
+
+    assert "weekly" in blob
+    assert "用户要周报时用" in blob
+    assert "read_skill" in blob  # 目录里点名了按需读正文的那个工具
+    assert "正文关键字" not in blob
+
+
 def test_agent_prompt_allows_batching_independent_calls() -> None:
     """一轮里的往返次数**由提示词决定**（v0.26）。
 

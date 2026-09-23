@@ -16,6 +16,12 @@ data: {"type":"error","message":"…"}         # 任何失败都在流内报，�
 ```
 
 Agent 工作流（v20）默认开启，可用设置项 ``chat.agent_enabled`` 关掉退回单轮检索。
+
+**同一批事件还顺手记一份会话事件日志**（P0-2，照 ZCode 的只追加日志设计）：
+``turn/start``、``step``、``tool_call``、``thinking``、``error``、``interrupted``、
+``turn/end`` 逐个进 ``session_events`` 表，词表与投影在 ``services/session_events.py``。
+消息里那份 ``steps`` 快照**形状不变**（老读法不受影响），但它从此是日志的投影：
+``GET /conversations/{id}/events`` 读的是原始事件，回看时算出来的过程面板与它等价。
 """
 
 from __future__ import annotations
@@ -36,6 +42,8 @@ from app.api.v1.schemas import (
     ChatResponseOut,
     ChatResumeIn,
     ChatSourceOut,
+    SessionEventListOut,
+    SessionEventOut,
     SuggestedQuestionsOut,
 )
 from app.core.exceptions import ConflictError, InvalidRequestError
@@ -55,6 +63,21 @@ from app.services.api_key import Caller
 from app.services.chat import ChatTurn, SourceRef
 from app.services.conversation import LastTurn
 from app.services.llm import ChatError, ChatMessage
+from app.services.session_events import (
+    KIND_ERROR,
+    KIND_INTERRUPTED,
+    KIND_STEP,
+    TURN_DEGRADED,
+    TURN_EMPTY,
+    TURN_ERROR,
+    TURN_OK,
+    EventDraft,
+    interrupted_payload,
+    step_event_draft,
+    thinking_draft,
+    turn_end_draft,
+    turn_start_draft,
+)
 from app.services.suggested_questions import (
     DEFAULT_LIMIT as SUGGESTED_DEFAULT_LIMIT,
 )
@@ -212,13 +235,21 @@ def chat_once(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
 ) -> ChatResponseOut:
-    """非流式版本：给脚本、MCP 与自动化测试用，逻辑与流式完全相同。"""
+    """非流式版本：给脚本、MCP 与自动化测试用，逻辑与流式完全相同。
+
+    P0-2 起这条链路也记事件日志：它此前只把答案与出处落库、
+    **过程一个字都不存**——于是同一句话从 `/chat` 问和从 `/chat/stream` 问，
+    会话里的过程面板一个有内容一个空着。现在两条路共用 ``_TurnSink`` 那一份映射
+    （事件、快照、思考都是它攒的），差别只剩"怎么把事件发出去"。
+    """
     check_kb_scope(services, caller, payload.kb_ids)
     _require_conversation(services, payload, caller)
     _warn_on_scope_drift(services, payload)
     model_pk = _effective_model(services, payload)
     thinking, effort = _effective_thinking(services, payload)
     history, summary, _ = _context(services, payload, model_pk)
+    sink = _TurnSink()
+    sink.start_turn(query=payload.query, model_pk=model_pk)
 
     if _use_agent(services):
         # **与流式走同一条链路**（P0）：这个端点的文档里写着"逻辑与流式完全相同"，
@@ -233,18 +264,25 @@ def chat_once(
             thinking=thinking,
             effort=effort,
         )
-        answer = _collect(
-            loop.run(
-                messages=services.chat.agent_messages(
-                    query=payload.query,
-                    history=history,
-                    summary=summary,
-                    kb_ids=payload.kb_ids,
-                    skill_names=payload.skill_names,
-                    model_pk=model_pk,
-                )
+        answer_text = ""
+        for event in loop.run(
+            messages=services.chat.agent_messages(
+                query=payload.query,
+                history=history,
+                summary=summary,
+                kb_ids=payload.kb_ids,
+                skill_names=payload.skill_names,
+                model_pk=model_pk,
             )
-        )
+        ):
+            if isinstance(event, DoneEvent):
+                # 收尾那条带的是后端拼好的全文，**以它为准**（避免个别增量丢失后
+                # 正文与出处对不上）——与流式那条路同一个口径
+                answer_text = event.answer
+            # 事件不发出去（这里没有流），但要**收进 sink**：快照与日志都由此而来
+            for _ in sink.feed(event):
+                pass
+        answer = ChatTurn(answer=answer_text or sink.answer, sources=list(sink.sources))
     else:
         sources = services.chat.retrieve_sources(
             query=payload.query,
@@ -260,8 +298,56 @@ def chat_once(
             thinking=thinking,
             thinking_effort=effort,
         )
-    _record_turn(services, payload, answer=answer.answer, sources=answer.sources, caller=caller)
+    sink.close_turn(status=_turn_status(sink.steps), answer=answer.answer)
+    _record_turn(
+        services,
+        payload,
+        answer=answer.answer,
+        sources=answer.sources,
+        steps=sink.steps,
+        thinking="".join(sink.thinking),
+        caller=caller,
+        events=sink.events,
+    )
     return ChatResponseOut(answer=answer.answer, sources=_sources_out(answer.sources))
+
+
+@router.get(
+    "/conversations/{conversation_id}/events",
+    response_model=SessionEventListOut,
+    summary="会话事件日志（只追加，按 seq 正序）",
+)
+def conversation_events(
+    conversation_id: str,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
+    kinds: str = Query(
+        default="",
+        description=(
+            "逗号分隔的事件类型（turn/start、turn/end、step、tool_call、"
+            "thinking、error、interrupted）；留空返回全部"
+        ),
+    ),
+) -> SessionEventListOut:
+    """这条会话的**事件日志**——"当时到底发生了什么"的原始记录（P0-2）。
+
+    与 ``GET /conversations/{id}`` 的分工：那个端点返回消息（含 ``steps`` 快照，
+    是**回看时要显示的东西**），这个返回**只追加的原始事件**（流式过程中的每一步、
+    每一次工具调用、中断与失败）。两者是"投影"与"事实"的关系——快照的每一条
+    都能在日志里找到出处（``services/session_events.steps_from_events``
+    就是那条换算，端到端用例比对了两者相等）。
+
+    **落在 chat.py 而不是 conversations.py**：事件的写入在对话链路里
+    （``_TurnSink``），读写放一处，那一侧改动时不会漏掉另一侧。
+    归属判定与既有的会话端点**同一套**（成员越主 404，不暴露存在性）。
+
+    ``kinds`` 里出现词表之外的取值会 **422**：这个端点是给人读日志、给脚本做
+    "只看中断"这类筛选用的，拼错了却拿到空列表会让人以为"这条会话没有这类事件"。
+    """
+    _require_visible_conversation(services, conversation_id, caller)
+    wanted = [item.strip() for item in kinds.split(",") if item.strip()]
+    events = services.conversations.session_events(conversation_id, kinds=wanted or None)
+    return SessionEventListOut(items=[SessionEventOut.model_validate(event) for event in events])
 
 
 @router.get(
@@ -371,6 +457,21 @@ class _TurnSink:
 
     它只管攒与发，不管收尾：`done` 事件与落库由调用方在循环结束后统一做，
     这样两处的口径不可能不一致。
+
+    **P0-2 起它还顺手攒一份会话事件日志**：同一批事件按 kind 记进
+    ``self.events``（词表见 ``services/session_events.py``），收尾时与消息
+    **同一个事务**落库。快照照旧攒（老读法一个字不变），但它从此是那份日志的
+    投影——"当时到底发生了什么"由日志回答，"回看时显示什么"由投影回答。
+
+    刻意**不记**的几样，各有理由：
+
+    - 正文增量（``delta``）：它就是答案本身，已经随消息落库；
+    - 出处（``sources``）：同上，而且是**累计**语义（每次检索都重发一遍全量）；
+    - 待确认（``approval``）：词表里没有它，而且它"还没被回答"——审批自己有
+      登记表（``services/approvals.py``）。等 P1-1 的模式闸落地再按 ZCode 的
+      ``approval/*`` 补一对审计事件；
+    - 压缩那一步（``_events`` 里直接发的那条 step）：它是给界面看的一句提示，
+      不进消息快照，记进日志会让"投影等于快照"这条验收当场不成立。
     """
 
     def __init__(self) -> None:
@@ -378,18 +479,101 @@ class _TurnSink:
         self.thinking: list[str] = []
         self.deltas: list[str] = []
         self.sources: list = []
+        #: 这一轮的会话事件（草稿）。``seq`` / ``id`` 由存储层在写那个事务里给。
+        self.events: list[EventDraft] = []
+        #: 这一轮**有没有结论**（``close_turn`` 之后为真）。
+        #: 中断收尾据此判断"要不要补一条 interrupted"：已经收尾过的一轮不该被
+        #: 记成"被中断"（用户读完答复才关页面，是很正常的一件事）。
+        self.finished = False
+        #: 当前这段连续思考的 payload。同一次思考在日志里只占一条：增量拼进来，
+        #: 每来一块写一行会让长会话的日志膨胀几十倍，而那些行在投影里没有区别。
+        self._thinking_draft: dict[str, object] | None = None
+        #: **已开始、还没有结果**的调用（``running`` 有、``done`` 没等到）。
+        #: 中断时它就是要补进 ``interrupted.payload.unpaired`` 的那份名单。
+        self._pending_calls: list[dict[str, object]] = []
 
     @property
     def answer(self) -> str:
         return "".join(self.deltas)
 
+    def start_turn(
+        self, *, query: str, model_pk: str | None, resume_reason: str | None = None
+    ) -> None:
+        """这一轮开始（``turn/start``）。
+
+        **在流开始之前**就记下：之后无论正常收尾、失败还是被中断，
+        日志的第一条都是"这一轮要做什么"，不会出现"有步骤、不知道在答什么"。
+        """
+        self.events.append(
+            turn_start_draft(query=query, model_pk=model_pk, resume_reason=resume_reason)
+        )
+
+    def close_turn(self, *, status: str, answer: str) -> None:
+        """这一轮有结论了（``turn/end``）。
+
+        终止原因是**枚举**（``ok`` / ``degraded`` / ``error`` / ``empty``），
+        不是"有没有异常"（调研报告 §2.1 第 2 条：异常分不清"没预算"与"崩了"）。
+        """
+        self.events.append(
+            turn_end_draft(status=status, answer_chars=len(answer), steps=len(self.steps))
+        )
+        self.finished = True
+
+    def mark_interrupted(self, *, reason: str) -> None:
+        """用户中途停止 / 断开：补一条 ``interrupted``（QwenPaw 那条教训）。
+
+        补的不只是"被中断了"这句话，还有**哪些调用没有结果**
+        （``unpaired``）与用户**已经看到**的那段正文——否则下一轮不知道
+        哪些动作是半截的，回看时也说不清当时屏幕上写到了哪。
+
+        补完就当作"这一轮有结论了"（``finished``）：同一轮不会再被记第二次。
+        """
+        self.events.append(
+            EventDraft(
+                kind=KIND_INTERRUPTED,
+                payload=interrupted_payload(
+                    reason=reason, unpaired=self._pending_calls, answer=self.answer
+                ),
+            )
+        )
+        self.finished = True
+
+    def note_error(self, message: str) -> None:
+        """这一轮在流里失败了：``error`` 那一条（``turn/end`` 由调用方收）。"""
+        self.events.append(EventDraft(kind=KIND_ERROR, payload={"message": message}))
+
+    def _track_call(self, event: StepEvent) -> None:
+        """跟踪"已开始、还没有结果"的调用（中断时那份名单，见 ``mark_interrupted``）。
+
+        配对按**工具名**先进先出：``tool_loop._perform`` 的发法是"running 按调用顺序
+        发全 → 执行 → done 也按调用顺序发"（见那里的说明），所以同名调用会按顺序
+        一一对上。配不上对的那条 running，就是这一轮里"结果没等到"的调用。
+        """
+        if not event.tool:
+            return
+        if event.status == "running":
+            self._pending_calls.append({"tool": event.tool, "label": event.label})
+            return
+        for index, pending in enumerate(self._pending_calls):
+            if pending["tool"] == event.tool:
+                del self._pending_calls[index]
+                return
+
     def feed(self, event: object) -> Iterator[str]:
+        # 换了一种事件就意味着这段思考结束了：下一条思考增量的到来会开新的一段
+        if not isinstance(event, ThinkingEvent):
+            self._thinking_draft = None
+
         if isinstance(event, StepEvent):
             # 快照的收法在服务层（``agent.step_snapshot``）：定时任务那条链路
             # 也要落同一份，两处各写一份必然分叉（见那个函数的说明）
             snapshot = step_snapshot(event)
             if snapshot is not None:
                 self.steps.append(snapshot)
+            # 同一条事件**同时**进日志：写侧的映射也只有一处（``step_event_draft``
+            # 复用 step_snapshot），所以"日志投影 == 快照"不是靠约定而是靠同一份代码
+            self.events.append(step_event_draft(event))
+            self._track_call(event)
             yield _sse(
                 {
                     "type": "step",
@@ -445,6 +629,14 @@ class _TurnSink:
             # 顺手攒一份全文：落库时要把它存下来，否则用户离开这一页再回来
             # 就只剩一句"已生成回答"（v0.25）
             self.thinking.append(event.text)
+            # 日志里同一次连续思考只占**一条**：增量拼进同一个 payload。
+            # 每来一块写一行的话，一条长思考就是几百行，而那些行在投影里
+            # 完全一样（思考不进 steps）——只增长度，不增信息。
+            if self._thinking_draft is None:
+                draft = thinking_draft()
+                self.events.append(draft)
+                self._thinking_draft = draft.payload
+            self._thinking_draft["text"] = f"{self._thinking_draft['text']}{event.text}"
             yield _sse({"type": "thinking", "text": event.text})
         elif isinstance(event, DeltaEvent):
             self.deltas.append(event.text)
@@ -464,6 +656,21 @@ def _source_from_snapshot(item: dict[str, object]) -> SourceRef:
     return SourceRef(**{key: value for key, value in item.items() if key in allowed})
 
 
+def _resume_marker(reason: str) -> dict[str, object]:
+    """续跑时那条「继续上一轮」的标记步骤。
+
+    它是**消息快照与事件日志共用的同一份 dict**：消息那边的 ``_resume_steps``
+    与日志那边的 ``step`` 事件都从它来。两处各写一份的话，"投影等于快照"
+    只会在续跑这条路上悄悄不成立——而那条路难得走一次。
+    """
+    return {
+        "phase": "tool",
+        "label": "继续上一轮",
+        "detail": f"上一次停下来是因为：{reason}",
+        "status": "done",
+    }
+
+
 def _resume_steps(
     previous: Sequence[dict[str, object]], fresh: Sequence[dict[str, object]], *, reason: str
 ) -> list[dict[str, object]]:
@@ -473,13 +680,7 @@ def _resume_steps(
     用户会看到"它一步都没查就回答了"——而事实是查过了，只是在上半场。
     那条标记把两半接上，也顺手回答了"为什么会有两段"。
     """
-    marker: dict[str, object] = {
-        "phase": "tool",
-        "label": "继续上一轮",
-        "detail": f"上一次停下来是因为：{reason}",
-        "status": "done",
-    }
-    return [*previous, marker, *fresh]
+    return [*previous, _resume_marker(reason), *fresh]
 
 
 def _agent_loop(
@@ -556,6 +757,44 @@ def _events(
     effort: str | None,
     caller: Caller,
 ) -> Iterator[str]:
+    """流式问答的**收尾**：建 sink、记 ``turn/start``、把断开也记进日志（P0-2）。
+
+    这一层刻意薄：它只做"这一轮从哪开始、到哪结束"。正文那一段在
+    ``_turn_events`` 里，两条链路（正常提问 / 续跑）共用同一份收尾，
+    于是不可能出现"一条链路记日志、另一条不记"。
+
+    ``GeneratorExit`` 是这里唯一必须拦的东西：用户在流式期间点停止、或者直接
+    关掉页面时，Starlette 会 close 掉这个生成器，异常从 ``yield from`` 那里穿上来。
+    不接住的话，库里就只剩半截（QwenPaw 那条教训：中断不补齐，
+    下一轮与回看都说不清"当时停在哪一步"）。
+    """
+    sink = _TurnSink()
+    sink.start_turn(query=payload.query, model_pk=model_pk)
+    try:
+        yield from _turn_events(
+            services,
+            payload,
+            sink=sink,
+            model_pk=model_pk,
+            thinking=thinking,
+            effort=effort,
+            caller=caller,
+        )
+    except GeneratorExit:
+        _record_interruption(services, payload.conversation_id, sink)
+        raise
+
+
+def _turn_events(
+    services: Services,
+    payload: ChatRequestIn,
+    *,
+    sink: _TurnSink,
+    model_pk: str | None,
+    thinking: bool | None,
+    effort: str | None,
+    caller: Caller,
+) -> Iterator[str]:
     """把一次问答摊成一串 SSE 事件。
 
     任何异常都在**流内**报出去（``type=error``）而不是靠 HTTP 状态码：
@@ -567,8 +806,9 @@ def _events(
     """
     chat = services.chat
     # 过程快照与正文都攒在 sink 里：**只活在内存里、结束时一次性写**——
-    # 边流边写会让每一拍都多一次 UPDATE，而回看要的是最终那一份
-    sink = _TurnSink()
+    # 边流边写会让每一拍都多一次 UPDATE，而回看要的是最终那一份。
+    # （P0-2 起同样的取舍套用到事件日志上：攒在 sink 里，与消息同一个事务写。
+    # 日志**只追加**这一点不受影响——它不更新任何东西，只是写得更晚一点。）
     collected: list[str] = []
     step_log: list[dict[str, object]] = []
     thinking_parts: list[str] = []
@@ -616,11 +856,11 @@ def _events(
             ):
                 yield from sink.feed(event)
         except ChatError as exc:
-            yield _sse({"type": "error", "message": str(exc)})
+            yield _fail(services, payload.conversation_id, sink, str(exc))
             return
         except Exception as exc:
             logger.exception("对话流异常")
-            yield _sse({"type": "error", "message": f"对话失败：{exc}"})
+            yield _fail(services, payload.conversation_id, sink, f"对话失败：{exc}")
             return
         sources = sink.sources
         step_log = sink.steps
@@ -634,7 +874,7 @@ def _events(
                 top_k=payload.top_k,
             )
         except Exception as exc:
-            yield _sse({"type": "error", "message": f"检索失败：{exc}"})
+            yield _fail(services, payload.conversation_id, sink, f"检索失败：{exc}")
             return
         # 用 pydantic 序列化而不是 ``s.__dict__``：
         # SourceRef 是 slots=True 的 dataclass，**没有 __dict__**，
@@ -659,11 +899,11 @@ def _events(
                 collected.append(delta)
                 yield _sse({"type": "delta", "text": delta})
         except ChatError as exc:
-            yield _sse({"type": "error", "message": str(exc)})
+            yield _fail(services, payload.conversation_id, sink, str(exc))
             return
         except Exception as exc:
             logger.exception("对话流异常")
-            yield _sse({"type": "error", "message": f"对话失败：{exc}"})
+            yield _fail(services, payload.conversation_id, sink, f"对话失败：{exc}")
             return
 
     answer = "".join(collected)
@@ -672,6 +912,10 @@ def _events(
     # 这条判断必须真的写出来——v0.12 之前只有注释、没有 if，于是流"正常结束但一个字都没吐"
     # 时照样落了一条空回答（实测：推理模型的思考吃光预算时就是这样）。
     if answer:
+        # 这一轮有结论了：先记 ``turn/end``（终止原因是枚举，不是"有没有异常"），
+        # 再连消息一起写——消息与事件同一个事务，见
+        # `ConversationService.record_turn`。
+        sink.close_turn(status=_turn_status(step_log), answer=answer)
         _record_turn(
             services,
             payload,
@@ -680,9 +924,14 @@ def _events(
             steps=step_log,
             thinking="".join(thinking_parts),
             caller=caller,
+            events=sink.events,
         )
     else:
+        # 一个字都没吐（推理模型的思考吃光预算时就是这样）：不落消息，
+        # 但**日志要留**——"为什么这一轮没有回答"正是回看时要问的。
         logger.warning("对话流没有产出任何正文，本轮不落库：query=%r", payload.query[:80])
+        sink.close_turn(status=TURN_EMPTY, answer="")
+        _flush_events(services, payload.conversation_id, sink)
     yield _sse({"type": "done", "answer": answer})
 
 
@@ -710,9 +959,55 @@ def _resume_events(
        已经在库里了，再把它当 `query` 传一遍就会重复一次（模型尤其容易被
        重复的同一句问话带偏）；
     3. **预算抬高 + 出处接上**：见 ``services/resume.py``。
+
+    事件日志这边与正常提问同一套收尾（建 sink → ``turn/start`` → 断开时补
+    ``interrupted``），只是 ``turn/start`` 多带 ``resume_reason``：
+    "这一轮为什么接着做"在日志里必须看得出来，否则回看时会以为用户又问了一遍。
     """
-    chat = services.chat
     sink = _TurnSink()
+    sink.start_turn(query=question, model_pk=model_pk, resume_reason=reason)
+    # **那条「继续上一轮」的标记也进日志**：消息里的 steps 是"上一轮 + 标记 +
+    # 这一轮"（见 ``_resume_steps``），日志若只记新的一半，投影就对不上了
+    # ——而"投影等于快照"正是这条链路要守的东西。
+    sink.events.append(EventDraft(kind=KIND_STEP, payload=_resume_marker(reason)))
+    try:
+        yield from _resume_turn_events(
+            services,
+            conversation_id=conversation_id,
+            payload=payload,
+            kb_ids=kb_ids,
+            question=question,
+            previous=previous,
+            reason=reason,
+            sink=sink,
+            model_pk=model_pk,
+            thinking=thinking,
+            effort=effort,
+            caller=caller,
+        )
+    except GeneratorExit:
+        # 与 ``_events`` 同一处置：续跑跑到一半被停止 / 断开的，同样要补齐
+        _record_interruption(services, conversation_id, sink)
+        raise
+
+
+def _resume_turn_events(
+    services: Services,
+    *,
+    conversation_id: str,
+    payload: ChatResumeIn,
+    kb_ids: Sequence[str],
+    question: str,
+    previous: LastTurn,
+    reason: str,
+    sink: _TurnSink,
+    model_pk: str | None,
+    thinking: bool | None,
+    effort: str | None,
+    caller: Caller,
+) -> Iterator[str]:
+    """续跑的主体（与 ``_events`` 的收尾分开，理由同 ``_turn_events``）。"""
+    chat = services.chat
     # 上一轮的出处还原成对象：**既要接进账本，也要先当作这一轮已有的出处**——
     # 续跑一次都没检索（材料够了直接收尾）时，答案里的 [n] 仍然要有对应的出处记录
     seeds = [_source_from_snapshot(item) for item in previous.sources]
@@ -762,29 +1057,34 @@ def _resume_events(
         ):
             yield from sink.feed(event)
     except ChatError as exc:
-        yield _sse({"type": "error", "message": str(exc)})
+        yield _fail(services, conversation_id, sink, str(exc))
         return
     except Exception as exc:
         logger.exception("续跑流异常")
-        yield _sse({"type": "error", "message": f"续跑失败：{exc}"})
+        yield _fail(services, conversation_id, sink, f"续跑失败：{exc}")
         return
 
     answer = sink.answer
     if answer:
+        # 终止原因与落库**同时**发生：``close_turn`` 先记 ``turn/end``，
+        # ``append_answer`` 再把消息与这批事件写进同一个事务（P0-2）
+        sink.close_turn(status=_turn_status(sink.steps), answer=answer)
         try:
-            services.conversations.append(
+            services.conversations.append_answer(
                 conversation_id,
-                role="assistant",
-                content=answer,
+                answer=answer,
                 sources=[item.model_dump() for item in _sources_out(sink.sources)],
                 steps=_resume_steps(previous.steps, sink.steps, reason=reason),
                 thinking="".join(sink.thinking),
+                events=sink.events,
             )
         except Exception:
             # 与 `_record_turn` 同一条取舍：落库失败不该让用户丢掉**已经付过费**的回答
             logger.exception("续跑落库失败：%s", conversation_id)
     else:
         logger.warning("续跑没有产出正文：conversation=%s", conversation_id)
+        sink.close_turn(status=TURN_EMPTY, answer="")
+        _flush_events(services, conversation_id, sink)
     yield _sse({"type": "done", "answer": answer})
 
 
@@ -880,26 +1180,30 @@ def _record_turn(  # type: ignore[no-untyped-def]
     steps: list[dict[str, object]] | None = None,
     thinking: str = "",
     caller: Caller,
+    events: Sequence[EventDraft] = (),
 ) -> None:
     """把这一轮写进会话（仅在指定了 ``conversation_id`` 时）。
 
     引用**存快照**：``_sources_out`` 出来的就是这一轮实际依据的原文出处。
     事后重查会得到不同的结果，引用编号就对不上了。
+
+    ``events``（P0-2）：这一轮的会话事件，与两条消息**同一个事务**落库
+    （见 ``ConversationService.record_turn``）。所以不可能出现"消息在、事件不在"。
     """
     if not payload.conversation_id:
         return
     conversation_id = payload.conversation_id
     try:
-        services.conversations.append(conversation_id, role="user", content=payload.query)
-        services.conversations.append(
+        services.conversations.record_turn(
             conversation_id,
-            role="assistant",
-            content=answer,
+            question=payload.query,
+            answer=answer,
             sources=[item.model_dump(mode="json") for item in _sources_out(sources)],
             # 过程与回答一起存：回看一条旧回答时，"它是怎么来的"和"它说了什么"
             # 同样重要（v0.25）
             steps=list(steps or ()),
             thinking=thinking,
+            events=list(events),
         )
         services.conversations.ensure_title(conversation_id, payload.query)
     except Exception:
@@ -911,6 +1215,61 @@ def _record_turn(  # type: ignore[no-untyped-def]
     _maybe_capture_memory(
         services, conversation_id, query=payload.query, answer=answer, caller=caller
     )
+
+
+# ------------------------------------------------------------------ 事件日志收尾
+
+
+def _turn_status(steps: Sequence[dict[str, object]]) -> str:
+    """这一轮的终止原因（枚举，见 ``services/session_events`` 的四个取值）。
+
+    降级判定**复用续跑那条路的口径**（``resume.degraded_reason``）而不是自己看
+    一眼 ``degraded`` 键：同一个问题（"这一轮跑完了吗"）有两份判断，
+    迟早会出现"日志说降级、界面不给继续按钮"这种对不上的状态。
+    """
+    return TURN_DEGRADED if resume_service.degraded_reason(steps) else TURN_OK
+
+
+def _flush_events(services: Services, conversation_id: str | None, sink: _TurnSink) -> None:
+    """把攒下的事件落库（**没有消息可写**时的收尾）。
+
+    三处用它：流内失败、流跑完但一个字都没吐、以及用户中途停止。
+    这三种情况按 v0.12 起的取舍都不留消息（失败的一轮不留半截记录），
+    而它们**恰恰最需要日志**——"当时为什么没有回答"只有这里答得出来。
+
+    best-effort：写日志失败绝不能把已经发生的失败再放大一次，只记日志。
+    """
+    if not conversation_id or not sink.finished or not sink.events:
+        return
+    try:
+        services.conversations.append_events(conversation_id, sink.events)
+    except Exception:
+        logger.exception("会话事件落库失败：%s", conversation_id)
+
+
+def _fail(services: Services, conversation_id: str | None, sink: _TurnSink, message: str) -> str:
+    """流内失败的收尾：把 ``error`` + ``turn/end`` 记进日志，并给出要发的那条 SSE。
+
+    返回值就是客户端看到的那条 ``type=error``——**顺序不能反**：
+    先记日志再返回，日志里才不会有"没有结尾的一轮"。
+    """
+    sink.note_error(message)
+    sink.close_turn(status=TURN_ERROR, answer="")
+    _flush_events(services, conversation_id, sink)
+    return _sse({"type": "error", "message": message})
+
+
+def _record_interruption(services: Services, conversation_id: str | None, sink: _TurnSink) -> None:
+    """用户中途停止 / 断开时的收尾（P0-2 的第 5 条，QwenPaw 那条教训）。
+
+    两件事：补一条 ``interrupted``（含"哪些调用没有结果"与已看到的正文），
+    再把这一轮攒到现在的事件一起写进日志。**已经收尾的一轮不补**——用户读完答复
+    才关页面是很正常的事，那不该被记成"被中断"。
+    """
+    if sink.finished:
+        return
+    sink.mark_interrupted(reason="客户端断开或用户停止")
+    _flush_events(services, conversation_id, sink)
 
 
 def _memory_owner(caller: Caller) -> str | None:
@@ -937,10 +1296,19 @@ def _require_conversation(services: Services, payload: ChatRequestIn, caller: Ca
     """
     if not payload.conversation_id:
         return
+    _require_visible_conversation(services, payload.conversation_id, caller)
+
+
+def _require_visible_conversation(services: Services, conversation_id: str, caller: Caller) -> None:
+    """会话要存在且可见，否则 404。**所有"按会话读"的端点共用这一处判定。**
+
+    抽成一个函数的理由与 ``Caller.owner_id`` 一样：这条规则一旦有两份，
+    就会出现"某个端点忘了判归属"——而那种漏法不报错，只是把别人的会话读走了。
+    """
     if caller.user is not None and not caller.is_admin:
-        services.conversations.get_for_owner(payload.conversation_id, caller.user.id)
+        services.conversations.get_for_owner(conversation_id, caller.user.id)
     else:
-        services.conversations.get(payload.conversation_id)
+        services.conversations.get(conversation_id)
 
 
 def _warn_on_scope_drift(services: Services, payload: ChatRequestIn) -> None:
@@ -969,19 +1337,3 @@ def _sources_out(sources) -> list[ChatSourceOut]:  # type: ignore[no-untyped-def
 
 
 __all__ = ["router"]
-
-
-def _collect(events: Iterator[object]) -> ChatTurn:
-    """把事件流收成一次问答（非流式端点用）。
-
-    收法：**最后一次 SourcesEvent 就是出处**，
-    ``DoneEvent`` 带的是后端拼好的全文（以它为准，避免个别增量丢失后正文与出处对不上）。
-    """
-    answer = ""
-    sources: list = []
-    for event in events:
-        if isinstance(event, SourcesEvent):
-            sources = list(event.sources)
-        elif isinstance(event, DoneEvent):
-            answer = event.answer
-    return ChatTurn(answer=answer, sources=sources)

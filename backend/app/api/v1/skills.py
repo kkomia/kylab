@@ -9,6 +9,11 @@
 
 被安全扫描拦下的技能**照样列出来**，只是标着原因（``flagged``）且不进模型目录：
 静默藏掉会让用户以为技能没装上，而"为什么它不生效"就成了一个查不出的问题。
+
+**被丢弃的技能（P0-3）同样列出来**，`discarded=true` + ``flagged`` 里那条理由：
+校验（缺 ``name``/``description``、描述超长）是在加载阶段做的，坏技能不进目录也读不出
+正文，但它写在磁盘上、也确实"装了"——能力页要说得出这件事，否则用户只会看到
+"我明明放进去了，怎么没有"。
 """
 
 from __future__ import annotations
@@ -63,6 +68,7 @@ def _out(record, summary: str = "") -> SkillOut:  # type: ignore[no-untyped-def]
         directory=record.directory,
         used_by_prompt=record.used_by_prompt,
         flagged=list(record.flagged),
+        discarded=record.discarded,
     )
 
 
@@ -100,8 +106,13 @@ def get_skill(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_read)],
 ) -> SkillDetailOut:
-    """连正文一起给：界面上要能读它（这也是用户核对"这个技能到底教了模型什么"的地方）。"""
-    record, body = services.skills.read(name)
+    """连正文一起给：界面上要能读它（这也是用户核对"这个技能到底教了模型什么"的地方）。
+
+    **被丢弃的技能这里也读得出来**（``allow_discarded=True``）：模型那条路
+    （``read_skill`` 工具）读不到，但人要看的就是"它到底写了什么、为什么被丢掉"
+    ——详情页是排错的地方，藏起来等于让人只能去翻磁盘。
+    """
+    record, body = services.skills.read(name, allow_discarded=True)
     return SkillDetailOut(
         **_out(record, _summaries(services).get(record.name, "")).model_dump(), body=body
     )

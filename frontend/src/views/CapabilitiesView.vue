@@ -8,6 +8,9 @@
  *   所以这里要能看正文——用户有权知道"它到底教了模型什么"。
  * - **插件**（协议上是 MCP 服务，界面上叫插件）：外部工具（能力）。
  *   这里能登记、探活、看它有哪些工具、配策略闸。
+ * - **插件包**（v0.43，`plugin.json` + 目录约定）：磁盘上的能力包，
+ *   目录即本地市场。**它和上一栏是两件事**：那一栏是连出去的外部服务，
+ *   这一栏是别人写好放在磁盘上的包（见 `docs/设计/插件与技能-v0.1.md`）。
  *
  * 三处刻意的设计：
  *
@@ -32,6 +35,7 @@ import {
   uninstallSkill,
   updateMCPServer,
 } from '@/api/capabilities'
+import PluginPackPanel from '@/components/capabilities/PluginPackPanel.vue'
 import SkillMarketDialog from '@/components/capabilities/SkillMarketDialog.vue'
 import IconAlert from '@/components/icons/IconAlert.vue'
 import IconCheck from '@/components/icons/IconCheck.vue'
@@ -76,13 +80,17 @@ const settingsOpen = ref(false)
  * 并排的代价是两栏各只剩一半宽——技能描述是整句文本，折行折得很碎；
  * MCP 那边每条又带着策略与工具清单。而且这两件事本来就不需要同时看。
  */
-const tab = ref<'skills' | 'mcp'>('skills')
+const tab = ref<'skills' | 'mcp' | 'packs'>('skills')
 
 const CAP_TABS = [
   { key: 'skills' as const, label: '技能' },
   // **用户面前叫「插件」**（v0.22，用户指定）：MCP 是协议的名字，不是用户的事。
   // 代码、接口与文档里仍是 MCP（那是它真实的东西），只改界面上这两个字。
   { key: 'mcp' as const, label: '插件' },
+  // 新的一栏叫「插件包」（v0.43）：上面那个名字已经被 MCP 占了，而两者是不同的东西
+  // ——这一栏是磁盘上的目录（`plugin.json`），不是要连的外部服务。
+  // 界面上两个同名标签只会让人点错，所以按计划里的叫法（P1-4「插件包与本地市场」）取名。
+  { key: 'packs' as const, label: '插件包' },
 ]
 
 /**
@@ -126,6 +134,10 @@ const skillOpen = computed({
     if (!value) skillDetail.value = null
   },
 })
+
+/** 插件包（v0.43）的几个数：只有一条状态标签用它，所以父组件不重复拉列表——
+    面板每次加载/启停之后把数回传上来（两个地方各拉一次会扫两遍磁盘）。 */
+const packStats = ref({ total: 0, enabled: 0, failed: 0 })
 
 const servers = ref<MCPServer[]>([])
 const serversLoading = ref(true)
@@ -187,9 +199,12 @@ function isFromMarket(skill: Skill): boolean {
   return skill.source !== 'builtin' && Boolean(installedSkills.value[skill.name])
 }
 
-/** 卡片来源那一行的说法：市场装的写仓库名，其余两种照旧。 */
+/** 卡片来源那一行的说法：市场装的写仓库名，其余几种照旧。
+    技能还可以住在 `~/.agents/skills`——那是跨工具共享的一层（ZCode / Claude Code /
+    Codex 都扫它），说法要写清楚，否则用户在那儿放了一个却在 KYLAB 里认不出来。 */
 function sourceLabelOf(skill: Skill): string {
   if (skill.source === 'builtin') return '随代码发布'
+  if (skill.source === 'agents') return '跨工具共享（~/.agents/skills）'
   const origin = installedSkills.value[skill.name]
   return origin ? `来自 ${sourceLabel(origin)}` : '手动放入'
 }
@@ -464,6 +479,10 @@ function policyLabel(policy: MCPPolicy): string {
           :tone="skills.length && !usableSkills ? 'warning' : 'neutral'"
         />
         <StatusTag :label="`插件 ${servers.length} 个`" tone="neutral" />
+        <StatusTag
+          :label="`插件包 ${packStats.enabled}/${packStats.total}`"
+          :tone="packStats.failed ? 'warning' : 'neutral'"
+        />
         <!-- 联网搜索与执行策略在这后面（v0.26 从总设置搬来的）。
              **只给管理员**：后端 `/settings` 是管理员端点，与侧栏那个设置入口同一档。 -->
         <AppButton v-if="isAdmin" @click="settingsOpen = true">
@@ -534,7 +553,7 @@ function policyLabel(policy: MCPPolicy): string {
           :hint="
             skills.length
               ? '换个关键词，或者把筛选切回「全部」。'
-              : '把带 SKILL.md 的目录放进仓库的 skills/ 或数据目录的 skills/，这里就会列出来。'
+              : '把带 SKILL.md 的目录放进仓库的 skills/、数据目录的 skills/，或 ~/.agents/skills（跨工具共享），这里就会列出来。'
           "
         />
         <ul v-else class="card-grid">
@@ -553,7 +572,15 @@ function policyLabel(policy: MCPPolicy): string {
                   {{ sourceLabelOf(skill) }}
                 </span>
                 <span v-else class="chip">{{ sourceLabelOf(skill) }}</span>
-                <span v-if="!skill.used_by_prompt" class="chip chip-warn">
+                <!-- 「被丢弃」与「被拦下」是两件事（P0-3）：前者是 frontmatter 不合规
+                     （缺 name/description、描述超长），照 ZCode 的规则整个技能不加载；
+                     后者是能用但这一轮不给模型看（注入特征、依赖没满足）。
+                     标签分开写，理由都在下面那一段里。 -->
+                <span v-if="skill.discarded" class="chip chip-warn">
+                  <IconAlert :size="12" />
+                  已丢弃
+                </span>
+                <span v-else-if="!skill.used_by_prompt" class="chip chip-warn">
                   <IconAlert :size="12" />
                   未进提示词
                 </span>
@@ -566,6 +593,10 @@ function policyLabel(policy: MCPPolicy): string {
           </li>
         </ul>
       </section>
+
+      <!-- --------------------------------------------------------- 插件包 -->
+      <!-- 面板自己管数据（它一栏就是一件事），数回传给上面的状态标签 -->
+      <PluginPackPanel v-else-if="tab === 'packs'" @stats="(value) => (packStats = value)" />
 
       <!-- ------------------------------------------------------------ 插件 -->
       <section v-else class="cap-col" role="tabpanel" aria-label="插件">
@@ -695,6 +726,11 @@ function policyLabel(policy: MCPPolicy): string {
         这就是模型按需读进来的**正文**。frontmatter（名字与描述）不在这里——
         那一行会进系统提示词，正文只在它决定用这个技能时才读。
       </p>
+      <!-- 被丢弃的技能也读得出来（后端详情端点放行），但要在这里说清"它为什么不算数"：
+           否则用户看到一份写得挺像样的正文，只会以为技能是好的 -->
+      <ul v-if="skillDetail?.discarded" class="flags">
+        <li v-for="(reason, at) in skillDetail.flagged" :key="at">{{ reason }}</li>
+      </ul>
       <!-- 来源与卸载入口（v0.27）：从市场装的技能要能在这里卸掉，
            而"从哪儿装的"是用户决定要不要卸的依据 -->
       <p v-if="skillDetail && isFromMarket(skillDetail)" class="skill-origin">

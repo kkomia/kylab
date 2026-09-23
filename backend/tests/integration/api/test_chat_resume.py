@@ -248,3 +248,51 @@ def test_resume_without_any_turn_is_422(client: TestClient) -> None:
 def test_resume_of_an_unknown_conversation_is_404(client: TestClient) -> None:
     response = client.post("/api/v1/conversations/conv_missing/resume", json={})
     assert response.status_code == 404
+
+
+def test_the_resumed_steps_are_also_a_projection_of_the_log(
+    client: TestClient, degraded: str
+) -> None:
+    """续跑那一轮的步骤**同样是事件日志的投影**（P0-2 的验收在续跑这条路上的样子）。
+
+    这条比正常轮难：消息里的 steps 是"上一轮 + 标记 + 这一轮"三段（见
+    ``_resume_steps``），所以日志里也必须三段都在——上一轮那些事件还在库里，
+    标记单独记一条 ``step``，这一轮的照常。少一段，投影就不等于快照了，
+    而"续跑之后过程面板少半截"正是最容易悄悄发生的那种分叉。
+    """
+    from app.services.session_events import SessionEvent, steps_from_events
+
+    install_fake_chat("眼轴是主要参数[1]，建议每 3 个月测一次。")
+    _install_fake_sources()
+    resumed = client.post(f"/api/v1/conversations/{degraded}/resume", json={"skill_names": []})
+    assert resumed.status_code == 200
+
+    detail = client.get(f"/api/v1/conversations/{degraded}").json()
+    resumed_steps = detail["messages"][-1]["steps"]
+    assert any(step["label"] == "继续上一轮" for step in resumed_steps), "续跑要接上那半截过程"
+
+    events = client.get(f"/api/v1/conversations/{degraded}/events").json()["items"]
+    rebuilt = steps_from_events(
+        [
+            SessionEvent(
+                id=item["id"],
+                seq=item["seq"],
+                kind=item["kind"],
+                payload=item["payload"],
+                created_at=None,
+            )
+            for item in events
+        ]
+    )
+    assert rebuilt == resumed_steps
+
+    # 标记本身也进了日志（否则上面那条比对不可能过）
+    assert [item["kind"] for item in events].count("step") >= 1
+    assert any(
+        item["kind"] == "step" and item["payload"].get("label") == "继续上一轮"
+        for item in events
+    )
+    # 两次 turn/start：后一次要说明这是"接着上一轮做"，否则回看时会以为用户又问了一遍
+    starts = [item["payload"] for item in events if item["kind"] == "turn/start"]
+    assert len(starts) == 2
+    assert starts[-1]["resume"] is True and starts[-1]["resume_reason"]

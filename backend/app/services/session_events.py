@@ -1,0 +1,315 @@
+"""会话事件日志的**词表、草稿与投影**（P0-2，开发计划 §12.225）。
+
+**照抄的是 ZCode 的第一条承重设计**（调研报告《Agent-与对话架构对标调研 v0.1》
+§2.1「会话 = 只追加事件日志」，该条证据等级为字符串证据）：
+``Session{Created,Resumed,Forked,Compacted,ModeChanged}`` /
+``Turn{Started,InputReceived,Complete,Error}`` /
+``Model{Request,Streaming,Complete,Error}`` /
+``ToolCall{Scheduled,Started,Progress,Result,Error}`` 是同一族事件的不同 kind，
+会话正文（我们这边是 ``chat_messages.steps``）只是这份日志的一个**投影**。
+
+**为什么值得照抄**：它把「过程面板」「断流续跑」「插话」「压缩」「审计」
+从五套各自的补丁变成对同一份日志的读操作。我们此前的 ``steps`` 是**流式当时
+拍下的快照**，于是每一处要用它的地方都得自己想办法（续跑要把两轮拼起来、
+压缩要另存一份 upto 标记）。日志一旦存在，这些都能现算。
+
+**词的来源与裁剪**：ZCode 的枚举里与我们有关的只有七种，逐个对应如下
+（其余如 ``CompactBoundary`` / ``CheckpointCreated`` / ``ModeChanged``
+留给对应的后续项：P1-3 压缩、P1-1 模式）：
+
+===================  ==========================================  ==============================
+kind                 什么时候写                                  抄的是 ZCode 的哪一处
+===================  ==========================================  ==============================
+``turn/start``       一轮问答开始（问题、模型档、是不是续跑）    ``Turn{Started,InputReceived}``
+``turn/end``         这一轮收尾（成功 / 降级 / 出错）           ``Turn{Complete,Error}``
+``step``             非工具的一步（组织回答那一步）             步骤序列
+``tool_call``        一次工具调用；**同一调用两条**：            ``ToolCall{Started}`` +
+                     ``running`` 那条是「开始」，``done`` 那条    ``ToolCall{Result,Error}``
+                     带 args / result 摘要与产出物
+``thinking``         模型的一段连续思考（增量拼成一条）         ``Model{Streaming}``
+``error``            这一轮失败的那句话                          ``Model{Error}`` / ``Turn{Error}``
+``interrupted``      用户在流式期间停止 / 断开                  QwenPaw 的中断补齐（见下）
+===================  ==========================================  ==============================
+
+**QwenPaw 那条教训**（调研报告 §2.1「中断时给每个未完成 tool_use 伪造结果」）：
+中断不补收尾的话，下一轮的消息不成对（OpenAI 兼容端点直接 400）。我们的
+``chat_messages`` 只存 user / assistant 两条，不存在 tool 消息配对问题，但那份
+**「哪些调用没有结果」**的信息仍然必须留下——它就是 ``interrupted`` 事件的
+``unpaired`` 字段，下一轮（或续跑）据此知道哪些动作是半截的。
+
+**只追加**：本模块不提供任何修改 / 删除事件的口子（``MetaStore`` 那边同样只有
+append 与 list）。日志要是能被改，「回看当时发生了什么」就不再成立。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Protocol
+
+from app.services.agent import StepEvent, step_snapshot
+
+__all__ = [
+    "EVENT_KINDS",
+    "KIND_ERROR",
+    "KIND_INTERRUPTED",
+    "KIND_STEP",
+    "KIND_THINKING",
+    "KIND_TOOL_CALL",
+    "KIND_TURN_END",
+    "KIND_TURN_START",
+    "STEP_KINDS",
+    "TURN_DEGRADED",
+    "TURN_EMPTY",
+    "TURN_ERROR",
+    "TURN_OK",
+    "TURN_STATUSES",
+    "EventDraft",
+    "SessionEvent",
+    "interrupted_payload",
+    "step_event_draft",
+    "steps_from_events",
+    "thinking_draft",
+    "turn_end_draft",
+    "turn_start_draft",
+]
+
+# ---- 词表 -----------------------------------------------------------------
+#
+# **一处定义**（这条是刻意的，见开发计划 §12.225 的纪律「能抄就抄，不发明」）：
+# 端点参数校验、写侧、投影、测试都从这几个常量取，散着写字符串就会出现
+# "某处写成 turn_start、某处写成 turn/start"这种只有对不上时才发现的错。
+
+KIND_TURN_START = "turn/start"
+KIND_TURN_END = "turn/end"
+KIND_STEP = "step"
+KIND_TOOL_CALL = "tool_call"
+KIND_THINKING = "thinking"
+KIND_ERROR = "error"
+KIND_INTERRUPTED = "interrupted"
+
+#: 全部合法的 kind。**顺序即词表顺序**，端点报错时按它列给调用方。
+EVENT_KINDS: tuple[str, ...] = (
+    KIND_TURN_START,
+    KIND_TURN_END,
+    KIND_STEP,
+    KIND_TOOL_CALL,
+    KIND_THINKING,
+    KIND_ERROR,
+    KIND_INTERRUPTED,
+)
+
+#: 投影成 ``steps`` 时要读的 kind。工具调用也是"一步"——它在快照里与普通步骤
+#: 同构（都有 phase/label/status，多一个 tool），所以投影必须把它一起算上。
+STEP_KINDS = frozenset({KIND_STEP, KIND_TOOL_CALL})
+
+# ---- turn 的终止原因 ----------------------------------------------------------
+#
+# 调研报告 §2.1 第 2 条：**终止原因是枚举返回值**，不要用"有没有抛异常"区分
+# ——异常分不清"没预算了"与"崩了"，而这两种情况该给用户的下一步完全不同。
+# 这四个取值写进 ``turn/end`` 的 ``status``。
+
+TURN_OK = "ok"
+"""正常收尾：模型给出了回答，而且这一轮没降级。"""
+
+TURN_DEGRADED = "degraded"
+"""**降级收尾**：工具步数或整轮墙钟用尽，按现有信息作答（v0.32 起界面据此给
+「继续」入口，判定见 ``services/resume.degraded_reason``）。"""
+
+TURN_ERROR = "error"
+"""这一轮在流里失败了（模型调用、检索都算）。"""
+
+TURN_EMPTY = "empty"
+"""流跑完了但一个字都没吐（实测：推理模型的思考吃光预算时就是这样）。
+
+它与 ``error`` 分开：没有人报错，模型只是没来得及说。
+"""
+
+TURN_STATUSES = (TURN_OK, TURN_DEGRADED, TURN_ERROR, TURN_EMPTY)
+"""``turn/end.payload.status`` 的全部取值。"""
+
+#: 「组织回答」这一步的 phase。它在 ``running`` 状态下**也要进快照**
+#: （理由见 ``agent.step_snapshot``），投影要跟着同一条取舍。
+_ANSWER_PHASE = "answer"
+
+#: 快照里允许出现的键。**与 ``agent.step_snapshot`` 的产出逐一对齐**：
+#: 投影出来的 dict 要和那份快照**一模一样**（P0-2 的核心验收），
+#: 所以这里不是"白名单"而是同一份契约的另一半。
+_SNAPSHOT_KEYS = (
+    "phase",
+    "label",
+    "detail",
+    "status",
+    "degraded",
+    "tool",
+    "added",
+    "args",
+    "result",
+    "artifacts",
+)
+
+
+@dataclass(slots=True)
+class EventDraft:
+    """一条**尚未落库**的事件：kind + payload。
+
+    为什么要有草稿这一层：``stream`` 那条链路在内存里攒事件（与它一直攒快照
+    的做法一致），收尾时才算 ``seq``、才写库。草稿不带 id / seq / conversation_id
+    ——那三样是存储层的事（见 ``storage/base.SessionEventRecord``）。
+
+    ``payload`` 特意是可变的：一段连续思考在日志里只占**一条**，后续增量
+    拼进同一个 dict。每来一个增量写一行会让长会话的日志膨胀几十倍，
+    而那些行在投影里没有任何区别（思考不进 ``steps``）。
+    """
+
+    kind: str
+    payload: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class SessionEvent:
+    """读出来的一条事件（服务层形状）。
+
+    **刻意摊开字段而不是把存储层的记录交给调用方**：协议层只该看到服务层给的
+    东西（与 ``services/conversation.LastTurn`` 同一条理由——工程规范 §3.3 的 L1
+    按 import 的模块名判，``api/`` 里出现 ``app.storage`` 直接红）。
+    """
+
+    id: int
+    seq: int
+    kind: str
+    payload: dict[str, object]
+    created_at: datetime | None = None
+
+
+# ---- 写侧的构造 -----------------------------------------------------------------
+
+
+def turn_start_draft(
+    *,
+    query: str,
+    model_pk: str | None,
+    resume_reason: str | None = None,
+) -> EventDraft:
+    """``turn/start``：这一轮要做什么。
+
+    带上 ``query`` 是照 ZCode 的 ``Turn/InputReceived``——日志要能独立回答
+    "这一轮是什么问题"，而不是逼读的人去 ``chat_messages`` 里按时间找配对。
+    ``resume_reason`` 非空表示这是**接着上一轮做**（续跑那条路）。
+    """
+    payload: dict[str, object] = {"query": query}
+    if model_pk:
+        payload["model_pk"] = model_pk
+    if resume_reason:
+        payload["resume"] = True
+        payload["resume_reason"] = resume_reason
+    return EventDraft(kind=KIND_TURN_START, payload=payload)
+
+
+def turn_end_draft(*, status: str, answer_chars: int, steps: int) -> EventDraft:
+    """``turn/end``：这一轮怎么结束的。
+
+    ``status`` 取 ``TURN_STATUSES`` 里的一个（``ok`` / ``degraded`` / ``error`` /
+    ``empty``），不用"有没有异常"区分（调研报告 §2.1 第 2 条：终止原因要是枚举返回值）。
+    """
+    return EventDraft(
+        kind=KIND_TURN_END,
+        payload={"status": status, "answer_chars": answer_chars, "steps": steps},
+    )
+
+
+def step_event_draft(event: StepEvent) -> EventDraft:
+    """把一个步骤事件翻成事件草稿（``step`` / ``tool_call`` 二选一）。
+
+    **payload 就是那份快照本身**（走 ``agent.step_snapshot``，绝不另写一版映射）——
+    于是"从事件重建快照"退化成"筛掉不该进快照的那几条、其余原样拼起来"，
+    两处口径不可能分叉。
+
+    ``running`` 的那条（``step_snapshot`` 返回 ``None``）在这里**要留下**：
+    ``step_snapshot`` 的取舍是"快照里不存没结论的步骤"，而日志要记的是
+    "这件事开始过"——中断时"哪些调用没有结果"正是从这些 running 里数出来的。
+    """
+    snapshot = step_snapshot(event)
+    if snapshot is not None:
+        return EventDraft(kind=_kind_of(event), payload=snapshot)
+    payload: dict[str, object] = {
+        "phase": event.phase,
+        "label": event.label,
+        "status": event.status,
+    }
+    if event.tool:
+        payload["tool"] = event.tool
+    return EventDraft(kind=_kind_of(event), payload=payload)
+
+
+def _kind_of(event: StepEvent) -> str:
+    """带 ``tool`` 的一步是工具调用（``tool_call``），其余是普通步骤（``step``）。
+
+    ZCode 把 ``ToolCall{...}`` 与步骤序列分成两族事件，我们**不另写两条**：
+    这里的一步就是一次工具调用（``tool_loop`` 的 running / done 一对，正是
+    DSH 的 ``tool/call`` + ``tool/result`` 事件对，靠 ``seq`` 关联），
+    再写一条重复的只会让日志翻倍、投影还要去重。
+    """
+    return KIND_TOOL_CALL if event.tool else KIND_STEP
+
+
+def thinking_draft() -> EventDraft:
+    """开一段 ``thinking``：返回的草稿由调用方把后续增量拼进它的 payload。"""
+    return EventDraft(kind=KIND_THINKING, payload={"text": ""})
+
+
+def interrupted_payload(
+    *,
+    reason: str,
+    unpaired: Sequence[dict[str, object]] = (),
+    answer: str = "",
+) -> dict[str, object]:
+    """中断那一轮要补的信息（QwenPaw 那条教训的落点）。
+
+    ``unpaired``：**已开始、没有结果**的调用（``running`` 有、``done`` 没等到）。
+    它回答的是"这一轮停在了半截的哪一步"，也是下一轮成对的前提。
+    与 DSH 的 ``interruptedBlocks()`` 同一个用途（保留用户已看到的那部分）。
+
+    ``answer``：用户**已经看到**的那段正文。取消不等于"什么都没发生"——
+    回看日志时要能看出当时屏幕上写到了哪。
+    """
+    payload: dict[str, object] = {"reason": reason, "unpaired": [dict(item) for item in unpaired]}
+    if answer:
+        payload["answer"] = answer
+    return payload
+
+
+# ---- 读侧的投影 -----------------------------------------------------------------
+
+
+class _EventLike(Protocol):
+    """投影只要求两样东西（结构化类型，所以 ``EventDraft`` 与 ``SessionEvent`` 都满足）。"""
+
+    kind: str
+    payload: dict[str, object]
+
+
+def steps_from_events(events: Iterable[_EventLike]) -> list[dict[str, object]]:
+    """把一段事件**投影**成 ``chat_messages.steps`` 那份快照（P0-2 的核心）。
+
+    抄的是 ZCode 的"读的时候现算"：日志是事实，快照是视图。规则只有两条，
+    都能在 ``agent.step_snapshot`` 里找到出处：
+
+    1. 只读 ``step`` / ``tool_call`` 两种 kind（其余 kind 不进过程面板）；
+    2. ``running`` 且不是「组织回答」的那条**不进投影**——这正是快照当年的取舍
+       （回看时多一行没有结论的步骤没有意义），日志留着它是因为中断要数它。
+
+    传进来的可以是 ``SessionEvent``（读端点）也可以是 ``EventDraft``（写侧自检），
+    只要带 ``kind`` / ``payload`` 两个属性即可——**同一段代码同时回答"库里的是不是
+    对"和"刚要写的是不是对"**。
+    """
+    projected: list[dict[str, object]] = []
+    for event in events:
+        if event.kind not in STEP_KINDS:
+            continue
+        payload = event.payload
+        if payload.get("status") == "running" and payload.get("phase") != _ANSWER_PHASE:
+            continue
+        projected.append({key: payload[key] for key in _SNAPSHOT_KEYS if key in payload})
+    return projected

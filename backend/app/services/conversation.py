@@ -27,7 +27,17 @@ from dataclasses import dataclass
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.llm import ChatMessage
-from app.storage.base import ChatMessageRecord, ConversationRecord, StoreBundle
+from app.services.session_events import (
+    EVENT_KINDS,
+    EventDraft,
+    SessionEvent,
+)
+from app.storage.base import (
+    ChatMessageRecord,
+    ConversationRecord,
+    SessionEventRecord,
+    StoreBundle,
+)
 
 __all__ = ["TITLE_MAX_CHARS", "ConversationService"]
 
@@ -323,6 +333,159 @@ class ConversationService:
         )
         self._stores.meta.touch_conversation(conversation_id)
         return record
+
+    # ------------------------------------------------------ 事件日志（P0-2）
+
+    def record_turn(
+        self,
+        conversation_id: str,
+        *,
+        question: str,
+        answer: str,
+        sources: Sequence[dict[str, object]] = (),
+        steps: Sequence[dict[str, object]] = (),
+        thinking: str = "",
+        events: Sequence[EventDraft] = (),
+    ) -> None:
+        """把一轮问答（提问 + 回答两条消息）**连同它的事件日志**写进库。
+
+        抄的是 ZCode 那条"会话 = 只追加事件日志"（开发计划 §12.225 的 P0-2）：
+        消息与事件在**同一个事务**里落库，于是不存在"消息在、事件不在"的窗口。
+        此前（v0.25 起）步骤是流式当时拍下的快照，边流边写会多几十次 UPDATE，
+        所以只能结束时一次性写；现在事件是只追加的行，同样一次写、代价不变，
+        但**每一轮都留下了一份不可变的过程记录**。
+
+        ``steps`` 仍然照旧存：快照的形状一个字没变，老读法（回看、续跑、
+        ``degraded`` 判断）全都不受影响。它现在的另一个身份是事件日志的投影
+        ——两者应当等价，``tests/unit/services/test_session_events.py`` 与
+        端到端用例各钉一遍（见 ``services/session_events.steps_from_events``）。
+        """
+        self.get(conversation_id)
+        messages = [
+            self._message(conversation_id, role="user", content=question),
+            self._message(
+                conversation_id,
+                role="assistant",
+                content=answer,
+                sources=sources,
+                steps=steps,
+                thinking=thinking,
+            ),
+        ]
+        self._write_turn(conversation_id, messages=messages, events=events)
+
+    def append_answer(
+        self,
+        conversation_id: str,
+        *,
+        answer: str,
+        sources: Sequence[dict[str, object]] = (),
+        steps: Sequence[dict[str, object]] = (),
+        thinking: str = "",
+        events: Sequence[EventDraft] = (),
+    ) -> None:
+        """只追加**回答**那一条（续跑用：提问上一轮就在库里，不能再落一遍）。
+
+        与 ``record_turn`` 共用同一条落库路径与同一条"消息 + 事件一起写"的纪律，
+        区别只有"写几条消息"——两处各写一份，迟早会出现"续跑那一轮的事件丢了"
+        这种只在某一条路上才有的毛病。
+        """
+        self.get(conversation_id)
+        messages = [
+            self._message(
+                conversation_id,
+                role="assistant",
+                content=answer,
+                sources=sources,
+                steps=steps,
+                thinking=thinking,
+            )
+        ]
+        self._write_turn(conversation_id, messages=messages, events=events)
+
+    def append_events(
+        self, conversation_id: str, events: Sequence[EventDraft]
+    ) -> list[SessionEventRecord]:
+        """只追加事件、不写消息（中断与失败那两条路用）。
+
+        什么时候会有"事件在、消息不在"：用户中途点了停止（正文没写完，
+        答不成一条消息），或者这一轮在流里报了错（按 v0.12 起的取舍，失败的一轮
+        不留半截记录）。这两种情况**恰恰最需要日志**——回看时"当时为什么没有回答"
+        只有这里答得出来。反过来（消息在、事件不在）才是不能容忍的那种，
+        它由 ``record_turn`` 的同一事务挡住。
+        """
+        self.get(conversation_id)
+        if not events:
+            return []
+        return self._stores.meta.append_session_events(
+            [self._event_record(conversation_id, draft) for draft in events]
+        )
+
+    def session_events(
+        self, conversation_id: str, *, kinds: Sequence[str] | None = None
+    ) -> list[SessionEvent]:
+        """按 ``seq`` 正序读这条会话的事件（``kinds`` 非空时只取那几种）。
+
+        ``kinds`` 里出现词表之外的取值**当场报错**而不是返回空列表：
+        静默返回空会让调用方以为"这条会话没有这类事件"，而真正的原因是拼错了
+        ——这个端点是给人和脚本读日志用的，说清楚比宽容有用。
+        """
+        self.get(conversation_id)
+        if kinds:
+            unknown = [kind for kind in kinds if kind not in EVENT_KINDS]
+            if unknown:
+                raise InvalidRequestError(
+                    f"不认识的事件类型：{'、'.join(unknown)}；"
+                    f"可用的是：{'、'.join(EVENT_KINDS)}"
+                )
+        records = self._stores.meta.list_session_events(conversation_id, kinds=kinds)
+        return [
+            SessionEvent(
+                id=int(record.id or 0),
+                seq=record.seq,
+                kind=record.kind,
+                payload=dict(record.payload),
+                created_at=record.created_at,
+            )
+            for record in records
+        ]
+
+    def _write_turn(self, conversation_id: str, *, messages, events) -> None:  # type: ignore[no-untyped-def]
+        """消息 + 事件一次写完，再推 ``updated_at``（与 ``append`` 同一口径）。"""
+        self._stores.meta.append_turn(
+            messages=messages,
+            events=[self._event_record(conversation_id, draft) for draft in events],
+        )
+        self._stores.meta.touch_conversation(conversation_id)
+
+    @staticmethod
+    def _message(
+        conversation_id: str,
+        *,
+        role: str,
+        content: str,
+        sources: Sequence[dict[str, object]] = (),
+        steps: Sequence[dict[str, object]] = (),
+        thinking: str = "",
+    ) -> ChatMessageRecord:
+        return ChatMessageRecord(
+            id=f"msg_{uuid.uuid4().hex[:12]}",
+            conversation_id=conversation_id,
+            role=role,
+            content=content,
+            sources=tuple(sources),
+            steps=tuple(steps),
+            thinking=thinking,
+        )
+
+    @staticmethod
+    def _event_record(conversation_id: str, draft: EventDraft) -> SessionEventRecord:
+        """草稿 → 存储记录。``seq`` 留 0：那是**写那个事务里**才算得出来的东西。"""
+        return SessionEventRecord(
+            conversation_id=conversation_id,
+            kind=draft.kind,
+            payload=dict(draft.payload),
+        )
 
     def ensure_title(self, conversation_id: str, first_question: str) -> None:
         """首轮提问落库后用它生成标题——**只在还没有标题时**。

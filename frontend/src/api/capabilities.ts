@@ -26,13 +26,23 @@ export interface Skill {
    * 是模型判断"何时该用"的触发文本，翻译它会影响功能。
    */
   summary: string
-  source: 'builtin' | 'user'
+  /**
+   * `builtin` = 随代码发布；`user` = 数据目录里放的；`agents` = `~/.agents/skills`
+   * （跨工具共享的用户级目录：ZCode / Claude Code / Codex 都扫这一处）。
+   */
+  source: 'builtin' | 'user' | 'agents'
   path: string
   directory: string
-  /** 会不会进 system prompt 的技能目录。被安全扫描拦下的为 false。 */
+  /** 会不会进 system prompt 的技能目录。被拦下、被门控、被丢弃的都是 false。 */
   used_by_prompt: boolean
   /** 没进目录的原因（人话）。空 = 没问题。 */
   flagged: string[]
+  /**
+   * **被丢弃**（P0-3）：frontmatter 缺 `name`/`description` 或描述超长（照 ZCode 的规则
+   * 整个技能不加载）。它仍然出现在列表里（理由在 `flagged` 里），但既不进提示词，
+   * 也读不出正文——所以这一类要单独标出来，不能和"被拦下"混成一句「未进提示词」。
+   */
+  discarded: boolean
 }
 
 export interface SkillDetail extends Skill {

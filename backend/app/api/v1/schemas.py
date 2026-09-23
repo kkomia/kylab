@@ -982,6 +982,34 @@ class ConversationDetailOut(ConversationOut):
     messages: list[ChatMessageOut] = Field(default_factory=list)
 
 
+class SessionEventOut(BaseModel):
+    """会话日志里的一条事件（P0-2，只追加）。
+
+    抄的是 ZCode 的会话事件日志（开发计划 §12.225）：会话是一串不可变事件，
+    消息里的 ``steps`` 是它的投影。字段刻意贴着存储的列（``seq`` / ``kind`` /
+    ``payload``）——读的人要能照着日志判断"当时到底发生了什么"，
+    在这里再包一层"好看的形状"只会让日志与它的读取方变成两件事。
+
+    ``kind`` 是**词表**取值（``turn/start``、``turn/end``、``step``、
+    ``tool_call``、``thinking``、``error``、``interrupted``），
+    定义在 ``services/session_events.py`` 一处。
+    """
+
+    model_config = _RECORD_CONFIG
+
+    id: int
+    seq: int
+    """**会话内**单调递增的序号。同一条会话不会出现两个相同的 ``seq``
+    （表上有唯一约束），所以它同时是"事件只追加"的判据。"""
+    kind: str
+    payload: dict[str, object] = Field(default_factory=dict)
+    created_at: datetime | None = None
+
+
+class SessionEventListOut(BaseModel):
+    items: list[SessionEventOut] = Field(default_factory=list)
+
+
 class ConversationArtifactOut(BaseModel):
     """会话产出的一份文件（v0.26）。
 
@@ -1977,16 +2005,21 @@ class SkillOut(BaseModel):
 
     它只是界面上的那一行说明：技能的 ``description`` 一个字都不改——
     那是模型判断"何时该用"的触发文本（见 services/skill_blurb.py）。"""
-    source: Literal["builtin", "user"] = "builtin"
-    """``builtin`` = 随代码发布（仓库 ``skills/``）；``user`` = 数据目录里用户放的。"""
+    source: Literal["builtin", "user", "agents"] = "builtin"
+    """``builtin`` = 随代码发布（仓库 ``skills/``）；``user`` = 数据目录 ``data/skills/`` 里
+    用户放的；``agents`` = ``~/.agents/skills``（跨工具共享的用户级目录，P0-3）。"""
     path: str = ""
     """``SKILL.md`` 的绝对路径。排错时要能找到它。"""
     directory: str = ""
     """技能目录（``references/`` 相对它解析）。"""
     used_by_prompt: bool = True
-    """会不会进 system prompt 的目录。被安全扫描拦下的为 false。"""
+    """会不会进 system prompt 的目录。被安全扫描拦下、依赖没满足、被丢弃的都是 false。"""
     flagged: list[str] = Field(default_factory=list)
     """没进目录的原因（人话）。空 = 没问题。"""
+    discarded: bool = False
+    """**被丢弃**（P0-3）：frontmatter 缺 ``name``/``description`` 或描述超长，
+    照 ZCode 的规则整个技能不加载。它仍然出现在列表里（带着 ``flagged`` 那条理由），
+    但既不进提示词，也读不出正文——能力页要能看见"装了但没通过校验"的那些。"""
 
 
 class SkillDetailOut(SkillOut):
@@ -2141,6 +2174,68 @@ class SkillListOut(BaseModel):
     items: list[SkillOut] = Field(default_factory=list)
     usable: int = 0
     """其中真正会进模型目录的条数——界面上一眼看出"装了 N 个，能用 M 个"。"""
+
+
+# ------------------------------------------------------------------ 插件包（v0.43）
+
+
+class PluginComponentOut(BaseModel):
+    """插件提供的一样东西（四类能力面之一）。
+
+    照 QwenPaw 的 ``register(api)`` 四类收窄而来（provider / 生命周期 hook /
+    控制命令 / 工具配置），见 `docs/设计/插件与技能-v0.1.md` §3。
+    """
+
+    kind: Literal["skill", "command", "hook", "tool"]
+    name: str
+    description: str = ""
+    path: str = ""
+    """相对插件根的路径（``tool`` 那一类就是 manifest 里写的 ``entry``）。"""
+    status: str = ""
+    """这一类**现在到底能不能用**。做不到的明说"未实现"——四类都还没接执行。"""
+
+
+class PluginOut(BaseModel):
+    """一个插件（本地市场里的一条）。
+
+    **加载失败的也在列表里**（``loaded=false`` 且 ``error`` 非空），照 DSH
+    "失败的 preset 也列出"：静默藏掉会让用户以为插件没装上。
+    """
+
+    name: str
+    version: str = "0.0.0"
+    description: str = ""
+    author: str = ""
+    homepage: str = ""
+    source: Literal["builtin", "user"] = "user"
+    """``user`` = 数据目录里用户放的（本地市场）；``builtin`` = 随代码发布。"""
+    path: str = ""
+    """插件目录的绝对路径。"""
+    manifest_path: str = ""
+    enabled: bool = True
+    blocked: bool = False
+    """内置且被用户屏蔽（照 ZCode 的屏蔽标记）：**不是删除**，只是不要再启用。"""
+    loaded: bool = True
+    """校验过了没有。``false`` 时 ``error`` 一定非空。"""
+    error: str = ""
+    """加载失败的原因（人话）。空 = 加载成功。"""
+    components: list[PluginComponentOut] = Field(default_factory=list)
+    kinds: list[str] = Field(default_factory=list)
+    """提供了哪几类能力（``skill``/``command``/``hook``/``tool`` 的子集）。"""
+    user_config: list[str] = Field(default_factory=list)
+    """manifest 里 ``userConfig`` 声明的字段名。**本轮只登记名字**（录入未实现）。"""
+
+
+class PluginListOut(BaseModel):
+    items: list[PluginOut] = Field(default_factory=list)
+    total: int = 0
+    enabled: int = 0
+    failed: int = 0
+    """加载失败的条数。它们**也在 items 里**（带着原因），这个数只是给状态栏用。"""
+    user_dir: str = ""
+    builtin_dir: str = ""
+    """两条发现源——**本地市场就是这两个目录**（放进来的目录就是"上架"）。
+    空串 = 这个目录不存在，扫描时跳过。"""
 
 
 # --------------------------------------------------------------------- 记忆（v0.14 三期）

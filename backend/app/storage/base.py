@@ -78,6 +78,7 @@ __all__ = [
     "ParseResultRecord",
     "ScheduledTaskRecord",
     "SearchHit",
+    "SessionEventRecord",
     "SessionRecord",
     "ShareRecord",
     "StorageError",
@@ -841,6 +842,39 @@ class ChatMessageRecord:
     thinking: str = ""
     """当轮的思考过程全文（推理模型的 ``reasoning_content``，v0.25）。空串 = 没有思考。"""
 
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class SessionEventRecord:
+    """会话事件（P0-2，抄 ZCode 的**只追加事件日志**）。
+
+    ZCode 把整个会话表达成一串不可变的事件
+    （``Turn{Started,Complete}`` / ``ToolCall{Started,Result}`` / ``Model{Error}``…），
+    会话正文只是它的投影（调研报告《Agent-与对话架构对标调研 v0.1》§2.1）。
+    这张表就是那条设计在 KYLAB 的落点：``chat_messages.steps`` 那份**流式当时
+    拍下的快照**从此可以用这份日志现算（``services/session_events.steps_from_events``），
+    续跑 / 压缩 / 回放也就不必各自打补丁。
+
+    **只追加**：存储层只有 append 与 list，没有 update / delete。
+    能被改的日志回答不了"当时发生了什么"——那是这份表存在的全部理由。
+    """
+
+    conversation_id: str
+    kind: str
+    """事件种类。取值是**词表**，定义在 ``services/session_events.EVENT_KINDS``
+    一处；存储层不校验（它不认识业务词表），校验在服务层。"""
+    payload: dict[str, object] = field(default_factory=dict)
+    seq: int = 0
+    """**会话内**单调递增的序号，由存储层在写那个事务里赋值（``max(seq)+1``）。
+
+    为什么不复用 ``created_at`` 排序：同一毫秒内的多条事件（一批并发的工具调用）
+    它分不出先后，而"哪条先发生"正是回放要读的东西。表上有
+    ``UNIQUE (conversation_id, seq)``，重复的 seq 会被数据库拒掉。
+    """
+    id: int | None = None
+    """``bigserial`` 主键，入库时由数据库给（与 ``document_stage_events``
+    同一种形状——另一张"只追加的事件表"，写法上不发明第二套）。"""
     created_at: datetime | None = None
 
 
@@ -2022,6 +2056,46 @@ class MetaStore(ABC):
     @abstractmethod
     def list_messages(self, conversation_id: str) -> list[ChatMessageRecord]:
         """按写入顺序返回——顺序就是对话顺序，所以按 created_at 排序。"""
+        ...
+
+    # ---- 会话事件日志（P0-2）----
+    @abstractmethod
+    def append_turn(
+        self,
+        *,
+        messages: Sequence[ChatMessageRecord],
+        events: Sequence[SessionEventRecord],
+    ) -> None:
+        """把一轮的消息与它的事件**写在同一个事务里**（P0-2）。
+
+        **为什么非要一起写**：事件日志是"当时发生了什么"的唯一事实源，而消息是
+        它的投影。两者分开写，就必然存在"消息在、事件不在"的窗口——回看时会看到
+        一条没有过程记录的回答，而那正是这个不可变日志要消灭的东西（v0.25 之前
+        步骤只活在流里，用户刷新一次就永久丢了）。
+        """
+        ...
+
+    @abstractmethod
+    def append_session_events(
+        self, records: Sequence[SessionEventRecord]
+    ) -> list[SessionEventRecord]:
+        """**只追加**一批事件，返回补好 ``seq`` / ``id`` 的那些记录。
+
+        写在同一事务里：先锁住会话行（``FOR UPDATE``），再按该会话的
+        ``max(seq)`` 逐个递增。锁是为了并发——同一会话同时有两轮在写时，
+        不锁就会算出同一个 seq，而表上的唯一约束会把这变成一次失败。
+        """
+        ...
+
+    @abstractmethod
+    def list_session_events(
+        self, conversation_id: str, *, kinds: Sequence[str] | None = None
+    ) -> list[SessionEventRecord]:
+        """按 ``seq`` 正序返回事件（``kinds`` 非空时只取那几种）。
+
+        **没有分页**：一轮对话的事件量级是几十条，而读它的场景是"把这一轮的
+        过程摊开"；真到几千条量级再谈（那时更该做的是按 turn 切片，不是 offset）。
+        """
         ...
 
     # ---- 会话产物（v0.26）----

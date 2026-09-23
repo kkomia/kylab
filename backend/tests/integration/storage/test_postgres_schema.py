@@ -27,6 +27,7 @@ from psycopg import sql
 
 from app.storage.postgres_impl.connection import Database
 from app.storage.postgres_impl.schema import (
+    MIGRATIONS,
     SCHEMA_PATH,
     SCHEMA_VERSION,
     SchemaError,
@@ -133,3 +134,48 @@ def test_version_newer_than_schema_version_is_rejected(fresh_db: Database) -> No
 
     with pytest.raises(SchemaError, match="高于本应用已知的"):
         ensure_schema(fresh_db)
+
+
+def test_migration_to_the_latest_version_runs_on_an_older_database(
+    fresh_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**在一条旧库上升级**，而不是只在空库上一次建完（P0-2 的迁移用例）。
+
+    空库那条路（``prepare``）会走 schema.sql 基线 + 全部增量，于是"某条增量写错了"
+    很难被发现——它可能只在**已经有数据的库**上才炸（列名撞了、约束重名）。
+    所以这里先把库停在上一个版本，再让它升级，并核对新表真的建出来了。
+
+    这也是"只增不改"纪律的守卫：把 ``MIGRATIONS`` 截到上一版再放回去，
+    任何"回头去改已发布那条"的做法都会在这条用例里露出来。
+    """
+    from app.storage.postgres_impl import schema as schema_module
+
+    previous = SCHEMA_VERSION - 1
+    older = tuple(item for item in MIGRATIONS if item.version <= previous)
+    monkeypatch.setattr(schema_module, "MIGRATIONS", older)
+    monkeypatch.setattr(schema_module, "SCHEMA_VERSION", previous)
+    assert prepare(fresh_db) == previous, "先造一个上一版的库"
+
+    monkeypatch.undo()
+    assert ensure_schema(fresh_db) == SCHEMA_VERSION, "升级应当只补缺的那几条"
+
+    with fresh_db.read() as conn:
+        columns = conn.execute(
+            "select column_name, data_type from information_schema.columns"
+            " where table_name = 'session_events' order by ordinal_position"
+        ).fetchall()
+        unique = conn.execute(
+            "select conname from pg_constraint"
+            " where conrelid = 'session_events'::regclass and contype = 'u'"
+        ).fetchall()
+    assert [row["column_name"] for row in columns] == [
+        "id",
+        "conversation_id",
+        "seq",
+        "kind",
+        "payload",
+        "created_at",
+    ]
+    assert [row["conname"] for row in unique] == ["uq_session_events_seq"], (
+        "会话内 seq 的唯一约束是「只追加」的机械保证"
+    )

@@ -157,7 +157,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **175** 条端点。
+共 **179** 条端点。
 
 ### `api-keys`
 
@@ -194,6 +194,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/chat/approvals/{approval_id}` | 对一条待确认的工具调用做出决定（允许一次 / 这类都允许 / 拒绝） |
 | `POST` | `/api/v1/chat/stream` | 快速检索问答（流式） |
 | `GET` | `/api/v1/chat/suggested-questions` | 推荐问题（取自入库时为各分段生成的问题） |
+| `GET` | `/api/v1/conversations/{conversation_id}/events` | 会话事件日志（只追加，按 seq 正序） |
 | `POST` | `/api/v1/conversations/{conversation_id}/resume` | 续跑上一轮（工具循环没跑完时） |
 
 ### `chunks`
@@ -360,6 +361,14 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `POST` | `/api/v1/notes/{note_id}/attach` | 把笔记加入知识库 |
 | `POST` | `/api/v1/notes/{note_id}/images` | 上传笔记配图 |
 | `GET` | `/api/v1/notes/{note_id}/images/{name}` | 读取笔记配图 |
+
+### `plugins`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/plugins` | 插件列表 |
+| `POST` | `/api/v1/plugins/{plugin_id}/disable` | 停用一个插件 |
+| `POST` | `/api/v1/plugins/{plugin_id}/enable` | 启用一个插件 |
 
 ### `sandbox`
 

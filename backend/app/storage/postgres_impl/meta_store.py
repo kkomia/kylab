@@ -70,6 +70,7 @@ from app.storage.base import (
     ParseResultRecord,
     RegisteredModelRecord,
     ScheduledTaskRecord,
+    SessionEventRecord,
     SessionRecord,
     ShareRecord,
     TaskCounts,
@@ -3284,22 +3285,133 @@ class PostgresMetaStore(MetaStore):
     def append_message(self, record: ChatMessageRecord) -> ChatMessageRecord:
         record.created_at = record.created_at or _now()
         with self._db.session() as conn:
-            conn.execute(
-                "INSERT INTO chat_messages"
-                " (id, conversation_id, role, content, sources, steps, thinking, created_at)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            self._insert_message(conn, record)
+        return record
+
+    @staticmethod
+    def _insert_message(conn: Connection, record: ChatMessageRecord) -> None:
+        """在**给定事务里**插一条消息（``append_message`` 与 ``append_turn`` 共用）。
+
+        抽出来是为了"消息与事件同一事务"那条要求：各写一份 INSERT 的话，
+        迟早有一处漏掉新列（这张表从 v0.25 起已经补过 ``steps`` / ``thinking``）。
+        """
+        conn.execute(
+            "INSERT INTO chat_messages"
+            " (id, conversation_id, role, content, sources, steps, thinking, created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (
+                record.id,
+                record.conversation_id,
+                record.role,
+                record.content,
+                _json([dict(item) for item in record.sources]),
+                _json([dict(item) for item in record.steps]),
+                record.thinking,
+                _dump(record.created_at),
+            ),
+        )
+
+    def append_turn(
+        self,
+        *,
+        messages: Sequence[ChatMessageRecord],
+        events: Sequence[SessionEventRecord],
+    ) -> None:
+        """一轮的消息与它的事件**同一个事务**（见接口处的说明）。
+
+        顺序刻意是"先消息、后事件"？不——**两条都在一个事务里，先后无所谓**，
+        唯一重要的是它们要么都在、要么都不在。这里先插消息只是阅读顺序顺一点。
+        """
+        if not messages:
+            return
+        now = _now()
+        for message in messages:
+            message.created_at = message.created_at or now
+        with self._db.session() as conn:
+            for message in messages:
+                self._insert_message(conn, message)
+            if events:
+                self._insert_events(conn, events, now)
+
+    def append_session_events(
+        self, records: Sequence[SessionEventRecord]
+    ) -> list[SessionEventRecord]:
+        if not records:
+            return []
+        with self._db.session() as conn:
+            return self._insert_events(conn, records, _now())
+
+    def _insert_events(
+        self,
+        conn: Connection,
+        records: Sequence[SessionEventRecord],
+        now: datetime,
+    ) -> list[SessionEventRecord]:
+        """在给定事务里只追加一批事件，并把 ``seq`` / ``id`` 补回记录。
+
+        ``seq`` 在**写这个事务里**算（``max(seq)+1`` 起逐个递增）：让数据库之外
+        的任何一方来决定序号，都会在下一次并发写时撞上唯一约束。锁的顺序是先会话行
+        （``FOR UPDATE``，同会话的写在这里排队）再取 max —— 反过来的话，
+        两个事务会同时读到同一个 max。
+        """
+        conversation_id = records[0].conversation_id
+        conn.execute(
+            "SELECT id FROM conversations WHERE id = %s FOR UPDATE", (conversation_id,)
+        )
+        row = conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) AS s FROM session_events WHERE conversation_id = %s",
+            (conversation_id,),
+        ).fetchone()
+        seq = int(row["s"]) if row is not None else 0
+        for record in records:
+            if record.conversation_id != conversation_id:
+                # 一批事件必须同属一个会话：跨会话的那一批没法用一条 max 算 seq，
+                # 硬要支持只会让这个函数变成两段几乎不重叠的代码。
+                raise ValueError("同一批会话事件必须属于同一个会话")
+            seq += 1
+            record.seq = seq
+            record.created_at = record.created_at or now
+            inserted = conn.execute(
+                "INSERT INTO session_events (conversation_id, seq, kind, payload, created_at)"
+                " VALUES (%s, %s, %s, %s, %s) RETURNING id",
                 (
-                    record.id,
                     record.conversation_id,
-                    record.role,
-                    record.content,
-                    _json([dict(item) for item in record.sources]),
-                    _json([dict(item) for item in record.steps]),
-                    record.thinking,
+                    record.seq,
+                    record.kind,
+                    _json(record.payload),
                     _dump(record.created_at),
                 ),
-            )
-        return record
+            ).fetchone()
+            record.id = int(inserted["id"])
+        return list(records)
+
+    def list_session_events(
+        self, conversation_id: str, *, kinds: Sequence[str] | None = None
+    ) -> list[SessionEventRecord]:
+        sql = "SELECT * FROM session_events WHERE conversation_id = %s"
+        params: list[object] = [conversation_id]
+        if kinds:
+            # `= ANY(%s)` 而不是拼 IN 占位符：kind 的个数由调用方给，
+            # 拼字符串就又多一处"把外部值拼进 SQL"的机会。
+            sql += " AND kind = ANY(%s)"
+            params.append(list(kinds))
+        # **按 seq 排序，不按 created_at**：同一毫秒里的一批并发工具调用
+        # 靠时间戳分不出先后（见 `SessionEventRecord.seq`）。
+        sql += " ORDER BY seq"
+        with self._db.read() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [self._session_event_from_row(row) for row in rows]
+
+    @staticmethod
+    def _session_event_from_row(row: dict) -> SessionEventRecord:
+        return SessionEventRecord(
+            id=int(row["id"]),
+            conversation_id=row["conversation_id"],
+            seq=int(row["seq"]),
+            kind=row["kind"],
+            payload=dict(row["payload"]),
+            created_at=_load(row["created_at"]),
+        )
 
     def list_messages(self, conversation_id: str) -> list[ChatMessageRecord]:
         # SQLite 用 `rowid` 做同 created_at 时的插入序兜底；PG 没有 rowid。

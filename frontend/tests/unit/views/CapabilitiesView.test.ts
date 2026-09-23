@@ -24,6 +24,9 @@ const deleteMCPServer = vi.fn()
 const probeMCPServer = vi.fn()
 const listInstalledSkills = vi.fn()
 const uninstallSkill = vi.fn()
+const listPlugins = vi.fn()
+const enablePlugin = vi.fn()
+const disablePlugin = vi.fn()
 const notifyError = vi.fn()
 const notifySuccess = vi.fn()
 
@@ -39,6 +42,14 @@ vi.mock('@/api/capabilities', () => ({
   uninstallSkill: (...a: unknown[]) => uninstallSkill(...a),
   sourceLabel: (origin: string) => origin.replace(/^github:([^@]+)@.*$/, '$1'),
   listAllMCPTools: vi.fn().mockResolvedValue([]),
+}))
+
+// 插件包（v0.43）是这一页的第三栏，面板自己去拉列表——所以这里mock它，
+// 与前面那组（技能 / MCP）同样的做法：**用例只关心这一页把什么显示出来**
+vi.mock('@/api/plugins', () => ({
+  listPlugins: (...a: unknown[]) => listPlugins(...a),
+  enablePlugin: (...a: unknown[]) => enablePlugin(...a),
+  disablePlugin: (...a: unknown[]) => disablePlugin(...a),
 }))
 
 vi.mock('@/composables/useToast', () => ({
@@ -62,6 +73,7 @@ const CLEAN_SKILL = {
   directory: 'E:/skills/kylab-knowledge-base',
   used_by_prompt: true,
   flagged: [],
+  discarded: false,
 }
 
 const FLAGGED_SKILL = {
@@ -70,6 +82,19 @@ const FLAGGED_SKILL = {
   source: 'user' as const,
   used_by_prompt: false,
   flagged: ['疑似提示注入（忽略先前指令）：这条技能不会进模型的技能目录'],
+}
+
+/** 被丢弃的技能（P0-3）：frontmatter 缺字段 → 不进目录也读不出正文，但要看得见。 */
+const DROPPED_SKILL = {
+  ...CLEAN_SKILL,
+  name: 'broken',
+  description: '',
+  source: 'agents' as const,
+  used_by_prompt: false,
+  discarded: true,
+  flagged: [
+    '已丢弃：SKILL.md 的 frontmatter 里没有 description（照 ZCode 的规则：缺 description 的技能不加载）',
+  ],
 }
 
 const SERVER = {
@@ -135,6 +160,14 @@ beforeEach(() => {
   listInstalledSkills.mockResolvedValue({ items: {}, total: 0 })
   listSkills.mockResolvedValue({ items: [CLEAN_SKILL, FLAGGED_SKILL], usable: 1 })
   listMCPServers.mockResolvedValue({ items: [SERVER] })
+  listPlugins.mockResolvedValue({
+    items: [],
+    total: 0,
+    enabled: 0,
+    failed: 0,
+    user_dir: 'E:/data/plugins',
+    builtin_dir: '',
+  })
 })
 
 describe('CapabilitiesView', () => {
@@ -151,6 +184,19 @@ describe('CapabilitiesView', () => {
     await vi.waitFor(() => expect(wrapper.text()).toContain('sketchy'))
 
     expect(wrapper.text()).toContain('疑似提示注入')
+  })
+
+  it('被丢弃的坏技能也看得见，理由与来源都在（P0-3）', async () => {
+    // 「被丢弃」与「被拦下」是两件事：前者是 frontmatter 不合规（整个技能不加载），
+    // 后者是能用但这一轮不给模型看。标签分开，理由原样透出来给用户照着改。
+    listSkills.mockResolvedValue({ items: [CLEAN_SKILL, DROPPED_SKILL], usable: 1 })
+    const wrapper = mountView()
+    await vi.waitFor(() => expect(wrapper.text()).toContain(DROPPED_SKILL.name))
+
+    expect(wrapper.text()).toContain('已丢弃')
+    expect(wrapper.text()).toContain('没有 description')
+    // 住在跨工具共享目录里的技能，来源那一行要说得出来
+    expect(wrapper.text()).toContain('~/.agents/skills')
   })
 
   it('点技能能读到正文（用户有权知道它教了模型什么）', async () => {
@@ -223,12 +269,13 @@ describe('CapabilitiesView', () => {
     expect(wrapper.text()).toContain('还没有插件')
   })
 
-  it('技能与插件是一次只看一页的两个标签', async () => {
+  it('技能、插件、插件包是一次只看一页的三个标签', async () => {
     const wrapper = mountView()
     await vi.waitFor(() => expect(wrapper.text()).toContain(CLEAN_SKILL.name))
 
-    // 默认在技能页：技能在、插件不在
-    expect(wrapper.findAll('.cap-tab').map((el) => el.text())).toEqual(['技能', '插件'])
+    // 默认在技能页：技能在、插件不在。
+    // 第三个标签是 v0.43 加的（磁盘上的能力包），它与「插件」（MCP 服务）不是一回事
+    expect(wrapper.findAll('.cap-tab').map((el) => el.text())).toEqual(['技能', '插件', '插件包'])
     expect(wrapper.text()).toContain(CLEAN_SKILL.name)
     expect(wrapper.text()).not.toContain('本地工具')
 
@@ -293,6 +340,56 @@ describe('能力页的搜索与筛选', () => {
     await wrapper.find('.panel-search input').setValue('没有这个东西')
 
     expect(wrapper.text()).toContain('没有匹配的技能')
+  })
+})
+
+/**
+ * 插件包一栏（v0.43）。
+ *
+ * 它与上面那个「插件」（协议上是 MCP 服务）是两件事：那一栏是**连出去的外部服务**，
+ * 这一栏是**磁盘上的能力包**（一个目录 + 一份 plugin.json）。名字取「插件包」，
+ * 因为「插件」这两个字已经被 MCP 那一栏占了（v0.22 用户指定），
+ * 页面上两个同名标签只会让人点错。
+ */
+describe('能力页的插件包一栏（v0.43）', () => {
+  const PACK = {
+    name: 'demo-pack',
+    version: '1.2.0',
+    description: '示例插件',
+    author: '',
+    homepage: '',
+    source: 'user' as const,
+    path: 'E:/data/plugins/demo-pack',
+    manifest_path: 'E:/data/plugins/demo-pack/plugin.json',
+    enabled: true,
+    blocked: false,
+    loaded: true,
+    error: '',
+    components: [],
+    kinds: [],
+    user_config: [],
+  }
+
+  it('切过去能看到列表，页头那条状态也来自它', async () => {
+    listPlugins.mockResolvedValue({
+      items: [PACK],
+      total: 1,
+      enabled: 1,
+      failed: 0,
+      user_dir: 'E:/data/plugins',
+      builtin_dir: '',
+    })
+    const wrapper = mountView()
+    await vi.waitFor(() => expect(wrapper.text()).toContain(CLEAN_SKILL.name))
+
+    const tab = wrapper.findAll('.cap-tab').find((item) => item.text() === '插件包')
+    expect(tab).toBeTruthy()
+    await tab!.trigger('click')
+
+    await vi.waitFor(() => expect(listPlugins).toHaveBeenCalled())
+    await vi.waitFor(() => expect(wrapper.text()).toContain(PACK.name))
+    // 「插件」那一条是 MCP（外部服务），两条状态并存不混淆
+    expect(wrapper.text()).toContain('插件包 1/1')
   })
 })
 

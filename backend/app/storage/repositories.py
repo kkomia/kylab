@@ -53,6 +53,7 @@ from app.storage.base import (
     ParseResultRecord,
     RegisteredModelRecord,
     ScheduledTaskRecord,
+    SessionEventRecord,
     SessionRecord,
     ShareRecord,
     TaskCounts,
@@ -529,6 +530,24 @@ class ConversationRepo(Protocol):
     def delete_conversation(self, conversation_id: str) -> None: ...
 
     def append_message(self, record: ChatMessageRecord) -> ChatMessageRecord: ...
+
+    # 会话事件日志（P0-2）也在对话域里：它**只按会话**被读写，而且
+    # `append_turn` 的整个意义就是"消息与事件同一个事务"——拆到另一个协议，
+    # 那条原子性就得跨两个仓储去保证，而跨仓储没有事务。
+    def append_turn(
+        self,
+        *,
+        messages: Sequence[ChatMessageRecord],
+        events: Sequence[SessionEventRecord],
+    ) -> None: ...
+
+    def append_session_events(
+        self, records: Sequence[SessionEventRecord]
+    ) -> list[SessionEventRecord]: ...
+
+    def list_session_events(
+        self, conversation_id: str, *, kinds: Sequence[str] | None = None
+    ) -> list[SessionEventRecord]: ...
 
     def list_messages(self, conversation_id: str) -> list[ChatMessageRecord]: ...
 

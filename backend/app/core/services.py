@@ -51,6 +51,7 @@ from app.services.note_ai import NoteAiService
 from app.services.notes import NotesService
 from app.services.observability import ObservabilityService
 from app.services.parser_router import ParserRouter
+from app.services.plugins import PluginService
 from app.services.retrieval import RetrievalService, build_reranker
 from app.services.retrieval.rerank import RerankProvider
 from app.services.runtime_config import RuntimeConfigService
@@ -153,6 +154,11 @@ class Services:
     skill_market: SkillMarketService
     skill_sources: SkillSourceService
     """技能源（v0.27）：内置的 GitHub 仓库清单 + 自定义源，浏览/取文件。"""
+    plugins: PluginService
+    """插件包（v0.43）：插件 = 一个目录 + 一份 plugin.json，**目录即本地市场**。
+
+    与 `mcp` 是两件事：MCP 是"连出去的外部服务"，插件是"磁盘上的能力包"
+    （技能/命令/钩子/工具四类能力面，见 `docs/设计/插件与技能-v0.1.md`）。"""
     mcp: MCPClientService
     schedules: ScheduleService
     """定时任务（v0.33）：到点替用户跑一轮问答。
@@ -314,6 +320,9 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     skill_source_service = SkillSourceService(
         resolved.data_dir, token=resolved.github_token or ""
     )
+    # 插件包（v0.43）：扫描数据目录 plugins/ 与仓库自带 plugins/（目录即本地市场）。
+    # **状态写在 app_settings**（启停/屏蔽），插件目录只读——见 services/plugins.py
+    plugins_service = PluginService(resolved.data_dir, bundle)
     # MCP 客户端（v0.15）：连外部 MCP 服务，是「插件能力」的落点
     mcp_service = MCPClientService(bundle)
     # 定时任务（v0.33）：只做"到点入队"，跑问答的那一步在 schedule_runner 里
@@ -522,6 +531,7 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         skills=skill_service,
         skill_market=skill_market_service,
         skill_sources=skill_source_service,
+        plugins=plugins_service,
         mcp=mcp_service,
         schedules=schedule_service,
     )

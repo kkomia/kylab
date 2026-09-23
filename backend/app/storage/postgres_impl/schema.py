@@ -25,7 +25,7 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 """应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
 
 **启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
@@ -273,6 +273,41 @@ MIGRATIONS: tuple[Migration, ...] = (
             # （停用的那些永远不进这个索引，而它们通常不少——跑完的一次性任务、
             # 用户临时关掉的周期性任务）。
             "CREATE INDEX idx_scheduled_tasks_due ON scheduled_tasks (next_run_at) WHERE enabled",
+        ),
+    ),
+    Migration(
+        version=13,
+        description="会话事件日志：只追加的事件表，steps 快照变成它的投影（P0-2，抄 ZCode）",
+        statements=(
+            # 抄的是 ZCode 的**只追加事件日志**（开发计划 §12.225 / P0-2）：
+            # 会话是一串不可变的事件，`chat_messages.steps` 那份"流式当时拍下的快照"
+            # 从此是它的一个投影。`kind` 的词表在 `services/session_events.py`
+            # 一处定义（存储层不认识业务词表，所以这里不加 CHECK）。
+            #
+            # 三处刻意的形状：
+            # ① **只有 append**：没有 updated_at 之类的列，也没有任何写侧方法
+            #    （`MetaStore` 只给 append / list）——能被改的日志回答不了
+            #    "当时发生了什么"，而那正是这张表存在的理由；
+            # ② `seq` 是**会话内**的单调序号，由写那个事务算（max+1）：
+            #    同一毫秒里的并发工具调用靠 created_at 分不出先后，而回放要读它；
+            # ③ `id` 是 bigserial，与 `document_stage_events` 同一种形状
+            #    —— 项目里另一张"只追加的事件表"，不发明第二套写法。
+            #
+            # `ON DELETE CASCADE`：会话删了，它的事件跟着走（与 chat_messages 同规则）。
+            """
+            CREATE TABLE session_events (
+                id              bigserial PRIMARY KEY,
+                conversation_id text NOT NULL REFERENCES conversations (id) ON DELETE CASCADE,
+                seq             bigint NOT NULL,
+                kind            text NOT NULL,
+                payload         jsonb NOT NULL DEFAULT '{}'::jsonb,
+                created_at      timestamptz NOT NULL DEFAULT now(),
+                CONSTRAINT uq_session_events_seq UNIQUE (conversation_id, seq)
+            )
+            """,
+            # 读形状只有一种：某条会话按 seq 正序（可带 kind 过滤）。上面那条唯一约束
+            # 建出的索引**正好就是这个形状**（前缀 conversation_id + seq 有序），
+            # 所以这里不再另建一条索引：多一条只会多一份写侧的代价与一处会漂的定义。
         ),
     ),
 )
