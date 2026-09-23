@@ -13,14 +13,13 @@
 import { act, render } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { initMock, setOptionMock, resizeMock, disposeMock } = vi.hoisted(() => {
+const { initMock, setOptionMock, disposeMock } = vi.hoisted(() => {
   const setOption = vi.fn()
   const resize = vi.fn()
   const dispose = vi.fn()
   return {
     initMock: vi.fn(() => ({ setOption, resize, dispose })),
     setOptionMock: setOption,
-    resizeMock: resize,
     disposeMock: dispose,
   }
 })
@@ -78,5 +77,11 @@ describe('EChart 图表基座', () => {
     expect(lastOption().color).toBe('#808080')
     document.documentElement.style.removeProperty('--mix-a')
     document.documentElement.style.removeProperty('--mix-b')
+  })
+
+  it('卸载时销毁实例（切页不留 canvas 与观察者）', () => {
+    const { unmount } = render(<EChart option={{ series: [{ type: 'line', data: [1] }] }} />)
+    unmount()
+    expect(disposeMock).toHaveBeenCalledTimes(1)
   })
 })

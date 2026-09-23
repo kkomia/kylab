@@ -69,10 +69,15 @@
 门禁的 lint 之外；5.9.3 是该范围内最新的一个。等 typescript-eslint 放开再抬，
 不为一个版本号把 lint 这条门禁弄瘸。
 
-其余依赖**逐条对着 registry 复核过**（2026-09-23，即上面表头那天，用 `pnpm view <包> version`）：
-`react 19.3.0`、`vite 8.3.0`、`vitest 5.0.1`、`tailwindcss 4.3.3`、`react-router 8.4.0`、
-`@tanstack/react-query 5.103.2`、`@assistant-ui/react 0.15.21`、`@remixicon/react 4.9.0`、
-`sonner 2.0.8`、`@tiptap/react 3.31.3`、`lucide-react 1.47.0` —— **都等于 registry 上的 version**。
+其余依赖**全量逐条对着 registry 复核**（2026-09-23，`pnpm view <包> version`，
+**79 个依赖一个不落**）：**78 个等于 registry 上的最新版**，唯一例外的就是上面那个 `typescript`。
+这一遍还顺手抬掉了四处落后项：`eslint 9.38.0 → 10.11.0`（连同 `@eslint/js 10.0.1`——
+插件侧 `typescript-eslint` / `eslint-plugin-react-hooks` / `eslint-config-prettier`
+的 peer 都已含 `^10`，不是被谁卡住的）与 `@testing-library/dom 10.4.2`、
+`@testing-library/user-event 14.6.7`、`@types/katex 0.16.8` 三个补丁版。
+eslint 10 带出的唯一一处新告警是真问题：`src/lib/clipboard.ts` 里
+`let copied = false` 的初值在两条分支上都会被覆盖（`no-useless-assignment`），
+已按最小改法修成 `let copied: boolean`，语义不变（见 §12.251）。
 
 **直接搬（框架无关的 TS，几乎零改动）**：
 
@@ -220,9 +225,11 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
   旧 Vue 在 `agent` 分支（`git checkout agent -- frontend` 取回）；`react` 领先 `agent` 14 个提交、
   领先 `main` **112** 个。**合并预检**：`git merge-tree --write-tree main react` **退出 0、零冲突**
   （`react` 从 `agent` 切、`agent` 是 `main` 的后代），并进 `main` 是快进式——风险在部署不在合并。
-- **门禁（合并树上）**：前端 `scripts/check-frontend.sh` 全绿 —— **523 条用例**
-  （§12.251 补了图表基座 3 条：切主题重画、`var()` 与 `color-mix()` 解析）+ 构建 + emoji +
-  分层与文案与版本号；后端 **2881 通过 / 9 跳过**；`scripts/lint.sh` 全过。
+- **门禁（合并树上）**：前端 `scripts/check-frontend.sh` 全绿 —— **524 条用例**
+  （§12.251 补了图表基座 4 条：切主题重画、`var()` 与 `color-mix()` 解析、卸载时销毁）+ 构建 +
+  emoji + 分层与文案与版本号；后端 **2881 通过 / 9 跳过**；`scripts/lint.sh` 全过。
+  **跑法有讲究**：这条命令的输出别接 `tail`/`head` 再看退出码——那样读到的是 `tail` 的退出码，
+  门禁红了也会显示 0（§12.251 里记了这个教训：当时正是这样误报过一次"全绿"）。
 - **审计缺口清零**：[完整性审计](../调研/React-迁移完整性审计-v0.1.md) 第一档 5 条（壳接线、401、
   会话管理、文件抽屉四件事、落地页口径）与第二档 2 条（通知条关闭按钮、悬停/聚焦预热）**全部补完**；
   连"启动后 idle 预热"也补了（`features/misc/prewarm.ts`：`onIdle` 空闲时预热

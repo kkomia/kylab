@@ -68,7 +68,7 @@ function execCommandCopy(text: string): boolean {
   document.body.appendChild(area)
   area.select()
   area.setSelectionRange(0, text.length)
-  let copied = false
+  let copied: boolean
   try {
     copied = document.execCommand('copy')
   } catch {
