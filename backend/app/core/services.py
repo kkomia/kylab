@@ -373,7 +373,32 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     # 斜杠命令（v0.44，P1-2）：扫数据目录与仓库自带的 `commands/`（放进来一个 md 文件
     # 就是一条命令）。`conversations` 只用来读"这条会话上一轮的档"——模式观测的基线
     # （见 services/commands.ModeWatch），进程内不重复读。
-    commands_service = CommandService(resolved.data_dir, conversations=conversations_service)
+    #
+    # `skills` 是"技能即命令"那一半（v0.45，调研 §3 第 4-5 条）：每个技能注册一条
+    # `/<技能名> [任务]`，正文仍由 ChatService.skill_prompt 注入（只有一处实现）。
+    # `skill_summaries` 给菜单那一行用中文简介，与能力页读的是同一份清单数据。
+    def _installed_skill_summaries() -> dict[str, str]:
+        """已装技能的中文简介（``技能名 → 简介``）；读不出来就当没有。
+
+        它只是菜单与 ``/skills`` 里那一行说明，坏掉不该让命令表跟着 500
+        （与 api/v1/skills.py 的 ``_summaries`` 同一口径、同一份数据）。
+        """
+        try:
+            records = skill_market_service.installed_records()
+        except Exception:  # 清单坏了不影响命令表（只是少几行中文简介）
+            return {}
+        return {
+            name: str(item.get("summary") or "")
+            for name, item in records.items()
+            if item.get("summary")
+        }
+
+    commands_service = CommandService(
+        resolved.data_dir,
+        conversations=conversations_service,
+        skills=skill_service,
+        skill_summaries=_installed_skill_summaries,
+    )
     chat_service = ChatService(
         retrieval,
         runtime,

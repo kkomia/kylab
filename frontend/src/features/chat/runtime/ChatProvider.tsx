@@ -163,6 +163,14 @@ export interface ChatApi {
   dismissApproval: () => void
   commandResult: ChatCommandResult | null
   dismissCommandResult: () => void
+  /**
+   * 命令送回输入框的那一句（`/rewind` 的 `refill`）；`null` = 没有正在等认领的回填。
+   *
+   * `Composer` 认它做一件事：**把焦点与光标交回输入框末尾**。字已经在 `query` 里了
+   * （provider 填的），这里给的是"这一下是回填来的"这个信号（`seq` 让同一句话连着
+   * 回填两次也各算一次）。
+   */
+  commandRefill: { text: string; seq: number } | null
 
   // —— 输入
   query: string
@@ -471,6 +479,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [copiedKey, setCopiedKey] = useState('')
   const [savedTurns, setSavedTurns] = useState<number[]>([])
   const [commandResult, setCommandResult] = useState<ChatCommandResult | null>(null)
+  /**
+   * 命令送回输入框的那句提问（`/rewind` 的 `refill`）。
+   *
+   * 存成一个带 `seq` 的对象而不是一段字符串：**同一句话连着回填两次也要各自生效一次**
+   * ——用户撤回、不改就又发出去、再撤回时，`text` 一个字没变，光看字符串的话
+   * `Composer` 那个"把焦点交回输入框"的副作用第二次就不会跑。
+   */
+  const [commandRefill, setCommandRefill] = useState<{ text: string; seq: number } | null>(null)
   const [flashCite, setFlashCite] = useState('')
   const [sampleOffset, setSampleOffset] = useState(0)
 
@@ -613,6 +629,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const commandPairDrawn = useRef<WeakSet<object>>(new WeakSet())
   /** 已经倒进消息里的那一份指纹（据此跳过没变化的重复计算）。 */
   const appliedFingerprint = useRef('')
+  /** 库里那份会话详情已经画进消息了没有（按会话 id 记一次，见"会话装载"那一节）。 */
+  const appliedDetail = useRef('')
+  /**
+   * 这一轮命令**撤掉了库里的轮次**（`/rewind` 给了 `refill`，见 `ChatCommandResult`）。
+   *
+   * 它要在收尾时起作用：那几轮在服务端已经删了，画面得按库重画一次；而
+   * "会话详情只画一次"那道闸（`appliedDetail`）得先放回去，重画才落得下来。
+   * 只置真、不在这里清——清的理由只有一个：收尾时用掉了（见下面那个 effect）。
+   */
+  const rewoundTurns = useRef(false)
 
   useEffect(() => {
     const state = liveRef.current
@@ -638,12 +664,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     if (!settled || !conversationId) return
     void usageRefetch()
     if (live?.stopped) return
+    // `/rewind` 撤过轮：被撤的那几轮只在库里"没了"，画面上的尾部是镜像自己长出来的，
+    // 不重读一次库它就永远挂在那儿（直到刷新）。**顺手把"只画一次"那道闸放回去**
+    // ——否则刚重读回来的详情会被它挡掉，等于白读。
+    if (rewoundTurns.current) {
+      rewoundTurns.current = false
+      appliedDetail.current = ''
+    }
     void detailRefetch()
   }, [live?.streaming, live?.stopped, conversationId, detailRefetch, usageRefetch])
 
   // ---------------------------------------------------------------- 会话装载
-
-  const appliedDetail = useRef('')
 
   /**
    * 把这条会话的产物**现在的样子**合并进各步骤的卡片（按 `artifact_id` 对齐）。
@@ -708,6 +739,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setExpandedCites(new Set())
     setTraceOpenIds({})
     setCommandResult(null)
+    // 回填信号也跟着清：换会话之后没人认领它，留着会让新页面白挨一次焦点跳动
+    setCommandRefill(null)
     setCopiedKey('')
     setSavedTurns([])
     setDropKind(null)
@@ -794,6 +827,35 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   )
 
   /**
+   * 输入框内容的那一个入口（受控组件：**一律经过这里**，别处只读 `query`）。
+   *
+   * 它定义在这一段（而不是下面"引用与命令"那一节）只有一个原因：`refillQuery` 要用它，
+   * 而 `refillQuery` 得排在 `runCommand` 前面（`runCommand` 的依赖数组在渲染期就求值，
+   * 引用一个定义在下面的 `const` 会当场抛 `Cannot access 'setQuery' before initialization`）。
+   */
+  const setQuery = useCallback((value: string) => {
+    setQueryState(value)
+    setWantCommands(value.startsWith('/') && !value.includes('\n'))
+    if (value.lastIndexOf('@') >= 0) setWantSkills(true)
+  }, [])
+
+  /**
+   * 命令把一句提问送回输入框（`/rewind` 的 `refill`）：**填进去、光标落在末尾、
+   * 焦点跟着进去**——用户改一版就能直接回车重发，不必先点一下输入框。
+   *
+   * 填的是后端给的那一句**原样**：既不改写也不去重，别的判断一概不做。
+   * 焦点那一下由 `Composer` 认 `commandRefill` 这个信号去做（textarea 在它手上，
+   * provider 不碰 DOM）。
+   */
+  const refillQuery = useCallback(
+    (text: string) => {
+      setQuery(text)
+      setCommandRefill((prev) => ({ text, seq: (prev?.seq ?? 0) + 1 }))
+    },
+    [setQuery],
+  )
+
+  /**
    * 命令回话里那几个"顺手要做的事"（后端 `action`）。
    * 放在 `runCommand` 之前定义：它要在两处被调到（常驻链路与流式期间那条直连链路）。
    */
@@ -863,6 +925,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       setCommandResult(null)
       const onCommand = (result: ChatCommandResult): void => {
         setCommandResult(result)
+        // `/rewind`：后端把**被撤掉的那句提问**随结果给回来 → 回填进输入框。
+        // 没有这个字段时一个字都不动（也不从 `result.text` 里抠，见 `ChatCommandResult`）。
+        if (result.refill) {
+          // 顺手记下"库里少了几轮"：收尾时要按库重画一次（见 `rewoundTurns`）
+          rewoundTurns.current = true
+          refillQuery(result.refill)
+        }
         handleCommandAction(result)
       }
       try {
@@ -896,6 +965,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       effectiveKbIds,
       handleCommandAction,
       history,
+      refillQuery,
       sending,
       streamTurn,
       thinkingEffort,
@@ -1270,12 +1340,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [],
   )
 
-  const setQuery = useCallback((value: string) => {
-    setQueryState(value)
-    setWantCommands(value.startsWith('/') && !value.includes('\n'))
-    if (value.lastIndexOf('@') >= 0) setWantSkills(true)
-  }, [])
-
   /**
    * 选中一条候选：**只把引用插进输入框**（"不预读"那一半）。
    *
@@ -1432,6 +1496,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     dismissApproval: () => liveActions.settleLiveApproval(),
     commandResult,
     dismissCommandResult: () => setCommandResult(null),
+    commandRefill,
     query,
     setQuery,
     canSend,

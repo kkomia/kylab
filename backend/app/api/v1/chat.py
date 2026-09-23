@@ -55,6 +55,7 @@ from app.api.auth import check_kb_scope, require_admin, require_read
 from app.api.v1.schemas import (
     ChatApprovalIn,
     ChatApprovalOut,
+    ChatCommandEventOut,
     ChatRequestIn,
     ChatResponseOut,
     ChatResumeIn,
@@ -175,7 +176,7 @@ def chat_stream(
     # **命令先于模型**（P1-2，照 QwenPaw 的"进 LLM 之前短路"）：
     # 这一段排在 `llm_config` 校验之前是刻意的——`/help` 与 `/mode` 不该因为
     # "还没配对话模型"而报错，它们根本不需要模型。
-    plan = _plan_command(services, payload)
+    plan = _plan_command(services, payload, caller)
     if plan is not None and plan.short_circuit:
         return StreamingResponse(
             _with_pings(_command_events(services, payload, plan)),
@@ -429,7 +430,7 @@ def chat_once(
     # **命令同样先于模型**（P1-2）：脚本、MCP 通道也要能用 `/help` `/mode` `/stop`
     # ——"停止与审批要是一等命令"（调研报告 §2.7 抄点第 5 条）说的就是没有前端按钮
     # 的那条路也得跑通。短路类命令不消耗模型调用、不落消息，答案就是命令那段话。
-    plan = _plan_command(services, payload)
+    plan = _plan_command(services, payload, caller)
     if plan is not None and plan.short_circuit:
         _record_command(services, payload, plan)
         return ChatResponseOut(answer=plan.text, sources=[])
@@ -2061,6 +2062,13 @@ class _CommandResult:
     """界面要顺手做的事（开新会话 / 切到某档 / 停掉这一轮）。"""
     prompt: str = ""
     """**改写类**命令渲染出来的这一轮提示（非空 = 接着走正常那条链路）。"""
+    refill: str = ""
+    """要**回填到输入框**的文字（``/rewind`` 把它撤掉的那句提问交回来）。
+
+    空 = 不回填（绝大多数命令如此）。合同是"有就给、没有就没有"：
+    前端据此把输入框填上（用户改一版就能重发，就是 Claude/Gemini 里 ``/rewind``
+    的手感），不认这个字段的老客户端一个字都不受影响——它只是少一个便利。
+    """
 
     @property
     def short_circuit(self) -> bool:
@@ -2068,20 +2076,26 @@ class _CommandResult:
         return not self.prompt
 
 
-def _plan_command(services: Services, payload: ChatRequestIn) -> _CommandResult | None:
+def _plan_command(
+    services: Services, payload: ChatRequestIn, caller: Caller
+) -> _CommandResult | None:
     """这一轮的输入是命令吗；是的话**当场把它办掉**（返回 ``None`` = 不是命令）。
 
     四种结局，每一种都有明确去处：
 
     1. **不是命令** → ``None``（普通提问，一切照旧）；
     2. **短路类内置**（``/help`` ``/new`` ``/stop`` ``/mode`` ``/model`` ``/compact``
-       与**不带描述的** ``/plan``）→ 在这里执行完，协议层按"一条 ``command`` + 一条
-       ``done``"回给界面；
-    3. **改写类**（``/skill``、**带描述的** ``/plan`` 与全部自定义 md）→ 返回渲染好的
-       ``prompt``，调用方拿它当这一轮的提示**继续往下走那条正常链路**
-       （ZCode：``/skill`` 会重写下一条 prompt）；
+       ``/rewind`` ``/context`` ``/status`` ``/skills`` 与**不带描述的** ``/plan``）
+       → 在这里执行完，协议层按"一条 ``command`` + 一条 ``done``"回给界面；
+    3. **改写类**（``/skill``、**技能自己的那条命令**、**带描述的** ``/plan``
+       与全部自定义 md）→ 返回渲染好的 ``prompt``，调用方拿它当这一轮的提示
+       **继续往下走那条正常链路**（ZCode：``/skill`` 会重写下一条 prompt）；
     4. **认不出的** → 照 DSH 的「``/`` 行永不静默降级为普通 prompt」回一句"没有这个命令"
        （静默发给模型的话，用户以为自己在用命令，模型却在猜他想说什么）。
+
+    ``caller`` 传给短路类里那几条"要看这一轮上下文"的（``/context`` ``/status``）：
+    上下文的分解里有一项是**调用者的**人设文件，而工具表那一份也要按他的库范围拼
+    （与 ``GET /chat/context-usage`` 同一处拼装，见那个端点的说明）。
 
     **本函数不碰模型**（除了 ``/compact`` 那一次摘要调用，那是压缩链路本身）：
     短路的意义就是"这一步不该花钱"。
@@ -2093,7 +2107,7 @@ def _plan_command(services: Services, payload: ChatRequestIn) -> _CommandResult 
     if record is None:
         return _unknown_command(services, parsed.name)
     if record.short_circuit:
-        return _dispatch_builtin(services, payload, record, parsed)
+        return _dispatch_builtin(services, payload, record, parsed, caller)
     return _rewrite_prompt(services, record, parsed)
 
 
@@ -2102,25 +2116,45 @@ def _rewrite_prompt(
 ) -> _CommandResult:
     """改写类命令：把正文渲染成**这一轮的提示**。
 
-    ``/skill`` 的正文由 ``ChatService.skill_prompt`` 渲染（它要读技能注册表），
-    自定义命令走 ``commands.render``（``$ARGUMENTS`` / ``$1..$N`` 与那条兜底追加）。
+    两条路共用这一处：
+    ``/skill`` 与**技能自己的命令**（``/kylab-web 查一下``）都走
+    ``ChatService.skill_prompt``——后者只是把"技能名"从参数换成了命令名本身，
+    技能注入仍然只有一处实现（照 Claude 的"命令＝技能"）；
+    自定义 md 命令走 ``commands.render``（``$ARGUMENTS`` / ``$0`` / ``$N`` /
+    ``$ARGUMENTS[N]`` / ``$name`` 与那条兜底追加）。
+
     技能名打错时**在这里就回一句**（而不是让整轮 404）：用户敲的是命令，
     他要的是"这个技能名不对"，不是一次 HTTP 报错。
     """
+    if record.skill:
+        # 技能自己的命令：任务就是参数的全文（不多切一层"技能名"）
+        return _skill_prompt(services, name=record.skill, task=parsed.args, command=record.name)
     if record.name == commands.NAME_SKILL:
         pieces = parsed.args.split(maxsplit=1)
         if not pieces:
             return _CommandResult(
                 name="skill",
                 ok=False,
-                text="用法：/skill <技能名> [任务]。技能名在「能力」页里能看到。",
+                text="用法：/skill <技能名> [任务]。技能名在「能力」页里能看到，"
+                "也可以直接敲 /技能名（见 /skills）。",
             )
-        try:
-            prompt = services.chat.skill_prompt(pieces[0], pieces[1] if len(pieces) > 1 else "")
-        except NotFoundError as exc:
-            return _CommandResult(name="skill", ok=False, text=f"读不到这个技能：{exc}")
-        return _CommandResult(name="skill", prompt=prompt)
+        return _skill_prompt(
+            services, name=pieces[0], task=pieces[1] if len(pieces) > 1 else "", command="skill"
+        )
     return _CommandResult(name=record.name, prompt=commands.render(record, parsed.args))
+
+
+def _skill_prompt(services: Services, *, name: str, task: str, command: str) -> _CommandResult:
+    """读一个技能的正文并渲染成这一轮的提示。**两条入口共用**（见 ``_rewrite_prompt``）。
+
+    读不出来就回一句人话（``NotFoundError``）：与"钉住技能"那条路的处置相反——
+    这里是用户明确点名的一次动作，静默什么都没发生，他只会以为技能不好使。
+    """
+    try:
+        prompt = services.chat.skill_prompt(name, task)
+    except NotFoundError as exc:
+        return _CommandResult(name=command, ok=False, text=f"读不到这个技能：{exc}")
+    return _CommandResult(name=command, prompt=prompt)
 
 
 def _unknown_command(services: Services, name: str) -> _CommandResult:
@@ -2156,6 +2190,7 @@ def _dispatch_builtin(
     payload: ChatRequestIn,
     record: commands.CommandDef,
     parsed: commands.ParsedCommand,
+    caller: Caller,
 ) -> _CommandResult:
     """执行一条短路类内置命令。**每一分支都必须自己回答"没有会话时怎么办"。**"""
     if record.name == commands.NAME_HELP:
@@ -2172,6 +2207,14 @@ def _dispatch_builtin(
         return _switch_model(services, payload, parsed)
     if record.name == commands.NAME_PLAN:
         return _enter_plan_mode(services, payload, parsed)
+    if record.name == commands.NAME_REWIND:
+        return _rewind(services, payload, parsed)
+    if record.name == commands.NAME_CONTEXT:
+        return _context_usage(services, payload, caller)
+    if record.name == commands.NAME_STATUS:
+        return _status(services, payload, caller)
+    if record.name == commands.NAME_SKILLS:
+        return _skills(services)
     return _CommandResult(name=record.name, ok=False, text=f"/{record.name} 还没有实现。")
 
 
@@ -2180,6 +2223,7 @@ def _help(services: Services, parsed: commands.ParsedCommand) -> _CommandResult:
 
     **与前端那个 ``/`` 菜单读同一份数据**（``services.commands``）——两处各写一份
     清单的话，"菜单里点得到、``/help`` 里查不到"这种不一致迟早出现。
+    技能那批也在里面（它们就是命令），所以这一屏同时也是"我有哪些技能"的一览。
     """
     wanted = parsed.args.split()[0].lstrip("/") if parsed.args.split() else ""
     if wanted:
@@ -2196,13 +2240,57 @@ def _help(services: Services, parsed: commands.ParsedCommand) -> _CommandResult:
             lines.append(f"注意：这一条正被 /{record.shadowed_by} 遮蔽（同名取优先级最高的那条）。")
         if record.error:
             lines.append(f"注意：这一条没有加载成功——{record.error}")
-        if record.source != "builtin" and record.path:
+        # 有文件就报文件：内置命令没有文件，自定义命令与**技能命令**都有
+        # （技能那份是 ``SKILL.md``，排错时正是要找它的地方）
+        if record.path:
             lines.append(f"文件：{record.path}")
         return _CommandResult(name="help", text="\n".join(lines))
-    lines = ["可用命令（内置 + 自定义）："]
-    for record in services.commands.catalog():
-        usage = record.usage or f"/{record.name}"
-        lines.append(f"{usage} — {record.summary}")
+    # **按组分节**（23 条命令平铺已经读不动了，而"分组"正是 `/` 菜单吃的那同一份数据）。
+    # 内置按用途再分三节——会话动作 / 上下文与状态 / 模式与模型——否则 `/rewind` 这类会话动作
+    # 会被一长串通用命令压到看不见（Claude 的 `/help` 也是按来源分节的）。
+    sections: list[tuple[str, tuple[str, ...]]] = [
+        (
+            "会话动作",
+            (commands.NAME_NEW, commands.NAME_STOP, commands.NAME_COMPACT, commands.NAME_REWIND),
+        ),
+        (
+            "上下文与状态",
+            (
+                commands.NAME_CONTEXT,
+                commands.NAME_STATUS,
+                commands.NAME_SKILLS,
+                commands.NAME_SKILL,
+            ),
+        ),
+        ("模式与模型", (commands.NAME_MODE, commands.NAME_MODEL, commands.NAME_PLAN)),
+        ("帮助", (commands.NAME_HELP,)),
+    ]
+    catalog = list(services.commands.catalog())
+    taken: set[str] = set()
+    lines: list[str] = []
+    for title, names in sections:
+        rows = [record for record in catalog if record.name in names]
+        if not rows:
+            continue
+        lines.append(f"{title}：")
+        for record in rows:
+            taken.add(record.name)
+            lines.append(f"  {record.usage or f'/{record.name}'} — {record.summary}")
+    # 其余按发现源分节：你放的 / 随代码发布 / 技能（技能那批由 `_skill_commands` 注册）
+    for group, title in (("user", "你放的"), ("repo", "随代码发布"), ("skill", "技能")):
+        rows = [record for record in catalog if record.group == group and record.name not in taken]
+        if not rows:
+            continue
+        lines.append(f"{title}：")
+        for record in rows:
+            taken.add(record.name)
+            lines.append(f"  {record.usage or f'/{record.name}'} — {record.summary}")
+    rest = [record for record in catalog if record.name not in taken]
+    if rest:
+        lines.append("其它：")
+        for record in rest:
+            lines.append(f"  {record.usage or f'/{record.name}'} — {record.summary}")
+    lines.append("/help <命令名> 看某一条的详细用法；技能也能直接当命令用：/技能名 [任务]。")
     return _CommandResult(name="help", text="\n".join(lines))
 
 
@@ -2288,6 +2376,278 @@ def _stop_turn(services: Services, payload: ChatRequestIn) -> _CommandResult:
         text="已请求停止；已经流出来的正文会留着，过程日志里补一条「被中断」。",
         action={"kind": "stop_turn"},
     )
+
+
+# ------------------------------------------------- 会话自身的动作与状态（P1-2 续）
+#
+# 这一节是《对话命令-调研 v0.1》§3 第 1-4 条差距的落点：``/rewind`` ``/context``
+# ``/status`` ``/skills``。四条的共识是**会话自身的动作与上下文/状态都要是一等命令**
+# （Claude / Gemini / ZCode 三家都有 ``/rewind``，Claude 有 ``/context``）——
+# 我们此前只有界面上一个按钮和一个仪表，于是"脚本/MCP 那条没有按钮的路"上没有等价物。
+#
+# 四条全是短路类，而且四条都需要一条会话（除了 ``/skills``）：
+# 没有会话时**如实说**，不假装做了什么（与 ``/compact`` ``/model`` 同一口径）。
+
+#: ``/rewind`` 一次最多撤几轮。**与 ``ConversationRewindIn.turns`` 的上限取同一个数**
+#: （那儿是 pydantic 的 ``le=20``）：命令与端点差一个数的话，用户会得到
+#: "界面按钮能撤 20 轮、命令说最多 10 轮"这种没人解释得清的区别。
+REWIND_MAX_TURNS = 20
+
+
+def _round_count(services: Services, conversation_id: str) -> tuple[int, int]:
+    """这条会话有多少轮问答、多少条消息（``(轮数, 消息数)``）。
+
+    轮数按**提问**数算（一轮 = 一问一答）：会话是一份线性记录，而"我问了几轮"
+    正是用户说的那个轮。回答可能缺失（半截的一轮不落消息），所以不能拿消息数除 2。
+    """
+    try:
+        messages = list(services.conversations.messages(conversation_id))
+    except Exception:
+        logger.info("读会话消息失败：%s", conversation_id, exc_info=True)
+        return 0, 0
+    return sum(1 for item in messages if item.role == "user"), len(messages)
+
+
+def _rewind(
+    services: Services, payload: ChatRequestIn, parsed: commands.ParsedCommand
+) -> _CommandResult:
+    """``/rewind [轮数]``：撤回最近 N 轮，并把被撤掉的那句提问**交回给界面**。
+
+    照三家的 ``/rewind``（Claude / Gemini / ZCode 都有，见调研报告 §3 第 1 条），
+    但**不做交互式选点**（Gemini 那一步要一层终端 UI，我们这里是"输入框里的一条命令"）：
+    不给参数撤 1 轮、``/rewind 2`` 撤 2 轮。
+
+    **能力本身早就有了**（``POST /conversations/{id}/rewind``，界面上「重新生成」
+    那个按钮走的就是它）——这一条只是把它接到"没有按钮的那条路"上：
+    写的是 ``ConversationService.rewind``，不另开一条删除实现。
+
+    越界（撤回数 > 现有轮数）**在这里就回一句人话**：服务层抛的是
+    ``InvalidRequestError``，让它穿透成 500 的话，用户看到的是一次故障而不是
+    "你只有 3 轮"。
+    """
+    if not payload.conversation_id:
+        return _CommandResult(
+            name=commands.NAME_REWIND,
+            ok=False,
+            text="/rewind 需要一条会话：它撤的是这条会话里最近的几轮问答。",
+        )
+    pieces = parsed.args.split()
+    turns = 1
+    if pieces:
+        try:
+            turns = int(pieces[0])
+        except ValueError:
+            turns = 0
+        if turns < 1 or turns > REWIND_MAX_TURNS:
+            return _CommandResult(
+                name=commands.NAME_REWIND,
+                ok=False,
+                text=(
+                    f"撤不了 {pieces[0]} 轮：轮数要写 1 到 {REWIND_MAX_TURNS} 之间的整数。\n"
+                    "用法：/rewind [轮数]——不带参数撤最近 1 轮。"
+                ),
+            )
+    rounds, _ = _round_count(services, payload.conversation_id)
+    if rounds == 0:
+        return _CommandResult(
+            name=commands.NAME_REWIND,
+            ok=False,
+            text="这条会话里还没有可撤回的问答（一条提问都没有）。",
+        )
+    if turns > rounds:
+        return _CommandResult(
+            name=commands.NAME_REWIND,
+            ok=False,
+            text=(
+                f"这条会话只有 {rounds} 轮问答，撤不回 {turns} 轮。\n"
+                f"要清空就写 /rewind {rounds}；不撤就把这句当没看见。"
+            ),
+        )
+    before = services.conversations.message_count(payload.conversation_id)
+    try:
+        query = services.conversations.rewind(payload.conversation_id, turns=turns)
+    except InvalidRequestError as exc:
+        # 走到这里说明上面那道判断题漏了一种情形（比如这一轮只有提问、没有回答）
+        logger.info("撤回被服务层拒绝：%s", payload.conversation_id, exc_info=True)
+        return _CommandResult(
+            name=commands.NAME_REWIND, ok=False, text=f"没能撤回：{exc}"
+        )
+    except Exception as exc:
+        logger.warning("撤回失败：%s", payload.conversation_id, exc_info=True)
+        return _CommandResult(name=commands.NAME_REWIND, ok=False, text=f"没能撤回：{exc}")
+    removed = max(0, before - services.conversations.message_count(payload.conversation_id))
+    return _CommandResult(
+        name=commands.NAME_REWIND,
+        text=(
+            f"已撤回 {turns} 轮（连回答一起删掉了 {removed} 条消息）：\n{query}\n"
+            "被撤回的对话不再出现在历史里，模型下一轮也看不到它们了；"
+            "那句提问已经填回输入框，改一版就能重发。"
+        ),
+        # **回填输入框**（与前端约定死的那个可选字段）：用户改一版再发就是
+        # Claude/Gemini 里 /rewind 的手感。取原样的提问，不截断——截断过的提问
+        # 回填回去就是"改一版"改错了地方。
+        refill=query,
+    )
+
+
+def _context_of(services: Services, payload: ChatRequestIn, caller: Caller):  # type: ignore[no-untyped-def]
+    """这一轮的上下文分解（``None`` = 没有可算的会话）。
+
+    **与 ``GET /chat/context-usage`` 同一处拼装**：工具表要调用者身份与这一轮的
+    库范围才能拼出来，两处各拼一份的话，命令说一套、仪表显示另一套。
+    只读：调它不会触发压缩（那是 ``prepare_context`` 的事）。
+    """
+    if not payload.conversation_id:
+        return None
+    try:
+        conversation = services.conversations.get(payload.conversation_id)
+    except Exception:
+        logger.info("读会话失败（上下文用量算不了）：%s", payload.conversation_id, exc_info=True)
+        return None
+    return services.chat.context_usage(
+        conversation_id=payload.conversation_id,
+        owner_id=caller.owner_id,
+        tools=tool_specs(services, owner_id=caller.owner_id, kb_ids=list(conversation.kb_ids)),
+    )
+
+
+def _context_lines(usage) -> list[str]:  # type: ignore[no-untyped-def]
+    """上下文用量的多行文本（``/context`` 与 ``/status`` 共用）。
+
+    **一行一项、不用 markdown 表格**：命令结果那个面板是纯文本渲染的
+    （见调研报告 §3 第 8 条的"只为结果挑一种既有排版"），表格在它里面就是一串竖线。
+    """
+    lines = [f"上下文占用：{usage.used:,} / {usage.total:,} tokens（{usage.ratio:.0%}，估算）"]
+    for part in usage.parts:
+        share = part.tokens / usage.used if usage.used else 0.0
+        lines.append(f"- {part.label}：{part.tokens:,} tokens（{share:.0%}）")
+    cut = int(usage.total * usage.compress_at / 100)
+    lines.append(f"自动压缩阈值：{usage.compress_at}%（到 {cut:,} tokens 就自动压）")
+    lines.append("数字按字符数估算（中日韩 1 字约 1 token、其余 4 字符约 1，偏高一点）。")
+    return lines
+
+
+def _context_usage(
+    services: Services, payload: ChatRequestIn, caller: Caller
+) -> _CommandResult:
+    """``/context``：这一轮的上下文**被什么占着**（照 Claude 的 ``/context``）。
+
+    与输入框旁边那个小仪表是同一份数据、同一个口径（``services.chat.context_usage``），
+    区别只在"哪一行是重点"：仪表给一个比例，这一条给**按来源的分解**——
+    "它怎么变笨了"的那个问题，能回答的一句话通常是"上下文里 60% 是技能目录"。
+    """
+    usage = _context_of(services, payload, caller)
+    if usage is None:
+        return _CommandResult(
+            name=commands.NAME_CONTEXT,
+            ok=False,
+            text="/context 需要一条会话：它算的是这条会话这一轮真会发出去的上下文。",
+        )
+    return _CommandResult(name=commands.NAME_CONTEXT, text="\n".join(_context_lines(usage)))
+
+
+def _status(services: Services, payload: ChatRequestIn, caller: Caller) -> _CommandResult:
+    """``/status``：这条会话的一览（照 Claude 的 ``/status``）。
+
+    只报**已有的**东西（调研报告 §3 第 3 条："没有的能力就少写一行，别现造"）：
+    模型 / 模式 / 项目 / 轮数 / 上下文占用——这五样都能从既有服务里读到，
+    而"思考开没开""用了哪些工具"这些要么没有会话级取值、要么要翻日志，
+    这一条不替它们编一行。每一样都注一句**它现在为什么是这个值**
+    （"跟随全局默认"还是"这条会话选的"），否则这一屏只是把界面上的字抄了一遍。
+    """
+    if not payload.conversation_id:
+        return _CommandResult(
+            name=commands.NAME_STATUS,
+            ok=False,
+            text="/status 需要一条会话：它看的是这条会话用的模型、模式、项目与上下文占用。",
+        )
+    try:
+        conversation = services.conversations.get(payload.conversation_id)
+    except Exception as exc:
+        logger.info("读会话失败（/status）：%s", payload.conversation_id, exc_info=True)
+        return _CommandResult(name=commands.NAME_STATUS, ok=False, text=f"读不到这条会话：{exc}")
+    rounds, messages = _round_count(services, payload.conversation_id)
+    lines = [f"这条会话：{conversation.title or '（还没有标题）'}"]
+    lines.append(f"- 轮数：{rounds} 轮问答（{messages} 条消息）")
+    current, followed = _current_model(services, payload)
+    if not current:
+        lines.append("- 模型：还没选过（设置页里也没绑定 chat 用途的默认模型）")
+    elif followed:
+        lines.append(f"- 模型：「{_model_label(services, current) or current}」（跟随全局默认）")
+    else:
+        lines.append(f"- 模型：「{_model_label(services, current) or current}」（这条会话选的）")
+    mode = services.chat.current_mode()
+    definition = modes.MODE_DEFS[mode]
+    lines.append(f"- 模式：{definition.label}（{mode}）——{definition.hint}")
+    if conversation.workspace_id:
+        name = _workspace_name(services, conversation.workspace_id, caller)
+        missing = f"- 项目：（这条会话挂的项目查不到了：{conversation.workspace_id}）"
+        lines.append(f"- 项目：{name}" if name else missing)
+    else:
+        lines.append("- 项目：未归档（不属于任何项目）")
+    usage = _context_of(services, payload, caller)
+    if usage is not None:
+        lines.append(
+            f"- 上下文：{usage.used:,} / {usage.total:,} tokens"
+            f"（{usage.ratio:.0%}，估算）"
+        )
+    lines.append("上下文按来源的分解见 /context；换档见 /mode。")
+    return _CommandResult(name=commands.NAME_STATUS, text="\n".join(lines))
+
+
+def _workspace_name(services: Services, workspace_id: str, caller: Caller) -> str:
+    """工作区（项目）的显示名；看不到或读不出来就空串。
+
+    归属判定交给工作区服务自己（``get`` 的 ``user_id`` 那条路，与侧栏同一处）——
+    这里只是把"管理员/成员各看到什么"的口径留在那一处。
+    """
+    try:
+        return services.workspaces.get(workspace_id, user_id=caller.owner_id).name
+    except Exception:
+        logger.info("读工作区失败：%s", workspace_id, exc_info=True)
+        return ""
+
+
+def _skills(services: Services) -> _CommandResult:
+    """``/skills``：列出可用技能，并说清**每个技能都能直接当命令用**。
+
+    照 Claude 的 ``/skills`` 与 QwenPaw 的"技能目录名即命令"（调研报告 §3 第 4 条）。
+    数据来自**命令表里的技能那批**（``CommandService.skill_commands``）而不是技能
+    注册表：这样"能不能敲、敲出来是什么"与菜单里那一份天然一致——两处各读一遍
+    磁盘就会出现"这里说能用、菜单里没有"。
+
+    三种状态分开说（能用 / 被同名命令遮蔽 / 名字不能当命令），因为**处置各不相同**：
+    前一种是换个名字，后一种是改用 ``/skill``。混成一句"不可用"等于什么都没说。
+    """
+    items = services.commands.skill_commands()
+    if not items:
+        return _CommandResult(
+            name=commands.NAME_SKILLS,
+            ok=False,
+            text=(
+                "还没有扫到任何技能：把技能目录放进 data/skills/，"
+                "或者在「能力」页里装一个（技能自带 SKILL.md）。"
+            ),
+        )
+    usable = [item for item in items if item.usable]
+    blocked = [item for item in items if not item.usable]
+    lines = [
+        f"可用技能 {len(usable)} 个。每个技能都能直接当命令用：/技能名 [任务]，"
+        "与 /skill 技能名 [任务] 是同一条路（正文注入这一轮）。"
+    ]
+    lines.extend(f"- {item.usage} — {item.summary}" for item in usable)
+    if blocked:
+        lines.append("下面这些暂时敲不出来（技能本身还在）：")
+        for item in blocked:
+            if item.shadowed_by:
+                lines.append(
+                    f"- /{item.name} 被 /{item.shadowed_by} 遮蔽了（同名取优先级最高的那条）："
+                    f"用 /skill {item.skill} [任务] 调它。"
+                )
+            else:
+                lines.append(f"- {item.skill}：{item.error}")
+    lines.append("技能正文只在用到时才展开（渐进披露），所以装得多也不会一直占着上下文。")
+    return _CommandResult(name=commands.NAME_SKILLS, text="\n".join(lines))
 
 
 #: ``/model`` 的用法那一行（列清单、认不出名字、没有会话时都要说一遍）。
@@ -2626,17 +2986,21 @@ def _command_events(
     命令只是"内容不同的一次流"。``done`` 的 ``answer`` 是**空串**——命令不产生回答，
     界面据此不建 assistant 气泡；消息也不会落库，这条路根本不碰 ``_record_turn``
     （这就是"不进模型历史"）。
+
+    载荷由 ``ChatCommandEventOut`` 拼（契约一个落点，见那个类）：
+    ``action`` 与 ``refill`` **没有就不出现**——老客户端不认 ``refill`` 时
+    行为一个字都不变（``/rewind`` 会带上被撤掉的那句提问，供界面回填输入框）。
     """
     _record_command(services, payload, result)
-    event: dict[str, object] = {
-        "type": "command",
-        "name": result.name,
-        "text": result.text,
-        "ok": result.ok,
-    }
-    if result.action:
-        event["action"] = dict(result.action)
-    yield _sse(event)
+    yield _sse(
+        ChatCommandEventOut(
+            name=result.name,
+            text=result.text,
+            ok=result.ok,
+            action=result.action,
+            refill=result.refill,
+        ).wire()
+    )
     yield _sse({"type": "done", "answer": ""})
 
 
@@ -2670,7 +3034,7 @@ def _record_command(services: Services, payload: ChatRequestIn, result: _Command
 @router.get(
     "/chat/commands",
     response_model=CommandListOut,
-    summary="可用命令（内置 + 自定义，被遮蔽的也在里面）",
+    summary="可用命令（内置 + 自定义 + 技能，被遮蔽的也在里面）",
 )
 def list_commands(
     services: Services = Depends(get_services),
@@ -2680,15 +3044,21 @@ def list_commands(
 
     三条与界面直接相关的约定：
 
-    1. **``{name, summary, usage, group}`` 四个字段是给菜单的**（``group`` 就是发现源
-       ——``builtin`` / ``user`` / ``repo``），其余字段是顺带给出的排错信息；
+    1. **``{name, summary, usage, group}`` 四个字段是给菜单的**（``group`` 是**菜单
+       分组**：``builtin`` / ``user`` / ``repo`` / ``skill``，见 ``CommandDef.group``
+       ——技能那批是单独一档，不再借技能自己的发现源分组），其余字段是顺带给出的排错信息；
     2. **被遮蔽的与加载失败的都在列表里**（``shadowed_by`` / ``error``，与插件列表
        同一套做法）：静默藏掉会让用户以为文件没生效，而原因只有这里知道；
     3. **``short_circuit`` 只是"这条通常要不要模型"的说明**：为真的是 ``/help`` ``/mode``
-       这一类，为假的是改写类（``/skill`` 与自定义 md 命令）。**界面不据它分流**
-       ——它是**表级**的保守口径，判不出 ``/plan`` 这种"看有没有参数"的两面派；
-       真正的判据是这一轮的结果（见 ``_CommandResult.short_circuit`` 与前端
-       ``ChatView.commandProducedContent``）。
+       这一类，为假的是改写类（``/skill``、**技能自己的那条命令**与自定义 md 命令）。
+       **界面不据它分流**——它是**表级**的保守口径，判不出 ``/plan`` 这种
+       "看有没有参数"的两面派；真正的判据是这一轮的结果（见
+       ``_CommandResult.short_circuit`` 与前端 ``ChatView.commandProducedContent``）。
+
+    **技能也是命令**（``/<技能名> [任务]``，照 Claude 的"命令＝技能"）：它们单独成组
+    （``group="skill"``，菜单里排在"内置 / 你放的 / 随代码发布"之后）——混在那三档里时
+    ``/rewind`` ``/status`` ``/skills`` 这些会话动作会被二十多条命令挤出首屏，而技能
+    本该是一眼可辨的一类。摘要也跟着收短：见 ``CommandOut.summary``。
     """
     items = services.commands.list()
     return CommandListOut(
@@ -2697,7 +3067,7 @@ def list_commands(
                 name=item.name,
                 summary=item.summary,
                 usage=item.usage or f"/{item.name}",
-                group=item.source,
+                group=item.group,
                 details=list(item.details),
                 argument_hint=item.argument_hint,
                 short_circuit=item.short_circuit,

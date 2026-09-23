@@ -191,6 +191,23 @@ export function Composer() {
     }, 0)
   }
 
+  /**
+   * 命令把一句提问送回了输入框（`/rewind` 的 `refill`，见 `ChatCommandResult.refill`）。
+   *
+   * 字是 provider 填的（它手上有 `query`），这里只补**用户接着要动手**的那两件事：
+   * 焦点进输入框、**光标落在末尾**——否则那句回填的话是"看得见、摸不着"：
+   * 用户还得先点一下才改得了，而这条命令要他做的恰恰就是"改一版再发"。
+   *
+   * 与插引用走同一个 `focusComposerEnd`（同一件事只有一处实现）：它放在 `setTimeout(0)`
+   * 里，等 React 把新的 `value` 提交到 DOM 之后再选末尾——早一步的话选中的是旧长度。
+   * 依赖只有 `commandRefill` 这一个对象（`seq` 每次都新），所以同一句话连着回填两次也各跑一次。
+   */
+  useEffect(() => {
+    if (!chat.commandRefill) return
+    focusComposerEnd()
+    // 只认 provider 给的那个信号（`seq` 每次都新）；它之外的依赖一概不看
+  }, [chat.commandRefill])
+
   // —— 拖拽：先判这一拖是哪一种，再把它写成对应那一句文案
   function onDragOver(event: React.DragEvent): void {
     const types = Array.from(event.dataTransfer?.types ?? [])
@@ -302,7 +319,18 @@ export function Composer() {
               <X size={13} />
             </button>
           </div>
-          <pre className="m-0 font-mono text-[length:var(--text-micro-size)] whitespace-pre-wrap text-[var(--text-secondary)]">
+          {/*
+            命令的回话**原样摆出来**：`/context` `/status` `/skills` 这几条都是多行纯文本
+            （一行一项，数字带千分位；后端刻意不用 markdown 表格，见 `_context_lines` 的说明），
+            所以是等宽 + `pre-wrap`——换行不塌、行内的数字与缩进对得齐，一块 `<pre>` 就够，
+            不为它另造一套卡片。
+
+            `break-words` 是**量出来的**（`.shots/cmd/probe-overflow.cjs`）：真实那些长路径
+            会在 `/` 处折行（734/734 不溢出），而一条**没有断点的长 token**（哈希、长 id）
+            会把 734 撑到 2111，文字直接跑到面板边框外面去——补上它之后那种极端行也在面板里
+            折行。它不改变任何一行的对齐（折的只是放不下的那些）。
+          */}
+          <pre className="m-0 font-mono text-[length:var(--text-micro-size)] break-words whitespace-pre-wrap text-[var(--text-secondary)]">
             {chat.commandResult.text}
           </pre>
         </div>

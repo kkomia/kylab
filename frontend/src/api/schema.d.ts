@@ -888,20 +888,26 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 可用命令（内置 + 自定义，被遮蔽的也在里面）
+         * 可用命令（内置 + 自定义 + 技能，被遮蔽的也在里面）
          * @description 斜杠命令的目录：前端那个 ``/`` 菜单就吃这一份（P1-2 第 4 条）。
          *
          *     三条与界面直接相关的约定：
          *
-         *     1. **``{name, summary, usage, group}`` 四个字段是给菜单的**（``group`` 就是发现源
-         *        ——``builtin`` / ``user`` / ``repo``），其余字段是顺带给出的排错信息；
+         *     1. **``{name, summary, usage, group}`` 四个字段是给菜单的**（``group`` 是**菜单
+         *        分组**：``builtin`` / ``user`` / ``repo`` / ``skill``，见 ``CommandDef.group``
+         *        ——技能那批是单独一档，不再借技能自己的发现源分组），其余字段是顺带给出的排错信息；
          *     2. **被遮蔽的与加载失败的都在列表里**（``shadowed_by`` / ``error``，与插件列表
          *        同一套做法）：静默藏掉会让用户以为文件没生效，而原因只有这里知道；
          *     3. **``short_circuit`` 只是"这条通常要不要模型"的说明**：为真的是 ``/help`` ``/mode``
-         *        这一类，为假的是改写类（``/skill`` 与自定义 md 命令）。**界面不据它分流**
-         *        ——它是**表级**的保守口径，判不出 ``/plan`` 这种"看有没有参数"的两面派；
-         *        真正的判据是这一轮的结果（见 ``_CommandResult.short_circuit`` 与前端
-         *        ``ChatView.commandProducedContent``）。
+         *        这一类，为假的是改写类（``/skill``、**技能自己的那条命令**与自定义 md 命令）。
+         *        **界面不据它分流**——它是**表级**的保守口径，判不出 ``/plan`` 这种
+         *        "看有没有参数"的两面派；真正的判据是这一轮的结果（见
+         *        ``_CommandResult.short_circuit`` 与前端 ``ChatView.commandProducedContent``）。
+         *
+         *     **技能也是命令**（``/<技能名> [任务]``，照 Claude 的"命令＝技能"）：它们单独成组
+         *     （``group="skill"``，菜单里排在"内置 / 你放的 / 随代码发布"之后）——混在那三档里时
+         *     ``/rewind`` ``/status`` ``/skills`` 这些会话动作会被二十多条命令挤出首屏，而技能
+         *     本该是一眼可辨的一类。摘要也跟着收短：见 ``CommandOut.summary``。
          */
         get: operations["list_commands_api_v1_chat_commands_get"];
         put?: never;
@@ -3615,6 +3621,9 @@ export interface components {
          *
          *     前四个字段 ``{name, summary, usage, group}`` 就是前端那个 ``/`` 菜单吃的东西
          *     （``details`` 给 ``/help <命令名>`` 展开用；``shadowed_by`` / ``error`` 是排错用的）。
+         *     技能注册来的那批也在里面（``/技能名 [任务]``）——它们取 ``group="skill"``：
+         *     技能是**单独一档**（``CommandDef.group``），不混进"内置 / 你放的 / 随代码发布"
+         *     里，那三档装不下二十多条命令、也辨认不出技能。
          */
         CommandOut: {
             /** Name */
@@ -3634,7 +3643,7 @@ export interface components {
              * @default builtin
              * @enum {string}
              */
-            group: "builtin" | "user" | "repo";
+            group: "builtin" | "user" | "repo" | "skill";
             /** Details */
             details?: string[];
             /**

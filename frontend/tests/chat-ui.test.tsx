@@ -398,6 +398,146 @@ describe('斜杠命令：带参数的 /plan', () => {
   })
 })
 
+describe('命令结果：回填与多行（/rewind 与 /context /status /skills）', () => {
+  /** 一条命令（菜单要的那几个字段，其余按契约给默认值）。 */
+  function command(name: string, usage: string, hint = '') {
+    return {
+      name,
+      summary: `${name} 的说明`,
+      usage,
+      group: 'builtin' as const,
+      details: [],
+      argument_hint: hint,
+      short_circuit: true,
+      shadowed_by: '',
+      error: '',
+      path: '',
+    }
+  }
+
+  it('/rewind 带着 refill：被撤的那句提问回填进输入框，光标在末尾且输入框拿到焦点', async () => {
+    const box = capture()
+    vi.mocked(listCommands).mockResolvedValue([command('rewind', '/rewind [n]', '[n]')])
+    renderPage()
+    await screen.findByPlaceholderText(/回车发送/)
+
+    await ask('/rewind 2')
+    await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      box.handlers!.onCommand!({
+        name: 'rewind',
+        text: '已撤回最近 2 轮',
+        ok: true,
+        // 被撤掉的**上一句提问**：后端随结果给回来，界面原样回填
+        refill: '帮我整理这份资料',
+      })
+      box.handlers!.onDone!('', liveDone)
+    })
+
+    // 类型收窄成 textarea：下面两条读的是**选区**（`selectionStart/End` 只在它上面有）
+    const field = screen.getByPlaceholderText(/回车发送/) as HTMLTextAreaElement
+    await waitFor(() => expect(field).toHaveValue('帮我整理这份资料'))
+    // 「光标落在末尾 + 焦点在输入框」：用户改一版就能直接回车重发，不必先点一下
+    await waitFor(() => expect(field).toHaveFocus())
+    expect(field.selectionStart).toBe('帮我整理这份资料'.length)
+    expect(field.selectionEnd).toBe('帮我整理这份资料'.length)
+    // 回填的是**命令的那一句**，不是命令本身（输入框里不该还留着 /rewind 2）
+    expect(field).not.toHaveValue('/rewind 2')
+  })
+
+  it('/rewind 撤掉的轮次：命令收尾后按库重画，被撤的那一轮从屏幕上消失', async () => {
+    const box = capture()
+    vi.mocked(listCommands).mockResolvedValue([command('rewind', '/rewind [n]', '[n]')])
+    // 库里**被撤之前**有两轮，撤回之后只剩第一轮（这才是库里的权威那份）
+    let calls = 0
+    vi.mocked(getConversation).mockImplementation(async () =>
+      calls++ === 0
+        ? detail([
+            stored('user', '第一问'),
+            stored('assistant', '第一答'),
+            stored('user', '被撤的这问'),
+            stored('assistant', '被撤的这答'),
+          ])
+        : detail([stored('user', '第一问'), stored('assistant', '第一答')]),
+    )
+    renderPage()
+    await screen.findByPlaceholderText(/回车发送/)
+    // 断言**只看消息流那一列**：回填进输入框的正是同一句话，全文查会查到自己
+    const list = () => within(screen.getByTestId('message-list'))
+    // 消息流那一列要等库里的历史画上来（画之前是骨架屏）
+    await screen.findByTestId('message-list')
+    expect(await list().findByText('被撤的这问')).toBeInTheDocument()
+
+    await ask('/rewind 1')
+    await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      box.handlers!.onCommand!({
+        name: 'rewind',
+        text: '已撤回最近 1 轮',
+        ok: true,
+        refill: '被撤的这问',
+      })
+      box.handlers!.onDone!('', liveDone)
+    })
+
+    // 服务端那几轮已经删了：不重读一次库，它们会一直挂在屏幕上（直到刷新）。
+    await waitFor(() => expect(list().queryByText('被撤的这问')).toBeNull())
+    expect(list().getByText('第一问')).toBeInTheDocument()
+  })
+
+  it('结果没有 refill 时一个字都不回填（/context 只摆结果）', async () => {
+    const box = capture()
+    vi.mocked(listCommands).mockResolvedValue([command('context', '/context')])
+    renderPage()
+    await screen.findByPlaceholderText(/回车发送/)
+
+    await ask('/context')
+    await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      box.handlers!.onCommand!({ name: 'context', text: '上下文：12% 已用', ok: true })
+      box.handlers!.onDone!('', liveDone)
+    })
+
+    const panel = await screen.findByTestId('command-result')
+    expect(panel).toHaveTextContent('上下文：12% 已用')
+    // **没有那个字段就不猜**：不从文案里抠，也不动输入框
+    expect(screen.getByPlaceholderText(/回车发送/)).toHaveValue('')
+  })
+
+  it('多行结果原样摆出来（换行不塌、等宽对齐）', async () => {
+    const box = capture()
+    vi.mocked(listCommands).mockResolvedValue([command('skills', '/skills')])
+    renderPage()
+    await screen.findByPlaceholderText(/回车发送/)
+
+    await ask('/skills')
+    await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
+
+    // 多行是**后端拼好的**：两列之间靠空格对齐，界面不许自己重排
+    const text = ['可用技能 2 个：', '  摘要     1,024 tok', '  翻译     2,048 tok'].join('\n')
+    await act(async () => {
+      box.handlers!.onCommand!({ name: 'skills', text, ok: true })
+      box.handlers!.onDone!('', liveDone)
+    })
+
+    const panel = await screen.findByTestId('command-result')
+    const pre = panel.querySelector('pre')
+    expect(pre).not.toBeNull()
+    // 换行与空格一个字不少（多行结果塌成一行 = 这一块没用了）
+    expect(pre!.textContent).toBe(text)
+    // 排版：保留换行（`pre-wrap`）、等宽（数字与两列才对得齐）、
+    // 放不下的长 token 在面板里折行（`break-words`，量过溢出才加的）
+    expect(pre).toHaveClass('whitespace-pre-wrap')
+    expect(pre).toHaveClass('font-mono')
+    expect(pre).toHaveClass('break-words')
+    // 面板仍然只有这一块（不新造卡片），且不是一条助手回答
+    expect(screen.queryByTestId('reply-text')).toBeNull()
+  })
+})
+
 describe('审批条', () => {
   it('三个按钮都在；拒绝时把理由一起交给 decideApproval', async () => {
     const box = capture()
@@ -1063,6 +1203,64 @@ describe('两个菜单（`/` 与 `@`）', () => {
     await user.click(option)
     // 还要参数的命令只**补完**，不立刻执行——光标留给参数
     expect(field).toHaveValue('/plan ')
+  })
+
+  it('技能单独成组，认不出的分组落进「其它」而不是消失', async () => {
+    vi.mocked(listCommands).mockResolvedValue([
+      {
+        name: 'rewind',
+        summary: '撤回最近 N 轮问答',
+        usage: '/rewind [n]',
+        group: 'builtin',
+        details: [],
+        argument_hint: '[n]',
+        short_circuit: true,
+        shadowed_by: '',
+        error: '',
+        path: '',
+      },
+      {
+        name: 'kylab-web',
+        summary: '查网页并读页面',
+        usage: '/kylab-web [任务]',
+        group: 'skill',
+        details: [],
+        argument_hint: '',
+        short_circuit: false,
+        shadowed_by: '',
+        error: '',
+        path: '',
+      },
+      {
+        // 后端将来再多一档时这份固定表一定晚一步——它不该被 `filter` 丢掉
+        name: 'future-thing',
+        summary: '还没认识的分组',
+        usage: '/future-thing',
+        group: 'plugin' as never,
+        details: [],
+        argument_hint: '',
+        short_circuit: false,
+        shadowed_by: '',
+        error: '',
+        path: '',
+      },
+    ])
+    renderPage()
+    const user = userEvent.setup()
+    const field = await screen.findByPlaceholderText(/回车发送/)
+
+    await user.click(field)
+    await user.type(field, '/')
+
+    // 技能**单独一个分组标题**（不混在"内置"里），认不出的一档收在末尾「其它」
+    await screen.findByRole('option', { name: /\/kylab-web/ })
+    const headings = [...document.querySelectorAll('p')]
+      .map((node) => node.textContent ?? '')
+      .filter((text) =>
+        ['内置', '自定义（你放的）', '自定义（随代码自带）', '技能', '其它'].includes(text),
+      )
+    expect(headings).toEqual(['内置', '技能', '其它'])
+    expect(screen.getByRole('option', { name: /future-thing/ })).toBeInTheDocument()
   })
 
   it('敲 `@` 出引用候选（文件），点一条只把引用插进输入框', async () => {

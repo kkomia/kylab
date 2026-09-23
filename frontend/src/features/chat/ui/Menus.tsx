@@ -43,12 +43,31 @@ export interface MenuHandle {
 /**
  * 分组的顺序与标题（`group` 的取值与后端 `CommandOut.group` 一一对应）。
  * 「随代码自带」是**我们调过的那些**，与"用户放的"分开说——出问题时先怀疑自己放的那份。
+ *
+ * 这个顺序**核过，不改**：内置在最上（每台机器都一样，也是敲 `/` 时最常用到的一批），
+ * 接着是用户自己放的那份（他要找的大概率是刚写的那条），再是随代码自带的
+ * ——"不是我写的"那类收尾，出问题时也最先怀疑它们——最后是**技能**。
+ *
+ * 「技能」放最后是刻意的：技能是一眼可辨的一类（`/kylab-web` 这种），但它有
+ * 二十多条（装得越多越长），排在内置后面会把 `/rewind` `/status` `/skills` 这些
+ * 会话动作挤出首屏；放末尾时"敲 `/` 先看到动作、想找技能再往下滚"。
  */
 const COMMAND_GROUPS: { key: ChatCommand['group']; label: string }[] = [
   { key: 'builtin', label: '内置' },
   { key: 'user', label: '自定义（你放的）' },
   { key: 'repo', label: '自定义（随代码自带）' },
+  { key: 'skill', label: '技能' },
 ]
+
+/**
+ * 认不出的 `group` 的落点。
+ *
+ * 后端将来再多一类分组时，前端这份表**一定会晚一步**——照旧写法，那些命令会被
+ * `filter` 悄悄丢掉，菜单里少几条是没人会发现的错（用户只会觉得"我明明装了这条
+ * 技能"）。所以认不出的一律收在这里摆出来，宁可分组标题不精确，也不能让命令消失。
+ * （技能那一组就是这么加的：后端加了 `skill` 取值，这里跟着补一行。）
+ */
+const OTHER_GROUP = { key: 'other' as const, label: '其它' }
 
 export function SlashMenu({
   items,
@@ -73,10 +92,18 @@ export function SlashMenu({
       ]
     : items
 
-  const grouped = COMMAND_GROUPS.map((group) => ({
-    ...group,
-    items: matched.filter((item) => item.group === group.key),
-  })).filter((group) => group.items.length > 0)
+  const grouped = [
+    ...COMMAND_GROUPS.map((group) => ({
+      ...group,
+      items: matched.filter((item) => item.group === group.key),
+    })),
+    {
+      ...OTHER_GROUP,
+      items: matched.filter(
+        (item) => !COMMAND_GROUPS.some((group) => group.key === (item.group as string)),
+      ),
+    },
+  ].filter((group) => group.items.length > 0)
   const flat = grouped.flatMap((group) => group.items)
 
   // 高亮项在**扁平顺序**里的下标（组的顺序就是扁平顺序，两处不会对不上）

@@ -199,7 +199,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 |------|------|------|
 | `POST` | `/api/v1/chat` | 快速检索问答（一次性） |
 | `POST` | `/api/v1/chat/approvals/{approval_id}` | 对一条待确认的工具调用做出决定（允许一次 / 这类都允许 / 拒绝） |
-| `GET` | `/api/v1/chat/commands` | 可用命令（内置 + 自定义，被遮蔽的也在里面） |
+| `GET` | `/api/v1/chat/commands` | 可用命令（内置 + 自定义 + 技能，被遮蔽的也在里面） |
 | `GET` | `/api/v1/chat/context-usage` | 上下文用量（按来源分解，估算） |
 | `POST` | `/api/v1/chat/stream` | 快速检索问答（流式） |
 | `GET` | `/api/v1/chat/suggested-questions` | 推荐问题（取自入库时为各分段生成的问题） |

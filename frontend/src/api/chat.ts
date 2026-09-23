@@ -210,7 +210,10 @@ export type ApprovalDecision = 'allow_once' | 'allow_always' | 'deny'
  * 一条斜杠命令（P1-2）。**菜单与 `/help` 读的是后端同一份数据**
  * （`GET /api/v1/chat/commands`，见 `listCommands`）。
  *
- * `group` 就是发现源，菜单按它分组：内置 / 你放的（`data/commands/`）/ 随代码发布。
+ * `group` 是**菜单分组**：内置 / 你放的（`data/commands/`）/ 随代码发布 / 技能
+ * （与 `Menus.tsx` 的 `COMMAND_GROUPS` 一一对应）。技能那批单独一档而不混进
+ * 前三档，是因为它们有二十多条、且本该一眼可辨。`summary` 对技能那批是**后端
+ * 截短过的**（有中文简介用它，没有就取描述的第一句，约 40 字）——别在前端再截。
  * 被遮蔽的（`shadowed_by`）与加载失败的（`error`）**也在列表里**——
  * 静默藏掉会让人以为文件没生效，而原因只有后端知道。
  */
@@ -218,7 +221,7 @@ export interface ChatCommand {
   name: string
   summary: string
   usage: string
-  group: 'builtin' | 'user' | 'repo'
+  group: 'builtin' | 'user' | 'repo' | 'skill'
   details: string[]
   argument_hint: string
   /**
@@ -295,6 +298,17 @@ export interface ChatCommandResult {
   name: string
   text: string
   ok: boolean
+  /**
+   * **被撤掉的那句提问**（`/rewind` 这条命令给的，后端 `_rewind` 填的）。
+   *
+   * 撤回类命令删的是服务端那几轮，而"用户刚才问的到底是哪一句"只有后端手上——
+   * 它随结果一起给回来，界面把这一句**原样回填进输入框**（用户改一版就能重发）。
+   *
+   * 两条纪律：
+   * - **没有这个字段就一个字都不动**（别的命令照旧；`/rewind` 没给也不猜）；
+   * - **不从 `text` 里抠**：回话是给人读的句子，问句是数据，两样东西不走同一条路。
+   */
+  refill?: string
   action?: {
     kind: string
     conversation_id?: string
@@ -382,6 +396,8 @@ export type ChatStreamEvent = SeqStamp &
         name: string
         text: string
         ok: boolean
+        /** 被撤掉的那句提问（`/rewind` 专有，见 `ChatCommandResult.refill`）。 */
+        refill?: string
         action?: ChatCommandResult['action']
       }
   )
@@ -760,6 +776,8 @@ async function pump(
         name: event.name,
         text: event.text,
         ok: event.ok,
+        // 只在**后端给了**的时候带上它：没有这一条时结果对象的形状与从前逐字相同
+        ...(event.refill ? { refill: event.refill } : {}),
         ...(event.action ? { action: event.action } : {}),
       })
       return

@@ -27,6 +27,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.services import get_services
+from app.services.commands import SKILL_SUMMARY_CHARS
 from tests.conftest import (
     admin_client as admin_session,
 )
@@ -112,6 +113,56 @@ def test_help_short_circuits_without_touching_the_model(
     assert not [item for item in events if item["type"] in {"step", "delta"}]
     # **不进模型历史**：库里一条消息都没有
     assert _messages(client, conversation_id) == []
+
+
+def _help_sections(text: str) -> dict[str, list[str]]:
+    """把 ``/help`` 的正文切成 ``{节标题: [命令名, ...]}``。
+
+    节标题是**顶格且以「：」收尾**的那几行（末尾那句用法提示以「。」收尾，不会被当标题）；
+    条目取每行第一个词——``/git:commit`` 这种带命名空间的也照样取得出来。
+    """
+    sections: dict[str, list[str]] = {}
+    current = ""
+    for line in text.splitlines():
+        if current and line.startswith("  "):
+            sections[current].append(line.split()[0].lstrip("/"))
+        elif line.rstrip().endswith("："):
+            current = line.strip()[:-1]
+            sections[current] = []
+    return sections
+
+
+def test_help_lays_every_command_out_in_sections(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/help`` 分节，**每条命令都有自己的位置**：「其它」那一节一出现就是漏了人。
+
+    平铺已经不成立了（二十多条一屏读不完，``/rewind`` 这类会话动作会被通用命令压到
+    看不见），所以这条钉的不是排版好不好看，而是**没有地方可漏**：命令清单（与 ``/``
+    菜单同一份数据）里的每一条都要在某一节里找得到，反过来也不许凭空多出来——
+    "菜单里点得到、``/help`` 里查不到"是最糟的一种不一致。
+    """
+    _no_model(monkeypatch)
+    text = _event(
+        _parse_sse(
+            client.post("/api/v1/chat/stream", json={"query": "/help", "kb_ids": [kb_id]}).text
+        ),
+        "command",
+    )["text"]
+
+    sections = _help_sections(text)
+    assert "其它" not in sections, f"这些命令没安置：{sections.get('其它')}"
+    usable = {
+        item["name"]
+        for item in client.get("/api/v1/chat/commands").json()["items"]
+        if not item["shadowed_by"] and not item["error"]
+    }
+    assert {name for names in sections.values() for name in names} == usable
+    # 会话动作排在最前（要一眼看见的那批），三条最容易没处放的各有其节
+    assert next(iter(sections)) == "会话动作"
+    assert {"mode", "model", "plan"} <= set(sections["模式与模型"])
+    assert {"skill", "skills"} <= set(sections["上下文与状态"])
+    assert "help" in sections["帮助"]
 
 
 def test_mode_switch_short_circuits_and_records_the_event(
@@ -253,6 +304,384 @@ def test_the_commands_endpoint_lists_builtins_and_custom_ones(client: TestClient
     shadowed = [item for item in body["items"] if item["shadowed_by"]]
     assert [item["name"] for item in shadowed] == ["mode"]
     assert body["user_dir"] == str(commands_dir)
+
+
+# --------------------------------------------------------------------- /rewind
+
+
+def _two_turns(client: TestClient, kb_id: str, conversation_id: str) -> None:
+    """在这条会话里走两轮问答（``/rewind`` 的用例都从这里起步）。"""
+    install_fake_chat("第一轮的回答。[1]")
+    for question in ("第一轮问题", "第二轮问题"):
+        client.post(
+            "/api/v1/chat/stream",
+            json={"query": question, "kb_ids": [kb_id], "conversation_id": conversation_id},
+        )
+
+
+def _run(client: TestClient, query: str, kb_id: str, conversation_id: str | None = None) -> dict:  # type: ignore[type-arg]
+    """发一条命令，返回那条 ``command`` 事件。"""
+    body: dict[str, object] = {"query": query, "kb_ids": [kb_id]}
+    if conversation_id:
+        body["conversation_id"] = conversation_id
+    return _event(_parse_sse(client.post("/api/v1/chat/stream", json=body).text), "command")
+
+
+def test_rewind_removes_the_last_turn_and_refills_the_input_box(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/rewind``：撤掉最近一轮，并**把那句提问交回界面**（``refill``）。
+
+    能力本身早就有（``POST /conversations/{id}/rewind``，界面上「重新生成」走它），
+    这一条验的是"没有按钮的那条路"上也够得着：写的是同一个 ``ConversationService.rewind``
+    ——撤掉的对话**不再出现在历史里**（消息真的没了，不是前端藏起来），
+    而 ``refill`` 是前端回填输入框的那份文本（用户改一版就能重发）。
+    """
+    conversation_id = _conversation(client, kb_id)
+    _two_turns(client, kb_id, conversation_id)
+    assert len(_messages(client, conversation_id)) == 4
+    _no_model(monkeypatch)
+
+    command = _run(client, "/rewind", kb_id, conversation_id)
+
+    assert command["ok"] is True
+    assert "已撤回 1 轮" in command["text"]
+    assert "第二轮问题" in command["text"], "撤掉的是哪一句要说出来"
+    assert "不再出现在历史里" in command["text"]
+    # **回填输入框的那个字段**（与前端约定死的可选字段）
+    assert command["refill"] == "第二轮问题"
+    # 历史里真的没了：只剩第一轮那两条
+    stored = _messages(client, conversation_id)
+    assert [item["content"] for item in stored] == ["第一轮问题", "第一轮的回答。[1]"]
+    # 命令自己仍然是"不进模型历史"的：没有多出来的消息，也不产生回答
+    assert len(stored) == 2
+
+
+def test_rewind_takes_a_turn_count(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/rewind 2``：撤 2 轮；撤掉的是**最早那一轮**的提问（它才是要重发的那句）。"""
+    conversation_id = _conversation(client, kb_id)
+    _two_turns(client, kb_id, conversation_id)
+    _no_model(monkeypatch)
+
+    command = _run(client, "/rewind 2", kb_id, conversation_id)
+
+    assert command["ok"] is True and "已撤回 2 轮" in command["text"]
+    assert command["refill"] == "第一轮问题"
+    assert _messages(client, conversation_id) == []
+
+
+def test_rewind_beyond_the_round_count_says_so(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """撤的轮数**超过现有轮数**：回一句人话，什么也不删（不是一次 500）。
+
+    服务层抛的是 ``InvalidRequestError``；让它穿透成故障页面的话，用户看到的
+    是一次报错而不是"你只有 1 轮"。
+    """
+    conversation_id = _conversation(client, kb_id)
+    _two_turns(client, kb_id, conversation_id)
+    _no_model(monkeypatch)
+
+    command = _run(client, "/rewind 5", kb_id, conversation_id)
+
+    assert command["ok"] is False
+    assert "只有 2 轮" in command["text"] and "撤不回 5 轮" in command["text"]
+    assert command.get("refill") in ("", None), "没撤成就没有可回填的东西"
+    assert len(_messages(client, conversation_id)) == 4, "什么都没删"
+
+
+def test_rewind_with_a_nonsense_count_and_with_no_conversation(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """参数不是正整数、以及没有会话：两条都**如实说**，不假装撤了什么。"""
+    _no_model(monkeypatch)
+    conversation_id = _conversation(client, kb_id)
+    _two_turns(client, kb_id, conversation_id)
+
+    nonsense = _run(client, "/rewind 三", kb_id, conversation_id)
+    assert nonsense["ok"] is False and "用法：/rewind" in nonsense["text"]
+    too_many = _run(client, "/rewind 99", kb_id, conversation_id)
+    assert too_many["ok"] is False and "REWIND" not in too_many["text"]
+    assert len(_messages(client, conversation_id)) == 4
+    # 没有会话：说清"它撤的是会话里的东西"，而不是静默什么都不做
+    orphan = _run(client, "/rewind", kb_id)
+    assert orphan["ok"] is False and "需要一条会话" in orphan["text"]
+
+
+# --------------------------------------------------------------------- /context /status
+
+
+def test_context_breaks_the_usage_down_by_source(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/context``：**一行一项 + 合计**，与输入框旁边那个仪表同一份数据。
+
+    这一条与 ``GET /chat/context-usage`` 是同一处拼装（工具表也一样），
+    所以它列出来的六项与仪表一致——两处各拼一份就会一个说一套。
+    """
+    _no_model(monkeypatch)
+    conversation_id = _conversation(client, kb_id)
+    usage = client.get(
+        "/api/v1/chat/context-usage", params={"conversation_id": conversation_id}
+    ).json()
+
+    command = _run(client, "/context", kb_id, conversation_id)
+
+    assert command["ok"] is True
+    for part in usage["items"]:
+        assert part["label"] in command["text"], part["label"]
+    assert f"{usage['used']:,} / {usage['total']:,}" in command["text"]
+    assert "自动压缩阈值" in command["text"]
+    # 是估算这件事要跟着说（仪表上不能把估算画成账单，命令同理）
+    assert "估算" in command["text"]
+    # 纯文本：不出现表格那种竖线
+    assert "|" not in command["text"]
+    assert _messages(client, conversation_id) == []
+
+
+def test_context_needs_a_conversation(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/context`` 没有会话时如实说：它算的是**会话里**这一轮会发出去的那份。"""
+    _no_model(monkeypatch)
+    command = _run(client, "/context", kb_id)
+    assert command["ok"] is False and "需要一条会话" in command["text"]
+
+
+def test_status_reports_model_mode_project_rounds_and_context(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/status``：模型 / 模式 / 项目 / 轮数 / 上下文占用一次说清，且**只报已有的**。
+
+    每一项都要注一句"它现在为什么是这个值"（跟随全局默认 vs 这条会话选的、
+    未归档 vs 挂在哪个项目）——否则这一屏只是把界面上的字抄了一遍。
+    """
+    install_fake_chat()  # 它顺手把 fake-model 绑给 chat 用途（"全局默认"就是它）
+    services = get_services()
+    services.runtime.set({"chat.mode": "build"})
+    # 项目走界面上同一条路：在专用区域里建一个目录，再拿它当工作区
+    area = str(client.get("/api/v1/workspaces/browse").json()["area"])
+    root = client.post(
+        "/api/v1/workspaces/dirs", json={"parent": area, "name": "状态项目"}
+    ).json()["path"]
+    project = client.post(
+        "/api/v1/workspaces", json={"name": "状态项目", "root_path": root}
+    ).json()
+    conversation_id = client.post(
+        "/api/v1/conversations", json={"title": "状态", "kb_ids": [kb_id]}
+    ).json()["id"]
+    client.patch(
+        f"/api/v1/conversations/{conversation_id}", json={"workspace_id": project["id"]}
+    )
+    _two_turns(client, kb_id, conversation_id)
+    _no_model(monkeypatch)
+
+    command = _run(client, "/status", kb_id, conversation_id)
+
+    assert command["ok"] is True
+    assert "状态" in command["text"]
+    assert "2 轮问答" in command["text"] and "4 条消息" in command["text"]
+    assert "fake-model" in command["text"] and "跟随全局默认" in command["text"]
+    assert "（build）" in command["text"]
+    assert "状态项目" in command["text"]
+    assert "上下文：" in command["text"]
+    assert "/context" in command["text"], "深一层的分解指向 /context"
+    assert _messages(client, conversation_id)[0]["role"] == "user", "命令不产生消息"
+
+
+def test_status_of_an_unfiled_conversation_says_unfiled(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """没挂项目的会话**说"未归档"**，不编一个默认项目（那正是工作区这个概念要分的）。"""
+    _no_model(monkeypatch)
+    conversation_id = _conversation(client, kb_id)
+    command = _run(client, "/status", kb_id, conversation_id)
+    assert command["ok"] is True and "未归档" in command["text"]
+    # 没有会话时同样如实说
+    assert "需要一条会话" in _run(client, "/status", kb_id)["text"]
+
+
+# --------------------------------------------------------------------- /skills 与技能即命令
+
+
+def _write_skill(
+    name: str = "weekly-report",
+    body: str = "先问周期，再拉数据。",
+    description: str = "用户要周报时用",
+) -> None:
+    """往数据目录里放一个技能（与 `data/skills/` 里手放一个完全一样）。"""
+    directory = get_services().skills._data_dir / "skills" / name
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n{body}\n", encoding="utf-8"
+    )
+
+
+def test_skills_lists_them_and_says_they_are_commands(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/skills``：名字 + 一句说明，并**明确说每个技能都能直接当命令用**。
+
+    它读的是命令表里的技能那批（``CommandService.skill_commands``）而不是技能注册表
+    ——"能不能敲、敲出来是什么"与菜单里那一份天然一致。
+    """
+    _no_model(monkeypatch)
+    _write_skill()
+
+    stream = client.post("/api/v1/chat/stream", json={"query": "/skills"})
+    command = _event(_parse_sse(stream.text), "command")
+
+    assert command["ok"] is True
+    assert "直接当命令用" in command["text"]
+    assert "/weekly-report [任务]" in command["text"]
+    assert "用户要周报时用" in command["text"]
+    assert "/skill" in command["text"], "通用入口也要说（名字不能当命令的那些靠它）"
+
+
+def test_a_skill_name_is_a_command_of_its_own(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/技能名 [任务]``：照 Claude 的"命令＝技能"，**复用 ``/skill`` 那条改写法**。
+
+    所以它还是过一次模型、还是留下回答，而这一轮的提示就是技能的正文
+    （``ChatService.skill_prompt`` 渲染的那一份，只有一处实现）。
+    """
+    _write_skill()
+    fake = install_fake_chat("好，先问周期。[1]")
+    conversation_id = _conversation(client, kb_id)
+
+    events = _parse_sse(
+        client.post(
+            "/api/v1/chat/stream",
+            json={
+                "query": "/weekly-report 上周的",
+                "kb_ids": [kb_id],
+                "conversation_id": conversation_id,
+            },
+        ).text
+    )
+
+    assert _event(events, "done")["answer"] == "好，先问周期。[1]"
+    prompt = fake.seen_messages[-1].content
+    assert "【技能 weekly-report 的流程】" in prompt, "注入的是技能正文（同一条路）"
+    assert "先问周期，再拉数据。" in prompt
+    assert "用户任务：上周的" in prompt
+    # 用户敲的那一行照旧作为"他问了什么"落库（回看时看得出用了哪条命令）
+    stored = _messages(client, conversation_id)
+    assert stored[0]["content"] == "/weekly-report 上周的"
+
+
+def test_a_skill_command_without_a_task_asks_the_skill_to_start(
+    client: TestClient, kb_id: str
+) -> None:
+    """不带任务：让技能按自己的流程开始（与 ``/skill <名字>`` 一个字不差）。"""
+    _write_skill()
+    fake = install_fake_chat("好。[1]")
+    client.post("/api/v1/chat/stream", json={"query": "/weekly-report", "kb_ids": [kb_id]})
+    prompt = fake.seen_messages[-1].content
+    assert "【技能 weekly-report 的流程】" in prompt and "请按上面的流程开始" in prompt
+
+
+def test_the_commands_endpoint_lists_skills_too(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``GET /chat/commands`` 里能看到技能那批——菜单因此不用另接一份数据。
+
+    分组**单独一档 ``skill``**（`Menus.tsx` 的 `COMMAND_GROUPS` 里排在那三档之后）：
+    技能混在"内置"里时，二十多条命令会把 ``/rewind`` ``/status`` ``/skills`` 这些
+    会话动作挤出首屏，而技能本该是一眼可辨的一类。摘要也跟着收短——技能那行的
+    ``description`` 是给模型看的整段触发文本，不能整段塞进菜单。
+    """
+    _write_skill()
+
+    body = client.get("/api/v1/chat/commands").json()
+    usable = {
+        item["name"]: item
+        for item in body["items"]
+        if not item["shadowed_by"] and not item["error"]
+    }
+
+    assert "weekly-report" in usable
+    assert usable["weekly-report"]["group"] == "skill", "技能单独一档，不混进内置/自定义"
+    assert usable["weekly-report"]["usage"] == "/weekly-report [任务]"
+    assert usable["weekly-report"]["short_circuit"] is False, "技能是改写类"
+    assert usable["weekly-report"]["path"].endswith("SKILL.md")
+    # 摘要被后端收短（前端那道 truncate 从此几乎不生效）：
+    # 给模型看的整段触发文本不能整段进菜单
+    long_name = "long-skill"
+    _write_skill(
+        long_name,
+        description=(
+            "Query a kylab knowledge base to answer questions from the user's own "
+            "documents with traceable citations. Use this Skill whenever the user asks "
+            "something their local knowledge base might cover."
+        ),
+    )
+    long_summary = client.get("/api/v1/chat/commands").json()
+    trimmed = next(item for item in long_summary["items"] if item["name"] == long_name)
+    assert len(trimmed["summary"]) <= SKILL_SUMMARY_CHARS
+    assert "traceable citations" not in trimmed["summary"]
+    assert trimmed["summary"].startswith("Query a kylab knowledge base")
+    # 内置那批的分组没被带跑（分组是"菜单里摆哪一档"，发现源另说）
+    assert usable["help"]["group"] == "builtin"
+    # 与内置重名时让位：技能叫 mode 也顶不掉内置那条（先到的赢）
+    assert usable["mode"]["group"] == "builtin"
+
+
+def test_a_skill_that_shadows_a_builtin_is_visible_in_the_list(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """技能与内置重名：**让位但看得见**（``shadowed_by`` + ``/skills`` 那句出路）。
+
+    静默少一条只会让人以为技能没装上，而 ``/skill <名字>`` 明明还能调它。
+    """
+    _no_model(monkeypatch)
+    _write_skill("mode")
+
+    body = client.get("/api/v1/chat/commands").json()
+    shadowed = [item for item in body["items"] if item["name"] == "mode" and item["shadowed_by"]]
+    assert shadowed, "同名的那条技能要带着 shadowed_by 留在列表里"
+    assert shadowed[0]["shadowed_by"] == "mode"
+    # 敲 /mode 走的仍然是内置那条（切档），不是那个技能
+    command = _event(
+        _parse_sse(
+            client.post(
+                "/api/v1/chat/stream", json={"query": "/mode", "kb_ids": [kb_id]}
+            ).text
+        ),
+        "command",
+    )
+    assert command["ok"] is True and "现在是" in command["text"]
+    # 而 /skills 要说清怎么办
+    skills = _event(
+        _parse_sse(client.post("/api/v1/chat/stream", json={"query": "/skills"}).text), "command"
+    )
+    assert "被 /mode 遮蔽" in skills["text"] and "/skill mode" in skills["text"]
+
+
+def test_the_non_streaming_endpoint_runs_the_new_commands_too(
+    client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``POST /chat`` 也能跑 ``/context``：脚本与 MCP 那条路不该比界面少东西。
+
+    脚本拿不到 ``refill``（那是流事件里的字段），但**那句提问就在回话的正文里**
+    ——``/rewind`` 从这条路调用时不会把用户的问题弄丢。
+    """
+    _no_model(monkeypatch)
+    conversation_id = _conversation(client, kb_id)
+    _two_turns(client, kb_id, conversation_id)
+    body = client.post(
+        "/api/v1/chat",
+        json={"query": "/rewind", "kb_ids": [kb_id], "conversation_id": conversation_id},
+    ).json()
+    assert "第二轮问题" in body["answer"] and body["sources"] == []
+    context = client.post(
+        "/api/v1/chat",
+        json={"query": "/context", "kb_ids": [kb_id], "conversation_id": conversation_id},
+    ).json()
+    assert "上下文占用" in context["answer"]
 
 
 # --------------------------------------------------------------------- 模式的另外一半

@@ -2238,15 +2238,23 @@ class CommandOut(BaseModel):
 
     前四个字段 ``{name, summary, usage, group}`` 就是前端那个 ``/`` 菜单吃的东西
     （``details`` 给 ``/help <命令名>`` 展开用；``shadowed_by`` / ``error`` 是排错用的）。
+    技能注册来的那批也在里面（``/技能名 [任务]``）——它们取 ``group="skill"``：
+    技能是**单独一档**（``CommandDef.group``），不混进"内置 / 你放的 / 随代码发布"
+    里，那三档装不下二十多条命令、也辨认不出技能。
     """
 
     name: str
     summary: str = ""
-    """一句话：这条命令是干什么的（菜单那一行）。"""
+    """一句话：这条命令是干什么的（菜单那一行）。
+
+    **技能那批是短的**：有中文简介用它，没有就取技能描述的第一句并截到约 40 个字
+    （``commands.SKILL_SUMMARY_CHARS``）——技能的 ``description`` 是给模型看的
+    触发文本，整段塞进菜单会被前端再截一次，读起来只剩一句半。
+    """
     usage: str = ""
     """怎么用（形如 ``/mode [plan|build|edit|yolo]``）。"""
-    group: Literal["builtin", "user", "repo"] = "builtin"
-    """发现源，菜单按它分组：**内置 / 你放的（数据目录 commands/）/ 随代码发布**。"""
+    group: Literal["builtin", "user", "repo", "skill"] = "builtin"
+    """菜单分组：**内置 / 你放的（数据目录 commands/）/ 随代码发布 / 技能**。"""
     details: list[str] = Field(default_factory=list)
     """展开说明（``/help <命令名>`` 用它，与菜单同一份数据）。"""
     argument_hint: str = ""
@@ -2260,12 +2268,12 @@ class CommandOut(BaseModel):
     （步骤 / 出处 / 正文）就按普通一轮渲染，没出才算"只回一句系统提示"。
     """
     shadowed_by: str = ""
-    """**被谁遮蔽**（空 = 没被遮蔽）：同名时内置 > 用户 > 仓库，first match wins。
+    """**被谁遮蔽**（空 = 没被遮蔽）：同名时内置 > 用户 > 仓库 > 技能，first match wins。
     被遮蔽的**仍然在列表里**（照插件列表的做法）——静默藏掉会让人以为文件没生效。"""
     error: str = ""
     """加载失败的原因（人话）。空 = 没问题。失败的也留在列表里，带原因。"""
     path: str = ""
-    """md 文件的绝对路径（内置命令为空）。排错时要能找到它。"""
+    """md／``SKILL.md`` 的绝对路径（内置命令为空）。排错时要能找到它。"""
 
 
 class CommandListOut(BaseModel):
@@ -2277,6 +2285,53 @@ class CommandListOut(BaseModel):
     builtin_dir: str = ""
     """两条发现源——**放进 ``user_dir`` 的 md 文件就是一个命令**（零注册、零重启）。
     空串 = 这个目录不存在，扫描时跳过。"""
+
+
+class ChatCommandEventOut(BaseModel):
+    """短路类命令那一轮的事件体（SSE 里的 ``type=command``，P1-2）。
+
+    **刻意不进 OpenAPI**：这条流没有 ``response_model``（SSE 是一串裸载荷），
+    所以这个类不是"接口文档"，而是**契约的唯一落点**——协议层按它拼载荷、
+    前端的 ``ChatCommandResult`` 按它对齐，两边都改的时候有个共同的地方可看。
+
+    两个可选的字段（``action`` / ``refill``）**没有就不出现在载荷里**：
+    老客户端不认它们时行为一个字都不变（``wire()`` 那道判断就是这件事的实现）。
+    """
+
+    type: Literal["command"] = "command"
+    name: str
+    """命令名（``/help`` → ``help``）。"""
+    text: str = ""
+    """回给用户看的那段话（界面按普通文本渲染，**不进模型上下文**）。"""
+    ok: bool = True
+    """失败的命令也走这条事件：那句解释就是回话，不是 HTTP 500。"""
+    action: dict[str, object] | None = None
+    """界面要顺手做的事（开新会话 / 切到某档 / 停掉这一轮 / 换模型）。"""
+    refill: str = ""
+    """要**回填到输入框**的文字（``/rewind`` 交回被撤掉的那句提问）。
+
+    与前端约定死的可选字段：有就填上（用户改一版就能重发，Claude/Gemini 里
+    ``/rewind`` 的手感），没有就什么都不做。
+    """
+
+    def wire(self) -> dict[str, object]:
+        """给 SSE 用的那一条：**可选字段没有就不出现**（向后兼容的唯一实现处）。
+
+        不用 ``model_dump(exclude_none=True)``：那样 ``action`` 里的 ``None`` 会被
+        剔掉，而 ``/model`` 那条动作里 ``kind`` 与 ``model_pk`` 是并列的，
+        "哪些字段该永远在、哪些该消失"是这条流的语义，值得写出来而不是靠默认行为。
+        """
+        event: dict[str, object] = {
+            "type": self.type,
+            "name": self.name,
+            "text": self.text,
+            "ok": self.ok,
+        }
+        if self.action:
+            event["action"] = dict(self.action)
+        if self.refill:
+            event["refill"] = self.refill
+        return event
 
 
 # ------------------------------------------------------------------ 插件包（v0.43）
