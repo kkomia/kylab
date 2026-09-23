@@ -51,7 +51,7 @@ if (Test-Path "$root/frontend/package.json") {
         Invoke-Step 'pnpm install' 'pnpm' @('--dir', "$root/frontend", 'install')
     }
     Invoke-Step 'eslint + prettier' 'pnpm' @('--dir', "$root/frontend", 'lint')
-    Invoke-Step '类型检查（vue-tsc）' 'pnpm' @('--dir', "$root/frontend", 'typecheck')
+    Invoke-Step '类型检查（tsc）' 'pnpm' @('--dir', "$root/frontend", 'typecheck')
     Invoke-Step 'emoji 扫描（前端）' 'python' @("$root/scripts/scan_emoji.py", "$root/frontend/src")
 }
 

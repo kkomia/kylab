@@ -59,15 +59,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 上面两个 job 只验证代码，不验证 scripts/*.sh 本身。
+      # 上面两个 job 只验证代码，不验证脚本本身。
       # .sh 的完整行为验证在本机 Git Bash 做过（含 Windows 无 python3 的坑），
       # 这里做语法自检，防止脚本被改坏后 CI 仍全绿。
-      - name: Shell 脚本语法检查
+      #
+      # **按 git 跟踪的文件扫，不手写清单**：手写清单会漏——`deploy/nas/` 那两个
+      # 脚本（其中 `deploy-from-windows.sh` 是用户照着跑的那条路）就是这么漏掉的。
+      - name: Shell 脚本语法检查（全部 .sh）
         run: |
-          sh -n scripts/lint.sh
-          sh -n scripts/ci.sh
-          sh -n scripts/dev-backend.sh
-          sh -n scripts/dev-frontend.sh
+          files=$(git ls-files '*.sh')
+          [ -n "$files" ] || { echo "::error::git ls-files 没列出任何 .sh"; exit 1; }
+          for f in $files; do
+            echo "  sh -n $f"
+            sh -n "$f"
+          done
+          echo "共 $(echo "$files" | wc -l) 个脚本，语法全过。"
 
   frontend:
     name: 前端（eslint + vitest + 规范扫描）
