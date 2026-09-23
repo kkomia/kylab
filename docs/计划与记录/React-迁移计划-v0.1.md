@@ -61,8 +61,18 @@
 | Office 预览 | **docx-preview**（已框架无关）+ **pptx-preview** + **exceljs/x-data-spreadsheet**（替 `@vue-office/*`） | `@vue-office/excel`、`@vue-office/pptx` | 预览链换实现 |
 | Toast | **sonner** | 自研 `useToast` | 48 行 |
 | 表单校验 | 原生 + 少量手写（现有前端也没用表单库，不引入） | — | — |
-| 路由 | **react-router** v7（数据路由不必用） | vue-router | 194 行 |
+| 路由 | **react-router** v8.4.0（数据路由不必用） | vue-router | 194 行 |
 | 测试 | **vitest** + **@testing-library/react** | @vue/test-utils | 863 条逐域重写 |
+
+**一处刻意不取最新：`typescript` 钉在 5.9.3，不是 registry 上最新的 7.0.2**——因为
+`typescript-eslint@8.70.1`（最新）的 peer 范围是 `typescript >=4.8.4 <6.1.0`，TS 7 落在
+门禁的 lint 之外；5.9.3 是该范围内最新的一个。等 typescript-eslint 放开再抬，
+不为一个版本号把 lint 这条门禁弄瘸。
+
+其余依赖**逐条对着 registry 复核过**（2026-09-23，即上面表头那天，用 `pnpm view <包> version`）：
+`react 19.3.0`、`vite 8.3.0`、`vitest 5.0.1`、`tailwindcss 4.3.3`、`react-router 8.4.0`、
+`@tanstack/react-query 5.103.2`、`@assistant-ui/react 0.15.21`、`@remixicon/react 4.9.0`、
+`sonner 2.0.8`、`@tiptap/react 3.31.3`、`lucide-react 1.47.0` —— **都等于 registry 上的 version**。
 
 **直接搬（框架无关的 TS，几乎零改动）**：
 
