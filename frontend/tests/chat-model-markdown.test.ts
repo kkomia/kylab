@@ -634,16 +634,14 @@ describe('只读渲染（文件预览）与数学（P1）', () => {
     expect(inline).not.toContain('katex-display')
   })
 
-  it('裸写的 `$…$` 一律当公式（**标准口径的代价**：价格那种写法分不出来）', () => {
-    // 旧口径要求公式体里含"可识别的 LaTeX 标记"，所以 `价格从 $5 到 $10` 一个字都不动；
-    // 标准口径只认 `$` 配对（micromark 的判据里没有"这像不像公式"这一条），
-    // 于是 `$5 到 $` 会被排成公式——**这是换标准路线的已知代价**（`model/README.md` 写全了）。
-    // 要留住字面量：把美元号转义（下面那条）
+  it('价格那种写法**不排**：收尾 `$` 前是空格，按 GitHub 口径不是公式', () => {
+    // 这条原来钉的是"标准口径的代价：价格会被排成公式"。补上边界规则之后不再如此：
+    // `$5 到 $10` 的收尾 `$` 前是空格，而 GitHub 的实现要求 `$` 紧挨内容
+    // （`rehypeMathSpacing`，见 `markdown.tsx` 里那个插件的注释与 `model/README.md`）。
     const markup = html(renderAnswerMarkdown('价格从 $5 到 $10 不等'))
 
-    expect(markup).toContain('class="katex"')
-    // 没被认成公式的尾巴照旧原样留在正文里（10 不等）
-    expect(markup).toContain('10 不等')
+    expect(markup).not.toContain('katex')
+    expect(markup).toContain('价格从 $5 到 $10 不等')
   })
 
   it('转义过的美元号仍是字面量：`\\$5` 不是公式（价格这样写就安全）', () => {
@@ -707,5 +705,40 @@ describe('只读渲染（文件预览）与数学（P1）', () => {
     expect(markup.match(/data-cite-index=/g)).toHaveLength(2)
     // 代码里的 `arr[1]` / `$1` 一个都没被改
     expect(text(renderAnswerMarkdown('```python\nprint("$1")\n```'))).toContain('print("$1")')
+  })
+})
+
+describe('行内公式的边界（GitHub 口径：`$` 与内容之间不留空格）', () => {
+  // 这一节的由来：换标准路线（remark-math）之后，"价格区间"会被整段排成公式。
+  // 补的这条边界是**主流口径**（GitHub 的实现要求 `$` 紧挨内容），
+  // 于是 `$x$` 照排、`$5 到 $10` 与 `$ x $` 退回普通文本。
+  it('紧挨内容的 `$x$` 照排', () => {
+    const out = html(renderAnswerMarkdown('眼轴 $24\mathrm{mm}$ 上下。'))
+
+    expect(out).toContain('katex')
+    expect(out).not.toContain('$24')
+  })
+
+  it('`$5 到 $10` 不排：退回原文，一个字符都不改', () => {
+    const out = html(renderAnswerMarkdown('价格在 $5 到 $10 之间。'))
+
+    expect(out).not.toContain('katex')
+    expect(out).toContain('$5 到 $10')
+  })
+
+  it('**已知边界**：`$ x $`（两侧留空）仍会被排——左侧那个空格在解析期就被去掉了', () => {
+    // 试过判它：`remark-math` 在 mdast 里把公式体去了首尾空白，转换到 hast 之后
+    // 左边的空格已经不可考（右边那个还在），所以"左侧留空"这条判不出来。
+    // 它与 GitHub 的口径差一处，但形状罕见（要字面量就写 `\$`），不值得为它再上一层扫描。
+    const out = html(renderAnswerMarkdown('这样写 $ x + y $ 不算公式。'))
+
+    expect(out).toContain('katex')
+    expect(out).toContain('不算公式。')
+  })
+
+  it('只带转义符的 `$52.7\%$` 照排（旧口径反而认不出来）', () => {
+    const out = html(renderAnswerMarkdown('占比 $52.7\%$ 上下。'))
+
+    expect(out).toContain('katex')
   })
 })

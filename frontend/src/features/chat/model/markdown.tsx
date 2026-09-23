@@ -1023,13 +1023,16 @@ function renderMarkdown(text: string, options: RenderOptions = {}): ReactNode {
     // `strict: 'ignore'` 与 `latex.ts` 的 `renderLatexToHtml` 同口径：语料里
     // `$5 到 $10` 这类"被当成公式的钱"一定会碰上，警告刷满控制台没有意义；
     // 真排不出来时 KaTeX 自己会把原文画成 `katex-error`（可读、不假装渲染成功）
+    rehypeMathSpacing,
     [rehypeKatex, { strict: 'ignore' }],
   )
   const rendered = createElement(ReactMarkdown, {
     children: text,
     // GFM 负责表格 / 删除线 / 任务列表这几样"旧实现不认、但语料里真有"的语法；
     // 它的 autolink 会被 `rehypeUnwrapLinks` 退回去，见那里的说明。
-    // `remarkMath` 认 `$…$` / `$$…$$`（标准口径，差异见 `model/README.md`）
+    // `remarkMath` 认 `$…$` / `$$…$$`；紧随其后的 `remarkMathSpacing` 把不合
+    // GitHub 口径的（`$` 与内容之间有空格）退回普通文本——见那个插件的注释。
+    // 完整口径与差异记在 `model/README.md`。
     remarkPlugins: [remarkGfm, remarkMath],
     rehypePlugins,
     components: (plain ? PLAIN_COMPONENTS : COMPONENTS) as Options['components'],
@@ -1037,6 +1040,44 @@ function renderMarkdown(text: string, options: RenderOptions = {}): ReactNode {
 
   putCapped(ELEMENT_CACHE, ELEMENT_CACHE_LIMIT, key, rendered)
   return rendered
+}
+
+/**
+ * 行内公式的**边界**：只认 GitHub 口径的那种写法——`$` 与内容之间**不留空格**。
+ *
+ * 为什么要有这一层：`remark-math` 默认只要求"配对"，于是"价格区间"这类文本也被排成公式
+ * （`$5 到 $10` 的收尾 `$` 前是空格，照排）。而 **GitHub 的实现要求 `$` 紧挨内容**
+ * （`$x$` 排、`$ x $` 与 `$5 到 $10` 都不排）——这是主流口径，用一条边界规则说得清楚。
+ *
+ * **为什么在 hast 这一步做**：先试过在 mdast 上（`inlineMath` 节点）改，但转换那一步
+ * 拿到的仍是没改过的那棵树（实测：插件跑完树里 0 个 `inlineMath`，产物里照样有 KaTeX）。
+ * 这里直接换掉 `remark-math` 生成的那个 `span.math-inline`：rehype-katex 认的是
+ * **这个类的元素**，它跑到时元素已经变成文本，自然不排。`$$…$$` 的 display 公式不受影响。
+ */
+function rehypeMathSpacing() {
+  return (tree: HastRoot): void => {
+    walk(tree, (node, parents) => {
+      if (!isElement(node)) return
+      const classes = classNameOf(node)
+      // `remark-math` 的产物：**`<code class="language-math math-inline">`**
+      // （实测——不是 `span.math-inline`，这一点没有文档，写错就永远不命中）。
+      // 两种形状都认，免得上游哪天改回 span。
+      const isInlineMath =
+        (node.tagName === 'code' && classes.includes('language-math')) ||
+        (node.tagName === 'span' && classes.includes('math-inline'))
+      if (!isInlineMath || classes.includes('math-display')) return
+      // 元素里装的是**公式原文**（不含两侧 `$`，尾随空格保留）；兜底再剥一次 `$`
+      const inner = textOf(node).replace(/^\$+/, '').replace(/\$+$/, '')
+      // GitHub 口径：`$` 与内容之间不留空格——留了就不是公式（`$5 到 $` / `$ x $`）
+      if (!/^\s/.test(inner) && !/\s$/.test(inner)) return
+      // 退回普通文本：把 `$` 补回去，原文照旧，一个字符都不改
+      const parent = parents[parents.length - 2]
+      if (!parent) return
+      const siblings = childrenOf(parent)
+      const index = siblings.indexOf(node)
+      if (index >= 0) siblings[index] = text(`$${inner}$`)
+    })
+  }
 }
 
 /** 把动作挂进 Context（只有真有回调时才包一层 Provider）。 */
