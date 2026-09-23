@@ -35,6 +35,15 @@ export interface RemoteText {
   text: string
 }
 
+export interface ContentProbe {
+  /** 上一次探测的结论：**非空 = 服务端明确回了个非 2xx**。空串 = 没结论，照常渲染。 */
+  failure: string
+  /** 这一轮探测还在飞（重试期间界面据此把按钮置灰）。 */
+  checking: boolean
+  /** 再探一次（签名链接会过期、服务端也会缓过来）。 */
+  retry: () => void
+}
+
 /** 取不到链接时的那句话（后端没给 url / 上层还没拿到签名）。 */
 export const NO_URL = '拿不到预览链接'
 
@@ -117,4 +126,63 @@ export function useRemoteText(url: string | null | undefined, inline?: string | 
   }, [url, provided])
 
   return state
+}
+
+/**
+ * 探一条签名链接到底通不通。**只给 `<iframe>` 这一条路用**（PDF）。
+ *
+ * 为什么要探：iframe 里加载的响应体是浏览器自己画的——服务端回 500 时，
+ * 用户看到的就是那份错误信封原文（`{"code":"internal_error",…}`，还带浏览器的
+ * JSON 查看器）。`onError` 指望不上：**HTTP 错误状态对 iframe 来说也是一次成功的加载**，
+ * 它不触发任何事件。所以先问一次，问出非 2xx 就改画我们自己的失败态
+ * （调用方**等这一问有结论再挂 iframe**：挂上去再撤换，浏览器已经开始画那份 JSON 了）。
+ *
+ * 三条纪律：
+ *
+ * 1. **只报"服务端明确说了不 OK"**。`fetch` 自己抛错（CORS、环境里没有可比对的 fetch）、
+ *    被中止——都算**没结论**，调用方照常挂载：探测的职责是"别把服务端的错误信封画给用户"，
+ *    不是替浏览器判断这份文件打不开（判错了就是"明明能看却说看不了"）；
+ * 2. **`Range: bytes=0-0`**：只问第一个字节。后端这个端点 `Accept-Ranges: bytes`，
+ *    问一声就够；真不支持 Range 时它开始回整包，这里主动 `abort()` 掐掉——
+ *    "探一下"不该把 200MB 的 PDF 拉下来；
+ * 3. **换链接就重探**（签名链接十分钟就过期，重新签发后那条 URL 是新的）。
+ */
+export function useContentProbe(url: string | null | undefined): ContentProbe {
+  const [attempt, setAttempt] = useState(0)
+  const [state, setState] = useState<{ checking: boolean; failure: string }>({
+    checking: Boolean(url),
+    failure: '',
+  })
+
+  useEffect(() => {
+    if (!url) {
+      setState({ checking: false, failure: '' })
+      return
+    }
+    const controller = new AbortController()
+    let alive = true
+    // 重试期间**留着上次的结论**：按钮在转、说明还在，不是先白一下再出现
+    setState((current) => ({ checking: true, failure: current.failure }))
+    void (async () => {
+      let status = 0
+      try {
+        const response = await fetch(url, {
+          headers: { Range: 'bytes=0-0' },
+          signal: controller.signal,
+        })
+        status = response.status
+        controller.abort() // 2xx 就到结论了，别陪着把响应体读完
+      } catch {
+        // 服务端状态码已经拿到（上面那次 abort）／网络层自己失败：两种都在 `status` 里区分
+      }
+      if (!alive) return
+      setState({ checking: false, failure: status >= 400 ? `HTTP ${status}` : '' })
+    })()
+    return () => {
+      alive = false
+      controller.abort()
+    }
+  }, [url, attempt])
+
+  return { ...state, retry: () => setAttempt((count) => count + 1) }
 }

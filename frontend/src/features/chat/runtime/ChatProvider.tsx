@@ -242,6 +242,8 @@ export interface ChatApi {
   saveAsNote: (turnIndex: number, turn: Turn) => void
   regenerating: boolean
   regenerate: (turnIndex: number) => void
+  /** 重发**失败的那一轮**（只在画面上撤掉这一对，不回退会话，见 provider 里的说明）。 */
+  retryTurn: (turnIndex: number) => void
   resuming: boolean
   resumeTurn: (turnIndex: number) => void
 
@@ -343,6 +345,19 @@ function pickText(loading: boolean, total: number, selected: number): string {
   if (selected === 0) return '未选库'
   if (selected === total) return `全部 ${selected} 个`
   return `已选 ${selected} 个`
+}
+
+/**
+ * 一段消息要带给模型的那份历史（只取最后 `HISTORY_LIMIT` 条）。
+ *
+ * 失败或没吐字的助手消息**不进历史**：模型看到空的上一轮会更离谱。
+ * 「重试」也要用它，但作用在**这一轮之前**的那一段上（见 `retryTurn`）。
+ */
+function historyOf(items: readonly ChatMessage[]): ChatHistoryMessage[] {
+  return items
+    .filter((item) => item.role === 'user' || (item.text.length > 0 && !item.error))
+    .slice(-HISTORY_LIMIT)
+    .map((item) => ({ role: item.role, content: item.text }))
 }
 
 /**
@@ -738,15 +753,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [live, conversationId],
   )
 
-  const history = useMemo<ChatHistoryMessage[]>(
-    () =>
-      messages
-        // 失败或没吐字的助手消息不进历史：模型看到空的上一轮会更离谱
-        .filter((item) => item.role === 'user' || (item.text.length > 0 && !item.error))
-        .slice(-HISTORY_LIMIT)
-        .map((item) => ({ role: item.role, content: item.text })),
-    [messages],
-  )
+  const history = useMemo<ChatHistoryMessage[]>(() => historyOf(messages), [messages])
 
   /**
    * 跑一轮流式问答：追加"提问 + 占位回答"两条，再把增量**就地**打进占位那条。
@@ -1113,6 +1120,33 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       thinkingOn,
       turns,
     ],
+  )
+
+  /**
+   * **重发失败的那一轮**（第四批评审 B①）。
+   *
+   * 与「重新生成」的区别只有一处，但那一处要紧：**不回退会话**。
+   * `rewindConversation` 删的是**库里最后那一轮**，而失败的一轮从来没落过库
+   * ——后端在整轮跑完时才把提问与回答一次写进会话（`services/conversation.py` 的
+   * `_write_turn`，失败那条路只记事件日志）。照着 `regenerate` 删一轮，
+   * 删掉的就是**上一轮那条好好的回答**，用户会以为重试把好东西弄丢了。
+   * 所以这里只在画面上撤掉这一对（它本来也只存在于这一页），再原样发一次。
+   *
+   * 上下文取**这一轮之前**的那一段：失败这一轮的提问马上会被重发一遍，
+   * 而 `history` 留着所有提问（失败那条提问也在里面），带上它模型会看到同一个问题两次。
+   */
+  const retryTurn = useCallback(
+    async (turnIndex: number) => {
+      const turn = turns[turnIndex]
+      const id = conversationId
+      if (!turn?.user || !id || sending || regenerating) return
+      const text = turn.user.text
+      const context = historyOf(messages.slice(0, turnIndex * 2))
+      const model = modelPk || undefined
+      setMessages((prev) => prev.slice(0, turnIndex * 2))
+      await streamTurn(text, context, model, id)
+    },
+    [conversationId, messages, modelPk, regenerating, sending, streamTurn, turns],
   )
 
   /** 点行内引用徽标：展开过程面板 → 滚到那一条出处 → 闪一下（三步缺一不可）。 */
@@ -1490,6 +1524,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     saveAsNote: (turnIndex, turn) => void saveAsNote(turnIndex, turn),
     regenerating,
     regenerate: (turnIndex) => void regenerate(turnIndex),
+    retryTurn: (turnIndex) => void retryTurn(turnIndex),
     resuming,
     resumeTurn: (turnIndex) => void resumeTurn(turnIndex),
     sourceOpen,

@@ -18,6 +18,8 @@ export { SpreadsheetPreview, type SpreadsheetPreviewProps } from './SpreadsheetP
 export { resolveRenderer, extensionOf, type PreviewRenderer, type PreviewHint } from './kinds'
 export {
   CANNOT_PREVIEW,
+  NETWORK_UNREACHABLE,
+  failureText,
   loadFailure,
   PreviewNote,
   PreviewNotSupported,

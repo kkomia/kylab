@@ -307,6 +307,39 @@ export function degradedReason(message: Message): string {
 }
 
 /**
+ * 失败那一轮给用户看的那句话（第四批评审 B①）。
+ *
+ * 绝大多数情况下**原样显示就对了**：错误体里的 `message` 是后端写给用户看的中文
+ * （"服务内部错误"、"检索失败：…"），前端那几条自己写的也是中文
+ * （"对话没有返回任何内容，请重试"、"对话中断"）。要翻的只有一类——
+ * **浏览器自己抛的那几个英文串**（`Failed to fetch` / `Load failed` /
+ * `NetworkError when attempting to fetch resource.`）：它们不是给人看的，
+ * 而且指向的原因与"服务端出错"**不是一回事**（请求压根没出去，重试多半就好；
+ * 服务端出错则可能要等一下）。这一层只做这一件翻译，不造别的说法，
+ * 也不把后端那句话改写掉——原因只有一处真相。
+ */
+const NETWORK_FAILURES = [
+  'failed to fetch',
+  'load failed',
+  'networkerror',
+  'network request failed',
+  'fetch failed',
+  'network error',
+  'err_network',
+  'err_internet_disconnected',
+]
+
+export function failureText(raw: string): string {
+  const text = raw.trim()
+  if (!text) return '没有拿到失败原因'
+  const lower = text.toLowerCase()
+  if (NETWORK_FAILURES.some((mark) => lower.includes(mark))) {
+    return '网络没连上（这条请求没有发出去）'
+  }
+  return text
+}
+
+/**
  * 这段回答里有没有"模型把工具调用写进正文"的标记（§12.227）。
  *
  * 后端在收尾那几条**不带工具表**的路上会把这类标记剥掉（`llm.split_text_tool_calls`），

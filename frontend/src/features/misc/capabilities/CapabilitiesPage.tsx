@@ -493,12 +493,21 @@ export function CapabilitiesPage() {
           {skillsQuery.isLoading && <SkeletonBlock variant="list" rows={3} />}
 
           {!skillsQuery.isLoading && visibleSkills.length === 0 && (
+            /*
+              空态说的是"接下来点哪儿"，不是"SKILL.md 该放哪个目录"（第四批评审 B②）。
+              原先那句整句是写给开发者的：`SKILL.md`、仓库的 `skills/`、数据目录、
+              `~/.agents/skills`——使用者读完不知道点哪里，而屏幕上真正能走的那条路
+              （右上「浏览市场」）一个字都没提。落盘的目录规则仍归后端与文档，
+              这一行只指**屏幕上已经有的**入口（与笔记页"点右上角的 + 写第一条"同一形态）。
+            */
             <EmptyState
               title={skills.length > 0 ? '没有匹配的技能' : '还没有技能'}
               hint={
                 skills.length > 0
                   ? '换个关键词，或者把筛选切回「全部」。'
-                  : '把带 SKILL.md 的目录放进仓库的 skills/、数据目录的 skills/，或 ~/.agents/skills（跨工具共享），这里就会列出来。'
+                  : isAdmin
+                    ? '点右上角的「浏览市场」装一个；本地已经有技能目录的话，点「重新扫描」。'
+                    : '点右上角的「重新扫描」，把本地的技能目录读进来。'
               }
             />
           )}

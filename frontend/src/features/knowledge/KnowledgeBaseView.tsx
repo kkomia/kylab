@@ -368,15 +368,23 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
   /**
    * 表格的行数**不跟着文件数走**：只有两三个文件时如果只画两三行，下面就是一大片空白，
    * 页面看着像没加载完。补的是**空行**（带分隔线），而不是把面板拉高。
+   *
+   * **一篇都没有时不补**（v0.14，界面评审第四批）：那一行是「这个知识库里还没有文档」，
+   * 它自己就是这块区域的答案；底下再铺一屏装饰行，空态看起来像"列表还没渲染完"。
+   * 补白只服务"有内容但填不满一屏"，空列表不属于这一类。
    */
   const syncFillerRows = useCallback(() => {
+    if (documents.length === 0) {
+      setFillerRows(0)
+      return
+    }
     const element = listPanel.current
     if (!element) return
     const head = element.querySelector<HTMLElement>('.panel-head')
     const headHeight = head?.offsetHeight ?? 36
     const bottomGap = 56
     const available = window.innerHeight - element.getBoundingClientRect().top - bottomGap
-    const dataRows = Math.max(documents.length, 1)
+    const dataRows = documents.length
     const fit = Math.ceil((available - headHeight) / ROW_HEIGHT)
     setFillerRows(Math.max(0, Math.min(fit - dataRows, 60)))
   }, [documents.length])

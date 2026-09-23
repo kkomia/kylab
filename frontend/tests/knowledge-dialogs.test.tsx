@@ -440,6 +440,52 @@ describe('库内检索面板', () => {
     expect(screen.getByText(/本次只做了关键词检索/)).toBeInTheDocument()
   })
 
+  it('检索失败：一行人话 + 一个重试按钮；重试按那一轮的原词再发一次', async () => {
+    searchMock.mockRejectedValueOnce(new Error('服务内部错误'))
+    const user = userEvent.setup()
+    renderDialog(<KbSearchPanel open kbId="kb-1" kbName="产品手册" onClose={vi.fn()} />)
+
+    const box = screen.getByLabelText('检索内容')
+    await user.type(box, '怎么安装')
+    await user.click(screen.getByRole('button', { name: '检索' }))
+
+    // 说清"哪一步没成" + 后端给的原因，不是孤零零一个词（评审 51 号图：只有红字、没有出路）
+    expect(await screen.findByText('检索失败：服务内部错误')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument()
+
+    // 用户已经把框里的字改了：重试仍按**那一条历史**的词发（失败的那条指着原来那个问题）
+    await user.clear(box)
+    await user.type(box, '换个词')
+    searchMock.mockResolvedValue({
+      hits: [],
+      mode: 'hybrid',
+      reranked: false,
+      filtered_out: 0,
+      stats: [],
+      embedding_configured: true,
+      embedding_is_development: false,
+    })
+    await user.click(screen.getByRole('button', { name: '重试' }))
+
+    await waitFor(() =>
+      expect(searchMock).toHaveBeenLastCalledWith(expect.objectContaining({ query: '怎么安装' })),
+    )
+    expect(await screen.findByText('没有命中')).toBeInTheDocument()
+  })
+
+  it('网络层失败：把浏览器那句英文翻成人话，不端给用户', async () => {
+    searchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const user = userEvent.setup()
+    renderDialog(<KbSearchPanel open kbId="kb-1" kbName="产品手册" onClose={vi.fn()} />)
+
+    await user.type(screen.getByLabelText('检索内容'), '近视')
+    await user.click(screen.getByRole('button', { name: '检索' }))
+
+    // "服务挂了"与"网断了"是两件事：重试的意义也不同（一个可能等一下就好，一个多半立刻能成）
+    expect(await screen.findByText('检索失败：网络没连上')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument()
+  })
+
   it('空内容不发请求，给一句中文提示', async () => {
     const user = userEvent.setup()
     renderDialog(<KbSearchPanel open kbId="kb-1" kbName="产品手册" onClose={vi.fn()} />)

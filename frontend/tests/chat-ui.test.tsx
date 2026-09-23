@@ -132,7 +132,11 @@ vi.mock('@/api/documents', async (importOriginal) => {
   return { ...actual, uploadDocument: vi.fn(async () => ({ document_id: 'd1' })) }
 })
 
-import { getConversation, type ConversationDetail } from '@/api/conversations'
+// 复制这条路只关心"交给剪贴板的到底是哪段文字"（两级兜底本身由 `lib-clipboard` 钉）
+vi.mock('@/lib/clipboard', () => ({ copyText: vi.fn(async () => true) }))
+
+import { getConversation, rewindConversation, type ConversationDetail } from '@/api/conversations'
+import { copyText } from '@/lib/clipboard'
 
 /** 抓走 handlers：用例自己按需要推事件（与真实链路同一形状）。 */
 function capture(): { handlers: ChatHandlers | null; abort: () => void } {
@@ -919,6 +923,88 @@ describe('联网编号的落点（A6）', () => {
     renderPage()
     await screen.findByTestId('reply-text')
     expect(screen.queryByTitle('联网搜索结果，见过程面板')).toBeNull()
+  })
+})
+
+describe('失败的一轮（第四批评审 B①：没有出口的那句红字）', () => {
+  /**
+   * 拍到的那张图里，失败气泡只有一句"服务内部错误"：没有按钮、没有 toast，
+   * 输入框里的字也已经被清空了——用户既看不到原因，也没有"再试一次"的路。
+   * 这一节钉三件事：**人话的原因**、**重试**、**复制问题**。
+   */
+  it('给原因 + 「重试」；重试是**原样重发**，不回退会话（上一轮不会被删）', async () => {
+    const box = capture()
+    renderPage()
+    await screen.findByPlaceholderText(/回车发送/)
+
+    await ask('这些资料的结论是什么？')
+    await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      box.handlers!.onError!('服务内部错误')
+    })
+
+    const line = await screen.findByTestId('reply-error')
+    // 原因在后面（那句话由后端给），前面那句是**我们**说的"这一轮没跑起来"
+    expect(line).toHaveTextContent('这一轮没跑起来：服务内部错误')
+    const retry = screen.getByRole('button', { name: /重试/ })
+    expect(retry).toHaveAttribute('title', '把这一轮原样再发一次')
+    expect(screen.getByRole('button', { name: /复制问题/ })).toBeInTheDocument()
+
+    const user = userEvent.setup()
+    await user.click(retry)
+
+    // 第二次发出去的是**同一句提问、同一条会话**（上下文里不含失败那一轮）
+    await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(chatStream).mock.calls[1][0]).toMatchObject({
+      query: '这些资料的结论是什么？',
+      conversation_id: 'c1',
+    })
+    // **不回退会话**：失败的一轮从来没落库，照 `rewindConversation` 删一轮
+    // 删掉的是上一轮那条好好的回答（这一条就是"重试"与"重新生成"的分界）
+    expect(rewindConversation).not.toHaveBeenCalled()
+    // 失败的那一对已经从画面上撤掉了，提问只剩重发后的那一条
+    expect(screen.queryByTestId('reply-error')).toBeNull()
+    expect(screen.getAllByText('这些资料的结论是什么？')).toHaveLength(1)
+  })
+
+  it('网断了说人话：浏览器那串英文不端给用户', async () => {
+    const box = capture()
+    renderPage()
+    await screen.findByPlaceholderText(/回车发送/)
+    await ask('问一句')
+    await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
+
+    // `fetch` 自己抛的就是这个（Chrome：Failed to fetch）
+    await act(async () => {
+      box.handlers!.onError!('Failed to fetch')
+    })
+
+    await waitFor(() =>
+      expect(screen.getByTestId('reply-error')).toHaveTextContent(
+        '这一轮没跑起来：网络没连上（这条请求没有发出去）',
+      ),
+    )
+    expect(screen.getByTestId('reply-error').textContent).not.toContain('Failed to fetch')
+  })
+
+  it('「复制问题」把那一句提问交给剪贴板（重试也不行时的兜底）', async () => {
+    const box = capture()
+    renderPage()
+    await screen.findByPlaceholderText(/回车发送/)
+    await ask('把这句话还给我')
+    await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
+
+    await act(async () => {
+      box.handlers!.onError!('服务内部错误')
+    })
+
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: /复制问题/ }))
+
+    await waitFor(() => expect(copyText).toHaveBeenCalledWith('把这句话还给我'))
+    // 名字精确匹配"已复制"：提问气泡上那枚复制的名字是"已复制提问"（同一份 copiedKey）
+    expect(screen.getByRole('button', { name: '已复制' })).toBeInTheDocument()
   })
 })
 

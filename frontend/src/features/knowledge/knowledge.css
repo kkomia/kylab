@@ -135,6 +135,22 @@
     color: var(--status-danger);
   }
 
+  /**
+ * 检索失败：一句人话 + 一个重试按钮（原先只有一行红字，没有出路）。
+ * 说明在上、按钮在下，左对齐——它长在结果区里，与那条空态同一块位置。
+ */
+  .kb-failure {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  /* 这一行已经是容器的第一行：外边距由容器的 gap 管，别再叠一层 */
+  .kb-failure .kb-error-line {
+    margin-top: 0;
+  }
+
   /* 缺前置条件时的常驻提示：不是错误，用中性底 */
   .kb-blocked-note {
     margin-top: var(--space-4);

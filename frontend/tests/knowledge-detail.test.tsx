@@ -262,6 +262,23 @@ describe('文档列表', () => {
     expect(container.querySelector('.kb-col-uploader')).toBeNull()
   })
 
+  it('一篇都没有时不画装饰补白行：空态自己就是这块区域的答案', async () => {
+    mockList([], 0, 0)
+    const { container } = renderView()
+
+    expect(await screen.findByText('这个知识库里还没有文档')).toBeInTheDocument()
+    // 空列表底下原先铺着一屏 16 行装饰行，看起来像"列表还没渲染完"（评审 57 号图）
+    expect(container.querySelectorAll('.kb-doc-filler')).toHaveLength(0)
+  })
+
+  it('有文件但填不满一屏时照旧补白（这一条只服务空列表）', async () => {
+    mockList([makeDoc()], 1, 1)
+    const { container } = renderView()
+
+    await screen.findByText('说明书.pdf')
+    expect(container.querySelectorAll('.kb-doc-filler').length).toBeGreaterThan(0)
+  })
+
   it('渲染行：名称、状态、切块数与大小都在一行里，分页参数下推给后端', async () => {
     const { container } = renderView()
 

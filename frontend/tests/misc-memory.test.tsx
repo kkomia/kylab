@@ -257,6 +257,28 @@ describe('记忆页', () => {
     expect(await screen.findByLabelText('记忆文件正文')).toHaveValue('正文')
   })
 
+  it('空态指的入口在屏幕上找得到：工具栏那颗写着「新增」，空态照它说话（B③）', async () => {
+    getMemoryMock.mockResolvedValue(
+      overview({
+        status: { ...overview().status, file_count: 0, retrievable_count: 0 },
+        files: [],
+      }),
+    )
+
+    renderMisc(<MemoryPage />)
+
+    expect(await screen.findByText('工作区里还没有记忆文件')).toBeInTheDocument()
+    // 空态说的"新增"就是工具栏上那颗按钮的字（原先那是一枚只有图标的 ⋮，整页找不到这个词）
+    const trigger = screen.getByRole('button', { name: '新增' })
+    expect(trigger).toHaveTextContent('新增')
+    const hint = document.querySelector('.m-empty-hint') as HTMLElement
+    expect(hint.textContent).toContain('「新增」→「新建记忆文件」')
+    // 菜单里的两项都还在（入口提成可见之后动作一个都没少）
+    await userEvent.click(trigger)
+    expect(await screen.findByRole('menuitem', { name: /新建记忆文件/ })).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: /记一条事实/ })).toBeInTheDocument()
+  })
+
   it('保存失败时草稿仍留在编辑器里，并把原因摆在上方', async () => {
     writeMemoryFileMock.mockRejectedValueOnce(new Error('磁盘只读'))
     renderMisc(<MemoryPage />)

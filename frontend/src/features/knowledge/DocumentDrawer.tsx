@@ -31,7 +31,7 @@ import {
   type DocumentSummary,
   type DownloadFormat,
 } from '@/api/documents'
-import { FilePreview } from '@/features/preview'
+import { FilePreview, PreviewUnavailable, failureText, loadFailure } from '@/features/preview'
 import { SkeletonRows, StatusTag } from '@/features/knowledge/composites'
 import { ProcessingTimeline } from '@/features/knowledge/ProcessingTimeline'
 import { messageOf, notify } from '@/features/knowledge/store'
@@ -99,6 +99,13 @@ export function DocumentDrawer({
   const [chunkTotal, setChunkTotal] = useState(0)
   const [preview, setPreview] = useState<DocumentPreview | null>(null)
   const [previewError, setPreviewError] = useState('')
+  /**
+   * 「阅读」视角自己的报错位。
+   *
+   * 与 `previewError`（切块视角的报错位）分开，但**失败绝不再被吞成 `null`**：
+   * 那会让阅读区整块空白——连"正在加载"都收了，用户看不到一句话、也没有出路。
+   */
+  const [readError, setReadError] = useState('')
   const [previewLoading, setPreviewLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
@@ -163,9 +170,11 @@ export function DocumentDrawer({
       const cached = previewCache.current[source]
       if (cached) {
         setPreview(cached)
+        setReadError('')
         return
       }
       setPreviewLoading(true)
+      setReadError('')
       try {
         const body = await getDocumentPreview(
           documentId,
@@ -173,9 +182,12 @@ export function DocumentDrawer({
         )
         previewCache.current[source] = body
         setPreview(body)
-      } catch {
-        // 阅读视角的失败**不写进 previewError**：那是切块视角的报错位
+      } catch (cause) {
+        // 阅读视角的失败**不写进 previewError**：那是切块视角的报错位。
+        // 但"没有别的报错位"不等于不用报错——失败留在这里，界面按统一失败态画出来
+        // （同一套 `PreviewUnavailable`：为什么 + 怎么办 + 重试）。
         setPreview(null)
+        setReadError(failureText(cause, '加载失败'))
       } finally {
         setPreviewLoading(false)
       }
@@ -191,6 +203,7 @@ export function DocumentDrawer({
     setChunks([])
     setChunkTotal(0)
     setPreviewError('')
+    setReadError('')
     setPreview(null)
     previewCache.current = { original: null, parsed: null }
     try {
@@ -477,7 +490,16 @@ export function DocumentDrawer({
                     页内跳页）/ Office 三件套（docx-preview 等，按需动态加载）。
                     本页只负责"取哪一份"（原件版式 vs 解析文本）与页码。
                   */}
-                  {!previewLoading && preview ? (
+                  {!previewLoading && readError ? (
+                    // 「阅读视角」这一路自己的失败态：与 PDF / Office / 文本分支**同一套**
+                    // （同一个 `PreviewUnavailable`），重试就地重取这一份
+                    <PreviewUnavailable
+                      name={document.name}
+                      reason={loadFailure(readError)}
+                      onRetry={() => void loadReadingView(previewSource)}
+                    />
+                  ) : null}
+                  {!previewLoading && !readError && preview ? (
                     <FilePreview preview={preview} page={page} />
                   ) : null}
                 </>

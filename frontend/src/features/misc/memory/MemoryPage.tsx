@@ -27,7 +27,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
-  EllipsisVertical,
+  ChevronDown,
   FileText,
   Plus,
   RefreshCw,
@@ -373,8 +373,15 @@ export function MemoryPage() {
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-sm" aria-label="新增" title="新增">
-                <EllipsisVertical />
+              {/*
+                「新增」这两个字要**看得见**（第四批评审 B③）：它原来是枚只有图标的 ⋮，
+                而空态正指着它说"手动新建一份"——整页找不到那个词，
+                第一次用的人只能一个个图标去猜。菜单里的两项不变，只是入口有了名字。
+              */}
+              <Button variant="outline" title="新增">
+                <Plus size={15} />
+                新增
+                <ChevronDown size={13} />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
@@ -467,12 +474,19 @@ export function MemoryPage() {
                 )}
 
                 {groups.length === 0 ? (
+                  /*
+                    空态指向的入口必须**在屏幕上找得到**（第四批评审 B③）：
+                    原先那句"也可以先手动新建一份"指的是工具栏上一枚只有图标的 ⋮，
+                    而整页找不到"新增"两个字——第一次用的人只能猜。
+                    这一处与触发按钮一起改：菜单入口现在写着「新增」（见 `actions` 里那颗），
+                    空态就指它，并且把菜单里的第二层（「新建记忆文件」）也写清。
+                  */
                   <EmptyState
                     title={files.length > 0 ? '没有匹配的文件' : '工作区里还没有记忆文件'}
                     hint={
                       files.length > 0
                         ? '换个关键词，或者清空过滤。'
-                        : '记忆服务开启后，对话会自动沉淀出每日笔记；也可以先手动新建一份。'
+                        : '记忆服务开启后，对话会自动沉淀出每日笔记；也可以点右上角的「新增」→「新建记忆文件」。'
                     }
                   />
                 ) : (

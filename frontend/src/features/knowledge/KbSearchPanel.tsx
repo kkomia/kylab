@@ -10,11 +10,12 @@
  * 开发用哈希兜底（只有词面重叠、没有语义），此时必须明说"向量召回不可信"。
  */
 import { useEffect, useState } from 'react'
-import { Search } from 'lucide-react'
+import { RefreshCw, Search } from 'lucide-react'
 
 import { search, type SearchResponse } from '@/api/search'
 import { EmptyState, SkeletonRows } from '@/features/knowledge/composites'
-import { messageOf, notify } from '@/features/knowledge/store'
+import { notify } from '@/features/knowledge/store'
+import { failureText } from '@/features/preview'
 import { formatAge, formatScore } from '@/lib/format'
 import { Button } from '@/ui/button'
 import { Checkbox } from '@/ui/checkbox'
@@ -85,8 +86,8 @@ export function KbSearchPanel({ open, kbId, kbName, onClose, onOpenDocument }: K
   const embeddingIsDevelopment = latest?.response?.embedding_is_development === true
   const embeddingMissing = latest?.response?.embedding_configured === false
 
-  async function runSearch(): Promise<void> {
-    const text = query.trim()
+  async function runSearch(raw?: string): Promise<void> {
+    const text = (raw ?? query).trim()
     if (!text) {
       notify.warning('请输入检索内容')
       return
@@ -106,7 +107,7 @@ export function KbSearchPanel({ open, kbId, kbName, onClose, onOpenDocument }: K
       })
       setTurns((current) => current.map((item) => (item === turn ? { ...item, response } : item)))
     } catch (cause) {
-      const error = messageOf(cause, '检索失败')
+      const error = failureText(cause, '检索失败')
       setTurns((current) => current.map((item) => (item === turn ? { ...item, error } : item)))
       notify.error(error)
     } finally {
@@ -241,7 +242,26 @@ export function KbSearchPanel({ open, kbId, kbName, onClose, onOpenDocument }: K
                 />
               ) : null}
 
-              {!searching && latest?.error ? <p className="kb-error-line">{latest.error}</p> : null}
+              {!searching && latest?.error ? (
+                /*
+                  失败态：一句人话 + 一个重试按钮。重试**按那一轮的词原样再发一次**
+                  （不是把现在的输入框内容发出去——用户可能已经改了框里的字，
+                  而失败的这一条历史仍然指着原来那个词）。toast 照旧：它管"这次没成"，
+                  结果区这行管"那一条记录为什么是空的"，两处各说各的。
+                */
+                <div className="kb-failure">
+                  <p className="kb-error-line">检索失败：{latest.error}</p>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={searching}
+                    onClick={() => void runSearch(latest.query)}
+                  >
+                    <RefreshCw aria-hidden="true" />
+                    重试
+                  </Button>
+                </div>
+              ) : null}
 
               {!searching && latest?.response ? (
                 <>

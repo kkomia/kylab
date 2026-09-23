@@ -207,6 +207,33 @@ describe('抽屉的基本信息与预览', () => {
     expect(screen.queryByRole('tab', { name: '原文版式' })).not.toBeInTheDocument()
   })
 
+  it('阅读视角接口失败：说清为什么并给重试，而不是留一块空白', async () => {
+    previewMock.mockRejectedValueOnce(new Error('服务内部错误'))
+    const user = userEvent.setup()
+    renderDrawer()
+    await screen.findByText('说明书.pdf')
+
+    // 旧实现把这里 catch 成 `null`：整块空白、连"正在加载原文"都收了（评审 52b 号图）
+    expect(await screen.findByText(/预览失败（服务内部错误）/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument()
+    // 下载入口在工具条上，失败态里不重复放一枚（规范：主操作不重复）
+    expect(screen.queryByRole('button', { name: '下载原文' })).toBeInTheDocument()
+
+    // 重试就地重取这一份：通了就把阅读区画出来
+    previewMock.mockResolvedValue({
+      kind: 'markdown',
+      filename: '说明书.pdf',
+      text: '# 回来了',
+      url: null,
+      expires_at: null,
+      original_kind: 'pdf',
+    })
+    await user.click(screen.getByRole('button', { name: '重试' }))
+
+    expect(await screen.findByText('回来了', { selector: 'h1' })).toBeInTheDocument()
+    expect(screen.queryByText(/预览失败/)).toBeNull()
+  })
+
   it('切块视角：说清"只显示前 5 块"、列出分段问题，并给出补出题的入口位置', async () => {
     const user = userEvent.setup()
     renderDrawer()

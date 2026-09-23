@@ -12,7 +12,7 @@
  * | `md` / `markdown` | `renderPlainMarkdown` | `react-markdown` + `remark-gfm` |
  * | `txt` / `log` / `csv` / 各种代码 | `<pre>` | `<pre class="kylab-text">` |
  * | `png` / `jpg` / `gif` / `webp` / `bmp` / `avif` | `<img>` | `<img>` |
- * | `pdf` | `<iframe>` 指向签名链接 | `<iframe>` 指向签名链接 |
+ * | `pdf` | `<iframe>` 指向签名链接 | `<iframe>` 指向签名链接（挂之前先探一次，见 `PdfPane`） |
  * | `docx` | `OfficePreview` + docx-preview | `DocxPreview` |
  * | `pptx` | `OfficePreview` + `@vue-office/pptx` | `PptxPreview` |
  * | `xlsx` / `xls` | `OfficePreview` + `@vue-office/excel` | `SpreadsheetPreview`（exceljs） |
@@ -41,7 +41,7 @@ import {
   PreviewUnavailable,
   loadFailure,
 } from './notes'
-import { NO_URL, useRemoteText } from './usePreviewSource'
+import { NO_URL, useContentProbe, useRemoteText } from './usePreviewSource'
 import './preview.css'
 
 export interface FilePreviewProps {
@@ -130,6 +130,32 @@ function MissingUrl({ name, reason }: { name: string; reason?: string | null }) 
   return <PreviewUnavailable name={name} reason={loadFailure(missingReason(reason))} />
 }
 
+/**
+ * PDF：交给浏览器自带的阅读器（`#page=N` 锚点零依赖就能跳页）。
+ *
+ * **先探一次再挂载**（`useContentProbe`）：iframe 的失败观测不到，服务端回 500 时
+ * 用户看到的是浏览器画的那份错误信封原文——所以**没探出结论之前根本不挂 iframe**，
+ * 那份响应体也就没有机会被渲染出来（挂上去再撤换来不及：浏览器已经开始画了）。
+ * 探出非 2xx 就换成我们自己的失败态 + 一个「重试」；探不出结论（fetch 自己抛错）
+ * 照常挂载——宁可按浏览器的行为来，也不能把能看的 PDF 判成看不了。
+ */
+function PdfPane({ url, name }: { url: string; name: string }) {
+  const probe = useContentProbe(url)
+  if (probe.failure) {
+    return (
+      <PreviewUnavailable
+        name={name}
+        reason={loadFailure(probe.failure)}
+        onRetry={probe.retry}
+        retrying={probe.checking}
+      />
+    )
+  }
+  // 探测还在飞：这一趟网络往返很短，就说"正在加载原文"（与文本/Office 分支同一句）
+  if (probe.checking) return <PreviewLoading />
+  return <iframe className="kylab-pdf" src={url} title={name} />
+}
+
 export function FilePreview({
   name,
   kind,
@@ -193,7 +219,7 @@ export function FilePreview({
             // `key` 绑在最终地址上：签名链接会过期，重新签发后必须**重建** iframe，
             // 否则它还在用旧 src；页码变了也要重建，否则已加载的 PDF 不会重新定位
             // （片段变化不会让原生阅读器跳页——旧 `DocumentDrawer.vue` 踩过同一个坑）
-            <iframe key={frameUrl} className="kylab-pdf" src={frameUrl} title={source.name} />
+            <PdfPane key={frameUrl} url={frameUrl} name={source.name} />
           ) : (
             <MissingUrl name={source.name} reason={reason} />
           )}

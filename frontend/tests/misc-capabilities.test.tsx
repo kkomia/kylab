@@ -323,6 +323,40 @@ describe('能力页', () => {
     expect(skills).toHaveAttribute('data-state', 'inactive')
   })
 
+  it('技能空态说人话：指屏幕上已有的两个入口，不写 SKILL.md / 目录规则（B②）', async () => {
+    listSkillsMock.mockResolvedValue({ items: [], usable: 0 })
+
+    renderMisc(<CapabilitiesPage />)
+
+    expect(await screen.findByText('还没有技能')).toBeInTheDocument()
+    const hint = document.querySelector('.m-empty-hint') as HTMLElement
+    // 出路就是屏幕上那两颗：装一个（浏览市场）、读本地目录（重新扫描）
+    expect(hint.textContent).toContain('浏览市场')
+    expect(hint.textContent).toContain('重新扫描')
+    // 写给开发者的那一套不再出现（用户不知道 SKILL.md 是什么）
+    expect(hint.textContent).not.toContain('SKILL.md')
+    expect(hint.textContent).not.toContain('~/.agents')
+    expect(hint.textContent).not.toContain('数据目录')
+  })
+
+  it('不是管理员时按屏幕上**真的有**的那颗说（市场入口只给管理员）', async () => {
+    useSessionStore.setState({
+      token: 'st',
+      currentUser: { id: 'u2', username: 'member', name: '成员', role: 'member', avatar_url: '' },
+      authStatus: null,
+      reloginCount: 0,
+    })
+    listSkillsMock.mockResolvedValue({ items: [], usable: 0 })
+
+    renderMisc(<CapabilitiesPage />)
+
+    expect(await screen.findByText('还没有技能')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /浏览市场/ })).toBeNull()
+    const hint = document.querySelector('.m-empty-hint') as HTMLElement
+    expect(hint.textContent).toContain('重新扫描')
+    expect(hint.textContent).not.toContain('浏览市场')
+  })
+
   it('技能正文按 markdown 渲染：看不到 `#` 与 `**`，也没有首行的解释小字', async () => {
     const { getSkill } = await import('@/api/capabilities')
     vi.mocked(getSkill).mockResolvedValue({

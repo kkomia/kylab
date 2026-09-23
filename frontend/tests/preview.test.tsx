@@ -19,6 +19,7 @@ import { DocxPreview } from '@/features/preview/DocxPreview'
 import { FilePreview } from '@/features/preview/FilePreview'
 import { PptxPreview } from '@/features/preview/PptxPreview'
 import { SpreadsheetPreview } from '@/features/preview/SpreadsheetPreview'
+import { failureText } from '@/features/preview/notes'
 import { resolveRenderer } from '@/features/preview/kinds'
 
 /**
@@ -69,8 +70,15 @@ function response(body: { bytes?: number[]; text?: string; status?: number }) {
   }
 }
 
+/**
+ * `fetch` 替身。**签名写全**（与上游替身同一条纪律）：探测那一档要断言
+ * "请求带了哪个头"（`Range: bytes=0-0`），不写签名的话 `mock.calls[0]` 是空元组，
+ * 连 `[1]` 都取不到。
+ */
 function stubFetch(body: Parameters<typeof response>[0] | Error) {
-  const fetchMock = vi.fn(async () => {
+  const fetchMock = vi.fn<
+    (url: string, init?: RequestInit) => Promise<ReturnType<typeof response>>
+  >(async () => {
     if (body instanceof Error) throw body
     return response(body)
   })
@@ -156,6 +164,18 @@ describe('分派表', () => {
   })
 })
 
+describe('失败说明的措辞', () => {
+  it('浏览器那句英文翻成人话，后端给的中文原样保留', () => {
+    // `fetch` 连不上时抛的是写给调用方看的英文（"检索失败：Failed to fetch" 不能上屏）
+    expect(failureText(new TypeError('Failed to fetch'), '检索失败')).toBe('网络没连上')
+    expect(failureText(new TypeError('Load failed'), '检索失败')).toBe('网络没连上')
+    // 后端那几句话是写给用户的中文：一个字都不改（原因只有一处真相）
+    expect(failureText(new Error('服务内部错误'), '检索失败')).toBe('服务内部错误')
+    // 连原因都没有时才用兜底
+    expect(failureText(undefined, '检索失败')).toBe('检索失败')
+  })
+})
+
 describe('FilePreview 分派到具体渲染器', () => {
   it('md：把内联内容按 Markdown 画出来', () => {
     render(<FilePreview name="说明.md" kind="md" text={'# 标题\n\n正文'} />)
@@ -177,11 +197,45 @@ describe('FilePreview 分派到具体渲染器', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('pdf：iframe 指向签名链接', () => {
+  it('pdf：iframe 指向签名链接', async () => {
+    // 探测要先通（这里让它拿到 206）：PDF 是"先探一次再挂载"的
+    stubFetch({ status: 206 })
     render(<FilePreview name="论文.pdf" kind="pdf" url="/api/documents/d1/content?sig=y" />)
-    const frame = screen.getByTitle('论文.pdf')
+    const frame = await screen.findByTitle('论文.pdf')
     expect(frame.tagName).toBe('IFRAME')
     expect(frame).toHaveAttribute('src', '/api/documents/d1/content?sig=y')
+  })
+
+  it('pdf：原件接口 500 —— 画我们自己的失败态，不把错误信封交给浏览器', async () => {
+    const fetchMock = stubFetch({ status: 500 })
+    render(<FilePreview name="论文.pdf" kind="pdf" url="/api/documents/d1/content?sig=y" />)
+
+    expect(await screen.findByText(/预览失败（HTTP 500）/)).toBeInTheDocument()
+    // **连 iframe 都没挂**：那份响应体是后端的错误信封，挂上去就是让浏览器把
+    // `{"code":"internal_error",…}` 原样画给用户（评审 52 号图）
+    expect(screen.queryByTitle('论文.pdf')).toBeNull()
+    // 探的是"这条路通不通"，不是"把整份 PDF 拉下来"：只问第一个字节
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ headers: { Range: 'bytes=0-0' } })
+  })
+
+  it('pdf：重试重新探一次，通了就把 iframe 挂上', async () => {
+    stubFetch({ status: 500 })
+    render(<FilePreview name="论文.pdf" kind="pdf" url="/api/d1/content?sig=y" />)
+    expect(await screen.findByText(/预览失败（HTTP 500）/)).toBeInTheDocument()
+
+    stubFetch({ status: 206 })
+    await userEvent.click(screen.getByRole('button', { name: '重试' }))
+
+    expect(await screen.findByTitle('论文.pdf')).toHaveAttribute('src', '/api/d1/content?sig=y')
+    expect(screen.queryByText(/预览失败/)).toBeNull()
+  })
+
+  it('pdf：探不出结论（fetch 自己抛错）时不拦——宁可按浏览器来，也不误报"看不了"', async () => {
+    stubFetch(new Error('Failed to parse URL'))
+    render(<FilePreview name="论文.pdf" kind="pdf" url="/api/d1/content?sig=y" />)
+
+    expect(await screen.findByTitle('论文.pdf')).toBeInTheDocument()
+    expect(screen.queryByText(/预览失败/)).toBeNull()
   })
 
   it('docx / pptx / xlsx：落到各自的渲染器（容器挂出来了）', async () => {
@@ -215,9 +269,13 @@ describe('FilePreview 分派到具体渲染器', () => {
     expect(screen.getByText(/签名链接已过期/)).toBeInTheDocument()
   })
 
-  it('pdf：给了页码就带 #page=N 锚点（原生阅读器的 PDF Open Parameters）', () => {
+  it('pdf：给了页码就带 #page=N 锚点（原生阅读器的 PDF Open Parameters）', async () => {
+    stubFetch({ status: 206 })
     render(<FilePreview name="论文.pdf" kind="pdf" url="/api/d1/content?sig=z" page={7} />)
-    expect(screen.getByTitle('论文.pdf')).toHaveAttribute('src', '/api/d1/content?sig=z#page=7')
+    expect(await screen.findByTitle('论文.pdf')).toHaveAttribute(
+      'src',
+      '/api/d1/content?sig=z#page=7',
+    )
   })
 
   it('文档页可以把整份「阅读视角」返回递进来，不必拆字段', () => {

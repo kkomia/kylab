@@ -11,10 +11,12 @@ import { Copy, RotateCcw, StickyNote, TriangleAlert } from 'lucide-react'
 
 import {
   degradedReason,
+  failureText,
   hasToolCallMarkup,
   replyArtifacts,
   usedWebSearch,
   wasDegraded,
+  type Message,
   type Turn,
 } from '@/features/chat/model/turns'
 
@@ -73,6 +75,8 @@ function AssistantMessage({
   const artifacts = replyArtifacts(turn)
   const isLastTurn = turnIndex === chat.turns.length - 1
   const copied = chat.copiedKey === `${turnIndex}:assistant`
+  /** 「复制问题」与提问气泡上那枚复制共用一份状态（同一个键）。 */
+  const questionCopied = chat.copiedKey === `${turnIndex}:user`
   const saved = chat.savedTurns.includes(turnIndex)
   const degraded = !message.streaming && wasDegraded(message)
   const rawTools = hasToolCallMarkup(message.text)
@@ -90,9 +94,50 @@ function AssistantMessage({
       <AssistantAvatar />
       <div className="min-w-0 flex-1">
         {message.error ? (
-          <p className="m-0 max-w-[var(--measure)] text-[length:var(--text-body-size)] text-[var(--status-danger)]">
-            {message.error}
-          </p>
+          /*
+            失败那一轮（第四批评审 B①）：原先这里只有一句红字，**没有任何出口**——
+            输入框里的字已经被清空了，用户既看不到原因，也没有"再试一次"的路。
+            现在两件事：**重试**（把这一轮原样重发，见 provider 的 `retryTurn`）
+            与**复制问题**（重试还不行时，把那句提问拿到别处去问）。
+
+            只给**最后一轮**「重试」：重发是把提问追加到会话末尾，
+            中间那一轮重发会把顺序弄乱（与「重新生成」同一条纪律）。
+            重试一失败，新的失败气泡自己又长出这两个出口，不必在别处再放一份。
+          */
+          <div className="max-w-[var(--measure)]">
+            <p
+              className="m-0 flex items-start gap-[var(--space-1)] text-[length:var(--text-body-size)] text-[var(--status-danger)]"
+              data-testid="reply-error"
+            >
+              <TriangleAlert size={15} className="mt-[3px] shrink-0" />
+              <span>这一轮没跑起来：{failureText(message.error)}</span>
+            </p>
+            <div className="mt-[var(--space-2)] flex items-center gap-[var(--space-3)]">
+              {isLastTurn && !chat.sending ? (
+                <button
+                  type="button"
+                  className="inline-flex cursor-pointer items-center gap-[var(--space-1)] text-[length:var(--text-micro-size)] font-medium text-[var(--accent-text)] hover:underline disabled:cursor-default disabled:opacity-60"
+                  disabled={chat.regenerating}
+                  title="把这一轮原样再发一次"
+                  onClick={() => chat.retryTurn(turnIndex)}
+                >
+                  <RotateCcw size={13} />
+                  重试
+                </button>
+              ) : null}
+              {turn.user ? (
+                <button
+                  type="button"
+                  className="inline-flex cursor-pointer items-center gap-[var(--space-1)] text-[length:var(--text-micro-size)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                  title="把那句提问复制下来"
+                  onClick={() => chat.copyMessage(turnIndex, turn.user as Message)}
+                >
+                  <Copy size={13} />
+                  {questionCopied ? '已复制' : '复制问题'}
+                </button>
+              ) : null}
+            </div>
+          </div>
         ) : (
           <>
             {/* 出错的那一轮没有过程可讲，只报错 */}
