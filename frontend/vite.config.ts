@@ -21,6 +21,14 @@ export default defineConfig({
     proxy: { '/api': 'http://127.0.0.1:8000' },
   },
   build: { outDir: 'dist', sourcemap: false },
+  // `vite preview` 是**生产构建的验收入口**：NAS 上跑的是 `dist/` + nginx 反代，
+  // 这里给它同一套 `/api` 反代，就能在本机用真实后端验一遍"构建产物 + 反代"这条链
+  // （`pnpm build && pnpm preview`，端口 4174 避开 dev 的 5173）。
+  preview: {
+    port: 4174,
+    strictPort: true,
+    proxy: { '/api': 'http://127.0.0.1:8000' },
+  },
   test: {
     environment: 'jsdom',
     include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
