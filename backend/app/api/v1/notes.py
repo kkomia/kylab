@@ -59,7 +59,7 @@ _LINE_PREFIX = re.compile(r"^\s*(?:[-*+]\s*\[[ xX]\]|[#>]+|[-*+]|\d+[.)])\s*")
 #: 图片整段丢掉：预览里不需要 alt 文字（那通常是文件名）。链接只保留可见文字，
 #: 所以 ``|`` 的两个分支里只有链接分支有 group(1)。
 #: 后面的可选后缀是**图片尺寸**（前端拖拽缩放的落库形式：``![alt](src){width=460}``，
-#: 见 frontend/src/components/notes/noteImage.ts）。它跟着图片一起丢掉，
+#: 见 frontend/src/features/notes/noteImage.ts）。它跟着图片一起丢掉，
 #: 否则每条缩过图的笔记，列表预览末尾都会挂一段 ``{width=460}``。
 _IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)(?:\{width=\d+(?:\s+height=\d+)?\})?")
 _INLINE = re.compile(r"\[([^\]]*)\]\([^)]*\)|\*\*|__|`{1,3}")

@@ -68,7 +68,7 @@ def test_list_preview_drops_image_and_its_size_marker(client: TestClient) -> Non
     """配图**连同尺寸后缀**一起丢。
 
     前端拖拽缩放后，图片在正文里是 ``![图](url){width=460}``（见
-    frontend/src/components/notes/noteImage.ts）。只丢图片语法的话，每条缩过图的
+    frontend/src/features/notes/noteImage.ts）。只丢图片语法的话，每条缩过图的
     笔记，列表预览末尾都会挂一段 ``{width=460}``——那是给编辑器看的，不是内容。
     """
     body = (
