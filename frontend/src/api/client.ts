@@ -3,8 +3,8 @@
  * 组件不直接发请求，一律经本目录。
  */
 
-import { operatorHeaders } from '@/composables/useOperator'
-import { clearSessionToken, requestRelogin, sessionToken } from '@/composables/useSessionToken'
+import { operatorHeaders } from '@/lib/operator'
+import { clearSessionToken, requestRelogin, sessionToken } from '@/lib/session'
 
 export const API_BASE = '/api/v1'
 

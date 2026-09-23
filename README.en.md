@@ -191,7 +191,7 @@ Use the identically named `.sh` variants on Linux / macOS.
 kylab/
 ├── docs/                  Design and specification documents (the project's core asset)
 ├── backend/               Python backend (FastAPI; app/ layered: api -> services -> storage/parsers)
-├── frontend/              Vue 3 + Vite + TS + Pinia web console
+├── frontend/              React 19 + Vite + TS web console (migration: plan §12.230)
 ├── desktop/               Tauri 2 desktop shell (thin client for a NAS-hosted server)
 ├── tests/e2e/             Cross-stack E2E (Playwright)
 ├── skills/                Official MCP Skill artifact
@@ -258,7 +258,7 @@ Every commit and every CI run executes the same checks (`scripts/lint.*`, `scrip
 |-------|------|
 | Backend lint | `ruff` |
 | Backend tests | `pytest -m "not bench and not cloud"` |
-| Frontend type check | `vue-tsc` |
+| Frontend type check | `tsc` (Vite + React, plan §12.234) |
 | Frontend lint | `eslint` (including the custom `kylab/no-emoji` rule) + `prettier` |
 | Frontend tests | `vitest` |
 | Emoji scan | `scripts/scan_emoji.py` |

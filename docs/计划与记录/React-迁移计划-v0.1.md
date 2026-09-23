@@ -175,10 +175,11 @@ frontend-react/
 | **P2 应用壳** | 完成（首版） | `ea0425c` | 路由与旧 vue-router 逐条对应 + 登录守卫 + 标题映射 + 全局 Toaster；19 个 shadcn 原语 vendor 进 `src/ui`（令牌化） |
 | **P3 知识库域** | 完成（首版） | `ea0425c` | 列表/详情/Wiki/文档详情 + 抽屉/上传/分享/数据源/时间线/库内检索；75 条用例 |
 | **P4 笔记 + 其余** | 完成（首版） | `ea0425c` | 笔记 tiptap React（84 条用例）；任务/记忆/工作区/能力/设置/驾驶舱/登录/404（50 条用例）；Office 预览三套渲染器（27 条用例） |
-| **P5 切换** | **待人工对照**（其余准备件已就绪） | — | 需要：逐页浏览器对照（同一条会话/同一份数据）、nginx 路径分流、删 `frontend/`、`check-frontend.sh` 改指向。`frontend-react/{nginx.conf,Dockerfile}` 已按旧前端逐字备好（P5 只改 compose 的 `context` 与镜像名） |
+| **P5 切换** | **完成** | `§12.234` | 新前端搬到规范路径 `frontend/`、旧 Vue 前端删除（历史在 `agent` 分支）；`gen_api_types.py` 回单目标；`check-react.sh` 删除（`check-frontend.sh` 现在查的就是 React）；nginx / compose / 桌面壳 / 脚本路径**一处未改** |
 
-**当前门禁**：`scripts/check-react.sh` 全绿（lint / tsc / **434 条用例** / 构建 / emoji / API 契约）；
-旧前端与后端的门禁**不受影响**（本计划第 1 节的纪律：两套互不当对方的红灯）。
+**当前门禁**：`scripts/check-frontend.sh` 全绿（lint / tsc / **510 条用例** / 构建 / emoji / API 契约 /
+分层与文案与版本号），`scripts/lint.sh` 全过；后端未改动。
+（迁移期的 `scripts/check-react.sh` 已在 P5 删除。）
 
 **已完成（第二轮）**：29 个 shadcn 原语全部 vendor 到位（新增 10 个：alert-dialog / checkbox /
 radio-group / context-menu / avatar / progress / collapsible / command / drawer / resizable）；

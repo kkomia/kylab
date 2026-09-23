@@ -1,24 +1,26 @@
-# 前端镜像（M7 / T7.1）。
+# 新前端（React）的镜像——与 `frontend/Dockerfile` 同构，只换了包管理器（pnpm）。
 #
-# 构建出静态文件，交给 nginx 提供，并让 nginx **把 /api 反代到后端**。
-#
-# 为什么不由后端直接提供静态文件：那要给 FastAPI 挂静态目录、处理 SPA 回退、
-# 配缓存头——都是 nginx 一句话的事。而且分开之后前端可以独立重建与部署。
+# 走 pnpm 的理由：本目录的依赖树按 pnpm 解析（`pnpm-workspace.yaml` 里给 esbuild
+# 放行安装脚本，缺了它 vite 起不来）；与两个前端共存的过渡期保持一致。
+# P5 切换时 `deploy/docker-compose.yml` 只需把 `context: ../frontend` 改成
+# `../frontend-react`、镜像名改 `kylab-web`。
 FROM node:22-slim AS builder
 
 WORKDIR /app
 
+# pnpm 由 corepack 提供（版本跟着 package.json 的 packageManager 走，若有）
+RUN corepack enable
+
 # 先装依赖再拷源码：源码改动不该让依赖层失效
-COPY package.json package-lock.json* ./
-RUN npm ci || npm install
+COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile || pnpm install
 
 COPY . .
-RUN npm run build
+RUN pnpm build
 
 
 FROM nginx:1.27-alpine AS runtime
 
-# 站点配置：SPA 回退 + /api 反代 + 静态资源缓存
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist /usr/share/nginx/html
 

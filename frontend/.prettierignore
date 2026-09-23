@@ -3,7 +3,5 @@ node_modules
 coverage
 pnpm-lock.yaml
 
-# 生成物：由 scripts/gen_api_types.py 从后端 OpenAPI 生成，
-# 它的排版归 openapi-typescript（4 空格）——让 prettier 再格式化一遍，
-# 每次重新生成都会抖出一大片与契约无关的格式 diff。
+# 生成物：由 scripts/gen_api_types.py 从后端 OpenAPI 生成
 src/api/schema.d.ts

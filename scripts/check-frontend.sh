@@ -36,7 +36,7 @@ step() {
 }
 
 step "eslint + prettier" pnpm --dir "$ROOT/frontend" lint
-step "类型检查（vue-tsc）" pnpm --dir "$ROOT/frontend" typecheck
+step "类型检查（tsc）" pnpm --dir "$ROOT/frontend" typecheck
 step "前端单测（vitest）" pnpm --dir "$ROOT/frontend" test
 step "生产构建" pnpm --dir "$ROOT/frontend" build
 step "emoji 扫描（前端）" "$PY" "$ROOT/scripts/scan_emoji.py" "$ROOT/frontend/src"

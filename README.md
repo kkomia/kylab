@@ -163,7 +163,7 @@ powershell -ExecutionPolicy Bypass -File scripts\ci.ps1              # CI 门禁
 kylab/
 ├── docs/                  设计与规范文档（本项目的核心资产）
 ├── backend/               Python 后端（FastAPI，app/ 分层：api → services → storage/parsers）
-├── frontend/              Vue 3 + Vite + TS + Pinia Web 控制台
+├── frontend/              React 19 + Vite + TS Web 控制台（迁移见开发计划 §12.230）
 ├── desktop/               Tauri 2 桌面壳（纯套壳：只连 NAS，不含服务端）
 ├── tests/e2e/             跨端 E2E（Playwright）
 ├── skills/                官方 MCP Skill 产物
@@ -237,7 +237,7 @@ kylab/
 |------|------|
 | 后端 lint | `ruff` |
 | 后端测试 | `pytest -m "not bench and not cloud"` |
-| 前端类型检查 | `vue-tsc` |
+| 前端类型检查 | `tsc`（Vite + React，见开发计划 §12.234） |
 | 前端 lint | `eslint`（含自定义 `kylab/no-emoji` 规则）+ `prettier` |
 | 前端测试 | `vitest` |
 | 禁 emoji 扫描 | `scripts/scan_emoji.py` |

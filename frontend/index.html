@@ -6,7 +6,8 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>KYLAB 知识库</title>
     <script>
-      // 首屏前定主题与字号，避免深浅切换、字号跳变闪烁（《前端设计规范 v0.3》§8）
+      // 首屏前定主题与字号，避免深浅切换、字号跳变闪烁（与旧前端逐字一致：
+      // 这份内联脚本是"用户看到的第一个像素"的一部分，两套前端要表现相同）
       ;(function () {
         try {
           var saved = localStorage.getItem('kylab-theme')
@@ -15,10 +16,6 @@
         } catch (error) {
           document.documentElement.dataset.theme = 'light'
         }
-
-        // 字号档位。这里必须**内联**：等 Vue 起来再设，用户每次刷新都会先看到
-        // 中档字号再跳到自己的档位。系数表与 composables/useFontScale.ts 保持一致，
-        // 两边都改才算改对（数字只有四个，比引一个模块进 index.html 便宜）。
         try {
           var sizes = { small: 14, medium: 15, large: 16.5, xlarge: 18 }
           var pick = localStorage.getItem('kylab-font-scale')
@@ -31,7 +28,7 @@
     </script>
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="/src/main.ts"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
