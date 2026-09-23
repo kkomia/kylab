@@ -63,6 +63,20 @@ NAS_USER=别的账号 sh deploy/nas/deploy-from-windows.sh          # 环境变�
 （开发计划「13 条做完」节：SSH 到 `yumao@192.168.31.18`；`docker-compose.yml` 注释里
 容器以 uid 1000 跑，对应就是它）。脚本因此**默认带上 `yumao@`**。
 
+**免密码部署（装一次，之后都不问密码）**：本机有一把**专用密钥** `~/.ssh/kylab-nas`
+（2026-09-23 生成，ed25519、**无口令**、只用于这台 NAS 的部署）。装一次：
+
+```bash
+sh deploy/nas/install-ssh-key.sh     # 会问一次 NAS 密码；之后部署不再问
+```
+
+它先把公钥那一行打印出来（你也可以复制到 NAS 的界面里手工粘贴），再用一条 ssh
+**幂等**地追加到 `~/.ssh/authorized_keys`（已在就不重复），最后用 `BatchMode=yes`
+——**这一步绝不会问密码**——验证这把钥匙真的能进（所以"免密通过"不是靠密码过的）。
+
+装好之后 `deploy-from-windows.sh` 会**自动用这把密钥**（`--dry-run` 里会打印
+"密钥 kylab-nas"），整条部署链路不再需要人输任何东西；要换一把就 `NAS_KEY=别的密钥`。
+
 **先看一眼它要干什么**（不碰网络）：`sh deploy/nas/deploy-from-windows.sh --dry-run`
 ——打印分支与自证结果、归档大小（约 11 MB）、**将要执行的那一条 ssh 完整命令**、
 以及远端那一步会做的事（判源码形态 → 只重建 frontend → `up -d` → 核对 200 与 `#root`）。

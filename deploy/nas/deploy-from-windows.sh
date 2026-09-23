@@ -10,6 +10,11 @@
 # yumao 是 NAS 上的登录用户（也是部署记录里用的那个：开发计划 §"13 条做完"那节的
 # 「SSH 到 yumao@192.168.31.18」；compose 注释里容器以 uid 1000 跑，也就是它）。
 #
+# **免密码那条路（推荐）**：本机已有一把专用密钥 `~/.ssh/kylab-nas`（2026-09-23 生成，
+# 无口令、专供这台 NAS 部署）。装法见 `deploy/nas/README.md` 的「免密码部署」一节——
+# 用户在 NAS 上贴一次公钥之后，这个脚本**不再问密码**。密钥不在就退回原来的密码方式；
+# 用 `NAS_KEY=别的密钥路径` 可以换一把。
+#
 # 它把 README 里那两条命令合成**一次 ssh**（所以只问一次密码），并且在传之前先自证
 # "这次要传的确实是新前端"——传一份旧的过去再构建，最后只会得到一个老界面，
 # 那种失败最难看出来（页面 200、没有报错）。
@@ -23,9 +28,22 @@ fi
 BRANCH="${1:-react}"
 HOST="${2:-192.168.31.18}"
 NAS_USER="${3:-${NAS_USER:-yumao}}"
+NAS_KEY="${NAS_KEY:-$HOME/.ssh/kylab-nas}"
 TARGET="$NAS_USER@$HOST"
 SRC="/vol1/1000/docker/kylab/src"
 APP="/vol1/1000/docker/kylab/app"
+
+# 有专用密钥就用它，并且 `IdentitiesOnly=yes`——否则 ssh 会先把自己知道的其它钥匙
+# 挨个试一遍，**还会在都没中之后回头问你密码**（那样"免密码"就成了空话）。
+# 密钥没装好/不存在时留空，退回原来的"问一次密码"。
+if [ -f "$NAS_KEY" ]; then
+  SSH_OPTS="-i $NAS_KEY -o IdentitiesOnly=yes"
+  SSH_HOW="密钥 $(basename "$NAS_KEY")"
+else
+  SSH_OPTS=""
+  SSH_HOW="密码（没找到 $NAS_KEY）"
+fi
+# shellcheck disable=SC2086  # 上面这个变量就是要按词拆开传给 ssh
 
 git rev-parse --show-toplevel >/dev/null 2>&1 \
   || { echo "!! 这里不是 git 仓库——请在仓库目录里跑（或双击 deploy/nas/deploy-from-windows.cmd）"; exit 2; }
@@ -41,17 +59,18 @@ REMOTE="mkdir -p $SRC && tar -x -C $SRC --overwrite && cd $APP && sh $SRC/deploy
 if [ "$DRY" = "1" ]; then
   echo "== dry-run（不碰网络）=="
   echo "   归档：git archive --format=tar $BRANCH（约 $(git archive --format=tar "$BRANCH" | wc -c | tr -d ' ') 字节）"
-  echo "   将以 $TARGET 登录（密码由 OpenSSH 在终端里问，只此一次）"
+  echo "   将以 $TARGET 登录（$SSH_HOW）"
   echo "   将要执行："
-  echo "     git archive --format=tar $BRANCH | ssh $TARGET \"$REMOTE\""
+  echo "     git archive --format=tar $BRANCH | ssh ${SSH_OPTS:+$SSH_OPTS }$TARGET \"$REMOTE\""
   echo "   远端那一步（update-frontend.sh）会：判源码形态 → 只重建 frontend → up -d → 核对首页 200 与 #root"
   echo "   本机最后会 curl http://$HOST:8081/ 并按 #root/#app 认版本。去掉 --dry-run 就真跑。"
   exit 0
 fi
 
-echo "== 1/3 推源码 + 在 NAS 上重建前端（$TARGET，会问一次密码）"
+echo "== 1/3 推源码 + 在 NAS 上重建前端（$TARGET，$SSH_HOW）"
 # 一条 ssh 里做完：解包 → 跑升级脚本（脚本自己还会核对源码形态、docker 权限）
-git archive --format=tar "$BRANCH" | ssh "$TARGET" \
+# shellcheck disable=SC2086  # $SSH_OPTS 要按词拆开
+git archive --format=tar "$BRANCH" | ssh $SSH_OPTS "$TARGET" \
   "mkdir -p $SRC && tar -x -C $SRC --overwrite && cd $APP && sh $SRC/deploy/nas/update-frontend.sh $BRANCH"
 
 echo "== 2/3 从本机核对首页"
