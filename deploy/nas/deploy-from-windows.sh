@@ -1,8 +1,14 @@
 #!/usr/bin/env sh
 # **从这台 Windows 直接部署到 NAS**（在 Git Bash 里跑；密码只在你的终端里输，不落任何地方）。
 #
-# 用法：sh deploy/nas/deploy-from-windows.sh [分支，默认 react] [主机，默认 192.168.31.18]
+# 用法：sh deploy/nas/deploy-from-windows.sh [分支，默认 react] [主机，默认 192.168.31.18] [SSH 用户，默认 yumao]
 #      sh deploy/nas/deploy-from-windows.sh --dry-run   # 只打印"将要做什么"，不碰网络
+#      NAS_USER=别的账号 sh deploy/nas/deploy-from-windows.sh    # 环境变量也行
+#
+# **为什么要显式写 SSH 用户 yumao**：这台 Windows 的登录用户是「小又」，`ssh <主机>`
+# 不带用户时用的就是它——NAS 上没有这个账号，必然是 Permission denied，白输一次密码。
+# yumao 是 NAS 上的登录用户（也是部署记录里用的那个：开发计划 §"13 条做完"那节的
+# 「SSH 到 yumao@192.168.31.18」；compose 注释里容器以 uid 1000 跑，也就是它）。
 #
 # 它把 README 里那两条命令合成**一次 ssh**（所以只问一次密码），并且在传之前先自证
 # "这次要传的确实是新前端"——传一份旧的过去再构建，最后只会得到一个老界面，
@@ -16,8 +22,13 @@ if [ "${1:-}" = "--dry-run" ]; then
 fi
 BRANCH="${1:-react}"
 HOST="${2:-192.168.31.18}"
+NAS_USER="${3:-${NAS_USER:-yumao}}"
+TARGET="$NAS_USER@$HOST"
 SRC="/vol1/1000/docker/kylab/src"
 APP="/vol1/1000/docker/kylab/app"
+
+git rev-parse --show-toplevel >/dev/null 2>&1 \
+  || { echo "!! 这里不是 git 仓库——请在仓库目录里跑（或双击 deploy/nas/deploy-from-windows.cmd）"; exit 2; }
 
 echo "== 0/3 本机自证：分支与"要传的东西""
 current=$(git rev-parse --abbrev-ref HEAD)
@@ -30,16 +41,17 @@ REMOTE="mkdir -p $SRC && tar -x -C $SRC --overwrite && cd $APP && sh $SRC/deploy
 if [ "$DRY" = "1" ]; then
   echo "== dry-run（不碰网络）=="
   echo "   归档：git archive --format=tar $BRANCH（约 $(git archive --format=tar "$BRANCH" | wc -c | tr -d ' ') 字节）"
+  echo "   将以 $TARGET 登录（密码由 OpenSSH 在终端里问，只此一次）"
   echo "   将要执行："
-  echo "     git archive --format=tar $BRANCH | ssh $HOST \"$REMOTE\""
+  echo "     git archive --format=tar $BRANCH | ssh $TARGET \"$REMOTE\""
   echo "   远端那一步（update-frontend.sh）会：判源码形态 → 只重建 frontend → up -d → 核对首页 200 与 #root"
   echo "   本机最后会 curl http://$HOST:8081/ 并按 #root/#app 认版本。去掉 --dry-run 就真跑。"
   exit 0
 fi
 
-echo "== 1/3 推源码 + 在 NAS 上重建前端（$HOST，会问一次密码）"
+echo "== 1/3 推源码 + 在 NAS 上重建前端（$TARGET，会问一次密码）"
 # 一条 ssh 里做完：解包 → 跑升级脚本（脚本自己还会核对源码形态、docker 权限）
-git archive --format=tar "$BRANCH" | ssh "$HOST" \
+git archive --format=tar "$BRANCH" | ssh "$TARGET" \
   "mkdir -p $SRC && tar -x -C $SRC --overwrite && cd $APP && sh $SRC/deploy/nas/update-frontend.sh $BRANCH"
 
 echo "== 2/3 从本机核对首页"

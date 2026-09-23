@@ -258,18 +258,28 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
 **本机入口已逐条试尽**（记在这里免得重复查）：`~/.ssh/` 只有 `config` 与 `known_hosts`、
 无任何登录私钥；`ssh-add -l` 无 agent；本机唯一那把 `~/.ollama/id_ed25519` 试过被拒；
 NAS 的 Docker 远程 API（2375/2376）**未开放**；本机**无 docker**（无法先在本机建一遍镜像）；
-仓库文档里**没有**登录凭据/密钥入口（规范明确"任何 token 不落库"）。
+仓库文档里**没有**登录凭据/密钥入口（规范明确"任何 token 不落库"）；SMB（445）**开着**，
+但那只到文件层——重建镜像仍要 NAS 上的 docker，跳不过登录。
+
+**SSH 用户是 `yumao`，不能省**（2026-09-23 复查发现的一处真缺陷）：脚本原先写的是
+`ssh "$HOST"`，而本机 `ssh -G 192.168.31.18` 解析出的用户是 **「小又」**（这台 Windows 的登录名），
+NAS 上没有这个账号——那条"只问一次密码"的路会**白输一次**。`yumao` 才是 NAS 上的登录用户
+（部署记录：开发计划 §"13 条做完"那节「SSH 到 `yumao@192.168.31.18`」；`docker-compose.yml`
+注释里容器以 uid 1000 跑，也就是它）。现在脚本默认带 `yumao@`，第 3 个参数或 `NAS_USER=` 可覆盖。
 
 **给用户的两条路**（`deploy/nas/README.md` 里有，密码只在用户终端里输）：
 
 ```bash
-# A. 从这台 Windows 直接部署（两条命令；NAS 的 src/ 不是 git 检出，所以用 archive 覆盖）
-git archive --format=tar react | ssh kkomia@192.168.31.18   "mkdir -p /vol1/1000/docker/kylab/src && tar -x -C /vol1/1000/docker/kylab/src --overwrite"
-ssh kkomia@192.168.31.18   "cd /vol1/1000/docker/kylab/app && sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react"
+# A. 从这台 Windows 直接部署（一次连接、只问一次密码；也可以直接双击同名 .cmd）
+sh deploy/nas/deploy-from-windows.sh          # 默认 react / 192.168.31.18 / yumao
+sh deploy/nas/deploy-from-windows.sh --dry-run   # 先看要执行的那条 ssh 命令，不碰网络
 
 # B. 已经登录在 NAS 上时，一条命令
 sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react
 ```
+
+手工的两条（脚本做的就是这两步）收在 README 的折叠块里，注意其中 **SSH 用户同样是 `yumao@`**
+（`kkomia@` 试过被拒）。
 
 NAS README 另有「**部署后核对与回滚**」一节（`a` 机器可判两条 + 人眼三条：登录 / 发一句看流式与出处 /
 知识库与笔记各开一处；回滚是把 `frontend/` 换回 `agent` 分支那份再只重建前端，两分钟）。

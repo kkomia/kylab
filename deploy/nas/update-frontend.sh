@@ -25,7 +25,7 @@ if [ -d "$WEB/src/features" ]; then
 elif [ -f "$WEB/src/views/ChatView.vue" ]; then
   echo "!! src/frontend 还是旧的 Vue 前端（有 src/views/ChatView.vue），构建出来会是老界面。"
   echo "   先把源码换成新前端，三选一（在**别的机器**上做第 1 条最省事）："
-  echo "     a) 仓库克隆处：git archive --format=tar $BRANCH | ssh kkomia@<NAS> 'tar -x -C $SRC'"
+  echo "     a) 仓库克隆处：git archive --format=tar $BRANCH | ssh yumao@<NAS> 'tar -x -C $SRC'"
   echo "     b) NAS 上有网有凭据：git clone --depth 1 -b $BRANCH https://gitee.com/kkomia/kylab.git /tmp/kylab-src && cp -a /tmp/kylab-src/. $SRC/"
   echo "     c) 只搬前端：把新的 frontend/ 整目录覆盖到 $WEB（构建只需要这一棵）"
   exit 2

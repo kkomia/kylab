@@ -46,12 +46,22 @@ tail -f build.log        # 另开一个会话看进度
 
 ### 前端换成 React 版之后（P5，开发计划 §12.234/§12.236）
 
-**从这台 Windows 直接部署（一条命令，只问一次密码）**——在仓库目录里用 Git Bash 跑：
+**从这台 Windows 直接部署（一次连接，只问一次密码）**——两选一：
+
+- **双击** `deploy/nas/deploy-from-windows.cmd`（找 Git Bash、切到仓库根、跑完停住别关窗）；
+- 或在仓库目录里用 Git Bash 跑：
 
 ```bash
-sh deploy/nas/deploy-from-windows.sh            # 默认 react 分支、默认 NAS 地址
-sh deploy/nas/deploy-from-windows.sh react 192.168.31.18   # 也可以显式给
+sh deploy/nas/deploy-from-windows.sh            # 默认 react 分支、192.168.31.18、用户 yumao
+sh deploy/nas/deploy-from-windows.sh react 192.168.31.18 yumao   # 三个都可以显式给
+NAS_USER=别的账号 sh deploy/nas/deploy-from-windows.sh          # 环境变量也行
 ```
+
+**SSH 用户必须写 `yumao`，不能省**：这台 Windows 的登录用户是「小又」，`ssh <主机>`
+默认就用它——NAS 上没有这个账号，会直接 Permission denied（试过 `kkomia` 也不行），
+白输一次密码。`yumao` 是 NAS 上的登录用户，也是部署记录里用的那个
+（开发计划「13 条做完」节：SSH 到 `yumao@192.168.31.18`；`docker-compose.yml` 注释里
+容器以 uid 1000 跑，对应就是它）。脚本因此**默认带上 `yumao@`**。
 
 **先看一眼它要干什么**（不碰网络）：`sh deploy/nas/deploy-from-windows.sh --dry-run`
 ——打印分支与自证结果、归档大小（约 11 MB）、**将要执行的那一条 ssh 完整命令**、
@@ -68,10 +78,10 @@ curl NAS 并认 `#root`/`#app`。
 
 ```bash
 # ① 把 react 分支的源码推到 NAS 的 src/（archive 覆盖；NAS 上那份本来就不是 git 检出）
-git archive --format=tar react | ssh kkomia@192.168.31.18   "mkdir -p /vol1/1000/docker/kylab/src && tar -x -C /vol1/1000/docker/kylab/src --overwrite"
+git archive --format=tar react | ssh yumao@192.168.31.18   "mkdir -p /vol1/1000/docker/kylab/src && tar -x -C /vol1/1000/docker/kylab/src --overwrite"
 
 # ② 在 NAS 上跑升级脚本（只重建前端 + 核对 #root）
-ssh kkomia@192.168.31.18   "cd /vol1/1000/docker/kylab/app && sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react"
+ssh yumao@192.168.31.18   "cd /vol1/1000/docker/kylab/app && sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react"
 ```
 
 两条都会在**你这边的终端**里问 NAS 的密码（OpenSSH 的交互式认证，密码不经我的脚本、也不落地）。
@@ -161,7 +171,7 @@ cd /vol1/1000/docker/kylab/app && docker compose build frontend && docker compos
 # 核对：curl -s http://127.0.0.1:8081/ | grep -o 'id="app"'   # 回到旧版
 ```
 
-从本机做也行（与部署对称）：`git archive --format=tar <旧提交> frontend | ssh kkomia@192.168.31.18 "tar -x -C /vol1/1000/docker/kylab/src --overwrite && cd /vol1/1000/docker/kylab/app && docker compose build frontend && docker compose up -d frontend"`。
+从本机做也行（与部署对称）：`git archive --format=tar <旧提交> frontend | ssh yumao@192.168.31.18 "tar -x -C /vol1/1000/docker/kylab/src --overwrite && cd /vol1/1000/docker/kylab/app && docker compose build frontend && docker compose up -d frontend"`。
 旧前端的最后一个提交在 `agent` 分支上（`git log agent -1 -- frontend` 可取到哈希）。
 **后端不用回滚**：这一批没动它（`docker compose build frontend` 也只重建前端）。
 
