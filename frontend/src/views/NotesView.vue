@@ -824,15 +824,28 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* 没有通用页头，顶部内边距收得很小：第一眼就是列表头与工具栏 */
+/* 没有通用页头，顶部内边距收得很小：第一眼就是列表头与工具栏。
+ *
+ * 这一页**自己占满内容区**（`height: 100%`，与 ChatView 的 `.chat` 同一个做法）：
+ * 外层 `main.content` 于是没有东西可滚，滚动条落到下面两列自己身上。
+ * 高度链一环都不能少——`html/body/#app` 到 `.shell` 都是 `height: 100%`，
+ * `.content` 作为 flex 项被拉伸，再到这一层与 `.notes-layout`；
+ * 断在哪一环，百分比都退化成"内容高"，两列就又会合并成同一条滚动条。 */
 .notes-page {
+  height: 100%;
   padding: var(--space-3) var(--page-gutter) var(--space-8);
 }
 
+/* 分栏：**两列各自滚**。
+ *
+ * 原先这里写着 `align-items: start`：两列各按**内容高**排版，页面被正文撑得很长，
+ * 滚动只能落在最外层——正文一滚，左边那份并不长的目录也被一起带走（用户报的现象）。
+ * 去掉它（grid 默认 stretch）并给容器定高，两列的高度才等于"可用高度"，
+ * 各自的 `overflow-y: auto` 也才真的滚得起来。 */
 .notes-layout {
   display: grid;
   grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
-  align-items: start;
+  height: 100%;
 }
 
 /* 折叠态：列表收成一条窄导轨（44 = 28px 的按钮 + 两侧各 8px 内边距），
@@ -857,6 +870,12 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--space-3);
   min-width: 0;
+  /* 目录自己滚：`height: 100%` 撑满这一格（配 grid 的 stretch）。
+     `min-height: 0` 不是装饰——grid 项的自动最小尺寸是**内容高**，
+     不压到 0 的话列表长了会把这一格顶高，滚动条又跑回外层去。 */
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
   padding: var(--space-2) var(--space-4) var(--space-6) var(--space-1);
   border-right: 1px solid var(--border-hairline);
 }
@@ -1063,11 +1082,28 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  min-height: 600px;
+  /* 正文列就是"正文的滚动容器"：工具栏的 sticky 吸的正是它（见 NoteEditor 的 `.toolbar`），
+     所以它必须真的滚起来，不能被 `.editor-body` 里那层内滚动架空。
+     原先的 `min-height: 600px` 在这里撤掉：矮窗口里它会让这一列比可用高度还高，
+     于是又把滚动推回外层；那条下限只在单栏堆叠时留着（见文件末尾的断点）。 */
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
 }
 
+/* 编辑区：**撑满这一列，但不许被压回一列的高度**。
+ *
+ * `min-height: 100%` 管"短笔记也铺满"——点得到正文下面那片空白；
+ * `flex: none` 管"正文多长它就多长"：flex 项默认 `flex-shrink: 1`，
+ * 正文几屏长时这一层会被压回列高，溢出的正文虽然照样在列里滚，
+ * 但工具栏 sticky 的**包含块**（就是这一层）也缩到了一屏——
+ * 滚过一屏之后再没地方可粘，工具栏会跟着滚走（吸顶静默失效）。
+ *
+ * 也**不要**写 `flex: 1`：它的 `flex-basis: 0%` 会把这一层的高度与内容彻底脱钩，
+ * 落在同一个坑里（实现"两列各自滚"时踩到过）。 */
 .pane-editor {
-  flex: 1;
+  flex: none;
+  min-height: 100%;
 }
 
 /* 没选笔记时把提示放在视觉中心：左上角一行字会被宽敞的编辑区衬得很空 */
@@ -1197,8 +1233,25 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 900px) {
+  /* 单栏是**堆叠**：上面目录、下面正文，"两列"这件事本身就不存在了。
+     各自独立滚动只在两列并排、各自有独立视野时才成立；堆叠时若还各滚各的，
+     一屏里会冒出两个小滚动区，滚到底还得先判断"现在滚的是哪一段"。
+     所以高度与 overflow 一并还原成内容流——两段重新共用外层那一条滚动条。 */
+  .notes-page {
+    height: auto;
+  }
+
   .notes-layout {
+    height: auto;
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* 单栏下正文列不再有"撑满一屏"的高度：高度与 overflow 一并还原（见上），
+     再给它一条下限——否则短笔记会让编辑区缩成一条，看起来像没加载出来 */
+  .notes-pane {
+    height: auto;
+    min-height: 600px;
+    overflow-y: visible;
   }
 
   /* 单栏下没有"另一栏"可以接收空间，折叠于是只能收成一条**横向**细条：
@@ -1217,6 +1270,8 @@ onBeforeUnmount(() => {
   }
 
   .notes-list {
+    height: auto;
+    overflow-y: visible;
     border-right: none;
     border-bottom: 1px solid var(--border-hairline);
     padding-left: var(--space-4);

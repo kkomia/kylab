@@ -227,9 +227,11 @@ defineExpose({ warm })
  * 的滚动位置**（长笔记切走再回来停在半中间很突兀，切到短笔记还会因高度骤减而乱跳）。
  * 记住每条自己的位置，回来时接着看，这也是笔记类应用的常规手感。
  *
- * 注意真正的滚动容器**不是 `.editor-body`**：正文区高度随内容增长，本身并不滚，
- * 会滚的是外层布局的 `main.content`（高度固定、内容溢出）。所以这里往上找
- * 第一个"样式允许滚且确实滚得动"的祖先，而不是写死某个类名。
+ * 注意真正的滚动容器**不是 `.editor-body`**：正文区高度随内容增长，本身并不滚。
+ * 并排两列时滚的是笔记页的正文列（`.notes-pane`）；单栏堆叠（<=900px）时那一列
+ * 也交回了页面，滚的是外层布局的 `main.content`。所以这里往上找
+ * 第一个"样式允许滚且确实滚得动"的祖先，而不是写死某个类名——
+ * 笔记页那次"两列各自滚"的改造正是靠这一条没被牵动。
  */
 const bodyRef = ref<HTMLElement | null>(null)
 const scrollByNote = new Map<string, number>()
@@ -498,20 +500,23 @@ watch(
 </template>
 
 <style scoped>
+/* 只管纵向排布：**高度由使用方决定**（笔记页的 `.pane-editor` 让它撑满正文列，
+   但随内容长高、不被压矮，见 `.toolbar` 那条注释）。
+   这里写死 `height: 100%` 或 `min-height: 0` 都会把滚动归属搞乱：
+   前者把这一层钉在列高上，正文只能在 `.editor-body` 里另开一个滚动区、
+   把列那层架空；后者允许这一层被压回列高，sticky 的包含块跟着缩到一屏。 */
 .note-editor {
   display: flex;
   flex-direction: column;
-  min-height: 0;
-  height: 100%;
 }
 
 /* 工具栏吸顶：正文再长也不必滚回顶部去点格式按钮。
  *
- * 滚动容器**不是 `.editor-body`**（它 `height: auto`、随内容长高，本身不滚），
- * 而是外层布局的 `main.content`（`overflow-y: auto`，见 App.vue）。
- * 所以这里用 `sticky`：相对最近的可滚动祖先吸附，而 `.toolbar` 到 `main.content`
- * 之间（`.notes-page` / `.notes-layout` / `.notes-pane` / `.note-editor`）都没有
- * `overflow: hidden` 之类的裁剪，不会被剪掉。
+ * 吸附对象是**正文列**（笔记页的 `.notes-pane`，`overflow-y: auto`）：
+ * 工具栏到它之间只有 `.note-editor` 这一级，没有 `overflow: hidden` 之类的裁剪，
+ * 所以吸得住。反过来，`.editor-body` 刻意**不设** overflow（见下面那条规则）——
+ * 它一旦自己成了滚动区，滚动就发生在工具栏**里面**，
+ * 外面那一列永远不动，sticky 就成了写着好看的声明（贴着滚动区的上沿不动）。
  *
  * `z-index` 是必需的：正文在换笔记时带 `opacity` 过渡，那个不透明度会让
  * `.editor-body` 自成一个层叠上下文；不给一个正的层级，它就会盖在工具栏上。
@@ -651,10 +656,12 @@ watch(
   color: var(--text-tertiary);
 }
 
+/* 正文区**不自己滚**：滚动归笔记页的正文列（`.notes-pane`）。
+   这里只负责把"列高减去工具栏"剩下的空间吃下来（`flex: 1`），
+   于是短笔记也铺满整列的点击区；
+   一旦给它 `overflow-y: auto`，它就成了内层滚动容器，把列那层的滚动架空。 */
 .editor-body {
   flex: 1;
-  min-height: 0;
-  overflow-y: auto;
   transition: opacity 160ms ease;
 }
 

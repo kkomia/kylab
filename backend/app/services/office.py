@@ -1,4 +1,5 @@
-"""Office 产出（v0.21）：把内容变成 .docx / .xlsx / .pptx / .pdf。
+"""产出（v0.21）：把内容变成 .docx / .xlsx / .pptx / .pdf，以及纯文本类的
+.md / .txt / .csv / .html（后者见 :func:`build_text`，不需要任何库）。
 
 **方案 A：纯 Python 库，不装 LibreOffice / Pandoc。** 四条理由：
 
@@ -9,6 +10,8 @@
    缺的是另一半——**产出**。
 2. **agent 的交付物得能发给别人。** 对话里整理出的一张表、一份报告，停在
    Markdown 上就只能在库里看；变成 .xlsx / .docx 才能被交给下游。
+   而对方**点名要 .md / .txt 时，原样给出去就是交付**——换格式不是交付的
+   必要条件（v0.41 补的 ``PLAIN_TEXT_KINDS`` 就是这一句的落点）。
 3. **不装外部程序**：LibreOffice 是几百 MB 的安装包，Pandoc + Poppler 还要另外
    配路径；而它们能做到的事里，我们真正需要的（读写这四种格式）纯 Python 库都能做。
 4. **代价写在明处**：这套东西只保证"结构正确、内容完整、文件能被
@@ -34,9 +37,11 @@ __all__ = [
     "MAX_CHARS",
     "MAX_ROWS",
     "MAX_SLIDES",
+    "PLAIN_TEXT_KINDS",
     "build_docx",
     "build_pdf",
     "build_pptx",
+    "build_text",
     "build_xlsx",
     "missing_requirement",
     "parse_blocks",
@@ -50,6 +55,15 @@ MAX_COLUMNS = 100
 #: 幻灯片上限。一页一页写出来的是沟通材料，不是归档材料。
 MAX_SLIDES = 60
 MAX_BULLETS_PER_SLIDE = 20
+
+#: **纯文本类产出**：正文原样落字节，不做任何转换，也不需要任何库。
+#:
+#: 为什么这四种也要走到这里来：交付口此前只认 .docx / .pdf（要过下面的转换器），
+#: 于是"给我一份 .md / .txt"这种再普通不过的要求只能被回绝——模型实测的答复是
+#: "导出文件只有那四种格式，没有 .md；沙箱也没开"，最后让用户自己复制。
+#: **交付这件事不该挑格式**：.md 与 .docx 的差别只在对方拿它干什么，
+#: 而不在"我们这边能不能造出来"。
+PLAIN_TEXT_KINDS = ("md", "txt", "csv", "html")
 
 #: 需要哪个库来完成哪种产出。键是"给用户看的名字"，值是 pip 包名。
 _REQUIREMENTS = {
@@ -69,7 +83,9 @@ def missing_requirement(kind: str) -> str:
     """
     spec = _REQUIREMENTS.get(kind)
     if spec is None:
-        return f"不认识的产出格式：{kind}"
+        # 纯文本类不是"缺依赖"，是**根本没有依赖**——把它们报成"不认识的格式"，
+        # 工具层就会在明明做得到的事情上回一句"做不到"
+        return "" if kind in PLAIN_TEXT_KINDS else f"不认识的产出格式：{kind}"
     package, module = spec
     try:
         __import__(module)
@@ -161,6 +177,37 @@ def parse_blocks(markdown: str) -> list[Block]:
         if paragraph:
             blocks.append(Block("paragraph", " ".join(paragraph)))
     return blocks
+
+
+# ------------------------------------------------------------------ 纯文本
+
+
+def build_text(text: str, *, kind: str) -> bytes:
+    """正文 → .md / .txt / .csv / .html（**原样落字节**，见 :data:`PLAIN_TEXT_KINDS`）。
+
+    **不做 Markdown → 纯文本的改写**：模型给的正文就是对方要的那份东西，
+    我们再去一遍标记（``# 标题`` → ``标题``、``| a | b |`` → 一行竖线）
+    只会让他下载到的东西与屏幕上看到的不是同一份——而"我拿到的和你给我看的不一样"
+    是最没法解释的一类问题。
+
+    ``title`` 不参与：纯文本产出的正文就是全文，而文件名已经带着标题——
+    再往正文里插一个标题，等于往对方要的那份内容里加东西（工具层因此只为
+    .docx / .pdf 那一支传它）。
+
+    ``.csv`` 是唯一一处加工：**加一个 UTF-8 BOM**。Excel / WPS 双击打开无 BOM 的
+    UTF-8 CSV 会按本地编码（中文环境是 GBK）解，中文全是乱码——而一份 .csv 的去向
+    几乎总是"被 Excel 打开"。BOM 对别的读法无害：我们自己的解析器就是按
+    ``utf-8-sig`` 起头解的（见 `parsers/text_decode.py` 的解码阶梯）。
+    """
+    if kind not in PLAIN_TEXT_KINDS:
+        raise RuntimeError(
+            f"{kind} 不是纯文本产出（只做 "
+            f"{'、'.join('.' + item for item in PLAIN_TEXT_KINDS)}）"
+        )
+    body = (text or "").encode("utf-8")
+    if kind == "csv":
+        return b"\xef\xbb\xbf" + body
+    return body
 
 
 # ------------------------------------------------------------------ docx

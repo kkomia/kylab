@@ -1,15 +1,21 @@
 /**
- * 笔记页版式：**工具栏吸顶 + 列表可折叠**（《开发计划》§12.224 用户报的 7、8 两条）。
+ * 笔记页版式：**工具栏吸顶 + 列表可折叠 + 两列各自滚**
+ * （《开发计划》§12.224 用户报的 7、8 两条，以及 0.1.1 体验第 4 条）。
  *
- * 这两条都是"平时看着没事、正文一长/想给正文腾地方才难受"的问题，所以钉住的是
+ * 这几条都是"平时看着没事、正文一长/想给正文腾地方才难受"的问题，所以钉住的是
  * **结构契约**，不是渲染结果：
  *
  * 1. 折叠：开关切一次，`.notes-layout` 挂上 `list-collapsed`，列表整块移出 DOM，
  *    状态写进 localStorage；重新挂载（等价于刷新）后仍然是折叠的；
- * 2. 吸顶：`.toolbar` 声明 `position: sticky`，真正的滚动容器 `main.content`
- *    声明 `overflow-y: auto`，并且从工具栏往上到滚动容器之间的每一级祖先
- *    **都没有** `overflow: hidden` 之类的裁剪——加一条就会让吸顶静默失效，
- *    这是这条最容易退化的方式（`.editor-body` 不是滚动容器，它随内容长高）。
+ * 2. 吸顶：`.toolbar` 声明 `position: sticky`，吸附对象是**正文列的滚动容器**
+ *    `.notes-pane`（工具栏就在它里面，中间那一级 `.note-editor` 没有 `overflow: hidden`
+ *    之类的裁剪）；`.editor-body` 也刻意不设 overflow——它一旦自己滚起来，
+ *    列那层就被架空，sticky 从此贴在一个不动的盒子上；
+ * 3. 两列各自滚：`.notes-list` 与 `.notes-pane` 各自 `overflow-y: auto` 且撑满可用高度，
+ *    页面自己占满内容区（外层那条滚动条在这页无事可做）。原先"目录与正文共用一个
+ *    滚动条"的根因是 `.notes-layout` 上的 `align-items: start`——两列各按内容高排版，
+ *    页面被正文撑长，滚动只能落在最外层；900px 以下单栏堆叠时这些声明全部还原，
+ *    两段重新共用页面那一条滚动条。
  *
  * 样式契约为什么读源码：vitest 默认 `css: false`，SFC 的 `<style>` 根本不进 jsdom，
  * `getComputedStyle` 只会永远读到默认值（`RowMenu.test.ts:207` 留过同一条注记）。
@@ -100,12 +106,54 @@ async function mountPage(): Promise<VueWrapper> {
   return wrapper
 }
 
-/** 源码里某条 CSS 规则的声明块（`选择器 { … }` 之间的那段）。 */
+/** 去掉块注释：中文注释里的逗号与括号不该参与"这是哪条规则"的判断。 */
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
+/**
+ * SFC 里的样式正文。传进来的若是整份单文件组件就先切到 `<style>` 块——
+ * 模板与脚本里的 `{` `}`（插值、对象字面量）会混进规则扫描，
+ * 让 `.notes-page` 这种规则被前面一段无关文本吞掉（这条踩过一次）。
+ * 已经是样式片段（比如下面的媒体查询切片）就原样返回。
+ */
+function styleText(source: string): string {
+  const open = source.indexOf('<style')
+  if (open < 0) return source
+  const from = source.indexOf('>', open)
+  const to = source.indexOf('</style>', from)
+  return source.slice(from + 1, to < 0 ? undefined : to)
+}
+
+/**
+ * 源码里某条 CSS 规则的声明块（`选择器 { … }` 之间的那段）。
+ *
+ * 选择器写成**列表**（`a, b { … }`）时，只要列表里含这一个就认：
+ * 合并规则是常态（两列共用一组重置），不该逼着样式拆成一条条单选择器。
+ */
 function cssRule(source: string, selector: string): string {
-  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const match = source.match(new RegExp(`\\n\\s*${escaped}\\s*\\{([^}]*)\\}`))
-  expect(match, `没在源码里找到 CSS 规则 ${selector}`).toBeTruthy()
-  return match?.[1] ?? ''
+  const rules = [...stripComments(styleText(source)).matchAll(/\n\s*([^{}]+?)\s*\{([^{}]*)\}/g)]
+  const found = rules.find((rule) =>
+    (rule[1] ?? '').split(',').some((part) => part.trim() === selector),
+  )
+  expect(found, `没在源码里找到 CSS 规则 ${selector}`).toBeTruthy()
+  return found?.[2] ?? ''
+}
+
+/** 源码里某个 `@media` 块的正文：按大括号配平截取，嵌套的规则都在里面。 */
+function mediaBlock(source: string, query: string): string {
+  const at = source.indexOf(`@media ${query}`)
+  expect(at, `没在源码里找到 @media ${query}`).toBeGreaterThanOrEqual(0)
+  const open = source.indexOf('{', at)
+  let depth = 0
+  for (let index = open; index < source.length; index += 1) {
+    if (source[index] === '{') depth += 1
+    else if (source[index] === '}') {
+      depth -= 1
+      if (depth === 0) return source.slice(open + 1, index)
+    }
+  }
+  return ''
 }
 
 function readSource(relative: string): string {
@@ -196,21 +244,76 @@ describe('笔记页：工具栏吸顶', () => {
     wrapper.unmount()
   })
 
-  it('吸顶链路上没有会裁掉 sticky 的祖先，滚动容器仍是 main.content', () => {
-    const content = cssRule(appShellSource, '.content')
-    expect(content).toMatch(/overflow-y:\s*auto/)
+  it('工具栏在正文列的滚动容器内，链路上没有会裁掉 sticky 的一级', async () => {
+    const wrapper = await mountPage()
 
-    // 从工具栏往上到 main.content：任何一级挂了 overflow: hidden / clip，吸顶就会
-    // 静默失效（元素被裁在那个盒子里，永远不动）
-    const chain: [string, string][] = [
-      [viewSource, '.notes-page'],
-      [viewSource, '.notes-layout'],
-      [viewSource, '.notes-pane'],
-      [editorSource, '.note-editor'],
-    ]
-    for (const [source, selector] of chain) {
-      expect(cssRule(source, selector), `${selector} 不该裁剪 sticky`).not.toMatch(
-        /overflow(?:-x|-y)?:\s*(?:hidden|clip)/,
+    // DOM 上工具栏确实长在 `.notes-pane` 里面，而那一列就是正文的滚动容器：
+    // sticky 相对"最近的可滚动祖先"吸附，这两条缺一不可
+    expect(wrapper.get('.notes-pane').find('.toolbar').exists()).toBe(true)
+    expect(cssRule(viewSource, '.notes-pane')).toMatch(/overflow-y:\s*auto/)
+
+    // 从工具栏往上到 `.notes-pane`：中间那一级挂了 overflow: hidden / clip，
+    // 吸顶就会静默失效（元素被裁在那个盒子里，永远不动）
+    expect(cssRule(editorSource, '.note-editor')).not.toMatch(
+      /overflow(?:-x|-y)?:\s*(?:hidden|clip)/,
+    )
+    // `.editor-body` 自己不能是滚动容器：它一滚，列那层就不动了，
+    // 工具栏等于贴在一个不动的盒子上——吸顶写了也白写
+    expect(cssRule(editorSource, '.editor-body')).not.toMatch(
+      /overflow(?:-x|-y)?:\s*(?:auto|scroll)/,
+    )
+
+    // sticky 只能在**包含块**里活动，而它的包含块就是编辑区这一层：
+    // 这一层必须"至少一列高、正文多长就多长"。flex 项默认 `flex-shrink: 1`，
+    // 正文几屏长时它会被压回列高——溢出的正文照样能滚，但工具栏滚过一屏
+    // 就再没地方可粘，跟着滚走了（这条踩到过）
+    const column = cssRule(viewSource, '.pane-editor')
+    expect(column).toMatch(/min-height:\s*100%/)
+    expect(column).toMatch(/flex:\s*none/)
+
+    wrapper.unmount()
+  })
+})
+
+describe('笔记页：两列各自滚', () => {
+  it('目录列与正文列各自是滚动容器：overflow-y 与高度都撑满可用高度', () => {
+    for (const selector of ['.notes-list', '.notes-pane']) {
+      const rule = cssRule(viewSource, selector)
+      expect(rule, `${selector} 要自己滚`).toMatch(/overflow-y:\s*auto/)
+      expect(rule, `${selector} 要撑满可用高度`).toMatch(/height:\s*100%/)
+      // 高度链上的 `min-height: 0` 不是装饰：grid 项的自动最小尺寸是**内容高**，
+      // 不压到 0 的话长内容会把格子顶高，overflow 就永远不会生效
+      expect(rule, `${selector} 要允许自己被内容压矮`).toMatch(/min-height:\s*0/)
+    }
+    // 列里面不能再出现"把正文高度钉在列高上"的一层（注：`min-height` 不算，
+    // 所以这里要求 `height` 前面是空白或分号）：那会让正文在 `.editor-body`
+    // 里自己滚，列那层从此不动——两列各自滚也就名存实亡
+    expect(cssRule(editorSource, '.note-editor')).not.toMatch(/(?:^|[\s;])height:\s*100%/)
+  })
+
+  it('页面自己撑满内容区：外层那条滚动条不再参与这一页的滚动', () => {
+    expect(cssRule(viewSource, '.notes-page')).toMatch(/height:\s*100%/)
+    expect(cssRule(viewSource, '.notes-layout')).toMatch(/height:\s*100%/)
+    // 根因：`align-items: start` 让两列各按**内容高**排版，页面被正文撑长，
+    // 滚动只能落在最外层——正文一滚，左边那份不长的目录就被一起带走。这条不能再回来。
+    expect(cssRule(viewSource, '.notes-layout')).not.toMatch(/align-items:\s*(?:start|flex-start)/)
+    // 外壳那一条留着（它还服务别的页面）：笔记页只是让它在自己这里无事可做
+    expect(cssRule(appShellSource, '.content')).toMatch(/overflow-y:\s*auto/)
+  })
+
+  it('单栏断点（<=900px）下两列不再各自滚：两段回到同一条滚动', () => {
+    const stacked = mediaBlock(viewSource, '(max-width: 900px)')
+
+    // 先确认这个断点确实把版式压成了单栏——不然"两列"还在，下面的还原就没意义
+    expect(cssRule(stacked, '.notes-layout')).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+    for (const selector of ['.notes-page', '.notes-layout', '.notes-list', '.notes-pane']) {
+      expect(cssRule(stacked, selector), `${selector} 在单栏下不该留着定高`).toMatch(
+        /height:\s*auto/,
+      )
+    }
+    for (const selector of ['.notes-list', '.notes-pane']) {
+      expect(cssRule(stacked, selector), `${selector} 在单栏下不该自己滚`).toMatch(
+        /overflow-y:\s*visible/,
       )
     }
   })

@@ -22,6 +22,15 @@
 「存为笔记 → 加入知识库」走的是**同一条服务层链路**（不另开一条写文档的通道，
 否则库里会出现两种来源、两种格式）。
 
+**交付与留档是两件事**（v0.41 写清楚）：`export_document` / `export_table` /
+`export_deck` 是**交付口**——文件落在会话的产物区，对话里挂一张可下载的卡片；
+`create_note` 是**留档**——只进笔记列表，对方在对话里什么也拿不到。
+这两件事此前在两边的 description 里没分开写，于是"给我一份 .md"被办成了
+"我把内容存成笔记了"：落点错了，用户在对话页上找不到任何可下载的东西。
+现在分工同时写在两边的 description、系统提示词（`chat.AGENT_SYSTEM_PROMPT`）
+与 `create_note` 的返回值里——**返回值那句是给"已经用错一次"准备的**，
+它不需要用户再纠正一遍。
+
 **为什么工具实现在这里、而不在 stdio/HTTP 的入口里**：两种传输方式要暴露同一批
 工具。写在入口里就得复制两份，而两份迟早会漂（一个加了字段另一个没加）。
 这里只依赖服务层，入口只负责把它挂到各自的传输上。
@@ -243,7 +252,11 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "create_note",
             "description": (
-                "把一段成果保存成笔记（Markdown）。**这是「把对话结论沉淀下来」的第一步**，"
+                "把一段成果保存成**笔记**（Markdown）——**笔记是给自己长期留档用的**："
+                "它只进笔记列表，**不是交付**（对方在对话里看不到卡片、也下载不了）。"
+                "**对方要的是一份文件时不要用这个**（「给我一份」「发我个 .md / .docx」"
+                "「能下载的」「发给我同事」），那种要求用 export_document 交付。"
+                "**这是「把对话结论沉淀下来」的第一步**："
                 "但笔记此时还不在知识库里、检索不到；要能被检索，再调 attach_note_to_kb。"
                 "适合保存：整理出的结论、待办与决定、可复用的流程。"
             ),
@@ -407,12 +420,17 @@ def tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "export_document",
             "description": (
-                "把整理好的正文**导出成一份真文件**（.docx 或 .pdf）。"
+                "把整理好的正文**导出成一份真文件**"
+                "（.docx / .pdf / .md / .txt / .csv / .html）。"
                 "正文用 Markdown（标题 #、要点 -、表格 | a | b |）。"
-                "**当对方要的是「一份报告 / 一份说明」时用它**——"
-                "只在对话里给一段 Markdown，他没法直接转发给别人。"
+                "**这是「交付一份文件」的那个口**：对方说「给我一份」「发我个 .md」「一份报告」"
+                "「能下载的」「发给我同事」时都用它——"
                 "文件落在**这条会话的产物区**（会话挂了工作区就落进那个目录），"
-                "界面上会挂一张可下载的卡片。"
+                "对话里会挂一张可下载的卡片，他点一下就能拿到。"
+                "**不要用 create_note 顶替交付**：笔记只进他自己的笔记列表，"
+                "对话里既看不到、也下载不了。"
+                ".md / .txt / .csv / .html 这四种是**原样落正文**（不做转换）；"
+                "要能被 Excel 排序求和的那张表用 export_table（.xlsx）。"
                 "**它不会进知识库**——那是另一件事，对方明确要求时才调 ingest_artifact。"
             ),
             "inputSchema": {
@@ -428,10 +446,18 @@ def tool_definitions() -> list[dict[str, Any]]:
                     },
                     "filename": {
                         "type": "string",
-                        "description": "文件名，扩展名决定格式：.docx 或 .pdf",
+                        "description": (
+                            "文件名，扩展名决定格式："
+                            ".docx / .pdf / .md / .txt / .csv / .html"
+                        ),
                     },
                     "markdown": {"type": "string", "description": "正文（Markdown）"},
-                    "title": {"type": "string", "description": "文档标题；留空则不加标题"},
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "文档标题；留空则不加标题（.md / .txt / .csv / .html 不看它）"
+                        ),
+                    },
                 },
                 "required": ["filename", "markdown"],
                 "additionalProperties": False,
@@ -799,7 +825,10 @@ def _create_note(services: Services, args: dict[str, Any], *, caller: Caller) ->
         "note_id": note.id,
         "title": note.title,
         "note": (
-            "笔记已保存。**此时还检索不到它**——"
+            "笔记已保存。**它是笔记，不是交付**——只出现在对方的笔记列表里，"
+            "对话里不会有可下载的卡片；**对方要的如果是「一份文件」，"
+            "请改用 export_document 交付**。"
+            "另外**此时还检索不到它**——"
             "要让知识库能检索，再调 attach_note_to_kb 把它加进某个库"
         ),
     }
@@ -1122,26 +1151,32 @@ def _export_document(
     caller: Caller,
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Markdown → .docx / .pdf → 落成一份文件（见 :func:`_save_export`）。"""
+    """Markdown → .docx / .pdf（转换）或 .md / .txt / .csv / .html（原样落字节）。
+
+    见 :func:`_save_export` 与 `office.build_text`。
+    """
     markdown = _require(args, "markdown")
     if len(markdown) > office.MAX_CHARS:
         raise InvalidRequestError(
             f"正文太长（{len(markdown)} 字，上限 {office.MAX_CHARS}）。"
-            "这么长的材料更适合拆成几份，或者直接用 create_note 存成笔记"
+            "这么长的材料更适合拆成几份分别导出"
         )
     kind = _suffix_of(_require(args, "filename"))
-    if kind not in ("docx", "pdf"):
-        raise InvalidRequestError(
-            f"export_document 只做 .docx 与 .pdf（收到 .{kind}）。"
-            "表格用 export_table，幻灯用 export_deck"
+    if kind in office.PLAIN_TEXT_KINDS:
+        # 纯文本类**不过转换器**：它们的"产出"就是正文本身（见 office.build_text）
+        content = _build(kind, office.build_text, markdown, kind=kind)
+    elif kind in ("docx", "pdf"):
+        content = _build(
+            kind,
+            office.build_docx if kind == "docx" else office.build_pdf,
+            markdown,
+            title=str(args.get("title") or ""),
         )
-    title = str(args.get("title") or "")
-    content = _build(
-        kind,
-        office.build_docx if kind == "docx" else office.build_pdf,
-        markdown,
-        title=title,
-    )
+    else:
+        raise InvalidRequestError(
+            f"export_document 只做 .docx / .pdf / .md / .txt / .csv / .html（收到 .{kind}）。"
+            "表格用 export_table（.xlsx），幻灯用 export_deck（.pptx）"
+        )
     return _save_export(
         services, args, content, caller=caller, kind=kind, conversation_id=conversation_id
     )
@@ -1209,20 +1244,24 @@ def _export_deck(
     )
 
 
-def _build(kind: str, builder: Any, *args: Any, **kwargs: Any) -> bytes:
+def _build(fmt: str, builder: Any, *args: Any, **kwargs: Any) -> bytes:
     """跑一次产出。
 
     **依赖缺失先判、单独报**：它是"这台机器上做不到"（要装东西），
     与"这份输入造不出来"是两回事。合成一句话的话，模型会去反复改内容，
     而问题根本不在那里。
+
+    第一个参数叫 ``fmt`` 而不是 ``kind``：``build_text`` 自己要收一个 ``kind``
+    关键字参数，同名会让 `_build(kind, build_text, …, kind=kind)` 直接报
+    "got multiple values for argument"。
     """
-    problem = office.missing_requirement(kind)
+    problem = office.missing_requirement(fmt)
     if problem:
         raise InvalidRequestError(problem)
     try:
         return builder(*args, **kwargs)
     except RuntimeError as exc:  # 产出过程中的内容问题（如 PDF 里出现非法标记）
-        raise InvalidRequestError(f"生成 {kind} 失败：{exc}") from exc
+        raise InvalidRequestError(f"生成 {fmt} 失败：{exc}") from exc
 
 
 def _save_export(

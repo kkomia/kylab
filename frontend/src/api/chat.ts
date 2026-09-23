@@ -112,7 +112,12 @@ export interface ChatArtifact {
   artifact_id: string
   name: string
   size_bytes: number
-  /** 扩展名（`docx` / `xlsx` / `pptx` / `pdf`），用来选图标。 */
+  /**
+   * 扩展名，用来选图标，也决定预览走哪个渲染器（见 `FilePreview.vue`）。
+   *
+   * 值是导出时定下的那份格式：`docx` / `pdf` / `md` / `txt` / `csv` / `html` /
+   * `xlsx` / `pptx`（v0.41 起正文类多了后面四种纯文本，见 `export_document`）。
+   */
   format: string
   /** 落在哪儿：`workspace`（工作区目录）/ `object`（会话临时区）/ `document`（直接进的库）。 */
   storage?: string

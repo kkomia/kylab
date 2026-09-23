@@ -217,6 +217,54 @@ def test_pdf_escapes_markup_characters() -> None:
     assert "a < b && c > d" in text
 
 
+# ------------------------------------------------------------------ 纯文本（v0.41）
+
+
+@pytest.mark.parametrize("kind", ["md", "txt", "csv", "html"])
+def test_text_kinds_are_written_as_is(kind: str) -> None:
+    """纯文本类**原样落字节**，不做 Markdown → 纯文本的改写。
+
+    改写（``# 标题`` → ``标题``、``| a | b |`` → 一行竖线）会让对方下载到的东西
+    与屏幕上看到的不是同一份——而"我拿到的和你给我看的不一样"是最没法解释的一类问题。
+    """
+    raw = office.build_text(MARKDOWN, kind=kind)
+
+    assert raw.decode("utf-8-sig") == MARKDOWN
+
+
+def test_csv_gets_a_bom_so_excel_does_not_mangle_chinese() -> None:
+    """含中文的 .csv 要带 UTF-8 BOM。
+
+    Excel / WPS 双击打开无 BOM 的 UTF-8 CSV 会按本地编码（中文环境是 GBK）解，
+    中文全是乱码——而一份 .csv 的去向几乎总是"被 Excel 打开"。
+    BOM 对别的读法无害：我们自己的解析器就是按 ``utf-8-sig`` 起头解的。
+    """
+    raw = office.build_text("项目,眼轴\n复查,3 个月\n", kind="csv")
+
+    assert raw.startswith(b"\xef\xbb\xbf")
+    assert raw.decode("utf-8-sig").startswith("项目,眼轴")
+
+
+def test_markdown_export_reads_back_through_the_ingest_pipeline() -> None:
+    """写出去的 .md 要能被**入库管线里那个真的解析器**读回来，且一字不差。
+
+    与 docx / pdf 那几条同一个手法（见文件头）：.md 是"原样交付"，
+    所以回读必须完全相等——多一层转义、少一个换行都算交付错了东西。
+    """
+    from app.parsers.plain_text import PlainTextParser
+
+    parsed = PlainTextParser().parse(
+        filename="随访方案.md", content=office.build_text(MARKDOWN, kind="md")
+    )
+
+    assert parsed.markdown == MARKDOWN
+
+
+def test_unknown_text_kind_is_refused() -> None:
+    with pytest.raises(RuntimeError, match="不是纯文本产出"):
+        office.build_text("正文", kind="rtf")
+
+
 # ------------------------------------------------------------------ 依赖
 
 
@@ -242,5 +290,10 @@ def test_unknown_format_is_named_back() -> None:
 
 
 def test_no_missing_requirement_for_the_formats_we_ship() -> None:
-    for kind in ("docx", "xlsx", "pptx", "pdf"):
+    """四种转换类与四种纯文本类都不缺东西。
+
+    **纯文本类回空串不是巧合**：它们不需要任何库，而报"缺依赖"会让工具层
+    在明明做得到的事情上回一句"做不到"（这正是"没有 .md 导出"的一半成因）。
+    """
+    for kind in ("docx", "xlsx", "pptx", "pdf", *office.PLAIN_TEXT_KINDS):
         assert office.missing_requirement(kind) == "", kind

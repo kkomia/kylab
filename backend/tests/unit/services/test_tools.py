@@ -641,6 +641,31 @@ def test_attach_note_needs_write_on_the_target_kb(
         )
 
 
+def test_create_note_points_back_to_the_delivery_tool(services: Services, admin: Caller) -> None:
+    """用错工具时要能**自己纠正**（v0.41，用户报的第 2 条）。
+
+    现象是"对方要一份文件，它把内容存成了笔记"——落点错了，而用户在对话页上
+    什么也拿不到（笔记只进笔记列表）。返回值里那句指路就是给这种情况准备的：
+    **它不需要用户再纠正一遍**，下一句就能改成导出。
+    """
+    result = call_tool(services, "create_note", {"content_md": "# 周会纪要"}, caller=admin)
+
+    assert "export_document" in result["note"]
+    assert "笔记" in result["note"]
+
+
+def test_note_and_export_descriptions_split_the_work() -> None:
+    """分工要**两边都写**：只写在一边等于没写。
+
+    描述是写给模型看的（见 `tool_definitions` 的说明），它选哪个工具只看这两段话——
+    原先两段都没提对方，于是"给我一份 .md"与"把这个记下来"在它眼里没有区别。
+    """
+    definitions = {item["name"]: item["description"] for item in tool_definitions()}
+
+    assert "export_document" in definitions["create_note"]
+    assert "create_note" in definitions["export_document"]
+
+
 def test_attach_unknown_note_raises(services: Services, kb: str, admin: Caller) -> None:
     with pytest.raises(NotFoundError):
         call_tool(
@@ -874,9 +899,11 @@ def test_export_pdf_is_a_readable_pdf(services: Services, kb: str, admin: Caller
     assert "每三个月测量一次眼轴长度" in text
 
 
-def test_export_refuses_a_wrong_extension(services: Services, kb: str, admin: Caller) -> None:
+def test_export_document_still_refuses_a_wrong_extension(
+    services: Services, kb: str, admin: Caller
+) -> None:
     """格式由扩展名决定，**不猜**：给 .xlsx 走文档那条路就得当场说清。"""
-    with pytest.raises(InvalidRequestError, match=r"只做 \.docx 与 \.pdf"):
+    with pytest.raises(InvalidRequestError, match=r"只做 \.docx / \.pdf / \.md"):
         call_tool(
             services,
             "export_document",
@@ -888,6 +915,15 @@ def test_export_refuses_a_wrong_extension(services: Services, kb: str, admin: Ca
             services,
             "export_table",
             {"knowledge_base_id": kb, "filename": "表.csv", "rows": [["a"]]},
+            caller=admin,
+        )
+    # .md 能交付了，但**不是"什么后缀都收"**：纯文本类也是原样落字节，
+    # 内容是一段 Markdown 却起了 .exe 的名字，落下去就是一份"我们交付的可执行文件"
+    with pytest.raises(InvalidRequestError, match=r"只做 \.docx / \.pdf / \.md"):
+        call_tool(
+            services,
+            "export_document",
+            {"knowledge_base_id": kb, "filename": "木马.exe", "markdown": "x"},
             caller=admin,
         )
 
@@ -1253,6 +1289,70 @@ def test_export_ignores_a_knowledge_base_id_from_the_model(
     )
 
     assert services.documents.count_documents(kb) == before
+
+
+def test_export_document_delivers_a_markdown_file(
+    services: Services, kb: str, admin: Caller
+) -> None:
+    """**用户报的第 3 条**：要一份 .md 时得交得出去（v0.41）。
+
+    改之前导出只认 .docx 与 .pdf，模型的实测答复是"导出文件只有那四种格式，没有 .md；
+    沙箱也没开"，最后只能让用户自己复制。而"给我一份 .md / .txt"是再普通不过的交付要求——
+    **交付这件事不该挑格式**：.md 与 .docx 的差别只在对方拿它干什么。
+    """
+    from app.services.tools import ARTIFACT_KEY
+
+    conversation_id = services.conversations.create(title="交付 .md").id
+    before = services.documents.count_documents(kb)
+    body = "# 随访方案\n\n每三个月测一次。\n"
+
+    result = call_tool(
+        services,
+        "export_document",
+        {"filename": "随访方案.md", "markdown": body},
+        caller=admin,
+        conversation_id=conversation_id,
+    )
+
+    assert result["format"] == "md"
+    # 产物的**记录真的落在这条会话上**：对话页那张卡片就按这条记录挂出来
+    record = services.artifacts.get(result["artifact_id"])
+    assert record.conversation_id == conversation_id
+    assert record.name == "随访方案.md" and record.format == "md"
+    assert [item.id for item in services.artifacts.list_for_conversation(conversation_id)] == [
+        record.id
+    ]
+    assert result[ARTIFACT_KEY]["format"] == "md"
+    # .md 是原样交付：落下去的字节就是正文本身。
+    # 尾部的换行不在里面——那是 `_require` 对所有工具参数统一做的首尾去空白，
+    # 不是这条链路改的内容（测试想把这一点也钉住，所以比的是 strip 之后的那份）
+    assert services.artifacts.content(record).decode("utf-8") == body.strip()
+    # 与 .docx 那条同一口径：交付**不进知识库**，那是另一个显式动作
+    assert services.documents.count_documents(kb) == before
+
+
+def test_export_document_delivers_every_plain_text_kind(
+    services: Services, admin: Caller
+) -> None:
+    """四种纯文本类都要能交出去，且 `format` 认得出各自的后缀。
+
+    前端按 `format` 选渲染器与图标（见 `FilePreview`）：字段值错了，
+    卡片上会是"这个格式不能在这里预览"——**文件其实好好的，只是没人认得它**。
+    """
+    from app.services import office
+
+    conversation_id = services.conversations.create(title="四种纯文本").id
+
+    for kind in office.PLAIN_TEXT_KINDS:
+        result = call_tool(
+            services,
+            "export_document",
+            {"filename": f"交付.{kind}", "markdown": "正文一行"},
+            caller=admin,
+            conversation_id=conversation_id,
+        )
+        assert result["format"] == kind
+        assert services.artifacts.get(result["artifact_id"]).format == kind
 
 
 def test_ingest_artifact_files_an_exported_file(

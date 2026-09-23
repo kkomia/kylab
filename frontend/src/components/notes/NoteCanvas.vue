@@ -382,20 +382,41 @@ defineExpose({ warm })
   border-radius: var(--radius-control);
 }
 
-/* 图片外面是 ResizableNodeView 生成的「容器 + 包裹层 + 手柄」，这里只补两件事：
-   包裹层别超栏宽，以及手柄的"安静"样子。 */
+/* 图片外面是 ResizableNodeView 生成的「容器 > 包裹层 > 图片 + 手柄」。
+   **尺寸只该有一个来源**：图片自己的内联 width（拖出来的那个，也是落盘的那个），
+   容器与包裹层都不另设宽度，只负责"跟着图走"。
+
+   容器这一条是给蓝框（选中态的 outline 画在容器上）治病的：容器默认是**块级 flex、
+   宽度铺满整栏**，而图往往比整栏窄，框于是永远比图宽——实测（headless Chrome，栏宽 732）：
+   图 460 时框右边多出 272px、图 120 时多出 612px，左沿也因 outline-offset 探出去 3px，
+   就是用户看到的"蓝框比图片大一圈、左右都超出"。`fit-content` 让容器收缩到内容宽，
+   框正好落在图片边框上；它仍是块级 flex，ProseMirror 期望的块级盒子身份不变。
+   `max-width` 兜一道"拖出栏宽时框也别溢出去"（拖到列宽上限时框与图仍重合，实测 0 偏差）。 */
+.editor-content :deep([data-resize-container]) {
+  width: fit-content;
+  max-width: 100%;
+}
+
+/* 包裹层同样不设尺寸，只兜一道"别超栏宽"：真正的截断点在图自己身上
+   （`.tiptap img` 的 `max-width: 100%`）。两道都在不影响结果，但**别让包裹层有自己的
+   宽度**——它一旦和图不一致，框与图就又分家了。 */
 .editor-content :deep([data-resize-wrapper]) {
   max-width: 100%;
 }
 
-/* 高度永远跟宽度与图片自身比例走。
+/* 高度永远跟宽度与图片自身比例走；块级化去掉行内元素底下那条基线缝。
  *
- * ResizableNodeView 拖拽时会往图片上写**内联** width/height，而宽度会被上面的
+ * 高度：ResizableNodeView 拖拽时会往图片上写**内联** width/height，而宽度会被上面的
  * `max-width: 100%` 截住、高度不会——于是"往右拖出栏宽"会把图压扁，而且
  * mouseup 落库读的是 offsetWidth/offsetHeight，压扁的比例会被写进正文。
  * 让高度始终由宽度决定，截断就看不出、存下来的也是真实比例。
- * 内联样式只能靠 `!important` 压过，这是它的唯一用途，不是随手加的。 */
+ * 内联样式只能靠 `!important` 压过，这是它的唯一用途，不是随手加的。
+ *
+ * 块级：图默认是行内元素、坐在包裹层的基线上，底下会空出一条 line-height 的缝
+ * （实测 7.3px：line-height 1.75 的 strut），包裹层因此比图高，跟着它走的容器下沿
+ * 与右下角手柄也就落到图片边框下面去了。块级化之后包裹层的高度就等于图的高度。 */
 .editor-content :deep([data-resize-wrapper] img) {
+  display: block;
   height: auto !important;
 }
 
@@ -434,6 +455,8 @@ defineExpose({ warm })
   }
 }
 
+/* 蓝框画在容器上——容器的盒子 = 图片的盒子（见上面那条 `fit-content`）。
+   `outline-offset` 那 1px 是让开图片自己那圈 hairline 边框，不是"框比图大"。 */
 .editor-content :deep([data-resize-container].ProseMirror-selectednode) {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
