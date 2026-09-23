@@ -184,10 +184,14 @@
   background: var(--bg-hover);
 }
 
+/* 选中的标签：与全站"选中"同一套（`misc.css` 的 `.m-filter-on` / `.m-kb-pick-on`）
+   ——中性选中底 + 强描边 + 主文字色。
+   原来是"蓝字 + 蓝 10% 底 + 冷蓝描边"，属于评审的跨页共性问题 3（蓝色被用在
+   大面积选中上）：标签筛选是**位置信息**（我在看哪一批），不是强调。 */
 .tag-on {
-  color: var(--accent-text);
-  background: var(--accent-soft);
-  border-color: var(--accent-selected);
+  background: var(--bg-selected);
+  border-color: var(--border-strong);
+  color: var(--text-primary);
 }
 
 .tag-count {
@@ -238,8 +242,11 @@
   background: var(--bg-hover);
 }
 
+/* 当前阅读的那一行：与侧栏会话条 / `.m-kb-pick-on` 同一口径——中性选中底、不描边
+   （列表行是"我在哪"，一行一条粗边会把整列框成表格）。
+   原先是蓝色 10% 底，同一个跨页共性问题 3。 */
 .note-item-active {
-  background: var(--accent-soft);
+  background: var(--bg-selected);
 }
 
 .note-item-title {

@@ -185,7 +185,8 @@ export function KbSearchPanel({ open, kbId, kbName, onClose, onOpenDocument }: K
                       onChange={(event) => setCandidateK(event.target.value)}
                     />
                   </label>
-                  <Label className="kb-switch">
+                  {/* 14px / 400（同 `.kb-switch`：布局在 CSS，字号/字重在调用点） */}
+                  <Label className="kb-switch text-[length:var(--text-meta-size)] font-normal">
                     <Checkbox
                       checked={rerank}
                       aria-label="启用 rerank（失败自动退回 RRF 顺序）"

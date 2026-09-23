@@ -638,7 +638,8 @@ export function KnowledgeBaseSettings({ kb, className, onChanged }: KnowledgeBas
                       <InfoTip text="把库里已录入的内容整理成分层页面，每个要点标注原文出处。开启只是允许生成，构建要到 Wiki 页点「生成 Wiki」；页面越多，耗时与模型调用越多。" />
                     </h3>
                     <div className="kb-field">
-                      <Label className="kb-switch">
+                      {/* 14px / 400（同 `.kb-switch`：布局在 CSS，字号/字重在调用点） */}
+                      <Label className="kb-switch text-[length:var(--text-meta-size)] font-normal">
                         <Checkbox
                           checked={wikiEnabled}
                           aria-label="为这个知识库开启 Wiki"

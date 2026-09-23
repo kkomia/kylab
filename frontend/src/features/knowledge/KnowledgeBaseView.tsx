@@ -996,10 +996,15 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
             <div className="kb-filters">
               <div className="kb-search-box">
                 <Search className="kb-search-icon" size={16} aria-hidden="true" />
+                {/* 输入框的"底 + 无描边 + 圆角 + 给图标让位"写在调用点：收层之后
+                    utilities 赢过 knowledge.css，原语自己的 `px-3 / bg-surface / border-border`
+                    会把 `.kb-search-box [data-slot='input']` 那几条吃掉（图标压到文字上）。
+                    左内边距的算式与 `.kb-search-icon` 的 `left` 同一份：12px + 图标与间隙 24px。 */}
                 <Input
                   value={searchDraft}
                   placeholder="按文件名过滤…"
                   aria-label="按文件名过滤"
+                  className="rounded-row border-transparent bg-subtle pl-[calc(var(--space-3)+24px)]"
                   onChange={(event) => setSearchDraft(event.target.value)}
                 />
               </div>
@@ -1595,18 +1600,23 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
             {/*
               目标目录：`@/ui/radio-group`（Radix）。值域里 `''` 是"根目录（未归档）"，
               而 Radix 的单选项允许空串，所以这个哨兵值不需要（与两个筛选下拉不同）。
+              每一行是"读得到的选项文字"：14px / 400，与 label 原语默认的 12px / 500 不同，
+              字号写在调用点（`.kb-switch` 只留布局，见 knowledge.css）。
             */}
             <RadioGroup
               value={moveChoice}
               onValueChange={setMoveChoice}
               className="flex flex-col gap-1"
             >
-              <Label className="kb-switch">
+              <Label className="kb-switch text-[length:var(--text-meta-size)] font-normal">
                 <RadioGroupItem value="" aria-label="根目录（未归档）" />
                 <span>根目录（未归档）</span>
               </Label>
               {folders.map((folder) => (
-                <Label key={folder.id} className="kb-switch">
+                <Label
+                  key={folder.id}
+                  className="kb-switch text-[length:var(--text-meta-size)] font-normal"
+                >
                   <RadioGroupItem value={folder.id} aria-label={folder.name} />
                   <span>{folder.name}</span>
                 </Label>

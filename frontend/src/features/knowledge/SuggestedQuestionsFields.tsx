@@ -80,7 +80,9 @@ export function SuggestedQuestionsFields({ value, onChange }: SuggestedQuestions
   return (
     <div className="kb-suggested">
       <div>
-        <Label className="kb-switch">
+        {/* 14px / 400：这一行是"读得到的选项文字"，label 原语的 12px / 500 是字段标签口径
+            （`.kb-switch` 只留布局，字号必须写在调用点——原语内部走 `cn()`，后写者为准） */}
+        <Label className="kb-switch text-[length:var(--text-meta-size)] font-normal">
           <Checkbox
             checked={value.enabled}
             aria-label="为每个切块生成推荐问题"
