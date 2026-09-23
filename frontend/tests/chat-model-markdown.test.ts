@@ -713,7 +713,7 @@ describe('行内公式的边界（GitHub 口径：`$` 与内容之间不留空�
   // 补的这条边界是**主流口径**（GitHub 的实现要求 `$` 紧挨内容），
   // 于是 `$x$` 照排、`$5 到 $10` 与 `$ x $` 退回普通文本。
   it('紧挨内容的 `$x$` 照排', () => {
-    const out = html(renderAnswerMarkdown('眼轴 $24\mathrm{mm}$ 上下。'))
+    const out = html(renderAnswerMarkdown('眼轴 $24\\mathrm{mm}$ 上下。'))
 
     expect(out).toContain('katex')
     expect(out).not.toContain('$24')
@@ -736,8 +736,8 @@ describe('行内公式的边界（GitHub 口径：`$` 与内容之间不留空�
     expect(out).toContain('不算公式。')
   })
 
-  it('只带转义符的 `$52.7\%$` 照排（旧口径反而认不出来）', () => {
-    const out = html(renderAnswerMarkdown('占比 $52.7\%$ 上下。'))
+  it('只带转义符的 `$52.7\\%$` 照排（旧口径反而认不出来）', () => {
+    const out = html(renderAnswerMarkdown('占比 $52.7\\%$ 上下。'))
 
     expect(out).toContain('katex')
   })
