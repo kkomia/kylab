@@ -175,7 +175,7 @@ frontend-react/
 | **P2 应用壳** | 完成（首版） | `ea0425c` | 路由与旧 vue-router 逐条对应 + 登录守卫 + 标题映射 + 全局 Toaster；19 个 shadcn 原语 vendor 进 `src/ui`（令牌化） |
 | **P3 知识库域** | 完成（首版） | `ea0425c` | 列表/详情/Wiki/文档详情 + 抽屉/上传/分享/数据源/时间线/库内检索；75 条用例 |
 | **P4 笔记 + 其余** | 完成（首版） | `ea0425c` | 笔记 tiptap React（84 条用例）；任务/记忆/工作区/能力/设置/驾驶舱/登录/404（50 条用例）；Office 预览三套渲染器（27 条用例） |
-| **P5 切换** | 未开始（准备件已就绪） | — | 需要：逐页浏览器对照（同一条会话/同一份数据）、nginx 路径分流、删 `frontend/`、`check-frontend.sh` 改指向。`frontend-react/{nginx.conf,Dockerfile}` 已按旧前端逐字备好（P5 只改 compose 的 `context` 与镜像名） |
+| **P5 切换** | **待人工对照**（其余准备件已就绪） | — | 需要：逐页浏览器对照（同一条会话/同一份数据）、nginx 路径分流、删 `frontend/`、`check-frontend.sh` 改指向。`frontend-react/{nginx.conf,Dockerfile}` 已按旧前端逐字备好（P5 只改 compose 的 `context` 与镜像名） |
 
 **当前门禁**：`scripts/check-react.sh` 全绿（lint / tsc / **434 条用例** / 构建 / emoji / API 契约）；
 旧前端与后端的门禁**不受影响**（本计划第 1 节的纪律：两套互不当对方的红灯）。
@@ -191,10 +191,22 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
 公式换成标准路线 `remark-math` + `rehype-katex`（8 条口径差异写在 `chat/model/README.md`）。
 **门禁**：`scripts/check-react.sh` 全绿，**468 条用例**（434 → 468）。
 
+**已完成（第三轮）**：**应用壳接线**——`features/layout/**`（侧栏 / 历史会话面板 / 用户区 /
+全局快捷键宿主 / 401 转登录 / 换页关面板）进路由，落地页回 `/` = 概览（与旧前端一致），
+登录页留在壳外；对话页**文件抽屉**补齐审计的 F11–F14（子目录进出 / 就地预览走
+`@/features/preview` / 往文件区上传 / 行拖出做引用）；完整性审计报告见
+[React-迁移完整性审计 v0.1](../调研/React-迁移完整性审计-v0.1.md)（22 条缺口 → 已清第一档 5 条）。
+**门禁**：`scripts/check-react.sh` 全绿，**510 条用例**（468 → 510）。
+
 **下一步（P5 之前必须做的事）**：
 
 1. **人工对照**：同一条会话、同一份笔记、同一个库，在两套前端里逐页截图比对——
-   这是 §0 验收第 2 条，**目前一次都没做过**（各域报告只做了代码级对照）；
+   这是 §0 验收第 2 条，**目前一次都没做过**（各域报告只做了代码级对照）。
+   **卡点**：本机 dev 库 `users` 表里 `kkomia` / `yumao` 两个 admin 账号都在且未停用，
+   但记录里的旧口令已被后端判"用户名或密码不正确"——需要用户给一个能进后台的会话
+   （或用户自己在两个前端里各登一次做对照）；
+   审计报告 §6 第二档还留着几条"需要对照时一起看"的项（对话域逐按钮核对、预热缺失、
+   通知条关闭按钮等），逐条记在那份文档里；
 2. **`src/ui` 原语替换**：知识库域自带的 `primitives.tsx`（占位实现）与 misc 域的 `shared/ui.tsx`
    应在对照通过后替换成 `src/ui/*`（shadcn），去掉两份手写外壳；
 3. **侧栏（壳）还没做**：`layout.toggleSidebar` / `chat.new` 的快捷键已接在对话页，
