@@ -271,6 +271,9 @@ ssh kkomia@192.168.31.18   "cd /vol1/1000/docker/kylab/app && sh /vol1/1000/dock
 sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react
 ```
 
+NAS README 另有「**部署后核对与回滚**」一节（`a` 机器可判两条 + 人眼三条：登录 / 发一句看流式与出处 /
+知识库与笔记各开一处；回滚是把 `frontend/` 换回 `agent` 分支那份再只重建前端，两分钟）。
+
 脚本带**四道守卫**（都用临时目录模拟验证过）：源码是新前端才继续；还是旧 Vue 就**拒绝构建**
 并打印三条换源码的路子（退出码 2）；`app/docker-compose.yml` 不在就提示路径不对（2）；
 用不了 docker 就把 `sudo sh <脚本> react` 那行打出来（3）。构建走 **npmmirror**

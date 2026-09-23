@@ -139,6 +139,32 @@ ls -l /vol1/1000/docker/kylab/data/memory
 界面：`http://192.168.31.18:8081`（首次打开会让你创建管理员账号）。
 接口文档：`http://192.168.31.18:8081/api/v1/docs`；健康检查：`/api/v1/health`（不鉴权）。
 
+## 部署后核对与回滚（前端换成 React 那次起补的一节）
+
+**部署后核对 5 条**（`deploy-from-windows.sh` 只做了第 1、2 条的机器可判部分，
+剩下三条要人眼过一下——它们是"页面能开"之后最容易漏的）：
+
+| # | 怎么核 | 期望 |
+| --- | --- | --- |
+| 1 | `curl -s http://127.0.0.1:8081/ \| grep -o 'id="root"'` | 打到 `id="root"`（React 版；旧 Vue 是 `id="app"`） |
+| 2 | `curl -s http://127.0.0.1:8081/api/v1/health` | `{"status":"ok",…}` |
+| 3 | 浏览器打开 8081，**登录一次** | 能进（凭据是库里的账号；前端换成 React 不影响登录） |
+| 4 | **发一句提问**，看流式与出处 | 字逐段出来（不是等半天一次出完）、出处徽标可点 |
+| 5 | 打开一个知识库、翻一页文档、开一条笔记 | 列表/分页/抽屉/编辑器都在；控制台无红色报错 |
+
+**回滚**（前端这一层，两分钟）：
+
+```bash
+# 在服务器上：把 src/frontend 换回旧版（Vue 在 agent 分支），再只重建前端
+cd /vol1/1000/docker/kylab/src && git archive <旧提交> frontend | tar -x -C . --overwrite
+cd /vol1/1000/docker/kylab/app && docker compose build frontend && docker compose up -d frontend
+# 核对：curl -s http://127.0.0.1:8081/ | grep -o 'id="app"'   # 回到旧版
+```
+
+从本机做也行（与部署对称）：`git archive --format=tar <旧提交> frontend | ssh kkomia@192.168.31.18 "tar -x -C /vol1/1000/docker/kylab/src --overwrite && cd /vol1/1000/docker/kylab/app && docker compose build frontend && docker compose up -d frontend"`。
+旧前端的最后一个提交在 `agent` 分支上（`git log agent -1 -- frontend` 可取到哈希）。
+**后端不用回滚**：这一批没动它（`docker compose build frontend` 也只重建前端）。
+
 ## `.env`（在服务器上，不进仓库）
 
 `app/.env` 只有四项，值与本机 `/vol1/1000/docker/kylab/docker-compose.yml` 里的一致：
