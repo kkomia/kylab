@@ -231,7 +231,10 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
    概览（真实统计）/ 知识库详情（31 篇文档、目录树、工具栏）/ 笔记（真实列表）/ 任务中心
    （真实任务行）/ 能力（7 个技能 + 五档筛选）全部正常，侧栏**13 条真实会话**都在，挂载点 `#root`。
    ——**NAS 上要跑的那份 dist 与本机验过的是同一份。**
-3. 锁文件含 `@esbuild/linux-x64`、`@tailwindcss/oxide-linux-x64-gnu`（容器里装得上）；
+3. **懒加载在生产产物上也验过**（§12.248 的拆分之后）：生产构建首屏是概览、**不含对话页**
+   （`chatLoaded:false`，13 条真实会话在侧栏），点进一条会话后 `thread`/`composer` 都在
+   ——说明打包后的 `ChatPage-*.js` 能在真实浏览器里正常按需拉起（dev 与 prod 各验一次）。
+4. 锁文件含 `@esbuild/linux-x64`、`@tailwindcss/oxide-linux-x64-gnu`（容器里装得上）；
    本机那两个 win32 包被 `.dockerignore` 排掉，不会带进 Linux 构建。
 
 ### 10.2.1 发版口径：**没动版本号，也没写 CHANGELOG**
