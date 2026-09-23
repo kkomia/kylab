@@ -99,6 +99,11 @@ import 也从 `@radix-ui/react-*` 换成了统一的 `radix-ui` 包——凭记�
 | `selection:bg-primary`                                              | `selection:bg-[var(--accent-selected)]`                               | 选中文字底（= `Others-TextSelected`）                                                          |
 | `text-foreground`                                                   | `text-text-primary`                                                   |                                                                                                |
 | `bg-foreground`（徽章底色 / 开关滑块）                              | `bg-[var(--badge-bg)]` / `bg-surface`、`bg-[var(--Always-White)]`     | 恒定色只用于"压在有色底上的白"                                                                 |
+| `bg-primary/20`（**进度条空槽**）                                   | `bg-[var(--meter-track)]`                                             | `--meter-track` 的注释就是"进度条空槽"（`Fills-F3`）                                           |
+| `bg-primary`（**进度条填充 / 勾选与单选的选中态**）                 | `bg-[var(--accent)]` + `text-[var(--Always-White)]`                   | 小面积强调用品牌蓝；勾/点在蓝底上用恒定白（与开关滑块同一档）                                  |
+| `border-input`（**复选框 / 单选框未选中**）                         | `border-border`                                                       | 与输入框同一档描边                                                                             |
+| `ring-2 ring-background`（**成组头像 / 状态点外那圈"隔断"**）       | `border-2 border-canvas`                                              | 本仓 `ring-*` 只有全局焦点环一处，这里要的是描边不是环，取值仍是 `--bg-canvas`                 |
+| `bg-border`（**拖拽把手 / 滚动条滑块**）                            | `bg-[var(--border-strong)]`                                           | 滑块/把手比描边深一档                                                                          |
 | `shadow-sm/md/lg`                                                   | `shadow-[var(--shadow-popover)]`，静态面**不用阴影**                  | `--shadow-popover` 是唯一的浮层阴影                                                            |
 
 ### 2.2 尺寸与间距
@@ -125,6 +130,7 @@ import 也从 `@radix-ui/react-*` 换成了统一的 `radix-ui` 包——凭记�
 | 卡片                                                | `rounded-[var(--radius-panel)]`   | `--radius-panel` 16px                  |
 | 浮层（菜单/下拉/选择/弹窗/抽屉/气泡之外的 popover） | `rounded-[var(--radius-overlay)]` | `--radius-overlay` 20px                |
 | `rounded-full`（开关/滑块/头像）                    | `rounded-pill`                    | `--radius-pill`                        |
+| `rounded-[4px]`（复选框、拖拽把手里的小方块）       | `rounded-[var(--radius-badge)]`   | `--radius-badge` 就是 4px 方角         |
 | 徽章                                                | `rounded-[var(--radius-badge)]`   | `--radius-badge` **4px 方角**（见 §4） |
 
 > `index.css` 里注册的 `--radius-card` 指向一个**不存在**的 `--radius-card` 令牌，
@@ -166,48 +172,62 @@ import 也从 `@radix-ui/react-*` 换成了统一的 `radix-ui` 包——凭记�
 
 ## 4. 有意偏离上游的地方（全部有理由，改回去之前先读理由）
 
-| 偏离                                                           | 理由                                                                                                               |
-| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `Button` 默认高度 36 → **32px**                                | 本仓"按钮与输入框同高"的硬口径（`--control-height`）                                                               |
-| `Button variant="destructive"` 是**红字 + 浅红底**，不是红实心 | 沿用旧前端 `AppButton variant="danger"`；Kimi 的纪律是"动作靠墨色，红只做小面积"，且白字压红在深色主题下只有 3.0:1 |
-| `Badge` 圆角 999px → **4px 方角**                              | `tokens.css` 对 `--radius-badge` 有明确注解："Kimi 的 badge 一律 4px 方角，胶囊是最像生成式设计的一种做法"         |
-| `Tooltip` 浅底 + 描边（上游是反色气泡），并**去掉小三角**      | 与旧前端 `InfoTip` 一致；带描边的气泡接实心三角会留接缝                                                            |
-| `Popover`/菜单**保留 1px 描边**                                | Kimi 深色靠底色差分，浅色下 `Bg-Tertiary`(#fff) 与画布(#fbfaf9) 几乎同色，必须靠描边                               |
-| `Card` 去掉 `shadow-sm`                                        | 规范：静态内容不用阴影                                                                                             |
-| `Skeleton` 底色 `bg-accent` → `bg-[var(--bg-hover)]`           | 与旧前端 `SkeletonBlock` 同款                                                                                      |
-| `Tabs` 指示条/当前项用**墨色与底色差**，不用品牌蓝             | 同上，强调只在小面积上用品牌色                                                                                     |
-| `ScrollArea` 只是"要和浮层一起滚"时才用                        | 全局原生细滚动条（tokens.css 那一大段）已经覆盖常规场景                                                            |
-| `Sheet` 的关闭按钮 28×28 + `--bg-hover`                        | 与旧 `AppModal` 的关闭按钮同款                                                                                     |
-| `Toaster` 位置 `top-center`、图标用语义色、主题读 `data-theme` | 旧前端通知条在顶部居中；不引 `next-themes`                                                                         |
-| 字号写带 `length:` 提示的任意值形式而不是具名类                | 具名类与 `tokens.css` 的遗留辅助类同名且会被它们的 `color` 压过，见 §1.1                                           |
+| 偏离                                                           | 理由                                                                                                                |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `Button` 默认高度 36 → **32px**                                | 本仓"按钮与输入框同高"的硬口径（`--control-height`）                                                                |
+| `Button variant="destructive"` 是**红字 + 浅红底**，不是红实心 | 沿用旧前端 `AppButton variant="danger"`；Kimi 的纪律是"动作靠墨色，红只做小面积"，且白字压红在深色主题下只有 3.0:1  |
+| `Badge` 圆角 999px → **4px 方角**                              | `tokens.css` 对 `--radius-badge` 有明确注解："Kimi 的 badge 一律 4px 方角，胶囊是最像生成式设计的一种做法"          |
+| `Tooltip` 浅底 + 描边（上游是反色气泡），并**去掉小三角**      | 与旧前端 `InfoTip` 一致；带描边的气泡接实心三角会留接缝                                                             |
+| `Popover`/菜单**保留 1px 描边**                                | Kimi 深色靠底色差分，浅色下 `Bg-Tertiary`(#fff) 与画布(#fbfaf9) 几乎同色，必须靠描边                                |
+| `Card` 去掉 `shadow-sm`                                        | 规范：静态内容不用阴影                                                                                              |
+| `Skeleton` 底色 `bg-accent` → `bg-[var(--bg-hover)]`           | 与旧前端 `SkeletonBlock` 同款                                                                                       |
+| `Tabs` 指示条/当前项用**墨色与底色差**，不用品牌蓝             | 同上，强调只在小面积上用品牌色                                                                                      |
+| `ScrollArea` 只是"要和浮层一起滚"时才用                        | 全局原生细滚动条（tokens.css 那一大段）已经覆盖常规场景                                                             |
+| `Sheet` 的关闭按钮 28×28 + `--bg-hover`                        | 与旧 `AppModal` 的关闭按钮同款                                                                                      |
+| `Toaster` 位置 `top-center`、图标用语义色、主题读 `data-theme` | 旧前端通知条在顶部居中；不引 `next-themes`                                                                          |
+| `Avatar` 默认尺寸 32 → **28px**（`size-[var(--avatar-size)]`） | tokens.css 那一行注释就是照 Kimi 的 `.not-login-icon` 实测写的（28×28 圆形）                                        |
+| `Avatar` 兜底文字用 `--text-secondary`，不是三级灰             | 首字母/缩写是**要被读到的内容**，而三级灰的用途约束是"只给可略过的元信息"（见 `themes/light.css` 文件头）           |
+| `Checkbox` 选中态是**品牌蓝**（`--accent`）不是墨色实心        | 墨色实心在本仓只有一个意思："主按钮"；勾选框做成墨块会被读成一个按钮                                                |
+| `AlertDialog` 内边距 `p-6` → `p-4`、宽度 480px                 | 本仓的弹窗只有一套取值（`dialog.tsx` 的 `md` 档），`size="sm"` 仍保留 `max-w-xs`                                    |
+| `Progress` 把 `value` 也传给 `Root`                            | 上游只拿它算 `translateX`，于是 `role="progressbar"` 上没有 `aria-valuenow` / `aria-valuemax`——读屏读不出进度       |
+| `ContextMenu` / `Command` 的菜单取值**对齐 `DropdownMenu`**    | 上游这三份的 `p-1` / `p-2`、`shadow-md` / `lg`、字号各写各的；本仓菜单只有一套取值                                  |
+| `ResizableHandle` 删掉 `focus-visible:ring-1 ...`              | 与其它组件同一条：焦点环只有 `tokens.css` 那条全局 `:focus-visible`（`role="separator"` / `tabIndex` 由库给，未丢） |
+| 字号写带 `length:` 提示的任意值形式而不是具名类                | 具名类与 `tokens.css` 的遗留辅助类同名且会被它们的 `color` 压过，见 §1.1                                            |
 
-## 5. 已 vendor（19 个）
+## 5. 已 vendor（29 个）
+
+第一批（19 个，不动 `package.json`）：
 
 `button` `input` `textarea` `label` `badge` `card` `skeleton` `separator` `table` `switch`
 `scroll-area` `tabs` `tooltip` `popover` `dropdown-menu` `select` `dialog` `sheet` `sonner`
 
-## 6. 还没 vendor 的（10 个）—— 缺依赖，需要主控先加包
+第二批（10 个，依赖到位后落地）——**每个原语用的包**都写在这里，换包时别只改一处：
 
-| 组件           | 缺的包                         | 最新版 |
-| -------------- | ------------------------------ | ------ |
-| `alert-dialog` | `@radix-ui/react-alert-dialog` | 1.1.23 |
-| `checkbox`     | `@radix-ui/react-checkbox`     | 1.3.11 |
-| `radio-group`  | `@radix-ui/react-radio-group`  | 1.4.7  |
-| `context-menu` | `@radix-ui/react-context-menu` | 2.3.7  |
-| `avatar`       | `@radix-ui/react-avatar`       | 1.2.6  |
-| `progress`     | `@radix-ui/react-progress`     | 1.1.16 |
-| `collapsible`  | `@radix-ui/react-collapsible`  | 1.1.20 |
-| `command`      | `cmdk`                         | 1.1.1  |
-| `drawer`       | `vaul`                         | 1.1.2  |
-| `resizable`    | `react-resizable-panels`       | 4.13.2 |
-| （动画）       | `tw-animate-css`               | 1.4.0  |
+| 文件           | 包                             | 备注                                                                        |
+| -------------- | ------------------------------ | --------------------------------------------------------------------------- |
+| `alert-dialog` | `@radix-ui/react-alert-dialog` | 复用 `@/ui/button`；表面/圆角/内边距与 `dialog.tsx` 同一口径                |
+| `checkbox`     | `@radix-ui/react-checkbox`     | 选中态 `--accent` + `--Always-White`；4px 圆角取 `--radius-badge`           |
+| `radio-group`  | `@radix-ui/react-radio-group`  | 同上一条；圆点是 `rounded-pill` 槽 + `fill-current` 的 8px 点               |
+| `context-menu` | `@radix-ui/react-context-menu` | 取值逐条对齐 `dropdown-menu`（见 §4）                                       |
+| `avatar`       | `@radix-ui/react-avatar`       | 默认尺寸 `--avatar-size`（28px）；隔断圈用 `border-canvas` 替 `ring-*`      |
+| `progress`     | `@radix-ui/react-progress`     | 空槽 `--meter-track`、填充 `--accent`；`value` 同时给 `Root`（a11y）        |
+| `collapsible`  | `@radix-ui/react-collapsible`  | 上游这一版纯透传、一个类名都没有                                            |
+| `command`      | `cmdk`                         | `CommandDialog` 走 `@/ui/dialog` 的壳，不另写弹窗；搜索图标是 lucide        |
+| `drawer`       | `vaul`                         | 带手势拖拽；桌面优先的场景仍推荐 `sheet`（同一个 `@radix-ui/react-dialog`） |
+| `resizable`    | `react-resizable-panels`       | v4 的 `Group` / `Panel` / `Separator`；`role="separator"` + `tabIndex` 保留 |
 
-这些组件**故意没有落文件**：写了也会让 `tsc` 报 `TS2307 Cannot find module`，
-把门禁弄红。上游源码已经在 `.cache/upstream/fetch/ny-v4/` 里按同一个 commit 存着，
-依赖到位后照着本文件 §2 的映射表再走一遍即可（`alert-dialog` 还会用到 `@/ui/button`）。
-`progress` 落地时用 `bg-[var(--meter-track)]` 做空槽、`bg-[var(--accent)]` 做填充；
-`avatar` 用 `--avatar-size`（28px）；`checkbox`/`radio-group` 的选中色用 `--accent`、
-未选中描边用 `--border`。
+`tw-animate-css` 已经在 `package.json` 且 `src/index.css` 里 `@import` 了，
+所以 §2.4 那套 `animate-in` / `slide-in-from-*` 现在**真的在跑**，不是空类。
+
+## 6. 上游源码缓存
+
+`.cache/upstream/fetch/ny-v4/` 里按同一个 commit（`98a1fe6`）存着 35 份 `ui/*.tsx`。
+本次新落的 10 个文件都按同一流程重新从
+`raw.githubusercontent.com/shadcn-ui/ui/98a1fe67b439324ddc857f47fbdce056600a4329/apps/v4/registry/new-york-v4/ui/<name>.tsx`
+拉过一遍并与缓存逐字节比对（十个文件全部一致），再用 §2 的映射表改造。
+
+还没 vendor 的（上游有、我们暂时用不上）：`button-group` `empty` `input-group` `item` `kbd`
+`spinner`——它们都不是缺依赖，而是"目前没有调用方"。
 
 ## 7. 给主控的三条建议（都不在本次所有权内，故只报告）
 

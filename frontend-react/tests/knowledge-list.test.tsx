@@ -163,7 +163,9 @@ describe('知识库列表', () => {
     listMock.mockReturnValue(new Promise((done) => (resolve = done)))
     const { container } = renderView()
 
-    expect(container.querySelector('.kb-skeleton')).not.toBeNull()
+    // 骨架屏现在是 `@/ui/skeleton` 的块（预设由 `composites.tsx` 拼出来），
+    // 所以按它的 `data-slot` 断言，而不是旧实现的 `.kb-skeleton-row`
+    expect(container.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(4)
     expect(screen.queryByText('还没有知识库')).not.toBeInTheDocument()
 
     resolve({ items: [makeKB()] })

@@ -12,7 +12,8 @@ import { formatBytes } from '@/lib/format'
 
 import { useKnowledgeBases } from '../shared/knowledgeBases'
 import { notifyError, notifySuccess } from '../shared/toast'
-import { Button, ConfirmDialog, ErrorLine, InfoTip, SkeletonBlock } from '../shared/ui'
+import { Button } from '@/ui/button'
+import { ConfirmDialog, ErrorLine, InfoTip, SkeletonBlock } from '../shared/composites'
 
 export const STORAGE_QUERY_KEY = ['maintenance', 'storage'] as const
 
@@ -94,11 +95,7 @@ export function StorageSection() {
               </span>
               <span className="m-row-value tabular">{formatBytes(storage.data.free_bytes)}</span>
             </div>
-            <Button
-              variant="primary"
-              disabled={compact.isPending}
-              onClick={() => setConfirmOpen(true)}
-            >
+            <Button disabled={compact.isPending} onClick={() => setConfirmOpen(true)}>
               {compact.isPending ? '整理中…' : '整理存储'}
             </Button>
           </div>

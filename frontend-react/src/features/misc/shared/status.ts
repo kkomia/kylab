@@ -6,7 +6,7 @@
  *
  * **文字永远在**，颜色只是加速识别的辅助（规范 §8）。
  */
-import type { TagTone } from './ui'
+import type { TagTone } from './composites'
 
 export interface StatusView {
   label: string

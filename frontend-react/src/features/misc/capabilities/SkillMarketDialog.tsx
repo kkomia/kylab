@@ -44,15 +44,10 @@ import {
 } from '@/api/capabilities'
 
 import { notifySuccess } from '../shared/toast'
-import {
-  Button,
-  EmptyState,
-  Modal,
-  Select,
-  SkeletonBlock,
-  StatusTag,
-  TextInput,
-} from '../shared/ui'
+import { Badge } from '@/ui/badge'
+import { Button } from '@/ui/button'
+import { Input } from '@/ui/input'
+import { EmptyState, Modal, OptionSelect, SkeletonBlock, StatusTag } from '../shared/composites'
 
 const SOURCES_QUERY_KEY = ['skills', 'market', 'sources'] as const
 
@@ -299,13 +294,12 @@ export function SkillMarketDialog({
               返回
             </Button>
             <Button
-              variant="primary"
-              icon={<Check size={14} />}
               disabled={!bundle || installing}
               onClick={() =>
                 bundle && install.mutate({ sourceId: bundle.source_id, path: bundle.path })
               }
             >
+              <Check size={14} />
               {installing ? '安装中…' : '安装'}
             </Button>
           </>
@@ -316,7 +310,7 @@ export function SkillMarketDialog({
       <div className="m-market-bar">
         {sourceOptions.length > 0 ? (
           <span className="m-source-pick">
-            <Select
+            <OptionSelect
               value={sourceId}
               onValueChange={pickSource}
               options={sourceOptions}
@@ -333,12 +327,8 @@ export function SkillMarketDialog({
             {view === 'sources' ? '返回清单' : `管理源 ${allSources.length}`}
           </Button>
           {view !== 'sources' && sourceId && (
-            <Button
-              size="sm"
-              disabled={refreshing}
-              icon={<RefreshCw size={14} />}
-              onClick={() => void loadSkills(sourceId, true)}
-            >
+            <Button size="sm" disabled={refreshing} onClick={() => void loadSkills(sourceId, true)}>
+              <RefreshCw size={14} />
               {refreshing ? '刷新中…' : '刷新'}
             </Button>
           )}
@@ -371,20 +361,12 @@ export function SkillMarketDialog({
           <div className="m-local-add">
             <span className="m-local-title">从本机添加</span>
             <div className="m-local-actions">
-              <Button
-                size="sm"
-                disabled={uploading}
-                icon={<Folder size={14} />}
-                onClick={() => folderInput.current?.click()}
-              >
+              <Button size="sm" disabled={uploading} onClick={() => folderInput.current?.click()}>
+                <Folder size={14} />
                 {uploading ? '添加中…' : '选文件夹'}
               </Button>
-              <Button
-                size="sm"
-                disabled={uploading}
-                icon={<Archive size={14} />}
-                onClick={() => zipInput.current?.click()}
-              >
+              <Button size="sm" disabled={uploading} onClick={() => zipInput.current?.click()}>
+                <Archive size={14} />
                 选压缩包
               </Button>
               {/* 两个 input 藏在按钮后面：`webkitdirectory` 那个是**选目录**的唯一办法
@@ -415,9 +397,9 @@ export function SkillMarketDialog({
           </p>
 
           <div className="m-add-source">
-            <TextInput
+            <Input
               value={newRepo}
-              onValueChange={setNewRepo}
+              onChange={(event) => setNewRepo(event.target.value)}
               placeholder="owner/repo，或 GitHub 上那个仓库（含子目录）的链接"
               aria-label="添加技能源"
               onKeyDown={(event) => {
@@ -428,14 +410,13 @@ export function SkillMarketDialog({
               }}
             />
             <Button
-              variant="primary"
-              icon={<Plus size={14} />}
               disabled={!newRepo.trim() || addingSource}
               onClick={() => {
                 setAddingSource(true)
                 addSource.mutate(newRepo.trim(), { onSettled: () => setAddingSource(false) })
               }}
             >
+              <Plus size={14} />
               添加
             </Button>
           </div>
@@ -452,25 +433,24 @@ export function SkillMarketDialog({
                   <div className="m-source-main">
                     <span className="m-source-name">{item.name}</span>
                     <code className="m-source-repo">{item.repo}</code>
-                    {item.builtin && <span className="m-chip">内置</span>}
-                    {item.subpath && <span className="m-chip">子目录 {item.subpath}</span>}
+                    {item.builtin && <Badge variant="secondary">内置</Badge>}
+                    {item.subpath && <Badge variant="secondary">子目录 {item.subpath}</Badge>}
                   </div>
                   <div className="m-source-actions">
-                    <button
-                      type="button"
-                      className="m-chip m-chip-btn"
-                      onClick={() => toggleSource.mutate(item)}
-                    >
-                      {item.enabled ? '已启用' : '已停用'}
-                    </button>
+                    <Badge asChild variant="secondary">
+                      <button type="button" onClick={() => toggleSource.mutate(item)}>
+                        {item.enabled ? '已启用' : '已停用'}
+                      </button>
+                    </Badge>
                     {!item.builtin && (
                       <Button
+                        variant="secondary"
                         size="sm"
-                        variant="subtle"
-                        icon={<Trash2 size={14} />}
                         aria-label={`删除源 ${item.name}`}
                         onClick={() => removeSource.mutate(item)}
-                      />
+                      >
+                        <Trash2 size={14} />
+                      </Button>
                     )}
                   </div>
                 </li>

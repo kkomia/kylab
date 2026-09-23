@@ -79,6 +79,7 @@ import {
   writePinnedSkills,
   writeStored,
 } from './prefs'
+import { isTypingTarget, matchChatShortcut, toggleSidebarPreference } from './shortcutPrefs'
 import {
   useChatCommands,
   useChatModels,
@@ -690,6 +691,42 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setResolvingEntry(false)
     void navigate(`/chat/${latestId}`, { replace: true })
   }, [conversationId, wantsNew, latestId, navigate])
+
+  // ---------------------------------------------------------------- 全局快捷键
+
+  /**
+   * 全局作用域的两条（`chat.new` / `layout.toggleSidebar`，迁移计划 §9 下一步第 4 条）。
+   *
+   * 三条规矩与旧版 `SideNav` 那份逐字一致：
+   *
+   * 1. **只处理 `global` 作用域**：输入框里那两条（回车发送 / 换行）归 `Composer`
+   *    那个处理函数，在这里也处理一遍会让一次回车干两件事；
+   * 2. **敲字的地方不抢**（`isTypingTarget`）：`Ctrl/Cmd+K` 在很多编辑器里是删行、
+   *    `Cmd+B` 在笔记页是加粗——输入框里是编辑器的地盘；
+   * 3. **绑定从注册表那份存储里读**（`runtime/shortcutPrefs`，键 `kylab-shortcuts`）：
+   *    设置页里改完，这里当场就照新的来。
+   *
+   * 挂在对话页（而不是壳上）：React 的壳还没有侧栏那两件东西，而这一页正是
+   * "新建会话"与"收侧栏看对话"发生的地方。挂到壳上是主控接线时的事（那两条 id 不变）。
+   */
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (isTypingTarget(event)) return
+      const action = matchChatShortcut(event, 'global')
+      if (!action) return
+      event.preventDefault()
+      if (action === 'chat.new') {
+        // 与侧栏那颗「新对话」同一个入口：`?new=1` 表示"显式新建"
+        void navigate('/chat?new=1')
+        return
+      }
+      // layout.toggleSidebar：侧栏还没落地，先把偏好翻过来（存储 + 事件两条约定，
+      // 见 `shortcutPrefs.toggleSidebarPreference`）
+      toggleSidebarPreference()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [navigate])
 
   // ---------------------------------------------------------------- 发送链路
 

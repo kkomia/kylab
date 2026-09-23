@@ -23,18 +23,19 @@ import { useSessionStore } from '@/lib/session'
 import { useKnowledgeBases } from '../shared/knowledgeBases'
 import { isTaskProblem, taskHealthTone, taskKindLabel, taskStateView } from '../shared/status'
 import { notifyError, notifySuccess } from '../shared/toast'
+import { Button } from '@/ui/button'
 import {
-  Button,
+  CheckRow,
   ConfirmDialog,
   EmptyState,
   ErrorLine,
   Modal,
+  OptionSelect,
   PageShell,
   SegmentedControl,
-  Select,
   SkeletonBlock,
   StatusTag,
-} from '../shared/ui'
+} from '../shared/composites'
 import { LoadPanel } from './LoadPanel'
 import { SchedulePanel } from './SchedulePanel'
 
@@ -216,7 +217,8 @@ export function TasksPage() {
         view === 'tasks' ? (
           <>
             {running && <StatusTag tone="info" live label="有任务在跑，自动刷新中" />}
-            <Button icon={<RefreshCw size={14} />} onClick={refresh}>
+            <Button onClick={refresh}>
+              <RefreshCw size={14} />
               刷新
             </Button>
           </>
@@ -224,7 +226,6 @@ export function TasksPage() {
       }
     >
       <SegmentedControl items={VIEWS} value={view} onChange={setView} ariaLabel="任务视图" />
-
       {view === 'schedules' ? (
         <div className="page-shell-body">
           <SchedulePanel />
@@ -251,7 +252,7 @@ export function TasksPage() {
             <>
               <div className="m-toolbar">
                 <div className="m-filter-select">
-                  <Select
+                  <OptionSelect
                     value={kb}
                     onValueChange={setKb}
                     options={kbOptions}
@@ -259,7 +260,7 @@ export function TasksPage() {
                   />
                 </div>
                 <div className="m-filter-select">
-                  <Select
+                  <OptionSelect
                     value={state}
                     onValueChange={setState}
                     options={STATE_OPTIONS}
@@ -267,7 +268,7 @@ export function TasksPage() {
                   />
                 </div>
                 <div className="m-filter-select">
-                  <Select
+                  <OptionSelect
                     value={health}
                     onValueChange={setHealth}
                     options={HEALTH_OPTIONS}
@@ -275,19 +276,14 @@ export function TasksPage() {
                   />
                 </div>
                 {/* 已取消默认不显示：给一个显式开关，并如实说藏了多少条 */}
-                <label className="m-check">
-                  <input
-                    type="checkbox"
-                    checked={showCanceled}
-                    onChange={(event) => setShowCanceled(event.target.checked)}
-                  />
-                  <span>显示已取消</span>
-                </label>
+                <CheckRow checked={showCanceled} onCheckedChange={setShowCanceled}>
+                  显示已取消
+                </CheckRow>
                 {hiddenCanceled > 0 && (
                   <span className="m-toolbar-note">已隐藏 {hiddenCanceled} 条已取消</span>
                 )}
                 {hasFilter && (
-                  <Button size="sm" variant="subtle" onClick={clearFilters}>
+                  <Button variant="secondary" size="sm" onClick={clearFilters}>
                     清除筛选
                   </Button>
                 )}
@@ -295,8 +291,8 @@ export function TasksPage() {
                     逐篇取消文档是做不到的（用户反馈） */}
                 {pendingCount > 0 && (
                   <Button
+                    variant="secondary"
                     size="sm"
-                    variant="subtle"
                     disabled={canceling}
                     onClick={() => setCancelOpen(true)}
                   >
@@ -383,20 +379,20 @@ export function TasksPage() {
                   {pageCount > 1 && (
                     <div className="m-pager-controls">
                       <Button
+                        variant="secondary"
                         size="sm"
-                        variant="subtle"
                         disabled={page <= 1}
-                        icon={<ChevronLeft size={14} />}
                         onClick={() => setPage((current) => Math.max(1, current - 1))}
                       >
+                        <ChevronLeft size={14} />
                         上一页
                       </Button>
                       <span className="m-pager-page tabular">
                         第 {page} / {pageCount} 页
                       </span>
                       <Button
+                        variant="secondary"
                         size="sm"
-                        variant="subtle"
                         disabled={page >= pageCount}
                         onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
                       >
@@ -425,7 +421,7 @@ export function TasksPage() {
                   <Button onClick={() => setDetail(null)}>关闭</Button>
                   {canCancel(detail) && (
                     <Button
-                      variant="danger"
+                      variant="destructive"
                       disabled={canceling}
                       onClick={() => void runCancel([detail.id])}
                     >
@@ -434,7 +430,6 @@ export function TasksPage() {
                   )}
                   {detail.document_id && (
                     <Button
-                      variant="primary"
                       onClick={() => {
                         const documentId = detail.document_id
                         setDetail(null)

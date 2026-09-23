@@ -27,6 +27,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
+  EllipsisVertical,
   FileText,
   Plus,
   RefreshCw,
@@ -53,8 +54,17 @@ import { useSessionStore } from '@/lib/session'
 
 import { SettingGroupPanel } from '../settings/SettingGroupPanel'
 import { notifyError, notifySuccess } from '../shared/toast'
+import { Badge } from '@/ui/badge'
+import { Button } from '@/ui/button'
 import {
-  Button,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/ui/dropdown-menu'
+import { Input } from '@/ui/input'
+import { Textarea } from '@/ui/textarea'
+import {
   ConfirmDialog,
   EmptyState,
   Field,
@@ -62,14 +72,10 @@ import {
   Modal,
   Notice,
   PageShell,
-  RowMenu,
-  MenuItem,
   SegmentedControl,
   SkeletonBlock,
   StatusTag,
-  TextArea,
-  TextInput,
-} from '../shared/ui'
+} from '../shared/composites'
 import { MemoryGraph } from './MemoryGraph'
 
 const MEMORY_QUERY_KEY = ['memory', 'overview'] as const
@@ -334,41 +340,42 @@ export function MemoryPage() {
           {/* 「设置」就在这一页（v0.26）：开关与服务地址原先挂在「总设置 → 功能」，
               而这一页顶着一句"记忆服务未启用"——同一个东西的说明和开关隔着两个菜单 */}
           {isAdmin && (
-            <Button icon={<Settings2 size={15} />} onClick={() => setSettingsOpen(true)}>
+            <Button onClick={() => setSettingsOpen(true)}>
+              <Settings2 size={15} />
               设置
             </Button>
           )}
           {status?.enabled && (
-            <Button
-              icon={<RefreshCw size={15} />}
-              disabled={reindex.isPending}
-              onClick={() => reindex.mutate()}
-            >
+            <Button disabled={reindex.isPending} onClick={() => reindex.mutate()}>
+              <RefreshCw size={15} />
               重建索引
             </Button>
           )}
-          <RowMenu label="新增">
-            <MenuItem
-              onSelect={() => {
-                setNoteOpen(true)
-              }}
-            >
-              <Plus size={14} /> 记一条事实
-            </MenuItem>
-            <MenuItem
-              onSelect={() => {
-                setNewOpen(true)
-              }}
-            >
-              <FileText size={14} /> 新建记忆文件
-            </MenuItem>
-          </RowMenu>
-          <Button
-            variant="primary"
-            icon={<Save size={14} />}
-            disabled={!dirty || save.isPending}
-            onClick={() => save.mutate()}
-          >
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon-sm" aria-label="新增" title="新增">
+                <EllipsisVertical />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              <DropdownMenuItem
+                onSelect={() => {
+                  setNoteOpen(true)
+                }}
+              >
+                <Plus size={14} /> 记一条事实
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onSelect={() => {
+                  setNewOpen(true)
+                }}
+              >
+                <FileText size={14} /> 新建记忆文件
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <Button disabled={!dirty || save.isPending} onClick={() => save.mutate()}>
+            <Save size={14} />
             {save.isPending ? '保存中…' : '保存'}
           </Button>
         </>
@@ -444,16 +451,12 @@ export function MemoryPage() {
                                 <span className="m-file-path">{item.path}</span>
                                 <span className="m-file-meta">
                                   {item.kind === 'daily' ? (
-                                    <span
-                                      className={
-                                        item.consolidated ? 'm-chip' : 'm-chip m-tag-warning'
-                                      }
-                                    >
+                                    <Badge variant={item.consolidated ? 'secondary' : 'warning'}>
                                       {item.consolidated ? '已整合' : '待整合'}
-                                    </span>
+                                    </Badge>
                                   ) : (
                                     !item.retrievable &&
-                                    !item.injected && <span className="m-chip">不参与</span>
+                                    !item.injected && <Badge variant="secondary">不参与</Badge>
                                   )}
                                   <span className="tabular">{formatBytes(item.size_bytes)}</span>
                                 </span>
@@ -499,11 +502,11 @@ export function MemoryPage() {
                           </Button>
                         )}
                         <Button
+                          variant="destructive"
                           size="sm"
-                          variant="danger"
-                          icon={<Trash2 size={14} />}
                           onClick={() => setPending({ kind: 'delete', path: detail.path })}
                         >
+                          <Trash2 size={14} />
                           删除
                         </Button>
                       </div>
@@ -581,13 +584,13 @@ export function MemoryPage() {
                   void runRecall()
                 }}
               >
-                <TextInput
+                <Input
                   value={recallQuery}
-                  onValueChange={setRecallQuery}
+                  onChange={(event) => setRecallQuery(event.target.value)}
                   placeholder="例如：用户偏好什么样的回答风格"
                   aria-label="召回测试"
                 />
-                <Button variant="primary" type="submit" disabled={recalling || !recallQuery.trim()}>
+                <Button type="submit" disabled={recalling || !recallQuery.trim()}>
                   {recalling ? '召回中…' : '召回'}
                 </Button>
               </form>
@@ -678,11 +681,7 @@ export function MemoryPage() {
         footer={
           <>
             <Button onClick={() => setNewOpen(false)}>取消</Button>
-            <Button
-              variant="primary"
-              disabled={create.isPending || !newPath.trim()}
-              onClick={submitNewFile}
-            >
+            <Button disabled={create.isPending || !newPath.trim()} onClick={submitNewFile}>
               {create.isPending ? '新建中…' : '新建'}
             </Button>
           </>
@@ -693,10 +692,10 @@ export function MemoryPage() {
           （或 <code>daily/</code>）下是每日现场，根下只当作普通文本。
         </p>
         <Field label="文件路径" htmlFor="memory-new-path">
-          <TextInput
+          <Input
             id="memory-new-path"
             value={newPath}
-            onValueChange={setNewPath}
+            onChange={(event) => setNewPath(event.target.value)}
             placeholder="digest/personal/某条结论.md"
           />
         </Field>
@@ -707,9 +706,9 @@ export function MemoryPage() {
             { label: '主题综述', path: 'digest/wiki/' },
           ].map((preset) => (
             <Button
-              key={preset.path}
+              variant="secondary"
               size="sm"
-              variant="subtle"
+              key={preset.path}
               onClick={() => setNewPath(preset.path)}
             >
               {preset.label}
@@ -725,11 +724,7 @@ export function MemoryPage() {
         footer={
           <>
             <Button onClick={() => setNoteOpen(false)}>取消</Button>
-            <Button
-              variant="primary"
-              disabled={remember.isPending || !noteText.trim()}
-              onClick={submitNote}
-            >
+            <Button disabled={remember.isPending || !noteText.trim()} onClick={submitNote}>
               {remember.isPending ? '记下中…' : '记下来'}
             </Button>
           </>
@@ -739,10 +734,10 @@ export function MemoryPage() {
           写进 <code>MEMORY.md</code> 的「核心长期记忆」，每轮对话都会带上它。
           一句话能说完的才放这里（最多 500 字）——更长的内容该写成笔记或记忆文件。
         </p>
-        <TextArea
+        <Textarea
           rows={4}
           value={noteText}
-          onValueChange={setNoteText}
+          onChange={(event) => setNoteText(event.target.value)}
           aria-label="要记住的事实"
           placeholder="例如：发布前必须先跑一遍后端门禁脚本。"
         />

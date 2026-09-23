@@ -163,7 +163,11 @@ describe('设置弹窗的分区', () => {
     expect(screen.getByText('bge-m3')).toBeInTheDocument()
     expect(screen.getByText('1024')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '保存并关闭' })).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '关闭' })).toBeInTheDocument()
+    // 弹窗壳换成 `@/ui/dialog` 之后右上角多了一颗同名的关闭按钮（`sr-only` 的「关闭」），
+    // 所以按底部的那个位置（`data-slot="dialog-footer"`）取
+    const dialog = screen.getByRole('dialog', { name: '知识库设置' })
+    const footer = dialog.querySelector('[data-slot="dialog-footer"]') as HTMLElement
+    expect(within(footer).getByRole('button', { name: '关闭' })).toBeInTheDocument()
   })
 
   it('只发真正变了的字段：改名称不发别的，没改动时保存按钮禁用', async () => {
@@ -404,7 +408,8 @@ describe('删除知识库', () => {
     expect(impactMock).toHaveBeenCalledWith('kb-1')
 
     // 弹窗里那一颗确认按钮（同名按钮有两颗：面板里的入口 + 弹窗里的确认）
-    const dialog = screen.getByRole('dialog', { name: '删除知识库' })
+    // 确认弹窗是 `@/ui/alert-dialog`（Radix）：role 是 alertdialog，不是 dialog
+    const dialog = screen.getByRole('alertdialog', { name: '删除知识库' })
     await user.click(within(dialog).getAllByRole('button', { name: /删除知识库/ })[0])
 
     await waitFor(() => expect(deleteMock).toHaveBeenCalledWith('kb-1'))

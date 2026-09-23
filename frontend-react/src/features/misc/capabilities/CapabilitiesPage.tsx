@@ -51,8 +51,11 @@ import { listPlugins } from '@/api/plugins'
 
 import { SettingGroupPanel } from '../settings/SettingGroupPanel'
 import { notifyError, notifySuccess } from '../shared/toast'
+import { Badge } from '@/ui/badge'
+import { Button } from '@/ui/button'
+import { Input } from '@/ui/input'
+import { Textarea } from '@/ui/textarea'
 import {
-  Button,
   ConfirmDialog,
   EmptyState,
   Field,
@@ -60,13 +63,11 @@ import {
   Modal,
   PageShell,
   SegmentedControl,
-  Select,
+  OptionSelect,
   SkeletonBlock,
   StatusTag,
-  TextArea,
-  TextInput,
   type TagTone,
-} from '../shared/ui'
+} from '../shared/composites'
 import { PLUGINS_QUERY_KEY, PluginPackPanel, statsOf } from './PluginPackPanel'
 import { SkillMarketDialog } from './SkillMarketDialog'
 
@@ -386,7 +387,8 @@ export function CapabilitiesPage() {
           />
           {/* 联网搜索与执行策略在这后面。**只给管理员**：后端 `/settings` 是管理员端点 */}
           {isAdmin && (
-            <Button icon={<Settings2 size={15} />} onClick={() => setSettingsOpen(true)}>
+            <Button onClick={() => setSettingsOpen(true)}>
+              <Settings2 size={15} />
               设置
             </Button>
           )}
@@ -394,7 +396,6 @@ export function CapabilitiesPage() {
       }
     >
       <SegmentedControl items={CAP_TABS} value={tab} onChange={setTab} ariaLabel="能力" />
-
       {tab === 'skills' && (
         <section className="page-shell-body" role="tabpanel" aria-label="技能">
           <header className="m-toolbar">
@@ -413,16 +414,13 @@ export function CapabilitiesPage() {
                   而「重新扫描」留在最后：那是本地目录变了之后的补救动作。
                   **只给管理员**：安装是往提示词里加东西，后端也要求管理员 */}
               {isAdmin && (
-                <Button
-                  variant="primary"
-                  size="sm"
-                  icon={<Plus size={14} />}
-                  onClick={() => setMarketOpen(true)}
-                >
+                <Button size="sm" onClick={() => setMarketOpen(true)}>
+                  <Plus size={14} />
                   浏览市场
                 </Button>
               )}
-              <Button size="sm" icon={<RefreshCw size={14} />} onClick={() => void reloadSkills()}>
+              <Button size="sm" onClick={() => void reloadSkills()}>
+                <RefreshCw size={14} />
                 重新扫描
               </Button>
             </div>
@@ -470,23 +468,23 @@ export function CapabilitiesPage() {
                     <div className="m-card-meta">
                       {/* 来源那一行**要说得出"从哪儿来的"**：市场装的写仓库名，
                           而这件事同时决定了它能不能在这里卸载 */}
-                      <span className={isFromMarket(skill) ? 'm-chip m-tag-info' : 'm-chip'}>
+                      <Badge variant={isFromMarket(skill) ? 'default' : 'secondary'}>
                         {sourceLabelOf(skill)}
-                      </span>
+                      </Badge>
                       {/* 「被丢弃」与「被拦下」是两件事：前者是 frontmatter 不合规
                           （缺 name/description、描述超长），整个技能不加载；
                           后者是能用但这一轮不给模型看。标签分开写，理由在下面那段里 */}
                       {skill.discarded ? (
-                        <span className="m-tag m-tag-warning">
+                        <Badge variant="warning">
                           <AlertCircle size={12} />
                           已丢弃
-                        </span>
+                        </Badge>
                       ) : (
                         !skill.used_by_prompt && (
-                          <span className="m-tag m-tag-warning">
+                          <Badge variant="warning">
                             <AlertCircle size={12} />
                             未进提示词
-                          </span>
+                          </Badge>
                         )
                       )}
                     </div>
@@ -527,7 +525,8 @@ export function CapabilitiesPage() {
               />
             </label>
             <div className="m-market-actions">
-              <Button variant="primary" size="sm" icon={<Plus size={14} />} onClick={startCreate}>
+              <Button size="sm" onClick={startCreate}>
+                <Plus size={14} />
                 新建插件
               </Button>
             </div>
@@ -564,7 +563,7 @@ export function CapabilitiesPage() {
                   <div className="m-card-body">
                     <span className="m-card-title">{server.name}</span>
                     <p className="m-card-desc">
-                      <span className="m-chip">{server.transport}</span>{' '}
+                      <Badge variant="secondary">{server.transport}</Badge>{' '}
                       <code className="m-card-target">{server.target}</code>
                     </p>
                     <div className="m-card-meta">
@@ -578,24 +577,25 @@ export function CapabilitiesPage() {
                         <StatusTag label="连不上" tone="warning" />
                       ) : null}
                       {server.has_secrets && (
-                        <span className="m-chip" title="凭据已配置（值不会回显）">
+                        <Badge variant="secondary" title="凭据已配置（值不会回显）">
                           <Check size={12} />
                           凭据已配置
-                        </span>
+                        </Badge>
                       )}
-                      {!server.enabled && <span className="m-chip">已停用</span>}
+                      {!server.enabled && <Badge variant="secondary">已停用</Badge>}
                       {server.tools.length > 0 && (
-                        <button
-                          type="button"
-                          className="m-chip m-chip-btn"
-                          onClick={() =>
-                            setExpandedTools(expandedTools === server.id ? '' : server.id)
-                          }
-                        >
-                          {expandedTools === server.id
-                            ? '收起工具'
-                            : `工具 ${server.tools.length} 个`}
-                        </button>
+                        <Badge asChild variant="secondary">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedTools(expandedTools === server.id ? '' : server.id)
+                            }
+                          >
+                            {expandedTools === server.id
+                              ? '收起工具'
+                              : `工具 ${server.tools.length} 个`}
+                          </button>
+                        </Badge>
                       )}
                     </div>
 
@@ -616,30 +616,32 @@ export function CapabilitiesPage() {
 
                   {/* 动作收进「⋯」：卡片本身回答"这是什么"，动作是次要的 */}
                   <div className="m-card-actions">
-                    <button
-                      type="button"
-                      className="m-icon-btn"
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
                       aria-label={`${server.name} 的操作`}
+                      title={`${server.name} 的操作`}
                       onClick={() => startEdit(server)}
                     >
                       <Pencil size={14} />
-                    </button>
+                    </Button>
                     <Button
+                      variant="secondary"
                       size="sm"
-                      variant="subtle"
-                      icon={<RefreshCw size={14} />}
                       disabled={probing === server.id}
                       onClick={() => probe.mutate(server)}
                     >
+                      <RefreshCw size={14} />
                       {probing === server.id ? '连接中…' : '测试连接'}
                     </Button>
                     <Button
+                      variant="secondary"
                       size="sm"
-                      variant="subtle"
-                      icon={<Trash2 size={14} />}
                       aria-label={`删除 ${server.name}`}
                       onClick={() => setConfirmTarget(server)}
-                    />
+                    >
+                      <Trash2 size={14} />
+                    </Button>
                   </div>
                 </li>
               ))}
@@ -659,7 +661,8 @@ export function CapabilitiesPage() {
           <>
             {skillDetail && isFromMarket(skillDetail) && (
               <span className="m-footer-left">
-                <Button icon={<Trash2 size={14} />} onClick={() => setUninstallTarget(skillDetail)}>
+                <Button onClick={() => setUninstallTarget(skillDetail)}>
+                  <Trash2 size={14} />
                   卸载
                 </Button>
               </span>
@@ -684,7 +687,7 @@ export function CapabilitiesPage() {
             而"从哪儿装的"是用户决定要不要卸的依据 */}
         {skillDetail && isFromMarket(skillDetail) && (
           <p className="m-detail-meta">
-            <span className="m-chip">{sourceLabelOf(skillDetail)}</span>
+            <Badge variant="secondary">{sourceLabelOf(skillDetail)}</Badge>
             <span className="text-meta">从市场装的，可以在这里卸载（随代码发布的那些卸不掉）</span>
           </p>
         )}
@@ -701,7 +704,6 @@ export function CapabilitiesPage() {
           <>
             <Button onClick={() => setFormOpen(false)}>取消</Button>
             <Button
-              variant="primary"
               disabled={saveServer.isPending || !form.name.trim() || !form.target.trim()}
               onClick={() => saveServer.mutate()}
             >
@@ -722,17 +724,17 @@ export function CapabilitiesPage() {
         </p>
 
         <Field label="名字" htmlFor="mcp-name">
-          <TextInput
+          <Input
             id="mcp-name"
             value={form.name}
-            onValueChange={(name) => setForm((current) => ({ ...current, name }))}
+            onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
             placeholder="例如：filesystem"
           />
         </Field>
 
         {!editing && (
           <Field label="传输方式">
-            <Select
+            <OptionSelect
               value={form.transport}
               onValueChange={(value) =>
                 setForm((current) => ({ ...current, transport: value as 'stdio' | 'http' }))
@@ -752,10 +754,10 @@ export function CapabilitiesPage() {
               : undefined
           }
         >
-          <TextInput
+          <Input
             id="mcp-target"
             value={form.target}
-            onValueChange={(target) => setForm((current) => ({ ...current, target }))}
+            onChange={(event) => setForm((current) => ({ ...current, target: event.target.value }))}
             placeholder={form.transport === 'stdio' ? '例如：npx' : '例如：https://example.com/mcp'}
           />
         </Field>
@@ -763,37 +765,43 @@ export function CapabilitiesPage() {
         {form.transport === 'stdio' ? (
           <>
             <Field label="参数（空格分隔）" htmlFor="mcp-args">
-              <TextInput
+              <Input
                 id="mcp-args"
                 value={form.args}
-                onValueChange={(args) => setForm((current) => ({ ...current, args }))}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, args: event.target.value }))
+                }
                 placeholder="例如：-y @modelcontextprotocol/server-filesystem /data"
               />
             </Field>
             <Field label="环境变量（每行一个 KEY=VALUE）" htmlFor="mcp-env">
-              <TextArea
+              <Textarea
                 id="mcp-env"
                 rows={2}
                 value={form.envKeys}
-                onValueChange={(envKeys) => setForm((current) => ({ ...current, envKeys }))}
+                onChange={(event) =>
+                  setForm((current) => ({ ...current, envKeys: event.target.value }))
+                }
                 placeholder="TOKEN=..."
               />
             </Field>
           </>
         ) : (
           <Field label="请求头（每行一个 KEY=VALUE）" htmlFor="mcp-headers">
-            <TextArea
+            <Textarea
               id="mcp-headers"
               rows={2}
               value={form.headers}
-              onValueChange={(headers) => setForm((current) => ({ ...current, headers }))}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, headers: event.target.value }))
+              }
               placeholder="Authorization=Bearer ..."
             />
           </Field>
         )}
 
         <Field label="准入策略">
-          <Select
+          <OptionSelect
             value={form.policy}
             onValueChange={(value) =>
               setForm((current) => ({ ...current, policy: value as MCPPolicy }))

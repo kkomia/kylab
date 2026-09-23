@@ -20,15 +20,7 @@ import {
   chunkOverlapMax,
   SUGGESTED_COUNT_DEFAULT,
 } from '@/api/knowledgeBases'
-import {
-  Button,
-  EmptyState,
-  InfoTip,
-  Input,
-  Modal,
-  Select,
-  Skeleton,
-} from '@/features/knowledge/primitives'
+import { EmptyState, InfoTip, SkeletonRows } from '@/features/knowledge/composites'
 import { chunkingErrorOf, numberOr, parseIntOrNull } from '@/features/knowledge/chunking'
 import { KnowledgeBaseSettings } from '@/features/knowledge/KnowledgeBaseSettings'
 import { RangeField } from '@/features/knowledge/RangeField'
@@ -38,6 +30,12 @@ import {
 } from '@/features/knowledge/SuggestedQuestionsFields'
 import { messageOf, notify, useKnowledgeBases, useModelRegistry } from '@/features/knowledge/store'
 import { formatRelativeTime } from '@/lib/format'
+import { Button } from '@/ui/button'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog'
+import { Input } from '@/ui/input'
+import { Label } from '@/ui/label'
+import { RadioGroup, RadioGroupItem } from '@/ui/radio-group'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select'
 
 /** 规范 §5.1 的阈值：超过 12 个容器就用行而不是卡片，避免格子被挤窄。 */
 const CARD_LIMIT = 12
@@ -51,6 +49,14 @@ const SQ_DEFAULTS: SuggestedQuestionsValue = {
   modelPk: '',
   prompt: '',
 }
+
+/**
+ * 「跟随默认」那一项的取值（`''` = 用默认嵌入模型）。
+ *
+ * Radix 的 `<Select.Item>` **不接受空串**，所以界面上用哨兵值，送出/取回都换回 `''`
+ * ——对外的契约定（`embedding_model_pk` 为空即默认）一点没变。
+ */
+const EMBEDDING_DEFAULT = '__default__'
 
 export function KnowledgeBasesView() {
   const store = useKnowledgeBases()
@@ -81,7 +87,7 @@ export function KnowledgeBasesView() {
     : ''
 
   const embeddingOptions = [
-    ...(defaultModel ? [{ value: '', label: `默认（${defaultLabel}）` }] : []),
+    ...(defaultModel ? [{ value: EMBEDDING_DEFAULT, label: `默认（${defaultLabel}）` }] : []),
     ...embeddingModels.map((model) => ({
       value: model.id,
       label: `${model.label || model.model_id}${model.dim ? ` · ${model.dim} 维` : ''}`,
@@ -166,7 +172,8 @@ export function KnowledgeBasesView() {
     <div className="page-shell">
       <div className="kb-head-actions">
         <h1 style={{ flex: 1 }}>知识库</h1>
-        <Button variant="primary" icon={Plus} disabled={noEmbeddingModel} onClick={openCreate}>
+        <Button variant="default" disabled={noEmbeddingModel} onClick={openCreate}>
+          <Plus aria-hidden="true" />
           新建知识库
         </Button>
       </div>
@@ -181,7 +188,7 @@ export function KnowledgeBasesView() {
 
       {store.error ? <p className="kb-error-line">{store.error}</p> : null}
 
-      {store.loading && !hasItems ? <Skeleton variant="card" rows={4} /> : null}
+      {store.loading && !hasItems ? <SkeletonRows variant="card" rows={4} /> : null}
 
       {!store.loading && !hasItems ? (
         <EmptyState
@@ -277,161 +284,178 @@ export function KnowledgeBasesView() {
         </div>
       ) : null}
 
-      <Modal
+      <Dialog
         open={createOpen}
-        title="新建知识库"
-        onClose={() => setCreateOpen(false)}
-        onEnter={() => void submitCreate()}
-        footer={
-          <>
-            <Button onClick={() => setCreateOpen(false)}>取消</Button>
+        onOpenChange={(next) => {
+          if (!next) setCreateOpen(false)
+        }}
+      >
+        <DialogContent
+          className="flex max-h-[min(88vh,900px)] flex-col gap-0 p-0"
+          onKeyDown={(event) => {
+            // 旧 `Modal onEnter`：「随手回车就创建」这一条只在这个弹窗上给。
+            // 多行输入里的回车不提交（文本框自己要用它换行）
+            if (event.key === 'Enter') {
+              if (event.target instanceof HTMLTextAreaElement) return
+              void submitCreate()
+            }
+          }}
+        >
+          <DialogHeader className="border-b border-[var(--border-hairline)] px-4 py-3 pr-10">
+            <DialogTitle>新建知识库</DialogTitle>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <div
+              className="kb-create-form"
+              style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}
+            >
+              <label className="field">
+                <span className="field-label">名称</span>
+                <Input
+                  id="kb-name"
+                  value={draftName}
+                  placeholder="例如：产品手册"
+                  onChange={(event) => setDraftName(event.target.value)}
+                />
+              </label>
+
+              <div className="field">
+                <span className="field-label">
+                  嵌入模型
+                  <InfoTip text="决定这个库的向量空间，建库时定下、之后不能换。小库选精度高的，大库选小的（更快、更省存储）。" />
+                </span>
+                {noEmbeddingModel ? (
+                  <p className="text-note">
+                    还没有可用的嵌入模型，无法建库。请先到「设置 → 模型注册」添加供应商并登记
+                    向量化模型，再到「设置 → 向量化」把它选为默认。
+                  </p>
+                ) : (
+                  <Select
+                    value={draftModel || EMBEDDING_DEFAULT}
+                    onValueChange={(value) =>
+                      setDraftModel(value === EMBEDDING_DEFAULT ? '' : value)
+                    }
+                  >
+                    <SelectTrigger id="kb-embedding" aria-label="嵌入模型">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {embeddingOptions.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+
+              {/* 库形态：建库时就要定的第二件大事——它决定"这个库有没有 Wiki" */}
+              <fieldset className="field" style={{ border: 0, margin: 0, padding: 0 }}>
+                <legend className="field-label">库形态</legend>
+                <RadioGroup
+                  className="kb-form-options"
+                  value={draftForm}
+                  onValueChange={(value) => setDraftForm(value as KbForm)}
+                >
+                  <Label
+                    className={['kb-form-option', draftForm === 'vector' ? 'kb-form-option-on' : '']
+                      .filter(Boolean)
+                      .join(' ')}
+                  >
+                    <RadioGroupItem value="vector" aria-label="仅向量检索" className="mt-0.5" />
+                    <span className="kb-form-option-text">
+                      <span className="kb-form-option-title">仅向量检索</span>
+                      <span className="kb-form-option-desc">
+                        问答时按片段检索原文作答，最省 token（默认）
+                      </span>
+                    </span>
+                  </Label>
+                  <Label
+                    className={['kb-form-option', draftForm === 'wiki' ? 'kb-form-option-on' : '']
+                      .filter(Boolean)
+                      .join(' ')}
+                  >
+                    <RadioGroupItem value="wiki" aria-label="向量检索 + Wiki" className="mt-0.5" />
+                    <span className="kb-form-option-text">
+                      <span className="kb-form-option-title">向量检索 + Wiki</span>
+                      <span className="kb-form-option-desc">
+                        额外把库里的内容整理成一套带出处的百科式页面
+                      </span>
+                    </span>
+                  </Label>
+                </RadioGroup>
+              </fieldset>
+
+              {/* 切分参数收在折叠区：多数人用默认值就好，但**要用的时候必须找得到** */}
+              <details className="kb-advanced">
+                <summary>
+                  切块与出题（可选，默认 {CHUNK_DEFAULT_SIZE} / {CHUNK_DEFAULT_OVERLAP} · 不出题）
+                </summary>
+                <div className="kb-advanced-grid">
+                  <div className="field">
+                    <span className="field-label">块长</span>
+                    <RangeField
+                      id="kb-chunk-size"
+                      value={numberOr(chunkSizeDraft, CHUNK_DEFAULT_SIZE)}
+                      onChange={(value) => {
+                        setChunkSizeDraft(String(value))
+                        // 块长调小后原重叠可能超上限，就地压回——否则滑块停在 max、读数还是旧值
+                        const max = chunkOverlapMax(value)
+                        if (numberOr(chunkOverlapDraft, 0) > max) setChunkOverlapDraft(String(max))
+                      }}
+                      min={CHUNK_SIZE_MIN}
+                      max={CHUNK_SIZE_MAX}
+                      marks={CHUNK_SIZE_MARKS}
+                      ariaLabel="块长"
+                    />
+                  </div>
+                  <div className="field">
+                    <span className="field-label">块重叠</span>
+                    <RangeField
+                      id="kb-chunk-overlap"
+                      value={numberOr(chunkOverlapDraft, 0)}
+                      onChange={(value) => setChunkOverlapDraft(String(value))}
+                      min={0}
+                      max={chunkOverlapCap}
+                      marks={CHUNK_OVERLAP_MARKS}
+                      ariaLabel="块重叠"
+                    />
+                  </div>
+                </div>
+                {chunkError ? (
+                  <p className="kb-chunking-error" role="alert">
+                    {chunkError}
+                  </p>
+                ) : (
+                  <p className="text-hint">
+                    重叠不超过块长的一半；建库后可在「知识库设置 → 切块策略」调整。
+                  </p>
+                )}
+
+                {/* 分段出题放在**同一个折叠区**里：它跟的是分段，不是"对话页的展示" */}
+                <div className="kb-advanced-divider" role="separator" aria-hidden="true" />
+                <SuggestedQuestionsFields
+                  value={suggested}
+                  onChange={(patch) => setSuggested((current) => ({ ...current, ...patch }))}
+                />
+              </details>
+            </div>
+          </div>
+          <DialogFooter className="border-t border-[var(--border-hairline)] px-4 py-3">
+            <Button variant="outline" onClick={() => setCreateOpen(false)}>
+              取消
+            </Button>
             <Button
-              variant="primary"
+              variant="default"
               disabled={creating || noEmbeddingModel || !canCreate}
               onClick={() => void submitCreate()}
             >
               {creating ? '创建中…' : '创建'}
             </Button>
-          </>
-        }
-      >
-        <div
-          className="kb-create-form"
-          style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-5)' }}
-        >
-          <label className="field">
-            <span className="field-label">名称</span>
-            <Input
-              id="kb-name"
-              value={draftName}
-              placeholder="例如：产品手册"
-              onChange={(event) => setDraftName(event.target.value)}
-            />
-          </label>
-
-          <div className="field">
-            <span className="field-label">
-              嵌入模型
-              <InfoTip text="决定这个库的向量空间，建库时定下、之后不能换。小库选精度高的，大库选小的（更快、更省存储）。" />
-            </span>
-            {noEmbeddingModel ? (
-              <p className="text-note">
-                还没有可用的嵌入模型，无法建库。请先到「设置 → 模型注册」添加供应商并登记
-                向量化模型，再到「设置 → 向量化」把它选为默认。
-              </p>
-            ) : (
-              <Select
-                id="kb-embedding"
-                value={draftModel}
-                options={embeddingOptions}
-                onChange={setDraftModel}
-                aria-label="嵌入模型"
-              />
-            )}
-          </div>
-
-          {/* 库形态：建库时就要定的第二件大事——它决定"这个库有没有 Wiki" */}
-          <fieldset className="field" style={{ border: 0, margin: 0, padding: 0 }}>
-            <legend className="field-label">库形态</legend>
-            <div className="kb-form-options">
-              <label
-                className={['kb-form-option', draftForm === 'vector' ? 'kb-form-option-on' : '']
-                  .filter(Boolean)
-                  .join(' ')}
-              >
-                <input
-                  type="radio"
-                  name="kb-form"
-                  value="vector"
-                  checked={draftForm === 'vector'}
-                  onChange={() => setDraftForm('vector')}
-                  style={{ accentColor: 'var(--accent)' }}
-                />
-                <span className="kb-form-option-text">
-                  <span className="kb-form-option-title">仅向量检索</span>
-                  <span className="kb-form-option-desc">
-                    问答时按片段检索原文作答，最省 token（默认）
-                  </span>
-                </span>
-              </label>
-              <label
-                className={['kb-form-option', draftForm === 'wiki' ? 'kb-form-option-on' : '']
-                  .filter(Boolean)
-                  .join(' ')}
-              >
-                <input
-                  type="radio"
-                  name="kb-form"
-                  value="wiki"
-                  checked={draftForm === 'wiki'}
-                  onChange={() => setDraftForm('wiki')}
-                  style={{ accentColor: 'var(--accent)' }}
-                />
-                <span className="kb-form-option-text">
-                  <span className="kb-form-option-title">向量检索 + Wiki</span>
-                  <span className="kb-form-option-desc">
-                    额外把库里的内容整理成一套带出处的百科式页面
-                  </span>
-                </span>
-              </label>
-            </div>
-          </fieldset>
-
-          {/* 切分参数收在折叠区：多数人用默认值就好，但**要用的时候必须找得到** */}
-          <details className="kb-advanced">
-            <summary>
-              切块与出题（可选，默认 {CHUNK_DEFAULT_SIZE} / {CHUNK_DEFAULT_OVERLAP} · 不出题）
-            </summary>
-            <div className="kb-advanced-grid">
-              <div className="field">
-                <span className="field-label">块长</span>
-                <RangeField
-                  id="kb-chunk-size"
-                  value={numberOr(chunkSizeDraft, CHUNK_DEFAULT_SIZE)}
-                  onChange={(value) => {
-                    setChunkSizeDraft(String(value))
-                    // 块长调小后原重叠可能超上限，就地压回——否则滑块停在 max、读数还是旧值
-                    const max = chunkOverlapMax(value)
-                    if (numberOr(chunkOverlapDraft, 0) > max) setChunkOverlapDraft(String(max))
-                  }}
-                  min={CHUNK_SIZE_MIN}
-                  max={CHUNK_SIZE_MAX}
-                  marks={CHUNK_SIZE_MARKS}
-                  ariaLabel="块长"
-                />
-              </div>
-              <div className="field">
-                <span className="field-label">块重叠</span>
-                <RangeField
-                  id="kb-chunk-overlap"
-                  value={numberOr(chunkOverlapDraft, 0)}
-                  onChange={(value) => setChunkOverlapDraft(String(value))}
-                  min={0}
-                  max={chunkOverlapCap}
-                  marks={CHUNK_OVERLAP_MARKS}
-                  ariaLabel="块重叠"
-                />
-              </div>
-            </div>
-            {chunkError ? (
-              <p className="kb-chunking-error" role="alert">
-                {chunkError}
-              </p>
-            ) : (
-              <p className="text-hint">
-                重叠不超过块长的一半；建库后可在「知识库设置 → 切块策略」调整。
-              </p>
-            )}
-
-            {/* 分段出题放在**同一个折叠区**里：它跟的是分段，不是"对话页的展示" */}
-            <div className="kb-advanced-divider" role="separator" aria-hidden="true" />
-            <SuggestedQuestionsFields
-              value={suggested}
-              onChange={(patch) => setSuggested((current) => ({ ...current, ...patch }))}
-            />
-          </details>
-        </div>
-      </Modal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

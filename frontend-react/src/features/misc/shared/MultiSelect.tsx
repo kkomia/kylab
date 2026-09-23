@@ -6,7 +6,7 @@
  * 每一项都是原生 checkbox——键盘可达、Tab 顺序正确、"已选几个"一眼可见。
  * 库多的时候它会自动换行，不会把弹窗撑高。
  */
-import type { SelectOption } from './ui'
+import type { SelectOption } from './composites'
 
 export function MultiSelect({
   options,

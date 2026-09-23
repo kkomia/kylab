@@ -3,12 +3,12 @@
 React 迁移 P1 的"对话页逻辑层"。四个模块逐一对应旧 Vue 的四个 composable，
 **行为、边界与注释里的"为什么"照搬**（见 `docs/计划与记录/React-迁移计划-v0.1.md` §2）：
 
-| 这里           | 旧实现（`frontend/src/`）               | 换掉的那一层                                                                     |
-| -------------- | --------------------------------------- | -------------------------------------------------------------------------------- |
-| `turns.ts`     | `composables/useChatTurns.ts`（832 行） | 无（纯函数，逐字搬）                                                             |
-| `liveTurn.ts`  | `composables/useLiveTurn.ts`（586 行）  | Vue `ref` → **zustand store**                                                    |
-| `markdown.tsx` | `composables/useMarkdown.ts`（580 行）  | 自研块级解析 → **react-markdown + remark-gfm + rehype-katex + rehype-highlight** |
-| `latex.ts`     | `composables/useLatex.ts`（290 行）     | Unicode 手写映射 → 同规则 + **KaTeX**（`katex.renderToString`）                  |
+| 这里           | 旧实现（`frontend/src/`）               | 换掉的那一层                                                                                   |
+| -------------- | --------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `turns.ts`     | `composables/useChatTurns.ts`（832 行） | 无（纯函数，逐字搬）                                                                           |
+| `liveTurn.ts`  | `composables/useLiveTurn.ts`（586 行）  | Vue `ref` → **zustand store**                                                                  |
+| `markdown.tsx` | `composables/useMarkdown.ts`（580 行）  | 自研块级解析 → **react-markdown + remark-gfm + remark-math + rehype-katex + rehype-highlight** |
+| `latex.ts`     | `composables/useLatex.ts`（290 行）     | Unicode 手写映射 → 同规则 + **KaTeX**（`katex.renderToString`）                                |
 
 用例：`tests/chat-model-{turns,live-turn,markdown,latex}.test.ts`，旧用例的功能点一条不丢
 （详见文末"旧 → 新"表）。
@@ -140,13 +140,40 @@ liveAnchor(id) / clearLiveAnchors() // 重连锚点（模块作用域，用例�
    "同内容同输出"对不上、`white-space: pre-wrap` 的容器里还会多一行。
 8. **代码块末尾的空行**：围栏代码的 value 带一个收尾换行、highlight.js 还会再补一个，
    这里按旧口径（`body.join('\n')`）**收掉一个**，DOM 与复制内容因此与旧实现一致。
-9. **公式**：`$x^{2}$`、`$\frac{1}{2}$`、`$\alpha$` 这类**认得出的**现在交给 KaTeX 排版
-   （旧回答路径完全不处理，字面显示）。**认不出的照旧一个字符都不动**（`$5 到 $10`）。
-   一条已知边界：Markdown 解析阶段会先吃掉 `\%` `\_` 这类字符转义，所以"只有转义符"的
-   写法（`$52.7\%$`）在回答里看不出是公式 → 按"认不出就原样保留"留在正文里
-   （与旧回答路径一致）；文档阅读视角走 `cleanInlineLatex`，那边照样还原。
+9. **公式走标准路线**（`remark-math` + `rehype-katex`，原先是自写的 `rehypeInlineMath`）：
+   `$x^{2}$`、`$\frac{1}{2}$`、`$\alpha$` 这类交给 KaTeX 排版（旧回答路径完全不处理，
+   字面显示）。**与旧口径的差异逐条列在下面那张表**——最要紧的是第一条（钱）。
 10. **引用徽标不再进 `a` 里**：`[1]` 出现在链接文字里时不再换成徽标（旧的会，那会造出
     嵌套 `<a>`——非法 HTML）。
+
+### 3.2.1 公式口径：`remark-math`（标准路线）与旧自写插件的**全部差异**
+
+问题从哪儿来：自写的 `rehypeInlineMath` 是在 **hast（渲染前一步）** 上按文本认公式，
+判据是"公式体里得有可识别的 LaTeX 标记"（`latex.ts` 的 `isInlineLatex`）；
+`remark-math` 是在 **mdast（解析期）** 认，判据是"`$` 配对"（micromark 的口径）。
+两条路的判据不同，差异就是下面这张表——**前四条在
+`tests/chat-model-markdown.test.ts` 里有用例钉住**，其余几条是换路线时按两边实现
+逐条核对出来的。
+
+| 写法                                           | 旧（自写 `rehypeInlineMath`）                                           | 现在（`remark-math`）                                                               |
+| ---------------------------------------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `价格从 $5 到 $10 不等`                        | **一个字都不动**（`5 到` 里没有 LaTeX 标记）                            | `$5 到 $` 被当成公式排掉——**这是换标准路线的已知代价**；要字面量就把美元号转义      |
+| `价格从 \$5 到 \$10 不等`（转义）              | 不动（`\$` 是普通文本）                                                 | 不动（CommonMark 的字符转义先吃掉反斜杠，KaTeX 看不到公式）——**这就是那句缓解写法** |
+| `$52.7\%$`（只有转义符）                       | 认不出（CommonMark 先把 `\%` 还原成 `%`，到 rehype 那一步就不是公式了） | **正常排版**（公式体在解析期就整段收走，`\%` 原样交给 KaTeX）——这一类是**变好了**   |
+| `推导 $$\frac{1}{2}$$ 结束`（单行 `$$`）       | 按整式排（`math-display`，整块居中）                                    | 行内公式（`$$` 必须**自成一行**才是 display，GitHub 的写法）                        |
+| 跨行的 `$x␊第二行$`                            | **不认**（正则里有 `[^$\n]`：跨行会把两行的公式并成一个）               | 认（micromark 允许行内公式跨行；首尾的空白与换行会被去掉）                          |
+| 超过 200 字的公式体（`INLINE_MATH_MAX_CHARS`） | 不认（旧实现写死的长度上限）                                            | 认（micromark 没有长度上限）                                                        |
+| `$\alpha$$\beta$` / `$a$$b$`（公式体里有 `$`） | 就近配对：认得出的切成**两个**公式，认不出的一个字不动                  | 配对个数不等 → 不当公式，KaTeX 报错画成 `katex-error`（**原文照旧可读**）           |
+| `$ x $`（首尾有空格，且里面没有别的标记）      | 不动（`trim()` 之后没有可识别的 LaTeX 标记）                            | 认（空格被当作 padding 去掉，公式体就是 `x`）                                       |
+
+**没有放松的两条（安全口径）**：代码块与行内代码里的 `$` 照旧是字面量（结构上不在
+扫描范围里）；KaTeX 排不出来时的兜底照旧是"把原文显示出来"（`rehype-katex` 的
+`katex-error` 分支），不吐假 HTML。
+
+**要改回"价格不当公式"怎么办**（留给以后的决定，不在这版里）：`remark-math` 只有一个
+像样的开关 `singleDollarTextMath: false`——那会连 `$x$` 行内公式一起关掉，只剩 `$$…$$`；
+另一半做法是在 mdast 上再挂一个自己的插件按 `isInlineLatex` 过滤（那等于把自写规则
+挪个位置，不是"标准路线"了）。
 
 ### 3.3 与旧实现**完全一致**的部分（重点保留）
 
@@ -167,15 +194,19 @@ liveAnchor(id) / clearLiveAnchors() // 重连锚点（模块作用域，用例�
 
 ## 4. 旧 → 新 用例对照
 
-| 旧用例文件                                    | 条数    | 新用例文件                           | 条数                                         |
-| --------------------------------------------- | ------- | ------------------------------------ | -------------------------------------------- |
-| `tests/unit/composables/useChatTurns.test.ts` | 60      | `tests/chat-model-turns.test.ts`     | 60（逐条搬，只改 import）                    |
-| `tests/unit/composables/useLiveTurn.test.ts`  | 15      | `tests/chat-model-live-turn.test.ts` | 15（逐条搬，`.value` → 调用）                |
-| `tests/unit/composables/useMarkdown.test.ts`  | 54      | `tests/chat-model-markdown.test.ts`  | 69（54 条搬 + 15 条新增：组件/@ 动作）       |
-| `tests/unit/composables/useLatex.test.ts`     | 16      | `tests/chat-model-latex.test.ts`     | 30（16 条搬 + 14 条新增：`$$` 边界 / KaTeX） |
-| **合计**                                      | **145** |                                      | **174**                                      |
+| 旧用例文件                                    | 条数    | 新用例文件                           | 条数                                                        |
+| --------------------------------------------- | ------- | ------------------------------------ | ----------------------------------------------------------- |
+| `tests/unit/composables/useChatTurns.test.ts` | 60      | `tests/chat-model-turns.test.ts`     | 60（逐条搬，只改 import）                                   |
+| `tests/unit/composables/useLiveTurn.test.ts`  | 15      | `tests/chat-model-live-turn.test.ts` | 15（逐条搬，`.value` → 调用）                               |
+| `tests/unit/composables/useMarkdown.test.ts`  | 54      | `tests/chat-model-markdown.test.ts`  | 73（54 条搬 + 15 条新增：组件/@ 动作 + 4 条：公式口径差异） |
+| `tests/unit/composables/useLatex.test.ts`     | 16      | `tests/chat-model-latex.test.ts`     | 30（16 条搬 + 14 条新增：`$$` 边界 / KaTeX）                |
+| **合计**                                      | **145** |                                      | **178**                                                     |
 
 markdown 那一批的**断言文本**也照旧（`html()` 只把 React 的空标签写法 `<br>` 归一成旧写的
-`<br />`），只有三处因为上面 §3.2 的结构差异改了写法，并在用例里写明了原因：
+`<br />`），只有几处因为上面 §3.2 的结构差异改了写法，并在用例里写明了原因：
 列表符号（第 4 条）、`blockquote` 多一层 `p`（第 3 条）、代码块内容断言走 `textContent`
-（高亮把代码切成了 span）。
+（高亮把代码切成了 span）、以及**公式那两条**（第 9 条 + §3.2.1 的差异表）。
+
+**`latex.ts` 一行没动**：它服务的是文档阅读视角（`cleanInlineLatex` 的纯文本还原、
+`splitInlineLatex` + `renderLatexToHtml` 自己拼），与回答渲染的公式路线互不影响——
+所以 `chat-model-latex.test.ts` 那 30 条**原样跑绿**。

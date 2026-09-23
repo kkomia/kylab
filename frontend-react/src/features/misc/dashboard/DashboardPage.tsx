@@ -19,10 +19,11 @@ import { Link } from 'react-router'
 
 import type { ActivityPoint } from '@/api/stats'
 import { getDashboard, getUsage } from '@/api/stats'
+import { Button } from '@/ui/button'
 import { formatBytes, formatCount, formatRelativeTime } from '@/lib/format'
 
 import { documentStageView } from '../shared/status'
-import { EmptyState, ErrorLine, PageShell, SkeletonBlock, StatusTag } from '../shared/ui'
+import { EmptyState, ErrorLine, PageShell, SkeletonBlock, StatusTag } from '../shared/composites'
 import { ActivityHeatmap } from './ActivityHeatmap'
 
 const EChart = lazy(() => import('./EChart').then((module) => ({ default: module.EChart })))
@@ -404,9 +405,9 @@ export function DashboardPage() {
               title="还没有文档"
               hint="到「知识库」页建一个库并上传文档，这里会出现规模与活跃度统计。"
             >
-              <Link to="/knowledge-bases">
-                <span className="m-btn m-btn-primary">去知识库</span>
-              </Link>
+              <Button asChild>
+                <Link to="/knowledge-bases">去知识库</Link>
+              </Button>
             </EmptyState>
           ) : (
             <div className="panel">

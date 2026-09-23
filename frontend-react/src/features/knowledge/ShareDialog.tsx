@@ -13,8 +13,11 @@
 import { useCallback, useEffect, useState } from 'react'
 
 import { grantShare, listShares, revokeShare, type Share, type SharePermission } from '@/api/shares'
-import { Button, Input, Modal, Select } from '@/features/knowledge/primitives'
 import { messageOf, notify } from '@/features/knowledge/store'
+import { Button } from '@/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/ui/dialog'
+import { Input } from '@/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select'
 
 const PERMISSION_OPTIONS: { value: SharePermission; label: string }[] = [
   { value: 'read', label: '只读' },
@@ -109,77 +112,109 @@ export function ShareDialog({ open, kbId, kbName, onClose }: ShareDialogProps) {
   }
 
   return (
-    <Modal open={open} title="分享知识库" onClose={onClose}>
-      <p className="kb-lead">把「{kbName}」分享给其他成员。对方登录后就能在列表里看到它。</p>
+    /** 弹窗壳：`@/ui/dialog`（README §3 的组合）。标题栏/底部各带一条分隔线、内容区自己滚。 */
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose()
+      }}
+    >
+      <DialogContent className="flex max-h-[min(88vh,900px)] flex-col gap-0 p-0">
+        <DialogHeader className="border-b border-[var(--border-hairline)] px-4 py-3 pr-10">
+          <DialogTitle>分享知识库</DialogTitle>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <p className="kb-lead">把「{kbName}」分享给其他成员。对方登录后就能在列表里看到它。</p>
 
-      <div className="kb-grant">
-        <Input
-          className="kb-grant-input"
-          value={usernameDraft}
-          placeholder="对方的登录名"
-          aria-label="对方的登录名"
-          disabled={granting}
-          onChange={(event) => setUsernameDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') void submitGrant()
-          }}
-        />
-        <Select
-          className="kb-grant-permission"
-          value={permissionDraft}
-          options={PERMISSION_OPTIONS}
-          aria-label="访问档位"
-          disabled={granting}
-          onChange={(value) => setPermissionDraft(value as SharePermission)}
-        />
-        <Button variant="primary" disabled={granting} onClick={() => void submitGrant()}>
-          {granting ? '分享中…' : '分享'}
-        </Button>
-      </div>
-      {grantError ? (
-        <p className="kb-share-error" role="alert">
-          {grantError}
-        </p>
-      ) : null}
-      <p className="text-hint">
-        只读 = 可检索、可对话；可写 = 还能上传与删除。被分享者不能把库再转授给别人。
-      </p>
+          <div className="kb-grant">
+            <Input
+              className="kb-grant-input"
+              value={usernameDraft}
+              placeholder="对方的登录名"
+              aria-label="对方的登录名"
+              disabled={granting}
+              onChange={(event) => setUsernameDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void submitGrant()
+              }}
+            />
+            <Select
+              value={permissionDraft}
+              onValueChange={(value) => setPermissionDraft(value as SharePermission)}
+              disabled={granting}
+            >
+              <SelectTrigger className="kb-grant-permission" aria-label="访问档位">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PERMISSION_OPTIONS.map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Button variant="default" disabled={granting} onClick={() => void submitGrant()}>
+              {granting ? '分享中…' : '分享'}
+            </Button>
+          </div>
+          {grantError ? (
+            <p className="kb-share-error" role="alert">
+              {grantError}
+            </p>
+          ) : null}
+          <p className="text-hint">
+            只读 = 可检索、可对话；可写 = 还能上传与删除。被分享者不能把库再转授给别人。
+          </p>
 
-      <h3 className="kb-share-title">已分享给</h3>
-      {loading ? <p className="text-hint">正在加载…</p> : null}
-      {!loading && loadError ? <p className="kb-share-error">{loadError}</p> : null}
-      {!loading && !loadError && shares.length === 0 ? (
-        <p className="text-hint">还没有分享给任何人。这个库目前只有你自己（和管理员）能看到。</p>
-      ) : null}
-      {!loading && shares.length > 0 ? (
-        <ul className="kb-share-list">
-          {shares.map((share) => (
-            <li key={share.user_id} className="kb-share-row">
-              <span className="kb-share-person">
-                <span className="kb-share-name">{share.name}</span>
-                <span className="kb-share-username">{share.username}</span>
-              </span>
-              <div style={{ width: 104 }}>
-                <Select
-                  value={share.permission}
-                  options={PERMISSION_OPTIONS}
-                  disabled={busyId === share.user_id}
-                  aria-label={`调整 ${share.name} 的访问档位`}
-                  onChange={(value) => void changePermission(share, value)}
-                />
-              </div>
-              <Button
-                variant="danger"
-                size="sm"
-                disabled={busyId === share.user_id}
-                onClick={() => void revoke(share)}
-              >
-                收回
-              </Button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </Modal>
+          <h3 className="kb-share-title">已分享给</h3>
+          {loading ? <p className="text-hint">正在加载…</p> : null}
+          {!loading && loadError ? <p className="kb-share-error">{loadError}</p> : null}
+          {!loading && !loadError && shares.length === 0 ? (
+            <p className="text-hint">
+              还没有分享给任何人。这个库目前只有你自己（和管理员）能看到。
+            </p>
+          ) : null}
+          {!loading && shares.length > 0 ? (
+            <ul className="kb-share-list">
+              {shares.map((share) => (
+                <li key={share.user_id} className="kb-share-row">
+                  <span className="kb-share-person">
+                    <span className="kb-share-name">{share.name}</span>
+                    <span className="kb-share-username">{share.username}</span>
+                  </span>
+                  <div style={{ width: 104 }}>
+                    <Select
+                      value={share.permission}
+                      disabled={busyId === share.user_id}
+                      onValueChange={(value) => void changePermission(share, value)}
+                    >
+                      <SelectTrigger aria-label={`调整 ${share.name} 的访问档位`}>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {PERMISSION_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    disabled={busyId === share.user_id}
+                    onClick={() => void revoke(share)}
+                  >
+                    收回
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }

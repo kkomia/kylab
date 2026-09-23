@@ -117,97 +117,9 @@
   color: var(--status-success);
 }
 
-/* ---------------------------------------------------------------- 按钮 */
-
-.m-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-1-5);
-  height: var(--control-height);
-  padding: 0 var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--button-bg);
-  color: var(--button-color);
-  font: inherit;
-  font-size: var(--text-meta-size);
-  line-height: 1;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: var(--transition-ui);
-}
-
-.m-btn:hover:not(:disabled) {
-  background: var(--button-bg-hover);
-}
-
-.m-btn:disabled {
-  /* 禁用态必须**看得出**是禁用：只降透明度时，浅色背景下几乎分辨不出来 */
-  background: var(--button-disabled-bg);
-  border-color: var(--button-disabled-border);
-  color: var(--button-disabled-text);
-  cursor: not-allowed;
-}
-
-.m-btn-primary {
-  background: var(--button-primary-bg);
-  border-color: transparent;
-  color: var(--button-primary-text);
-}
-
-.m-btn-primary:hover:not(:disabled) {
-  background: var(--button-primary-bg-hover);
-}
-
-.m-btn-danger {
-  background: var(--status-danger);
-  border-color: transparent;
-  color: var(--button-primary-text);
-}
-
-.m-btn-ghost {
-  background: transparent;
-  border-color: transparent;
-}
-
-.m-btn-sm {
-  height: 26px;
-  padding: 0 var(--space-2);
-  font-size: var(--text-micro-size);
-}
-
-.m-btn-block {
-  width: 100%;
-}
-
-/* 纯图标按钮：命中区不小于 --hit-target */
-.m-icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--hit-target);
-  height: var(--hit-target);
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-control);
-  background: transparent;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  transition: var(--transition-ui);
-}
-
-.m-icon-btn:hover:not(:disabled) {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.m-icon-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
 /* ---------------------------------------------------------------- 表单 */
+/* （输入框 / 多行输入 / 下拉 / 按钮 / 标签 / 徽章 / 弹窗 / 菜单 / 骨架 / 头像的样式
+   不在这里：它们已经换成 `@/ui/*` 的原语，样式只在 src/ui 与 tokens.css 里一份） */
 
 .m-form {
   display: flex;
@@ -225,33 +137,7 @@
   grid-column: 1 / -1;
 }
 
-.m-input,
-.m-textarea,
-.m-select {
-  width: 100%;
-  min-height: var(--control-height);
-  padding: 0 var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: var(--text-meta-size);
-}
-
-.m-textarea {
-  padding: var(--space-2) var(--space-3);
-  line-height: var(--line-ui);
-  resize: vertical;
-}
-
-.m-input:focus-visible,
-.m-textarea:focus-visible,
-.m-select:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -1px;
-}
-
+/* 勾选行：框本身是 @/ui/checkbox（Radix），这里只管"框 + 文字"那一行的排版 */
 .m-check {
   display: inline-flex;
   align-items: center;
@@ -260,52 +146,6 @@
   color: var(--text-secondary);
   cursor: pointer;
   user-select: none;
-}
-
-.m-check input {
-  accent-color: var(--accent);
-}
-
-/* ---------------------------------------------------------------- 分段控件 */
-
-.m-tabs {
-  display: inline-flex;
-  gap: var(--space-1);
-  width: fit-content;
-  padding: var(--space-0-5);
-  background: var(--bg-subtle);
-  border-radius: var(--radius-control);
-}
-
-.m-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1-5);
-  height: var(--control-height);
-  padding: 0 var(--space-3);
-  border: none;
-  border-radius: var(--radius-control);
-  background: none;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: var(--text-meta-size);
-  cursor: pointer;
-  transition: var(--transition-ui);
-}
-
-.m-tab:hover {
-  color: var(--text-primary);
-}
-
-.m-tab-on {
-  background: var(--bg-surface);
-  color: var(--text-primary);
-  font-weight: 500;
-}
-
-.m-tab-count {
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
 }
 
 /* 筛选胶囊（带计数）：与分段控件不同——它是一排可以横着滚的过滤器 */
@@ -343,62 +183,6 @@
   color: var(--text-primary);
 }
 
-/* ---------------------------------------------------------------- 标签与徽章 */
-
-.m-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 1px var(--space-1);
-  border-radius: var(--radius-badge);
-  font-size: var(--text-micro-size);
-  line-height: 1.4;
-  white-space: nowrap;
-  background: var(--status-neutral-soft);
-  color: var(--text-secondary);
-}
-
-.m-tag-info {
-  background: var(--status-info-soft);
-  color: var(--status-info);
-}
-
-.m-tag-success {
-  background: var(--status-success-soft);
-  color: var(--status-success);
-}
-
-.m-tag-warning {
-  background: var(--status-warning-soft);
-  color: var(--status-warning);
-}
-
-.m-tag-danger {
-  background: var(--status-danger-soft);
-  color: var(--status-danger);
-}
-
-.m-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 0 var(--space-1);
-  border-radius: var(--radius-badge);
-  background: var(--bg-group);
-  color: var(--text-secondary);
-  font-size: var(--text-micro-size);
-}
-
-.m-chip-btn {
-  border: 1px solid transparent;
-  cursor: pointer;
-  transition: var(--transition-ui);
-}
-
-.m-chip-btn:hover {
-  border-color: var(--border-strong);
-}
-
 /* 运行中：脉动的小圆点，配合文字（颜色只是加速识别，规范 §8） */
 .m-dot {
   width: 6px;
@@ -420,7 +204,6 @@
     opacity: 0.3;
   }
 }
-
 @media (prefers-reduced-motion: reduce) {
   .m-dot-live {
     animation: none;
@@ -476,26 +259,6 @@
 
 .m-filter-select {
   flex: 0 0 148px;
-}
-
-/* ---------------------------------------------------------------- 骨架屏 */
-
-.m-skeleton {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.m-skeleton-row {
-  height: 16px;
-  border-radius: var(--radius-control);
-  background: var(--bg-subtle);
-}
-
-.m-skeleton-card {
-  height: 96px;
-  border-radius: var(--radius-panel);
-  background: var(--bg-subtle);
 }
 
 /* ---------------------------------------------------------------- 空态 */
@@ -641,119 +404,9 @@ button.m-card-title:hover {
   gap: var(--space-1);
 }
 
-/* ---------------------------------------------------------------- 弹窗 */
-
-.m-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-6);
-  background: var(--overlay-scrim);
-}
-
-.m-modal {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  max-width: 520px;
-  max-height: 84vh;
-  background: var(--modal-bg);
-  border: 1px solid var(--modal-border);
-  border-radius: var(--radius-overlay);
-  box-shadow: var(--shadow-popover);
-}
-
-.m-modal-md {
-  max-width: 620px;
-}
-
-.m-modal-wide {
-  max-width: 960px;
-}
-
-.m-modal-full {
-  max-height: 92vh;
-}
-
-.m-modal-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-4) var(--space-5);
-  border-bottom: 1px solid var(--border-hairline);
-}
-
-.m-modal-title {
-  margin: 0;
-  font-size: var(--text-section-size);
-  font-weight: 600;
-  color: var(--modal-header-color);
-}
-
-.m-modal-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  flex: 1;
-  min-height: 0;
-  padding: var(--space-4) var(--space-5);
-  overflow: auto;
-}
-
-.m-modal-foot {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-5);
-  border-top: 1px solid var(--border-hairline);
-}
-
 /* 脚注里的左侧内容（卸载、去掉头像这类破坏性动作靠左） */
 .m-footer-left {
   margin-right: auto;
-}
-
-/* ---------------------------------------------------------------- 菜单（Radix） */
-
-.m-menu-content {
-  z-index: 70;
-  min-width: 160px;
-  padding: var(--menu-pad);
-  background: var(--bg-menu);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-control);
-  box-shadow: var(--shadow-popover);
-}
-
-.m-menu-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  height: var(--menu-item-height);
-  padding: 0 var(--space-2);
-  border-radius: var(--menu-item-radius);
-  color: var(--menu-item-text);
-  font-size: var(--text-meta-size);
-  cursor: pointer;
-  outline: none;
-}
-
-.m-menu-item[data-highlighted] {
-  background: var(--bg-hover);
-}
-
-.m-menu-item[data-disabled] {
-  color: var(--text-quaternary);
-  cursor: not-allowed;
-}
-
-.m-menu-danger {
-  color: var(--status-danger);
 }
 
 /* ---------------------------------------------------------------- 行（设置那种"标签 + 值 + 动作"） */
@@ -1811,26 +1464,6 @@ button.m-card-title:hover {
   margin: 0;
   font-size: var(--text-meta-size);
   color: var(--status-danger);
-}
-
-/* ---------------------------------------------------------------- 头像 */
-
-.m-avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-pill);
-  background: var(--bg-group);
-  color: var(--text-secondary);
-  font-weight: 600;
-  overflow: hidden;
-  flex-shrink: 0;
-}
-
-.m-avatar img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
 }
 
 /* ---------------------------------------------------------------- 供应商 / 模型 */
@@ -3017,46 +2650,6 @@ button.m-card-title:hover {
   margin: 0;
   font-size: var(--text-micro-size);
   color: var(--text-secondary);
-}
-
-/* ---------------------------------------------------------------- 提示条（Toast） */
-
-.m-toasts {
-  position: fixed;
-  top: var(--space-4);
-  left: 50%;
-  z-index: 90;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  transform: translateX(-50%);
-  pointer-events: none;
-}
-
-.m-toast {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  max-width: 520px;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-row);
-  background: var(--bg-surface);
-  box-shadow: var(--shadow-raised);
-  font-size: var(--text-meta-size);
-  color: var(--text-primary);
-}
-
-.m-toast-error {
-  color: var(--status-danger);
-}
-
-.m-toast-warning {
-  color: var(--status-warning);
-}
-
-.m-toast-success {
-  color: var(--status-success);
 }
 
 /* ---------------------------------------------------------------- 窄屏 */

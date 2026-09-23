@@ -17,7 +17,8 @@ import { clearAvatar, uploadAvatar } from '@/api/auth'
 import { useSessionStore } from '@/lib/session'
 
 import { notifyError, notifySuccess } from '../shared/toast'
-import { Avatar, Button, Modal } from '../shared/ui'
+import { Button } from '@/ui/button'
+import { Avatar, Modal } from '../shared/composites'
 
 /** 输出边长。256 在 2× 屏上看着也够，而文件通常只有几十 KB。 */
 const OUTPUT_SIZE = 256
@@ -158,7 +159,7 @@ export function AvatarDialog({
           <Button disabled={busy} onClick={() => fileInput.current?.click()}>
             {preview ? '重选' : '选择图片'}
           </Button>
-          <Button variant="primary" disabled={!preview || busy} onClick={() => void save()}>
+          <Button disabled={!preview || busy} onClick={() => void save()}>
             {busy ? '上传中…' : '保存'}
           </Button>
         </>

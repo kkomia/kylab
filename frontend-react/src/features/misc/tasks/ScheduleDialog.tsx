@@ -21,7 +21,10 @@ import { useKnowledgeBases } from '@/features/misc/shared/knowledgeBases'
 
 import { MultiSelect } from '../shared/MultiSelect'
 import { notifyError, notifySuccess } from '../shared/toast'
-import { Button, Field, Modal, Select, TextArea, TextInput } from '../shared/ui'
+import { Button } from '@/ui/button'
+import { Input } from '@/ui/input'
+import { Textarea } from '@/ui/textarea'
+import { Field, Modal, OptionSelect } from '../shared/composites'
 
 const MODES = [
   { value: 'daily', label: '每天' },
@@ -200,7 +203,7 @@ export function ScheduleDialog({
       footer={
         <>
           <Button onClick={onClose}>取消</Button>
-          <Button variant="primary" disabled={!ready || save.isPending} onClick={submit}>
+          <Button disabled={!ready || save.isPending} onClick={submit}>
             {save.isPending ? '保存中…' : '保存'}
           </Button>
         </>
@@ -208,10 +211,10 @@ export function ScheduleDialog({
     >
       <div className="m-form">
         <Field label="名字" htmlFor="schedule-name">
-          <TextInput
+          <Input
             id="schedule-name"
             value={draft.name}
-            onValueChange={(name) => patch({ name })}
+            onChange={(event) => patch({ name: event.target.value })}
             placeholder="每日早报"
           />
         </Field>
@@ -221,11 +224,11 @@ export function ScheduleDialog({
           htmlFor="schedule-prompt"
           hint="这就是它每次要问的那句话，写具体一点结果更有用。"
         >
-          <TextArea
+          <Textarea
             id="schedule-prompt"
             rows={3}
             value={draft.prompt}
-            onValueChange={(prompt) => patch({ prompt })}
+            onChange={(event) => patch({ prompt: event.target.value })}
             placeholder="把昨天的构建日志汇总成三条结论"
           />
         </Field>
@@ -234,7 +237,7 @@ export function ScheduleDialog({
           <span className="field-label">什么时候跑</span>
           <div className="m-form-actions">
             <div className="m-filter-select">
-              <Select
+              <OptionSelect
                 value={draft.kind}
                 onValueChange={(value) => patch({ kind: value as Draft['kind'] })}
                 options={KIND_OPTIONS}
@@ -244,7 +247,7 @@ export function ScheduleDialog({
             {draft.kind === 'cron' ? (
               <>
                 <div className="m-filter-select">
-                  <Select
+                  <OptionSelect
                     value={draft.mode}
                     onValueChange={(mode) => patch({ mode })}
                     options={MODES}
@@ -252,9 +255,8 @@ export function ScheduleDialog({
                   />
                 </div>
                 {draft.mode !== 'custom' && (
-                  <input
+                  <Input
                     type="time"
-                    className="m-input"
                     style={{ width: '120px' }}
                     aria-label="时间"
                     value={draft.time}
@@ -263,7 +265,7 @@ export function ScheduleDialog({
                 )}
                 {draft.mode === 'weekly' && (
                   <div className="m-filter-select">
-                    <Select
+                    <OptionSelect
                       value={draft.weekday}
                       onValueChange={(weekday) => patch({ weekday })}
                       options={WEEKDAYS}
@@ -272,11 +274,10 @@ export function ScheduleDialog({
                   </div>
                 )}
                 {draft.mode === 'monthly' && (
-                  <input
+                  <Input
                     type="number"
                     min={1}
                     max={31}
-                    className="m-input"
                     style={{ width: '72px' }}
                     aria-label="几号"
                     value={draft.dayOfMonth}
@@ -285,9 +286,8 @@ export function ScheduleDialog({
                 )}
               </>
             ) : (
-              <input
+              <Input
                 type="datetime-local"
-                className="m-input"
                 aria-label="时间"
                 value={draft.runAt}
                 onChange={(event) => patch({ runAt: event.target.value })}
@@ -295,9 +295,9 @@ export function ScheduleDialog({
             )}
           </div>
           {draft.kind === 'cron' && draft.mode === 'custom' && (
-            <TextInput
+            <Input
               value={draft.customCron}
-              onValueChange={(customCron) => patch({ customCron })}
+              onChange={(event) => patch({ customCron: event.target.value })}
               placeholder="0 9 * * *"
               aria-label="自定义 cron 表达式"
             />

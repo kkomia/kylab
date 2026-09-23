@@ -6,7 +6,7 @@
  *
  * 文字永远在，颜色只是加速识别的辅助（§8 必须项）。
  */
-import type { StatusTone } from '@/features/knowledge/primitives'
+import type { StatusTone } from '@/features/knowledge/composites'
 
 export interface StatusView {
   label: string

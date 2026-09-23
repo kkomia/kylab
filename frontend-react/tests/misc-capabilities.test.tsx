@@ -230,6 +230,8 @@ describe('能力页', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'from-github' }))
 
     const dialog = await screen.findByRole('dialog')
+    // 正文弹窗是 @/ui/dialog 的组合壳，正文用可复制的 pre 而不是 title 属性
+    expect(dialog).toHaveAttribute('data-slot', 'dialog-content')
     expect(await within(dialog).findByText(/按需读进来的一段/)).toBeInTheDocument()
     expect(within(dialog).getByText('来自 owner/repo')).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: /卸载/ })).toBeInTheDocument()

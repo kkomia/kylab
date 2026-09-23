@@ -14,7 +14,7 @@
  */
 import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, RefreshCw } from 'lucide-react'
+import { EllipsisVertical, Plus, RefreshCw } from 'lucide-react'
 
 import {
   createProvider,
@@ -32,19 +32,23 @@ import {
 } from '@/api/modelRegistry'
 
 import { notifyError, notifySuccess } from '../shared/toast'
+import { Button } from '@/ui/button'
 import {
-  Button,
-  Checkbox,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/ui/dropdown-menu'
+import { Input } from '@/ui/input'
+import {
+  CheckRow,
   ConfirmDialog,
   EmptyState,
   Field,
-  MenuItem,
-  RowMenu,
-  Select,
+  OptionSelect,
   SkeletonBlock,
   StatusTag,
-  TextInput,
-} from '../shared/ui'
+} from '../shared/composites'
 import { mergeModelOptions, presetModelMeta } from './providerPresets'
 
 export const REGISTRY_QUERY_KEY = ['model-registry'] as const
@@ -329,7 +333,8 @@ export function ModelRegistryPanel() {
             一个供应商 = 一个接口地址 + 一把凭据；同一个地址下可以登记多个模型。
           </span>
         </h3>
-        <Button icon={<Plus size={14} />} onClick={() => setAddingProvider((value) => !value)}>
+        <Button onClick={() => setAddingProvider((value) => !value)}>
+          <Plus size={14} />
           {addingProvider ? '取消' : '添加供应商'}
         </Button>
       </div>
@@ -340,7 +345,7 @@ export function ModelRegistryPanel() {
             {/* 预设：一键填好名称与接口地址（各家地址不一样，抄地址是纯摩擦） */}
             <div className="m-field-wide">
               <Field label="预设">
-                <Select
+                <OptionSelect
                   value={selectedPresetId}
                   onValueChange={onPresetPick}
                   options={presetOptions}
@@ -350,7 +355,7 @@ export function ModelRegistryPanel() {
             </div>
             {selectedPreset?.hint && <p className="m-preset-hint">{selectedPreset.hint}</p>}
             <Field label="类别">
-              <Select
+              <OptionSelect
                 value={providerDraft.kind}
                 onValueChange={(kind) => setProviderDraft((current) => ({ ...current, kind }))}
                 options={kindOptions}
@@ -358,20 +363,22 @@ export function ModelRegistryPanel() {
               />
             </Field>
             <Field label="名称" htmlFor="provider-name">
-              <TextInput
+              <Input
                 id="provider-name"
                 value={providerDraft.name}
-                onValueChange={(name) => setProviderDraft((current) => ({ ...current, name }))}
+                onChange={(event) =>
+                  setProviderDraft((current) => ({ ...current, name: event.target.value }))
+                }
                 placeholder="例如：深度求索"
               />
             </Field>
             <div className="m-field-wide">
               <Field label="接口地址" htmlFor="provider-url">
-                <TextInput
+                <Input
                   id="provider-url"
                   value={providerDraft.base_url}
-                  onValueChange={(base_url) =>
-                    setProviderDraft((current) => ({ ...current, base_url }))
+                  onChange={(event) =>
+                    setProviderDraft((current) => ({ ...current, base_url: event.target.value }))
                   }
                   placeholder="https://api.deepseek.com"
                 />
@@ -379,12 +386,12 @@ export function ModelRegistryPanel() {
             </div>
             <div className="m-field-wide">
               <Field label="API Key" htmlFor="provider-key">
-                <TextInput
+                <Input
                   id="provider-key"
                   type="password"
                   value={providerDraft.api_key}
-                  onValueChange={(api_key) =>
-                    setProviderDraft((current) => ({ ...current, api_key }))
+                  onChange={(event) =>
+                    setProviderDraft((current) => ({ ...current, api_key: event.target.value }))
                   }
                   placeholder="sk-…"
                 />
@@ -393,7 +400,6 @@ export function ModelRegistryPanel() {
           </div>
           <div className="m-form-actions">
             <Button
-              variant="primary"
               disabled={busy === 'provider:create' || !providerDraft.name.trim()}
               onClick={() => createProviderMutation.mutate()}
             >
@@ -416,35 +422,52 @@ export function ModelRegistryPanel() {
               <span className="m-provider-name">{provider.name}</span>
               {!provider.enabled && <StatusTag tone="warning" label="已停用" />}
             </div>
-            <RowMenu label={`${provider.name} 的操作`} align="right">
-              <MenuItem
-                disabled={!provider.api_key_configured || busy === `test:${provider.id}`}
-                onSelect={() => testProviderMutation.mutate(provider)}
-              >
-                <RefreshCw size={14} />
-                测试连接
-              </MenuItem>
-              <MenuItem
-                onSelect={() => {
-                  setEditingProvider(provider.id)
-                  // **密钥栏留空**：留空 = 不改。把掩码填进去会被当成新密钥
-                  setProviderEdit({
-                    name: provider.name,
-                    base_url: provider.base_url,
-                    api_key: '',
-                  })
-                }}
-              >
-                编辑
-              </MenuItem>
-              <MenuItem onSelect={() => startAddModel(provider)}>添加模型</MenuItem>
-              <MenuItem onSelect={() => toggleProviderMutation.mutate(provider)}>
-                {provider.enabled ? '停用' : '启用'}
-              </MenuItem>
-              <MenuItem danger onSelect={() => setDeleteTarget({ kind: 'provider', provider })}>
-                删除
-              </MenuItem>
-            </RowMenu>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`${provider.name} 的操作`}
+                  title={`${provider.name} 的操作`}
+                >
+                  <EllipsisVertical />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start">
+                <DropdownMenuItem
+                  disabled={!provider.api_key_configured || busy === `test:${provider.id}`}
+                  onSelect={() => testProviderMutation.mutate(provider)}
+                >
+                  <RefreshCw size={14} />
+                  测试连接
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => {
+                    setEditingProvider(provider.id)
+                    // **密钥栏留空**：留空 = 不改。把掩码填进去会被当成新密钥
+                    setProviderEdit({
+                      name: provider.name,
+                      base_url: provider.base_url,
+                      api_key: '',
+                    })
+                  }}
+                >
+                  编辑
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => startAddModel(provider)}>
+                  添加模型
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => toggleProviderMutation.mutate(provider)}>
+                  {provider.enabled ? '停用' : '启用'}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={() => setDeleteTarget({ kind: 'provider', provider })}
+                >
+                  删除
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
 
           <p className="m-provider-meta">
@@ -462,31 +485,33 @@ export function ModelRegistryPanel() {
             <div className="m-form-card">
               <div className="m-form-grid">
                 <Field label="名称" htmlFor={`provider-edit-name-${provider.id}`}>
-                  <TextInput
+                  <Input
                     id={`provider-edit-name-${provider.id}`}
                     value={providerEdit.name}
-                    onValueChange={(name) => setProviderEdit((current) => ({ ...current, name }))}
+                    onChange={(event) =>
+                      setProviderEdit((current) => ({ ...current, name: event.target.value }))
+                    }
                   />
                 </Field>
                 <div className="m-field-wide">
                   <Field label="接口地址" htmlFor={`provider-edit-url-${provider.id}`}>
-                    <TextInput
+                    <Input
                       id={`provider-edit-url-${provider.id}`}
                       value={providerEdit.base_url}
-                      onValueChange={(base_url) =>
-                        setProviderEdit((current) => ({ ...current, base_url }))
+                      onChange={(event) =>
+                        setProviderEdit((current) => ({ ...current, base_url: event.target.value }))
                       }
                     />
                   </Field>
                 </div>
                 <div className="m-field-wide">
                   <Field label="API Key" htmlFor={`provider-edit-key-${provider.id}`}>
-                    <TextInput
+                    <Input
                       id={`provider-edit-key-${provider.id}`}
                       type="password"
                       value={providerEdit.api_key}
-                      onValueChange={(api_key) =>
-                        setProviderEdit((current) => ({ ...current, api_key }))
+                      onChange={(event) =>
+                        setProviderEdit((current) => ({ ...current, api_key: event.target.value }))
                       }
                       placeholder="留空表示不修改"
                     />
@@ -496,7 +521,6 @@ export function ModelRegistryPanel() {
               <div className="m-form-actions">
                 <Button onClick={() => setEditingProvider('')}>取消</Button>
                 <Button
-                  variant="primary"
                   disabled={busy === `provider:${provider.id}`}
                   onClick={() => updateProviderMutation.mutate(provider)}
                 >
@@ -512,11 +536,11 @@ export function ModelRegistryPanel() {
                 <Field label="模型 ID" htmlFor={`model-id-${provider.id}`}>
                   {/* 候选来自上游探测（**不落库**）+ 预设建议；手写这条路一直在。
                       用原生 `datalist`：可搜索、可手写、键盘可达，且没有额外的浮层要维护 */}
-                  <TextInput
+                  <Input
                     id={`model-id-${provider.id}`}
                     list={`model-options-${provider.id}`}
                     value={modelDraft.model_id}
-                    onValueChange={setModelId}
+                    onChange={(event) => setModelId(event.target.value)}
                     placeholder="选择或直接输入，如 BAAI/bge-m3"
                   />
                   <datalist id={`model-options-${provider.id}`}>
@@ -528,18 +552,22 @@ export function ModelRegistryPanel() {
                   </datalist>
                 </Field>
                 <Field label="显示名" optional htmlFor={`model-label-${provider.id}`}>
-                  <TextInput
+                  <Input
                     id={`model-label-${provider.id}`}
                     value={modelDraft.label}
-                    onValueChange={(label) => setModelDraft((current) => ({ ...current, label }))}
+                    onChange={(event) =>
+                      setModelDraft((current) => ({ ...current, label: event.target.value }))
+                    }
                     placeholder="对话主力"
                   />
                 </Field>
                 <Field label="向量维度" optional htmlFor={`model-dim-${provider.id}`}>
-                  <TextInput
+                  <Input
                     id={`model-dim-${provider.id}`}
                     value={modelDraft.dim}
-                    onValueChange={(dim) => setModelDraft((current) => ({ ...current, dim }))}
+                    onChange={(event) =>
+                      setModelDraft((current) => ({ ...current, dim: event.target.value }))
+                    }
                     placeholder="仅向量化模型需要"
                   />
                 </Field>
@@ -547,13 +575,13 @@ export function ModelRegistryPanel() {
                   <span className="field-label">能力</span>
                   <div className="m-cap-row">
                     {Object.entries(capabilities).map(([key, label]) => (
-                      <Checkbox
+                      <CheckRow
                         key={key}
                         checked={modelDraft.capabilities.includes(key)}
                         onCheckedChange={() => toggleCapability(setModelDraft, key)}
                       >
                         {label}
-                      </Checkbox>
+                      </CheckRow>
                     ))}
                   </div>
                 </div>
@@ -580,7 +608,6 @@ export function ModelRegistryPanel() {
               <div className="m-form-actions">
                 <Button onClick={() => setAddingModelFor('')}>取消</Button>
                 <Button
-                  variant="primary"
                   disabled={busy === 'model:create' || !modelDraft.model_id.trim()}
                   onClick={() => registerModelMutation.mutate(provider.id)}
                 >
@@ -616,52 +643,70 @@ export function ModelRegistryPanel() {
                   {model.bound_slots.map((slot) => (
                     <StatusTag key={slot} tone="success" label={`用于${slotLabel(slot)}`} />
                   ))}
-                  <RowMenu label={`${model.label || model.model_id} 的操作`} align="right">
-                    <MenuItem
-                      onSelect={() => {
-                        setEditingModel(model.id)
-                        setModelEdit({
-                          model_id: model.model_id,
-                          label: model.label,
-                          dim: model.dim === null ? '' : String(model.dim),
-                          capabilities: [...model.capabilities],
-                        })
-                      }}
-                    >
-                      编辑
-                    </MenuItem>
-                    <MenuItem danger onSelect={() => setDeleteTarget({ kind: 'model', model })}>
-                      删除
-                    </MenuItem>
-                  </RowMenu>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`${model.label || model.model_id} 的操作`}
+                        title={`${model.label || model.model_id} 的操作`}
+                      >
+                        <EllipsisVertical />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start">
+                      <DropdownMenuItem
+                        onSelect={() => {
+                          setEditingModel(model.id)
+                          setModelEdit({
+                            model_id: model.model_id,
+                            label: model.label,
+                            dim: model.dim === null ? '' : String(model.dim),
+                            capabilities: [...model.capabilities],
+                          })
+                        }}
+                      >
+                        编辑
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onSelect={() => setDeleteTarget({ kind: 'model', model })}
+                      >
+                        删除
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
 
                   {editingModel === model.id && (
                     <div className="m-form-card m-model-edit">
                       <div className="m-form-grid">
                         <Field label="模型 ID" htmlFor={`model-edit-id-${model.id}`}>
-                          <TextInput
+                          <Input
                             id={`model-edit-id-${model.id}`}
                             value={modelEdit.model_id}
-                            onValueChange={(model_id) =>
-                              setModelEdit((current) => ({ ...current, model_id }))
+                            onChange={(event) =>
+                              setModelEdit((current) => ({
+                                ...current,
+                                model_id: event.target.value,
+                              }))
                             }
                           />
                         </Field>
                         <Field label="显示名" htmlFor={`model-edit-label-${model.id}`}>
-                          <TextInput
+                          <Input
                             id={`model-edit-label-${model.id}`}
                             value={modelEdit.label}
-                            onValueChange={(label) =>
-                              setModelEdit((current) => ({ ...current, label }))
+                            onChange={(event) =>
+                              setModelEdit((current) => ({ ...current, label: event.target.value }))
                             }
                           />
                         </Field>
                         <Field label="向量维度" htmlFor={`model-edit-dim-${model.id}`}>
-                          <TextInput
+                          <Input
                             id={`model-edit-dim-${model.id}`}
                             value={modelEdit.dim}
-                            onValueChange={(dim) =>
-                              setModelEdit((current) => ({ ...current, dim }))
+                            onChange={(event) =>
+                              setModelEdit((current) => ({ ...current, dim: event.target.value }))
                             }
                           />
                         </Field>
@@ -669,13 +714,13 @@ export function ModelRegistryPanel() {
                           <span className="field-label">能力</span>
                           <div className="m-cap-row">
                             {Object.entries(capabilities).map(([key, label]) => (
-                              <Checkbox
+                              <CheckRow
                                 key={key}
                                 checked={modelEdit.capabilities.includes(key)}
                                 onCheckedChange={() => toggleCapability(setModelEdit, key)}
                               >
                                 {label}
-                              </Checkbox>
+                              </CheckRow>
                             ))}
                           </div>
                         </div>
@@ -683,7 +728,6 @@ export function ModelRegistryPanel() {
                       <div className="m-form-actions">
                         <Button onClick={() => setEditingModel('')}>取消</Button>
                         <Button
-                          variant="primary"
                           disabled={busy === `model:${model.id}`}
                           onClick={() => updateModelMutation.mutate(model)}
                         >

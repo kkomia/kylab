@@ -6,7 +6,7 @@
  * 两者都用**卡片式选择器**：三档主题、四档字号，选中那一档靠底色表达，
  * 而不是靠一个字面上的"当前"。
  */
-import { InfoTip } from '../shared/ui'
+import { InfoTip } from '../shared/composites'
 import { FONT_SCALES, useFontScale } from './useFontScale'
 import { setTheme, useThemeMode, type ThemeMode } from './useTheme'
 

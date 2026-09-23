@@ -16,7 +16,7 @@ import { lazy, Suspense, useMemo } from 'react'
 
 import type { ActivityPoint } from '@/api/stats'
 
-import { SkeletonBlock } from '../shared/ui'
+import { SkeletonBlock } from '../shared/composites'
 
 const EChart = lazy(() => import('./EChart').then((module) => ({ default: module.EChart })))
 

@@ -11,8 +11,10 @@ import { cn } from '@/lib/utils'
  * 表面同为 `--bg-overlay`，靠边缘的那条边保留 1px `--border-hairline`（贴在窗口边上时
  * 它是"这两块是分开的"的唯一线索）。
  *
- * 另一条路是 `drawer`（上游用 `vaul`，带手势拖拽关闭）——那需要新依赖，
- * 而它的卖点是移动端手势；桌面优先的控制台不需要，故未 vendor。
+ * 另一条路是 `@/ui/drawer`（上游用 `vaul`，带手势拖拽与底部把手）——它的卖点是
+ * **移动端手势**，而且底下就是同一个 `@radix-ui/react-dialog`（所以两者的无障碍、
+ * 焦点陷阱、Esc 关闭完全一致）；桌面优先的场景用这个 `sheet` 就够，少一层依赖。
+ * 两者表面/描边取值相同（都走 `--bg-overlay` / `--border-hairline`），换用不需要改样式。
  */
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />

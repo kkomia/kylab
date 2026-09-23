@@ -8,7 +8,8 @@
  */
 import { useEffect, useState } from 'react'
 
-import { Button, InfoTip } from '../shared/ui'
+import { Button } from '@/ui/button'
+import { InfoTip } from '../shared/composites'
 import {
   addBinding,
   bindingFromEvent,

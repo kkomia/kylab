@@ -8,7 +8,7 @@
  * 取值口径：胶囊高 `--control-height`（与输入框、按钮同高）、圆角 999（胶囊），
  * 选中态去掉描边——描边 + 底色同时出现会读成"按钮被按下"，而这里表达的是状态。
  */
-import { InfoTip } from '../shared/ui'
+import { InfoTip } from '../shared/composites'
 
 export function WorkspaceKbPicker({
   items,

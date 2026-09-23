@@ -16,7 +16,7 @@ import type { SystemLoad } from '@/api/tasks'
 import { formatBytes, formatDuration } from '@/lib/format'
 
 import { loadTone, taskKindLabel } from '../shared/status'
-import { InfoTip, RingGauge } from '../shared/ui'
+import { InfoTip, RingGauge } from '../shared/composites'
 
 /** 中心文字用的百分比。`null` 写"—"而不是 0%。 */
 function percentText(value: number | null | undefined): string {

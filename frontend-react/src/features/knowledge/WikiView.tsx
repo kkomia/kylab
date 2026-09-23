@@ -27,15 +27,24 @@ import {
 } from '@/api/wiki'
 import { Markdown } from '@/features/knowledge/markdown'
 import {
-  Button,
-  ConfirmDialog,
   EmptyState,
-  Skeleton,
+  SkeletonRows,
   StatusTag,
   type StatusTone,
-} from '@/features/knowledge/primitives'
+} from '@/features/knowledge/composites'
 import { messageOf, notify, useKnowledgeBases, usePolling } from '@/features/knowledge/store'
 import { formatDate, formatRelativeTime } from '@/lib/format'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/ui/alert-dialog'
+import { Button } from '@/ui/button'
 
 const POLL_INTERVAL_MS = 3000
 
@@ -354,12 +363,8 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
           <StatusTag label={statusView.label} tone={statusView.tone} running={statusView.running} />
         ) : null}
         {overview?.enabled ? (
-          <Button
-            variant="primary"
-            icon={RefreshCw}
-            disabled={busyGenerating}
-            onClick={requestGenerate}
-          >
+          <Button variant="default" disabled={busyGenerating} onClick={requestGenerate}>
+            <RefreshCw aria-hidden="true" />
             {generateLabel}
           </Button>
         ) : null}
@@ -367,7 +372,7 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
 
       {error ? <p className="kb-error-line">{error}</p> : null}
 
-      {loading ? <Skeleton variant="list" rows={5} /> : null}
+      {loading ? <SkeletonRows variant="list" rows={5} /> : null}
 
       {/* 库没开 Wiki：给"去哪儿开"的引导，不是一个空树 */}
       {!loading && overview && !overview.enabled ? (
@@ -376,7 +381,9 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
             title="这个知识库还没有开启 Wiki"
             hint="Wiki 是库形态的一种：开启后可以用已录入的内容整理出一套带出处的百科式页面。请到「知识库设置 → Wiki」打开。"
           >
-            <Button onClick={() => void navigate(`/kb/${kbId}`)}>回到知识库</Button>
+            <Button variant="outline" onClick={() => void navigate(`/kb/${kbId}`)}>
+              回到知识库
+            </Button>
           </EmptyState>
         </div>
       ) : null}
@@ -391,7 +398,7 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
           {/* 正在生成且还没有页面：给"在动"的画面，而不是一个空状态 */}
           {!hasPages && overview.status === 'generating' ? (
             <div className="kb-generating">
-              <Skeleton variant="list" rows={4} />
+              <SkeletonRows variant="list" rows={4} />
               <p className="text-note">
                 正在整理库里的内容，页面会陆续出现。页面越多耗时越长，可以先去忙别的。
               </p>
@@ -415,12 +422,8 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
                   <p className="text-hint" style={{ margin: 0 }}>
                     会调用对话模型，页面越多越久。
                   </p>
-                  <Button
-                    variant="primary"
-                    icon={RefreshCw}
-                    disabled={busyGenerating}
-                    onClick={requestGenerate}
-                  >
+                  <Button variant="default" disabled={busyGenerating} onClick={requestGenerate}>
+                    <RefreshCw aria-hidden="true" />
                     {generateLabel}
                   </Button>
                 </div>
@@ -497,7 +500,7 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
               </aside>
 
               <section className="kb-wiki-article">
-                {detailLoading && !detail ? <Skeleton variant="text" rows={8} /> : null}
+                {detailLoading && !detail ? <SkeletonRows variant="text" rows={8} /> : null}
                 {detailError ? <p className="kb-error-line">{detailError}</p> : null}
 
                 {detail ? (
@@ -573,29 +576,54 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
         </>
       ) : null}
 
-      <ConfirmDialog
+      {/*
+        两个确认弹窗都是 `@/ui/alert-dialog`（Radix）。与旧 `ConfirmDialog` 的**两处差异**：
+        点「确定」后弹窗立即关闭（旧实现停在忙碌态直到请求回来，失败仍会弹 toast）；
+        Esc 与点遮罩不再关闭（AlertDialog 的设计如此：只能走「取消 / 确定」二选一）。
+      */}
+      <AlertDialog
         open={confirmRegenerateOpen}
-        title="重新生成 Wiki"
-        lead={`重新生成会覆盖现有的 ${overview?.page_count ?? 0} 篇页面。`}
-        note="已有页面在生成完成前仍然可读；生成过程会调用对话模型，页面越多耗时越长。"
-        confirmLabel="重新生成"
-        busy={generating}
-        busyLabel="生成中…"
-        onConfirm={() => void runGenerate()}
-        onClose={() => setConfirmRegenerateOpen(false)}
-      />
+        onOpenChange={(next) => {
+          if (!next) setConfirmRegenerateOpen(false)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>重新生成 Wiki</AlertDialogTitle>
+            <AlertDialogDescription>
+              重新生成会覆盖现有的 {overview?.page_count ?? 0} 篇页面。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <p className="kb-modal-note">
+            已有页面在生成完成前仍然可读；生成过程会调用对话模型，页面越多耗时越长。
+          </p>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void runGenerate()}>重新生成</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-      <ConfirmDialog
+      <AlertDialog
         open={confirmClearOpen}
-        title="清除 Wiki 页面"
-        lead="确定清除这个知识库已生成的 Wiki 页面？"
-        note="只删除整理出来的页面，不影响文档、切块与向量；清除后可以重新生成。"
-        confirmLabel="清除"
-        busy={clearing}
-        busyLabel="清除中…"
-        onConfirm={() => void confirmClear()}
-        onClose={() => setConfirmClearOpen(false)}
-      />
+        onOpenChange={(next) => {
+          if (!next) setConfirmClearOpen(false)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>清除 Wiki 页面</AlertDialogTitle>
+            <AlertDialogDescription>确定清除这个知识库已生成的 Wiki 页面？</AlertDialogDescription>
+          </AlertDialogHeader>
+          <p className="kb-modal-note">
+            只删除整理出来的页面，不影响文档、切块与向量；清除后可以重新生成。
+          </p>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmClear()}>清除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

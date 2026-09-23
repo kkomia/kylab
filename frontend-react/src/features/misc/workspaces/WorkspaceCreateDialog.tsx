@@ -24,7 +24,9 @@ import { createWorkspace, type Workspace } from '@/api/workspaces'
 import { useSessionStore } from '@/lib/session'
 
 import { notifyError } from '../shared/toast'
-import { Button, Field, InfoTip, Modal, TextInput } from '../shared/ui'
+import { Button } from '@/ui/button'
+import { Input } from '@/ui/input'
+import { Field, InfoTip, Modal } from '../shared/composites'
 import { DirectoryPickerDialog } from './DirectoryPickerDialog'
 import { WORKSPACES_QUERY_KEY } from './queries'
 
@@ -80,11 +82,7 @@ export function WorkspaceCreateDialog({
       footer={
         <>
           <Button onClick={onClose}>取消</Button>
-          <Button
-            variant="primary"
-            disabled={!ready || create.isPending}
-            onClick={() => create.mutate()}
-          >
+          <Button disabled={!ready || create.isPending} onClick={() => create.mutate()}>
             {create.isPending ? '创建中…' : '创建工作区'}
           </Button>
         </>
@@ -92,10 +90,10 @@ export function WorkspaceCreateDialog({
     >
       <div className="m-form">
         <Field label="名字" htmlFor="ws-create-name">
-          <TextInput
+          <Input
             id="ws-create-name"
             value={name}
-            onValueChange={setName}
+            onChange={(event) => setName(event.target.value)}
             placeholder="例如：知识库产品化"
           />
         </Field>
@@ -108,11 +106,11 @@ export function WorkspaceCreateDialog({
           }
         >
           <div className="m-path-row">
-            <TextInput
+            <Input
               id="ws-create-root"
               aria-label="根目录"
               value={rootPath}
-              onValueChange={setRootPath}
+              onChange={(event) => setRootPath(event.target.value)}
               placeholder={isAdmin ? '点右边的「浏览…」挑一个' : '例如：/volume1/my-project'}
             />
             {isAdmin && <Button onClick={() => setPicking(true)}>浏览…</Button>}
@@ -120,10 +118,10 @@ export function WorkspaceCreateDialog({
         </Field>
 
         <Field label="描述" optional htmlFor="ws-create-desc">
-          <TextInput
+          <Input
             id="ws-create-desc"
             value={description}
-            onValueChange={setDescription}
+            onChange={(event) => setDescription(event.target.value)}
             placeholder="这个项目是做什么的"
           />
         </Field>

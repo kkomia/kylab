@@ -128,7 +128,11 @@ describe('模型注册器', () => {
     renderMisc(<ModelRegistryPanel />)
     await userEvent.click(await screen.findByRole('button', { name: '添加供应商' }))
 
-    await userEvent.selectOptions(screen.getByLabelText('供应商预设'), 'deepseek')
+    // 下拉已经是 @/ui/select（Radix）：先点开触发器，再点选项
+    const presetTrigger = screen.getByLabelText('供应商预设')
+    expect(presetTrigger).toHaveAttribute('data-slot', 'select-trigger')
+    await userEvent.click(presetTrigger)
+    await userEvent.click(await screen.findByRole('option', { name: '深度求索' }))
 
     expect(screen.getByLabelText('名称')).toHaveValue('深度求索')
     expect(screen.getByLabelText('接口地址')).toHaveValue('https://api.deepseek.com')
@@ -152,6 +156,8 @@ describe('模型注册器', () => {
 
     renderMisc(<ModelRegistryPanel />)
     await userEvent.click(await screen.findByRole('button', { name: /深度求索 的操作/ }))
+    // 行内「⋯」菜单已经是 @/ui/dropdown-menu（Radix）：点开才有菜单，项按 menuitem 查
+    expect(await screen.findByRole('menu')).toHaveAttribute('data-slot', 'dropdown-menu-content')
     await userEvent.click(await screen.findByRole('menuitem', { name: '添加模型' }))
 
     // 探测失败不弹错误通知，只就地给一句提示，并指明手写这条出路
@@ -191,7 +197,9 @@ describe('模型注册器', () => {
     await userEvent.click(await screen.findByRole('button', { name: /对话主力 的操作/ }))
     await userEvent.click(await screen.findByRole('menuitem', { name: '删除' }))
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('alertdialog')
+    // 二次确认走 @/ui/alert-dialog：role 是 alertdialog，正文说明仍在
+    expect(dialog).toHaveAttribute('data-slot', 'alert-dialog-content')
     expect(within(dialog).getByText('删除模型「对话主力」？')).toBeInTheDocument()
     expect(within(dialog).getByText(/它正被 1 个用途使用，删除后会自动解绑。/)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('button', { name: '删除' }))

@@ -720,3 +720,87 @@ describe('两个菜单（`/` 与 `@`）', () => {
     expect(field).toHaveValue('看看@doc/report.md ')
   })
 })
+
+describe('两个抽屉（引用原文 / 产物与文件）', () => {
+  /** 出处两条（点第一条的「看全文」）。 */
+  const sources = [1, 2].map((index) => ({
+    index,
+    chunk_id: `chunk-${index}`,
+    document_id: `doc-${index}`,
+    document_name: `报告${index}.pdf`,
+    heading_path: '第一章',
+    page: index,
+    preview: `第 ${index} 段的原文`,
+    knowledge_base_id: 'kb1',
+    score: 0.9,
+  }))
+
+  it('引用原文从右侧滑出（不是居中的弹窗），正文就是那一段原文', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '这些都说了什么'), stored('assistant', '见 [1][2]。', { sources })]),
+    )
+    renderPage()
+    const user = userEvent.setup()
+
+    // 出处列表里每一条都有自己的「看全文」：点第一条（编号 1 那条）
+    await user.click((await screen.findAllByText('看全文'))[0])
+    const drawer = await screen.findByRole('dialog', { name: /引用原文/ })
+    expect(drawer).toHaveTextContent('第 1 段的原文')
+    expect(drawer).toHaveTextContent('第一章 › 第 1 页')
+    // 抽屉的观感：贴右缘滑出（不是居中的弹窗），表面走 `--bg-overlay` 那枚令牌
+    expect(drawer).toHaveClass('bg-[var(--bg-overlay)]')
+    expect(drawer.className).toContain('right-0')
+  })
+
+  it('产物与文件：入口没变（加号 → 浏览文件），**打开时取数**，列出文件区', async () => {
+    const { listFiles } = await import('@/api/conversations')
+    vi.mocked(listFiles).mockResolvedValue({
+      mode: 'object',
+      label: '本会话',
+      path: '',
+      parent: null,
+      entries: [
+        {
+          key: 'out/report.docx',
+          name: '季度报告.docx',
+          is_dir: false,
+          size_bytes: 2048,
+          modified_at: null,
+          kind: 'docx',
+        },
+      ],
+      truncated: false,
+    })
+    renderPage()
+    const user = userEvent.setup()
+    await screen.findByPlaceholderText(/回车发送/)
+
+    // **打开之前不取数**：抽屉挂上才请求文件区（挂载即请求是这一条的另一半）
+    expect(listFiles).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('button', { name: '添加附件或技能' }))
+    await user.click(await screen.findByRole('menuitem', { name: /浏览文件/ }))
+
+    const drawer = await screen.findByRole('dialog', { name: /产物与文件/ })
+    expect(await within(drawer).findByText('季度报告.docx')).toBeInTheDocument()
+    expect(listFiles).toHaveBeenCalledWith('c1')
+  })
+
+  it('开抽屉不动底下对话的滚动位置（用户看到的那一句还在原处）', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '这些都说了什么'), stored('assistant', '见 [1][2]。', { sources })]),
+    )
+    renderPage()
+    const user = userEvent.setup()
+
+    const viewport = await screen.findByLabelText('对话内容')
+    viewport.scrollTop = 123
+
+    await user.click((await screen.findAllByText('看全文'))[0])
+    await screen.findByRole('dialog', { name: /引用原文/ })
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /引用原文/ })).toBeNull())
+
+    expect(viewport.scrollTop).toBe(123)
+  })
+})

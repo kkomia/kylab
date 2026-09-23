@@ -321,7 +321,8 @@ describe('切块的人工干预', () => {
     expect(await screen.findByText('确定删除第 1 块？')).toBeInTheDocument()
     expect(screen.getByText(/只想让它暂时不出现在检索里，用「禁用」/)).toBeInTheDocument()
 
-    const dialog = screen.getByRole('dialog', { name: '删除切块' })
+    // 确认弹窗是 `@/ui/alert-dialog`（Radix）：role 是 alertdialog，不是 dialog
+    const dialog = screen.getByRole('alertdialog', { name: '删除切块' })
     await user.click(within(dialog).getByRole('button', { name: '确定' }))
     await waitFor(() => expect(deleteChunkMock).toHaveBeenCalledWith('doc-1', 0))
   })

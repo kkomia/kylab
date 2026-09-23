@@ -23,6 +23,7 @@ import {
   Folder as FolderIcon,
   Inbox,
   Library,
+  MoreHorizontal,
   Pencil,
   Plus,
   RefreshCw,
@@ -56,22 +57,10 @@ import {
   type ImpactReport,
 } from '@/api/documents'
 import { createFolder, deleteFolder, listFolders, renameFolder, type Folder } from '@/api/folders'
+import { MeterBar, SkeletonRows, StatusTag } from '@/features/knowledge/composites'
 import { DocumentDrawer } from '@/features/knowledge/DocumentDrawer'
 import { KbSearchPanel } from '@/features/knowledge/KbSearchPanel'
 import { KnowledgeBaseSettings } from '@/features/knowledge/KnowledgeBaseSettings'
-import {
-  Button,
-  ConfirmDialog,
-  IconButton,
-  Input,
-  MenuItem,
-  MeterBar,
-  Modal,
-  RowMenu,
-  Select,
-  Skeleton,
-  StatusTag,
-} from '@/features/knowledge/primitives'
 import { ShareDialog } from '@/features/knowledge/ShareDialog'
 import { messageOf, notify, useKnowledgeBases, usePolling } from '@/features/knowledge/store'
 import { useOperatorStore } from '@/lib/operator'
@@ -79,6 +68,29 @@ import { documentStageView, FILTER_STAGE_KEYS } from '@/features/knowledge/statu
 import { UploadDialog } from '@/features/knowledge/UploadDialog'
 import { MAX_UPLOAD_MB, UPLOAD_FORMAT_HINT } from '@/features/knowledge/uploadLimits'
 import { formatBytes, formatMillis, formatRelativeTime } from '@/lib/format'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/ui/alert-dialog'
+import { Button } from '@/ui/button'
+import { Checkbox } from '@/ui/checkbox'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/ui/dropdown-menu'
+import { Input } from '@/ui/input'
+import { Label } from '@/ui/label'
+import { RadioGroup, RadioGroupItem } from '@/ui/radio-group'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select'
 
 const POLL_INTERVAL_MS = 2000
 /** 处于这些阶段的文档还在动，需要轮询刷新。 */
@@ -99,13 +111,23 @@ const SEARCH_DEBOUNCE_MS = 300
 /** 与 CSS 的 `--row-height` 一致：补白行按它算，两处漂了就会算错行数。 */
 const ROW_HEIGHT = 44
 
+/**
+ * 「全部」那一项的取值。
+ *
+ * Radix 的 `<Select.Item>` **不接受空串**（空串被它当成"没有值"，触发器会退回占位符），
+ * 而这里的值域里 `''` 正是"不带这个筛选条件"。所以界面上用哨兵值，进出都换回 `''`
+ * ——送给接口的筛选对象（`stageFilter` / `sourceFilter`）一点没变。
+ */
+const ALL_STAGES = '__all_stages__'
+const ALL_SOURCES = '__all_sources__'
+
 const STAGE_FILTER_OPTIONS = [
-  { value: '', label: '全部状态' },
+  { value: ALL_STAGES, label: '全部状态' },
   ...FILTER_STAGE_KEYS.map((stage) => ({ value: stage, label: documentStageView(stage).label })),
 ]
 /** 只列真实可能出现的来源：webdav 是框架预留、MVP 不实现，摆上去就是点了没反应的死选项。 */
 const SOURCE_FILTER_OPTIONS = [
-  { value: '', label: '全部来源' },
+  { value: ALL_SOURCES, label: '全部来源' },
   { value: 'upload', label: '本地上传' },
   { value: 'html', label: '网页' },
   { value: 'rss', label: 'RSS 订阅' },
@@ -756,7 +778,15 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
             <div className="kb-tree-head">
               <span>目录</span>
               {knowledgeBase.can_write ? (
-                <IconButton icon={Plus} size={15} label="新建目录" onClick={startCreateFolder} />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="新建目录"
+                  title="新建目录"
+                  onClick={startCreateFolder}
+                >
+                  <Plus aria-hidden="true" />
+                </Button>
               ) : null}
             </div>
 
@@ -841,31 +871,35 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                             <span className="kb-tree-count tabular">{folder.document_count}</span>
                           </button>
                           {knowledgeBase.can_write ? (
-                            <RowMenu label={`${folder.name} 的操作`}>
-                              {(close) => (
-                                <>
-                                  <MenuItem
-                                    icon={Pencil}
-                                    onClick={() => {
-                                      startRenameFolder(folder)
-                                      close()
-                                    }}
-                                  >
-                                    重命名
-                                  </MenuItem>
-                                  <MenuItem
-                                    icon={Trash2}
-                                    danger
-                                    onClick={() => {
-                                      setFolderDeleteTarget(folder)
-                                      close()
-                                    }}
-                                  >
-                                    删除目录
-                                  </MenuItem>
-                                </>
-                              )}
-                            </RowMenu>
+                            /* 行菜单：`@/ui/dropdown-menu`（Radix）。与旧 `RowMenu` 的行为差异：
+                               菜单走 Portal 渲染到 body（旧实现是行内绝对定位）、打开时焦点进菜单、
+                               关掉后还给触发器；菜单项是 `[role=menuitem]` 的 div 不是 `<button>`，
+                               选中后菜单自动关闭（旧实现的 `close()` 因此消失）。 */
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  aria-label={`${folder.name} 的操作`}
+                                  title={`${folder.name} 的操作`}
+                                >
+                                  <MoreHorizontal aria-hidden="true" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem onSelect={() => startRenameFolder(folder)}>
+                                  <Pencil aria-hidden="true" />
+                                  重命名
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  variant="destructive"
+                                  onSelect={() => setFolderDeleteTarget(folder)}
+                                >
+                                  <Trash2 aria-hidden="true" />
+                                  删除目录
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           ) : null}
                         </div>
                       </li>
@@ -892,13 +926,13 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                 <div className="kb-tree-form-actions">
                   <Button
                     size="sm"
-                    variant="primary"
+                    variant="default"
                     disabled={folderSaving}
                     onClick={() => void submitFolder()}
                   >
                     {folderSaving ? '保存中…' : '保存'}
                   </Button>
-                  <Button size="sm" onClick={() => setFolderFormOpen(false)}>
+                  <Button size="sm" variant="outline" onClick={() => setFolderFormOpen(false)}>
                     取消
                   </Button>
                 </div>
@@ -921,32 +955,50 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
             </div>
             <div className="kb-filter">
               <Select
-                value={stageFilter}
-                options={STAGE_FILTER_OPTIONS}
-                aria-label="按状态筛选"
-                onChange={(value) => {
-                  setStageFilter(value)
+                value={stageFilter || ALL_STAGES}
+                onValueChange={(value) => {
+                  setStageFilter(value === ALL_STAGES ? '' : value)
                   setPage(1)
                   setSelected([])
                 }}
-              />
+              >
+                <SelectTrigger aria-label="按状态筛选">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STAGE_FILTER_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             <div className="kb-filter">
               <Select
-                value={sourceFilter}
-                options={SOURCE_FILTER_OPTIONS}
-                aria-label="按来源筛选"
-                onChange={(value) => {
-                  setSourceFilter(value)
+                value={sourceFilter || ALL_SOURCES}
+                onValueChange={(value) => {
+                  setSourceFilter(value === ALL_SOURCES ? '' : value)
                   setPage(1)
                   setSelected([])
                 }}
-              />
+              >
+                <SelectTrigger aria-label="按来源筛选">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {SOURCE_FILTER_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
             {hasFilter ? (
               <Button
                 size="sm"
-                variant="subtle"
+                variant="secondary"
                 onClick={() => {
                   setSearchDraft('')
                   setSearchQuery('')
@@ -962,39 +1014,38 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
 
             <div className="kb-toolbar-actions">
               <Button
-                variant="subtle"
-                icon={Search}
+                variant="secondary"
                 disabled={documents.length === 0}
                 onClick={() => setSearchOpen(true)}
               >
+                <Search aria-hidden="true" />
                 在此库检索
               </Button>
               {/* Wiki 入口只在库形态选了「向量检索 + Wiki」时出现 */}
               {knowledgeBase?.wiki_enabled ? (
-                <Button
-                  variant="subtle"
-                  icon={Library}
-                  onClick={() => void navigate(`/kb/${kbId}/wiki`)}
-                >
+                <Button variant="secondary" onClick={() => void navigate(`/kb/${kbId}/wiki`)}>
+                  <Library aria-hidden="true" />
                   Wiki
                 </Button>
               ) : null}
               {/* 分享入口只对 owner / 管理员出现：can_manage 由后端算 */}
               {knowledgeBase?.can_manage ? (
-                <Button variant="subtle" icon={Share2} onClick={() => setShareOpen(true)}>
+                <Button variant="secondary" onClick={() => setShareOpen(true)}>
+                  <Share2 aria-hidden="true" />
                   分享
                 </Button>
               ) : null}
               {/* 只读分享的成员看得到内容，但没有写入口 */}
               {knowledgeBase?.can_write ? (
-                <Button variant="subtle" icon={Upload} onClick={() => setUploadOpen(true)}>
+                <Button variant="secondary" onClick={() => setUploadOpen(true)}>
+                  <Upload aria-hidden="true" />
                   上传文档
                 </Button>
               ) : null}
             </div>
           </div>
 
-          {loading && documents.length === 0 ? <Skeleton variant="list" rows={4} /> : null}
+          {loading && documents.length === 0 ? <SkeletonRows variant="list" rows={4} /> : null}
 
           {!(loading && documents.length === 0) ? (
             <>
@@ -1012,7 +1063,7 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                   </span>
                   <Button
                     size="sm"
-                    icon={FolderIcon}
+                    variant="outline"
                     disabled={batchRunning}
                     onClick={() => {
                       setMoveBatchIds([...selected])
@@ -1022,10 +1073,12 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                       )
                     }}
                   >
+                    <FolderIcon aria-hidden="true" />
                     移动到目录
                   </Button>
                   <Button
                     size="sm"
+                    variant="outline"
                     disabled={batchRunning}
                     onClick={() => void runBatchToggleDisabled('disable')}
                   >
@@ -1033,6 +1086,7 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                   </Button>
                   <Button
                     size="sm"
+                    variant="outline"
                     disabled={batchRunning}
                     onClick={() => void runBatchToggleDisabled('enable')}
                   >
@@ -1040,33 +1094,40 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                   </Button>
                   <Button
                     size="sm"
-                    icon={CircleHelp}
+                    variant="outline"
                     disabled={batchRunning}
                     onClick={() => void runBatchQuestions()}
                   >
+                    <CircleHelp aria-hidden="true" />
                     生成问题
                   </Button>
                   <Button
                     size="sm"
-                    icon={RefreshCw}
+                    variant="outline"
                     disabled={batchRunning}
                     onClick={() => void runBatch('reprocess')}
                   >
+                    <RefreshCw aria-hidden="true" />
                     重新摄入
                   </Button>
                   <Button
                     size="sm"
-                    variant="danger"
-                    icon={Trash2}
+                    variant="destructive"
                     disabled={batchRunning}
                     onClick={() => {
                       if (selectedCount === 0 || batchRunning) return
                       setBatchDeleteOpen(true)
                     }}
                   >
+                    <Trash2 aria-hidden="true" />
                     删除
                   </Button>
-                  <Button size="sm" disabled={batchRunning} onClick={() => setSelected([])}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={batchRunning}
+                    onClick={() => setSelected([])}
+                  >
                     取消选择
                   </Button>
                 </div>
@@ -1076,16 +1137,11 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                 <div className="panel-head kb-doc-head">
                   {knowledgeBase?.can_write ? (
                     <span className="kb-col-check">
-                      <input
-                        className="kb-checkbox"
-                        type="checkbox"
-                        checked={allSelected}
+                      {/* @/ui/checkbox（Radix）：半选走 `'indeterminate'`（旧实现写的是原生 DOM 的 `indeterminate`） */}
+                      <Checkbox
+                        checked={someSelected ? 'indeterminate' : allSelected}
                         aria-label={allSelected ? '取消选择本页' : '全选本页（可逐页累加）'}
-                        onChange={toggleSelectAll}
-                        ref={(node) => {
-                          // 原生 indeterminate 只能走 DOM 属性（表头显示"半选"）
-                          if (node) node.indeterminate = someSelected
-                        }}
+                        onCheckedChange={toggleSelectAll}
                       />
                     </span>
                   ) : null}
@@ -1127,12 +1183,10 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                         <div className="kb-doc-row panel-row">
                           {knowledgeBase?.can_write ? (
                             <span className="kb-col-check">
-                              <input
-                                className="kb-checkbox"
-                                type="checkbox"
+                              <Checkbox
                                 checked={selected.includes(document.id)}
                                 aria-label={`选择 ${document.name}`}
-                                onChange={() => toggleSelect(document.id)}
+                                onCheckedChange={() => toggleSelect(document.id)}
                               />
                             </span>
                           ) : null}
@@ -1197,107 +1251,96 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                             {formatRelativeTime(document.updated_at)}
                           </span>
 
-                          {/* 操作菜单对**所有能看这个库的人**开放：下载是只读动作 */}
-                          <RowMenu label={`${document.name} 的操作`} className="kb-col-menu">
-                            {(close) => (
-                              <>
-                                <MenuItem
-                                  icon={Download}
-                                  onClick={() => {
-                                    close()
-                                    void onDownload(document)
-                                  }}
-                                >
-                                  下载
-                                </MenuItem>
-                                {knowledgeBase?.can_write ? (
-                                  <>
-                                    <MenuItem
-                                      icon={Pencil}
-                                      onClick={() => {
-                                        close()
-                                        setRenameTarget(document)
-                                        setRenameDraft(document.name)
-                                      }}
+                          {/* 操作菜单对**所有能看这个库的人**开放：下载是只读动作。
+                              与旧 `RowMenu` 的差异同目录菜单：Portal 渲染、焦点进菜单后还给触发器、
+                              菜单项是 div[role=menuitem]、选中即自动关闭。 */}
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="kb-col-menu"
+                                aria-label={`${document.name} 的操作`}
+                                title={`${document.name} 的操作`}
+                              >
+                                <MoreHorizontal aria-hidden="true" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <DropdownMenuItem onSelect={() => void onDownload(document)}>
+                                <Download aria-hidden="true" />
+                                下载
+                              </DropdownMenuItem>
+                              {knowledgeBase?.can_write ? (
+                                <>
+                                  <DropdownMenuItem
+                                    onSelect={() => {
+                                      setRenameTarget(document)
+                                      setRenameDraft(document.name)
+                                    }}
+                                  >
+                                    <Pencil aria-hidden="true" />
+                                    重命名
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onSelect={() => {
+                                      setMoveTarget(document)
+                                      // 默认落在它当前所在的位置：多数人是想改到别处
+                                      setMoveChoice(document.folder_id ?? '')
+                                    }}
+                                  >
+                                    <FolderIcon aria-hidden="true" />
+                                    移动到目录
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onSelect={() => void reprocess(document)}>
+                                    <RefreshCw aria-hidden="true" />
+                                    重新摄入
+                                  </DropdownMenuItem>
+                                  {/* 补生成分段问题：只对已索引的文档有意义 */}
+                                  {document.stage === 'indexed' ? (
+                                    <DropdownMenuItem
+                                      onSelect={() =>
+                                        void runBatchAction('questions', {
+                                          ids: [document.id],
+                                          verb: '生成问题',
+                                          refresh: 'list',
+                                          success: () => '已排队生成问题，完成后列表会自动刷新',
+                                          partial: (_result, firstError) =>
+                                            firstError || '生成问题失败',
+                                        })
+                                      }
                                     >
-                                      重命名
-                                    </MenuItem>
-                                    <MenuItem
-                                      icon={FolderIcon}
-                                      onClick={() => {
-                                        close()
-                                        setMoveTarget(document)
-                                        // 默认落在它当前所在的位置：多数人是想改到别处
-                                        setMoveChoice(document.folder_id ?? '')
-                                      }}
+                                      <CircleHelp aria-hidden="true" />
+                                      生成问题
+                                    </DropdownMenuItem>
+                                  ) : null}
+                                  <DropdownMenuItem
+                                    onSelect={() => void onToggleDisabled(document)}
+                                  >
+                                    <X aria-hidden="true" />
+                                    {document.disabled ? '恢复检索' : '停用检索'}
+                                  </DropdownMenuItem>
+                                  {/* 取消只在真的还在跑时出现：对已完成的文档摆一个点了报错的按钮没有意义 */}
+                                  {ACTIVE_STAGES.has(document.stage) ? (
+                                    <DropdownMenuItem
+                                      disabled={canceling === document.id}
+                                      onSelect={() => setCancelTarget(document)}
                                     >
-                                      移动到目录
-                                    </MenuItem>
-                                    <MenuItem
-                                      icon={RefreshCw}
-                                      onClick={() => {
-                                        close()
-                                        void reprocess(document)
-                                      }}
-                                    >
-                                      重新摄入
-                                    </MenuItem>
-                                    {/* 补生成分段问题：只对已索引的文档有意义 */}
-                                    {document.stage === 'indexed' ? (
-                                      <MenuItem
-                                        icon={CircleHelp}
-                                        onClick={() => {
-                                          close()
-                                          void runBatchAction('questions', {
-                                            ids: [document.id],
-                                            verb: '生成问题',
-                                            refresh: 'list',
-                                            success: () => '已排队生成问题，完成后列表会自动刷新',
-                                            partial: (_result, firstError) =>
-                                              firstError || '生成问题失败',
-                                          })
-                                        }}
-                                      >
-                                        生成问题
-                                      </MenuItem>
-                                    ) : null}
-                                    <MenuItem
-                                      icon={X}
-                                      onClick={() => {
-                                        close()
-                                        void onToggleDisabled(document)
-                                      }}
-                                    >
-                                      {document.disabled ? '恢复检索' : '停用检索'}
-                                    </MenuItem>
-                                    {/* 取消只在真的还在跑时出现：对已完成的文档摆一个点了报错的按钮没有意义 */}
-                                    {ACTIVE_STAGES.has(document.stage) ? (
-                                      <MenuItem
-                                        icon={X}
-                                        disabled={canceling === document.id}
-                                        onClick={() => {
-                                          close()
-                                          setCancelTarget(document)
-                                        }}
-                                      >
-                                        {canceling === document.id ? '取消中…' : '取消解析'}
-                                      </MenuItem>
-                                    ) : null}
-                                    <MenuItem
-                                      icon={Trash2}
-                                      danger
-                                      onClick={() => {
-                                        close()
-                                        openDelete(document)
-                                      }}
-                                    >
-                                      删除
-                                    </MenuItem>
-                                  </>
-                                ) : null}
-                              </>
-                            )}
-                          </RowMenu>
+                                      <X aria-hidden="true" />
+                                      {canceling === document.id ? '取消中…' : '取消解析'}
+                                    </DropdownMenuItem>
+                                  ) : null}
+                                  <DropdownMenuItem
+                                    variant="destructive"
+                                    onSelect={() => openDelete(document)}
+                                  >
+                                    <Trash2 aria-hidden="true" />
+                                    删除
+                                  </DropdownMenuItem>
+                                </>
+                              ) : null}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
                         </div>
 
                         {document.error ? <p className="kb-doc-error">{document.error}</p> : null}
@@ -1366,11 +1409,11 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                     <div className="kb-pager-controls">
                       <Button
                         size="sm"
-                        variant="subtle"
-                        icon={ChevronLeft}
+                        variant="secondary"
                         disabled={page <= 1}
                         onClick={() => goToPage(page - 1)}
                       >
+                        <ChevronLeft aria-hidden="true" />
                         上一页
                       </Button>
                       <span className="kb-pager-page tabular">
@@ -1378,11 +1421,12 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                       </span>
                       <Button
                         size="sm"
-                        variant="subtle"
+                        variant="secondary"
                         disabled={page >= pageCount}
                         onClick={() => goToPage(page + 1)}
                       >
                         下一页
+                        <ChevronRight aria-hidden="true" />
                       </Button>
                     </div>
                   ) : null}
@@ -1441,16 +1485,52 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
       ) : null}
 
       {/* 移动到目录：单篇与批量共用（目录清单、选中逻辑、提示文案都一样） */}
-      <Modal
+      <Dialog
         open={moveTarget !== null || moveBatchIds.length > 0}
-        title="移动到目录"
-        onClose={() => {
-          setMoveTarget(null)
-          setMoveBatchIds([])
+        onOpenChange={(next) => {
+          if (!next) {
+            setMoveTarget(null)
+            setMoveBatchIds([])
+          }
         }}
-        footer={
-          <>
+      >
+        <DialogContent className="flex max-h-[min(88vh,900px)] flex-col gap-0 p-0">
+          <DialogHeader className="border-b border-[var(--border-hairline)] px-4 py-3 pr-10">
+            <DialogTitle>移动到目录</DialogTitle>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <p className="kb-lead">
+              {moveBatchIds.length > 0
+                ? `把选中的 ${moveBatchIds.length} 篇移到：`
+                : `把「${moveTarget?.name ?? ''}」移到：`}
+            </p>
+            {/*
+              目标目录：`@/ui/radio-group`（Radix）。值域里 `''` 是"根目录（未归档）"，
+              而 Radix 的单选项允许空串，所以这个哨兵值不需要（与两个筛选下拉不同）。
+            */}
+            <RadioGroup
+              value={moveChoice}
+              onValueChange={setMoveChoice}
+              className="flex flex-col gap-1"
+            >
+              <Label className="kb-switch">
+                <RadioGroupItem value="" aria-label="根目录（未归档）" />
+                <span>根目录（未归档）</span>
+              </Label>
+              {folders.map((folder) => (
+                <Label key={folder.id} className="kb-switch">
+                  <RadioGroupItem value={folder.id} aria-label={folder.name} />
+                  <span>{folder.name}</span>
+                </Label>
+              ))}
+            </RadioGroup>
+            {folders.length === 0 ? (
+              <p className="text-hint">还没有目录。先关掉这里，用左侧目录树右上角的「+」建一个。</p>
+            ) : null}
+          </div>
+          <DialogFooter className="border-t border-[var(--border-hairline)] px-4 py-3">
             <Button
+              variant="outline"
               onClick={() => {
                 setMoveTarget(null)
                 setMoveBatchIds([])
@@ -1458,141 +1538,161 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
             >
               取消
             </Button>
-            <Button variant="primary" disabled={moving} onClick={() => void confirmMove()}>
+            <Button variant="default" disabled={moving} onClick={() => void confirmMove()}>
               {moving ? '移动中…' : '移动'}
             </Button>
-          </>
-        }
-      >
-        <p className="kb-lead">
-          {moveBatchIds.length > 0
-            ? `把选中的 ${moveBatchIds.length} 篇移到：`
-            : `把「${moveTarget?.name ?? ''}」移到：`}
-        </p>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-1)' }}>
-          <label className="kb-switch">
-            <input
-              type="radio"
-              name="move-target"
-              value=""
-              checked={moveChoice === ''}
-              onChange={() => setMoveChoice('')}
-              style={{ accentColor: 'var(--text-secondary)' }}
-            />
-            <span>根目录（未归档）</span>
-          </label>
-          {folders.map((folder) => (
-            <label key={folder.id} className="kb-switch">
-              <input
-                type="radio"
-                name="move-target"
-                value={folder.id}
-                checked={moveChoice === folder.id}
-                onChange={() => setMoveChoice(folder.id)}
-                style={{ accentColor: 'var(--text-secondary)' }}
-              />
-              <span>{folder.name}</span>
-            </label>
-          ))}
-        </div>
-        {folders.length === 0 ? (
-          <p className="text-hint">还没有目录。先关掉这里，用左侧目录树右上角的「+」建一个。</p>
-        ) : null}
-      </Modal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 重命名：只改显示名，不重跑解析 */}
-      <Modal
+      <Dialog
         open={renameTarget !== null}
-        title="重命名文档"
-        onClose={() => setRenameTarget(null)}
-        footer={
-          <>
-            <Button onClick={() => setRenameTarget(null)}>取消</Button>
-            <Button variant="primary" disabled={renaming} onClick={() => void confirmRename()}>
+        onOpenChange={(next) => {
+          if (!next) setRenameTarget(null)
+        }}
+      >
+        <DialogContent className="flex max-h-[min(88vh,900px)] flex-col gap-0 p-0">
+          <DialogHeader className="border-b border-[var(--border-hairline)] px-4 py-3 pr-10">
+            <DialogTitle>重命名文档</DialogTitle>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <p className="kb-lead">给「{renameTarget?.name ?? ''}」换一个名字：</p>
+            <Input
+              value={renameDraft}
+              placeholder="文件名"
+              aria-label="文件名"
+              onChange={(event) => setRenameDraft(event.target.value)}
+            />
+          </div>
+          <DialogFooter className="border-t border-[var(--border-hairline)] px-4 py-3">
+            <Button variant="outline" onClick={() => setRenameTarget(null)}>
+              取消
+            </Button>
+            <Button variant="default" disabled={renaming} onClick={() => void confirmRename()}>
               {renaming ? '保存中…' : '保存'}
             </Button>
-          </>
-        }
-      >
-        <p className="kb-lead">给「{renameTarget?.name ?? ''}」换一个名字：</p>
-        <Input
-          value={renameDraft}
-          placeholder="文件名"
-          aria-label="文件名"
-          onChange={(event) => setRenameDraft(event.target.value)}
-        />
-      </Modal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {/* 删除确认：**先给人看影响清单再动手** */}
-      <ConfirmDialog
+      {/*
+        四个确认弹窗都是 `@/ui/alert-dialog`（Radix）。与旧 `ConfirmDialog` 的**两处差异**：
+        点「确定」后弹窗立即关闭（旧实现停在忙碌态直到请求回来，失败仍会弹 toast）；
+        Esc 与点遮罩不再关闭（AlertDialog 的设计如此：只能走「取消 / 确定」二选一）。
+        删除确认：**先给人看影响清单再动手**。
+      */}
+      <AlertDialog
         open={deleteTarget !== null}
-        title="删除文档"
-        lead={`确定删除「${deleteTarget?.name ?? ''}」？`}
-        note={
-          deleteImpact?.restorable
-            ? '原文进回收站保留 7 天，其间可恢复；切块与向量立即清除，删掉就搜不到。'
-            : '此操作不可恢复。'
-        }
-        busy={deleting}
-        busyLabel="删除中…"
-        onConfirm={() => void confirmDelete()}
-        onClose={() => setDeleteTarget(null)}
+        onOpenChange={(next) => {
+          if (!next) setDeleteTarget(null)
+        }}
       >
-        {deleteImpact === null ? (
-          <p className="text-note">正在统计影响…</p>
-        ) : (
-          <dl className="kb-impact">
-            <div>
-              <dt>切块</dt>
-              <dd className="tabular">{deleteImpact.chunks}</dd>
-            </div>
-            <div>
-              <dt>占用的空间</dt>
-              <dd className="tabular">{formatBytes(deleteImpact.size_bytes)}</dd>
-            </div>
-            <div>
-              <dt>进行中的任务</dt>
-              <dd className="tabular">{deleteImpact.running_tasks}</dd>
-            </div>
-          </dl>
-        )}
-      </ConfirmDialog>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除文档</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定删除「{deleteTarget?.name ?? ''}」？
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <p className="kb-modal-note">
+            {deleteImpact?.restorable
+              ? '原文进回收站保留 7 天，其间可恢复；切块与向量立即清除，删掉就搜不到。'
+              : '此操作不可恢复。'}
+          </p>
+          {deleteImpact === null ? (
+            <p className="text-note">正在统计影响…</p>
+          ) : (
+            <dl className="kb-impact">
+              <div>
+                <dt>切块</dt>
+                <dd className="tabular">{deleteImpact.chunks}</dd>
+              </div>
+              <div>
+                <dt>占用的空间</dt>
+                <dd className="tabular">{formatBytes(deleteImpact.size_bytes)}</dd>
+              </div>
+              <div>
+                <dt>进行中的任务</dt>
+                <dd className="tabular">{deleteImpact.running_tasks}</dd>
+              </div>
+            </dl>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmDelete()}>确定</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 目录删除：非空时后端会拒绝，说明文案由确认弹窗带出 */}
-      <ConfirmDialog
+      <AlertDialog
         open={folderDeleteTarget !== null}
-        title="删除目录"
-        lead={`删除目录「${folderDeleteTarget?.name ?? ''}」？`}
-        note="目录本身删除后不可恢复；目录里的文档不受影响（仍留在知识库中）。"
-        busy={folderDeleting}
-        busyLabel="删除中…"
-        onConfirm={() => void confirmFolderDelete()}
-        onClose={() => setFolderDeleteTarget(null)}
-      />
+        onOpenChange={(next) => {
+          if (!next) setFolderDeleteTarget(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除目录</AlertDialogTitle>
+            <AlertDialogDescription>
+              删除目录「{folderDeleteTarget?.name ?? ''}」？
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <p className="kb-modal-note">
+            目录本身删除后不可恢复；目录里的文档不受影响（仍留在知识库中）。
+          </p>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmFolderDelete()}>确定</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
-      <ConfirmDialog
+      <AlertDialog
         open={batchDeleteOpen}
-        title="删除文档"
-        lead={`删除选中的 ${selectedCount} 篇文档？`}
-        note="原文会移入回收站保留 7 天；切块与向量立即清除，删除后立刻搜不到。"
-        busy={batchRunning}
-        busyLabel="删除中…"
-        onConfirm={() => void runBatch('delete')}
-        onClose={() => setBatchDeleteOpen(false)}
-      />
+        onOpenChange={(next) => {
+          if (!next) setBatchDeleteOpen(false)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除文档</AlertDialogTitle>
+            <AlertDialogDescription>删除选中的 {selectedCount} 篇文档？</AlertDialogDescription>
+          </AlertDialogHeader>
+          <p className="kb-modal-note">
+            原文会移入回收站保留 7 天；切块与向量立即清除，删除后立刻搜不到。
+          </p>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void runBatch('delete')}>确定</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 取消解析：不是删除——已产出的内容保留，之后可以重新摄入 */}
-      <ConfirmDialog
+      <AlertDialog
         open={cancelTarget !== null}
-        title="取消解析"
-        lead={`取消「${cancelTarget?.name ?? ''}」的解析？`}
-        note="已解析出的内容会保留，之后可以重新摄入。"
-        confirmLabel="取消解析"
-        busyLabel="取消中…"
-        busy={canceling !== ''}
-        onConfirm={() => void confirmCancelParse()}
-        onClose={() => setCancelTarget(null)}
-      />
+        onOpenChange={(next) => {
+          if (!next) setCancelTarget(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>取消解析</AlertDialogTitle>
+            <AlertDialogDescription>
+              取消「{cancelTarget?.name ?? ''}」的解析？
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <p className="kb-modal-note">已解析出的内容会保留，之后可以重新摄入。</p>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmCancelParse()}>
+              取消解析
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

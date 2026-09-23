@@ -16,7 +16,6 @@ import { useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 
 import { uploadDocument } from '@/api/documents'
-import { Button, IconButton, Modal } from '@/features/knowledge/primitives'
 import { messageOf } from '@/features/knowledge/store'
 import {
   MAX_UPLOAD_BYTES,
@@ -25,6 +24,8 @@ import {
   UPLOAD_FORMAT_HINT,
 } from '@/features/knowledge/uploadLimits'
 import { formatBytes } from '@/lib/format'
+import { Button } from '@/ui/button'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog'
 
 /**
  * `rejected` 与 `failed` 分开，是因为**下一步动作不同**：
@@ -282,17 +283,111 @@ export function UploadDialog({ open, kbId, folderId, onClose, onUploaded }: Uplo
         }`
 
   return (
-    <Modal
+    <Dialog
       open={open}
-      title="上传文档"
-      size="wide"
-      onClose={onClose}
-      footer={
-        <>
+      onOpenChange={(next) => {
+        if (!next) onClose()
+      }}
+    >
+      {/* 宽档：`sm:max-w-[980px]`（旧 `Modal size="wide"` 的 980px） */}
+      <DialogContent className="flex max-h-[min(88vh,900px)] flex-col gap-0 p-0 sm:max-w-[980px]">
+        <DialogHeader className="border-b border-[var(--border-hairline)] px-4 py-3 pr-10">
+          <DialogTitle>上传文档</DialogTitle>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <div
+            className={[
+              'kb-dropzone',
+              dragActive ? 'kb-dropzone-active' : '',
+              items.length > 0 ? 'kb-dropzone-compact' : '',
+            ]
+              .filter(Boolean)
+              .join(' ')}
+            onDragOver={(event) => {
+              event.preventDefault()
+              setDragActive(true)
+            }}
+            onDragLeave={(event) => {
+              event.preventDefault()
+              setDragActive(false)
+            }}
+            onDrop={(event) => void onDrop(event)}
+          >
+            <span className="kb-dropzone-actions">
+              <Button variant="outline" onClick={() => fileInput.current?.click()}>
+                选择文件
+              </Button>
+              <Button variant="outline" onClick={() => folderInput.current?.click()}>
+                选择文件夹
+              </Button>
+            </span>
+            <span className="kb-dropzone-hint">也可以把文件或整个文件夹拖到这里</span>
+          </div>
+
+          <input
+            ref={fileInput}
+            className="kb-visually-hidden"
+            type="file"
+            multiple
+            tabIndex={-1}
+            aria-label="选择文件"
+            onChange={onPicked}
+          />
+          <input
+            ref={folderInput}
+            className="kb-visually-hidden"
+            type="file"
+            multiple
+            tabIndex={-1}
+            aria-label="选择文件夹"
+            onChange={onPicked}
+          />
+
+          <p className="text-hint">
+            {UPLOAD_FORMAT_HINT}。单个文件不超过 {MAX_UPLOAD_MB}MB，一次最多 {MAX_UPLOAD_FILES} 个。
+          </p>
+
+          {notice ? <p className="text-note">{notice}</p> : null}
+
+          {items.length > 0 ? (
+            <ul className="kb-file-list">
+              {items.map((item, index) => (
+                <li key={keyOf(item)} className="kb-file-row">
+                  <span className="kb-file-name" title={item.name}>
+                    {item.name}
+                  </span>
+                  <span className="kb-file-size tabular">{formatBytes(item.file.size)}</span>
+                  <span className={`kb-file-status-${item.status}`}>
+                    {item.status === 'uploading' ? '上传中…' : STATUS_LABEL[item.status]}
+                  </span>
+                  <span className="kb-file-message">{item.message}</span>
+                  <span>
+                    {item.status === 'pending' ? (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`移除 ${item.name}`}
+                        onClick={() => removeAt(index)}
+                      >
+                        <X aria-hidden="true" />
+                      </Button>
+                    ) : null}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+        <DialogFooter className="flex-wrap items-center border-t border-[var(--border-hairline)] px-4 py-3">
           <span className="kb-foot-note">{summary}</span>
-          {failedCount ? <Button onClick={retryFailed}>重试失败项（{failedCount}）</Button> : null}
+          {failedCount ? (
+            <Button variant="outline" onClick={retryFailed}>
+              重试失败项（{failedCount}）
+            </Button>
+          ) : null}
           {hasResult ? (
             <Button
+              variant="outline"
               onClick={() => {
                 setItems([])
                 setNotice('')
@@ -301,89 +396,14 @@ export function UploadDialog({ open, kbId, folderId, onClose, onUploaded }: Uplo
               清空清单
             </Button>
           ) : null}
-          <Button onClick={onClose}>关闭</Button>
-          <Button variant="primary" disabled={!canSubmit} onClick={() => void submit()}>
+          <Button variant="outline" onClick={onClose}>
+            关闭
+          </Button>
+          <Button variant="default" disabled={!canSubmit} onClick={() => void submit()}>
             {uploading ? '上传中…' : `开始上传${pendingCount ? `（${pendingCount}）` : ''}`}
           </Button>
-        </>
-      }
-    >
-      <div
-        className={[
-          'kb-dropzone',
-          dragActive ? 'kb-dropzone-active' : '',
-          items.length > 0 ? 'kb-dropzone-compact' : '',
-        ]
-          .filter(Boolean)
-          .join(' ')}
-        onDragOver={(event) => {
-          event.preventDefault()
-          setDragActive(true)
-        }}
-        onDragLeave={(event) => {
-          event.preventDefault()
-          setDragActive(false)
-        }}
-        onDrop={(event) => void onDrop(event)}
-      >
-        <span className="kb-dropzone-actions">
-          <Button onClick={() => fileInput.current?.click()}>选择文件</Button>
-          <Button onClick={() => folderInput.current?.click()}>选择文件夹</Button>
-        </span>
-        <span className="kb-dropzone-hint">也可以把文件或整个文件夹拖到这里</span>
-      </div>
-
-      <input
-        ref={fileInput}
-        className="kb-visually-hidden"
-        type="file"
-        multiple
-        tabIndex={-1}
-        aria-label="选择文件"
-        onChange={onPicked}
-      />
-      <input
-        ref={folderInput}
-        className="kb-visually-hidden"
-        type="file"
-        multiple
-        tabIndex={-1}
-        aria-label="选择文件夹"
-        onChange={onPicked}
-      />
-
-      <p className="text-hint">
-        {UPLOAD_FORMAT_HINT}。单个文件不超过 {MAX_UPLOAD_MB}MB，一次最多 {MAX_UPLOAD_FILES} 个。
-      </p>
-
-      {notice ? <p className="text-note">{notice}</p> : null}
-
-      {items.length > 0 ? (
-        <ul className="kb-file-list">
-          {items.map((item, index) => (
-            <li key={keyOf(item)} className="kb-file-row">
-              <span className="kb-file-name" title={item.name}>
-                {item.name}
-              </span>
-              <span className="kb-file-size tabular">{formatBytes(item.file.size)}</span>
-              <span className={`kb-file-status-${item.status}`}>
-                {item.status === 'uploading' ? '上传中…' : STATUS_LABEL[item.status]}
-              </span>
-              <span className="kb-file-message">{item.message}</span>
-              <span>
-                {item.status === 'pending' ? (
-                  <IconButton
-                    icon={X}
-                    size={14}
-                    label={`移除 ${item.name}`}
-                    onClick={() => removeAt(index)}
-                  />
-                ) : null}
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </Modal>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

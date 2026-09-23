@@ -18,17 +18,17 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getSettings, updateSettings, type SettingField, type SettingGroup } from '@/api/settings'
 
 import { notifyError, notifySuccess } from '../shared/toast'
+import { Button } from '@/ui/button'
+import { Input } from '@/ui/input'
+import { Textarea } from '@/ui/textarea'
 import {
-  Button,
-  Checkbox,
+  CheckRow,
   ErrorLine,
   InfoTip,
-  Select,
+  OptionSelect,
   SkeletonBlock,
   StatusTag,
-  TextArea,
-  TextInput,
-} from '../shared/ui'
+} from '../shared/composites'
 import { editHint, groupTip } from './groupTips'
 
 export const SETTINGS_QUERY_KEY = ['settings'] as const
@@ -115,7 +115,7 @@ export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?:
                   // 布尔项不能走文本输入：里面的 "false" 是非空字符串，一不小心就写成了开启
                   if (field.type === 'bool') {
                     return (
-                      <Checkbox
+                      <CheckRow
                         key={field.key}
                         checked={draft[field.key] === 'true'}
                         onCheckedChange={(next) =>
@@ -123,14 +123,14 @@ export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?:
                         }
                       >
                         {field.label}
-                      </Checkbox>
+                      </CheckRow>
                     )
                   }
                   if (field.type === 'select') {
                     return (
                       <label key={field.key} className="m-edit-field">
                         <span className="m-edit-label">{field.label}</span>
-                        <Select
+                        <OptionSelect
                           value={draft[field.key] ?? ''}
                           onValueChange={(value) =>
                             setDraft((current) => ({ ...current, [field.key]: value }))
@@ -150,21 +150,21 @@ export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?:
                         )}
                       </span>
                       {field.type === 'textarea' ? (
-                        <TextArea
+                        <Textarea
                           rows={5}
                           value={draft[field.key] ?? ''}
-                          onValueChange={(value) =>
-                            setDraft((current) => ({ ...current, [field.key]: value }))
+                          onChange={(event) =>
+                            setDraft((current) => ({ ...current, [field.key]: event.target.value }))
                           }
                           aria-label={field.label}
                         />
                       ) : (
-                        <TextInput
+                        <Input
                           type={field.type === 'int' ? 'number' : 'text'}
                           placeholder={field.type === 'secret' ? '留空表示不改动' : undefined}
                           value={draft[field.key] ?? ''}
-                          onValueChange={(value) =>
-                            setDraft((current) => ({ ...current, [field.key]: value }))
+                          onChange={(event) =>
+                            setDraft((current) => ({ ...current, [field.key]: event.target.value }))
                           }
                           aria-label={field.label}
                         />
@@ -176,11 +176,7 @@ export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?:
               </div>
               <div className="m-edit-actions">
                 <Button onClick={() => setEditing(null)}>返回</Button>
-                <Button
-                  variant="primary"
-                  disabled={save.isPending}
-                  onClick={() => save.mutate(editing)}
-                >
+                <Button disabled={save.isPending} onClick={() => save.mutate(editing)}>
                   {save.isPending ? '保存中…' : '保存'}
                 </Button>
               </div>
@@ -207,9 +203,7 @@ export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?:
                 </div>
               ))}
               <div className="m-edit-actions">
-                <Button variant="primary" onClick={() => openEdit(group)}>
-                  编辑
-                </Button>
+                <Button onClick={() => openEdit(group)}>编辑</Button>
               </div>
             </>
           )}

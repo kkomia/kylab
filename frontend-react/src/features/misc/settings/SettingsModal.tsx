@@ -62,21 +62,21 @@ import {
 import { clearSessionToken, useSessionStore } from '@/lib/session'
 
 import { notifyError, notifySuccess } from '../shared/toast'
+import { Button } from '@/ui/button'
+import { Input } from '@/ui/input'
+import { Textarea } from '@/ui/textarea'
 import {
   Avatar,
-  Button,
-  Checkbox,
+  CheckRow,
   ConfirmDialog,
   ErrorLine,
   Field,
   InfoTip,
   Modal,
-  Select,
+  OptionSelect,
   SkeletonBlock,
   StatusTag,
-  TextArea,
-  TextInput,
-} from '../shared/ui'
+} from '../shared/composites'
 import { AppearanceSection } from './AppearanceSection'
 import { ModelRegistryPanel, REGISTRY_QUERY_KEY } from './ModelRegistryPanel'
 import { SettingGroupPanel, SETTINGS_QUERY_KEY } from './SettingGroupPanel'
@@ -485,11 +485,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     {editing.fields.map((field) => (
                       <label key={field.key} className="m-edit-field">
                         <span className="m-edit-label">{field.label}</span>
-                        <TextInput
+                        <Input
                           type={field.type === 'int' ? 'number' : 'text'}
                           value={draft[field.key] ?? ''}
-                          onValueChange={(value) =>
-                            setDraft((current) => ({ ...current, [field.key]: value }))
+                          onChange={(event) =>
+                            setDraft((current) => ({ ...current, [field.key]: event.target.value }))
                           }
                           aria-label={field.label}
                         />
@@ -501,11 +501,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   </div>
                   <div className="m-edit-actions">
                     <Button onClick={() => setEditing(null)}>返回</Button>
-                    <Button
-                      variant="primary"
-                      disabled={save.isPending}
-                      onClick={() => save.mutate(editing)}
-                    >
+                    <Button disabled={save.isPending} onClick={() => save.mutate(editing)}>
                       {save.isPending ? '保存中…' : '保存'}
                     </Button>
                   </div>
@@ -534,7 +530,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                         {testing ? '测试中…' : '测试连接'}
                       </Button>
                     </div>
-                    <Select
+                    <OptionSelect
                       value={slotOf('embedding')?.bound_model_pk ?? ''}
                       onValueChange={(value) => bind.mutate({ slot: 'embedding', value })}
                       options={slotOptions('embedding')}
@@ -578,7 +574,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                         {testing ? '测试中…' : '测试连接'}
                       </Button>
                     </div>
-                    <Select
+                    <OptionSelect
                       value={slotOf('rerank')?.bound_model_pk ?? ''}
                       onValueChange={(value) => bind.mutate({ slot: 'rerank', value })}
                       options={slotOptions('rerank')}
@@ -617,7 +613,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       // 布尔项不能走文本输入：里面的 "false" 是非空字符串，一不小心就写成了开启
                       if (field.type === 'bool') {
                         return (
-                          <Checkbox
+                          <CheckRow
                             key={field.key}
                             checked={draft[field.key] === 'true'}
                             onCheckedChange={(next) =>
@@ -625,14 +621,14 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                             }
                           >
                             {field.label}
-                          </Checkbox>
+                          </CheckRow>
                         )
                       }
                       if (field.type === 'select') {
                         return (
                           <label key={field.key} className="m-edit-field">
                             <span className="m-edit-label">{field.label}</span>
-                            <Select
+                            <OptionSelect
                               value={draft[field.key] ?? ''}
                               onValueChange={(value) =>
                                 setDraft((current) => ({ ...current, [field.key]: value }))
@@ -652,21 +648,27 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                             )}
                           </span>
                           {field.type === 'textarea' ? (
-                            <TextArea
+                            <Textarea
                               rows={5}
                               value={draft[field.key] ?? ''}
-                              onValueChange={(value) =>
-                                setDraft((current) => ({ ...current, [field.key]: value }))
+                              onChange={(event) =>
+                                setDraft((current) => ({
+                                  ...current,
+                                  [field.key]: event.target.value,
+                                }))
                               }
                               aria-label={field.label}
                             />
                           ) : (
-                            <TextInput
+                            <Input
                               type={field.type === 'int' ? 'number' : 'text'}
                               placeholder={field.type === 'secret' ? '留空表示不改动' : undefined}
                               value={draft[field.key] ?? ''}
-                              onValueChange={(value) =>
-                                setDraft((current) => ({ ...current, [field.key]: value }))
+                              onChange={(event) =>
+                                setDraft((current) => ({
+                                  ...current,
+                                  [field.key]: event.target.value,
+                                }))
                               }
                               aria-label={field.label}
                             />
@@ -698,11 +700,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       </Button>
                     )}
                     <Button onClick={() => setEditing(null)}>返回</Button>
-                    <Button
-                      variant="primary"
-                      disabled={save.isPending}
-                      onClick={() => save.mutate(editing)}
-                    >
+                    <Button disabled={save.isPending} onClick={() => save.mutate(editing)}>
                       {save.isPending ? '保存中…' : '保存'}
                     </Button>
                   </div>
@@ -728,7 +726,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                         {testing ? '测试中…' : '测试连接'}
                       </Button>
                     </div>
-                    <Select
+                    <OptionSelect
                       value={slotOf('chat')?.bound_model_pk ?? ''}
                       onValueChange={(value) => bind.mutate({ slot: 'chat', value })}
                       options={slotOptions('chat')}
@@ -815,10 +813,10 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                             <span className="m-edit-current">当前 {field.value}</span>
                           )}
                         </span>
-                        <TextInput
+                        <Input
                           value={draft[field.key] ?? ''}
-                          onValueChange={(value) =>
-                            setDraft((current) => ({ ...current, [field.key]: value }))
+                          onChange={(event) =>
+                            setDraft((current) => ({ ...current, [field.key]: event.target.value }))
                           }
                           placeholder={field.type === 'secret' ? '留空表示不改动' : undefined}
                           aria-label={field.label}
@@ -840,11 +838,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       {testing ? '测试中…' : '测试连接'}
                     </Button>
                     <Button onClick={() => setEditing(null)}>返回</Button>
-                    <Button
-                      variant="primary"
-                      disabled={save.isPending}
-                      onClick={() => save.mutate(editing)}
-                    >
+                    <Button disabled={save.isPending} onClick={() => save.mutate(editing)}>
                       {save.isPending ? '保存中…' : '保存'}
                     </Button>
                   </div>
@@ -914,12 +908,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   <InfoTip text="被开通的账号登录后只能看到分享给他的知识库；没有登录名的名册条目只用于标记文档归属。" />
                 </h3>
                 <Button
-                  icon={<UserPlus size={14} />}
                   onClick={() => {
                     setUsersOpen((value) => !value)
                     setCreateError('')
                   }}
                 >
+                  <UserPlus size={14} />
                   {usersOpen ? '取消' : '添加用户'}
                 </Button>
               </div>
@@ -930,35 +924,35 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     <label className="field-label" htmlFor="kylab-new-name">
                       显示名
                     </label>
-                    <TextInput
+                    <Input
                       id="kylab-new-name"
                       value={newName}
-                      onValueChange={setNewName}
+                      onChange={(event) => setNewName(event.target.value)}
                       placeholder="例如 小王"
                     />
                     <label className="field-label" htmlFor="kylab-new-username">
                       登录名
                     </label>
-                    <TextInput
+                    <Input
                       id="kylab-new-username"
                       value={newUsername}
-                      onValueChange={setNewUsername}
+                      onChange={(event) => setNewUsername(event.target.value)}
                       placeholder="用于登录，不区分大小写"
                     />
                     <label className="field-label" htmlFor="kylab-account-password">
                       初始密码
                     </label>
-                    <TextInput
+                    <Input
                       id="kylab-account-password"
                       type="password"
                       value={newAccountPassword}
-                      onValueChange={setNewAccountPassword}
+                      onChange={(event) => setNewAccountPassword(event.target.value)}
                       placeholder={`至少 ${MIN_PASSWORD_CHARS} 个字符`}
                     />
                     <label className="field-label" htmlFor="kylab-new-role">
                       角色
                     </label>
-                    <Select
+                    <OptionSelect
                       id="kylab-new-role"
                       value={newRole}
                       onValueChange={(value) => setNewRole(value as UserRole)}
@@ -972,11 +966,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     </p>
                   )}
                   <div className="m-password-actions">
-                    <Button
-                      variant="primary"
-                      disabled={createAccount.isPending}
-                      onClick={submitCreateUser}
-                    >
+                    <Button disabled={createAccount.isPending} onClick={submitCreateUser}>
                       {createAccount.isPending ? '开通中…' : '开通账号'}
                     </Button>
                   </div>
@@ -1038,8 +1028,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                         )}
                         {person.id !== currentUser?.id && (
                           <Button
+                            variant="destructive"
                             size="sm"
-                            variant="danger"
                             onClick={() => setDeleteTarget(person)}
                           >
                             删除
@@ -1080,31 +1070,31 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   </h3>
                   <div className="m-password-form">
                     <Field label="当前密码" htmlFor="kylab-old-password">
-                      <TextInput
+                      <Input
                         id="kylab-old-password"
                         type="password"
                         autoComplete="current-password"
                         value={oldPassword}
-                        onValueChange={setOldPassword}
+                        onChange={(event) => setOldPassword(event.target.value)}
                       />
                     </Field>
                     <Field label="新密码" htmlFor="kylab-new-password">
-                      <TextInput
+                      <Input
                         id="kylab-new-password"
                         type="password"
                         autoComplete="new-password"
                         placeholder={`至少 ${MIN_PASSWORD_CHARS} 个字符`}
                         value={newPassword}
-                        onValueChange={setNewPassword}
+                        onChange={(event) => setNewPassword(event.target.value)}
                       />
                     </Field>
                     <Field label="确认新密码" htmlFor="kylab-confirm-password">
-                      <TextInput
+                      <Input
                         id="kylab-confirm-password"
                         type="password"
                         autoComplete="new-password"
                         value={confirmNewPassword}
-                        onValueChange={setConfirmNewPassword}
+                        onChange={(event) => setConfirmNewPassword(event.target.value)}
                       />
                     </Field>
                     {passwordError && (
@@ -1113,18 +1103,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       </p>
                     )}
                     <div className="m-password-actions">
-                      <Button
-                        variant="primary"
-                        disabled={changePassword.isPending}
-                        onClick={submitPasswordChange}
-                      >
+                      <Button disabled={changePassword.isPending} onClick={submitPasswordChange}>
                         {changePassword.isPending ? '提交中…' : '更新密码'}
                       </Button>
-                      <Button
-                        variant="danger"
-                        icon={<LogOut size={14} />}
-                        onClick={() => void doLogout()}
-                      >
+                      <Button variant="destructive" onClick={() => void doLogout()}>
+                        <LogOut size={14} />
                         退出登录
                       </Button>
                     </div>
@@ -1183,7 +1166,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           <>
             <Button onClick={() => setResetTarget(null)}>取消</Button>
             <Button
-              variant="primary"
               disabled={resetPassword.isPending || resetDraft.length < MIN_PASSWORD_CHARS}
               onClick={() => resetTarget && resetPassword.mutate(resetTarget)}
             >
@@ -1195,12 +1177,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         <p className="m-muted">
           为「{resetTarget?.name}」设置新密码。对方所有已登录的设备会立即退出。
         </p>
-        <TextInput
+        <Input
           type="password"
           autoComplete="new-password"
           placeholder={`至少 ${MIN_PASSWORD_CHARS} 个字符`}
           value={resetDraft}
-          onValueChange={setResetDraft}
+          onChange={(event) => setResetDraft(event.target.value)}
           aria-label="新密码"
         />
         {resetError && (

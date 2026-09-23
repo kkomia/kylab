@@ -156,7 +156,9 @@ describe('记忆页', () => {
 
     await userEvent.click(screen.getByRole('button', { name: /每日 · 09-22/ }))
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('alertdialog')
+    // 确认框已经换成 @/ui/alert-dialog：role 是 alertdialog，动作仍是"放弃改动 / 取消"
+    expect(dialog).toHaveAttribute('data-slot', 'alert-dialog-content')
     expect(within(dialog).getByText('放弃未保存的改动？')).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('button', { name: '放弃改动' }))
 

@@ -306,8 +306,11 @@ describe('设置弹窗', () => {
     renderMisc(<SettingsModal open onClose={() => undefined} />)
     await userEvent.click(await screen.findByRole('button', { name: /向量化/ }))
 
-    const select = await screen.findByLabelText('默认嵌入模型')
-    await userEvent.selectOptions(select, 'm3')
+    // 下拉已经是 @/ui/select（Radix 的 combobox + 浮层选项），不是原生 select
+    const trigger = await screen.findByLabelText('默认嵌入模型')
+    expect(trigger).toHaveAttribute('data-slot', 'select-trigger')
+    await userEvent.click(trigger)
+    await userEvent.click(await screen.findByRole('option', { name: /嵌入（备选）/ }))
 
     await waitFor(() => expect(bindSlotMock).toHaveBeenCalledWith('embedding', 'm3'))
     expect(await screen.findByText('默认模型已更新')).toBeInTheDocument()
@@ -375,6 +378,10 @@ describe('头像弹窗（账号菜单用它）', () => {
     )
 
     expect(screen.getByLabelText('选择头像图片')).toBeInTheDocument()
+    // 头像本体走 @/ui/avatar：拿不到图时由它自己的加载探测换成兜底（首字母）
+    const avatar = document.querySelector('[data-slot="avatar"]')
+    expect(avatar).toBeInTheDocument()
+    expect(avatar?.querySelector('[data-slot="avatar-fallback"]')).toHaveTextContent('管')
     expect(screen.getByRole('button', { name: '去掉头像' })).toBeInTheDocument()
     // 没选图之前「保存」是灰的（不做无意义的上传）
     expect(screen.getByRole('button', { name: '保存' })).toBeDisabled()

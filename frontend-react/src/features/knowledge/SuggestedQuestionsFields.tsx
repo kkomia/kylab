@@ -16,9 +16,13 @@ import {
   SUGGESTED_COUNT_MIN,
   SUGGESTED_PROMPT_MAX_CHARS,
 } from '@/api/knowledgeBases'
-import { InfoTip, Select, Textarea } from '@/features/knowledge/primitives'
+import { InfoTip } from '@/features/knowledge/composites'
 import { RangeField } from '@/features/knowledge/RangeField'
 import { useModelRegistry } from '@/features/knowledge/store'
+import { Checkbox } from '@/ui/checkbox'
+import { Label } from '@/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select'
+import { Textarea } from '@/ui/textarea'
 
 export interface SuggestedQuestionsValue {
   enabled: boolean
@@ -45,6 +49,15 @@ const COUNT_MARKS = [
   { value: SUGGESTED_COUNT_MAX },
 ]
 
+/**
+ * 「跟随对话模型」那一项的取值。
+ *
+ * Radix 的 `<Select.Item>` **不接受空串**（空串被它留作"没有选择"），而这里的值域里
+ * `''` 正是"跟随对话模型"。所以界面上用一个哨兵值，进出都换回 `''`——
+ * 对外的契约（`SuggestedQuestionsValue.modelPk`）一点没变。
+ */
+const FOLLOW_CHAT_MODEL = '__follow__'
+
 export function SuggestedQuestionsFields({ value, onChange }: SuggestedQuestionsFieldsProps) {
   const registry = useModelRegistry()
 
@@ -57,7 +70,7 @@ export function SuggestedQuestionsFields({ value, onChange }: SuggestedQuestions
   }, [])
 
   const modelOptions = [
-    { value: '', label: '跟随对话模型' },
+    { value: FOLLOW_CHAT_MODEL, label: '跟随对话模型' },
     ...registry.chatModels.map((model) => ({
       value: model.id,
       label: model.label || model.model_id,
@@ -67,16 +80,14 @@ export function SuggestedQuestionsFields({ value, onChange }: SuggestedQuestions
   return (
     <div className="kb-suggested">
       <div>
-        <label className="kb-switch">
-          <input
-            className="kb-checkbox"
-            type="checkbox"
+        <Label className="kb-switch">
+          <Checkbox
             checked={value.enabled}
             aria-label="为每个切块生成推荐问题"
-            onChange={(event) => onChange({ enabled: event.target.checked })}
+            onCheckedChange={(checked) => onChange({ enabled: checked === true })}
           />
           <span>为每个切块生成推荐问题</span>
-        </label>
+        </Label>
         <p className="text-hint">
           入库时为每一段让模型出几个问题，问题会一起进检索索引；只影响<strong>以后上传</strong>
           的文档，已入库的可以在文档列表里选中后点「生成问题」补上。关掉则对话页空状态
@@ -105,11 +116,22 @@ export function SuggestedQuestionsFields({ value, onChange }: SuggestedQuestions
           <InfoTip text="默认跟随对话页当前选的模型。换一个便宜的小模型可以省 token：出题只需判断这段在讲什么。" />
         </span>
         <Select
-          value={value.modelPk}
-          options={modelOptions}
-          onChange={(modelPk) => onChange({ modelPk })}
-          aria-label="出题用的模型"
-        />
+          value={value.modelPk || FOLLOW_CHAT_MODEL}
+          onValueChange={(modelPk) =>
+            onChange({ modelPk: modelPk === FOLLOW_CHAT_MODEL ? '' : modelPk })
+          }
+        >
+          <SelectTrigger aria-label="出题用的模型">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {modelOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       <div className="field">

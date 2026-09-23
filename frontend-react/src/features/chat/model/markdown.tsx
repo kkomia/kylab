@@ -16,6 +16,7 @@
  * | `codeBlockHtml` / `tableBlockHtml` 两段式容器 + 复制按钮 | `MarkdownPre` / `MarkdownTable` 两个组件（同样的 class 与 `data-*`，事件委托照样能用） |
  * | `decorateCitations` 把 `[N]` 换成徽标（跳过代码） | `rehypeCitations`（同一套正则与"整组对不上就整组不换"） |
  * | `HTML_CACHE` / `BLOCK_CACHE` 两层缓存 | 只留文本级（React 元素按 `(text, sources, plain)` 缓存）。**块级那层没有插点了**：解析在库里面，见 `putCapped` 上面那段 |
+ * | `splitInlineLatex` 切公式、`rehype-katex` 排 | **`remark-math` + `rehype-katex`**（标准口径，差异见 `model/README.md`） |
  *
  * ## 出口：一个组件 + 三个函数（README 里写着怎么选）
  *
@@ -34,8 +35,7 @@ import ReactMarkdown, { type ExtraProps, type Options } from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
-
-import { splitInlineLatex } from './latex'
+import remarkMath from 'remark-math'
 
 /**
  * 只允许这两种协议：`javascript:` 之类的链接点了就是执行代码，必须挡掉。
@@ -427,43 +427,22 @@ function rehypeTrimBlocks() {
   }
 }
 
-/**
- * `$…$` / `$$…$$` → KaTeX 认的那种节点（`span.math.math-inline` / `math-display`）。
- *
- * 识别与边界**全部来自 `latex.ts`**（`splitInlineLatex`）：哪些写法算公式、
- * `$` 与 `$$` 怎么配、不跨换行——与文档阅读视角同一份判据，不在这里另立一套。
- * 真正的排版交给 `rehype-katex`（它认 `math-inline` / `math-display` 这两个类名，
- * 见它的源码；`remark-math` 不在依赖里，这个插件就是替它的那一小块）。
- *
- * 交给 KaTeX 的是**原文**（`\mathrm{mm}` `\frac{1}{2}` 要它自己排），不是
- * `cleanInlineLatex` 那份还原成纯文本的结果。
- *
- * 一条已知边界：Markdown 解析阶段会把 `\%` `\_` 这类**转义字符**先还原掉
- * （CommonMark 的字符转义），于是"只有转义符、没有别的 LaTeX 标记"的写法
- * （`$52.7\%$`）到这一步已经看不出是公式了，按"认不出就原样保留"留在正文里——
- * 与旧实现的回答渲染完全一样（旧回答路径本来就不做 LaTeX 处理）。
- */
-function rehypeInlineMath() {
-  return (tree: HastRoot): void => {
-    mapTextChildren(tree, [], (value) => mathPieces(value))
-  }
-}
+/* ------------------------------------------------------------------ 公式 */
 
-function mathPieces(value: string): HastNode[] | null {
-  if (!value.includes('$')) return null
-  const segments = splitInlineLatex(value)
-  if (!segments.some((segment) => segment.kind === 'math')) return null
-  return segments.map((segment) =>
-    segment.kind === 'text'
-      ? text(segment.value)
-      : element(
-          'span',
-          // 类名跟 remark-math 保持一致（rehype-katex 只认这两个之一）
-          { className: segment.display ? ['math', 'math-display'] : ['math', 'math-inline'] },
-          [text(segment.value)],
-        ),
-  )
-}
+/*
+ * `$…$` / `$$…$$` 走**标准那一路**（`remark-math` + `rehype-katex`，在 `renderMarkdown`
+ * 的 plugins 里挂上），这里没有自写的 rehype 插件了——原先那个
+ * `rehypeInlineMath`（拿 `latex.ts` 的 `splitInlineLatex` 把文本节点切成 `span.math`）
+ * 是"标准件还没装上"时的替身。现在公式在**解析期**（mdast）就被认走，走的是
+ * GitHub / remark 生态同一套口径：
+ *
+ * - `$…$`（行内）与 `$$ … $$`（整式：围栏自成一行才是 display）都由 micromark 认；
+ * - 配对个数必须相等（`$$` 配 `$$`），公式体里不出现落单的 `$`、不跨空行；
+ * - 公式体是**原文**（`\%` 这类转义不会被 CommonMark 提前吃掉，交给 KaTeX 自己解）。
+ *
+ * **与旧口径的差异逐条写在 `model/README.md`**（最要紧的一条：标准口径下
+ * `$5 到 $10` 这种"钱"也会被当成公式——它不判"这像不像公式"，只认 `$` 配对）。
+ */
 
 /* ------------------------------------------------------------------ 行内引用 */
 
@@ -1023,7 +1002,6 @@ function renderMarkdown(text: string, options: RenderOptions = {}): ReactNode {
   const rehypePlugins: NonNullable<Options['rehypePlugins']> = [
     rehypeUnwrapLinks,
     rehypeCodeText,
-    rehypeInlineMath,
     rehypeSoftBreaks,
     rehypeTrimBlocks,
     rehypeBareUrls,
@@ -1041,14 +1019,18 @@ function renderMarkdown(text: string, options: RenderOptions = {}): ReactNode {
     // 高亮之后：把它补的那个收尾换行撤掉（复制用的是之前存下的原文，见 `rehypeCodeText`）
     rehypeCodeTail,
     // KaTeX **放最后**：它把公式换成一大片 span，后面的文本级规则就不该再进那片了
-    // （几个扫描函数都跳过 `math`，顺序上再兜一层）
-    rehypeKatex,
+    // （几个扫描函数都跳过 `math`，顺序上再兜一层）。
+    // `strict: 'ignore'` 与 `latex.ts` 的 `renderLatexToHtml` 同口径：语料里
+    // `$5 到 $10` 这类"被当成公式的钱"一定会碰上，警告刷满控制台没有意义；
+    // 真排不出来时 KaTeX 自己会把原文画成 `katex-error`（可读、不假装渲染成功）
+    [rehypeKatex, { strict: 'ignore' }],
   )
   const rendered = createElement(ReactMarkdown, {
     children: text,
     // GFM 负责表格 / 删除线 / 任务列表这几样"旧实现不认、但语料里真有"的语法；
-    // 它的 autolink 会被 `rehypeUnwrapLinks` 退回去，见那里的说明
-    remarkPlugins: [remarkGfm],
+    // 它的 autolink 会被 `rehypeUnwrapLinks` 退回去，见那里的说明。
+    // `remarkMath` 认 `$…$` / `$$…$$`（标准口径，差异见 `model/README.md`）
+    remarkPlugins: [remarkGfm, remarkMath],
     rehypePlugins,
     components: (plain ? PLAIN_COMPONENTS : COMPONENTS) as Options['components'],
   })

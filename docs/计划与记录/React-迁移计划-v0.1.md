@@ -175,10 +175,21 @@ frontend-react/
 | **P2 应用壳** | 完成（首版） | `ea0425c` | 路由与旧 vue-router 逐条对应 + 登录守卫 + 标题映射 + 全局 Toaster；19 个 shadcn 原语 vendor 进 `src/ui`（令牌化） |
 | **P3 知识库域** | 完成（首版） | `ea0425c` | 列表/详情/Wiki/文档详情 + 抽屉/上传/分享/数据源/时间线/库内检索；75 条用例 |
 | **P4 笔记 + 其余** | 完成（首版） | `ea0425c` | 笔记 tiptap React（84 条用例）；任务/记忆/工作区/能力/设置/驾驶舱/登录/404（50 条用例）；Office 预览三套渲染器（27 条用例） |
-| **P5 切换** | 未开始 | — | 需要：逐页浏览器对照（同一条会话/同一份数据）、nginx 路径分流、删 `frontend/`、`check-frontend.sh` 改指向 |
+| **P5 切换** | 未开始（准备件已就绪） | — | 需要：逐页浏览器对照（同一条会话/同一份数据）、nginx 路径分流、删 `frontend/`、`check-frontend.sh` 改指向。`frontend-react/{nginx.conf,Dockerfile}` 已按旧前端逐字备好（P5 只改 compose 的 `context` 与镜像名） |
 
 **当前门禁**：`scripts/check-react.sh` 全绿（lint / tsc / **434 条用例** / 构建 / emoji / API 契约）；
 旧前端与后端的门禁**不受影响**（本计划第 1 节的纪律：两套互不当对方的红灯）。
+
+**已完成（第二轮）**：29 个 shadcn 原语全部 vendor 到位（新增 10 个：alert-dialog / checkbox /
+radio-group / context-menu / avatar / progress / collapsible / command / drawer / resizable）；
+**知识库域与 misc 域的两处自写外壳已删掉**（`knowledge/primitives.tsx` 471 行、
+`misc/shared/ui.tsx` 684 行），全量换成 `@/ui/*`，两域各自只留一组**组合件**
+（`composites.tsx`：上游没有一一对应物的 `StatusTag`/`MeterBar`/`EmptyState`/`InfoTip` 这类拼装），
+用例条数与断言数都不减（知识库 75→75 / 断言 258→259；misc 50→50 / 断言 156→168）；
+对话页把出处/产物换成 `@/ui/sheet` 抽屉（先滑回去再通知宿主、不动底下滚动）、
+快捷键接到与设置页**同一个 localStorage 契约**（`kylab-shortcuts`，不 import 别人的域）、
+公式换成标准路线 `remark-math` + `rehype-katex`（8 条口径差异写在 `chat/model/README.md`）。
+**门禁**：`scripts/check-react.sh` 全绿，**468 条用例**（434 → 468）。
 
 **下一步（P5 之前必须做的事）**：
 
@@ -186,10 +197,9 @@ frontend-react/
    这是 §0 验收第 2 条，**目前一次都没做过**（各域报告只做了代码级对照）；
 2. **`src/ui` 原语替换**：知识库域自带的 `primitives.tsx`（占位实现）与 misc 域的 `shared/ui.tsx`
    应在对照通过后替换成 `src/ui/*`（shadcn），去掉两份手写外壳；
-3. **缺失原语**：`src/ui` 还差 10 个（alert-dialog / checkbox / radio-group / context-menu /
-   avatar / progress / collapsible / command / drawer / resizable）——依赖已装，照 `src/ui/README.md` 补；
-4. **快捷键注册表**：chat 域只接了 Enter/Shift+Enter；`useShortcuts` 注册表在 misc 域已搬，
-   两处要合起来接（设置里的快捷键面板 → 对话页真实生效）；
-5. **抽屉**：对话页的出处抽屉/产物抽屉现在就地弹窗（旧版是右侧抽屉），
-   `src/ui/sheet` 已就绪，接线后替换；
-6. **剩余依赖**：`remark-math`（可选，替换 chat 域自写的 `rehypeInlineMath`）。
+3. **侧栏（壳）还没做**：`layout.toggleSidebar` / `chat.new` 的快捷键已接在对话页，
+   等壳里的侧栏读同一个存储键（`kylab-sidebar-collapsed`）并监听 `kylab:sidebar-toggle`
+   ——契约写在 `chat/runtime/shortcutPrefs.ts` 模块头，搬到壳上时 id 不变；
+4. **两处口径要用户拍**：① `remark-math` 把"`$5 到 $10`"按公式排（标准口径的代价，
+   缓解写法是 `\$5`）；② 对话页的文件抽屉仍是"文件区列表 + 签名 URL 预览"，
+   旧版的内嵌预览与子目录进出属知识库域的 `FilePreview`，要不要接由对照结果定。

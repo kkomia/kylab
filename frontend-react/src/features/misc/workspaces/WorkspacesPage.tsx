@@ -22,8 +22,9 @@ import { deleteWorkspace, listWorkspaces, updateWorkspace, type Workspace } from
 import { notifyError, notifySuccess } from '../shared/toast'
 import { useKnowledgeBases } from '../shared/knowledgeBases'
 import { useSessionStore } from '@/lib/session'
+import { Button } from '@/ui/button'
+import { Input } from '@/ui/input'
 import {
-  Button,
   ConfirmDialog,
   EmptyState,
   ErrorLine,
@@ -31,8 +32,7 @@ import {
   InfoTip,
   PageShell,
   SkeletonBlock,
-  TextInput,
-} from '../shared/ui'
+} from '../shared/composites'
 import { DirectoryPickerDialog } from './DirectoryPickerDialog'
 import { WorkspaceCreateDialog } from './WorkspaceCreateDialog'
 import { WorkspaceKbPicker } from './WorkspaceKbPicker'
@@ -199,15 +199,12 @@ export function WorkspacesPage() {
       title="工作区"
       actions={
         <>
-          <Button icon={<Plus size={15} />} onClick={() => setCreating(true)}>
+          <Button onClick={() => setCreating(true)}>
+            <Plus size={15} />
             新建工作区
           </Button>
           {active && (
-            <Button
-              variant="primary"
-              disabled={!dirty || save.isPending}
-              onClick={() => save.mutate()}
-            >
+            <Button disabled={!dirty || save.isPending} onClick={() => save.mutate()}>
               {save.isPending ? '保存中…' : '保存'}
             </Button>
           )}
@@ -223,9 +220,7 @@ export function WorkspacesPage() {
           title="还没有工作区"
           hint="建一个，把项目目录和它用的知识库绑在一起；在这个工作区里开的会话会自动带上这些库。"
         >
-          <Button variant="primary" onClick={() => setCreating(true)}>
-            新建工作区
-          </Button>
+          <Button onClick={() => setCreating(true)}>新建工作区</Button>
         </EmptyState>
       )}
 
@@ -258,10 +253,12 @@ export function WorkspacesPage() {
               <h2 className="m-section-title">{active.name}</h2>
 
               <Field label="名字" htmlFor="ws-name">
-                <TextInput
+                <Input
                   id="ws-name"
                   value={form.name}
-                  onValueChange={(name) => setForm((current) => ({ ...current, name }))}
+                  onChange={(event) =>
+                    setForm((current) => ({ ...current, name: event.target.value }))
+                  }
                   placeholder="例如：知识库产品化"
                 />
               </Field>
@@ -274,11 +271,13 @@ export function WorkspacesPage() {
                 }
               >
                 <div className="m-path-row">
-                  <TextInput
+                  <Input
                     id="ws-root"
                     aria-label="根目录"
                     value={form.root_path}
-                    onValueChange={(root_path) => setForm((current) => ({ ...current, root_path }))}
+                    onChange={(event) =>
+                      setForm((current) => ({ ...current, root_path: event.target.value }))
+                    }
                     placeholder={isAdmin ? '点右边的「浏览…」挑一个' : '例如：/volume1/my-project'}
                   />
                   {/* 目录浏览管理员专属（列的是服务器上的目录树），与端点判定一致 */}
@@ -287,11 +286,11 @@ export function WorkspacesPage() {
               </Field>
 
               <Field label="描述" optional htmlFor="ws-desc">
-                <TextInput
+                <Input
                   id="ws-desc"
                   value={form.description}
-                  onValueChange={(description) =>
-                    setForm((current) => ({ ...current, description }))
+                  onChange={(event) =>
+                    setForm((current) => ({ ...current, description: event.target.value }))
                   }
                   placeholder="这个项目是做什么的"
                 />
@@ -304,18 +303,12 @@ export function WorkspacesPage() {
               />
 
               <div className="m-form-actions" style={{ marginTop: 'var(--space-2)' }}>
-                <Button
-                  variant="primary"
-                  icon={<ChevronRight size={14} />}
-                  onClick={() => void newConversation()}
-                >
+                <Button onClick={() => void newConversation()}>
+                  <ChevronRight size={14} />
                   在这个工作区新开会话
                 </Button>
-                <Button
-                  variant="danger"
-                  icon={<Trash2 size={14} />}
-                  onClick={() => setConfirmDelete(true)}
-                >
+                <Button variant="destructive" onClick={() => setConfirmDelete(true)}>
+                  <Trash2 size={14} />
                   删除工作区
                 </Button>
               </div>

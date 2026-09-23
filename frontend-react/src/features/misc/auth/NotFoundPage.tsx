@@ -4,7 +4,8 @@
  */
 import { Link } from 'react-router'
 
-import { EmptyState } from '../shared/ui'
+import { Button } from '@/ui/button'
+import { EmptyState } from '../shared/composites'
 
 export function NotFoundPage() {
   return (
@@ -14,9 +15,11 @@ export function NotFoundPage() {
       </header>
       <div className="page-shell-body">
         <EmptyState title="没有找到这个地址" hint="链接可能已失效，或者知识库/文档已经被删除。">
-          <Link to="/">
-            <span className="m-btn m-btn-primary">回到概览</span>
-          </Link>
+          {/* 主按钮样式的链接：`Button asChild` 把类名给到 `<a>` 本身，
+              而不是在 `<a>` 里再套一个按钮（那样是无障碍上的嵌套交互元素） */}
+          <Button asChild>
+            <Link to="/">回到概览</Link>
+          </Button>
         </EmptyState>
       </div>
     </article>

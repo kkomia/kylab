@@ -20,17 +20,18 @@ import { search, type SearchHit, type SearchResponse } from '@/api/search'
 import { formatAge, formatScore } from '@/lib/format'
 
 import { notifyError, notifyWarning } from '../shared/toast'
+import { Button } from '@/ui/button'
+import { Input } from '@/ui/input'
+import { Textarea } from '@/ui/textarea'
 import {
-  Button,
+  CheckRow,
   EmptyState,
   ErrorLine,
   Field,
   Modal,
-  Select,
+  OptionSelect,
   SkeletonBlock,
-  TextArea,
-  TextInput,
-} from '../shared/ui'
+} from '../shared/composites'
 
 interface Turn {
   query: string
@@ -141,11 +142,11 @@ export function KbSearchPanel({
             <label className="field-label" htmlFor="kb-search-input">
               检索内容
             </label>
-            <TextArea
+            <Textarea
               id="kb-search-input"
               rows={3}
               value={query}
-              onValueChange={setQuery}
+              onChange={(event) => setQuery(event.target.value)}
               placeholder="输入问题或关键词，回车检索"
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
@@ -159,7 +160,7 @@ export function KbSearchPanel({
           <div className="m-form-actions">
             <div className="m-filter-select">
               <Field label="模式">
-                <Select
+                <OptionSelect
                   value={mode}
                   onValueChange={(value) => setMode(value as typeof mode)}
                   options={MODE_OPTIONS}
@@ -169,10 +170,10 @@ export function KbSearchPanel({
             </div>
             <div style={{ flex: '0 0 96px' }}>
               <Field label="返回条数">
-                <TextInput
+                <Input
                   type="number"
                   value={topK}
-                  onValueChange={setTopK}
+                  onChange={(event) => setTopK(event.target.value)}
                   aria-label="返回条数"
                 />
               </Field>
@@ -184,32 +185,23 @@ export function KbSearchPanel({
             <div className="m-form-actions">
               <div style={{ flex: '0 0 96px' }}>
                 <Field label="候选池">
-                  <TextInput
+                  <Input
                     type="number"
                     value={candidateK}
-                    onValueChange={setCandidateK}
+                    onChange={(event) => setCandidateK(event.target.value)}
                     aria-label="候选池"
                   />
                 </Field>
               </div>
-              <label className="m-check">
-                <input
-                  type="checkbox"
-                  checked={rerank}
-                  onChange={(event) => setRerank(event.target.checked)}
-                />
-                <span>启用 rerank（失败自动退回 RRF 顺序）</span>
-              </label>
+              <CheckRow checked={rerank} onCheckedChange={setRerank}>
+                启用 rerank（失败自动退回 RRF 顺序）
+              </CheckRow>
             </div>
           </details>
 
           <div>
-            <Button
-              variant="primary"
-              icon={<Search size={14} />}
-              disabled={searching}
-              onClick={() => void runSearch()}
-            >
+            <Button disabled={searching} onClick={() => void runSearch()}>
+              <Search size={14} />
               {searching ? '检索中…' : '检索'}
             </Button>
           </div>

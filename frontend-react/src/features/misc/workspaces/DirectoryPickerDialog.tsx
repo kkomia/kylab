@@ -35,7 +35,9 @@ import {
 } from '@/api/workspaces'
 import { useSessionStore } from '@/lib/session'
 
-import { Button, IconButton, Modal, SkeletonBlock, TextInput } from '../shared/ui'
+import { Button } from '@/ui/button'
+import { Input } from '@/ui/input'
+import { ErrorLine, Modal, SkeletonBlock } from '../shared/composites'
 
 export function DirectoryPickerDialog({
   open,
@@ -179,7 +181,6 @@ export function DirectoryPickerDialog({
           </span>
           <Button onClick={onClose}>取消</Button>
           <Button
-            variant="primary"
             disabled={!pickable}
             onClick={() => {
               if (!view) return
@@ -214,9 +215,9 @@ export function DirectoryPickerDialog({
         )}
 
         {error ? (
-          <p className="m-error-line">{error}</p>
+          <ErrorLine>{error}</ErrorLine>
         ) : (
-          actionError && <p className="m-error-line">{actionError}</p>
+          actionError && <ErrorLine>{actionError}</ErrorLine>
         )}
         {loading && <SkeletonBlock variant="list" rows={4} />}
 
@@ -232,8 +233,8 @@ export function DirectoryPickerDialog({
 
             <div className="m-picker-head">
               <Button
+                variant="secondary"
                 size="sm"
-                variant="subtle"
                 disabled={!view.parent}
                 onClick={() => view.parent && void load(view.parent)}
               >
@@ -247,12 +248,12 @@ export function DirectoryPickerDialog({
                   size="sm"
                   disabled={busy || !canCreate}
                   title={canCreate ? undefined : currentEntry?.create_reason}
-                  icon={<FolderPlus size={14} />}
                   onClick={() => {
                     cancelEditing()
                     setCreating(true)
                   }}
                 >
+                  <FolderPlus size={14} />
                   新建文件夹
                 </Button>
               </span>
@@ -263,9 +264,9 @@ export function DirectoryPickerDialog({
 
             {creating && (
               <div className="m-edit-row">
-                <TextInput
+                <Input
                   value={newName}
-                  onValueChange={setNewName}
+                  onChange={(event) => setNewName(event.target.value)}
                   placeholder="文件夹名"
                   aria-label="新文件夹名"
                   onKeyDown={(event) => {
@@ -275,13 +276,12 @@ export function DirectoryPickerDialog({
                 />
                 <Button
                   size="sm"
-                  variant="primary"
                   disabled={busy || !newName.trim()}
                   onClick={() => void submitCreate()}
                 >
                   建
                 </Button>
-                <Button size="sm" variant="ghost" onClick={cancelEditing}>
+                <Button variant="ghost" size="sm" onClick={cancelEditing}>
                   取消
                 </Button>
               </div>
@@ -293,9 +293,9 @@ export function DirectoryPickerDialog({
                   <li key={entry.path} className="m-dir-row">
                     {renaming === entry.path ? (
                       <>
-                        <TextInput
+                        <Input
                           value={renameName}
-                          onValueChange={setRenameName}
+                          onChange={(event) => setRenameName(event.target.value)}
                           aria-label={`把「${entry.name}」改名`}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter') void submitRename()
@@ -304,13 +304,12 @@ export function DirectoryPickerDialog({
                         />
                         <Button
                           size="sm"
-                          variant="primary"
                           disabled={busy || !renameName.trim()}
                           onClick={() => void submitRename()}
                         >
                           改
                         </Button>
-                        <Button size="sm" variant="ghost" onClick={cancelEditing}>
+                        <Button variant="ghost" size="sm" onClick={cancelEditing}>
                           取消
                         </Button>
                       </>
@@ -334,20 +333,28 @@ export function DirectoryPickerDialog({
                         </button>
                         {/* 悬停才出现：一行一个图标会把列表压得很吵。
                             改不了名时**灰着并说明原因**——不让用户点了才知道 */}
-                        <IconButton
-                          label={
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={
                             entry.renamable === false
                               ? entry.rename_reason
                               : `把「${entry.name}」改名`
                           }
-                          icon={<Pencil size={13} />}
+                          title={
+                            entry.renamable === false
+                              ? entry.rename_reason
+                              : `把「${entry.name}」改名`
+                          }
                           disabled={entry.renamable === false}
                           onClick={() => {
                             cancelEditing()
                             setRenaming(entry.path)
                             setRenameName(entry.name)
                           }}
-                        />
+                        >
+                          <Pencil size={13} />
+                        </Button>
                       </>
                     )}
                   </li>

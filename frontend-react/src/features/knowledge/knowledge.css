@@ -4,249 +4,26 @@
  * 三条纪律与旧前端一致：
  * 1. **颜色、间距、圆角一律引用 `tokens.css` 的变量**，这里不出现色值与裸像素
  *    （结构常量如列宽、行高除外——它们属于布局骨架）；
- * 2. 类名统一 `kb-` 前缀，避免与 `@/ui/*`（P2 域）将来的通用类名打架；
+ * 2. 类名统一 `kb-` 前缀，避免与 `@/ui/*`（P2 域）的通用类名打架；
  * 3. 全局已有的 `.panel` / `.panel-head` / `.panel-row` / `.field` / `.field-label` /
  *    `.text-hint` / `.text-note` / `.text-meta` / `.text-micro` / `.tabular` / `.sep`
  *    直接用，不在这里重写一遍。
  *
- * 等 `src/ui/**`（shadcn 原语）落地后，本文件里的按钮/输入框/弹窗这几块应当被
- * 替换成那套原语——它们是**占位实现**，不是第二套设计系统。
+ * **按钮 / 输入框 / 下拉 / 弹窗 / 菜单 / 状态标签这几块已经不在这里**：
+ * 它们全部换成 `@/ui/*` 的原语（见各页面的 import），本文件只留**页面自己的排版**
+ * （卡片、表格、抽屉、目录树…）与 `compose.tsx` 里那几个组合件要用的少量类。
+ *
+ * 两条与 `@/ui/*` 交接时必须知道的：
+ * - 本文件**没有 `@layer`**，所以这里的规则会压过 Tailwind 的 utilities。
+ *   要覆盖 `@/ui/*` 里某个类时这是好事（例如 `.kb-search-box [data-slot='input']`），
+ *   但别在这里重复写字号/文字色，否则会静默盖掉原语自己的取值（`tokens.css` 的
+ *   `.text-meta` 就是这个坑，见 `src/ui/README.md` §1.1）。
+ * - 要选中原语内部的元素，用它们的 `data-slot`（`@/ui/*` 全部保留了它）。
  */
-
-/* ------------------------------------------------------------ 按钮 */
-
-.kb-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  height: var(--control-height);
-  padding: 0 var(--space-3);
-  font-size: var(--text-meta-size);
-  color: var(--text-primary);
-  white-space: nowrap;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  transition: var(--transition-ui);
-}
-
-.kb-btn-sm {
-  height: 28px;
-  font-size: var(--text-meta-size);
-}
-
-.kb-btn-block {
-  justify-content: center;
-  width: 100%;
-}
-
-.kb-btn-primary {
-  color: var(--button-primary-text);
-  background: var(--button-primary-bg);
-  border-color: transparent;
-}
-
-.kb-btn-primary:hover:not(:disabled) {
-  background: var(--button-primary-bg-hover);
-}
-
-.kb-btn-ghost {
-  color: var(--text-secondary);
-  border-color: transparent;
-}
-
-.kb-btn-ghost:hover:not(:disabled) {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-/* 工具栏里的"扁平控件"：与筛选下拉同底、同圆角、无描边 */
-.kb-btn-subtle {
-  color: var(--text-primary);
-  background: var(--bg-subtle);
-  border-color: transparent;
-  border-radius: var(--radius-row);
-}
-
-.kb-btn-subtle:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-
-.kb-btn-danger {
-  color: var(--status-danger);
-  border-color: transparent;
-}
-
-.kb-btn-danger:hover:not(:disabled) {
-  background: var(--danger-soft);
-}
-
-.kb-btn:disabled {
-  color: var(--button-disabled-text);
-  background: var(--button-disabled-bg);
-  border-color: var(--button-disabled-border);
-  cursor: not-allowed;
-}
-
-/* 纯图标按钮：与 32px 的按钮同高，命中区不缩水 */
-.kb-icon-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: var(--control-height);
-  height: var(--control-height);
-  color: var(--text-secondary);
-  border-radius: var(--radius-control);
-}
-
-.kb-icon-btn:hover:not(:disabled) {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.kb-icon-btn:disabled {
-  color: var(--button-disabled-text);
-  cursor: not-allowed;
-}
-
-/* ------------------------------------------------------------ 输入框 / 下拉 */
-
-.kb-input,
-.kb-textarea,
-.kb-select {
-  width: 100%;
-  font: inherit;
-  font-size: var(--text-meta-size);
-  color: var(--text-primary);
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  outline: none;
-  transition: var(--transition-ui);
-}
-
-.kb-input,
-.kb-select {
-  height: var(--control-height);
-  padding: 0 var(--space-3);
-}
-
-.kb-textarea {
-  padding: var(--space-2) var(--space-3);
-  line-height: var(--line-prose);
-  resize: vertical;
-}
-
-.kb-input::placeholder,
-.kb-textarea::placeholder {
-  color: var(--text-quaternary);
-}
-
-.kb-input:hover:not(:disabled),
-.kb-textarea:hover:not(:disabled),
-.kb-select:hover:not(:disabled) {
-  border-color: var(--text-quaternary);
-}
-
-.kb-input:focus,
-.kb-textarea:focus,
-.kb-select:focus {
-  border-color: var(--text-primary);
-  box-shadow: inset 0 0 0 1px var(--text-primary);
-}
-
-.kb-input:disabled,
-.kb-textarea:disabled,
-.kb-select:disabled {
-  color: var(--button-disabled-text);
-  background: var(--button-disabled-bg);
-  border-color: var(--button-disabled-border);
-  cursor: not-allowed;
-}
-
-.kb-checkbox {
-  flex: 0 0 auto;
-  width: 15px;
-  height: 15px;
-  accent-color: var(--accent);
-  cursor: pointer;
-}
-
-/* ------------------------------------------------------------ 状态胶囊 */
-
-.kb-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  height: 22px;
-  padding: 0 var(--space-2);
-  font-size: var(--text-micro-size);
-  white-space: nowrap;
-  border-radius: var(--radius-pill);
-}
-
-.kb-tag-dot {
-  flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
-  background: currentcolor;
-  border-radius: var(--radius-pill);
-}
-
-.kb-tag-neutral {
-  color: var(--text-secondary);
-  background: var(--status-neutral-soft);
-}
-
-.kb-tag-success {
-  color: var(--status-success);
-  background: var(--status-success-soft);
-}
-
-.kb-tag-warning {
-  color: var(--status-warning);
-  background: var(--status-warning-soft);
-}
-
-.kb-tag-danger {
-  color: var(--status-danger);
-  background: var(--status-danger-soft);
-}
-
-.kb-tag-info {
-  color: var(--status-info);
-  background: var(--status-info-soft);
-}
-
-/* 进行中：不加底色，用呼吸的圆点表示"还在动" */
-.kb-tag-running {
-  color: var(--text-secondary);
-  background: transparent;
-}
-
-.kb-tag-running .kb-tag-dot {
-  color: var(--status-info);
-  animation: kb-pulse 1.6s ease-in-out infinite;
-}
-
-@keyframes kb-pulse {
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.35;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .kb-tag-running .kb-tag-dot {
-    animation: none;
-  }
-}
 
 /* ------------------------------------------------------------ 骨架与空态 */
 
+/* 骨架屏的三种预设：高度是本域的排版，底色与呼吸由 `@/ui/skeleton` 给 */
 .kb-skeleton {
   display: flex;
   flex-direction: column;
@@ -256,9 +33,6 @@
 
 .kb-skeleton-row {
   height: var(--row-height);
-  background: var(--bg-subtle);
-  border-radius: var(--radius-row);
-  animation: kb-shimmer 1.4s ease-in-out infinite;
 }
 
 .kb-skeleton-card {
@@ -268,17 +42,6 @@
 
 .kb-skeleton-text {
   height: 14px;
-}
-
-@keyframes kb-shimmer {
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.55;
-  }
 }
 
 .kb-empty {
@@ -381,68 +144,42 @@
   animation: kb-pulse 1.6s ease-in-out infinite;
 }
 
+/* ------------------------------------------------------------ 状态标签的圆点 */
+
+/*
+ * 状态标签本身是 `@/ui/badge` 拼出来的（见 `compose.tsx`）：形状、底色、字色全部来自
+ * 原语与本仓令牌。这里只剩"还在动"那一条——圆点呼吸，旧 `.kb-tag-running .kb-tag-dot`
+ * 的同一条动画。
+ */
+.kb-dot-running {
+  animation: kb-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes kb-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .kb-dot-running,
+  .kb-segment-pulsing .kb-segment-fill {
+    animation: none;
+  }
+}
+
 /* ------------------------------------------------------------ 弹窗 */
 
-.kb-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-6);
-  background: rgb(0 0 0 / 32%);
-}
-
-.kb-modal {
-  display: flex;
-  flex-direction: column;
-  width: min(560px, 100%);
-  max-height: min(88vh, 900px);
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-overlay);
-  box-shadow: 0 18px 48px rgb(0 0 0 / 18%);
-}
-
-.kb-modal-wide {
-  width: min(980px, 100%);
-}
-
-.kb-modal-full {
-  height: min(88vh, 900px);
-}
-
-.kb-modal-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-5);
-  border-bottom: 1px solid var(--border-hairline);
-}
-
-.kb-modal-title {
-  font-size: var(--text-section-size);
-  font-weight: 600;
-}
-
-.kb-modal-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  padding: var(--space-5);
-  overflow-y: auto;
-}
-
-.kb-modal-foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-5);
-  border-top: 1px solid var(--border-hairline);
-}
+/*
+ * 弹窗壳（遮罩 / 表面 / 标题栏 / 底部）**不在本文件里**：它已经是 `@/ui/dialog`
+ * 与 `@/ui/alert-dialog`（组合方式见各页面，取值见 `src/ui/README.md` §2/§3）。
+ * 这里只留弹窗里那句导语与后果说明的排版。
+ */
 
 /* 弹窗里的一句导语（规范 §5.1 保留项） */
 .kb-lead {
@@ -485,48 +222,14 @@
 
 /* ------------------------------------------------------------ 行菜单 */
 
-.kb-menu-wrap {
-  position: relative;
-  display: inline-flex;
-}
+/*
+ * 行菜单（浮层表面 / 项高 / 悬停底色）**不在本文件里**：它已经是
+ * `@/ui/dropdown-menu`，取值见 `src/ui/README.md` §2（`--bg-menu` / `--menu-pad` /
+ * `--menu-item-height`）。这里只剩"菜单触发器在行里怎么摆"。
+ */
 
-.kb-menu {
-  position: absolute;
-  top: calc(100% + var(--space-1));
-  right: 0;
-  z-index: 20;
-  min-width: 168px;
-  padding: var(--menu-pad);
-  background: var(--bg-menu);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-row);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 14%);
-}
-
-.kb-menu-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
-  height: var(--menu-item-height);
-  padding: 0 var(--space-2);
-  font-size: var(--text-meta-size);
-  color: var(--text-primary);
-  text-align: left;
-  border-radius: var(--menu-item-radius);
-}
-
-.kb-menu-item:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-
-.kb-menu-item:disabled {
-  color: var(--button-disabled-text);
-  cursor: not-allowed;
-}
-
-.kb-menu-item-danger {
-  color: var(--status-danger);
+.kb-chunk-menu {
+  margin-left: auto;
 }
 
 /* ------------------------------------------------------------ 数值滑杆 */
@@ -1029,7 +732,8 @@
   min-width: 180px;
 }
 
-.kb-search-box .kb-input {
+/* 搜索框仍是"输入框 + 前置图标"这一种排版：按 `data-slot` 命中 `@/ui/input` */
+.kb-search-box [data-slot='input'] {
   padding-left: calc(var(--space-3) + 24px);
   background: var(--bg-subtle);
   border-color: transparent;
@@ -1501,31 +1205,8 @@
   box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
 }
 
-.kb-reader {
-  max-width: var(--measure);
-  margin-top: var(--space-5);
-  font-size: var(--text-body-size);
-  line-height: var(--line-prose);
-  color: var(--text-primary);
-}
-
-.kb-reader-frame {
-  width: 100%;
-  height: 70vh;
-  margin-top: var(--space-5);
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-panel);
-}
-
-.kb-reader-image {
-  display: block;
-  max-width: 100%;
-  height: auto;
-  margin-top: var(--space-5);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-panel);
-}
+/* 原文渲染（`kb-reader*` 三条）已随预览交给 `@/features/preview` 而删除：
+   那三条在换原语之前就没有调用方了（本次一并清掉，免得看着像还有第二个阅读器）。 */
 
 .kb-muted {
   margin: var(--space-4) 0 0;
@@ -2087,11 +1768,15 @@
   color: var(--text-primary);
 }
 
+/* 勾选/单选的那一行（配 `@/ui/label` 用）：字号与文字色仍按旧口径
+   （14px / 二级灰）。label 原语默认是 12px / 500，而这一行是"读得到的选项文字"，
+   不是字段标签。**本文件没有 @layer**，所以这两行会压过 label 的 utilities（有意为之）。 */
 .kb-switch {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   font-size: var(--text-meta-size);
+  font-weight: 400;
   color: var(--text-secondary);
   cursor: pointer;
 }

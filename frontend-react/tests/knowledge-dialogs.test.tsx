@@ -5,7 +5,7 @@
  * `ShareDialog`（若有）、`SourcePanel` 的"登记与拉取分开"、
  * `KbSearchPanel` 的检索参数与"向量召回不可信"提示。
  */
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { toast } from 'sonner'
@@ -204,7 +204,8 @@ describe('分享弹窗', () => {
     expect(await screen.findByText('林工')).toBeInTheDocument()
     expect(screen.getByText('lin')).toBeInTheDocument()
     expect(listSharesMock).toHaveBeenCalledWith('kb-1')
-    expect(screen.getByRole('combobox', { name: '调整 林工 的访问档位' })).toHaveValue('read')
+    // 档位下拉是 `@/ui/select`（Radix）：触发器是 combobox，当前值显示在它的文本里
+    expect(screen.getByRole('combobox', { name: '调整 林工 的访问档位' })).toHaveTextContent('只读')
   })
 
   it('按登录名授出：空名字给中文原因，填了就把档位一起发出去', async () => {
@@ -225,7 +226,8 @@ describe('分享弹窗', () => {
     expect(grantMock).not.toHaveBeenCalled()
 
     await user.type(screen.getByLabelText('对方的登录名'), 'zhao')
-    fireEvent.change(screen.getByLabelText('访问档位'), { target: { value: 'write' } })
+    await user.click(screen.getByRole('combobox', { name: '访问档位' }))
+    await user.click(await screen.findByRole('option', { name: '可写' }))
     await user.click(screen.getByRole('button', { name: '分享' }))
 
     await waitFor(() => expect(grantMock).toHaveBeenCalledWith('kb-1', 'zhao', 'write'))
@@ -247,9 +249,9 @@ describe('分享弹窗', () => {
     renderDialog(<ShareDialog open kbId="kb-1" kbName="产品手册" onClose={vi.fn()} />)
     await screen.findByText('林工')
 
-    fireEvent.change(screen.getByRole('combobox', { name: '调整 林工 的访问档位' }), {
-      target: { value: 'write' },
-    })
+    // 行内改档位：点开下拉、选「可写」，与首次授出走同一条接口
+    await user.click(screen.getByRole('combobox', { name: '调整 林工 的访问档位' }))
+    await user.click(await screen.findByRole('option', { name: '可写' }))
     await waitFor(() => expect(grantMock).toHaveBeenCalledWith('kb-1', 'lin', 'write'))
 
     await user.click(screen.getByRole('button', { name: '收回' }))
@@ -370,7 +372,8 @@ describe('数据源面板', () => {
 
     await user.click(screen.getByRole('button', { name: '删除 文档页' }))
     expect(await screen.findByText(/已抓进来的文档会保留/)).toBeInTheDocument()
-    const dialog = screen.getByRole('dialog', { name: '删除数据源' })
+    // 确认弹窗是 `@/ui/alert-dialog`（Radix）：role 是 alertdialog
+    const dialog = screen.getByRole('alertdialog', { name: '删除数据源' })
     await user.click(within(dialog).getByRole('button', { name: '确定' }))
     await waitFor(() => expect(deleteSourceMock).toHaveBeenCalledWith('s-1'))
   })

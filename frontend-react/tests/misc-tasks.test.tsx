@@ -195,7 +195,9 @@ describe('任务中心', () => {
     renderMisc(<TasksPage />)
     await userEvent.click(await screen.findByRole('button', { name: /取消排队中的任务（1）/ }))
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('alertdialog')
+    // @/ui/alert-dialog：确认框不是 dialog 而是 alertdialog（Esc / 点遮罩都不关）
+    expect(dialog).toHaveAttribute('data-slot', 'alert-dialog-content')
     await userEvent.click(within(dialog).getByRole('button', { name: '撤下' }))
 
     await waitFor(() => expect(cancelTasksMock).toHaveBeenCalledWith({}))
@@ -255,7 +257,10 @@ describe('任务中心', () => {
 describe('定时任务分段', () => {
   it('显示服务器时区、上一轮结论与下次时间（"下次几点"只能靠它，猜错的代价是它在你睡觉时跑）', async () => {
     renderMisc(<TasksPage />)
-    await userEvent.click(await screen.findByRole('tab', { name: '定时任务' }))
+    // 分段控件已经是 @/ui/tabs（Radix）：role=tab 由库给，键盘左右键也能切
+    const tab = await screen.findByRole('tab', { name: '定时任务' })
+    expect(tab).toHaveAttribute('data-slot', 'tabs-trigger')
+    await userEvent.click(tab)
 
     expect(await screen.findByText('每日早报')).toBeInTheDocument()
     expect(screen.getByText(/时间按服务器时区（CST UTC\+08:00）计算/)).toBeInTheDocument()

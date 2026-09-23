@@ -12,6 +12,10 @@
  *    （`<br />`）——`html()` 把它们归一成旧写法，**除此之外一个字符都不改**
  *    （所以下面那批 `toBe` 与旧用例是同一串文本）。结构上确有一处不同：
  *    `blockquote` 的内容现在被 remark 包在 `<p class="md-p">` 里（旧实现是直接铺行）。
+ *
+ * P5 之前还有一处**口径变化**：公式改走 `remark-math` + `rehype-katex` 的标准口径
+ * （原先那个自写的 `rehypeInlineMath` 撤了）。受影响的两条用例已按新口径重写，
+ * 并在用例里写明了"为什么变"；差异表在 `src/features/chat/model/README.md`。
  */
 
 import { fireEvent, render } from '@testing-library/react'
@@ -617,17 +621,46 @@ describe('只读渲染（文件预览）与数学（P1）', () => {
     expect(markup).not.toContain('$x^{2}$')
   })
 
-  it('整式 `$$…$$` 走 displayMode（块级排版）', () => {
-    const markup = html(renderAnswerMarkdown('推导 $$\\frac{1}{2}$$ 结束'))
+  it('整式 `$$…$$`：**围栏自成一行**才是块级排版（标准口径的 display 判据）', () => {
+    // 口径变了（remark-math 标准口径，差异表见 `model/README.md`）：display 不是
+    // "看到 `$$` 就是了"，而是"`$$` 自成一行"（GitHub 的写法）——单行写成
+    // `$$ … $$` 时它只是**行内**公式。旧的自写插件按"`$$` 配对"直接给 math-display，
+    // 于是单行 `$$…$$` 也会整块居中
+    const display = html(renderAnswerMarkdown('推导\n\n$$\n\\frac{1}{2}\n$$\n\n结束'))
+    expect(display).toContain('katex-display')
 
-    expect(markup).toContain('katex-display')
+    const inline = html(renderAnswerMarkdown('推导 $$\\frac{1}{2}$$ 结束'))
+    expect(inline).toContain('class="katex"')
+    expect(inline).not.toContain('katex-display')
   })
 
-  it('认不出的 `$…$` 一个字符都不动（价格不能被当成公式）', () => {
+  it('裸写的 `$…$` 一律当公式（**标准口径的代价**：价格那种写法分不出来）', () => {
+    // 旧口径要求公式体里含"可识别的 LaTeX 标记"，所以 `价格从 $5 到 $10` 一个字都不动；
+    // 标准口径只认 `$` 配对（micromark 的判据里没有"这像不像公式"这一条），
+    // 于是 `$5 到 $` 会被排成公式——**这是换标准路线的已知代价**（`model/README.md` 写全了）。
+    // 要留住字面量：把美元号转义（下面那条）
     const markup = html(renderAnswerMarkdown('价格从 $5 到 $10 不等'))
+
+    expect(markup).toContain('class="katex"')
+    // 没被认成公式的尾巴照旧原样留在正文里（10 不等）
+    expect(markup).toContain('10 不等')
+  })
+
+  it('转义过的美元号仍是字面量：`\\$5` 不是公式（价格这样写就安全）', () => {
+    const markup = html(renderAnswerMarkdown('价格从 \\$5 到 \\$10 不等'))
 
     expect(markup).toContain('价格从 $5 到 $10 不等')
     expect(markup).not.toContain('katex')
+  })
+
+  it('只有转义符的公式也认（`$52.7\\%$`）——旧口径下这一类认不出来', () => {
+    // 旧口径的已知边界：Markdown 解析阶段先把 `\%` 还原成 `%`，到 rehype 那一步
+    // 就看不出它是公式了，于是连 `$` 一起留在正文里。标准路线在**解析期**就认公式、
+    // 把原文（含 `\%`）原样交给 KaTeX，所以这一类现在正常排版（差异表见 `model/README.md`）
+    const markup = html(renderAnswerMarkdown('占比 $52.7\\%$ 左右'))
+
+    expect(markup).toContain('class="katex"')
+    expect(markup).toContain('左右')
   })
 
   it('代码块里的 `$` 不动：那是字面量，不是公式', () => {

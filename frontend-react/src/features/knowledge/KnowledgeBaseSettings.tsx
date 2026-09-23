@@ -40,15 +40,7 @@ import {
 } from '@/api/knowledgeBases'
 import { SUGGESTED_COUNT_DEFAULT } from '@/api/knowledgeBases'
 import type { ImpactReport } from '@/api/documents'
-import {
-  Button,
-  ConfirmDialog,
-  IconButton,
-  InfoTip,
-  Input,
-  Modal,
-  Textarea,
-} from '@/features/knowledge/primitives'
+import { InfoTip } from '@/features/knowledge/composites'
 import { chunkingErrorOf, numberOr, parseIntOrNull } from '@/features/knowledge/chunking'
 import { RangeField } from '@/features/knowledge/RangeField'
 import { SourcePanel } from '@/features/knowledge/SourcePanel'
@@ -59,6 +51,22 @@ import {
 import { messageOf, notify, useKnowledgeBases } from '@/features/knowledge/store'
 import { copyText } from '@/lib/clipboard'
 import { formatBytes } from '@/lib/format'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/ui/alert-dialog'
+import { Button } from '@/ui/button'
+import { Checkbox } from '@/ui/checkbox'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog'
+import { Input } from '@/ui/input'
+import { Label } from '@/ui/label'
+import { Textarea } from '@/ui/textarea'
 
 /** 简介上限。与后端 `KB_DESCRIPTION_MAX_CHARS` 对齐，超了后端也会拒。 */
 const DESCRIPTION_MAX = 200
@@ -349,376 +357,427 @@ export function KnowledgeBaseSettings({ kb, className, onChanged }: KnowledgeBas
   }
 
   return (
-    <span className={['kb-menu-wrap', className].filter(Boolean).join(' ')}>
-      <IconButton
-        icon={SettingsIcon}
-        label={`${kb.name} 的设置`}
+    <span className={className}>
+      <Button
+        variant="ghost"
+        size="icon"
+        aria-label={`${kb.name} 的设置`}
         title="知识库设置"
         onClick={openSettings}
-      />
-
-      <Modal
-        open={open}
-        title="知识库设置"
-        size="wide"
-        height="full"
-        onClose={() => setOpen(false)}
-        onEnter={() => {
-          if (SAVE_SECTIONS.includes(section)) void save()
-        }}
-        footer={
-          SAVE_SECTIONS.includes(section) ? (
-            <>
-              <Button onClick={cancel}>取消</Button>
-              <Button variant="primary" disabled={saving || !dirty} onClick={() => void save()}>
-                {saving ? '保存中…' : '保存并关闭'}
-              </Button>
-            </>
-          ) : (
-            <Button onClick={() => setOpen(false)}>关闭</Button>
-          )
-        }
       >
-        <div className="kb-settings-layout">
-          <nav className="kb-settings-nav" aria-label="设置分组">
-            {GROUPS.map((group) => (
-              <div key={group.label}>
-                <p className="kb-nav-group">{group.label}</p>
-                {group.items.map((item) => (
-                  <button
-                    key={item.key}
-                    type="button"
-                    aria-current={section === item.key ? 'true' : undefined}
-                    className={[
-                      'kb-nav-item',
-                      section === item.key ? 'kb-nav-item-on' : '',
-                      item.key === 'danger' ? 'kb-nav-item-danger' : '',
-                    ]
-                      .filter(Boolean)
-                      .join(' ')}
-                    onClick={() => setSection(item.key)}
-                  >
-                    <item.icon size={15} />
-                    <span>{item.label}</span>
-                  </button>
+        <SettingsIcon aria-hidden="true" />
+      </Button>
+
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          if (!next) setOpen(false)
+        }}
+      >
+        {/* 宽档 + 整高：旧 `Modal size="wide" height="full"`（980px / min(88vh,900px)） */}
+        <DialogContent
+          className="flex h-[min(88vh,900px)] max-h-[min(88vh,900px)] flex-col gap-0 p-0 sm:max-w-[980px]"
+          onKeyDown={(event) => {
+            // 旧 `Modal onEnter`：「回车 = 保存」这一条只挂在会改数据的分区上
+            if (event.key === 'Enter' && SAVE_SECTIONS.includes(section)) {
+              if (event.target instanceof HTMLTextAreaElement) return
+              void save()
+            }
+          }}
+        >
+          <DialogHeader className="border-b border-[var(--border-hairline)] px-4 py-3 pr-10">
+            <DialogTitle>知识库设置</DialogTitle>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <div className="kb-settings-layout">
+              <nav className="kb-settings-nav" aria-label="设置分组">
+                {GROUPS.map((group) => (
+                  <div key={group.label}>
+                    <p className="kb-nav-group">{group.label}</p>
+                    {group.items.map((item) => (
+                      <button
+                        key={item.key}
+                        type="button"
+                        aria-current={section === item.key ? 'true' : undefined}
+                        className={[
+                          'kb-nav-item',
+                          section === item.key ? 'kb-nav-item-on' : '',
+                          item.key === 'danger' ? 'kb-nav-item-danger' : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' ')}
+                        onClick={() => setSection(item.key)}
+                      >
+                        <item.icon size={15} />
+                        <span>{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
                 ))}
-              </div>
-            ))}
-          </nav>
+              </nav>
 
-          <div className="kb-pane">
-            {section === 'basic' ? (
-              <>
-                <h3 className="kb-pane-title">基本信息</h3>
-                <div className="kb-field">
-                  <span className="field-label">知识库 ID</span>
-                  <div className="kb-field-inline">
-                    <code className="kb-id">{kb.id}</code>
-                    <Button size="sm" aria-label="复制知识库 ID" onClick={() => void copyId()}>
-                      复制
-                    </Button>
-                  </div>
-                  <p className="text-hint">API 集成时用它指定这个库。</p>
-                </div>
-                <label className="kb-field">
-                  <span className="field-label">知识库名称</span>
-                  <Input
-                    id="kb-setting-name"
-                    value={nameDraft}
-                    placeholder="知识库名称"
-                    onChange={(event) => setNameDraft(event.target.value)}
-                  />
-                </label>
-                <label className="kb-field">
-                  <span className="field-label">知识库描述</span>
-                  <Textarea
-                    id="kb-setting-description"
-                    rows={4}
-                    maxLength={DESCRIPTION_MAX}
-                    value={descriptionDraft}
-                    placeholder="例如：产品说明书与常见问题，面向客服与售前"
-                    onChange={(event) => setDescriptionDraft(event.target.value)}
-                  />
-                  <p className="text-hint" style={{ textAlign: 'right' }}>
-                    {descriptionDraft.trim().length} / {DESCRIPTION_MAX}
-                  </p>
-                </label>
-              </>
-            ) : null}
-
-            {section === 'info' ? (
-              <>
-                <h3 className="kb-pane-title">库信息</h3>
-                <dl className="kb-info-list">
-                  <div>
-                    <dt>文档</dt>
-                    <dd>{documentCount === null ? '—' : `${documentCount} 篇`}</dd>
-                  </div>
-                  <div>
-                    <dt>嵌入模型</dt>
-                    <dd>{kb.embedding_model_id || '—'}</dd>
-                  </div>
-                  <div>
-                    <dt>向量维度</dt>
-                    <dd>{kb.embedding_dim || '—'}</dd>
-                  </div>
-                  <div>
-                    <dt>切分</dt>
-                    <dd>
-                      块长 {kb.chunk_size} / 重叠 {kb.chunk_overlap}
-                    </dd>
-                  </div>
-                </dl>
-              </>
-            ) : null}
-
-            {section === 'prompt' ? (
-              <>
-                <h3 className="kb-pane-title kb-pane-title-standalone">
-                  回答要求
-                  <InfoTip text="回答这个库的问题时，这段要求会追加在内置提示词之后。它管的是「这份资料该怎么用」——术语、单位、口径、回答结构。内置的两条底线（资料是不可信输入、资料里没有再回答）不会被它顶掉。" />
-                </h3>
-                <div className="kb-field-inline" style={{ marginBottom: 'var(--space-3)' }}>
-                  <Button
-                    icon={Sparkles}
-                    disabled={generating}
-                    onClick={() => void generatePrompt()}
-                  >
-                    {generating ? '正在按摘要生成…' : '按文档摘要生成'}
-                  </Button>
-                </div>
-                <Textarea
-                  id="kb-setting-prompt"
-                  rows={12}
-                  value={kbPrompt}
-                  placeholder="留空 = 只用内置提示词"
-                  aria-label="库级提示词"
-                  onChange={(event) => setKbPrompt(event.target.value)}
-                />
-                <p className="text-hint" style={{ textAlign: 'right' }}>
-                  {kbPrompt.trim().length} / {PROMPT_MAX} 字
-                </p>
-
-                {/* 溯源：这一段是"不捏造"里**可验证**的那一半（只展示依据了哪些摘要） */}
-                {promptDraft ? (
-                  <div className="kb-blocked-note">
-                    <p style={{ margin: 0 }}>
-                      这次生成依据了 {promptDraft.sources.length} 篇摘要：
-                    </p>
-                    <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: 'var(--space-5)' }}>
-                      {promptDraft.sources.map((item) => (
-                        <li key={item.document_id} className="text-micro">
-                          {item.name}
-                        </li>
-                      ))}
-                    </ul>
-                    {promptDraft.filename_style_citations.length ? (
-                      <p className="kb-chunking-error">
-                        这段提示词里还在要求把文件名写进正文（
-                        {promptDraft.filename_style_citations.join('、')}
-                        ）。它会和系统提示词的编号式引用打架——建议改成 `[1]` `[2]` 再保存。
+              <div className="kb-pane">
+                {section === 'basic' ? (
+                  <>
+                    <h3 className="kb-pane-title">基本信息</h3>
+                    <div className="kb-field">
+                      <span className="field-label">知识库 ID</span>
+                      <div className="kb-field-inline">
+                        <code className="kb-id">{kb.id}</code>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          aria-label="复制知识库 ID"
+                          onClick={() => void copyId()}
+                        >
+                          复制
+                        </Button>
+                      </div>
+                      <p className="text-hint">API 集成时用它指定这个库。</p>
+                    </div>
+                    <label className="kb-field">
+                      <span className="field-label">知识库名称</span>
+                      <Input
+                        id="kb-setting-name"
+                        value={nameDraft}
+                        placeholder="知识库名称"
+                        onChange={(event) => setNameDraft(event.target.value)}
+                      />
+                    </label>
+                    <label className="kb-field">
+                      <span className="field-label">知识库描述</span>
+                      <Textarea
+                        id="kb-setting-description"
+                        rows={4}
+                        maxLength={DESCRIPTION_MAX}
+                        value={descriptionDraft}
+                        placeholder="例如：产品说明书与常见问题，面向客服与售前"
+                        onChange={(event) => setDescriptionDraft(event.target.value)}
+                      />
+                      <p className="text-hint" style={{ textAlign: 'right' }}>
+                        {descriptionDraft.trim().length} / {DESCRIPTION_MAX}
                       </p>
-                    ) : (
-                      <p className="text-hint">
-                        引用口径是编号式（`[1]` `[2]`，与检索结果对应），正文里不写文件名。
-                      </p>
-                    )}
-                  </div>
-                ) : null}
-              </>
-            ) : null}
-
-            {section === 'chunking' ? (
-              <>
-                <h3 className="kb-pane-title kb-pane-title-standalone">
-                  切块与出题
-                  <InfoTip text="块太大：一段里混着好几件事，命中后给模型的上下文会跑题。块太小：句子被切断。中文资料里 512 约一到两段话；重叠留一点，跨块的句子才不会被截断。轨道上的点是常用值，强调色是默认值；拖到刻度附近会自动吸附，右侧的数字也可以直接输入。" />
-                </h3>
-
-                <div className="kb-field">
-                  <label className="field-label" htmlFor="kb-chunk-size">
-                    块长（字符）
-                  </label>
-                  <RangeField
-                    id="kb-chunk-size"
-                    value={numberOr(chunkSizeDraft, CHUNK_DEFAULT_SIZE)}
-                    onChange={(value) => {
-                      setChunkSizeDraft(String(value))
-                      // 块长调小以后原重叠可能超过新上限，就地压回（滑块画不出超上限的值）
-                      const max = chunkOverlapMax(value)
-                      if (numberOr(chunkOverlapDraft, 0) > max) setChunkOverlapDraft(String(max))
-                    }}
-                    min={CHUNK_SIZE_MIN}
-                    max={CHUNK_SIZE_MAX}
-                    marks={CHUNK_SIZE_MARKS}
-                    snapToMarks
-                    editableValue
-                    ariaLabel="块长（字符）"
-                    valueLabel="块长（字符）"
-                  />
-                </div>
-
-                <div className="kb-field">
-                  <label className="field-label" htmlFor="kb-chunk-overlap">
-                    块重叠（字符）
-                  </label>
-                  <RangeField
-                    id="kb-chunk-overlap"
-                    value={numberOr(chunkOverlapDraft, 0)}
-                    onChange={(value) => setChunkOverlapDraft(String(value))}
-                    min={0}
-                    max={chunkOverlapCap}
-                    marks={CHUNK_OVERLAP_MARKS}
-                    snapToMarks
-                    editableValue
-                    ariaLabel="块重叠（字符）"
-                    valueLabel="块重叠（字符）"
-                  />
-                  {/* 这一行留着：上限是个**跟着块长变的数**，提示里写不死 */}
-                  <p className="text-hint">上限 {chunkOverlapCap}（块长的一半）。</p>
-                </div>
-
-                {chunkingError ? (
-                  <p className="kb-pane-error" role="alert">
-                    {chunkingError}
-                  </p>
+                    </label>
+                  </>
                 ) : null}
 
-                {/* 改动只对之后摄入的文档生效：这一条必须写出来，否则用户会以为"保存了却没反应" */}
-                <div
-                  className={['kb-callout', chunkingStale ? 'kb-callout-strong' : '']
-                    .filter(Boolean)
-                    .join(' ')}
-                >
-                  <p style={{ margin: 0, flex: '1 1 260px' }}>
-                    {chunkingStale
-                      ? '已保存。已有文档还是按旧的切块参数、也没有问题，需要重新摄入才会生效。'
-                      : '改动只对之后上传或重新摄入的文档生效；已有文档要重新摄入才会按新参数切块、并补上问题。'}
-                  </p>
-                  <Button
-                    size="sm"
-                    icon={RefreshCw}
-                    disabled={reingesting || documentCount === 0}
-                    onClick={() => setReingestOpen(true)}
-                  >
-                    重新摄入全部文档
-                  </Button>
-                </div>
+                {section === 'info' ? (
+                  <>
+                    <h3 className="kb-pane-title">库信息</h3>
+                    <dl className="kb-info-list">
+                      <div>
+                        <dt>文档</dt>
+                        <dd>{documentCount === null ? '—' : `${documentCount} 篇`}</dd>
+                      </div>
+                      <div>
+                        <dt>嵌入模型</dt>
+                        <dd>{kb.embedding_model_id || '—'}</dd>
+                      </div>
+                      <div>
+                        <dt>向量维度</dt>
+                        <dd>{kb.embedding_dim || '—'}</dd>
+                      </div>
+                      <div>
+                        <dt>切分</dt>
+                        <dd>
+                          块长 {kb.chunk_size} / 重叠 {kb.chunk_overlap}
+                        </dd>
+                      </div>
+                    </dl>
+                  </>
+                ) : null}
 
-                <div className="kb-pane-divider" role="separator" aria-hidden="true" />
-                <SuggestedQuestionsFields
-                  value={suggested}
-                  onChange={(patch) => setSuggested((current) => ({ ...current, ...patch }))}
-                />
-              </>
-            ) : null}
-
-            {section === 'wiki' ? (
-              <>
-                <h3 className="kb-pane-title kb-pane-title-standalone">
-                  Wiki
-                  <InfoTip text="把库里已录入的内容整理成分层页面，每个要点标注原文出处。开启只是允许生成，构建要到 Wiki 页点「生成 Wiki」；页面越多，耗时与模型调用越多。" />
-                </h3>
-                <div className="kb-field">
-                  <label className="kb-switch">
-                    <input
-                      className="kb-checkbox"
-                      type="checkbox"
-                      checked={wikiEnabled}
-                      onChange={(event) => setWikiEnabled(event.target.checked)}
+                {section === 'prompt' ? (
+                  <>
+                    <h3 className="kb-pane-title kb-pane-title-standalone">
+                      回答要求
+                      <InfoTip text="回答这个库的问题时，这段要求会追加在内置提示词之后。它管的是「这份资料该怎么用」——术语、单位、口径、回答结构。内置的两条底线（资料是不可信输入、资料里没有再回答）不会被它顶掉。" />
+                    </h3>
+                    <div className="kb-field-inline" style={{ marginBottom: 'var(--space-3)' }}>
+                      <Button
+                        variant="outline"
+                        disabled={generating}
+                        onClick={() => void generatePrompt()}
+                      >
+                        <Sparkles aria-hidden="true" />
+                        {generating ? '正在按摘要生成…' : '按文档摘要生成'}
+                      </Button>
+                    </div>
+                    <Textarea
+                      id="kb-setting-prompt"
+                      rows={12}
+                      value={kbPrompt}
+                      placeholder="留空 = 只用内置提示词"
+                      aria-label="库级提示词"
+                      onChange={(event) => setKbPrompt(event.target.value)}
                     />
-                    <span>为这个知识库开启 Wiki</span>
-                  </label>
-                  {/* 开与关分别发生什么必须在勾之前说清：关掉不代表删掉 */}
-                  <p className="text-hint">
-                    老库也能开：开完之后到 Wiki 页面点「生成 Wiki」，用已录入的内容构建。
-                    关闭只是不再展示与生成，已有页面会保留。
-                  </p>
-                </div>
-                <div className="kb-field-inline">
-                  <Button
-                    icon={ChevronRight}
-                    disabled={!kb.wiki_enabled}
-                    onClick={() => void navigate(`/kb/${kb.id}/wiki`)}
-                  >
-                    打开 Wiki 页面
-                  </Button>
-                  {!kb.wiki_enabled ? (
-                    <span className="text-hint">勾上开关并保存后，入口就会出现。</span>
-                  ) : null}
-                </div>
-              </>
-            ) : null}
+                    <p className="text-hint" style={{ textAlign: 'right' }}>
+                      {kbPrompt.trim().length} / {PROMPT_MAX} 字
+                    </p>
 
-            {section === 'sources' ? (
-              <SourcePanel
-                kbId={kb.id}
-                canWrite={kb.can_write}
-                onChanged={() => onChanged?.('sources')}
-              />
-            ) : null}
+                    {/* 溯源：这一段是"不捏造"里**可验证**的那一半（只展示依据了哪些摘要） */}
+                    {promptDraft ? (
+                      <div className="kb-blocked-note">
+                        <p style={{ margin: 0 }}>
+                          这次生成依据了 {promptDraft.sources.length} 篇摘要：
+                        </p>
+                        <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: 'var(--space-5)' }}>
+                          {promptDraft.sources.map((item) => (
+                            <li key={item.document_id} className="text-micro">
+                              {item.name}
+                            </li>
+                          ))}
+                        </ul>
+                        {promptDraft.filename_style_citations.length ? (
+                          <p className="kb-chunking-error">
+                            这段提示词里还在要求把文件名写进正文（
+                            {promptDraft.filename_style_citations.join('、')}
+                            ）。它会和系统提示词的编号式引用打架——建议改成 `[1]` `[2]` 再保存。
+                          </p>
+                        ) : (
+                          <p className="text-hint">
+                            引用口径是编号式（`[1]` `[2]`，与检索结果对应），正文里不写文件名。
+                          </p>
+                        )}
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
 
-            {section === 'danger' ? (
+                {section === 'chunking' ? (
+                  <>
+                    <h3 className="kb-pane-title kb-pane-title-standalone">
+                      切块与出题
+                      <InfoTip text="块太大：一段里混着好几件事，命中后给模型的上下文会跑题。块太小：句子被切断。中文资料里 512 约一到两段话；重叠留一点，跨块的句子才不会被截断。轨道上的点是常用值，强调色是默认值；拖到刻度附近会自动吸附，右侧的数字也可以直接输入。" />
+                    </h3>
+
+                    <div className="kb-field">
+                      <label className="field-label" htmlFor="kb-chunk-size">
+                        块长（字符）
+                      </label>
+                      <RangeField
+                        id="kb-chunk-size"
+                        value={numberOr(chunkSizeDraft, CHUNK_DEFAULT_SIZE)}
+                        onChange={(value) => {
+                          setChunkSizeDraft(String(value))
+                          // 块长调小以后原重叠可能超过新上限，就地压回（滑块画不出超上限的值）
+                          const max = chunkOverlapMax(value)
+                          if (numberOr(chunkOverlapDraft, 0) > max)
+                            setChunkOverlapDraft(String(max))
+                        }}
+                        min={CHUNK_SIZE_MIN}
+                        max={CHUNK_SIZE_MAX}
+                        marks={CHUNK_SIZE_MARKS}
+                        snapToMarks
+                        editableValue
+                        ariaLabel="块长（字符）"
+                        valueLabel="块长（字符）"
+                      />
+                    </div>
+
+                    <div className="kb-field">
+                      <label className="field-label" htmlFor="kb-chunk-overlap">
+                        块重叠（字符）
+                      </label>
+                      <RangeField
+                        id="kb-chunk-overlap"
+                        value={numberOr(chunkOverlapDraft, 0)}
+                        onChange={(value) => setChunkOverlapDraft(String(value))}
+                        min={0}
+                        max={chunkOverlapCap}
+                        marks={CHUNK_OVERLAP_MARKS}
+                        snapToMarks
+                        editableValue
+                        ariaLabel="块重叠（字符）"
+                        valueLabel="块重叠（字符）"
+                      />
+                      {/* 这一行留着：上限是个**跟着块长变的数**，提示里写不死 */}
+                      <p className="text-hint">上限 {chunkOverlapCap}（块长的一半）。</p>
+                    </div>
+
+                    {chunkingError ? (
+                      <p className="kb-pane-error" role="alert">
+                        {chunkingError}
+                      </p>
+                    ) : null}
+
+                    {/* 改动只对之后摄入的文档生效：这一条必须写出来，否则用户会以为"保存了却没反应" */}
+                    <div
+                      className={['kb-callout', chunkingStale ? 'kb-callout-strong' : '']
+                        .filter(Boolean)
+                        .join(' ')}
+                    >
+                      <p style={{ margin: 0, flex: '1 1 260px' }}>
+                        {chunkingStale
+                          ? '已保存。已有文档还是按旧的切块参数、也没有问题，需要重新摄入才会生效。'
+                          : '改动只对之后上传或重新摄入的文档生效；已有文档要重新摄入才会按新参数切块、并补上问题。'}
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={reingesting || documentCount === 0}
+                        onClick={() => setReingestOpen(true)}
+                      >
+                        <RefreshCw aria-hidden="true" />
+                        重新摄入全部文档
+                      </Button>
+                    </div>
+
+                    <div className="kb-pane-divider" role="separator" aria-hidden="true" />
+                    <SuggestedQuestionsFields
+                      value={suggested}
+                      onChange={(patch) => setSuggested((current) => ({ ...current, ...patch }))}
+                    />
+                  </>
+                ) : null}
+
+                {section === 'wiki' ? (
+                  <>
+                    <h3 className="kb-pane-title kb-pane-title-standalone">
+                      Wiki
+                      <InfoTip text="把库里已录入的内容整理成分层页面，每个要点标注原文出处。开启只是允许生成，构建要到 Wiki 页点「生成 Wiki」；页面越多，耗时与模型调用越多。" />
+                    </h3>
+                    <div className="kb-field">
+                      <Label className="kb-switch">
+                        <Checkbox
+                          checked={wikiEnabled}
+                          aria-label="为这个知识库开启 Wiki"
+                          onCheckedChange={(checked) => setWikiEnabled(checked === true)}
+                        />
+                        <span>为这个知识库开启 Wiki</span>
+                      </Label>
+                      {/* 开与关分别发生什么必须在勾之前说清：关掉不代表删掉 */}
+                      <p className="text-hint">
+                        老库也能开：开完之后到 Wiki 页面点「生成 Wiki」，用已录入的内容构建。
+                        关闭只是不再展示与生成，已有页面会保留。
+                      </p>
+                    </div>
+                    <div className="kb-field-inline">
+                      <Button
+                        variant="outline"
+                        disabled={!kb.wiki_enabled}
+                        onClick={() => void navigate(`/kb/${kb.id}/wiki`)}
+                      >
+                        <ChevronRight aria-hidden="true" />
+                        打开 Wiki 页面
+                      </Button>
+                      {!kb.wiki_enabled ? (
+                        <span className="text-hint">勾上开关并保存后，入口就会出现。</span>
+                      ) : null}
+                    </div>
+                  </>
+                ) : null}
+
+                {section === 'sources' ? (
+                  <SourcePanel
+                    kbId={kb.id}
+                    canWrite={kb.can_write}
+                    onChanged={() => onChanged?.('sources')}
+                  />
+                ) : null}
+
+                {section === 'danger' ? (
+                  <>
+                    <h3 className="kb-pane-title" style={{ color: 'var(--status-danger)' }}>
+                      删除知识库
+                    </h3>
+                    <p className="text-note">
+                      整个知识库连同其中的文档、切块与向量都会被删除，<strong>不会进回收站</strong>
+                      ，无法恢复。
+                    </p>
+                    <Button variant="destructive" onClick={() => void openDelete()}>
+                      删除知识库
+                    </Button>
+                  </>
+                ) : null}
+              </div>
+            </div>
+          </div>
+          <DialogFooter className="border-t border-[var(--border-hairline)] px-4 py-3">
+            {SAVE_SECTIONS.includes(section) ? (
               <>
-                <h3 className="kb-pane-title" style={{ color: 'var(--status-danger)' }}>
-                  删除知识库
-                </h3>
-                <p className="text-note">
-                  整个知识库连同其中的文档、切块与向量都会被删除，<strong>不会进回收站</strong>
-                  ，无法恢复。
-                </p>
-                <Button variant="danger" onClick={() => void openDelete()}>
-                  删除知识库
+                <Button variant="outline" onClick={cancel}>
+                  取消
+                </Button>
+                <Button variant="default" disabled={saving || !dirty} onClick={() => void save()}>
+                  {saving ? '保存中…' : '保存并关闭'}
                 </Button>
               </>
-            ) : null}
-          </div>
-        </div>
-      </Modal>
+            ) : (
+              <Button variant="outline" onClick={() => setOpen(false)}>
+                关闭
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-      {/* 整库重跑：把代价说清楚再动手（云端解析要花钱、要时间） */}
-      <ConfirmDialog
+      {/*
+        两个确认弹窗都是 `@/ui/alert-dialog`（Radix）。与旧 `ConfirmDialog` 的**两处差异**：
+        点「确定」后弹窗立即关闭（旧实现停在忙碌态直到请求回来，失败仍会弹 toast）；
+        Esc 与点遮罩不再关闭（AlertDialog 的设计如此：只能走「取消 / 确定」二选一）。
+      */}
+      <AlertDialog
         open={reingestOpen}
-        title="重新摄入全部文档"
-        lead={`把「${kb.name}」里的文档全部重新解析、切块与向量化？`}
-        note="这会消耗云端解析额度并占用一段时间；期间知识库照常可检索（旧的切块会保留到新切块写入）。正在处理中的文档会被跳过。"
-        confirmLabel="开始重新摄入"
-        busy={reingesting}
-        busyLabel="排队中…"
-        onConfirm={() => void confirmReingest()}
-        onClose={() => setReingestOpen(false)}
-      />
-
-      <ConfirmDialog
-        open={deleteOpen}
-        title="删除知识库"
-        lead={`确定删除知识库「${kb.name}」？`}
-        note="不可恢复。库里的文档、切块与向量都会删除，不进回收站。"
-        confirmLabel="删除知识库"
-        busy={deleting}
-        busyLabel="删除中…"
-        onConfirm={() => void confirmDelete()}
-        onClose={() => setDeleteOpen(false)}
+        onOpenChange={(next) => {
+          if (!next) setReingestOpen(false)
+        }}
       >
-        {impact === null ? (
-          <p className="text-hint">正在统计影响…</p>
-        ) : (
-          <dl className="kb-impact">
-            <div>
-              <dt>文档</dt>
-              <dd className="tabular">{impact.documents}</dd>
-            </div>
-            <div>
-              <dt>切块</dt>
-              <dd className="tabular">{impact.chunks}</dd>
-            </div>
-            <div>
-              <dt>占用的空间</dt>
-              <dd className="tabular">{formatBytes(impact.size_bytes)}</dd>
-            </div>
-          </dl>
-        )}
-      </ConfirmDialog>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>重新摄入全部文档</AlertDialogTitle>
+            <AlertDialogDescription>
+              把「{kb.name}」里的文档全部重新解析、切块与向量化？
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <p className="kb-modal-note">
+            这会消耗云端解析额度并占用一段时间；期间知识库照常可检索（旧的切块会保留到新切块写入）。正在处理中的文档会被跳过。
+          </p>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmReingest()}>
+              开始重新摄入
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={deleteOpen}
+        onOpenChange={(next) => {
+          if (!next) setDeleteOpen(false)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除知识库</AlertDialogTitle>
+            <AlertDialogDescription>确定删除知识库「{kb.name}」？</AlertDialogDescription>
+          </AlertDialogHeader>
+          <p className="kb-modal-note">不可恢复。库里的文档、切块与向量都会删除，不进回收站。</p>
+          {impact === null ? (
+            <p className="text-hint">正在统计影响…</p>
+          ) : (
+            <dl className="kb-impact">
+              <div>
+                <dt>文档</dt>
+                <dd className="tabular">{impact.documents}</dd>
+              </div>
+              <div>
+                <dt>切块</dt>
+                <dd className="tabular">{impact.chunks}</dd>
+              </div>
+              <div>
+                <dt>占用的空间</dt>
+                <dd className="tabular">{formatBytes(impact.size_bytes)}</dd>
+              </div>
+            </dl>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmDelete()}>删除知识库</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </span>
   )
 }

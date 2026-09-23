@@ -21,16 +21,22 @@ import {
   type DataSource,
   type SourceKind,
 } from '@/api/dataSources'
-import {
-  Button,
-  ConfirmDialog,
-  EmptyState,
-  Input,
-  Select,
-  StatusTag,
-} from '@/features/knowledge/primitives'
+import { EmptyState, StatusTag } from '@/features/knowledge/composites'
 import { messageOf, notify } from '@/features/knowledge/store'
 import { formatRelativeTime } from '@/lib/format'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/ui/alert-dialog'
+import { Button } from '@/ui/button'
+import { Input } from '@/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select'
 
 const KIND_OPTIONS: { value: SourceKind; label: string }[] = [
   { value: 'rss', label: 'RSS / Atom 订阅' },
@@ -138,7 +144,6 @@ export function SourcePanel({ kbId, canWrite, onChanged }: SourcePanelProps) {
   async function confirmRemove(): Promise<void> {
     const source = deleteTarget
     if (!source) return
-    setBusy(`delete:${source.id}`)
     try {
       await deleteDataSource(source.id)
       setDeleteTarget(null)
@@ -146,8 +151,6 @@ export function SourcePanel({ kbId, canWrite, onChanged }: SourcePanelProps) {
       notify.success('数据源已删除，已抓取的文档保留')
     } catch (cause) {
       notify.error(messageOf(cause, '删除失败'))
-    } finally {
-      setBusy('')
     }
   }
 
@@ -155,7 +158,8 @@ export function SourcePanel({ kbId, canWrite, onChanged }: SourcePanelProps) {
     <div>
       <div className="kb-toolbar-actions" style={{ marginBottom: 'var(--space-3)' }}>
         {canWrite ? (
-          <Button icon={Plus} onClick={() => setAdding((value) => !value)}>
+          <Button variant="outline" onClick={() => setAdding((value) => !value)}>
+            <Plus aria-hidden="true" />
             {adding ? '取消' : '添加数据源'}
           </Button>
         ) : null}
@@ -173,10 +177,19 @@ export function SourcePanel({ kbId, canWrite, onChanged }: SourcePanelProps) {
               <span className="field-label">类型</span>
               <Select
                 value={draft.kind}
-                options={KIND_OPTIONS}
-                aria-label="数据源类型"
-                onChange={(value) => setDraft({ ...draft, kind: value as SourceKind })}
-              />
+                onValueChange={(value) => setDraft({ ...draft, kind: value as SourceKind })}
+              >
+                <SelectTrigger aria-label="数据源类型">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {KIND_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </label>
             <label className="field">
               <span className="field-label">名称（可选）</span>
@@ -199,7 +212,7 @@ export function SourcePanel({ kbId, canWrite, onChanged }: SourcePanelProps) {
               onChange={(event) => setDraft({ ...draft, url: event.target.value })}
             />
           </label>
-          <Button variant="primary" disabled={busy === 'create'} onClick={() => void submit()}>
+          <Button variant="default" disabled={busy === 'create'} onClick={() => void submit()}>
             {busy === 'create' ? '登记中…' : '登记'}
           </Button>
         </div>
@@ -230,21 +243,24 @@ export function SourcePanel({ kbId, canWrite, onChanged }: SourcePanelProps) {
                 <span className="kb-source-actions">
                   <Button
                     size="sm"
-                    icon={RefreshCw}
+                    variant="outline"
                     disabled={busy === `sync:${source.id}`}
                     onClick={() => void sync(source)}
                   >
+                    <RefreshCw aria-hidden="true" />
                     {busy === `sync:${source.id}` ? '拉取中…' : '立即拉取'}
                   </Button>
-                  <Button size="sm" onClick={() => void toggle(source)}>
+                  <Button size="sm" variant="outline" onClick={() => void toggle(source)}>
                     {source.enabled ? '停用' : '启用'}
                   </Button>
                   <Button
-                    size="sm"
-                    icon={Trash2}
+                    size="icon-sm"
+                    variant="outline"
                     aria-label={`删除 ${source.name}`}
                     onClick={() => setDeleteTarget(source)}
-                  />
+                  >
+                    <Trash2 aria-hidden="true" />
+                  </Button>
                 </span>
               ) : null}
             </li>
@@ -252,17 +268,32 @@ export function SourcePanel({ kbId, canWrite, onChanged }: SourcePanelProps) {
         </ul>
       ) : null}
 
-      {/* 删除确认：已抓取的文档保留是关键信息，要写在后果里 */}
-      <ConfirmDialog
+      {/*
+        删除确认：`@/ui/alert-dialog`（Radix）。与旧 `ConfirmDialog` 的**两处行为差异**：
+        1. 点「确定」后弹窗立即关闭（旧实现停在忙碌态直到请求回来）——失败仍会弹 toast，
+           所以不会静默失败；
+        2. Esc 与点遮罩不再关闭（AlertDialog 的设计如此：关闭只能走「取消 / 确定」二选一）。
+      */}
+      <AlertDialog
         open={deleteTarget !== null}
-        title="删除数据源"
-        lead={`删除数据源「${deleteTarget?.name ?? ''}」？`}
-        note="已抓进来的文档会保留：停掉订阅不等于撤销已收集的资料。"
-        busy={busy.startsWith('delete:')}
-        busyLabel="删除中…"
-        onConfirm={() => void confirmRemove()}
-        onClose={() => setDeleteTarget(null)}
-      />
+        onOpenChange={(next) => {
+          if (!next) setDeleteTarget(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除数据源</AlertDialogTitle>
+            <AlertDialogDescription>
+              删除数据源「{deleteTarget?.name ?? ''}」？
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <p className="kb-modal-note">已抓进来的文档会保留：停掉订阅不等于撤销已收集的资料。</p>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmRemove()}>确定</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }

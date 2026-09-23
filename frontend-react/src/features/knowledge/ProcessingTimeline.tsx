@@ -17,11 +17,11 @@ import { useCallback, useEffect, useState } from 'react'
 import { getDocumentTimeline, type DocumentTimeline } from '@/api/documents'
 import {
   MeterBar,
-  Skeleton,
+  SkeletonRows,
   StatusTag,
   type MeterTone,
   type StatusTone,
-} from '@/features/knowledge/primitives'
+} from '@/features/knowledge/composites'
 import { messageOf, usePolling } from '@/features/knowledge/store'
 import { formatMillis } from '@/lib/format'
 
@@ -87,7 +87,7 @@ export function ProcessingTimeline({ documentId, active }: ProcessingTimelinePro
   })
 
   if (error) return <p className="kb-error-line">{error}</p>
-  if (loading) return <Skeleton variant="list" rows={4} />
+  if (loading) return <SkeletonRows variant="list" rows={4} />
   if (!timeline) return <p className="kb-timeline-note">这份文档还没有处理记录。</p>
 
   const segments = Array.from({ length: timeline.step_total }, (_, index) => {

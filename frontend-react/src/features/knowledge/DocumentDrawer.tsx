@@ -15,7 +15,7 @@
  * 所以两个下载按钮每次都现取一条新链接。
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ChevronRight, Download, FileText, Pencil, Trash2, X } from 'lucide-react'
+import { ChevronRight, Download, FileText, MoreHorizontal, Pencil, Trash2, X } from 'lucide-react'
 
 import {
   RENDERABLE_KINDS,
@@ -32,19 +32,29 @@ import {
   type DownloadFormat,
 } from '@/api/documents'
 import { FilePreview } from '@/features/preview'
-import {
-  Button,
-  ConfirmDialog,
-  IconButton,
-  MenuItem,
-  RowMenu,
-  Skeleton,
-  StatusTag,
-} from '@/features/knowledge/primitives'
+import { SkeletonRows, StatusTag } from '@/features/knowledge/composites'
 import { ProcessingTimeline } from '@/features/knowledge/ProcessingTimeline'
 import { messageOf, notify } from '@/features/knowledge/store'
 import { documentStageView } from '@/features/knowledge/status'
 import { formatBytes, formatDate } from '@/lib/format'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/ui/alert-dialog'
+import { Button } from '@/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/ui/dropdown-menu'
+import { Textarea } from '@/ui/textarea'
 
 /** 预览最多拉几块：再多就该去库内检索面板，而不是在这一页翻。 */
 const PREVIEW_LIMIT = 5
@@ -309,35 +319,41 @@ export function DocumentDrawer({
             {document ? (
               <Button
                 size="sm"
-                icon={Download}
+                variant="outline"
                 disabled={downloading !== null}
                 onClick={() => void download('original')}
               >
+                <Download aria-hidden="true" />
                 {downloading === 'original' ? '准备中…' : '下载原文'}
               </Button>
             ) : null}
             {document && document.chunk_count > 0 ? (
               <Button
                 size="sm"
-                icon={Download}
+                variant="outline"
                 disabled={downloading !== null}
                 onClick={() => void download('markdown')}
               >
+                <Download aria-hidden="true" />
                 {downloading === 'markdown' ? '准备中…' : '下载 Markdown'}
               </Button>
             ) : null}
-            <IconButton
-              icon={ChevronRight}
-              label="收起"
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="收起"
+              title="收起"
               disabled={closing}
               onClick={requestClose}
-            />
+            >
+              <ChevronRight aria-hidden="true" />
+            </Button>
           </div>
         </header>
 
         <div className="kb-drawer-body">
           {error ? <p className="kb-error-line">{error}</p> : null}
-          {loading ? <Skeleton variant="text" rows={5} /> : null}
+          {loading ? <SkeletonRows variant="text" rows={5} /> : null}
 
           {!loading && document ? (
             <>
@@ -491,49 +507,55 @@ export function DocumentDrawer({
                               ) : null}
                               {chunk.disabled ? <StatusTag tone="warning" label="已禁用" /> : null}
 
-                              {/* 行内操作：解析器一定会出错，所以"用户能自己修"是质量的最后兜底 */}
-                              <RowMenu label="切块操作" className="kb-chunk-menu">
-                                {(close) => (
-                                  <>
-                                    <MenuItem
-                                      icon={Pencil}
-                                      onClick={() => {
-                                        setEditing(chunk.chunk_id)
-                                        setDraft(chunk.text)
-                                        close()
-                                      }}
-                                    >
-                                      编辑正文
-                                    </MenuItem>
-                                    <MenuItem
-                                      icon={X}
-                                      onClick={() => {
-                                        void toggleChunk(chunk)
-                                        close()
-                                      }}
-                                    >
-                                      {chunk.disabled ? '恢复参与检索' : '禁用（不参与检索）'}
-                                    </MenuItem>
-                                    <MenuItem
-                                      icon={Trash2}
-                                      danger
-                                      onClick={() => {
-                                        setChunkDeleteTarget(chunk)
-                                        close()
-                                      }}
-                                    >
-                                      删除
-                                    </MenuItem>
-                                  </>
-                                )}
-                              </RowMenu>
+                              {/*
+                                行内操作：`@/ui/dropdown-menu`（Radix）。与旧 `RowMenu` 的差异：
+                                菜单走 Portal 渲染到 body（不再是行内绝对定位、不再是 `fixed`），
+                                点开时 Radix 会把焦点移进菜单、关掉后还给触发器；菜单项是
+                                `[role=menuitem]` 的 div 而不是 `<button>`，选中后菜单自动关闭
+                                （旧实现的 `close()` 因此消失）。图标尺寸也交给原语的
+                                `[&_svg]:size-4`（16px；旧实现是 14px）。
+                              */}
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="kb-chunk-menu"
+                                    aria-label="切块操作"
+                                    title="切块操作"
+                                  >
+                                    <MoreHorizontal aria-hidden="true" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem
+                                    onSelect={() => {
+                                      setEditing(chunk.chunk_id)
+                                      setDraft(chunk.text)
+                                    }}
+                                  >
+                                    <Pencil aria-hidden="true" />
+                                    编辑正文
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onSelect={() => void toggleChunk(chunk)}>
+                                    <X aria-hidden="true" />
+                                    {chunk.disabled ? '恢复参与检索' : '禁用（不参与检索）'}
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    variant="destructive"
+                                    onSelect={() => setChunkDeleteTarget(chunk)}
+                                  >
+                                    <Trash2 aria-hidden="true" />
+                                    删除
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
                             </div>
 
                             {/* 编辑态：显式保存。改正文要重新向量化，是有代价的操作，不该边打字边存 */}
                             {editing === chunk.chunk_id ? (
                               <div className="kb-chunk-editor">
-                                <textarea
-                                  className="kb-textarea"
+                                <Textarea
                                   rows={6}
                                   aria-label={`第 ${chunk.ordinal + 1} 块正文`}
                                   value={draft}
@@ -544,6 +566,7 @@ export function DocumentDrawer({
                                     保存后会重新向量化这一块，检索随即按新内容生效。
                                   </span>
                                   <Button
+                                    variant="outline"
                                     disabled={savingChunk}
                                     onClick={() => {
                                       setEditing('')
@@ -553,7 +576,7 @@ export function DocumentDrawer({
                                     取消
                                   </Button>
                                   <Button
-                                    variant="primary"
+                                    variant="default"
                                     disabled={savingChunk || !draft.trim()}
                                     onClick={() => void saveChunk(chunk)}
                                   >
@@ -591,17 +614,33 @@ export function DocumentDrawer({
         </div>
       </aside>
 
-      {/* 删除切块：不可恢复，且"其实想禁用"的人不少——后果说明里把替代方案写出来 */}
-      <ConfirmDialog
+      {/*
+        删除切块：不可恢复，且"其实想禁用"的人不少——后果说明里把替代方案写出来。
+        `@/ui/alert-dialog`（Radix）：点「确定」后弹窗立即关闭；Esc 与点遮罩不再关闭
+        （AlertDialog 的设计如此：只能走「取消 / 确定」二选一）。
+      */}
+      <AlertDialog
         open={chunkDeleteTarget !== null}
-        title="删除切块"
-        lead={`确定删除第 ${(chunkDeleteTarget?.ordinal ?? 0) + 1} 块？`}
-        note="会从检索索引与向量库中一并移除，无法恢复。只想让它暂时不出现在检索里，用「禁用」，随时可以恢复。"
-        busy={chunkDeleting}
-        busyLabel="删除中…"
-        onConfirm={() => void confirmRemoveChunk()}
-        onClose={() => setChunkDeleteTarget(null)}
-      />
+        onOpenChange={(next) => {
+          if (!next) setChunkDeleteTarget(null)
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>删除切块</AlertDialogTitle>
+            <AlertDialogDescription>
+              确定删除第 {(chunkDeleteTarget?.ordinal ?? 0) + 1} 块？
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <p className="kb-modal-note">
+            会从检索索引与向量库中一并移除，无法恢复。只想让它暂时不出现在检索里，用「禁用」，随时可以恢复。
+          </p>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmRemoveChunk()}>确定</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   )
 }

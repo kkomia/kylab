@@ -5,7 +5,7 @@
  * 对应旧用例：`frontend/tests/unit/views/KnowledgeBaseView.test.ts`（若有）与
  * `api/documents.test.ts` 里"分页参数下推"、`batchDocuments` 那两条。
  */
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { toast } from 'sonner'
@@ -215,10 +215,26 @@ describe('文档列表', () => {
         predicate((filter ?? {}) as Record<string, unknown>),
       )
 
-    fireEvent.change(screen.getByLabelText('按状态筛选'), { target: { value: 'failed' } })
+    const user = userEvent.setup()
+    // 筛选下拉是 `@/ui/select`（Radix）：先点开触发器，再点选项（不再是原生 select 的 change）
+    await user.click(screen.getByRole('combobox', { name: '按状态筛选' }))
+    await user.click(await screen.findByRole('option', { name: '失败' }))
     await waitFor(() => expect(calledWith((filter) => filter.stage === 'failed')).toBe(true))
 
-    await userEvent.setup().type(screen.getByLabelText('搜索文件名'), '白皮书')
+    // 选回「全部状态」：Radix 的 Item 不收空串值，界面上用的是一个哨兵值，
+    // 换回 `''` 之后筛选条件必须真的从请求里**消失**（而不是发一个空串下去）
+    await user.click(screen.getByRole('combobox', { name: '按状态筛选' }))
+    await user.click(await screen.findByRole('option', { name: '全部状态' }))
+    await waitFor(() => {
+      // 文档清单那一轮（`limit: 20`）里不该再有 stage——另外那一轮是"未归档计数"（`limit: 1`）
+      const listCall = listDocsMock.mock.calls
+        .map(([, filter]) => (filter ?? {}) as Record<string, unknown>)
+        .filter((filter) => filter.limit === 20)
+        .at(-1)
+      expect(listCall).not.toHaveProperty('stage')
+    })
+
+    await user.type(screen.getByLabelText('搜索文件名'), '白皮书')
     // 防抖 300ms 之后才发请求
     await waitFor(() => expect(calledWith((filter) => filter.q === '白皮书')).toBe(true), {
       timeout: 2000,
@@ -283,7 +299,9 @@ describe('多选与批量', () => {
 
     await user.click(screen.getByRole('button', { name: /^删除$/ }))
     expect(await screen.findByText('删除选中的 2 篇文档？')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: '确定' }))
+    // 确认弹窗是 `@/ui/alert-dialog`（Radix）：role 是 alertdialog，不是 dialog
+    const dialog = screen.getByRole('alertdialog', { name: '删除文档' })
+    await user.click(within(dialog).getByRole('button', { name: '确定' }))
 
     await waitFor(() =>
       expect(batchMock).toHaveBeenCalledWith('kb-1', 'delete', ['doc-1', 'doc-2'], null, false),
@@ -384,7 +402,8 @@ describe('单篇动作', () => {
     expect(screen.getByText(/原文进回收站保留 7 天/)).toBeInTheDocument()
     expect(impactMock).toHaveBeenCalledWith('doc-1')
 
-    await user.click(screen.getByRole('button', { name: '确定' }))
+    const dialog = screen.getByRole('alertdialog', { name: '删除文档' })
+    await user.click(within(dialog).getByRole('button', { name: '确定' }))
     await waitFor(() => expect(deleteMock).toHaveBeenCalledWith('doc-1'))
   })
 

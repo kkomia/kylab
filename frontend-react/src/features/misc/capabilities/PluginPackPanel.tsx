@@ -14,7 +14,7 @@
  */
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertCircle, Archive, RefreshCw, Search } from 'lucide-react'
+import { AlertCircle, Archive, EllipsisVertical, RefreshCw, Search } from 'lucide-react'
 
 import {
   disablePlugin,
@@ -26,17 +26,15 @@ import {
 import { useSessionStore } from '@/lib/session'
 
 import { notifyError, notifySuccess } from '../shared/toast'
+import { Badge } from '@/ui/badge'
+import { Button } from '@/ui/button'
 import {
-  Button,
-  Chip,
-  ChipButton,
-  EmptyState,
-  FilterChips,
-  MenuItem,
-  RowMenu,
-  SkeletonBlock,
-  StatusTag,
-} from '../shared/ui'
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/ui/dropdown-menu'
+import { EmptyState, FilterChips, SkeletonBlock, StatusTag } from '../shared/composites'
 
 export const PLUGINS_QUERY_KEY = ['plugins', 'list'] as const
 
@@ -149,19 +147,14 @@ export function PluginPackPanel() {
           >
             {userDir}
           </code>
-          <Button
-            size="sm"
-            disabled={list.isFetching}
-            icon={<RefreshCw size={14} />}
-            onClick={() => void list.refetch()}
-          >
+          <Button size="sm" disabled={list.isFetching} onClick={() => void list.refetch()}>
+            <RefreshCw size={14} />
             重新扫描
           </Button>
         </div>
       </header>
 
       <FilterChips items={filters} value={filter} onChange={setFilter} ariaLabel="插件包筛选" />
-
       {list.isLoading && <SkeletonBlock variant="list" rows={3} />}
 
       {!list.isLoading && visible.length === 0 && (
@@ -186,9 +179,11 @@ export function PluginPackPanel() {
                 <span className="m-card-title">{record.name}</span>
                 <p className="m-card-desc">{record.description || '（没有描述）'}</p>
                 <div className="m-card-meta">
-                  <Chip>{sourceLabel(record)}</Chip>
-                  <Chip>{record.version}</Chip>
-                  {record.kinds.length > 0 && <Chip>{kindsLabel(record)}</Chip>}
+                  <Badge variant="secondary">{sourceLabel(record)}</Badge>
+                  <Badge variant="secondary">{record.version}</Badge>
+                  {record.kinds.length > 0 && (
+                    <Badge variant="secondary">{kindsLabel(record)}</Badge>
+                  )}
                   {!record.loaded ? (
                     <StatusTag label="加载失败" tone="danger" />
                   ) : (
@@ -200,14 +195,21 @@ export function PluginPackPanel() {
                     </>
                   )}
                   {record.user_config.length > 0 && (
-                    <Chip title="manifest 里声明的配置项">配置项 {record.user_config.length}</Chip>
+                    <Badge variant="secondary" title="manifest 里声明的配置项">
+                      配置项 {record.user_config.length}
+                    </Badge>
                   )}
                   {record.components.length > 0 && (
-                    <ChipButton
-                      onClick={() => setExpanded(expanded === record.name ? '' : record.name)}
-                    >
-                      {expanded === record.name ? '收起' : `提供了 ${record.components.length} 项`}
-                    </ChipButton>
+                    <Badge asChild variant="secondary">
+                      <button
+                        type="button"
+                        onClick={() => setExpanded(expanded === record.name ? '' : record.name)}
+                      >
+                        {expanded === record.name
+                          ? '收起'
+                          : `提供了 ${record.components.length} 项`}
+                      </button>
+                    </Badge>
                   )}
                 </div>
 
@@ -226,7 +228,7 @@ export function PluginPackPanel() {
                   <ul className="m-pack-parts">
                     {record.components.map((part) => (
                       <li key={`${part.kind}-${part.name}`}>
-                        <Chip>{KIND_LABELS[part.kind] ?? part.kind}</Chip>
+                        <Badge variant="secondary">{KIND_LABELS[part.kind] ?? part.kind}</Badge>
                         <code>{part.name}</code>
                         {part.path && <span className="m-part-path">{part.path}</span>}
                         <span className="m-part-status">{part.status}</span>
@@ -238,14 +240,26 @@ export function PluginPackPanel() {
 
               {isAdmin && (
                 <div className="m-card-actions">
-                  <RowMenu label={`${record.name} 的操作`} align="right">
-                    <MenuItem
-                      disabled={busy === record.name}
-                      onSelect={() => toggle.mutate(record)}
-                    >
-                      {record.enabled ? '停用' : '启用'}
-                    </MenuItem>
-                  </RowMenu>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`${record.name} 的操作`}
+                        title={`${record.name} 的操作`}
+                      >
+                        <EllipsisVertical />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start">
+                      <DropdownMenuItem
+                        disabled={busy === record.name}
+                        onSelect={() => toggle.mutate(record)}
+                      >
+                        {record.enabled ? '停用' : '启用'}
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               )}
             </li>

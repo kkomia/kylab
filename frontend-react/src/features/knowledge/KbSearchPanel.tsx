@@ -13,17 +13,16 @@ import { useEffect, useState } from 'react'
 import { Search } from 'lucide-react'
 
 import { search, type SearchResponse } from '@/api/search'
-import {
-  Button,
-  EmptyState,
-  Input,
-  Modal,
-  Select,
-  Skeleton,
-  Textarea,
-} from '@/features/knowledge/primitives'
+import { EmptyState, SkeletonRows } from '@/features/knowledge/composites'
 import { messageOf, notify } from '@/features/knowledge/store'
 import { formatAge, formatScore } from '@/lib/format'
+import { Button } from '@/ui/button'
+import { Checkbox } from '@/ui/checkbox'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/ui/dialog'
+import { Input } from '@/ui/input'
+import { Label } from '@/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select'
+import { Textarea } from '@/ui/textarea'
 
 const MODE_OPTIONS = [
   { value: 'hybrid', label: '混合（向量 + BM25）' },
@@ -116,219 +115,233 @@ export function KbSearchPanel({ open, kbId, kbName, onClose, onOpenDocument }: K
   }
 
   return (
-    <Modal open={open} size="wide" title={`在「${kbName}」中检索`} onClose={onClose}>
-      <div className="kb-search-panel">
-        <div className="kb-search-side">
-          <label className="field">
-            <span className="field-label">检索内容</span>
-            <Textarea
-              id="kb-search-input"
-              rows={3}
-              value={query}
-              placeholder="输入问题或关键词，回车检索"
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault()
-                  void runSearch()
-                }
-              }}
-            />
-          </label>
-
-          <div className="kb-search-row" style={{ marginBottom: 'var(--space-4)' }}>
-            <label className="field" style={{ flex: 1 }}>
-              <span className="field-label">模式</span>
-              <Select
-                value={mode}
-                options={MODE_OPTIONS}
-                aria-label="检索模式"
-                onChange={(value) => setMode(value as typeof mode)}
-              />
-            </label>
-            <label className="field kb-narrow">
-              <span className="field-label">返回条数</span>
-              <Input
-                type="number"
-                value={topK}
-                aria-label="返回条数"
-                onChange={(event) => setTopK(event.target.value)}
-              />
-            </label>
-          </div>
-
-          <details className="kb-advanced">
-            <summary>高级选项</summary>
-            <div className="kb-search-row">
-              <label className="field kb-narrow">
-                <span className="field-label">候选池</span>
-                <Input
-                  type="number"
-                  value={candidateK}
-                  aria-label="候选池"
-                  onChange={(event) => setCandidateK(event.target.value)}
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) onClose()
+      }}
+    >
+      {/* 宽档：`sm:max-w-[980px]`（旧 `Modal size="wide"` 的 980px） */}
+      <DialogContent className="flex max-h-[min(88vh,900px)] flex-col gap-0 p-0 sm:max-w-[980px]">
+        <DialogHeader className="border-b border-[var(--border-hairline)] px-4 py-3 pr-10">
+          <DialogTitle>在「{kbName}」中检索</DialogTitle>
+        </DialogHeader>
+        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+          <div className="kb-search-panel">
+            <div className="kb-search-side">
+              <label className="field">
+                <span className="field-label">检索内容</span>
+                <Textarea
+                  id="kb-search-input"
+                  rows={3}
+                  value={query}
+                  placeholder="输入问题或关键词，回车检索"
+                  onChange={(event) => setQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && !event.shiftKey) {
+                      event.preventDefault()
+                      void runSearch()
+                    }
+                  }}
                 />
               </label>
-              <label className="kb-switch">
-                <input
-                  className="kb-checkbox"
-                  type="checkbox"
-                  checked={rerank}
-                  onChange={(event) => setRerank(event.target.checked)}
-                />
-                <span>启用 rerank（失败自动退回 RRF 顺序）</span>
-              </label>
-            </div>
-          </details>
 
-          <Button
-            variant="primary"
-            icon={Search}
-            disabled={searching}
-            onClick={() => void runSearch()}
-          >
-            {searching ? '检索中…' : '检索'}
-          </Button>
-
-          {turns.length > 0 ? (
-            <div>
-              <p className="kb-history">本次会话</p>
-              <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
-                {turns.map((turn, index) => (
-                  <li key={index}>
-                    <button
-                      type="button"
-                      className={[
-                        'kb-history-item',
-                        index === activeTurn ? 'kb-history-item-on' : '',
-                      ]
-                        .filter(Boolean)
-                        .join(' ')}
-                      onClick={() => setActiveTurn(index)}
-                    >
-                      <span className="kb-history-query">{turn.query}</span>
-                      <span className="text-micro tabular">
-                        {turn.response ? `${turn.response.hits.length} 条` : '—'}
-                      </span>
-                      <span className="text-micro tabular">{formatAge(turn.at, now)}</span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="kb-search-hits">
-          {searching ? <Skeleton variant="text" rows={6} /> : null}
-
-          {!searching && !latest ? (
-            <EmptyState
-              title="还没有检索记录"
-              hint="左侧输入内容；结果会显示每条命中来自哪条通道、各自排名多少。"
-            />
-          ) : null}
-
-          {!searching && latest?.error ? <p className="kb-error-line">{latest.error}</p> : null}
-
-          {!searching && latest?.response ? (
-            <>
-              <div className="kb-hit-summary">
-                <span style={{ color: 'var(--text-primary)' }}>
-                  {latest.response.hits.length} 条命中<span className="sep">·</span>
-                  {modeLabel(latest.response.mode)}
-                </span>
-                {latest.response.reranked ? <span>已 rerank</span> : null}
-                {latest.response.filtered_out > 0 ? (
-                  <span>元数据过滤掉 {latest.response.filtered_out} 条</span>
-                ) : null}
+              <div className="kb-search-row" style={{ marginBottom: 'var(--space-4)' }}>
+                <label className="field" style={{ flex: 1 }}>
+                  <span className="field-label">模式</span>
+                  <Select value={mode} onValueChange={(value) => setMode(value as typeof mode)}>
+                    <SelectTrigger aria-label="检索模式">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {MODE_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value}>
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </label>
+                <label className="field kb-narrow">
+                  <span className="field-label">返回条数</span>
+                  <Input
+                    type="number"
+                    value={topK}
+                    aria-label="返回条数"
+                    onChange={(event) => setTopK(event.target.value)}
+                  />
+                </label>
               </div>
 
-              {embeddingMissing ? (
-                <p className="kb-dev-warning">
-                  <strong>本次只做了关键词检索：</strong>
-                  服务端未选定嵌入模型，向量通道已跳过。请到「设置 →
-                  向量化」选定默认嵌入模型后重试。
-                </p>
-              ) : null}
-              {!embeddingMissing && embeddingIsDevelopment ? (
-                <p className="kb-dev-warning">
-                  <strong>向量召回不代表真实效果：</strong>
-                  当前用的是开发用确定性哈希（只反映词面重叠，没有语义）。BM25 的结果是可信的，
-                  向量分数仅供链路自测。
-                </p>
-              ) : null}
+              <details className="kb-advanced">
+                <summary>高级选项</summary>
+                <div className="kb-search-row">
+                  <label className="field kb-narrow">
+                    <span className="field-label">候选池</span>
+                    <Input
+                      type="number"
+                      value={candidateK}
+                      aria-label="候选池"
+                      onChange={(event) => setCandidateK(event.target.value)}
+                    />
+                  </label>
+                  <Label className="kb-switch">
+                    <Checkbox
+                      checked={rerank}
+                      aria-label="启用 rerank（失败自动退回 RRF 顺序）"
+                      onCheckedChange={(checked) => setRerank(checked === true)}
+                    />
+                    <span>启用 rerank（失败自动退回 RRF 顺序）</span>
+                  </Label>
+                </div>
+              </details>
 
-              {latest.response.stats.length > 0 ? (
-                <ul className="kb-hit-channels">
-                  {latest.response.stats.map((stat) => (
-                    <li key={stat.channel}>
-                      {channelLabel(stat.channel)} · 候选 {stat.count} ·{' '}
-                      {stat.elapsed_ms.toFixed(1)} ms
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
+              <Button variant="default" disabled={searching} onClick={() => void runSearch()}>
+                <Search aria-hidden="true" />
+                {searching ? '检索中…' : '检索'}
+              </Button>
 
-              {latest.response.hits.length === 0 ? (
-                <EmptyState
-                  title="没有命中"
-                  hint="换关键词、放宽模式到混合检索，或确认文档已经处理到「已索引」。"
-                />
-              ) : (
-                <ol className="kb-hit-list">
-                  {latest.response.hits.map((hit) => (
-                    <li key={hit.chunk_id} className="kb-hit">
-                      <div className="kb-hit-summary" style={{ marginBottom: 0 }}>
+              {turns.length > 0 ? (
+                <div>
+                  <p className="kb-history">本次会话</p>
+                  <ul style={{ margin: 0, padding: 0, listStyle: 'none' }}>
+                    {turns.map((turn, index) => (
+                      <li key={index}>
                         <button
                           type="button"
-                          className="kb-hit-title"
-                          onClick={() => onOpenDocument?.(hit.document_id)}
+                          className={[
+                            'kb-history-item',
+                            index === activeTurn ? 'kb-history-item-on' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ')}
+                          onClick={() => setActiveTurn(index)}
                         >
-                          {hit.document_name ?? hit.document_id}
+                          <span className="kb-history-query">{turn.query}</span>
+                          <span className="text-micro tabular">
+                            {turn.response ? `${turn.response.hits.length} 条` : '—'}
+                          </span>
+                          <span className="text-micro tabular">{formatAge(turn.at, now)}</span>
                         </button>
-                        {hit.heading_path ? (
-                          <span className="kb-hit-meta">{hit.heading_path}</span>
-                        ) : null}
-                        {hit.page !== null ? (
-                          <span className="kb-hit-meta">第 {hit.page} 页</span>
-                        ) : null}
-                        <span className="kb-hit-score" style={{ marginLeft: 'auto' }}>
-                          {formatScore(hit.score)}
-                        </span>
-                      </div>
-                      <p
-                        className="kb-hit-text"
-                        style={
-                          showFullText
-                            ? undefined
-                            : {
-                                display: '-webkit-box',
-                                WebkitLineClamp: 3,
-                                WebkitBoxOrient: 'vertical',
-                                overflow: 'hidden',
-                              }
-                        }
-                      >
-                        {hit.text}
-                      </p>
-                      <ul className="kb-hit-channels">
-                        {hit.channels.map((channel) => (
-                          <li key={channel}>
-                            {channelLabel(channel)} · 第 {hit.ranks[channel] ?? '—'} 位 ·{' '}
-                            {formatScore(hit.raw_scores[channel])}
-                          </li>
-                        ))}
-                        {hit.image_ids.length > 0 ? <li>{hit.image_ids.length} 张图</li> : null}
-                      </ul>
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </>
-          ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="kb-search-hits">
+              {searching ? <SkeletonRows variant="text" rows={6} /> : null}
+
+              {!searching && !latest ? (
+                <EmptyState
+                  title="还没有检索记录"
+                  hint="左侧输入内容；结果会显示每条命中来自哪条通道、各自排名多少。"
+                />
+              ) : null}
+
+              {!searching && latest?.error ? <p className="kb-error-line">{latest.error}</p> : null}
+
+              {!searching && latest?.response ? (
+                <>
+                  <div className="kb-hit-summary">
+                    <span style={{ color: 'var(--text-primary)' }}>
+                      {latest.response.hits.length} 条命中<span className="sep">·</span>
+                      {modeLabel(latest.response.mode)}
+                    </span>
+                    {latest.response.reranked ? <span>已 rerank</span> : null}
+                    {latest.response.filtered_out > 0 ? (
+                      <span>元数据过滤掉 {latest.response.filtered_out} 条</span>
+                    ) : null}
+                  </div>
+
+                  {embeddingMissing ? (
+                    <p className="kb-dev-warning">
+                      <strong>本次只做了关键词检索：</strong>
+                      服务端未选定嵌入模型，向量通道已跳过。请到「设置 →
+                      向量化」选定默认嵌入模型后重试。
+                    </p>
+                  ) : null}
+                  {!embeddingMissing && embeddingIsDevelopment ? (
+                    <p className="kb-dev-warning">
+                      <strong>向量召回不代表真实效果：</strong>
+                      当前用的是开发用确定性哈希（只反映词面重叠，没有语义）。BM25 的结果是可信的，
+                      向量分数仅供链路自测。
+                    </p>
+                  ) : null}
+
+                  {latest.response.stats.length > 0 ? (
+                    <ul className="kb-hit-channels">
+                      {latest.response.stats.map((stat) => (
+                        <li key={stat.channel}>
+                          {channelLabel(stat.channel)} · 候选 {stat.count} ·{' '}
+                          {stat.elapsed_ms.toFixed(1)} ms
+                        </li>
+                      ))}
+                    </ul>
+                  ) : null}
+
+                  {latest.response.hits.length === 0 ? (
+                    <EmptyState
+                      title="没有命中"
+                      hint="换关键词、放宽模式到混合检索，或确认文档已经处理到「已索引」。"
+                    />
+                  ) : (
+                    <ol className="kb-hit-list">
+                      {latest.response.hits.map((hit) => (
+                        <li key={hit.chunk_id} className="kb-hit">
+                          <div className="kb-hit-summary" style={{ marginBottom: 0 }}>
+                            <button
+                              type="button"
+                              className="kb-hit-title"
+                              onClick={() => onOpenDocument?.(hit.document_id)}
+                            >
+                              {hit.document_name ?? hit.document_id}
+                            </button>
+                            {hit.heading_path ? (
+                              <span className="kb-hit-meta">{hit.heading_path}</span>
+                            ) : null}
+                            {hit.page !== null ? (
+                              <span className="kb-hit-meta">第 {hit.page} 页</span>
+                            ) : null}
+                            <span className="kb-hit-score" style={{ marginLeft: 'auto' }}>
+                              {formatScore(hit.score)}
+                            </span>
+                          </div>
+                          <p
+                            className="kb-hit-text"
+                            style={
+                              showFullText
+                                ? undefined
+                                : {
+                                    display: '-webkit-box',
+                                    WebkitLineClamp: 3,
+                                    WebkitBoxOrient: 'vertical',
+                                    overflow: 'hidden',
+                                  }
+                            }
+                          >
+                            {hit.text}
+                          </p>
+                          <ul className="kb-hit-channels">
+                            {hit.channels.map((channel) => (
+                              <li key={channel}>
+                                {channelLabel(channel)} · 第 {hit.ranks[channel] ?? '—'} 位 ·{' '}
+                                {formatScore(hit.raw_scores[channel])}
+                              </li>
+                            ))}
+                            {hit.image_ids.length > 0 ? <li>{hit.image_ids.length} 张图</li> : null}
+                          </ul>
+                        </li>
+                      ))}
+                    </ol>
+                  )}
+                </>
+              ) : null}
+            </div>
+          </div>
         </div>
-      </div>
-    </Modal>
+      </DialogContent>
+    </Dialog>
   )
 }

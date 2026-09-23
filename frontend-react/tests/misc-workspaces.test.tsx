@@ -107,6 +107,8 @@ describe('工作区页', () => {
     createConversationMock.mockResolvedValue({ id: 'conv-9' } as never)
 
     const dialog = await screen.findByRole('dialog')
+    // 弹窗已经是 @/ui/dialog 的组合壳（标题栏 / 内容区 / 底部三段式都来自它）
+    expect(dialog).toHaveAttribute('data-slot', 'dialog-content')
     await userEvent.type(within(dialog).getByLabelText('名字'), '新项目')
     await userEvent.type(within(dialog).getByLabelText('根目录'), '/srv/new')
     await userEvent.click(within(dialog).getByRole('button', { name: '创建工作区' }))
@@ -123,7 +125,9 @@ describe('工作区页', () => {
     renderMisc(<WorkspacesPage />, { route: '/workspaces?focus=ws-1' })
     await userEvent.click(await screen.findByRole('button', { name: /删除工作区/ }))
 
-    const dialog = await screen.findByRole('dialog')
+    const dialog = await screen.findByRole('alertdialog')
+    // @/ui/alert-dialog 的实际结构：确认框是 alertdialog（不吃 Esc、点遮罩也不关）
+    expect(dialog).toHaveAttribute('data-slot', 'alert-dialog-content')
     expect(within(dialog).getByText(/里面的会话\*\*不会被删除\*\*/)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('button', { name: '删除工作区' }))
 

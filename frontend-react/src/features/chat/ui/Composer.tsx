@@ -19,13 +19,14 @@ import { ArrowUp, ChevronDown, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { FILE_DRAG_TYPE } from '../runtime/prefs'
+import { matchChatShortcut } from '../runtime/shortcutPrefs'
 import { useChat, type MentionItem } from '../runtime/ChatProvider'
 import { ApprovalBar } from './ApprovalBar'
 import { ContextGauge, KnowledgeBaseControl, ModelPicker, PlusMenu } from './ComposerControls'
-import { FilesDialog } from './Dialogs'
 import { ExecPolicyControl } from './ExecPolicyControl'
 import { MentionMenu, SlashMenu, type MenuHandle } from './Menus'
 import { ModePicker } from './ModePicker'
+import { FilesSheet } from './Sheets'
 
 /** 输入框里现在是不是在打一条命令：`/` 开头**且还没打空格**（打了空格就是在写参数了）。 */
 function slashFilterOf(text: string): string | null {
@@ -88,10 +89,15 @@ export function Composer() {
 
   /**
    * 输入框上的键盘：菜单开着时先归菜单（↑↓ 选择、回车选中、Esc 关掉），
-   * 其余情况才是"回车发送、Shift + 回车换行"。
+   * 其余情况交给**快捷键注册表**那套绑定（`chat.send` / `chat.newline`）。
    *
    * **`@` 菜单排在 `/` 之前**：同一个 token 里不可能同时在打命令，两个菜单也不会同时开着
    * （判据互斥），而先问引用那个更贴用户当下的动作。
+   *
+   * 改之前最后那一段是写死的 `Enter && !shiftKey`。现在"哪组键发送、哪组键换行"由用户在
+   * 设置里定（默认仍是回车发送、Shift+回车换行）。**没匹配上的键一律不动**：
+   * 交给浏览器，也就是输入框原生的输入与换行——这正是"把发送键改成 Ctrl+回车"之后，
+   * 单独按回车仍然能换行的原因。
    */
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
     if (mentionVisible) {
@@ -135,10 +141,35 @@ export function Composer() {
         return
       }
     }
-    if (event.key === 'Enter' && !event.shiftKey) {
+    // 菜单都关着的时候：交给**快捷键注册表**那套绑定（`runtime/shortcutPrefs`，
+    // 存储与 misc 域的注册表共用 `kylab-shortcuts`——见那里的模块头）
+    const action = matchChatShortcut(event.nativeEvent, 'composer')
+    if (action === 'chat.send') {
       event.preventDefault()
       chat.send()
+      return
     }
+    if (action === 'chat.newline') {
+      event.preventDefault()
+      insertLineBreak(event.currentTarget)
+    }
+  }
+
+  /**
+   * 在光标处插一个换行（`chat.newline` 那一条）。
+   *
+   * 为什么不"不拦着让浏览器自己插"：默认绑定（Shift+回车）确实原生就能换行，
+   * 但用户完全可能把它改成别的（Ctrl+J 之类）——那时不拦着就等于"改了不生效"，
+   * 而设置页上的提示会说能用。输入框是**受控**的，所以插完要把结果交回
+   * `chat.setQuery`（旧 Vue 那边是靠派发 `input` 事件让 v-model 认的，
+   * React 这里直接落 state，少一层 DOM 事件绕法）。
+   */
+  function insertLineBreak(field: HTMLTextAreaElement | null): void {
+    if (!field || typeof field.setRangeText !== 'function') return
+    const start = field.selectionStart ?? field.value.length
+    const end = field.selectionEnd ?? start
+    field.setRangeText('\n', start, end, 'end')
+    chat.setQuery(field.value)
   }
 
   /** 插完引用把焦点与光标交回输入框末尾（用户接着就能往下打）。 */
@@ -383,7 +414,14 @@ export function Composer() {
         }}
       />
 
-      {filesOpen ? <FilesDialog onClose={() => setFilesOpen(false)} /> : null}
+      {/*
+        「浏览文件」打开的是**抽屉**（产物与上传的文件都落在文件区里）。
+        `key` 绑会话 id：换一条会话就整个重来——文件区是按会话划的，
+        旧 `FileDrawer` 也是这么绑的（`:key="conversationId"`）
+      */}
+      {filesOpen ? (
+        <FilesSheet key={chat.conversationId} onClose={() => setFilesOpen(false)} />
+      ) : null}
     </div>
   )
 }

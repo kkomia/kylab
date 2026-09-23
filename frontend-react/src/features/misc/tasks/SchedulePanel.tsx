@@ -23,16 +23,15 @@ import {
 import { formatDate } from '@/lib/format'
 
 import { notifyError, notifySuccess } from '../shared/toast'
+import { Button } from '@/ui/button'
 import {
-  Button,
   ConfirmDialog,
   EmptyState,
   ErrorLine,
-  IconButton,
   SkeletonBlock,
   StatusTag,
   type TagTone,
-} from '../shared/ui'
+} from '../shared/composites'
 import { ScheduleDialog } from './ScheduleDialog'
 
 const SCHEDULES_QUERY_KEY = ['scheduled-tasks'] as const
@@ -119,18 +118,18 @@ export function SchedulePanel() {
           {timezone && <span className="text-micro"> 时间按服务器时区（{timezone}）计算</span>}
         </p>
         <div className="m-page-actions">
-          <Button size="sm" icon={<RefreshCw size={14} />} onClick={() => void list.refetch()}>
+          <Button size="sm" onClick={() => void list.refetch()}>
+            <RefreshCw size={14} />
             刷新
           </Button>
           <Button
             size="sm"
-            variant="primary"
-            icon={<Plus size={14} />}
             onClick={() => {
               setEditing(null)
               setDialogOpen(true)
             }}
           >
+            <Plus size={14} />
             新建
           </Button>
         </div>
@@ -179,8 +178,8 @@ export function SchedulePanel() {
               </div>
               <div className="m-schedule-actions">
                 <Button
-                  size="sm"
                   variant="ghost"
+                  size="sm"
                   disabled={busyId === item.id || runNow.isPending}
                   onClick={() => runNow.mutate(item)}
                 >
@@ -188,34 +187,42 @@ export function SchedulePanel() {
                 </Button>
                 {item.conversation_id && (
                   <Button
-                    size="sm"
                     variant="ghost"
+                    size="sm"
                     onClick={() => void navigate(`/chat/${item.conversation_id}`)}
                   >
                     看结果
                   </Button>
                 )}
                 <Button
-                  size="sm"
                   variant="ghost"
+                  size="sm"
                   disabled={busyId === item.id}
                   onClick={() => toggle.mutate(item)}
                 >
                   {item.enabled ? '停用' : '启用'}
                 </Button>
-                <IconButton
-                  label={`改动「${item.name}」`}
-                  icon={<Pencil size={14} />}
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`改动「${item.name}」`}
+                  title={`改动「${item.name}」`}
                   onClick={() => {
                     setEditing(item)
                     setDialogOpen(true)
                   }}
-                />
-                <IconButton
-                  label={`删除「${item.name}」`}
-                  icon={<Trash2 size={14} />}
+                >
+                  <Pencil size={14} />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`删除「${item.name}」`}
+                  title={`删除「${item.name}」`}
                   onClick={() => setRemoving(item)}
-                />
+                >
+                  <Trash2 size={14} />
+                </Button>
               </div>
             </li>
           ))}

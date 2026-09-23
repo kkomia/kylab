@@ -254,7 +254,8 @@ describe('Wiki 页', () => {
     expect(generateMock).not.toHaveBeenCalled()
 
     // 确认弹窗里的那一颗（页头上那颗同名按钮还在）
-    const dialog = screen.getByRole('dialog', { name: '重新生成 Wiki' })
+    // 确认弹窗是 `@/ui/alert-dialog`（Radix）：role 是 alertdialog，不是 dialog
+    const dialog = screen.getByRole('alertdialog', { name: '重新生成 Wiki' })
     await user.click(within(dialog).getByRole('button', { name: '重新生成' }))
     await waitFor(() => expect(generateMock).toHaveBeenCalledWith('kb-1'))
     expect(successToast).toHaveBeenCalledWith('已开始生成 Wiki，页面会陆续出现')
@@ -293,7 +294,7 @@ describe('Wiki 页', () => {
     await user.click(screen.getByRole('button', { name: '清除' }))
     expect(await screen.findByText('确定清除这个知识库已生成的 Wiki 页面？')).toBeInTheDocument()
 
-    const dialog = screen.getByRole('dialog', { name: '清除 Wiki 页面' })
+    const dialog = screen.getByRole('alertdialog', { name: '清除 Wiki 页面' })
     await user.click(within(dialog).getByRole('button', { name: '清除' }))
 
     await waitFor(() => expect(clearMock).toHaveBeenCalledWith('kb-1'))

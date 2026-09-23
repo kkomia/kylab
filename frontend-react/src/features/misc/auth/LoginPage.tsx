@@ -23,7 +23,9 @@ import { useNavigate, useSearchParams } from 'react-router'
 import { getAuthBootstrapStatus, login, me, setup, MIN_PASSWORD_CHARS } from '@/api/auth'
 import { clearSessionToken, setSessionToken, useSessionStore } from '@/lib/session'
 
-import { Button, Field, TextInput } from '../shared/ui'
+import { Button } from '@/ui/button'
+import { Input } from '@/ui/input'
+import { Field } from '../shared/composites'
 
 /** 登录后回到用户原本想去的页面（守卫在 query 里带了 redirect）。 */
 function redirectTarget(raw: string | null): string {
@@ -130,10 +132,10 @@ export function LoginPage() {
           }}
         >
           <Field label="用户名" htmlFor="login-username">
-            <TextInput
+            <Input
               id="login-username"
               value={username}
-              onValueChange={setUsername}
+              onChange={(event) => setUsername(event.target.value)}
               placeholder={isSetup ? '由你决定，例如 admin' : ''}
               autoComplete="username"
               disabled={submit.isPending}
@@ -142,10 +144,10 @@ export function LoginPage() {
 
           {isSetup && (
             <Field label="显示名" optional htmlFor="login-name">
-              <TextInput
+              <Input
                 id="login-name"
                 value={displayName}
-                onValueChange={setDisplayName}
+                onChange={(event) => setDisplayName(event.target.value)}
                 placeholder="界面上显示的名字，留空则用用户名"
                 disabled={submit.isPending}
               />
@@ -153,11 +155,11 @@ export function LoginPage() {
           )}
 
           <Field label="密码" htmlFor="login-password">
-            <TextInput
+            <Input
               id="login-password"
               type="password"
               value={password}
-              onValueChange={setPassword}
+              onChange={(event) => setPassword(event.target.value)}
               placeholder={isSetup ? `至少 ${MIN_PASSWORD_CHARS} 个字符` : ''}
               autoComplete="current-password"
               disabled={submit.isPending}
@@ -166,11 +168,11 @@ export function LoginPage() {
 
           {isSetup && (
             <Field label="确认密码" htmlFor="login-confirm">
-              <TextInput
+              <Input
                 id="login-confirm"
                 type="password"
                 value={confirmPassword}
-                onValueChange={setConfirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
                 autoComplete="new-password"
                 disabled={submit.isPending}
               />
@@ -183,7 +185,7 @@ export function LoginPage() {
             </p>
           )}
 
-          <Button variant="primary" type="submit" block disabled={submit.isPending}>
+          <Button className="w-full" type="submit" disabled={submit.isPending}>
             {submit.isPending ? '请稍候…' : isSetup ? '创建并进入' : '登录'}
           </Button>
         </form>
