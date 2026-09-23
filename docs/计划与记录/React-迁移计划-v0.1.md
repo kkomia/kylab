@@ -258,6 +258,17 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
   而且其中"切换主题要重画"这一条已经在 React 版里被用例钉住了
   （`frontend/tests/misc-echart.test.tsx`）；`调研/` 与 `计划与记录/` 里的 Vue 提法
   是历史快照与新旧对照，本来就不该改。
+- **两处机械对照**（本轮新做，不靠审计文档的转述）：
+  ① **路由**：拿 `agent` 分支上旧 Vue 的 `src/router/index.ts` 与 `frontend/src/app/App.tsx`
+  逐条对——**15/15 全中**（含 `/search`、`/settings` 两条重定向与 `:pathMatch(.*)*` 的 404），
+  只多一条**有意**加的 `/dashboard → /`；侧栏 `NAV_ITEMS` + `KNOWLEDGE_GROUP` 那六项与旧
+  `SideNav.vue` 逐项一致（连"能力不能用齿轮"那条教训也照抄过来）。
+  ② **API 层**：`git diff agent:frontend/src/api HEAD:frontend/src/api` 只有 **8 行**差异——
+  `client.ts` 两处 import 从 Vue composables 换成 `lib/`（`operator` / `session`）、
+  `chat.ts` 一处同样的 import，外加**迁移中顺手修掉的一个真 bug**：直播里的工具步骤漏转发
+  `kind`（界面只能按工具名兜底，新加的工具在"正在跑的那一轮"里画中性图标、刷新后才对），
+  按后端真实事件补齐。**其余上百个接口调用一字未改**——"直接抄、不重复造轮子"这条，
+  在最大的一块（4,015 行）上是有账可查的。
 
 ### 10.2 NAS 产物的本机预检（都做了）
 
