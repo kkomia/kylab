@@ -206,9 +206,16 @@ function ConversationRow({
         to={`/chat/${item.id}`}
         className={sub ? `${SIDE_ROW} pl-6 text-text-secondary` : SIDE_ROW}
         title={title}
-        /* 划过就预取正文（旧 `SideNav.vue` 的悬停预取口径）：点进去不必等一次往返 */
-        onMouseEnter={() => prefetchConversationDetail(queryClient, item.id)}
-        onFocus={() => prefetchConversationDetail(queryClient, item.id)}
+        /* 划过就预取正文（旧 `SideNav.vue` 的悬停预取口径）**并把对话页的代码拉下来**：
+           点进去既不必等往返、也不必等 chunk */
+        onMouseEnter={() => {
+          preloadPage('chat')
+          prefetchConversationDetail(queryClient, item.id)
+        }}
+        onFocus={() => {
+          preloadPage('chat')
+          prefetchConversationDetail(queryClient, item.id)
+        }}
       >
         <span className="min-w-0 flex-1 truncate">{title}</span>
       </Link>
@@ -358,6 +365,9 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
       {!collapsed && (
         <Link
           to="/chat?new=1"
+          /* 划过就先把对话页的代码拉下来（它是最可能去的地方），点进去不必等 */
+          onMouseEnter={() => preloadPage('chat')}
+          onFocus={() => preloadPage('chat')}
           className="ly-nav-item mx-2 mb-2 flex min-h-11 items-center gap-1.5 overflow-hidden rounded-[var(--radius-nav)] border border-[var(--border-hairline)] bg-[var(--bg-group)] px-2 text-[length:var(--text-meta-size)] leading-5 font-medium text-text-primary no-underline transition-colors hover:border-[var(--border-strong)]"
           title={`新建会话（${newChatKeys.join(' + ')}）`}
         >

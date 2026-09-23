@@ -20,12 +20,12 @@ import { Toaster } from '@/ui/sonner'
 import { ensureAuthStatus, restoreSession } from '@/lib/sessionActions'
 import { hasCredential, sessionToken, useSessionStore } from '@/lib/session'
 import { loadRoster } from '@/lib/operator'
-import { ChatPage } from '@/features/chat/ChatPage'
 import { PAGES } from '@/app/routes'
 import { AppShell } from '@/features/layout'
 
 // 懒加载的**入口函数**都在 `app/routes.ts` 里（侧栏的 hover 预热要用同一批函数，
 // 同一个函数引用 React 才会复用同一个 chunk）。
+const ChatPage = lazy(PAGES.chat)
 const KnowledgeBasesView = lazy(PAGES.knowledgeBases)
 const KnowledgeBaseView = lazy(PAGES.knowledgeBase)
 const WikiView = lazy(PAGES.wiki)

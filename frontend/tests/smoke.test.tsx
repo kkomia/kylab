@@ -121,9 +121,14 @@ describe('应用壳', () => {
     window.history.pushState({}, '', '/chat')
     render(<App />)
 
-    await waitFor(() => {
-      expect(screen.getByLabelText('对话内容')).toBeInTheDocument()
-    })
+    // 对话页是**懒加载**的（chunk 里有 assistant-ui + katex + highlight，静态 import 会把
+    // 主 chunk 顶到 1.4 MB）：这里要等一次动态 import，给足超时，别用默认的 1 秒
+    await waitFor(
+      () => {
+        expect(screen.getByLabelText('对话内容')).toBeInTheDocument()
+      },
+      { timeout: 5000 },
+    )
   })
 
   it('没有凭据时把人送到登录页，并带上 redirect', async () => {

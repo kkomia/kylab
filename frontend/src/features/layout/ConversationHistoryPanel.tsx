@@ -41,6 +41,7 @@ import type { ConversationSummary } from '@/api/conversations'
 import { Input } from '@/ui/input'
 import { Skeleton } from '@/ui/skeleton'
 
+import { preloadPage } from '@/app/routes'
 import { prefetchConversationDetail } from '@/features/chat/runtime/useChatData'
 import { ConversationRowMenu } from './ConversationRowMenu'
 import { useConversationStore } from './conversations'
@@ -313,8 +314,14 @@ export function ConversationHistoryPanel({
                         to={`/chat/${item.id}`}
                         className="flex flex-col gap-2 py-[14px] pr-3 pl-2 text-text-primary no-underline"
                         onClick={onClose}
-                        onMouseEnter={() => prefetchConversationDetail(queryClient, item.id)}
-                        onFocus={() => prefetchConversationDetail(queryClient, item.id)}
+                        onMouseEnter={() => {
+                          preloadPage('chat')
+                          prefetchConversationDetail(queryClient, item.id)
+                        }}
+                        onFocus={() => {
+                          preloadPage('chat')
+                          prefetchConversationDetail(queryClient, item.id)
+                        }}
                       >
                         <span className="flex items-baseline justify-between gap-4 pr-6">
                           <span className="inline-flex min-w-0 items-center gap-1.5 overflow-hidden text-[length:var(--text-section-size)] font-medium text-ellipsis whitespace-nowrap text-text-primary">

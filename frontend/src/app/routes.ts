@@ -9,6 +9,10 @@
  *   该报的错照旧由那一页自己报）。
  */
 export const PAGES = {
+  // 对话页：**必须懒加载**——它带着 assistant-ui + katex + highlight.js，
+  // 静态 import 会把整包打进主 chunk（实测：主 chunk 1423.9 kB、首屏合计 ~1.6 MB）。
+  // 旧前端也是懒加载的（`ChatView` 走 `() => import(...)`）。
+  chat: () => import('@/features/chat/ChatPage').then((m) => ({ default: m.ChatPage })),
   login: () => import('@/features/misc/auth/LoginPage').then((m) => ({ default: m.LoginPage })),
   dashboard: () =>
     import('@/features/misc/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })),
