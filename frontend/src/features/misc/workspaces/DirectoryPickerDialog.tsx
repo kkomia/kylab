@@ -101,14 +101,17 @@ export function DirectoryPickerDialog({
   }
 
   useEffect(() => {
-    if (!open) return
+    // 非管理员**不去读**：目录浏览是管理员专属接口，成员去读只会拿一条 403，
+    // 而这一层又不会渲染它的错误（见下面那个提前返回）——白跑一趟还会在服务端日志里留痕。
+    // （旧 Vue 版没这道闸，读了一整轮才被拒；这是迁移时补上的。）
+    if (!open || !isAdmin) return
     setView(null)
     setError('')
     cancelEditing()
     void load(start?.trim() || undefined)
     // 每一次打开都重新读一次：服务器上的目录可能被别处改过
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
+  }, [open, isAdmin])
 
   /**
    * 新建 → **建完直接进去**。
