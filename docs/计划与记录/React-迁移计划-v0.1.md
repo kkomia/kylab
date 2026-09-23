@@ -225,11 +225,15 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
   旧 Vue 在 `agent` 分支（`git checkout agent -- frontend` 取回）；`react` 领先 `agent` 14 个提交、
   领先 `main` **112** 个。**合并预检**：`git merge-tree --write-tree main react` **退出 0、零冲突**
   （`react` 从 `agent` 切、`agent` 是 `main` 的后代），并进 `main` 是快进式——风险在部署不在合并。
-- **门禁（合并树上）**：前端 `scripts/check-frontend.sh` 全绿 —— **524 条用例**
-  （§12.251 补了图表基座 4 条：切主题重画、`var()` 与 `color-mix()` 解析、卸载时销毁）+ 构建 +
-  emoji + 分层与文案与版本号；后端 **2881 通过 / 9 跳过**；`scripts/lint.sh` 全过。
+- **门禁（合并树上）**：前端 `scripts/check-frontend.sh` 全绿 —— **532 条用例**
+  （§12.251 补了图表基座 4 条：切主题重画、`var()` 与 `color-mix()` 解析、卸载时销毁；
+  以及剪贴板两级兜底 8 条）+ 构建 + emoji + 分层与文案与版本号；后端 **2881 通过 / 9 跳过**；
+  `scripts/lint.sh` 全过。
   **跑法有讲究**：这条命令的输出别接 `tail`/`head` 再看退出码——那样读到的是 `tail` 的退出码，
   门禁红了也会显示 0（§12.251 里记了这个教训：当时正是这样误报过一次"全绿"）。
+- **产物层面也核过**：`frontend/dist/assets/` 里 34 个 js 资源，**没有任何 Vue 运行时标记**
+  （`createApp` / `__vue` / `vue-router` / `reactive(` 一个都不命中）——"前端离开 Vue 技术栈"
+  在交付物上成立，不只是源码里没有 `.vue`。
 - **审计缺口清零**：[完整性审计](../调研/React-迁移完整性审计-v0.1.md) 第一档 5 条（壳接线、401、
   会话管理、文件抽屉四件事、落地页口径）与第二档 2 条（通知条关闭按钮、悬停/聚焦预热）**全部补完**；
   连"启动后 idle 预热"也补了（`features/misc/prewarm.ts`：`onIdle` 空闲时预热
