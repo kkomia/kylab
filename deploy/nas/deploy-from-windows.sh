@@ -2,12 +2,18 @@
 # **从这台 Windows 直接部署到 NAS**（在 Git Bash 里跑；密码只在你的终端里输，不落任何地方）。
 #
 # 用法：sh deploy/nas/deploy-from-windows.sh [分支，默认 react] [主机，默认 192.168.31.18]
+#      sh deploy/nas/deploy-from-windows.sh --dry-run   # 只打印"将要做什么"，不碰网络
 #
 # 它把 README 里那两条命令合成**一次 ssh**（所以只问一次密码），并且在传之前先自证
 # "这次要传的确实是新前端"——传一份旧的过去再构建，最后只会得到一个老界面，
 # 那种失败最难看出来（页面 200、没有报错）。
 set -eu
 
+DRY=0
+if [ "${1:-}" = "--dry-run" ]; then
+  DRY=1
+  shift
+fi
 BRANCH="${1:-react}"
 HOST="${2:-192.168.31.18}"
 SRC="/vol1/1000/docker/kylab/src"
@@ -19,6 +25,17 @@ current=$(git rev-parse --abbrev-ref HEAD)
 git cat-file -e "$BRANCH:frontend/src/features" 2>/dev/null \
   || { echo "!! $BRANCH 的 frontend/ 里没有 src/features —— 这不是新前端，传过去只会得到老界面"; exit 2; }
 echo "   分支 $BRANCH ✓；归档里含 frontend/src/features ✓（新前端）"
+
+REMOTE="mkdir -p $SRC && tar -x -C $SRC --overwrite && cd $APP && sh $SRC/deploy/nas/update-frontend.sh $BRANCH"
+if [ "$DRY" = "1" ]; then
+  echo "== dry-run（不碰网络）=="
+  echo "   归档：git archive --format=tar $BRANCH（约 $(git archive --format=tar "$BRANCH" | wc -c | tr -d ' ') 字节）"
+  echo "   将要执行："
+  echo "     git archive --format=tar $BRANCH | ssh $HOST \"$REMOTE\""
+  echo "   远端那一步（update-frontend.sh）会：判源码形态 → 只重建 frontend → up -d → 核对首页 200 与 #root"
+  echo "   本机最后会 curl http://$HOST:8081/ 并按 #root/#app 认版本。去掉 --dry-run 就真跑。"
+  exit 0
+fi
 
 echo "== 1/3 推源码 + 在 NAS 上重建前端（$HOST，会问一次密码）"
 # 一条 ssh 里做完：解包 → 跑升级脚本（脚本自己还会核对源码形态、docker 权限）

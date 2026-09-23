@@ -53,6 +53,10 @@ sh deploy/nas/deploy-from-windows.sh            # 默认 react 分支、默认 N
 sh deploy/nas/deploy-from-windows.sh react 192.168.31.18   # 也可以显式给
 ```
 
+**先看一眼它要干什么**（不碰网络）：`sh deploy/nas/deploy-from-windows.sh --dry-run`
+——打印分支与自证结果、归档大小（约 11 MB）、**将要执行的那一条 ssh 完整命令**、
+以及远端那一步会做的事（判源码形态 → 只重建 frontend → `up -d` → 核对 200 与 `#root`）。
+
 它把下面那两条 ssh 合成**一次连接**（所以只问一次密码），并在传之前先自证
 "这次要传的确实是新前端"（`frontend/src/features` 在不在）——传一份旧的过去再构建，
 最后只会得到一个老界面，而那种失败最难看出来（页面 200、没有报错）。跑完它自己
