@@ -1,16 +1,19 @@
-"""前端显示文案排查（v25）：清单 + 分类 + "AI 味"可疑项。
+"""前端显示文案排查（v26，React 版）：清单 + 分类 + "AI 味"可疑项。
 
 用法：python scripts/audit-copy.py
 退出码：0 = 没有可疑项；1 = 有可疑项（**不接入 CI**，它是审阅工具不是门禁——
 文案是否合适需要人判断，机械规则只负责把人该看的地方指出来）。
 
 只认**会显示给用户**的文字：
-- `<template>` 文本节点；
-- 模板属性值（placeholder/title/aria-label/…）；
-- `<script>` 与 `.ts` 的**单行**字符串字面量（多行的基本是代码，不是文案）。
+- JSX 文本节点（`>新建会话<` 这种**单行**片段）；
+- 属性/字符串字面量里的单行中文（placeholder / title / aria-label / toast 文案 …）。
 
 排除：所有注释、多行代码块、含箭头/比较运算符的代码片段。
-输出：按板块统计 → 可疑清单（分类 + 长度 + 命中模式）。
+
+**v25 → v26（2026-09-23）**：P5 把前端从 Vue 换成 React 之后，这份脚本原来只认
+`<template>` 文本节点、板块表也全是 `ChatView` 这类 Vue 文件名——跑起来只剩下 `.ts`
+里的字符串，静默退化成"大部分文案看不到"（实测：104 条 / 18 个文件，板块只剩两个）。
+现在改成认 JSX 文本节点，板块表按 React 的域重写。判据（AI_SMELL 与长度）一个字没改。
 """
 
 from __future__ import annotations
@@ -26,19 +29,36 @@ sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 ROOT = Path(__file__).resolve().parent.parent / "frontend" / "src"
 CJK = re.compile(r"[\u4e00-\u9fff]")
 
-#: 板块归类：按文件路径把文案归到用户能认出来的界面上。
+#: 板块归类：按文件路径把文案归到用户能认出来的界面上（React 的域与文件名，见
+#: 《React 迁移计划》§3 的所有权表）。
 SURFACES = [
-    ("登录/首次设置", ("LoginView", "useSession")),
-    ("侧栏/框架", ("layout/", "PageShell", "PageHeader", "EmptyState", "ConfirmDialog", "AppModal")),
-    ("概览（驾驶舱）", ("DashboardView", "charts/", "stores/stats", "api/stats")),
-    ("知识库列表", ("KnowledgeBasesView", "stores/knowledgeBases")),
-    ("知识库详情/文档列表", ("KnowledgeBaseView", "KnowledgeBaseMenu", "UploadDialog", "RowMenu")),
-    ("文档抽屉", ("DocumentDrawer", "OfficePreview", "SourcePanel", "ProcessingTimeline")),
-    ("对话", ("ChatView", "useChatTurns", "useMarkdown", "api/chat")),
-    ("笔记", ("NotesView", "NoteEditor", "NoteCanvas", "notes/", "api/notes", "stores/notes")),
-    ("任务中心", ("TasksView", "tasks/", "api/tasks", "status.ts")),
+    ("登录/首次设置", ("misc/auth/", "LoginPage", "lib/session")),
+    ("侧栏/框架", ("layout/", "AppShell", "SideNav", "AccountMenu")),
+    ("概览（驾驶舱）", ("misc/dashboard/", "api/stats")),
+    ("知识库列表", ("KnowledgeBasesView", "knowledge/store", "api/knowledgeBases")),
+    (
+        "知识库详情/文档列表",
+        ("KnowledgeBaseView", "KnowledgeBaseSettings", "UploadDialog", "ShareDialog"),
+    ),
+    ("文档抽屉", ("DocumentDrawer", "preview/", "SourcePanel", "ProcessingTimeline")),
+    ("对话", ("chat/", "api/chat")),
+    ("笔记", ("notes/", "api/notes")),
+    ("任务中心", ("misc/tasks/", "tasks/", "api/tasks", "status.ts")),
     ("Wiki", ("WikiView", "api/wiki")),
-    ("设置", ("SettingsModal", "settings/", "ModelRegistryPanel", "ModelPicker", "api/settings", "api/modelRegistry")),
+    (
+        "设置",
+        (
+            "misc/settings/",
+            "SettingsModal",
+            "ModelRegistryPanel",
+            "providerPresets",
+            "api/settings",
+            "api/modelRegistry",
+        ),
+    ),
+    ("能力（技能/插件/MCP）", ("capabilities/", "api/capabilities")),
+    ("记忆", ("misc/memory/", "api/memory")),
+    ("工作区", ("misc/workspaces/", "layout/workspaces", "api/workspaces")),
     ("通用/其它", ()),
 ]
 
@@ -87,13 +107,14 @@ def looks_like_code(text: str) -> bool:
 def collect(path: pathlib.Path) -> list[str]:
     raw = strip_comments(path.read_text(encoding="utf-8"))
     found: list[str] = []
-    if path.suffix == ".vue":
-        for block in re.findall(r"<template>(.*)</template>", raw, flags=re.S):
-            without_tags = re.sub(r"<[^>]+>", "\n", block)
-            without_tags = re.sub(r"\{\{.*?\}\}", " ", without_tags, flags=re.S)
-            found += [piece.strip() for piece in without_tags.splitlines() if CJK.search(piece)]
-        for match in re.finditer(r"[:@\w-]+\s*=\s*\"([^\"]*)\"", raw):
-            found.append(match.group(1))
+    if path.suffix == ".tsx":
+        # JSX 文本节点：`>新建会话<` 这种。两个细节——
+        # 1. **逐行拆开**：跨行的标签块里夹着代码，整段看会被 looks_like_code 当"多行代码"滤掉，
+        #    而真正的文案都是单行的（与旧 Vue 版处理 `<template>` 的办法一致）；
+        # 2. `[^<>{}]+` 顺带把 `{表达式}` 挡在外面——那里面的中文是字符串字面量，
+        #    下面那一遍字面量扫描会收，不会漏。
+        for match in re.finditer(r">([^<>{}]+)<", raw):
+            found += [piece.strip() for piece in match.group(1).splitlines() if CJK.search(piece)]
     for match in re.finditer(r"'([^'\\\n]*)'|\"([^\"\\\n]*)\"|`([^`\n]*)`", raw):
         value = match.group(1) or match.group(2) or match.group(3) or ""
         found.append(value)
@@ -115,7 +136,7 @@ def main() -> None:
     items: list[tuple[str, str]] = []
     seen: set[str] = set()
     for path in sorted(ROOT.rglob("*")):
-        if path.suffix not in (".vue", ".ts"):
+        if path.suffix not in (".tsx", ".ts"):
             continue
         rel = str(path.relative_to(ROOT))
         for text in collect(path):
