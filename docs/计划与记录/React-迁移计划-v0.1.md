@@ -234,6 +234,14 @@ radio-group / context-menu / avatar / progress / collapsible / command / drawer 
 3. 锁文件含 `@esbuild/linux-x64`、`@tailwindcss/oxide-linux-x64-gnu`（容器里装得上）；
    本机那两个 win32 包被 `.dockerignore` 排掉，不会带进 Linux 构建。
 
+### 10.2.1 发版口径：**没动版本号，也没写 CHANGELOG**
+
+迁移这一批**刻意不碰版本号**（`backend/pyproject.toml` / `core/config.py` / `deploy/docker-compose.yml` /
+`frontend/package.json` 四处仍是 `0.1.1`，V1 门禁一致），也不往 CHANGELOG 里加条目——
+这是**发版动作**，由用户在合并 `react` → `main` 时一起定（`0.2.0` 还是 `0.1.2`），
+本计划只把"落了什么"记在 §12.230–§12.249 与本文里，避免"改了代码顺手改了版本号"这种越权。
+（CHANGELOG 的格式见 `CHANGELOG.md` 顶部：一个版本一段，附"为什么"与门禁数字。）
+
 ### 10.3 唯一没做完的一步：NAS 上重建前端镜像
 
 **现状实测**：`http://192.168.31.18:8081/` 200，但 HTML 里是 **`id="app"`（旧 Vue）**；
