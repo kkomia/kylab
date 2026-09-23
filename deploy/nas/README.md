@@ -69,8 +69,14 @@ ssh kkomia@192.168.31.18   "cd /vol1/1000/docker/kylab/app && sh /vol1/1000/dock
   NAS 上 clone / 只覆盖 `frontend/` 这一棵）并退出码 2 —— 免得白构建一次却发现界面还是老的；
 - 两者都不是 → 提示路径不对，退出码 2。
 
-源码 OK 之后做三件事：**只重建 frontend**（后端不重建）→ `up -d frontend` →
+源码 OK 之后还会先过两道守卫，再做事：
+- `$APP/docker-compose.yml` 不在 → 提示路径不对并退出码 2（免得在一台机器上瞎构建）；
+- `docker info` 不通（最常见的是 `/var/run/docker.sock` 权限）→ **直接把该敲的那一行打出来**
+  （`sudo sh <脚本> react`）并退出码 3，而不是丢一个 `permission denied` 让人猜。
+
+然后是三件事：**只重建 frontend**（后端不重建）→ `up -d frontend` →
 核对首页 200 **并认一次 `#root`/`#app`**（镜像没真换掉时页面会安静地还是旧版）。
+（这几条分支都用临时目录模拟跑过：源码形态三档、app 缺失、docker 不可用。）
 
 > 构建走的是 **npmmirror**（`deploy/nas/docker-compose.yml` 给前端构建传了
 > `NPM_REGISTRY`，与后端那份 `UV_INDEX_URL` 同一个理由：这台机器到境外带宽极差）。

@@ -34,6 +34,11 @@ else
   exit 2
 fi
 
+if [ ! -f "$APP/docker-compose.yml" ]; then
+  echo "!! 找不到应用层的 compose（$APP/docker-compose.yml）——路径与这台机器对不上，先确认部署位置"
+  exit 2
+fi
+
 if [ -d "$SRC/.git" ]; then
   echo "== 1/4 源码是 git 检出：切 $BRANCH 并拉取"
   cd "$SRC"
@@ -47,6 +52,14 @@ fi
 
 echo "== 2/4 只重建前端镜像（后端不重建）"
 cd "$APP"
+# docker 权限自查：这台 NAS 上 docker 从普通用户就能用（README 里的命令都没有 sudo），
+# 但换一台机器/换一个用户时最常见的坑就是 "permission denied ... docker.sock"——
+# 与其让人对着这个报错猜，不如当场给出该敲的那一行。
+if ! docker info >/dev/null 2>&1; then
+  echo "!! 当前用户用不了 docker（多半是 /var/run/docker.sock 权限）。用 sudo 重跑这条就行："
+  echo "     sudo sh $0 $BRANCH"
+  exit 3
+fi
 docker compose build frontend
 
 echo "== 3/4 重启前端容器"
