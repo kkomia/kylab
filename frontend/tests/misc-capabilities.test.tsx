@@ -1,10 +1,14 @@
 /**
  * 能力页（旧 `views/CapabilitiesView.vue` + `components/capabilities/**`）的用例。
  *
- * 三条刻意设计的验证：
+ * 五条刻意设计的验证：
  * 1. **被拦下/被丢弃的技能要显示原因**（`flagged` + `discarded` 分开标）；
  * 2. **插件包的"未实现"原样显示**（四类能力面的 status 是后端给的，界面不改写）；
- * 3. **探活连不上不是错误、是结果**：`reachable:false` + `detail` 要显示出来。
+ * 3. **探活连不上不是错误、是结果**：`reachable:false` + `detail` 要显示出来；
+ * 4. **分区导航是页签组**（`aria-selected` 跟着点击走）——这一页唯一的导航，
+ *    评审 G1 报的就是它既没有当前态、也不是页签；
+ * 5. **技能正文按 markdown 渲染**：用户看到的是文档，不是 `SKILL.md` 源码
+ *    （`#` 成标题、`**` 成加粗），且首行那句解释小字已按 U1 删掉。
  */
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -230,10 +234,44 @@ describe('能力页', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'from-github' }))
 
     const dialog = await screen.findByRole('dialog')
-    // 正文弹窗是 @/ui/dialog 的组合壳，正文用可复制的 pre 而不是 title 属性
+    // 正文弹窗是 @/ui/dialog 的组合壳，正文按 markdown 渲染（不再用可复制的 pre）
     expect(dialog).toHaveAttribute('data-slot', 'dialog-content')
     expect(await within(dialog).findByText(/按需读进来的一段/)).toBeInTheDocument()
     expect(within(dialog).getByText('来自 owner/repo')).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: /卸载/ })).toBeInTheDocument()
+  })
+
+  it('分区导航是带当前态的页签组：`aria-selected` 跟着点击走', async () => {
+    renderMisc(<CapabilitiesPage />)
+
+    const skills = await screen.findByRole('tab', { name: '技能' })
+    const plugins = screen.getByRole('tab', { name: '插件' })
+    expect(skills).toHaveAttribute('aria-selected', 'true')
+    expect(skills).toHaveAttribute('data-state', 'active')
+    expect(plugins).toHaveAttribute('aria-selected', 'false')
+
+    await userEvent.click(plugins)
+    expect(plugins).toHaveAttribute('aria-selected', 'true')
+    expect(skills).toHaveAttribute('aria-selected', 'false')
+  })
+
+  it('技能正文按 markdown 渲染：看不到 `#` 与 `**`，也没有首行的解释小字', async () => {
+    const { getSkill } = await import('@/api/capabilities')
+    vi.mocked(getSkill).mockResolvedValue({
+      ...skill({ name: 'from-github' }),
+      body: '# 正文\n\n按需读进来的一段，**加粗**。',
+    })
+    listSkillsMock.mockResolvedValue({ items: [skill({ name: 'from-github' })], usable: 1 })
+
+    renderMisc(<CapabilitiesPage />)
+    await userEvent.click(await screen.findByRole('button', { name: 'from-github' }))
+
+    const dialog = await screen.findByRole('dialog')
+    // `#` 成了标题、`**` 成了加粗：源文件被渲染成了文档
+    expect(within(dialog).getByRole('heading', { name: '正文' })).toBeInTheDocument()
+    expect(within(dialog).getByText('加粗').tagName).toBe('STRONG')
+    expect(dialog.textContent).not.toContain('**')
+    // 首行那句"这就是模型按需读进来的正文…"（解释性小字，U1）不再出现
+    expect(dialog.textContent).not.toContain('frontmatter')
   })
 })

@@ -48,3 +48,24 @@ export const FILTER_STAGE_KEYS = [
   'enriched',
   'failed',
 ] as const
+
+/**
+ * 文档**来源**（`DocumentOut.source_kind`）→ 中文文案。
+ *
+ * 与上面的状态映射同一个理由：列表的筛选下拉与抽屉的「来源」读的是同一份取值，
+ * 两处各写一份就会出现"一处叫本地上传、另一处把 `upload` 直接摆出来"。
+ *
+ * 注意它**不是上传者**：来源说的是"这份文档怎么进来的"，上传者是"谁传的"
+ * （`uploaded_by_name`，列表里那一列）——`DocumentOut` 上两个不同的字段。
+ */
+const SOURCE_KINDS: Record<string, string> = {
+  upload: '本地上传',
+  html: '网页',
+  rss: 'RSS 订阅',
+  webdav: 'WebDAV',
+}
+
+/** 未知识别值兜底成原值：后端新增来源时界面不会空白（同 `documentStageView`）。 */
+export function documentSourceLabel(kind: string): string {
+  return SOURCE_KINDS[kind] ?? kind
+}

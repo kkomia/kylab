@@ -159,6 +159,17 @@ describe('抽屉的基本信息与预览', () => {
     expect(screen.getByText('讲了安装与卸载')).toBeInTheDocument()
   })
 
+  it('「来源」写中文而不是裸的 source_kind；「上传者」是另一个字段，两者各写各的', async () => {
+    renderDrawer()
+
+    await screen.findByText('说明书.pdf')
+    // 这一格以前直接把 `upload` 摆出来（列表的筛选下拉同一份取值写作"本地上传"）
+    expect(await screen.findByText('本地上传')).toBeInTheDocument()
+    expect(screen.queryByText('upload')).toBeNull()
+    // 上传者与来源是两个字段：`uploaded_by_name`（谁传的）vs `source_kind`（怎么进来的）
+    expect(screen.getByText('小又')).toBeInTheDocument()
+  })
+
   it('两个下载按钮的文字不一样，且都走"先签发链接再下载"那条路', async () => {
     const user = userEvent.setup()
     renderDrawer()

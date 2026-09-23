@@ -7,6 +7,8 @@
  */
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath, URL as NodeURL } from 'node:url'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { toast } from 'sonner'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -300,4 +302,75 @@ describe('Wiki 页', () => {
     await waitFor(() => expect(clearMock).toHaveBeenCalledWith('kb-1'))
     expect(successToast).toHaveBeenCalledWith('已清除 Wiki 页面')
   })
+
+  it('面包屑不许折行：库名可压缩到省略号，箭头与 `Wiki` 永远留着', async () => {
+    renderWiki()
+
+    // 页标题这一行就是"库名 › Wiki"这条路径，折成两行路径语义就没了（评审 K18）
+    const crumb = await screen.findByRole('heading', { level: 1 })
+    expect(crumb).toHaveStyle({ display: 'flex', whiteSpace: 'nowrap' })
+    const name = within(crumb).getByRole('link', { name: '产品手册' })
+    expect(crumb.firstElementChild).toBe(name)
+    expect(name).toHaveStyle({ overflow: 'hidden', textOverflow: 'ellipsis' })
+    expect(within(crumb).getByText('Wiki')).toBeInTheDocument()
+  })
+
+  it('正文第一个标题与页面标题是同一句话时跳过它（评审 K19）', async () => {
+    pageMock.mockResolvedValue(makePage({ content_md: '# 总览\n\n正文第一句[1]。' }))
+    renderWiki()
+
+    expect(await screen.findByText(/正文第一句/)).toBeInTheDocument()
+    // 页头一行 + 正文一行本来是同一句话，现在只剩页头那一行
+    expect(screen.getAllByRole('heading', { name: '总览' })).toHaveLength(1)
+  })
+
+  it('正文首个标题与页面标题不同（或开篇不是标题）时原样渲染，不吃正文', async () => {
+    pageMock.mockResolvedValue(makePage({ content_md: '## 本页要点\n\n正文第一句[1]。' }))
+    renderWiki()
+
+    expect(await screen.findByText(/正文第一句/)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '本页要点' })).toBeInTheDocument()
+    expect(screen.getAllByRole('heading', { name: '总览' })).toHaveLength(1)
+  })
+
+  it('「主题」一节是真正的列表：条目各自成行，折行对齐条目首行（评审 K20）', async () => {
+    pageMock.mockResolvedValue(
+      makePage({ content_md: '## 主题\n\n- [[安装]]：一句话说明\n- 另一条说明\n' }),
+    )
+    const { container } = renderWiki()
+
+    expect(await screen.findByText(/一句话说明/)).toBeInTheDocument()
+    const list = container.querySelector('ul.kb-md-list') as HTMLElement
+    expect(list).not.toBeNull()
+    expect(list.querySelectorAll('li.kb-md-li')).toHaveLength(2)
+
+    // 条目能不能被看成"列表"全靠符号，而符号是 CSS 给的：Tailwind 的 preflight 把
+    // `ol, ul, menu` 的 `list-style` 去掉了，这两条规则是"别再把符号弄丢"的护栏
+    // （jsdom 不做布局，量不到符号，只能读源码——同 `notes-editor.test.tsx` 的做法）
+    const css = stripComments(styleText())
+    expect(cssRule(css, 'ul.kb-md-list')).toMatch(/list-style:\s*disc/)
+    expect(cssRule(css, 'ol.kb-md-list')).toMatch(/list-style:\s*decimal/)
+  })
 })
+
+/* --------------------------------------------------------------- 源码小工具 */
+
+function styleText(): string {
+  return readFileSync(
+    fileURLToPath(new NodeURL('../src/features/knowledge/knowledge.css', import.meta.url)),
+    'utf8',
+  )
+}
+
+function stripComments(source: string): string {
+  return source.replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
+function cssRule(source: string, selector: string): string {
+  const rules = [...source.matchAll(/\n\s*([^{}]+?)\s*\{([^{}]*)\}/g)]
+  const found = rules.find((rule) =>
+    (rule[1] ?? '').split(',').some((part) => part.trim() === selector),
+  )
+  expect(found, `没在源码里找到 CSS 规则 ${selector}`).toBeTruthy()
+  return found?.[2] ?? ''
+}

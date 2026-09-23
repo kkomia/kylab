@@ -26,6 +26,7 @@ import { useKnowledgeBases } from '../shared/knowledgeBases'
 import { isTaskProblem, taskHealthTone, taskKindLabel, taskStateView } from '../shared/status'
 import { notifyError, notifySuccess } from '../shared/toast'
 import { Button } from '@/ui/button'
+import { Tabs, TabsList, TabsTrigger } from '@/ui/tabs'
 import {
   CheckRow,
   ConfirmDialog,
@@ -34,7 +35,6 @@ import {
   Modal,
   OptionSelect,
   PageShell,
-  SegmentedControl,
   SkeletonBlock,
   StatusTag,
 } from '../shared/composites'
@@ -46,6 +46,9 @@ const POLL_INTERVAL_MS = 2000
 const PAGE_SIZE = 20
 
 const TASK_LOAD_QUERY_KEY = ['tasks', 'load'] as const
+
+/** 分段控件的取值（Radix 的 `onValueChange` 给的是 `string`，在这里收窄一次）。 */
+type TaskView = 'tasks' | 'schedules'
 
 const VIEWS = [
   { value: 'tasks' as const, label: '流水线任务' },
@@ -71,7 +74,7 @@ const HEALTH_OPTIONS = [
 
 export function TasksPage() {
   const navigate = useNavigate()
-  const [view, setView] = useState<'tasks' | 'schedules'>('tasks')
+  const [view, setView] = useState<TaskView>('tasks')
 
   const [kb, setKb] = useState('')
   const [state, setState] = useState('')
@@ -226,7 +229,50 @@ export function TasksPage() {
         ) : undefined
       }
     >
-      <SegmentedControl items={VIEWS} value={view} onChange={setView} ariaLabel="任务视图" />
+      {/*
+        页签的**当前态**为什么不是 `<SegmentedControl>`（同一个 `@/ui/tabs` 原语、同一个形状，
+        只是把底与字放进了按钮内部）：`tokens.css` 里那条**无 `@layer`** 的
+        `button { background: none; font: inherit }` 按层叠规则压过 `@layer utilities` 里的
+        `bg-*` / `font-*`，所以 `@/ui/tabs` 自带的 `data-[state=active]:bg-surface` 一点没生效
+        ——评审 T1 实测当前项与另一项同为透明底、400 字重。span 不受那条重置影响，
+        于是"浅灰轨道 + 白色当前项"这个原语本来的形态在这里才真的画出来。
+        （`styles/tokens.css` 与 `ui/` 原语本轮不动，见《界面优化计划》§3 的共享面约定。）
+      */}
+      <Tabs value={view} onValueChange={(next) => setView(next as TaskView)}>
+        <TabsList aria-label="任务视图" className="h-9 p-0.5">
+          {VIEWS.map((item) => {
+            const current = item.value === view
+            return (
+              <TabsTrigger key={item.value} value={item.value} className="h-8">
+                {/* 白底分段。`data-slot` 与 `misc/memory/MemoryPage.tsx` 的同名钩子一致
+                    （同类控件同一形状），也是用例的抓手——jsdom 不算样式，只能钉住这两个元素。 */}
+                <span
+                  aria-hidden="true"
+                  data-slot="segment-current"
+                  className={
+                    current
+                      ? 'absolute inset-0 rounded-control bg-surface transition-opacity'
+                      : 'absolute inset-0 rounded-control opacity-0 transition-opacity'
+                  }
+                />
+                {/* 字色与字重同理只能写在 span 上：当前项 Primary + 500，另一项 Secondary。
+                    `px-3` 也是补回来的——原语的 `px-3 py-1` 与 `background` 死在同一条重置上，
+                    少了它两个分段会**贴着**（当前项的白底看起来像给文字刷了一块底，而不是一个分段）。 */}
+                <span
+                  data-slot="segment-label"
+                  className={
+                    current
+                      ? 'relative px-3 text-[length:var(--text-meta-size)] font-medium text-text-primary'
+                      : 'relative px-3 text-[length:var(--text-meta-size)] text-text-secondary'
+                  }
+                >
+                  {item.label}
+                </span>
+              </TabsTrigger>
+            )
+          })}
+        </TabsList>
+      </Tabs>
       {view === 'schedules' ? (
         <div className="page-shell-body">
           <SchedulePanel />
@@ -351,19 +397,7 @@ export function TasksPage() {
                             tone={taskStateView(task.state).tone}
                             live={task.state === 'running'}
                           />
-                          {/*
-                          健康列的文字用后端给的 label：它是判定结论，
-                          前端再翻译一遍就有两套说法。终态（done）与状态列语义重复，
-                          退成弱文字；只有"需要看"的判据才配标签。
-                          */}
-                          {task.health !== 'done' ? (
-                            <StatusTag
-                              label={task.health_label}
-                              tone={taskHealthTone(task.health)}
-                            />
-                          ) : (
-                            <span className="m-row-health-done">{task.health_label}</span>
-                          )}
+                          {healthCell(task)}
                           <span className="m-row-attempts">{attemptText(task)}</span>
                           <span className="m-row-time">{formatDate(task.updated_at)}</span>
                         </div>
@@ -543,6 +577,36 @@ function documentName(task: TaskSummary): string {
  */
 function attemptText(task: TaskSummary): string {
   return `${task.attempts} / ${task.max_attempts}`
+}
+
+/**
+ * 健康列这一格的内容。
+ *
+ * **只有"成功"这一档不写字**：后端在 `succeeded` 那档给的 label 正是「已完成」，
+ * 与左边状态列逐字相同——同一行两个徽章说同一件事，一个字的新判断都没有（评审 T2）。
+ * 所以那一档退成一个不带词的中性标记。
+ *
+ * 判定必须按 `state === 'succeeded'`：**失败与已取消同样落在 `health === 'done'`**
+ * （后端把三种都算终态），而它们的 label（已失败 / 已取消）恰恰是这一列存在的意义
+ * ——失败要有可读的文字出口，不能跟着一起吞掉。
+ *
+ * 标记不带词，但不能没有名字：列头是 `aria-hidden` 的，读屏器只能靠 `aria-label`
+ * 知道这一格是什么。`role="img"` 是让那个名字真的被读出来——`generic` 角色上的
+ * `aria-label` 按 ARIA 规范不参与命名。
+ */
+function healthCell(task: TaskSummary) {
+  if (task.state === 'succeeded' && task.health === 'done') {
+    return (
+      <span className="m-row-health-done" role="img" aria-label="健康">
+        —
+      </span>
+    )
+  }
+  // 其余各档逐字显示后端给的标签（执行中 / 排队中 / 可能卡住 / 长时间未执行 / 已失败 / 已取消）
+  if (task.health === 'done') {
+    return <span className="m-row-health-done">{task.health_label}</span>
+  }
+  return <StatusTag label={task.health_label} tone={taskHealthTone(task.health)} />
 }
 
 /** 行上是否需要招人注意：**失败**与**卡住/逾期**都要，但原因不同，所以文案分开。 */

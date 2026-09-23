@@ -63,6 +63,7 @@ import {
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu'
 import { Input } from '@/ui/input'
+import { Tabs, TabsList, TabsTrigger } from '@/ui/tabs'
 import { Textarea } from '@/ui/textarea'
 import {
   ConfirmDialog,
@@ -72,7 +73,6 @@ import {
   Modal,
   Notice,
   PageShell,
-  SegmentedControl,
   SkeletonBlock,
   StatusTag,
 } from '../shared/composites'
@@ -323,7 +323,8 @@ export function MemoryPage() {
           ? { label: '记忆服务正常', tone: 'success' as const }
           : { label: '记忆服务未连接', tone: 'warning' as const }
 
-  const tabItems = TABS.map((item) =>
+  // 显式类型：文件那一档多一个 `count`，不给类型的话它是个"有些成员没有该属性"的联合
+  const tabItems: { value: Tab; label: string; count?: number }[] = TABS.map((item) =>
     item.value === 'files' && status ? { ...item, count: status.file_count } : item,
   )
 
@@ -391,15 +392,57 @@ export function MemoryPage() {
         <SkeletonBlock variant="list" rows={6} />
       ) : (
         <>
-          <SegmentedControl
-            items={tabItems}
+          {/*
+            页签的**当前态**：与 `misc/tasks/TasksPage.tsx` 是同一种处理（同一个 `@/ui/tabs`
+            原语、同一形状、同名的 `data-slot` 钩子）。底与字写在按钮**内部**的 span 上，
+            因为 `tokens.css` 那条无 `@layer` 的 `button { background: none; font: inherit }`
+            会压过 `@layer utilities` 里的 `bg-*` / `font-*`——原语自带的
+            `data-[state=active]:bg-surface` 正是这样被吃掉的（评审 M5）。
+          */}
+          <Tabs
             value={tab}
-            onChange={(next) => {
-              setTab(next)
-              if (next === 'graph') setGraphWanted(true)
+            onValueChange={(next) => {
+              const nextTab = next as Tab
+              setTab(nextTab)
+              if (nextTab === 'graph') setGraphWanted(true)
             }}
-            ariaLabel="记忆视图"
-          />
+          >
+            <TabsList aria-label="记忆视图" className="h-9 p-0.5">
+              {tabItems.map((item) => {
+                const current = item.value === tab
+                return (
+                  <TabsTrigger key={item.value} value={item.value} className="h-8">
+                    <span
+                      aria-hidden="true"
+                      data-slot="segment-current"
+                      className={
+                        current
+                          ? 'absolute inset-0 rounded-control bg-surface transition-opacity'
+                          : 'absolute inset-0 rounded-control opacity-0 transition-opacity'
+                      }
+                    />
+                    {/* `px-3` 与原语的 `px-3 py-1` 同级——它和 `background` 死在同一条重置上，
+                        少了它两个分段会贴着；计数放进同一个 span，间距仍由 `gap-1.5` 给 */}
+                    <span
+                      data-slot="segment-label"
+                      className={
+                        current
+                          ? 'relative inline-flex items-center gap-1.5 px-3 text-[length:var(--text-meta-size)] font-medium text-text-primary'
+                          : 'relative inline-flex items-center gap-1.5 px-3 text-[length:var(--text-meta-size)] text-text-secondary'
+                      }
+                    >
+                      {item.label}
+                      {item.count !== undefined && (
+                        <span className="text-[length:var(--text-micro-size)] text-text-tertiary tabular-nums">
+                          {item.count}
+                        </span>
+                      )}
+                    </span>
+                  </TabsTrigger>
+                )
+              })}
+            </TabsList>
+          </Tabs>
 
           {tab === 'files' && (
             <div className="m-split m-split-files page-shell-body">

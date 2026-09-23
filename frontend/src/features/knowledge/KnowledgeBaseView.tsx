@@ -64,7 +64,11 @@ import { KnowledgeBaseSettings } from '@/features/knowledge/KnowledgeBaseSetting
 import { ShareDialog } from '@/features/knowledge/ShareDialog'
 import { messageOf, notify, useKnowledgeBases, usePolling } from '@/features/knowledge/store'
 import { useOperatorStore } from '@/lib/operator'
-import { documentStageView, FILTER_STAGE_KEYS } from '@/features/knowledge/status'
+import {
+  documentSourceLabel,
+  documentStageView,
+  FILTER_STAGE_KEYS,
+} from '@/features/knowledge/status'
 import { UploadDialog } from '@/features/knowledge/UploadDialog'
 import { MAX_UPLOAD_MB, UPLOAD_FORMAT_HINT } from '@/features/knowledge/uploadLimits'
 import { formatBytes, formatMillis, formatRelativeTime } from '@/lib/format'
@@ -128,10 +132,30 @@ const STAGE_FILTER_OPTIONS = [
 /** 只列真实可能出现的来源：webdav 是框架预留、MVP 不实现，摆上去就是点了没反应的死选项。 */
 const SOURCE_FILTER_OPTIONS = [
   { value: ALL_SOURCES, label: '全部来源' },
-  { value: 'upload', label: '本地上传' },
-  { value: 'html', label: '网页' },
-  { value: 'rss', label: 'RSS 订阅' },
+  { value: 'upload', label: documentSourceLabel('upload') },
+  { value: 'html', label: documentSourceLabel('html') },
+  { value: 'rss', label: documentSourceLabel('rss') },
 ]
+
+/*
+ * 「状态」与「上传者」两列的盒子（表头与数据行共用同一组取值）。
+ *
+ * 为什么要定宽：这两个盒子是**从左边开始**的列，宽度若随文案走（"失败"比"向量化中"窄、
+ * 用户名有长有短），表头就没法同时对齐每一行——只能对齐"最常见的那一行"。定宽之后，
+ * 表头与每一行的左边缘落在同一条竖线上（评审 K6：表里原先有三条左基准）。
+ *
+ * 取值按现有文案的最宽者留一点余量：状态最宽是"向量化中"（66px），上传者最长按 8 个
+ * 半角字符算（80px），再长的用省略号，全文在抽屉的「上传者」里。
+ */
+const STATUS_CELL = { flex: '0 0 72px', display: 'flex', alignItems: 'center' }
+const UPLOADER_CELL = {
+  flex: '0 0 80px',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+}
+/** 表头里的「文件」：弹性、可被压缩到省略号——文件名那一列就是这么用的。 */
+const HEAD_FILE_CELL = { flex: 1, minWidth: 0 }
 
 /** 列表行的悬浮提示：文件名 + 摘要（v25）。摘要不占列，但对"这篇是啥"很省事。 */
 function rowTitle(document: DocumentSummary): string {
@@ -1138,6 +1162,12 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
               ) : null}
 
               <div className="panel" ref={listPanel}>
+                {/*
+                  表头与数据行用同一套列宽：「文件」让出 36px 给展开箭头（`.kb-head-file`），
+                  「状态」「上传者」用与行内同宽的盒子——七列的左边缘才在一条竖线上
+                  （评审 K6/K3：原先这两列有内容没表头，左侧还有三条基准）。
+                  「上传者」跟着行内那颗一起出现/消失：花名册没加载出来时行内也没有这一格。
+                */}
                 <div className="panel-head kb-doc-head">
                   {knowledgeBase?.can_write ? (
                     <span className="kb-col-check">
@@ -1150,7 +1180,15 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                     </span>
                   ) : null}
                   <span className="kb-col-file kb-head-file" aria-hidden="true">
-                    文件
+                    <span style={HEAD_FILE_CELL}>文件</span>
+                    <span style={STATUS_CELL}>状态</span>
+                    {/* 与行内那一格同名同类：窄屏那条 `@media` 藏的是 `.kb-col-uploader`，
+                        两边都挂这个类，列头才会跟着一起藏（否则窄屏下两边的列数不一样） */}
+                    {roster.length > 0 ? (
+                      <span className="kb-col-uploader" style={UPLOADER_CELL}>
+                        上传者
+                      </span>
+                    ) : null}
                   </span>
                   <span className="kb-col-chunks" aria-hidden="true">
                     切块
@@ -1222,17 +1260,26 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                             >
                               <span className="kb-row-name-text">{document.name}</span>
                             </Link>
-                            <StatusTag
-                              label={stage.label}
-                              tone={stage.tone}
-                              running={ACTIVE_STAGES.has(document.stage)}
-                              title={document.error ?? undefined}
-                            />
-                            {/* 停用：不参与检索但一切保留。中性色——它是"被搁置"，不是"出错" */}
+                            {/* 停用：不参与检索但一切保留。中性色——它是"被搁置"，不是"出错"。
+                                摆在文件名之后而不是状态那一格里：多出来的宽度由文件名让出来
+                                （这一列是弹性的），右边的列不会因为这一颗标签整体移位 */}
                             {document.disabled ? <StatusTag label="已停用" tone="neutral" /> : null}
+                            {/* 状态列：定宽的盒子，列头与它同宽（见 `STATUS_CELL`） */}
+                            <span style={STATUS_CELL}>
+                              <StatusTag
+                                label={stage.label}
+                                tone={stage.tone}
+                                running={ACTIVE_STAGES.has(document.stage)}
+                                title={document.error ?? undefined}
+                              />
+                            </span>
                             {/* 谁传的（G6）。没记到时显示"未记录"而不是留空——留空会让人以为是没渲染出来 */}
                             {roster.length > 0 ? (
-                              <span className="kb-col-uploader">
+                              <span
+                                className="kb-col-uploader"
+                                style={UPLOADER_CELL}
+                                title={document.uploaded_by_name || undefined}
+                              >
                                 {document.uploaded_by_name || '未记录'}
                               </span>
                             ) : null}

@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { KnowledgeBaseView } from '@/features/knowledge'
 import { resetKnowledgeBaseCache, resetRegistryCache } from '@/features/knowledge/store'
+import { useOperatorStore } from '@/lib/operator'
 import type { Folder } from '@/api/folders'
 import type { DocumentSummary } from '@/api/documents'
 import type { KnowledgeBase } from '@/api/knowledgeBases'
@@ -173,10 +174,24 @@ const FOLDER: Folder = {
   created_at: null,
 }
 
+/** 名册里的一条：上传者那一列只在名册拉到之后才出现（行与列头同一条条件）。 */
+const ROSTER_USER = {
+  id: 'u-1',
+  name: '小又',
+  note: '',
+  created_at: null,
+  document_count: 2,
+  avatar_url: '',
+  username: null,
+  role: 'member' as const,
+  disabled: false,
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   resetKnowledgeBaseCache()
   resetRegistryCache()
+  useOperatorStore.setState({ roster: [] })
   listKbMock.mockResolvedValue({ items: [makeKB()] })
   listFoldersMock.mockResolvedValue({ items: [FOLDER] })
   mockList([
@@ -214,6 +229,36 @@ describe('页头', () => {
 })
 
 describe('文档列表', () => {
+  it('七列都有表头，表头与行内共用同一组列宽（评审 K3 / K6）', async () => {
+    useOperatorStore.setState({ roster: [ROSTER_USER] })
+    const { container } = renderView()
+
+    await screen.findByText('说明书.pdf')
+    const head = container.querySelector('.kb-doc-head') as HTMLElement
+    const row = container.querySelector('.kb-doc-row') as HTMLElement
+    const headFile = head.querySelector('.kb-head-file') as HTMLElement
+
+    // 列头与数据列一一对应，顺序就是列顺序（原先只有五个，状态与上传者有内容没列头）
+    expect((head.textContent ?? '').replace(/\s+/g, '')).toBe('文件状态上传者切块问题大小更新时间')
+    expect(within(row).getByText('小又')).toBeInTheDocument()
+
+    // jsdom 不做布局，"对齐"只能守到这一层：列头与行内那两格用的是同一组宽度，
+    // 左边缘才有可能落在同一条竖线上（宽度随文案走的话，列头只能对上其中一行）
+    const rowTag = within(row).getByText('已索引')
+    const rowUploader = row.querySelector('.kb-col-uploader') as HTMLElement
+    expect(within(headFile).getByText('状态').style.flex).toBe(rowTag.parentElement?.style.flex)
+    expect(within(headFile).getByText('上传者').style.flex).toBe(rowUploader.style.flex)
+  })
+
+  it('名册没拉到时不摆"上传者"这一列：行里没有，列头也不能有', async () => {
+    const { container } = renderView()
+
+    await screen.findByText('说明书.pdf')
+    const head = container.querySelector('.kb-doc-head') as HTMLElement
+    expect(head.textContent ?? '').not.toContain('上传者')
+    expect(container.querySelector('.kb-col-uploader')).toBeNull()
+  })
+
   it('渲染行：名称、状态、切块数与大小都在一行里，分页参数下推给后端', async () => {
     const { container } = renderView()
 

@@ -35,7 +35,7 @@ import { FilePreview } from '@/features/preview'
 import { SkeletonRows, StatusTag } from '@/features/knowledge/composites'
 import { ProcessingTimeline } from '@/features/knowledge/ProcessingTimeline'
 import { messageOf, notify } from '@/features/knowledge/store'
-import { documentStageView } from '@/features/knowledge/status'
+import { documentSourceLabel, documentStageView } from '@/features/knowledge/status'
 import { formatBytes, formatDate } from '@/lib/format'
 import {
   AlertDialog,
@@ -379,7 +379,13 @@ export function DocumentDrawer({
                 </div>
                 <div>
                   <dt>来源</dt>
-                  <dd>{document.source_kind}</dd>
+                  {/* 取值与列表的「来源」筛选同一份文案：这里原先直接把 `upload` 摆出来 */}
+                  <dd>{documentSourceLabel(document.source_kind)}</dd>
+                </div>
+                <div>
+                  {/* 与列表那一列同名同值：列表里它只是一个列头下的用户名，读全文时得能对上 */}
+                  <dt>上传者</dt>
+                  <dd>{document.uploaded_by_name || '未记录'}</dd>
                 </div>
                 <div>
                   <dt>更新时间</dt>

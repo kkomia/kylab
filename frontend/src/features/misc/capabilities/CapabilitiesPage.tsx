@@ -16,7 +16,7 @@
  * 3. **策略默认「需要确认」**。外部工具会以用户的名义执行动作，默认静默执行
  *    是这一层最不该有的默认。
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -48,12 +48,17 @@ import {
 } from '@/api/capabilities'
 import { useSessionStore } from '@/lib/session'
 import { listPlugins } from '@/api/plugins'
+// 技能正文复用知识域那一份渲染件：`Markdown` 是"只读长文"的口径（出处徽标、站内双链都要
+// 显式传参才出现，这里不传），而且它的规则只认解析器认识的那些标记，源码里的 HTML 进不来。
+import { Markdown } from '@/features/knowledge/markdown'
 
 import { SettingGroupPanel } from '../settings/SettingGroupPanel'
 import { notifyError, notifySuccess } from '../shared/toast'
 import { Badge } from '@/ui/badge'
 import { Button } from '@/ui/button'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog'
 import { Input } from '@/ui/input'
+import { Tabs, TabsList, TabsTrigger } from '@/ui/tabs'
 import { Textarea } from '@/ui/textarea'
 import {
   ConfirmDialog,
@@ -62,7 +67,6 @@ import {
   FilterChips,
   Modal,
   PageShell,
-  SegmentedControl,
   OptionSelect,
   SkeletonBlock,
   StatusTag,
@@ -70,6 +74,10 @@ import {
 } from '../shared/composites'
 import { PLUGINS_QUERY_KEY, PluginPackPanel, statsOf } from './PluginPackPanel'
 import { SkillMarketDialog } from './SkillMarketDialog'
+// 上面那个渲染件的样式**跟着一起引**：知识域的路由是懒加载的，`knowledge.css` 只在那几个
+// chunk 里加载（实测能力页上没有任何 `.kb-md-*` 规则）——少了它，正文就是裸 HTML
+// （段落没有间距、代码块没有底色），那还不如继续显示源文件。
+import '@/features/knowledge/knowledge.css'
 
 const SKILLS_QUERY_KEY = ['skills', 'list'] as const
 const INSTALLED_QUERY_KEY = ['skills', 'installed'] as const
@@ -83,6 +91,38 @@ const CAP_TABS = [
   // 新的一栏叫「插件包」：上面那个名字已经被 MCP 占了，而两者是不同的东西
   { value: 'packs' as const, label: '插件包' },
 ]
+
+type CapTab = (typeof CAP_TABS)[number]['value']
+
+/**
+ * 分区导航（技能 / 插件 / 插件包）——这一页唯一的导航，当前档必须一眼看得出来。
+ *
+ * 语义与键盘交给 `@/ui/tabs`（Radix）：`role="tablist"` / `role="tab"`、`aria-selected`、
+ * 左右方向键 + roving tabindex 都是它给的。
+ *
+ * **当前态的视觉垫在内层 `span` 上，不在触发按钮上**——这是被一条全局规则逼出来的写法：
+ * `tokens.css` 里那条**未分层**的 `button { padding: 0; background: none; color: inherit;
+ * font: inherit; border: none }` 按 CSS 的分层规则**压过 `@layer utilities` 里的全部工具类**
+ * （未分层 > 分层，与优先级无关）。实测三个页签因此渲染成一串纯文本：`px-3` 归零、
+ * `data-[state=active]:bg-surface` 不生效，两档截图逐像素相同（评审 G1）。
+ * `span` 不在那条规则的范围里，所以把分段的白底/字色/内边距放在它上面。
+ * 等那条归零规则收进 `@layer base`（令牌批次），这几层 span 可以收回触发按钮本身。
+ */
+function CapabilityTabs({ value, onChange }: { value: CapTab; onChange: (next: CapTab) => void }) {
+  return (
+    <Tabs value={value} onValueChange={(next) => onChange(next as CapTab)}>
+      <TabsList aria-label="能力" className="h-9 p-0.5">
+        {CAP_TABS.map((item) => (
+          <TabsTrigger key={item.value} value={item.value} className="group/tab h-8">
+            <span className="flex h-7 items-center rounded-control px-3 text-[length:var(--text-meta-size)] font-medium whitespace-nowrap text-text-secondary transition-colors group-hover/tab:text-text-primary group-data-[state=active]/tab:bg-surface group-data-[state=active]/tab:text-text-primary">
+              {item.label}
+            </span>
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
+  )
+}
 
 const TRANSPORT_OPTIONS = [
   { value: 'stdio', label: 'stdio（起一个本地进程）' },
@@ -141,6 +181,11 @@ function messageOf(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
 }
 
+/** 滚动容器是不是已经到底了（留 4px 容差：亚像素会把"到底"判成"没到底"）。 */
+function scrolledToEnd(element: HTMLElement): boolean {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= 4
+}
+
 export function CapabilitiesPage() {
   const queryClient = useQueryClient()
   const isAdmin = useSessionStore((store) => store.currentUser?.role === 'admin')
@@ -155,6 +200,9 @@ export function CapabilitiesPage() {
   )
   const [skillDetail, setSkillDetail] = useState<Awaited<ReturnType<typeof getSkill>> | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  /** 正文下面还有没有没读完的（决定弹窗底部那层渐隐出不出现）。 */
+  const [bodyAtEnd, setBodyAtEnd] = useState(true)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
   const [marketOpen, setMarketOpen] = useState(false)
   const [uninstallTarget, setUninstallTarget] = useState<Skill | null>(null)
 
@@ -281,6 +329,16 @@ export function CapabilitiesPage() {
     }
   }
 
+  /**
+   * 正文是**异步取回来**的（也可能换了一条），所以每换一次内容就重新量一次滚动位置：
+   * 底部那层渐隐只在"下面还有正文"时出现（它是滚动提示，不是一句说明文字）。
+   */
+  useEffect(() => {
+    const element = bodyRef.current
+    if (!element) return
+    setBodyAtEnd(scrolledToEnd(element))
+  }, [skillDetail])
+
   const uninstall = useMutation({
     mutationFn: (skill: Skill) => uninstallSkill(skill.name),
     onSuccess: async (_result, skill) => {
@@ -395,7 +453,7 @@ export function CapabilitiesPage() {
         </>
       }
     >
-      <SegmentedControl items={CAP_TABS} value={tab} onChange={setTab} ariaLabel="能力" />
+      <CapabilityTabs value={tab} onChange={setTab} />
       {tab === 'skills' && (
         <section className="page-shell-body" role="tabpanel" aria-label="技能">
           <header className="m-toolbar">
@@ -651,14 +709,62 @@ export function CapabilitiesPage() {
       )}
 
       {/* ------------------------------------------------------------ 技能正文 */}
-      <Modal
+      {/*
+        弹窗自己拼（不走 `Modal`）：那个组合件的宽只有 520/620/960 三档，
+        而技能正文是**阅读面**——960 与对话页的 66ch 正文纪律相反，每行会拖到 900px 以上
+        （评审：右侧空一大块、行太长）。这里按 720px 收，与对话页来源抽屉同一档
+        （`sm:max-w-[min(720px,92vw)]`）。三段式与 Esc/遮罩关闭/焦点退还仍由
+        `@/ui/dialog`（Radix）给，见 `src/ui/dialog.tsx` 头注释里那段组合示例。
+      */}
+      <Dialog
         open={skillDetail !== null || detailLoading}
-        title={skillDetail?.name ?? '读取技能…'}
-        onClose={() => setSkillDetail(null)}
-        size="wide"
-        height="tall"
-        footer={
-          <>
+        onOpenChange={(next) => {
+          if (!next) setSkillDetail(null)
+        }}
+      >
+        <DialogContent className="flex max-h-[88vh] flex-col gap-0 p-0 sm:max-w-[min(720px,92vw)]">
+          <DialogHeader className="flex-row items-center justify-between gap-3 border-b border-[var(--border-hairline)] px-5 py-4 pr-12 text-left">
+            <DialogTitle>{skillDetail?.name ?? '读取技能…'}</DialogTitle>
+          </DialogHeader>
+
+          <div className="relative flex min-h-0 flex-1 flex-col">
+            <div
+              ref={bodyRef}
+              onScroll={(event) => setBodyAtEnd(scrolledToEnd(event.currentTarget))}
+              className="min-h-0 flex-1 overflow-y-auto px-5 py-4"
+            >
+              {/* 被丢弃的技能也读得出来（后端详情端点放行），但要在这里说清"它为什么不算数" */}
+              {skillDetail?.discarded && (
+                <ul className="m-flags">
+                  {skillDetail.flagged.map((reason, at) => (
+                    <li key={at}>{reason}</li>
+                  ))}
+                </ul>
+              )}
+              {/* 来源与卸载入口：从市场装的技能要能在这里卸掉，
+                  而"从哪儿装的"是用户决定要不要卸的依据 */}
+              {skillDetail && isFromMarket(skillDetail) && (
+                <p className="m-detail-meta">
+                  <Badge variant="secondary">{sourceLabelOf(skillDetail)}</Badge>
+                  <span className="text-meta">
+                    从市场装的，可以在这里卸载（随代码发布的那些卸不掉）
+                  </span>
+                </p>
+              )}
+              {/* 正文按 markdown 渲染（复用知识域的渲染件）：`SKILL.md` 是文档，
+                  不是源文件——用户不需要看 `#`、`**` 和反引号 */}
+              {skillDetail && <Markdown text={skillDetail.body} />}
+            </div>
+            {/* 下面还有正文：底部一层渐隐（滚动提示，不是一句说明文字） */}
+            {!bodyAtEnd && (
+              <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-[var(--bg-overlay)] to-transparent"
+              />
+            )}
+          </div>
+
+          <DialogFooter className="flex-row items-center justify-end gap-2 border-t border-[var(--border-hairline)] px-5 py-3">
             {skillDetail && isFromMarket(skillDetail) && (
               <span className="m-footer-left">
                 <Button onClick={() => setUninstallTarget(skillDetail)}>
@@ -668,31 +774,9 @@ export function CapabilitiesPage() {
               </span>
             )}
             <Button onClick={() => setSkillDetail(null)}>关闭</Button>
-          </>
-        }
-      >
-        <p className="text-meta">
-          这就是模型按需读进来的**正文**。frontmatter（名字与描述）不在这里——
-          那一行会进系统提示词，正文只在它决定用这个技能时才读。
-        </p>
-        {/* 被丢弃的技能也读得出来（后端详情端点放行），但要在这里说清"它为什么不算数" */}
-        {skillDetail?.discarded && (
-          <ul className="m-flags">
-            {skillDetail.flagged.map((reason, at) => (
-              <li key={at}>{reason}</li>
-            ))}
-          </ul>
-        )}
-        {/* 来源与卸载入口：从市场装的技能要能在这里卸掉，
-            而"从哪儿装的"是用户决定要不要卸的依据 */}
-        {skillDetail && isFromMarket(skillDetail) && (
-          <p className="m-detail-meta">
-            <Badge variant="secondary">{sourceLabelOf(skillDetail)}</Badge>
-            <span className="text-meta">从市场装的，可以在这里卸载（随代码发布的那些卸不掉）</span>
-          </p>
-        )}
-        <pre className="m-skill-body">{skillDetail?.body ?? ''}</pre>
-      </Modal>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* ------------------------------------------------------------ 登记表单 */}
       <Modal

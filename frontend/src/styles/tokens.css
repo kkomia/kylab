@@ -8,96 +8,107 @@
  *    节奏一旦失控，"克制"就退化成了"没对齐"。
  */
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
+/* ---------------------------------------------------------------------
+   **这一段是元素级重置，必须待在 `@layer base` 里。**
+   层外的声明会压过 Tailwind 的 `@layer utilities`——CSS 分层规则与优先级无关，
+   未分层的样式永远赢。后果是按钮上的 `bg-*` / `border-*` / `px-*` / `font-*`
+   全部失效：页签的当前态、主操作的实心按钮，全都退化成了纯文字
+   （2026-09-24 的界面评审把这一条挖了出来，它是当时一整片"控件形状不对"的病根）。
+   Tailwind v4 的 preflight 同样在 `base` 层，这里与它同层、按源码顺序生效。
+   —— 只套**重置**；下面的 `:root` 令牌定义保持不分层（令牌要被 `var()` 读到，
+   且不该被 utilities 覆盖语义）。
+   --------------------------------------------------------------------- */
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
 
-html,
-body,
-#app {
-  height: 100%;
-}
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
 
-body {
-  margin: 0;
-  background: var(--bg-canvas);
-  color: var(--text-primary);
-  /* 字体栈按 Kimi 的顺序（它同样是纯系统字体，不引 webfont 做正文） */
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, Roboto, 'Noto Sans', Ubuntu,
-    Cantarell, 'Helvetica Neue', sans-serif, Arial, 'PingFang SC', 'Source Han Sans SC',
-    'Microsoft YaHei UI', 'Microsoft YaHei';
-  font-size: var(--text-body-size);
-  /* 行高按 Kimi 的 ui-B1（22 / 15 ≈ 1.47）。比原来的 1.65 紧——
+  body {
+    margin: 0;
+    background: var(--bg-canvas);
+    color: var(--text-primary);
+    /* 字体栈按 Kimi 的顺序（它同样是纯系统字体，不引 webfont 做正文） */
+    font-family:
+      -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, Roboto, 'Noto Sans', Ubuntu,
+      Cantarell, 'Helvetica Neue', sans-serif, Arial, 'PingFang SC', 'Source Han Sans SC',
+      'Microsoft YaHei UI', 'Microsoft YaHei';
+    font-size: var(--text-body-size);
+    /* 行高按 Kimi 的 ui-B1（22 / 15 ≈ 1.47）。比原来的 1.65 紧——
      Kimi 的观感有相当一部分来自这个密度。长篇阅读面（文档正文、Wiki）
      仍用 --line-prose，不受这一档影响。 */
-  line-height: 1.47;
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizelegibility;
-}
+    line-height: 1.47;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizelegibility;
+  }
 
-/**
+  /**
  * 字阶：四级，靠**字号**分工，不靠字重堆砌。
  *
  * 上一轮的问题是所有标题都是 600——标题、小标题、正文名一切皆粗体，
  * 粗体就不再是重音，"文档优先"也就无从体现。这里只在页标题与小标题上用力，
  * 正文与所有数字回到 400/500，让层级由字号和留白说话。
  */
-h1,
-h2,
-h3 {
-  margin: 0;
-  color: var(--text-primary);
-  line-height: 1.3;
-}
+  h1,
+  h2,
+  h3 {
+    margin: 0;
+    color: var(--text-primary);
+    line-height: 1.3;
+  }
 
-/* 页标题：整个界面唯一的重音 */
-h1 {
-  font-size: var(--text-page-title-size);
-  font-weight: 600;
-  letter-spacing: -0.018em;
-}
+  /* 页标题：整个界面唯一的重音 */
+  h1 {
+    font-size: var(--text-page-title-size);
+    font-weight: 600;
+    letter-spacing: -0.018em;
+  }
 
-/* 内容小标题：只比正文大一点，靠上方的留白分区 */
-h2 {
-  font-size: var(--text-section-size);
-  font-weight: 600;
-  letter-spacing: -0.005em;
-}
+  /* 内容小标题：只比正文大一点，靠上方的留白分区 */
+  h2 {
+    font-size: var(--text-section-size);
+    font-weight: 600;
+    letter-spacing: -0.005em;
+  }
 
-h3 {
-  font-size: var(--text-body-size);
-  font-weight: 600;
-  color: var(--text-secondary);
-}
+  h3 {
+    font-size: var(--text-body-size);
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
 
-a {
-  color: var(--accent-text);
-  text-decoration: none;
-}
+  a {
+    color: var(--accent-text);
+    text-decoration: none;
+  }
 
-a:hover {
-  text-decoration: underline;
-}
+  a:hover {
+    text-decoration: underline;
+  }
 
-button {
-  padding: 0;
-  font: inherit;
-  color: inherit;
-  background: none;
-  border: none;
-  cursor: pointer;
-}
+  button {
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
 
-/* 原生 checkbox / radio 自带 3px 外边距（UA 样式），同样要归零 */
-input[type='checkbox'],
-input[type='radio'] {
-  margin: 0;
-}
+  /* 原生 checkbox / radio 自带 3px 外边距（UA 样式），同样要归零 */
+  input[type='checkbox'],
+  input[type='radio'] {
+    margin: 0;
+  }
 
-/* 键盘可达性：鼠标点击不出现焦点环，键盘导航必须有。
+  /* 键盘可达性：鼠标点击不出现焦点环，键盘导航必须有。
    焦点环用**墨色**（`Labels-Primary`），不是品牌蓝——v0.18 照 Kimi 的实测值改的：
 
      box-shadow: var(--next-sidebar-focus-ring, inset 0 0 0 1px var(--Labels-Primary))   ← 21 处
@@ -107,20 +118,20 @@ input[type='radio'] {
    蓝的只有 3 处、墨色的近 30 处：**Kimi 的焦点环是墨色的**，品牌蓝留给小面积强调
    （与本仓规范 §7「强调只在小面积上用品牌色」同一口径）。原来那圈 2px 蓝环在整页
    到处都是，正是"品牌色被大面积使用"；用户点名的"蓝色框线表现与 Kimi 不一致"就是它。 */
-:focus-visible {
-  outline: 2px solid var(--text-primary);
-  outline-offset: 2px;
-  border-radius: var(--radius-control);
-}
+  :focus-visible {
+    outline: 2px solid var(--text-primary);
+    outline-offset: 2px;
+    border-radius: var(--radius-control);
+  }
 
-/* 等宽用 Kimi 指定的 Geist Mono。**本机没装时逐级回退**，所以这里是一条链而不是一个值。
+  /* 等宽用 Kimi 指定的 Geist Mono。**本机没装时逐级回退**，所以这里是一条链而不是一个值。
    顺带修一个既有问题：--font-mono 此前被组件引用却从未定义（引用处一直拿到空值）。 */
-code,
-pre {
-  font-family: var(--font-mono);
-}
+  code,
+  pre {
+    font-family: var(--font-mono);
+  }
 
-/**
+  /**
  * 滚动条：全局细滚动条（《界面评审与改进计划 v0.2》§2）。
  *
  * 目标是 Kimi / wekora 那种**悬浮的圆角胶囊**：滑块比轨道窄、两端是圆的，
@@ -128,38 +139,39 @@ pre {
  * 只靠 `border-radius` 的话，滑块会撑满整个轨道宽度，看起来还是一根方条。
  * 颜色只引主题变量，浅色/深色自动跟随；轨道透明，内容区看起来是整块。
  */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-strong) transparent;
-}
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
 
-::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
-}
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
 
-::-webkit-scrollbar-track {
-  background: transparent;
-}
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
 
-/* 4px 的透明边框把滑块收成 4px 宽的胶囊；圆角按胶囊半径给足 */
-::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  background-clip: content-box;
-  border: 4px solid transparent;
-  border-radius: 999px;
-}
+  /* 4px 的透明边框把滑块收成 4px 宽的胶囊；圆角按胶囊半径给足 */
+  ::-webkit-scrollbar-thumb {
+    background: var(--border-strong);
+    background-clip: content-box;
+    border: 4px solid transparent;
+    border-radius: 999px;
+  }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--text-tertiary);
-  background-clip: content-box;
-  border: 4px solid transparent;
-}
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-tertiary);
+    background-clip: content-box;
+    border: 4px solid transparent;
+  }
 
-/* 角落（横向与纵向滚动条相交处）不要那块默认的方疙瘩 */
-::-webkit-scrollbar-corner {
-  background: transparent;
-}
+  /* 角落（横向与纵向滚动条相交处）不要那块默认的方疙瘩 */
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+} /* @layer base 结束（上面的 `:root` 令牌定义在层外，故意） */
 
 /**
  * 「用时才出现」的滚动条（v0.26，用户报的侧栏那一条）。

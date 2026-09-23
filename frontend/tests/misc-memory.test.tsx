@@ -97,6 +97,20 @@ function overview(overrides: Partial<MemoryOverview> = {}): MemoryOverview {
   }
 }
 
+/**
+ * 页签当前态的两个可见抓手（与 `misc-tasks.test.tsx` 里的那份一致）。
+ *
+ * jsdom 不算样式，所以钉的是那两处钩子：白底分段在不在、字色字重按不按当前项给。
+ */
+function segmentState(trigger: HTMLElement) {
+  const pill = trigger.querySelector('[data-slot="segment-current"]')?.className ?? ''
+  const label = trigger.querySelector('[data-slot="segment-label"]')?.className ?? ''
+  return {
+    pillShown: !pill.includes('opacity-0'),
+    emphasized: label.includes('text-text-primary') && label.includes('font-medium'),
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   resetToasts()
@@ -134,6 +148,24 @@ describe('记忆页', () => {
     expect(
       screen.getByText(/每轮对话都会把它整份注入上下文（不参与检索，所以搜不到是正常的）/),
     ).toBeInTheDocument()
+  })
+
+  it('页签的当前项有可见的当前态（文件那一档的计数照旧），另一项保持弱化', async () => {
+    renderMisc(<MemoryPage />)
+    const files = await screen.findByRole('tab', { name: /文件/ })
+    const recall = screen.getByRole('tab', { name: '召回' })
+
+    // 评审 M5 只缺视觉：aria-selected 与键盘本来就是对的
+    expect(files).toHaveAttribute('aria-selected', 'true')
+    expect(recall).toHaveAttribute('aria-selected', 'false')
+    // 文件数仍挂在那一档上（换掉 SegmentedControl 不能把这个丢了）
+    expect(files).toHaveTextContent('3')
+    expect(segmentState(files)).toEqual({ pillShown: true, emphasized: true })
+    expect(segmentState(recall)).toEqual({ pillShown: false, emphasized: false })
+
+    await userEvent.click(recall)
+    expect(segmentState(recall)).toEqual({ pillShown: true, emphasized: true })
+    expect(segmentState(files)).toEqual({ pillShown: false, emphasized: false })
   })
 
   it('改了草稿点保存：把**原文**交给接口，并按返回内容刷新编辑器', async () => {

@@ -95,6 +95,22 @@ function task(overrides: Partial<TaskSummary> = {}): TaskSummary {
   }
 }
 
+/**
+ * 页签当前态的两个可见抓手。
+ *
+ * jsdom 不算样式（`vite.config.ts` 里 `test.css: false`），所以这里钉住的是**那两处钩子**：
+ * 白底分段在不在、字色字重按不按当前项给——评审 T1 的缺陷正是"两边一模一样"，
+ * 而"一模一样"在 DOM 上就是这两处没区别。`misc-memory.test.tsx` 里有一份同样的辅助。
+ */
+function segmentState(trigger: HTMLElement) {
+  const pill = trigger.querySelector('[data-slot="segment-current"]')?.className ?? ''
+  const label = trigger.querySelector('[data-slot="segment-label"]')?.className ?? ''
+  return {
+    pillShown: !pill.includes('opacity-0'),
+    emphasized: label.includes('text-text-primary') && label.includes('font-medium'),
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   resetToasts()
@@ -136,6 +152,69 @@ describe('任务中心', () => {
     // 失败行必须给一个**文字**出口（红点在黑白截图里就不见了）
     // 行尾给一句**可操作**的提示：失败与卡住要找的人不同，所以分开说
     expect(screen.getByText('查看失败原因')).toBeInTheDocument()
+  })
+
+  it('成功行的「健康」不再复述状态词，但失败/已取消仍逐字给后端标签（评审 T2）', async () => {
+    listTasksMock.mockResolvedValue({
+      items: [
+        task({
+          id: 't-ok',
+          state: 'succeeded',
+          document_name: '成功的.pdf',
+          health: 'done',
+          health_label: '已完成',
+        }),
+        task({
+          id: 't-bad',
+          state: 'failed',
+          document_name: '失败的.pdf',
+          health: 'done',
+          health_label: '已失败',
+        }),
+        task({
+          id: 't-canceled',
+          state: 'canceled',
+          document_name: '取消的.pdf',
+          health: 'done',
+          health_label: '已取消',
+        }),
+      ],
+    })
+
+    renderMisc(<TasksPage />)
+    await screen.findByText('成功的.pdf')
+    // 已取消默认不显示，点开才看得到那一行（失败/取消同属 done 档，要一起核）
+    await userEvent.click(screen.getByRole('checkbox', { name: '显示已取消' }))
+
+    // 按列表范围查：筛选下拉的兜底原生 select 里也有同名的选项
+    const rows = screen.getByRole('list')
+    // 同一行不再出现两个「已完成」——只留状态列徽章那一个
+    expect(within(rows).getAllByText('已完成')).toHaveLength(1)
+    // 不写词的那一格仍有名字：列头是 aria-hidden 的，读屏器只能靠这个标记
+    expect(within(rows).getByLabelText('健康')).toBeInTheDocument()
+    // 健康列三格的内容（这一档的弱文字单元格就是 `.m-row-health-done`）：
+    // 成功行只有一个不带词的记号，失败/取消行照旧写后端标签
+    const healthCells = [...rows.querySelectorAll('.m-row-health-done')].map(
+      (cell) => cell.textContent,
+    )
+    expect(healthCells).toEqual(['—', '已失败', '已取消'])
+  })
+
+  it('页签的当前项有可见的当前态，另一项保持弱化（语义态仍由 Radix 给）', async () => {
+    renderMisc(<TasksPage />)
+    const pipeline = await screen.findByRole('tab', { name: '流水线任务' })
+    const schedules = screen.getByRole('tab', { name: '定时任务' })
+
+    // 评审 T1 只缺视觉：aria-selected 与键盘本来就是对的，这一条不许改坏
+    expect(pipeline).toHaveAttribute('aria-selected', 'true')
+    expect(schedules).toHaveAttribute('aria-selected', 'false')
+    expect(segmentState(pipeline)).toEqual({ pillShown: true, emphasized: true })
+    expect(segmentState(schedules)).toEqual({ pillShown: false, emphasized: false })
+
+    // 切过去之后当前态跟着走（同一个钩子，不另写一套）
+    await userEvent.click(schedules)
+    expect(segmentState(schedules)).toEqual({ pillShown: true, emphasized: true })
+    expect(segmentState(pipeline)).toEqual({ pillShown: false, emphasized: false })
   })
 
   it('点开详情用 pre 显示失败原文（可选中复制，而不是 title 属性）', async () => {

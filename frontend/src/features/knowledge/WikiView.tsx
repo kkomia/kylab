@@ -69,6 +69,31 @@ interface NavRow {
   hasChildren: boolean
 }
 
+/**
+ * 正文自带的第一个标题如果与页面标题是同一句话，就丢掉。
+ *
+ * 页头（`kb-article-title`）已经把标题显示了一次，正文再写一遍就是同一行字出现两次
+ * （评审 K19：`y=110` 与 `y=230` 一模一样），首屏最好的一行被白白用掉。页面标题由系统
+ * 给定、模型输出里带不带这一行却不受控，所以判断放在**渲染时**，不动库里的数据。
+ *
+ * 只在"正文的第一个块就是标题、且与页面标题相同"时跳过；开篇直接是正文、或标题写法
+ * 不同（多了编号、加了书名号）时一律原样渲染——宁可多一行，也不要吃掉用户的内容。
+ */
+function dropDuplicateTitle(text: string, title: string): string {
+  const wanted = title.replace(/\s+/g, ' ').trim()
+  if (!wanted) return text
+  const lines = text.split('\n')
+  let index = 0
+  while (index < lines.length && (lines[index] ?? '').trim() === '') index += 1
+  const heading = /^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$/.exec(lines[index] ?? '')
+  if (!heading) return text
+  if ((heading[1] ?? '').replace(/\s+/g, ' ').trim() !== wanted) return text
+  // 连同标题后面紧跟的空行一起去掉，否则正文首段前面会多出一段空白
+  let end = index + 1
+  while (end < lines.length && (lines[end] ?? '').trim() === '') end += 1
+  return [...lines.slice(0, index), ...lines.slice(end)].join('\n')
+}
+
 export interface WikiViewProps {
   /** 不传则从路由参数取（`/kb/:kbId/wiki`）。 */
   kbId?: string
@@ -353,11 +378,34 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
   return (
     <div className="page-shell">
       <div className="kb-head-actions">
-        <h1 style={{ flex: 1 }}>
-          {/* 面包屑：Wiki 挂在某个库下，回库里的入口要一直在（旧前端同一个位置） */}
-          <Link to={`/kb/${kbId}`}>{kbName}</Link>
-          <ChevronRight size={13} aria-hidden="true" style={{ margin: '0 var(--space-1)' }} />
-          <span>Wiki</span>
+        {/*
+          面包屑：Wiki 挂在某个库下，回库里的入口要一直在（旧前端同一个位置）。
+          路径要靠一行读出来，所以整行**不折行**：窄的时候只压缩库名（末尾省略号），
+          箭头与 `Wiki` 是路径的落点，永远留着（评审 K18：原先折成"名称 / › / Wiki"三行，
+          三行缩进还不一致，路径语义就没了）。库名放 `title` 里，压到看不见时还能悬停读全文。
+        */}
+        <h1
+          style={{
+            flex: 1,
+            display: 'flex',
+            alignItems: 'center',
+            minWidth: 0,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          <Link
+            to={`/kb/${kbId}`}
+            title={kbName}
+            style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}
+          >
+            {kbName}
+          </Link>
+          <ChevronRight
+            size={13}
+            aria-hidden="true"
+            style={{ flex: '0 0 auto', margin: '0 var(--space-1)' }}
+          />
+          <span style={{ flex: '0 0 auto' }}>Wiki</span>
         </h1>
         {overview ? (
           <StatusTag label={statusView.label} tone={statusView.tone} running={statusView.running} />
@@ -523,7 +571,7 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
                     </header>
 
                     <Markdown
-                      text={detail.content_md}
+                      text={dropDuplicateTitle(detail.content_md, detail.title)}
                       citations={detail.sources.map((source) => ({
                         index: source.index,
                         document_name: source.document_name,

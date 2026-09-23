@@ -2310,6 +2310,21 @@
   padding-left: var(--space-5);
 }
 
+/*
+ * 符号：Tailwind 的 preflight 把 `ol, ul, menu` 的符号一并去掉了（`list-style: none`），
+ * 而 `padding-left` 留着——于是 Markdown 列表读起来是"缩进了一段的长文"：没有符号可分条目，
+ * 折行又回到条目的最左（评审 K20，Wiki 总览的「主题」是模型给的 `- [[标题]]：说明`）。
+ * 笔记域的富文本对同一件事的处理就是在这里还原（`notes.css` 的 `ul { list-style: disc }`）。
+ * 有符号之后，`padding-left` 就是那条**悬挂缩进**：符号挂在文字左侧，折行对齐条目首行。
+ */
+ul.kb-md-list {
+  list-style: disc;
+}
+
+ol.kb-md-list {
+  list-style: decimal;
+}
+
 .kb-md-quote {
   margin: var(--space-3) 0;
   padding: var(--space-2) var(--space-3);
