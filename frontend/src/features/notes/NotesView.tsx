@@ -24,6 +24,7 @@ import { Link, useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 
 import type { NoteAiAction, NoteListItem } from '@/api/notes'
+import { formatCount } from '@/lib/format'
 import { Button } from '@/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog'
 import { Input } from '@/ui/input'
@@ -595,7 +596,7 @@ export function NotesView() {
             {!listCollapsed && (
               <>
                 <p className="list-title">
-                  全部<span className="list-count tabular">{total}</span>
+                  全部<span className="list-count tabular">{formatCount(total)}</span>
                 </p>
                 <button
                   type="button"
@@ -656,7 +657,7 @@ export function NotesView() {
                                 读起来是"2026-09-3"（界面评审 N4 就是这么读的——
                                 它以为日期被截断了，其实那是**标签 + 计数**两个东西）。
                                 `·` 是仓库里既有的分隔符（用量行也用它），不新增词汇。 */}
-                            <span className="tag-count tabular">· {item.count}</span>
+                            <span className="tag-count tabular">· {formatCount(item.count)}</span>
                           </button>
                         ))}
                       </span>

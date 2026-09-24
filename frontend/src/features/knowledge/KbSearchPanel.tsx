@@ -16,7 +16,7 @@ import { search, type SearchResponse } from '@/api/search'
 import { EmptyState, SkeletonRows } from '@/features/knowledge/composites'
 import { notify } from '@/features/knowledge/store'
 import { failureText } from '@/features/preview'
-import { formatAge, formatScore } from '@/lib/format'
+import { formatAge, formatCount, formatLatency, formatScore } from '@/lib/format'
 import { Button } from '@/ui/button'
 import { Checkbox } from '@/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/ui/dialog'
@@ -221,7 +221,7 @@ export function KbSearchPanel({ open, kbId, kbName, onClose, onOpenDocument }: K
                         >
                           <span className="kb-history-query">{turn.query}</span>
                           <span className="text-micro tabular">
-                            {turn.response ? `${turn.response.hits.length} 条` : '—'}
+                            {turn.response ? `${formatCount(turn.response.hits.length)} 条` : '—'}
                           </span>
                           <span className="text-micro tabular">{formatAge(turn.at, now)}</span>
                         </button>
@@ -267,7 +267,8 @@ export function KbSearchPanel({ open, kbId, kbName, onClose, onOpenDocument }: K
                 <>
                   <div className="kb-hit-summary">
                     <span style={{ color: 'var(--text-primary)' }}>
-                      {latest.response.hits.length} 条命中<span className="sep">·</span>
+                      {formatCount(latest.response.hits.length)} 条命中
+                      <span className="sep">·</span>
                       {modeLabel(latest.response.mode)}
                     </span>
                     {latest.response.reranked ? <span>已 rerank</span> : null}
@@ -295,8 +296,8 @@ export function KbSearchPanel({ open, kbId, kbName, onClose, onOpenDocument }: K
                     <ul className="kb-hit-channels">
                       {latest.response.stats.map((stat) => (
                         <li key={stat.channel}>
-                          {channelLabel(stat.channel)} · 候选 {stat.count} ·{' '}
-                          {stat.elapsed_ms.toFixed(1)} ms
+                          {channelLabel(stat.channel)} · 候选 {formatCount(stat.count)} ·{' '}
+                          {formatLatency(stat.elapsed_ms)}
                         </li>
                       ))}
                     </ul>
@@ -351,7 +352,9 @@ export function KbSearchPanel({ open, kbId, kbName, onClose, onOpenDocument }: K
                                 {formatScore(hit.raw_scores[channel])}
                               </li>
                             ))}
-                            {hit.image_ids.length > 0 ? <li>{hit.image_ids.length} 张图</li> : null}
+                            {hit.image_ids.length > 0 ? (
+                              <li>{formatCount(hit.image_ids.length)} 张图</li>
+                            ) : null}
                           </ul>
                         </li>
                       ))}

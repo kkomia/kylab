@@ -31,6 +31,8 @@ import {
   type RegisteredModel,
 } from '@/api/modelRegistry'
 
+import { formatCount } from '@/lib/format'
+
 import { notifyError, notifySuccess } from '../shared/toast'
 import { Button } from '@/ui/button'
 import {
@@ -320,9 +322,9 @@ export function ModelRegistryPanel() {
   const deleteNote = !deleteTarget
     ? ''
     : deleteTarget.kind === 'provider'
-      ? `它下面的 ${deleteTarget.provider.model_count} 个模型会被一并删除，引用这些模型的用途会自动解绑。`
+      ? `它下面的 ${formatCount(deleteTarget.provider.model_count)} 个模型会被一并删除，引用这些模型的用途会自动解绑。`
       : deleteTarget.model.bound_slots.length > 0
-        ? `它正被 ${deleteTarget.model.bound_slots.length} 个用途使用，删除后会自动解绑。`
+        ? `它正被 ${formatCount(deleteTarget.model.bound_slots.length)} 个用途使用，删除后会自动解绑。`
         : ''
 
   return (
@@ -483,7 +485,7 @@ export function ModelRegistryPanel() {
               {provider.api_key_configured ? provider.api_key_hint : '未配密钥'}
             </span>
             <span className="sep">·</span>
-            <span className="tabular">{provider.model_count} 个模型</span>
+            <span className="tabular">{formatCount(provider.model_count)} 个模型</span>
           </p>
           {provider.base_url && <p className="m-provider-url">{provider.base_url}</p>}
 
@@ -599,7 +601,7 @@ export function ModelRegistryPanel() {
                   : availableError
                     ? `拉取候选失败：${availableError}。可直接输入模型 ID。`
                     : availableModels.length > 0
-                      ? `已拉取到 ${availableModels.length} 个候选，可搜索选择，也可直接输入。`
+                      ? `已拉取到 ${formatCount(availableModels.length)} 个候选，可搜索选择，也可直接输入。`
                       : '供应商没有返回模型列表，手动填写模型 ID。'}
                 {!loadingAvailable && (
                   <button

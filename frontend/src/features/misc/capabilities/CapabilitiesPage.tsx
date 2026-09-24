@@ -46,6 +46,7 @@ import {
   type MCPServer,
   type Skill,
 } from '@/api/capabilities'
+import { formatCount } from '@/lib/format'
 import { useSessionStore } from '@/lib/session'
 import { listPlugins } from '@/api/plugins'
 // 技能正文复用知识域那一份渲染件：`Markdown` 是"只读长文"的口径（出处徽标、站内双链都要
@@ -434,12 +435,12 @@ export function CapabilitiesPage() {
       actions={
         <>
           <StatusTag
-            label={`技能 ${usableSkills}/${skills.length} 可用`}
+            label={`技能 ${formatCount(usableSkills)} / ${formatCount(skills.length)} 可用`}
             tone={skills.length > 0 && usableSkills === 0 ? 'warning' : 'neutral'}
           />
-          <StatusTag label={`插件 ${servers.length} 个`} tone="neutral" />
+          <StatusTag label={`插件 ${formatCount(servers.length)} 个`} tone="neutral" />
           <StatusTag
-            label={`插件包 ${packStats.enabled}/${packStats.total}`}
+            label={`插件包 ${formatCount(packStats.enabled)} / ${formatCount(packStats.total)}`}
             tone={packStats.failed > 0 ? 'warning' : 'neutral'}
           />
           {/* 联网搜索与执行策略在这后面。**只给管理员**：后端 `/settings` 是管理员端点 */}
@@ -680,7 +681,7 @@ export function CapabilitiesPage() {
                           >
                             {expandedTools === server.id
                               ? '收起工具'
-                              : `工具 ${server.tools.length} 个`}
+                              : `工具 ${formatCount(server.tools.length)} 个`}
                           </button>
                         </Badge>
                       )}

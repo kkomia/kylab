@@ -43,6 +43,8 @@ import {
   type SkillSource,
 } from '@/api/capabilities'
 
+import { formatBytes, formatCount } from '@/lib/format'
+
 import { notifySuccess } from '../shared/toast'
 import { Badge } from '@/ui/badge'
 import { Button } from '@/ui/button'
@@ -54,12 +56,6 @@ const SOURCES_QUERY_KEY = ['skills', 'market', 'sources'] as const
 type View = 'list' | 'detail' | 'sources'
 
 const KIND_LABELS: Record<string, string> = { code: '代码', doc: '文本', asset: '资源' }
-
-function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
 
 /** 列表与详情上显示哪一句：**中文优先**（英文描述对中文用户等于没有）。 */
 function blurb(item: { description: string; summary?: string }): string {
@@ -324,7 +320,7 @@ export function SkillMarketDialog({
         )}
         <div className="m-market-actions">
           <Button size="sm" onClick={() => setView(view === 'sources' ? 'list' : 'sources')}>
-            {view === 'sources' ? '返回清单' : `管理源 ${allSources.length}`}
+            {view === 'sources' ? '返回清单' : `管理源 ${formatCount(allSources.length)}`}
           </Button>
           {view !== 'sources' && sourceId && (
             <Button size="sm" disabled={refreshing} onClick={() => void loadSkills(sourceId, true)}>
@@ -489,7 +485,8 @@ export function SkillMarketDialog({
           ) : (
             <>
               <p className="m-list-count">
-                共 {skills.length} 个技能{installedCount > 0 && `，已装 ${installedCount} 个`}
+                共 {formatCount(skills.length)} 个技能
+                {installedCount > 0 && `，已装 ${formatCount(installedCount)} 个`}
               </p>
               <ul className="m-market-list">
                 {visibleSkills.map((skill) => (
@@ -551,7 +548,7 @@ export function SkillMarketDialog({
                 <span>·</span>
                 <code>{bundle.sha.slice(0, 7)}</code>
                 {bundle.license && <span>· {bundle.license}</span>}
-                <span>· {formatSize(bundle.total_bytes)}</span>
+                <span>· {formatBytes(bundle.total_bytes)}</span>
               </p>
 
               {/* 代码文件**单独提示**：技能目录里的脚本是会被 agent 执行的代码，
@@ -559,7 +556,7 @@ export function SkillMarketDialog({
               {bundle.code_count > 0 && (
                 <p className="m-code-warn">
                   <AlertCircle size={14} />
-                  里面有 {bundle.code_count} 个脚本文件（下面标着「代码」的那些）——
+                  里面有 {formatCount(bundle.code_count)} 个脚本文件（下面标着「代码」的那些）——
                   技能用到它们时会在你的机器上执行。装之前不妨先看一眼。
                 </p>
               )}
@@ -581,7 +578,7 @@ export function SkillMarketDialog({
                       {KIND_LABELS[file.kind] ?? file.kind}
                     </span>
                     <code className="m-file-path">{file.path}</code>
-                    <span className="m-file-size">{formatSize(file.size)}</span>
+                    <span className="m-file-size">{formatBytes(file.size)}</span>
                   </li>
                 ))}
               </ul>

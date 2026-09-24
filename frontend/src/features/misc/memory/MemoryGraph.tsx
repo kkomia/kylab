@@ -10,6 +10,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import type { MemoryGraph as MemoryGraphData } from '@/api/memory'
+import { formatCount } from '@/lib/format'
 
 import { layoutGraph } from './graphLayout'
 
@@ -95,7 +96,7 @@ export function MemoryGraph({
                   }}
                 >
                   <circle r={item.r} />
-                  <title>{`${item.node.path}（${item.node.degree} 条链接）`}</title>
+                  <title>{`${item.node.path}（${formatCount(item.node.degree)} 条链接）`}</title>
                   {item.labelled && (
                     <text y={item.r + 14}>{item.node.title || item.node.path}</text>
                   )}
@@ -124,7 +125,7 @@ export function MemoryGraph({
 
       {graph.dangling.length > 0 && (
         <p className="m-graph-dangling">
-          有 {graph.dangling.length} 条链接指向不存在的文件：
+          有 {formatCount(graph.dangling.length)} 条链接指向不存在的文件：
           {graph.dangling.map((item, at) => (
             <span key={`${item[0]}-${item[1]}-${at}`}>
               <code>{item[0]}</code> → <code>{item[1]}</code>

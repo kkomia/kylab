@@ -33,7 +33,7 @@ import {
   type StatusTone,
 } from '@/features/knowledge/composites'
 import { messageOf, notify, useKnowledgeBases, usePolling } from '@/features/knowledge/store'
-import { formatDate, formatRelativeTime } from '@/lib/format'
+import { formatCount, formatDate, formatRelativeTime } from '@/lib/format'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -483,7 +483,7 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
             <div className="kb-wiki-body">
               <aside className="kb-wiki-nav" aria-label="页面目录">
                 <div className="kb-wiki-nav-head">
-                  <span>页面 · {overview.page_count}</span>
+                  <span>页面 · {formatCount(overview.page_count)}</span>
                   {/* 清除是低频且不可恢复的动作：平时只留一行小字，确认弹窗才说清代价 */}
                   <button
                     type="button"

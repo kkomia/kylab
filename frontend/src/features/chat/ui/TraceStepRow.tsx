@@ -11,6 +11,7 @@ import { ChevronDown } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { resultPreview, type TraceStep } from '@/features/chat/model/turns'
+import { formatCount } from '@/lib/format'
 
 import { LinkText } from './LinkText'
 import { StepIcon } from './stepIcons'
@@ -151,7 +152,7 @@ export function TraceStepRow({
                   */}
                   {preview !== null ? (
                     <span className={`${RAW_NOTE} tabular`}>
-                      仅预览 {preview.length}/{step.result.length} 字
+                      仅预览 {formatCount(preview.length)} / {formatCount(step.result.length)} 字
                     </span>
                   ) : null}
                 </p>
@@ -164,7 +165,9 @@ export function TraceStepRow({
                     className={RAW_MORE}
                     onClick={() => setFullResult((value) => !value)}
                   >
-                    {fullResult ? '收起，只看预览' : `加载全部（${step.result.length} 字）`}
+                    {fullResult
+                      ? '收起，只看预览'
+                      : `加载全部（${formatCount(step.result.length)} 字）`}
                   </button>
                 ) : null}
               </>

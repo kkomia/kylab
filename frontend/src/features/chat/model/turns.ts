@@ -23,6 +23,8 @@
  */
 
 import type { ChatArtifact, ChatSource, ChatStep } from '@/api/chat'
+// 纯函数模块：只借它的格式化，不引组件（这一层仍然不认识任何一个 UI 组件）
+import { formatCount } from '@/lib/format'
 
 // 取值是**契约**（请求与响应都用它），定义在 api/chat.ts；这里再导出一次，
 // 既有的 `import type { ThinkingEffort } from '@/composables/useChatTurns'` 因此不用改
@@ -281,7 +283,7 @@ export function traceSummary(message: Message): string {
     return message.steps.some((step) => step.phase === 'tool') ? '本轮没有命中资料' : '直接作答'
   }
   const documents = new Set(message.sources.map((item) => item.document_id)).size
-  return `检索完成 · 引用了 ${message.sources.length} 个片段 · ${documents} 篇文档`
+  return `检索完成 · 引用了 ${formatCount(message.sources.length)} 个片段 · ${formatCount(documents)} 篇文档`
 }
 
 /**
@@ -806,7 +808,7 @@ function legacyTraceSteps(turn: Turn): TraceStep[] {
       key: 'retrieve',
       icon: 'search',
       label: '检索知识库',
-      detail: `「${short}」找到 ${message.sources.length} 个片段`,
+      detail: `「${short}」找到 ${formatCount(message.sources.length)} 个片段`,
     })
   }
   if (message.thinking?.enabled) steps.push(...thinkingStep(message))
@@ -833,7 +835,7 @@ function thinkingStep(message: Message): TraceStep[] {
 
 function answerDetail(message: Message): string {
   if (message.streaming) return '正在生成…'
-  return message.text.length > 0 ? `共 ${message.text.length} 字` : ''
+  return message.text.length > 0 ? `共 ${formatCount(message.text.length)} 字` : ''
 }
 
 /**

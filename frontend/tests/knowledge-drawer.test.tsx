@@ -242,7 +242,8 @@ describe('抽屉的基本信息与预览', () => {
     await user.click(screen.getByRole('tab', { name: '切块' }))
 
     expect(screen.getByText('该文档共 137 块，这里只显示前 1 块。')).toBeInTheDocument()
-    expect(screen.getByText(/已为 3\/137 段出题，共 6 条/)).toBeInTheDocument()
+    // 配比斜杠两侧带空格、出题数用「题」（与列表那一列同一个单位词）：全站一种写法
+    expect(screen.getByText(/已为 3 \/ 137 段出题，共 6 题/)).toBeInTheDocument()
     expect(screen.getByText('第一块的正文')).toBeInTheDocument()
     expect(screen.getByText('怎么安装？')).toBeInTheDocument()
     expect(screen.getByText(/第 1 块/)).toBeInTheDocument()

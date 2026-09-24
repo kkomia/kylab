@@ -23,7 +23,7 @@ import {
   type StatusTone,
 } from '@/features/knowledge/composites'
 import { messageOf, usePolling } from '@/features/knowledge/store'
-import { formatMillis } from '@/lib/format'
+import { formatCount, formatMillis } from '@/lib/format'
 
 /** 与列表同一个节拍：两处数字对得上比"更实时"重要。 */
 const POLL_INTERVAL_MS = 2000
@@ -132,8 +132,8 @@ export function ProcessingTimeline({ documentId, active }: ProcessingTimelinePro
     <div className="kb-timeline">
       <div className="kb-timeline-summary">
         <p style={{ margin: 0 }}>
-          共 {timeline.step_total} 个环节 · 当前第 {timeline.current_index} 个 · 总耗时{' '}
-          {formatMillis(timeline.total_ms)}
+          共 {formatCount(timeline.step_total)} 个环节 · 当前第{' '}
+          {formatCount(timeline.current_index)} 个 · 总耗时 {formatMillis(timeline.total_ms)}
         </p>
         <StatusTag
           label={statusLabel}

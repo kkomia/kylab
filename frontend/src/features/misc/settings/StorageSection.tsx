@@ -8,7 +8,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { compactStorage, getStorageOverview } from '@/api/maintenance'
-import { formatBytes } from '@/lib/format'
+import { formatBytes, formatCount } from '@/lib/format'
 
 import { useKnowledgeBases } from '../shared/knowledgeBases'
 import { notifyError, notifySuccess } from '../shared/toast'
@@ -70,7 +70,7 @@ export function StorageSection() {
       <div className="m-row">
         <div className="m-row-main">
           <span className="m-row-label">知识库数量</span>
-          <span className="m-row-value tabular">{kbCount}</span>
+          <span className="m-row-value tabular">{formatCount(kbCount)}</span>
         </div>
       </div>
 

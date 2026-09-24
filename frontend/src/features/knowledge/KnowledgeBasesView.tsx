@@ -29,7 +29,7 @@ import {
   type SuggestedQuestionsValue,
 } from '@/features/knowledge/SuggestedQuestionsFields'
 import { messageOf, notify, useKnowledgeBases, useModelRegistry } from '@/features/knowledge/store'
-import { formatRelativeTime } from '@/lib/format'
+import { formatCount, formatRelativeTime } from '@/lib/format'
 import { Button } from '@/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog'
 import { Input } from '@/ui/input'
@@ -219,7 +219,7 @@ export function KnowledgeBasesView() {
                 <span className="kb-card-body">
                   <span className="kb-doc-count">
                     <span className="kb-doc-value tabular">
-                      {store.summaries[kb.id]?.count ?? '—'}
+                      {formatCount(store.summaries[kb.id]?.count ?? null)}
                     </span>
                     <span className="kb-doc-unit">篇文档</span>
                   </span>

@@ -59,6 +59,7 @@ import {
   type RosterUser,
   type UserRole,
 } from '@/api/users'
+import { formatCount } from '@/lib/format'
 import { clearSessionToken, useSessionStore } from '@/lib/session'
 
 import { notifyError, notifySuccess } from '../shared/toast'
@@ -996,7 +997,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                               <span className="sep">·</span>
                             </>
                           )}
-                          {person.document_count} 篇文档
+                          {formatCount(person.document_count)} 篇文档
                         </span>
                       </span>
                       {person.username ? (
@@ -1199,7 +1200,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         open={deleteTarget !== null}
         title="删除用户"
         lead={`确定删除「${deleteTarget?.name ?? ''}」？`}
-        note={`对方上传的 ${deleteTarget?.document_count ?? 0} 篇文档会保留，但不再归属任何人；账号将无法再登录。不可撤销。`}
+        note={`对方上传的 ${formatCount(deleteTarget?.document_count)} 篇文档会保留，但不再归属任何人；账号将无法再登录。不可撤销。`}
         confirmLabel="删除"
         busy={removeAccount.isPending}
         busyLabel="删除中…"

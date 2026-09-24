@@ -71,7 +71,13 @@ import {
 } from '@/features/knowledge/status'
 import { UploadDialog } from '@/features/knowledge/UploadDialog'
 import { MAX_UPLOAD_MB, UPLOAD_FORMAT_HINT } from '@/features/knowledge/uploadLimits'
-import { formatBytes, formatMillis, formatRelativeTime } from '@/lib/format'
+import {
+  formatBytes,
+  formatCount,
+  formatDate,
+  formatMillis,
+  formatRelativeTime,
+} from '@/lib/format'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -758,10 +764,16 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
   const totalCount = unfiledCount === null ? null : unfiledCount + foldersTotal
   const pageCount = Math.max(1, Math.ceil(total / DOCUMENT_PAGE_SIZE))
 
-  /** 出题列文案：生成中 > 已出题条数 > 未生成 > 还没切块（出不了题）。 */
+  /**
+   * 出题列文案：生成中 > 已出题条数 > 未生成 > 还没切块（出不了题）。
+   *
+   * **单位不写在格子里（单位上提）**：列头就叫「问题」，右边紧挨的「切块」列同样
+   * 只有数字——一列写 222 题、一列写裸 74，读起来像两种东西。列头给单位、格子给数，
+   * 两个数值列才对齐得上（全库规模那类表也是这个写法）。
+   */
   function questionCell(document: DocumentSummary): string {
     if (document.questions_pending) return '生成中…'
-    if (document.question_count > 0) return `${document.question_count} 题`
+    if (document.question_count > 0) return formatCount(document.question_count)
     if (document.chunk_count === 0) return '—'
     return '未生成'
   }
@@ -773,7 +785,7 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
         ? '还没有切块，无法出题'
         : '还没有为这份文档生成切块问题（选中后可点「生成问题」）'
     }
-    return `${document.questioned_chunk_count}/${document.chunk_count} 段有问题，共 ${document.question_count} 条`
+    return `${formatCount(document.questioned_chunk_count)} / ${formatCount(document.chunk_count)} 段有问题，共 ${formatCount(document.question_count)} 题`
   }
 
   function goToPage(next: number): void {
@@ -864,7 +876,7 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                       <Inbox size={14} />
                       <span className="kb-tree-label">全部文档</span>
                       {totalCount !== null ? (
-                        <span className="kb-tree-count tabular">{totalCount}</span>
+                        <span className="kb-tree-count tabular">{formatCount(totalCount)}</span>
                       ) : null}
                     </button>
                   </div>
@@ -891,7 +903,9 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                             <FolderIcon size={14} />
                             <span className="kb-tree-label">未归档</span>
                             {unfiledCount !== null ? (
-                              <span className="kb-tree-count tabular">{unfiledCount}</span>
+                              <span className="kb-tree-count tabular">
+                                {formatCount(unfiledCount)}
+                              </span>
                             ) : null}
                           </button>
                         </div>
@@ -917,7 +931,9 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                             >
                               <FolderIcon size={14} />
                               <span className="kb-tree-label">{folder.name}</span>
-                              <span className="kb-tree-count tabular">{folder.document_count}</span>
+                              <span className="kb-tree-count tabular">
+                                {formatCount(folder.document_count)}
+                              </span>
                             </button>
                             {knowledgeBase.can_write ? (
                               /* 行菜单：`@/ui/dropdown-menu`（Radix）。与旧 `RowMenu` 的行为差异：
@@ -1119,7 +1135,7 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
               {selectedCount > 0 ? (
                 <div className="kb-batch">
                   <span className="kb-batch-count">
-                    已选 {selectedCount} 篇
+                    已选 {formatCount(selectedCount)} 篇
                     {/* 跨页选择必须说清楚：否则用户看到"已选 60 篇"而眼前只有 20 行 */}
                     {offPageSelected > 0 ? (
                       <span className="kb-batch-offpage">
@@ -1335,7 +1351,9 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                             ) : null}
                           </span>
 
-                          <span className="kb-col-chunks tabular">{document.chunk_count}</span>
+                          <span className="kb-col-chunks tabular">
+                            {formatCount(document.chunk_count)}
+                          </span>
                           <span
                             className={[
                               'kb-col-questions',
@@ -1348,7 +1366,8 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                             {questionCell(document)}
                           </span>
                           <span className="kb-col-size">{formatBytes(document.size_bytes)}</span>
-                          <span className="kb-col-updated">
+                          {/* 与抽屉里同一个 helper、同一串文本；绝对时间挂 title 供核对 */}
+                          <span className="kb-col-updated" title={formatDate(document.updated_at)}>
                             {formatRelativeTime(document.updated_at)}
                           </span>
 
@@ -1505,7 +1524,7 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
               {/* 总数常显，只有翻页控件在单页时隐藏：总数恰恰是扫列表时想知道的第一个数 */}
               {total > 0 || documents.length > 0 ? (
                 <div className="kb-pager">
-                  <span>共 {total} 篇</span>
+                  <span>共 {formatCount(total)} 篇</span>
                   {pageCount > 1 ? (
                     <div className="kb-pager-controls">
                       <Button
@@ -1602,7 +1621,7 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
             <p className="kb-lead">
               {moveBatchIds.length > 0
-                ? `把选中的 ${moveBatchIds.length} 篇移到：`
+                ? `把选中的 ${formatCount(moveBatchIds.length)} 篇移到：`
                 : `把「${moveTarget?.name ?? ''}」移到：`}
             </p>
             {/*
@@ -1764,7 +1783,9 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>删除文档</AlertDialogTitle>
-            <AlertDialogDescription>删除选中的 {selectedCount} 篇文档？</AlertDialogDescription>
+            <AlertDialogDescription>
+              删除选中的 {formatCount(selectedCount)} 篇文档？
+            </AlertDialogDescription>
           </AlertDialogHeader>
           <p className="kb-modal-note">
             原文会移入回收站保留 7 天；切块与向量立即清除，删除后立刻搜不到。
@@ -1837,7 +1858,7 @@ function progressTone(document: DocumentSummary) {
 function progressCaption(document: DocumentSummary): string {
   const progress = document.progress
   if (!progress) return ''
-  const head = `第 ${progress.step_index}/${progress.step_total} 步 · ${progress.step_label}`
+  const head = `第 ${formatCount(progress.step_index)} / ${formatCount(progress.step_total)} 步 · ${progress.step_label}`
   if (progress.status === 'done') return `${head} · 共 ${formatMillis(progress.total_ms)}`
   const elapsed = `已用 ${formatMillis(progress.elapsed_ms)}`
   if (progress.stalled) return `${head} · ${elapsed} · 疑似卡住（没有 worker 在处理）`

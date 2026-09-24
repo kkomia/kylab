@@ -15,7 +15,7 @@ import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { Bot, Check, ChevronDown, ChevronRight, Folder, Plus, Sparkles, Upload } from 'lucide-react'
 import { useState } from 'react'
 
-import { formatCount } from '@/lib/format'
+import { formatCount, formatPercent } from '@/lib/format'
 
 import { CONTROL_TRIGGER } from './DropdownShell'
 import { useChat } from '../runtime/ChatProvider'
@@ -342,7 +342,9 @@ export function ContextGauge() {
   const error = chat.contextUsage.error
   if (!chat.conversationId) return null
 
+  // 条形宽度按整数百分比画（像素量级），文字读数走 `formatPercent`（10% 以下留一位小数）
   const percent = usage ? Math.round(Math.min(1, Math.max(0, usage.ratio)) * 100) : 0
+  const percentText = formatPercent(usage ? Math.min(1, Math.max(0, usage.ratio)) * 100 : null)
 
   return (
     <DropdownMenu.Root>
@@ -355,13 +357,13 @@ export function ContextGauge() {
           // 精确到个位数的读数放悬停里（行上只放比率，见上面那段说明）
           title={
             usage
-              ? `上下文已用 ${formatCount(usage.used)} / ${formatCount(usage.total)} tokens（${percent}%）`
+              ? `上下文已用 ${formatCount(usage.used)} / ${formatCount(usage.total)} tokens（${percentText}）`
               : '上下文用量'
           }
         >
           <span className="inline-flex min-w-0 items-center gap-[var(--space-1-5)]">
             <span className="tabular truncate">
-              {error ? '上下文读数不可用' : usage ? `上下文已用 ${percent}%` : '正在读上下文…'}
+              {error ? '上下文读数不可用' : usage ? `上下文已用 ${percentText}` : '正在读上下文…'}
             </span>
             {/* 一圈很细的占用条：它替掉"再去点开看一眼"那一步（不许被压扁） */}
             <span className="inline-block h-[4px] w-[28px] shrink-0 overflow-hidden rounded-[2px] bg-[var(--bg-active)]">

@@ -52,7 +52,7 @@ import type { KnowledgeBase } from '@/api/knowledgeBases'
 import { createNote } from '@/api/notes'
 import type { RegisteredModel } from '@/api/modelRegistry'
 import { copyText } from '@/lib/clipboard'
-import { formatBytes } from '@/lib/format'
+import { formatBytes, formatCount } from '@/lib/format'
 
 import {
   buildTurns,
@@ -1283,7 +1283,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       void (async () => {
         try {
           for (const file of files) await uploadDocument(targetId, file)
-          notifySuccess(`已把 ${files.length} 个文件传给「${name}」，入库后就能被引用`)
+          notifySuccess(`已把 ${formatCount(files.length)} 个文件传给「${name}」，入库后就能被引用`)
           void kbsRefetch()
         } catch (cause) {
           notifyError(cause)

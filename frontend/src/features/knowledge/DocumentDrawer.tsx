@@ -36,7 +36,7 @@ import { SkeletonRows, StatusTag } from '@/features/knowledge/composites'
 import { ProcessingTimeline } from '@/features/knowledge/ProcessingTimeline'
 import { messageOf, notify } from '@/features/knowledge/store'
 import { documentSourceLabel, documentStageView } from '@/features/knowledge/status'
-import { formatBytes, formatDate } from '@/lib/format'
+import { formatBytes, formatCount, formatDate, formatRelativeTime } from '@/lib/format'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -293,8 +293,8 @@ export function DocumentDrawer({
   /** "这是前 5 块，共 137 块"——不说清的话，用户会把预览当成全文。 */
   const previewNote =
     chunkTotal > chunks.length
-      ? `该文档共 ${chunkTotal} 块，这里只显示前 ${chunks.length} 块。`
-      : `该文档共 ${chunkTotal} 块，已全部显示。`
+      ? `该文档共 ${formatCount(chunkTotal)} 块，这里只显示前 ${formatCount(chunks.length)} 块。`
+      : `该文档共 ${formatCount(chunkTotal)} 块，已全部显示。`
 
   /**
    * 出题情况一句话（v24）。数字取自**文档级统计**，不是当前这几块的合计——
@@ -305,7 +305,7 @@ export function DocumentDrawer({
     if (document.question_count === 0) {
       return '还没有为切块生成问题。在文档列表里选中这份，点「生成问题」补上。'
     }
-    return `已为 ${document.questioned_chunk_count}/${document.chunk_count} 段出题，共 ${document.question_count} 条；下面每块的问题列在正文之后。`
+    return `已为 ${formatCount(document.questioned_chunk_count)} / ${formatCount(document.chunk_count)} 段出题，共 ${formatCount(document.question_count)} 题；下面每块的问题列在正文之后。`
   }
 
   const activeHint = VIEW_TABS.find((tab) => tab.key === view)?.hint ?? ''
@@ -398,11 +398,11 @@ export function DocumentDrawer({
                 </div>
                 <div>
                   <dt>切块数</dt>
-                  <dd>{document.chunk_count}</dd>
+                  <dd>{formatCount(document.chunk_count)}</dd>
                 </div>
                 <div>
                   <dt>页数</dt>
-                  <dd>{document.page_count ?? '—'}</dd>
+                  <dd>{formatCount(document.page_count)}</dd>
                 </div>
                 <div>
                   <dt>来源</dt>
@@ -414,9 +414,16 @@ export function DocumentDrawer({
                   <dt>上传者</dt>
                   <dd>{document.uploaded_by_name || '未记录'}</dd>
                 </div>
+                {/*
+                  与列表那一列**同一串文本**（同一个 `formatRelativeTime`）：
+                  同一屏里列表写 6 天前、这里写 2026-09-16 11:42，读者既要换算，
+                  也认不出说的是不是同一个时刻。绝对时间放 title 供核对。
+                */}
                 <div>
                   <dt>更新时间</dt>
-                  <dd>{formatDate(document.updated_at)}</dd>
+                  <dd title={formatDate(document.updated_at)}>
+                    {formatRelativeTime(document.updated_at)}
+                  </dd>
                 </div>
               </dl>
 
@@ -425,7 +432,7 @@ export function DocumentDrawer({
               <h3 className="kb-section-title">
                 文件内容
                 {chunkTotal > 0 ? (
-                  <span className="kb-section-badge">共 {chunkTotal} 个切块</span>
+                  <span className="kb-section-badge">共 {formatCount(chunkTotal)} 个切块</span>
                 ) : null}
               </h3>
 

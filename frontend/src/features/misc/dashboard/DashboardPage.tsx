@@ -407,13 +407,13 @@ export function DashboardPage() {
             {usage.data.estimated_tokens > 0 && (
               <p className="m-usage-note">
                 其中约 {formatCount(usage.data.estimated_tokens)} token 是按字符数估算的（
-                {usage.data.estimated_calls} 次向量化调用，接口不返回用量）。
+                {formatCount(usage.data.estimated_calls)} 次向量化调用，接口不返回用量）。
                 这部分只用于看趋势，别拿它精确对账。
               </p>
             )}
             {usage.data.unreported_calls > 0 && (
               <p className="m-usage-note">
-                另有 {usage.data.unreported_calls} 次调用供应商没有返回用量，
+                另有 {formatCount(usage.data.unreported_calls)} 次调用供应商没有返回用量，
                 它们只计入「调用次数」与「处理条数」，token 数字不含它们。
               </p>
             )}
@@ -481,8 +481,8 @@ export function DashboardPage() {
                         <span className="m-kb-name">{kb.name}</span>
                         <span className="m-kb-model">{kb.embedding_model_id}</span>
                       </span>
-                      <span className="m-col-num tabular">{kb.documents}</span>
-                      <span className="m-col-num tabular">{kb.chunks}</span>
+                      <span className="m-col-num tabular">{formatCount(kb.documents)}</span>
+                      <span className="m-col-num tabular">{formatCount(kb.chunks)}</span>
                       <span className="m-col-time">
                         {kb.last_activity ? (
                           <span className="tabular">{formatRelativeTime(kb.last_activity)}</span>

@@ -190,8 +190,8 @@ describe('能力页', () => {
     const broken = (await screen.findByText('broken')).closest('li') as HTMLElement
     expect(within(broken).getByText('已丢弃')).toBeInTheDocument()
     expect(within(broken).getByText('frontmatter 缺 name')).toBeInTheDocument()
-    // 状态栏那个数来自后端：1 / 2 可用
-    expect(screen.getByText('技能 1/2 可用')).toBeInTheDocument()
+    // 状态栏那个数来自后端：1 / 2 可用（斜杠两侧带空格，全站一种写法）
+    expect(screen.getByText('技能 1 / 2 可用')).toBeInTheDocument()
   })
 
   it('技能卡是 2–3 列紧凑网格：摘要只占一行，长描述进详情弹窗', async () => {

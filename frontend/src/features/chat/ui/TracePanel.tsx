@@ -31,6 +31,7 @@ import {
   type TraceEntry,
 } from '@/features/chat/model/turns'
 import type { ChatSource } from '@/api/chat'
+import { formatCount } from '@/lib/format'
 
 import { LinkText } from './LinkText'
 import { StepIcon } from './stepIcons'
@@ -80,7 +81,7 @@ function EntryRow({ entry }: { entry: TraceEntry }) {
         >
           {entry.label}
           <span className="text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
-            {entry.steps.length} 次
+            {formatCount(entry.steps.length)} 次
           </span>
           <ChevronDown className={caretClass(open)} size={12} />
         </button>
@@ -203,11 +204,11 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
             <div className="mt-[var(--space-3)] flex items-center gap-[var(--space-2)]">
               {view.total > 0 ? (
                 <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
-                  当前已显示 {view.shown}/{view.total} 条工具调用
+                  当前已显示 {formatCount(view.shown)} / {formatCount(view.total)} 条工具调用
                 </span>
               ) : (
                 <span className="text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
-                  还有 {view.hidden} 段过程没显示
+                  还有 {formatCount(view.hidden)} 段过程没显示
                 </span>
               )}
               <button

@@ -22,7 +22,7 @@ import {
   updateScheduledTask,
   type ScheduledTask,
 } from '@/api/schedules'
-import { formatDate } from '@/lib/format'
+import { formatCount, formatDate } from '@/lib/format'
 
 import { notifyError, notifySuccess } from '../shared/toast'
 import { Button } from '@/ui/button'
@@ -160,7 +160,9 @@ export function SchedulePanel() {
                   <span className="m-schedule-name">{item.name}</span>
                   <StatusTag tone={lastRunTone(item.last_status)} label={lastRunText(item)} />
                   {item.run_count > 0 && (
-                    <span className="tabular text-micro">跑过 {item.run_count} 次</span>
+                    <span className="tabular text-micro">
+                      跑过 {formatCount(item.run_count)} 次
+                    </span>
                   )}
                 </div>
                 <p className="m-schedule-prompt">{item.prompt}</p>

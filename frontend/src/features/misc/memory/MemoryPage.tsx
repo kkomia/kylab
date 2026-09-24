@@ -53,7 +53,7 @@ import { Markdown } from '@/features/knowledge/markdown'
 // 阅读视角复用本仓那份 Markdown 渲染（与能力页的技能正文同一处），
 // 它的排版类 `kb-md-*` 在知识库域的样式表里——本页是懒加载路由，得自己带上
 import '@/features/knowledge/knowledge.css'
-import { formatBytes, formatDate, formatRelativeTime } from '@/lib/format'
+import { formatBytes, formatCount, formatDate, formatRelativeTime, formatScore } from '@/lib/format'
 import { useSessionStore } from '@/lib/session'
 
 import { SettingGroupPanel } from '../settings/SettingGroupPanel'
@@ -445,7 +445,7 @@ export function MemoryPage() {
                   {/* 文件数仍挂在那一档上；间距由原语触发按钮自己的 `gap-1.5` 给 */}
                   {item.count !== undefined && (
                     <span className="text-[length:var(--text-micro-size)] text-text-tertiary tabular-nums">
-                      {item.count}
+                      {formatCount(item.count)}
                     </span>
                   )}
                 </TabsTrigger>
@@ -469,7 +469,7 @@ export function MemoryPage() {
 
                 {overview.data?.truncated && (
                   <p className="m-toolbar-note">
-                    文件太多，这里只列出了前面 {status?.file_count} 个。
+                    文件太多，这里只列出了前面 {formatCount(status?.file_count)} 个。
                   </p>
                 )}
 
@@ -634,8 +634,14 @@ export function MemoryPage() {
                     )}
 
                     <footer className="m-editor-foot text-micro">
-                      <span className="tabular">
-                        {formatBytes(detail.size_bytes)} · 改动于 {formatDate(detail.modified_at)}
+                      {/*
+                        时间与左边那一列**同一个口径**（`formatRelativeTime`）：同一屏里
+                        列表写"6 天前"、这里写"2026-09-17 17:33"的话，读者要在脑子里做换算，
+                        还分不清说的是不是同一个时刻。绝对时间放 `title` 供核对。
+                      */}
+                      <span className="tabular" title={formatDate(detail.modified_at)}>
+                        {formatBytes(detail.size_bytes)} · 改动于{' '}
+                        {formatRelativeTime(detail.modified_at)}
                       </span>
                       {detail.truncated && (
                         <span className="m-warn-text">
@@ -731,7 +737,9 @@ export function MemoryPage() {
                                   {hit.end_line ? `–${hit.end_line}` : ''}
                                 </>
                               )}
-                              {hit.score !== null && ` · ${hit.score.toFixed(2)}`}
+                              {/* 相似度与检索页同一口径：三位小数（`formatScore`）——
+                                  同一个分数在两页写两位/三位，读者会以为换了算法 */}
+                              {hit.score !== null && ` · ${formatScore(hit.score)}`}
                             </span>
                           </div>
                           <p className="m-hit-text">{hit.text}</p>

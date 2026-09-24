@@ -23,7 +23,7 @@ import {
 } from '@/api/dataSources'
 import { EmptyState, StatusTag } from '@/features/knowledge/composites'
 import { messageOf, notify } from '@/features/knowledge/store'
-import { formatRelativeTime } from '@/lib/format'
+import { formatCount, formatRelativeTime } from '@/lib/format'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -120,7 +120,7 @@ export function SourcePanel({ kbId, canWrite, onChanged }: SourcePanelProps) {
         notify.success(`取回 ${result.fetched} 条，都是已有内容（无新增）`)
       }
       if (result.errors.length) {
-        notify.error(`${result.errors.length} 条入库失败：${result.errors[0]}`)
+        notify.error(`${formatCount(result.errors.length)} 条入库失败：${result.errors[0]}`)
       }
     } catch (cause) {
       notify.error(messageOf(cause, '拉取失败'))

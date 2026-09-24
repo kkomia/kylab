@@ -17,7 +17,7 @@ import { Image as ImageIcon, Search } from 'lucide-react'
 import { Link } from 'react-router'
 
 import { search, type SearchHit, type SearchResponse } from '@/api/search'
-import { formatAge, formatScore } from '@/lib/format'
+import { formatAge, formatCount, formatLatency, formatScore } from '@/lib/format'
 
 import { notifyError, notifyWarning } from '../shared/toast'
 import { Button } from '@/ui/button'
@@ -221,7 +221,7 @@ export function KbSearchPanel({
                     >
                       <span className="m-history-query">{turn.query}</span>
                       <span className="m-history-hits tabular">
-                        {turn.response ? `${turn.response.hits.length} 条` : '—'}
+                        {turn.response ? `${formatCount(turn.response.hits.length)} 条` : '—'}
                       </span>
                       <span className="m-history-age tabular">{formatAge(turn.at, now)}</span>
                     </button>
@@ -246,7 +246,7 @@ export function KbSearchPanel({
             <>
               <div className="m-hit-summary">
                 <span>
-                  {latest.response.hits.length} 条命中<span className="sep">·</span>
+                  {formatCount(latest.response.hits.length)} 条命中<span className="sep">·</span>
                   {modeLabel(latest.response.mode)}
                 </span>
                 {latest.response.reranked && <span className="m-summary-note">已 rerank</span>}
@@ -283,8 +283,8 @@ export function KbSearchPanel({
                     {latest.response.stats.map((stat) => (
                       <li key={stat.channel} className="m-channel-stat">
                         <span className="m-col-name">{channelLabel(stat.channel)}</span>
-                        <span className="m-col-count">{stat.count}</span>
-                        <span className="m-col-ms">{stat.elapsed_ms.toFixed(1)} ms</span>
+                        <span className="m-col-count">{formatCount(stat.count)}</span>
+                        <span className="m-col-ms">{formatLatency(stat.elapsed_ms)}</span>
                       </li>
                     ))}
                   </ul>
@@ -340,7 +340,7 @@ export function KbSearchPanel({
                         {hit.image_ids.length > 0 && (
                           <li className="m-hit-channel">
                             <ImageIcon size={13} />
-                            {hit.image_ids.length} 张图
+                            {formatCount(hit.image_ids.length)} 张图
                           </li>
                         )}
                       </ul>

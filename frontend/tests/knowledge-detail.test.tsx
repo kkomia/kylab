@@ -589,7 +589,8 @@ describe('单篇动作', () => {
     ])
     renderView()
 
-    expect(await screen.findByText(/第 3\/6 步 · 切分内容/)).toBeInTheDocument()
+    // 配比斜杠两侧带空格：全站一种写法
+    expect(await screen.findByText(/第 3 \/ 6 步 · 切分内容/)).toBeInTheDocument()
     expect(screen.getByText(/重试 1 次/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: '处理明细' })).toBeInTheDocument()
   })

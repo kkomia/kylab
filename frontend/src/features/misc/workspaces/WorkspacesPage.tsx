@@ -21,6 +21,7 @@ import { deleteWorkspace, listWorkspaces, updateWorkspace, type Workspace } from
 
 import { notifyError, notifySuccess } from '../shared/toast'
 import { useKnowledgeBases } from '../shared/knowledgeBases'
+import { formatCount } from '@/lib/format'
 import { useSessionStore } from '@/lib/session'
 import { Button } from '@/ui/button'
 import { Input } from '@/ui/input'
@@ -241,7 +242,9 @@ export function WorkspacesPage() {
                       <span className="m-ws-row-name">{item.name}</span>
                       <span className="m-ws-row-path">{item.root_path}</span>
                     </span>
-                    <span className="m-ws-row-count tabular">{item.conversation_count}</span>
+                    <span className="m-ws-row-count tabular">
+                      {formatCount(item.conversation_count)}
+                    </span>
                   </button>
                 </li>
               ))}

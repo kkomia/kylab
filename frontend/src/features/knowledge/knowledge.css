@@ -1058,11 +1058,20 @@
     color: var(--text-tertiary);
   }
 
+  /**
+   * 更新时间列：**不折行**，宽度按最长的那个字符串给（绝对时间 `2026-09-16 11:42`）。
+   *
+   * 96px 装不下它——实测 14px 字号下这串要 108.6px，于是同一格里的日期与时刻被折成
+   * 两行（行高 20.58 → 41.16），而抽屉里写的是同一串、却是一行（评审记的"列表两行
+   * vs 抽屉一行"）。给到 112px 留一点字体回退的余量：宁可让弹性列（文件名）少 16px，
+   * 也不要一列高度在一屏里参差不齐。
+   */
   .kb-col-updated {
-    flex: 0 0 96px;
+    flex: 0 0 112px;
     font-size: var(--text-meta-size);
     color: var(--text-tertiary);
     text-align: right;
+    white-space: nowrap;
   }
 
   .kb-doc-group + .kb-doc-group {

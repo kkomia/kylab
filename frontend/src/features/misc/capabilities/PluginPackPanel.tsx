@@ -23,6 +23,7 @@ import {
   type PluginList,
   type PluginPack,
 } from '@/api/plugins'
+import { formatCount } from '@/lib/format'
 import { useSessionStore } from '@/lib/session'
 
 import { notifyError, notifySuccess } from '../shared/toast'
@@ -196,7 +197,7 @@ export function PluginPackPanel() {
                   )}
                   {record.user_config.length > 0 && (
                     <Badge variant="secondary" title="manifest 里声明的配置项">
-                      配置项 {record.user_config.length}
+                      配置项 {formatCount(record.user_config.length)}
                     </Badge>
                   )}
                   {record.components.length > 0 && (
@@ -207,7 +208,7 @@ export function PluginPackPanel() {
                       >
                         {expanded === record.name
                           ? '收起'
-                          : `提供了 ${record.components.length} 项`}
+                          : `提供了 ${formatCount(record.components.length)} 项`}
                       </button>
                     </Badge>
                   )}

@@ -26,8 +26,18 @@ function Tabs({
   )
 }
 
+/**
+ * 轨道高 **32px = `--control-height`**（与按钮、输入框同一档）。
+ *
+ * 写法上有一个坑必须避开：`group-data-[orientation=horizontal]/tabs:h-8` 这种
+ * **带变体的工具类优先级高于调用点上的 `h-9`**（变体选择器是两级类名，`h-9` 是一级），
+ * 于是调用点写 `h-9` 会被静默吃掉——曾经真的这样埋过一处（已删的 `SegmentedControl`
+ * 上写着 `h-9 p-0.5`，实测轨道一直是 32px，谁也看不出那句没生效）。
+ * 带变体的高度只留**竖排那一档**（`h-fit`，它必须靠变体才生效）；横排这个是普通
+ * `h-8`，`cn()` 的 tailwind-merge 就能让调用点的 `h-*` 正常覆盖它。
+ */
 const tabsListVariants = cva(
-  'group/tabs-list inline-flex w-fit items-center justify-center rounded-row p-[3px] group-data-[orientation=horizontal]/tabs:h-8 group-data-[orientation=vertical]/tabs:h-fit group-data-[orientation=vertical]/tabs:flex-col data-[variant=line]:rounded-none',
+  'group/tabs-list inline-flex w-fit items-center justify-center rounded-row p-[3px] h-8 group-data-[orientation=vertical]/tabs:h-fit group-data-[orientation=vertical]/tabs:flex-col data-[variant=line]:rounded-none',
   {
     variants: {
       variant: {

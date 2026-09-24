@@ -19,7 +19,7 @@ import { ChevronLeft, ChevronRight, FileText, RefreshCw } from 'lucide-react'
 import { useNavigate } from 'react-router'
 
 import { cancelTasks, getTaskLoad, listTasks, type TaskSummary } from '@/api/tasks'
-import { formatDate } from '@/lib/format'
+import { formatCount, formatDate } from '@/lib/format'
 import { useSessionStore } from '@/lib/session'
 
 import { useKnowledgeBases } from '../shared/knowledgeBases'
@@ -230,12 +230,12 @@ export function TasksPage() {
       setDetail(null)
       await list.refetch()
       if (result.failed === 0) {
-        notifySuccess(`已撤下 ${result.succeeded} 个任务`)
+        notifySuccess(`已撤下 ${formatCount(result.succeeded)} 个任务`)
         return
       }
       const firstError = result.items.find((item) => !item.ok)?.error
       notifyError(
-        `撤下：${result.succeeded} 个成功、${result.failed} 个未撤下` +
+        `撤下：${formatCount(result.succeeded)} 个成功、${formatCount(result.failed)} 个未撤下` +
           (firstError ? `（${firstError}）` : ''),
       )
     } catch (cause) {
@@ -347,7 +347,9 @@ export function TasksPage() {
                   显示已取消
                 </CheckRow>
                 {hiddenCanceled > 0 && (
-                  <span className="m-toolbar-note">已隐藏 {hiddenCanceled} 条已取消</span>
+                  <span className="m-toolbar-note">
+                    已隐藏 {formatCount(hiddenCanceled)} 条已取消
+                  </span>
                 )}
                 {hasFilter && (
                   <Button variant="secondary" size="sm" onClick={clearFilters}>
@@ -363,11 +365,11 @@ export function TasksPage() {
                     disabled={canceling}
                     onClick={() => setCancelOpen(true)}
                   >
-                    取消排队中的任务（{pendingCount}）
+                    取消排队中的任务（{formatCount(pendingCount)}）
                   </Button>
                 )}
                 <span className="m-toolbar-count tabular">
-                  {visibleTasks.length} / {tasks.length} 项
+                  {formatCount(visibleTasks.length)} / {formatCount(tasks.length)} 项
                 </span>
               </div>
 
@@ -471,7 +473,7 @@ export function TasksPage() {
               {/* 分页：**总数常显、只藏翻页控件**，与文档列表同一套口径 */}
               {visibleTasks.length > 0 && (
                 <div className="m-pager">
-                  <span className="m-pager-total">共 {visibleTasks.length} 项</span>
+                  <span className="m-pager-total">共 {formatCount(visibleTasks.length)} 项</span>
                   {pageCount > 1 && (
                     <div className="m-pager-controls">
                       <Button
@@ -601,7 +603,7 @@ export function TasksPage() {
           <ConfirmDialog
             open={cancelOpen}
             title="取消排队中的任务"
-            lead={`撤下 ${pendingCount} 个还在排队的任务？`}
+            lead={`撤下 ${formatCount(pendingCount)} 个还在排队的任务？`}
             note="只是不再处理：文档与已入库内容都保留，之后可重新上传或点「重新摄入」。正在执行的任务不在此列。"
             confirmLabel="撤下"
             busy={canceling}
@@ -646,9 +648,12 @@ function documentName(task: TaskSummary): string {
  *
  * 原来成功行写"一次通过"、其余写"第 N / M 次尝试"，同一列出现两种句式，
  * 列头叫「尝试」却读不出它到底是次数还是结论。统一成次数之后这一列只有一个含义。
+ *
+ * 斜杠两侧带空格：全站的配比都写 `a / b`（列表的「66 / 89 项」、翻页的「第 1 / 4 页」、
+ * 负载环里的「0 / 1」、对话页的「1,234 / 32,768 tokens」），一个写法走到底。
  */
 function attemptText(task: TaskSummary): string {
-  return `${task.attempts} / ${task.max_attempts}`
+  return `${formatCount(task.attempts)} / ${formatCount(task.max_attempts)}`
 }
 
 /**

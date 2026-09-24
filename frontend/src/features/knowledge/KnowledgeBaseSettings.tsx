@@ -50,7 +50,7 @@ import {
 } from '@/features/knowledge/SuggestedQuestionsFields'
 import { messageOf, notify, useKnowledgeBases } from '@/features/knowledge/store'
 import { copyText } from '@/lib/clipboard'
-import { formatBytes } from '@/lib/format'
+import { formatBytes, formatCount } from '@/lib/format'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -455,7 +455,8 @@ export function KnowledgeBaseSettings({ kb, className, onChanged }: KnowledgeBas
                         onChange={(event) => setDescriptionDraft(event.target.value)}
                       />
                       <p className="text-hint" style={{ textAlign: 'right' }}>
-                        {descriptionDraft.trim().length} / {DESCRIPTION_MAX}
+                        {formatCount(descriptionDraft.trim().length)} /{' '}
+                        {formatCount(DESCRIPTION_MAX)}
                       </p>
                     </label>
                   </>
@@ -467,7 +468,7 @@ export function KnowledgeBaseSettings({ kb, className, onChanged }: KnowledgeBas
                     <dl className="kb-info-list">
                       <div>
                         <dt>文档</dt>
-                        <dd>{documentCount === null ? '—' : `${documentCount} 篇`}</dd>
+                        <dd>{documentCount === null ? '—' : `${formatCount(documentCount)} 篇`}</dd>
                       </div>
                       <div>
                         <dt>嵌入模型</dt>
@@ -512,14 +513,14 @@ export function KnowledgeBaseSettings({ kb, className, onChanged }: KnowledgeBas
                       onChange={(event) => setKbPrompt(event.target.value)}
                     />
                     <p className="text-hint" style={{ textAlign: 'right' }}>
-                      {kbPrompt.trim().length} / {PROMPT_MAX} 字
+                      {formatCount(kbPrompt.trim().length)} / {formatCount(PROMPT_MAX)} 字
                     </p>
 
                     {/* 溯源：这一段是"不捏造"里**可验证**的那一半（只展示依据了哪些摘要） */}
                     {promptDraft ? (
                       <div className="kb-blocked-note">
                         <p style={{ margin: 0 }}>
-                          这次生成依据了 {promptDraft.sources.length} 篇摘要：
+                          这次生成依据了 {formatCount(promptDraft.sources.length)} 篇摘要：
                         </p>
                         <ul style={{ margin: 'var(--space-2) 0 0', paddingLeft: 'var(--space-5)' }}>
                           {promptDraft.sources.map((item) => (

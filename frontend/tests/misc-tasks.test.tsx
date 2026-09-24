@@ -543,7 +543,7 @@ describe('任务中心', () => {
     // 五个读数一种控件：都是环（此前 3 个环 + 一个空环替身 + 一个纯数字）
     expect(within(panel).getAllByRole('img')).toHaveLength(5)
     // `role="img"` 会把环里的 `<text>` 当装饰，读数必须写进名字里才算数
-    expect(within(panel).getByRole('img', { name: '并发槽位占用 0/1' })).toBeInTheDocument()
+    expect(within(panel).getByRole('img', { name: '并发槽位占用 0 / 1' })).toBeInTheDocument()
     expect(within(panel).getByRole('img', { name: '云端解析今日页数 0%' })).toBeInTheDocument()
     expect(
       within(panel).getByRole('img', { name: '本进程常驻内存占机器内存 6.3%' }),

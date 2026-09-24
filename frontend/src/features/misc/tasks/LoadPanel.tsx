@@ -18,19 +18,17 @@
  * 与"0 / 1000 页"的读数直接矛盾（评审 T5）。
  */
 import type { SystemLoad } from '@/api/tasks'
-import { formatBytes, formatDuration } from '@/lib/format'
+import { formatBytes, formatCount, formatDuration, formatPercent } from '@/lib/format'
 
 import { loadTone, taskKindLabel } from '../shared/status'
 import { InfoTip, RingGauge } from '../shared/composites'
 
-/** 中心文字用的百分比。`null` 写"—"而不是 0%。 */
-function percentText(value: number | null | undefined): string {
-  return value === null || value === undefined ? '—' : `${Math.round(value)}%`
-}
-
 /**
  * 环的**可访问名**。`role="img"` 会把环里的 `<text>` 当装饰（读屏器读不到），
  * 所以读数必须进名字里；没有读数时名字只留指标名，不给一个孤零零的"—"。
+ *
+ * 名字里的读数与环里**逐字相同**（含 `12.3%` 这种小数位与 `0 / 1` 这种斜杠写法）：
+ * 读屏器听到的与屏幕上看到的处处一样，配比写法全站一种。
  */
 function ringLabel(name: string, reading: string): string {
   return reading === '' || reading === '—' || reading === '…' ? name : `${name} ${reading}`
@@ -50,10 +48,14 @@ export function LoadPanel({ load, live }: { load: SystemLoad | null; live?: bool
   const quotaRatio = quotaPercent === null ? 0 : Math.min(quotaPercent / 100, 1)
 
   /**
-   * 并发槽位：环里的读数是 `在跑 / 槽位`（评审 T4 要的"0/1"），弧按同一个比值画。
-   * 槽位为 0 时给"—"：那时没有分母，写 0/0 会被读成"一个都没占用"。
+   * 并发槽位：环里的读数是 `在跑 / 槽位`，弧按同一个比值画。
+   * 槽位为 0 时给"—"：那时没有分母，写 `0 / 0` 会被读成"一个都没占用"。
+   *
+   * 斜杠两侧**带空格**，与任务页的「`66 / 89` 项」「第 `1 / 4` 页」、对话页的
+   * 「`已用 1,234 / 32,768` tokens」同一种写法（全站一种）。
    */
-  const slotsText = queue && queue.slots > 0 ? `${queue.running}/${queue.slots}` : '—'
+  const slotsText =
+    queue && queue.slots > 0 ? `${formatCount(queue.running)} / ${formatCount(queue.slots)}` : '—'
   const slotsRatio = queue && queue.slots > 0 ? queue.running / queue.slots : 0
 
   /**
@@ -65,8 +67,8 @@ export function LoadPanel({ load, live }: { load: SystemLoad | null; live?: bool
     hardware && hardware.memory_total_bytes > 0 && hardware.process_rss_bytes !== null
       ? (hardware.process_rss_bytes / hardware.memory_total_bytes) * 100
       : null
-  // 一档小数：这个数常态小于 1%，四舍五入到整数会把 0.4% 写成 1%（差 2.5 倍）
-  const processShareText = processShare === null ? '—' : `${processShare.toFixed(1)}%`
+  // 一位小数交给 formatPercent：这一档常态小于 10%，取整会把 0.6% 写成 1%
+  const processShareText = formatPercent(processShare)
 
   const cpuTone = loadTone(cpuPercent)
   const memoryTone = loadTone(memoryPercent, 85, 93)
@@ -98,8 +100,9 @@ export function LoadPanel({ load, live }: { load: SystemLoad | null; live?: bool
   /** 有没有需要解释的异常状态（停滞 / 逾期）。没有就把那一行整个省掉。 */
   const problems: string[] = []
   if (queue && queue.stalled > 0)
-    problems.push(`${queue.stalled} 个任务可能卡住（没有 worker 在续约）`)
-  if (queue && queue.overdue > 0) problems.push(`${queue.overdue} 个任务长时间未被领取`)
+    problems.push(`${formatCount(queue.stalled)} 个任务可能卡住（没有 worker 在续约）`)
+  if (queue && queue.overdue > 0)
+    problems.push(`${formatCount(queue.overdue)} 个任务长时间未被领取`)
 
   return (
     <section className="m-load" aria-label="运行负载">
@@ -113,14 +116,16 @@ export function LoadPanel({ load, live }: { load: SystemLoad | null; live?: bool
           <span className="m-gauge-glyph">
             <RingGauge
               ratio={(cpuPercent ?? 0) / 100}
-              label={percentText(cpuPercent)}
+              label={formatPercent(cpuPercent)}
               tone={cpuTone}
-              ariaLabel={ringLabel('CPU 使用率', percentText(cpuPercent))}
+              ariaLabel={ringLabel('CPU 使用率', formatPercent(cpuPercent))}
             />
           </span>
           <span className="m-gauge-name">CPU</span>
           <span className="m-gauge-detail tabular">
-            {hardware ? `${hardware.cpu_count} 核${cpuPercent === null ? ' · 采样中' : ''}` : '—'}
+            {hardware
+              ? `${formatCount(hardware.cpu_count)} 核${cpuPercent === null ? ' · 采样中' : ''}`
+              : '—'}
           </span>
         </div>
 
@@ -128,9 +133,9 @@ export function LoadPanel({ load, live }: { load: SystemLoad | null; live?: bool
           <span className="m-gauge-glyph">
             <RingGauge
               ratio={(memoryPercent ?? 0) / 100}
-              label={percentText(memoryPercent)}
+              label={formatPercent(memoryPercent)}
               tone={memoryTone}
-              ariaLabel={ringLabel('内存使用量', percentText(memoryPercent))}
+              ariaLabel={ringLabel('内存使用量', formatPercent(memoryPercent))}
             />
           </span>
           <span className="m-gauge-name">内存</span>
@@ -155,7 +160,7 @@ export function LoadPanel({ load, live }: { load: SystemLoad | null; live?: bool
           <span className="m-gauge-detail">
             {queue ? (
               <>
-                排队 <strong className="tabular">{queue.pending}</strong> 条
+                排队 <strong className="tabular">{formatCount(queue.pending)}</strong> 条
               </>
             ) : (
               '—'
@@ -167,11 +172,11 @@ export function LoadPanel({ load, live }: { load: SystemLoad | null; live?: bool
           <span className="m-gauge-glyph">
             <RingGauge
               ratio={quotaRatio}
-              label={pendingData ? '…' : percentText(quotaPercent)}
+              label={pendingData ? '…' : formatPercent(quotaPercent)}
               tone={quotaTone}
               ariaLabel={ringLabel(
                 '云端解析今日页数',
-                pendingData ? '…' : percentText(quotaPercent),
+                pendingData ? '…' : formatPercent(quotaPercent),
               )}
             />
           </span>
@@ -180,7 +185,7 @@ export function LoadPanel({ load, live }: { load: SystemLoad | null; live?: bool
             {pendingData
               ? '读取中…'
               : quota?.configured
-                ? `${quota.pages_used} / ${quota.daily_quota} 页`
+                ? `${formatCount(quota.pages_used)} / ${formatCount(quota.daily_quota)} 页`
                 : '未配置'}
           </span>
         </div>
@@ -211,7 +216,10 @@ export function LoadPanel({ load, live }: { load: SystemLoad | null; live?: bool
       {queue && queue.pending > 0 && (pendingKinds.length > 0 || oldestWait) && (
         <p className="m-load-note">
           {pendingKinds.length > 0 && (
-            <>排队的构成：{pendingKinds.map((item) => `${item.label} ${item.count}`).join('、')}</>
+            <>
+              排队的构成：
+              {pendingKinds.map((item) => `${item.label} ${formatCount(item.count)}`).join('、')}
+            </>
           )}
           {oldestWait && (
             <>

@@ -13,7 +13,9 @@ import {
   formatCount,
   formatDate,
   formatDuration,
+  formatLatency,
   formatMillis,
+  formatPercent,
   formatRelativeTime,
   formatScore,
   summarizeDocuments,
@@ -31,6 +33,73 @@ describe('formatBytes', () => {
     expect(formatBytes(null)).toBe('—')
     expect(formatBytes(undefined)).toBe('—')
     expect(formatBytes(0)).toBe('0 B')
+  })
+
+  it('一位小数的进位按读数判，不在下一档边上写出"1024.0 KB"', () => {
+    // 1048575 B 的原始换算是 1023.999 KB：旧写法会给出 "1024.0 KB"，
+    // 而同一列里紧挨着的 1 MB 文件写的是 "1.0 MB"——两个一样大的数看起来差一档
+    expect(formatBytes(1_048_575)).toBe('1.0 MB')
+    expect(formatBytes(1_048_576)).toBe('1.0 MB')
+    // 还没到进位线的仍是 KB（1023.0 的一位小数不触发抬档）
+    expect(formatBytes(1023 * 1024)).toBe('1023.0 KB')
+  })
+})
+
+describe('formatPercent', () => {
+  it('10% 以上取整：一位小数在这个量级上只是噪音', () => {
+    expect(formatPercent(37.4)).toBe('37%')
+    expect(formatPercent(84.6)).toBe('85%')
+    expect(formatPercent(100)).toBe('100%')
+  })
+
+  it('10% 以下留一位小数：0.6% 不能被写成 1%', () => {
+    // 内存、CPU 的常态读数就在这一档，取整会把它抬成 1%（差近一倍）
+    expect(formatPercent(0.6)).toBe('0.6%')
+    expect(formatPercent(0.4)).toBe('0.4%')
+    expect(formatPercent(9.96)).toBe('10%')
+  })
+
+  it('末尾的 .0 收掉：2% 不写成 2.0%', () => {
+    expect(formatPercent(2)).toBe('2%')
+    expect(formatPercent(9.0)).toBe('9%')
+  })
+
+  it('非零但不值 0.1% 时写 <0.1%，不写 0.0%', () => {
+    expect(formatPercent(0.04)).toBe('<0.1%')
+    expect(formatPercent(-0.04)).toBe('>-0.1%')
+  })
+
+  it('零写 0%；负数带上符号而不是被吞掉', () => {
+    expect(formatPercent(0)).toBe('0%')
+    expect(formatPercent(-12.4)).toBe('-12%')
+    expect(formatPercent(-0.6)).toBe('-0.6%')
+  })
+
+  it('拿不到值时给占位符而不是 0%', () => {
+    expect(formatPercent(null)).toBe('—')
+    expect(formatPercent(undefined)).toBe('—')
+    expect(formatPercent(Number.NaN)).toBe('—')
+    expect(formatPercent(Number.POSITIVE_INFINITY)).toBe('—')
+  })
+})
+
+describe('formatLatency', () => {
+  it('毫秒固定不换算，一位小数', () => {
+    // 换算到秒会把 12.3 ms 写成 0.0 秒、340.8 ms 写成 0.3 秒，刻度就漂了
+    expect(formatLatency(12.34)).toBe('12.3 ms')
+    expect(formatLatency(340.84)).toBe('340.8 ms')
+    expect(formatLatency(1523.4)).toBe('1523.4 ms')
+  })
+
+  it('零与负数照常带符号', () => {
+    expect(formatLatency(0)).toBe('0.0 ms')
+    expect(formatLatency(-3.2)).toBe('-3.2 ms')
+  })
+
+  it('拿不到值时给占位符', () => {
+    expect(formatLatency(null)).toBe('—')
+    expect(formatLatency(undefined)).toBe('—')
+    expect(formatLatency(Number.NaN)).toBe('—')
   })
 })
 
@@ -72,6 +141,10 @@ describe('formatScore', () => {
 
   it('缺值给占位符', () => {
     expect(formatScore(null)).toBe('—')
+  })
+
+  it('负数照常三位小数', () => {
+    expect(formatScore(-0.5)).toBe('-0.500')
   })
 })
 
@@ -143,6 +216,12 @@ describe('formatCount', () => {
     expect(formatCount(undefined)).toBe('—')
     expect(formatCount(Number.NaN)).toBe('—')
     expect(formatCount(Number.POSITIVE_INFINITY)).toBe('—')
+  })
+
+  it('负数也分位（差量/欠额这类读数同样要读得出量级）', () => {
+    expect(formatCount(-1234)).toBe('-1,234')
+    // -0.4 取整是 -0：不能写出一个读不通的「-0」
+    expect(formatCount(-0.4)).toBe('0')
   })
 })
 

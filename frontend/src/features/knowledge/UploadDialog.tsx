@@ -23,7 +23,7 @@ import {
   MAX_UPLOAD_MB,
   UPLOAD_FORMAT_HINT,
 } from '@/features/knowledge/uploadLimits'
-import { formatBytes } from '@/lib/format'
+import { formatBytes, formatCount } from '@/lib/format'
 import { Button } from '@/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog'
 
@@ -276,10 +276,10 @@ export function UploadDialog({ open, kbId, folderId, onClose, onUploaded }: Uplo
   const summary =
     items.length === 0
       ? '还没有选择文件'
-      : `共 ${items.length} 个${
-          pendingCount ? ` · 待上传 ${pendingCount}（${formatBytes(totalBytes)}）` : ''
-        }${doneCount ? ` · 已处理 ${doneCount}` : ''}${failedCount ? ` · 失败 ${failedCount}` : ''}${
-          rejectedCount ? ` · 未接收 ${rejectedCount}` : ''
+      : `共 ${formatCount(items.length)} 个${
+          pendingCount ? ` · 待上传 ${formatCount(pendingCount)}（${formatBytes(totalBytes)}）` : ''
+        }${doneCount ? ` · 已处理 ${formatCount(doneCount)}` : ''}${failedCount ? ` · 失败 ${formatCount(failedCount)}` : ''}${
+          rejectedCount ? ` · 未接收 ${formatCount(rejectedCount)}` : ''
         }`
 
   return (
@@ -382,7 +382,7 @@ export function UploadDialog({ open, kbId, folderId, onClose, onUploaded }: Uplo
           <span className="kb-foot-note">{summary}</span>
           {failedCount ? (
             <Button variant="outline" onClick={retryFailed}>
-              重试失败项（{failedCount}）
+              重试失败项（{formatCount(failedCount)}）
             </Button>
           ) : null}
           {hasResult ? (
@@ -400,7 +400,9 @@ export function UploadDialog({ open, kbId, folderId, onClose, onUploaded }: Uplo
             关闭
           </Button>
           <Button variant="default" disabled={!canSubmit} onClick={() => void submit()}>
-            {uploading ? '上传中…' : `开始上传${pendingCount ? `（${pendingCount}）` : ''}`}
+            {uploading
+              ? '上传中…'
+              : `开始上传${pendingCount ? `（${formatCount(pendingCount)}）` : ''}`}
           </Button>
         </DialogFooter>
       </DialogContent>

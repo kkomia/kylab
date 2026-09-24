@@ -105,6 +105,7 @@ import {
 } from '@/features/misc/settings/useShortcuts'
 import { toggleSidebarPreference } from '@/features/chat/runtime/shortcutPrefs'
 import type { ConversationSummary } from '@/api/conversations'
+import { formatCount } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import { AccountMenu } from './AccountMenu'
@@ -629,7 +630,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                     />
                     <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
                     <span className="tabular shrink-0 text-[length:var(--text-micro-size)] text-text-tertiary">
-                      {workspace.conversation_count}
+                      {formatCount(workspace.conversation_count)}
                     </span>
                   </button>
                 </li>
@@ -650,7 +651,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                         )
                       }
                     >
-                      展开（还有 {hiddenCount(workspace.id)} 条）
+                      展开（还有 {formatCount(hiddenCount(workspace.id))} 条）
                     </button>
                   </li>
                 )}
