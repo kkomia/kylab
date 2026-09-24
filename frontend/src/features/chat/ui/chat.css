@@ -16,13 +16,24 @@
  * **同一套口径**——同一份 Markdown 在两个页面里不该有两种段距。
  *
  * 两条工程约束：
- * 1. **规则写在 `@layer components` 里**。层外的样式会压过 Tailwind 的
+ * 1. **规则写在 `@layer components` 里**（第二批就收了）。层外的样式会压过 Tailwind 的
  *    `@layer utilities`（与令牌那条同一条 CSS 规则，见 `tokens.css` 头部那段），
  *    而这个文件里的元素恰恰可能被调用方加工具类（`AnswerText` 的 className 就落在
- *    同一个容器上）。进 components 层，工具类仍然说了算；
+ *    同一个容器上）。进 components 层，工具类仍然说了算。
+ *    **第五批补上顶部那句层序声明**：层的先后由名字**首次出现**的位置决定，
+ *    只写 `@layer components` 块的话，本文件先被浏览器看到时 `components` 会拿到第 1 位，
+ *    Tailwind 后来声明的 `base` 反而压在它上面（`misc.css` 那次实测：preflight 的
+ *    `* { margin: 0 }` 把整份组件样式吃掉）。这一句内容与 `tokens.css` / `misc.css` /
+ *    `knowledge.css` 逐字相同，重复是幂等的。
  * 2. **只认 `.md-*` 与 `.md-body` 作用域**：这一族类名只有对话页的 Markdown 渲染器
  *    会发出来（文件预览自己有一套 `.kylab-md-*`），所以不会外溢到别的页面。
  */
+
+/**
+ * **层级顺序：`theme → base → components → utilities`，与基座那句逐字相同。**
+ * 顺序一旦定死，后面再声明同一串名字不会改变它——所以每个开层文件都写一遍是安全的。
+ */
+@layer theme, base, components, utilities;
 
 @layer components {
   /* ---------------------------------------------------------------- 正文骨架 */
@@ -179,11 +190,13 @@
     border-radius: var(--radius-badge);
   }
 
-  /* 代码块里的 code 不重复给底色：那一层的底在 `.md-pre` 上 */
+  /* 代码块里的 code 不重复给内边距 / 字号 / 圆角：那一层的盒子由 `.md-pre` 给。
+     **`background` 那一行单独放到文件末尾的层外段**（标着 `@unlayered`）：
+     它压的是 highlight.js 的主题（层外的 `.hljs { background: #fff }`），
+     而层外的声明压过一切层的规则——连 utilities 也压不过它，所以它搬不到调用点去。 */
   .md-pre code {
     padding: 0;
     font-size: inherit;
-    background: none;
     border-radius: 0;
   }
 
@@ -349,4 +362,27 @@
   .md-table tr:last-child td {
     border-bottom: 0;
   }
+}
+
+/**
+ * ---------------------------------------------------------------- 层外例外
+ *
+ * **这一段只能留在层外**，理由与 `preview.css` 里 docx-preview 那三条完全相同：
+ * 对手是**层外的第三方样式**——`main.tsx` 引进来的 highlight.js 主题
+ * （`highlight.js/styles/github.css`）里的 `.hljs { color: #24292e; background: #fff }`，
+ * 它由打包器作为**独立样式表**注入，没有层。
+ *
+ * 两种常规办法在这里都不成立：
+ * - 留在 `@layer components` 里 → 层外的 `.hljs` 无条件赢（探针实测：代码块里的
+ *   `<code>` 底色从 transparent 变成 `#fff`，深色主题下就是一块白底压在代码块上）；
+ * - 把取值挪到调用点（`.kb-switch` 那个做法）→ 调用点只能写 utilities，
+ *   而 utilities 也在层里，同样压不过层外的它。
+ *
+ * 结构检查（`scripts/check_layering.py` 的 C1）认「写在注释开头的 `@unlayered`」这个标记，
+ * 但要求把理由写清楚——不留标记的层外规则一律报红（注释里提到这个标记不算数）。
+ */
+
+/* @unlayered: highlight.js 的主题在层外（见上），只有层外的声明压得住它。 */
+.md-pre code {
+  background: none;
 }

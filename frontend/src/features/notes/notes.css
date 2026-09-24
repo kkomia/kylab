@@ -12,590 +12,23 @@
  * （旧前端靠 `assets/base.css` 的 `html, body, #app { height: 100% }`，
  * 而 React 挂的是 `#root`——外壳（P2）补上这一环之前，本页会退化成
  * "两列共用外层那一条滚动条"）。
+ *
+ * **整份规则收在 `@layer components` 里（2026-09-24 第五批）**，理由与 `tokens.css`
+ * 那段元素重置、`misc.css` 的 `.m-*`、`knowledge.css` 的 `.kb-*` 逐字相同：
+ * **未分层的声明永远压过 `@layer utilities`**（分层规则与优先级无关）。本页的选择器
+ * 几乎全是单类（`.tool` / `.icon-action` / `.note-item`），靠层外身份赢的话，
+ * 调用点上的工具类就永远改不动它们——而页面里本来就混着两种写法。
+ *
+ * 两个例外，都在下面标了位置：
+ * - `@keyframes` 不进层（本文件 1 个，已提到文件顶部，与 `misc.css` / `knowledge.css`
+ *   做法一致）：动画名是文档级的，放进层只会让"同名关键帧谁赢"多一条规则；
+ * - 收层后**工具类开始赢**：凡此前"靠层外赢过 utilities"才成立的地方都会跟着变。
+ *   本批用"同一时刻、层内 vs 层外"的结构探针核对（`.shots/batch5-probe-notes.cjs`），
+ *   差异逐条为空才算收干净——本域**没有**需要挪到调用点的取值（对照 `knowledge.css`
+ *   的 `.kb-switch`：那两条是"有意压过原语"，这里一处都没有）。
  */
 
-/* ------------------------------------------------ 页面：自己占满内容区 */
-.notes-page {
-  height: 100%;
-  padding: var(--space-3) var(--page-gutter) var(--space-8);
-}
-
-/* 分栏：**两列各自滚**。
- *
- * 原先这里写着 `align-items: start`：两列各按**内容高**排版，页面被正文撑得很长，
- * 滚动只能落在最外层——正文一滚，左边那份并不长的目录也被一起带走（用户报的现象）。
- * 去掉它（grid 默认 stretch）并给容器定高，两列的高度才等于"可用高度"，
- * 各自的 `overflow-y: auto` 也才真的滚得起来。 */
-.notes-layout {
-  display: grid;
-  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
-  height: 100%;
-}
-
-/* 折叠态：列表收成一条窄导轨（44 = 28px 的按钮 + 两侧各 8px 内边距），
-   省下来的这一栏**整份给正文**——这正是折叠要买的东西。 */
-.notes-layout.list-collapsed {
-  grid-template-columns: 44px minmax(0, 1fr);
-}
-
-.notes-layout.list-collapsed .notes-list {
-  gap: 0;
-  align-items: center;
-  padding: var(--space-2) 0;
-}
-
-.notes-layout.list-collapsed .list-head {
-  justify-content: center;
-}
-
-/* ------------------------------------------------ 列表：扁平 + 时间分组 */
-.notes-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  min-width: 0;
-  /* 目录自己滚：`height: 100%` 撑满这一格（配 grid 的 stretch）。
-     `min-height: 0` 不是装饰——grid 项的自动最小尺寸是**内容高**，
-     不压到 0 的话列表长了会把这一格顶高，滚动条又跑回外层去。 */
-  height: 100%;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--space-2) var(--space-4) var(--space-6) var(--space-1);
-  border-right: 1px solid var(--border-hairline);
-}
-
-.list-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-}
-
-.list-title {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  margin: 0;
-  font-size: var(--text-section-size);
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.list-count {
-  font-size: var(--text-micro-size);
-  font-weight: 400;
-  color: var(--text-tertiary);
-}
-
-.icon-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  color: var(--text-secondary);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-control);
-  cursor: pointer;
-}
-
-.icon-action:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.icon-action-on {
-  color: var(--accent-text);
-  background: var(--accent-soft);
-}
-
-.icon-action-danger:hover {
-  color: var(--status-danger);
-  background: var(--danger-soft);
-}
-
-/* 折叠开关比旁边的动作安静一档：它是版式开关，不是"对这条笔记做什么"。
-   必须写在 `.icon-action` 之后——同为单类选择器，靠顺序才能盖过它的次级文字色 */
-.collapse-toggle {
-  color: var(--text-tertiary);
-}
-
-.search-box {
-  position: relative;
-}
-
-/* 放大镜压在输入框左侧：输入框本身是 `@/ui/input` 的原语，左内边距由调用方
-   用 `pl-8`（32px = 12px 内边距 + 14px 图标 + 6px 间隙）让开 */
-.search-icon {
-  position: absolute;
-  top: 50%;
-  left: var(--space-3);
-  z-index: 1;
-  color: var(--text-tertiary);
-  transform: translateY(-50%);
-  pointer-events: none;
-}
-
-/* 标签条按语义分三层：**时间 / 来源 / 状态**。
- *
- * 此前是"一锅 chip 平铺三行"：日期型（`2026-09`）、来源型（`AI日报`）、状态型（`已核实`）
- * 混在一排，要逐行读才知道能筛什么（界面评审 N4）。分组的判据是标签的**形状**
- * （见 `tagKindOf`），不猜后端语义、也不改标签本身。
- * 竖排三层：每层一行小标题 + 若干 chip，行内照旧自动换行。 */
-.tag-bar {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.tag-group {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-}
-
-.tag-group-label {
-  flex: 0 0 auto;
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.tag-group-items {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.tag-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-pair) var(--space-2);
-  font-size: var(--text-micro-size);
-  color: var(--text-secondary);
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-pill);
-  cursor: pointer;
-}
-
-.tag-chip:hover {
-  background: var(--bg-hover);
-}
-
-/* 选中的标签：与全站"选中"同一套（`misc.css` 的 `.m-filter-on` / `.m-kb-pick-on`）
-   ——中性选中底 + 强描边 + 主文字色。
-   原来是"蓝字 + 蓝 10% 底 + 冷蓝描边"，属于评审的跨页共性问题 3（蓝色被用在
-   大面积选中上）：标签筛选是**位置信息**（我在看哪一批），不是强调。 */
-.tag-on {
-  background: var(--bg-selected);
-  border-color: var(--border-strong);
-  color: var(--text-primary);
-}
-
-.tag-count {
-  color: var(--text-tertiary);
-}
-
-.list-hint {
-  margin: 0;
-  font-size: var(--text-micro-size);
-}
-
-.list-error {
-  color: var(--status-danger);
-}
-
-.note-groups {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-}
-
-.group-label {
-  margin: 0 0 var(--space-2);
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.note-items {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-pair);
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.note-item {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
-  color: inherit;
-  text-decoration: none;
-  border-radius: var(--radius-row);
-}
-
-.note-item:hover {
-  background: var(--bg-hover);
-}
-
-/* 当前阅读的那一行：与侧栏会话条 / `.m-kb-pick-on` 同一口径——中性选中底、不描边
-   （列表行是"我在哪"，一行一条粗边会把整列框成表格）。
-   原先是蓝色 10% 底，同一个跨页共性问题 3。 */
-.note-item-active {
-  background: var(--bg-selected);
-}
-
-.note-item-title {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  font-size: var(--text-meta-size);
-  font-weight: 500;
-  color: var(--text-primary);
-  overflow-wrap: anywhere;
-}
-
-.pin-icon {
-  flex: 0 0 auto;
-  color: var(--accent-text);
-}
-
-.note-item-meta {
-  display: flex;
-  gap: var(--space-3);
-  align-items: baseline;
-  justify-content: space-between;
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-}
-
-.note-item-preview {
-  display: -webkit-box;
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 1;
-}
-
-.note-item-tail {
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: var(--space-1);
-  align-items: center;
-  color: var(--text-tertiary);
-}
-
-/* ------------------------------------------------ 编辑器：无边框、工具栏在顶 */
-.notes-pane {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  /* 正文列就是"正文的滚动容器"：工具栏的 sticky 吸的正是它（见下面的 `.toolbar`），
-     所以它必须真的滚起来，不能被 `.editor-body` 里那层内滚动架空。 */
-  height: 100%;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-/* 编辑区：**撑满这一列，但不许被压回一列的高度**。
- *
- * `min-height: 100%` 管"短笔记也铺满"——点得到正文下面那片空白；
- * `flex: none` 管"正文多长它就多长"：flex 项默认 `flex-shrink: 1`，
- * 正文几屏长时这一层会被压回列高，溢出的正文虽然照样在列里滚，
- * 但工具栏 sticky 的**包含块**（就是这一层）也缩到了一屏——
- * 滚过一屏之后再没地方可粘，工具栏会跟着滚走（吸顶静默失效）。
- *
- * 也**不要**写 `flex: 1`：它的 `flex-basis: 0%` 会把这一层的高度与内容彻底脱钩，
- * 落在同一个坑里（实现"两列各自滚"时踩到过）。 */
-.pane-editor {
-  flex: none;
-  min-height: 100%;
-}
-
-/* 没选笔记时把提示放在视觉中心：左上角一行字会被宽敞的编辑区衬得很空 */
-.pane-empty {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-12) 0;
-}
-
-.pane-empty .empty {
-  align-items: center;
-}
-
-.save-label {
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-  white-space: nowrap;
-}
-
-.save-error {
-  color: var(--status-danger);
-}
-
-/* 标题是"文档的一部分"，不是表单字段：无边框、字大、和正文同栏 */
-.doc-title {
-  display: block;
-  width: 100%;
-  margin: 0 0 var(--space-3);
-  padding: 0;
-  font-family: inherit;
-  /* 比页标题小一档：它是"文档标题"，不该压过工具栏与正文的层级关系 */
-  font-size: calc(var(--text-page-title-size) * 0.78);
-  font-weight: 600;
-  line-height: 1.3;
-  color: var(--text-primary);
-  background: transparent;
-  border: none;
-  outline: none;
-}
-
-.doc-title::placeholder {
-  color: var(--text-tertiary);
-}
-
-.tag-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  align-items: center;
-  min-height: var(--hit-target);
-  margin-bottom: var(--space-4);
-}
-
-.tag-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 1px var(--space-2);
-  font-size: var(--text-micro-size);
-  color: var(--text-secondary);
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-pill);
-}
-
-.tag-remove {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  /* 这个 × 是**固定 14px 的圆钮**里的一枚符号（不是正文字），所以字号不跟
-     `--font-scale` 走：它一旦放大就会从 14px 的钮里溢出来，钮又不能再大
-     （标签胶囊只有 24px 高）。全站唯一一处刻意脱离字阶的地方，在这里写明。 */
-  font-size: var(--text-micro-size);
-  line-height: 1;
-  color: var(--text-tertiary);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-pill);
-  cursor: pointer;
-}
-
-.tag-remove:hover {
-  color: var(--status-danger);
-  background: var(--danger-soft);
-}
-
-.tag-entry {
-  min-width: 80px;
-  padding: var(--space-pair) var(--space-2);
-  font-family: inherit;
-  font-size: var(--text-micro-size);
-  color: var(--text-secondary);
-  background: transparent;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-pill);
-  outline: none;
-}
-
-.tag-entry:focus {
-  border-color: var(--accent-selected);
-}
-
-.doc-status {
-  display: flex;
-  gap: var(--space-1);
-  align-items: center;
-  margin-bottom: var(--space-3);
-  font-size: var(--text-micro-size);
-  color: var(--status-success);
-}
-
-.doc-link {
-  margin-left: var(--space-2);
-  color: var(--accent-text);
-  text-decoration: none;
-}
-
-.doc-link:hover {
-  text-decoration: underline;
-}
-
-/* ------------------------------------------------ 工具栏与正文 */
-/* 只管纵向排布：**高度由使用方决定**（笔记页的 `.pane-editor` 让它撑满正文列，
-   但随内容长高、不被压矮）。这里写死 `height: 100%` 或 `min-height: 0` 都会把
-   滚动归属搞乱：前者把这一层钉在列高上，正文只能在 `.editor-body` 里另开一个滚动区、
-   把列那层架空；后者允许这一层被压回列高，sticky 的包含块跟着缩到一屏。 */
-.note-editor {
-  display: flex;
-  flex-direction: column;
-}
-
-/* 工具栏吸顶：正文再长也不必滚回顶部去点格式按钮。
- *
- * 吸附对象是**正文列**（笔记页的 `.notes-pane`，`overflow-y: auto`）：
- * 工具栏到它之间只有 `.note-editor` 这一级，没有 `overflow: hidden` 之类的裁剪，
- * 所以吸得住。反过来，`.editor-body` 刻意**不设** overflow——它一旦自己成了滚动区，
- * 滚动就发生在工具栏**里面**，外面那一列永远不动，sticky 就成了写着好看的声明。
- *
- * `z-index` 是必需的：正文在换笔记时带 `opacity` 过渡，那个不透明度会让
- * `.editor-body` 自成一个层叠上下文；不给一个正的层级，它就会盖在工具栏上。
- * 背景必须是不透明色（`--bg-surface` 两套主题都是实色），否则滚动时正文会透出来。 */
-.toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
-  border-bottom: 1px solid var(--border-hairline);
-  background: var(--bg-surface);
-}
-
-.tool-group {
-  display: flex;
-  align-items: center;
-  gap: var(--space-pair);
-}
-
-.tool {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  color: var(--text-secondary);
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-control);
-  cursor: pointer;
-}
-
-.tool:hover:not(:disabled) {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.tool:disabled {
-  color: var(--text-tertiary);
-  opacity: 0.45;
-  cursor: default;
-}
-
-.tool-on {
-  color: var(--accent-text);
-  background: var(--accent-soft);
-}
-
-/* 分组竖线：**必须看得见**。
- *
- * 此前取 `--border`（Separators-S1，约 12% 的黑），压在白底上只有 1.28:1——
- * 分组等于没分，用户只能靠"点点看"（界面评审 N1）。改用 `--separator`
- * （主题里就是 `--text-tertiary` 那一档：白底 4.7:1、深色 5.7:1），
- * 两条线把 16 个图标切成"历史 ｜ 排版 ｜ 更多"三段，一眼能看出分组。
- * 高度只有 16px、宽 1px，压得住工具栏的整体观感。 */
-.tool-sep {
-  width: 1px;
-  height: 16px;
-  margin: 0 var(--space-2);
-  background: var(--separator);
-}
-
-/* 「段落样式」下拉的触发器：它是一个**选择器**，长相就该与图标按钮不同——
-  文字 + 下拉箭头，宽度随当前样式的名字走。 */
-.tool-style {
-  width: auto;
-  gap: var(--space-1);
-  padding: 0 var(--space-2);
-  color: var(--text-secondary);
-}
-
-.tool-style-text {
-  font-size: var(--text-micro-size);
-  white-space: nowrap;
-}
-
-/* 下拉里的"当前项"：与工具栏上的 `tool-on` 同一套强调色，但**不再常亮**——
-   亮只亮在真正被选中的那一项上（界面评审 N2）。 */
-.tool-menu-on {
-  color: var(--accent-text);
-}
-
-.toolbar-right {
-  display: flex;
-  gap: var(--space-1);
-  align-items: center;
-  margin-left: auto;
-}
-
-/* 工具栏右侧是一个 28px 的按钮排；AI 入口的外框必须同高，否则文字基线会与邻排错开 */
-.toolbar-right .ai-trigger {
-  min-width: 28px;
-  height: 28px;
-}
-
-.file-input {
-  display: none;
-}
-
-/* 上传中的可见反馈（粘贴图片这条路尤其需要：没有它，等待期里界面毫无动静） */
-.upload-hint {
-  font-size: var(--text-micro-size);
-  color: var(--text-tertiary);
-  white-space: nowrap;
-}
-
-/* AI 入口：星芒 + 短标签，用强调色与普通格式按钮区分开 */
-.ai-trigger {
-  display: inline-flex;
-  gap: 4px;
-  align-items: center;
-  padding: 0 var(--space-1);
-  font-size: var(--text-micro-size);
-  font-weight: 600;
-  color: var(--accent-text);
-  border-radius: var(--radius-control);
-}
-
-.ai-trigger:hover {
-  background: var(--accent-soft);
-}
-
-.ai-busy {
-  opacity: 0.8;
-}
-
-/* 运行中的进度圈：把星芒换成一个转圈，用户一眼知道"它在跑" */
-.ai-spinner {
-  width: 13px;
-  height: 13px;
-  border: 2px solid var(--accent-soft);
-  border-top-color: var(--accent);
-  border-radius: var(--radius-pill);
-  animation: ai-spin 0.7s linear infinite;
-}
+/* 动画定义留在层外（见文件头）。 */
 
 @keyframes ai-spin {
   to {
@@ -603,306 +36,906 @@
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  /* 降级成慢转而不是停住：停住就没有"在跑"的信息了 */
-  .ai-spinner {
-    animation-duration: 1.8s;
-  }
-}
-
-/* 正文区**不自己滚**：滚动归笔记页的正文列（`.notes-pane`）。
-   这里只负责把"列高减去工具栏"剩下的空间吃下来（`flex: 1`），
-   于是短笔记也铺满整列的点击区；
-   一旦给它 `overflow-y: auto`，它就成了内层滚动容器，把列那层的滚动架空。 */
-.editor-body {
-  flex: 1;
-  transition: opacity 160ms ease;
-}
-
-/* 正文还在路上（缓存未命中）时把旧内容轻轻压暗：换笔记就有了过渡而不是硬切，
-   而这段时间通常刚好够请求回来——回来即恢复，看不出一道闪。
-   延迟 120ms 才加这个类（见 NotesView），所以命中缓存的切换完全不会压暗。 */
-.editor-body.is-loading {
-  opacity: 0.45;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .editor-body {
-    transition: none;
-  }
-}
-
-/* 正文收在一条窄栏里居中：满屏宽的行读起来很累，也不像"写作工具" */
-.editor-column {
-  max-width: 780px;
-  margin: 0 auto;
-  padding: var(--space-6) var(--space-6) var(--space-16);
-}
-
-/* ------------------------------------------------ 正文本身（Tiptap 产出） */
-.editor-content .tiptap {
-  min-height: 360px;
-  font-size: var(--text-body-size);
-  line-height: 1.75;
-  color: var(--text-primary);
-  outline: none;
-}
-
-.editor-content .tiptap > * + * {
-  margin-top: var(--space-3);
-}
-
-.editor-content .tiptap h1 {
-  font-size: var(--text-page-title-size);
-}
-
-.editor-content .tiptap h2 {
-  font-size: var(--text-section-size);
-}
-
-.editor-content .tiptap h3 {
-  font-size: var(--text-body-size);
-  font-weight: 600;
-}
-
-.editor-content .tiptap ul,
-.editor-content .tiptap ol {
-  padding-left: var(--space-6);
-}
-
-.editor-content .tiptap ul {
-  list-style: disc;
-}
-
-.editor-content .tiptap ol {
-  list-style: decimal;
-}
-
-.editor-content .tiptap ul[data-type='taskList'] {
-  list-style: none;
-  padding-left: var(--space-2);
-}
-
-.editor-content .tiptap ul[data-type='taskList'] li {
-  display: flex;
-  gap: var(--space-2);
-  align-items: flex-start;
-}
-
-/* 原生复选框默认是浏览器蓝，和全站的青绿强调色不是一套；显式交给主题令牌 */
-.editor-content .tiptap input[type='checkbox'] {
-  accent-color: var(--accent);
-  margin-top: 0.35em;
-}
-
-.editor-content .tiptap blockquote {
-  padding-left: var(--space-4);
-  color: var(--text-secondary);
-  border-left: 2px solid var(--border-strong);
-}
-
-.editor-content .tiptap pre {
-  padding: var(--space-3) var(--space-4);
-  overflow-x: auto;
-  font-family: var(--font-mono);
-  font-size: var(--text-micro-size);
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-control);
-}
-
-.editor-content .tiptap code {
-  font-family: var(--font-mono);
-  font-size: 0.92em;
-}
-
-.editor-content .tiptap a {
-  color: var(--accent-text);
-  text-decoration: underline;
-}
-
-.editor-content .tiptap img {
-  max-width: 100%;
-  height: auto;
-  border: 1px solid var(--border-hairline);
-  border-radius: var(--radius-control);
-}
-
-/* 图片外面是 ResizableNodeView 生成的「容器 > 包裹层 > 图片 + 手柄」。
-   **尺寸只该有一个来源**：图片自己的内联 width（拖出来的那个，也是落盘的那个），
-   容器与包裹层都不另设宽度，只负责"跟着图走"。
-
-   容器这一条是给蓝框（选中态的 outline 画在容器上）治病的：容器默认是**块级 flex、
-   宽度铺满整栏**，而图往往比整栏窄，框于是永远比图宽——实测（headless Chrome，
-   栏宽 732）：图 460 时框右边多出 272px、图 120 时多出 612px，左沿也因
-   outline-offset 探出去 3px，就是用户看到的"蓝框比图片大一圈、左右都超出"。
-   `fit-content` 让容器收缩到内容宽，框正好落在图片边框上；它仍是块级 flex，
-   ProseMirror 期望的块级盒子身份不变。
-   `max-width` 兜一道"拖出栏宽时框也别溢出去"。 */
-.editor-content [data-resize-container] {
-  width: fit-content;
-  max-width: 100%;
-}
-
-/* 包裹层同样不设尺寸，只兜一道"别超栏宽"：真正的截断点在图自己身上
-   （`.tiptap img` 的 `max-width: 100%`）。两道都在不影响结果，但**别让包裹层有自己的
-   宽度**——它一旦和图不一致，框与图就又分家了。 */
-.editor-content [data-resize-wrapper] {
-  max-width: 100%;
-}
-
-/* 高度永远跟宽度与图片自身比例走；块级化去掉行内元素底下那条基线缝。
+/**
+ * **层级顺序：与 `tokens.css` / `misc.css` / `knowledge.css` 顶部那句逐字相同，
+ * 重复是故意的。**
  *
- * 高度：ResizableNodeView 拖拽时会往图片上写**内联** width/height，而宽度会被上面的
- * `max-width: 100%` 截住、高度不会——于是"往右拖出栏宽"会把图压扁，而且
- * mouseup 落库读的是 offsetWidth/offsetHeight，压扁的比例会被写进正文。
- * 让高度始终由宽度决定，截断就看不出、存下来的也是真实比例。
- * 内联样式只能靠 `!important` 压过，这是它的唯一用途，不是随手加的。
+ * 层的顺序由"这个名字第一次出现的位置"决定，而本文件在真实加载里可能**先于**
+ * `tokens.css` 被浏览器看到（它挂在笔记页那条路由的依赖子树里）。只写下面那个
+ * `@layer components`、不写这一句的话，`components` 会拿到第 1 位，Tailwind 后来
+ * 声明的 `base` 反而压在它上面——`* { margin: 0; padding: 0; border: 0 }` 这类
+ * preflight 重置会静默吃掉整份笔记页样式（`misc.css` 那次实测：页标题字号退回 15px、
+ * 卡片内边距归零）。
  *
- * 块级：图默认是行内元素、坐在包裹层的基线上，底下会空出一条 line-height 的缝
- * （实测 7.3px：line-height 1.75 的 strut），包裹层因此比图高，跟着它走的容器下沿
- * 与右下角手柄也就落到图片边框下面去了。块级化之后包裹层的高度就等于图的高度。 */
-.editor-content [data-resize-wrapper] img {
-  display: block;
-  height: auto !important;
-}
+ * 两句内容相同、幂等：谁先被浏览器看到，顺序都由它定死，不依赖 CSS 的加载顺序。
+ */
+@layer theme, base, components, utilities;
 
-/* 手柄：平时完全透明，鼠标进到图上或正在拖拽时才现出一个 11px 的小圆点。
-   `transform` 把它挪到角上（ResizableNodeView 已给 right/bottom: 0）。 */
-.editor-content [data-resize-handle] {
-  width: 11px;
-  height: 11px;
-  background: var(--accent);
-  border: 1.5px solid var(--bg-surface);
-  border-radius: var(--radius-pill);
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-.editor-content [data-resize-handle='bottom-right'] {
-  transform: translate(50%, 50%);
-  cursor: nwse-resize;
-}
-
-.editor-content [data-resize-container]:hover [data-resize-handle],
-.editor-content [data-resize-state='true'] [data-resize-handle] {
-  opacity: 1;
-}
-
-/* 只读时把手柄藏掉：ResizableNodeView 要**收到一次 update**（文档有改动）才摘手柄，
-   而只读笔记可能一直不产生 update——手柄留在图上，拖了还会改文档。
-   直接看编辑器自己的 contenteditable 属性最可靠。 */
-.editor-content .tiptap[contenteditable='false'] [data-resize-handle] {
-  display: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .editor-content [data-resize-handle] {
-    transition: none;
-  }
-}
-
-/* 蓝框画在容器上——容器的盒子 = 图片的盒子（见上面那条 `fit-content`）。
-   `outline-offset` 那 1px 是让开图片自己那圈 hairline 边框，不是"框比图大"。 */
-.editor-content [data-resize-container].ProseMirror-selectednode {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-  border-radius: var(--radius-control);
-}
-
-.editor-content .tiptap p.is-editor-empty:first-child::before {
-  float: left;
-  height: 0;
-  color: var(--text-tertiary);
-  pointer-events: none;
-  content: attr(data-placeholder);
-}
-
-/* ------------------------------------------------ 弹窗里那两件本页自己的东西
-   弹窗/按钮/输入都是 `@/ui/**` 的原语（旧版来自 AppModal / AppButton / AppInput），
-   这里只剩两样：选库用的原生 `<select>`，以及页面自己的空状态。 */
-
-.kb-select {
-  width: 100%;
-  height: var(--control-height);
-  padding: 0 var(--space-2);
-  font-family: inherit;
-  font-size: var(--text-meta-size);
-  color: var(--text-primary);
-  background: var(--bg-subtle);
-  border: 1px solid transparent;
-  border-radius: var(--radius-control);
-  outline: none;
-}
-
-.kb-select:focus {
-  border-color: var(--accent-selected);
-}
-
-/* ------------------------------------------------ 空状态 */
-.empty {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding: var(--space-12) 0;
-}
-
-.empty-title {
-  margin: 0;
-  font-size: var(--text-section-size);
-  font-weight: 600;
-}
-
-.empty-hint {
-  margin: 0;
-  max-width: var(--measure);
-  color: var(--text-secondary);
-}
-
-/* ------------------------------------------------ 单栏断点 */
-@media (max-width: 900px) {
-  /* 单栏是**堆叠**：上面目录、下面正文，"两列"这件事本身就不存在了。
-     各自独立滚动只在两列并排、各自有独立视野时才成立；堆叠时若还各滚各的，
-     一屏里会冒出两个小滚动区，滚到底还得先判断"现在滚的是哪一段"。
-     所以高度与 overflow 一并还原成内容流——两段重新共用外层那一条滚动条。 */
+@layer components {
+  /* ------------------------------------------------ 页面：自己占满内容区 */
   .notes-page {
-    height: auto;
+    height: 100%;
+    padding: var(--space-3) var(--page-gutter) var(--space-8);
   }
 
+  /* 分栏：**两列各自滚**。
+   *
+   * 原先这里写着 `align-items: start`：两列各按**内容高**排版，页面被正文撑得很长，
+   * 滚动只能落在最外层——正文一滚，左边那份并不长的目录也被一起带走（用户报的现象）。
+   * 去掉它（grid 默认 stretch）并给容器定高，两列的高度才等于"可用高度"，
+   * 各自的 `overflow-y: auto` 也才真的滚得起来。 */
   .notes-layout {
-    height: auto;
-    grid-template-columns: minmax(0, 1fr);
+    display: grid;
+    grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+    height: 100%;
   }
 
-  /* 单栏下正文列不再有"撑满一屏"的高度：高度与 overflow 一并还原（见上），
-     再给它一条下限——否则短笔记会让编辑区缩成一条，看起来像没加载出来 */
-  .notes-pane {
-    height: auto;
-    min-height: 600px;
-    overflow-y: visible;
-  }
-
-  /* 单栏下没有"另一栏"可以接收空间，折叠于是只能收成一条**横向**细条：
-     留一条窄列反而既占宽度又什么也放不下 */
+  /* 折叠态：列表收成一条窄导轨（44 = 28px 的按钮 + 两侧各 8px 内边距），
+     省下来的这一栏**整份给正文**——这正是折叠要买的东西。 */
   .notes-layout.list-collapsed {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: 44px minmax(0, 1fr);
   }
 
   .notes-layout.list-collapsed .notes-list {
-    flex-direction: row;
-    padding: var(--space-1) var(--space-4);
+    gap: 0;
+    align-items: center;
+    padding: var(--space-2) 0;
   }
 
   .notes-layout.list-collapsed .list-head {
-    justify-content: flex-start;
+    justify-content: center;
   }
 
+  /* ------------------------------------------------ 列表：扁平 + 时间分组 */
   .notes-list {
-    height: auto;
-    overflow-y: visible;
-    border-right: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-width: 0;
+    /* 目录自己滚：`height: 100%` 撑满这一格（配 grid 的 stretch）。
+       `min-height: 0` 不是装饰——grid 项的自动最小尺寸是**内容高**，
+       不压到 0 的话列表长了会把这一格顶高，滚动条又跑回外层去。 */
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-2) var(--space-4) var(--space-6) var(--space-1);
+    border-right: 1px solid var(--border-hairline);
+  }
+
+  .list-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+  }
+
+  .list-title {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    margin: 0;
+    font-size: var(--text-section-size);
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+
+  .list-count {
+    font-size: var(--text-micro-size);
+    font-weight: 400;
+    color: var(--text-tertiary);
+  }
+
+  .icon-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    color: var(--text-secondary);
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-control);
+    cursor: pointer;
+  }
+
+  .icon-action:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .icon-action-on {
+    color: var(--accent-text);
+    background: var(--accent-soft);
+  }
+
+  .icon-action-danger:hover {
+    color: var(--status-danger);
+    background: var(--danger-soft);
+  }
+
+  /* 折叠开关比旁边的动作安静一档：它是版式开关，不是"对这条笔记做什么"。
+     必须写在 `.icon-action` 之后——同为单类选择器，靠顺序才能盖过它的次级文字色 */
+  .collapse-toggle {
+    color: var(--text-tertiary);
+  }
+
+  .search-box {
+    position: relative;
+  }
+
+  /* 放大镜压在输入框左侧：输入框本身是 `@/ui/input` 的原语，左内边距由调用方
+     用 `pl-8`（32px = 12px 内边距 + 14px 图标 + 6px 间隙）让开 */
+  .search-icon {
+    position: absolute;
+    top: 50%;
+    left: var(--space-3);
+    z-index: 1;
+    color: var(--text-tertiary);
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+
+  /* 标签条按语义分三层：**时间 / 来源 / 状态**。
+   *
+   * 此前是"一锅 chip 平铺三行"：日期型（`2026-09`）、来源型（`AI日报`）、状态型（`已核实`）
+   * 混在一排，要逐行读才知道能筛什么（界面评审 N4）。分组的判据是标签的**形状**
+   * （见 `tagKindOf`），不猜后端语义、也不改标签本身。
+   * 竖排三层：每层一行小标题 + 若干 chip，行内照旧自动换行。 */
+  .tag-bar {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .tag-group {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+
+  .tag-group-label {
+    flex: 0 0 auto;
+    font-size: var(--text-micro-size);
+    color: var(--text-tertiary);
+  }
+
+  .tag-group-items {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .tag-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-pair) var(--space-2);
+    font-size: var(--text-micro-size);
+    color: var(--text-secondary);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-pill);
+    cursor: pointer;
+  }
+
+  .tag-chip:hover {
+    background: var(--bg-hover);
+  }
+
+  /* 选中的标签：与全站"选中"同一套（`misc.css` 的 `.m-filter-on` / `.m-kb-pick-on`）
+     ——中性选中底 + 强描边 + 主文字色。
+     原来是"蓝字 + 蓝 10% 底 + 冷蓝描边"，属于评审的跨页共性问题 3（蓝色被用在
+     大面积选中上）：标签筛选是**位置信息**（我在看哪一批），不是强调。 */
+  .tag-on {
+    background: var(--bg-selected);
+    border-color: var(--border-strong);
+    color: var(--text-primary);
+  }
+
+  .tag-count {
+    color: var(--text-tertiary);
+  }
+
+  .list-hint {
+    margin: 0;
+    font-size: var(--text-micro-size);
+  }
+
+  .list-error {
+    color: var(--status-danger);
+  }
+
+  .note-groups {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .group-label {
+    margin: 0 0 var(--space-2);
+    font-size: var(--text-micro-size);
+    color: var(--text-tertiary);
+  }
+
+  .note-items {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-pair);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .note-item {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    color: inherit;
+    text-decoration: none;
+    border-radius: var(--radius-row);
+  }
+
+  .note-item:hover {
+    background: var(--bg-hover);
+  }
+
+  /* 当前阅读的那一行：与侧栏会话条 / `.m-kb-pick-on` 同一口径——中性选中底、不描边
+     （列表行是"我在哪"，一行一条粗边会把整列框成表格）。
+     原先是蓝色 10% 底，同一个跨页共性问题 3。 */
+  .note-item-active {
+    background: var(--bg-selected);
+  }
+
+  .note-item-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: var(--text-meta-size);
+    font-weight: 500;
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+  }
+
+  .pin-icon {
+    flex: 0 0 auto;
+    color: var(--accent-text);
+  }
+
+  .note-item-meta {
+    display: flex;
+    gap: var(--space-3);
+    align-items: baseline;
+    justify-content: space-between;
+    font-size: var(--text-micro-size);
+    color: var(--text-tertiary);
+  }
+
+  .note-item-preview {
+    display: -webkit-box;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 1;
+  }
+
+  .note-item-tail {
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: var(--space-1);
+    align-items: center;
+    color: var(--text-tertiary);
+  }
+
+  /* ------------------------------------------------ 编辑器：无边框、工具栏在顶 */
+  .notes-pane {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    /* 正文列就是"正文的滚动容器"：工具栏的 sticky 吸的正是它（见下面的 `.toolbar`），
+       所以它必须真的滚起来，不能被 `.editor-body` 里那层内滚动架空。 */
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  /* 编辑区：**撑满这一列，但不许被压回一列的高度**。
+   *
+   * `min-height: 100%` 管"短笔记也铺满"——点得到正文下面那片空白；
+   * `flex: none` 管"正文多长它就多长"：flex 项默认 `flex-shrink: 1`，
+   * 正文几屏长时这一层会被压回列高，溢出的正文虽然照样在列里滚，
+   * 但工具栏 sticky 的**包含块**（就是这一层）也缩到了一屏——
+   * 滚过一屏之后再没地方可粘，工具栏会跟着滚走（吸顶静默失效）。
+   *
+   * 也**不要**写 `flex: 1`：它的 `flex-basis: 0%` 会把这一层的高度与内容彻底脱钩，
+   * 落在同一个坑里（实现"两列各自滚"时踩到过）。 */
+  .pane-editor {
+    flex: none;
+    min-height: 100%;
+  }
+
+  /* 没选笔记时把提示放在视觉中心：左上角一行字会被宽敞的编辑区衬得很空 */
+  .pane-empty {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-12) 0;
+  }
+
+  .pane-empty .empty {
+    align-items: center;
+  }
+
+  .save-label {
+    font-size: var(--text-micro-size);
+    color: var(--text-tertiary);
+    white-space: nowrap;
+  }
+
+  .save-error {
+    color: var(--status-danger);
+  }
+
+  /* 标题是"文档的一部分"，不是表单字段：无边框、字大、和正文同栏 */
+  .doc-title {
+    display: block;
+    width: 100%;
+    margin: 0 0 var(--space-3);
+    padding: 0;
+    font-family: inherit;
+    /* 比页标题小一档：它是"文档标题"，不该压过工具栏与正文的层级关系 */
+    font-size: calc(var(--text-page-title-size) * 0.78);
+    font-weight: 600;
+    line-height: 1.3;
+    color: var(--text-primary);
+    background: transparent;
+    border: none;
+    outline: none;
+  }
+
+  .doc-title::placeholder {
+    color: var(--text-tertiary);
+  }
+
+  .tag-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    align-items: center;
+    min-height: var(--hit-target);
+    margin-bottom: var(--space-4);
+  }
+
+  .tag-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 1px var(--space-2);
+    font-size: var(--text-micro-size);
+    color: var(--text-secondary);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-pill);
+  }
+
+  .tag-remove {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    /* 这个 × 是**固定 14px 的圆钮**里的一枚符号（不是正文字），所以字号不跟
+       `--font-scale` 走：它一旦放大就会从 14px 的钮里溢出来，钮又不能再大
+       （标签胶囊只有 24px 高）。全站唯一一处刻意脱离字阶的地方，在这里写明。 */
+    font-size: var(--text-micro-size);
+    line-height: 1;
+    color: var(--text-tertiary);
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-pill);
+    cursor: pointer;
+  }
+
+  .tag-remove:hover {
+    color: var(--status-danger);
+    background: var(--danger-soft);
+  }
+
+  .tag-entry {
+    min-width: 80px;
+    padding: var(--space-pair) var(--space-2);
+    font-family: inherit;
+    font-size: var(--text-micro-size);
+    color: var(--text-secondary);
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-pill);
+    outline: none;
+  }
+
+  .tag-entry:focus {
+    border-color: var(--accent-selected);
+  }
+
+  .doc-status {
+    display: flex;
+    gap: var(--space-1);
+    align-items: center;
+    margin-bottom: var(--space-3);
+    font-size: var(--text-micro-size);
+    color: var(--status-success);
+  }
+
+  .doc-link {
+    margin-left: var(--space-2);
+    color: var(--accent-text);
+    text-decoration: none;
+  }
+
+  .doc-link:hover {
+    text-decoration: underline;
+  }
+
+  /* ------------------------------------------------ 工具栏与正文 */
+  /* 只管纵向排布：**高度由使用方决定**（笔记页的 `.pane-editor` 让它撑满正文列，
+     但随内容长高、不被压矮）。这里写死 `height: 100%` 或 `min-height: 0` 都会把
+     滚动归属搞乱：前者把这一层钉在列高上，正文只能在 `.editor-body` 里另开一个滚动区、
+     把列那层架空；后者允许这一层被压回列高，sticky 的包含块跟着缩到一屏。 */
+  .note-editor {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* 工具栏吸顶：正文再长也不必滚回顶部去点格式按钮。
+   *
+   * 吸附对象是**正文列**（笔记页的 `.notes-pane`，`overflow-y: auto`）：
+   * 工具栏到它之间只有 `.note-editor` 这一级，没有 `overflow: hidden` 之类的裁剪，
+   * 所以吸得住。反过来，`.editor-body` 刻意**不设** overflow——它一旦自己成了滚动区，
+   * 滚动就发生在工具栏**里面**，外面那一列永远不动，sticky 就成了写着好看的声明。
+   *
+   * `z-index` 是必需的：正文在换笔记时带 `opacity` 过渡，那个不透明度会让
+   * `.editor-body` 自成一个层叠上下文；不给一个正的层级，它就会盖在工具栏上。
+   * 背景必须是不透明色（`--bg-surface` 两套主题都是实色），否则滚动时正文会透出来。 */
+  .toolbar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
     border-bottom: 1px solid var(--border-hairline);
+    background: var(--bg-surface);
+  }
+
+  .tool-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-pair);
+  }
+
+  .tool {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    color: var(--text-secondary);
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-control);
+    cursor: pointer;
+  }
+
+  .tool:hover:not(:disabled) {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  .tool:disabled {
+    color: var(--text-tertiary);
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  .tool-on {
+    color: var(--accent-text);
+    background: var(--accent-soft);
+  }
+
+  /* 分组竖线：**必须看得见**。
+   *
+   * 此前取 `--border`（Separators-S1，约 12% 的黑），压在白底上只有 1.28:1——
+   * 分组等于没分，用户只能靠"点点看"（界面评审 N1）。改用 `--separator`
+   * （主题里就是 `--text-tertiary` 那一档：白底 4.7:1、深色 5.7:1），
+   * 两条线把 16 个图标切成"历史 ｜ 排版 ｜ 更多"三段，一眼能看出分组。
+   * 高度只有 16px、宽 1px，压得住工具栏的整体观感。 */
+  .tool-sep {
+    width: 1px;
+    height: 16px;
+    margin: 0 var(--space-2);
+    background: var(--separator);
+  }
+
+  /* 「段落样式」下拉的触发器：它是一个**选择器**，长相就该与图标按钮不同——
+    文字 + 下拉箭头，宽度随当前样式的名字走。 */
+  .tool-style {
+    width: auto;
+    gap: var(--space-1);
+    padding: 0 var(--space-2);
+    color: var(--text-secondary);
+  }
+
+  .tool-style-text {
+    font-size: var(--text-micro-size);
+    white-space: nowrap;
+  }
+
+  /* 下拉里的"当前项"：与工具栏上的 `tool-on` 同一套强调色，但**不再常亮**——
+     亮只亮在真正被选中的那一项上（界面评审 N2）。 */
+  .tool-menu-on {
+    color: var(--accent-text);
+  }
+
+  .toolbar-right {
+    display: flex;
+    gap: var(--space-1);
+    align-items: center;
+    margin-left: auto;
+  }
+
+  /* 工具栏右侧是一个 28px 的按钮排；AI 入口的外框必须同高，否则文字基线会与邻排错开 */
+  .toolbar-right .ai-trigger {
+    min-width: 28px;
+    height: 28px;
+  }
+
+  .file-input {
+    display: none;
+  }
+
+  /* 上传中的可见反馈（粘贴图片这条路尤其需要：没有它，等待期里界面毫无动静） */
+  .upload-hint {
+    font-size: var(--text-micro-size);
+    color: var(--text-tertiary);
+    white-space: nowrap;
+  }
+
+  /* AI 入口：星芒 + 短标签，用强调色与普通格式按钮区分开 */
+  .ai-trigger {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+    padding: 0 var(--space-1);
+    font-size: var(--text-micro-size);
+    font-weight: 600;
+    color: var(--accent-text);
+    border-radius: var(--radius-control);
+  }
+
+  .ai-trigger:hover {
+    background: var(--accent-soft);
+  }
+
+  .ai-busy {
+    opacity: 0.8;
+  }
+
+  /* 运行中的进度圈：把星芒换成一个转圈，用户一眼知道"它在跑" */
+  .ai-spinner {
+    width: 13px;
+    height: 13px;
+    border: 2px solid var(--accent-soft);
+    border-top-color: var(--accent);
+    border-radius: var(--radius-pill);
+    animation: ai-spin 0.7s linear infinite;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    /* 降级成慢转而不是停住：停住就没有"在跑"的信息了 */
+    .ai-spinner {
+      animation-duration: 1.8s;
+    }
+  }
+
+  /* 正文区**不自己滚**：滚动归笔记页的正文列（`.notes-pane`）。
+     这里只负责把"列高减去工具栏"剩下的空间吃下来（`flex: 1`），
+     于是短笔记也铺满整列的点击区；
+     一旦给它 `overflow-y: auto`，它就成了内层滚动容器，把列那层的滚动架空。 */
+  .editor-body {
+    flex: 1;
+    transition: opacity 160ms ease;
+  }
+
+  /* 正文还在路上（缓存未命中）时把旧内容轻轻压暗：换笔记就有了过渡而不是硬切，
+     而这段时间通常刚好够请求回来——回来即恢复，看不出一道闪。
+     延迟 120ms 才加这个类（见 NotesView），所以命中缓存的切换完全不会压暗。 */
+  .editor-body.is-loading {
+    opacity: 0.45;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .editor-body {
+      transition: none;
+    }
+  }
+
+  /* 正文收在一条窄栏里居中：满屏宽的行读起来很累，也不像"写作工具" */
+  .editor-column {
+    max-width: 780px;
+    margin: 0 auto;
+    padding: var(--space-6) var(--space-6) var(--space-16);
+  }
+
+  /* ------------------------------------------------ 正文本身（Tiptap 产出） */
+  .editor-content .tiptap {
+    min-height: 360px;
+    font-size: var(--text-body-size);
+    line-height: 1.75;
+    color: var(--text-primary);
+    outline: none;
+  }
+
+  .editor-content .tiptap > * + * {
+    margin-top: var(--space-3);
+  }
+
+  .editor-content .tiptap h1 {
+    font-size: var(--text-page-title-size);
+  }
+
+  .editor-content .tiptap h2 {
+    font-size: var(--text-section-size);
+  }
+
+  .editor-content .tiptap h3 {
+    font-size: var(--text-body-size);
+    font-weight: 600;
+  }
+
+  .editor-content .tiptap ul,
+  .editor-content .tiptap ol {
+    padding-left: var(--space-6);
+  }
+
+  .editor-content .tiptap ul {
+    list-style: disc;
+  }
+
+  .editor-content .tiptap ol {
+    list-style: decimal;
+  }
+
+  .editor-content .tiptap ul[data-type='taskList'] {
+    list-style: none;
+    padding-left: var(--space-2);
+  }
+
+  .editor-content .tiptap ul[data-type='taskList'] li {
+    display: flex;
+    gap: var(--space-2);
+    align-items: flex-start;
+  }
+
+  /* 原生复选框默认是浏览器蓝，和全站的青绿强调色不是一套；显式交给主题令牌 */
+  .editor-content .tiptap input[type='checkbox'] {
+    accent-color: var(--accent);
+    margin-top: 0.35em;
+  }
+
+  .editor-content .tiptap blockquote {
     padding-left: var(--space-4);
+    color: var(--text-secondary);
+    border-left: 2px solid var(--border-strong);
+  }
+
+  .editor-content .tiptap pre {
+    padding: var(--space-3) var(--space-4);
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: var(--text-micro-size);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-control);
+  }
+
+  .editor-content .tiptap code {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+  }
+
+  .editor-content .tiptap a {
+    color: var(--accent-text);
+    text-decoration: underline;
+  }
+
+  .editor-content .tiptap img {
+    max-width: 100%;
+    height: auto;
+    border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-control);
+  }
+
+  /* 图片外面是 ResizableNodeView 生成的「容器 > 包裹层 > 图片 + 手柄」。
+     **尺寸只该有一个来源**：图片自己的内联 width（拖出来的那个，也是落盘的那个），
+     容器与包裹层都不另设宽度，只负责"跟着图走"。
+
+     容器这一条是给蓝框（选中态的 outline 画在容器上）治病的：容器默认是**块级 flex、
+     宽度铺满整栏**，而图往往比整栏窄，框于是永远比图宽——实测（headless Chrome，
+     栏宽 732）：图 460 时框右边多出 272px、图 120 时多出 612px，左沿也因
+     outline-offset 探出去 3px，就是用户看到的"蓝框比图片大一圈、左右都超出"。
+     `fit-content` 让容器收缩到内容宽，框正好落在图片边框上；它仍是块级 flex，
+     ProseMirror 期望的块级盒子身份不变。
+     `max-width` 兜一道"拖出栏宽时框也别溢出去"。 */
+  .editor-content [data-resize-container] {
+    width: fit-content;
+    max-width: 100%;
+  }
+
+  /* 包裹层同样不设尺寸，只兜一道"别超栏宽"：真正的截断点在图自己身上
+     （`.tiptap img` 的 `max-width: 100%`）。两道都在不影响结果，但**别让包裹层有自己的
+     宽度**——它一旦和图不一致，框与图就又分家了。 */
+  .editor-content [data-resize-wrapper] {
+    max-width: 100%;
+  }
+
+  /* 高度永远跟宽度与图片自身比例走；块级化去掉行内元素底下那条基线缝。
+   *
+   * 高度：ResizableNodeView 拖拽时会往图片上写**内联** width/height，而宽度会被上面的
+   * `max-width: 100%` 截住、高度不会——于是"往右拖出栏宽"会把图压扁，而且
+   * mouseup 落库读的是 offsetWidth/offsetHeight，压扁的比例会被写进正文。
+   * 让高度始终由宽度决定，截断就看不出、存下来的也是真实比例。
+   * 内联样式只能靠 `!important` 压过，这是它的唯一用途，不是随手加的。
+   *
+   * 块级：图默认是行内元素、坐在包裹层的基线上，底下会空出一条 line-height 的缝
+   * （实测 7.3px：line-height 1.75 的 strut），包裹层因此比图高，跟着它走的容器下沿
+   * 与右下角手柄也就落到图片边框下面去了。块级化之后包裹层的高度就等于图的高度。 */
+  .editor-content [data-resize-wrapper] img {
+    display: block;
+    height: auto !important;
+  }
+
+  /* 手柄：平时完全透明，鼠标进到图上或正在拖拽时才现出一个 11px 的小圆点。
+     `transform` 把它挪到角上（ResizableNodeView 已给 right/bottom: 0）。 */
+  .editor-content [data-resize-handle] {
+    width: 11px;
+    height: 11px;
+    background: var(--accent);
+    border: 1.5px solid var(--bg-surface);
+    border-radius: var(--radius-pill);
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+
+  .editor-content [data-resize-handle='bottom-right'] {
+    transform: translate(50%, 50%);
+    cursor: nwse-resize;
+  }
+
+  .editor-content [data-resize-container]:hover [data-resize-handle],
+  .editor-content [data-resize-state='true'] [data-resize-handle] {
+    opacity: 1;
+  }
+
+  /* 只读时把手柄藏掉：ResizableNodeView 要**收到一次 update**（文档有改动）才摘手柄，
+     而只读笔记可能一直不产生 update——手柄留在图上，拖了还会改文档。
+     直接看编辑器自己的 contenteditable 属性最可靠。 */
+  .editor-content .tiptap[contenteditable='false'] [data-resize-handle] {
+    display: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .editor-content [data-resize-handle] {
+      transition: none;
+    }
+  }
+
+  /* 蓝框画在容器上——容器的盒子 = 图片的盒子（见上面那条 `fit-content`）。
+     `outline-offset` 那 1px 是让开图片自己那圈 hairline 边框，不是"框比图大"。 */
+  .editor-content [data-resize-container].ProseMirror-selectednode {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-radius: var(--radius-control);
+  }
+
+  .editor-content .tiptap p.is-editor-empty:first-child::before {
+    float: left;
+    height: 0;
+    color: var(--text-tertiary);
+    pointer-events: none;
+    content: attr(data-placeholder);
+  }
+
+  /* ------------------------------------------------ 弹窗里那两件本页自己的东西
+     弹窗/按钮/输入都是 `@/ui/**` 的原语（旧版来自 AppModal / AppButton / AppInput），
+     这里只剩两样：选库用的原生 `<select>`，以及页面自己的空状态。 */
+
+  .kb-select {
+    width: 100%;
+    height: var(--control-height);
+    padding: 0 var(--space-2);
+    font-family: inherit;
+    font-size: var(--text-meta-size);
+    color: var(--text-primary);
+    background: var(--bg-subtle);
+    border: 1px solid transparent;
+    border-radius: var(--radius-control);
+    outline: none;
+  }
+
+  .kb-select:focus {
+    border-color: var(--accent-selected);
+  }
+
+  /* ------------------------------------------------ 空状态 */
+  .empty {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-2);
+    padding: var(--space-12) 0;
+  }
+
+  .empty-title {
+    margin: 0;
+    font-size: var(--text-section-size);
+    font-weight: 600;
+  }
+
+  .empty-hint {
+    margin: 0;
+    max-width: var(--measure);
+    color: var(--text-secondary);
+  }
+
+  /* ------------------------------------------------ 单栏断点 */
+  @media (max-width: 900px) {
+    /* 单栏是**堆叠**：上面目录、下面正文，"两列"这件事本身就不存在了。
+       各自独立滚动只在两列并排、各自有独立视野时才成立；堆叠时若还各滚各的，
+       一屏里会冒出两个小滚动区，滚到底还得先判断"现在滚的是哪一段"。
+       所以高度与 overflow 一并还原成内容流——两段重新共用外层那一条滚动条。 */
+    .notes-page {
+      height: auto;
+    }
+
+    .notes-layout {
+      height: auto;
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    /* 单栏下正文列不再有"撑满一屏"的高度：高度与 overflow 一并还原（见上），
+       再给它一条下限——否则短笔记会让编辑区缩成一条，看起来像没加载出来 */
+    .notes-pane {
+      height: auto;
+      min-height: 600px;
+      overflow-y: visible;
+    }
+
+    /* 单栏下没有"另一栏"可以接收空间，折叠于是只能收成一条**横向**细条：
+       留一条窄列反而既占宽度又什么也放不下 */
+    .notes-layout.list-collapsed {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .notes-layout.list-collapsed .notes-list {
+      flex-direction: row;
+      padding: var(--space-1) var(--space-4);
+    }
+
+    .notes-layout.list-collapsed .list-head {
+      justify-content: flex-start;
+    }
+
+    .notes-list {
+      height: auto;
+      overflow-y: visible;
+      border-right: none;
+      border-bottom: 1px solid var(--border-hairline);
+      padding-left: var(--space-4);
+    }
   }
 }

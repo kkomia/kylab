@@ -105,6 +105,7 @@ import {
 } from '@/features/misc/settings/useShortcuts'
 import { toggleSidebarPreference } from '@/features/chat/runtime/shortcutPrefs'
 import type { ConversationSummary } from '@/api/conversations'
+import { cn } from '@/lib/utils'
 
 import { AccountMenu } from './AccountMenu'
 import { ConversationRowMenu } from './ConversationRowMenu'
@@ -127,9 +128,30 @@ const CHAT_PREVIEW = 8
 const NAV_ROW =
   'ly-nav-item flex min-h-[var(--nav-height)] items-center gap-1.5 overflow-hidden rounded-[var(--radius-nav)] px-2 text-[length:var(--text-meta-size)] leading-5 text-text-primary no-underline transition-[gap,padding] duration-[var(--motion-slow)] ease-in-out hover:bg-[var(--bg-hover)]'
 
+/**
+ * 折叠态的导航行：图标居中。
+ *
+ * **这两个值必须在调用点表达**（不是"顺手挪的"）：它们原先写在 `layout.css` 的
+ * `.ly-sidebar-collapsed .ly-nav-item` 里，那条规则靠"本文件没有 `@layer`"才压得过
+ * 上面这两个工具类。收层之后**层序与优先级无关**，层里的声明压不过工具类——
+ * 留在 CSS 里就等于从来没生效（图标会偏左、gap 也不归零）。
+ *
+ * 左右 14px = (44 − 16) ÷ 2：44 是折叠栏（60）减掉 nav 的 `px-2` 两侧，16 是图标盒。
+ * 折叠开关的过渡靠 `transition-[gap,padding]`（在 `NAV_ROW` 上），换类名就能平滑滑过去。
+ */
+const NAV_ROW_COLLAPSED = 'gap-0 px-[14px]'
+
 /** 会话 / 项目那些行：同高同圆角，只是没有图标位。 */
 const SIDE_ROW =
   'ly-side-row box-border flex h-[var(--nav-height)] w-full items-center gap-2 rounded-[var(--radius-nav)] px-1.5 text-left text-[length:var(--text-meta-size)] leading-5 text-text-primary no-underline transition-colors hover:bg-[var(--bg-hover)]'
+
+/**
+ * 给行右端常驻的「⋯」让出的那一片宽度（= 按钮 24 + 右间距 6 + 4px 呼吸缝）。
+ *
+ * 原先写在 `layout.css` 的 `.ly-side-row-wrap > .ly-side-row` 里，靠层外身份压过行自己的
+ * `px-1.5`；收层后同样压不过，所以在这里按同一份取值写出来（`_` 是 Tailwind 任意值里的空格）。
+ */
+const SIDE_ROW_MENU_GUTTER = 'pr-[calc(var(--hit-target)_+_var(--space-1-5)_+_var(--space-1))]'
 
 /**
  * 会话 / 项目行的类名。
@@ -139,18 +161,34 @@ const SIDE_ROW =
  * 中性 alpha 填充，不用品牌色底、也没有左侧指示条）。
  * 项目下的会话默认降一档灰（层级靠缩进 + 色，不靠加边框），**当前那条提回正文色**：
  * 选中底要在一眼扫过去时读得出来，降档只该作用在"不是这里"的行上。
+ *
+ * `menuGutter` 只给"行里挂着「⋯」"的那些（`ConversationRow`）——它对应的正是原来
+ * `.ly-side-row-wrap > .ly-side-row` 那条后代规则，别的行（项目名、展开、全部项目）
+ * 从来不在 wrap 里，也就从来不吃这片内边距。
  */
 function sideRow({
   sub = false,
   current = false,
-}: { sub?: boolean; current?: boolean } = {}): string {
-  if (current) return `${SIDE_ROW}${sub ? ' pl-6' : ''} bg-[var(--bg-selected)]`
-  return sub ? `${SIDE_ROW} pl-6 text-text-secondary` : SIDE_ROW
+  menuGutter = false,
+}: { sub?: boolean; current?: boolean; menuGutter?: boolean } = {}): string {
+  return cn(
+    SIDE_ROW,
+    sub && 'pl-6',
+    menuGutter && SIDE_ROW_MENU_GUTTER,
+    current ? 'bg-[var(--bg-selected)]' : sub && 'text-text-secondary',
+  )
 }
 
-/** 节标题行上那个动作按钮：默认隐形（`.ly-side-add`），悬停/聚焦才显形。 */
+/**
+ * 节标题行上那个动作按钮：默认隐形（`.ly-side-add`），悬停/聚焦才显形。
+ *
+ * **过渡属性写在调用点**：按钮身上的 `transition-colors`（原语那一套）与
+ * `layout.css` 里的 `.ly-side-add { transition: opacity ... }` 是同一个属性上的竞争，
+ * 收层后工具类赢——所以把原规则里的三个取值（属性/时长/曲线）逐条写在这里，
+ * 计算结果与收层前逐字相同（探针核过：`transitionProperty` 仍是 `opacity`）。
+ */
 const SIDE_ADD =
-  'ly-side-add ml-auto inline-flex size-6 items-center justify-center rounded-control text-text-tertiary transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary'
+  'ly-side-add ml-auto inline-flex size-6 items-center justify-center rounded-control text-text-tertiary transition-[opacity] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:bg-[var(--bg-hover)] hover:text-text-primary'
 
 /**
  * 导航项顺序 = 使用频率（《界面信息架构草案》§1）。
@@ -230,7 +268,7 @@ function ConversationRow({
     <div className="ly-side-row-wrap">
       <Link
         to={`/chat/${item.id}`}
-        className={sideRow({ sub, current })}
+        className={sideRow({ sub, current, menuGutter: true })}
         title={title}
         /* 当前那条会话标在语义上（辅助技术与用例都靠它读） */
         aria-current={current ? 'page' : undefined}
@@ -448,9 +486,11 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
             to={item.to}
             // 选中态用**中性 alpha 底**（不是品牌色底，Kimi 的实测值），而且是类名不是内联样式：
             // 内联样式会压过 `:hover`，鼠标划过当前项就没了反馈
-            className={
-              isActive(item.to, item.exact) ? `${NAV_ROW} bg-[var(--bg-selected)]` : NAV_ROW
-            }
+            className={cn(
+              NAV_ROW,
+              collapsed && NAV_ROW_COLLAPSED,
+              isActive(item.to, item.exact) && 'bg-[var(--bg-selected)]',
+            )}
             // 当前路由标在语义上（旧版只有一个 CSS class）：辅助技术与用例都靠它读
             aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
             title={collapsed ? item.label : undefined}
@@ -469,11 +509,12 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
         <div className="flex flex-col">
           <button
             type="button"
-            className={
-              knowledgeActive && !knowledgeOpen
-                ? `${NAV_ROW} w-full cursor-pointer border-0 bg-[var(--bg-selected)] text-left`
-                : `${NAV_ROW} w-full cursor-pointer border-0 bg-transparent text-left`
-            }
+            className={cn(
+              NAV_ROW,
+              collapsed && NAV_ROW_COLLAPSED,
+              'w-full cursor-pointer border-0 text-left',
+              knowledgeActive && !knowledgeOpen ? 'bg-[var(--bg-selected)]' : 'bg-transparent',
+            )}
             aria-expanded={knowledgeOpen}
             title={collapsed ? KNOWLEDGE_GROUP.label : undefined}
             onClick={() => setKnowledgeOpen((open) => !open)}

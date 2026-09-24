@@ -12,119 +12,30 @@
  * 3. **"悬停才显形、但始终可聚焦"的那两组控件**（节标题右侧的增补按钮、会话行右端的「⋯」）。
  *
  * 取值全部来自 `tokens.css` 的令牌，没有一处硬编码色值。
+ *
+ * **整份规则收在 `@layer components` 里（2026-09-24 第五批）**，理由与 `tokens.css`
+ * 那段元素重置、`misc.css` 的 `.m-*`、`knowledge.css` 的 `.kb-*` 逐字相同：
+ * **未分层的声明永远压过 `@layer utilities`**（分层规则与优先级无关）。
+ *
+ * 收层在这里**挖出四处"有意靠层外身份压过工具类"的规则**，按 `knowledge.css`
+ * 的 `.kb-switch` 同一个做法处理——**取值挪到调用点**（那里本来就知道折叠态），
+ * 本文件只留布局骨架与状态，不再与工具类争同一个属性：
+ *
+ * 1. `.ly-sidebar-collapsed .ly-nav-item` 的 `gap: 0` 与左右 14px（图标在 60px 栏里居中）
+ *    → `SideNav` 的 `NAV_ROW` 折叠态写 `gap-0 px-[14px]`；
+ * 2. `.ly-sidebar-collapsed .ly-account-row` 的 `justify-content: center` 与 `gap: 0`
+ *    → `AccountMenu` 按同一份折叠态写 `justify-center gap-0`；
+ * 3. `.ly-side-row-wrap > .ly-side-row` 的 `padding-right`（给行右端的「⋯」让位）
+ *    → `SideNav` 的 `sideRow()` 写 `pr-[calc(...)]`；
+ * 4. `.ly-side-add` 的 `transition: opacity`（那枚按钮身上带着 `transition-colors`）
+ *    → `SideNav` 的 `SIDE_ADD` 写 `transition-[opacity] duration-[...] ease-[...]`。
+ *
+ * 判据不是"看着没变"，而是 `.shots/batch5-probe-layout.cjs`：同一时刻把本文件再注入
+ * 一份**去掉层**的副本，逐元素比"层内 / 层外"两种身份下的计算样式——差异逐条为空
+ * 才算收干净（那四处挪走的取值也会被它验到：挪错一个像素就会现形）。
  */
 
-/* ------------------------------------------------------------------ 折叠过渡 */
-
-/* 宽度与 flex-basis 一起动，内容区平滑让出 / 收回空间。
-   时长取 Kimi 的 300ms ease-in-out（它折叠的是 transform，我们折叠的是宽度——
-   聊天应用必须让内容区真的让出空间，不能只把侧栏推走）。 */
-.ly-sidebar {
-  transition:
-    width var(--motion-slow) var(--motion-ease-inout),
-    flex-basis var(--motion-slow) var(--motion-ease-inout);
-}
-
-/* 折叠态：图标栏。`overflow: visible` 是给账号菜单留的——
-   折叠态下它向右飞出，被 `overflow: hidden` 裁掉就点不到了。 */
-.ly-sidebar-collapsed {
-  overflow: visible;
-}
-
-/* 字标 / 导航标签 / 账号那三行文字：用 max-width 收成 0，**不用 `display: none`**。
-   后者是瞬时的，宽度动画会断在它身上；`max-width` 让它们跟着栏一起收。 */
-.ly-collapsible {
-  overflow: hidden;
-  max-width: 200px;
-  transition:
-    max-width var(--motion-slow) var(--motion-ease-inout),
-    opacity var(--motion-fast) var(--motion-ease);
-}
-
-.ly-sidebar-collapsed .ly-collapsible {
-  max-width: 0;
-  opacity: 0;
-}
-
-/* 导航项不切 `justify-content`（那是瞬时的）：只把左右内边距改到能让图标居中的
-   14px（= (44 − 16) ÷ 2），图标平滑滑到中间，而不是"啪"地跳过去。 */
-.ly-sidebar-collapsed .ly-nav-item {
-  gap: 0;
-  padding-right: 14px;
-  padding-left: 14px;
-}
-
-/* 页脚那一块：折叠态只留头像，于是整行居中；内边距也收到 `--space-2`
-   （与其余各行共用同一条起始线）。 */
-.ly-sidebar-collapsed .ly-sidebar-foot {
-  padding-right: var(--space-2);
-  padding-left: var(--space-2);
-}
-
-.ly-sidebar-collapsed .ly-account-row {
-  justify-content: center;
-  gap: 0;
-}
-
-/* 折叠开关绝对定位在离右缘 `--space-4` 处。
-   **这不是随手定位，是为了让过渡不跳**：展开态它在右边距 16px；折叠态 60px 栏里
-   "居中"的位置恰好也是右边距 16px（60 − 16 − 28 = 16）。于是宽度动画一动，
-   它就顺着右缘平滑滑到正中，不用切换 `justify-content`，也就没有瞬移。 */
-
-/* 尊重"减少动态效果"：动画是锦上添花，不该在需要静的人那里坚持播放 */
-@media (prefers-reduced-motion: reduce) {
-  .ly-sidebar,
-  .ly-collapsible,
-  .ly-nav-item {
-    transition: none;
-  }
-}
-
-/* ------------------------------------------------ 悬停才显形（但仍可 Tab 到） */
-
-/* 节标题右侧的增补动作（「新建项目」/「查看全部会话」）：默认不摆，
-   鼠标移到这一节标题行上才出现。常驻的话两节各挂一个图标，读起来像
-   "这两行各有一个主要动作"，而它们的主语其实是下面那份清单。
-   **`opacity: 0` 的元素仍可聚焦**，`:focus-visible` 也会把它显出来
-   （规范 §8 禁止"只有 hover 才够得着"的关键操作）。 */
-.ly-side-add {
-  opacity: 0;
-  transition: opacity var(--motion-fast) var(--motion-ease);
-}
-
-.ly-side-head:hover .ly-side-add,
-.ly-side-add:focus-visible {
-  opacity: 1;
-}
-
-/* 会话行右端的「⋯」：同一套手势。给标题常驻让出按钮那一片宽度
-   （= 按钮 24 + 右间距 6 + 4px 呼吸缝），否则省略号正好被压在按钮底下。 */
-.ly-side-row-wrap {
-  position: relative;
-}
-
-.ly-side-row-wrap > .ly-side-row {
-  padding-right: calc(var(--hit-target) + var(--space-1-5) + var(--space-1));
-}
-
-.ly-row-menu {
-  position: absolute;
-  top: 50%;
-  right: var(--space-1-5);
-  display: flex;
-  margin-top: calc(var(--hit-target) / -2);
-  opacity: 0;
-  transition: opacity var(--motion-fast) var(--motion-ease);
-}
-
-/* 打开时整片推到不透明：浮层的 `opacity` 会作用于子元素，
-   而 0 的父层会让整个菜单一起淡掉（它是独立表面，不该被父层的淡出带着走）。
-   `data-state="open"` 由 Radix 写在**触发器**上，所以要用 `:has()` 从父层问一句。 */
-.ly-side-row-wrap:hover .ly-row-menu,
-.ly-side-row-wrap:focus-within .ly-row-menu,
-.ly-row-menu:has([data-state='open']) {
-  opacity: 1;
-}
+/* 动画定义留在层外（见文件头）。 */
 
 /* ------------------------------------------------------------------ 图标动效 */
 
@@ -228,61 +139,180 @@
 
    `fill-mode: both` 在这里是安全的：终帧就是静止姿态（opacity 1 / scale 1 / 无位移），
    悬停结束后元素停在原样。 */
-.ly-nav-item:hover .ly-nav-motion-drop {
-  animation: ly-nav-drop-in 200ms linear both;
-}
 
-.ly-nav-item:hover .ly-nav-motion-rise {
-  animation: ly-nav-rise-in 200ms linear both;
-}
+/**
+ * **层级顺序：与 `tokens.css` / `misc.css` / `knowledge.css` 顶部那句逐字相同，
+ * 重复是故意的。**
+ *
+ * 层的顺序由"这个名字第一次出现的位置"决定，而本文件在真实加载里可能**先于**
+ * `tokens.css` 被浏览器看到（侧栏挂在 `App` 的依赖子树里）。只写下面那个
+ * `@layer components`、不写这一句的话，`components` 会拿到第 1 位，Tailwind 后来
+ * 声明的 `base` 反而压在它上面——`* { margin: 0; padding: 0; border: 0 }` 这类
+ * preflight 重置会静默吃掉整份侧栏样式（`misc.css` 那次实测：页标题字号退回 15px、
+ * 卡片内边距归零）。
+ *
+ * 两句内容相同、幂等：谁先被浏览器看到，顺序都由它定死，不依赖 CSS 的加载顺序。
+ */
+@layer theme, base, components, utilities;
 
-.ly-nav-item:hover .ly-nav-motion-tilt {
-  animation: ly-nav-tilt-in 200ms linear both;
-}
+@layer components {
+  /* ------------------------------------------------------------------ 折叠过渡 */
 
-.ly-nav-item:hover .ly-nav-motion-spring {
-  animation: ly-nav-spring-in 200ms linear both;
-}
-
-.ly-nav-item:hover .ly-nav-motion-slide {
-  animation: ly-nav-slide-in 200ms linear both;
-}
-
-/* 选择器要和上面同权重（都是 0-3-0）才压得住——只写 `.ly-nav-item .ly-nav-icon`
-   是 0-2-0，会被 `:hover` 那条盖掉，等于这个设置从来没生效过（旧版踩过）。 */
-@media (prefers-reduced-motion: reduce) {
-  .ly-nav-item:hover .ly-nav-motion-drop,
-  .ly-nav-item:hover .ly-nav-motion-rise,
-  .ly-nav-item:hover .ly-nav-motion-tilt,
-  .ly-nav-item:hover .ly-nav-motion-spring,
-  .ly-nav-item:hover .ly-nav-motion-slide {
-    animation: none;
+  /* 宽度与 flex-basis 一起动，内容区平滑让出 / 收回空间。
+     时长取 Kimi 的 300ms ease-in-out（它折叠的是 transform，我们折叠的是宽度——
+     聊天应用必须让内容区真的让出空间，不能只把侧栏推走）。 */
+  .ly-sidebar {
+    transition:
+      width var(--motion-slow) var(--motion-ease-inout),
+      flex-basis var(--motion-slow) var(--motion-ease-inout);
   }
-}
 
-/* ------------------------------------------------------- 历史会话面板的条目 */
+  /* 折叠态：图标栏。`overflow: visible` 是给账号菜单留的——
+     折叠态下它向右飞出，被 `overflow: hidden` 裁掉就点不到了。 */
+  .ly-sidebar-collapsed {
+    overflow: visible;
+  }
 
-/* 行菜单浮在条目右上角：「⋯」默认隐形，鼠标移到这一条（或键盘 Tab 到它）才显形。
-   与侧栏那一处同一个手势、同一套"始终可聚焦"的底线。 */
-.ly-entry-menu {
-  position: absolute;
-  top: var(--space-2);
-  right: var(--space-2);
-  opacity: 0;
-  transition: opacity var(--motion-fast) var(--motion-ease);
-}
+  /* 字标 / 导航标签 / 账号那三行文字：用 max-width 收成 0，**不用 `display: none`**。
+     后者是瞬时的，宽度动画会断在它身上；`max-width` 让它们跟着栏一起收。 */
+  .ly-collapsible {
+    overflow: hidden;
+    max-width: 200px;
+    transition:
+      max-width var(--motion-slow) var(--motion-ease-inout),
+      opacity var(--motion-fast) var(--motion-ease);
+  }
 
-.ly-entry:hover .ly-entry-menu,
-.ly-entry:focus-within .ly-entry-menu,
-.ly-entry-menu:has([data-state='open']) {
-  opacity: 1;
-}
+  .ly-sidebar-collapsed .ly-collapsible {
+    max-width: 0;
+    opacity: 0;
+  }
 
-/* 预览两行截断：这正是参考图里的形态 */
-.ly-entry-preview {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  /* 导航项在折叠态怎么摆（`gap: 0`、左右 14px = (44 − 16) ÷ 2 让图标居中），
+     由调用点按同一份折叠态写工具类（见文件头第 1 条）：这里写已经压不过它身上的
+     `gap-1.5` / `px-2`——**层序与优先级无关**。 */
+
+  /* 页脚那一块：折叠态只留头像，于是整行居中。
+     **内边距这里没有规则**：它要的 `--space-2` 与调用点的 `p-2` 是同一个值，
+     两边各写一条只会让人以为其中一条在起作用（折叠态的行居中同理，见 AccountMenu）。 */
+
+  /* 折叠开关绝对定位在离右缘 `--space-4` 处。
+     **这不是随手定位，是为了让过渡不跳**：展开态它在右边距 16px；折叠态 60px 栏里
+     "居中"的位置恰好也是右边距 16px（60 − 16 − 28 = 16）。于是宽度动画一动，
+     它就顺着右缘平滑滑到正中，不用切换 `justify-content`，也就没有瞬移。 */
+
+  /* 尊重"减少动态效果"：动画是锦上添花，不该在需要静的人那里坚持播放 */
+  @media (prefers-reduced-motion: reduce) {
+    .ly-sidebar,
+    .ly-collapsible,
+    .ly-nav-item {
+      transition: none;
+    }
+  }
+
+  /* ------------------------------------------------ 悬停才显形（但仍可 Tab 到） */
+
+  /* 节标题右侧的增补动作（「新建项目」/「查看全部会话」）：默认不摆，
+     鼠标移到这一节标题行上才出现。常驻的话两节各挂一个图标，读起来像
+     "这两行各有一个主要动作"，而它们的主语其实是下面那份清单。
+     **`opacity: 0` 的元素仍可聚焦**，`:focus-visible` 也会把它显出来
+     （规范 §8 禁止"只有 hover 才够得着"的关键操作）。
+
+     **这里只留"隐形"这一半**：过渡属性由调用点写（见文件头第 4 条）——
+     那颗按钮身上带着 `transition-colors`，写在这里的 `transition` 收层之后
+     已经压不过它，留着就是一段看着生效其实不生效的声明。 */
+  .ly-side-add {
+    opacity: 0;
+  }
+
+  .ly-side-head:hover .ly-side-add,
+  .ly-side-add:focus-visible {
+    opacity: 1;
+  }
+
+  /* 会话行右端的「⋯」：同一套手势。给标题常驻让出按钮那一片宽度
+     （= 按钮 24 + 右间距 6 + 4px 呼吸缝），否则省略号正好被压在按钮底下。
+     **那一片宽度由调用点给**（`SideNav` 的 `sideRow()` 写 `pr-[calc(...)]`）：
+     它要压的是行自己的 `px-1.5`，收层之后层里的声明压不过工具类（见文件头第 3 条）。 */
+  .ly-side-row-wrap {
+    position: relative;
+  }
+
+  .ly-row-menu {
+    position: absolute;
+    top: 50%;
+    right: var(--space-1-5);
+    display: flex;
+    margin-top: calc(var(--hit-target) / -2);
+    opacity: 0;
+    transition: opacity var(--motion-fast) var(--motion-ease);
+  }
+
+  /* 打开时整片推到不透明：浮层的 `opacity` 会作用于子元素，
+     而 0 的父层会让整个菜单一起淡掉（它是独立表面，不该被父层的淡出带着走）。
+     `data-state="open"` 由 Radix 写在**触发器**上，所以要用 `:has()` 从父层问一句。 */
+  .ly-side-row-wrap:hover .ly-row-menu,
+  .ly-side-row-wrap:focus-within .ly-row-menu,
+  .ly-row-menu:has([data-state='open']) {
+    opacity: 1;
+  }
+
+  .ly-nav-item:hover .ly-nav-motion-drop {
+    animation: ly-nav-drop-in 200ms linear both;
+  }
+
+  .ly-nav-item:hover .ly-nav-motion-rise {
+    animation: ly-nav-rise-in 200ms linear both;
+  }
+
+  .ly-nav-item:hover .ly-nav-motion-tilt {
+    animation: ly-nav-tilt-in 200ms linear both;
+  }
+
+  .ly-nav-item:hover .ly-nav-motion-spring {
+    animation: ly-nav-spring-in 200ms linear both;
+  }
+
+  .ly-nav-item:hover .ly-nav-motion-slide {
+    animation: ly-nav-slide-in 200ms linear both;
+  }
+
+  /* 选择器要和上面同权重（都是 0-3-0）才压得住——只写 `.ly-nav-item .ly-nav-icon`
+     是 0-2-0，会被 `:hover` 那条盖掉，等于这个设置从来没生效过（旧版踩过）。 */
+  @media (prefers-reduced-motion: reduce) {
+    .ly-nav-item:hover .ly-nav-motion-drop,
+    .ly-nav-item:hover .ly-nav-motion-rise,
+    .ly-nav-item:hover .ly-nav-motion-tilt,
+    .ly-nav-item:hover .ly-nav-motion-spring,
+    .ly-nav-item:hover .ly-nav-motion-slide {
+      animation: none;
+    }
+  }
+
+  /* ------------------------------------------------------- 历史会话面板的条目 */
+
+  /* 行菜单浮在条目右上角：「⋯」默认隐形，鼠标移到这一条（或键盘 Tab 到它）才显形。
+     与侧栏那一处同一个手势、同一套"始终可聚焦"的底线。 */
+  .ly-entry-menu {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-2);
+    opacity: 0;
+    transition: opacity var(--motion-fast) var(--motion-ease);
+  }
+
+  .ly-entry:hover .ly-entry-menu,
+  .ly-entry:focus-within .ly-entry-menu,
+  .ly-entry-menu:has([data-state='open']) {
+    opacity: 1;
+  }
+
+  /* 预览两行截断：这正是参考图里的形态 */
+  .ly-entry-preview {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
 }

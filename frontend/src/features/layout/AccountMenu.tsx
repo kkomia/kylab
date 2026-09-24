@@ -47,6 +47,7 @@ import { useNavigate } from 'react-router'
 import { AvatarDialog } from '@/features/misc/settings/AvatarDialog'
 import { SettingsModal } from '@/features/misc/settings/SettingsModal'
 import { setTheme, useThemeMode } from '@/features/misc/settings/useTheme'
+import { cn } from '@/lib/utils'
 import { logout } from '@/lib/sessionActions'
 import { useSessionStore } from '@/lib/session'
 import { setOperator, useOperatorStore } from '@/lib/operator'
@@ -61,6 +62,7 @@ import {
 
 import { useConversationStore } from './conversations'
 import { useWorkspaceStore } from './workspaces'
+import { useSidebar } from './useSidebar'
 
 const ICON = 14
 
@@ -86,6 +88,15 @@ export function AccountMenu() {
   const navigate = useNavigate()
   const currentUser = useSessionStore((state) => state.currentUser)
   const dark = useResolvedDark()
+  /**
+   * 侧栏折叠态：这一行在折叠栏里只剩头像，于是**整行居中、gap 归零**。
+   *
+   * 这两个值原先写在 `layout.css` 的 `.ly-sidebar-collapsed .ly-account-row` 里，
+   * 靠"那份文件没有 `@layer`"才压得过这里的 `gap-2`。收层之后**层序与优先级无关**，
+   * 层里的声明压不过工具类——所以状态在这里表达（`useSidebar` 是模块级单例，
+   * 与侧栏读的是同一份状态，不会出现"栏收了、行没动"）。
+   */
+  const { collapsed } = useSidebar()
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [avatarOpen, setAvatarOpen] = useState(false)
@@ -132,7 +143,10 @@ export function AccountMenu() {
         <DropdownMenuTrigger asChild>
           <button
             type="button"
-            className="ly-account-row flex min-h-11 w-full min-w-0 items-center gap-2 rounded-nav p-2 text-left transition-colors hover:bg-[var(--bg-hover)] data-[state=open]:bg-[var(--bg-hover)]"
+            className={cn(
+              'ly-account-row flex min-h-11 w-full min-w-0 items-center gap-2 rounded-nav p-2 text-left transition-colors hover:bg-[var(--bg-hover)] data-[state=open]:bg-[var(--bg-hover)]',
+              collapsed && 'justify-center gap-0',
+            )}
             aria-label={identityName ? `账号：${identityName}` : '账号'}
           >
             {/* 头像是**一个 28px 的圆**（`--avatar-size`），不是一枚线稿图标：

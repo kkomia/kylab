@@ -1,4 +1,4 @@
-"""仓库结构性规范自动核查：分层纪律、测试位置、脚本编码、界面文案、版本号。
+"""仓库结构性规范自动核查：分层纪律、测试位置、脚本编码、界面文案、版本号、CSS 分层。
 
 对应《项目工程规范 v0.4》§3.3（分层纪律）、§5.1（测试存放铁律）与 §6（脚本约定）、
 《前端设计规范》§5.1（界面里不写解释性小字），以及 CHANGELOG「附：版本号约定」。
@@ -6,6 +6,7 @@
 ``L1`` 协议层越界、``L2`` 业务层直连数据库/SQL、``L3`` 解析器互引、
 ``L4`` 解析器反向依赖业务层、``L5`` 业务层依赖协议层、``L6`` app 根下的游离模块、
 ``A1`` 异步端点里没有 await（假异步，会按住事件循环）、
+``C1`` CSS 分层纪律（层序声明 + 层外规则）、
 ``T1`` 测试位置、``S1`` .ps1 缺少 UTF-8 BOM、``U1`` 界面里的解释性小字、
 ``V1`` 手写版本号不一致、``PARSE`` 语法错误。
 
@@ -162,6 +163,79 @@ UI_COPY_MSG = (
     "界面里的解释性小字（标题下面那句「这一页是什么」）："
     "删掉它，或改用别的类名（别用 page-/panel-/section- 开头的 desc/lead）"
 )
+
+
+# ---------------------------------------------------------------- C1：CSS 分层纪律
+#
+# **同一个病根已经犯过三次**，三次都不是"选择器写错了"，而是"那份文件压根没有 `@layer`"：
+# `tokens.css` 的元素重置换掉全站按钮样式、`misc.css` 的 364 条 `.m-*`、`knowledge.css`
+# 的 `.kb-*`（外加本批收掉的 4 份）。机制只有一条：**未分层的声明永远压过
+# `@layer utilities`，与优先级无关**——层里的工具类再怎么"后写、更具体"都赢不了层外。
+#
+# 为什么必须机械检查：**这个 bug 测试抓不到**。`tokens.css` 那次全站按钮都坏了，
+# 742 条前端用例照样全绿（样式错了不报错、jsdom 也不算计算样式）。只有人眼看得见，
+# 而"这次看得见"正是前三次没兜住的原因。
+#
+# 两条判据（都只看**样式规则**，`@keyframes` / `@font-face` / `@import` / `@theme`
+# 这类 at-rule 不算——它们不参与"谁压过谁"的竞争）：
+# 1. 文件里出现 `@layer <名字> { … }` 块时，必须在文件里**先**写一句显式的层序声明
+#    `@layer theme, base, components, utilities;`。层的先后由**名字首次出现的位置**决定，
+#    不声明就由 CSS 的加载顺序决定：`misc.css` 排在 `tokens.css` 前面那次实测，
+#    `components` 拿到了第 1 位，Tailwind 的 `base` 压在它上面，preflight 的
+#    `* { margin: 0; padding: 0; border: 0 }` 把整份组件样式吃掉（页标题字号退回 15px）；
+# 2. `@layer` 块**之外**不允许有普通样式规则（顶层 `@media` 里的也算层外）。
+#    这一条就是三次病根的同一条机制。
+#
+# 例外只有两类，都要求写清理由：
+# - 规则上方一句 `/* @unlayered: 原因 */`（标记与规则之间只能隔空行或注释）：
+#   留给**真的只能靠层外身份**的规则——典型是第三方库把 `<style>` 注入到我们给的容器
+#   内部（`preview.css` 的 docx-preview 三条、`chat.css` 的 highlight.js 一条）：
+#   对手是层外的规则，进层等于没写；把取值挪到调用点也不行（utilities 同样在层里）。
+# - `CSS_UNLAYERED_FILES` 里逐条写明理由的**基座文件**：`styles/**` 与入口 `index.css`
+#   按设计就在层外（令牌 `:root`、全局 `:focus-visible`、高度链），收它们是另一批工作。
+#   **默认空着**：放行一整份文件是很大的口子，每加一行都要在 PR 里说清为什么。
+
+#: 层序的唯一口径（与 `tokens.css` 顶部那句一致）。顺序**由首次出现决定**，
+#: 所以每个开层文件都要重复声明一句（内容相同、幂等）。
+CSS_LAYER_ORDER = ("theme", "base", "components", "utilities")
+
+#: 规则级例外标记：写在规则上方（中间只允许空行或注释）。
+CSS_UNLAYERED_MARKER = "@unlayered:"
+
+#: 文件级例外：**按设计就留在层外**的基座文件。键是相对仓库根的 POSIX 路径。
+#: 每一条都必须写清"为什么它可以不收"——这张表不是"懒得改"的存档。
+CSS_UNLAYERED_FILES: dict[str, str] = {
+    "frontend/src/styles/tokens.css": (
+        "基座：层序的唯一声明者本身；`:root` 令牌与全局 `:focus-visible`、遗留辅助类"
+        "（`.text-meta` / `.panel` …）按既有记载有意留在层外（`src/ui/README.md` §1.1 写着"
+        "它们就是靠层外身份压过 utilities），收它们属于另一批工作"
+    ),
+    "frontend/src/index.css": (
+        "Tailwind 入口：`@theme inline` 必须写在顶层；`html, body, #root { height: 100% }`"
+        "是高度链重置（本批不收它——那要连同主题文件一起动）"
+    ),
+    "frontend/src/styles/themes/light.css": "主题令牌：整份只有 `[data-theme='light'] { --* }`",
+    "frontend/src/styles/themes/dark.css": "主题令牌：整份只有 `[data-theme='dark'] { --* }`",
+}
+
+CSS_LAYER_BLOCK_MSG = (
+    "这份 CSS 里有 @layer 块，却没有在文件里先显式声明层序。"
+    "请照 tokens.css 顶部那句补一行 `@layer theme, base, components, utilities;`——"
+    "层的先后由名字**首次出现的位置**决定，不声明就由 CSS 的加载顺序决定"
+    "（`components` 可能排到 `base` 前面，Tailwind 的 preflight 会吃掉整份组件样式）"
+)
+
+CSS_UNLAYERED_MSG = (
+    "层外的样式规则：**未分层的声明永远压过 `@layer utilities`**（与优先级无关），"
+    "这就是三次病根（tokens.css 的重置 / misc.css / knowledge.css）的同一条机制。"
+    "请把规则收进 `@layer components`（元素重置收 `@layer base`），或把取值挪到调用点；"
+    "**真的只能靠层外身份**时（第三方库把 `<style>` 注入到容器内部），"
+    "在规则上方写一句 `/* @unlayered: 原因 */`"
+)
+
+#: 条件组 at-rule：它们**不产生新的层**，里面的规则仍然是层外/层内身份不变，
+#: 所以要钻进去看。其余 at-rule（`@keyframes` / `@font-face` / `@theme` …）不参与级联竞争，跳过。
+CSS_CONDITIONAL_RULES = ("media", "supports", "container", "scope", "document", "starting-style")
 
 
 class Violation:
@@ -507,6 +581,192 @@ def version_sources(root: Path) -> dict[str, set[str]]:
     return found
 
 
+def check_css_layers(root: Path) -> list[Violation]:
+    """C1：前端 CSS 的分层纪律（见 ``CSS_LAYER_BLOCK_MSG`` / ``CSS_UNLAYERED_MSG``）。
+
+    规则是"扫描 + 分类"，不是完整 CSS 解析器——只认这个仓库会出现的形状：
+    层序声明（`@layer a, b;`）、层块（`@layer components { … }`）、条件组
+    （`@media { … }`）、以及普通样式规则。**大括号按配对计数**，注释先换成空格
+    （长度不变，所以行号与字符位置都还对得上）。
+
+    为什么要自己扫而不是用现成的解析器：这个脚本要能在**只有标准库**的环境里跑
+    （CI 与本地门禁都直接 `python scripts/…`），引入解析器依赖不值当。
+    """
+    frontend_src = root / "frontend" / "src"
+    if not frontend_src.exists():
+        return []
+
+    violations: list[Violation] = []
+    for path in sorted(frontend_src.rglob("*.css")):
+        text = path.read_text(encoding="utf-8", errors="replace")
+        masked = _mask_css_comments(text)
+        items = _css_items(masked, 0, len(masked))
+        display = path.relative_to(root)
+        posix = display.as_posix()
+
+        statements = [item for item in items if item[0] == "statement"]
+        has_layer_block = any(
+            item[0] == "block" and _at_rule_name(item[3]) == "layer" for item in items
+        )
+        rules = _css_unlayered_rules(masked, items, inside_layer=False)
+
+        # 判据一：开层文件必须先显式声明层序
+        declared = any(
+            _at_rule_name(prelude) == "layer"
+            and _layer_statement_names(prelude) == CSS_LAYER_ORDER
+            for _, _, _, prelude in statements
+        )
+        if (has_layer_block or rules) and not declared:
+            if posix not in CSS_UNLAYERED_FILES:
+                violations.append(
+                    Violation(
+                        "C1", display, 1, f"{CSS_LAYER_BLOCK_MSG}（期望：{'、'.join(CSS_LAYER_ORDER)}）"
+                    )
+                )
+
+        # 判据二：层外的普通样式规则
+        if posix in CSS_UNLAYERED_FILES:
+            continue
+        for offset, selector in rules:
+            if _marked_unlayered(text, offset):
+                continue
+            lineno = text.count("\n", 0, offset) + 1
+            violations.append(Violation("C1", display, lineno, f"{CSS_UNLAYERED_MSG}（{selector}）"))
+    return violations
+
+
+def _mask_css_comments(text: str) -> str:
+    """把注释内容换成空格（换行保留）——注释里的 `{` `}` `@layer` 不能参与扫描。
+
+    长度与换行位置都不变，于是**字符偏移与行号可以直接用在原文上**（找 `@unlayered:` 标记时要）。
+    """
+    out = list(text)
+    cursor = 0
+    while True:
+        start = text.find("/*", cursor)
+        if start < 0:
+            break
+        end = text.find("*/", start + 2)
+        end = len(text) - 2 if end < 0 else end
+        for index in range(start, min(end + 2, len(text))):
+            if out[index] != "\n":
+                out[index] = " "
+        cursor = end + 2
+    return "".join(out)
+
+
+def _css_items(masked: str, start: int, stop: int) -> list[tuple[str, int, int, str]]:
+    """把 `[start, stop)` 里的顶层条目拆开：``(类型, 起始偏移, 结束偏移, prelude)``。
+
+    类型是 ``statement``（以 `;` 结束，如 `@import …` / `@layer a, b;`）或
+    ``block``（以 `{ … }` 包裹，如 `.a { }` / `@media … { }`）。
+    """
+    items: list[tuple[str, int, int, str]] = []
+    index = start
+    while index < stop:
+        char = masked[index]
+        if char in " \t\r\n}":
+            index += 1
+            continue
+        prelude_start = index
+        while index < stop and masked[index] not in "{;":
+            index += 1
+        if index >= stop:
+            break
+        prelude = masked[prelude_start:index].strip()
+        if masked[index] == ";":
+            items.append(("statement", prelude_start, index + 1, prelude))
+            index += 1
+            continue
+        depth = 0
+        body_end = stop
+        cursor = index
+        while cursor < stop:
+            if masked[cursor] == "{":
+                depth += 1
+            elif masked[cursor] == "}":
+                depth -= 1
+                if depth == 0:
+                    body_end = cursor
+                    break
+            cursor += 1
+        items.append(("block", prelude_start, body_end + 1, prelude))
+        index = body_end + 1
+    return items
+
+
+def _at_rule_name(prelude: str) -> str:
+    """prelude 若是 at-rule，返回它的名字（小写，不含 `@`）；否则返回空串。"""
+    if not prelude.startswith("@"):
+        return ""
+    return prelude[1:].split()[0].lower() if len(prelude) > 1 else ""
+
+
+def _layer_statement_names(prelude: str) -> tuple[str, ...]:
+    """`@layer theme, base, components, utilities;` → 四个名字（去空白）。"""
+    if _at_rule_name(prelude) != "layer":
+        return ()
+    names = prelude.split(maxsplit=1)
+    if len(names) < 2:
+        return ()
+    return tuple(name.strip() for name in names[1].split(","))
+
+
+def _css_unlayered_rules(
+    masked: str, items: list[tuple[str, int, int, str]], inside_layer: bool
+) -> list[tuple[int, str]]:
+    """层外的普通样式规则：``(起始偏移, 选择器)``。
+
+    层块里的规则直接跳过（它们已经进层）；条件组（`@media` …）不产生新层，要钻进去；
+    其余 at-rule（关键帧、字体、`@theme`…）与级联无关，跳过。
+    """
+    found: list[tuple[int, str]] = []
+    for kind, start, end, prelude in items:
+        name = _at_rule_name(prelude)
+        if kind == "statement":
+            continue
+        if name == "layer":
+            continue
+        if name in CSS_CONDITIONAL_RULES:
+            inner = _css_items(masked, masked.index("{", start) + 1, end - 1)
+            found.extend(_css_unlayered_rules(masked, inner, inside_layer))
+            continue
+        if name:
+            continue
+        if not inside_layer:
+            found.append((start, " ".join(prelude.split())))
+    return found
+
+
+def _marked_unlayered(text: str, offset: int) -> bool:
+    """规则上方（中间只隔空行或注释）有没有 `/* @unlayered: … */` 标记。
+
+    两条约束，都是被实测逼出来的：
+
+    1. **只认紧邻的那一串注释**：隔一条别的规则就不算——否则一句标记会顺着文件一路罩下去，
+       那就成了"写一次、后面全都放行"的通道；
+    2. **标记必须写在注释开头**：`/* 上面那条为什么用 @unlayered: 标记…… */` 这种
+       "注释里提到标记本身"的写法**不放行**——第一版就是按"注释里出现过这几个字"判的，
+       结果那段解释性注释把下面那条层外规则也罩住了（反向验证时脚本该红没红）。
+    """
+    cursor = offset
+    while True:
+        probe = cursor - 1
+        while probe >= 0 and text[probe] in " \t\r\n":
+            probe -= 1
+        if probe < 0:
+            return False
+        if text[probe] != "/":  # 只可能是注释的收尾 `*/`；别的字符说明上面是内容
+            return False
+        comment_start = text.rfind("/*", 0, probe)
+        if comment_start < 0:
+            return False
+        body = text[comment_start + 2 : probe - 1].lstrip(" \t\r\n*")
+        if body.startswith(CSS_UNLAYERED_MARKER):
+            return True
+        cursor = comment_start
+
+
 def check_app_root_modules(root: Path) -> list[Violation]:
     """L6：``app/`` 根下只允许 ``main.py`` 与 ``__init__.py``（见 ``APP_ROOT_MSG``）。
 
@@ -594,6 +854,7 @@ def main() -> int:
     violations.extend(check_ps1_bom(root))
     violations.extend(check_version_consistency(root))
     violations.extend(check_app_root_modules(root))
+    violations.extend(check_css_layers(root))
 
     for violation in violations:
         print(violation)
@@ -601,10 +862,10 @@ def main() -> int:
     if violations:
         print(
             f"\n共发现 {len(violations)} 处违规，违反《项目工程规范》§3.3 / §5.1、"
-            f"脚本编码约定、界面文案条款或 CHANGELOG「附：版本号约定」。"
+            f"脚本编码约定、界面文案条款、CSS 分层纪律或 CHANGELOG「附：版本号约定」。"
         )
         return 1
-    print("分层纪律、测试位置、脚本编码、界面文案与版本号检查通过。")
+    print("分层纪律、测试位置、脚本编码、界面文案、CSS 分层与版本号检查通过。")
     return 0
 
 
