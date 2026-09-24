@@ -37,6 +37,7 @@ import {
   PageShell,
   SkeletonBlock,
   StatusTag,
+  type TagTone,
 } from '../shared/composites'
 import { LoadPanel } from './LoadPanel'
 import { SchedulePanel } from './SchedulePanel'
@@ -64,13 +65,33 @@ const STATE_OPTIONS = [
   { value: 'canceled', label: '已取消' },
 ]
 
+/**
+ * 「按健康筛选」的选项。
+ *
+ * **不给状态列的词留位置**：健康列回答的是"有没有问题"，而"执行中 / 排队中"是
+ * **状态**列的说法——在这份选项里再放一遍，就等于把那两列的同一个词又搬进筛选
+ * （第六批：此前这里逐字重复了状态筛选的两档）。合并成「无异常」之后，
+ * 剩下两档正是行上会写出来的那两句判定结论。
+ *
+ * 与行上的对应关系：筛「可能卡住 / 长时间未执行」= 行上写那两个词的行；
+ * 筛「无异常」= 行上健康列是中性记号（没有话要说）的行。
+ */
 const HEALTH_OPTIONS = [
   { value: '', label: '全部健康' },
-  { value: 'running', label: '执行中' },
-  { value: 'idle', label: '排队中' },
+  { value: 'ok', label: '无异常' },
   { value: 'stalled', label: '可能卡住' },
   { value: 'overdue', label: '长时间未执行' },
 ]
+
+/**
+ * 健康筛选的判定。`ok` 是"还没结束且没有问题"那一档——后端在这一档给
+ * `running` 或 `idle` 两种取值（都表示租约正常、没排太久）。
+ */
+function matchesHealth(task: TaskSummary, filter: string): boolean {
+  if (filter === '') return true
+  if (filter === 'ok') return task.health === 'running' || task.health === 'idle'
+  return task.health === filter
+}
 
 export function TasksPage() {
   const navigate = useNavigate()
@@ -156,7 +177,7 @@ export function TasksPage() {
         (task) =>
           (kb === '' || task.knowledge_base_id === kb) &&
           (state === '' || task.state === state) &&
-          (health === '' || task.health === health) &&
+          (health === '' || matchesHealth(task, health)) &&
           // 默认不看已取消；显式选了「已取消」这个状态时当然要显示
           (showCanceled || state === 'canceled' || task.state !== 'canceled'),
       ),
@@ -533,7 +554,10 @@ export function TasksPage() {
                   </div>
                   <div>
                     <dt>健康</dt>
-                    <dd>{detail.health_label}</dd>
+                    {/* 与行内**同一处判定**（`healthVerdict`）：同一个任务在两处不能说两句话。
+                        「没有需要注意的」这一档在这里也只是一枚记号——它上面那行的 `dt`
+                        就是列头那个词，读者不会把"—"读成缺失。 */}
+                    <dd>{healthText(detail)}</dd>
                   </div>
                   <div>
                     <dt>尝试次数</dt>
@@ -628,44 +652,68 @@ function attemptText(task: TaskSummary): string {
 }
 
 /**
- * 健康列这一格的内容。
+ * 健康这一格 / 这一行该说什么——**行内与详情弹窗共用这一处判定**。
+ * 两处各写一遍的话就会出现"行上是中性记号、弹窗里写着已取消"这种自己跟自己不一致的状态。
  *
- * **两列说的是两件事**：状态列说"这个任务处在哪个状态"（排队中 / 执行中 / 已完成 /
- * 失败 / 已取消），健康列说"**这一轮还在不在动**"（后端按租约续没续、排了多久算出来的
- * 判定：执行中 / 排队中 / 可能卡住 / 长时间未执行 / 已结束）。所以：
+ * 三种结果：
+ * - `problem`：有问题的两档（可能卡住 / 长时间未执行），逐字用后端给的判定结论；
+ * - `word`：失败。它是终态里唯一带来新判断的——状态列说"这件事没成"，
+ *   这里说"这一轮**已经结束**，不必再等"；
+ * - `quiet`：没有新判断可说，不写词（由调用点画成中性记号）。
+ */
+type HealthVerdict =
+  | { kind: 'problem'; label: string; tone: TagTone }
+  | { kind: 'word'; label: string }
+  | { kind: 'quiet' }
+
+/**
+ * 健康列的判定。**两列说的是两件事**：状态列说"这个任务处在哪个状态"（排队中 / 执行中 /
+ * 已完成 / 失败 / 已取消），健康列说"**有没有问题**"——后端按租约续没续、排了多久算出来的
+ * 判定（执行中 / 排队中 / 可能卡住 / 长时间未执行 / 已结束）。所以：
  *
- * 1. **还没结束的那几档照字写**（`health !== 'done'`）。它们正是健康列存在的理由
- *    ——"执行中"与"可能卡住"看起来一样，健康列负责分开它们——而且这四个值就是
- *    上面「按健康筛选」的选项，筛了却在行上看不到那个词，筛选结果就没法核对；
- * 2. **终态这一档（`done`）只在它带来新判断时写词**。已经结束了，健康列没有"还在不在动"
- *    可说；此时后端给的 label 若与状态列**逐字相同**（`succeeded`→已完成、`canceled`→
- *    已取消），写出来就是同一行两个徽章说同一件事、一个字的新判断都没有（评审 T2 与
- *    第三批 A②），退成不带词的中性标记；
- * 3. **`failed` 是终态里唯一的例外**：状态列写「失败」（这件事没成），健康列写「已失败」
- *    （这一轮**已经结束**，不必再等）——两处不是同一句话，它是有效信息，留着。
+ * 1. **有问题的两档照字写**：它们正是健康列存在的理由（"执行中"与"可能卡住"看起来一样，
+ *    这一列负责分开它们），而且「按健康筛选」里就有那两档——筛了却在行上看不到那个词，
+ *    筛选结果就没法核对；
+ * 2. **没有问题的档不写词**：在跑的两档（后端的 label 是"执行中" / "排队中"）与已结束的
+ *    两档（"已完成" / "已取消"）都退成同一个中性记号。它们的 label 与状态列**逐字相同**，
+ *    写出来就是同一行两个徽章说同一件事、一个字的新判断都没有（评审 T2；第一批只收了
+ *    succeeded、第三批收了 canceled，这一批把在跑的两档也收掉——它们当时留着是为了让
+ *    健康筛选的数在行上看得见，现在筛选那一侧改成了「无异常」）；
+ * 3. **`failed` 是终态里唯一的例外**：保留"已失败"（见上面 `word` 那条）。
  *
- * 判定按 `state` 点名而不是"看 label 长什么样"：后端换文案时这里的取舍会重新被看见，
- * 而不会跟着一起变。
+ * 判定按 `health` / `state` 的取值点名，而不是"看 label 长什么样"：后端换文案时这里的
+ * 取舍会重新被看见，而不会跟着一起变。
+ */
+function healthVerdict(task: TaskSummary): HealthVerdict {
+  if (isTaskProblem(task.health)) {
+    return { kind: 'problem', label: task.health_label, tone: taskHealthTone(task.health) }
+  }
+  if (task.state === 'failed') return { kind: 'word', label: task.health_label }
+  return { kind: 'quiet' }
+}
+
+/**
+ * 健康列的单元格。
  *
- * 标记不带词，但不能没有名字：列头是 `aria-hidden` 的，读屏器只能靠 `aria-label`
+ * 中性记号不带词，但不能没有名字：列头是 `aria-hidden` 的，读屏器只能靠 `aria-label`
  * 知道这一格是什么。`role="img"` 是让那个名字真的被读出来——`generic` 角色上的
  * `aria-label` 按 ARIA 规范不参与命名。
  */
 function healthCell(task: TaskSummary) {
-  if (task.health === 'done') {
-    // 这两档的后端 label 与状态列逐字相同（已完成 / 已取消），复述而已
-    if (task.state === 'succeeded' || task.state === 'canceled') {
-      return (
-        <span className="m-row-health-done" role="img" aria-label="健康">
-          —
-        </span>
-      )
-    }
-    // 其余终态：失败（已失败）——状态列说的是"没成"，这里说的是"这一轮结束了"
-    return <span className="m-row-health-done">{task.health_label}</span>
-  }
-  // 还在动的那四档：逐字显示后端给的判定结论（前端不再翻译一遍）
-  return <StatusTag label={task.health_label} tone={taskHealthTone(task.health)} />
+  const verdict = healthVerdict(task)
+  if (verdict.kind === 'problem') return <StatusTag label={verdict.label} tone={verdict.tone} />
+  if (verdict.kind === 'word') return <span className="m-row-health-done">{verdict.label}</span>
+  return (
+    <span className="m-row-health-done" role="img" aria-label="健康">
+      —
+    </span>
+  )
+}
+
+/** 弹窗那一行要写什么字：与行内同一处判定的文本形态（`quiet` 就是那枚中性记号）。 */
+function healthText(task: TaskSummary): string {
+  const verdict = healthVerdict(task)
+  return verdict.kind === 'quiet' ? '—' : verdict.label
 }
 
 /** 行上是否需要招人注意：**失败**与**卡住/逾期**都要，但原因不同，所以文案分开。 */

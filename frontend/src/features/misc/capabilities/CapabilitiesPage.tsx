@@ -514,15 +514,27 @@ export function CapabilitiesPage() {
 
           {/* 技能卡是**紧凑网格**（评审 G2）：一列 130px 大卡时，900px 的屏只能看到 5 张，
               而每张卡上那三行英文原文读不完就被截断——密度低、重点也看不出来。
-              现在每张卡只回答"叫什么、干什么、能不能用"，其余进详情弹窗（点名字打开）。 */}
+              现在每张卡只回答"叫什么、干什么、能不能用"，其余进详情弹窗（点名字打开）。
+
+              形状取自**共享原语**，不是另抄一套：容器是 `.m-cards`（列间距本来就在它身上）、
+              卡片是 `.m-card`（底色 / 描边 / 圆角 / 首行对齐都归它）、图标是 `.m-card-icon`
+              （它自带的 `align-items: center` 与那 2px 顶部微调就是"图标对齐首行"这件事的答案）。
+              只有**紧凑密度**那两个取值写在调用点（圆角 16 → 12、内边距 12/16 → 10/12）——
+              这四条工具类能盖过 `.m-card`，靠的是 `misc.css` 收进了 `@layer components`
+              （分层之后工具类赢在层序，不在优先级）。
+
+              此前这套是手写副本：当时 `.m-cards { display: flex }` 还没进层，会静默吃掉
+              同元素上的 `grid`（见 `misc.css` 文件头），于是连图标对齐都只能自己用一个
+              加 `padding-top` 的 span 顶着。 */}
           {visibleSkills.length > 0 && (
-            <ul className="grid grid-cols-1 gap-[var(--space-2-5)] sm:grid-cols-2 xl:grid-cols-3">
+            <ul className="m-cards grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3">
               {visibleSkills.map((skill) => (
                 <li
                   key={skill.name}
-                  className="flex items-start gap-[var(--space-2-5)] rounded-[var(--radius-row)] border border-[var(--border-hairline)] bg-surface px-[var(--space-3)] py-[var(--space-2-5)]"
+                  className="m-card gap-[var(--space-2-5)] rounded-[var(--radius-row)] px-[var(--space-3)] py-[var(--space-2-5)]"
                 >
-                  <span className="pt-[var(--space-0-5)] text-text-tertiary" aria-hidden="true">
+                  {/* 图标是装饰：`aria-hidden` 不是原语给的，跟着换类一起留着 */}
+                  <span className="m-card-icon" aria-hidden="true">
                     <Sparkles size={16} />
                   </span>
                   <div className="flex min-w-0 flex-1 flex-col gap-[var(--space-0-5)]">

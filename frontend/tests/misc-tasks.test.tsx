@@ -154,7 +154,10 @@ function ringStrokes(panel: HTMLElement, name: string): number {
  * - 白底、字色、框内距都在原语的类里（评审 T1 的病正是这几条被吃掉）。
  *
  * jsdom 不算样式（`vite.config.ts` 里 `test.css: false`），"当前项真的白底"由真浏览器
- * 截图作证（`.shots/batch2/11-tasks.png`），这里守的是"别再手写一遍"。
+ * 取证：`.shots/batch2/11-tasks.png`，以及第六批那份探针里逐页签读到的计算样式
+ * （当前档 `background-color: rgb(255, 255, 255)` + 墨色 500 字重 + `padding-left: 12px`，
+ * 另一档透明 + 次级灰；`.shots/batch6/probe-misc/after-summary.json` 的 `tabs` 一节）。
+ * 这里守的是"别再手写一遍"。
  */
 function tabShape(trigger: HTMLElement) {
   const cls = trigger.className
@@ -259,6 +262,140 @@ describe('任务中心', () => {
       (cell) => cell.textContent,
     )
     expect(healthCells).toEqual(['—', '已失败', '—'])
+  })
+
+  it('在跑的行也不说同一个词：健康列只回答"有没有问题"（第六批）', async () => {
+    listTasksMock.mockResolvedValue({
+      items: [
+        task({
+          id: 't-queued',
+          state: 'pending',
+          document_name: '排队中.pdf',
+          health: 'idle',
+          health_label: '排队中',
+        }),
+        task({ id: 't-run', document_name: '执行中.pdf' }),
+        task({
+          id: 't-stuck',
+          document_name: '卡住.pdf',
+          health: 'stalled',
+          health_label: '可能卡住',
+        }),
+      ],
+    })
+
+    renderMisc(<TasksPage />)
+    await screen.findByText('排队中.pdf')
+    const rows = screen.getByRole('list')
+
+    /** 逐行读两列的文本——这一页要守的就是"同一行里两列不说同一个词"。 */
+    const columns = () =>
+      [...rows.querySelectorAll('li.m-list-item')].map((row) => ({
+        name: row.querySelector('.m-row-name')?.textContent ?? '',
+        status: row.querySelector('.m-col-status')?.textContent ?? '',
+        health: row.querySelector('.m-col-health')?.textContent ?? '',
+      }))
+
+    expect(columns()).toEqual([
+      // 在跑的两档：健康列不再复述状态列那个词，退成中性记号
+      { name: '排队中.pdf', status: '排队中', health: '—' },
+      { name: '执行中.pdf', status: '执行中', health: '—' },
+      // 该出声的仍出声：有问题的档逐字写后端给的判定结论（也正是这一列存在的理由）
+      { name: '卡住.pdf', status: '执行中', health: '可能卡住' },
+    ])
+    // 记号仍有名字：列头是 aria-hidden 的，读屏器只能靠它
+    expect(within(rows).getAllByLabelText('健康')).toHaveLength(2)
+    expect(within(rows).getAllByText('可能卡住')).toHaveLength(1)
+  })
+
+  it('详情弹窗的「健康」与「状态」也不说同一个词（与行内同一处判定，第六批）', async () => {
+    listTasksMock.mockResolvedValue({
+      items: [
+        task({
+          id: 't-canceled',
+          state: 'canceled',
+          document_name: '取消的.pdf',
+          health: 'done',
+          health_label: '已取消',
+        }),
+        task({
+          id: 't-failed',
+          state: 'failed',
+          document_name: '失败的.pdf',
+          health: 'done',
+          health_label: '已失败',
+        }),
+      ],
+    })
+
+    renderMisc(<TasksPage />)
+    await screen.findByText('失败的.pdf')
+    await userEvent.click(screen.getByRole('checkbox', { name: '显示已取消' }))
+
+    /** 弹窗里 `dt → dd` 的对照表（比按文本查稳：两列本来就可能是同一个词）。 */
+    const fields = (dialog: HTMLElement): Record<string, string> =>
+      Object.fromEntries(
+        [...dialog.querySelectorAll('.m-detail-grid > div')].map((wrap) => [
+          wrap.querySelector('dt')?.textContent ?? '',
+          wrap.querySelector('dd')?.textContent ?? '',
+        ]),
+      )
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: /查看任务详情：解析 取消的\.pdf/ }),
+    )
+    const canceled = fields(await screen.findByRole('dialog'))
+    expect(canceled['状态']).toBe('已取消')
+    // 与行内同一句：已经结束、没有问题，就不复述状态列那个词
+    expect(canceled['健康']).toBe('—')
+    // 关掉再开另一个（弹窗里有两颗叫「关闭」的按钮，用 Esc 不留歧义）
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: /查看任务详情：解析 失败的\.pdf/ }),
+    )
+    const failed = fields(await screen.findByRole('dialog'))
+    // 失败是终态里唯一带来新判断的：状态列说"没成"，这里说"这一轮已经结束"
+    expect(failed['状态']).toBe('失败')
+    expect(failed['健康']).toBe('已失败')
+  })
+
+  it('「按健康筛选」与健康列同一套词：无异常 / 可能卡住 / 长时间未执行（第六批）', async () => {
+    listTasksMock.mockResolvedValue({
+      items: [
+        task({
+          id: 't-queued',
+          state: 'pending',
+          document_name: '排队中.pdf',
+          health: 'idle',
+          health_label: '排队中',
+        }),
+        task({ id: 't-run', document_name: '执行中.pdf' }),
+        task({
+          id: 't-overdue',
+          state: 'pending',
+          document_name: '逾期.pdf',
+          health: 'overdue',
+          health_label: '长时间未执行',
+        }),
+      ],
+    })
+
+    renderMisc(<TasksPage />)
+    await screen.findByText('排队中.pdf')
+
+    // 选项不再把状态筛选那两个词搬过来（搬过来就又变成"两列同词"）
+    await userEvent.click(screen.getByRole('combobox', { name: '按健康筛选' }))
+    expect(await screen.findByRole('option', { name: '无异常' })).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: '排队中' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: '执行中' })).not.toBeInTheDocument()
+    await userEvent.click(screen.getByRole('option', { name: '无异常' }))
+
+    // 「无异常」= 还没结束且没有问题（后端的 running / idle 两档）：逾期那条被筛掉
+    await waitFor(() => expect(screen.queryByText('逾期.pdf')).not.toBeInTheDocument())
+    expect(screen.getByText('排队中.pdf')).toBeInTheDocument()
+    expect(screen.getByText('执行中.pdf')).toBeInTheDocument()
   })
 
   it('页签就是原语本身：当前态由 @/ui/tabs 自带的类画出来，不再垫 span（评审 T1）', async () => {

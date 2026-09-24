@@ -41,7 +41,6 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Label } from '@/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/ui/select'
 import { Skeleton } from '@/ui/skeleton'
-import { Tabs, TabsList, TabsTrigger } from '@/ui/tabs'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/ui/tooltip'
 import { cn } from '@/lib/utils'
 
@@ -197,47 +196,7 @@ export function CheckRow({
   )
 }
 
-// ------------------------------------------------------------------ 分段 / 筛选
-
-/**
- * 分段控件：`@/ui/tabs` 的组合。
- *
- * 用 Radix 的 Tabs 而不是自己写 `role="tablist"` + 按钮：左右箭头切换、`aria-selected`、
- * `roving tabindex` 都是它给的（旧实现只有 role，没有键盘）。两处尺寸类是为了与旧的
- * `.m-tabs` 对齐（胶囊槽 36px、当前项 32px），取值仍是令牌。
- */
-export function SegmentedControl<T extends string>({
-  items,
-  value,
-  onChange,
-  ariaLabel,
-}: {
-  items: readonly { value: T; label: string; count?: number }[]
-  value: T
-  onChange: (next: T) => void
-  ariaLabel: string
-}) {
-  return (
-    <Tabs value={value} onValueChange={(next) => onChange(next as T)}>
-      <TabsList aria-label={ariaLabel} className="h-9 p-0.5">
-        {items.map((item) => (
-          <TabsTrigger
-            key={item.value}
-            value={item.value}
-            className="h-8 data-[state=active]:font-medium"
-          >
-            {item.label}
-            {item.count !== undefined && (
-              <span className="text-[length:var(--text-micro-size)] text-text-tertiary tabular-nums">
-                {item.count}
-              </span>
-            )}
-          </TabsTrigger>
-        ))}
-      </TabsList>
-    </Tabs>
-  )
-}
+// ------------------------------------------------------------------ 筛选
 
 /**
  * 筛选胶囊（带计数）：保留的**样式壳**。
@@ -245,6 +204,11 @@ export function SegmentedControl<T extends string>({
  * 与分段控件的区别是它**不是**"当前视图"而是"一排可横着滚的过滤器"，选中态是
  * `--bg-selected` + 深描边、形状是胶囊——`@/ui/tabs` 与 `@/ui/badge` 都没有这一形态
  * （Badge 是 4px 方角、Tabs 是面板槽），所以只留样式；语义仍是 `role="tablist"`。
+ *
+ * 分段控件本身**不再在这里包一层**：三个用它的页面（任务 / 记忆 / 能力）直接用
+ * `@/ui/tabs`。原来那个 `SegmentedControl` 包装是绕开未分层 CSS 那件事的产物
+ * （它垫 `h-9 p-0.5` / `h-8` 去仿旧的 `.m-tabs`，而那个类早就不存在了），
+ * 收层之后最后的调用点也退回了原语，包装于是一并删掉——留着只会有两种形状。
  */
 export function FilterChips<T extends string>({
   items,

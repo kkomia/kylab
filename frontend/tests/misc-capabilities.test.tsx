@@ -217,6 +217,21 @@ describe('能力页', () => {
     // 卡片上那一行是**截断**的（整段仍在 DOM 里，读全的地方是详情）
     expect(within(card).getByText(long).className).toContain('truncate')
 
+    /*
+      **形状是共享原语的，不是手写副本**（第六批）：容器 `.m-cards`（列间距归它）、
+      卡片 `.m-card`（底色 / 描边 / 圆角 / 首行对齐归它）、图标 `.m-card-icon`。
+      紧凑密度只有四个取值写在调用点——那四条能盖过 `.m-card`，靠的是 `misc.css`
+      收进了 `@layer components`（工具类赢在层序）。谁再把这一套抄回调用点，这里会挂。
+    */
+    expect(grid.className).toContain('m-cards')
+    expect(grid.className.split(/\s+/)).not.toContain('gap-[var(--space-2-5)]')
+    expect(card.className).toContain('m-card')
+    expect(card.className).toContain('rounded-[var(--radius-row)]')
+    // 图标：装饰性（aria-hidden 保住），对齐交给原语自己（不再用 span 加内边距顶）
+    const icon = card.querySelector('span') as HTMLElement
+    expect(icon.className).toBe('m-card-icon')
+    expect(icon).toHaveAttribute('aria-hidden', 'true')
+
     await userEvent.click(within(card).getByRole('button', { name: 'pdf-report' }))
     const dialog = await screen.findByRole('dialog')
     // 中文简介优先，整段读得到；英文原文也在（描述是模型那条路的触发文本）

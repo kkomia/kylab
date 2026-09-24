@@ -8,11 +8,15 @@
  * 3. 只放"结构 + 密度"，观感由令牌决定——深浅主题切换时这份文件不需要改一行。
  *
  * **整份规则收在 `@layer components` 里（2026-09-24 第三批 A）**，理由与 tokens.css
- * 那段重置完全相同：**未分层的声明永远压过 `@layer utilities`**（与优先级无关），
- * 于是 `.m-cards { display: flex }` 会静默吃掉同元素上的 `grid`——能力页的新网格
- * 当时只能绕开 `.m-cards` 另写一套。tokens.css 的重置收进 `base`（与 preflight 同层），
- * 这里是**组件类**，对应的层是 `components`；Tailwind v4 的顺序是
- * theme → base → components → utilities，收进来之后工具类才真的能覆盖它们。
+ * 那段重置完全相同：**未分层的声明永远压过 `@layer utilities`**（与优先级无关）。
+ * 这一条曾经把调用点逼成手写副本：`.m-cards { display: flex }` 会静默吃掉同元素上的
+ * `grid`，所以能力页的技能网格当时只能绕开 `.m-cards` 另抄一套卡片（连图标的对齐都
+ * 自己用一个加内边距的 span 顶着）。收层之后这种组合才成立——技能网格现在就是
+ * `.m-cards` + 调用点的 `grid grid-cols-*`，只有紧凑密度那几个取值写在调用点
+ * （第六批回退；等价性在 `.shots/batch6/probe-misc/` 里逐属性、逐像素比过）。
+ * tokens.css 的重置收进 `base`（与 preflight 同层），这里是**组件类**，对应的层是
+ * `components`；Tailwind v4 的顺序是 theme → base → components → utilities，
+ * 收进来之后工具类才真的能覆盖它们。
  *
  * 两个例外，都在下面标了位置：
  * - `@keyframes` 不进层：动画名是文档级的，放进层只会让"同名关键帧谁赢"多一条规则，

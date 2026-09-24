@@ -53,16 +53,14 @@ const TASK_KINDS: Record<string, string> = {
 /**
  * 健康判据 → 语义色。
  *
- * **文字用后端给的 `health_label`，这里只决定颜色**：标签是后端判定的结论
- * （"可能卡住" / "长时间未执行"），前端再翻译一遍就会出现两套说法。
- * `done` 覆盖"已完成/已取消/已失败"三种终态，所以给中性色，不冒充成功色。
+ * **只有"有问题"的两档会画成标签**（见 `TasksPage.healthVerdict`）：`running` / `idle` /
+ * `done` 三档在行上与弹窗里都退成一个中性记号——后端给它们的 label（执行中 / 排队中 /
+ * 已完成 / 已取消）与状态列逐字相同，复述而已。所以这里只留下会用到颜色的两档：
+ * 给一张查不到用处的表，只会让人以为还有别的用武之地。
  */
 const TASK_HEALTH_TONES: Record<string, TagTone> = {
-  running: 'info',
   stalled: 'danger',
   overdue: 'warning',
-  idle: 'neutral',
-  done: 'neutral',
 }
 
 export function taskHealthTone(health: string): TagTone {
