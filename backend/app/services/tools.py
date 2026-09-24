@@ -907,13 +907,12 @@ def _list_documents(services: Services, args: dict[str, Any], *, caller: Caller)
 def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
     """在**记忆**里召回，与 `search` 是两条路。
 
-    **记忆目前是"一个工作区"，不按账号分**（设计文档 §5 的已知边界）：
-    只要 ReMe 跑在同一个工作区上，不同账号召回的就是同一份记忆。
-    这里**不做归属过滤**，因为过滤不了——真过滤需要按账号分工作区目录，
-    而那个决定在产品层面还没做。
+    **归属按账号走**（v0.54 起是精确的）：记忆工作区是 ``<data>/memory/<user_id>/``，
+    这个工具**只读自己的那一份**——与 `_remember` 写的是同一个目录（那条曾经写共享桶，
+    见它的注释）。管理员是 `None`（共享桶），成员之间互不可见。
 
-    这段话是刻意写在这里的：先前这里写的是"记忆的归属按账号走、它绑人"，
-    而代码里没有任何一处做这件事。留着那种说法，下一个人就会以为记忆已经隔离好了。
+    这段话是刻意写在这里的：先前这里写的是"记忆不按账号分、过滤不了"，
+    那是 ReMe 当外挂服务时的边界；native 之后按目录天然隔离。
     """
     query = _require(args, "query")
     limit = int(args.get("limit") or DEFAULT_RECALL)
@@ -946,10 +945,19 @@ def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
 
 
 def _remember(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:
+    """往**核心长期记忆**里写一条。
+
+    **归属必须与 `_recall` 一致**（v0.54 修）：`recall` 一直传 `user_id`，而这里
+    原先不传——`workspace_for(None)` 落到**共享桶**，于是成员"记住了"的东西写进了
+    他自己读不到的地方：下次再问永远搜不到，而且**不报错、只给空结果**（最难查的
+    那类）。管理员两侧都是 `None`（共享桶），所以这个洞只在成员账号上露出来。
+    """
     content = _require(args, "content")
     raw_tags = args.get("tags") or []
     result = services.memory.remember(
-        content, tags=[str(item) for item in raw_tags] if isinstance(raw_tags, list) else []
+        content,
+        tags=[str(item) for item in raw_tags] if isinstance(raw_tags, list) else [],
+        user_id=_owner_of(caller),
     )
     if not result["saved"]:
         return {**result, "note": "这条已经在核心记忆里了，没有重复写入"}

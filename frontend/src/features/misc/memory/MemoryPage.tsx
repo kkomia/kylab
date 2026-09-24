@@ -1,14 +1,14 @@
 /**
- * 记忆页（v0.14 三期）——与旧前端 `views/MemoryView.vue` 逐条对应。
+ * 记忆页（v0.14 三期；v0.46 起记忆是后端进程内的本地实现）。
  *
  * 一个视图、三块内容：**文件**（浏览与编辑）、**图谱**（wikilink 结构）、
  * **召回**（试一下搜不搜得到）。三块各回答一个问题，所以用分段控件切开。
  *
  * 三条来自后端的、必须让用户看见的事实（这一页的可用性全压在它们上）：
  * 1. **只有 `daily/` 与 `digest/` 会被召回**；`MEMORY.md` / `SOUL.md` 走**注入**
- *    ——每轮对话都进 system prompt，但不参与检索。不写清楚，"改了却搜不到"会被当成 bug；
- * 2. **编辑后索引会自己跟上**（记忆服务的文件守护，约 5 秒 debounce），
- *    所以保存路径上没有"正在重建索引"这种等待；`重建索引` 只是手动兜底；
+ *    ——每轮对话都进 system prompt，但不参与召回。不写清楚，"改了却搜不到"会被当成 bug；
+ * 2. **没有索引需要等**：召回是每次现扫工作区，保存完就已经生效
+ *    （这一页因此没有"重建索引"这种按钮，也没有"索引跟不跟得上"要解释）；
  * 3. **记忆目录随 owner**：后端按登录会话分桶（普通成员 → `data/memory/<自己>/`；
  *    管理员会话与 API Key 通道 → 共享桶 `data/memory/`，见 `api/v1/memory.py` 的
  *    `_scope`）。所以左侧栏脚注那行路径是**当前这一份**的落点，页面不另做隔离判断
@@ -30,7 +30,6 @@ import {
   ChevronDown,
   FileText,
   Plus,
-  RefreshCw,
   Save,
   Search,
   Settings2,
@@ -42,9 +41,7 @@ import {
   getMemory,
   getMemoryFile,
   getMemoryGraph,
-  probeMemory,
   recallMemory,
-  reindexMemory,
   rememberMemory,
   writeMemoryFile,
   type MemoryFile,
@@ -168,27 +165,6 @@ export function MemoryPage() {
     queryFn: getMemoryGraph,
     enabled: graphWanted,
   })
-  /**
-   * 连通性**真的探一次**（挂载时）。
-   *
-   * 为什么非探不可：`GET /memory` 从不打远端（它每次刷新都被调），所以
-   * `status.reachable` 常态是 `null`，界面于是长期显示「已启用」——
-   * 用户看到的是"服务其实没起，我却以为它在工作"（真实那次：ReMe 不可达，
-   * 状态栏仍写「已启用」，按一下召回才报错）。`probe` 是唯一说得出真话的端点，
-   * 而它一直是**全前端零调用**（`api/memory.ts` 里那个函数没人用）。
-   *
-   * 只有管理员探：那个端点打的是 `memory.base_url`（管理员填的地址），
-   * 权限档与设置页其它「测试连接」一致。成员账号保持"未探测"这一态——
-   * 那一态本身也要如实说（见下面的 `statusView`），不能拿它冒充"已连接"。
-   */
-  const probe = useQuery({
-    queryKey: ['memory', 'probe'],
-    queryFn: probeMemory,
-    enabled: isAdmin,
-    retry: false,
-    staleTime: 60_000,
-  })
-
   const files = useMemo(() => overview.data?.files ?? [], [overview.data])
   const status = overview.data?.status ?? null
   /** 草稿与已保存内容不一致 = 有未保存的改动。 */
@@ -299,12 +275,6 @@ export function MemoryPage() {
     onError: (error: unknown) => notifyError(`没记下来：${messageOf(error)}`),
   })
 
-  const reindex = useMutation({
-    mutationFn: reindexMemory,
-    onSuccess: (result) => notifySuccess(result.detail || '已请记忆服务重建索引'),
-    onError: (error: unknown) => notifyError(messageOf(error)),
-  })
-
   const submitNote = () => {
     const text = noteText.trim()
     if (!text) return
@@ -331,7 +301,8 @@ export function MemoryPage() {
     try {
       setRecallHits(await recallMemory(query))
     } catch (error) {
-      // 关着或服务没起时后端**明确报错**（不返回空）——原样显示这句话
+      // 关着时后端**明确报错**（不返回空）——原样显示这句话。
+      // 开着时的空结果是另一回事：那代表真没有相关记忆（见下面的空态）
       setRecallHits(null)
       setRecallError(messageOf(error))
     } finally {
@@ -352,34 +323,44 @@ export function MemoryPage() {
   }
 
   /**
-   * 状态标签：**"没探测"与"连不上"是两件事**（用户报的"常态显示已启用"）。
+   * 状态标签：**只说本地事实**（v0.46）。
    *
-   * `probe.data.reachable` 才是探过的结论（`true` / `false`）；`null` 只剩两种情形：
-   * 成员账号（探测端点管理员专属）与还在探。这两种都不能冒充"已连接"——
-   * 所以标签分别写「连通性未知」与「检查中」，并在 title 里说清为什么。
+   * 原先这里是"探测结论"（记忆服务正常 / 未连接 / 连通性未知），因为记忆那时是
+   * 另一个进程、而 `GET /memory` 故意不打远端——两边拼起来，界面上就出现过
+   * 用户根本不该读的东西（内部地址、端口、异常原文）。现在记忆跑在后端进程里，
+   * 没有第二个进程可连，标签只说"开没开"，细节在下面那行本地数字里。
    */
-  const probed = probe.data?.reachable ?? null
   const statusView = !status
     ? { label: '读取中', tone: 'neutral' as const, hint: '' }
     : !status.enabled
       ? {
           label: '未启用',
           tone: 'neutral' as const,
-          hint: '记忆服务没开：召回与自动沉淀不工作；四份文件的注入与编辑不受影响。',
+          hint:
+            '长期记忆没开：过去的对话不会被召回，也不会自动沉淀；' +
+            '四份文件的注入与编辑不受影响。',
         }
-      : isAdmin && probe.isPending
-        ? { label: '检查中', tone: 'neutral' as const, hint: '正在测试记忆服务的连通性。' }
-        : probed === true
-          ? { label: '记忆服务正常', tone: 'success' as const, hint: probe.data?.detail ?? '' }
-          : probed === false
-            ? { label: '记忆服务未连接', tone: 'warning' as const, hint: probe.data?.detail ?? '' }
-            : probe.isError
-              ? { label: '连通性未知', tone: 'neutral' as const, hint: messageOf(probe.error) }
-              : {
-                  label: '已启用',
-                  tone: 'neutral' as const,
-                  hint: '连通性没探测过（只有管理员能测）；这不代表服务连得上。',
-                }
+      : {
+          label: '已启用',
+          tone: 'success' as const,
+          hint: '召回与自动沉淀都在本地工作区上做，改完即生效。',
+        }
+
+  /**
+   * 本地状态那行：几份文件、多少条可召回、上次更新。
+   *
+   * 时间与别处**同一个口径**（`formatRelativeTime`）：同一屏里一处写"2 小时前"、
+   * 另一处写绝对时间的代价是读者要在脑子里做换算，还分不清说的是不是同一时刻。
+   */
+  const localState = status
+    ? [
+        `${formatCount(status.file_count)} 份文件`,
+        `${formatCount(status.entry_count)} 条可召回`,
+        status.last_changed_at
+          ? `上次更新 ${formatRelativeTime(status.last_changed_at)}`
+          : '还没有内容',
+      ].join(' · ')
+    : ''
 
   // 显式类型：文件那一档多一个 `count`，不给类型的话它是个"有些成员没有该属性"的联合
   const tabItems: { value: Tab; label: string; count?: number }[] = TABS.map((item) =>
@@ -394,20 +375,14 @@ export function MemoryPage() {
           <StatusTag
             label={statusView.label}
             tone={statusView.tone}
-            title={statusView.hint || status?.detail || undefined}
+            title={statusView.hint || undefined}
           />
-          {/* 「设置」就在这一页（v0.26）：开关与服务地址原先挂在「总设置 → 功能」，
-              而这一页顶着一句"记忆服务未启用"——同一个东西的说明和开关隔着两个菜单 */}
+          {/* 「设置」就在这一页（v0.26）：开关原先挂在「总设置 → 功能」，
+              而这一页顶着一句"记忆未启用"——同一个东西的说明和开关隔着两个菜单 */}
           {isAdmin && (
             <Button onClick={() => setSettingsOpen(true)}>
               <Settings2 size={15} />
               设置
-            </Button>
-          )}
-          {status?.enabled && (
-            <Button disabled={reindex.isPending} onClick={() => reindex.mutate()}>
-              <RefreshCw size={15} />
-              重建索引
             </Button>
           )}
           <DropdownMenu>
@@ -450,20 +425,6 @@ export function MemoryPage() {
       {overview.isError && (
         <Notice tone="error" icon={<AlertCircle size={15} />}>
           {messageOf(overview.error)}
-        </Notice>
-      )}
-
-      {/*
-        服务不通时的**范围说明**（用户报的"状态说已启用、其实没连上"）。
-        关键是范围说对：不通的是"召回 + 自动沉淀"这两件要打远端的事，
-        而四份文件的**注入与编辑是本地读文件**——它们照常工作。
-        说反了（例如让人以为人设也失效了）会让用户去改一件本来没事的东西。
-      */}
-      {status?.enabled && probed === false && (
-        <Notice tone="warn" icon={<AlertCircle size={15} />}>
-          {`记忆服务未连接：召回过去的记忆与自动沉淀不可用；四份核心文件（SOUL.md / PROFILE.md / AGENTS.md / MEMORY.md）的每轮注入与编辑不受影响。${
-            probe.data?.detail ? `（探测结果：${probe.data.detail}）` : ''
-          }`}
         </Notice>
       )}
 
@@ -528,7 +489,7 @@ export function MemoryPage() {
                 */}
                 <p className="m-toolbar-note" data-testid="memory-inject-note">
                   {'核心四份（SOUL.md / PROFILE.md / AGENTS.md / MEMORY.md）每轮整份注入提示词，' +
-                    '与记忆服务是否连通无关；只有召回与自动沉淀需要服务在跑。'}
+                    '不参与召回；召回与自动沉淀走的是每日现场与长期知识那两层。'}
                 </p>
 
                 {overview.data?.truncated && (
@@ -550,7 +511,7 @@ export function MemoryPage() {
                     hint={
                       files.length > 0
                         ? '换个关键词，或者清空过滤。'
-                        : '记忆服务开启后，对话会自动沉淀出每日笔记；也可以点右上角的「新增」→「新建记忆文件」。'
+                        : '长期记忆开启后，对话会自动沉淀出每日笔记；也可以点右上角的「新增」→「新建记忆文件」。'
                     }
                   />
                 ) : (
@@ -612,9 +573,13 @@ export function MemoryPage() {
                 )}
 
                 {status && (
-                  <p className="text-micro">
-                    工作区：<code>{status.workspace}</code>
-                  </p>
+                  <div className="m-toolbar-note" data-testid="memory-local-state">
+                    <p>
+                      工作区：<code>{status.workspace}</code>
+                    </p>
+                    {/* 本地状态就这三个数字：几份文件、多少条可召回、上次更新 */}
+                    <p className="tabular">{localState}</p>
+                  </div>
                 )}
               </aside>
 
@@ -638,7 +603,7 @@ export function MemoryPage() {
                             而**这一份具体怎么生效**由列表行右侧那枚标记逐行承担
                             （`effectOf`）——那句话与标记本来就是同一件事的两种说法。
                           */}
-                          <InfoTip text="记忆分两路生效：核心文件（MEMORY.md / SOUL.md）每轮整份注入上下文，不参与检索（所以搜不到是正常的）；每日现场与长期知识进检索索引，由召回工具按需取片段。其余位置的文件既不注入也不参与检索，只是一份可编辑的文本。" />
+                          <InfoTip text="记忆分两路生效：核心文件（MEMORY.md / SOUL.md）每轮整份注入上下文，不参与召回（所以搜不到是正常的）；每日现场与长期知识进召回池，由召回工具按需取片段。其余位置的文件既不注入也不参与召回，只是一份可编辑的文本。" />
                         </h2>
                         {/* 核心文件的标题就是文件名（MEMORY.md），再摆一行路径是重复的 */}
                         {detail.path !== detail.title && (
@@ -802,8 +767,12 @@ export function MemoryPage() {
                                 </>
                               )}
                               {/* 相似度与检索页同一口径：三位小数（`formatScore`）——
-                                  同一个分数在两页写两位/三位，读者会以为换了算法 */}
+                                  同一个分数在两页写两位/三位，读者会以为换了算法。
+                                  覆盖率是**判据**（命中多少查询词），单独标一下：
+                                  它才是"这条算不算相关"的依据，分数只管排序。 */}
                               {hit.score !== null && ` · ${formatScore(hit.score)}`}
+                              {hit.coverage !== null &&
+                                ` · 命中 ${Math.round(hit.coverage * 100)}%`}
                             </span>
                           </div>
                           <p className="m-hit-text">{hit.text}</p>

@@ -76,7 +76,6 @@ export function SkillMarketDialog({
   const [view, setView] = useState<View>('list')
   const [sourceId, setSourceId] = useState('')
   const [skills, setSkills] = useState<MarketSkill[]>([])
-  const [cached, setCached] = useState(true)
   const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [installing, setInstalling] = useState(false)
@@ -99,10 +98,11 @@ export function SkillMarketDialog({
   })
   const allSources: SkillSource[] = sources.data ?? []
   const enabledSources = allSources.filter((item) => item.enabled)
-  const currentSource = allSources.find((item) => item.id === sourceId) ?? null
+  // 下拉只显示**源名**：原先跟的那串 `owner/repo` 是仓库 slug，属于实现细节
+  // （2026-09-24 用户反馈圈掉了它），要看它去哪台仓库请到「管理源」——那里是数据本身。
   const sourceOptions = enabledSources.map((item) => ({
     value: item.id,
-    label: `${item.name} · ${item.repo}`,
+    label: item.name,
   }))
 
   const visibleSkills = (() => {
@@ -120,7 +120,6 @@ export function SkillMarketDialog({
     try {
       const result = await browseSkillSource(source, refresh)
       setSkills(result.items)
-      setCached(result.cached)
     } catch (failure) {
       setSkills([])
       setError(messageOf(failure, '浏览失败'))
@@ -331,16 +330,8 @@ export function SkillMarketDialog({
         </div>
       </div>
 
-      {currentSource && view !== 'sources' && (
-        <p className="m-source-note">
-          {currentSource.why || currentSource.repo}
-          {cached ? (
-            <span> · 用的是缓存（几小时内不会重复请求 GitHub）</span>
-          ) : (
-            <span> · 刚从 GitHub 拉的最新清单</span>
-          )}
-        </p>
-      )}
+      {/* 原先这里还有一行源说明（`why` + "用的是缓存（几小时内不会重复请求 GitHub）"）：
+          它是**实现说明**（缓存策略、GitHub 请求、全站安装量），2026-09-24 用户反馈后整行删掉 */}
 
       {/* 错误**就地显示**：这里的错误大多带下一步（配 token、换个源、稍后再试） */}
       {error && (
@@ -387,16 +378,11 @@ export function SkillMarketDialog({
               />
             </div>
           </div>
-          <p className="m-add-hint">
-            文件夹或 .zip 都行：里面要有一个带 name 的 SKILL.md（<code>my-skill/SKILL.md</code>{' '}
-            这种一层目录就好）。
-          </p>
-
           <div className="m-add-source">
             <Input
               value={newRepo}
               onChange={(event) => setNewRepo(event.target.value)}
-              placeholder="owner/repo，或 GitHub 上那个仓库（含子目录）的链接"
+              placeholder="仓库地址"
               aria-label="添加技能源"
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && newRepo.trim() && !addingSource) {
@@ -416,10 +402,6 @@ export function SkillMarketDialog({
               添加
             </Button>
           </div>
-          <p className="m-add-hint">
-            任意公开仓库都行——我们扫的是仓库里的 SKILL.md，所以不必等谁去做适配。
-          </p>
-
           {sources.isLoading ? (
             <SkeletonBlock variant="list" rows={4} />
           ) : (
@@ -463,7 +445,7 @@ export function SkillMarketDialog({
             <input
               type="search"
               value={query}
-              placeholder="在这个源里搜索技能"
+              placeholder="搜索技能"
               aria-label="搜索技能"
               onChange={(event) => setQuery(event.target.value)}
             />

@@ -1437,6 +1437,93 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/notes/folders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 文件夹列表（含每个文件夹的笔记数）
+         * @description 整棵树一次给出：层级（``parent_id``）由前端拼，数字（各自条数 / 未归档 / 总数）
+         *     一起带回——它们每次移动笔记都要同时变，分几次取就会有"对不上"的中间态。
+         *
+         *     **路由必须声明在 ``/{note_id}`` 之前**：两者都是 ``/notes/` + 一段``，
+         *     顺序反了 ``GET /notes/folders`` 会被当成"取一条 id 为 folders 的笔记"（404）。
+         */
+        get: operations["list_note_folders_api_v1_notes_folders_get"];
+        put?: never;
+        /** 新建文件夹 */
+        post: operations["create_note_folder_api_v1_notes_folders_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notes/folders/{folder_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 删除文件夹（子文件夹一起删，里面的笔记回到未归档） */
+        delete: operations["delete_note_folder_api_v1_notes_folders__folder_id__delete"];
+        options?: never;
+        head?: never;
+        /** 重命名文件夹 */
+        patch: operations["rename_note_folder_api_v1_notes_folders__folder_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/notes/folders/{folder_id}/parent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 移动文件夹（换父级）
+         * @description 单独一个端点而不是并进上面那条 PATCH：改名与换位置都带一个可选字段时，
+         *     "没传"与"传了 null"会在同一个字段上表达两件事（不动父级 / 挪回根级），
+         *     只能靠 ``model_fields_set`` 这类字段存在性判断来区分——与其玩这个，
+         *     不如让"换父级"像文档那样自成一条路径（``PATCH /documents/{id}/folder``）。
+         */
+        patch: operations["move_note_folder_api_v1_notes_folders__folder_id__parent_patch"];
+        trace?: never;
+    };
+    "/api/v1/notes/{note_id}/folder": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * 把笔记移进文件夹 / 移回未归档
+         * @description 归属单独的端点（理由见 ``NoteUpdateIn`` 与 ``NotesService.move_note``）：
+         *     编辑器那条自动保存 PATCH 不带 folder_id，两者互不覆盖。
+         */
+        patch: operations["move_note_api_v1_notes__note_id__folder_patch"];
+        trace?: never;
+    };
     "/api/v1/notes/{note_id}": {
         parameters: {
             query?: never;
@@ -2344,8 +2431,8 @@ export interface paths {
          * 记忆状态与文件列表
          * @description 一次给全页面首屏要的东西（状态 + 文件列表）。
          *
-         *     **不打远端**（``status`` 而不是 ``probe``）：状态栏每次刷新都调它，
-         *     顺手打一次记忆服务会让"打开记忆页"变成一次网络等待。
+         *     **状态是纯本地的**（数一遍工作区）：没有第二个进程、没有探测，
+         *     所以"打开记忆页"不会变成一次网络等待。
          */
         get: operations["get_memory_api_v1_memory_get"];
         put?: never;
@@ -2375,8 +2462,8 @@ export interface paths {
          * 写入（覆盖）一个记忆文件
          * @description 整份覆盖。文件不存在就**新建**（要能新建整合笔记，见服务层 ``write_file``）。
          *
-         *     索引不在这里管：ReMe 自己有文件守护会追（实测 5 秒 debounce），
-         *     而它的 ``reindex`` 看不见新文件（"without rescanning workspace files"）。
+         *     **保存路径上没有任何索引动作**，而且这次连"要不要等索引"都不用解释：
+         *     召回是每次按需扫工作区，改完就已经生效。
          */
         put: operations["write_memory_file_api_v1_memory_files__path__put"];
         post?: never;
@@ -2396,10 +2483,10 @@ export interface paths {
         };
         /**
          * 记忆的 wikilink 图谱
-         * @description 本地从正文里的 ``[[…]]`` 算出来（不调 ReMe 的 ``graph_snapshot``）。
+         * @description 本地从正文里的 ``[[…]]`` 算出来（纯函数，见 ``memory_files.graph_of``）。
          *
          *     只画连上边的节点，孤立文件不进图——它们已经在文件列表里了，
-         *     图要回答的是"结构"而不是"清单"（见 ``memory_files.graph_of``）。
+         *     图要回答的是"结构"而不是"清单"。
          */
         get: operations["get_memory_graph_api_v1_memory_graph_get"];
         put?: never;
@@ -2421,10 +2508,12 @@ export interface paths {
         put?: never;
         /**
          * 在记忆里召回
-         * @description 与知识库检索**两条路、永不合并**（设计文档 §2.1）。
+         * @description 与知识库检索**两条路、永不合并**（设计文档 §2.1）——连索引都不共用：
+         *     这一路是在本工作区的 Markdown 上现扫现算（见 ``memory_files.search``）。
          *
-         *     记忆服务没起或没启用时**明确报错**，不返回空结果（§2.3）——返回空会让模型
-         *     （和用户）以为"没有相关记忆"，然后基于错误前提继续。
+         *     **没启用时明确报错**，不返回空结果（§2.3）——返回空会让模型（和用户）
+         *     以为"没有相关记忆"，然后基于错误前提继续。启用着而真的没有相关记忆时，
+         *     返回空的列表才是诚实的答案（那时检索确实跑过了）。
          */
         post: operations["recall_memory_api_v1_memory_recall_post"];
         delete?: never;
@@ -2444,57 +2533,11 @@ export interface paths {
         put?: never;
         /**
          * 记一条长期事实
-         * @description 写进 ``MEMORY.md``，**不经过 ReMe**（那条路径没有记忆服务也能工作，见服务层）。
+         * @description 写进 ``MEMORY.md``，**不经过任何外部东西**（那条路径没有开关也能工作）。
          *
          *     重复的一条返回 ``saved=false``，不是错误：那是"本来就有"，调用方据此不必再记一遍。
          */
         post: operations["remember_api_v1_memory_remember_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/memory/reindex": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 请记忆服务重建索引
-         * @description 手动兜底，不是保存流程的一环（见 ``MemoryService.write_file`` 的说明）。
-         *
-         *     真正要它的时候是这一类：服务当时没起、用户改了一批文件，之后才把服务拉起来。
-         */
-        post: operations["reindex_api_v1_memory_reindex_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/memory/probe": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * 测试记忆服务连通性
-         * @description 设置页的「测试连接」。
-         *
-         *     **管理员专属**，与设置页其它"测试连接"同档：它打的是 ``memory.base_url``
-         *     这个可配置地址，而那个地址由管理员填。用普通读权限放行，等于把
-         *     "让服务端按我指定的地址发一个请求"这件事开放给任何成员。
-         */
-        post: operations["probe_api_v1_memory_probe_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5157,17 +5200,6 @@ export interface components {
              */
             installed: boolean;
         };
-        /**
-         * MemoryActionOut
-         * @description 无返回值的动作（重建索引）统一用它回一句人话。
-         */
-        MemoryActionOut: {
-            /**
-             * Detail
-             * @default
-             */
-            detail: string;
-        };
         /** MemoryFileDetailOut */
         MemoryFileDetailOut: {
             /** Path */
@@ -5330,6 +5362,8 @@ export interface components {
             end_line?: number | null;
             /** Score */
             score?: number | null;
+            /** Coverage */
+            coverage?: number | null;
         };
         /** MemoryLinkOut */
         MemoryLinkOut: {
@@ -5356,16 +5390,6 @@ export interface components {
              * @default false
              */
             truncated: boolean;
-        };
-        /** MemoryProbeOut */
-        MemoryProbeOut: {
-            /** Reachable */
-            reachable: boolean;
-            /**
-             * Detail
-             * @default
-             */
-            detail: string;
         };
         /** MemoryRecallIn */
         MemoryRecallIn: {
@@ -5412,20 +5436,15 @@ export interface components {
         };
         /**
          * MemoryStatusOut
-         * @description 记忆层的状态。
+         * @description 记忆层的状态。**全是本地数字**（v0.44）：
          *
-         *     ``enabled`` 与 ``reachable`` 是**两件事**：前者是"有没有打开"，后者是
-         *     "记忆服务活着吗"。分开是因为它们对应完全不同的处置——没打开要去设置里开，
-         *     服务没起要去把进程拉起来。揉成一个"不可用"会让用户不知道该动哪里。
+         *     没有"连没连上"这一项——记忆跑在我们自己的进程里，没有第二个进程可连。
+         *     原先那对 ``base_url`` / ``reachable``（三态）随 ReMe 一起删了：
+         *     它们的存在只为了让界面说清"服务在不在"，而现在这件事不存在。
          */
         MemoryStatusOut: {
             /** Enabled */
             enabled: boolean;
-            /**
-             * Base Url
-             * @default
-             */
-            base_url: string;
             /**
              * Workspace
              * @default
@@ -5436,8 +5455,6 @@ export interface components {
              * @default false
              */
             core_file_exists: boolean;
-            /** Reachable */
-            reachable?: boolean | null;
             /**
              * Detail
              * @default
@@ -5453,6 +5470,16 @@ export interface components {
              * @default 0
              */
             retrievable_count: number;
+            /**
+             * Entry Count
+             * @default 0
+             */
+            entry_count: number;
+            /**
+             * Last Changed At
+             * @default
+             */
+            last_changed_at: string;
             /**
              * Unconsolidated Count
              * @default 0
@@ -5601,6 +5628,69 @@ export interface components {
             source_ref?: string | null;
             /** Tags */
             tags?: string[];
+            /** Folder Id */
+            folder_id?: string | null;
+        };
+        /** NoteFolderCreateIn */
+        NoteFolderCreateIn: {
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id?: string | null;
+        };
+        /**
+         * NoteFolderListOut
+         * @description 左栏那棵树的读数：文件夹 + 三个数字（未归档 / 总数）一次给全。
+         *
+         *     **为什么不只给树**：树上每个节点都要显示条数，未归档与"全部"也各要一个，
+         *     而它们每次移动笔记都会一起变；拆成"列表 + 额外两次计数请求"只会让
+         *     三个数字有机会对不上（用户看到的是一棵树，数字就该是同一时刻的）。
+         */
+        NoteFolderListOut: {
+            /** Items */
+            items?: components["schemas"]["NoteFolderOut"][];
+            /**
+             * Unfiled Count
+             * @default 0
+             */
+            unfiled_count: number;
+            /**
+             * Total Count
+             * @default 0
+             */
+            total_count: number;
+        };
+        /** NoteFolderOut */
+        NoteFolderOut: {
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+            /** Parent Id */
+            parent_id?: string | null;
+            /**
+             * Note Count
+             * @description 这个文件夹里**直接**有多少篇笔记（不含子文件夹里的）。
+             * @default 0
+             */
+            note_count: number;
+            /** Created At */
+            created_at?: string | null;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * NoteFolderParentIn
+         * @description 把文件夹移动到某个文件夹下；``parent_id=None`` = 挪回根级。
+         */
+        NoteFolderParentIn: {
+            /** Parent Id */
+            parent_id?: string | null;
+        };
+        /** NoteFolderRenameIn */
+        NoteFolderRenameIn: {
+            /** Name */
+            name: string;
         };
         /** NoteImageOut */
         NoteImageOut: {
@@ -5633,6 +5723,8 @@ export interface components {
             kb_id?: string | null;
             /** Doc Id */
             doc_id?: string | null;
+            /** Folder Id */
+            folder_id?: string | null;
             /**
              * Pinned
              * @default false
@@ -5670,6 +5762,14 @@ export interface components {
              */
             offset: number;
         };
+        /**
+         * NoteMoveIn
+         * @description 把笔记移动到某个文件夹；``folder_id=None`` = 移回未归档。
+         */
+        NoteMoveIn: {
+            /** Folder Id */
+            folder_id?: string | null;
+        };
         /** NoteOut */
         NoteOut: {
             /** Id */
@@ -5686,6 +5786,8 @@ export interface components {
             kb_id?: string | null;
             /** Doc Id */
             doc_id?: string | null;
+            /** Folder Id */
+            folder_id?: string | null;
             /**
              * Pinned
              * @default false
@@ -5713,6 +5815,10 @@ export interface components {
         /**
          * NoteUpdateIn
          * @description 全部字段可空：只传要改的字段。``None`` = 不动这一项。
+         *
+         *     **刻意没有 ``folder_id``**：归属走 ``PATCH /notes/{id}/folder``。
+         *     编辑器每 800ms 自动保存一次，如果归属也走这条路径，草稿里那份旧的 folder_id
+         *     会把用户在左栏刚移好的位置刷回去（理由详见服务层 ``NotesService.move_note``）。
          */
         NoteUpdateIn: {
             /** Title */
@@ -10438,6 +10544,8 @@ export interface operations {
                 q?: string | null;
                 /** @description 按标签过滤 */
                 tag?: string | null;
+                /** @description 按文件夹过滤：文件夹 id，或 unfiled（未归档）；留空 = 全部 */
+                folder?: string | null;
                 limit?: number;
                 offset?: number;
             };
@@ -10522,6 +10630,214 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NoteTagListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_note_folders_api_v1_notes_folders_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteFolderListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_note_folder_api_v1_notes_folders_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteFolderCreateIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteFolderOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_note_folder_api_v1_notes_folders__folder_id__delete: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                folder_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_note_folder_api_v1_notes_folders__folder_id__patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                folder_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteFolderRenameIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteFolderOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    move_note_folder_api_v1_notes_folders__folder_id__parent_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                folder_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteFolderParentIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteFolderOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    move_note_api_v1_notes__note_id__folder_patch: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                note_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NoteMoveIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NoteOut"];
                 };
             };
             /** @description Validation Error */
@@ -12788,68 +13104,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MemoryRememberOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reindex_api_v1_memory_reindex_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryActionOut"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    probe_api_v1_memory_probe_post: {
-        parameters: {
-            query?: never;
-            header?: {
-                authorization?: string | null;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryProbeOut"];
                 };
             };
             /** @description Validation Error */

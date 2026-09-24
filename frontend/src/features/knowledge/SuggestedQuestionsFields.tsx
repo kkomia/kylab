@@ -36,12 +36,6 @@ interface SuggestedQuestionsFieldsProps {
   onChange: (patch: Partial<SuggestedQuestionsValue>) => void
 }
 
-/**
- * 出题时的合并批大小（**与后端 `_CHUNKS_PER_CALL` 一致**）。
- * 只用于把这句代价说明写准确——真正合并发生在后端。
- */
-const CHUNKS_PER_CALL_HINT = 8
-
 /** 轨道上的常用值：1 条太薄、2 条兜底、3 条是默认、5 条是上限。 */
 const COUNT_MARKS = [
   { value: 2 },
@@ -90,11 +84,6 @@ export function SuggestedQuestionsFields({ value, onChange }: SuggestedQuestions
           />
           <span>为每个切块生成推荐问题</span>
         </Label>
-        <p className="text-hint">
-          入库时为每一段让模型出几个问题，问题会一起进检索索引；只影响<strong>以后上传</strong>
-          的文档，已入库的可以在文档列表里选中后点「生成问题」补上。关掉则对话页空状态
-          改用内置的静态示例问题。
-        </p>
       </div>
 
       <div className="field">
@@ -107,9 +96,6 @@ export function SuggestedQuestionsFields({ value, onChange }: SuggestedQuestions
           marks={COUNT_MARKS}
           ariaLabel="每个切块生成几条问题"
         />
-        <p className="text-hint">
-          每 {CHUNKS_PER_CALL_HINT} 段合并成一次模型调用；只对之后上传或重新摄入的文档生效。
-        </p>
       </div>
 
       <div className="field">

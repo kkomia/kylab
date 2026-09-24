@@ -1,36 +1,44 @@
 """记忆工作区的**文件层**（v0.14 三期，见 ``docs/设计/记忆层设计-v0.1.md`` §3）。
 
 记忆就是一堆带 frontmatter 与 wikilink 的普通 Markdown（ReMe 的主张：
-*Memory as File, File as Memory*）。三期要让人**看得见、改得动**这些文件，
-于是这里提供四件事：列的出、读得进、写得回、连成图。
+*Memory as File, File as Memory*）。这一层提供五件事：列的出、读得进、写得回、
+连成图、**搜得到**。
 
-**为什么直接读本地目录，而不是转发 ReMe 的 ``list`` / ``read`` / ``write``**：
+**全都在本地做，没有第二个进程**（v0.46 起）：文件是我们自己的（``data/memory/``，
+见设计文档 §2.2 的数据落点），检索也就是把这几份 Markdown 读进来打分——
+没有外部服务可连、没有索引要追、没有"编辑之后它什么时候跟上"这个问题。
+（原先这一层是 ReMe 的 HTTP 门面，退化的形态见设计文档 §3.5：
+即使只想用它的文件操作与 BM25，它也要自己的进程、自己的 venv。）
 
-1. 这个目录是**我们自己的**（``data/memory/``，见设计文档 §2.2 的数据落点），
-   ``remember`` 与 ``core_text`` 早就直接读写它了——再经 ReMe 绕一圈，
-   等于"读一个自己的文本文件还得先有另一个进程活着"；
-2. 界面是**随时要打开**的东西：记忆服务没起、或者用户就是想看看上次记了什么，
-   这时页面不该整个空掉。**能看**与**能召回**是两件事，前者不依赖服务；
-3. 少一层转发就少一处它改字段名我们要跟着改的地方。
+**为什么直接读本地目录**：
 
-**索引怎么办**：不用我们管。读 ReMe 的 ``config/default.yaml`` 可以看到它有
-``index_update_loop`` 这个后台守护，``watch_dirs: [daily_dir, digest_dir]``、
-``watch_suffixes: [md]``、``force_polling`` + 5 秒 debounce——文件一改，它自己会重新分块入库。
-而它的 ``reindex`` job 写明了是 *without rescanning workspace files*，
-也就是"只重建已入库分片的索引、看不见新文件"，所以**每次保存后调它是白调**。
-我们的做法是：保存路径上什么都不做，``MemoryService.reindex`` 只留作手动兜底。
+1. 这个目录是**我们自己的**，``remember`` 与 ``core_text`` 早就直接读写它了
+   ——经别的进程绕一圈，等于"读一个自己的文本文件还得先有另一个进程活着"；
+2. 界面是**随时要打开**的东西：记忆没启用、或者用户就是想看看上次记了什么，
+   这时页面不该整个空掉。**能看**与**能召回**是两件事，前者不依赖开关；
+3. 少一层转发就少一处别人改字段名我们要跟着改的地方。
 
-**这条同时划出了一条界**：只有 ``daily/`` 与 ``digest/`` 会被召回（它们才在
-``watch_dirs`` 里），``MEMORY.md`` / ``SOUL.md`` 靠注入生效、不参与检索。
-``MemoryFile.retrievable`` 把这件事带给界面，免得用户以为"搜不到 = 索引坏了"。
+**召回的口径**（``search``）：按行切块，块内做词命中打分 + 标题/文件名加权
++ 与文件名的整串命中加分；分数只用于**排序**，命中与否另有一条跨查询可比的判据
+（词面覆盖 ≥ ``MIN_TERM_COVERAGE``）。**为什么不走向量**：这一池子是"个人长期记忆"，
+量级是几份到几百份文件、几百 KB，词面命中已经够用；而向量要么进文档池
+（那会破坏设计文档 §2.1 的两池隔离），要么为记忆单开一路索引与一份 embedding 账单
+——在证明"规模上值得"之前不付这个代价。
 
-**图谱也是本地算的**（不调 ReMe 的 ``graph_snapshot``）：wikilink 就在文件正文里，
-数一遍是纯函数，可测、可离线、且与"哪些还没被整合"是同一份数据。
+**召回池的边界**（``MemoryFile.retrievable``）：只有 ``daily/`` 与 ``digest/``
+参与召回；``MEMORY.md`` / ``SOUL.md`` 这几份**每轮整份注入 system prompt**，
+再召回一遍就是同一段内容进上下文两次。这条边界由我们的选择定下（原先是从 ReMe 的
+``watch_dirs`` 读出来的，见设计文档 §3.3），界面必须把它显示出来——否则用户改完
+一个不参与召回的文件却搜不到，会以为是检索坏了。
+
+**图谱也是本地算的**：wikilink 就在文件正文里，数一遍是纯函数，可测、可离线，
+且与"哪些还没被整合"是同一份数据。
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import unicodedata
@@ -42,27 +50,38 @@ from typing import Any
 import yaml
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
+from app.services.retrieval.coverage import content_terms
 
 __all__ = [
     "CORE_KIND",
     "DAILY_KIND",
+    "DEFAULT_RECALL",
     "DIGEST_KIND",
     "MAX_LISTED_FILES",
     "MAX_READ_BYTES",
     "MAX_WRITE_BYTES",
     "MAX_WRITE_CHARS",
+    "MIN_MATCHED_TERMS",
+    "MIN_TERM_COVERAGE",
+    "MemoryBlock",
     "MemoryFile",
     "MemoryFileDetail",
     "MemoryGraph",
     "MemoryGraphNode",
+    "MemoryMatch",
+    "WorkspaceStats",
     "classify",
     "delete_file",
     "describe",
+    "entry_texts",
     "graph_of",
+    "links_of",
     "parse_frontmatter",
     "read_file",
     "safe_path",
     "scan",
+    "search",
+    "stats",
     "wikilinks",
     "write_file",
 ]
@@ -94,12 +113,61 @@ MAX_WRITE_BYTES = 4_000_000
 #: 于是"net 上不会传进一个必然被服务层拒掉的请求"，而真正的判据仍是上面的字节数。
 MAX_WRITE_CHARS = 1_000_000
 
+#: 一次召回默认取几条。与 ``MemoryService.DEFAULT_RECALL`` 同源（服务层传进来，
+#: 这里只做兜底），口径不变：给模型"够用"的几条，上下文预算是有限的。
+DEFAULT_RECALL = 6
+
+#: 命中判据之一：命中的证据占**那条通道**总量的比例下限（``MemoryMatch.coverage``）。
+#:
+#: **为什么不能拿打分当判据**：分数量纲依赖词频与块数，跨查询不可比
+#: ——同一个分数在 3 个块的库和 3000 个块的库里含义完全不同。覆盖率是归一化的量
+#: （分子分母都随查询长度走），跨查询、跨工作区都可比。这条与文档检索那边的
+#: 「相关度下限」是**同一类思路**（见 ``services/retrieval/coverage.py``），
+#: 但**各算各的**：记忆池永不进文档检索，也不共用任何索引（设计文档 §2.1）。
+#:
+#: 取 1/3 而不是文档检索那边的 0.5：那是给长文档定的（几千字的正文里大部分查询词
+#: 都会出现），而记忆的一个块往往只有一句话——一句"用户偏好先给结论再给理由"
+#: 对得上「用户偏好什么样的回答风格」的一半词已经算强命中了（实测：
+#: 拿 0.5 去卡，界面输入框里那句示例提示词什么都搜不出来）。
+MIN_TERM_COVERAGE = 1 / 3
+
+#: 命中判据之二：**在通过的那条通道里**至少要有这么多个单位命中（单位见 ``_word_pairs``）。
+#:
+#: 它**只对 3 个以上单位的查询成立**（短查询不受它管，见 ``_passes``）。
+#: 作用是挡住"查询长起来之后蹭上一个常用词就算命中"：例如
+#: 「用户的开会时间安排」在只写了「用户偏好…」的记忆上拿到 1/4 但只有「用户」一个词
+#: 命中——那不该算相关。
+MIN_MATCHED_TERMS = 2
+
+#: 同一个文件最多贡献几条命中。没有它，一次召回很容易被某一份长日笔记占满
+#: （同一份文件里相邻的块分数接近），而"召回"的价值恰恰在于从**多个**文件里凑线索。
+MAX_HITS_PER_FILE = 3
+
+#: 顺链走一步最多给几条边（图谱那部分不额外花成本，但也不必把整个图塞进上下文）。
+MAX_LINKS = 10
+
+#: 一条命中的片段上限（字符）。召回结果是要进上下文的：长了就等于把整份文件塞进去。
+MAX_HIT_CHARS = 600
+
+#: 超过这么多行的块再切一刀。正常记忆条目是 1–5 行（bullet 或一段话），
+#: 但没有空行的大段正文也是常见的——不切的话，一次命中会把整节内容全带走。
+MAX_BLOCK_LINES = 24
+
+#: 标题/文件名加权：查询词出现在文件的标题、路径或摘要里时，这份文件的块
+#: **整体加分**（不是只在那一行上加分）。理由：命中标题意味着"这份文件就是讲这个的"，
+#: 而命中正文只说明"这里提了一句"。
+HEAD_BONUS = 1.5
+
+#: 整串命中加分（查询原样出现在块里）。词表命中可能只是凑巧共享了几个常用词，
+#: 而"原样出现"是最强的证据，给一个能压过普通词表命中的加值。
+PHRASE_BONUS = 2.0
+
 #: 顶层目录 → 分类。``memory/`` 是每日现场，``digest/`` 是整理后的长期知识。
 #: 两个名字都收（``daily`` 是 ReMe 的默认，``memory`` 是 QwenPaw 那族的写法，
 #: 而我们的工作区可能被任一版本初始化过）。
 _TOP_LEVEL = {"memory": DAILY_KIND, "daily": DAILY_KIND, "digest": DIGEST_KIND}
 
-#: 会进检索索引的分类。**改这里之前先看 ReMe 的 watch_dirs**（见 ``retrievable``）。
+#: 会进检索索引的分类。**改这里之前先看 ``MemoryFile.retrievable`` 的说明**。
 _INDEXED_KINDS = (DAILY_KIND, DIGEST_KIND)
 
 #: 这几个目录是**派生物**（原始对话、可重建索引、外部资料），
@@ -113,6 +181,11 @@ _WIKILINK = re.compile(r"\[\[([^\[\]|]+?)(?:\|([^\[\]]*))?\]\]")
 _FRONTMATTER = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.DOTALL)
 #: 正文里的第一个一级/二级标题，作为"没有 title 时"的显示名。
 _HEADING = re.compile(r"^#{1,2}\s+(.+?)\s*$", re.MULTILINE)
+#: 一行以列表项开头（``- x`` / ``* x`` / ``1. x``，允许前置缩进）。
+#: 三处用到它：切块（条目自成一块）、数条目、捕获去重（只认单行条目）。
+_BULLET = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+")
+#: 块首认定：**顶格**的列表项或标题。缩进的列表项是上一项的子内容，不该切开。
+_BLOCK_START = re.compile(r"^(?:[-*+]|\d+\.)\s+|^#{1,6}\s+")
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,14 +213,15 @@ class MemoryFile:
     retrievable: bool = False
     """``recall`` 找不找得到它。
 
-    **这是实测得出的一条分界**（读 ReMe 的 ``config/default.yaml``）：
-    它的索引守护只盯 ``watch_dirs: [daily_dir, digest_dir]``，也就是只有
-    ``daily/`` 与 ``digest/`` 下的文件进了检索索引。``MEMORY.md`` / ``SOUL.md``
-    走的是**注入**（每轮进 system prompt），本来就不该被检索到；其余目录下的
-    Markdown 既不注入也不被召回，在这里只是一个能编辑的文本文件。
+    **这条界由我们的选择定**（v0.46）：``daily/`` 与 ``digest/`` 进召回池；
+    ``MEMORY.md`` / ``SOUL.md`` / ``PROFILE.md`` / ``AGENTS.md`` 走**注入**
+    （每轮整份进 system prompt），再被召回一遍就是同一段内容进上下文两次；
+    其余目录下的 Markdown 既不注入也不召回，在这里只是一个能编辑的文本文件。
+    （这条界原先是从 ReMe 的 ``watch_dirs`` 读出来的，见设计文档 §3.3；
+    现在它由 ``_INDEXED_KINDS`` 定，口径与用户看到的行为一字未变。）
 
     界面必须把这条显示出来——否则用户改完一个文件却发现"搜不到"，
-    会以为是索引坏了，而不是"这个位置本来就不参与检索"。"""
+    会以为是检索坏了，而不是"这个位置本来就不参与召回"。"""
 
     @property
     def is_core(self) -> bool:
@@ -187,6 +261,57 @@ class MemoryGraph:
     dangling: list[tuple[str, str]] = field(default_factory=list)
     """``(from_path, 原始目标)``：写了但没解析到文件的链接。单独给出来，
     界面可以提示"有 3 条链接指向不存在的文件"。"""
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryBlock:
+    """召回的最小单位：文件里的一"块"正文（见 ``blocks_of``），带真实行号。
+
+    ``path`` + 行号是这一层最重要的东西：**用户拿着它就能去改那一条**
+    （界面上的召回结果点一下就跳到编辑器那一段）。
+    """
+
+    path: str
+    title: str
+    summary: str
+    start_line: int
+    end_line: int
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryMatch:
+    """一条召回命中：片段 + 出处 + 分数。"""
+
+    text: str
+    path: str
+    start_line: int
+    end_line: int
+    score: float
+    """排序用的分数（词命中 × 词的稀缺度，再乘标题加权与整串加分）。
+    **只在本条查询内可比**——它依赖工作区里有几块正文，不是归一化的量。"""
+
+    coverage: float
+    """命中的判据：查询实词在这一块里出现的比例（0.0–1.0，见 ``MIN_TERM_COVERAGE``）。"""
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceStats:
+    """工作区的本地状态（``stats``）。界面上"几份文件、多少条、上次改动"就是它。"""
+
+    file_count: int = 0
+    """工作区里的 Markdown 份数（不含 ``session/`` 那类派生物目录）。"""
+
+    retrievable_count: int = 0
+    """其中进入召回池的份数。"""
+
+    entry_count: int = 0
+    """**可召回的条数**：召回池那些文件切出来的块数。与 ``count_entries`` 同源——
+    这个数字与"召回能给出几条线索"是同一件事，不是另算的一个估计值。"""
+
+    last_changed_at: str = ""
+    """最近一次改动的时间（ISO，UTC）。没有索引也就没有"索引时间"，
+    如实给"内容最后变更时间"——界面上写的是"上次更新"。"""
 
 
 # --------------------------------------------------------------------- 路径
@@ -574,3 +699,405 @@ def graph_of(entries: list[MemoryFile]) -> MemoryGraph:
     ]
     nodes.sort(key=lambda node: (-node.degree, node.path))
     return MemoryGraph(nodes=nodes, edges=edges, dangling=dangling)
+
+
+# --------------------------------------------------------------------- 召回
+#
+# 这一节是 v0.46 的"去服务化"落点：召回在本地做，读的就是上面那些函数读的同一批
+# 文件。**没有任何索引、没有第二处数据**——所以也不存在"索引跟不跟得上编辑"这个
+# 问题（原先那个问题要解释 ReMe 的 5 秒 debounce，见设计文档 §3.3）。
+
+
+def _frontmatter_lines(text: str) -> int:
+    """frontmatter 占掉的行数。行号必须报**文件里的真实行号**：用户拿着它去
+    编辑器里找那一行，前移几行就会找错地方。"""
+    match = _FRONTMATTER.match(text)
+    if not match:
+        return 0
+    raw = match.group(0)
+    return raw.count("\n") + (0 if raw.endswith("\n") else 1)
+
+
+def _split_blocks(text: str) -> list[tuple[int, int, str]]:
+    """把正文切成"块"：``(起始行, 结束行, 正文)``，行号 **1 起、相对整个文件**。
+
+    切法（三条规则，都为了对上人写记忆的习惯）：
+
+    1. **空行分段**：连续非空行是一块；
+    2. **顶格的标题或列表项另起一块**：日笔记里一条 `- ` 就是一条记忆，
+       把它们粘成一整块，召回就分不清"命中哪一条"（行号也会是整节的）；
+    3. **缩进的列表项不切开**：它是上一条的子内容，切开会让同一条记忆被拆成两半。
+
+    超过 ``MAX_BLOCK_LINES`` 行的块再按行数切开：没有空行的长正文很常见，
+    不切的话一次命中会把整节内容全带进上下文。
+    """
+    lines = text.splitlines()
+    offset = _frontmatter_lines(text)
+    out: list[tuple[int, int, str]] = []
+    start = 0
+    buf: list[str] = []
+
+    def flush() -> None:
+        nonlocal start, buf
+        if not buf:
+            return
+        for index in range(0, len(buf), MAX_BLOCK_LINES):
+            window = buf[index : index + MAX_BLOCK_LINES]
+            out.append(
+                (start + index, start + index + len(window) - 1, "\n".join(window).strip())
+            )
+        buf = []
+
+    for number, raw in enumerate(lines[offset:], start=offset + 1):
+        if not raw.strip():
+            flush()
+            continue
+        if buf and _BLOCK_START.match(raw):
+            flush()
+        if not buf:
+            start = number
+        buf.append(raw.rstrip())
+    flush()
+    return [(begin, end, body) for begin, end, body in out if body]
+
+
+#: 疑问词与纯客套词：**不算检索证据**（见 ``_requirement_terms``）。
+#:
+#: 它们描述的是"我要问什么"，不是"这段记忆在说什么"——拿它们当证据，
+#: 等于要求记忆里也写着"什么时候"这四个字。实测两种坏法各一例：
+#: 「复盘什么时候做」在只写了「复盘固定每周五下午做」的记忆上被判成不相关
+#: （"什么时候"没命中，于是三个单位只中一个）；反过来，
+#: 「用户的时间安排」这类问题会因为蹭上「用户」而更像命中。
+#: 剔掉它们之后，"命中"更接近用户的直觉：**记忆里有没有你问的那件事**。
+#:
+#: 名单刻意短：只收"明显不承载信息"的那批（疑问 + 能不能/是否这类助动词短语）。
+#: 长名单会让"搜不到"变成一件无法解释的事（用户没法知道哪个词被我们吃了）。
+_FILLER_WORDS = frozenset(
+    {
+        "什么",
+        "什么样",
+        "什么时候",
+        "怎么",
+        "怎么样",
+        "怎样",
+        "为什么",
+        "如何",
+        "多少",
+        "多久",
+        "几点",
+        "哪里",
+        "哪个",
+        "哪些",
+        "哪种",
+        "何时",
+        "谁",
+        "是否",
+        "能不能",
+        "可不可以",
+        "有没有",
+        "是不是",
+        "要不要",
+    }
+)
+
+
+def _requirement_terms(query: str) -> list[str]:
+    """查询的**实词**（走 ``services/retrieval/coverage.py`` 那份切分，再剔掉疑问词）。
+
+    用**与文档检索同一套中文切法**（jieba + 去掉单字虚词）：两处对"什么算一个词"
+    的看法就不会漂；但**只用它的分词器，不碰它的索引**——记忆池与文档池永不混池（§2.1）。
+
+    疑问词在 ``_FILLER_WORDS`` 里单独剔掉（理由写在那个常量上）。
+    查询里一个实词都不剩时返回空：那时只剩字对那条通道（见 ``_word_pairs``）。
+    """
+    return [word for word in content_terms(query) if word not in _FILLER_WORDS]
+
+
+def _word_pairs(query: str) -> list[str]:
+    """查询的**相邻字对**（去空格后的滑动二元组，保序去重）。
+
+    **为什么除了词还要字对**：分词是 jieba 做的，它切出来的东西与正文里的写法
+    可能对不上——实测「发布前要先跑什么」被切成 `发布 / 前要 / 什么`，
+    而正文里写的是"发布前必须先跑一遍"，于是"前要"这个词永远命中不了，
+    去掉疑问词后只剩两个单位、命中一个，覆盖率刚好卡在线上（**明明记过这句话
+    却差点搜不出来**）。字对不依赖分词：`发布 / 布前 / 先跑` 都能在正文里找到。
+
+    字对单独成一条通道（两条通道任一条通过即算命中），**不是与词混在一张表里
+    数覆盖率**：混在一起会把词那一侧的覆盖率压下去（实测那样做会把
+    「用户偏好什么样的回答风格」这种正常提问误判成不相关）。
+    """
+    flat = "".join((query or "").split())
+    pairs: list[str] = []
+    for index in range(len(flat) - 1):
+        pair = flat[index : index + 2]
+        if pair not in pairs:
+            pairs.append(pair)
+    return pairs
+
+
+def _evidence(units: list[str], haystack: str) -> tuple[list[str], float]:
+    """一条通道的命中：``(命中的单位, 覆盖率)``。"""
+    if not units:
+        return [], 0.0
+    hit = [unit for unit in units if unit in haystack]
+    return hit, len(hit) / len(units)
+
+
+def _passes(hit: list[str], units: list[str]) -> bool:
+    """这条通道算不算命中（判据见 ``MIN_MATCHED_TERMS`` / ``MIN_TERM_COVERAGE``）。
+
+    "至少两个单位"**只对 3 个以上单位的查询成立**：一两个单位的短查询本来就没什么
+    可蹭的，命中一个就是 1/2（或 1/1）的覆盖——再要求"必须全中"会把正常提问挡在门外
+    （实测：「发布前要先跑什么」剔掉疑问词后只剩 `发布 / 前要` 两个单位，
+    而「前要」是分词的产物、正文里根本没有；要求两个都中，这条真记忆就搜不出来了）。
+    """
+    if not units:
+        return False
+    floor = MIN_MATCHED_TERMS if len(units) >= 3 else 1
+    return len(hit) >= floor and len(hit) / len(units) >= MIN_TERM_COVERAGE
+
+
+def _clip(text: str) -> str:
+    """把片段压到 ``MAX_HIT_CHARS``，**按整行截**（截断的痕迹要说出来）。"""
+    if len(text) <= MAX_HIT_CHARS:
+        return text
+    kept: list[str] = []
+    used = 0
+    for line in text.splitlines():
+        if used + len(line) > MAX_HIT_CHARS:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    return "\n".join(kept) + "\n…"
+
+
+def _retrievable_paths(workspace: Path) -> list[Path]:
+    """召回池里的那些文件（``_INDEXED_KINDS`` 对应的分类）。"""
+    workspace = workspace.resolve()
+    out: list[Path] = []
+    for target in _iter_markdown(workspace):
+        try:
+            if classify(_relative(workspace, target)) in _INDEXED_KINDS:
+                out.append(target)
+        except (OSError, ValueError):
+            logger.warning("记忆文件路径解析失败，跳过：%s", target, exc_info=True)
+    return out
+
+
+def _block_records(workspace: Path, target: Path) -> list[MemoryBlock]:
+    """一个文件 → 若干块（带该文件的标题与摘要，供加权用）。"""
+    raw = target.read_bytes().decode("utf-8", errors="replace")
+    rel = _relative(workspace, target)
+    meta, body = parse_frontmatter(raw)
+    kind = classify(rel)
+    title = _title_of(body, meta, target.name, kind=kind)
+    summary = _summary_of(meta)
+    return [
+        MemoryBlock(
+            path=rel,
+            title=title,
+            summary=summary,
+            start_line=begin,
+            end_line=end,
+            text=body_text,
+        )
+        for begin, end, body_text in _split_blocks(raw)
+    ]
+
+
+def search(
+    workspace: Path,
+    query: str,
+    *,
+    limit: int = DEFAULT_RECALL,
+    per_file: int = MAX_HITS_PER_FILE,
+) -> list[MemoryMatch]:
+    """在召回池里找回相关的块。**纯本地、纯函数式的一次扫描**（没有索引可查）。
+
+    **两条证据通道，命中判据是"任一条通过"**（都是词面证据，都不依赖索引）：
+
+    - **实词**（jieba 切出来的词）：查询里的词出现在这一块里多少；
+    - **相邻字对**（不依赖分词的滑动二元组）：绕开"jieba 的切法与正文写法不一致"
+      这类漏检（见 ``_word_pairs`` 的实测例子）。
+
+    每条通道各自算覆盖率（``MIN_TERM_COVERAGE``）与命中个数（``MIN_MATCHED_TERMS``），
+    **哪个通过算哪个**；两者分开算、不混在一张表里（混着数会把正常提问的覆盖率
+    压到线下，实测过）。命中结果里的 ``coverage`` 给的是通过那条通道的比例。
+
+    打分（只用于排序，口径写在这里免得下一个人猜）：
+
+    ``score = Σ(证据权重 × (1 + ln 频次))``，标题/路径/摘要命中再乘 ``HEAD_BONUS``，
+    查询原样出现再加 ``PHRASE_BONUS``。权重是 ``ln(1 + 块数 / (1 + 出现块数))``
+    ——一份日笔记里到处都是「用户」，「用户」就不该和「锂价」一样重。
+
+    **命中与否不看分数**：分数是量纲量、跨查询不可比；判据是归一化的，
+    于是"没召回任何东西"永远只有一个含义：**这几份记忆里确实没有相关的话**
+    （关着时是另一回事：那时直接报错）。
+
+    每个文件最多贡献 ``per_file`` 条：没有这条限制，一次召回很容易被某一份长
+    日笔记占满，而召回的价值恰恰在于从多个文件里凑线索。
+    """
+    text = " ".join((query or "").split())
+    if not text:
+        return []
+    words = _requirement_terms(text)
+    pairs = _word_pairs(text)
+    if not words and not pairs:
+        # 单字查询（「锂」）：没有词、也没有字对，退化成"整串出现即命中"。
+        # 用户明确只搜这一个字时就该按它搜——返回空比"低精度的一堆"更让人困惑。
+        words = [text.casefold()]
+    phrase = text.casefold()
+
+    blocks: list[MemoryBlock] = []
+    for target in _retrievable_paths(workspace):
+        try:
+            blocks.extend(_block_records(workspace, target))
+        except OSError:
+            # 一份读不了的文件不该让整次召回失败（同 ``scan`` 的处置）
+            logger.warning("读记忆文件失败，跳过：%s", target, exc_info=True)
+    if not blocks:
+        return []
+
+    folded = [block.text.casefold() for block in blocks]
+    total = len(blocks)
+
+    def weight_of(unit: str) -> float:
+        """这个证据有多稀缺（出现在越少的块里越值钱）。"""
+        seen = sum(1 for hay in folded if unit in hay)
+        return math.log(1 + total / (1 + seen))
+
+    matched: list[MemoryMatch] = []
+    for block, hay in zip(blocks, folded, strict=True):
+        hit_words, word_ratio = _evidence(words, hay)
+        hit_pairs, pair_ratio = _evidence(pairs, hay)
+        # 先看实词那条；它不过再看字对那条（两条都不混着数，理由见上面的说明）
+        if _passes(hit_words, words):
+            hit, coverage = hit_words, word_ratio
+        elif _passes(hit_pairs, pairs):
+            hit, coverage = hit_pairs, pair_ratio
+        else:
+            continue
+        score = sum(weight_of(unit) * (1.0 + math.log(hay.count(unit))) for unit in hit)
+        head = f"{block.title} {block.path} {block.summary}".casefold()
+        if any(unit in head for unit in hit):
+            score *= HEAD_BONUS
+        if len(text) >= 2 and phrase in hay:
+            score += PHRASE_BONUS
+        matched.append(
+            MemoryMatch(
+                text=_clip(block.text),
+                path=block.path,
+                start_line=block.start_line,
+                end_line=block.end_line,
+                score=score,
+                coverage=coverage,
+            )
+        )
+
+    matched.sort(key=lambda item: (-item.score, item.path, item.start_line))
+    picked: list[MemoryMatch] = []
+    used: dict[str, int] = {}
+    for item in matched:
+        if used.get(item.path, 0) >= per_file:
+            continue
+        used[item.path] = used.get(item.path, 0) + 1
+        picked.append(item)
+    return picked[: max(1, limit)]
+
+
+def links_of(entries: list[MemoryFile], paths: list[str]) -> list[tuple[str, str, str]]:
+    """命中集合的邻接边：``(对端路径, 方向, 显示名)``。
+
+    出链来自命中文件正文里的 ``[[…]]``，入链来自"哪些文件链到了命中文件"。
+    两边都只用 ``scan`` 已经读到的出链，**不额外读任何文件**——所以这一步是
+    免费附带的（原先是 ReMe 在同一份响应里给的 ``link_expansion``）。
+
+    链接解析沿用图谱那一套（全路径/文件名/主干名都认，重名不猜）：
+    同一个链接在图谱里连得上、在这里也必须连得上。
+    """
+    wanted = list(dict.fromkeys(path for path in paths if path))
+    if not wanted:
+        return []
+    index = _path_index(entries)
+    titles = {entry.path: entry.title for entry in entries}
+    wanted_set = set(wanted)
+    out: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(path: str, direction: str) -> None:
+        key = (path, direction)
+        if key in seen or path in wanted_set or len(out) >= MAX_LINKS:
+            return
+        seen.add(key)
+        out.append((path, direction, titles.get(path, Path(path).name)))
+
+    for entry in entries:
+        for link in entry.links:
+            target = _resolve(link, index)
+            if target is None:
+                continue
+            # 命中文件 → 对端是出链；其它文件 → 对端是命中文件时算入链
+            if entry.path in wanted_set:
+                add(target, "out")
+            elif target in wanted_set:
+                add(entry.path, "in")
+    return out
+
+
+def entry_texts(workspace: Path) -> list[str]:
+    """工作区里**所有** ``- `` 条目的正文（跨全部文件，含核心文件）。
+
+    给"同一件事别反复写"用（见 ``MemoryService.capture`` 的去重）。
+    **只认单行条目的那一行**：去重比对要的是一个稳定的短指纹，
+    不是完整正文——把多行 bullet 整段拿来比，只会让"意思一样但排版不同"漏过去。
+    """
+    workspace = workspace.resolve()
+    out: list[str] = []
+    for target in _iter_markdown(workspace):
+        try:
+            text = target.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            logger.warning("读记忆文件失败，跳过：%s", target, exc_info=True)
+            continue
+        _, body = parse_frontmatter(text)
+        for line in body.splitlines():
+            entry = _BULLET.sub("", line).strip() if _BULLET.match(line) else ""
+            if entry:
+                out.append(entry)
+    return out
+
+
+def stats(workspace: Path) -> WorkspaceStats:
+    """工作区的本地状态：几份文件、其中几份可召回、可召回条数、最后改动时间。
+
+    ``entry_count`` 用**与 ``search`` 同一个切块器**数出来：这个数字的含义就是
+    "召回最多能给出多少条线索"，另算一套口径的话，界面上那个数字迟早和召回对不上。
+
+    没有索引也就没有"索引时间"：召回每次按需扫工作区，所以这里如实给
+    "内容最后变更时间"（界面上写"上次更新"）。
+    """
+    workspace = workspace.resolve()
+    targets = _iter_markdown(workspace)
+    retrievable: list[Path] = []
+    latest = 0.0
+    for target in targets:
+        try:
+            latest = max(latest, target.stat().st_mtime)
+            if classify(_relative(workspace, target)) in _INDEXED_KINDS:
+                retrievable.append(target)
+        except (OSError, ValueError):
+            logger.warning("记忆文件状态读取失败，跳过：%s", target, exc_info=True)
+
+    entries = 0
+    for target in retrievable:
+        try:
+            entries += len(_split_blocks(target.read_bytes().decode("utf-8", errors="replace")))
+        except OSError:
+            logger.warning("读记忆文件失败，跳过：%s", target, exc_info=True)
+
+    return WorkspaceStats(
+        file_count=len(targets),
+        retrievable_count=len(retrievable),
+        entry_count=entries,
+        last_changed_at=datetime.fromtimestamp(latest, tz=UTC).isoformat() if latest else "",
+    )

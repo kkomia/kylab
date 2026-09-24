@@ -16,7 +16,7 @@
  * 3. **策略默认「需要确认」**。外部工具会以用户的名义执行动作，默认静默执行
  *    是这一层最不该有的默认。
  */
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
@@ -202,9 +202,6 @@ export function CapabilitiesPage() {
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   const [skillQuery, setSkillQuery] = useState('')
-  const [skillFilter, setSkillFilter] = useState<'all' | 'builtin' | 'market' | 'user' | 'blocked'>(
-    'all',
-  )
   const [skillDetail, setSkillDetail] = useState<Awaited<ReturnType<typeof getSkill>> | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
   /** 正文下面还有没有没读完的（决定弹窗底部那层渐隐出不出现）。 */
@@ -253,55 +250,32 @@ export function CapabilitiesPage() {
     skill.source !== 'builtin' && Boolean(installed[skill.name])
 
   /**
-   * 卡片来源那一行的说法：市场装的写仓库名，其余几种照旧。
-   * 技能还可以住在 `~/.agents/skills`——那是跨工具共享的一层（ZCode / Claude Code /
-   * Codex 都扫它），说法要写清楚，否则用户在那儿放了一个却在 KYLAB 里认不出来。
+   * 卡片详情里那一行来源的说法。
+   *
+   * **不再有"随代码发布"这种说法**（2026-09-24 用户反馈"这两个词是内部分类名"）：
+   * 界面上说「内置」——它与市场源清单里那枚徽标同一个词。技能还可以住在
+   * `~/.agents/skills`——那是跨工具共享的一层（ZCode / Claude Code / Codex 都扫它），
+   * 说法要写清楚，否则用户在那儿放了一个却在 KYLAB 里认不出来。
    */
   const sourceLabelOf = (skill: Skill): string => {
-    if (skill.source === 'builtin') return '随代码发布'
+    if (skill.source === 'builtin') return '内置'
     if (skill.source === 'agents') return '跨工具共享（~/.agents/skills）'
     const origin = installed[skill.name]
-    return origin ? `来自 ${sourceLabel(origin)}` : '手动放入'
+    return origin ? `来自 ${sourceLabel(origin)}` : '本地安装'
   }
 
-  /** 搜索只看**名字与描述**——技能正文不进列表（它有几百行，搜它是另一件事）。 */
+  /**
+   * 搜索只看**名字与描述**——技能正文不进列表（它有几百行，搜它是另一件事）。
+   *
+   * 原先还有一排按**来源**分的筛选胶囊（`随代码发布 5` / `从市场装 2` / …）：
+   * 那是我们自己的分类，用户找技能靠搜索与列表，而来源在详情弹窗里已经说了一句
+   * （2026-09-24 用户反馈后删掉整排）。
+   */
   const visibleSkills = skills.filter((item) => {
-    if (skillFilter === 'builtin' && item.source !== 'builtin') return false
-    if (skillFilter === 'market' && (item.source === 'builtin' || !isFromMarket(item))) return false
-    if (skillFilter === 'user' && (item.source === 'builtin' || isFromMarket(item))) return false
-    if (skillFilter === 'blocked' && item.used_by_prompt) return false
     const word = skillQuery.trim().toLowerCase()
     if (!word) return true
     return `${item.name} ${item.description}`.toLowerCase().includes(word)
   })
-
-  const skillFilters = useMemo(
-    () => [
-      { key: 'all' as const, label: '全部', count: skills.length },
-      {
-        key: 'builtin' as const,
-        label: '随代码发布',
-        count: skills.filter((item) => item.source === 'builtin').length,
-      },
-      {
-        key: 'market' as const,
-        label: '从市场装',
-        count: skills.filter((item) => item.source !== 'builtin' && isFromMarket(item)).length,
-      },
-      {
-        key: 'user' as const,
-        label: '手动放入',
-        count: skills.filter((item) => item.source !== 'builtin' && !isFromMarket(item)).length,
-      },
-      {
-        key: 'blocked' as const,
-        label: '未进提示词',
-        count: skills.filter((item) => !item.used_by_prompt).length,
-      },
-    ],
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [skills, installed],
-  )
 
   const visibleServers = servers.filter((item) => {
     if (serverFilter === 'enabled' && !item.enabled) return false
@@ -512,15 +486,8 @@ export function CapabilitiesPage() {
             </div>
           </header>
 
-          {/* 0 计数的来源不占位置：原先是五颗胶囊（`手动放入 0` / `未进提示词 0` 也在），
-              一排里两颗点不出任何东西——规则见 `withoutEmptyCounts` */}
-          <FilterChips
-            items={withoutEmptyCounts(skillFilters, skillFilter)}
-            value={skillFilter}
-            onChange={setSkillFilter}
-            ariaLabel="技能筛选"
-          />
-
+          {/* 这一排按**来源**分的筛选胶囊已删（2026-09-24）：「随代码发布」「从市场装」
+              是内部分类名，而用户找技能靠搜索与列表；来源在详情弹窗里说一句就够 */}
           {skillsQuery.isLoading && <SkeletonBlock variant="list" rows={3} />}
 
           {!skillsQuery.isLoading && visibleSkills.length === 0 && (

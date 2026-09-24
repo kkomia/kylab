@@ -11,7 +11,7 @@
 
 import { request } from './client'
 
-/** 文件分类，按它在工作区里的位置分（位置就是 ReMe 的分层）。 */
+/** 文件分类，按它在工作区里的位置分（位置就是它的分层）。 */
 export type MemoryKind = 'core' | 'daily' | 'digest' | 'other'
 
 export interface MemoryFile {
@@ -28,10 +28,9 @@ export interface MemoryFile {
   /**
    * `recall` 找不找得到它。
    *
-   * **只有 `daily/` 与 `digest/` 为 true**——只有这两个目录在记忆服务的
-   * `watch_dirs` 里、才进检索索引。`MEMORY.md` / `SOUL.md` 走注入（每轮进
-   * system prompt），其余目录既不召回也不注入。界面上必须说清这条，
-   * 否则用户改完一个文件搜不到，会以为是索引坏了。
+   * **只有 `daily/` 与 `digest/` 为 true**：它们是召回池。`MEMORY.md` / `SOUL.md`
+   * 走注入（每轮进 system prompt），其余目录既不召回也不注入。界面上必须说清这条，
+   * 否则用户改完一个文件搜不到，会以为是检索坏了。
    */
   retrievable: boolean
   /** 每轮对话会不会被注入 system prompt（只有两个核心文件）。 */
@@ -49,21 +48,23 @@ export interface MemoryFileDetail extends Omit<MemoryFile, 'consolidated'> {
   consolidated: null
 }
 
+/**
+ * 记忆的本地状态。**没有"连没连上"这一项**：记忆跑在后端自己的进程里，
+ * 没有第二个进程可连，所以也没有可探测的东西。
+ */
 export interface MemoryStatus {
   enabled: boolean
-  base_url: string
   workspace: string
   core_file_exists: boolean
-  /**
-   * 记忆服务活着吗。**三态**：`null` = 这次没探测（`GET /memory` 从不打远端），
-   * `true`/`false` = `POST /memory/probe` 真探过。
-   *
-   * 用它之前先想清楚：`null` 不代表"连不上"，只代表"没人问过"。
-   */
-  reachable: boolean | null
   detail: string
+  /** 工作区里的记忆文件份数。 */
   file_count: number
+  /** 其中进入召回池的份数（`daily/` 与 `digest/`）。 */
   retrievable_count: number
+  /** **可召回的条数**（召回池按行切出来的块数）。 */
+  entry_count: number
+  /** 记忆内容最后一次改动的时间（界面上写"上次更新"）。 */
+  last_changed_at: string
   /** `daily/` 里还没被 `digest/` 链到的条数。 */
   unconsolidated_count: number
 }
@@ -80,7 +81,10 @@ export interface MemoryHit {
   path: string
   start_line: number | null
   end_line: number | null
+  /** 排序用的分。**只在本条查询内可比**（跟工作区里有几块正文有关）。 */
   score: number | null
+  /** 命中判据：查询里的实词有多少比例出现在这一块（0–1）。 */
+  coverage: number | null
 }
 
 export interface MemoryLink {
@@ -159,16 +163,6 @@ export function rememberMemory(content: string, tags: string[] = []): Promise<Me
     method: 'POST',
     body: JSON.stringify({ content, tags }),
   })
-}
-
-/** 请记忆服务重建索引（手动兜底，不是保存流程的一环）。 */
-export function reindexMemory(): Promise<{ detail: string }> {
-  return request<{ detail: string }>('/memory/reindex', { method: 'POST' })
-}
-
-/** 测试记忆服务连通性（管理员专属，与设置页其它「测试连接」同档）。 */
-export function probeMemory(): Promise<{ reachable: boolean; detail: string }> {
-  return request<{ reachable: boolean; detail: string }>('/memory/probe', { method: 'POST' })
 }
 
 function encodePath(path: string): string {

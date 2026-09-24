@@ -37,6 +37,12 @@ const deleteNote = vi.fn()
 const attachNote = vi.fn()
 const aiTransform = vi.fn()
 const uploadNoteImage = vi.fn()
+const listNoteFolders = vi.fn()
+const createNoteFolder = vi.fn()
+const renameNoteFolder = vi.fn()
+const moveNoteFolder = vi.fn()
+const deleteNoteFolder = vi.fn()
+const moveNote = vi.fn()
 const listKnowledgeBases = vi.fn()
 
 vi.mock('@/api/notes', () => ({
@@ -49,6 +55,12 @@ vi.mock('@/api/notes', () => ({
   attachNote: (...args: unknown[]) => attachNote(...args),
   aiTransform: (...args: unknown[]) => aiTransform(...args),
   uploadNoteImage: (...args: unknown[]) => uploadNoteImage(...args),
+  listNoteFolders: (...args: unknown[]) => listNoteFolders(...args),
+  createNoteFolder: (...args: unknown[]) => createNoteFolder(...args),
+  renameNoteFolder: (...args: unknown[]) => renameNoteFolder(...args),
+  moveNoteFolder: (...args: unknown[]) => moveNoteFolder(...args),
+  deleteNoteFolder: (...args: unknown[]) => deleteNoteFolder(...args),
+  moveNote: (...args: unknown[]) => moveNote(...args),
 }))
 
 vi.mock('@/api/knowledgeBases', () => ({
@@ -121,6 +133,7 @@ function note(id: string, overrides: Partial<Note> = {}): Note {
     source_ref: null,
     kb_id: null,
     doc_id: null,
+    folder_id: null,
     pinned: false,
     tags: [],
     created_at: AT(1),
@@ -176,6 +189,12 @@ beforeEach(() => {
     attachNote,
     aiTransform,
     uploadNoteImage,
+    listNoteFolders,
+    createNoteFolder,
+    renameNoteFolder,
+    moveNoteFolder,
+    deleteNoteFolder,
+    moveNote,
     listKnowledgeBases,
   ]) {
     mock.mockReset()
@@ -191,6 +210,8 @@ beforeEach(() => {
   })
   getNote.mockImplementation((id: string) => Promise.resolve(note(id)))
   listNoteTags.mockResolvedValue({ items: [] })
+  // 默认还没有文件夹：那棵树只摆「全部 / 未归档」两行（文件夹相关的用例各自覆盖）
+  listNoteFolders.mockResolvedValue({ items: [], unfiled_count: 2, total_count: 2 })
   listKnowledgeBases.mockResolvedValue({ items: [] })
   updateNote.mockImplementation((id: string, payload: Record<string, unknown>) =>
     Promise.resolve({ ...note(id), ...payload }),
@@ -210,11 +231,15 @@ describe('笔记页：列表', () => {
       limit: 100,
       offset: 0,
     })
+    // 条数与作用域现在由树上那两行给出（原来是头部的一行标题）：
+    // 全部 3 / 未归档 N 都在树里，所以这一份读数要跟着给
+    listNoteFolders.mockResolvedValue({ items: [], unfiled_count: 0, total_count: 3 })
     renderPage('/notes/n1')
 
     const list = await screen.findByRole('complementary')
-    expect(within(list).getByText('全部')).toBeTruthy()
-    expect(within(list).getByText('3')).toBeTruthy()
+    const tree = await within(list).findByRole('tree', { name: '笔记文件夹' })
+    expect(within(tree).getByText('全部')).toBeTruthy()
+    expect(within(tree).getByText('3')).toBeTruthy()
 
     // 分组标签：置顶单独一组（哪怕它是很久以前的），其余按时间分桶
     expect(within(list).getByText('置顶')).toBeTruthy()
@@ -461,7 +486,10 @@ describe('笔记页：搜索 / 新建 / 删除 / 移动', () => {
 
     fireEvent.click(screen.getByLabelText('新建笔记'))
 
-    await waitFor(() => expect(createNote).toHaveBeenCalledWith({ content_md: '', title: '' }))
+    // 没有选中的文件夹 → 新笔记进未归档（`folder_id: null`）
+    await waitFor(() =>
+      expect(createNote).toHaveBeenCalledWith({ content_md: '', title: '', folder_id: null }),
+    )
     await waitFor(() => expect(screen.getByLabelText('笔记标题')).toHaveValue(''))
   })
 

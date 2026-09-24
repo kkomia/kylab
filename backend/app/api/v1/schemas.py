@@ -1603,15 +1603,69 @@ class NoteCreateIn(BaseModel):
     source_kind: Literal["manual", "chat", "clip"] = "manual"
     source_ref: str | None = None
     tags: list[str] = Field(default_factory=list)
+    folder_id: str | None = None
+    """建在哪一层（左栏选中文件夹时点「+」）；留空 = 未归档。"""
 
 
 class NoteUpdateIn(BaseModel):
-    """全部字段可空：只传要改的字段。``None`` = 不动这一项。"""
+    """全部字段可空：只传要改的字段。``None`` = 不动这一项。
+
+    **刻意没有 ``folder_id``**：归属走 ``PATCH /notes/{id}/folder``。
+    编辑器每 800ms 自动保存一次，如果归属也走这条路径，草稿里那份旧的 folder_id
+    会把用户在左栏刚移好的位置刷回去（理由详见服务层 ``NotesService.move_note``）。
+    """
 
     title: str | None = Field(default=None, max_length=80)
     content_md: str | None = None
     pinned: bool | None = None
     tags: list[str] | None = None
+
+
+class NoteMoveIn(BaseModel):
+    """把笔记移动到某个文件夹；``folder_id=None`` = 移回未归档。"""
+
+    folder_id: str | None = None
+
+
+class NoteFolderCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    parent_id: str | None = None
+    """父文件夹；留空 = 建在根级。"""
+
+
+class NoteFolderRenameIn(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+class NoteFolderParentIn(BaseModel):
+    """把文件夹移动到某个文件夹下；``parent_id=None`` = 挪回根级。"""
+
+    parent_id: str | None = None
+
+
+class NoteFolderOut(BaseModel):
+    model_config = _RECORD_CONFIG
+
+    id: str
+    name: str
+    parent_id: str | None = None
+    note_count: int = 0
+    """这个文件夹里**直接**有多少篇笔记（不含子文件夹里的）。"""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class NoteFolderListOut(BaseModel):
+    """左栏那棵树的读数：文件夹 + 三个数字（未归档 / 总数）一次给全。
+
+    **为什么不只给树**：树上每个节点都要显示条数，未归档与"全部"也各要一个，
+    而它们每次移动笔记都会一起变；拆成"列表 + 额外两次计数请求"只会让
+    三个数字有机会对不上（用户看到的是一棵树，数字就该是同一时刻的）。
+    """
+
+    items: list[NoteFolderOut] = Field(default_factory=list)
+    unfiled_count: int = 0
+    total_count: int = 0
 
 
 class NoteAttachIn(BaseModel):
@@ -1628,6 +1682,7 @@ class NoteOut(BaseModel):
     source_ref: str | None = None
     kb_id: str | None = None
     doc_id: str | None = None
+    folder_id: str | None = None
     pinned: bool = False
     tags: list[str] = Field(default_factory=list)
     created_at: datetime | None = None
@@ -2429,9 +2484,9 @@ class MemoryFileOut(BaseModel):
     retrievable: bool = False
     """``recall`` 找不找得到它。
 
-    **必须显示出来**：只有 ``daily/`` 与 ``digest/`` 在 ReMe 的 ``watch_dirs`` 里、
-    才进检索索引；``MEMORY.md`` / ``SOUL.md`` 走注入。用户改完一个不参与检索的
-    文件却搜不到时，界面得能解释"这是位置决定的"，而不是让他怀疑索引坏了。
+    **必须显示出来**：只有 ``daily/`` 与 ``digest/`` 在召回池里；
+    ``MEMORY.md`` / ``SOUL.md`` 走注入。用户改完一个不参与召回的文件却搜不到时，
+    界面得能解释"这是位置决定的"，而不是让他怀疑检索坏了。
     """
 
     injected: bool = False
@@ -2467,26 +2522,30 @@ class MemoryFileWriteIn(BaseModel):
 
 
 class MemoryStatusOut(BaseModel):
-    """记忆层的状态。
+    """记忆层的状态。**全是本地数字**（v0.46）：
 
-    ``enabled`` 与 ``reachable`` 是**两件事**：前者是"有没有打开"，后者是
-    "记忆服务活着吗"。分开是因为它们对应完全不同的处置——没打开要去设置里开，
-    服务没起要去把进程拉起来。揉成一个"不可用"会让用户不知道该动哪里。
+    没有"连没连上"这一项——记忆跑在我们自己的进程里，没有第二个进程可连。
+    原先那对 ``base_url`` / ``reachable``（三态）随 ReMe 一起删了：
+    它们的存在只为了让界面说清"服务在不在"，而现在这件事不存在。
     """
 
     enabled: bool
-    base_url: str = ""
     workspace: str = ""
     core_file_exists: bool = False
-    reachable: bool | None = None
-    """**三态**：``None`` = 这次没探测（``GET /memory`` 从不打远端），
-    ``True``/``False`` = ``POST /memory/probe`` 真探过。
-
-    用布尔的话，页头会在服务健康时挂出"记忆服务未连接"——因为没有谁去连过。
-    没测过就别下结论。"""
     detail: str = ""
     file_count: int = 0
+    """工作区里的记忆文件份数。"""
+
     retrievable_count: int = 0
+    """其中进入召回池的份数（``daily/`` 与 ``digest/``）。"""
+
+    entry_count: int = 0
+    """**可召回的条数**（按行切出来的块数，与召回同一个口径）。"""
+
+    last_changed_at: str = ""
+    """记忆内容最后一次改动的时间。没有索引也就没有"索引时间"，
+    这里的含义就是界面上写的"上次更新"。"""
+
     unconsolidated_count: int = 0
     """``daily/`` 里还没被 ``digest/`` 链到的条数——"哪些还没被整合"（设计文档三期）。"""
 
@@ -2508,6 +2567,14 @@ class MemoryHitOut(BaseModel):
     start_line: int | None = None
     end_line: int | None = None
     score: float | None = None
+    """排序用的分。**只在本条查询内可比**：它跟工作区里有几块正文有关，
+    不是归一化的量——所以界面上不要拿它当"相关度百分比"读。"""
+
+    coverage: float | None = None
+    """命中判据：查询里的实词有多少比例出现在这一块（0–1）。
+
+    与分数量纲不同，这个是**归一化**的：它决定"算不算命中"
+    （见 ``memory_files.MIN_TERM_COVERAGE``），分数只决定排在第几条。"""
 
 
 class MemoryLinkOut(BaseModel):
@@ -2547,17 +2614,6 @@ class MemoryGraphOut(BaseModel):
     edges: list[tuple[str, str]] = Field(default_factory=list)
     dangling: list[tuple[str, str]] = Field(default_factory=list)
     """写了但没解析到文件的链接 ``(来自哪份, 原始目标)``——界面提示"有 N 条链接指空"。"""
-
-
-class MemoryProbeOut(BaseModel):
-    reachable: bool
-    detail: str = ""
-
-
-class MemoryActionOut(BaseModel):
-    """无返回值的动作（重建索引）统一用它回一句人话。"""
-
-    detail: str = ""
 
 
 # ------------------------------------------------------------------ 定时任务（v0.33）

@@ -1,14 +1,14 @@
 """仓库结构性规范自动核查：分层纪律、测试位置、脚本编码、界面文案、版本号、CSS 分层。
 
 对应《项目工程规范 v0.4》§3.3（分层纪律）、§5.1（测试存放铁律）与 §6（脚本约定）、
-《前端设计规范》§5.1（界面里不写解释性小字），以及 CHANGELOG「附：版本号约定」。
+《前端设计规范》§5.1（界面里不写解释性小字、不写实现细节），以及 CHANGELOG「附：版本号约定」。
 这些约束靠人工 review 容易漏，故做成机械检查接入 CI：
 ``L1`` 协议层越界、``L2`` 业务层直连数据库/SQL、``L3`` 解析器互引、
 ``L4`` 解析器反向依赖业务层、``L5`` 业务层依赖协议层、``L6`` app 根下的游离模块、
 ``A1`` 异步端点里没有 await（假异步，会按住事件循环）、
 ``C1`` CSS 分层纪律（层序声明 + 层外规则）、
 ``T1`` 测试位置、``S1`` .ps1 缺少 UTF-8 BOM、``U1`` 界面里的解释性小字、
-``V1`` 手写版本号不一致、``PARSE`` 语法错误。
+``U2`` 界面文案里的实现细节、``V1`` 手写版本号不一致、``PARSE`` 语法错误。
 
 用法：python scripts/check_layering.py [仓库根目录，默认当前目录]
 退出码：0 = 通过；1 = 发现违规。
@@ -136,32 +136,116 @@ SQL_START_RE = re.compile(
 #
 # 判据是**命名约定**而不是"这段文字像不像解释"——后者没法机械判。所以：
 # 属性名精确匹配；类名按前缀族匹配（要写别的用途的名字，就别用 page-/panel-/section- 开头）。
+#
+# 2026-09-24 扩展（用户第二轮反馈，11 张截图）：解释性小字不止住在 `*-desc` 里，
+# 它更常叫 `*-hint` / `*-note` / `*-caption` / `*-sub`——`.m-block-hint`（"向量化部分按
+# 字符数估算"）、`.m-usage-note`（"其中约 18,477,797 token 是按字符数估算的…"）、
+# `.m-add-hint`、`.m-figure-note` 都是这么长出来的。所以尾巴族加上这四个词。
 
 FORBIDDEN_ATTRS = ("description=", ":description=")
 
 #: 类名族：命中即报。`page-desc` / `panel-desc` / `section-desc` / `page-description` /
 #: `panel-lead` … 都在这几族里。
-#: 类名族：命中即报。`page-desc` / `panel-desc` / `section-desc` / `page-description` /
-#: `panel-lead` … 都在这几族里。
 #:
-#: **用分词而不是正则**：类名本来就是按空白分开的，拆开看更准；而正则要写的 ``
+#: **用分词而不是正则**：类名本来就是按空白分开的，拆开看更准；而正则要写的 ``
 #: 这类转义在这个仓库里被 heredoc 吃掉过一次（第一版的正则里剩了个退格符，
 #: 规则从此永远不命中——所以这条检查的写法本身就是那次事故的产物）。
 UI_COPY_FAMILIES = ("page", "panel", "section", "view", "tab")
 UI_COPY_TAILS = ("desc", "description", "lead")
+
+#: 第二批尾巴族（2026-09-24）：`hint` / `note` / `caption` / `sub`。
+#: 判据是**最后一个连字符段**（`name.rsplit("-", 1)[-1]`），因为这一族的命名习惯是
+#: `<域>-<对象>-<用途>`（`m-block-hint`、`kb-modal-note`、`m-row-sub`、`*-caption`），
+#: 前缀是域而不是用途。这带来两个刻意的边界：
+#: - **不按"整串里出现过这个词"判**：`notes-toc` / `note-group` / `bg-subtle` 不命中
+#:   （尾段是 `toc` / `group` / `subtle`）——它们是布局与笔记域的命名，不是说明文字；
+#: - **尾段带后缀也不算**（`m-summary-warn`）——那条规则留给"想写别的用途"的人：
+#:   按用途命名（`*-error` / `*-count` / `*-empty`），不要用 `*-hint`。
+#:
+#: 例外按**类名**列进 `UI_COPY_ALLOWED`，逐条写理由。真正有用途的那几类
+#: （表单字段的约束提示"至少 8 个字符"、计数"0 / 200"、空态、校验错误、
+#: 禁用/受限原因、会自己变的实时数）不算解释性小字——它们说的是"这一格该怎么填"
+#: 或"现在为什么不能用"，不是"这一页是什么"。
+UI_COPY_TAIL_FAMILIES = ("hint", "note", "caption", "sub")
+
 UI_COPY_CLASS = re.compile(
-    r"""class="[^"]*(?:(?:page|panel|section|view|tab)-desc(?:ription)?"""
-    r"""|(?:page|panel|section|view|tab)-lead)""",
+    r"""class="[^"]*(?:(?:page|panel|section|view|tab)-desc(?:ription)?"""
+    r"""|(?:page|panel|section|view|tab)-lead)""",
     re.I,
 )
 
 #: 允许的例外：有正当用途、名字恰好落在上面那几族里的类。
 #: **能空就空着**——留一个例外就要写清理由，不然它会长成一条通道。
-UI_COPY_ALLOWED: frozenset[str] = frozenset()
+#: 键是类名（原样，含前缀），值是"它为什么不是解释性小字"。按用途分组写，便于核对。
+UI_COPY_ALLOWED: frozenset[str] = frozenset(
+    {
+        # 设计系统的辅助文字原语：承载**字段计数**（`0 / 200`）与**约束提示**
+        # （"至少 8 个字符"、"上限 1024（块长的一半）"）。它说的是"这一格怎么填"。
+        "text-hint",
+        "text-note",
+        # 空态：只在没有数据时出现，说的是"现在是什么、点哪儿开始"。
+        "empty-hint",
+        "kb-empty-hint",
+        "kb-doc-empty-hint",
+        "kb-dropzone-hint",
+        "m-empty-hint",
+        "m-empty-note",
+        # 受限/受阻原因：解释**为什么这个动作现在做不了**（不是解释这一页是什么）。
+        "kb-blocked-note",
+        "kb-readonly-note",
+        "m-picker-note",
+        # 会自己变的实时数：排队条数、并发槽位、进度。
+        "m-load-hint",
+        "m-load-note",
+        "m-summary-note",
+        # 快捷键提示：键位映射本身就是内容（不是对它的解释）。
+        "m-shortcut-hint",
+        # 弹窗/抽屉底部那句"这一步会做什么"（动作代价与后果），与"名词解释"不同。
+        "kb-modal-note",
+        "kb-foot-note",
+        "kb-preview-note",
+        "kb-tabs-hint",
+        "kb-chunk-hint",
+        "kb-timeline-note",
+        "kylab-note",
+        "kylab-none-note",
+        "kylab-sheet-note",
+        # 登录页的状态行（"当前已登录：X" / 首次使用的下一步）。
+        "m-login-hint",
+        # 供应商预设的一句话（"这一家要走什么地址"），属于"这一格该填什么"。
+        "m-preset-hint",
+        # 工作区页脚那句"不会动你的文件"是**后果说明**（删之前必须知道的事）。
+        "m-foot-note",
+        # 「启用开关」那一类状态行的灰字：空态（"还没有任何人"）、
+        # 禁用原因（"未选定前不能新建知识库"）、加载中（"正在加载…"）。
+        "m-row-note",
+        # 编辑态顶部那句"改这一组之前该知道的一件事"（groupTips.editHint）：管的是**动作**
+        # （开思考更慢、密钥只回显掩码、清掉凭据走哪个入口），不是"这一页是什么"。
+        "m-edit-hint",
+        # 工具栏上的状态行：任务中心"已取消 23"、记忆页"只列出了前 N 个"——报的是数，
+        # 不是对界面的解释（记忆页那条通读全文的说明不算，它由另一条泳道重做那一页时收）。
+        "m-toolbar-note",
+        # 市场弹窗"还没有启用的源——先添加一个仓库"：无源时的空态 + 下一步。
+        "m-market-hint",
+        # 候选模型清单的加载/失败/为空状态行（失败时指明"可直接手写模型 ID"这条出路）。
+        "m-source-note",
+        # 首页大数卡片下面那行注解：**只在异常时出现**（N 篇失败 / N 篇待索引 / 还没有文档）。
+        "m-figure-note",
+        # 笔记列表的错误行（"笔记加载失败"）与编辑器上传进度（"图片上传中…"）。
+        "list-hint",
+        "upload-hint",
+        # 账号行里"显示名（登录名）"的后半截：那是**身份的第二半**（登录要用的是它），
+        # 不是说明文字。
+        "m-row-sub",
+    }
+)
 
 UI_COPY_MSG = (
     "界面里的解释性小字（标题下面那句「这一页是什么」）："
-    "删掉它，或改用别的类名（别用 page-/panel-/section- 开头的 desc/lead）"
+    "删掉它——用户不需要在界面上被解释这个东西是什么；"
+    "**确实有用途**（字段约束、计数、空态、校验错误、受限原因）时，"
+    "给这个类换个按用途起的名字（`*-error` / `*-count` / `*-empty`），"
+    "或把它列进 `UI_COPY_ALLOWED` 并写清理由"
 )
 
 
@@ -395,12 +479,17 @@ def check_ui_copy(path: Path) -> list[Violation]:
 
     1. 给 `PageShell` / `PageHeader` 传 `description`——那个 prop 已经删了，
        而 Vue 不为多余属性报错，它会安静地落在根元素上渲染出来（这正是它会被写回来的原因）；
-    2. 类名落在 `page-` / `panel-` / `section-` / `view-` / `tab-` 的 `desc` / `lead` 族里。
+    2. 类名落在 `page-` / `panel-` / `section-` / `view-` / `tab-` 的 `desc` / `lead` 族里，
+       或**尾段**是 `hint` / `note` / `caption` / `sub`（2026-09-24 扩的那一批）。
 
     **注释不算**：注释里提到这些词，多半正是在解释"为什么删掉它"，那要留着。
 
-    例外靠 `UI_COPY_ALLOWED` 显式列（默认是空的）：留一个例外就得写清理由，
+    例外靠 `UI_COPY_ALLOWED` 显式列（按类名，逐条写理由）：留一个例外就得写清理由，
     不然它会长成一条通道。
+
+    **这条规则只查类名，查不出"用合法类名写着解释性文字"**（`text-hint` 是设计系统原语，
+    25 处合法用法里也能混进一句"这是个什么东西"）。那一半靠 U2 兜实现细节、
+    靠评审兜纯说教——机械判据要诚实地承认自己判不了语义。
     """
     # 后缀里必须有 `.tsx`：P5 之后组件全是 `.tsx`，而这条规则盯的正是组件里的文案——
     # 只认 `.vue` / `.ts` 的话，规则会因为"什么都没扫到"而永远绿（Vue 时代的写法，
@@ -439,14 +528,16 @@ def _class_names(line: str) -> list[str]:
 def _is_ui_copy_class(name: str) -> bool:
     """这个类名是不是"页面/小节说明"那一族。
 
-    族前缀 + `desc`/`description`/`lead` 打头。用 `partition` 而不是正则：
-    这个文件里**不写正则转义**（第一版写的 `\b` 被 heredoc 变成了退格符，
-    规则从此永远不命中——一次看不出任何异常的静默失效）。
+    两条判据：族前缀 + `desc`/`description`/`lead` 打头；或**尾段**落在
+    `hint`/`note`/`caption`/`sub` 里（`.m-block-hint` / `.kb-modal-note` / `.m-row-sub`）。
+    用 `partition` / `rsplit` 而不是正则：这个文件里**不写正则转义**（第一版写的 `\\b`
+    被 heredoc 变成了退格符，规则从此永远不命中——一次看不出任何异常的静默失效）。
     """
     head, _, tail = name.partition("-")
-    if head not in UI_COPY_FAMILIES or not tail:
-        return False
-    return any(tail == item or tail.startswith(f"{item}-") for item in UI_COPY_TAILS)
+    if head in UI_COPY_FAMILIES and tail:
+        if any(tail == item or tail.startswith(f"{item}-") for item in UI_COPY_TAILS):
+            return True
+    return name.rsplit("-", 1)[-1] in UI_COPY_TAIL_FAMILIES
 
 
 def _targets_page_shell(line: str, text: str, lineno: int) -> bool:
@@ -480,6 +571,290 @@ def _opened_tags(text: str) -> list[str]:
         if name and name[0].isalpha():
             names.append(name)
     return names
+
+
+# ---------------------------------------------------------------- U2：实现细节不许进界面文案
+#
+# 起因是 2026-09-24 那轮用户反馈（11 张截图）：界面上真的出现过
+# `连不上记忆服务 http://127.0.0.1:2333/health_check：[WinError 10061] 由于目标计算机积极拒绝`、
+# `API Key … 走 /api/v1 的鉴权头（后端 app/api/auth.py 是权威）`、
+# `在线 v0.1.1 · v1`、`里面要有一个带 name 的 SKILL.md（my-skill/SKILL.md 这种一层目录就好）`。
+# 用户原话："你写代码的时候不要再 webui 上向我解释这是个什么东西，我是科班出身的，不需要你解释。"
+#
+# 这些文字有个共同形状：**它们是开发者的词汇，不是用户的数据**——路径、端口、接口前缀、
+# 异常原文、版本号。正因为它们"看起来很像有用信息"（有时还真的是排查线索），
+# review 时最容易被放过；而它们一旦渲染出来，就是把内部实现漏给了用户。所以列成黑名单机械查。
+#
+# 判据（只扫**会渲染出来的字符**）：
+# 1. 字符串字面量（`'…'` / `"…"` / 模板串）与 JSX 文本节点；
+# 2. **注释不算**——注释里写 `app/api/auth.py` 往往正是在解释"为什么删掉它"（同 U1）；
+# 3. **import / export 的模块说明符不算**：`'@/app/routes'` 是模块路径，永远不会渲染；
+#    把它算进来只会逼着每加一个别名 import 就来加一条例外，规则会被用废。
+#
+# 例外按"**文件 + 字面量**"列进 `U2_ALLOWED`，逐条写理由——**不能按规则放行**，
+# 按规则放行等于把整条规则关掉。要放行的那一类只有一种：字符串本身就是**数据**
+# （可复制的地址、模型 base_url、示例 URL），而不是在向用户解释什么。
+
+#: 黑名单：``(分类名, 正则)``。分类名只用于报错文案（告诉人这是哪一类漏了）。
+U2_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    # 代码/文件路径与文件名。`\w+\.py` 只要求"某段字母开头、以 .py 结尾"，
+    # 因为屏上出现的写法五花八门（`app/api/auth.py`、`auth.py`、`services/chat.py`）。
+    (
+        "代码路径",
+        re.compile(
+            r"app/|[A-Za-z_][A-Za-z0-9_.-]*\.py|SKILL\.md|installed\.json"
+            r"|data/|C:\\\\|\.vue|\.sql"
+        ),
+    ),
+    # 本机 / 内部服务地址。**不是**禁"所有 URL"：可复制的地址是数据，
+    # 那种要放行得走 U2_ALLOWED（见下）。这里禁的是"把内部跑着的东西说给用户听"。
+    ("内部地址", re.compile(r"127\.0\.0\.1|localhost|http://|https://")),
+    # 端口：`127.0.0.1:2333` 里那个四位端口，单独也能命中（避免只写地址不写主机时漏网）。
+    ("端口", re.compile(r":[0-9]{4}")),
+    # 内部接口面。
+    ("接口路径", re.compile(r"/api/v1|/v1/")),
+    # 异常与运行时语汇：异常类名、驱动名、实现手法（防抖/幂等/缓存）。
+    # **"缓存"用户原话是"要允许"**，我把它留下了：它现在是全仓零例外的干净词，
+    # 而"缓存"一旦上界面，说的就是实现（"用的是缓存，几小时内不会重复请求 GitHub"）；
+    # 将来真有面向用户的性能说法（"下次打开更快"），按 U2_ALLOWED 加一条并写清
+    # "这是给用户看的性能口径"即可——留了出口，所以不必提前松口。
+    (
+        "运行时语汇",
+        re.compile(r"WinError|Traceback|httpx|psycopg|debounce|幂等|缓存"),
+    ),
+    # 版本串：屏幕上不该出现后端/前端版本号（`v0.1.1`）。它与 `V1` 不冲突：
+    # V1 查的是**配置文件里手写的版本号必须一致**（pyproject / package.json / compose），
+    # 这里查的是"版本号有没有漏到界面上"，两者的地盘不重叠。
+    ("版本串", re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")),
+)
+
+#: 例外：(相对仓库根的 POSIX 路径, 字面量里必须出现的片段, 理由)。
+#: 理由一律回答同一个问题：**这个字符串为什么是数据而不是解释**。
+U2_ALLOWED: tuple[tuple[str, str, str], ...] = (
+    (
+        "frontend/src/api/client.ts",
+        "/api/v1",
+        "API 基址常量：拼请求用的路径，不渲染",
+    ),
+    (
+        "frontend/src/features/chat/model/markdown.tsx",
+        "https://",
+        "正文自动识别裸域名时补的前缀，落在链接 href 上（用户可点），不是文案",
+    ),
+    (
+        "frontend/src/features/notes/NoteEditor.tsx",
+        "https://",
+        "插入链接时补的协议前缀，写进正文 markdown，不是文案",
+    ),
+    (
+        "frontend/src/features/knowledge/SourcePanel.tsx",
+        "example.com",
+        "输入框的示例地址（占位符）：它示范「这一格该填什么」的格式，本身就是数据",
+    ),
+    (
+        "frontend/src/features/misc/capabilities/CapabilitiesPage.tsx",
+        "example.com",
+        "同上：MCP 地址栏的示例格式，不是对实现的解释",
+    ),
+    (
+        "frontend/src/features/misc/settings/ModelRegistryPanel.tsx",
+        "api.deepseek.com",
+        "供应商预设的 base_url：它就是这条数据本身（用户要照着改地址）",
+    ),
+)
+
+#: JSX 文本节点里出现这些字符就**不当文字看**（见 `jsx_text_runs`）：TS 的表达式
+#: （比较、三元、调用）会落在 `>`…`<` 之间，带一个 `(` 或 `=` 就排掉。
+U2_TEXT_LIKE_FORBIDDEN = set("()=;&|!?[]*+\"'\\")
+
+U2_MSG = (
+    "界面文案里出现了实现细节（代码路径/本机地址/端口/接口路径/异常原文/版本号）："
+    "把它删掉——用户不需要在界面上读实现。**真只是数据**（可复制的地址、模型 base_url、"
+    "示例 URL）时，在 `U2_ALLOWED` 里按「文件 + 字面量」加一条并写清为什么它不是解释"
+)
+
+
+def _blank(out: list[str], text: str, start: int, stop: int) -> None:
+    """把 `[start, stop)` 里的字符换成空格（换行保留）——长度不变，行号才对得上。"""
+    for index in range(max(start, 0), min(stop, len(text))):
+        if text[index] != "\n":
+            out[index] = " "
+
+
+def _string_end(text: str, start: int) -> int | None:
+    """`start` 处是一个引号时，返回收尾引号的下标；未闭合（跨行）返回 None。
+
+    单行串跨行说明那多半不是字符串（写了一半的代码、或我认错了引号），
+    这时**不当字符串处理**比"吃掉半个文件"安全——静默漏报总好过静默误报一片。
+    """
+    quote = text[start]
+    index = start + 1
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == quote:
+            return index
+        if char == "\n" and quote != "`":
+            return None
+        index += 1
+    return None
+
+
+def _regex_can_start(text: str, index: int) -> bool:
+    """`index` 处的 `/` 是不是正则字面量的开头（而不是除号）。
+
+    判据是**前一个非空白字符**：它要是能结束一个表达式（字母、数字、`)`、`]`、`}`、
+    引号、`$`、`` ` ``），那 `/` 就是除号；否则按正则处理。这条判断是必需的——
+    仓库里真有 `` .replace(/\\*\\*|__|`{1,3}/g, '') ``：正则里那个反引号会让
+    "先找成对引号"的做法把后面半份文件都当成模板串。
+    """
+    probe = index - 1
+    while probe >= 0 and text[probe] in " \t\r\n":
+        probe -= 1
+    if probe < 0:
+        return True
+    return not (text[probe].isalnum() or text[probe] in "_$)]}'\"`")
+
+
+def _regex_end(text: str, start: int) -> int | None:
+    """`start` 处的 `/` 若是一个正则字面量，返回收尾 `/` 的下标；否则 None。"""
+    index = start + 1
+    in_class = False
+    while index < len(text):
+        char = text[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "\n":
+            return None
+        if char == "[":
+            in_class = True
+        elif char == "]":
+            in_class = False
+        elif char == "/" and not in_class:
+            return index
+        index += 1
+    return None
+
+
+def strip_ts_comments_and_strings(text: str) -> tuple[str, list[tuple[int, str]]]:
+    """脱注释（换空格，长度与换行不变）+ 收集字符串字面量：``(内容起始下标, 内容)``。
+
+    为什么不用正则：`//` 会出现在字符串里（`'https://x'`），`'` 会出现在正则里
+    （见 `_regex_can_start`），`/*` 会出现在 JSX 文本里——互相遮蔽。所以按字符走一遍，
+    顺带把"注释"和"字符串"分开：注释要丢掉，字符串要留下（U2 要查的正是后者）。
+    """
+    out = list(text)
+    literals: list[tuple[int, str]] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        following = text[index + 1] if index + 1 < len(text) else ""
+        if char == "/" and following == "/":
+            stop = text.find("\n", index)
+            stop = len(text) if stop < 0 else stop
+            _blank(out, text, index, stop)
+            index = stop
+            continue
+        if char == "/" and following == "*":
+            stop = text.find("*/", index + 2)
+            stop = len(text) - 2 if stop < 0 else stop
+            _blank(out, text, index, min(stop + 2, len(text)))
+            index = min(stop + 2, len(text))
+            continue
+        if char in "\"'`":
+            end = _string_end(text, index)
+            if end is None:
+                index += 1
+                continue
+            literals.append((index + 1, text[index + 1 : end]))
+            _blank(out, text, index, end + 1)
+            index = end + 1
+            continue
+        if char == "/" and _regex_can_start(text, index):
+            end = _regex_end(text, index)
+            if end is not None:
+                _blank(out, text, index, end + 1)
+                index = end + 1
+                continue
+        index += 1
+    return "".join(out), literals
+
+
+def jsx_text_runs(masked: str) -> list[tuple[int, str]]:
+    """脱注释/字符串后的文本里，`>` 与 `<` / `{` 之间那段**像文字**的内容。
+
+    两处刻意的取舍：
+
+    1. **允许跨行**（`<p>` 换行再写说明的写法才是常态——第一版只认同一行，
+       于是"文件夹或 .zip 都行：… SKILL.md"这种整段漏了，反向验证时才发现）；
+    2. **不含代码味字符**（`()=;&|!?[]*+` 与引号）才算文字：TS 里 `a > b` 这种比较
+       也会落进 `>`…`<` 之间，那段带一个 `(` 或 `=` 就被排掉。代价是
+       "只含英文单词的 JSX 文本"可能漏（本仓库的用户可见文案是中文，
+       英文串几乎都在字符串字面量里，那条路照查）。
+    """
+    found: list[tuple[int, str]] = []
+    for match in re.finditer(r">([^<>{}]*)", masked):
+        run = match.group(1)
+        if not run.strip():
+            continue
+        if U2_TEXT_LIKE_FORBIDDEN & set(run):
+            continue
+        lead = len(run) - len(run.lstrip())
+        found.append((match.start(1) + lead, run.strip()))
+    return found
+
+
+def _is_module_specifier(text: str, start: int) -> bool:
+    """这个字符串是不是 import/export 的模块说明符（`from '…'` / `import('…')`）。
+
+    模块路径永远不会渲染，不该按文案查。判断只看字面量前面那一小段：
+    去掉空白**与那个开引号**后以 `from` / `import(` / `import` / `require(` 收尾就算。
+    （`start` 是引号后一格，所以先要剥掉引号——第一版漏了这一步，
+    于是 `'@/app/routes'` 这四条别名 import 全被误报成"代码路径上了界面"。）
+    """
+    head = text[max(start - 40, 0) : start].rstrip()
+    if head and head[-1] in "'\"`":
+        head = head[:-1].rstrip()
+    return head.endswith(("from", "import(", "import", "require("))
+
+
+def _u2_allowed(relative: str, value: str) -> bool:
+    """这个文件里的这个字面量在例外表里吗（例外表按「文件 + 片段」匹配）。"""
+    return any(
+        relative == path and fragment in value for path, fragment, _reason in U2_ALLOWED
+    )
+
+
+def check_impl_leak(path: Path, root: Path) -> list[Violation]:
+    """U2：界面文案里不许出现实现细节（见 ``U2_MSG`` 与 ``U2_PATTERNS``）。
+
+    扫三类地方：字符串字面量、模板串、JSX 文本节点；**注释、import 说明符与 `.d.ts` 不算**
+    （理由见 U2 那一段的头注释）。`.d.ts` 是纯类型声明——它在编译后不存在，一行都渲染不出来，
+    而 `schema.d.ts`（生成的接口清单）里全是 `/api/v1/...` 这类**类型字面量**，
+    把它们算成文案只会让这条规则天天红着、然后被绕过。
+    """
+    if path.suffix not in (".ts", ".tsx") or path.name.endswith(".d.ts"):
+        return []
+    relative = path.relative_to(root).as_posix() if path.is_absolute() else path.as_posix()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    masked, literals = strip_ts_comments_and_strings(text)
+    found: list[Violation] = []
+    for start, value in literals + jsx_text_runs(masked):
+        if _is_module_specifier(text, start) or _u2_allowed(relative, value):
+            continue
+        for label, pattern in U2_PATTERNS:
+            match = pattern.search(value)
+            if match is None:
+                continue
+            lineno = text.count("\n", 0, start) + 1
+            snippet = " ".join(value.strip().split())[:60]
+            found.append(
+                Violation("U2", path, lineno, f"{U2_MSG}——{label}：{match.group(0)!r}（{snippet!r}）")
+            )
+    return found
 
 
 def check_ps1_bom(root: Path) -> list[Violation]:
@@ -850,6 +1225,7 @@ def main() -> int:
             if path.is_file():
                 violations.extend(check_test_placement(path, root))
                 violations.extend(check_ui_copy(path))
+                violations.extend(check_impl_leak(path, root))
 
     violations.extend(check_ps1_bom(root))
     violations.extend(check_version_consistency(root))
@@ -862,10 +1238,12 @@ def main() -> int:
     if violations:
         print(
             f"\n共发现 {len(violations)} 处违规，违反《项目工程规范》§3.3 / §5.1、"
-            f"脚本编码约定、界面文案条款、CSS 分层纪律或 CHANGELOG「附：版本号约定」。"
+            f"脚本编码约定、界面文案条款（解释性小字 / 实现细节）、"
+            f"CSS 分层纪律或 CHANGELOG「附：版本号约定」。"
         )
         return 1
-    print("分层纪律、测试位置、脚本编码、界面文案、CSS 分层与版本号检查通过。")
+    print("分层纪律、测试位置、脚本编码、界面文案（解释性小字 / 实现细节）、"
+          "CSS 分层与版本号检查通过。")
     return 0
 
 

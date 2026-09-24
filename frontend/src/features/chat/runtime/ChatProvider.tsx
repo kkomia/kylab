@@ -199,10 +199,23 @@ export interface ChatApi {
   // —— 知识库与技能
   kbs: KnowledgeBase[]
   kbLoading: boolean
+  /** 这一轮查不查库（原「知识库」开关；现在长在合并后那颗胶囊的面板顶部，叫「启用」）。 */
   useKb: boolean
-  toggleKbSwitch: () => void
+  /**
+   * 打开/关掉「启用」。**是 set 而不是 toggle**：那颗开关现在是一枚多选项
+   * （Radix 的 checkbox 语义给出的是"目标状态"，不是"翻一下"），
+   * 传目标值能避免"连点两下少翻一次"那类对不上的状态。
+   */
+  setKbEnabled: (on: boolean) => void
   selectedKbIds: string[]
   toggleKb: (id: string) => void
+  /** 面板上的「全选」/「清空」：一次改完整个范围，比逐个点快。 */
+  selectAllKbs: () => void
+  clearKbs: () => void
+  /**
+   * 合并后那颗胶囊上"状态"那段字：`已关` / `读取中…` / `还没有知识库` / `未选库` /
+   * `全部 N 个` / `已选 N 个`（前缀「知识库 ·」由 `ComposerControls` 拼上）。
+   */
   kbPickText: string
   pinnedSkills: string[]
   toggleSkill: (name: string) => void
@@ -362,8 +375,18 @@ function fromStored(item: ConversationArtifact): Partial<ChatArtifact> & { artif
   }
 }
 
-/** 选库入口上写什么（开关那件事由开关本身表达，这里只说"选了哪几个"）。 */
-function pickText(loading: boolean, total: number, selected: number): string {
+/**
+ * 输入框上那颗「知识库」胶囊的**状态那段字**上写什么。
+ *
+ * 这里是"当前这一轮查不查、查哪几个"的**唯一**读数：开关与多选合并成一个控件之后
+ * （2026-09-24，"开关和『全部 4 个』合并成一个控件"），三态必须从这一颗胶囊上读出来
+ * ——`已关` / `未选库` / `全部 N 个`或`已选 N 个`。
+ *
+ * 关掉的那一档**不沿用"选了哪几个"那几句话**：关着时"全部 4 个"是一句假话
+ * （这一轮一个都不查），所以它单独占一档，排在最前。
+ */
+function pickText(enabled: boolean, loading: boolean, total: number, selected: number): string {
+  if (!enabled) return '已关'
   // **还没加载完就说"还没有知识库"是假话**：库明明在，只是还没取回来
   if (loading && total === 0) return '读取中…'
   if (total === 0) return '还没有知识库'
@@ -1085,7 +1108,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
          * 随后按详情回填成项目绑的那几个——同一轮里"看到的范围"和"实际查的范围"对不上，
          * 用户会觉得范围自己变过。
          *
-         * `useKb` 关着时不动：那颗开关是用户**明确表过态**的（"这一轮不查库"），
+         * `useKb` 关着时不动：那颗「启用」开关是用户**明确表过态**的（"这一轮不查库"），
          * 项目的默认库不该越过它。
          */
         const inherited = created.kb_ids.filter((id) => kbs.some((item) => item.id === id))
@@ -1347,11 +1370,30 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     )
   }, [])
 
-  const toggleKbSwitch = useCallback(() => {
-    setUseKb((prev) => {
-      writeStored(KB_SWITCH_KEY, prev ? '0' : '1')
-      return !prev
-    })
+  /** 面板上的「全选」：范围 = 手上这份清单里的全部。 */
+  const selectAllKbs = useCallback(() => {
+    setSelectedKbIds(kbs.map((item) => item.id))
+  }, [kbs])
+
+  /**
+   * 面板上的「清空」：**清的是选择，不是关开关**。
+   *
+   * 两件事看着像，结果差很远：清空之后"这一轮一个库都不查"由 `canSend` 拦住
+   * （开着且一个都没选 → 不许发），用户看得出自己把范围清没了；
+   * 若这里顺手把开关也关掉，用户会以为"我只是清了一下"，而其实连"要不要查库"
+   * 那个更硬的决定都被改了。
+   */
+  const clearKbs = useCallback(() => {
+    setSelectedKbIds([])
+  }, [])
+
+  /**
+   * 打开/关掉「启用」。**这一颗是"我平时怎么用"**（写进本机偏好，见 `KB_SWITCH_KEY`），
+   * 与「选了哪几个」分开存：关掉时**不清空选择**，下次打开还是原来那几个。
+   */
+  const setKbEnabled = useCallback((on: boolean) => {
+    setUseKb(on)
+    writeStored(KB_SWITCH_KEY, on ? '1' : '0')
   }, [])
 
   const kbsRefetch = kbsQuery.refetch
@@ -1366,7 +1408,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const targetId = useKb ? (selectedKbIds[0] ?? kbs[0]?.id) : undefined
       if (!targetId) {
         notifyWarning(
-          useKb ? '先在「知识库」里选一个库，文件才有地方放' : '打开「知识库」开关后再传文件',
+          useKb
+            ? '先在「知识库」里选一个库，文件才有地方放'
+            : '在「知识库」里打开「启用」后再传文件',
         )
         return
       }
@@ -1396,7 +1440,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
        * 点一下是"把这个库并进这一轮的检索范围"，不插文本。所以 `value` 放**库 id**
        * ——它只用来认是哪一份（同名库不会串），`label` 才是给人看的名字。
        *
-       * 候选直接来自同一层已经取过的 `kbs`（输入框那颗「知识库」开关读的也是它），
+       * 候选直接来自同一层已经取过的 `kbs`（输入框那颗「知识库」胶囊读的也是它），
        * 不为这个菜单多起一次请求。
        */
       ...kbs.map((kb) => ({
@@ -1455,9 +1499,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * 三条口径，都是为了让"点完会发生什么"一眼可推：
    *
    * 1. **只增不减、持久**：并进去的留在 `selectedKbIds` 里，发送之后不清空——
-   *    它与输入框那颗「知识库」开关**同一份状态**。多造一个"本轮有效"的临时层
-   *    就要多一套"什么时候还回去"的规则，而用户看到的那颗开关会自己变回去
-   *    （正是"怎么又变回去了"那类困惑）。要取消就在那颗胶囊里逐个点掉。
+   *    它与输入框上那颗「知识库」胶囊**同一份状态**（合并之后只有这一处状态，
+   *    所以面板里勾的、胶囊上写的、`@` 并进去的三者天然一致）。多造一个"本轮有效"的
+   *    临时层就要多一套"什么时候还回去"的规则，而用户看到的那颗胶囊会自己变回去
+   *    （正是"怎么又变回去了"那类困惑）。要取消就在那颗胶囊里逐个点掉、或点「清空」。
    * 2. **开关关着时顺手打开**：不打开的话点这一下什么都不会发生（范围按空算），
    *    那是这里最坏的结果——用户以为选上了，实际没查。提示里明说这一点。
    * 3. **已经在范围里就说一句"已经在"**，不重复并入（也不谎报"已加入"）。
@@ -1472,14 +1517,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       const turnedOn = !useKb
       setSelectedKbIds((prev) => (prev.includes(kbId) ? prev : [...prev, kbId]))
-      if (turnedOn) toggleKbSwitch()
+      if (turnedOn) setKbEnabled(true)
       notifySuccess(
         turnedOn
           ? `已把「${kb.name}」并入检索范围，并打开了「知识库」开关`
           : `已把「${kb.name}」并入检索范围（在输入框的「知识库」里可以取消）`,
       )
     },
-    [kbs, selectedKbIds, toggleKbSwitch, useKb],
+    [kbs, selectedKbIds, setKbEnabled, useKb],
   )
 
   /**
@@ -1664,10 +1709,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     kbs,
     kbLoading: kbsQuery.isLoading,
     useKb,
-    toggleKbSwitch,
+    setKbEnabled,
     selectedKbIds,
     toggleKb,
-    kbPickText: pickText(kbsQuery.isLoading, kbs.length, selectedKbIds.length),
+    selectAllKbs,
+    clearKbs,
+    kbPickText: pickText(useKb, kbsQuery.isLoading, kbs.length, selectedKbIds.length),
     pinnedSkills,
     toggleSkill,
     skills,

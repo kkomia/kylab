@@ -6,9 +6,10 @@
  * 2. 保存走的是**原文**（含 frontmatter）：`writeMemoryFile(path, 草稿原文)`；
  * 3. 有未保存改动时切文件**先问**，不静默丢。
  *
- * 另加一条是用户报出来的："状态常态显示已启用，其实服务没连上"——
- * 页面挂载时**必须真探一次**（`probeMemory`），并且把"服务不通"的影响范围说对：
- * 只坏召回与自动沉淀，四份文件的注入与编辑照常（注入是本地读文件）。
+ * 另加一条是 v0.46 的返工：记忆现在是后端**进程内的本地实现**，所以这一页
+ * 不能再有"探测记忆服务"那套（曾经把内部地址、端口与异常原文打给用户看过）。
+ * 取而代之的是本地状态（几份文件、多少条可召回、上次更新）——下面的用例钉住
+ * "界面上不出现任何服务/地址/连通性字样"，以及那三个数字真的渲染出来。
  */
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -22,8 +23,6 @@ vi.mock('@/api/memory', () => ({
   getMemoryGraph: vi.fn(),
   recallMemory: vi.fn(),
   rememberMemory: vi.fn(),
-  reindexMemory: vi.fn(),
-  probeMemory: vi.fn(),
 }))
 
 vi.mock('@/api/settings', () => ({
@@ -34,7 +33,7 @@ vi.mock('@/api/settings', () => ({
 import {
   getMemory,
   getMemoryFile,
-  probeMemory,
+  recallMemory,
   writeMemoryFile,
   type MemoryFile,
   type MemoryOverview,
@@ -48,9 +47,9 @@ import { useSessionStore } from '@/lib/session'
 const getMemoryMock = vi.mocked(getMemory)
 const getMemoryFileMock = vi.mocked(getMemoryFile)
 const writeMemoryFileMock = vi.mocked(writeMemoryFile)
-const probeMemoryMock = vi.mocked(probeMemory)
+const recallMemoryMock = vi.mocked(recallMemory)
 
-/** 记忆页的「设置」与探测端点都是管理员档（成员账号连按钮都不该看见）。 */
+/** 记忆页的「设置」是管理员档（成员账号连按钮都不该看见）。 */
 function asAdmin(): void {
   useSessionStore.setState({
     token: 'st',
@@ -82,13 +81,13 @@ function overview(overrides: Partial<MemoryOverview> = {}): MemoryOverview {
   return {
     status: {
       enabled: true,
-      base_url: 'http://127.0.0.1:8790',
       workspace: '/data/memory',
       core_file_exists: true,
-      reachable: null,
       detail: '',
       file_count: 3,
-      retrievable_count: 1,
+      retrievable_count: 2,
+      entry_count: 12,
+      last_changed_at: '2026-09-23T09:00:00Z',
       unconsolidated_count: 0,
     },
     files: [
@@ -140,10 +139,9 @@ function tabState(trigger: HTMLElement) {
 beforeEach(() => {
   vi.clearAllMocks()
   resetToasts()
-  // 默认**成员账号**：探测是管理员端点，多数用例不该顺手打它
   useSessionStore.setState({ token: '', currentUser: null })
   getMemoryMock.mockResolvedValue(overview())
-  probeMemoryMock.mockResolvedValue({ reachable: true, detail: '服务正常' })
+  recallMemoryMock.mockResolvedValue({ query: '', hits: [], links: [], note: '' })
   getMemoryFileMock.mockImplementation(async (path) => ({
     ...file({
       path,
@@ -315,38 +313,76 @@ describe('记忆页', () => {
     expect(screen.getByLabelText('记忆文件正文')).toHaveValue('# 核心\n\n- 偏好简洁x')
   })
 
-  it('挂载时真探一次连通性：不通就如实说「未连接」，并把影响范围说对', async () => {
-    asAdmin()
-    probeMemoryMock.mockResolvedValue({ reachable: false, detail: '连不上 http://127.0.0.1:8790' })
-
-    renderMisc(<MemoryPage />)
-
-    // 常态那个「已启用」换成真实结论（用户报的就是它：服务没起，界面还说已启用）
-    expect(await screen.findByText('记忆服务未连接')).toBeInTheDocument()
-    expect(probeMemoryMock).toHaveBeenCalledTimes(1)
-    // 范围说对：坏的只是召回与自动沉淀；注入是本地读文件，照常
-    const banner = document.querySelector('.m-notice-warn') as HTMLElement
-    expect(banner.textContent).toContain('召回过去的记忆与自动沉淀不可用')
-    expect(banner.textContent).toContain('每轮注入与编辑不受影响')
-    expect(banner.textContent).toContain('连不上 http://127.0.0.1:8790')
-  })
-
-  it('服务正常时给「记忆服务正常」，没有那条警告', async () => {
-    asAdmin()
-    renderMisc(<MemoryPage />)
-
-    expect(await screen.findByText('记忆服务正常')).toBeInTheDocument()
-    expect(document.querySelector('.m-notice-warn')).toBeNull()
-  })
-
-  it('成员账号不探（探测是管理员端点），标签说清"没探测过"而不是"已连接"', async () => {
+  it('状态只说本地事实：几份文件、多少条可召回、上次更新', async () => {
     renderMisc(<MemoryPage />)
 
     expect(await screen.findByText('已启用')).toBeInTheDocument()
-    await waitFor(() => expect(getMemoryMock).toHaveBeenCalled())
-    expect(probeMemoryMock).not.toHaveBeenCalled()
-    // 没探测这一态本身也要如实标出来（拿它冒充"已连接"正是原来的毛病）
-    expect(screen.getByText('已启用')).toHaveAttribute('title', expect.stringContaining('没探测过'))
+    const state = await screen.findByTestId('memory-local-state')
+    expect(state.textContent).toContain('/data/memory')
+    expect(state.textContent).toContain('3 份文件')
+    expect(state.textContent).toContain('12 条可召回')
+    expect(state.textContent).toContain('上次更新')
+    // 没有"重建索引"这种按钮：召回是现扫工作区，没有索引要等
+    expect(screen.queryByRole('button', { name: '重建索引' })).toBeNull()
+  })
+
+  it('界面上不出现服务地址/端口/连通性这类实现细节', async () => {
+    asAdmin()
+    renderMisc(<MemoryPage />)
+    await screen.findByText('已启用')
+
+    // 曾经真的把 `http://127.0.0.1:2333/health_check` 与异常原文打给用户看过——
+    // 这条用例按"整页文本"扫一遍，防止那种文案再溜回来
+    const text = document.body.textContent ?? ''
+    expect(text).not.toMatch(/http:\/\/|127\.0\.0\.1|localhost/)
+    expect(text).not.toMatch(/记忆服务|未连接|连通性/)
+    expect(text).not.toContain('WinError')
+  })
+
+  it('未启用时标签说「未启用」，并把影响范围说对', async () => {
+    getMemoryMock.mockResolvedValue({
+      ...overview(),
+      status: {
+        ...overview().status,
+        enabled: false,
+        detail: '未启用：过去的对话不会被召回，也不会自动沉淀',
+      },
+    })
+
+    renderMisc(<MemoryPage />)
+
+    const tag = await screen.findByText('未启用')
+    // 范围说对：开关管召回与自动沉淀；四份文件的注入与编辑不受影响
+    expect(tag).toHaveAttribute('title', expect.stringContaining('注入与编辑不受影响'))
+  })
+
+  it('召回结果给出处与判据：文件、行号、分数、命中比例', async () => {
+    recallMemoryMock.mockResolvedValue({
+      query: '锂价',
+      hits: [
+        {
+          text: '锂价下跌 10% 会让毛利下降',
+          path: 'digest/personal/锂价.md',
+          start_line: 8,
+          end_line: 8,
+          score: 2.7236,
+          coverage: 0.75,
+        },
+      ],
+      links: [],
+      note: '这是记忆，不是知识库原文。',
+    })
+    renderMisc(<MemoryPage />)
+    await userEvent.click(await screen.findByRole('tab', { name: /召回/ }))
+    await userEvent.type(screen.getByLabelText('召回测试'), '锂价')
+
+    await userEvent.click(screen.getByRole('button', { name: '召回' }))
+
+    // 出处（可点开学那一份）+ 行号 + 分数 + **命中判据**（判据才是"算不算相关"）
+    expect(await screen.findByText('digest/personal/锂价.md')).toBeInTheDocument()
+    expect(screen.getByText(/L8/)).toBeInTheDocument()
+    expect(screen.getByText(/2\.724/)).toBeInTheDocument()
+    expect(screen.getByText(/命中 75%/)).toBeInTheDocument()
   })
 
   it('「每轮注入」这句话常驻文件列表上方（改完 SOUL.md 的第一个问题就是它进没进）', async () => {
@@ -354,7 +390,7 @@ describe('记忆页', () => {
 
     const note = await screen.findByTestId('memory-inject-note')
     expect(note.textContent).toContain('每轮整份注入提示词')
-    expect(note.textContent).toContain('与记忆服务是否连通无关')
+    expect(note.textContent).toContain('不参与召回')
   })
 })
 

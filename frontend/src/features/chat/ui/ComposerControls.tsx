@@ -126,7 +126,33 @@ export function PlusMenu({
   )
 }
 
-/** 知识库开关 + 选库菜单（开关关掉时选库入口没有意义，摆着只是噪声）。 */
+/**
+ * 选库那一行小动作（「全选」/「清空」）：**是两个菜单项**，不是两个裸按钮。
+ *
+ * 理由与启用开关那条一样——菜单里的键盘是**方向键在菜单项之间走**，裸按钮只可能被
+ * Tab 碰到，而 Radix 的菜单按 Tab 就关（`DropdownMenu` 默认 modal）。摆成菜单项，
+ * 它们才和下面那份清单在同一套键盘里。
+ */
+const SMALL_ITEM =
+  'flex-1 cursor-pointer rounded-[var(--radius-control)] px-[var(--space-2)] py-[var(--space-1)] text-center text-[length:var(--text-meta-size)] text-[var(--text-secondary)] outline-none data-[highlighted]:bg-[var(--bg-hover)] data-[highlighted]:text-[var(--text-primary)] data-[disabled]:cursor-default data-[disabled]:opacity-50'
+
+/**
+ * 「知识库」——**一颗胶囊管两件事**（2026-09-24 用户："开关和「全部 4 个」多选——
+ * 合并成一个控件"）。
+ *
+ * 合并前是并排两颗：一颗 `role=switch` 的裸语义开关，一颗「全部 4 个 / 已选 N 个」的
+ * 多选下拉。它们管的是同一件事（这一轮的检索范围），却要用户在两颗之间自己拼出
+ * "现在到底查不查、查哪几个"；而且左组因此要 473.6px，比卡片内宽 742 里分给它的
+ * 那半还宽——实测那一排折成两行（`.shots/feedback/laneB-00-row-before.png`）。
+ *
+ * 合并之后：
+ * - **触发器读状态**（`ChatProvider` 的 `pickText`，一处口径）：`知识库 · 全部 4 个` /
+ *   `知识库 · 已选 2 个` / `知识库 · 已关`——三态从这一颗上直接读出来；
+ * - **面板里分两层**：顶上那行「启用」是原来那颗开关（"我平时怎么用"，写进本机偏好），
+ *   下面是这一轮的库清单（勾选即选，带「全选 / 清空」）；
+ * - **关掉启用时清单置灰但选择留着**（`disabled` 只是不让改，不动 `selectedKbIds`）：
+ *   用户关掉再打开，原来勾的那几个还在。
+ */
 export function KnowledgeBaseControl() {
   const chat = useChat()
   const [filter, setFilter] = useState('')
@@ -135,93 +161,137 @@ export function KnowledgeBaseControl() {
   const visible = keyword
     ? chat.kbs.filter((item) => item.name.toLocaleLowerCase().includes(keyword))
     : chat.kbs
+  /** 「全选」要能一眼看出"已经全了"：全都勾着时置灰（没有"全选一次"可做了）。 */
+  const allSelected = chat.kbs.length > 0 && chat.selectedKbIds.length === chat.kbs.length
+  const label = `知识库 · ${chat.kbPickText}`
 
   return (
-    <>
-      {/*
-        「知识库」**就是一个开关**（v0.19）：原先它是个"开关 + 选库"二合一的菜单，
-        要先点开才知道这一轮到底查不查库，而"查不查"比"查哪几个"高频得多。
-      */}
-      <button
-        type="button"
-        role="switch"
-        aria-checked={chat.useKb}
-        aria-label="使用知识库"
-        title={chat.useKb ? '这一轮会查知识库' : '这一轮不查知识库，按纯对话回答'}
-        // 与左右邻居同一个容器（等高、胶囊、浅底）：它原先是一颗**裸开关**——
-        // `border-radius: 0`、没有底色，一行里就它没有形状（A4）
-        className={`${TRIGGER} gap-[var(--space-2)]`}
-        onClick={chat.toggleKbSwitch}
-      >
-        {/* `shrink-0`：滑块的子元素是绝对定位的，min-content 是 0——不钉住的话
-            整行挤的时候它会被压成一条缝，而不是像文字那样出省略号（第三批 A②） */}
-        <span
-          className={`relative inline-block h-[16px] w-[28px] shrink-0 rounded-[var(--radius-pill)] transition-colors [transition:var(--transition-ui)] ${
-            chat.useKb ? 'bg-[var(--accent)]' : 'bg-[var(--bg-active)]'
-          }`}
+    // 收起时清掉筛选词：下次打开看到的还是完整清单（筛剩下的那几个不该留着当默认）
+    <DropdownMenu.Root
+      onOpenChange={(open) => {
+        if (!open) setFilter('')
+      }}
+    >
+      <DropdownMenu.Trigger asChild>
+        <button
+          type="button"
+          className={TRIGGER}
+          // 名字给一个**稳定的**（可见的 `知识库 · 全部 4 个` 里那半段是状态，不能当名字）：
+          // 探针与用例都按它取这一颗，状态另从文本读
+          aria-label="知识库范围"
+          // 挤窄了会出省略号，悬停里补全（写的与可见的那一行**逐字相同**，不另造一句）
+          title={label}
         >
-          <span
-            className={`absolute top-[2px] h-[12px] w-[12px] rounded-[var(--radius-pill)] bg-[var(--bg-surface)] transition-all [transition:var(--transition-ui)] ${
-              chat.useKb ? 'left-[14px]' : 'left-[2px]'
-            }`}
-          />
-        </span>
-        {/* `truncate`：这一格的字不许折成两行——胶囊是定高的，折行会里外溢出去
-            （字号调到「更大」时实测：3 行字从 32px 的胶囊里漏出来）。挤得厉害时
-            它和别的标签一样出省略号（第三批 A②） */}
-        <span className="truncate">知识库</span>
-      </button>
-
-      {chat.useKb ? (
-        <DropdownMenu.Root>
-          <DropdownMenu.Trigger asChild>
-            <button type="button" className={TRIGGER} aria-label="选择要查的知识库">
-              <span className="max-w-[132px] truncate">{chat.kbPickText}</span>
-              <ChevronDown size={13} />
-            </button>
-          </DropdownMenu.Trigger>
-          <DropdownMenu.Portal>
-            <DropdownMenu.Content
-              side="top"
-              align="start"
-              sideOffset={6}
-              className={`${CONTENT} max-h-[360px] overflow-y-auto`}
+          {/* `truncate`：这一格的字不许折成两行（理由与右边那颗模型名同款） */}
+          <span className="max-w-[168px] truncate">{label}</span>
+          <ChevronDown size={13} />
+        </button>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          side="top"
+          align="start"
+          sideOffset={6}
+          className={`${CONTENT} max-h-[360px] overflow-y-auto`}
+        >
+          {/*
+            「启用」= 原开关（`KB_SWITCH_KEY` 那份本机偏好，语义一字没改）。
+            它是**菜单项**（`CheckboxItem`）而不是面板里一枚裸开关：菜单里的键盘只走项，
+            裸开关会被 Radix 关菜单的那一下 Tab 挡在外面（见 `SMALL_ITEM` 上的说明）。
+            视觉仍是滑块——"这是开还是关"这一眼不该因为换了个位置就丢掉。
+          */}
+          <DropdownMenu.CheckboxItem
+            className={ITEM}
+            checked={chat.useKb}
+            onCheckedChange={(value) => chat.setKbEnabled(value === true)}
+            // 改开关**不关面板**（同下面那些勾选）：接着多半就要挑库
+            onSelect={(event) => event.preventDefault()}
+          >
+            <span className="flex-1 text-left">启用</span>
+            {/* 滑块是这一行的**读数**（状态已经由 `data-state` 与 aria 表达）：不参与无障碍树 */}
+            <span
+              aria-hidden="true"
+              className={`relative inline-block h-[16px] w-[28px] shrink-0 rounded-[var(--radius-pill)] transition-colors [transition:var(--transition-ui)] ${
+                chat.useKb ? 'bg-[var(--accent)]' : 'bg-[var(--bg-active)]'
+              }`}
             >
-              {/* 库多了（几十个）没有它就得在一长条里找 */}
-              {chat.kbs.length > 8 ? (
-                <input
-                  className="mb-[var(--space-1)] h-[var(--control-height)] w-full rounded-[var(--radius-control)] border border-[var(--border)] bg-[var(--bg-surface)] px-[var(--space-2)] text-[length:var(--text-meta-size)]"
-                  type="search"
-                  placeholder="筛选知识库"
-                  value={filter}
-                  onChange={(event) => setFilter(event.target.value)}
-                />
-              ) : null}
-              {visible.map((kb) => (
-                <DropdownMenu.CheckboxItem
-                  key={kb.id}
-                  className={ITEM}
-                  checked={chat.selectedKbIds.includes(kb.id)}
-                  onCheckedChange={() => chat.toggleKb(kb.id)}
-                  // 勾选**不关菜单**：用户常要一次勾几个
-                  onSelect={(event) => event.preventDefault()}
-                >
-                  <span className={MARK}>
-                    {chat.selectedKbIds.includes(kb.id) ? <Check size={14} /> : null}
-                  </span>
-                  <span className="truncate">{kb.name}</span>
-                </DropdownMenu.CheckboxItem>
-              ))}
-              {chat.kbs.length === 0 ? (
-                <p className={NOTE}>还没有知识库。去「所有知识库」建一个，或先关掉这个开关。</p>
-              ) : visible.length === 0 ? (
-                <p className={NOTE}>没有匹配的知识库。</p>
-              ) : null}
-            </DropdownMenu.Content>
-          </DropdownMenu.Portal>
-        </DropdownMenu.Root>
-      ) : null}
-    </>
+              <span
+                className={`absolute top-[2px] h-[12px] w-[12px] rounded-[var(--radius-pill)] bg-[var(--bg-surface)] transition-all [transition:var(--transition-ui)] ${
+                  chat.useKb ? 'left-[14px]' : 'left-[2px]'
+                }`}
+              />
+            </span>
+          </DropdownMenu.CheckboxItem>
+
+          <DropdownMenu.Separator className="my-[var(--space-1)] h-px bg-[var(--border)]" />
+
+          <div className="flex items-center gap-[var(--space-1)]">
+            {/*
+              动作写在 `onSelect` 里（**不是 `onClick`**）：键盘回车/空格激活菜单项时
+              Radix 只派发 `onSelect`，不派发 DOM 的 click——写在 onClick 上的话鼠标能点、
+              键盘按不动。`preventDefault` 同时表示"别关菜单"。
+            */}
+            <DropdownMenu.Item
+              className={SMALL_ITEM}
+              disabled={!chat.useKb || allSelected}
+              onSelect={(event) => {
+                event.preventDefault()
+                chat.selectAllKbs()
+              }}
+            >
+              全选
+            </DropdownMenu.Item>
+            <DropdownMenu.Item
+              className={SMALL_ITEM}
+              disabled={!chat.useKb || chat.selectedKbIds.length === 0}
+              onSelect={(event) => {
+                event.preventDefault()
+                chat.clearKbs()
+              }}
+            >
+              清空
+            </DropdownMenu.Item>
+          </div>
+
+          {/* 库多了（几十个）没有它就得在一长条里找 */}
+          {chat.kbs.length > 8 ? (
+            <input
+              className="my-[var(--space-1)] h-[var(--control-height)] w-full rounded-[var(--radius-control)] border border-[var(--border)] bg-[var(--bg-surface)] px-[var(--space-2)] text-[length:var(--text-meta-size)]"
+              type="search"
+              placeholder="筛选知识库"
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+            />
+          ) : null}
+
+          {visible.map((kb) => (
+            <DropdownMenu.CheckboxItem
+              key={kb.id}
+              /*
+                关掉「启用」时**只是不让改**（`disabled`），不动选择：用户关掉再打开，
+                原来勾的还是原来那几个。置灰那一下也顺便说明"现在这些勾不生效"。
+              */
+              disabled={!chat.useKb}
+              className={`${ITEM} data-[disabled]:cursor-default data-[disabled]:opacity-50`}
+              checked={chat.selectedKbIds.includes(kb.id)}
+              onCheckedChange={() => chat.toggleKb(kb.id)}
+              // 勾选**不关菜单**：用户常要一次勾几个
+              onSelect={(event) => event.preventDefault()}
+            >
+              <span className={MARK}>
+                {chat.selectedKbIds.includes(kb.id) ? <Check size={14} /> : null}
+              </span>
+              <span className="truncate">{kb.name}</span>
+            </DropdownMenu.CheckboxItem>
+          ))}
+          {chat.kbs.length === 0 ? (
+            <p className={NOTE}>还没有知识库。去「所有知识库」建一个，或先关掉「启用」。</p>
+          ) : visible.length === 0 ? (
+            <p className={NOTE}>没有匹配的知识库。</p>
+          ) : null}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   )
 }
 

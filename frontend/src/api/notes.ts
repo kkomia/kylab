@@ -4,6 +4,10 @@
  * `content_md` 是唯一事实源：编辑器只负责把它渲染出来再写回去，
  * 因此这里进出的都是 Markdown 字符串，没有任何编辑器专用的 JSON 形状——
  * 换编辑器时这一层不用改。
+ *
+ * **归属（`folder_id`）走单独的一条路径**（`moveNote`）：编辑器那条 PATCH 是
+ * 防抖自动保存，带上 folder_id 就会与用户在左栏的操作互相覆盖。理由见后端
+ * `NotesService.move_note`。
  */
 
 import { request, upload } from './client'
@@ -19,6 +23,8 @@ export interface Note {
   /** 「加入知识库」后指向生成的文档；未入库为 null。 */
   kb_id: string | null
   doc_id: string | null
+  /** 所属文件夹；null = 未归档。 */
+  folder_id: string | null
   pinned: boolean
   tags: string[]
   created_at: string | null
@@ -48,6 +54,8 @@ export interface NotePayload {
   source_kind?: NoteSourceKind
   source_ref?: string | null
   tags?: string[]
+  /** 建在哪一层；留空 = 未归档。 */
+  folder_id?: string | null
 }
 
 export interface NoteUpdate {
@@ -57,12 +65,32 @@ export interface NoteUpdate {
   tags?: string[]
 }
 
+/** 一个笔记文件夹（层级由 `parent_id` 表达）。 */
+export interface NoteFolder {
+  id: string
+  name: string
+  parent_id: string | null
+  /** 这个文件夹里**直接**有多少篇笔记（不含子文件夹的）。 */
+  note_count: number
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface NoteFolderList {
+  items: NoteFolder[]
+  /** 未归档的条数（不带 `folder_id` 的笔记）。 */
+  unfiled_count: number
+  total_count: number
+}
+
 export function listNotes(
-  options: { q?: string; tag?: string; limit?: number; offset?: number } = {},
+  options: { q?: string; tag?: string; folder?: string; limit?: number; offset?: number } = {},
 ): Promise<NoteList> {
   const params = new URLSearchParams()
   if (options.q) params.set('q', options.q)
   if (options.tag) params.set('tag', options.tag)
+  // `folder` 的取值由调用方给：文件夹 id 或 `unfiled` 哨兵（后端定义的）
+  if (options.folder) params.set('folder', options.folder)
   if (options.limit) params.set('limit', String(options.limit))
   if (options.offset) params.set('offset', String(options.offset))
   const suffix = params.toString()
@@ -81,12 +109,53 @@ export function updateNote(noteId: string, payload: NoteUpdate): Promise<Note> {
   return request<Note>(`/notes/${noteId}`, { method: 'PATCH', body: JSON.stringify(payload) })
 }
 
+/** 把笔记移进某个文件夹；`folderId` 传 null = 移回未归档。 */
+export function moveNote(noteId: string, folderId: string | null): Promise<Note> {
+  return request<Note>(`/notes/${noteId}/folder`, {
+    method: 'PATCH',
+    body: JSON.stringify({ folder_id: folderId }),
+  })
+}
+
 export function deleteNote(noteId: string): Promise<void> {
   return request<void>(`/notes/${noteId}`, { method: 'DELETE' })
 }
 
 export function listNoteTags(): Promise<{ items: NoteTag[] }> {
   return request<{ items: NoteTag[] }>('/notes/tags')
+}
+
+/* ------------------------------------------------------------------ 文件夹（v14） */
+
+export function listNoteFolders(): Promise<NoteFolderList> {
+  return request<NoteFolderList>('/notes/folders')
+}
+
+export function createNoteFolder(payload: {
+  name: string
+  parent_id?: string | null
+}): Promise<NoteFolder> {
+  return request<NoteFolder>('/notes/folders', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function renameNoteFolder(folderId: string, name: string): Promise<NoteFolder> {
+  return request<NoteFolder>(`/notes/folders/${folderId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ name }),
+  })
+}
+
+/** 换父级：`parentId` 传 null = 挪回根级。 */
+export function moveNoteFolder(folderId: string, parentId: string | null): Promise<NoteFolder> {
+  return request<NoteFolder>(`/notes/folders/${folderId}/parent`, {
+    method: 'PATCH',
+    body: JSON.stringify({ parent_id: parentId }),
+  })
+}
+
+/** 删文件夹：里面的子文件夹一起删，笔记回到未归档（后端保证不删笔记）。 */
+export function deleteNoteFolder(folderId: string): Promise<void> {
+  return request<void>(`/notes/folders/${folderId}`, { method: 'DELETE' })
 }
 
 /** 把笔记作为 Markdown 文档加入知识库，返回回填了 `doc_id`/`kb_id` 的笔记。 */

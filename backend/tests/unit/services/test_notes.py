@@ -6,7 +6,13 @@
 import pytest
 
 from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
-from app.services.notes import MAX_TAGS, NotesService, derive_title, normalize_tags
+from app.services.notes import (
+    MAX_TAGS,
+    NOTE_FOLDER_NAME_MAX_CHARS,
+    NotesService,
+    derive_title,
+    normalize_tags,
+)
 
 
 @pytest.fixture
@@ -155,6 +161,269 @@ def test_tags_are_aggregated(notes: NotesService) -> None:
     tags = dict(notes.tags(user_id="u1"))
 
     assert tags == {"眼科": 2, "重点": 1}
+
+
+# ------------------------------------------------------------------ 文件夹（v14）
+
+
+def test_folders_nest_and_carry_counts(notes: NotesService) -> None:
+    """两层文件夹 + 各自的条数；未归档与总数也在这份读数里。"""
+    work = notes.create_folder(user_id="u1", name="工作")
+    meetings = notes.create_folder(user_id="u1", name="会议记录", parent_id=work.id)
+    notes.create(user_id="u1", title="周会", folder_id=work.id)
+    notes.create(user_id="u1", title="复盘", folder_id=meetings.id)
+    notes.create(user_id="u1", title="随手记")
+
+    overview = notes.folder_overview(user_id="u1")
+
+    # 顺序不断言：PG 的字符串排序跟着库的 collation 走（glibc 的 C/en_US 与 ICU
+    # 对中文的先后不一样），拿它当断言只会得到一条"换台机器就红"的用例。
+    # 排序本身由下面那条用 ASCII 名的用例钉住。
+    assert {item.id for item in overview.folders} == {work.id, meetings.id}
+    assert overview.folders[1 if overview.folders[0].id == work.id else 0].parent_id == work.id
+    assert overview.counts == {work.id: 1, meetings.id: 1}
+    assert overview.unfiled == 1
+    assert overview.total == 3  # 总数 = 各项之和，未归档也在内
+
+
+def test_folders_are_listed_by_name(notes: NotesService) -> None:
+    """树上的先后是"按名字"，不是"按建的时候"——所以先建的后出现也算对。"""
+    notes.create_folder(user_id="u1", name="banana")
+    notes.create_folder(user_id="u1", name="Apple")
+
+    names = [item.name for item in notes.folder_overview(user_id="u1").folders]
+
+    assert names == ["Apple", "banana"]  # lower(name) 排序：大小写不敏感
+
+
+def test_folder_counts_exclude_other_peoples_notes(notes: NotesService) -> None:
+    mine = notes.create_folder(user_id="u1", name="我的")
+    notes.create(user_id="u1", title="我的", folder_id=mine.id)
+    notes.create(user_id="u2", title="别人的")
+
+    overview = notes.folder_overview(user_id="u1")
+
+    assert overview.counts == {mine.id: 1}
+    assert overview.unfiled == 0 and overview.total == 1
+
+
+def test_duplicate_folder_name_is_rejected_per_level(notes: NotesService) -> None:
+    """**同级**不许重名；不同层各自有一个「会议」是正常的。"""
+    root = notes.create_folder(user_id="u1", name="工作")
+    notes.create_folder(user_id="u1", name="会议")
+    child = notes.create_folder(user_id="u1", name="归档", parent_id=root.id)
+    notes.create_folder(user_id="u1", name="会议", parent_id=child.id)  # 另一层，允许
+
+    with pytest.raises(ConflictError):
+        notes.create_folder(user_id="u1", name="会议")
+    with pytest.raises(ConflictError):
+        notes.create_folder(user_id="u1", name="会议", parent_id=child.id)
+
+
+def test_folder_name_is_cleaned_and_bounded(notes: NotesService) -> None:
+    created = notes.create_folder(user_id="u1", name="  项目  笔记  ")
+    assert created.name == "项目 笔记"
+
+    with pytest.raises(InvalidRequestError):
+        notes.create_folder(user_id="u1", name="   ")
+    with pytest.raises(InvalidRequestError):
+        notes.create_folder(user_id="u1", name="x" * (NOTE_FOLDER_NAME_MAX_CHARS + 1))
+
+
+def test_unknown_parent_folder_is_404(notes: NotesService) -> None:
+    with pytest.raises(NotFoundError):
+        notes.create_folder(user_id="u1", name="子", parent_id="fld_missing")
+
+
+def test_folders_of_another_user_are_invisible(notes: NotesService) -> None:
+    """越主即 404（与笔记同一口径）：否则别人的文件夹 id 会变成存在性 oracle。"""
+    theirs = notes.create_folder(user_id="u2", name="别人的")
+
+    with pytest.raises(NotFoundError):
+        notes.get_folder_for_owner(theirs.id, "u1")
+    assert notes.folder_overview(user_id="u1").folders == []
+    with pytest.raises(NotFoundError):
+        notes.create_folder(user_id="u1", name="子", parent_id=theirs.id)
+    with pytest.raises(NotFoundError):
+        notes.rename_folder(theirs.id, user_id="u1", name="改个名")
+
+
+def test_rename_folder_rejects_sibling_duplicate(notes: NotesService) -> None:
+    notes.create_folder(user_id="u1", name="A")
+    second = notes.create_folder(user_id="u1", name="B")
+
+    with pytest.raises(ConflictError):
+        notes.rename_folder(second.id, user_id="u1", name="A")
+
+    renamed = notes.rename_folder(second.id, user_id="u1", name="C")
+    assert renamed.name == "C"
+    assert notes.rename_folder(second.id, user_id="u1", name="C").name == "C"  # 原地重命名
+
+
+def test_move_folder_into_itself_or_its_descendant_is_rejected(notes: NotesService) -> None:
+    """环一旦写进库，树就再也长不出来（前端遍历会无限展开）。"""
+    root = notes.create_folder(user_id="u1", name="工作")
+    child = notes.create_folder(user_id="u1", name="会议", parent_id=root.id)
+    grandchild = notes.create_folder(user_id="u1", name="周会", parent_id=child.id)
+
+    with pytest.raises(InvalidRequestError, match="它自己"):
+        notes.move_folder(root.id, user_id="u1", parent_id=root.id)
+    with pytest.raises(InvalidRequestError, match="子文件夹"):
+        notes.move_folder(root.id, user_id="u1", parent_id=child.id)
+    with pytest.raises(InvalidRequestError, match="子文件夹"):
+        notes.move_folder(root.id, user_id="u1", parent_id=grandchild.id)
+
+
+def test_move_folder_between_parents_and_back_to_root(notes: NotesService) -> None:
+    root = notes.create_folder(user_id="u1", name="工作")
+    other = notes.create_folder(user_id="u1", name="生活")
+    child = notes.create_folder(user_id="u1", name="会议", parent_id=root.id)
+
+    moved = notes.move_folder(child.id, user_id="u1", parent_id=other.id)
+    assert moved.parent_id == other.id
+
+    back = notes.move_folder(child.id, user_id="u1", parent_id=None)
+    assert back.parent_id is None
+
+
+def test_move_folder_rejects_duplicate_name_at_the_destination(notes: NotesService) -> None:
+    """换位置要按**新位置的兄弟**比一次：两个「会议」不能在同一个父下面碰头。"""
+    target = notes.create_folder(user_id="u1", name="目标")
+    notes.create_folder(user_id="u1", name="会议", parent_id=target.id)
+    loose = notes.create_folder(user_id="u1", name="会议")
+
+    with pytest.raises(ConflictError):
+        notes.move_folder(loose.id, user_id="u1", parent_id=target.id)
+
+
+def test_deleting_a_folder_keeps_its_notes_and_unfiles_them(notes: NotesService) -> None:
+    """**这条是本轮的核心纪律**：删文件夹 → 里面的笔记回到未归档，一个都不许少。"""
+    work = notes.create_folder(user_id="u1", name="工作")
+    meetings = notes.create_folder(user_id="u1", name="会议", parent_id=work.id)
+    inside = notes.create(user_id="u1", title="周会纪要", folder_id=meetings.id)
+
+    notes.delete_folder(work.id, user_id="u1")
+
+    assert notes.folder_overview(user_id="u1").folders == []  # 子文件夹跟着删（级联）
+    survived = notes.get_for_owner(inside.id, "u1")
+    assert survived.title == "周会纪要" and survived.folder_id is None
+    assert notes.folder_overview(user_id="u1").unfiled == 1
+
+
+def test_move_note_into_folder_and_back_to_unfiled(notes: NotesService) -> None:
+    folder = notes.create_folder(user_id="u1", name="工作")
+    record = notes.create(user_id="u1", title="条目")
+
+    moved = notes.move_note(record.id, user_id="u1", folder_id=folder.id)
+    assert moved.folder_id == folder.id
+    # 移动不是编辑：不动 updated_at，否则列表会把它顶到最前面
+    assert moved.updated_at == record.updated_at
+
+    back = notes.move_note(record.id, user_id="u1", folder_id=None)
+    assert back.folder_id is None
+
+
+def test_move_note_rejects_unknown_or_foreign_folder(notes: NotesService) -> None:
+    theirs = notes.create_folder(user_id="u2", name="别人的")
+    record = notes.create(user_id="u1", title="条目")
+
+    with pytest.raises(NotFoundError):
+        notes.move_note(record.id, user_id="u1", folder_id="fld_missing")
+    with pytest.raises(NotFoundError):
+        notes.move_note(record.id, user_id="u1", folder_id=theirs.id)
+    with pytest.raises(NotFoundError):  # 越主的笔记连移动都不行
+        notes.move_note(record.id, user_id="u2", folder_id=theirs.id)
+
+
+def test_create_note_inside_a_folder_and_reject_foreign_folder(notes: NotesService) -> None:
+    folder = notes.create_folder(user_id="u1", name="工作")
+
+    inside = notes.create(user_id="u1", title="周会", folder_id=folder.id)
+
+    assert inside.folder_id == folder.id
+    with pytest.raises(NotFoundError):
+        notes.create(user_id="u1", title="越主", folder_id="fld_missing")
+
+
+def test_list_filters_by_folder_and_unfiled(notes: NotesService) -> None:
+    work = notes.create_folder(user_id="u1", name="工作")
+    life = notes.create_folder(user_id="u1", name="生活")
+    in_work = notes.create(user_id="u1", title="工作条目", folder_id=work.id)
+    notes.create(user_id="u1", title="生活条目", folder_id=life.id)
+    notes.create(user_id="u1", title="没归档的")
+
+    items, total = notes.list(user_id="u1", folder_id=work.id)
+    assert total == 1 and items[0].id == in_work.id
+
+    unfiled_items, unfiled_total = notes.list(user_id="u1", unfiled=True)
+    assert unfiled_total == 1 and unfiled_items[0].title == "没归档的"
+
+    _, all_total = notes.list(user_id="u1")
+    assert all_total == 3
+
+    # 搜索与文件夹两个条件叠加：同一个轴上的两种取法 + 子串
+    _searched, searched_total = notes.list(user_id="u1", folder_id=work.id, query="工作条目")
+    assert searched_total == 1
+
+
+def test_list_does_not_validate_the_folder(bundle) -> None:  # type: ignore[no-untyped-def]
+    """不存在的文件夹 id 返回空列表而不是 404：别的标签页刚删掉它时，
+    空列表比报错更像"这个地方现在是空的"。"""
+    service = NotesService(bundle)
+    service.create(user_id="u1", title="无关")
+
+    items, total = service.list(user_id="u1", folder_id="fld_missing")
+
+    assert items == [] and total == 0
+
+
+def test_note_folder_foreign_keys_declare_the_documented_semantics(pg_stores) -> None:  # type: ignore[no-untyped-def]
+    """外键的 ``ON DELETE`` 是**表定义上的语义**，所以直接问数据库（而不是问服务层）。
+
+    ``SET NULL``：删文件夹 → 笔记回到未归档（``confdeltype='n'``）；
+    ``CASCADE``：删文件夹 → 子文件夹跟着走（``'c'``）。
+    这条用例钉的是"语义真的落在表上"——服务层哪天被改成手写两段删除，
+    这两条仍然必须成立（它们是数据层的保证，不是某条代码路径的行为）。
+    """
+    with pg_stores.read() as conn:
+        rows = conn.execute(
+            "select conrelid::regclass::text as rel, "
+            "       a.attname as col, c.confdeltype as del "
+            "  from pg_constraint c "
+            "  join pg_attribute a on a.attrelid = c.conrelid and a.attnum = any(c.conkey) "
+            " where c.contype = 'f' "
+            "   and c.conrelid in ('notes'::regclass, 'note_folders'::regclass)"
+        ).fetchall()
+
+    rules = {(row["rel"], row["col"]): row["del"] for row in rows}
+    assert rules[("notes", "folder_id")] == "n", "删文件夹要留下笔记（SET NULL）"
+    assert rules[("note_folders", "parent_id")] == "c", "子文件夹随父级一起删（CASCADE）"
+
+
+def test_deleting_a_parent_folder_row_cascades_and_unfiles_at_the_database_level(
+    bundle,  # type: ignore[no-untyped-def]
+    pg_stores,  # type: ignore[no-untyped-def]
+) -> None:
+    """不走服务层，直接删父文件夹那一行：子文件夹消失、笔记还在且回到未归档。
+
+    与上面那条互补：上面查的是**声明**，这条查的是**行为**（声明写对了但没生效，
+    在生产里是同一种故障）。``pg_stores`` 与 ``bundle`` 指向同一个临时库。
+    """
+    service = NotesService(bundle)
+    parent = service.create_folder(user_id="u1", name="工作")
+    child = service.create_folder(user_id="u1", name="会议", parent_id=parent.id)
+    note = service.create(user_id="u1", title="周会", folder_id=child.id)
+
+    with pg_stores.session() as conn:
+        conn.execute("DELETE FROM note_folders WHERE id = %s", (parent.id,))
+        folders = conn.execute("SELECT id FROM note_folders").fetchall()
+        row = conn.execute(
+            "SELECT folder_id, title FROM notes WHERE id = %s", (note.id,)
+        ).fetchone()
+
+    assert folders == [], "子文件夹应当随父级级联删掉"
+    assert row is not None and row["title"] == "周会", "笔记不该跟着文件夹消失"
+    assert row["folder_id"] is None, "失去归属的笔记回到未归档"
 
 
 # ------------------------------------------------------------------ 加入知识库

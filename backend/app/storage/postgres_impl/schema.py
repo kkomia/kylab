@@ -25,7 +25,7 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 """应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
 
 **启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
@@ -308,6 +308,60 @@ MIGRATIONS: tuple[Migration, ...] = (
             # 读形状只有一种：某条会话按 seq 正序（可带 kind 过滤）。上面那条唯一约束
             # 建出的索引**正好就是这个形状**（前缀 conversation_id + seq 有序），
             # 所以这里不再另建一条索引：多一条只会多一份写侧的代价与一处会漂的定义。
+        ),
+    ),
+    Migration(
+        version=14,
+        description="笔记文件夹：左栏的层级文件夹 + 笔记的归属（parent_id 自引用）",
+        statements=(
+            # 笔记从"扁平 + 标签"长出一层文件夹。与知识库目录（kb_folders，单层）刻意不同：
+            # **笔记允许嵌套**（`parent_id` 自引用），因为这里的文件夹是用户自己的知识
+            # 组织方式，"工作 / 会议记录"这样的两层是常态，而知识库的目录只是分组文件。
+            #
+            # 两条 `ON DELETE` 语义**是这张迁移的核心决定**，不是默认值：
+            #
+            # ① `parent_id` 用 ``CASCADE``：删一个文件夹连带删掉它的子文件夹。
+            #    子文件夹是"这个文件夹下面的一层"，父不在，那一层也就无从挂起；
+            #    换成 SET NULL 会把子文件夹悄悄挪到根级（用户会以为它们丢了，
+            #    与 folder.py 里"非空目录拒绝删"防的是同一件事）。**注意这里连带删掉的
+            #    只是文件夹本身**：子树里的笔记一个都不会没（见下一条）。
+            #
+            # ② `notes.folder_id` 用 ``SET NULL``：删文件夹 → 里面的笔记**回到未归档**，
+            #    而不是跟着消失。这与本产品"删除笔记要先问"是同一条纪律——删一个容器
+            #    不该顺手销毁里面的内容，而笔记误删不可恢复（正文没有第二份）。
+            #    界面对此负责：确认框里会把"里面的 N 篇笔记会回到未归档"说清楚。
+            #
+            # 代价写在明处：这两条语义意味着"删文件夹"是一个**会动的**操作，
+            # 所以它永远不该被静默触发（界面上是一次显式确认，API 上调 DELETE）。
+            """
+            CREATE TABLE note_folders (
+                id         text PRIMARY KEY,
+                user_id    text,
+                name       text NOT NULL,
+                parent_id  text REFERENCES note_folders (id) ON DELETE CASCADE,
+                created_at timestamptz NOT NULL DEFAULT now(),
+                updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """,
+            # 树每次都按"谁的文件夹、按名字排"整份读出来（个人规模，不做分页），
+            # 这条索引直接服务它。
+            "CREATE INDEX idx_note_folders_owner ON note_folders (user_id, lower(name))",
+            # 同级重名在**数据库层**也要挡住（服务层先查一次是为了给出人的话，
+            # 这一条是最后一道）。写成表达式索引是因为 `coalesce`：
+            # 唯一索引里 NULL 互不相等，而"根级文件夹"（parent_id 为 NULL）
+            # 与"无归属通道建的文件夹"（user_id 为 NULL）同样要挡住重名。
+            # `''` 不会与真实 id 撞：id 一律是 `fld_<hex>` / `usr_<hex>` 前缀。
+            """
+            CREATE UNIQUE INDEX uq_note_folders_sibling_name
+                ON note_folders (coalesce(user_id, ''), coalesce(parent_id, ''), name)
+            """,
+            """
+            ALTER TABLE notes
+                ADD COLUMN folder_id text REFERENCES note_folders (id) ON DELETE SET NULL
+            """,
+            # 列表的过滤形状是"谁的、哪个文件夹"+置顶/时间排序；未归档（folder_id IS NULL）
+            # 与具体文件夹两种取值都走这条索引（NULL 也在索引里）。
+            "CREATE INDEX idx_notes_folder ON notes (user_id, folder_id)",
         ),
     ),
 )

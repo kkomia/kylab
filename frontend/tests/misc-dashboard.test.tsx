@@ -209,15 +209,18 @@ describe('驾驶舱', () => {
     expect((swatches[0] as HTMLElement).style.background).toContain('color-mix')
   })
 
-  it('用量三态分开说：估算 token 单独标注，只讲口径不下结论', async () => {
+  it('模型用量只留四个大数与相对量条：估算口径与按模型明细都不上屏（2026-09-24 删）', async () => {
     renderMisc(<DashboardPage />)
 
-    expect(await screen.findByText(/其中约 5,000 token 是按字符数估算的/)).toBeInTheDocument()
-    // 有 token 的按 token 说，没有的（检索/向量化）说条数
-    expect(screen.getByText(/共 240 条/)).toBeInTheDocument()
-    expect(screen.getByText(/按模型：deepseek-chat（100 次）/)).toBeInTheDocument()
-    // 「这部分只用于看趋势，别拿它精确对账」这类叮嘱已删：口径本身留着，语气不留
-    expect(screen.queryByText(/别拿它精确对账|这部分只用于看趋势/)).toBeNull()
+    // 四个大数在（用量本身是结论）
+    expect(await screen.findByText('调用次数')).toBeInTheDocument()
+    // 估算说明（"其中约 … 是按字符数估算的"）、按模型那行（含供应商 URL）、
+    // 每条进度行右侧那串数（`100 次 · 共 240 条`）全部删掉
+    expect(screen.queryByText(/是按字符数估算的/)).toBeNull()
+    expect(screen.queryByText(/供应商没有返回用量/)).toBeNull()
+    expect(screen.queryByText(/按模型：/)).toBeNull()
+    expect(screen.queryByText(/共 240 条/)).toBeNull()
+    expect(screen.queryByText(/向量化部分按字符数估算/)).toBeNull()
   })
 
   it('趋势能在三个维度之间切换，切换只改取值口径', async () => {

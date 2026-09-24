@@ -3,39 +3,44 @@
 **两个池子不能混**（这是本模块存在的第一条理由）：记忆是"你说的"（无出处、可改、
 高频写），文档知识库是"文献说的"（有出处、不该被改、原文为王）。混进同一次检索，
 引用会脏、溯源会断。所以记忆召回是独立的一路（MCP 上是 `recall`，与 `search` 分开），
-结果永不合并。
+结果永不合并——而且**两条路连索引都不共用**：文档走 pgvector + 全文，
+记忆走 `memory_files.search` 对本工作区 Markdown 的一次扫描。
 
-**分工**：ReMe 管文件与整理（捕获、四动作整合、wikilink 图谱、它自己的 BM25 检索），
-本模块只是 KYLAB 的门面：
+**记忆在我们自己的进程里**（v0.46 起）。原先这一层是 ReMe 的 HTTP 门面
+（`base_url` + `POST /search`、`/auto_memory`、`/health_check`），得先有第二个进程
+活着——而它并进同一个进程又做不到：`reme-ai[as]` 会带来 agentscope，后者钉
+`mcp<2.0.0`，与我们的 `mcp>=2` 互斥（实测见设计文档 §3.5）。于是三件事都改成 native：
 
-- ``recall`` → 转发给 ReMe 的 ``POST /search``（接口面见设计文档 §3.1）；
-- ``remember`` → 写 ``MEMORY.md``，**不经过 ReMe**。理由：那是"核心长期记忆"这一层，
-  按 QwenPaw/ReMe 的设计它就是**用户与 Agent 共编的普通文件**、
-  且明确"不由自动流程覆盖"。我们直接维护它，于是**没有 ReMe 也能记住东西**；
-- ``core_text`` → 供对话把 ``MEMORY.md`` 注入 system prompt（二期）；
-- ``files`` / ``file_text`` / ``write_file`` / ``delete_file`` / ``graph`` → 三期的
-  记忆页（浏览/编辑/看图谱）。这些**直接读写本地工作区**，理由写在
-  ``services/memory_files.py`` 的模块头：看自己的文本文件不该先要求另一个进程活着。
-  编辑后的索引由 ReMe 自己的文件守护追（实测：5 秒 debounce），**保存路径上不需要
-  我们做什么**；``reindex`` 只是手动兜底。
+- ``recall`` → :func:`memory_files.search`（本地按块打分，带文件与行号）；
+- ``capture`` → 我们自己的捕获：让对话模型挑出值得长期留下的条目，
+  去重后追加到当天的 ``daily/`` 文件（**沿用队列与重试语义**，见 ``enqueue_capture``）；
+- ``status`` → 纯本地状态（几份文件、可召回几条、上次更新时间），**不探测任何东西**。
+
+**哪些没做**（如实写在这里，也写在设计文档 §3.5）：ReMe 的 Auto-Dream 四动作整理
+（CREATE/CORROBORATE/REFINE/CORRECT）这一轮不做，所以记忆**只增不并**——
+daily 里的条目不会被自动折叠进 ``digest/``；它的 BM25 质量也不追求（我们只做
+词面命中 + 标题加权，规模上够用，见 ``memory_files.search``）。
 
 **关着时一律明确报错，不返回空**：返回空会让模型以为"没有相关记忆"，
-然后基于错误前提继续推理——那是比报错更坏的一种失败。
+然后基于错误前提继续推理——那是比报错更坏的一种失败。（**开着时**返回空才是
+真的"没有相关记忆"：那时检索确实在本地跑过了。）
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import uuid
-from dataclasses import dataclass, replace
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import httpx
-
-from app.core.exceptions import InvalidRequestError, UpstreamError
+from app.core.exceptions import InvalidRequestError
 from app.models.enums import TaskKind, TaskState
 from app.services import memory_files
+from app.services.llm import ChatMessage, OpenAICompatChat
 from app.services.memory_files import MemoryFile, MemoryFileDetail, MemoryGraph
 from app.services.runtime_config import RuntimeConfigService
 from app.storage.base import StoreBundle, TaskRecord
@@ -55,11 +60,6 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
-
-#: 核心长期记忆的文件名。**不进检索**，靠注入 system prompt 生效。
-#: 共享桶的代号：管理员控制台与 API Key 通道的记忆（无账号归属）。
-#: 它同时是 `data/memory/` 本身，见 ``workspace_for``。
-SHARED_SCOPE = "shared"
 
 CORE_MEMORY_FILE = "MEMORY.md"
 
@@ -277,11 +277,13 @@ read_when:
 #: 一次召回最多取几条。与检索工具同一口径：给模型"够用"的几条，
 #: 而不是它说要多少就给多少（上下文预算是有限的）。
 MAX_RECALL = 20
-DEFAULT_RECALL = 6
+#: 服务层不另立一个默认值：默认条数只在文件层定一次（少一处会对不上的数）。
+DEFAULT_RECALL = memory_files.DEFAULT_RECALL
 
 #: 捕获节流的默认值：每几个用户回合沉淀一次。
 #: 5 是 ReMe/QwenPaw 的默认（见设计文档 §2.4），这里保持一致——
 #: 换成别的数没有依据，而它有：那条默认值来自它们的实际使用经验。
+#: **理由现在更硬了**：一次捕获就是一次模型调用，而省 token 是这个项目反复强调的事。
 DEFAULT_CAPTURE_EVERY = 5
 
 #: 一条记忆的字数上限。**协议层与这里同源**（``api/v1/schemas.py`` 的
@@ -289,88 +291,105 @@ DEFAULT_CAPTURE_EVERY = 5
 #: 用户看到的是一句"请求不合法"，而不是"这条太长了，请存成笔记"。
 MAX_ENTRY_CHARS = 500
 
-#: 调用 ReMe 的超时。它的检索是本地 BM25，正常在毫秒级；
-#: 给到 10 秒是为了容忍首次索引建立，而不是为了容忍它卡死。
-_TIMEOUT_SECONDS = 10.0
+#: 一次捕获最多写几条。一轮对话能沉淀出的"长期事实"通常一到两条，
+#: 5 是护栏：模型偶尔会把整段对话拆成十条"事实"，而记忆不是流水账。
+MAX_CAPTURED_ITEMS = 5
 
-#: 新建 MEMORY.md 时的模板。frontmatter 里的 ``summary`` / ``read_when``
-#: 是 ReMe 那一族的约定（给检索与注入用），照抄以免以后要迁移。
+#: 送进捕获提示词的"已经记过的条目"条数上限（取最近的这些条）。
+#: 不设上限的话，这个提示词会随着记忆增长越来越贵——而它每次捕获都要发一遍。
+KNOWN_ENTRIES_IN_PROMPT = 60
+
+#: 单条消息送进捕获提示词的字数上限。一轮对话里助手的回答可能很长，
+#: 但"值得长期记"的决定与结论通常首尾都有，所以取头也取尾（见 ``_transcript``）。
+CAPTURE_MESSAGE_CHARS = 2000
+
+#: 去重判据：去掉空白与标点后的**字符二元组重合度**下限（Jaccard）。
 #:
-#: 正文照抄 QwenPaw 的 MEMORY.md（`md_files/zh/`），**只改了一处**：它那四条例子
-#: 是列表项（``- 用户的稳定偏好与工作方式`` …），而我们这个文件里的列表项
-#: **就是记忆条目本身**（``_read_entries`` 按 `- ` 认条目）——照抄的话，
-#: 那四条例子会在下一次 `remember` 时被当成四条已存在的记忆。
-#: 于是改成一句散文，意思一字不差。
+#: 阈值定得偏高（0.7）是**故意偏保守**：漏过一条改写（写重了一条记忆）是看得见的，
+#: 用户扫一眼文件就能删；而误判"新事实与旧条目是同一件事"会静默丢掉一条真事实。
+#: 两者不对等，所以宁可少拦。另外两条更硬的判据在 ``_similar`` 里：
+#: 指纹相同（只差标点空白），以及"短的那条是长的那条的整段、且只多出几个字"。
+DUP_SIMILARITY = 0.7
+
+#: 包含关系算重复时，长的那条最多能比短的多几个字（见 ``_similar``）。
 #:
-#: 它教的几件事都留着，其中两件是**安全与卫生**上的：
-#: "不要把每日流水复制进来"（记忆越长越像日志，而它每轮都要进上下文）、
-#: "除非明确要求不要记密码/令牌"（这一条我们只在长度上限上兜过，没有明说）。
-_TEMPLATE = """---
-summary: "Agent 的核心长期记忆，由用户和 Agent 共同维护"
-read_when:
-  - 需要了解长期有效的用户偏好、重要决策、工具设置或经验教训
+#: **为什么要有个数**：没有它，"设备名是 nas"与"设备名是 nas，地址是 192.168.1.10"
+#: 会被判成重复，而后者多出来的地址就**永远不落盘**了——这一轮没有整理机制
+#: （Auto-Dream 不做），我们没法把新信息并进旧条目，所以拦下来等于丢信息。
+#: 只差几个字的才是"同一句话的标点级改写"，那才该拦。
+CONTAINMENT_SLACK = 6
+
+#: 指纹用：去重比对前把空白与标点抹掉（只留字与数字）。
+#: ``\w`` 在 Python 3 里按 Unicode 匹配，汉字也算字，所以中文不受影响。
+_NON_WORD = re.compile(r"[\W_]+", re.UNICODE)
+#: 数字串（判"数字变了 = 不是同一件事"用，见 ``_similar``）。
+_DIGIT_RUN = re.compile(r"\d+")
+#: 模型输出里认得出是"一条"的行：项目符号或编号开头。
+_ENTRY_LINE = re.compile(r"^\s*(?:[-*+•]|\d+[.、)])\s*")
+#: 代码围栏（模型爱把输出包起来）。
+_FENCE = re.compile(r"^\s*```")
+
+#: 捕获用的系统提示词。**留的是 ReMe/QwenPaw 那份"什么值得记"的清单**
+#: （设计文档 §2.4 抄下来的那几条），因为那是这一层最见功力的地方：
+#: 写"识别以后仍可能有用的事"，模型就会把整轮对话都抄下来。
+#:
+#: 最后两条是安全与卫生，且必须写在提示词里：**敏感信息不进记忆**是
+#: MEMORY.md 模板里就有的约定，而这里是我们唯一会"自动写入"的入口。
+_CAPTURE_SYSTEM = (
+    "你在把一轮对话里**值得长期留下的事**挑出来，写进这个人的长期记忆。\n"
+    "值得记的：稳定的偏好与工作方式、项目背景与长期约束、已经确认的决定（连同原因）、"
+    "当前进展与阻塞、可复用的做法。\n"
+    "不值得记的：一次性的问答内容、从资料里查到的知识（那是知识库的事）、"
+    "寒暄与客套、与已有条目重复的内容。\n"
+    "**绝不记录密码、令牌、密钥、证件号这类敏感信息**，哪怕对话里提到了。\n"
+    "输出格式：每条一行，以「- 」开头，一句话说清一件事（不超过 60 字）；"
+    "没有值得记的就**什么也不要输出**，不要写「没有」这类说明。"
+)
+
+#: 新建当日现场文件时的骨架。日期**用本地日期**而不是 UTC：这是给人看的
+#: "今天的现场"，而人的日期感是本地时间（用 UTC 会让东八区早上 8 点前的
+#: 对话记到"昨天"）。
+_DAILY_TEMPLATE = """---
+summary: "{date} 的现场记忆（对话里自动沉淀下来的条目）"
 ---
 
-## 核心长期记忆
-
-这是 Agent 的核心长期记忆文件，用户和 Agent 都可以读它、改它、往里加。
-
-记录经过筛选、长期有效、以后会反复用到的信息：对方的稳定偏好与工作方式，
-重要决定与长期约束，工具设置（设备名、地址、别名这类），以及值得长期留下的经验教训。
-
-不要把每日流水或整段会话记录复制到这里——那是笔记的事。除非对方明确要求，
-**不要记录密码、令牌或其他敏感信息**。更新前先读一遍现有内容，
-保留用户或其他会话写进来的有效信息，并合并去重。
+# {date}
 
 {entries}
-
-## 工具设置
-
-<!-- 在这里记录长期有效、与当前工作区相关的工具设置。 -->
-
-## 重要决策与经验
-
-<!-- 在这里记录需要跨会话保留的重要决策、约束和经验教训。 -->
 """
 
 
 @dataclass(frozen=True, slots=True)
 class MemoryStatus:
-    """记忆层的当前状态，给界面与健康检查用。"""
+    """记忆层的当前状态，给界面用。
+
+    **没有任何"连通性"字段**（v0.46 起）：记忆是我们自己进程内的一路检索，
+    没有第二个进程可连，也就没有"连不上"这种状态。原先那个三态 ``reachable``
+    （``None`` = 没探过）是给探测端点用的，随 ReMe 一起删了。
+    """
 
     enabled: bool
-    base_url: str
     workspace: str
     core_file_exists: bool
-    reachable: bool | None = None
-    """**三态**：``None`` = 这次没探测，``True``/``False`` = 真探过。
+    file_count: int = 0
+    """工作区里的记忆文件份数。"""
 
-    为什么不是布尔：``status()`` 故意不打远端（界面每次渲染都调它），
-    而 ``probe()`` 才真的打一次。用布尔的话，``status()`` 只能填一个值，
-    于是页面上会出现"记忆服务未连接"——而那时根本没有谁去连过。
-    **没测过就别下结论**，界面据此只显示"已启用"。
+    retrievable_count: int = 0
+    """其中进入召回池的份数（``daily/`` 与 ``digest/``）。"""
 
-    实测踩过：`GET /memory` 返回 `reachable: false` 而服务其实是健康的
-    （`probe` 同一时刻返回"服务正常"），页头因此一直挂着警示。
-    """
+    entry_count: int = 0
+    """可召回的**条数**：召回池那些文件切出来的块数（与召回同源，见 ``memory_files.stats``）。"""
+
+    last_changed_at: str = ""
+    """记忆内容最后一次改动的时间（ISO，UTC）。没有索引也就没有"索引时间"，
+    这里的含义就是"上次更新"。"""
 
     detail: str = ""
 
 
-@dataclass(frozen=True, slots=True)
-class MemoryHit:
-    """一条召回结果。
-
-    ``text`` 是 ReMe 给的片段原文；``path`` + 行号是它在工作区里的位置——
-    保留位置是因为"这条记忆从哪个文件的哪一段来"决定了用户能不能去改它，
-    也是"渐进式展开"的入口（先给片段，不够再按路径读全文）。
-    """
-
-    text: str
-    path: str = ""
-    start_line: int | None = None
-    end_line: int | None = None
-    score: float | None = None
+#: 召回结果的记录类型**直接用文件层那一个**：片段与出处本来就是在那里算出来的，
+#: 服务层只转发——再拷一层就多一处"字段对不上"的机会。
+MemoryHit = memory_files.MemoryMatch
 
 
 @dataclass(frozen=True, slots=True)
@@ -383,7 +402,11 @@ class MemoryLink:
 
 
 class MemoryService:
-    """记忆的门面。**不持有任何 ReMe 的进程内状态**——它是另一个进程。"""
+    """记忆的实现。**全在本地**：读写的都是 ``data/memory/`` 下的 Markdown。
+
+    唯一会出网的动作是**捕获时问一次对话模型**（``capture``）——那不是"记忆服务"，
+    而是我们自己的模型通道，模型没配好时它明确报错（见 ``_ask_model``）。
+    """
 
     def __init__(
         self,
@@ -391,22 +414,22 @@ class MemoryService:
         data_dir: Path,
         *,
         stores: StoreBundle | None = None,
+        ask: Callable[[list[ChatMessage]], str] | None = None,
     ) -> None:
         self._runtime = runtime
         self._data_dir = data_dir
         #: 存储（可选）：**只有入队捕获任务时才需要**。不给它也能用——
         #: recall / remember / 注入都不碰数据库，测试与脚本因此可以轻量构造。
         self._stores = stores
+        #: 问模型的能力（可选）：不给就用运行期配置里绑定的对话模型（见 ``_ask_model``）。
+        #: 测试注入它来跑"捕获"这条链路，不必真连一个模型。
+        self._ask = ask
 
     # ------------------------------------------------------------------ 配置
 
     @property
     def enabled(self) -> bool:
         return self._runtime.get_bool("memory.enabled")
-
-    @property
-    def base_url(self) -> str:
-        return self._runtime.get("memory.base_url").rstrip("/")
 
     def workspace_for(self, user_id: str | None = None) -> Path:
         """某个账号的记忆工作区（**agent 按账号隔离的落点**，v0.15）。
@@ -423,6 +446,10 @@ class MemoryService:
         为什么"一个账号一个目录"就是"一个账号一个 agent"：这个目录里放着它的
         ``SOUL.md``（人格）与 ``MEMORY.md``（长期记忆），
         而这两份东西每轮都进 system prompt。**分开它们，Agent 才真的是"我的"**。
+
+        **native 之后这条隔离是精确的**：召回只扫"这个账号自己的目录"，
+        不存在"一个记忆服务只能盯一份工作区"那种进程级限制
+        （原先 ``memory.service_scope`` 就是为了如实说明那件事，随 ReMe 一起删了）。
         """
         raw = (self._runtime.get("memory.workspace") or "memory").strip()
         base = self._data_dir / raw
@@ -441,41 +468,15 @@ class MemoryService:
         """共享桶的 ``MEMORY.md``（``core_file_for(None)`` 的兼容写法）。"""
         return self.core_file_for(None)
 
-    @property
-    def service_scope(self) -> str:
-        """配置里那个 ReMe 实例服务的是**哪个账号的记忆**。
-
-        ReMe 的 ``workspace_dir`` 是**进程级**配置（它的 ``watch_dirs`` 只认
-        ``daily`` / ``digest`` 两个固定子目录），一个实例只能盯一份工作区。
-        所以"按账号召回"的完整形态是**每个账号一个 ReMe 实例**；在只有一个实例的
-        部署里，我们只能如实说"它服务的是谁"，而不是假装所有账号都隔离好了。
-
-        默认 ``shared``：单用户部署里那个实例盯的就是共享桶。
-        """
-        return (self._runtime.get("memory.service_scope") or SHARED_SCOPE).strip()
-
-    def _require_scope_served(self, user_id: str | None) -> None:
-        """召回/重建索引前确认"这个账号的记忆由这个实例服务"。
-
-        **不糊弄**：实例服务的是别人时，宁可报错也不返回——返回的话，
-        甲用户会读到乙用户的记忆片段，而且界面上完全看不出来。
-        """
-        wanted = user_id or SHARED_SCOPE
-        served = self.service_scope
-        if wanted == served:
-            return
-        raise InvalidRequestError(
-            f"当前记忆服务（ReMe）盯的是「{served}」的记忆，不是「{wanted}」的。"
-            "按账号召回需要为该账号单独跑一个记忆服务，"
-            "并把它的 workspace_dir 指到该账号的目录、在设置里把"
-            "「记忆服务所属账号」改成它。"
-        )
-
     def _require_enabled(self) -> None:
+        """召回与自动沉淀的那道闸。
+
+        报错文案里**不提任何服务**（v0.46）：本地实现没有"要去把某个进程拉起来"
+        这回事，能做的动作只有一件——去设置里打开它。
+        """
         if not self.enabled:
             raise InvalidRequestError(
-                "未启用长期记忆。请在「设置 → 长期记忆」里打开，"
-                "并让记忆服务（ReMe）在配置的地址上运行"
+                "未启用长期记忆。请在「设置 → 长期记忆」里打开（在记忆页可以直接打开）"
             )
 
     # ------------------------------------------------------------------ 读取
@@ -606,41 +607,29 @@ class MemoryService:
             )
         return "\n\n".join(parts)
 
-    def status(self) -> MemoryStatus:
-        """当前状态。**不做网络探测**（那是 ``probe`` 的事）——
-        界面每次渲染都调它，不该顺手打一次远端。
+    def status(self, user_id: str | None = None) -> MemoryStatus:
+        """当前状态：**数一遍工作区，不连任何东西**。
 
-        因此 ``reachable`` 是 ``None``（= 没探过），不是 ``False``：
-        见 ``MemoryStatus.reachable`` 上那段实测记录。
+        为什么连计数都在这里算（而不是让界面 filter）：这些数字的含义都压在
+        "召回池是哪几个目录""什么算一条"这些判断上，而它们只在这一层知道。
+        界面只该显示数字。
+
+        成本：一次目录遍历 + 读召回池那几个文件。这是"个人长期记忆"的量级
+        （几份到几百份、几百 KB），所以不另做缓存——不缓存就没有"缓存过期"
+        这个新问题。
         """
+        space = self.workspace_for(user_id)
+        stats = memory_files.stats(space)
         return MemoryStatus(
             enabled=self.enabled,
-            base_url=self.base_url,
-            workspace=str(self.workspace),
-            core_file_exists=self.core_file.exists(),
-            reachable=None,
-            detail="" if self.enabled else "未启用",
+            workspace=str(space),
+            core_file_exists=self.core_file_for(user_id).exists(),
+            file_count=stats.file_count,
+            retrievable_count=stats.retrievable_count,
+            entry_count=stats.entry_count,
+            last_changed_at=stats.last_changed_at,
+            detail="" if self.enabled else "未启用：过去的对话不会被召回，也不会自动沉淀",
         )
-
-    def probe(self) -> MemoryStatus:
-        """连通性检查：真的打一次记忆服务。供设置的「测试连接」用。
-
-        **必须用 `dataclasses.replace`，不能 `MemoryStatus(**{**base.__dict__, ...})`**：
-        `MemoryStatus` 是 `slots=True` 的记录，**没有 `__dict__`**，
-        那样写会在"启用且服务活着"这条路径上抛 `AttributeError` → 500。
-        这个 bug 只在真打一次服务时才出现：关着时走的是上面那个 early return，
-        而单测里唯一覆盖 probe 的用例恰好是关着的那条。
-        """
-        base = self.status()
-        if not self.enabled:
-            return base
-        try:
-            payload = self._post("health_check", {})
-        except (UpstreamError, InvalidRequestError) as exc:
-            # **要显式给 `reachable=False`**：`status()` 那份是 None（没探过），
-            # 而这里确实探过并且失败了——不写就会把"没探过"当成"连不上"传出去。
-            return replace(base, reachable=False, detail=str(exc))
-        return replace(base, reachable=True, detail=f"服务正常：{_brief(payload)}")
 
     # ------------------------------------------------------------------ 召回
 
@@ -649,70 +638,124 @@ class MemoryService:
     ) -> tuple[list[MemoryHit], list[MemoryLink]]:
         """在记忆里找回相关片段。**与文档检索是两条路**（见模块头）。
 
-        返回（片段，邻接边）。带图谱是因为 ReMe 的召回本来就是"渐进式"的：
-        先给最相关的片段，不够时按 wikilink 走到相关的记忆节点——
-        这一步不额外花检索成本，它就在同一个响应里。
+        打分与命中判据都在 ``memory_files.search``（读那一处的说明）。
+        顺链给出的邻接边是**免费附带的**：wikilink 就在正文里，
+        命中文件一出链就顺出来了，不需要第二次检索。
         """
         self._require_enabled()
-        self._require_scope_served(user_id)
         text = query.strip()
         if not text:
             raise InvalidRequestError("缺少参数：query")
         count = max(1, min(int(limit or DEFAULT_RECALL), MAX_RECALL))
 
-        payload = self._post("search", {"query": text, "limit": count})
-        return _hits_of(payload), _links_of(payload)
+        space = self.workspace_for(user_id)
+        hits = memory_files.search(space, text, limit=count)
+        links = [
+            MemoryLink(path=path, direction=direction, name=name)
+            for path, direction, name in memory_files.links_of(
+                self.files(user_id), [item.path for item in hits]
+            )
+        ]
+        return hits, links
 
     # ------------------------------------------------------------------ 捕获
 
     def capture(
         self, messages: list[dict[str, str]], *, session_id: str, user_id: str | None = None
     ) -> dict[str, Any]:
-        """把一轮对话交给 ReMe 的 Auto-Memory 沉淀。
+        """把一轮对话沉淀成记忆条目（**我们自己的实现**，v0.46 起）。
 
-        **由 ReMe 决定记什么**，我们不在这里做二次筛选——它的规矩是
-        "识别以后仍可能有用的事"（稳定偏好、项目背景与限制、已确认的决定及原因、
-        当前进展与阻塞、可复用的流程），并且没有值得记的内容时**不产生空记忆**。
-        我们替它筛一遍，只会把它判断得比它差。
+        三步：让对话模型挑出"值得长期留下"的条目 → 与工作区里已有的条目去重
+        → 追加到**当天的 ``daily/`` 文件**。
 
-        ``messages`` 每项要带 ``role`` 与 ``name``：ReMe 那侧收的是 agentscope 的
-        ``Msg``，**缺 ``name`` 会被它的校验直接拒掉**（实测报
-        ``1 validation error for Msg / name Field required``）。``name`` 就是
-        "谁说的"，所以这里强制调用方给全，而不是替它编一个。
+        为什么落 daily 而不是 ``MEMORY.md``（设计文档 §1 的两层分工）：
+        ``MEMORY.md`` 是那几份**每轮整份注入上下文**的核心文件，自动沉淀直接写进去
+        等于机器替人决定"什么该长期占着上下文窗口"；而 daily 是按需召回的现场，
+        只增不并。**这一轮没有整理机制**（Auto-Dream 不做），所以 daily 会一直长，
+        这一点如实写在设计文档里，不藏着。
 
-        ``session_id`` 是**溯源锚点**：ReMe 会把来源对话写成
-        ``session/dialog/<session_id>.jsonl`` 并在记忆笔记里回链，
-        这样"这条记忆是哪次对话来的"永远查得到。用我们的 conversation id 正好。
+        去重有两道：提示词里把那句话说出来（模型自己先别重复），以及
+        机械比对（``_similar``）兜底——模型并不总是听话。
+
+        失败一律抛出去：它跑在队列上（``TaskKind.MEMORY``），由 worker 按重试语义
+        处置；在这里吞掉的话，"记忆开着却什么都没记住"会变成一个查不出原因的现象。
         """
         self._require_enabled()
-        # 捕获是"写进谁的记忆"，所以同样要过服务范围校验
-        self._require_scope_served(user_id)
         if not messages:
             raise InvalidRequestError("没有可沉淀的消息")
         for index, item in enumerate(messages):
-            if not (item.get("role") and item.get("name") and item.get("content")):
-                raise InvalidRequestError(
-                    f"第 {index + 1} 条消息缺少 role / name / content"
-                    "（记忆服务要求每条都标明是谁说的）"
-                )
+            if not (item.get("role") and item.get("content")):
+                raise InvalidRequestError(f"第 {index + 1} 条消息缺少 role / content")
         if not session_id.strip():
             raise InvalidRequestError("缺少参数：session_id（记忆要靠它回溯来源对话）")
 
-        payload = self._post(
-            "auto_memory", {"messages": messages, "session_id": session_id}
-        )
-        meta = payload.get("metadata") if isinstance(payload, dict) else None
-        meta = meta if isinstance(meta, dict) else {}
+        space = self.workspace_for(user_id)
+        known = memory_files.entry_texts(space)
+        raw = self._ask_model(_capture_prompt(messages, known))
+        fresh = _select_new(raw, known)
+        if not fresh:
+            # 没有值得记的**也是一次正常结果**（ReMe 那边同样不产生空记忆）：
+            # 返回 created=false 而不是报错，调用方据此不必报告"记下了"。
+            return {
+                "created": False,
+                "path": "",
+                "entries": [],
+                "summary": "这一轮没有值得新记的内容",
+                "messages": len(messages),
+            }
+
+        path = self._append_daily(space, fresh, session_id=session_id)
         return {
-            "created": bool(meta.get("created")),
-            "modified": bool(meta.get("modified")),
-            # `answer` 是它给人类读的一句话（"记下了什么"），直接透出给日志与界面
-            "summary": str(payload.get("answer") or "")[:300]
-            if isinstance(payload, dict)
-            else "",
-            "path": str(meta.get("path") or ""),
-            "messages": int(meta.get("n_messages") or 0),
+            "created": True,
+            "path": path,
+            "entries": fresh,
+            "summary": f"记下了 {len(fresh)} 条：" + "；".join(fresh)[:200],
+            "messages": len(messages),
         }
+
+    def _ask_model(self, messages: list[ChatMessage]) -> str:
+        """问一次对话模型。
+
+        用的是运行期配置里**绑定给「对话生成」的那个模型**（与对话同一条模型通道），
+        而不是另配一套：记忆沉淀是对话的副产品，没有理由让它用别的模型。
+        没绑定时报可读错误（同 ``ChatService`` 的口径），由队列去重试。
+        """
+        if self._ask is not None:
+            return self._ask(messages)
+        config = self._runtime.llm()
+        if not config.is_configured:
+            raise InvalidRequestError(
+                "没有配置对话模型，记忆沉淀需要一个能用的对话模型（设置 → 模型）"
+            )
+        return OpenAICompatChat(config).complete(messages)
+
+    def _append_daily(self, space: Path, entries: list[str], *, session_id: str) -> str:
+        """把条目追加到当天的现场文件，返回它的相对路径。
+
+        **两个纪律**：
+
+        - 落到谁的目录由调用方给（``space``），文件里不留任何跨账号信息；
+        - 来源会话写成一行 HTML 注释（``<!-- 来源会话 conv_x -->``）：
+          渲染出来看不见（不打扰正文），又能回答"这条是哪次对话来的"。
+          不写成 wikilink——那会连到不存在的文件上，把图谱的悬空链接数弄脏。
+        """
+        day = datetime.now().strftime("%Y-%m-%d")
+        target = space / "daily" / f"{day}.md"
+        block = "\n".join(f"- {entry}" for entry in entries)
+        note = f"<!-- 来源会话 {session_id} -->"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists():
+                body = target.read_bytes().decode("utf-8", errors="replace").rstrip("\n")
+                content = f"{body}\n{block}\n{note}\n"
+            else:
+                content = _DAILY_TEMPLATE.format(date=day, entries=f"{block}\n{note}")
+            # 按字节写：``write_text`` 在 Windows 上把 ``\n`` 翻成 ``\r\n``
+            # （与 memory_files 同一处坑），而这份文件用户也会用别的编辑器改
+            target.write_bytes(content.encode("utf-8"))
+        except OSError as exc:
+            raise InvalidRequestError(f"写不了当天的记忆文件：{exc}") from exc
+        return f"daily/{day}.md"
 
     # ------------------------------------------------------------------ 记住
 
@@ -721,18 +764,16 @@ class MemoryService:
     ) -> dict[str, Any]:
         """把一条长期事实写进 ``MEMORY.md``。
 
-        **按 QwenPaw/ReMe 的约定做合并去重**：它们在 MEMORY.md 的说明里明确
-        "更新前先读取现有内容，保留用户或其他会话写入的有效信息，并合并去重"。
-        不这么做的话，同一件事会被记很多遍，而记忆越长越不像记忆、越像日志。
+        **合并去重**是这个文件的约定（QwenPaw/ReMe 那份说明里写着"更新前先读一遍
+        现有内容，保留别人写进来的有效信息，并合并去重"）：不这么做的话，
+        同一件事会被记很多遍，而记忆越长越不像记忆、越像日志。
 
         返回 ``added`` 让调用方知道是真写进去了还是本来就有——模型据此不必重复记。
 
-        **不看``memory.enabled``那道闸**（v0.22 起，与那四份人设文件同一理由）：
+        **不看 ``memory.enabled`` 那道闸**（v0.22 起，与那四份人设文件同一理由）：
         它写的是 ``MEMORY.md``，而那份文件由我们直接读写、并且**无论开关如何都会注入
-        提示词**——也就是说写进去立即就有效。原先它在闸后面，于是关掉记忆服务时
-        "记住"这件事整个是死的，而报错还写着"请在设置里打开，并让记忆服务跑起来"
-        ——那句对 ``recall`` 成立，对这里**不成立**（这里根本不经过 ReMe）。
-        闸管的是另一半：过去的对话会不会被召回（``recall``）、会不会自动沉淀（``capture``）。
+        提示词**——也就是说写进去立即就有效。闸管的是另一半：过去的对话会不会被
+        召回（``recall``）、会不会自动沉淀（``capture``）。
         """
         text = " ".join(content.split()).strip()
         if not text:
@@ -771,9 +812,9 @@ class MemoryService:
     ) -> bool:
         """按节流规则把一次沉淀排进队列；返回**是否真的入了队**。
 
-        为什么必须有节流：ReMe 的设计是"每累计 5 个用户回合触发一次"，
-        **但它的服务不管累计**（每次调用就是一次 LLM 调用）。每轮都沉淀
-        等于每轮多花一次模型调用，而省 token 是这个项目反复强调的事。
+        为什么必须有节流：一次捕获就是**一次模型调用**（见 ``capture``），
+        每轮都沉淀等于每轮多花一次调用，而省 token 是这个项目反复强调的事。
+        节流值默认 5（``DEFAULT_CAPTURE_EVERY``，与 ReMe/QwenPaw 的默认一致）。
 
         为什么放在服务层而不是调用方：它是"记忆怎么工作"的一部分。
         调用方只该提供"这是第几轮"，不该知道"每几轮一次"这个规则——
@@ -806,10 +847,9 @@ class MemoryService:
 
     # ------------------------------------------------------------------ 文件
     #
-    # 三期的浏览/编辑走**本地目录**（理由见 services/memory_files.py 的模块头）：
-    # 这几个方法**不要求 ``memory.enabled``**——记忆关着的时候，用户依然该能打开
-    # 自己的记忆文件看看写了什么、把不对的改掉。要求"先起一个服务才能读自己的文本
-    # 文件"是没道理的。真正需要服务活着的只有召回与索引（``recall`` / ``reindex``）。
+    # 浏览/编辑走**本地目录**：这几个方法**不要求 ``memory.enabled``**——
+    # 记忆关着的时候，用户依然该能打开自己的记忆文件看看写了什么、把不对的改掉。
+    # 要求"先打开一个开关才能读自己的文本文件"是没道理的。
 
     def files(self, user_id: str | None = None) -> list[MemoryFile]:
         """列出这个账号工作区里的记忆文件（分类、摘要、出链、是否已整合）。"""
@@ -832,35 +872,20 @@ class MemoryService:
     def write_file(self, path: str, content: str, user_id: str | None = None) -> MemoryFileDetail:
         """写一个文件。
 
-        **故意不在这里调 ``reindex``**：ReMe 自己有一组后台守护
-        （``index_update_loop``，``watch_dirs: [daily_dir, digest_dir]``、
-        ``force_polling`` + 5 秒 debounce），编辑会被它自动吃掉；
-        而 ``reindex`` 的说明是 *without rescanning workspace files*——
-        它只重建"已入库分片"的索引，**看不见刚新建的文件**。所以每次保存后调它
-        既是多余的、又解决不了新文件的问题。要手动兜底时用 ``reindex``（界面上是
-        那个按钮），而不是在保存路径上假装做了点什么。
+        **保存路径上什么都不做**（v0.46 之后连"什么都不做"都不必解释了）：
+        召回是每次按需扫工作区，改完下一句问话就能搜到——原先这里要交代
+        ReMe 的文件守护会不会跟上、``reindex`` 为什么是白调（见设计文档 §3.3），
+        那类问题随第二个进程一起消失了。
         """
         return memory_files.write_file(self.workspace_for(user_id), path, content)
 
     def delete_file(self, path: str, user_id: str | None = None) -> None:
-        """删一个文件。索引同上：交给 ReMe 的守护去追。"""
+        """删一个文件。索引同上：没有索引要追。"""
         memory_files.delete_file(self.workspace_for(user_id), path)
 
     def graph(self, user_id: str | None = None) -> MemoryGraph:
         """wikilink 图谱（本地算，见 ``memory_files.graph_of`` 的说明）。"""
         return memory_files.graph_of(self.files(user_id))
-
-    def reindex(self, user_id: str | None = None) -> str:
-        """请记忆服务重建索引，返回它给的一句话。
-
-        这是**手动兜底**，不是保存流程的一环：守护进程只在服务活着的时候看文件，
-        所以"服务没起时改了一批文件、后来才起"这类情况下索引可能是旧的
-        （它启动时有 ``init_changes_step`` 做一次差量，但没覆盖到的就得手动来）。
-        ``scope`` 默认 ``all``（它自己的默认值），我们不传。
-        """
-        self._require_enabled()
-        self._require_scope_served(user_id)
-        return _brief(self._post("reindex", {}))
 
     # ------------------------------------------------------ 核心记忆的条目
 
@@ -918,39 +943,154 @@ class MemoryService:
         # 每次 remember 都把整份文件的换行翻一遍（与 seed_persona 同一处坑）
         self.core_file_for(user_id).write_bytes(body.encode("utf-8"))
 
-    # ------------------------------------------------------------------ HTTP
 
-    def _post(self, job: str, payload: dict[str, Any]) -> Any:
-        """调记忆服务的一个 job。
-
-        **接口面**：ReMe 的 ``http_service.py`` 里写的是
-        ``self.service.post(f"/{job.name}", ...)``——也就是"每个 job 就是
-        ``POST /<job 名>`` + JSON 请求体"（见设计文档 §3.1）。所以这里不需要
-        一张路由表，job 名直接拼路径。
-        """
-        if not self.base_url:
-            raise InvalidRequestError("没有配置记忆服务地址（设置 → 长期记忆）")
-        url = f"{self.base_url}/{job}"
-        try:
-            response = httpx.post(url, json=payload, timeout=_TIMEOUT_SECONDS)
-        except httpx.HTTPError as exc:
-            raise UpstreamError(f"连不上记忆服务 {url}：{exc}") from exc
-        if response.status_code >= 400:
-            raise UpstreamError(
-                f"记忆服务返回 {response.status_code}：{response.text[:200]}"
-            )
-        try:
-            return response.json()
-        except ValueError as exc:
-            raise UpstreamError("记忆服务返回的不是 JSON") from exc
+# --------------------------------------------------------------- 捕获的纯函数
+#
+# 下面这些都是纯的（输入 → 输出，不碰文件、不连模型），所以"模型输出怎么解析"
+# 与"什么算重复"这两件最容易出错的事可以单独测。
 
 
-# --------------------------------------------------------------------- 解析
+def _capture_prompt(messages: list[dict[str, str]], known: list[str]) -> list[ChatMessage]:
+    """拼捕获用的两条消息。
+
+    **把已有的条目给模型看一份**（只给最近的 ``KNOWN_ENTRIES_IN_PROMPT`` 条）：
+    这是我们能做的最省的去重——让模型自己就别重复。全给不行：条目会一直长，
+    那这个提示词会越来越贵，而它每次捕获都要发一遍。机械去重仍然兜底（``_select_new``）。
+
+    ``name`` 可选：缺省按 role 说"用户／助手"。原先它是**必须**的，
+    因为 ReMe 收的是 agentscope 的 ``Msg``、缺 ``name`` 会被它自己的校验拒掉；
+    那个校验随 ReMe 一起没了，我们只需要"谁说的"——``role`` 已经给了。
+    """
+    transcript = "\n".join(
+        f"{item.get('name') or ('用户' if item['role'] == 'user' else '助手')}："
+        f"{_one_line(item['content'])}"
+        for item in messages
+    )
+    body = f"这一轮的对话：\n\n{transcript}\n"
+    if known:
+        recent = known[-KNOWN_ENTRIES_IN_PROMPT:]
+        listed = "\n".join(f"- {item}" for item in recent)
+        body += f"\n已经记过的内容（不要重复）：\n{listed}\n"
+    body += "\n请只输出值得新记的条目。"
+    return [
+        ChatMessage(role="system", content=_CAPTURE_SYSTEM),
+        ChatMessage(role="user", content=body),
+    ]
 
 
-def _brief(payload: Any) -> str:
-    text = str(payload)
-    return text[:120]
+def _one_line(text: str) -> str:
+    """一条消息压成一段：长回答**掐中间留两头**（结论与决定常常在首尾）。"""
+    flat = " ".join((text or "").split())
+    if len(flat) <= CAPTURE_MESSAGE_CHARS:
+        return flat
+    head = CAPTURE_MESSAGE_CHARS * 3 // 5
+    tail = CAPTURE_MESSAGE_CHARS - head
+    return f"{flat[:head]}……{flat[-tail:]}"
+
+
+def _select_new(raw: str, known: list[str]) -> list[str]:
+    """从模型的输出里取出**值得新写**的条目（解析 + 去重 + 上限）。
+
+    只认**带项目符号或编号的行**：模型偶尔会回一句散文（"这轮没有值得记的"），
+    把它当成一条记忆写进去是最坏的结果——而"什么都没解析到"正好等于它的本意。
+    """
+    fresh: list[str] = []
+    for line in (raw or "").splitlines():
+        if _FENCE.match(line):
+            continue
+        if not _ENTRY_LINE.match(line):
+            continue
+        entry = " ".join(_ENTRY_LINE.sub("", line).split())
+        if not entry or len(entry) > MAX_ENTRY_CHARS:
+            # 超过上限的丢掉而不是截断：半条记忆比没有更糟（它会被当成完整事实读）
+            continue
+        if any(_similar(entry, old) for old in known):
+            continue
+        if any(_similar(entry, other) for other in fresh):
+            continue
+        fresh.append(entry)
+        if len(fresh) >= MAX_CAPTURED_ITEMS:
+            break
+    return fresh
+
+
+def _fingerprint(text: str) -> str:
+    """去重比对用的指纹：大小写、空白、标点、标签都不参与比较。"""
+    return _NON_WORD.sub("", _normalize(text))
+
+
+def _loose(text: str) -> str:
+    """比"包含关系"用的形态：大小写归一、空白压成一个空格，**标点留着**。
+
+    标点在这里是**词边界**：中文没有空格，「用户偏好简短回答，不要长篇大论」
+    只有在逗号处才算"补了半句"；把标点也抹掉的指纹做不到这件事。
+    """
+    return " ".join(_normalize(text).split())
+
+
+def _contains(shorter: str, longer: str) -> bool:
+    """``shorter`` 整段出现在 ``longer`` 里，且**两端都落在词边界上**。
+
+    边界这一条是给 ASCII 词留的：「项目代号叫 kylab」是「项目代号叫 kylab2 代」
+    的子串，但那说的是另一个版本，不是同一件事——"kylab" 后面紧跟"2"，
+    不算边界。
+    """
+    start = longer.find(shorter)
+    while start >= 0:
+        end = start + len(shorter)
+        before = longer[start - 1] if start else " "
+        after = longer[end] if end < len(longer) else " "
+        if not (before.isalnum() or after.isalnum()):
+            return True
+        start = longer.find(shorter, start + 1)
+    return False
+
+
+def _similar(one: str, other: str) -> bool:
+    """两条记忆是不是**同一件事**（见 ``DUP_SIMILARITY`` 那段取舍）。
+
+    三条判据，从硬到软：
+
+    1. **指纹相同**：只差大小写、标点、空白（「设备名是 nas。」与「设备名是nas」）；
+    2. **整段包含且只多出几个字**（``CONTAINMENT_SLACK``）：同一句话的标点级改写，
+       多出来的那几个字不足以让拦下来变成丢信息；
+    3. **字符二元组重合度够高**：接住"换了词的同一句话"与语序调换。
+
+    两条**否决**（先于上面第 2、3 条）：
+
+    - **数字不同就不是同一件事**：版本号、地址、数量、日期都是数字，数字变了
+      就是变了（「代号叫 kylab」与「代号叫 kylab2」不能被当成重复）。
+      没有这一条，短句上"只差两个字"的相似度天然很高，新版本会被静默丢掉；
+    - 其中一条是空的（没有可比的内容）。
+
+    这一层**拦得住**：完全一样、只差标点空白、语序调换、同一句话补几个字、
+    数字不变的近似改写。**拦不住**：换了说法的同一件事——实测
+    「发布顺序固定为：先跑门禁 → 再打标签 → 最后推镜像。」与
+    「发布顺序是门禁、打标签、推镜像」的二元组重合度只有 0.33，判不出来。
+    那种情况靠的是**提示词那一侧的纪律**（把已有条目给模型看，让它自己别重复，
+    实测有效），以及以后若做了整理机制，由它去合并同类条目。
+    机械化地判"两句话说的是不是一回事"要的是语义，不是字面——那正是这一层不做的事。
+    """
+    first, second = _fingerprint(one), _fingerprint(other)
+    if not first or not second:
+        return False
+    if first == second:
+        return True
+    if _DIGIT_RUN.findall(first) != _DIGIT_RUN.findall(second):
+        return False
+    loose_one, loose_two = _loose(one), _loose(other)
+    shorter, longer = sorted((loose_one, loose_two), key=len)
+    if (
+        shorter
+        and len(longer) - len(shorter) <= CONTAINMENT_SLACK
+        and _contains(shorter, longer)
+    ):
+        return True
+    grams_first = {first[index : index + 2] for index in range(len(first) - 1)}
+    grams_second = {second[index : index + 2] for index in range(len(second) - 1)}
+    if not grams_first or not grams_second:
+        return False
+    return len(grams_first & grams_second) / len(grams_first | grams_second) >= DUP_SIMILARITY
 
 
 def _normalize(line: str) -> str:
@@ -962,151 +1102,42 @@ def _normalize(line: str) -> str:
     return " ".join(body.split()).lower()
 
 
-def _hits_of(payload: Any) -> list[MemoryHit]:
-    """从记忆服务的返回里取出片段。
+#: 新建 MEMORY.md 时的模板。frontmatter 里的 ``summary`` / ``read_when``
+#: 是 ReMe 那一族的约定（给检索与注入用），照抄以免以后要迁移。
+#:
+#: 正文照抄 QwenPaw 的 MEMORY.md（`md_files/zh/`），**只改了一处**：它那四条例子
+#: 是列表项（``- 用户的稳定偏好与工作方式`` …），而我们这个文件里的列表项
+#: **就是记忆条目本身**（``_read_entries`` 按 `- ` 认条目）——照抄的话，
+#: 那四条例子会在下一次 `remember` 时被当成四条已存在的记忆。
+#: 于是改成一句散文，意思一字不差。
+#:
+#: 它教的几件事都留着，其中两件是**安全与卫生**上的：
+#: "不要把每日流水复制进来"（记忆越长越像日志，而它每轮都要进上下文）、
+#: "除非明确要求不要记密码/令牌"（这一条我们只在长度上限上兜过，没有明说）。
+_TEMPLATE = """---
+summary: "Agent 的核心长期记忆，由用户和 Agent 共同维护"
+read_when:
+  - 需要了解长期有效的用户偏好、重要决策、工具设置或经验教训
+---
 
-    **真实形状**（实测得出，见设计文档 §3.2）::
+## 核心长期记忆
 
-        {"answer": "…给人读的文本…", "success": true,
-         "metadata": {"results": [{"id","text","path","start_line","end_line",
-                                   "scores": {"keyword": 2.72, "score": 2.72}}],
-                      "link_expansion": {…}}}
+这是 Agent 的核心长期记忆文件，用户和 Agent 都可以读它、改它、往里加。
 
-    注意分数在 ``scores.score`` 里（不是顶层 ``score``），
-    而结果列表在 ``metadata.results`` 里——这两个位置第一版都猜错了，
-    是靠**真跑一遍服务**才纠正的（原先的容错解析会直接报"认不出结构"）。
-    容错仍然保留：字段名多认几种，版本升级时不至于立刻断，
-    但"整个返回都不认识"要报错而不是返回空。
-    """
-    body = _unwrap(payload)
+记录经过筛选、长期有效、以后会反复用到的信息：对方的稳定偏好与工作方式，
+重要决定与长期约束，工具设置（设备名、地址、别名这类），以及值得长期留下的经验教训。
 
-    items: list[Any] = []
-    found_list = False
-    if isinstance(body, list):
-        items = body
-        found_list = True
-    elif isinstance(body, dict):
-        for key in ("results", "hits", "chunks", "items", "memories"):
-            candidate = body.get(key)
-            if isinstance(candidate, list):
-                items = candidate
-                found_list = True
-                break
+不要把每日流水或整段会话记录复制到这里——那是笔记的事。除非对方明确要求，
+**不要记录密码、令牌或其他敏感信息**。更新前先读一遍现有内容，
+保留用户或其他会话写进来的有效信息，并合并去重。
 
-    hits: list[MemoryHit] = []
-    for item in items:
-        if isinstance(item, str):
-            if item.strip():
-                hits.append(MemoryHit(text=item.strip()))
-            continue
-        if not isinstance(item, dict):
-            continue
-        text = ""
-        for key in ("text", "content", "snippet", "chunk", "body"):
-            value = item.get(key)
-            if isinstance(value, str) and value.strip():
-                text = value.strip()
-                break
-        if not text:
-            continue
-        path = ""
-        for key in ("path", "file", "file_path", "source"):
-            value = item.get(key)
-            if isinstance(value, str):
-                path = value
-                break
-        hits.append(
-            MemoryHit(
-                text=text,
-                path=path,
-                start_line=_int_or_none(item.get("start_line")),
-                end_line=_int_or_none(item.get("end_line")),
-                score=_score_of(item),
-            )
-        )
+{entries}
 
-    if hits:
-        return hits
-    if items:
-        raise UpstreamError(
-            "记忆服务返回了内容，但没有认出其中的片段字段；"
-            f"可能是它的响应格式变了（原始返回前 200 字：{_brief(payload)}）"
-        )
-    if not found_list and payload:
-        raise UpstreamError(
-            "记忆服务的返回结构与预期不符（找不到结果列表）；"
-            f"原始返回前 200 字：{_brief(payload)}"
-        )
-    # 认出来了、而且是空的 = 真的没有相关记忆。这才是该返回空的情况。
-    return []
+## 工具设置
 
+<!-- 在这里记录长期有效、与当前工作区相关的工具设置。 -->
 
-def _links_of(payload: Any) -> list[MemoryLink]:
-    """命中片段的邻接边（ReMe 的 ``metadata.link_expansion``）。
+## 重要决策与经验
 
-    结构是 ``{命中路径: {"outlinks": [{"path","meta":{"name"}}], "inlinks": [...]}}``。
-    它是**免费附带的**：ReMe 在同一个响应里给了图谱，我们不额外花一次检索就能让
-    模型"顺着链接走"。取不出来时返回空列表——图谱缺失不该让一次召回失败，
-    片段本身已经够用了。
-    """
-    body = _unwrap(payload)
-    if not isinstance(body, dict):
-        return []
-    expansion = body.get("link_expansion")
-    if not isinstance(expansion, dict):
-        return []
-
-    links: list[MemoryLink] = []
-    for _source, sides in expansion.items():
-        if not isinstance(sides, dict):
-            continue
-        for key, direction in (("outlinks", "out"), ("inlinks", "in")):
-            for edge in sides.get(key) or []:
-                if not isinstance(edge, dict):
-                    continue
-                path = edge.get("path")
-                if not isinstance(path, str) or not path:
-                    continue
-                meta = edge.get("meta") if isinstance(edge.get("meta"), dict) else {}
-                name = meta.get("name")
-                links.append(
-                    MemoryLink(
-                        path=path,
-                        direction=direction,
-                        name=name if isinstance(name, str) else "",
-                    )
-                )
-    return links
-
-
-def _unwrap(payload: Any) -> Any:
-    """逐层剥开外层信封。
-
-    ``metadata`` 是 ReMe 的实际信封（实测），其余几个是容错：它的版本之间
-    换过字段名，多认几个不至于一升级就"召回到零条"。
-    """
-    body = payload
-    for key in ("metadata", "data", "result", "payload"):
-        if isinstance(body, dict) and isinstance(body.get(key), (dict, list)):
-            body = body[key]
-            break
-    return body
-
-
-def _int_or_none(value: Any) -> int | None:
-    return int(value) if isinstance(value, (int, float)) else None
-
-
-def _score_of(item: dict[str, Any]) -> float | None:
-    """分数在 ``scores.score``（融合后的分）里；也认顶层 ``score``。"""
-    scores = item.get("scores")
-    if isinstance(scores, dict):
-        for key in ("score", "rrf", "vector", "keyword"):
-            value = scores.get(key)
-            if isinstance(value, (int, float)):
-                return float(value)
-    for key in ("score", "rrf_score", "relevance"):
-        value = item.get(key)
-        if isinstance(value, (int, float)):
-            return float(value)
-    return None
+<!-- 在这里记录需要跨会话保留的重要决策、约束和经验教训。 -->
+"""

@@ -197,17 +197,14 @@ SETTING_GROUPS: dict[str, Any] = {
         ],
     },
     # 记忆（v0.14，见 docs/设计/记忆层设计-v0.1.md）。
-    # **默认关**：启用它等于多跑一个进程（ReMe）且会调 LLM（捕获与整合都要），
-    # 升级之后默默开始烧 token 是最不该有的默认。
+    # **默认关**：开着它，对话收尾会真的调一次模型去做沉淀（省 token 是这个项目
+    # 反复强调的事），升级之后默默开始烧 token 是最不该有的默认。
+    # **这一组里没有"服务地址"**（v0.46）：记忆在我们自己的进程里跑，没有第二个
+    # 进程可连——那个设置项随 ReMe 一起删了，"测试连接"也随之删掉。
     "memory": {
         "label": "长期记忆",
         "fields": [
             {"key": "memory.enabled", "label": "启用长期记忆", "type": "bool"},
-            {
-                "key": "memory.base_url",
-                "label": "记忆服务地址（ReMe）",
-                "type": "text",
-            },
             {
                 "key": "memory.workspace",
                 "label": "记忆工作区目录（相对数据目录）",
@@ -217,11 +214,6 @@ SETTING_GROUPS: dict[str, Any] = {
                 "key": "memory.capture_every",
                 "label": "每多少个用户回合沉淀一次记忆",
                 "type": "int",
-            },
-            {
-                "key": "memory.service_scope",
-                "label": "记忆服务所属账号（shared = 共享桶）",
-                "type": "text",
             },
         ],
     },
@@ -288,24 +280,14 @@ DEFAULTS: dict[str, str] = {
     # 用户以为联网已经开了，然后在第一次搜索时得到一个别人的额度错误。
     "web.search_api_key": "",
     "memory.enabled": "false",
-    # ReMe 的服务地址。它的接口是 `POST /<job 名>`（见设计文档 §3.1）。
-    # **端口 2333 是实测出来的默认值**：`reme/constants.py` 里写着
-    # `REME_DEFAULT_PORT = 2333`，`reme start` 起来后日志打的也是 2333。
-    # 这里原先写的是 8181（照文档抄的），照它配就永远连不上——
-    # 而"连不上"在界面上只表现为一句报错，很难看出是端口抄错了。
-    "memory.base_url": "http://127.0.0.1:2333",
     # 记忆工作区放在数据目录下（相对路径）：与其它数据一起备份/迁移，
     # 一个部署只有一处要备份。
     "memory.workspace": "memory",
-    # **每多少个用户回合沉淀一次**。ReMe 的设计是"每累计 5 个用户回合触发一次"，
-    # 但它服务本身不管累计（每次调用就是一次 LLM 调用），所以节流得我们做。
-    # 每轮都沉淀 = 每轮多一次 LLM 调用，而这个用户反复强调过省 token。
+    # **每多少个用户回合沉淀一次**。一次沉淀就是一次模型调用
+    # （服务层 ``capture`` 要问一遍对话模型"这轮有没有值得记的"），所以节流得我们做。
+    # 每轮都沉淀 = 每轮多一次调用，而这个项目反复强调过省 token。
+    # 5 这个数沿用 ReMe/QwenPaw 的默认（见设计文档 §2.4）。
     "memory.capture_every": "5",
-    # **记忆服务（ReMe）盯的是哪个账号的记忆**。它的 workspace_dir 是进程级配置
-    # （watch_dirs 只认固定的 daily/digest 两个子目录），一个实例只能服务一份记忆。
-    # 所以"按账号隔离"的完整形态是**每个账号一个实例**；只有一个实例时，
-    # 这里如实写明它服务谁，请求别的账号的记忆会被**明确拒绝**而不是返回别人的片段。
-    "memory.service_scope": "shared",
 }
 
 
@@ -730,11 +712,12 @@ class RuntimeConfigService:
             "llm.temperature": settings.llm_temperature,
             "llm.enable_thinking": settings.llm_enable_thinking,
             "llm.thinking_effort": settings.llm_thinking_effort,
-            # 长期记忆（v0.1.1）：容器部署要在 .env/compose 里一次写清"开关 /
-            # 服务地址 / 落点"，而这些键原先在映射表里没有——写进 .env 也**不生效**。
-            # 三项默认都是 None（没设），于是不设时照旧回落到 DEFAULTS。
+            # 长期记忆（v0.1.1）：容器部署要在 .env/compose 里一次写清"开关 / 落点"，
+            # 而这些键原先在映射表里没有——写进 .env 也**不生效**。
+            # 两项默认都是 None（没设），于是不设时照旧回落到 DEFAULTS。
+            # **服务地址那一项已删**（v0.46）：记忆跑在我们自己的进程里，
+            # 没有第二个进程可连（见 services/memory.py 的模块头）。
             "memory.enabled": settings.memory_enabled,
-            "memory.base_url": settings.memory_base_url,
             "memory.workspace": settings.memory_workspace,
             # Agent 模式（P1-1）同一套口径：容器部署可以在 compose 里一次写清
             # "这一部署默认用哪一档"（``KYLAB_CHAT_MODE``），网页上改的仍然覆盖它。

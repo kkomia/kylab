@@ -1,4 +1,4 @@
-"""记忆端点的集成测试（v0.14 三期）。
+"""记忆端点的集成测试（v0.14 三期；v0.46 起记忆是**进程内的本地实现**）。
 
 镜像同构：``app/api/v1/memory.py`` → ``tests/integration/api/test_memory_api.py``。
 
@@ -6,11 +6,13 @@
 
 1. **文件浏览/编辑是走本地目录的**，所以 ``memory.enabled=false`` 时也该能用
    ——记忆关着的时候，用户依然该能打开自己的记忆文件看看写了什么；
-2. **召回/记住需要服务**，关着时**明确报错**（不是返回空结果，见设计文档 §2.3）；
+2. **召回要跑在真实工作区上**：从这里进去的请求要能命中磁盘上的记忆、
+   带回文件与行号，噪声查询返回空；关着时**明确报错**（不是返回空结果，见 §2.3）；
 3. **路径越界要挡住**：路径由前端传进来，这是这个端点唯一的安全边界。
 
-召回那一路把 ReMe 的 ``_post`` 打桩（不碰网络），但返回的是**实测抓下来的真实形状**
-（结果在 ``metadata.results``、分数在 ``scores.score``）——第一版就是在这里猜错的。
+**没有"测试连接"这类端点了**（v0.46 删）：记忆跑在我们自己的进程里，
+没有第二个进程可连。所以这一份里也不再有任何 ``monkeypatch`` 打桩的 HTTP——
+本地实现不需要假装别的东西活着，这本身就是这次改动的价值。
 """
 
 from __future__ import annotations
@@ -47,14 +49,15 @@ def workspace(client: TestClient):
         "# 今天的现场\n\n结论见 [[digest/personal/锂价.md]]\n".encode()
     )
     (root / "digest" / "personal" / "锂价.md").write_bytes(
-        "---\ntags: [锂价]\n---\n\n# 锂价敏感性\n\n来源 [[会话一]]\n".encode()
+        "---\ntags: [锂价]\n---\n\n# 锂价敏感性\n\n来源 [[会话一]]\n"
+        "\n锂价下跌 10% 会让电池业务毛利下降约 0.8 个百分点。\n".encode()
     )
     (root / "session" / "dialog" / "conv_x.md").write_bytes("# 原始对话\n".encode())
     return root
 
 
 def _enable(client: TestClient, **values: str) -> None:
-    """把记忆打开（以及需要时改地址）。走设置端点，与用户的操作同一条路。
+    """把记忆打开（以及需要时改别的项）。走设置端点，与用户的操作同一条路。
 
     设置端点的请求体是 ``{"values": [{"key": …, "value": …}]}``——**是列表不是字典**，
     因为一个键可能被重复提交，而且这样服务端能按序报出"哪个键不认识"。
@@ -95,14 +98,43 @@ def test_overview_reports_retrievability_and_injection(client: TestClient, works
     assert by_path["SOUL.md"]["injected"] is True
 
 
+def test_overview_reports_local_counts(client: TestClient, workspace) -> None:
+    """状态是**纯本地的数字**：几份文件、其中几份可召回、可召回几条、上次更新。
+
+    这三个数字原先由界面 filter 出来（而且"可召回"那时是别人家索引的性质）；
+    现在它们是这一层的本地事实——也就必须有用例钉住"数的是召回池里那些文件"。
+    """
+    status = client.get("/api/v1/memory").json()["status"]
+
+    assert status["retrievable_count"] == 2  # daily 一份 + digest 一份
+    assert status["entry_count"] > 0
+    assert status["last_changed_at"], "有文件就该有'上次更新'时间"
+    # **没有连通性字段了**：没有第二个进程可连，也就没有"连没连上"这回事
+    assert "reachable" not in status
+    assert "base_url" not in status
+
+
 def test_overview_counts_unconsolidated(client: TestClient, workspace) -> None:
     """「哪些还没被整合」= ``daily/`` 里没被 ``digest/`` 链到的。
     实测那份里 ``会话一.md`` 是被链到的，所以计数为 0。"""
     assert client.get("/api/v1/memory").json()["status"]["unconsolidated_count"] == 0
 
 
+def test_overview_counts_unconsolidated_when_nothing_links_back(
+    client: TestClient, workspace
+) -> None:
+    """反向也要钉：没有回链的日笔记要**真的算进**那个计数。
+
+    只测"等于 0"的话，一个恒为 0 的实现也能过——而那个数字是界面上
+    「待整合」标记的依据（本轮没有自动整理，它是用户判断"还有多少没归档"的唯一线索）。
+    """
+    (workspace / "daily" / "2026-09-17.md").write_bytes("# 新的一天\n\n还没被整合。\n".encode())
+
+    assert client.get("/api/v1/memory").json()["status"]["unconsolidated_count"] == 1
+
+
 def test_graph_comes_from_local_files(client: TestClient, workspace) -> None:
-    """图谱是本地从 ``[[…]]`` 算的，**不需要记忆服务活着**。"""
+    """图谱是本地从 ``[[…]]`` 算的，**不需要任何别的东西活着**。"""
     graph = client.get("/api/v1/memory/graph").json()
     assert graph["edges"] == [["daily/2026-09-16/会话一.md", "digest/personal/锂价.md"]]
     assert {node["path"] for node in graph["nodes"]} == {
@@ -144,7 +176,7 @@ def test_write_creates_new_file(client: TestClient, workspace) -> None:
 
 
 def test_editing_works_even_when_memory_disabled(client: TestClient, workspace) -> None:
-    """**记忆关着也能编辑自己的文件**：要求"先起一个服务才能读自己的文本文件"
+    """**记忆关着也能编辑自己的文件**：要求"先打开一个开关才能读自己的文本文件"
     是没道理的（这条界线写在 services/memory_files.py 的模块头）。"""
     assert client.get("/api/v1/memory").json()["status"]["enabled"] is False
     assert (
@@ -201,46 +233,51 @@ def test_recall_requires_memory_enabled(client: TestClient, workspace) -> None:
     assert "未启用长期记忆" in response.json()["message"]
 
 
-def test_recall_parses_the_real_response_shape(client: TestClient, workspace, monkeypatch) -> None:
-    """真实形状：结果在 ``metadata.results``、分数在 ``scores.score``。
-    第一版这两个位置都猜错了，是靠真跑一遍服务才纠正的——所以这里钉住它。"""
-    _enable(client, **{"memory.base_url": "http://reme.test"})
-    payload = {
-        "answer": "…给人读的…",
-        "success": True,
-        "metadata": {
-            "results": [
-                {
-                    "id": "abc",
-                    "text": "用户偏好先给结论，再给理由。",
-                    "path": "digest/personal/风格.md",
-                    "start_line": 3,
-                    "end_line": 5,
-                    "scores": {"keyword": 2.72, "score": 2.72},
-                }
-            ],
-            "link_expansion": {
-                "digest/personal/风格.md": {
-                    "outlinks": [{"path": "digest/personal/锂价.md", "meta": {"name": "锂价"}}],
-                    "inlinks": [],
-                }
-            },
-        },
-    }
-    monkeypatch.setattr("app.services.memory.httpx.post", lambda *a, **k: _FakeResponse(payload))
+def test_recall_finds_a_real_memory_with_source(client: TestClient, workspace) -> None:
+    """召回跑在真实工作区上：命中要带回**文件 + 行号 + 分数 + 覆盖率**。
 
-    body = client.post(
-        "/api/v1/memory/recall", json={"query": "我喜欢什么风格", "limit": 3}
-    ).json()
+    行号是"渐进式展开"的入口，也是界面"点一下跳到那一段"的依据（见 §3.1 的四条轴）。
+    """
+    _enable(client)
 
-    assert body["hits"][0]["path"] == "digest/personal/风格.md"
-    assert body["hits"][0]["start_line"] == 3
-    assert body["hits"][0]["score"] == 2.72
-    assert body["links"][0]["path"] == "digest/personal/锂价.md"
-    assert body["links"][0]["direction"] == "out"
-    assert body["links"][0]["name"] == "锂价"
+    body = client.post("/api/v1/memory/recall", json={"query": "锂价下跌对毛利的影响"}).json()
+
+    assert body["hits"], f"这条记忆就在磁盘上，必须能召回：{body}"
+    top = body["hits"][0]
+    assert top["path"] == "digest/personal/锂价.md"
+    # 行号是**文件里的真实行号**（frontmatter 占 3 行、标题/来源/空行各 1 行）
+    assert top["start_line"] == 9 and top["end_line"] == 9
+    assert "毛利" in top["text"]
+    assert top["score"] > 0
+    # 覆盖率是**判据**（归一化量），与只用于排序的分数不是一回事
+    assert top["coverage"] >= 1 / 3
     # 那句话必须提醒这是记忆、不是知识库原文（与 MCP 同一句）
     assert "不是知识库原文" in body["note"]
+
+
+def test_recall_returns_empty_for_a_noise_query(client: TestClient, workspace) -> None:
+    """**开着时返回空是诚实的答案**（检索确实跑过了），与"关着时返回空"不是一回事。
+
+    本地检索没有"连不上"这种中间态，所以空只有一个含义：
+    这几份记忆里确实没有相关的话。
+    """
+    _enable(client)
+
+    body = client.post("/api/v1/memory/recall", json={"query": "合唱团的排练时间安排"}).json()
+
+    assert body["hits"] == []
+
+
+def test_recall_never_returns_document_pool_content(client: TestClient, workspace) -> None:
+    """两池不混（§2.1）在这一层的证据：召回只读 ``data/memory/`` 下的召回池，
+    连工作区里"不参与召回"的那几份（``MEMORY.md`` 等）都不会出现在结果里，
+    更不可能碰到任何文档片段——这一路根本不 import 检索服务。"""
+    _enable(client)
+
+    body = client.post("/api/v1/memory/recall", json={"query": "用户偏好先给结论"}).json()
+
+    assert body["hits"] == []
+    assert all("知识库" not in hit["path"] for hit in body["hits"])
 
 
 def test_recall_limit_is_clamped_by_the_schema(client: TestClient, workspace) -> None:
@@ -251,29 +288,8 @@ def test_recall_limit_is_clamped_by_the_schema(client: TestClient, workspace) ->
     )
 
 
-def test_recall_upstream_failure_is_not_an_empty_result(client: TestClient, workspace, monkeypatch):
-    """记忆服务连不上时**报错**，不静默降级成"没有相关记忆"（§2.3）。
-
-    502 而不是 500：上游出错与"我们内部出错了"该分得清（见 ``UpstreamError``
-    的说明），用户看到文案就知道该去把那个进程拉起来。
-    """
-    import httpx
-
-    monkeypatch.setattr(
-        "app.services.memory.httpx.post",
-        lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("连不上")),
-    )
-    _enable(client, **{"memory.base_url": "http://reme.test"})
-
-    response = client.post("/api/v1/memory/recall", json={"query": "x"})
-    assert response.status_code == 502
-    assert response.json()["code"] == "upstream_error"
-    assert "记忆服务" in response.json()["message"]
-
-
-def test_remember_without_service_writes_local_file(client: TestClient, workspace) -> None:
-    """``remember`` **不经过 ReMe**：写的是本地 ``MEMORY.md``。
-    所以记忆服务没起也能记住东西——这是那条路径刻意的设计。
+def test_remember_writes_the_local_file(client: TestClient, workspace) -> None:
+    """``remember`` 写的是本地 ``MEMORY.md``，改完下一句问话就能被注入读到。
 
     用一条**与夹具不同**的事实：夹具里已经有一条"先给结论"，
     拿同一条去记会走到"已存在"那一支，这条用例就测不到"真写进去了"。
@@ -298,13 +314,10 @@ def test_remember_without_service_writes_local_file(client: TestClient, workspac
 
 
 def test_remember_does_not_require_the_switch(client: TestClient, workspace) -> None:
-    """**「记住」与 ``recall`` 不是同口径了**（v0.22 改）。
+    """**「记住」与 ``recall`` 不是同口径**（v0.22 改）。
 
     它写的是 ``MEMORY.md``，那份文件不看开关、每轮都注入——写进去立即有效。
-    原先它与 ``recall`` 共用 ``_require_enabled``，于是关掉记忆服务时
-    "记住"整个是死的，而报错还劝用户"把记忆服务跑起来"——
-    那句话对这里不成立（这里根本不经过 ReMe）。
-    对照：``recall`` 关着时仍然 422，见 ``test_recall_requires_enabled``。
+    对照：``recall`` 关着时仍然 422（见上一条）。
     """
     # 夹具里已有一条「用户偏好先给结论」——用它会被去重，那测的是去重不是这道闸
     response = client.post("/api/v1/memory/remember", json={"content": "项目代号叫 kylab"})
@@ -325,112 +338,26 @@ def test_remember_rejects_too_long(client: TestClient, workspace) -> None:
     assert response.status_code == 422
 
 
-def test_reindex_reports_upstream_detail(client: TestClient, workspace, monkeypatch) -> None:
-    _enable(client, **{"memory.base_url": "http://reme.test"})
-    monkeypatch.setattr(
-        "app.services.memory.httpx.post",
-        lambda *a, **k: _FakeResponse({"answer": "已重建索引", "success": True}),
-    )
-    response = client.post("/api/v1/memory/reindex")
-    assert response.status_code == 200, response.text
-    assert "已重建索引" in response.json()["detail"]
+def test_there_is_no_probe_endpoint(client: TestClient, workspace) -> None:
+    """**「测试连接」这个端点删掉了**（v0.46）：记忆跑在我们自己的进程里，
+    没有第二个进程可连——留着它只会在界面上引出一串用户不该读的实现细节
+    （地址、端口、异常原文）。
 
-
-def test_probe_is_admin_only(client: TestClient) -> None:
-    """「测试连接」打的是**可配置的地址**，与设置页其它测试同档：管理员专属。
-    用普通读权限放行，等于把"让服务端按我指定的地址发请求"开放给任何成员。
-
-    成员账号直接落库造（开通端点是另一条路的事），与 ``test_visibility_api``
-    同一套写法——测的是**档位**，不是开通流程。
+    断言 404 而不是 403/405：它不该以任何形态存在。
     """
-    from app.core.security import hash_password
-    from app.models.enums import UserRole
-    from app.storage.base import UserRecord
-
-    meta = get_services().auth._stores.meta
-    meta.create_user(
-        UserRecord(
-            id="user_member",
-            name="成员",
-            username="member",
-            password_hash=hash_password("member pass 123"),
-            role=UserRole.MEMBER,
-        )
-    )
-    member = client.post(
-        "/api/v1/auth/login", json={"username": "member", "password": "member pass 123"}
-    ).json()
-    response = client.post(
-        "/api/v1/memory/probe", headers={"Authorization": f"Bearer {member['token']}"}
-    )
-    assert response.status_code == 403
+    assert client.post("/api/v1/memory/probe").status_code == 404
 
 
-class _FakeResponse:
-    """最小 httpx.Response 替身：只用得到 ``status_code``/``json()``/``text``。"""
+def test_the_settings_group_has_no_service_address(client: TestClient, workspace) -> None:
+    """设置里「长期记忆」那一组**不再有服务地址**（那是 ReMe 的遗物）。
 
-    def __init__(self, payload: dict) -> None:
-        self.status_code = 200
-        self._payload = payload
-
-    def json(self) -> dict:
-        return self._payload
-
-    @property
-    def text(self) -> str:
-        return str(self._payload)
-
-
-def test_overview_does_not_claim_a_connection_it_never_checked(
-    client: TestClient, workspace, monkeypatch
-) -> None:
-    """``GET /memory`` **不打远端**，所以它只能说"已启用"，不能说"未连接"。
-
-    这是实测踩出来的：该端点原先返回 ``reachable: false``，而同一时刻
-    ``/memory/probe`` 报"服务正常"——页头因此一直挂着"记忆服务未连接"的警示，
-    而那时根本没有任何一次连接失败过。**没测过就别下结论。**
+    这条钉的是配置面：字段名一旦漏出去，界面会自动把它渲染成一个输入框
+    （设置页的字段是后端给的，见 ``SettingsModal`` 的 featureGroups），
+    于是用户会看到一个填了也没用的地址栏。
     """
-    _enable(client, **{"memory.base_url": "http://reme.test"})
+    groups = client.get("/api/v1/settings").json()["groups"]
+    memory_group = next(item for item in groups if item["key"] == "memory")
+    keys = [field["key"] for field in memory_group["fields"]]
 
-    def boom(*_a, **_k):  # type: ignore[no-untyped-def]
-        raise AssertionError("GET /memory 不该发网络请求")
-
-    monkeypatch.setattr("app.services.memory.httpx.post", boom)
-
-    body = client.get("/api/v1/memory").json()
-
-    assert body["status"]["enabled"] is True
-    assert body["status"]["reachable"] is None
-
-
-def test_probe_reports_a_real_connection(client: TestClient, workspace, monkeypatch) -> None:
-    """probe 这条**成功路径**原先一条用例都没有，于是它在真机上 500：
-    ``MemoryStatus`` 是 slots 记录、没有 ``__dict__``，而那里用
-    ``MemoryStatus(**{**base.__dict__, ...})`` 拼的。只有真打一次服务才发现得了。
-    """
-    _enable(client, **{"memory.base_url": "http://reme.test"})
-    monkeypatch.setattr(
-        "app.services.memory.httpx.post",
-        lambda *a, **k: _FakeResponse({"answer": "ReMe v0.4.1.12 - healthy"}),
-    )
-
-    body = client.post("/api/v1/memory/probe").json()
-
-    assert body["reachable"] is True
-    assert "服务正常" in body["detail"]
-
-
-def test_probe_reports_a_failure_without_500(client: TestClient, workspace, monkeypatch) -> None:
-    """连不上是 probe 的**正常产出**（它是设置页的「测试连接」），不是服务器错误。"""
-    import httpx
-
-    _enable(client, **{"memory.base_url": "http://reme.test"})
-    monkeypatch.setattr(
-        "app.services.memory.httpx.post",
-        lambda *a, **k: (_ for _ in ()).throw(httpx.ConnectError("连不上")),
-    )
-
-    response = client.post("/api/v1/memory/probe")
-
-    assert response.status_code == 200, response.text
-    assert response.json()["reachable"] is False
+    assert keys == ["memory.enabled", "memory.workspace", "memory.capture_every"]
+    assert all("base_url" not in key and "service_scope" not in key for key in keys)

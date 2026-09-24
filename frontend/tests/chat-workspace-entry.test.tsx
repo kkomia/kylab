@@ -9,7 +9,8 @@
  *    那些（默认全部）"，而输入框随后按详情回填成项目绑的那几个，两处对不上；
  * 2. **不带项目的入口维持原样**：把输入框里选的那几个记进会话（下次打开按它回填）；
  * 3. **`@` 菜单里的「知识库」**：选中 = 点一下并进检索范围（不插文本、不预读），
- *    提示说清"可以取消"，且开关关着时顺手打开（否则点了等于没点）。
+ *    提示说清"可以取消"，且「启用」关着时顺手打开（否则点了等于没点）——合并成
+ *    一颗胶囊之后开关长在它面板里，所以这里顺带钉住"胶囊上的状态跟着变"。
  *
  * 这些用例都走**真的组件树**（`ChatPage`），只有网络那一层是 mock 的——
  * 事件形状、发送载荷的拼装、回填的时机与真实链路同源。
@@ -209,9 +210,31 @@ async function ask(text: string): Promise<void> {
   await user.keyboard('{Enter}')
 }
 
-/** 当前选库胶囊上写着什么。 */
+/**
+ * 当前「知识库」胶囊上写着什么。
+ *
+ * 开关与选库**合并成一颗**之后，可见文案是 `知识库 · 全部 2 个`（前缀是这一颗的名字，
+ * 后面那一段才是状态）；这里只回状态那一段——下面这些用例问的是"这一轮的范围是哪几个"，
+ * 不是那半句名字。
+ */
 function pickTextOf(): string {
-  return screen.getByRole('button', { name: '选择要查的知识库' }).textContent?.trim() ?? ''
+  const label = screen.getByRole('button', { name: '知识库范围' }).textContent?.trim() ?? ''
+  return label.replace(/^知识库 · /, '')
+}
+
+/** 打开「知识库」胶囊的面板（合并后开关与选库都在这一层里）。 */
+async function openKbPanel(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(screen.getByRole('button', { name: '知识库范围' }))
+  await screen.findByRole('menuitemcheckbox', { name: '启用' })
+}
+
+/** 把面板里的「启用」（原「使用知识库」开关）扳到目标档，然后收起面板。 */
+async function setKbEnabled(user: ReturnType<typeof userEvent.setup>, on: boolean): Promise<void> {
+  await openKbPanel(user)
+  const toggle = screen.getByRole('menuitemcheckbox', { name: '启用' })
+  if ((toggle.getAttribute('aria-checked') === 'true') !== on) await user.click(toggle)
+  expect(toggle).toHaveAttribute('aria-checked', String(on))
+  await user.keyboard('{Escape}')
 }
 
 beforeEach(() => {
@@ -311,7 +334,7 @@ describe('`@` 菜单里的知识库', () => {
     await user.click(field)
     await user.type(field, '@')
     // 「知识库」是第一档，条目直接来自同一层的库清单（不多发一次请求）。
-    // 按 role 取菜单再在菜单里找这一档：输入框上那颗开关也叫「知识库」，全文查会撞上
+    // 按 role 取菜单再在菜单里找这一档：输入框上那颗胶囊的触发键也叫「知识库」，全文查会撞上
     const menu = await screen.findByRole('listbox', { name: '添加上下文' })
     await waitFor(() => expect(within(menu).getByText('知识库')).toBeInTheDocument())
     const option = await screen.findByRole('option', { name: /笔记/ })
@@ -335,15 +358,22 @@ describe('`@` 菜单里的知识库', () => {
     const field = await screen.findByPlaceholderText(/回车发送/)
     await waitFor(() => expect(pickTextOf()).toBe('已选 1 个'))
 
-    const kbSwitch = screen.getByRole('switch', { name: '使用知识库' })
-    await user.click(kbSwitch)
-    expect(kbSwitch).toHaveAttribute('aria-checked', 'false')
+    // 关掉「启用」（合并后它就是面板顶上那一行）：胶囊上那一段当场变成「已关」
+    await setKbEnabled(user, false)
+    expect(pickTextOf()).toBe('已关')
 
     await user.click(field)
     await user.type(field, '@')
     await user.click(await screen.findByRole('option', { name: /笔记/ }))
 
-    expect(kbSwitch).toHaveAttribute('aria-checked', 'true')
+    // 顺手打开：胶囊回到「全部 2 个」，面板里的「启用」也是勾上的（只有这一处状态）
+    expect(pickTextOf()).toBe('全部 2 个')
+    await openKbPanel(user)
+    expect(screen.getByRole('menuitemcheckbox', { name: '启用' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    await user.keyboard('{Escape}')
     expect(await screen.findByText(/并打开了「知识库」开关/)).toBeInTheDocument()
     // 开关打开之后这一轮的库范围就是"详情回填的那一个 + 刚并进来的那一个"
     expect(pickTextOf()).toBe('全部 2 个')

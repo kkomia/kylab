@@ -140,7 +140,11 @@ export function KnowledgeBaseSettings({ kb, className, onChanged }: KnowledgeBas
     prompt: '',
   })
   const [wikiEnabled, setWikiEnabled] = useState(false)
-  /** 刚保存过切分参数、但已有文档还是旧切块：面板上会出现"重新摄入"的提示。 */
+  /**
+   * 刚保存过切分参数、但已有文档还是旧切块：面板上那排「重新摄入全部文档」会转成警示色。
+   *
+   * 它现在**只负责高亮**：说明文字已删（2026-09-24），"已有文档怎么办"由那颗按钮自己回答。
+   */
   const [chunkingStale, setChunkingStale] = useState(false)
   const [reingestOpen, setReingestOpen] = useState(false)
   const [reingesting, setReingesting] = useState(false)
@@ -433,7 +437,6 @@ export function KnowledgeBaseSettings({ kb, className, onChanged }: KnowledgeBas
                           复制
                         </Button>
                       </div>
-                      <p className="text-hint">API 集成时用它指定这个库。</p>
                     </div>
                     <label className="kb-field">
                       <span className="field-label">知识库名称</span>
@@ -602,17 +605,14 @@ export function KnowledgeBaseSettings({ kb, className, onChanged }: KnowledgeBas
                       </p>
                     ) : null}
 
-                    {/* 改动只对之后摄入的文档生效：这一条必须写出来，否则用户会以为"保存了却没反应" */}
+                    {/* 那两句"改动只对之后上传的文档生效"已删（2026-09-24 用户反馈）：
+                        控件自身把话说完了——「重新摄入全部文档」这颗按钮就在同一行，
+                        它就是"已有文档怎么办"的答案。 */}
                     <div
                       className={['kb-callout', chunkingStale ? 'kb-callout-strong' : '']
                         .filter(Boolean)
                         .join(' ')}
                     >
-                      <p style={{ margin: 0, flex: '1 1 260px' }}>
-                        {chunkingStale
-                          ? '已保存。已有文档还是按旧的切块参数、也没有问题，需要重新摄入才会生效。'
-                          : '改动只对之后上传或重新摄入的文档生效；已有文档要重新摄入才会按新参数切块、并补上问题。'}
-                      </p>
                       <Button
                         size="sm"
                         variant="outline"
@@ -648,11 +648,6 @@ export function KnowledgeBaseSettings({ kb, className, onChanged }: KnowledgeBas
                         />
                         <span>为这个知识库开启 Wiki</span>
                       </Label>
-                      {/* 开与关分别发生什么必须在勾之前说清：关掉不代表删掉 */}
-                      <p className="text-hint">
-                        老库也能开：开完之后到 Wiki 页面点「生成 Wiki」，用已录入的内容构建。
-                        关闭只是不再展示与生成，已有页面会保留。
-                      </p>
                     </div>
                     <div className="kb-field-inline">
                       <Button

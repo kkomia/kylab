@@ -49,6 +49,7 @@ from app.storage.base import (
     KnowledgeBaseRecord,
     MCPServerRecord,
     ModelProviderRecord,
+    NoteFolderRecord,
     NoteRecord,
     ParseResultRecord,
     RegisteredModelRecord,
@@ -255,9 +256,11 @@ class FolderRepo(Protocol):
 
 @runtime_checkable
 class NoteRepo(Protocol):
-    r"""笔记域（v20）：笔记本体、计数、标签、以及与文档的挂接。
+    r"""笔记域（v20 / 文件夹 v14）：笔记本体、计数、标签、文件夹，以及与文档的挂接。
 
-    `attach_note_document` 是\「笔记进知识库\」留下的那条边，读写都由这个域负责。
+    文件夹（`note_folders`）与"加入知识库"留下的那条边（`attach_note_document`）
+    都在这里：它们读写的是同一批笔记行与它们的归属，拆到两个域只会让
+    "移动笔记 / 改笔记"分成两处看。
     """
 
     def create_note(self, record: NoteRecord) -> NoteRecord: ...
@@ -270,12 +273,20 @@ class NoteRepo(Protocol):
         user_id: str | None,
         query: str | None = None,
         tag: str | None = None,
+        folder_id: str | None = None,
+        unfiled: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> list[NoteRecord]: ...
 
     def count_notes(
-        self, *, user_id: str | None, query: str | None = None, tag: str | None = None
+        self,
+        *,
+        user_id: str | None,
+        query: str | None = None,
+        tag: str | None = None,
+        folder_id: str | None = None,
+        unfiled: bool = False,
     ) -> int: ...
 
     def update_note(
@@ -294,6 +305,22 @@ class NoteRepo(Protocol):
     def attach_note_document(self, note_id: str, *, kb_id: str, doc_id: str) -> None: ...
 
     def list_note_tags(self, *, user_id: str | None) -> list[tuple[str, int]]: ...
+
+    def create_note_folder(self, record: NoteFolderRecord) -> NoteFolderRecord: ...
+
+    def get_note_folder(self, folder_id: str) -> NoteFolderRecord | None: ...
+
+    def list_note_folders(self, *, user_id: str | None) -> list[NoteFolderRecord]: ...
+
+    def rename_note_folder(self, folder_id: str, name: str) -> None: ...
+
+    def set_note_folder_parent(self, folder_id: str, parent_id: str | None) -> None: ...
+
+    def delete_note_folder(self, folder_id: str) -> None: ...
+
+    def count_notes_by_folder(self, *, user_id: str | None) -> dict[str | None, int]: ...
+
+    def set_note_folder(self, note_id: str, folder_id: str | None) -> None: ...
 
 
 @runtime_checkable

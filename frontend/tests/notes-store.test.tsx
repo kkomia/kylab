@@ -50,6 +50,7 @@ function note(id: string, content = `${id} 的正文`): Note {
     source_ref: null,
     kb_id: null,
     doc_id: null,
+    folder_id: null,
     pinned: false,
     tags: [],
     created_at: '2026-09-01T00:00:00Z',

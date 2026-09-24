@@ -275,9 +275,16 @@ describe('切块参数的滑杆与数字框', () => {
 
     await waitFor(() => expect(updateMock).toHaveBeenCalledWith('kb-1', { chunk_size: 1024 }))
     expect(successToast).toHaveBeenCalledWith('切分参数已保存')
-    // 弹窗还在，并且那一句"需要重新摄入"变成了加重态
+    // 弹窗还在（存完停在这一栏）。
+    // **那两句"改动只对之后上传的文档生效"已删**（2026-09-24 用户反馈）：
+    // 「重新摄入全部文档」那颗按钮就是"已有文档怎么办"的答案，它必须还在，
+    // 而且这一栏保存过之后它要换成加重态（`kb-callout-strong`）——
+    // 用例外观只剩这一处提示了，所以这里改为断言它。
     expect(screen.getByRole('dialog', { name: '知识库设置' })).toBeInTheDocument()
-    expect(screen.getByText(/已有文档还是按旧的切块参数/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /重新摄入全部文档/ })).toBeInTheDocument()
+    expect(
+      screen.getByRole('button', { name: /重新摄入全部文档/ }).closest('.kb-callout'),
+    ).toHaveClass('kb-callout-strong')
   })
 
   it('「重新摄入全部文档」走 all=true，由服务端解析全集', async () => {

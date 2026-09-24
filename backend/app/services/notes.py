@@ -6,7 +6,8 @@ kylab 已有知识库、对话（SSE 流式）、摄入流水线三大底座，�
 1. **笔记 CRUD**：Markdown 是唯一事实源（``content_md``），编辑器只负责渲染与编辑；
 2. **加入知识库**：把笔记当成一份 ``text/markdown`` 文档走**现有摄入流水线**——
    切块、嵌入、检索全部复用，入库后回填 ``kb_id``/``doc_id``，检索命中可跳回笔记；
-3. **问答存为笔记**：前端把一轮问答写成 ``source_kind='chat'`` 的笔记，本层不特殊处理。
+3. **问答存为笔记**：前端把一轮问答写成 ``source_kind='chat'`` 的笔记，本层不特殊处理；
+4. **文件夹（v14）**：左栏的层级文件夹 + 笔记归属，见下面"文件夹"那一节。
 
 **刻意不做**（与本产品"单机零依赖"的定位冲突，调研报告 §1 已明确）：
 协作编辑（CRDT/Yjs）、云端多端同步、模板市场、语音听记。
@@ -20,16 +21,19 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 
-from app.core.exceptions import InvalidRequestError, NotFoundError
-from app.storage.base import IMAGES, NoteRecord, StoreBundle
+from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
+from app.storage.base import IMAGES, NoteFolderRecord, NoteRecord, StoreBundle
 
 __all__ = [
     "MAX_IMAGE_BYTES",
     "MAX_TAGS",
     "MAX_TAG_CHARS",
+    "NOTE_FOLDER_NAME_MAX_CHARS",
+    "NoteFolderOverview",
     "NotesService",
     "image_resource",
     "normalize_tags",
@@ -42,6 +46,9 @@ NOTE_TITLE_MAX_CHARS = 80
 #: 每条笔记最多几个标签、单个标签多长。标签是"顺手贴的分类"，不是分类体系。
 MAX_TAGS = 8
 MAX_TAG_CHARS = 24
+#: 文件夹名上限。与知识库目录（``folder.FOLDER_NAME_MAX_CHARS``）同一个数：
+#: 够写清"2026 Q1 合同"，又不至于把左栏那棵树撑爆。
+NOTE_FOLDER_NAME_MAX_CHARS = 64
 #: 允许的来源类型。``manual`` 手记 / ``chat`` 问答存为 / ``clip`` 剪藏。
 SOURCE_KINDS = frozenset({"manual", "chat", "clip"})
 
@@ -112,6 +119,7 @@ class NotesService:
         source_kind: str = "manual",
         source_ref: str | None = None,
         tags: list[str] | None = None,
+        folder_id: str | None = None,
     ) -> NoteRecord:
         kind = source_kind if source_kind in SOURCE_KINDS else "manual"
         body = content_md or ""
@@ -125,6 +133,10 @@ class NotesService:
                 source_kind=kind,
                 source_ref=source_ref,
                 tags=normalize_tags(tags),
+                # 顺手建在某文件夹里（左栏选中文件夹时点"+"就是这条路径）。
+                # 文件夹必须先校验归属：否则能把笔记挂到别人的文件夹下——
+                # 那条笔记此后在列表里就"消失"了（列表按文件夹过滤时查不出来）。
+                folder_id=self._folder_id_for_owner(folder_id, user_id),
             )
         )
 
@@ -195,6 +207,148 @@ class NotesService:
     def delete(self, note_id: str, *, user_id: str | None) -> None:
         self.get_for_owner(note_id, user_id)
         self._stores.meta.delete_note(note_id)
+
+    def move_note(self, note_id: str, *, user_id: str | None, folder_id: str | None) -> NoteRecord:
+        """把笔记移进文件夹 / 移回未归档（``folder_id=None``）。
+
+        **为什么不在 ``PATCH /notes/{id}`` 里带上 ``folder_id``**：那条路径是编辑器的
+        自动保存（800ms 一次、可能落后于用户在树上的操作）。归属与正文走同一条 PATCH，
+        就会出现"用户刚在左栏把笔记移到 A，而编辑器手上那份草稿的 folder_id 还是旧的"
+        ——保存回来把归属又刷回去。分成两条路径之后，移动是移动、保存是保存，
+        两者不会互相覆盖。文档那边（``PATCH /documents/{id}/folder``）也是这么分的。
+        """
+        record = self.get_for_owner(note_id, user_id)
+        self._stores.meta.set_note_folder(record.id, self._folder_id_for_owner(folder_id, user_id))
+        return self.get(note_id)
+
+    # ------------------------------------------------------------------ 文件夹（v14）
+
+    def folder_overview(self, *, user_id: str | None) -> NoteFolderOverview:
+        """左栏那棵树要的全部数字：文件夹、各自条数、未归档条数、总条数。
+
+        **一次聚合算全**（``count_notes_by_folder`` 按 ``folder_id`` GROUP BY，
+        未归档那一行就是键为 ``None`` 的那条）：逐个文件夹查一次就是 N+1，
+        而这三组数字每次移动笔记都要一起变。
+        """
+        folders = self._stores.meta.list_note_folders(user_id=user_id)
+        counts = self._stores.meta.count_notes_by_folder(user_id=user_id)
+        by_folder = {key: value for key, value in counts.items() if key is not None}
+        unfiled = counts.get(None, 0)
+        return NoteFolderOverview(
+            folders=folders,
+            counts=by_folder,
+            unfiled=unfiled,
+            total=sum(counts.values()),
+        )
+
+    def get_folder_for_owner(self, folder_id: str, user_id: str | None) -> NoteFolderRecord:
+        """取文件夹；**越主即 404**（与笔记同一口径，理由见 ``get_for_owner``）。"""
+        record = self._stores.meta.get_note_folder(folder_id)
+        if record is None:
+            raise NotFoundError(f"文件夹不存在：{folder_id}")
+        if user_id is not None and record.user_id != user_id:
+            raise NotFoundError(f"文件夹不存在：{folder_id}")
+        return record
+
+    def create_folder(
+        self, *, user_id: str | None, name: str, parent_id: str | None = None
+    ) -> NoteFolderRecord:
+        cleaned = _clean_folder_name(name)
+        if parent_id is not None:
+            self.get_folder_for_owner(parent_id, user_id)
+        self._reject_duplicate_name(user_id, parent_id, cleaned)
+        return self._stores.meta.create_note_folder(
+            NoteFolderRecord(
+                id=f"fld_{uuid.uuid4().hex[:12]}",
+                user_id=user_id,
+                name=cleaned,
+                parent_id=parent_id,
+            )
+        )
+
+    def rename_folder(
+        self, folder_id: str, *, user_id: str | None, name: str
+    ) -> NoteFolderRecord:
+        record = self.get_folder_for_owner(folder_id, user_id)
+        cleaned = _clean_folder_name(name)
+        if cleaned != record.name:
+            self._reject_duplicate_name(user_id, record.parent_id, cleaned)
+            self._stores.meta.rename_note_folder(folder_id, cleaned)
+        return self.get_folder_for_owner(folder_id, user_id)
+
+    def move_folder(
+        self, folder_id: str, *, user_id: str | None, parent_id: str | None
+    ) -> NoteFolderRecord:
+        """把文件夹挪到另一个文件夹下；``parent_id=None`` = 挪回根级。
+
+        两条要挡住的：**移进自己**、**移进自己的子孙**——环一旦写进库，
+        树就再也长不出来（前端遍历会把那一圈无限展开），而这是**用户点得出来**的
+        操作（菜单里那两个选项不该出现，但接口不能只靠界面自觉）。
+        """
+        record = self.get_folder_for_owner(folder_id, user_id)
+        if parent_id is not None:
+            parent = self.get_folder_for_owner(parent_id, user_id)
+            if parent.id == record.id:
+                raise InvalidRequestError("不能把文件夹移进它自己")
+            if record.id in self._ancestor_ids(parent.id, user_id):
+                raise InvalidRequestError("不能把文件夹移进它自己的子文件夹里")
+        # 换了位置就要按**新位置的兄弟**比一次重名：根级与子级各有各的名册
+        if parent_id != record.parent_id:
+            self._reject_duplicate_name(user_id, parent_id, record.name)
+            self._stores.meta.set_note_folder_parent(folder_id, parent_id)
+        return self.get_folder_for_owner(folder_id, user_id)
+
+    def delete_folder(self, folder_id: str, *, user_id: str | None) -> None:
+        """删文件夹：**子文件夹跟着删（级联），里面的笔记回到未归档**。
+
+        这两条都是**表定义上的语义**（见 schema.py 迁移 v14 与 ``NoteFolderRecord``），
+        不是本方法的判断——所以这里只发一条 DELETE。界面对此负责：
+        确认框里会说清"N 个子文件夹会被删、M 篇笔记会回到未归档、笔记本身不会删"。
+
+        与知识库目录（非空则拒绝）的不同是有意的：那里的目录是单层容器，
+        "先把文件移走再删"只是两步；这里的文件夹是**用户自己的层级**，
+        逐个清空再自底向上删一层层点，成本远高于收益——而真正不可恢复的东西
+        （笔记正文）本来就没有跟着消失。
+        """
+        self.get_folder_for_owner(folder_id, user_id)
+        self._stores.meta.delete_note_folder(folder_id)
+
+    def _ancestor_ids(self, folder_id: str, user_id: str | None) -> set[str]:
+        """从某个文件夹往上走到的全部祖先 id（不含它自己）。
+
+        整份名册一次读出、在内存里走：文件夹是个人规模（几十个），
+        每步回库查一次父级"不会更准，只会更慢"。
+        链上出现断点（父不在名册里）或成环时**停在那一步**——
+        库里本不该有这两种状态（写入路径都校验过），但真出现了也不该让这里转死循环。
+        """
+        parents = {
+            item.id: item.parent_id for item in self._stores.meta.list_note_folders(user_id=user_id)
+        }
+        seen: set[str] = set()
+        cursor = parents.get(folder_id)
+        while cursor is not None and cursor not in seen:
+            seen.add(cursor)
+            cursor = parents.get(cursor)
+        return seen
+
+    def _reject_duplicate_name(
+        self, user_id: str | None, parent_id: str | None, name: str
+    ) -> None:
+        """同一层里不许重名。
+
+        先查一次是为了**给出人的话**（数据库那条唯一索引（v14）报的是约束名，
+        用户读到的是英文报错）；索引仍然是最后一道，两者是"提示"与"保证"的关系。
+        比的是同级：两个不同的文件夹下面各自有一个「会议记录」是正常的。
+        """
+        siblings = self._stores.meta.list_note_folders(user_id=user_id)
+        if any(item.parent_id == parent_id and item.name == name for item in siblings):
+            raise ConflictError(f"这一层已经有一个同名文件夹：{name}")
+
+    def _folder_id_for_owner(self, folder_id: str | None, user_id: str | None) -> str | None:
+        """把"要放进哪个文件夹"校验成可写入的 ``folder_id``（``None`` 原样返回）。"""
+        if folder_id is None:
+            return None
+        return self.get_folder_for_owner(folder_id, user_id).id
 
     def attach_to_kb(self, note_id: str, *, user_id: str | None, kb_id: str) -> NoteRecord:
         """把笔记作为一份 Markdown 文档加入知识库（走现有摄入流水线）。
@@ -285,15 +439,55 @@ class NotesService:
         user_id: str | None,
         query: str | None = None,
         tag: str | None = None,
+        folder_id: str | None = None,
+        unfiled: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[list[NoteRecord], int]:
-        """返回（当页笔记，过滤后的总数）。总数一次带回，省一次往返。"""
+        """返回（当页笔记，过滤后的总数）。总数一次带回，省一次往返。
+
+        ``folder_id`` / ``unfiled`` 是过滤器，**不校验文件夹是否存在**：
+        别的标签页刚删掉那个文件夹时，这里返回空列表比抛 404 更好
+        （界面自己会在下一轮读数里发现"这个文件夹没了"并退回"全部"）。
+        """
         items = self._stores.meta.list_notes(
-            user_id=user_id, query=query, tag=tag, limit=limit, offset=offset
+            user_id=user_id,
+            query=query,
+            tag=tag,
+            folder_id=folder_id,
+            unfiled=unfiled,
+            limit=limit,
+            offset=offset,
         )
-        total = self._stores.meta.count_notes(user_id=user_id, query=query, tag=tag)
+        total = self._stores.meta.count_notes(
+            user_id=user_id, query=query, tag=tag, folder_id=folder_id, unfiled=unfiled
+        )
         return items, total
 
     def tags(self, *, user_id: str | None) -> list[tuple[str, int]]:
         return self._stores.meta.list_note_tags(user_id=user_id)
+
+
+@dataclass(frozen=True, slots=True)
+class NoteFolderOverview:
+    """左栏文件夹树的读数（一次给全，见 ``NotesService.folder_overview``）。
+
+    ``counts`` 只含**真实存在的文件夹**；某个文件夹一篇笔记都没有时它不在这个字典里
+    （调用方按 0 处理）——聚合是按"有笔记的文件夹"分组的，凭空补齐零值只会让
+    存储层替调用方猜它想要多少项。
+    """
+
+    folders: list[NoteFolderRecord] = field(default_factory=list)
+    counts: dict[str, int] = field(default_factory=dict)
+    unfiled: int = 0
+    total: int = 0
+
+
+def _clean_folder_name(name: str) -> str:
+    """压平空白并校验长度：名字进的是左栏那棵树，带换行会把行高撑歪。"""
+    cleaned = " ".join((name or "").split())
+    if not cleaned:
+        raise InvalidRequestError("文件夹名不能为空")
+    if len(cleaned) > NOTE_FOLDER_NAME_MAX_CHARS:
+        raise InvalidRequestError(f"文件夹名不能超过 {NOTE_FOLDER_NAME_MAX_CHARS} 个字符")
+    return cleaned

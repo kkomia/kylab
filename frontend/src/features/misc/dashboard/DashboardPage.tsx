@@ -397,8 +397,6 @@ export function DashboardPage() {
       <div className="panel m-card-block">
         <div className="m-block-head">
           <span className="m-block-title">近 {usageDays} 天</span>
-          {/* 口径说明，压到半句：它是"这个数怎么来的"，用户不知道就没法拿它做判断 */}
-          <span className="m-block-hint">向量化部分按字符数估算</span>
         </div>
 
         <dl className="m-usage-figures">
@@ -422,55 +420,21 @@ export function DashboardPage() {
         ) : !usage.data || usage.data.total.calls === 0 ? (
           <p className="m-usage-empty">还没有用量记录。提问或上传文档之后这里会有数据。</p>
         ) : (
-          <>
-            {/* 三态分开说：不区分的话会把"没报"画成"没用"、把"估算"画成"实测"。
-                **合成一段、只留事实**（2026-09-24）：原来两句各带一句"别拿它精确对账"
-                的叮嘱，那是在替用户下结论；口径本身（哪部分估的、哪部分没报）才是
-                他不知道就没有判断力的东西。 */}
-            {usage.data.estimated_tokens > 0 || usage.data.unreported_calls > 0 ? (
-              <p className="m-usage-note">
-                {usage.data.estimated_tokens > 0
-                  ? `其中约 ${formatCount(usage.data.estimated_tokens)} token 是按字符数估算的（${formatCount(usage.data.estimated_calls)} 次向量化调用，接口不返回用量）`
-                  : null}
-                {usage.data.estimated_tokens > 0 && usage.data.unreported_calls > 0 ? '；' : null}
-                {usage.data.unreported_calls > 0
-                  ? `另有 ${formatCount(usage.data.unreported_calls)} 次调用供应商没有返回用量，只计入「调用次数」与「处理条数」`
-                  : null}
-                。
-              </p>
-            ) : null}
-
-            <ul className="m-usage-list">
-              {usage.data.by_kind.map((item) => (
-                <li key={item.kind} className="m-usage-row">
-                  <span className="m-usage-name">{item.label}</span>
-                  <span className="m-usage-bar">
-                    <span
-                      className="m-usage-bar-fill"
-                      style={{ width: `${barWidth(item.calls)}%` }}
-                    />
-                  </span>
-                  {/* 有 token 的按 token 说，没有的（检索）说条数：
-                      把"输入 0 · 输出 0"摆出来只会让人以为统计坏了 */}
-                  <span className="m-usage-figures-inline tabular">
-                    {formatCount(item.calls)} 次
-                    {item.prompt_tokens || item.completion_tokens
-                      ? ` · 输入 ${formatCount(item.prompt_tokens)} · 输出 ${formatCount(item.completion_tokens)}`
-                      : item.items
-                        ? ` · 共 ${formatCount(item.items)} 条`
-                        : ''}
-                  </span>
-                </li>
-              ))}
-            </ul>
-
-            <p className="m-usage-note">
-              按模型：
-              {usage.data.by_model
-                .map((model) => `${model.model}（${formatCount(model.calls)} 次）`)
-                .join('、')}
-            </p>
-          </>
+          <ul className="m-usage-list">
+            {usage.data.by_kind.map((item) => (
+              <li key={item.kind} className="m-usage-row">
+                <span className="m-usage-name">{item.label}</span>
+                <span className="m-usage-bar">
+                  <span
+                    className="m-usage-bar-fill"
+                    style={{ width: `${barWidth(item.calls)}%` }}
+                  />
+                </span>
+                {/* 这一行原先还挂着一串数（`428 次 · 共 4,646 条` / `输入 … 输出 …`）：
+                    条只负责"相对量"，绝对数在上方那四个大数里已经给过一遍（2026-09-24 删） */}
+              </li>
+            ))}
+          </ul>
         )}
       </div>
 
@@ -501,7 +465,13 @@ export function DashboardPage() {
                     <Link className="m-kb-link" to={`/kb/${kb.id}`}>
                       <span className="m-col-name">
                         <span className="m-kb-name">{kb.name}</span>
-                        <span className="m-kb-model">{kb.embedding_model_id}</span>
+                        {/* 模型 id 与库名之间**必须有缝**：`.m-col-name` 是纯 flex:1 容器，
+                            两个 span 当行内元素排会贴在一起（`城市建成环境研究现状BAAI/bge-m3`
+                            ——2026-09-24 用户截图圈的就是这处排版缺陷）。缝写在调用点：
+                            工具类压 `@layer components` 里的 `.m-kb-model`，不会打架 */}
+                        <span className="m-kb-model ml-[var(--space-2)]">
+                          {kb.embedding_model_id}
+                        </span>
                       </span>
                       <span className="m-col-num tabular">{formatCount(kb.documents)}</span>
                       <span className="m-col-num tabular">{formatCount(kb.chunks)}</span>

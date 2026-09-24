@@ -105,27 +105,14 @@
     border-right: 1px solid var(--border-hairline);
   }
 
+  /* 头部只有动作按钮，所以靠右排：「+ 新建笔记」仍在右端——空态那句
+     "点右上角的 + 写第一条"说的就是它。原来的"全部 N"标题去掉了，
+     作用域与条数移到树上「全部」「未归档」那两行（一处说一件事）。 */
   .list-head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: var(--space-2);
-  }
-
-  .list-title {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-2);
-    margin: 0;
-    font-size: var(--text-section-size);
-    font-weight: 600;
-    color: var(--text-primary);
-  }
-
-  .list-count {
-    font-size: var(--text-micro-size);
-    font-weight: 400;
-    color: var(--text-tertiary);
   }
 
   .icon-action {
@@ -300,6 +287,153 @@
 
   .list-error {
     color: var(--status-danger);
+  }
+
+  /* ------------------------------------------------ 文件夹（v14，左栏那棵树）
+   *
+   * 尺寸口径与左栏其他行对齐：行高 24px（与 `.tag-bar-toggle` 的 20px 同一量级，
+   * 但树行要容纳 14px 的图标与右侧的行菜单，取 24px）、左沿与搜索框/小标题同一条线。
+   * 缩进由 `aria-level` 落在内联样式的 padding-left 上（`FolderTree` 里按层级算），
+   * 这里只管行本身。
+   *
+   * **这段规则与其余部分一样收在 `@layer components` 里**（见文件头那段说明）：
+   * 层外声明永远压过 `@layer utilities`，这里的单类选择器会与调用点上的工具类打架。
+   */
+  /* **`flex: 0 0 auto` 是必须的**（真机实测踩到）：左栏（`.notes-list`）是一列
+   * 定高的 flex 容器，子项默认 `flex-shrink: 1`——笔记一多，这一块会被压成
+   * **0 高**（内容还在 DOM 里、也有样式，但整棵树在屏幕上不存在）。
+   * 这里不许它缩：左栏要么正常排下来、要么自己出滚动条。 */
+  .folder-panel {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .folder-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  /* 小标题与 `.group-label` / `.tag-group-label` 共用同一条基准线 */
+  .folder-head-label {
+    font-size: var(--text-micro-size);
+    color: var(--text-secondary);
+  }
+
+  .folder-add {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* 树自己滚：文件夹多起来（几十个）时不许把笔记列表整块往下推——
+     左栏的高度首先属于"有哪些笔记"。36vh 在 856px 高的左栏里约 8 行，
+     超过就滚。 */
+  .folder-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    max-height: 36vh;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+  }
+
+  /* 行高 28px：与知识库那棵树的行（30px）同一量级，够放 14px 的图标与行菜单。
+   *
+   * **`flex: 0 0 auto` 也是必须的**（真机实测踩到）：树本身是一列 flex 容器，
+   * 行默认 `flex-shrink: 1`——文件夹一多（12 个就够），行会被压扁到 18px 来"挤进去"，
+   * 而 `max-height` + `overflow-y: auto` 那条滚动就永远不触发。行保住自己的高度，
+   * 多出来的部分才由树自己滚。 */
+  .folder-row {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: var(--space-1);
+    height: 28px;
+    padding-right: var(--space-1);
+    border-radius: var(--radius-control);
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .folder-row:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  /* 选中：与标签筛选同一套（中性选中底 + 主文字色），不新增一套"选中的样子" */
+  .folder-row-on {
+    background: var(--bg-selected);
+    color: var(--text-primary);
+  }
+
+  /* 键盘焦点环：树是靠方向键走的，没有可见焦点就等于走不见 */
+  .folder-row:focus-visible {
+    outline: 2px solid var(--accent-text);
+    outline-offset: -2px;
+  }
+
+  .folder-caret {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    color: var(--text-tertiary);
+    background: none;
+    border: none;
+    cursor: pointer;
+  }
+
+  .folder-icon {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    color: var(--text-tertiary);
+  }
+
+  .folder-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    font-size: var(--text-meta-size);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .folder-count {
+    flex: 0 0 auto;
+    font-size: var(--text-micro-size);
+    color: var(--text-tertiary);
+  }
+
+  /* 行菜单**常驻**（不是悬停才出现）：悬停才出现的那类动作，键盘与触屏用户
+     都要先"猜"它在哪；知识库那棵树的行菜单同样是常驻的。
+     颜色压到 tertiary，让它在行里安静一点。 */
+  .folder-menu {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    color: var(--text-tertiary);
+    background: none;
+    border: none;
+    border-radius: var(--radius-control);
+    cursor: pointer;
+  }
+
+  .folder-menu:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
   }
 
   .note-groups {

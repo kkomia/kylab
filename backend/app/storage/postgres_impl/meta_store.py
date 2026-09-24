@@ -66,6 +66,7 @@ from app.storage.base import (
     MCPServerRecord,
     MetaStore,
     ModelProviderRecord,
+    NoteFolderRecord,
     NoteRecord,
     ParseResultRecord,
     RegisteredModelRecord,
@@ -620,6 +621,7 @@ class PostgresMetaStore(MetaStore):
             source_ref=row["source_ref"],
             kb_id=row["kb_id"],
             doc_id=row["doc_id"],
+            folder_id=row["folder_id"],
             pinned=bool(row["pinned"]),
             tags=list(tags),
             created_at=_load(row["created_at"]),
@@ -627,7 +629,13 @@ class PostgresMetaStore(MetaStore):
         )
 
     @staticmethod
-    def _note_filters(user_id: str | None, query: str | None, tag: str | None) -> tuple[str, list]:
+    def _note_filters(
+        user_id: str | None,
+        query: str | None,
+        tag: str | None,
+        folder_id: str | None = None,
+        unfiled: bool = False,
+    ) -> tuple[str, list]:
         """拼 WHERE 子句。
 
         ``user_id=None`` 表示**不过滤归属**（管理员/API Key 通道要看全部，
@@ -635,6 +643,10 @@ class PostgresMetaStore(MetaStore):
         SQLite 里用 ``user_id IS ?`` 同时覆盖 NULL 与具体值；PG 的 ``IS`` 只接受
         NULL/TRUE/FALSE/UNKNOWN，不能与任意值参数化，所以按分支写成
         "无筛选 / ``= %s``"，语义与 SQLite 版一致。
+
+        ``folder_id`` / ``unfiled`` 与文档列表的 ``folder_id`` / ``root_only`` 同一套
+        写法：两者是同一个轴上的两种取法，**由调用方保证不同时给**
+        （``unfiled`` 优先，与文档那边一致：``root_only`` 先判）。
 
         搜索用 ``ILIKE`` 子串匹配而不是全文索引：笔记是个人规模的数据，
         子串匹配对中文天然可用（不需要分词），也没有"改了正文忘了同步索引"这类静默故障。
@@ -645,6 +657,11 @@ class PostgresMetaStore(MetaStore):
         if user_id is not None:
             where.append("n.user_id = %s")
             params.append(user_id)
+        if unfiled:
+            where.append("n.folder_id IS NULL")
+        elif folder_id is not None:
+            where.append("n.folder_id = %s")
+            params.append(folder_id)
         for term in (query or "").split():
             escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             where.append("(n.title ILIKE %s ESCAPE '\\' OR n.content_md ILIKE %s ESCAPE '\\')")
@@ -677,8 +694,8 @@ class PostgresMetaStore(MetaStore):
         with self._db.session() as conn:
             conn.execute(
                 "INSERT INTO notes (id, user_id, title, content_md, source_kind, source_ref,"
-                " kb_id, doc_id, pinned, created_at, updated_at)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                " kb_id, doc_id, folder_id, pinned, created_at, updated_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     record.id,
                     record.user_id,
@@ -688,6 +705,7 @@ class PostgresMetaStore(MetaStore):
                     record.source_ref,
                     record.kb_id,
                     record.doc_id,
+                    record.folder_id,
                     record.pinned,
                     _dump(record.created_at),
                     _dump(record.updated_at),
@@ -716,10 +734,14 @@ class PostgresMetaStore(MetaStore):
         user_id: str | None,
         query: str | None = None,
         tag: str | None = None,
+        folder_id: str | None = None,
+        unfiled: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> list[NoteRecord]:
-        where, params = self._note_filters(user_id, query, tag)
+        where, params = self._note_filters(
+            user_id, query, tag, folder_id=folder_id, unfiled=unfiled
+        )
         sql = (
             # where 由本文件内部拼装：列名是字面量，值一律走 %s 绑定
             f"SELECT n.* FROM notes n WHERE {where}"  # noqa: S608
@@ -731,9 +753,17 @@ class PostgresMetaStore(MetaStore):
         return [self._note_from_row(row, tags.get(row["id"], [])) for row in rows]
 
     def count_notes(
-        self, *, user_id: str | None, query: str | None = None, tag: str | None = None
+        self,
+        *,
+        user_id: str | None,
+        query: str | None = None,
+        tag: str | None = None,
+        folder_id: str | None = None,
+        unfiled: bool = False,
     ) -> int:
-        where, params = self._note_filters(user_id, query, tag)
+        where, params = self._note_filters(
+            user_id, query, tag, folder_id=folder_id, unfiled=unfiled
+        )
         with self._db.read() as conn:
             row = conn.execute(
                 f"SELECT COUNT(*) AS n FROM notes n WHERE {where}",  # noqa: S608
@@ -791,6 +821,101 @@ class PostgresMetaStore(MetaStore):
         with self._db.read() as conn:
             rows = conn.execute(sql, params).fetchall()
         return [(row["tag"], int(row["n"])) for row in rows]
+
+    # ------------------------------------------------------------------ 笔记文件夹（v14）
+
+    @staticmethod
+    def _note_folder_from_row(row: dict) -> NoteFolderRecord:
+        return NoteFolderRecord(
+            id=row["id"],
+            user_id=row["user_id"],
+            name=row["name"],
+            parent_id=row["parent_id"],
+            created_at=_load(row["created_at"]),
+            updated_at=_load(row["updated_at"]),
+        )
+
+    def create_note_folder(self, record: NoteFolderRecord) -> NoteFolderRecord:
+        moment = _now()
+        record.created_at = record.created_at or moment
+        record.updated_at = record.updated_at or moment
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO note_folders (id, user_id, name, parent_id, created_at, updated_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s)",
+                (
+                    record.id,
+                    record.user_id,
+                    record.name,
+                    record.parent_id,
+                    _dump(record.created_at),
+                    _dump(record.updated_at),
+                ),
+            )
+        return record
+
+    def get_note_folder(self, folder_id: str) -> NoteFolderRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM note_folders WHERE id = %s", (folder_id,)
+            ).fetchone()
+        return self._note_folder_from_row(row) if row else None
+
+    def list_note_folders(self, *, user_id: str | None) -> list[NoteFolderRecord]:
+        # 与知识库目录同一条口径：按名字排（PG 没有 NOCASE，用 lower(name)，
+        # 服务这条查询的索引在迁移 v14 里）。
+        where = "" if user_id is None else "WHERE user_id = %s"
+        params: tuple = () if user_id is None else (user_id,)
+        with self._db.read() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM note_folders {where} ORDER BY lower(name), id",  # noqa: S608
+                params,
+            ).fetchall()
+        return [self._note_folder_from_row(row) for row in rows]
+
+    def rename_note_folder(self, folder_id: str, name: str) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE note_folders SET name = %s, updated_at = %s WHERE id = %s",
+                (name, _dump(_now()), folder_id),
+            )
+
+    def set_note_folder_parent(self, folder_id: str, parent_id: str | None) -> None:
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE note_folders SET parent_id = %s, updated_at = %s WHERE id = %s",
+                (parent_id, _dump(_now()), folder_id),
+            )
+
+    def delete_note_folder(self, folder_id: str) -> None:
+        """**一条 DELETE 就是全部**：子文件夹由 ``parent_id`` 的外键级联删掉，
+        里面的笔记由 ``notes.folder_id`` 的 ``ON DELETE SET NULL`` 回到未归档。
+        在 Python 里手写"先查子树再逐个删"只会把这两条已经声明在表上的语义
+        复制成第二处会漂的定义。
+        """
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM note_folders WHERE id = %s", (folder_id,))
+
+    def count_notes_by_folder(self, *, user_id: str | None) -> dict[str | None, int]:
+        """``{文件夹 id / None（未归档）: 笔记数}``，一次聚合取全（含未归档那一行）。"""
+        where = "" if user_id is None else "WHERE user_id = %s"
+        params: tuple = () if user_id is None else (user_id,)
+        with self._db.read() as conn:
+            rows = conn.execute(
+                # where 只有两种取值（空串 / 一个字面量条件），用户值走绑定
+                f"SELECT folder_id, COUNT(*) AS n FROM notes {where} GROUP BY folder_id",  # noqa: S608
+                params,
+            ).fetchall()
+        return {row["folder_id"]: int(row["n"]) for row in rows}
+
+    def set_note_folder(self, note_id: str, folder_id: str | None) -> None:
+        """**不动 `updated_at`**：移动是"归了个档"，不是改了这条笔记。
+        顺手把它顶到列表最前面（列表按 updated_at 排）等于把用户刚翻到的地方打乱。
+        """
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE notes SET folder_id = %s WHERE id = %s", (folder_id, note_id)
+            )
 
     def update_document_stage(
         self, document_id: str, stage: DocumentStage, *, error: str | None = None

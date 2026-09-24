@@ -23,6 +23,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  FolderInput,
   Library,
   ListTree,
   Pin,
@@ -34,22 +35,38 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
 
-import type { NoteAiAction, NoteListItem } from '@/api/notes'
+import type { NoteAiAction, NoteFolder, NoteListItem } from '@/api/notes'
 import { formatCount } from '@/lib/format'
 import { Button } from '@/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/ui/dropdown-menu'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog'
 import { Input } from '@/ui/input'
 
 import { NoteEditor, type NoteEditorHandle } from './NoteEditor'
 import type { NoteTocItem } from './NoteCanvas'
+import { NoteFolderTree } from './FolderTree'
+import { descendantIds, folderOptions, folderPath, subtreeStats } from './folders'
 import {
   useAiTransform,
   useAttachNote,
   useCreateNote,
+  useCreateNoteFolder,
   useDeleteNote,
+  useDeleteNoteFolder,
   useKnowledgeBaseOptions,
+  useMoveNote,
+  useMoveNoteFolder,
+  useNoteFolders,
   useNoteTags,
   useNotesList,
+  useRenameNoteFolder,
   useSaveNote,
 } from './queries'
 import {
@@ -65,6 +82,7 @@ import {
   shortDate,
   snapshotOf,
   tagKindOf,
+  UNFILED_FOLDER,
   useNotesStore,
   writeListCollapsed,
   writeTagsCollapsed,
@@ -101,6 +119,20 @@ const SEARCH_DEBOUNCE_MS = 300
 type Draft = NoteBody
 
 /**
+ * 文件夹的建/改名共用一个表单（与知识库目录那边同一套）。
+ *
+ * `parentId` 只在"新建"时有意义：它是这颗新文件夹会落在哪一层——
+ * "建子文件夹"与"建根级文件夹"因此是同一个对话框的两次调用。
+ */
+interface FolderForm {
+  mode: 'create' | 'rename'
+  /** 改名时的目标；新建时为空。 */
+  folderId?: string
+  parentId: string | null
+  name: string
+}
+
+/**
  * 标签云的三组（界面评审 N4）。顺序即语义顺序：**先时间、再来源、最后状态**——
  * 时间最像"这批笔记的坐标"，来源是主体，状态是补充。
  */
@@ -122,10 +154,13 @@ export function NotesView() {
 
   const query = useNotesStore((state) => state.query)
   const activeTag = useNotesStore((state) => state.activeTag)
+  const activeFolder = useNotesStore((state) => state.activeFolder)
   const setFilter = useNotesStore((state) => state.setFilter)
+  const setFolder = useNotesStore((state) => state.setFolder)
 
-  const listQuery = useNotesList({ q: query, tag: activeTag })
+  const listQuery = useNotesList({ q: query, tag: activeTag, folder: activeFolder })
   const tagsQuery = useNoteTags()
+  const foldersQuery = useNoteFolders()
   const kbQuery = useKnowledgeBaseOptions()
 
   const createMutation = useCreateNote()
@@ -133,12 +168,17 @@ export function NotesView() {
   const deleteMutation = useDeleteNote()
   const attachMutation = useAttachNote()
   const aiMutation = useAiTransform()
+  const moveNoteMutation = useMoveNote()
+  const createFolderMutation = useCreateNoteFolder()
+  const renameFolderMutation = useRenameNoteFolder()
+  const moveFolderMutation = useMoveNoteFolder()
+  const deleteFolderMutation = useDeleteNoteFolder()
 
   // 列表项与标签都从查询结果里派生：包一层 useMemo 是为了让它们有**稳定的身份**，
   // 否则下面那两个 effect 的依赖每次渲染都在变（`?? []` 每次都造一个新数组）
   const items = useMemo(() => listQuery.data?.items ?? [], [listQuery.data])
-  const total = listQuery.data?.total ?? 0
   const tags = useMemo(() => tagsQuery.data ?? [], [tagsQuery.data])
+  const folders = useMemo(() => foldersQuery.data?.items ?? [], [foldersQuery.data])
   const kbOptions = useMemo(
     () => (kbQuery.data ?? []).map((kb) => ({ value: kb.id, label: kb.name })),
     [kbQuery.data],
@@ -154,6 +194,11 @@ export function NotesView() {
   const [attachKb, setAttachKb] = useState('')
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [switching, setSwitching] = useState(false)
+  /** 文件夹的建/改名对话框（两种模式共用一个表单，与知识库目录那边同款）。 */
+  const [folderForm, setFolderForm] = useState<FolderForm | null>(null)
+  const [folderSaving, setFolderSaving] = useState(false)
+  /** 待确认删除的文件夹（确认框里要把它会带走的东西说清楚）。 */
+  const [folderDelete, setFolderDelete] = useState<NoteFolder | null>(null)
 
   /**
    * 列表折叠（本机偏好）。
@@ -209,6 +254,7 @@ export function NotesView() {
       pinned: note.pinned,
       kb_id: note.kb_id,
       doc_id: note.doc_id,
+      folder_id: note.folder_id ?? null,
       updated_at: note.updated_at,
     }
     setDraft(next)
@@ -513,7 +559,13 @@ export function NotesView() {
         rememberBody(client, leaving)
         flush(leaving)
       }
-      const note = await createMutation.mutateAsync({ title: '', content_md: '' })
+      // 建在当前选中的文件夹里——否则在文件夹视图下点"+ 新建"，
+      // 新笔记会落到未归档：**看不见自己刚建的东西**（而这一轮又没有拖拽可以补救）
+      const note = await createMutation.mutateAsync({
+        title: '',
+        content_md: '',
+        folder_id: newNoteFolderId,
+      })
       await navigate(`/notes/${note.id}`)
     } catch (cause) {
       toast.error(errorText(cause, '新建失败'))
@@ -603,8 +655,110 @@ export function NotesView() {
     writeTagsCollapsed(next)
   }
 
+  /* ------------------------------------------------------------ 文件夹（v14） */
+
+  /** 新建的笔记落在哪儿：选中某个文件夹时就在它里面，其他两种情况进未归档。 */
+  const newNoteFolderId =
+    activeFolder === '' || activeFolder === UNFILED_FOLDER ? null : activeFolder
+
   /**
-   * 点目录跳过去。
+   * 选中的文件夹被删掉了（自己删的、或另一个标签页删的）→ 退回"全部"。
+   *
+   * 不退的话列表会停在一个**永远为空**的筛选上：数据没了、界面上却还有一条
+   * 看起来正常的筛选条件，用户只会以为"笔记都没了"。
+   * 只在**读数已经拿到**时判断（`isSuccess`）——首屏还没读数时 `folders` 是空数组，
+   * 那时候退掉会把用户刚选中的文件夹键成白选。
+   */
+  useEffect(() => {
+    if (!foldersQuery.isSuccess) return
+    if (activeFolder === '' || activeFolder === UNFILED_FOLDER) return
+    if (!folders.some((folder) => folder.id === activeFolder)) setFolder('')
+  }, [foldersQuery.isSuccess, folders, activeFolder, setFolder])
+
+  function openCreateFolder(parentId: string | null): void {
+    setFolderForm({ mode: 'create', parentId, name: '' })
+  }
+
+  function openRenameFolder(folder: NoteFolder): void {
+    setFolderForm({
+      mode: 'rename',
+      folderId: folder.id,
+      parentId: folder.parent_id,
+      name: folder.name,
+    })
+  }
+
+  async function submitFolderForm(): Promise<void> {
+    const form = folderForm
+    if (!form) return
+    const name = form.name.trim()
+    if (!name) {
+      toast.error('先给文件夹起个名字')
+      return
+    }
+    setFolderSaving(true)
+    try {
+      if (form.mode === 'create') {
+        await createFolderMutation.mutateAsync({ name, parentId: form.parentId })
+      } else if (form.folderId) {
+        await renameFolderMutation.mutateAsync({ folderId: form.folderId, name })
+      }
+      setFolderForm(null)
+    } catch (cause) {
+      // 重名、超长这类都被后端挡下来并给了可读文案（比如"这一层已经有一个同名文件夹"）
+      toast.error(errorText(cause, '保存失败'))
+    } finally {
+      setFolderSaving(false)
+    }
+  }
+
+  async function moveFolder(folder: NoteFolder, parentId: string | null): Promise<void> {
+    try {
+      await moveFolderMutation.mutateAsync({ folderId: folder.id, parentId })
+    } catch (cause) {
+      toast.error(errorText(cause, '移动失败'))
+    }
+  }
+
+  async function confirmDeleteFolder(): Promise<void> {
+    const folder = folderDelete
+    if (!folder) return
+    try {
+      await deleteFolderMutation.mutateAsync(folder.id)
+      // 删掉的正是当前选中的那一支 → 退回"全部"（见上面那个 effect 的同一条理由；
+      // 这里先退一步是为了让用户在请求返回的瞬间就回到有内容的地方）
+      const doomed = descendantIds(folders, folder.id)
+      if (activeFolder === folder.id || doomed.has(activeFolder)) setFolder('')
+      setFolderDelete(null)
+      toast.success('文件夹已删除，里面的笔记回到了未归档')
+    } catch (cause) {
+      toast.error(errorText(cause, '删除失败'))
+    }
+  }
+
+  /**
+   * 把当前这条笔记移进某个文件夹（`folderId=null` = 移回未归档）。
+   *
+   * 走的是**单独那条端点**（不是编辑器的自动保存）：移动不是编辑，
+   * 也不该被 800ms 后才落盘的那份草稿覆盖（见后端 `NotesService.move_note`）。
+   */
+  async function moveCurrentNote(folderId: string | null): Promise<void> {
+    const item = draftRef.current
+    if (!item) return
+    if ((item.folder_id ?? null) === folderId) return
+    try {
+      const updated = await moveNoteMutation.mutateAsync({ noteId: item.id, folderId })
+      setDraft((prev) =>
+        prev && prev.id === updated.id ? { ...prev, folder_id: updated.folder_id } : prev,
+      )
+      const target = folderId ? folderPath(folders, folderId) : ''
+      toast.success(target ? `已移动到「${target}」` : '已移回未归档')
+    } catch (cause) {
+      toast.error(errorText(cause, '移动失败'))
+    }
+  }
+
+  /** 点目录跳过去。
    *
    * **落点不在这里算**：滚动容器是谁、阅读线在哪儿（吸顶工具栏的下沿）都是画布那边
    * 的事（`NoteTocItem.scrollTo`，见 NoteCanvas），页面只负责"点了就跳"。
@@ -623,6 +777,26 @@ export function NotesView() {
     )
   }, [tags])
   const activeKbName = kbOptions.find((option) => option.value === draft?.kb_id)?.label ?? ''
+
+  /** 「移动到」菜单的候选：全部文件夹（带完整路径，同名不同层才分得清）。 */
+  const noteMoveOptions = useMemo(() => folderOptions(folders), [folders])
+  /** 打开的那条笔记现在在哪个文件夹（菜单上打勾用）。 */
+  const draftFolderName = draft?.folder_id ? folderPath(folders, draft.folder_id) : ''
+  /** 删除确认要说的两个数：会带走几个子文件夹、几篇笔记（数错了等于骗人）。 */
+  const deleteStats = folderDelete ? subtreeStats(folders, folderDelete.id) : null
+
+  /**
+   * 列表空态的第一句随作用域变。
+   *
+   * 在"工作"这个文件夹里看到"还没有笔记"会让人以为笔记都没了——
+   * 而实际情况是"这个位置现在是空的"，两句话说的不是一回事。
+   */
+  const emptyTitle =
+    activeFolder === ''
+      ? '还没有笔记'
+      : activeFolder === UNFILED_FOLDER
+        ? '没有未归档的笔记'
+        : `「${folderPath(folders, activeFolder) || '这个文件夹'}」里还没有笔记`
 
   const saveLabel =
     saveState === 'saving'
@@ -645,22 +819,22 @@ export function NotesView() {
         }`}
       >
         <aside className="notes-list">
+          {/*
+            头部只剩动作按钮：原来那行"全部 N"的标题移到了树上的「全部」那一行
+            （选中态与条数都在那儿，两处各写一份迟早会说两套话）。
+            「+」仍在这一行的右端——空态那句"点右上角的 + 写第一条"说的就是它。
+          */}
           <div className="list-head">
             {!listCollapsed && (
-              <>
-                <p className="list-title">
-                  全部<span className="list-count tabular">{formatCount(total)}</span>
-                </p>
-                <button
-                  type="button"
-                  className="icon-action"
-                  title="新建笔记"
-                  aria-label="新建笔记"
-                  onClick={() => void createNew()}
-                >
-                  <Plus size={16} />
-                </button>
-              </>
+              <button
+                type="button"
+                className="icon-action"
+                title="新建笔记"
+                aria-label="新建笔记"
+                onClick={() => void createNew()}
+              >
+                <Plus size={16} />
+              </button>
             )}
             {/* 折叠开关：箭头指向"列表会往哪边收"，展开态在右、折叠态独居导轨中央 */}
             <button
@@ -675,8 +849,8 @@ export function NotesView() {
             </button>
           </div>
 
-          {/* 折叠后整块列表**移出 DOM**（不只是 CSS 藏起来）：导轨里再养着搜索框
-              与上百行列表没有意义，而且它们还得继续跟着数据变化重渲染 */}
+          {/* 折叠后整块列表**移出 DOM**（不只是 CSS 藏起来）：导轨里再养着搜索框、
+              文件夹树与上百行列表没有意义，而且它们还得继续跟着数据变化重渲染 */}
           {!listCollapsed && (
             <>
               <div className="search-box">
@@ -689,6 +863,38 @@ export function NotesView() {
                   onChange={(event) => setSearchInput(event.target.value)}
                 />
               </div>
+
+              {/*
+                文件夹树：**读不到就不摆**（`isSuccess`）。空数组会渲染出一棵
+                "全部 0 / 未归档 0"的树——那是把"还没读到"说成了"这里什么都没有"。
+              */}
+              {foldersQuery.isSuccess && (
+                <div className="folder-panel">
+                  <div className="folder-head">
+                    <span className="folder-head-label">文件夹</span>
+                    <button
+                      type="button"
+                      className="icon-action folder-add"
+                      title="新建文件夹"
+                      aria-label="新建文件夹"
+                      onClick={() => openCreateFolder(null)}
+                    >
+                      <Plus size={14} />
+                    </button>
+                  </div>
+                  <NoteFolderTree
+                    folders={folders}
+                    unfiledCount={foldersQuery.data?.unfiled_count ?? 0}
+                    totalCount={foldersQuery.data?.total_count ?? 0}
+                    active={activeFolder}
+                    onSelect={setFolder}
+                    onCreateChild={(folder) => openCreateFolder(folder.id)}
+                    onRename={openRenameFolder}
+                    onDelete={setFolderDelete}
+                    onMove={(folder, parentId) => void moveFolder(folder, parentId)}
+                  />
+                </div>
+              )}
 
               {/*
                 标签区：**默认折叠**（用户反馈："标签在笔记目录里面不默认展开。不然标签
@@ -767,7 +973,8 @@ export function NotesView() {
                 <p className="list-hint list-error">{errorText(listQuery.error, '笔记加载失败')}</p>
               ) : !listQuery.isLoading && !items.length ? (
                 <div className="empty">
-                  <p className="empty-title">还没有笔记</p>
+                  {/* 空态随作用域变：在文件夹里看到"还没有笔记"会让人以为笔记没了 */}
+                  <p className="empty-title">{emptyTitle}</p>
                   <p className="empty-hint">点右上角的 + 写第一条</p>
                 </div>
               ) : (
@@ -855,6 +1062,49 @@ export function NotesView() {
                       <ListTree size={15} />
                     </button>
                   )}
+                  {/*
+                    「移动到文件夹」：这一轮的移动入口（不做拖拽）。
+                    放在工具栏而不是列表行上，与置顶 / 加入知识库同类——它们都是
+                    "对当前这条笔记做什么"，而列表行上再加一排悬停才出现的按钮，
+                    会把本来就窄的左栏挤得更紧。
+                  */}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className={`icon-action${draft.folder_id ? ' icon-action-on' : ''}`}
+                        title={draftFolderName ? `已在「${draftFolderName}」` : '移动到文件夹'}
+                        aria-label="移动到文件夹"
+                      >
+                        <FolderInput size={15} />
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuLabel>移动到</DropdownMenuLabel>
+                      {noteMoveOptions.map((option) => (
+                        <DropdownMenuItem
+                          key={option.id}
+                          onSelect={() => void moveCurrentNote(option.id)}
+                        >
+                          <Check
+                            size={14}
+                            aria-hidden="true"
+                            className={draft.folder_id === option.id ? '' : 'invisible'}
+                          />
+                          {option.path}
+                        </DropdownMenuItem>
+                      ))}
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onSelect={() => void moveCurrentNote(null)}>
+                        <Check
+                          size={14}
+                          aria-hidden="true"
+                          className={draft.folder_id ? 'invisible' : ''}
+                        />
+                        未归档
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <button
                     type="button"
                     className={`icon-action${draft.pinned ? ' icon-action-on' : ''}`}
@@ -1042,6 +1292,79 @@ export function NotesView() {
               onClick={() => void confirmAttach()}
             >
               {attachMutation.isPending ? '处理中…' : '加入'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 新建 / 重命名共用一个表单（与知识库目录那套一致）：靠 mode 区分两种模式 */}
+      <Dialog open={folderForm !== null} onOpenChange={(open) => !open && setFolderForm(null)}>
+        <DialogContent aria-describedby={undefined}>
+          <DialogHeader>
+            <DialogTitle>
+              {folderForm?.mode === 'rename' ? '重命名文件夹' : '新建文件夹'}
+            </DialogTitle>
+          </DialogHeader>
+          {folderForm?.mode === 'create' && folderForm.parentId && (
+            <p className="text-[length:var(--text-meta-size)] text-text-secondary">
+              建在「{folderPath(folders, folderForm.parentId)}」里
+            </p>
+          )}
+          <Input
+            value={folderForm?.name ?? ''}
+            placeholder="文件夹名"
+            aria-label="文件夹名"
+            autoFocus
+            onChange={(event) =>
+              setFolderForm((prev) => (prev ? { ...prev, name: event.target.value } : prev))
+            }
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void submitFolderForm()
+            }}
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFolderForm(null)}>
+              取消
+            </Button>
+            <Button
+              variant="default"
+              disabled={folderSaving}
+              onClick={() => void submitFolderForm()}
+            >
+              {folderSaving ? '保存中…' : '保存'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/*
+        删文件夹的确认框：**必须把后果说全**——删掉的只是文件夹，
+        里面的笔记会回到未归档、一篇都不会少。这两件事一个都不许含糊：
+        用户按下这一下之前，屏幕上这几句是他唯一的依据。
+      */}
+      <Dialog open={folderDelete !== null} onOpenChange={(open) => !open && setFolderDelete(null)}>
+        <DialogContent aria-describedby={undefined}>
+          <DialogHeader>
+            <DialogTitle>删除「{folderDelete?.name}」？</DialogTitle>
+          </DialogHeader>
+          <p>
+            {deleteStats && deleteStats.folders > 0
+              ? `它里面的 ${formatCount(deleteStats.folders)} 个子文件夹会被一起删除。`
+              : '这个文件夹会被删除。'}
+            {deleteStats && deleteStats.notes > 0
+              ? `里面的 ${formatCount(deleteStats.notes)} 篇笔记会回到未归档，不会被删除。`
+              : ''}
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setFolderDelete(null)}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleteFolderMutation.isPending}
+              onClick={() => void confirmDeleteFolder()}
+            >
+              {deleteFolderMutation.isPending ? '处理中…' : '删除'}
             </Button>
           </DialogFooter>
         </DialogContent>

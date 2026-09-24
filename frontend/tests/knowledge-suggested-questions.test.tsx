@@ -150,8 +150,14 @@ describe('SuggestedQuestionsFields', () => {
     expect(screen.queryByRole('option', { name: 'gpt-x' })).toBeNull()
   })
 
-  it('关掉时给一句"会发生什么"，而不是让用户猜', async () => {
+  it('选项下面不再挂解释文字：勾/不勾各是什么由控件自己说（2026-09-24 删）', async () => {
     renderFields({ enabled: false })
-    expect(await screen.findByText(/改用内置的静态示例问题/)).toBeInTheDocument()
+    // 「入库时为每一段让模型出几个问题…关掉则对话页空状态改用内置的静态示例问题。」
+    // 与「每 8 段合并成一次模型调用…」两段都删了：前者是名词解释，后者是实现细节
+    expect(screen.queryByText(/改用内置的静态示例问题/)).toBeNull()
+    expect(screen.queryByText(/合并成一次模型调用/)).toBeNull()
+    // 四个控件都还在（删的是文字，不是功能）
+    expect(screen.getByRole('checkbox', { name: '为每个切块生成推荐问题' })).toBeInTheDocument()
+    expect(screen.getByRole('slider', { name: '每个切块生成几条问题' })).toBeInTheDocument()
   })
 })

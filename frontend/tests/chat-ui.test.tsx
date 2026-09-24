@@ -294,6 +294,198 @@ describe('对话流（发一句 → 增量 → done）', () => {
   })
 })
 
+/**
+ * 「知识库」开关与「全部 N 个」多选**合并成一颗胶囊**（2026-09-24）。
+ *
+ * 合并之后这一颗要同时回答两件事，所以用例也分两层钉：
+ * 1. **触发器读状态**（三态：`全部 N 个` / `已选 N 个` / `已关`），而且那一排里
+ *    只有这一颗——不再是"开关 + 多选"两颗并排；
+ * 2. **面板里改的是同一份状态**（勾选 / 全选 / 清空 / 启用），并且**既有数据语义一条不动**：
+ *    `kylab-chat-use-kb` 那个键与默认值、`selectedKbIds` 默认全选、按 `detail.kb_ids`
+ *    非空回填、`canSend` 的门槛（开着且一个都没选 → 不许发）。
+ */
+describe('知识库：开关与选库合并成一颗胶囊', () => {
+  const THREE_KBS = {
+    items: [
+      { id: 'kb1', name: '我的资料' },
+      { id: 'kb2', name: '笔记' },
+      { id: 'kb3', name: '论文库' },
+    ],
+    total: 3,
+  }
+
+  /**
+   * 三只库 + 详情里没有 `kb_ids`（回填不介入）的对话页。
+   *
+   * `stateText` 是"库清单到手"之后胶囊上该读到的那一段：等它出现，用例才不靠计时
+   * （清单回来之前那颗胶囊写的是「读取中…」）。
+   */
+  async function renderWithThreeKbs(stateText = '知识库 · 全部 3 个'): Promise<void> {
+    const { listKnowledgeBases } = await import('@/api/knowledgeBases')
+    vi.mocked(listKnowledgeBases).mockResolvedValue(THREE_KBS as never)
+    const conv = detail([stored('user', '在吗')])
+    conv.kb_ids = []
+    vi.mocked(getConversation).mockResolvedValue(conv)
+    renderPage()
+    await screen.findByPlaceholderText(/回车发送/)
+    await waitFor(() => expect(kbPill()).toHaveTextContent(stateText))
+  }
+
+  /** 输入框那一排左边那颗「知识库」胶囊（名字是稳定的那一半，状态从文本读）。 */
+  function kbPill(): HTMLElement {
+    return screen.getByRole('button', { name: '知识库范围' })
+  }
+
+  /** 打开胶囊的面板（合并后开关与库清单都在这一层里）。 */
+  async function openPanel(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+    await user.click(kbPill())
+    await screen.findByRole('menuitemcheckbox', { name: '启用' })
+  }
+
+  it('那一排只有这一颗胶囊（开关不再是第二颗），三态从它身上直接读出来', async () => {
+    await renderWithThreeKbs()
+    const user = userEvent.setup()
+
+    // 合并前那一颗 `role=switch` 的裸开关**不该再出现在这一排**
+    expect(screen.queryByRole('switch', { name: '使用知识库' })).toBeNull()
+    // 左组里带「知识库」的键只剩这一颗（合并前是"开关 + 全部 3 个"两颗，名字各一个）
+    const left = kbPill().parentElement as HTMLElement
+    expect(within(left).getAllByRole('button', { name: /知识库/ })).toHaveLength(1)
+    expect(kbPill()).toHaveTextContent('知识库 · 全部 3 个')
+
+    // 少勾一个 → `已选 N 个`
+    await openPanel(user)
+    await user.click(screen.getByRole('menuitemcheckbox', { name: '论文库' }))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(kbPill()).toHaveTextContent('知识库 · 已选 2 个'))
+
+    // 关掉「启用」→ `已关`（这一档说的是"这一轮一个库都不查"）
+    await openPanel(user)
+    await user.click(screen.getByRole('menuitemcheckbox', { name: '启用' }))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(kbPill()).toHaveTextContent('知识库 · 已关'))
+  })
+
+  it('面板：清空之后范围空掉，这一轮**不让发**（开着且一个都没选）', async () => {
+    capture()
+    await renderWithThreeKbs()
+    const user = userEvent.setup()
+    const field = screen.getByPlaceholderText(/回车发送/)
+
+    await openPanel(user)
+    await user.click(screen.getByRole('menuitem', { name: '清空' }))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(kbPill()).toHaveTextContent('知识库 · 未选库'))
+
+    await user.click(field)
+    await user.type(field, '问一句')
+    expect(screen.getByRole('button', { name: '发送' })).toBeDisabled()
+    await user.keyboard('{Enter}')
+    expect(chatStream).not.toHaveBeenCalled()
+  })
+
+  it('面板：全选回到全部，发出去的那一轮就是全选那几个', async () => {
+    capture()
+    await renderWithThreeKbs()
+    const user = userEvent.setup()
+
+    // 先清掉：不然「全选」此刻没有可做的事（全勾着时它是禁用的）
+    await openPanel(user)
+    await user.click(screen.getByRole('menuitem', { name: '清空' }))
+    await user.click(screen.getByRole('menuitem', { name: '全选' }))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(kbPill()).toHaveTextContent('知识库 · 全部 3 个'))
+
+    await ask('问一句')
+    await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(chatStream).mock.calls[0][0]).toMatchObject({ kb_ids: ['kb1', 'kb2', 'kb3'] })
+  })
+
+  it('关掉「启用」：清单置灰但勾还留着（关掉的只是"用不用"）', async () => {
+    await renderWithThreeKbs()
+    const user = userEvent.setup()
+
+    await openPanel(user)
+    await user.click(screen.getByRole('menuitemcheckbox', { name: '启用' }))
+    // 关掉之后清单**还在、勾也还在**，只是不让改（置灰 = 这一轮它们不生效）
+    for (const name of ['我的资料', '笔记', '论文库']) {
+      const item = screen.getByRole('menuitemcheckbox', { name })
+      expect(item).toHaveAttribute('aria-disabled', 'true')
+      expect(item).toHaveAttribute('aria-checked', 'true')
+    }
+    await user.keyboard('{Escape}')
+    expect(kbPill()).toHaveTextContent('知识库 · 已关')
+
+    // 再打开看一眼：三个勾还都在——这就是"关掉不清空选择"
+    await openPanel(user)
+    for (const name of ['我的资料', '笔记', '论文库']) {
+      expect(screen.getByRole('menuitemcheckbox', { name })).toHaveAttribute('aria-checked', 'true')
+    }
+  })
+
+  it('关掉「启用」之后发出去的那一轮：kb_ids 是空（纯对话）', async () => {
+    // 直接用本机偏好进"关"这一档（与上一个用例同一个状态，这里要的是"发出去长什么样"）
+    window.localStorage.setItem('kylab-chat-use-kb', '0')
+    capture()
+    await renderWithThreeKbs('知识库 · 已关')
+
+    await ask('纯聊一句')
+    await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
+    // 关着 = 这一轮一个库都不查（`effectiveKbIds` 那一句），但仍然发得出去
+    expect(vi.mocked(chatStream).mock.calls[0][0]).toMatchObject({ kb_ids: [] })
+  })
+
+  it('「启用」写进本机偏好：本机没存过时默认开着，关掉之后落 `0`（键与取值口径都没变）', async () => {
+    const box = capture()
+    await renderWithThreeKbs()
+    const user = userEvent.setup()
+
+    // `tests/setup.ts` 每个用例后清一次 localStorage，所以这里就是"本机没存过"
+    expect(window.localStorage.getItem('kylab-chat-use-kb')).toBeNull()
+    expect(kbPill()).toHaveTextContent('知识库 · 全部 3 个')
+
+    await openPanel(user)
+    await user.click(screen.getByRole('menuitemcheckbox', { name: '启用' }))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(kbPill()).toHaveTextContent('知识库 · 已关'))
+    // 与合并前那颗开关**同一个键、同一个取值口径**（`'0'` = 关；见 `prefs.ts`）
+    expect(window.localStorage.getItem('kylab-chat-use-kb')).toBe('0')
+    expect(box.handlers).toBeNull()
+  })
+
+  it('本机存着 `0` 时进来就是「已关」，清单里的勾还都在（这条偏好读得回来）', async () => {
+    window.localStorage.setItem('kylab-chat-use-kb', '0')
+    await renderWithThreeKbs('知识库 · 已关')
+
+    // 关着不影响"默认全选"：清单到手之后三个都是勾上的（只是置灰不让改）
+    const user = userEvent.setup()
+    await openPanel(user)
+    for (const name of ['我的资料', '笔记', '论文库']) {
+      expect(screen.getByRole('menuitemcheckbox', { name })).toHaveAttribute('aria-checked', 'true')
+    }
+  })
+
+  it('进已有会话：按 detail.kb_ids 非空回填；空列表不回填（保持默认全选）', async () => {
+    const { listKnowledgeBases } = await import('@/api/knowledgeBases')
+    vi.mocked(listKnowledgeBases).mockResolvedValue(THREE_KBS as never)
+
+    // 详情里记着两个 → 这一轮的范围就是那两个（不是"全部 3 个"）
+    const kept = detail([stored('user', '在吗')])
+    kept.kb_ids = ['kb1', 'kb2']
+    vi.mocked(getConversation).mockResolvedValue(kept)
+    const first = renderPage()
+    await waitFor(() => expect(kbPill()).toHaveTextContent('知识库 · 已选 2 个'))
+    first.unmount()
+
+    // 详情里是空列表 → **不回填**（空不是一次选择，是"这条会话没记"），默认全选照旧
+    const empty = detail([stored('user', '在吗')])
+    empty.kb_ids = []
+    vi.mocked(getConversation).mockResolvedValue(empty)
+    renderPage()
+    await waitFor(() => expect(kbPill()).toHaveTextContent('知识库 · 全部 3 个'))
+  })
+})
+
 describe('过程面板：图标按 kind、同类工具并成一行', () => {
   it('工具步骤按 kind 出图标，同一个工具并成一行 + 次数', async () => {
     vi.mocked(getConversation).mockResolvedValue(

@@ -19,8 +19,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Activity,
-  ChevronRight,
   CircleUser,
   Database,
   Folder,
@@ -217,6 +215,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
       label: `${model.label || model.model_id} · ${model.provider_name}`,
     })),
   ]
+
+  /**
+   * 值的摘要行里把下拉标签搬进来时，要**摘掉「（默认）」**：它只是选项列表里的标记，
+   * 搬到摘要里会变成「思考开（中（默认））」这种括号套括号（2026-09-24 用户反馈）。
+   * 只摘这一个标记，摘不出东西就原样返回——不去猜别的写法。
+   */
+  const inlineLabel = (label: string): string => label.replace('（默认）', '').trim() || label
 
   /**
    * 选中模型的"身份证"：名称 · 维度 · 供应商。
@@ -736,9 +741,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       disabled={bindingSlot === 'chat'}
                       label="默认对话模型"
                     />
-                    {slotSummary('chat') && (
-                      <p className="m-slot-value tabular">{slotSummary('chat')}</p>
-                    )}
+                    {/* 对话模型这里**不再跟一行摘要**（2026-09-24）：`slotSummary('chat')`
+                        拼出来的串与下拉里选中的那串一模一样（「DeepSeek Flash · 深度求索」
+                        说两遍）。嵌入/重排那两处留着——那里的摘要带维度，是另一份信息 */}
                     {!chatConfigured && (
                       <p className="m-row-note">
                         未选定时「对话」与标题生成不可用。如果这里没有可选项，先到「模型注册」登记对话模型。
@@ -766,29 +771,27 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                         温度 {fieldValue('llm', 'llm.temperature') || '—'}
                         <span className="sep">·</span>
                         {fieldValue('llm', 'llm.enable_thinking') === 'true'
-                          ? `思考开（${selectLabel(
-                              'llm',
-                              'llm.thinking_effort',
-                              fieldValue('llm', 'llm.thinking_effort'),
-                            )}）`
+                          ? `思考开 · ${inlineLabel(
+                              selectLabel(
+                                'llm',
+                                'llm.thinking_effort',
+                                fieldValue('llm', 'llm.thinking_effort'),
+                              ),
+                            )}`
                           : '思考关'}
                       </span>
                     </div>
                     {group('llm') && <Button onClick={() => openEdit(group('llm')!)}>编辑</Button>}
                   </div>
-                  {fieldValue('llm', 'llm.enable_thinking') === 'true' && (
-                    <p className="m-row-note">更慢、更费 token。</p>
-                  )}
-
+                  {/* 原先这里在思考开着时挂一句「更慢、更费 token。」：那是**替用户下结论**
+                      的废话（2026-09-24 删），代价在他的账上，不在界面上 */}
                   <h3 className="m-section-title m-section-gap">对话行为</h3>
                   <div className="m-row">
                     <div className="m-row-main">
+                      {/* 提示词不与这一页相干：它跟**知识库**绑定，在「知识库 → 设置 → 回答要求」
+                          里改。原先这里挂一句跨页指路的常显文字，2026-09-24 用户反馈后删掉——
+                          管别页的事别写到这一页上 */}
                       <span className="m-row-label">检索与生成</span>
-                      {/* 提示词不再在这里配（v0.19）：它跟**知识库**绑定，
-                          去「知识库 → 设置 → 回答要求」里改。这里只留一句指路 */}
-                      <span className="m-row-value">
-                        回答用的提示词在「知识库 → 设置」里配，每个库一份
-                      </span>
                     </div>
                     <span className="m-row-value tabular">
                       带入 {fieldValue('chat', 'chat.top_k') || '—'} 条资料
@@ -1121,13 +1124,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               <div className="m-row">
                 <div className="m-row-main">
                   <span className="m-row-label">后端状态</span>
-                  <span className="m-row-value">
-                    {health.data
-                      ? `在线 v${health.data.version} · ${health.data.api_version}`
-                      : health.isError
-                        ? messageOf(health.error, '不可达')
-                        : '检测中'}
-                  </span>
+                  {/* 原先这里写「在线 v0.1.1 · v1」：版本号是给维护者看的，用户只需要知道在不在
+                      （右边的状态点已经说了），异常原文也不该往界面上搬（2026-09-24 用户反馈） */}
                 </div>
                 <StatusTag
                   tone={health.data ? 'success' : 'danger'}
@@ -1138,23 +1136,17 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
               <div className="m-row">
                 <div className="m-row-main">
                   <span className="m-row-label">访问鉴权</span>
-                  <span className="m-row-value">
-                    {authStatus.data?.needs_setup
-                      ? '尚未初始化：请先创建管理员账号'
-                      : '已启用：/api/v1 一律需要登录会话或 API Key'}
-                  </span>
+                  {/* 「已启用：/api/v1 一律需要登录会话或 API Key」已删（2026-09-24）：
+                      接口前缀与鉴权术语都是实现；只留**真需要用户动手**的那一步 */}
+                  {authStatus.data?.needs_setup ? (
+                    <span className="m-row-value">请先创建管理员账号</span>
+                  ) : null}
                 </div>
                 <StatusTag
                   tone={authStatus.data?.needs_setup ? 'warning' : 'success'}
                   label={authStatus.data?.needs_setup ? '未初始化' : '已启用'}
                 />
               </div>
-
-              <p className="m-row-note">
-                <Activity size={12} /> API Key 不在这一页：它是给外部程序用的凭据， 走 `/api/v1`
-                的鉴权头，与这里的登录会话是两条路（后端 `app/api/auth.py` 是权威）。
-                <ChevronRight size={12} />
-              </p>
             </>
           )}
         </div>

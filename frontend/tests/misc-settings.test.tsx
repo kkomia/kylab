@@ -378,12 +378,21 @@ describe('设置弹窗', () => {
     expect(window.localStorage.getItem('kylab-font-scale')).toBe('xlarge')
   })
 
-  it('系统与安全一节显示后端版本与鉴权状态', async () => {
+  it('系统与安全一节只说"在不在"与"要不要登录"：不写版本号、不写接口路径', async () => {
     renderMisc(<SettingsModal open onClose={() => undefined} />)
     await userEvent.click(await screen.findByRole('button', { name: /系统与安全/ }))
 
-    expect(await screen.findByText('在线 v0.43.0 · v1')).toBeInTheDocument()
-    expect(screen.getByText(/已启用：\/api\/v1 一律需要登录会话或 API Key/)).toBeInTheDocument()
+    // 状态点答"在不在"，值那一栏不再复述版本号（`在线 v0.43.0 · v1` 已删）
+    expect(await screen.findByText('后端状态')).toBeInTheDocument()
+    expect(screen.getByText('在线')).toBeInTheDocument()
+    expect(screen.queryByText(/v0\.43\.0/)).toBeNull()
+    // 鉴权那行同样不写 `/api/v1`：已启用就是已启用
+    expect(screen.getByText('访问鉴权')).toBeInTheDocument()
+    expect(screen.getByText('已启用')).toBeInTheDocument()
+    expect(screen.queryByText(/\/api\/v1/)).toBeNull()
+    // 那段解释 API Key 与登录会话是两条路的常显文字也删了（它带着 `app/api/auth.py`）
+    expect(screen.queryByText(/API Key 不在这一页/)).toBeNull()
+    expect(screen.queryByText(/app\/api\/auth\.py/)).toBeNull()
   })
 })
 

@@ -74,6 +74,7 @@ __all__ = [
     "ImageRecord",
     "KnowledgeBaseRecord",
     "MetaStore",
+    "NoteFolderRecord",
     "ObjectStore",
     "ParseResultRecord",
     "ScheduledTaskRecord",
@@ -461,6 +462,28 @@ class FolderRecord:
 
 
 @dataclass(slots=True)
+class NoteFolderRecord:
+    """笔记文件夹（v14）。
+
+    **与 `FolderRecord` 刻意不同的一点是 `parent_id`**：知识库的目录单层（理由见上一条），
+    笔记的文件夹允许嵌套——它承载的是用户自己的知识组织方式，"工作 / 会议记录"
+    这样的两层在真实笔记里是常态，而不是要等规模变大才出现的需求。
+
+    级联语义（与 ``schema.py`` 的迁移 v14 逐字对应，两处必须一起读）：
+    删父文件夹连带删子文件夹；**子文件夹里的笔记一律回到未归档**（``ON DELETE SET NULL``），
+    不跟着消失——删容器不该销毁内容。
+    """
+
+    id: str
+    user_id: str | None = None
+    name: str = ""
+    #: 父文件夹 id；``None`` = 根级
+    parent_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
 class NoteRecord:
     """一条笔记（v20）。
 
@@ -479,6 +502,8 @@ class NoteRecord:
     #: 「加入知识库」后指向生成的文档（未入库为空）
     kb_id: str | None = None
     doc_id: str | None = None
+    #: 所属文件夹（v14）；``None`` = 未归档
+    folder_id: str | None = None
     pinned: bool = False
     tags: list[str] = field(default_factory=list)
     created_at: datetime | None = None
@@ -1476,6 +1501,8 @@ class MetaStore(ABC):
         user_id: str | None,
         query: str | None = None,
         tag: str | None = None,
+        folder_id: str | None = None,
+        unfiled: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> list[NoteRecord]:
@@ -1483,11 +1510,22 @@ class MetaStore(ABC):
 
         ``user_id=None`` 表示"无归属"（管理员/API Key 建的笔记），
         用 ``IS`` 而不是 ``=`` 比较，才能同时匹配 NULL 与具体值。
+
+        ``folder_id`` / ``unfiled`` 是**同一个轴上的两种取法**（与文档列表的
+        ``folder_id`` / ``root_only`` 同款）：给具体 id 就是"这个文件夹里的"，
+        ``unfiled=True`` 就是"未归档的"。不传两者 = 不按文件夹过滤（全部）。
+        写成两个参数而不是一个 `'unfiled'` 哨兵，是因为存储层不该认识界面上的字符串。
         """
 
     @abstractmethod
     def count_notes(
-        self, *, user_id: str | None, query: str | None = None, tag: str | None = None
+        self,
+        *,
+        user_id: str | None,
+        query: str | None = None,
+        tag: str | None = None,
+        folder_id: str | None = None,
+        unfiled: bool = False,
     ) -> int:
         """与 ``list_notes`` 同一套过滤条件的总数（分页用）。"""
 
@@ -1515,6 +1553,48 @@ class MetaStore(ABC):
     @abstractmethod
     def list_note_tags(self, *, user_id: str | None) -> list[tuple[str, int]]:
         """该用户用过的标签与条数（按条数、名字排序）。"""
+
+    # ---- 笔记文件夹（v14）----
+
+    @abstractmethod
+    def create_note_folder(self, record: NoteFolderRecord) -> NoteFolderRecord:
+        """建一个文件夹（``parent_id`` 为空即根级）。"""
+
+    @abstractmethod
+    def get_note_folder(self, folder_id: str) -> NoteFolderRecord | None: ...
+
+    @abstractmethod
+    def list_note_folders(self, *, user_id: str | None) -> list[NoteFolderRecord]:
+        """按名字（不区分大小写）整份列出——层级由调用方按 ``parent_id`` 自己接。
+
+        **刻意不在存储层拼树**：树是界面的事，"哪些节点展开着"更是；
+        存储只回答"有哪些文件夹、各自的父是谁"。
+        """
+
+    @abstractmethod
+    def rename_note_folder(self, folder_id: str, name: str) -> None: ...
+
+    @abstractmethod
+    def set_note_folder_parent(self, folder_id: str, parent_id: str | None) -> None:
+        """移动文件夹；``None`` = 移到根级。成环由业务层先挡住（这里不做图遍历）。"""
+
+    @abstractmethod
+    def delete_note_folder(self, folder_id: str) -> None:
+        """删文件夹。**子文件夹由外键级联删掉、里面的笔记回到未归档**——
+        两条语义都写在表定义上（见 schema.py 迁移 v14 的注释），这里只发一条 DELETE。
+        """
+
+    @abstractmethod
+    def count_notes_by_folder(self, *, user_id: str | None) -> dict[str | None, int]:
+        """``{文件夹 id（``None`` = 未归档）: 笔记数}``。
+
+        **一次 GROUP BY 取全**：界面上每个文件夹都要显示条数，逐个查就是 N+1；
+        三个数字（每个文件夹、未归档、总数）都由这一次聚合得出，总数 = 各项之和。
+        """
+
+    @abstractmethod
+    def set_note_folder(self, note_id: str, folder_id: str | None) -> None:
+        """把笔记移进文件夹；``None`` = 移回未归档。**只动归属，不碰正文与标签**。"""
 
     # ---- 子文件 ----
     @abstractmethod

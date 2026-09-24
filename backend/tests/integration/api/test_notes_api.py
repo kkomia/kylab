@@ -248,3 +248,167 @@ def test_note_image_rejects_svg(client: TestClient) -> None:
     )
 
     assert response.status_code == 422
+
+
+# ------------------------------------------------------- 文件夹（v14）
+
+
+def test_folder_crud_roundtrip(client: TestClient) -> None:
+    empty = client.get("/api/v1/notes/folders").json()
+    assert empty == {"items": [], "unfiled_count": 0, "total_count": 0}
+
+    created = client.post("/api/v1/notes/folders", json={"name": "工作"})
+    assert created.status_code == 201, created.text
+    folder = created.json()
+    assert folder["id"].startswith("fld_")
+    assert folder["parent_id"] is None and folder["note_count"] == 0
+
+    renamed = client.patch(f"/api/v1/notes/folders/{folder['id']}", json={"name": "工作台"})
+    assert renamed.status_code == 200 and renamed.json()["name"] == "工作台"
+
+    assert client.delete(f"/api/v1/notes/folders/{folder['id']}").status_code == 204
+    assert client.get("/api/v1/notes/folders").json()["items"] == []
+    assert (
+        client.patch(f"/api/v1/notes/folders/{folder['id']}", json={"name": "x"}).status_code == 404
+    )
+
+
+def test_folder_tree_counts_and_nesting(client: TestClient) -> None:
+    work = client.post("/api/v1/notes/folders", json={"name": "工作"}).json()
+    meetings = client.post(
+        "/api/v1/notes/folders", json={"name": "会议", "parent_id": work["id"]}
+    ).json()
+    assert meetings["parent_id"] == work["id"]
+
+    client.post("/api/v1/notes", json={"title": "在文件夹里", "folder_id": meetings["id"]})
+    client.post("/api/v1/notes", json={"title": "没归档的"})
+
+    body = client.get("/api/v1/notes/folders").json()
+    counts = {item["id"]: item["note_count"] for item in body["items"]}
+    assert counts == {work["id"]: 0, meetings["id"]: 1}  # 子文件夹的条数不算在父上
+    assert body["unfiled_count"] == 1
+    assert body["total_count"] == 2
+
+
+def test_folder_name_conflicts_and_validation(client: TestClient) -> None:
+    client.post("/api/v1/notes/folders", json={"name": "工作"})
+
+    duplicate = client.post("/api/v1/notes/folders", json={"name": "工作"})
+    assert duplicate.status_code == 409
+    # 给人话：说得出是哪一个重名，而不是一句"资源冲突"
+    assert "工作" in duplicate.json()["message"]
+
+    assert client.post("/api/v1/notes/folders", json={"name": ""}).status_code == 422
+    assert (
+        client.post(
+            "/api/v1/notes/folders", json={"name": "x", "parent_id": "fld_missing"}
+        ).status_code
+        == 404
+    )
+
+
+def test_folder_cannot_move_into_its_own_subtree(client: TestClient) -> None:
+    root = client.post("/api/v1/notes/folders", json={"name": "工作"}).json()
+    child = client.post(
+        "/api/v1/notes/folders", json={"name": "会议", "parent_id": root["id"]}
+    ).json()
+
+    into_self = client.patch(
+        f"/api/v1/notes/folders/{root['id']}/parent", json={"parent_id": root["id"]}
+    )
+    assert into_self.status_code == 422
+    assert "它自己" in into_self.json()["message"]
+
+    into_child = client.patch(
+        f"/api/v1/notes/folders/{root['id']}/parent", json={"parent_id": child["id"]}
+    )
+    assert into_child.status_code == 422
+    assert "子文件夹" in into_child.json()["message"]
+
+    # 反向（子 → 根）是合法移动
+    assert (
+        client.patch(
+            f"/api/v1/notes/folders/{child['id']}/parent", json={"parent_id": None}
+        ).json()["parent_id"]
+        is None
+    )
+
+
+def test_move_note_into_folder_and_filter_the_list(client: TestClient) -> None:
+    work = client.post("/api/v1/notes/folders", json={"name": "工作"}).json()
+    note = client.post("/api/v1/notes", json={"title": "周会"}).json()
+    assert note["folder_id"] is None
+
+    moved = client.patch(f"/api/v1/notes/{note['id']}/folder", json={"folder_id": work["id"]})
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["folder_id"] == work["id"]
+
+    in_folder = client.get("/api/v1/notes", params={"folder": work["id"]}).json()
+    assert in_folder["total"] == 1 and in_folder["items"][0]["id"] == note["id"]
+    assert client.get("/api/v1/notes", params={"folder": "unfiled"}).json()["total"] == 0
+
+    back = client.patch(f"/api/v1/notes/{note['id']}/folder", json={"folder_id": None})
+    assert back.json()["folder_id"] is None
+    assert client.get("/api/v1/notes", params={"folder": "unfiled"}).json()["total"] == 1
+
+
+def test_moving_a_note_does_not_touch_its_content(client: TestClient) -> None:
+    """归属走单独的端点：移动不是编辑，正文/标签/置顶一个都不该动。"""
+    folder = client.post("/api/v1/notes/folders", json={"name": "工作"}).json()
+    note = client.post(
+        "/api/v1/notes", json={"title": "周会", "content_md": "正文", "tags": ["会议"]}
+    ).json()
+    client.patch(f"/api/v1/notes/{note['id']}", json={"pinned": True})
+    before = client.get(f"/api/v1/notes/{note['id']}").json()
+
+    after = client.patch(
+        f"/api/v1/notes/{note['id']}/folder", json={"folder_id": folder["id"]}
+    ).json()
+
+    assert after["content_md"] == before["content_md"]
+    assert after["tags"] == before["tags"] and after["pinned"] is True
+    assert after["updated_at"] == before["updated_at"]
+
+
+def test_move_note_to_unknown_folder_is_404(client: TestClient) -> None:
+    note = client.post("/api/v1/notes", json={"title": "t"}).json()
+
+    response = client.patch(f"/api/v1/notes/{note['id']}/folder", json={"folder_id": "fld_missing"})
+
+    assert response.status_code == 404
+
+
+def test_deleting_a_folder_keeps_its_notes(client: TestClient) -> None:
+    """删文件夹 → 里面的笔记回到未归档，**一篇都不许少**（本轮的核心纪律）。"""
+    work = client.post("/api/v1/notes/folders", json={"name": "工作"}).json()
+    meetings = client.post(
+        "/api/v1/notes/folders", json={"name": "会议", "parent_id": work["id"]}
+    ).json()
+    note = client.post(
+        "/api/v1/notes", json={"title": "周会纪要", "folder_id": meetings["id"]}
+    ).json()
+
+    assert client.delete(f"/api/v1/notes/folders/{work['id']}").status_code == 204
+
+    folders = client.get("/api/v1/notes/folders").json()
+    assert folders["items"] == [], "子文件夹应当跟着父级一起删"
+    assert folders["unfiled_count"] == 1 and folders["total_count"] == 1
+
+    survived = client.get(f"/api/v1/notes/{note['id']}")
+    assert survived.status_code == 200, "笔记不该跟着文件夹消失"
+    assert survived.json()["title"] == "周会纪要" and survived.json()["folder_id"] is None
+
+
+def test_unknown_folder_list_filter_is_empty_not_404(client: TestClient) -> None:
+    client.post("/api/v1/notes", json={"title": "无关"})
+
+    response = client.get("/api/v1/notes", params={"folder": "fld_missing"})
+
+    assert response.status_code == 200 and response.json()["total"] == 0
+
+
+def test_folder_routes_do_not_shadow_the_note_detail_route(client: TestClient) -> None:
+    """``GET /notes/folders`` 不能被 ``/{note_id}`` 抢走（路由声明顺序的守卫）。"""
+    client.delete("/api/v1/notes/nonexistent")  # 顺手确认细节路由还在（404 也算走通）
+
+    assert client.get("/api/v1/notes/folders").status_code == 200

@@ -13,17 +13,20 @@ REST 这边如果收紧成管理员专属，同一串 API Key 从两个入口进
 **记忆目前是整个部署共用的一份**（设计文档 §5 的已知边界），这件事由界面明说，
 不在这里用一道假的门禁来暗示它已经被隔离好了。
 
+**没有"测试连接"这个端点**（v0.46 删）：记忆跑在我们自己的进程里，
+没有第二个进程可连。原先那个 ``POST /memory/probe`` 打的是 ``memory.base_url``
+——一个由管理员填的地址，所以它当时是管理员专属；现在这件事整个不存在了。
+
 **浏览与编辑走本地目录**，因此 ``memory.enabled`` 关着也能用（理由见
-``services/memory_files.py`` 的模块头）。只有召回、记住、重建索引需要服务活着。
+``services/memory_files.py`` 的模块头）。只有召回与自动沉淀看那个开关。
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
 
-from app.api.auth import require_admin, require_read, require_write
+from app.api.auth import require_read, require_write
 from app.api.v1.schemas import (
-    MemoryActionOut,
     MemoryFileDetailOut,
     MemoryFileOut,
     MemoryFileWriteIn,
@@ -32,7 +35,6 @@ from app.api.v1.schemas import (
     MemoryHitOut,
     MemoryLinkOut,
     MemoryOverviewOut,
-    MemoryProbeOut,
     MemoryRecallIn,
     MemoryRecallOut,
     MemoryRememberIn,
@@ -88,21 +90,22 @@ def _file_out(record) -> MemoryFileOut:  # type: ignore[no-untyped-def]
 
 
 def _status_out(record, files) -> MemoryStatusOut:  # type: ignore[no-untyped-def]
-    """状态 + 由文件列表算出的三个计数。
+    """状态 + 由文件列表算出的一个计数。
 
-    计数在这里算（而不是让前端 filter）：**"哪些还没被整合"这件事的判据
-    在服务层**（``MemoryFile.consolidated`` 怎么来的只有那边知道），
-    前端只该显示数字。
+    ``unconsolidated_count`` 在这里算（而不是让前端数）：**"哪些还没被整合"的判据
+    在服务层**（``MemoryFile.consolidated`` 怎么来的只有那边知道），前端只该显示数字。
+    其余三个数字（几份文件、可召回几份、可召回几条）来自服务层的本地统计，
+    与召回用的是同一个切块口径。
     """
     return MemoryStatusOut(
         enabled=record.enabled,
-        base_url=record.base_url,
         workspace=record.workspace,
         core_file_exists=record.core_file_exists,
-        reachable=record.reachable,
+        file_count=record.file_count,
+        retrievable_count=record.retrievable_count,
+        entry_count=record.entry_count,
+        last_changed_at=record.last_changed_at,
         detail=record.detail,
-        file_count=len(files),
-        retrievable_count=sum(1 for item in files if item.retrievable),
         unconsolidated_count=sum(
             1 for item in files if item.kind == "daily" and not item.consolidated
         ),
@@ -116,11 +119,12 @@ def get_memory(
 ) -> MemoryOverviewOut:
     """一次给全页面首屏要的东西（状态 + 文件列表）。
 
-    **不打远端**（``status`` 而不是 ``probe``）：状态栏每次刷新都调它，
-    顺手打一次记忆服务会让"打开记忆页"变成一次网络等待。
+    **状态是纯本地的**（数一遍工作区）：没有第二个进程、没有探测，
+    所以"打开记忆页"不会变成一次网络等待。
     """
-    files = services.memory.files(_scope(caller))
-    status_out = _status_out(services.memory.status(), files)
+    scope = _scope(caller)
+    files = services.memory.files(scope)
+    status_out = _status_out(services.memory.status(scope), files)
     return MemoryOverviewOut(
         status=status_out,
         files=[_file_out(item) for item in files],
@@ -166,8 +170,8 @@ def write_memory_file(
 ) -> MemoryFileDetailOut:
     """整份覆盖。文件不存在就**新建**（要能新建整合笔记，见服务层 ``write_file``）。
 
-    索引不在这里管：ReMe 自己有文件守护会追（实测 5 秒 debounce），
-    而它的 ``reindex`` 看不见新文件（"without rescanning workspace files"）。
+    **保存路径上没有任何索引动作**，而且这次连"要不要等索引"都不用解释：
+    召回是每次按需扫工作区，改完就已经生效。
     """
     services.memory.write_file(path, payload.content, _scope(caller))
     return read_memory_file(path, services=services, caller=caller)
@@ -191,10 +195,10 @@ def get_memory_graph(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
 ) -> MemoryGraphOut:
-    """本地从正文里的 ``[[…]]`` 算出来（不调 ReMe 的 ``graph_snapshot``）。
+    """本地从正文里的 ``[[…]]`` 算出来（纯函数，见 ``memory_files.graph_of``）。
 
     只画连上边的节点，孤立文件不进图——它们已经在文件列表里了，
-    图要回答的是"结构"而不是"清单"（见 ``memory_files.graph_of``）。
+    图要回答的是"结构"而不是"清单"。
     """
     graph = services.memory.graph(_scope(caller))
     return MemoryGraphOut(
@@ -215,10 +219,12 @@ def recall_memory(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
 ) -> MemoryRecallOut:
-    """与知识库检索**两条路、永不合并**（设计文档 §2.1）。
+    """与知识库检索**两条路、永不合并**（设计文档 §2.1）——连索引都不共用：
+    这一路是在本工作区的 Markdown 上现扫现算（见 ``memory_files.search``）。
 
-    记忆服务没起或没启用时**明确报错**，不返回空结果（§2.3）——返回空会让模型
-    （和用户）以为"没有相关记忆"，然后基于错误前提继续。
+    **没启用时明确报错**，不返回空结果（§2.3）——返回空会让模型（和用户）
+    以为"没有相关记忆"，然后基于错误前提继续。启用着而真的没有相关记忆时，
+    返回空的列表才是诚实的答案（那时检索确实跑过了）。
     """
     hits, links = services.memory.recall(
         payload.query, limit=payload.limit, user_id=_scope(caller)
@@ -232,6 +238,7 @@ def recall_memory(
                 start_line=item.start_line,
                 end_line=item.end_line,
                 score=item.score,
+                coverage=item.coverage,
             )
             for item in hits
         ],
@@ -249,7 +256,7 @@ def remember(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_write),
 ) -> MemoryRememberOut:
-    """写进 ``MEMORY.md``，**不经过 ReMe**（那条路径没有记忆服务也能工作，见服务层）。
+    """写进 ``MEMORY.md``，**不经过任何外部东西**（那条路径没有开关也能工作）。
 
     重复的一条返回 ``saved=false``，不是错误：那是"本来就有"，调用方据此不必再记一遍。
     """
@@ -261,30 +268,3 @@ def remember(
         entries=int(result.get("entries") or 0),
         reason=str(result.get("reason") or ""),
     )
-
-
-@router.post("/reindex", response_model=MemoryActionOut, summary="请记忆服务重建索引")
-def reindex(
-    services: Services = Depends(get_services),
-    caller: Caller = Depends(require_write),
-) -> MemoryActionOut:
-    """手动兜底，不是保存流程的一环（见 ``MemoryService.write_file`` 的说明）。
-
-    真正要它的时候是这一类：服务当时没起、用户改了一批文件，之后才把服务拉起来。
-    """
-    return MemoryActionOut(detail=services.memory.reindex(_scope(caller)))
-
-
-@router.post("/probe", response_model=MemoryProbeOut, summary="测试记忆服务连通性")
-def probe(
-    services: Services = Depends(get_services),
-    caller: Caller = Depends(require_admin),
-) -> MemoryProbeOut:
-    """设置页的「测试连接」。
-
-    **管理员专属**，与设置页其它"测试连接"同档：它打的是 ``memory.base_url``
-    这个可配置地址，而那个地址由管理员填。用普通读权限放行，等于把
-    "让服务端按我指定的地址发一个请求"这件事开放给任何成员。
-    """
-    status_out = services.memory.probe()
-    return MemoryProbeOut(reachable=status_out.reachable, detail=status_out.detail)

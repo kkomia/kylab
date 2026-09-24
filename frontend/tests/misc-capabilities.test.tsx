@@ -196,7 +196,7 @@ describe('能力页', () => {
     expect(screen.getByText('技能 1 / 2 可用')).toBeInTheDocument()
   })
 
-  it('来源筛选：0 计数的来源不占位置，「全部」永远在（用户反馈："整简洁一点"）', async () => {
+  it('不再有按来源分的筛选排（「随代码发布」「从市场装」是内部分类名，2026-09-24 删）', async () => {
     listSkillsMock.mockResolvedValue({
       items: [
         skill({ name: 'builtin-a', source: 'builtin' }),
@@ -212,16 +212,15 @@ describe('能力页', () => {
 
     renderMisc(<CapabilitiesPage />)
 
-    // 先等技能列表到货：计数是从它算出来的（等不到就会读到清一色的 0）
     await screen.findByText('builtin-a')
-    const chips = screen.getByRole('tablist', { name: '技能筛选' })
-    const labels = [...chips.querySelectorAll('button')].map((chip) => chip.textContent)
-    // 5 颗变 3 颗：`手动放入 0` / `未进提示词 0` 两颗点不出任何东西的胶囊不再占位置
-    expect(labels).toEqual(['全部3', '随代码发布2', '从市场装1'])
-    // "能看到全部"的那一颗必须在
-    expect(within(chips).getByRole('tab', { name: /全部/ })).toBeInTheDocument()
-    expect(within(chips).queryByRole('tab', { name: /手动放入/ })).toBeNull()
-    expect(within(chips).queryByRole('tab', { name: /未进提示词/ })).toBeNull()
+    // 那一排胶囊（含「全部」与三档来源）整排不在了：来源靠详情弹窗那一行说，
+    // 找技能靠搜索与列表。**断言"整排不存在"**，而不是"少了几颗"——
+    // 否则以后把内部分类名加回来时用例照样绿
+    expect(screen.queryByRole('tablist', { name: '技能筛选' })).toBeNull()
+    expect(screen.queryByText('随代码发布')).toBeNull()
+    expect(screen.queryByText('从市场装')).toBeNull()
+    // 三个技能照样都列出来（列表本身没被筛选排带走）
+    expect(screen.getByText('from-market')).toBeInTheDocument()
   })
 
   it('首屏只留一个主动作：浏览市场在主位，「重新扫描」收进「更多」（功能不删）', async () => {

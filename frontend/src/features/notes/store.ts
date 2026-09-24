@@ -44,13 +44,25 @@ export const NOTES_LIST_COLLAPSED_STORAGE_KEY = 'kylab-notes-list-collapsed'
  */
 export const NOTES_TAGS_COLLAPSED_STORAGE_KEY = 'kylab-notes-tags-collapsed'
 
+/**
+ * 文件夹筛选里"未归档"的取值。
+ *
+ * **必须与后端 `api/v1/notes.py` 的 `UNFILED_FOLDER` 逐字一致**（都是 `unfiled`）：
+ * 它是走 URL 的哨兵值，不像文件夹 id 那样有 `fld_` 前缀兜住拼错的后果——
+ * 写错了不会报错，只会静默地把"未归档"当成一个不存在的文件夹 id（得到空列表）。
+ */
+export const UNFILED_FOLDER = 'unfiled'
+
 /* ------------------------------------------------------------------ 查询键 */
 
 export const notesQueryKeys = {
   all: ['notes'] as const,
   lists: () => [...notesQueryKeys.all, 'list'] as const,
-  list: (filters: { q: string; tag: string }) => [...notesQueryKeys.lists(), filters] as const,
+  list: (filters: { q: string; tag: string; folder: string }) =>
+    [...notesQueryKeys.lists(), filters] as const,
   tags: () => [...notesQueryKeys.all, 'tags'] as const,
+  /** 文件夹树（含各自条数、未归档与总数）：一次取全，见后端 `GET /notes/folders`。 */
+  folders: () => [...notesQueryKeys.all, 'folders'] as const,
   /** 正文缓存：**键就是 noteId**（旧实现 `Map` 的 key），不带任何过滤条件。 */
   body: (noteId: string) => ['note', noteId] as const,
   bodies: () => ['note'] as const,
@@ -207,13 +219,25 @@ interface NotesUiState {
   /** 当前过滤条件：列表与刷新共用（旧 store 的 `query` / `activeTag`）。 */
   query: string
   activeTag: string
+  /**
+   * 当前选中的文件夹：`''` 全部 / `UNFILED_FOLDER` 未归档 / 文件夹 id。
+   *
+   * 与搜索词、标签同一层（跨挂载周期留着）：切走再回来时左栏那棵树上的选中态
+   * 还在原处。**但它会跟着文件夹一起消失**——选中的文件夹被删掉时页面要把它
+   * 退回"全部"（否则列表会停在一个永远空的筛选上，见 NotesView 里那个 effect）。
+   */
+  activeFolder: string
   setFilter(query: string, tag: string): void
+  setFolder(folder: string): void
 }
 
 export const useNotesStore = create<NotesUiState>()((set) => ({
   query: '',
   activeTag: '',
+  activeFolder: '',
   setFilter: (query, tag) => set({ query, activeTag: tag }),
+  // 文件夹与标签是两个独立的筛选项，各改各的：选中文件夹不该把标签清掉
+  setFolder: (folder) => set({ activeFolder: folder }),
 }))
 
 /* ------------------------------------------------------- 正文缓存（服务端） */
@@ -234,6 +258,8 @@ export interface NoteBody {
   pinned: boolean
   kb_id: string | null
   doc_id: string | null
+  /** 所属文件夹（v14）。**不进保存指纹**：移动走单独那条路径，不是编辑。 */
+  folder_id: string | null
   updated_at: string | null
 }
 

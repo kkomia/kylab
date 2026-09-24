@@ -22,9 +22,15 @@ from app.api.v1.schemas import (
     NoteAiOut,
     NoteAttachIn,
     NoteCreateIn,
+    NoteFolderCreateIn,
+    NoteFolderListOut,
+    NoteFolderOut,
+    NoteFolderParentIn,
+    NoteFolderRenameIn,
     NoteImageOut,
     NoteListItemOut,
     NoteListOut,
+    NoteMoveIn,
     NoteOut,
     NoteTagListOut,
     NoteTagOut,
@@ -46,12 +52,51 @@ PREVIEW_CHARS = 120
 #: 签名绑定的就是"哪条笔记的哪张图"，过期时间只是最后的兜底。
 IMAGE_URL_TTL_SECONDS = 10 * 365 * 24 * 3600
 
+#: ``GET /notes?folder=`` 的哨兵值：筛选"未归档"。
+#:
+#: 用**一个参数**而不是"``folder_id`` + 一个 bool"：界面上的选中态本来就是一个值
+#: （全部 / 未归档 / 某个文件夹），一个轴一个参数才守得住"只可能选中一个"。
+#: 不会与文件夹 id 撞：id 一律由服务层生成成 ``fld_<hex>``。
+UNFILED_FOLDER = "unfiled"
+
 
 def _owner(caller: Caller) -> str | None:
     """归属过滤用：只有**普通成员**会话才有归属；管理员与 API Key 通道没有。"""
     if caller.user is not None and not caller.is_admin:
         return caller.user.id
     return None
+
+
+def _folder_filter(folder: str | None) -> tuple[str | None, bool]:
+    """把查询参数拆成存储层的两个取值（具体文件夹 / 未归档 / 不过滤）。"""
+    if folder == UNFILED_FOLDER:
+        return None, True
+    return (folder or None), False
+
+
+def _folder_item(record, counts: dict[str, int]) -> NoteFolderOut:  # type: ignore[no-untyped-def]
+    """文件夹 + 它**直接**装了多少篇笔记（子文件夹的另算，树上各显示各的）。"""
+    return NoteFolderOut(
+        id=record.id,
+        name=record.name,
+        parent_id=record.parent_id,
+        note_count=counts.get(record.id, 0),
+        created_at=record.created_at,
+        updated_at=record.updated_at,
+    )
+
+
+def _folder_payload(
+    services: Services, user_id: str | None, record  # type: ignore[no-untyped-def]
+) -> NoteFolderOut:
+    """写操作的响应：**条数是真的**。
+
+    多花一次聚合是刻意的（与知识库目录写操作后回填 ``document_count`` 同一口径）：
+    返回 0 会让"这个字段说的是真话"这条约定悄悄失效——某一个调用方信了它，
+    就长出一个只在某些条件下错的界面。
+    """
+    counts = services.notes.folder_overview(user_id=user_id).counts
+    return _folder_item(record, counts)
 
 
 #: 行首的 Markdown 结构性记号：标题井号、引用、列表符号、有序列表序号、待办框。
@@ -95,11 +140,22 @@ def list_notes(
     caller: Annotated[Caller, Depends(require_read)],
     q: str | None = Query(default=None, description="标题/正文子串搜索"),
     tag: str | None = Query(default=None, description="按标签过滤"),
+    folder: str | None = Query(
+        default=None,
+        description="按文件夹过滤：文件夹 id，或 unfiled（未归档）；留空 = 全部",
+    ),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
 ) -> NoteListOut:
+    folder_id, unfiled = _folder_filter(folder)
     items, total = services.notes.list(
-        user_id=_owner(caller), query=q, tag=tag, limit=limit, offset=offset
+        user_id=_owner(caller),
+        query=q,
+        tag=tag,
+        folder_id=folder_id,
+        unfiled=unfiled,
+        limit=limit,
+        offset=offset,
     )
     return NoteListOut(
         items=[_list_item(item) for item in items], total=total, limit=limit, offset=offset
@@ -118,6 +174,113 @@ def list_tags(
     return NoteTagListOut(items=items)
 
 
+# --------------------------------------------------------------------- 文件夹（v14）
+
+
+@router.get(
+    "/folders",
+    response_model=NoteFolderListOut,
+    summary="文件夹列表（含每个文件夹的笔记数）",
+)
+def list_note_folders(
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_read)],
+) -> NoteFolderListOut:
+    """整棵树一次给出：层级（``parent_id``）由前端拼，数字（各自条数 / 未归档 / 总数）
+    一起带回——它们每次移动笔记都要同时变，分几次取就会有"对不上"的中间态。
+
+    **路由必须声明在 ``/{note_id}`` 之前**：两者都是 ``/notes/` + 一段``，
+    顺序反了 ``GET /notes/folders`` 会被当成"取一条 id 为 folders 的笔记"（404）。
+    """
+    overview = services.notes.folder_overview(user_id=_owner(caller))
+    return NoteFolderListOut(
+        items=[_folder_item(item, overview.counts) for item in overview.folders],
+        unfiled_count=overview.unfiled,
+        total_count=overview.total,
+    )
+
+
+@router.post(
+    "/folders",
+    response_model=NoteFolderOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="新建文件夹",
+)
+def create_note_folder(
+    payload: NoteFolderCreateIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_write)],
+) -> NoteFolderOut:
+    owner = _owner(caller)
+    record = services.notes.create_folder(
+        user_id=owner, name=payload.name, parent_id=payload.parent_id
+    )
+    return _folder_payload(services, owner, record)
+
+
+@router.patch("/folders/{folder_id}", response_model=NoteFolderOut, summary="重命名文件夹")
+def rename_note_folder(
+    folder_id: str,
+    payload: NoteFolderRenameIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_write)],
+) -> NoteFolderOut:
+    owner = _owner(caller)
+    record = services.notes.rename_folder(folder_id, user_id=owner, name=payload.name)
+    return _folder_payload(services, owner, record)
+
+
+@router.patch(
+    "/folders/{folder_id}/parent",
+    response_model=NoteFolderOut,
+    summary="移动文件夹（换父级）",
+)
+def move_note_folder(
+    folder_id: str,
+    payload: NoteFolderParentIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_write)],
+) -> NoteFolderOut:
+    """单独一个端点而不是并进上面那条 PATCH：改名与换位置都带一个可选字段时，
+    "没传"与"传了 null"会在同一个字段上表达两件事（不动父级 / 挪回根级），
+    只能靠 ``model_fields_set`` 这类字段存在性判断来区分——与其玩这个，
+    不如让"换父级"像文档那样自成一条路径（``PATCH /documents/{id}/folder``）。
+    """
+    owner = _owner(caller)
+    record = services.notes.move_folder(
+        folder_id, user_id=owner, parent_id=payload.parent_id
+    )
+    return _folder_payload(services, owner, record)
+
+
+@router.delete(
+    "/folders/{folder_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="删除文件夹（子文件夹一起删，里面的笔记回到未归档）",
+)
+def delete_note_folder(
+    folder_id: str,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_write)],
+) -> None:
+    services.notes.delete_folder(folder_id, user_id=_owner(caller))
+
+
+@router.patch("/{note_id}/folder", response_model=NoteOut, summary="把笔记移进文件夹 / 移回未归档")
+def move_note(
+    note_id: str,
+    payload: NoteMoveIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_write)],
+) -> NoteOut:
+    """归属单独的端点（理由见 ``NoteUpdateIn`` 与 ``NotesService.move_note``）：
+    编辑器那条自动保存 PATCH 不带 folder_id，两者互不覆盖。"""
+    record = services.notes.move_note(
+        note_id, user_id=_owner(caller), folder_id=payload.folder_id
+    )
+    return NoteOut.model_validate(record)
+
+
 @router.post("", response_model=NoteOut, status_code=status.HTTP_201_CREATED, summary="新建笔记")
 def create_note(
     payload: NoteCreateIn,
@@ -131,6 +294,7 @@ def create_note(
         source_kind=payload.source_kind,
         source_ref=payload.source_ref,
         tags=payload.tags,
+        folder_id=payload.folder_id,
     )
     return NoteOut.model_validate(record)
 

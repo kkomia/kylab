@@ -164,7 +164,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **182** 条端点。
+共 **186** 条端点。
 
 ### `api-keys`
 
@@ -333,9 +333,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/memory/files/{path}` | 读一个记忆文件 |
 | `PUT` | `/api/v1/memory/files/{path}` | 写入（覆盖）一个记忆文件 |
 | `GET` | `/api/v1/memory/graph` | 记忆的 wikilink 图谱 |
-| `POST` | `/api/v1/memory/probe` | 测试记忆服务连通性 |
 | `POST` | `/api/v1/memory/recall` | 在记忆里召回 |
-| `POST` | `/api/v1/memory/reindex` | 请记忆服务重建索引 |
 | `POST` | `/api/v1/memory/remember` | 记一条长期事实 |
 
 ### `model-registry`
@@ -363,12 +361,18 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 |------|------|------|
 | `GET` | `/api/v1/notes` | 笔记列表（置顶优先，其次最近更新） |
 | `POST` | `/api/v1/notes` | 新建笔记 |
+| `GET` | `/api/v1/notes/folders` | 文件夹列表（含每个文件夹的笔记数） |
+| `POST` | `/api/v1/notes/folders` | 新建文件夹 |
+| `DELETE` | `/api/v1/notes/folders/{folder_id}` | 删除文件夹（子文件夹一起删，里面的笔记回到未归档） |
+| `PATCH` | `/api/v1/notes/folders/{folder_id}` | 重命名文件夹 |
+| `PATCH` | `/api/v1/notes/folders/{folder_id}/parent` | 移动文件夹（换父级） |
 | `GET` | `/api/v1/notes/tags` | 用过的标签与条数 |
 | `DELETE` | `/api/v1/notes/{note_id}` | 删除笔记 |
 | `GET` | `/api/v1/notes/{note_id}` | 笔记详情 |
 | `PATCH` | `/api/v1/notes/{note_id}` | 更新笔记 |
 | `POST` | `/api/v1/notes/{note_id}/ai` | 用对话模型排版 / 润色笔记 |
 | `POST` | `/api/v1/notes/{note_id}/attach` | 把笔记加入知识库 |
+| `PATCH` | `/api/v1/notes/{note_id}/folder` | 把笔记移进文件夹 / 移回未归档 |
 | `POST` | `/api/v1/notes/{note_id}/images` | 上传笔记配图 |
 | `GET` | `/api/v1/notes/{note_id}/images/{name}` | 读取笔记配图 |
 

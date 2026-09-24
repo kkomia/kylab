@@ -342,14 +342,14 @@ export function TasksPage() {
                     label="按健康筛选"
                   />
                 </div>
-                {/* 已取消默认不显示：给一个显式开关，并如实说藏了多少条 */}
+                {/* 已取消默认不显示：给一个显式开关，并如实说藏了多少条。
+                    右边那个数**不再复述"已取消"**——勾选框的标签已经说过了
+                    （原来是「显示已取消 已隐藏 23 条已取消」，同一句说了两遍，2026-09-24 改） */}
                 <CheckRow checked={showCanceled} onCheckedChange={setShowCanceled}>
                   显示已取消
                 </CheckRow>
                 {hiddenCanceled > 0 && (
-                  <span className="m-toolbar-note">
-                    已隐藏 {formatCount(hiddenCanceled)} 条已取消
-                  </span>
+                  <span className="m-toolbar-note">已取消 {formatCount(hiddenCanceled)}</span>
                 )}
                 {hasFilter && (
                   <Button variant="secondary" size="sm" onClick={clearFilters}>
