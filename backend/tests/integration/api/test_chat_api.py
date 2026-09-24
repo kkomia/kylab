@@ -16,6 +16,8 @@ from fastapi.testclient import TestClient
 
 from app.core.services import get_services
 from app.services.chat import SourceRef
+from app.services.failures import failure_text
+from app.services.llm import ChatError
 from app.services.session_events import SessionEvent, steps_from_events
 from app.services.tool_loop import MARKER_STEP_LABEL
 from tests.conftest import (
@@ -128,8 +130,17 @@ def test_search_shows_up_as_a_step_with_a_readable_label(
 
 
 def test_stream_reports_model_failure_inside_the_stream(client: TestClient, kb_id: str) -> None:
-    """模型失败要在**流内**报：此时 HTTP 状态码早已发出，改不了。"""
-    install_fake_chat(error="模型只返回了思考过程、没有正文")
+    """模型失败要在**流内**报：此时 HTTP 状态码早已发出，改不了。
+
+    报出来的那句话由 ``services/failures.py`` 按**失败原因**挑（v0.53）：带
+    ``reason="thinking_only"`` 就是真实链路里 ``llm._content_of`` 抛的那一档，
+    用户看到的是一句能照着做的话，而异常原文只进日志。所以这里断言的是"挑出来的那句话"
+    ——**不是**异常自带的那句（那句话里可能有端点地址与上游返回体）。
+    """
+    error = ChatError(
+        "ollama: chat stream produced reasoning only (resp 200)", reason="thinking_only"
+    )
+    install_fake_chat(error=error)
     _install_fake_sources()
 
     response = client.post("/api/v1/chat/stream", json={"query": "问题", "kb_ids": [kb_id]})
@@ -137,7 +148,10 @@ def test_stream_reports_model_failure_inside_the_stream(client: TestClient, kb_i
     assert response.status_code == 200  # 仍是 200，错误在流里
     events = _parse_sse(response.text)
     assert events[-1]["type"] == "error"
-    assert "思考过程" in events[-1]["message"]
+    # 与映射层逐字一致：改回 `str(exc)` 这条就红
+    assert events[-1]["message"] == failure_text(error)
+    # 异常原文一个字都不许漏给用户
+    assert "ollama" not in events[-1]["message"]
 
 
 def test_once_endpoint_returns_answer_and_sources(client: TestClient, kb_id: str) -> None:
@@ -603,8 +617,14 @@ def test_a_failed_turn_is_recorded_as_error_and_turn_end(client: TestClient, kb_
 
     按 v0.12 起的取舍，失败的一轮不写半截记录（"问了但没答"的空档最难解释）。
     可"当时为什么没答出来"恰恰是回看时要问的——这句话只有日志答得出来。
+
+    **日志里那句话是"按原因挑出来的"**（v0.53，见 ``services/failures.py``）：
+    用户与日志看到的是同一句人话，异常原文只进服务端日志文件（``_fail`` 的 ``cause``）。
+    这里给 ``reason="bad_response"``（**不可重试**那一档）：可重试的原因会先按既有策略
+    重试一次、中间多一条 ``step``（P2-2 的既定行为），那是另一条用例的事。
     """
-    install_fake_chat(error="模型暂时不可用")
+    error = ChatError("openai compat: choices[0] missing", reason="bad_response")
+    install_fake_chat(error=error)
     conversation_id = _conversation(client)
 
     response = client.post(
@@ -616,7 +636,8 @@ def test_a_failed_turn_is_recorded_as_error_and_turn_end(client: TestClient, kb_
 
     logged = _events(client, conversation_id)
     assert [item["kind"] for item in logged] == ["turn/start", "error", "turn/end"]
-    assert logged[1]["payload"]["message"] == "模型暂时不可用"
+    assert logged[1]["payload"]["message"] == failure_text(error)
+    assert "choices[0]" not in logged[1]["payload"]["message"], "异常原文不进事件"
     assert logged[2]["payload"]["status"] == "error"
     # 没有回答就没有消息（与"不留半截记录"同一口径）
     assert client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"] == []

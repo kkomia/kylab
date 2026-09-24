@@ -92,10 +92,16 @@ class ChatError(UpstreamError):
     code = "chat_error"
     message = "对话模型调用失败"
 
-    def __init__(self, message: str | None = None, *, reason: str = "") -> None:
+    def __init__(
+        self, message: str | None = None, *, reason: str = "", status: int | None = None
+    ) -> None:
         super().__init__(message)
         #: 失败原因（分类用，见 ``RETRYABLE_REASONS``）。空串 = 没归类，按不可重试算。
         self.reason = reason
+        #: 上游的 HTTP 状态码（连接层失败没有）。**面给用户的文案只认它和 ``reason``**，
+        #: 不认 ``message``——那句里带着端点地址与上游返回体，是给日志看的
+        #: （见 ``services/failures.py``）。资源在连接层失败时是 ``None``。
+        self.status = status
 
     @property
     def retryable(self) -> bool:
@@ -411,7 +417,7 @@ class OpenAICompatChat:
             except httpx.TransportError as exc:
                 raise _transport_error(exc) from exc
         if not produced:
-            raise ChatError(_empty_stream_hint(finish_reason))
+            raise ChatError(_empty_stream_hint(finish_reason), reason="empty_answer")
 
     # ------------------------------------------------------------------ 内部
 
@@ -488,7 +494,7 @@ class OpenAICompatChat:
         try:
             return response.json()
         except ValueError as exc:
-            raise ChatError(f"对话端点返回的不是 JSON：{exc}") from exc
+            raise ChatError(f"对话端点返回的不是 JSON：{exc}", reason="bad_response") from exc
 
 
 class _ReusedClient:
@@ -531,7 +537,9 @@ def _content_of(body: dict) -> str:
     try:
         message = body["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise ChatError(f"对话响应格式不符合 OpenAI 规范：{exc}") from exc
+        raise ChatError(
+            f"对话响应格式不符合 OpenAI 规范：{exc}", reason="bad_response"
+        ) from exc
 
     content = (message.get("content") or "").strip()
     if content:
@@ -540,13 +548,15 @@ def _content_of(body: dict) -> str:
     if (message.get("reasoning_content") or "").strip():
         raise ChatError(
             "模型只返回了思考过程、没有正文：这是推理模型，思考把回复预算用完了。"
-            "请在输入框把「深度思考」调低或关掉，或换一个非推理模型"
+            "请在输入框把「深度思考」调低或关掉，或换一个非推理模型",
+            reason="thinking_only",
         )
     # 两者都空：**不能**返回空串。返回空串的话上层只会得到一句"没有回答"，
     # 用户看不出是模型没配好、被限流还是提示词太长——所以在这里就给出可处置的原因。
     raise ChatError(
         "模型返回了空正文：常见原因是提示词过长被截断，或该模型不支持当前请求格式。"
-        "请到设置 → 对话模型里检查后重试"
+        "请到设置 → 对话模型里检查后重试",
+        reason="empty_answer",
     )
 
 
@@ -596,8 +606,16 @@ def _status_reason(status: int) -> str:
 
 
 def _status_error(response: httpx.Response) -> ChatError:
-    """非 200 的响应 → **带分类**的 ``ChatError``（文案仍是 ``_error_hint`` 那份）。"""
-    return ChatError(_error_hint(response), reason=_status_reason(response.status_code))
+    """非 200 的响应 → **带分类**的 ``ChatError``（文案仍是 ``_error_hint`` 那份）。
+
+    ``status`` 一并带上：401/404 这些给不出 ``reason``（它们不可重试），但**给用户的
+    那句话要按状态码挑**（见 ``services/failures.py`` 的 ``_BY_STATUS``）。
+    """
+    return ChatError(
+        _error_hint(response),
+        reason=_status_reason(response.status_code),
+        status=response.status_code,
+    )
 
 
 def _transport_error(exc: httpx.TransportError) -> ChatError:
@@ -606,6 +624,7 @@ def _transport_error(exc: httpx.TransportError) -> ChatError:
     超时（``TimeoutException`` 那一族）与"连不上 / 中途断开"分开写：它们对用户是
     两件事（一个是慢，一个是没通上），而两者都进可重试白名单。
     """
+    # 连接层失败没有 HTTP 状态码（``status`` 留空）：给用户的文案只按 ``reason`` 挑
     if isinstance(exc, httpx.TimeoutException):
         return ChatError(f"对话端点超时：{exc}", reason="timeout")
     return ChatError(f"对话端点连不上或中途断开：{exc}", reason="network_error")

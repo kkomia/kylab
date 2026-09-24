@@ -561,6 +561,21 @@ class SearchRequest(BaseModel):
     mode: str = "hybrid"
     candidate_k: int = Field(default=40, gt=0, le=500)
     score_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    """相对融合分的下限（该条分 / 最高分）。只剪尾巴，剪不掉"整批都不相关"。"""
+    min_vector_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    """向量余弦的**绝对**下限。不传 = 按库的嵌入模型用标定默认（见下），0 = 关闭。
+
+    标定默认落在 ``services/retrieval`` 的 ``MIN_VECTOR_SCORE_BY_MODEL``：余弦的绝对值
+    是模型属性，本机只标定过 bge-m3（0.89，噪声头 0.84–0.88 / 真查询头 0.92–0.97）；
+    **没标定过的嵌入模型默认不设限**——宁可少拦，也不能拿一个别的模型的尺度把真命中拦掉。
+    """
+    min_term_coverage: float | None = Field(default=None, ge=0.0, le=1.0)
+    """词面覆盖的绝对下限：查询实词里至少多少比例出现在候选（或其文档名）里。
+
+    不传 = 跟着向量下限走（向量下限开着时为 0.67，取值与噪声实测见
+    ``services/retrieval`` 的 ``DEFAULT_MIN_TERM_COVERAGE``），0 = 关闭。
+    两条证据是"或"的关系，见 ``services/retrieval/coverage.py``。
+    """
     rerank: bool = False
     filters: MetadataFilterIn | None = None
 

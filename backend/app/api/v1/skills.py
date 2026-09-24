@@ -53,16 +53,25 @@ router = APIRouter(prefix="/skills", tags=["skills"])
 
 
 def _out(record, summary: str = "") -> SkillOut:  # type: ignore[no-untyped-def]
-    """技能记录 → 界面形状。``summary`` 是**中文简介**（v0.28）。
+    """技能记录 → 界面形状。``summary`` 是**中文简介**（v0.28，v0.53 补上内置那批）。
 
-    它不住在技能目录里，而是安装时记进清单的那一行（``installed.json``）——
-    技能的 ``SKILL.md`` 我们一个字都不改（见 ``services/skill_blurb.py``）。
-    所以由调用方查出来传进来：只有市场装的技能才有。
+    两个来源，先看清单再退回技能自己：
+
+    1. **市场装的技能**：安装时记进清单的那一行（``data/installed.json``）。技能的
+       ``SKILL.md`` 我们一个字都不改（见 ``services/skill_blurb.py``），所以简介
+       只能存在清单里，由调用方查出来传进来；
+    2. **仓库自带的技能**（内置那 5 个）：没有安装那一步，简介写在 ``SKILL.md``
+       的 frontmatter 里（``SkillRecord.summary``）——**同一件东西，同一处消费**。
+
+    **两边都有时以清单那份为准**（市场那份是为中文界面存的、更短更贴；frontmatter
+    那份常是英文），没有才退回技能自己那份。这个顺序必须与命令菜单那边
+    （``core/services.py`` 的 ``_skill_summaries``）一致——反了就会出现
+    "能力页一句、菜单里另一句"。
     """
     return SkillOut(
         name=record.name,
         description=record.description,
-        summary=summary,
+        summary=summary or record.summary,
         source=record.source,
         path=record.path,
         directory=record.directory,

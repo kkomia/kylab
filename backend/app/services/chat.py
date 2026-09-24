@@ -1360,7 +1360,12 @@ class ChatService:
                 config, thinking_effort=normalize_effort(thinking_effort, config.thinking_effort)
             )
         if not config.is_configured:
-            raise ChatError("尚未配置对话模型，请到设置 → 模型配置里填写 API Key 与模型 ID")
+            # reason 是给用户那句话用的（见 services/failures.py）：不能靠 message，
+            # 那一句里带着设置页的内部叫法
+            raise ChatError(
+                "尚未配置对话模型，请到设置 → 模型配置里填写 API Key 与模型 ID",
+                reason="not_configured",
+            )
         return config
 
     def _build_chat(

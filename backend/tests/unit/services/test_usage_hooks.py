@@ -188,8 +188,17 @@ def _retrieval(bundle, recorded, *, hits: int):  # type: ignore[no-untyped-def]
             rerank_score=None,
         )
 
-    service._vector_channel = lambda request, qv: ([f"c{i}" for i in range(hits)], {})  # type: ignore[method-assign]
-    service._materialize = lambda fused, raw, request: ([_hit() for _ in range(hits)], 0)  # type: ignore[method-assign]
+    # 三个替身都按**当前**签名写：`_vector_channel` / `_materialize` 自从有了"每库
+    # 解析一次嵌入模型"的缓存（v0.53）各多一个可选参数。写死参数个数的话，
+    # 签名一变这里就 TypeError——那条错会伪装成"用量没记上"，看不出是替身过时了。
+    service._vector_channel = lambda request, qv, embedders=None: (
+        [f"c{i}" for i in range(hits)],
+        {},
+    )  # type: ignore[method-assign]
+    service._materialize = lambda fused, raw, request, embedders=None: (
+        [_hit() for _ in range(hits)],
+        0,
+    )  # type: ignore[method-assign]
     return service, RetrievalQuery
 
 

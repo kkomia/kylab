@@ -85,6 +85,7 @@ from app.services.agent_tools import build_runner, tool_specs
 from app.services.api_key import Caller
 from app.services.chat import ChatTurn, SourceRef
 from app.services.conversation import LastTurn
+from app.services.failures import failure_text
 from app.services.live_turns import LiveEmit
 from app.services.llm import (
     ChatError,
@@ -1242,11 +1243,11 @@ def _turn_events(
                 )
                 return
         except ChatError as exc:
-            yield _fail(services, payload.conversation_id, sink, str(exc))
+            yield _fail(services, payload.conversation_id, sink, failure_text(exc), cause=exc)
             return
         except Exception as exc:
-            logger.exception("对话流异常")
-            yield _fail(services, payload.conversation_id, sink, f"对话失败：{exc}")
+            # 原始异常由 `_fail` 记进日志（cause）：用户看到的只有那一句人话
+            yield _fail(services, payload.conversation_id, sink, failure_text(exc), cause=exc)
             return
         sources = sink.sources
         step_log = sink.steps
@@ -1260,7 +1261,8 @@ def _turn_events(
                 top_k=payload.top_k,
             )
         except Exception as exc:
-            yield _fail(services, payload.conversation_id, sink, f"检索失败：{exc}")
+            # 检索这一环出的错（向量化、库连接…）同样只把结论给用户
+            yield _fail(services, payload.conversation_id, sink, failure_text(exc), cause=exc)
             return
         # 用 pydantic 序列化而不是 ``s.__dict__``：
         # SourceRef 是 slots=True 的 dataclass，**没有 __dict__**，
@@ -1292,11 +1294,11 @@ def _turn_events(
                 # 与工具循环那条路同一处置：正文增量不进缓冲（收尾那条 done 带全文）
                 yield LiveEmit({"type": "delta", "text": shown}, keep=False)
         except ChatError as exc:
-            yield _fail(services, payload.conversation_id, sink, str(exc))
+            yield _fail(services, payload.conversation_id, sink, failure_text(exc), cause=exc)
             return
         except Exception as exc:
-            logger.exception("对话流异常")
-            yield _fail(services, payload.conversation_id, sink, f"对话失败：{exc}")
+            # 原始异常由 `_fail` 记进日志（cause）：用户看到的只有那一句人话
+            yield _fail(services, payload.conversation_id, sink, failure_text(exc), cause=exc)
             return
         tail = marker_stream.flush()
         if tail:
@@ -1477,11 +1479,10 @@ def _resume_turn_events(
         ):
             yield from sink.feed(event)
     except ChatError as exc:
-        yield _fail(services, conversation_id, sink, str(exc))
+        yield _fail(services, conversation_id, sink, failure_text(exc), cause=exc)
         return
     except Exception as exc:
-        logger.exception("续跑流异常")
-        yield _fail(services, conversation_id, sink, f"续跑失败：{exc}")
+        yield _fail(services, conversation_id, sink, failure_text(exc), cause=exc)
         return
 
     answer = sink.answer
@@ -1945,16 +1946,30 @@ def _flush_events(services: Services, conversation_id: str | None, sink: _TurnSi
 
 
 def _fail(
-    services: Services, conversation_id: str | None, sink: _TurnSink, message: str
+    services: Services,
+    conversation_id: str | None,
+    sink: _TurnSink,
+    message: str,
+    *,
+    cause: BaseException | None = None,
 ) -> LiveEmit:
     """流内失败的收尾：把 ``error`` + ``turn/end`` 记进日志，并给出要发的那条事件。
 
     返回值就是客户端看到的那个 ``type=error``——**顺序不能反**：
     先记日志再返回，日志里才不会有"没有结尾的一轮"。
 
+    ``message`` **必须是给人看的一句话**（调用方一律传 ``failure_text(exc)``，
+    见 ``services/failures.py``）；``cause`` 是那条要被记下来的原始异常——
+    **异常原文只走日志这条路**：``error`` 事件会进会话事件表、也会被前端原样显示，
+    内部语言（端点地址、上游返回体、``httpx`` 的类名）不该出现在那里。
+
     ``log_index`` 取收尾那一刻的日志条数（游标口径，见 ``_events`` 的收尾），
     ``terminal=True`` 让后台那一条记住它：重连收口时把这条错误原样再发一遍。
     """
+    if cause is not None:
+        # 与调用点里那几处 logger.exception 同一个落点：一条失败**总要留下能排错的东西**，
+        # 而给用户的那句话里没有它
+        logger.warning("这一轮失败（对用户报：%s）：%s", message, cause, exc_info=True)
     sink.note_error(message)
     sink.close_turn(status=TURN_ERROR, answer="")
     _flush_events(services, conversation_id, sink)

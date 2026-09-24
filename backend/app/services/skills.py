@@ -31,7 +31,9 @@
 或描述超过 1024 字符 → **整个技能被丢弃**（不进目录、也不给 ``read_skill`` 读），
 理由记在记录里并出现在能力页上。识别 ``name`` / ``description`` / ``when_to_use`` /
 ``license`` / ``metadata`` 五个扁平 ``key: value`` 字段（同 ZCode，多出来的一律忽略，
-不报错）。丢弃 ≠ 静默：坏技能照旧列在 ``list()`` 里，带着"为什么不用它"。
+不报错），外加我们自己扩展的 ``summary``（**给人看的一句中文简介**：市场装的技能那份
+存在安装清单里，仓库自带的写在 frontmatter）。**丢弃 ≠ 静默**：坏技能照旧列在
+``list()`` 里，带着"为什么不用它"。
 
 > 一处**有据的偏离**：ZCode 的第二档是"**完全没有 frontmatter** 的技能仍然加载，
 > name 退化成目录名、description 为空"（``diagnosing-skills`` §2「Loads but may not
@@ -175,6 +177,14 @@ class SkillRecord:
     """没进目录的原因（人话）。空 = 没发现问题。"""
     when_to_use: str = ""
     """``SKILL.md`` 的 ``when_to_use``（可选，ZCode 的五个识别字段之一）。目录里跟在描述后面。"""
+    summary: str = ""
+    """``SKILL.md`` 的 ``summary``（可选，v0.53）：**给人看的一句中文简介**。
+
+    它不进模型的技能目录——``description`` 才是给模型看的触发文本，两份各管一头。
+    仓库自带的技能（内置那 5 个）就靠它显示中文；市场装的技能这份简介存在安装清单里
+    （``data/installed.json``，来源是技能源的中文摘要），两条路的消费方是同一处
+    （``api/v1/skills.py`` 与 ``core/services.py`` 的 ``_skill_summaries``）。
+    """
     relative_path: str = ""
     """相对**发现根**的位置（``<组>/<名字>/SKILL.md``）。目录里那一行用它而不是绝对路径：
     绝对路径带用户名与机器布局，进提示词只是噪音（要排错时接口里有 ``path``）。"""
@@ -455,9 +465,12 @@ class SkillService:
         meta, _body = parse_frontmatter(text)
         name = str(meta.get("name") or "").strip()
         description = str(meta.get("description") or "").strip()
-        # 认 name / description / when_to_use / license / metadata 五个键（ZCode 同一批）；
-        # 其余键一律忽略，不当错误——事实标准是"多写的不算错"。
+        # 认 name / description / when_to_use / license / metadata 五个键（ZCode 同一批）
+        # 加上我们自己扩展的 ``summary``；其余键一律忽略，不当错误——事实标准是"多写的不算错"。
         when_to_use = str(meta.get("when_to_use") or "").strip()
+        # summary 是**给人看的中文简介**（见 SkillRecord）：市场装的技能那份存在安装清单里，
+        # 仓库自带的没有安装那一步，就写在 frontmatter 里——两条路的数据形状一样
+        summary = str(meta.get("summary") or "").strip()
         common = {
             # 缺 name 时退回目录名**只为了界面上指认得出来**（否则是一行空白），
             # 它照样是被丢弃的，不会进目录、也读不出正文。
@@ -467,6 +480,7 @@ class SkillService:
             "source": source,
             "directory": str(directory),
             "when_to_use": when_to_use,
+            "summary": summary,
             "relative_path": _relative_skill_path(directory, root),
         }
         dropped = _drop_reason(name=name, description=description)

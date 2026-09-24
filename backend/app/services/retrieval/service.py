@@ -10,6 +10,9 @@
   为什么结果为空；后续可把常用过滤下沉到索引；
 - **阈值作用于相对融合分**（``该条分 / 最高分``）：向量距离与 BM25 分数量纲不同，
   绝对阈值没法跨模式通用；相对阈值在任何模式下语义一致（1.0 = 只保留并列第一）；
+- **相关度下限作用于通道原始分**（v0.53，见 ``_passes_relevance``）：相对阈值剪不掉
+  "整批都不相关"那一类——噪声查询的最高分本身就是噪声，比例永远接近 1（实测：传 0.9
+  仍剩 7 条噪声、0.99 只砍掉名次靠后的）。要判断"这批东西压根不相关"，只能看绝对值；
 - **rerank 失败降级为不重排**：日志告警即可，绝不因此让整次检索失败（架构 §5 把它定义为可选增强）。
 """
 
@@ -21,6 +24,7 @@ from collections.abc import Sequence
 
 from app.services.embedding.base import EmbeddingNotConfiguredError, EmbeddingProvider
 from app.services.embedding.resolver import EmbeddingResolver
+from app.services.retrieval.coverage import content_terms, term_coverage
 from app.services.retrieval.fusion import DEFAULT_RRF_K, rrf_fuse
 from app.services.retrieval.rerank import RerankError, RerankProvider
 from app.services.retrieval.types import (
@@ -35,10 +39,43 @@ from app.storage.base import DocumentRecord, StoreBundle
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["RetrievalService", "similarity_from_distance"]
+__all__ = [
+    "DEFAULT_MIN_TERM_COVERAGE",
+    "MIN_VECTOR_SCORE_BY_MODEL",
+    "RetrievalService",
+    "calibrated_vector_floor",
+    "similarity_from_distance",
+]
 
 VECTOR_CHANNEL = "vector"
 FULLTEXT_CHANNEL = "fulltext"
+
+#: 向量通道（余弦）的相关度下限，**按嵌入模型标定**。
+#:
+#: 余弦的绝对值是**模型属性**，不是通用量（同一个"相关"在不同模型上是 0.4 还是 0.95
+#: 完全看它的训练目标），所以这张表只写本机实测标定过的模型：bge-m3 上语料内两段任意
+#: 文本的余弦底就很高，用别的模型的尺度写死一个数会把它的真命中全拦掉。
+#:
+#: 0.89 的来源（2026-09-24，本机四库实测，逐条见交付记录）：
+#:
+#: - 噪声查询（库里没有答案）的**头部**在 0.844–0.882：「今天北京的天气怎么样」0.882、
+#:   「真空镀膜机的靶材更换周期」0.864、「红烧肉的做法步骤」0.844；取 0.89 = 刚好高过
+#:   实测最高那条噪声头，一次拦住整批噪声；
+#: - 真查询的常态是 0.92–0.97，所以这个数**卡在两者之间**；
+#: - 代价是真实的：短查询/罕见词会低于它（「眼科」0.908、「郭正茂」那条真命中 0.852、
+#:   「Hallermann」0.861）——这一类靠**词面覆盖**那一路救回（见 ``coverage.py``）。
+#:   因此这个数不往上抬：再抬只会开始拦真查询里较弱的那些，而噪声并不会少拦一条。
+MIN_VECTOR_SCORE_BY_MODEL: dict[str, float] = {
+    "bge-m3": 0.89,
+}
+
+#: 词面覆盖下限（见 ``coverage.py``）：查询实词里至少 **2/3** 出现在候选正文或它的文档名里。
+#:
+#: 取值的根据同样是实测（2026-09-24，本机四库，逐条见交付记录）：噪声查询的最高覆盖是
+#: 2/4（「合唱团的排练时间安排」蹭到「时间」「安排」，「如何用 Rust 写一个 HTTP 服务器」
+#: 蹭到「一个」「服务」），而真命中那一侧——人名「郭正茂」1/1、按文档名找的
+#: 「0.1.0版本体验修了什么」3/4 = 0.75——都在这条线之上。取 0.67 就是"刚高过实测噪声的最高覆盖"。
+DEFAULT_MIN_TERM_COVERAGE = 0.67
 
 
 def similarity_from_distance(distance: float) -> float:
@@ -49,6 +86,71 @@ def similarity_from_distance(distance: float) -> float:
     """
     similarity = 1.0 - (distance * distance) / 2.0
     return max(-1.0, min(1.0, similarity))
+
+
+def calibrated_vector_floor(model_id: str) -> float:
+    """这个嵌入模型上"算相关"的余弦下限；**没标定过的模型返回 0 = 不设限**。
+
+    为什么按模型查表而不是写一个全局默认：见 ``MIN_VECTOR_SCORE_BY_MODEL``。
+    匹配用"包含"而不是相等：注册表里的模型 id 带供应商前缀（``BAAI/bge-m3``）
+    或版本后缀（``bge-m3:latest``），要求用户把名字写得分毫不差才会生效，
+    那等于这个默认对大多数人是不生效的。
+    """
+    lowered = (model_id or "").casefold()
+    for name, floor in MIN_VECTOR_SCORE_BY_MODEL.items():
+        if name in lowered:
+            return floor
+    return 0.0
+
+
+def _passes_relevance(
+    raw_scores: dict[str, float],
+    text: str,
+    *,
+    title: str = "",
+    vector_floor: float,
+    coverage_floor: float,
+    terms: Sequence[str],
+    semantic: bool = True,
+) -> bool:
+    """这条候选与查询之间有没有**足够强的证据**（v0.53）。
+
+    两条证据，满足其一即可：
+
+    1. **语义够近**：向量通道的原始分（余弦）达到该模型标定的下限；
+    2. **词面够像**：查询实词里至少 ``coverage_floor`` 的比例出现在**这段正文或它所属
+       文档的名字**里（见 ``coverage.py``：为什么这件事不交给全文通道的原始分）。
+
+    ``title`` 也要算：用户常常是拿文件名/版本号在找东西（实测「0.1.0版本体验修了什么」
+    命中的就是同名那份文档，而正文里并没有"版本""体验"这些字样）。不算它就会把
+    这类真命中拦掉——**误杀比噪声更糟**。
+
+    为什么是"或"而不是"与"：两者各自对应一类真实命中——换个说法的问法是语义命中、
+    连词面都对不上的；索引号/人名/缩写这类是词面命中、余弦反而低（实测「郭正茂」
+    那条真命中只有 0.852，低于任何安全的向量下限）。要求"与"会把这两类各砍一半。
+
+    **两条证据都不足的候选会被拦掉**，包括全文通道单独捞上来、而词面覆盖又不到下限
+    的那些（原始分高也没用，理由见 ``coverage.py`` 的实测：无关查询也能拿到 9.9）。
+
+    但**只有这一次检索真有语义证据时才判**（``semantic``）：向量通道一条候选都没返回时
+    （没配嵌入模型、或用户选了纯关键词那一档），"不相关"这个判断我们下不了——
+    那时全文通道的产出照旧原样返回。纯关键词那一档本来就是**调试台**用来分辨
+    "召回不行"还是"融合不行"的，不该被判定层改写。
+
+    两条下限都为 0 时直接放行——**没标定过的嵌入模型上默认不改变任何既有行为**。
+    """
+    if vector_floor <= 0.0 and coverage_floor <= 0.0:
+        return True
+    vector = raw_scores.get(VECTOR_CHANNEL)
+    if vector_floor > 0.0 and vector is not None and vector >= vector_floor:
+        return True
+    if not semantic:
+        # 这次检索压根没有语义证据（向量通道空着）：不下"不相关"的判断，照旧放行
+        return True
+    if coverage_floor <= 0.0:
+        return False
+    haystack = f"{title}\n{text}" if title else text
+    return term_coverage(terms, haystack) >= coverage_floor
 
 
 class RetrievalService:
@@ -91,10 +193,15 @@ class RetrievalService:
         raw: dict[str, dict[str, float]] = {}
         ordered: list[tuple[str, Sequence[str]]] = []
         stats: list[ChannelStat] = []
+        # 这次检索里"每个库用哪个嵌入实现"只解析一次：向量通道要它本身，
+        # 相关度下限要它的身份（模型 id → 标定表）。各解析一次会让每个库多一次
+        # resolver 往返（用例 `test_vector_channel_resolves_an_embedder_per_knowledge_base`
+        # 盯着这个次数）。
+        embedders: dict[str, EmbeddingProvider] = {}
 
         if request.mode in (RetrievalMode.HYBRID, RetrievalMode.VECTOR):
             started = time.perf_counter()
-            vector_ranked, vector_scores = self._vector_channel(request, query_vector)
+            vector_ranked, vector_scores = self._vector_channel(request, query_vector, embedders)
             raw[VECTOR_CHANNEL] = vector_scores
             ordered.append((VECTOR_CHANNEL, vector_ranked))
             stats.append(
@@ -119,7 +226,7 @@ class RetrievalService:
             )
 
         fused = rrf_fuse(ordered, k=self._rrf_k)
-        hits, filtered_out = self._materialize(fused, raw, request)
+        hits, filtered_out = self._materialize(fused, raw, request, embedders)
         hits, reranked = self._maybe_rerank(hits, request)
         # 记在**返回之前**：返回给调用方的条数才是"命中数"，与 stats 里的分路召回数
         # 不是一回事（后者是融合前的候选量）
@@ -162,7 +269,10 @@ class RetrievalService:
     # ------------------------------------------------------------------ 召回通道
 
     def _vector_channel(
-        self, request: RetrievalQuery, query_vector: Sequence[float] | None
+        self,
+        request: RetrievalQuery,
+        query_vector: Sequence[float] | None,
+        embedders: dict[str, EmbeddingProvider] | None = None,
     ) -> tuple[list[str], dict[str, float]]:
         best: dict[str, float] = {}
         recall_factor = 2 if self._stores.meta.any_disabled_documents(request.kb_ids) else 1
@@ -180,7 +290,7 @@ class RetrievalService:
             if query_vector is not None:
                 vector = list(query_vector)
             else:
-                embedder = self._embedder_for(kb_id)
+                embedder = self._embedder_cached(kb_id, embedders)
                 cached = embedded.get(id(embedder))
                 if cached is not None:
                     vector = list(cached)
@@ -242,6 +352,7 @@ class RetrievalService:
         fused: Sequence[tuple[str, float, tuple[str, ...], dict[str, int]]],
         raw: dict[str, dict[str, float]],
         request: RetrievalQuery,
+        embedders: dict[str, EmbeddingProvider] | None = None,
     ) -> tuple[list[RetrievalHit], int]:
         if not fused:
             return [], 0
@@ -252,6 +363,14 @@ class RetrievalService:
 
         top_score = fused[0][1] or 1.0
         threshold = request.score_threshold
+        # 相关度下限（每库一对）：按模型标定，见 `MIN_VECTOR_SCORE_BY_MODEL` 与 `coverage.py`
+        floors = self._relevance_floors(request, embedders)
+        # **这次检索有没有语义证据**：向量通道一条候选都没返回时（没配嵌入模型、
+        # 或选了纯关键词那一档）判定层不下结论——理由见 `_passes_relevance`
+        semantic = bool(raw.get(VECTOR_CHANNEL))
+        # 查询实词**懒算**：正常查询（余弦 0.92+）一条都不会走到词面那一支，
+        # 不该为它们多切一次词
+        terms: tuple[str, ...] | None = None
 
         hits: list[RetrievalHit] = []
         filtered_out = 0
@@ -283,6 +402,27 @@ class RetrievalService:
                 filtered_out += 1
                 continue
 
+            raw_scores = {
+                channel: values[chunk_id] for channel, values in raw.items() if chunk_id in values
+            }
+            vector_floor, coverage_floor = floors.get(chunk.knowledge_base_id, (0.0, 0.0))
+            if vector_floor > 0.0 or coverage_floor > 0.0:
+                if terms is None:
+                    terms = content_terms(request.query)
+                if not _passes_relevance(
+                    raw_scores,
+                    chunk.text,
+                    title=document.name if document else "",
+                    vector_floor=vector_floor,
+                    coverage_floor=coverage_floor,
+                    terms=terms,
+                    semantic=semantic,
+                ):
+                    # 与元数据过滤共用一个计数：界面上那句"N 条被过滤"要说得出
+                    # "为什么变少了"，多一个计数就要多一处界面改动
+                    filtered_out += 1
+                    continue
+
             hits.append(
                 RetrievalHit(
                     chunk_id=chunk.chunk_id,
@@ -296,11 +436,67 @@ class RetrievalService:
                     document_name=document.name if document else None,
                     channels=channels,
                     ranks=ranks,
-                    raw_scores={channel: values[chunk_id] for channel, values in raw.items()
-                                if chunk_id in values},
+                    raw_scores=raw_scores,
                 )
             )
         return hits, filtered_out
+
+    def _relevance_floors(
+        self, request: RetrievalQuery, embedders: dict[str, EmbeddingProvider] | None = None
+    ) -> dict[str, tuple[float, float]]:
+        """这次检索各库的（余弦下限, 词面覆盖下限）。
+
+        ``None`` = 按标定默认，``0`` = 显式关闭（调用方能关掉整套判定）。
+
+        **默认整套跟着模型标定走**：余弦的尺度是模型属性，没标定过的模型上我们说不出
+        "多少算相关"，此时连词面那一半也一起关掉——它是"或"里的第二条，单独留着只会
+        在没有语义判定兜底时把召回砍掉一截。这正是"宁可少拦"的落点：本机（bge-m3）
+        两条件都开，别的模型保持既有行为，要收紧请显式传参。
+
+        ``embedders`` 是这次检索的**每库解析一次**的缓存（见 ``_embedder_cached``）：
+        这里要的只是"这个库用的是哪个模型"（查标定表），但它与向量通道要的是**同一个
+        对象**——分开解析会让每个库多一次 resolver 往返（用例盯着这个次数）。
+        """
+        explicit_vector = request.min_vector_score
+        explicit_coverage = request.min_term_coverage
+        floors: dict[str, tuple[float, float]] = {}
+        for kb_id in request.kb_ids:
+            vector = (
+                calibrated_vector_floor(self._embedding_model_id(kb_id, embedders))
+                if explicit_vector is None
+                else max(0.0, explicit_vector)
+            )
+            if explicit_coverage is None:
+                # 语向下限开着才有词面下限：两者是一套（见方法说明）
+                coverage = DEFAULT_MIN_TERM_COVERAGE if vector > 0.0 else 0.0
+            else:
+                coverage = max(0.0, explicit_coverage)
+            floors[kb_id] = (vector, coverage)
+        return floors
+
+    def _embedder_cached(
+        self, kb_id: str, cache: dict[str, EmbeddingProvider] | None
+    ) -> EmbeddingProvider:
+        """这次检索期间"这个库用哪个嵌入实现"只解析一次。
+
+        ``cache`` 为 ``None``（脚本、单次调用）时不缓存，照旧每次解析。
+        """
+        if cache is None:
+            return self._embedder_for(kb_id)
+        if kb_id not in cache:
+            cache[kb_id] = self._embedder_for(kb_id)
+        return cache[kb_id]
+
+    def _embedding_model_id(
+        self, kb_id: str, embedders: dict[str, EmbeddingProvider] | None = None
+    ) -> str:
+        """这个库用的嵌入模型 id；拿不到就返回空串（= 未标定 = 不设限）。"""
+        try:
+            return str(getattr(self._embedder_cached(kb_id, embedders), "model_id", "") or "")
+        except Exception:
+            # 取模型身份失败不该让检索失败：退回"未标定"，只是不设下限
+            logger.debug("取嵌入模型身份失败（本次不设相关度下限）：%s", kb_id, exc_info=True)
+            return ""
 
     def _documents_of(self, chunks) -> dict[str, DocumentRecord]:
         """批量取回命中的文档元信息（用于过滤与展示来源文档名）。

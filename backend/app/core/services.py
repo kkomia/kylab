@@ -376,28 +376,42 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     #
     # `skills` 是"技能即命令"那一半（v0.45，调研 §3 第 4-5 条）：每个技能注册一条
     # `/<技能名> [任务]`，正文仍由 ChatService.skill_prompt 注入（只有一处实现）。
-    # `skill_summaries` 给菜单那一行用中文简介，与能力页读的是同一份清单数据。
-    def _installed_skill_summaries() -> dict[str, str]:
-        """已装技能的中文简介（``技能名 → 简介``）；读不出来就当没有。
+    # `skill_summaries` 给菜单那一行用中文简介，与能力页读的是同一份数据
+    # （市场装的在安装清单里、仓库自带的在 SKILL.md 的 frontmatter 里）。
+    def _skill_summaries() -> dict[str, str]:
+        """技能的中文简介（``技能名 → 简介``）；读不出来就当没有。
 
-        它只是菜单与 ``/skills`` 里那一行说明，坏掉不该让命令表跟着 500
-        （与 api/v1/skills.py 的 ``_summaries`` 同一口径、同一份数据）。
+        两个来源，与能力页（api/v1/skills.py 的 ``_out``）**同一份数据、同一套优先序**：
+        市场装的技能在安装清单里（``data/installed.json``），仓库自带的写在
+        ``SKILL.md`` 的 frontmatter 里（``SkillRecord.summary``）。**两边都有时以清单那份
+        为准**（市场那份是为中文界面存的、更短更贴；frontmatter 那份常是英文），
+        所以下面先收 frontmatter 那批、再用清单覆盖——顺序必须与 ``_out`` 的
+        ``summary or record.summary`` 一致，反了就会出现"能力页一句、菜单里另一句"。
+
+        坏掉只是菜单里少几行中文，不该让命令表跟着 500。
         """
+        out: dict[str, str] = {}
+        try:
+            for record in skill_service.list():
+                if record.summary:
+                    out[record.name] = record.summary
+        except Exception:  # 扫技能失败不影响命令表的其余部分
+            logger.warning("读技能自带的中文简介失败", exc_info=True)
         try:
             records = skill_market_service.installed_records()
         except Exception:  # 清单坏了不影响命令表（只是少几行中文简介）
-            return {}
-        return {
-            name: str(item.get("summary") or "")
-            for name, item in records.items()
-            if item.get("summary")
-        }
+            return out
+        for name, item in records.items():
+            summary = str(item.get("summary") or "")
+            if summary:
+                out[name] = summary
+        return out
 
     commands_service = CommandService(
         resolved.data_dir,
         conversations=conversations_service,
         skills=skill_service,
-        skill_summaries=_installed_skill_summaries,
+        skill_summaries=_skill_summaries,
     )
     chat_service = ChatService(
         retrieval,

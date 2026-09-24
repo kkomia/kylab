@@ -48,6 +48,8 @@ def search(
             mode=payload.mode,
             candidate_k=payload.candidate_k,
             score_threshold=payload.score_threshold,
+            min_vector_score=payload.min_vector_score,
+            min_term_coverage=payload.min_term_coverage,
             rerank=payload.rerank,
             filters=filters,
         )

@@ -6431,6 +6431,10 @@ export interface components {
             candidate_k: number;
             /** Score Threshold */
             score_threshold?: number | null;
+            /** Min Vector Score */
+            min_vector_score?: number | null;
+            /** Min Term Coverage */
+            min_term_coverage?: number | null;
             /**
              * Rerank
              * @default false

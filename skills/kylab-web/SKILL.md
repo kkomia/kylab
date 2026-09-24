@@ -1,6 +1,7 @@
 ---
 name: kylab-web
 description: Look something up on the live web and read the page — "查一下", "搜一下", "今天/最近怎么样", "现在是什么情况", "这条新闻", "最新政策", a URL the user pasted, or anything whose answer changes over time. Use this whenever the answer is not in the user's own documents, notes, or memory. Do NOT answer time-sensitive questions ("今天", "最新", "现在") from your own knowledge — it is stale, and saying so is better than guessing.
+summary: 联网查最新信息并读原文页面，回答那些会随时间变化的问题
 ---
 
 # Look things up on the live web

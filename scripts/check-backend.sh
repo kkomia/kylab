@@ -54,6 +54,7 @@ if [ -z "${KYLAB_TEST_DATABASE_URL:-}" ]; then
     echo "   门禁会变成'绿得没有意义'。请指向一个带 pgvector 的库："
     echo "   KYLAB_TEST_DATABASE_URL=postgresql://用户:口令@主机:5432/postgres \\"
     echo "     sh scripts/check-backend.sh"
+    echo "   只想跑测试（允许从 backend/.env 借库作维护连接）：sh scripts/test-backend.sh"
     fail=$((fail + 1))
 else
     step "后端测试" sh -c "cd '$ROOT/backend' && '$VENV_PY' -m pytest tests -m 'not bench and not cloud' -q"

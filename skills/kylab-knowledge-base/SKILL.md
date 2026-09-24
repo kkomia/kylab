@@ -1,6 +1,7 @@
 ---
 name: kylab-knowledge-base
 description: Query a kylab knowledge base to answer questions from the user's own documents with traceable citations. Use this Skill whenever the user asks something that their local knowledge base might cover — product manuals, research papers, internal guidelines, subscribed feeds — or explicitly says "查知识库", "在我的文档里找", "知识库里有没有", "ask my knowledge base", "search my docs". Also use it before answering from general knowledge when the answer should be grounded in the user's own material, because kylab returns the actual source passages rather than a generated summary.
+summary: 在你的知识库里检索原文段落，给出可追溯出处的回答
 ---
 
 # Query a kylab knowledge base

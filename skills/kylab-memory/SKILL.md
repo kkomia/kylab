@@ -1,6 +1,7 @@
 ---
 name: kylab-memory
 description: Keep what is durable and recall what was said before — the user's standing preferences, decisions that were settled, constraints that keep coming up, or "上次说到哪了", "我之前说过", "记一下". Use `recall` before asking the user to repeat themselves, and `remember` when something is worth still knowing next week. Not for documents (that is the knowledge base) and not for one-off facts from this conversation.
+summary: 记住跨会话的偏好与结论，需要时想起之前说过的内容
 ---
 
 # Remember, and recall

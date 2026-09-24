@@ -492,3 +492,154 @@ def test_unconfigured_embedding_skips_the_vector_channel(seeded: StoreBundle) ->
     assert response.hits
     vector_stat = next(stat for stat in response.stats if stat.channel == "vector")
     assert vector_stat.count == 0
+
+
+# --------------------------------------------------------------------- 相关度下限（v0.53）
+
+
+def test_floors_are_off_for_the_development_embedder(
+    seeded: StoreBundle, retrieval: RetrievalService
+) -> None:
+    """开发用哈希嵌入没有标定过余弦尺度 → 默认整套不设限，既有行为一字不变。
+
+    这不是"顺手放过"：余弦的绝对值随模型变，拿 bge-m3 的尺度拦别的模型会把
+    它的真命中全砍掉（见 ``test_relevance_floors.py``）。
+    """
+    default = retrieval.search(RetrievalQuery(query="检索 部署 配置", kb_ids=["kb_1"], top_k=10))
+    explicit_off = retrieval.search(
+        RetrievalQuery(
+            query="检索 部署 配置",
+            kb_ids=["kb_1"],
+            top_k=10,
+            min_vector_score=0.0,
+            min_term_coverage=0.0,
+        )
+    )
+
+    assert [hit.chunk_id for hit in default.hits] == [hit.chunk_id for hit in explicit_off.hits]
+    assert default.filtered_out == explicit_off.filtered_out
+
+
+def test_vector_floor_filters_and_counts_what_it_dropped(
+    seeded: StoreBundle, retrieval: RetrievalService
+) -> None:
+    """余弦下限是**绝对**判定：1.0 谁也不可能达到（余弦等于 1 只对自己），
+    这时又没有词面那一路兜底（显式关掉），于是命中为空、且 filtered_out 说得清原因。"""
+    response = retrieval.search(
+        RetrievalQuery(
+            query="检索 部署 配置",
+            kb_ids=["kb_1"],
+            top_k=10,
+            min_vector_score=1.0,
+            min_term_coverage=0.0,
+        )
+    )
+
+    assert response.hits == []
+    assert response.filtered_out > 0
+
+
+def test_word_evidence_rescues_hits_below_the_vector_floor(
+    seeded: StoreBundle, retrieval: RetrievalService
+) -> None:
+    """两条证据是"或"：语义那一路被卡死时，词面对得上的候选照样留下。
+
+    这正是"误杀真命中比留下噪声更糟"的落点——人名、索引号、缩写这类查询的
+    余弦本来就低（实测「郭正茂」那条只有 0.852），只能靠词面这一路救。
+    """
+    response = retrieval.search(
+        RetrievalQuery(
+            query="向量检索 混合召回",
+            kb_ids=["kb_1"],
+            top_k=10,
+            min_vector_score=1.0,  # 语义那一路必然不通过
+            min_term_coverage=0.5,
+        )
+    )
+
+    assert response.hits
+    # 头一条就是查询词都落在里面的那段（其余候选是"覆盖到一半"的，不写死它们）
+    assert "向量检索" in response.hits[0].text
+
+
+def test_coverage_floor_can_be_turned_off_alone(
+    seeded: StoreBundle, retrieval: RetrievalService
+) -> None:
+    """只关词面那一条：语义够近的候选照样回来（参数是分别可关的）。"""
+    response = retrieval.search(
+        RetrievalQuery(
+            query="向量检索 混合召回",
+            kb_ids=["kb_1"],
+            top_k=10,
+            min_vector_score=1.0,
+            min_term_coverage=0.0,
+        )
+    )
+
+    assert response.hits == []
+
+
+def test_keyword_only_mode_is_left_alone(
+    seeded: StoreBundle, retrieval: RetrievalService
+) -> None:
+    """纯关键词那一档没有语义证据（向量通道空着）→ 判定层不下结论，产出与改动前一致。
+
+    那一档是**调试台**用来分辨"召回不行"还是"融合不行"的：它要显示的是通道本身的
+    产出，被判定层改写之后就说不清是谁的问题了。
+    """
+    off = retrieval.search(
+        RetrievalQuery(
+            query="检索 部署 配置 存储",
+            kb_ids=["kb_1"],
+            mode=RetrievalMode.FULLTEXT,
+            top_k=20,
+            min_vector_score=0.0,
+            min_term_coverage=0.0,
+        )
+    )
+    on = retrieval.search(
+        RetrievalQuery(
+            query="检索 部署 配置 存储",
+            kb_ids=["kb_1"],
+            mode=RetrievalMode.FULLTEXT,
+            top_k=20,
+            min_vector_score=0.99,
+            min_term_coverage=0.99,
+        )
+    )
+
+    assert [hit.chunk_id for hit in on.hits] == [hit.chunk_id for hit in off.hits]
+    assert on.filtered_out == off.filtered_out
+
+
+def test_vector_mode_without_candidates_does_not_judge(
+    seeded: StoreBundle,
+) -> None:
+    """没配嵌入模型（向量通道空）→ 即便模型标定过、下限开着，也不判不相关。
+
+    这时全文通道是唯一的来源，把它按"语义不相关"砍掉是拿错了尺子。
+    """
+
+    class _Unconfigured:
+        model_id = "BAAI/bge-m3"  # 标定过，但一条候选都产不出来
+
+        def embed(self, texts):  # type: ignore[no-untyped-def]
+            raise EmbeddingNotConfiguredError("未配置嵌入模型")
+
+        def embed_query(self, text: str) -> list[float]:
+            raise EmbeddingNotConfiguredError("未配置嵌入模型")
+
+    service = RetrievalService(seeded, embedder=_Unconfigured(), reranker=NoopReranker())
+
+    response = service.search(RetrievalQuery(query="部署说明", kb_ids=["kb_1"]))
+    without = service.search(
+        RetrievalQuery(
+            query="部署说明",
+            kb_ids=["kb_1"],
+            min_vector_score=0.0,
+            min_term_coverage=0.0,
+        )
+    )
+
+    assert response.hits
+    assert response.filtered_out == without.filtered_out

@@ -1,6 +1,7 @@
 ---
 name: kylab-office-export
 description: Turn a finished result into a real file the user can send on — .docx or .pdf for a report, .xlsx for a table, .pptx for a deck. Use this Skill when the user asks for "一份报告", "导出成 Word / Excel / PPT", "生成文件", "做个表格给我", "整理成文档", "给我一份能发出去的", or when the deliverable is clearly meant to leave the chat (a report for someone else, a spreadsheet to work in, slides to present). Do not use it for material that is only meant to be read in the conversation — answer inline instead.
+summary: 把结果导出成能直接发出去的 Word、Excel、PPT 或 PDF
 ---
 
 # Export a deliverable into a real file

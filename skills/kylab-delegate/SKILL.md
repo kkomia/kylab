@@ -1,6 +1,7 @@
 ---
 name: kylab-delegate
 description: Hand a self-contained piece of work to a sub-agent and get its conclusion back — "把这批资料读完告诉我", "分头查一下这几个问题", "帮我把这几篇的结论汇总成一句话". Use `spawn_subagent` when the work means grinding through a batch of material to produce one answer, so this conversation's context stays usable. Do not use it for one lookup, or for work that needs this conversation's history.
+summary: 把成批资料交给子 Agent 读完，只把结论带回这段对话
 ---
 
 # Delegate a batch of work

@@ -40,6 +40,7 @@ def _write_skill(
     description: str = "干某件事",
     body: str = "步骤一",
     when_to_use: str = "",
+    summary: str = "",
     frontmatter: str | None = None,
 ) -> Path:
     """写一个技能目录。``frontmatter`` 给了就**整段照用**（测缺字段时用）。"""
@@ -49,6 +50,8 @@ def _write_skill(
         head = f"---\nname: {name}\ndescription: {description}\n"
         if when_to_use:
             head += f"when_to_use: {when_to_use}\n"
+        if summary:
+            head += f"summary: {summary}\n"
         frontmatter = head + "---\n"
     (directory / SKILL_FILE).write_text(
         f"{frontmatter}\n# {name}\n\n{body}\n", encoding="utf-8"
@@ -431,6 +434,52 @@ def test_extra_frontmatter_fields_are_tolerated(tmp_path: Path) -> None:
     assert item.discarded is False
     assert item.used_by_prompt is True
     assert item.when_to_use == "用户问许可时"
+
+
+def test_summary_comes_from_frontmatter(tmp_path: Path) -> None:
+    """``summary`` 是**给人看的一句中文简介**（v0.53），与 ``description`` 分工：
+    后者是给模型判断"何时该用"的触发文本，前者只上界面（能力页那一行、``/skills``）。
+
+    仓库自带的技能走的就是这条路——它们没有"安装"那一步，简介只能写在 SKILL.md 里；
+    市场装的技能那份存在 ``data/installed.json``，两条路的形状是同一个
+    ``技能名 → 简介``（消费方也只有一处：``api/v1/skills.py`` 的 ``_out``）。
+    """
+    builtin = tmp_path / "builtin"
+    _write_skill(builtin, "reporter", summary="把结果整理成一份周报")
+
+    service = _service(tmp_path, builtin=builtin)
+    item = service.list()[0]
+
+    assert item.summary == "把结果整理成一份周报"
+    # 它**不进模型的目录**：目录那一行只有 name + description（summary 是给人看的）
+    assert "周报" not in service.catalog()
+
+
+def test_missing_summary_is_an_empty_string(tmp_path: Path) -> None:
+    """没写就没有——界面按"中文优先、缺则截断英文描述"处理，不该在这里编一句。"""
+    builtin = tmp_path / "builtin"
+    _write_skill(builtin, "plain")
+
+    assert _service(tmp_path, builtin=builtin).list()[0].summary == ""
+
+
+def test_repository_builtin_skills_declare_chinese_summaries() -> None:
+    """**仓库自带的那批技能必须带中文简介**（能力页上那几张卡）。
+
+    这条用例盯的是"别哪天又把 frontmatter 里的 summary 删了"：它不在任何代码里，
+    删掉之后别的用例一条都不会红，而界面上那 5 张卡会退回一行英文。
+    """
+    root = Path(__file__).resolve().parents[4] / "skills"
+    service = SkillService(
+        root.parent / "backend" / "data",
+        builtin_dir=root,
+        agents_dir=root.parent / "no-agents",
+    )
+
+    items = [item for item in service.list() if item.source == "builtin"]
+
+    assert len(items) == 5, [item.name for item in items]
+    assert all(item.summary for item in items), [(item.name, item.summary) for item in items]
 
 
 def test_a_dropped_skill_does_not_shadow_a_usable_one(tmp_path: Path) -> None:
