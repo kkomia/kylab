@@ -36,13 +36,17 @@ const KEY = 'sandbox.exec_policy'
 const POLICIES: { value: string; label: string; hint: string }[] = [
   { value: 'allow', label: '允许', hint: '允许执行命令：直接跑，不再问你' },
   { value: 'ask', label: '需确认', hint: '需确认：每次执行命令前问你一下' },
-  { value: 'deny', label: '拒绝', hint: '拒绝：一律不执行命令（这一档最硬，模式也放行不了）' },
+  { value: 'deny', label: '拒绝', hint: '拒绝：一律不执行命令' },
 ]
 
-/** 菜单里那句把两个旋钮分开的话（用户要能回答"谁管什么"，就得有一句明说）。 */
-const MENU_NOTE =
-  '管的是命令能不能跑：允许 / 需确认 / 拒绝。「拒绝」最硬——模式选了全放行也拦得住。' +
-  '（设置页里同一项叫「沙箱执行 → 总开关」。）'
+/**
+ * 菜单底部那段常驻说明**已删**（2026-09-24）。
+ *
+ * 原文是"管的是命令能不能跑：允许 / 需确认 / 拒绝。「拒绝」最硬——模式选了全放行也拦得住。
+ * （设置页里同一项叫「沙箱执行 → 总开关」。）"——三句都在解释这一项与别处的关系，
+ * 而这一项自己的三档名字已经把答案写在脸上。用户原话："不要再在 webui 上向我解释
+ * 这是个什么东西"。同一批删掉的还有 `ModePicker` 的那一段（两段本来是一对）。
+ */
 
 /** 是否管理员：这一排里的两个设置入口都是管理员端点。会话还没恢复完时按"不是"处理。 */
 export function useIsAdmin(): boolean {
@@ -84,6 +88,8 @@ export function ExecPolicyControl() {
       }
       client.setQueryData(['chat', 'exec-policy'], value)
       const chosen = POLICIES.find((item) => item.value === value)
+      // 保留"下一个动作就生效"这一截：它说的是这次改动从哪一刻起作用（与
+      // `ModePicker` 的"下一轮生效"同一类），不是解释这一项是什么
       notifySuccess(`命令执行策略已改成「${chosen?.label ?? value}」，下一个动作就生效`)
     } catch (cause) {
       notifyError(cause)
@@ -109,17 +115,6 @@ export function ExecPolicyControl() {
           <span>{item.label}</span>
         </button>
       ))}
-      {/*
-        一句把两个旋钮分开的常驻说明（用户报的"摸不着头脑"）。
-        不放进 title：这个疑问是打开菜单时才产生的，而 title 要悬停才出，
-        看到了问题的地方就该看到答案。
-      */}
-      <p
-        className="m-0 mt-[var(--space-1)] border-t border-[var(--border)] px-[var(--space-3)] pt-[var(--space-2)] text-[length:var(--text-micro-size)] leading-[1.5] text-[var(--text-tertiary)]"
-        data-testid="exec-policy-note"
-      >
-        {MENU_NOTE}
-      </p>
     </Dropdown>
   )
 }

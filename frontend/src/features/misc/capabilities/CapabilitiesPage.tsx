@@ -629,14 +629,14 @@ export function CapabilitiesPage() {
 
           {serversQuery.isLoading && <SkeletonBlock variant="list" rows={3} />}
 
-          {/* 空态说"这里现在是什么、点了会发生什么"，**不说工具名怎么拼** */}
+          {/* 空态只说"点哪儿开始"，不解释登记之后它会怎么被调用 */}
           {!serversQuery.isLoading && visibleServers.length === 0 && (
             <EmptyState
               title={servers.length > 0 ? '没有匹配的插件' : '还没有插件'}
               hint={
                 servers.length > 0
                   ? '换个关键词，或者把筛选切回「全部」。'
-                  : '登记一个 MCP 服务，它的工具就能在对话里被 Agent 直接调用。'
+                  : '点右上角的「新建插件」登记一个 MCP 服务。'
               }
             />
           )}

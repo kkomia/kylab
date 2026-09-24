@@ -1419,7 +1419,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       void (async () => {
         try {
           for (const file of files) await uploadDocument(targetId, file)
-          notifySuccess(`已把 ${formatCount(files.length)} 个文件传给「${name}」，入库后就能被引用`)
+          // 只报结果。原来还缀着"入库后就能被引用"——那是入库这条链路的后果说明，
+          // 不属于"这一下做成了没有"（2026-09-24 用户要求清掉这一类解释）
+          notifySuccess(`已把 ${formatCount(files.length)} 个文件传给「${name}」`)
           void kbsRefetch()
         } catch (cause) {
           notifyError(cause)

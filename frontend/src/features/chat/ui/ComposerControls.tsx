@@ -114,9 +114,7 @@ export function PlusMenu({
                   <p className={NOTE}>正在读技能清单…</p>
                 ) : chat.skills.length === 0 ? (
                   <p className={NOTE}>还没有可用的技能。去「能力」页装一个。</p>
-                ) : (
-                  <p className={NOTE}>勾上的技能每一轮都会展开正文——它会占上下文，按需勾。</p>
-                )}
+                ) : null}
               </DropdownMenu.SubContent>
             </DropdownMenu.Portal>
           </DropdownMenu.Sub>
@@ -567,11 +565,14 @@ export function ContextGauge() {
               </ul>
               {usage.compress_at > 0 ? (
                 <p className={`${NOTE} leading-[1.5]`}>
-                  {/* `compress_at` 是**百分比**（后端 `chat.compress_at` 设置项，
+                  {/* 只给这条读数（阈值是用户自己的设置）。后面原来还缀着
+                      "（先剪旧工具结果，再摘要）"——那是在讲压缩怎么实现的，
+                      属于 2026-09-24 用户要求清掉的那一类解释，删。
+                      `compress_at` 是**百分比**（后端 `chat.compress_at` 设置项，
                       见 `backend/app/api/v1/schemas.py` 与该文件里「自动压缩阈值：{n}%」
                       那句），不是 token 数：此前直接 `formatCount` 打出来是"到 70 会
                       自动压缩"——既少了 `%`，也把一个百分比当成了数量。 */}
-                  到 {usage.compress_at}% 会自动压缩（先剪旧工具结果，再摘要）。
+                  到 {usage.compress_at}% 会自动压缩
                 </p>
               ) : null}
               {usage.estimated && usage.note ? (

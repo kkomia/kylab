@@ -828,9 +828,9 @@ describe('降级与"工具标记"两种异常收尾', () => {
     )
     renderPage()
 
-    expect(
-      await screen.findByText('这一段是模型写出来的工具调用标记，没有执行。'),
-    ).toBeInTheDocument()
+    // 标签在 2026-09-24 压短（原句"这一段是模型写出来的工具调用标记，没有执行。"是在替
+    // 用户认"这一段是什么"，按用户要求删成标签）：断言的**是同一件事**——那段标记不当回答渲染
+    expect(await screen.findByText('未执行的工具调用标记')).toBeInTheDocument()
     // 原文照旧显示（那是当时真实返回的东西），只是按原文排版
     expect(screen.getByTestId('reply-raw-tools')).toHaveTextContent('<tool_call>')
     // 而且**没有**走 Markdown 那条渲染路径

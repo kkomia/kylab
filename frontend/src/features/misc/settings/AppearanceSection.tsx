@@ -26,7 +26,7 @@ export function AppearanceSection() {
     <>
       <h3 className="m-section-title">
         外观
-        <InfoTip text="主题与字号只影响这一台机器的浏览器，存在本地，不写进知识库配置。" />
+        <InfoTip text="主题与字号只影响这一台机器的浏览器，存在本地。" />
       </h3>
 
       <div className="m-row">

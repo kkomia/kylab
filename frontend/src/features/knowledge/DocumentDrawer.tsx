@@ -61,11 +61,11 @@ const PREVIEW_LIMIT = 5
 
 type DrawerView = 'read' | 'chunks' | 'progress'
 
-const VIEW_TABS: { key: DrawerView; label: string; hint: string }[] = [
-  { key: 'read', label: '阅读', hint: '原文渲染，日常看这个' },
-  { key: 'chunks', label: '切块', hint: '解析产物，等宽带块号，调解析用' },
+const VIEW_TABS: { key: DrawerView; label: string }[] = [
+  { key: 'read', label: '阅读' },
+  { key: 'chunks', label: '切块' },
   // 第三个视角（§12.115）：这份文档走到哪一步了、每步各花多久
-  { key: 'progress', label: '处理明细', hint: '环节与耗时，排查"卡住"用' },
+  { key: 'progress', label: '处理明细' },
 ]
 
 const SOURCE_TABS = [
@@ -251,7 +251,7 @@ export function DocumentDrawer({
       replaceChunk(await updateChunk(documentId, chunk.ordinal, text))
       setEditing('')
       setDraft('')
-      notify.success('切块已更新，检索会按新内容生效')
+      notify.success('切块已更新')
     } catch (cause) {
       notify.error(messageOf(cause, '保存失败'))
     } finally {
@@ -307,8 +307,6 @@ export function DocumentDrawer({
     }
     return `已为 ${formatCount(document.questioned_chunk_count)} / ${formatCount(document.chunk_count)} 段出题，共 ${formatCount(document.question_count)} 题；下面每块的问题列在正文之后。`
   }
-
-  const activeHint = VIEW_TABS.find((tab) => tab.key === view)?.hint ?? ''
 
   return (
     <>
@@ -451,7 +449,6 @@ export function DocumentDrawer({
                     {tab.label}
                   </button>
                 ))}
-                <span className="kb-tabs-hint">{activeHint}</span>
               </div>
 
               {/* 摘要放在视角之上：它是"这份文档是什么"的一句话答案 */}
@@ -611,9 +608,6 @@ export function DocumentDrawer({
                                   onChange={(event) => setDraft(event.target.value)}
                                 />
                                 <div className="kb-chunk-actions">
-                                  <span className="kb-chunk-hint">
-                                    保存后会重新向量化这一块，检索随即按新内容生效。
-                                  </span>
                                   <Button
                                     variant="outline"
                                     disabled={savingChunk}

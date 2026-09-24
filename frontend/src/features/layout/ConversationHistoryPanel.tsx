@@ -211,10 +211,16 @@ export function ConversationHistoryPanel({
   if (!open) return null
 
   const emptyTitle = search ? '没有匹配的会话' : archivedView ? '还没有归档的会话' : '还没有会话'
+  /*
+    「已归档」那一档**没有小字**。原来写的是"归档是把不看了的会话收起来——它不是删除，
+    随时可以取消归档。"——那是在解释"归档"这个词是什么意思、以及它的后果；而这一档的
+    标题（还没有归档的会话）与菜单里的动作（归档 / 取消归档）已经把这件事说全了。
+    2026-09-24 按用户要求删（"我圈的地方 类似的 全项目扫一遍，全部去掉"）。
+  */
   const emptyHint = search
     ? '换个关键词试试，或者清空搜索。'
     : archivedView
-      ? '归档是把不看了的会话收起来——它不是删除，随时可以取消归档。'
+      ? ''
       : '在对话里提问之后，记录会出现在这里。'
 
   return (
@@ -292,7 +298,10 @@ export function ConversationHistoryPanel({
         {!loading && grouped.length === 0 && (
           <div className="flex flex-col gap-2 py-8">
             <p className="text-[length:var(--text-section-size)] text-text-primary">{emptyTitle}</p>
-            <p className="text-[length:var(--text-meta-size)] text-text-tertiary">{emptyHint}</p>
+            {/* 小字为空时**不画这一行**：空的 <p> 会白占一段行高 */}
+            {emptyHint ? (
+              <p className="text-[length:var(--text-meta-size)] text-text-tertiary">{emptyHint}</p>
+            ) : null}
           </div>
         )}
 

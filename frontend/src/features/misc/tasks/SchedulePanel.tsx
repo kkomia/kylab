@@ -113,10 +113,8 @@ export function SchedulePanel() {
   return (
     <div className="m-block">
       <div className="m-block-head">
-        <p className="m-muted">
-          到点自动跑一句话，结果落在一条同名会话里。
-          {timezone && <span className="text-micro"> 时间按服务器时区（{timezone}）计算</span>}
-        </p>
+        {/* 只说时区口径（cron 语义要对得上），不说"到点会自己跑"这种机制 */}
+        <p className="m-muted">时间按服务器时区（{timezone || '未知'}）计算</p>
         <div className="m-page-actions">
           <Button size="sm" onClick={() => void list.refetch()}>
             <RefreshCw size={14} />
@@ -139,9 +137,10 @@ export function SchedulePanel() {
       {loading && <SkeletonBlock variant="list" rows={3} />}
 
       {empty && (
+        /* 空态给一条能照抄的例子（这一格该填什么），不解释挂上之后怎么跑 */
         <EmptyState
           title="还没有定时任务"
-          hint="比如「每天 9 点把昨天的构建日志汇总成三条结论」——挂上之后到点它自己跑，结果留在会话里。"
+          hint="比如「每天 9 点把昨天的构建日志汇总成三条结论」。"
         />
       )}
 
@@ -243,7 +242,7 @@ export function SchedulePanel() {
         open={removing !== null}
         title="删除这条定时任务？"
         lead={`「${removing?.name ?? ''}」不会再跑了。`}
-        note="它已经跑出来的会话不会被删——那是它替你问过的内容。"
+        note="它已经跑出来的会话不会被删。"
         confirmLabel="删除"
         busy={remove.isPending}
         busyLabel="删除中…"

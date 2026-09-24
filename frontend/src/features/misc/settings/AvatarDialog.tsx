@@ -182,7 +182,7 @@ export function AvatarDialog({
           <Avatar name={name} url={url || undefined} size={96} />
         )}
       </div>
-      <p className="text-hint">一张方图最合适；会居中裁成正方形并缩到 {OUTPUT_SIZE}px 再上传。</p>
+      <p className="text-hint">一张方图最合适；上传时会裁成正方形（{OUTPUT_SIZE}px）。</p>
       <input
         ref={fileInput}
         className="m-local-input"

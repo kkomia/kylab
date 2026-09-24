@@ -77,7 +77,7 @@
  * 于是"按 Ctrl+B"和"点那颗折叠按钮"最终落到同一个状态上。
  */
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { Link, useLocation, useMatch, useNavigate, useSearchParams } from 'react-router'
+import { Link, useLocation, useMatch, useNavigate } from 'react-router'
 
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -89,7 +89,6 @@ import {
   RiArrowRightSLine,
   RiBook2Line,
   RiDashboardLine,
-  RiFolderAddLine,
   RiFolderLine,
   RiRobotLine,
   RiServerLine,
@@ -318,7 +317,6 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const location = useLocation()
   const navigate = useNavigate()
   const { collapsed, toggleSidebar } = useSidebar()
-  const [searchParams] = useSearchParams()
 
   /**
    * 当前打开的是哪条会话（`/chat/<id>`；裸 `/chat` 与 `/chat?new=1` 没有 id）。
@@ -327,13 +325,6 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
    * `/chat/` 前缀判断（那份判断迟早会和路由表分叉）。
    */
   const conversationId = useMatch('/chat/:conversationId')?.params.conversationId ?? null
-  /**
-   * 当前停在哪一页工作区（`/workspaces?focus=<id>`）。
-   * 只在工作区那一页上算：`?focus=` 是那一页的定位参数，别的地方带着它不算数。
-   */
-  const onWorkspaces = location.pathname === '/workspaces'
-  const focusedWorkspaceId = onWorkspaces ? searchParams.get('focus') : null
-
   const conversations = useConversationStore((state) => state.items)
   const loadConversations = useConversationStore((state) => state.load)
   const workspaces = useWorkspaceStore((state) => state.items)
@@ -607,15 +598,6 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                 }
               />
             </button>
-            <button
-              type="button"
-              className={SIDE_ADD}
-              title="新建项目"
-              aria-label="新建项目"
-              onClick={() => void navigate('/workspaces?new=1')}
-            >
-              <RiFolderAddLine size={15} aria-hidden="true" />
-            </button>
           </div>
 
           {workspaceError && (
@@ -629,27 +611,29 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
             {workspaces.map((workspace) => (
               <Fragment key={workspace.id}>
                 <li>
-                  {/* 项目行也是"能停住的一页"（`/workspaces?focus=<id>`）：停在这一页上时
-                      它就该像导航项一样亮起来——项目节此前一整片都没有当前项。
+                  {/* 项目行**不再跳"工作区"那一页**（那一页已删）：点它是"把这个项目的
+                      会话展开/收起"——与下面那条「展开（还有 N 条）」同一个状态，
+                      所以两处永远一致，也不会再出现"点一下就跑走"的意外。
 
-                      右端那颗「+」是**在这个项目里新开一条会话**（市面上的"在已有项目内
-                      新增对话就是点一下"）：它是行的兄弟、绝对定位浮在右端，所以
-                      (a) 点它不会触发上面那次"进项目页"的跳转；(b) 它显形时整行一个字都不动
-                      ——那片宽度由 `menuGutter` 常驻预留（与会话行的「⋯」同一套做法）。 */}
+                      右端那颗「+」是**在这个项目里新开一条会话**：它是行的兄弟、绝对定位
+                      浮在右端，所以 (a) 点它不会触发行的展开/收起；(b) 它显形时整行一个字
+                      都不动——那片宽度由 `menuGutter` 常驻预留（与会话行的「⋯」同一套做法）。 */}
                   <div className="ly-side-row-wrap">
                     <button
                       type="button"
                       className={cn(
-                        sideRow({
-                          current: workspace.id === focusedWorkspaceId,
-                          menuGutter: true,
-                        }),
-                        'cursor-pointer border-0',
-                        workspace.id === focusedWorkspaceId ? undefined : 'bg-transparent',
+                        sideRow({ menuGutter: true }),
+                        'cursor-pointer border-0 bg-transparent',
                       )}
-                      aria-current={workspace.id === focusedWorkspaceId ? 'page' : undefined}
+                      aria-expanded={expandedProjects.includes(workspace.id)}
                       title={workspace.root_path}
-                      onClick={() => void navigate(`/workspaces?focus=${workspace.id}`)}
+                      onClick={() =>
+                        setExpandedProjects((current) =>
+                          current.includes(workspace.id)
+                            ? current.filter((id) => id !== workspace.id)
+                            : [...current, workspace.id],
+                        )
+                      }
                     >
                       <RiFolderLine
                         size={15}
@@ -703,28 +687,6 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                 )}
               </Fragment>
             ))}
-            {workspaces.length === 0 ? (
-              <li className="px-1.5 py-2 text-[length:var(--text-meta-size)] leading-5 text-text-tertiary">
-                还没有项目
-              </li>
-            ) : (
-              <li>
-                {/* 「全部项目」是这一节的收尾入口（`/workspaces` 本身）：停在那一页上就亮它，
-                    带着 `?focus=` 时亮的是上面那个具体的项目行——两处互斥，不会同时亮。 */}
-                <button
-                  type="button"
-                  className={
-                    onWorkspaces && !focusedWorkspaceId
-                      ? `${SIDE_ROW} cursor-pointer border-0 bg-[var(--bg-selected)]`
-                      : `${SIDE_ROW} cursor-pointer border-0 bg-transparent text-text-tertiary`
-                  }
-                  aria-current={onWorkspaces && !focusedWorkspaceId ? 'page' : undefined}
-                  onClick={() => void navigate('/workspaces')}
-                >
-                  全部项目
-                </button>
-              </li>
-            )}
           </ul>
 
           {/* ------------------------------------------------------------ 对话 */}

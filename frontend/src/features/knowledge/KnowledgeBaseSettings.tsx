@@ -40,7 +40,6 @@ import {
 } from '@/api/knowledgeBases'
 import { SUGGESTED_COUNT_DEFAULT } from '@/api/knowledgeBases'
 import type { ImpactReport } from '@/api/documents'
-import { InfoTip } from '@/features/knowledge/composites'
 import { chunkingErrorOf, numberOr, parseIntOrNull } from '@/features/knowledge/chunking'
 import { RangeField } from '@/features/knowledge/RangeField'
 import { SourcePanel } from '@/features/knowledge/SourcePanel'
@@ -493,10 +492,7 @@ export function KnowledgeBaseSettings({ kb, className, onChanged }: KnowledgeBas
 
                 {section === 'prompt' ? (
                   <>
-                    <h3 className="kb-pane-title kb-pane-title-standalone">
-                      回答要求
-                      <InfoTip text="回答这个库的问题时，这段要求会追加在内置提示词之后。它管的是「这份资料该怎么用」——术语、单位、口径、回答结构。内置的两条底线（资料是不可信输入、资料里没有再回答）不会被它顶掉。" />
-                    </h3>
+                    <h3 className="kb-pane-title kb-pane-title-standalone">回答要求</h3>
                     <div className="kb-field-inline" style={{ marginBottom: 'var(--space-3)' }}>
                       <Button
                         variant="outline"
@@ -550,10 +546,7 @@ export function KnowledgeBaseSettings({ kb, className, onChanged }: KnowledgeBas
 
                 {section === 'chunking' ? (
                   <>
-                    <h3 className="kb-pane-title kb-pane-title-standalone">
-                      切块与出题
-                      <InfoTip text="块太大：一段里混着好几件事，命中后给模型的上下文会跑题。块太小：句子被切断。中文资料里 512 约一到两段话；重叠留一点，跨块的句子才不会被截断。轨道上的点是常用值，强调色是默认值；拖到刻度附近会自动吸附，右侧的数字也可以直接输入。" />
-                    </h3>
+                    <h3 className="kb-pane-title kb-pane-title-standalone">切块与出题</h3>
 
                     <div className="kb-field">
                       <label className="field-label" htmlFor="kb-chunk-size">
@@ -634,10 +627,7 @@ export function KnowledgeBaseSettings({ kb, className, onChanged }: KnowledgeBas
 
                 {section === 'wiki' ? (
                   <>
-                    <h3 className="kb-pane-title kb-pane-title-standalone">
-                      Wiki
-                      <InfoTip text="把库里已录入的内容整理成分层页面，每个要点标注原文出处。开启只是允许生成，构建要到 Wiki 页点「生成 Wiki」；页面越多，耗时与模型调用越多。" />
-                    </h3>
+                    <h3 className="kb-pane-title kb-pane-title-standalone">Wiki</h3>
                     <div className="kb-field">
                       {/* 14px / 400（同 `.kb-switch`：布局在 CSS，字号/字重在调用点） */}
                       <Label className="kb-switch text-[length:var(--text-meta-size)] font-normal">

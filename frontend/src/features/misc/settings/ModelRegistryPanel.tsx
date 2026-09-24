@@ -47,7 +47,6 @@ import {
   ConfirmDialog,
   EmptyState,
   Field,
-  InfoTip,
   OptionSelect,
   SkeletonBlock,
   StatusTag,
@@ -329,18 +328,9 @@ export function ModelRegistryPanel() {
 
   return (
     <div className="m-block">
-      {/*
-        **内容区的页面级标题**：左侧导航选中的是「模型注册」，而正文第一行原先是
-        「供应商 + 一句灰字」——标题缺位时，用户只能靠那行灰字认路。这里补上导航项
-        的名字，那行灰字按《前端设计规范》§5.1 收进 ⓘ（"一个供应商 = 一个接口地址
-        + 一把凭据"属于要阐述的说明，不是标题）。
-      */}
       <h3 className="m-section-title">模型注册</h3>
       <div className="m-block-head">
-        <h3 className="m-block-title">
-          供应商
-          <InfoTip text="一个供应商 = 一个接口地址 + 一把凭据；同一个地址下可以登记多个模型。" />
-        </h3>
+        <h3 className="m-block-title">供应商</h3>
         <Button onClick={() => setAddingProvider((value) => !value)}>
           <Plus size={14} />
           {addingProvider ? '取消' : '添加供应商'}

@@ -34,7 +34,6 @@ const NotesView = lazy(PAGES.notes)
 const LoginPage = lazy(PAGES.login)
 const TasksPage = lazy(PAGES.tasks)
 const MemoryPage = lazy(PAGES.memory)
-const WorkspacesPage = lazy(PAGES.workspaces)
 const CapabilitiesPage = lazy(PAGES.capabilities)
 const DashboardPage = lazy(PAGES.dashboard)
 const NotFoundPage = lazy(PAGES.notFound)
@@ -63,7 +62,6 @@ const TITLES: Array<[RegExp, string]> = [
   [/^\/notes/, '笔记'],
   [/^\/tasks/, '任务中心'],
   [/^\/memory/, '记忆'],
-  [/^\/workspaces/, '工作区'],
   [/^\/capabilities/, '能力'],
 ]
 
@@ -161,11 +159,13 @@ export function App() {
                 <Route path="/notes/:noteId?" element={<NotesView />} />
                 <Route path="/tasks" element={<TasksPage />} />
                 <Route path="/memory" element={<MemoryPage />} />
-                <Route path="/workspaces" element={<WorkspacesPage />} />
                 <Route path="/capabilities" element={<CapabilitiesPage />} />
                 {/* 旧地址保留成重定向，免得旧书签变 404（与旧前端同一处置） */}
                 <Route path="/search" element={<Navigate to="/knowledge-bases" replace />} />
                 <Route path="/settings" element={<Navigate to="/" replace />} />
+                {/* 「工作区」那一页已按用户要求删掉（它的说明文字与"新建项目"流程一起走）：旧书签回首页，
+                    项目分组本身还在侧栏里（那一节照旧列会话、照旧能一键新建）。 */}
+                <Route path="/workspaces" element={<Navigate to="/" replace />} />
                 <Route path="*" element={<NotFoundPage />} />
               </Route>
             </Routes>

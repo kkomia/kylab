@@ -151,14 +151,15 @@ function AssistantMessage({
 
             {/*
               模型把工具调用写进正文（§12.219）：**不当回答渲染**。
-              原文照旧显示（只是按原文排版、不走 Markdown），上面加一行说明——
-              把"这段不是人话"这件事说在明处，而不是让用户自己猜。
+              原文照旧显示（只是按原文排版、不走 Markdown），上面加一个短标签说明
+              这一段不是回答。原来那句是"这一段是模型写出来的工具调用标记，没有执行。"
+              ——"这一段是…"正是在替用户认这是什么，2026-09-24 按用户要求压成标签。
             */}
             {rawTools ? (
               <>
                 <p className="mt-[var(--space-3)] mb-0 flex items-center gap-[var(--space-1)] text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
                   <TriangleAlert size={13} />
-                  这一段是模型写出来的工具调用标记，没有执行。
+                  未执行的工具调用标记
                 </p>
                 <div
                   data-testid="reply-raw-tools"

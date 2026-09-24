@@ -101,7 +101,7 @@ export function SuggestedQuestionsFields({ value, onChange }: SuggestedQuestions
       <div className="field">
         <span className="field-label">
           出题用的模型
-          <InfoTip text="默认跟随对话页当前选的模型。换一个便宜的小模型可以省 token：出题只需判断这段在讲什么。" />
+          <InfoTip text="默认跟随对话页当前选的模型。" />
         </span>
         <Select
           value={value.modelPk || FOLLOW_CHAT_MODEL}
@@ -134,9 +134,10 @@ export function SuggestedQuestionsFields({ value, onChange }: SuggestedQuestions
           aria-label="自定义出题提示词"
           onChange={(event) => onChange({ prompt: event.target.value })}
         />
+        {/* 只说这一格怎么写：留空是内置；`{n}` 是条数；要求每行一个问题（解析靠它） */}
         <p className="text-hint">
-          留空即用内置提示词。自定义时它会替换内置那句指令，资料片段照旧附在前面；用
-          <code>{'{n}'}</code> 表示条数，并请要求模型<strong>每行输出一个问题</strong>。
+          留空即用内置提示词。用 <code>{'{n}'}</code> 表示条数，并要求模型
+          <strong>每行输出一个问题</strong>。
         </p>
       </div>
     </div>

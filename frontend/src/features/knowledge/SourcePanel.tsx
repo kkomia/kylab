@@ -109,7 +109,7 @@ export function SourcePanel({ kbId, canWrite, onChanged }: SourcePanelProps) {
       await load()
       onChanged()
       if (result.not_modified) {
-        notify.success('这个源没有更新（服务端返回未修改）')
+        notify.success('这个源没有更新')
       } else if (result.created > 0) {
         notify.success(
           `取回 ${result.fetched} 条，新入库 ${result.created} 条` +
@@ -222,7 +222,7 @@ export function SourcePanel({ kbId, canWrite, onChanged }: SourcePanelProps) {
       {!loading && sources.length === 0 && !adding ? (
         <EmptyState
           title="还没有数据源"
-          hint="上传文档之外，也可以订阅一个 RSS 源或盯住一个网页，让它自动更新。"
+          hint="点「添加数据源」订阅一个 RSS 源，或盯住一个网页让它自动更新。"
         />
       ) : null}
 
@@ -287,7 +287,7 @@ export function SourcePanel({ kbId, canWrite, onChanged }: SourcePanelProps) {
               删除数据源「{deleteTarget?.name ?? ''}」？
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <p className="kb-modal-note">已抓进来的文档会保留：停掉订阅不等于撤销已收集的资料。</p>
+          <p className="kb-modal-note">已抓进来的文档会保留。</p>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={() => void confirmRemove()}>确定</AlertDialogAction>

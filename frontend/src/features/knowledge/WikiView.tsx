@@ -425,10 +425,7 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
       {/* 库没开 Wiki：给"去哪儿开"的引导，不是一个空树 */}
       {!loading && overview && !overview.enabled ? (
         <div className="kb-wiki-empty">
-          <EmptyState
-            title="这个知识库还没有开启 Wiki"
-            hint="Wiki 是库形态的一种：开启后可以用已录入的内容整理出一套带出处的百科式页面。请到「知识库设置 → Wiki」打开。"
-          >
+          <EmptyState title="这个知识库还没有开启 Wiki" hint="请到「知识库设置 → Wiki」打开。">
             <Button variant="outline" onClick={() => void navigate(`/kb/${kbId}`)}>
               回到知识库
             </Button>
@@ -447,18 +444,14 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
           {!hasPages && overview.status === 'generating' ? (
             <div className="kb-generating">
               <SkeletonRows variant="list" rows={4} />
-              <p className="text-note">
-                正在整理库里的内容，页面会陆续出现。页面越多耗时越长，可以先去忙别的。
-              </p>
+              {/* 状态行：说"在动"，不说耗时是怎么来的 */}
+              <p className="text-note">正在整理库里的内容，页面会陆续出现。</p>
             </div>
           ) : null}
 
           {!hasPages && overview.status !== 'generating' ? (
             <div className="kb-wiki-empty">
-              <EmptyState
-                title="还没有 Wiki 页面"
-                hint="把库里已录入的内容整理成一套百科式页面，每个要点都带原文出处。"
-              >
+              <EmptyState title="还没有 Wiki 页面">
                 <div
                   style={{
                     display: 'flex',
@@ -616,7 +609,7 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
                 ) : null}
 
                 {!detail && !detailLoading && !detailError ? (
-                  <EmptyState title="从左侧选择一篇页面" hint="文章正文与出处会显示在这里。" />
+                  <EmptyState title="从左侧选择一篇页面" />
                 ) : null}
               </section>
             </div>
@@ -642,9 +635,8 @@ export function WikiView({ kbId: kbIdProp }: WikiViewProps) {
               重新生成会覆盖现有的 {overview?.page_count ?? 0} 篇页面。
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <p className="kb-modal-note">
-            已有页面在生成完成前仍然可读；生成过程会调用对话模型，页面越多耗时越长。
-          </p>
+          {/* 动手前必须知道的：已有页面在完成前仍可读，别以为一按就全没了 */}
+          <p className="kb-modal-note">已有页面在生成完成前仍然可读。</p>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
             <AlertDialogAction onClick={() => void runGenerate()}>重新生成</AlertDialogAction>

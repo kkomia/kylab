@@ -173,7 +173,9 @@ describe('侧栏的会话分区', () => {
   it('一条会话都没有时说一句状态，不给操作指引', async () => {
     renderShell()
     expect(await screen.findByText('还没有对话')).toBeInTheDocument()
-    expect(await screen.findByText('还没有项目')).toBeInTheDocument()
+    // 「还没有项目」不再渲染：那一节现在只是分组（工作区页连同它的"新建项目"流程删了），
+    // 空着就空着——写一句"还没有项目"等于指给用户一个不存在的入口
+    expect(screen.queryByText('还没有项目')).not.toBeInTheDocument()
   })
 
   it('当前会话有选中态：只有那一条标 aria-current，普通项保持正文色', async () => {
@@ -215,28 +217,20 @@ describe('侧栏的会话分区', () => {
     expect(other.className).toContain('text-text-secondary')
   })
 
-  it('项目区的当前项：`?focus=` 亮那个项目，「全部项目」亮没有 focus 的那一页', async () => {
+  it('项目行是**展开/收起**：点它不跳页（`/workspaces` 那一页已删）', async () => {
     listWorkspacesMock.mockResolvedValue({ items: [workspace({ id: 'w1', name: '合同整理' })] })
-    const first = renderShell('/workspaces?focus=w1')
+    // 用 `/notes` 而不是 `/`：夹具里没有 `/` 那条路由（pathless 布局路由要子路由命中才渲染）
+    renderShell('/notes')
 
-    // `/^合同整理/` 这个锚点是**新加的那个「+」逼出来的**：行自己的可及名以项目名开头，
-    // 而行右端那颗「+」的名字是「在项目「合同整理」里新建会话」（它必须说明是给哪个项目
-    // 新建，所以名字里也带项目名）——不加锚点这里会同时命中两个按钮。
-    // 收紧的只是选择器，判定一个字没动。
-    const focused = await screen.findByRole('button', { name: /^合同整理/ })
-    expect(focused).toHaveAttribute('aria-current', 'page')
-    expect(focused.className).toContain('bg-[var(--bg-selected)]')
-    const allProjects = screen.getByRole('button', { name: '全部项目' })
-    expect(allProjects).not.toHaveAttribute('aria-current')
-    expect(allProjects.className).not.toContain('bg-[var(--bg-selected)]')
-
-    // `/workspaces` 本身（全部项目）：亮的是那一行，项目行不再亮
-    first.unmount()
-    renderShell('/workspaces')
-    const allProjects2 = await screen.findByRole('button', { name: '全部项目' })
-    expect(allProjects2).toHaveAttribute('aria-current', 'page')
-    expect(allProjects2.className).toContain('bg-[var(--bg-selected)]')
-    expect(screen.getByRole('button', { name: /^合同整理/ })).not.toHaveAttribute('aria-current')
+    // `/^合同整理/` 这个锚点：行自己的可及名以项目名开头，右端那颗「+」的名字是
+    // 「在项目「合同整理」里新建会话」（它必须说明是给哪个项目新建）——不加锚点会同时命中两个。
+    const row = await screen.findByRole('button', { name: /^合同整理/ })
+    // 点它只改展开态，标签里带的是 `aria-expanded`（不再是"当前页"）
+    expect(row).toHaveAttribute('aria-expanded', 'false')
+    await userEvent.setup().click(row)
+    expect(row).toHaveAttribute('aria-expanded', 'true')
+    // 「全部项目」那个入口随页面一起去掉了，不该再有任何按钮叫这个名字
+    expect(screen.queryByRole('button', { name: '全部项目' })).not.toBeInTheDocument()
   })
 
   it('归档之后那条会话立刻从侧栏消失（归档不是删除）', async () => {

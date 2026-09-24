@@ -148,11 +148,11 @@ export function ProcessingTimeline({ documentId, active }: ProcessingTimelinePro
         ariaLabel="处理进度"
       />
 
-      {/* 停滞要说清"该做什么"：只说"卡住"等于把问题丢回给用户 */}
+      {/* 停滞要说清"该做什么"：只说"卡住"等于把问题丢回给用户。
+          不再说心跳/续约是怎么算的（实现），只留"它会自己重跑"与那条手动出路 */}
       {timeline.stalled ? (
         <p className="kb-timeline-stall">
-          这一步已超过一个心跳周期没有进展，且没有 worker 在续约：进程可能重启过。它会被自动回收
-          重跑，也可以在列表里对这篇文档点「重新摄入」。
+          这一步停住了：进程可能重启过，它会自动重跑，也可以在列表里对这篇文档点「重新摄入」。
         </p>
       ) : null}
 
@@ -196,11 +196,6 @@ export function ProcessingTimeline({ documentId, active }: ProcessingTimelinePro
           <pre className="kb-timeline-failure">{failure}</pre>
         </>
       ) : null}
-
-      <p className="kb-timeline-note">
-        耗时按"进入某一步到进入下一步"之间的间隔累加，所以重试与重新摄入的时间都算在里面。
-        跑着的那一步显示的是<strong>到此刻为止</strong>，每次刷新都会涨，这是"还在动"的证据。
-      </p>
     </div>
   )
 }

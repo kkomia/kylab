@@ -503,9 +503,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                         />
                       </label>
                     ))}
-                    <p className="m-edit-hint">
-                      批大小影响单次请求的文本条数，太大可能被端点拒绝。
-                    </p>
+                    <p className="m-edit-hint">太大可能被端点拒绝。</p>
                   </div>
                   <div className="m-edit-actions">
                     <Button onClick={() => setEditing(null)}>返回</Button>
@@ -516,16 +514,13 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </>
               ) : (
                 <>
-                  <h3 className="m-section-title">
-                    向量化
-                    <InfoTip text="模型在「模型注册」里登记，这里只负责选默认的那个。新建知识库时也可以为单个库另选（小库用高精度、大库用小模型）。" />
-                  </h3>
+                  <h3 className="m-section-title">向量化</h3>
 
                   <div className="m-slot-field">
                     <div className="m-slot-head">
                       <span className="m-slot-label">
                         默认嵌入模型
-                        <InfoTip text="库建好即冻结，之后不能换（换模型要新建库）。未指定时无法新建知识库。" />
+                        <InfoTip text="库建好即冻结，之后不能换。未指定时无法新建知识库。" />
                       </span>
                       <StatusTag
                         tone={embeddingConfigured ? 'success' : 'warning'}
@@ -550,8 +545,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     )}
                     {!embeddingConfigured && (
                       <p className="m-row-note">
-                        未选定前不能新建知识库：没有嵌入模型就没有向量空间。如果这里没有可选项，
-                        先到「模型注册」添加供应商并登记模型。
+                        未选定前不能新建知识库。这里没有可选项时，先到「模型注册」添加供应商并登记模型。
                       </p>
                     )}
                     {testResult && (
@@ -569,7 +563,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                     <div className="m-slot-head">
                       <span className="m-slot-label">
                         重排模型
-                        <InfoTip text="可选。不选则整体跳过重排，不影响检索可用性。" />
+                        <InfoTip text="可选；不选则跳过重排，检索本身不受影响。" />
                       </span>
                       <StatusTag
                         tone={slotOf('rerank')?.configured ? 'success' : 'neutral'}
@@ -687,8 +681,8 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
                     <p className="m-edit-hint">
                       {editing.key === 'llm'
-                        ? '推理模型打开深度思考后会更慢、更费 token（回复长度不再设上限，由模型自己决定何时收尾）。关掉它更快，但难题上的推导会浅一些。'
-                        : '留空即恢复内置提示词：内置版本要求模型只依据资料作答，并在引用处标出资料编号。'}
+                        ? '打开会更慢、更费 token；关掉更快，但难题上的推导会浅一些。'
+                        : '留空即恢复内置提示词。'}
                     </p>
 
                     {testResult && (
@@ -715,10 +709,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </>
               ) : (
                 <>
-                  <h3 className="m-section-title">
-                    对话模型（LLM）
-                    <InfoTip text="模型在「模型注册」里登记，这里只选默认的那个。没选时「对话」会直接报错，不会编造没有依据的答案。" />
-                  </h3>
+                  <h3 className="m-section-title">对话模型（LLM）</h3>
 
                   <div className="m-slot-field">
                     <div className="m-slot-head">
@@ -763,10 +754,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                   <h3 className="m-section-title m-section-gap">采样与行为</h3>
                   <div className="m-row">
                     <div className="m-row-main">
-                      <span className="m-row-label">
-                        温度 / 深度思考
-                        <InfoTip text="长度上限交给模型：它自己决定什么时候收尾。少数端点不传就会退化成很小的默认值，那种情况在「模型注册」里给该模型加 options.max_tokens。" />
-                      </span>
+                      <span className="m-row-label">温度 / 深度思考</span>
                       <span className="m-row-value tabular">
                         温度 {fieldValue('llm', 'llm.temperature') || '—'}
                         <span className="sep">·</span>
@@ -851,10 +839,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                 </>
               ) : (
                 <>
-                  <h3 className="m-section-title">
-                    服务配置
-                    <InfoTip text="两个云端节点互为备选：文字型文档优先 MinerU，扫描件与混合型降级到 PaddleOCR。" />
-                  </h3>
+                  <h3 className="m-section-title">服务配置</h3>
 
                   <div className="m-row">
                     <div className="m-row-main">
@@ -909,10 +894,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           {section === 'users' && (
             <>
               <div className="m-section-head">
-                <h3 className="m-section-title">
-                  用户
-                  <InfoTip text="被开通的账号登录后只能看到分享给他的知识库；没有登录名的名册条目只用于标记文档归属。" />
-                </h3>
+                <h3 className="m-section-title">用户</h3>
                 <Button
                   onClick={() => {
                     setUsersOpen((value) => !value)
@@ -1072,7 +1054,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
 
                   <h3 className="m-section-title m-section-gap">
                     修改密码
-                    <InfoTip text="改密会吊销其他设备上的登录，当前这条保留。忘记密码时可由管理员在「用户」里重置。" />
+                    <InfoTip text="改密会吊销其他设备上的登录，当前这条保留。" />
                   </h3>
                   <div className="m-password-form">
                     <Field label="当前密码" htmlFor="kylab-old-password">

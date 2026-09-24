@@ -219,11 +219,7 @@ export function ScheduleDialog({
           />
         </Field>
 
-        <Field
-          label="到点要做什么"
-          htmlFor="schedule-prompt"
-          hint="这就是它每次要问的那句话，写具体一点结果更有用。"
-        >
+        <Field label="到点要做什么" htmlFor="schedule-prompt" hint="写具体一点，结果更有用。">
           <Textarea
             id="schedule-prompt"
             rows={3}
@@ -316,7 +312,7 @@ export function ScheduleDialog({
             emptyText="还没有知识库可查。"
             label="到点查哪些知识库"
           />
-          <span className="text-hint">不选就是不查知识库，只靠模型自己的能力回答。</span>
+          <span className="text-hint">不选就是不查知识库。</span>
         </div>
       </div>
     </Modal>

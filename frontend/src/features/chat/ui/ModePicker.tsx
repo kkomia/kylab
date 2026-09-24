@@ -24,25 +24,22 @@ import { notifyError, notifySuccess } from '../runtime/notify'
 import { Dropdown } from './DropdownShell'
 import { useIsAdmin } from './ExecPolicyControl'
 
-/** 每一档的短名字与那一句人话（**没有这一档就退化成后端给的展示名**）。 */
+/**
+ * 每一档的短名字与那一句人话（**没有这一档就退化成后端给的展示名**）。
+ *
+ * 每档只写"选了它会发生什么"，**不写它相对旁边那颗「命令·…」胶囊是什么关系**：
+ * 那一整段（"模式管要不要先问一句、命令能不能跑由旁边决定、拒绝更硬"）连同
+ * `MENU_NOTE` 都删了——它是把两个控件的分工讲给用户听，而用户要的是挑一档
+ * （2026-09-24："不要再在 webui 上向我解释这是个什么东西"）。
+ */
 const COPY: Record<string, { label: string; hint: string }> = {
   // 「构建」这句原先写"该问的照问"——用户读不出"该"是谁定的（用户原话：
   // "和模式里面的全放行是不是有冲突…摸不着头脑"），改成把动作说白：写东西前问一句。
   build: { label: '构建', hint: '变更前确认：写东西前问一句' },
   edit: { label: '编辑', hint: '自动编辑：写东西不再逐条问' },
   plan: { label: '计划', hint: '先给计划再动手：没计划前不写东西' },
-  yolo: { label: '全放行', hint: '少确认全放行：连审批也不再问；「命令·拒绝」仍然拦得住' },
+  yolo: { label: '全放行', hint: '少确认全放行：连审批也不再问' },
 }
-
-/**
- * 菜单里那句把两个旋钮分开的话。
- *
- * 为什么不放进某一档的 hint 里：这个疑问是**打开菜单时**产生的（两个胶囊并排），
- * 而 hint 只挂在悬停的 title 上——看到了问题的地方就该看到答案。
- */
-const MENU_NOTE =
-  '模式管"要不要先问一句"；命令能不能跑由旁边的「命令·允许/需确认/拒绝」决定。' +
-  '那一道的「拒绝」更硬：这里选了全放行也拦得住。'
 
 export function ModePicker() {
   const isAdmin = useIsAdmin()
@@ -123,12 +120,6 @@ export function ModePicker() {
           </span>
         </button>
       ))}
-      <p
-        className="m-0 mt-[var(--space-1)] border-t border-[var(--border)] px-[var(--space-3)] pt-[var(--space-2)] text-[length:var(--text-micro-size)] leading-[1.5] text-[var(--text-tertiary)]"
-        data-testid="mode-note"
-      >
-        {MENU_NOTE}
-      </p>
     </Dropdown>
   )
 }

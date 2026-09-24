@@ -106,7 +106,7 @@ export function MemoryGraph({
           </svg>
         ) : (
           <p className="m-empty-hint">
-            还没有链接。在记忆正文里写 <code>[[另一份记忆]]</code>，两份记忆就会连起来。
+            还没有链接。在记忆正文里写 <code>[[另一份记忆]]</code> 就能连起来。
           </p>
         )}
       </div>

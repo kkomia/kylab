@@ -40,12 +40,12 @@ export function IngestDialog() {
           <DialogTitle>存进知识库</DialogTitle>
         </DialogHeader>
         <div className="flex min-h-0 flex-1 flex-col gap-[var(--space-3)] overflow-y-auto p-[var(--space-4)]">
-          <p className="m-0 text-[length:var(--text-meta-size)] text-[var(--text-secondary)]">
-            把「{file.name}」存一份到知识库，之后它就能被检索到。
-            <span className="text-[var(--text-tertiary)]">
-              原文件仍然在{file.where || '原处'}，不会被搬走。
-            </span>
-          </p>
+          {/*
+            这一格原来是一段解释：把「X」存一份到知识库、之后它就能被检索到、
+            原文件仍然在原处不会被搬走。三句都在讲这一步的后果与机制，
+            而弹窗标题（存进知识库）+ 下面那排库名按钮已经把要做的事说完了
+            ——2026-09-24 按用户要求整段删掉（"不要再在 webui 上向我解释这是个什么东西"）。
+          */}
           {chat.kbs.length > 0 ? (
             <ul className="m-0 flex list-none flex-wrap gap-[var(--space-2)] p-0">
               {chat.kbs.map((kb) => (

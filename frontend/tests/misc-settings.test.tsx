@@ -302,15 +302,16 @@ describe('设置弹窗', () => {
     expect(screen.queryByText('长期记忆')).not.toBeInTheDocument()
   })
 
-  it('内容区有页面级标题（左侧选中项的名字），灰字说明收进 ⓘ', async () => {
+  it('内容区有页面级标题（左侧选中项的名字），"供应商是什么"的说明已删干净', async () => {
     renderMisc(<SettingsModal open onClose={() => undefined} />)
     await screen.findByText('深度求索')
 
     // 「模型注册」这一节原先只有一行灰字可认路：标题缺位（评审 §设置-1）
     expect(screen.getByRole('heading', { name: '模型注册' })).toBeInTheDocument()
-    // 那行灰字改成标题旁的问号（§5.1 的小字纪律）
+    // 那行灰字后来收进标题旁的 ⓘ，2026-09-24 按用户要求**连 ⓘ 一起删掉**：
+    // "一个供应商 = 一个接口地址 + 一把凭据"是在解释它是什么，不是填这一格要的信息
     expect(screen.queryByText(/一个供应商 = 一个接口地址/)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '说明' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '说明' })).not.toBeInTheDocument()
   })
 
   it('模型行：没绑用途的写「未指定」，角色标记用中性标签（不再是绿色胶囊）', async () => {

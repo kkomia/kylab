@@ -339,7 +339,10 @@ describe('记忆页', () => {
     expect(text).not.toContain('WinError')
   })
 
-  it('未启用时标签说「未启用」，并把影响范围说对', async () => {
+  // 原先这条断言标签的 title 里带着"四份文件的注入与编辑不受影响"——那是一句
+  // 影响范围说明（在解释开关管什么），已按用户要求删除。标签现在只报状态。
+  // 这条改成守住删除：说明不许挂回 title 上（后端那句 `detail` 也不许渲出来）。
+  it('未启用时标签只说「未启用」，不挂影响范围说明', async () => {
     getMemoryMock.mockResolvedValue({
       ...overview(),
       status: {
@@ -352,8 +355,9 @@ describe('记忆页', () => {
     renderMisc(<MemoryPage />)
 
     const tag = await screen.findByText('未启用')
-    // 范围说对：开关管召回与自动沉淀；四份文件的注入与编辑不受影响
-    expect(tag).toHaveAttribute('title', expect.stringContaining('注入与编辑不受影响'))
+    expect(tag).not.toHaveAttribute('title')
+    expect(screen.queryByText(/注入与编辑不受影响/)).toBeNull()
+    expect(screen.queryByText(/不会被召回/)).toBeNull()
   })
 
   it('召回结果给出处与判据：文件、行号、分数、命中比例', async () => {
@@ -385,12 +389,17 @@ describe('记忆页', () => {
     expect(screen.getByText(/命中 75%/)).toBeInTheDocument()
   })
 
-  it('「每轮注入」这句话常驻文件列表上方（改完 SOUL.md 的第一个问题就是它进没进）', async () => {
+  // 原先这里断言的是文件列表上方那行常驻说明（"核心四份…每轮整份注入提示词…"）。
+  // 那句话已按用户要求删除（它在解释记忆怎么运作，"改完 SOUL.md 第一个问题"由列表行
+  // 那枚「每轮注入」标记逐行回答——见上一条用例）。这条改成**守住删除**：
+  // 那句话不许长回来，也不许换一身马甲回到工具栏上。
+  it('文件列表上方不再有那行机制说明（守住删除）', async () => {
     renderMisc(<MemoryPage />)
+    await screen.findByRole('button', { name: /MEMORY\.md/ })
 
-    const note = await screen.findByTestId('memory-inject-note')
-    expect(note.textContent).toContain('每轮整份注入提示词')
-    expect(note.textContent).toContain('不参与召回')
+    expect(screen.queryByTestId('memory-inject-note')).toBeNull()
+    expect(screen.queryByText(/每轮整份注入/)).toBeNull()
+    expect(screen.queryByText(/不参与召回/)).toBeNull()
   })
 })
 

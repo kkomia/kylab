@@ -458,11 +458,7 @@ export function SkillMarketDialog({
           ) : visibleSkills.length === 0 ? (
             <EmptyState
               title={skills.length > 0 ? '没有匹配的技能' : '这个源里没有技能'}
-              hint={
-                skills.length > 0
-                  ? '换个关键词再找找。'
-                  : '它可能不是一个技能仓库，或者技能放在了别处——换个源试试。'
-              }
+              hint={skills.length > 0 ? '换个关键词再找找。' : '换个源试试。'}
             />
           ) : (
             <>
@@ -567,11 +563,6 @@ export function SkillMarketDialog({
 
               <p className="m-detail-foot">
                 装的是 <code>{bundle.sha.slice(0, 7)}</code> 这一版。
-                {bundle.files.some((item) => item.kind === 'code') && (
-                  <span>
-                    落盘后它只是文件，不会自己跑起来——用不用、怎么用由对话里的工具策略决定。
-                  </span>
-                )}
               </p>
             </>
           ) : null}

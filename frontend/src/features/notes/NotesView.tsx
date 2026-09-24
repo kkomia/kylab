@@ -593,7 +593,8 @@ export function NotesView() {
       setDraft((prev) =>
         prev && prev.id === item.id ? { ...prev, content_md: result.content_md } : prev,
       )
-      toast.success('AI 处理完成；不满意可以用工具栏的撤销或直接改')
+      // 只报"做完了"并给撤销的落点（位置，不是解释）：原来还缀着"或直接改"
+      toast.success('AI 处理完成；不满意可用工具栏的撤销')
     } catch (cause) {
       toast.error(errorText(cause, 'AI 处理失败'))
     } finally {
@@ -623,7 +624,8 @@ export function NotesView() {
           : prev,
       )
       setAttachOpen(false)
-      toast.success('已加入知识库，之后可以在检索里命中这条笔记')
+      // 只报结果（原来那句"之后可以在检索里命中这条笔记"是在解释入库之后会怎样）
+      toast.success('已加入知识库')
     } catch (cause) {
       toast.error(errorText(cause, '加入知识库失败'))
     }
@@ -1264,9 +1266,11 @@ export function NotesView() {
           <DialogHeader>
             <DialogTitle>加入知识库</DialogTitle>
           </DialogHeader>
-          <p className="text-[length:var(--text-meta-size)] text-text-secondary">
-            笔记会作为一份 Markdown 文档进入选中的知识库，之后检索与问答都能命中它。
-          </p>
+          {/*
+            标题下面原来还有一句"笔记会作为一份 Markdown 文档进入选中的知识库，
+            之后检索与问答都能命中它。"——那是入库这条链路会发生什么，
+            选项框里的库名已经说明了一切，2026-09-24 按用户要求删。
+          */}
           <label className="field">
             <span className="field-label">目标知识库</span>
             <select

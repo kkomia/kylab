@@ -26,10 +26,6 @@ export const PAGES = {
   tasks: () => import('@/features/misc/tasks/TasksPage').then((m) => ({ default: m.TasksPage })),
   memory: () =>
     import('@/features/misc/memory/MemoryPage').then((m) => ({ default: m.MemoryPage })),
-  workspaces: () =>
-    import('@/features/misc/workspaces/WorkspacesPage').then((m) => ({
-      default: m.WorkspacesPage,
-    })),
   capabilities: () =>
     import('@/features/misc/capabilities/CapabilitiesPage').then((m) => ({
       default: m.CapabilitiesPage,

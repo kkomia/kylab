@@ -190,12 +190,8 @@ export function KnowledgeBasesView() {
 
       {store.loading && !hasItems ? <SkeletonRows variant="card" rows={4} /> : null}
 
-      {!store.loading && !hasItems ? (
-        <EmptyState
-          title="还没有知识库"
-          hint="知识库是最外层的容器，每个库对应一套 embedding 模型与一组切分参数。"
-        />
-      ) : null}
+      {/* 空态只说"现在没有"，不解释知识库是什么 */}
+      {!store.loading && !hasItems ? <EmptyState title="还没有知识库" /> : null}
 
       {/* 卡片网格：容器型对象、条目少，用卡片承载"挑一个进去"这个动作 */}
       {hasItems && useCards ? (
@@ -319,7 +315,7 @@ export function KnowledgeBasesView() {
               <div className="field">
                 <span className="field-label">
                   嵌入模型
-                  <InfoTip text="决定这个库的向量空间，建库时定下、之后不能换。小库选精度高的，大库选小的（更快、更省存储）。" />
+                  <InfoTip text="建库时定下，之后不能换。" />
                 </span>
                 {noEmbeddingModel ? (
                   <p className="text-note">
@@ -363,9 +359,7 @@ export function KnowledgeBasesView() {
                     <RadioGroupItem value="vector" aria-label="仅向量检索" className="mt-0.5" />
                     <span className="kb-form-option-text">
                       <span className="kb-form-option-title">仅向量检索</span>
-                      <span className="kb-form-option-desc">
-                        问答时按片段检索原文作答，最省 token（默认）
-                      </span>
+                      <span className="kb-form-option-desc">按片段检索原文作答（默认）</span>
                     </span>
                   </Label>
                   <Label
@@ -376,9 +370,7 @@ export function KnowledgeBasesView() {
                     <RadioGroupItem value="wiki" aria-label="向量检索 + Wiki" className="mt-0.5" />
                     <span className="kb-form-option-text">
                       <span className="kb-form-option-title">向量检索 + Wiki</span>
-                      <span className="kb-form-option-desc">
-                        额外把库里的内容整理成一套带出处的百科式页面
-                      </span>
+                      <span className="kb-form-option-desc">额外整理出一套带出处的百科式页面</span>
                     </span>
                   </Label>
                 </RadioGroup>
@@ -425,9 +417,7 @@ export function KnowledgeBasesView() {
                     {chunkError}
                   </p>
                 ) : (
-                  <p className="text-hint">
-                    重叠不超过块长的一半；建库后可在「知识库设置 → 切块策略」调整。
-                  </p>
+                  <p className="text-hint">建库后可在「知识库设置 → 切块策略」调整。</p>
                 )}
 
                 {/* 分段出题放在**同一个折叠区**里：它跟的是分段，不是"对话页的展示" */}

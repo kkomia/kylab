@@ -84,7 +84,7 @@ export function ShortcutsSection() {
     <>
       <h3 className="m-section-title">
         快捷键
-        <InfoTip text="只影响这一台机器的浏览器，存在本地，不写进后端配置。全局那两条在输入框里不生效——那里是编辑器（笔记正文）的地盘。" />
+        <InfoTip text="只影响这一台机器的浏览器，存在本地。全局那两条在输入框里不生效。" />
       </h3>
 
       {commands.map((command) => (

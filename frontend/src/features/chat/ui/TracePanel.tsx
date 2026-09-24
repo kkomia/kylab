@@ -221,12 +221,13 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
       {/*
         "带了什么"常驻、且**与面板是否展开无关**：它回答的是"这一轮它记得我什么"，
         而这件事在收起状态下同样是用户要看的（原先唯一的读法在输入框那个折叠仪表里）。
+
+        这一行**只是一个读数**（`本轮带入长期记忆与人设 N 字`）。原来还挂着一个
+        `title`，讲那四份文件是怎么注入的、跟记忆服务通不通有没有关系、数字从哪个
+        端点来——2026-09-24 按用户要求删掉：读数留着，解释机制的那半句不留。
       */}
       {memoryText ? (
-        <p
-          className="tabular mt-[var(--space-1)] m-0 text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]"
-          title="SOUL.md / PROFILE.md / AGENTS.md / MEMORY.md 四份文件每轮整份注入 system prompt，与记忆服务是否连通无关；这个数来自 GET /chat/context-usage 的「记忆与人设」一项（估算值）。"
-        >
+        <p className="tabular mt-[var(--space-1)] m-0 text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
           {memoryText}
         </p>
       ) : null}

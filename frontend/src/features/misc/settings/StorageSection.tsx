@@ -13,15 +13,16 @@ import { formatBytes, formatCount } from '@/lib/format'
 import { useKnowledgeBases } from '../shared/knowledgeBases'
 import { notifyError, notifySuccess } from '../shared/toast'
 import { Button } from '@/ui/button'
-import { ConfirmDialog, ErrorLine, InfoTip, SkeletonBlock } from '../shared/composites'
+import { ConfirmDialog, ErrorLine, SkeletonBlock } from '../shared/composites'
 
 export const STORAGE_QUERY_KEY = ['maintenance', 'storage'] as const
 
+/* 这一块报的是"用了什么"（配置事实）；机制类括注（索引类型/hash 寻址/队列）已删 */
 const LAYOUT_ROWS: { label: string; value: string }[] = [
-  { label: '元数据', value: 'PostgreSQL（含运行期配置与任务队列）' },
-  { label: '向量', value: 'pgvector（HNSW 索引，按知识库分区，维度随库）' },
+  { label: '元数据', value: 'PostgreSQL' },
+  { label: '向量', value: 'pgvector' },
   { label: '全文检索', value: 'tsvector + jieba 分词' },
-  { label: '原文与图片', value: '对象存储：本地目录或 S3 兼容服务，按内容 hash 寻址' },
+  { label: '原文与图片', value: '对象存储：本地目录或 S3 兼容服务' },
 ]
 
 export function StorageSection() {
@@ -53,10 +54,7 @@ export function StorageSection() {
 
   return (
     <>
-      <h3 className="m-section-title">
-        存储配置
-        <InfoTip text="元数据、向量与全文都在同一个 PostgreSQL 里；连接串由环境变量 KYLAB_DATABASE_URL 决定，改后需重启后端。" />
-      </h3>
+      <h3 className="m-section-title">存储配置</h3>
 
       {LAYOUT_ROWS.map((row) => (
         <div key={row.label} className="m-row">
@@ -89,10 +87,7 @@ export function StorageSection() {
           </div>
           <div className="m-row">
             <div className="m-row-main">
-              <span className="m-row-label">
-                其中可回收
-                <InfoTip text="删掉的行只留下死元组，数据库大小不会因此变小；「整理存储」把它们标成可复用，占用不会立刻下降。" />
-              </span>
+              <span className="m-row-label">其中可回收</span>
               <span className="m-row-value tabular">{formatBytes(storage.data.free_bytes)}</span>
             </div>
             <Button disabled={compact.isPending} onClick={() => setConfirmOpen(true)}>
@@ -102,11 +97,11 @@ export function StorageSection() {
         </>
       )}
 
+      {/* 动手前的代价：要等多久、期间别人的查询会怎样（不说 VACUUM/死元组是怎么跑的） */}
       <ConfirmDialog
         open={confirmOpen}
         title="整理存储？"
-        lead="会丢掉无主向量分区并重写含死元组的表页。库大时可能要几十秒，期间别人的查询会变慢。"
-        note="写入不会中断；占用也不会立刻下降——回收的空间留给后续复用。"
+        lead="库大时可能要几十秒，期间别人的查询会变慢。"
         confirmLabel="开始整理"
         busy={compact.isPending}
         busyLabel="整理中…"

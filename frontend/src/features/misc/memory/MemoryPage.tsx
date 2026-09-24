@@ -71,7 +71,6 @@ import {
   ConfirmDialog,
   EmptyState,
   Field,
-  InfoTip,
   Modal,
   Notice,
   PageShell,
@@ -329,22 +328,14 @@ export function MemoryPage() {
    * 另一个进程、而 `GET /memory` 故意不打远端——两边拼起来，界面上就出现过
    * 用户根本不该读的东西（内部地址、端口、异常原文）。现在记忆跑在后端进程里，
    * 没有第二个进程可连，标签只说"开没开"，细节在下面那行本地数字里。
+   *
+   * 标签后面**不再跟一句"这意味着什么"**：开关在设置里，这行只报状态。
    */
   const statusView = !status
-    ? { label: '读取中', tone: 'neutral' as const, hint: '' }
+    ? { label: '读取中', tone: 'neutral' as const }
     : !status.enabled
-      ? {
-          label: '未启用',
-          tone: 'neutral' as const,
-          hint:
-            '长期记忆没开：过去的对话不会被召回，也不会自动沉淀；' +
-            '四份文件的注入与编辑不受影响。',
-        }
-      : {
-          label: '已启用',
-          tone: 'success' as const,
-          hint: '召回与自动沉淀都在本地工作区上做，改完即生效。',
-        }
+      ? { label: '未启用', tone: 'neutral' as const }
+      : { label: '已启用', tone: 'success' as const }
 
   /**
    * 本地状态那行：几份文件、多少条可召回、上次更新。
@@ -372,11 +363,7 @@ export function MemoryPage() {
       title="记忆"
       actions={
         <>
-          <StatusTag
-            label={statusView.label}
-            tone={statusView.tone}
-            title={statusView.hint || undefined}
-          />
+          <StatusTag label={statusView.label} tone={statusView.tone} />
           {/* 「设置」就在这一页（v0.26）：开关原先挂在「总设置 → 功能」，
               而这一页顶着一句"记忆未启用"——同一个东西的说明和开关隔着两个菜单 */}
           {isAdmin && (
@@ -482,15 +469,10 @@ export function MemoryPage() {
                 </label>
 
                 {/*
-                  「每轮注入」这件事要**在文件一进来就说**（原先只有列表行那枚标记
-                  「每轮注入」与编辑器标题旁的 ⓘ）：用户改了 SOUL.md 却感觉不到差别，
-                  第一个动作就是来这里确认"它到底进没进提示词"。
-                  写成常驻一行，那个问题进来就有答案。
+                  这里原有一行常驻说明（"核心四份每轮整份注入提示词…"。已按用户要求删除：
+                  那一句是在解释记忆怎么运作，而"这一份进不进提示词"由**列表行那枚
+                  「每轮注入」标记**逐行回答（标记是数据，说明是解释）。
                 */}
-                <p className="m-toolbar-note" data-testid="memory-inject-note">
-                  {'核心四份（SOUL.md / PROFILE.md / AGENTS.md / MEMORY.md）每轮整份注入提示词，' +
-                    '不参与召回；召回与自动沉淀走的是每日现场与长期知识那两层。'}
-                </p>
 
                 {overview.data?.truncated && (
                   <p className="m-toolbar-note">
@@ -511,7 +493,7 @@ export function MemoryPage() {
                     hint={
                       files.length > 0
                         ? '换个关键词，或者清空过滤。'
-                        : '长期记忆开启后，对话会自动沉淀出每日笔记；也可以点右上角的「新增」→「新建记忆文件」。'
+                        : '点右上角的「新增」→「新建记忆文件」。'
                     }
                   />
                 ) : (
@@ -587,24 +569,14 @@ export function MemoryPage() {
                 {detailLoading ? (
                   <SkeletonBlock variant="text" rows={6} />
                 ) : !detail ? (
-                  <EmptyState
-                    title="选一份记忆开始读"
-                    hint="左边是工作区里的全部 Markdown：核心记忆、每日现场、整合后的长期知识。"
-                  />
+                  <EmptyState title="选一份记忆开始读" />
                 ) : (
                   <>
                     <header className="m-editor-head">
                       <div className="m-editor-title">
-                        <h2>
-                          {detail.title}
-                          {/*
-                            「这一份怎么生效」按《前端设计规范》§5.1 收进 ⓘ：原先它是一行
-                            常驻小字（"每轮对话都会把它整份注入上下文…"）。机制说一遍就够，
-                            而**这一份具体怎么生效**由列表行右侧那枚标记逐行承担
-                            （`effectOf`）——那句话与标记本来就是同一件事的两种说法。
-                          */}
-                          <InfoTip text="记忆分两路生效：核心文件（MEMORY.md / SOUL.md）每轮整份注入上下文，不参与召回（所以搜不到是正常的）；每日现场与长期知识进召回池，由召回工具按需取片段。其余位置的文件既不注入也不参与召回，只是一份可编辑的文本。" />
-                        </h2>
+                        {/* 标题里不再挂「这一份怎么生效」的 ⓘ：那句话在解释机制，
+                            而**这一份具体怎么生效**由列表行右侧那枚标记逐行承担（`effectOf`） */}
+                        <h2>{detail.title}</h2>
                         {/* 核心文件的标题就是文件名（MEMORY.md），再摆一行路径是重复的 */}
                         {detail.path !== detail.title && (
                           <code className="m-file-path">{detail.path}</code>
@@ -692,7 +664,7 @@ export function MemoryPage() {
               ) : graph.data && graph.data.nodes.length === 0 ? (
                 <EmptyState
                   title="还没有连起来的记忆"
-                  hint="在正文里写 [[另一份记忆]]，两份记忆就建立了一条链接；图谱按链接画出结构。"
+                  hint="在正文里写 [[另一份记忆]] 就能建立一条链接。"
                 />
               ) : graph.data ? (
                 <MemoryGraph
@@ -739,7 +711,7 @@ export function MemoryPage() {
                 recallHits.hits.length === 0 ? (
                   <EmptyState
                     title="没有召回任何记忆"
-                    hint="这代表记忆里没有相关的内容，不是出错。可以换个说法再试，或者先把这条记下来。"
+                    hint="记忆里没有相关的内容。换个说法再试，或先把这条记下来。"
                   />
                 ) : (
                   <>
@@ -829,9 +801,10 @@ export function MemoryPage() {
           </>
         }
       >
+        {/* 只说路径与生效方式的**对应关系**（这一格该填什么），不说"目录决定一切"是怎么实现的 */}
         <p className="text-meta">
-          放在哪个目录决定它怎么生效：<code>digest/</code> 下会被召回，<code>memory/</code>
-          （或 <code>daily/</code>）下是每日现场，根下只当作普通文本。
+          <code>digest/</code> 会被召回，<code>memory/</code>（或 <code>daily/</code>）
+          是每日现场，根目录下是普通文本。
         </p>
         <Field label="文件路径" htmlFor="memory-new-path">
           <Input
@@ -872,10 +845,8 @@ export function MemoryPage() {
           </>
         }
       >
-        <p className="text-meta">
-          写进 <code>MEMORY.md</code> 的「核心长期记忆」，每轮对话都会带上它。
-          一句话能说完的才放这里（最多 500 字）——更长的内容该写成笔记或记忆文件。
-        </p>
+        {/* 只说这一格的约束（一句话、500 字），不解释它会被注入到哪儿 */}
+        <p className="text-meta">一句话能说完的才放这里，最多 500 字。</p>
         <Textarea
           rows={4}
           value={noteText}
@@ -893,7 +864,6 @@ export function MemoryPage() {
             ? `将删除 ${detail?.path ?? ''}。记忆文件没有回收站，删除后只能从备份找回。`
             : '当前文件有改动还没保存，切换过去就会丢掉。'
         }
-        note={pending?.kind === 'delete' ? '如果只是想改内容，取消后直接编辑即可。' : undefined}
         confirmLabel={pending?.kind === 'delete' ? '删除' : '放弃改动'}
         busy={remove.isPending}
         busyLabel="删除中…"

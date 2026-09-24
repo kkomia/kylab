@@ -21,7 +21,7 @@ import type { SystemLoad } from '@/api/tasks'
 import { formatBytes, formatCount, formatDuration, formatPercent } from '@/lib/format'
 
 import { loadTone, taskKindLabel } from '../shared/status'
-import { InfoTip, RingGauge } from '../shared/composites'
+import { RingGauge } from '../shared/composites'
 
 /**
  * 环的**可访问名**。`role="img"` 会把环里的 `<text>` 当装饰（读屏器读不到），
@@ -99,8 +99,7 @@ export function LoadPanel({ load, live }: { load: SystemLoad | null; live?: bool
 
   /** 有没有需要解释的异常状态（停滞 / 逾期）。没有就把那一行整个省掉。 */
   const problems: string[] = []
-  if (queue && queue.stalled > 0)
-    problems.push(`${formatCount(queue.stalled)} 个任务可能卡住（没有 worker 在续约）`)
+  if (queue && queue.stalled > 0) problems.push(`${formatCount(queue.stalled)} 个任务可能卡住`)
   if (queue && queue.overdue > 0)
     problems.push(`${formatCount(queue.overdue)} 个任务长时间未被领取`)
 
@@ -199,10 +198,8 @@ export function LoadPanel({ load, live }: { load: SystemLoad | null; live?: bool
               ariaLabel={ringLabel('本进程常驻内存占机器内存', processShareText)}
             />
           </span>
-          <span className="m-gauge-name">
-            本进程常驻内存
-            <InfoTip text="切词与向量化都在这个进程里跑，所以它随摄入进度变大是正常的。只涨不落时重启服务即可——那是内存没被释放，不是任务出错了。" />
-          </span>
+          {/* 一个数就该只有一个数：原先这里挂着 ⓘ 解释"为什么它会涨"（已删） */}
+          <span className="m-gauge-name">本进程常驻内存</span>
           {/* 环里是占机器内存的比例，这一行给两个原始值——分母写在明处，比例才读得出大小 */}
           <span className="m-gauge-detail tabular">
             {hardware
@@ -230,21 +227,17 @@ export function LoadPanel({ load, live }: { load: SystemLoad | null; live?: bool
       )}
 
       {oversubscribed ? (
-        <p className="m-load-hint">
-          在跑数超过了上限：多半是有一个刚被中断的任务还没到租约到期时间，回收后它会自己回到队列（约一分钟内）。
-        </p>
+        <p className="m-load-hint">刚被中断的任务会在约一分钟内回到队列。</p>
       ) : (
         queue &&
         queue.pending > 0 &&
         queue.running >= queue.slots && (
-          <p className="m-load-hint">
-            槽位已占满，后面的要等前一个跑完。上限由 <code>KYLAB_WORKER_CONCURRENCY</code> 决定。
-          </p>
+          <p className="m-load-hint">槽位已占满，后面的要等前一个跑完。</p>
         )
       )}
       {quota?.configured && quota.exhausted ? (
         <p className="m-load-hint">
-          额度已用尽：云端不再优先处理，解析会明显变慢（<strong>不是失败</strong>）。
+          额度已用尽：解析会明显变慢（<strong>不是失败</strong>）。
         </p>
       ) : (
         !pendingData &&

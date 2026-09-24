@@ -118,7 +118,9 @@ export function ApprovalBar({
           // 上限与后端一致（500 字）：界面先挡住，用户不必靠报错才知道写超了
           maxLength={500}
           onChange={(event) => setReason(event.target.value)}
-          // 回车就等于点「拒绝」——写理由的人下一句要做的就是拒绝，不必再挪手去点
+          /*
+            回车就等于点「拒绝」——写理由的人下一句要做的就是拒绝，不必再挪手去点。
+          */
           onKeyDown={(event) => {
             if (event.key === 'Enter') {
               event.preventDefault()
@@ -126,9 +128,11 @@ export function ApprovalBar({
             }
           }}
         />
-        <span className="text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
-          这句话会随拒绝一起告诉模型，它据此换个做法
-        </span>
+        {/*
+          输入框下面原来还跟着一句"这句话会随拒绝一起告诉模型，它据此换个做法"：
+          它在解释这一句去哪儿了、会起什么作用。占位符（"拒绝时补一句理由"）已经把
+          该写什么说清，2026-09-24 按用户要求删。
+        */}
       </div>
 
       <div className="flex flex-wrap items-center gap-[var(--space-2)]">

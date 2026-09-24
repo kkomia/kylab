@@ -538,7 +538,8 @@ describe('笔记页：搜索 / 新建 / 删除 / 移动', () => {
     })
     expect(await screen.findByText('已加入知识库「资料库」')).toBeTruthy()
     expect(screen.getByText('查看文档').closest('a')?.getAttribute('href')).toBe('/documents/d9')
-    expect(toastSuccess).toHaveBeenCalledWith('已加入知识库，之后可以在检索里命中这条笔记')
+    // 文案 2026-09-24 压短（后半句"之后可以在检索里命中这条笔记"是在解释入库之后会怎样）
+    expect(toastSuccess).toHaveBeenCalledWith('已加入知识库')
   })
 
   it('没有知识库时给一句指路，不开弹窗', async () => {
@@ -725,7 +726,8 @@ describe('笔记页：AI 动作', () => {
     await waitFor(() =>
       expect(document.querySelector('.tiptap')?.textContent).toContain('整理后的正文'),
     )
-    expect(toastSuccess).toHaveBeenCalledWith('AI 处理完成；不满意可以用工具栏的撤销或直接改')
+    // 文案 2026-09-24 压短（"或直接改"是多余的一截提示）
+    expect(toastSuccess).toHaveBeenCalledWith('AI 处理完成；不满意可用工具栏的撤销')
   })
 })
 

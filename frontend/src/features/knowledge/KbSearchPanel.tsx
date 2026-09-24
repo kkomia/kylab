@@ -236,10 +236,7 @@ export function KbSearchPanel({ open, kbId, kbName, onClose, onOpenDocument }: K
               {searching ? <SkeletonRows variant="text" rows={6} /> : null}
 
               {!searching && !latest ? (
-                <EmptyState
-                  title="还没有检索记录"
-                  hint="左侧输入内容；结果会显示每条命中来自哪条通道、各自排名多少。"
-                />
+                <EmptyState title="还没有检索记录" hint="在左侧输入内容开始检索。" />
               ) : null}
 
               {!searching && latest?.error ? (
@@ -287,8 +284,8 @@ export function KbSearchPanel({ open, kbId, kbName, onClose, onOpenDocument }: K
                   {!embeddingMissing && embeddingIsDevelopment ? (
                     <p className="kb-dev-warning">
                       <strong>向量召回不代表真实效果：</strong>
-                      当前用的是开发用确定性哈希（只反映词面重叠，没有语义）。BM25 的结果是可信的，
-                      向量分数仅供链路自测。
+                      当前走的是开发用兜底（只反映词面重叠）。BM25
+                      的结果是可信的，向量分数仅供链路自测。
                     </p>
                   ) : null}
 

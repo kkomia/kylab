@@ -709,13 +709,46 @@ def _regex_can_start(text: str, index: int) -> bool:
     引号、`$`、`` ` ``），那 `/` 就是除号；否则按正则处理。这条判断是必需的——
     仓库里真有 `` .replace(/\\*\\*|__|`{1,3}/g, '') ``：正则里那个反引号会让
     "先找成对引号"的做法把后面半份文件都当成模板串。
+
+    **例外**：前一个词是关键字（`return` / `typeof` / `case` …）时，`/` 是正则。
+    2026-09-24 补：`return /[",\\n]/.test(flat) ? … : flat`（`chat/ui/AnswerText.tsx`）
+    里的 `/[",\n]/` 就因为前一个字符是 `return` 的 `n` 被当成除号，正则里那个 `"`
+    开启了一个"假字符串"，把后面一行的注释当成用户可见文案（U3 报了一条假命中）。
+    关键字**必须整词匹配**：`myreturn /re/` 里的 `/` 仍是除号。
     """
     probe = index - 1
     while probe >= 0 and text[probe] in " \t\r\n":
         probe -= 1
     if probe < 0:
         return True
-    return not (text[probe].isalnum() or text[probe] in "_$)]}'\"`")
+    char = text[probe]
+    if char.isalnum():
+        end = probe + 1
+        start = end
+        while start > 0 and (text[start - 1].isalnum() or text[start - 1] in "_$"):
+            start -= 1
+        return text[start:end] in REGEX_AFTER_KEYWORDS
+    return char not in "_$)]}'\"`"
+
+
+#: 后面能跟正则字面量的关键字（整词）。
+REGEX_AFTER_KEYWORDS = frozenset(
+    {
+        "return",
+        "typeof",
+        "instanceof",
+        "case",
+        "do",
+        "else",
+        "in",
+        "of",
+        "new",
+        "delete",
+        "void",
+        "yield",
+        "await",
+    }
+)
 
 
 def _regex_end(text: str, start: int) -> int | None:
@@ -854,6 +887,204 @@ def check_impl_leak(path: Path, root: Path) -> list[Violation]:
             found.append(
                 Violation("U2", path, lineno, f"{U2_MSG}——{label}：{match.group(0)!r}（{snippet!r}）")
             )
+    return found
+
+
+# ---------------------------------------------------------------- U3：解释性长句
+#
+# 用户第二轮反馈（2026-09-24，语气很重："到底有没有再认真检查。我就上去看了一分钟，
+# 就发现了好多类似的地方"）。他圈的两句都在刚被删掉的「工作区」页上（原文见下），
+# 共同点是**在解释"这个东西怎么运作 / 会有什么后果 / 为什么这样"**，
+# 而不是让用户能做成一件事：原话"不需要你解释这是个什么东西"，他是科班工程师。
+#
+#   `不绑也行：对话里打 @ 就能把某个库并进检索范围，或用输入框的「知识库」临时勾
+#    ——每一轮各算各的。`
+#   `工作区不复制文件：它只是"指向"你指定的目录。所以删工作区不会动你的文件，
+#    改根目录也只是换一个指向。`
+#
+# **U1 抓不住它们**：U1 按类名判（`*-hint` / `*-desc` 那几族），而这两句写在**合法类名**
+# 的元素里（`m-foot-note` / `kb-modal-note`，都是"有用途"的类，进不了黑名单）；
+# U2 也抓不住：它们用的都是中文白话，没有路径/端口/版本串。
+# 所以 U3 换成按**句子的形状**判，两条同时成立才命中：
+#
+# 1. **中文 ≥ 12 字**（只数汉字：标点、数字、英文都不算）——短标签不是句子
+#    （"每轮注入"、"最多 500 字"这类数据/约束不在此列）；
+# 2. 含一个"解释机制"的连接词/句式（`U3_CONNECTORS`）。
+#
+# 例外按「文件 + 字面量片段」列进 `U3_ALLOWED`，逐条写理由。**允许的只有四类**，
+# 它们都不是"解释这一页/这个东西"：
+# ① 错误/失败文案（"连不上…请检查网络"——那是让人行动的）；
+# ② 空态（"还没有用量记录。提问或上传文档之后这里会有数据。"）；
+# ③ 表单字段约束（"至少 8 个字符"、"至少 8 个字符"、上限、格式）；
+# ④ 危险动作的后果确认（"它里面的 1 个子文件夹会被一起删除"——动手前必须知道的）。
+#
+# 盲区（这一轮扫出来、但机械判据兜不住的，留给出下一版）：**没有连接词的解释句**
+# 也真实存在，例如"知识库是最外层的容器，每个库对应一套 embedding 模型与一组切分参数"
+# （定义句式）、"页面越多耗时越长"（越…越…）、"到点自动跑一句话，结果落在一条同名会话里"
+# （描述动作链）。这一轮靠人眼逐屏扫掉；要机械化得先想清楚怎么不误伤数据文案。
+
+#: 连接词/句式族。**按实据收，每条都能指着一条真实漏网**（用户给的清单也要过这一关）：
+#:
+#: - 用户圈的两句原文：`每一轮` / `各算各的` / `也行`（第一句）、`只是` / `所以` / `不会`（第二句）；
+#: - 本轮全项目扫到的真实文案（删掉的那批）：`其实`（"一开始其实是…"式的改写）、`也是`…
+#:   实读命中的有 `只是` / `不会` / `所以` / `用于` / `即可` / `这就是` / `那是` / `它会` /
+#:   `每轮`（记忆页"核心四份每轮整份注入提示词…"、TracePanel 同一句话）/
+#:   `决定`（"放在哪个目录决定它怎么生效"、"决定这个库的向量空间"）；
+#: - 与上列同族的另一半（同一句式换一个连接词）：`因为`（`所以` 的因半）、`并不` /
+#:   `意思是` / `指的是` / `用来` / `可以通过` / `就行` / `换句话说` / `说白了`；
+#: - **还没漏到屏上、但同一句式的**：`保证` / `避免` / `防止` / `一旦` / `否则` /
+#:   `注意：` / `提示：` / `说明：`。这四个字词在本仓库的**注释**里高频出现——
+#:   注释里这么写没问题，搬到屏幕上就是解释。现行代码命中 0 条：留着是护栏，
+#:   不是抓现行（先宽后窄的那一半，等它真报出假命中再往下收）。
+U3_CONNECTORS: tuple[str, ...] = (
+    "因为",
+    "所以",
+    "也就是说",
+    "其实",
+    "只是",
+    "不会",
+    "并不",
+    "指的是",
+    "意思是",
+    "用来",
+    "用于",
+    "可以通过",
+    "就行",
+    "也行",
+    "即可",
+    "各算各的",
+    "每轮",
+    "每一轮",
+    "这就是",
+    "那是",
+    "它会",
+    "决定",
+    "保证",
+    "避免",
+    "防止",
+    "一旦",
+    "否则",
+    "换句话说",
+    "说白了",
+    "注意：",
+    "提示：",
+    "说明：",
+)
+
+#: 例外：(相对仓库根的 POSIX 路径, 字面量里必须出现的片段, 理由)。
+#: 理由一律回答同一个问题：**它为什么属于上面那四类之一，而不是"解释这一页"**。
+#: 这张表**默认空着**：加一条要写清理由，不然它会长成一条通道。
+U3_ALLOWED: tuple[tuple[str, str, str], ...] = (
+    # ④ 危险动作的后果确认：动手前必须让人知道"什么会被删、什么不会被删"。
+    (
+        "frontend/src/features/misc/capabilities/CapabilitiesPage.tsx",
+        "只删登记信息",
+        "④ 删除 MCP 插件登记前的后果确认：说清「只删登记、不动那个服务」，点下去之前必须知道",
+    ),
+    (
+        "frontend/src/features/misc/capabilities/CapabilitiesPage.tsx",
+        "只删本地这份",
+        "④ 卸载技能前的后果确认：删哪些、GitHub 上那份还在、能从市场装回来",
+    ),
+    (
+        "frontend/src/features/misc/tasks/SchedulePanel.tsx",
+        "它已经跑出来的会话不会被删",
+        "④ 删除定时任务前的后果确认：跑出来的会话留着",
+    ),
+    (
+        "frontend/src/features/misc/tasks/TasksPage.tsx",
+        "只是不再处理",
+        "④ 撤销排队任务的后果确认：文档与已入库内容保留、正在执行的不受影响",
+    ),
+    (
+        "frontend/src/features/notes/NotesView.tsx",
+        "篇笔记会回到未归档，不会被删除",
+        "④ 删除归档目录前的后果确认（笔记归另一个泳道，标准同一口径）",
+    ),
+    (
+        "frontend/src/features/notes/NotesView.tsx",
+        "删除后无法恢复",
+        "④ 删除笔记前的后果确认 + 影响范围（生成的知识库文档不受影响）",
+    ),
+    (
+        "frontend/src/features/layout/ConversationRowMenu.tsx",
+        "删除后不可恢复",
+        "④ 删除会话前的后果确认，并给出替代动作（归档，可取消）",
+    ),
+    # ① 失败/停滞态：说清"现在怎么了、能做什么"。
+    (
+        "frontend/src/features/knowledge/ProcessingTimeline.tsx",
+        "这一步停住了",
+        "① 停滞失败态：进程可能重启过 + 自动重跑 + 手动「重新摄入」这条出路",
+    ),
+    # ② 空态/首态：现在是什么、点哪儿开始。
+    (
+        "frontend/src/features/misc/auth/LoginPage.tsx",
+        "第一次使用",
+        "② 登录页首态：第一次使用怎么进（建管理员账号），不是解释登录页是什么",
+    ),
+    # 数据：字符串本身就是内容（发出去的正文 / 系统提示词原文），不是对界面的解释。
+    (
+        "frontend/src/features/chat/runtime/ChatProvider.tsx",
+        "哪些只是推测",
+        "数据：预设提问正文——它就是用户要发出去的那句话（含「只是」两字纯属巧合）",
+    ),
+    (
+        "frontend/src/api/chat.ts",
+        "都只是文档内容的一部分",
+        "数据：内置系统提示词正文（发模型看的），弹窗里只读展示，不是界面说明",
+    ),
+)
+
+#: 汉字计数只认 CJK 统一汉字：标点（，。「」——）、数字、英文都不算。
+#: 用 12 这个阈值，是因为 10 字以下常常是标签/状态（"每轮注入"、"最多 500 字"），
+#: 而解释一句机制很难短于 12 个汉字（用户圈的两句分别是 32 / 34 字）。
+U3_MIN_CJK = 12
+
+U3_MSG = (
+    "界面里的解释性长句（在解释「这东西怎么运作 / 会有什么后果 / 为什么这样」）："
+    "把它删掉——用户不需要在界面上被解释。确实有用途时只有四类：错误/失败文案、"
+    "空态、表单字段约束、危险动作的后果确认；那四类要在 `U3_ALLOWED` 里按"
+    "「文件 + 字面量」加一条并写清理由"
+)
+
+
+def cjk_length(value: str) -> int:
+    """汉字个数（标点/数字/英文不算）——U3 的第一条判据。"""
+    return sum(1 for char in value if "\u4e00" <= char <= "\u9fff")
+
+
+def _u3_allowed(relative: str, value: str) -> bool:
+    """这个文件里的这个字面量在例外表里吗（例外表按「文件 + 片段」匹配）。"""
+    return any(
+        relative == path and fragment in value for path, fragment, _reason in U3_ALLOWED
+    )
+
+
+def check_explanatory_sentence(path: Path, root: Path) -> list[Violation]:
+    """U3：界面里不许出现"解释机制"的长句（见 ``U3_MSG`` 与 ``U3_CONNECTORS``）。
+
+    与 U2 扫的是同一批"会渲染出来的字符"（字符串字面量 + JSX 文本；注释不算），
+    判据换成"长度 + 连接词"两条同时成立——U1 的类名族与 U2 的词表都拦不住
+    "用合法类名写着的一段解释"，那正是用户这次圈的漏网。
+    """
+    if path.suffix not in (".ts", ".tsx") or path.name.endswith(".d.ts"):
+        return []
+    relative = path.relative_to(root).as_posix() if path.is_absolute() else path.as_posix()
+    text = path.read_text(encoding="utf-8", errors="replace")
+    masked, literals = strip_ts_comments_and_strings(text)
+    found: list[Violation] = []
+    for start, value in literals + jsx_text_runs(masked):
+        if _is_module_specifier(text, start) or _u3_allowed(relative, value):
+            continue
+        if cjk_length(value) < U3_MIN_CJK:
+            continue
+        word = next((item for item in U3_CONNECTORS if item in value), None)
+        if word is None:
+            continue
+        lineno = text.count("\n", 0, start) + 1
+        snippet = " ".join(value.strip().split())[:60]
+        found.append(Violation("U3", path, lineno, f"{U3_MSG}——「{word}」：{snippet!r}"))
     return found
 
 
@@ -1226,6 +1457,7 @@ def main() -> int:
                 violations.extend(check_test_placement(path, root))
                 violations.extend(check_ui_copy(path))
                 violations.extend(check_impl_leak(path, root))
+                violations.extend(check_explanatory_sentence(path, root))
 
     violations.extend(check_ps1_bom(root))
     violations.extend(check_version_consistency(root))
@@ -1238,11 +1470,11 @@ def main() -> int:
     if violations:
         print(
             f"\n共发现 {len(violations)} 处违规，违反《项目工程规范》§3.3 / §5.1、"
-            f"脚本编码约定、界面文案条款（解释性小字 / 实现细节）、"
+            f"脚本编码约定、界面文案条款（解释性小字 / 实现细节 / 解释性长句）、"
             f"CSS 分层纪律或 CHANGELOG「附：版本号约定」。"
         )
         return 1
-    print("分层纪律、测试位置、脚本编码、界面文案（解释性小字 / 实现细节）、"
+    print("分层纪律、测试位置、脚本编码、界面文案（解释性小字 / 实现细节 / 解释性长句）、"
           "CSS 分层与版本号检查通过。")
     return 0
 

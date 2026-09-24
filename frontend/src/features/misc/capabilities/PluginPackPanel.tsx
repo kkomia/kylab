@@ -187,13 +187,10 @@ export function PluginPackPanel() {
       {list.isLoading && <SkeletonBlock variant="list" rows={3} />}
 
       {!list.isLoading && visible.length === 0 && (
+        /* 目录就在工具栏那行 `code` 里摆着，空态不再复述"把目录放到哪里" */
         <EmptyState
           title={items.length > 0 ? '没有匹配的插件包' : '还没有插件包'}
-          hint={
-            items.length > 0
-              ? '换个关键词，或者把筛选切回「全部」。'
-              : `把带 plugin.json 的目录放进 ${userDir}，这里就会列出来。`
-          }
+          hint={items.length > 0 ? '换个关键词，或者把筛选切回「全部」。' : undefined}
         />
       )}
 

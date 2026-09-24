@@ -329,7 +329,8 @@ describe('切块的人工干预', () => {
 
     await waitFor(() => expect(updateChunkMock).toHaveBeenCalledWith('doc-1', 0, '改过的正文'))
     expect(await screen.findByText('改过的正文')).toBeInTheDocument()
-    expect(successToast).toHaveBeenCalledWith('切块已更新，检索会按新内容生效')
+    // 文案跟着改：toast 后半句"检索会按新内容生效"是在解释机制，已按用户要求删除
+    expect(successToast).toHaveBeenCalledWith('切块已更新')
   })
 
   it('禁用是"先藏起来"（可恢复），撤销入口就在同一个菜单里', async () => {
