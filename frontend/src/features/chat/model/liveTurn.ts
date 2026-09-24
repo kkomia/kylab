@@ -349,7 +349,17 @@ function dropped(reason: string): void {
  */
 function adoptHandlers(token: number, revision: number): ChatHandlers {
   const inner = liveHandlers(token)
+  //: 这一轮**已经收尾**（`done` / `error` 到过）之后，不许再把它抬回"流式中"。
+  //
+  // 为什么需要这道闸：`api/chat.ts` 的 `emit` 是**先 dispatch、再报锚点**
+  // （那条顺序本身是对的，锚点语义要求如此），所以 `done` 那一事件的 `onSeq`
+  // 是在收尾**之后**才到的。少了它，`done` 先把 `streaming` 落回 false、
+  // 紧接着同一事件的 `onSeq` 又把它抬成 true —— 表现就是**输入框永远停在
+  // 「停止生成」上**：刷新（或重进）任何"环形缓冲里还留着刚跑完那一轮"的会话都会中招，
+  // 按什么都没用（用户点一次「停止生成」能救回来，但没人知道要点）。
+  let closed = false
   const adopt = (): void => {
+    if (closed) return
     // 这一格已经换过主（新一轮 / 换了会话）：什么都别动。
     // 旧实现是对着**捕获的那个对象**改字段——那种情况下它改的是一个已经没人看的对象，
     // 效果同样是"什么都不动"
@@ -388,10 +398,14 @@ function adoptHandlers(token: number, revision: number): ChatHandlers {
     },
     onDone: (answer, info) => {
       adopt()
+      // 先 adopt（`done` 也可能是第一条事件：那一轮确实跑到过），再封口——
+      // 这样同一事件尾随的 `onSeq` 就不会把它抬回来（见上面 `closed` 那段）
+      closed = true
       inner.onDone?.(answer, info)
     },
     onError: (message) => {
       adopt()
+      closed = true
       inner.onError?.(message)
     },
     // 断了也算"认领过"：一条刚开始建连就断掉的流同样该按重连预算再接一次

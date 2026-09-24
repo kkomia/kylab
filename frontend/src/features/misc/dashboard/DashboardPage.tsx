@@ -50,6 +50,18 @@ const METRIC_LABELS = {
 type Metric = keyof typeof METRIC_LABELS
 
 /**
+ * 顶部大数的一个槽位。`note` 是**可缺省**的：没有口径要交代时那一行不出现
+ * （见 `figureSlots` 的注释——`全部已索引` / `全部在窗口内` 那一批解释小字已删）。
+ */
+type FigureSlot = {
+  label: string
+  value: string
+  note?: string
+  ready: boolean
+  wide: boolean
+}
+
+/**
  * 按天趋势的聚合口径（纯函数，导出供用例钉住）。
  *
  * 观察窗口太长时按周聚合，否则折线全是锯齿——365 天一天一个点的话，
@@ -107,14 +119,22 @@ export function DashboardPage() {
    *
    * **数据没到也先把六个槽位画出来**（值为占位符、注解用静态说明）：
    * 这是流式渲染的一半——页面的骨架立刻可见，用户不用盯着一块空白等最慢的请求。
+   *
+   * **注解只在"这一格自己说不清"时才给**（2026-09-24 用户："ai 味道太重，
+   * 有很多 ai 味道很重的解释小字"）：`相互隔离的检索范围` / `向量化的最小单位` /
+   * `不含向量与索引` / `全部已索引` / `全部在窗口内` 这一批全部删掉了——卡片上已经有
+   * 标签（`切块`）与大数字，再加一句同义复述就是"这一页是什么"式的小字。
+   * 留下的两类都有判据：**口径**（失败/待索引这类状态读数）与**加载态**（`正在统计…`）。
+   * 「近 N 天入库」原来还有一句"N 篇更早入库"：它等于「文档与索引」的总数减这一格的
+   * 数（两个数就在同一行的相邻卡片上），补不出来新判断力，也一并删。
    */
-  const figureSlots = (() => {
+  const figureSlots = ((): FigureSlot[] => {
     if (!data) {
       return [
-        { label: '知识库', value: '—', note: '相互隔离的检索范围', ready: false, wide: false },
+        { label: '知识库', value: '—', ready: false, wide: false },
         { label: '文档与索引', value: '—', note: '正在统计…', ready: false, wide: true },
-        { label: '切块', value: '—', note: '向量化的最小单位', ready: false, wide: false },
-        { label: '原文体积', value: '—', note: '不含向量与索引', ready: false, wide: false },
+        { label: '切块', value: '—', ready: false, wide: false },
+        { label: '原文体积', value: '—', ready: false, wide: false },
         {
           label: `近 ${windowDays} 天入库`,
           value: '—',
@@ -131,6 +151,9 @@ export function DashboardPage() {
      * 而第二张卡的主数字与第三张卡的注解其实都是**同一个数**。合成一张之后：
      * 主数字只留文档总数，注解只说索引的**状态**——失败和待索引都报"还差多少"，
      * 数字只在真的不等于总数时才出现，于是它既不是重复、也能一眼看出有没有活没干完。
+     *
+     * **全都索完之后不再留一句"全部已索引"**：那是"没有异常"的复述，主数字与
+     * 状态都正常时这一格无话可说，就什么都不说（2026-09-24 删解释小字那一批）。
      */
     const indexNote =
       data.total_documents === 0
@@ -139,15 +162,11 @@ export function DashboardPage() {
           ? `${formatCount(data.failed_documents)} 篇失败`
           : data.indexed_documents < data.total_documents
             ? `${formatCount(data.total_documents - data.indexed_documents)} 篇待索引`
-            : '全部已索引'
-    // 窗口外的旧文档：注解报"窗口外的篇数"而不是"占全部 n 篇"——
-    // 后者与主数字重复（界面评审 D8），前者是真信息
-    const olderDocuments = Math.max(0, data.total_documents - data.recent_documents)
+            : ''
     return [
       {
         label: '知识库',
         value: formatCount(data.total_knowledge_bases),
-        note: '相互隔离的检索范围',
         ready: true,
         wide: false,
       },
@@ -161,14 +180,12 @@ export function DashboardPage() {
       {
         label: '切块',
         value: formatCount(data.total_chunks),
-        note: '向量化的最小单位',
         ready: true,
         wide: false,
       },
       {
         label: '原文体积',
         value: formatBytes(data.storage_bytes),
-        note: '不含向量与索引',
         ready: true,
         wide: false,
       },
@@ -176,7 +193,6 @@ export function DashboardPage() {
         label: `近 ${windowDays} 天入库`,
         // 注释必须与**主数字同义**：任务在跑的信息属于任务中心，不该蹭这张卡
         value: formatCount(data.recent_documents),
-        note: olderDocuments > 0 ? `${formatCount(olderDocuments)} 篇更早入库` : '全部在窗口内',
         ready: true,
         wide: false,
       },
@@ -300,7 +316,9 @@ export function DashboardPage() {
             >
               {item.value}
             </span>
-            <span className="m-figure-note">{item.note}</span>
+            {/* 注解是**可选**的：没有异常、没有口径要交代时就不摆这一行
+                （`全部已索引` / `全部在窗口内` 那一批解释小字已删） */}
+            {item.note ? <span className="m-figure-note">{item.note}</span> : null}
           </li>
         ))}
       </ul>
@@ -310,11 +328,12 @@ export function DashboardPage() {
       <div className="panel m-card-block">
         <div className="m-block-head">
           <span className="m-block-title">近 {summary?.window_days ?? windowDays} 天入库节奏</span>
-          {/* 图例要带**色阶样本**：只有一句"越深越多"的话，深色下既看不出网格在哪，
-              也不知道最深是哪一档（界面评审 D2）。方块与图上的分档同源（HEAT_STEPS） */}
-          <span className="m-block-hint m-heat-legend">
+          {/* 图例只留**色阶样本**：样本本身已经把"深=多"说清楚了，再加一句
+              "颜色越深表示当天入库越多"就是替图形说话（2026-09-24 删解释小字）。
+              方块与图上的分档同源（HEAT_STEPS）。这里不再带 `m-block-hint`：
+              那个类只管文字的字号与颜色，而这一格已经没有字了。 */}
+          <span className="m-heat-legend">
             <HeatLegend />
-            颜色越深表示当天入库越多
           </span>
         </div>
         {summary ? (
@@ -378,7 +397,8 @@ export function DashboardPage() {
       <div className="panel m-card-block">
         <div className="m-block-head">
           <span className="m-block-title">近 {usageDays} 天</span>
-          <span className="m-block-hint">向量化接口通常不返回用量，那部分按字符数估算</span>
+          {/* 口径说明，压到半句：它是"这个数怎么来的"，用户不知道就没法拿它做判断 */}
+          <span className="m-block-hint">向量化部分按字符数估算</span>
         </div>
 
         <dl className="m-usage-figures">
@@ -403,20 +423,22 @@ export function DashboardPage() {
           <p className="m-usage-empty">还没有用量记录。提问或上传文档之后这里会有数据。</p>
         ) : (
           <>
-            {/* 三态分开说：不区分的话会把"没报"画成"没用"、把"估算"画成"实测" */}
-            {usage.data.estimated_tokens > 0 && (
+            {/* 三态分开说：不区分的话会把"没报"画成"没用"、把"估算"画成"实测"。
+                **合成一段、只留事实**（2026-09-24）：原来两句各带一句"别拿它精确对账"
+                的叮嘱，那是在替用户下结论；口径本身（哪部分估的、哪部分没报）才是
+                他不知道就没有判断力的东西。 */}
+            {usage.data.estimated_tokens > 0 || usage.data.unreported_calls > 0 ? (
               <p className="m-usage-note">
-                其中约 {formatCount(usage.data.estimated_tokens)} token 是按字符数估算的（
-                {formatCount(usage.data.estimated_calls)} 次向量化调用，接口不返回用量）。
-                这部分只用于看趋势，别拿它精确对账。
+                {usage.data.estimated_tokens > 0
+                  ? `其中约 ${formatCount(usage.data.estimated_tokens)} token 是按字符数估算的（${formatCount(usage.data.estimated_calls)} 次向量化调用，接口不返回用量）`
+                  : null}
+                {usage.data.estimated_tokens > 0 && usage.data.unreported_calls > 0 ? '；' : null}
+                {usage.data.unreported_calls > 0
+                  ? `另有 ${formatCount(usage.data.unreported_calls)} 次调用供应商没有返回用量，只计入「调用次数」与「处理条数」`
+                  : null}
+                。
               </p>
-            )}
-            {usage.data.unreported_calls > 0 && (
-              <p className="m-usage-note">
-                另有 {formatCount(usage.data.unreported_calls)} 次调用供应商没有返回用量，
-                它们只计入「调用次数」与「处理条数」，token 数字不含它们。
-              </p>
-            )}
+            ) : null}
 
             <ul className="m-usage-list">
               {usage.data.by_kind.map((item) => (

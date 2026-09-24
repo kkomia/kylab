@@ -41,7 +41,9 @@
    当前档由 ``services/modes`` 判定、`plan` 档的门闸状态由 ``services/plan_gate`` 持有。
    **被拦的调用不执行**，而是把"为什么被拦 + 怎么办"当成工具结果回灌给模型——
    与 ``agent_exec`` 里"策略拦下"完全同一个形状（连步骤总结的措辞都对齐：
-   「没有执行（…拦下）」），所以界面、快照、事件流都不必为它新增分支。
+   「没有执行（…拦下）」，但**括号里写明是哪一道闸**——模式写「Agent 模式「x」」，
+   策略写「拒绝规则」「命令执行策略…」——用户才知道该去动哪个设置），
+   所以界面、快照、事件流都不必为它新增分支。
    **工具表不变**：四档下交给模型的工具一模一样，变的只是"这一步允不允许执行"
    （见 ``modes`` 模块头的第 1 条规矩）。
 """
@@ -483,6 +485,10 @@ class ToolLoop:
         形状与 ``agent_exec._refused`` 完全一致（``content`` = 理由，``summary`` =
         「没有执行（…拦下）」），所以事件、快照、界面都不必为它新增分支。
 
+        摘要里的括号**必须点明是"Agent 模式"这一道闸**：输入框旁边并排摆着
+        「模式·x」与「命令·x」两个胶囊，"被拦下"那一行只写档名的话，用户会去
+        改执行策略而不是模式（或反过来），而这两处的下一步完全不同。
+
         ``plan`` 档之外的档**不会**走到这里返回非空（``modes.allows`` 一律放行）：
         它们的差别在"要不要问一句"，那件事在 ``_execute`` 里用审批表达。
         """
@@ -497,7 +503,7 @@ class ToolLoop:
         if allowed:
             return None
         return ToolOutcome(
-            content=reason, summary=f"没有执行（{modes.label_of(self._mode)}档拦下）"
+            content=reason, summary=f"没有执行（Agent 模式「{modes.label_of(self._mode)}」拦下）"
         )
 
     def _expired(self, started_at: float) -> bool:

@@ -319,6 +319,68 @@ export function ModelPicker() {
 }
 
 /**
+ * 环的几何：`r=10` 与 `strokeWidth=2` 是 AI Elements 的原值（见 `ContextGauge` 那段）。
+ * 周长要手算：`strokeDasharray` 用一整圈、`strokeDashoffset` 用"还差多少"，
+ * SVG 没有"百分比进度"这种属性。
+ */
+const RING_RADIUS = 10
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
+
+/**
+ * 上下文占用环（来源与改法：`ContextGauge` 的注释，Apache-2.0 / vercel/ai-elements）。
+ *
+ * `ratio` 先夹到 0..1：环的几何只能表达一圈，把 120% 画成"绕一圈多"会让人误以为
+ * 还有余量——上限与"确实占满"是两件事，百分比读数在环旁边写着，这里不重复表达。
+ *
+ * 颜色仍走上游的 `currentColor`，但**由这一层给一个令牌**（`text-[var(--text-primary)]`）：
+ * 环是这一格的图形读数，按 SC 1.4.11 要 ≥3:1，而进度圈的可见透明度是
+ * 「字色 alpha × 0.7」两层相乘——跟着按钮的 `--text-secondary`（0.6）走只有
+ * **3.01:1**（浅色、压在按钮底 `--bg-subtle` 上），比门槛高 0.01，像素取整就能把
+ * 它推到线下；换成 `--text-primary`（浅 0.9 / 深 0.84）之后实测
+ * **浅色 6.23:1、深色 6.53:1**，而底圈（× 0.25）仍是 **1.70:1（浅）/ 1.98:1（深）** 的
+ * "空槽"档——它不是要被读的那一半（旧那条线性条的轨道 `--bg-active` 是 1.44:1，
+ * 现在这档比它还实一点）。
+ */
+function ContextRing({ ratio }: { ratio: number }) {
+  const filled = Math.min(1, Math.max(0, ratio))
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={16}
+      height={16}
+      role="img"
+      aria-label="上下文用量"
+      /* `shrink-0`：这一格被挤时环不许跟着缩（缩了就成一团看不清的墨点） */
+      className="shrink-0 text-[var(--text-primary)]"
+      fill="none"
+    >
+      {/* 底圈：整圈都画满，作为"总量"的背景 */}
+      <circle
+        cx={12}
+        cy={12}
+        r={RING_RADIUS}
+        stroke="currentColor"
+        strokeWidth={2}
+        opacity={0.25}
+      />
+      {/* 进度圈：从 12 点起笔，圆的缺口由 `strokeDashoffset` 给 */}
+      <circle
+        cx={12}
+        cy={12}
+        r={RING_RADIUS}
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeDasharray={RING_CIRCUMFERENCE}
+        strokeDashoffset={RING_CIRCUMFERENCE * (1 - filled)}
+        opacity={0.7}
+        style={{ transform: 'rotate(-90deg)', transformOrigin: 'center' }}
+      />
+    </svg>
+  )
+}
+
+/**
  * 上下文仪表：输入框旁边一个**能核对**的读数，点开看到按来源分解，
  * 里面那个「压缩」走既有那条 `/compact` 链路（界面不另造一套压缩）。
  *
@@ -329,12 +391,29 @@ export function ModelPicker() {
  * 2. **只读**：调它不会触发压缩，所以随时可以刷新；
  * 3. **是估算就说出来**：`estimated` 与后端那句 `note` 原样显示，不把估算画成账单。
  *
- * **行上只放比率，精确数字在 `title` 与展开的菜单里**（第三批评审 A②）：那一行的宽度
- * 是硬预算（卡片 768 − 左右内边距 = 742），而「上下文已用 12,345 / 128,000」光文字就要
- * 176px——把整行顶出去、让「选库」折到第二行。比率是**有界**的：「上下文已用 100%」105px，
- * 窗口再窄、字号再调、上下文窗口再大都不会把行撑破。而"还能问多长"本来就是这一格要回答的
- * 问题，右边那条细占用条画的是同一个比率；要核对绝对数字（含按来源分解与自动压缩阈值）
- * 就点开它——菜单里一字不少。
+ * **形状是环，不是条**（2026-09-24 用户："明明基本所有的上下文都是用的圆圈，
+ * 你是设计成进度条"）。环照 **Vercel AI Elements 的 `Context`**（Apache-2.0，
+ * vercel/ai-elements，取数 2026-09-24，注册表条目 https://registry.ai-sdk.dev/context.json，
+ * 其中环那一段在源文件 63-102 行）：`viewBox="0 0 24 24"`、`r=10`、`strokeWidth=2`、
+ * 两条 `circle`（底圈 `opacity=0.25`；进度圈 `opacity=0.7` + `strokeDasharray` +
+ * `strokeDashoffset` + `strokeLinecap="round"` + `rotate(-90deg)` 让起笔落在 12 点），
+ * 颜色一律 `currentColor`。
+ * 我们改了两处，理由都在下面：
+ *   a. **不引 hover-card / tokenlens / echarts**（照上游那一整套要装三个包，而这三个
+ *      都不是我们缺的东西）：分解面板继续用既有 `DropdownMenu.Content`——按来源分解、
+ *      估算说明、`/compact` 入口都还在原处；
+ *   b. 颜色不写死在 SVG 里：两条圈仍然是 `currentColor`，颜色由 `ContextRing` 用一个
+ *      令牌给（`--text-primary`）——环是图形读数，要 ≥3:1，为什么不是继承按钮的
+ *      `--text-secondary`（只有 3.01:1）见 `ContextRing` 的注释；
+ *
+ * **读数不许截断**（第三批评审 A② 为了省宽度，把这一格压到 59.5px，
+ * `scrollWidth` 却是 101——屏幕上只剩「上下文…」，百分比根本看不见，而百分比正是
+ * 这一格要回答的问题）。现在那一格只放**比率**：环 + `11%`（10% 以下留一位小数，
+ * 见 `formatPercent`）。完整读数（`7,133 / 65,536 tokens（11%）`）仍在 `title` 里，
+ * 菜单里一字不少。这一格因此比原来窄 ~40px（环 16 + 间隙 6 + 比率 31，原来 93.5）。
+ * 读数那一格也**不再参与收缩**（`whitespace-nowrap` + 不带 `overflow: hidden`，见下面
+ * 触发器上的注释）：它今天是全排唯一"必须看得见"的字，放不下时先挤按钮的内边距与
+ * 旁边那个会出省略号的模型名——实测 `scrollWidth == clientWidth`（27 = 27）。
  */
 export function ContextGauge() {
   const chat = useChat()
@@ -342,16 +421,21 @@ export function ContextGauge() {
   const error = chat.contextUsage.error
   if (!chat.conversationId) return null
 
-  // 条形宽度按整数百分比画（像素量级），文字读数走 `formatPercent`（10% 以下留一位小数）
-  const percent = usage ? Math.round(Math.min(1, Math.max(0, usage.ratio)) * 100) : 0
-  const percentText = formatPercent(usage ? Math.min(1, Math.max(0, usage.ratio)) * 100 : null)
+  // 环的推进量按 0..1 的占用比画；文字读数走 `formatPercent`（10% 以下留一位小数）
+  const ratio = usage ? Math.min(1, Math.max(0, usage.ratio)) : 0
+  // 菜单里那行括号用整数百分比（口径与旧版一致：菜单给整数，行上给小数的读数）
+  const percent = Math.round(ratio * 100)
+  const percentText = formatPercent(usage ? ratio * 100 : null)
+  // 行上那一格的字：有读数给比率，出错说"不可用"，还没回来给占位符
+  // （**不给 0%**——0% 的含义是"确实没占"，而"还没读到"不是它）
+  const label = error ? '不可用' : usage ? percentText : '—'
 
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
         <button
           type="button"
-          // `min-w-0`：放不下时让这一格里的字出现省略号，而不是把整行顶出去
+          // `min-w-0`：整行真放不下时让**按钮**先缩进自己的横内边距，而不是把整行顶出去
           className={`${TRIGGER} min-w-0`}
           aria-label="上下文用量"
           // 精确到个位数的读数放悬停里（行上只放比率，见上面那段说明）
@@ -361,17 +445,15 @@ export function ContextGauge() {
               : '上下文用量'
           }
         >
-          <span className="inline-flex min-w-0 items-center gap-[var(--space-1-5)]">
-            <span className="tabular truncate">
-              {error ? '上下文读数不可用' : usage ? `上下文已用 ${percentText}` : '正在读上下文…'}
-            </span>
-            {/* 一圈很细的占用条：它替掉"再去点开看一眼"那一步（不许被压扁） */}
-            <span className="inline-block h-[4px] w-[28px] shrink-0 overflow-hidden rounded-[2px] bg-[var(--bg-active)]">
-              <span
-                className="block h-full bg-[var(--text-tertiary)]"
-                style={{ width: `${percent}%` }}
-              />
-            </span>
+          {/* 内层这一格**不参与收缩**：环是 `shrink-0`，读数是 `whitespace-nowrap`
+              且**不带** `overflow: hidden`——于是它的最小宽度就是这几个字的宽度。
+              上一版是 `min-w-0 truncate`：`overflow: hidden` 会把自动最小尺寸变成 0，
+              它因此第一个被压扁（实测 `clientWidth 23 / scrollWidth 27`，数字被截，
+              与用户报的"百分比看不见"是同一个毛病）。现在放不下时先挤按钮自己那 8px
+              横内边距，再挤旁边那个本来就出省略号的模型名——读数不动。 */}
+          <span className="inline-flex items-center gap-[var(--space-1-5)]">
+            <ContextRing ratio={ratio} />
+            <span className="tabular whitespace-nowrap">{label}</span>
           </span>
         </button>
       </DropdownMenu.Trigger>
@@ -415,7 +497,11 @@ export function ContextGauge() {
               </ul>
               {usage.compress_at > 0 ? (
                 <p className={`${NOTE} leading-[1.5]`}>
-                  到 {formatCount(usage.compress_at)} 会自动压缩（先剪旧工具结果，再摘要）。
+                  {/* `compress_at` 是**百分比**（后端 `chat.compress_at` 设置项，
+                      见 `backend/app/api/v1/schemas.py` 与该文件里「自动压缩阈值：{n}%」
+                      那句），不是 token 数：此前直接 `formatCount` 打出来是"到 70 会
+                      自动压缩"——既少了 `%`，也把一个百分比当成了数量。 */}
+                  到 {usage.compress_at}% 会自动压缩（先剪旧工具结果，再摘要）。
                 </p>
               ) : null}
               {usage.estimated && usage.note ? (

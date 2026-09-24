@@ -62,6 +62,29 @@ export function statsOf(data: PluginList | undefined): PackStats {
   }
 }
 
+/**
+ * 0 计数的筛选项不渲染（「全部」与**当前选中项**除外）。
+ *
+ * 用户反馈（2026-09-24）：能力菜单里的来源筛选"整简洁一点"——原先是
+ * `全部 7 / 随代码发布 5 / 从市场装 2 / 手动放入 0 / 未进提示词 0`，两颗 0 的胶囊
+ * 占着位置却点不出任何东西。计数为 0 意味着"切过去是空列表"，那不叫筛选入口；
+ * 列表为空那句话已经交代了结果。
+ *
+ * 两个例外：
+ * - 「全部」永远留着：它是"能看到全部"的那一颗，也是空态那句"把筛选切回「全部」"的去处；
+ * - 当前选中项留着：它若被自己的计数藏掉，筛选栏会出现"一颗都没亮"的错位状态，
+ *   而列表正因这条筛选是空的——留一颗亮着的胶囊，才说得清列表为什么是空的。
+ *
+ * 放在这个模块（而不是各调用点）是因为它**与数据无关、三个筛选栏同一口径**：
+ * 技能 / 插件 / 插件包三排胶囊形状相同，规则也该相同；父页面本来就依赖本模块（`statsOf`）。
+ */
+export function withoutEmptyCounts<T extends string>(
+  items: readonly { key: T; label: string; count: number }[],
+  value: T,
+): { key: T; label: string; count: number }[] {
+  return items.filter((item) => item.count > 0 || item.key === 'all' || item.key === value)
+}
+
 function sourceLabel(record: PluginPack): string {
   return record.source === 'builtin' ? '随代码发布' : '放在数据目录'
 }
@@ -155,7 +178,12 @@ export function PluginPackPanel() {
         </div>
       </header>
 
-      <FilterChips items={filters} value={filter} onChange={setFilter} ariaLabel="插件包筛选" />
+      <FilterChips
+        items={withoutEmptyCounts(filters, filter)}
+        value={filter}
+        onChange={setFilter}
+        ariaLabel="插件包筛选"
+      />
       {list.isLoading && <SkeletonBlock variant="list" rows={3} />}
 
       {!list.isLoading && visible.length === 0 && (

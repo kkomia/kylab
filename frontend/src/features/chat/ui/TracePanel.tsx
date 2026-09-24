@@ -164,6 +164,22 @@ function Citations({ turnIndex, sources }: { turnIndex: number; sources: ChatSou
   )
 }
 
+/**
+ * "本轮带了什么"那一句：长期记忆与人设的注入量。
+ *
+ * 为什么值得常驻这一行：四份人设文件**每轮都进 system prompt**（实测占三成多），
+ * 但界面上原先只有在输入框那个折叠的上下文仪表里才看得到"记忆与人设"一项，
+ * 首轮之前它根本不渲染——于是用户的体感是"我写了 SOUL.md，它好像没读"
+ * （用户原话："全程没有生效"）。把数字放到**这一轮的边上**之后，
+ * "带了没带、带了多少"就不再是个需要推断的问题。
+ *
+ * 数字来自 `GET /chat/context-usage` 的 `memory` 项（`chars` / `tokens`）；
+ * 这里**不复述任何文件内容**，只报数量。
+ */
+function memoryNote(chars: number, tokens: number): string {
+  return `本轮带入长期记忆与人设 ${formatCount(chars)} 字（约 ${formatCount(tokens)} tokens）`
+}
+
 export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn }) {
   const chat = useChat()
   const reply = turn.reply as ChatMessage | null
@@ -171,6 +187,16 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
 
   const open = chat.traceOpen(reply)
   const view = chat.traceView(turnIndex, turn)
+
+  /**
+   * 只在**最新一轮**挂那一句：上下文用量是按会话（当前提示词）算的，
+   * 挂在每一轮上会让旧轮次也宣称"本轮带了 N 字"，而它当时带的是那时那份
+   * （用户改过记忆文件之后，两个数字就不一样了）。旧轮次不该替历史下结论。
+   */
+  const latest = turnIndex === chat.turns.length - 1
+  const memory = chat.contextUsage.data?.items.find((item) => item.kind === 'memory')
+  const memoryText =
+    latest && memory && memory.chars > 0 ? memoryNote(memory.chars, memory.tokens) : ''
 
   return (
     <>
@@ -191,6 +217,19 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
           </span>
         )}
       </button>
+
+      {/*
+        "带了什么"常驻、且**与面板是否展开无关**：它回答的是"这一轮它记得我什么"，
+        而这件事在收起状态下同样是用户要看的（原先唯一的读法在输入框那个折叠仪表里）。
+      */}
+      {memoryText ? (
+        <p
+          className="tabular mt-[var(--space-1)] m-0 text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]"
+          title="SOUL.md / PROFILE.md / AGENTS.md / MEMORY.md 四份文件每轮整份注入 system prompt，与记忆服务是否连通无关；这个数来自 GET /chat/context-usage 的「记忆与人设」一项（估算值）。"
+        >
+          {memoryText}
+        </p>
+      ) : null}
 
       {open ? (
         <div className="mt-[var(--space-3)]">

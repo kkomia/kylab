@@ -42,6 +42,7 @@ import {
   getMemory,
   getMemoryFile,
   getMemoryGraph,
+  probeMemory,
   recallMemory,
   reindexMemory,
   rememberMemory,
@@ -166,6 +167,26 @@ export function MemoryPage() {
     queryKey: MEMORY_GRAPH_KEY,
     queryFn: getMemoryGraph,
     enabled: graphWanted,
+  })
+  /**
+   * 连通性**真的探一次**（挂载时）。
+   *
+   * 为什么非探不可：`GET /memory` 从不打远端（它每次刷新都被调），所以
+   * `status.reachable` 常态是 `null`，界面于是长期显示「已启用」——
+   * 用户看到的是"服务其实没起，我却以为它在工作"（真实那次：ReMe 不可达，
+   * 状态栏仍写「已启用」，按一下召回才报错）。`probe` 是唯一说得出真话的端点，
+   * 而它一直是**全前端零调用**（`api/memory.ts` 里那个函数没人用）。
+   *
+   * 只有管理员探：那个端点打的是 `memory.base_url`（管理员填的地址），
+   * 权限档与设置页其它「测试连接」一致。成员账号保持"未探测"这一态——
+   * 那一态本身也要如实说（见下面的 `statusView`），不能拿它冒充"已连接"。
+   */
+  const probe = useQuery({
+    queryKey: ['memory', 'probe'],
+    queryFn: probeMemory,
+    enabled: isAdmin,
+    retry: false,
+    staleTime: 60_000,
   })
 
   const files = useMemo(() => overview.data?.files ?? [], [overview.data])
@@ -330,17 +351,35 @@ export function MemoryPage() {
     void openFile(path)
   }
 
+  /**
+   * 状态标签：**"没探测"与"连不上"是两件事**（用户报的"常态显示已启用"）。
+   *
+   * `probe.data.reachable` 才是探过的结论（`true` / `false`）；`null` 只剩两种情形：
+   * 成员账号（探测端点管理员专属）与还在探。这两种都不能冒充"已连接"——
+   * 所以标签分别写「连通性未知」与「检查中」，并在 title 里说清为什么。
+   */
+  const probed = probe.data?.reachable ?? null
   const statusView = !status
-    ? { label: '读取中', tone: 'neutral' as const }
+    ? { label: '读取中', tone: 'neutral' as const, hint: '' }
     : !status.enabled
-      ? { label: '未启用', tone: 'neutral' as const }
-      : // `reachable === null` = **这次没探测**（GET /memory 不打远端）：
-        // 这时只能说"已启用"，不能说"未连接"——那是替一个没发生过的检查下结论
-        status.reachable === null
-        ? { label: '已启用', tone: 'neutral' as const }
-        : status.reachable
-          ? { label: '记忆服务正常', tone: 'success' as const }
-          : { label: '记忆服务未连接', tone: 'warning' as const }
+      ? {
+          label: '未启用',
+          tone: 'neutral' as const,
+          hint: '记忆服务没开：召回与自动沉淀不工作；四份文件的注入与编辑不受影响。',
+        }
+      : isAdmin && probe.isPending
+        ? { label: '检查中', tone: 'neutral' as const, hint: '正在测试记忆服务的连通性。' }
+        : probed === true
+          ? { label: '记忆服务正常', tone: 'success' as const, hint: probe.data?.detail ?? '' }
+          : probed === false
+            ? { label: '记忆服务未连接', tone: 'warning' as const, hint: probe.data?.detail ?? '' }
+            : probe.isError
+              ? { label: '连通性未知', tone: 'neutral' as const, hint: messageOf(probe.error) }
+              : {
+                  label: '已启用',
+                  tone: 'neutral' as const,
+                  hint: '连通性没探测过（只有管理员能测）；这不代表服务连得上。',
+                }
 
   // 显式类型：文件那一档多一个 `count`，不给类型的话它是个"有些成员没有该属性"的联合
   const tabItems: { value: Tab; label: string; count?: number }[] = TABS.map((item) =>
@@ -355,7 +394,7 @@ export function MemoryPage() {
           <StatusTag
             label={statusView.label}
             tone={statusView.tone}
-            title={status?.detail || undefined}
+            title={statusView.hint || status?.detail || undefined}
           />
           {/* 「设置」就在这一页（v0.26）：开关与服务地址原先挂在「总设置 → 功能」，
               而这一页顶着一句"记忆服务未启用"——同一个东西的说明和开关隔着两个菜单 */}
@@ -414,6 +453,20 @@ export function MemoryPage() {
         </Notice>
       )}
 
+      {/*
+        服务不通时的**范围说明**（用户报的"状态说已启用、其实没连上"）。
+        关键是范围说对：不通的是"召回 + 自动沉淀"这两件要打远端的事，
+        而四份文件的**注入与编辑是本地读文件**——它们照常工作。
+        说反了（例如让人以为人设也失效了）会让用户去改一件本来没事的东西。
+      */}
+      {status?.enabled && probed === false && (
+        <Notice tone="warn" icon={<AlertCircle size={15} />}>
+          {`记忆服务未连接：召回过去的记忆与自动沉淀不可用；四份核心文件（SOUL.md / PROFILE.md / AGENTS.md / MEMORY.md）的每轮注入与编辑不受影响。${
+            probe.data?.detail ? `（探测结果：${probe.data.detail}）` : ''
+          }`}
+        </Notice>
+      )}
+
       {overview.isLoading ? (
         <SkeletonBlock variant="list" rows={6} />
       ) : (
@@ -466,6 +519,17 @@ export function MemoryPage() {
                     onChange={(event) => setFilter(event.target.value)}
                   />
                 </label>
+
+                {/*
+                  「每轮注入」这件事要**在文件一进来就说**（原先只有列表行那枚标记
+                  「每轮注入」与编辑器标题旁的 ⓘ）：用户改了 SOUL.md 却感觉不到差别，
+                  第一个动作就是来这里确认"它到底进没进提示词"。
+                  写成常驻一行，那个问题进来就有答案。
+                */}
+                <p className="m-toolbar-note" data-testid="memory-inject-note">
+                  {'核心四份（SOUL.md / PROFILE.md / AGENTS.md / MEMORY.md）每轮整份注入提示词，' +
+                    '与记忆服务是否连通无关；只有召回与自动沉淀需要服务在跑。'}
+                </p>
 
                 {overview.data?.truncated && (
                   <p className="m-toolbar-note">

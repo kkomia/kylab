@@ -193,9 +193,10 @@ def test_allow_always_remembers_the_rule_and_stops_asking(workspace, monkeypatch
 def test_deny_refuses_with_the_same_doorway_out(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """用户点了「拒绝」：不执行，回给模型的话**仍要带那两条出路**。
 
-    与老行为一致的部分：`_refused` 的摘要（"没有执行（策略拦下）"）、
-    「设置 → 沙箱执行」这个人话路径、以及建议的放行规则。
-    多出来的只有一句"对方拒绝了"——那句话必须准确，模型才知道别再重试这条。
+    与老行为一致的部分：「设置 → 沙箱执行」这个人话路径、以及建议的放行规则。
+    摘要（过程面板那一行）现在**点明是哪一道闸**（"对方没批准：拒绝"）——
+    用户点开轨迹要能分清"我自己点了拒绝"与"策略拦的、我得去改设置"。
+    多出来的还有一句"对方拒绝了"——那句话必须准确，模型才知道别再重试这条。
     """
     _available(monkeypatch)
     calls = _no_run(monkeypatch)
@@ -205,11 +206,46 @@ def test_deny_refuses_with_the_same_doorway_out(workspace, monkeypatch) -> None:
     )
     assert calls == []
     assert outcome.ran is False
-    assert outcome.summary == "没有执行（策略拦下）"
+    assert outcome.summary == "没有执行（对方没批准：拒绝）"
     assert "拒绝" in outcome.text
     assert "sandbox.exec_policy" not in outcome.text  # 给用户看的是界面路径，不是配置键
     assert "设置 → 沙箱执行" in outcome.text
     assert "Bash(ls" in outcome.text
+
+
+def test_each_refusal_names_its_own_gate(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**每一种"没执行"都要报出是谁拦的**——这一行是用户判断"该去改哪里"的唯一依据。
+
+    原先四种原因（拒绝规则 / 总开关设成拒绝 / 需确认但没人可问 / 对方没批准）
+    共用一句"没有执行（策略拦下）"：用户在过程面板上看到它，分不清是规则的锅
+    还是自己刚才点错了。这条用例把四句钉在一起——任一处退回泛泛而谈就会红。
+    """
+    _available(monkeypatch)
+    _no_run(monkeypatch)
+    runtime = workspace.runtime
+
+    runtime._values["sandbox.rules_deny"] = "Bash(rm:*)"
+    denied = run_command(workspace, _admin(), conversation_id=None, args={"command": "rm -rf x"})
+    assert denied.summary == "没有执行（拒绝规则拦下）"
+
+    runtime._values.pop("sandbox.rules_deny", None)
+    runtime._values["sandbox.exec_policy"] = "deny"
+    switched_off = run_command(workspace, _admin(), conversation_id=None, args={"command": "ls"})
+    assert switched_off.summary == "没有执行（命令执行策略设为「拒绝」）"
+
+    # `sandbox` 那一档（不引导但还认）：不直接放行，也不问，摘要要说清"没有可确认的入口"
+    runtime._values["sandbox.exec_policy"] = "sandbox"
+    legacy = run_command(workspace, _admin(), conversation_id=None, args={"command": "ls"})
+    assert legacy.summary == "没有执行（需确认，但这一轮没有可确认的入口）"
+
+    # 没有界面的链路（定时任务）：确实没执行，而且说的是"没人可确认"
+    runtime._values["sandbox.exec_policy"] = "ask"  # 回到默认档：让流程走到审批那一步
+    nobody = run_command(
+        workspace, _admin(), conversation_id=None, args={"command": "ls"},
+        approval=approval_service.UNAVAILABLE,
+    )
+    assert nobody.summary == "没有执行（对方没批准：这条链路没人可确认）"
+    assert "拒绝" not in nobody.text
 
 
 def test_timeout_is_a_refusal_and_says_nobody_answered(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -46,9 +46,29 @@ function detailIsRawJson(detail: string): boolean {
   return /^\s*\{\s*"[\w.]+"\s*:/.test(detail)
 }
 
+/**
+ * "被拦下 / 在等确认"的那几个摘要（二：这一行**默认展开**）。
+ *
+ * 判据只能是这句话本身：`StepEvent` 没有"成功/失败"这一维度，
+ * 拦下与跑完都是 `status: done`。所以按**执行器写死的句式**认——
+ * `agent_exec._refused` / `_awaiting` 与 `tool_loop._blocked_by_mode` 的摘要
+ * 都是「没有执行（…拦下）」「等待确认」，还有权限与隔离那两条
+ * （「…不能执行命令」「…拒绝执行」）。老快照里的措辞（"计划档拦下"）也在词表里，
+ * 因为它就躺在用户正打开的那些会话里。
+ *
+ * 为什么值得默认展开：用户问"它怎么没做成这件事"时，答案就在这一行下面
+ * （被哪条规则拦的、等的是哪一次确认、原文是什么）。折起来等于把答案藏在一次点击后面，
+ * 而"这一行说的不是成功，是拦截"恰恰是最需要一眼看见的一句。
+ */
+const REFUSAL_MARKS = ['没有执行', '等待确认', '拒绝执行', '不能执行命令']
+
+export function isRefusalDetail(detail: string): boolean {
+  return REFUSAL_MARKS.some((mark) => detail.includes(mark))
+}
+
 export function TraceStepRow({
   step,
-  open,
+  open: hostOpen,
   onToggle,
   variant = 'plain',
 }: {
@@ -61,6 +81,21 @@ export function TraceStepRow({
 }) {
   /** 展开入口只在真有原文时给：没有原文却画个能点的箭头，点了什么都不变。 */
   const hasDetail = Boolean(step.args || step.result)
+
+  /**
+   * **用户的点击压过默认值**（`null` = 他还没点过）。
+   *
+   * 拦下的行默认展开，但**不能变成折不起来**：点一下就该收起。
+   * 所以真正的取值是"他选了就听他的，否则看默认值"，而宿主那份状态照样同步
+   * （`onToggle`）——两处一起更新，下一次重渲染才不会把用户刚收起的那一行弹回去。
+   */
+  const [userChose, setUserChose] = useState<boolean | null>(null)
+  const refusal = isRefusalDetail(step.detail)
+  const open = userChose ?? (hostOpen || refusal)
+  const toggle = () => {
+    setUserChose(!open)
+    onToggle()
+  }
 
   /**
    * **超长返回先只给预览**（P2-1，照 ZCode 的两级懒加载 `previewBytes/fullBytes`）。
@@ -110,12 +145,12 @@ export function TraceStepRow({
               className="inline-flex shrink-0 items-center justify-center w-[18px] h-[18px] p-0 rounded-[var(--radius-control)] cursor-pointer [transition:var(--transition-ui)] hover:bg-[var(--bg-hover)]"
               aria-expanded={open}
               aria-label={`${step.label}的原文`}
-              onClick={onToggle}
+              onClick={toggle}
             >
               <ChevronDown className={caretClass(open)} size={12} />
             </button>
           ) : hasDetail ? (
-            <button type="button" className={STEP_TOGGLE} aria-expanded={open} onClick={onToggle}>
+            <button type="button" className={STEP_TOGGLE} aria-expanded={open} onClick={toggle}>
               {step.label}
               <ChevronDown className={caretClass(open)} size={12} />
             </button>

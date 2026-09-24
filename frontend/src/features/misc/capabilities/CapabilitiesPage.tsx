@@ -21,6 +21,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   Check,
+  Ellipsis,
   Pencil,
   Plus,
   RefreshCw,
@@ -58,6 +59,12 @@ import { notifyError, notifySuccess } from '../shared/toast'
 import { Badge } from '@/ui/badge'
 import { Button } from '@/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/ui/dropdown-menu'
 import { Input } from '@/ui/input'
 import { Tabs, TabsList, TabsTrigger } from '@/ui/tabs'
 import { Textarea } from '@/ui/textarea'
@@ -73,7 +80,7 @@ import {
   StatusTag,
   type TagTone,
 } from '../shared/composites'
-import { PLUGINS_QUERY_KEY, PluginPackPanel, statsOf } from './PluginPackPanel'
+import { PLUGINS_QUERY_KEY, PluginPackPanel, statsOf, withoutEmptyCounts } from './PluginPackPanel'
 import { SkillMarketDialog } from './SkillMarketDialog'
 // 上面那个渲染件的样式**跟着一起引**：知识域的路由是懒加载的，`knowledge.css` 只在那几个
 // chunk 里加载（实测能力页上没有任何 `.kb-md-*` 规则）——少了它，正文就是裸 HTML
@@ -468,24 +475,47 @@ export function CapabilitiesPage() {
               />
             </label>
             <div className="m-market-actions">
-              {/* 「逛市场」放在动作组最前（它是这一页最主要的"添置东西"的入口），
-                  而「重新扫描」留在最后：那是本地目录变了之后的补救动作。
-                  **只给管理员**：安装是往提示词里加东西，后端也要求管理员 */}
-              {isAdmin && (
-                <Button size="sm" onClick={() => setMarketOpen(true)}>
-                  <Plus size={14} />
-                  浏览市场
+              {/* **首屏只留一个主动作**（用户反馈："skill 源建议整简洁一点，主要靠用户
+                  手动安装吧"）。「浏览市场」留主位：它是"用户给自己装一个技能"这条主动作
+                  唯一的入口；「重新扫描」是本地目录变了之后的补救动作，低频，收进「更多」
+                  ——功能一个不少，只是多一层。
+
+                  **不是管理员时反过来**：市场入口只给管理员（后端也要求），那时「重新
+                  扫描」自己顶上主位，且不再给一个只有一项的「更多」（空菜单比没有菜单更糟）。 */}
+              {isAdmin ? (
+                <>
+                  <Button size="sm" onClick={() => setMarketOpen(true)}>
+                    <Plus size={14} />
+                    浏览市场
+                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button size="sm" variant="secondary" aria-label="更多">
+                        <Ellipsis size={14} />
+                        更多
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" sideOffset={4} className="min-w-[148px]">
+                      <DropdownMenuItem onSelect={() => void reloadSkills()}>
+                        <RefreshCw size={14} />
+                        重新扫描
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </>
+              ) : (
+                <Button size="sm" variant="secondary" onClick={() => void reloadSkills()}>
+                  <RefreshCw size={14} />
+                  重新扫描
                 </Button>
               )}
-              <Button size="sm" onClick={() => void reloadSkills()}>
-                <RefreshCw size={14} />
-                重新扫描
-              </Button>
             </div>
           </header>
 
+          {/* 0 计数的来源不占位置：原先是五颗胶囊（`手动放入 0` / `未进提示词 0` 也在），
+              一排里两颗点不出任何东西——规则见 `withoutEmptyCounts` */}
           <FilterChips
-            items={skillFilters}
+            items={withoutEmptyCounts(skillFilters, skillFilter)}
             value={skillFilter}
             onChange={setSkillFilter}
             ariaLabel="技能筛选"
@@ -507,7 +537,7 @@ export function CapabilitiesPage() {
                 skills.length > 0
                   ? '换个关键词，或者把筛选切回「全部」。'
                   : isAdmin
-                    ? '点右上角的「浏览市场」装一个；本地已经有技能目录的话，点「重新扫描」。'
+                    ? '点右上角的「浏览市场」装一个；本地已经有技能目录的话，点「更多」里的「重新扫描」。'
                     : '点右上角的「重新扫描」，把本地的技能目录读进来。'
               }
             />
@@ -553,21 +583,23 @@ export function CapabilitiesPage() {
                         「被丢弃」与「被拦下」是两件事：前者是 frontmatter 不合规
                         （缺 name/description、描述超长），整个技能不加载；
                         后者是能用但这一轮不给模型看。标签分开写，理由在下面那行里。
-                        能用的也标一下：同一列里"哪些不算数"要一眼扫得出来。
+
+                        **「可用」不挂**（2026-09-24 用户反馈：来源相关的那些徽标能收的收）：
+                        它是默认状态，同一列里逐卡重复 N 遍，而"几个能用"页头那颗
+                        「技能 7 / 7 可用」已经说过一次了。卡上只留**例外**——
+                        一眼扫过去，有标的就是不算数的。
                       */}
                       {skill.discarded ? (
                         <Badge variant="warning">
                           <AlertCircle size={12} />
                           已丢弃
                         </Badge>
-                      ) : skill.used_by_prompt ? (
-                        <Badge variant="secondary">可用</Badge>
-                      ) : (
+                      ) : !skill.used_by_prompt ? (
                         <Badge variant="warning">
                           <AlertCircle size={12} />
                           未进提示词
                         </Badge>
-                      )}
+                      ) : null}
                     </div>
                     {/* 中文优先（v0.28）：技能描述基本都是英文，而这一页是给中文用户看的。
                      **一行**，多的部分进详情弹窗——卡片的宽度不该由最长的那条描述决定 */}
@@ -620,8 +652,9 @@ export function CapabilitiesPage() {
             </div>
           </header>
 
+          {/* 同一口径：一排里 0 的那几档不占位置（见 `withoutEmptyCounts`） */}
           <FilterChips
-            items={serverFilters}
+            items={withoutEmptyCounts(serverFilters, serverFilter)}
             value={serverFilter}
             onChange={setServerFilter}
             ariaLabel="插件筛选"
@@ -772,17 +805,14 @@ export function CapabilitiesPage() {
                 </ul>
               )}
               {/* 来源：卡片上已经不摆它了（那是每张卡都重复的同一条噪音，评审 G2），
-                  但"从哪儿来的"仍要说得出——它同时决定了能不能在这里卸载 */}
+                  "从哪儿来的"只在详情里说一句。
+                  **一件东西一句话**：原来是一个来源徽标 + 一行 12px 说明（说的还是同一件
+                  事），两件并排等于谁也没被读到；现在合成一行灰字——
+                  徽标留给"状态"（被丢弃 / 未进提示词 / 连接正常），来源是**出处**，不是状态。 */}
               {skillDetail && (
                 <p className="m-detail-meta">
-                  <Badge variant={isFromMarket(skillDetail) ? 'default' : 'secondary'}>
-                    {sourceLabelOf(skillDetail)}
-                  </Badge>
-                  {isFromMarket(skillDetail) && (
-                    <span className="text-meta">
-                      从市场装的，可以在这里卸载（随代码发布的那些卸不掉）
-                    </span>
-                  )}
+                  <span>{sourceLabelOf(skillDetail)}</span>
+                  {isFromMarket(skillDetail) && <span>· 市场安装，可在下方卸载</span>}
                 </p>
               )}
               {/* 完整描述（卡片上只有一行，长的进这里）：中文简介优先，

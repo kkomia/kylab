@@ -33,6 +33,17 @@ export const NOTE_BODY_TTL_MS = 60_000
 /** 本机偏好：列表是否折叠。不进后端设置——"这台机器怎么显示"换台机器该重选。 */
 export const NOTES_LIST_COLLAPSED_STORAGE_KEY = 'kylab-notes-list-collapsed'
 
+/**
+ * 本机偏好：标签区是否折叠。
+ *
+ * 与列表折叠同一类东西（"这台机器怎么显示"），同一套写法落 `localStorage`。
+ * **默认是折叠**（用户反馈 2026-09-24："标签在笔记目录里面不默认展开，不然标签一多
+ * 就太多了"）：真实数据里三组 7 个 chip 就占掉左栏 150px（左栏高 856px 的 17.5%），
+ * 而且标签越多它长得越高——时间分组还会折行，一行行把笔记列表往下推。
+ * 这一层是"次要的筛选项"，默认收起来、用时点开，是它的正确默认值。
+ */
+export const NOTES_TAGS_COLLAPSED_STORAGE_KEY = 'kylab-notes-tags-collapsed'
+
 /* ------------------------------------------------------------------ 查询键 */
 
 export const notesQueryKeys = {
@@ -315,6 +326,34 @@ export function writeListCollapsed(collapsed: boolean): void {
   try {
     if (collapsed) window.localStorage.setItem(NOTES_LIST_COLLAPSED_STORAGE_KEY, '1')
     else window.localStorage.removeItem(NOTES_LIST_COLLAPSED_STORAGE_KEY)
+  } catch {
+    // 存不上就只在本次会话生效
+  }
+}
+
+/**
+ * 读标签区折叠偏好。
+ *
+ * 与上面那条**方向相反**：标签区的默认值是**折叠**，所以只有显式存过 "0"（用户把它
+ * 展开了）才返回 false——没存过、存了别的、存储不可读（隐私模式）一律按默认的折叠走。
+ */
+export function readTagsCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(NOTES_TAGS_COLLAPSED_STORAGE_KEY) !== '0'
+  } catch {
+    return true
+  }
+}
+
+/**
+ * 写标签区折叠偏好。
+ *
+ * 同样只写**非默认值**：折叠是默认，展开才落一条 "0"。
+ */
+export function writeTagsCollapsed(collapsed: boolean): void {
+  try {
+    if (collapsed) window.localStorage.removeItem(NOTES_TAGS_COLLAPSED_STORAGE_KEY)
+    else window.localStorage.setItem(NOTES_TAGS_COLLAPSED_STORAGE_KEY, '0')
   } catch {
     // 存不上就只在本次会话生效
   }

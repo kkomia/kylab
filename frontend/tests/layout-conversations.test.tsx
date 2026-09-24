@@ -219,7 +219,11 @@ describe('侧栏的会话分区', () => {
     listWorkspacesMock.mockResolvedValue({ items: [workspace({ id: 'w1', name: '合同整理' })] })
     const first = renderShell('/workspaces?focus=w1')
 
-    const focused = await screen.findByRole('button', { name: /合同整理/ })
+    // `/^合同整理/` 这个锚点是**新加的那个「+」逼出来的**：行自己的可及名以项目名开头，
+    // 而行右端那颗「+」的名字是「在项目「合同整理」里新建会话」（它必须说明是给哪个项目
+    // 新建，所以名字里也带项目名）——不加锚点这里会同时命中两个按钮。
+    // 收紧的只是选择器，判定一个字没动。
+    const focused = await screen.findByRole('button', { name: /^合同整理/ })
     expect(focused).toHaveAttribute('aria-current', 'page')
     expect(focused.className).toContain('bg-[var(--bg-selected)]')
     const allProjects = screen.getByRole('button', { name: '全部项目' })
@@ -232,7 +236,7 @@ describe('侧栏的会话分区', () => {
     const allProjects2 = await screen.findByRole('button', { name: '全部项目' })
     expect(allProjects2).toHaveAttribute('aria-current', 'page')
     expect(allProjects2.className).toContain('bg-[var(--bg-selected)]')
-    expect(screen.getByRole('button', { name: /合同整理/ })).not.toHaveAttribute('aria-current')
+    expect(screen.getByRole('button', { name: /^合同整理/ })).not.toHaveAttribute('aria-current')
   })
 
   it('归档之后那条会话立刻从侧栏消失（归档不是删除）', async () => {

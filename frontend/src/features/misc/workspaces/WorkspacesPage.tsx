@@ -219,7 +219,7 @@ export function WorkspacesPage() {
       {!list.isLoading && workspaces.length === 0 && (
         <EmptyState
           title="还没有工作区"
-          hint="建一个，把项目目录和它用的知识库绑在一起；在这个工作区里开的会话会自动带上这些库。"
+          hint="建一个，给它一个项目目录；绑的知识库会作为这个项目里新会话的默认资料范围（不绑也能用：对话里用 @ 点一个库，或用输入框的「知识库」临时勾）。"
         >
           <Button onClick={() => setCreating(true)}>新建工作区</Button>
         </EmptyState>

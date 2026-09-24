@@ -21,8 +21,9 @@ import type { ReactNode } from 'react'
  * 横内边距 `space-2`（8px，第三批评审 A②）而不是 `space-3`：那一行六个胶囊要在一张
  * 768 的卡片里排成一行，12px 时整行要 751px、卡片只有 742px——多出来的十几像素正是
  * "整格折到第二行"的来源。收窄这一处（六个胶囊同时跟上，仍是一种形状），整行才有
- * 余量：默认字号下，读数那格写比率时留 ~34px，写「上下文读数不可用」时留 ~13px
- * （最长的就是这句）——都够；再往后（更大字号、更窄的窗口）由左组折行接住。
+ * 余量。**2026-09-24 起读数那一格换成环 + 比率**（`ContextGauge`，16px 的环替掉原来
+ * 那条 28px 的占用条），它自己从 ~111px 收到 ~70px，是这一排里省得最多的一格；
+ * 再往后（更大字号、更窄的窗口）仍由左组折行接住。
  */
 export const CONTROL_TRIGGER =
   'inline-flex h-[var(--control-height)] cursor-pointer items-center gap-[var(--space-1-5)] ' +

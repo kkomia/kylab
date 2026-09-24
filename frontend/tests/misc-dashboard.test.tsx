@@ -132,19 +132,39 @@ describe('驾驶舱', () => {
     renderMisc(<DashboardPage />)
 
     expect(await screen.findByText('产品手册')).toBeInTheDocument()
-    // 文档与索引：主数字是文档总数，注解只说索引的**状态**（失败 / 待索引 / 已索引的百分比）
+    // 文档与索引：主数字是文档总数，注解只说索引的**状态**（失败 / 待索引）
     expect(screen.getByText('文档与索引')).toBeInTheDocument()
     expect(screen.getByText('1 篇失败')).toBeInTheDocument()
     // 原来那张"索引完成率"卡已经并进去了：同一件事不再占两个首屏位置
     expect(screen.queryByText('索引完成率')).toBeNull()
-    // 「近 365 天入库」的注解报**窗口外**的篇数，不再复述总文档数（10 - 4 = 6）
-    expect(screen.getByText('6 篇更早入库')).toBeInTheDocument()
+    // 「近 365 天入库」**不再挂注解**（2026-09-24 删解释小字）：N 篇更早入库等于
+    // 「文档与索引」的总数减这一格的数（两个数就在同一行），"全部在窗口内"则只是复述
+    const recentCard = screen.getByText('近 365 天入库').closest('li') as HTMLElement
+    expect(recentCard.querySelector('.m-figure-note')).toBeNull()
+    expect(screen.queryByText(/更早入库|全部在窗口内/)).toBeNull()
     expect(screen.queryByText('占全部 10 篇')).toBeNull()
     // 知识库规模表的最近活动走相对时间
     expect(screen.getByText(/天前|小时前|刚刚|2026-/)).toBeInTheDocument()
   })
 
-  it('文档与索引：没有失败时注解报"还差多少"，全都索完才说"全部已索引"', async () => {
+  it('大数与图例不再挂"这一页是什么"式的小字（用户点名的那几条，删了就不许长回来）', async () => {
+    renderMisc(<DashboardPage />)
+    await screen.findByText('产品手册')
+
+    for (const gone of [
+      '相互隔离的检索范围',
+      '向量化的最小单位',
+      '不含向量与索引',
+      '全部在窗口内',
+      '颜色越深表示当天入库越多',
+    ]) {
+      expect(screen.queryByText(gone), `这句解释小字不该在：${gone}`).toBeNull()
+    }
+    // 留下的注解都有判据：口径（失败数）与加载态（正在统计…），不是同义复述
+    expect(screen.getByText('1 篇失败')).toBeInTheDocument()
+  })
+
+  it('文档与索引：没有失败时注解报"还差多少"，全都索完则**什么都不说**', async () => {
     getDashboardMock.mockResolvedValue(
       dashboard({ total_documents: 10, indexed_documents: 7, failed_documents: 0 }),
     )
@@ -156,7 +176,11 @@ describe('驾驶舱', () => {
       dashboard({ total_documents: 10, indexed_documents: 10, failed_documents: 0 }),
     )
     renderMisc(<DashboardPage />)
-    expect(await screen.findByText('全部已索引')).toBeInTheDocument()
+    // 全都索完：注解那一行不出现——"全部已索引"是"没有异常"的复述，
+    // 卡片上已经有标签与大数字（2026-09-24 删解释小字那一批）
+    const indexCard = (await screen.findByText('文档与索引')).closest('li') as HTMLElement
+    await waitFor(() => expect(indexCard.querySelector('.m-figure-note')).toBeNull())
+    expect(screen.queryByText('全部已索引')).toBeNull()
     expect(screen.queryByText('0%')).toBeNull()
   })
 
@@ -185,13 +209,15 @@ describe('驾驶舱', () => {
     expect((swatches[0] as HTMLElement).style.background).toContain('color-mix')
   })
 
-  it('用量三态分开说：估算 token 单独标注，别拿它精确对账', async () => {
+  it('用量三态分开说：估算 token 单独标注，只讲口径不下结论', async () => {
     renderMisc(<DashboardPage />)
 
     expect(await screen.findByText(/其中约 5,000 token 是按字符数估算的/)).toBeInTheDocument()
     // 有 token 的按 token 说，没有的（检索/向量化）说条数
     expect(screen.getByText(/共 240 条/)).toBeInTheDocument()
     expect(screen.getByText(/按模型：deepseek-chat（100 次）/)).toBeInTheDocument()
+    // 「这部分只用于看趋势，别拿它精确对账」这类叮嘱已删：口径本身留着，语气不留
+    expect(screen.queryByText(/别拿它精确对账|这部分只用于看趋势/)).toBeNull()
   })
 
   it('趋势能在三个维度之间切换，切换只改取值口径', async () => {

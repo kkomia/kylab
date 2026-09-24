@@ -5,6 +5,10 @@
  * 1. 只有 `daily/` 与 `digest/` 会被召回、核心文件走注入——编辑区上方那句说明要按它分叉；
  * 2. 保存走的是**原文**（含 frontmatter）：`writeMemoryFile(path, 草稿原文)`；
  * 3. 有未保存改动时切文件**先问**，不静默丢。
+ *
+ * 另加一条是用户报出来的："状态常态显示已启用，其实服务没连上"——
+ * 页面挂载时**必须真探一次**（`probeMemory`），并且把"服务不通"的影响范围说对：
+ * 只坏召回与自动沉淀，四份文件的注入与编辑照常（注入是本地读文件）。
  */
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -19,6 +23,7 @@ vi.mock('@/api/memory', () => ({
   recallMemory: vi.fn(),
   rememberMemory: vi.fn(),
   reindexMemory: vi.fn(),
+  probeMemory: vi.fn(),
 }))
 
 vi.mock('@/api/settings', () => ({
@@ -29,6 +34,7 @@ vi.mock('@/api/settings', () => ({
 import {
   getMemory,
   getMemoryFile,
+  probeMemory,
   writeMemoryFile,
   type MemoryFile,
   type MemoryOverview,
@@ -37,10 +43,22 @@ import { layoutGraph } from '@/features/misc/memory/graphLayout'
 import { MemoryPage } from '@/features/misc/memory/MemoryPage'
 import { renderMisc } from '@/features/misc/testing/harness'
 import { resetToasts } from '@/features/misc/shared/toast'
+import { useSessionStore } from '@/lib/session'
 
 const getMemoryMock = vi.mocked(getMemory)
 const getMemoryFileMock = vi.mocked(getMemoryFile)
 const writeMemoryFileMock = vi.mocked(writeMemoryFile)
+const probeMemoryMock = vi.mocked(probeMemory)
+
+/** 记忆页的「设置」与探测端点都是管理员档（成员账号连按钮都不该看见）。 */
+function asAdmin(): void {
+  useSessionStore.setState({
+    token: 'st',
+    currentUser: { id: 'u1', username: 'admin', name: '管理员', role: 'admin', avatar_url: '' },
+    authStatus: null,
+    reloginCount: 0,
+  })
+}
 
 function file(overrides: Partial<MemoryFile> = {}): MemoryFile {
   return {
@@ -122,7 +140,10 @@ function tabState(trigger: HTMLElement) {
 beforeEach(() => {
   vi.clearAllMocks()
   resetToasts()
+  // 默认**成员账号**：探测是管理员端点，多数用例不该顺手打它
+  useSessionStore.setState({ token: '', currentUser: null })
   getMemoryMock.mockResolvedValue(overview())
+  probeMemoryMock.mockResolvedValue({ reachable: true, detail: '服务正常' })
   getMemoryFileMock.mockImplementation(async (path) => ({
     ...file({
       path,
@@ -292,6 +313,48 @@ describe('记忆页', () => {
       await screen.findByText(/磁盘只读（你的改动还在编辑器里，可以再存一次）/),
     ).toBeInTheDocument()
     expect(screen.getByLabelText('记忆文件正文')).toHaveValue('# 核心\n\n- 偏好简洁x')
+  })
+
+  it('挂载时真探一次连通性：不通就如实说「未连接」，并把影响范围说对', async () => {
+    asAdmin()
+    probeMemoryMock.mockResolvedValue({ reachable: false, detail: '连不上 http://127.0.0.1:8790' })
+
+    renderMisc(<MemoryPage />)
+
+    // 常态那个「已启用」换成真实结论（用户报的就是它：服务没起，界面还说已启用）
+    expect(await screen.findByText('记忆服务未连接')).toBeInTheDocument()
+    expect(probeMemoryMock).toHaveBeenCalledTimes(1)
+    // 范围说对：坏的只是召回与自动沉淀；注入是本地读文件，照常
+    const banner = document.querySelector('.m-notice-warn') as HTMLElement
+    expect(banner.textContent).toContain('召回过去的记忆与自动沉淀不可用')
+    expect(banner.textContent).toContain('每轮注入与编辑不受影响')
+    expect(banner.textContent).toContain('连不上 http://127.0.0.1:8790')
+  })
+
+  it('服务正常时给「记忆服务正常」，没有那条警告', async () => {
+    asAdmin()
+    renderMisc(<MemoryPage />)
+
+    expect(await screen.findByText('记忆服务正常')).toBeInTheDocument()
+    expect(document.querySelector('.m-notice-warn')).toBeNull()
+  })
+
+  it('成员账号不探（探测是管理员端点），标签说清"没探测过"而不是"已连接"', async () => {
+    renderMisc(<MemoryPage />)
+
+    expect(await screen.findByText('已启用')).toBeInTheDocument()
+    await waitFor(() => expect(getMemoryMock).toHaveBeenCalled())
+    expect(probeMemoryMock).not.toHaveBeenCalled()
+    // 没探测这一态本身也要如实标出来（拿它冒充"已连接"正是原来的毛病）
+    expect(screen.getByText('已启用')).toHaveAttribute('title', expect.stringContaining('没探测过'))
+  })
+
+  it('「每轮注入」这句话常驻文件列表上方（改完 SOUL.md 的第一个问题就是它进没进）', async () => {
+    renderMisc(<MemoryPage />)
+
+    const note = await screen.findByTestId('memory-inject-note')
+    expect(note.textContent).toContain('每轮整份注入提示词')
+    expect(note.textContent).toContain('与记忆服务是否连通无关')
   })
 })
 

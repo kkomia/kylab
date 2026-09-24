@@ -1482,8 +1482,9 @@ def test_plan_mode_blocks_a_write_and_feeds_the_reason_back_to_the_model() -> No
 
     1. **执行器一次都没被叫到**（不是"执行了但结果被丢掉"——那更危险）；
     2. 回灌的那条 tool 消息里带着"为什么被拦 + 怎么办"（没有它，模型只会重试）；
-    3. 步骤的结论是「没有执行（计划档拦下）」，与 ``agent_exec`` 那句
-       「没有执行（策略拦下）」同一个形状——界面与快照都不必为模式新增分支。
+    3. 步骤的结论是「没有执行（Agent 模式「计划」拦下）」，与 ``agent_exec`` 那句
+       「没有执行（…拦下）」同一个形状，但**括号里点明是哪一道闸**——输入框旁边
+       并排摆着「模式」与「命令」两个胶囊，不点名的话用户会去改错的那个设置。
     """
     ran: list[str] = []
     loop, _client = _mode_loop(
@@ -1504,7 +1505,7 @@ def test_plan_mode_blocks_a_write_and_feeds_the_reason_back_to_the_model() -> No
     # 取 **done 那条**：同名步骤有两条（running 先发，见 ``_perform``），
     # 结论在第二条上——第一条的 detail 是空的（"这件事开始了"，还没结果）
     done = [s for s in _steps(events) if s.tool == "create_note" and s.status == "done"]
-    assert [s.detail for s in done] == ["没有执行（计划档拦下）"]
+    assert [s.detail for s in done] == ["没有执行（Agent 模式「计划」拦下）"]
 
 
 def test_plan_mode_lets_read_only_tools_run() -> None:
@@ -1529,7 +1530,7 @@ def test_plan_mode_lets_read_only_tools_run() -> None:
     detail = next(
         s for s in _steps(events) if s.tool == "create_note" and s.status == "done"
     ).detail
-    assert detail == "没有执行（计划档拦下）"
+    assert detail == "没有执行（Agent 模式「计划」拦下）"
 
 
 def test_the_plan_gate_opens_after_the_model_answers_with_text() -> None:

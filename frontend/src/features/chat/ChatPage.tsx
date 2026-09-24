@@ -18,19 +18,46 @@
  * `ui/Dialogs.tsx` 的「存进知识库」弹窗（后者故意还是弹窗，理由见那份文件）。
  *
  * 路由与页面壳由主控接（`src/app/**`）：这一页只管 `/chat/:conversationId?`
- * 那两个参数（会话 id 与 `?new=1`），其余入口一律不改路径。
+ * 那三个参数（会话 id、`?new=1`、`?workspace=<id>`），其余入口一律不改路径。
  */
 import { Toaster } from 'sonner'
 
 // 回答正文的排版（`md-p` / `md-ul` / `md-cite` 那一族，渲染器一直在发这些类名）。
 // 挂在页面这一层而不是某个组件里：消息列表、过程面板、出处列表都要它
 import './ui/chat.css'
-import { ChatProvider } from './runtime/ChatProvider'
+import { ChatProvider, useChat } from './runtime/ChatProvider'
 import { ChatRuntime } from './runtime/ChatRuntime'
 import { ChatThread } from './ui/ChatThread'
 import { Composer } from './ui/Composer'
 import { IngestDialog } from './ui/Dialogs'
 import { SourceSheet } from './ui/Sheets'
+
+/**
+ * 新会话的落点（`?new=1&workspace=<id>`）：**在第一条消息落下之前**就说清这条会话
+ * 归哪个项目。
+ *
+ * 为什么要单独摆这一条：会话在建起来之前，`ChatHeader` 没有标题可显示（它整条不画），
+ * 于是"我刚才点的是哪个项目的新建"在欢迎态里看不见——而落地之后要改就得去
+ * 「移至项目」里找补。建完（地址换成 `/chat/<id>`）这一条自然消失，接棒的是
+ * `ChatHeader` 那句项目名，两处不会同时出现。
+ *
+ * 排版与 `ChatHeader` 对齐：同样是内容列外侧的整条、内容按 `--chat-measure` 居中，
+ * 视觉上属于"这一页的抬头"而不是对话内容。
+ */
+function NewChatScope() {
+  const chat = useChat()
+  if (!chat.pendingWorkspace) return null
+  return (
+    <div className="flex shrink-0 items-center px-[var(--page-gutter)] pt-[var(--space-2)]">
+      <p
+        data-testid="new-chat-scope"
+        className="mx-auto w-full max-w-[var(--chat-measure)] text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]"
+      >
+        在项目「{chat.pendingWorkspace.name}」里新建：第一条消息落下后，这条会话就归在它下面
+      </p>
+    </div>
+  )
+}
 
 export function ChatPage() {
   return (
@@ -42,6 +69,7 @@ export function ChatPage() {
             对着 DeepSeek / Kimi 补上的（原先完全无页头，长会话里滚动后不知道在哪）。
             会话条本身在 `ChatThread` 里、不随消息滚走。 */}
         <div className="flex h-dvh flex-col bg-[var(--bg-canvas)] text-[var(--text-primary)]">
+          <NewChatScope />
           <ChatThread />
           <Composer />
         </div>

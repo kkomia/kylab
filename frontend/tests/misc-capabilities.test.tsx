@@ -182,8 +182,10 @@ describe('能力页', () => {
     const card = (await screen.findByText('pdf-report')).closest('li') as HTMLElement
     // 中文简介优先（`description` 是模型判断"何时该用"的英文触发文本）
     expect(within(card).getByText('把一批文档汇成一份 PDF 报告')).toBeInTheDocument()
-    // 能用的也标出来：同一列里"哪些不算数"要一眼扫得出来
-    expect(within(card).getByText('可用')).toBeInTheDocument()
+    // 能用的**不再逐卡挂「可用」**（那是默认状态，同一列里重复 N 遍是纯噪音，
+    // 而"几个能用"页头那颗「技能 x / y 可用」已经说过一次了）——卡上只留例外
+    expect(within(card).queryByText('可用')).not.toBeInTheDocument()
+    expect(within(card).queryByRole('status')).not.toBeInTheDocument()
     // 来源**不在卡上**（每张卡都挂同一条「随代码发布」是纯噪音），它去了筛选与详情
     expect(within(card).queryByText('手动放入')).not.toBeInTheDocument()
 
@@ -192,6 +194,47 @@ describe('能力页', () => {
     expect(within(broken).getByText('frontmatter 缺 name')).toBeInTheDocument()
     // 状态栏那个数来自后端：1 / 2 可用（斜杠两侧带空格，全站一种写法）
     expect(screen.getByText('技能 1 / 2 可用')).toBeInTheDocument()
+  })
+
+  it('来源筛选：0 计数的来源不占位置，「全部」永远在（用户反馈："整简洁一点"）', async () => {
+    listSkillsMock.mockResolvedValue({
+      items: [
+        skill({ name: 'builtin-a', source: 'builtin' }),
+        skill({ name: 'builtin-b', source: 'builtin' }),
+        skill({ name: 'from-market', source: 'user' }),
+      ],
+      usable: 3,
+    })
+    listInstalledMock.mockResolvedValue({
+      items: { 'from-market': 'github:owner/repo@abc1234#skills/from-market' },
+      total: 1,
+    })
+
+    renderMisc(<CapabilitiesPage />)
+
+    // 先等技能列表到货：计数是从它算出来的（等不到就会读到清一色的 0）
+    await screen.findByText('builtin-a')
+    const chips = screen.getByRole('tablist', { name: '技能筛选' })
+    const labels = [...chips.querySelectorAll('button')].map((chip) => chip.textContent)
+    // 5 颗变 3 颗：`手动放入 0` / `未进提示词 0` 两颗点不出任何东西的胶囊不再占位置
+    expect(labels).toEqual(['全部3', '随代码发布2', '从市场装1'])
+    // "能看到全部"的那一颗必须在
+    expect(within(chips).getByRole('tab', { name: /全部/ })).toBeInTheDocument()
+    expect(within(chips).queryByRole('tab', { name: /手动放入/ })).toBeNull()
+    expect(within(chips).queryByRole('tab', { name: /未进提示词/ })).toBeNull()
+  })
+
+  it('首屏只留一个主动作：浏览市场在主位，「重新扫描」收进「更多」（功能不删）', async () => {
+    renderMisc(<CapabilitiesPage />)
+
+    // 主位那颗就是安装入口
+    expect(await screen.findByRole('button', { name: /浏览市场/ })).toBeInTheDocument()
+    // 补救动作在「更多」里，不再平铺在首屏
+    expect(screen.queryByRole('button', { name: /重新扫描/ })).toBeNull()
+
+    await userEvent.click(screen.getByRole('button', { name: '更多' }))
+    const item = await screen.findByRole('menuitem', { name: /重新扫描/ })
+    expect(item).toBeInTheDocument()
   })
 
   it('技能卡是 2–3 列紧凑网格：摘要只占一行，长描述进详情弹窗', async () => {

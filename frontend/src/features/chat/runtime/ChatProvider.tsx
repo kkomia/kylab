@@ -67,6 +67,10 @@ import {
 } from '@/features/chat/model/turns'
 import { splitSuggestions } from '@/features/chat/model/suggestions'
 
+// 项目清单（壳那一层）：`?workspace=` 那条新建链路要说清"这一条会落在哪个项目"。
+// 侧栏是发起方，这份清单通常已经在手上（`ensureWorkspacesLoaded` 那一下就是补这个）。
+import { ensureWorkspacesLoaded, useWorkspaceStore } from '@/features/layout/workspaces'
+
 import { liveActions, useLiveTurnState, type LiveThinking, type LiveTurnState } from './liveAdapter'
 import { notifyError, notifySuccess, notifyWarning } from './notify'
 import {
@@ -134,10 +138,15 @@ function makeChatMessage(
   return { ...makeMessage(role, text, extra), id: `m${messageSeq}` }
 }
 
-/** `@` 提及里的一条候选（三类共用一个形状，见 `ui/Menus.tsx`）。 */
+/** `@` 提及里的一条候选（四类共用一个形状，见 `ui/Menus.tsx`）。 */
 export interface MentionItem {
-  kind: 'file' | 'skill' | 'session'
-  /** 插进输入框的引用文本（不含前导的 `@`）。 */
+  /**
+   * `knowledge` 那一类与另外三类**做的事不一样**：它不是"往输入框里插一条引用文本"，
+   * 而是**把某个知识库并进这一轮的检索范围**（见 `applyMention`）。
+   * 所以那一类的 `value` 放的是**库 id**（只用来认是哪一份，不插进输入框）。
+   */
+  kind: 'file' | 'skill' | 'session' | 'knowledge'
+  /** 插进输入框的引用文本（不含前导的 `@`）；`knowledge` 那一类放库 id，不插。 */
   value: string
   label: string
   detail: string
@@ -155,6 +164,14 @@ export interface ChatApi {
   pendingEntry: boolean
   /** 第一轮对话之前：欢迎层与输入卡片作为一组居中。 */
   welcome: boolean
+  /**
+   * 这次新建将落到哪个项目（`?new=1&workspace=<id>`，侧栏项目行那颗「+」带来的）；
+   * `null` = 不落在任何项目下（未归档对话），或者项目名还没到手。
+   *
+   * 摆出来是让人**在第一条消息落下之前**就知道这条会话归谁——建完才知道落点，
+   * 事后还得自己去「移至项目」里找补，正是这条链路要修掉的那件事。
+   */
+  pendingWorkspace: { id: string; name: string } | null
   sending: boolean
 
   // —— 流上两条"停在这里等用户"的东西
@@ -467,6 +484,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const conversationId = params.conversationId ?? ''
   /** 显式新建（侧栏「新对话」带来的 `?new=1`）：`/chat` 表示"回到最近一次"。 */
   const wantsNew = Boolean(searchParams.get('new'))
+  /**
+   * 这次新建要落在哪个项目下（`?workspace=<id>`，侧栏项目行那颗「+」带来的）。
+   *
+   * **两个条件都要满足**：是"新建"这条入口（`?new=1`）且还没有会话 id。
+   * 会话一旦建起来，落点就已经写进库里了——地址里再挂着它只会骗人
+   * （`/chat/<id>?workspace=x` 什么都改不了），所以那边一律不认。
+   */
+  const pendingWorkspaceId =
+    wantsNew && !params.conversationId ? (searchParams.get('workspace') ?? '').trim() : ''
 
   const live = useLiveTurnState()
 
@@ -541,6 +567,25 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const models = useMemo(() => registry?.models ?? [], [registry])
   const commands = useMemo(() => commandsQuery.data ?? [], [commandsQuery.data])
   const skills = useMemo(() => skillsQuery.data ?? [], [skillsQuery.data])
+
+  /**
+   * 项目清单：`?workspace=` 那条路上要用它的**名字**（新会话落在哪儿要摆给人看）。
+   * 侧栏是这条入口的发起方，清单通常已经在手上——走 `ensureWorkspacesLoaded`
+   * 只补"没加载过"那一次，与 `ChatHeader` / 「移至项目」同一条口径。
+   */
+  const workspaces = useWorkspaceStore((state) => state.items)
+  useEffect(() => {
+    if (pendingWorkspaceId) void ensureWorkspacesLoaded()
+  }, [pendingWorkspaceId])
+  /**
+   * 摆给用户看的落点。**名字还没到手时给 `null`**（不画）：
+   * 「在项目『』里新建」是一句不成立的话，而它一闪而过同样让人不安。
+   */
+  const pendingWorkspace = useMemo(() => {
+    if (!pendingWorkspaceId) return null
+    const name = workspaces.find((item) => item.id === pendingWorkspaceId)?.name ?? ''
+    return name ? { id: pendingWorkspaceId, name } : null
+  }, [pendingWorkspaceId, workspaces])
 
   /** 这一轮真正发出去的库范围：开关关掉就是空（后端据此跳过检索，就是一轮纯对话）。 */
   const effectiveKbIds = useMemo(() => (useKb ? selectedKbIds : []), [useKb, selectedKbIds])
@@ -798,6 +843,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       context: ChatHistoryMessage[],
       model: string | undefined,
       target: string,
+      /**
+       * 这一轮真正发出去的库范围。默认就是输入框当前那份；**新建那条路上显式给一份**
+       * ——从项目入口进来时，后端按工作区继承下来的那几个库（见 `send`）：
+       * 建会话与发第一轮之间隔着一次往返，闭包里那份 `effectiveKbIds` 可能已经不是
+       * 接口刚刚记下的那份了。
+       */
+      kbIds: string[] = effectiveKbIds,
     ) => {
       setMessages((prev) => [
         ...prev,
@@ -812,7 +864,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       await liveActions.startChatTurn(
         {
           query: text,
-          kb_ids: effectiveKbIds,
+          kb_ids: kbIds,
           skill_names: pinnedSkills,
           history: context,
           conversation_id: target,
@@ -898,7 +950,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * 决定建不建气泡。
    */
   const runCommand = useCallback(
-    async (text: string, target: string, model: string | undefined) => {
+    async (
+      text: string,
+      target: string,
+      model: string | undefined,
+      /** 同 `streamTurn` 的第 5 个参数：新建那条路上把这一轮的库范围显式传进来。 */
+      kbIds: string[] = effectiveKbIds,
+    ) => {
       // **先确保菜单到手**（要真的等一下）：清单空 = 后端没有命令这一层（旧版本），
       // 按普通一轮发出去才是对的（反过来的话，用户会得到一条空回答。
       // 第一次敲 `/plan` 时清单还没请求过，读 hook 上那份会读到 undefined——
@@ -918,7 +976,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
       const payload = {
         query: text,
-        kb_ids: effectiveKbIds,
+        kb_ids: kbIds,
         conversation_id: target,
         model_pk: model,
       }
@@ -997,13 +1055,44 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     // 新对话：第一句话落下去之前先建会话，拿到 id 再提问。
     // 反过来（先问再建）会丢掉这一轮的落库
     let target = conversationId
+    /** 这一轮发出去查哪些库；新建那条路上可能被项目继承来的那份替掉（见下）。 */
+    let kbIds = effectiveKbIds
     if (!target) {
       try {
-        const created = await createConversation(effectiveKbIds, modelPk || null, {
-          thinking: thinkingOn,
-          thinking_effort: thinkingEffort,
-        })
+        /**
+         * **从项目入口进来时（`?workspace=`）故意传空库列表**：让后端按工作区绑定的库
+         * 继承（`api/v1/conversations.py` 里那条）——"项目绑的库是这个项目里新会话的
+         * 默认库"落到行为上就是这一行，与工作区页那颗「在这个工作区新开会话」逐字同一条。
+         *
+         * **不带项目的入口维持原样**（传输入框里选的那几个）：会话记下这一次的选择，
+         * 下次打开按 `detail.kb_ids` 回填。两边合起来是一句实话——**从哪儿进来决定
+         * 默认范围**：项目里进来就是项目的库，直接新建就是你在输入框里选的那些。
+         */
+        const created = await createConversation(
+          pendingWorkspaceId ? [] : effectiveKbIds,
+          modelPk || null,
+          {
+            thinking: thinkingOn,
+            thinking_effort: thinkingEffort,
+          },
+          pendingWorkspaceId || null,
+        )
         target = created.id
+        /**
+         * 继承来的库**当场**就是这一轮的库范围，同时把输入框的选择也改成它们。
+         *
+         * 不这么做的话，第一轮查的是"输入框里原来的那些"（默认是全部），而输入框
+         * 随后按详情回填成项目绑的那几个——同一轮里"看到的范围"和"实际查的范围"对不上，
+         * 用户会觉得范围自己变过。
+         *
+         * `useKb` 关着时不动：那颗开关是用户**明确表过态**的（"这一轮不查库"），
+         * 项目的默认库不该越过它。
+         */
+        const inherited = created.kb_ids.filter((id) => kbs.some((item) => item.id === id))
+        if (pendingWorkspaceId && useKb && inherited.length > 0) {
+          kbIds = inherited
+          setSelectedKbIds(inherited)
+        }
         void navigate(`/chat/${target}`, { replace: true })
       } catch (cause) {
         notifyError(cause)
@@ -1013,23 +1102,26 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
     setQueryState('')
     if (text.startsWith('/')) {
-      await runCommand(text, target, model)
+      await runCommand(text, target, model, kbIds)
       return
     }
-    await streamTurn(text, context, model, target)
+    await streamTurn(text, context, model, target, kbIds)
   }, [
     canSend,
     conversationId,
     effectiveKbIds,
     history,
+    kbs,
     modelPk,
     navigate,
+    pendingWorkspaceId,
     query,
     runCommand,
     sending,
     streamTurn,
     thinkingEffort,
     thinkingOn,
+    useKb,
   ])
 
   /**
@@ -1295,10 +1387,27 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     [kbs, kbsRefetch, selectedKbIds, useKb],
   )
 
-  // —— `@` 提及：候选来自这条会话的文件区 + 技能 + 会话列表
+  // —— `@` 提及：候选来自知识库 + 这条会话的文件区 + 技能 + 会话列表
 
   const mentionItems = useMemo<MentionItem[]>(
     () => [
+      /**
+       * **知识库**（与另外三类做的事不一样，见 `MentionItem` 与 `applyMention`）：
+       * 点一下是"把这个库并进这一轮的检索范围"，不插文本。所以 `value` 放**库 id**
+       * ——它只用来认是哪一份（同名库不会串），`label` 才是给人看的名字。
+       *
+       * 候选直接来自同一层已经取过的 `kbs`（输入框那颗「知识库」开关读的也是它），
+       * 不为这个菜单多起一次请求。
+       */
+      ...kbs.map((kb) => ({
+        kind: 'knowledge' as const,
+        value: kb.id,
+        label: kb.name,
+        detail:
+          useKb && selectedKbIds.includes(kb.id)
+            ? '已在检索范围'
+            : `${formatCount(kb.document_count)} 篇文档`,
+      })),
       ...(filesQuery.data?.entries ?? []).map((file) => ({
         kind: 'file' as const,
         // **引用的是它在文件区里的 key（路径）**，不是显示用的短名字
@@ -1320,7 +1429,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         detail: '会话',
       })),
     ],
-    [conversationsQuery.data, filesQuery.data, skills],
+    [conversationsQuery.data, filesQuery.data, kbs, selectedKbIds, skills, useKb],
   )
 
   const loadMentions = useCallback(() => {
@@ -1341,20 +1450,69 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   )
 
   /**
-   * 选中一条候选：**只把引用插进输入框**（"不预读"那一半）。
+   * `@` 里点了一个知识库：**并进检索范围**（不插文本）。
+   *
+   * 三条口径，都是为了让"点完会发生什么"一眼可推：
+   *
+   * 1. **只增不减、持久**：并进去的留在 `selectedKbIds` 里，发送之后不清空——
+   *    它与输入框那颗「知识库」开关**同一份状态**。多造一个"本轮有效"的临时层
+   *    就要多一套"什么时候还回去"的规则，而用户看到的那颗开关会自己变回去
+   *    （正是"怎么又变回去了"那类困惑）。要取消就在那颗胶囊里逐个点掉。
+   * 2. **开关关着时顺手打开**：不打开的话点这一下什么都不会发生（范围按空算），
+   *    那是这里最坏的结果——用户以为选上了，实际没查。提示里明说这一点。
+   * 3. **已经在范围里就说一句"已经在"**，不重复并入（也不谎报"已加入"）。
+   */
+  const pickKnowledge = useCallback(
+    (kbId: string) => {
+      const kb = kbs.find((item) => item.id === kbId)
+      if (!kb) return
+      if (useKb && selectedKbIds.includes(kbId)) {
+        notifyWarning(`「${kb.name}」已经在检索范围里了`)
+        return
+      }
+      const turnedOn = !useKb
+      setSelectedKbIds((prev) => (prev.includes(kbId) ? prev : [...prev, kbId]))
+      if (turnedOn) toggleKbSwitch()
+      notifySuccess(
+        turnedOn
+          ? `已把「${kb.name}」并入检索范围，并打开了「知识库」开关`
+          : `已把「${kb.name}」并入检索范围（在输入框的「知识库」里可以取消）`,
+      )
+    },
+    [kbs, selectedKbIds, toggleKbSwitch, useKb],
+  )
+
+  /**
+   * 选中一条候选。
+   *
+   * **文件 / 技能 / 会话**：只把引用插进输入框（"不预读"那一半）。
    *
    * 读什么、读哪一段由模型决定（它手上有 `read_file` / `read_skill` / 会话工具）——
    * 界面在这里替它读一遍，用户既看不见自己付了多少上下文，也拿不回"我只要它看结论"这个选择。
+   *
+   * **知识库**：点一下 = 并进检索范围，不插文本（见 `pickKnowledge`）。理由有两条：
+   * `@库名` 会与同名的文件 / 会话撞在一起（三类都按名字认），而那件事**有地方看得见、
+   * 也能取消**（输入框那颗「知识库」胶囊），所以让范围那条状态来表达它比留一段文本更准。
+   * 顺手把还在打的 `@过滤词` 收掉：那一段不是内容（是搜索词），留着就会发给模型，
+   * 而且收掉之后菜单自然合上（`Composer` 的判据是"最后一个 `@` 之后还有没有字"）。
    */
   const applyMention = useCallback(
     (item: MentionItem) => {
+      if (item.kind === 'knowledge') {
+        pickKnowledge(item.value)
+        // 走 `setQuery`（输入框那个唯一入口）而不是 `setQueryState`：这一步是**替用户
+        // 改输入内容**，与敲键盘是同一件事，`/` 那几档状态该跟着一起算。
+        const at = query.lastIndexOf('@')
+        if (at >= 0) setQuery(query.slice(0, at))
+        return
+      }
       setQueryState((current) => {
         const at = current.lastIndexOf('@')
         if (at < 0) return current
         return `${current.slice(0, at)}${mentionToken(item.value)} `
       })
     },
-    [mentionToken],
+    [mentionToken, pickKnowledge, query, setQuery],
   )
 
   /** 拖拽那条路进来的引用：接在**现有内容后面**（拖进来时没有 `@` 可以替换）。 */
@@ -1491,6 +1649,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     turns,
     pendingEntry,
     welcome: messages.length === 0 && !pendingEntry,
+    pendingWorkspace,
     sending,
     pendingApproval,
     dismissApproval: () => liveActions.settleLiveApproval(),

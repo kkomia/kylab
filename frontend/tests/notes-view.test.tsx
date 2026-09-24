@@ -92,6 +92,19 @@ if (typeof Range.prototype.getClientRects !== 'function') {
 /** 与页面里写死的那个键一致：它是"刷新后还折叠"的凭据，属于对外行为。 */
 const COLLAPSED_KEY = 'kylab-notes-list-collapsed'
 
+/** 同上：标签区折叠偏好（**默认折叠**，展开才落 "0"）。 */
+const TAGS_COLLAPSED_KEY = 'kylab-notes-tags-collapsed'
+
+/**
+ * 标签区折叠时 chip 不在 DOM 里（与列表折叠同一口径：收起来的东西不留着渲染）。
+ * 要点开标签的用例都从这里进——这也是用户真实走的那一步。
+ */
+async function expandTags(): Promise<HTMLElement> {
+  const toggle = await screen.findByRole('button', { name: /标签/ })
+  if (toggle.getAttribute('aria-expanded') === 'false') fireEvent.click(toggle)
+  return toggle
+}
+
 const TODAY = new Date()
 const AT = (daysAgo: number, hour = 12): string => {
   const date = new Date(TODAY.getFullYear(), TODAY.getMonth(), TODAY.getDate(), hour)
@@ -233,6 +246,8 @@ describe('笔记页：列表', () => {
     })
     renderPage('/notes/n1')
 
+    // 标签区**默认折叠**（用户反馈："标签一多就太多了"）：先点开那一行小标题
+    await expandTags()
     const chip = await screen.findByRole('button', { name: /工作/ })
     fireEvent.click(chip)
 
@@ -252,6 +267,7 @@ describe('笔记页：列表', () => {
     })
     renderPage('/notes/n1')
 
+    await expandTags()
     await screen.findByRole('button', { name: /2026-09/ })
     // 三组的小标题按语义顺序出现；空的那一组不占位置
     const labels = [...document.querySelectorAll('.tag-group-label')].map((n) => n.textContent)
@@ -267,6 +283,52 @@ describe('笔记页：列表', () => {
     // 分组只影响显示，过滤仍然是"点哪个筛哪个"
     fireEvent.click(screen.getByRole('button', { name: /2026-09/ }))
     await waitFor(() => expect(listNotes).toHaveBeenLastCalledWith({ tag: '2026-09', limit: 100 }))
+  })
+
+  it('标签区默认折叠：一行小标题（标签 3）+ caret，点开才有 chip，偏好落 localStorage', async () => {
+    listNoteTags.mockResolvedValue({
+      items: [
+        { tag: '工作', count: 3 },
+        { tag: '灵感', count: 1 },
+        { tag: '已核实', count: 1 },
+      ],
+    })
+    renderPage('/notes/n1')
+
+    const toggle = await screen.findByRole('button', { name: /标签/ })
+    // 默认折叠：一个 chip 都不渲染，展开态是"点开之后才有"的东西
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(document.querySelector('.tag-chip')).toBeNull()
+    expect(document.querySelector('.tag-bar')?.className).toContain('tag-bar-collapsed')
+    // 折叠是默认值，存储里不该留下一条无意义的状态
+    expect(window.localStorage.getItem(TAGS_COLLAPSED_KEY)).toBeNull()
+
+    fireEvent.click(toggle)
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(document.querySelectorAll('.tag-chip')).toHaveLength(3)
+    // 展开是非默认值，才落一条 "0"
+    expect(window.localStorage.getItem(TAGS_COLLAPSED_KEY)).toBe('0')
+    // 折叠态那一行本身也只有一行：结构上它只是一个按钮 + 计数
+    expect(toggle.textContent).toContain('标签')
+
+    fireEvent.click(toggle)
+    expect(document.querySelector('.tag-chip')).toBeNull()
+    expect(window.localStorage.getItem(TAGS_COLLAPSED_KEY)).toBeNull()
+  })
+
+  it('折叠态也说得出"现在按哪个标签看"：选中的标签留在那一行里', async () => {
+    listNoteTags.mockResolvedValue({ items: [{ tag: '工作', count: 3 }] })
+    renderPage('/notes/n1')
+
+    await expandTags()
+    fireEvent.click(await screen.findByRole('button', { name: /工作/ }))
+    fireEvent.click(screen.getByRole('button', { name: /标签/ })) // 收起
+
+    const bar = document.querySelector('.tag-bar') as HTMLElement
+    expect(bar.className).toContain('tag-bar-collapsed')
+    // 列表被筛过，屏幕上得有个东西说明为什么只剩这几条
+    expect(bar.querySelector('.tag-chip')?.textContent).toContain('工作')
   })
 
   it('搜索：输入后防抖 300ms 才落到过滤条件上（不会每敲一个字发一次）', async () => {
@@ -459,6 +521,59 @@ describe('笔记页：搜索 / 新建 / 删除 / 移动', () => {
 
     expect(toastError).toHaveBeenCalledWith('还没有知识库，先去「知识库」新建一个')
     expect(screen.queryByRole('dialog')).toBeNull()
+  })
+})
+
+describe('笔记页：目录（正文大纲）', () => {
+  it('有标题就有目录：右栏按层级列出，点一条跳过去', async () => {
+    getNote.mockImplementation((id: string) =>
+      Promise.resolve(note(id, { content_md: '# 第一节\n\n正文\n\n## 小节 A\n\n更多' })),
+    )
+    renderPage('/notes/n1')
+    await waitForDraft('n1')
+
+    const rail = await screen.findByRole('complementary', { name: '笔记目录' })
+    const items = [...rail.querySelectorAll('.toc-item')]
+    expect(items.map((item) => item.textContent)).toEqual(['第一节', '小节 A'])
+    // 层级只用来缩进（1–3 级），不是字号
+    expect(items[0].getAttribute('data-level')).toBe('1')
+    expect(items[1].getAttribute('data-level')).toBe('2')
+    // 有标题才有这个开关（没有锚点的目录是个空盒子）
+    expect(screen.getByLabelText('目录').getAttribute('aria-expanded')).toBe('true')
+
+    // 点它跳过去：jsdom 里量不到布局，但这一步不该炸，也不该把目录点没
+    fireEvent.click(items[1])
+    expect(rail.querySelectorAll('.toc-item')).toHaveLength(2)
+  })
+
+  it('目录可以收起：整栏退出布局（第三列一并去掉）', async () => {
+    getNote.mockImplementation((id: string) =>
+      Promise.resolve(note(id, { content_md: '# 第一节\n\n正文' })),
+    )
+    renderPage('/notes/n1')
+    await waitForDraft('n1')
+    expect(await screen.findByRole('complementary', { name: '笔记目录' })).toBeTruthy()
+    expect((document.querySelector('.notes-layout') as HTMLElement).className).toContain('toc-open')
+
+    fireEvent.click(screen.getByLabelText('目录'))
+
+    expect(screen.queryByRole('complementary', { name: '笔记目录' })).toBeNull()
+    expect((document.querySelector('.notes-layout') as HTMLElement).className).not.toContain(
+      'toc-open',
+    )
+    // 开关还在（否则收起来就叫不回来了），读得出当前状态
+    expect(screen.getByLabelText('目录').getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('没有标题的笔记不渲染目录，也不给开关', async () => {
+    getNote.mockImplementation((id: string) =>
+      Promise.resolve(note(id, { content_md: '一段没有标题的正文' })),
+    )
+    renderPage('/notes/n1')
+    await waitForDraft('n1')
+
+    expect(screen.queryByRole('complementary', { name: '笔记目录' })).toBeNull()
+    expect(screen.queryByLabelText('目录')).toBeNull()
   })
 })
 

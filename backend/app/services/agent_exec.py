@@ -152,11 +152,15 @@ def run_command(
     decision = rules_from_runtime(services.runtime, source="执行").decide("Bash", arguments)
     global_mode = services.runtime.get("sandbox.exec_policy") or POLICY_ASK
     if decision.action == ACTION_DENY:
-        return _refused(f"这条命令被拒绝规则拦下：{decision.reason}。换一条路，不要重试这条。")
+        return _refused(
+            f"这条命令被拒绝规则拦下：{decision.reason}。换一条路，不要重试这条。",
+            gate="拒绝规则拦下",
+        )
     if global_mode == POLICY_DENY:
         return _refused(
             "执行的策略是「拒绝执行」（设置 → 沙箱执行）。"
-            "请如实告诉对方：要让我能跑命令，得先把那一项改成「需要确认」或「允许」。"
+            "请如实告诉对方：要让我能跑命令，得先把那一项改成「需要确认」或「允许」。",
+            gate="命令执行策略设为「拒绝」",
         )
     # **命中规则时规则说了算，没命中才用总开关**（与端点逐条对齐）：
     # 少了这半句，"总开关设成允许"这件事会变成 no-op——用户改完照样被拒，
@@ -279,8 +283,15 @@ def _timeout_of(args: dict[str, object]) -> float:
     return min(value, float(MAX_TIMEOUT_SECONDS))
 
 
-def _refused(reason: str) -> ExecOutcome:
-    return ExecOutcome(ok=False, ran=False, text=reason, summary="没有执行（策略拦下）")
+def _refused(reason: str, *, gate: str = "命令执行策略拦下") -> ExecOutcome:
+    """不执行的统一形状；``gate`` 说清**是哪一道闸拦的**。
+
+    原先这一格一律是"策略拦下"：它把"拒绝规则""总开关设成拒绝""对方没批准"
+    "需要确认但没有可确认的入口"四种原因糊成同一句话——用户在过程面板那一行看到的
+    因此答不出"到底是谁拦的、我该去改哪里"（模式那道闸另有一句，见 ``tool_loop``）。
+    回给模型的 ``text`` 本来就说得很细（三档拒批分开写），这里只是让它也进摘要。
+    """
+    return ExecOutcome(ok=False, ran=False, text=reason, summary=f"没有执行（{gate}）")
 
 
 def _how_to_open(rule: str) -> str:
@@ -300,7 +311,8 @@ def _needs_confirm(rule: str) -> ExecOutcome:
     return _refused(
         "执行需要对方先确认，**这一轮没有执行**。"
         f"请如实告诉对方：{_how_to_open(rule)}"
-        "**不要假装执行过，也不要凭猜测编造命令的输出。**"
+        "**不要假装执行过，也不要凭猜测编造命令的输出。**",
+        gate="需确认，但这一轮没有可确认的入口",
     )
 
 
@@ -310,15 +322,22 @@ def _not_approved(approval: str, rule: str) -> ExecOutcome:
     三种必须分开说，因为模型下一轮该讲的话不一样：拒绝了（别再提这条命令）、
     没有回应（可以说"刚才那条我没等到你确认"）、没有人可以问（定时任务那条链路，
     得让用户自己知道"它跑不了"）。混成一句"被策略拦下"就全错了。
+
+    摘要（过程面板那一行）也按这三种分开：那一行原来只写"策略拦下"，
+    而"对方点了拒绝"与"没人可问"在界面上要做的下一步完全不同。
     """
     if approval == approval_service.DENY:
         head = "对方**拒绝**了这次执行"
+        gate = "对方没批准：拒绝"
     elif approval == approval_service.TIMEOUT:
         head = "**对方一直没有回应**（等到超时），按没有批准处理"
+        gate = "对方没批准：等不到回应"
     else:
         head = "这条链路上没有人可以确认（这条链路没有界面可问）"
+        gate = "对方没批准：这条链路没人可确认"
     return _refused(
-        f"{head}，**这一轮没有执行**。不要重试这条命令，也不要假装执行过。{_how_to_open(rule)}"
+        f"{head}，**这一轮没有执行**。不要重试这条命令，也不要假装执行过。{_how_to_open(rule)}",
+        gate=gate,
     )
 
 

@@ -54,6 +54,9 @@
 @layer components {
   /* ------------------------------------------------ 页面：自己占满内容区 */
   .notes-page {
+    /* 目录栏的宽度。写在页面这一层、由 `.notes-layout` 取用：它是"这一页版式的取值"，
+       与正文列一样属于版式，而不是某一栏的内部尺寸。取值推导见文件末尾那段媒体查询。 */
+    --toc-width: 176px;
     height: 100%;
     padding: var(--space-3) var(--page-gutter) var(--space-8);
   }
@@ -180,11 +183,65 @@
    * 此前是"一锅 chip 平铺三行"：日期型（`2026-09`）、来源型（`AI日报`）、状态型（`已核实`）
    * 混在一排，要逐行读才知道能筛什么（界面评审 N4）。分组的判据是标签的**形状**
    * （见 `tagKindOf`），不猜后端语义、也不改标签本身。
-   * 竖排三层：每层一行小标题 + 若干 chip，行内照旧自动换行。 */
+   * 竖排三层：每层一行小标题 + 若干 chip，行内照旧自动换行。
+   *
+   * **整块默认折叠**（2026-09-24 用户反馈："标签在笔记目录里面不默认展开。不然标签一多
+   * 就太多了"）：实测三组 7 个 chip 占掉 150.1px（左栏高 856px 的 17.5%），而且标签越多
+   * 它长得越高——来源那一组还折了行，单独占 86.9px。这一层是次要筛选项，默认收成一行
+   * 小标题（`标签 7` + caret），点开才铺开。 */
   .tag-bar {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
+  }
+
+  .tag-bar-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  /* 三组之间的间距落在**这一层**，而不是父级的 gap：折叠时整块进出 DOM 的正是它，
+     父级 gap 若同时管着"小标题 → 第一组"，展开/折叠时那个 gap 的对象会换一次
+     （小标题 ↔ 三组 / 组 ↔ 组），两处各算一遍就容易错开 8px。 */
+  .tag-groups {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  /* 一行高：20px = 12px（--text-micro-size）的字 + 上下各 4px 的命中余量。
+     **不加左右内边距**：这样它的左沿与其他小标题（`.group-label` / `.tag-group-label`）
+     共用同一条基准线。 */
+  .tag-bar-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: 20px;
+    padding: 0;
+    border: none;
+    background: none;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: var(--text-micro-size);
+    cursor: pointer;
+  }
+
+  .tag-bar-toggle:hover {
+    color: var(--text-primary);
+  }
+
+  /* 折叠态**必须是一行**（用户要的"不超过一行高"）：标题与"当前标签"那颗 chip
+     同行排列、不换行——换行就等于白折了 */
+  .tag-bar-collapsed .tag-bar-head {
+    flex-wrap: nowrap;
+  }
+
+  .tag-bar-head .tag-chip {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .tag-group {
@@ -338,6 +395,13 @@
     height: 100%;
     min-height: 0;
     overflow-y: auto;
+    /* **`position: relative` 是给大纲扩展的坐标系用的**，不是装饰：
+       它算"当前读到哪一节"用的是 `标题.offsetTop` 与 `本列.scrollTop` 相比，
+       而 `offsetTop` 是相对**最近的定位祖先**量的。这里不定位的话，标题的 offsetParent
+       会一路穿到 body，`offsetTop` 变成几万像素的绝对值，与 scrollTop 再也对不上
+       （高亮永远不动）。定位在这一层之后，两个数落在同一个坐标系里。
+       sticky 的工具栏不受影响：吸附对象是"最近的可滚动祖先"，与定位无关。 */
+    position: relative;
   }
 
   /* 编辑区：**撑满这一列，但不许被压回一列的高度**。
@@ -367,6 +431,82 @@
 
   .pane-empty .empty {
     align-items: center;
+  }
+
+  /* ------------------------------------------------ 目录（正文大纲，第三栏） */
+  /* 它是 `.notes-layout` 的第三列（宽度 `--toc-width`），自己滚；
+     列与列之间那条线由左边框画——与左栏的右边框同一种描边。
+     为什么从正文列里借宽度、以及 1360px 这个断点怎么来的，见文件末尾那段媒体查询。 */
+  .notes-toc {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    min-height: 0;
+    padding: var(--space-2) var(--space-3) var(--space-4) var(--space-4);
+    border-left: 1px solid var(--border-hairline);
+    overflow-y: auto;
+  }
+
+  .toc-title {
+    margin: 0;
+    font-size: var(--text-micro-size);
+    color: var(--text-tertiary);
+  }
+
+  .toc-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-0-5);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .toc-item {
+    display: block;
+    width: 100%;
+    padding: var(--space-1) var(--space-2);
+    /* 当前那一节靠**左侧一道竖条**标出来（不是整块底色）：底色留给"悬停"，
+       两者同时在的时候也分得开——指针停在别的标题上不该让人以为读数变了。 */
+    border: none;
+    border-left: 2px solid transparent;
+    border-radius: var(--radius-control);
+    background: none;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: var(--text-micro-size);
+    line-height: var(--line-ui);
+    text-align: left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+
+  .toc-item:hover {
+    color: var(--text-primary);
+    background: var(--bg-hover);
+  }
+
+  /* 缩进只按层级**让位**（1–3 级）：176px 的栏里，字号再分档就没得读了 */
+  .toc-item[data-level='2'] {
+    padding-left: var(--space-4);
+  }
+
+  .toc-item[data-level='3'] {
+    padding-left: var(--space-6);
+  }
+
+  /* 已经读过的那些退一档灰；当前那一节最后声明，所以它在两者都命中时赢
+     （同为单类选择器，靠顺序，与 `notes.css` 里 `.collapse-toggle` 那条一个道理） */
+  .toc-item-past {
+    color: var(--text-tertiary);
+  }
+
+  .toc-item-on {
+    border-left-color: var(--accent);
+    background: var(--bg-selected);
+    color: var(--text-primary);
   }
 
   .save-label {
@@ -664,8 +804,15 @@
     }
   }
 
-  /* 正文收在一条窄栏里居中：满屏宽的行读起来很累，也不像"写作工具" */
+  /* 正文收在一条窄栏里居中：满屏宽的行读起来很累，也不像"写作工具"。
+   *
+   * `position: relative` 是**大纲的阅读线**用的：它上边正好是吸顶工具栏的下沿，
+   * 而标题的 `offsetTop` 是相对最近定位祖先量的——定位在这一层之后，
+   * "这一节读过去了没有"的判据、以及点目录的落点，都落在工具栏下沿这条线上
+   * （详见 NoteCanvas 的 `tocReadingLine`）。这里也是 `.editor-content .tiptap`
+   * 让掉 `position: relative` 之后的接手者，两层缺一不可。 */
   .editor-column {
+    position: relative;
     max-width: 780px;
     margin: 0 auto;
     padding: var(--space-6) var(--space-6) var(--space-16);
@@ -892,6 +1039,34 @@
     color: var(--text-secondary);
   }
 
+  /* ------------------------------------------------ 目录栏的两段断点 */
+  /* 目录栏是**从正文列里借**宽度的（它不是用掉两侧的余量——1440 屏实测正文列 830.9px，
+     而正文那一栏的上限 780px 居中之后两侧只剩 25.4px）。
+     所以 1360 这个断点的算法是"借完之后正文还剩多少"：
+       页面可用宽 = 视口 − 240（侧栏）− 2×page-gutter
+       正文列 = 可用宽 − 300（列表）− 176（目录）
+     1440 屏 → 654.9px（正文 607px，≈66 个字符，仍在阅读区间里）；
+     1360 屏 → 578.7px；1280 屏 → 502.6px（正文 454px），再往下就是"为了一条目录
+     把写作宽度压没了"。所以 1360 以下整个功能收起：**栏不出现，按钮也不出现**——
+     一个按了没反应的按钮比没有按钮更糟。 */
+  @media (min-width: 1360px) {
+    .notes-layout.toc-open {
+      grid-template-columns: minmax(240px, 300px) minmax(0, 1fr) var(--toc-width);
+    }
+
+    /* 列表也折叠时第三列照旧（44px 导轨 + 正文 + 目录） */
+    .notes-layout.list-collapsed.toc-open {
+      grid-template-columns: 44px minmax(0, 1fr) var(--toc-width);
+    }
+  }
+
+  @media (max-width: 1359px) {
+    .notes-toc,
+    .toc-toggle {
+      display: none;
+    }
+  }
+
   /* ------------------------------------------------ 单栏断点 */
   @media (max-width: 900px) {
     /* 单栏是**堆叠**：上面目录、下面正文，"两列"这件事本身就不存在了。
@@ -938,4 +1113,33 @@
       padding-left: var(--space-4);
     }
   }
+}
+
+/**
+ * **第三处例外，与文件头的两处不同类，单独说明：这一条必须在层外。**
+ *
+ * 让掉 ProseMirror 自带的 `.ProseMirror { position: relative }`。
+ * 它一层层影响的是坐标：`.tiptap` 一旦是定位元素，它就成了所有标题的 offsetParent，
+ * 于是大纲扩展拿到的 `标题.offsetTop` 是"相对编辑器盒子"的（实测 0 / 100 / 355…），
+ * 而它要与之比较的是正文列的 `scrollTop`——两个数不在同一个坐标系里，整套滚动高亮
+ * 会整段错位（差的正是"工具栏 + 标题 + 标签行"那一截，实测 171px，而且标签多绕一行
+ * 这个差值还会变）。让位之后 offsetParent 落到 `.notes-pane`（它由上面那条
+ * `position: relative` 兜住），两个数才是同一把尺子。
+ *
+ * **为什么不在 `@layer components` 里**：PM 那份 CSS 是 tiptap 自己 import 的、
+ * **未分层**的表，而未分层的声明永远压过分层里的（见文件头那段说明与 `misc.css`
+ * 那次实测）——写进层里会被静默吃掉（本次实测：写进去了，`offsetParent` 仍指向
+ * `.tiptap`）。层外再靠选择器权重（0,2,0 > 0,1,0）胜过它。
+ *
+ * 让位前核对过 `.tiptap` 里那两个绝对定位的租客：`ProseMirror-gapcursor` 从不设
+ * left/top、靠**静态位置**落点，换包含块不影响它画在哪；`prosemirror-dropcursor`
+ * 直接读 `dom.offsetParent` 现算坐标，包含块换了它自己跟着换。图片缩放手柄另有
+ * 包含块（`ResizableNodeView` 给包裹层写了内联 `position: relative`），不受影响。
+ *
+ * 层外身份是**唯一可行的办法**：对手（`prosemirror-view` 的 `.ProseMirror`）自己就是
+ * 一份未分层的表，进层等于没写——这正是下面这个标记要放行的那一类。
+ */
+/* @unlayered: 对手是 prosemirror-view 未分层的 .ProseMirror 规则，进层就被它压掉 */
+.editor-content .tiptap {
+  position: static;
 }

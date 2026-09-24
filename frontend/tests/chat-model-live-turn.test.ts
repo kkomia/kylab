@@ -313,6 +313,33 @@ describe('重连锚点与接回来（P2-2）', () => {
     expect(liveTurnState()?.error).toBe('')
   })
 
+  it('真实 emit 顺序（先 dispatch 再报锚点）：done 之后跟来的 onSeq 不许把状态抬回「流式中」', async () => {
+    // 这条钉的是一个**真的把人卡住过**的缺陷：`api/chat.ts` 的 `emit` 先把事件交给
+    // 界面、再报锚点，所以 `done` 那一事件的 `onSeq` 是在收尾**之后**到的。重连补发
+    // 一条已经结束的轮次时（`done(recovered)` 是最后一条），那个尾随的 `onSeq` 会把
+    // `streaming` 又抬成 true —— 输入框从此永远停在「停止生成」上：刷新（或重进）
+    // 任何"环形缓冲里还留着刚跑完那一轮"的会话都会复现，按什么都没用。
+    //
+    // 上面几条用例的调用顺序是**反的**（先 onSeq 再类型 handler），所以它们看不见这个
+    // 缺陷——顺序本身也是这里要守住的东西。
+    const box = captureLive()
+    await attachLiveTurn('c1')
+
+    box.handlers!.onStep!({
+      phase: 'tool',
+      label: '检索知识库',
+      detail: '命中 1 段',
+      status: 'done',
+    } as never)
+    box.handlers!.onSeq!(30)
+    expect(liveTurnState()?.streaming).toBe(true)
+
+    box.handlers!.onDone!('完整答复。', { recovered: true, detail: '这一轮已经收尾了' })
+    box.handlers!.onSeq!(31)
+
+    expect(liveTurnState()).toMatchObject({ streaming: false, recovered: true })
+  })
+
   it('真断线：按锚点接回来（after=最后收到的 seq），新事件继续进来', async () => {
     vi.useFakeTimers()
     try {

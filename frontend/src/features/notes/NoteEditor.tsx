@@ -58,7 +58,8 @@ import {
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu'
 
-import { NoteCanvas, type NoteCanvasHandle } from './NoteCanvas'
+import { NoteCanvas, type NoteCanvasHandle, type NoteTocItem } from './NoteCanvas'
+import { scrollParentOf } from './scrollParent'
 
 export interface NoteEditorHandle {
   /** 转发给画布：提前把某篇的正文解析成文档（切换时省掉这段主线程开销）。 */
@@ -81,6 +82,8 @@ export interface NoteEditorProps {
   /** 落在根节点上的类名：页面用它挂 `.pane-editor`（撑满正文列但不被压矮）。 */
   className?: string
   onValueChange(value: string): void
+  /** 大纲（目录）变了：由画布向上转交（页面画那一列，编辑器自己不摆它）。 */
+  onToc?(items: NoteTocItem[]): void
   onNotify(payload: { type: 'error' | 'success'; message: string }): void
   /** 请求对本篇做一次 AI 处理；由页面负责保存、调用、写回。 */
   onAi(action: NoteAiAction): void
@@ -183,22 +186,9 @@ function withSuffixFromType(file: File): File {
 }
 
 /**
- * 正文滚动容器：往上找第一个"样式允许滚且确实滚得动"的祖先，找不到就退回页面。
- *
- * 不写死类名是刻意的：并排两列时滚的是笔记页的正文列（`.notes-pane`）；
- * 单栏堆叠（<=900px）时那一列把滚动交回了外层 `main.content`。
- * 笔记页那次"两列各自滚"的改造正是靠这一条没被牵动。
+ * markdown → 文档的缓存，以及滚动父级的查找都在别处（见 `NoteCanvas` / `scrollParent.ts`）：
+ * 这两件事都不是"工具栏"该管的。
  */
-function scrollParentOf(el: HTMLElement | null): HTMLElement | null {
-  let node: HTMLElement | null = el
-  while (node) {
-    const overflowY = getComputedStyle(node).overflowY
-    const scrollable = overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay'
-    if (scrollable && node.scrollHeight > node.clientHeight + 1) return node
-    node = node.parentElement
-  }
-  return (document.scrollingElement as HTMLElement | null) ?? null
-}
 
 export function NoteEditor({
   value,
@@ -211,6 +201,7 @@ export function NoteEditor({
   header,
   className,
   onValueChange,
+  onToc,
   onNotify,
   onAi,
   ref,
@@ -593,6 +584,7 @@ export function NoteEditor({
             noteId={noteId}
             uploadImage={uploadImageForEditor}
             onValueChange={onValueChange}
+            onToc={onToc}
             onReady={onReady}
             onChange={refresh}
           />

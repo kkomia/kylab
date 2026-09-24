@@ -11,8 +11,12 @@
  *
  * 两个菜单的判据互斥（`@` 之后不能有空白、`/` 开头且还没打空格），所以不会同时开着；
  * `Composer` 里 `@` 排在 `/` 之前——先问引用那个更贴用户当下的动作。
+ *
+ * `@` 菜单里的**知识库**那一档是个例外：另外三档选中后插一段文本，它选中后是
+ * **把库并进这一轮的检索范围**（理由与口径见 `ChatProvider` 的 `pickKnowledge`
+ * 与 `applyMention`）——菜单只负责把"选了哪一条"交给 provider，两种行为在同一处分流。
  */
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { ChatCommand } from '@/api/chat'
 
@@ -106,24 +110,31 @@ export function SlashMenu({
   ].filter((group) => group.items.length > 0)
   const flat = grouped.flatMap((group) => group.items)
 
-  // 高亮项在**扁平顺序**里的下标（组的顺序就是扁平顺序，两处不会对不上）
-  const active = useRef(0)
+  // 高亮项在**扁平顺序**里的下标（组的顺序就是扁平顺序，两处不会对不上）。
+  // **是 state 不是 ref**：键盘那侧只调 `move(±1)`，这个值变了必须让这一层重画一次，
+  // 高亮才跟着动——用 ref 时 `data-active` 永远停在第一条（而 `pickActive` 又会挑中
+  // 正确的那条，"看得见的高亮"与"回车会选中的那条"于是对不上）。
+  const [active, setActive] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    active.current = 0
+    setActive(0)
   }, [filter])
+
+  /** 高亮移出可视区时把它带回来（清单长了以后键盘上下选常用到）。 */
+  useEffect(() => {
+    listRef.current
+      ?.querySelector<HTMLElement>('[data-active="true"]')
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [active])
 
   handleRef.current = {
     move: (delta) => {
       if (flat.length === 0) return
-      active.current = (active.current + delta + flat.length) % flat.length
-      listRef.current
-        ?.querySelector<HTMLElement>('[data-active="true"]')
-        ?.scrollIntoView({ block: 'nearest' })
+      setActive((current) => (current + delta + flat.length) % flat.length)
     },
     pickActive: () => {
-      const command = flat[active.current]
+      const command = flat[active]
       if (command) onPick(command)
     },
     count: () => flat.length,
@@ -136,7 +147,7 @@ export function SlashMenu({
           <div key={group.key}>
             <p className={GROUP}>{group.label}</p>
             {group.items.map((command) => {
-              const isActive = flat.indexOf(command) === active.current
+              const isActive = flat.indexOf(command) === active
               return (
                 <button
                   key={command.name}
@@ -147,7 +158,7 @@ export function SlashMenu({
                   className={`${ITEM} ${isActive ? ITEM_ACTIVE : ''}`}
                   // 鼠标移上去也要把高亮带过去，否则键盘与鼠标会指着两条不同的命令
                   onMouseEnter={() => {
-                    active.current = flat.indexOf(command)
+                    setActive(flat.indexOf(command))
                   }}
                   onClick={() => onPick(command)}
                 >
@@ -169,7 +180,18 @@ export function SlashMenu({
   )
 }
 
+/**
+ * `@` 菜单的分组顺序。
+ *
+ * **「知识库」排在最前**（`@` 是"这一轮依据什么回答"的入口，换库比引用某一个文件
+ * 更常用，而它是这四类里**唯一点一下就改变本轮检索范围**的一类——那正是产品要的
+ * "知识库在对话界面里随手可用"）。另外三类都是"往输入框里插一条引用"，排在后面。
+ *
+ * 顺带说清默认高亮：过滤词为空时回车选中的是**第一条**，也就是第一个知识库
+ * （没有知识库时就是第一个文件）。敲了过滤词之后前缀命中优先，那一层不受影响。
+ */
 const MENTION_GROUPS: { kind: MentionItem['kind']; label: string }[] = [
+  { kind: 'knowledge', label: '知识库' },
   { kind: 'file', label: '文件' },
   { kind: 'skill', label: '技能' },
   { kind: 'session', label: '会话' },
@@ -215,23 +237,27 @@ export function MentionMenu({
   })).filter((group) => group.items.length > 0)
   const flat = grouped.flatMap((group) => group.items)
 
-  const active = useRef(0)
+  // 同上面那个菜单：`active` 必须是 state，键盘上下选才会把高亮挪给人看
+  const [active, setActive] = useState(0)
   const listRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    active.current = 0
+    setActive(0)
   }, [filter])
+
+  useEffect(() => {
+    listRef.current
+      ?.querySelector<HTMLElement>('[data-active="true"]')
+      ?.scrollIntoView({ block: 'nearest' })
+  }, [active])
 
   handleRef.current = {
     move: (delta) => {
       if (flat.length === 0) return
-      active.current = (active.current + delta + flat.length) % flat.length
-      listRef.current
-        ?.querySelector<HTMLElement>('[data-active="true"]')
-        ?.scrollIntoView({ block: 'nearest' })
+      setActive((current) => (current + delta + flat.length) % flat.length)
     },
     pickActive: () => {
-      const item = flat[active.current]
+      const item = flat[active]
       if (item) onPick(item)
     },
     count: () => flat.length,
@@ -244,7 +270,7 @@ export function MentionMenu({
           <div key={group.kind}>
             <p className={GROUP}>{group.label}</p>
             {group.items.map((item) => {
-              const isActive = flat.indexOf(item) === active.current
+              const isActive = flat.indexOf(item) === active
               return (
                 <button
                   key={`${item.kind}:${item.value}`}
@@ -254,7 +280,7 @@ export function MentionMenu({
                   data-active={isActive ? 'true' : 'false'}
                   className={`${ITEM} ${isActive ? ITEM_ACTIVE : ''}`}
                   onMouseEnter={() => {
-                    active.current = flat.indexOf(item)
+                    setActive(flat.indexOf(item))
                   }}
                   onClick={() => onPick(item)}
                 >
@@ -272,10 +298,15 @@ export function MentionMenu({
           </div>
         ))}
         {flat.length === 0 ? (
-          <p className={EMPTY}>{loading ? '正在读文件清单…' : '没有匹配的文件 / 技能 / 会话'}</p>
+          <p className={EMPTY}>
+            {loading ? '正在读文件清单…' : '没有匹配的知识库 / 文件 / 技能 / 会话'}
+          </p>
         ) : null}
       </div>
-      <p className={FOOT}>只插入引用，不读取内容；↑↓ 选择，回车或点击插入</p>
+      <p className={FOOT}>
+        知识库那一条是并进本轮检索范围（点一下生效，在输入框的「知识库」里取消）； 文件 / 技能 /
+        会话只插入引用、不读取内容。↑↓ 选择，回车或点击生效
+      </p>
     </div>
   )
 }

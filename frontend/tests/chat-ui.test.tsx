@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   chatStream,
   decideApproval,
+  getContextUsage,
   getSuggestedQuestions,
   listCommands,
   type ChatHandlers,
@@ -702,20 +703,69 @@ describe('停止与回到最新', () => {
     expect(thread.nextElementSibling?.contains(composer)).toBe(true)
   })
 
-  it('输入卡片控制行的预算是"一行"：胶囊横内边距收窄、那一格只放比率', async () => {
+  it('输入卡片控制行的预算是"一行"：胶囊横内边距收窄、那一格只放环 + 比率', async () => {
     vi.mocked(getConversation).mockResolvedValue(
       detail([stored('user', '你好'), stored('assistant', '你好呀')]),
     )
     renderPage()
     await screen.findByTestId('reply-text')
 
-    // 上下文那一格：行上放比率（有界，不会把整行顶出去），精确数字在 title 里
+    // 上下文那一格：行上放**比率**（有界，不会把整行顶出去），精确数字在 title 里
     const gauge = screen.getByRole('button', { name: '上下文用量' })
-    expect(gauge).toHaveTextContent('上下文已用 0%')
+    expect(gauge).toHaveTextContent('0%')
     expect(gauge).toHaveAttribute('title', '上下文已用 0 / 0 tokens（0%）')
+    // 行上那一格的字**就是比率本身**：改前是整句「上下文已用 0%」被 59.5px 的格子截成
+    // 「上下文…」（`scrollWidth` 101），百分比反而看不见；现在文案不许再只剩半句
+    expect(gauge.querySelector('span.tabular')?.textContent).toBe('0%')
+    // 环照 AI Elements 的几何：viewBox 24 / r=10 / strokeWidth=2，底圈 + 进度圈各一条
+    const ring = gauge.querySelector('svg[role="img"]') as SVGElement
+    expect(ring).toHaveAttribute('viewBox', '0 0 24 24')
+    expect(ring.getAttribute('width')).toBe('16')
+    const [track, progress] = Array.from(ring.querySelectorAll('circle'))
+    expect(track).toHaveAttribute('r', '10')
+    expect(track).toHaveAttribute('stroke-width', '2')
+    expect(track).toHaveAttribute('opacity', '0.25')
+    expect(progress).toHaveAttribute('opacity', '0.7')
+    expect(progress).toHaveAttribute('stroke-linecap', 'round')
+    // 0% → 进度圈整圈都是缺口（dashoffset 等于周长），底圈照旧画满
+    expect(Number(progress.getAttribute('stroke-dashoffset'))).toBeCloseTo(2 * Math.PI * 10, 6)
+    expect(Number(progress.getAttribute('stroke-dasharray'))).toBeCloseTo(2 * Math.PI * 10, 6)
     // 左组与右组都带 `min-w-0`：放不下时按"字省"（省号）而不是整格换行/撑破卡片
     const left = gauge.parentElement?.previousElementSibling as HTMLElement
     expect(left.className).toContain('min-w-0')
+  })
+
+  it('上下文菜单：环随比率走，压缩阈值说的是**百分比**（不是 token 数）', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    vi.mocked(getContextUsage).mockResolvedValue({
+      items: [{ kind: 'system', label: '系统提示', tokens: 1600, share: 0.25 }],
+      used: 6400,
+      total: 25600,
+      ratio: 0.25,
+      compress_at: 70,
+      estimated: true,
+      note: '按字符数估算：中日韩 1 字约 1 token',
+    } as never)
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    // 行上读数：比率（四分之一 → 25%），环的缺口同步到 3/4 圈
+    const gauge = await screen.findByRole('button', { name: '上下文用量' })
+    await waitFor(() => expect(gauge).toHaveTextContent('25%'))
+    expect(gauge).toHaveAttribute('title', '上下文已用 6,400 / 25,600 tokens（25%）')
+    const progress = gauge.querySelectorAll('circle')[1]
+    expect(Number(progress.getAttribute('stroke-dashoffset'))).toBeCloseTo(
+      2 * Math.PI * 10 * 0.75,
+      6,
+    )
+
+    // 菜单里那句阈值：`compress_at` 是**后端的百分比设置项**，此前被当成数量打出来
+    // （"到 70 会自动压缩"）——少一个 `%`，读起来像"到 70 个 token 就压缩"
+    await userEvent.setup().click(gauge)
+    expect(await screen.findByText(/到 70% 会自动压缩/)).toBeInTheDocument()
+    expect(screen.getByText(/已用 6,400 \/ 25,600 tokens/)).toBeInTheDocument()
   })
 
   it('流式期间发送键变成停止，点了之后这一轮在本页收口', async () => {

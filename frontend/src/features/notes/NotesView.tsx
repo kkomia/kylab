@@ -18,7 +18,18 @@
  *    要额外补指针捕获 API（`tests/setup.ts` 没有），为两个选项不值当。
  */
 import { useQueryClient } from '@tanstack/react-query'
-import { Check, ChevronLeft, ChevronRight, Library, Pin, Plus, Search, Trash } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Library,
+  ListTree,
+  Pin,
+  Plus,
+  Search,
+  Trash,
+} from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { toast } from 'sonner'
@@ -30,6 +41,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Input } from '@/ui/input'
 
 import { NoteEditor, type NoteEditorHandle } from './NoteEditor'
+import type { NoteTocItem } from './NoteCanvas'
 import {
   useAiTransform,
   useAttachNote,
@@ -48,12 +60,14 @@ import {
   latestNoteId,
   prefetchBody,
   readListCollapsed,
+  readTagsCollapsed,
   rememberBody,
   shortDate,
   snapshotOf,
   tagKindOf,
   useNotesStore,
   writeListCollapsed,
+  writeTagsCollapsed,
   type NoteBody,
   type TagKind,
 } from './store'
@@ -149,6 +163,25 @@ export function NotesView() {
    * 而不是先展开再收起来（那会闪一下）。
    */
   const [listCollapsed, setListCollapsed] = useState(() => readListCollapsed())
+
+  /**
+   * 标签区折叠（本机偏好）。
+   *
+   * 与列表折叠同一类东西、同一套写法（`readListCollapsed` 那一对的口径），
+   * **但默认值相反**：标签区默认折叠——它是"次要的筛选项"，标签一多就长得比笔记列表
+   * 还高（实测三组 7 个 chip 占 150.1px，左栏总共才 856px）。
+   */
+  const [tagsCollapsed, setTagsCollapsed] = useState(() => readTagsCollapsed())
+
+  /**
+   * 目录（正文大纲）。
+   *
+   * 默认展开：它就是用户点名要的那件东西，藏起来等于每次都要多点一下。
+   * 关掉之后整栏从布局里退出（`.notes-layout` 的第三列也一并去掉），
+   * 正文列回到 780px 的宽度上限。
+   */
+  const [tocOpen, setTocOpen] = useState(true)
+  const [tocItems, setTocItems] = useState<NoteTocItem[]>([])
 
   const editorRef = useRef<NoteEditorHandle | null>(null)
   const routeNoteIdRef = useRef(routeNoteId)
@@ -564,6 +597,22 @@ export function NotesView() {
     writeListCollapsed(next)
   }
 
+  function toggleTagsCollapsed(): void {
+    const next = !tagsCollapsed
+    setTagsCollapsed(next)
+    writeTagsCollapsed(next)
+  }
+
+  /**
+   * 点目录跳过去。
+   *
+   * **落点不在这里算**：滚动容器是谁、阅读线在哪儿（吸顶工具栏的下沿）都是画布那边
+   * 的事（`NoteTocItem.scrollTo`，见 NoteCanvas），页面只负责"点了就跳"。
+   */
+  function jumpToToc(item: NoteTocItem): void {
+    item.scrollTo()
+  }
+
   const groups = useMemo(() => groupNotes(items), [items])
   /** 标签按语义分三组；空的那组不占位置（没有状态标签时就只有两行）。 */
   const tagGroups = useMemo(() => {
@@ -590,7 +639,11 @@ export function NotesView() {
     // 刻意不用 PageShell：这一页的第一屏应当是"列表头 + 编辑器工具栏"，
     // 而不是通用页头（大标题 + 说明）。工具型界面里那两行只是占地方。
     <div className="notes-page">
-      <div className={`notes-layout${listCollapsed ? ' list-collapsed' : ''}`}>
+      <div
+        className={`notes-layout${listCollapsed ? ' list-collapsed' : ''}${
+          tocOpen && tocItems.length > 0 ? ' toc-open' : ''
+        }`}
+      >
         <aside className="notes-list">
           <div className="list-head">
             {!listCollapsed && (
@@ -637,32 +690,76 @@ export function NotesView() {
                 />
               </div>
 
+              {/*
+                标签区：**默认折叠**（用户反馈："标签在笔记目录里面不默认展开。不然标签
+                一多就太多了"）。折叠态就是这一行小标题（实测 20px），展开态才是那三组
+                chip（实测 150.1px）。
+
+                当前生效的标签即使在折叠态也留在这一行里（旁边那颗亮着的 chip）：
+                否则列表被筛过、屏幕上却没有任何东西说得出"为什么只剩这几条"。
+              */}
               {tags.length > 0 && (
-                <div className="tag-bar">
-                  {tagGroups.map((group) => (
-                    <div key={group.kind} className="tag-group">
-                      <span className="tag-group-label">{group.label}</span>
-                      <span className="tag-group-items">
-                        {group.items.map((item) => (
-                          <button
-                            key={item.tag}
-                            type="button"
-                            className={`tag-chip${activeTag === item.tag ? ' tag-on' : ''}`}
-                            onClick={() =>
-                              setFilter(searchInput.trim(), activeTag === item.tag ? '' : item.tag)
-                            }
-                          >
-                            {item.tag}
-                            {/* 计数前面要有一个记号：`2026-09` 后面直接跟一个 `3`，
+                <div className={`tag-bar${tagsCollapsed ? ' tag-bar-collapsed' : ''}`}>
+                  <div className="tag-bar-head">
+                    <button
+                      type="button"
+                      className="tag-bar-toggle"
+                      aria-expanded={!tagsCollapsed}
+                      title={tagsCollapsed ? '展开标签' : '折叠标签'}
+                      onClick={toggleTagsCollapsed}
+                    >
+                      {tagsCollapsed ? (
+                        <ChevronRight size={12} aria-hidden="true" />
+                      ) : (
+                        <ChevronDown size={12} aria-hidden="true" />
+                      )}
+                      <span>标签</span>
+                      <span className="tag-count tabular">{formatCount(tags.length)}</span>
+                    </button>
+                    {tagsCollapsed && activeTag && (
+                      <button
+                        type="button"
+                        className="tag-chip tag-on"
+                        onClick={() => setFilter(searchInput.trim(), '')}
+                      >
+                        {activeTag}
+                      </button>
+                    )}
+                  </div>
+
+                  {!tagsCollapsed && (
+                    <div className="tag-groups">
+                      {tagGroups.map((group) => (
+                        <div key={group.kind} className="tag-group">
+                          <span className="tag-group-label">{group.label}</span>
+                          <span className="tag-group-items">
+                            {group.items.map((item) => (
+                              <button
+                                key={item.tag}
+                                type="button"
+                                className={`tag-chip${activeTag === item.tag ? ' tag-on' : ''}`}
+                                onClick={() =>
+                                  setFilter(
+                                    searchInput.trim(),
+                                    activeTag === item.tag ? '' : item.tag,
+                                  )
+                                }
+                              >
+                                {item.tag}
+                                {/* 计数前面要有一个记号：`2026-09` 后面直接跟一个 `3`，
                                 读起来是"2026-09-3"（界面评审 N4 就是这么读的——
                                 它以为日期被截断了，其实那是**标签 + 计数**两个东西）。
                                 `·` 是仓库里既有的分隔符（用量行也用它），不新增词汇。 */}
-                            <span className="tag-count tabular">· {formatCount(item.count)}</span>
-                          </button>
-                        ))}
-                      </span>
+                                <span className="tag-count tabular">
+                                  · {formatCount(item.count)}
+                                </span>
+                              </button>
+                            ))}
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
               )}
 
@@ -730,6 +827,7 @@ export function NotesView() {
               onValueChange={(markdown) =>
                 setDraft((prev) => (prev ? { ...prev, content_md: markdown } : prev))
               }
+              onToc={setTocItems}
               onNotify={(payload) => {
                 if (payload.type === 'error') toast.error(payload.message)
                 else toast.success(payload.message)
@@ -742,6 +840,21 @@ export function NotesView() {
               }
               actions={
                 <>
+                  {/* 目录开关：**只在这条笔记真有标题时出现**（没有锚点的目录是个空盒子）。
+                      窄屏下它与目录栏一起收起（见 notes.css 的断点）。 */}
+                  {tocItems.length > 0 && (
+                    <button
+                      type="button"
+                      className={`icon-action toc-toggle${tocOpen ? ' icon-action-on' : ''}`}
+                      title={tocOpen ? '隐藏目录' : '显示目录'}
+                      aria-label="目录"
+                      aria-expanded={tocOpen}
+                      aria-pressed={tocOpen}
+                      onClick={() => setTocOpen((prev) => !prev)}
+                    >
+                      <ListTree size={15} />
+                    </button>
+                  )}
                   <button
                     type="button"
                     className={`icon-action${draft.pinned ? ' icon-action-on' : ''}`}
@@ -836,6 +949,43 @@ export function NotesView() {
             </div>
           )}
         </section>
+
+        {/*
+          目录（正文大纲）在**右栏**——这是量过之后的选择，不是顺手：
+          - 左栏已经是"列表 + 标签"，再塞一层导航会把两种轴（哪条笔记 / 这一节的哪里）
+            叠在同一列里；
+          - 右栏放得下：1440 屏实测正文列 830.9px，而正文那一栏的上限是 780px、
+            居中之后两侧只剩 25.4px——目录栏（176px）不是"用掉余量"，是**从正文列里
+            借**：借完 654.9px，正文仍有 607px（≈66 个字符的行宽，没有掉出阅读区间）；
+          - 再窄就借不起了（1280 屏只余 502px），所以整个功能在 1360px 以下收起
+            （见 notes.css 里那段断点与推导）。
+
+          没有标题时**整栏不渲染**：空盒子只会占地方。
+        */}
+        {tocOpen && tocItems.length > 0 && (
+          <aside className="notes-toc" aria-label="笔记目录">
+            <p className="toc-title">目录</p>
+            <ul className="toc-list">
+              {tocItems.map((item) => (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    className={`toc-item${item.isActive ? ' toc-item-on' : ''}${
+                      item.isScrolledOver ? ' toc-item-past' : ''
+                    }`}
+                    /* 层级只用来缩进（1–3 级，再深的标题在 176px 里也读不出层级差） */
+                    data-level={Math.min(item.level, 3)}
+                    aria-current={item.isActive ? 'true' : undefined}
+                    title={item.textContent}
+                    onClick={() => jumpToToc(item)}
+                  >
+                    {item.textContent}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </aside>
+        )}
       </div>
 
       <Dialog open={deleteOpen} onOpenChange={setDeleteOpen}>

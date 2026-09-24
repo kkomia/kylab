@@ -125,6 +125,39 @@ def test_persona_block_labels_each_file() -> None:
     assert "【操作规程（AGENTS.md）】" in text
 
 
+def test_persona_block_opens_with_a_do_follow_this_instruction() -> None:
+    """四份文件前面要有一句**"这是我的设定，请照着做"**（用户实测的"全程没生效"）。
+
+    原先它们只有来源标签：标签回答"它是什么"，但"所以要照着做"一句都没有——
+    要求散在通用 base 提示词里，模型完全可以把这几段当资料读完就算。
+    这里钉三件事：总起句在最前、它写着"照此说话做事"、以及**冲突时以对方当下为准**
+    （只靠 MEMORY.md 那句"可能过时"不够：人格与规程也会被当成过期的资料）。
+    """
+    text = build_system_prompt(
+        PromptContext(
+            base="底",
+            persona=((SOUL_FILE, "我很克制"), (CORE_MEMORY_FILE, "他偏好中文")),
+        )
+    )
+
+    assert "请始终照此说话做事" in text
+    # 总起句排在**所有文件之前**，而不是被塞在某一份后面
+    assert text.index("请始终照此说话做事") < text.index("【你的人格")
+    # 冲突的优先级说清（文件是快照，对方当下说的才是新事实）
+    assert "以他此刻说的为准" in text
+    # 它不能变成一次"逐字转述"练习
+    assert "不要向对方复述文件原文" in text
+    # 总起句与 MEMORY.md 那句各说一次，不重复同一句措辞（那句原样留在记忆那份的标签里）
+    assert text.count("可能已经过时") == 1
+
+
+def test_no_persona_files_no_dangling_instruction() -> None:
+    """一份文件都没有时，**总起句也不出现**：空喊一句"请遵守以下设定"比不写更糟。"""
+    assert build_system_prompt(PromptContext(base="底")) == "底"
+    # 文件存在但内容为空（只有空白）时同样不带总起句
+    assert build_system_prompt(PromptContext(base="底", persona=((SOUL_FILE, "  \n"),))) == "底"
+
+
 def test_memory_is_marked_as_possibly_stale() -> None:
     """**只有记忆带这句**：它是四份里唯一会过时的。"""
     text = build_system_prompt(

@@ -7,9 +7,16 @@ import { cn } from '@/lib/utils'
 
 /**
  * 下拉选择。触发器与 `Input` **同高同款**（`h-8` / `--control-height`，
- * 描边 `--border`、聚焦转墨色）——旧前端曾在这里出过"同一行里高差 11px"的问题，
- * 所以这四处取值不再各写各的。菜单部分与 `dropdown-menu` 共用同一组弹层令牌。
- */
+ * 描边 `--border`）——旧前端曾在这里出过"同一行里高差 11px"的问题，
+ * 所以这四处取值不再各写各的。
+ *
+ * 聚焦（2026-09-24）：触发器是个 `<button>`，键盘走到它时**只出 `--ring` 那一层环**
+ * （3px，画在描边外侧）。改前是 `focus:border-[var(--text-primary)]` 加全局墨色
+ * `:focus-visible`——1px 墨边 + 2px 空隙 + 2px 墨环，用户点名的"黑线加粗"。
+ * 两点有意与 shadcn 上游不同（理由同 tokens.css「焦点环」）：
+ *   - 不像上游那样把 `border-ring` 也加上：本仓控件描边是 hairline，染成环色会与
+ *     3px 环连成一条 4px 粗环——又回到"加粗"那条抱怨上；环单独画在外面已满足 3:1；
+ *   - 环不半透明（上游 `ring-ring/50` 对白底约 1.7:1）。 */
 function Select({ ...props }: React.ComponentProps<typeof SelectPrimitive.Root>) {
   return <SelectPrimitive.Root data-slot="select" {...props} />
 }
@@ -31,9 +38,10 @@ function SelectTrigger({
   return (
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
+      data-focus-ring="self"
       data-size={size}
       className={cn(
-        'flex w-fit items-center justify-between gap-2 rounded-control border border-border bg-surface px-3 py-1 text-[length:var(--text-body-size)] whitespace-nowrap transition-[color,box-shadow,border-color] hover:border-[var(--text-quaternary)] focus:border-[var(--text-primary)] disabled:cursor-not-allowed disabled:border-[var(--button-disabled-border)] disabled:bg-[var(--button-disabled-bg)] disabled:text-[var(--button-disabled-text)] aria-invalid:border-status-danger data-[placeholder]:text-text-quaternary data-[size=default]:h-8 data-[size=sm]:h-7 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*="size-"])]:size-4 [&_svg:not([class*="text-"])]:text-text-tertiary',
+        'flex w-fit items-center justify-between gap-2 rounded-control border border-border bg-surface px-3 py-1 text-[length:var(--text-body-size)] whitespace-nowrap transition-[color,box-shadow,border-color] outline-none hover:border-[var(--text-quaternary)] focus-visible:ring-[3px] focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:border-[var(--button-disabled-border)] disabled:bg-[var(--button-disabled-bg)] disabled:text-[var(--button-disabled-text)] aria-invalid:border-status-danger data-[placeholder]:text-text-quaternary data-[size=default]:h-8 data-[size=sm]:h-7 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*="size-"])]:size-4 [&_svg:not([class*="text-"])]:text-text-tertiary',
         className,
       )}
       {...props}

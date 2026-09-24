@@ -7,7 +7,7 @@
  * 品牌位（环行星标 + 折叠开关）
  * 新建会话（`/chat?new=1`，带快捷键提示）
  * 主导航：笔记 / 记忆 / 能力 / 知识库▸（所有知识库 / 概览 / 任务中心）
- * 项目节：项目行（带条数）+ 各自的项目内会话（超过 5 条先收起）+ 全部项目
+ * 项目节：项目行（带条数，悬停时右端出现「+」= 在这个项目里新开会话）+ 各自的项目内会话（超过 5 条先收起）+ 全部项目
  * 对话节：没归项目的会话（前 8 条）+ 查看全部会话
  * 页脚：账号（头像 + 名字 → 向上展开的菜单）
  * ```
@@ -52,8 +52,9 @@
  *    库可能几十个，全铺在侧栏上正是"知识库占的地方太多"的根源；
  * 3. **设置入口只给管理员**，且放在账号的二级菜单里：退出登录低频且不可逆、
  *    主题属于"这台机器怎么显示"，摊在页脚上都不合适；
- * 4. **会话行的「⋯」与节标题右侧的加号都是"悬停才显形、但始终可 Tab 到"**
- *    （规范 §8 禁止"只有 hover 才够得着"的关键操作）；
+ * 4. **会话行的「⋯」、项目行的「+」与节标题右侧的加号都是"悬停才显形、但始终可 Tab 到"**
+ *    （规范 §8 禁止"只有 hover 才够得着"的关键操作）。三者显形都**不动别人的位置**：
+ *    前两个走 `.ly-row-menu`（绝对定位 + 那片宽度常驻预留），最后那个在标题行里；
  * 5. **"我在哪"整栏只有一种样子**：当前会话 / 当前项目 / 当前导航项都加
  *    `--bg-selected` 底（= `Fills-F2`，规范 §7 的取值：中性 alpha 填充，不用品牌色底、
  *    也没有左侧指示条），并各自带上 `aria-current="page"`。会话行静止态是**正文色**
@@ -83,6 +84,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { preloadPage, type PageName } from '@/app/routes'
 import { prefetchConversationDetail } from '@/features/chat/runtime/useChatData'
 import {
+  RiAddLine,
   RiArrowDownSLine,
   RiArrowRightSLine,
   RiBook2Line,
@@ -190,6 +192,23 @@ function sideRow({
  */
 const SIDE_ADD =
   'ly-side-add ml-auto inline-flex size-6 items-center justify-center rounded-control text-text-tertiary transition-[opacity] duration-[var(--motion-fast)] ease-[var(--motion-ease)] hover:bg-[var(--bg-hover)] hover:text-text-primary'
+
+/**
+ * 项目行右端那颗「在这个项目里新建会话」（+）。
+ *
+ * 与上面那颗节标题的按钮同一副长相（24px 命中区、悬停才显形但不改变布局），
+ * 差别只有两处，都是**行内嵌在列表里**带来的：
+ *
+ * 1. **去掉 `ly-side-add` 与 `ml-auto`**：显隐由 `.ly-row-menu` 那一套管
+ *    （跟着行一起在 hover / focus-within 时淡入，和会话行的「⋯」同一处规则）；
+ * 2. **`shrink-0`**：它是绝对定位容器里的实体按钮，别被挤变形。
+ *
+ * 为什么要它：在已有项目里新开一条会话应当是**行上点一下**的事——原先只有
+ * "点进工作区页 → 右栏底部那颗按钮"（两次点击、还要先认路），而侧栏最上面那颗
+ * 「新建会话」建出来的是**未归档**对话，事后得自己去「移至项目」找补。
+ */
+const SIDE_ROW_ADD =
+  'inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-control border-0 bg-transparent text-text-tertiary transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary'
 
 /**
  * 导航项顺序 = 使用频率（《界面信息架构草案》§1）。
@@ -611,28 +630,55 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
               <Fragment key={workspace.id}>
                 <li>
                   {/* 项目行也是"能停住的一页"（`/workspaces?focus=<id>`）：停在这一页上时
-                      它就该像导航项一样亮起来——项目节此前一整片都没有当前项。 */}
-                  <button
-                    type="button"
-                    className={
-                      workspace.id === focusedWorkspaceId
-                        ? `${SIDE_ROW} cursor-pointer border-0 bg-[var(--bg-selected)]`
-                        : `${SIDE_ROW} cursor-pointer border-0 bg-transparent`
-                    }
-                    aria-current={workspace.id === focusedWorkspaceId ? 'page' : undefined}
-                    title={workspace.root_path}
-                    onClick={() => void navigate(`/workspaces?focus=${workspace.id}`)}
-                  >
-                    <RiFolderLine
-                      size={15}
-                      className="shrink-0 text-text-secondary"
-                      aria-hidden="true"
-                    />
-                    <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
-                    <span className="tabular shrink-0 text-[length:var(--text-micro-size)] text-text-tertiary">
-                      {formatCount(workspace.conversation_count)}
-                    </span>
-                  </button>
+                      它就该像导航项一样亮起来——项目节此前一整片都没有当前项。
+
+                      右端那颗「+」是**在这个项目里新开一条会话**（市面上的"在已有项目内
+                      新增对话就是点一下"）：它是行的兄弟、绝对定位浮在右端，所以
+                      (a) 点它不会触发上面那次"进项目页"的跳转；(b) 它显形时整行一个字都不动
+                      ——那片宽度由 `menuGutter` 常驻预留（与会话行的「⋯」同一套做法）。 */}
+                  <div className="ly-side-row-wrap">
+                    <button
+                      type="button"
+                      className={cn(
+                        sideRow({
+                          current: workspace.id === focusedWorkspaceId,
+                          menuGutter: true,
+                        }),
+                        'cursor-pointer border-0',
+                        workspace.id === focusedWorkspaceId ? undefined : 'bg-transparent',
+                      )}
+                      aria-current={workspace.id === focusedWorkspaceId ? 'page' : undefined}
+                      title={workspace.root_path}
+                      onClick={() => void navigate(`/workspaces?focus=${workspace.id}`)}
+                    >
+                      <RiFolderLine
+                        size={15}
+                        className="shrink-0 text-text-secondary"
+                        aria-hidden="true"
+                      />
+                      <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
+                      <span className="tabular shrink-0 text-[length:var(--text-micro-size)] text-text-tertiary">
+                        {formatCount(workspace.conversation_count)}
+                      </span>
+                    </button>
+                    <div className="ly-row-menu">
+                      {/* 带 `?workspace=` 才是"在这个项目里新建"（对话页据此把会话挂上去，
+                          并在第一句话落下之前就把落点说出来）。 */}
+                      <button
+                        type="button"
+                        className={SIDE_ROW_ADD}
+                        aria-label={`在项目「${workspace.name}」里新建会话`}
+                        title="在这个项目里新建会话"
+                        onMouseEnter={() => preloadPage('chat')}
+                        onFocus={() => preloadPage('chat')}
+                        onClick={() =>
+                          void navigate(`/chat?new=1&workspace=${encodeURIComponent(workspace.id)}`)
+                        }
+                      >
+                        <RiAddLine size={15} aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
                 </li>
                 {shownConversations(workspace.id).map((item) => (
                   <li key={item.id}>
