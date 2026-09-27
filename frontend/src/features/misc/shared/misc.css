@@ -1615,14 +1615,6 @@
     color: var(--text-tertiary);
   }
 
-  .m-provider-url {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: var(--text-c2-size);
-    color: var(--text-tertiary);
-    overflow-wrap: anywhere;
-  }
-
   .m-form-card {
     display: flex;
     flex-direction: column;
@@ -1724,12 +1716,6 @@
     gap: var(--space-1);
     font-size: var(--text-meta-size);
     color: var(--text-primary);
-  }
-
-  .m-slot-value {
-    margin: 0;
-    font-size: var(--text-micro-size);
-    color: var(--text-tertiary);
   }
 
   .m-test-result {

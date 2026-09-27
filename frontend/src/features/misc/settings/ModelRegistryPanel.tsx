@@ -468,16 +468,18 @@ export function ModelRegistryPanel() {
             </DropdownMenu>
           </div>
 
+          {/*
+            供应商卡上**只留"哪把钥匙"**（v0.53）。原先这一行还有「供应商类型」与
+            「N 个模型」，下面另起一行印 base_url——三样都不重复任何东西，但也没有
+            区分度：这一列里所有供应商都是同一类，模型数量下面那份清单里数得出来，
+            而 base_url 是实现细节（要看要改去「编辑」）。用户圈的就是这一块。
+            掩码密钥留着：同一个供应商配了几把钥匙时，它是唯一能分辨的那一条。
+          */}
           <p className="m-provider-meta">
-            <span>{kinds[provider.kind] ?? provider.kind}</span>
-            <span className="sep">·</span>
             <span className="tabular">
               {provider.api_key_configured ? provider.api_key_hint : '未配密钥'}
             </span>
-            <span className="sep">·</span>
-            <span className="tabular">{formatCount(provider.model_count)} 个模型</span>
           </p>
-          {provider.base_url && <p className="m-provider-url">{provider.base_url}</p>}
 
           {editingProvider === provider.id && (
             <div className="m-form-card">
@@ -621,21 +623,18 @@ export function ModelRegistryPanel() {
                 <li key={model.id} className="m-model-row">
                   <div className="m-model-title">
                     <span className="m-model-name">{model.label || model.model_id}</span>
-                    <span className="m-model-meta">
-                      <span className="tabular">{model.model_id}</span>
-                      {model.dim && (
-                        <>
-                          <span className="sep">·</span>
-                          <span className="tabular">{model.dim} 维</span>
-                        </>
-                      )}
-                      {model.capabilities.map((cap) => (
-                        <span key={cap}>
-                          <span className="sep">·</span>
-                          <span>{capabilities[cap] ?? cap}</span>
-                        </span>
-                      ))}
-                    </span>
+                    {/*
+                      名字旁边**只留"另一份信息"**（v0.53，用户圈着这一串说"同一个东西
+                      说两遍"）：模型 id 与用途原先也印在这里，而两样都已经在别处说过一遍
+                      ——名字本身就是 id（或它的短形式），用途是右边那枚胶囊。最刺眼的是
+                      `Qwen/Qwen3.5-4B` 那种没有单独显示名的模型：标题与副标题一字不差。
+                      维度留着：它不重复任何东西。
+                    */}
+                    {model.dim && (
+                      <span className="m-model-meta">
+                        <span className="tabular">{model.dim} 维</span>
+                      </span>
+                    )}
                   </div>
                   {/*
                     正被哪些用途用着：一眼能看出"删了会影响什么"。

@@ -207,12 +207,25 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     })
   }
 
-  /** 下拉选项：空值 = 未指定，其余是"模型名 · 供应商"。 */
+  /**
+   * 下拉选项：空值 = 未指定，其余是"模型名 · 维度 · 供应商"。
+   *
+   * **维度写进选项里**（v0.53）：嵌入/重排原先在选中项下面另跟一行摘要（`slotSummary`）
+   * 把同一个模型再报一遍——用户圈着它说"这不就是同一个东西说两遍"。维度是**另一份
+   * 信息**，不该连它一起丢，所以并进标签：只说一遍，而且在"选哪个"的那一刻就看得见。
+   * 对话模型没有维度，标签与原先一字不差。
+   */
   const slotOptions = (slot: string) => [
     { value: '', label: '未指定' },
     ...bindableModels(slot).map((model) => ({
       value: model.id,
-      label: `${model.label || model.model_id} · ${model.provider_name}`,
+      label: [
+        model.label || model.model_id,
+        model.dim ? `${model.dim} 维` : '',
+        model.provider_name,
+      ]
+        .filter(Boolean)
+        .join(' · '),
     })),
   ]
 
@@ -222,19 +235,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
    * 只摘这一个标记，摘不出东西就原样返回——不去猜别的写法。
    */
   const inlineLabel = (label: string): string => label.replace('（默认）', '').trim() || label
-
-  /**
-   * 选中模型的"身份证"：名称 · 维度 · 供应商。
-   * 未选定时返回空串——选择器里已经写着「未指定」了，再跟一行同样的字只是噪声。
-   */
-  const slotSummary = (slot: string): string => {
-    const state = slotOf(slot)
-    if (!state?.configured) return ''
-    const model = registryData?.models.find((item) => item.id === state.bound_model_pk)
-    if (!model) return state.bound_model_label || '—'
-    const dim = model.dim ? ` · ${model.dim} 维` : ''
-    return `${model.label || model.model_id}${dim} · ${state.provider_name}`
-  }
 
   const embeddingConfigured = slotOf('embedding')?.configured ?? false
   const chatConfigured = slotOf('chat')?.configured ?? false
@@ -540,9 +540,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       disabled={bindingSlot === 'embedding'}
                       label="默认嵌入模型"
                     />
-                    {slotSummary('embedding') && (
-                      <p className="m-slot-value tabular">{slotSummary('embedding')}</p>
-                    )}
                     {!embeddingConfigured && (
                       <p className="m-row-note">
                         未选定前不能新建知识库。这里没有可选项时，先到「模型注册」添加供应商并登记模型。
@@ -583,9 +580,6 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       disabled={bindingSlot === 'rerank'}
                       label="重排模型"
                     />
-                    {slotSummary('rerank') && (
-                      <p className="m-slot-value tabular">{slotSummary('rerank')}</p>
-                    )}
                   </div>
 
                   <h3 className="m-section-title m-section-gap">高级</h3>
@@ -732,9 +726,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
                       disabled={bindingSlot === 'chat'}
                       label="默认对话模型"
                     />
-                    {/* 对话模型这里**不再跟一行摘要**（2026-09-24）：`slotSummary('chat')`
-                        拼出来的串与下拉里选中的那串一模一样（「DeepSeek Flash · 深度求索」
-                        说两遍）。嵌入/重排那两处留着——那里的摘要带维度，是另一份信息 */}
+                    {/* **三个用途格都不再跟一行摘要**（v0.53 统一）：那一行拼出来的串与
+                        下拉里选中的那串是同一个模型，等于把选中值说两遍。对话那一格在
+                        2026-09-24 就先删了（「DeepSeek Flash · 深度求索」说两遍）；
+                        嵌入/重排当时以"摘要带维度、是另一份信息"为由留着，用户 2026-09-27
+                        圈着它说"这不就是同一个东西说两遍"——**维度并进了选项标签**，
+                        信息没丢，但只说一遍（见 slotOptions）。 */}
                     {!chatConfigured && (
                       <p className="m-row-note">
                         未选定时「对话」与标题生成不可用。如果这里没有可选项，先到「模型注册」登记对话模型。
