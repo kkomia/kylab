@@ -38,6 +38,18 @@ PRIORITY_KB_PROMPT = 30
 PRIORITY_MEMORY = 40
 PRIORITY_SKILLS = 50
 PRIORITY_SUMMARY = 60
+PRIORITY_BOOTSTRAP = 70
+"""「还没认识对方」那一段**单独排在最末**（v0.52）。
+
+原先它拼在 ``AGENTS.md`` 那一份的末尾（靠前），后面还跟着知识库提示词、技能目录、
+摘要——而技能目录本身就是一份**能力清单**。实测（用户在界面上只发了一句"你好"）：
+模型照那份清单回了一串"联网、笔记、记忆这些都正常"，**没有做首次引导**，
+而引导块当时确实在提示词里（机制没问题，是话说在了没人听的地方）。
+
+两条理由把它挪到最后：① 它是**关于这一轮该做什么**的指令，不是待读的资料——
+按本文件的语义就该排"这一轮的上下文"那一档；② 越靠后越近，模型读到的最后一段
+是它，而不是一份可以被复述的能力列表。
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +72,11 @@ class PromptContext:
     """「还没认识对方：这一轮该做一次开场」那一段，来自 `MemoryService.bootstrap_block`。
 
     **只在对方的资料还是空模板时非空**（由服务层判）：Agent 一写进去它自己就没了，
-    所以这一段不需要"用过就删"的簿记。"""
+    所以这一段不需要"用过就删"的簿记。
+
+    **它是独立一块、而且排在整份提示词的最后**（``PRIORITY_BOOTSTRAP``，v0.52）：
+    它说的是"这一轮该做什么"，而不是"我是谁"或"要读什么资料"——原先拼在 ``AGENTS.md``
+    末尾时，后面还跟着一整份技能目录，实测模型会照着那份目录复述能力而不做引导。"""
 
     kb_prompt: str = ""
     memory: str = ""
@@ -81,6 +97,7 @@ def default_contributors() -> list[PromptContributor]:
         (PRIORITY_MEMORY, "memory", lambda ctx: ctx.memory),
         (PRIORITY_SKILLS, "skills", lambda ctx: ctx.skills),
         (PRIORITY_SUMMARY, "summary", _summary_block),
+        (PRIORITY_BOOTSTRAP, "bootstrap", lambda ctx: ctx.bootstrap),
     ]
 
 
@@ -159,14 +176,14 @@ def _persona_block(context: PromptContext) -> str:
         else:
             blocks.append(f"【{label}（{name}）】\n{body}")
     guidance = context.memory_guidance.strip()
-    bootstrap = context.bootstrap.strip()
-    notes = [part for part in (guidance, bootstrap) if part]
-    if notes:
-        joined = "\n\n".join(notes)
+    if guidance:
+        # 「长期记忆怎么用」挂在**操作规程那一份的末尾**（照 QwenPaw 把记忆指导拼进
+        # AGENTS.md 那一段的做法）：它属于"这类活怎么干"，单列成一块会读起来像
+        # 另一份待读的资料。没有 ``AGENTS.md`` 时退化成独立一块——总比丢掉好。
         if agents_at is None:
-            blocks.append(joined)
+            blocks.append(guidance)
         else:
-            blocks[agents_at] = f"{blocks[agents_at]}\n\n{joined}"
+            blocks[agents_at] = f"{blocks[agents_at]}\n\n{guidance}"
     if not blocks:
         return ""
     return "\n\n".join([_PERSONA_LEAD, *blocks])

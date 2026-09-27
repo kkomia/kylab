@@ -417,39 +417,55 @@ def test_memory_guidance_survives_a_missing_agents_file() -> None:
     assert "记忆指导正文" in text
 
 
-def test_bootstrap_rides_with_the_agents_section_after_the_guidance() -> None:
-    """首次引导与记忆指导挂在**同一处**（操作规程那一份的末尾），且顺序固定。
+def test_the_guidance_rides_with_the_agents_section() -> None:
+    """「长期记忆怎么用」挂在**操作规程那一份的末尾**（照 QwenPaw 的做法）。
 
-    两者都是"这类活怎么干"，不是待读的资料。顺序固定是刻意的：同一份提示词
-    每轮要是排得不一样，任何"比对两轮提示词差在哪"的排查都会失效。
+    它属于"这类活怎么干"，不是待读的资料；顺序固定是刻意的——同一份提示词每轮
+    要是排得不一样，任何"比对两轮提示词差在哪"的排查都会失效。
     """
     text = build_system_prompt(
         PromptContext(
             base="底",
             persona=_persona_of(AGENTS_FILE),
             memory_guidance="记忆指导正文",
+        )
+    )
+
+    assert text.index(f"{AGENTS_FILE} 正文") < text.index("记忆指导正文")
+    # 紧挨着：两者之间不该插进别的东西（这一份就是一个整块）
+    assert "记忆指导正文" in text.split(f"{AGENTS_FILE} 正文")[1]
+
+
+def test_the_bootstrap_is_the_last_block_even_after_the_skills() -> None:
+    """首次引导是**独立一块、排在整份提示词的最后**（v0.52）。
+
+    **为什么不能拼在 ``AGENTS.md`` 末尾**（原先那样做）：后面还跟着知识库提示词、
+    记忆块、**技能目录**、摘要——而技能目录本身就是一份能力清单。实测（用户在界面上
+    只发了一句"你好"）：模型照那份清单回了一串"联网、笔记、记忆这些都正常"，
+    **没做引导**，而引导块当时确实在提示词里。机制没错，是话说在了没人听的地方。
+
+    所以这里钉的是**位置**：技能正文之后、整份提示词的收尾。
+    """
+    text = build_system_prompt(
+        PromptContext(
+            base="底",
+            persona=_persona_of(AGENTS_FILE),
+            memory_guidance="记忆指导正文",
+            skills="技能正文",
+            summary="摘要正文",
             bootstrap="引导正文",
         )
     )
 
-    assert (
-        text.index(f"{AGENTS_FILE} 正文")
-        < text.index("记忆指导正文")
-        < text.index("引导正文")
-    )
+    assert text.index("技能正文") < text.index("引导正文"), "要在技能目录之后"
+    assert text.index("摘要正文") < text.index("引导正文"), "要在摘要之后"
+    assert text.rstrip().endswith("引导正文"), "而且它就是最后一段"
 
 
-def test_bootstrap_alone_still_lands_in_the_agents_section() -> None:
-    """只有引导、没有记忆指导时（长期记忆关着的那种实例）也照样挂上去。"""
-    text = build_system_prompt(
-        PromptContext(base="底", persona=_persona_of(AGENTS_FILE), bootstrap="引导正文")
-    )
-
-    assert text.index(f"{AGENTS_FILE} 正文") < text.index("引导正文")
-
-
-def test_bootstrap_is_absent_when_the_service_says_nothing() -> None:
+def test_the_bootstrap_is_absent_when_the_service_says_nothing() -> None:
     """服务层判"人设已经填过"时给空串，提示词里就一个字都不该多出来。"""
-    text = build_system_prompt(PromptContext(base="底", persona=_persona_of(AGENTS_FILE)))
+    text = build_system_prompt(
+        PromptContext(base="底", persona=_persona_of(AGENTS_FILE), skills="技能正文")
+    )
 
     assert "引导正文" not in text
