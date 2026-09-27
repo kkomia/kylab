@@ -431,6 +431,12 @@ class TaskWorker:
             # 事后也无从推断这条记忆该落到谁名下。空串 = 共享桶。
             user_id = str(task.payload.get("user_id") or "")
             self._capture_memory(messages, session_id, user_id)
+            # **这一行 return 不能省**：MEMORY 不在 ``DOCUMENT_KINDS`` 里，
+            # 掉到下面那条 ``not in DOCUMENT_KINDS`` 会抛 NotImplementedError，
+            # 而它在 ``NON_RETRYABLE`` 里 → 任务被判 FAILED。
+            # 原先漏了这一行，症状是"记忆条目确实写进去了，任务中心却每次都记一条失败"
+            # ——副作用已经发生，所以看起来像功能正常，只有翻任务列表才看得出。
+            return
         if task.kind is TaskKind.SCHEDULED:
             # 定时任务（v0.33）：payload 里是 scheduled_id，没有 document_id。
             # 与其它分支一样**没接线就明确报错**，不静默跳过——跳过会让"到点了

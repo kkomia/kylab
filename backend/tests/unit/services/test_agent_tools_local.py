@@ -1,35 +1,82 @@
 """新工具的接线（v0.33）：工具表里出现什么、结果怎么渲染给模型。
 
 镜像同构：``app/services/agent_tools.py`` 的 ``_LOCAL_TOOLS`` / ``_LOCAL_KB_TOOLS`` /
-``_run_file_tool`` / ``_list_tables`` / ``_query_table`` / ``_schedule_task`` → 本文件。
+``_run_file_tool`` / ``_list_tables`` / ``_query_table`` / ``_schedule_task`` /
+``_read_memory`` / ``_write_memory`` → 本文件。
 
-三件事：
+四件事：
 
 1. **关掉知识库开关时，表格那两个工具一起消失**（判据是"数据从哪来"——
    表格副本就是入库文档的产物，留着它等于开一条按 SQL 读库里内容的近路）；
 2. **文件与执行工具恒在**（它们不依赖知识库，依赖的是会话的工作区与沙箱）；
 3. **渲染是给人/模型读的文本**：文件内容不能包在 JSON 里（一屏 ``\\n``），
-   SQL 结果给 Markdown 表（模型对表格形状的读数比一层字段名准）。
+   SQL 结果给 Markdown 表（模型对表格形状的读数比一层字段名准）；
+4. **记忆那一侧跟着记忆开关走**：关着时 ``recall`` 与 ``read_memory`` 一起消失，
+   而 ``remember`` 留着（它不看那个开关，见 ``MemoryService.remember``）。
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from app.core.exceptions import InvalidRequestError
-from app.services import agent_tools
+from app.services import agent_tools, memory_files
 from app.services.agent_files import Roots
 from app.services.api_key import Caller
+from app.services.memory import MemoryService
 from app.storage.base import ScheduledTaskRecord
 from tests.conftest import install_fake_chat  # noqa: F401  （保持与其它用例一致的导入面）
 
 
 def _names(kb_ids: list[str] | None) -> set[str]:
     return {spec.name for spec in agent_tools.tool_specs(kb_ids=kb_ids)}
+
+
+class _FakeMemory:
+    """只实现 ``tool_specs`` 用到的那一个属性（形状与真的一致）。"""
+
+    def __init__(self, enabled: bool) -> None:
+        self.enabled = enabled
+
+
+class _FakeRuntime:
+    """只实现 MemoryService 用到的那三个读接口（形状与真的一致）。"""
+
+    def __init__(self, values: dict[str, str]) -> None:
+        self._values = values
+
+    def get(self, key: str) -> str:
+        return self._values.get(key, "")
+
+    def get_bool(self, key: str, *, default: bool = False) -> bool:
+        raw = self._values.get(key)
+        if raw is None or not raw.strip():
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    def get_int(self, key: str) -> int:
+        return 0
+
+
+def _memory_service(tmp_path: Path) -> MemoryService:
+    return MemoryService(  # type: ignore[arg-type]
+        _FakeRuntime({"memory.workspace": "memory"}), tmp_path
+    )
+
+
+def _names_with_memory(enabled: bool, kb_ids: list[str] | None = None) -> set[str]:
+    """带一个假记忆服务的工具表。
+
+    ``services`` 只给 ``memory`` 一项：``_mcp_specs`` 读不到 ``services.mcp`` 会
+    自己吞掉（那一处是"外部工具读不出来不该让整轮起不来"）。
+    """
+    services = SimpleNamespace(memory=_FakeMemory(enabled))
+    return {spec.name for spec in agent_tools.tool_specs(services, kb_ids=kb_ids)}
 
 
 # ------------------------------------------------------------------ 工具表
@@ -259,3 +306,161 @@ def test_the_machine_tools_are_wired_into_the_runner(tmp_path, monkeypatch) -> N
     runner = agent_tools.build_runner(_FakeServices(), Caller(is_admin=True), kb_ids=[])
     outcome = runner("read_file", {"path": "note.txt"})
     assert "hello" in outcome.content
+
+
+# ------------------------------------------------------------------ 记忆工具
+
+
+def test_memory_tools_follow_the_memory_switch() -> None:
+    """记忆关着时 **``recall`` 与 ``read_memory`` 一起消失**，``remember`` 留着。
+
+    关着时 ``recall`` 会明确报"未启用长期记忆"，而"给了又拒"正是知识库那一侧
+    已经修过的坑（模型先试一次、再拿一句错误，白花一个来回——见 ``_KB_TOOLS``）。
+
+    ``remember`` **必须留着**：它写的是 ``MEMORY.md``，那份文件不看开关也会注入，
+    所以关着时它照样有效（与 ``MemoryService.remember`` 同一口径）。
+    """
+    on = _names_with_memory(True, ["kb_x"])
+    off = _names_with_memory(False, ["kb_x"])
+
+    assert {"recall", "read_memory"} <= on
+    assert not ({"recall", "read_memory"} & off)
+    # 写人设与 `remember` 一样**不看开关**：人设文件不看开关也会注入，
+    # 所以关着记忆时它们照样有效（见 `MemoryService.remember` 的说明）
+    assert {"remember", "write_memory"} <= off
+
+
+def test_read_memory_description_says_when_to_use_it() -> None:
+    """描述要写清"**片段不够时**用它"。
+
+    缺了这一句，模型看到的是"有个读记忆的工具"，而它并不觉得自己需要——
+    它以为自己手上的片段就是全文。那正是原先那个缺口的样子。
+    """
+    specs = {
+        spec.name: spec for spec in agent_tools.tool_specs(
+            SimpleNamespace(memory=_FakeMemory(True)), kb_ids=["kb_x"]
+        )
+    }
+    description = specs["read_memory"].description
+
+    assert "recall" in description and "展开" in description
+
+
+def test_read_memory_expands_a_hit_by_line_window(tmp_path: Path) -> None:
+    """按行窗口给正文，并说清"这是第几行到第几行、**共几行**"。
+
+    行号是模型接着往下读的依据：不说总行数，它不知道还有没有下文，
+    就会把这一窗当成全文——于是又回到"以为自己看到了全部"。
+    """
+    service = _memory_service(tmp_path)
+    relative = "daily/2026-09-27/某会话.md"
+    memory_files.write_file(
+        service.workspace, relative, "\n".join(f"第 {index} 行" for index in range(1, 21))
+    )
+
+    outcome = agent_tools._read_memory(
+        SimpleNamespace(memory=service),
+        Caller(is_admin=True),
+        {"path": relative, "start_line": 5, "limit": 3},
+    )
+
+    assert "第 5 行" in outcome.content and "第 7 行" in outcome.content
+    assert "第 4 行" not in outcome.content and "第 8 行" not in outcome.content
+    assert "共 20 行" in outcome.content
+
+
+def test_read_memory_refuses_to_escape_the_workspace(tmp_path: Path) -> None:
+    """路径越界一律拒——**不因为"path 是从 recall 结果里抄来的"就放行**。
+
+    走的是记忆那一侧的同一套安全解析（``safe_path``），所以这里只需确认
+    它没被绕过、并且把原因如实回了模型（它据此才该改路）。
+    """
+    service = _memory_service(tmp_path)
+
+    outcome = agent_tools._read_memory(
+        SimpleNamespace(memory=service),
+        Caller(is_admin=True),
+        {"path": "../../backend/.env"},
+    )
+
+    assert "读不了这份记忆" in outcome.content
+
+
+def test_read_memory_without_a_path_says_so() -> None:
+    outcome = agent_tools._read_memory(
+        SimpleNamespace(memory=None), Caller(is_admin=True), {}
+    )
+
+    assert "缺少参数" in outcome.content
+
+
+def test_write_memory_updates_a_persona_file(tmp_path: Path) -> None:
+    """整份改写 ``PROFILE.md``——**首次引导靠它才落得下来**（Agent 自己写对方是谁）。
+
+    回应里必须带上"告诉对方"：那是他的设定（设计文档 §2.5 的两条约定之一：
+    **改动要告知用户**）。
+    """
+    service = _memory_service(tmp_path)
+
+    outcome = agent_tools._write_memory(
+        SimpleNamespace(memory=service),
+        Caller(is_admin=True),
+        {"name": "PROFILE.md", "content": "# 我是 KYLAB\n\n- 名字：小又\n"},
+    )
+
+    assert "PROFILE.md" in outcome.content
+    assert "告诉对方" in outcome.content
+    assert memory_files.read_file(service.workspace, "PROFILE.md").content.startswith("# 我是")
+
+
+def test_write_memory_refuses_memory_md(tmp_path: Path) -> None:
+    """``MEMORY.md`` **不在白名单里**：它的条目由 `remember` 一条条维护
+    （管去重、只替换「核心长期记忆」那一节），允许整份覆盖等于把"逐条维护"
+    换成"一把梭"——而它每轮整份进上下文，写坏了影响面最大。
+
+    拒绝时要把**该用什么**说清楚：只说"不行"，模型会换个名字再试。
+    """
+    service = _memory_service(tmp_path)
+
+    outcome = agent_tools._write_memory(
+        SimpleNamespace(memory=service),
+        Caller(is_admin=True),
+        {"name": "MEMORY.md", "content": "- 覆盖整份"},
+    )
+
+    assert "只能改" in outcome.content
+    assert "remember" in outcome.content
+    assert not (service.workspace / "MEMORY.md").exists()
+
+
+def test_write_memory_refuses_the_agents_own_persona(tmp_path: Path) -> None:
+    """``SOUL.md`` / ``AGENTS.md`` **也不在白名单里**（v0.52，用户口径）。
+
+    白名单里只留 ``PROFILE.md``（关于"对方是谁"的事实）。这两份是**用户自己的东西**
+    ——Agent 改自己的人格与规程，既难回滚、也难让用户察觉，而它们每轮整份进上下文。
+    拒绝时要告诉它**该怎么做**（说出来让对方决定），而不是只回一句"不行"：
+    只说不行，模型会换个说法再试一次。
+    """
+    service = _memory_service(tmp_path)
+
+    for name in ("SOUL.md", "AGENTS.md"):
+        outcome = agent_tools._write_memory(
+            SimpleNamespace(memory=service),
+            Caller(is_admin=True),
+            {"name": name, "content": "我自己改的"},
+        )
+        assert "PROFILE.md" in outcome.content
+        assert "说给他听" in outcome.content or "说给" in outcome.content
+        assert not (service.workspace / name).exists()
+
+
+def test_write_memory_needs_content(tmp_path: Path) -> None:
+    service = _memory_service(tmp_path)
+
+    outcome = agent_tools._write_memory(
+        SimpleNamespace(memory=service),
+        Caller(is_admin=True),
+        {"name": "PROFILE.md", "content": "   "},
+    )
+
+    assert "缺少参数" in outcome.content

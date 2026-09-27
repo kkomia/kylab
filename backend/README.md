@@ -22,9 +22,11 @@ uv run uvicorn app.main:app --reload
 > 所以本地、CI、Docker 一律用 `uv sync --all-extras`：
 >
 > - `tabular`（duckdb）——storage 组合根的必需项，不是可选项；
-> - `parsers`（pypdf / pymupdf / python-docx / openpyxl / pandas / markdown-it-py）——
+> - `parsers`（pypdf / pymupdf / python-docx / openpyxl / pandas）——
 >   上传→解析→入库主链路要用；代码里是惰性导入，缺了只是该功能不可用，对应测试也写了
 >   `importorskip`，但**运行产品就该装上**；
+>   （`markdown-it-py` 原先在这一组里，v0.47 起**提为核心依赖**——记忆召回也用它按 AST 切块，
+>   而记忆层随时会用到，放在 extra 里会变成"没装 parsers 的部署一召回就炸"）
 > - `mcp`（M4）——只在跑 MCP Server 那个入口时需要。
 >
 > 只想跑一个「不解析文档的最小 API」时才用裸 `uv sync`，那种情况下解析相关测试会跳过。

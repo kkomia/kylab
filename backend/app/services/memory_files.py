@@ -18,9 +18,12 @@
    这时页面不该整个空掉。**能看**与**能召回**是两件事，前者不依赖开关；
 3. 少一层转发就少一处别人改字段名我们要跟着改的地方。
 
-**召回的口径**（``search``）：按行切块，块内做词命中打分 + 标题/文件名加权
-+ 与文件名的整串命中加分；分数只用于**排序**，命中与否另有一条跨查询可比的判据
-（词面覆盖 ≥ ``MIN_TERM_COVERAGE``）。**为什么不走向量**：这一池子是"个人长期记忆"，
+**召回的口径**（``search``）：按 Markdown AST 切块（标题当面包屑，见 ``_split_blocks``），
+块内按 **BM25** 打分 + 标题/文件名加权；分数只用于**排序**，命中与否另有一条跨查询可比的
+判据（词面覆盖 ≥ ``MIN_TERM_COVERAGE``）。**读盘与切块走一层按 mtime 失效的缓存**
+（``_BLOCK_CACHE``）：一次召回要把整个召回池读一遍，而池子外面还有"内容没变"这个事实
+——实测 300 份文件因此从 0.8 秒降到 0.15 秒。
+**为什么不走向量**：这一池子是"个人长期记忆"，
 量级是几份到几百份文件、几百 KB，词面命中已经够用；而向量要么进文档池
 （那会破坏设计文档 §2.1 的两池隔离），要么为记忆单开一路索引与一份 embedding 账单
 ——在证明"规模上值得"之前不付这个代价。
@@ -37,10 +40,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import os
 import re
+import threading
 import unicodedata
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -48,14 +53,19 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from markdown_it import MarkdownIt
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.retrieval.coverage import content_terms
 
 __all__ = [
     "CORE_KIND",
+    "DAILY_DIR",
     "DAILY_KIND",
+    "DAY_INDEX_CLOSE",
+    "DAY_INDEX_OPEN",
     "DEFAULT_RECALL",
+    "DIGEST_DIR",
     "DIGEST_KIND",
     "MAX_LISTED_FILES",
     "MAX_READ_BYTES",
@@ -70,18 +80,24 @@ __all__ = [
     "MemoryGraphNode",
     "MemoryMatch",
     "WorkspaceStats",
+    "chunks_for_index",
     "classify",
+    "clip_hit",
     "delete_file",
     "describe",
     "entry_texts",
     "graph_of",
+    "invalidate",
     "links_of",
     "parse_frontmatter",
     "read_file",
+    "refresh_day_index",
     "safe_path",
     "scan",
     "search",
+    "session_note_path",
     "stats",
+    "to_relative",
     "wikilinks",
     "write_file",
 ]
@@ -153,19 +169,63 @@ MAX_HIT_CHARS = 600
 #: 但没有空行的大段正文也是常见的——不切的话，一次命中会把整节内容全带走。
 MAX_BLOCK_LINES = 24
 
+#: Markdown 解析器（模块级复用：它是无状态的，每次新建纯属浪费）。
+#:
+#: **不开 linkify**：那条规则要额外的 ``linkify-it-py``，而它对"切块"没有任何用。
+#: **不开表格**：GFM 表格遇到空行就终止，所以它不可能被空行切开——开了也没有用武之地。
+#: 解析开销实测约 0.2ms/份（200 次 37ms），相对"每次召回都要读盘"可以忽略。
+_MARKDOWN = MarkdownIt("commonmark")
+
+#: 标题多过这个数就**退回按行切**（照 QwenPaw 的 ``max_ast_sections``）。
+#: 那种形状多半是机器生成的目录/日志：为它建树不划算，而按行切在它上面本来就够用。
+MAX_AST_SECTIONS = 100
+
+#: 面包屑（祖先标题）最多留多少个字符；**超了从最外层开始丢**。
+#:
+#: 深层标题路径会跟着它下面每一个块各重复一遍，而块文本是要进上下文的。
+#: 丢最外层而不是最内层：越靠近正文的标题越能说明"这一段在讲什么"。
+MAX_BREADCRUMB_CHARS = 120
+
 #: 标题/文件名加权：查询词出现在文件的标题、路径或摘要里时，这份文件的块
 #: **整体加分**（不是只在那一行上加分）。理由：命中标题意味着"这份文件就是讲这个的"，
 #: 而命中正文只说明"这里提了一句"。
 HEAD_BONUS = 1.5
 
-#: 整串命中加分（查询原样出现在块里）。词表命中可能只是凑巧共享了几个常用词，
-#: 而"原样出现"是最强的证据，给一个能压过普通词表命中的加值。
-PHRASE_BONUS = 2.0
+#: 整串命中加权（查询原样出现在块里）。词表命中可能只是凑巧共享了几个常用词，
+#: 而"原样出现"是最强的证据，所以给它一个能压过普通词表命中的倍数。
+#:
+#: **为什么是乘不是加**（v0.48 改，实测逼出来的）：原先是 ``score += 2.0``，
+#: 而 BM25 本身对一句话的记忆只贡献 0.1–0.3 —— **加值是排序信号的七到十五倍**，
+#: 于是"长度归一化"这类改进在最终分数里被压成尾巴（实测：
+#: 一句写得准的短记忆 0.280 vs 长笔记里蹭到一次 0.135，差 2.07 倍，
+#: 但加上 2.0 之后变成 2.280 vs 2.135，只差 6.8%）。乘起来就把排序权
+#: 还给 BM25，而"原样命中要更靠前"这层意思一点没丢。
+PHRASE_MULTIPLIER = 2.0
+
+#: BM25 的两个常数（标准取值 ``k1=1.2`` / ``b=0.75``，QwenPaw 用的也是这套）。
+#:
+#: **为什么换掉原来那个 ``Σ(权重 × (1 + ln 频次))``**：那个式子有 IDF 的味道，
+#: 但**没有长度归一化**——一份 40 行的长笔记里蹭到两个词，就能压过一句写得很准的
+#: 短记忆。BM25 的 ``b`` 正是治这件事的。
+#:
+#: **一处有据的偏离**：标准 BM25 的 ``tf`` 是**词频**，而这里用**子串出现次数**。
+#: 理由是命中判据本身就是子串的（``_evidence``），两处口径必须一致——否则会出现
+#: "判据说命中了、分数却是 0"（查询词「敏感性」与正文里 jieba 切成一个词的
+#: 「锂价敏感性」就是这种情形）。长度也用**字符数**：中文里它是词数的单调代理，
+#: 而且不用分词就能算，正好可以跟着缓存走。
+BM25_K1 = 1.2
+BM25_B = 0.75
+
+#: 我们自己的目录名，**只在这里写一次**：``daily/`` 是每天现场（捕获往这里写），
+#: ``digest/`` 是整理后的长期知识。注入给模型的记忆指导要靠这两个名字说清
+#: "去哪儿找"，写死两处的话，改了目录而提示词没跟上，模型就会去翻一个不存在的地方。
+DAILY_DIR = "daily"
+DIGEST_DIR = "digest"
 
 #: 顶层目录 → 分类。``memory/`` 是每日现场，``digest/`` 是整理后的长期知识。
 #: 两个名字都收（``daily`` 是 ReMe 的默认，``memory`` 是 QwenPaw 那族的写法，
 #: 而我们的工作区可能被任一版本初始化过）。
-_TOP_LEVEL = {"memory": DAILY_KIND, "daily": DAILY_KIND, "digest": DIGEST_KIND}
+_TOP_LEVEL = {"memory": DAILY_KIND, DAILY_DIR: DAILY_KIND, DIGEST_DIR: DIGEST_KIND}
 
 #: 会进检索索引的分类。**改这里之前先看 ``MemoryFile.retrievable`` 的说明**。
 _INDEXED_KINDS = (DAILY_KIND, DIGEST_KIND)
@@ -223,10 +283,20 @@ class MemoryFile:
     界面必须把这条显示出来——否则用户改完一个文件却发现"搜不到"，
     会以为是检索坏了，而不是"这个位置本来就不参与召回"。"""
 
+    is_day_index: bool = False
+    """它是不是**当天索引页**（由 ``refresh_day_index`` 维护的那一份）。
+
+    **判据是内容里的 ``notes:auto`` 区块，不是文件名**——这一点是被一条集成用例
+    逼出来的：``daily/<日期>.md`` 在**旧部署里装的是真记忆**（那时条目直接平铺在
+    这个文件里）。按文件名去认，就会把那些文件从「待整合」的计数里悄悄漏掉，
+    而那个数字是用户判断"还有多少没归档"的唯一线索。有自动区块的才算派生物。
+
+    它不进「待整合」的计数（派生物永远不会被整合），但**留在召回池里**：
+    命中它给到的是一行"路径 + 摘要"，正好是把模型指向那条笔记的线索。"""
+
     @property
     def is_core(self) -> bool:
         return self.kind == CORE_KIND
-
 
 @dataclass(frozen=True, slots=True)
 class MemoryFileDetail:
@@ -292,7 +362,19 @@ class MemoryMatch:
     **只在本条查询内可比**——它依赖工作区里有几块正文，不是归一化的量。"""
 
     coverage: float
-    """命中的判据：查询实词在这一块里出现的比例（0.0–1.0，见 ``MIN_TERM_COVERAGE``）。"""
+    """命中的判据：查询实词在这一块里出现的比例（0.0–1.0，见 ``MIN_TERM_COVERAGE``）。
+
+    **向量那一路单独命中时它是 0.0**（那一侧没有"覆盖率"这个概念，判据是余弦下限），
+    所以界面上不要把它当成"命中率"来读——那正是 ``source`` 存在的理由。
+    """
+
+    source: str = "text"
+    """这条是怎么被找到的：``text``（词面命中）/ ``vector``（语义接近）/ ``both``。
+
+    词面那条路是**有判据的**（覆盖 ≥ 1/3），向量那条路是**有下限的**（余弦 ≥
+    ``memory.vector_min_score``）；两条都命中时分数走 RRF（见 ``memory_index``）。
+    界面据此说清"这条是按意思找到的"，而不是拿一个 0.0 的覆盖率冒充命中率。
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -353,6 +435,15 @@ def _relative(workspace: Path, target: Path) -> str:
     return target.resolve().relative_to(workspace.resolve()).as_posix()
 
 
+def to_relative(workspace: Path, target: Path) -> str:
+    """工作区相对路径（POSIX 分隔符）——**给工作区外面的调用方用的那一份**。
+
+    越小的地方各自写一遍 ``relative_to(...).as_posix()``，越容易出现
+    "一处 resolve 了、一处没 resolve"这种只在 Windows 上露头的分歧。
+    """
+    return _relative(workspace, target)
+
+
 #: 核心文件：住在工作区根下、**靠注入生效、不进检索**的那几份。
 #:
 #: 人设四件套（P1 起）：人格、身份、操作规程、长期记忆。它们必须是同一份清单——
@@ -368,6 +459,113 @@ def classify(path: str) -> str:
         return CORE_KIND
     head = path.split("/", 1)[0] if "/" in path else ""
     return _TOP_LEVEL.get(head, OTHER_KIND)
+
+
+# ------------------------------------------------------ 会话笔记与当天索引页
+#
+# 这一节是**捕获的落点形状**（照 QwenPaw 的 Auto-Memory 抄）：一个会话一天一条
+# 笔记 ``daily/<日期>/<slug>.md``，另有一张当天的索引页 ``daily/<日期>.md``
+# 列出当天各条笔记。
+#
+# 为什么形状归这一层管：它是"文件在工作区里怎么摆"，与扫描、检索、图谱是同一类
+# 知识。放在捕获那一侧的话，界面、索引、图谱会各拼一遍路径，迟早对不上。
+
+#: 当天索引页的自动区块标记。**只重建标记之间的内容**——标记之外是人的。
+#: 这一条让"从平铺文件升级到索引页"不会抹掉已有的记忆：旧版本把条目直接平铺在
+#: 这个文件里，那些内容落在标记之外，原样留着。
+DAY_INDEX_OPEN = "<!-- notes:auto -->"
+DAY_INDEX_CLOSE = "<!-- /notes:auto -->"
+
+#: 文件名里不允许出现的字符（会话 id 是我们生成的，但它进的是**文件名**）。
+_UNSAFE_NAME = re.compile(r"[^A-Za-z0-9_-]+")
+
+
+def session_note_path(session_id: str, *, day: str) -> str:
+    """一个会话在某一天的现场笔记：``daily/<day>/<slug>.md``。
+
+    **一个会话一条**：同一天再沉淀是更新这一条，而不是往一个平铺文件里继续追加。
+    """
+    return f"{DAILY_DIR}/{day}/{_note_slug(session_id)}.md"
+
+
+def _note_slug(session_id: str) -> str:
+    """会话 id → 文件名主干。
+
+    两件事都要做：
+
+    - **清字符**：id 进的是文件名，不清就可能写出越界路径，或者在 Windows 上
+      直接失败（``:`` / 反斜杠之类）；
+    - **尾部缀一个短哈希**：清字符是**多对一**的映射（``a/b`` 与 ``a:b`` 都变成
+      ``a-b``），不缀哈希就会有两个会话撞进同一份笔记——那正好把"一个会话一条"
+      变成"两个会话互相覆盖"，而且是静默的。
+    """
+    clean = _UNSAFE_NAME.sub("-", session_id).strip("-")[:32]
+    digest = hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:8]
+    return f"{clean}-{digest}" if clean else digest
+
+
+def _notes_of_day(workspace: Path, day: str) -> list[tuple[str, str]]:
+    """当天会话笔记 ``[(相对路径, 摘要)]``，按路径排序（顺序稳定，刷新不会跳）。"""
+    directory = workspace / DAILY_DIR / day
+    out: list[tuple[str, str]] = []
+    if not directory.is_dir():
+        return out
+    for target in sorted(directory.glob("*.md")):
+        try:
+            text = target.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            logger.warning("读记忆笔记失败，跳过：%s", target, exc_info=True)
+            continue
+        meta, _ = parse_frontmatter(text)
+        out.append((_relative(workspace, target), _summary_of(meta)))
+    return out
+
+
+def refresh_day_index(workspace: Path, *, day: str) -> str:
+    """重建当天索引页的 ``notes:auto`` 区块；返回索引页的相对路径。
+
+    索引内容**从笔记的 frontmatter 现扫**，而不是让调用方喂进来：调用方只知道
+    它刚写的那一份，而索引页要列的是当天**全部**会话笔记——两处各记一份清单，
+    迟早会出现"写了一下午，索引上只有最后一条"。
+
+    链的是同一目录下真实存在的笔记（所以不会制造悬空链接），于是索引页与各条
+    笔记在图谱里真的连起来了——此前默认工作区一个连接都没有，图谱是空的。
+    """
+    workspace = workspace.resolve()
+    target = workspace / DAILY_DIR / f"{day}.md"
+    lines = [
+        f"- [[{path}]] {summary}".rstrip() for path, summary in _notes_of_day(workspace, day)
+    ]
+    block = "\n".join([DAY_INDEX_OPEN, *lines, DAY_INDEX_CLOSE])
+    try:
+        body = target.read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        body = _day_index_head(day)
+    if DAY_INDEX_OPEN in body and DAY_INDEX_CLOSE in body:
+        head, _, rest = body.partition(DAY_INDEX_OPEN)
+        _, _, tail = rest.partition(DAY_INDEX_CLOSE)
+        body = f"{head}{block}{tail}"
+    else:
+        # 标记缺失（没建过索引页、或被手改掉了）：**追加**而不是重建整份。
+        # 旧版本平铺下来的条目就在正文里，重建会把它们抹掉。
+        body = f"{body.rstrip(chr(10))}\n\n{block}\n"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # 按字节写（与其它写入点同一处坑：Windows 上 write_text 会翻换行）
+        target.write_bytes(body.encode("utf-8"))
+    except OSError as exc:
+        raise InvalidRequestError(f"写不了当天的记忆索引页：{exc}") from exc
+    return f"{DAILY_DIR}/{day}.md"
+
+
+def _day_index_head(day: str) -> str:
+    """新建当天索引页时的头部（frontmatter + 标题）。"""
+    return (
+        "---\n"
+        f'summary: "{day} 的现场记忆：当天各个会话沉淀下来的条目"\n'
+        "---\n\n"
+        f"# {day}\n"
+    )
 
 
 # ----------------------------------------------------------------- 解析纯函数
@@ -494,6 +692,8 @@ def _entry_of(workspace: Path, target: Path) -> MemoryFile:
         modified_at=datetime.fromtimestamp(stat.st_mtime, tz=UTC).isoformat(),
         links=tuple(wikilinks(raw)),
         retrievable=kind in _INDEXED_KINDS,
+        # 索引页的判据是**内容里有自动区块**，不是文件名（理由见那个字段的说明）
+        is_day_index=DAY_INDEX_OPEN in raw,
     )
 
 
@@ -601,6 +801,9 @@ def write_file(workspace: Path, path: str, content: str) -> MemoryFileDetail:
         target.write_bytes(content.encode("utf-8"))
     except OSError as exc:
         raise InvalidRequestError(f"写不了这个文件：{exc}") from exc
+    # 我们自己写入的**显式失效**（理由见 ``invalidate``）：时间戳精度在网络文件系统上
+    # 可能只有一秒上下，"同一个 tick 内等长改写"会溜过去。
+    invalidate(target)
     return read_file(workspace, path)
 
 
@@ -614,6 +817,7 @@ def delete_file(workspace: Path, path: str) -> None:
         raise NotFoundError(f"记忆文件不存在：{path}") from exc
     except OSError as exc:
         raise InvalidRequestError(f"删不了这个文件：{exc}") from exc
+    invalidate(target)
 
 
 # --------------------------------------------------------------------- 图谱
@@ -721,15 +925,88 @@ def _frontmatter_lines(text: str) -> int:
 def _split_blocks(text: str) -> list[tuple[int, int, str]]:
     """把正文切成"块"：``(起始行, 结束行, 正文)``，行号 **1 起、相对整个文件**。
 
-    切法（三条规则，都为了对上人写记忆的习惯）：
+    切法（五条规则，前三条是为了对上人写记忆的习惯，后两条是 AST 带来的）：
 
     1. **空行分段**：连续非空行是一块；
     2. **顶格的标题或列表项另起一块**：日笔记里一条 `- ` 就是一条记忆，
        把它们粘成一整块，召回就分不清"命中哪一条"（行号也会是整节的）；
     3. **缩进的列表项不切开**：它是上一条的子内容，切开会让同一条记忆被拆成两半。
+    4. **标题不单独成块，改为"面包屑"**：`## 复盘` 后面跟一条 `- `，旧切法会给出
+       两块——一块只有标题（正文为空），一块只有那条 bullet。光看后者不知道它属于
+       哪一节。现在标题进块的**文本**（`## 复盘` 打在正文前面），而**行号仍然从
+       内容行起算**（用户要拿它去编辑器里找那一行，标题不算他的目标）；
+    5. **代码块不被切开**：围栏与四空格缩进那两种都算——它们内部的空行照收
+       （普通空行早就触发过切分，能留在缓冲里的空行只可能来自这里），
+       超长时的切点也只落在这种空行上。
 
-    超过 ``MAX_BLOCK_LINES`` 行的块再按行数切开：没有空行的长正文很常见，
-    不切的话一次命中会把整节内容全带进上下文。
+    超过 ``MAX_BLOCK_LINES`` 行的块再切（见 ``_windows``）；标题多到
+    ``MAX_AST_SECTIONS`` 以上时整份退回**按行切**（``_split_blocks_by_lines``）。
+    """
+    lines = text.splitlines()
+    offset = _frontmatter_lines(text)
+    body_lines = lines[offset:]
+    headings, protected = _structure("\n".join(body_lines))
+    if len(headings) > MAX_AST_SECTIONS:
+        return _split_blocks_by_lines(text)
+
+    # 标题占用的行 → 要么是"这一行的标题文本"（面包屑的更新点），要么是 None
+    # （setext 标题的第二行那种：要吃掉，但不能当正文，也不能重复更新面包屑）
+    heading_at: dict[int, tuple[int, str] | None] = {}
+    for begin, end, level, title in headings:
+        heading_at[begin] = (level, title)
+        for extra in range(begin + 1, end + 1):
+            heading_at[extra] = None
+
+    out: list[tuple[int, int, str]] = []
+    stack: list[tuple[int, str]] = []
+    buf: list[str] = []
+    start = 0
+
+    def in_protected(number: int) -> bool:
+        return any(begin <= number <= end for begin, end in protected)
+
+    def flush() -> None:
+        nonlocal buf, start
+        if not buf:
+            return
+        at = start
+        for piece in _windows(buf):
+            out.append((at, at + len(piece) - 1, _compose_block(stack, piece)))
+            at += len(piece)
+        buf = []
+
+    for number, raw in enumerate(body_lines, start=offset + 1):
+        body_number = number - offset
+        if body_number in heading_at:
+            flush()
+            head = heading_at[body_number]
+            if head is not None:
+                level, title = head
+                while stack and stack[-1][0] >= level:
+                    stack.pop()
+                stack.append((level, title))
+            continue
+        if not raw.strip():
+            if in_protected(body_number):
+                buf.append(raw.rstrip())
+                continue
+            flush()
+            continue
+        if _BLOCK_START.match(raw) and not in_protected(body_number):
+            flush()
+        if not buf:
+            start = number
+        buf.append(raw.rstrip())
+    flush()
+    return [(begin, end, body) for begin, end, body in out if body]
+
+
+def _split_blocks_by_lines(text: str) -> list[tuple[int, int, str]]:
+    """**按行切**（没有 AST 的兜底）：规则只有"空行分段 + 顶格标题/列表项另起一块"。
+
+    它给两种情形用：标题多到 ``MAX_AST_SECTIONS`` 以上的文件（那种形状多半是
+    机器生成的目录/日志），以及哪天 markdown-it 认不出这份正文时的保底。
+    它**不知道**面包屑，也不知道代码块与表格——所以只是兜底，不是主路。
     """
     lines = text.splitlines()
     offset = _frontmatter_lines(text)
@@ -759,6 +1036,85 @@ def _split_blocks(text: str) -> list[tuple[int, int, str]]:
         buf.append(raw.rstrip())
     flush()
     return [(begin, end, body) for begin, end, body in out if body]
+
+
+def _structure(body: str) -> tuple[list[tuple[int, int, int, str]], list[tuple[int, int]]]:
+    """解析正文 → ``(标题, 不可切区间)``，行号 **1 起、相对这份正文**。
+
+    标题是 ``(起始行, 结束行, 层级, 文本)``（setext 标题横跨两行，所以有结束行）；
+    不可切区间是**代码块**占用的行号闭区间——围栏（```）与四空格缩进两种都算。
+
+    代码块是唯一需要保护的结构：它内部可以有空行（普通空行会切成两块，各少半截），
+    也可以有**看起来像列表项的行**（`- 一条示例`，`_BLOCK_START` 会误判成新块）。
+    表格不需要：GFM 表格遇到空行即终止，劈不开。
+
+    **frontmatter 必须先剥掉再解析**：`---` 紧跟一行文字在 CommonMark 里是
+    **setext 标题**，不剥的话那份 frontmatter 会被当成一个二级标题，
+    面包屑里就会多出一条 `## summary: ...`。
+    """
+    headings: list[tuple[int, int, int, str]] = []
+    protected: list[tuple[int, int]] = []
+    tokens = _MARKDOWN.parse(body)
+    for index, token in enumerate(tokens):
+        if token.map is None:
+            continue
+        begin = token.map[0] + 1
+        if token.type == "heading_open":
+            title = ""
+            if index + 1 < len(tokens) and tokens[index + 1].type == "inline":
+                title = tokens[index + 1].content.strip()
+            headings.append((begin, token.map[1], int(token.tag[1:]), title))
+        elif token.type in ("fence", "code_block"):
+            # ``map`` 的结束是**开区间**，转成闭区间就是 begin..map[1]
+            protected.append((begin, token.map[1]))
+    return headings, protected
+
+
+def _windows(buf: list[str]) -> list[list[str]]:
+    """超长缓冲的切法：优先在**空行**处切，没有空行就按行数硬切。
+
+    空行在这里是安全的切点——普通空行早就触发过 ``flush`` 了，能留在缓冲里的空行
+    只可能来自代码块内部（见 ``_split_blocks`` 第 5 条）。所以"在空行处切"
+    既尊重作者划的段落，又不会把一个代码块从中间劈开。
+    """
+    if len(buf) <= MAX_BLOCK_LINES:
+        return [buf]
+    pieces: list[list[str]] = []
+    current: list[str] = []
+    for line in buf:
+        current.append(line)
+        # 两个切点：**攒够半窗之后的空行**（作者划的段落边界），或**满一窗**（硬切）
+        at_blank = not line.strip() and len(current) >= MAX_BLOCK_LINES // 2
+        if at_blank or len(current) >= MAX_BLOCK_LINES:
+            pieces.append(current)
+            current = []
+    if current:
+        pieces.append(current)
+    return pieces
+
+
+def _compose_block(stack: list[tuple[int, str]], lines: list[str]) -> str:
+    """面包屑 + 正文（QwenPaw 的 ``_compose_text``）。
+
+    面包屑让一个块**自带出处**：日笔记里的一条 `- ` 只写"固定每周五下午做复盘"，
+    光看它不知道属于哪一天、哪一节；带上 `# 2026-09-24` 就说得清了。
+    它同时是**检索证据**——标题里的词因此能命中标题下面的正文块。
+    """
+    body = "\n".join(lines).strip()
+    crumb = _breadcrumb_text(stack)
+    return f"{crumb}\n\n{body}" if crumb else body
+
+
+def _breadcrumb_text(stack: list[tuple[int, str]]) -> str:
+    """祖先标题拼成 ``# H1`` / ``## H2``……；超长时**从最外层开始丢**。
+
+    丢最外层而不是最内层：越靠近正文的标题越能说明"这一段在讲什么"，
+    而最外层那个往往是文件名/日期那种"这份东西叫什么"。
+    """
+    parts = [f"{'#' * level} {text}" for level, text in stack if text]
+    while parts and len("\n\n".join(parts)) > MAX_BREADCRUMB_CHARS:
+        parts.pop(0)
+    return "\n\n".join(parts)
 
 
 #: 疑问词与纯客套词：**不算检索证据**（见 ``_requirement_terms``）。
@@ -871,6 +1227,15 @@ def _clip(text: str) -> str:
     return "\n".join(kept) + "\n…"
 
 
+def clip_hit(text: str) -> str:
+    """把片段压到 ``MAX_HIT_CHARS``（``_clip`` 的公开别名）。
+
+    向量那一路也要用它：两路给出的片段长度必须是一个口径，否则同一条记忆在
+    "词面命中"和"语义命中"两种情形下长度不一样，用户看不出为什么。
+    """
+    return _clip(text)
+
+
 def _retrievable_paths(workspace: Path) -> list[Path]:
     """召回池里的那些文件（``_INDEXED_KINDS`` 对应的分类）。"""
     workspace = workspace.resolve()
@@ -884,7 +1249,35 @@ def _retrievable_paths(workspace: Path) -> list[Path]:
     return out
 
 
-def _block_records(workspace: Path, target: Path) -> list[MemoryBlock]:
+#: 分块缓存：``绝对路径 → ((mtime_ns, size), 块)``。
+#:
+#: **为什么要有它**：召回每次都要把这些文件读一遍、切一遍（没有索引，见设计文档
+#: §3.5.3），而实测 300 份文件一次召回要 **0.9 秒**——其中绝大部分就是这件事，
+#: 与切法无关（按行切也是 0.8 秒）。
+#:
+#: **失效判据是 ``(mtime_ns, size)``**：用户拿别的编辑器改了文件，mtime 一定变，
+#: 所以"外部改动看不到"这件事不会发生（这是缓存最容易出的错，所以判据取最硬的那个）。
+#: 进程重启后自然重建——**不做持久化索引**：那要另立一份格式与迁移，
+#: 而这一层的量级（几份到几百份、几百 KB）还不值得。
+#: 缓存里有别人的会话（召回是按账号取工作区的），所以**按绝对路径**而不是相对路径。
+_BLOCK_CACHE: dict[Path, tuple[tuple[int, int], tuple[_IndexedBlock, ...]]] = {}
+_CACHE_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True, slots=True)
+class _IndexedBlock:
+    """一块 + 检索要用的预计算。
+
+    ``folded`` 是 ``casefold`` 之后的正文：每次查询都要用它做子串比对，
+    而它只跟文件内容有关，所以跟着缓存走。``length`` 给 BM25 的长度归一化用。
+    """
+
+    block: MemoryBlock
+    folded: str
+    length: int
+
+
+def _index_file(workspace: Path, target: Path) -> tuple[_IndexedBlock, ...]:
     """一个文件 → 若干块（带该文件的标题与摘要，供加权用）。"""
     raw = target.read_bytes().decode("utf-8", errors="replace")
     rel = _relative(workspace, target)
@@ -892,17 +1285,86 @@ def _block_records(workspace: Path, target: Path) -> list[MemoryBlock]:
     kind = classify(rel)
     title = _title_of(body, meta, target.name, kind=kind)
     summary = _summary_of(meta)
-    return [
-        MemoryBlock(
-            path=rel,
-            title=title,
-            summary=summary,
-            start_line=begin,
-            end_line=end,
-            text=body_text,
+    out: list[_IndexedBlock] = []
+    for begin, end, body_text in _split_blocks(raw):
+        folded = body_text.casefold()
+        out.append(
+            _IndexedBlock(
+                block=MemoryBlock(
+                    path=rel,
+                    title=title,
+                    summary=summary,
+                    start_line=begin,
+                    end_line=end,
+                    text=body_text,
+                ),
+                folded=folded,
+                length=len(folded),
+            )
         )
-        for begin, end, body_text in _split_blocks(raw)
-    ]
+    return tuple(out)
+
+
+def _load_blocks(workspace: Path, target: Path) -> tuple[_IndexedBlock, ...]:
+    """读一个文件的块，**带缓存**（判据与理由见 ``_BLOCK_CACHE``）。"""
+    stat = target.stat()
+    stamp = (stat.st_mtime_ns, stat.st_size)
+    with _CACHE_LOCK:
+        cached = _BLOCK_CACHE.get(target)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    blocks = _index_file(workspace, target)
+    with _CACHE_LOCK:
+        _BLOCK_CACHE[target] = (stamp, blocks)
+    return blocks
+
+
+def _prune_cache() -> None:
+    """把**已经不存在**的文件从缓存里去掉。
+
+    判据取"文件还在不在"，而不是"在不在**我这一趟**的文件集里"：召回是按账号取
+    工作区的，而缓存是进程级的一份——两个账号交替召回时，后一种判据会把对方刚建好的
+    缓存一起删掉，缓存就白做了。顺带它也让缓存有界：留下来的都是真实存在的文件。
+
+    开销是每个条目一次 ``stat``（几百个文件约零点几毫秒），比"每次都全读"便宜三个数量级。
+    """
+    with _CACHE_LOCK:
+        for path in [item for item in _BLOCK_CACHE if not item.exists()]:
+            del _BLOCK_CACHE[path]
+
+
+def invalidate(path: Path) -> None:
+    """把一份文件从分块缓存里去掉。**我们自己写文件时必须调它。**
+
+    ``(mtime_ns, size)`` 已经能盖住绝大多数外部改动，但时间戳精度在**网络文件系统**
+    上可能只有一秒上下——"同一个 tick 内、字节数还一样"的改写是能溜过去的
+    （这个项目要跑在 NAS 上，所以那不是假想）。我们自己的写入路径因此显式失效，
+    不留这个窗口；外部编辑器改的那种情况交给 mtime+size 兜底——真要一点缝隙都没有，
+    就只剩"每次都全读"，而那正是这个缓存要省掉的事。
+    """
+    with _CACHE_LOCK:
+        _BLOCK_CACHE.pop(path, None)
+
+
+def chunks_for_index(workspace: Path) -> list[tuple[str, int, int, str]]:
+    """召回池里**当前全部**的块：``(路径, 起始行, 结束行, 正文)``。
+
+    给向量索引对齐用（见 ``services/memory_index.py``）：索引是按块存的，而"现在有
+    哪些块、内容是什么"只有这里知道（切块规则与缓存都在这）。走的是同一份缓存，
+    所以对齐一次不会把文件重读一遍。
+    """
+    out: list[tuple[str, int, int, str]] = []
+    for target in _retrievable_paths(workspace):
+        try:
+            blocks = _load_blocks(workspace, target)
+        except OSError:
+            logger.warning("读记忆文件失败，跳过：%s", target, exc_info=True)
+            continue
+        for item in blocks:
+            out.append(
+                (item.block.path, item.block.start_line, item.block.end_line, item.block.text)
+            )
+    return out
 
 
 def search(
@@ -912,7 +1374,7 @@ def search(
     limit: int = DEFAULT_RECALL,
     per_file: int = MAX_HITS_PER_FILE,
 ) -> list[MemoryMatch]:
-    """在召回池里找回相关的块。**纯本地、纯函数式的一次扫描**（没有索引可查）。
+    """在召回池里找回相关的块。**纯本地的一次扫描**（没有索引要维护）。
 
     **两条证据通道，命中判据是"任一条通过"**（都是词面证据，都不依赖索引）：
 
@@ -924,11 +1386,16 @@ def search(
     **哪个通过算哪个**；两者分开算、不混在一张表里（混着数会把正常提问的覆盖率
     压到线下，实测过）。命中结果里的 ``coverage`` 给的是通过那条通道的比例。
 
-    打分（只用于排序，口径写在这里免得下一个人猜）：
+    **打分（只用于排序）走 BM25**（照 QwenPaw 的检索那一路）：
 
-    ``score = Σ(证据权重 × (1 + ln 频次))``，标题/路径/摘要命中再乘 ``HEAD_BONUS``，
-    查询原样出现再加 ``PHRASE_BONUS``。权重是 ``ln(1 + 块数 / (1 + 出现块数))``
-    ——一份日笔记里到处都是「用户」，「用户」就不该和「锂价」一样重。
+    ``score = Σ idf(单位) × tf·(k1+1) / (tf + k1·(1 - b + b·dl/avgdl))``，
+    ``idf(单位) = ln(1 + (块数 - 出现块数 + 0.5) / (出现块数 + 0.5))``；
+    标题/路径/摘要命中再乘 ``HEAD_BONUS``，查询原样出现再乘 ``PHRASE_MULTIPLIER``。
+    两个 BM25 参数与那处"子串当词频"的偏离写在 ``BM25_K1`` 上，
+    "为什么整串命中要用乘"写在 ``PHRASE_MULTIPLIER`` 上。
+
+    原来那个 ``Σ(权重 × (1 + ln 频次))`` 有 IDF 的味道但**没有长度归一化**：
+    一份 40 行的长笔记里蹭到两个词就能压过一句写得很准的短记忆，而 ``b`` 正是治它的。
 
     **命中与否不看分数**：分数是量纲量、跨查询不可比；判据是归一化的，
     于是"没召回任何东西"永远只有一个含义：**这几份记忆里确实没有相关的话**
@@ -936,6 +1403,9 @@ def search(
 
     每个文件最多贡献 ``per_file`` 条：没有这条限制，一次召回很容易被某一份长
     日笔记占满，而召回的价值恰恰在于从多个文件里凑线索。
+
+    **读盘与切块走缓存**（``_load_blocks``）：一次召回要把整个召回池读一遍，
+    而池子外面还有一份"内容没变"的事实——按 ``(mtime_ns, size)`` 复用。
     """
     text = " ".join((query or "").split())
     if not text:
@@ -948,26 +1418,37 @@ def search(
         words = [text.casefold()]
     phrase = text.casefold()
 
-    blocks: list[MemoryBlock] = []
-    for target in _retrievable_paths(workspace):
+    paths = _retrievable_paths(workspace)
+    _prune_cache()
+    blocks: list[_IndexedBlock] = []
+    for target in paths:
         try:
-            blocks.extend(_block_records(workspace, target))
+            blocks.extend(_load_blocks(workspace, target))
         except OSError:
             # 一份读不了的文件不该让整次召回失败（同 ``scan`` 的处置）
             logger.warning("读记忆文件失败，跳过：%s", target, exc_info=True)
     if not blocks:
         return []
 
-    folded = [block.text.casefold() for block in blocks]
     total = len(blocks)
+    avgdl = (sum(item.length for item in blocks) / total) or 1.0
+    idf_cache: dict[str, float] = {}
 
-    def weight_of(unit: str) -> float:
-        """这个证据有多稀缺（出现在越少的块里越值钱）。"""
-        seen = sum(1 for hay in folded if unit in hay)
-        return math.log(1 + total / (1 + seen))
+    def idf(unit: str) -> float:
+        """这个证据有多稀缺（出现在越少的块里越值钱）。
+
+        **每个单位只算一次**：``df`` 要扫一遍全部块，而它在块循环里会被反复问到。
+        """
+        value = idf_cache.get(unit)
+        if value is None:
+            df = sum(1 for item in blocks if unit in item.folded)
+            value = math.log(1 + (total - df + 0.5) / (df + 0.5))
+            idf_cache[unit] = value
+        return value
 
     matched: list[MemoryMatch] = []
-    for block, hay in zip(blocks, folded, strict=True):
+    for item in blocks:
+        hay = item.folded
         hit_words, word_ratio = _evidence(words, hay)
         hit_pairs, pair_ratio = _evidence(pairs, hay)
         # 先看实词那条；它不过再看字对那条（两条都不混着数，理由见上面的说明）
@@ -977,18 +1458,23 @@ def search(
             hit, coverage = hit_pairs, pair_ratio
         else:
             continue
-        score = sum(weight_of(unit) * (1.0 + math.log(hay.count(unit))) for unit in hit)
-        head = f"{block.title} {block.path} {block.summary}".casefold()
+        norm = BM25_K1 * (1 - BM25_B + BM25_B * (item.length / avgdl))
+        score = 0.0
+        for unit in hit:
+            # ``hit`` 里的单位一定在 hay 里（``_evidence`` 就是这么挑的），所以 tf ≥ 1
+            tf = hay.count(unit)
+            score += idf(unit) * (tf * (BM25_K1 + 1)) / (tf + norm)
+        head = f"{item.block.title} {item.block.path} {item.block.summary}".casefold()
         if any(unit in head for unit in hit):
             score *= HEAD_BONUS
         if len(text) >= 2 and phrase in hay:
-            score += PHRASE_BONUS
+            score *= PHRASE_MULTIPLIER
         matched.append(
             MemoryMatch(
-                text=_clip(block.text),
-                path=block.path,
-                start_line=block.start_line,
-                end_line=block.end_line,
+                text=_clip(item.block.text),
+                path=item.block.path,
+                start_line=item.block.start_line,
+                end_line=item.block.end_line,
                 score=score,
                 coverage=coverage,
             )
@@ -1091,7 +1577,9 @@ def stats(workspace: Path) -> WorkspaceStats:
     entries = 0
     for target in retrievable:
         try:
-            entries += len(_split_blocks(target.read_bytes().decode("utf-8", errors="replace")))
+            # 走同一份缓存：这一页看完，召回那条路上要用的东西也就热了
+            # （反过来也一样），而两边数的块必须是同一个口径。
+            entries += len(_load_blocks(workspace, target))
         except OSError:
             logger.warning("读记忆文件失败，跳过：%s", target, exc_info=True)
 

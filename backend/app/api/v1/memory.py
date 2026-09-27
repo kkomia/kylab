@@ -96,6 +96,10 @@ def _status_out(record, files) -> MemoryStatusOut:  # type: ignore[no-untyped-de
     在服务层**（``MemoryFile.consolidated`` 怎么来的只有那边知道），前端只该显示数字。
     其余三个数字（几份文件、可召回几份、可召回几条）来自服务层的本地统计，
     与召回用的是同一个切块口径。
+
+    **当天索引页不算"待整合"**：它是 ``refresh_day_index`` 现扫出来的派生物
+    （当天各条会话笔记的目录），永远不会被整合。算进去的话，每过一天那枚标记
+    就白涨一个，慢慢变成一个没人再看的数字。
     """
     return MemoryStatusOut(
         enabled=record.enabled,
@@ -107,7 +111,9 @@ def _status_out(record, files) -> MemoryStatusOut:  # type: ignore[no-untyped-de
         last_changed_at=record.last_changed_at,
         detail=record.detail,
         unconsolidated_count=sum(
-            1 for item in files if item.kind == "daily" and not item.consolidated
+            1
+            for item in files
+            if item.kind == "daily" and not item.consolidated and not item.is_day_index
         ),
     )
 
@@ -239,6 +245,7 @@ def recall_memory(
                 end_line=item.end_line,
                 score=item.score,
                 coverage=item.coverage,
+                source=item.source,
             )
             for item in hits
         ],

@@ -40,8 +40,9 @@ class _FakeRuntime:
     三条用例直接 AttributeError。
     """
 
-    def __init__(self, enabled: bool) -> None:
+    def __init__(self, enabled: bool, **extra: str) -> None:
         self._values = {"memory.enabled": "true"} if enabled else {}
+        self._values.update(extra)
 
     def get(self, key: str) -> str:
         return self._values.get(key, "")
@@ -172,6 +173,31 @@ def test_memory_is_marked_as_possibly_stale() -> None:
     # 人格那份不该带（它不会因为时间而失效）
     soul_part = text.split("【你的人格")[1].split("【长期记忆")[0]
     assert "可能已经过时" not in soul_part
+
+
+def test_dropping_memory_from_the_persona_list_drops_its_stale_warning(
+    tmp_path,  # type: ignore[no-untyped-def]
+) -> None:
+    """把 ``MEMORY.md`` 从注入清单里去掉之后，**那句"可能过时"的声明也一起没了**。
+
+    不能只去掉正文、留一句悬空的声明——那读起来像"下面有一份会过时的东西"，
+    而下面什么都没有。这条同时钉住"这份文件确实没进提示词"。
+    """
+    service = MemoryService(
+        _FakeRuntime(True, **{"memory.persona_files": "SOUL.md"}),  # type: ignore[arg-type]
+        tmp_path,
+    )
+    service.seed_persona()
+    (service.workspace_for(None) / SOUL_FILE).write_bytes("我的人格".encode())
+    (service.workspace_for(None) / CORE_MEMORY_FILE).write_bytes("记过的事".encode())
+
+    text = build_system_prompt(
+        PromptContext(base="底", persona=tuple(service.persona_texts()))
+    )
+
+    assert "我的人格" in text
+    assert "记过的事" not in text, "它不在注入清单里"
+    assert "可能已经过时" not in text, "悬空的声明比不写更糟"
 
 
 def test_persona_files_have_a_fixed_order() -> None:
@@ -344,3 +370,86 @@ def test_templates_have_no_emoji(tmp_path) -> None:  # type: ignore[no-untyped-d
                 or 0x2600 <= code <= 0x27BF  # 杂项符号（含 ✅ ✗ ➜ 一类）
                 or code in {0xFE0F, 0x2B50, 0x2049, 0x203C}
             ), f"{name} 里有 emoji：{char!r} (U+{code:04X})"
+
+
+# ------------------------------------------- 记忆指导的注入位置（照 QwenPaw）
+
+
+def _persona_of(*names: str) -> tuple[tuple[str, str], ...]:
+    return tuple((name, f"{name} 正文") for name in names)
+
+
+def test_memory_guidance_is_injected_only_when_the_service_gives_one() -> None:
+    """服务层给空串时（记忆未启用），提示词里一个字都不该多出来。"""
+    without = build_system_prompt(PromptContext(base="底", persona=_persona_of(AGENTS_FILE)))
+    with_guidance = build_system_prompt(
+        PromptContext(base="底", persona=_persona_of(AGENTS_FILE), memory_guidance="记忆指导正文")
+    )
+
+    assert "记忆指导正文" not in without
+    assert "记忆指导正文" in with_guidance
+
+
+def test_memory_guidance_lands_inside_the_agents_section() -> None:
+    """挂在**操作规程那一份之内**，而不是末尾单列（照 QwenPaw 拼进 AGENTS.md）。
+
+    "什么时候去查记忆"是做事规程的一部分；单列成一块会让模型把它读成
+    另一份待读的资料，而不是"我该怎么干活"。
+    """
+    text = build_system_prompt(
+        PromptContext(
+            base="底",
+            persona=_persona_of(SOUL_FILE, PROFILE_FILE, AGENTS_FILE, CORE_MEMORY_FILE),
+            memory_guidance="记忆指导正文",
+        )
+    )
+
+    assert text.index(f"{AGENTS_FILE} 正文") < text.index("记忆指导正文")
+    assert text.index("记忆指导正文") < text.index(f"{CORE_MEMORY_FILE} 正文")
+
+
+def test_memory_guidance_survives_a_missing_agents_file() -> None:
+    """没有 `AGENTS.md` 时退化成独立一块——总比把整段指导丢掉好。"""
+    text = build_system_prompt(
+        PromptContext(base="底", persona=_persona_of(SOUL_FILE), memory_guidance="记忆指导正文")
+    )
+
+    assert "记忆指导正文" in text
+
+
+def test_bootstrap_rides_with_the_agents_section_after_the_guidance() -> None:
+    """首次引导与记忆指导挂在**同一处**（操作规程那一份的末尾），且顺序固定。
+
+    两者都是"这类活怎么干"，不是待读的资料。顺序固定是刻意的：同一份提示词
+    每轮要是排得不一样，任何"比对两轮提示词差在哪"的排查都会失效。
+    """
+    text = build_system_prompt(
+        PromptContext(
+            base="底",
+            persona=_persona_of(AGENTS_FILE),
+            memory_guidance="记忆指导正文",
+            bootstrap="引导正文",
+        )
+    )
+
+    assert (
+        text.index(f"{AGENTS_FILE} 正文")
+        < text.index("记忆指导正文")
+        < text.index("引导正文")
+    )
+
+
+def test_bootstrap_alone_still_lands_in_the_agents_section() -> None:
+    """只有引导、没有记忆指导时（长期记忆关着的那种实例）也照样挂上去。"""
+    text = build_system_prompt(
+        PromptContext(base="底", persona=_persona_of(AGENTS_FILE), bootstrap="引导正文")
+    )
+
+    assert text.index(f"{AGENTS_FILE} 正文") < text.index("引导正文")
+
+
+def test_bootstrap_is_absent_when_the_service_says_nothing() -> None:
+    """服务层判"人设已经填过"时给空串，提示词里就一个字都不该多出来。"""
+    text = build_system_prompt(PromptContext(base="底", persona=_persona_of(AGENTS_FILE)))
+
+    assert "引导正文" not in text

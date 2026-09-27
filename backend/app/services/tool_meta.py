@@ -154,6 +154,12 @@ TOOL_META: dict[str, ToolMeta] = {
     "attach_note_to_kb": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
     "list_notes": _READ,
     "recall": _READ,
+    # 读记忆正文（把 recall 给的片段展开）：与 recall / read_file 同一档——
+    # 只读、无副作用，最该和同批里别的读并发
+    "read_memory": _READ,
+    # 整份改写人设文件（SOUL / PROFILE / AGENTS）：写的是长期数据，
+    # 与 remember 同一档。**不是只读**，所以 plan 档会把它拦下（见 modes.is_write）
+    "write_memory": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
     # 写的是人设文件（MEMORY.md 那一层），长期数据
     "remember": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
     # 产物落在**这一轮的会话**里（artifacts），不是用户的工作区

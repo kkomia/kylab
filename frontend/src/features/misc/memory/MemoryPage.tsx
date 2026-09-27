@@ -741,10 +741,15 @@ export function MemoryPage() {
                               {/* 相似度与检索页同一口径：三位小数（`formatScore`）——
                                   同一个分数在两页写两位/三位，读者会以为换了算法。
                                   覆盖率是**判据**（命中多少查询词），单独标一下：
-                                  它才是"这条算不算相关"的依据，分数只管排序。 */}
+                                  它才是"这条算不算相关"的依据，分数只管排序。
+                                  **语义那一路没有覆盖率**（它没有"命中多少查询词"这回事，
+                                  判据是余弦下限），所以那种命中不显示 0%，而是如实说
+                                  "按意思找到的"——`source` 就是为这一句存在的。 */}
                               {hit.score !== null && ` · ${formatScore(hit.score)}`}
-                              {hit.coverage !== null &&
-                                ` · 命中 ${Math.round(hit.coverage * 100)}%`}
+                              {hit.source === 'vector'
+                                ? ' · 按意思找到的'
+                                : hit.coverage !== null &&
+                                  ` · 命中 ${Math.round(hit.coverage * 100)}%`}
                             </span>
                           </div>
                           <p className="m-hit-text">{hit.text}</p>

@@ -220,6 +220,8 @@ def build_agent_messages(
     summary: str = "",
     system_prompt: str = "",
     persona: tuple[tuple[str, str], ...] = (),
+    memory_guidance: str = "",
+    bootstrap: str = "",
     skills: str = "",
     kb_prompt: str = "",
 ) -> list[ChatMessage]:
@@ -240,6 +242,8 @@ def build_agent_messages(
                 PromptContext(
                     base=system_prompt or AGENT_SYSTEM_PROMPT,
                     persona=persona,
+                    memory_guidance=memory_guidance,
+                    bootstrap=bootstrap,
                     kb_prompt=kb_prompt,
                     skills=skills,
                     # 摘要同样是"数据"，打散定界符（它源自更早的用户输入与文档）
@@ -637,14 +641,42 @@ class ChatService:
         return f"{catalog}{_SKILL_SEPARATOR}{loaded}" if catalog else loaded
 
     def _memory_block(self, owner_id: str | None = None) -> str:
-        """要注入 system prompt 的记忆块；未接入或没内容时是空串。
+        """要注入 system prompt 的记忆块（人设 + 记忆指导）；没接入时是空串。
 
         **按账号取**（v0.15）：甲用户的人格与记忆不该出现在乙用户的提示词里——
         注入是记忆里最容易"串号"的一环，因为它是每轮都静默发生的。
         """
         if self._memory is None:
             return ""
-        return self._memory.prompt_block(owner_id)
+        # 记忆指导**两条链路都给**：它是"你有记忆、什么时候去查"，与这一轮
+        # 注入了哪几份人设文件无关。只给工具循环那条而漏掉这条，会在
+        # `chat.agent_enabled=false` 时表现成"记忆又消失了"。
+        parts = [
+            self._memory.prompt_block(owner_id),
+            self._memory_guidance(),
+            self._bootstrap_note(owner_id),
+        ]
+        return "\n\n".join(item for item in parts if item)
+
+    def _bootstrap_note(self, owner_id: str | None = None) -> str:
+        """「还没认识对方」那一段；人设已经被填过、或没接记忆服务时是空串。
+
+        **判在服务层**（比对 ``PROFILE.md`` 与模板）：这一段什么时候出现、
+        什么时候自己消失，是记忆那一层的知识，不是提示词层的。
+        """
+        if self._memory is None:
+            return ""
+        return self._memory.bootstrap_block(owner_id)
+
+    def _memory_guidance(self) -> str:
+        """「长期记忆怎么用」那一段；没接记忆服务、或记忆未启用时是空串。
+
+        **判在服务层**（``MemoryService.guidance``）：开关的口径只有那一处，
+        这里再判一次就会分叉——而分叉的后果是"提示词说可以查、调用却被拒"。
+        """
+        if self._memory is None:
+            return ""
+        return self._memory.guidance()
 
     # ------------------------------------------------------------------ 对外
 
@@ -1087,6 +1119,11 @@ class ChatService:
         skill_text = [self._skill_block()]
         tool_text = [_tool_spec_text(item) for item in tools]
         memory_text = [text for _, text in self._persona_texts(owner_id)]
+        # 记忆指导与首次引导算进「记忆与人设」这一项：它们确实是提示词里为记忆
+        # 付的那部分预算，不计的话仪表会少报一段每轮都发出去的字数。
+        for extra in (self._memory_guidance(), self._bootstrap_note(owner_id)):
+            if extra:
+                memory_text.append(extra)
 
         parts = [
             _usage_part(USAGE_MESSAGES, "消息", messages_text),
@@ -1148,6 +1185,10 @@ class ChatService:
             # 人设四份文件（含 MEMORY.md）统一由 persona 提供：
             # 它们住在同一个目录（`data/memory/<账号>/`），也是用户能编辑的那份"人格"
             persona=self._persona_texts(owner_id),
+            # 记忆指导挂在 AGENTS.md 那一份的末尾（见 services/prompt.py 的 _persona_block）；
+            # 「还没认识对方」那一段跟着它——两者都是"这类活怎么干"，不是待读的资料
+            memory_guidance=self._memory_guidance(),
+            bootstrap=self._bootstrap_note(owner_id),
             skills=self._skill_block(self._pinned_bodies(skill_names)),
             kb_prompt=self.kb_prompt(scope),
         )

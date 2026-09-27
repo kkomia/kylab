@@ -837,6 +837,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jieba" },
+    { name = "markdown-it-py" },
     { name = "psutil" },
     { name = "psycopg", extra = ["binary"] },
     { name = "psycopg-pool" },
@@ -855,7 +856,8 @@ office = [
     { name = "reportlab" },
 ]
 parsers = [
-    { name = "markdown-it-py" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "openpyxl" },
     { name = "pandas" },
     { name = "pymupdf" },
@@ -883,8 +885,9 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "jieba", specifier = ">=0.42" },
-    { name = "markdown-it-py", marker = "extra == 'parsers'", specifier = ">=3.0" },
+    { name = "markdown-it-py", specifier = ">=3.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2" },
+    { name = "numpy", marker = "extra == 'parsers'", specifier = ">=2.0" },
     { name = "openpyxl", marker = "extra == 'parsers'", specifier = ">=3.1" },
     { name = "pandas", marker = "extra == 'parsers'", specifier = ">=2.2" },
     { name = "psutil", specifier = ">=6.0" },

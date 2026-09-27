@@ -9,18 +9,25 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.agent_tools import _LOCAL_TOOLS, _SKILL_TOOLS
+from app.services.agent_tools import _LOCAL_TOOLS, _MEMORY_TOOLS, _SKILL_TOOLS
 from app.services.tool_meta import TOOL_META, meta_of, parallel_groups
 from app.services.tools import TOOL_NAMES
 
 
 def _builtin_names() -> set[str]:
     """内置工具名：MCP 那批（``TOOL_NAMES``）+ 技能那批（``_SKILL_TOOLS``）+
-    这台机器上那批（``_LOCAL_TOOLS``）。三段都要，漏一段门禁就有洞。"""
+    这台机器上那批（``_LOCAL_TOOLS``）+ 记忆那批（``_MEMORY_TOOLS``）。
+
+    **四段都要，漏一段门禁就有洞**：加 ``_MEMORY_TOOLS`` 时这处没跟上，
+    ``read_memory`` 就掉进了 fail-closed 的"未知工具"档——策略上被当成
+    "动整台机器"（独占、risk=high），显示上被画成中性图标。两处都不是报错，
+    只是安静地不对，所以这条门禁必须把新分组一起收进来。
+    """
     return (
         set(TOOL_NAMES)
         | {str(item["name"]) for item in _SKILL_TOOLS}
         | {str(item["name"]) for item in _LOCAL_TOOLS}
+        | {str(item["name"]) for item in _MEMORY_TOOLS}
     )
 
 
@@ -60,7 +67,14 @@ def test_reading_tools_are_the_ones_that_parallelize() -> None:
     assert "search" in parallel
     assert "web_search" in parallel
     assert "read_file" in parallel
-    for name in ("create_note", "delete_document", "upload_document", "run_command", "remember"):
+    for name in (
+        "create_note",
+        "delete_document",
+        "upload_document",
+        "run_command",
+        "remember",
+        "write_memory",
+    ):
         assert name not in parallel, f"{name} 会改东西，不该并发"
     # 联网那两个**影响面是 network 而不是 none**，但它们是只读的：
     # 这里刻意允许（照 ZCode 的判定，一次网络读不会改任何东西）

@@ -30,6 +30,12 @@ dependencies = [
     # 负载面板要读**本机** CPU / 内存（services/system_load.py）。
     # 不用 /proc 自己解析：那只在 Linux 上成立，而这个项目要在 Windows 上开发。
     "psutil>=6.0",
+    # Markdown 解析。**核心依赖而不是 parsers extra**（v0.47 从 extra 提上来）：
+    # 记忆召回现在按 AST 切块（标题做面包屑、代码块不被劈开，见
+    # services/memory_files.py），而记忆层随时会被用到——放在 extra 里的后果是
+    # "没装 parsers 的部署一召回就炸"，与"漏装 extra 的后果是第一次上传才炸"
+    # 属于同一类失败，而这一类不该赌。入库管线那半边本来也用它。
+    "markdown-it-py>=3.0",
 ]
 
 # 按里程碑分层引入的重依赖
@@ -45,7 +51,11 @@ parsers = [
     "python-docx>=1.1",
     "openpyxl>=3.1",
     "pandas>=2.2",
-    "markdown-it-py>=3.0",
+    # numpy 本来跟着 pandas 进来，这里**显式写出来**：记忆的向量那一路（可选功能，
+    # 默认关，惰性导入见 services/memory_index.py）直接用 numpy 做余弦。
+    # 写明白是为了下一个人不用靠"pandas 会带它"这种隐式依赖活着。
+    "numpy>=2.0",
+    # markdown-it-py 在**核心依赖**里（记忆召回也用它切块），这里不再重复列
 ]
 # Office 产出（v0.21，见 services/office.py 的方案 A 说明）。
 # **读**那半边不在这里：入库管线早已能解析这四种格式（local_office / Tabular /

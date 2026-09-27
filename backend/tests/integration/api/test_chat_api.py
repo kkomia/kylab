@@ -987,3 +987,67 @@ def test_context_usage_needs_a_known_conversation(client: TestClient) -> None:
     assert (
         client.get("/api/v1/chat/context-usage?conversation_id=conv_不存在").status_code == 404
     )
+
+
+# ------------------------------------------------- 记忆：交给长期记忆那一步（P0-8）
+
+
+def _enable_memory(client: TestClient) -> None:
+    """把长期记忆打开。走设置端点，与用户的操作同一条路。"""
+    response = client.patch(
+        "/api/v1/settings", json={"values": [{"key": "memory.enabled", "value": "true"}]}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["rejected"] == [], response.text
+
+
+def test_the_fifth_turn_says_it_was_handed_to_memory(client: TestClient, kb_id: str) -> None:
+    """**第 5 轮的过程面板里看得见「交给长期记忆」**（P0-8 的可见性）。
+
+    自动沉淀是**异步**的（走队列），所以它没法像工具调用那样在过程面板里自己
+    长出来——不补这一步，用户那边就是"记忆这东西好像存在，但从来没见过它动"。
+
+    顺带守住三条：前面几轮**不显示**（节流是每 5 个用户回合一次）、它同样是
+    事件日志里的一条、以及快照与日志仍然是同一件事（P0-2 那条验收对它也成立）。
+    """
+    _enable_memory(client)
+    install_fake_chat("答案")
+    conversation_id = _conversation(client)
+
+    for index in range(1, 6):
+        _ask(client, conversation_id, kb_id, f"问题{index}")
+
+    messages = client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"]
+    tracings = [[step["label"] for step in item["steps"]] for item in messages]
+    assert all("交给长期记忆" not in item for item in tracings[:-1]), "前 4 轮不该显示"
+    assert "交给长期记忆" in tracings[-1]
+
+    handoffs = [
+        event
+        for event in _events(client, conversation_id)
+        if event["payload"].get("phase") == "memory"
+    ]
+    assert len(handoffs) == 1, "第 5 轮一次，日志里也只该有一条"
+    assert handoffs[0]["kind"] == "step"
+    # 快照 == 日志的投影（同一份 payload，两处一起写）
+    assert [step for step in messages[-1]["steps"] if step["phase"] == "memory"] == [
+        handoffs[0]["payload"]
+    ]
+
+
+def test_memory_is_not_handed_over_when_the_switch_is_off(client: TestClient, kb_id: str) -> None:
+    """关着长期记忆时**不显示那一步**——判据问的是服务层，不是"界面自己觉得"。
+
+    显示"会沉淀"而实际什么都不会发生，比少一行糟得多：用户会照着它去记忆页找，
+    然后得出"这功能是坏的"。
+    """
+    install_fake_chat("答案")
+    conversation_id = _conversation(client)
+
+    for index in range(1, 6):
+        _ask(client, conversation_id, kb_id, f"问题{index}")
+
+    messages = client.get(f"/api/v1/conversations/{conversation_id}").json()["messages"]
+    assert all(
+        step["phase"] != "memory" for item in messages for step in item["steps"]
+    )

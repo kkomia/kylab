@@ -23,6 +23,7 @@ from pathlib import Path
 
 from app.core.config import Settings, get_settings
 from app.core.storage import build_stores
+from app.services import memory_index
 from app.services.api_key import ApiKeyService
 from app.services.approvals import ApprovalRegistry
 from app.services.artifacts import ArtifactService
@@ -311,7 +312,6 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     # 记忆服务**先建**：ChatService 要拿它把长期记忆注入 system prompt。
     # 工作区放在数据目录下（见 services/memory.py 与设计文档 §2.2）：
     # 与其它数据一起备份/迁移，一个部署只有一处要备份
-    memory_service = MemoryService(runtime, resolved.data_dir, stores=bundle)
     # 工作区也要 data_dir：它要拦住「把数据目录当工作区」这种配置
     # （指向那里等于绕过账号隔离，见 services/workspace.py 的第三道校验）
     workspace_service = WorkspaceService(bundle, resolved.data_dir)
@@ -356,6 +356,22 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         embedders=embedding_resolver,
         # 检索次数原先只在日志里：接了回调仪表盘才有"检索量 / 平均命中"可看
         usage_recorder=lambda **kwargs: usage.record(**kwargs),  # type: ignore[arg-type]
+    )
+    # 记忆服务：**内容全在本地**（`data/memory/` 下的 Markdown），只有两个可选动作会
+    # 出网——捕获问一次对话模型（`ask` 不传就用运行期绑定的那个）、向量那一路嵌入
+    # （默认关，见 `memory.vector_enabled`）。所以它得**建在 embedder 之后**：
+    # 那个嵌入能力要连同**模型身份**一起交进去（换模型之后旧向量就是垃圾，
+    # 见 services/memory_index.py 的说明第 2 条）。
+    memory_service = MemoryService(
+        runtime,
+        resolved.data_dir,
+        stores=bundle,
+        embed=memory_index.EmbeddingSource(
+            model_id=embedder.model_id,
+            dim=embedder.dim,
+            embed=embedder.embed,
+            max_batch=embedder.max_batch,
+        ),
     )
     # webhook 先建：下面的摄入与生命周期都通过回调向它发事件（T4.6）。
     # **用回调而不是直接依赖**：通知是旁路，它挂了不能让摄入卡住
@@ -498,6 +514,22 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         # 而用户以为"7 天后就清掉了"
         lifecycle = LifecycleService(bundle)
         lifecycle.purge_expired_trash()
+        # 记忆整理（Auto-Dream 的等价物，v0.49）：把**变了样的现场**沉淀进 digest/。
+        # 挂在空闲分支上与补摘要同一个理由——用空闲时间换召回质量，而且有节拍
+        # （`memory.dream_after_hours`）。**没有变化时它一次模型都不调**，
+        # 所以放在这里不会让空转的实例开始烧钱。
+        try:
+            memory_service.dream_all()
+        except Exception:
+            logger.warning("记忆整理失败，跳过本轮", exc_info=True)
+        # 记忆的向量索引对齐（v0.50）：**与整理同一个理由挂在空档上**——嵌入是一次
+        # 网络调用，放进召回路径就等于让每次检索都赌一次上游延迟。代价是索引可能
+        # 落后一轮，而查询只认当前确实存在的块（见 services/memory_index.py 第 1 条）。
+        # 开关关着、或没有块变过时，它一次嵌入都不发。
+        try:
+            memory_service.sync_index_all()
+        except Exception:
+            logger.warning("记忆向量索引对齐失败，跳过本轮", exc_info=True)
 
     lifecycle_service = LifecycleService(bundle, notifier=webhooks.emit)
     folders_service = FolderService(bundle)

@@ -215,6 +215,26 @@ SETTING_GROUPS: dict[str, Any] = {
                 "label": "每多少个用户回合沉淀一次记忆",
                 "type": "int",
             },
+            {
+                "key": "memory.dream_after_hours",
+                "label": "每多少小时整理一次现场记忆（0 = 不整理）",
+                "type": "int",
+            },
+            {
+                "key": "memory.vector_enabled",
+                "label": "记忆检索启用语义（向量）那一路",
+                "type": "bool",
+            },
+            {
+                "key": "memory.vector_min_score",
+                "label": "语义那一路的余弦下限（越低召回越多）",
+                "type": "text",
+            },
+            {
+                "key": "memory.persona_files",
+                "label": "每轮注入的人设文件与顺序（逗号分隔）",
+                "type": "text",
+            },
         ],
     },
 }
@@ -288,6 +308,38 @@ DEFAULTS: dict[str, str] = {
     # 每轮都沉淀 = 每轮多一次调用，而这个项目反复强调过省 token。
     # 5 这个数沿用 ReMe/QwenPaw 的默认（见设计文档 §2.4）。
     "memory.capture_every": "5",
+    # **每多少小时整理一次现场记忆**（Auto-Dream 的等价物，v0.49）。
+    # 一次整理就是一次模型调用（要问模型"这些现场里有什么值得沉淀成长期知识的"），
+    # 所以节拍定得比捕获松得多：捕获是每 5 个回合，整理是**一天一次**。
+    # QwenPaw 那边用的是 cron `0 23 * * *` + 0–60 秒随机延迟；我们没有常驻调度器，
+    # 挂在 worker 的空闲分支上（见 core/services.py 的 `_maintain`），
+    # 实际精度就是这个间隔。
+    #
+    # **v0.52 起默认 0 = 不整理**（用户口径："凡是会花钱的都默认关"）。
+    # 代价要说清楚：关着时**记忆只增不并**——现场条目会一直躺在 `daily/` 里，
+    # 不会自动沉淀成 `digest/` 里的长期知识（界面上那枚「待整合」标记也会一直为真）。
+    # 想让它每天自动整理一次，把这一项改成 24；改完**不必重启**。
+    #
+    # **0 = 不整理**：那是这件事唯一的开关。记忆的总开关只有 `memory.enabled` 一个，
+    # 不另立"启用整理"（同一个东西两处判，迟早会分叉，见 design §2.3）。
+    "memory.dream_after_hours": "0",
+    # **记忆检索的语义（向量）那一路**（v0.50）。默认**关**，理由有两条：
+    # ① QwenPaw 那边默认也是关的（`auto_memory_search_config.enabled = false`）；
+    # ② 打开它要付嵌入账单（一次对齐要把变了的块全部嵌入），而"规模上不值得"正是
+    #    当初把它推后的理由。v0.50 用真模型 + 真工作区量过它确实有用（同义查询
+    #    余弦 0.615、无关 0.345），所以**值得开**——但由用户决定付不付这份钱。
+    # 关着时检索完全走词面那一路，那条路自己是完整的（不是降级）。
+    "memory.vector_enabled": "false",
+    # 余弦下限。实测相关 0.61–0.68、无关 0.33–0.35，取中间偏保守的 0.45。
+    # **它是可以调的**：样本只有五条，这个数是起点不是定论（见 services/memory_index.py）。
+    "memory.vector_min_score": "0.45",
+    # **每轮注入哪几份人设文件、按什么顺序**（v0.51，照 QwenPaw 的 ``system_prompt_files``）。
+    # 默认顺序的理由写在 ``memory.PERSONA_FILES`` 那张表上（身份 → 资料 → 规程 → 记忆）。
+    #
+    # 只认那四份核心文件（``memory_files.CORE_FILES``），别的名字会被丢掉并记日志：
+    # 让任意路径进 system prompt 等于绕过"哪些是设定、哪些是被召回的现场"这条分界。
+    # 空值 = 默认顺序（不是"一份都不注入"）；想去掉哪一份就从这一行里删掉它。
+    "memory.persona_files": "SOUL.md,PROFILE.md,AGENTS.md,MEMORY.md",
 }
 
 
@@ -483,6 +535,18 @@ class RuntimeConfigService:
             return int(raw)
         except ValueError:
             return int(DEFAULTS.get(key, "0") or 0)
+
+    def get_float(self, key: str) -> float:
+        """取一个浮点设置（口径与 :meth:`get_int` 一致：解析不了就回落默认值）。
+
+        记忆的向量下限（``memory.vector_min_score``）是第一个浮点设置——**它必须能调**：
+        0.45 那个数是五条样本量出来的起点，不是一个定论（见 ``memory_index``）。
+        """
+        raw = self.get(key)
+        try:
+            return float(raw)
+        except ValueError:
+            return float(DEFAULTS.get(key, "0") or 0)
 
     def get_bool(self, key: str, *, default: bool = False) -> bool:
         """取一个布尔设置。

@@ -83,8 +83,13 @@ export interface MemoryHit {
   end_line: number | null
   /** 排序用的分。**只在本条查询内可比**（跟工作区里有几块正文有关）。 */
   score: number | null
-  /** 命中判据：查询里的实词有多少比例出现在这一块（0–1）。 */
+  /** 命中判据：查询里的实词有多少比例出现在这一块（0–1）。
+   *
+   *  **语义那一路单独命中时它是 0**（那一侧没有"覆盖率"，判据是余弦下限），
+   *  所以不要一律读成"命中率"——先看 `source`。 */
   coverage: number | null
+  /** 这条是怎么被找到的：`text` / `vector`（按意思找到的）/ `both`。 */
+  source?: 'text' | 'vector' | 'both'
 }
 
 export interface MemoryLink {

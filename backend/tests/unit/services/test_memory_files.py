@@ -22,7 +22,10 @@ import pytest
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.memory_files import (
+    _BLOCK_CACHE,
     MAX_WRITE_BYTES,
+    _load_blocks,
+    _split_blocks,
     classify,
     delete_file,
     describe,
@@ -31,6 +34,7 @@ from app.services.memory_files import (
     read_file,
     safe_path,
     scan,
+    search,
     wikilinks,
     write_file,
 )
@@ -175,6 +179,33 @@ def test_scan_marks_retrievable_only_for_watched_dirs(tmp_path: Path) -> None:
     assert by_path["MEMORY.md"].retrievable is False
     assert by_path["MEMORY.md"].is_core is True
     assert by_path["SOUL.md"].is_core is True
+
+
+def test_scan_only_calls_a_day_page_an_index_when_it_is_derived(tmp_path: Path) -> None:
+    """``is_day_index`` 看的是**内容里的自动区块**，不是文件名。
+
+    ``daily/<日期>.md`` 在**旧部署里装的是真记忆**（那时条目直接平铺在这个文件
+    里），按文件名去认就会把它们从「待整合」的计数里悄悄漏掉——而那个数字是
+    用户判断"还有多少没归档"的唯一线索。有 ``notes:auto`` 区块的才算派生物。
+
+    这一条是被一条集成用例逼出来的：那条用例写了一份**手写的**
+    ``daily/2026-09-17.md``，期望它算进「待整合」。
+    """
+    root = tmp_path / "memory"
+    (root / "daily").mkdir(parents=True)
+    (root / "daily" / "2026-09-16.md").write_text(
+        "# 老格式\n\n- 手写的一条真记忆\n", encoding="utf-8"
+    )
+    (root / "daily" / "2026-09-17.md").write_text(
+        "# 2026-09-17\n\n<!-- notes:auto -->\n"
+        "- [[daily/2026-09-17/某会话.md]] 摘要\n<!-- /notes:auto -->\n",
+        encoding="utf-8",
+    )
+
+    by_path = {item.path: item for item in scan(root)}
+
+    assert by_path["daily/2026-09-16.md"].is_day_index is False
+    assert by_path["daily/2026-09-17.md"].is_day_index is True
 
 
 def test_scan_core_title_is_filename_not_heading(tmp_path: Path) -> None:
@@ -338,3 +369,212 @@ def test_graph_does_not_guess_ambiguous_names(tmp_path: Path) -> None:
     )
     graph = graph_of(scan(root))
     assert graph.edges == [("digest/引用.md", "digest/a/同名.md")]
+
+
+# -------------------------------------- 切块：AST 感知（P1，照 QwenPaw 的分块器）
+#
+# 这一组只测**切块本身**（不经过 recall）：它是召回的地基——块切错了，
+# 分数再准也找不回正确的那一段。三条新行为都是 AST 带来的，两条旧行为是必须保住的。
+
+
+def test_a_heading_becomes_a_breadcrumb_not_an_empty_chunk() -> None:
+    """标题**不单独成块**：它进块的文本当面包屑，而**行号仍从内容行起算**。
+
+    旧切法给出两块：一块只有 `## 复盘`（正文是空的），一块只有那条 bullet。
+    空块会被召回——白占"每份文件最多 3 条"的名额，而它的片段里没有一个字能回答
+    用户；而那条 bullet 光看也不知道属于哪一天、哪一节。
+
+    **行号起算点这一条是有意保留的**：集成用例钉着"`daily/2026-09-24.md` 的那条
+    bullet 必须报第 3 行"（用户拿着行号去编辑器里找的是他的目标，标题不是）。
+    """
+    blocks = _split_blocks("# 2026-09-24\n\n## 复盘\n\n- 固定每周五下午做复盘\n")
+
+    assert [(begin, end) for begin, end, _ in blocks] == [(5, 5)]
+    text = blocks[0][2]
+    assert "# 2026-09-24" in text and "## 复盘" in text
+    assert text.endswith("- 固定每周五下午做复盘")
+
+
+def test_the_breadcrumb_follows_the_heading_levels() -> None:
+    """层级变了面包屑跟着变：三级标题下不该还挂着隔壁二级的兄弟。"""
+    blocks = _split_blocks("# 顶层\n\n## 甲\n\n甲的内容\n\n## 乙\n\n乙的内容\n")
+
+    texts = [text for _begin, _end, text in blocks]
+    assert texts[0].startswith("# 顶层\n\n## 甲")
+    assert texts[1].startswith("# 顶层\n\n## 乙"), "兄弟节不能进面包屑"
+
+
+def test_line_numbers_still_point_at_the_content_not_the_heading() -> None:
+    """行号要跳过 frontmatter 与标题：报错了用户就跳错地方。"""
+    blocks = _split_blocks("---\nsummary: 测试\n---\n\n# 标题\n\n## 小节\n\n正文在这里\n")
+
+    assert [(begin, end) for begin, end, _ in blocks] == [(9, 9)]
+    assert blocks[0][2].startswith("# 标题\n\n## 小节")
+
+
+def test_a_fence_keeps_its_blank_line() -> None:
+    """围栏内部的空行**不能切**：切开之后两块各少半截，谁都跑不起来。"""
+    blocks = _split_blocks("## 跑法\n\n```bash\nset -e\n\npytest -q\n```\n")
+
+    assert len(blocks) == 1
+    assert (blocks[0][0], blocks[0][1]) == (3, 7)
+    assert "set -e" in blocks[0][2] and "pytest -q" in blocks[0][2]
+
+
+def test_a_bullet_inside_a_fence_does_not_start_a_new_chunk() -> None:
+    """围栏里的 `- 一条` 是**代码**，不是列表项。
+
+    不认这一条的话，一篇讲"怎么写记忆笔记"的记忆里那个示例代码块会被劈成两半
+    ——而示例代码恰恰是"照抄能跑"的那种内容。
+    """
+    blocks = _split_blocks("## 写法\n\n```markdown\n- 一条示例\n- 另一条\n```\n")
+
+    assert len(blocks) == 1
+    assert "- 一条示例" in blocks[0][2] and "- 另一条" in blocks[0][2]
+
+
+def test_an_indented_code_block_is_protected_too() -> None:
+    """四空格缩进的代码块同样会含空行，同样不能切。"""
+    blocks = _split_blocks("## 片段\n\n    first\n\n    second\n\n后面一段\n")
+
+    assert len(blocks) == 2
+    assert "first" in blocks[0][2] and "second" in blocks[0][2]
+    assert "后面一段" in blocks[1][2]
+
+
+def test_the_breadcrumb_drops_the_outermost_ancestor_when_it_is_too_long() -> None:
+    """面包屑超预算时**从最外层开始丢**（照 QwenPaw）。
+
+    丢最外层而不是最内层：越靠近正文的标题越能说明"这一段在讲什么"，
+    而最外层那个往往是"这份东西叫什么"；跟着每个块重复一遍才是真浪费。
+    """
+    deep = "\n\n".join(f"{'#' * level} 第{level}层" + "长" * 40 for level in range(1, 6))
+    blocks = _split_blocks(f"{deep}\n\n正文\n")
+
+    text = blocks[0][2]
+    assert "正文" in text
+    assert "第1层" not in text, "最外层要先丢"
+    assert "第5层" in text, "最靠近正文的那一层必须留着"
+
+
+def test_too_many_headings_falls_back_to_line_splitting() -> None:
+    """标题多到 ``MAX_AST_SECTIONS`` 以上时整份**退回按行切**（照 QwenPaw 的
+    ``max_ast_sections``）。
+
+    那种形状多半是机器生成的目录/日志，为它建树不划算。兜底不是"少切几块"，
+    而是**换一套简单规则**——所以这里同时断言"还切得出块"与"没有面包屑"。
+    """
+    from app.services.memory_files import MAX_AST_SECTIONS
+
+    text = "\n\n".join(f"## 标题{index}\n\n内容{index}" for index in range(MAX_AST_SECTIONS + 5))
+
+    blocks = _split_blocks(text)
+
+    assert len(blocks) >= MAX_AST_SECTIONS
+    assert any("内容0" in body for _begin, _end, body in blocks)
+    assert blocks[0][2] == "## 标题0", "兜底那条路没有面包屑，标题自成一块"
+
+
+# ----------------------------------------- 分块缓存（P1：一次召回不再重读整池）
+#
+# 缓存最容易出的错是"改了却还是旧的"，而那种错**不会报错**——所以这一组钉的全是
+# 失效路径，而不是"缓存命中得快"。
+
+
+def test_the_block_cache_notices_an_outside_edit(tmp_path: Path) -> None:
+    """**外部编辑器改了文件，召回必须看到新的。**
+
+    判据是 ``(mtime_ns, size)``：本地盘上它是硬的，所以这条在大多数环境里本来就过。
+    它存在的意义是把"缓存把改动吃掉了"这种**不会报错的错**钉死。
+    """
+    root = tmp_path / "memory"
+    (root / "daily").mkdir(parents=True)
+    target = root / "daily" / "2026-09-24.md"
+    target.write_bytes("- 复盘只看没做完的事\n".encode())
+
+    first = search(root, "复盘")
+    assert first and "没做完" in first[0].text
+
+    target.write_bytes("- 复盘要先把上周的结论过一遍，再逐条对\n".encode())
+    again = search(root, "复盘")
+
+    assert again and "上周的结论" in again[0].text
+
+
+def test_writing_through_the_memory_layer_invalidates_immediately(tmp_path: Path) -> None:
+    """**我们自己写的一定要立刻生效**，不能等 mtime 那一层。
+
+    网络文件系统的时间戳精度可能只有一秒上下，同一个 tick 内**等长改写**会溜过
+    ``(mtime_ns, size)``——而这个项目要跑在 NAS 上，所以写入路径显式失效。
+    这条用例特意用**等长**的两次写入来钉它。
+    """
+    root = tmp_path / "memory"
+    (root / "digest").mkdir(parents=True)
+    write_file(root, "digest/a.md", "- 复盘只看没做完的事\n")
+    _load_blocks(root, root / "digest" / "a.md")  # 先让它进缓存
+
+    # 长度一模一样，只有内容不同：这正是 mtime+size 盖不住的那种改写
+    write_file(root, "digest/a.md", "- 复盘先把上周过一遍\n")
+
+    hits = search(root, "复盘")
+    assert hits and "上周过一遍" in hits[0].text
+
+
+def test_the_block_cache_reuses_an_untouched_file(tmp_path: Path) -> None:
+    """内容没变时**不重读**：同一份文件的块对象就是同一个。
+
+    用对象身份而不是计时来断言：计时在 CI 上不稳，而"有没有重新建过"是事实。
+    """
+    root = tmp_path / "memory"
+    (root / "digest").mkdir(parents=True)
+    target = root / "digest" / "a.md"
+    target.write_bytes("- 复盘只看没做完的事\n".encode())
+
+    first = _load_blocks(root, target)
+    second = _load_blocks(root, target)
+
+    assert first is second
+    assert first and first[0].block.path == "digest/a.md"
+
+
+def test_the_cache_drops_files_that_left_the_workspace(tmp_path: Path) -> None:
+    """文件没了，缓存里也不该还留着它——缓存的大小跟着**工作区**走，不跟着历史走。"""
+    root = tmp_path / "memory"
+    (root / "digest").mkdir(parents=True)
+    target = root / "digest" / "a.md"
+    target.write_bytes("- 复盘只看没做完的事\n".encode())
+    _load_blocks(root, target)
+
+    target.unlink()
+    search(root, "复盘")
+
+    assert target not in _BLOCK_CACHE
+
+
+# ------------------------------------------- 打分：BM25 的长度归一化（P1）
+
+
+def test_a_short_precise_chunk_outranks_a_long_one_that_merely_mentions_it(
+    tmp_path: Path,
+) -> None:
+    """**一句话写得很准**要压过**长笔记里顺带提了一次**。
+
+    旧打分 ``Σ(权重 × (1+ln 频次))`` 没有长度项：两者同 tf、同 df 就**打平**，
+    于是按 ``(路径, 起始行)`` 排序——字典序靠前的那份（长笔记）拿走第一条，
+    用户看到的是三百字里那一句无关内容。BM25 的 ``b`` 正是治这件事的。
+    """
+    root = tmp_path / "memory"
+    (root / "digest" / "a").mkdir(parents=True)
+    (root / "digest" / "b").mkdir(parents=True)
+    filler = "\n".join(f"这一行在讲别的事情，编号 {index}。" for index in range(12))
+    (root / "digest" / "a" / "杂记.md").write_bytes(
+        f"# 一周杂记\n\n{filler}\n其中有一天顺带提到了复盘这件事。\n".encode()
+    )
+    (root / "digest" / "b" / "口径.md").write_bytes("- 复盘只看没做完的事\n".encode())
+
+    hits = search(root, "复盘", limit=5)
+
+    assert hits, "两边都写了这两个字，必须都召回得到"
+    assert hits[0].path == "digest/b/口径.md", "排在第一条的该是那句写得准的短记忆"
+    assert hits[0].score > hits[1].score
+    assert len(hits[0].text) < len(hits[1].text), "短的那条本来就短，这也是它该排前面的理由"

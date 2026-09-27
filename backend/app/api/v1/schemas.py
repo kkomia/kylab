@@ -2574,7 +2574,17 @@ class MemoryHitOut(BaseModel):
     """命中判据：查询里的实词有多少比例出现在这一块（0–1）。
 
     与分数量纲不同，这个是**归一化**的：它决定"算不算命中"
-    （见 ``memory_files.MIN_TERM_COVERAGE``），分数只决定排在第几条。"""
+    （见 ``memory_files.MIN_TERM_COVERAGE``），分数只决定排在第几条。
+
+    **语义那一路单独命中时它是 0**（那一侧没有"覆盖率"，判据是余弦下限），
+    所以界面上不要一律把它读成"命中率"——先看 ``source``。
+    """
+
+    source: str = "text"
+    """这条是怎么被找到的：``text`` / ``vector``（按意思找到的）/ ``both``。
+
+    v0.50 加的。它存在的唯一理由是**别让界面把 0 当成"没命中"**：
+    语义那一路没有覆盖率这个概念，界面该说"按意思找到的"。"""
 
 
 class MemoryLinkOut(BaseModel):

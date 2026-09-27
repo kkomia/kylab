@@ -359,5 +359,13 @@ def test_the_settings_group_has_no_service_address(client: TestClient, workspace
     memory_group = next(item for item in groups if item["key"] == "memory")
     keys = [field["key"] for field in memory_group["fields"]]
 
-    assert keys == ["memory.enabled", "memory.workspace", "memory.capture_every"]
+    assert keys == [
+        "memory.enabled",
+        "memory.workspace",
+        "memory.capture_every",
+        "memory.dream_after_hours",
+        "memory.vector_enabled",
+        "memory.vector_min_score",
+        "memory.persona_files",
+    ]
     assert all("base_url" not in key and "service_scope" not in key for key in keys)

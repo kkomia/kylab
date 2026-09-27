@@ -5364,6 +5364,11 @@ export interface components {
             score?: number | null;
             /** Coverage */
             coverage?: number | null;
+            /**
+             * Source
+             * @default text
+             */
+            source: string;
         };
         /** MemoryLinkOut */
         MemoryLinkOut: {
@@ -5436,7 +5441,7 @@ export interface components {
         };
         /**
          * MemoryStatusOut
-         * @description 记忆层的状态。**全是本地数字**（v0.44）：
+         * @description 记忆层的状态。**全是本地数字**（v0.46）：
          *
          *     没有"连没连上"这一项——记忆跑在我们自己的进程里，没有第二个进程可连。
          *     原先那对 ``base_url`` / ``reachable``（三态）随 ReMe 一起删了：

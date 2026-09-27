@@ -50,6 +50,18 @@ class PromptContext:
     persona: tuple[tuple[str, str], ...] = ()
     """``[(文件名, 正文)]``，来自 `MemoryService.persona_texts`（按人设顺序）。"""
 
+    memory_guidance: str = ""
+    """「长期记忆怎么用」那一段，来自 `MemoryService.guidance`。
+
+    **未启用长期记忆时是空串**（由服务层判，这里不重复判）：关着时 ``recall``
+    会明确报错，再告诉模型"什么时候该去查记忆"只会换来每轮一次无效调用。"""
+
+    bootstrap: str = ""
+    """「还没认识对方：这一轮该做一次开场」那一段，来自 `MemoryService.bootstrap_block`。
+
+    **只在对方的资料还是空模板时非空**（由服务层判）：Agent 一写进去它自己就没了，
+    所以这一段不需要"用过就删"的簿记。"""
+
     kb_prompt: str = ""
     memory: str = ""
     skills: str = ""
@@ -123,13 +135,21 @@ def _persona_block(context: PromptContext) -> str:
 
     总起句只在**真有文件进来**时才给（一份都没有时这一块整体为空）：
     空挂着一段"请遵守以下设定"而没有下文，比不写更糟。
+
+    「长期记忆怎么用」（``memory_guidance``）挂在**操作规程那一份的末尾**，
+    照 QwenPaw 把记忆指导拼进 ``AGENTS.md`` 那一段的做法：这是"这类活怎么干"的
+    一部分，单列成一块会让它读起来像另一份待读的资料。没有 ``AGENTS.md`` 时
+    退化成独立一块——总比把整段指导丢掉好。
     """
     blocks: list[str] = []
+    agents_at: int | None = None
     for name, text in context.persona:
         body = text.strip()
         if not body:
             continue
         label = _PERSONA_LABELS.get(name, name)
+        if name == "AGENTS.md":
+            agents_at = len(blocks)
         if name == "MEMORY.md":
             # 只有记忆这份要带"可能过时"的声明，见 `MemoryService.prompt_block` 里的理由
             blocks.append(
@@ -138,6 +158,15 @@ def _persona_block(context: PromptContext) -> str:
             )
         else:
             blocks.append(f"【{label}（{name}）】\n{body}")
+    guidance = context.memory_guidance.strip()
+    bootstrap = context.bootstrap.strip()
+    notes = [part for part in (guidance, bootstrap) if part]
+    if notes:
+        joined = "\n\n".join(notes)
+        if agents_at is None:
+            blocks.append(joined)
+        else:
+            blocks[agents_at] = f"{blocks[agents_at]}\n\n{joined}"
     if not blocks:
         return ""
     return "\n\n".join([_PERSONA_LEAD, *blocks])
