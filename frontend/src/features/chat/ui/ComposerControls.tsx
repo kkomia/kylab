@@ -256,12 +256,13 @@ const SMALL_ITEM =
  * "现在到底查不查、查哪几个"；而且左组因此要 473.6px，比卡片内宽 742 里分给它的
  * 那半还宽——实测那一排折成两行（`.shots/feedback/laneB-00-row-before.png`）。
  *
- * 合并之后：
- * - **触发器读状态**（`ChatProvider` 的 `pickText`，一处口径）：`知识库 · 全部 4 个` /
- *   `知识库 · 已选 2 个` / `知识库 · 已关`——三态从这一颗上直接读出来；
- * - **面板里分两层**：顶上那行「启用」是原来那颗开关（"我平时怎么用"，写进本机偏好），
- *   下面是这一轮的库清单（勾选即选，带「全选 / 清空」）；
- * - **关掉启用时清单置灰但选择留着**（`disabled` 只是不让改，不动 `selectedKbIds`）：
+ * 合并之后（**2026-09-27 起触发器不再读状态**，用户："就写「知识库」，用一个开关按钮，
+ * 不要显示「已关」"）：
+ * - **触发器 = 开关 + 名字**：左边开关直接开/关（`role=switch`），右边「知识库」点开面板；
+ *   原先那三态文字（`知识库 · 全部 4 个` / `已选 N 个` / `已关`）一个字都不印了——
+ *   每变一次宽度就跳一次，而"开没开"本来就该由开关表达；
+ * - **面板里只剩"查哪几个"**：勾选即选，带「全选 / 清空」（原来那行「启用」随开关搬到触发器上）；
+ * - **关掉时清单置灰但选择留着**（`disabled` 只是不让改，不动 `selectedKbIds`）：
  *   用户关掉再打开，原来勾的那几个还在。
  */
 export function KnowledgeBaseControl() {
@@ -274,7 +275,7 @@ export function KnowledgeBaseControl() {
     : chat.kbs
   /** 「全选」要能一眼看出"已经全了"：全都勾着时置灰（没有"全选一次"可做了）。 */
   const allSelected = chat.kbs.length > 0 && chat.selectedKbIds.length === chat.kbs.length
-  const label = `知识库 · ${chat.kbPickText}`
+  const label = '知识库'
 
   return (
     // 收起时清掉筛选词：下次打开看到的还是完整清单（筛剩下的那几个不该留着当默认）
@@ -283,21 +284,56 @@ export function KnowledgeBaseControl() {
         if (!open) setFilter('')
       }}
     >
-      <DropdownMenu.Trigger asChild>
+      {/*
+        **一颗胶囊里两件东西**（2026-09-27 用户："知识库那个地方就写「知识库」，
+        然后用一个打开关闭的按钮就可以了，不要显示「已关」"）：
+
+        - 左边是**开关**（`role=switch`，onClick 直接开/关）——"这一轮查不查库"从这一颗上
+          一步就能改；
+        - 右边是**名字**，点它展开面板挑"查哪几个"。
+
+        原先触发器读的是状态文字（`知识库 · 全部 4 个` / `知识库 · 已选 2 个` /
+        `知识库 · 已关`）：那个词每变一次，这一颗的宽度就跟着跳一次，而"开没开"本来就
+        该用开关表达，不该再写一遍。**状态一个字都不印**，选择结果在面板的勾上。
+      */}
+      <span className={`${TRIGGER} gap-[var(--space-2)] pr-[var(--space-1)]`}>
         <button
           type="button"
-          className={TRIGGER}
-          // 名字给一个**稳定的**（可见的 `知识库 · 全部 4 个` 里那半段是状态，不能当名字）：
-          // 探针与用例都按它取这一颗，状态另从文本读
-          aria-label="知识库范围"
-          // 挤窄了会出省略号，悬停里补全（写的与可见的那一行**逐字相同**，不另造一句）
-          title={label}
+          role="switch"
+          aria-checked={chat.useKb}
+          aria-label={chat.useKb ? '关闭知识库' : '打开知识库'}
+          title={chat.useKb ? '关闭知识库' : '打开知识库'}
+          onClick={() => chat.setKbEnabled(!chat.useKb)}
+          className="inline-flex shrink-0 cursor-pointer items-center"
         >
-          {/* `truncate`：这一格的字不许折成两行（理由与右边那颗模型名同款） */}
-          <span className="max-w-[168px] truncate">{label}</span>
-          <ChevronDown size={13} />
+          <span
+            aria-hidden="true"
+            className={`relative inline-block h-[16px] w-[28px] rounded-[var(--radius-pill)] transition-colors [transition:var(--transition-ui)] ${
+              chat.useKb ? 'bg-[var(--accent)]' : 'bg-[var(--bg-active)]'
+            }`}
+          >
+            <span
+              className={`absolute top-[2px] h-[12px] w-[12px] rounded-[var(--radius-pill)] bg-[var(--bg-surface)] transition-all [transition:var(--transition-ui)] ${
+                chat.useKb ? 'left-[14px]' : 'left-[2px]'
+              }`}
+            />
+          </span>
         </button>
-      </DropdownMenu.Trigger>
+        <DropdownMenu.Trigger asChild>
+          <button
+            type="button"
+            // 名字给一个**稳定的**（这一颗上不再有状态文字，名字与可见文本同字）
+            aria-label="知识库范围"
+            // 悬停里补全"这一轮查哪几个"（`kbPickText` 那一处口径）——**行上不印**：
+            // 用户要的是"就写知识库"，而想知道细节时悬停一下还有据可查
+            title={`知识库：${chat.kbPickText}`}
+            className="cursor-pointer truncate text-left outline-none"
+          >
+            {label}
+          </button>
+        </DropdownMenu.Trigger>
+        <ChevronDown size={13} />
+      </span>
       <DropdownMenu.Portal>
         <DropdownMenu.Content
           side="top"
@@ -305,35 +341,6 @@ export function KnowledgeBaseControl() {
           sideOffset={6}
           className={`${CONTENT} max-h-[360px] overflow-y-auto`}
         >
-          {/*
-            「启用」= 原开关（`KB_SWITCH_KEY` 那份本机偏好，语义一字没改）。
-            它是**菜单项**（`CheckboxItem`）而不是面板里一枚裸开关：菜单里的键盘只走项，
-            裸开关会被 Radix 关菜单的那一下 Tab 挡在外面（见 `SMALL_ITEM` 上的说明）。
-            视觉仍是滑块——"这是开还是关"这一眼不该因为换了个位置就丢掉。
-          */}
-          <DropdownMenu.CheckboxItem
-            className={ITEM}
-            checked={chat.useKb}
-            onCheckedChange={(value) => chat.setKbEnabled(value === true)}
-            // 改开关**不关面板**（同下面那些勾选）：接着多半就要挑库
-            onSelect={(event) => event.preventDefault()}
-          >
-            <span className="flex-1 text-left">启用</span>
-            {/* 滑块是这一行的**读数**（状态已经由 `data-state` 与 aria 表达）：不参与无障碍树 */}
-            <span
-              aria-hidden="true"
-              className={`relative inline-block h-[16px] w-[28px] shrink-0 rounded-[var(--radius-pill)] transition-colors [transition:var(--transition-ui)] ${
-                chat.useKb ? 'bg-[var(--accent)]' : 'bg-[var(--bg-active)]'
-              }`}
-            >
-              <span
-                className={`absolute top-[2px] h-[12px] w-[12px] rounded-[var(--radius-pill)] bg-[var(--bg-surface)] transition-all [transition:var(--transition-ui)] ${
-                  chat.useKb ? 'left-[14px]' : 'left-[2px]'
-                }`}
-              />
-            </span>
-          </DropdownMenu.CheckboxItem>
-
           <DropdownMenu.Separator className="my-[var(--space-1)] h-px bg-[var(--border)]" />
 
           <div className="flex items-center gap-[var(--space-1)]">
@@ -396,7 +403,7 @@ export function KnowledgeBaseControl() {
             </DropdownMenu.CheckboxItem>
           ))}
           {chat.kbs.length === 0 ? (
-            <p className={NOTE}>还没有知识库。去「所有知识库」建一个，或先关掉「启用」。</p>
+            <p className={NOTE}>还没有知识库。去「所有知识库」建一个。</p>
           ) : visible.length === 0 ? (
             <p className={NOTE}>没有匹配的知识库。</p>
           ) : null}

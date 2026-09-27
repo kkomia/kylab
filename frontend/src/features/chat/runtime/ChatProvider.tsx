@@ -47,7 +47,7 @@ import {
   type ConversationArtifact,
   type ConversationDetail,
 } from '@/api/conversations'
-import { uploadDocument } from '@/api/documents'
+import { uploadFile } from '@/api/conversations'
 import type { KnowledgeBase } from '@/api/knowledgeBases'
 import { createNote } from '@/api/notes'
 import type { RegisteredModel } from '@/api/modelRegistry'
@@ -1399,30 +1399,33 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const kbsRefetch = kbsQuery.refetch
 
   /**
-   * 附件上传：附件在 KYLAB 里就是**知识库文档**（没有"只挂在这一轮消息上"的附件），
-   * 所以必须有一个落点：优先用当前勾选的第一个库；一个都没有时**明确拒绝并说明**。
+   * 附件上传：**放进这条会话的文件区**，与知识库没有关系（2026-09-27 用户报的：
+   * "上传图片会直接传到知识库，不应与知识库绑定"）。
+   *
+   * 原先这里调的是 `uploadDocument(kbId, file)`——传一份文件等于往知识库里塞一篇文档，
+   * 没有可用的库时还只能拒绝（"文件才有地方放"）。正确的两条路是**分开的**：
+   * - **对话区传的文件**只作这一轮的上下文：落在这条会话的文件区里，`@` 能引用它、
+   *   agent 的文件工具（`list_files` / `read_file`）也读得到；
+   * - **进知识库**是另一件事：在知识库页面传，或者让 agent 调接口传。
+   *
+   * 落点必须是**会话**，所以还没有会话时如实说明（首条消息发出去就有了）。
    */
   const uploadFiles = useCallback(
     (files: File[]) => {
       if (files.length === 0) return
-      const targetId = useKb ? (selectedKbIds[0] ?? kbs[0]?.id) : undefined
-      if (!targetId) {
-        notifyWarning(
-          useKb
-            ? '先在「知识库」里选一个库，文件才有地方放'
-            : '在「知识库」里打开「启用」后再传文件',
-        )
+      if (!conversationId) {
+        notifyWarning('先发出第一条消息，这条会话的文件区建好之后再传')
         return
       }
-      const name = kbs.find((item) => item.id === targetId)?.name ?? ''
       setUploading(true)
       void (async () => {
         try {
-          for (const file of files) await uploadDocument(targetId, file)
-          // 只报结果。原来还缀着"入库后就能被引用"——那是入库这条链路的后果说明，
-          // 不属于"这一下做成了没有"（2026-09-24 用户要求清掉这一类解释）
-          notifySuccess(`已把 ${formatCount(files.length)} 个文件传给「${name}」`)
-          void kbsRefetch()
+          for (const file of files) await uploadFile(conversationId, file)
+          // 只报结果（原先那句"入库后就能被引用"是后果说明，2026-09-24 已清掉）
+          notifySuccess(`已把 ${formatCount(files.length)} 个文件放进这条会话的文件区`)
+          // 文件区那份清单是"打开才拉"的（`wantConvFiles`），这里按 key 失效，
+          // 下次打开就是新的——不为了这次上传把它提前拉起来
+          void queryClient.invalidateQueries({ queryKey: ['chat', 'files', conversationId] })
         } catch (cause) {
           notifyError(cause)
         } finally {
@@ -1430,7 +1433,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         }
       })()
     },
-    [kbs, kbsRefetch, selectedKbIds, useKb],
+    [conversationId, queryClient],
   )
 
   // —— `@` 提及：候选来自知识库 + 这条会话的文件区 + 技能 + 会话列表

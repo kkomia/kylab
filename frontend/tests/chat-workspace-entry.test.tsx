@@ -55,6 +55,8 @@ vi.mock('@/api/conversations', async (importOriginal) => {
     getConversation: vi.fn(),
     listConversations: vi.fn(async () => ({ items: [] })),
     listArtifacts: vi.fn(async () => ({ items: [] })),
+    // 对话区上传走**会话文件区**（2026-09-27），知识库那条接口不再参与
+    uploadFile: vi.fn(async () => ({ key: 'f1', name: 'a.png' })),
     listFiles: vi.fn(async () => ({
       mode: 'object',
       label: '本会话',
@@ -125,10 +127,7 @@ vi.mock('@/api/notes', async (importOriginal) => {
   return { ...actual, createNote: vi.fn(async () => ({ id: 'n1', title: 't', content_md: '' })) }
 })
 
-vi.mock('@/api/documents', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/api/documents')>()
-  return { ...actual, uploadDocument: vi.fn(async () => ({ document_id: 'd1' })) }
-})
+// 复制这条路只关心"交给剪贴板的到底是哪段文字"
 
 import { createConversation, getConversation, type ConversationDetail } from '@/api/conversations'
 import type { ChatHandlers } from '@/api/chat'
@@ -211,30 +210,27 @@ async function ask(text: string): Promise<void> {
 }
 
 /**
- * 当前「知识库」胶囊上写着什么。
+ * 当前这一轮的库范围。
  *
- * 开关与选库**合并成一颗**之后，可见文案是 `知识库 · 全部 2 个`（前缀是这一颗的名字，
- * 后面那一段才是状态）；这里只回状态那一段——下面这些用例问的是"这一轮的范围是哪几个"，
- * 不是那半句名字。
+ * **2026-09-27 起那一颗上不再印状态**（用户："就写「知识库」，用一个开关按钮，
+ * 不要显示「已关」"）：行上是开关（`aria-checked`）+ 名字，范围搬进了**悬停提示**
+ * 与面板的勾里。下面这些用例问的是"这一轮的范围是哪几个"，读悬停那一句最省事，
+ * 也不必为了一个读数每次都把面板点开。
  */
 function pickTextOf(): string {
-  const label = screen.getByRole('button', { name: '知识库范围' }).textContent?.trim() ?? ''
-  return label.replace(/^知识库 · /, '')
+  const title = screen.getByRole('button', { name: '知识库范围' }).getAttribute('title') ?? ''
+  return title.replace(/^知识库：/, '')
 }
 
-/** 打开「知识库」胶囊的面板（合并后开关与选库都在这一层里）。 */
-async function openKbPanel(user: ReturnType<typeof userEvent.setup>): Promise<void> {
-  await user.click(screen.getByRole('button', { name: '知识库范围' }))
-  await screen.findByRole('menuitemcheckbox', { name: '启用' })
+/** 那一颗上的开关（开/关的唯一读数）。 */
+function kbSwitch(): HTMLElement {
+  return screen.getByRole('switch', { name: /知识库/ })
 }
 
-/** 把面板里的「启用」（原「使用知识库」开关）扳到目标档，然后收起面板。 */
+/** 把触发器上的开关扳到目标档。 */
 async function setKbEnabled(user: ReturnType<typeof userEvent.setup>, on: boolean): Promise<void> {
-  await openKbPanel(user)
-  const toggle = screen.getByRole('menuitemcheckbox', { name: '启用' })
-  if ((toggle.getAttribute('aria-checked') === 'true') !== on) await user.click(toggle)
-  expect(toggle).toHaveAttribute('aria-checked', String(on))
-  await user.keyboard('{Escape}')
+  if ((kbSwitch().getAttribute('aria-checked') === 'true') !== on) await user.click(kbSwitch())
+  expect(kbSwitch()).toHaveAttribute('aria-checked', String(on))
 }
 
 beforeEach(() => {
@@ -366,15 +362,10 @@ describe('`@` 菜单里的知识库', () => {
     await user.type(field, '@')
     await user.click(await screen.findByRole('option', { name: /笔记/ }))
 
-    // 顺手打开：胶囊回到「全部 2 个」，面板里的「启用」也是勾上的（只有这一处状态）
+    // 顺手打开：范围回到「全部 2 个」，而**开关就在触发器上**（不在面板里了）
     expect(pickTextOf()).toBe('全部 2 个')
-    await openKbPanel(user)
-    expect(screen.getByRole('menuitemcheckbox', { name: '启用' })).toHaveAttribute(
-      'aria-checked',
-      'true',
-    )
-    await user.keyboard('{Escape}')
-    expect(await screen.findByText(/并打开了「知识库」开关/)).toBeInTheDocument()
+    expect(kbSwitch()).toHaveAttribute('aria-checked', 'true')
+    await expect(screen.findByText(/并打开了「知识库」开关/)).resolves.toBeInTheDocument()
     // 开关打开之后这一轮的库范围就是"详情回填的那一个 + 刚并进来的那一个"
     expect(pickTextOf()).toBe('全部 2 个')
     expect(field).toHaveValue('')
