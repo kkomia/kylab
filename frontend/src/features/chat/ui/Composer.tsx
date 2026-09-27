@@ -22,10 +22,8 @@ import { FILE_DRAG_TYPE } from '../runtime/prefs'
 import { matchChatShortcut } from '../runtime/shortcutPrefs'
 import { useChat, type MentionItem } from '../runtime/ChatProvider'
 import { ApprovalBar } from './ApprovalBar'
-import { ContextGauge, KnowledgeBaseControl, ModelPicker, PlusMenu } from './ComposerControls'
-import { ExecPolicyControl } from './ExecPolicyControl'
+import { KnowledgeBaseControl, ModelPicker, PlusMenu } from './ComposerControls'
 import { MentionMenu, SlashMenu, type MenuHandle } from './Menus'
-import { ModePicker } from './ModePicker'
 import { FilesSheet } from './Sheets'
 
 /** 输入框里现在是不是在打一条命令：`/` 开头**且还没打空格**（打了空格就是在写参数了）。 */
@@ -411,41 +409,31 @@ export function Composer() {
           左组 466.5 里塞不下 473.6 的内容，最后那颗「全部 4 个」被挤到第二行）；
           合并后左组 4 颗走成一行（读数见 `.shots/feedback/laneB-*.json`）。
 
-          放不下时的退路分两层，**顺序不能反**：
-          1. **左组折行**（`flex-wrap` 留着）：加号 / 执行策略 / 模式 / 知识库
-             是"这一轮给什么"，字数少、整格移动不丢词——折行比把它们的标签截短可读；
-          2. **右组不折，先挤按钮的内边距、再让模型名出省略号**：上下文读数 / 模型 /
-              发送是"怎么生成、发出去"。**读数那一格现在不参与收缩**了
-              （`whitespace-nowrap` + 不带 `overflow: hidden`，见 `ContextGauge` 上的
-              注释）——它曾是这一排里第一个被压掉的（实测 `clientWidth 23 /
-              scrollWidth 27`），而"还能问多长"正是这一格要回答的问题；会出省略号的
-              是模型名（有 aria-label，菜单里也能核对），发送键则始终是 `shrink-0`。
+          **2026-09-27 这一排按旧版收成三颗**（用户拿着旧版截图："我觉得很简洁美观"，
+          参照图里只有 `+ 知识库 模型 发送`）。三样东西各自**搬到了它该在的那一格**，
+          一个功能都没删：
+          - 「上下文用量」→ 进了**模型浮层**（它回答"还能问多长"，与模型/思考档同类，
+            见 `ContextSummary`）；
+          - 「命令·允许」与「模式·构建」→ 进了**「+」菜单**的两层子菜单（它们与附件/技能
+            同属"这一轮怎么配"，见 `ExecPolicyControl` / `ModePicker`）。
 
-          于是：默认字号一行；字号调到「更大」或窗口很窄时，是**左组折行、右组完整**，
-          没有哪一格的字会被压成两行（那正是这张卡片这一轮要修的毛病）。
+          放不下时的退路只剩一层：**右组不折，让模型名出省略号**（它有 aria-label，
+          菜单里也能核对），发送键始终是 `shrink-0`。左组很少再有折行的机会
+          （两颗），但 `flex-wrap` 留着——字号调到「更大」时它仍然是最后的退路。
+          实测（1440）：整行 742×32、一行放下，与收窄前同高。
         */}
         <div className="flex items-center justify-between gap-[var(--space-2)]">
           <div className="flex min-w-0 flex-wrap items-center gap-[var(--space-1)]">
-            {/* 「加号」：附件与技能都收在这里 */}
+            {/* 「加号」：附件、技能，以及「这一轮怎么配」那两项（命令 / 模式）都收在这里 */}
             <PlusMenu
               onPickFiles={() => fileInput.current?.click()}
               onBrowseFiles={() => chat.openFiles()}
             />
-            {/*
-              这两个旋钮**不是同一件事**（这里原先写着"两件都是这一轮它有多放手"——
-              那句话正是用户看着两个胶囊犯迷糊的原因）：
-              - 「命令·允许」= **能不能执行命令**（全局设置，管理员；allow / ask / deny）；
-              - 「模式」= **要不要先问一句**（本会话的档：plan 收紧、yolo 放宽）。
-              两道闸都要过：**拒绝最硬**（yolo 也越不过它）。分工写在各自的菜单里。
-            */}
-            <ExecPolicyControl />
-            <ModePicker />
             <KnowledgeBaseControl />
           </div>
 
           <div className="flex min-w-0 items-center gap-[var(--space-2)]">
-            {/* 上下文仪表摆在这一端：它与模型/思考档是同一类信息（"还能问多长"） */}
-            <ContextGauge />
+            {/* 模型这一格还装着"思考 / 强度 / 上下文读数"（它们是同一个问题的几个面） */}
             <ModelPicker />
             {/* 这两句是行内附注，也**不许折行**（同上：整行只有一行） */}
             {chat.useKb && chat.kbs.length > 0 && chat.selectedKbIds.length === 0 ? (

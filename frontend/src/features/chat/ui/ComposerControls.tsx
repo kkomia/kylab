@@ -12,12 +12,25 @@
  * 一颗**没有容器的裸开关**（`border-radius: 0`、无底色），一行里两种形态。
  */
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { Bot, Check, ChevronDown, ChevronRight, Folder, Plus, Sparkles, Upload } from 'lucide-react'
+import {
+  Bot,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Compass,
+  Folder,
+  Plus,
+  ShieldCheck,
+  Sparkles,
+  Upload,
+} from 'lucide-react'
 import { useState } from 'react'
 
 import { formatCount, formatPercent } from '@/lib/format'
 
-import { CONTROL_TRIGGER } from './DropdownShell'
+import { CONTROL_TRIGGER, MENU_CHECK, MENU_ITEM, MENU_PANEL } from './DropdownShell'
+import { ExecPolicyItems, useExecPolicy } from './ExecPolicyControl'
+import { ModeItems, useChatMode } from './ModePicker'
 import { useChat } from '../runtime/ChatProvider'
 
 /**
@@ -27,14 +40,72 @@ import { useChat } from '../runtime/ChatProvider'
  * 两处各写一遍正是"一行四个控件四种形状"的来源）。这里只是给它一个短名字。
  */
 const TRIGGER = CONTROL_TRIGGER
-const CONTENT =
-  'z-50 min-w-[220px] overflow-hidden rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-menu)] p-[var(--space-2)] shadow-[var(--shadow-popover)]'
-const ITEM =
-  'flex w-full cursor-pointer items-center gap-[var(--space-2)] rounded-[var(--radius-control)] px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--text-meta-size)] text-[var(--text-primary)] outline-none data-[highlighted]:bg-[var(--bg-hover)]'
+const CONTENT = MENU_PANEL
+const ITEM = MENU_ITEM
 const NOTE =
   'px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--text-meta-size)] text-[var(--text-tertiary)]'
 /** 勾的位置**永远占着**（没选中的那些也留一格）：否则选中项一变，整列文字会左右跳。 */
-const MARK = 'inline-flex w-[14px] shrink-0 text-[var(--accent)]'
+const MARK = MENU_CHECK
+
+/**
+ * 「思考 / 强度」那两行的形状（v0.53，照旧版 `ModelPicker.vue` 的 `.mp-row`）。
+ *
+ * 一行一个偏好：左边是标签，右边是控件，行高一致。两个偏好共用一层行壳，
+ * 视觉上才是"一组参数"而不是两条随意的菜单项。
+ */
+const PREF_ROW =
+  'flex min-h-[32px] w-full items-center justify-between gap-[var(--space-3)] rounded-[var(--radius-control)] px-[var(--space-3)] text-[length:var(--text-meta-size)] text-[var(--text-primary)]'
+/** 开关那一行整行可点（它是 `CheckboxItem`，键盘能走、状态能播报），所以要 hover 反馈。 */
+const PREF_ROW_BUTTON = `${PREF_ROW} cursor-pointer outline-none data-[highlighted]:bg-[var(--bg-hover)]`
+
+/**
+ * 开关的槽与滑块（旧版的 `.mp-switch` / `.mp-knob`）：36×20 的胶囊，滑块 14px。
+ * **开=主色填充**，关=浅底 + 强边框——关着时它看起来是"一个槽"，开着时是"一条亮色"，
+ * 一眼能分辨，不必去读旁边有没有字。
+ */
+const switchTrack = (on: boolean) =>
+  `relative inline-flex h-[20px] w-[36px] shrink-0 items-center rounded-full border transition-colors ${
+    on
+      ? 'border-[var(--accent)] bg-[var(--accent)]'
+      : 'border-[var(--border-strong)] bg-[var(--bg-hover)]'
+  }`
+const switchKnob = (on: boolean) =>
+  `absolute left-[2px] top-[2px] h-[14px] w-[14px] rounded-full bg-[var(--bg-surface)] transition-transform ${
+    on ? 'translate-x-[16px]' : ''
+  }`
+
+/**
+ * 强度那三档的槽与档（旧版的 `.mp-seg` / `.mp-seg-btn`）。
+ *
+ * **三档并排摆出来**是这个设计的一半：做成三个菜单项时，用户得先点开「强度」
+ * 才知道有哪几档可挑，而挑一档的成本本来就低。选中的那一档底色立起来（`--bg-surface`
+ * + 1px 投影），未选的只是文字——所以"当前在哪一档"是看形状得到的，不用读小字。
+ */
+const SEG_GROUP = 'flex items-center rounded-[var(--radius-control)] bg-[var(--bg-subtle)] p-[2px]'
+const SEG_BUTTON =
+  'inline-flex h-[24px] min-w-[34px] cursor-pointer items-center justify-center rounded-[var(--radius-control)] px-[var(--space-2)] text-[length:var(--text-meta-size)] text-[var(--text-secondary)] outline-none data-[highlighted]:bg-[var(--bg-hover)] data-[state=checked]:bg-[var(--bg-surface)] data-[state=checked]:text-[var(--text-primary)] data-[state=checked]:shadow-[0_1px_2px_rgb(0_0_0/10%)] data-[disabled]:cursor-not-allowed data-[disabled]:text-[var(--text-tertiary)]'
+
+/**
+ * 思考强度的三档（与后端 `ThinkingEffort` 同值）。**中文标签只有三个字**，
+ * 并排放得下；写成"强度：低"那种句子就摆不成一排了。
+ */
+const THINKING_EFFORTS: { value: string; label: string }[] = [
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+]
+
+/**
+ * 模型列表那一行（v0.53，照旧版 `.mp-model`）。
+ *
+ * 两个改动都有依据：① **勾挪到右边**——旧版就是右勾，而右侧的勾不会让左边的名字左右跳
+ * （左勾必须给每行留一格，那一格在视觉上是"缩进"，名字全都退了一格）；
+ * ② **选中项整行用主色**，扫一眼就知道现在是哪个，不必去找勾。
+ */
+const MODEL_ITEM =
+  'flex w-full cursor-pointer items-center justify-between gap-[var(--space-2)] rounded-[var(--radius-control)] px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--text-meta-size)] text-[var(--text-primary)] outline-none data-[highlighted]:bg-[var(--bg-hover)] data-[state=checked]:text-[var(--accent)]'
+/** 勾的位置**永远占着**（没选中的也留一格）：否则选中项一变，整列文字会左右跳。 */
+const CHECK_SLOT = 'inline-flex w-[14px] shrink-0 justify-end text-[var(--accent)]'
 
 /**
  * 「加号」：附件与技能都收在这里（照 Kimi 的输入框布局）。
@@ -51,6 +122,8 @@ export function PlusMenu({
 }) {
   const chat = useChat()
   const [skillsOpen, setSkillsOpen] = useState(false)
+  const policy = useExecPolicy()
+  const mode = useChatMode()
 
   return (
     <DropdownMenu.Root
@@ -92,10 +165,7 @@ export function PlusMenu({
               <ChevronRight size={13} />
             </DropdownMenu.SubTrigger>
             <DropdownMenu.Portal>
-              <DropdownMenu.SubContent
-                sideOffset={4}
-                className={`${CONTENT} max-h-[320px] overflow-y-auto`}
-              >
+              <DropdownMenu.SubContent sideOffset={4} className={`${CONTENT} max-h-[320px]`}>
                 {chat.skills.map((skill) => (
                   <DropdownMenu.CheckboxItem
                     key={skill.name}
@@ -118,6 +188,49 @@ export function PlusMenu({
               </DropdownMenu.SubContent>
             </DropdownMenu.Portal>
           </DropdownMenu.Sub>
+
+          {/*
+            「这一轮它有多放手」两颗（2026-09-27 从那一排搬进来）。
+
+            搬的理由是**那一排太热闹**：用户拿着旧版截图说"我觉得很简洁美观"，旧版那一排
+            只有 `+ 知识库 模型 发送`。而这两项与上面的附件/技能**不是一类事**——
+            上面是"给这一轮什么"，这里是"它被允许做到哪一步"——所以隔一条线、并留在
+            自己的一层子菜单里（触发器上仍写着当前档，`命令·允许` / `模式·构建`，
+            与原先那一颗胶囊同形，只是要打开菜单才看得见）。
+
+            交互上仍走 Radix 的 `Sub`：键盘能进去、能选、选完连同外层菜单一起收掉。
+          */}
+          {(policy.ready || mode.ready) && (
+            <DropdownMenu.Separator className="my-[var(--space-1)] h-px bg-[var(--border)]" />
+          )}
+          {policy.ready && (
+            <DropdownMenu.Sub>
+              <DropdownMenu.SubTrigger className={ITEM}>
+                <ShieldCheck size={15} />
+                <span className="flex-1 text-left">命令·{policy.label}</span>
+                <ChevronRight size={13} />
+              </DropdownMenu.SubTrigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.SubContent sideOffset={4} className={CONTENT}>
+                  <ExecPolicyItems />
+                </DropdownMenu.SubContent>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Sub>
+          )}
+          {mode.ready && (
+            <DropdownMenu.Sub>
+              <DropdownMenu.SubTrigger className={ITEM}>
+                <Compass size={15} />
+                <span className="flex-1 text-left">模式·{mode.label}</span>
+                <ChevronRight size={13} />
+              </DropdownMenu.SubTrigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.SubContent sideOffset={4} className={`${CONTENT} min-w-[260px]`}>
+                  <ModeItems />
+                </DropdownMenu.SubContent>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Sub>
+          )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
@@ -313,6 +426,16 @@ export function ModelPicker() {
         >
           <Bot size={14} />
           <span className="max-w-[140px] truncate">{label}</span>
+          {/*
+            「思考关」只在**非默认**时占位（旧版的做法）：默认开着思考，触发器上不该多一个字；
+            而关掉之后，这一格是唯一能看出"这一轮它不深想"的地方——不写出来，
+            用户得点开面板才知道自己关过。
+          */}
+          {!chat.thinkingOn && (
+            <span className="shrink-0 rounded-[var(--radius-control)] bg-[var(--bg-hover)] px-[var(--space-1)] text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
+              思考关
+            </span>
+          )}
           <ChevronDown size={13} />
         </button>
       </DropdownMenu.Trigger>
@@ -328,58 +451,73 @@ export function ModelPicker() {
             onValueChange={(value) => chat.setModelPk(value)}
           >
             {/* 留空 = 交给后端的全局默认；把它单独列一条，别让用户以为必须选一个 */}
-            <DropdownMenu.RadioItem className={ITEM} value="">
-              <span className={MARK}>{chat.modelPk === '' ? <Check size={14} /> : null}</span>
-              <span>默认模型</span>
+            <DropdownMenu.RadioItem className={MODEL_ITEM} value="">
+              <span className="truncate">默认模型</span>
+              <span className={CHECK_SLOT}>{chat.modelPk === '' ? <Check size={14} /> : null}</span>
             </DropdownMenu.RadioItem>
             {chat.modelOptions.map((model) => (
-              <DropdownMenu.RadioItem key={model.value} className={ITEM} value={model.value}>
-                <span className={MARK}>
+              <DropdownMenu.RadioItem key={model.value} className={MODEL_ITEM} value={model.value}>
+                <span className="truncate">{model.label}</span>
+                <span className={CHECK_SLOT}>
                   {chat.modelPk === model.value ? <Check size={14} /> : null}
                 </span>
-                <span className="truncate">{model.label}</span>
               </DropdownMenu.RadioItem>
             ))}
           </DropdownMenu.RadioGroup>
 
           <DropdownMenu.Separator className="my-[var(--space-1)] h-px bg-[var(--border)]" />
 
+          {/* 上下文读数（环 + 比率）留在**上半屏**：它与"用哪个模型、要不要深想"同类，
+              一眼要看得见；明细与压缩入口在浮层最底下（见 ContextDetails 的注释） */}
+          <ContextSummary />
+
+          {/*
+            「思考」与「强度」沿用**旧版（Vue）那套形态**（v0.53）：思考是一个**开关**、
+            强度是**并排三档**，两样都收在模型这一个入口里——它们回答的是同一个问题
+            "这一轮怎么生成"，铺在输入框下面只会让工具条比输入框还热闹（旧版的原话）。
+
+            语义仍走 Radix（`CheckboxItem` / `RadioItem`）：键盘能走、选中状态能播报，
+            只是把"一条带勾的菜单项"换成了开关与分段的外观。`onSelect` 里 `preventDefault`
+            让面板留着——改完思考常常还要接着改强度（旧版也是这个取舍：选模型才收起）。
+            强度做成三档而不是三条菜单项：那样得先点开「强度」才知道有哪几档。
+          */}
           <DropdownMenu.CheckboxItem
-            className={ITEM}
+            className={PREF_ROW_BUTTON}
             checked={chat.thinkingOn}
             onCheckedChange={(value) => chat.setThinkingOn(value === true)}
-            // 开关不关菜单：改完思考档常常还要接着改强度
             onSelect={(event) => event.preventDefault()}
           >
-            <span className={MARK}>{chat.thinkingOn ? <Check size={14} /> : null}</span>
-            <span>深度思考</span>
+            <span>思考</span>
+            <span aria-hidden="true" className={switchTrack(chat.thinkingOn)}>
+              <span className={switchKnob(chat.thinkingOn)} />
+            </span>
           </DropdownMenu.CheckboxItem>
 
-          {chat.thinkingOn ? (
+          <div className={PREF_ROW}>
+            <span>强度</span>
             <DropdownMenu.RadioGroup
               value={chat.thinkingEffort}
               onValueChange={(value) => chat.setThinkingEffort(value)}
+              className={SEG_GROUP}
+              aria-label="思考强度"
             >
-              <DropdownMenu.RadioItem className={ITEM} value="low">
-                <span className={MARK}>
-                  {chat.thinkingEffort === 'low' ? <Check size={14} /> : null}
-                </span>
-                <span>强度：低</span>
-              </DropdownMenu.RadioItem>
-              <DropdownMenu.RadioItem className={ITEM} value="medium">
-                <span className={MARK}>
-                  {chat.thinkingEffort === 'medium' ? <Check size={14} /> : null}
-                </span>
-                <span>强度：中</span>
-              </DropdownMenu.RadioItem>
-              <DropdownMenu.RadioItem className={ITEM} value="high">
-                <span className={MARK}>
-                  {chat.thinkingEffort === 'high' ? <Check size={14} /> : null}
-                </span>
-                <span>强度：高</span>
-              </DropdownMenu.RadioItem>
+              {THINKING_EFFORTS.map((item) => (
+                <DropdownMenu.RadioItem
+                  key={item.value}
+                  value={item.value}
+                  disabled={!chat.thinkingOn}
+                  onSelect={(event) => event.preventDefault()}
+                  className={SEG_BUTTON}
+                >
+                  {item.label}
+                </DropdownMenu.RadioItem>
+              ))}
             </DropdownMenu.RadioGroup>
-          ) : null}
+          </div>
+
+          {/* 明细沉底：读数、按来源分解、估算说明与「压缩上下文」——要看时往下滚 */}
+          <DropdownMenu.Separator className="my-[var(--space-1)] h-px bg-[var(--border)]" />
+          <ContextDetails />
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
@@ -449,8 +587,13 @@ function ContextRing({ ratio }: { ratio: number }) {
 }
 
 /**
- * 上下文仪表：输入框旁边一个**能核对**的读数，点开看到按来源分解，
- * 里面那个「压缩」走既有那条 `/compact` 链路（界面不另造一套压缩）。
+ * 上下文读数：**在模型浮层里的一行**（2026-09-27 从输入框那一排搬进来），
+ * 下面是能核对的分解与那个「压缩」入口（走既有 `/compact` 链路，界面不另造一套压缩）。
+ *
+ * **为什么与模型放在一起**：它回答的是"还能问多长"，与"用哪个模型、要不要深想"
+ * 是同一类问题（这一句原先就写在 `Composer.tsx` 那一排的注释里）。那一排要减到
+ * `+ 知识库 模型 发送`，它就跟着模型走——而不是被删掉：**该看到的读数一个都没少**，
+ * 只是从"总在眼前"变成"打开模型这一格就在眼前"。
  *
  * 三条纪律（旧 `ContextGauge` 逐条搬）：
  * 1. **数字全部来自接口**（`used` / `total` / `ratio` / `share` 一个都不在这里算）——
@@ -465,25 +608,11 @@ function ContextRing({ ratio }: { ratio: number }) {
  * 其中环那一段在源文件 63-102 行）：`viewBox="0 0 24 24"`、`r=10`、`strokeWidth=2`、
  * 两条 `circle`（底圈 `opacity=0.25`；进度圈 `opacity=0.7` + `strokeDasharray` +
  * `strokeDashoffset` + `strokeLinecap="round"` + `rotate(-90deg)` 让起笔落在 12 点），
- * 颜色一律 `currentColor`。
- * 我们改了两处，理由都在下面：
- *   a. **不引 hover-card / tokenlens / echarts**（照上游那一整套要装三个包，而这三个
- *      都不是我们缺的东西）：分解面板继续用既有 `DropdownMenu.Content`——按来源分解、
- *      估算说明、`/compact` 入口都还在原处；
- *   b. 颜色不写死在 SVG 里：两条圈仍然是 `currentColor`，颜色由 `ContextRing` 用一个
- *      令牌给（`--text-primary`）——环是图形读数，要 ≥3:1，为什么不是继承按钮的
- *      `--text-secondary`（只有 3.01:1）见 `ContextRing` 的注释；
- *
- * **读数不许截断**（第三批评审 A② 为了省宽度，把这一格压到 59.5px，
- * `scrollWidth` 却是 101——屏幕上只剩「上下文…」，百分比根本看不见，而百分比正是
- * 这一格要回答的问题）。现在那一格只放**比率**：环 + `11%`（10% 以下留一位小数，
- * 见 `formatPercent`）。完整读数（`7,133 / 65,536 tokens（11%）`）仍在 `title` 里，
- * 菜单里一字不少。这一格因此比原来窄 ~40px（环 16 + 间隙 6 + 比率 31，原来 93.5）。
- * 读数那一格也**不再参与收缩**（`whitespace-nowrap` + 不带 `overflow: hidden`，见下面
- * 触发器上的注释）：它今天是全排唯一"必须看得见"的字，放不下时先挤按钮的内边距与
- * 旁边那个会出省略号的模型名——实测 `scrollWidth == clientWidth`（27 = 27）。
+ * 颜色一律 `currentColor`；颜色由 `ContextRing` 用一个令牌给（`--text-primary`）——
+ * 环是图形读数，要 ≥3:1，为什么不是继承按钮的 `--text-secondary`（只有 3.01:1）
+ * 见 `ContextRing` 的注释。
  */
-export function ContextGauge() {
+export function ContextSummary() {
   const chat = useChat()
   const usage = chat.contextUsage.data
   const error = chat.contextUsage.error
@@ -491,107 +620,105 @@ export function ContextGauge() {
 
   // 环的推进量按 0..1 的占用比画；文字读数走 `formatPercent`（10% 以下留一位小数）
   const ratio = usage ? Math.min(1, Math.max(0, usage.ratio)) : 0
-  // 菜单里那行括号用整数百分比（口径与旧版一致：菜单给整数，行上给小数的读数）
-  const percent = Math.round(ratio * 100)
   const percentText = formatPercent(usage ? ratio * 100 : null)
   // 行上那一格的字：有读数给比率，出错说"不可用"，还没回来给占位符
   // （**不给 0%**——0% 的含义是"确实没占"，而"还没读到"不是它）
   const label = error ? '不可用' : usage ? percentText : '—'
+  // 精确到个位数的读数放悬停里（行上只放比率）
+  const title = usage
+    ? `上下文已用 ${formatCount(usage.used)} / ${formatCount(usage.total)} tokens（${percentText}）`
+    : '上下文用量'
 
   return (
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>
-        <button
-          type="button"
-          // `min-w-0`：整行真放不下时让**按钮**先缩进自己的横内边距，而不是把整行顶出去
-          className={`${TRIGGER} min-w-0`}
-          aria-label="上下文用量"
-          // 精确到个位数的读数放悬停里（行上只放比率，见上面那段说明）
-          title={
-            usage
-              ? `上下文已用 ${formatCount(usage.used)} / ${formatCount(usage.total)} tokens（${percentText}）`
-              : '上下文用量'
-          }
-        >
-          {/* 内层这一格**不参与收缩**：环是 `shrink-0`，读数是 `whitespace-nowrap`
-              且**不带** `overflow: hidden`——于是它的最小宽度就是这几个字的宽度。
-              上一版是 `min-w-0 truncate`：`overflow: hidden` 会把自动最小尺寸变成 0，
-              它因此第一个被压扁（实测 `clientWidth 23 / scrollWidth 27`，数字被截，
-              与用户报的"百分比看不见"是同一个毛病）。现在放不下时先挤按钮自己那 8px
-              横内边距，再挤旁边那个本来就出省略号的模型名——读数不动。 */}
-          <span className="inline-flex items-center gap-[var(--space-1-5)]">
-            <ContextRing ratio={ratio} />
-            <span className="tabular whitespace-nowrap">{label}</span>
-          </span>
-        </button>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          side="top"
-          align="end"
-          sideOffset={6}
-          className={`${CONTENT} min-w-[260px]`}
-        >
-          {usage ? (
-            <>
-              <p className="m-0 px-[var(--space-1)] text-[length:var(--text-meta-size)] text-[var(--text-primary)]">
-                已用 {formatCount(usage.used)} / {formatCount(usage.total)} tokens
-                <span className="text-[var(--text-tertiary)]">（{percent}%）</span>
-              </p>
-              {/* 按来源分解：**label 用后端给的中文**（口径在服务端，界面不翻译 kind） */}
-              <ul className="m-0 mt-[var(--space-1)] flex list-none flex-col gap-[var(--space-1)] p-0">
-                {usage.items.map((part) => (
-                  <li
-                    key={part.kind}
-                    className="grid grid-cols-[1fr_auto_64px] items-center gap-[var(--space-2)] text-[length:var(--text-meta-size)] text-[var(--text-secondary)]"
-                  >
-                    <span className="truncate" title={part.label}>
-                      {part.label}
-                    </span>
-                    <span className="tabular text-[var(--text-tertiary)]">
-                      {formatCount(part.tokens)}
-                    </span>
-                    <span className="block h-[4px] overflow-hidden rounded-[2px] bg-[var(--bg-active)]">
-                      <span
-                        className="block h-full bg-[var(--accent)]"
-                        style={{ width: `${Math.round(part.share * 100)}%` }}
-                      />
-                    </span>
-                  </li>
-                ))}
-                {usage.items.length === 0 ? (
-                  <li className={NOTE}>这一轮还没有可分解的内容。</li>
-                ) : null}
-              </ul>
-              {usage.compress_at > 0 ? (
-                <p className={`${NOTE} leading-[1.5]`}>
-                  {/* 只给这条读数（阈值是用户自己的设置）。后面原来还缀着
-                      "（先剪旧工具结果，再摘要）"——那是在讲压缩怎么实现的，
-                      属于 2026-09-24 用户要求清掉的那一类解释，删。
-                      `compress_at` 是**百分比**（后端 `chat.compress_at` 设置项，
-                      见 `backend/app/api/v1/schemas.py` 与该文件里「自动压缩阈值：{n}%」
-                      那句），不是 token 数：此前直接 `formatCount` 打出来是"到 70 会
-                      自动压缩"——既少了 `%`，也把一个百分比当成了数量。 */}
-                  到 {usage.compress_at}% 会自动压缩
-                </p>
-              ) : null}
-              {usage.estimated && usage.note ? (
-                <p className={`${NOTE} leading-[1.5]`}>{usage.note}</p>
-              ) : null}
-            </>
-          ) : (
-            <p className={`${NOTE} leading-[1.5]`}>
-              {error ? (error as Error).message : '正在读上下文用量…'}
+    <div className={PREF_ROW} title={title}>
+      <span>上下文</span>
+      <span className="inline-flex items-center gap-[var(--space-1-5)]">
+        <ContextRing ratio={ratio} />
+        <span className="tabular whitespace-nowrap">{label}</span>
+      </span>
+    </div>
+  )
+}
+
+/**
+ * 上下文那一行的**明细**（读数、按来源分解、估算说明、压缩入口）。
+ *
+ * **与 `ContextSummary` 那一行分开是实测逼出来的**（2026-09-27）：明细有六七行，
+ * 直接跟在模型后面时浮层一到 `max-h` 就滚——「思考 / 强度」被挤到折线以下，
+ * 而用户给的参照图里它们就在模型下面一眼可见。所以：**读数那一行留在上半屏**
+ * （模型 / 上下文 / 思考 / 强度），明细与压缩沉到底部，要看时往下滚。
+ */
+export function ContextDetails() {
+  const chat = useChat()
+  const usage = chat.contextUsage.data
+  const error = chat.contextUsage.error
+  if (!chat.conversationId) return null
+  // 详情里那行括号用整数百分比（口径与旧版一致：那一行给整数，行上给小数的读数）
+  const percent = usage ? Math.round(Math.min(1, Math.max(0, usage.ratio)) * 100) : 0
+
+  return (
+    <>
+      {usage ? (
+        <div className="px-[var(--space-3)] pb-[var(--space-1)] pt-[var(--space-1)]">
+          <p className="m-0 text-[length:var(--text-meta-size)] text-[var(--text-primary)]">
+            已用 {formatCount(usage.used)} / {formatCount(usage.total)} tokens
+            <span className="text-[var(--text-tertiary)]">（{percent}%）</span>
+          </p>
+          {/* 按来源分解：**label 用后端给的中文**（口径在服务端，界面不翻译 kind） */}
+          <ul className="m-0 mt-[var(--space-1)] flex list-none flex-col gap-[var(--space-1)] p-0">
+            {usage.items.map((part) => (
+              <li
+                key={part.kind}
+                className="grid grid-cols-[1fr_auto_64px] items-center gap-[var(--space-2)] text-[length:var(--text-meta-size)] text-[var(--text-secondary)]"
+              >
+                <span className="truncate" title={part.label}>
+                  {part.label}
+                </span>
+                <span className="tabular text-[var(--text-tertiary)]">
+                  {formatCount(part.tokens)}
+                </span>
+                <span className="block h-[4px] overflow-hidden rounded-[2px] bg-[var(--bg-active)]">
+                  <span
+                    className="block h-full bg-[var(--accent)]"
+                    style={{ width: `${Math.round(part.share * 100)}%` }}
+                  />
+                </span>
+              </li>
+            ))}
+            {usage.items.length === 0 ? (
+              <li className="text-[length:var(--text-meta-size)] text-[var(--text-tertiary)]">
+                这一轮还没有可分解的内容。
+              </li>
+            ) : null}
+          </ul>
+          {usage.compress_at > 0 ? (
+            <p className="m-0 mt-[var(--space-1)] text-[length:var(--text-meta-size)] leading-[1.5] text-[var(--text-tertiary)]">
+              {/* 只给这条读数（阈值是用户自己的设置）。后面原来还缀着
+                  "（先剪旧工具结果，再摘要）"——那是在讲压缩怎么实现的，
+                  属于 2026-09-24 用户要求清掉的那一类解释，删。
+                  `compress_at` 是**百分比**（后端 `chat.compress_at` 设置项），
+                  不是 token 数：此前直接 `formatCount` 打出来是"到 70 会
+                  自动压缩"——既少了 `%`，也把一个百分比当成了数量。 */}
+              到 {usage.compress_at}% 会自动压缩
             </p>
-          )}
-          <DropdownMenu.Item
-            className={`${ITEM} justify-center border border-[var(--border)]`}
-            onSelect={chat.compressContext}
-          >
-            压缩上下文（/compact）
-          </DropdownMenu.Item>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
+          ) : null}
+          {usage.estimated && usage.note ? (
+            <p className="m-0 mt-[var(--space-1)] text-[length:var(--text-meta-size)] leading-[1.5] text-[var(--text-tertiary)]">
+              {usage.note}
+            </p>
+          ) : null}
+        </div>
+      ) : (
+        <p className={`${NOTE} leading-[1.5]`}>
+          {error ? (error as Error).message : '正在读上下文用量…'}
+        </p>
+      )}
+      <DropdownMenu.Item
+        className={`${ITEM} justify-center border border-[var(--border)]`}
+        onSelect={chat.compressContext}
+      >
+        压缩上下文（/compact）
+      </DropdownMenu.Item>
+    </>
   )
 }

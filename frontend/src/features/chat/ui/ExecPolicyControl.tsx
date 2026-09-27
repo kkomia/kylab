@@ -1,34 +1,29 @@
 /**
- * 输入框那一排的「命令执行策略」（旧 `components/chat/ExecPolicyControl.vue`）。
+ * 「命令执行策略」——**2026-09-27 从输入框那一排搬进「+」菜单**（用户挑的旧版布局：
+ * 那一排只留 `+ 知识库 模型 发送`，见《界面优化计划》§5.9）。
  *
- * 为什么把它从设置页搬到输入框旁边：被拦下的那一刻，用户正看着这段对话——
- * 让他先去「能力 → 沙箱执行」翻出那一项、改完再问一遍，是这条链路上最没必要的往返。
- * 而这一项恰恰是"改完立刻能感觉到差别"的那种设置。
+ * 搬的是**入口，不是判定**：读写仍与设置页同一份（`sandbox.exec_policy`，走 `/settings`
+ * 那两个接口）。在这里另存一份是最危险的实现方式——两处显示的档迟早不一致，
+ * 而"我明明改成允许了，它怎么还拦"正是最难查的一类问题（数据只有一份，这里只是它的另一个门）。
  *
- * **读写的是与设置页同一份**（`sandbox.exec_policy`，走 `/settings` 那两个接口）：
- * 在这里另存一份是最危险的实现方式——两处显示的档迟早不一致，
- * 而"我明明改成允许了，它怎么还拦"正是最难查的一类问题（数据只有一份，
- * 这里只是它的另一个门）。
- *
- * 名字从「执行·x」改成「命令·x」（用户问"它和模式里的全放行是不是冲突"）：
- * 这一排并排摆着两个胶囊，「执行」与「模式」在中文里都可以被读成"这一轮它有多放手"，
- * 用户无法从名字判断谁管什么。事实是——这一项管**命令本身能不能跑**
- * （能不能在这台机器上起进程），而「模式」管**要不要先问一句**。
- * 名字落在"命令"上，两者才是可区分的问题。
+ * **搬走的代价记在这里**：这一项从此不再一眼可见。原先的取舍是"被拦下的那一刻用户正看着
+ * 这段对话"——现在承担那一刻的是**审批条**与过程面板（真的被拦下时它们就在眼前），
+ * 而"这一轮有多放手"要看一眼菜单。用户明确选了这一档取舍。
  *
  * 只引导三档（allow / ask / deny）：`sandbox` 是四档里更早的写法，仍然认，但不在这里
  * 引导去选；当前值不在三档里时**照原样显示**，不假装它是别的东西。
  * 非管理员**不显示**：它背后是管理员端点，摆在成员眼前只会让他点了拿到 403。
  */
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, ShieldCheck } from 'lucide-react'
+import { Check } from 'lucide-react'
 import { useState } from 'react'
 
 import { getSettings, updateSettings } from '@/api/settings'
 import { useSessionStore } from '@/lib/session'
 
 import { notifyError, notifySuccess } from '../runtime/notify'
-import { Dropdown } from './DropdownShell'
+import { MENU_CHECK, MENU_ITEM } from './DropdownShell'
 
 /** 后端 `sandbox.exec_policy` 的键。**不另起名字**：改的就是设置页那一项。 */
 const KEY = 'sandbox.exec_policy'
@@ -54,7 +49,19 @@ export function useIsAdmin(): boolean {
   return user?.role === 'admin'
 }
 
-export function ExecPolicyControl() {
+/**
+ * 这一项的当前档与写入动作。
+ *
+ * **触发器（子菜单那一行）与子菜单里的三档都读这一处**：两处各写一份的话，
+ * "显示的是哪一档"与"点了写哪一档"迟早对不上（这一项的全部风险就在这里）。
+ */
+export function useExecPolicy(): {
+  ready: boolean
+  label: string
+  current: string | null
+  saving: boolean
+  choose: (value: string) => void
+} {
   const isAdmin = useIsAdmin()
   const client = useQueryClient()
   const [saving, setSaving] = useState(false)
@@ -71,50 +78,59 @@ export function ExecPolicyControl() {
     enabled: isAdmin,
   })
 
-  // 读不到就**不显示这个控件**：它是顺手的入口，不值得为它把对话页变成错误提示
-  const mode = query.data ?? null
-  if (!isAdmin || mode === null) return null
+  // 读不到就**不显示这个入口**：它是顺手的入口，不值得为它把对话页变成错误提示
+  const current = query.data ?? null
+  const label =
+    current === null ? '' : (POLICIES.find((i) => i.value === current)?.label ?? current)
 
-  const label = POLICIES.find((item) => item.value === mode)?.label ?? mode
-
-  async function choose(value: string): Promise<void> {
-    if (value === mode || saving) return
+  function choose(value: string): void {
+    if (value === current || saving) return
     setSaving(true)
-    try {
-      const result = await updateSettings([{ key: KEY, value }])
-      if (result.rejected.length > 0) {
-        notifyError(new Error(`这一项不被接受：${result.rejected.join('、')}`))
-        return
+    void (async () => {
+      try {
+        const result = await updateSettings([{ key: KEY, value }])
+        if (result.rejected.length > 0) {
+          notifyError(new Error(`这一项不被接受：${result.rejected.join('、')}`))
+          return
+        }
+        client.setQueryData(['chat', 'exec-policy'], value)
+        const chosen = POLICIES.find((item) => item.value === value)
+        // 保留"下一个动作就生效"这一截：它说的是这次改动从哪一刻起作用（与
+        // `ModePicker` 的"下一轮生效"同一类），不是解释这一项是什么
+        notifySuccess(`命令执行策略已改成「${chosen?.label ?? value}」，下一个动作就生效`)
+      } catch (cause) {
+        notifyError(cause)
+      } finally {
+        setSaving(false)
       }
-      client.setQueryData(['chat', 'exec-policy'], value)
-      const chosen = POLICIES.find((item) => item.value === value)
-      // 保留"下一个动作就生效"这一截：它说的是这次改动从哪一刻起作用（与
-      // `ModePicker` 的"下一轮生效"同一类），不是解释这一项是什么
-      notifySuccess(`命令执行策略已改成「${chosen?.label ?? value}」，下一个动作就生效`)
-    } catch (cause) {
-      notifyError(cause)
-    } finally {
-      setSaving(false)
-    }
+    })()
   }
 
+  return { ready: isAdmin && current !== null, label, current, saving, choose }
+}
+
+/**
+ * 子菜单里的三档。走 Radix 的 `RadioItem`：键盘能走、当前档能播报（`aria-checked`）。
+ *
+ * 选中之后**不拦默认行为**（与技能那种"关了菜单还要接着勾"不同）：改档是一次决定，
+ * 决定做完就把菜单收掉——旧版那一颗胶囊也是这个行为。
+ */
+export function ExecPolicyItems() {
+  const { current, saving, choose } = useExecPolicy()
   return (
-    <Dropdown label={`命令·${label}`} ariaLabel="命令执行策略" icon={<ShieldCheck size={14} />}>
+    <DropdownMenu.RadioGroup value={current ?? ''} onValueChange={(value) => choose(value)}>
       {POLICIES.map((item) => (
-        <button
+        <DropdownMenu.RadioItem
           key={item.value}
-          type="button"
-          className="flex w-full cursor-pointer items-center gap-[var(--space-2)] rounded-[var(--radius-control)] px-[var(--space-3)] py-[var(--space-2)] text-left text-[length:var(--text-meta-size)] text-[var(--text-primary)] hover:bg-[var(--bg-hover)] disabled:opacity-60"
+          value={item.value}
           disabled={saving}
           title={item.hint}
-          onClick={() => void choose(item.value)}
+          className={`${MENU_ITEM} data-[disabled]:cursor-default data-[disabled]:opacity-60`}
         >
-          <span className="inline-flex w-[14px] shrink-0 text-[var(--accent)]">
-            {item.value === mode ? <Check size={14} /> : null}
-          </span>
+          <span className={MENU_CHECK}>{item.value === current ? <Check size={14} /> : null}</span>
           <span>{item.label}</span>
-        </button>
+        </DropdownMenu.RadioItem>
       ))}
-    </Dropdown>
+    </DropdownMenu.RadioGroup>
   )
 }

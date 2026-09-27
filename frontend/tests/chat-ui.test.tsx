@@ -895,22 +895,57 @@ describe('停止与回到最新', () => {
     expect(thread.nextElementSibling?.contains(composer)).toBe(true)
   })
 
-  it('输入卡片控制行的预算是"一行"：胶囊横内边距收窄、那一格只放环 + 比率', async () => {
+  it('输入卡片控制行按旧版收成三颗：+ / 知识库 / 模型，两侧都带 min-w-0', async () => {
     vi.mocked(getConversation).mockResolvedValue(
       detail([stored('user', '你好'), stored('assistant', '你好呀')]),
     )
     renderPage()
     await screen.findByTestId('reply-text')
 
-    // 上下文那一格：行上放**比率**（有界，不会把整行顶出去），精确数字在 title 里
-    const gauge = screen.getByRole('button', { name: '上下文用量' })
-    expect(gauge).toHaveTextContent('0%')
-    expect(gauge).toHaveAttribute('title', '上下文已用 0 / 0 tokens（0%）')
-    // 行上那一格的字**就是比率本身**：改前是整句「上下文已用 0%」被 59.5px 的格子截成
+    // 2026-09-27 收窄（用户拿着旧版截图："我觉得很简洁美观"）：
+    // 「命令·允许」「模式·构建」进了「+」菜单、「上下文用量」进了模型浮层。
+    // 这一条钉的就是**那一排只剩三颗 + 发送**——多一颗都算回退。
+    const field = document.querySelector('#chat-query') as HTMLElement
+    const card = field.parentElement as HTMLElement
+    const row = [...card.querySelectorAll(':scope > div')].find((el) =>
+      el.className.includes('justify-between'),
+    ) as HTMLElement
+    const left = row.children[0] as HTMLElement
+    const right = row.children[1] as HTMLElement
+    expect([...left.children].map((el) => el.getAttribute('aria-label'))).toEqual([
+      '添加附件或技能',
+      '知识库范围',
+    ])
+    // 右组：模型那一格 + 发送键（各有 aria-label，这一排就这两颗）
+    expect([...right.children].map((el) => el.getAttribute('aria-label'))).toEqual([
+      '选择对话模型',
+      '发送',
+    ])
+    // 两侧都带 `min-w-0`：放不下时按"字省"（省号）而不是整格换行/撑破卡片
+    expect(left.className).toContain('min-w-0')
+    expect(right.className).toContain('min-w-0')
+  })
+
+  it('上下文那一行在模型浮层里：环 + 比率，读数不许截断', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    // 它从那一排搬进了模型浮层（仍属"还能问多长"这一类），所以先开浮层
+    await userEvent.setup().click(screen.getByRole('button', { name: '选择对话模型' }))
+    const summary = await screen.findByText('上下文')
+    const row = summary.parentElement as HTMLElement
+
+    // 行上放**比率**（有界，不会把整行顶出去），精确数字在 title 里
+    expect(row).toHaveTextContent('0%')
+    expect(row).toHaveAttribute('title', '上下文已用 0 / 0 tokens（0%）')
+    // 那一格的字**就是比率本身**：改前是整句「上下文已用 0%」被 59.5px 的格子截成
     // 「上下文…」（`scrollWidth` 101），百分比反而看不见；现在文案不许再只剩半句
-    expect(gauge.querySelector('span.tabular')?.textContent).toBe('0%')
+    expect(row.querySelector('span.tabular')?.textContent).toBe('0%')
     // 环照 AI Elements 的几何：viewBox 24 / r=10 / strokeWidth=2，底圈 + 进度圈各一条
-    const ring = gauge.querySelector('svg[role="img"]') as SVGElement
+    const ring = row.querySelector('svg[role="img"]') as SVGElement
     expect(ring).toHaveAttribute('viewBox', '0 0 24 24')
     expect(ring.getAttribute('width')).toBe('16')
     const [track, progress] = Array.from(ring.querySelectorAll('circle'))
@@ -922,9 +957,6 @@ describe('停止与回到最新', () => {
     // 0% → 进度圈整圈都是缺口（dashoffset 等于周长），底圈照旧画满
     expect(Number(progress.getAttribute('stroke-dashoffset'))).toBeCloseTo(2 * Math.PI * 10, 6)
     expect(Number(progress.getAttribute('stroke-dasharray'))).toBeCloseTo(2 * Math.PI * 10, 6)
-    // 左组与右组都带 `min-w-0`：放不下时按"字省"（省号）而不是整格换行/撑破卡片
-    const left = gauge.parentElement?.previousElementSibling as HTMLElement
-    expect(left.className).toContain('min-w-0')
   })
 
   it('上下文菜单：环随比率走，压缩阈值说的是**百分比**（不是 token 数）', async () => {
@@ -944,7 +976,9 @@ describe('停止与回到最新', () => {
     await screen.findByTestId('reply-text')
 
     // 行上读数：比率（四分之一 → 25%），环的缺口同步到 3/4 圈
-    const gauge = await screen.findByRole('button', { name: '上下文用量' })
+    await userEvent.setup().click(screen.getByRole('button', { name: '选择对话模型' }))
+    const summary = await screen.findByText('上下文')
+    const gauge = summary.parentElement as HTMLElement
     await waitFor(() => expect(gauge).toHaveTextContent('25%'))
     expect(gauge).toHaveAttribute('title', '上下文已用 6,400 / 25,600 tokens（25%）')
     const progress = gauge.querySelectorAll('circle')[1]
@@ -953,11 +987,13 @@ describe('停止与回到最新', () => {
       6,
     )
 
-    // 菜单里那句阈值：`compress_at` 是**后端的百分比设置项**，此前被当成数量打出来
+    // 同一格里的那句阈值：`compress_at` 是**后端的百分比设置项**，此前被当成数量打出来
     // （"到 70 会自动压缩"）——少一个 `%`，读起来像"到 70 个 token 就压缩"
-    await userEvent.setup().click(gauge)
     expect(await screen.findByText(/到 70% 会自动压缩/)).toBeInTheDocument()
     expect(screen.getByText(/已用 6,400 \/ 25,600 tokens/)).toBeInTheDocument()
+    // 分解与估算说明跟着一起搬进来了（信息一个都没少）
+    expect(screen.getByText('系统提示')).toBeInTheDocument()
+    expect(screen.getByText('按字符数估算：中日韩 1 字约 1 token')).toBeInTheDocument()
   })
 
   it('流式期间发送键变成停止，点了之后这一轮在本页收口', async () => {

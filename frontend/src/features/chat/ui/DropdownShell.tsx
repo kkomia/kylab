@@ -30,6 +30,23 @@ export const CONTROL_TRIGGER =
   'rounded-[var(--radius-pill)] border border-transparent bg-[var(--bg-subtle)] px-[var(--space-2)] ' +
   'text-[length:var(--text-meta-size)] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] data-[state=open]:bg-[var(--bg-hover)] data-[state=open]:text-[var(--text-primary)]'
 
+/**
+ * 菜单面（浮层的底、边框、圆角、内边距）——**菜单类控件共用一份**。
+ *
+ * 2026-09-27 从 `ComposerControls` 搬到这里：那一排收窄之后，命令与模式两档搬进了
+ * 「+」菜单的子菜单，而子菜单用的还是这张面。两处各写一份的话，浮层的圆角或内边距
+ * 改一次就要记得改两处（"同一行两个高度"那个毛病的同型）。
+ */
+export const MENU_PANEL =
+  'z-50 min-w-[220px] max-h-[420px] overflow-y-auto rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-menu)] p-[var(--space-2)] shadow-[var(--shadow-popover)]'
+
+/** 菜单项的形状（+ 菜单、模型菜单、命令/模式子菜单共用）。 */
+export const MENU_ITEM =
+  'flex w-full cursor-pointer items-center gap-[var(--space-2)] rounded-[var(--radius-control)] px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--text-meta-size)] text-[var(--text-primary)] outline-none data-[highlighted]:bg-[var(--bg-hover)]'
+
+/** 勾的位置**永远占着**（没选中的那些也留一格）：否则选中项一变，整列文字会左右跳。 */
+export const MENU_CHECK = 'inline-flex w-[14px] shrink-0 text-[var(--accent)]'
+
 export function Dropdown({
   label,
   ariaLabel,

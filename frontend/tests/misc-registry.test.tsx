@@ -114,12 +114,19 @@ beforeEach(() => {
 })
 
 describe('模型注册器', () => {
-  it('供应商卡片显示类别、掩码与模型数，模型行标出「用于对话」', async () => {
+  it('供应商卡片只留名字 + 掩码密钥，模型行标出「用于对话」', async () => {
     renderMisc(<ModelRegistryPanel />)
 
     expect(await screen.findByText('深度求索')).toBeInTheDocument()
     expect(screen.getByText('sk-xu…ten')).toBeInTheDocument()
-    expect(screen.getByText('1 个模型')).toBeInTheDocument()
+    // 2026-09-27（界面优化计划 §5.8）：卡片上原先还有「类别」与「N 个模型」，
+    // 下面另起一行印 base_url——三样都没有区分度（这一列所有供应商同一类、
+    // 数量下面数得出来），base_url 还是实现细节。用户圈着这块说
+    // "同一个东西说两遍"，所以这里改成**钉"它们不在了"**：
+    expect(screen.queryByText('1 个模型')).not.toBeInTheDocument()
+    expect(screen.queryByText('对话模型服务')).not.toBeInTheDocument()
+    expect(screen.queryByText('https://api.deepseek.com')).not.toBeInTheDocument()
+    // 掩码密钥留着：同一个供应商配了几把钥匙时，它是唯一能分辨的那一条
     // 删模型之前要知道会影响什么：这一行是**只读状态**
     expect(screen.getByText('用于对话')).toBeInTheDocument()
   })
