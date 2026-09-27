@@ -266,7 +266,7 @@ function normalizeCommand(raw: components['schemas']['CommandOut']): ChatCommand
  * 读一次命令目录（前端输入框里那个 `/` 菜单吃它）。
  *
  * **失败不抛**：菜单是顺手的入口，后端旧版本没有这个端点时不该把对话页变成错误提示
- * （同 `ModePicker` 的处置）——返回空列表，界面只少一个菜单。
+ * （与「权限」那颗读不到设置就不显示同一处置）——返回空列表，界面只少一个菜单。
  */
 export async function listCommands(): Promise<ChatCommand[]> {
   try {

@@ -115,13 +115,26 @@ SETTING_GROUPS: dict[str, Any] = {
             },
             {
                 "key": "chat.mode",
-                "label": "Agent 模式",
+                "label": "任务模式（目标 / 计划）",
                 "type": "select",
-                # 四档的取值与文案**只有一处来源**（services/modes.py，照 ZCode 的枚举
-                # 与 UI 文案）：在这里再抄一份，界面上的名字与引擎判定的档迟早会对不上
+                # 两档的取值与文案**只有一处来源**（services/modes.py）：在这里再抄一份，
+                # 界面上的名字与引擎判定的档迟早会对不上。
+                # **它管的是"怎么干活"（要不要先给计划），不是"能碰多少"**——后者是
+                # 下一项 `chat.permission`。两根轴是用户 2026-09-27 明确分开的。
                 "options": [
                     {"value": item["name"], "label": f"{item['label']}（{item['hint']}）"}
-                    for item in modes.describe()
+                    for item in modes.describe_modes()
+                ],
+            },
+            {
+                "key": "chat.permission",
+                "label": "权限（仅查看 / 工作区内编辑 / 完全访问）",
+                "type": "select",
+                # 三层权限的取值与文案同样只有 `services/modes.py` 一处来源。
+                # 输入区那一颗「权限」胶囊读写的也是这一项——与这里同一份数据。
+                "options": [
+                    {"value": item["name"], "label": f"{item['label']}（{item['hint']}）"}
+                    for item in modes.describe_permissions()
                 ],
             },
             {
@@ -162,16 +175,16 @@ SETTING_GROUPS: dict[str, Any] = {
         ],
     },
     # 沙箱执行（v0.16，见 docs/设计/Agent-工作区与能力层设计-v0.1.md §4）。
-    # **默认 ask**：这是权限最大的一个动作（在用户的机器上执行代码），
-    # 默认放行是这一层最不该有的默认。四档：allow / ask / deny / sandbox。
+    #
+    # **2026-09-27：「命令执行策略」这一项已折进权限轴**（用户在输入区那颗「权限」上选
+    # 仅查看 / 工作区内编辑 / 完全访问，见 services/modes.py 的模块头）——
+    # 它原来那一项（allow / ask / deny / sandbox）与权限档说的是同一件事，
+    # 摆两处必然出现"界面上写着允许、实际还是被拒"。老值仍然认（`coerce_permission` 映射）。
+    # 三张清单留在这里，它们不是"策略"而是**规则**（逐条 `Bash(git status:*)`），
+    # 与权限档是两回事：档决定"要不要问"，规则决定"这种命令一律不许/一律放行"。
     "sandbox": {
         "label": "沙箱执行",
         "fields": [
-            {
-                "key": "sandbox.exec_policy",
-                "label": "总开关（allow / ask / deny / sandbox）",
-                "type": "text",
-            },
             # 三张清单，语法照抄 Claude Code 的权限模型（见 services/command_policy.py）：
             # `Bash(git status:*)` 那样的规则，**deny 永远优先**。
             {
@@ -271,19 +284,25 @@ DEFAULTS: dict[str, str] = {
     # Office 导出、子 Agent 都是其中的工具。关掉就退回"原问题单轮检索"的旧路径
     # （services/chat.py::answer_stream）——那条路径还在，用于排查与省钱。
     "chat.agent_enabled": "true",
-    # Agent 模式四档（v0.43，P1-1，见 services/modes.py）。**默认 build**：
-    # 与 ZCode 的默认档一致（"变更前确认"）——"没问就动了东西"是最让人意外的默认，
-    # 而四档里只有它不改变引入模式之前的行为。
+    # 任务模式两档（2026-09-27 由四档收敛而来，见 services/modes.py 的模块头）。
+    # **默认 goal**：直接干活；"要不要先给计划"是用户的活法偏好，而默认该是能干活的那个。
     "chat.mode": modes.DEFAULT_MODE,
+    # 权限三档（同上）：**默认"工作区内编辑"**——默认要能干活（"仅查看"当默认，
+    # 产品一上来就是废的），而"动整台机器"（执行命令）仍然要问一句，风险留在看得见的地方。
+    #
+    # 这一项替代了原来的 `sandbox.exec_policy`（那一项的三档已折进权限轴）。
+    # **旧键的值不再被读取**，所以升级上来的部署如果原来把它设成 `allow`，
+    # 命令的行为会从"直接跑"变成"问一句"——**变化的方向是更安全的那一侧**，
+    # 而界面上显示的档（工作区内编辑）与实际行为一致。要放行就在权限那颗上改成"完全访问"。
+    # （认旧**值**的映射还在 `modes.coerce_permission` 里：那是给"有人照旧写法写在
+    #   `chat.permission` 上"这种情况用的。）
+    "chat.permission": modes.DEFAULT_PERMISSION,
     # 上下文压缩（v20.1，见 services/chat.py::prepare_context）：
     # 占用达到阈值就把更早的对话折成摘要，避免长会话撑爆窗口或悄悄失忆。
     # 窗口做成本设置项是因为**没有统一的 API 能查到模型的真实窗口**。
     "chat.context_window": "65536",
     "chat.compress_at": "70",
     "chat.compress_keep": "6",
-    # 记忆（v0.14）。关闭时 recall / remember 都**明确报"未启用"**，不静默返回空
-    # ——返回空会让模型以为"没有相关记忆"，然后基于错误前提继续推理。
-    "sandbox.exec_policy": "ask",
     # **三张清单默认都空**，也就是"一律先问"。
     # 抄的是 Claude Code 的默认：它也不预置放行清单——预置一张"看起来安全"的
     # 只读命令表是危险的，因为**只读不等于无害**：`cat /etc/passwd` 是只读的，
@@ -757,6 +776,31 @@ class RuntimeConfigService:
         thinking = values["llm.enable_thinking"].lower() in ("1", "true", "yes", "on")
         effort = normalize_effort(values["llm.thinking_effort"])
         return temperature, None, thinking, effort
+
+    def normalize_modes(self) -> list[str]:
+        """把**旧取值**写回新档（一次迁移，启动时跑）；返回改过的键与前后值。
+
+        为什么不是"只在读的时候映射"：设置页下拉项是按**新**取值生成的，库里留着
+        旧的 `build` 时那一格会显示成**空**——界面与引擎不一致正是最难查的一类问题。
+        写回之后三处（库、界面、引擎）说的是同一个词。
+
+        只动确实需要改的键：库里没有那一项时什么都不做（**不**替用户写一条新记录，
+        那会让"这一项从来没配过"变成"配过且等于默认"）。
+        """
+        changed: list[str] = []
+        pairs = (
+            ("chat.mode", modes.coerce),
+            ("chat.permission", modes.coerce_permission),
+        )
+        for key, coerce in pairs:
+            raw = self._cached(key)
+            if raw is None:
+                continue
+            fixed = coerce(raw)
+            if fixed != raw:
+                self.set({key: fixed})
+                changed.append(f"{key}: {raw} → {fixed}")
+        return changed
 
     # ------------------------------------------------------------------ 引导值
 

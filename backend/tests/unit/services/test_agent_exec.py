@@ -88,7 +88,12 @@ def workspace(tmp_path, monkeypatch):  # type: ignore[no-untyped-def]
 
 
 def _allow_all(services: _FakeServices) -> None:
-    services.runtime._values["sandbox.exec_policy"] = "allow"
+    """把权限扳到**完全访问**：命令直接跑（这是"允许"这一档在权限轴上的名字）。
+
+    2026-09-27："命令执行策略"那一项已折进权限轴（仅查看 / 工作区内编辑 / 完全访问），
+    所以这里写的是 `chat.permission` 而不是 `sandbox.exec_policy`。
+    """
+    services.runtime._values["chat.permission"] = "full"
 
 
 def _no_run(monkeypatch) -> list[list[str]]:  # type: ignore[no-untyped-def]
@@ -153,7 +158,10 @@ def test_allow_once_runs_the_command(workspace, monkeypatch) -> None:  # type: i
     _available(monkeypatch)
     calls = _no_run(monkeypatch)
     outcome = run_command(
-        workspace, _admin(), conversation_id=None, args={"argv": ["ls", "-la"]},
+        workspace,
+        _admin(),
+        conversation_id=None,
+        args={"argv": ["ls", "-la"]},
         approval=approval_service.ALLOW_ONCE,
     )
     assert calls == [["ls", "-la"]]
@@ -171,7 +179,9 @@ def test_allow_always_remembers_the_rule_and_stops_asking(workspace, monkeypatch
     _available(monkeypatch)
     calls = _no_run(monkeypatch)
     first = run_command(
-        workspace, _admin(), conversation_id=None,
+        workspace,
+        _admin(),
+        conversation_id=None,
         args={"command": "git status --short"},
         approval=approval_service.ALLOW_ALWAYS,
     )
@@ -193,7 +203,7 @@ def test_allow_always_remembers_the_rule_and_stops_asking(workspace, monkeypatch
 def test_deny_refuses_with_the_same_doorway_out(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """用户点了「拒绝」：不执行，回给模型的话**仍要带那两条出路**。
 
-    与老行为一致的部分：「设置 → 沙箱执行」这个人话路径、以及建议的放行规则。
+    与老行为一致的部分：「设置 → 聊天」这个人话路径、以及建议的放行规则。
     摘要（过程面板那一行）现在**点明是哪一道闸**（"对方没批准：拒绝"）——
     用户点开轨迹要能分清"我自己点了拒绝"与"策略拦的、我得去改设置"。
     多出来的还有一句"对方拒绝了"——那句话必须准确，模型才知道别再重试这条。
@@ -201,22 +211,25 @@ def test_deny_refuses_with_the_same_doorway_out(workspace, monkeypatch) -> None:
     _available(monkeypatch)
     calls = _no_run(monkeypatch)
     outcome = run_command(
-        workspace, _admin(), conversation_id=None, args={"command": "ls"},
+        workspace,
+        _admin(),
+        conversation_id=None,
+        args={"command": "ls"},
         approval=approval_service.DENY,
     )
     assert calls == []
     assert outcome.ran is False
     assert outcome.summary == "没有执行（对方没批准：拒绝）"
     assert "拒绝" in outcome.text
-    assert "sandbox.exec_policy" not in outcome.text  # 给用户看的是界面路径，不是配置键
-    assert "设置 → 沙箱执行" in outcome.text
+    assert "chat.permission" not in outcome.text  # 给用户看的是界面路径，不是配置键
+    assert "设置 → 聊天" in outcome.text
     assert "Bash(ls" in outcome.text
 
 
 def test_each_refusal_names_its_own_gate(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """**每一种"没执行"都要报出是谁拦的**——这一行是用户判断"该去改哪里"的唯一依据。
 
-    原先四种原因（拒绝规则 / 总开关设成拒绝 / 需确认但没人可问 / 对方没批准）
+    原先四种原因（拒绝规则 / 权限档不让跑 / 需确认但没人可问 / 对方没批准）
     共用一句"没有执行（策略拦下）"：用户在过程面板上看到它，分不清是规则的锅
     还是自己刚才点错了。这条用例把四句钉在一起——任一处退回泛泛而谈就会红。
     """
@@ -229,19 +242,23 @@ def test_each_refusal_names_its_own_gate(workspace, monkeypatch) -> None:  # typ
     assert denied.summary == "没有执行（拒绝规则拦下）"
 
     runtime._values.pop("sandbox.rules_deny", None)
-    runtime._values["sandbox.exec_policy"] = "deny"
+    runtime._values["chat.permission"] = "view"
     switched_off = run_command(workspace, _admin(), conversation_id=None, args={"command": "ls"})
-    assert switched_off.summary == "没有执行（命令执行策略设为「拒绝」）"
+    assert switched_off.summary == "没有执行（权限档为「仅查看」）"
 
-    # `sandbox` 那一档（不引导但还认）：不直接放行，也不问，摘要要说清"没有可确认的入口"
-    runtime._values["sandbox.exec_policy"] = "sandbox"
+    # 旧的 `sandbox` 那一档（折进权限轴之前是"照跑但不过审批"）现在按"完全访问"认：
+    # 命令真的跑了——这一档的差别已经被权限轴吸收，不该再留一条什么都不做的中间态
+    runtime._values["chat.permission"] = "sandbox"
     legacy = run_command(workspace, _admin(), conversation_id=None, args={"command": "ls"})
-    assert legacy.summary == "没有执行（需确认，但这一轮没有可确认的入口）"
+    assert legacy.ran is True
 
     # 没有界面的链路（定时任务）：确实没执行，而且说的是"没人可确认"
-    runtime._values["sandbox.exec_policy"] = "ask"  # 回到默认档：让流程走到审批那一步
+    runtime._values["chat.permission"] = "workspace"  # 回到默认档：让流程走到审批那一步
     nobody = run_command(
-        workspace, _admin(), conversation_id=None, args={"command": "ls"},
+        workspace,
+        _admin(),
+        conversation_id=None,
+        args={"command": "ls"},
         approval=approval_service.UNAVAILABLE,
     )
     assert nobody.summary == "没有执行（对方没批准：这条链路没人可确认）"
@@ -257,7 +274,10 @@ def test_timeout_is_a_refusal_and_says_nobody_answered(workspace, monkeypatch) -
     _available(monkeypatch)
     calls = _no_run(monkeypatch)
     outcome = run_command(
-        workspace, _admin(), conversation_id=None, args={"command": "ls"},
+        workspace,
+        _admin(),
+        conversation_id=None,
+        args={"command": "ls"},
         approval=approval_service.TIMEOUT,
     )
     assert calls == []
@@ -272,12 +292,15 @@ def test_a_link_without_a_ui_keeps_the_old_behaviour(workspace, monkeypatch) -> 
     _available(monkeypatch)
     calls = _no_run(monkeypatch)
     outcome = run_command(
-        workspace, _admin(), conversation_id=None, args={"command": "ls"},
+        workspace,
+        _admin(),
+        conversation_id=None,
+        args={"command": "ls"},
         approval=approval_service.UNAVAILABLE,
     )
     assert calls == []
     assert "没有人可以确认" in outcome.text
-    assert "设置 → 沙箱执行" in outcome.text
+    assert "设置 → 聊天" in outcome.text
 
 
 def test_unknown_decision_never_means_allow(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -315,11 +338,13 @@ def test_deny_rule_beats_a_broader_allow(workspace) -> None:  # type: ignore[no-
     assert "拒绝规则" in outcome.text
 
 
-def test_deny_policy_switch_stops_everything(workspace) -> None:  # type: ignore[no-untyped-def]
-    workspace.runtime._values["sandbox.exec_policy"] = "deny"
+def test_view_permission_stops_everything(workspace) -> None:  # type: ignore[no-untyped-def]
+    """「仅查看」这一档：命令跑不跑由**权限档**决定（原来读的是 `sandbox.exec_policy`，
+    那一项已折进权限轴）。"""
+    workspace.runtime._values["chat.permission"] = "view"
     outcome = run_command(workspace, _admin(), conversation_id=None, args={"command": "ls"})
     assert outcome.ran is False
-    assert "拒绝执行" in outcome.text
+    assert "仅查看" in outcome.text
 
 
 # ------------------------------------------------------------------ 闸 2：隔离

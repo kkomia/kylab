@@ -24,6 +24,7 @@ import { useChat, type MentionItem } from '../runtime/ChatProvider'
 import { ApprovalBar } from './ApprovalBar'
 import { KnowledgeBaseControl, ModelPicker, PlusMenu } from './ComposerControls'
 import { MentionMenu, SlashMenu, type MenuHandle } from './Menus'
+import { PermissionControl } from './PermissionControl'
 import { FilesSheet } from './Sheets'
 
 /** 输入框里现在是不是在打一条命令：`/` 开头**且还没打空格**（打了空格就是在写参数了）。 */
@@ -410,12 +411,17 @@ export function Composer() {
           合并后左组 4 颗走成一行（读数见 `.shots/feedback/laneB-*.json`）。
 
           **2026-09-27 这一排按旧版收成三颗**（用户拿着旧版截图："我觉得很简洁美观"，
-          参照图里只有 `+ 知识库 模型 发送`）。三样东西各自**搬到了它该在的那一格**，
-          一个功能都没删：
+          参照图里只有 `+ 知识库 模型 发送`），同一天**权限轴**那次改动之后定格为：
+
+          `+ 权限 知识库 …… 模型 发送`
+
           - 「上下文用量」→ 进了**模型浮层**（它回答"还能问多长"，与模型/思考档同类，
             见 `ContextSummary`）；
-          - 「命令·允许」与「模式·构建」→ 进了**「+」菜单**的两层子菜单（它们与附件/技能
-            同属"这一轮怎么配"，见 `ExecPolicyControl` / `ModePicker`）。
+          - 「权限」（仅查看 / 工作区内编辑 / 完全访问）→ **回到这一排**，位置是用户指定的
+            「加号右边、知识库左边」（见 `PermissionControl`）。它把原来那一项
+            「命令执行策略」折了进来——"命令能不能跑"从此只有这一个说法；
+          - 「任务模式」（目标 / 计划）→ 用户要它"不单独弄一个菜单"，所以回到**设置页**
+            （它管的是"怎么干活"，与权限是两根轴）。
 
           放不下时的退路只剩一层：**右组不折，让模型名出省略号**（它有 aria-label，
           菜单里也能核对），发送键始终是 `shrink-0`。左组很少再有折行的机会
@@ -424,11 +430,14 @@ export function Composer() {
         */}
         <div className="flex items-center justify-between gap-[var(--space-2)]">
           <div className="flex min-w-0 flex-wrap items-center gap-[var(--space-1)]">
-            {/* 「加号」：附件、技能，以及「这一轮怎么配」那两项（命令 / 模式）都收在这里 */}
+            {/* 「加号」：附件与技能都收在这里（"这一轮给它什么"） */}
             <PlusMenu
               onPickFiles={() => fileInput.current?.click()}
               onBrowseFiles={() => chat.openFiles()}
             />
+            {/* 「权限」：能碰多少（仅查看 / 工作区内编辑 / 完全访问）。位置是用户指定的：
+                加号右边、知识库左边。另一根轴（任务模式）在设置页，不占这一排 */}
+            <PermissionControl />
             <KnowledgeBaseControl />
           </div>
 

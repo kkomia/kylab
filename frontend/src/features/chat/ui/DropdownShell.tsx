@@ -1,13 +1,13 @@
 /**
- * 那一排触发器的**薄壳**（Radix 的菜单在好几个控件里长得一样）。
+ * 那一排触发器的**薄壳**（那一排与各处菜单共用的取值）。
  *
  * 抽出来只有一条理由，而且是用户明确报过的毛病：**同一行里两个高度**。
  * 取值只有一处（`--control-height` + `--radius-pill`），谁加进来的控件都跟它对齐。
- * 「菜单由 Radix 提供（浮层定位、键盘、Esc、点击外部关闭）」这件事也就只有一处需要维护。
+ *
+ * **2026-09-27 摘掉了这里的 `Dropdown` 组件**：它是"触发器 + 面板"的整壳，
+ * 而用它最后的两处（命令执行策略、任务模式）一个折进了权限轴、一个回到了设置页。
+ * 留着的三个 `MENU_*` 是**取值**（面 / 项 / 勾），那一排与各处的菜单共用。
  */
-import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { ChevronDown } from 'lucide-react'
-import type { ReactNode } from 'react'
 
 /**
  * 输入框那一排控件的**统一外形**（高度、形状、底色、悬停）。
@@ -46,39 +46,3 @@ export const MENU_ITEM =
 
 /** 勾的位置**永远占着**（没选中的那些也留一格）：否则选中项一变，整列文字会左右跳。 */
 export const MENU_CHECK = 'inline-flex w-[14px] shrink-0 text-[var(--accent)]'
-
-export function Dropdown({
-  label,
-  ariaLabel,
-  icon,
-  align = 'start',
-  children,
-}: {
-  label: string
-  ariaLabel: string
-  icon: ReactNode
-  align?: 'start' | 'end'
-  children: ReactNode
-}) {
-  return (
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>
-        <button type="button" aria-label={ariaLabel} className={CONTROL_TRIGGER}>
-          {icon}
-          <span className="max-w-[140px] truncate">{label}</span>
-          <ChevronDown size={13} />
-        </button>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          side="top"
-          align={align}
-          sideOffset={6}
-          className="z-50 min-w-[200px] max-h-[420px] overflow-y-auto rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-menu)] p-[var(--space-2)] shadow-[var(--shadow-popover)]"
-        >
-          {children}
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  )
-}

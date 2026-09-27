@@ -2954,7 +2954,7 @@ def _switch_model(
 def _switch_mode(
     services: Services, payload: ChatRequestIn, parsed: commands.ParsedCommand
 ) -> _CommandResult:
-    """``/mode [计划档名]``：切 Agent 模式（不带参数就报当前档）。
+    """``/mode [档名]``：切**任务模式**（目标 / 计划；不带参数就报当前档）。
 
     三件事按顺序做，顺序不能换：**先读旧档**（写入之后就没有"旧档"了）→ 写设置 →
     记账（会话事件 + 观测表）。漏掉记账的话，下一轮会再补一条重复的 ``mode/changed``。
@@ -2967,7 +2967,7 @@ def _switch_mode(
             name="mode",
             text=(
                 f"现在是「{label}」档（{current}）。\n{commands.modes_text()}\n"
-                "切换：/mode plan|build|edit|yolo"
+                "切换：/mode goal|plan"
             ),
         )
     wanted = pieces[0].lower()

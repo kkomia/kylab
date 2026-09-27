@@ -148,6 +148,7 @@ vi.mock('@/api/documents', async (importOriginal) => {
 vi.mock('@/lib/clipboard', () => ({ copyText: vi.fn(async () => true) }))
 
 import { getConversation, rewindConversation, type ConversationDetail } from '@/api/conversations'
+import { useSessionStore } from '@/lib/session'
 import { copyText } from '@/lib/clipboard'
 
 /** 抓走 handlers：用例自己按需要推事件（与真实链路同一形状）。 */
@@ -992,6 +993,36 @@ describe('停止与回到最新', () => {
     expect(thread.nextElementSibling?.contains(composer)).toBe(true)
   })
 
+  it('权限那一颗：加号右边、知识库左边，档名从 /settings 读出来', async () => {
+    // 管理员 + 设置里那一项有值，控件才渲染（读不到就不显示这个入口，与旧控件同一口径）
+    useSessionStore.setState({
+      currentUser: { id: 'u1', username: 'admin', name: '管理员', role: 'admin', avatar_url: '' },
+      token: '',
+      reloginCount: 0,
+    })
+    const { getSettings } = await import('@/api/settings')
+    vi.mocked(getSettings).mockResolvedValueOnce({
+      groups: [
+        {
+          key: 'chat',
+          label: '聊天',
+          fields: [{ key: 'chat.permission', label: '权限', type: 'select', value: 'workspace' }],
+        },
+      ],
+    } as never)
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    // 触发器上写着当前档（`权限·工作区内编辑`），且**位置**就在加号与知识库之间
+    const pill = await screen.findByRole('button', { name: '权限' })
+    expect(pill).toHaveTextContent('权限·工作区内编辑')
+    const siblings = [...(pill.parentElement?.children ?? [])]
+    expect(siblings.indexOf(pill)).toBe(1)
+  })
+
   it('输入卡片控制行按旧版收成三颗：+ / 知识库 / 模型，两侧都带 min-w-0', async () => {
     vi.mocked(getConversation).mockResolvedValue(
       detail([stored('user', '你好'), stored('assistant', '你好呀')]),
@@ -999,9 +1030,9 @@ describe('停止与回到最新', () => {
     renderPage()
     await screen.findByTestId('reply-text')
 
-    // 2026-09-27 收窄（用户拿着旧版截图："我觉得很简洁美观"）：
-    // 「命令·允许」「模式·构建」进了「+」菜单、「上下文用量」进了模型浮层。
-    // 这一条钉的就是**那一排只剩三颗 + 发送**——多一颗都算回退。
+    // 2026-09-27 收窄（用户拿着旧版截图："我觉得很简洁美观"）：「上下文用量」进了模型浮层；
+    // 同一天权限轴那一次改动又把「权限」摆回这一排（用户指定：加号右边、知识库左边），
+    // 而「命令执行策略」折进权限档、「模式」回到设置页。这一条钉的就是这一排的成员。
     const field = document.querySelector('#chat-query') as HTMLElement
     const card = field.parentElement as HTMLElement
     const row = [...card.querySelectorAll(':scope > div')].find((el) =>
@@ -1010,8 +1041,12 @@ describe('停止与回到最新', () => {
     const left = row.children[0] as HTMLElement
     const right = row.children[1] as HTMLElement
     // 左组：加号 + 「知识库」那一颗（它里面是**开关 + 名字**两个可点目标，
-    // 2026-09-27 起名字上不再印状态文字）。`getAllByRole('button')` 只数 role=button 的，
+    // 名字上不印状态文字）。`getAllByRole('button')` 只数 role=button 的，
     // 开关自己的 role 是 switch，所以这里另外单独钉一颗。
+    //
+    // 「权限」那一颗**要读得到设置才渲染**（读不到就不显示这个入口，与旧控件同一口径），
+    // 所以它由上面那条专门的用例负责（那里给了管理员会话与 `chat.permission` 的值，
+    // 并钉住"加号右边、知识库左边"这个位置）。
     expect(within(left).getAllByRole('button')).toHaveLength(2)
     expect(within(left).getByRole('button', { name: '添加附件或技能' })).toBeInTheDocument()
     expect(within(left).getByRole('button', { name: '知识库范围' })).toBeInTheDocument()

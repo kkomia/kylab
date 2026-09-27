@@ -62,7 +62,7 @@ def test_leaving_plan_mode_clears_the_state() -> None:
     gate = _gate()
     gate.note_plan("计划：做 A、B、C")
 
-    gate.sync_mode(modes.MODE_BUILD)
+    gate.sync_mode(modes.MODE_GOAL)
     assert gate.plan_given is False
     assert gate.snapshot()["generations"] == 1
 
@@ -103,7 +103,7 @@ def test_coming_back_to_plan_mode_starts_a_new_plan_phase() -> None:
     gate.sync_mode(modes.MODE_PLAN)
     gate.note_plan("计划：做 A")
 
-    gate.sync_mode(modes.MODE_BUILD)
+    gate.sync_mode(modes.MODE_GOAL)
     gate.sync_mode(modes.MODE_PLAN)
 
     assert gate.plan_given is False

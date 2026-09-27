@@ -132,10 +132,13 @@ def test_only_skill_is_not_short_circuited_among_builtins() -> None:
     }
 
 
-def test_modes_text_lists_all_four_modes() -> None:
-    """``/mode`` 不带参数时列的四档与 ``services/modes`` 同一份（不另抄清单）。"""
+def test_modes_text_lists_the_two_modes() -> None:
+    """``/mode`` 不带参数时列的**两档**与 ``services/modes`` 同一份（不另抄清单）。
+
+    2026-09-27：模式轴从四档收敛成两档（目标 / 计划），"能碰多少"那一半拆去了权限轴。
+    """
     text = modes_text()
-    for name in ("plan", "build", "edit", "yolo"):
+    for name in ("goal", "plan"):
         assert f"（{name}）" in text
 
 

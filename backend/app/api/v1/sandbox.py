@@ -32,8 +32,10 @@ from app.api.v1.schemas import (
 from app.core.exceptions import ForbiddenError
 from app.core.services import Services, get_services
 from app.services import isolation as isolation_service
+from app.services import modes
 from app.services.api_key import Caller
 from app.services.command_policy import (
+    ACTION_ALLOW,
     ACTION_ASK,
     ACTION_DENY,
     append_allow_rule,
@@ -41,7 +43,7 @@ from app.services.command_policy import (
     suggest_rule,
     tool_arguments,
 )
-from app.services.sandbox import POLICY_ASK, ExecutionPolicy, sandbox_for
+from app.services.sandbox import ExecutionPolicy, sandbox_for
 
 router = APIRouter(prefix="/sandbox", tags=["sandbox"])
 
@@ -114,16 +116,24 @@ def exec_command(
     #
     # 两条顺序上的讲究，都是这套方案里最要紧的地方：
     #
-    # 1. **deny 永远优先**（无论来自规则还是总开关）——先判 deny，再谈别的档位。
+    # 1. **deny 永远优先**（无论来自规则还是权限档）——先判 deny，再谈别的档位。
     #    少了它，一条更宽的 allow 会把用户的 deny 静默盖掉；
-    # 2. **命中 allow 就真的跳过确认**（第一版漏了这条：规则说放行、而总开关还是
+    # 2. **命中 allow 就真的跳过确认**（第一版漏了这条：规则说放行、而权限档还是
     #    ask，于是"以后都允许"点完照样再问一遍——那正是规则存在的意义被架空了）。
-    #    实现上就是把命中的那条规则当作生效档位；没命中规则才用总开关。
-    global_mode = services.runtime.get("sandbox.exec_policy") or POLICY_ASK
+    #    实现上就是把命中的那条规则当作生效档位；没命中规则才用权限档。
+    #
+    # 权限档（2026-09-27：原来读的是 `sandbox.exec_policy`，那一项已折进权限轴）：
+    # 仅查看 → 不跑；工作区内编辑 → 问一句；完全访问 → 直接跑。
+    permission = modes.coerce_permission(services.runtime.get("chat.permission"))
+    global_mode = {
+        modes.PERMISSION_VIEW: ACTION_DENY,
+        modes.PERMISSION_WORKSPACE: ACTION_ASK,
+        modes.PERMISSION_FULL: ACTION_ALLOW,
+    }[permission]
     if decision.action == ACTION_DENY:
         raise ForbiddenError(f"这条命令被拒绝规则拦下：{decision.reason}")
     if global_mode == ACTION_DENY:
-        raise ForbiddenError("沙箱执行的总开关设成了「拒绝执行」（设置 → 沙箱执行）")
+        raise ForbiddenError("这一轮的权限是「仅查看」：不改动任何东西，也不执行命令")
 
     policy = ExecutionPolicy(
         mode=decision.action if decision.rule is not None else global_mode,

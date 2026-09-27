@@ -297,9 +297,7 @@ def test_create_and_rename_directories(client: TestClient) -> None:
 
 
 def test_create_refuses_a_bad_name(client: TestClient) -> None:
-    response = client.post(
-        "/api/v1/workspaces/dirs", json={"parent": _area(client), "name": "a/b"}
-    )
+    response = client.post("/api/v1/workspaces/dirs", json={"parent": _area(client), "name": "a/b"})
     assert response.status_code == 422
     assert "不能有这些字符" in response.json()["message"]
 
@@ -691,7 +689,7 @@ def test_sandbox_exec_requires_approval_under_ask_policy(client: TestClient) -> 
     是"要先确认"。界面据此弹确认框，确认后带 approved 重调。"""
     client.patch(
         "/api/v1/settings",
-        json={"values": [{"key": "sandbox.exec_policy", "value": "ask"}]},
+        json={"values": [{"key": "chat.permission", "value": "workspace"}]},
     )
 
     response = client.post("/api/v1/sandbox/exec", json={"argv": ["python", "-c", "print(1)"]})
@@ -714,7 +712,7 @@ def test_sandbox_exec_refuses_when_no_isolation_is_available(client: TestClient)
 
     client.patch(
         "/api/v1/settings",
-        json={"values": [{"key": "sandbox.exec_policy", "value": "allow"}]},
+        json={"values": [{"key": "chat.permission", "value": "full"}]},
     )
     response = client.post(
         "/api/v1/sandbox/exec", json={"argv": ["python", "-c", "print(1)"], "approved": True}
@@ -725,16 +723,21 @@ def test_sandbox_exec_refuses_when_no_isolation_is_available(client: TestClient)
     assert "拒绝执行" in response.json()["message"]
 
 
-def test_sandbox_exec_respects_deny_policy(client: TestClient) -> None:
+def test_sandbox_exec_respects_view_permission(client: TestClient) -> None:
+    """「仅查看」这一档：命令**不跑**，而且回的话要说清是权限档拦的。
+
+    2026-09-27：这一档原来是设置里的「命令执行策略 = 拒绝」（`sandbox.exec_policy`），
+    那一项已折进权限轴，所以现在推到的是 `chat.permission = view`。
+    """
     client.patch(
         "/api/v1/settings",
-        json={"values": [{"key": "sandbox.exec_policy", "value": "deny"}]},
+        json={"values": [{"key": "chat.permission", "value": "view"}]},
     )
 
     response = client.post("/api/v1/sandbox/exec", json={"argv": ["ls"], "approved": True})
 
     assert response.status_code == 403
-    assert "拒绝" in response.json()["message"]
+    assert "仅查看" in response.json()["message"]
 
 
 def test_sandbox_exec_rejects_an_empty_command(client: TestClient) -> None:
@@ -762,7 +765,7 @@ def test_exec_deny_rule_wins_over_a_broader_allow(client: TestClient) -> None:
     _set_rules(
         client,
         **{
-            "sandbox.exec_policy": "allow",
+            "chat.permission": "full",
             "sandbox.rules_allow": "Bash(git push:*)",
             "sandbox.rules_deny": "Bash(git push --force:*)",
         },
@@ -782,7 +785,7 @@ def test_allow_rule_skips_the_confirmation(client: TestClient) -> None:
     """放行清单里的命令**不再问**——这正是规则存在的意义（同一个动作问一遍就够）。"""
     _set_rules(
         client,
-        **{"sandbox.exec_policy": "ask", "sandbox.rules_allow": "Bash(git status:*)"},
+        **{"chat.permission": "workspace", "sandbox.rules_allow": "Bash(git status:*)"},
     )
 
     # 命中放行规则 → **不再问确认**。这台机器没有内核隔离，所以它会继续走到
@@ -795,7 +798,7 @@ def test_allow_rule_skips_the_confirmation(client: TestClient) -> None:
 
 def test_command_outside_the_rules_still_asks(client: TestClient) -> None:
     """没命中任何规则时回到默认档（ask）——**默认放行等于规则表形同虚设**。"""
-    _set_rules(client, **{"sandbox.exec_policy": "ask", "sandbox.rules_allow": "Bash(ls)"})
+    _set_rules(client, **{"chat.permission": "workspace", "sandbox.rules_allow": "Bash(ls)"})
 
     response = client.post("/api/v1/sandbox/exec", json={"argv": ["curl", "https://x.test"]})
 
@@ -806,7 +809,7 @@ def test_command_outside_the_rules_still_asks(client: TestClient) -> None:
 def test_remember_writes_a_word_prefix_rule(client: TestClient) -> None:
     """「以后都允许」写进放行清单的是**词前缀**，不是完整命令——
     记住完整命令等于没记住（下次参数就不同了）。"""
-    _set_rules(client, **{"sandbox.exec_policy": "ask", "sandbox.rules_allow": ""})
+    _set_rules(client, **{"chat.permission": "workspace", "sandbox.rules_allow": ""})
 
     client.post(
         "/api/v1/sandbox/exec",
@@ -821,7 +824,7 @@ def test_remember_writes_a_word_prefix_rule(client: TestClient) -> None:
 
 
 def test_remember_does_not_duplicate(client: TestClient) -> None:
-    _set_rules(client, **{"sandbox.exec_policy": "ask", "sandbox.rules_allow": "Bash(git:*)"})
+    _set_rules(client, **{"chat.permission": "workspace", "sandbox.rules_allow": "Bash(git:*)"})
 
     client.post(
         "/api/v1/sandbox/exec",

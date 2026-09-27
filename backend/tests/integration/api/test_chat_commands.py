@@ -187,7 +187,7 @@ def test_mode_switch_short_circuits_and_records_the_event(
     assert changes, "切模式必须留下一条 mode/changed"
     payload = changes[-1]["payload"]
     assert payload["mode"] == "plan"
-    assert payload["previousMode"] == "build"
+    assert payload["previousMode"] == "goal"
     assert payload["source"] == "command"
     # 命令那一轮本身也留在日志里（DSH：写 session log 但不进模型历史）
     logged = _events(client, conversation_id, "command")
@@ -460,7 +460,7 @@ def test_status_reports_model_mode_project_rounds_and_context(
     """
     install_fake_chat()  # 它顺手把 fake-model 绑给 chat 用途（"全局默认"就是它）
     services = get_services()
-    services.runtime.set({"chat.mode": "build"})
+    services.runtime.set({"chat.mode": "goal"})
     # 项目走界面上同一条路：在专用区域里建一个目录，再拿它当工作区
     area = str(client.get("/api/v1/workspaces/browse").json()["area"])
     root = client.post(
@@ -484,7 +484,7 @@ def test_status_reports_model_mode_project_rounds_and_context(
     assert "状态" in command["text"]
     assert "2 轮问答" in command["text"] and "4 条消息" in command["text"]
     assert "fake-model" in command["text"] and "跟随全局默认" in command["text"]
-    assert "（build）" in command["text"]
+    assert "（goal）" in command["text"]
     assert "状态项目" in command["text"]
     assert "上下文：" in command["text"]
     assert "/context" in command["text"], "深一层的分解指向 /context"
@@ -705,7 +705,7 @@ def test_a_mode_changed_outside_the_conversation_is_recorded_on_the_next_turn(
     assert _events(client, conversation_id, "mode/changed") == []
 
     # 会话之外改档（等价于点设置页那个下拉）
-    get_services().runtime.set({"chat.mode": "yolo"})
+    get_services().runtime.set({"chat.mode": "plan"})
     client.post(
         "/api/v1/chat/stream",
         json={"query": "第二轮", "kb_ids": [kb_id], "conversation_id": conversation_id},
@@ -713,7 +713,7 @@ def test_a_mode_changed_outside_the_conversation_is_recorded_on_the_next_turn(
     changes = _events(client, conversation_id, "mode/changed")
     assert len(changes) == 1
     payload = changes[0]["payload"]
-    assert payload["mode"] == "yolo" and payload["previousMode"] == "build"
+    assert payload["mode"] == "plan" and payload["previousMode"] == "goal"
     assert payload["source"] == "settings"
     # 同一档不重复报：第三轮没有新的 mode/changed
     client.post(
@@ -737,12 +737,12 @@ def test_the_mode_is_written_into_the_system_prompt(client: TestClient, kb_id: s
 
     system = fake.seen_messages[0]
     assert system.role == "system"
-    assert "【当前模式】" in system.content
+    assert "【当前任务模式】" in system.content
     assert "计划" in system.content and "plan" in system.content
     # 换一档，下一轮的提示词跟着换（同一个读点，见 ChatService.current_mode）
-    services.runtime.set({"chat.mode": "yolo"})
+    services.runtime.set({"chat.mode": "goal"})
     client.post("/api/v1/chat/stream", json={"query": "再来一次", "kb_ids": [kb_id]})
-    assert "yolo" in fake.seen_messages[0].content
+    assert "goal" in fake.seen_messages[0].content
 
 
 # --------------------------------------------------------------------- 其余几条内置命令
@@ -878,19 +878,19 @@ def test_stop_really_stops_a_running_turn(client: TestClient, kb_id: str) -> Non
     assert get_services().commands.turns.running(conversation_id) is False
 
 
-def test_mode_with_an_unknown_value_lists_the_four(
+def test_mode_with_an_unknown_value_lists_the_two(
     client: TestClient, kb_id: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``/mode 乱写``：不认识的档**当场列出四档**，而不是悄悄按默认档走。"""
+    """``/mode 乱写``：不认识的档**当场列出两档**，而不是悄悄按默认档走。"""
     _no_model(monkeypatch)
     events = _parse_sse(
         client.post("/api/v1/chat/stream", json={"query": "/mode 快", "kb_ids": [kb_id]}).text
     )
     command = _event(events, "command")
     assert command["ok"] is False
-    assert all(name in command["text"] for name in ("plan", "build", "edit", "yolo"))
+    assert all(name in command["text"] for name in ("goal", "plan"))
     # 报错也不该改设置
-    assert get_services().chat.current_mode() == "build"
+    assert get_services().chat.current_mode() == "goal"
 
 
 def test_help_with_a_command_name_expands_it(
@@ -902,8 +902,8 @@ def test_help_with_a_command_name_expands_it(
         client.post("/api/v1/chat/stream", json={"query": "/help mode", "kb_ids": [kb_id]}).text
     )
     text = _event(events, "command")["text"]
-    assert "用法：/mode [plan|build|edit|yolo]" in text
-    assert "plan" in text and "yolo" in text
+    assert "用法：/mode [goal|plan]" in text
+    assert "plan" in text and "goal" in text
 
 
 def test_turn_start_carries_the_mode(client: TestClient, kb_id: str) -> None:
@@ -915,7 +915,7 @@ def test_turn_start_carries_the_mode(client: TestClient, kb_id: str) -> None:
         json={"query": "问一句", "kb_ids": [kb_id], "conversation_id": conversation_id},
     )
     starts = _events(client, conversation_id, "turn/start")
-    assert starts and starts[0]["payload"]["mode"] == "build"
+    assert starts and starts[0]["payload"]["mode"] == "goal"
 
 
 # --------------------------------------------------------------------- /model
@@ -1096,7 +1096,7 @@ def test_plan_switches_the_mode_and_records_the_event(
     )
     command = _event(events, "command")
     assert command["ok"] is True
-    assert command["action"]["mode"] == "plan" and command["action"]["previousMode"] == "build"
+    assert command["action"]["mode"] == "plan" and command["action"]["previousMode"] == "goal"
     assert "计划" in command["text"] and "/plan <描述>" in command["text"]
     assert get_services().chat.current_mode() == "plan"
     assert _messages(client, conversation_id) == []
@@ -1104,7 +1104,7 @@ def test_plan_switches_the_mode_and_records_the_event(
     changes = _events(client, conversation_id, "mode/changed")
     assert len(changes) == 1, "切档必须留下一条 mode/changed"
     assert changes[0]["payload"] == {
-        "previousMode": "build",
+        "previousMode": "goal",
         "mode": "plan",
         "source": "command",
     }

@@ -1,18 +1,19 @@
-"""agent 模式四档的**判定矩阵**（P1-1，开发计划 §12.225）。
+"""**两根轴**的判定矩阵：权限（能碰什么）× 任务模式（怎么干活）（2026-09-27 拆分）。
 
-这一组用例守的是调研报告 §2.6 抄下来的那几条语义，而不是"函数能跑"：
+这一组用例守的是用户定下的那两条口径，而不是"函数能跑"：
 
-1. **四档 × 读 / 写 / 执行三类工具**：只有 ``plan`` 档会真的拦，而且只拦"会改动东西"的；
-2. **模式不改工具清单**：判定函数只看元数据与档位，没有任何"这一档不给这个工具"的口子
-   ——它不接触工具表，工具表的同一性由 ``test_tool_loop`` 那条端到端用例钉住；
-3. **拦下时说的话要够用**：为什么被拦（这一档的规矩 + 这个工具的影响面）与怎么办
-   （先给计划、等确认），缺一样模型只会换个名字重试；
-4. **``edit`` / ``yolo`` 的差别在"要不要问"**（``auto_approves``），不在"能不能做"。
+1. **权限三档 × 读 / 写 / 执行三类工具**：只有「仅查看」会真的拦，而且只拦"会改动东西"的；
+2. **模式两档只决定"要不要先给计划"**：``goal`` 一律放行，``plan`` 在没给计划前拦写类；
+3. **两道闸都要过，先权限后计划**（``decide``）：回给模型的理由必须**说清是哪一道拦的**
+   ——输入框那一排并排摆着「权限」与「模式」两颗，指错了用户会去改另一颗；
+4. **档不改工具清单**：判定函数只看元数据与档位，不接触工具表（工具表的同一性由
+   ``test_tool_loop`` 那条端到端用例钉住）；
+5. **``auto_approves`` 归权限轴**：``view`` 压根不放行、``workspace`` 只免"工作区里的写"、
+   ``full`` 一律免问。
 
 工具名从 ``tool_meta.TOOL_META`` 里**取真实的条目**（不新造假元数据当夹具）：
 元数据被改动时（比如哪天把 ``create_note`` 改成只读），这里的矩阵就该跟着红——
-这正是它存在的意义。少数几条用 ``ToolMeta(...)`` 现造，因为要测的是**判定规则**
-本身（例如"destructive 但影响面在会话里"这种组合，表里暂时没有对应工具）。
+这正是它存在的意义。少数几条用 ``ToolMeta(...)`` 现造，因为要测的是**判定规则**本身。
 """
 
 from __future__ import annotations
@@ -32,35 +33,51 @@ WRITE_TOOLS = ("create_note", "upload_document", "export_document", "remember", 
 EXEC_TOOLS = ("run_command",)
 
 
-def _verdict(name: str, mode: str, *, plan_given: bool) -> bool:
-    return modes.allows(meta_of(name), mode, plan_given=plan_given, tool=name)[0]
+def _verdict(
+    name: str,
+    *,
+    mode: str = modes.MODE_GOAL,
+    permission: str = modes.PERMISSION_WORKSPACE,
+    plan_given: bool = False,
+) -> bool:
+    return modes.decide(
+        meta_of(name), mode=mode, permission=permission, plan_given=plan_given, tool=name
+    )[0]
 
 
 # ------------------------------------------------------------------ 词表本身
 
 
-def test_the_four_modes_are_exactly_zcodes_enum() -> None:
-    """四档的名字与顺序**照抄 ZCode**（``build|edit|plan|yolo``），默认档是 ``build``。
+def test_the_two_axes_are_exactly_what_the_user_defined() -> None:
+    """两根轴的取值与默认档。
 
-    抄的不是"四个词"，而是"哪一档最不意外"：ZCode 的默认是"变更前确认"，
-    所以我们也不把"全放行"或者"计划"设成默认——引入模式这件事**不该改变
-    任何既有行为**，默认档必须与没有模式时一模一样。
+    - 权限：``view`` / ``workspace`` / ``full``（**默认工作区内编辑**——默认要能干活，
+      而"动整台机器"仍然要问一句，风险留在看得见的地方）；
+    - 模式：``goal`` / ``plan``（**默认目标**——"要不要先给计划"是活法偏好，
+      默认该是能干活的那个）。
+
+    顺序 = 界面的排列顺序：权限由紧到松，模式按用户列的那两个。
     """
-    assert modes.MODES == ("build", "edit", "plan", "yolo")
-    assert modes.DEFAULT_MODE == "build"
-    assert modes.DEFAULT_MODE in modes.MODE_DEFS
+    assert modes.PERMISSIONS == ("view", "workspace", "full")
+    assert modes.DEFAULT_PERMISSION == "workspace"
+    assert set(modes.PERMISSION_DEFS) == set(modes.PERMISSIONS)
+
+    assert modes.MODES == ("goal", "plan")
+    assert modes.DEFAULT_MODE == "goal"
+    assert set(modes.MODE_DEFS) == set(modes.MODES)
 
 
-def test_each_mode_carries_the_zcode_one_line_copy() -> None:
-    """四句人话就是 ZCode 的 UI 文案（直译），界面与回给模型的理由共用这一份。"""
-    assert {item["name"]: item["hint"] for item in modes.describe()} == {
-        "build": "变更前确认",
-        "edit": "自动编辑",
-        "plan": "先给计划再动手",
-        "yolo": "少确认全放行",
+def test_each_level_carries_its_one_line_copy() -> None:
+    """两轴的每一档都要有 hint 与 detail：界面第二行、设置页下拉项都从它取，
+    空串会让界面出现空白项。"""
+    for item in [*modes.describe_modes(), *modes.describe_permissions()]:
+        assert item["hint"], item
+        assert item["detail"], item
+    assert {item["name"]: item["label"] for item in modes.describe_permissions()} == {
+        "view": "仅查看",
+        "workspace": "工作区内编辑",
+        "full": "完全访问",
     }
-    # 每一档都要有 detail：界面的第二行、设置页的下拉项都从它取，空串会让界面出现空白项
-    assert all(item["detail"] for item in modes.describe())
 
 
 def test_an_unknown_mode_falls_back_to_the_default_and_says_so(caplog) -> None:
@@ -69,44 +86,79 @@ def test_an_unknown_mode_falls_back_to_the_default_and_says_so(caplog) -> None:
     静默回默认是"改了不生效"那类问题里最难查的一种，所以日志是这条的一部分。
     """
     with caplog.at_level(logging.WARNING):
-        assert modes.coerce("nonsense") == "build"
-        assert modes.coerce("") == "build"
-        assert modes.coerce(None) == "build"
+        assert modes.coerce("nonsense") == modes.DEFAULT_MODE
+        assert modes.coerce("") == modes.DEFAULT_MODE
+        assert modes.coerce(None) == modes.DEFAULT_MODE
+        assert modes.coerce_permission("nonsense") == modes.DEFAULT_PERMISSION
     assert "nonsense" in caplog.text
 
     # 大小写与空白照收（.env 里手写的那一份常常带空格）
     assert modes.coerce("  PLAN ") == "plan"
-    assert modes.coerce("yolo") == "yolo"
+    assert modes.coerce_permission("  FULL ") == "full"
 
 
-# ------------------------------------------------------------------ 判定矩阵
+def test_the_old_four_modes_and_the_old_exec_policy_are_mapped(caplog) -> None:
+    """旧值照收：``build``/``edit``/``yolo`` → ``goal``；旧的命令执行策略三档 → 权限三档。
+
+    旧部署、``.env``、网页上写过的值都可能是旧的四档——判不出来的话会静默回默认档，
+    而"我以前设的是全放行，怎么变回去了"是那种最难查的问题。映射时**留一条日志**。
+    """
+    with caplog.at_level(logging.INFO):
+        assert modes.coerce("build") == "goal"
+        assert modes.coerce("edit") == "goal"
+        assert modes.coerce("yolo") == "goal"
+        assert modes.coerce("plan") == "plan"
+
+        # 旧的「命令执行策略」：允许 → 完全访问；需确认 → 工作区内编辑；拒绝 → 仅查看
+        assert modes.coerce_permission("allow") == "full"
+        assert modes.coerce_permission("ask") == "workspace"
+        assert modes.coerce_permission("deny") == "view"
+        # 更早那一档（"照跑但不过审批"）：按它能做什么归到完全访问
+        assert modes.coerce_permission("sandbox") == "full"
+    assert "build" in caplog.text or "edit" in caplog.text
+
+
+# ------------------------------------------------------------------ 判定矩阵：权限轴
+
+
+@pytest.mark.parametrize("permission", modes.PERMISSIONS)
+@pytest.mark.parametrize("mode", modes.MODES)
+@pytest.mark.parametrize("name", READ_TOOLS)
+def test_read_only_tools_run_in_every_combination(permission: str, mode: str, name: str) -> None:
+    """只读工具**六种组合全放行**（两轴 × 三档），``plan`` 档也不例外。
+
+    计划档要挡的是"动手"，不是"查资料"：不给它读，它连计划都写不出来。
+    """
+    assert _verdict(name, mode=mode, permission=permission) is True
 
 
 @pytest.mark.parametrize("mode", modes.MODES)
-@pytest.mark.parametrize("name", READ_TOOLS)
-def test_read_only_tools_run_in_all_four_modes(mode: str, name: str) -> None:
-    """只读工具**四档全放行**，``plan`` 档也不例外。
-
-    计划档要挡的是"动手"，不是"查资料"：不给它读，它连计划都写不出来
-    （要动哪几个文件都不清楚）。``web_fetch`` / ``web_search`` 也算只读——
-    影响面 ``network`` 在我们这一档的含义是"只发请求、不改任何东西"，
-    与 ``tool_meta.ToolMeta.parallel`` 同一处有据的偏离。
-    """
-    assert _verdict(name, mode, plan_given=False) is True
-
-
-@pytest.mark.parametrize("mode", ("build", "edit", "yolo"))
 @pytest.mark.parametrize("name", WRITE_TOOLS + EXEC_TOOLS)
-def test_the_other_three_modes_only_change_whether_to_ask(mode: str, name: str) -> None:
-    """``build`` / ``edit`` / ``yolo`` **一律放行**：它们的差别在"要不要问一句"。
+def test_view_blocks_every_write_on_both_modes(mode: str, name: str) -> None:
+    """「仅查看」的核心：**写类一律拦下**（模式是什么都一样）。
 
-    这是照抄 ZCode 的那条原则（"模式不影响工具是否存在，只喂权限引擎"）：
-    如果这三档也各自拦一些，模式就变成了第二张权限表，与工具元数据迟早说不到一起。
+    这条是权限轴存在的理由——它管的是"能碰什么"，与"怎么干活"无关。
     """
-    assert _verdict(name, mode, plan_given=False) is True
-    assert modes.allows(
-        meta_of(name), mode, plan_given=False, tool=name, tool_label="写笔记"
-    )[1] == ""
+    assert _verdict(name, mode=mode, permission=modes.PERMISSION_VIEW) is False
+    assert _verdict(name, mode=mode, permission=modes.PERMISSION_VIEW, plan_given=True) is False
+
+
+@pytest.mark.parametrize("permission", (modes.PERMISSION_WORKSPACE, modes.PERMISSION_FULL))
+@pytest.mark.parametrize("name", WRITE_TOOLS + EXEC_TOOLS)
+def test_the_two_looser_levels_allow_writes(permission: str, name: str) -> None:
+    """``workspace`` / ``full`` **一律放行**写类：它们的差别在"要不要问一句"
+    （见 ``test_auto_approve_matrix``），不在"能不能做"。
+
+    这是照抄 ZCode 的那条原则（"档不影响工具是否存在，只喂权限引擎"）：
+    如果它们也各自拦一些，档就变成了第二张权限表，与工具元数据迟早说不到一起。
+    """
+    assert _verdict(name, permission=permission) is True
+    assert modes.decide(
+        meta_of(name), mode=modes.MODE_GOAL, permission=permission, tool=name, tool_label="写笔记"
+    ) == (True, "")
+
+
+# ------------------------------------------------------------------ 判定矩阵：模式轴
 
 
 @pytest.mark.parametrize("name", WRITE_TOOLS + EXEC_TOOLS)
@@ -116,8 +168,43 @@ def test_plan_blocks_writes_until_the_plan_is_given(name: str) -> None:
     计划给出来之后同一档就放行了——这一档要的不是"永远不许写"，
     而是"先给计划、等对方确认"。
     """
-    assert _verdict(name, "plan", plan_given=False) is False
-    assert _verdict(name, "plan", plan_given=True) is True
+    assert _verdict(name, mode="plan", plan_given=False) is False
+    assert _verdict(name, mode="plan", plan_given=True) is True
+
+
+@pytest.mark.parametrize("name", WRITE_TOOLS + EXEC_TOOLS)
+def test_goal_allows_everything_that_permission_allows(name: str) -> None:
+    """``goal`` 档**一律放行**：它的差别不在"能不能做"，那件事归权限轴。"""
+    assert _verdict(name, mode="goal", plan_given=False) is True
+
+
+def test_both_gates_must_pass_and_permission_is_checked_first() -> None:
+    """两道闸都要过，而且**先权限后计划**——顺序决定回给模型的是哪一句理由。
+
+    ``view`` + ``plan``（都没计划）时拦下它的必须是**权限**：两句话的下一步完全不同，
+    模型按"先给计划"去做也是白搭（这一档压根不许动东西）。
+    """
+    meta = meta_of("create_note")
+    allowed, reason = modes.decide(
+        meta,
+        mode=modes.MODE_PLAN,
+        permission=modes.PERMISSION_VIEW,
+        plan_given=False,
+        tool="create_note",
+    )
+    assert allowed is False
+    assert "仅查看" in reason and "计划" not in reason
+
+    # 权限那一档过了，才轮到计划档说话
+    allowed, reason = modes.decide(
+        meta,
+        mode=modes.MODE_PLAN,
+        permission=modes.PERMISSION_WORKSPACE,
+        plan_given=False,
+        tool="create_note",
+    )
+    assert allowed is False
+    assert "「计划」档" in reason
 
 
 def test_writes_are_decided_by_metadata_not_by_a_hardcoded_name_list() -> None:
@@ -133,7 +220,8 @@ def test_writes_are_decided_by_metadata_not_by_a_hardcoded_name_list() -> None:
     assert modes.is_write(meta_of("web_fetch")) is False
     # 未知工具（外部 MCP）：元数据取最保守的那一档，所以算写类
     assert modes.is_write(meta_of("mcp__someone__do_something")) is True
-    assert _verdict("mcp__someone__do_something", "plan", plan_given=False) is False
+    assert _verdict("mcp__someone__do_something", permission="view") is False
+    assert _verdict("mcp__someone__do_something", mode="plan", plan_given=False) is False
 
 
 def test_a_destructive_write_stays_blocked_in_plan_even_with_a_plan() -> None:
@@ -146,31 +234,39 @@ def test_a_destructive_write_stays_blocked_in_plan_even_with_a_plan() -> None:
     """
     meta = meta_of("run_command")
     assert meta.destructive and meta.needs_approval
-    assert modes.allows(meta, "plan", plan_given=True, tool="run_command")[0] is True
+    assert (
+        modes.decide(
+            meta,
+            mode="plan",
+            permission=modes.PERMISSION_WORKSPACE,
+            plan_given=True,
+            tool="run_command",
+        )[0]
+        is True
+    )
 
 
 def test_every_declared_tool_gets_a_verdict() -> None:
     """工具表里的每一个工具都要能判定（不抛、不返回 None）——表烂掉时立刻可见。"""
     for name, meta in TOOL_META.items():
-        allowed, reason = modes.allows(meta, "plan", plan_given=False, tool=name)
-        assert isinstance(allowed, bool)
-        assert bool(reason) is (not allowed)
-        # 允许的档位下永远允许，不允许的档位下永远给出理由，两者不重叠
-        assert modes.allows(meta, "build", plan_given=False, tool=name) == (True, "")
+        for permission in modes.PERMISSIONS:
+            for mode in modes.MODES:
+                allowed, reason = modes.decide(
+                    meta, mode=mode, permission=permission, plan_given=False, tool=name
+                )
+                assert isinstance(allowed, bool)
+                assert bool(reason) is (not allowed)
 
 
 # ------------------------------------------------------------------ 拦下时说的话
 
 
-def test_the_refusal_says_why_and_what_to_do() -> None:
-    """被拦时回给模型的话：**这一档的规矩 + 这个工具为什么算写类 + 怎么办**。
-
-    只说"不允许"的回话会让模型反复重试同一个调用，而屏幕前的人不知道发生了什么
-    （QwenPaw 的回灌文案是同一套三段式）。
-    """
-    allowed, reason = modes.allows(
+def test_the_plan_refusal_says_why_and_what_to_do() -> None:
+    """被**模式**拦时回给模型的话：这一档的规矩 + 这个工具为什么算写类 + 怎么办。"""
+    allowed, reason = modes.decide(
         meta_of("create_note"),
-        "plan",
+        mode="plan",
+        permission=modes.PERMISSION_WORKSPACE,
         plan_given=False,
         tool="create_note",
         tool_label="写笔记",
@@ -182,47 +278,76 @@ def test_the_refusal_says_why_and_what_to_do() -> None:
     assert "写笔记" in reason and "create_note" in reason  # 拦的是哪一个调用
     assert "workspace" in reason  # 为什么它算"会改动东西"（用元数据说事实）
     assert "不要重试这个调用" in reason  # 防它换个名字重试
-    # 不可逆的工具要额外说清（同样是拿元数据说话，不是形容词）
-    _, dangerous = modes.allows(
-        meta_of("run_command"), "plan", plan_given=False, tool="run_command"
+
+
+def test_the_permission_refusal_says_why_and_what_to_do() -> None:
+    """被**权限**拦时回给模型的话：现在哪一档 + 为什么它算写类 + **怎么办**。
+
+    「仅查看」的"怎么办"是**如实说明并停手**（去改权限档、把要做的事说清楚），
+    与计划档那句"先给计划"完全不同——这也是 `decide` 要按顺序判、并把理由分开给的原因。
+    """
+    allowed, reason = modes.decide(
+        meta_of("run_command"),
+        mode=modes.MODE_GOAL,
+        permission=modes.PERMISSION_VIEW,
+        tool="run_command",
+        tool_label="执行命令",
     )
-    assert "不可逆" in dangerous
+
+    assert allowed is False
+    assert "「仅查看」权限" in reason
+    assert "执行命令" in reason and "run_command" in reason
+    assert "system" in reason  # 影响面（元数据里的事实）
+    assert "不可逆" in reason  # destructive 的要额外说清
+    assert "不要重试这个调用" in reason
+    assert "只读的事" in reason  # 明确"哪些照做"，免得它把整轮都停掉
+    assert "先给出计划" not in reason  # 不提计划（那是另一道闸的事）
 
 
 def test_the_refusal_never_names_the_tool_it_did_not_get() -> None:
     """没有中文标签时退回原始工具名，而不是编一个人话或者留空。"""
-    _, reason = modes.allows(meta_of("create_note"), "plan", plan_given=False, tool="create_note")
+    _, reason = modes.decide(
+        meta_of("create_note"),
+        mode="plan",
+        permission=modes.PERMISSION_WORKSPACE,
+        plan_given=False,
+        tool="create_note",
+    )
     assert "create_note" in reason
 
 
-# ------------------------------------------------------------------ 要不要问一句
+# ------------------------------------------------------------------ 要不要问一句（权限轴）
 
 
 def test_auto_approve_matrix() -> None:
-    """``auto_approves``：这一档下"要不要停下来问"。
+    """``auto_approves``：这一档权限下"要不要停下来问"。
 
-    - ``build`` / ``plan``：不问它是**不问**，该问的照问（现状不变）；
-    - ``edit``：会话/工作区里的非破坏性写入免问（"自动编辑"）；
-      执行命令（影响面在整台机器）与 destructive 的照问；
-    - ``yolo``：一律免问（ZCode：``"Yolo mode bypasses permission prompts"``）。
+    - ``view``：压根不放行（``permission_allows`` 拦下），这里只是安全侧的兜底；
+    - ``workspace``：会话/工作区里的非破坏性写入免问；执行命令（影响面在整台机器）
+      与 destructive 的照问；
+    - ``full``：一律免问。**但"免问"不等于"越过拒绝"**：显式的拒绝规则在
+      ``agent_exec`` 里排在审批之前（那三道闸不归权限轴管）。
     """
-    assert modes.auto_approves(meta_of("run_command"), "build") is False
-    assert modes.auto_approves(meta_of("run_command"), "plan") is False
-    assert modes.auto_approves(meta_of("run_command"), "edit") is False  # 影响面在机器上
-    assert modes.auto_approves(meta_of("run_command"), "yolo") is True
+    assert modes.auto_approves(meta_of("run_command"), "view") is False
+    assert modes.auto_approves(meta_of("run_command"), "workspace") is False  # 影响面在机器上
+    assert modes.auto_approves(meta_of("run_command"), "full") is True
 
     workspace_write = ToolMeta(
         side_effect_scope="workspace", risk_level="medium", needs_approval=True
     )
-    assert modes.auto_approves(workspace_write, "edit") is True
-    assert modes.auto_approves(workspace_write, "build") is False
-    assert modes.auto_approves(workspace_write, "yolo") is True
+    assert modes.auto_approves(workspace_write, "workspace") is True
+    assert modes.auto_approves(workspace_write, "view") is False
+    assert modes.auto_approves(workspace_write, "full") is True
 
-    # destructive 的即使落在工作区里也不免问：删东西不可逆，"自动编辑"管不到它
-    assert modes.auto_approves(
-        ToolMeta(side_effect_scope="workspace", destructive=True, needs_approval=True), "edit"
-    ) is False
-    assert modes.auto_approves(meta_of("delete_document"), "edit") is False
+    # destructive 的即使落在工作区里也不免问：删东西不可逆，"工作区内编辑"管不到它
+    assert (
+        modes.auto_approves(
+            ToolMeta(side_effect_scope="workspace", destructive=True, needs_approval=True),
+            "workspace",
+        )
+        is False
+    )
+    assert modes.auto_approves(meta_of("delete_document"), "workspace") is False
 
 
 # ------------------------------------------------------------------ 存得下来（验收 ④）
@@ -241,25 +366,42 @@ def test_the_mode_is_a_runtime_setting_with_an_env_bootstrap(bundle) -> None:  #
 
     assert runtime.get("chat.mode") == "plan"  # .env 引导
 
-    runtime.set({"chat.mode": "yolo"})
-    assert runtime.get("chat.mode") == "yolo"  # 网页上写的盖住引导值
+    runtime.set({"chat.mode": "goal"})
+    assert runtime.get("chat.mode") == "goal"  # 网页上写的盖住引导值
 
 
-def test_the_default_mode_is_build_without_any_configuration(runtime) -> None:  # type: ignore[no-untyped-def]
-    """什么都没配时是 ``build``（与 ZCode 默认一致）：**引入模式不改变既有行为**。"""
-    assert runtime.get("chat.mode") == "build"
+def test_the_defaults_without_any_configuration(runtime) -> None:  # type: ignore[no-untyped-def]
+    """什么都没配时：模式 ``goal``、权限 ``workspace``。"""
+    assert runtime.get("chat.mode") == modes.DEFAULT_MODE
+    assert runtime.get("chat.permission") == modes.DEFAULT_PERMISSION
     assert modes.coerce(runtime.get("chat.mode")) == modes.DEFAULT_MODE
+    assert modes.coerce_permission(runtime.get("chat.permission")) == modes.DEFAULT_PERMISSION
 
 
-def test_the_settings_page_offers_exactly_the_four_modes() -> None:
-    """设置页那一项的下拉项与 ``modes.describe()`` **同源**（四个，不多不少）。
+def test_the_settings_page_offers_exactly_these_levels() -> None:
+    """设置页那两项的下拉项与 ``modes.describe_*`` **同源**（不多不少）。
 
     两处各写一份的话，界面上的档名与引擎的档名迟早会对不上——
-    而"选了一个引擎不认识的档"这件事只会表现为"模式好像没生效"。
+    而"选了一个引擎不认识的档"这件事只会表现为"好像没生效"。
     """
-    field = next(
+    mode_field = next(
         item for item in SETTING_GROUPS["chat"]["fields"] if item["key"] == "chat.mode"
     )
+    permission_field = next(
+        item for item in SETTING_GROUPS["chat"]["fields"] if item["key"] == "chat.permission"
+    )
 
-    assert field["type"] == "select"
-    assert [option["value"] for option in field["options"]] == list(modes.MODES)
+    assert mode_field["type"] == "select"
+    assert [option["value"] for option in mode_field["options"]] == list(modes.MODES)
+    assert permission_field["type"] == "select"
+    assert [option["value"] for option in permission_field["options"]] == list(modes.PERMISSIONS)
+
+
+def test_the_old_exec_policy_setting_is_gone() -> None:
+    """旧的「命令执行策略」那一项**已经从设置里去掉**（折进权限轴）。
+
+    留着它就会出现"两处都在说命令能不能跑"：一处写着允许、另一处被权限档拒掉，
+    而用户只会看到"我明明开了它还是不让跑"。
+    """
+    keys = {item["key"] for item in SETTING_GROUPS["sandbox"]["fields"]}
+    assert "sandbox.exec_policy" not in keys

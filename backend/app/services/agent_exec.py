@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING
 from app.core.exceptions import InvalidRequestError
 from app.services import approvals as approval_service
 from app.services import isolation as isolation_service
+from app.services import modes
 from app.services.agent_files import Roots, describe_roots, resolve_roots
 from app.services.api_key import Caller
 from app.services.approvals import ApprovalRequest
@@ -146,11 +147,22 @@ def run_command(
             summary="成员账号不能执行命令",
         )
 
-    # 闸 2：策略。deny 优先（规则或总开关），命中 allow 才是放行；
-    # 没命中规则就用总开关——与端点的判定顺序逐条对齐（那里有两段说明为什么）。
+    # 闸 2：策略。deny 优先（规则或权限档），命中 allow 才是放行；
+    # 没命中规则就用**权限档**——与端点的判定顺序逐条对齐（那里有两段说明为什么）。
+    #
+    # 权限档怎么落到命令这一侧（2026-09-27：原来读的是 `sandbox.exec_policy`，
+    # 那一项已折进权限轴，见 services/modes.py 的模块头）：
+    #   仅查看      → 不跑（下一条直接拒，并把"这一档不许动东西"说清楚）
+    #   工作区内编辑 → 问一句（`_needs_confirm`）
+    #   完全访问    → 直接跑
     arguments = tool_arguments(argv)
     decision = rules_from_runtime(services.runtime, source="执行").decide("Bash", arguments)
-    global_mode = services.runtime.get("sandbox.exec_policy") or POLICY_ASK
+    permission = modes.coerce_permission(services.runtime.get("chat.permission"))
+    global_mode = {
+        modes.PERMISSION_VIEW: POLICY_DENY,
+        modes.PERMISSION_WORKSPACE: POLICY_ASK,
+        modes.PERMISSION_FULL: ACTION_ALLOW,
+    }[permission]
     if decision.action == ACTION_DENY:
         return _refused(
             f"这条命令被拒绝规则拦下：{decision.reason}。换一条路，不要重试这条。",
@@ -158,9 +170,10 @@ def run_command(
         )
     if global_mode == POLICY_DENY:
         return _refused(
-            "执行的策略是「拒绝执行」（设置 → 沙箱执行）。"
-            "请如实告诉对方：要让我能跑命令，得先把那一项改成「需要确认」或「允许」。",
-            gate="命令执行策略设为「拒绝」",
+            "这一轮的权限是「仅查看」：不改动任何东西，也不执行命令。"
+            "请如实告诉对方：要让我能跑命令，得把权限改成「工作区内编辑」或「完全访问」"
+            "（输入框那一排的「权限」，或设置 → 聊天）。",
+            gate="权限档为「仅查看」",
         )
     # **命中规则时规则说了算，没命中才用总开关**（与端点逐条对齐）：
     # 少了这半句，"总开关设成允许"这件事会变成 no-op——用户改完照样被拒，
@@ -283,10 +296,10 @@ def _timeout_of(args: dict[str, object]) -> float:
     return min(value, float(MAX_TIMEOUT_SECONDS))
 
 
-def _refused(reason: str, *, gate: str = "命令执行策略拦下") -> ExecOutcome:
+def _refused(reason: str, *, gate: str = "权限档拦下") -> ExecOutcome:
     """不执行的统一形状；``gate`` 说清**是哪一道闸拦的**。
 
-    原先这一格一律是"策略拦下"：它把"拒绝规则""总开关设成拒绝""对方没批准"
+    原先这一格一律是"策略拦下"：它把"拒绝规则""权限档不让跑""对方没批准"
     "需要确认但没有可确认的入口"四种原因糊成同一句话——用户在过程面板那一行看到的
     因此答不出"到底是谁拦的、我该去改哪里"（模式那道闸另有一句，见 ``tool_loop``）。
     回给模型的 ``text`` 本来就说得很细（三档拒批分开写），这里只是让它也进摘要。
@@ -299,10 +312,14 @@ def _how_to_open(rule: str) -> str:
 
     只说"不允许"的报错等于没说：模型只能反复重试同一件事，而界面上的用户
     根本不知道要去改哪个设置（这一条是从第一版就有的口径）。
+
+    2026-09-27：那句"去设置 → 沙箱执行改策略"改成**权限档**的说法——"命令执行策略"
+    那一项已经折进权限轴，指向一个不存在的设置项等于把用户引沟里。
     """
     return (
-        "要让我跑命令，得先把「设置 → 沙箱执行」的策略改成「允许」，"
-        f"或者在放行清单里加一行 `{rule}`（加完只放行这一族命令，其它仍然要确认）。"
+        "要让我跑命令，得把权限改成「工作区内编辑」或「完全访问」"
+        f"（输入框那一排的「权限」，或设置 → 聊天），或者在放行清单里加一行 `{rule}`"
+        "（加完只放行这一族命令，其它仍然要确认）。"
     )
 
 

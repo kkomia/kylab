@@ -2322,7 +2322,7 @@ class CommandOut(BaseModel):
     触发文本，整段塞进菜单会被前端再截一次，读起来只剩一句半。
     """
     usage: str = ""
-    """怎么用（形如 ``/mode [plan|build|edit|yolo]``）。"""
+    """怎么用（形如 ``/mode [goal|plan]``）。"""
     group: Literal["builtin", "user", "repo", "skill"] = "builtin"
     """菜单分组：**内置 / 你放的（数据目录 commands/）/ 随代码发布 / 技能**。"""
     details: list[str] = Field(default_factory=list)

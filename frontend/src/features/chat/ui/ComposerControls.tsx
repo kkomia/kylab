@@ -12,25 +12,12 @@
  * 一颗**没有容器的裸开关**（`border-radius: 0`、无底色），一行里两种形态。
  */
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import {
-  Bot,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Compass,
-  Folder,
-  Plus,
-  ShieldCheck,
-  Sparkles,
-  Upload,
-} from 'lucide-react'
+import { Bot, Check, ChevronDown, ChevronRight, Folder, Plus, Sparkles, Upload } from 'lucide-react'
 import { useState } from 'react'
 
 import { formatCount, formatPercent } from '@/lib/format'
 
 import { CONTROL_TRIGGER, MENU_CHECK, MENU_ITEM, MENU_PANEL } from './DropdownShell'
-import { ExecPolicyItems, useExecPolicy } from './ExecPolicyControl'
-import { ModeItems, useChatMode } from './ModePicker'
 import { useChat } from '../runtime/ChatProvider'
 
 /**
@@ -122,8 +109,6 @@ export function PlusMenu({
 }) {
   const chat = useChat()
   const [skillsOpen, setSkillsOpen] = useState(false)
-  const policy = useExecPolicy()
-  const mode = useChatMode()
 
   return (
     <DropdownMenu.Root
@@ -190,47 +175,14 @@ export function PlusMenu({
           </DropdownMenu.Sub>
 
           {/*
-            「这一轮它有多放手」两颗（2026-09-27 从那一排搬进来）。
+            「命令」与「模式」这两颗**搬出去**了（2026-09-27，权限轴那一次改动）：
+            - 「命令执行策略」折进了**权限轴**——它是"能碰多少"的一部分，
+              现在有自己的位置（那一排上、加号右边、知识库左边那颗「权限」）；
+            - 「任务模式」（目标 / 计划）是**另一根轴**（怎么干活），用户要它"不单独弄一个菜单"，
+              所以它回到了设置页。
 
-            搬的理由是**那一排太热闹**：用户拿着旧版截图说"我觉得很简洁美观"，旧版那一排
-            只有 `+ 知识库 模型 发送`。而这两项与上面的附件/技能**不是一类事**——
-            上面是"给这一轮什么"，这里是"它被允许做到哪一步"——所以隔一条线、并留在
-            自己的一层子菜单里（触发器上仍写着当前档，`命令·允许` / `模式·构建`，
-            与原先那一颗胶囊同形，只是要打开菜单才看得见）。
-
-            交互上仍走 Radix 的 `Sub`：键盘能进去、能选、选完连同外层菜单一起收掉。
+            留在这里的只有"这一轮给它什么"：附件、文件、技能。
           */}
-          {(policy.ready || mode.ready) && (
-            <DropdownMenu.Separator className="my-[var(--space-1)] h-px bg-[var(--border)]" />
-          )}
-          {policy.ready && (
-            <DropdownMenu.Sub>
-              <DropdownMenu.SubTrigger className={ITEM}>
-                <ShieldCheck size={15} />
-                <span className="flex-1 text-left">命令·{policy.label}</span>
-                <ChevronRight size={13} />
-              </DropdownMenu.SubTrigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.SubContent sideOffset={4} className={CONTENT}>
-                  <ExecPolicyItems />
-                </DropdownMenu.SubContent>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Sub>
-          )}
-          {mode.ready && (
-            <DropdownMenu.Sub>
-              <DropdownMenu.SubTrigger className={ITEM}>
-                <Compass size={15} />
-                <span className="flex-1 text-left">模式·{mode.label}</span>
-                <ChevronRight size={13} />
-              </DropdownMenu.SubTrigger>
-              <DropdownMenu.Portal>
-                <DropdownMenu.SubContent sideOffset={4} className={`${CONTENT} min-w-[260px]`}>
-                  <ModeItems />
-                </DropdownMenu.SubContent>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Sub>
-          )}
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

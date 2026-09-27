@@ -208,11 +208,7 @@ def test_tool_call_runs_and_its_result_goes_back_to_the_model() -> None:
 
     loop, client = _loop(
         [
-            LLMReply(
-                tool_calls=(
-                    ToolCall(id="c1", name="search", arguments='{"query":"眼轴"}'),
-                )
-            ),
+            LLMReply(tool_calls=(ToolCall(id="c1", name="search", arguments='{"query":"眼轴"}'),)),
             # 工具跑完之后**会再问一次模型**（还要不要继续调、还是可以答了）——
             # 所以要给第二条：它表示"够了，作答"
             LLMReply(),
@@ -302,9 +298,7 @@ def test_step_budget_says_so_instead_of_pretending() -> None:
     """
     always = LLMReply(tool_calls=(ToolCall(id="c", name="search", arguments="{}"),))
     # 两步都用掉 + 最后那次"按现有信息作答"（终端那一步不带工具，见 run）
-    loop, _ = _loop(
-        [always, always, LLMReply()], runner=lambda n, a: ToolOutcome("x"), max_steps=2
-    )
+    loop, _ = _loop([always, always, LLMReply()], runner=lambda n, a: ToolOutcome("x"), max_steps=2)
 
     events = list(loop.run(messages=[]))
 
@@ -420,6 +414,7 @@ def test_search_without_any_scope_is_refused() -> None:
     """
     assert _scope_search({"query": "x"}, []) is None
 
+
 def test_step_detail_prefers_the_human_summary() -> None:
     """过程面板显示**人话**而不是结构化结果。
 
@@ -442,9 +437,7 @@ def test_a_tool_step_carries_its_raw_arguments_and_result() -> None:
     loop, _ = _loop(
         [
             LLMReply(
-                tool_calls=(
-                    ToolCall(id="c1", name="search", arguments='{"query": "海豹08 贴膜"}'),
-                )
+                tool_calls=(ToolCall(id="c1", name="search", arguments='{"query": "海豹08 贴膜"}'),)
             ),
             LLMReply(text="答"),
         ],
@@ -498,6 +491,7 @@ def test_a_step_without_raw_text_leaves_both_empty() -> None:
 
     assert answer.args == ""
     assert answer.result == ""
+
 
 # ------------------------------------------------------------------ 子 Agent（P1 补上）
 
@@ -1114,6 +1108,7 @@ def test_the_assistant_message_carries_the_selection_reasoning() -> None:
     tool_message = next(m for m in client.answer_messages or [] if m.role == "tool")
     assert tool_message.reasoning is None
 
+
 # ------------------------------------------------------------------ 墙钟闸（§12.211）
 
 
@@ -1457,10 +1452,11 @@ def _mode_loop(
     *,
     tools: list[ToolSpec] | None = None,
     mode: str = "plan",
+    permission: str | None = None,
     gate=None,  # type: ignore[no-untyped-def]
     **kwargs,  # type: ignore[no-untyped-def]
 ) -> tuple[ToolLoop, _FakeClient]:
-    """按模式建一个循环：工具表就是"读 + 写 + 执行"三类的代表。"""
+    """按模式（与可选的权限档）建一个循环：工具表就是"读 + 写 + 执行"三类的代表。"""
     client = _FakeClient(replies)
     return (
         ToolLoop(
@@ -1468,6 +1464,7 @@ def _mode_loop(
             tools=tools if tools is not None else [SEARCH, WRITE, COMMAND],
             runner=runner,
             mode=mode,
+            permission=permission,
             gate=gate,
             **kwargs,
         ),
@@ -1482,7 +1479,7 @@ def test_plan_mode_blocks_a_write_and_feeds_the_reason_back_to_the_model() -> No
 
     1. **执行器一次都没被叫到**（不是"执行了但结果被丢掉"——那更危险）；
     2. 回灌的那条 tool 消息里带着"为什么被拦 + 怎么办"（没有它，模型只会重试）；
-    3. 步骤的结论是「没有执行（Agent 模式「计划」拦下）」，与 ``agent_exec`` 那句
+    3. 步骤的结论是「没有执行（模式「计划」拦下）」，与 ``agent_exec`` 那句
        「没有执行（…拦下）」同一个形状，但**括号里点明是哪一道闸**——输入框旁边
        并排摆着「模式」与「命令」两个胶囊，不点名的话用户会去改错的那个设置。
     """
@@ -1505,7 +1502,7 @@ def test_plan_mode_blocks_a_write_and_feeds_the_reason_back_to_the_model() -> No
     # 取 **done 那条**：同名步骤有两条（running 先发，见 ``_perform``），
     # 结论在第二条上——第一条的 detail 是空的（"这件事开始了"，还没结果）
     done = [s for s in _steps(events) if s.tool == "create_note" and s.status == "done"]
-    assert [s.detail for s in done] == ["没有执行（Agent 模式「计划」拦下）"]
+    assert [s.detail for s in done] == ["没有执行（模式「计划」拦下）"]
 
 
 def test_plan_mode_lets_read_only_tools_run() -> None:
@@ -1530,7 +1527,7 @@ def test_plan_mode_lets_read_only_tools_run() -> None:
     detail = next(
         s for s in _steps(events) if s.tool == "create_note" and s.status == "done"
     ).detail
-    assert detail == "没有执行（Agent 模式「计划」拦下）"
+    assert detail == "没有执行（模式「计划」拦下）"
 
 
 def test_the_plan_gate_opens_after_the_model_answers_with_text() -> None:
@@ -1611,19 +1608,19 @@ def test_the_tool_table_is_identical_in_all_four_modes() -> None:
     assert seen["plan"] == ["search", "create_note", "run_command"]
 
 
-def test_yolo_answers_the_approval_prompt_itself_and_edit_does_not() -> None:
-    """``edit`` / ``yolo`` 的差别在"要不要问一句"（``modes.auto_approves``）：
+def test_the_permission_decides_who_answers_the_approval_prompt() -> None:
+    """三档权限的差别就在"要不要问一句"（``modes.auto_approves``，2026-09-27 拆出来的轴）：
 
-    - ``build``：停下来问（现状，``ApprovalEvent`` 发出去）；
-    - ``edit``：执行命令的影响面在整台机器上，**照问**；
-    - ``yolo``：不再问，执行器直接拿到 ``allow_once``（ZCode：yolo 绕过确认）。
+    - ``workspace``（默认）：执行命令的影响面在**整台机器**上，照问（发 ``ApprovalEvent``）；
+    - ``full``：不再问，执行器直接拿到 ``allow_once``；
+    - ``view``：压根不放行（``permission_allows`` 已经拦下）——一个事件都不发。
 
-    **免问不等于越过拒绝**：显式的拒绝规则与「拒绝执行」总开关在 ``agent_exec``
-    里排在审批之前（那三道闸不归模式管），这条用例只管"问不问"。
+    **免问不等于越过拒绝**：显式的拒绝规则在 ``agent_exec`` 里排在审批之前
+    （那三道闸不归权限轴管），这条用例只管"问不问"。
     """
     registry = ApprovalRegistry(timeout=5)
 
-    def run_with(mode: str) -> tuple[list[str | None], int]:
+    def run_with(permission: str) -> tuple[list[str | None], int]:
         seen: list[str | None] = []
         loop, _client = _mode_loop(
             [
@@ -1631,7 +1628,8 @@ def test_yolo_answers_the_approval_prompt_itself_and_edit_does_not() -> None:
                 LLMReply(),
             ],
             runner=_approval_runner(registry, seen),
-            mode=mode,
+            mode=modes.MODE_GOAL,
+            permission=permission,
             approvals=registry,
         )
         iterator = loop.run(messages=[])
@@ -1646,17 +1644,17 @@ def test_yolo_answers_the_approval_prompt_itself_and_edit_does_not() -> None:
                 registry.decide(event.approval_id, approval_service.ALLOW_ONCE)
         return seen, asked
 
-    build_seen, build_asked = run_with("build")
-    assert build_seen == [None, approval_service.ALLOW_ONCE]
-    assert build_asked == 1
+    workspace_seen, workspace_asked = run_with(modes.PERMISSION_WORKSPACE)
+    assert workspace_seen == [None, approval_service.ALLOW_ONCE]
+    assert workspace_asked == 1, "工作区内编辑这一档，执行命令仍然要问"
 
-    edit_seen, edit_asked = run_with("edit")
-    assert edit_seen == [None, approval_service.ALLOW_ONCE]
-    assert edit_asked == 1, "执行命令在 edit 档仍然要问"
+    full_seen, full_asked = run_with(modes.PERMISSION_FULL)
+    assert full_seen == [approval_service.ALLOW_ONCE], "完全访问不再问，直接带同意跑"
+    assert full_asked == 0
 
-    yolo_seen, yolo_asked = run_with("yolo")
-    assert yolo_seen == [approval_service.ALLOW_ONCE], "yolo 档不再问，直接带同意跑"
-    assert yolo_asked == 0
+    view_seen, view_asked = run_with(modes.PERMISSION_VIEW)
+    assert view_seen == [], "仅查看这一档写类根本不执行（执行器都没被叫到）"
+    assert view_asked == 0, "既然压根不放行，就不该再弹一个问"
 
 
 # ------------------------------------------------------------------ 流中断重试（P2-2）
@@ -1834,4 +1832,3 @@ def test_the_failed_attempts_tool_fragments_do_not_leak_into_the_retry() -> None
     list(loop.run(messages=[]))
 
     assert ran == [("search", {"query": "眼轴"})], "参数来自第二趟，第一趟的碎片已经丢掉"
-

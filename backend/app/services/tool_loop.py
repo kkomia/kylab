@@ -324,8 +324,6 @@ class ToolOutcome:
         return text[:limit] + ("…" if len(text) > limit else "")
 
 
-
-
 #: 执行一个工具：``(工具名, 参数字典[, approval=…]) -> ToolOutcome``。
 #: 由组合根绑定（见 ``api``/``core.services``），循环自己不认识 Services。
 #:
@@ -348,6 +346,7 @@ class ToolLoop:
         max_steps: int = DEFAULT_MAX_STEPS,
         max_seconds: float = DEFAULT_MAX_SECONDS,
         mode: str | None = None,
+        permission: str | None = None,
         gate: plan_gate.PlanGate | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -364,10 +363,16 @@ class ToolLoop:
         self._max_seconds = max(1.0, max_seconds)
         # 时钟可注入：用例不必真的 sleep 到超时（也就能测"跨过上限的那一步")
         self._clock = clock
-        #: 这一轮的模式档（P1-1）。不传 = 默认档（``build``）：
-        #: 子 Agent、脚本、单测这些调用点不必知道有"模式"这回事，
-        #: 而默认档的行为与引入模式之前**完全一样**（放行，该问的照问）。
+        #: 这一轮的**模式档**（任务行为：要不要先给计划）。不传 = 默认档（``goal``）。
         self._mode = modes.coerce(mode) if mode is not None else modes.DEFAULT_MODE
+        #: 这一轮的**权限档**（能碰多少，2026-09-27 从四档模式里拆出来的那根轴）。
+        #: 不传 = 默认档（``workspace``）：子 Agent、脚本、单测这些调用点不必知道有权限轴，
+        #: 而默认档与拆分之前的行为差别是"工作区里的写不再逐条问"（见 modes 模块头）。
+        self._permission = (
+            modes.coerce_permission(permission)
+            if permission is not None
+            else modes.DEFAULT_PERMISSION
+        )
         #: ``plan`` 档的计划门闸。为空 = 按"还没有计划"算（fail-closed，
         #: 与 ``tool_meta`` 那条"未声明一律独占"同一口径）：计划档下宁可不写。
         self._gate = gate
@@ -493,18 +498,25 @@ class ToolLoop:
         它们的差别在"要不要问一句"，那件事在 ``_execute`` 里用审批表达。
         """
         meta = meta_of(call.name)
-        allowed, reason = modes.allows(
+        allowed, reason = modes.decide(
             meta,
-            self._mode,
+            mode=self._mode,
+            permission=self._permission,
             plan_given=self._plan_given(),
             tool=call.name,
             tool_label=tool_label(call.name),
         )
         if allowed:
             return None
-        return ToolOutcome(
-            content=reason, summary=f"没有执行（Agent 模式「{modes.label_of(self._mode)}」拦下）"
-        )
+        # 摘要里必须点明是**哪一道闸**拦下的：输入框那一排并排摆着「权限」与「模式」两颗，
+        # 只写档名的话，用户会去改另一颗，而两处的下一步完全不同（见 `modes` 模块头
+        # 第 3 条的顺序说明）。
+        permission_ok, _ = modes.permission_allows(meta, self._permission, tool=call.name)
+        if permission_ok:
+            summary = f"没有执行（模式「{modes.label_of(self._mode)}」拦下）"
+        else:
+            summary = f"没有执行（权限「{modes.permission_label_of(self._permission)}」拦下）"
+        return ToolOutcome(content=reason, summary=summary)
 
     def _expired(self, started_at: float) -> bool:
         """这一轮是否已经用满墙钟（见 `DEFAULT_MAX_SECONDS`）。"""
@@ -584,8 +596,8 @@ class ToolLoop:
         if approval is not None:
             return approval
         meta = meta_of(call.name)
-        if meta.needs_approval and modes.auto_approves(meta, self._mode):
-            logger.info("模式 %s 免去了 %s 的确认", self._mode, call.name)
+        if meta.needs_approval and modes.auto_approves(meta, self._permission):
+            logger.info("权限 %s 免去了 %s 的确认", self._permission, call.name)
             return ALLOW_ONCE
         return None
 
@@ -834,9 +846,7 @@ class ToolLoop:
             # 顺序必须与 `tool_calls` 一致：OpenAI 兼容端点要求每条调用都有结果，
             # 而"结果与调用怎么配对"靠的是 tool_call_id，不是顺序——但保持同序
             # 仍然是对端最容易处理的那种形状（也便于人读日志）。
-            messages.append(
-                ChatMessage(role="tool", content=outcome.content, tool_call_id=call.id)
-            )
+            messages.append(ChatMessage(role="tool", content=outcome.content, tool_call_id=call.id))
             yield StepEvent(
                 phase="tool",
                 label=tool_label(call.name),
@@ -850,7 +860,6 @@ class ToolLoop:
                 result=_clip(outcome.content, MAX_STEP_PREVIEW_CHARS),
                 artifacts=tuple(outcome.artifacts),
             )
-
 
     def _resolve_approvals(
         self, calls: Sequence[ToolCall], outcomes: list[ToolOutcome]

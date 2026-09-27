@@ -268,10 +268,6 @@ def build_agent_messages(
     return messages
 
 
-
-
-
-
 #: 意图判断为"寒暄/无关"时用的系统提示词：此时没有资料可依据，
 #: 不能再用"资料里没有再回答"的那套要求，否则模型会把寒暄也答成"资料中没有找到"。
 CHAT_ONLY_SYSTEM_PROMPT = (
@@ -439,9 +435,7 @@ class _SectionReader:
             cached = self._cache.get(key)
         if cached is not None:
             return cached
-        chunks = list(
-            self._stores.meta.list_chunks_by_heading(hit.document_id, hit.heading_path)
-        )
+        chunks = list(self._stores.meta.list_chunks_by_heading(hit.document_id, hit.heading_path))
         with self._lock:
             # 谁先写好算谁的：两次并发读到的是同一份库内容，覆盖也无害
             return self._cache.setdefault(key, chunks)
@@ -910,9 +904,7 @@ class ChatService:
         stopped = "answered"
         try:
             if task.kb_ids:
-                sources = self.retrieve_sources(
-                    task.question, kb_ids=task.kb_ids, top_k=top_k
-                )
+                sources = self.retrieve_sources(task.question, kb_ids=task.kb_ids, top_k=top_k)
                 searches += 1
             turns += 1
             if budget.expired:
@@ -1045,9 +1037,7 @@ class ChatService:
         self._conversations.set_summary(conversation_id, new_summary, pending[-1].id)
         return len(pending)
 
-    def summarize_history(
-        self, summary: str, messages: list, model_pk: str | None
-    ) -> str:
+    def summarize_history(self, summary: str, messages: list, model_pk: str | None) -> str:
         """**第二级压缩**：把更早的对话（含已有摘要）折成一段新摘要。
 
         抄的是三家共同的"到阈值就整段摘要"（调研报告 §2.8 的抄点第 4 条的后半）。
@@ -1204,36 +1194,46 @@ class ChatService:
         )
 
     def current_mode(self) -> str:
-        """当前 Agent 模式档（``plan`` / ``build`` / ``edit`` / ``yolo``，P1-1）。
+        """当前任务模式档（``goal`` / ``plan``）。
 
         读点就这一处（``chat.mode`` 的设置值经 ``modes.coerce`` 归一）：
         系统提示词（``mode_block``）、会话事件（``mode/changed`` 的 previousMode）、
-        ``/mode`` 那条命令的"现在是什么档"全部问它。散着读会出现"提示词说 build、
-        闸门按 plan 判"这种只有用户被拦下时才发现的错。
+        ``/mode`` 那条命令的"现在是什么档"全部问它。散着读会出现"提示词说目标、
+        闸门按计划判"这种只有用户被拦下时才发现的错。
         """
         return modes.coerce(self._runtime.get("chat.mode"))
 
+    def current_permission(self) -> str:
+        """当前权限档（``view`` / ``workspace`` / ``full``，2026-09-27 从四档模式里拆出来）。
+
+        与 ``current_mode`` 同一个理由：读点只有这一处。
+        """
+        return modes.coerce_permission(self._runtime.get("chat.permission"))
+
     def mode_block(self) -> str:
-        """当前 Agent 模式与它的语义，**要拼进系统提示词的那一段**（P1-1 遗留 #7）。
+        """当前**两根轴**（权限 + 任务模式）与它们的语义，**要拼进系统提示词的那一段**。
 
-        抄的是"先告知"而不是只有 QwenPaw 的"拦下并回灌"（调研报告 §2.6）：
-        拦下并回灌是**兜底**（模型不知道这一档的规矩时它一定会撞一次），
-        而这一句是**预防**——写清楚现在哪一档、这一档允许什么，那一撞大多不会发生。
-        两者不冲突，都在：``tool_loop`` 那边仍然拦（并且把理由回灌），这里负责先说。
+        抄的是"先告知"而不是只有"拦下并回灌"（调研报告 §2.6）：拦下并回灌是**兜底**
+        （模型不知道这一档的规矩时它一定会撞一次），而这一句是**预防**——写清楚现在
+        哪两档、各自允许什么，那一撞大多不会发生。两者不冲突，都在：
+        ``tool_loop`` 那边仍然拦（并且把理由回灌），这里负责先说。
 
-        档从 ``chat.mode`` 现读（``tool_loop`` 那处是同一个读点）：所以 ``/mode``
-        或设置页改一下，**下一轮**的提示词与闸门就都是新档，不必重启。
+        档从设置里现读（``tool_loop`` 那处是同一个读点）：所以设置页或输入区改一下，
+        **下一轮**的提示词与闸门就都是新档，不必重启。
 
-        最后一句话是刻意的：四档下交给模型的工具表**一模一样**（``modes`` 模块头的
+        最后一句话是刻意的：两档下交给模型的工具表**一模一样**（``modes`` 模块头的
         第 1 条规矩），不说清楚的话，它被拦下时会以为"这个工具没给我 / 环境坏了"，
         然后换个名字重试——那正是最费钱的一种反应。
         """
-        name = modes.coerce(self._runtime.get("chat.mode"))
-        item = modes.MODE_DEFS[name]
+        mode = modes.MODE_DEFS[self.current_mode()]
+        permission = modes.PERMISSION_DEFS[self.current_permission()]
         return (
-            f"【当前模式】{item.label}（{name}）：{item.hint}。{item.detail}\n"
-            "这一档由用户选定，**只影响权限判定，不影响你能用哪些工具**："
-            "被拦下的调用会把原因交回给你，照原因调整做法，不要换个名字重试。"
+            f"【当前权限】{permission.label}（{self.current_permission()}）：{permission.hint}。"
+            f"{permission.detail}\n"
+            f"【当前任务模式】{mode.label}（{self.current_mode()}）：{mode.hint}。{mode.detail}\n"
+            "这两档由用户选定，**只影响判定，不影响你能用哪些工具**："
+            "被拦下的调用会把原因交回给你（并说明是权限还是模式拦的），照原因调整做法，"
+            "不要换个名字重试。"
         )
 
     def _persona_texts(self, owner_id: str | None) -> tuple[tuple[str, str], ...]:
@@ -1303,9 +1303,7 @@ class ChatService:
         """
         config = self._resolve_llm(model_pk, thinking, thinking_effort)
         result = self.run_subagent(
-            subagent_service.SubAgentTask(
-                question=question, kb_ids=list(kb_ids), depth=0
-            ),
+            subagent_service.SubAgentTask(question=question, kb_ids=list(kb_ids), depth=0),
             config=config,
         )
         # 停下来时如实说：把"预算用完"说成"查完了"，父 Agent 会拿半截结论当完整的用
@@ -1365,9 +1363,11 @@ class ChatService:
             tools=list(tools),
             runner=runner,
             approvals=approvals,
-            # 模式档：不传就从运行期配置读（**唯一的读点**，见上面那段说明）。
+            # 模式档（任务行为：要不要先给计划）：不传就从运行期配置读（**唯一的读点**）。
             # 归一化交给 `modes.coerce`：设置页里是自由文本，写错了回默认档而不是炸整轮
             mode=mode if mode is not None else self._runtime.get("chat.mode"),
+            # 权限档（能碰多少）：同一次读法。两根轴互不影响，合流判定在 `modes.decide`
+            permission=self._runtime.get("chat.permission"),
             # 计划门闸按会话取：同一条会话的几轮共享一份"给没给过计划"
             gate=plan_gate.gate_for(conversation_id),
             **extra,  # type: ignore[arg-type]
@@ -1524,8 +1524,7 @@ def build_messages(
         # 摘要同样是"数据"。它由模型自己生成，但内容源自更早的用户输入与文档——
         # 一样要打散定界符，且声明"引用编号以本轮资料为准"，避免模型引用摘要里的旧编号。
         parts.append(
-            "【此前对话的摘要】（用于保持上下文，引用编号仍以本轮资料为准）\n"
-            + neutralize(summary)
+            "【此前对话的摘要】（用于保持上下文，引用编号仍以本轮资料为准）\n" + neutralize(summary)
         )
 
     messages: list[ChatMessage] = [ChatMessage(role="system", content="\n\n".join(parts))]
@@ -1582,9 +1581,7 @@ def _after_marker(records: list, marker: str | None) -> list:
     宁可多带一点也不能漏掉上下文。
     """
     useful = [
-        item
-        for item in records
-        if item.role in ("user", "assistant") and item.content.strip()
+        item for item in records if item.role in ("user", "assistant") and item.content.strip()
     ]
     if not marker:
         return useful

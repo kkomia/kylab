@@ -39,6 +39,18 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if created:
             logger.info("记忆/人设模板已就位：%s", "、".join(created))
 
+    # 旧取值写回新档（2026-09-27 拆分权限轴时的一次迁移）：库里可能还留着
+    # 四档模式时代的 `build` / `edit` / `yolo`。只在读的时候映射的话，设置页那个下拉
+    # 会因为"没有匹配的选项"显示成空——**界面与引擎不一致**正是最难查的一类问题。
+    # 失败只警告：迁移不成不该拦住整个服务起来（引擎侧本来就有 coerce 兜底）。
+    try:
+        migrated = services.runtime.normalize_modes()
+    except Exception:
+        logger.warning("旧模式取值写回失败", exc_info=True)
+    else:
+        if migrated:
+            logger.info("旧的模式/权限取值已写回新档：%s", "；".join(migrated))
+
     stop = asyncio.Event()
     worker_tasks: list[asyncio.Task[None]] = []
     if settings.run_worker:

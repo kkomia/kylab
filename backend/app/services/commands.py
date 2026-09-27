@@ -186,7 +186,7 @@ class CommandDef:
     summary: str
     """一句话：这条命令是干什么的（菜单那一行 + ``/help`` 的列表）。"""
     usage: str = ""
-    """怎么用（形如 ``/mode [plan|build|edit|yolo]``），空 = 没有参数。"""
+    """怎么用（形如 ``/mode [goal|plan]``），空 = 没有参数。"""
     details: tuple[str, ...] = ()
     """展开说明（``/help <命令>`` 用它）。空 = 没有更多可说的。"""
 
@@ -327,7 +327,7 @@ BUILTIN_COMMANDS: tuple[CommandDef, ...] = (
     CommandDef(
         name="mode",
         summary="切 Agent 模式（plan / build / edit / yolo）",
-        usage="/mode [plan|build|edit|yolo]",
+        usage="/mode [goal|plan]",
         details=(
             "不带参数时只报当前档，四档的语义见 services/modes.py：",
             "plan = 先给计划再动手 / build = 变更前确认（默认档）/",
@@ -472,7 +472,7 @@ def is_builtin(name: str) -> bool:
 
 
 def modes_text() -> str:
-    """四档的一句话清单（``/mode`` 不带参数时回给用户看）。"""
+    """两档的一句话清单（``/mode`` 不带参数时回给用户看）。"""
     return "\n".join(
         f"- {MODE_DEFS[name].label}（{name}）：{MODE_DEFS[name].hint}——{MODE_DEFS[name].detail}"
         for name in MODES
