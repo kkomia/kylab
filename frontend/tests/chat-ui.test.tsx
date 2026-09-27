@@ -17,7 +17,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router'
+import { MemoryRouter, Route, Routes, Link } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
@@ -220,6 +220,36 @@ function renderPage(route = '/chat/c1') {
 }
 
 /**
+ * 带**跳转入口**的壳：用例要模拟"点侧栏里的另一条会话，再点回来"。
+ *
+ * 与 `renderPage` 同一套（同一条路由、同一个 provider），只是多挂两个 `<Link>`——
+ * 这个 bug 只在**同一次挂载内换会话**时出现，卸载重挂（`renderPage` 再 render 一次）
+ * 走的是另一条路，复现不出来。
+ */
+function renderNavigable() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={['/chat/c1']}>
+        <Routes>
+          <Route
+            path="/chat/:conversationId?"
+            element={
+              <>
+                <ChatPage />
+                <Link to="/chat?new=1">去新对话</Link>
+                <Link to="/chat/c1">回 c1</Link>
+                <Link to="/chat/c2">去 c2</Link>
+              </>
+            }
+          />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
+
+/**
  * 输入并发送（回车那条路，与用户实际动作一致）。
  *
  * 先等发送键亮起来：知识库清单到手之后"默认全选"才成立（旧前端同一条），
@@ -380,6 +410,30 @@ describe('知识库：一颗胶囊 = 开关 + 名字，选择在面板里', () =
     await user.click(kbSwitch())
     expect(kbSwitch()).toHaveAttribute('aria-checked', 'true')
     expect(kbPill()).toHaveTextContent(/^知识库$/)
+  })
+
+  it('换会话再点回来看过的那条：内容跟着重画（曾经会画成空白）', async () => {
+    // 用户报的 bug（2026-09-27）：看一条会话 → 去新对话/别的会话 → 再点回来，
+    // 只有标题换了，内容还是"新对话那一页"。两个原因叠在一起：
+    // ① `appliedDetail` 那道闸（详情只画一次）换会话时没复位；
+    // ② "换会话清空"那个 effect 声明在"应用详情"之后，返回看过的会话时详情命中缓存、
+    //    在切换那一轮就被后面的清空擦掉。
+    //
+    // 路径要**照用户那条**：中间那一步是"新对话页"（`?new=1`）——那一轮没有任何 detail
+    // 被应用，`appliedDetail` 还是 `c1`，所以回 c1 时会被那道闸挡住。
+    // （先答 c2 再回 c1 的路径挡不住，用它当用例是假绿的：反向验证时它照样过。）
+    const first = detail([stored('user', '甲问题'), stored('assistant', '甲的答案')])
+    vi.mocked(getConversation).mockResolvedValue(first as never)
+    renderNavigable()
+    expect(await screen.findByText('甲的答案')).toBeInTheDocument()
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('link', { name: '去新对话' }))
+    await waitFor(() => expect(screen.queryByText('甲的答案')).not.toBeInTheDocument())
+
+    // 回 c1：详情从缓存里来（同一次挂载内必命中）——以前这一步是**一片空白**
+    await user.click(screen.getByRole('link', { name: '回 c1' }))
+    expect(await screen.findByText('甲的答案')).toBeInTheDocument()
   })
 
   it('对话区上传进的是**会话文件区**，不是知识库（用户报的那个 bug）', async () => {

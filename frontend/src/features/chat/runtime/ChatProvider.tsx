@@ -774,6 +774,35 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  /**
+   * 换会话：清掉页面上一切"属于上一条"的东西。
+   *
+   * **这个 effect 必须声明在"应用详情"那个之前**（2026-09-27 修的 bug）：
+   * 返回一条**看过的**会话时，详情命中 React Query 的缓存、在切换那一轮就到位了——
+   * 两个 effect 在同一轮里按声明顺序跑，"先清后画"才是对的；反过来会把刚画上的
+   * 内容当场擦掉，屏幕上就成了"标题换了、内容还是新对话页"（用户报的那个）。
+   *
+   * 同时**复位 `appliedDetail`**：那道闸是"这一条会话的详情只画一次"，
+   * 换会话就得重新上膛，否则再回到同一条会话时会被它挡住、一个字都不画。
+   */
+  useEffect(() => {
+    setMessages([])
+    setOpenSteps(new Set())
+    setOpenGroups(new Set())
+    setTraceExtraPages(new Map())
+    setExpandedCites(new Set())
+    setTraceOpenIds({})
+    setCommandResult(null)
+    // 回填信号也跟着清：换会话之后没人认领它，留着会让新页面白挨一次焦点跳动
+    setCommandRefill(null)
+    setCopiedKey('')
+    setSavedTurns([])
+    setDropKind(null)
+    setWantConvFiles(false)
+    appliedFingerprint.current = ''
+    appliedDetail.current = ''
+  }, [conversationId, wantsNew])
+
   const detail = detailQuery.data
   useEffect(() => {
     if (!detail || detail.id !== conversationId) return
@@ -797,24 +826,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     void refreshArtifacts(detail.id)
     void liveActions.attachLiveTurn(detail.id)
   }, [detail, conversationId, kbs, setModelPk, setThinkingOn, refreshArtifacts])
-
-  /** 换会话：清掉页面上一切"属于上一条"的东西。 */
-  useEffect(() => {
-    setMessages([])
-    setOpenSteps(new Set())
-    setOpenGroups(new Set())
-    setTraceExtraPages(new Map())
-    setExpandedCites(new Set())
-    setTraceOpenIds({})
-    setCommandResult(null)
-    // 回填信号也跟着清：换会话之后没人认领它，留着会让新页面白挨一次焦点跳动
-    setCommandRefill(null)
-    setCopiedKey('')
-    setSavedTurns([])
-    setDropKind(null)
-    setWantConvFiles(false)
-    appliedFingerprint.current = ''
-  }, [conversationId, wantsNew])
 
   /**
    * 停在 `/chat`（没有 id）时该显示什么：最近一次对话，或者空态。
