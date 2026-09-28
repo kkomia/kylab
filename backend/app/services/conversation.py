@@ -313,6 +313,7 @@ class ConversationService:
         sources: list[dict[str, object]] | None = None,
         steps: list[dict[str, object]] | None = None,
         thinking: str = "",
+        attachments: list[dict[str, object]] | None = None,
     ) -> ChatMessageRecord:
         """追加一条消息，并把会话的 ``updated_at`` 推到现在。
 
@@ -329,6 +330,7 @@ class ConversationService:
                 sources=tuple(sources or ()),
                 steps=tuple(steps or ()),
                 thinking=thinking,
+                attachments=tuple(attachments or ()),
             )
         )
         self._stores.meta.touch_conversation(conversation_id)
@@ -346,6 +348,7 @@ class ConversationService:
         steps: Sequence[dict[str, object]] = (),
         thinking: str = "",
         events: Sequence[EventDraft] = (),
+        attachments: Sequence[dict[str, object]] = (),
     ) -> None:
         """把一轮问答（提问 + 回答两条消息）**连同它的事件日志**写进库。
 
@@ -355,6 +358,10 @@ class ConversationService:
         所以只能结束时一次性写；现在事件是只追加的行，同样一次写、代价不变，
         但**每一轮都留下了一份不可变的过程记录**。
 
+        ``attachments``（v0.55）是这一轮用户消息**随发的附件快照**（文件区里的
+        key / 名字 / 类型 / 字节数），只挂用户那一条——用户报的"我发的对话里没有
+        文件组件标识"，根因就是原先消息与文件之间**没有任何关联可查**。
+
         ``steps`` 仍然照旧存：快照的形状一个字没变，老读法（回看、续跑、
         ``degraded`` 判断）全都不受影响。它现在的另一个身份是事件日志的投影
         ——两者应当等价，``tests/unit/services/test_session_events.py`` 与
@@ -362,7 +369,11 @@ class ConversationService:
         """
         self.get(conversation_id)
         messages = [
-            self._message(conversation_id, role="user", content=question),
+            # 附件（v0.55）**只挂用户那一条**：它们是"这次带着哪几份文件问的"，
+            # 不是回答的一部分（回答里用到的东西由 steps / sources 表达）。
+            self._message(
+                conversation_id, role="user", content=question, attachments=attachments
+            ),
             self._message(
                 conversation_id,
                 role="assistant",
@@ -467,6 +478,7 @@ class ConversationService:
         sources: Sequence[dict[str, object]] = (),
         steps: Sequence[dict[str, object]] = (),
         thinking: str = "",
+        attachments: Sequence[dict[str, object]] = (),
     ) -> ChatMessageRecord:
         return ChatMessageRecord(
             id=f"msg_{uuid.uuid4().hex[:12]}",
@@ -476,6 +488,7 @@ class ConversationService:
             sources=tuple(sources),
             steps=tuple(steps),
             thinking=thinking,
+            attachments=tuple(attachments),
         )
 
     @staticmethod

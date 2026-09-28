@@ -7,6 +7,7 @@
  */
 
 import { request } from './client'
+import type { ChatAttachment } from './chat'
 import type { ChatSource } from './chat'
 import type { ThinkingEffort } from './chat'
 import type { components } from './schema'
@@ -43,15 +44,19 @@ type ChatMessageOut = Required<components['schemas']['ChatMessageOut']>
 /**
  * 库里存下的一条消息（历史回放用）：契约来自后端的 OpenAPI。
  *
- * 两处显式处理，都因为**存下来的数据比 schema 老**：
+ * 三处显式处理，都因为**存下来的数据比 schema 老**：
  *
  * - `sources` 用本项目的 `ChatSource` 而不是 schema 里的那个字段类型：
  *   快照是**当年写下的**，v25 之前的没有 `document_summary`（见 `ChatSource` 的说明）；
  * - `role` 在 schema 里就是开放的 `string`——后端存的是模型给的原文角色，
- *   将来多一种（工具消息之类）时界面不该崩，渲染时按已知的两种分派。
+ *   将来多一种（工具消息之类）时界面不该崩，渲染时按已知的两种分派；
+ * - `attachments` **显式留成可选**（v0.55）：老消息没有这一项（后端只对用户消息回填，
+ *   而那批数据里没有），`Required<>` 会把它变成"一定有"——那才是替后端"可能不发"背书。
+ *   助手消息也恒为空，只有用户消息带它。
  */
-export type StoredMessage = Required<Omit<ChatMessageOut, 'sources'>> & {
+export type StoredMessage = Required<Omit<ChatMessageOut, 'sources' | 'attachments'>> & {
   sources: ChatSource[]
+  attachments?: ChatAttachment[]
 }
 
 export interface ConversationDetail extends ConversationSummary {
@@ -205,15 +210,29 @@ export interface ConversationFileListing {
 }
 
 /**
- * 这条会话的文件区：**一条会话恰好有一个**。
+ * 文件区的**两档视图**（v0.55）。
  *
- * 挂了工作区就是那个真实目录（`mode: "workspace"`，能带 `path` 进子目录）；
- * 没挂就是会话自己的临时区（`mode: "object"`，平铺）。
- * 哪一种是服务端算的——**界面不问、也不猜**，这与"产物落在哪"用的是同一份判断。
+ * 为什么要有两档：这里原先只有"会话挂的那个目录"一种读法，于是同一个项目下所有会话
+ * 共用一堆文件，分不出哪份是这次对话传的。现在按**用途**分——用户上传的与 Agent
+ * 产出的都算"这次对话的东西"，平铺在 `conversation` 档里、按会话记账；`project` 档
+ * 读的是用户**自己的项目目录**（能进子目录），只有挂了工作区才有这一档。界面因此
+ * 不必猜"这份属于谁"，只选一档去读。
  */
-export function listFiles(conversationId: string, path = ''): Promise<ConversationFileListing> {
-  const params = new URLSearchParams()
-  if (path) params.set('path', path)
+export type FileScope = 'conversation' | 'project'
+
+/**
+ * 这条会话的文件区（`scope` 选哪一档，见 `FileScope`）。
+ *
+ * `path` **只在 project 档有意义**：conversation 档是平铺的，传了服务端也不看。
+ */
+export function listFiles(
+  conversationId: string,
+  path = '',
+  scope: FileScope = 'conversation',
+): Promise<ConversationFileListing> {
+  // scope 显式带上（即使默认档也写清楚）：读请求的人一眼看得出在读哪一档
+  const params = new URLSearchParams({ scope })
+  if (path && scope === 'project') params.set('path', path)
   const query = params.toString()
   return request<FileListing>(
     `/conversations/${conversationId}/files${query ? `?${query}` : ''}`,
@@ -227,21 +246,21 @@ export function listFiles(conversationId: string, path = ''): Promise<Conversati
   }))
 }
 
-/** 往文件区里放一份文件（界面上的"上传"）。同名不覆盖，服务端会退到 `名字 (2).ext`。 */
-export function uploadFile(
-  conversationId: string,
-  file: File,
-  path = '',
-): Promise<ConversationFile> {
+/**
+ * 往文件区里放一份文件（界面上的"上传"）。同名不覆盖，服务端会退到 `名字 (2).ext`。
+ *
+ * **上传一律落会话文件区**（v0.55）：不再写进项目目录——那条路会让同一项目下所有会话
+ * 共用一堆文件，且"这份是谁传的"没有记录（用户报的"上传的文件分不开"）。所以这里
+ * 不再带 `path`。文件名**可以带相对路径**（`图表/a.png`）：上传文件夹时前端用它保留
+ * 目录结构，服务端按它落账。
+ */
+export function uploadFile(conversationId: string, file: File): Promise<ConversationFile> {
   const body = new FormData()
   body.append('file', file)
-  const params = new URLSearchParams()
-  if (path) params.set('path', path)
-  const query = params.toString()
-  return request<ConversationFile>(
-    `/conversations/${conversationId}/files${query ? `?${query}` : ''}`,
-    { method: 'POST', body },
-  )
+  return request<ConversationFile>(`/conversations/${conversationId}/files`, {
+    method: 'POST',
+    body,
+  })
 }
 
 /**

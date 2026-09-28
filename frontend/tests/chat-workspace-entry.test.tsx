@@ -145,6 +145,7 @@ const WORKSPACE: Workspace = {
   conversation_count: 3,
   created_at: null,
   updated_at: null,
+  archived_at: null,
 }
 
 /** 抓走 handlers：用例只关心"发出去的那一版载荷长什么样"。 */

@@ -231,7 +231,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `PATCH` | `/api/v1/conversations/{conversation_id}` | 修改会话（标题 / 置顶） |
 | `GET` | `/api/v1/conversations/{conversation_id}/artifacts` | 这条会话产出的文件 |
 | `POST` | `/api/v1/conversations/{conversation_id}/artifacts/{artifact_id}/ingest` | 把一份产物存进知识库（显式动作） |
-| `GET` | `/api/v1/conversations/{conversation_id}/files` | 这条会话的文件区（工作区目录 / 会话临时区） |
+| `GET` | `/api/v1/conversations/{conversation_id}/files` | 这条会话的文件区（会话文件 / 项目目录） |
 | `POST` | `/api/v1/conversations/{conversation_id}/files` | 往文件区里放一份文件 |
 | `GET` | `/api/v1/conversations/{conversation_id}/files/content` | 按签名取文件内容（预览 / 下载共用） |
 | `GET` | `/api/v1/conversations/{conversation_id}/files/download-url` | 签发文件链接（预览 / 下载共用） |

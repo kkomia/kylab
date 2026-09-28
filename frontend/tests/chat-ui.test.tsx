@@ -444,13 +444,21 @@ describe('知识库：一颗胶囊 = 开关 + 名字，选择在面板里', () =
     capture()
     await renderWithThreeKbs()
     const user = userEvent.setup()
+    await screen.findByRole('textbox', { name: '消息输入框' })
 
     const input = document.querySelector('input[type="file"]') as HTMLInputElement
     const file = new File(['x'], 'a.png', { type: 'image/png' })
     await user.upload(input, file)
 
+    // v0.55：选完**先摆在输入框里**（发送前不上传）。用户报的"直接发送、然后上传到工作区"
+    // 从这里开始改：这一步之后接口一次都还没发。
+    expect(vi.mocked(uploadFile)).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: '移除 a.png' })).toBeInTheDocument()
+
+    // 发送那一刻才落到**这条会话**（'c1' 是 fixture 里那条）的文件区，文件本身原样交给它
+    await user.type(screen.getByRole('textbox', { name: '消息输入框' }), '看图')
+    await user.click(screen.getByRole('button', { name: '发送' }))
     await waitFor(() => expect(vi.mocked(uploadFile)).toHaveBeenCalledTimes(1))
-    // 落点是**这条会话**（'c1' 是 fixture 里那条），文件本身原样交给它
     expect(vi.mocked(uploadFile).mock.calls[0][0]).toBe('c1')
     expect(vi.mocked(uploadFile).mock.calls[0][1]).toBe(file)
     // 知识库那条接口**一次都不许被调到**——"上传图片会直接传到知识库"就是从这里来的
@@ -1775,8 +1783,8 @@ describe('两个抽屉（引用原文 / 产物与文件）', () => {
 
     const drawer = await screen.findByRole('dialog', { name: /产物与文件/ })
     expect(await within(drawer).findByText('季度报告.docx')).toBeInTheDocument()
-    // 打开就取**根那一层**（`path` 为空 = 文件区的根，旧 `FileDrawer` 的 `load('')`）
-    expect(listFiles).toHaveBeenCalledWith('c1', '')
+    // 打开就取**会话档的根那一层**（v0.55 的默认档：这条会话的文件，平铺）
+    expect(listFiles).toHaveBeenCalledWith('c1', '', 'conversation')
   })
 
   it('开抽屉不动底下对话的滚动位置（用户看到的那一句还在原处）', async () => {
@@ -1795,5 +1803,73 @@ describe('两个抽屉（引用原文 / 产物与文件）', () => {
     await waitFor(() => expect(screen.queryByRole('dialog', { name: /引用原文/ })).toBeNull())
 
     expect(viewport.scrollTop).toBe(123)
+  })
+})
+
+/**
+ * 用户消息**随发的附件**（v0.55）。
+ *
+ * 用户报的问题（原话）："对话中上传的文件，没有在我发送的对话中有文件组件标识。"
+ * 后端补的是"提问身上记着带了哪几份"，这一层守的是**界面两个入口都画得出来**：
+ * 刚发出去那一轮（`send` → `streamTurn`），与回看旧会话（`getConversation` 的详情）。
+ */
+describe('用户消息随发的附件（v0.55）', () => {
+  /** 一份上传返回的文件条目（`send` 拿它拼随发附件的快照）。 */
+  const GUIDE = {
+    key: 'art_guide',
+    name: '指南.pdf',
+    is_dir: false,
+    size_bytes: 448444,
+    modified_at: null,
+    kind: 'pdf',
+  }
+
+  it('新发一轮带附件：提问气泡里就有文件片，点它直落文件抽屉', async () => {
+    const { uploadFile } = await import('@/api/conversations')
+    vi.mocked(uploadFile).mockResolvedValue(GUIDE as never)
+    const box = capture()
+    renderPage()
+    const user = userEvent.setup()
+    await screen.findByRole('textbox', { name: '消息输入框' })
+
+    const input = document.querySelector('input[type="file"]') as HTMLInputElement
+    await user.upload(input, new File(['x'], '指南.pdf', { type: 'application/pdf' }))
+    await user.type(screen.getByRole('textbox', { name: '消息输入框' }), '看这份')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+
+    await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
+    // 快照**只带 key** 交给后端（名字 / 类型 / 字节数由服务端按库里的记录回填）
+    expect(vi.mocked(chatStream).mock.calls[0][0]).toMatchObject({
+      query: '看这份',
+      attachments: [{ key: 'art_guide' }],
+    })
+    expect(box.handlers).toBeTruthy()
+
+    // 提问气泡下方就是这一份的文件片：名字可见、带大小
+    const chip = await screen.findByRole('button', { name: '预览 指南.pdf' })
+    expect(chip).toHaveAttribute('title', '指南.pdf')
+    expect(chip).toHaveTextContent('437.9 KB')
+
+    // 点它开「产物与文件」抽屉并直落这份（与产物卡片同一条路）
+    await user.click(chip)
+    const drawer = await screen.findByRole('dialog', { name: /指南\.pdf/ })
+    expect(within(drawer).getByText('指南.pdf')).toBeInTheDocument()
+  })
+
+  it('回看已有会话：详情里带的附件同样画在提问气泡里（助手那条不画）', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([
+        stored('user', '看看这份', {
+          attachments: [{ key: 'art_guide', name: '指南.pdf', kind: 'pdf', size_bytes: 448444 }],
+        }),
+        stored('assistant', '好的'),
+      ]),
+    )
+    renderPage()
+
+    const chip = await screen.findByRole('button', { name: '预览 指南.pdf' })
+    expect(chip).toHaveTextContent('437.9 KB')
+    // 附件只在**用户消息**上：助手那条没有，所以这一页只有一个文件片
+    expect(screen.getAllByRole('button', { name: /^预览 / })).toHaveLength(1)
   })
 })

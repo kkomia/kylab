@@ -52,7 +52,7 @@ from app.services.command_policy import (
     suggest_rule,
     tool_arguments,
 )
-from app.services.sandbox import POLICY_ASK, POLICY_DENY, sandbox_for
+from app.services.sandbox import POLICY_ASK, POLICY_DENY, require_isolation, sandbox_for
 
 if TYPE_CHECKING:
     # 只为类型标注：**运行时不导入**，免得与组合根（core.services）成环
@@ -186,22 +186,31 @@ def run_command(
         # 该单独定的一件事，不该由"把 ask 做成真的会问"这一次改动顺手改掉。
         return _needs_confirm(rule)
 
-    # 闸 3：内核隔离。没有可用后端就**拒绝**，不回退成裸跑（见 isolation 模块头）。
+    # 闸 3：内核隔离。没有可用后端时**默认降级为直接执行**（v0.55），
+    # 除非设置里打开了「无隔离时拒绝执行」——那时按纪律拒绝，不回退成裸跑。
     #
-    # **它排在"问用户"之前**：隔离不可用时这条命令根本没有跑起来的可能，
+    # **它排在"问用户"之前**：严格模式下没有隔离就根本没有跑起来的可能，
     # 先问等于让对方白点一次（点完他还是看到这句）。三道闸一道没少，只是换了个顺序。
+    #
+    # 为什么默认降级（而不是照旧一律拒绝）：Windows 上没有 bwrap / sandbox-exec 的
+    # 原生等价物、容器里也常没挂 docker，一律拒绝会让**本地源码启动与容器部署两边
+    # 都跑不了命令**（用户报的"明明指定了工作区，为啥还是不能执行工具"）。
+    # 降级时**如实标注未隔离**（见 `isolation.direct_isolation`），风险摆明面上。
     found = _detect()
     if not found.available:
-        return ExecOutcome(
-            ok=False,
-            ran=False,
-            text=(
-                "这台机器上没有可用的内核级隔离，按纪律拒绝执行（不会退化成不带隔离地裸跑）。"
-                f"{found.detail}请把这一点如实告诉对方；需要跑命令的话，"
-                "要在部署这台服务的机器上装 Docker（或 Linux 上的 bubblewrap）。"
-            ),
-            summary="这台机器没有隔离，拒绝执行",
-        )
+        if require_isolation(services.runtime):
+            return ExecOutcome(
+                ok=False,
+                ran=False,
+                text=(
+                    "这台机器上没有可用的内核级隔离，而设置里开着「无隔离时拒绝执行」，"
+                    f"所以这一轮没有跑。{found.detail}"
+                    "要跑命令：装 Docker（或 Linux 上的 bubblewrap），"
+                    "或者把设置里那一项关掉（关掉即降级为直接执行，风险更高）。"
+                ),
+                summary="这台机器没有隔离，拒绝执行",
+            )
+        found = isolation_service.direct_isolation()
 
     if mode == ACTION_ALLOW:
         pass  # 规则命中或总开关放行：不必问
@@ -378,8 +387,12 @@ def _awaiting(
         label="执行命令",
         args=arguments,
         detail=(
-            f"在 {found.backend} 隔离里执行；cwd 是这次会话的沙箱目录；"
-            f"{'允许联网' if allow_network else '已断网'}"
+            "在本机直接执行（未隔离）：cwd 是这次会话的沙箱目录，网络不受限"
+            if found.backend == isolation_service.BACKEND_DIRECT
+            else (
+                f"在 {found.backend} 隔离里执行；cwd 是这次会话的沙箱目录；"
+                f"{'允许联网' if allow_network else '已断网'}"
+            )
         ),
         rule=rule,
     )
@@ -414,12 +427,19 @@ def _render(
     退出码、标准输出、标准错误。少了标准错误，"命令没输出"与"命令失败了"
     在它眼里就是同一件事。
     """
-    parts = [
-        f"$ {' '.join(argv)}",
-        f"（在隔离里执行：{result.backend}；cwd = 沙箱目录；"
-        f"工作区{'已挂载' if roots.workspace else '未挂载'}；"
-        f"{'允许联网' if allow_network else '已断网'}；超时 {timeout:g} 秒）",
-    ]
+    # 这一行要说清"在哪儿跑的"：未隔离那一档必须明写（模型据此才可能在回答里如实交代），
+    # 而"已断网"对它是**假话**——直接执行不控网络（见 `isolation.direct_isolation`）。
+    where = (
+        "（**未隔离：直接在本机执行**；cwd = 沙箱目录；"
+        f"工作区{'已挂载' if roots.workspace else '未挂载'}；网络不受限；超时 {timeout:g} 秒）"
+        if result.backend == isolation_service.BACKEND_DIRECT
+        else (
+            f"（在隔离里执行：{result.backend}；cwd = 沙箱目录；"
+            f"工作区{'已挂载' if roots.workspace else '未挂载'}；"
+            f"{'允许联网' if allow_network else '已断网'}；超时 {timeout:g} 秒）"
+        )
+    )
+    parts = [f"$ {' '.join(argv)}", where]
     if result.timed_out:
         parts.append(
             f"命令超过 {timeout:g} 秒被终止。要跑更久的事，请把它拆小，或者告诉对方改超时。"

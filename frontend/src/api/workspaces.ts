@@ -19,6 +19,8 @@ export interface Workspace {
   conversation_count: number
   created_at: string | null
   updated_at: string | null
+  /** 归档时间（v0.55）。`null` = 未归档。归档**不是删除**，里面的会话都还在。 */
+  archived_at: string | null
 }
 
 export interface WorkspacePayload {
@@ -26,10 +28,19 @@ export interface WorkspacePayload {
   root_path: string
   description?: string
   kb_ids?: string[]
+  /** 归档 / 取消归档（只用于 PATCH；新建时不传）。 */
+  archived?: boolean
 }
 
-export function listWorkspaces(): Promise<{ items: Workspace[] }> {
-  return request<{ items: Workspace[] }>('/workspaces')
+/**
+ * 工作区清单。
+ *
+ * `archived` 与会话列表同一口径：默认只列**未归档**的项目；`true` 时列**已归档**的
+ * （归档视图是一个单独的视图，不是"多出来的一组"）。
+ */
+export function listWorkspaces(archived = false): Promise<{ items: Workspace[] }> {
+  const query = archived ? '?archived=true' : ''
+  return request<{ items: Workspace[] }>(`/workspaces${query}`)
 }
 
 /** 目录浏览里的一行：一个子目录，或一个"起点"。 */

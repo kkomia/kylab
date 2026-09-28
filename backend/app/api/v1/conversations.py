@@ -18,6 +18,7 @@ from fastapi.responses import Response
 
 from app.api.auth import require_read, require_write, signing_secret
 from app.api.v1.schemas import (
+    ChatAttachmentOut,
     ChatMessageOut,
     ChatSourceOut,
     ConversationArtifactListOut,
@@ -39,7 +40,11 @@ from app.core.exceptions import NotFoundError, PayloadTooLargeError, Unauthorize
 from app.core.services import Services, get_services
 from app.core.signing import SigningError, verify_resource
 from app.services.api_key import WRITE, Caller
-from app.services.artifacts import file_signature_resource, split_filename
+from app.services.artifacts import (
+    ARTIFACT_SCOPE_CONVERSATION,
+    file_signature_resource,
+    split_filename,
+)
 from app.services.documents import media_type_of
 from app.services.ingest import content_disposition
 from app.services.session_events import fill_missing_thinking, steps_per_turn
@@ -205,6 +210,8 @@ def get_conversation(
                 sources=[ChatSourceOut.model_validate(src) for src in item.sources],
                 steps=steps,
                 thinking=item.thinking,
+                # 随发的附件快照（v0.55）：老消息是 '[]'，返回空列表
+                attachments=[ChatAttachmentOut.model_validate(f) for f in item.attachments],
                 created_at=item.created_at,
             )
         )
@@ -329,22 +336,33 @@ def list_artifacts(
 @router.get(
     "/{conversation_id}/files",
     response_model=FileListingOut,
-    summary="这条会话的文件区（工作区目录 / 会话临时区）",
+    summary="这条会话的文件区（会话文件 / 项目目录）",
 )
 def list_files(
     conversation_id: str,
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_read)],
-    path: str = Query(default="", description="要列哪个子目录（只在工作区模式下有意义）"),
+    path: str = Query(default="", description="子目录（只在 scope=project 时有意义）"),
+    scope: str = Query(
+        default=ARTIFACT_SCOPE_CONVERSATION,
+        description=(
+            "conversation（默认）= 这条会话的文件（上传 + 产出，平铺）；"
+            "project = 会话挂着的项目目录（可进子目录）"
+        ),
+    ),
 ) -> FileListingOut:
-    """文件面板的内容：**一条会话恰好有一个文件区**。
+    """文件面板的内容。``scope`` 两档（v0.55）：
 
-    挂了工作区就是那个真实目录（能进子目录）；没挂就是会话自己的临时区（平铺）。
-    哪一种是服务端算的，界面不需要知道，也不该问——
-    这与"产物落在哪"用的是同一份判断（``ArtifactService.spot_for``）。
+    - ``conversation``：**这条会话的文件**——上传的与产出的都在这儿，平铺一层。
+      上传一律落在这一档里并按会话记账，所以同一项目下不同会话的文件**分得开**
+      （改之前挂了工作区就把上传写进项目目录，于是整个项目共用一个池子）；
+    - ``project``：会话挂着的**项目目录**（能进子目录）——那是用户自己的项目文件，
+      只有挂了工作区才有这一档，没挂时服务层会明确说清。
+
+    哪一份落在哪儿由服务层算，界面不需要知道（``ArtifactService``）。
     """
     _get_visible(services, caller, conversation_id)
-    listing = services.artifacts.list_files(conversation_id, path)
+    listing = services.artifacts.list_files(conversation_id, path, scope=scope)
     return FileListingOut(
         mode=listing.mode,
         label=listing.label,
@@ -376,12 +394,15 @@ async def upload_file(
     file: Annotated[UploadFile, File(...)],
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
-    path: str = Query(default="", description="放进哪个子目录（只在工作区模式下有意义）"),
+    path: str = Query(default="", description="旧参数，已不用（上传恒落会话文件区，平铺）"),
 ) -> FileEntryOut:
     """界面上的"上传"。
 
-    **同名不覆盖**：退到 ``名字 (2).ext``。与产物落盘同一套规矩——
-    用户目录里那个文件可能比这次上传的重要得多。
+    **一律落这条会话的文件区**（v0.55）：不再写进项目目录——那条路会让同一项目下
+    所有会话共用一堆文件，且"这份是谁传的"没有记录（用户报的"上传的文件分不开"）。
+    文件名**可以带相对路径**（``图表/a.png``）：上传文件夹时用它保留目录结构。
+
+    ``path`` 是旧接口留下的参数，收下但不用（见服务层说明）。
     """
     _get_visible(services, caller, conversation_id)
     content = await file.read()

@@ -25,7 +25,7 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 16
 """应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
 
 **启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
@@ -362,6 +362,33 @@ MIGRATIONS: tuple[Migration, ...] = (
             # 列表的过滤形状是"谁的、哪个文件夹"+置顶/时间排序；未归档（folder_id IS NULL）
             # 与具体文件夹两种取值都走这条索引（NULL 也在索引里）。
             "CREATE INDEX idx_notes_folder ON notes (user_id, folder_id)",
+        ),
+    ),
+    Migration(
+        version=15,
+        description="项目（工作区）归档：把不看了的项目收起来，而不是删掉（v0.55）",
+        statements=(
+            # 与会话归档（v7）同一口径：用**时间戳**而不是布尔——“什么时候归档的”
+            # 本身有用（归档视图按它排序），布尔还得再加一列才行。
+            # `NULL` = 未归档，存量项目全部落在“未归档”里，行为与迁移前一致。
+            "ALTER TABLE workspaces ADD COLUMN archived_at timestamptz",
+            # 列表默认 `archived_at IS NULL`，这条索引直接服务它
+            "CREATE INDEX idx_workspaces_archived ON workspaces (archived_at, updated_at DESC)",
+        ),
+    ),
+    Migration(
+        version=16,
+        description="用户消息带上随发的附件快照：这条消息是带着哪几份文件发出去的（v0.55）",
+        statements=(
+            # 用户报的："对话中上传的文件，没有在我发送的对话中有文件组件标识。"
+            # 查下来不是前端没画——**数据里根本没有这个关联**：上传只记到会话
+            # （`conversation_artifacts.conversation_id`），消息是纯文本，
+            # 两点之间只有时间先后，指认不出"这几份是随这条消息发出去的"。
+            #
+            # 存**快照**（key / 名字 / 类型 / 字节数）而不是外键 id，与 `sources`
+            # 同一口径：回看一条旧消息时，当时带着什么就该是什么，
+            # 哪怕那份文件后来被删了、或文件区的落点变了。
+            "ALTER TABLE chat_messages ADD COLUMN attachments jsonb NOT NULL DEFAULT '[]'::jsonb",
         ),
     ),
 )

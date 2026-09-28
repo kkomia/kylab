@@ -23,7 +23,7 @@
  * | --- | --- |
  * | **子目录进出一层**：面包屑每段可点、`truncated` 的"只给你看了 300 个" | `path` 状态 + 面包屑 + `listing.parent` 的「上一级」+ 截断说明 |
  * | **内嵌预览**：按后缀分派（md / 文本 / 图片 / PDF / Office 三件套） | `@/features/preview` 的 `<FilePreview/>`——**签名链接由这里换**（那个域名只认链接、不认 `documentId`，见 `features/preview/README.md` 的第二种调用形） |
- * | **上传**：`uploadFile(conversationId, file, path)` + 「已放入「X」」 | 多选、**串行**、逐条结果与失败原因留在抽屉里 |
+ * | **上传**：`uploadFile(conversationId, file)` + 「已放入「X」」 | 多选、**串行**、逐条结果与失败原因留在抽屉里 |
  * | **拖拽引用**：行上写 `application/x-kylab-file` | `onDragStart` 逐字照搬（投放端在 `Composer`，契约没动过） |
  *
  * 三条与旧版不同，都是有意的：
@@ -36,17 +36,25 @@
  *   （旧版就是这个口径，`initialEntry` 那段注释写着用户报的那个 bug）。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, Download, File as FileIcon, Folder, Upload } from 'lucide-react'
 
-import { downloadFile, getFileUrl, uploadFile, type ConversationFile } from '@/api/conversations'
+import {
+  downloadFile,
+  getFileUrl,
+  uploadFile,
+  type ConversationFile,
+  type FileScope,
+} from '@/api/conversations'
 import { FilePreview, resolveRenderer } from '@/features/preview'
 import { formatBytes, formatDate } from '@/lib/format'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/ui/sheet'
+import { Tabs, TabsList, TabsTrigger } from '@/ui/tabs'
 
 import { notifyError } from '../runtime/notify'
 import { FILE_DRAG_TYPE } from '../runtime/prefs'
 import { useChat } from '../runtime/ChatProvider'
-import { useConversationFiles } from '../runtime/useChatData'
+import { useConversationDetail, useConversationFiles } from '../runtime/useChatData'
 
 /** 收起动画时长：与 `@/ui/sheet` 内容上 `data-[state=closed]:duration-300` 那个 300 对齐。 */
 const LEAVE_MS = 300
@@ -285,11 +293,12 @@ interface UploadItem {
 }
 
 /**
- * 产物与文件：这条会话的文件区（工作区目录 / 会话临时区）。
+ * 产物与文件：这条会话的文件区。
  *
- * 产物与上传的文件都落在这里，所以它是"这一轮交出来的东西在哪"的那个答案。
- * 挂了工作区就是一个**真实目录**（能进子目录），没挂就是会话自己的临时区（平铺）——
- * 哪一种是服务端算的，这一层不问也不猜。
+ * **两档视图**（v0.55，见 `FileScope`）：默认「本会话」——用户上传的与 Agent 产出的
+ * 都平铺在这里（按会话记账，所以同一项目下不同会话的文件分得开）；挂了项目的会话
+ * 还有「项目文件」这一档，读的是那个真实目录（能进子目录）。哪一份落在哪儿由服务端算，
+ * 这一层只选一档去读、不问也不猜。
  *
  * `Composer` 挂它时绑了 `key={conversationId}`：换会话就整个重来
  * （文件区是按会话划的，旧 `FileDrawer` 也是这么绑的）。
@@ -317,7 +326,12 @@ export function FilesSheet({
   // 关的动作仍然先滑回去、`LEAVE_MS` 之后才回调 `onClose` 让宿主卸掉它
   const { open, requestClose } = useSlideOut(true, onClose)
 
-  /** 当前目录（工作区模式下才有意义；临时区恒为根那一层）。 */
+  /**
+   * 看的是**哪一档**（v0.55）：默认「本会话」——打开文件抽屉先要看到的是"这次对话的
+   * 文件"（用户上传的与 Agent 产出的都在这一档），而不是整个项目目录。
+   */
+  const [scope, setScope] = useState<FileScope>('conversation')
+  /** 当前目录：**只在项目档有意义**（会话档是平铺的，恒为根那一层）。 */
   const [path, setPath] = useState('')
   /** 正在预览的那份文件；`null` = 正在看目录（旧 `FileDrawer.previewing` 同一位）。 */
   const [previewing, setPreviewing] = useState<ConversationFile | null>(null)
@@ -328,8 +342,25 @@ export function FilesSheet({
   /** 直落的那一份只落一次：落地之后再点面包屑回目录，不该又被拽回去。 */
   const landed = useRef<string | null>(null)
 
-  const query = useConversationFiles(chat.conversationId, true, path)
+  const queryClient = useQueryClient()
+  /**
+   * 有没有「项目文件」这一档：**看会话挂没挂工作区**（`workspace_id` 有值才算）。
+   * 判据用详情里那个字段，而不是"试拉一次看报不报错"——那样正常会话也会先亮一下红字，
+   * 而这里要回答的只是"要不要多画一个 tab"。
+   */
+  const detail = useConversationDetail(chat.conversationId)
+  const hasProject = Boolean(detail.data?.workspace_id)
+
+  const query = useConversationFiles(chat.conversationId, true, path, scope)
   const listing = query.data ?? null
+
+  /** 换档：**清空 `path`**——项目档的面包屑路径带进会话档是错的（那两档的路径不是一回事）。 */
+  function switchScope(next: FileScope): void {
+    if (next === scope) return
+    setPreviewing(null)
+    setPath('')
+    setScope(next)
+  }
 
   /**
    * 把 `initialKey` 变成可预览的条目（旧 `FileDrawer.openInitial` 逐条照搬）。
@@ -403,11 +434,14 @@ export function FilesSheet({
   }
 
   /**
-   * 往这一层目录里放文件（旧 `FileDrawer.onPick` 的多选版）。
+   * 往这一层放文件（旧 `FileDrawer.onPick` 的多选版）。
    *
-   * **串行而不是并发**：文件区的落点可能是工作区目录，服务端要落盘、同名还要退到
-   * `名字 (2).ext`——并发上传会让"哪一个变成了 (2)"无从判断（与知识库 `UploadDialog`
-   * 同一条理由）。逐条结果留在抽屉里：多选之后"哪几个没成"必须能逐个看。
+   * 上传**一律落会话档**（v0.55）：所以这里不再带 `path`——不管此刻在看哪一档，
+   * 新的文件都属于"这次对话"。
+   *
+   * **串行而不是并发**：名字相同要退到 `名字 (2).ext`，并发上传会让"哪一个变成了 (2)"
+   * 无从判断（与知识库 `UploadDialog` 同一条理由）。逐条结果留在抽屉里：多选之后
+   * "哪几个没成"必须能逐个看。
    */
   async function onPick(event: React.ChangeEvent<HTMLInputElement>): Promise<void> {
     const input = event.target
@@ -422,7 +456,7 @@ export function FilesSheet({
         { id, name: file.name, status: 'uploading', message: '' },
       ])
       try {
-        const entry = await uploadFile(chat.conversationId, file, path)
+        const entry = await uploadFile(chat.conversationId, file)
         setUploads((current) =>
           current.map((item) =>
             item.id === id ? { ...item, status: 'done', message: `已放入「${entry.name}」` } : item,
@@ -443,8 +477,12 @@ export function FilesSheet({
       }
     }
     setUploading(false)
-    // 传完重读这一层：新文件（名字可能被服务端改成「名字 (2)」）要出现在列表里
-    await query.refetch()
+    /**
+     * 传完失效**这一条会话的文件区整片缓存**（不只是当前这一层）：上传落的是会话档，
+     * 而此刻可能正看着项目档——只 `refetch` 当前这层会让会话档留着旧清单（下次切过去
+     * 看不到刚传的那份）。按前缀失效把两档一起标脏，react-query 只会重取在用的那些。
+     */
+    await queryClient.invalidateQueries({ queryKey: ['chat', 'files', chat.conversationId] })
   }
 
   const shownPath = listing?.path ?? path
@@ -504,52 +542,66 @@ export function FilesSheet({
         )
       }
       /*
-        面包屑只在浏览态出现：预览态的标题行已经写着文件名了（旧 `FileDrawer` 同一条）。
-        最后一段是当前目录（不可点），前面每一段都能回到那一层。
+        两档与面包屑都在**浏览态**出现（预览态的标题行已经写着文件名了，旧 `FileDrawer` 同一条）。
+
+        「项目文件」这一档只有挂了项目的会话才有（`hasProject`）；面包屑**只在项目档**出现，
+        会话档是平铺一层（`path` / `parent` 都是空的），画它只会多一条没有意义的根那一段。
       */
       toolbar={
         previewing ? null : (
-          <nav
-            aria-label="路径"
-            className="flex items-center gap-[var(--space-1)] overflow-x-auto text-[length:var(--text-meta-size)]"
-          >
-            {parent !== null ? (
-              <button
-                type="button"
-                className="mr-[var(--space-1)] inline-flex shrink-0 cursor-pointer items-center gap-[var(--space-1)] rounded-[var(--radius-control)] px-[var(--space-1)] py-[1px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
-                onClick={() => {
-                  setPreviewing(null)
-                  setPath(parent)
-                }}
-              >
-                <ChevronLeft size={13} />
-                上一级
-              </button>
+          <div className="flex flex-col gap-[var(--space-2)]">
+            {hasProject ? (
+              <Tabs value={scope} onValueChange={(next) => switchScope(next as FileScope)}>
+                <TabsList aria-label="文件范围">
+                  <TabsTrigger value="conversation">本会话</TabsTrigger>
+                  <TabsTrigger value="project">项目文件</TabsTrigger>
+                </TabsList>
+              </Tabs>
             ) : null}
-            {crumbs.map((crumb, index) => (
-              <span key={crumb.path || 'root'} className="flex shrink-0 items-center">
-                {index > 0 ? (
-                  <ChevronRight size={12} className="shrink-0 text-[var(--text-quaternary)]" />
+            {scope === 'project' ? (
+              <nav
+                aria-label="路径"
+                className="flex items-center gap-[var(--space-1)] overflow-x-auto text-[length:var(--text-meta-size)]"
+              >
+                {parent !== null ? (
+                  <button
+                    type="button"
+                    className="mr-[var(--space-1)] inline-flex shrink-0 cursor-pointer items-center gap-[var(--space-1)] rounded-[var(--radius-control)] px-[var(--space-1)] py-[1px] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                    onClick={() => {
+                      setPreviewing(null)
+                      setPath(parent)
+                    }}
+                  >
+                    <ChevronLeft size={13} />
+                    上一级
+                  </button>
                 ) : null}
-                <button
-                  type="button"
-                  className={
-                    index === lastCrumb
-                      ? 'cursor-default px-[var(--space-1)] py-[1px] text-[var(--text-primary)]'
-                      : 'cursor-pointer rounded-[var(--radius-control)] px-[var(--space-1)] py-[1px] whitespace-nowrap text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
-                  }
-                  aria-current={index === lastCrumb ? 'page' : undefined}
-                  disabled={index === lastCrumb}
-                  onClick={() => {
-                    setPreviewing(null)
-                    setPath(crumb.path)
-                  }}
-                >
-                  {crumb.label}
-                </button>
-              </span>
-            ))}
-          </nav>
+                {crumbs.map((crumb, index) => (
+                  <span key={crumb.path || 'root'} className="flex shrink-0 items-center">
+                    {index > 0 ? (
+                      <ChevronRight size={12} className="shrink-0 text-[var(--text-quaternary)]" />
+                    ) : null}
+                    <button
+                      type="button"
+                      className={
+                        index === lastCrumb
+                          ? 'cursor-default px-[var(--space-1)] py-[1px] text-[var(--text-primary)]'
+                          : 'cursor-pointer rounded-[var(--radius-control)] px-[var(--space-1)] py-[1px] whitespace-nowrap text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]'
+                      }
+                      aria-current={index === lastCrumb ? 'page' : undefined}
+                      disabled={index === lastCrumb}
+                      onClick={() => {
+                        setPreviewing(null)
+                        setPath(crumb.path)
+                      }}
+                    >
+                      {crumb.label}
+                    </button>
+                  </span>
+                ))}
+              </nav>
+            ) : null}
+          </div>
         )
       }
     >

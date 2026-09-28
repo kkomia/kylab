@@ -841,6 +841,9 @@ class WorkspaceRecord:
     进入工作区，资料范围就定了；新会话默认继承它们（见设计文档 §5）。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    archived_at: datetime | None = None
+    """归档时间（v0.55）。``None`` = 未归档。与会话归档同一口径：用时间戳而不是布尔，
+    "什么时候收起来的"本身有用；归档**不是删除**，里面的会话与内容都还在。"""
 
 
 @dataclass(slots=True)
@@ -866,6 +869,13 @@ class ChatMessageRecord:
 
     thinking: str = ""
     """当轮的思考过程全文（推理模型的 ``reasoning_content``，v0.25）。空串 = 没有思考。"""
+
+    attachments: Sequence[dict[str, object]] = field(default_factory=tuple)
+    """这条消息**随发的附件快照**（v0.55，只有用户消息会有）。
+
+    每项形如 ``{"key": "art_…", "name": "指南.pdf", "kind": "pdf", "size_bytes": 448444}``。
+    存快照而不是外键，与 ``sources`` 同一口径：回看时"当时带着哪几份文件"必须是当时的样子。
+    """
 
     created_at: datetime | None = None
 
@@ -1979,6 +1989,12 @@ class MetaStore(ABC):
 
     @abstractmethod
     def update_workspace(self, record: WorkspaceRecord) -> WorkspaceRecord: ...
+
+    @abstractmethod
+    def set_workspace_archived(self, workspace_id: str, archived: bool) -> None:
+        """归档 / 取消归档一个工作区（v0.55）。**不推 ``updated_at``**：与会话那条同理
+        （归档是一次整理动作，不该把它顶到"最近更新"的最前面）。"""
+        ...
 
     @abstractmethod
     def delete_workspace(self, workspace_id: str) -> None:

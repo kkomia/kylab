@@ -2019,6 +2019,8 @@ def _record_turn(  # type: ignore[no-untyped-def]
             steps=list(steps or ()),
             thinking=thinking,
             events=list(events),
+            # 随发的附件（v0.55）**只挂用户那条消息**：用户报的"我发的消息里没有文件"
+            attachments=_turn_attachments(services, conversation_id, payload),
         )
         services.conversations.ensure_title(conversation_id, payload.query)
     except Exception:
@@ -2028,6 +2030,38 @@ def _record_turn(  # type: ignore[no-untyped-def]
         return
     # 落库成功之后才谈沉淀：消息没进库就沉淀，记忆会指向一个空会话
     _maybe_capture_memory(services, conversation_id, caller=caller)
+
+
+def _turn_attachments(
+    services: Services, conversation_id: str, payload: ChatRequestIn
+) -> list[dict[str, object]]:
+    """这一轮用户消息随带的附件**快照**（v0.55）。
+
+    名字 / 类型 / 字节数**按库里的记录回填**，不信客户端送来的那几个字段——它们
+    只是显示用的，而"这条消息当时带的是哪几份文件"要能被信任。
+
+    ``key`` **必须属于这条会话**：不校验的话，任何 key（越会话的、甚至不存在的）
+    都能被写进消息里。校验不过的**丢掉并记日志**，而不是让整轮落库失败——
+    与这个模块"落库失败也不打扰用户"同一条口径（附件只是展示，不该赔上整轮）。
+    """
+    if not payload.attachments:
+        return []
+    known = {item.id: item for item in services.artifacts.list_for_conversation(conversation_id)}
+    snapshot: list[dict[str, object]] = []
+    for item in payload.attachments:
+        record = known.get(item.key)
+        if record is None:
+            logger.warning("附件不属于这条会话，已忽略：%s / %s", conversation_id, item.key)
+            continue
+        snapshot.append(
+            {
+                "key": record.id,
+                "name": record.name,
+                "kind": record.format or "",
+                "size_bytes": record.size_bytes,
+            }
+        )
+    return snapshot
 
 
 # ------------------------------------------------------------------ 事件日志收尾

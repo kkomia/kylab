@@ -665,10 +665,14 @@ def test_sandbox_capability_is_admin_only(client: TestClient, member_token: str)
 
 
 def test_sandbox_capability_reports_something(client: TestClient) -> None:
-    """无论这台机器有没有隔离，都要**如实报出来**（含怎么办），而不是报错。"""
+    """无论这台机器有没有隔离，都要**如实报出来**（含怎么办），而不是报错。
+
+    ``direct`` 是 v0.55 的降级档（没有真隔离、且没开严格模式时）——它不是沙箱，
+    如实报出来正是这一条的要求。
+    """
     body = client.get("/api/v1/sandbox").json()
 
-    assert body["backend"] in ("bwrap", "sandbox-exec", "docker", "none")
+    assert body["backend"] in ("bwrap", "sandbox-exec", "docker", "direct", "none")
     assert body["detail"]
     assert body["max_output_chars"] > 0
 
@@ -698,11 +702,10 @@ def test_sandbox_exec_requires_approval_under_ask_policy(client: TestClient) -> 
     assert "确认" in response.json()["message"]
 
 
-def test_sandbox_exec_refuses_when_no_isolation_is_available(client: TestClient) -> None:
-    """**没有内核级隔离就拒绝执行**，不回退成裸跑。
+def test_sandbox_exec_refuses_when_isolation_is_required(client: TestClient) -> None:
+    """**严格模式**（设置里打开「无隔离时拒绝执行」）下，没有内核级隔离就拒绝，不回退裸跑。
 
-    这条是这一层的立场，也是最容易被"先让它跑起来"优化掉的一条：
-    回退会把"我们以为它在沙箱里"变成一个静默的假象，而那个假象比拒绝危险得多。
+    这条钉的是那一项设置的行为；默认是**降级为直接执行**，见下一条。
     """
     from app.services import isolation
 
@@ -712,7 +715,12 @@ def test_sandbox_exec_refuses_when_no_isolation_is_available(client: TestClient)
 
     client.patch(
         "/api/v1/settings",
-        json={"values": [{"key": "chat.permission", "value": "full"}]},
+        json={
+            "values": [
+                {"key": "chat.permission", "value": "full"},
+                {"key": "sandbox.require_isolation", "value": "true"},
+            ]
+        },
     )
     response = client.post(
         "/api/v1/sandbox/exec", json={"argv": ["python", "-c", "print(1)"], "approved": True}
@@ -721,6 +729,44 @@ def test_sandbox_exec_refuses_when_no_isolation_is_available(client: TestClient)
     assert response.status_code == 409, response.text
     assert response.json()["code"] == "unsupported_content"
     assert "拒绝执行" in response.json()["message"]
+
+
+def test_sandbox_exec_degrades_to_direct_without_isolation(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**默认降级为直接执行**（v0.55）：没有 bwrap / docker 的机器也要能跑命令。
+
+    与上一条是一对：默认那一档要让"本地源码启动与容器部署"两边都能执行工具
+    （用户报的"明明指定了工作区，还是不能执行工具"）。降级时后端如实报 ``direct``。
+    """
+    from app.services import isolation
+
+    found = isolation.detect()
+    if found.available:  # pragma: no cover - 有隔离的机器上这条不适用
+        pytest.skip("这台机器有可用的隔离后端，降级路径不适用")
+
+    monkeypatch.setattr(
+        isolation,
+        "run_isolated",
+        lambda argv, **kwargs: isolation.ExecutionResult(
+            exit_code=0, stdout="1\n", stderr="", truncated=False, backend="direct"
+        ),
+    )
+    client.patch(
+        "/api/v1/settings",
+        json={
+            "values": [
+                {"key": "chat.permission", "value": "full"},
+                {"key": "sandbox.require_isolation", "value": "false"},
+            ]
+        },
+    )
+    response = client.post(
+        "/api/v1/sandbox/exec", json={"argv": ["python", "-c", "print(1)"], "approved": True}
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["backend"] == "direct"
 
 
 def test_sandbox_exec_respects_view_permission(client: TestClient) -> None:

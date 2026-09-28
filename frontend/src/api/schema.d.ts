@@ -1313,12 +1313,16 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 这条会话的文件区（工作区目录 / 会话临时区）
-         * @description 文件面板的内容：**一条会话恰好有一个文件区**。
+         * 这条会话的文件区（会话文件 / 项目目录）
+         * @description 文件面板的内容。``scope`` 两档（v0.55）：
          *
-         *     挂了工作区就是那个真实目录（能进子目录）；没挂就是会话自己的临时区（平铺）。
-         *     哪一种是服务端算的，界面不需要知道，也不该问——
-         *     这与"产物落在哪"用的是同一份判断（``ArtifactService.spot_for``）。
+         *     - ``conversation``：**这条会话的文件**——上传的与产出的都在这儿，平铺一层。
+         *       上传一律落在这一档里并按会话记账，所以同一项目下不同会话的文件**分得开**
+         *       （改之前挂了工作区就把上传写进项目目录，于是整个项目共用一个池子）；
+         *     - ``project``：会话挂着的**项目目录**（能进子目录）——那是用户自己的项目文件，
+         *       只有挂了工作区才有这一档，没挂时服务层会明确说清。
+         *
+         *     哪一份落在哪儿由服务层算，界面不需要知道（``ArtifactService``）。
          */
         get: operations["list_files_api_v1_conversations__conversation_id__files_get"];
         put?: never;
@@ -1326,8 +1330,11 @@ export interface paths {
          * 往文件区里放一份文件
          * @description 界面上的"上传"。
          *
-         *     **同名不覆盖**：退到 ``名字 (2).ext``。与产物落盘同一套规矩——
-         *     用户目录里那个文件可能比这次上传的重要得多。
+         *     **一律落这条会话的文件区**（v0.55）：不再写进项目目录——那条路会让同一项目下
+         *     所有会话共用一堆文件，且"这份是谁传的"没有记录（用户报的"上传的文件分不开"）。
+         *     文件名**可以带相对路径**（``图表/a.png``）：上传文件夹时用它保留目录结构。
+         *
+         *     ``path`` 是旧接口留下的参数，收下但不用（见服务层说明）。
          */
         post: operations["upload_file_api_v1_conversations__conversation_id__files_post"];
         delete?: never;
@@ -2551,7 +2558,13 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 工作区列表 */
+        /**
+         * 工作区列表
+         * @description 默认只列**未归档**的项目；``archived=true`` 列出**已归档**的（归档视图）。
+         *
+         *     与会话列表同一口径：归档的项目不进默认视图，要看它们得显式要——
+         *     这样"收起来"才真的把侧栏腾干净，而找回来也有一个明确的地方。
+         */
         get: operations["list_workspaces_api_v1_workspaces_get"];
         put?: never;
         /**
@@ -2653,7 +2666,7 @@ export interface paths {
         head?: never;
         /**
          * 改工作区
-         * @description 名字 / 根目录 / 描述 / 知识库都可选，只改传了的那些。
+         * @description 名字 / 根目录 / 描述 / 知识库 / 归档都可选，只改传了的那些。
          *
          *     **归属不可改**：把一个工作区转给别人，连带的是"里头会话的 Agent 行为"，
          *     那是另一个功能，不该顺手做掉。
@@ -3136,8 +3149,9 @@ export interface paths {
          * @description **探测而不是假设**：真去盘上找 bwrap / sandbox-exec / docker，
          *     并检查 docker daemon 是否活着（装了 CLI 但 daemon 没起是最常见的假阳性）。
          *
-         *     界面据此显示当前状态；没有隔离时明说"执行会被拒绝"，
-         *     而不是等用户点了执行再报错——那时他已经以为它能跑了。
+         *     界面据此显示当前状态；没有真隔离时**默认换成降级档**（``direct``，未隔离直接执行，
+         *     v0.55），只有设置里开了「无隔离时拒绝执行」才报"执行会被拒绝"——两种都在这里说清，
+         *     而不是等用户点了执行再报错（那时他已经以为它能跑了）。
          */
         get: operations["get_capability_api_v1_sandbox_get"];
         put?: never;
@@ -3417,6 +3431,41 @@ export interface components {
             detail: string;
         };
         /**
+         * ChatAttachmentIn
+         * @description 这一轮用户消息**随发的附件**（v0.55）。
+         *
+         *     只带 ``key``（文件区里的产物 id）就够：名字 / 类型 / 字节数一律由服务端按
+         *     **库里的记录**回填，不信客户端送来的那几个字段（它们只是显示用的）。
+         *     服务端还会校验这个 key **属于这条会话**——不校验的话任何 key 都能被写进消息。
+         */
+        ChatAttachmentIn: {
+            /** Key */
+            key: string;
+        };
+        /**
+         * ChatAttachmentOut
+         * @description 用户消息随发的附件快照（v0.55，见 :class:`ChatAttachmentIn`）。
+         *
+         *     ``key`` 是文件区里的 key：界面拿它去预览 / 下载（与文件抽屉同一套端点），
+         *     所以就算那份文件后来被删了，这条消息仍然说得清"当时带的是它"。
+         */
+        ChatAttachmentOut: {
+            /** Key */
+            key: string;
+            /** Name */
+            name: string;
+            /**
+             * Kind
+             * @default
+             */
+            kind: string;
+            /**
+             * Size Bytes
+             * @default 0
+             */
+            size_bytes: number;
+        };
+        /**
          * ChatHistoryIn
          * @description 历史消息：只带 role 与 content，不落库（会话持久化不在本轮范围）。
          */
@@ -3452,6 +3501,11 @@ export interface components {
              * @default
              */
             thinking: string;
+            /**
+             * Attachments
+             * @description 用户消息随发的附件（v0.55）。**只有用户消息会有**；老消息返回空列表。
+             */
+            attachments?: components["schemas"]["ChatAttachmentOut"][];
             /** Created At */
             created_at?: string | null;
         };
@@ -3496,6 +3550,11 @@ export interface components {
              * @description 这一轮的思考强度；同上，留空逐级回退
              */
             thinking_effort?: ("low" | "medium" | "high") | null;
+            /**
+             * Attachments
+             * @description 这一轮用户消息随发的附件（文件区里的 key）；会作为快照写进那条消息
+             */
+            attachments?: components["schemas"]["ChatAttachmentIn"][];
         };
         /**
          * ChatResponseOut
@@ -6229,13 +6288,16 @@ export interface components {
         /**
          * SandboxCapabilityOut
          * @description 这台机器上的内核级隔离能力。
+         *
+         *     ``direct`` 是**降级档**（v0.55）：没有真隔离且没开严格模式时，就是"直接在本机执行、
+         *     未隔离"。它不是沙箱，`detail` 里会如实说明。
          */
         SandboxCapabilityOut: {
             /**
              * Backend
              * @enum {string}
              */
-            backend: "bwrap" | "sandbox-exec" | "docker" | "none";
+            backend: "bwrap" | "sandbox-exec" | "docker" | "direct" | "none";
             /** Available */
             available: boolean;
             /**
@@ -7971,6 +8033,11 @@ export interface components {
             created_at?: string | null;
             /** Updated At */
             updated_at?: string | null;
+            /**
+             * Archived At
+             * @description 归档时间（v0.55）。``None`` = 未归档。
+             */
+            archived_at?: string | null;
         };
         /**
          * WorkspaceUpdateIn
@@ -7985,6 +8052,8 @@ export interface components {
             description?: string | null;
             /** Kb Ids */
             kb_ids?: string[] | null;
+            /** Archived */
+            archived?: boolean | null;
         };
     };
     responses: never;
@@ -10353,8 +10422,10 @@ export interface operations {
     list_files_api_v1_conversations__conversation_id__files_get: {
         parameters: {
             query?: {
-                /** @description 要列哪个子目录（只在工作区模式下有意义） */
+                /** @description 子目录（只在 scope=project 时有意义） */
                 path?: string;
+                /** @description conversation（默认）= 这条会话的文件（上传 + 产出，平铺）；project = 会话挂着的项目目录（可进子目录） */
+                scope?: string;
             };
             header?: {
                 authorization?: string | null;
@@ -10389,7 +10460,7 @@ export interface operations {
     upload_file_api_v1_conversations__conversation_id__files_post: {
         parameters: {
             query?: {
-                /** @description 放进哪个子目录（只在工作区模式下有意义） */
+                /** @description 旧参数，已不用（上传恒落会话文件区，平铺） */
                 path?: string;
             };
             header?: {
@@ -13124,7 +13195,10 @@ export interface operations {
     };
     list_workspaces_api_v1_workspaces_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description false（默认）= 未归档的项目；true = 已归档的项目（v0.55） */
+                archived?: boolean;
+            };
             header?: {
                 authorization?: string | null;
             };

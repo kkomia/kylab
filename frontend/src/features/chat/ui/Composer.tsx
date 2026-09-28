@@ -15,7 +15,7 @@
  * 5. **「回到最新」浮标**也挂在卡片上沿（assistant-ui 的视口状态决定它出现与否）。
  */
 import { ThreadPrimitive } from '@assistant-ui/react'
-import { ArrowUp, ChevronDown, Square, X } from 'lucide-react'
+import { ArrowUp, ChevronDown, File as FileIcon, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { FILE_DRAG_TYPE } from '../runtime/prefs'
@@ -105,6 +105,67 @@ function namePastedFile(file: File, index: number): File {
 }
 
 /**
+ * 把一份文件**改名成它的相对路径**（`图表/第二季度.png`）再交给暂存。
+ *
+ * 为什么要改名：上传链路的 filename 就是 `file.name`，而后端按它保留文件夹结构
+ * （v0.55，上传文件夹）。改名之后整条链路（`addAttachments` → `send` 里那次上传）
+ * 一行都不用动。代价是界面上那张缩略图 / 文件片显示的是带路径的长名字——那正是用户
+ * 拖进来的那个文件夹里的相对位置，读得懂，不必再为"显示名"造一层（旧 `FileDrawer` 也没造）。
+ */
+function asRelativePath(file: File, path: string): File {
+  const name = path.replace(/^\/+/, '').trim()
+  if (!name) return file
+  return new File([file], name, { type: file.type, lastModified: file.lastModified })
+}
+
+/** 目录选择的 input 给的是 `webkitRelativePath`（含用户选中的那层文件夹名）。 */
+function fromDirectoryInput(file: File): File {
+  return asRelativePath(file, file.webkitRelativePath || file.name)
+}
+
+/**
+ * 读完一个目录项里的**全部**子项。
+ *
+ * `FileSystemDirectoryReader.readEntries` 是**分批**返回的（每批最多约 100 项），
+ * 读到空数组才代表读完了——只读一批会把大文件夹悄悄截断，而界面上看起来"就是这么几个"。
+ */
+function readAllEntries(reader: FileSystemDirectoryReader): Promise<FileSystemEntry[]> {
+  return new Promise((resolve, reject) => {
+    const all: FileSystemEntry[] = []
+    const step = (): void => {
+      reader.readEntries((batch) => {
+        if (batch.length === 0) {
+          resolve(all)
+          return
+        }
+        all.push(...batch)
+        step()
+      }, reject)
+    }
+    step()
+  })
+}
+
+/** 把一个文件项读成 `File`（`FileSystemFileEntry.file` 是回调式的）。 */
+function readEntryFile(entry: FileSystemFileEntry): Promise<File> {
+  return new Promise((resolve, reject) => entry.file(resolve, reject))
+}
+
+/** 把一个目录项**递归**读成"带相对路径的文件"（相对路径取 `entry.fullPath`，去掉前导 `/`）。 */
+async function filesInDirectory(entry: FileSystemDirectoryEntry): Promise<File[]> {
+  const found: File[] = []
+  for (const child of await readAllEntries(entry.createReader())) {
+    if (child.isDirectory) {
+      found.push(...(await filesInDirectory(child as FileSystemDirectoryEntry)))
+      continue
+    }
+    const file = await readEntryFile(child as FileSystemFileEntry)
+    found.push(asRelativePath(file, child.fullPath))
+  }
+  return found
+}
+
+/**
  * 发送 / 停止那一个圆形按钮（v0.19 起同一个位置、同一种形状）。
  *
  * **禁用态是"灰化"而不是"半透明"**（v0.28，第二批评审 A4）：原先只有
@@ -121,10 +182,19 @@ export function Composer() {
   const chat = useChat()
   const field = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  const folderInput = useRef<HTMLInputElement>(null)
   const slashHandle = useRef<MenuHandle | null>(null)
   const mentionHandle = useRef<MenuHandle | null>(null)
   const [slashDismissed, setSlashDismissed] = useState(false)
   const [mentionDismissed, setMentionDismissed] = useState(false)
+
+  /**
+   * `webkitdirectory` 是目录选择的非标准属性，React 的类型里没有它——挂载后直接给节点
+   * 落一个属性。比写 `@ts-expect-error` 稳：哪天类型补上这个属性，抑制注释会变成"多余"。
+   */
+  useEffect(() => {
+    folderInput.current?.setAttribute('webkitdirectory', '')
+  }, [])
 
   const slashFilter = slashFilterOf(chat.query)
   const mentionFilter = mentionFilterOf(chat.query)
@@ -280,6 +350,10 @@ export function Composer() {
    *
    * - 工作区里的文件/目录 → 插一条**引用**（不读、也不上传）；
    * - 其余（从资源管理器拖进来的文件）→ 走**既有上传链路**（和「加号 → 添加文件」同一件事）。
+   *
+   * 拖进来的可能是**文件夹**：`transfer.files` 对目录只给得出目录本身、给不出里面的文件，
+   * 所以只要有目录项，就改走 `webkitGetAsEntry` 递归读整棵目录，给每份文件配上相对路径；
+   * 只是普通文件时保持原样（那条路最快，也不必等异步）。
    */
   function onDrop(event: React.DragEvent): void {
     chat.setDropKind(null)
@@ -299,7 +373,29 @@ export function Composer() {
       }
       return
     }
-    chat.uploadFiles(Array.from(transfer.files ?? []))
+    const entries = Array.from(transfer.items ?? []).map((item) =>
+      typeof item.webkitGetAsEntry === 'function' ? item.webkitGetAsEntry() : null,
+    )
+    if (!entries.some((entry) => entry?.isDirectory)) {
+      chat.addAttachments(Array.from(transfer.files ?? []))
+      return
+    }
+    // 读目录是异步的（要逐层等 `readEntries`）：先把整棵读完再一次性交出去，
+    // 免得读到一半就进列表、用户看到附件一批批冒出来。
+    void (async () => {
+      const collected: File[] = []
+      for (const entry of entries) {
+        if (!entry) continue
+        if (entry.isDirectory) {
+          collected.push(...(await filesInDirectory(entry as FileSystemDirectoryEntry)))
+          continue
+        }
+        collected.push(
+          asRelativePath(await readEntryFile(entry as FileSystemFileEntry), entry.fullPath),
+        )
+      }
+      chat.addAttachments(collected)
+    })()
   }
 
   /**
@@ -308,9 +404,9 @@ export function Composer() {
    * - **有文件才 `preventDefault`**——这一条是红线。无条件拦下去的话，用户复制一段文字
    *   粘进来会石沉大海（浏览器"把文本插到光标处"的默认动作被吃掉了），这是这个功能最容易
    *   犯的错。所以判据只看 `clipboardData.files`：空的时候这里什么都不做，纯文本照常走原生粘贴。
-   * - **文件交给 `chat.uploadFiles`，不自己再发一次请求**：上传那一整套（还没有会话时如实拒绝、
-   *   "正在上传…"的状态、成功/失败提示、传完让文件区清单失效）都长在 `ChatProvider.uploadFiles`
-   *   里，拖拽落点与「加号 → 添加文件」走的也是它。这里另起一条路等于把那几件事抄一遍，
+   * - **文件交给 `chat.addAttachments`，不自己另起一条路**：暂存那一整套（本地预览、
+   *   发送时统一上传、失败保留原文）都长在 `ChatProvider.addAttachments` 里，
+   *   拖拽落点与「加号 → 添加文件」走的也是它。这里另起一条路等于把那几件事抄一遍，
    *   三条入口迟早各说各话。
    * - **一次粘多份**（`clipboardData.files` 是列表）原样全交给它，它本来就是按列表收的。
    * - **同时带文字与文件时以文件为准**（从网页上复制一张图常常两样都有）：拦掉的正是那一次
@@ -321,7 +417,7 @@ export function Composer() {
     const pasted = Array.from(event.clipboardData?.files ?? [])
     if (pasted.length === 0) return
     event.preventDefault()
-    chat.uploadFiles(pasted.map(namePastedFile))
+    chat.addAttachments(pasted.map(namePastedFile))
   }
 
   return (
@@ -449,6 +545,47 @@ export function Composer() {
 
       <div className="mx-auto flex w-full max-w-[var(--chat-measure)] flex-col gap-[var(--space-1)] rounded-[var(--radius-input)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-[var(--space-3)] py-[var(--space-2)] shadow-[var(--shadow-input)]">
         {/*
+          暂存的附件（v0.55）：**发送前就摆在这里**，图片给缩略图、别的给一个文件片，
+          每份都能单独拿掉。用户报的正是这件事——"文件和图片应该通过缩略图的形式保留在
+          对话框（agent 产品都是这么做的），而你是直接发送，然后上传到工作区"。
+
+          它们此刻**还没上传**（发送那一刻才落到会话文件区，见 `ChatProvider.send`），
+          所以这里画的是本地预览，不产生任何请求。
+        */}
+        {chat.attachments.length > 0 ? (
+          <ul
+            className="m-0 flex list-none flex-wrap gap-[var(--space-2)] p-0"
+            aria-label="待发送的附件"
+          >
+            {chat.attachments.map((item) => (
+              <li key={item.id} className="relative">
+                {item.preview ? (
+                  <img
+                    src={item.preview}
+                    alt={item.file.name}
+                    className="h-14 w-14 rounded-[var(--radius-control)] border border-[var(--border-hairline)] object-cover"
+                  />
+                ) : (
+                  <span className="inline-flex h-14 max-w-[180px] items-center gap-[var(--space-2)] rounded-[var(--radius-control)] border border-[var(--border-hairline)] px-[var(--space-2)] text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
+                    <FileIcon size={14} aria-hidden="true" className="shrink-0" />
+                    <span className="truncate">{item.file.name}</span>
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="absolute -top-1.5 -right-1.5 inline-flex size-4 cursor-pointer items-center justify-center rounded-[var(--radius-pill)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] text-[var(--text-tertiary)] transition-colors hover:text-text-primary"
+                  aria-label={`移除 ${item.file.name}`}
+                  title="移除"
+                  onClick={() => chat.removeAttachment(item.id)}
+                >
+                  <X size={10} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        {/*
           输入框**不再挂占位提示**（用户原话："那个提示词干掉，太蠢了"）："这一轮查不查库"
           在下面那排的「知识库」开关上摆着——那是看得见的状态，不必再用一句话在框里复述一遍。
 
@@ -509,6 +646,7 @@ export function Composer() {
             {/* 「加号」：附件与技能都收在这里（"这一轮给它什么"） */}
             <PlusMenu
               onPickFiles={() => fileInput.current?.click()}
+              onPickFolder={() => folderInput.current?.click()}
               onBrowseFiles={() => chat.openFiles()}
             />
             {/* 「权限」：能碰多少（仅查看 / 工作区内编辑 / 完全访问）。位置是用户指定的：
@@ -573,7 +711,27 @@ export function Composer() {
           const input = event.target
           const files = Array.from(input.files ?? [])
           input.value = ''
-          chat.uploadFiles(files)
+          chat.addAttachments(files)
+        }}
+      />
+
+      {/*
+        「添加文件夹」的落点。**与上面那份分开两个 input**：目录选择靠 `webkitdirectory`，
+        同一个 input 加上它就变成"只能选目录"——两件事放一个节点上做不到。
+        `webkitdirectory` 本身在挂载时落上去（见组件顶部那个 effect）。
+      */}
+      <input
+        ref={folderInput}
+        className="hidden"
+        type="file"
+        multiple
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={(event) => {
+          const input = event.target
+          const files = Array.from(input.files ?? [])
+          input.value = ''
+          chat.addAttachments(files.map(fromDirectoryInput))
         }}
       />
 

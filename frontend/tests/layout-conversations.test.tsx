@@ -106,6 +106,7 @@ function workspace(overrides: Partial<Workspace> = {}): Workspace {
     conversation_count: 0,
     created_at: null,
     updated_at: null,
+    archived_at: null,
     ...overrides,
   }
 }

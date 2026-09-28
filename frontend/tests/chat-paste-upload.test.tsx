@@ -1,20 +1,25 @@
 /**
- * 输入框的**粘贴上传**（`ui/Composer.tsx` 的 `onPaste`）——钉住"哪一次粘贴该拦、哪一次必须放行"。
+ * 输入框的**附件入口**（`ui/Composer.tsx`）——粘贴、选文件、选文件夹、拖入目录。
  *
  * 为什么单开一个文件：页面级用例（`chat-ui.test.tsx`）钉的是"从哪个入口发消息、界面长什么样"，
- * 这里钉的是**粘贴这一个动作本身的两条口径**——带文件才拦、纯文本一个字都不许拦。
- * 两条都从输入框出发，判据却完全不同，混进页面用例里会被那一堆 mock 淹掉。
+ * 这里钉的是**几个入口本身的口径**——粘贴时带文件才拦、纯文本一个字都不许拦；
+ * 选文件 / 选文件夹 / 拖入目录都要**保留相对路径**（v0.55：上传给后端的 filename 就是它）。
+ * 这些判据都从输入框出发，却互不相同，混进页面用例里会被那一堆 mock 淹掉。
  *
- * 断言落在 `@/api/conversations.uploadFile` 上，因为它就是**既有上传入口的终点**
- * （`ChatProvider.uploadFiles` → `uploadFile`；拖拽落点与「加号 → 添加文件」走的也是它）。
- * 界面这一层要是哪天自己另发一次请求，这条用例当场看得见：`uploadFile` 根本不会被调到。
+ * 断言落在 `@/api/conversations.uploadFile` 上，因为它就是**上传的终点**：拖拽、粘贴、
+ * 「加号 → 添加文件」三条入口都先经过 `ChatProvider.addAttachments` **暂存**，
+ * 再由 `ChatProvider.send` 里那一段统一上传（v0.55：用户报的"上传效果不合理"——
+ * 文件和图片应当**先以缩略图留在输入框里**，发送那一刻才上传）。所以这里同时钉两件事：
+ * 粘完**一次都不许上传**、点发送**才**上传。
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ChatProvider } from '@/features/chat/runtime/ChatProvider'
+import { ChatRuntime } from '@/features/chat/runtime/ChatRuntime'
 import { Composer } from '@/features/chat/ui/Composer'
 
 vi.mock('@/api/chat', async (importOriginal) => {
@@ -53,8 +58,17 @@ vi.mock('@/api/conversations', async (importOriginal) => {
       entries: [],
       truncated: false,
     })),
-    // **这两条用例要断言的就是它**：调了几次、每一次拿到的文件名是什么
-    uploadFile: vi.fn(),
+    // **这两条用例要断言的就是它**：调了几次、每一次拿到的文件名是什么。
+    // 返回一份**完整的文件条目**（v0.55）：`send` 会拿上传返回的这份拼"随发附件"的
+    // 快照（见 `ChatProvider.send`），所以它必须是一份真形状，而不是空
+    uploadFile: vi.fn(async () => ({
+      key: 'f1',
+      name: 'a.png',
+      is_dir: false,
+      size_bytes: 12,
+      modified_at: null,
+      kind: 'png',
+    })),
     getFileUrl: vi.fn(),
     downloadFile: vi.fn(async () => undefined),
   }
@@ -126,7 +140,13 @@ beforeEach(() => {
   vi.mocked(getConversation).mockResolvedValue(emptyConversation())
 })
 
-/** 挂起真实的 `ChatProvider` + `Composer`（会话 id 从路由参数来，与 App 那条路由同形）。 */
+/** 挂起真实的 `ChatProvider` + `Composer`（会话 id 从路由参数来，与 App 那条路由同形）。
+ *
+ * **`ChatRuntime` 也要挂**：输入卡片上沿那个「回到最新」浮标是 assistant-ui 的
+ * `ThreadPrimitive.ScrollToBottom`，它要 `AssistantRuntimeProvider` 的上下文——
+ * 少了它，一旦这一页有消息（例如"发送那一刻才上传"那条用例发了一句）就会抛
+ * `thread viewport context` 缺失。真实页面里这一层由 `ChatPage` 装上。
+ */
 function withComposer() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
@@ -137,7 +157,9 @@ function withComposer() {
             path="/chat/:conversationId?"
             element={
               <ChatProvider>
-                <Composer />
+                <ChatRuntime>
+                  <Composer />
+                </ChatRuntime>
               </ChatProvider>
             }
           />
@@ -178,7 +200,7 @@ async function paste(field: HTMLElement, files: File[], text = ''): Promise<Even
 }
 
 describe('输入框的粘贴上传', () => {
-  it('粘一张截图：走既有上传入口，补上能判类型的名字，并且拦下这一次粘贴', async () => {
+  it('粘一张截图：补上能判类型的名字、留在输入框里，并且拦下这一次粘贴', async () => {
     withComposer()
     const field = await screen.findByRole('textbox', { name: '消息输入框' })
 
@@ -186,25 +208,28 @@ describe('输入框的粘贴上传', () => {
     const shot = new File(['png-bytes'], 'image.png', { type: 'image/png' })
     const event = await paste(field, [shot])
 
-    await waitFor(() => expect(vi.mocked(uploadFile)).toHaveBeenCalledTimes(1))
-    const [conversation, uploaded] = vi.mocked(uploadFile).mock.calls[0]
-    expect(conversation).toBe('c1')
-    // 名字换成能看懂、且**后缀还在**的那一种：后端按后缀判类型，判不出就直接拒
-    expect(uploaded.name).toMatch(/^粘贴的截图-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-1\.png$/)
-    expect(uploaded.type).toBe('image/png')
+    // v0.55：粘贴**不再立刻上传**——它先以"待发送的附件"留在输入框里
+    expect(vi.mocked(uploadFile)).not.toHaveBeenCalled()
+    // 名字换成能看懂、且**后缀还在**的那一种（后端按后缀判类型，判不出就直接拒）。
+    // 认那颗移除按钮的无障碍名字：图片缩略图与文件片两种画法下它都在（不依赖渲染形态）
+    expect(
+      screen.getByRole('button', {
+        name: /^移除 粘贴的截图-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-1\.png$/,
+      }),
+    ).toBeInTheDocument()
     // 有文件才拦：拦下之后输入框里不会落进"文件名"那种垃圾文本
     expect(event.defaultPrevented).toBe(true)
     expect(field).toHaveValue('')
   })
 
-  it('粘纯文本：一个字都不拦（没上传、也没被 preventDefault）', async () => {
+  it('粘纯文本：一个字都不拦（没有附件、也没被 preventDefault）', async () => {
     withComposer()
     const field = await screen.findByRole('textbox', { name: '消息输入框' })
 
     const event = await paste(field, [], '一段要粘进来的话')
 
-    // 剪贴板里没有文件：这里什么都不做，上传入口一次都不该被调
-    expect(vi.mocked(uploadFile)).not.toHaveBeenCalled()
+    // 剪贴板里没有文件：这里什么都不做，输入框里也不会多出一份待发附件
+    expect(screen.queryByLabelText('待发送的附件')).not.toBeInTheDocument()
     // **没被拦**才是对的：拦了就等于"粘不了字"，而这是这个功能最容易犯的错。
     // jsdom 不会替浏览器把文本插进框里（"插到光标处"是浏览器的默认编辑动作），
     // 所以"文本照常进框"在这里只能钉在"我们没拦"这一头上——拦没拦才是我们的行为。
@@ -212,21 +237,126 @@ describe('输入框的粘贴上传', () => {
     expect(field).toHaveValue('')
   })
 
-  it('一次粘多份：两份都传，各给一个不撞的名字', async () => {
+  it('一次粘多份：两份都留在输入框里，各给一个不撞的名字', async () => {
     withComposer()
     const field = await screen.findByRole('textbox', { name: '消息输入框' })
 
-    // 第一份是 Chrome 的占位名，第二份**连名字都没有**——两份都得能被上传
+    // 第一份是 Chrome 的占位名，第二份**连名字都没有**——两份都得能进输入框
     const fromChrome = new File(['a'], 'image.png', { type: 'image/png' })
     const unnamed = new File(['b'], '', { type: 'image/png' })
     const event = await paste(field, [fromChrome, unnamed])
 
-    await waitFor(() => expect(vi.mocked(uploadFile)).toHaveBeenCalledTimes(2))
-    const names = vi.mocked(uploadFile).mock.calls.map(([, file]) => file.name)
+    const list = await screen.findByLabelText('待发送的附件')
+    const names = within(list)
+      .getAllByRole('button')
+      .map((node) => node.getAttribute('aria-label') ?? '')
     // 序号把它们分开：同一个粘贴动作里两份同名文件在文件区里分不出谁是谁
     expect(names[0]).toMatch(/-1\.png$/)
     expect(names[1]).toMatch(/-2\.png$/)
     expect(new Set(names).size).toBe(2)
     expect(event.defaultPrevented).toBe(true)
+  })
+
+  it('发送那一刻才上传：之前只在输入框里，点发送才落到会话文件区', async () => {
+    const user = userEvent.setup()
+    withComposer()
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
+    await paste(field, [new File(['png-bytes'], 'image.png', { type: 'image/png' })])
+
+    // 还只是"待发送"，一份都没上去
+    expect(vi.mocked(uploadFile)).not.toHaveBeenCalled()
+
+    await user.type(field, '看看这张图')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+
+    await waitFor(() => expect(vi.mocked(uploadFile)).toHaveBeenCalledTimes(1))
+    const [conversation, uploaded] = vi.mocked(uploadFile).mock.calls[0]
+    expect(conversation).toBe('c1')
+    expect(uploaded.name).toMatch(/^粘贴的截图-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-1\.png$/)
+    // 上传成功之后它从输入框里拿掉：否则下一轮会把同一份再传一次
+    await waitFor(() => expect(screen.queryByLabelText('待发送的附件')).not.toBeInTheDocument())
+  })
+})
+
+/**
+ * 文件夹上传（v0.55）：目录选择与拖入目录都要**保留相对路径**。
+ *
+ * 上传给后端的 filename 就是那条相对路径（后端按它保留文件夹结构），而界面上的名字
+ * 也取同一条——所以「移除 X」的无障碍名字是这条断言最省事的落点：它同时证明
+ * "相对路径确实挂在了那份文件上"，且不依赖缩略图那种渲染形态。
+ */
+describe('文件夹上传：相对路径当 filename', () => {
+  it('选一个文件夹：每份文件按 `webkitRelativePath` 改名后进输入框（此刻还没上传）', async () => {
+    const user = userEvent.setup()
+    withComposer()
+    await screen.findByRole('textbox', { name: '消息输入框' })
+
+    // 目录选择给的文件带 `webkitRelativePath`（jsdom 的 File 造不出来，手动挂上）
+    const inner = new File(['png-bytes'], '第二季度.png', { type: 'image/png' })
+    Object.defineProperty(inner, 'webkitRelativePath', { value: '图表/第二季度.png' })
+
+    // 两个隐藏 input：先"选文件"、后"选文件夹"（`webkitdirectory` 在第二个上）
+    const inputs = document.querySelectorAll('input[type="file"]')
+    expect(inputs).toHaveLength(2)
+    await user.upload(inputs[1] as HTMLInputElement, inner)
+
+    expect(
+      await screen.findByRole('button', { name: '移除 图表/第二季度.png' }),
+    ).toBeInTheDocument()
+    expect(vi.mocked(uploadFile)).not.toHaveBeenCalled()
+  })
+
+  it('拖入一个目录：递归读整棵（分批读完），每份带上相对路径', async () => {
+    withComposer()
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
+
+    const pic = new File(['a'], 'a.png', { type: 'image/png' })
+    const note = new File(['b'], 'b.txt', { type: 'text/plain' })
+    const fileEntry = (file: File, fullPath: string) => ({
+      isDirectory: false,
+      isFile: true,
+      fullPath,
+      file: (ok: (value: File) => void) => ok(file),
+    })
+    // 每层都**先给一批、再给空数组**：只读一批的实现会在这里漏掉子目录里的那份文件
+    const sub = {
+      isDirectory: true,
+      isFile: false,
+      fullPath: '/图表/sub',
+      createReader: () => {
+        let round = 0
+        return {
+          readEntries: (cb: (entries: unknown[]) => void) => {
+            round += 1
+            cb(round === 1 ? [fileEntry(note, '/图表/sub/b.txt')] : [])
+          },
+        }
+      },
+    }
+    const root = {
+      isDirectory: true,
+      isFile: false,
+      fullPath: '/图表',
+      createReader: () => {
+        let round = 0
+        return {
+          readEntries: (cb: (entries: unknown[]) => void) => {
+            round += 1
+            cb(round === 1 ? [fileEntry(pic, '/图表/a.png'), sub] : [])
+          },
+        }
+      },
+    }
+    const transfer = {
+      types: ['Files'],
+      files: [] as File[],
+      getData: () => '',
+      items: [{ webkitGetAsEntry: () => root }],
+    }
+    fireEvent.drop(field, { dataTransfer: transfer })
+
+    expect(await screen.findByRole('button', { name: '移除 图表/a.png' })).toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: '移除 图表/sub/b.txt' })).toBeInTheDocument()
+    expect(vi.mocked(uploadFile)).not.toHaveBeenCalled()
   })
 })

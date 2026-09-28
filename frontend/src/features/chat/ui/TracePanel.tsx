@@ -167,22 +167,6 @@ function Citations({ turnIndex, sources }: { turnIndex: number; sources: ChatSou
   )
 }
 
-/**
- * "本轮带了什么"那一句：长期记忆与人设的注入量。
- *
- * 为什么值得常驻这一行：四份人设文件**每轮都进 system prompt**（实测占三成多），
- * 但界面上原先只有在输入框那个折叠的上下文仪表里才看得到"记忆与人设"一项，
- * 首轮之前它根本不渲染——于是用户的体感是"我写了 SOUL.md，它好像没读"
- * （用户原话："全程没有生效"）。把数字放到**这一轮的边上**之后，
- * "带了没带、带了多少"就不再是个需要推断的问题。
- *
- * 数字来自 `GET /chat/context-usage` 的 `memory` 项（`chars` / `tokens`）；
- * 这里**不复述任何文件内容**，只报数量。
- */
-function memoryNote(chars: number, tokens: number): string {
-  return `本轮带入长期记忆与人设 ${formatCount(chars)} 字（约 ${formatCount(tokens)} tokens）`
-}
-
 export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn }) {
   const chat = useChat()
   /**
@@ -202,19 +186,16 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
   const view = chat.traceView(turnIndex, turn)
   const trailingThinkingText = trailingThinking(reply)
 
-  /**
-   * 只在**最新一轮**挂那一句：上下文用量是按会话（当前提示词）算的，
-   * 挂在每一轮上会让旧轮次也宣称"本轮带了 N 字"，而它当时带的是那时那份
-   * （用户改过记忆文件之后，两个数字就不一样了）。旧轮次不该替历史下结论。
-   */
-  const latest = turnIndex === chat.turns.length - 1
-  const memory = chat.contextUsage.data?.items.find((item) => item.kind === 'memory')
-  const memoryText =
-    latest && memory && memory.chars > 0 ? memoryNote(memory.chars, memory.tokens) : ''
-
   return (
     <>
-      {/* 依据摘要那一行：这一行的数字就是"这句回答有没有出处"的答案 */}
+      {/*
+        依据摘要那一行：**它同时是过程面板的开合开关**（左边那个箭头）。
+
+        右侧那句话（`traceSummary`）**只在真的有出处时才说**：有出处时它报的是
+        「检索完成 · 引用了 N 个片段 · M 篇文档」，那是这一行唯一有用的读数。
+        没有出处时它会说"本轮没有命中资料 / 直接作答"——用户原话是"没啥用"，
+        所以那两种情况**只留箭头**（收起/展开照样点得到）。
+      */}
       <button
         type="button"
         className="flex w-full cursor-pointer items-center gap-[var(--space-1)] bg-transparent p-0 text-left"
@@ -225,26 +206,12 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
         {reply.streaming ? (
           /* 流式时这一行是**滚动的实时状态**：工具在跑就报工具名，思考在写就给它最新的那一截 */
           <LiveLine text={liveLine(reply)} />
-        ) : (
+        ) : reply.sources.length > 0 ? (
           <span className="text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
             {traceSummary(reply)}
           </span>
-        )}
+        ) : null}
       </button>
-
-      {/*
-        "带了什么"常驻、且**与面板是否展开无关**：它回答的是"这一轮它记得我什么"，
-        而这件事在收起状态下同样是用户要看的（原先唯一的读法在输入框那个折叠仪表里）。
-
-        这一行**只是一个读数**（`本轮带入长期记忆与人设 N 字`）。原来还挂着一个
-        `title`，讲那四份文件是怎么注入的、跟记忆服务通不通有没有关系、数字从哪个
-        端点来——2026-09-24 按用户要求删掉：读数留着，解释机制的那半句不留。
-      */}
-      {memoryText ? (
-        <p className="tabular mt-[var(--space-1)] m-0 text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
-          {memoryText}
-        </p>
-      ) : null}
 
       {open ? (
         <div className="mt-[var(--space-3)]">

@@ -32,6 +32,7 @@ import {
   listCommands,
   type ChatApproval,
   type ChatArtifact,
+  type ChatAttachment,
   type ChatCommand,
   type ChatCommandResult,
   type ChatHistoryMessage,
@@ -133,6 +134,54 @@ export interface ChatMessage extends Message {
   id: string
 }
 
+/**
+ * 发送前**暂存在输入框里**的一份附件（v0.55）。
+ *
+ * 为什么不再"选完立刻上传"：用户报的"上传文件得效果不合理……文件和图片应该通过缩略图
+ * 的形式保留在对话框（agent 产品都是这么做的），而你是直接发送，然后上传到工作区"。
+ * 落点是**发送那一刻**（`send` 里，建完会话之后逐份上传），在那之前它只是输入框里
+ * 的一张缩略图 / 一个文件片。
+ *
+ * 顺带解掉另一条反馈（"新项目上传文件甚至需要先对话一次"）：暂存不需要会话 id，
+ * 而建会话发生在发送那一步、比上传更早——那道"先聊一句才能传文件"的限制自然没有了。
+ */
+export interface StagedAttachment {
+  id: string
+  file: File
+  /** 图片用 `URL.createObjectURL` 出来的**本地**预览；非图片（或环境不支持）为空串。 */
+  preview: string
+}
+
+let attachmentSeq = 0
+
+/**
+ * 图片附件的**本地预览地址**（`blob:`），非图片给空串。
+ *
+ * 两处保守，都是实测踩出来的：
+ * - 环境里没有 `URL.createObjectURL`（老浏览器、某些测试环境）→ 空串，界面退回文件片；
+ * - 有它但**调用会抛**（jsdom / vitest 的桩在遇到非 Node `Blob` 时报
+ *   `Cannot read properties of undefined (reading '_buffer')`）→ 同样退回空串。
+ * 预览只是锦上添花，不该因为它让"加一份附件"整个失败。
+ */
+function imagePreview(file: File): string {
+  if (!file.type.startsWith('image/')) return ''
+  try {
+    return typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : ''
+  } catch {
+    return ''
+  }
+}
+
+/** 释放一个预览地址（与 `imagePreview` 成对；同样容忍环境没有它或它只是会抛的桩）。 */
+function releasePreview(url: string): void {
+  if (!url) return
+  try {
+    URL.revokeObjectURL(url)
+  } catch {
+    // 没有东西要释放
+  }
+}
+
 let messageSeq = 0
 function makeChatMessage(
   role: ChatMessage['role'],
@@ -226,7 +275,17 @@ export interface ChatApi {
   toggleSkill: (name: string) => void
   skills: { name: string; summary: string; description: string }[]
   skillsLoading: boolean
-  uploadFiles: (files: File[]) => void
+  /**
+   * **发送前暂存在输入框里的附件**（v0.55）。
+   *
+   * 用户报的："文件和图片应该通过缩略图的形式保留在对话框（agent 产品都是这么做的），
+   * 而你是直接发送，然后上传到工作区。" 所以它们现在只是界面上的缩略图 / 文件片，
+   * **发送那一刻**才落到这条会话的文件区（见 `send`）。
+   */
+  attachments: StagedAttachment[]
+  /** 把选中的 / 拖进来 / 粘进来的文件**暂存**到输入框（不再立刻上传）。 */
+  addAttachments: (files: File[]) => void
+  removeAttachment: (id: string) => void
   uploading: boolean
 
   // —— 模型与思考
@@ -347,10 +406,12 @@ function idOf(message: Message): string {
 /**
  * 把一份会话详情铺进界面（缓存与网络两条路都走它，口径才不会分叉）。
  *
- * 三个"都要还原"：
+ * 四处"都要还原"：
  * - **过程与思考**（v0.25）：不然离开这一页再回来，只剩一句"已生成回答"；
  * - **库范围**：回放时沿用，否则多轮上下文会指向上一次没查的库；
- * - **模型与思考档**（v12/v16）：为空则保持当前默认。
+ * - **模型与思考档**（v12/v16）：为空则保持当前默认；
+ * - **随发的附件**（v0.55）：用户消息带着"当时传了哪几份"，不还原的话回看时那条提问
+ *   就只剩文字了——用户报的正是"发送的对话里没有文件组件标识"。
  */
 function messagesFromDetail(detail: ConversationDetail): ChatMessage[] {
   return detail.messages.map((item) =>
@@ -361,6 +422,8 @@ function messagesFromDetail(detail: ConversationDetail): ChatMessage[] {
       thinkingText: item.thinking ?? '',
       // 这一轮当时用哪档思考没存（那是会话级偏好），不猜
       thinking: null,
+      // 用户随发的附件（v0.55）：回看旧会话时也要画得出来；老消息没有这一项，给空数组
+      attachments: item.attachments ?? [],
     }),
   )
 }
@@ -536,6 +599,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [query, setQueryState] = useState('')
   const [resolvingEntry, setResolvingEntry] = useState(false)
   const [uploading, setUploading] = useState(false)
+  /** 发送前暂存的附件（v0.55）：只是输入框里的缩略图 / 文件片，发送那一刻才上传。 */
+  const [attachments, setAttachments] = useState<StagedAttachment[]>([])
   const [regenerating, setRegenerating] = useState(false)
   const [resuming, setResuming] = useState(false)
   const [copiedKey, setCopiedKey] = useState('')
@@ -758,6 +823,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   /** 库里那份会话详情已经画进消息了没有（按会话 id 记一次，见"会话装载"那一节）。 */
   const appliedDetail = useRef('')
   /**
+   * 从「新建态」（`/chat?new=1`）刚建出来的那条会话 id（v0.55）。
+   *
+   * 用户在新建页发出第一条消息时，`send` 会先建会话、再把地址换成 `/chat/<新id>`。
+   * 那一下**不是"换一条会话"**——消息是同一个逻辑会话里刚写上的，而下面两个 effect
+   * 会把它当成"切走再切回来"处理：一个清空 `messages`，一个拿**还没落库的空详情**
+   * 覆盖它。两边各擦一次再画回来，用户看到的就是"发完闪一下，然后我发的那条才出现"
+   * （他报的正是这条）。这个 ref 就是让这两道闸认出新会话是"新建态的延续"：
+   * 建会话那一刻写上，等"换会话"那个 effect 消费掉就清空。
+   */
+  const createdEntryRef = useRef('')
+  /**
    * 这一轮命令**撤掉了库里的轮次**（`/rewind` 给了 `refill`，见 `ChatCommandResult`）。
    *
    * 它要在收尾时起作用：那几轮在服务端已经删了，画面得按库重画一次；而
@@ -844,6 +920,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * 换会话就得重新上膛，否则再回到同一条会话时会被它挡住、一个字都不画。
    */
   useEffect(() => {
+    // 从「新建态」落到**刚建出来的那条**：不算换会话（v0.55，见 `createdEntryRef`）。
+    // 放它过去，`messages` 就不会被清一下再画回来——用户报的那一下闪烁正是这里。
+    if (createdEntryRef.current && createdEntryRef.current === conversationId) {
+      createdEntryRef.current = ''
+      return
+    }
     setMessages([])
     setOpenSteps(new Set())
     setOpenGroups(new Set())
@@ -910,6 +992,62 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   // ---------------------------------------------------------------- 发送链路
 
+  /**
+   * 附件**暂存**（v0.55）：选中的 / 拖进来的 / 粘进来的文件先摆在输入框里，
+   * 发送那一刻才落到这条会话的文件区（见 `send` 里那一段）。
+   *
+   * 为什么不再"选完立刻上传"（旧 `uploadFiles` 的行为）：用户报的"上传文件得效果不合理……
+   * 文件和图片应该通过缩略图的形式保留在对话框（agent 产品都是这么做的），而你是直接发送，
+   * 然后上传到工作区"。三处入口（拖拽 / 粘贴 / 加号）共用这一份，与上传落点分工明确：
+   * **这一层只碰本地文件，网络在发送那一步**。
+   *
+   * **图片给一张本地预览**：`URL.createObjectURL` 出来的是本机 blob，不产生任何请求；
+   * 非图片（或环境里没有这个 API，例如 jsdom）留空串，界面画一个文件片。
+   *
+   * **位置在 `send` 之前**：`send` 的依赖数组里有 `attachments` 与 `removeAttachments`，
+   * 而依赖数组是渲染期求值的——把这段放在 `send` 之后会当场抛
+   * `Cannot access 'removeAttachments' before initialization`。
+   */
+  const addAttachments = useCallback((files: File[]) => {
+    if (files.length === 0) return
+    setAttachments((prev) => [
+      ...prev,
+      ...files.map((file) => {
+        attachmentSeq += 1
+        return { id: `att${attachmentSeq}`, file, preview: imagePreview(file) }
+      }),
+    ])
+  }, [])
+
+  /**
+   * 移除若干份暂存附件。
+   *
+   * **预览地址要一并释放**：不释放的话每选一次图就多占一份 blob，直到整页刷新——
+   * 那正是 blob URL 最常见的泄漏方式（同一件事的第二半在下面那个卸载清理里）。
+   */
+  const removeAttachments = useCallback((ids: string[]) => {
+    if (ids.length === 0) return
+    const drop = new Set(ids)
+    setAttachments((prev) => {
+      for (const item of prev) {
+        if (drop.has(item.id)) releasePreview(item.preview)
+      }
+      return prev.filter((item) => !drop.has(item.id))
+    })
+  }, [])
+
+  const removeAttachment = useCallback((id: string) => removeAttachments([id]), [removeAttachments])
+
+  /** 卸载时把还没发出去的预览地址一起放掉（见 `removeAttachments`）。 */
+  const attachmentsRef = useRef(attachments)
+  attachmentsRef.current = attachments
+  useEffect(
+    () => () => {
+      for (const item of attachmentsRef.current) releasePreview(item.preview)
+    },
+    [],
+  )
+
   const turns = useMemo(() => buildTurns(messages), [messages])
   const sending = Boolean(live?.streaming && live.conversationId === conversationId)
   const pendingEntry = resolvingEntry || detailQuery.isLoading
@@ -942,10 +1080,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
        * 接口刚刚记下的那份了。
        */
       kbIds: string[] = effectiveKbIds,
+      /**
+       * 这一轮随发的附件（v0.55）。**只有 `send` 那条路会给**——它拿上传返回的条目
+       * 拼出快照；其余调用点（示例问题 / 重新生成 / 重试 / 命令）用默认空数组，
+       * 它们这一轮没有新上传的文件。
+       */
+      attachments: ChatAttachment[] = [],
     ) => {
       setMessages((prev) => [
         ...prev,
-        makeChatMessage('user', text),
+        // 附件要**当场**挂上用户气泡：刚发出去那一轮立刻就有文件片，不必等回看
+        makeChatMessage('user', text, { attachments }),
         makeChatMessage('assistant', '', {
           streaming: true,
           // 记下这一轮实际发出去的思考档：过程面板要如实显示"这一步做没做"
@@ -963,6 +1108,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           model_pk: model,
           thinking: thinkingOn,
           thinking_effort: thinkingEffort,
+          // **只把 key 交上去**：名字 / 类型 / 字节数由服务端按库里的记录回填
+          // （见 `ChatAttachment`），服务端还会校验它属于这条会话
+          attachments: attachments.map((item) => ({ key: item.key })),
         },
         { conversationId: target, query: text, thinking },
       )
@@ -1127,7 +1275,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     (!useKb || selectedKbIds.length > 0) &&
     query.trim().length > 0 &&
     !detailQuery.isLoading &&
-    !resolvingEntry
+    !resolvingEntry &&
+    // 上传期间不许再发（那一下会把这批附件重复上传一次）
+    !uploading
 
   const send = useCallback(async () => {
     const text = query.trim()
@@ -1171,6 +1321,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         )
         target = created.id
         /**
+         * 这一条是「新建态」的延续，不是"换会话"：两处都要放它过去，否则刚写上的
+         * 那一对消息会被"清空 + 用空详情覆盖"各擦一遍再画回来（用户看到的闪烁，v0.55）。
+         *
+         * - `createdEntryRef`：让"换会话"那个 effect 跳过这一次；
+         * - `appliedDetail`：这条会话的详情此刻**还是空的**（这一轮要跑完才落库），
+         *   照它 `setMessages` 会把流式中的正文当场擦掉，所以先上膛、别让它应用一次。
+         */
+        createdEntryRef.current = target
+        appliedDetail.current = target
+        /**
          * 继承来的库**当场**就是这一轮的库范围，同时把输入框的选择也改成它们。
          *
          * 不这么做的话，第一轮查的是"输入框里原来的那些"（默认是全部），而输入框
@@ -1209,13 +1369,56 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       }
     }
 
+    /**
+     * 暂存的附件**在这里**落到这条会话的文件区（v0.55）。
+     *
+     * 三件事的顺序都是必须的：
+     * 1. **先建会话再上传**——文件区的落点就是会话，没有会话时上传无处可去
+     *    （这也是"新项目要先对话一次才能传文件"那条反馈的根因，现在建会话发生在同一趟里）；
+     * 2. **上传失败就不发这一轮**：文件没上去，这一轮就少了它们，而用户以为已经带上了；
+     *    这时**保留输入的原文**（还没 `setQueryState('')`），他改一下就能重发；
+     * 3. **成功的那几份立刻从输入框拿掉**（连同预览地址），失败重发时才不会重复上传。
+     *
+     * 边传边攒`sentAttachments`（v0.55）：它就是"这一轮随发了哪几份"的**快照**，
+     * 交给 `streamTurn` 一起发出去与画进用户气泡。用**上传返回的条目**而不是本地那份
+     * `File`——key / 名字 / 类型 / 字节数都以服务端落完账的那份为准（同名会退成
+     * `名字 (2).ext`，本地名字可能与库里的不同）。
+     */
+    const sentAttachments: ChatAttachment[] = []
+    if (attachments.length > 0) {
+      setUploading(true)
+      const uploadedIds: string[] = []
+      try {
+        for (const item of attachments) {
+          const entry = await uploadFile(target, item.file)
+          uploadedIds.push(item.id)
+          sentAttachments.push({
+            key: entry.key,
+            name: entry.name,
+            kind: entry.kind,
+            size_bytes: entry.size_bytes,
+          })
+        }
+      } catch (cause) {
+        removeAttachments(uploadedIds)
+        notifyError(cause)
+        setUploading(false)
+        return
+      }
+      setUploading(false)
+      removeAttachments(attachments.map((item) => item.id))
+      // 文件区那份清单是"打开才拉"的（`wantConvFiles`），按 key 失效，下次打开就是新的
+      void queryClient.invalidateQueries({ queryKey: ['chat', 'files', target] })
+    }
+
     setQueryState('')
     if (text.startsWith('/')) {
       await runCommand(text, target, model, kbIds)
       return
     }
-    await streamTurn(text, context, model, target, kbIds)
+    await streamTurn(text, context, model, target, kbIds, sentAttachments)
   }, [
+    attachments,
     canSend,
     conversationId,
     effectiveKbIds,
@@ -1225,7 +1428,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     navigate,
     pendingWorkspaceId,
     query,
+    queryClient,
     refreshWorkspaceCounts,
+    removeAttachments,
     runCommand,
     sending,
     streamTurn,
@@ -1485,44 +1690,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const kbsRefetch = kbsQuery.refetch
-
-  /**
-   * 附件上传：**放进这条会话的文件区**，与知识库没有关系（2026-09-27 用户报的：
-   * "上传图片会直接传到知识库，不应与知识库绑定"）。
-   *
-   * 原先这里调的是 `uploadDocument(kbId, file)`——传一份文件等于往知识库里塞一篇文档，
-   * 没有可用的库时还只能拒绝（"文件才有地方放"）。正确的两条路是**分开的**：
-   * - **对话区传的文件**只作这一轮的上下文：落在这条会话的文件区里，`@` 能引用它、
-   *   agent 的文件工具（`list_files` / `read_file`）也读得到；
-   * - **进知识库**是另一件事：在知识库页面传，或者让 agent 调接口传。
-   *
-   * 落点必须是**会话**，所以还没有会话时如实说明（首条消息发出去就有了）。
-   */
-  const uploadFiles = useCallback(
-    (files: File[]) => {
-      if (files.length === 0) return
-      if (!conversationId) {
-        notifyWarning('先发出第一条消息，这条会话的文件区建好之后再传')
-        return
-      }
-      setUploading(true)
-      void (async () => {
-        try {
-          for (const file of files) await uploadFile(conversationId, file)
-          // 只报结果（原先那句"入库后就能被引用"是后果说明，2026-09-24 已清掉）
-          notifySuccess(`已把 ${formatCount(files.length)} 个文件放进这条会话的文件区`)
-          // 文件区那份清单是"打开才拉"的（`wantConvFiles`），这里按 key 失效，
-          // 下次打开就是新的——不为了这次上传把它提前拉起来
-          void queryClient.invalidateQueries({ queryKey: ['chat', 'files', conversationId] })
-        } catch (cause) {
-          notifyError(cause)
-        } finally {
-          setUploading(false)
-        }
-      })()
-    },
-    [conversationId, queryClient],
-  )
 
   // —— `@` 提及：候选来自知识库 + 这条会话的文件区 + 技能 + 会话列表
 
@@ -1812,7 +1979,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     toggleSkill,
     skills,
     skillsLoading: skillsQuery.isLoading,
-    uploadFiles,
+    attachments,
+    addAttachments,
+    removeAttachment,
     uploading,
     models,
     modelOptions: models.map((model) => ({

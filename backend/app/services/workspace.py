@@ -369,10 +369,20 @@ class WorkspaceService:
 
     # ------------------------------------------------------------------ 读
 
-    def list(self, *, user_id: str | None) -> list[WorkspaceView]:
-        """列出可见的工作区。``user_id=None`` = 管理员/API Key 通道，看全部。"""
+    def list(self, *, user_id: str | None, archived: bool = False) -> list[WorkspaceView]:
+        """列出可见的工作区。``user_id=None`` = 管理员/API Key 通道，看全部。
+
+        ``archived`` 与会话列表同口径（``services/conversation.py::list``）：默认
+        （``False``）只列**未归档**的，``True`` 时列**已归档**的——归档视图是一个
+        单独的视图，不是"多出来的一组"。归属过滤与归档过滤都在这里做，
+        存储层不认识调用者身份（同会话那条取舍）。
+        """
         records = self._stores.meta.list_workspaces()
-        visible = [item for item in records if self._visible(item, user_id)]
+        visible = [
+            item
+            for item in records
+            if self._visible(item, user_id) and (item.archived_at is not None) == archived
+        ]
         return [
             WorkspaceView(
                 record=item,
@@ -726,11 +736,15 @@ class WorkspaceService:
         root_path: str | None = None,
         description: str | None = None,
         kb_ids: list[str] | None = None,
+        archived: bool | None = None,
     ) -> WorkspaceRecord:
         """改工作区。**只改传进来的字段**（``None`` = 不动）。
 
         归属**不可改**：`owner_id` 不在参数里。把一个工作区转给别人，
         连带的是"里头会话里的 Agent 行为"——那是另一个功能，不该顺手做掉。
+
+        ``archived``（v0.55）与会话归档同一口径：**不是删除**，且**不推 ``updated_at``**
+        （归档是一次整理动作，不该把这个项目顶到"最近更新"的最前面）。
         """
         record = self.get(workspace_id, user_id=user_id)
         if name is not None:
@@ -748,7 +762,15 @@ class WorkspaceService:
             record.description = description.strip()
         if kb_ids is not None:
             record.kb_ids = tuple(dict.fromkeys(kb_ids))
-        return self._stores.meta.update_workspace(record)
+        # 只有"别的字段真的改了"才走 `update_workspace`——它会推 updated_at，
+        # 而**纯归档**那一下不该推（见 docstring）。与 API 的 PATCH 只带 archived 时对应。
+        touched = any(value is not None for value in (name, root_path, description, kb_ids))
+        if touched:
+            record = self._stores.meta.update_workspace(record)
+        if archived is not None:
+            self._stores.meta.set_workspace_archived(workspace_id, archived)
+            record = self._stores.meta.get_workspace(workspace_id) or record
+        return record
 
     def delete(self, workspace_id: str, *, user_id: str | None) -> None:
         """删工作区。**里面的会话退回未归档**，不跟着删（见存储层协议说明）。"""

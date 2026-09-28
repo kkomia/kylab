@@ -677,14 +677,35 @@ describe('同类工具合并（v0.26）', () => {
 
   it('每一条都带着它的工具名：图标靠它选，分组也靠它', () => {
     const steps = traceSteps(
+      turnWith([call('web_search', '联网搜索', ''), call('export_document', '导出文档', '')]),
+    )
+
+    expect(steps.map((item) => item.tool)).toEqual(['web_search', 'export_document'])
+  })
+
+  it('记忆与人设文件的读写不进过程面板（v0.55）', () => {
+    // 用户报的：这几步把"角色在后台读/写了哪些核心文件"摊在对话里，角色扮演感没了
+    const steps = traceSteps(
       turnWith([
+        call('read_memory', 'read_memory', ''),
         call('web_search', '联网搜索', ''),
-        call('export_document', '导出文档', ''),
+        call('write_memory', 'write_memory', ''),
         call('remember', '记住', ''),
       ]),
     )
 
-    expect(steps.map((item) => item.tool)).toEqual(['web_search', 'export_document', 'remember'])
+    expect(steps.map((item) => item.tool)).toEqual(['web_search'])
+  })
+
+  it('老快照没有工具名时，按中文标签也认得出来要隐藏的那一步', () => {
+    const steps = traceSteps(
+      turnWith([
+        step('tool', { label: '记住' }),
+        step('tool', { label: '写笔记', tool: 'create_note' }),
+      ]),
+    )
+
+    expect(steps.map((item) => item.label)).toEqual(['写笔记'])
   })
 })
 

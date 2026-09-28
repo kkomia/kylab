@@ -226,6 +226,13 @@ SETTING_GROUPS: dict[str, Any] = {
                 "label": "只读挂载目录（逗号分隔；留空用默认清单）",
                 "type": "text",
             },
+            # v0.55：无内核隔离时**默认降级为直接执行**（见 services/isolation.py 的模块头）。
+            # 打开这一项 = 严格：没有 bwrap / sandbox-exec / docker 时宁可跑不了也不裸跑。
+            {
+                "key": "sandbox.require_isolation",
+                "label": "无内核隔离时拒绝执行（关 = 降级为直接执行，未隔离）",
+                "type": "bool",
+            },
         ],
     },
     # 记忆（v0.14，见 docs/设计/记忆层设计-v0.1.md）。
@@ -341,6 +348,10 @@ DEFAULTS: dict[str, str] = {
     "sandbox.rules_allow": "",
     "sandbox.rules_ask": "",
     "sandbox.rules_deny": "",
+    # 无内核隔离时是否拒绝执行（v0.55）。**默认关 = 降级为直接执行**：没有它，
+    # Windows 本地与没挂 docker 的容器两边都跑不了命令（用户报的）；
+    # 打开它 = 严格，留给高敏部署（见 services/isolation.py 的模块头）。
+    "sandbox.require_isolation": "false",
     "web.search_provider": "tavily",
     # 留空 = 没配。**默认不填任何密钥**：预置一个"看起来能用"的值会让
     # 用户以为联网已经开了，然后在第一次搜索时得到一个别人的额度错误。

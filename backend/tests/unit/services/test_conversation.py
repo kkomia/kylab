@@ -62,6 +62,27 @@ def test_sources_are_stored_as_a_snapshot(service: ConversationService) -> None:
     assert [dict(item) for item in stored.sources] == snapshot
 
 
+def test_turn_attachments_are_snapshotted_on_the_user_message(
+    service: ConversationService,
+) -> None:
+    """随发的附件**挂在用户那条消息上**（v0.55）。
+
+    用户报的"对话中上传的文件，没有在我发送的对话中有文件组件标识"——根因是消息与
+    文件之间原先**没有任何关联**（文件只记到会话），所以这里钉住三件事：
+    写进去、读得回来、**回答那条不带**（附件是"带着哪几份文件问的"，不是回答的一部分）。
+    """
+    conv = service.create()
+    snapshot = [
+        {"key": "art_1", "name": "指南.pdf", "kind": "pdf", "size_bytes": 448444},
+    ]
+
+    service.record_turn(conv.id, question="看看这份", answer="好", attachments=snapshot)
+
+    user, assistant = service.messages(conv.id)
+    assert [dict(item) for item in user.attachments] == snapshot
+    assert list(assistant.attachments) == []
+
+
 # --------------------------------------------------------------------- 标题
 
 

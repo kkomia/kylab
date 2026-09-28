@@ -15,9 +15,9 @@
 - 回给模型的"怎么放开"那两条出路**在任何一条拒绝对话里都要在**，
   否则模型只能反复重试同一条命令。
 
-另外三条：不是管理员就拒绝（与端点同一档）、没有隔离就拒绝（**不回退成裸跑**，
-且**排在"问用户"之前**——问了也跑不了的事不该让对方白点一次）、
-命令拆得出 argv（``command`` 字符串也认，但不走 shell）。
+另外三条：不是管理员就拒绝（与端点同一档）、没有隔离时**默认降级为直接执行**
+（v0.55；只有开了「无隔离时拒绝执行」才拒绝，且**排在"问用户"之前**——问了也跑不了的事
+不该让对方白点一次）、命令拆得出 argv（``command`` 字符串也认，但不走 shell）。
 """
 
 from __future__ import annotations
@@ -315,11 +315,12 @@ def test_unknown_decision_never_means_allow(workspace, monkeypatch) -> None:  # 
 
 
 def test_isolation_is_checked_before_asking(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """没有隔离就**不问了**：问了也跑不了的事不该让对方白点一次。
+    """严格模式下没有隔离就**不问了**：问了也跑不了的事不该让对方白点一次。
 
     这一条钉的是顺序（隔离排在"问用户"之前）——反过来的话用户会点一次同意，
-    然后拿到的还是"这台机器上跑不了"。
+    然后拿到的还是"这台机器上跑不了"。严格模式 = 设置里打开「无隔离时拒绝执行」。
     """
+    workspace.runtime._values["sandbox.require_isolation"] = "true"
     monkeypatch.setattr(
         agent_exec, "_detect", lambda force=False: isolation_service.detect(prefer="none")
     )
@@ -351,14 +352,47 @@ def test_view_permission_stops_everything(workspace) -> None:  # type: ignore[no
 
 
 def test_without_isolation_it_refuses_instead_of_running_naked(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """**不回退成裸跑**：回退会把"我们以为它在沙箱里"变成一个静默的假象。"""
+    """**严格模式**下不回退成裸跑：回退会把"我们以为它在沙箱里"变成一个静默的假象。
+
+    严格 = 设置里打开「无隔离时拒绝执行」（v0.55 那一项）。默认是降级直执，
+    见下面 `test_without_isolation_degrades_to_direct_by_default`。
+    """
     _allow_all(workspace)
+    workspace.runtime._values["sandbox.require_isolation"] = "true"
     monkeypatch.setattr(
         agent_exec, "_detect", lambda force=False: isolation_service.detect(prefer="none")
     )
     outcome = run_command(workspace, _admin(), conversation_id=None, args={"command": "ls"})
     assert outcome.ran is False
     assert "没有可用的内核级隔离" in outcome.text
+
+
+def test_without_isolation_degrades_to_direct_by_default(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**默认降级为直接执行**（v0.55）：没有 bwrap / docker 的机器（本地 Windows、
+    没挂 docker 的容器）也要能跑命令——用户报的"明明指定了工作区，还是不能执行工具"。
+
+    降级不是"假装有沙箱"：执行后端如实报 ``direct``（未隔离），
+    回给模型的话里也写明"未隔离"，见 `isolation.direct_isolation`。
+    """
+    _allow_all(workspace)
+    monkeypatch.setattr(
+        agent_exec, "_detect", lambda force=False: isolation_service.detect(prefer="none")
+    )
+    seen: dict[str, object] = {}
+
+    def _fake_run(argv, **kwargs):  # type: ignore[no-untyped-def]
+        seen.update(kwargs)
+        return isolation_service.ExecutionResult(
+            exit_code=0, stdout="hello\n", stderr="", truncated=False, backend="direct"
+        )
+
+    monkeypatch.setattr(isolation_service, "run_isolated", _fake_run)
+    outcome = run_command(workspace, _admin(), conversation_id=None, args={"command": "ls"})
+
+    assert outcome.ran and outcome.ok
+    isolation = seen["isolation"]
+    assert getattr(isolation, "backend", "") == "direct"
+    assert "未隔离" in outcome.text
 
 
 def test_runs_when_policy_and_isolation_are_both_ready(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]

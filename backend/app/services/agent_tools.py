@@ -37,13 +37,15 @@ from app.services.agent_exec import run_command
 from app.services.agent_files import (
     DEFAULT_READ_LINES,
     MAX_LIST_ENTRIES,
+    MAX_READ_LINES,
     MAX_SEARCH_HITS,
     list_files,
+    read_bytes,
     read_file,
     resolve_roots,
     search_files,
 )
-from app.services.api_key import Caller
+from app.services.api_key import WRITE, Caller
 from app.services.chat import SourceRef
 from app.services.command_policy import (
     ACTION_ALLOW,
@@ -56,7 +58,7 @@ from app.services.mcp_client import normalized_server_name, split_qualified
 from app.services.memory import WRITABLE_PERSONA_FILES
 from app.services.schedules import timezone_name
 from app.services.tool_loop import ToolOutcome, ToolRunner
-from app.services.tools import ARTIFACT_KEY, call_tool, tool_definitions
+from app.services.tools import ARTIFACT_KEY, MAX_UPLOAD_BYTES, call_tool, tool_definitions
 
 __all__ = ["build_runner", "tool_specs"]
 
@@ -308,15 +310,91 @@ _LOCAL_TOOLS: tuple[dict[str, Any], ...] = (
         ),
         "inputSchema": {"type": "object", "properties": {}},
     },
+    # ---- 会话文件区（v0.55，用户报的"上传的图片文件不是应该能用来交互吗"）----
+    #
+    # 这两个工具补的是一个**真实的洞**：`list_files` / `read_file` 只看工作区与沙箱
+    # 两个根，而**没挂工作区的会话**把用户上传的文件放在对象存储里——模型原先
+    # 既列不到、也拿不到 artifact_id，于是"上传一张图问它"完全无从谈起。
+    {
+        "name": "list_conversation_files",
+        "description": (
+            "列**这条会话的文件**：对方上传的文件、以及你之前产出的文件都在这儿（平铺一层）。"
+            "**对方说「我传的那个文件」时先列一眼**，不要凭文件名猜内容。"
+            "项目目录里的文件（用户自己的项目文件）不在这里——那种用 `list_files`。"
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "read_conversation_file",
+        "description": (
+            "读会话文件区里的一份**文本**文件（按行分页，key 用 list_conversation_files 给的）。"
+            "图片 / PDF / Office 这类二进制读不出来——那种要先用 `ingest_file` 加进知识库，"
+            "切块完成后再用 `search` 检索它的内容。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "list_conversation_files 给出的 key"},
+                "offset": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "从第几行开始读，默认 1",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_READ_LINES,
+                    "description": f"最多读几行，默认 {DEFAULT_READ_LINES}",
+                },
+            },
+            "required": ["key"],
+        },
+    },
+    {
+        "name": "ingest_file",
+        "description": (
+            "把**会话里已经有的一份文件**加进知识库（对方上传的、或你自己产出的都算）。"
+            "`path` 给 `list_conversation_files` 的 key，或工作区/沙箱里的相对路径"
+            "（后者可用 `where` 指定哪个根）。入库是异步的：返回 document_id 后"
+            "用 `get_document_status` 查进度，处理完就能被 `search` 检索到。"
+            "**图片 / PDF / Office 这类读不出文本的文件，看内容就只有这一条路。**"
+            "大文件也走这个（`upload_document` 要把内容写成 base64 放进参数，只适合很小的文本）。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "knowledge_base_id": {"type": "string"},
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "文件区的 key（list_conversation_files），或工作区/沙箱里的相对路径"
+                    ),
+                },
+                "where": {
+                    "type": "string",
+                    "enum": ["workspace", "sandbox"],
+                    "description": "按本机路径找时用哪个根；留空 = 有工作区就用工作区",
+                },
+            },
+            "required": ["knowledge_base_id", "path"],
+        },
+    },
 )
 
 #: 这些工具**同样属于知识库那一侧**：关掉知识库开关时它们一起消失。
 #: 判据是"数据从哪来"——表格副本就是入库文档的产物，用户关掉知识库时
 #: 不该还留一条按 SQL 读库里内容的近路（与 ``_KB_TOOLS`` 同一条纪律）。
-_LOCAL_KB_TOOLS = frozenset({"list_tables", "query_table"})
+_LOCAL_KB_TOOLS = frozenset({"list_tables", "query_table", "ingest_file"})
 
 #: 文件三件事：一趟走 ``agent_files`` 的那三个函数（它们共用"两个根"的解析）。
 _FILE_TOOLS = frozenset({"list_files", "read_file", "search_files"})
+
+#: **会话文件区**的两个工具（v0.55）：``list_conversation_files`` / ``read_conversation_file``。
+#:
+#: 为什么不并进 ``_FILE_TOOLS``：那一组认的是"两个根"（工作区 / 沙箱），而文件区
+#: 是**另一层**——没挂工作区的会话把文件放在对象存储里，那里既不是工作区也不是沙箱
+#: （见 ``services/artifacts.py`` 的 ``ArtifactSpot``）。三种落点各走各的门。
+_CONVERSATION_FILE_TOOLS = frozenset({"list_conversation_files", "read_conversation_file"})
 
 #: 读记忆正文时默认读几行、最多读几行。
 #:
@@ -685,6 +763,10 @@ def build_runner(
             return ToolOutcome(content=_read_skill(services, args))
         if name in _FILE_TOOLS:
             return _run_file_tool(name, _roots(), args)
+        if name in _CONVERSATION_FILE_TOOLS:
+            return _run_conversation_file_tool(name, services, conversation_id, args)
+        if name == "ingest_file":
+            return _ingest_file(services, caller, conversation_id, _roots(), args)
         if name == "read_memory":
             return _read_memory(services, caller, args)
         if name == "write_memory":
@@ -1000,6 +1082,168 @@ def _run_file_tool(name: str, roots: Any, args: dict[str, Any]) -> ToolOutcome:
     return ToolOutcome(
         content=_join_blocks(head, chr(10).join(lines) or "（没有命中）", str(payload["note"])),
         summary=f"命中 {payload['total']} 处" if hits else "没有命中",
+    )
+
+
+# ------------------------------------------------------------------ 会话文件区（v0.55）
+
+
+def _run_conversation_file_tool(
+    name: str, services: Any, conversation_id: str | None, args: dict[str, Any]
+) -> ToolOutcome:
+    """会话文件区那两个工具的入口（列 / 读）。
+
+    **为什么必须存在**：用户报的"我们不是有 minio 吗，非工作区会话上传的图片文件
+    不是应该能用来交互吗"——查下来发现存储那一半早就对了（没挂工作区的会话，
+    上传确实落进对象存储），**缺的是"让 agent 用得上它"**：``list_files`` / ``read_file``
+    只看工作区与沙箱两个根，而对象存储里的那份文件哪个根都不是，模型既列不到、
+    也拿不到 ``artifact_id``，连 ``ingest_artifact`` 都用不上。
+
+    两个动作都走 ``services.artifacts``（它自己按会话决定落点：工作区模式给相对路径、
+    对象模式给产物 id），所以这里**同一个工具在两种会话下都成立**。
+    """
+    if not conversation_id:
+        return ToolOutcome(
+            content="这条链路没有会话，用不了文件区（要看本机文件用 list_files）。"
+        )
+    if name == "list_conversation_files":
+        try:
+            # 会话文件区是**平铺**的（记录驱动），没有 path 可言——见 artifacts.list_files
+            listing = services.artifacts.list_files(conversation_id)
+        except KylabError as exc:
+            return ToolOutcome(content=f"列不了这条会话的文件：{exc}")
+        lines = [
+            f"{'d' if item.is_dir else 'f'} {item.key}"
+            + ("" if item.is_dir else f"（{_size_text(item.size_bytes)}）")
+            for item in listing.entries
+        ]
+        note = "这份清单被截断过（只给了前一批）" if listing.truncated else ""
+        return ToolOutcome(
+            content=_join_blocks(
+                f"{listing.label}：{len(listing.entries)} 项",
+                chr(10).join(lines) or "（文件区是空的）",
+                note,
+            ),
+            summary=f"{listing.label} {len(listing.entries)} 项",
+        )
+
+    key = str(args.get("key") or "").strip()
+    if not key:
+        return ToolOutcome(content="缺少参数：key（用 list_conversation_files 拿）")
+    try:
+        content, filename = services.artifacts.read_file(conversation_id, key)
+    except KylabError as exc:
+        return ToolOutcome(content=f"读不了这份文件：{exc}")
+    text = _text_or_none(content)
+    if text is None:
+        return _binary_file_outcome(filename, key)
+    lines = text.splitlines()
+    start = max(1, _int_or_none(args.get("offset")) or 1)
+    limit = max(1, min(MAX_READ_LINES, _int_or_none(args.get("limit")) or DEFAULT_READ_LINES))
+    window = lines[start - 1 : start - 1 + limit]
+    body = chr(10).join(f"{start + index}: {line}" for index, line in enumerate(window))
+    more = start + len(window) <= len(lines)
+    return ToolOutcome(
+        content=_join_blocks(
+            f"【{filename}】第 {start}–{start + len(window) - 1} 行（共 {len(lines)} 行）",
+            body or "（这一段是空的）",
+            f"接着读用 offset={start + len(window)}" if more else "",
+        ),
+        summary=f"读了 {filename} 的 {len(window)} 行",
+    )
+
+
+def _text_or_none(content: bytes) -> str | None:
+    """字节 → 文本；**二进制给 ``None``**（判据与 ``agent_files._looks_binary`` 同一条：
+    前 4KB 里有 NUL，或者根本不是合法 UTF-8）。"""
+    if b"\x00" in content[:4096]:
+        return None
+    try:
+        return content.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _binary_file_outcome(filename: str, key: str) -> ToolOutcome:
+    """二进制读不了——**如实说，并给出下一步**（入库 → 检索）。
+
+    这条出路是这个工具存在的另一半：图片与 PDF 的内容，当前链路**没有多模态**
+    可以"看"，唯一能读到的办法就是先进知识库、让解析器把它转成文本再检索。
+    """
+    return ToolOutcome(
+        content=(
+            f"{filename} 是二进制文件（图片 / PDF / Office 之类），读不出文本。"
+            "要看它的内容：先用 ingest_file 把它加进知识库"
+            f"（path 给同一个 key：{key}），处理完再用 search 检索。"
+        ),
+        summary="二进制文件，读不出文本",
+    )
+
+
+def _ingest_file(
+    services: Any,
+    caller: Caller,
+    conversation_id: str | None,
+    roots: Any,
+    args: dict[str, Any],
+) -> ToolOutcome:
+    """把**会话里已经有的文件**加进知识库（v0.55）。
+
+    两条来源，按顺序找（顺序是刻意的：文件区是"用户给的东西"，文件面是"模型自己造的东西"）：
+
+    1. **会话文件区**（``artifacts.read_file``）——用户上传的、以及产出的文件。
+       工作区模式按相对路径落到磁盘，对象模式按产物 id 取对象存储里那份；
+    2. **文件面**（``agent_files.read_bytes``）——工作区 / 沙箱里的相对路径，
+       可以给 ``where`` 指定哪个根。
+
+    入库那一半**与 ``upload_document`` 共用同一份实现**（``ingest.submit`` +
+    ``documents.enqueue_ingest``）：两条路只是"字节从哪儿来"不同，落库之后一模一样。
+    """
+    kb_id = str(args.get("knowledge_base_id") or "").strip()
+    path = str(args.get("path") or "").strip()
+    if not kb_id or not path:
+        return ToolOutcome(content="缺少参数：knowledge_base_id 与 path")
+    # 写操作先过作用域：越界时指出是哪个库（模型据此能告诉对方"这把 Key 没那个库的写权限"）
+    services.api_keys.check_access(caller, need=WRITE, kb_ids=[kb_id])
+
+    content: bytes | None = None
+    filename = path.rsplit("/", 1)[-1] or "文件"
+    if conversation_id:
+        try:
+            content, filename = services.artifacts.read_file(conversation_id, path)
+        except KylabError:
+            # 不在文件区里就往下走文件面——**不是错误**，两条来源本来就都常见
+            content = None
+    if content is None:
+        try:
+            content, filename = read_bytes(
+                roots, where=args.get("where"), path=path, max_bytes=MAX_UPLOAD_BYTES
+            )
+        except KylabError as exc:
+            return ToolOutcome(
+                content=(
+                    f"找不到这份文件：{path}（{exc}）。"
+                    "文件区的 key 用 list_conversation_files 拿；本机的相对路径用 list_files 拿。"
+                )
+            )
+
+    outcome = services.ingest.submit(
+        knowledge_base_id=kb_id,
+        filename=filename,
+        content=content,
+        # 记上"是谁传的"（与 upload_document 同一口径）
+        uploaded_by=caller.user.id if caller.user is not None else None,
+    )
+    if not outcome.is_duplicate:
+        services.documents.enqueue_ingest(outcome.document.id)
+    return ToolOutcome(
+        content=_join_blocks(
+            f"{outcome.document.name} → {outcome.document.id}",
+            "内容与库里已有文档相同，没有重复入库"
+            if outcome.is_duplicate
+            else "已入队处理，可以用 get_document_status 查进度；处理完就能被 search 检索到",
+        ),
+        summary="已放进知识库" if not outcome.is_duplicate else "库里已有同一份",
     )
 
 

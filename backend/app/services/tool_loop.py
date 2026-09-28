@@ -190,6 +190,11 @@ _LABELS = {
     "query_table": "查表格",
     "schedule_task": "挂定时任务",
     "list_scheduled_tasks": "查看定时任务",
+    # 会话文件区（v0.55）：名字照旧说清"它替我做了什么"——"上传的文件"是用户此刻
+    # 脑子里那个说法（他说"我传的那个文件"），比"会话文件区"更直接
+    "list_conversation_files": "查看上传的文件",
+    "read_conversation_file": "读上传的文件",
+    "ingest_file": "把文件加入知识库",
 }
 
 

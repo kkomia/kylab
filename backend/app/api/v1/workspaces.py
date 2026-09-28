@@ -56,6 +56,7 @@ def _out(record, conversation_count: int) -> WorkspaceOut:  # type: ignore[no-un
         conversation_count=conversation_count,
         created_at=record.created_at,
         updated_at=record.updated_at,
+        archived_at=record.archived_at,
     )
 
 
@@ -63,8 +64,17 @@ def _out(record, conversation_count: int) -> WorkspaceOut:  # type: ignore[no-un
 def list_workspaces(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_read)],
+    archived: bool = Query(
+        default=False,
+        description="false（默认）= 未归档的项目；true = 已归档的项目（v0.55）",
+    ),
 ) -> WorkspaceListOut:
-    views = services.workspaces.list(user_id=_owner(caller))
+    """默认只列**未归档**的项目；``archived=true`` 列出**已归档**的（归档视图）。
+
+    与会话列表同一口径：归档的项目不进默认视图，要看它们得显式要——
+    这样"收起来"才真的把侧栏腾干净，而找回来也有一个明确的地方。
+    """
+    views = services.workspaces.list(user_id=_owner(caller), archived=archived)
     return WorkspaceListOut(items=[_out(view.record, view.conversation_count) for view in views])
 
 
@@ -185,7 +195,7 @@ def update_workspace(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
 ) -> WorkspaceOut:
-    """名字 / 根目录 / 描述 / 知识库都可选，只改传了的那些。
+    """名字 / 根目录 / 描述 / 知识库 / 归档都可选，只改传了的那些。
 
     **归属不可改**：把一个工作区转给别人，连带的是"里头会话的 Agent 行为"，
     那是另一个功能，不该顺手做掉。
@@ -197,6 +207,7 @@ def update_workspace(
         root_path=payload.root_path,
         description=payload.description,
         kb_ids=payload.kb_ids,
+        archived=payload.archived,
     )
     return _out(record, services.workspaces.conversation_count(workspace_id))
 

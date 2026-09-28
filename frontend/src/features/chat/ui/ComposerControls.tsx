@@ -12,7 +12,17 @@
  * 一颗**没有容器的裸开关**（`border-radius: 0`、无底色），一行里两种形态。
  */
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
-import { Bot, Check, ChevronDown, ChevronRight, Folder, Plus, Sparkles, Upload } from 'lucide-react'
+import {
+  Bot,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  FolderUp,
+  Plus,
+  Sparkles,
+  Upload,
+} from 'lucide-react'
 import { useState } from 'react'
 
 import { formatCount, formatPercent } from '@/lib/format'
@@ -102,9 +112,12 @@ const CHECK_SLOT = 'inline-flex w-[14px] shrink-0 justify-end text-[var(--accent
  */
 export function PlusMenu({
   onPickFiles,
+  onPickFolder,
   onBrowseFiles,
 }: {
   onPickFiles: () => void
+  /** 选一整个文件夹（整棵目录按相对路径传上去，见 `Composer` 那一处）。 */
+  onPickFolder: () => void
   onBrowseFiles: () => void
 }) {
   const chat = useChat()
@@ -132,6 +145,11 @@ export function PlusMenu({
           <DropdownMenu.Item className={ITEM} onSelect={onPickFiles}>
             <Upload size={15} />
             <span>添加文件和图片</span>
+          </DropdownMenu.Item>
+          {/* 文件夹单独一条：目录选择要靠 `webkitdirectory`，与"选文件"那个 input 不是同一个 */}
+          <DropdownMenu.Item className={ITEM} onSelect={onPickFolder}>
+            <FolderUp size={15} />
+            <span>添加文件夹</span>
           </DropdownMenu.Item>
           {/* 浏览文件区与"添加"是两件事：一个是往这一轮里塞素材，一个是看已经在那儿的文件 */}
           <DropdownMenu.Item className={ITEM} onSelect={onBrowseFiles}>

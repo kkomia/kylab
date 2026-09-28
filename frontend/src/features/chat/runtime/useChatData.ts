@@ -18,6 +18,7 @@ import {
   listFiles,
   type ConversationDetail,
   type ConversationFileListing,
+  type FileScope,
 } from '@/api/conversations'
 import { getRegistry, type RegisteredModel } from '@/api/modelRegistry'
 import { listKnowledgeBases, type KnowledgeBase } from '@/api/knowledgeBases'
@@ -140,6 +141,9 @@ export function useConversations(limit = 50) {
  * 这几件事本来就是同一个回答的几半，拆开传只会让"哪一层"多一个来源。
  * `@` 提及只取 `entries`（见 `ChatProvider`）。
  *
+ * **`scope` 也要进缓存键**（v0.55）：会话档与项目档是两份不同的列表，只按 `path`
+ * 分会互相命中——切到项目档看到的是刚缓存的会话文件，反之亦然。
+ *
  * 按 `path` 分开缓存：进子目录再退回来不该重跑一次请求。
  *
  * **`staleTime` 是 0（每层都当"可能已经变了"）**：文件区是这条会话里**一起在长**的东西
@@ -147,10 +151,15 @@ export function useConversations(limit = 50) {
  * 每次打开与每次换目录都重读一遍，这里用同一个口径；react-query 会把并发的同 key
  * 请求合成一条，所以"重读"不会变成重复往返。
  */
-export function useConversationFiles(conversationId: string, enabled: boolean, path = '') {
+export function useConversationFiles(
+  conversationId: string,
+  enabled: boolean,
+  path = '',
+  scope: FileScope = 'conversation',
+) {
   return useQuery({
-    queryKey: ['chat', 'files', conversationId, path],
-    queryFn: (): Promise<ConversationFileListing> => listFiles(conversationId, path),
+    queryKey: ['chat', 'files', conversationId, scope, path],
+    queryFn: (): Promise<ConversationFileListing> => listFiles(conversationId, path, scope),
     enabled: enabled && Boolean(conversationId),
   })
 }

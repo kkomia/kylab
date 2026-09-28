@@ -7,7 +7,7 @@
  * 消息的原对象从 `getExternalStoreMessages` 回读——assistant-ui 只管"这是第几条、
  * 谁说的"，过程面板/出处/交付物这些属于我们的字段一个字都没经过它。
  */
-import { Copy, RotateCcw, StickyNote, TriangleAlert } from 'lucide-react'
+import { Copy, File as FileIcon, RotateCcw, StickyNote, TriangleAlert } from 'lucide-react'
 
 import {
   degradedReason,
@@ -19,6 +19,7 @@ import {
   type Message,
   type Turn,
 } from '@/features/chat/model/turns'
+import { formatBytes } from '@/lib/format'
 
 import { AnswerText } from './AnswerText'
 import { Deliverables } from './Deliverables'
@@ -55,9 +56,40 @@ function UserMessage({ message, turnIndex }: { message: ChatMessage; turnIndex: 
       >
         <Copy size={13} />
       </button>
-      <p className="m-0 max-w-[min(78%,620px)] rounded-[var(--radius-panel)_var(--radius-panel)_var(--space-1)_var(--radius-panel)] border border-[var(--border-hairline)] bg-[var(--bg-subtle)] px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--text-body-size)] whitespace-pre-wrap text-[var(--text-primary)] [overflow-wrap:anywhere]">
-        {message.text}
-      </p>
+      <div className="flex max-w-[min(78%,620px)] flex-col items-end gap-[var(--space-2)]">
+        <p className="m-0 max-w-full w-fit rounded-[var(--radius-panel)_var(--radius-panel)_var(--space-1)_var(--radius-panel)] border border-[var(--border-hairline)] bg-[var(--bg-subtle)] px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--text-body-size)] whitespace-pre-wrap text-[var(--text-primary)] [overflow-wrap:anywhere]">
+          {message.text}
+        </p>
+        {/*
+          随发的附件（v0.55）：一份一个小片，摆在提问文本**下方**。
+          点它开「产物与文件」抽屉并直落这一份（与产物卡片同一条路），所以 key / name / kind
+          三个一起给过去——光有 key 猜不出该用哪个渲染器（见 `ChatProvider.filesSeed`）。
+          aria-label 带上文件名，读屏才分得出点的是哪一份。
+        */}
+        {message.attachments.length > 0 ? (
+          <ul className="m-0 flex list-none flex-wrap justify-end gap-[var(--space-2)] p-0">
+            {message.attachments.map((file) => (
+              <li key={file.key}>
+                <button
+                  type="button"
+                  className="inline-flex max-w-[220px] cursor-pointer items-center gap-[var(--space-1)] rounded-[var(--radius-control)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-[var(--space-2)] py-[var(--space-1)] text-left text-[length:var(--text-micro-size)] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+                  aria-label={`预览 ${file.name}`}
+                  title={file.name}
+                  onClick={() =>
+                    chat.openFiles({ key: file.key, name: file.name, kind: file.kind })
+                  }
+                >
+                  <FileIcon size={13} aria-hidden="true" className="shrink-0" />
+                  <span className="truncate">{file.name}</span>
+                  <span className="tabular shrink-0 text-[var(--text-tertiary)]">
+                    {formatBytes(file.size_bytes)}
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </div>
     </div>
   )
 }

@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-from app.core.exceptions import InvalidRequestError
+from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services import agent_tools, memory_files
 from app.services.agent_files import Roots
 from app.services.api_key import Caller
@@ -344,6 +344,197 @@ def test_read_memory_description_says_when_to_use_it() -> None:
     description = specs["read_memory"].description
 
     assert "recall" in description and "展开" in description
+
+
+# ------------------------------------------------------------------ 会话文件区（v0.55）
+
+
+class _FakeArtifacts:
+    """会话文件区的假件：只实现那两个工具用到的方法（形状与真的一致）。"""
+
+    def __init__(
+        self,
+        *,
+        label: str = "本会话",
+        entries: list[Any] | None = None,
+        blobs: dict[str, bytes] | None = None,
+        truncated: bool = False,
+    ) -> None:
+        self.label = label
+        self.entries = list(entries or [])
+        self.blobs = dict(blobs or {})
+        self.truncated = truncated
+
+    def list_files(self, conversation_id: str, path: str = "") -> Any:
+        return SimpleNamespace(label=self.label, entries=self.entries, truncated=self.truncated)
+
+    def read_file(self, conversation_id: str, key: str) -> tuple[bytes, str]:
+        if key not in self.blobs:
+            raise NotFoundError(f"文件区里没有这份：{key}")
+        return self.blobs[key], key.rsplit("/", 1)[-1]
+
+
+class _FakeIngest:
+    def __init__(self, *, duplicate: bool = False) -> None:
+        self.duplicate = duplicate
+        self.calls: list[dict[str, Any]] = []
+
+    def submit(self, **kwargs: Any) -> Any:
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            document=SimpleNamespace(id="doc_new", name=kwargs["filename"]),
+            is_duplicate=self.duplicate,
+        )
+
+
+class _FakeDocuments:
+    def __init__(self) -> None:
+        self.enqueued: list[str] = []
+
+    def enqueue_ingest(self, document_id: str) -> None:
+        self.enqueued.append(document_id)
+
+
+class _FakeApiKeys:
+    def __init__(self) -> None:
+        self.checks: list[tuple[Any, list[str]]] = []
+
+    def check_access(self, caller: Any, *, need: Any = None, kb_ids: Any = None) -> None:
+        self.checks.append((need, list(kb_ids or [])))
+
+
+def _file_services(artifacts: Any = None, *, duplicate: bool = False) -> _FakeServices:
+    return _FakeServices(
+        artifacts=artifacts,
+        ingest=_FakeIngest(duplicate=duplicate),
+        documents=_FakeDocuments(),
+        api_keys=_FakeApiKeys(),
+    )
+
+
+def test_conversation_file_tools_are_always_there() -> None:
+    """会话文件区那两个**不依赖知识库**：用户上传的东西与"查不查库"没关系。"""
+    names = _names(None)
+    assert {"list_conversation_files", "read_conversation_file"} <= names
+
+
+def test_ingest_file_follows_the_knowledge_base_switch() -> None:
+    """入库是**写知识库**：关掉开关时它一起消失（与表格那两个同一条纪律）。"""
+    assert "ingest_file" in _names(["kb_x"])
+    assert "ingest_file" not in _names(None)
+
+
+def test_list_conversation_files_renders_the_file_area() -> None:
+    entry = SimpleNamespace(key="art_1", name="报告.txt", is_dir=False, size_bytes=2048)
+    services = _file_services(_FakeArtifacts(entries=[entry]))
+
+    outcome = agent_tools._run_conversation_file_tool(
+        "list_conversation_files", services, "c1", {}
+    )
+
+    assert "本会话" in outcome.content
+    assert "art_1" in outcome.content
+    assert outcome.summary == "本会话 1 项"
+
+
+def test_conversation_file_tools_say_so_without_a_conversation() -> None:
+    """没有会话（外部 MCP 客户端那条链路）时**如实说**，而不是抛。"""
+    services = _file_services(_FakeArtifacts())
+    for name in ("list_conversation_files", "read_conversation_file"):
+        outcome = agent_tools._run_conversation_file_tool(name, services, None, {"key": "k"})
+        assert "文件区" in outcome.content
+
+
+def test_read_conversation_file_pages_text() -> None:
+    blob = "第一行\n第二行\n第三行\n".encode()
+    services = _file_services(_FakeArtifacts(blobs={"notes.txt": blob}))
+
+    outcome = agent_tools._run_conversation_file_tool(
+        "read_conversation_file", services, "c1", {"key": "notes.txt", "offset": 2, "limit": 1}
+    )
+
+    assert "2: 第二行" in outcome.content
+    assert "共 3 行" in outcome.content
+
+
+def test_read_conversation_file_tells_binary_how_to_ingest() -> None:
+    """二进制读不出来时**给出下一步**（入库 → 检索）——当前链路没有多模态，
+    这是唯一能"看"到图片 / PDF 内容的路。"""
+    services = _file_services(_FakeArtifacts(blobs={"shot.png": b"\x89PNG\x00\x00"}))
+
+    outcome = agent_tools._run_conversation_file_tool(
+        "read_conversation_file", services, "c1", {"key": "shot.png"}
+    )
+
+    assert "二进制" in outcome.content
+    assert "ingest_file" in outcome.content
+
+
+def test_ingest_file_reads_from_the_conversation_file_area() -> None:
+    """文件区命中：字节从那儿来，落库那一段与 ``upload_document`` 同一条路。"""
+    services = _file_services(_FakeArtifacts(blobs={"报告.pdf": b"pdf-bytes"}))
+
+    outcome = agent_tools._ingest_file(
+        services,
+        Caller(is_admin=True),
+        "c1",
+        Roots(workspace=None, sandbox=Path(".")),
+        {"knowledge_base_id": "kb_1", "path": "报告.pdf"},
+    )
+
+    assert services.ingest.calls[0]["filename"] == "报告.pdf"
+    assert services.ingest.calls[0]["content"] == b"pdf-bytes"
+    assert services.documents.enqueued == ["doc_new"]
+    assert "doc_new" in outcome.content
+
+
+def test_ingest_file_falls_back_to_the_file_face(tmp_path: Path) -> None:
+    """文件区没有这份（模型自己 ``run_command`` 造出来的东西）就落到工作区/沙箱那一侧。"""
+    (tmp_path / "out.csv").write_bytes(b"a,b\n1,2\n")
+    services = _file_services(_FakeArtifacts())
+
+    outcome = agent_tools._ingest_file(
+        services,
+        Caller(is_admin=True),
+        "c1",
+        Roots(workspace=tmp_path, sandbox=tmp_path),
+        {"knowledge_base_id": "kb_1", "path": "out.csv"},
+    )
+
+    assert services.ingest.calls[0]["content"] == b"a,b\n1,2\n"
+    assert "doc_new" in outcome.content
+
+
+def test_ingest_file_reports_a_duplicate_without_enqueueing() -> None:
+    """库里已有同一份：**不重复入库、也不入队**，并如实说。"""
+    services = _file_services(_FakeArtifacts(blobs={"a.txt": b"x"}), duplicate=True)
+
+    outcome = agent_tools._ingest_file(
+        services,
+        Caller(is_admin=True),
+        "c1",
+        Roots(workspace=None, sandbox=Path(".")),
+        {"knowledge_base_id": "kb_1", "path": "a.txt"},
+    )
+
+    assert services.documents.enqueued == []
+    assert "相同" in outcome.content
+
+
+def test_ingest_file_says_where_to_find_paths_when_missing() -> None:
+    """找不到时要说清"两种路径分别从哪儿拿"——否则模型只能瞎猜。"""
+    services = _file_services(_FakeArtifacts())
+
+    outcome = agent_tools._ingest_file(
+        services,
+        Caller(is_admin=True),
+        "c1",
+        Roots(workspace=None, sandbox=Path(".")),
+        {"knowledge_base_id": "kb_1", "path": "nope.pdf"},
+    )
+
+    assert "list_conversation_files" in outcome.content
+    assert "list_files" in outcome.content
 
 
 def test_read_memory_expands_a_hit_by_line_window(tmp_path: Path) -> None:

@@ -1011,6 +1011,12 @@ U3_ALLOWED: tuple[tuple[str, str, str], ...] = (
         "删除后不可恢复",
         "④ 删除会话前的后果确认，并给出替代动作（归档，可取消）",
     ),
+    (
+        "frontend/src/features/layout/WorkspaceRowMenu.tsx",
+        "里面的会话不会被删",
+        "④ 删除项目前的后果确认：说清「会话不会被删、只是退回对话栏」，"
+        "并给出替代动作（归档，可取消）",
+    ),
     # ① 失败/停滞态：说清"现在怎么了、能做什么"。
     (
         "frontend/src/features/knowledge/ProcessingTimeline.tsx",

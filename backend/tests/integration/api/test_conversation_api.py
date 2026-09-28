@@ -654,7 +654,7 @@ def test_file_area_of_a_bare_conversation_lists_its_artifacts(client: TestClient
     body = client.get(f"/api/v1/conversations/{conversation['id']}/files").json()
 
     assert body["mode"] == "object"
-    assert body["label"] == "本会话"
+    assert body["label"] == "本会话的文件"
     assert [item["name"] for item in body["entries"]] == ["短诗.docx"]
     assert body["entries"][0]["kind"] == "docx"
 
@@ -716,7 +716,11 @@ def test_file_listing_refuses_another_conversations_key(client: TestClient) -> N
 def test_workspace_backed_conversation_browses_the_real_directory(
     client: TestClient, tmp_path
 ) -> None:
-    """挂了工作区就是那个真实目录，能进子目录、能上传进子目录。"""
+    """挂了工作区多出一档 ``scope=project``（能进子目录），而**默认那档是会话的文件**。
+
+    v0.55 起上传不再写进项目目录（用户报的"同项目里上传的文件分不开"），
+    所以这里同时钉住三件事：项目档照旧能浏览、上传落**会话档**、项目目录一个字节都没多。
+    """
     services = get_services()
     root = tmp_path / "proj"
     root.mkdir()
@@ -728,13 +732,31 @@ def test_workspace_backed_conversation_browses_the_real_directory(
     ).json()
     base = f"/api/v1/conversations/{conversation['id']}/files"
 
-    listing = client.get(base).json()
+    # 默认档：这条会话的文件（此刻是空的——项目里的东西不属于它）
+    default = client.get(base).json()
+    assert default["label"] == "本会话的文件" and default["entries"] == []
+
+    listing = client.get(base, params={"scope": "project"}).json()
     assert listing["mode"] == "workspace" and listing["label"] == "工作区「我的项目」"
     assert [item["name"] for item in listing["entries"]] == ["章节"]
 
-    inner = client.get(base, params={"path": "章节"}).json()
+    inner = client.get(base, params={"path": "章节", "scope": "project"}).json()
     assert inner["path"] == "章节" and inner["parent"] == ""
     assert inner["entries"][0]["kind"] == "md"
 
-    client.post(base, params={"path": "章节"}, files={"file": ("二.md", b"x", "text/markdown")})
-    assert (root / "章节" / "二.md").read_bytes() == b"x"
+    client.post(base, files={"file": ("二.md", b"x", "text/markdown")})
+    # 上传**不落项目目录**，而是进会话档
+    assert not (root / "章节" / "二.md").exists()
+    assert [item["name"] for item in client.get(base).json()["entries"]] == ["二.md"]
+
+
+def test_project_scope_without_a_workspace_says_so(client: TestClient) -> None:
+    """没挂工作区时 ``scope=project`` **明确说清**，而不是给一个空列表。"""
+    conversation = client.post("/api/v1/conversations", json={"title": "没项目"}).json()
+
+    response = client.get(
+        f"/api/v1/conversations/{conversation['id']}/files", params={"scope": "project"}
+    )
+
+    assert response.status_code == 422, response.text
+    assert "没有挂工作区" in response.json()["message"]

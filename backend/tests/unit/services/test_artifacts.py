@@ -16,7 +16,12 @@ import pytest
 from app.core.exceptions import NotFoundError
 from app.core.services import Services
 from app.services.api_key import Caller
-from app.services.artifacts import ArtifactService, safe_filename, split_filename
+from app.services.artifacts import (
+    ARTIFACT_SCOPE_PROJECT,
+    ArtifactService,
+    safe_filename,
+    split_filename,
+)
 from app.storage.base import ARTIFACT_IN_OBJECTS, ARTIFACT_IN_WORKSPACE
 
 
@@ -321,7 +326,7 @@ def test_unwired_ingest_says_so_instead_of_silently_doing_nothing(conversation: 
 
 
 def test_temp_area_lists_the_conversations_files(services: Services, conversation: str) -> None:
-    """没挂工作区的会话也有"文件"可看：临时区里就是这条会话的产物。"""
+    """没挂工作区的会话也有"文件"可看：**会话文件区**里就是这条会话的产物。"""
     services.artifacts.save(
         conversation_id=conversation, filename="短诗.docx", content=b"x", kind="docx"
     )
@@ -329,23 +334,24 @@ def test_temp_area_lists_the_conversations_files(services: Services, conversatio
     listing = services.artifacts.list_files(conversation)
 
     assert listing.mode == ARTIFACT_IN_OBJECTS
-    assert listing.label == "本会话"
+    assert listing.label == "本会话的文件"
     assert [item.name for item in listing.entries] == ["短诗.docx"]
     assert listing.entries[0].kind == "docx"
-    # 临时区是平铺的：没有上下级
+    # 会话文件区是平铺的：没有上下级
     assert listing.path == "" and listing.parent is None
 
 
 def test_workspace_area_lists_real_directories(
     services: Services, workspace_conversation: tuple[str, Path]
 ) -> None:
+    """``scope=project`` 才是"项目目录"那一档：可进子目录（v0.55 起默认是会话文件区）。"""
     conversation_id, root = workspace_conversation
     (root / "章节").mkdir()
     (root / "章节" / "一.md").write_text("正文", encoding="utf-8")
     (root / "说明.txt").write_text("说明", encoding="utf-8")
     (root / ".git").mkdir()  # 隐藏项不进列表
 
-    listing = services.artifacts.list_files(conversation_id)
+    listing = services.artifacts.list_files(conversation_id, scope=ARTIFACT_SCOPE_PROJECT)
 
     assert listing.mode == ARTIFACT_IN_WORKSPACE
     assert listing.label == "工作区「我的项目」"
@@ -353,9 +359,18 @@ def test_workspace_area_lists_real_directories(
     assert [item.name for item in listing.entries] == ["章节", "说明.txt"]
     assert listing.entries[0].is_dir and listing.entries[0].kind == "dir"
 
-    inner = services.artifacts.list_files(conversation_id, "章节")
+    inner = services.artifacts.list_files(conversation_id, "章节", scope=ARTIFACT_SCOPE_PROJECT)
     assert [item.key for item in inner.entries] == ["章节/一.md"]
     assert inner.path == "章节" and inner.parent == ""
+
+
+def test_project_scope_without_a_workspace_says_so(services: Services, conversation: str) -> None:
+    """没挂工作区时"项目文件"这一档**明确说清**，而不是给一个空列表
+    （空列表会被读成"这个项目里没有文件"）。"""
+    from app.core.exceptions import InvalidRequestError
+
+    with pytest.raises(InvalidRequestError, match="没有挂工作区"):
+        services.artifacts.list_files(conversation, scope=ARTIFACT_SCOPE_PROJECT)
 
 
 def test_reading_a_file_from_either_area(
@@ -411,7 +426,7 @@ def test_reading_another_conversations_artifact_is_refused(
 def test_upload_into_the_temp_area_becomes_an_artifact(
     services: Services, conversation: str
 ) -> None:
-    """临时区的东西按产物记账——另立一套"没有记录的文件"只会让清理策略漏掉它们。"""
+    """上传的东西按产物记账——另立一套"没有记录的文件"只会让清理策略漏掉它们。"""
     entry = services.artifacts.write_file(
         conversation_id=conversation, path="", filename="我传的.txt", content=b"up"
     )
@@ -420,33 +435,79 @@ def test_upload_into_the_temp_area_becomes_an_artifact(
     assert services.artifacts.get(entry.key).name == "我传的.txt"
 
 
-def test_upload_into_a_workspace_does_not_overwrite(
+def test_upload_lands_in_the_conversation_not_the_project(
     services: Services, workspace_conversation: tuple[str, Path]
 ) -> None:
+    """**上传不写进项目目录**（v0.55，用户报的"同项目里上传的文件分不开"）。
+
+    改之前：挂了工作区就把上传写进那个真实目录，于是同一项目下所有会话共用一个池子，
+    而"这份是谁传的"没有任何记录。现在上传一律落**会话文件区**（对象存储 + 记账），
+    项目目录里一个字节都不动——要进项目目录的是产物（``save``）与用户显式的动作。
+    """
     conversation_id, root = workspace_conversation
-    (root / "已有.txt").write_text("原来的", encoding="utf-8")
+    before = sorted(item.name for item in root.iterdir())
 
     entry = services.artifacts.write_file(
-        conversation_id=conversation_id, path="", filename="已有.txt", content="新的".encode()
+        conversation_id=conversation_id, path="", filename="我传的.txt", content=b"up"
     )
 
-    assert (root / "已有.txt").read_text(encoding="utf-8") == "原来的"
-    assert entry.name == "已有 (2).txt"
-    assert services.artifacts.read_file(conversation_id, entry.key)[0] == "新的".encode()
+    # 项目目录**一个字都没多**（这是这条改动的核心验收）
+    assert sorted(item.name for item in root.iterdir()) == before
+    # 但它**在会话文件区里**（列得到、读得到、有记录）
+    listing = services.artifacts.list_files(conversation_id)
+    assert [item.name for item in listing.entries] == ["我传的.txt"]
+    assert listing.label == "本会话的文件"
+    assert services.artifacts.read_file(conversation_id, entry.key)[0] == b"up"
 
 
-def test_upload_to_a_subdirectory(
+def test_upload_keeps_the_folder_path_in_the_name(
     services: Services, workspace_conversation: tuple[str, Path]
 ) -> None:
+    """上传文件夹时，前端把**相对路径**当名字交过来（``图表/第二季度.png``）。
+
+    名字要原样保留那棵结构（用户选的就是文件夹），而清洗必须逐段做：
+    ``..`` 这类导航段一律丢掉——名字虽然只用来显示，但它会被下游拿去拼 Key。
+    """
     conversation_id, root = workspace_conversation
-    (root / "素材").mkdir()
 
     entry = services.artifacts.write_file(
-        conversation_id=conversation_id, path="素材", filename="图.txt", content=b"x"
+        conversation_id=conversation_id, path="", filename="图表/第二季度.png", content=b"png"
     )
 
-    assert entry.key == "素材/图.txt"
-    assert (root / "素材" / "图.txt").is_file()
+    assert entry.name == "图表/第二季度.png"
+    assert entry.kind == "png"
+    assert sorted(item.name for item in root.iterdir()) == []
+
+    sneaky = services.artifacts.write_file(
+        conversation_id=conversation_id, path="", filename="../../外面.txt", content=b"x"
+    )
+    assert sneaky.name == "外面.txt"
+
+
+def test_two_conversations_in_the_same_project_do_not_mix(
+    services: Services, workspace_conversation: tuple[str, Path]
+) -> None:
+    """**同一个项目下的两条会话，各自的文件互不串**——用户报的那条原话。
+
+    "我上传了一个文件夹。在同一项目内，这里该次对话上传的文件信息，很明显没有和
+    之前对话上传的文件分开。"
+    """
+    first, _root = workspace_conversation
+    second = services.conversations.create(title="同项目的另一条", workspace_id=(
+        services.conversations.get(first).workspace_id
+    )).id
+
+    services.artifacts.write_file(
+        conversation_id=first, path="", filename="第一次传的.pdf", content=b"a"
+    )
+    services.artifacts.write_file(
+        conversation_id=second, path="", filename="第二次传的.pdf", content=b"b"
+    )
+
+    first_names = [item.name for item in services.artifacts.list_files(first).entries]
+    second_names = [item.name for item in services.artifacts.list_files(second).entries]
+    assert first_names == ["第一次传的.pdf"]
+    assert second_names == ["第二次传的.pdf"]
 
 
 def test_file_signature_covers_the_conversation_and_the_key() -> None:

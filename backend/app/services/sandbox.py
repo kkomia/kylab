@@ -37,6 +37,7 @@ import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from app.core.exceptions import ForbiddenError, InvalidRequestError
 
@@ -45,8 +46,10 @@ __all__ = [
     "POLICY_ASK",
     "POLICY_DENY",
     "POLICY_SANDBOX",
+    "REQUIRE_ISOLATION_KEY",
     "ExecutionPolicy",
     "Sandbox",
+    "require_isolation",
     "resolve_in",
     "sandbox_root",
 ]
@@ -57,6 +60,24 @@ POLICY_ALLOW = "allow"
 POLICY_ASK = "ask"
 POLICY_DENY = "deny"
 POLICY_SANDBOX = "sandbox"
+
+#: 设置键：**没有内核级隔离时是否拒绝执行**（v0.55，默认关）。
+#:
+#: 默认关 = 允许降级为**本机直接执行**（见 `services/isolation.direct_isolation` 与它的模块头）：
+#: Windows 上没有 bwrap / sandbox-exec 的原生等价物、容器里也常没挂 docker，
+#: 若一律拒绝则"本地源码启动与容器部署两边都跑不了命令"（用户报的）。
+#: 打开它 = 严格：宁可跑不了，也不在无隔离的机器上执行——留给高敏部署。
+REQUIRE_ISOLATION_KEY = "sandbox.require_isolation"
+
+
+def require_isolation(runtime: Any) -> bool:
+    """读上面那一项设置（默认 ``False`` = 允许降级直执）。
+
+    用鸭子类型接 ``runtime``（只要求它有 ``get_bool``）：策略层不依赖
+    ``services/runtime_config`` 的具体实现，免得这一层多背一个 import。
+    """
+    return bool(runtime.get_bool(REQUIRE_ISOLATION_KEY, default=False))
+
 
 #: 沙箱目录在数据目录下的位置。
 SANDBOX_DIRNAME = "sandbox"

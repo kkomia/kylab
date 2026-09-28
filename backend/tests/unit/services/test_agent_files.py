@@ -24,6 +24,7 @@ from app.core.exceptions import InvalidRequestError
 from app.services.agent_files import (
     Roots,
     list_files,
+    read_bytes,
     read_file,
     search_files,
 )
@@ -132,6 +133,45 @@ def test_read_file_reads_from_sandbox(roots: Roots) -> None:
     payload = read_file(roots, path="notes.txt", where="sandbox")
     assert payload["text"] == "试错的产物"
     assert payload["where"] == "sandbox"
+
+
+# ------------------------------------------------------------------ 读原始字节（v0.55）
+
+
+def test_read_bytes_returns_raw_content_and_name(roots: Roots) -> None:
+    """给"把它加进知识库"那条路用：它要的是**字节**，不是给模型看的文本。"""
+    content, name = read_bytes(roots, path="README.md")
+    assert name == "README.md"
+    assert content.decode("utf-8").startswith("# 项目")
+
+
+def test_read_bytes_allows_binary(roots: Roots) -> None:
+    """同一份文件 ``read_file`` 会拒（二进制），``read_bytes`` **必须放行**——
+    否则"把这张图 / 这份 PDF 加进知识库"这一步永远走不通。"""
+    workspace = roots.workspace
+    assert workspace is not None
+    blob = b"\x89PNG\r\n\x1a\n\x00\x00"
+    (workspace / "shot.png").write_bytes(blob)
+    content, name = read_bytes(roots, path="shot.png")
+    assert content == blob
+    assert name == "shot.png"
+
+
+def test_read_bytes_enforces_the_size_cap(roots: Roots) -> None:
+    """先看大小再读：上限由调用方给（摄入那条路有自己的上限）。"""
+    with pytest.raises(InvalidRequestError, match="文件太大"):
+        read_bytes(roots, path="README.md", max_bytes=2)
+
+
+def test_read_bytes_uses_the_same_bounds_as_read_file(roots: Roots) -> None:
+    """越界、不存在、指到目录：三个都要拒——这条路最终会把字节交给解析器，
+    闸门一道都不能少（与 ``read_file`` 共用 ``resolve_in``）。"""
+    with pytest.raises(InvalidRequestError):
+        read_bytes(roots, path="../../.env")
+    with pytest.raises(InvalidRequestError, match="没有这个文件"):
+        read_bytes(roots, path="nope.txt")
+    with pytest.raises(InvalidRequestError, match="这是一个目录"):
+        read_bytes(roots, path="src")
 
 
 def test_read_file_refuses_a_binary_file(roots: Roots) -> None:

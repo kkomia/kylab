@@ -22,7 +22,7 @@
  * 键名与旧实现逐字一致（`kylab-trace-open`）。
  */
 
-import type { ChatArtifact, ChatSource, ChatStep } from '@/api/chat'
+import type { ChatArtifact, ChatAttachment, ChatSource, ChatStep } from '@/api/chat'
 // 纯函数模块：只借它的格式化，不引组件（这一层仍然不认识任何一个 UI 组件）
 import { formatCount } from '@/lib/format'
 
@@ -61,6 +61,13 @@ export interface Message {
   steps: ChatStep[]
   /** 流式收到的思考过程（推理模型的 reasoning_content）；历史回放为空。 */
   thinkingText: string
+  /**
+   * 这条**用户消息**随发的附件快照（v0.55）；助手消息恒为空。
+   *
+   * 存放在消息里而不是"按 key 现查"：回看旧会话（`messagesFromDetail`）与刚发出去的
+   * 那一轮（`streamTurn`）都要能画出文件片，两处都拿到同一份数据才不会一边有一边没有。
+   */
+  attachments: ChatAttachment[]
   /** 过程面板的展开态；`undefined` = 跟随默认（流式中、还没吐字时默认展开）。 */
   traceOpen?: boolean
 }
@@ -172,6 +179,7 @@ export function makeMessage(
     thinking: null,
     steps: [],
     thinkingText: '',
+    attachments: [],
     ...extra,
   }
 }
@@ -793,29 +801,57 @@ export function trailingThinking(message: Message): string {
   return message.thinkingText
 }
 
+/**
+ * **记忆与人设文件的读写不进过程面板**（v0.55，用户要求）。
+ *
+ * 用户原话："soul.md profile.md 这种核心文件应该是要……直接显示表达出来。这样会降低
+ * agent 的角色扮演感"——这条工具步骤显示的是 `read_memory` / `write_memory PROFILE.md`，
+ * 等于把"角色在后台读了什么人设文件"摊在对话里，沉浸感当场就没了。
+ *
+ * 判据认**工具名**（`tool`），老快照没有工具名时退回中文标签（见
+ * `HIDDEN_TRACE_LABELS`）。后端仍在事件流里如实发这些步骤（它不该管界面怎么画），
+ * 所以这一刀只切**渲染**，数据一条不少；隐藏的是"哪几行不画"，
+ * 而它们的推理也跟着那一步一起不画（那是同一件事的一部分）。
+ *
+ * 只隐藏**动核心文件**的三个（人设 / 长期记忆）：`recall`（回忆）是检索、
+ * 与"查知识库"同类，仍然照常显示。
+ */
+const HIDDEN_TRACE_TOOLS: ReadonlySet<string> = new Set(['read_memory', 'write_memory', 'remember'])
+
+/** 老快照没有工具名时按当时的中文标签认（`read_memory`/`write_memory` 的标签就是工具名，只有 `remember` 有中文标签）。 */
+const HIDDEN_TRACE_LABELS: ReadonlySet<string> = new Set(['记住'])
+
+/** 这一步动的是不是记忆 / 人设文件——是就不画进过程面板。 */
+function isHiddenTraceStep(step: ChatStep): boolean {
+  if (step.tool && HIDDEN_TRACE_TOOLS.has(step.tool)) return true
+  return HIDDEN_TRACE_LABELS.has(step.label)
+}
+
 function agentTraceSteps(message: Message): TraceStep[] {
   // 显式标注元素类型：不标的话 TS 会把 `empty` 推成必填，后面 unshift 思考那一步就类型不兼容
-  const steps: TraceStep[] = message.steps.map((step, index) => ({
-    key: `${step.phase}-${index}`,
-    icon: stepIcon(step),
-    // 原始种类：工具步骤与 icon 同值，但"原始的那一档"单独留一份——
-    // 配色与 `data-kind` 认它、画图认 icon（老快照没有它，于是 undefined）
-    kind: isToolKind(step.kind) ? step.kind : undefined,
-    tool: step.tool,
-    // 老快照没有 `tool`：退回当时的标签，好让**已经存在的对话**也能合并
-    group: step.phase === 'tool' ? step.tool || step.label : undefined,
-    label: step.label,
-    detail: step.phase === 'answer' ? answerDetail(message) : step.detail,
-    // "这一轮什么新东西都没找到"在过程面板里要轻一档：它是一句交代，不是一次收获
-    empty: step.added === 0,
-    // 原文只在真有的时候带上（"组织回答"那一步没有）
-    args: step.args,
-    result: step.result,
-    artifacts: step.artifacts,
-    // 这一步自己那段推理（v0.54）。老快照没有它 —— 那种数据整轮只有一串，
-    // 由 `trailingThinking` 兜底（见 `TracePanel`）。
-    thinking: step.thinking,
-  }))
+  const steps: TraceStep[] = message.steps
+    .filter((step) => !isHiddenTraceStep(step))
+    .map((step, index) => ({
+      key: `${step.phase}-${index}`,
+      icon: stepIcon(step),
+      // 原始种类：工具步骤与 icon 同值，但"原始的那一档"单独留一份——
+      // 配色与 `data-kind` 认它、画图认 icon（老快照没有它，于是 undefined）
+      kind: isToolKind(step.kind) ? step.kind : undefined,
+      tool: step.tool,
+      // 老快照没有 `tool`：退回当时的标签，好让**已经存在的对话**也能合并
+      group: step.phase === 'tool' ? step.tool || step.label : undefined,
+      label: step.label,
+      detail: step.phase === 'answer' ? answerDetail(message) : step.detail,
+      // "这一轮什么新东西都没找到"在过程面板里要轻一档：它是一句交代，不是一次收获
+      empty: step.added === 0,
+      // 原文只在真有的时候带上（"组织回答"那一步没有）
+      args: step.args,
+      result: step.result,
+      artifacts: step.artifacts,
+      // 这一步自己那段推理（v0.54）。老快照没有它 —— 那种数据整轮只有一串，
+      // 由 `trailingThinking` 兜底（见 `TracePanel`）。
+      thinking: step.thinking,
+    }))
   if (message.thinking?.enabled && !steps.some((item) => item.icon === 'think')) {
     steps.unshift(...thinkingStep(message))
   }

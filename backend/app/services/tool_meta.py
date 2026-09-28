@@ -199,6 +199,12 @@ TOOL_META: dict[str, ToolMeta] = {
     # 挂定时任务：它自己不动文件，但会**在未来动手**——不并发，改天再说
     "schedule_task": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
     "list_scheduled_tasks": _READ,
+    # ---- 会话文件区（v0.55，见 agent_tools._CONVERSATION_FILE_TOOLS）----
+    # 列/读文件区是**只读**：它与 read_file 同一档（读一眼，最该和同批里别的读并发）
+    "list_conversation_files": _READ,
+    "read_conversation_file": _READ,
+    # 把会话里的一份文件加进知识库：写的是长期数据，与 upload_document / ingest_artifact 同一档
+    "ingest_file": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
 }
 
 #: 未知工具（外部 MCP 服务暴露的）：**fail-closed**——不并发、按动系统算。

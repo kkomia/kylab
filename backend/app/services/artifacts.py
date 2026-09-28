@@ -1,35 +1,29 @@
 """会话的文件区：Agent 做出来的文件**落在哪**、怎么浏览、什么时候**进知识库**（v0.26）。
 
-"文件区"是这一层唯一的抽象——**每条会话恰好有一个**，位置由 :meth:`ArtifactService.spot_for`
-决定：挂了工作区就是那个真实目录，没挂就是对象存储里按会话分的临时前缀。
-浏览、上传、预览、下载四个动作都走这一份判断，所以界面上的文件面板
-（`FileDrawer`）不需要知道自己在看的是哪一种。
+"文件区"是这一层唯一的抽象——**每条会话恰好有一个**。浏览、上传、预览、下载四个动作
+都走这一份判断，所以界面上的文件面板（文件抽屉）不需要知道自己在看的是哪一种。
 
-这个模块存在的理由，是线上真的出过一次事：用户让 Agent「写一首四句的短诗，
-导出成 docx 给我」，那个会话**没有挂工作区**，而导出工具的实现是"直接当一次入库
-提交"——`knowledge_base_id` 是必填参数。模型于是替用户挑了一个语义上最顺手的库，
-把 docx 塞进了「笔记」，并在回答里说明"你这边没有专门的工作区，我就选了最顺手的那个"。
+**v0.55 改了一次落点划分**（用户报的"同一项目里，这次对话上传的文件和上次的分不开"）。
+改之前是"挂了工作区就把上传也写进那个真实目录"，于是同一项目下所有会话共用一堆文件，
+而"这份是谁传的"在数据里**根本不存在**——实测那条会话的产物记录数是 **0**：
+后端连"这次传过什么"都没记，界面想分也分不了。现在按**用途**分：
 
-三件事被这一次暴露出来，本模块就是它们的答案：
+- 什么 → 落在哪 → 为什么
 
-1. **产物不是天生要入库的**。它是"这一次对话做出来的一个文件"，与"知识库里的一份
-   资料"是两个身份。身份混在一起时，"这份文件是怎么来的"就再也说不清了。
-2. **要有一个存放地址**。没挂工作区的会话也有落点——对象存储里按会话分的临时前缀
-   （``conversations/<会话 id>/…``）；挂了工作区的，就落进**用户的真实目录**，
-   那是他打开项目就能看见的地方。
-3. **入库是显式动作**。用户说「存进知识库」，或者自己点卡片上那个按钮；
-   模型不会替他决定（那是"替用户做选择"，而他并不知道用户在整理什么）。
+- **用户上传**（"给它看看这份东西"）→ **对象存储**，按会话记账。
+  它是**这次对话的输入**，不是用户的项目文件；按会话存才分得开。
+- **Agent 产物**（导出的 docx 等）→ 挂了工作区就落**用户的真实目录**，没挂就落对象存储。
+  那是"做出来的成果"，落进他的项目他打开就看得见。
+- **显式入库** → 知识库（复制一份，见 :meth:`ArtifactService.ingest`）：用户点名要的才做。
 
-两档落点的区别不只是路径，**生命周期也不一样**：
+于是"文件区"有**两个视图**（``list_files(scope=…)``）：
 
-| | 工作区 | 未挂工作区（对象存储） |
-| --- | --- | --- |
-| 位置 | 用户指定的真实目录 | ``conversations/<id>/`` 前缀 |
-| 谁拥有 | 用户（他的项目文件） | 这条会话 |
-| 删会话时 | **保留**（那是他的文件） | 一起清掉（只许诺会话期间有效） |
+- ``conversation``（默认）：**这条会话的文件**——上传的与产出的都在这儿（按产物记录列，平铺）；
+- ``project``：会话挂着的**工作区目录**（可进子目录）——那是用户自己的项目文件，
+  只有挂了工作区才有这一档。
 
-"删会话时保留工作区里的文件"是有意为之：那是他项目里的一份真文件，
-删掉一次对话不该让它消失——那正是"我的文件被它弄没了"的典型事故。
+生命周期跟着落点走：对象存储那份**删会话时一起清掉**（只许诺会话期间有效），
+工作区里那份**保留**（那是他项目里的一份真文件，删掉一次对话不该让它消失）。
 """
 
 from __future__ import annotations
@@ -53,6 +47,8 @@ from app.storage.base import (
 )
 
 __all__ = [
+    "ARTIFACT_SCOPE_CONVERSATION",
+    "ARTIFACT_SCOPE_PROJECT",
     "MAX_READ_BYTES",
     "ArtifactService",
     "ArtifactSpot",
@@ -64,6 +60,12 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+ARTIFACT_SCOPE_CONVERSATION = "conversation"
+"""``list_files`` 的第一档视图（默认）：**这条会话的文件**——上传的与产出的都在，平铺。"""
+
+ARTIFACT_SCOPE_PROJECT = "project"
+"""``list_files`` 的第二档视图：会话挂着的**工作区目录**（可进子目录，只有工作区会话才有）。"""
 
 CONVERSATION_PREFIX = "conversations"
 """对象存储里会话临时产物的前缀。**与内容寻址的 ``originals/`` 分开**：
@@ -125,6 +127,35 @@ def safe_filename(filename: str, *, fallback: str = "产物") -> str:
     if len(stem) > MAX_NAME_CHARS:
         stem = stem[:MAX_NAME_CHARS]
     return f"{stem}.{suffix}" if suffix else stem
+
+
+def _upload_name(filename: str) -> str:
+    """上传文件的名字：**允许保留相对路径**（v0.55 起支持上传文件夹）。
+
+    与 :func:`safe_filename` 的差别只有一处：它保留 ``/``。上传文件夹时前端把
+    "目录/子目录/文件"整条相对路径交过来，丢掉路径就等于把文件夹拍平——
+    而用户选的正是文件夹，他要的是那棵结构。
+
+    三段清洗，缺一不可：
+
+    1. 反斜杠统一成正斜杠（Windows 上传的那条路）；
+    2. 丢掉空段与 ``.`` / ``..``——名字虽然只是"显示用"，但它会被下游拿去
+       拼对象 Key、也可能被落盘路径用上，**这道闸不能靠"反正现在不落盘"**；
+    3. 每段再删非法字符与首尾的点/空格（与 :func:`safe_filename` 同一份判据）。
+    """
+    segments = [
+        _UNSAFE_IN_NAME.sub("", segment).strip(" .")
+        for segment in (filename or "").replace("\\", "/").split("/")
+    ]
+    kept = [
+        segment[:MAX_NAME_CHARS]
+        for segment in segments
+        if segment and segment not in (".", "..")
+    ]
+    if not kept:
+        return "文件"
+    # 总长也收一道：一个几千层的路径本身就不该进这个系统（它只用来显示与拼 Key）
+    return "/".join(kept)[:MAX_NAME_CHARS * 4]
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,26 +282,61 @@ class ArtifactService:
         kind: str,
         owner_id: str | None = None,
     ) -> ConversationArtifactRecord:
-        """把一份产出落盘并登记。
+        """把一份**产物**落盘并登记。
 
         ``kind`` 是扩展名（``docx`` / ``xlsx`` / ``pptx`` / ``pdf``）——
         **以调用方生成的内容为准，不是以文件名的后缀为准**：文件名是模型写的，
         而字节是我们自己造的；两者不一致时，信字节。
+
+        落点**按用途**（v0.55 的划分，见模块头）：挂了工作区 → 用户的真实目录
+        （他打开项目就看得见）；没挂 → 对象存储。**用户上传不走这里**——
+        那是 :meth:`write_file`，它一律按会话记账。
         """
         spot = self.spot_for(conversation_id)
         name = safe_filename(filename, fallback=f"产物.{kind}" if kind else "产物")
-        artifact_id = f"art_{uuid.uuid4().hex[:12]}"
 
         if spot.root is not None:
             # `safe_filename` 已经保证名字里没有路径分隔符，`resolve_in` 是**第二道**：
             # 往用户的真实目录里写文件的这条路上，一道校验不够（见 sandbox.py 的说明）。
             path = _write_new(resolve_in(spot.root, name), content)
-            storage, location = ARTIFACT_IN_WORKSPACE, str(path)
-        else:
-            key = _object_key(conversation_id, artifact_id, name)
-            location = self._stores.objects.write(key, content)
-            storage = ARTIFACT_IN_OBJECTS
+            return self._stores.meta.create_artifact(
+                ConversationArtifactRecord(
+                    id=f"art_{uuid.uuid4().hex[:12]}",
+                    conversation_id=conversation_id,
+                    name=name,
+                    format=kind,
+                    size_bytes=len(content),
+                    storage=ARTIFACT_IN_WORKSPACE,
+                    location=str(path),
+                    workspace_id=spot.workspace_id,
+                    owner_id=owner_id,
+                )
+            )
+        return self._record_bytes(
+            conversation_id=conversation_id,
+            name=name,
+            content=content,
+            kind=kind,
+            owner_id=owner_id,
+        )
 
+    def _record_bytes(
+        self,
+        *,
+        conversation_id: str,
+        name: str,
+        content: bytes,
+        kind: str,
+        owner_id: str | None = None,
+    ) -> ConversationArtifactRecord:
+        """把字节落进**对象存储**并登记一条产物记录（v0.55）。
+
+        :meth:`save`（产物，没挂工作区那半边）与 :meth:`write_file`（上传，恒走这条）
+        共用它：Key 规则、落点、记账三件事只写一份，两边各抄一遍迟早会漂。
+        """
+        artifact_id = f"art_{uuid.uuid4().hex[:12]}"
+        key = _object_key(conversation_id, artifact_id, name)
+        location = self._stores.objects.write(key, content)
         return self._stores.meta.create_artifact(
             ConversationArtifactRecord(
                 id=artifact_id,
@@ -278,26 +344,40 @@ class ArtifactService:
                 name=name,
                 format=kind,
                 size_bytes=len(content),
-                storage=storage,
+                storage=ARTIFACT_IN_OBJECTS,
                 location=location,
-                workspace_id=spot.workspace_id,
+                workspace_id=None,
                 owner_id=owner_id,
             )
         )
 
     # ------------------------------------------------------------------ 文件区（浏览）
 
-    def list_files(self, conversation_id: str, path: str = "") -> FileListing:
-        """列一层文件。两条落点各列各的，返回同一个形状。
+    def list_files(
+        self, conversation_id: str, path: str = "", *, scope: str = ARTIFACT_SCOPE_CONVERSATION
+    ) -> FileListing:
+        """列文件区的一层。``scope`` 两档（v0.55，见模块头）：
 
-        ``path`` 只在工作区模式下有意义（临时区是平铺的，传了也不看）。
+        - ``conversation``（默认）：**这条会话的文件**——上传的与产出的都在，平铺一层
+          （按产物记录列，所以挂不挂工作区都一样）。用户报的"同项目内上传的文件分不开"
+          就是这一档要解决的；
+        - ``project``：会话挂着的**工作区目录**（可进子目录）。只有挂了工作区才有，
+          没挂时**明确说清**，而不是悄悄给一个空列表（空列表会被读成"这个项目里没有文件"）。
         """
         spot = self.spot_for(conversation_id)
-        if spot.root is None:
-            return self._list_temp(spot)
-        return self._list_directory(spot, path)
+        if scope == ARTIFACT_SCOPE_PROJECT:
+            if spot.root is None:
+                raise InvalidRequestError("这条会话没有挂工作区，没有「项目文件」可看")
+            return self._list_directory(spot, path)
+        return self._list_conversation(spot)
 
-    def _list_temp(self, spot: ArtifactSpot) -> FileListing:
+    def _list_conversation(self, spot: ArtifactSpot) -> FileListing:
+        """这条会话的产物记录（上传的 + 产出的），平铺一层。
+
+        **标签固定是"本会话的文件"**：``spot.label`` 在工作区会话下说的是
+        "工作区「X」"，而这里列的是**会话**的东西——用它的标签会让人以为在看整个项目。
+        同理 ``mode`` 恒为平铺那一档（记录没有目录层级可言）。
+        """
         entries = [
             FileEntry(
                 key=record.id,
@@ -308,7 +388,9 @@ class ArtifactService:
             )
             for record in self._stores.meta.list_artifacts(spot.conversation_id)
         ]
-        return FileListing(mode=spot.mode, label=spot.label, entries=tuple(entries))
+        return FileListing(
+            mode=ARTIFACT_IN_OBJECTS, label="本会话的文件", entries=tuple(entries)
+        )
 
     def _list_directory(self, spot: ArtifactSpot, path: str) -> FileListing:
         directory = self._directory(spot, path)
@@ -365,19 +447,26 @@ class ArtifactService:
     def read_file(self, conversation_id: str, key: str) -> tuple[bytes, str]:
         """取一份文件的字节与显示名（预览与下载共用）。
 
-        临时区那份按产物 id 找记录；工作区那份按相对路径落到磁盘上——
-        两者都要过 ``resolve_in``，因为 key 是从浏览器回来的，而它最终拼成了文件路径。
+        两种 key 都认（v0.55 起两条视图并存）：
+
+        - **产物 id**（``art_…``，``scope=conversation`` 那一档给的）：按记录取，
+          字节可能在对象存储、也可能在用户的目录里（导出的产物）；
+        - **工作区里的相对路径**（``scope=project`` 那一档给的）：落到磁盘上读，
+          必须过 ``resolve_in``——key 是从浏览器回来的，而它最终拼成了文件路径。
+
+        顺序是"**先记录、后路径**"：产物 id 是 ``art_`` 前缀的固定形状，
+        相对路径不可能长成那样，两者不会撞。
         """
-        spot = self.spot_for(conversation_id)
-        if spot.root is None:
-            record = self._stores.meta.get_artifact(key)
-            if record is None or record.conversation_id != conversation_id:
+        record = self._stores.meta.get_artifact(key)
+        if record is not None:
+            if record.conversation_id != conversation_id:
                 # 越会话取产物：不暴露"它在别处存在"，与 API 层同一口径
                 raise NotFoundError(f"文件不存在：{key}")
             return self.content(record), record.name
 
-        target = resolve_in(spot.root, key)
-        if not target.is_file():
+        spot = self.spot_for(conversation_id)
+        target = resolve_in(spot.root, key) if spot.root is not None else None
+        if target is None or not target.is_file():
             raise NotFoundError(f"文件不存在：{key}")
         size = target.stat().st_size
         if size > MAX_READ_BYTES:
@@ -391,40 +480,35 @@ class ArtifactService:
             raise InvalidRequestError(f"读不了这个文件（{key}）：{exc}") from exc
 
     def write_file(
-        self, conversation_id: str, *, path: str, filename: str, content: bytes
+        self, conversation_id: str, *, path: str = "", filename: str, content: bytes
     ) -> FileEntry:
-        """往文件区里放一份文件（界面上的"上传"）。
+        """往**这条会话的文件区**里放一份文件（界面上的"上传"）。
 
-        工作区：写进指定目录，**同名不覆盖**（退到 ``名字 (2).ext``，与产物落盘同一套）。
-        临时区：登记成一条产物——那里的东西本来就按产物记账，另立一套"没有记录的文件"
-        只会让清理策略漏掉它们。
+        **一律落对象存储、按会话记账**（v0.55）。改之前是"挂了工作区就写进那个真实
+        目录"，后果是同一项目下所有会话共用一堆文件，而"这份是谁传的"没有任何记录
+        （用户报的"上传的文件分不开"就是它，实测那条会话的产物记录数是 0）。
+        上传是**这次对话的输入**，按会话存才分得开；该进项目目录的是产物
+        （:meth:`save`）与用户显式的动作，不是"随手传上来给它看的文件"。
+
+        ``filename`` **可以带相对路径**（``图表/第二季度.png``）：前端上传文件夹时
+        靠它保留目录结构；清洗在 :func:`_upload_name` 里逐段做（去非法字符、丢 ``..``）。
+
+        ``path`` 是**旧接口留下的目录参数**：会话文件区是平铺的，收下但不用——
+        留着只是为了旧客户端多传一个字段时不至于报错。
         """
-        spot = self.spot_for(conversation_id)
-        if spot.root is None:
-            record = self.save(
-                conversation_id=conversation_id,
-                filename=filename,
-                content=content,
-                kind=_suffix_of(filename),
-            )
-            return FileEntry(
-                key=record.id,
-                name=record.name,
-                size_bytes=record.size_bytes,
-                modified_at=record.created_at,
-                kind=record.format,
-            )
-
-        directory = self._directory(spot, path)
-        name = safe_filename(filename)
-        target = _write_new(resolve_in(directory, name), content)
-        stat = target.stat()
+        name = _upload_name(filename)
+        record = self._record_bytes(
+            conversation_id=conversation_id,
+            name=name,
+            content=content,
+            kind=_suffix_of(name),
+        )
         return FileEntry(
-            key=_relative_key(spot.root, target),
-            name=target.name,
-            size_bytes=stat.st_size,
-            modified_at=datetime.fromtimestamp(stat.st_mtime).astimezone(),
-            kind=_suffix_of(target.name),
+            key=record.id,
+            name=record.name,
+            size_bytes=record.size_bytes,
+            modified_at=record.created_at,
+            kind=record.format,
         )
 
     # ------------------------------------------------------------------ 读

@@ -736,6 +736,17 @@ class ChatHistoryIn(BaseModel):
     content: str
 
 
+class ChatAttachmentIn(BaseModel):
+    """这一轮用户消息**随发的附件**（v0.55）。
+
+    只带 ``key``（文件区里的产物 id）就够：名字 / 类型 / 字节数一律由服务端按
+    **库里的记录**回填，不信客户端送来的那几个字段（它们只是显示用的）。
+    服务端还会校验这个 key **属于这条会话**——不校验的话任何 key 都能被写进消息。
+    """
+
+    key: str = Field(min_length=1)
+
+
 class ChatRequestIn(BaseModel):
     query: str = Field(min_length=1)
     kb_ids: list[str] = Field(
@@ -762,6 +773,10 @@ class ChatRequestIn(BaseModel):
     )
     thinking_effort: Literal["low", "medium", "high"] | None = Field(
         default=None, description="这一轮的思考强度；同上，留空逐级回退"
+    )
+    attachments: list[ChatAttachmentIn] = Field(
+        default_factory=list,
+        description="这一轮用户消息随发的附件（文件区里的 key）；会作为快照写进那条消息",
     )
 
 
@@ -982,6 +997,19 @@ class ConversationListOut(BaseModel):
     items: list[ConversationOut]
 
 
+class ChatAttachmentOut(BaseModel):
+    """用户消息随发的附件快照（v0.55，见 :class:`ChatAttachmentIn`）。
+
+    ``key`` 是文件区里的 key：界面拿它去预览 / 下载（与文件抽屉同一套端点），
+    所以就算那份文件后来被删了，这条消息仍然说得清"当时带的是它"。
+    """
+
+    key: str
+    name: str
+    kind: str = ""
+    size_bytes: int = 0
+
+
 class ChatMessageOut(BaseModel):
     model_config = _RECORD_CONFIG
 
@@ -998,6 +1026,9 @@ class ChatMessageOut(BaseModel):
 
     thinking: str = ""
     """当轮的思考过程全文（v0.25）。空串 = 这一轮没有思考。"""
+
+    attachments: list[ChatAttachmentOut] = Field(default_factory=list)
+    """用户消息随发的附件（v0.55）。**只有用户消息会有**；老消息返回空列表。"""
 
     created_at: datetime | None = None
 
@@ -1861,9 +1892,13 @@ class DocumentTimelineOut(BaseModel):
 
 
 class SandboxCapabilityOut(BaseModel):
-    """这台机器上的内核级隔离能力。"""
+    """这台机器上的内核级隔离能力。
 
-    backend: Literal["bwrap", "sandbox-exec", "docker", "none"]
+    ``direct`` 是**降级档**（v0.55）：没有真隔离且没开严格模式时，就是"直接在本机执行、
+    未隔离"。它不是沙箱，`detail` 里会如实说明。
+    """
+
+    backend: Literal["bwrap", "sandbox-exec", "docker", "direct", "none"]
     available: bool
     detail: str = ""
     """人话说明（为什么可用/不可用）。界面直接显示它。"""
@@ -1937,6 +1972,9 @@ class WorkspaceUpdateIn(BaseModel):
     root_path: str | None = Field(default=None, min_length=1, max_length=1000)
     description: str | None = Field(default=None, max_length=500)
     kb_ids: list[str] | None = None
+    archived: bool | None = None
+    """归档 / 取消归档（v0.55）。**不是删除**：里面的会话与内容都还在。
+    与会话那条同一口径（`ConversationUpdateIn.archived`）。"""
 
 
 class WorkspaceOut(BaseModel):
@@ -1951,6 +1989,8 @@ class WorkspaceOut(BaseModel):
     """这个工作区下的会话数。侧栏每个工作区后面那个数字。"""
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    archived_at: datetime | None = None
+    """归档时间（v0.55）。``None`` = 未归档。"""
 
 
 class WorkspaceListOut(BaseModel):

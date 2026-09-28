@@ -2801,6 +2801,8 @@ class PostgresMetaStore(MetaStore):
             # 老库里这两列刚补上，存量行是 '[]' / ''——与"这一轮没有过程"恰好同义
             steps=tuple(row.get("steps") or ()),
             thinking=row.get("thinking") or "",
+            # 老库里这列刚补上，存量行是 '[]'——与"这条消息没有随发附件"恰好同义
+            attachments=tuple(row.get("attachments") or ()),
             created_at=_load(row["created_at"]),
         )
 
@@ -2923,6 +2925,16 @@ class PostgresMetaStore(MetaStore):
                 ),
             )
         return record
+
+    def set_workspace_archived(self, workspace_id: str, archived: bool) -> None:
+        # 与 `set_conversation_archived` 逐字同一条：**不推 updated_at**（归档是整理动作）。
+        # 时间戳而不是布尔：`now()` 记下"什么时候收起来的"，取消就置回 NULL。
+        with self._db.session() as conn:
+            conn.execute(
+                "UPDATE workspaces SET archived_at = CASE WHEN %s THEN now() ELSE NULL END"
+                " WHERE id = %s",
+                (archived, workspace_id),
+            )
 
     def delete_workspace(self, workspace_id: str) -> None:
         # 外键是 ON DELETE SET NULL：里面的会话**退回未归档**，不跟着删。
@@ -3218,6 +3230,7 @@ class PostgresMetaStore(MetaStore):
             kb_ids=tuple(row["kb_ids"]),
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
+            archived_at=_load(row["archived_at"]),
         )
 
     def list_conversations(
@@ -3422,8 +3435,9 @@ class PostgresMetaStore(MetaStore):
         """
         conn.execute(
             "INSERT INTO chat_messages"
-            " (id, conversation_id, role, content, sources, steps, thinking, created_at)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            " (id, conversation_id, role, content, sources, steps, thinking, attachments,"
+            "  created_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 record.id,
                 record.conversation_id,
@@ -3432,6 +3446,7 @@ class PostgresMetaStore(MetaStore):
                 _json([dict(item) for item in record.sources]),
                 _json([dict(item) for item in record.steps]),
                 record.thinking,
+                _json([dict(item) for item in record.attachments]),
                 _dump(record.created_at),
             ),
         )

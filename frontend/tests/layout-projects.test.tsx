@@ -55,7 +55,13 @@ vi.mock('@/features/misc/settings/SettingsModal', () => ({ SettingsModal: () => 
 vi.mock('@/features/misc/settings/AvatarDialog', () => ({ AvatarDialog: () => null }))
 
 import { listConversations } from '@/api/conversations'
-import { createWorkspace, listWorkspaces, type Workspace } from '@/api/workspaces'
+import {
+  createWorkspace,
+  deleteWorkspace,
+  listWorkspaces,
+  updateWorkspace,
+  type Workspace,
+} from '@/api/workspaces'
 import { AppShell } from '@/features/layout/AppShell'
 import { useConversationStore } from '@/features/layout/conversations'
 import { useWorkspaceStore } from '@/features/layout/workspaces'
@@ -66,6 +72,8 @@ import { useSessionStore } from '@/lib/session'
 
 const listWorkspacesMock = vi.mocked(listWorkspaces)
 const createWorkspaceMock = vi.mocked(createWorkspace)
+const updateWorkspaceMock = vi.mocked(updateWorkspace)
+const deleteWorkspaceMock = vi.mocked(deleteWorkspace)
 const listConversationsMock = vi.mocked(listConversations)
 
 function workspace(overrides: Partial<Workspace> = {}): Workspace {
@@ -78,6 +86,7 @@ function workspace(overrides: Partial<Workspace> = {}): Workspace {
     conversation_count: 0,
     created_at: null,
     updated_at: null,
+    archived_at: null,
     ...overrides,
   }
 }
@@ -139,7 +148,9 @@ describe('侧栏的「新增项目」', () => {
   it('点开弹窗、提交调建项目接口，建完侧栏立刻出现这个项目', async () => {
     const user = userEvent.setup()
     renderShell()
-    await waitFor(() => expect(listWorkspacesMock).toHaveBeenCalledTimes(1))
+    // 挂载时拉两份清单：默认那份（未归档）+ 已归档那份（v0.55：侧栏底部那行
+    // 「已归档（N）」要先知道有没有、有几条）
+    await waitFor(() => expect(listWorkspacesMock).toHaveBeenCalledWith(true))
 
     const created = workspace({ id: 'w9', name: '新项目', root_path: '/srv/new' })
     createWorkspaceMock.mockResolvedValue(created)
@@ -173,5 +184,89 @@ describe('侧栏的「新增项目」', () => {
     const sidebar = screen.getByRole('complementary', { name: '侧栏' })
     const row = await within(sidebar).findByRole('button', { name: /^新项目/ })
     expect(row).toHaveAttribute('aria-expanded', 'false')
+  })
+})
+
+/**
+ * 项目行菜单（v0.55）：重命名 / 归档 / 删除。
+ *
+ * 用户原话："项目未提供归档 \ 删除 \ 重命名功能"。这三件事原先挂在**已删的「工作区」页**
+ * 上，所以侧栏的项目行只剩一颗「+」。这一组钉住三件事：动作真的发到对应接口、
+ * 结果**就地**反映到侧栏、以及**删除必须先确认且说清"会话不会被删"**（后端语义：
+ * 外键 `ON DELETE SET NULL`）。
+ */
+describe('项目行菜单（重命名 / 归档 / 删除）', () => {
+  beforeEach(() => {
+    updateWorkspaceMock.mockReset()
+    deleteWorkspaceMock.mockReset()
+  })
+
+  /** 默认清单给一项、已归档清单空——两次调用按参数分开（侧栏挂载时会各拉一次）。 */
+  function mockOneProject(item: Workspace): void {
+    listWorkspacesMock.mockImplementation(async (archived = false) => ({
+      items: archived ? [] : [item],
+    }))
+  }
+
+  async function openMenu(user: ReturnType<typeof userEvent.setup>, name: string) {
+    await user.click(await screen.findByRole('button', { name: `项目「${name}」的操作` }))
+  }
+
+  it('归档：调 { archived: true }，那行从侧栏消失、底部出现「已归档（1）」', async () => {
+    const user = userEvent.setup()
+    const item = workspace({ id: 'w1', name: '合同整理' })
+    mockOneProject(item)
+    updateWorkspaceMock.mockResolvedValue({ ...item, archived_at: '2026-09-28T00:00:00Z' })
+    renderShell()
+
+    await openMenu(user, '合同整理')
+    await user.click(await screen.findByRole('menuitem', { name: '归档' }))
+
+    await waitFor(() => expect(updateWorkspaceMock).toHaveBeenCalledWith('w1', { archived: true }))
+    // 归档之后默认清单里没有它了（归档的意义就是"收起来"）
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: /^合同整理/ })).not.toBeInTheDocument(),
+    )
+    // 而找回它的入口出现了
+    expect(await screen.findByRole('button', { name: /^已归档（1）/ })).toBeInTheDocument()
+  })
+
+  it('重命名：弹窗里输入新名字，保存调 { name }，行上立刻换掉', async () => {
+    const user = userEvent.setup()
+    const item = workspace({ id: 'w1', name: '合同整理' })
+    mockOneProject(item)
+    updateWorkspaceMock.mockResolvedValue({ ...item, name: '合同归档' })
+    renderShell()
+
+    await openMenu(user, '合同整理')
+    await user.click(await screen.findByRole('menuitem', { name: '重命名' }))
+
+    const input = await screen.findByLabelText('项目名字')
+    await user.clear(input)
+    await user.type(input, '合同归档')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    await waitFor(() =>
+      expect(updateWorkspaceMock).toHaveBeenCalledWith('w1', { name: '合同归档' }),
+    )
+    expect(await screen.findByRole('button', { name: /^合同归档/ })).toBeInTheDocument()
+  })
+
+  it('删除要先确认：只点菜单项不发请求，确认框里说清「会话不会被删」', async () => {
+    const user = userEvent.setup()
+    const item = workspace({ id: 'w1', name: '合同整理' })
+    mockOneProject(item)
+    deleteWorkspaceMock.mockResolvedValue(undefined)
+    renderShell()
+
+    await openMenu(user, '合同整理')
+    await user.click(await screen.findByRole('menuitem', { name: '删除' }))
+    expect(deleteWorkspaceMock).not.toHaveBeenCalled()
+
+    const dialog = await screen.findByRole('alertdialog')
+    expect(dialog).toHaveTextContent('里面的会话不会被删')
+
+    await user.click(within(dialog).getByRole('button', { name: '删除' }))
+    await waitFor(() => expect(deleteWorkspaceMock).toHaveBeenCalledWith('w1'))
   })
 })

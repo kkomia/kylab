@@ -313,6 +313,44 @@ def read_file(
     }
 
 
+def read_bytes(
+    roots: Roots,
+    *,
+    where: str | None = None,
+    path: str,
+    max_bytes: int | None = None,
+) -> tuple[bytes, str]:
+    """读一份文件的**原始字节**与文件名（v0.55）：给"把它加进知识库"那条路用。
+
+    与 :func:`read_file` 共用同一套根解析与越界闸（``pick`` + ``resolve_in``），
+    差别只有一处，而那一处是刻意的：**它不判文本还是二进制**。入库这条路上二进制
+    才是常态（PDF / 图片 / Office），而 ``read_file`` 是给模型"看内容"的，二进制必须拦
+    ——少了这道拦，一屏乱码会把上下文吃掉。
+
+    ``max_bytes`` 由调用方给（摄入那条路有它自己的上限，见 ``ingest``）：
+    在这里只做一次"先看大小再读"，免得把一个几百 MB 的文件整个读进内存。
+    """
+    _, root = roots.pick(where)
+    target = resolve_in(root, path)
+    if not target.exists():
+        raise InvalidRequestError(f"没有这个文件：{path}")
+    if target.is_dir():
+        raise InvalidRequestError(f"这是一个目录：{path}（列目录用 list_files）")
+    try:
+        size = target.stat().st_size
+    except OSError as exc:
+        raise InvalidRequestError(f"读不了这个文件：{exc}") from exc
+    if max_bytes is not None and size > max_bytes:
+        raise InvalidRequestError(
+            f"文件太大（{size} 字节，上限 {max_bytes} 字节）。"
+            "更大的文件请在界面上传，或者先用 run_command 把它拆小"
+        )
+    try:
+        return target.read_bytes(), target.name
+    except OSError as exc:
+        raise InvalidRequestError(f"读不了这个文件：{exc}") from exc
+
+
 def _looks_binary(path: Path) -> bool:
     """靠**前 4KB 里有没有 NUL 字节**判二进制。
 

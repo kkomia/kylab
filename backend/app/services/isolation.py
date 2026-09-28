@@ -31,6 +31,15 @@
 是否活着——装了 CLI 但 daemon 没起是最常见的假阳性）。界面与端点据此告诉用户
 "这台机器上现在有什么"。**没有隔离时明确拒绝要隔离的执行**，不回退成裸跑：
 回退会让"我们以为它在沙箱里"成为一个静默的假象，而这个假象比拒绝危险得多。
+
+**v0.55 的降级档**：上面那条纪律在"这台机器上永远没有隔离"时会变成一道死闸——
+Windows 上没有 bwrap / sandbox-exec 的原生等价物，容器里也常没挂 docker，
+于是**本地源码启动与容器部署两边都跑不了命令**（用户报的正是这条："明明指定了工作区，
+为啥还是不能执行工具"）。所以补一个**显式的降级后端** ``direct``（``direct_isolation``）：
+没有真隔离时**直接在本机执行**，但**如实标注"未隔离"**，并由设置项
+``sandbox.require_isolation`` 决定要不要退回严格拒绝（默认关 = 允许降级）。
+这与同行通行做法一致：Kimi Work 桌面端就是宿主直接执行 + 审批；Claude Code
+在没有沙箱时默认"警告并降级"，并把提示标题写成 ``unsandboxed``。
 """
 
 from __future__ import annotations
@@ -46,6 +55,7 @@ from app.core.exceptions import InvalidRequestError, UnsupportedContentError
 
 __all__ = [
     "BACKEND_BWRAP",
+    "BACKEND_DIRECT",
     "BACKEND_DOCKER",
     "BACKEND_NONE",
     "BACKEND_SEATBELT",
@@ -56,6 +66,7 @@ __all__ = [
     "bind_paths_from",
     "build_plan",
     "detect",
+    "direct_isolation",
     "run_isolated",
 ]
 
@@ -65,6 +76,9 @@ BACKEND_BWRAP = "bwrap"
 BACKEND_SEATBELT = "sandbox-exec"
 BACKEND_DOCKER = "docker"
 BACKEND_NONE = "none"
+#: **无隔离直接执行**（降级档，v0.55）。它不是"沙箱"，是"承认这台机器上现在没有沙箱"：
+#: 命令原样在本机跑，安全由工作区根 + 命令策略 + 用户确认承担。见 `direct_isolation`。
+BACKEND_DIRECT = "direct"
 
 #: Linux 上**只读挂载**的目录：只挂"能把命令跑起来"的那些。
 #:
@@ -172,6 +186,29 @@ def detect(*, prefer: str | None = None) -> Isolation:
     )
 
 
+def direct_isolation() -> Isolation:
+    """**无隔离直接执行**这一档（降级用，v0.55，见模块头末段）。
+
+    什么时候用它由调用方决定（读 ``sandbox.require_isolation``，默认关 = 用它）：
+    ``detect()`` 找不到任何真隔离时，调用方要么拒绝、要么换上这一档。
+
+    **它不是沙箱**，所以 ``detail`` 里必须把这一点说白：命令原样在本机跑，
+    工作区根与路径越界仍由 ``sandbox.resolve_in`` 挡着，但**进程跑起来之后能碰什么，
+    这一档管不住**（网络也不受限）。把它包装成"沙箱"就是模块头警告的那个静默假象。
+    """
+    return Isolation(
+        backend=BACKEND_DIRECT,
+        available=True,
+        detail=(
+            "这台机器上没有可用的内核级隔离，当前**直接在本机执行（未隔离）**："
+            "命令以这次会话的沙箱目录为 cwd、工作区路径越界仍会被拒，"
+            "但进程本身能碰到本机的东西，网络也不受限。"
+            "要开启隔离：Linux 装 bubblewrap、macOS 用 sandbox-exec、任意平台装 Docker。"
+            "要让它在无隔离时严格拒绝而不是降级，把设置里的「无隔离时拒绝执行」打开。"
+        ),
+    )
+
+
 def _probe(name: str) -> Isolation:
     if name == BACKEND_BWRAP:
         path = shutil.which("bwrap")
@@ -236,6 +273,8 @@ def build_plan(
         return _seatbelt_plan(argv, workspace_root, sandbox_dir, allow_network)
     if chosen.backend == BACKEND_DOCKER:
         return _docker_plan(argv, workspace_root, sandbox_dir, allow_network)
+    if chosen.backend == BACKEND_DIRECT:
+        return _direct_plan(argv, sandbox_dir)
     return IsolationPlan(
         backend=BACKEND_NONE,
         argv=list(argv),
@@ -373,6 +412,22 @@ def _docker_plan(
     )
 
 
+def _direct_plan(argv: list[str], sandbox_dir: Path) -> IsolationPlan:
+    """无隔离：**命令原样跑**，只是 cwd 落在这次会话的沙箱目录。
+
+    与另外三个后端的差别必须写在明处：它们各自限定了"进程能碰什么"（bind mount /
+    Seatbelt profile / 容器 namespace），这一个**什么都不限定**——它是降级档
+    （见 `direct_isolation`）。所以 ``detail`` 里如实写"未隔离"，界面与给模型的话照它说。
+    """
+    return IsolationPlan(
+        backend=BACKEND_DIRECT,
+        argv=list(argv),
+        workdir=str(sandbox_dir),
+        available=True,
+        detail="未隔离：直接在本机执行（cwd 是这次会话的沙箱目录）",
+    )
+
+
 def run_isolated(
     argv: list[str],
     *,
@@ -403,6 +458,14 @@ def run_isolated(
         )
 
     sandbox_dir.mkdir(parents=True, exist_ok=True)
+    # 环境变量分两档：前三个后端是"限定视图"，给一份固定的 POSIX env 就够（它们
+    # 自己把需要的目录挂进去）；而**直接执行那一档必须继承当前进程环境**——
+    # Windows 上少了 PATH / PATHEXT / SystemRoot，连 `python` 都找不到（v0.55）。
+    env = (
+        None
+        if plan.backend == BACKEND_DIRECT
+        else {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(sandbox_dir)}
+    )
     try:
         # S603：整条链路就是为了"在隔离里执行用户要跑的命令"而存在的，
         # 而且传的是**数组**（没有 shell 解析），并被隔离后端包着——
@@ -413,7 +476,7 @@ def run_isolated(
             capture_output=True,
             text=True,
             timeout=timeout,
-            env={"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(sandbox_dir)},
+            env=env,
         )
     except subprocess.TimeoutExpired as exc:
         return ExecutionResult(

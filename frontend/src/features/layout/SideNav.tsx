@@ -7,7 +7,7 @@
  * 品牌位（环行星标 + 折叠开关）
  * 新建会话（`/chat?new=1`，带快捷键提示）
  * 主导航：笔记 / 记忆 / 能力 / 知识库▸（所有知识库 / 概览 / 任务中心）
- * 项目节：标题右侧「新增项目」（打开新建弹窗）+ 项目行（带条数，悬停时右端出现「+」= 在这个项目里新开会话）+ 各自的项目内会话（超过 5 条先收起）
+ * 项目节：标题右侧「新增项目」（打开新建弹窗）+ 项目行（带条数，悬停时右端出现「+」= 在这个项目里新开会话，以及「⋯」= 重命名 / 归档 / 删除）+ 各自的项目内会话（超过 5 条先收起）+ 清单底部的「已归档」入口（v0.55）
  * 对话节：没归项目的会话（前 8 条）+ 查看全部会话
  * 页脚：账号（头像 + 名字 → 向上展开的菜单）
  * ```
@@ -113,6 +113,7 @@ import { cn } from '@/lib/utils'
 
 import { AccountMenu } from './AccountMenu'
 import { ConversationRowMenu } from './ConversationRowMenu'
+import { WorkspaceRowMenu } from './WorkspaceRowMenu'
 import { IconChatNew, IconSidebar } from './icons'
 import { useConversationStore } from './conversations'
 import { ensureWorkspacesLoaded, useWorkspaceStore } from './workspaces'
@@ -156,6 +157,13 @@ const SIDE_ROW =
  * `px-1.5`；收层后同样压不过，所以在这里按同一份取值写出来（`_` 是 Tailwind 任意值里的空格）。
  */
 const SIDE_ROW_MENU_GUTTER = 'pr-[calc(var(--hit-target)_+_var(--space-1-5)_+_var(--space-1))]'
+
+/**
+ * 项目行右端有**两颗**按钮（「在这个项目里新建会话」+「⋯」项目菜单，v0.55），
+ * 所以让出的宽度比上面那一档多一颗按钮（24 + 两个按钮之间的 4px 缝）。
+ */
+const SIDE_ROW_MENU_GUTTER_WIDE =
+  'pr-[calc(2_*_var(--hit-target)_+_var(--space-1)_+_var(--space-1-5)_+_var(--space-1))]'
 
 /**
  * 会话 / 项目行的类名。
@@ -330,6 +338,8 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const conversations = useConversationStore((state) => state.items)
   const loadConversations = useConversationStore((state) => state.load)
   const workspaces = useWorkspaceStore((state) => state.items)
+  const archivedProjects = useWorkspaceStore((state) => state.archived)
+  const loadArchivedProjects = useWorkspaceStore((state) => state.loadArchived)
   const workspaceError = useWorkspaceStore((state) => state.error)
   const loadWorkspaces = useWorkspaceStore((state) => state.load)
 
@@ -348,6 +358,8 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const [expandedProjects, setExpandedProjects] = useState<string[]>([])
   /** 「新增项目」弹窗开着吗（按钮在「项目」标题右边）。 */
   const [creatingProject, setCreatingProject] = useState(false)
+  /** 「已归档」那一行展开了吗（v0.55，项目归档）。默认收起——归档的常态就是"不看了"。 */
+  const [showArchived, setShowArchived] = useState(false)
 
   useEffect(() => {
     void loadConversations()
@@ -356,6 +368,16 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
     // 也要这份清单，两处都不该重复发同一个请求。
     void ensureWorkspacesLoaded()
   }, [loadConversations])
+
+  /**
+   * 已归档的项目：**要不要显示那一行**得先知道有没有。
+   *
+   * 单独拉一次（`?archived=true`）而不是把两份清单混在一起：默认视图里**不该**出现
+   * 归档的项目（那正是"收起来"的意思），而"找回来"的入口要有依据。
+   */
+  useEffect(() => {
+    void loadArchivedProjects()
+  }, [loadArchivedProjects])
 
   /**
    * 全局快捷键（P2-1，照 ZCode 的注册表）。
@@ -643,7 +665,8 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                     <button
                       type="button"
                       className={cn(
-                        sideRow({ menuGutter: true }),
+                        sideRow(),
+                        SIDE_ROW_MENU_GUTTER_WIDE,
                         'cursor-pointer border-0 bg-transparent',
                       )}
                       aria-expanded={expandedProjects.includes(workspace.id)}
@@ -666,7 +689,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                         {formatCount(workspace.conversation_count)}
                       </span>
                     </button>
-                    <div className="ly-row-menu">
+                    <div className="ly-row-menu gap-[var(--space-1)]">
                       {/* 带 `?workspace=` 才是"在这个项目里新建"（对话页据此把会话挂上去，
                           并在第一句话落下之前就把落点说出来）。 */}
                       <button
@@ -682,6 +705,9 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                       >
                         <RiAddLine size={15} aria-hidden="true" />
                       </button>
+                      {/* 项目菜单（v0.55）：重命名 / 归档 / 删除。
+                          用户报的"项目没有这三件事"——它们原先挂在已删的「工作区」页上。 */}
+                      <WorkspaceRowMenu item={workspace} />
                     </div>
                   </div>
                 </li>
@@ -708,6 +734,43 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                 )}
               </Fragment>
             ))}
+
+            {/* 已归档的项目（v0.55）：那一行是**找回来的入口**，没有它归档就等于弄丢。
+                形态沿用旁边那条「展开（还有 N 条）」——同一栏里"还有更多"就用同一句话法。
+                归档的行**不进默认清单**（后端默认只列未归档的），所以这里单独铺一份。 */}
+            {archivedProjects.length > 0 && (
+              <li>
+                <button
+                  type="button"
+                  className={`${SIDE_ROW} cursor-pointer border-0 bg-transparent pl-6 text-text-tertiary`}
+                  aria-expanded={showArchived}
+                  onClick={() => setShowArchived((value) => !value)}
+                >
+                  {showArchived
+                    ? '收起已归档'
+                    : `已归档（${formatCount(archivedProjects.length)}）`}
+                </button>
+              </li>
+            )}
+            {showArchived &&
+              archivedProjects.map((workspace) => (
+                <li key={workspace.id}>
+                  <div className="ly-side-row-wrap">
+                    {/* 归档行**不可展开**（它不铺会话，收起来的意义就是"不看了"），
+                        所以是一个静态 div 而不是按钮：行里只有那颗「⋯」是可交互的。 */}
+                    <div
+                      className={cn(sideRow(), SIDE_ROW_MENU_GUTTER, 'text-text-tertiary')}
+                      title={workspace.root_path}
+                    >
+                      <RiFolderLine size={15} className="shrink-0 opacity-60" aria-hidden="true" />
+                      <span className="min-w-0 flex-1 truncate line-through">{workspace.name}</span>
+                    </div>
+                    <div className="ly-row-menu">
+                      <WorkspaceRowMenu item={workspace} />
+                    </div>
+                  </div>
+                </li>
+              ))}
           </ul>
 
           {/* ------------------------------------------------------------ 对话 */}

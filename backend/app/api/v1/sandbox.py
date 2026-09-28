@@ -9,11 +9,14 @@
    而是"在这台机器上执行代码"。与设置页同一档；
 2. **策略闸**（``ExecutionPolicy``）：``ask`` 时未确认回 409，界面确认后带
    ``approved=true`` 重调；``deny`` 直接 403；
-3. **内核隔离**（``services/isolation.py``）：没有可用隔离后端时**拒绝执行**，
-   不回退成裸跑。
+3. **内核隔离**（``services/isolation.py``）：有真隔离就用它；没有时**默认降级为直接
+   执行并如实标注"未隔离"**（v0.55，见 ``isolation.direct_isolation``），
+   只有设置里开了「无隔离时拒绝执行」才按纪律拒绝。
 
-第 3 条是最容易被"优化掉"的一条（"先让它能跑起来"），但它不能省：
-没有它，前两道闸保护的只是"用户点了同意"，而用户同意的是"在一个沙箱里跑"。
+第 3 条为什么默认降级而不是一律拒绝：Windows 上没有 bwrap / sandbox-exec 的原生等价物、
+容器里也常没挂 docker，一律拒绝会让**本地源码启动与容器部署两边都跑不了命令**。
+降级那一档**不是沙箱**，所以它把"未隔离"写在明面上（详情与给模型的话里都写），
+而不是让"用户点了同意"被误读成"在一个沙箱里跑"。
 """
 
 from __future__ import annotations
@@ -43,7 +46,7 @@ from app.services.command_policy import (
     suggest_rule,
     tool_arguments,
 )
-from app.services.sandbox import ExecutionPolicy, sandbox_for
+from app.services.sandbox import ExecutionPolicy, require_isolation, sandbox_for
 
 router = APIRouter(prefix="/sandbox", tags=["sandbox"])
 
@@ -56,10 +59,11 @@ def get_capability(
     """**探测而不是假设**：真去盘上找 bwrap / sandbox-exec / docker，
     并检查 docker daemon 是否活着（装了 CLI 但 daemon 没起是最常见的假阳性）。
 
-    界面据此显示当前状态；没有隔离时明说"执行会被拒绝"，
-    而不是等用户点了执行再报错——那时他已经以为它能跑了。
+    界面据此显示当前状态；没有真隔离时**默认换成降级档**（``direct``，未隔离直接执行，
+    v0.55），只有设置里开了「无隔离时拒绝执行」才报"执行会被拒绝"——两种都在这里说清，
+    而不是等用户点了执行再报错（那时他已经以为它能跑了）。
     """
-    found = isolation_service.detect()
+    found = _isolation_or_direct(services)
     return SandboxCapabilityOut(
         backend=found.backend,
         available=found.available,
@@ -85,6 +89,7 @@ def preview_plan(
         payload.argv,
         workspace_root=root,
         sandbox_dir=box,
+        isolation=_isolation_or_direct(services),
         allow_network=payload.allow_network,
         bind_ro=isolation_service.bind_paths_from(services.runtime.get("sandbox.bind_ro")),
     )
@@ -151,6 +156,7 @@ def exec_command(
         payload.argv,
         workspace_root=root,
         sandbox_dir=box,
+        isolation=_isolation_or_direct(services),
         timeout=payload.timeout_seconds or isolation_service.DEFAULT_TIMEOUT_SECONDS,
         allow_network=payload.allow_network,
         bind_ro=isolation_service.bind_paths_from(services.runtime.get("sandbox.bind_ro")),
@@ -163,6 +169,19 @@ def exec_command(
         timed_out=result.timed_out,
         backend=result.backend,
     )
+
+
+def _isolation_or_direct(services: Services) -> isolation_service.Isolation:
+    """这次执行用哪个后端：有真隔离就用它；没有且**没开严格模式**时换成降级档 ``direct``。
+
+    **严格模式下原样返回 ``detect()`` 的结果**（``available=False`` 的 ``none``）：
+    ``run_isolated`` 见到它会抛 ``UnsupportedContentError``（端点据此报"拒绝执行"），
+    ``build_plan`` 给出一份不可用的计划——两处行为与降级前逐字一致。
+    """
+    found = isolation_service.detect()
+    if found.available or require_isolation(services.runtime):
+        return found
+    return isolation_service.direct_isolation()
 
 
 def _rule_set(services: Services):  # type: ignore[no-untyped-def]

@@ -101,7 +101,7 @@ vi.mock('@/api/capabilities', async (importOriginal) => ({
 
 import { getConversation } from '@/api/conversations'
 import { downloadFile, getFileUrl, listFiles, uploadFile } from '@/api/conversations'
-import type { ConversationFileListing } from '@/api/conversations'
+import type { ConversationDetail, ConversationFileListing } from '@/api/conversations'
 
 const source: ChatSource = {
   index: 1,
@@ -115,10 +115,32 @@ const source: ChatSource = {
   score: 0.9,
 } as ChatSource
 
+/**
+ * 一份最小的会话详情：抽屉现在要读它来决定有没有「项目文件」那一档
+ * （判据是 `workspace_id` 有没有值，见 `FilesSheet.hasProject`）。
+ */
+function conversationDetail(workspaceId: string | null = null): ConversationDetail {
+  return {
+    id: 'c1',
+    title: '一条会话',
+    kb_ids: [],
+    model_pk: '',
+    thinking: null,
+    thinking_effort: null,
+    workspace_id: workspaceId,
+    pinned: false,
+    archived: false,
+    message_count: 0,
+    created_at: null,
+    updated_at: null,
+    messages: [],
+  } as unknown as ConversationDetail
+}
+
 beforeEach(() => {
   Element.prototype.scrollTo = () => undefined
   vi.clearAllMocks()
-  vi.mocked(getConversation).mockResolvedValue(undefined as never)
+  vi.mocked(getConversation).mockResolvedValue(conversationDetail())
 })
 
 function withProviders(node: React.ReactNode) {
@@ -217,8 +239,11 @@ describe('产物与文件抽屉：打开时取数、关掉后再开', () => {
     await user.click(screen.getByRole('button', { name: '浏览文件' }))
     const drawer = await screen.findByRole('dialog', { name: /产物与文件/ })
     expect(await within(drawer).findByText('季度报告.docx')).toBeInTheDocument()
-    // 打开就取**根那一层**（`path` 为空 = 文件区的根，旧 `FileDrawer` 的 `load('')`）
-    expect(listFiles).toHaveBeenCalledWith('c1', '')
+    // 打开就取**会话档的根那一层**（v0.55 的默认档：这条会话的文件，平铺）
+    expect(listFiles).toHaveBeenCalledWith('c1', '', 'conversation')
+    // 会话档平铺：**不画面包屑**；而这条会话没挂项目，所以也没有「项目文件」那一档
+    expect(within(drawer).queryByRole('navigation', { name: '路径' })).toBeNull()
+    expect(within(drawer).queryByRole('tab', { name: '项目文件' })).toBeNull()
 
     await user.keyboard('{Escape}')
     expect(screen.getByTestId('files-open')).toHaveTextContent('true')
@@ -265,7 +290,9 @@ describe('文件区抽屉：旧 FileDrawer 的四件事', () => {
     return { user, drawer }
   }
 
-  it('子目录：点目录进去（取那一层）、面包屑与「上一级」都能退回根', async () => {
+  it('子目录：切到「项目文件」那一档，点目录进去、面包屑与「上一级」都能退回根', async () => {
+    // 「项目文件」这一档只有**挂了项目的会话**才有（判据是详情里的 `workspace_id`）
+    vi.mocked(getConversation).mockResolvedValue(conversationDetail('w1'))
     const root = listing({
       entries: [
         {
@@ -300,15 +327,25 @@ describe('文件区抽屉：旧 FileDrawer 的四件事', () => {
         },
       ],
     })
-    vi.mocked(listFiles).mockImplementation(async (_id, path = '') => (path ? sub : root))
+    // 只有项目档会带 `path`（会话档是平铺的，传了也不看）
+    vi.mocked(listFiles).mockImplementation(async (_id, path = '', scope = 'conversation') =>
+      scope === 'project' && path ? sub : root,
+    )
     const { user, drawer } = await openDrawer()
 
+    // 默认停在「本会话」：平铺一层，**不画面包屑**（那两档的路径不是一回事）
     expect(await within(drawer).findByText('readme.md')).toBeInTheDocument()
+    expect(within(drawer).queryByRole('navigation', { name: '路径' })).toBeNull()
 
-    // 进一层：请求带上了那一层的路径（旧 `load(entry.key)`）
+    // 切到「项目文件」：这才是那个真实目录（能进子目录）
+    await user.click(within(drawer).getByRole('tab', { name: '项目文件' }))
+    expect(await within(drawer).findByText('readme.md')).toBeInTheDocument()
+    expect(listFiles).toHaveBeenCalledWith('c1', '', 'project')
+
+    // 进一层：请求带上了那一层的路径（旧 `load(entry.key)`），而且报的是项目档
     await user.click(within(drawer).getByText('导出的东西'))
     expect(await within(drawer).findByText('报告.pdf')).toBeInTheDocument()
-    expect(listFiles).toHaveBeenCalledWith('c1', 'out')
+    expect(listFiles).toHaveBeenCalledWith('c1', 'out', 'project')
     // 面包屑：根那一段用服务端给的 `label`，当前目录是最后一段（不可点）
     const trail = within(drawer).getByRole('navigation', { name: '路径' })
     expect(within(trail).getByText('工作区「我的项目」')).toBeInTheDocument()

@@ -231,6 +231,7 @@ describe('侧栏导航', () => {
           conversation_count: 7,
           created_at: null,
           updated_at: null,
+          archived_at: null,
         },
       ],
     })
