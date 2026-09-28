@@ -1958,3 +1958,18 @@ def test_dream_slug_flattens_names_into_a_filename() -> None:
     assert _dream_slug("  发布 顺序  ") == "发布-顺序"
     assert _dream_slug('a/b:c*d?"e') == "abcde"
     assert _dream_slug("///") == "未命名"
+
+
+def test_the_profile_template_warns_against_placeholder_words() -> None:
+    """D26 的另一半：模板要拦住"下一份又被写成待确认"。
+
+    字段**留空**（空值不会被当成待办），提示语才点名那几个词——两件事都要在，
+    少一半都会重新长出那种"每轮追问"的文件。
+    """
+    template = memory_service._PROFILE_TEMPLATE
+
+    assert "没填的就留空" in template
+    assert "待确认" in template  # 只出现在提示语里
+    # 字段值必须是空的：`- **名字：**` 后面直接换行
+    assert "- **名字：**\n" in template
+    assert "- **怎么称呼他：**\n" in template

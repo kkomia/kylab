@@ -469,3 +469,22 @@ def test_the_bootstrap_is_absent_when_the_service_says_nothing() -> None:
     )
 
     assert "引导正文" not in text
+
+
+def test_the_persona_lead_forbids_chasing_placeholder_fields() -> None:
+    """D26：文件里写着「待确认」「待补」这类占位词时，**不许每一轮都去追问对方**。
+
+    实测（2026-09-28 走查）：那份 `PROFILE.md` 的用户资料三行写着「待确认」（模型自己
+    早先这么填的），于是每轮注入之后模型都把它当成"还没做完的事"，见面就问"怎么称呼你"
+    —— 那天 17 条新会话里 14 条出现了这种追问，而记忆 bootstrap 那条路实测根本不再注入。
+
+    规则写在**总起句**里（只要有文件进来就注入），与 `memory._PROFILE_TEMPLATE`
+    那句提示一前一后挡住它。这条用例是**对着渲染结果**钉的，不是对着常量名。
+    """
+    persona = [("PROFILE.md", "# 用户资料\n\n- **怎么称呼他：** 待确认\n")]
+    text = build_system_prompt(PromptContext(base="底", persona=persona))
+
+    assert "没填的字段就当没填" in text
+    assert "追问" in text
+    # 点名那几个占位词：不点名的话，模型未必把「待补」也当成同一类
+    assert "待确认" in text and "待补" in text
