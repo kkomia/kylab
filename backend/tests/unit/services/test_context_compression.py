@@ -287,3 +287,43 @@ def test_prune_tool_results_is_a_no_op_when_there_are_fewer_than_keep() -> None:
 
     assert prune_tool_results(messages) == 0
     assert all(item.content != TOOL_RESULT_PLACEHOLDER for item in messages)
+
+
+def test_the_budget_is_capped_so_a_huge_window_still_compresses(
+    bundle, runtime, bind_slot
+) -> None:  # type: ignore[no-untyped-def]
+    """D37：窗口 1M × 70% = **70 万 token** 的阈值，而实测那条会话总共才 1.2 万 token
+    （占 1.2%），按当时速率要堆到约 1.7 万轮才可能触发——等于这个功能不存在。
+
+    加了绝对上限之后，同一个窗口只要越过上限就压。这里把上限调到 3000 造出"过线"，
+    因为它就是那条判据本身（默认 12 万在生产里同样是这个作用，只是数字更大）。
+    """
+    conversations = ConversationService(bundle)
+    conv = conversations.create(owner_id="u1")
+    _seed(conversations, conv.id, turns=8, size=200)
+    runtime.set(
+        {
+            "chat.context_window": "1000000",
+            "chat.compress_at": "70",
+            "chat.compress_keep": "2",
+            "chat.compress_max_tokens": "3000",
+        }
+    )
+    bind_slot("chat", model_id="m", capabilities=["chat"])
+    service = _service(runtime, conversations, _SummaryChat("要点：只保留最近两轮之外的全部信息"))
+
+    prepared = service.prepare_context(conversation_id=conv.id, query="新问题")
+
+    assert prepared.compressed is True
+
+
+def test_the_default_cap_does_not_change_the_default_window() -> None:
+    """默认值那条线：上限必须**高于**默认窗口的 70%，否则这次改动会悄悄改掉既有行为
+    （默认配置下本来就在 45875 触发，上限要是更低就会提前压）。"""
+    from app.services.chat import (
+        DEFAULT_COMPRESS_AT,
+        DEFAULT_COMPRESS_MAX_TOKENS,
+        DEFAULT_CONTEXT_WINDOW,
+    )
+
+    assert DEFAULT_COMPRESS_MAX_TOKENS > DEFAULT_CONTEXT_WINDOW * DEFAULT_COMPRESS_AT // 100

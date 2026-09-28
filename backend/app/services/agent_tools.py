@@ -40,6 +40,8 @@ from app.services.agent_files import (
     MAX_READ_LINES,
     MAX_SEARCH_HITS,
     list_files,
+    looks_binary_bytes,
+    looks_binary_name,
     read_bytes,
     read_file,
     resolve_roots,
@@ -334,7 +336,12 @@ _LOCAL_TOOLS: tuple[dict[str, Any], ...] = (
         "inputSchema": {
             "type": "object",
             "properties": {
-                "key": {"type": "string", "description": "list_conversation_files 给出的 key"},
+                "key": {
+                    "type": "string",
+                    # D34：模型照抄整行（`f art_x（2.3 KB）`）是实测发生过的失败路径，
+                    # 所以"取哪一段"要写在参数说明里，与列表表头那句一致
+                    "description": "列表里 `key=` 后面那一串（原样照抄，别带文件名与大小）",
+                },
                 "offset": {
                     "type": "integer",
                     "minimum": 1,
@@ -1112,8 +1119,12 @@ def _run_conversation_file_tool(
             listing = services.artifacts.list_files(conversation_id)
         except KylabError as exc:
             return ToolOutcome(content=f"列不了这条会话的文件：{exc}")
+        # 每行**自解释**（D34，2026-09-28 走查）：原来的形状是 `f art_6a6f9058babd（2.3 KB）`
+        # ——既没有文件名，也没说那串 id 是干什么的。于是模型把**整行**当 key 交给
+        # read_conversation_file，实测必然读失败（`文件不存在：f art_6a6f9058babd（2.3 KB）`），
+        # 白烧掉好几次调用。现在文件名与 `key=` 标签都写出来，表头再点一句"只取 key= 后面那串"。
         lines = [
-            f"{'d' if item.is_dir else 'f'} {item.key}"
+            f"{'目录' if item.is_dir else '文件'} {item.name} — key={item.key}"
             + ("" if item.is_dir else f"（{_size_text(item.size_bytes)}）")
             for item in listing.entries
         ]
@@ -1121,6 +1132,7 @@ def _run_conversation_file_tool(
         return ToolOutcome(
             content=_join_blocks(
                 f"{listing.label}：{len(listing.entries)} 项",
+                "读某一份就把 `key=` 后面那一串原样交给 read_conversation_file（别带这一行其它字）",
                 chr(10).join(lines) or "（文件区是空的）",
                 note,
             ),
@@ -1134,6 +1146,10 @@ def _run_conversation_file_tool(
         content, filename = services.artifacts.read_file(conversation_id, key)
     except KylabError as exc:
         return ToolOutcome(content=f"读不了这份文件：{exc}")
+    # **先按名字判一次**（D36）：PDF 这类文件头里没有 NUL、还能按 UTF-8 解出来，
+    # 只看字节会把它当文本交给模型（实测读到 `1: %PDF-1.4 …` 那种原始字节）
+    if looks_binary_name(filename):
+        return _binary_file_outcome(filename, key)
     text = _text_or_none(content)
     if text is None:
         return _binary_file_outcome(filename, key)
@@ -1154,9 +1170,13 @@ def _run_conversation_file_tool(
 
 
 def _text_or_none(content: bytes) -> str | None:
-    """字节 → 文本；**二进制给 ``None``**（判据与 ``agent_files._looks_binary`` 同一条：
-    前 4KB 里有 NUL，或者根本不是合法 UTF-8）。"""
-    if b"\x00" in content[:4096]:
+    """字节 → 文本；**二进制给 ``None``**（判据与 `agent_files` 那一侧**共用同一份**：
+    魔数 / NUL 见 `looks_binary_bytes`，再加上"根本不是合法 UTF-8"）。
+
+    注意"文件名"这条判据在调用点（`looks_binary_name`）——这里只拿得到字节，
+    而 PDF 那种**没有 NUL** 的二进制只能靠名字先拦一道（D36）。
+    """
+    if looks_binary_bytes(content):
         return None
     try:
         return content.decode("utf-8")

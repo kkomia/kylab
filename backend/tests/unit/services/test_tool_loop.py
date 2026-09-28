@@ -275,6 +275,12 @@ def test_tool_failure_returns_to_the_model_instead_of_raising() -> None:
     assert "内部错误" in tool_message.content
     # **这句话是这条用例的重点**：异常原文只进日志
     assert "服务连不上" not in tool_message.content
+    # 但**过程面板那一行仍然要给真原因**（D33 的另一半）：两个诉求各有落点——
+    # `content` 是模型读的、`summary` 是上屏幕的（`step_detail()` 优先用它）。
+    # 集成用例 `test_chat_api.py` 里那条 tool failure 钉的是后者；
+    # 这里从单测这一侧把同一件事再钉一遍（少一半就会变成"悄悄吞掉"）。
+    details = [e.detail for e in events if isinstance(e, StepEvent)]
+    assert any("服务连不上" in item for item in details), details
     # 整轮照常收尾
     assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
 

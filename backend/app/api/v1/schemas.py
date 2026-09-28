@@ -1105,6 +1105,10 @@ class ContextUsageOut(BaseModel):
     """``used / total``（0~1）。"""
     compress_at: int = 0
     """触发自动压缩的阈值（百分比，设置项 ``chat.compress_at``）。界面画那条线要用它。"""
+    compress_budget: int = 0
+    """**实际**触发压缩的 token 数：``compress_at`` 与绝对上限（``chat.compress_max_tokens``）
+    取小的那个（D37）。界面说"到多少会自动压"要用**这个**——窗口调大之后
+    ``total × compress_at`` 会是个永远到不了的数（实测 1M 窗口报 70 万，那条会话才 1.2 万）。"""
     estimated: bool = True
     """恒为真：这些数字是**按字符数估的**，不是分词器给的。"""
     note: str = ""

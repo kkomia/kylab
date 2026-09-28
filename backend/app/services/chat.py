@@ -53,12 +53,31 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONTEXT_WINDOW = 65536
 #: 触发压缩的占用比例（百分比）。
 DEFAULT_COMPRESS_AT = 70
+#: 压缩预算的**绝对上限**（token，D37）。
+#:
+#: 为什么比例之外还要一个绝对值：比例说的是"模型能吃多少"，而压缩要防的是
+#: "**上下文一长，答案就开始跑偏**"——两件事。只看比例的话，窗口设成 1M 时阈值就是
+#: 70 万 token：实测那条会话总共才 1.2 万 token（占 1.2%），按当时速率要堆到**约 1.7 万轮**
+#: 才可能触发，等于这个功能不存在（走查 D37）。12 万这个数取在"主流模型仍然答得稳"
+#: 的区间里：比默认窗口（65536）的 70% 高，所以**默认配置下不改变任何现有行为**——
+#: 它只在用户把窗口调得很大时才起作用。
+DEFAULT_COMPRESS_MAX_TOKENS = 120_000
 #: 压缩时保留最近几条消息**原样**不进摘要：指代几乎总指向最近一两轮。
 DEFAULT_COMPRESS_KEEP = 6
 #: 系统提示词与资料块的固定开销（token）：估算时给一个额度，免得只算历史而低估。
 SYSTEM_PROMPT_TOKEN_ALLOWANCE = 1200
 #: 摘要长度上限（字）。摘要要短才有意义，否则等于没压。
 SUMMARY_MAX_CHARS = 1200
+
+
+def compress_budget(*, window: int, percent: int, cap: int) -> int:
+    """压缩预算（token）：**比例与绝对上限取小的那个**（D37）。
+
+    三处共用它——`prepare_context`（真正决定压不压）、`ContextUsage`（界面画那条线）、
+    `/context` 命令给模型看的那行说明。各算一遍迟早会分叉，而分叉的样子就是
+    "界面说 70 万、实际 12 万"，用户只能靠猜。
+    """
+    return max(1024, min(int(window * max(1, min(percent, 95)) / 100), max(1024, cap)))
 
 # ---- 两级压缩（P1-3，抄 DSH 的 tool-result-pruner + ZCode 的 microcompact）----
 #
@@ -508,6 +527,11 @@ class ContextUsage:
     #: 触发第二级压缩的阈值（百分比，设置项 ``chat.compress_at``）。
     #: 界面画那条线要用它——不然用户只知道"占了多少"，不知道"离自动压缩还有多远"。
     compress_at: int
+    #: 触发压缩的**实际 token 数**：比例与绝对上限（``chat.compress_max_tokens``）
+    #: 取小的那个。**别再各算一遍**——只按 `total × compress_at` 算的话，窗口调大之后
+    #: 界面与 `/context` 会报出一个永远到不了的数（D37 实测：1M 窗口报 70 万，
+    #: 而那条会话总共才 1.2 万）。三处共用 `compress_budget()`。
+    compress_budget: int
 
     @property
     def ratio(self) -> float:
@@ -995,8 +1019,11 @@ class ChatService:
         pending = _after_marker(records, upto)
         window = self._runtime.get_int("chat.context_window") or DEFAULT_CONTEXT_WINDOW
         percent = self._runtime.get_int("chat.compress_at") or DEFAULT_COMPRESS_AT
+        cap = self._runtime.get_int("chat.compress_max_tokens") or DEFAULT_COMPRESS_MAX_TOKENS
         keep = max(0, self._runtime.get_int("chat.compress_keep") or DEFAULT_COMPRESS_KEEP)
-        budget = max(1024, int(window * max(1, min(percent, 95)) / 100))
+        # **比例与绝对值取小的那个**（D37）：只看比例的话，1M 窗口的阈值是 70 万 token，
+        # 而那等于"永远不压缩"——见 `DEFAULT_COMPRESS_MAX_TOKENS` 的说明。
+        budget = compress_budget(window=window, percent=percent, cap=cap)
         cost = (
             SYSTEM_PROMPT_TOKEN_ALLOWANCE
             + estimate_tokens(summary)
@@ -1147,12 +1174,16 @@ class ChatService:
 
         window = self._runtime.get_int("chat.context_window") or DEFAULT_CONTEXT_WINDOW
         percent = self._runtime.get_int("chat.compress_at") or DEFAULT_COMPRESS_AT
+        cap = self._runtime.get_int("chat.compress_max_tokens") or DEFAULT_COMPRESS_MAX_TOKENS
         used = sum(item.tokens for item in parts)
         return ContextUsage(
             parts=tuple(parts),
             used=used,
             total=max(1, window),
             compress_at=max(1, min(percent, 95)),
+            compress_budget=compress_budget(
+                window=max(1, window), percent=max(1, min(percent, 95)), cap=cap
+            ),
         )
 
     # -------------------------------------------------------- 工具循环（P0）

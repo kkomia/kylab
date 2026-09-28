@@ -743,6 +743,7 @@ describe('上下文用量（P1-3 的仪表）', () => {
             total: 32000,
             ratio: 0.025,
             compress_at: 25600,
+            compress_budget: 25600,
             estimated: true,
             note: '按字符数估算：中日韩 1 字约 1 token…',
           }),

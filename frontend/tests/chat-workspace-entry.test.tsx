@@ -42,6 +42,7 @@ vi.mock('@/api/chat', async (importOriginal) => {
       total: 0,
       ratio: 0,
       compress_at: 0,
+      compress_budget: 0,
       estimated: true,
       note: '',
     })),
@@ -249,6 +250,7 @@ beforeEach(() => {
     total: 0,
     ratio: 0,
     compress_at: 0,
+    compress_budget: 0,
     estimated: true,
     note: '',
   })

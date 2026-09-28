@@ -152,6 +152,13 @@ SETTING_GROUPS: dict[str, Any] = {
                 "label": "压缩时保留的最近消息条数",
                 "type": "int",
             },
+            {
+                # 与上面那条百分比**取小的那个**（D37）：窗口调到很大时（例如 1M），
+                # 70% 就是 70 万 token，等于永远不压缩——绝对值这条才是真正的兜底。
+                "key": "chat.compress_max_tokens",
+                "label": "压缩预算的绝对上限（token）",
+                "type": "int",
+            },
         ],
     },
     # 联网（v0.22，见 services/web.py 的模块头）。
@@ -337,6 +344,9 @@ DEFAULTS: dict[str, str] = {
     "chat.context_window": "65536",
     "chat.compress_at": "70",
     "chat.compress_keep": "6",
+    # 绝对上限（D37）：比默认窗口的 70%（45875）高，所以**默认配置下一字不改**既有行为；
+    # 只有用户把窗口调到很大时它才会先到线（12 万 token）。
+    "chat.compress_max_tokens": "120000",
     # **三张清单默认都空**，也就是"一律先问"。
     # 抄的是 Claude Code 的默认：它也不预置放行清单——预置一张"看起来安全"的
     # 只读命令表是危险的，因为**只读不等于无害**：`cat /etc/passwd` 是只读的，

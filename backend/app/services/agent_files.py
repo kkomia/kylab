@@ -58,6 +58,122 @@ logger = logging.getLogger(__name__)
 WHERE_WORKSPACE = "workspace"
 WHERE_SANDBOX = "sandbox"
 
+#: 一看扩展名就知道**读不成文本**的那些（D36，2026-09-28 走查）。
+#:
+#: 为什么光看 NUL 不够：**PDF 这类文件的头部没有 NUL**（实测那个 397 B 的样例：
+#: 前 4KB 里 0 个 NUL，还能按 UTF-8 解出来），于是它被当成文本，"读"出来是
+#: `1: %PDF-1.4 …` 这种原始字节——模型会把它当内容接着猜。
+#:
+#: 这是**黑名单**，不是文本白名单：`.log` / `.yaml` / `.toml` / `.sql` / `Dockerfile`
+#: 这类自造或小众文本格式一个都不在里面，所以不会出现"把能读的文件判成二进制"。
+BINARY_SUFFIXES = frozenset(
+    {
+        # 文档
+        ".pdf",
+        ".doc",
+        ".docx",
+        ".xls",
+        ".xlsx",
+        ".ppt",
+        ".pptx",
+        ".odt",
+        ".ods",
+        ".odp",
+        # 图片
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".bmp",
+        ".ico",
+        ".tif",
+        ".tiff",
+        ".heic",
+        # 压缩包
+        ".zip",
+        ".gz",
+        ".tar",
+        ".7z",
+        ".rar",
+        ".xz",
+        ".bz2",
+        # 音视频
+        ".mp3",
+        ".wav",
+        ".flac",
+        ".ogg",
+        ".mp4",
+        ".mov",
+        ".avi",
+        ".mkv",
+        ".webm",
+        # 字体
+        ".woff",
+        ".woff2",
+        ".ttf",
+        ".otf",
+        # 二进制产物 / 可执行
+        ".pyc",
+        ".so",
+        ".dll",
+        ".exe",
+        ".bin",
+        ".class",
+        ".jar",
+        ".wasm",
+        ".dylib",
+        ".sqlite",
+        ".db",
+    }
+)
+
+#: 文件头（魔数）：没有扩展名、或扩展名被改过时兜底。顺序无所谓，逐条比。
+BINARY_MAGIC = (
+    b"%PDF-",
+    b"PK\x03\x04",  # zip / docx / xlsx / pptx
+    b"PK\x05\x06",  # 空 zip
+    b"\x89PNG\r\n\x1a\n",
+    b"\xff\xd8\xff",  # jpeg
+    b"GIF87a",
+    b"GIF89a",
+    b"\x1f\x8b",  # gzip
+    b"BZh",  # bzip2
+    b"\xfd7zXZ\x00",  # xz
+    b"7z\xbc\xaf\x27\x1c",
+    b"Rar!\x1a\x07",
+    b"OggS",
+    b"RIFF",  # wav / avi / webp
+    b"\xd0\xcf\x11\xe0",  # 老式 Office（doc/xls/ppt）
+    b"\x7fELF",
+    b"\xca\xfe\xba\xbe",  # java class
+    b"SQLite format 3\x00",
+    b"\x00asm",  # wasm
+    b"wOFF",
+    b"wOF2",
+)
+
+
+def looks_binary_name(name: str) -> bool:
+    """按**名字**（扩展名）判二进制。
+
+    上传件那条路只有名字与字节（没有真实路径），所以这一条得单独能调——
+    `agent_tools` 读会话文件时就先问它（D36）。
+    """
+    return Path(name).suffix.lower() in BINARY_SUFFIXES
+
+
+def looks_binary_bytes(content: bytes) -> bool:
+    """按**字节**判二进制：魔数命中、或前 4KB 里有 NUL。
+
+    **不做 UTF-8 解码**——那是"到底能不能当文本读"的最后一步，在
+    `agent_tools._text_or_none` 那一侧（它多一条 `UnicodeDecodeError` 的判据）。
+    """
+    if content.startswith(BINARY_MAGIC):
+        return True
+    return b"\x00" in content[:4096]
+
+
 #: 一次最多列多少条。与其它列表类工具同一量级（见 ``tools.MAX_DOC_PAGE``）：
 #: 再多就是拿上下文换"我全都要"，而模型真正需要的通常是"这里有什么"。
 MAX_LIST_ENTRIES = 200
@@ -360,15 +476,22 @@ def read_bytes(
 
 
 def _looks_binary(path: Path) -> bool:
-    """靠**前 4KB 里有没有 NUL 字节**判二进制。
+    """这个文件能不能当文本读？**先看名字，再看字节**（D36）。
 
-    这比"按扩展名白名单"稳：``.md`` / ``.txt`` 之外还有一堆文本格式（``.log``、
-    ``.yaml``、``.toml``、``.sql``、``Dockerfile``…），白名单会漏，而漏的代价是
-    "模型读不了这个文件"；NUL 字节则是二进制文件几乎必然有、文本文件几乎必然没有的东西。
+    为什么两条都要：
+    - **名字**挡住"确实叫 .pdf / .png"的（绝大多数）——它们的内容可能不含 NUL，
+      光看字节会放过去（走查实测：397 B 的 PDF 前 4KB 里 0 个 NUL）；
+    - **字节**（魔数 + NUL）挡住"改了名 / 没有扩展名"的。
+
+    判据是**黑名单**，不会误伤 `.log` / `.yaml` / `.toml` / `.sql` 这类自造文本格式
+    （它们不在 `BINARY_SUFFIXES` 里），所以"把能读的文件判成二进制"这种反向错误
+    仍然不会发生——这正是当初只敢看 NUL 的那个顾虑。
     """
+    if looks_binary_name(path.name):
+        return True
     try:
         with path.open("rb") as handle:
-            return b"\x00" in handle.read(4096)
+            return looks_binary_bytes(handle.read(4096))
     except OSError:
         return False
 

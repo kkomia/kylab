@@ -1051,6 +1051,9 @@ export interface ContextUsage {
   ratio: number
   /** 自动压缩的触发点（token 数）：仪表上画一条刻度，让"离压缩还有多远"看得见。 */
   compress_at: number
+  /** 触发压缩的**实际 token 数**（D37）：`compress_at` 那个比例与绝对上限取小的那个。
+   *  说"到多少会自动压"要用**这个**——窗口调大之后比例算出来会是个永远到不了的数。 */
+  compress_budget: number
   estimated: boolean
   note: string
 }
@@ -1080,6 +1083,8 @@ export async function getContextUsage(conversationId: string): Promise<ContextUs
     total: raw.total ?? 0,
     ratio: raw.ratio ?? 0,
     compress_at: raw.compress_at ?? 0,
+    // 老后端没有这个字段时退化成"比例算出来的那个数"，好过显示 0
+    compress_budget: raw.compress_budget ?? raw.compress_at ?? 0,
     estimated: raw.estimated ?? true,
     note: raw.note ?? '',
   }

@@ -655,3 +655,63 @@ def test_write_memory_needs_content(tmp_path: Path) -> None:
     )
 
     assert "缺少参数" in outcome.content
+
+
+# ------------------------------------------------------- D34：列表要自解释
+# ------------------------------------------------------- D36：PDF 那种没有 NUL 的也算二进制
+
+
+def test_the_file_listing_labels_the_key_so_the_model_does_not_copy_the_whole_line() -> None:
+    """D34：列表每行要有**文件名**与 `key=` 标签，表头还要说清"只取 key= 后面那串"。
+
+    病灶：原先是 `f art_6a6f9058babd（2.3 KB）`——没有文件名，也没说那串 id 是干什么的。
+    实测模型会把**整行**当 key 交给 read_conversation_file，于是必然读失败
+    （`读不了这份文件：文件不存在：f art_6a6f9058babd（2.3 KB）`），白烧三次调用。
+    """
+    entry = SimpleNamespace(key="art_1", name="走查样例.md", is_dir=False, size_bytes=549)
+    services = _file_services(_FakeArtifacts(entries=[entry]))
+
+    outcome = agent_tools._run_conversation_file_tool("list_conversation_files", services, "c1", {})
+
+    assert "走查样例.md" in outcome.content, "文件名要出现（不然人也不知道那是哪一份）"
+    assert "key=art_1" in outcome.content, "key 要有标签"
+    assert "别带" in outcome.content, "表头要说清取哪一段"
+    # 旧形状那种"只有一个裸 id"的行不该再出现
+    assert "\nf art_1" not in outcome.content
+
+
+def test_a_pdf_without_nul_bytes_is_still_binary(tmp_path: Path) -> None:
+    """D36：PDF 的文件头里**没有 NUL**，还能按 UTF-8 解出来——只看字节会把它当文本。
+
+    实测（走查那个 397 B 的样例）：前 4KB 里 0 个 NUL、`_text_or_none` 也放它过，
+    于是"读"出来是 `1: %PDF-1.4 …` 这种原始字节，模型照样把它当内容去猜。
+    这里三条判据一起钉：按路径、按名字、按字节。
+    """
+    from app.services import agent_files
+
+    body = b"%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n"
+    pdf = tmp_path / "sample.pdf"
+    pdf.write_bytes(body)
+
+    assert agent_files._looks_binary(pdf) is True
+    assert agent_files.looks_binary_name("sample.pdf") is True
+    # 字节那一侧也认（魔数兜底）——"改了名 / 没有扩展名"的靠它
+    assert agent_tools._text_or_none(body) is None
+    renamed = tmp_path / "mystery"
+    renamed.write_bytes(body)
+    assert agent_files._looks_binary(renamed) is True
+
+
+def test_ordinary_text_files_are_not_mistaken_for_binary(tmp_path: Path) -> None:
+    """反向那一半：这份名单是**黑名单**，不能误伤自造 / 小众文本格式。
+
+    （只敢看 NUL 的那个顾虑正是"按扩展名白名单会漏掉 .log/.yaml/Dockerfile"——
+    黑名单不会：它们不在名单里，所以照样按文本读。）
+    """
+    from app.services import agent_files
+
+    for name in ("app.log", "conf.yaml", "notes.txt", "Makefile"):
+        path = tmp_path / name
+        path.write_text("普通文本\n", encoding="utf-8")
+        assert agent_files._looks_binary(path) is False, name
+        assert agent_files.looks_binary_name(name) is False, name

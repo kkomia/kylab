@@ -568,6 +568,10 @@ def context_usage(
         total=usage.total,
         ratio=round(usage.ratio, 4),
         compress_at=usage.compress_at,
+        # **实际**阈值（比例与绝对上限取小的那个，D37）：界面按这个说"到多少会自动压"，
+        # 否则窗口调大之后那句提示是个永远到不了的数（实测 1M 窗口报 70 万，
+        # 而那条会话总共才 1.2 万）
+        compress_budget=usage.compress_budget,
         estimated=True,
         note=(
             "按字符数估算：中日韩 1 字约 1 token、其余 4 字符约 1 token（偏高一点），"
@@ -2690,8 +2694,12 @@ def _context_lines(usage) -> list[str]:  # type: ignore[no-untyped-def]
     for part in usage.parts:
         share = part.tokens / usage.used if usage.used else 0.0
         lines.append(f"- {part.label}：{part.tokens:,} tokens（{share:.0%}）")
-    cut = int(usage.total * usage.compress_at / 100)
-    lines.append(f"自动压缩阈值：{usage.compress_at}%（到 {cut:,} tokens 就自动压）")
+    # 阈值那一行用 `compress_budget`（比例与绝对上限取小的那个，D37）：
+    # 只按 `total × compress_at` 算的话，窗口调大之后这里会报一个永远到不了的数
+    lines.append(
+        f"自动压缩阈值：{usage.compress_budget:,} tokens"
+        f"（按窗口的 {usage.compress_at}% 与绝对上限取小的那个）"
+    )
     lines.append("数字按字符数估算（中日韩 1 字约 1 token、其余 4 字符约 1，偏高一点）。")
     return lines
 

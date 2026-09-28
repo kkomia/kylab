@@ -673,10 +673,11 @@ export function ContextDetails() {
               {/* 只给这条读数（阈值是用户自己的设置）。后面原来还缀着
                   "（先剪旧工具结果，再摘要）"——那是在讲压缩怎么实现的，
                   属于 2026-09-24 用户要求清掉的那一类解释，删。
-                  `compress_at` 是**百分比**（后端 `chat.compress_at` 设置项），
-                  不是 token 数：此前直接 `formatCount` 打出来是"到 70 会
-                  自动压缩"——既少了 `%`，也把一个百分比当成了数量。 */}
-              到 {usage.compress_at}% 会自动压缩
+                  数字用 `compress_budget`（**实际**阈值，D37）而不是百分比：
+                  它是"窗口的 `compress_at`%"与绝对上限取小的那个——窗口调到 1M 时
+                  按比例算是 70 万 token，而那条会话总共才 1.2 万，那句提示就成了
+                  一个永远到不了的数。 */}
+              到 {formatCount(usage.compress_budget)} tokens 会自动压缩
             </p>
           ) : null}
           {usage.estimated && usage.note ? (

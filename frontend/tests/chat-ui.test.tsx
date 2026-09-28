@@ -48,6 +48,7 @@ vi.mock('@/api/chat', async (importOriginal) => {
       total: 0,
       ratio: 0,
       compress_at: 0,
+      compress_budget: 0,
       estimated: true,
       note: '',
     })),
@@ -1114,6 +1115,9 @@ describe('停止与回到最新', () => {
       total: 25600,
       ratio: 0.25,
       compress_at: 70,
+      // **实际阈值**（token）：故意与 `compress_at` 不同值——这样下面那条断言能证明
+      // 界面读的是 `compress_budget`，而不是又把百分比当数量打了一遍（那是早晚出过的 bug）
+      compress_budget: 17920,
       estimated: true,
       note: '按字符数估算：中日韩 1 字约 1 token',
     } as never)
@@ -1132,9 +1136,13 @@ describe('停止与回到最新', () => {
       6,
     )
 
-    // 同一格里的那句阈值：`compress_at` 是**后端的百分比设置项**，此前被当成数量打出来
-    // （"到 70 会自动压缩"）——少一个 `%`，读起来像"到 70 个 token 就压缩"
-    expect(await screen.findByText(/到 70% 会自动压缩/)).toBeInTheDocument()
+    // 同一格里的那句阈值（D37 起换了口径，守护的**意图**没变）：
+    // 早先这里把 `compress_at`（百分比设置项）当成 token 数量打出来过——"到 70 会自动压缩"，
+    // 少一个 `%`，读起来像"到 70 个 token 就压缩"。现在的口径是后端算好的**实际阈值**
+    // `compress_budget`（窗口的 compress_at% 与绝对上限取小的那个），单位写清是 tokens：
+    // 这样既不会有"百分比当数量"，也不会有"窗口调大之后报一个永远到不了的数"。
+    expect(await screen.findByText(/到 17,920 tokens 会自动压缩/)).toBeInTheDocument()
+    expect(screen.queryByText(/到 70% 会自动压缩/)).not.toBeInTheDocument()
     expect(screen.getByText(/已用 6,400 \/ 25,600 tokens/)).toBeInTheDocument()
     // 分解与估算说明跟着一起搬进来了（信息一个都没少）
     expect(screen.getByText('系统提示')).toBeInTheDocument()

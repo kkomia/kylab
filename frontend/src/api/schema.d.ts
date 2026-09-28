@@ -3845,6 +3845,11 @@ export interface components {
              */
             compress_at: number;
             /**
+             * Compress Budget
+             * @default 0
+             */
+            compress_budget: number;
+            /**
              * Estimated
              * @default true
              */
