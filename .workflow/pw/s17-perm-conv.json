@@ -1,0 +1,50 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 12000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat/conv_921b1cd3ec76", "settle": 5000 },
+
+    { "kind": "note", "value": "permission menu" },
+    { "kind": "click", "selector": "button[aria-label^=\"权限\"]", "settle": 1200 },
+    { "kind": "shot", "path": "100-permission-menu.png" },
+    { "kind": "eval", "code": "(() => { const m=[...document.querySelectorAll('[role=\"menu\"]')]; return JSON.stringify({text:m.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,500)).join(' /// ')}); })()" },
+    { "kind": "clickText", "value": "仅查看", "settle": 1500 },
+    { "kind": "eval", "code": "JSON.stringify({perm:document.querySelector('button[aria-label^=\"权限\"]')?.innerText.trim(), stored:localStorage.getItem('chat.permission')})" },
+
+    { "kind": "note", "value": "write task under view-only" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "请在本会话文件区创建一个新文件 hello.txt，内容写「你好」，然后告诉我结果。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 4000 },
+    { "kind": "shot", "path": "101-viewonly-running.png" },
+    { "kind": "eval", "code": "JSON.stringify({approval:!!document.querySelector('[role=\"alert\"], [aria-label*=\"审批\"], [aria-label*=\"确认\"]'), steps:[...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')+' | '+e.innerText.replace(/\\n/g,' ').slice(0,120))})" },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 200000 },
+    { "kind": "wait", "ms": 2000 },
+    { "kind": "shot", "path": "102-viewonly-done.png" },
+    { "kind": "text", "selector": "[data-role=\"assistant\"]", "limit": 1200 },
+    { "kind": "eval", "code": "JSON.stringify({steps:[...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')+' | '+e.innerText.replace(/\\n/g,' ').slice(0,220))})" },
+
+    { "kind": "note", "value": "conversation row menu" },
+    { "kind": "click", "selector": "button[aria-label$=\"的操作\"]", "settle": 1200 },
+    { "kind": "shot", "path": "103-conversation-menu.png" },
+    { "kind": "eval", "code": "(() => { const m=[...document.querySelectorAll('[role=\"menu\"]')]; return JSON.stringify({text:m.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,400)).join(' /// ')}); })()" },
+    { "kind": "press", "key": "Escape", "settle": 800 },
+
+    { "kind": "note", "value": "history panel + search" },
+    { "kind": "click", "selector": "button[aria-label=\"查看全部会话\"]", "settle": 2000 },
+    { "kind": "shot", "path": "104-history-panel.png" },
+    { "kind": "eval", "code": "(() => { const d=[...document.querySelectorAll('[role=\"dialog\"]')]; return JSON.stringify({text:d.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,700)).join(' /// '), inputs:[...document.querySelectorAll('[role=\"dialog\"] input')].map(i=>({ph:i.placeholder,type:i.type}))}); })()" },
+    { "kind": "fill", "selector": "[role=\"dialog\"] input", "value": "省份", "settle": 2000 },
+    { "kind": "shot", "path": "105-history-search.png" },
+    { "kind": "eval", "code": "(() => { const d=[...document.querySelectorAll('[role=\"dialog\"]')]; return JSON.stringify({text:d.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,600)).join(' /// ')}); })()" },
+    { "kind": "press", "key": "Escape", "settle": 800 },
+
+    { "kind": "note", "value": "restore permission" },
+    { "kind": "click", "selector": "button[aria-label^=\"权限\"]", "settle": 1000 },
+    { "kind": "clickText", "value": "完全访问", "settle": 1000 },
+    { "kind": "eval", "code": "JSON.stringify({perm:document.querySelector('button[aria-label^=\"权限\"]')?.innerText.trim()})" }
+  ]
+}

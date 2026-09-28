@@ -1,0 +1,24 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "steps": [
+    { "kind": "goto", "url": "/chat", "settle": 3000 },
+    { "kind": "shot", "path": "03-chat-empty.png" },
+    { "kind": "eval", "code": "JSON.stringify({url:location.pathname, editors:[...document.querySelectorAll('textarea,[contenteditable=true]')].map(e=>({tag:e.tagName,ce:e.getAttribute('contenteditable'),ph:e.getAttribute('placeholder')||e.getAttribute('data-placeholder'),aria:e.getAttribute('aria-label')})), buttons:[...document.querySelectorAll('button')].map(b=>({t:(b.innerText||'').trim().slice(0,20),aria:b.getAttribute('aria-label'),title:b.title,testid:b.getAttribute('data-testid')})).filter(b=>b.t||b.aria||b.title||b.testid)})" },
+    { "kind": "text", "selector": "main, [role=main], body", "limit": 1200 },
+    { "kind": "goto", "url": "/capabilities", "settle": 2500 },
+    { "kind": "shot", "path": "04-capabilities.png" },
+    { "kind": "text", "selector": "main, [role=main], body", "limit": 2500 },
+    { "kind": "goto", "url": "/memory", "settle": 2000 },
+    { "kind": "shot", "path": "05-memory.png" },
+    { "kind": "goto", "url": "/notes", "settle": 2000 },
+    { "kind": "shot", "path": "06-notes.png" },
+    { "kind": "goto", "url": "/tasks", "settle": 2000 },
+    { "kind": "shot", "path": "07-tasks.png" },
+    { "kind": "goto", "url": "/knowledge-bases", "settle": 2500 },
+    { "kind": "shot", "path": "08-kb.png" }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 30000,
+  "steps": [
+    { "kind": "goto", "url": "/login", "settle": 1200 },
+    { "kind": "fill", "selector": "#login-username", "value": "kkomia" },
+    { "kind": "fill", "selector": "#login-password", "value": "117118363" },
+    { "kind": "click", "selector": "button[type=\"submit\"]", "settle": 2500 },
+
+    { "kind": "goto", "url": "/chat/conv_f09770d930a2", "settle": 3000 },
+    { "kind": "scroll", "selector": "[aria-label=\"对话内容\"]", "y": 0, "settle": 700 },
+    { "kind": "shot", "path": "20-thread-top.png" },
+    { "kind": "scroll", "selector": "[aria-label=\"对话内容\"]", "y": 260, "settle": 600 },
+    { "kind": "shot", "path": "21-thread-mid.png" },
+
+    { "kind": "eval", "code": "JSON.stringify({katex:document.querySelectorAll('.katex').length, mathml:document.querySelectorAll('math').length, mdBody:document.querySelectorAll('.md-body').length, mathNodes:[...document.querySelectorAll('.md-body *')].filter(e=>e.className && /math|latex|formula|katex/i.test(e.className.toString())).map(e=>({cls:e.className.toString().slice(0,60),txt:e.innerText.slice(0,80)})).slice(0,8)})" },
+    { "kind": "eval", "code": "(() => { const code=document.querySelector('[data-testid=\"reply-text\"] pre, .md-body pre'); if(!code) return 'no-pre'; const spans=[...code.querySelectorAll('span')]; const colors=new Set(spans.map(s=>getComputedStyle(s).color)); return JSON.stringify({preCls:code.className.slice(0,80), spanCount:spans.length, distinctColors:colors.size, sample:spans.slice(0,6).map(s=>s.innerText+'|'+getComputedStyle(s).color)}); })()" },
+    { "kind": "eval", "code": "JSON.stringify({h1:[...document.querySelectorAll('.md-body h1')].map(e=>e.innerText), h2:[...document.querySelectorAll('.md-body h2')].map(e=>e.innerText), ol:document.querySelectorAll('.md-body ol').length, ul:document.querySelectorAll('.md-body ul').length, blockquote:document.querySelectorAll('.md-body blockquote').length, table:document.querySelectorAll('.md-body table').length, hr:document.querySelectorAll('.md-body hr').length, inlineCode:document.querySelectorAll('.md-body code:not(pre code)').length})" },
+    { "kind": "eval", "code": "JSON.stringify({allAria:[...document.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label')).filter(Boolean)})" },
+    { "kind": "eval", "code": "JSON.stringify({turnAttrs:[...document.querySelectorAll('[data-role]')].map(e=>({role:e.getAttribute('data-role'),turn:e.getAttribute('data-turn')})), actionsUser:[...document.querySelectorAll('[data-role=\"user\"] button')].map(b=>b.getAttribute('aria-label')||b.innerText.trim()), actionsAssistant:[...document.querySelectorAll('[data-role=\"assistant\"] button')].map(b=>b.getAttribute('aria-label')||b.innerText.trim().slice(0,20))})" },
+    { "kind": "hover", "selector": "[data-role=\"assistant\"]", "settle": 600 },
+    { "kind": "shot", "path": "22-message-hover.png" },
+    { "kind": "hover", "selector": "[data-role=\"user\"]", "settle": 600 },
+    { "kind": "shot", "path": "23-user-hover.png" },
+    { "kind": "scroll", "selector": "[aria-label=\"对话内容\"]", "y": 99999, "settle": 600 },
+    { "kind": "shot", "path": "24-thread-bottom.png" }
+  ]
+}

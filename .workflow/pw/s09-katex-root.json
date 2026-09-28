@@ -1,0 +1,18 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 20000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat/conv_f09770d930a2", "settle": 5000 },
+    { "kind": "eval", "code": "(() => { let hit=[]; for(const s of document.styleSheets){ let rules; try{ rules=s.cssRules }catch(e){ continue } if(!rules) continue; for(const r of rules){ if(r.cssText && r.cssText.indexOf('.katex')>=0){ hit.push(r.cssText.slice(0,90)); if(hit.length>4) break } } if(hit.length>4) break } return JSON.stringify({katexRuleCount:hit.length, sample:hit}); })()" },
+    { "kind": "eval", "code": "(() => { const ps=[...document.querySelectorAll('.md-body p')]; const out=[]; for(const p of ps){ if(p.querySelector('.katex')){ out.push({ws:getComputedStyle(p).whiteSpace, txt:p.innerText.slice(0,40)}); } } return JSON.stringify({parasWithMath:out.length, sample:out.slice(0,4)}); })()" },
+    { "kind": "eval", "code": "(() => { const p=[...document.querySelectorAll('.md-body p')].find(e=>e.querySelector('.katex')); if(!p) return 'none'; const k=p.querySelector('.katex'); const before=k.getBoundingClientRect(); const newlineTextNodes=[]; const w=document.createTreeWalker(k,NodeFilter.SHOW_TEXT); let n; while(n=w.nextNode()){ if(/\\n/.test(n.nodeValue)) newlineTextNodes.push(JSON.stringify(n.nodeValue.slice(0,20))); } p.style.whiteSpace='normal'; const after=k.getBoundingClientRect(); p.style.whiteSpace=''; return JSON.stringify({before:[Math.round(before.width),Math.round(before.height)], afterNormal:[Math.round(after.width),Math.round(after.height)], newlineTextNodes:newlineTextNodes.length, samples:newlineTextNodes.slice(0,3)}); })()" },
+    { "kind": "eval", "code": "(() => { const p=[...document.querySelectorAll('.md-body p')].find(e=>e.querySelector('.katex')); if(!p) return 'none'; const k=p.querySelector('.katex'); const vl=k.querySelector('.vlist'); const vlr=k.querySelector('.vlist-r'); const base=k.querySelector('.base'); return JSON.stringify({vlistH:vl?vl.getBoundingClientRect().height:null, vlistStyle:vl?vl.getAttribute('style'):null, vlrDisplay:vlr?getComputedStyle(vlr).display:null, baseDisplay:base?getComputedStyle(base).display:null, katexFontSize:getComputedStyle(k).fontSize, pLineHeight:getComputedStyle(p).lineHeight}); })()" },
+    { "kind": "eval", "code": "(() => { const p=[...document.querySelectorAll('.md-body p')].find(e=>e.querySelector('.katex')); p.style.whiteSpace='normal'; const r=p.getBoundingClientRect(); return JSON.stringify({withNormalPHeight:Math.round(r.height)}); })()" },
+    { "kind": "shot", "path": "46-math-whiteSpaceNormal.png" }
+  ]
+}

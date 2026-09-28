@@ -1,0 +1,57 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 12000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat/conv_921b1cd3ec76", "settle": 5000 },
+
+    { "kind": "note", "value": "last assistant answer under view-only" },
+    { "kind": "eval", "code": "(() => { const ms=[...document.querySelectorAll('[data-role=\"assistant\"]')]; const last=ms[ms.length-1]; return JSON.stringify({turns:ms.length, last:last.innerText.slice(0,700)}); })()" },
+
+    { "kind": "note", "value": "conversation row menu (not the project one)" },
+    { "kind": "click", "selector": "button[aria-label$=\"的操作\"]:not([aria-label^=\"项目\"])", "settle": 1500 },
+    { "kind": "shot", "path": "109-conv-row-menu.png" },
+    { "kind": "eval", "code": "(() => { const m=[...document.querySelectorAll('[role=\"menu\"]')]; return JSON.stringify({text:m.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,300)).join(' /// ')}); })()" },
+    { "kind": "press", "key": "Escape", "settle": 800 },
+
+    { "kind": "note", "value": "account menu / theme" },
+    { "kind": "click", "selector": "button[aria-label^=\"账号\"]", "settle": 1200 },
+    { "kind": "shot", "path": "110-account-menu.png" },
+    { "kind": "eval", "code": "(() => { const m=[...document.querySelectorAll('[role=\"menu\"]')]; return JSON.stringify({text:m.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,300)).join(' /// '), theme:document.documentElement.getAttribute('data-theme')}); })()" },
+
+    { "kind": "note", "value": "dark mode" },
+    { "kind": "clickText", "value": "深色", "settle": 1500 },
+    { "kind": "shot", "path": "111-dark-mode.png" },
+    { "kind": "eval", "code": "JSON.stringify({theme:document.documentElement.getAttribute('data-theme'), bg:getComputedStyle(document.body).backgroundColor})" },
+
+    { "kind": "note", "value": "responsive breakpoints" },
+    { "kind": "viewport", "width": 1024, "height": 800, "settle": 1200 },
+    { "kind": "shot", "path": "112-w1024.png" },
+    { "kind": "eval", "code": "JSON.stringify({sidebar:!!document.querySelector('[aria-label=\"侧栏\"]'), sidebarW:document.querySelector('[aria-label=\"侧栏\"]')?.getBoundingClientRect().width, overflowX:document.documentElement.scrollWidth>window.innerWidth, composerRowH:Math.round((document.querySelector('textarea[aria-label=\"消息输入框\"]')?.closest('div[class*=rounded]')||{getBoundingClientRect:()=>({height:0})}).getBoundingClientRect().height)})" },
+    { "kind": "viewport", "width": 900, "height": 800, "settle": 1200 },
+    { "kind": "shot", "path": "113-w900.png" },
+    { "kind": "viewport", "width": 768, "height": 800, "settle": 1200 },
+    { "kind": "shot", "path": "114-w768.png" },
+    { "kind": "eval", "code": "JSON.stringify({sidebar:!!document.querySelector('[aria-label=\"侧栏\"]'), sidebarW:document.querySelector('[aria-label=\"侧栏\"]')?.getBoundingClientRect().width, overflowX:document.documentElement.scrollWidth>window.innerWidth, bodyScrollW:document.documentElement.scrollWidth})" },
+    { "kind": "viewport", "width": 420, "height": 800, "settle": 1200 },
+    { "kind": "shot", "path": "115-w420.png" },
+    { "kind": "eval", "code": "JSON.stringify({sidebar:!!document.querySelector('[aria-label=\"侧栏\"]'), sidebarW:document.querySelector('[aria-label=\"侧栏\"]')?.getBoundingClientRect().width, overflowX:document.documentElement.scrollWidth>window.innerWidth, bodyScrollW:document.documentElement.scrollWidth})" },
+    { "kind": "viewport", "width": 1440, "height": 900, "settle": 1200 },
+
+    { "kind": "note", "value": "loading skeleton on hard load" },
+    { "kind": "goto", "url": "/chat/conv_048a2a5f125d", "settle": 60 },
+    { "kind": "shot", "path": "116-load-60ms.png" },
+    { "kind": "eval", "code": "JSON.stringify({bodyLen:document.body.innerText.length, hasSkeleton:!!document.querySelector('[class*=animate-pulse],[class*=skeleton],[role=progressbar],[class*=spinner]'), text:document.body.innerText.slice(0,200)})" },
+    { "kind": "wait", "ms": 900 },
+    { "kind": "shot", "path": "117-load-1s.png" },
+
+    { "kind": "note", "value": "restore light theme" },
+    { "kind": "click", "selector": "button[aria-label^=\"账号\"]", "settle": 1000 },
+    { "kind": "clickText", "value": "浅色", "settle": 1200 },
+    { "kind": "eval", "code": "JSON.stringify({theme:document.documentElement.getAttribute('data-theme')})" }
+  ]
+}

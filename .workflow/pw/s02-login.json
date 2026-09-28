@@ -1,0 +1,17 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "steps": [
+    { "kind": "goto", "url": "/login", "settle": 1500 },
+    { "kind": "eval", "code": "JSON.stringify([...document.querySelectorAll('input')].map(i=>({type:i.type,name:i.name,id:i.id,ph:i.placeholder,ac:i.autocomplete})))" },
+    { "kind": "fill", "selector": "input[type=\"text\"], input:not([type=\"password\"])", "value": "kkomia" },
+    { "kind": "fill", "selector": "input[type=\"password\"]", "value": "117118363" },
+    { "kind": "click", "selector": "button[type=\"submit\"], button" },
+    { "kind": "wait", "ms": 3500 },
+    { "kind": "shot", "path": "02-after-login.png" },
+    { "kind": "eval", "code": "JSON.stringify({url:location.href,title:document.title,ls:Object.keys(localStorage),ss:Object.keys(sessionStorage),cookie:document.cookie.slice(0,80)})" }
+  ]
+}

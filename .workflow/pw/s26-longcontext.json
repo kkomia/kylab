@@ -1,0 +1,601 @@
+{
+ "baseUrl": "http://localhost:5173",
+ "headless": true,
+ "viewport": {
+  "width": 1440,
+  "height": 900
+ },
+ "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+ "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+ "timeout": 15000,
+ "steps": [
+  {
+   "kind": "ensureLogin",
+   "username": "kkomia",
+   "password": "117118363"
+  },
+  {
+   "kind": "goto",
+   "url": "/chat",
+   "settle": 3000
+  },
+  {
+   "kind": "clickText",
+   "value": "新建会话",
+   "settle": 2500
+  },
+  {
+   "kind": "note",
+   "value": "turn 1: plant an early fact"
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请记住这个口令：ZQ7K-凌云。只回复「记住了」三个字。"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 2000
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-2"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-3"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-4"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-5"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-6"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-7"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-8"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-9"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-10"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-11"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-12"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-13"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-14"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-15"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-16"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-17"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-18"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-19"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-20"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-21"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-22"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-23"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-24"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-25"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-26"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-27"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-28"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-29"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "请只输出这几个字符，不要任何其它内容：FILLER-30"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 1500
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "note",
+   "value": "after 30 turns: recall the early fact + inspect context"
+  },
+  {
+   "kind": "eval",
+   "code": "JSON.stringify({turns:document.querySelectorAll('[data-role=\"assistant\"]').length})"
+  },
+  {
+   "kind": "fill",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "value": "我最开始让你记住的那个口令是什么？只回答口令本身，不要解释。"
+  },
+  {
+   "kind": "press",
+   "selector": "textarea[aria-label=\"消息输入框\"]",
+   "key": "Enter",
+   "settle": 2000
+  },
+  {
+   "kind": "waitFor",
+   "selector": "button[aria-label=\"停止生成\"]",
+   "state": "detached",
+   "timeout": 120000
+  },
+  {
+   "kind": "wait",
+   "ms": 1500
+  },
+  {
+   "kind": "shot",
+   "path": "190-longcontext-31turns.png"
+  },
+  {
+   "kind": "eval",
+   "code": "(() => { const ms=[...document.querySelectorAll('[data-role=\"assistant\"]')]; return JSON.stringify({turns:ms.length, first:ms[0].innerText.slice(0,120), last:ms[ms.length-1].innerText.slice(0,300)}); })()"
+  },
+  {
+   "kind": "click",
+   "selector": "button[aria-label=\"选择对话模型\"]",
+   "settle": 1500
+  },
+  {
+   "kind": "shot",
+   "path": "191-longcontext-usage.png"
+  },
+  {
+   "kind": "eval",
+   "code": "(() => { const m=[...document.querySelectorAll('[role=\"menu\"]')]; return JSON.stringify({menu:m.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,700)).join(' /// ')}); })()"
+  },
+  {
+   "kind": "press",
+   "key": "Escape",
+   "settle": 600
+  },
+  {
+   "kind": "eval",
+   "code": "JSON.stringify({kinds:[...new Set([...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')))]})"
+  }
+ ]
+}

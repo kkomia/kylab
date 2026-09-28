@@ -37,6 +37,15 @@ frontend/dist/
 test-results/
 playwright-report/
 
+# ---- 走查脚本用的浏览器 profile：带登录态且 100MB+，绝不入库 ----
+.workflow/pw/.pwprofile/
+
+# ---- 2026-09-28 走查：kimi-webbridge 的临时请求体与调用脚本（该路线已弃用）----
+.workflow/wb.ps1
+.workflow/wb-multi.ps1
+.workflow/shot.ps1
+.workflow/req-*.json
+
 # ---- 编辑器与系统 ----
 .idea/
 .vscode/

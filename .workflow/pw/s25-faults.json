@@ -1,0 +1,51 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 15000,
+  "initScript": "(() => { const push=(o)=>{ try{ const c=JSON.parse(sessionStorage.getItem('__errLog')||'[]'); c.push(o); sessionStorage.setItem('__errLog', JSON.stringify(c.slice(-40))); }catch(e){} }; const oe=console.error; console.error=function(){ push({t:Date.now(), args:[...arguments].map(a=>{ try{ return typeof a==='string'?a:JSON.stringify(a).slice(0,160) }catch(e){ return String(a) } }).join(' | ').slice(0,300)}); return oe.apply(this,arguments); }; })();",
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat/conv_ece31d6eb933", "settle": 6000 },
+    { "kind": "eval", "code": "JSON.stringify({idleErrors:JSON.parse(sessionStorage.getItem('__errLog')||'[]').length})" },
+
+    { "kind": "note", "value": "open file drawer -> does the React warning fire?" },
+    { "kind": "click", "selector": "button[aria-label=\"添加附件或技能\"]", "settle": 1200 },
+    { "kind": "clickText", "value": "浏览文件", "settle": 2500 },
+    { "kind": "eval", "code": "JSON.stringify({afterDrawer:JSON.parse(sessionStorage.getItem('__errLog')||'[]').length})" },
+    { "kind": "press", "key": "Escape", "settle": 1200 },
+    { "kind": "eval", "code": "JSON.stringify({afterClose:JSON.parse(sessionStorage.getItem('__errLog')||'[]').length, msgs:JSON.parse(sessionStorage.getItem('__errLog')||'[]').map(e=>e.args.slice(0,80))})" },
+
+    { "kind": "note", "value": "EXCEPTION 1: stream request aborted (network cut)" },
+    { "kind": "route", "url": "**/api/v1/chat/stream*", "action": "abort" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "请用一句话说明什么是知识库。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 3000 },
+    { "kind": "shot", "path": "180-abort-3s.png" },
+    { "kind": "eval", "code": "JSON.stringify({stop:!!document.querySelector('button[aria-label=\"停止生成\"]'), send:!!document.querySelector('button[aria-label=\"发送\"]'), bodyText:document.body.innerText.slice(-700)})" },
+    { "kind": "wait", "ms": 6000 },
+    { "kind": "shot", "path": "181-abort-9s.png" },
+    { "kind": "eval", "code": "JSON.stringify({stop:!!document.querySelector('button[aria-label=\"停止生成\"]'), send:!!document.querySelector('button[aria-label=\"发送\"]'), toasts:[...document.querySelectorAll('[data-sonner-toast]')].map(e=>e.innerText.slice(0,200)), bodyText:document.body.innerText.slice(-700)})" },
+    { "kind": "route", "url": "**/api/v1/chat/stream*", "action": "unroute" },
+
+    { "kind": "note", "value": "EXCEPTION 2: stream returns 500" },
+    { "kind": "route", "url": "**/api/v1/chat/stream*", "action": "fulfill500", "detail": "模拟服务端内部错误" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "再问一句：什么是向量检索？" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 4000 },
+    { "kind": "shot", "path": "182-500.png" },
+    { "kind": "eval", "code": "JSON.stringify({stop:!!document.querySelector('button[aria-label=\"停止生成\"]'), toasts:[...document.querySelectorAll('[data-sonner-toast]')].map(e=>e.innerText.slice(0,200)), bodyText:document.body.innerText.slice(-800)})" },
+    { "kind": "wait", "ms": 4000 },
+    { "kind": "shot", "path": "183-500-later.png" },
+    { "kind": "eval", "code": "JSON.stringify({toasts:[...document.querySelectorAll('[data-sonner-toast]')].map(e=>e.innerText.slice(0,200)), retryButtons:[...document.querySelectorAll('button')].map(b=>b.innerText.trim()).filter(t=>t&&t.length<8).slice(0,20)})" },
+    { "kind": "route", "url": "**/api/v1/chat/stream*", "action": "unroute" },
+
+    { "kind": "note", "value": "recovery: normal send after faults" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "用一个词回答：1+1=?" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 3000 },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 120000 },
+    { "kind": "wait", "ms": 1500 },
+    { "kind": "shot", "path": "184-recovered.png" },
+    { "kind": "eval", "code": "(() => { const ms=[...document.querySelectorAll('[data-role=\"assistant\"]')]; return JSON.stringify({last:ms[ms.length-1].innerText.slice(0,200), errors:JSON.parse(sessionStorage.getItem('__errLog')||'[]').length}); })()" }
+  ]
+}

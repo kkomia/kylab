@@ -1,0 +1,39 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 12000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat/conv_048a2a5f125d", "settle": 5000 },
+
+    { "kind": "note", "value": "1) trace panel: expand a tool step" },
+    { "kind": "eval", "code": "JSON.stringify({steps:[...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')+' | '+e.innerText.replace(/\\n/g,' ').slice(0,90))})" },
+    { "kind": "click", "selector": "[data-kind=\"search\"], [data-kind=\"read\"]", "settle": 1200 },
+    { "kind": "shot", "path": "80-trace-expanded.png" },
+    { "kind": "text", "selector": "[data-kind=\"search\"]", "limit": 900 },
+    { "kind": "eval", "code": "JSON.stringify({buttons:[...document.querySelectorAll('[data-kind] button')].map(b=>b.getAttribute('aria-label')||b.innerText.trim().slice(0,24))})" },
+
+    { "kind": "note", "value": "2) model popover with context summary" },
+    { "kind": "click", "selector": "button[aria-label=\"选择对话模型\"]", "settle": 1200 },
+    { "kind": "shot", "path": "81-model-menu-context.png" },
+    { "kind": "eval", "code": "(() => { const m=[...document.querySelectorAll('[role=\"menu\"]')]; return JSON.stringify({menus:m.length, text:m.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,600)).join(' /// ')}); })()" },
+    { "kind": "press", "key": "Escape", "settle": 800 },
+
+    { "kind": "note", "value": "3) permission -> view only" },
+    { "kind": "click", "selector": "button[aria-label=\"权限\"]", "settle": 1200 },
+    { "kind": "shot", "path": "82-permission-menu.png" },
+    { "kind": "eval", "code": "(() => { const m=[...document.querySelectorAll('[role=\"menu\"]')]; return JSON.stringify({text:m.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,400)).join(' /// ')}); })()" },
+
+    { "kind": "note", "value": "4) file drawer" },
+    { "kind": "press", "key": "Escape", "settle": 600 },
+    { "kind": "click", "selector": "button[aria-label=\"添加附件或技能\"]", "settle": 1200 },
+    { "kind": "shot", "path": "83-plus-menu.png" },
+    { "kind": "eval", "code": "(() => { const m=[...document.querySelectorAll('[role=\"menu\"]')]; return JSON.stringify({text:m.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,500)).join(' /// ')}); })()" },
+    { "kind": "clickText", "value": "浏览文件区", "settle": 1500 },
+    { "kind": "shot", "path": "84-file-drawer.png" },
+    { "kind": "eval", "code": "(() => { const d=[...document.querySelectorAll('[role=\"dialog\"]')]; return JSON.stringify({dialogs:d.length, text:d.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,800)).join(' /// '), aria:[...document.querySelectorAll('[role=\"dialog\"] [aria-label]')].map(e=>e.getAttribute('aria-label')).slice(0,20)}); })()" }
+  ]
+}

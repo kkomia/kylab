@@ -1,0 +1,39 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 12000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat", "settle": 3000 },
+    { "kind": "clickText", "value": "新建会话", "settle": 2500 },
+
+    { "kind": "note", "value": "A: start a long generation" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "请写一篇 3000 字以上的长文，主题是「中国县级医院信息化建设」，分 15 个小节，每节带小标题，尽量写长，不要提前结束。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 2500 },
+    { "kind": "eval", "code": "JSON.stringify({url:location.pathname, streaming:!!document.querySelector('button[aria-label=\"停止生成\"]'), replyLen:(document.querySelector('[data-testid=\"reply-text\"]')||{innerText:''}).innerText.length})" },
+    { "kind": "wait", "ms": 9000 },
+    { "kind": "eval", "code": "JSON.stringify({urlA:location.pathname, streaming:!!document.querySelector('button[aria-label=\"停止生成\"]'), replyLen:(document.querySelector('[data-testid=\"reply-text\"]')||{innerText:''}).innerText.length})" },
+    { "kind": "shot", "path": "120-A-streaming.png" },
+
+    { "kind": "note", "value": "switch to B while A is streaming" },
+    { "kind": "clickText", "value": "请列出 5 个中国省份的名字", "settle": 2500 },
+    { "kind": "eval", "code": "JSON.stringify({urlB:location.pathname, streamingBtn:!!document.querySelector('button[aria-label=\"停止生成\"]'), sendBtn:!!document.querySelector('button[aria-label=\"发送\"]'), replyLen:(document.querySelector('[data-testid=\"reply-text\"]')||{innerText:''}).innerText.length, threadText:document.body.innerText.slice(0,200)})" },
+    { "kind": "shot", "path": "121-B-right-after-switch.png" },
+
+    { "kind": "note", "value": "B: send another task while A may still run" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "请再列出 5 个中国城市的名字，用无序列表。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 3000 },
+    { "kind": "eval", "code": "JSON.stringify({urlB:location.pathname, streamingBtn:!!document.querySelector('button[aria-label=\"停止生成\"]'), replyLen:(document.querySelector('[data-testid=\"reply-text\"]')||{innerText:''}).innerText.length})" },
+    { "kind": "wait", "ms": 6000 },
+    { "kind": "shot", "path": "122-B-streaming.png" },
+    { "kind": "eval", "code": "JSON.stringify({urlB:location.pathname, streamingBtn:!!document.querySelector('button[aria-label=\"停止生成\"]'), replyLen:(document.querySelector('[data-testid=\"reply-text\"]')||{innerText:''}).innerText.length, turns:document.querySelectorAll('[data-role=\"assistant\"]').length})" },
+
+    { "kind": "note", "value": "back to A" },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 180000 },
+    { "kind": "goto", "url": "/chat", "settle": 2500 },
+    { "kind": "eval", "code": "JSON.stringify({sidebar:[...document.querySelectorAll('[aria-label$=\"的操作\"]')].map(e=>e.getAttribute('aria-label').slice(0,40))})" }
+  ]
+}

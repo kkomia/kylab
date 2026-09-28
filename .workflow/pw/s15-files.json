@@ -1,0 +1,42 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 12000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat", "settle": 3000 },
+    { "kind": "clickText", "value": "新建会话", "settle": 2000 },
+
+    { "kind": "eval", "code": "JSON.stringify({toolbar:[...document.querySelectorAll('button')].filter(b=>b.getBoundingClientRect().y>780).map(b=>({aria:b.getAttribute('aria-label'),t:b.innerText.trim().slice(0,18),r:[Math.round(b.getBoundingClientRect().x),Math.round(b.getBoundingClientRect().y)]})), fileInputs:[...document.querySelectorAll('input[type=file]')].map(i=>({multiple:i.multiple,webkitdir:i.hasAttribute('webkitdirectory'),accept:i.accept}))})" },
+
+    { "kind": "note", "value": "upload a markdown file" },
+    { "kind": "setInputFiles", "selector": "input[type=\"file\"]:not([webkitdirectory])", "files": ["D:/GitLab/kylab/.workflow/fixtures/走查样例.md"], "settle": 2500 },
+    { "kind": "shot", "path": "90-upload-attached.png" },
+    { "kind": "eval", "code": "(() => { const ta=document.querySelector('textarea[aria-label=\"消息输入框\"]'); return JSON.stringify({composerText:document.body.innerText.split('\\n').filter(l=>l.includes('走查样例')).slice(0,4), pendingAttach:[...document.querySelectorAll('[aria-label=\"待发送的附件\"] *')].map(e=>e.innerText).slice(0,8)}); })()" },
+
+    { "kind": "note", "value": "ask agent to summarize the uploaded file" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "请读一下我刚上传的这份文件，用 3 条要点总结它，并指出里面那张数据表的样本量是多少。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 3000 },
+    { "kind": "shot", "path": "91-file-task-running.png" },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 200000 },
+    { "kind": "wait", "ms": 2000 },
+    { "kind": "shot", "path": "92-file-task-done.png" },
+    { "kind": "text", "selector": "[data-role=\"assistant\"]", "limit": 1500 },
+    { "kind": "eval", "code": "JSON.stringify({url:location.pathname, steps:[...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')+' | '+e.innerText.replace(/\\n/g,' ').slice(0,110)), userAttach:[...document.querySelectorAll('[data-role=\"user\"] img, [data-role=\"user\"] [class*=file], [data-role=\"user\"] button')].map(e=>e.innerText.trim().slice(0,40)).slice(0,8)})" },
+
+    { "kind": "note", "value": "open file drawer" },
+    { "kind": "click", "selector": "button[aria-label=\"添加附件或技能\"]", "settle": 1000 },
+    { "kind": "clickText", "value": "浏览文件", "settle": 2000 },
+    { "kind": "shot", "path": "93-file-drawer.png" },
+    { "kind": "eval", "code": "(() => { const d=[...document.querySelectorAll('[role=\"dialog\"]')]; return JSON.stringify({dialogs:d.length, text:d.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,900)).join(' /// '), aria:[...document.querySelectorAll('[role=\"dialog\"] [aria-label]')].map(e=>e.getAttribute('aria-label')).slice(0,24)}); })()" },
+    { "kind": "press", "key": "Escape", "settle": 800 },
+
+    { "kind": "note", "value": "trace step expansion" },
+    { "kind": "clickText", "value": "导出文档", "settle": 1200 },
+    { "kind": "shot", "path": "94-trace-step-expanded.png" },
+    { "kind": "eval", "code": "JSON.stringify({stepTexts:[...document.querySelectorAll('[data-kind]')].map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,300))})" }
+  ]
+}

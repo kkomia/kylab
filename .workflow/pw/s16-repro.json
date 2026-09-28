@@ -1,0 +1,25 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 12000,
+  "initScript": "(() => { const push=(o)=>{ try{ const c=JSON.parse(sessionStorage.getItem('__errLog')||'[]'); c.push(o); sessionStorage.setItem('__errLog', JSON.stringify(c.slice(-30))); }catch(e){} }; const oe=console.error; console.error=function(){ push({t:Date.now(), args:[...arguments].map(a=>{ try{ return typeof a==='string'?a:JSON.stringify(a).slice(0,200) }catch(e){ return String(a) } }).join(' | ').slice(0,500)}); return oe.apply(this,arguments); }; })();",
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat/conv_921b1cd3ec76", "settle": 6000 },
+    { "kind": "note", "value": "baseline: no interaction, 12s" },
+    { "kind": "wait", "ms": 12000 },
+    { "kind": "eval", "code": "JSON.stringify({errorsAfterIdle:JSON.parse(sessionStorage.getItem('__errLog')||'[]').length})" },
+
+    { "kind": "note", "value": "trace step expand" },
+    { "kind": "clickText", "value": "读上传的文件", "settle": 1500 },
+    { "kind": "shot", "path": "95-trace-expanded.png" },
+    { "kind": "eval", "code": "JSON.stringify({stepTexts:[...document.querySelectorAll('[data-kind]')].map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,400))})" },
+
+    { "kind": "note", "value": "locate permission control" },
+    { "kind": "eval", "code": "(() => { const all=[...document.querySelectorAll('button,[role=\"button\"],[aria-label]')]; const hit=all.filter(e=>/权限|完全访问|仅查看|工作区内编辑/.test((e.innerText||'')+' '+(e.getAttribute('aria-label')||''))); return JSON.stringify(hit.map(e=>({tag:e.tagName, aria:e.getAttribute('aria-label'), t:e.innerText.trim().slice(0,20), r:[Math.round(e.getBoundingClientRect().x),Math.round(e.getBoundingClientRect().y)]}))); })()" },
+    { "kind": "eval", "code": "JSON.stringify({errorsNow:JSON.parse(sessionStorage.getItem('__errLog')||'[]').map(e=>e.args.slice(0,120))})" }
+  ]
+}

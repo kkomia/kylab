@@ -1,0 +1,15 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 20000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat/conv_f09770d930a2", "settle": 5000 },
+    { "kind": "eval", "code": "(() => { const k=document.querySelector('.katex-html'); if(!k) return 'no-katex-html'; const all=k.querySelectorAll('*'); const withStyle=[...all].filter(e=>e.hasAttribute('style')); return JSON.stringify({nodes:all.length, withStyleAttr:withStyle.length, sampleStyle:withStyle.slice(0,3).map(e=>e.getAttribute('style')), vlistOuterHTML:k.querySelector('.vlist')?k.querySelector('.vlist').outerHTML.slice(0,240):null}); })()" },
+    { "kind": "eval", "code": "(() => { const body=document.querySelector('.md-body'); const styled=[...body.querySelectorAll('[style]')]; return JSON.stringify({mdBodyStyleAttrTotal:styled.length, sample:styled.slice(0,5).map(e=>e.tagName+'|'+e.getAttribute('style').slice(0,40))}); })()" },
+    { "kind": "eval", "code": "(() => { const html=k=>k.innerHTML; const k=document.querySelector('.katex'); return JSON.stringify({katexOuter:k.outerHTML.slice(0,900)}); })()" }
+  ]
+}

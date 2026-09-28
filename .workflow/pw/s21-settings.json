@@ -1,0 +1,18 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 10000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat/conv_048a2a5f125d", "settle": 4000 },
+    { "kind": "click", "selector": "button[aria-label^=\"账号\"]", "settle": 1000 },
+    { "kind": "eval", "code": "JSON.stringify({items:[...document.querySelectorAll('[role=\"menuitem\"]')].map(e=>e.innerText.trim())})" },
+    { "kind": "click", "selector": "[role=\"menuitem\"]:has-text(\"设置\")", "settle": 2000 },
+    { "kind": "shot", "path": "140-settings-modal.png" },
+    { "kind": "eval", "code": "(() => { const d=[...document.querySelectorAll('[role=\"dialog\"]')]; return JSON.stringify({dialogs:d.length, text:d.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,1200)).join(' /// ')}); })()" },
+    { "kind": "eval", "code": "JSON.stringify({tabs:[...document.querySelectorAll('[role=\"dialog\"] [role=\"tab\"], [role=\"dialog\"] button')].map(e=>e.innerText.trim().slice(0,20)).filter(Boolean).slice(0,30)})" }
+  ]
+}

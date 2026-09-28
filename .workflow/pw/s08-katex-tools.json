@@ -1,0 +1,35 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 20000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat/conv_f09770d930a2", "settle": 5000 },
+    { "kind": "scroll", "selector": "[aria-label=\"对话内容\"]", "y": 520, "settle": 800 },
+    { "kind": "shot", "path": "40-math-zoom.png" },
+    { "kind": "eval", "code": "(() => { const k=document.querySelector('.katex'); if(!k) return 'no-katex'; const vlist=k.querySelector('.vlist'); const ms=k.querySelector('.msupsub'); const cs=getComputedStyle(k); const pv=vlist?getComputedStyle(vlist):null; const sheets=[...document.styleSheets].map(s=>s.href||'(inline)').filter(h=>/katex/i.test(h)); const body=k.closest('.md-body'); return JSON.stringify({katexFont:cs.fontFamily.slice(0,60), katexDisplay:cs.display, katexWhiteSpace:cs.whiteSpace, vlistPos:pv&&pv.position, vlistDisplay:pv&&pv.display, msupsubDisplay:ms?getComputedStyle(ms).display:null, vlistKids:vlist?vlist.children.length:0, sheets, sheetCount:document.styleSheets.length, mdBodyWhiteSpace:body?getComputedStyle(body).whiteSpace:null, parentTag:k.parentElement.tagName, parentWhiteSpace:getComputedStyle(k.parentElement).whiteSpace, pWhite:getComputedStyle(k.parentElement).whiteSpace, katexH:k.getBoundingClientRect().height}); })()" },
+    { "kind": "eval", "code": "(() => { const k=document.querySelectorAll('.katex')[1]||document.querySelector('.katex'); const r=k.getBoundingClientRect(); const p=k.parentElement.getBoundingClientRect(); return JSON.stringify({katexRect:[Math.round(r.x),Math.round(r.y),Math.round(r.width),Math.round(r.height)], parentRect:[Math.round(p.x),Math.round(p.y),Math.round(p.width),Math.round(p.height)], html:k.querySelector('.katex-html')?k.querySelector('.katex-html').innerHTML.slice(0,300):null}); })()" },
+
+    { "kind": "goto", "url": "/chat", "settle": 3500 },
+    { "kind": "clickText", "value": "新建会话", "settle": 2500 },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "请分两步完成，不要反问我：第一步，在我的知识库里检索「眼眶血管性疾病」相关的原文段落并给出来源；第二步，把结论整理成一份 Markdown 文件，文件名 eye.md，写到本会话的文件区。做完用一句话汇报。" },
+    { "kind": "wait", "ms": 700 },
+    { "kind": "shot", "path": "41-newchat-filled.png" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 4000 },
+    { "kind": "shot", "path": "42-tool-start.png" },
+    { "kind": "wait", "ms": 8000 },
+    { "kind": "shot", "path": "43-tool-mid.png" },
+    { "kind": "eval", "code": "JSON.stringify({stop:!!document.querySelector('button[aria-label=\"停止生成\"]'), kinds:[...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')), texts:[...document.querySelectorAll('[data-kind]')].map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,130))})" },
+    { "kind": "wait", "ms": 15000 },
+    { "kind": "shot", "path": "44-tool-later.png" },
+    { "kind": "eval", "code": "JSON.stringify({stop:!!document.querySelector('button[aria-label=\"停止生成\"]'), kinds:[...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')), texts:[...document.querySelectorAll('[data-kind]')].map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,160))})" },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 200000 },
+    { "kind": "wait", "ms": 2000 },
+    { "kind": "shot", "path": "45-tool-done.png" },
+    { "kind": "eval", "code": "JSON.stringify({url:location.pathname, stop:!!document.querySelector('button[aria-label=\"停止生成\"]'), kinds:[...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')), texts:[...document.querySelectorAll('[data-kind]')].map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,200))})" },
+    { "kind": "text", "selector": "body", "limit": 2500 }
+  ]
+}

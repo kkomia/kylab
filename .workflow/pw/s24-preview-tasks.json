@@ -1,0 +1,55 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 15000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat/conv_ece31d6eb933", "settle": 4500 },
+
+    { "kind": "note", "value": "file drawer row structure" },
+    { "kind": "click", "selector": "button[aria-label=\"添加附件或技能\"]", "settle": 1000 },
+    { "kind": "clickText", "value": "浏览文件", "settle": 2000 },
+    { "kind": "eval", "code": "(() => { const d=document.querySelector('[role=\"dialog\"]'); if(!d) return 'no-dialog'; const rows=[...d.querySelectorAll('*')].filter(e=>e.innerText && e.innerText.trim().startsWith('data.xlsx') && e.children.length<=3); return JSON.stringify({count:rows.length, sample:rows.slice(0,3).map(e=>({tag:e.tagName, cls:(e.className||'').toString().slice(0,90), role:e.getAttribute('role'), html:e.outerHTML.slice(0,400)}))}); })()" },
+    { "kind": "eval", "code": "(() => { const d=document.querySelector('[role=\"dialog\"]'); const clickable=[...d.querySelectorAll('button,[role=\"button\"],[tabindex],a')].map(e=>({tag:e.tagName, aria:e.getAttribute('aria-label'), t:e.innerText.trim().slice(0,24)})); return JSON.stringify({clickable:clickable.slice(0,20)}); })()" },
+
+    { "kind": "note", "value": "click the row itself" },
+    { "kind": "eval", "code": "(() => { const d=document.querySelector('[role=\"dialog\"]'); const cand=[...d.querySelectorAll('*')].filter(e=>e.children.length>0 && e.innerText && e.innerText.trim().startsWith('data.xlsx')); const row=cand[cand.length-1]; if(!row) return 'no-row'; row.click(); return 'clicked:'+row.tagName+'.'+(row.className||'').toString().slice(0,50); })()" },
+    { "kind": "wait", "ms": 2500 },
+    { "kind": "shot", "path": "170-preview-xlsx.png" },
+    { "kind": "eval", "code": "(() => { const d=[...document.querySelectorAll('[role=\"dialog\"]')]; return JSON.stringify({text:d.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,800)).join(' /// '), tables:document.querySelectorAll('[role=\"dialog\"] table').length, sheets:document.querySelectorAll('[role=\"dialog\"] [class*=grid]').length}); })()" },
+
+    { "kind": "note", "value": "back then preview png" },
+    { "kind": "eval", "code": "(() => { const back=document.querySelector('[aria-label=\"回到文件列表\"]'); if(back){ back.click(); return 'back'; } return 'no-back'; })()" },
+    { "kind": "wait", "ms": 1200 },
+    { "kind": "eval", "code": "(() => { const d=document.querySelector('[role=\"dialog\"]'); const cand=[...d.querySelectorAll('*')].filter(e=>e.children.length>0 && e.innerText && e.innerText.trim().startsWith('chart.png')); const row=cand[cand.length-1]; if(!row) return 'no-row'; row.click(); return 'clicked'; })()" },
+    { "kind": "wait", "ms": 2500 },
+    { "kind": "shot", "path": "171-preview-png.png" },
+    { "kind": "eval", "code": "(() => { const d=[...document.querySelectorAll('[role=\"dialog\"]')]; return JSON.stringify({imgs:d[0]?d[0].querySelectorAll('img').length:0, text:d.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,300)).join(' /// ')}); })()" },
+    { "kind": "press", "key": "Escape", "settle": 800 },
+
+    { "kind": "note", "value": "translation task" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "把下面这句翻译成英文，只给译文：眼眶血管性疾病分为血管瘤和血管畸形两大类。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 2500 },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 150000 },
+    { "kind": "wait", "ms": 1500 },
+    { "kind": "eval", "code": "(() => { const ms=[...document.querySelectorAll('[data-role=\"assistant\"]')]; return JSON.stringify({translation:ms[ms.length-1].innerText.slice(0,300)}); })()" },
+
+    { "kind": "note", "value": "planning task" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "给我一个三天的广州出差计划，用表格列出每天上下午的安排，不要展开解释。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 2500 },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 150000 },
+    { "kind": "wait", "ms": 1500 },
+    { "kind": "shot", "path": "172-planning-table.png" },
+    { "kind": "eval", "code": "(() => { const ms=[...document.querySelectorAll('[data-role=\"assistant\"]')]; const last=ms[ms.length-1]; return JSON.stringify({tables:last.querySelectorAll('table').length, text:last.innerText.slice(0,400)}); })()" },
+
+    { "kind": "note", "value": "data analysis task" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "用一句话算一下：样本量 128，其中 43 例是双侧，双侧占比是多少（保留一位小数）？" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 2500 },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 150000 },
+    { "kind": "wait", "ms": 1500 },
+    { "kind": "eval", "code": "(() => { const ms=[...document.querySelectorAll('[data-role=\"assistant\"]')]; return JSON.stringify({answer:ms[ms.length-1].innerText.slice(0,300)}); })()" }
+  ]
+}

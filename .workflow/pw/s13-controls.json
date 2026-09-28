@@ -1,0 +1,43 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 12000,
+  "initScript": "(() => { const push=(o)=>{ try{ const c=JSON.parse(sessionStorage.getItem('__errLog')||'[]'); c.push(o); sessionStorage.setItem('__errLog', JSON.stringify(c.slice(-20))); }catch(e){} }; const oe=console.error; console.error=function(){ push({t:Date.now(), args:[...arguments].map(a=>{ try{ return typeof a==='string'?a:JSON.stringify(a).slice(0,300) }catch(e){ return String(a) } }).join(' | ').slice(0,900), stack:(new Error().stack||'').split('\\n').slice(1,8).join(' <- ')}); return oe.apply(this,arguments); }; window.addEventListener('error',e=>push({t:Date.now(),args:'window.error: '+e.message})); window.addEventListener('unhandledrejection',e=>push({t:Date.now(),args:'unhandledrejection: '+String(e.reason).slice(0,200)})); })();",
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat/conv_35f92d16a879", "settle": 5000 },
+
+    { "kind": "note", "value": "context-usage button visibility" },
+    { "kind": "eval", "code": "(() => { const b=document.querySelector('button[aria-label=\"上下文用量\"]'); if(!b) return 'not-in-dom'; const r=b.getBoundingClientRect(); const cs=getComputedStyle(b); const wrap=b.closest('[data-slot],div'); return JSON.stringify({rect:[Math.round(r.x),Math.round(r.y),Math.round(r.width),Math.round(r.height)], display:cs.display, visibility:cs.visibility, opacity:cs.opacity, pointerEvents:cs.pointerEvents, text:b.innerText.slice(0,80), html:b.outerHTML.slice(0,300)}); })()" },
+    { "kind": "eval", "code": "(() => { const bs=[...document.querySelectorAll('button')].filter(b=>{const r=b.getBoundingClientRect(); return r.y>600 && r.y<900}); return JSON.stringify(bs.map(b=>({aria:b.getAttribute('aria-label'), text:b.innerText.trim().slice(0,20), rect:[Math.round(b.getBoundingClientRect().x),Math.round(b.getBoundingClientRect().y)]}))); })()" },
+    { "kind": "eval", "code": "(() => { const b=document.querySelector('button[aria-label=\"上下文用量\"]'); b.click(); return 'clicked-via-js'; })()" },
+    { "kind": "wait", "ms": 1200 },
+    { "kind": "shot", "path": "70-context-popover.png" },
+    { "kind": "eval", "code": "(() => { const pop=[...document.querySelectorAll('[data-radix-popper-content-wrapper],[role=\"dialog\"],[role=\"menu\"]')]; return JSON.stringify({pops:pop.length, text:pop.map(e=>e.innerText.slice(0,700)).join(' ||| ')}); })()" },
+
+    { "kind": "note", "value": "textarea autogrow with real typing" },
+    { "kind": "click", "selector": "textarea[aria-label=\"消息输入框\"]", "settle": 300 },
+    { "kind": "type", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "第一行内容比较短\n第二行内容也比较短\n第三行还是一样短\n第四行继续\n第五行结束", "delay": 8 },
+    { "kind": "wait", "ms": 600 },
+    { "kind": "eval", "code": "JSON.stringify({height:Math.round(document.querySelector('textarea[aria-label=\"消息输入框\"]').getBoundingClientRect().height), scrollHeight:document.querySelector('textarea[aria-label=\"消息输入框\"]').scrollHeight, valueLen:document.querySelector('textarea[aria-label=\"消息输入框\"]').value.length})" },
+    { "kind": "shot", "path": "71-autogrow-typing.png" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "" },
+
+    { "kind": "note", "value": "seek react update-depth warning" },
+    { "kind": "click", "selector": "button[aria-label=\"选择对话模型\"]", "settle": 1000 },
+    { "kind": "shot", "path": "72-model-menu.png" },
+    { "kind": "text", "selector": "body", "limit": 700 },
+    { "kind": "press", "key": "Escape", "settle": 600 },
+    { "kind": "click", "selector": "button[aria-label=\"知识库范围\"]", "settle": 1000 },
+    { "kind": "shot", "path": "73-kb-scope-menu.png" },
+    { "kind": "press", "key": "Escape", "settle": 600 },
+    { "kind": "click", "selector": "button[aria-label=\"添加附件或技能\"]", "settle": 1000 },
+    { "kind": "shot", "path": "74-attach-menu.png" },
+    { "kind": "text", "selector": "body", "limit": 700 },
+    { "kind": "press", "key": "Escape", "settle": 600 },
+    { "kind": "eval", "code": "JSON.stringify({errors:JSON.parse(sessionStorage.getItem('__errLog')||'[]')})" }
+  ]
+}

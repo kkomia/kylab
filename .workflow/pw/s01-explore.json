@@ -1,0 +1,15 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "steps": [
+    { "kind": "goto", "url": "/", "settle": 2500 },
+    { "kind": "shot", "path": "01-overview.png" },
+    { "kind": "eval", "code": "JSON.stringify({title:document.title,url:location.href,hash:location.hash,rootKids:document.getElementById('root')?.children.length,links:[...document.querySelectorAll('a')].map(a=>a.getAttribute('href')+'|'+a.innerText.trim()).slice(0,40)})" },
+    { "kind": "eval", "code": "JSON.stringify({buttons:[...document.querySelectorAll('button')].map(b=>(b.innerText||b.getAttribute('aria-label')||b.title||'').trim()).filter(Boolean).slice(0,60)})" },
+    { "kind": "eval", "code": "JSON.stringify({nav:[...document.querySelectorAll('nav *')].map(e=>e.tagName+':'+(e.innerText||'').trim().slice(0,30)).filter(s=>s.length>2).slice(0,60)})" },
+    { "kind": "text", "selector": "body", "limit": 3000 }
+  ]
+}

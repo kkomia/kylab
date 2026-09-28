@@ -1,0 +1,39 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 40000,
+  "steps": [
+    { "kind": "goto", "url": "/login", "settle": 1500 },
+    { "kind": "fill", "selector": "#login-username", "value": "kkomia" },
+    { "kind": "fill", "selector": "#login-password", "value": "117118363" },
+    { "kind": "click", "selector": "button[type=\"submit\"]", "settle": 3000 },
+    { "kind": "eval", "code": "localStorage.getItem('kylab-session-token')?'LOGGED-IN':'NO-TOKEN'" },
+
+    { "kind": "goto", "url": "/chat", "settle": 3000 },
+    { "kind": "eval", "code": "(() => { const vp=document.querySelector('[aria-label=\"对话内容\"]'); window.__probe={t0:performance.now(),s:[]}; window.__probe.timer=setInterval(()=>{ window.__probe.s.push([Math.round(performance.now()-window.__probe.t0), vp?vp.scrollHeight:-1, vp?Math.round(vp.scrollHeight-vp.clientHeight-vp.scrollTop):-1, document.body.innerText.length]); },120); return vp?'probe-on':'no-viewport'; })()" },
+
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "请只输出一份 Markdown 渲染自检样例，不要任何解释和寒暄。必须包含：一个一级标题、一个二级标题、一个有序列表（3 项）、一个无序列表（3 项，其中一项嵌套二级）、一个 3 行 3 列的表格、一段引用文字、一段 Python 代码块（含缩进的 for 循环）、一个行内代码 `npm run dev`、一个行内公式 $E = mc^2$、一个块级公式 $$\\int_0^1 x^2\\,dx = \\frac{1}{3}$$、以及一条分隔线。" },
+    { "kind": "wait", "ms": 600 },
+    { "kind": "shot", "path": "10-composer-filled.png" },
+    { "kind": "eval", "code": "JSON.stringify({taValueLen:document.querySelector('textarea[aria-label=\"消息输入框\"]').value.length, taHeight:document.querySelector('textarea[aria-label=\"消息输入框\"]').getBoundingClientRect().height, sendBtn:!!document.querySelector('button[aria-label=\"发送\"]'), stopBtn:!!document.querySelector('button[aria-label=\"停止生成\"]')})" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 1500 },
+    { "kind": "shot", "path": "11-sent-early.png" },
+    { "kind": "eval", "code": "JSON.stringify({url:location.pathname, stopBtn:!!document.querySelector('button[aria-label=\"停止生成\"]'), bodyLen:document.body.innerText.length, taCleared:document.querySelector('textarea[aria-label=\"消息输入框\"]').value.length})" },
+    { "kind": "wait", "ms": 6000 },
+    { "kind": "shot", "path": "12-streaming-mid.png" },
+    { "kind": "eval", "code": "JSON.stringify({stopBtn:!!document.querySelector('button[aria-label=\"停止生成\"]'), bodyLen:document.body.innerText.length})" },
+    { "kind": "wait", "ms": 12000 },
+    { "kind": "shot", "path": "13-streaming-late.png" },
+    { "kind": "eval", "code": "JSON.stringify({stopBtn:!!document.querySelector('button[aria-label=\"停止生成\"]'), bodyLen:document.body.innerText.length})" },
+    { "kind": "wait", "ms": 20000 },
+    { "kind": "shot", "path": "14-answer-final.png" },
+    { "kind": "eval", "code": "JSON.stringify({stopBtn:!!document.querySelector('button[aria-label=\"停止生成\"]'), sendBtn:!!document.querySelector('button[aria-label=\"发送\"]'), bodyLen:document.body.innerText.length})" },
+    { "kind": "eval", "code": "(() => { clearInterval(window.__probe.timer); const s=window.__probe.s; const d=[]; for(let i=1;i<s.length;i++) d.push(s[i][1]-s[i-1][1]); return JSON.stringify({n:s.length, dur:s.length?s[s.length-1][0]:0, hStart:s.length?s[0][1]:0, hEnd:s.length?s[s.length-1][1]:0, maxJump:d.length?Math.max(...d):0, bigJumps:d.filter(x=>Math.abs(x)>80).length, notPinnedSamples:s.filter(x=>x[2]>40).length, lenStart:s.length?s[0][3]:0, lenEnd:s.length?s[s.length-1][3]:0}); })()" },
+
+    { "kind": "eval", "code": "JSON.stringify({threadKids:document.querySelector('[aria-label=\"对话内容\"]')?.children.length, msgNodes:[...document.querySelectorAll('[aria-label=\"对话内容\"] > *')].map(e=>({tag:e.tagName, cls:(e.className||'').toString().slice(0,60), len:e.innerText.length})).slice(0,12)})" },
+    { "kind": "html", "selector": "[aria-label=\"对话内容\"]", "limit": 6000 }
+  ]
+}

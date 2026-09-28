@@ -1,0 +1,25 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 15000,
+  "initScript": "(() => { const KEY='__probeLog'; const push=(o)=>{ try{ const c=JSON.parse(sessionStorage.getItem(KEY)||'[]'); c.push(o); sessionStorage.setItem(KEY, JSON.stringify(c.slice(-40))); }catch(e){} }; const p=Storage.prototype; const rm=p.removeItem, st=p.setItem, cl=p.clear; p.removeItem=function(k){ if(String(k).indexOf('kylab')===0) push({op:'removeItem',k:String(k),t:Date.now(),stack:(new Error().stack||'').split('\\n').slice(1,7).join(' <- ')}); return rm.apply(this,arguments); }; p.setItem=function(k,v){ if(String(k).indexOf('kylab')===0) push({op:'setItem',k:String(k),v:String(v).slice(0,14),t:Date.now()}); return st.apply(this,arguments); }; p.clear=function(){ push({op:'clear',t:Date.now(),stack:(new Error().stack||'').split('\\n').slice(1,7).join(' <- ')}); return cl.apply(this,arguments); }; const f=window.fetch; window.fetch=function(){ const a=arguments; const u=(a[0]&&a[0].url)||String(a[0]); const pr=f.apply(this,a); pr.then(r=>{ if(r.status===401) push({op:'http401',u:String(u).slice(0,120),t:Date.now()}); }).catch(e=>{ push({op:'fetchreject',u:String(u).slice(0,120),msg:String(e&&e.message).slice(0,80),t:Date.now(),stack:(new Error().stack||'').split('\\n').slice(1,7).join(' <- ')}); }); return pr; }; const XO=XMLHttpRequest.prototype.open; XMLHttpRequest.prototype.open=function(m,u){ this.addEventListener('load',()=>{ if(this.status===401) push({op:'xhr401',u:String(u).slice(0,120),t:Date.now()}); }); return XO.apply(this,arguments); }; })();",
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "eval", "code": "JSON.stringify({token:!!localStorage.getItem('kylab-session-token')})" },
+    { "kind": "goto", "url": "/chat", "settle": 4000 },
+    { "kind": "eval", "code": "JSON.stringify({url:location.pathname, token:!!localStorage.getItem('kylab-session-token')})" },
+    { "kind": "wait", "ms": 6000 },
+    { "kind": "eval", "code": "JSON.stringify({url:location.pathname, token:!!localStorage.getItem('kylab-session-token'), log:JSON.parse(sessionStorage.getItem('__probeLog')||'[]')})" },
+    { "kind": "goto", "url": "/tasks", "settle": 3000 },
+    { "kind": "eval", "code": "JSON.stringify({url:location.pathname, token:!!localStorage.getItem('kylab-session-token'), log:JSON.parse(sessionStorage.getItem('__probeLog')||'[]')})" },
+    { "kind": "goto", "url": "/notes", "settle": 3000 },
+    { "kind": "eval", "code": "JSON.stringify({url:location.pathname, token:!!localStorage.getItem('kylab-session-token'), log:JSON.parse(sessionStorage.getItem('__probeLog')||'[]')})" },
+    { "kind": "goto", "url": "/capabilities", "settle": 3000 },
+    { "kind": "eval", "code": "JSON.stringify({url:location.pathname, token:!!localStorage.getItem('kylab-session-token'), log:JSON.parse(sessionStorage.getItem('__probeLog')||'[]')})" },
+    { "kind": "goto", "url": "/memory", "settle": 3000 },
+    { "kind": "eval", "code": "JSON.stringify({url:location.pathname, token:!!localStorage.getItem('kylab-session-token'), log:JSON.parse(sessionStorage.getItem('__probeLog')||'[]')})" }
+  ]
+}

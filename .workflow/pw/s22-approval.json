@@ -1,0 +1,50 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 15000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat", "settle": 3000 },
+    { "kind": "clickText", "value": "新建会话", "settle": 2500 },
+
+    { "kind": "note", "value": "set permission to workspace-edit (so approvals can trigger)" },
+    { "kind": "click", "selector": "button[aria-label^=\"权限\"]", "settle": 1000 },
+    { "kind": "eval", "code": "(() => { const m=[...document.querySelectorAll('[role=\"menu\"]')]; return JSON.stringify({menu:m.map(e=>e.innerText.replace(/\\n/g,' | ')).join(' /// ')}); })()" },
+    { "kind": "clickText", "value": "工作区内编辑", "settle": 1200 },
+    { "kind": "eval", "code": "JSON.stringify({perm:document.querySelector('button[aria-label^=\"权限\"]')?.innerText.trim()})" },
+
+    { "kind": "note", "value": "ask for a shell command that writes outside the workspace" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "请在系统里执行一条命令：新建目录 D:\\tmp\\kylab-qa-approval，并在里面写一个文件 hello.txt，内容是 kylab。做完告诉我执行结果。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 3000 },
+
+    { "kind": "waitForText", "value": "允许一次", "timeout": 45000 },
+    { "kind": "shot", "path": "150-approval-bar.png" },
+    { "kind": "eval", "code": "(() => { const btns=[...document.querySelectorAll('button')].map(b=>b.innerText.trim()||b.getAttribute('aria-label')).filter(Boolean); const bar=document.querySelector('[role=\"alert\"], [class*=border-dashed], [data-testid*=approval]'); return JSON.stringify({navButtons:btns.slice(0,40), barText:(bar?bar.innerText:'').slice(0,400)}); })()" },
+    { "kind": "text", "selector": "[data-role=\"assistant\"]", "limit": 600 },
+
+    { "kind": "note", "value": "refuse it" },
+    { "kind": "clickText", "value": "拒绝", "settle": 1500 },
+    { "kind": "shot", "path": "151-approval-refused.png" },
+    { "kind": "eval", "code": "JSON.stringify({steps:[...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')+' | '+e.innerText.replace(/\\n/g,' ').slice(0,160))})" },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 150000 },
+    { "kind": "wait", "ms": 2000 },
+    { "kind": "shot", "path": "152-after-refuse.png" },
+    { "kind": "eval", "code": "(() => { const ms=[...document.querySelectorAll('[data-role=\"assistant\"]')]; return JSON.stringify({last:ms[ms.length-1].innerText.slice(0,600), steps:[...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')+' | '+e.innerText.replace(/\\n/g,' ').slice(0,200))}); })()" },
+
+    { "kind": "note", "value": "tool failure: read a missing file" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "请读取文件 D:\\tmp\\definitely-missing-9f3a7c.txt，把它的内容原样贴给我。如果读不到，就只说一句读不到，不要换别的方式。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 3000 },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 150000 },
+    { "kind": "wait", "ms": 2000 },
+    { "kind": "shot", "path": "153-tool-failure.png" },
+    { "kind": "eval", "code": "(() => { const ms=[...document.querySelectorAll('[data-role=\"assistant\"]')]; return JSON.stringify({last:ms[ms.length-1].innerText.slice(0,600), steps:[...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')+' | '+e.innerText.replace(/\\n/g,' ').slice(0,220))}); })()" },
+
+    { "kind": "note", "value": "restore permission" },
+    { "kind": "click", "selector": "button[aria-label^=\"权限\"]", "settle": 1000 },
+    { "kind": "clickText", "value": "完全访问", "settle": 1000 },
+    { "kind": "eval", "code": "JSON.stringify({perm:document.querySelector('button[aria-label^=\"权限\"]')?.innerText.trim()})" }
+  ]
+}

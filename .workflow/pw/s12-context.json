@@ -1,0 +1,54 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 20000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat", "settle": 3000 },
+    { "kind": "clickText", "value": "新建会话", "settle": 2000 },
+
+    { "kind": "note", "value": "long input with real newlines" },
+    { "kind": "eval", "code": "(() => { const lines=[]; for(let i=1;i<=30;i++) lines.push('第'+i+'行：这是一行用来测试输入框自增高的文本。'); const ta=document.querySelector('textarea[aria-label=\"消息输入框\"]'); const setter=Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,'value').set; setter.call(ta, lines.join('\\n')); ta.dispatchEvent(new Event('input',{bubbles:true})); return 'set'; })()" },
+    { "kind": "wait", "ms": 1200 },
+    { "kind": "eval", "code": "(() => { const ta=document.querySelector('textarea[aria-label=\"消息输入框\"]'); const r=ta.getBoundingClientRect(); return JSON.stringify({height:Math.round(r.height), scrollHeight:ta.scrollHeight, valueLen:ta.value.length, maxH:getComputedStyle(ta).maxHeight, overflowY:getComputedStyle(ta).overflowY}); })()" },
+    { "kind": "shot", "path": "60-longinput-multiline.png" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "" },
+
+    { "kind": "note", "value": "turn1 - list" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "请列出 5 个中国省份的名字，用有序列表，每行只有省份名，不要解释。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 2500 },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 150000 },
+    { "kind": "wait", "ms": 1500 },
+    { "kind": "text", "selector": "[data-role=\"assistant\"]", "limit": 700 },
+    { "kind": "shot", "path": "61-turn1.png" },
+
+    { "kind": "note", "value": "turn2 - referential edit (把上面第 3 点改成云南)" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "把上面第 3 点改成「云南」，其余保持不变，重新输出整个列表。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 2500 },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 150000 },
+    { "kind": "wait", "ms": 1500 },
+    { "kind": "eval", "code": "(() => { const ms=[...document.querySelectorAll('[data-role=\"assistant\"]')]; const last=ms[ms.length-1]; return JSON.stringify({turns:ms.length, lastText:last.innerText.slice(0,400)}); })()" },
+    { "kind": "shot", "path": "62-turn2-refer.png" },
+
+    { "kind": "note", "value": "turn3 - topic switch then switch back" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "换个话题：1+1 等于几？只回答数字。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 2500 },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 150000 },
+    { "kind": "wait", "ms": 1200 },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "回到刚才那份省份列表：第 5 个是什么？只回答名称。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 2500 },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 150000 },
+    { "kind": "wait", "ms": 1500 },
+    { "kind": "eval", "code": "(() => { const ms=[...document.querySelectorAll('[data-role=\"assistant\"]')]; return JSON.stringify({turns:ms.length, lastText:ms[ms.length-1].innerText.slice(0,300), prevText:ms[ms.length-2].innerText.slice(0,200)}); })()" },
+    { "kind": "shot", "path": "63-turn3-switchback.png" },
+
+    { "kind": "note", "value": "context usage popover" },
+    { "kind": "click", "selector": "button[aria-label=\"上下文用量\"]", "settle": 1200 },
+    { "kind": "shot", "path": "64-context-usage.png" },
+    { "kind": "text", "selector": "body", "limit": 900 },
+    { "kind": "eval", "code": "(() => { const el=[...document.querySelectorAll('[role=\"dialog\"],[role=\"tooltip\"],[data-radix-popper-content-wrapper]')].map(e=>e.innerText).join('\\n---\\n'); return JSON.stringify({popover:el.slice(0,1500)}); })()" }
+  ]
+}

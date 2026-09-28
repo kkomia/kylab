@@ -1,0 +1,39 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 12000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat/conv_048a2a5f125d", "settle": 4000 },
+
+    { "kind": "note", "value": "reload restore" },
+    { "kind": "eval", "code": "(() => { const t=document.querySelector('[aria-label=\"对话内容\"]'); const vp=t; return JSON.stringify({before:{scrollTop:Math.round(vp.scrollTop), scrollHeight:vp.scrollHeight, height:vp.clientHeight, msgs:document.querySelectorAll('[data-role]').length, textLen:vp.innerText.length}}); })()" },
+    { "kind": "goto", "url": "/chat/conv_048a2a5f125d", "settle": 4500 },
+    { "kind": "eval", "code": "(() => { const vp=document.querySelector('[aria-label=\"对话内容\"]'); return JSON.stringify({after:{scrollTop:Math.round(vp.scrollTop), scrollHeight:vp.scrollHeight, height:vp.clientHeight, msgs:document.querySelectorAll('[data-role]').length, textLen:vp.innerText.length, atBottom:Math.abs(vp.scrollHeight-vp.clientHeight-vp.scrollTop)<8}}); })()" },
+    { "kind": "shot", "path": "130-reload-restore.png" },
+
+    { "kind": "note", "value": "account menu -> settings entry" },
+    { "kind": "click", "selector": "button[aria-label^=\"账号\"]", "settle": 1000 },
+    { "kind": "clickText", "value": "设置", "settle": 2000 },
+    { "kind": "eval", "code": "JSON.stringify({urlAfterSettings:location.pathname, title:document.title})" },
+    { "kind": "shot", "path": "131-after-settings-entry.png" },
+
+    { "kind": "note", "value": "capabilities page" },
+    { "kind": "goto", "url": "/capabilities", "settle": 3000 },
+    { "kind": "shot", "path": "132-capabilities.png" },
+    { "kind": "eval", "code": "JSON.stringify({tabs:[...document.querySelectorAll('[role=\"tab\"]')].map(e=>e.innerText.trim()), aria:[...document.querySelectorAll('[aria-label]')].map(e=>e.getAttribute('aria-label')).filter(Boolean).slice(0,30), text:document.body.innerText.slice(0,700)})" },
+    { "kind": "clickText", "value": "插件", "settle": 2000 },
+    { "kind": "shot", "path": "133-plugins-tab.png" },
+    { "kind": "eval", "code": "JSON.stringify({text:document.body.innerText.slice(0,700), switches:[...document.querySelectorAll('[role=\"switch\"],input[type=checkbox]')].length, buttons:[...document.querySelectorAll('button')].map(b=>b.innerText.trim().slice(0,16)).filter(Boolean).slice(0,25)})" },
+    { "kind": "clickText", "value": "插件包", "settle": 2000 },
+    { "kind": "shot", "path": "134-pluginpacks-tab.png" },
+    { "kind": "eval", "code": "JSON.stringify({text:document.body.innerText.slice(0,600)})" },
+    { "kind": "clickText", "value": "技能", "settle": 2000 },
+    { "kind": "clickText", "value": "kylab-web", "settle": 1800 },
+    { "kind": "shot", "path": "135-skill-detail.png" },
+    { "kind": "eval", "code": "JSON.stringify({text:document.body.innerText.slice(0,900)})" }
+  ]
+}

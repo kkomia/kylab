@@ -1,0 +1,45 @@
+{
+  "baseUrl": "http://localhost:5173",
+  "headless": true,
+  "viewport": { "width": 1440, "height": 900 },
+  "shotDir": "D:/GitLab/kylab/docs/产品走查-2026-09-28/shots",
+  "userDataDir": "D:/GitLab/kylab/.workflow/pw/.pwprofile",
+  "timeout": 15000,
+  "steps": [
+    { "kind": "ensureLogin", "username": "kkomia", "password": "117118363" },
+    { "kind": "goto", "url": "/chat", "settle": 3000 },
+    { "kind": "clickText", "value": "新建会话", "settle": 2500 },
+
+    { "kind": "note", "value": "A) repro: list_files on a conversation with NO workspace" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "请调用文件列表工具，列出当前文件根的目录内容——不要传 where、也不要传 path，就用默认值。把工具返回的结果原样贴给我，不要自己解读。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 3000 },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 150000 },
+    { "kind": "wait", "ms": 2000 },
+    { "kind": "shot", "path": "160-sandbox-list-crash.png" },
+    { "kind": "eval", "code": "(() => { const ms=[...document.querySelectorAll('[data-role=\"assistant\"]')]; return JSON.stringify({last:ms[ms.length-1].innerText.slice(0,700), steps:[...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')+' | '+e.innerText.replace(/\\n/g,' ').slice(0,200))}); })()" },
+
+    { "kind": "note", "value": "B) non-text upload: png + xlsx + pdf" },
+    { "kind": "setInputFiles", "selector": "input[type=\"file\"]:not([webkitdirectory])", "files": ["D:/GitLab/kylab/.workflow/fixtures/chart.png", "D:/GitLab/kylab/.workflow/fixtures/data.xlsx", "D:/GitLab/kylab/.workflow/fixtures/sample.pdf"], "settle": 2500 },
+    { "kind": "shot", "path": "161-nontext-attached.png" },
+    { "kind": "fill", "selector": "textarea[aria-label=\"消息输入框\"]", "value": "我上传了三个文件（一个 png、一个 xlsx、一个 pdf）。请分别说明：你能不能直接读到它们的内容？读不到的话，正确的处理方式是什么？一句话一个文件。" },
+    { "kind": "press", "selector": "textarea[aria-label=\"消息输入框\"]", "key": "Enter", "settle": 3000 },
+    { "kind": "waitFor", "selector": "button[aria-label=\"停止生成\"]", "state": "detached", "timeout": 180000 },
+    { "kind": "wait", "ms": 2000 },
+    { "kind": "shot", "path": "162-nontext-answer.png" },
+    { "kind": "eval", "code": "(() => { const ms=[...document.querySelectorAll('[data-role=\"assistant\"]')]; return JSON.stringify({last:ms[ms.length-1].innerText.slice(0,900), steps:[...document.querySelectorAll('[data-kind]')].map(e=>e.getAttribute('data-kind')+' | '+e.innerText.replace(/\\n/g,' ').slice(0,160))}); })()" },
+
+    { "kind": "note", "value": "C) file drawer previews" },
+    { "kind": "click", "selector": "button[aria-label=\"添加附件或技能\"]", "settle": 1000 },
+    { "kind": "clickText", "value": "浏览文件", "settle": 2000 },
+    { "kind": "shot", "path": "163-drawer-nontext.png" },
+    { "kind": "eval", "code": "(() => { const d=[...document.querySelectorAll('[role=\"dialog\"]')]; return JSON.stringify({text:d.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,800)).join(' /// ')}); })()" },
+    { "kind": "clickText", "value": "data.xlsx", "settle": 2500 },
+    { "kind": "shot", "path": "164-preview-xlsx.png" },
+    { "kind": "eval", "code": "(() => { const d=[...document.querySelectorAll('[role=\"dialog\"]')]; return JSON.stringify({text:d.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,700)).join(' /// '), tables:document.querySelectorAll('[role=\"dialog\"] table').length}); })()" },
+    { "kind": "clickText", "value": "chart.png", "settle": 2500 },
+    { "kind": "shot", "path": "165-preview-png.png" },
+    { "kind": "clickText", "value": "sample.pdf", "settle": 2500 },
+    { "kind": "shot", "path": "166-preview-pdf.png" },
+    { "kind": "eval", "code": "(() => { const d=[...document.querySelectorAll('[role=\"dialog\"]')]; return JSON.stringify({text:d.map(e=>e.innerText.replace(/\\n/g,' | ').slice(0,600)).join(' /// '), iframes:document.querySelectorAll('[role=\"dialog\"] iframe, [role=\"dialog\"] embed, [role=\"dialog\"] object').length}); })()" }
+  ]
+}
