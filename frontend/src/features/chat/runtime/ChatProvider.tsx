@@ -41,6 +41,7 @@ import {
 } from '@/api/chat'
 import {
   createConversation,
+  getConversation,
   ingestArtifact,
   listArtifacts,
   rewindConversation,
@@ -67,6 +68,10 @@ import {
 } from '@/features/chat/model/turns'
 import { splitSuggestions } from '@/features/chat/model/suggestions'
 
+// 侧栏那份会话清单（壳那一层）：新会话建出来之后要**当场**插进去。
+// 不做这一步的话，侧栏只在挂载时 `load()` 过一次，谁也告诉不了它清单变长了——
+// 于是新会话要刷新页面才出现（用户报的那条）。
+import { useConversationStore } from '@/features/layout/conversations'
 // 项目清单（壳那一层）：`?workspace=` 那条新建链路要说清"这一条会落在哪个项目"。
 // 侧栏是发起方，这份清单通常已经在手上（`ensureWorkspacesLoaded` 那一下就是补这个）。
 import { ensureWorkspacesLoaded, useWorkspaceStore } from '@/features/layout/workspaces'
@@ -519,6 +524,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const live = useLiveTurnState()
 
+  /**
+   * 刚建的那条会话（等它的标题生成出来，见下面那个 effect）。
+   *
+   * 用 ref 不用 state：它只在"这一轮结束后"被读一次，进 state 会让每次新建都多一次渲染，
+   * 而它本身不参与任何渲染结果。
+   */
+  const createdConversationRef = useRef('')
+
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [query, setQueryState] = useState('')
   const [resolvingEntry, setResolvingEntry] = useState(false)
@@ -590,6 +603,51 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const models = useMemo(() => registry?.models ?? [], [registry])
   const commands = useMemo(() => commandsQuery.data ?? [], [commandsQuery.data])
   const skills = useMemo(() => skillsQuery.data ?? [], [skillsQuery.data])
+
+  /**
+   * 新建会话要动的那两份壳状态：侧栏那份会话清单要**多一行**，
+   * 项目行上的条数是**另一个 store 里的数**，要**加一**（同一个事实不能只改一半）。
+   */
+  const upsertConversation = useConversationStore((state) => state.upsert)
+  const refreshWorkspaceCounts = useWorkspaceStore((state) => state.refreshCounts)
+
+  /**
+   * 把某一条会话的摘要重新读一遍并**就地替换那一行**（v0.54）。
+   *
+   * 为什么是"读一条"而不是 `load()` 整份清单：这时变的只是标题，整份重拉的代价与闪烁
+   * 都白付（这条纪律写在 `conversations.ts` 的 `upsert` 上）。而 `ConversationDetail
+   * extends ConversationSummary`——详情那一份**就是**摘要，所以不必另发列表请求，
+   * 也不必自己拼字段（拼出来的那一份迟早与列表接口分叉）。
+   */
+  const refreshConversationSummary = useCallback(
+    async (id: string) => {
+      try {
+        upsertConversation(await getConversation(id))
+      } catch {
+        // 补标题失败不该打扰用户：那一行还在（只是暂时还叫「未命名对话」），
+        // 下次进对话页或刷新页面会自动校正。
+      }
+    },
+    [upsertConversation],
+  )
+
+  /**
+   * 刚建的那条会话，**等这一轮跑完再把标题补上**（v0.54）。
+   *
+   * 时序是后端定的：`POST /conversations` 建出来的记录标题是空的，标题要等第一句提问
+   * 落下才生成——所以"建完当场 upsert"只能得到一行「未命名对话」。用户报的现象正是
+   * "新建对话之后左下方的列表里没有出现新的对话名"，只补一行空标题等于半个修复。
+   *
+   * 判据取 `live.streaming`：它是"这一轮还在跑"的唯一信号（跑完、出错、被停止都会落回
+   * `false`），而那时标题已经在库里了。**只补一次**（取完就清掉 ref），
+   * 否则之后每一轮结束都会为同一件事再发一次请求。
+   */
+  useEffect(() => {
+    const pending = createdConversationRef.current
+    if (!pending || live?.streaming) return
+    createdConversationRef.current = ''
+    void refreshConversationSummary(pending)
+  }, [live?.streaming, refreshConversationSummary])
 
   /**
    * 项目清单：`?workspace=` 那条路上要用它的**名字**（新会话落在哪儿要摆给人看）。
@@ -1128,6 +1186,23 @@ export function ChatProvider({ children }: { children: ReactNode }) {
           setSelectedKbIds(inherited)
         }
         void navigate(`/chat/${target}`, { replace: true })
+        /**
+         * 新会话**当场**进侧栏：侧栏那份清单只在挂载时 `load()` 一次，
+         * 不告诉它的话，新会话要刷新页面才出现（用户报的"刷新一下才有"就是这条）。
+         * 用后端刚返回的那条摘要（与列表接口同一个 `ConversationOut`），
+         * 就地插入而**不重拉列表**——理由写在 `conversations.ts` 的 `upsert` 上。
+         *
+         * 落在项目下时，项目行的条数是另一个 store 里的数，得跟着刷一次；
+         * 刷不动也不该把这一轮发送带崩（它只是个计数），所以只丢掉那个失败。
+         */
+        upsertConversation(created)
+        if (pendingWorkspaceId) void refreshWorkspaceCounts().catch(() => undefined)
+        /**
+         * 记下"这条是刚建的"：**后端此刻还没给它起标题**（标题要等这一轮提问落下才生成），
+         * 所以侧栏那一行现在只能显示「未命名对话」。用户报的正是"没有出现新的对话名"
+         * ——只补一行空标题等于半个修复，所以等这一轮答完再回来把真名补上（见下面那个 effect）。
+         */
+        createdConversationRef.current = created.id
       } catch (cause) {
         notifyError(cause)
         return
@@ -1150,11 +1225,13 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     navigate,
     pendingWorkspaceId,
     query,
+    refreshWorkspaceCounts,
     runCommand,
     sending,
     streamTurn,
     thinkingEffort,
     thinkingOn,
+    upsertConversation,
     useKb,
   ])
 

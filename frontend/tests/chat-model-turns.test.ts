@@ -26,6 +26,7 @@ import {
   THINKING_EFFORTS,
   TRACE_PAGE_SIZE,
   thinkingParagraphs,
+  trailingThinking,
   usedWebSearch,
   replyArtifacts,
   stepIcon,
@@ -888,5 +889,73 @@ describe('usedWebSearch：这一轮跑过联网搜索没有', () => {
     })
 
     expect(usedWebSearch(reply)).toBe(false)
+  })
+})
+
+/**
+ * 每一步自己的推理（v0.54）。
+ *
+ * 用户报的问题（原话）："他是把所有思考的内容全部放在一起了。很难看，我觉得思考就应该
+ * 对应到他调用得工具里面去。" 数据库里那条会话是 **21 个工具步骤 + 一整串 26303 字的
+ * thinking**——后端从这一版起按"自上一处步骤快照以来的增量"挂到每一步上，这里钉的就是
+ * 界面那一侧读它读得对不对。
+ */
+describe('每步自己的思考（v0.54）', () => {
+  function turnOf(steps: ChatStep[], extra: Partial<Message> = {}) {
+    return {
+      user: message('user', { text: '问' }),
+      reply: message('assistant', { steps, ...extra }),
+    }
+  }
+
+  it('每一步的推理落在它自己那一步上（不是整串摊在末尾）', () => {
+    const steps = traceSteps(
+      turnOf([
+        step('tool', { label: '联网搜索', tool: 'web_search', thinking: '先搜一下官方发布页。' }),
+        step('tool', {
+          label: '抓取网页',
+          tool: 'web_fetch',
+          thinking: '这一页看起来是镜像，去抓真源。',
+        }),
+      ]),
+    )
+
+    expect(steps[0].thinking).toBe('先搜一下官方发布页。')
+    expect(steps[1].thinking).toBe('这一页看起来是镜像，去抓真源。')
+  })
+
+  it('老消息（每一步都没有推理）才把整串兜出来，让界面默认折起它', () => {
+    const reply = message('assistant', {
+      steps: [step('tool', { label: '联网搜索', tool: 'web_search' })],
+      thinkingText: '很长很长的一整串思考。',
+    })
+
+    expect(trailingThinking(reply)).toBe('很长很长的一整串思考。')
+  })
+
+  it('新消息不再兜整串：同一批文字在末尾再说一遍是噪声', () => {
+    const reply = message('assistant', {
+      steps: [step('tool', { label: '联网搜索', tool: 'web_search', thinking: '这一步的理由。' })],
+      thinkingText: '这一步的理由。',
+    })
+
+    expect(trailingThinking(reply)).toBe('')
+  })
+
+  it('整串为空（回放的历史）就什么都不给', () => {
+    const reply = message('assistant', {
+      steps: [step('tool', { label: '联网搜索', tool: 'web_search' })],
+    })
+
+    expect(trailingThinking(reply)).toBe('')
+  })
+
+  it('只有空白也算"没有推理"：空串会让界面多出一块空白', () => {
+    const reply = message('assistant', {
+      steps: [step('tool', { label: '联网搜索', tool: 'web_search', thinking: '   ' })],
+      thinkingText: '整串还在。',
+    })
+
+    expect(trailingThinking(reply)).toBe('整串还在。')
   })
 })

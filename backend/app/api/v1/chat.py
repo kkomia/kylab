@@ -78,6 +78,7 @@ from app.services.agent import (
     DoneEvent,
     SourcesEvent,
     StepEvent,
+    StepThinking,
     ThinkingEvent,
     step_snapshot,
 )
@@ -759,6 +760,10 @@ class _TurnSink:
         #: 当前这段连续思考的 payload。同一次思考在日志里只占一条：增量拼进来，
         #: 每来一块写一行会让长会话的日志膨胀几十倍，而那些行在投影里没有区别。
         self._thinking_draft: dict[str, object] | None = None
+        #: 推理的**切段**累加器（见 ``agent.StepThinking``）：它决定"下一处步骤快照
+        #: 该带上哪一段推理"。与上面的 ``thinking`` 是两个累加器，不能合并——
+        #: 那份攒的是整轮的全文（整串落库，既有行为），这份每挂到一处快照上就取空。
+        self._step_thinking = StepThinking()
         #: 那一段思考**在直播缓冲里的那条**（P2-2）。后续增量同时拼进它，
         #: 于是重连补发的人拿到的是完整思考，而正在看的人收到的仍是逐段增量。
         self._thinking_emit: LiveEmit | None = None
@@ -860,13 +865,16 @@ class _TurnSink:
 
         if isinstance(event, StepEvent):
             # 快照的收法在服务层（``agent.step_snapshot``）：定时任务那条链路
-            # 也要落同一份，两处各写一份必然分叉（见那个函数的说明）
-            snapshot = step_snapshot(event)
+            # 也要落同一份，两处各写一份必然分叉（见那个函数的说明）。
+            # 这个累加器把"产生这一步的那一轮推理"挂到快照上（同一处判定）
+            snapshot = step_snapshot(event, thinking=self._step_thinking)
             if snapshot is not None:
                 self.steps.append(snapshot)
             # 同一条事件**同时**进日志：写侧的映射也只有一处（``step_event_draft``
-            # 复用 step_snapshot），所以"日志投影 == 快照"不是靠约定而是靠同一份代码
-            self.events.append(step_event_draft(event))
+            # 复用 step_snapshot），所以"日志投影 == 快照"不是靠约定而是靠同一份代码。
+            # **已经算好的那份原样传进去**：再算一遍会第二次取走推理增量，
+            # 于是消息里那份带上思考、日志里那份没有（或反过来）
+            self.events.append(step_event_draft(event, snapshot))
             self._track_call(event)
             # ``log_index`` = 它刚写进日志的那条是第几条（1 起）：
             # 后台那一条据此算出与 ``session_events`` **同一个** seq（见 live_turns）
@@ -894,6 +902,21 @@ class _TurnSink:
                     # 一个二十步的长会话会白扛几十 KB
                     **({"args": event.args} if event.args else {}),
                     **({"result": event.result} if event.result else {}),
+                    # 这一步的推理（v0.54）：**从已经算好的那份快照里取**，不再算一遍
+                    # （再算会第二次取走增量，于是消息里有、直播里没有）。
+                    #
+                    # 为什么要发给直播而不是"等回看时再说"：这一批要解决的正是
+                    # "正在跑的那一轮里，思考全挤成一团"。只给快照的话，用户答完
+                    # 看到的过程面板仍然没有每步推理，得刷新页面才出现——
+                    # 而"刚答完那一眼"正是他要看的那一刻。
+                    #
+                    # 一段只发一次（挂在产生它的那一步上），不是每个增量都发：
+                    # 逐帧带的话，一次长思考会让这条流白扛几十 KB。
+                    **(
+                        {"thinking": snapshot["thinking"]}
+                        if snapshot and snapshot.get("thinking")
+                        else {}
+                    ),
                     **(
                         {"artifacts": [dict(a) for a in event.artifacts]} if event.artifacts else {}
                     ),
@@ -937,6 +960,9 @@ class _TurnSink:
             # 顺手攒一份全文：落库时要把它存下来，否则用户离开这一页再回来
             # 就只剩一句"已生成回答"（v0.25）
             self.thinking.append(event.text)
+            # 同一段推理也喂给切段那个累加器：它攒到下一处快照被取走为止
+            # （"这段推理属于哪一步"因此有了位置，见 ``agent.StepThinking``）
+            self._step_thinking.note(event.text)
             # 日志里同一次连续思考只占**一条**：增量拼进同一个 payload。
             # 每来一块写一行的话，一条长思考就是几百行，而那些行在投影里
             # 完全一样（思考不进 steps）——只增长度，不增信息。

@@ -10,7 +10,7 @@
 import { ChevronDown } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
-import { resultPreview, type TraceStep } from '@/features/chat/model/turns'
+import { resultPreview, thinkingParagraphs, type TraceStep } from '@/features/chat/model/turns'
 import { formatCount } from '@/lib/format'
 
 import { LinkText } from './LinkText'
@@ -22,6 +22,8 @@ import {
   STEP_LABEL,
   STEP_ROW,
   STEP_TOGGLE,
+  THINK_BLOCK,
+  THINK_PARAGRAPH,
   caretClass,
   RAW_BODY,
   RAW_LABEL,
@@ -71,6 +73,7 @@ export function TraceStepRow({
   open: hostOpen,
   onToggle,
   variant = 'plain',
+  streaming = false,
 }: {
   step: TraceStep
   /** 原文（入参 / 返回）是否展开。由宿主持有——它才管得住"哪几行开着"。 */
@@ -78,6 +81,13 @@ export function TraceStepRow({
   onToggle: () => void
   /** `child` = 某一组展开后的一次调用：缩进一档、图标位换成小圆点。 */
   variant?: 'plain' | 'child'
+  /**
+   * 这一轮还在流式生成中（v0.54）。**只影响"这一步的思考"的初始开合**：
+   * 干活的时候它还摊着（用户在等，看着它想什么），**答完就自动收起来**——
+   * 用户原话："输出最终结果完毕后，把思考折叠起来，就显示工具调用信息就行了。
+   * 当然用户也可以展开查看。"
+   */
+  streaming?: boolean
 }) {
   /** 展开入口只在真有原文时给：没有原文却画个能点的箭头，点了什么都不变。 */
   const hasDetail = Boolean(step.args || step.result)
@@ -96,6 +106,16 @@ export function TraceStepRow({
     setUserChose(!open)
     onToggle()
   }
+
+  /**
+   * 这一步自己的思考（v0.54）：**默认值跟着流式状态走**、用户点过就听他的。
+   *
+   * 与上面原文那两个开关**分开**：它们是两件事（"它想了什么" vs "它拿回来什么"），
+   * 合成一个的话，想看一眼推理就得把 2000 字的工具原文一起铺开。
+   */
+  const [thinkingChose, setThinkingChose] = useState<boolean | null>(null)
+  const thinking = step.thinking ?? ''
+  const thinkingOpen = thinkingChose ?? streaming
 
   /**
    * **超长返回先只给预览**（P2-1，照 ZCode 的两级懒加载 `previewBytes/fullBytes`）。
@@ -165,6 +185,35 @@ export function TraceStepRow({
             />
           ) : null}
         </div>
+
+        {/* 这一步自己的思考（v0.54）：折叠入口那一行 + 展开后的按段正文。
+            位置刻意在**标签之下、入参/返回之上**——它讲的是"这次调用是怎么想出来的"，
+            顺序上先有想法才有调用；而标签仍然是这一行的头一句，所以它看上去仍是一次工具调用。 */}
+        {thinking.trim() ? (
+          <div className="mt-[var(--space-1)]">
+            <button
+              type="button"
+              className={STEP_TOGGLE}
+              aria-expanded={thinkingOpen}
+              aria-label="这一步的思考"
+              onClick={() => setThinkingChose(!thinkingOpen)}
+            >
+              思考
+              <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
+                {formatCount(thinking.length)} 字
+              </span>
+              <ChevronDown className={caretClass(thinkingOpen)} size={12} />
+            </button>
+            {thinkingOpen ? (
+              <div className={THINK_BLOCK} data-testid="step-thinking">
+                {thinkingParagraphs(thinking).map((paragraph, index) => (
+                  // 段落是同一段文本按空行切出来的，没有稳定 id；下标即位置
+                  <LinkText key={index} className={THINK_PARAGRAPH} text={paragraph} />
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
 
         {/* 入参与返回是**原始载荷**（JSON / 工具正文），走等宽 `<pre>`，里面网址同样要能点 */}
         {hasDetail && open ? (

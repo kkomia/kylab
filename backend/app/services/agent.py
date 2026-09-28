@@ -29,6 +29,7 @@ __all__ = [
     "DoneEvent",
     "SourcesEvent",
     "StepEvent",
+    "StepThinking",
     "ThinkingEvent",
     "step_snapshot",
 ]
@@ -174,7 +175,51 @@ class DoneEvent:
     answer: str
 
 
-def step_snapshot(event: StepEvent) -> dict[str, object] | None:
+class StepThinking:
+    """把模型推理**按步骤快照切成段**的累加器：这一段属于哪一步，只有这一处判。
+
+    **要它解决什么**：一轮里的 ``ThinkingEvent`` 是一串增量，而落库的 ``thinking``
+    是整轮拼起来的一整串——于是回看那条消息时，二十一步的推理全连在一起，
+    看不出哪一段是"产生这次工具调用"的那一轮推理（用户报的原话：「思考就应该
+    对应到他调用的工具里面去」）。而"产生这一步的那一轮推理"在流里**有位置**：
+    它紧挨在这一步的步骤事件之前，所以累加起来、在这一步的快照上取走即可。
+
+    **两条链路各自持有一个实例**（``api/v1/chat.py`` 的 ``_TurnSink`` 与
+    ``services/schedule_runner.py``）：取段这一步写在 ``step_snapshot`` 里，
+    两处不可能各写一份规则（那个函数存在的理由就是"两处各写一份必然分叉"）。
+
+    **它与整轮那份 ``thinking`` 是两个累加器，不能合并**：整轮那份要跨轮一直拼、
+    最后整串落库（既有行为，别动，见 ``services/conversation``）；这一份每挂上
+    一处快照就**取空一次**——"增量"的定义就是"自上一处快照以来"。
+    """
+
+    __slots__ = ("_pending",)
+
+    def __init__(self) -> None:
+        self._pending: list[str] = []
+
+    def note(self, text: str) -> None:
+        """收一段推理增量（空串不收：它既不是段的开始也不是段的内容）。"""
+        if text:
+            self._pending.append(text)
+
+    def take(self) -> str:
+        """取走"自上一处快照以来"的那段推理，并**取空**；没有就返回空串。
+
+        用列表攒着最后 ``join``，不做字符串逐个相加：一次长思考有几百个增量，
+        逐次相加是 O(n²)（``api/v1/chat.py`` 里那份日志草稿也攒着不拼，但理由不同
+        ——它是为了少写行数，这里是为了少复制字符）。
+        """
+        if not self._pending:
+            return ""
+        text = "".join(self._pending)
+        self._pending.clear()
+        return text
+
+
+def step_snapshot(
+    event: StepEvent, *, thinking: StepThinking | None = None
+) -> dict[str, object] | None:
     """把一条步骤事件收成**落库的快照**；``running`` 的那条返回 ``None``（不入库）。
 
     这段映射原先写在 ``api/v1/chat.py`` 的 ``_TurnSink`` 里。搬到服务层是因为
@@ -189,10 +234,17 @@ def step_snapshot(event: StepEvent) -> dict[str, object] | None:
       ``DoneEvent`` 表达，不带上它就少了最后那一行；
     - **空字段不写键**（而不是写空值）：快照是每一轮都存一遍的东西，
       省下的键在长对话里是真金白银，而"缺省即空"在读取侧是一句话的事。
+
+    ``thinking``：调用的那两条链路把**自己那个** ``StepThinking``
+    传进来，于是这一步会带上"产生它的那一轮推理"（增量，见本函数的实现处）。
+    不传（``None``）时快照里不会有这个键——**读日志投影那条路就是这样**：
+    ``services/session_events.step_event_draft`` 落进日志的那份 payload
+    与消息里那份是**同一个 dict**（调用方算过一次就传进来，见它那个 ``snapshot``
+    参数），所以投影与快照仍然逐字相等，读取侧不必再判一次"这段属于哪一步"。
     """
     if event.status == "running" and event.phase != "answer":
         return None
-    return {
+    snapshot: dict[str, object] = {
         "phase": event.phase,
         "label": event.label,
         "detail": event.detail,
@@ -210,3 +262,17 @@ def step_snapshot(event: StepEvent) -> dict[str, object] | None:
         **({"result": event.result} if event.result else {}),
         **({"artifacts": [dict(item) for item in event.artifacts]} if event.artifacts else {}),
     }
+    if thinking is not None:
+        # 挂的是**增量**（自上一处快照以来那一段），不是整串：二十一步各挂一份整串
+        # 的话，那条消息的 JSON 会大二十倍，界面上同一段话也会被念二十遍。
+        #
+        # 一轮里并行的多个调用只有**第一个**快照带得上它——``running`` 在那两处
+        # tool_loop 里是先按调用顺序全部发出去的（见 ``tool_loop._perform``），
+        # 而它们在这里就返回了（上面那条 return），所以"这一轮的第一处快照"
+        # 恰好是第一个 ``done``。
+        segment = thinking.take()
+        # 空段**不写这个键**（而不是写空串）：界面靠"有没有这个键"决定要不要渲染
+        # 那一块，空串会让每一步底下都多出一块空白
+        if segment.strip():
+            snapshot["thinking"] = segment
+    return snapshot

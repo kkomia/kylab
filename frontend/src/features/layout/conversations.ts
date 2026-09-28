@@ -66,6 +66,7 @@ interface ConversationState {
   /** 当前清单对应的搜索词（空串 = 未筛选）。 */
   query: string
   load: (q?: string) => Promise<void>
+  upsert: (item: ConversationSummary) => void
   loadDetailList: (options?: HistoryQuery) => Promise<void>
   rename: (id: string, title: string) => Promise<void>
   setPinned: (id: string, pinned: boolean) => Promise<void>
@@ -108,6 +109,28 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       set({ loading: false })
     }
   },
+
+  /**
+   * 新建会话之后把那一行**就地插进侧栏这份清单**（`ChatProvider.send` 建完会话调它）。
+   *
+   * **为什么是插入而不是重新 `load()`**：上面第 3 条纪律——改完就地更新，不重拉列表。
+   * 重拉会让整份清单重建、侧栏在点击后闪一下；而其余动作（改名/置顶/归档/移动）都能
+   * 用"改那一格"躲开这个代价，唯独新建既躲不开又白付：清单没有变短，只是多了最新的
+   * 一条。刚建的会话 `updated_at` 就是当下、也没置顶，按同一口径排必然在最前，
+   * 所以插入一条即得与后端一致的结果。标题与时间由**下一次 `load()` 校正**：
+   * 建的时候标题还是空的（后端要等第一轮提问才生成，见 `ConversationService.create`），
+   * 这一刻没有哪个字段是"重拉才拿得到"的。
+   *
+   * **按 `id` 去重**：同一份摘要可能被交进来两次（改完别处又插一次、发送失败重试），
+   * 插两次侧栏就出现两行同一条会话。
+   */
+  upsert: (item) =>
+    set({
+      items: sortConversations([
+        item,
+        ...get().items.filter((existing) => existing.id !== item.id),
+      ]),
+    }),
 
   /**
    * 历史会话面板的清单。

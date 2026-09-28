@@ -163,8 +163,10 @@ export function App() {
                 {/* 旧地址保留成重定向，免得旧书签变 404（与旧前端同一处置） */}
                 <Route path="/search" element={<Navigate to="/knowledge-bases" replace />} />
                 <Route path="/settings" element={<Navigate to="/" replace />} />
-                {/* 「工作区」那一页已按用户要求删掉（它的说明文字与"新建项目"流程一起走）：旧书签回首页，
-                    项目分组本身还在侧栏里（那一节照旧列会话、照旧能一键新建）。 */}
+                {/* 「工作区」那一页已按用户要求删掉：旧书签回首页。项目分组本身还在侧栏里
+                    （那一节照旧列会话）；**「新增项目」的入口也在侧栏那一节的标题右边**
+                    （2026-09-28 按用户要求加回来的，见 `features/layout/SideNav.tsx`），
+                    所以删掉这一页之后"建项目"这件事仍然做得了。 */}
                 <Route path="/workspaces" element={<Navigate to="/" replace />} />
                 <Route path="*" element={<NotFoundPage />} />
               </Route>

@@ -142,6 +142,13 @@ export interface TraceStep {
    * 拿它归并不会把两件事并到一起。非工具步骤没有这个键（它们不参与分组）。
    */
   group?: string
+  /**
+   * **产生这一步的那一轮推理**（v0.54，用户报的"思考应该对应到它调用的工具里面去"）。
+   *
+   * 见 `ChatStep.thinking`：老消息没有它（整轮只有一串 thinking），
+   * 那种数据由 `trailingThinking` 兜底渲染成"默认折叠的一整块"。
+   */
+  thinking?: string
 }
 
 /** 提问原文在面板里只显示一小段：它是"检索了什么"的提示，不是内容主体。 */
@@ -766,6 +773,26 @@ export function traceSteps(turn: Turn): TraceStep[] {
   return legacyTraceSteps(turn)
 }
 
+/**
+ * **整轮那一串思考**：只有"没有任何一步带自己的推理"时才需要它（v0.54）。
+ *
+ * 两处来由不同，所以判据是"步骤里有没有"而不是"是新的还是老的"：
+ *
+ * 1. **老消息**（这条规则上线前落库的）：`steps[]` 里没有 `thinking`，而整轮的
+ *    `thinkingText` 是一整串（实测那条会话 26303 字、21 步）。拆不出来，所以整块给出来，
+ *    由界面**默认折叠**——用户报的"很难看"主要是它一直摊着，而不是它存在。
+ * 2. **回放的历史**（`ChatProvider` 的历史路径）：`thinkingText` 恒为空串，于是返回空串，
+ *    界面什么都不画。
+ *
+ * 新数据（每一步自带推理）返回**空串**：那时思考已经落在各自的工具行里，
+ * 再在末尾铺一遍同一批文字就是把同一件事说两遍。
+ */
+export function trailingThinking(message: Message): string {
+  if (!message.thinkingText.trim()) return ''
+  if (message.steps.some((step) => (step.thinking ?? '').trim())) return ''
+  return message.thinkingText
+}
+
 function agentTraceSteps(message: Message): TraceStep[] {
   // 显式标注元素类型：不标的话 TS 会把 `empty` 推成必填，后面 unshift 思考那一步就类型不兼容
   const steps: TraceStep[] = message.steps.map((step, index) => ({
@@ -785,6 +812,9 @@ function agentTraceSteps(message: Message): TraceStep[] {
     args: step.args,
     result: step.result,
     artifacts: step.artifacts,
+    // 这一步自己那段推理（v0.54）。老快照没有它 —— 那种数据整轮只有一串，
+    // 由 `trailingThinking` 兜底（见 `TracePanel`）。
+    thinking: step.thinking,
   }))
   if (message.thinking?.enabled && !steps.some((item) => item.icon === 'think')) {
     steps.unshift(...thinkingStep(message))

@@ -19,7 +19,7 @@
  * DOM 开销一直在。
  */
 import { ChevronDown } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import {
   liveLine,
@@ -27,6 +27,7 @@ import {
   sourceWhere,
   thinkingParagraphs,
   traceSummary,
+  trailingThinking,
   type Turn,
   type TraceEntry,
 } from '@/features/chat/model/turns'
@@ -51,7 +52,7 @@ import { useChat, type ChatMessage } from '../runtime/ChatProvider'
 const CITE_FOLD_LIMIT = 3
 
 /** 过程面板的一行：单独一步，或**同类工具并成的一组**。 */
-function EntryRow({ entry }: { entry: TraceEntry }) {
+function EntryRow({ entry, streaming }: { entry: TraceEntry; streaming: boolean }) {
   const chat = useChat()
 
   // 单独一步：绝大多数工具只调一次，那一档不该多一层点击
@@ -59,6 +60,7 @@ function EntryRow({ entry }: { entry: TraceEntry }) {
     return (
       <TraceStepRow
         step={entry.step}
+        streaming={streaming}
         open={chat.isStepOpen(entry.step.key)}
         onToggle={() => chat.toggleStep(entry.step.key)}
       />
@@ -92,6 +94,7 @@ function EntryRow({ entry }: { entry: TraceEntry }) {
                 key={child.key}
                 step={child}
                 variant="child"
+                streaming={streaming}
                 open={chat.isStepOpen(child.key)}
                 onToggle={() => chat.toggleStep(child.key)}
               />
@@ -182,11 +185,22 @@ function memoryNote(chars: number, tokens: number): string {
 
 export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn }) {
   const chat = useChat()
+  /**
+   * 整轮那一串思考的展开态（v0.54）：**默认收起**。
+   *
+   * 它是给老消息兜底的（见 `trailingThinking`），用户报的正是"这一整块很难看"，
+   * 所以默认值只能是收起；要看时点一下就行——"当然用户也可以展开查看"是用户的原话。
+   *
+   * **必须写在下面那个提前 return 之前**：钩子的顺序不能随渲染分支变
+   * （写在 return 之后会被 lint 判成"条件调用"）。
+   */
+  const [trailingOpen, setTrailingOpen] = useState(false)
   const reply = turn.reply as ChatMessage | null
   if (!reply) return null
 
   const open = chat.traceOpen(reply)
   const view = chat.traceView(turnIndex, turn)
+  const trailingThinkingText = trailingThinking(reply)
 
   /**
    * 只在**最新一轮**挂那一句：上下文用量是按会话（当前提示词）算的，
@@ -236,7 +250,7 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
         <div className="mt-[var(--space-3)]">
           <ol className="relative m-0 flex list-none flex-col p-0">
             {view.entries.map((entry) => (
-              <EntryRow key={entry.key} entry={entry} />
+              <EntryRow key={entry.key} entry={entry} streaming={Boolean(reply.streaming)} />
             ))}
           </ol>
 
@@ -262,23 +276,37 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
           ) : null}
 
           {/*
-            思考过程：**按段切开的整块**（不是一整串 pre-wrap 的文本）。
-            样子与正文刻意拉开距离（缩进、底色、左侧一道线、更小的字号与更紧的段距），
-            因为它讲的是"这一步怎么想出来的"，不是答案本身。
-            **默认仍然展开**（v0.25 照 Kimi 的那次选择：过程常驻在正文里，
-            见 `isTraceOpen`）、也**不给折叠开关**——这里只改它长什么样。
+            整轮那一串思考（v0.54 改）：**只有"没有任何一步带自己的推理"时才画**，
+            而且**默认折叠**——用户原话："他是把所有思考的内容全部放在一起了。很难看……
+            输出最终结果完毕后，把思考折叠起来，就显示工具调用信息就行了。当然用户也可以展开查看。"
+
+            新数据不走这里：每一步的推理已经落在它自己那行里（见 `TraceStepRow`），
+            再在末尾铺一遍是把同一件事说两遍（`trailingThinking` 会返回空串）。
+            这里兜的是**老消息**（这条规则上线前落库的、整轮只有一串的那种）——
+            用户手上正开着的就是它们；拆不出来就只能整块给，但至少不再一直摊着。
           */}
-          {reply.thinkingText ? (
+          {trailingThinkingText ? (
             <div className="mt-[var(--space-4)]">
-              <p className="m-0 text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
+              <button
+                type="button"
+                className={STEP_TOGGLE}
+                aria-expanded={trailingOpen}
+                onClick={() => setTrailingOpen((value) => !value)}
+              >
                 思考过程
-              </p>
-              <div className={THINK_BLOCK} data-testid="thinking-block">
-                {thinkingParagraphs(reply.thinkingText).map((paragraph, index) => (
-                  // 段落是**同一段文本按空行切出来的**，没有稳定 id；下标即位置
-                  <LinkText key={index} className={THINK_PARAGRAPH} text={paragraph} />
-                ))}
-              </div>
+                <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
+                  {formatCount(trailingThinkingText.length)} 字
+                </span>
+                <ChevronDown className={caretClass(trailingOpen)} size={12} />
+              </button>
+              {trailingOpen ? (
+                <div className={THINK_BLOCK} data-testid="thinking-block">
+                  {thinkingParagraphs(trailingThinkingText).map((paragraph, index) => (
+                    // 段落是**同一段文本按空行切出来的**，没有稳定 id；下标即位置
+                    <LinkText key={index} className={THINK_PARAGRAPH} text={paragraph} />
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
 

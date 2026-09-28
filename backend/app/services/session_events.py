@@ -168,6 +168,12 @@ _SNAPSHOT_KEYS = (
     "args",
     "result",
     "artifacts",
+    # 产生这一步的那一段推理（增量）。它与其它键不同：不是写侧自己算出来的、
+    # 而是**调用方算好快照后原样传进 step_event_draft** 的那一份（见那个函数），
+    # 所以这里只能原样带走——投影**自己不去判**"这段属于哪一步"，
+    # 判两遍（写侧按流切、读侧按事件重放）迟早会在"空回答的那一轮"或
+    # "不是工具循环产出的那两步"上分叉，而那种分叉不报错、只是回看时少一段
+    "thinking",
 )
 
 
@@ -281,18 +287,25 @@ def turn_end_draft(*, status: str, answer_chars: int, steps: int) -> EventDraft:
     )
 
 
-def step_event_draft(event: StepEvent) -> EventDraft:
+def step_event_draft(event: StepEvent, snapshot: dict[str, object] | None = None) -> EventDraft:
     """把一个步骤事件翻成事件草稿（``step`` / ``tool_call`` 二选一）。
 
     **payload 就是那份快照本身**（走 ``agent.step_snapshot``，绝不另写一版映射）——
     于是"从事件重建快照"退化成"筛掉不该进快照的那几条、其余原样拼起来"，
     两处口径不可能分叉。
 
+    ``snapshot``：调用方**已经算过**那份快照时原样传进来（``_TurnSink.feed`` 就是）。
+    同一条事件在一条链路上只该算一次——第二遍算会**第二次取走**"自上一处快照以来的
+    推理"（见 ``agent.StepThinking``），于是消息里那份带上思考、日志里那份没有，
+    而"投影 == 快照"那条硬验收只在端到端用例里才看得见它红。不给就自己算
+    （测试与其它调用点照旧）。
+
     ``running`` 的那条（``step_snapshot`` 返回 ``None``）在这里**要留下**：
     ``step_snapshot`` 的取舍是"快照里不存没结论的步骤"，而日志要记的是
     "这件事开始过"——中断时"哪些调用没有结果"正是从这些 running 里数出来的。
     """
-    snapshot = step_snapshot(event)
+    if snapshot is None:
+        snapshot = step_snapshot(event)
     if snapshot is not None:
         return EventDraft(kind=_kind_of(event), payload=snapshot)
     payload: dict[str, object] = {

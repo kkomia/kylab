@@ -7,7 +7,7 @@
  * 品牌位（环行星标 + 折叠开关）
  * 新建会话（`/chat?new=1`，带快捷键提示）
  * 主导航：笔记 / 记忆 / 能力 / 知识库▸（所有知识库 / 概览 / 任务中心）
- * 项目节：项目行（带条数，悬停时右端出现「+」= 在这个项目里新开会话）+ 各自的项目内会话（超过 5 条先收起）+ 全部项目
+ * 项目节：标题右侧「新增项目」（打开新建弹窗）+ 项目行（带条数，悬停时右端出现「+」= 在这个项目里新开会话）+ 各自的项目内会话（超过 5 条先收起）
  * 对话节：没归项目的会话（前 8 条）+ 查看全部会话
  * 页脚：账号（头像 + 名字 → 向上展开的菜单）
  * ```
@@ -89,6 +89,7 @@ import {
   RiArrowRightSLine,
   RiBook2Line,
   RiDashboardLine,
+  RiFolderAddLine,
   RiFolderLine,
   RiRobotLine,
   RiServerLine,
@@ -104,6 +105,7 @@ import {
   isTypingTarget,
   matchShortcut,
 } from '@/features/misc/settings/useShortcuts'
+import { WorkspaceCreateDialog } from '@/features/misc/workspaces/WorkspaceCreateDialog'
 import { toggleSidebarPreference } from '@/features/chat/runtime/shortcutPrefs'
 import type { ConversationSummary } from '@/api/conversations'
 import { formatCount } from '@/lib/format'
@@ -329,6 +331,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const loadConversations = useConversationStore((state) => state.load)
   const workspaces = useWorkspaceStore((state) => state.items)
   const workspaceError = useWorkspaceStore((state) => state.error)
+  const loadWorkspaces = useWorkspaceStore((state) => state.load)
 
   /** 滚动的那一层（项目 + 对话两节）。滚动条按"用时才出现"显示。 */
   const sideScroll = useRef<HTMLDivElement | null>(null)
@@ -343,6 +346,8 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const [knowledgeOpen, setKnowledgeOpen] = useState(false)
   /** 手动展开了哪几个项目。 */
   const [expandedProjects, setExpandedProjects] = useState<string[]>([])
+  /** 「新增项目」弹窗开着吗（按钮在「项目」标题右边）。 */
+  const [creatingProject, setCreatingProject] = useState(false)
 
   useEffect(() => {
     void loadConversations()
@@ -598,6 +603,22 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                 }
               />
             </button>
+            {/* 「新增项目」：与「对话」那一节的「查看全部会话」**同一份类名常量**
+                （`SIDE_ADD` = 悬停/聚焦才显形、但始终可 Tab 到），位置由 `ml-auto` 顶到
+                标题右边——用户点名的位置就是这里。图标按文件头那张对照表取
+                `folder-add-line`，与「项目」行的 `folder-line` 是同一族。
+
+                这一格此前是空的：上一版把新建流程挂在已删的「工作区」页上，于是侧栏
+                一颗能新建的按钮都不剩（用户原话"没有按钮可以新增了"）。 */}
+            <button
+              type="button"
+              className={SIDE_ADD}
+              title="新增项目"
+              aria-label="新增项目"
+              onClick={() => setCreatingProject(true)}
+            >
+              <RiFolderAddLine size={15} aria-hidden="true" />
+            </button>
           </div>
 
           {workspaceError && (
@@ -742,6 +763,22 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
       <div className="ly-sidebar-foot mt-auto p-2">
         <AccountMenu />
       </div>
+
+      {/* 新建项目弹窗挂在 `aside` 这一层，**不是**「项目」标题那一格里：那一格连同
+          整段下半栏在折叠态不在 DOM 里，把它当弹窗的父节点等于"建到一半收起侧栏就把
+          填好的表单连同弹窗一起摘掉"。 */}
+      <WorkspaceCreateDialog
+        open={creatingProject}
+        onClose={() => setCreatingProject(false)}
+        onCreated={() => {
+          // 建完立刻让侧栏长出这一个项目：清单只有 zustand 这一份来源
+          // （`useWorkspaceStore`），刷新走它的 `load()`，不另发明一条刷新路径。
+          void loadWorkspaces()
+          // 项目节可能是收起来的，而用户此刻找的正是刚建的这个——展开它，
+          // 否则"建完了"只有一个弹窗消失的动静，东西却不在眼前。
+          setProjectsOpen(true)
+        }}
+      />
     </aside>
   )
 }

@@ -12,7 +12,7 @@
  *    面板里的搜索与归档视图**不写回侧栏那份**；
  * 4. 相对时间分组（今天/昨天/本周/本月/更早）与预览的 Markdown 压平。
  */
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router'
@@ -251,6 +251,40 @@ describe('侧栏的会话分区', () => {
     )
     await waitFor(() => expect(screen.queryByText('会话 A')).not.toBeInTheDocument())
     expect(await screen.findByText('还没有对话')).toBeInTheDocument()
+  })
+
+  it('新建会话之后侧栏立刻多出那一行：就地插入，不重拉清单', async () => {
+    listConversationsMock.mockResolvedValue({
+      items: [conversation({ id: 'c1', title: '会话 A', updated_at: '2026-09-22T08:00:00Z' })],
+    })
+    renderShell()
+    expect(await screen.findByText('会话 A')).toBeInTheDocument()
+    // 这条用例要钉的就是"不刷新页面"：侧栏挂载那一次 load 之后，谁也不许再重拉整份清单
+    const callsAfterMount = listConversationsMock.mock.calls.length
+
+    // 「新建会话」的真实调用点是 `ChatProvider.send`（建完会话把后端返回的摘要交给这份
+    // 清单）；对话页那条用例归 `tests/chat-ui.test.tsx`，这里只驱动建完之后的**那一步**，
+    // 验"清单变长之后侧栏立刻可见"——修复前这里会一行都不多（正是用户报的现象）。
+    await act(async () => {
+      useConversationStore
+        .getState()
+        .upsert(conversation({ id: 'c2', title: '会话 B', updated_at: '2026-09-23T08:00:00Z' }))
+    })
+
+    expect(await screen.findByText('会话 B')).toBeInTheDocument()
+    // 刚建的那条排在最前：与后端同一口径（置顶优先，其次最近更新），不是插到哪算哪
+    const titles = screen.getAllByRole('link').map((link) => link.textContent)
+    expect(titles.indexOf('会话 B')).toBeLessThan(titles.indexOf('会话 A'))
+    // 就地插入：整份清单不重建（重拉会让侧栏在点击后闪一下）
+    expect(listConversationsMock.mock.calls.length).toBe(callsAfterMount)
+
+    // 同一份摘要重复交进来不许出现两行（发送失败重试、别处又插一次都会走到这里）
+    await act(async () => {
+      useConversationStore
+        .getState()
+        .upsert(conversation({ id: 'c2', title: '会话 B', updated_at: '2026-09-23T08:00:00Z' }))
+    })
+    expect(screen.getAllByText('会话 B')).toHaveLength(1)
   })
 })
 

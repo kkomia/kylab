@@ -21,7 +21,14 @@ import logging
 from typing import TYPE_CHECKING
 
 from app.core.exceptions import NotFoundError
-from app.services.agent import DeltaEvent, SourcesEvent, StepEvent, ThinkingEvent, step_snapshot
+from app.services.agent import (
+    DeltaEvent,
+    SourcesEvent,
+    StepEvent,
+    StepThinking,
+    ThinkingEvent,
+    step_snapshot,
+)
 from app.services.api_key import Caller
 from app.services.schedules import ScheduleService
 from app.storage.base import ScheduledTaskRecord
@@ -97,6 +104,10 @@ class _Turn:
     sources: list = dataclasses.field(default_factory=list)
     steps: list[dict[str, object]] = dataclasses.field(default_factory=list)
     thinking: list[str] = dataclasses.field(default_factory=list)
+    #: 推理的**切段**累加器（见 ``agent.StepThinking``）：与上面那份整轮全文分开，
+    #: 它每挂到一处步骤快照上就取空——定时任务的会话里"思考对应到哪一步"
+    #: 与对话页是同一条规则（同一份 ``step_snapshot``）
+    step_thinking: StepThinking = dataclasses.field(default_factory=StepThinking)
     degraded_reason: str = ""
 
 
@@ -166,10 +177,15 @@ def _ask(
             turn.answer += event.text
         elif isinstance(event, ThinkingEvent):
             turn.thinking.append(event.text)
+            # 同一段推理也喂给切段那个累加器（与对话页同一处置，见
+            # ``api/v1/chat.py`` 的 ``_TurnSink.feed``）：攒到下一处快照被取走
+            turn.step_thinking.note(event.text)
         elif isinstance(event, SourcesEvent):
             turn.sources = list(event.sources)
         elif isinstance(event, StepEvent):
-            snapshot = step_snapshot(event)
+            # 把"产生这一步的那一轮推理"挂到快照上：取段只有 ``step_snapshot``
+            # 那一处判定，两处各写一份必然分叉
+            snapshot = step_snapshot(event, thinking=turn.step_thinking)
             if snapshot is not None:
                 turn.steps.append(snapshot)
             if event.degraded:
