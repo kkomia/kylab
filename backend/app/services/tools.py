@@ -181,7 +181,19 @@ def tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "在知识库里检索原文片段。**这是本服务的主打能力**："
                 "返回的是原文出处（含文档名与页码），不是生成的回答。"
-                "需要一段连贯的话时用 REST 的 chat 接口，这个工具给的是依据。"
+                "需要一段连贯的话时用 REST 的 chat 接口，这个工具给的是依据。\n\n"
+                "**返回里带一份 `distribution`（这一批命中的分布）**，用它决定「要多少」：\n"
+                "- `fit`：`strong` 很对得上 / `weak` 只对上一部分 / `none` 这份资料答不了"
+                "（`none` 时**如实说资料里没有**，不要拿这几条噪声编答案）/ "
+                "`unknown` 这个库的嵌入模型没标定过、**判不了契合度**（这时按你要的条数返回，"
+                "不自动收敛）；\n"
+                "- `count` / `above_baseline`：兜底阈值之上有多少条、其中多少条真的过了基线；\n"
+                "- `scores`：max / p90 / p75 / median / p25 / min 与 `band`（带宽小 = "
+                "这一批都差不多，换阈值切出来的还是同一批内容）；\n"
+                "- `documents` / `per_document`：落在几篇文档上、每篇几条——**冗余在这里**。\n\n"
+                "程序会给一组建议（`distribution.suggested`），你可以用自己的判断覆盖它："
+                "这一轮只要最相关的两三段就传 `keep=3`；要更严就传 `min_score`（绝对余弦）；"
+                "同一个问题被好几本书各答一遍时用 `per_doc`（每篇最多留几条）收敛。"
             ),
             "inputSchema": {
                 "type": "object",
@@ -193,6 +205,24 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "description": "在哪些库里查；留空则查全部",
                     },
                     "top_k": {"type": "integer", "minimum": 1, "maximum": MAX_TOP_K},
+                    "keep": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_TOP_K,
+                        "description": "这一轮最多要几段（留空 = 用分布给出的建议）",
+                    },
+                    "min_score": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": "相似度下限（绝对余弦，留空 = 用建议）",
+                    },
+                    "per_doc": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "description": "每篇文档最多留几段（留空 = 用建议）",
+                    },
                 },
                 "required": ["query"],
                 "additionalProperties": False,
@@ -600,6 +630,30 @@ def _require(args: dict[str, Any], key: str) -> str:
     return value
 
 
+def _int_or_none(value: Any) -> int | None:
+    """可选的整数参数：缺失/空/解析不了都返回 ``None``（= 用默认）。
+
+    解析不了**不报错**：这些参数是"模型顺手给的调节量"，给错一个数就让整次检索失败
+    不划算——退回默认值，结果照样能用（与 `modes.coerce` 同一取舍）。
+    """
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    """可选的浮点参数（同 ``_int_or_none`` 的取舍）。"""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _visible_items(services: Services, caller: Caller) -> list[Any]:
     """当前调用者能看到的库。``visible_kb_ids`` 返回 ``None`` 表示**不受限**
     （管理员会话，或范围为空 = 不限范围的 API Key），此时不过滤。"""
@@ -729,8 +783,24 @@ def _search(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
     top_k = int(args.get("top_k") or 6)
     top_k = max(1, min(MAX_TOP_K, top_k))
 
-    response = services.retrieval.search(_query(query=query, kb_ids=kb_ids, top_k=top_k))
-    return {
+    # 动态返回（v0.54）：兜底阈值与基线从设置读（用户可配），模型给的 keep/min_score/per_doc
+    # 覆盖分布的建议。两个设置都读不到时**保持既有行为**（不传 stats_floor = 不统计）。
+    floor = services.runtime.get_float("retrieval.floor_score")
+    baseline = services.runtime.get_float("retrieval.baseline_score") or None
+    response = services.retrieval.search(
+        _query(
+            query=query,
+            kb_ids=kb_ids,
+            top_k=top_k,
+            stats_floor=floor if floor > 0.0 else None,
+            baseline=baseline,
+            keep=_int_or_none(args.get("keep")),
+            min_score=_float_or_none(args.get("min_score")),
+            per_doc=_int_or_none(args.get("per_doc")),
+        )
+    )
+    distribution = response.distribution
+    payload: dict[str, Any] = {
         "query": query,
         "hits": [
             {
@@ -745,11 +815,30 @@ def _search(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
                 # 没有它就只能给一个连不回原文的引用。对外部 MCP 客户端同样有用。
                 "chunk_id": hit.chunk_id,
                 "knowledge_base_id": hit.knowledge_base_id,
+                # 相似度（余弦）与融合分**不是一回事**：界面与模型都按它判断"多相关"
+                "similarity": (
+                    round(hit.raw_scores["vector"], 4) if "vector" in hit.raw_scores else None
+                ),
             }
             for hit in response.hits
         ],
         "filtered_out": response.filtered_out,
+        "returned": len(response.hits),
+        "decision": response.decision,
+        "distribution": distribution.as_payload() if distribution is not None else None,
     }
+    if distribution is not None and distribution.fit == "none":
+        # 拟合度是"这份资料答不了"时**必须说清**：不说的话模型会把这批 0.8x 的片段
+        # 当依据编答案，而那正是最坏的一种回答（看着有出处，其实没有内容）
+        payload["note"] = distribution.note
+    elif distribution is not None and response.decision is not None:
+        payload["note"] = (
+            "这批是按上面的分布**收敛后**的结果"
+            f"（keep={response.decision['keep']}、min_score={response.decision['min_score']}、"
+            f"per_doc={response.decision['per_doc']}，{response.decision['decided_by']}）。"
+            "不够就直接说不够；要更多/更少就带着 keep / min_score / per_doc 再查一次。"
+        )
+    return payload
 
 
 def _document_or_403(services: Services, document_id: str, *, caller: Caller) -> Any:
@@ -1424,12 +1513,34 @@ _HANDLERS = {
 }
 
 
-def _query(*, query: str, kb_ids: list[str], top_k: int):  # type: ignore[no-untyped-def]
+def _query(  # type: ignore[no-untyped-def]
+    *,
+    query: str,
+    kb_ids: list[str],
+    top_k: int,
+    stats_floor: float | None = None,
+    baseline: float | None = None,
+    keep: int | None = None,
+    min_score: float | None = None,
+    per_doc: int | None = None,
+):
     """构造检索请求。
 
     放在函数里 import：``mcp`` 层与 ``services`` 层都往这儿引用，
     顶层 import 会让这条单向依赖变得不明显。
+
+    ``stats_floor`` 非空 = **开启动态返回**（v0.54）：程序先按兜底低阈值收候选、
+    统计分布，再按 ``keep`` / ``min_score`` / ``per_doc``（模型给的，或分布的建议）收敛。
     """
     from app.services.retrieval import RetrievalQuery
 
-    return RetrievalQuery(query=query, kb_ids=kb_ids, top_k=top_k)
+    return RetrievalQuery(
+        query=query,
+        kb_ids=kb_ids,
+        top_k=top_k,
+        stats_floor=stats_floor,
+        baseline=baseline,
+        keep=keep,
+        min_score=min_score,
+        per_doc=per_doc,
+    )

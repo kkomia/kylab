@@ -25,6 +25,7 @@ from collections.abc import Sequence
 from app.services.embedding.base import EmbeddingNotConfiguredError, EmbeddingProvider
 from app.services.embedding.resolver import EmbeddingResolver
 from app.services.retrieval.coverage import content_terms, term_coverage
+from app.services.retrieval.distribution import ScoreDistribution, summarize
 from app.services.retrieval.fusion import DEFAULT_RRF_K, rrf_fuse
 from app.services.retrieval.rerank import RerankError, RerankProvider
 from app.services.retrieval.types import (
@@ -228,6 +229,15 @@ class RetrievalService:
         fused = rrf_fuse(ordered, k=self._rrf_k)
         hits, filtered_out = self._materialize(fused, raw, request, embedders)
         hits, reranked = self._maybe_rerank(hits, request)
+
+        # —— 动态返回（v0.54）：先看分布，再决定切在哪 ——
+        distribution = None
+        decision: dict[str, object] | None = None
+        if request.stats_floor is not None:
+            hits, distribution, decision, dropped = self._apply_distribution(
+                hits, request, embedders
+            )
+            filtered_out += dropped
         # 记在**返回之前**：返回给调用方的条数才是"命中数"，与 stats 里的分路召回数
         # 不是一回事（后者是融合前的候选量）
         self._record_usage(request, hits=hits[: request.top_k], started=started_all)
@@ -238,7 +248,123 @@ class RetrievalService:
             reranked=reranked,
             stats=stats,
             filtered_out=filtered_out,
+            distribution=distribution,
+            decision=decision,
         )
+
+    def _apply_distribution(
+        self,
+        hits: list[RetrievalHit],
+        request: RetrievalQuery,
+        embedders: dict[str, EmbeddingProvider] | None = None,
+    ) -> tuple[list[RetrievalHit], ScoreDistribution, dict[str, object], int]:
+        """按分布与调用方的决定**收敛**返回集（见 ``distribution.py`` 的模块头）。
+
+        三件事按顺序做，顺序不能反：
+
+        1. **统计**（兜底阈值之上的全批）：条数、分位数、带宽、落在几篇文档上、拟合度；
+        2. **切分数**：``min_score``（模型给的 → 否则建议值）。这一步用的是**余弦**，
+           不是融合分——融合分只反映名次，拿它当阈值是把"第几名"当成了"多相关"；
+        3. **按文档收敛**：``per_doc``（模型给的 → 否则建议值）与 ``keep`` 封顶。
+           **按文档**这一步才是治"上下文太长"的旋钮：实测的浪费是同一个问题被多本手册
+           各答一遍（3–4 条来自同一本），而不是分数没切开。
+
+        ``decided_by`` 记清这次是"模型定的"还是"按建议走的"——用户问"为什么只回 3 条"
+        时，答案必须是一个数加一个来源，而不是一句"系统自动"。
+        """
+        basis = "vector" if any("vector" in hit.raw_scores for hit in hits) else "none"
+        # 基线：显式给了就用（用户配的那一项），否则按嵌入模型标定——**都没标定就是 None**，
+        # 那时判不了契合度、也不收敛（见 `distribution.FIT_UNKNOWN`：安全阀）。
+        baseline = (
+            request.baseline
+            if request.baseline is not None
+            else self._calibrated_baseline(request, embedders)
+        )
+        scored: list[tuple[str, float | None, str]] = [
+            (
+                hit.document_name or hit.document_id,
+                # **没有向量分就交 None**：拿融合分（RRF）当相似度算分位数会把整份分布
+                # 污染掉（实测 min 被拉到 0.007、带宽拉到 0.974）。条数与文档冗余照旧统计。
+                float(hit.raw_scores["vector"]) if "vector" in hit.raw_scores else None,
+                hit.document_id,
+            )
+            for hit in hits
+        ]
+        distribution = summarize(
+            scored,
+            floor=request.stats_floor or 0.0,
+            baseline=baseline,
+            basis=basis,
+            keep_cap=request.top_k,
+        )
+
+        model_decided = request.keep is not None or request.min_score is not None
+        keep = request.keep if request.keep is not None else distribution.suggested_keep
+        min_score = (
+            request.min_score if request.min_score is not None else distribution.suggested_min_score
+        )
+        per_doc = request.per_doc if request.per_doc is not None else distribution.suggested_per_doc
+
+        dropped = 0
+        # 兜底阈值已经是统计窗口的下沿，这里只可能再往上切：``min_score`` 低于它就等于不切
+        if min_score is not None:
+            kept: list[RetrievalHit] = []
+            for hit in hits:
+                similarity = hit.raw_scores.get("vector")
+                # **没有相似度的（只有全文通道）照旧留下**：这一刀切的是"不够像"，
+                # 而它的证据不在相似度那一侧（词面覆盖已经判过了）——没有证据就不拦，
+                # 与 `_passes_relevance` 同一条纪律。
+                if similarity is None or float(similarity) >= min_score:
+                    kept.append(hit)
+                else:
+                    dropped += 1
+            hits = kept
+
+        if per_doc is not None and per_doc > 0:
+            seen: dict[str, int] = {}
+            kept = []
+            for hit in hits:
+                used = seen.get(hit.document_id, 0)
+                if used >= per_doc:
+                    dropped += 1
+                    continue
+                seen[hit.document_id] = used + 1
+                kept.append(hit)
+            hits = kept
+
+        limit = max(0, min(int(keep), request.top_k))
+        if len(hits) > limit:
+            dropped += len(hits) - limit
+            hits = hits[:limit]
+
+        decision = {
+            "keep": limit,
+            "min_score": min_score,
+            "per_doc": per_doc,
+            "decided_by": "model" if model_decided else "suggested",
+            "fit": distribution.fit,
+            "dropped": dropped,
+        }
+        return hits, distribution, decision, dropped
+
+    def _calibrated_baseline(
+        self, request: RetrievalQuery, embedders: dict[str, EmbeddingProvider] | None = None
+    ) -> float | None:
+        """这一次检索的基线（噪声天花板）；**一个标定值都没有时返回 ``None``**。
+
+        多库混检时取最高而不是最低：基线是"多高才算真的对上"，用最低的那条会让
+        一个标定宽松的库把另一个库的噪声也判成"对得上"。
+
+        返回 ``None`` 是这套机制的**安全阀**：标定表只覆盖 bge-m3，别的模型上拿 0.89 去判
+        "契合程度"会把它们的真命中全判成噪声（实测过：确定性嵌入的用例里整库被判成
+        `fit=none`、返回 0 条）。``None`` 时照报分布，但不判、不收敛。
+        """
+        values = [
+            calibrated_vector_floor(self._embedding_model_id(kb_id, embedders))
+            for kb_id in request.kb_ids
+        ]
+        values = [value for value in values if value > 0.0]
+        return max(values) if values else None
 
     def _record_usage(
         self, request: RetrievalQuery, *, hits: Sequence[object], started: float
@@ -466,6 +592,12 @@ class RetrievalService:
                 if explicit_vector is None
                 else max(0.0, explicit_vector)
             )
+            if request.stats_floor is not None and vector > 0.0:
+                # **动态返回时把窗口放宽到兜底阈值**（v0.54）：相关度下限（0.89）会把
+                # "可能相关"的那一段也剪掉，而判断契合程度靠的正是"这条答案周围围着多少
+                # 噪声"——窗口被剪掉了，分布就只剩答案那一小撮，``baseline`` 也就无从比较。
+                # 只放宽、不收紧：兜底阈值比标定值高时按标定值走。
+                vector = min(vector, max(0.0, request.stats_floor))
             if explicit_coverage is None:
                 # 语向下限开着才有词面下限：两者是一套（见方法说明）
                 coverage = DEFAULT_MIN_TERM_COVERAGE if vector > 0.0 else 0.0

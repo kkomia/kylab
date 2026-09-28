@@ -159,6 +159,25 @@ SETTING_GROUPS: dict[str, Any] = {
     # 没配时工具会明确说"去哪配"，而不是返回空结果——空结果会被模型读成
     # "网上没有这件事"，那比报错坏得多。
     # 抓网页（web_fetch）**不需要**这里的任何配置，它只认公网地址。
+    # 检索（v0.54 动态返回，见 services/retrieval/distribution.py 的模块头）。
+    # **这两项是"用户可配的基础阈值"**：兜底阈值决定统计窗口看多宽，基线是判"这个问题
+    # 与库对不对得上"的参照线。它们的默认值来自本机实测（医学库 21580 chunk）：
+    # 无关问题整批落在 0.854–0.885、相关问题在 0.917–0.981，基线 0.89 卡在中间。
+    "retrieval": {
+        "label": "检索",
+        "fields": [
+            {
+                "key": "retrieval.floor_score",
+                "label": "兜底相似度阈值（动态返回的统计下沿）",
+                "type": "float",
+            },
+            {
+                "key": "retrieval.baseline_score",
+                "label": "契合度基线（0 = 按嵌入模型自动标定）",
+                "type": "float",
+            },
+        ],
+    },
     "web": {
         "label": "联网",
         "fields": [
@@ -270,6 +289,14 @@ DEFAULTS: dict[str, str] = {
     "llm.enable_thinking": "true",
     "llm.thinking_effort": "medium",
     "chat.top_k": "6",
+    # 动态返回的两个基础阈值（v0.54，见 services/retrieval/distribution.py）：
+    # 兜底阈值 **0.80**——实测无关问题整批落在 0.854–0.885，取 0.80 让统计窗口比它更低，
+    # "答案周围围着多少噪声"才看得出来（相关度下限 0.89 会把这一段剪掉）；
+    # 基线 **0（= 自动）**——按嵌入模型查标定表（bge-m3 → 0.89）。**默认不写死 0.89**：
+    # 余弦的绝对尺度是模型属性，别的模型上拿 0.89 判"契合程度"会把真命中全判成噪声。
+    # 没标定过的模型上这一层就只报分布、不判也不收敛。
+    "retrieval.floor_score": "0.80",
+    "retrieval.baseline_score": "0",
     # 检索按块命中，但**喂给模型的是整段小节**（v17，见 services/chat.py
     # 的「小块检索、大块阅读」）：0 = 关闭，只给命中的那一块
     "chat.section_chars": "1800",

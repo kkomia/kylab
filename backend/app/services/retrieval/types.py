@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from app.models.enums import DataSourceKind
+from app.services.retrieval.distribution import ScoreDistribution
 
 __all__ = [
     "ChannelStat",
@@ -72,6 +73,21 @@ class RetrievalQuery:
     ``None`` = 跟着向量下限走（向量下限 > 0 时为 ``DEFAULT_MIN_TERM_COVERAGE`` = 0.67，
     否则 0），``0`` = 关闭。为什么这一半不挂在全文通道的原始分上：见 ``coverage.py``。
     """
+    stats_floor: float | None = None
+    """**分布统计窗口的兜底低阈值**（绝对余弦，v0.54，见 ``distribution.py``）。
+
+    刻意压低（默认 0.80，低于实测噪声带 0.854–0.885）：相关度下限那道闸（0.89）会把
+    "可能相关"的那一段也剪掉，而**判断契合程度靠的正是"这条答案周围围着多少噪声"**。
+    ``None`` = 不开启分布统计（保持既有行为），``0`` = 从零开始统计（什么都收）。
+    """
+    baseline: float | None = None
+    """标定基线（噪声天花板），判拟合度的参照线；``None`` = 按嵌入模型标定（见 ``service``）。"""
+    keep: int | None = None
+    """**调用方（模型）决定**的返回条数；``None`` = 用分布给出的建议。"""
+    min_score: float | None = None
+    """**调用方（模型）决定**的分数下限（绝对余弦）；``None`` = 用建议。"""
+    per_doc: int | None = None
+    """**调用方（模型）决定**的"每篇文档最多留几条"；``None`` = 用建议。"""
     rerank: bool = False
     filters: MetadataFilter | None = None
 
@@ -124,3 +140,10 @@ class RetrievalResponse:
     stats: list[ChannelStat] = field(default_factory=list)
     filtered_out: int = 0
     """被元数据过滤、相对阈值或**相关度下限**挡掉的候选数——避免"结果为空"时无从判断原因。"""
+    distribution: ScoreDistribution | None = None
+    """兜底阈值之上的分布（v0.54）。``None`` = 这次没开分布统计（``stats_floor`` 为空）。"""
+    decision: dict[str, object] | None = None
+    """这次**实际**按什么切的：``{"keep": n, "min_score": x, "per_doc": y, "decided_by": ...}``。
+
+    调试台与工具结果都读它——用户问"为什么只回了 3 条"时，答案必须是一个数而不是猜测。
+    """

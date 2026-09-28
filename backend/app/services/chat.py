@@ -709,12 +709,20 @@ class ChatService:
         # 放在这里，四条调用路径（流式 / 一次性 / 非 Agent / 子 Agent）全都覆盖到。
         if not kb_ids:
             return []
+        # 动态返回（v0.54，见 services/retrieval/distribution.py 的模块头）：**这一条路也要开**。
+        # 它是"非 Agent / 定时任务"那条链路的取资料口，用户看到的"常见问题命中太多、
+        # 上下文太长"有一半是从这里来的（`chat.top_k` 默认 6 × 每段 ~2000 字）。
+        # 兜底阈值那两项读不到（老部署没这一项）时传空 = 保持既有行为。
+        floor = self._runtime.get_float("retrieval.floor_score")
+        baseline = self._runtime.get_float("retrieval.baseline_score") or None
         response = self._retrieval.search(
             RetrievalQuery(
                 query=query,
                 kb_ids=kb_ids,
                 top_k=limit,
                 candidate_k=candidate_k,
+                stats_floor=floor if floor > 0.0 else None,
+                baseline=baseline,
             )
         )
         if reader is None and self._stores is not None:
