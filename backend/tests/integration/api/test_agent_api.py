@@ -831,11 +831,19 @@ def test_allow_rule_skips_the_confirmation(client: TestClient) -> None:
     """放行清单里的命令**不再问**——这正是规则存在的意义（同一个动作问一遍就够）。"""
     _set_rules(
         client,
-        **{"chat.permission": "workspace", "sandbox.rules_allow": "Bash(git status:*)"},
+        **{
+            "chat.permission": "workspace",
+            "sandbox.rules_allow": "Bash(git status:*)",
+            # **把隔离模式显式钉成严格**（v0.55 起默认是"没有真隔离就用降级档 direct 直接跑"，
+            # 见 `test_sandbox_exec_degrades_to_direct_without_isolation`）。不钉的话，
+            # 这条用例的期望取决于**跑它的机器有没有内核隔离**：有隔离时 409、
+            # 没有时 200 且命令真的跑掉——同一条用例两种结果，那不是在测行为，是在测环境。
+            "sandbox.require_isolation": "true",
+        },
     )
 
-    # 命中放行规则 → **不再问确认**。这台机器没有内核隔离，所以它会继续走到
-    # 隔离层并被那里拒绝（code=unsupported_content）——用这个区分两件事：
+    # 命中放行规则 → **不再问确认**；严格模式下没有内核隔离就由隔离层拒绝
+    # （code=unsupported_content）——用这个区分两件事：
     # "准入已通过、卡在隔离" 与 "准入没过、卡在确认"。
     response = client.post("/api/v1/sandbox/exec", json={"argv": ["git", "status", "--short"]})
     assert response.status_code == 409, response.text
