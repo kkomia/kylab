@@ -144,7 +144,15 @@ def resolve_roots(services: Services, *, conversation_id: str | None, caller: Ca
     只是没有那个根：沙箱始终可用，而"没挂工作区"本身是要如实告诉模型的一件事
     （它会据此改用 sandbox，而不是反复撞同一个错）。
     """
-    box = sandbox_for(services.runtime.data_dir, conversation_id or "adhoc")
+    # ``.ensure()` 不是顺手加的：``sandbox_for`` 返回的是 ``Sandbox`` 数据类，
+    # 而 ``Roots.sandbox`` 的类型是 ``Path``（后面 ``list_files`` / ``read_file``
+    # 直接拿它调 ``.exists()`` / ``.iterdir()``）。原先这里漏了 ``.ensure()``，
+    # 于是没挂工作区的会话里 ``list_files`` 必抛
+    # ``AttributeError: 'Sandbox' object has no attribute 'exists'``
+    # （2026-09-28 走查 D33 实测），而那条异常又被工具层原样写进了上下文。
+    # 另外两处取沙箱的地方（`api/v1/sandbox.py`、`agent_exec.py`）一直都是
+    # ``sandbox_for(...).ensure()``——同一个东西只有一种取法。
+    box = sandbox_for(services.runtime.data_dir, conversation_id or "adhoc").ensure()
     workspace: Path | None = None
     if conversation_id:
         try:

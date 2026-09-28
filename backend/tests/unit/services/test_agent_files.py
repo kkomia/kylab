@@ -236,3 +236,47 @@ def test_paths_outside_the_root_are_rejected(roots: Roots, path: str) -> None:
 def test_list_rejects_escaping_paths(roots: Roots) -> None:
     with pytest.raises(InvalidRequestError):
         list_files(roots, path="..")
+
+
+# ---------------------------------------------------------------- 沙箱根的类型（D33）
+
+def test_the_sandbox_root_is_a_path_so_the_file_tools_work(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """**没挂工作区的会话里，`Roots.sandbox` 必须是一个 `Path`**（2026-09-28 走查 D33）。
+
+    它是 `sandbox_for(...).ensure()` 的返回值。原先 `resolve_roots` 漏了 `.ensure()`，
+    拿到的是 `Sandbox` 数据类，而 `list_files` 会直接拿这个根调 `.exists()` —— 于是
+    「没挂项目的会话里列文件」100% 抛
+    `AttributeError: 'Sandbox' object has no attribute 'exists'`，
+    异常原文还被工具层写进了上下文（用户看到天书、模型顺着源码乱猜）。
+
+    这条用例同时钉住**类型**与**行为**：类型错了会当场红，行为错了（比如又抛别的）
+    也跑不过去。注意它必须走**真正的 `resolve_roots`**：既有的 `roots` fixture 直接
+    构造 `Roots`（sandbox 已是 Path），`test_agent_exec.py` 那条还把 `resolve_roots`
+    monkeypatch 掉了——两处都恰好绕开了这个 bug，所以它一直没被抓住。
+    """
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from app.services.agent_files import describe_roots, resolve_roots
+    from app.services.api_key import Caller
+
+    services = SimpleNamespace(
+        runtime=SimpleNamespace(data_dir=tmp_path),
+        # 没挂项目的会话：workspace_id 为空
+        conversations=SimpleNamespace(get=lambda _id: SimpleNamespace(workspace_id=None)),
+        workspaces=SimpleNamespace(),
+    )
+
+    roots = resolve_roots(services, conversation_id="conv_1", caller=Caller(is_admin=True))
+
+    assert roots.workspace is None
+    assert isinstance(roots.sandbox, Path), (
+        "sandbox 必须是 Path：它是 list_files / read_file 直接 .exists() 的那个根"
+    )
+    # 空沙箱 = 0 项，不抛；而且沙箱目录被真的建出来了（否则会报"没有这个目录"）
+    payload = list_files(roots)
+    assert payload["where"] == "sandbox"
+    assert payload["total"] == 0
+    assert roots.sandbox.is_dir()
+    # 给模型看的"你在哪儿"里也要能印出这个根（它要拿绝对路径去 run_command）
+    assert str(roots.sandbox) in describe_roots(roots)

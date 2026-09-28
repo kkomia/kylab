@@ -61,6 +61,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:  # 只为标注：chat.py 反过来要用这个模块（工具循环是它的主流程）
     from app.services.chat import SourceRef
 
+from app.core.exceptions import KylabError
 from app.core.logging import sanitize_log_value
 from app.services import modes, plan_gate
 from app.services.agent import (
@@ -577,11 +578,31 @@ class ToolLoop:
                 if decision is not None
                 else self._runner(call.name, args)
             )
-        except Exception as exc:  # 工具是外部世界，什么都能抛
-            # 异常文本里可能带着模型给的参数（多行 JSON）：不转义的话，一条日志会被
-            # 伪装成好几条，而多出来的那几行看起来像我们自己打的
-            logger.info("工具 %s 执行失败：%s", call.name, sanitize_log_value(exc))
+        except KylabError as exc:
+            # 这一类是**我们自己写给用户看**的话（"这条会话没有挂工作区…"、
+            # "没有这个目录：x"）：原样交给模型，它据此换一步走。
+            logger.info("工具 %s 被业务规则拦下：%s", call.name, sanitize_log_value(exc))
             return ToolOutcome(content=f"工具执行失败：{exc}")
+        except Exception as exc:  # 工具是外部世界，什么都能抛
+            # 其余的是**我们的 bug**（AttributeError / KeyError 之类）：日志里留全文与
+            # 栈，**交给模型的只给人话**。原先这里把 `{exc}` 原样写进内容——2026-09-28
+            # 走查 D33 实测到 `'Sandbox' object has no attribute 'exists'` 就这么进了上下文：
+            # 用户看到天书，模型还会顺着这句废话继续猜（它读到的不是"失败"，是一段源码）。
+            #
+            # 异常文本里可能带着模型给的参数（多行 JSON）：日志那边仍然要转义，否则一条
+            # 日志会被伪装成好几条，而多出来的那几行看起来像我们自己打的。
+            logger.warning(
+                "工具 %s 内部错误（全文只进日志，不进上下文）：%s",
+                call.name,
+                sanitize_log_value(exc),
+                exc_info=True,
+            )
+            return ToolOutcome(
+                content=(
+                    "这个工具这次没能跑起来（内部错误，细节已记进日志）。"
+                    "换一步再试，或者把这件事拆开做。"
+                )
+            )
         return _truncate(outcome)
 
     def _approval_for(self, call: ToolCall, approval: str | None) -> str | None:

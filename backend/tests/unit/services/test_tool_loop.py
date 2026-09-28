@@ -252,7 +252,13 @@ def test_without_tools_it_just_answers() -> None:
 
 
 def test_tool_failure_returns_to_the_model_instead_of_raising() -> None:
-    """工具是外部世界，什么都能抛。**抛出去整轮就废了**，而多数失败模型自己能纠正。"""
+    """工具是外部世界，什么都能抛。**抛出去整轮就废了**，而多数失败模型自己能纠正。
+
+    **但"没抛出去"不等于"可以原样交代"**（2026-09-28 走查 D33）：意料之外的异常
+    （`AttributeError` 这种）是**我们的 bug**，它的原文不该进上下文——用户看到的是
+    `'Sandbox' object has no attribute 'exists'` 这种天书，而模型会把这句源码当成
+    "工具说了什么"继续猜。所以这一条同时钉住两件事：**整轮照常收尾** + **原文不外漏**。
+    """
 
     def runner(name: str, args: dict) -> ToolOutcome:  # type: ignore[arg-type]
         raise RuntimeError("服务连不上")
@@ -265,8 +271,10 @@ def test_tool_failure_returns_to_the_model_instead_of_raising() -> None:
     events = list(loop.run(messages=[]))
 
     tool_message = next(m for m in client.answer_messages or [] if m.role == "tool")
-    assert "工具执行失败" in tool_message.content
-    assert "服务连不上" in tool_message.content
+    assert "没能跑起来" in tool_message.content
+    assert "内部错误" in tool_message.content
+    # **这句话是这条用例的重点**：异常原文只进日志
+    assert "服务连不上" not in tool_message.content
     # 整轮照常收尾
     assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
 
@@ -1832,3 +1840,26 @@ def test_the_failed_attempts_tool_fragments_do_not_leak_into_the_retry() -> None
     list(loop.run(messages=[]))
 
     assert ran == [("search", {"query": "眼轴"})], "参数来自第二趟，第一趟的碎片已经丢掉"
+
+
+def test_a_business_rule_message_still_reaches_the_model() -> None:
+    """`KylabError` 是**我们写给用户看**的话：照旧原样交给模型（与"内部错误不外漏"成对）。
+
+    两类必须分开处置，所以两类的用例也要成对：把上面那条（RuntimeError → 只说人话）
+    与这条（InvalidRequestError → 原文照给）放一起，谁把两类合成一类都会有一条红。
+    """
+    from app.core.exceptions import InvalidRequestError
+
+    def runner(name: str, args: dict) -> ToolOutcome:  # type: ignore[arg-type]
+        raise InvalidRequestError("这条会话没有挂工作区，要看试错目录就用 where=sandbox")
+
+    loop, client = _loop(
+        [LLMReply(tool_calls=(ToolCall(id="c1", name="list_files", arguments="{}"),)), LLMReply()],
+        runner=runner,
+    )
+
+    list(loop.run(messages=[]))
+
+    tool_message = next(m for m in client.answer_messages or [] if m.role == "tool")
+    assert "工具执行失败" in tool_message.content
+    assert "没有挂工作区" in tool_message.content
