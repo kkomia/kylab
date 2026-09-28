@@ -44,6 +44,43 @@ tail -f build.log        # 另开一个会话看进度
 
 升级：把新源码替换 `/vol1/1000/docker/kylab/src/`，再 `docker compose up -d --build`。
 
+### 后端也变了的时候（2026-09-28 起，这一节是踩出来的）
+
+`update-frontend.sh` 与 `deploy-from-windows.sh` **只重建前端**——它们是"前端换成 React"
+那一批留下的工具。**`backend/` 改了的时候必须重建后端**，否则会得到一个
+**页面是新的、后端还是老的**部署：页面 200、没有任何报错，但新接口 404 或行为照旧，
+这是最难查的一类假成功（那天就是拿它们部署"权限轴 + 动态返回"这两批后端改动）。
+
+后端变了就**整棵重建**（两个服务一起，几十秒到几分钟）：
+
+```bash
+cd /vol1/1000/docker/kylab/app && docker compose build && docker compose up -d
+```
+
+**解包覆盖会留下旧文件（同一天踩到）**：NAS 的 `src/` 是 `git archive` 解开的**累积**目录，
+`tar --overwrite` **只覆盖、不删**。Vue 时代留下的 `frontend/tests/unit/views/*.test.ts`
+一直躺在那里，而新版 `pnpm build` 的 tsc 会把 `tests/` 一起检查 → 报一堆找不到
+`vue` / `pinia` / `@vue/test-utils` 的错、**构建直接失败**。所以换代码时**干净重解**：
+
+```bash
+# 在 NAS 上：把旧 src 改名备份（同卷 rename，秒级、可回滚），再解一份新的
+cd /vol1/1000/docker/kylab && mv src src.bak-$(date +%Y%m%d-%H%M%S) && mkdir src
+# 然后从本机再 archive 一次（就是 deploy-from-windows.sh 的 ① 那一步）
+```
+
+`src/` 里**没有任何"只存在于 NAS"的东西**（2026-09-28 核过：无 `.env`、无 `.git`、
+无 `*.local`；凭据住在 `app/.env`，数据住在 `data/` 与 `pgdata/`，都不在 `src/` 下），
+所以改名备份是安全的；确认部署无误后 `rm -rf src.bak-*` 清掉即可。
+
+**部署完的自证**（比"页面 200"强得多：那次 200 完，后端却还是老的）：
+
+```bash
+cd /vol1/1000/docker/kylab/app
+docker compose exec -T backend python -c "from app.services.runtime_config import DEFAULTS; print(sorted(k for k in DEFAULTS if k.startswith('retrieval.') or k == 'chat.permission'))"
+docker compose exec -T backend python -c "from app.services import modes; print(list(modes.MODES), list(modes.PERMISSIONS))"
+```
+
+
 ### 前端换成 React 版之后（P5，开发计划 §12.234/§12.236）
 
 **从这台 Windows 直接部署（一次连接，只问一次密码）**——两选一：
@@ -77,6 +114,10 @@ sh deploy/nas/install-ssh-key.sh     # 会问一次 NAS 密码；之后部署不
 装好之后 `deploy-from-windows.sh` 会**自动用这把密钥**（`--dry-run` 里会打印
 "密钥 kylab-nas"），整条部署链路不再需要人输任何东西；要换一把就 `NAS_KEY=别的密钥`。
 
+> **2026-09-28**：这把钥匙原先只在本机、**并没有装到 NAS 上**（免密登录实测被拒），
+> 当天装好并验证（`ssh -i ~/.ssh/kylab-nas -o BatchMode=yes yumao@192.168.31.18` 通过，
+> 之后整条部署都是免密的）。换机器或换了 NAS 系统之后，照着 `install-ssh-key.sh` 再装一次。
+
 **先看一眼它要干什么**（不碰网络）：`sh deploy/nas/deploy-from-windows.sh --dry-run`
 ——打印分支与自证结果、归档大小（约 11 MB）、**将要执行的那一条 ssh 完整命令**、
 以及远端那一步会做的事（判源码形态 → 只重建 frontend → `up -d` → 核对 200 与 `#root`）。
@@ -107,8 +148,7 @@ ssh yumao@192.168.31.18   "cd /vol1/1000/docker/kylab/app && sh /vol1/1000/docke
 **NAS 上一条命令的版本**（已经登录在 NAS 上时）：`sh /vol1/1000/docker/kylab/src/deploy/nas/update-frontend.sh react`
 
 它先看源码形态（这台 NAS 的 `src/` 是 **`git archive` 解开的、不含 `.git`**，
-所以"先 pull 再构建"在这里会失败）：
-- `src/frontend/src/features/` 在 → 是新前端，继续；**顺便**发现 `.git` 才做 `fetch/pull`（加分项，不是前提）；
+所以"先 pull 再构建"在这里会失败）：- `src/frontend/src/features/` 在 → 是新前端，继续；**顺便**发现 `.git` 才做 `fetch/pull`（加分项，不是前提）；
 - 还是 `src/views/ChatView.vue`（旧 Vue）→ **不构建**，直接打印三条换源码的路子（本机 archive 过去 /
   NAS 上 clone / 只覆盖 `frontend/` 这一棵）并退出码 2 —— 免得白构建一次却发现界面还是老的；
 - 两者都不是 → 提示路径不对，退出码 2。
