@@ -45,6 +45,7 @@ playwright-report/
 .workflow/wb-multi.ps1
 .workflow/shot.ps1
 .workflow/req-*.json
+.workflow/commit-msg*.txt
 
 # ---- 编辑器与系统 ----
 .idea/
