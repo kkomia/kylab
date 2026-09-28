@@ -25,7 +25,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate, useSearchParams } from 'react-router'
 
 import { getAuthBootstrapStatus, login, me, setup, MIN_PASSWORD_CHARS } from '@/api/auth'
-import { clearSessionToken, setSessionToken, useSessionStore } from '@/lib/session'
+import { clearSessionToken, isUnauthorized, setSessionToken, useSessionStore } from '@/lib/session'
 
 import { Button } from '@/ui/button'
 import { Input } from '@/ui/input'
@@ -73,12 +73,20 @@ export function LoginPage() {
         const account = await me()
         if (cancelled) return
         // 拿不到账号就当令牌失效：**不能把 undefined 写进 store**，
-        // 那会让 `isAdmin` 与页头账号一起变成空，而界面还以为登录着
-        if (!account?.id) throw new Error('会话无效')
+        // 那会让 `isAdmin` 与页头账号一起变成空，而界面还以为登录着。
+        // 这是**服务器明确说"没有这个账号"**（200 但没内容），所以在这里直接清。
+        if (!account?.id) {
+          clearSessionToken()
+          return
+        }
         useSessionStore.setState({ currentUser: account })
         await navigate(target, { replace: true })
-      } catch {
-        if (!cancelled) clearSessionToken()
+      } catch (error) {
+        if (cancelled) return
+        // **只有 401 才清令牌**（D07，2026-09-28 走查）：网络不通 / 超时 / 5xx
+        // 都不是"你的登录过期了"——那时候把令牌删掉，网好了还得重新输密码。
+        // 判据是共享的那一条（`error.status`，见 `lib/session.ts::isUnauthorized`）。
+        if (isUnauthorized(error)) clearSessionToken()
       }
     })()
     return () => {

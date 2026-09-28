@@ -20,7 +20,7 @@ import {
   type AuthBootstrapStatus,
   type LoginResult,
 } from '@/api/auth'
-import { clearSessionToken, setSessionToken, useSessionStore } from '@/lib/session'
+import { clearSessionToken, isUnauthorized, setSessionToken, useSessionStore } from '@/lib/session'
 
 /** 在途的状态请求：并发调用共享同一次，避免启动时连打三四个 `/auth/status`。 */
 let statusPromise: Promise<AuthBootstrapStatus | null> | null = null
@@ -71,14 +71,31 @@ export async function logout(): Promise<void> {
   await ensureAuthStatus(true)
 }
 
-export async function restoreSession(): Promise<boolean> {
-  if (!useSessionStore.getState().token) return false
+/**
+ * 恢复身份的结果——**三态，不是一个布尔**（D07，2026-09-28 走查）。
+ *
+ * 原先这里是 `Promise<boolean>`：`catch` 一律 `clearSessionToken()` + `false`，
+ * 于是**网络抖动 / 超时 / 后端 5xx** 与"你的登录真过期了"被当成同一件事：
+ * 用户被强制登出，而且**本地令牌被删掉**（网好了还得重新输密码）。
+ * 实测报告 D07 记的就是这一条，`client.ts` 其实**早就给错误标了 `status`** ✗ 没人看。
+ *
+ * 三态之后调用方才能各做各的：
+ * - `ok`：身份拿到了；
+ * - `expired`：401，凭据真失效 → 清令牌、去登录页；
+ * - `unreachable`：没连上/服务端出错 → **令牌留着**，别把用户踢出去。
+ */
+export type SessionRestore = 'ok' | 'expired' | 'unreachable'
+
+export async function restoreSession(): Promise<SessionRestore> {
+  if (!useSessionStore.getState().token) return 'expired'
   try {
     useSessionStore.setState({ currentUser: await apiMe() })
-    return true
-  } catch {
+    return 'ok'
+  } catch (error) {
+    // **只有 401 才算过期**（见 `lib/session.ts::isUnauthorized` 的说明）
+    if (!isUnauthorized(error)) return 'unreachable'
     clearSessionToken()
-    return false
+    return 'expired'
   }
 }
 

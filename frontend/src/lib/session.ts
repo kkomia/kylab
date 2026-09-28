@@ -70,3 +70,19 @@ export function hasCredential(): boolean {
 export function requestRelogin(): void {
   useSessionStore.setState((state) => ({ reloginCount: state.reloginCount + 1 }))
 }
+
+/**
+ * 这个失败是不是"**凭据失效**"（服务端明确回 401）。
+ *
+ * 为什么值得单列一条判据（D07，2026-09-28 走查）：**只有 401 才该清令牌**。
+ * 网络不通、请求超时、后端 5xx 都不是"你的登录过期了"——把它们当成过期，
+ * 用户会被强制登出，而且**本地令牌被删掉**（重连之后还得重新输密码）。
+ * 判据就一条：`api/client.ts` 给错误标过 `status`（`error.status = response.status`），
+ * 只有 401 算失效；没有 `status` 的（fetch 直接抛的 TypeError、超时）一律不算。
+ *
+ * 放在这里而不是各调用点各写一遍：`restoreSession`、登录页那条探活、
+ * 以及以后任何"拿令牌去试一下"的地方，都该用同一条口径。
+ */
+export function isUnauthorized(error: unknown): boolean {
+  return (error as { status?: number } | null | undefined)?.status === 401
+}

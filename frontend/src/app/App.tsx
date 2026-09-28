@@ -81,7 +81,7 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       if (!alive) return
       const onLogin = location.pathname === '/login'
       if (onLogin) {
-        if (!status?.needs_setup && sessionToken() && (await restoreSession())) {
+        if (!status?.needs_setup && sessionToken() && (await restoreSession()) === 'ok') {
           navigate('/chat', { replace: true })
           return
         }
@@ -96,8 +96,13 @@ function AuthGate({ children }: { children: React.ReactNode }) {
       }
       // **恢复身份**：令牌可能还在但过期/被吊销（改密、管理员踢掉）。
       // 不验一次的话，侧栏账号区会空着（`currentUser` 一直是 null）、
-      // 而每个请求各报一次 401。`restoreSession` 失败会清令牌，下一次渲染就落到登录页
-      if (!(await restoreSession())) {
+      // 而每个请求各报一次 401。
+      //
+      // 但**只有"凭据真失效"才落登录页**（D07，2026-09-28 走查）：网络不通 / 超时 /
+      // 后端 5xx 时令牌留着、界面照常起来（各请求自己报它们各自的错）。原先这里只认布尔，
+      // 一次网络抖动就把人强制登出，而且**本地令牌被删了**——那才是最难补救的后果。
+      const restored = await restoreSession()
+      if (restored === 'expired') {
         navigate(`/login?redirect=${encodeURIComponent(location.pathname + location.search)}`, {
           replace: true,
         })
