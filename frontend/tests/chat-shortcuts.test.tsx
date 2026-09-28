@@ -233,7 +233,7 @@ describe('输入框：发送键与换行键跟着绑定走', () => {
   it('默认：回车发送、Shift+回车换行（换行是**插进输入框**，没发出去）', async () => {
     renderPage()
     const user = userEvent.setup()
-    const field = await screen.findByPlaceholderText(/回车发送/)
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
 
     await user.click(field)
     await user.type(field, '第一行')
@@ -250,7 +250,7 @@ describe('输入框：发送键与换行键跟着绑定走', () => {
     storeBindings({ 'chat.send': ['Mod+Enter'] })
     renderPage()
     const user = userEvent.setup()
-    const field = await screen.findByPlaceholderText(/回车发送/)
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
 
     await user.click(field)
     await user.type(field, '不按默认那组键发')
@@ -272,7 +272,7 @@ describe('输入框：发送键与换行键跟着绑定走', () => {
     storeBindings({ 'chat.newline': ['Mod+J'] })
     renderPage()
     const user = userEvent.setup()
-    const field = await screen.findByPlaceholderText(/回车发送/)
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
 
     await user.click(field)
     await user.type(field, '甲')
@@ -285,7 +285,7 @@ describe('输入框：发送键与换行键跟着绑定走', () => {
     storeBindings({ 'chat.newline': ['Enter'] })
     renderPage()
     const user = userEvent.setup()
-    const field = await screen.findByPlaceholderText(/回车发送/)
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
 
     await user.click(field)
     await user.type(field, '回车还是发送')

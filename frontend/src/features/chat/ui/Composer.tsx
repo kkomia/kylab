@@ -56,6 +56,55 @@ function mentionFilterOf(text: string): string | null {
 }
 
 /**
+ * 粘贴进来的文件补后缀用的那张表：MIME → 后缀。
+ *
+ * 为什么要补：浏览器给粘贴的截图**没有可用的名字**（Chrome 一律叫 `image.png`，有的浏览器
+ * 连名字都是空的），而后端按**后缀**判类型、判这份东西能不能存——没有后缀的那一份会被直接拒。
+ * 表里只收剪贴板里常见的几种，表里没有的按 MIME 子类型兜底（见 `namePastedFile`）。
+ */
+const PASTE_SUFFIXES: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/webp': 'webp',
+  'image/gif': 'gif',
+  'image/bmp': 'bmp',
+  'image/svg+xml': 'svg',
+  'application/pdf': 'pdf',
+  'text/plain': 'txt',
+}
+
+/** 浏览器给粘贴内容的那几个**占位名**：看着有后缀，但两份截图会撞成同一个名字。 */
+const PASTE_PLACEHOLDER_NAMES = new Set(['image.png', 'blob', 'image'])
+
+/**
+ * 给一份粘贴进来的文件补一个**用得上的名字**再交出去。
+ *
+ * 判据只有一条：这个名字拿去上传会不会出问题——
+ * - 没有后缀（`file.name` 是空的、或者叫 `blob`）：后端按后缀判类型，够不着类型就等于被拒；
+ * - 占位名（截图在 Chrome 里一律叫 `image.png`）：后缀够用了，但**两次粘贴在文件区里同名**，
+ *   用户看到一排 `image.png`，分不出哪张是哪张。
+ *
+ * 名字里带**时间戳 + 序号**：同一个粘贴动作里的多份文件、以及过一会儿再粘一张，都不会撞名。
+ * 「粘贴的截图 / 粘贴的文件」按 MIME 分：图片那一路是绝大多数情况，非图片的（比如从别处
+ * 复制来的 PDF）不该被叫成截图。中文名照用户看得懂的方向取；后端对文件名没有 ASCII 要求，
+ * 真有重名它也退到 `名字 (2).ext`。
+ */
+function namePastedFile(file: File, index: number): File {
+  const lower = file.name.toLowerCase()
+  if (/\.[a-z0-9]+$/.test(lower) && !PASTE_PLACEHOLDER_NAMES.has(lower)) return file
+  const fromMime = file.type.split('/')[1]?.replace(/[^a-z0-9]/g, '') ?? ''
+  const suffix = PASTE_SUFFIXES[file.type.toLowerCase()] ?? fromMime
+  // 连 MIME 都没有（`file.type` 为空）：猜不出后缀，原样交出去，让后端的报错说清是哪一份不行
+  if (!suffix) return file
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const kind = file.type.startsWith('image/') ? '粘贴的截图' : '粘贴的文件'
+  return new File([file], `${kind}-${stamp}-${index + 1}.${suffix}`, {
+    type: file.type,
+    lastModified: file.lastModified,
+  })
+}
+
+/**
  * 发送 / 停止那一个圆形按钮（v0.19 起同一个位置、同一种形状）。
  *
  * **禁用态是"灰化"而不是"半透明"**（v0.28，第二批评审 A4）：原先只有
@@ -253,9 +302,27 @@ export function Composer() {
     chat.uploadFiles(Array.from(transfer.files ?? []))
   }
 
-  const placeholder = chat.useKb
-    ? '向知识库提问…（回车发送，Shift + 回车换行）'
-    : '纯对话，不查知识库…（回车发送，Shift + 回车换行）'
+  /**
+   * 粘贴上传：**只有剪贴板里真的带了文件才拦**。
+   *
+   * - **有文件才 `preventDefault`**——这一条是红线。无条件拦下去的话，用户复制一段文字
+   *   粘进来会石沉大海（浏览器"把文本插到光标处"的默认动作被吃掉了），这是这个功能最容易
+   *   犯的错。所以判据只看 `clipboardData.files`：空的时候这里什么都不做，纯文本照常走原生粘贴。
+   * - **文件交给 `chat.uploadFiles`，不自己再发一次请求**：上传那一整套（还没有会话时如实拒绝、
+   *   "正在上传…"的状态、成功/失败提示、传完让文件区清单失效）都长在 `ChatProvider.uploadFiles`
+   *   里，拖拽落点与「加号 → 添加文件」走的也是它。这里另起一条路等于把那几件事抄一遍，
+   *   三条入口迟早各说各话。
+   * - **一次粘多份**（`clipboardData.files` 是列表）原样全交给它，它本来就是按列表收的。
+   * - **同时带文字与文件时以文件为准**（从网页上复制一张图常常两样都有）：拦掉的正是那一次
+   *   粘贴的默认动作，所以附带的那串文字不会落进输入框——截图那条路才是用户此刻的意图
+   *   （他复制的就是图）。想粘文字时不带文件，走的是上面那条"什么都不做"。
+   */
+  function onPaste(event: React.ClipboardEvent<HTMLTextAreaElement>): void {
+    const pasted = Array.from(event.clipboardData?.files ?? [])
+    if (pasted.length === 0) return
+    event.preventDefault()
+    chat.uploadFiles(pasted.map(namePastedFile))
+  }
 
   return (
     <div
@@ -381,15 +448,24 @@ export function Composer() {
       ) : null}
 
       <div className="mx-auto flex w-full max-w-[var(--chat-measure)] flex-col gap-[var(--space-1)] rounded-[var(--radius-input)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-[var(--space-3)] py-[var(--space-2)] shadow-[var(--shadow-input)]">
+        {/*
+          输入框**不再挂占位提示**（用户原话："那个提示词干掉，太蠢了"）："这一轮查不查库"
+          在下面那排的「知识库」开关上摆着——那是看得见的状态，不必再用一句话在框里复述一遍。
+
+          去掉 `placeholder` 会连带去掉这个输入框**唯一的无障碍名字**（读屏与用例都靠它认框），
+          所以补一个不显示的 `aria-label`：界面上看不见，但读屏、以及
+          `tests/chat-paste-upload.test.tsx` 这类用例仍然认得出它是哪一个框。
+        */}
         <textarea
           id="chat-query"
           ref={field}
           rows={2}
-          className="max-h-[240px] min-h-[44px] w-full resize-none border-none bg-transparent text-[length:var(--text-body-size)] text-[var(--text-primary)] outline-none placeholder:text-[var(--text-quaternary)]"
-          placeholder={placeholder}
+          aria-label="消息输入框"
+          className="max-h-[240px] min-h-[44px] w-full resize-none border-none bg-transparent text-[length:var(--text-body-size)] text-[var(--text-primary)] outline-none"
           value={chat.query}
           onChange={(event) => chat.setQuery(event.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
         />
 
         {/*

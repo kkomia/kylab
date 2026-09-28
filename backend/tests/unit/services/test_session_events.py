@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from app.services.agent import StepEvent, step_snapshot
+from app.services.agent import StepEvent, StepThinking, step_snapshot
 from app.services.session_events import (
     EVENT_KINDS,
     KIND_COMMAND,
@@ -27,10 +27,12 @@ from app.services.session_events import (
     EventDraft,
     SessionEvent,
     command_draft,
+    fill_missing_thinking,
     interrupted_payload,
     mode_changed_draft,
     step_event_draft,
     steps_from_events,
+    steps_per_turn,
     thinking_draft,
     turn_end_draft,
     turn_start_draft,
@@ -218,3 +220,136 @@ def test_the_projection_reads_both_drafts_and_stored_events() -> None:
         created_at=None,
     )
     assert steps_from_events([stored]) == steps_from_events([draft]) == [dict(draft.payload)]
+
+
+# --------------------------------------------------------------- 老日志的每步推理（v0.54）
+
+
+def _old_log_round(thinking: str, label: str, tool: str) -> list[SessionEvent]:
+    """一段**老日志**：步骤 payload 里没有 ``thinking``（这一版之前写的）。
+
+    这正是用户在回看时遇到的那批数据：整轮只有一串 ``thinking`` 事件，
+    步骤快照里没有"哪段推理属于哪一步"。
+    """
+    draft = step_event_draft(StepEvent(phase="tool", label=label, tool=tool, status="done"))
+    payload = dict(draft.payload)
+    payload.pop("thinking", None)
+    return [
+        SessionEvent(id=1, seq=1, kind=KIND_THINKING, payload={"text": thinking}, created_at=None),
+        SessionEvent(id=2, seq=2, kind=draft.kind, payload=payload, created_at=None),
+    ]
+
+
+def test_an_old_log_still_gets_each_step_its_own_reasoning() -> None:
+    """**老日志**也要投影出"哪段推理属于哪一步"（读侧按同一份规则现算）。
+
+    没有这一条，用户在回看旧会话时看到的仍然是"所有思考揉成一团"——而那正是
+    他报上来的现象（截图里那条 22 次联网搜索的会话）。
+    """
+    events = [
+        *_old_log_round("先查眼轴的共识。", "检索知识库", "search"),
+        SessionEvent(
+            id=3,
+            seq=3,
+            kind=KIND_TOOL_CALL,
+            payload={
+                "phase": "tool",
+                "label": "读文件",
+                "detail": "读完了",
+                "status": "done",
+                "tool": "read_file",
+            },
+            created_at=None,
+        ),
+        SessionEvent(
+            id=4, seq=4, kind=KIND_THINKING, payload={"text": "再读那份报告。"}, created_at=None
+        ),
+        SessionEvent(
+            id=5,
+            seq=5,
+            kind=KIND_TOOL_CALL,
+            payload={
+                "phase": "tool",
+                "label": "抓取网页",
+                "detail": "抓到了",
+                "status": "done",
+                "tool": "web_fetch",
+            },
+            created_at=None,
+        ),
+    ]
+
+    projected = steps_from_events(events)
+
+    assert [step.get("thinking") for step in projected] == [
+        "先查眼轴的共识。",
+        None,
+        "再读那份报告。",
+    ]
+
+
+def test_a_new_log_keeps_the_reasoning_it_already_carries() -> None:
+    """新日志 payload 里**自带** ``thinking``：原样带走，不会被事件流再挂一遍。"""
+    snapshot = step_snapshot(
+        StepEvent(phase="tool", label="检索知识库", tool="search", status="done"),
+        thinking=_noted("写侧挂好的那一段。"),
+    )
+    assert snapshot is not None
+    draft = step_event_draft(
+        StepEvent(phase="tool", label="检索知识库", tool="search", status="done"), snapshot
+    )
+    events = [
+        # 同一段推理的 thinking 事件也在日志里（写侧两处都落）：重放**不许**再挂一次
+        SessionEvent(
+            id=1,
+            seq=1,
+            kind=KIND_THINKING,
+            payload={"text": "写侧挂好的那一段。"},
+            created_at=None,
+        ),
+        SessionEvent(id=2, seq=2, kind=draft.kind, payload=dict(draft.payload), created_at=None),
+    ]
+
+    assert steps_from_events(events) == [snapshot]
+
+
+def _noted(text: str) -> StepThinking:
+    """造一个只喂了一段推理的累加器（给 `step_snapshot` 用）。"""
+    accumulator = StepThinking()
+    accumulator.note(text)
+    return accumulator
+
+
+def test_steps_per_turn_splits_on_turn_boundaries() -> None:
+    """按 ``turn/start … turn/end`` 切：一轮一份投影（会话详情据此与消息对齐）。"""
+    events = [
+        turn_start_draft(query="问一句", model_pk=None, mode="goal"),
+        *_old_log_round("第一轮的推理。", "检索知识库", "search"),
+        turn_end_draft(status=TURN_STATUSES[0], answer_chars=10, steps=1),
+        turn_start_draft(query="问一句", model_pk=None, mode="goal"),
+        *_old_log_round("第二轮的推理。", "抓取网页", "web_fetch"),
+        turn_end_draft(status=TURN_STATUSES[0], answer_chars=10, steps=1),
+    ]
+
+    turns = steps_per_turn(events)
+
+    assert len(turns) == 2
+    assert [step["thinking"] for step in turns[0]] == ["第一轮的推理。"]
+    assert [step["thinking"] for step in turns[1]] == ["第二轮的推理。"]
+
+
+def test_fill_missing_thinking_only_adds_what_is_missing() -> None:
+    """只补缺的那个键：库里已有的不覆盖；条数对不上就**什么都不做**。"""
+    stored = [{"label": "联网搜索", "detail": "8 条"}, {"label": "抓取网页", "detail": "1 页"}]
+    projected = [
+        {"label": "联网搜索", "detail": "8 条", "thinking": "这段该补上"},
+        {"label": "抓取网页", "detail": "1 页", "thinking": "这条库里已经有了"},
+    ]
+    # 第二条库里已经有自己的推理：那份是权威，不许被投影覆盖
+    stored_with_one = [stored[0], {**stored[1], "thinking": "库里那份"}]
+
+    filled = fill_missing_thinking(stored_with_one, projected)
+
+    assert [step.get("thinking") for step in filled] == ["这段该补上", "库里那份"]
+    # 条数不同（事件与消息对不上）：原样返回，绝不猜着补
+    assert fill_missing_thinking(stored, projected[:1]) == stored

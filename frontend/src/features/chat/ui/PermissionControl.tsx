@@ -108,7 +108,14 @@ export function usePermission(): {
   return { ready: isAdmin && current !== null, label, current, saving, choose }
 }
 
-/** 那一排上的胶囊：`权限·工作区内编辑`。 */
+/**
+ * 那一排上的胶囊：**只写档名**（`工作区内编辑`）。
+ *
+ * 原先写的是 `权限·工作区内编辑`：那颗胶囊上有盾牌图标、位置就在加号右边，
+ * 而"权限"两个字在每一帧里都在，用户要的只是档名（原话："这个权限按钮不要加权限俩字"）。
+ * **"这是什么"不能丢**，所以它挪到了无障碍名字上（`aria-label`）——
+ * 屏幕阅读器与用例读到的仍是完整语义，屏幕上只剩档名。
+ */
 export function PermissionControl() {
   const { ready, label, current, saving, choose } = usePermission()
   if (!ready) return null
@@ -119,11 +126,11 @@ export function PermissionControl() {
         <button
           type="button"
           className={CONTROL_TRIGGER}
-          aria-label="权限"
+          aria-label={`权限：${label}`}
           title="这一轮它能碰多少"
         >
           <ShieldCheck size={14} />
-          <span className="max-w-[168px] truncate">权限·{label}</span>
+          <span className="max-w-[168px] truncate">{label}</span>
         </button>
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>

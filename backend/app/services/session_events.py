@@ -55,7 +55,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
-from app.services.agent import StepEvent, step_snapshot
+from app.services.agent import StepEvent, StepThinking, step_snapshot
 
 __all__ = [
     "EVENT_KINDS",
@@ -77,10 +77,12 @@ __all__ = [
     "EventDraft",
     "SessionEvent",
     "command_draft",
+    "fill_missing_thinking",
     "interrupted_payload",
     "mode_changed_draft",
     "step_event_draft",
     "steps_from_events",
+    "steps_per_turn",
     "thinking_draft",
     "turn_end_draft",
     "turn_start_draft",
@@ -378,13 +380,82 @@ def steps_from_events(events: Iterable[_EventLike]) -> list[dict[str, object]]:
     传进来的可以是 ``SessionEvent``（读端点）也可以是 ``EventDraft``（写侧自检），
     只要带 ``kind`` / ``payload`` 两个属性即可——**同一段代码同时回答"库里的是不是
     对"和"刚要写的是不是对"**。
+
+    ## 每一步的推理（v0.54）：payload 里有就用，没有才现算
+
+    这一版起快照多了一个 ``thinking`` 键（产生这一步的那一轮推理，见
+    ``agent.StepThinking``）。**新**日志里它随 step payload 一起落库——那份是写侧
+    当时的判定，原样带走（"投影 == 快照"那条验收靠的就是这个）。
+
+    而**老**日志（这一版之前写的）里根本没有这个键：那时整轮只存一串，用户在回看
+    那些会话时看到的仍然是"所有思考揉成一团"。所以这里按**同一份规则**现算一遍
+    （``StepThinking``）——喂给它的是事件流而不是实况流，判定仍然只有一处。
+    两条边界与写侧逐条对齐：``running`` 那条**不取段**（写侧只在真的产出快照时才取），
+    以及没有推理时**不写这个键**（空串会让界面多出一块空白）。
     """
     projected: list[dict[str, object]] = []
+    pending = StepThinking()
     for event in events:
+        if event.kind == KIND_THINKING:
+            text = event.payload.get("text")
+            if isinstance(text, str):
+                pending.note(text)
+            continue
         if event.kind not in STEP_KINDS:
             continue
         payload = event.payload
         if payload.get("status") == "running" and payload.get("phase") != _ANSWER_PHASE:
             continue
-        projected.append({key: payload[key] for key in _SNAPSHOT_KEYS if key in payload})
+        step = {key: payload[key] for key in _SNAPSHOT_KEYS if key in payload}
+        segment = pending.take()
+        if "thinking" not in step and segment.strip():
+            step["thinking"] = segment
+        projected.append(step)
     return projected
+
+
+def steps_per_turn(events: Iterable[_EventLike]) -> list[list[dict[str, object]]]:
+    """按 ``turn/start … turn/end`` 切开，每轮一份步骤快照（``steps_from_events`` 的上一层）。
+
+    读会话详情时要用它把"事件流"与"消息列表"对上：一轮 = 一条 assistant 消息，
+    对不上（条数不同）时调用方**什么都不补**（见 ``fill_missing_thinking``）——
+    猜着补会把推理挂到错的那一轮上，而那比不补更难发现。
+    """
+    turns: list[list[_EventLike]] = []
+    current: list[_EventLike] = []
+    for event in events:
+        if event.kind == KIND_TURN_START:
+            current = []
+            continue
+        if event.kind == KIND_TURN_END:
+            if current:
+                turns.append(current)
+            current = []
+            continue
+        current.append(event)
+    if current:
+        # 没有 ``turn/end``（被中断且没收尾）的那一轮也照收：它的步骤是真实发生过的
+        turns.append(current)
+    return [steps_from_events(turn) for turn in turns]
+
+
+def fill_missing_thinking(
+    steps: Sequence[dict[str, object]], projected: Sequence[dict[str, object]]
+) -> list[dict[str, object]]:
+    """把**老快照**缺的 ``thinking`` 从投影里按下标补上；对不上就原样返回。
+
+    只补这一个键（其余字段一概以库里那份为准）：这一步要解决的是"老会话回看时思考
+    还是揉成一团"，而不是重算历史。条数不同**什么都不做**——那种情况说明这条会话的
+    事件与消息对不上（例如某个回答被顶替过），补出来的东西会挂错轮次。
+    """
+    if len(steps) != len(projected):
+        return [dict(step) for step in steps]
+    filled: list[dict[str, object]] = []
+    # `strict=True`：上面刚判过条数相等，这里再让 zip 自己盯着——将来若有人挪走那条
+    # 守卫，这条会当场抛，而不是静默少补几轮
+    for step, source in zip(steps, projected, strict=True):
+        merged = dict(step)
+        if "thinking" not in merged and source.get("thinking"):
+            merged["thinking"] = source["thinking"]
+        filled.append(merged)
+    return filled

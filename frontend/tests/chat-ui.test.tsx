@@ -258,7 +258,7 @@ function renderNavigable() {
  */
 async function ask(text: string): Promise<void> {
   const user = userEvent.setup()
-  const field = screen.getByPlaceholderText(/回车发送/)
+  const field = screen.getByRole('textbox', { name: '消息输入框' })
   await user.click(field)
   await user.type(field, text)
   // 打完字之后**发送键才该亮起来**（它有话可发、且库范围有效）：
@@ -283,7 +283,7 @@ describe('对话流（发一句 → 增量 → done）', () => {
   it('回答进气泡，过程面板出步骤', async () => {
     const box = capture()
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
 
     await ask('这些资料的结论是什么？')
     await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
@@ -317,7 +317,7 @@ describe('对话流（发一句 → 增量 → done）', () => {
   it('发送的请求里带着这一轮的范围与思考档（协议是我们自己的）', async () => {
     const box = capture()
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
 
     await ask('问一句')
     await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
@@ -365,7 +365,7 @@ describe('知识库：一颗胶囊 = 开关 + 名字，选择在面板里', () =
     conv.kb_ids = []
     vi.mocked(getConversation).mockResolvedValue(conv)
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
     // 名字现在恒为「知识库」，所以等"库清单到手"要等**面板里那几只认得出来**
     const user = userEvent.setup()
     await openPanel(user)
@@ -461,7 +461,7 @@ describe('知识库：一颗胶囊 = 开关 + 名字，选择在面板里', () =
     capture()
     await renderWithThreeKbs()
     const user = userEvent.setup()
-    const field = screen.getByPlaceholderText(/回车发送/)
+    const field = screen.getByRole('textbox', { name: '消息输入框' })
 
     await openPanel(user)
     await user.click(screen.getByRole('menuitem', { name: '清空' }))
@@ -658,7 +658,7 @@ describe('斜杠命令：带参数的 /plan', () => {
       },
     ])
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
 
     await ask('/plan 帮我整理这份资料')
     await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
@@ -710,7 +710,7 @@ describe('命令结果：回填与多行（/rewind 与 /context /status /skills�
     const box = capture()
     vi.mocked(listCommands).mockResolvedValue([command('rewind', '/rewind [n]', '[n]')])
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
 
     await ask('/rewind 2')
     await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
@@ -727,7 +727,7 @@ describe('命令结果：回填与多行（/rewind 与 /context /status /skills�
     })
 
     // 类型收窄成 textarea：下面两条读的是**选区**（`selectionStart/End` 只在它上面有）
-    const field = screen.getByPlaceholderText(/回车发送/) as HTMLTextAreaElement
+    const field = screen.getByRole('textbox', { name: '消息输入框' }) as HTMLTextAreaElement
     await waitFor(() => expect(field).toHaveValue('帮我整理这份资料'))
     // 「光标落在末尾 + 焦点在输入框」：用户改一版就能直接回车重发，不必先点一下
     await waitFor(() => expect(field).toHaveFocus())
@@ -753,7 +753,7 @@ describe('命令结果：回填与多行（/rewind 与 /context /status /skills�
         : detail([stored('user', '第一问'), stored('assistant', '第一答')]),
     )
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
     // 断言**只看消息流那一列**：回填进输入框的正是同一句话，全文查会查到自己
     const list = () => within(screen.getByTestId('message-list'))
     // 消息流那一列要等库里的历史画上来（画之前是骨架屏）
@@ -782,7 +782,7 @@ describe('命令结果：回填与多行（/rewind 与 /context /status /skills�
     const box = capture()
     vi.mocked(listCommands).mockResolvedValue([command('context', '/context')])
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
 
     await ask('/context')
     await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
@@ -795,14 +795,14 @@ describe('命令结果：回填与多行（/rewind 与 /context /status /skills�
     const panel = await screen.findByTestId('command-result')
     expect(panel).toHaveTextContent('上下文：12% 已用')
     // **没有那个字段就不猜**：不从文案里抠，也不动输入框
-    expect(screen.getByPlaceholderText(/回车发送/)).toHaveValue('')
+    expect(screen.getByRole('textbox', { name: '消息输入框' })).toHaveValue('')
   })
 
   it('多行结果原样摆出来（换行不塌、等宽对齐）', async () => {
     const box = capture()
     vi.mocked(listCommands).mockResolvedValue([command('skills', '/skills')])
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
 
     await ask('/skills')
     await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
@@ -833,7 +833,7 @@ describe('审批条', () => {
   it('三个按钮都在；拒绝时把理由一起交给 decideApproval', async () => {
     const box = capture()
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
 
     await ask('清一下临时目录')
     await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
@@ -868,7 +868,7 @@ describe('审批条', () => {
   it('没写理由时请求形状与加这个输入框之前逐字相同', async () => {
     const box = capture()
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
     await ask('跑一下')
     await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
 
@@ -1016,9 +1016,11 @@ describe('停止与回到最新', () => {
     renderPage()
     await screen.findByTestId('reply-text')
 
-    // 触发器上写着当前档（`权限·工作区内编辑`），且**位置**就在加号与知识库之间
-    const pill = await screen.findByRole('button', { name: '权限' })
-    expect(pill).toHaveTextContent('权限·工作区内编辑')
+    // 触发器上**只写档名**（用户 2026-09-28 的原话："这个权限按钮不要加权限俩字"），
+    // "这是什么"留给无障碍名字（`权限：<档名>`）；位置仍然在加号与知识库之间
+    const pill = await screen.findByRole('button', { name: '权限：工作区内编辑' })
+    expect(pill).toHaveTextContent('工作区内编辑')
+    expect(pill).not.toHaveTextContent('权限')
     const siblings = [...(pill.parentElement?.children ?? [])]
     expect(siblings.indexOf(pill)).toBe(1)
   })
@@ -1134,7 +1136,7 @@ describe('停止与回到最新', () => {
   it('流式期间发送键变成停止，点了之后这一轮在本页收口', async () => {
     const box = capture()
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
 
     await ask('长回答')
     await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
@@ -1362,7 +1364,7 @@ describe('抬头（会话标题 + 所属项目）', () => {
     // `?new=1` 那种新会话：没有会话 id → 没有标题 → 抬头整条不画（不占位）
     vi.mocked(getConversation).mockResolvedValue(detail([]))
     renderPage('/chat/')
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
     expect(screen.queryByText('一条会话')).toBeNull()
   })
 
@@ -1437,7 +1439,9 @@ describe('欢迎态的推荐问题（A5）', () => {
     const chip = await screen.findByRole('button', { name: '视力恢复的机制是什么？' })
     await user.click(chip)
 
-    expect(await screen.findByPlaceholderText(/回车发送/)).toHaveValue('视力恢复的机制是什么？')
+    expect(await screen.findByRole('textbox', { name: '消息输入框' })).toHaveValue(
+      '视力恢复的机制是什么？',
+    )
   })
 })
 
@@ -1488,7 +1492,7 @@ describe('失败的一轮（第四批评审 B①：没有出口的那句红字�
   it('给原因 + 「重试」；重试是**原样重发**，不回退会话（上一轮不会被删）', async () => {
     const box = capture()
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
 
     await ask('这些资料的结论是什么？')
     await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
@@ -1524,7 +1528,7 @@ describe('失败的一轮（第四批评审 B①：没有出口的那句红字�
   it('网断了说人话：浏览器那串英文不端给用户', async () => {
     const box = capture()
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
     await ask('问一句')
     await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
 
@@ -1544,7 +1548,7 @@ describe('失败的一轮（第四批评审 B①：没有出口的那句红字�
   it('「复制问题」把那一句提问交给剪贴板（重试也不行时的兜底）', async () => {
     const box = capture()
     renderPage()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
     await ask('把这句话还给我')
     await waitFor(() => expect(chatStream).toHaveBeenCalledTimes(1))
 
@@ -1607,7 +1611,7 @@ describe('两个菜单（`/` 与 `@`）', () => {
     ])
     renderPage()
     const user = userEvent.setup()
-    const field = await screen.findByPlaceholderText(/回车发送/)
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
 
     await user.click(field)
     await user.type(field, '/')
@@ -1660,7 +1664,7 @@ describe('两个菜单（`/` 与 `@`）', () => {
     ])
     renderPage()
     const user = userEvent.setup()
-    const field = await screen.findByPlaceholderText(/回车发送/)
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
 
     await user.click(field)
     await user.type(field, '/')
@@ -1697,7 +1701,7 @@ describe('两个菜单（`/` 与 `@`）', () => {
     })
     renderPage()
     const user = userEvent.setup()
-    const field = await screen.findByPlaceholderText(/回车发送/)
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
 
     await user.click(field)
     await user.type(field, '看看@')
@@ -1761,7 +1765,7 @@ describe('两个抽屉（引用原文 / 产物与文件）', () => {
     })
     renderPage()
     const user = userEvent.setup()
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
 
     // **打开之前不取数**：抽屉挂上才请求文件区（挂载即请求是这一条的另一半）
     expect(listFiles).not.toHaveBeenCalled()

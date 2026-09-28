@@ -21,6 +21,7 @@ import {
   STEP_EMPTY_DIM,
   STEP_LABEL,
   STEP_ROW,
+  STEP_ROW_CHILD,
   STEP_TOGGLE,
   THINK_BLOCK,
   THINK_PARAGRAPH,
@@ -79,7 +80,10 @@ export function TraceStepRow({
   /** 原文（入参 / 返回）是否展开。由宿主持有——它才管得住"哪几行开着"。 */
   open: boolean
   onToggle: () => void
-  /** `child` = 某一组展开后的一次调用：缩进一档、图标位换成小圆点。 */
+  /**
+   * `child` = 某一组展开后的一次调用：图标位换成小圆点、文字只比父行往里一点点
+   * （9px，见 `STEP_ROW_CHILD`），展开箭头排在结论之后——排在前面的话这一笔
+   * 22px 会自己变成一层缩进。 */
   variant?: 'plain' | 'child'
   /**
    * 这一轮还在流式生成中（v0.54）。**只影响"这一步的思考"的初始开合**：
@@ -133,14 +137,13 @@ export function TraceStepRow({
 
   return (
     <li
-      className={`${STEP_ROW} ${step.empty ? STEP_EMPTY_DIM : ''} ${
-        child ? 'pl-[var(--space-4)]' : ''
-      }`}
+      // 子行换的是**外壳的行内间距**，不是再补一层左内边距：两笔叠加才是缩进过深的原因
+      className={`${child ? STEP_ROW_CHILD : STEP_ROW} ${step.empty ? STEP_EMPTY_DIM : ''}`}
       data-kind={step.kind ?? step.icon}
     >
       {child ? (
         <span
-          className="relative z-[1] mt-[8px] mx-[8px] mb-0 h-[5px] w-[5px] shrink-0 rounded-[var(--radius-pill)] bg-[var(--border-strong)]"
+          className="relative z-[1] mt-[var(--space-2)] h-[5px] w-[5px] shrink-0 rounded-[var(--radius-pill)] bg-[var(--border-strong)]"
           aria-hidden
         />
       ) : (
@@ -158,6 +161,35 @@ export function TraceStepRow({
           {/*
             **组内的一次调用不再重复工具名**：外面那一行已经写着「联网搜索 8 次」，
             里面八行各再写一遍只是把同一个词印八次。这里直接给结果本身。
+            只有连结论都没有的那些（如"组织回答"）才退回写工具名，否则那一行会是空的。
+          */}
+          {child ? (
+            hasDetail || step.detail ? null : (
+              <p className={STEP_LABEL}>{step.label}</p>
+            )
+          ) : hasDetail ? (
+            <button type="button" className={STEP_TOGGLE} aria-expanded={open} onClick={toggle}>
+              {step.label}
+              <ChevronDown className={caretClass(open)} size={12} />
+            </button>
+          ) : (
+            <p className={STEP_LABEL}>{step.label}</p>
+          )}
+
+          {step.detail && !detailIsRawJson(step.detail) ? (
+            <LinkText
+              className={child ? `${STEP_DETAIL} min-w-0 !mt-0 truncate` : STEP_DETAIL}
+              text={step.detail}
+            />
+          ) : null}
+
+          {/*
+            子行的展开箭头**排在结论之后**（v0.55）。
+            为什么不放在前面：它是一颗 18px 的按钮，加上 4px 间距就是 22px，
+            排在文字前等于给子行又加一笔缩进，而子行的首个字形至多只能比父行文字
+            再往里 ~10px（用户原话："可以有一点缩进 但是不能太多"）。
+            放到后面之后，这个 22px 落在文字右侧，不再参与缩进；父行那一行仍是
+            「标签 + 箭头」的老样子（就是上面那个 `STEP_TOGGLE`）。
           */}
           {hasDetail && child ? (
             <button
@@ -169,20 +201,6 @@ export function TraceStepRow({
             >
               <ChevronDown className={caretClass(open)} size={12} />
             </button>
-          ) : hasDetail ? (
-            <button type="button" className={STEP_TOGGLE} aria-expanded={open} onClick={toggle}>
-              {step.label}
-              <ChevronDown className={caretClass(open)} size={12} />
-            </button>
-          ) : child && step.detail ? null : (
-            <p className={STEP_LABEL}>{step.label}</p>
-          )}
-
-          {step.detail && !detailIsRawJson(step.detail) ? (
-            <LinkText
-              className={child ? `${STEP_DETAIL} flex-1 min-w-0 !mt-0 truncate` : STEP_DETAIL}
-              text={step.detail}
-            />
           ) : null}
         </div>
 

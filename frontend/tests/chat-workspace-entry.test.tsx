@@ -202,7 +202,7 @@ function renderPage(route: string) {
 /** 输入一句并回车（发送键亮起来才算"库范围有效"，与真实可用状态同一条判据）。 */
 async function ask(text: string): Promise<void> {
   const user = userEvent.setup()
-  const field = screen.getByPlaceholderText(/回车发送/)
+  const field = screen.getByRole('textbox', { name: '消息输入框' })
   await user.click(field)
   await user.type(field, text)
   await waitFor(() => expect(screen.getByRole('button', { name: '发送' })).toBeEnabled())
@@ -263,7 +263,7 @@ describe('项目入口新建（`?new=1&workspace=<id>`）', () => {
     expect(await screen.findByTestId('new-chat-scope')).toHaveTextContent(
       '在项目「闲聊」里新建：第一条消息落下后，这条会话就归在它下面',
     )
-    const field = await screen.findByPlaceholderText(/回车发送/)
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
 
     await ask('在吗')
 
@@ -290,7 +290,7 @@ describe('项目入口新建（`?new=1&workspace=<id>`）', () => {
     createConversationMock.mockResolvedValue({ id: 'c9', kb_ids: [] } as never)
     renderPage('/chat?new=1&workspace=w1')
 
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
     await waitFor(() => expect(pickTextOf()).toBe('全部 2 个'))
     await ask('在吗')
 
@@ -303,7 +303,7 @@ describe('项目入口新建（`?new=1&workspace=<id>`）', () => {
     createConversationMock.mockResolvedValue({ id: 'c9', kb_ids: ['kb1', 'kb2'] } as never)
     renderPage('/chat?new=1')
 
-    await screen.findByPlaceholderText(/回车发送/)
+    await screen.findByRole('textbox', { name: '消息输入框' })
     await ask('在吗')
 
     await waitFor(() => expect(createConversationMock).toHaveBeenCalledTimes(1))
@@ -324,7 +324,7 @@ describe('`@` 菜单里的知识库', () => {
     getConversationMock.mockResolvedValue(conversation(['kb1']))
     renderPage('/chat/c1')
     const user = userEvent.setup()
-    const field = await screen.findByPlaceholderText(/回车发送/)
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
     await waitFor(() => expect(pickTextOf()).toBe('已选 1 个'))
 
     await user.click(field)
@@ -351,7 +351,7 @@ describe('`@` 菜单里的知识库', () => {
     getConversationMock.mockResolvedValue(conversation(['kb1']))
     renderPage('/chat/c1')
     const user = userEvent.setup()
-    const field = await screen.findByPlaceholderText(/回车发送/)
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
     await waitFor(() => expect(pickTextOf()).toBe('已选 1 个'))
 
     // 关掉「启用」（合并后它就是面板顶上那一行）：胶囊上那一段当场变成「已关」

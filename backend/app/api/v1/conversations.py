@@ -42,6 +42,7 @@ from app.services.api_key import WRITE, Caller
 from app.services.artifacts import file_signature_resource, split_filename
 from app.services.documents import media_type_of
 from app.services.ingest import content_disposition
+from app.services.session_events import fill_missing_thinking, steps_per_turn
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -171,18 +172,42 @@ def get_conversation(
     真到了几百轮再谈分页。
     """
     record = _get_visible(services, caller, conversation_id)
-    messages = [
-        ChatMessageOut(
-            id=item.id,
-            role=item.role,
-            content=item.content,
-            sources=[ChatSourceOut.model_validate(src) for src in item.sources],
-            steps=[dict(step) for step in item.steps],
-            thinking=item.thinking,
-            created_at=item.created_at,
+    records = services.conversations.messages(conversation_id)
+    # 老会话的"哪段推理属于哪一步"（v0.54）：这一版之前落库的步骤里没有 `thinking`
+    # （那时整轮只存一串，回看时思考仍是一团）。用户在回看时**正是要点开它们**，
+    # 所以读的时候按事件日志现算一次补上——规则与写侧同一份
+    # （`session_events.steps_from_events` 用同一个 `StepThinking`）。
+    #
+    # 只有确实缺这个键的会话才去读日志：新会话每步自带推理，白读一遍是多余的一次查询。
+    # 条数对不上（`fill_missing_thinking` 的判据）时什么都不补——把推理挂到错的那一轮
+    # 比不补更难发现。
+    projected = (
+        steps_per_turn(services.conversations.session_events(conversation_id))
+        if any(
+            item.role == "assistant" and item.steps and not any("thinking" in s for s in item.steps)
+            for item in records
         )
-        for item in services.conversations.messages(conversation_id)
-    ]
+        else []
+    )
+    assistant_index = 0
+    messages: list[ChatMessageOut] = []
+    for item in records:
+        steps = [dict(step) for step in item.steps]
+        if item.role == "assistant" and steps:
+            if assistant_index < len(projected):
+                steps = fill_missing_thinking(steps, projected[assistant_index])
+            assistant_index += 1
+        messages.append(
+            ChatMessageOut(
+                id=item.id,
+                role=item.role,
+                content=item.content,
+                sources=[ChatSourceOut.model_validate(src) for src in item.sources],
+                steps=steps,
+                thinking=item.thinking,
+                created_at=item.created_at,
+            )
+        )
     return ConversationDetailOut(**_summary(services, record).model_dump(), messages=messages)
 
 
