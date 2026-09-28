@@ -445,3 +445,64 @@ describe('重连锚点与接回来（P2-2）', () => {
     expect(liveTurnState()?.conversationId).toBe('c1')
   })
 })
+
+/**
+ * 换会话之后，**上一条流晚到的增量一个字都不许串进来**（D16，2026-09-28 走查）。
+ *
+ * 实测到的那次：A 会话长时间流式中切到 B，给 B 发一句，结果 **B 的正文区里出现了
+ * A 的思考片段**（`Ihavep`、`ictingareasfor` 这种被截断的英文），全程零报错——
+ * 只有肉眼能看出来。根因是切走时上一条流**照旧在跑**（这是刻意的：切页不丢进行中的
+ * 对话，见 §12.224 第 4 条），而它的回调原先无条件写进"当前那一份"状态。
+ *
+ * 修法：每个回调认 `liveRevision`（"这一格还是不是我放进去的"）——与 `adoptHandlers`
+ * 那条既有规则同一份判据。这两条用例成对：一条钉"过期的写不进来"，
+ * 一条钉"当前那一条照旧写得进来"（免得守卫做成谁都写不进）。
+ */
+describe('换会话之后，上一条流晚到的增量不许串进来（D16）', () => {
+  it('A 那条流在 B 的界面上吐字——这条曾经真的发生', async () => {
+    // ① A 那一轮开起来，把它的 handlers 扣下来
+    const first = capture()
+    await startChatTurn(
+      { query: '问 A', kb_ids: [], conversation_id: 'conv_a' },
+      { conversationId: 'conv_a', query: '问 A', thinking: null },
+    )
+    const handlersA = first.handlers
+    expect(handlersA).not.toBeNull()
+
+    // ② 切到 B 并又开一轮：`install` 因此换了代数，A 的 handlers 变成"过期的"
+    const second = capture()
+    await startChatTurn(
+      { query: '问 B', kb_ids: [], conversation_id: 'conv_b' },
+      { conversationId: 'conv_b', query: '问 B', thinking: null },
+    )
+    expect(second.handlers).not.toBeNull()
+    const before = liveTurnState()
+
+    // ③ A 那条流还在跑（后端那条流与页面无关），它现在吐思考、吐正文、报锚点
+    handlersA?.onThinking?.('A 的思考片段', { logSeq: 99 })
+    handlersA?.onDelta?.('A 的正文片段')
+    handlersA?.onSeq?.(99)
+
+    const after = liveTurnState()
+    expect(after?.conversationId).toBe('conv_b')
+    expect(after?.thinkingText).toBe(before?.thinkingText)
+    expect(after?.text).toBe(before?.text)
+    // 锚点也是按会话记的：过期流不许把**别人**的锚点推上去
+    expect(liveAnchor('conv_b')).toBe(0)
+  })
+
+  it('当前那一条自己的增量照旧写得进去（守卫不是"谁都写不进"）', async () => {
+    const box = capture()
+    await startChatTurn(
+      { query: '问 B', kb_ids: [], conversation_id: 'conv_b' },
+      { conversationId: 'conv_b', query: '问 B', thinking: null },
+    )
+
+    box.handlers?.onThinking?.('B 自己的思考')
+    box.handlers?.onDelta?.('B 自己的正文')
+
+    const after = liveTurnState()
+    expect(after?.thinkingText).toBe('B 自己的思考')
+    expect(after?.text).toBe('B 自己的正文')
+  })
+})

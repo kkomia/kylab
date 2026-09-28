@@ -76,3 +76,6 @@ jieba.cache
 # pytest 的临时目录（`tmp_path` 的落点）：本机 TEMP 指向仓库根时会留在 backend/ 下
 pytest-of-*/
 
+
+# pnpm 的包存储：某些脚本会把它建在仓库根（2026-09-28 误提交过一次 427k 行）
+.pnpm-store/

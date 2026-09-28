@@ -294,9 +294,25 @@ function pushThinking(chunk: string, logSeq?: number): void {
  * 是同一批东西，两套 handler 迟早会在某个事件上分叉（"断线重连之后少了一种反应"
  * 就是那种 bug 的样子）。
  */
-function liveHandlers(token: number): ChatHandlers {
+function liveHandlers(token: number, revision: number): ChatHandlers {
+  /**
+   * 这一格**还是不是我放进去的那一份**（见 `liveRevision`）。
+   *
+   * 为什么要它（2026-09-28 走查 D16，实测到**跨会话串字**）：切到别的会话时上一条流
+   * **照旧在跑**（这是刻意的——"切页不丢进行中的对话"，见 §12.224 第 4 条），
+   * 而它晚到的正文/思考增量原先会**无条件**写进当前那一份状态——于是 A 会话的思考
+   * 片段出现在 B 会话的正文区里（静默、控制台零报错，只有肉眼能看出来）。
+   *
+   * 判据与 `adoptHandlers` 里那条**是同一条规则**（"这一格还是不是我放的"），
+   * 所以两处都拿 `liveRevision`；区别只是那条路要顺带"认领"（把 streaming 抬起来），
+   * 这条路只负责**不越界**。
+   */
+  const alive = (): boolean => liveRevision === revision
   return {
     onSeq: (seq) => {
+      // 锚点也是**按会话**记的，但它取的是"当前那一份"的会话 id：过期流写进来会
+      // 把**别人**的锚点推到自己的 seq 上（那条会话的重连从此就少补一段）
+      if (!alive()) return
       const state = liveTurnState()
       if (!state) return
       // 只往前记：补发是"从锚点之后"开始的，理论上不会倒着来，但单调这件事
@@ -304,27 +320,41 @@ function liveHandlers(token: number): ChatHandlers {
       if (seq > liveAnchor(state.conversationId)) anchors.set(state.conversationId, seq)
     },
     onStep: (step) => {
+      if (!alive()) return
       const state = liveTurnState()
       if (state) update({ steps: mergeStep(state.steps, step) })
     },
     onSources: (items) => {
+      if (!alive()) return
       if (liveTurnState()) update({ sources: items })
     },
-    onThinking: (chunk, options) => pushThinking(chunk, options?.logSeq),
+    onThinking: (chunk, options) => {
+      if (!alive()) return
+      pushThinking(chunk, options?.logSeq)
+    },
     onApproval: (approval) => {
+      if (!alive()) return
       if (liveTurnState()) update({ approval })
     },
     onDelta: (delta) => {
+      if (!alive()) return
       // 正文增量**只可能来自还活着的那一轮**（补发里没有它，见 live_turns 的 keep）：
       // 收到它就说明这一轮在动，重连预算因而可以收回
       reconnectAttempts = 0
       const state = liveTurnState()
       if (state) update({ text: state.text + delta })
     },
-    onDone: (answer, info) => finishWith(answer, info),
-    onError: (message) => failWith(message),
+    onDone: (answer, info) => {
+      if (!alive()) return
+      finishWith(answer, info)
+    },
+    onError: (message) => {
+      if (!alive()) return
+      failWith(message)
+    },
     onDropped: (reason) => {
       if (token !== streamToken) return // 上一条流晚到的收尾（见 `streamToken`）
+      if (!alive()) return // 换了会话/换了轮：这条断线不该替别人排重连
       dropped(reason)
     },
   }
@@ -348,7 +378,7 @@ function dropped(reason: string): void {
  * 界面上也不会多出任何东西（镜像那条规则管着，见对话页的 `syncLive`）。
  */
 function adoptHandlers(token: number, revision: number): ChatHandlers {
-  const inner = liveHandlers(token)
+  const inner = liveHandlers(token, revision)
   //: 这一轮**已经收尾**（`done` / `error` 到过）之后，不许再把它抬回"流式中"。
   //
   // 为什么需要这道闸：`api/chat.ts` 的 `emit` 是**先 dispatch、再报锚点**
@@ -432,9 +462,14 @@ export function scheduleReconnect(reason: string): void {
   }
   reconnectAttempts += 1
   const id = state.conversationId
+  // 这一格现在的代数。定时器是**异步**的：等它烧到的时候，用户可能已经切到别的会话、
+  // 或者又开了一轮（`install` 会 +1）。那时这次重连会把**别人的**状态换成这一条会话的
+  // ——与 `liveHandlers` 那条守卫是同一族问题（D16），所以这里也要认代数。
+  const revision = liveRevision
   if (reconnectTimer !== null) clearTimeout(reconnectTimer)
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
+    if (liveRevision !== revision) return
     void attachLiveTurn(id)
   }, RECONNECT_DELAY_MS)
 }
@@ -453,8 +488,12 @@ async function begin(
   install(state)
   thinkingBlocks = []
   const token = ++streamToken
+  // **这一轮归哪一代**：`install` 刚把它放进去，所以就是现在的代数。
+  // 之后的每个回调都要拿它比对（见 `liveHandlers`）——切了会话/换了轮之后，
+  // 这条流晚到的东西一个字都不能写进状态。
+  const revision = liveRevision
   try {
-    handle = await open(liveHandlers(token))
+    handle = await open(liveHandlers(token, revision))
   } catch (cause) {
     // 用户点了「停止」：已经流出来的部分留着，它仍然是有用的
     if (isAbortError(cause)) endStream()
@@ -598,7 +637,7 @@ export async function attachLiveTurn(conversationId: string): Promise<void> {
     handle = await openLiveTurn(
       conversationId,
       liveAnchor(conversationId),
-      fresh ? adoptHandlers(token, revision) : liveHandlers(token),
+      fresh ? adoptHandlers(token, revision) : liveHandlers(token, revision),
       undefined,
       { smooth: false },
     )
