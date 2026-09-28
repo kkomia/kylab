@@ -790,3 +790,43 @@ describe('行内公式的边界（GitHub 口径：`$` 与内容之间不留空�
     expect(out).toContain('katex')
   })
 })
+
+/* ------------------------------------------- 公式的内联 style（D01，2026-09-28 走查） */
+
+describe('公式的内联 style 不能丢（D01）', () => {
+  /**
+   * 这条钉的是**排版信息本身**，不是"样式好不好看"。
+   *
+   * 病灶：`hast-util-to-jsx-runtime` 里 `typeof value === 'object' ? value :
+   * parseStyle(...)`，而 `parseStyle` 调的 `styleToJs` 在 ESM 那边拿到的是命名空间对象
+   * （`style-to-js@1.0.0` 只 `exports.default`），一调就 TypeError、再被
+   * `ignoreInvalidStyle: true` 吞成 `{}` —— KaTeX 的内联 style 于是**全丢**：
+   * 实测 `.katex-html` 里 19 个节点 **0** 个 style、`.vlist` 高度 **0**、指数掉到下一行。
+   *
+   * 修法在 `model/markdown.tsx` 的 `rehypeStyleObjects`（rehype 阶段把 style 串转成对象，
+   * 走"原样透传"那一支）。所以这条用例是**对着那个插件**红的/绿的。
+   */
+  it('行内公式落进 DOM 时带着 KaTeX 的内联样式', () => {
+    const node = renderAnswerMarkdown('行内 $E = mc^2$ 收尾')
+    const { container } = render(createElement(Fragment, null, node))
+
+    const htmlBox = container.querySelector('.katex-html')
+    expect(htmlBox).not.toBeNull()
+    // 丢掉时它恰好是 0（不是"少几条"）
+    expect(htmlBox?.querySelectorAll('[style]').length ?? 0).toBeGreaterThan(0)
+
+    // `.vlist` 的高度是 KaTeX 用内联 style 给的；丢了它高度就是 0，分式与上下标跟着散架
+    const vlist = container.querySelector('.vlist') as HTMLElement | null
+    expect(vlist).not.toBeNull()
+    expect(vlist?.getAttribute('style') ?? '').not.toBe('')
+  })
+
+  it('块级公式同样带着内联样式（`$$…$$` 那条路）', () => {
+    const node = renderAnswerMarkdown('$$\\int_0^1 x^2\\,dx = \\frac{1}{3}$$')
+    const { container } = render(createElement(Fragment, null, node))
+
+    const htmlBox = container.querySelector('.katex-html')
+    expect(htmlBox).not.toBeNull()
+    expect(htmlBox?.querySelectorAll('[style]').length ?? 0).toBeGreaterThan(0)
+  })
+})

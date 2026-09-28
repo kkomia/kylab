@@ -36,6 +36,7 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
+import styleToObject from 'style-to-object'
 
 /**
  * 只允许这两种协议：`javascript:` 之类的链接点了就是执行代码，必须挡掉。
@@ -1069,6 +1070,9 @@ function renderMarkdown(text: string, options: RenderOptions = {}): ReactNode {
     // 真排不出来时 KaTeX 自己会把原文画成 `katex-error`（可读、不假装渲染成功）
     rehypeMathSpacing,
     [rehypeKatex, { strict: 'ignore' }],
+    // **必须排在 KaTeX 之后**：它刚生成的那一大片 span 才是有 style 的那些；
+    // 顺序反了就没有可转的东西（见下面那个插件自己的说明）
+    rehypeStyleObjects,
   )
   const rendered = createElement(ReactMarkdown, {
     children: text,
@@ -1124,8 +1128,69 @@ function rehypeMathSpacing() {
   }
 }
 
-/** 把动作挂进 Context（只有真有回调时才包一层 Provider）。 */
-function withActions(content: ReactNode, actions: MarkdownActions | undefined): ReactNode {
+/**
+ * 把 `properties.style` 从**字符串**换成对象（D01，2026-09-28 走查）。
+ *
+ * ## 为什么必须换
+ *
+ * `hast-util-to-jsx-runtime` 处理 style 的那一行是
+ * `typeof value === 'object' ? value : parseStyle(state, String(value))`，
+ * 而 `parseStyle` 里调的是 `styleToJs(value, {reactCompat: true})` —— 但
+ * `style-to-js@1.0.0` 是纯 CJS 且只 `exports.default = StyleToJS`：
+ * ESM 那边 `import styleToJs from 'style-to-js'` 拿到的是**命名空间对象**，
+ * 一调就 `TypeError`，紧接着被 `ignoreInvalidStyle: true` **静默吞成 `{}`**。
+ * 后果是 KaTeX 的内联 style **全丢**：实测 `.katex-html` 里 19 个节点 0 个 style、
+ * `.vlist` 计算高度 0、指数掉到下一行、`∫₀¹x²dx=⅓` 散成一串碎片。
+ *
+ * ## 为什么修在这里（而不是打包器那侧）
+ *
+ * 试过 `optimizeDeps.needsInterop: ['style-to-js']`：**没用**——`style-to-js` 被**内联**进了
+ * react-markdown 的预打包产物（`.vite/deps/react-markdown.js` 里那段 `style-to-js@1.0.0`
+ * 就是它），单独的互操作设置够不到它。而"先把 style 转成对象"走的是**另一支**：
+ * 对象原样透传，与 bundler 怎么判 CJS/ESM 无关——dev 与生产构建都稳。
+ *
+ * ## 转法照抄上游（不引它的包）
+ *
+ * `style-to-js` 的实现本身就三步：`style-to-object` 解串 + `camelCase` 属性名
+ * （它那个 `reactCompat` 参数在 1.0.0 里**根本没被用**，函数签名只有 `style`）。
+ * 所以这里用同一个解析器 `style-to-object`（已是依赖）+ 一份与它 `cjs/utilities.js`
+ * **逐条对齐**的 `camelCase`，语义与"它没坏的时候"完全一致。
+ *
+ * 顺序上**必须排在 `rehypeKatex` 之后**：那段 HTML 是它刚生成的。
+ */
+function rehypeStyleObjects() {
+  return (tree: HastRoot): void => {
+    walk(tree, (node) => {
+      if (!isElement(node)) return
+      const raw = node.properties.style
+      if (typeof raw !== 'string') return
+      const style: Record<string, string> = {}
+      styleToObject(raw, (property, value) => {
+        // 与 `style-to-js` 同一条：属性或值缺一个就丢这一条
+        if (property && value) style[camelCaseStyle(property)] = value
+      })
+      node.properties.style = style
+    })
+  }
+}
+
+/**
+ * CSS 属性名 → React 的驼峰名。**与 `style-to-js/cjs/utilities.js` 的 `camelCase` 逐条对齐**：
+ * 没有连字符的原样返回、`--x` 自定义属性原样返回（React 也认这种）、
+ * 厂商前缀 `-webkit-` 只把前缀后的第一个连字符去掉（`-webkit-line-clamp` → `WebkitLineClamp` 那种口径）。
+ */
+function camelCaseStyle(property: string): string {
+  if (!property || !property.includes('-') || /^--[a-zA-Z0-9-]+$/.test(property)) return property
+  return property
+    .toLowerCase()
+    .replace(/^-(webkit|moz|ms|o)-/, (_, prefix: string) => `${prefix}-`)
+    .replace(/-([a-z])/g, (_, character: string) => character.toUpperCase())
+}
+
+/** 把动作挂进 Context（只有真有回调时才包一层 Provider）。 */ function withActions(
+  content: ReactNode,
+  actions: MarkdownActions | undefined,
+): ReactNode {
   if (!actions) return content
   return createElement(ActionsContext.Provider, { value: actions }, content)
 }
