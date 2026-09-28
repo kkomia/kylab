@@ -229,9 +229,18 @@ export function isTypingTarget(event: KeyboardEvent): boolean {
 export function toggleSidebarPreference(): boolean {
   let collapsed = true
   try {
-    collapsed = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) !== '1'
-    if (collapsed) window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, '1')
-    else window.localStorage.removeItem(SIDEBAR_COLLAPSED_STORAGE_KEY)
+    // **与 `useSidebar` 同一条口径**（D29，2026-09-28 走查）：键是 `'1'` = 折叠、
+    // `'0'` = 显式展开、不存在 = 没表过态 → 窄屏按折叠算。
+    // 展开也要**写 `'0'`**（不再是删键）：删键等于"没表过态"，窄屏上会被下一次渲染收回去。
+    //
+    // 这里复制一份口径而不是 import layout 域那条：chat 域不能反向依赖 layout 域（会成环），
+    // 存储键与广播事件当初也是按同一条约定各写一份的（见文件头）。
+    const stored = window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY)
+    const narrow =
+      typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 760px)').matches
+    const nowCollapsed = stored === '1' || (stored === null && narrow)
+    collapsed = !nowCollapsed
+    window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, collapsed ? '1' : '0')
   } catch {
     // 存不上就只在本次会话生效（与旧 `useSidebar` 同一条）
   }

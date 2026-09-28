@@ -641,7 +641,7 @@ export function Composer() {
           （两颗），但 `flex-wrap` 留着——字号调到「更大」时它仍然是最后的退路。
           实测（1440）：整行 742×32、一行放下，与收窄前同高。
         */}
-        <div className="flex items-center justify-between gap-[var(--space-2)]">
+        <div className="flex flex-wrap items-center justify-between gap-[var(--space-2)]">
           <div className="flex min-w-0 flex-wrap items-center gap-[var(--space-1)]">
             {/* 「加号」：附件与技能都收在这里（"这一轮给它什么"） */}
             <PlusMenu
@@ -655,7 +655,10 @@ export function Composer() {
             <KnowledgeBaseControl />
           </div>
 
-          <div className="flex min-w-0 items-center gap-[var(--space-2)]">
+          {/* 右组：`ml-auto` 是给**换行**那一档用的（窄屏，D29）——它会整组落到第二行，
+              而 `justify-between` 在"本行只有一个孩子"时是把它摆在行首的（发送键会跑到
+              左边、且与权限胶囊同一行时还会重叠）。`ml-auto` 让它换行之后仍然靠右。 */}
+          <div className="ml-auto flex min-w-0 items-center gap-[var(--space-2)]">
             {/* 模型这一格还装着"思考 / 强度 / 上下文读数"（它们是同一个问题的几个面） */}
             <ModelPicker />
             {/* 这两句是行内附注，也**不许折行**（同上：整行只有一行） */}

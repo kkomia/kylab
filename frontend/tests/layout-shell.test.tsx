@@ -292,7 +292,11 @@ describe('侧栏折叠', () => {
     expect(screen.getByRole('complementary', { name: '侧栏' }).className).not.toContain(
       'ly-sidebar-collapsed',
     )
-    expect(window.localStorage.getItem('kylab-sidebar-collapsed')).toBeNull()
+    expect(
+      // 展开也**写下 `'0'`**（D29 起的新契约）：删键等于"**没表过态**"，而窄屏
+      // 默认是折叠——那样用户点开侧栏之后会被下一次渲染收回去，看着像开关失灵。
+      window.localStorage.getItem('kylab-sidebar-collapsed'),
+    ).toBe('0')
   })
 
   it('挂载时读存储：预置为 1 就直接是窄条', async () => {
