@@ -202,7 +202,11 @@ describe('抽屉的基本信息与预览', () => {
     })
     renderDrawer()
 
-    expect(await screen.findByText('标题')).toBeInTheDocument()
+    // 这一等要跨**两次 mock 的异步链**（文档详情 → 原文预览），是本用例唯一的等待。
+    // 默认 1s 的 `findBy*` 在单跑时富余（实测 515ms），**全量并发下会擦线**
+    // （实测这条用例整条 1444ms ✗ ≈ 1s 等待超时 + 渲染）。只放宽这一处，
+    // 并写明理由：**不动** vitest 的 `testTimeout`（那是掩盖，不是修）。
+    expect(await screen.findByText('标题', {}, { timeout: 3000, interval: 50 })).toBeInTheDocument()
     expect(previewMock).toHaveBeenCalledWith('doc-1', 'auto')
     expect(screen.queryByRole('tab', { name: '原文版式' })).not.toBeInTheDocument()
   })
