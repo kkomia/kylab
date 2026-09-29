@@ -1,0 +1,99 @@
+# 客户端运行时（边车）的**真实依赖**清单 —— P4-3
+#
+# ## 这份清单是**算出来的**，不是"看出来的" ✗✓（本轮最重要的一课）
+#
+# 上一版是 22 个 pin，靠"读代码看它 import 了什么"写出来的 ✗ —— 实测证明它**不等于**
+# 真实导入闭包 ✗：运行时四轮报缺（`typing_extensions` → `_cffi_backend` → `pydantic_settings` → 更早的 `jieba`），
+# 每一个都是"静态看不出来、只有真跑才会炸"的东西 ✓。
+# 现在的口径：**以 `import app.sidecar` 的实测 `sys.modules` 为准** ✓
+# （只读脚本：`.shots/p4-sidecar-closure.py` ✓，输出 `.shots/p4-sidecar-closure.json` ✓，
+#  它**不装包、不打网络、不改运行时、不杀进程** ✓ —— 与旧脚本 `.shots/sidecar-import-closure.py` 的区别就在这 ✓，
+#  旧那个会 `pip install` ✗，而镜像那条会卡死 >10 分钟 ✗）。
+#
+# 实测规模：**39 个非标准库顶层模块** ✓（含 4 个扩展/元数据里的特例 ✓）。
+#
+# ## 版本口径
+# 全部从**当前开发 venv 实测**读出来（`importlib.metadata` ✓），不是"最新版" ✓；
+# 传递依赖也全部 pin ✓（只 pin 根的后果：换台机器解析出的版本与今天不同 ✓）。
+#
+# ## 三类形态必须都拷（离线装配的三个坑 ✓）
+# 1. **目录**（绝大多数包 ✓）；
+# 2. **单文件 `.py`**：`typing_extensions.py` ✓ —— 按目录拷会漏 ✗；
+# 3. **site-packages 根目录下的 `.pyd`**：`_cffi_backend.cp312-win_amd64.pyd` ✓ —— 同样会漏 ✗。
+#
+# ## 红线
+# 1. 绝不打包 dev venv（`backend/.venv`，约 400 MB）✗；
+# 2. 绝不打包 LibreOffice（约 700 MB）✗ —— 本机装了只"检测后使用" ✓；
+# 3. 不裁 `backend/app` 的源码（整份拷 ✓）；
+# 4. **不拷 `_duckdb*.pyd`** ✗（凭空 +35 MB ✓ —— 边车不用 duckdb 那条链 ✓）。
+#
+# ## 装法
+# `powershell -ExecutionPolicy Bypass -File scripts\build-sidecar-runtime.ps1`
+# 本文件**存成 UTF-8 带 BOM** ✓：pip 按本机 locale（GBK）猜编码 ✗，无 BOM 时中文注释会
+# `UnicodeDecodeError`（实测过一次 ✓）。
+#
+# ⚠️ 本版由 `write` 工具落盘（**无 BOM** ✗）→ 提交前请补 BOM（或让 ps1 生成时带上 ✓）。
+
+# ---------------------------------------------------------------- 1) 四个根（边车真的用）
+fastapi==0.141.1          # 边车的 HTTP 入口（GET /health、POST /turn）
+uvicorn==0.52.4           # 跑 FastAPI 的 ASGI 服务器（只监听 127.0.0.1）
+                          #   ⚠️ 它**不出现在闭包里** ✗：`sidecar.main()` 里是**函数内** `import uvicorn` ✓
+                          #   —— 这类"入口处才导入"的包要靠人工补 ✓（闭包只反映模块级导入 ✓）
+httpx==0.28.1             # 两个远端客户端：KB 的 POST /api/v1/search、模型的 /model-proxy/*
+pydantic==2.13.5          # /turn 的请求与响应模型
+
+# ---------------------------------------------------------------- 2) 传递依赖（闭包实测到）
+starlette==1.6.0          # FastAPI 底层：路由、请求/响应、SSE 的 StreamingResponse
+pydantic_core==2.46.5     # pydantic 的 Rust 内核
+pydantic-settings==2.15.0 # ★ 上一版**压根没有** ✗✓（实测第 3 轮逼出来的缺项）
+                          #   链路：app.sidecar → services.runtime_config → core.config → pydantic_settings
+python-dotenv==1.2.3      #   ↑ 读 .env 用（pydantic-settings 依赖）
+annotated-types==0.8.0    # pydantic 的类型标注约束
+typing-inspection==0.4.4  # pydantic 的运行时类型自省
+typing_extensions==4.16.0 # ★ **单文件 .py** ✓（离线装配最容易漏的形态 ✗）
+annotated-doc==0.0.5      # FastAPI 0.141 的依赖
+anyio==4.15.1             # httpx / starlette 的异步原语
+idna==3.19                # 域名国际化（httpx 处理 URL）
+certifi==2026.7.22        # HTTPS 根证书（连远端检索与模型端点）
+click==8.5.0              # uvicorn 的命令行入口
+PyYAML==6.0.3             # ★ 实测闭包里有（配置/技能 frontmatter 那条链 ✓）
+python-multipart==0.0.32  # FastAPI 表单/上传（导入链带进来 ✓）
+Pygments==2.21.0          # markdown-it 的语法高亮后端（闭包带进来 ✓）
+markdown-it-py==4.2.0     # ★ 闭包带进来（技能/文档渲染那条链 ✓）
+mdurl==0.1.2              #   ↑ 的依赖
+python-dateutil==2.9.0.post0  # ★ 闭包带进来（日期解析 ✓）
+six==1.17.0               #   ↑ 的依赖
+# 运行期才导入的传输层 ✓（`httpx` 真正发请求的那一层 ✓ —— 闭包里看不到 ✗，但烟测证明必须有 ✓）
+httpcore==1.0.9           # httpx 的传输层（连接池、超时、代理）
+h11==0.16.0               # httpcore 的 HTTP/1.1 实现；uvicorn 也用它
+# 注：`sniffio` **不写** ✓ —— 开发 venv 里根本没有它 ✓，闭包也不需要 ✓（anyio 4.x 已内联该判断 ✓）
+
+# ---------------------------------------------------------------- 3) 导入闭包带来的（功能上边车用不到）
+argon2-cffi==25.1.0           # 链条：agent_tools → agent_exec → agent_files → api_key → core.security
+argon2-cffi-bindings==26.1.0  #   ↑ 的编译扩展
+cffi==2.1.1                   #   ↑ 的依赖（含 site-packages 根下的 **`_cffi_backend*.pyd`** ✓ 三种形态之一）
+pycparser==3.0                # cffi 解析 C 声明
+psycopg==3.3.5                # 服务器那条 PG 链（边车不连库 ✓，但模块级导入会拉进来）
+psycopg-binary==3.3.5         #   ↑ 的二进制实现
+psycopg-pool==3.3.1           #   ↑ 的连接池
+boto3==1.43.93                # 对象存储链（产物/附件 ✓）
+botocore==1.43.93             #   ↑ 的核心
+s3transfer==0.19.2            #   ↑ 的传输
+jmespath==1.1.0               #   ↑ 的表达式
+pywin32==312                  # ★ Windows 上的进程/服务相关（`pywin32_system32` ✓ + `pywin32_bootstrap` ✓）
+# `jieba==0.42.1` —— ⚠️ **实测仍在闭包里** ✗✓（本轮测量：`import app.sidecar` 后 `jieba` 在 `sys.modules` 里 ✓）
+#   本体约 40.9 MB（自带词典与模型），边车一次都用不到 ✓。
+#   前一条 lane 说"已改惰性导入、不必加回" ✗ —— **实测不支持这个结论** ✓：
+#   `services/retrieval/coverage.py` 那一处是惰性的 ✓，但**另外三处仍是模块级** `import jieba` ✓
+#   （见上一版清单第 51-55 行的记录 ✓）。所以本轮**按实测**把它留在这里 ✓（注释形式，见文末"下一步" ✓）。
+
+# ---------------------------------------------------------------- 4) 明确**不打**的东西
+# `_duckdb` / `duckdb`：实测闭包里有（服务器那条分析链 ✓），但边车**一次都不执行**那条路 ✓
+#   → **不拷 `_duckdb*.pyd`** ✗（省 35 MB ✓）；清单里也不 pin ✓。
+# `_virtualenv`：开发 venv 的产物 ✗（不是任何包的依赖 ✓）→ 不拷 ✓。
+
+# ---------------------------------------------------------------- 下一步（省 40.9 MB 的路）
+# 把 `import jieba` 那三处也改成惰性（`retrieval/embedding/deterministic.py` /
+# `retrieval/storage/text.py` / `retrieval/storage/postgres_impl/fulltext_store.py` ✓）
+# → 重跑 `.shots/p4-sidecar-closure.py` ✓ → `jieba` 应从闭包里消失 ✓ → 那时再把这一段删掉 ✓
+#   （判据：闭包脚本的输出里查不到 `jieba` ✓，而不是"看代码觉得不该有" ✗）。
