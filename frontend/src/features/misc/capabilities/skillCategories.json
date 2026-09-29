@@ -193,5 +193,20 @@
     "research": "科研与论文",
     "slides": "演示与幻灯片",
     "writing": "写作与文案"
-  }
+  },
+  "order": [
+    "slides",
+    "documents",
+    "data",
+    "design",
+    "media",
+    "research",
+    "code",
+    "writing",
+    "marketing",
+    "business",
+    "productivity",
+    "learning",
+    "other"
+  ]
 }

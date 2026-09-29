@@ -352,10 +352,15 @@ def _rows_from_disk() -> list[dict[str, str]]:
     return rows
 
 
-def build_mapping() -> dict[str, dict[str, str]]:
-    """生成物内容：`{"categories": {slug: 中文名}, "assignments": {slug: 类别}}`。"""
+def build_mapping() -> dict[str, object]:
+    """生成物内容：类别顺序 + `{slug: 中文名}` + `{技能: 类别}`。
+
+    `order` 是**展示顺序**：JSON 落盘时键名排过序（`sort_keys=True`，为的是 diff 稳定），
+    光看 `categories` 那个对象读不出"先给用户看哪一类"——所以顺序单独给一份列表。
+    """
     assignments = classify(_rows_from_disk())
     return {
+        "order": [item.slug for item in CATEGORIES],
         "categories": {item.slug: item.label for item in CATEGORIES},
         "assignments": assignments,
     }

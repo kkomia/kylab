@@ -21,6 +21,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertCircle,
   Check,
+  ChevronDown,
   Ellipsis,
   Pencil,
   Plus,
@@ -31,6 +32,7 @@ import {
   Sparkles,
   Trash2,
 } from 'lucide-react'
+import { Fragment } from 'react'
 
 import {
   createMCPServer,
@@ -84,6 +86,7 @@ import {
 } from '../shared/composites'
 import { PLUGINS_QUERY_KEY, PluginPackPanel, statsOf, withoutEmptyCounts } from './PluginPackPanel'
 import { SkillMarketDialog } from './SkillMarketDialog'
+import { groupSkills } from './skillCategories'
 // 上面那个渲染件的样式**跟着一起引**：知识域的路由是懒加载的，`knowledge.css` 只在那几个
 // chunk 里加载（实测能力页上没有任何 `.kb-md-*` 规则）——少了它，正文就是裸 HTML
 // （段落没有间距、代码块没有底色），那还不如继续显示源文件。
@@ -278,6 +281,27 @@ export function CapabilitiesPage() {
     if (!word) return true
     return `${item.name} ${item.description}`.toLowerCase().includes(word)
   })
+
+  /**
+   * 过滤之后**再分组**（搜索是在类内生效的：某一类被筛空，那一类的头就不画了）。
+   *
+   * 分组是纯函数（`./skillCategories` 读镜像 JSON），页面只画结果：
+   * "每类几条、有没有漏"因此能用真映射单测，不必起浏览器。
+   */
+  const skillGroups = groupSkills(visibleSkills)
+  /**
+   * 收起来的那几类（默认**全展开**）：首屏就该看见有哪些技能，
+   * 收合是"这一类我看过了"的整理动作，不是一个默认状态。
+   */
+  const [closedCategories, setClosedCategories] = useState<ReadonlySet<string>>(new Set())
+  const toggleCategory = (slug: string) => {
+    setClosedCategories((current) => {
+      const next = new Set(current)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
+      return next
+    })
+  }
 
   const visibleServers = servers.filter((item) => {
     if (serverFilter === 'enabled' && !item.enabled) return false
@@ -546,27 +570,62 @@ export function CapabilitiesPage() {
               加 `padding-top` 的 span 顶着。 */}
           {visibleSkills.length > 0 && (
             <ul className="m-cards grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3">
-              {visibleSkills.map((skill) => (
-                <li
-                  key={skill.name}
-                  className="m-card gap-[var(--space-2-5)] rounded-[var(--radius-row)] px-[var(--space-3)] py-[var(--space-2-5)]"
-                >
-                  {/* 图标是装饰：`aria-hidden` 不是原语给的，跟着换类一起留着 */}
-                  <span className="m-card-icon" aria-hidden="true">
-                    <Sparkles size={16} />
-                  </span>
-                  <div className="flex min-w-0 flex-1 flex-col gap-[var(--space-0-5)]">
-                    <div className="flex min-w-0 items-center gap-[var(--space-2)]">
-                      {/* 名字（技能标识，通常是目录名）是卡上唯一可点的东西：整张卡不做成
+              {/*
+                **按分类分组**（2026-09-29 用户："把这 178 条当初始技能集做分类整理并在页面上展示"）。
+
+                三笔的来路：
+                - 分组与顺序由 `./skillCategories`（读镜像 JSON 的纯函数）给，页面不自己判；
+                - 每一类的头**可收合**（`closedCategories` 记收起来的那几类，默认全展开——
+                  首屏就该看见有哪些技能，收合是"这一类我看过了"的整理动作）；
+                - 头那一格 `col-span-full`：它排在同一个网格里，所以"整行一条"要自己说。
+              */}
+              {skillGroups.map((group) => (
+                <Fragment key={group.slug}>
+                  <li className="col-span-full">
+                    <button
+                      type="button"
+                      className="flex w-full cursor-pointer items-center gap-[var(--space-2)] bg-transparent p-0 text-left text-[length:var(--text-meta-size)] font-medium text-text-primary"
+                      data-testid="skill-category"
+                      data-category={group.slug}
+                      aria-expanded={!closedCategories.has(group.slug)}
+                      onClick={() => toggleCategory(group.slug)}
+                    >
+                      <ChevronDown
+                        size={12}
+                        aria-hidden
+                        className={`shrink-0 text-text-quaternary transition-transform ${
+                          closedCategories.has(group.slug) ? '-rotate-90' : ''
+                        }`}
+                      />
+                      {group.label}
+                      <span className="tabular text-[length:var(--text-micro-size)] text-text-tertiary">
+                        {formatCount(group.skills.length)}
+                      </span>
+                    </button>
+                  </li>
+                  {closedCategories.has(group.slug)
+                    ? null
+                    : group.skills.map((skill) => (
+                        <li
+                          key={skill.name}
+                          className="m-card gap-[var(--space-2-5)] rounded-[var(--radius-row)] px-[var(--space-3)] py-[var(--space-2-5)]"
+                        >
+                          {/* 图标是装饰：`aria-hidden` 不是原语给的，跟着换类一起留着 */}
+                          <span className="m-card-icon" aria-hidden="true">
+                            <Sparkles size={16} />
+                          </span>
+                          <div className="flex min-w-0 flex-1 flex-col gap-[var(--space-0-5)]">
+                            <div className="flex min-w-0 items-center gap-[var(--space-2)]">
+                              {/* 名字（技能标识，通常是目录名）是卡上唯一可点的东西：整张卡不做成
                           按钮，否则「复制名字」「选中摘要」这些基本操作都会变得别扭 */}
-                      <button
-                        type="button"
-                        className="min-w-0 flex-1 truncate text-left text-[length:var(--text-meta-size)] font-medium text-text-primary hover:text-accent"
-                        onClick={() => void openSkill(skill)}
-                      >
-                        {skill.name}
-                      </button>
-                      {/*
+                              <button
+                                type="button"
+                                className="min-w-0 flex-1 truncate text-left text-[length:var(--text-meta-size)] font-medium text-text-primary hover:text-accent"
+                                onClick={() => void openSkill(skill)}
+                              >
+                                {skill.name}
+                              </button>
+                              {/*
                         「被丢弃」与「被拦下」是两件事：前者是 frontmatter 不合规
                         （缺 name/description、描述超长），整个技能不加载；
                         后者是能用但这一轮不给模型看。标签分开写，理由在下面那行里。
@@ -576,49 +635,53 @@ export function CapabilitiesPage() {
                         「技能 7 / 7 可用」已经说过一次了。卡上只留**例外**——
                         一眼扫过去，有标的就是不算数的。
                       */}
-                      {skill.discarded ? (
-                        <Badge variant="warning">
-                          <AlertCircle size={12} />
-                          已丢弃
-                        </Badge>
-                      ) : !skill.used_by_prompt ? (
-                        <Badge variant="warning">
-                          <AlertCircle size={12} />
-                          未进提示词
-                        </Badge>
-                      ) : null}
-                      {/*
+                              {skill.discarded ? (
+                                <Badge variant="warning">
+                                  <AlertCircle size={12} />
+                                  已丢弃
+                                </Badge>
+                              ) : !skill.used_by_prompt ? (
+                                <Badge variant="warning">
+                                  <AlertCircle size={12} />
+                                  未进提示词
+                                </Badge>
+                              ) : null}
+                              {/*
                         单条启停（D23，走查实测这一页原先**一个开关都没有**）。
                         **被丢弃的不给开关**：它本来就不加载，摆一个按下去没反应的开关
                         比不摆更糟。开关旁边的可访问名说清"按下去会怎样"，而不是只写"开关"。
                       */}
-                      {skill.discarded ? null : (
-                        <Switch
-                          size="sm"
-                          checked={skill.enabled}
-                          disabled={toggleSkill.isPending}
-                          aria-label={`${skill.enabled ? '关掉' : '启用'}技能 ${skill.name}`}
-                          onCheckedChange={(next) => toggleSkill.mutate({ skill, enabled: next })}
-                        />
-                      )}
-                    </div>
-                    {/* 中文优先（v0.28）：技能描述基本都是英文，而这一页是给中文用户看的。
-                     **一行**，多的部分进详情弹窗——卡片的宽度不该由最长的那条描述决定 */}
-                    <p className="truncate text-[length:var(--text-micro-size)] text-text-secondary">
-                      {skill.summary || skill.description || '（没有描述）'}
-                    </p>
-                    {/* 被拦下的技能**要显示理由**：静默藏掉会让人以为技能没装上 */}
-                    {skill.flagged.length > 0 && (
-                      <p className="flex flex-wrap gap-x-[var(--space-2)] text-[length:var(--text-micro-size)] text-status-warning">
-                        {skill.flagged.map((reason, at) => (
-                          <span key={at} className="truncate">
-                            {reason}
-                          </span>
-                        ))}
-                      </p>
-                    )}
-                  </div>
-                </li>
+                              {skill.discarded ? null : (
+                                <Switch
+                                  size="sm"
+                                  checked={skill.enabled}
+                                  disabled={toggleSkill.isPending}
+                                  aria-label={`${skill.enabled ? '关掉' : '启用'}技能 ${skill.name}`}
+                                  onCheckedChange={(next) =>
+                                    toggleSkill.mutate({ skill, enabled: next })
+                                  }
+                                />
+                              )}
+                            </div>
+                            {/* 中文优先（v0.28）：技能描述基本都是英文，而这一页是给中文用户看的。
+                             **一行**，多的部分进详情弹窗——卡片的宽度不该由最长的那条描述决定 */}
+                            <p className="truncate text-[length:var(--text-micro-size)] text-text-secondary">
+                              {skill.summary || skill.description || '（没有描述）'}
+                            </p>
+                            {/* 被拦下的技能**要显示理由**：静默藏掉会让人以为技能没装上 */}
+                            {skill.flagged.length > 0 && (
+                              <p className="flex flex-wrap gap-x-[var(--space-2)] text-[length:var(--text-micro-size)] text-status-warning">
+                                {skill.flagged.map((reason, at) => (
+                                  <span key={at} className="truncate">
+                                    {reason}
+                                  </span>
+                                ))}
+                              </p>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                </Fragment>
               ))}
             </ul>
           )}
