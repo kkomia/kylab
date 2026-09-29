@@ -830,3 +830,45 @@ describe('公式的内联 style 不能丢（D01）', () => {
     expect(htmlBox?.querySelectorAll('[style]').length ?? 0).toBeGreaterThan(0)
   })
 })
+
+/* ------------------------------------------- 长代码块的限高与展开（D04，2026-09-28 走查） */
+
+describe('长代码块限高与展开（D04）', () => {
+  /** 造一块够长的代码（限高比的是 `scrollHeight`，jsdom 不做排版，下面会 stub 它）。 */
+  const LONG_CODE = '```ts\n' + 'const x = 1\n'.repeat(40) + '```'
+
+  it('超出限高 → 头部带里有「展开代码」；点了之后限高清掉、按钮变「收起代码」', () => {
+    // 病灶：`.md-pre` 原先只有 `overflow-x: auto`，没有限高——长代码把整屏撑开，
+    // 后面的话被顶到几屏之外（走查实测 computed `max-height: none`）。
+    const spy = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(1200)
+    try {
+      const node = renderAnswerMarkdown(LONG_CODE)
+      const { container } = render(createElement(Fragment, null, node))
+
+      const pre = container.querySelector('.md-pre') as HTMLElement
+      expect(pre.style.maxHeight).toBe('400px')
+
+      const toggle = container.querySelector('[data-toggle-code]') as HTMLElement
+      expect(toggle).not.toBeNull()
+      expect(toggle.getAttribute('aria-label')).toBe('展开代码')
+
+      fireEvent.click(toggle)
+
+      // 展开 = 把限高清掉（交给页面滚动），按钮翻成"收起"
+      expect(pre.style.maxHeight).toBe('')
+      expect(
+        (container.querySelector('[data-toggle-code]') as HTMLElement).getAttribute('aria-label'),
+      ).toBe('收起代码')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('没超限的短代码块**不给**展开按钮（挂一个用不上的按钮比没有更烦人）', () => {
+    const node = renderAnswerMarkdown('```ts\nconst x = 1\n```')
+    const { container } = render(createElement(Fragment, null, node))
+
+    expect(container.querySelector('.md-pre')).not.toBeNull()
+    expect(container.querySelector('[data-toggle-code]')).toBeNull()
+  })
+})

@@ -30,7 +30,18 @@
  * （文件预览是"看"，不是"操作这份内容"）。
  */
 
-import { createContext, createElement, useContext, useMemo, type JSX, type ReactNode } from 'react'
+import { ChevronDown, ChevronUp } from 'lucide-react'
+import {
+  createContext,
+  createElement,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type JSX,
+  type ReactNode,
+} from 'react'
 import ReactMarkdown, { type ExtraProps, type Options } from 'react-markdown'
 import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
@@ -863,6 +874,9 @@ function MarkdownAnchor(props: PropsOf<'a'>) {
 function MarkdownPre(props: PropsOf<'pre'>) {
   const actions = useContext(ActionsContext)
   const node = hastOf(props)
+  const preRef = useRef<HTMLPreElement | null>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [overflowing, setOverflowing] = useState(false)
   const code = childrenOf(node ?? { type: 'root', children: [] }).find(
     (child): child is HastElement => isElement(child) && child.tagName === 'code',
   )
@@ -872,6 +886,18 @@ function MarkdownPre(props: PropsOf<'pre'>) {
   const codeText = String(
     (code as unknown as { data?: Record<string, unknown> })?.data?.[CODE_TEXT_KEY] ?? '',
   )
+  /**
+   * 这一块代码是不是**超过了限高**（D04，2026-09-28 走查）。
+   *
+   * 量一次就够：`.md-pre` 是等宽、按行折行的，内容不变高度就不变（`[codeText]` 是它的
+   * 全部依赖）。**只有真的超出才给展开按钮**——每一块都挂一个永远用不上的按钮，
+   * 比没有更烦人。
+   */
+  useEffect(() => {
+    const element = preRef.current
+    if (!element) return
+    setOverflowing(element.scrollHeight > CODE_MAX_HEIGHT_PX + 1)
+  }, [codeText])
   return createElement(
     'div',
     { className: 'md-code' },
@@ -882,6 +908,26 @@ function MarkdownPre(props: PropsOf<'pre'>) {
       // 原先语言名是绝对定位在右上角的，代码一长就从它底下穿过去，
       // 像两样东西叠在一起；而且整块没有复制入口。
       lang ? createElement('span', { className: 'md-code-lang' }, lang) : createElement('span'),
+      // 展开 / 收起（D04）：长代码原先一路把整屏撑开（`.md-pre` 只有 `overflow-x`），
+      // 后面的话都被顶到几屏之外；现在先限高，想全看再展开。
+      overflowing
+        ? createElement(
+            'button',
+            {
+              type: 'button',
+              className: 'md-icon-btn',
+              'data-toggle-code': true,
+              'aria-expanded': expanded,
+              'aria-label': expanded ? '收起代码' : '展开代码',
+              title: expanded ? '收起' : '展开',
+              onClick: (event: { stopPropagation: () => void }) => {
+                event.stopPropagation()
+                setExpanded((value) => !value)
+              },
+            },
+            createElement(expanded ? ChevronUp : ChevronDown, { size: 13 }),
+          )
+        : null,
       createElement(
         'button',
         {
@@ -900,9 +946,28 @@ function MarkdownPre(props: PropsOf<'pre'>) {
         createElement(CopyIcon),
       ),
     ),
-    createElement('pre', { className: 'md-pre' }, props.children as ReactNode),
+    createElement(
+      'pre',
+      {
+        className: 'md-pre',
+        ref: preRef,
+        // 限高走**内联样式**而不是 CSS：那个数就是上面量出来的判据（`CODE_MAX_HEIGHT_PX`），
+        // 写在两个地方迟早对不上。**只在"真的超了、而且没展开"时给**——
+        // 短块不该带这个属性（HTML 保持干净，展开时同样清掉，交给页面滚动）。
+        style: overflowing && !expanded ? { maxHeight: CODE_MAX_HEIGHT_PX } : undefined,
+      },
+      props.children as ReactNode,
+    ),
   )
 }
+
+/**
+ * 代码块的限高（px，D04）。
+ *
+ * 400 这个数取的是"大约 20 行等宽代码 + 内边距"：再高就开始把整屏占满（走查实测
+ * 长代码块把后面的正文顶到几屏之外），再低则常见的一个函数都看不完。
+ */
+const CODE_MAX_HEIGHT_PX = 400
 
 /** 表格内容（复制 / 下载要的那两份，从 hast 上取，不碰 DOM）。 */
 function tableOf(node: HastElement | undefined): MarkdownTable {

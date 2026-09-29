@@ -310,7 +310,10 @@
   .md-pre {
     margin: 0;
     padding: var(--space-3);
-    overflow-x: auto;
+    /* 两个方向都能滚（D04）：纵向那一半是给"限高之后"用的——限高的数在
+       `model/markdown.tsx` 的 `CODE_MAX_HEIGHT_PX`（那边按内联样式给），
+       这里只负责"超出时滚起来"；展开时那边把限高清掉，此处也就自然不滚。 */
+    overflow: auto;
     font-size: var(--text-micro-size);
     line-height: var(--line-code);
     color: var(--text-primary);
