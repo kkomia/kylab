@@ -24,11 +24,15 @@
  * 余量。**2026-09-24 起读数那一格换成环 + 比率**（`ContextGauge`，16px 的环替掉原来
  * 那条 28px 的占用条），它自己从 ~111px 收到 ~70px，是这一排里省得最多的一格；
  * 再往后（更大字号、更窄的窗口）仍由左组折行接住。
+ *
+ * 末尾那两条 `disabled:` 是**必须的**：模型那一颗在"一个可用模型都没有"时是 `disabled`
+ * （`ModelPicker` 里那个判据），而禁用只写 `disabled` 属性的话外形一点不变——
+ * 用户点下去没有反应，只会以为"这个按钮坏了"。
  */
 export const CONTROL_TRIGGER =
   'inline-flex h-[var(--control-height)] cursor-pointer items-center gap-[var(--space-1-5)] ' +
   'rounded-[var(--radius-pill)] border border-transparent bg-[var(--bg-subtle)] px-[var(--space-2)] ' +
-  'text-[length:var(--text-meta-size)] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] data-[state=open]:bg-[var(--bg-hover)] data-[state=open]:text-[var(--text-primary)]'
+  'text-[length:var(--text-meta-size)] font-medium text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] data-[state=open]:bg-[var(--bg-hover)] data-[state=open]:text-[var(--text-primary)] disabled:cursor-default disabled:opacity-50'
 
 /**
  * 菜单面（浮层的底、边框、圆角、内边距）——**菜单类控件共用一份**。
@@ -36,9 +40,15 @@ export const CONTROL_TRIGGER =
  * 2026-09-27 从 `ComposerControls` 搬到这里：那一排收窄之后，命令与模式两档搬进了
  * 「+」菜单的子菜单，而子菜单用的还是这张面。两处各写一份的话，浮层的圆角或内边距
  * 改一次就要记得改两处（"同一行两个高度"那个毛病的同型）。
+ *
+ * 进出场也收在这一处：chat 里那四个菜单**直连 `@radix-ui/react-dropdown-menu`**
+ * （绕过了 `ui/dropdown-menu.tsx` 那份自带 `data-[state=open]:animate-in` 的封装），
+ * 于是弹窗 200ms、抽屉 300/500ms，而菜单是 0ms——一屏里菜单"凭空出现"，看起来比别处
+ * 生硬。150ms 是 `tokens.css` 的 `--motion-fast` 档，与列表行/底色的状态切换同速：
+ * 菜单是"轻"的那一类，不该跟弹窗同一档（Radix 靠这段动画名把关闭也演完再卸载）。
  */
 export const MENU_PANEL =
-  'z-50 min-w-[220px] max-h-[420px] overflow-y-auto rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-menu)] p-[var(--space-2)] shadow-[var(--shadow-popover)]'
+  'z-50 min-w-[220px] max-h-[420px] overflow-y-auto rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-menu)] p-[var(--space-2)] shadow-[var(--shadow-popover)] duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0'
 
 /** 菜单项的形状（+ 菜单、模型菜单、命令/模式子菜单共用）。 */
 export const MENU_ITEM =

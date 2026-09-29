@@ -597,6 +597,9 @@ export function isAbortError(error: unknown): boolean {
  * `options.smooth`（默认开）控制**显示节流**：服务端可能把几十个 delta 挤在一毫秒里
  * （检索结果整批返回、端点特别快），节流层会把它们按受控速度缓缓送出，
  * 让"检索、写作"的过程看得见。脚本/自测这类不需要过程感的调用可以关掉它。
+ *
+ * 系统开了「减少动态效果」时它也会被关掉（见 `prefersReducedMotion`）：那种设置下
+ * 用户要的正是"别动"。这一层只会**再关**，不会把调用方关掉的打开。
  */
 export async function chatStream(
   payload: ChatPayload,
@@ -670,6 +673,18 @@ export interface ResumePayload {
   skill_names?: string[]
 }
 
+/**
+ * 系统是否要求"减少动态效果"（CSS `prefers-reduced-motion: reduce`）。
+ *
+ * 逐字流对开了这个开关的用户是负担而不是信息——他们看到的"过程"就是屏幕一直在动。
+ * 取不到 `matchMedia` 时一律按"没开"处理：宁可多一层节流，也不能因为环境缺这个 API
+ * 就把节流层无声地关掉（测试里的 jsdom 默认就没有它）。
+ */
+function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
 /** SSE 请求的公共部分：建连、转发取消、把读取交给 `pump`。 */
 async function openStream(
   url: string,
@@ -682,7 +697,9 @@ async function openStream(
   } = {},
 ): Promise<ChatStreamHandle> {
   const { body, signal } = options
-  const smooth = options.smooth ?? true
+  // 系统的「减少动态效果」只让节流**再关一点**（`smooth && !reduce`）：调用方显式传
+  // `smooth: false` 的那条路（重连补发，过程已经发生过一遍）语义一点没变。
+  const smooth = (options.smooth ?? true) && !prefersReducedMotion()
   const controller = new AbortController()
   // 外部 signal 先于本次请求被取消时，abort() 不会再触发事件，这里补一次转发
   const forward = (): void => controller.abort()

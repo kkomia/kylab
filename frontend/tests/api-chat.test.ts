@@ -317,6 +317,44 @@ describe('chatStream', () => {
     }
   })
 
+  it('系统开了「减少动态效果」时不套节流：整段一次到达就直接交付', async () => {
+    // 开了那个系统开关的用户，逐字流是负担不是信息（`chat.ts` 里 smooth 与它相与）。
+    // 这里**必须自己 stub**：`tests/setup.ts` 那份对任何 query 都回 false，
+    // 所以"照旧套节流"那一半由上面那条用例守着。
+    vi.stubGlobal(
+      'matchMedia',
+      vi.fn((query: string) => ({
+        matches: query.includes('prefers-reduced-motion'),
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    )
+    const body = events([
+      { type: 'delta', text: 'x'.repeat(1200) },
+      { type: 'done', answer: 'x'.repeat(1200) },
+    ])
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sseResponse([body])),
+    )
+
+    let text = ''
+    let answer = ''
+    // **不传 smooth**：这就是界面上真实那条调用（节流默认是开的）
+    await chatStream(
+      { query: 'q', kb_ids: ['kb_1'] },
+      { onDelta: (chunk) => (text += chunk), onDone: (value) => (answer = value) },
+    )
+    await settle()
+
+    // 节流层根本没建：不用推进任何计时器，整段与 done 都已经交付
+    expect(text).toHaveLength(1200)
+    expect(answer).toHaveLength(1200)
+  })
+
   it('approval 事件带齐确认条要显示的东西，并且立刻派发', async () => {
     // 这一条是"后端停下来问了"的唯一信号：漏掉它界面上会什么都没有，
     // 而那一轮在后端一直等到超时（用户看到的就是"卡住了"）

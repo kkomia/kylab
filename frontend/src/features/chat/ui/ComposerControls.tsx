@@ -282,9 +282,19 @@ export function KnowledgeBaseControl() {
               chat.useKb ? 'bg-[var(--accent)]' : 'bg-[var(--bg-active)]'
             }`}
           >
+            {/*
+              位移**交给 transform**（与模型面板里「思考」那颗开关同一做法，见本文件的
+              `switchKnob`）：原先写 `left-[14px]` 配 `transition-all
+              [transition:var(--transition-ui)]`，而 `--transition-ui` 只含
+              background-color / color / box-shadow（`src/styles/tokens.css`），`left`
+              不在它的过渡属性里——点开关时滑块是"啪"地跳过去，而那一颗是滑过去的
+              （用户报的正是这个不一致）。
+              行程 12px = 28px 的槽 − 12px 的滑块 − 两侧各 2px；照抄那颗 36/14 的开关
+              写成 16px 会让滑块的右缘顶出槽 4px。
+            */}
             <span
-              className={`absolute top-[2px] h-[12px] w-[12px] rounded-[var(--radius-pill)] bg-[var(--bg-surface)] transition-all [transition:var(--transition-ui)] ${
-                chat.useKb ? 'left-[14px]' : 'left-[2px]'
+              className={`absolute top-[2px] left-[2px] h-[12px] w-[12px] rounded-[var(--radius-pill)] bg-[var(--bg-surface)] transition-transform ${
+                chat.useKb ? 'translate-x-[12px]' : 'translate-x-0'
               }`}
             />
           </span>
@@ -311,8 +321,11 @@ export function KnowledgeBaseControl() {
           sideOffset={6}
           className={`${CONTENT} max-h-[360px] overflow-y-auto`}
         >
-          <DropdownMenu.Separator className="my-[var(--space-1)] h-px bg-[var(--border)]" />
-
+          {/*
+            这里**不放开头的分隔线**：它是"隔开两段"的记号，而它上面什么都没有，
+            打开面板第一眼是一条孤零零的横线，读起来像"上面还有内容没画出来"
+            （用户报的正是这个）。第一件东西直接是「全选 / 清空」那一行动作。
+          */}
           <div className="flex items-center gap-[var(--space-1)]">
             {/*
               动作写在 `onSelect` 里（**不是 `onClick`**）：键盘回车/空格激活菜单项时
@@ -546,7 +559,16 @@ function ContextRing({ ratio }: { ratio: number }) {
         strokeWidth={2}
         opacity={0.25}
       />
-      {/* 进度圈：从 12 点起笔，圆的缺口由 `strokeDashoffset` 给 */}
+      {/*
+        进度圈：从 12 点起笔，圆的缺口由 `strokeDashoffset` 给。
+
+        **过渡写在类里、不写在 `style` 里**：内联样式的优先级高于任何类，`style` 里写了
+        `transition` 之后 `motion-reduce:transition-none` 就压不住它（"减少动态效果"直落
+        那一半会失效）。生成顺序实测过：`motion-reduce:transition-none` 排在这条
+        `[transition:…]` 之后，能覆盖。
+        读数从 30% 走到 70% 时看得出过程（用户报的"看不出过程"就是这里没有过渡）；
+        0.3s / ease-in-out 是 `tokens.css` 里"有体量的东西"那一档。
+      */}
       <circle
         cx={12}
         cy={12}
@@ -557,6 +579,7 @@ function ContextRing({ ratio }: { ratio: number }) {
         strokeDasharray={RING_CIRCUMFERENCE}
         strokeDashoffset={RING_CIRCUMFERENCE * (1 - filled)}
         opacity={0.7}
+        className="[transition:stroke-dashoffset_var(--motion-slow)_var(--motion-ease-inout)] motion-reduce:transition-none"
         style={{ transform: 'rotate(-90deg)', transformOrigin: 'center' }}
       />
     </svg>
