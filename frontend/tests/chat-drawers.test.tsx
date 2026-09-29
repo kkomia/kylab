@@ -63,6 +63,8 @@ vi.mock('@/api/conversations', async (importOriginal) => {
     getFileUrl: vi.fn(),
     uploadFile: vi.fn(),
     downloadFile: vi.fn(async () => undefined),
+    // 「取进本会话」（D20）：它是**写**动作，用例要断言"点了哪一行、带了什么路径"
+    importWorkspaceFile: vi.fn(),
   }
 })
 
@@ -100,7 +102,13 @@ vi.mock('@/api/capabilities', async (importOriginal) => ({
 }))
 
 import { getConversation } from '@/api/conversations'
-import { downloadFile, getFileUrl, listFiles, uploadFile } from '@/api/conversations'
+import {
+  downloadFile,
+  getFileUrl,
+  importWorkspaceFile,
+  listFiles,
+  uploadFile,
+} from '@/api/conversations'
 import type { ConversationDetail, ConversationFileListing } from '@/api/conversations'
 
 const source: ChatSource = {
@@ -474,7 +482,7 @@ describe('文件区抽屉：旧 FileDrawer 的四件事', () => {
         },
       ],
     })
-    // 只有项目档会带 `path`（会话档是平铺的，传了也不看）
+    // **两档都带 `path`**（D20 起会话档也能进子目录），所以这里的 mock 按 path 分流
     vi.mocked(listFiles).mockImplementation(async (_id, path = '', scope = 'conversation') =>
       scope === 'project' && path ? sub : root,
     )
@@ -724,5 +732,185 @@ describe('文件区抽屉：旧 FileDrawer 的四件事', () => {
     // **不是附件**：一个真文件的拖拽会落在 `Files` 那一档，这里只有引用
     expect(store.has('Files')).toBe(false)
     expect(store.size).toBe(2)
+  })
+})
+
+/**
+ * D20：会话档的**目录层级**与「取进本会话」（走查报告 §D20）。
+ *
+ * 用户当时的两句话是"文件区不支持目录层级"与"'项目文件'也没法移到会话"。
+ * 两件事在界面上的落点都是这个抽屉：前者是"会话档也能点进目录"（层级本来就在
+ * 上传时的相对路径里，服务端 D20 起按它列），后者是项目档每一行多一个
+ * **取进本会话**——它与「加入知识库」是两个目的地（见 `Sheets.tsx` 头注）。
+ */
+describe('文件区抽屉：D20（会话档的目录层级 + 取进本会话）', () => {
+  /** 一层目录的回答（`path` / `parent` / `label` / `truncated` 都要给全）。 */
+  function listing(over: Partial<ConversationFileListing> = {}): ConversationFileListing {
+    return {
+      mode: 'object',
+      label: '本会话的文件',
+      path: '',
+      parent: null,
+      entries: [],
+      truncated: false,
+      ...over,
+    }
+  }
+
+  function file(key: string, name: string, kind = 'md') {
+    return { key, name, is_dir: false, size_bytes: 6, modified_at: null, kind }
+  }
+
+  const dir = (key: string, name: string) => ({
+    key,
+    name,
+    is_dir: true,
+    size_bytes: 0,
+    modified_at: null,
+    kind: 'dir',
+  })
+
+  /** 打开抽屉（标题行跟着预览走，所以调用方自己抓节点）。 */
+  async function openDrawer() {
+    const user = userEvent.setup()
+    withProviders(<FilesHost />)
+    await user.click(screen.getByRole('button', { name: '浏览文件' }))
+    const drawer = await screen.findByRole('dialog', { name: /产物与文件/ })
+    return { user, drawer }
+  }
+
+  it('会话档也能进子目录：点目录进去、面包屑与「上一级」都能退回根', async () => {
+    const root = listing({
+      entries: [dir('图表', '图表'), file('art_1', '说明.txt', 'txt')],
+    })
+    const sub = listing({
+      path: '图表',
+      parent: '',
+      entries: [file('art_2', '第二季度.png', 'png')],
+    })
+    vi.mocked(listFiles).mockImplementation(async (_id, path = '') => (path ? sub : root))
+    const { user, drawer } = await openDrawer()
+
+    expect(await within(drawer).findByText('说明.txt')).toBeInTheDocument()
+    // 根那层不画面包屑：档位那个 tab 已经写着"这是本会话的文件"（画出来只是多一行）
+    expect(within(drawer).queryByRole('navigation', { name: '路径' })).toBeNull()
+
+    // 点目录进一层：**会话档也带 path**——这一条就是 api 客户端那处改动的接线
+    await user.click(within(drawer).getByText('图表'))
+    expect(listFiles).toHaveBeenCalledWith('c1', '图表', 'conversation')
+    expect(await within(drawer).findByText('第二季度.png')).toBeInTheDocument()
+
+    const trail = within(drawer).getByRole('navigation', { name: '路径' })
+    expect(within(trail).getByText('本会话的文件')).toBeInTheDocument()
+    expect(within(trail).getByText('图表')).toHaveAttribute('aria-current', 'page')
+
+    // 上一级：回到根那一层（`parent` 是服务端算的）
+    await user.click(within(drawer).getByRole('button', { name: '上一级' }))
+    expect(await within(drawer).findByText('说明.txt')).toBeInTheDocument()
+  })
+
+  it('取进本会话：项目档点一行 → 复制进会话档，并切到那份文件所在的那一层', async () => {
+    vi.mocked(getConversation).mockResolvedValue(conversationDetail('w1'))
+    const projectRoot = listing({
+      mode: 'workspace',
+      label: '工作区「我的项目」',
+      entries: [dir('docs', 'docs')],
+    })
+    const projectDocs = listing({
+      mode: 'workspace',
+      label: '工作区「我的项目」',
+      path: 'docs',
+      parent: '',
+      entries: [file('docs/报告.md', '报告.md')],
+    })
+    const conversationRoot = listing({ entries: [] })
+    const conversationDocs = listing({
+      path: 'docs',
+      parent: '',
+      entries: [file('art_9', '报告.md')],
+    })
+    vi.mocked(listFiles).mockImplementation(async (_id, path = '', scope = 'conversation') => {
+      if (scope === 'project') return path ? projectDocs : projectRoot
+      return path ? conversationDocs : conversationRoot
+    })
+    vi.mocked(importWorkspaceFile).mockResolvedValue({
+      key: 'art_9',
+      name: 'docs/报告.md',
+      is_dir: false,
+      size_bytes: 6,
+      modified_at: null,
+      kind: 'md',
+    })
+    const { user, drawer } = await openDrawer()
+
+    // 项目档：进 docs，那一行上就是「取进本会话」（与「加入知识库」不是一回事）
+    await user.click(within(drawer).getByRole('tab', { name: '项目文件' }))
+    await user.click(await within(drawer).findByText('docs'))
+    const take = await within(drawer).findByRole('button', { name: '取进本会话：报告.md' })
+    await user.click(take)
+
+    // 带走的是项目档那一行的 key（工作区里的相对路径），落点由服务端算
+    expect(importWorkspaceFile).toHaveBeenCalledWith('c1', 'docs/报告.md')
+    // 结果如实说清"现在它在会话里"（名字用服务端返回的那一份：同名时它可能被改过）
+    expect(await within(drawer).findByTestId('file-taken-note')).toHaveTextContent(
+      '已取进本会话：docs/报告.md',
+    )
+    // **切到会话档的那一层**：只把缓存标脏的话用户还站在项目档里，看不见这件事发生过
+    await waitFor(() => expect(listFiles).toHaveBeenCalledWith('c1', 'docs', 'conversation'))
+    expect(await within(drawer).findByText('报告.md')).toBeInTheDocument()
+    expect(within(drawer).getByRole('tab', { name: '本会话' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+  })
+
+  it('「取进本会话」只出现在项目档的**文件**行上（目录与已在本会话里的都没有）', async () => {
+    vi.mocked(getConversation).mockResolvedValue(conversationDetail('w1'))
+    vi.mocked(listFiles).mockImplementation(async (_id, path = '', scope = 'conversation') =>
+      scope === 'project'
+        ? listing({
+            mode: 'workspace',
+            label: '工作区「我的项目」',
+            entries: [dir('docs', 'docs'), file('readme.md', 'readme.md')],
+          })
+        : path
+          ? listing({ path, parent: '', entries: [] })
+          : listing({ entries: [file('art_1', '说明.txt', 'txt')] }),
+    )
+    const { user, drawer } = await openDrawer()
+
+    // 会话档里的东西已经在这条会话里了，再给一个"取进本会话"是个什么都不做的按钮
+    await within(drawer).findByText('说明.txt')
+    expect(within(drawer).queryByRole('button', { name: /取进本会话/ })).toBeNull()
+
+    await user.click(within(drawer).getByRole('tab', { name: '项目文件' }))
+    await within(drawer).findByText('readme.md')
+    // 目录不可取（服务端也只收文件），所以两行里只有一行有这个按钮
+    expect(within(drawer).getAllByRole('button', { name: /取进本会话/ })).toHaveLength(1)
+  })
+
+  it('取失败：把原因留在抽屉里，而且**不切档**（用户还站在他刚才那一行上）', async () => {
+    vi.mocked(getConversation).mockResolvedValue(conversationDetail('w1'))
+    vi.mocked(listFiles).mockResolvedValue(
+      listing({
+        mode: 'workspace',
+        label: '工作区「我的项目」',
+        entries: [file('readme.md', 'readme.md')],
+      }),
+    )
+    vi.mocked(importWorkspaceFile).mockRejectedValue(new Error('文件不存在：readme.md'))
+    const { user, drawer } = await openDrawer()
+
+    await user.click(within(drawer).getByRole('tab', { name: '项目文件' }))
+    await user.click(await within(drawer).findByRole('button', { name: '取进本会话：readme.md' }))
+
+    expect(await within(drawer).findByTestId('file-taken-note')).toHaveTextContent(
+      '文件不存在：readme.md',
+    )
+    // 还在项目档（失败时"切过去看它"没有意义——那边本来就没有它）
+    expect(within(drawer).getByRole('tab', { name: '项目文件' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
   })
 })

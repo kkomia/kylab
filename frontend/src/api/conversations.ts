@@ -223,7 +223,9 @@ export type FileScope = 'conversation' | 'project'
 /**
  * 这条会话的文件区（`scope` 选哪一档，见 `FileScope`）。
  *
- * `path` **只在 project 档有意义**：conversation 档是平铺的，传了服务端也不看。
+ * `path` **两档都认**（D20 起）：项目档进的是真实子目录；会话档进的是名字里的
+ * 相对路径那一层（上传文件夹时 `Composer` 把 `图表/第二季度.png` 当 filename 交过来，
+ * 服务端原样存着）——两档因此是同一个形状，界面那套"点目录 → path = entry.key"通用。
  */
 export function listFiles(
   conversationId: string,
@@ -232,7 +234,7 @@ export function listFiles(
 ): Promise<ConversationFileListing> {
   // scope 显式带上（即使默认档也写清楚）：读请求的人一眼看得出在读哪一档
   const params = new URLSearchParams({ scope })
-  if (path && scope === 'project') params.set('path', path)
+  if (path) params.set('path', path)
   const query = params.toString()
   return request<FileListing>(
     `/conversations/${conversationId}/files${query ? `?${query}` : ''}`,
@@ -292,6 +294,27 @@ export async function downloadFile(conversationId: string, key: string): Promise
   document.body.appendChild(anchor)
   anchor.click()
   anchor.remove()
+}
+
+/**
+ * 「取进本会话」（D20）：把**项目档**里的一份文件复制进这条会话的文件区。
+ *
+ * **与「加入知识库」是两个目的地**（`ingestArtifact`）：这一步进的是**这条会话的
+ * 文件区**——Agent 这一轮就能在 `list_conversation_files` 里看到它，别的会话看不到，
+ * 删这条会话时一起清；进知识库那条是把它变成长期资料。
+ *
+ * `path` 就是项目档那一行给的 key（工作区里的相对路径）。服务端只按这条会话自己的
+ * 工作区解析它（`..` / 绝对路径 / 符号链接出界都拒），落点与名字也由服务端定。
+ * 返回的是**会话文件区里的那一行**（`key` 是新的产物 id），界面据此说清"现在它在会话里"。
+ */
+export function importWorkspaceFile(
+  conversationId: string,
+  path: string,
+): Promise<ConversationFile> {
+  return request<ConversationFile>(`/conversations/${conversationId}/files/import`, {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  })
 }
 
 /**

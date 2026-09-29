@@ -6,7 +6,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createConversation } from '@/api/conversations'
+import { createConversation, importWorkspaceFile, listFiles } from '@/api/conversations'
 
 function ok(): Response {
   return new Response(JSON.stringify({ id: 'conv_1' }), {
@@ -18,6 +18,11 @@ function ok(): Response {
 function lastBody(): Record<string, unknown> {
   const call = vi.mocked(fetch).mock.calls.at(-1)
   return JSON.parse(String(call?.[1]?.body ?? '{}'))
+}
+
+/** 最后一次请求的地址（`request` 里的路径是相对的，`API_BASE` 已经拼上）。 */
+function lastUrl(): string {
+  return String(vi.mocked(fetch).mock.calls.at(-1)?.[0] ?? '')
 }
 
 afterEach(() => {
@@ -65,5 +70,76 @@ describe('createConversation', () => {
     await createConversation(['kb_1'], null, { thinking: false })
 
     expect(lastBody().thinking).toBe(false)
+  })
+})
+
+/** 文件区一层目录的回答（字段给全，避免解析那一段掩盖了地址本身）。 */
+function listing(): Response {
+  return new Response(
+    JSON.stringify({
+      mode: 'object',
+      label: '本会话的文件',
+      path: '图表',
+      parent: '',
+      entries: [],
+      truncated: false,
+    }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  )
+}
+
+describe('listFiles：两档的 path 都发出去（D20）', () => {
+  it('会话档也带 path —— 会话档的层级在上传时那个相对路径里', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => listing()),
+    )
+
+    await listFiles('conv_1', '图表', 'conversation')
+
+    // 这就是 D20 之前那处坏点：那时 `path` 只在 project 档才发，会话档点进目录永远是根
+    expect(lastUrl()).toBe(
+      '/api/v1/conversations/conv_1/files?scope=conversation&path=%E5%9B%BE%E8%A1%A8',
+    )
+  })
+
+  it('根那层不带 path（少一个空参数）', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => listing()),
+    )
+
+    await listFiles('conv_1', '', 'conversation')
+
+    expect(lastUrl()).toBe('/api/v1/conversations/conv_1/files?scope=conversation')
+  })
+})
+
+describe('importWorkspaceFile：「取进本会话」只把来源路径交给服务端', () => {
+  it('POST 到 /files/import，体里只有 path，返回的是会话文件区那一行', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              key: 'art_9',
+              name: 'docs/报告.md',
+              is_dir: false,
+              size_bytes: 6,
+              modified_at: null,
+              kind: 'md',
+            }),
+            { status: 201, headers: { 'Content-Type': 'application/json' } },
+          ),
+      ),
+    )
+
+    const entry = await importWorkspaceFile('conv_1', 'docs/报告.md')
+
+    expect(lastUrl()).toBe('/api/v1/conversations/conv_1/files/import')
+    expect(vi.mocked(fetch).mock.calls.at(-1)?.[1]?.method).toBe('POST')
+    expect(lastBody()).toEqual({ path: 'docs/报告.md' })
+    expect(entry.key).toBe('art_9')
   })
 })

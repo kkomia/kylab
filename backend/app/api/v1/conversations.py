@@ -23,8 +23,10 @@ from app.api.v1.schemas import (
     ChatSourceOut,
     ConversationArtifactListOut,
     ConversationArtifactOut,
+    ConversationBranchIn,
     ConversationCreateIn,
     ConversationDetailOut,
+    ConversationFileImportIn,
     ConversationListOut,
     ConversationOut,
     ConversationRewindIn,
@@ -277,6 +279,33 @@ def rewind_conversation(
     return ConversationRewindOut(query=query, removed=max(0, before - after))
 
 
+@router.post(
+    "/{conversation_id}/branch",
+    response_model=ConversationOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="从第 N 轮分叉出一条新会话（「从这里重开」）",
+)
+def branch_conversation(
+    conversation_id: str,
+    payload: ConversationBranchIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_write)],
+) -> ConversationOut:
+    """把到第 ``payload.turn`` 轮为止的历史复制进一条**新会话**；原会话一个字节不动。
+
+    与 ``rewind`` 的分工：那个是"删掉尾巴、把那句提问还给界面重发"（**改原会话**），
+    这个是"另起一条"（**原会话不动**）。用户不敢乱试的正是后者——一改就回不去了。
+
+    带走消息（含出处 / 步骤 / 思考快照）与它的事件日志，带走知识库范围 / 模型 /
+    思考偏好 / 工作区与**归属**；**不带走文件区**（产物记录与对象存储里的字节都不搬），
+    所以消息上的附件快照也不抄——那份 key 指向源会话的记账，抄过去点开必然 404。
+    这条边界写进《API 接口规范》§1.9。
+    """
+    _get_visible(services, caller, conversation_id)
+    record = services.conversations.branch(conversation_id, turn=payload.turn)
+    return _summary(services, record)
+
+
 @router.delete(
     "/{conversation_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -344,20 +373,21 @@ def list_files(
     conversation_id: str,
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_read)],
-    path: str = Query(default="", description="子目录（只在 scope=project 时有意义）"),
+    path: str = Query(default="", description="要列的那一层子目录（两档都认）"),
     scope: str = Query(
         default=ARTIFACT_SCOPE_CONVERSATION,
         description=(
-            "conversation（默认）= 这条会话的文件（上传 + 产出，平铺）；"
+            "conversation（默认）= 这条会话的文件（上传 + 产出，可进子目录）；"
             "project = 会话挂着的项目目录（可进子目录）"
         ),
     ),
 ) -> FileListingOut:
     """文件面板的内容。``scope`` 两档（v0.55）：
 
-    - ``conversation``：**这条会话的文件**——上传的与产出的都在这儿，平铺一层。
-      上传一律落在这一档里并按会话记账，所以同一项目下不同会话的文件**分得开**
-      （改之前挂了工作区就把上传写进项目目录，于是整个项目共用一个池子）；
+    - ``conversation``：**这条会话的文件**——上传的与产出的都在这儿。上传一律落这一档
+      并按会话记账，所以同一项目下不同会话的文件**分得开**（改之前挂了工作区就把上传
+      写进项目目录，于是整个项目共用一个池子）。``path`` 从 D20 起也认：上传文件夹时
+      名字里带着相对路径（``图表/第二季度.png``），这一档因此与项目档一样能进子目录；
     - ``project``：会话挂着的**项目目录**（能进子目录）——那是用户自己的项目文件，
       只有挂了工作区才有这一档，没挂时服务层会明确说清。
 
@@ -416,6 +446,37 @@ async def upload_file(
         filename=file.filename or "未命名",
         content=content,
     )
+    return FileEntryOut(
+        key=entry.key,
+        name=entry.name,
+        is_dir=entry.is_dir,
+        size_bytes=entry.size_bytes,
+        modified_at=entry.modified_at,
+        kind=entry.kind,
+    )
+
+
+@router.post(
+    "/{conversation_id}/files/import",
+    response_model=FileEntryOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="把项目目录里的一份文件取进本会话",
+)
+def import_project_file(
+    conversation_id: str,
+    payload: ConversationFileImportIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_write)],
+) -> FileEntryOut:
+    """「取进本会话」（D20）：把**这条会话自己的工作区**里的一份文件复制进文件区。
+
+    与「加入知识库」是两个目的地，别混：这一步进的是**这条会话的文件区**
+    （别的会话看不到、删会话一起清），进知识库那条走 ``artifacts/…/ingest``。
+    源路径只走工作区那道闸（绝对路径 / ``..`` / 符号链接出界都拒）；
+    返回的是**会话文件区里的那一行**（key 是新的产物 id），界面据此说清"现在它在会话里"。
+    """
+    _get_visible(services, caller, conversation_id)
+    entry = services.artifacts.import_from_project(conversation_id, payload.path)
     return FileEntryOut(
         key=entry.key,
         name=entry.name,

@@ -21,7 +21,7 @@
  *
  * | 旧 | 这里 |
  * | --- | --- |
- * | **子目录进出一层**：面包屑每段可点、`truncated` 的"只给你看了 300 个" | `path` 状态 + 面包屑 + `listing.parent` 的「上一级」+ 截断说明 |
+ * | **子目录进出一层**：面包屑每段可点、`truncated` 的"只给你看了 300 个" | `path` 状态 + 面包屑 + `listing.parent` 的「上一级」+ 截断说明（**两档都能进**：会话档的层级来自名字里的相对路径，项目档来自真实目录 —— D20） |
  * | **内嵌预览**：按后缀分派（md / 文本 / 图片 / PDF / Office 三件套） | `@/features/preview` 的 `<FilePreview/>`——**签名链接由这里换**（那个域名只认链接、不认 `documentId`，见 `features/preview/README.md` 的第二种调用形） |
  * | **上传**：`uploadFile(conversationId, file)` + 「已放入「X」」 | 多选、**串行**、逐条结果与失败原因留在抽屉里 |
  * | **拖拽引用**：行上写 `application/x-kylab-file` | `onDragStart` 逐字照搬（投放端在 `Composer`，契约没动过） |
@@ -34,6 +34,11 @@
  *   逐个看（与知识库 `UploadDialog` 同一条理由）；
  * - **产物卡片也从这里预览**：`openArtifact` 不再开新标签页，而是"开抽屉 + 直落那一份"
  *   （旧版就是这个口径，`initialEntry` 那段注释写着用户报的那个 bug）。
+ *
+ * D20 加的那一件事（「项目文件取进本会话」）：项目档每一行多一个**取进本会话**——
+ * 用户的原话是"项目文件也没法移到会话"。它与「加入知识库」是两个目的地：这一步只是
+ * **复制一份到这条会话**（Agent 这一轮就在文件区里看得见它），项目里那份一个字节不动；
+ * 进知识库那条在产物卡片上，走 `ingestArtifact`（见 `api/conversations.ts`）。
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -42,6 +47,7 @@ import { ChevronLeft, ChevronRight, Download, File as FileIcon, Folder, Upload }
 import {
   downloadFile,
   getFileUrl,
+  importWorkspaceFile,
   uploadFile,
   type ConversationFile,
   type FileScope,
@@ -326,9 +332,13 @@ interface UploadItem {
  * 产物与文件：这条会话的文件区。
  *
  * **两档视图**（v0.55，见 `FileScope`）：默认「本会话」——用户上传的与 Agent 产出的
- * 都平铺在这里（按会话记账，所以同一项目下不同会话的文件分得开）；挂了项目的会话
- * 还有「项目文件」这一档，读的是那个真实目录（能进子目录）。哪一份落在哪儿由服务端算，
+ * 都在这里（按会话记账，所以同一项目下不同会话的文件分得开）；挂了项目的会话
+ * 还有「项目文件」这一档，读的是那个真实目录。哪一份落在哪儿由服务端算，
  * 这一层只选一档去读、不问也不猜。
+ *
+ * **两档都能进子目录**（D20）：项目档进的是真实目录；本会话档进的是上传时名字里带的
+ * 相对路径那一层（`Composer` 把 `图表/第二季度.png` 当 filename 交过来，服务端原样存着）。
+ * 两档在界面上因此是同一个形状：面包屑 + 「上一级」+ 点目录进一层，服务端算 `path`/`parent`。
  *
  * `Composer` 挂它时绑了 `key={conversationId}`：换会话就整个重来
  * （文件区是按会话划的，旧 `FileDrawer` 也是这么绑的）。
@@ -363,12 +373,20 @@ export function FilesSheet({
    * 文件"（用户上传的与 Agent 产出的都在这一档），而不是整个项目目录。
    */
   const [scope, setScope] = useState<FileScope>('conversation')
-  /** 当前目录：**只在项目档有意义**（会话档是平铺的，恒为根那一层）。 */
+  /** 当前目录：**两档都认**（会话档是名字里的相对路径，项目档是真实目录，D20）。 */
   const [path, setPath] = useState('')
   /** 正在预览的那份文件；`null` = 正在看目录（旧 `FileDrawer.previewing` 同一位）。 */
   const [previewing, setPreviewing] = useState<ConversationFile | null>(null)
   const [uploads, setUploads] = useState<UploadItem[]>([])
   const [uploading, setUploading] = useState(false)
+  /**
+   * 「取进本会话」正在取的那一份（`entry.key`），以及上一条结果。
+   *
+   * 与 `uploads` 分开：那条路是**上传**（用户从本机选文件），这条是**从项目里复制**
+   * （用户点的是列表里已经有的一行）。两者的结果文案也分开——别让用户以为他刚上传了什么。
+   */
+  const [taking, setTaking] = useState('')
+  const [taken, setTaken] = useState<UploadItem | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const uploadSeq = useRef(0)
   /** 直落的那一份只落一次：落地之后再点面包屑回目录，不该又被拽回去。 */
@@ -432,6 +450,53 @@ export function FilesSheet({
       return
     }
     setPreviewing(entry)
+  }
+
+  /**
+   * 「取进本会话」（D20）：把项目档这一行**复制**进这条会话的文件区。
+   *
+   * 与「加入知识库」是两个目的地（见文件头注）：这一步只是"这次对话要用它"——
+   * 复制一份进会话档，项目里那份一个字节不动。
+   *
+   * 成功之后做三件事，顺序有讲究：
+   *
+   * 1. **失效整片文件区缓存**（不只当前这一层）：刚取的那份在会话档、而项目档那一行
+   *    也可能要重画（同名时服务端会退到 `名字 (2).ext`，界面得拿到新名字）；
+   * 2. **切到会话档、并落到那份文件所在的那一层**：只把缓存标脏的话，用户还站在
+   *    项目档里，看不见"取进来"这件事发生过（这一步与上传那条路刻意不同：上传是
+   *    "东西到了就算成"，而这一步的意义就是**到会话档里去看它**）；
+   * 3. 把结果这句话留在抽屉里（`已取进本会话：docs/报告.md`），失败给原因——
+   *    与上传那一条同一个口径，不让用户去猜。
+   */
+  async function takeIntoConversation(entry: ConversationFile): Promise<void> {
+    setTaking(entry.key)
+    try {
+      const created = await importWorkspaceFile(chat.conversationId, entry.key)
+      setTaken({
+        id: (uploadSeq.current += 1),
+        name: created.name,
+        status: 'done',
+        message: `已取进本会话：${created.name}`,
+      })
+      await queryClient.invalidateQueries({
+        queryKey: ['chat', 'files', chat.conversationId],
+      })
+      setPreviewing(null)
+      setScope('conversation')
+      // 落到哪一层由**服务端返回的那个名字**算出来（不是复用当前 path）：
+      // 两者现在恒等（名字就是项目里的相对路径），但把这条不变量写明，
+      // 省得以后名字被改写（例如同名加后缀）时这里悄悄对不上
+      setPath(parentOf(created.name))
+    } catch (cause) {
+      setTaken({
+        id: (uploadSeq.current += 1),
+        name: entry.name,
+        status: 'failed',
+        message: cause instanceof Error ? cause.message : '取进本会话失败',
+      })
+    } finally {
+      setTaking('')
+    }
   }
 
   async function download(entry: ConversationFile): Promise<void> {
@@ -576,8 +641,9 @@ export function FilesSheet({
       /*
         两档与面包屑都在**浏览态**出现（预览态的标题行已经写着文件名了，旧 `FileDrawer` 同一条）。
 
-        「项目文件」这一档只有挂了项目的会话才有（`hasProject`）；面包屑**只在项目档**出现，
-        会话档是平铺一层（`path` / `parent` 都是空的），画它只会多一条没有意义的根那一段。
+        「项目文件」这一档只有挂了项目的会话才有（`hasProject`）。面包屑与「上一级」
+        **两档共用**（D20）：项目档一直在（根那一层就是那个目录），会话档**进了子目录才出现**
+        ——根那层只有"本会话的文件"这一段，而档位那个 tab 已经写着这件事，画出来只是多一行。
       */
       toolbar={
         previewing ? null : (
@@ -590,7 +656,7 @@ export function FilesSheet({
                 </TabsList>
               </Tabs>
             ) : null}
-            {scope === 'project' ? (
+            {scope === 'project' || shownPath ? (
               <nav
                 aria-label="路径"
                 className="flex items-center gap-[var(--space-1)] overflow-x-auto text-[length:var(--text-meta-size)]"
@@ -663,6 +729,16 @@ export function FilesSheet({
             </ul>
           ) : null}
 
+          {/* 「取进本会话」的结果：成功说清"现在它在会话里"（名字可能是服务端改过的），失败给原因 */}
+          {taken ? (
+            <p
+              className={taken.status === 'failed' ? NOTE_BAD : NOTE}
+              data-testid="file-taken-note"
+            >
+              {taken.message}
+            </p>
+          ) : null}
+
           {query.isLoading ? (
             <p className={NOTE}>正在读文件区…</p>
           ) : message ? (
@@ -701,14 +777,33 @@ export function FilesSheet({
                       ) : null}
                     </button>
                     {entry.is_dir ? null : (
-                      <button
-                        type="button"
-                        className={`${ROW_ACTION} mr-[var(--space-1)]`}
-                        aria-label={`下载 ${entry.name}`}
-                        onClick={() => void download(entry)}
-                      >
-                        <Download size={15} />
-                      </button>
+                      <>
+                        {/*
+                          「取进本会话」（D20）**只在项目档**出现：会话档里的东西已经在这条
+                          会话里了，再给一个"取进本会话"是个什么都不做的按钮。
+                          它与「加入知识库」不是一回事（见文件头注），所以文案里一个"库"字都没有。
+                        */}
+                        {scope === 'project' ? (
+                          <button
+                            type="button"
+                            className={`${ROW_ACTION} mr-[var(--space-1)] w-auto gap-[var(--space-1)] px-[var(--space-2)] text-[length:var(--text-micro-size)]`}
+                            aria-label={`取进本会话：${entry.name}`}
+                            title="复制一份到这条会话的文件区（项目里那份不动）"
+                            disabled={taking === entry.key}
+                            onClick={() => void takeIntoConversation(entry)}
+                          >
+                            {taking === entry.key ? '取进中…' : '取进本会话'}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className={`${ROW_ACTION} mr-[var(--space-1)]`}
+                          aria-label={`下载 ${entry.name}`}
+                          onClick={() => void download(entry)}
+                        >
+                          <Download size={15} />
+                        </button>
+                      </>
                     )}
                   </div>
                 </li>

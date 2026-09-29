@@ -964,6 +964,17 @@ class ConversationRewindOut(BaseModel):
     removed: int = 0
 
 
+class ConversationBranchIn(BaseModel):
+    """**从这里重开**（D11）：从第 ``turn`` 轮分叉出一条新会话。
+
+    ``turn`` 是**第几个提问**（1 起数）。越界（0 / 超过总轮数）不夹到边界、
+    也不"取最后一条"，而是报错——静默夹过去会让用户以为分叉点就是他点的那一处，
+    而拿到的是另一段历史。``0`` 与小数由这一层的 ``ge=1`` 挡住（422）。
+    """
+
+    turn: int = Field(ge=1)
+
+
 class ConversationOut(BaseModel):
     """会话摘要。列表用它，所以带上 ``message_count`` 让界面能写"6 条消息"。"""
 
@@ -1179,10 +1190,11 @@ class FileEntryOut(BaseModel):
 
 
 class FileListingOut(BaseModel):
-    """一层目录（临时区是唯一的一层）。"""
+    """一层目录（v0.26；两档都能进子目录，见 ``mode``）。"""
 
     mode: str
-    """``workspace``（能进子目录）/ ``object``（平铺的会话临时区）。"""
+    """``workspace``（项目目录）/ ``object``（会话文件区）。
+    **它不是"平铺 / 分层"那一档**——从 D20 起会话文件区也按名字里的相对路径分层。"""
     label: str
     """给人看的那句话：「工作区「我的项目」」/「本会话」。"""
     path: str = ""
@@ -1191,6 +1203,17 @@ class FileListingOut(BaseModel):
     truncated: bool = False
     """条目被截断过。界面要如实说"只显示了前 N 项"——
     否则"这个项目只有 300 个文件"与"我只给你看了 300 个"看起来一模一样。"""
+
+
+class ConversationFileImportIn(BaseModel):
+    """把**项目目录**里的一份文件取进这条会话的文件区（D20）。
+
+    只给一个相对路径（项目档那一行给的 key）：落点、名字都归服务端算——
+    界面不该也不能决定"复制到哪儿"。路径只走工作区那道闸（绝对路径 / ``..`` /
+    符号链接出界都拒），与读文件、预览同一条。
+    """
+
+    path: str = Field(min_length=1, max_length=1024)
 
 
 class IngestArtifactIn(BaseModel):
@@ -2775,3 +2798,21 @@ class ScheduledTaskRunOut(BaseModel):
 
     task_id: str
     detail: str = ""
+
+
+class ChatStepRetryIn(BaseModel):
+    """重跑某一步的请求体（D24，2026-09-28 走查）。
+
+    **只有一项，而且是"界面独有"的那一项**：这一步重跑之后要接着把这一轮答完，
+    而"这一轮都调了哪些技能"存在输入框的偏好里、本来就不入库（与 ``ChatResumeIn``
+    逐字同一条理由）。模型 / 思考档 / 库范围一律取**会话已存的**——重试一步是接着
+    同一轮做，不给它换模型的机会。
+
+    **要重跑哪一步不进这里**：它在路径上（``(message_id, step_index)``），
+    放请求体里就等于同一件事有两个入口，而"哪一步"是这条请求的唯一主语。
+    """
+
+    skill_names: list[str] = Field(
+        default_factory=list,
+        description="本轮钉住的技能名（与提问时同一份，来自输入框「加号 → 技能」）",
+    )

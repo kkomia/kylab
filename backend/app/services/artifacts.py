@@ -129,12 +129,8 @@ def safe_filename(filename: str, *, fallback: str = "产物") -> str:
     return f"{stem}.{suffix}" if suffix else stem
 
 
-def _upload_name(filename: str) -> str:
-    """上传文件的名字：**允许保留相对路径**（v0.55 起支持上传文件夹）。
-
-    与 :func:`safe_filename` 的差别只有一处：它保留 ``/``。上传文件夹时前端把
-    "目录/子目录/文件"整条相对路径交过来，丢掉路径就等于把文件夹拍平——
-    而用户选的正是文件夹，他要的是那棵结构。
+def _clean_segments(name: str) -> list[str]:
+    """把 ``图表/第二季度.png`` 切成**逐段清洗过**的段（上传与"列哪一层"共用这一份）。
 
     三段清洗，缺一不可：
 
@@ -145,17 +141,37 @@ def _upload_name(filename: str) -> str:
     """
     segments = [
         _UNSAFE_IN_NAME.sub("", segment).strip(" .")
-        for segment in (filename or "").replace("\\", "/").split("/")
+        for segment in (name or "").replace("\\", "/").split("/")
     ]
-    kept = [
+    return [
         segment[:MAX_NAME_CHARS]
         for segment in segments
         if segment and segment not in (".", "..")
     ]
+
+
+def _upload_name(filename: str) -> str:
+    """上传文件的名字：**允许保留相对路径**（v0.55 起支持上传文件夹）。
+
+    与 :func:`safe_filename` 的差别只有一处：它保留 ``/``。上传文件夹时前端把
+    "目录/子目录/文件"整条相对路径交过来（`Composer.asRelativePath` 就是这么改名的），
+    丢掉路径就等于把文件夹拍平——而用户选的正是文件夹，他要的是那棵结构。
+    """
+    kept = _clean_segments(filename)
     if not kept:
         return "文件"
     # 总长也收一道：一个几千层的路径本身就不该进这个系统（它只用来显示与拼 Key）
     return "/".join(kept)[:MAX_NAME_CHARS * 4]
+
+
+def _upload_prefix(path: str) -> str:
+    """界面点开的那一层目录 → **名字前缀**（D20，与 `_upload_name` 同一套逐段清洗）。
+
+    会话文件区的层级**就在名字里**（`_upload_name` 保留的那条相对路径），所以"列出哪一层"
+    等于"取名字的前缀"。归一用的是同一份判据：``a//b/../c`` 与上传时的 ``a/b/c`` 落成
+    同一个前缀，于是"界面能点进去的目录"与"文件名里真有的目录"永远对得上。
+    """
+    return "/".join(_clean_segments(path))
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,9 +374,10 @@ class ArtifactService:
     ) -> FileListing:
         """列文件区的一层。``scope`` 两档（v0.55，见模块头）：
 
-        - ``conversation``（默认）：**这条会话的文件**——上传的与产出的都在，平铺一层
-          （按产物记录列，所以挂不挂工作区都一样）。用户报的"同项目内上传的文件分不开"
-          就是这一档要解决的；
+        - ``conversation``（默认）：**这条会话的文件**——上传的与产出的都在
+          （按产物记录列，所以挂不挂工作区都一样）。``path`` 从 D20 起也认：
+          上传文件夹时名字里就带着相对路径（``图表/第二季度.png``），
+          所以这一档能进子目录，与项目档同一个形状；
         - ``project``：会话挂着的**工作区目录**（可进子目录）。只有挂了工作区才有，
           没挂时**明确说清**，而不是悄悄给一个空列表（空列表会被读成"这个项目里没有文件"）。
         """
@@ -369,27 +386,57 @@ class ArtifactService:
             if spot.root is None:
                 raise InvalidRequestError("这条会话没有挂工作区，没有「项目文件」可看")
             return self._list_directory(spot, path)
-        return self._list_conversation(spot)
+        return self._list_conversation(spot, path)
 
-    def _list_conversation(self, spot: ArtifactSpot) -> FileListing:
-        """这条会话的产物记录（上传的 + 产出的），平铺一层。
+    def _list_conversation(self, spot: ArtifactSpot, path: str = "") -> FileListing:
+        """这条会话的产物记录（上传的 + 产出的），**按名字里的目录分层列**（D20）。
 
-        **标签固定是"本会话的文件"**：``spot.label`` 在工作区会话下说的是
-        "工作区「X」"，而这里列的是**会话**的东西——用它的标签会让人以为在看整个项目。
-        同理 ``mode`` 恒为平铺那一档（记录没有目录层级可言）。
+        层级**已经在名字里**（见 `_upload_name`），所以这里不新增字段、也不改记录：
+        把"当前目录那一段"切出来，目录项是**合成的**（它没有记录、也就没有产物 id），
+        文件项的 key 仍是产物 id——预览、下载、`read_file` 那条路一行都不用改。
+
+        `path` 来自浏览器，先过 `_upload_prefix` 归一（丢空段与 ``.`` / ``..``、逐段清
+        非法字符）：会话档没有磁盘路径可越界，但归一之后"列的目录"与"文件名里的目录"
+        才是同一套判据。列不存在的目录给**空列表**（不是报错）：上一次进来之后
+        那些层可能已经被删会话清掉了，而空列表会被读成"这条会话里没有文件"——
+        所以 `mode` / `label` 照旧说着这是哪一档，界面据此说清。
         """
-        entries = [
-            FileEntry(
-                key=record.id,
-                name=record.name,
-                size_bytes=record.size_bytes,
-                modified_at=record.created_at,
-                kind=record.format or _suffix_of(record.name),
+        prefix = _upload_prefix(path)
+        directories: dict[str, FileEntry] = {}
+        files: list[FileEntry] = []
+        for record in self._stores.meta.list_artifacts(spot.conversation_id):
+            rest = _under_prefix(record.name, prefix)
+            if rest is None:
+                continue
+            head, slash, _tail = rest.partition("/")
+            if slash:
+                # 合成的目录项：key 是它在这一档里的路径（与项目档的 key 同一个形状），
+                # 于是界面那套"点目录 → path = entry.key"两档通用
+                directories.setdefault(
+                    head,
+                    FileEntry(key=_join_key(prefix, head), name=head, is_dir=True, kind="dir"),
+                )
+                continue
+            files.append(
+                FileEntry(
+                    key=record.id,
+                    name=head,
+                    size_bytes=record.size_bytes,
+                    modified_at=record.created_at,
+                    kind=record.format or _suffix_of(head),
+                )
             )
-            for record in self._stores.meta.list_artifacts(spot.conversation_id)
-        ]
+        entries = [*directories.values(), *files]
+        # 目录在前、各自按名字（不区分大小写）——与 `_list_directory` 同一个习惯
+        entries.sort(key=lambda item: (not item.is_dir, item.name.lower()))
+        truncated = len(entries) > MAX_LIST_ENTRIES
         return FileListing(
-            mode=ARTIFACT_IN_OBJECTS, label="本会话的文件", entries=tuple(entries)
+            mode=ARTIFACT_IN_OBJECTS,
+            label="本会话的文件",
+            path=prefix,
+            parent=_parent_of_prefix(prefix),
+            entries=tuple(entries[:MAX_LIST_ENTRIES]),
+            truncated=truncated,
         )
 
     def _list_directory(self, spot: ArtifactSpot, path: str) -> FileListing:
@@ -497,6 +544,65 @@ class ArtifactService:
         留着只是为了旧客户端多传一个字段时不至于报错。
         """
         name = _upload_name(filename)
+        record = self._record_bytes(
+            conversation_id=conversation_id,
+            name=name,
+            content=content,
+            kind=_suffix_of(name),
+        )
+        return FileEntry(
+            key=record.id,
+            name=record.name,
+            size_bytes=record.size_bytes,
+            modified_at=record.created_at,
+            kind=record.format,
+        )
+
+    def import_from_project(self, conversation_id: str, path: str) -> FileEntry:
+        """把**这条会话自己的工作区**里的一份文件复制进会话文件区（D20）。
+
+        用户的原话是"项目文件也没法移到会话"：项目档只是只读地列着他那个真实目录，
+        而"这次对话要用这份文件"的唯一替代是把它拖进输入框插一条 ``@路径``——
+        那条引用只到输入框，文件区里看不见它，换一条会话更是拿不到。
+
+        五条分寸：
+
+        1. **源路径只走 `resolve_in`**（与读文件、预览同一条闸）：绝对路径、``..``、
+           解析后跳出根（含**符号链接**指到外面）一律拒——路径是浏览器回来的，
+           这里不许自己拼 `Path`；
+        2. **只认这条会话自己的工作区**：``spot`` 是这条会话的落点，别的工作区够不着
+           （会话之间因此不会互相取文件）；
+        3. **复制，不是搬**：项目目录里那份一个字节都不动（那是用户的真文件），
+           会话区这份是对象存储里的新记录，按会话记账、删会话时一起清；
+        4. **大小沿用 `MAX_READ_BYTES`**（与预览同一个数）：这条链路把整份字节读进内存，
+           没有分片；超了明确说清，而不是让服务端自己去扛一个 2GB 的文件；
+        5. **同名不覆盖、按规则改名**：会话区是给人翻的，两行一模一样的名字分不出哪份是
+           刚取进来的，所以退到 ``名字 (2).ext``（与产物落盘 `_write_new` 同一个习惯）。
+           ——注意这与"上传"那条路不同：上传是用户自己一个个选的，他看得见自己传了什么；
+           而这一步是**从项目里复制**，同名多半是"上次已经取过一份"。
+        """
+        spot = self.spot_for(conversation_id)
+        if spot.root is None:
+            raise InvalidRequestError("这条会话没有挂工作区，没有「项目文件」可取")
+        source = resolve_in(spot.root, path)
+        if not source.is_file():
+            raise NotFoundError(f"文件不存在：{path}")
+        size = source.stat().st_size
+        if size > MAX_READ_BYTES:
+            raise InvalidRequestError(
+                f"这个文件 {size // (1024 * 1024)}MB，超过取用上限 "
+                f"{MAX_READ_BYTES // (1024 * 1024)}MB。先在项目里把它拆小，"
+                "或者用「下载」在别处打开"
+            )
+        try:
+            content = source.read_bytes()
+        except OSError as exc:
+            raise InvalidRequestError(f"读不了这个文件（{path}）：{exc}") from exc
+
+        taken = {
+            record.name.lower() for record in self._stores.meta.list_artifacts(conversation_id)
+        }
+        name = _unique_name(_upload_name(_relative_key(spot.root, source)), taken)
         record = self._record_bytes(
             conversation_id=conversation_id,
             name=name,
@@ -709,6 +815,48 @@ def _parent_of(root: Path, directory: Path) -> str | None:
         return None
     parent = directory.parent
     return "" if parent == root else _relative_key(root, parent)
+
+
+def _join_key(prefix: str, name: str) -> str:
+    """把当前层前缀与一个名字拼成 key（前缀为空时就是名字本身）。"""
+    return f"{prefix}/{name}" if prefix else name
+
+
+def _under_prefix(name: str, prefix: str) -> str | None:
+    """``name`` 在 ``prefix`` 这一层之下的部分；不在这一层之下给 ``None``。
+
+    **按段比而不是 `startswith`**：``报告`` 与 ``报告集`` 是两回事，
+    `startswith("报告/")` 那一下必须带上分隔符才分得开（这里用前缀相等或前缀 + ``/``）。
+    """
+    if not prefix:
+        return name
+    if name == prefix:
+        # 记录的名字正好等于这一层（理论上是"没有文件名"的形状）：不列，
+        # 否则它会在自己那一层里变成一个没有名字的行
+        return None
+    head = f"{prefix}/"
+    return name[len(head) :] if name.startswith(head) else None
+
+
+def _parent_of_prefix(prefix: str) -> str | None:
+    """会话档"上一层目录"的 key：根那一层是 ``None``（与 :func:`_parent_of` 同口径）。"""
+    return "/".join(prefix.split("/")[:-1]) if prefix else None
+
+
+def _unique_name(name: str, taken: set[str]) -> str:
+    """同名时退到 ``名字 (2).ext``（与 `_write_new` 同一个习惯）。
+
+    ``taken`` 是这条会话里**已经用掉的名字**（全路径，含目录），比较不区分大小写：
+    会话区最终是给人翻的，``报告.md`` 与 ``报告.MD`` 并排两行同样分不出来。
+    """
+    if name.lower() not in taken:
+        return name
+    stem, suffix = split_filename(name)
+    for index in range(2, 1000):
+        candidate = f"{stem} ({index}){f'.{suffix}' if suffix else ''}"
+        if candidate.lower() not in taken:
+            return candidate
+    raise InvalidRequestError(f"这个名字的同名文件太多了：{name}")
 
 
 def _object_key(conversation_id: str, artifact_id: str, name: str) -> str:
