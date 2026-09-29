@@ -21,7 +21,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { webCitationsOfSteps } from '@/features/chat/model/sourceCitations'
 import { AnswerText } from '@/features/chat/ui/AnswerText'
 import { SourceBadge, SourceCardHost } from '@/features/chat/ui/SourceCard'
-import { cardPlacement, resetCitation } from '@/features/chat/ui/sourceCardStore'
+import {
+  CLOSE_GRACE_MS,
+  activeCitation,
+  cardPlacement,
+  hideCitation,
+  hideCitationNow,
+  resetCitation,
+  showCitation,
+} from '@/features/chat/ui/sourceCardStore'
 
 /** 后端 `services/tools.py::_web_search` 的返回形状（逐字照抄它渲染的那几行）。 */
 const SEARCH_RESULT = [
@@ -190,6 +198,42 @@ describe('徽章与卡片（一次只挂一张，hover / focus / Esc / aria）',
     const cards = screen.getAllByTestId('source-card')
     expect(cards).toHaveLength(1)
     expect(cards[0]).toHaveTextContent('arxiv.org')
+  })
+})
+
+describe('悬停抖动那条修法：共享状态 + 关闭宽限（用户："hover 有概率鬼畜抖动"）', () => {
+  const citation = webCitationsOfSteps([{ tool: 'web_search', result: SEARCH_RESULT }]).get(1)!
+
+  it('hideCitation 只是"请求关闭"：宽限内再 show 就撤销（指针从胶囊挪到卡片上不会闪）', () => {
+    vi.useFakeTimers()
+    try {
+      showCitation(citation, null)
+      hideCitation()
+      // 还没到宽限：仍然开着（否则卡片已被卸掉，指针就落空了）
+      expect(activeCitation()).not.toBeNull()
+
+      vi.advanceTimersByTime(CLOSE_GRACE_MS - 20)
+      showCitation(citation, null) // 指针挪到卡片上：卡片这一侧报到
+      vi.advanceTimersByTime(CLOSE_GRACE_MS * 3)
+      expect(activeCitation()).not.toBeNull()
+
+      // 真正离开（不再回来）→ 过了宽限才关
+      hideCitation()
+      vi.advanceTimersByTime(CLOSE_GRACE_MS - 10)
+      expect(activeCitation()).not.toBeNull()
+      vi.advanceTimersByTime(20)
+      expect(activeCitation()).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('Esc 是立刻关（不走宽限）', () => {
+    showCitation(citation, null)
+
+    hideCitationNow()
+
+    expect(activeCitation()).toBeNull()
   })
 })
 

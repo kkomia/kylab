@@ -34,6 +34,7 @@ import {
   activeCitation,
   cardPlacement,
   hideCitation,
+  hideCitationNow,
   showCitation,
   subscribeCitation,
 } from './sourceCardStore'
@@ -42,17 +43,49 @@ import { useSiteLogo } from './siteLogos'
 /** 卡片这一块的抓点（用例与 `aria-controls` 共用）。 */
 export const CITATION_CARD_ID = 'source-citation-card'
 
-/** 行内徽章的类名：小圆角、固定高度、不参与行高计算（`leading-none`）。 */
+/**
+ * 行内胶囊的类名。
+ *
+ * **五项尺寸全部有依据、且不写死 px**（用户 2026-09-29："有点太憋了……参考最开始
+ * 我给你的 kimi 的那个的大小"）。这一份文档（`docs/调研/`）里**没有**那枚胶囊的现成
+ * 数字 ✗，所以按"能落 token 就落 token、能相对就相对"定，并把量到的值记在这里：
+ *
+ * | 项 | 值 | 依据 |
+ * | --- | --- | --- |
+ * | 高度 | `min-h-[1.5em]` | 字号 12px → **18px**（改前 15.08，太憋 ✗）；`em` 跟着字号走 ✓ |
+ * | 左右内边距 | `px-[var(--space-1)]` | 4px 令牌（改前 3.98，同值但不再手写 ✗） |
+ * | 图标与文字间距 | `gap-[var(--space-1)]` | 4px 令牌（改前 3.27） |
+ * | 字号 | `--text-micro-size` | 12px 令牌（改前 11.7 = 0.78em 手写 ✗） |
+ * | 圆角 | `var(--radius-pill)` | 胶囊（改前 `--radius-control` 10px，偏方 ✗） |
+ *
+ * **`em` 而不是 `calc(… * 1.5)`**：Tailwind 的任意值里带 `*` / `/` 生成不出类名 ✗
+ * （这一族已经踩过一次，见 `traceStyles.STEP_ICON` 的注释 ✓）。
+ *
+ * ## hover 变黑（亮）/ 变"抬起的底色"（暗）
+ *
+ * 亮色：底色转**近黑**（`--text-primary` ✓）＋文字转画布色（`--bg-canvas` ✓）——
+ * 与 Kimi 那种"悬停整块反相"的观感一致 ✓。
+ * 暗色**不照抄反转** ✗：暗底上再压一块近白会刺眼，所以改成
+ * "底色抬到 `--bg-hover` + 文字提亮到 `--text-primary` + 描边提到 `--border-strong`" ✓
+ * （文档里查不到 Kimi 的暗色取值 ✗ —— 这是**我的选择**：保持"悬停更醒目"这层意思，
+ * 但不引入新的亮块；要改成硬反转，改这一行即可）。
+ *
+ * **hover 只许变色，绝不变形/位移** ✗：这里只动 `background-color` / `color` /
+ * `border-color`（宽度始终 1px ✓），所以悬停不会改变几何 —— 那正是抖动的常见成因之一。
+ */
 export const BADGE_CLASS =
-  'md-cite-site inline-flex items-center gap-[0.28em] align-[-0.18em] rounded-[var(--radius-control)] ' +
-  'border border-[var(--border-hairline)] bg-[var(--bg-subtle)] px-[0.34em] py-[0.06em] ' +
-  'text-[0.78em] leading-none text-[var(--text-secondary)] no-underline ' +
-  'cursor-pointer [transition:var(--transition-ui)] hover:border-[var(--border)] ' +
-  'hover:text-[var(--text-primary)] focus-visible:outline focus-visible:outline-1 ' +
+  'md-cite-site inline-flex min-h-[1.5em] items-center gap-[var(--space-1)] ' +
+  'align-[-0.2em] rounded-[var(--radius-pill)] border border-[var(--border-hairline)] ' +
+  'bg-[var(--bg-subtle)] px-[var(--space-1)] text-[length:var(--text-micro-size)] ' +
+  'leading-none text-[var(--text-secondary)] no-underline ' +
+  'cursor-pointer [transition:var(--transition-ui)] ' +
+  'hover:border-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-canvas)] ' +
+  'dark:hover:border-[var(--border-strong)] dark:hover:bg-[var(--bg-hover)] ' +
+  'dark:hover:text-[var(--text-primary)] focus-visible:outline focus-visible:outline-1 ' +
   'focus-visible:outline-[var(--ring)]'
 
-/** 徽章里那枚 logo（与过程面板那一枚同一套取图与退化）。 */
-function BadgeLogo({ citation, size = '0.92em' }: { citation: WebCitation; size?: string }) {
+/** 徽章里那枚 logo（与过程面板那一枚同一套取图与退化）。**默认 1em**：跟字号走 ✓ */
+function BadgeLogo({ citation, size = '1em' }: { citation: WebCitation; size?: string }) {
   const url = useSiteLogo(citation.site)
   const box = { width: size, height: size }
   if (url) {
@@ -151,7 +184,8 @@ export function SourceCardHost() {
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') hideCitation()
+      // Esc 是**立刻关**（不走那 140ms 宽限）：键盘用户按了就该马上消失
+      if (event.key === 'Escape') hideCitationNow()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)

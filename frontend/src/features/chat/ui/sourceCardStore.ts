@@ -19,19 +19,55 @@ export interface ActiveCitation {
 
 let active: ActiveCitation | null = null
 const listeners = new Set<() => void>()
+let pending: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 关闭的**宽限**（用户 2026-09-29："hover 有概率鬼畜抖动"）。
+ *
+ * 为什么需要：胶囊与卡片是**两个元素**（卡片由 `SourceCardHost` 统一画在别处），
+ * 指针从胶囊挪到卡片上时必然经过中间那 8px 空隙——没有宽限的话，
+ * 离开胶囊的那一刻就 `hideCitation()` → 卡片被卸掉 → 指针落空 → 悬停状态反复开合 ✗。
+ * 140ms 够人手挪过那 8px，又短到"移开就消失"仍然干脆。
+ */
+export const CLOSE_GRACE_MS = 140
+
+function cancelPending(): void {
+  if (pending === null) return
+  clearTimeout(pending)
+  pending = null
+}
 
 function notify(): void {
   for (const listener of listeners) listener()
 }
 
-/** 打开（或换成另一条）。 */
+/** 打开（或换成另一条）。**先撤掉待关闭**——胶囊与卡片谁后报到都不该被关掉。 */
 export function showCitation(citation: WebCitation, anchor: HTMLElement | null): void {
+  cancelPending()
   active = { citation, anchor }
   notify()
 }
 
-/** 关上（没开就什么都不做：免得每次移开鼠标都惊动订阅者）。 */
+/**
+ * 请求关闭：**延迟 `CLOSE_GRACE_MS`** 再真的关。
+ *
+ * 延迟期间任何一侧（胶囊 / 卡片）再 `showCitation` 都会把它撤掉 —— 这就是
+ * "触发区与卡片共享一份开放状态 + 一小段宽限"那条修法。
+ * 想立刻关（Esc、点走）用 `hideCitationNow`。
+ */
 export function hideCitation(): void {
+  if (!active || pending !== null) return
+  pending = setTimeout(() => {
+    pending = null
+    if (!active) return
+    active = null
+    notify()
+  }, CLOSE_GRACE_MS)
+}
+
+/** 立刻关（Esc / 换会话）。 */
+export function hideCitationNow(): void {
+  cancelPending()
   if (!active) return
   active = null
   notify()
@@ -50,6 +86,7 @@ export function subscribeCitation(listener: () => void): () => void {
 
 /** 用例之间归零（模块级状态不该在用例之间带）。 */
 export function resetCitation(): void {
+  cancelPending()
   active = null
   listeners.clear()
 }
