@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import httpx
 import pytest
@@ -57,7 +58,15 @@ def _client(tmp_path, monkeypatch, model, *, health_ok: bool = True) -> TestClie
 
     _FakeClients.model = model  # type: ignore[attr-defined]  # 类体里取不到闭包变量 ✗，出来再挂 ✓
     monkeypatch.setattr(sidecar, "build_clients", lambda base, token: _FakeClients())
-    monkeypatch.setattr(sidecar, "_probe_health", lambda url, timeout=5.0: health_ok)
+    # `_probe_health` 现在回 `(可达?, 说明)` ✓ —— 说明要**如实带出来** ✗（别吞成一句"不可达" ✗）
+    monkeypatch.setattr(
+        sidecar,
+        "_probe_health",
+        lambda url, timeout=5.0: (
+            health_ok,
+            "" if health_ok else "网络不可达：ConnectError（测试）",
+        ),
+    )
 
     app = sidecar.create_app("http://server.test/api/v1", "t", tmp_path / "ws")
     return TestClient(app)
@@ -124,11 +133,30 @@ def test_workspace_refuses_system_directories() -> None:
 
 def test_workspace_defaults_under_the_user_home(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setattr(sidecar, "DEFAULT_WORKSPACE", tmp_path / "home" / ".kylab" / "workspace")
+    # `default_workspace` 现在会**跳过仓库根之下**的落点 ✗；pytest 的 tmp_path 就在仓库里 ✓，
+    # 所以这条用例要把那道判断关掉（它另有专测 ✓），否则它会一直回退到别处 ✗
+    monkeypatch.setattr(sidecar, "_inside_repo", lambda path: False)
 
     resolved = sidecar.default_workspace()
 
     assert resolved == tmp_path / "home" / ".kylab" / "workspace"
     assert resolved.is_dir()
+
+
+def test_workspace_fallbacks_never_land_inside_the_repo(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**任何回退落点都不得在仓库根之下** ✗（烟测现场：TEMP 被指到 `backend/` ✗）。
+
+    判据直接打在守卫上 ✓：把"是不是在仓库里"一律判真 ✗ → 每个候选都被跳过 ✓ →
+    应当**如实抛错**（而不是硬在某处建目录 ✓）。这样不必依赖 pytest 的临时目录
+    到底在不在仓库里（本机它就在仓库里 ✓，拿它当"仓库外"的样本会假红 ✗）。
+    """
+    monkeypatch.setattr(sidecar, "DEFAULT_WORKSPACE", Path(sidecar.__file__).parent / "nope")
+    monkeypatch.setattr(sidecar, "_inside_repo", lambda path: True)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        sidecar.default_workspace()
+
+    assert "仓库根之下" in str(excinfo.value)
 
 
 def test_knowledge_client_is_the_remote_one(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -153,6 +181,9 @@ def test_probe_health_is_false_on_network_error() -> None:
 
     httpx.get = lambda url, **kwargs: httpx.Client(transport=transport).get(url, **kwargs)  # type: ignore[assignment]
     try:
-        assert sidecar._probe_health("http://server.test/api/v1/health") is False
+        # **返回 (可达?, 说明)** ✓：说明里要有异常原文 ✗（别吞成一句"不可达" ✗）
+        ok, reason = sidecar._probe_health("http://server.test/api/v1/health")
+        assert ok is False
+        assert "网络不可达" in reason and "ConnectError" in reason
     finally:
         httpx.get = original  # type: ignore[assignment]

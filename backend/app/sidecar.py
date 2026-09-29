@@ -86,7 +86,11 @@ def default_workspace() -> Path:
 
     1. `~/.kylab/workspace`（首选 ✓，用户看得见、好备份 ✓）；
     2. `%LOCALAPPDATA%\\kylab\\workspace`（Windows）/ `$XDG_DATA_HOME`（*nix）✓；
-    3. 系统临时目录下的 `kylab-workspace` ✓（最后兜底 ✓）。
+    3. `%LOCALAPPDATA%\\Temp\\kylab-workspace`（Windows）/ 系统临时目录（*nix）✓
+       —— **两个问题分开** ✗：`tempfile.gettempdir()` 在受管终端里可能指向**仓库目录**
+       （本会话实测就是 `E:\\gitlab\\kylab\\backend` ✗）→ 落在仓库里的工作区会被 git 看见 ✗、
+       也会跟着仓库被清掉 ✗，所以 Windows 上**显式用 `%LOCALAPPDATA%\\Temp`** ✓，
+       并且**任何落点只要在仓库根之下就跳过** ✗（`_inside_repo` ✓）。
 
     三处都写不了才抛 ✗（那时如实报出来，而不是假装起来了 ✓）。
     """
@@ -96,10 +100,16 @@ def default_workspace() -> Path:
         candidates.append(Path(local) / "kylab" / "workspace")
     import tempfile
 
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        candidates.append(Path(os.environ["LOCALAPPDATA"]) / "Temp" / "kylab-workspace")
     candidates.append(Path(tempfile.gettempdir()) / "kylab-workspace")
 
     problems: list[str] = []
     for candidate in candidates:
+        # **绝不落在仓库里** ✗（临时兜底最容易踩：TEMP 常被指到工程目录 ✓）
+        if _inside_repo(candidate):
+            problems.append(f"{candidate}（在仓库根之下，跳过 ✗）")
+            continue
         try:
             candidate.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -107,6 +117,19 @@ def default_workspace() -> Path:
             continue
         return candidate
     raise RuntimeError("找不到可写的工作区目录：" + "；".join(problems))
+
+
+def _inside_repo(path: Path) -> bool:
+    """这个路径是不是落在**仓库根**之下（`backend/` 的上一级 ✓）。
+
+    判据用 `app/sidecar.py` 自己的位置往上一级推 ✓ —— 不依赖 cwd ✗、
+    也不依赖用户把仓库放在哪儿 ✓。
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    try:
+        return path.resolve().is_relative_to(repo_root)
+    except OSError:
+        return False
 
 
 def _check_workspace(raw: str | None) -> Path:
@@ -170,12 +193,24 @@ class HealthOut(BaseModel):
     note: str = ""
 
 
-def _probe_health(url: str, timeout: float = 5.0) -> bool:
+def _probe_health(url: str, timeout: float = 5.0) -> tuple[bool, str]:
+    """探活 → ``(可达?, 说明)`` ✓ —— **失败原因必须带出来** ✗（P3 烟测抓到：吞成 False ✗）。
+
+    烟测现场：`/health` 说"后端不可达" ✗，可**同一份 base/token** 的 `/turn` 却成功了 ✓ ——
+    探针把原因吞了，于是"不可达"三个字既不可信、也没法排障 ✗。现在分两类如实报：
+
+    - **网络层不可达**（连不上/超时/DNS）→ 带上异常原文 ✓；
+    - **端点答了但不是 2xx** → 带上**状态码 + 正文前 200 字** ✓（那条才是真正要看的 ✓）。
+    """
     try:
         response = httpx.get(url, timeout=timeout)
-    except httpx.HTTPError:
-        return False
-    return response.status_code < 500
+    except httpx.HTTPError as exc:
+        return False, f"网络不可达：{type(exc).__name__}: {exc}（url={url}）"
+    if response.status_code >= 400:
+        return False, (
+            f"端点返回 {response.status_code}（url={url}）：{response.text[:200]}"
+        )
+    return True, ""
 
 
 def create_app(base_url: str, token: str, workspace: Path) -> FastAPI:
@@ -185,13 +220,14 @@ def create_app(base_url: str, token: str, workspace: Path) -> FastAPI:
 
     @app.get("/health", response_model=HealthOut, summary="健康 + 两端可达性")
     def health() -> HealthOut:
-        kb_ok = _probe_health(clients.health_url)
+        kb_ok, why = _probe_health(clients.health_url)
         return HealthOut(
             version=SIDECAR_VERSION,
             workspace=str(workspace),
             kb_reachable=kb_ok,
             model_reachable=kb_ok,  # 同一个后端；模型是否**可用**要看它的档位配置 ✓
-            note="" if kb_ok else f"后端不可达：{clients.health_url}（如实报，不假装健康）",
+            # **如实报原因** ✗（网络不可达 vs 端点非 2xx 分开 ✓ —— 别吞成一句"不可达" ✗）
+            note=why,
         )
 
     @app.post("/turn", response_model=TurnOut, summary="走一轮（模型在远端；工具待接线）")
