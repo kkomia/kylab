@@ -45,6 +45,7 @@ Windows 上没有 bwrap / sandbox-exec 的原生等价物，容器里也常没�
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 import subprocess
@@ -419,19 +420,100 @@ def _docker_plan(
     )
 
 
+#: 项目虚拟环境里放解释器的那个目录名与可执行文件名（Windows 与 POSIX 两套）。
+_VENV_LAYOUTS = (("Scripts", "python.exe"), ("bin", "python"))
+
+
+def _project_scripts_dir() -> Path | None:
+    """项目**自己**的虚拟环境里放解释器的那个目录；找不到就 ``None``。
+
+    **按本文件的位置推导**（``<repo>/backend/app/services/isolation.py`` → 往上三层是
+    ``<repo>/backend``），不写死机器上的绝对路径：这段代码要跟着克隆走，
+    别人的机器、CI 容器里都得成立。
+
+    找不到就返回 ``None``（装在 site-packages 里跑、或者这台机器没建 ``.venv``）——
+    调用方据此**原样退回**，不许因为"推导不到 venv"把用户的命令弄成起不来。
+    """
+    backend_dir = Path(__file__).resolve().parents[2]
+    for folder, binary in _VENV_LAYOUTS:
+        candidate = backend_dir / ".venv" / folder
+        if (candidate / binary).exists():
+            return candidate
+    return None
+
+
+def _direct_env() -> dict[str, str]:
+    """direct 档要用的环境：**继承当前进程环境**，再把项目解释器目录放进 ``PATH`` **最前面**。
+
+    两件事各有理由，缺一件这条就是错的：
+
+    - **继承**：Windows 上少了 ``PATH`` / ``PATHEXT`` / ``SystemRoot``，连 ``python`` 都
+      找不到（v0.55 那条记录）。所以这里拷一份当前环境，**只动 ``PATH`` 这一项**。
+    - **放最前面**（而不是追加在后面）：服务是 ``uv run`` 起的，``PATH`` 里排在前面的
+      ``python`` 是 **uv 托管的裸解释器**（``…\\uv\\python\\cpython-3.12-…\\python.exe``），
+      它的 ``site-packages`` 是空的——于是沙箱里任何一句 ``python -c "import numpy"``
+      都是 ``ModuleNotFoundError``（2026-09-29 能力实测 K-03 的"画图 60 步交白卷"就是这么来的）。
+      追加在后面赢不过它，必须放最前；**原有的 PATH 项一个都不动**（是追加，不是覆盖）。
+
+    推导不到项目虚拟环境时返回 ``{}`` = 什么都不改（见 ``_project_scripts_dir``）。
+    """
+    scripts = _project_scripts_dir()
+    if scripts is None:
+        return {}
+    env = dict(os.environ)
+    existing = env.get("PATH", "")
+    env["PATH"] = f"{scripts}{os.pathsep}{existing}" if existing else str(scripts)
+    return env
+
+
+def _direct_argv(argv: list[str]) -> list[str]:
+    """direct 档的 argv：**裸名字先按项目虚拟环境解析一遍**。
+
+    只动 ``argv[0]``，而且只有它**不带目录**（``python``、``pip`` 这种）时才试：
+    带路径的（``E:\\…\\python.exe``、``./x``）照旧；项目虚拟环境里没有这个名字的
+    （``ls``、``git``、``node``）**原样返回**——一个都不动。
+
+    **为什么光给子进程 env 里的 PATH 不够**（2026-09-29 能力实测 K-03 的根因）：
+    Windows 的 ``CreateProcess`` 找可执行文件**不看**我们传下去的那份 ``env``
+    （实测：``subprocess.run(["python", …], env={"PATH": "<venv>\\Scripts;…"})`` 仍旧落到
+    uv 那只裸解释器上——``sys.prefix == sys.base_prefix`` 为真、``import numpy`` 失败）。
+    把解析结果**写成绝对路径**才是两边都成立的做法：POSIX 那边本来就会按 ``env`` 的
+    PATH 解析（见 ``_direct_env``），Windows 这边靠这一手把行为对齐。
+    """
+    if not argv:
+        return list(argv)
+    head = argv[0]
+    if os.path.dirname(head):
+        return list(argv)
+    scripts = _project_scripts_dir()
+    if scripts is None:
+        return list(argv)
+    for candidate in (scripts / head, scripts / f"{head}.exe"):
+        if candidate.exists():
+            return [str(candidate), *argv[1:]]
+    return list(argv)
+
+
 def _direct_plan(argv: list[str], sandbox_dir: Path) -> IsolationPlan:
     """无隔离：**命令原样跑**，只是 cwd 落在这次会话的沙箱目录。
 
     与另外三个后端的差别必须写在明处：它们各自限定了"进程能碰什么"（bind mount /
     Seatbelt profile / 容器 namespace），这一个**什么都不限定**——它是降级档
     （见 `direct_isolation`）。所以 ``detail`` 里如实写"未隔离"，界面与给模型的话照它说。
+
+    "原样跑"里有**两处只属于这一档的加工**，都是为了同一件事——沙箱里那个裸 ``python``
+    必须是**项目自己的解释器**（带依赖），而不是 uv 托管的那只裸的：
+
+    - ``argv``：裸名字先按项目虚拟环境解析（见 ``_direct_argv``）；
+    - ``env``：继承当前进程环境，并把项目解释器目录放进 ``PATH`` 最前面（见 ``_direct_env``）。
     """
     return IsolationPlan(
         backend=BACKEND_DIRECT,
-        argv=list(argv),
+        argv=_direct_argv(argv),
         workdir=str(sandbox_dir),
         available=True,
         detail="未隔离：直接在本机执行（cwd 是这次会话的沙箱目录）",
+        env=_direct_env(),
     )
 
 
@@ -465,10 +547,14 @@ def run_isolated(
         )
 
     sandbox_dir.mkdir(parents=True, exist_ok=True)
-    # 环境变量分两档：前三个后端是"限定视图"，给一份固定的 POSIX env 就够（它们
-    # 自己把需要的目录挂进去）；而**直接执行那一档必须继承当前进程环境**——
-    # Windows 上少了 PATH / PATHEXT / SystemRoot，连 `python` 都找不到（v0.55）。
-    env = (
+    # 环境变量分两档：
+    #
+    # - **直接执行那一档**由 `_direct_plan` 组装（继承当前进程环境 + 把项目解释器放进
+    #   PATH 最前面，见 `_direct_env` 里那段"为什么"）；推导不到项目虚拟环境时它是空的
+    #   ——那就照旧 `None` = **继承**，因为 Windows 上少了 PATH / PATHEXT / SystemRoot，
+    #   连 `python` 都找不到（v0.55）；
+    # - 前三个后端是"限定视图"，给一份固定的 POSIX env 就够（它们自己把需要的目录挂进去）。
+    env = plan.env or (
         None
         if plan.backend == BACKEND_DIRECT
         else {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(sandbox_dir)}

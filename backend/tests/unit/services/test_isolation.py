@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -405,3 +406,52 @@ def test_docker_probe_asks_for_utf8_explicitly(monkeypatch) -> None:  # type: ig
     assert found.available is True, found.detail
     assert seen["encoding"] == "utf-8"
     assert seen["errors"] == "replace"
+
+
+def test_direct_backend_puts_the_project_interpreter_first(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """direct 档里裸 `python` 要落到**项目自己的解释器**上（`import numpy` 能用）。
+
+    这是 2026-09-29 能力实测 K-03 的根因：服务是 ``uv run`` 起的，``PATH`` 里排在最前的
+    ``python`` 是 **uv 托管的裸解释器**（``…\\uv\\python\\cpython-3.12-…``，site-packages 空），
+    于是沙箱里 ``python -c "import numpy"`` 一律 ``ModuleNotFoundError``——"画图"那条
+    60 步就这么交白卷的。``_direct_plan`` 因此把裸名字**按项目虚拟环境解析成绝对路径**
+    （Windows 的 ``CreateProcess`` 不看子进程 env 的 PATH，只写 PATH 不够；见 `_direct_argv`），
+    同时把那个目录放进子进程 ``PATH`` 最前面（见 `_direct_env`）。推导不到 venv 就原样退回。
+
+    这条**真跑一条命令**，并且拿命令自己报的 ``sys.executable`` 当判据（不是看字符串）。
+    为了确定性地复现"沙箱里没有项目解释器"这个现场，先把当前 PATH 里的那个目录摘掉：
+    少了修复，裸 ``python`` 只会落到外面别的解释器上——断言当场红。
+    """
+    scripts = iso._project_scripts_dir()
+    if scripts is None:
+        pytest.skip("这台机器上没有 backend/.venv，推导不到项目解释器")
+
+    def _same_as_scripts(entry: str) -> bool:
+        try:
+            return Path(entry).resolve() == scripts.resolve()
+        except OSError:  # PATH 里可能有写坏的项
+            return False
+
+    kept = [
+        item
+        for item in os.environ.get("PATH", "").split(os.pathsep)
+        if item and not _same_as_scripts(item)
+    ]
+    monkeypatch.setenv("PATH", os.pathsep.join(kept))
+
+    box = tmp_path / "box"
+    box.mkdir()
+    result = iso.run_isolated(
+        ["python", "-c", "import sys, numpy; print(sys.executable); print(numpy.__version__)"],
+        workspace_root=tmp_path,
+        sandbox_dir=box,
+        isolation=iso.direct_isolation(),
+        timeout=60,
+    )
+
+    lines = [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
+    assert result.ok, result.stderr or result.stdout
+    # 第一行是命令自己报的解释器：它必须在**项目那个虚拟环境**里
+    assert lines and Path(lines[0]).parent.resolve() == scripts.resolve(), lines
+    # 第二行是 numpy 的版本 = `import numpy` 真的成了（K-03 那条路的判据）
+    assert len(lines) >= 2 and lines[1], lines
