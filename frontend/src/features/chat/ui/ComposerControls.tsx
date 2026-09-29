@@ -589,12 +589,16 @@ function ContextRing({ ratio }: { ratio: number }) {
  * 环是图形读数，要 ≥3:1，为什么不是继承按钮的 `--text-secondary`（只有 3.01:1）
  * 见 `ContextRing` 的注释。
  */
-export function ContextSummary() {
+/**
+ * 上下文读数的那几个值（D08，2026-09-28 走查）：**常驻那颗读数与浮层里那一行共用一份口径**。
+ *
+ * 抽出来的理由就是 D08 本身：同一个数在两处显示，两处各算一遍迟早会漂
+ * （一个显示 3%、另一个显示 4%，用户只能怀疑整块仪表）。
+ */
+function useContextReadout() {
   const chat = useChat()
   const usage = chat.contextUsage.data
   const error = chat.contextUsage.error
-  if (!chat.conversationId) return null
-
   // 环的推进量按 0..1 的占用比画；文字读数走 `formatPercent`（10% 以下留一位小数）
   const ratio = usage ? Math.min(1, Math.max(0, usage.ratio)) : 0
   const percentText = formatPercent(usage ? ratio * 100 : null)
@@ -605,6 +609,39 @@ export function ContextSummary() {
   const title = usage
     ? `上下文已用 ${formatCount(usage.used)} / ${formatCount(usage.total)} tokens（${percentText}）`
     : '上下文用量'
+  return { ratio, label, title }
+}
+
+/**
+ * **常驻**的那颗上下文读数（D08）。
+ *
+ * 走查实测：占用读数进不了常驻区 —— 它只活在「模型」浮层里，用户不点开就完全不知道
+ * "这一轮还剩多少上下文"。而这一格恰恰是**该一直看得见**的那种数：它决定"还能不能接着聊"。
+ *
+ * 做成**只读**的一颗（不是按钮）：明细与压缩入口照旧在「模型」浮层最底下
+ * （那里的设计一点没动，见 `ContextDetails`）；这里只把那个数字摆出来，
+ * 全量口径在悬停里。
+ */
+export function ContextUsageChip() {
+  const chat = useChat()
+  const { ratio, label, title } = useContextReadout()
+  if (!chat.conversationId) return null
+  return (
+    <span
+      data-testid="context-usage-chip"
+      className="inline-flex shrink-0 items-center gap-[var(--space-1)] text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]"
+      title={title}
+    >
+      <ContextRing ratio={ratio} />
+      <span className="tabular whitespace-nowrap">{label}</span>
+    </span>
+  )
+}
+
+export function ContextSummary() {
+  const chat = useChat()
+  const { ratio, label, title } = useContextReadout()
+  if (!chat.conversationId) return null
 
   return (
     <div className={PREF_ROW} title={title}>

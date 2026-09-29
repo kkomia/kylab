@@ -22,7 +22,7 @@ import { FILE_DRAG_TYPE } from '../runtime/prefs'
 import { matchChatShortcut } from '../runtime/shortcutPrefs'
 import { useChat, type MentionItem } from '../runtime/ChatProvider'
 import { ApprovalBar } from './ApprovalBar'
-import { KnowledgeBaseControl, ModelPicker, PlusMenu } from './ComposerControls'
+import { ContextUsageChip, KnowledgeBaseControl, ModelPicker, PlusMenu } from './ComposerControls'
 import { MentionMenu, SlashMenu, type MenuHandle } from './Menus'
 import { PermissionControl } from './PermissionControl'
 import { FilesSheet } from './Sheets'
@@ -733,6 +733,9 @@ export function Composer() {
               而 `justify-between` 在"本行只有一个孩子"时是把它摆在行首的（发送键会跑到
               左边、且与权限胶囊同一行时还会重叠）。`ml-auto` 让它换行之后仍然靠右。 */}
           <div className="ml-auto flex min-w-0 items-center gap-[var(--space-2)]">
+            {/* 上下文占用**常驻**在这一排（D08，2026-09-28 走查）：它决定"还能不能接着聊"，
+                原先只活在「模型」浮层里，不点开就看不到。明细与压缩入口照旧在浮层最底下 */}
+            <ContextUsageChip />
             {/* 模型这一格还装着"思考 / 强度 / 上下文读数"（它们是同一个问题的几个面） */}
             <ModelPicker />
             {/* 这两句是行内附注，也**不许折行**（同上：整行只有一行） */}

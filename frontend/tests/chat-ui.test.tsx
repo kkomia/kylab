@@ -1044,6 +1044,9 @@ describe('停止与回到最新', () => {
     // 2026-09-27 收窄（用户拿着旧版截图："我觉得很简洁美观"）：「上下文用量」进了模型浮层；
     // 同一天权限轴那一次改动又把「权限」摆回这一排（用户指定：加号右边、知识库左边），
     // 而「命令执行策略」折进权限档、「模式」回到设置页。这一条钉的就是这一排的成员。
+    // **D08（2026-09-28 走查）又把「上下文用量」请回了这一排**：那一格决定
+    // "还能不能接着聊"，不该藏在浮层里。两次决定都记在这里：09-27 为简洁收进去、
+    // 09-28 走查要求露出来（明细与压缩入口仍在浮层最底下，没有回退那一半）。
     const field = document.querySelector('#chat-query') as HTMLElement
     const card = field.parentElement as HTMLElement
     const row = [...card.querySelectorAll(':scope > div')].find((el) =>
@@ -1063,10 +1066,14 @@ describe('停止与回到最新', () => {
     expect(within(left).getByRole('button', { name: '知识库范围' })).toBeInTheDocument()
     expect(within(left).getAllByRole('switch')).toHaveLength(1)
     // 右组：模型那一格 + 发送键（各有 aria-label，这一排就这两颗）
-    expect([...right.children].map((el) => el.getAttribute('aria-label'))).toEqual([
+    // 右组：模型那一格 + 发送键（各有 aria-label），外加**常驻的上下文读数**（D08）。
+    // 那一颗是**只读**的一格（span，没有 aria-label），所以这里先按 aria-label 认那两颗，
+    // 再单独钉它在右组里 —— 两种东西混在一个数组里比不出来。
+    expect([...right.children].map((el) => el.getAttribute('aria-label')).filter(Boolean)).toEqual([
       '选择对话模型',
       '发送',
     ])
+    expect(within(right).getByTestId('context-usage-chip')).toBeInTheDocument()
     // 两侧都带 `min-w-0`：放不下时按"字省"（省号）而不是整格换行/撑破卡片
     expect(left.className).toContain('min-w-0')
     expect(right.className).toContain('min-w-0')
@@ -2140,5 +2147,32 @@ describe('上下文分解能看"本轮注入了什么"（D09，2026-09-28 走查
     )
     // 没有 preview 的那一项**不摆入口**（"其它"只有数字）
     expect(screen.queryByRole('button', { name: '其它：看本轮注入了什么' })).not.toBeInTheDocument()
+  })
+})
+
+describe('上下文读数常驻可见（D08，2026-09-28 走查）', () => {
+  it('**不点开模型菜单**就能看到占用读数', async () => {
+    // 病灶：读数原先只活在「模型」浮层里 —— 用户不点开就完全不知道"这一轮还剩多少上下文"
+    vi.mocked(getContextUsage).mockResolvedValue({
+      items: [],
+      used: 11008,
+      total: 1_000_000,
+      ratio: 0.011,
+      compress_at: 70,
+      compress_budget: 700000,
+      estimated: true,
+      note: '按字符数估算',
+    } as never)
+
+    renderPage()
+
+    const chip = await screen.findByTestId('context-usage-chip')
+    // 悬停里给全量口径（个位数的 token 读数）——**等读数回来**再断言
+    // （读数是异步取的，刚挂上那一刻 title 还是兜底那句「上下文用量」）
+    await waitFor(() =>
+      expect(chip).toHaveAttribute('title', expect.stringContaining('上下文已用')),
+    )
+    // 而浮层里那一行（`ContextSummary`）**没有被渲染** —— 说明这一颗真的在常驻区
+    expect(screen.queryByText('上下文')).not.toBeInTheDocument()
   })
 })
