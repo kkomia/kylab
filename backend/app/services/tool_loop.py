@@ -57,6 +57,7 @@ from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 if TYPE_CHECKING:  # 只为标注：chat.py 反过来要用这个模块（工具循环是它的主流程）
     from app.services.chat import SourceRef
@@ -479,6 +480,76 @@ class ToolLoop:
             degraded=True,
         )
         yield from self._answer(messages)
+
+    def retry_step(
+        self,
+        *,
+        messages: list[ChatMessage],
+        tool: str,
+        arguments: str,
+        reasoning: str = "",
+    ) -> Iterator[object]:
+        """**只重跑一步**（D24，2026-09-28 走查）：用存下来的入参再跑一次那次调用，然后接着答完。
+
+        为什么"接着答"是这条语义的一半：只把工具重跑一遍、回答还是旧的，用户看到的
+        仍是那个建立在失败结果上的答案；这一步的全部价值在于"结果换掉之后，它把话接着说下去"。
+
+        为什么整条都走既有循环、而不是另写一条"执行工具"的路：**闸全在循环里**。
+        模式闸 / 权限档（``_blocked_by_mode``）、计划门闸、审批（``_execute_batch`` 里
+        按调用发出去的那条 `approval`）都判定在 ``_execute`` / ``_resolve_approvals``
+        这两处——绕过去重跑一次工具，等于开了一条"从历史里再执行一次"的后门。
+        所以这里只做三件事：把这条调用**当这一批里唯一的一条**跑掉（事件顺序与
+        ``_perform`` 逐条对齐）、把它接回 ``messages``、``run`` 接着跑。
+
+        接回 ``messages`` 的那两条（assistant 的 ``tool_calls`` + ``tool`` 结果）是
+        "这一次调用真的执行了"的全部凭据：模型看到的是"这一次调用成功了"，而不是一句转述。
+        ``reasoning`` 由调用方给（存下来的那一步的推理）：端点（DeepSeek 实测）要求带
+        工具调用的助手消息把 ``reasoning_content`` 传回来，缺它这一轮请求直接 400。
+
+        ``stop=None``：**重跑不认上一轮那两道闸**。步数/墙钟是"这一轮还能不能继续做"
+        的预算，而这是一次用户点名的动作——预算已经在"接着答"那一段里由 ``run`` 重新给。
+        真正与安全有关的闸（模式 / 权限 / 审批）一个都不跳过，见上。
+
+        **失败如实**：``_execute`` 早就定死——工具失败就是把错误当结果回灌
+        （``outcome="failed"`` 那套），重跑还是失败就照旧是失败，这里一个字节都不粉饰。
+        """
+        call = ToolCall(id=f"call_{uuid4().hex[:12]}", name=tool, arguments=arguments)
+        # 顺序与 ``_perform`` 一致：running 先发、再执行、done 带结果（界面按它把两行并成一条）
+        yield StepEvent(
+            phase="tool",
+            label=tool_label(tool),
+            tool=tool,
+            kind=kind_of(tool),
+            status="running",
+        )
+        outcomes = self._execute_batch([call], stop=None)
+        merged = _merge_sources(outcomes)
+        if merged:
+            # 与 ``_perform`` 同一条：一批（这里是"一条"）只发一次累计出处
+            yield SourcesEvent(sources=merged)
+        # 审批照旧问出来、停在那儿等回答：`ask` 档的工具不允许因为"这次是从历史里重跑"
+        # 就免问——这条路上同样没有界面之外的旁路
+        outcomes = yield from self._resolve_approvals([call], outcomes)
+        outcome = outcomes[0]
+        yield StepEvent(
+            phase="tool",
+            label=tool_label(tool),
+            tool=tool,
+            kind=kind_of(tool),
+            detail=outcome.step_detail(),
+            added=outcome.added,
+            outcome=outcome.outcome,
+            args=_clip(arguments, MAX_STEP_PREVIEW_CHARS),
+            result=_clip(outcome.content, MAX_STEP_PREVIEW_CHARS),
+            artifacts=tuple(outcome.artifacts),
+        )
+        messages.append(
+            ChatMessage(role="assistant", content="", tool_calls=(call,), reasoning=reasoning)
+        )
+        messages.append(ChatMessage(role="tool", content=outcome.content, tool_call_id=call.id))
+        # 从这里接着把这一轮跑完：``run`` 的第一步就是又一次模型调用（带着工具表），
+        # 与"这一次调用刚刚返回"完全同形——所以"接着答"不必另写一份
+        yield from self.run(messages=messages)
 
     # ------------------------------------------------------------------ 内部
 

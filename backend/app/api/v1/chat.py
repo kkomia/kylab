@@ -60,6 +60,7 @@ from app.api.v1.schemas import (
     ChatResponseOut,
     ChatResumeIn,
     ChatSourceOut,
+    ChatStepRetryIn,
     CommandListOut,
     CommandOut,
     ContextUsageItemOut,
@@ -128,6 +129,7 @@ from app.services.tool_loop import (
     MARKER_ONLY_ANSWER,
     MARKER_STEP_LABEL,
     text_marker_step,
+    tool_label,
 )
 
 logger = logging.getLogger(__name__)
@@ -324,6 +326,82 @@ def resume_turn(
             thinking=thinking,
             effort=effort,
             caller=caller,
+        ),
+    )
+    return StreamingResponse(
+        _live_stream(services, conversation_id, live, after=0),
+        media_type="text/event-stream",
+        headers=SSE_HEADERS,
+    )
+
+
+@router.post(
+    "/conversations/{conversation_id}/messages/{message_id}/steps/{step_index}/retry",
+    summary="重跑这一轮里的某一步（工具级重试），再从那里接着答完",
+    response_class=StreamingResponse,
+)
+def retry_step(
+    conversation_id: str,
+    message_id: str,
+    step_index: int,
+    payload: ChatStepRetryIn,
+    services: Services = Depends(get_services),
+    caller: Caller = Depends(require_read),
+) -> StreamingResponse:
+    """**只重跑那一步**（D24，2026-09-28 走查），再接着把这一轮答完。
+
+    寻址用 ``(message_id, step_index)``：**步骤在库里是消息 ``steps`` 数组里的一个 dict、
+    没有自己的 id**，而这两个东西天然稳定——消息 id 是 ``msg_*``（``LastTurn.answer_id``
+    就拿得到），下标在数组里不动（重试是**就地替换**，见 ``_retry_steps``）。
+    一个存储字段都不用加。
+
+    三处与「续跑」（``/resume``）分开的判定，每一处都有理由：
+
+    1. **能不能重试看那一步自己**（见 ``_retry_target``）：非工具步骤、没跑完的、
+       还在等确认的、**已经成功的**、以及入参没存下来的，都 422 带一句话——
+       这些情况点了按钮也没有意义，说清楚比悄悄做别的事强；
+    2. **只有最后一轮那条回答能重试**：重试之后这一轮会重写一遍回答，
+       而更早的轮次已经被后面的回答接过去了（"接着答"会落在错的顺序上）；
+       **别人的会话 / 别人的消息一律 404**（不暴露存在性，与 ``_get_artifact`` 同一条）；
+    3. **执行不绕闸**：重跑走 ``ToolLoop.retry_step``，模式闸 / 权限档 / 计划门闸 /
+       审批（确认条）全在原处判定（见那个方法的说明）——历史里的一步不是后门。
+
+    旧回答**当场被顶替**（``drop_answer``）：与续跑同一条取舍——同一句提问底下不挂
+    两条回答。落库失败不影响已经付过费的回答（与 ``_resume_turn_events`` 同一处置）。
+    """
+    _require_visible_conversation(services, conversation_id, caller)
+    conversation = services.conversations.get(conversation_id)
+    check_kb_scope(services, caller, conversation.kb_ids)
+    turn, step = _retry_target(services, conversation_id, message_id, step_index)
+
+    # 模型档位 / 思考档位 / 库范围**取会话已存的**：重试一步是接着同一轮做，
+    # 不是新一轮提问（与续跑同一条；界面能改的只有"钉住的技能"，它不入库）
+    model_pk = conversation.model_pk
+    thinking = conversation.thinking
+    effort = conversation.thinking_effort
+
+    # 先把那条回答删掉：新的回答会顶替它。**在流开始之前**做——失败了要当场
+    # 4xx/5xx，而不是"流里报个错、库里还留着旧的"（与 ``resume_turn`` 逐字同一条）
+    services.conversations.drop_answer(conversation_id, answer_id=turn.answer_id)
+
+    # 与提问 / 续跑同一处置（P2-2）：跑在后台任务里，断开可以按锚点重连补发——
+    # 重跑一步也要跑工具（可能几十秒），不能绑在那条连接上
+    live = _start_live_turn(
+        services,
+        conversation_id,
+        _retry_events(
+            services,
+            caller,
+            conversation_id=conversation_id,
+            # 库范围取**会话已存的**（与续跑同一条：接着同一轮做，不是新一轮提问）
+            kb_ids=conversation.kb_ids,
+            step_index=step_index,
+            step=step,
+            turn=turn,
+            payload=payload,
+            model_pk=model_pk,
+            thinking=thinking,
+            effort=effort,
         ),
     )
     return StreamingResponse(
@@ -1551,6 +1629,252 @@ def _resume_turn_events(
     yield LiveEmit(
         {"type": "done", "answer": answer}, log_index=len(sink.events), terminal=True
     )
+
+
+#: 重试一步时**允许**的结果类别（D24）。只有"这一步没做成"的那两类：
+#: ``failed``（工具自己失败 / 业务规则拦下）与 ``blocked``（模式闸、权限档、
+#: 拒绝规则拦下——用户改完设置/放开权限之后重试正是这条路的用处）。
+#: ``""``（已经成功）与 ``"awaiting"``（还在等用户点头）不在这里，理由见 `_retry_target`。
+_RETRYABLE_OUTCOMES = frozenset({"failed", "blocked"})
+
+
+def _retry_target(
+    services: Services, conversation_id: str, message_id: str, step_index: int
+) -> tuple[LastTurn, dict[str, object]]:
+    """要重试的那一步（连同它所属的那一轮）。**不合规就当场报错，什么都不动。**
+
+    判定的顺序是"从外往里"：先确认这条消息是**这条会话里最后一轮的那条回答**
+    （更早的轮次已经被后面的回答接过去了，重试会落在错的顺序上），再确认下标指向
+    一步**真的能重跑**的动作。每一句报错都要能照着做下一步——这是走查 D24 的起点
+    （"被拒绝之后只能靠模型自己换做法"），报一句"不能重试"而不说为什么，等于没修。
+    """
+    messages = services.conversations.messages(conversation_id)
+    answer = next((item for item in messages if item.id == message_id), None)
+    if answer is None or answer.role != "assistant":
+        # **404 而不是 403/422**：不暴露"这条消息在别处存在"（与 `_get_artifact` 同一条）
+        raise NotFoundError(f"消息不存在：{message_id}")
+    turn = services.conversations.last_turn(conversation_id)
+    if turn is None or turn.answer_id != message_id:
+        raise InvalidRequestError(
+            "只能重试最后一轮里的那一步：这一轮之后又答过了，重试它会把顺序弄乱"
+        )
+
+    steps = list(turn.steps)
+    if step_index < 0 or step_index >= len(steps):
+        raise InvalidRequestError(
+            f"这一步不存在：第 {step_index} 步（这一轮一共 {len(steps)} 步）"
+        )
+    step = dict(steps[step_index])
+    tool = str(step.get("tool") or "")
+    if not tool:
+        raise InvalidRequestError("这一步不是工具调用，没有可重跑的动作")
+    if step.get("status") != "done":
+        raise InvalidRequestError("这一步还没跑完，没有结果可以替换")
+    outcome = str(step.get("outcome") or "")
+    if outcome == "awaiting":
+        raise InvalidRequestError("这一步还在等你的确认：先回答那条确认，再谈重试")
+    if outcome not in _RETRYABLE_OUTCOMES:
+        raise InvalidRequestError("这一步是成功的，没有要重试的东西")
+    # 入参是重跑的唯一依据：没有它就只能拿一副空的参数去执行**另一个**调用，
+    # 那比拒绝更糟（用户以为重试的就是原来那一步）
+    if not str(step.get("args") or "").strip():
+        raise InvalidRequestError("这一步的入参没有存下来，没法按原样重跑")
+    return turn, step
+
+
+def _retry_events(
+    services: Services,
+    caller: Caller,
+    *,
+    conversation_id: str,
+    kb_ids: Sequence[str],
+    step_index: int,
+    step: dict[str, object],
+    turn: LastTurn,
+    payload: ChatStepRetryIn,
+    model_pk: str | None,
+    thinking: bool | None,
+    effort: str | None,
+) -> Iterator[LiveEmit]:
+    """把一次"重跑一步 + 接着答完"摊成一串事件（与 ``_resume_events`` 同构）。
+
+    与续跑同一个外层结构（建 sink → ``turn/start`` → 断开补 ``interrupted``），
+    原因也同一条：它同样跑在后台、同样可能被断开/被停止。
+    """
+    sink = _TurnSink()
+    mode = services.chat.current_mode()
+    _note_turn_mode(services, sink, conversation_id, mode)
+    # 这一轮为什么存在，日志里要看得出来（与续跑的 `resume_reason` 同一个字段）：
+    # 否则回看时会以为是用户又问了一遍
+    reason = f"重试第 {step_index + 1} 步（{tool_label(str(step.get('tool') or ''))}）"
+    sink.start_turn(query=turn.question, model_pk=model_pk, resume_reason=reason, mode=mode)
+    services.commands.turns.begin(conversation_id)
+    try:
+        yield from _retry_turn_events(
+            services,
+            caller,
+            conversation_id=conversation_id,
+            kb_ids=kb_ids,
+            step_index=step_index,
+            step=step,
+            turn=turn,
+            payload=payload,
+            sink=sink,
+            model_pk=model_pk,
+            thinking=thinking,
+            effort=effort,
+        )
+    except GeneratorExit:
+        # 与 ``_events`` / ``_resume_events`` 同一处置：跑到一半被停止/断开的要补齐
+        _record_interruption(services, conversation_id, sink)
+        raise
+    finally:
+        services.commands.turns.end(conversation_id)
+
+
+def _retry_turn_events(
+    services: Services,
+    caller: Caller,
+    *,
+    conversation_id: str,
+    kb_ids: Sequence[str],
+    step_index: int,
+    step: dict[str, object],
+    turn: LastTurn,
+    payload: ChatStepRetryIn,
+    sink: _TurnSink,
+    model_pk: str | None,
+    thinking: bool | None,
+    effort: str | None,
+) -> Iterator[LiveEmit]:
+    """重试的主体：重跑那一步 → 把结果接回上下文 → 接着把这一轮答完 → 落库。
+
+    与 ``_resume_turn_events`` 逐条对齐的地方（**刻意不各写一份**）：出处接进账本、
+    历史里去掉这一轮的提问、交接说明与提问合成一条 user 消息、以及收尾那一段
+    （``close_turn`` → ``append_answer`` → 一样带 ``done`` 游标）。
+    """
+    chat = services.chat
+    # 上一轮的出处还原成对象：既要接进来源账本（编号接着往下排），也要先当作
+    # 这一轮已有的出处——续答一次都没检索时，答案里的 [n] 仍然要有对应记录
+    seeds = [_source_from_snapshot(item) for item in turn.sources]
+    sink.sources = list(seeds)
+
+    # 历史里去掉这一轮的提问（它在库里，由 `question` 显式带进来），与续跑同一条：
+    # 把同一句问话传两遍，模型容易被重复的提问带偏
+    context_payload = ChatRequestIn(query=turn.question, conversation_id=conversation_id)
+    history, summary, _ = _context(services, context_payload, model_pk)
+    if history and history[-1].role == "user" and history[-1].content == turn.question:
+        history = history[:-1]
+
+    note = resume_service.retry_note(
+        resume_service.ResumeMaterial(
+            question=turn.question,
+            answer=turn.answer,
+            steps=turn.steps,
+            sources=turn.sources,
+        ),
+        step_label=tool_label(str(step.get("tool") or "")),
+        tool=str(step.get("tool") or ""),
+        had_answer=bool(turn.answer.strip()),
+    )
+
+    try:
+        # 预算走**默认那一档**（不像续跑那样抬高）：重试是"把一条调用重做一遍、
+        # 然后把话说完"，本来就不该再开一整个长回合的额度。要接着查更多，
+        # 那是模型自己的判断（它照常可以调工具，只是额度是常规的一份）
+        loop = _agent_loop(
+            services,
+            caller,
+            kb_ids=kb_ids,
+            conversation_id=conversation_id,
+            model_pk=model_pk,
+            thinking=thinking,
+            effort=effort,
+            seed_sources=seeds,
+        )
+        for event in loop.retry_step(
+            messages=chat.agent_messages(
+                # 提问 + 交接说明合成一个用户消息（同续跑：有些端点对连续同角色
+                # 消息的处理方式不一致，这里没有理由冒那个险）
+                query=f"{turn.question}\n\n{note}",
+                history=history,
+                summary=summary,
+                kb_ids=kb_ids,
+                skill_names=payload.skill_names,
+                model_pk=model_pk,
+                owner_id=_memory_owner(caller),
+            ),
+            tool=str(step.get("tool") or ""),
+            # 入参**原样**（存下来的那个字符串）：端点进来时已经确认它非空，
+            # 而"是不是合法 JSON"交给循环里那条既有的判定（不合法就走它那条失败路）
+            arguments=str(step.get("args") or ""),
+            # 这一步当初的推理：端点要求带工具调用的助手消息把 reasoning 传回来
+            reasoning=str(step.get("thinking") or ""),
+        ):
+            yield from sink.feed(event)
+    except ChatError as exc:
+        yield _fail(services, conversation_id, sink, failure_text(exc), cause=exc)
+        return
+    except Exception as exc:
+        yield _fail(services, conversation_id, sink, failure_text(exc), cause=exc)
+        return
+
+    answer = sink.answer
+    if answer:
+        sink.close_turn(status=_turn_status(sink.steps), answer=answer)
+        try:
+            services.conversations.append_answer(
+                conversation_id,
+                answer=answer,
+                sources=[item.model_dump() for item in _sources_out(sink.sources)],
+                steps=_retry_steps(turn.steps, step_index, sink.steps),
+                thinking="".join(sink.thinking),
+                events=sink.events,
+            )
+        except Exception:
+            # 与 `_record_turn` / `_resume_turn_events` 同一条取舍：
+            # 落库失败不该让用户丢掉**已经付过费**的回答
+            logger.exception("重试一步落库失败：%s", conversation_id)
+    else:
+        logger.warning("重试一步没有产出正文：conversation=%s", conversation_id)
+        sink.close_turn(status=TURN_EMPTY, answer="")
+        _flush_events(services, conversation_id, sink)
+    yield LiveEmit(
+        {"type": "done", "answer": answer}, log_index=len(sink.events), terminal=True
+    )
+
+
+def _retry_steps(
+    previous: Sequence[dict[str, object]],
+    step_index: int,
+    fresh: Sequence[dict[str, object]],
+) -> list[dict[str, object]]:
+    """重试之后的步骤快照：**上一轮那些，第 N 步就地换成刚重跑出来的那份**，再接上这一轮新的。
+
+    为什么是"就地替换"而不是"把新的接在末尾"：这一步在原顺序里的位置是它的一部分。
+    用户点的是"重试这一步"（同一个动作重做一遍），所以过程面板该看到的仍然是
+    "第 3 步：读文件 → 成功"，而不是"第 3 步失败了，末尾又补了一次读文件"。
+    顺序与轮次绑定：`sink.steps[0]` 就是刚重跑那一步（``ToolLoop.retry_step`` 先发它），
+    其余是"接着答"这一段新长出来的。
+
+    重跑**没有新的推理**：产生这次调用的那一段推理是当初那一次的事，所以原来那份
+    ``thinking`` 要接回去——不接，界面上一展开这一步，它当初"为什么这么调"就没了。
+    """
+    steps = [dict(item) for item in previous]
+    if not fresh:
+        # 一步都没记下来（理论上不会：重跑那一步的 done 一定进快照）——
+        # 那就原样返回，宁可不替换，也不把上一轮的过程抹掉
+        return steps
+    retried = dict(fresh[0])
+    if 0 <= step_index < len(steps):
+        carried = steps[step_index].get("thinking")
+        if carried and "thinking" not in retried:
+            retried["thinking"] = carried
+        steps[step_index] = retried
+        return [*steps, *(dict(item) for item in fresh[1:])]
+    # 下标越界在端点那一层已经拦掉了（`_retry_target`）；真到这儿就接在后面，
+    # 别把新跑出来的那一步吞掉
+    return [*steps, *(dict(item) for item in fresh)]
 
 
 def _use_agent(services: Services) -> bool:
