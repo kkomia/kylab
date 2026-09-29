@@ -83,7 +83,7 @@ from app.services.agent import (
     ThinkingEvent,
     step_snapshot,
 )
-from app.services.agent_tools import build_runner, tool_specs
+from app.services.agent_tools import build_runner, build_tool_table
 from app.services.api_key import Caller
 from app.services.approvals import ALLOW_ALWAYS, ALLOW_ONCE
 from app.services.chat import ChatTurn, SourceRef
@@ -630,10 +630,12 @@ def context_usage(
         conversation_id=conversation_id,
         owner_id=caller.owner_id,
         # 工具表与那一轮给模型的一模一样：同一处拼装（``_agent_loop``），
-        # 两处各拼一份的话，仪表会显示一套、模型拿到另一套
-        tools=tool_specs(
+        # 两处各拼一份的话，仪表会显示一套、模型拿到另一套。
+        # v0.57 起交给模型的是**核心常驻那一份**（外围靠发现通道），所以这里也按它算——
+        # 否则仪表会把"其实没发出去的外围工具"算进上下文。
+        tools=build_tool_table(
             services, owner_id=caller.owner_id, kb_ids=list(conversation.kb_ids)
-        ),
+        ).resident(),
     )
     return ContextUsageOut(
         items=[
@@ -1150,7 +1152,18 @@ def _agent_loop(
     ``planning=True``：**研究流程的开场那一轮**（出澄清问题 / 出计划）——
     工具表是**空的**，模型只能说话、不能动手（照搬清单第 1 条：正式检索前先出计划）。
     执行器照旧传着（空工具表下它不会被调用），这样这一条链路与正常那条只差一个工具表。
+
+    **工具表走"核心常驻 + 外围可发现"**（v0.57，用户裁定，见
+    `docs/调研/Agent-暴露机制-对标与落点-v0.1.md`）：交给模型的是 ``table.resident()``
+    （核心 + ``find_tools`` / ``use_tool`` 两个入口），外围工具靠发现通道取。
+    执行器必须拿到**同一张表**——`use_tool` 要知道"这一轮能调什么、已经发现过什么"，
+    所以这里建一次、两处共用。
     """
+    table = build_tool_table(
+        services,
+        owner_id=caller.owner_id if caller is not None else None,
+        kb_ids=kb_ids,
+    )
     return services.chat.tool_loop(
         model_pk=model_pk,
         thinking=thinking,
@@ -1165,14 +1178,7 @@ def _agent_loop(
         # 开场那一轮给空表：这一轮只准说、不准动手。
         tools=[]
         if planning
-        else tool_specs(
-            services,
-            owner_id=caller.owner_id,
-            # 这一轮允许查的库（空 = 用户关掉了知识库开关）：
-            # 关掉时知识库那一侧的工具**整个不出现**，免得模型每轮
-            # 先去列库、再检索一次被拒（见 agent_tools._KB_TOOLS）
-            kb_ids=kb_ids,
-        ),
+        else table.resident(),
         # **这一轮有界面可以问**（v0.41）：`ask` 档的工具调用（目前是 run_command）
         # 挂进这张登记表，由循环发一条 approval 事件、停在那里等人回答；
         # 用户的决定从 `POST /chat/approvals/{id}` 交回来（见 services/approvals.py）。
@@ -1196,6 +1202,8 @@ def _agent_loop(
                 thinking_effort=effort,
             ),
             seed_sources=seed_sources,
+            # **同一张暴露表**：`find_tools` / `use_tool` 靠它知道自己能调什么
+            exposure=table,
         ),
         max_steps=max_steps,
         max_seconds=max_seconds,
@@ -3119,7 +3127,10 @@ def _context_of(services: Services, payload: ChatRequestIn, caller: Caller):  # 
     return services.chat.context_usage(
         conversation_id=payload.conversation_id,
         owner_id=caller.owner_id,
-        tools=tool_specs(services, owner_id=caller.owner_id, kb_ids=list(conversation.kb_ids)),
+        # 与 `_agent_loop` 同源：常驻那一份（核心 + 网关），见 build_tool_table
+        tools=build_tool_table(
+            services, owner_id=caller.owner_id, kb_ids=list(conversation.kb_ids)
+        ).resident(),
     )
 
 

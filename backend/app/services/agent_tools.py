@@ -33,6 +33,7 @@ from typing import Any
 from app.core.exceptions import InvalidRequestError, KylabError
 from app.core.logging import sanitize_log_value
 from app.services import isolation as isolation_service
+from app.services import tool_meta
 from app.services.agent_exec import run_command
 from app.services.agent_files import (
     DEFAULT_READ_LINES,
@@ -545,7 +546,34 @@ _KB_TOOLS = frozenset(
 def tool_specs(
     services: Any = None, *, owner_id: str | None = None, kb_ids: Sequence[str] | None = None
 ) -> list[ToolSpec]:
-    """这一轮提供给模型的全部工具：内置 → 技能 → 外部 MCP 服务。
+    """**完整**工具表（核心 + 外围 + 发现通道）。
+
+    ⚠️ 对话那条链路**不要直接用它**：完整表意味着外围工具也每轮常驻，等于没做暴露分层。
+    对话走 :func:`build_tool_table`（核心常驻 + 外围靠 ``find_tools``）。
+    保留这一个的原因：外部 MCP 客户端、定时任务、脚本与用例那条路上**没有发现通道**，
+    给它们一张"看得见就能调"的完整表才不是把工具藏起来。
+    """
+    specs = _all_specs(services, owner_id=owner_id, kb_ids=kb_ids)
+    skills, skills_listed = _skill_counts(services)
+    specs.extend(
+        _exposure_specs(
+            _exposure_text(
+                resident=len(specs) + len(_EXPOSURE_TOOLS),
+                peripheral=0,
+                skills=skills,
+                skills_listed=skills_listed,
+            )
+        )
+    )
+    return specs
+
+
+def _all_specs(
+    services: Any = None, *, owner_id: str | None = None, kb_ids: Sequence[str] | None = None
+) -> list[ToolSpec]:
+    """不分暴露档的完整清单（除发现通道本身）。**装配点只有这一处**（见模块头六段顺序）。
+
+    顺序：内置 → 技能 → 本机能力 → 记忆 → 外部 MCP。
 
     ``services`` 给不给决定后两段在不在：
 
@@ -553,9 +581,8 @@ def tool_specs(
     - 给了 → 再加上外部服务暴露的工具。**只列调用方自己有权限用的那些**
       （``owner_id`` 收口，与能力页看到的同一批），否则会出现
       "别人登记的 MCP 服务在我的对话里被调起来"。
-
-    外部那一段走**缓存**（见 ``MCPClientService.cached_tools``），所以这句话
-    不便宜但也不贵：它是每轮一次的内存查找，不是每轮一次握手。
+      外部那一段走**缓存**（见 ``MCPClientService.cached_tools``），
+      所以这句话不便宜但也不贵：它是每轮一次的内存查找，不是每轮一次握手。
 
     ``kb_ids`` 是**这一轮允许查的库**（会话上选的那些）。为空 = 用户关掉了
     知识库开关，那就**别把知识库那一侧的工具摆给它**（见 ``_KB_TOOLS``）——
@@ -613,8 +640,359 @@ def tool_specs(
     return specs
 
 
-#: 在**对话这条门**上不收 ``knowledge_base_id`` 的工具（v0.26）。
+# ============================================================ 暴露：核心常驻 + 外围可发现
+#
+# 用户裁定（《Agent-暴露机制-对标与落点-v0.1》）：**核心工具常驻、外围技能与工具延迟发现**。
+# 这一节就是那条裁定的实现，三件事：
+#
+# 1. **核心/外围的划分**只有一处定义：``tool_meta.PERIPHERAL_TOOLS`` + ``is_peripheral()``
+#    （那里有判据与"永远核心"的硬约束）——这里不另起名单；
+# 2. **发现通道**是一个常驻工具 ``find_tools(query)``：命中就回它的**完整 schema**
+#    （最多 `MAX_DISCOVER_PER_CALL` 个），没命中就回**索引**（名字 + 一句话）；
+# 3. **调用**走常驻的 ``use_tool(name, arguments)``。
+#
+# 为什么调用要绕一层网关、而不是"发现了就把它加进 tools 数组"：工具循环在构造时就把
+# 工具表**拷了一份**（``tool_loop.py`` 的 ``self._tools = list(tools)``），
+# 而那一行不在本轮的改动范围内。网关这条路把"发现 → 调用"整条链留在我这一侧：
+# 执行器本来就是按工具名分发的（见 `build_runner.run`），网关只是把
+# ``use_tool`` 的参数翻成一次**同样的内部分发**——审批、权限、产物落点、
+# 来源账本全部走原路（见 `run` 里 ``use_tool`` 那一支的说明）。
+# 升级路径（真·按需声明）记在设计文档里，需要的正好是那一行的配合。
+
+#: 一次 ``find_tools`` 最多回几个工具的完整 schema。
 #:
+#: 取 4：一条 schema 平均 ~250 token，4 条 ≈ 1,000 token——比"外围全常驻"
+#: 便宜一个数量级，又不至于让模型发现一次只够用一步（它多叫一次这个工具也不贵）。
+MAX_DISCOVER_PER_CALL = 4
+
+#: 索引模式（没命中/空查询）最多列几行名字。
+MAX_INDEX_LINES = 40
+
+_EXPOSURE_TOOLS: tuple[dict[str, Any], ...] = (
+    {
+        "name": "find_tools",
+        "description": (
+            "{exposure}\n"
+            "上面这些是**这一轮的真实数量**（当场从工具注册表与技能目录算的）。"
+            "要取外围工具的完整参数、或想看看还有什么，就调本工具："
+            "用一句话说清你要干什么，它会回**匹配到的工具的完整参数 schema**，"
+            "之后用 `use_tool` 调；不带查询（或查询为空）时它回一份**索引**（名字 + 一句话）。"
+            "**动手做那件事之前先调它**——不要凭「这个环境没有这个能力」就放弃。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": (
+                        "你要做的事（例如「把结果导出成 Excel」「建一个知识库」「跑一段命令」）"
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_DISCOVER_PER_CALL,
+                    "description": f"最多回几个工具的 schema，默认 {MAX_DISCOVER_PER_CALL}",
+                },
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "use_tool",
+        "description": (
+            "调用**你已经用 `find_tools` 找到过**的工具：`name` 是工具名、"
+            "`arguments` 是它的参数对象（按 find_tools 给的 schema 填）。"
+            "没发现过、或不存在的名字这里会拒绝，并把外围工具索引回给你——"
+            "**先 find_tools、再 use_tool**。调用结果与直接调用完全一样"
+            "（审批、落盘、出处都走原路）。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "工具名，例如 export_table"},
+                "arguments": {
+                    "type": "object",
+                    "description": "那个工具的参数对象（照 find_tools 返回的 schema 填）",
+                },
+            },
+            "required": ["name"],
+            "additionalProperties": False,
+        },
+    },
+)
+
+
+def _exposure_specs(exposure_text: str) -> list[ToolSpec]:
+    """两个网关工具（它们**永远常驻**，见 ``tool_meta.CORE_ALWAYS``）。
+
+    ``find_tools`` 的描述里带着**这一轮的真实暴露数量**（用户要求：核心注入必须
+    始终告诉模型"当前可用技能 N 个 / 工具 M 个 / 另有 K 个可按需取"）。
+    为什么放在工具描述里而不是系统提示词：那份提示词在别的 lane 手里，
+    而工具表本来每轮就发——数一数就能算出来的事不该跨文件改。
+    """
+    return [
+        ToolSpec(
+            name=item["name"],
+            description=str(item["description"]).format(exposure=exposure_text),
+            parameters=item["inputSchema"],
+        )
+        for item in _EXPOSURE_TOOLS
+    ]
+
+
+def _skill_counts(services: Any) -> tuple[int, int]:
+    """（可用技能数，已进目录的技能数）。**当场算**，不写死。
+
+    与 ``SkillService.catalog()`` 同一套判据（``used_by_prompt`` + ``MAX_CATALOG``），
+    所以"目录里列了几条"与系统提示词里那份目录**永远对得上**。
+    技能服务是**无状态、每次重扫**的（`skills.py` 模块头有取舍说明），
+    这里只调 ``list()`` 不渲染目录——多一次扫描（几十毫秒量级），换来的是
+    "模型知道自己没看到多少"这一条硬要求。
+    """
+    skills = getattr(services, "skills", None) if services is not None else None
+    if skills is None:
+        return (0, 0)
+    try:
+        usable = [item for item in skills.list() if item.used_by_prompt]
+    except Exception:  # 技能目录读不出来不该让整轮对话起不来
+        logger.warning("技能计数失败，本轮暴露数量按 0 算", exc_info=True)
+        return (0, 0)
+    from app.services.skills import MAX_CATALOG
+
+    return (len(usable), min(len(usable), MAX_CATALOG))
+
+
+def _exposure_text(*, resident: int, peripheral: int, skills: int, skills_listed: int) -> str:
+    """核心注入里的那一段"数量 + 怎么发现"（**每轮都发**，用户点名的硬要求）。
+
+    两个数必须是**真的**：常驻/外围来自这一轮的工具表，技能来自技能目录的同一套判据。
+    外围工具或技能增减时这段文字跟着变（用例钉住这一条）。
+    """
+    total_tools = resident + peripheral
+    return (
+        "【本环境的暴露情况】"
+        f"当前工具共 **{total_tools}** 个：其中 **{resident}** 个已常驻在你的工具表里"
+        "（记忆、技能、检索、联网、读文件与下面这两个入口），"
+        f"另有 **{peripheral}** 个**按需检索**（导出、建库、跑命令、派子 Agent、"
+        "定时任务、文件列举与搜索、外部 MCP 服务等）；"
+        f"当前可用技能 **{skills}** 个，其中 **{skills_listed}** 个已列在系统提示词里，"
+        f"另有 **{max(0, skills - skills_listed)}** 个可直接用 `list_skills` 查、"
+        "`read_skill` 取正文。"
+        "要外围工具：`find_tools`（查）→ `use_tool`（调）；要技能：`read_skill`。"
+    )
+
+
+def _bigrams(text: str) -> set[str]:
+    """字符二元组集合（中英一视同仁，不引分词器）。"""
+    line = " ".join((text or "").lower().split())
+    if len(line) < 2:
+        return {line} if line else set()
+    return {line[index : index + 2] for index in range(len(line) - 1)}
+
+
+def _match_score(query: str, spec: ToolSpec) -> int:
+    """查询与一个工具的匹配分：二元组命中数 + 名字直接命中的加权。
+
+    **刻意是可算的**：不引模型、不引向量——这个函数会被用例逐条钉住，
+    而且它决定"外围工具能不能被找到"，判错了的后果是"工具存在但永远发现不了"。
+    """
+    line = (query or "").lower()
+    if not line:
+        return 0
+    target = f"{spec.name} {spec.description}".lower()
+    score = sum(1 for gram in _bigrams(line) if gram in target)
+    if spec.name.lower() in line:
+        score += 8
+    return score
+
+
+def _clip(text: str, limit: int) -> str:
+    line = " ".join((text or "").split())
+    return line if len(line) <= limit else line[:limit] + "…"
+
+
+def _plan_mode_blocks(services: Any, name: str) -> bool:
+    """计划档下要不要拦住这个内层工具（网关那一支专用，见 `use_tool` 分支）。
+
+    ``plan`` 档的规矩是"没给计划之前写类工具一律被拦"（``tool_loop`` 用**外层调用**
+    的元数据判）。网关在元数据里是只读的，所以内层这一判必须自己补——
+    判据不另写一套：用 ``modes.is_write``（与那道门闸同一个函数）。
+    """
+    runtime = getattr(services, "runtime", None)
+    if runtime is None:
+        return False
+    try:
+        from app.services import modes
+
+        if modes.coerce(runtime.get("chat.mode")) != modes.MODE_PLAN:
+            return False
+        return modes.is_write(tool_meta.meta_of(name))
+    except Exception:  # 读不到档位时**不拦**（与"拦错了"相比，写成"放行了"更接近既有行为）
+        logger.warning("网关判计划档失败，按放行处理：%s", name, exc_info=True)
+        return False
+
+
+class ToolTable:
+    """一轮的暴露表：**核心常驻** + **外围（发现后可调）**。
+
+    形状是一个对象而不是三个列表：`find_tools` / `use_tool` 的执行器要能拿到
+    "这一轮有哪些外围工具、哪些已经被发现过"，而那两件事必须与交给模型的
+    那张表是同一份事实（分两处维护迟早出现"表里有、发现不到"）。
+    """
+
+    def __init__(self, resident: list[ToolSpec], peripheral: list[ToolSpec]) -> None:
+        #: 交给模型的那一份（**核心 + 网关**）。顺序即装配顺序。
+        self._resident = resident
+        self._peripheral = peripheral
+        self._by_name = {spec.name: spec for spec in peripheral}
+        #: 已经发现过的外围工具（只做记录与诊断——`use_tool` 允许调用任何在册工具，
+        #: 但"它是不是被发现的"这件事在排查时要看得见）。
+        self._discovered: set[str] = set()
+
+    # ------------------------------------------------------------------ 读
+
+    def resident(self) -> list[ToolSpec]:
+        """核心那张表（**就是交给模型的那一份**，别再拷一遍）。"""
+        return self._resident
+
+    def peripheral(self) -> list[ToolSpec]:
+        return list(self._peripheral)
+
+    def peripheral_names(self) -> list[str]:
+        return [spec.name for spec in self._peripheral]
+
+    def discoveries(self) -> list[str]:
+        return sorted(self._discovered)
+
+    def knows(self, name: str) -> bool:
+        """这个名字在**这一轮的表里**吗（外围或常驻都算）。"""
+        return name in self._by_name or any(spec.name == name for spec in self._resident)
+
+    def allows(self, name: str) -> bool:
+        """``use_tool`` 放不放它：**必须先被发现过**（外围）或本来就是常驻的一个。
+
+        为什么要求"发现过"：`use_tool` 的说明书就是这么写的，而这条限制让
+        "发现通道"成为**唯一的路**——否则模型可以凭记忆瞎猜工具名（猜中了会绕过
+        发现，猜错了拿到一个含糊的错误）。常驻那几个不需要发现（它们本来就在表里）。
+        """
+        if any(spec.name == name for spec in self._resident):
+            return True
+        return name in self._discovered
+
+    def snapshot(self) -> dict[str, object]:
+        """给日志 / 仪表 / 用例看的只读快照。"""
+        return {
+            "resident": [spec.name for spec in self._resident],
+            "peripheral": [spec.name for spec in self._peripheral],
+            "discovered": self.discoveries(),
+        }
+
+    # ------------------------------------------------------------------ 发现
+
+    def discover(self, query: str, limit: int | None = None) -> list[ToolSpec]:
+        """按查询挑出外围工具（**按分数降序、最多 limit 个**）。
+
+        查询为空、或一条都没命中时回**空列表**——调用方据此改回索引模式
+        （"没找到"和"没有这个能力"是两件事，见 `render_discovery`）。
+        """
+        cap = max(1, min(int(limit or MAX_DISCOVER_PER_CALL), MAX_DISCOVER_PER_CALL))
+        scored = [
+            (_match_score(query, spec), spec)
+            for spec in self._peripheral
+        ]
+        hits = [(score, spec) for score, spec in scored if score > 0]
+        # 分数相同时按名字排：**同一轮里同样的查询给同样的答案**（可复现）
+        hits.sort(key=lambda item: (-item[0], item[1].name))
+        found = [spec for _, spec in hits[:cap]]
+        self._discovered.update(spec.name for spec in found)
+        return found
+
+    def render_discovery(self, query: str, found: Sequence[ToolSpec]) -> str:
+        """`find_tools` 的结果文本（**JSON**：schema 要能被原样抄进 arguments）。"""
+        if found:
+            return json.dumps(
+                {
+                    "found": [spec.name for spec in found],
+                    "note": (
+                        "这些工具现在可以用了：用 `use_tool` 调，"
+                        "`name` 填工具名、`arguments` 按下面的 parameters 填。"
+                    ),
+                    "tools": [
+                        {
+                            "name": spec.name,
+                            "description": spec.description,
+                            "parameters": spec.parameters,
+                        }
+                        for spec in found
+                    ],
+                },
+                ensure_ascii=False,
+                indent=1,
+            )
+        index = [
+            {"name": spec.name, "description": _clip(spec.description, 80)}
+            for spec in self._peripheral[:MAX_INDEX_LINES]
+        ]
+        more = max(0, len(self._peripheral) - len(index))
+        return json.dumps(
+            {
+                "found": [],
+                f"index（{len(self._peripheral)} 个外围工具，这里只列名字）": index,
+                "剩余没列出的": more,
+                "note": (
+                    f"没匹配上「{_clip(query, 60)}」。上面是这边**按需暴露**的工具索引："
+                    "如果你要做的事对应其中一个，用 `find_tools` 带上更具体的一句话"
+                    f"（例如「用它导出 Excel」），每次最多取回 "
+                    f"{MAX_DISCOVER_PER_CALL} 个的完整参数。"
+                ),
+            },
+            ensure_ascii=False,
+            indent=1,
+        )
+
+    def render_unknown(self, name: str) -> str:
+        """`use_tool` 拿到一个不在册的名字时回的文本（**给出路，不只说不行**）。"""
+        return json.dumps(
+            {
+                "error": f"没有这个工具：{name}",
+                "hint": "先用 `find_tools` 查（它会把名字与完整参数给你），再 `use_tool` 调。",
+                "index": [
+                    {"name": spec.name} for spec in self._peripheral[:MAX_INDEX_LINES]
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+
+def build_tool_table(
+    services: Any = None, *, owner_id: str | None = None, kb_ids: Sequence[str] | None = None
+) -> ToolTable:
+    """对话那条链路的工具表：**核心 + 网关常驻，外围可发现**。
+
+    划分只看 ``tool_meta.is_peripheral``（一处定义）。``CORE_ALWAYS`` 那几个
+    永远在常驻那一侧——哪怕有人把它们写进外围名单（那是硬约束，不是偏好）。
+    """
+    specs = _all_specs(services, owner_id=owner_id, kb_ids=kb_ids)
+    resident = [spec for spec in specs if not tool_meta.is_peripheral(spec.name)]
+    peripheral = [spec for spec in specs if tool_meta.is_peripheral(spec.name)]
+    skills, skills_listed = _skill_counts(services)
+    resident.extend(
+        _exposure_specs(
+            _exposure_text(
+                # 常驻数**算上这两个网关**（模型看到的常驻工具就是这么多）
+                resident=len(resident) + len(_EXPOSURE_TOOLS),
+                peripheral=len(peripheral),
+                skills=skills,
+                skills_listed=skills_listed,
+            )
+        )
+    )
+    return ToolTable(resident, peripheral)
+
+
+#: 在**对话这条门**上不收 ``knowledge_base_id`` 的工具（v0.26）。#:
 #: 外部门（MCP）保持原契约：那条通道没有会话，产物唯一的落点就是知识库，
 #: 而且"外部客户端点名叫了哪个库"这件事本身就是显式的。
 #: 对话这条门不一样：产物先落盘，入库是另一个动作。**参数留在这里过不了日子**——
@@ -688,6 +1066,7 @@ def build_runner(
     conversation_id: str | None = None,
     subagent: Callable[[str], tuple[str, list[Any]]] | None = None,
     seed_sources: Sequence[SourceRef] = (),
+    exposure: Any = None,
 ) -> ToolRunner:
     """绑一个执行器。``kb_ids`` 是**这一轮允许查的库**（会话上选的那些）。
 
@@ -758,6 +1137,43 @@ def build_runner(
         拿到决定之后带着它把这一条重跑一遍——见 ``tool_loop._resolve_approvals``。"""
         if name.startswith("mcp__"):
             return _call_mcp(services, name, args, owner_id=owner_id)
+        if name == "find_tools":
+            # 发现通道（核心常驻）：回匹配到的外围工具的**完整 schema**，没命中回索引。
+            # 它**不依赖任何别的工具**（只读这一轮的表）——这一条是硬约束：
+            # 发现工具要是自己也需要被发现，外围就永远不可达。
+            if exposure is None:
+                return ToolOutcome(content="这条链路没有工具暴露表，find_tools 不可用。")
+            query = str(args.get("query") or "")
+            found = exposure.discover(query, args.get("limit"))
+            return ToolOutcome(content=exposure.render_discovery(query, found))
+        if name == "use_tool":
+            # 调用网关：把参数翻成一次**同样的内部分发**。三条不能省：
+            # 1. **必须先发现过**（说明书这么写的，也让发现通道成为唯一的路）；
+            # 2. 不许拿它包自己或 find_tools（自递归）；3. 审批照原路走——
+            #    内层工具该问的还会问（`approval` 原样透传，见下面那行）。
+            if exposure is None:
+                return ToolOutcome(content="这条链路没有工具暴露表，use_tool 不可用。")
+            target = str(args.get("name") or "").strip()
+            inner = args.get("arguments") or {}
+            if target in ("use_tool", "find_tools"):
+                return ToolOutcome(content=f"{target} 是常驻入口，直接调它就行，不必包一层。")
+            if not isinstance(inner, dict):
+                return ToolOutcome(
+                    content="arguments 必须是一个对象（照 find_tools 给的 schema 填）。"
+                )
+            if not exposure.allows(target):
+                return ToolOutcome(content=exposure.render_unknown(target))
+            # **plan 档的写类门闸要在这里补判一次**：网关自己在元数据里是只读的
+            # （否则用户会被问两遍，见 tool_meta 的说明），而工具循环那道门闸只看
+            # **外层调用**的元数据——不补这一判，写类工具就能绕道网关溜进计划档。
+            if _plan_mode_blocks(services, target):
+                return ToolOutcome(
+                    text=(
+                        f"计划档下先不给动手：`{target}` 是会改动东西的工具，"
+                        "请先把计划给出来、等对方确认，再用 `use_tool` 调它。"
+                    )
+                )
+            return run(target, inner, approval=approval)
         if name == "spawn_subagent":
             task = str(args.get("task") or "").strip()
             if not task:

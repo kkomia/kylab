@@ -40,11 +40,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 __all__ = [
+    "CORE_ALWAYS",
+    "EXPOSURE_CORE",
+    "EXPOSURE_PERIPHERAL",
     "KINDS",
+    "PERIPHERAL_TOOLS",
     "RISKS",
     "SCOPES",
     "TOOL_META",
     "ToolMeta",
+    "is_peripheral",
     "kind_of",
     "meta_of",
     "parallel_groups",
@@ -55,6 +60,102 @@ SCOPES: tuple[str, ...] = ("none", "session", "workspace", "system", "network")
 
 #: 风险分级（照 ZCode 的 ``riskLevel``；``critical`` 留给"不可逆的外部动作"）。
 RISKS: tuple[str, ...] = ("low", "medium", "high", "critical")
+
+#: 暴露档取值（见 ``ToolMeta.exposure``）。核心 = 每轮随工具表常驻；外围 = 靠发现通道取。
+EXPOSURE_CORE = "core"
+EXPOSURE_PERIPHERAL = "peripheral"
+
+#: **永远常驻的那几个**（用户点名的硬约束，见《Agent-暴露机制-对标与落点-v0.1》）。
+#:
+#: 三条理由各不一样，但结论都是"不能延迟"：
+#:
+#: - **记忆四件**（``recall`` / ``remember`` / ``read_memory`` / ``write_memory``）：
+#:   "被延迟发现就等于没有记忆"——用户原话；
+#: - **技能两件**（``read_skill`` / ``list_skills``）：技能是"索引常驻 + 正文按需"，
+#:   取正文的入口要是也延迟，那套设计就断了；
+#: - **发现通道自身**（``find_tools`` / ``call_tool``）：**这是死锁约束**——
+#:   发现工具自己若也要被发现，外围就永远不可达（用例专门钉这一条）。
+CORE_ALWAYS: frozenset[str] = frozenset(
+    {
+        "recall",
+        "remember",
+        "read_memory",
+        "write_memory",
+        "read_skill",
+        "list_skills",
+        "find_tools",
+        "call_tool",
+    }
+)
+
+#: **外围工具名单**（一处定义，别在别处再抄一份）。
+#:
+#: 判据两条（照用户给的划分口径）：**是不是每轮都可能用到** + **有没有替代物**。
+#: 落到具体工具上就是三类：
+#:
+#: 1. **要交东西的**（导出四件 / 建笔记）：多数回合用不到，用到时是"这一步的终点"，
+#:    而它自己会出现在发现结果里——延迟的代价只是一次发现；
+#: 2. **管库的**（建库 / 传文档 / 删文档 / 数据源 / 入库 / 表格查询…）：
+#:    配置性动作，一轮里顶多用一次；
+#: 3. **重或危险的**（``run_command`` / ``spawn_subagent`` / 定时任务）：
+#:    它们"sandbox/权限"成本最高，而"每轮都可能用到"这一条明显不成立。
+#:
+#: 反过来留在核心的是"看一眼就有用"的那些：读文件/读记忆/读技能/检索/联网/看会话文件。
+#: MCP 工具**不在这个集合里**：它们按前缀自动归外围（见 :func:`is_peripheral`）——
+#: 外部服务的工具随时可能装几十个，那正是外围这一档存在的理由。
+PERIPHERAL_TOOLS: frozenset[str] = frozenset(
+    {
+        # 产出/写入类
+        "create_note",
+        "list_notes",
+        "export_document",
+        "export_table",
+        "export_deck",
+        "export_file",
+        # 本机执行与派活
+        "run_command",
+        "spawn_subagent",
+        "schedule_task",
+        "list_scheduled_tasks",
+        # 文件列举/搜索（读单个文件是核心：``read_file``）
+        "list_files",
+        "search_files",
+        # 知识库管理面
+        "list_knowledge_bases",
+        "create_knowledge_base",
+        "upload_document",
+        "add_data_source",
+        "get_document_status",
+        "delete_document",
+        "list_documents",
+        "attach_note_to_kb",
+        "ingest_artifact",
+        "list_tables",
+        "query_table",
+        "ingest_file",
+    }
+)
+
+
+def is_peripheral(name: str) -> bool:
+    """这个工具要不要走"发现通道"。
+
+    三件事按顺序判：
+
+    1. 在 :data:`CORE_ALWAYS` 里 → **永远核心**（哪怕有人把它写进外围名单，
+       或它的 meta 写了 ``peripheral``——硬约束优先，静默失效不允许）；
+    2. ``mcp__`` 前缀 → 外围（外部服务的工具随时可能几十个）；
+    3. 在 :data:`PERIPHERAL_TOOLS` 里，或它自己的 meta 标了 ``peripheral`` → 外围。
+
+    其余一律核心（``ToolMeta.exposure`` 的默认值就是 ``core``，fail-safe）。
+    """
+    if name in CORE_ALWAYS:
+        return False
+    if name.startswith("mcp__"):
+        return True
+    if name in PERIPHERAL_TOOLS:
+        return True
+    return meta_of(name).exposure == EXPOSURE_PERIPHERAL
 
 #: 工具卡的**语义种类**（P2-1，照 ZCode 的固定枚举，见调研报告 §2.5 第 1 条）。
 #:
@@ -105,6 +206,17 @@ class ToolMeta:
     side_effect_scope: str = "system"
     risk_level: str = "high"
     needs_approval: bool = False
+    #: **暴露档**：``core``（核心，每轮随工具表常驻）还是 ``peripheral``（外围，靠发现通道取）。
+    #:
+    #: 默认 ``core`` 是**故意的 fail-safe**：没声明的工具宁可多占一点上下文，
+    #: 也不能因为"忘了标"而变成模型看不见——那属于静默失效（用户点名的硬约束）。
+    #: 真正的名单见 :data:`PERIPHERAL_TOOLS`（一处定义），MCP 工具按前缀自动归外围。
+    exposure: str = "core"
+    #: 显式指定工具卡种类（空 = 按 ``_derive_kind`` 推）。
+    #:
+    #: 只有"网关"这种**它自己不干活、替别的工具干活**的工具需要它：
+    #: ``use_tool`` 若按"只读"推出来会画成一个读书图标，而它可能正在导出一份 Excel。
+    kind: str = ""
 
     @property
     def parallel(self) -> bool:
@@ -187,6 +299,25 @@ TOOL_META: dict[str, ToolMeta] = {
     # 技能：读一次、看一眼
     "list_skills": _READ,
     "read_skill": _READ,
+    # ---- 暴露网关（v0.57，见 agent_tools 的"暴露：核心常驻 + 外围可发现"一节）----
+    #
+    # 两个都是**只读且无副作用**的入口：真正有风险/要审批的是它们**转发**到的那个工具，
+    # 而内层工具的判断照原路走（审批、权限、plan 档的写类门闸在网关那一支里自己补判，
+    # 见 agent_tools `use_tool` 分支）。在这里标成"会写"会让用户被问两遍：
+    # 一次问"要不要调用 use_tool"、一次问"要不要执行 run_command"。
+    "find_tools": ToolMeta(
+        read_only=True,
+        concurrent_safe=True,
+        side_effect_scope="none",
+        risk_level="low",
+        kind="search",
+    ),
+    "use_tool": ToolMeta(
+        read_only=True,
+        side_effect_scope="none",
+        risk_level="low",
+        kind="tool",
+    ),
     # 子代理是一次完整的调研（贵、有副作用、要落消息），独占
     "spawn_subagent": ToolMeta(side_effect_scope="session", risk_level="medium"),
     # ---- 这台机器上的能力（v0.33，见 agent_tools._LOCAL_TOOLS）----
@@ -286,8 +417,8 @@ def kind_of(name: str) -> str:
     tool = str(name or "")
     if tool not in TOOL_META:
         return "tool"
-    explicit = _KIND_OVERRIDES.get(tool)
-    if explicit is not None:
+    explicit = _KIND_OVERRIDES.get(tool) or TOOL_META[tool].kind
+    if explicit:
         return explicit
     return _derive_kind(TOOL_META[tool])
 
