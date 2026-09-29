@@ -339,8 +339,16 @@ export interface ChatApi {
   showMoreTrace: (turnIndex: number) => void
   isStepOpen: (key: string) => boolean
   toggleStep: (key: string) => void
-  isGroupOpen: (key: string) => boolean
-  toggleGroup: (key: string) => void
+  /**
+   * 用户对这一组的**选择**：`true` = 他开过 / `false` = 他收过 / `undefined` = 没碰过。
+   *
+   * 为什么不是 `isGroupOpen(key) => boolean`（P0 收尾批改的）：布尔那两档分不出
+   * "他收过"与"他没碰过"，而组级默认档（还在跑就展开）只在**没碰过**时才该生效
+   * ——见 §12.333 约束 1 与下面 `openGroups` 的说明。
+   */
+  groupOpenChoice: (key: string) => boolean | undefined
+  /** 记下用户对某一组的选择（`open` = 他点完之后是开着还是收着）。 */
+  chooseGroupOpen: (key: string, open: boolean) => void
   citesExpanded: (turnIndex: number) => boolean
   toggleCites: (turnIndex: number) => void
   flashCite: string
@@ -626,7 +634,32 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   // 过程面板的展开态：两张表分开（"看某一步的原文"与"看这一组有哪些调用"同时开着是正常的）
   const [openSteps, setOpenSteps] = useState<ReadonlySet<string>>(new Set())
-  const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set())
+  /**
+   * 组的开合那张表的键：**会话 id + 组 key**（见下面 `openGroups` 的说明）。
+   *
+   * 组 key（`turns.traceKey`）只保证**同一轮内**唯一，而那张表跨会话活着——
+   * 不带会话前缀的话，A 会话里收起的那一组会让 B 会话里同 key 的组也一上来就折着。
+   */
+  const groupScopeKey = (key: string): string => `${conversationId}|${key}`
+
+  /**
+   * 组的开合：**用户选过什么**（`true` = 他开过 / `false` = 他收过 / 不在表里 = 没碰过）。
+   *
+   * 为什么不是"翻转型 Set"（P0 收尾批改的就是它）：Set 只记得"开过"，记不了"他收过"。
+   * 而 §12.333 约束 1 要的是"**用户手动开合过就完全听他的**"——组级默认档是
+   * "还在跑就展开"，于是他收起一个正在跑的组时，那一下没有地方记：收起面板再打开、
+   * 或换会话再回来，又按默认档弹开，用户那一口等于白点。
+   *
+   * **键上带会话 id**（`groupScopeKey`）：这张表跨会话活着（换会话那一处不清它，
+   * 好让"回来还是他选的那一档"成立），而组 key 只保证**同一轮内**唯一——
+   * 不带会话前缀的话，A 会话里收起的那一组会让 B 会话里 key 相同的组也一上来就折着
+   * （与 `traceKey` 修的跨轮串号是同一类 bug）。默认档只在**没碰过**时生效。
+   *
+   * **forced（在等确认 / 没做成）仍然压过用户**这一档（三层优先级见 `TracePanel`）。
+   * 只活在这一次会话的内存里（不做本机记忆）：面板级那一位（`traceOpenMemory`）
+   * 记的是"他手动干预过没有"，语义不同，别混在一起。
+   */
+  const [openGroups, setOpenGroups] = useState<ReadonlyMap<string, boolean>>(new Map())
   const [traceExtraPages, setTraceExtraPages] = useState<ReadonlyMap<number, number>>(new Map())
   const [expandedCites, setExpandedCites] = useState<ReadonlySet<number>>(new Set())
   /**
@@ -939,7 +972,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
     setMessages([])
     setOpenSteps(new Set())
-    setOpenGroups(new Set())
+    /*
+      组的选择**不在这里清**（见 `openGroups`）：它按会话存着（键上带会话 id），
+      换出去再回来还是他选的那一档；那张表里别的会话那些键也漏不到这一条会话来。
+      只有"新建态"（`conversationId` 是空串，见 `groupScopeKey`）没有 id 可依附——
+      它的键都以 `|` 开头，这里把那一段清掉，免得上一回新对话里的选择漏到这一回来。
+    */
+    if (!conversationId) {
+      setOpenGroups((prev) => new Map([...prev].filter(([key]) => !key.startsWith('|'))))
+    }
     setTraceExtraPages(new Map())
     setExpandedCites(new Set())
     setTraceOpenIds({})
@@ -2086,12 +2127,12 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         else next.add(key)
         return next
       }),
-    isGroupOpen: (key) => openGroups.has(key),
-    toggleGroup: (key) =>
+    groupOpenChoice: (key) => openGroups.get(groupScopeKey(key)),
+    chooseGroupOpen: (key, open) =>
       setOpenGroups((prev) => {
-        const next = new Set(prev)
-        if (next.has(key)) next.delete(key)
-        else next.add(key)
+        // 两档都写下来：他收过的那一组，下一次挂载与"换出去再回来"都不该被默认档弹开
+        const next = new Map(prev)
+        next.set(groupScopeKey(key), open)
         return next
       }),
     citesExpanded: (turnIndex) => expandedCites.has(turnIndex),

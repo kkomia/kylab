@@ -30,9 +30,12 @@ import { TracePanel } from '@/features/chat/ui/TracePanel'
  * 宿主那两张展开表（`ChatProvider` 的 `openSteps` / `openGroups`）。
  * 面板点出来的 key **原样**存进来——"跨轮串号"就是在这张表上露出来的：
  * 两轮的 key 一样，表里就只有一条记录，于是两块一起开。
+ *
+ * `openGroups` 是**"用户选过什么"**（`true` 开 / `false` 收 / 不在表里 = 没碰过），
+ * 与真宿主同一档（P0 收尾批：翻转型 Set 记不了"他收过"）。
  */
 const openSteps = new Set<string>()
-const openGroups = new Set<string>()
+const openGroups = new Map<string, boolean>()
 
 /** 判定要用的两件事实：这一轮点过的档位、他手动开过没有（真实实现里分别来自
  *  `traceOpenIds` 与本机记忆）。测试按需摆放，每个用例开头归零。 */
@@ -55,10 +58,9 @@ const stubs = {
     if (openSteps.has(key)) openSteps.delete(key)
     else openSteps.add(key)
   },
-  isGroupOpen: (key: string) => openGroups.has(key),
-  toggleGroup: (key: string) => {
-    if (openGroups.has(key)) openGroups.delete(key)
-    else openGroups.add(key)
+  groupOpenChoice: (key: string) => openGroups.get(key),
+  chooseGroupOpen: (key: string, open: boolean) => {
+    openGroups.set(key, open)
   },
   citesExpanded: () => false,
   toggleCites: vi.fn(),

@@ -35,9 +35,13 @@ import {
 import { formatElapsed } from '@/features/chat/ui/TraceStepRow'
 import { TracePanel } from '@/features/chat/ui/TracePanel'
 
-/** 宿主那两张展开表；用例自己摆放（与 `chat-trace-fold.test.tsx` 同一手法）。 */
+/**
+ * 宿主那两张展开表；用例自己摆放（与 `chat-trace-fold.test.tsx` 同一手法）。
+ * `openGroups` 与真宿主同一档：记的是**"用户选过什么"**（两档都记），
+ * 不是"翻转型 Set"——"他收起来"必须记得住（P0 收尾批）。
+ */
 const openSteps = new Set<string>()
-const openGroups = new Set<string>()
+const openGroups = new Map<string, boolean>()
 
 const stubs = {
   // 这一节只关心"一行怎么画"，面板默认给摊开那一档；面板自己的开合规则由
@@ -58,10 +62,9 @@ const stubs = {
     if (openSteps.has(key)) openSteps.delete(key)
     else openSteps.add(key)
   },
-  isGroupOpen: (key: string) => openGroups.has(key),
-  toggleGroup: (key: string) => {
-    if (openGroups.has(key)) openGroups.delete(key)
-    else openGroups.add(key)
+  groupOpenChoice: (key: string) => openGroups.get(key),
+  chooseGroupOpen: (key: string, open: boolean) => {
+    openGroups.set(key, open)
   },
   citesExpanded: () => false,
   toggleCites: vi.fn(),
@@ -146,12 +149,8 @@ describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
 
   it('跑着的组**默认就展开**（组在进行过程中展开）；点一下收起，之后就听用户的', async () => {
     reset()
-    render(
-      <TracePanel
-        turnIndex={0}
-        turn={turnOf([step({ detail: '第一条' }), step({ detail: '第二条', status: 'running' })])}
-      />,
-    )
+    const turn = turnOf([step({ detail: '第一条' }), step({ detail: '第二条', status: 'running' })])
+    const { rerender } = render(<TracePanel turnIndex={0} turn={turn} />)
 
     const group = document.querySelector('li[data-running]') as HTMLElement
     // §12.333：组里还有 running 的步骤 → 这一组展开，组内两次调用直接看得见
@@ -162,7 +161,13 @@ describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
 
     // 用户点一下：**完全听他的**（"他收起过，就别自动开"）——即使这一步还在跑
     await userEvent.setup().click(within(group).getByRole('button', { name: /正在联网搜索/ }))
-    expect(group.querySelectorAll('li[data-kind="search"] li')).toHaveLength(0)
+    /*
+      桩里那张表不是响应式的（模块级 Map），真宿主那一下是 `setState`（整页用例
+      `chat-ui` 盯的就是真宿主那一半）。这里重画一次，让桩的表反映到画面上。
+    */
+    rerender(<TracePanel turnIndex={0} turn={turn} />)
+
+    expect(document.querySelectorAll('li[data-kind="search"] li')).toHaveLength(0)
   })
 
   it('纯判据：只有 running 算在跑', () => {
@@ -206,6 +211,41 @@ describe('必须看得见：组那一行也走同一个 forceExpand', () => {
 })
 
 /*
+ * §12.333 的两层尺度是**故意不对称**的，这一节是让那件事安全的那根钉。
+ *
+ * 组与面板折起来会**一次藏掉整块**（组头一收，组内所有行连同状态一起没了），
+ * 所以那两层拒绝收起；**单步**折起来的只有**原文（入参 / 返回）**——标签、结论与
+ * 图标圆底上的那枚状态灯都还在。也就是说"这一步没做成 / 在等你确认"这个**事实**
+ * 并没有被藏起来，用户折掉的是**原因**（它到底为什么没做成）。
+ */
+describe('单步级：折起来的一行仍然看得见状态灯（不对称是有道理的）', () => {
+  it('outcome="failed" 的一步被用户折起来之后，data-outcome 与状态灯仍在文档里', async () => {
+    reset()
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf([
+          step({ detail: '工具内部错误：服务连不上', outcome: 'failed', args: '{"cmd":"ls"}' }),
+        ])}
+      />,
+    )
+
+    // 单步那一行默认展开（`forceExpand`）：先点一下折起来
+    await userEvent.setup().click(screen.getByRole('button', { name: /联网搜索/ }))
+
+    // 折起来 = 原文不在文档里（折的是**原因**那一层）
+    expect(screen.queryByText('入参')).toBeNull()
+
+    // 但"这一步没做成"这个**事实**没被藏起来：行上的 `data-outcome` 与那枚状态灯都还在
+    const row = document.querySelector('li[data-outcome="failed"]') as HTMLElement
+    expect(row).not.toBeNull()
+    expect(within(row).getByTestId('step-outcome')).toHaveAttribute('data-outcome', 'failed')
+    // 结论那一行也照旧在（它不是原文那一段）
+    expect(screen.getByText('工具内部错误：服务连不上')).toBeInTheDocument()
+  })
+})
+
+/*
  * §12.333：组级也按面板级那一条规则——**进行中展开、内容跑完折叠**，
  * 三条约束照旧（用户干预优先 / awaiting 与 failed 强制展开并拒绝收起 / 回答与出处不在折叠里）。
  *
@@ -227,22 +267,58 @@ describe('组级开合：进行中展开、内容跑完折叠（§12.333）', ()
     expect(screen.queryByText('第一条')).toBeNull()
   })
 
-  it('用户点开跑完的组 → 听他的（宿主的表也记着"他开过"，跨挂载认得）', async () => {
+  it('用户点开跑完的组 → 听他的（宿主记的是"他选过什么"，跨挂载认得）', async () => {
     reset()
-    render(<TracePanel turnIndex={0} turn={doneGroup()} />)
+    const turn = doneGroup()
+    const { rerender } = render(<TracePanel turnIndex={0} turn={turn} />)
 
     await userEvent.setup().click(screen.getByRole('button', { name: /联网搜索/ }))
+    // 桩的表不是响应式的（真宿主那一下是 `setState`，整页用例盯那一半）
+    rerender(<TracePanel turnIndex={0} turn={turn} />)
 
     expect(screen.getByText('第一条')).toBeInTheDocument()
-    // 宿主那张表只记"开过"这一档（记不了"他收过"，见 `TracePanel` 里 `toggle` 的说明）
-    expect([...openGroups]).toEqual(['t0:group:tool-0:web_search'])
+    expect(openGroups.get('t0:group:tool-0:web_search')).toBe(true)
+  })
+
+  it('他收起一个"还在跑"的组 → **换挂载之后仍然是收起的**（他选的那一档记在宿主上）', async () => {
+    reset()
+    const turn = turnOf([step({ detail: '第一条' }), step({ detail: '第二条', status: 'running' })])
+    /** 换挂载：根上换 key，整棵卸载重挂——"用户选过什么"必须活在组件之外。 */
+    const panel = (mount: number) => (
+      <div key={mount}>
+        <TracePanel turnIndex={0} turn={turn} />
+      </div>
+    )
+
+    const { rerender } = render(panel(0))
+
+    // 跑着 → 默认展开；点一下 = 他选"收"
+    await userEvent.setup().click(screen.getByRole('button', { name: /正在联网搜索/ }))
+    // 桩的表不是响应式的：重画一次让"他选的那一档"反映到画面上（真宿主是 `setState`）
+    rerender(panel(0))
+    expect(screen.queryByText('第一条')).toBeNull()
+    expect(openGroups.get('t0:group:tool-0:web_search')).toBe(false)
+
+    // 换挂载（收起面板再打开 / 换会话再回来那条路）：**仍然按他选的"收"画**——
+    // 默认档（还在跑就展开）不许把他那一下盖掉
+    rerender(panel(1))
+    expect(screen.getByRole('button', { name: /正在联网搜索/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    expect(screen.queryByText('第一条')).toBeNull()
+
+    // 他再点开 → 也记下来，换挂载之后同样算数
+    await userEvent.setup().click(screen.getByRole('button', { name: /正在联网搜索/ }))
+    rerender(panel(2))
+    expect(screen.getByText('第一条')).toBeInTheDocument()
   })
 
   it('组里有 failed → 强制展开，而且点它**收不起来**（安全语义压过用户这一下点击）', async () => {
     reset()
     // 他早先自己开过这一组（宿主表里有记录）：进入 forced 之后那一下点击**不许把它抹掉**——
     // 否则"拒绝收起"只是当场看着像，等这一步不再 forced 时它会突然自己折起来
-    openGroups.add('t0:group:tool-0:web_search')
+    openGroups.set('t0:group:tool-0:web_search', true)
     render(
       <TracePanel
         turnIndex={0}
@@ -261,7 +337,7 @@ describe('组级开合：进行中展开、内容跑完折叠（§12.333）', ()
     // 拒绝收起：还是摊着；他早先那条记录也一个字没动
     expect(head).toHaveAttribute('aria-expanded', 'true')
     expect(screen.getByText('第一条')).toBeInTheDocument()
-    expect([...openGroups]).toEqual(['t0:group:tool-0:web_search'])
+    expect(openGroups.get('t0:group:tool-0:web_search')).toBe(true)
   })
 })
 
@@ -431,21 +507,19 @@ describe('§12.334：组那一行的状态灯与站点（两件事都要在**折
 
   it('展开之后子行**不重复**画站点（组行已经汇总过一遍）', async () => {
     reset()
-    render(
-      <TracePanel
-        turnIndex={0}
-        turn={turnOf([
-          step({
-            detail: '第一条',
-            args: '{"query":"a"}',
-            result: 'https://github.com/anthropics/skills',
-          }),
-          step({ detail: '第二条', args: '{"query":"b"}', result: 'https://arxiv.org/abs/2401.1' }),
-        ])}
-      />,
-    )
+    const turn = turnOf([
+      step({
+        detail: '第一条',
+        args: '{"query":"a"}',
+        result: 'https://github.com/anthropics/skills',
+      }),
+      step({ detail: '第二条', args: '{"query":"b"}', result: 'https://arxiv.org/abs/2401.1' }),
+    ])
+    const { rerender } = render(<TracePanel turnIndex={0} turn={turn} />)
 
     await userEvent.setup().click(screen.getByRole('button', { name: /联网搜索/ }))
+    // 桩的表不是响应式的（真宿主那一下是 `setState`）
+    rerender(<TracePanel turnIndex={0} turn={turn} />)
 
     // 两条结论照旧逐条在（合的是入口，不是信息）
     expect(screen.getByText('第一条')).toBeInTheDocument()

@@ -117,18 +117,18 @@ function EntryRow({
    *
    * 1. **组里有 `awaiting` / `failed`**（`forceExpand`，单步那一行也走它）：强制展开，
    *    而且**拒绝收起**（见下面 `toggle`）——"要你动手 / 它没做成"是三家收敛的安全语义，
-   *    折起来等于把它藏进一次点击后面；
-   * 2. **用户手动干预过**（`groupChose` 是当场那一下，宿主的 `openGroups` 跨挂载）：
-   *    完全听他的 —— 默认档听用户的，**进入 forceExpand 那三档之后不再听**；
+   *    折起来等于把**整组行连同状态一起**藏进一次点击后面；
+   * 2. **用户选过这一组**（宿主的 `openGroups`，**开与收两档都记**，见 `ChatProvider`）：
+   *    完全听他的 —— 默认档听用户的，**进入 forceExpand 那三档之后不再听**。
+   *    这一档记在宿主上而不是组件里：收起面板再打开、换会话再回来，得还是他选的那一档；
    * 3. **默认档**：这一组还在跑就展开（那就是进度条），跑完就折叠。
    *
    * "这一组还在跑吗"问的是 `turns.isBlockRunning`（面板级那条规则问同一个函数），
-   * 两层不会各判出一个答案。
+   * 两层不会各判出一个答案；键是带轮次的（`traceKey`），跨轮不会串号。
    *
-   * 这几个判据与下面两个 `useState` **必须写在"单独一步"的提前 return 之前**：
-   * 钩子的顺序不能随渲染分支变（写在 return 之后会被 lint 判成"条件调用"）。
+   * 这些判据**必须写在"单独一步"的提前 return 之前**：它们跟着渲染分支变的话，
+   * lint 会判成"条件调用"（钩子顺序不能变）。
    */
-  const [groupChose, setGroupChose] = useState<boolean | null>(null)
   const groupForced = entry.kind === 'group' && entry.steps.some(forceExpand)
   /** 组里还有一次调用在跑：那一行也要看得出来。 */
   const groupRunning = entry.kind === 'group' && isBlockRunning({ steps: entry.steps })
@@ -146,22 +146,12 @@ function EntryRow({
     )
   }
 
-  const open = groupForced || (groupChose ?? (chat.isGroupOpen(key) || groupRunning))
+  const open = groupForced || (chat.groupOpenChoice(key) ?? groupRunning)
   const toggle = () => {
-    // 第 2 层那一档不收（与宿主 `toggleTrace` 拒绝收起同一个写法：连档位都不留）
+    // 第 1 层那一档不收（与宿主 `toggleTrace` 拒绝收起同一个写法）：连"他选过"都不留，
+    // 否则这一步不再 forced 时，会突然按那一下无效的点击折起来
     if (groupForced) return
-    const next = !open
-    setGroupChose(next)
-    /*
-      宿主那张表只有"开过"这一档（`toggleGroup` 是翻转型的 Set，记不了"他收过"），
-      所以**只在它能记对的时候**动它：用户把默认展开的组收起来时，表里本来没有这个 key，
-      翻一下反而记成"他开过"——下次挂载（收起面板再打开）就会把这一组弹开，
-      与用户刚做的事相反。
-
-      代价写在这里：他收起一个"默认开着"的组，这一下只在本挂载内有效
-      （表里没有第二档可以记"他收过"）；跨挂载仍按默认档走（还在跑就展开）。
-    */
-    if (chat.isGroupOpen(key) !== next) chat.toggleGroup(key)
+    chat.chooseGroupOpen(key, !open)
   }
 
   /**

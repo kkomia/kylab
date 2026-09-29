@@ -785,6 +785,74 @@ describe('过程面板的默认档与强制展开（P0）', () => {
   })
 })
 
+/**
+ * §12.333 约束 1：**用户手动开合过就完全听他的**。
+ *
+ * 这一条走**真宿主**（不是桩）：要钉的正是"他选过的那一档存在哪儿"——存在宿主上
+ * （`ChatProvider` 的 `openGroups`，开与收两档都记），所以收起面板再打开、换会话再回来
+ * 都还认得。P0 收尾批之前那一档是"翻转型 Set"（只记得开过），他收起一个**默认展开**
+ * （还在跑）的组时那一下没地方记，回来又按默认档弹开。
+ */
+describe('组级开合记在宿主上（§12.333 约束 1）', () => {
+  it('他收起一个还在跑的组 → 换会话再回来仍然是收起的', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([
+        stored('user', '查一下'),
+        stored('assistant', '查到了。', {
+          steps: [
+            {
+              phase: 'tool',
+              label: '联网搜索',
+              detail: '「芯片 出口」命中 3 条',
+              status: 'done',
+              tool: 'web_search',
+              kind: 'search',
+            },
+            {
+              phase: 'tool',
+              label: '联网搜索',
+              detail: '「光刻机」命中 5 条',
+              status: 'running',
+              tool: 'web_search',
+              kind: 'search',
+            },
+          ],
+        }),
+      ]),
+    )
+    renderNavigable()
+
+    /** 组那一行与它的展开容器（标题里也会出现同样的对象，所以断言都缩进容器里查）。 */
+    function group() {
+      const head = screen.getByRole('button', { name: /正在联网搜索/ })
+      const body = document.getElementById(
+        head.getAttribute('aria-controls') as string,
+      ) as HTMLElement
+      return { head, body }
+    }
+
+    // 组里还有一步在跑 → 面板与组都默认展开（同一条 `isBlockRunning` 判据的两层）
+    expect(await screen.findByTestId('reply-text')).toHaveTextContent('查到了。')
+    expect(group().head).toHaveAttribute('aria-expanded', 'true')
+    expect(within(group().body).getByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()
+
+    // 他收起这一组（"还在跑"的默认档被他的点击压过）
+    const user = userEvent.setup()
+    await user.click(group().head)
+    expect(group().head).toHaveAttribute('aria-expanded', 'false')
+    expect(group().body.textContent).toBe('')
+
+    // 换会话再回来：内容重画，但**他选的那一档还在**
+    await user.click(screen.getByRole('link', { name: '去新对话' }))
+    await waitFor(() => expect(screen.queryByTestId('reply-text')).not.toBeInTheDocument())
+    await user.click(screen.getByRole('link', { name: '回 c1' }))
+
+    expect(await screen.findByTestId('reply-text')).toHaveTextContent('查到了。')
+    expect(group().head).toHaveAttribute('aria-expanded', 'false')
+    expect(group().body.textContent).toBe('')
+  })
+})
+
 describe('斜杠命令：带参数的 /plan', () => {
   it('回答照常进对话流，而不是只在"只回一句"面板里', async () => {
     const box = capture()
