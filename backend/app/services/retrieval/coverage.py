@@ -29,10 +29,32 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-
-import jieba
+from typing import Any
 
 __all__ = ["MIN_TERM_CHARS", "content_terms", "term_coverage"]
+
+#: 惰性拿到的 jieba（**故意不是模块级导入** ✗）。
+_JIEBA: Any = None
+
+
+def _jieba() -> Any:
+    """第一次用到时才导入 jieba（模块级导入会让**客户端运行时**凭空多背 40.9 MB ✗）。
+
+    为什么惰性：这个模块挂在 `app.services.retrieval` 的导入链上 ✓，而"算词面覆盖"
+    只有**服务器**那条检索链会用 ✓ —— 边车（客户端运行时）只跑循环 + 工具 + 沙箱 ✓。
+    模块级 `import jieba` 的后果实测过（P4-3，2026-09-29）：`dist\\sidecar-runtime` 里
+    `python -m app.sidecar` 直接启动失败 ✗（`ModuleNotFoundError: No module named 'jieba'`），
+    而"精简集合够用"这件事就此不成立 ✓。
+
+    **行为一个字没变** ✗：第一次调用时才导入 ✓，jieba 真的不在时仍在**调用那一刻**
+    抛 `ModuleNotFoundError` ✓（只是从导入期挪到了调用期 ✓）。
+    """
+    global _JIEBA
+    if _JIEBA is None:
+        import jieba
+
+        _JIEBA = jieba
+    return _JIEBA
 
 #: 参与判定的最短词元（字符数）。单字词在中文里绝大多数是虚词或黏着语素
 #: （的／了／是／在／机／修），拿它们当"词面证据"只会把噪声算成命中——
@@ -43,7 +65,7 @@ MIN_TERM_CHARS = 2
 def content_terms(text: str) -> tuple[str, ...]:
     """查询里的实词（去重、大小写归一）。切法见模块头。"""
     terms: dict[str, None] = {}
-    for word in jieba.lcut(text or ""):
+    for word in _jieba().lcut(text or ""):
         term = word.strip()
         if len(term) < MIN_TERM_CHARS:
             continue
