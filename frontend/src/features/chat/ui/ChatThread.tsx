@@ -17,9 +17,9 @@
  * 过程面板那类"我们的字段"就不会在骨架里被磨掉。
  */
 import { ThreadPrimitive, useAuiState } from '@assistant-ui/react'
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 
-import { buildTurns } from '@/features/chat/model/turns'
+import { buildTurns, type Turn } from '@/features/chat/model/turns'
 
 import { ChatHeader } from './ChatHeader'
 import { MessageView } from './MessageView'
@@ -37,6 +37,22 @@ const FOLLOW_THRESHOLD_PX = 24
 /** 这几个键的含义就是"用户自己在往上翻"（和滚轮同一类意图，不必等 `scroll` 事件）。 */
 const SCROLL_UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home'])
 
+/**
+ * 这一下按键是不是发生在**输入控件**里（见 `onDocumentKeyDown` 的闸①）。
+ *
+ * 在输入框里按方向键是"改光标"、按 PageUp 是"翻自己的内容"，都不是"往回读对话"；
+ * 而实测这种情形下**这一栏根本不会滚**（浏览器滚的是"焦点元素的最近可滚动祖先"，
+ * 那条链上不是这一栏），停跟随只会把正在流式的视图冻住。
+ *
+ * `contenteditable` 要单独判：它长在普通 `div` 上，光看标签名看不出来。
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  if (target.isContentEditable) return true
+  const tag = target.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+}
+
 /** 轮次号：一条提问与它后面那条回答共享同一个号（0 起，与旧 `turns` 的下标一致）。 */
 function turnIndexes(messages: ChatMessage[]): Map<string, number> {
   const map = new Map<string, number>()
@@ -53,8 +69,40 @@ function turnIndexes(messages: ChatMessage[]): Map<string, number> {
   return map
 }
 
-/** 骨架屏：只画有把握的结构（几行灰条），不画"空对话"的欢迎层，也别让人干等一屏白。 */
-function LoadingSkeleton() {
+/**
+ * 上一帧那几轮（`Turn`）——**只在它那两条消息对象真的换了时才重建**。
+ *
+ * 为什么要这一层（D32 §12.312 定位，第三节的"放大器"）：`buildTurns` 每次调用都给**所有**轮
+ * 造新对象，而消息数组每一拍都换引用 ⇒ 每一轮的 `turn` 属性都换 ⇒ `React.memo` 一次也拦不住，
+ * 整棵消息树每一拍全量重渲染（实测：单次 commit 有 ~4465 个组件真正渲染过，其中 markdown
+ * 段落 ~680 个）。
+ *
+ * 判据只有一条：**这一轮的提问与回答还是不是上一帧那两个对象**。`mirrorLive` 只换被写到的那
+ * 一条消息，所以没动的那些轮天然满足。表按 `${user.id}|${reply.id}` 收，收完把上一帧的键丢掉
+ * ——它只是"上一帧"的快照，不是缓存（不留历史、不会长）。
+ */
+function useStableTurns(messages: ChatMessage[]): Turn[] {
+  const cacheRef = useRef(new Map<string, Turn>())
+  return useMemo(() => {
+    const cache = cacheRef.current
+    const kept = new Map<string, Turn>()
+    const stable = buildTurns(messages).map((turn) => {
+      // `Turn` 上那两条是 `Message`（模型层的基类型），实际对象就是我们这边的 `ChatMessage`
+      const user = turn.user as ChatMessage | null
+      const reply = turn.reply as ChatMessage | null
+      const key = `${user?.id ?? ''}|${reply?.id ?? ''}`
+      const previous = cache.get(key)
+      const value =
+        previous && previous.user === turn.user && previous.reply === turn.reply ? previous : turn
+      kept.set(key, value)
+      return value
+    })
+    cacheRef.current = kept
+    return stable
+  }, [messages])
+}
+
+/** 骨架屏：只画有把握的结构（几行灰条），不画"空对话"的欢迎层，也别让人干等一屏白。 */ function LoadingSkeleton() {
   return (
     <div className="py-[var(--space-6)]" aria-hidden>
       {[92, 78, 85, 64].map((width, row) => (
@@ -71,10 +119,12 @@ function LoadingSkeleton() {
 export function ChatThread() {
   const chat = useChat()
   const isRunning = useAuiState((state) => state.thread.isRunning)
-  const order = turnIndexes(chat.messages)
+  const order = useMemo(() => turnIndexes(chat.messages), [chat.messages])
   // 提问与回答是**一个整体**（旧前端渲染前先配对）：配对交给 `model/turns` 的
-  // `buildTurns`，这里按轮次号取回来——「存为笔记」的标题、出处、交付物都按它对
-  const turns = buildTurns(chat.messages)
+  // `buildTurns`，这里按轮次号取回来——「存为笔记」的标题、出处、交付物都按它对。
+  // **这一层必须保住"没动的轮还是原来那个对象"**（见 `useStableTurns`），
+  // 否则下面那些 `React.memo` 一个都拦不住。
+  const turns = useStableTurns(chat.messages)
 
   /**
    * 「用户还在最新那一头」——内容再长就贴回底部；他往上翻过就不再抢。
@@ -165,8 +215,32 @@ export function ChatThread() {
       }
       // 触摸一上来就先停：手指的意图没法像 `wheel` 那样只看一个数
       const onTouchMove = () => stopFollowing()
-      const onKeyDown = (event: KeyboardEvent) => {
-        if (SCROLL_UP_KEYS.has(event.key)) stopFollowing()
+
+      /**
+       * 上翻键的意图判在 **document** 上，不再挂在视口元素上（D31 补验 + 本轮实测）。
+       *
+       * 病灶（真浏览器实测）：监听挂在视口上时只有"焦点落在视口里"才收得到；而视口原先
+       * **不可聚焦**（没有 `tabindex`），点一下消息区焦点落在 `BODY`——于是键盘用户按 PageUp
+       * **根本翻不动这一栏**（浏览器滚的是"焦点元素的最近可滚动祖先"，那条链上不是这一栏），
+       * 位置差实测 0。现在两件事配一对：
+       * ① 视口加 `tabIndex={0}`（见下面视口那一行）→ 它成为可聚焦的滚动区，键盘真能滚它；
+       * ② 判定挪到 document → 焦点在视口本身或它里面任何可聚焦元素上都收得到。
+       *
+       * 两道闸：
+       * - ① **输入控件里不算**（见 `isEditableTarget`）：那是改文字，不是往回读；
+       * - ② **视口不在文档里不算**（`isConnected`）。这一条刻意**不用 `getClientRects()`
+       *   判"看得见"**：不在这棵树上时监听本来就随 `attachViewport` 的 cleanup 摘掉了，
+       *   而 jsdom 不算版面（任何元素都没有 client rect）——用它会把手写用例里这条行为
+       *   一起挡掉，等于让这条修法在测试里测不到。
+       *
+       * 只改"停止跟随"这一个状态：往下滚、回到贴底那两条路一个字都没动。
+       */
+      const onDocumentKeyDown = (event: KeyboardEvent) => {
+        if (!SCROLL_UP_KEYS.has(event.key)) return
+        if (isEditableTarget(event.target)) return
+        const el = viewportRef.current
+        if (!el || !el.isConnected) return
+        stopFollowing()
       }
 
       /*
@@ -190,14 +264,14 @@ export function ChatThread() {
 
       node.addEventListener('wheel', onWheel, { passive: true })
       node.addEventListener('touchmove', onTouchMove, { passive: true })
-      node.addEventListener('keydown', onKeyDown)
+      document.addEventListener('keydown', onDocumentKeyDown)
       node.addEventListener('scroll', onScroll, { passive: true })
 
       detachRef.current = () => {
         growth.disconnect()
         node.removeEventListener('wheel', onWheel)
         node.removeEventListener('touchmove', onTouchMove)
-        node.removeEventListener('keydown', onKeyDown)
+        document.removeEventListener('keydown', onDocumentKeyDown)
         node.removeEventListener('scroll', onScroll)
         if (frameRef.current !== null) {
           cancelAnimationFrame(frameRef.current)
@@ -276,6 +350,15 @@ export function ChatThread() {
         scrollToBottomOnThreadSwitch={false}
         className="min-h-0 flex-1 overflow-y-auto [overflow-anchor:none]"
         aria-label="对话内容"
+        /*
+          **可聚焦的滚动区**（D31 补验的缺口）：不聚焦时键盘用户按 PageUp 翻不动这一栏
+          （浏览器滚的是"焦点元素的最近可滚动祖先"，而点一下消息区时焦点落在 `BODY`）。
+          加上 `tabIndex={0}` 之后：Tab 到它、或点它内部任何不可聚焦的地方，焦点都落到这里，
+          PageUp / ArrowUp 就真能滚这一栏；焦点环由 `tokens.css` 那条全局
+          `:focus-visible`（2px 墨环 + 2px offset）给——**鼠标点它不亮**，只有键盘导航才亮，
+          所以不需要再加任何类名。
+        */
+        tabIndex={0}
         ref={attachViewport}
       >
         {/* 正文列：**与输入卡片同一条 768px 的居中窄列**（`--chat-measure`），内边距照旧

@@ -52,6 +52,8 @@ import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import styleToObject from 'style-to-object'
 
+import type { WebCitation } from './sourceCitations'
+
 /**
  * 只允许这两种协议：`javascript:` 之类的链接点了就是执行代码，必须挡掉。
  *
@@ -495,12 +497,23 @@ const CITE_RE = /\[(\d+(?:\s*[,，]\s*\d+)*)\]/g
 export interface CiteFallback {
   /** 悬停说明，例如「联网搜索结果，见过程面板」。 */
   title: string
+  /**
+   * **编号 → 网页引用**（D11-③，可选）。给了之后，对得上的编号不再画成
+   * "有说明的非链接"，而是交给界面画成**站点徽章**（真实 logo + 域名 + 悬停卡片）；
+   * 卡片长什么样由调用方给（见 `MarkdownActions.renderWebCitation`）——
+   * 这一层不认识任何界面组件，只认识"哪几个编号是网页引用"。
+   *
+   * 数据从哪来：联网那一步的返回文本（`model/sourceCitations.ts` 解析），
+   * **不新增后端字段**。
+   */
+  citations?: ReadonlyMap<number, WebCitation>
 }
 
 function rehypeCitations(options: { sources: readonly CitationSource[]; fallback?: CiteFallback }) {
   const known = new Map(options.sources.map((source) => [source.index, source]))
+  const web = options.fallback?.citations
   return (tree: HastRoot): void => {
-    mapTextChildren(tree, [], (value) => citationPieces(value, known, options.fallback))
+    mapTextChildren(tree, [], (value) => citationPieces(value, known, options.fallback, web))
   }
 }
 
@@ -508,6 +521,7 @@ function citationPieces(
   value: string,
   known: Map<number, CitationSource>,
   fallback?: CiteFallback,
+  web?: ReadonlyMap<number, WebCitation>,
 ): HastNode[] | null {
   CITE_RE.lastIndex = 0
   if (!CITE_RE.test(value)) return null
@@ -523,13 +537,42 @@ function citationPieces(
         .map((item) => Number(item.trim()))
         .filter((item) => Number.isInteger(item))
       if (numbers.length === 0) return [text(part)]
+      /** 这个编号有出处吗（知识库那条，或者联网那条）。 */
+      const has = (item: number): boolean => known.has(item) || Boolean(web?.has(item))
       // 没有兜底说明时：组里有一个对不上就整组不换（`[3, 9]` 换一半会把原意读歪）
-      if (!fallback && numbers.some((item) => !known.has(item))) return [text(part)]
+      if (!fallback && numbers.some((item) => !has(item))) return [text(part)]
       // 走到这里：要么每个编号都有出处，要么有兜底说明接住对不上的那些
-      return numbers.map((item) =>
-        known.has(item) ? citationChip(known.get(item)!) : plainCitationChip(item, fallback!),
-      )
+      return numbers.map((item) => {
+        if (known.has(item)) return citationChip(known.get(item)!)
+        const citation = web?.get(item)
+        if (citation) return siteCitationChip(citation)
+        return plainCitationChip(item, fallback!)
+      })
     })
+}
+
+/**
+ * **网页引用**那一枚（D11-③）：先把"编号 + 域名"落成标记，界面那一层再换成
+ * `SourceBadge`（真实 logo + 悬停卡片）。
+ *
+ * 为什么不让这一层直接画徽章：`model/` 不认识界面组件（分层纪律），
+ * 而"画成什么样"正是界面的事。所以这里给的是**数据 + 一个可认的类名**，
+ * 界面通过 `MarkdownActions.renderWebCitation` 接管。
+ * 落到文本里的那一份是域名（没有界面接管时，读者看到的也是"这条来自 github.com"，
+ * 而不是一个光秃秃的 `[1]`）。
+ */
+function siteCitationChip(citation: WebCitation): HastElement {
+  return element(
+    'a',
+    {
+      className: ['md-cite', 'md-cite-site'],
+      'data-cite-index': String(citation.index),
+      // 界面那一层据此认出"这是网页引用那一枚"，改成真实 logo + 卡片
+      'data-cite-site-chip': '1',
+      title: citation.title ? `${citation.title}（${citation.domain}）` : citation.domain,
+    },
+    [text(citation.domain)],
+  )
 }
 
 /**
@@ -711,6 +754,21 @@ function sourcesSignature(sources: readonly CitationSource[]): string {
     .join('\u0002')
 }
 
+/**
+ * **网页引用也进缓存键**（D11-③）。
+ *
+ * 不加它的后果实测过：同一段正文先在"有联网引用"那一轮渲染成站点徽章，缓存住；
+ * 另一轮同样文字但没有引用时命中同一棵树，于是**没有引用的那一轮也画出了 github.com**
+ * （用例 `没给 citations（老调用方）` 就是这么红的）。文案要进键（上面那句），
+ * 引用当然也要。
+ */
+function citationsSignature(citations?: ReadonlyMap<number, WebCitation>): string {
+  if (!citations || citations.size === 0) return ''
+  return [...citations.values()]
+    .map((citation) => `${citation.index}\u0001${citation.url}\u0001${citation.domain}`)
+    .join('\u0002')
+}
+
 /* ------------------------------------------------------------------ 组件 */
 
 /**
@@ -723,6 +781,17 @@ function sourcesSignature(sources: readonly CitationSource[]): string {
 export interface MarkdownActions {
   /** 点了行内引用徽标（`[1]`）。旧实现是页面上的 `[data-cite-index]` 事件委托。 */
   onOpenSource?: (index: number) => void
+  /**
+   * **网页引用那一枚怎么画**（D11-③，可选）。给了它、并且这个编号在
+   * `citations` 里，界面就可以把它渲染成站点徽章（真实 logo + 域名 + 悬停卡片）；
+   * 不给就退回"有说明的非链接"。
+   *
+   * 为什么由调用方传渲染函数：`model/` 不认识界面组件（分层纪律），
+   * 而"徽章长什么样"是界面的事。
+   */
+  renderWebCitation?: (citation: WebCitation, onOpen: (index: number) => void) => ReactNode
+  /** 编号 → 网页引用（与 `CiteFallback.citations` 同一份，界面渲染徽章时要用）。 */
+  citations?: ReadonlyMap<number, WebCitation>
   /**
    * 复制代码块。给的是**代码原文**（不含语言名——旧实现从 `.md-code` 里只取 `pre`，
    * 同一个口径）。不给回调时按钮照旧渲染（带 `data-copy-code`），页面可以用事件委托接。
@@ -828,6 +897,13 @@ function MarkdownAnchor(props: PropsOf<'a'>) {
     // **只有真给了 `onOpenSource` 才挂处理函数**：没给的时候这一块要保持"纯标记"，
     // 好让页面沿用旧接法（在容器上监听 `[data-cite-index]`）时一个字节都不受影响
     const open = actions.onOpenSource
+    // 网页引用那一枚（D11-③）：界面给了渲染函数就交给它（真实 logo + 域名 + 卡片）
+    const citation = actions.citations?.get(index)
+    if (node?.properties['data-cite-site-chip'] !== undefined && citation) {
+      if (actions.renderWebCitation) {
+        return actions.renderWebCitation(citation, open ?? (() => undefined))
+      }
+    }
     return createElement(
       'a',
       {
@@ -1163,7 +1239,7 @@ function renderMarkdown(text: string, options: RenderOptions = {}): ReactNode {
   // 说明文案进缓存键：同一段正文在两轮里（一轮有联网、一轮没有）输出不同
   const key = `${text}\u0000${sourcesSignature(sources)}\u0000${plain ? 'plain' : 'rich'}\u0000${
     fallback?.title ?? ''
-  }`
+  }\u0000${citationsSignature(fallback?.citations)}`
   const cached = ELEMENT_CACHE.get(key)
   if (cached !== undefined) return cached
 
@@ -1388,14 +1464,23 @@ export function Answer({
   plain = false,
   className,
   onOpenSource,
+  renderWebCitation,
   onCopyCode,
   onCopyTable,
   onDownloadTable,
 }: AnswerProps): ReactNode {
   // 回调每次都可能是新的闭包，这里按**回调本身**记忆，免得 Provider 的 value 每次渲染都换
+  const citations = citeFallback?.citations
   const actions = useMemo<MarkdownActions>(
-    () => ({ onOpenSource, onCopyCode, onCopyTable, onDownloadTable }),
-    [onOpenSource, onCopyCode, onCopyTable, onDownloadTable],
+    () => ({
+      onOpenSource,
+      renderWebCitation,
+      citations,
+      onCopyCode,
+      onCopyTable,
+      onDownloadTable,
+    }),
+    [onOpenSource, renderWebCitation, citations, onCopyCode, onCopyTable, onDownloadTable],
   )
   const content = renderMarkdown(text, { sources, plain, fallback: citeFallback })
   if (!content) return null

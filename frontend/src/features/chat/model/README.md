@@ -242,3 +242,58 @@ markdown 那一批的**断言文本**也照旧（`html()` 只把 React 的空标
 **`latex.ts` 一行没动**：它服务的是文档阅读视角（`cleanInlineLatex` 的纯文本还原、
 `splitInlineLatex` + `renderLatexToHtml` 自己拼），与回答渲染的公式路线互不影响——
 所以 `chat-model-latex.test.ts` 那 30 条**原样跑绿**。
+
+---
+
+## 5. 回答里的网页引用：`sourceCitations.ts` + 站点徽章（D11-③，2026-09-29）
+
+用户要的样子（照 Kimi）：行内一枚**小圆角徽章 = 站点真实 logo + 域名**，悬停/聚焦出
+一张卡片（站点 + 域名 + 淡色对勾 / 页面标题 / 一两行摘要 / 可点可复制的 URL）。
+
+### 5.1 数据从哪来（**不新增后端字段**）
+
+知识库出处的 `ChatSource` 只有 `document_name / heading_path / page / preview`——
+**没有 URL、没有站点**，那是**文档**不是网页，所以它**照旧**画文档名徽标 ✓（别硬套 ✗）。
+网页引用的标题 / 网址 / 摘要**本来就在库里**：`web_search` 那一步的 `result` 就是后端
+渲染好的编号列表（`services/tools.py::_web_search`）：
+
+```
+检索词：agent skills，共 3 条：
+[1] Anthropic 的官方仓库
+https://github.com/anthropics/skills
+官方维护的 Agent Skills 仓库，含文档与示例。
+```
+
+`webCitationsOfSteps(steps)` 把这段文本解析成 `{index, title, url, domain, snippet, site}`：
+摘要取的就是搜索结果自带的那行 snippet；站点标识复用 `webSites.ts` 那张表
+（`siteOfDomain`）。**解析不出 URL/域名的编号整条不要** → 它退回原来那句说明
+（`citeFallback`），**不出现空徽章、不出破图**。
+
+### 5.2 三层怎么接（分层纪律：`model/` 不认识界面组件）
+
+| 层                         | 做什么                                                                                                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model/sourceCitations.ts` | 纯函数解析（上面那一件事）                                                                                                                                          |
+| `model/markdown.tsx`       | `CiteFallback.citations` 给了就**不再画"有说明的非链接"**，改成一枚带 `data-cite-site-chip` 的标记；**卡片长什么样**由 `MarkdownActions.renderWebCitation` 交给界面 |
+| `ui/SourceCard.tsx`        | `SourceBadge`（行内徽章）+ `SourceCardHost`（**一条回答只挂一个**的卡片）；`ui/sourceCardStore.ts` 是"当前开着哪一条"那个小状态（`ui/siteLogos.ts` 供两处共用取图） |
+
+接线一行在 `ui/MessageView.tsx`：`citeFallback` 带上 `citations: webCitationsOfSteps(message.steps)`。
+
+### 5.3 两条踩过的坑（都留了用例）
+
+1. **渲染缓存键必须带上引用**：同一段正文先在"有联网引用"那一轮渲染成徽章、缓存住，
+   另一轮同样文字但没有引用时命中同一棵树 → **没有引用的那一轮也画出了 `github.com`**。
+   修法是 `citationsSignature()` 进 `renderMarkdown` 的 `ELEMENT_CACHE` 键
+   （用例：`chat-source-citations.test.tsx` 的「没给 citations（老调用方）…」）；
+2. **`[data-cite-site]` 只在认得出站点时才有值**：真实结果里大量是表外域名
+   （`iim.net.cn`、`xhby.net`…）——它们**也有徽章**，所以按 `data-cite-domain` 认。
+
+### 5.4 验收数字（真浏览器，`.shots/d11b-cite/`）
+
+- **行内徽章 13 枚**（`conv_563ca9101377`），控制台 error / pageerror **0**；
+- **段落行高变化 = 0**：带徽章那几段的高度是行高的**整数倍**（76.5 = 3×25.5、51 = 2×25.5），
+  与不带徽章的段落同一口径；徽章盒高 **15.08px** < 行高 **25.5px**，
+  `bottomGapToLine = 0`（没有沉到行外）；
+- 卡片：悬停（`mouseover`）/ 键盘聚焦都能开、`aria-expanded=true`、Esc 关、
+  贴边翻转（`cardPlacement` 纯函数 + 用例）、**没有 👍/👎**；
+- 亮/暗各一张：`light-inline.png` / `light-card.png` / `dark-inline.png` / `dark-card.png`。

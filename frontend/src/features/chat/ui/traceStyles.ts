@@ -135,9 +135,11 @@ export const STEP_BODY = 'min-w-0 pt-px'
  * 过程标签落在**更小一档的字号 + 更淡一档的颜色**上，扫过去才分得清"这是它干的过程"
  * 与"这是回答本身"（用户原话："工具调用过程的字体设计跟正文意义导致没区分度"）。
  * 行高显式给 `--line-ui`(1.47)：这一族是元信息，不该跟着正文那档 1.7 走。
+ *
+ * `text-left` 与 `STEP_TOGGLE` 同一处理由（见那一段），两处是同一个视觉档。
  */
 export const STEP_LABEL =
-  'm-0 text-[length:var(--text-meta-size)] text-[var(--text-secondary)] leading-[var(--line-ui)]'
+  'm-0 text-left text-[length:var(--text-meta-size)] text-[var(--text-secondary)] leading-[var(--line-ui)]'
 
 /**
  * 可点的标签（标签 + 箭头）：字号与颜色与 `STEP_LABEL` **同一档**。
@@ -152,11 +154,25 @@ export const STEP_LABEL =
  * 与上面那两笔冲突，**谁赢取决于打包后的声明顺序**（同一层里逐条比先后）；
  * 字体族交给 preflight（`button { font: inherit }`）就够了——那一条在 base 层，
  * utilities 里的字号/行高照样压得住它（实测字体族与正文段落逐字相同）。
+ *
+ * ## `text-left` 不是装饰（D11-①，2026-09-29 走查："标签与文字没对齐"）
+ *
+ * `<button>` 的 UA 默认是 **`text-align: center`**，而这一档的标签**会换行**：
+ * 组行那句「联网搜索 11 个关键词 · 2025国庆 重庆到遵义 高速救援…」实测两行。
+ * 不写 `text-left` 时每一行**各自居中**——真浏览器量到的数字：
+ * 首字形落在 **x=467.28**（容器左边缘是 461，多出 6.28）、第二行落在 **x=732.44**，
+ * 而它下面那排站点行 / 结论都在 **461**。看上去就是"标签与文字没对齐"
+ * （证据：`.shots/d11b-align/before*.json` 与 `glyph.json`）。
+ * 单步行那些短标签不换行，所以只有长标题（组行）看得出这一条。
+ *
+ * 顺手钉住它的用例：`frontend/tests/chat-trace-step-row.test.tsx` 里
+ * 「标签类名带 text-left」那两条（类名级，不用起浏览器）。
  */
 export const STEP_TOGGLE =
   'inline-flex items-center gap-[var(--space-1)] p-0 border-none bg-transparent ' +
-  'text-[length:var(--text-meta-size)] text-[var(--text-secondary)] leading-[var(--line-ui)] ' +
-  'cursor-pointer [transition:var(--transition-ui)] hover:text-[var(--text-primary)]'
+  'text-left text-[length:var(--text-meta-size)] text-[var(--text-secondary)] ' +
+  'leading-[var(--line-ui)] cursor-pointer [transition:var(--transition-ui)] ' +
+  'hover:text-[var(--text-primary)]'
 
 /** 箭头：展开时转 180°。 */
 export function caretClass(open: boolean): string {
@@ -243,6 +259,16 @@ export const SITE_TILE =
   'inline-flex h-[1.2em] min-w-[1.2em] items-center justify-center rounded-[var(--radius-control)] ' +
   'border border-[var(--border)] bg-[var(--bg-subtle)] px-[0.15em] text-[0.82em] leading-none ' +
   'text-[var(--text-secondary)]'
+
+/**
+ * 真实 logo 那一格（D11-②）：**外框尺寸与 `SITE_TILE` 逐字相同**（1.2em 见方）。
+ *
+ * 为什么必须同尺寸：图标是**异步**取回来的（先画字母牌、拿到了再换成图），两者只要差
+ * 一点，这一行就会在加载完成的那一刻抖一下——而面板里每一行都会经历那一下。
+ * 所以图收在同一个 1.2em 方框里，用 `object-contain`（不裁不拉伸）。
+ */
+export const SITE_TILE_IMG =
+  'inline-block h-[1.2em] w-[1.2em] shrink-0 rounded-[var(--radius-control)] object-contain'
 
 /** 多出来的站点收成 `+N`。 */
 export const SITE_MORE = 'text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]'

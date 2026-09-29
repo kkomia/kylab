@@ -8,6 +8,7 @@
  * 谁说的"，过程面板/出处/交付物这些属于我们的字段一个字都没经过它。
  */
 import { Copy, File as FileIcon, RotateCcw, StickyNote, TriangleAlert } from 'lucide-react'
+import { memo, useCallback, useMemo } from 'react'
 
 import {
   degradedReason,
@@ -19,13 +20,28 @@ import {
   type Message,
   type Turn,
 } from '@/features/chat/model/turns'
+import { webCitationsOfSteps } from '@/features/chat/model/sourceCitations'
 import { formatBytes } from '@/lib/format'
 
 import { AnswerText } from './AnswerText'
 import { Deliverables } from './Deliverables'
 import { Logo } from './Logo'
 import { TracePanel } from './TracePanel'
-import { useChat, type ChatMessage } from '../runtime/ChatProvider'
+import { useChatRows, type ChatMessage } from '../runtime/ChatProvider'
+
+/**
+ * 正文那一块**只在它自己的文本 / 出处 / "待生成"那一位变了时才重渲染**。
+ *
+ * 为什么在这里包一层、而不改 `AnswerText.tsx` 自己：那个文件不属于这一条 lane，而且它
+ * **不消费 `useChat()`**——这正是它能整块跳过的原因（D32：context value 每拍都换新对象，
+ * 消费 `useChat()` 的组件一律重渲染，只有不消费的那些 `React.memo` 才拦得住）。
+ * markdown 重排是这棵树里最贵的一项：实测单次 commit 里有 ~680 个 markdown 段落重新渲染，
+ * 而其中绝大多数属于**没在流式**的那些回答（它们的 `text` 一个字都没变）。
+ *
+ * 代价是它的每个 prop 都必须稳定，所以 `className` 写成字面量、`citeFallback` 与
+ * `onCite` 在 `AssistantMessage` 里各做了一次稳定化（见那里的注释）。
+ */
+const MemoAnswerText = memo(AnswerText)
 
 /** 空的头像沟槽留给 logo：回答这一列的起点在它右边，与正文列对齐。 */
 function AssistantAvatar() {
@@ -40,7 +56,7 @@ function AssistantAvatar() {
 }
 
 function UserMessage({ message, turnIndex }: { message: ChatMessage; turnIndex: number }) {
-  const chat = useChat()
+  const chat = useChatRows()
   const copied = chat.copiedKey === `${turnIndex}:user`
   return (
     <div className="group/ask flex items-end justify-end gap-[var(--space-2)]">
@@ -103,14 +119,19 @@ function AssistantMessage({
   turn: Turn
   turnIndex: number
 }) {
-  const chat = useChat()
+  const chat = useChatRows()
+  /**
+   * `revealSource` 单独取出来：`useCallback` 的依赖数组要写它（写 `chat.revealSource` 的话
+   * lint 会要求依赖整个 `chat`，而那个对象每拍都换新身份 → memo 白做）。
+   */
+  const { revealSource } = chat
   const artifacts = replyArtifacts(turn)
-  const isLastTurn = turnIndex === chat.turns.length - 1
+  const isLastTurn = turnIndex === chat.turnCount - 1
   /**
    * 这一轮**后面**还有几轮（D35）：失败气泡上那个「重试」会把它们一起撤掉，
    * 所以标题里要把代价说清楚（`retryTurn` 那边同时会把已落库的那几轮从库里撤掉）。
    */
-  const laterTurns = chat.turns.length - turnIndex - 1
+  const laterTurns = chat.turnCount - turnIndex - 1
   const copied = chat.copiedKey === `${turnIndex}:assistant`
   /** 「复制问题」与提问气泡上那枚复制共用一份状态（同一个键）。 */
   const questionCopied = chat.copiedKey === `${turnIndex}:user`
@@ -123,8 +144,29 @@ function AssistantMessage({
    * 这一轮**跑过联网搜索**时给一句说明：那些编号指的就是过程面板里那次搜索的返回
    * （`web_search` 的返回本身是 `[1] … [N]` 带编号的，见 `usedWebSearch`）。
    * 没跑过就什么都不说——模型凭空写的编号，我们不给它编一个来源。
+   *
+   * `citations`（D11-③）：把这一次联网搜索的**编号 → 网页引用**（标题 / URL / 域名 / 摘要）
+   * 一起交下去，正文里那些编号就渲染成**站点徽章**（真实 logo + 域名 + 悬停卡片）。
+   * 数据全部来自**这一步已有的返回文本**（`model/sourceCitations.ts` 解析），
+   * 没有新增后端字段；解析不出 URL 的那些**仍然走上面那句说明**（不做空徽章、不出破图）。
    */
-  const citeFallback = usedWebSearch(message) ? { title: '联网搜索结果，见过程面板' } : undefined
+  const citeFallback = useMemo(
+    () =>
+      usedWebSearch(message)
+        ? { title: '联网搜索结果，见过程面板', citations: webCitationsOfSteps(message.steps) }
+        : undefined,
+    [message],
+  )
+  /**
+   * 点正文里的编号 → 就地滑出那段原文。
+   *
+   * 包一层 `useCallback` 是为了 `MemoAnswerText`：内联箭头每次都换身份，会让那一层 memo
+   * 整块失效（`revealSource` 自己是宿主上的 `useCallback`，身份是稳的）。
+   */
+  const revealCite = useCallback(
+    (sourceIndex: number) => revealSource(turnIndex, sourceIndex),
+    [revealSource, turnIndex],
+  )
 
   return (
     <div className="flex items-start gap-[var(--space-3)]">
@@ -221,7 +263,7 @@ function AssistantMessage({
               /* `max-w-[var(--measure)]`：旧 `.reply-text { max-width: var(--measure) }`
                  ——正文列是 768px，但**行宽**另有 66ch 的上限（阅读型界面的口径），
                  照旧版补齐（对照记录 §3 第 5 条）。 */
-              <AnswerText
+              <MemoAnswerText
                 className="mt-[var(--space-3)] max-w-[var(--measure)] text-[length:var(--text-body-size)] leading-[var(--line-prose)] text-[var(--text-primary)]"
                 text={message.text}
                 // 流式中且还没有正文 → 正文区给一句"正在生成…"（D27）。消息上的 `streaming`
@@ -229,7 +271,7 @@ function AssistantMessage({
                 pending={message.streaming === true}
                 sources={message.sources}
                 citeFallback={citeFallback}
-                onCite={(sourceIndex) => chat.revealSource(turnIndex, sourceIndex)}
+                onCite={revealCite}
               />
             )}
 
@@ -316,8 +358,13 @@ function AssistantMessage({
  *
  * `turnIndex` 由外层算好传进来（`数据` 里那两个键 `[turnIndex]:[role]` 用它）：
  * 一条回答与它前面那条提问共享同一个轮次号，行内徽标、出处、消息动作都按它分组。
+ *
+ * **`memo` 的前提是 props 稳定**，而两件事一起保证了它：`ChatThread` 那边
+ * `useStableTurns`（没动的轮还是上一帧那个对象）、镜像那边只换被写到的那一条消息。
+ * 注意这一层只挡得住"父组件重渲染"；`useChat()` 的 context 变化会绕过 memo
+ * （子组件 `UserMessage`/`AssistantMessage` 都是消费者），那一半由 context 拆分解决。
  */
-export function MessageView({
+export const MessageView = memo(function MessageView({
   message,
   turn,
   turnIndex,
@@ -343,4 +390,4 @@ export function MessageView({
       )}
     </div>
   )
-}
+})

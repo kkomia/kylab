@@ -57,6 +57,7 @@ import { copyText } from '@/lib/clipboard'
 import { formatBytes, formatCount } from '@/lib/format'
 
 import {
+  artifactNameMap,
   buildTurns,
   isTraceOpen,
   makeMessage,
@@ -82,6 +83,7 @@ import { ensureWorkspacesLoaded, useWorkspaceStore } from '@/features/layout/wor
 import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from '@/features/knowledge/uploadLimits'
 
 import { liveActions, useLiveTurnState, type LiveThinking, type LiveTurnState } from './liveAdapter'
+import { subscribeLiveTurn } from '@/features/chat/model/liveTurn'
 import { notifyError, notifySuccess, notifyWarning } from './notify'
 import {
   KB_SWITCH_KEY,
@@ -347,21 +349,6 @@ export interface ChatApi {
   groupOpenChoice: (key: string) => boolean | undefined
   /** 记下用户对某一组的选择（`open` = 他点完之后是开着还是收着）。 */
   chooseGroupOpen: (key: string, open: boolean) => void
-  /**
-   * **批量**把某一轮里的若干行设成同一档（「全部展开 / 全部收起」，调研 §5.2 P2）。
-   *
-   * 为什么一次把 key 给全、而不是在界面那一层逐个 `toggleStep` / `chooseGroupOpen`：
-   * 那会写出 N 个中间态（React 会合批成一次渲染，但**记账**仍是 N 次"翻一下"），
-   * 而这一下点击在语义上**是一件事**（用户原话要的是"一下摊开这一轮"）。
-   *
-   * 写的是**同一张表**（`openSteps` / `openGroups`）：所以"用户选过"那一档照旧记得住，
-   * 收起面板再打开、换会话再回来还是他选的那一档（不另造一套记账）。
-   *
-   * 注意：调用方（`TracePanel`）**不许把强制展开的那些 key 递进来**：`awaiting` / `failed` /
-   * `blocked` 是安全语义，优先级高于用户这一下点击（§12.333 约束 2）。
-   */
-  chooseStepsOpen: (keys: readonly string[], open: boolean) => void
-  chooseGroupsOpen: (keys: readonly string[], open: boolean) => void
   citesExpanded: (turnIndex: number) => boolean
   toggleCites: (turnIndex: number) => void
   flashCite: string
@@ -423,6 +410,59 @@ const ChatContext = createContext<ChatApi | null>(null)
 export function useChat(): ChatApi {
   const value = useContext(ChatContext)
   if (!value) throw new Error('useChat 必须在 <ChatProvider> 里用')
+  return value
+}
+
+/**
+ * **消息与过程那一层**要的那一份（D32 §12.312 定位的"放大器"）。
+ *
+ * 为什么不直接读 `useChat()`：那个对象每次渲染都新建，而对话页**每一拍**（每次 store 写入）
+ * 都重渲染 —— 于是每一个消费者都跟着重渲染。在 172 条消息的大会话上实测：每次写入
+ * `UserMessage`/`AssistantMessage`/`TracePanel` 各重渲染 **172 个实例**、`EntryRow` 246 个；
+ * 而**不**消费它的那些（`MessageView`、`AnswerText`）靠 `memo` 只重渲染 **2 个 / 1.6 个**。
+ *
+ * 所以把这一批**真正会被 Stream 拍到的东西**单独发一份：里面每一个字段都是稳定引用
+ * （回调一律 `useCallback`、条数用数字而不是 `turns` 数组、artifact 名表按内容签名缓存）。
+ * 消费它的组件于是只在自己那些属性真变了时才重渲染。
+ *
+ * 行为中性：**字段名与取值与原 api 逐个相同**，只是换了一条更稳的通道；别处照样读 `useChat()`。
+ */
+export interface ChatRowApi {
+  traceOpen: ChatApi['traceOpen']
+  toggleTrace: ChatApi['toggleTrace']
+  traceView: ChatApi['traceView']
+  showMoreTrace: ChatApi['showMoreTrace']
+  isStepOpen: ChatApi['isStepOpen']
+  toggleStep: ChatApi['toggleStep']
+  groupOpenChoice: ChatApi['groupOpenChoice']
+  chooseGroupOpen: ChatApi['chooseGroupOpen']
+  citesExpanded: ChatApi['citesExpanded']
+  toggleCites: ChatApi['toggleCites']
+  flashCite: ChatApi['flashCite']
+  revealSource: ChatApi['revealSource']
+  copiedKey: ChatApi['copiedKey']
+  copyMessage: ChatApi['copyMessage']
+  savedTurns: ChatApi['savedTurns']
+  saveAsNote: ChatApi['saveAsNote']
+  regenerating: ChatApi['regenerating']
+  regenerate: ChatApi['regenerate']
+  retryTurn: ChatApi['retryTurn']
+  resuming: ChatApi['resuming']
+  resumeTurn: ChatApi['resumeTurn']
+  openSource: ChatApi['openSource']
+  openFiles: ChatApi['openFiles']
+  sending: ChatApi['sending']
+  /** 一共有几轮（等于 `turns.length`）——用**数字**，别把每拍都换引用的数组递下去。 */
+  turnCount: number
+  /** `art_*` → 文件名：按内容签名缓存，身份稳（见下面 `artifactNames`）。 */
+  artifactNames: ReadonlyMap<string, string>
+}
+
+const ChatRowContext = createContext<ChatRowApi | null>(null)
+
+export function useChatRows(): ChatRowApi {
+  const value = useContext(ChatRowContext)
+  if (!value) throw new Error('useChatRows 必须在 <ChatProvider> 里用')
   return value
 }
 
@@ -631,6 +671,38 @@ function mirrorLive(
   )
 }
 
+/**
+ * 这一轮状态**每一个可见字段**的指纹（走 `LiveTurnState`，与渲染无关所以放模块级）。
+ *
+ * 为什么不直接比 `live` 这个对象：那一层每次更新都换新对象，但"换新对象"与"画面上看得见
+ * 的东西变了"不是一回事（步骤里 `durationMs` 这种只在收尾写一次）。指纹变了才值得镜像一次。
+ */
+function liveFingerprintOf(live: LiveTurnState): string {
+  const steps = live.steps.reduce(
+    (sum, step) =>
+      sum +
+      step.label.length +
+      step.detail.length +
+      (step.args?.length ?? 0) +
+      (step.result?.length ?? 0),
+    0,
+  )
+  return [
+    live.conversationId,
+    live.mode,
+    live.query,
+    live.text.length,
+    live.thinkingText.length,
+    live.steps.length,
+    steps,
+    live.sources.length,
+    live.streaming,
+    live.error,
+    live.recovered,
+    live.approval?.approval_id ?? '',
+  ].join('|')
+}
+
 export function ChatProvider({ children }: { children: ReactNode }) {
   const params = useParams<{ conversationId?: string }>()
   const [searchParams] = useSearchParams()
@@ -693,8 +765,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * **单步没有自动档**（不像组那样"还在跑就展开"），默认就是折着——于是"不在表里"
    * 与"他收过"落在同一个画面上，不需要分出第二档；组必须分得清（见下面 `openGroups`）。
    *
-   * 「全部展开 / 全部收起」（调研 §5.2 P2）写的就是**这张表**（`chooseStepsOpen`），
-   * 不另记一笔：收起来之后换挂载、换会话回来看见的还是它。
+   * 写这张表的入口只有**单个**那一个（`toggleStep`）：原先还有个"全部展开 / 全部收起"
+   * 的批量入口，用户说"用不上"，已整档删掉（`Set`/`Map` 的记账本身没有因此变）。
    */
   const [openSteps, setOpenSteps] = useState<ReadonlySet<string>>(new Set())
   /**
@@ -893,42 +965,73 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * 为什么不直接依赖 `live` 这个对象：那一层可能就地改字段（旧 Vue 的响应式就是这么做的），
    * 对象引用不一定变。指纹变了就说明"画面上该动"——这正是旧 `ChatView` 的
    * `streamFingerprint` 用来决定滚动的那一招，这里把它用在镜像上，更稳。
+   *
+   * **放在模块级、由监听者调用**（D32 §12.312 定位，第二节）：算术不变，但触发点从
+   * "被动 effect 每次渲染都算一遍"挪到了"store 写入之后立刻算一次"——它不再参与渲染，
+   * 于是也不再是被动 effect 里那一次 `setMessages` 的入口。
    */
-  const liveFingerprint = useMemo(() => {
-    if (!live) return ''
-    const steps = live.steps.reduce(
-      (sum, step) =>
-        sum +
-        step.label.length +
-        step.detail.length +
-        (step.args?.length ?? 0) +
-        (step.result?.length ?? 0),
-      0,
-    )
-    return [
-      live.conversationId,
-      live.mode,
-      live.query,
-      live.text.length,
-      live.thinkingText.length,
-      live.steps.length,
-      steps,
-      live.sources.length,
-      live.streaming,
-      live.error,
-      live.recovered,
-      live.approval?.approval_id ?? '',
-    ].join('|')
-  }, [live])
-
   const liveRef = useRef(live)
   liveRef.current = live
   /** 命令那一轮的气泡建过没有（按 live 状态对象认：换一轮就是新对象）。 */
   const commandPairDrawn = useRef<WeakSet<object>>(new WeakSet())
   /** 已经倒进消息里的那一份指纹（据此跳过没变化的重复计算）。 */
   const appliedFingerprint = useRef('')
-  /** 库里那份会话详情已经画进消息了没有（按会话 id 记一次，见"会话装载"那一节）。 */
+  /**
+   * 库里那份会话详情已经画进消息了没有（按会话 id 记一次，见"会话装载"那一节）。
+   */
   const appliedDetail = useRef('')
+  /**
+   * 路由上当前的会话 id，给模块级监听者读（它在 `useEffect(…, [])` 里注册，
+   * 闭包里拿不到最新的那个值）。
+   */
+  const conversationRef = useRef(conversationId)
+  conversationRef.current = conversationId
+
+  /**
+   * 把"正在流式的那一轮"镜像进消息数组。**只在两处被调**：store 写入之后的监听者，
+   * 以及"挂载 / 换会话"这两个可能已经有一轮在跑却没有新写入的时刻。
+   *
+   * 引用恒定（只读 ref），所以注册/注销不会因为它换身份而重跑。
+   */
+  const mirrorLiveState = useCallback((state: LiveTurnState | null) => {
+    if (!state || state.conversationId !== conversationRef.current) return
+    const fingerprint = liveFingerprintOf(state)
+    if (appliedFingerprint.current === fingerprint) return
+    appliedFingerprint.current = fingerprint
+    setMessages((prev) => mirrorLive(prev, state, commandPairDrawn.current))
+  }, [])
+
+  /**
+   * 镜像**不再挂在被动 effect 上**（D32 §12.312 定位，第二节）。
+   *
+   * 原先这里是一条 `useEffect(…, [liveFingerprint, conversationId])`，里面调
+   * `setMessages`——`liveFingerprint` 每拍都变，于是**每一拍都在被动 effect 里 setState**：
+   * React 记 `didScheduleUpdateDuringPassiveEffects`、`nestedPassiveUpdateCount++`，
+   * 流式期间从不归零，超过 50 就在 `getRootForUpdatedFiber` 打出
+   * 「Maximum update depth exceeded」（栈点名的就是这一行的 `setMessages`）。
+   *
+   * 现在写入点在 `liveTurn.update()` 末尾的那个监听者里（pacer 的心跳 timer / 流事件回调
+   * 的同一个同步任务），不在被动 effect 里；而且它与 store 写入同任务，React 会**合批成一次**
+   * 渲染（实测"每次 store 写入引发的 commit 数"从 2.0 降到 1.0）。
+   */
+  useEffect(() => {
+    const unsubscribe = subscribeLiveTurn(mirrorLiveState)
+    // 挂载时 store 里可能已经有一轮在跑（切页回来）：补一次
+    mirrorLiveState(liveRef.current)
+    return unsubscribe
+  }, [mirrorLiveState])
+
+  /**
+   * **换会话**也要补一次：切走再切回来时 `attachLiveTurn` 发现"手上就是这条会话、
+   * 流还开着"会直接 return，**不产生写入**——只靠监听者的话，回来时那一轮的正文看不见。
+   *
+   * 这一条在"会话装载"那条 effect **之前**声明：换会话那一下它会先跑（此刻指纹是新的），
+   * 然后才轮到那条 effect 把 `appliedFingerprint` 清掉；反过来的话会被空指纹挡掉。
+   */
+  useEffect(() => {
+    mirrorLiveState(liveRef.current)
+  }, [conversationId, mirrorLiveState])
+
   /**
    * 从「新建态」（`/chat?new=1`）刚建出来的那条会话 id（v0.55）。
    *
@@ -948,14 +1051,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * 只置真、不在这里清——清的理由只有一个：收尾时用掉了（见下面那个 effect）。
    */
   const rewoundTurns = useRef(false)
-
-  useEffect(() => {
-    const state = liveRef.current
-    if (!state || state.conversationId !== conversationId) return
-    if (appliedFingerprint.current === liveFingerprint) return
-    appliedFingerprint.current = liveFingerprint
-    setMessages((prev) => mirrorLive(prev, state, commandPairDrawn.current))
-  }, [liveFingerprint, conversationId])
 
   /**
    * 流从"在跑"变成"没在跑"：**由当前挂载着的这一页收尾**（旧 `settleTurn`）。
@@ -2128,6 +2223,197 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     }
   }, [conversationId, ingestKbId, ingestTarget, kbName])
 
+  /**
+   * `art_*` → 文件名（D19）：**身份要稳**（D32 拆分那一批）。
+   *
+   * `turns` 每一拍都换引用，直接 `useMemo(…, [turns])` 会每拍重算、而且新 Map 会顺着
+   * `names` 属性传进每一行、把行上的 memo 全作废。这里按"表里真有几条 artifact、都叫什么"
+   * 的便宜签名缓存：内容没变就把上一帧那张表**原样**还回去。
+   */
+  const artifactSignature = useMemo(() => {
+    let signature = ''
+    for (const turn of turns) {
+      for (const item of turn.user?.attachments ?? []) {
+        if (item.key) signature += `${item.key}:${item.name}\n`
+      }
+      for (const step of turn.reply?.steps ?? []) {
+        for (const file of step.artifacts ?? []) {
+          if (file.artifact_id) signature += `${file.artifact_id}:${file.name}\n`
+        }
+      }
+    }
+    return signature
+  }, [turns])
+  const artifactNamesRef = useRef<{ signature: string; names: Map<string, string> }>({
+    signature: '',
+    names: new Map(),
+  })
+  if (artifactNamesRef.current.signature !== artifactSignature) {
+    artifactNamesRef.current = { signature: artifactSignature, names: artifactNameMap(turns) }
+  }
+  const artifactNames = artifactNamesRef.current.names
+
+  /*
+    下面这一批是**消息与过程那一层**要的全部东西（`ChatRowApi`）。
+    为什么单独拎出来（D32 §12.312 定位的"放大器"那一半）：它们全都读同一个 `useChat()`，
+    而那个 context value 每次渲染都新建 —— 于是**每一个消费者、每一拍都重渲染**
+    （在 172 条消息的大会话上实测：`UserMessage`/`AssistantMessage`/`TracePanel` 每次
+    store 写入各重渲染 **172 个实例**、`EntryRow` 246 个）。这一批里**每一个字段都必须是
+    稳定引用**（回调一律 `useCallback`、`turnCount` 用数字而不是 `turns` 数组），
+    拆出去之后那些组件才能靠 `memo` 在"没动的那些轮"上整块跳过。
+  */
+  const rowShowMoreTrace = useCallback(
+    (turnIndex: number) =>
+      setTraceExtraPages((prev) => {
+        const next = new Map(prev)
+        next.set(turnIndex, (next.get(turnIndex) ?? 0) + 1)
+        return next
+      }),
+    [],
+  )
+  const rowIsStepOpen = useCallback((key: string) => openSteps.has(key), [openSteps])
+  const rowToggleStep = useCallback(
+    (key: string) =>
+      setOpenSteps((prev) => {
+        const next = new Set(prev)
+        if (next.has(key)) next.delete(key)
+        else next.add(key)
+        return next
+      }),
+    [],
+  )
+  const rowGroupOpenChoice = useCallback(
+    (key: string) => openGroups.get(`${conversationId}|${key}`),
+    [openGroups, conversationId],
+  )
+  const rowChooseGroupOpen = useCallback(
+    (key: string, open: boolean) =>
+      setOpenGroups((prev) => {
+        // 两档都写下来：他收过的那一组，下一次挂载与"换出去再回来"都不该被默认档弹开
+        const next = new Map(prev)
+        next.set(`${conversationId}|${key}`, open)
+        return next
+      }),
+    [conversationId],
+  )
+  const rowCitesExpanded = useCallback(
+    (turnIndex: number) => expandedCites.has(turnIndex),
+    [expandedCites],
+  )
+  const rowToggleCites = useCallback(
+    (turnIndex: number) =>
+      setExpandedCites((prev) => {
+        const next = new Set(prev)
+        if (next.has(turnIndex)) next.delete(turnIndex)
+        else next.add(turnIndex)
+        return next
+      }),
+    [],
+  )
+  /**
+   * **行那一层要的几个回调，实现本身依赖 `turns`/`messages`**（`regenerate` / `resumeTurn` /
+   * `retryTurn` 都要读某一轮），因此它们**每一拍都换身份**——直接塞进稳定的 `rowApi` 里，
+   * 那条通道就白拆了（实测：那样做之后 `AssistantMessage` 每次 store 写入还是重渲染
+   * 168 个实例）。
+   *
+   * 这里用"最新实现放 ref、外面包一层恒定的壳"：身份永不改变，调用的永远是当前那一份实现。
+   * 语义与原来逐个直传**完全一样**（只多一次转发），行为中性。
+   */
+  const rowHandlersRef = useRef({ copyMessage, saveAsNote, regenerate, retryTurn, resumeTurn })
+  rowHandlersRef.current = { copyMessage, saveAsNote, regenerate, retryTurn, resumeTurn }
+
+  const rowCopyMessage = useCallback(
+    (turnIndex: number, message: Message) =>
+      void rowHandlersRef.current.copyMessage(turnIndex, message),
+    [],
+  )
+  const rowSaveAsNote = useCallback(
+    (turnIndex: number, turn: Turn) => void rowHandlersRef.current.saveAsNote(turnIndex, turn),
+    [],
+  )
+  const rowRegenerate = useCallback(
+    (turnIndex: number) => void rowHandlersRef.current.regenerate(turnIndex),
+    [],
+  )
+  const rowRetryTurn = useCallback(
+    (turnIndex: number) => void rowHandlersRef.current.retryTurn(turnIndex),
+    [],
+  )
+  const rowResumeTurn = useCallback(
+    (turnIndex: number) => void rowHandlersRef.current.resumeTurn(turnIndex),
+    [],
+  )
+  const rowOpenSource = useCallback((source: ChatSource) => {
+    setActiveSource(source)
+    setSourceOpen(true)
+  }, [])
+  const rowOpenFiles = useCallback(
+    (seed: { key: string; name: string; kind: string } | null = null) => {
+      setFilesSeed(seed)
+      setFilesOpen(true)
+    },
+    [],
+  )
+
+  const rowApi: ChatRowApi = useMemo(
+    () => ({
+      traceOpen,
+      toggleTrace,
+      traceView,
+      showMoreTrace: rowShowMoreTrace,
+      isStepOpen: rowIsStepOpen,
+      toggleStep: rowToggleStep,
+      groupOpenChoice: rowGroupOpenChoice,
+      chooseGroupOpen: rowChooseGroupOpen,
+      citesExpanded: rowCitesExpanded,
+      toggleCites: rowToggleCites,
+      flashCite,
+      revealSource,
+      copiedKey,
+      copyMessage: rowCopyMessage,
+      savedTurns,
+      saveAsNote: rowSaveAsNote,
+      regenerating,
+      regenerate: rowRegenerate,
+      retryTurn: rowRetryTurn,
+      resuming,
+      resumeTurn: rowResumeTurn,
+      openSource: rowOpenSource,
+      openFiles: rowOpenFiles,
+      sending,
+      turnCount: turns.length,
+      artifactNames,
+    }),
+    [
+      traceOpen,
+      toggleTrace,
+      traceView,
+      rowShowMoreTrace,
+      rowIsStepOpen,
+      rowToggleStep,
+      rowGroupOpenChoice,
+      rowChooseGroupOpen,
+      rowCitesExpanded,
+      rowToggleCites,
+      flashCite,
+      revealSource,
+      copiedKey,
+      rowCopyMessage,
+      savedTurns,
+      rowSaveAsNote,
+      regenerating,
+      rowRegenerate,
+      rowRetryTurn,
+      resuming,
+      rowResumeTurn,
+      rowOpenSource,
+      rowOpenFiles,
+      sending,
+      turns.length,
+      artifactNames,
+    ],
+  )
+
   const api: ChatApi = {
     conversationId,
     messages,
@@ -2222,33 +2508,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         return next
       }),
     /*
-      批量那两位：**一次 setState 把整批写进去**（见接口上的说明）。
-      没有一行要改时把**原引用还回去**——空写会让整棵消息树白白重渲染一次，
-      而这一下点击在"全都是这一档"的时候本来就什么都不该做。
+      组与单步各**单个**开合（`chooseGroupOpen` / `toggleStep`）；"全部展开 / 全部收起"
+      那两个批量入口按用户要求整档删掉了（"用不上"），所以这里也不再收一批 key 的那种写法。
     */
-    chooseStepsOpen: (keys, open) =>
-      setOpenSteps((prev) => {
-        const next = new Set(prev)
-        let changed = false
-        for (const key of keys) {
-          if (next.has(key) === open) continue
-          if (open) next.add(key)
-          else next.delete(key)
-          changed = true
-        }
-        return changed ? next : prev
-      }),
-    chooseGroupsOpen: (keys, open) =>
-      setOpenGroups((prev) => {
-        let next: Map<string, boolean> | null = null
-        for (const key of keys) {
-          const scoped = groupScopeKey(key)
-          if (prev.get(scoped) === open) continue
-          if (!next) next = new Map(prev)
-          next.set(scoped, open)
-        }
-        return next ?? prev
-      }),
     citesExpanded: (turnIndex) => expandedCites.has(turnIndex),
     toggleCites: (turnIndex) =>
       setExpandedCites((prev) => {
@@ -2294,5 +2556,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setDropKind,
   }
 
-  return <ChatContext.Provider value={api}>{children}</ChatContext.Provider>
+  return (
+    <ChatContext.Provider value={api}>
+      {/*
+        「消息与过程那一层」那一份（`ChatRowApi`）**套在里面**：消费它的组件仍然能顺着
+        外层拿到完整 api 的别处能力，但它自己**只**订阅这一份稳定的 value —— 于是它不会
+        因为 `api` 每次渲染新建而跟着重渲染（D32 放大器那一半，见 `ChatRowApi` 的说明）。
+      */}
+      <ChatRowContext.Provider value={rowApi}>{children}</ChatRowContext.Provider>
+    </ChatContext.Provider>
+  )
 }

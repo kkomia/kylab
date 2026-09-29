@@ -185,7 +185,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **190** 条端点。
+共 **191** 条端点。
 
 ### `api-keys`
 
@@ -447,6 +447,12 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/knowledge-bases/{kb_id}/shares` | 库的分享列表 |
 | `PUT` | `/api/v1/knowledge-bases/{kb_id}/shares` | 分享/调整档位（按登录名） |
 | `DELETE` | `/api/v1/knowledge-bases/{kb_id}/shares/{user_id}` | 收回分享 |
+
+### `site-icons`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/site-icons` | 站点图标（本机缓存，取不到回 404 由前端退回字母牌） |
 
 ### `skills`
 

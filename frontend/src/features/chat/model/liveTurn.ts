@@ -51,6 +51,7 @@
  */
 
 import { create } from 'zustand'
+import { useSyncExternalStore } from 'react'
 
 import {
   chatStream,
@@ -128,9 +129,21 @@ export const useLiveTurnStore = create<LiveTurnStore>()(() => ({ live: null }))
  *
  * 与 `liveTurnState()` 的分工：组件读它，流回调这类非组件代码读那个
  * （钩子只能在渲染里调，回调里调是违纪）。
+ *
+ * **快照函数必须是模块级的那一个**（D32 §12.312 定位，第二节）：
+ * `useLiveTurnStore((store) => store.live)` 这种内联 selector 在 zustand v5 里会被包成
+ * `useCallback(() => selector(api.getState()), [api, selector])`——**`getSnapshot` 于是
+ * 每次渲染换一个身份**，而 React 给 `useSyncExternalStore` 压的那个
+ * `updateStoreInstance` 是被动 effect（依赖里就含 `getSnapshot`），于是**每渲染一次就跑一趟**：
+ * 这正是告警后半句"某个依赖每次渲染都在变"的那一位。换成 `subscribe` + 模块级 `getLive`
+ * 之后，身份恒定，那一趟不再发生；订阅本身照旧（不是"每次重挂订阅"）。
  */
+function getLiveSnapshot(): LiveTurnState | null {
+  return useLiveTurnStore.getState().live
+}
+
 export function useLiveTurn(): LiveTurnState | null {
-  return useLiveTurnStore((store) => store.live)
+  return useSyncExternalStore(useLiveTurnStore.subscribe, getLiveSnapshot, getLiveSnapshot)
 }
 
 /** 命令式读取（对应旧实现的 `liveTurnState.value`）。 */
@@ -148,12 +161,52 @@ export function liveTurnState(): LiveTurnState | null {
  */
 let liveRevision = 0
 
-/** 换掉整份状态（新一轮、清空、接回来时登记）。 */
+/**
+ * 状态**每次写进 store** 之后的监听者（`ChatProvider` 用它把这一轮镜像进消息数组）。
+ *
+ * 为什么要有这一层（D32 §12.312 定位，第二节）：那条镜像原先挂在对话页的**被动 effect** 里
+ * （依赖 `liveFingerprint`，而那东西每拍都变），也就是**在被动 effect 里调 `setMessages`**。
+ * React 会因此记 `didScheduleUpdateDuringPassiveEffects`、把 `nestedPassiveUpdateCount`
+ * 往上加，而流式期间这个计数器从不归零（每一拍都夹一次），超过 50 就在
+ * `getRootForUpdatedFiber` 打出「Maximum update depth exceeded」——栈点名的是
+ * `ChatProvider.tsx` 里的 `setMessages`。
+ *
+ * 挪到这里之后，镜像发生在**写 store 的同一个同步任务里**（pacer 的心跳 timer、或流事件的
+ * 回调），`isFlushingPassiveEffects` 为假，计数器不再增长；而且它与那次 store 写入落在**同一个
+ * 任务**里，React 会合批成**一次**渲染（实测"每次 store 写入引发的 commit 数"从 2.0 降到 1.0）。
+ *
+ * 只做**通知**，不在这里碰界面：镜像怎么写仍然是 `ChatProvider` 一处说了算。
+ */
+type LiveTurnListener = (state: LiveTurnState | null) => void
+const liveListeners = new Set<LiveTurnListener>()
+
+export function subscribeLiveTurn(listener: LiveTurnListener): () => void {
+  liveListeners.add(listener)
+  return () => {
+    liveListeners.delete(listener)
+  }
+}
+
+/** 写完之后立刻通知（`install` / `update` 是**唯一**两个写入点，所以挂在它们末尾就够）。 */
+function notifyLiveListeners(state: LiveTurnState | null): void {
+  // 复制一份再遍历：监听者在回调里注销自己（换页卸载）时不该搅乱这一趟
+  for (const listener of [...liveListeners]) listener(state)
+}
+
+/**
+ * 换掉整份状态（新一轮、清空、接回来时登记）。
+ *
+ * **先通知镜像、再写 store**（顺序是量出来的）：写 store 会把订阅者（对话页那一层
+ * `useLiveTurnState`）标成 SyncLane，React 可能**当场**把它 flush 掉；镜像要是排在它后面，
+ * 那一次 `setMessages` 就落到下一次渲染里去了——"每次 store 写入引发的 commit 数"于是停在
+ * 1.8~1.9。反过来（镜像先、写入后）两者落在同一个任务、同一次渲染里（实测降到 1.0）。
+ */
 function install(next: LiveTurnState | null): void {
   liveRevision += 1
   // 换会话 / 重新开一轮：那些"看着它跑"的起点作废（见 `stepClocks`）——
   // 上一轮第 3 步的起点要是留着，这一轮第 3 步跑完会算出一个离谱的数
   stepClocks.clear()
+  notifyLiveListeners(next)
   useLiveTurnStore.setState({ live: next })
 }
 
@@ -163,8 +216,12 @@ function install(next: LiveTurnState | null): void {
  * React 认"新引用"，所以这里必须换一个新对象——组件订阅的就是它。
  * 一次 delta 一个新对象是可以接受的：正文本来就是一次一个增量，
  * 而**步骤 / 出处**都是在事件里成批来的，不是每帧。
+ *
+ * 顺序同 `install`（镜像先、写入后），理由见那里。
  */
 function update(part: Partial<LiveTurnState>): void {
+  const current = liveTurnState()
+  notifyLiveListeners(current ? { ...current, ...part } : null)
   useLiveTurnStore.setState((store) => (store.live ? { live: { ...store.live, ...part } } : {}))
 }
 

@@ -35,6 +35,9 @@ const chatStub = {
   regenerating: false,
   resuming: false,
   turns: [] as unknown[],
+  // 行那一层（`useChatRows`）要的两个字段：条数用数字、artifact 名表身份稳定
+  turnCount: 0,
+  artifactNames: new Map<string, string>(),
   savedTurns: [] as number[],
   send: () => undefined,
   stop: () => undefined,
@@ -53,7 +56,9 @@ const chatStub = {
 
 vi.mock('@/features/chat/runtime/ChatProvider', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/features/chat/runtime/ChatProvider')>()
-  return { ...actual, useChat: () => chatStub }
+  // `MessageView`/`TracePanel` 走的是稳定的那一份（`useChatRows`，D32 拆分），
+  // 桩里两条都给同一个对象，免得它们拿到 null context 直接抛
+  return { ...actual, useChat: () => chatStub, useChatRows: () => chatStub }
 })
 
 import { ChatRuntime } from '@/features/chat/runtime/ChatRuntime'
@@ -177,5 +182,84 @@ describe('流式滚动（D31）：往上翻之后不再被拽回', () => {
     box.toBottom()
     box.grow()
     await waitFor(() => expect(box.top).toBe(box.max))
+  })
+
+  /**
+   * 键盘那一路（D31 补验的缺口 + 本轮定的修法）。
+   *
+   * 实测的病灶：上翻键原先只挂在**视口元素**上（冒泡相），而视口**不可聚焦**
+   * ——焦点在输入框或 BODY 时 `keydown` 到得了 `document`、到不了视口，
+   * 于是键盘用户按 PageUp **根本翻不动这一栏**（位置差 0）。
+   *
+   * 修法两件配一对：视口 `tabIndex={0}`（成为可聚焦的滚动区），判定挪到 `document`，
+   * 并加两道闸——① 输入控件里**不算**（那是改文字，且那一栏不会滚，停跟随只会把视图冻住）；
+   * ② 视口不可见不算。
+   */
+  it('焦点在输入框里按 PageUp **不停**跟随；视口拿到焦点按 PageUp 要停', async () => {
+    chatStub.messages = [
+      message('m1', 'user', '问一段长的'),
+      message('m2', 'assistant', '答一段长的'),
+    ]
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <ChatRuntime>
+          <ChatThread />
+        </ChatRuntime>
+      </QueryClientProvider>,
+    )
+    const viewport = await screen.findByLabelText('对话内容')
+    await screen.findByTestId('message-list')
+
+    // 那条缺口的一半：视口必须**可聚焦**（键盘才滚得动它，Tab 也能到）
+    expect(viewport).toHaveAttribute('tabindex', '0')
+
+    const box = fakeScroll(viewport)
+    box.grow()
+    await waitFor(() => expect(box.top).toBe(box.max))
+
+    /*
+      情形一：焦点在输入框里按 PageUp —— 闸①：**不算**往上翻。
+      闸① 生效的证据是"跟随还在"：再长一截仍然贴底。
+    */
+    const composer = document.createElement('textarea')
+    composer.setAttribute('aria-label', '消息输入框')
+    document.body.appendChild(composer)
+    composer.focus()
+    fireEvent.keyDown(composer, { key: 'PageUp' })
+    box.grow()
+    await waitFor(() => expect(box.top).toBe(box.max))
+    composer.remove()
+
+    /*
+      情形二：焦点在视口**本身**（`tabIndex` 那条路：Tab 到它、或点它内部）——要停。
+      停住的证据：`scrollTop` 掉下去之后，内容再长也不写回底部。
+    */
+    viewport.focus()
+    fireEvent.keyDown(viewport, { key: 'PageUp' })
+    box.move(box.top - 400)
+    viewport.dispatchEvent(new Event('scroll'))
+    const afterKey = box.top
+    box.grow()
+    box.grow()
+    await settle()
+    expect(box.top).toBe(afterKey)
+
+    /*
+      情形三：焦点在视口**里面**的可聚焦元素上（键盘用户真正的姿势）——同样要停。
+      这里用"再滚回贴底 → 焦点在内部按钮上按 PageUp"来复核，顺带证明恢复那条路没被改坏。
+    */
+    box.toBottom()
+    box.grow()
+    await waitFor(() => expect(box.top).toBe(box.max))
+    const inner = viewport.querySelector('button')
+    expect(inner).not.toBeNull()
+    ;(inner as HTMLElement).focus()
+    fireEvent.keyDown(inner as HTMLElement, { key: 'PageUp' })
+    box.move(box.top - 400)
+    viewport.dispatchEvent(new Event('scroll'))
+    const afterInner = box.top
+    box.grow()
+    await settle()
+    expect(box.top).toBe(afterInner)
   })
 })

@@ -34,6 +34,7 @@ import {
 } from '@/features/chat/model/turns'
 import { formatElapsed } from '@/features/chat/ui/TraceStepRow'
 import { TracePanel } from '@/features/chat/ui/TracePanel'
+import { STEP_LABEL, STEP_TOGGLE } from '@/features/chat/ui/traceStyles'
 
 /**
  * 宿主那两张展开表；用例自己摆放（与 `chat-trace-fold.test.tsx` 同一手法）。
@@ -77,6 +78,8 @@ const stubs = {
 
 vi.mock('@/features/chat/runtime/ChatProvider', () => ({
   useChat: () => stubs,
+  // 行那一层走的是稳定的那一份（D32 拆分）：同一个桩，字段是超集
+  useChatRows: () => stubs,
 }))
 
 function step(extra: Partial<ChatStep> = {}): ChatStep {
@@ -654,5 +657,36 @@ describe('面板那一行：跑着写短名，**跑完没出处也写短名**', 
     const row = screen.getByTestId('trace-toggle')
     expect(row).toHaveTextContent('检索完成')
     expect(row).not.toHaveTextContent('执行过程')
+  })
+})
+
+/*
+ * D11-①（2026-09-29 用户："工具行里'标签'与'文字'没对齐"）。
+ *
+ * 病灶是 **`<button>` 的 UA 默认 `text-align: center` + 标签会换行**：
+ * 组行那句「联网搜索 11 个关键词 · 2025国庆 重庆到遵义…」实测两行，不写 `text-left` 时
+ * 每一行各自居中——首字形落在 x=467.28（容器左边缘 461）、第二行落在 x=732.44，
+ * 而它下面的站点行 / 结论都在 461。数字与截图在 `.shots/d11b-align/`。
+ *
+ * 这里钉**类名**（不起浏览器也能红）：真浏览器那条数字链太贵，而这条回归是
+ * "有人顺手把 `text-left` 删了"。与 `chat-ui.test.tsx` 里那几条类名断言同一手法。
+ */
+describe('标签左对齐（D11-①：换行后每一行各自居中的那条回归）', () => {
+  it('两档标签类名都带 text-left（单步的纯文本档 + 可点档）', () => {
+    expect(STEP_LABEL.split(' ')).toContain('text-left')
+    expect(STEP_TOGGLE.split(' ')).toContain('text-left')
+  })
+
+  it('组行那一行真的把它带到了 DOM 上（长标题就是在这里换行的）', () => {
+    reset()
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf([step({ detail: '第一条' }), step({ detail: '第二条' })])}
+      />,
+    )
+
+    const groupToggle = screen.getByRole('button', { name: /联网搜索/ })
+    expect(groupToggle.className).toContain('text-left')
   })
 })

@@ -20,8 +20,10 @@ import {
   type CiteFallback,
   type MarkdownTable,
 } from '@/features/chat/model/markdown'
+import type { WebCitation } from '@/features/chat/model/sourceCitations'
 
 import { notifyError, notifyWarning } from '../runtime/notify'
+import { SourceBadge, SourceCardHost } from './SourceCard'
 
 export interface AnswerTextProps {
   text: string
@@ -112,12 +114,22 @@ export function AnswerText({
         sources={sources}
         citeFallback={citeFallback}
         onOpenSource={onCite}
+        // 网页引用那一枚（D11-③）：真实 logo + 域名，悬停/聚焦出卡片。
+        // **渲染函数由界面给**：`model/` 不认识界面组件（分层纪律）。
+        renderWebCitation={(citation: WebCitation, open: (index: number) => void) => (
+          <SourceBadge citation={citation} onOpen={open} />
+        )}
         onCopyCode={(code) => void copyBlock(code, '代码')}
         // 表格进剪贴板用**制表符分隔**而不是 CSV：粘进 Excel / 飞书表格时
         // 它会被直接拆成单元格，而 CSV 粘过去是一整行纯文本
         onCopyTable={(tsv) => void copyBlock(tsv, '表格')}
         onDownloadTable={downloadTable}
       />
+      {/*
+        卡片**这一条回答只挂一个**（D11-③）：徽章只负责"报是哪一条 + 报坐标"，
+        卡片在这里统一画——一枚徽章一张卡，一篇文章就会塞进几十个浮层组件。
+      */}
+      <SourceCardHost />
     </div>
   )
 }

@@ -73,6 +73,8 @@ const stubs = {
 
 vi.mock('@/features/chat/runtime/ChatProvider', () => ({
   useChat: () => stubs,
+  // 行那一层走的是稳定的那一份（D32 拆分）：同一个桩，字段是超集
+  useChatRows: () => stubs,
 }))
 
 function step(extra: Partial<ChatStep> = {}): ChatStep {

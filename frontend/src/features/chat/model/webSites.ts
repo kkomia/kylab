@@ -126,6 +126,15 @@ const KNOWN_SITES: Readonly<Record<string, { id: string; name: string; badge: st
  */
 const SITE_KEYS: readonly string[] = Object.keys(KNOWN_SITES).sort((a, b) => b.length - a.length)
 
+/**
+ * 表里的域名（D11-② 起对外）。
+ *
+ * 除了本文件自己用，它还担一件事：**后端那份"允许抓图标的域名"白名单要与它一致**
+ * （`backend/app/services/site_icons.py` 的 `ALLOWED_DOMAINS`）。两边漂了不会报错，
+ * 只会让某些站点的真实 logo 悄悄退回字母牌——所以有一条用例把两份集合逐项比对。
+ */
+export const KNOWN_DOMAINS: readonly string[] = Object.freeze(Object.keys(KNOWN_SITES))
+
 /** 一个合法主机名：至少两节、只含字母数字与连字符（单标签的 `localhost` 没有站点可言）。 */
 const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/
 

@@ -22,21 +22,20 @@
  * 而"展开 → 收起 → 再展开"每一次都有动效。取舍与细节见 `Fold.tsx` 头注。
  */
 import { ChevronDown, ListTree } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useRef, useState } from 'react'
 
 import {
-  artifactNameMap,
   groupHeading,
   isBlockRunning,
   sourcePreview,
   sourceWhere,
   thinkingParagraphs,
-  traceEntries,
   traceKey,
   traceSummary,
   trailingThinking,
   type Turn,
   type TraceEntry,
+  type TracePage,
 } from '@/features/chat/model/turns'
 import { webSitesOfSteps } from '@/features/chat/model/webSites'
 import type { ChatSource } from '@/api/chat'
@@ -52,14 +51,12 @@ import {
   STEP_TOGGLE,
   THINK_BLOCK,
   THINK_PARAGRAPH,
-  TRACE_BULK,
-  TRACE_BULK_BAR,
   TRACE_FOLD_CONTENT,
   caretClass,
   stepIconClass,
 } from './traceStyles'
 import { WebSiteList } from './WebSiteList'
-import { useChat, type ChatMessage } from '../runtime/ChatProvider'
+import { useChatRows, type ChatMessage, type ChatRowApi } from '../runtime/ChatProvider'
 
 /** 出处列表默认铺几条（多出来的折起来）。 */
 const CITE_FOLD_LIMIT = 3
@@ -91,14 +88,14 @@ function EntryRow({
   entry: TraceEntry
   streaming: boolean
 }) {
-  const chat = useChat()
+  const chat = useChatRows()
   /**
    * `art_*` → 文件名（D19，2026-09-28 走查）。
    *
-   * 在这一层算一次、发给行用：行里只显示，不该各自去扫一遍会话；
-   * 表里同时收了**消息附件**（用户上传）与**步骤产物**（工具导出）两处。
+   * 这张表来自宿主（`ChatRowApi.artifactNames`）：**身份按内容签名缓存**，所以它不会
+   * 每一拍换新引用、也不会把下面那些行上的 `memo` 一起作废（理由写在宿主那一段）。
    */
-  const artifactNames = useMemo(() => artifactNameMap(chat.turns), [chat.turns])
+  const artifactNames = chat.artifactNames
 
   /**
    * 这一行的开合 key **带上轮次**（P0，真 bug）。
@@ -222,7 +219,7 @@ function EntryRow({
 
 /** 逐条出处。点文件名/「看全文」都是**看这一段原文**，不离开对话页。 */
 function Citations({ turnIndex, sources }: { turnIndex: number; sources: ChatSource[] }) {
-  const chat = useChat()
+  const chat = useChatRows()
   const expanded = chat.citesExpanded(turnIndex)
   const shown = expanded ? sources : sources.slice(0, CITE_FOLD_LIMIT)
 
@@ -282,7 +279,7 @@ function Citations({ turnIndex, sources }: { turnIndex: number; sources: ChatSou
 }
 
 export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn }) {
-  const chat = useChat()
+  const chat = useChatRows()
   /**
    * 整轮那一串思考的展开态（v0.54）：**默认收起**。
    *
@@ -295,39 +292,33 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
   const [trailingOpen, setTrailingOpen] = useState(false)
 
   /**
-   * 「全部展开 / 全部收起」要动的那两批 key（调研 §5.2 P2）。
+   * 面板那一页（前 N 条）：**只在"这一轮"或"取页的那支函数"真的换了时才重算**。
    *
-   * 三件事在这里定死：
+   * 为什么用 ref 缓存而不是 `useMemo`：这一段在下面那个 `if (!reply) return null` 之后，
+   * 钩子不能放在条件返回后面（lint 会判"条件调用"）。没在流式的那几轮 `turn` 是稳定引用
+   * （见 `ChatThread` 的 `useStableTurns`），于是这一页与里面的 `entries` 也保持稳定——
+   * 它们就是下面那些行 memo 的 prop。
    *
-   * 1. **范围是这一轮**，而且是**这一轮的全部条目**，不只是当前画出来的前 20 条：
-   *    只作用于看得见的那几行的话，点完「全部展开」再点「加载更多」，后半截又冒出一批
-   *    折着的行——那正是这件事要省掉的那一步（分页切的是渲染，不是数据，见 `tracePage`）。
-   * 2. **单步与组两级一起**：组那一行摊开、里面每一次调用还折着的话，用户点完还得再点一层。
-   * 3. **强制展开的那些一律不进名单**（`forceExpand`；§12.333 约束 2）：`awaiting` /
-   *    `failed` / `blocked` 的组与单步不能被「全部收起」收掉——安全语义高于用户这一下点击；
-   *    「全部展开」方向本来也不必动它们（它们就是摊着的）。
-   *
-   * 判据用的是 `forceExpand` 本身，不在这里另写一遍"哪种算强制"。
+   * `traceView` 也要进判据：点「加载更多」时它的身份会换（宿主那边依赖 `traceExtraPages`），
+   * 少这一条的话"加载更多"就再也点不动了。
    */
-  const bulkKeys = useMemo(() => {
-    const steps: string[] = []
-    const groups: string[] = []
-    for (const entry of traceEntries(turn)) {
-      if (entry.kind === 'step') {
-        if (!forceExpand(entry.step)) steps.push(traceKey(turnIndex, entry.key))
-        continue
-      }
-      // 组里只要有一档强制展开，这一组的开合就归那条规则管（它拒绝收起）
-      if (!entry.steps.some(forceExpand)) groups.push(traceKey(turnIndex, entry.key))
-      for (const child of entry.steps) {
-        if (!forceExpand(child)) steps.push(traceKey(turnIndex, child.key))
-      }
-    }
-    return { steps, groups }
-  }, [turn, turnIndex])
+  const viewRef = useRef<{
+    turn: Turn
+    traceView: ChatRowApi['traceView']
+    page: TracePage
+  } | null>(null)
 
   const reply = turn.reply as ChatMessage | null
   if (!reply) return null
+
+  if (
+    !viewRef.current ||
+    viewRef.current.turn !== turn ||
+    viewRef.current.traceView !== chat.traceView
+  ) {
+    viewRef.current = { turn, traceView: chat.traceView, page: chat.traceView(turnIndex, turn) }
+  }
+  const view = viewRef.current.page
 
   /**
    * 面板的档位来自宿主（判定在 `turns.ts::isTraceOpen`，这里只把"是不是摊开"翻出来用）。
@@ -335,21 +326,7 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
    * 而回答正文与出处都在面板之外——**正文永远不在这块折叠里**（规则 d）。
    */
   const open = chat.traceOpen(reply) === 'full'
-  const view = chat.traceView(turnIndex, turn)
   const trailingThinkingText = trailingThinking(reply)
-
-  /**
-   * 那一下点击：两批 key 各写**一次**（宿主那两位就是为此存在的，见 `ChatProvider`）。
-   *
-   * **不动面板自己那一档**：这两个入口就画在面板内容里，面板收着时它们同内容一起
-   * 不在文档里（条件渲染），所以"要不要顺带摊开面板"这件事不存在；面板那一行
-   * （`trace-toggle`）是用户自己的开关，「全部收起」也不替他把整块过程折掉——
-   * 折掉之后他连自己刚收起的结果都看不见了。
-   */
-  const bulkOpen = (next: boolean) => {
-    chat.chooseStepsOpen(bulkKeys.steps, next)
-    chat.chooseGroupsOpen(bulkKeys.groups, next)
-  }
 
   /**
    * 这一行此刻写什么：**有出处就报出处摘要**（`traceSummary`），**没有就写固定短名**
@@ -418,39 +395,6 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
       */}
       <Fold id={panelId} role="group" aria-label={headline} open={open}>
         <div className={TRACE_FOLD_CONTENT}>
-          {/*
-                「全部展开 / 全部收起」（调研 §5.2 P2）：LobeHub 放在消息动作条上、
-                Qwen 给了 `Ctrl+O` / `Alt+T`，十二个样本里没有这一条的只有少数几家，
-                而我们的过程默认"进行中展开、内容跑完折叠"，长回合要一条条点开确实累。
-
-                入口**画在面板内容里**（不是"执行过程"那一行、也不是「加载更多」那一行）：
-                它管的是这一块里的行，和那两行各管各的（那两行一个是面板开关、一个是分页）。
-                面板收着时这一行不在文档里——批量动作不顺带摊开面板，理由见上面 `bulkOpen`。
-
-                名字就用可见文字本身（无障碍名字与可见文字一致才点得到），
-                作用范围与"跳过强制展开"那两条都写在 `bulkKeys` 上，并有定向用例钉着。
-              */}
-          {view.entries.length > 0 ? (
-            <div className={TRACE_BULK_BAR}>
-              <button
-                type="button"
-                data-testid="trace-bulk-expand"
-                className={TRACE_BULK}
-                onClick={() => bulkOpen(true)}
-              >
-                全部展开
-              </button>
-              <button
-                type="button"
-                data-testid="trace-bulk-collapse"
-                className={TRACE_BULK}
-                onClick={() => bulkOpen(false)}
-              >
-                全部收起
-              </button>
-            </div>
-          ) : null}
-
           <ol className="relative m-0 flex list-none flex-col p-0">
             {view.entries.map((entry) => (
               <EntryRow

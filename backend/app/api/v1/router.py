@@ -31,6 +31,7 @@ from app.api.v1 import (
     search,
     settings,
     shares,
+    site_icons,
     skills,
     stats,
     tabular,
@@ -85,3 +86,5 @@ api_router.include_router(plugins.router)
 api_router.include_router(mcp_servers.router)
 # 沙箱执行（v0.16）：内核级隔离 + 策略闸（管理员专属）
 api_router.include_router(sandbox.router)
+# 站点图标（D11-②）：浏览器不直连第三方站点，图标由本机缓存代理
+api_router.include_router(site_icons.router)

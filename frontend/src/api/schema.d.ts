@@ -3325,6 +3325,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/site-icons": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 站点图标（本机缓存，取不到回 404 由前端退回字母牌）
+         * @description 按域名发一枚图标（png / jpeg / gif / ico / webp，按魔数嗅探后才发）。
+         *
+         *     - **不在已知站点表里 → 422**：这条接口不代为抓任意域名（别当跳板用）；
+         *     - **表里但抓不到 → 404**：正常的降级路径，前端退回字母牌，不报错、不留空位；
+         *     - 缓存命中时不发任何外部请求；响应带一天浏览器缓存。
+         */
+        get: operations["site_icon_api_v1_site_icons_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -14736,6 +14760,38 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["SandboxExecOut"];
                 };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    site_icon_api_v1_site_icons_get: {
+        parameters: {
+            query: {
+                /** @description 站点域名（必须是已知站点表里的，见 services/site_icons） */
+                domain: string;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Validation Error */
             422: {

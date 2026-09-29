@@ -12,11 +12,14 @@
  *
  * 第三组是**接线**：纯函数全对而那一行没画出来，等于没做（D19 的教训）。
  */
-import { render, screen, within } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TraceStep } from '@/features/chat/model/turns'
 import {
+  KNOWN_DOMAINS,
   MAX_WEB_SITES,
   hostOfUrl,
   siteOfDomain,
@@ -24,6 +27,7 @@ import {
   webSitesOfSteps,
 } from '@/features/chat/model/webSites'
 import { TraceStepRow } from '@/features/chat/ui/TraceStepRow'
+import { resetSiteIconCache } from '@/features/chat/ui/WebSiteList'
 
 /** 后端 `_web_search` 的返回形状：编号 + 标题 + 网址 + 摘要。 */
 const WEB_RESULT = [
@@ -222,5 +226,137 @@ describe('接线：站点那一行真的画在一行上（不是只有纯函数�
 
     expect(screen.getByText('联网搜索')).toBeInTheDocument()
     expect(screen.getByText(/命中 3 条/)).toBeInTheDocument()
+  })
+})
+
+/**
+ * 真实 logo（D11-②）。
+ *
+ * 用户原话："网页搜索 一定要把 网页的 logo 给显示出来"——这一版把"本机表给的字母牌"
+ * 升级成"站点真实 logo"，但**走我们自己的源**（`/api/v1/site-icons`）：浏览器不直连第三方，
+ * 也不在每次重绘时发请求。所以这里钉四件事：
+ *
+ * 1. 请求发给我们自己、而且**只发给表里的站点**；
+ * 2. 拿到图就换掉字母牌，**外框尺寸逐字相同**（不引起重排跳动）；
+ * 3. 取不到（404 / 网络错 / 环境不支持 ObjectURL）**一律退回字母牌**，不抛、不打印；
+ * 4. 两张表（前端已知站点、后端白名单）必须一起动——漂了只会在界面上悄悄退回字母牌。
+ */
+describe('真实 logo：向自己的源要图，取不到退回字母牌', () => {
+  const okResponse = () =>
+    ({ ok: true, blob: async () => new Blob([new Uint8Array([1, 2, 3])]) }) as unknown as Response
+  const logo = () => document.querySelector('[data-site-logo="github"]')
+  /** 抓住**原始**的 URL：直接给全局那一个塞属性会留到后面的用例里（stubGlobal 只还原绑定）。 */
+  const RealURL = URL
+
+  function stubObjectUrl(): void {
+    class FakeURL extends RealURL {}
+    Object.assign(FakeURL, { createObjectURL: () => 'blob:site-icon' })
+    vi.stubGlobal('URL', FakeURL)
+  }
+
+  beforeEach(() => {
+    resetSiteIconCache()
+    vi.unstubAllGlobals()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    resetSiteIconCache()
+  })
+
+  it('命中的站点：请求发给我们自己的源，拿到图就换成真实 logo（外框尺寸不变）', async () => {
+    stubObjectUrl()
+    const fetchMock = vi.fn(async () => okResponse())
+    vi.stubGlobal('fetch', fetchMock)
+
+    row({ result: WEB_RESULT })
+
+    await waitFor(() => expect(logo()).not.toBeNull())
+    const [url] = fetchMock.mock.calls[0] as unknown as [string]
+    expect(url).toBe('/api/v1/site-icons?domain=github.com')
+    // **尺寸逐字相同**：换图前后都是那枚 1.2em 的方框（否则这一行会抖一下）
+    const img = logo() as HTMLElement
+    expect(img.className).toContain('h-[1.2em]')
+    expect(img.className).toContain('w-[1.2em]')
+    // 这一行有三个命中站点，各请求一次（同一个域名只发一次）
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+  })
+
+  it('未命中的站点**一次请求都不发**（表外的域名不出我们的源）', () => {
+    stubObjectUrl()
+    const fetchMock = vi.fn(async () => okResponse())
+    vi.stubGlobal('fetch', fetchMock)
+
+    row({ result: '见 https://news.example.com/a 这一篇' })
+
+    expect(screen.getByTestId('web-sites')).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('取不到（404）→ 退回字母牌，不留空、不抛', async () => {
+    stubObjectUrl()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ ok: false }) as unknown as Response),
+    )
+
+    row({ result: WEB_RESULT })
+
+    const strip = screen.getByTestId('web-sites')
+    expect(within(strip).getByText('G')).toBeInTheDocument()
+    expect(logo()).toBeNull()
+  })
+
+  it('网络报错 → 也是字母牌，而且**控制台一声不响**（验收项：零 error）', async () => {
+    stubObjectUrl()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('Failed to fetch')
+      }),
+    )
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    row({ result: WEB_RESULT })
+    await waitFor(() => expect(logo()).toBeNull())
+
+    const strip = screen.getByTestId('web-sites')
+    expect(within(strip).getByText('G')).toBeInTheDocument()
+    expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
+  })
+
+  it('环境没有 ObjectURL（老浏览器）→ 直接退化，不发请求', () => {
+    class FakeURL extends RealURL {}
+    Object.assign(FakeURL, { createObjectURL: undefined })
+    vi.stubGlobal('URL', FakeURL)
+    const fetchMock = vi.fn(async () => okResponse())
+    vi.stubGlobal('fetch', fetchMock)
+    expect(typeof URL.createObjectURL).toBe('undefined')
+
+    row({ result: WEB_RESULT })
+
+    expect(screen.getByText('G')).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('两张表必须一起动：前端已知站点表 = 后端图标白名单', () => {
+  it('域名集合逐项相同（漂了不会报错，只会让某些站点的 logo 悄悄退回字母牌）', () => {
+    // vitest 的工作目录就是 `frontend/`（见 vite.config.ts 的 root），所以后端文件在 `../` 下
+    const source = readFileSync(
+      join(process.cwd(), '..', 'backend', 'app', 'services', 'site_icons.py'),
+      'utf8',
+    )
+    const block = source.slice(
+      source.indexOf('ALLOWED_DOMAINS: frozenset'),
+      source.indexOf('ICON_PATHS'),
+    )
+    // 只认"长得像域名的"引号串：这一段里还夹着中文注释（注释里的引号不该混进来）
+    const backend = new Set(
+      [...block.matchAll(/"([a-z0-9.-]+\.[a-z]{2,})"/g)].map((match) => match[1]),
+    )
+
+    expect([...backend].sort()).toEqual([...KNOWN_DOMAINS].sort())
   })
 })
