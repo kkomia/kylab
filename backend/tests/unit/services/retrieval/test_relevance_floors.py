@@ -58,13 +58,13 @@ def test_calibrated_model_turns_both_floors_on() -> None:
 
 
 def test_wemm_models_get_their_own_conservative_floor() -> None:
-    """WeMM 多模态那台也标定过：**0.35**（真库噪声头 0.305 之上、真命中 0.51 之下）。
+    """WeMM 多模态那台也标定过：**0.33**（真库噪声头 0.305 之上、真命中 0.386 之下）。
 
     用户登记的模型名带量化后缀（``WeMM-Embedding-2B-Q4_K_M.gguf``），查表用"包含"
     匹配，所以两种写法都命中——要求把名字写得一字不差，等于这条标定对大多数人不生效。
     """
     for model_id in ("WeMM-Embedding-2B-Q4_K_M.gguf", "WeMM-Embedding-2B", "wemm-embedding-2b"):
-        assert _floors(model_id) == (0.35, DEFAULT_MIN_TERM_COVERAGE), model_id
+        assert _floors(model_id) == (0.33, DEFAULT_MIN_TERM_COVERAGE), model_id
 
     # 它比 bge-m3 那个 0.531 低——两个模型的余弦尺度本来就不是一回事
     assert MIN_VECTOR_SCORE_BY_MODEL["wemm-embedding-2b"] < MIN_VECTOR_SCORE_BY_MODEL["bge-m3"]
@@ -91,7 +91,7 @@ def test_the_old_scale_and_the_new_scale_agree_point_by_point() -> None:
 def test_wemm_floor_lets_real_hits_through_and_stops_noise() -> None:
     """地板两侧的行为：低于它走"资料里没有"，高于它**不误杀**。
 
-    数字取自真机实测（真余弦：相关 0.510–0.717、不相关 0.131–0.305），见
+    数字取自真机实测（真余弦：相关 0.386–0.717、不相关 0.131–0.305），见
     ``MIN_VECTOR_SCORE_BY_MODEL`` 上面那段标定依据。
     """
     from app.services.retrieval.distribution import FIT_NONE, FIT_STRONG, summarize

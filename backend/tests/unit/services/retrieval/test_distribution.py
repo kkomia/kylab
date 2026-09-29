@@ -4,15 +4,18 @@
 
 这里钉的是**由本机实测得出的那几条判断**（2026-09-28，医学知识库 21580 chunk，bge-m3）：
 
-1. **真问题的分布是一条窄带**：37 条候选挤在 0.918–0.981（35 条在 0.90–0.95），
+1. **真问题的分布是一条窄带**：37 条候选挤在 0.593–0.805（旧刻度 0.918–0.981），
    相邻落差最大 0.027——所以"最大断崖切一刀"这条路走不通，``band`` 必须报出来；
-2. **无关问题整条分布往下挪**：「今天北京的天气怎么样？」落在 0.854–0.885，
-   而基线是 0.89 → ``fit="none"``，返回 0 条。**契合度是从分布的位置读出来的**，
-   不是从单条最高分读出来的；
+2. **无关问题整条分布往下挪**：「今天北京的天气怎么样？」落在 0.460–0.520（旧刻度
+   0.854–0.885），而基线是 0.531（旧刻度 0.89）→ ``fit="none"``，返回 0 条。
+   **契合度是从分布的位置读出来的**，不是从单条最高分读出来的；
 3. **条数与文档冗余是两件事**：同一个问题被 4–5 本手册各答一遍（实测 3 条、4 条来自同一本），
    所以建议里必须带 ``per_doc``；
 4. **没有向量分的候选不许污染分数统计**：拿融合分（RRF）当相似度算分位数，实测会把
    min 拉到 0.007、带宽拉到 0.974——整份分布就废了。
+
+本文件的数字都在**真余弦**刻度上（2026-09-29 换口径，旧值按
+``v = 1 - √(2(1 - 旧值))`` 换算而来；理由见 ``service.similarity_from_distance``）。
 """
 
 from __future__ import annotations
@@ -29,16 +32,16 @@ from app.services.retrieval.distribution import (
     summarize,
 )
 
-BASELINE = 0.89
-FLOOR = 0.80
+BASELINE = 0.531  # 旧刻度 0.89
+FLOOR = 0.37  # 旧刻度 0.80
 
 
 def _flat_band() -> list[tuple[str, float | None, str]]:
-    """实测形状：一条 0.917–0.981 的窄带，分布在 14 篇里，头三篇各 15+ 条。"""
+    """实测形状：一条 0.593–0.805 的窄带，分布在 14 篇里，头三篇各 15+ 条。"""
     items: list[tuple[str, float | None, str]] = []
     for index in range(86):
-        # 分数从 0.981 缓降到 0.917（带宽 0.065），前三篇各占十几条
-        score = 0.981 - 0.064 * index / 85
+        # 分数从 0.805 缓降到 0.593（带宽 0.212，旧刻度是 0.065），前三篇各占十几条
+        score = 0.805 - 0.212 * index / 85
         doc = f"doc{index % 14}"
         items.append((f"手册{index % 14}", score, doc))
     return items
@@ -56,6 +59,31 @@ def test_percentile_interpolates_instead_of_snapping() -> None:
     assert percentile([0.5], 0.9) == 0.5
 
 
+def test_the_thresholds_are_on_the_true_cosine_scale() -> None:
+    """这套阈值与余量都在**真余弦**刻度上（换口径那次一并换算过来的）。
+
+    钉住这三个数是为了防"照着旧文档填回去"：旧刻度（欧氏公式的虚高值）→ 真余弦
+    是 ``v = 1 - √(2(1 - 旧值))``，本机那批实测的换算是
+    ``兜底阈值 0.80 → 0.368``、``strong 余量 0.04（基线 0.89 处）→ 0.095``。
+    """
+    from app.services.retrieval.distribution import STRONG_MARGIN
+    from app.services.runtime_config import DEFAULTS
+
+    def to_true(old_scale: float) -> float:
+        return 1.0 - (2.0 * (1.0 - old_scale)) ** 0.5
+
+    # 一条变换两处都核对：换错公式就会立刻红
+    assert to_true(0.80) == pytest.approx(0.3675, abs=1e-3)
+    margin = to_true(0.89 + 0.04) - to_true(0.89)
+    assert margin == pytest.approx(0.095, abs=1e-3)
+
+    assert float(DEFAULTS["retrieval.floor_score"]) == pytest.approx(0.37)
+    strong_margin = STRONG_MARGIN
+    assert strong_margin == pytest.approx(0.095)
+    # 基线保持 "0 = 自动"（按嵌入模型查标定表），不许写死某个模型的值
+    assert DEFAULTS["retrieval.baseline_score"] == "0"
+
+
 def test_a_strong_flat_band_suggests_a_small_converged_set() -> None:
     """实测那个医学问题：``strong`` + 窄带 → 建议**每篇 1 条、总共 4 条**。
 
@@ -68,7 +96,7 @@ def test_a_strong_flat_band_suggests_a_small_converged_set() -> None:
     assert distribution.count == 86
     assert distribution.above_baseline == 86
     assert distribution.documents == 14
-    assert distribution.band < 0.07, "窄带：实测 0.065"
+    assert distribution.band < 0.25, "窄带：实测（换算到真余弦）0.212"
     assert distribution.suggested_per_doc == 1
     assert distribution.suggested_keep == STRONG_KEEP_LIMIT == 4
     assert distribution.suggested_min_score == BASELINE
@@ -80,10 +108,10 @@ def test_a_strong_flat_band_suggests_a_small_converged_set() -> None:
 def test_an_off_topic_question_is_judged_by_where_the_whole_band_sits() -> None:
     """无关问题：整条分布压在基线之下 → ``none``、返回 0 条、回话要说"资料里没有"。
 
-    实测「今天北京的天气怎么样？」30 条落在 0.854–0.885（基线 0.89）——
-    注意**最高分 0.885 并不低**，只看单条最高分是判不出来的。
+    实测「今天北京的天气怎么样？」30 条落在 0.460–0.520（基线 0.531，旧刻度
+    0.854–0.885 / 0.89）——注意**最高分 0.520 并不低**，只看单条最高分是判不出来的。
     """
-    items = [("手册", 0.885 - 0.001 * index, f"doc{index % 45}") for index in range(30)]
+    items = [("手册", 0.520 - 0.002 * index, f"doc{index % 45}") for index in range(30)]
     distribution = summarize(items, floor=FLOOR, baseline=BASELINE, keep_cap=6)
 
     assert distribution.fit == FIT_NONE
@@ -96,7 +124,7 @@ def test_an_off_topic_question_is_judged_by_where_the_whole_band_sits() -> None:
 
 def test_a_partial_match_is_weak_and_keeps_only_a_couple() -> None:
     """刚过基线 = ``weak``：建议 2 条，回话让模型"只回答问到的那一点"。"""
-    items = [("手册", 0.90, "doc1"), ("手册", 0.895, "doc2"), ("手册", 0.892, "doc3")]
+    items = [("手册", 0.60, "doc1"), ("手册", 0.5915, "doc2"), ("手册", 0.585, "doc3")]
     distribution = summarize(items, floor=FLOOR, baseline=BASELINE, keep_cap=6)
 
     assert distribution.fit == FIT_WEAK
@@ -110,17 +138,17 @@ def test_hits_without_a_vector_score_do_not_pollute_the_score_stats() -> None:
     实测教训：拿融合分（RRF）当相似度混进来，min 会变成 0.007、带宽变成 0.974。
     """
     items: list[tuple[str, float | None, str]] = [
-        ("手册", 0.95, "doc1"),
-        ("手册", 0.93, "doc2"),
+        ("手册", 0.70, "doc1"),
+        ("手册", 0.65, "doc2"),
         ("全文命中", None, "doc3"),
     ]
     distribution = summarize(items, floor=FLOOR, baseline=BASELINE, keep_cap=6)
 
     assert distribution.count == 3
     assert distribution.documents == 3
-    assert distribution.minimum == 0.93
-    assert distribution.band < 0.03
-    assert distribution.maximum == 0.95
+    assert distribution.minimum == 0.65
+    assert distribution.band < 0.06
+    assert distribution.maximum == 0.70
 
 
 def test_without_any_semantic_score_it_does_not_judge_the_fit() -> None:
@@ -144,7 +172,7 @@ def test_without_any_semantic_score_it_does_not_judge_the_fit() -> None:
 def test_an_uncalibrated_model_means_no_judgement_and_no_convergence() -> None:
     """**安全阀**：``baseline=None``（嵌入模型没标定过）时只报分布，判不了、也不收敛。
 
-    为什么必须有这一条：标定表只覆盖 bge-m3，别的模型上拿 0.89 去判会把它们的真命中
+    为什么必须有这一条：标定表只覆盖 bge-m3，别的模型上套它的基线去判会把它们的真命中
     全判成噪声（实测：确定性嵌入的集成用例里整库被判成 ``fit=none``、**返回 0 条**，
     知识库直接哑掉）。这时退回"按调用方要的条数返回"= 这个机制上线前的行为。
     """
@@ -158,7 +186,7 @@ def test_an_uncalibrated_model_means_no_judgement_and_no_convergence() -> None:
     assert "没有标定过" in distribution.note
     # 分布本身照报（条数与文档冗余是尺度无关的，仍然有用）
     assert distribution.count == 86 and distribution.documents == 14
-    assert distribution.maximum > 0.9
+    assert distribution.maximum > 0.8
 
 
 def test_an_empty_window_says_so() -> None:
@@ -204,7 +232,7 @@ def test_the_payload_is_compact_and_rounded() -> None:
         "documents",
         "per_document",
     }
-    assert payload["floor"] == 0.8 and payload["baseline"] == 0.89
+    assert payload["floor"] == 0.37 and payload["baseline"] == 0.531
     scores = payload["scores"]
     assert isinstance(scores, dict)
     assert len(str(round(scores["max"], 3)).split(".")[-1]) <= 3
