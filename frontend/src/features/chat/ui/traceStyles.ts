@@ -56,6 +56,15 @@ export const STEP_ROW_CHILD = `${STEP_ROW_SHELL} gap-[var(--space-1)]`
  */
 export const STEP_ICON =
   'relative z-[1] inline-flex shrink-0 items-center justify-center w-[21px] h-[21px] ' +
+  // 纵向：**图标中心 = 首行行盒中心**（用户 2026-09-29："你的图标大小比文字要高啊，肯定要用中心对齐"）。
+  // 为什么不是 items-center：那是按**整个文字块**居中，标签换行（组行标题实测会换到两行）时
+  // 图标会跟着块中心下沉，反而更歪；所以留着父级的 items-start，只在图标上补一个精确偏移：
+  //   首行行盒高 = --text-meta-size × --line-ui = 14 × 1.47 = 20.58px（tokens.css 实测值，
+  //   标签那一档显式 leading-[var(--line-ui)]）；STEP_BODY 有 pt-px(1px)，所以
+  //   偏移 = (20.58 − 21) / 2 + 1 = +0.79px。
+  // 真浏览器量法（另一条 lane 给的口径）：行盒中心 ≠ 字形盒中心（14px 字号 Range 给 16px 字形盒，
+  // 两者中心差 ≈2.3px）—— 所以必须按行盒量，否则会把"已经对齐"看成差 2px。
+  'mt-[calc(var(--text-meta-size)*var(--line-ui)/2-10.5px+1px)] ' +
   'rounded-[var(--radius-pill)] border border-[var(--border)] bg-[var(--bg-canvas)] ' +
   'text-[var(--text-tertiary)]'
 
