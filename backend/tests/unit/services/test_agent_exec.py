@@ -49,7 +49,11 @@ class _FakeRuntime:
         return self._values.get(key, "")
 
     def get_bool(self, key: str, default: bool = False) -> bool:
-        return bool(self._values.get(key, default))
+        # 与真实实现同一口径：**字符串要按布尔解析**（"false" 是假 ✗ 不是真）
+        raw = self._values.get(key)
+        if raw is None:
+            return default
+        return raw.strip().lower() not in ("", "0", "false", "no", "off")
 
     def set(self, values: dict[str, str], **_kwargs: object) -> None:
         """与真实实现同一个语义：**写完立刻生效**（它那边是清掉读缓存）。"""
@@ -368,12 +372,15 @@ def test_without_isolation_it_refuses_instead_of_running_naked(workspace, monkey
     assert "没有可用的内核级隔离" in outcome.text
 
 
-def test_without_isolation_degrades_to_direct_by_default(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """**默认降级为直接执行**（v0.55）：没有 bwrap / docker 的机器（本地 Windows、
-    没挂 docker 的容器）也要能跑命令——用户报的"明明指定了工作区，还是不能执行工具"。
+def test_without_isolation_refuses_by_default(  # type: ignore[no-untyped-def]
+    workspace, monkeypatch
+) -> None:
+    """**默认拒绝**没有隔离的执行（D16，2026-09-29 翻转了 v0.55 那条默认）。
 
-    降级不是"假装有沙箱"：执行后端如实报 ``direct``（未隔离），
-    回给模型的话里也写明"未隔离"，见 `isolation.direct_isolation`。
+    为什么翻转：用户点名的会话 `conv_a5f4628f405f` 里，降级直执的表现是
+    "上一步 `ls` 被拦 → 下一步 `find / -maxdepth 7` **整机跑起来**、网络不受限" ✗ ——
+    那与"没有隔离就不执行"这条纪律正好相反。裸跑现在是**显式开关**：
+    关掉 `sandbox.require_isolation` 才降级，而且降级时如实报 ``direct``（未隔离）✓。
     """
     _allow_all(workspace)
     monkeypatch.setattr(
@@ -388,6 +395,15 @@ def test_without_isolation_degrades_to_direct_by_default(workspace, monkeypatch)
         )
 
     monkeypatch.setattr(isolation_service, "run_isolated", _fake_run)
+
+    # ① 默认：拒绝执行（连进程都不起）
+    refused = run_command(workspace, _admin(), conversation_id=None, args={"command": "ls"})
+    assert not refused.ran
+    assert "没有可用的内核级隔离" in refused.text
+    assert seen == {}
+
+    # ② 显式关掉那一项（= 明确同意裸跑）才降级
+    workspace.runtime._values["sandbox.require_isolation"] = "false"
     outcome = run_command(workspace, _admin(), conversation_id=None, args={"command": "ls"})
 
     assert outcome.ran and outcome.ok
@@ -410,8 +426,11 @@ def test_utf8_command_output_comes_back_instead_of_a_decode_crash(workspace, mon
     这里走的是**真链路**（不再 monkeypatch `run_isolated`）：权限扳到完全访问、
     探测结果装成"没有隔离"（于是降级成 direct 真跑），命令用 `sys.stdout.buffer`
     写**字节**，免得通过 locale 的子进程编码被"顺手救活"。
+
+    D16 之后**默认拒绝**这种执行，所以要显式关掉那一项开关（= 同意裸跑）✓。
     """
     _allow_all(workspace)
+    workspace.runtime._values["sandbox.require_isolation"] = "false"
     monkeypatch.setattr(
         agent_exec, "_detect", lambda force=False: isolation_service.detect(prefer="none")
     )

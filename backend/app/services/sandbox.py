@@ -63,20 +63,23 @@ POLICY_SANDBOX = "sandbox"
 
 #: 设置键：**没有内核级隔离时是否拒绝执行**（v0.55，默认关）。
 #:
-#: 默认关 = 允许降级为**本机直接执行**（见 `services/isolation.direct_isolation` 与它的模块头）：
-#: Windows 上没有 bwrap / sandbox-exec 的原生等价物、容器里也常没挂 docker，
-#: 若一律拒绝则"本地源码启动与容器部署两边都跑不了命令"（用户报的）。
-#: 打开它 = 严格：宁可跑不了，也不在无隔离的机器上执行——留给高敏部署。
+#: **默认开** = 没有隔离就**拒绝执行**（D16，2026-09-29 用户点名会话 `conv_a5f4628f405f` 后翻转）。
+#:
+#: 为什么翻转：降级档（`isolation.direct_isolation`）在真实会话里的表现是
+#: "上一步 `ls` 被拦 → 下一步 `find / -maxdepth 7` **整机跑起来**、网络不受限" ✗ ——
+#: 那正是我们一直写的纪律"没有隔离就不执行"被静默绕过的样子。
+#: 现在裸跑是**显式开关**：打开它（= 关掉本项）才会降级直执，
+#: 且设置页要写清"命令会在你本机直接执行、可访问网络与全部文件"。
 REQUIRE_ISOLATION_KEY = "sandbox.require_isolation"
 
 
 def require_isolation(runtime: Any) -> bool:
-    """读上面那一项设置（默认 ``False`` = 允许降级直执）。
+    """读上面那一项设置（**默认 ``True``** = 没有隔离就拒绝）。
 
     用鸭子类型接 ``runtime``（只要求它有 ``get_bool``）：策略层不依赖
     ``services/runtime_config`` 的具体实现，免得这一层多背一个 import。
     """
-    return bool(runtime.get_bool(REQUIRE_ISOLATION_KEY, default=False))
+    return bool(runtime.get_bool(REQUIRE_ISOLATION_KEY, default=True))
 
 
 #: 沙箱目录在数据目录下的位置。

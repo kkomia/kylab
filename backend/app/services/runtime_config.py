@@ -253,11 +253,16 @@ SETTING_GROUPS: dict[str, Any] = {
                 "label": "只读挂载目录（逗号分隔；留空用默认清单）",
                 "type": "text",
             },
-            # v0.55：无内核隔离时**默认降级为直接执行**（见 services/isolation.py 的模块头）。
-            # 打开这一项 = 严格：没有 bwrap / sandbox-exec / docker 时宁可跑不了也不裸跑。
+            # v0.55：无内核隔离时**默认降级为直接执行**；**D16（2026-09-29）翻转了默认**：
+            # 现在**默认拒绝**（没有 bwrap / sandbox-exec / docker 就不执行），
+            # 裸跑必须**显式关掉本项**——用户点名的会话里"上一步被拦、下一步整机裸跑"就是这么来的
+            # （见 services/sandbox.py 里 REQUIRE_ISOLATION_KEY 的注释）。
             {
                 "key": "sandbox.require_isolation",
-                "label": "无内核隔离时拒绝执行（关 = 降级为直接执行，未隔离）",
+                "label": (
+                    "无内核隔离时拒绝执行（**默认开**；关掉 = 命令在本机直接执行、"
+                    "可访问网络与全部文件）"
+                ),
                 "type": "bool",
             },
         ],
@@ -388,10 +393,10 @@ DEFAULTS: dict[str, str] = {
     "sandbox.rules_allow": "",
     "sandbox.rules_ask": "",
     "sandbox.rules_deny": "",
-    # 无内核隔离时是否拒绝执行（v0.55）。**默认关 = 降级为直接执行**：没有它，
-    # Windows 本地与没挂 docker 的容器两边都跑不了命令（用户报的）；
-    # 打开它 = 严格，留给高敏部署（见 services/isolation.py 的模块头）。
-    "sandbox.require_isolation": "false",
+    # 无内核隔离时是否拒绝执行（v0.55）。**D16（2026-09-29）默认改成 true = 拒绝**：
+    # 用户点名的会话里，降级直执的表现是"上一步被拦、下一步 `find /` 整机裸跑、网络不受限" ✗ ——
+    # 那与"没有隔离就不执行"这条纪律正好相反。裸跑现在是显式开关（关掉本项）。
+    "sandbox.require_isolation": "true",
     "web.search_provider": "tavily",
     # 留空 = 没配。**默认不填任何密钥**：预置一个"看起来能用"的值会让
     # 用户以为联网已经开了，然后在第一次搜索时得到一个别人的额度错误。

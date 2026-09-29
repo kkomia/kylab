@@ -602,7 +602,24 @@ def run_isolated(
             timed_out=True,
         )
     except OSError as exc:
-        raise UnsupportedContentError(f"起不了隔离进程（{plan.backend}）：{exc}") from exc
+        # **两类失败必须分开报**（D16，2026-09-29 用户点名会话 `conv_a5f4628f405f`）：
+        # 现场那条 `ls -a /` 在 Windows 上的报错是「起不了隔离进程（direct）：
+        # [WinError 2] 系统找不到指定的文件」✗ —— 读的人会以为"隔离坏了"，
+        # 而真正的原因是**这台机器上没有 `ls`**（同一个会话里后面 `cmd /c dir` 全都跑得动 ✓）。
+        # 一句错话让模型与用户都走错方向，所以这里按 errno/winerror 判：
+        # 找不到可执行文件 → 说是"命令不存在"（并给这台机器上能用的替代）；
+        # 其余 OSError → 才是真的"隔离/进程起不来"。
+        first = plan.argv[0] if plan.argv else ""
+        missing_file = isinstance(exc, FileNotFoundError) or getattr(exc, "winerror", None) == 2
+        if missing_file:
+            detail = (
+                f"命令没找到：`{first}` 在这台机器上不存在（这不是隔离的问题）。"
+                "换一个本机有的命令：Windows 上列目录用 `dir`、找文件用 `dir /s /b` 或 "
+                "`where`，Linux/macOS 上用 `ls` / `find`。"
+            )
+        else:
+            detail = f"隔离后端不可用（{plan.backend}）：{exc}"
+        raise UnsupportedContentError(detail) from exc
 
     stdout, cut_out = _clip(finished.stdout)
     stderr, cut_err = _clip(finished.stderr)
