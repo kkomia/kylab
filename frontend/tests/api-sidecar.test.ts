@@ -19,6 +19,7 @@ import {
   sidecarBase,
   sidecarStatus,
   sidecarTurnsEnabled,
+  sidecarTurnsEnabledFrom,
   toSidecarTurnBody,
 } from '@/api/sidecar'
 
@@ -33,7 +34,7 @@ describe('边车分派：判定只有一处', () => {
   beforeEach(() => {
     resetSidecarProbe()
     vi.restoreAllMocks()
-    // 这一组验的是"**开关开着**时的分派"；开关本身（默认关）由下面那一组验
+    // 这一组验的是"**开关开着**时的分派"；开关本身（默认开 / 显式关是逃生门）由下面那一组验
     setSidecarTurnsForTest(true)
   })
   afterEach(() => {
@@ -159,7 +160,18 @@ describe('边车分派：判定只有一处', () => {
   })
 })
 
-describe('边车轮次开关：默认关（缺"记录一轮"端点，绝不静默丢这一轮）', () => {
+/**
+ * 开关：**默认开** ✓，**显式关 = 逃生门** ✗。
+ *
+ * 为什么"默认开"这条能直接量、而"显式关"那条用窄接口：本模块读的是**构建期**那份
+ * `import.meta.env` ✓，`vi.stubEnv` 改不到它 ✗（实测：开了 stub 仍然读到空值，
+ * 见 `setSidecarTurnsForTest` 的说明 ✓）。所以分两处钉：
+ *
+ * - **不设变量**这种事**不用改环境** ✓ —— 测试环境里本来就没设（先断言这个前提 ✓）；
+ * - **字面量怎么判**用纯函数 `sidecarTurnsEnabledFrom` 逐个喂 ✓，
+ *   `resolveTurnTarget()` 那条分支则用同一个 override 驱动 ✓（走的是同一段代码 ✓）。
+ */
+describe('边车轮次开关：默认开，显式关是逃生门', () => {
   beforeEach(() => {
     resetSidecarProbe()
     vi.restoreAllMocks()
@@ -170,7 +182,32 @@ describe('边车轮次开关：默认关（缺"记录一轮"端点，绝不静�
     vi.unstubAllGlobals()
   })
 
-  it('开关没设 → 走服务器（即使边车活着也不走），且状态位可见、不静默', async () => {
+  it('① 不设 VITE_SIDECAR_TURNS → 走边车（默认开），状态位说清打的是哪个基址', async () => {
+    // 前提要显式：这个环境里**没设**那个变量（否则这条用例量的就不是"默认"了 ✗）
+    expect(
+      import.meta.env.VITE_SIDECAR_TURNS as string | undefined,
+      '这条用例的前提：测试环境里没有设 VITE_SIDECAR_TURNS',
+    ).toBeUndefined()
+    const fetchMock = vi.fn().mockResolvedValue(okJson({ ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(sidecarTurnsEnabled()).toBe(true)
+    const target = await resolveTurnTarget()
+
+    expect(target.kind).toBe('sidecar')
+    expect(target.base).toBe(DEFAULT_SIDECAR_BASE)
+    expect(target.url).toBe(`${DEFAULT_SIDECAR_BASE}${SIDECAR_STREAM_PATH}`)
+    expect(target.fallback).toBe(false)
+    // 走边车也要**说得清**（不是只有一个布尔值）：状态位带上实际基址
+    const status = sidecarStatus()
+    expect(status.enabled).toBe(true)
+    expect(status.available).toBe(true)
+    expect(status.reason).toContain('走边车')
+    expect(status.reason).toContain(DEFAULT_SIDECAR_BASE)
+  })
+
+  it('② 显式关（逃生门）→ 走服务器，有 reason 与一条 info，且**根本不去探边车**', async () => {
+    setSidecarTurnsForTest(false)
     const fetchMock = vi.fn().mockResolvedValue(okJson({ ok: true }))
     vi.stubGlobal('fetch', fetchMock)
     const info = vi.spyOn(console, 'info').mockImplementation(() => {})
@@ -180,30 +217,60 @@ describe('边车轮次开关：默认关（缺"记录一轮"端点，绝不静�
     expect(target.kind).toBe('server')
     expect(target.url).toBe(`${API_BASE}/chat/stream`)
     expect(target.fallback).toBe(true)
-    expect(target.reason).toContain('开关未启用')
-    // 开关状态必须暴露给界面（"当前走哪条链"要看得出来）
-    expect(sidecarStatus().enabled).toBe(false)
-    // 关闭**不许静默**：有一条 info（env 里没设时按 "关" 判）
+    // 文案要能区分"被显式关掉"与"边车没起来"（默认开之后，这两件事长得很像 ✗）
+    expect(target.reason).toContain('显式关掉')
+    expect(target.reason).toContain('逃生门')
+    // 关闭**不许静默**：状态位 + 一条 info
+    const status = sidecarStatus()
+    expect(status.enabled).toBe(false)
+    expect(status.reason).toContain('显式关掉')
     expect(info).toHaveBeenCalledTimes(1)
     expect(String(info.mock.calls[0][0])).toContain('VITE_SIDECAR_TURNS')
-    // 而且**根本没去探边车**（开关关着就不该有额外请求）
+    // 开关关着就不该有额外请求（否则每轮白探一次）
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('开关开着也不认奇怪的值（只有 1/true/yes 算开）', () => {
-    // 这里验的是**判据本身**：直接喂给判定函数读的那个窄接口（见 setSidecarTurnsForTest 的说明）
-    for (const value of [false]) {
-      setSidecarTurnsForTest(value)
-      expect(sidecarTurnsEnabled()).toBe(false)
-      expect(baseForPath('/chat/stream')).toBe(API_BASE)
+  it('③ 字面量判据：只有 0/false/no/off 关，其余（含不设、含空、含奇怪值）都开', () => {
+    for (const raw of [undefined, '', '   ', '1', 'true', 'TRUE', 'yes', 'on', 'enabled']) {
+      expect(sidecarTurnsEnabledFrom(raw), String(raw)).toBe(true)
     }
-    for (const value of [true]) {
-      setSidecarTurnsForTest(value)
-      expect(sidecarTurnsEnabled()).toBe(true)
-      expect(baseForPath('/chat/stream')).toBe(sidecarBase())
+    for (const raw of ['0', 'false', 'FALSE', 'no', 'No', 'off', 'OFF', ' 0 ', '\tfalse\t']) {
+      expect(sidecarTurnsEnabledFrom(raw), String(raw)).toBe(false)
     }
-    // 恢复"按 env 判"：env 没设 → 关（本仓库默认就是关）
-    setSidecarTurnsForTest(undefined)
+    // 与 override 那条路一致：关掉之后 `/chat/stream` 也回服务器
+    setSidecarTurnsForTest(false)
     expect(sidecarTurnsEnabled()).toBe(false)
+    expect(baseForPath('/chat/stream')).toBe(API_BASE)
+    setSidecarTurnsForTest(true)
+    expect(sidecarTurnsEnabled()).toBe(true)
+    expect(baseForPath('/chat/stream')).toBe(sidecarBase())
+  })
+
+  it('④ 默认开但边车没起来 → 回退服务器，且**回退是显式的**（状态位 + warn）', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('ECONNREFUSED')))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    const target = await resolveTurnTarget()
+
+    expect(target.kind).toBe('server')
+    expect(target.fallback).toBe(true)
+    expect(target.reason).toContain('回退')
+    const status = sidecarStatus()
+    expect(status.enabled).toBe(true)
+    expect(status.available).toBe(false)
+    expect(status.reason).toContain('回退')
+    expect(status.reason).toContain('ECONNREFUSED')
+    expect(warn).toHaveBeenCalledTimes(1)
+  })
+
+  it('⑤ 还没探过边车时不猜好坏：available=null，但仍然说清默认会先试边车', () => {
+    const status = sidecarStatus()
+
+    expect(status.enabled).toBe(true)
+    expect(status.available).toBeNull()
+    expect(status.reason).toContain('还没探过')
+    expect(status.reason).toContain(DEFAULT_SIDECAR_BASE)
+    // reason **不许空着**：三种状态都要能据它判断"当前走哪条链"
+    expect(status.reason.length).toBeGreaterThan(0)
   })
 })

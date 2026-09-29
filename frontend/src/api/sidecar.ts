@@ -1,18 +1,27 @@
 /**
  * 对话轮次的**基址分派**（P4 第 2 片）：对话轮次走**本地边车**，其余接口照旧走**服务器**。
  *
- * ## TODO（P4-2b，服务器侧）：缺"记录一轮"的端点
+ * ## 已完成（P4-2b，2026-09-29）：开关**默认开**
  *
- * 会话是**服务器权威**：一轮的落库长在 chat 处理链里（`api/v1/chat.py` 的 `start_turn` /
- * `close_turn`），而 `api/v1/conversations.py` **没有**任何"追加/写入一轮"的端点
- * （只有新建 / 改标题 / 回退 / 分叉 / 文件那几条）。
- * 所以：**若边车跑完这一轮而没人写回服务器，用户刷新一下这轮就没了** —— 那是数据丢失，
- * 比"慢一点"严重得多。因此本片把接线放在 `VITE_SIDECAR_TURNS` 这个**显式开关**后面、
- * **默认关**；开关状态由 `sidecarStatus()` 暴露，界面能看出当前走哪条链。
+ * 原先这里是 TODO：`api/v1/conversations.py` **没有**任何"追加/写入一轮"的端点 ✗，
+ * 而会话是**服务器权威** —— 边车跑完这一轮若没人写回，用户刷新一下这轮就没了 ✗
+ * （数据丢失，比"慢一点"严重得多 ✓），所以那时接线放在 `VITE_SIDECAR_TURNS` 后面、
+ * **默认关** ✓。现在那两件事都入库并验通了 ✓：
  *
- * P4-2b 加上"记录一轮"的端点之后，应当由**边车自己**在跑完后写回服务器
- * （它有用户令牌，且本来就在跟服务器说话）：跑在本机、账在服务器。**写入失败要如实报**，
- * 不许当成功。那时这个开关才能默认开。
+ * 1. **记录一轮的端点**（`f921f8e` ✓）：`POST /api/v1/chat/turns/record` ✓ ——
+ *    401 / 422 / 幂等 `recorded=false` / 回读 `message_count: 2` 都实测过 ✓；
+ * 2. **边车跑完写回**（`f7b9a2f` ✓）：真机端到端物证 `turn_id: e590b199…` +
+ *    `recorded: true` ✓（`.shots/e2e-turn.json` ✓）
+ *    → "**跑在本机、账在服务器**"成立 ✓，"丢这一轮"的风险不再存在 ✓。
+ *
+ * 于是本片翻成 **默认开** ✓：不设 `VITE_SIDECAR_TURNS` 就走边车 ✓。
+ *
+ * ## 显式关 = 逃生门（保留，不许删）
+ *
+ * 只有**明确的假值**才关 ✗：`0` / `false` / `no` / `off`（大小写不敏感 ✓）。
+ * 这不是历史包袱 ✓：默认开是产品行为 ✓，而"改一个环境变量就能回退服务器那条链" ✗
+ * 是万一边车出问题时的**逃生门** ✓ —— 回退不用改代码、不用重新发版 ✓。
+ * 被显式关掉时同样**不静默** ✓（`reason` + `console.info` ✓）。
  *
  * ## 为什么分派落在"接口类别"这一层
  *
@@ -34,9 +43,12 @@
  *
  * ## 回退必须可见，不许静默
  *
- * 边车没起来（或探测失败）时回退到服务器那条链，但回退是**显式**的：
- * `resolveTurnTarget()` 返回 `fallback: true` 与 `reason`，同时 `console.warn` 一条；
- * 开关没开时同样给 `reason`，并 `console.info` 一条（这是默认状态，用 info 不用 warn）。
+ * 三种状态都要看得出来 ✓：**走边车** / **被显式关掉**（逃生门 ✓）/ **边车没起来、已回退** ✓。
+ * - 回退：`resolveTurnTarget()` 返回 `fallback: true` 与 `reason`，同时 `console.warn` 一条 ✓；
+ * - 显式关：同样给 `reason`，并 `console.info` 一条 ✓ —— 那是**主动选择**、不是异常 ✓，
+ *   所以用 info 不用 warn ✓；
+ * - 走边车：`sidecarStatus().reason` 也说清"打的是哪个基址" ✓（只给一个布尔值的话，
+ *   排障时说不出"这一轮到底走的哪条链" ✗）。
  */
 
 import { API_BASE } from './client'
@@ -86,15 +98,38 @@ export function sidecarBase(): string {
 }
 
 /**
- * 对话轮次**走边车**这个开关（默认关，见文件头 TODO）。
+ * 开关的字面量判定：**默认开** ✓，只有明确的假值才关 ✗。
  *
- * 只认 `VITE_SIDECAR_TURNS` 的明确真值：`1` / `true` / `yes`（大小写不敏感）。
- * 别的值（含空）一律当关 —— **默认必须是关**：缺"记录一轮"端点时走边车会丢这一轮。
+ * 为什么单独抽成纯函数（而不是把 `env()` 读在里头）：判据是这一片最容易写错的一位 ✓
+ * ——`1/true/yes` 那套是"默认关"时代的写法 ✗（只认真值、其余全关 ✗），
+ * 现在要求的是**反过来**：`0` / `false` / `no` / `off`（大小写不敏感 ✓、前后空白忽略 ✓）
+ * 才关 ✓，**别的值（含不设、含空）一律走边车** ✓。抽出来之后用例能逐个字面量钉住它 ✓，
+ * 不必去动构建期的环境变量 ✗（`vi.stubEnv` 改不到本模块读的那一份，见下面那个窄接口 ✓）。
+ */
+export function sidecarTurnsEnabledFrom(raw: string | undefined): boolean {
+  const value = (raw ?? '').trim().toLowerCase()
+  return !(value === '0' || value === 'false' || value === 'no' || value === 'off')
+}
+
+/**
+ * 对话轮次**走边车**这个开关（**默认开** ✓，见文件头"已完成"那一段）。
+ *
+ * 不设 `VITE_SIDECAR_TURNS` → 走边车 ✓；要回退服务器那条链就**显式关** ✓
+ * （逃生门：改一个环境变量即可，不必改代码/发版 ✓）。
  */
 export function sidecarTurnsEnabled(): boolean {
   if (turnsOverride !== undefined) return turnsOverride
-  const raw = (env().VITE_SIDECAR_TURNS ?? '').trim().toLowerCase()
-  return raw === '1' || raw === 'true' || raw === 'yes'
+  return sidecarTurnsEnabledFrom(env().VITE_SIDECAR_TURNS)
+}
+
+/** 被显式关掉时把用户写的那个值带出来 ✓（`reason` 里要说清是**哪一种**关法 ✓）。 */
+function explicitOffReason(): string {
+  const raw = env().VITE_SIDECAR_TURNS
+  const shown = raw === undefined || raw.trim() === '' ? '' : `=${raw.trim()}`
+  return (
+    `边车对话轮次被显式关掉（VITE_SIDECAR_TURNS${shown}）` +
+    '，走服务器那条链（逃生门；删掉这个变量就回到边车）'
+  )
 }
 
 /** 这个路径归边车吗？（判定只有这一处） */
@@ -116,7 +151,7 @@ export interface TurnTarget {
   url: string
   /** 是不是**回退**（边车不可用 → 用服务器那条链）。 */
   fallback: boolean
-  /** 给人看的原因（回退或开关没开时**必须有**，不许空着）。 */
+  /** 给人看的原因（回退或被显式关掉时**必须有** ✓，不许空着 ✗）。 */
   reason: string
 }
 
@@ -128,18 +163,51 @@ interface ProbeState {
 
 const probe: ProbeState = { available: null, reason: '', at: 0 }
 
-/** 给界面读的状态位（走哪条链不是静默的）。 */
+/**
+ * 给界面读的状态位（走哪条链不是静默的）。
+ *
+ * `reason` 现在**三种状态都说得清** ✓（默认开之后，"开关未启用"那句话只覆盖"显式关" ✓，
+ * 所以不能再用它当默认文案 ✗）：
+ *
+ * 1. **走边车** ✓ —— 说打的是哪个基址 ✓；
+ * 2. **被显式关掉** ✓ —— 逃生门，说清是哪个变量 + 删掉它就能回边车 ✓；
+ * 3. **边车没起来、已回退** ✓ —— 带上探测给的原因 ✓。
+ *
+ * 还没探过就返回第 4 种（`available: null`）：**不猜**边车是好是坏 ✗，
+ * 只说"还没探过、默认会先试边车" ✓。
+ */
 export function sidecarStatus(): {
   base: string
   available: boolean | null
   reason: string
   enabled: boolean
 } {
+  const base = sidecarBase()
+  const enabled = sidecarTurnsEnabled()
+  if (!enabled) {
+    return { base, available: probe.available, reason: explicitOffReason(), enabled: false }
+  }
+  if (probe.available === true) {
+    return {
+      base,
+      available: true,
+      reason: `走边车：对话轮次打 ${base}${SIDECAR_STREAM_PATH}`,
+      enabled: true,
+    }
+  }
+  if (probe.available === false) {
+    return {
+      base,
+      available: false,
+      reason: `${probe.reason || '边车不可用'}；已回退到服务器 ${API_BASE}（这条链仍然可用）`,
+      enabled: true,
+    }
+  }
   return {
-    base: sidecarBase(),
-    available: probe.available,
-    reason: probe.reason,
-    enabled: sidecarTurnsEnabled(),
+    base,
+    available: null,
+    reason: `还没探过边车（默认先试 ${base}，不可用就回退服务器 ${API_BASE}）`,
+    enabled: true,
   }
 }
 
@@ -188,8 +256,8 @@ export async function resolveTurnTarget(): Promise<TurnTarget> {
     reason: '',
   }
   if (!sidecarTurnsEnabled()) {
-    // **开关没开不是失败**，但也绝不静默（用户/排障都要能看出"这一轮走的是服务器"）
-    const reason = '边车对话轮次开关未启用（VITE_SIDECAR_TURNS），走服务器那条链'
+    // **显式关不是失败** ✓，但也绝不静默 ✓（排障要能一眼看出"这一轮走的是服务器、而且是被关掉的"）
+    const reason = explicitOffReason()
     console.info(`[sidecar] ${reason}`)
     return { ...server, reason }
   }
