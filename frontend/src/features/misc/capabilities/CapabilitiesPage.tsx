@@ -40,6 +40,7 @@ import {
   listMCPServers,
   listSkills,
   probeMCPServer,
+  setSkillEnabled,
   sourceLabel,
   uninstallSkill,
   updateMCPServer,
@@ -66,6 +67,7 @@ import {
   DropdownMenuTrigger,
 } from '@/ui/dropdown-menu'
 import { Input } from '@/ui/input'
+import { Switch } from '@/ui/switch'
 import { Tabs, TabsList, TabsTrigger } from '@/ui/tabs'
 import { Textarea } from '@/ui/textarea'
 import {
@@ -331,6 +333,24 @@ export function CapabilitiesPage() {
     onError: (error: unknown) => notifyError(messageOf(error, '卸载失败')),
   })
 
+  /**
+   * 单条技能的启停（D23，2026-09-28 走查）。
+   *
+   * **关掉 = 不进提示词**，磁盘上的文件一个字都不动——用户想的是"这一轮别让它插嘴"，
+   * 不是"把这东西删了"。所以这里不弹确认框（可逆），成功之后提示一句就好；
+   * 失败**如实报**，而列表要重拉（`reloadSkills`）——它不是乐观更新：
+   * 开关的位置是服务端说了算（`enabled` 由设置项算出来），本地先改会与它对不上。
+   */
+  const toggleSkill = useMutation({
+    mutationFn: ({ skill, enabled }: { skill: Skill; enabled: boolean }) =>
+      setSkillEnabled(skill.name, enabled),
+    onSuccess: async (updated, { skill }) => {
+      await reloadSkills()
+      notifySuccess(updated.enabled ? `已启用「${skill.name}」` : `已关掉「${skill.name}」`)
+    },
+    onError: (error: unknown) => notifyError(messageOf(error, '改技能开关失败')),
+  })
+
   const probe = useMutation({
     mutationFn: (server: MCPServer) => probeMCPServer(server.id),
     onMutate: (server) => setProbing(server.id),
@@ -567,6 +587,20 @@ export function CapabilitiesPage() {
                           未进提示词
                         </Badge>
                       ) : null}
+                      {/*
+                        单条启停（D23，走查实测这一页原先**一个开关都没有**）。
+                        **被丢弃的不给开关**：它本来就不加载，摆一个按下去没反应的开关
+                        比不摆更糟。开关旁边的可访问名说清"按下去会怎样"，而不是只写"开关"。
+                      */}
+                      {skill.discarded ? null : (
+                        <Switch
+                          size="sm"
+                          checked={skill.enabled}
+                          disabled={toggleSkill.isPending}
+                          aria-label={`${skill.enabled ? '关掉' : '启用'}技能 ${skill.name}`}
+                          onCheckedChange={(next) => toggleSkill.mutate({ skill, enabled: next })}
+                        />
+                      )}
                     </div>
                     {/* 中文优先（v0.28）：技能描述基本都是英文，而这一页是给中文用户看的。
                      **一行**，多的部分进详情弹窗——卡片的宽度不该由最长的那条描述决定 */}

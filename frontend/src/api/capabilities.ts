@@ -43,6 +43,11 @@ export interface Skill {
    * 也读不出正文——所以这一类要单独标出来，不能和"被拦下"混成一句「未进提示词」。
    */
   discarded: boolean
+  /**
+   * **用户**没把它关掉（D23）。与 `used_by_prompt` 分开：那个是"实际进没进"
+   * （安全扫描、依赖、丢弃都会让它为 false），这个是"开关在哪一边"。
+   */
+  enabled: boolean
 }
 
 export interface SkillDetail extends Skill {
@@ -242,6 +247,19 @@ export function addSkillSource(repo: string): Promise<SkillSource> {
 export function setSkillSourceEnabled(sourceId: string, enabled: boolean): Promise<SkillSource> {
   return request<SkillSource>(`/skills/market/sources/${encodeURIComponent(sourceId)}`, {
     method: 'PATCH',
+    body: JSON.stringify({ enabled }),
+  })
+}
+
+/**
+ * 开/关一条技能（D23）。**关掉 = 不进提示词**，磁盘上的文件不动。
+ *
+ * 与「技能源」那个开关（`setSkillSourceEnabled`）是两层不同的东西：源是"从哪个仓库找技能"，
+ * 这一条是"这一条技能给不给模型看"。
+ */
+export function setSkillEnabled(name: string, enabled: boolean): Promise<Skill> {
+  return request<Skill>(`/skills/${encodeURIComponent(name)}/enabled`, {
+    method: 'PUT',
     body: JSON.stringify({ enabled }),
   })
 }

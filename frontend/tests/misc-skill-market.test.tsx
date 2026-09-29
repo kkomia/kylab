@@ -111,6 +111,7 @@ beforeEach(() => {
     used_by_prompt: true,
     flagged: [],
     discarded: false,
+    enabled: true,
   })
 })
 

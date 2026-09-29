@@ -752,3 +752,61 @@ def test_shadowing_order_is_builtin_then_user_then_agents(tmp_path: Path) -> Non
     assert [(item.description, item.source) for item in only_user] == [
         ("数据目录的", "user")
     ]
+
+
+def test_skill_can_be_turned_off_and_back_on(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """D23：单条技能能关掉，关掉 = 不进提示词（文件不动）。
+
+    病灶（走查实测）：能力页三个页签**一个开关都没有**——技能只能整批生效，
+    想"这一轮别让它插嘴"就只能删掉它。
+    """
+    from app.services.skills import DISABLED_REASON, DISABLED_SKILLS_KEY, SkillService
+
+    (tmp_path / "skills" / "one").mkdir(parents=True)
+    (tmp_path / "skills" / "one" / "SKILL.md").write_text(
+        "---\nname: one\ndescription: 第一个技能\n---\n正文\n", encoding="utf-8"
+    )
+    saved: dict[str, str] = {}
+    service = SkillService(
+        tmp_path,
+        builtin_dir=tmp_path / "builtin-none",
+        agents_dir=tmp_path / "agents-none",
+        config_value=lambda key: saved.get(key, ""),
+        config_set=lambda values: saved.update(values),
+    )
+
+    assert service.is_enabled("one") is True
+    assert service.get("one").used_by_prompt is True
+
+    off = service.set_enabled("one", False)
+
+    # 关掉之后：不进提示词、理由在 flagged 里、设置项写下来了
+    assert off.used_by_prompt is False
+    assert DISABLED_REASON in off.flagged
+    assert service.is_enabled("one") is False
+    assert saved[DISABLED_SKILLS_KEY] == "one"
+    assert service.get("one").used_by_prompt is False
+
+    on = service.set_enabled("one", True)
+
+    assert on.used_by_prompt is True
+    assert on.flagged == ()
+    assert saved[DISABLED_SKILLS_KEY] == ""
+
+
+def test_turning_off_a_skill_without_a_settings_writer_fails_loudly(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """没接设置服务时**如实抛错**，而不是假装写成功（那种部署里开关按下去会静默无效）。"""
+    import pytest
+
+    from app.services.skills import SkillService
+
+    (tmp_path / "skills" / "one").mkdir(parents=True)
+    (tmp_path / "skills" / "one" / "SKILL.md").write_text(
+        "---\nname: one\ndescription: 第一个技能\n---\n正文\n", encoding="utf-8"
+    )
+    service = SkillService(
+        tmp_path, builtin_dir=tmp_path / "builtin-none", agents_dir=tmp_path / "agents-none"
+    )
+
+    with pytest.raises(RuntimeError):
+        service.set_enabled("one", False)

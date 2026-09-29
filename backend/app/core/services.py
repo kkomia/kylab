@@ -319,7 +319,10 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     # 技能的门控要读运行期配置（`requires.config`，见 services/skills.py）：
     # 把"读一个配置键"的能力注进去，而不是把整个 runtime 塞给技能服务——
     # 技能层只需要这一个动作，多了就说不清它到底依赖什么。
-    skill_service = SkillService(resolved.data_dir, config_value=runtime.get)
+    # D23 之后多了一个"写"：单条技能的启停（`chat.disabled_skills`）存在运行期配置里。
+    skill_service = SkillService(
+        resolved.data_dir, config_value=runtime.get, config_set=runtime.set
+    )
     # 技能市场（v0.16）：安装/卸载。**只写 data/skills/**——仓库自带的那份动不了
     skill_market_service = SkillMarketService(resolved.data_dir, skill_service)
     # 技能源（v0.27）：从 GitHub 仓库浏览技能。**出站只在这一层**——

@@ -30,6 +30,7 @@ from app.api.v1.schemas import (
     SkillBrowseOut,
     SkillBundleOut,
     SkillDetailOut,
+    SkillEnabledIn,
     SkillInspectIn,
     SkillInstalledOut,
     SkillInstallIn,
@@ -48,6 +49,7 @@ from app.core.exceptions import InvalidRequestError
 from app.core.services import Services, get_services
 from app.services.api_key import Caller
 from app.services.skill_market import MAX_UNPACKED_BYTES
+from app.services.skills import DISABLED_REASON
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
@@ -76,6 +78,10 @@ def _out(record, summary: str = "") -> SkillOut:  # type: ignore[no-untyped-def]
         path=record.path,
         directory=record.directory,
         used_by_prompt=record.used_by_prompt,
+        # **用户的开关**（D23）与"实际进没进"是两件事：安全扫描/依赖/丢弃都会让
+        # `used_by_prompt` 为 false，那时开关仍该画成"开着"（关它是没用的）。
+        # 判据就是服务写进去的那条理由常量——不是另写一句字面量，免得两处漂。
+        enabled=DISABLED_REASON not in record.flagged,
         flagged=list(record.flagged),
         discarded=record.discarded,
     )
@@ -107,6 +113,23 @@ def list_skills(
         items=[_out(item, summaries.get(item.name, "")) for item in items],
         usable=sum(1 for item in items if item.used_by_prompt),
     )
+
+
+@router.put("/{name}/enabled", response_model=SkillOut, summary="开/关一条技能")
+def set_skill_enabled(
+    name: str,
+    payload: SkillEnabledIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_admin)],
+) -> SkillOut:
+    """单条技能的启停（D23，2026-09-28 走查）。
+
+    **关掉 = 不进提示词**：文件不动、市场那边的安装记录也不动，只是"这一轮不给模型看"。
+    权限与装/卸插件同一档（``require_admin``）：技能会改变模型的行为，这是一件
+    **部署级**的事，与"改我自己的偏好"不是一类。
+    """
+    record = services.skills.set_enabled(name, payload.enabled)
+    return _out(record, _summaries(services).get(record.name, ""))
 
 
 @router.get("/{name}", response_model=SkillDetailOut, summary="技能详情（含正文）")

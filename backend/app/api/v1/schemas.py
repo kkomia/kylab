@@ -2192,12 +2192,28 @@ class SkillOut(BaseModel):
     """技能目录（``references/`` 相对它解析）。"""
     used_by_prompt: bool = True
     """会不会进 system prompt 的目录。被安全扫描拦下、依赖没满足、被丢弃的都是 false。"""
+    enabled: bool = True
+    """**用户**没把它关掉（D23）。
+
+    与 ``used_by_prompt`` 分开：那个是"实际进没进"（安全扫描、依赖、丢弃都会让它 false），
+    这个是"用户的开关在哪一边"。两者都可能为 false 而原因不同——能力页上那颗开关
+    只能照着 ``enabled`` 画，理由那一栏照旧读 ``flagged``。
+    """
     flagged: list[str] = Field(default_factory=list)
     """没进目录的原因（人话）。空 = 没问题。"""
     discarded: bool = False
     """**被丢弃**（P0-3）：frontmatter 缺 ``name``/``description`` 或描述超长，
     照 ZCode 的规则整个技能不加载。它仍然出现在列表里（带着 ``flagged`` 那条理由），
     但既不进提示词，也读不出正文——能力页要能看见"装了但没通过校验"的那些。"""
+
+
+class SkillEnabledIn(BaseModel):
+    """开/关一条技能（D23）。"""
+
+    model_config = _RECORD_CONFIG
+
+    enabled: bool
+    """``False`` = 关掉：不进提示词，模型也不知道有它（文件不动）。"""
 
 
 class SkillDetailOut(SkillOut):

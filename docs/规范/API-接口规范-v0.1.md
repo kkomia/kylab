@@ -164,7 +164,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **186** 条端点。
+共 **187** 条端点。
 
 ### `api-keys`
 
@@ -442,6 +442,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `PATCH` | `/api/v1/skills/market/sources/{source_id}` | 启用 / 停用一个源 |
 | `POST` | `/api/v1/skills/market/upload` | 上传一个技能（文件夹或压缩包） |
 | `GET` | `/api/v1/skills/{name}` | 技能详情（含正文） |
+| `PUT` | `/api/v1/skills/{name}/enabled` | 开/关一条技能 |
 
 ### `stats`
 

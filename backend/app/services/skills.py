@@ -70,7 +70,7 @@ import re
 import shutil
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -93,6 +93,14 @@ logger = logging.getLogger(__name__)
 
 #: 技能文件名。大写是这一族的约定（Claude Code / QwenPaw 都是 `SKILL.md`）。
 SKILL_FILE = "SKILL.md"
+
+#: 单条技能的启停存在这个运行期配置里（D23）：**逗号分隔的 slug 列表**，关掉的在里面。
+#: 用 slug 而不是显示名：slug 是 `normalize_name` 归一化过的（只含安全字符），
+#: 逗号分隔因此不会有歧义，也不必为了一个列表去引 JSON。
+DISABLED_SKILLS_KEY = "chat.disabled_skills"
+
+#: 关掉一个技能之后它在列表里显示的理由（与"被安全扫描拦下"共用 `flagged` 那个字段）。
+DISABLED_REASON = "已被你关掉：它不会进提示词，模型也不会知道有它"
 
 #: "随代码发布的那批技能在哪"的环境变量。见模块头的三种来源。
 BUILTIN_DIR_ENV = "KYLAB_SKILLS_DIR"
@@ -310,6 +318,7 @@ class SkillService:
         builtin_dir: Path | None = None,
         agents_dir: Path | None = None,
         config_value: Callable[[str], str] | None = None,
+        config_set: Callable[[dict[str, str]], None] | None = None,
         binaries: Callable[[str], str | None] | None = None,
     ) -> None:
         #: 读一个运行期配置的值（``requires.config`` 用它判定）。
@@ -317,6 +326,10 @@ class SkillService:
         #: "不宣称自己能跑"，反过来的话，一个没接配置的部署会把技能摆在目录里，
         #: 模型照它做然后失败在最后一步。
         self._config_value = config_value
+        #: 写一个运行期配置的值（D23：单条技能的启停存在这里）。
+        #: **不给就是"关不掉"**：`set_enabled` 会如实抛错，而不是假装写成功。
+        #: 与 `config_value` 一样只注入 callable —— 技能服务不必认识设置服务本身。
+        self._config_set = config_set
         self._binaries = binaries or shutil.which
         self._data_dir = data_dir
         # 仓库自带的技能目录（三种来源见模块头）：显式注入 > KYLAB_SKILLS_DIR >
@@ -357,7 +370,48 @@ class SkillService:
                 # ``data/skills/x`` 不该让 ``~/.agents/skills`` 里那份好用的 x 消失。
                 if current is None or (current.discarded and not record.discarded):
                     found[record.slug] = record
-        return sorted(found.values(), key=lambda item: (item.source != "builtin", item.name))
+        records = sorted(found.values(), key=lambda item: (item.source != "builtin", item.name))
+        disabled = self._disabled()
+        if not disabled:
+            return records
+        # **用户关掉的 = 不进提示词**（D23）：折进 `used_by_prompt` 这个**已有**判据。
+        # 被丢弃的技能不动——它本来就不进，而且"没通过校验"比"你关掉了"更该先说。
+        return [
+            replace(record, used_by_prompt=False, flagged=(*record.flagged, DISABLED_REASON))
+            if record.slug in disabled and not record.discarded
+            else record
+            for record in records
+        ]
+
+    def _disabled(self) -> set[str]:
+        """用户关掉了哪些技能（D23）。**读不到就是空集**：没接配置的部署照旧全开。"""
+        if self._config_value is None:
+            return set()
+        raw = self._config_value(DISABLED_SKILLS_KEY) or ""
+        return {item.strip() for item in raw.split(",") if item.strip()}
+
+    def is_enabled(self, name: str) -> bool:
+        """这条技能没被用户关掉。"""
+        return normalize_name(name) not in self._disabled()
+
+    def set_enabled(self, name: str, enabled: bool) -> SkillRecord:
+        """开/关一条技能（D23）。
+
+        **关掉 = 不进提示词**（`used_by_prompt=False`），磁盘上的文件一个字都不动：
+        技能是磁盘上的东西，"关"这件事的语义只是"这一轮不给模型看"。
+        `used_by_prompt` 已经是提示词、`list_skills` 工具、能力页三处共用的判据，
+        所以折进它一处，三处自动一致。
+        """
+        record = self.get(name)
+        if self._config_set is None:
+            raise RuntimeError("这个部署没有接设置服务，技能启停改不了")
+        disabled = self._disabled()
+        if enabled:
+            disabled.discard(record.slug)
+        else:
+            disabled.add(record.slug)
+        self._config_set({DISABLED_SKILLS_KEY: ",".join(sorted(disabled))})
+        return self.get(name)
 
     def get(self, name: str) -> SkillRecord:
         wanted = normalize_name(name)

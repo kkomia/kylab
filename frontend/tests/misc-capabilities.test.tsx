@@ -40,6 +40,8 @@ vi.mock('@/api/capabilities', async (importOriginal) => {
     uploadSkill: vi.fn(),
     listAllMCPTools: vi.fn(),
     callMCPTool: vi.fn(),
+    // D23：单条技能的启停
+    setSkillEnabled: vi.fn(),
   }
 })
 
@@ -58,6 +60,7 @@ import {
   listMCPServers,
   listSkills,
   probeMCPServer,
+  setSkillEnabled,
   type MCPServer,
   type Skill,
 } from '@/api/capabilities'
@@ -84,6 +87,8 @@ function skill(overrides: Partial<Skill> = {}): Skill {
     used_by_prompt: true,
     flagged: [],
     discarded: false,
+    // D23：用户那颗开关的位置（与 `used_by_prompt` 分开——那个是"实际进没进"）
+    enabled: true,
     ...overrides,
   }
 }
@@ -432,5 +437,30 @@ describe('能力页', () => {
     expect(dialog.textContent).not.toContain('**')
     // 首行那句"这就是模型按需读进来的正文…"（解释性小字，U1）不再出现
     expect(dialog.textContent).not.toContain('frontmatter')
+  })
+
+  it('技能卡上有开关：点它调 setSkillEnabled（D23，走查实测原先一个开关都没有）', async () => {
+    listSkillsMock.mockResolvedValue({ items: [skill()], usable: 1 })
+    vi.mocked(setSkillEnabled).mockResolvedValue(skill({ enabled: false }))
+
+    renderMisc(<CapabilitiesPage />)
+
+    // 可访问名说清"按下去会怎样"，而不是只写一个「开关」
+    const toggle = await screen.findByRole('switch', { name: '关掉技能 pdf-report' })
+    await userEvent.click(toggle)
+
+    await waitFor(() => expect(setSkillEnabled).toHaveBeenCalledWith('pdf-report', false))
+  })
+
+  it('被丢弃的技能**不给**开关（按下去不会有反应，摆着更糟）', async () => {
+    listSkillsMock.mockResolvedValue({
+      items: [skill({ discarded: true, used_by_prompt: false, flagged: ['缺 description'] })],
+      usable: 0,
+    })
+
+    renderMisc(<CapabilitiesPage />)
+
+    expect(await screen.findByText('已丢弃')).toBeInTheDocument()
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument()
   })
 })
