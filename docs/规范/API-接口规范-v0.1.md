@@ -160,11 +160,32 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 那一轮已经跑完时，补发完会给一条带 `recovered` 与说明的 `done`（里面是完整答复）。
 不带 `conversation_id` 的调用没有可补发的地方，事件里不带 `seq`，仍然是断开即结束。
 
+### 1.9 对话分叉：「从这里重开」（D11）
+
+`POST /conversations/{id}/branch` 以**第 N 轮**为界，把到那一轮为止的历史**复制**进一条
+**新会话**，然后在它里面继续。请求体 `{"turn": N}`，`N` 是**第几个提问**（1 起数）；
+越界（`0` / 超过总轮数）返回 `422`，不夹到边界——静默夹过去会让调用方以为分叉点就是
+他点的那一处。原会话**一个字节都不动**（两条可以分别继续，也可以各自再分叉）。
+
+**带走的**：消息（含出处 / 步骤 / 思考快照）与它的事件日志（`seq` 是新会话自己的）、
+知识库范围 / 模型 / 思考偏好 / 工作区，以及**归属**（新会话归源会话的主人）；
+压缩摘要**只有它的覆盖标记落在这段历史里**才带（标记在 cut 之外说明那份摘要讲的是
+后面那些轮次）。
+
+**不带走文件区**（一条用户能感知到的边界，务必照实说）：
+
+- 产物记录与对象存储里的字节都不搬 → **分叉出来的会话历史正文在、文件区是空的**；
+- 因此用户消息上的**附件片也不会出现**——那份 key 指向源会话的记账，抄过去点开必然
+  404；而让两条会话共享同一个对象 key 更糟：删掉源会话会把分叉的文件一起带走，
+  "两条真的独立"就不成立了。
+
+新会话的标题是 `源标题（分支 · 第 N 轮）`；再分叉时标记换成**新的那一处**（不一路接下去）。
+
 ---
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **187** 条端点。
+共 **190** 条端点。
 
 ### `api-keys`
 
@@ -205,6 +226,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/chat/suggested-questions` | 推荐问题（取自入库时为各分段生成的问题） |
 | `GET` | `/api/v1/chat/turns/{conversation_id}/live` | 接上这条会话正在跑（或刚跑完）的那一轮 |
 | `GET` | `/api/v1/conversations/{conversation_id}/events` | 会话事件日志（只追加，按 seq 正序） |
+| `POST` | `/api/v1/conversations/{conversation_id}/messages/{message_id}/steps/{step_index}/retry` | 重跑这一轮里的某一步（工具级重试），再从那里接着答完 |
 | `POST` | `/api/v1/conversations/{conversation_id}/resume` | 续跑上一轮（工具循环没跑完时） |
 
 ### `chunks`
@@ -231,10 +253,12 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `PATCH` | `/api/v1/conversations/{conversation_id}` | 修改会话（标题 / 置顶） |
 | `GET` | `/api/v1/conversations/{conversation_id}/artifacts` | 这条会话产出的文件 |
 | `POST` | `/api/v1/conversations/{conversation_id}/artifacts/{artifact_id}/ingest` | 把一份产物存进知识库（显式动作） |
+| `POST` | `/api/v1/conversations/{conversation_id}/branch` | 从第 N 轮分叉出一条新会话（「从这里重开」） |
 | `GET` | `/api/v1/conversations/{conversation_id}/files` | 这条会话的文件区（会话文件 / 项目目录） |
 | `POST` | `/api/v1/conversations/{conversation_id}/files` | 往文件区里放一份文件 |
 | `GET` | `/api/v1/conversations/{conversation_id}/files/content` | 按签名取文件内容（预览 / 下载共用） |
 | `GET` | `/api/v1/conversations/{conversation_id}/files/download-url` | 签发文件链接（预览 / 下载共用） |
+| `POST` | `/api/v1/conversations/{conversation_id}/files/import` | 把项目目录里的一份文件取进本会话 |
 | `POST` | `/api/v1/conversations/{conversation_id}/rewind` | 回退最近 N 轮问答（「重新生成」用） |
 
 ### `data-sources`

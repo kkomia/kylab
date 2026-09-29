@@ -721,6 +721,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/messages/{message_id}/steps/{step_index}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 重跑这一轮里的某一步（工具级重试），再从那里接着答完
+         * @description **只重跑那一步**（D24，2026-09-28 走查），再接着把这一轮答完。
+         *
+         *     寻址用 ``(message_id, step_index)``：**步骤在库里是消息 ``steps`` 数组里的一个 dict、
+         *     没有自己的 id**，而这两个东西天然稳定——消息 id 是 ``msg_*``（``LastTurn.answer_id``
+         *     就拿得到），下标在数组里不动（重试是**就地替换**，见 ``_retry_steps``）。
+         *     一个存储字段都不用加。
+         *
+         *     三处与「续跑」（``/resume``）分开的判定，每一处都有理由：
+         *
+         *     1. **能不能重试看那一步自己**（见 ``_retry_target``）：非工具步骤、没跑完的、
+         *        还在等确认的、**已经成功的**、以及入参没存下来的，都 422 带一句话——
+         *        这些情况点了按钮也没有意义，说清楚比悄悄做别的事强；
+         *     2. **只有最后一轮那条回答能重试**：重试之后这一轮会重写一遍回答，
+         *        而更早的轮次已经被后面的回答接过去了（"接着答"会落在错的顺序上）；
+         *        **别人的会话 / 别人的消息一律 404**（不暴露存在性，与 ``_get_artifact`` 同一条）；
+         *     3. **执行不绕闸**：重跑走 ``ToolLoop.retry_step``，模式闸 / 权限档 / 计划门闸 /
+         *        审批（确认条）全在原处判定（见那个方法的说明）——历史里的一步不是后门。
+         *
+         *     旧回答**当场被顶替**（``drop_answer``）：与续跑同一条取舍——同一句提问底下不挂
+         *     两条回答。落库失败不影响已经付过费的回答（与 ``_resume_turn_events`` 同一处置）。
+         */
+        post: operations["retry_step_api_v1_conversations__conversation_id__messages__message_id__steps__step_index__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat/approvals/{approval_id}": {
         parameters: {
             query?: never;
@@ -1282,6 +1321,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/{conversation_id}/branch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 从第 N 轮分叉出一条新会话（「从这里重开」）
+         * @description 把到第 ``payload.turn`` 轮为止的历史复制进一条**新会话**；原会话一个字节不动。
+         *
+         *     与 ``rewind`` 的分工：那个是"删掉尾巴、把那句提问还给界面重发"（**改原会话**），
+         *     这个是"另起一条"（**原会话不动**）。用户不敢乱试的正是后者——一改就回不去了。
+         *
+         *     带走消息（含出处 / 步骤 / 思考快照）与它的事件日志，带走知识库范围 / 模型 /
+         *     思考偏好 / 工作区与**归属**；**不带走文件区**（产物记录与对象存储里的字节都不搬），
+         *     所以消息上的附件快照也不抄——那份 key 指向源会话的记账，抄过去点开必然 404。
+         *     这条边界写进《API 接口规范》§1.9。
+         */
+        post: operations["branch_conversation_api_v1_conversations__conversation_id__branch_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}/artifacts": {
         parameters: {
             query?: never;
@@ -1316,9 +1383,10 @@ export interface paths {
          * 这条会话的文件区（会话文件 / 项目目录）
          * @description 文件面板的内容。``scope`` 两档（v0.55）：
          *
-         *     - ``conversation``：**这条会话的文件**——上传的与产出的都在这儿，平铺一层。
-         *       上传一律落在这一档里并按会话记账，所以同一项目下不同会话的文件**分得开**
-         *       （改之前挂了工作区就把上传写进项目目录，于是整个项目共用一个池子）；
+         *     - ``conversation``：**这条会话的文件**——上传的与产出的都在这儿。上传一律落这一档
+         *       并按会话记账，所以同一项目下不同会话的文件**分得开**（改之前挂了工作区就把上传
+         *       写进项目目录，于是整个项目共用一个池子）。``path`` 从 D20 起也认：上传文件夹时
+         *       名字里带着相对路径（``图表/第二季度.png``），这一档因此与项目档一样能进子目录；
          *     - ``project``：会话挂着的**项目目录**（能进子目录）——那是用户自己的项目文件，
          *       只有挂了工作区才有这一档，没挂时服务层会明确说清。
          *
@@ -1337,6 +1405,31 @@ export interface paths {
          *     ``path`` 是旧接口留下的参数，收下但不用（见服务层说明）。
          */
         post: operations["upload_file_api_v1_conversations__conversation_id__files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/conversations/{conversation_id}/files/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 把项目目录里的一份文件取进本会话
+         * @description 「取进本会话」（D20）：把**这条会话自己的工作区**里的一份文件复制进文件区。
+         *
+         *     与「加入知识库」是两个目的地，别混：这一步进的是**这条会话的文件区**
+         *     （别的会话看不到、删会话一起清），进知识库那条走 ``artifacts/…/ingest``。
+         *     源路径只走工作区那道闸（绝对路径 / ``..`` / 符号链接出界都拒）；
+         *     返回的是**会话文件区里的那一行**（key 是新的产物 id），界面据此说清"现在它在会话里"。
+         */
+        post: operations["import_project_file_api_v1_conversations__conversation_id__files_import_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3655,6 +3748,25 @@ export interface components {
              */
             document_summary: string;
         };
+        /**
+         * ChatStepRetryIn
+         * @description 重跑某一步的请求体（D24，2026-09-28 走查）。
+         *
+         *     **只有一项，而且是"界面独有"的那一项**：这一步重跑之后要接着把这一轮答完，
+         *     而"这一轮都调了哪些技能"存在输入框的偏好里、本来就不入库（与 ``ChatResumeIn``
+         *     逐字同一条理由）。模型 / 思考档 / 库范围一律取**会话已存的**——重试一步是接着
+         *     同一轮做，不给它换模型的机会。
+         *
+         *     **要重跑哪一步不进这里**：它在路径上（``(message_id, step_index)``），
+         *     放请求体里就等于同一件事有两个入口，而"哪一步"是这条请求的唯一主语。
+         */
+        ChatStepRetryIn: {
+            /**
+             * Skill Names
+             * @description 本轮钉住的技能名（与提问时同一份，来自输入框「加号 → 技能」）
+             */
+            skill_names?: string[];
+        };
         /** ChunkList */
         ChunkList: {
             /** Items */
@@ -3942,6 +4054,18 @@ export interface components {
             /** Created At */
             created_at?: string | null;
         };
+        /**
+         * ConversationBranchIn
+         * @description **从这里重开**（D11）：从第 ``turn`` 轮分叉出一条新会话。
+         *
+         *     ``turn`` 是**第几个提问**（1 起数）。越界（0 / 超过总轮数）不夹到边界、
+         *     也不"取最后一条"，而是报错——静默夹过去会让用户以为分叉点就是他点的那一处，
+         *     而拿到的是另一段历史。``0`` 与小数由这一层的 ``ge=1`` 挡住（422）。
+         */
+        ConversationBranchIn: {
+            /** Turn */
+            turn: number;
+        };
         /** ConversationCreateIn */
         ConversationCreateIn: {
             /**
@@ -4020,6 +4144,18 @@ export interface components {
             message_count: number;
             /** Messages */
             messages?: components["schemas"]["ChatMessageOut"][];
+        };
+        /**
+         * ConversationFileImportIn
+         * @description 把**项目目录**里的一份文件取进这条会话的文件区（D20）。
+         *
+         *     只给一个相对路径（项目档那一行给的 key）：落点、名字都归服务端算——
+         *     界面不该也不能决定"复制到哪儿"。路径只走工作区那道闸（绝对路径 / ``..`` /
+         *     符号链接出界都拒），与读文件、预览同一条。
+         */
+        ConversationFileImportIn: {
+            /** Path */
+            path: string;
         };
         /** ConversationListOut */
         ConversationListOut: {
@@ -4656,7 +4792,7 @@ export interface components {
         };
         /**
          * FileListingOut
-         * @description 一层目录（临时区是唯一的一层）。
+         * @description 一层目录（v0.26；两档都能进子目录，见 ``mode``）。
          */
         FileListingOut: {
             /** Mode */
@@ -9460,6 +9596,43 @@ export interface operations {
             };
         };
     };
+    retry_step_api_v1_conversations__conversation_id__messages__message_id__steps__step_index__retry_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+                message_id: string;
+                step_index: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatStepRetryIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     decide_approval_api_v1_chat_approvals__approval_id__post: {
         parameters: {
             query?: never;
@@ -10447,6 +10620,43 @@ export interface operations {
             };
         };
     };
+    branch_conversation_api_v1_conversations__conversation_id__branch_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationBranchIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_artifacts_api_v1_conversations__conversation_id__artifacts_get: {
         parameters: {
             query?: never;
@@ -10483,9 +10693,9 @@ export interface operations {
     list_files_api_v1_conversations__conversation_id__files_get: {
         parameters: {
             query?: {
-                /** @description 子目录（只在 scope=project 时有意义） */
+                /** @description 要列的那一层子目录（两档都认） */
                 path?: string;
-                /** @description conversation（默认）= 这条会话的文件（上传 + 产出，平铺）；project = 会话挂着的项目目录（可进子目录） */
+                /** @description conversation（默认）= 这条会话的文件（上传 + 产出，可进子目录）；project = 会话挂着的项目目录（可进子目录） */
                 scope?: string;
             };
             header?: {
@@ -10535,6 +10745,43 @@ export interface operations {
         requestBody: {
             content: {
                 "multipart/form-data": components["schemas"]["Body_upload_file_api_v1_conversations__conversation_id__files_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FileEntryOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    import_project_file_api_v1_conversations__conversation_id__files_import_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationFileImportIn"];
             };
         };
         responses: {
