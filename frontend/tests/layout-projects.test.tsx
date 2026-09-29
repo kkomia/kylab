@@ -64,6 +64,7 @@ import {
 } from '@/api/workspaces'
 import { AppShell } from '@/features/layout/AppShell'
 import { useConversationStore } from '@/features/layout/conversations'
+import type { ConversationSummary } from '@/api/conversations'
 import { useWorkspaceStore } from '@/features/layout/workspaces'
 import { useSidebarStore } from '@/features/layout/useSidebar'
 import { resetAllShortcuts } from '@/features/misc/settings/useShortcuts'
@@ -268,5 +269,74 @@ describe('项目行菜单（重命名 / 归档 / 删除）', () => {
 
     await user.click(within(dialog).getByRole('button', { name: '删除' }))
     await waitFor(() => expect(deleteWorkspaceMock).toHaveBeenCalledWith('w1'))
+  })
+})
+
+/**
+ * 项目行点开要有东西（2026-09-29 走查）。
+ *
+ * 用户看到的是"项目行右边写着 1，点开却是空的"。成因**不在展开**：
+ * `aria-expanded` 正常翻转、state 也对，是**没有东西可展开**——子项来自那份
+ * "最新 50 条、不带过滤"的扁平清单按 `workspace_id` 分组，而一个久没动过的项目
+ * 在那 50 条里一条都没有；计数则来自 `workspaces.conversation_count`（是对的）。
+ * 两个数据源，于是"数字有、内容是空"。
+ *
+ * 这里钉住的是**补齐之后**的行为：点项目行要能看到 ≥1 条子项。
+ */
+describe('项目行展开要有子项（按项目补齐）', () => {
+  /** 一条会话摘要（只列用例关心的字段，其余给默认值）。 */
+  function conversation(overrides: Partial<ConversationSummary> = {}): ConversationSummary {
+    return {
+      id: 'c1',
+      title: '会话 A',
+      kb_ids: [],
+      model_pk: null,
+      workspace_id: null,
+      thinking: null,
+      thinking_effort: null,
+      pinned: false,
+      archived_at: null,
+      preview: '',
+      created_at: null,
+      updated_at: new Date().toISOString(),
+      message_count: 2,
+      ...overrides,
+    }
+  }
+
+  it('清单里没有、但计数是 1 的项目，点开后要出现那一条会话', async () => {
+    const user = userEvent.setup()
+    const item = workspace({ id: 'w1', name: '医学知识库', conversation_count: 1 })
+    // 首屏那份清单（不带过滤）里**没有**这个项目的会话——这就是实测现场
+    listConversationsMock.mockImplementation(async (_limit, _q, filter) =>
+      filter?.workspaceId === 'w1'
+        ? {
+            items: [
+              conversation({
+                id: 'c1',
+                title: '搭一个知识库要几步',
+                workspace_id: 'w1',
+              }),
+            ],
+          }
+        : { items: [] },
+    )
+    listWorkspacesMock.mockImplementation(async (archived = false) => ({
+      items: archived ? [] : [item],
+    }))
+    renderShell()
+
+    const sidebar = screen.getByRole('complementary', { name: '侧栏' })
+    const row = await within(sidebar).findByRole('button', { name: /^医学知识库/ })
+    await user.click(row)
+
+    // 点开之后：≥1 条子项在项目行底下（修复前这里永远是 0 条）
+    expect(await within(sidebar).findByText('搭一个知识库要几步')).toBeInTheDocument()
+    expect(row).toHaveAttribute('aria-expanded', 'true')
+    // 补齐是在**首屏**就做了的（所以点开时不会先闪一下空白）：
+    // 这一条请求就是"按项目补"的那次，**不是**把分页调大
+    await waitFor(() =>
+      expect(listConversationsMock).toHaveBeenCalledWith(50, undefined, { workspaceId: 'w1' }),
+    )
   })
 })

@@ -116,7 +116,7 @@ import { AccountMenu } from './AccountMenu'
 import { ConversationRowMenu } from './ConversationRowMenu'
 import { WorkspaceRowMenu } from './WorkspaceRowMenu'
 import { IconChatNew, IconSidebar } from './icons'
-import { useConversationStore } from './conversations'
+import { sortConversations, useConversationStore } from './conversations'
 import { ensureWorkspacesLoaded, useWorkspaceStore } from './workspaces'
 import { useAutoHideScrollbar } from './useAutoHideScrollbar'
 import { useSidebar } from './useSidebar'
@@ -368,6 +368,9 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const conversationId = useMatch('/chat/:conversationId')?.params.conversationId ?? null
   const conversations = useConversationStore((state) => state.items)
   const loadConversations = useConversationStore((state) => state.load)
+  const loadWorkspaceConversations = useConversationStore((state) => state.loadWorkspace)
+  /** 按项目补齐的分片（`workspaceId -> 清单`），见 store 里那条说明。 */
+  const workspaceConversations = useConversationStore((state) => state.workspaceItems)
   const workspaces = useWorkspaceStore((state) => state.items)
   const archivedProjects = useWorkspaceStore((state) => state.archived)
   const loadArchivedProjects = useWorkspaceStore((state) => state.loadArchived)
@@ -409,6 +412,30 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   useEffect(() => {
     void loadArchivedProjects()
   }, [loadArchivedProjects])
+
+  /**
+   * **按项目补齐会话清单**（2026-09-29 走查：项目行有计数、点开却是空的）。
+   *
+   * 计数来自 `workspaces.conversation_count`（对的），而子项来自那份"最新 50 条"的
+   * 扁平清单按 `workspace_id` 分组（可能一条都没有）——两个数据源，于是"1"点开是空。
+   * 这里对**计数 > 已加载条数**的项目各补一次（`workspace_id` 过滤后端本来就支持，
+   * 见 `loadWorkspace`），首屏就补，所以用户点开时子项**已经在了**——不会再有
+   * "点开要先等一个请求"的空窗。项目通常个位数，多这几条读请求可以接受；
+   * 补过的项目在 store 里存成**分片**，重复渲染不会再拉。
+   *
+   * **不需要等首屏那份清单**：分片与 `items` 分开存，`load()` 整份替换也盖不掉它
+   * （先前并进 `items` 的那版就是这么被后到的 `load()` 盖掉、真链路上复发的）。
+   */
+  useEffect(() => {
+    for (const workspace of workspaces) {
+      const loaded =
+        conversations.filter((item) => item.workspace_id === workspace.id).length +
+        (workspaceConversations[workspace.id]?.length ?? 0)
+      if (workspace.conversation_count > loaded) {
+        void loadWorkspaceConversations(workspace.id)
+      }
+    }
+  }, [workspaces, conversations, workspaceConversations, loadWorkspaceConversations])
 
   /**
    * 全局快捷键（P2-1，照 ZCode 的注册表）。
@@ -457,17 +484,27 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
     location.pathname.startsWith('/kb/')
 
   // 会话只有**一份**平铺清单，分组在这里做（两处各存一份的话，
-  // "把某条会话挪进工作区"就得同时改两个地方）
+  // "把某条会话挪进工作区"就得同时改两个地方）。
+  //
+  // 再加**按项目补齐的分片**（见上面那条 effect）：首屏那份清单只取最新 50 条，
+  // 久没动的项目可能一条都不在里面——只按它分组就会出现"计数写着 1、点开是空"。
+  // 两处按 id 去重（同一条会话可能既在平铺清单里、也在分片里）。
   const byWorkspace = useMemo(() => {
     const groups = new Map<string, ConversationSummary[]>()
-    for (const item of conversations) {
-      if (!item.workspace_id) continue
+    const seen = new Set<string>()
+    const push = (item: ConversationSummary): void => {
+      if (!item.workspace_id || seen.has(item.id)) return
+      seen.add(item.id)
       const list = groups.get(item.workspace_id) ?? []
       list.push(item)
       groups.set(item.workspace_id, list)
     }
+    for (const item of conversations) push(item)
+    for (const slice of Object.values(workspaceConversations)) for (const item of slice) push(item)
+    // 与后端同一口径（置顶优先、其次最近更新）：分片并进来之后不重排就乱了
+    for (const [id, list] of groups) groups.set(id, sortConversations(list))
     return groups
-  }, [conversations])
+  }, [conversations, workspaceConversations])
 
   /**
    * 没归项目的会话（对话那一节铺的就是它们）。

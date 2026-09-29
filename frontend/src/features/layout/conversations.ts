@@ -65,7 +65,23 @@ interface ConversationState {
   loaded: boolean
   /** 当前清单对应的搜索词（空串 = 未筛选）。 */
   query: string
+  /**
+   * **按项目补齐**的那些分片：`workspaceId -> 那一条项目的会话清单`。
+   *
+   * 侧栏的项目节要按 `workspace_id` 分组，而首屏那份清单是"最新 50 条、不带过滤"——
+   * 一个久没动过的项目在那 50 条里可能**一条都没有**，于是"项目行右边写着 1、
+   * 点开却是空的"（2026-09-29 走查）。
+   *
+   * **为什么单独存分片、而不是并进 `items`**：`load()` 是"整份替换"，
+   * 而它和补齐是两个并发请求——并进 `items` 的话，随后到达的那次 `load()`
+   * （挂载两次、或用户点了刷新）会把补齐的结果原样盖掉，症状一模一样复发
+   * （真链路上实测过）。分开存之后，`load()` 怎么替换都动不了分片。
+   * 分片里有键 = 这个项目已经补过，别重复拉。
+   */
+  workspaceItems: Record<string, ConversationSummary[]>
   load: (q?: string) => Promise<void>
+  /** 按项目补齐清单（后端支持 `workspace_id` 过滤）。见 `workspaceItems`。 */
+  loadWorkspace: (workspaceId: string) => Promise<void>
   upsert: (item: ConversationSummary) => void
   loadDetailList: (options?: HistoryQuery) => Promise<void>
   rename: (id: string, title: string) => Promise<void>
@@ -83,7 +99,14 @@ const EMPTY = {
   error: '',
   loaded: false,
   query: '',
+  workspaceItems: {} as Record<string, ConversationSummary[]>,
 }
+
+/**
+ * 正在补的项目（**模块级**，不进 state）：同一项目并发补两次会各插一份清单，
+ * 而 `upsert` 的去重是按 id 的，插两次只是白跑一趟请求——不如在这里挡住。
+ */
+const workspaceInFlight = new Set<string>()
 
 export const useConversationStore = create<ConversationState>((set, get) => ({
   ...EMPTY,
@@ -107,6 +130,33 @@ export const useConversationStore = create<ConversationState>((set, get) => ({
       set({ error: error instanceof Error ? error.message : '会话列表加载失败' })
     } finally {
       set({ loading: false })
+    }
+  },
+
+  /**
+   * 按项目补齐清单（`workspace_id` 过滤**后端本来就支持**，见 `listConversations`）。
+   *
+   * 起因（2026-09-29 走查）：侧栏的项目节是在前端把这份"最新 50 条"按 `workspace_id`
+   * 分组得来的，而项目行右边的计数来自 `workspaces` 接口的 `conversation_count`——
+   * **两个数据源**。一个很久没动过的项目在那 50 条里一条都没有，于是"数字写着 1、
+   * 点开却是空的"。这里按项目补一次，把两边对齐（**不是**把分页调大：
+   * 那只是把同一个坑推到更远的地方，而且"取最新 50 条"这条语义会废掉）。
+   *
+   * 失败**不标记已补**：网络抖一下就当补齐过的话，用户点开永远还是空的；
+   * 不标记则下一次渲染会再试一次（请求是幂等的读）。
+   */
+  loadWorkspace: async (workspaceId) => {
+    if (get().workspaceItems[workspaceId] || workspaceInFlight.has(workspaceId)) return
+    workspaceInFlight.add(workspaceId)
+    try {
+      const result = await listConversations(CONVERSATION_PAGE, undefined, { workspaceId })
+      // **只写分片，不碰 `items`**：`load()` 随时可能整份替换，而它与这次补齐是并发的
+      // （见 `workspaceItems` 的说明）——碰 `items` 就会被后到的那次替换盖掉
+      set({ workspaceItems: { ...get().workspaceItems, [workspaceId]: result.items } })
+    } catch {
+      // 与 `load` 同一条：侧栏不该因为一次读失败弹红字，留空下次再试
+    } finally {
+      workspaceInFlight.delete(workspaceId)
     }
   },
 
