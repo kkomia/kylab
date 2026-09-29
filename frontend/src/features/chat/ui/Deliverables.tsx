@@ -10,8 +10,10 @@
  * 过程面板里那一步照旧写着「导出文档 · 已导出」，中间状态并不丢。
  */
 import { formatBytes } from '@/lib/format'
+import { downloadFile } from '@/api/conversations'
 import type { ChatArtifact } from '@/api/chat'
 
+import { notifyError } from '../runtime/notify'
 import { useChat, type ChatApi } from '../runtime/ChatProvider'
 
 /**
@@ -27,6 +29,21 @@ import { useChat, type ChatApi } from '../runtime/ChatProvider'
  */
 function openArtifact(chat: ChatApi, file: ChatArtifact): void {
   chat.openFiles({ key: file.artifact_id, name: file.name, kind: file.format })
+}
+
+/**
+ * 下载这一份产物（D18）：换一条签名链接、点一下临时 `<a>`。
+ *
+ * 与文件抽屉里那个 `download(entry)` 是**同一条路**（`api/conversations.downloadFile`），
+ * 连失败处置也照抄：`notifyError` 如实说。产物在文件区的 key 就是 `artifact_id`，
+ * 所以这里不需要另给名字。
+ */
+async function downloadArtifact(chat: ChatApi, file: ChatArtifact): Promise<void> {
+  try {
+    await downloadFile(chat.conversationId, file.artifact_id)
+  } catch (cause) {
+    notifyError(cause)
+  }
 }
 
 export function Deliverables({ files }: { files: ChatArtifact[] }) {
@@ -65,6 +82,19 @@ export function Deliverables({ files }: { files: ChatArtifact[] }) {
             onClick={() => openArtifact(chat, file)}
           >
             预览
+          </button>
+          {/*
+            **直接下载**（D18，2026-09-28 走查）：卡片上原先只有「预览」与「存进知识库」，
+            想留一份到本地得先开文件抽屉再找同一条。签名链接与"换链接再点一下"那套
+            早就在 `api/conversations.ts` 里（文件抽屉走的就是它），这里只是把入口挪到
+            用户真正看着那份文件的地方。失败照旧如实报（与文件抽屉同一句处理）。
+          */}
+          <button
+            type="button"
+            className="shrink-0 cursor-pointer text-[length:var(--text-micro-size)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+            onClick={() => void downloadArtifact(chat, file)}
+          >
+            下载
           </button>
           {/*
             「存进知识库」**一定要经过那一步弹窗**，不让服务端替用户挑库：

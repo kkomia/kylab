@@ -1265,6 +1265,50 @@ describe('出处列表与交付物（§6 的两条）', () => {
     )
   })
 
+  it('产物卡片的「下载」直接换签名链接下载（D18，2026-09-28 走查）', async () => {
+    // 病灶：卡片上原先只有「预览」与「存进知识库」，想留一份到本地得先开文件抽屉再找同一条；
+    // 而签名链接那套（`getFileUrl` → 临时 `<a>`）早就在 `api/conversations.ts` 里。
+    const { downloadFile } = await import('@/api/conversations')
+    const artifact = {
+      artifact_id: 'art1',
+      name: '季度报告.pdf',
+      size_bytes: 2048,
+      format: 'pdf',
+      storage: 'object',
+      where: '本会话',
+      path: '',
+      knowledge_base_id: '',
+      document_id: '',
+    }
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([
+        stored('user', '导出一下'),
+        stored('assistant', '已导出。', {
+          steps: [
+            {
+              phase: 'tool',
+              label: '导出文档',
+              detail: '已导出',
+              status: 'done',
+              tool: 'export_document',
+              kind: 'write',
+              artifacts: [artifact],
+            },
+          ],
+        }),
+      ]),
+    )
+
+    renderPage()
+
+    const user = userEvent.setup()
+    // 下载按钮与「预览」并排（用户看着那份文件的地方就是入口）
+    await user.click(await screen.findByRole('button', { name: '下载' }))
+
+    // 产物在文件区的 key 就是 `artifact_id`：调用方不必另给名字
+    await waitFor(() => expect(downloadFile).toHaveBeenCalledWith('c1', 'art1'))
+  })
+
   it('产物卡片的「预览」开的是**文件区抽屉**，直落这一份（不再开新标签页）', async () => {
     const { getFileUrl, listFiles } = await import('@/api/conversations')
     // 产物在临时区里的 key 就是 `artifact_id`——**没有后缀**，所以抽屉要直落它，
