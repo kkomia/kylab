@@ -23,7 +23,14 @@ from pathlib import Path
 # 挂的日志会落到 ``<仓库根>/data/logs``，多跑几次就在仓库里长出一个数据目录
 # （历史上那份 ``data/kylab.db`` 就是这么来的，直到存储换 PostgreSQL 才成死文件）。
 # 本脚本只读 OpenAPI，不需要真实数据目录，显式指到临时目录即可。
-os.environ["KYLAB_DATA_DIR"] = tempfile.mkdtemp(prefix="kylab-openapi-")
+#
+# **`dir=` 必须显式给**（2026-09-29 整改）：本机沙箱会**拒写 `%TEMP%`**，而
+# `tempfile` 在那种情况下会**静默回退到 cwd** ✗ —— 于是每跑一次本脚本，仓库根就多一个
+# `kylab-openapi-*`（实测积累过 114 个目录 / 124.2 MB）。指到仓库内的 `.tmp/` 之后，
+# 回退路径也落在被忽略的目录里（`.tmp/` 见 `.gitignore` 与 `.tmp/README.md`）。
+_TMP_DIR = Path(__file__).resolve().parents[1] / ".tmp"
+_TMP_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["KYLAB_DATA_DIR"] = tempfile.mkdtemp(prefix="kylab-openapi-", dir=_TMP_DIR)
 
 ROOT = Path(__file__).resolve().parents[1]
 

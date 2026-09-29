@@ -14,7 +14,10 @@
     3. 不裁剪 backend\app 的源码（整份拷；少拷一个文件就是一个只有上线才发现的缺件）。
 
 .PARAMETER OutDir
-    产物目录（默认 dist\sidecar-runtime）。**会被清空重建**。不要指向仓库里已存在的目录。
+    产物目录（默认 build\sidecar-runtime）。**会被清空重建**。不要指向仓库里已存在的目录。
+    ⚠️ 落在 `build/` 而不是 `dist/`（2026-09-29 搬家）：`build/` 与 `dist/` 都在 .gitignore 里，
+    但 `dist/` 这个名字在前后端工具链里到处都是（`frontend/dist/` 是前端产物），
+    仓库根再放一份"边车运行时"容易看错；`build/` 只放我们自己造的构建物，一眼能对上。
 
 .PARAMETER PythonExe
     用来建 venv 的解释器（默认用 `python`）。必须带 pip（`python -m venv` 会用 ensurepip 装）。
@@ -31,7 +34,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$OutDir = 'dist\sidecar-runtime',
+    [string]$OutDir = 'build\sidecar-runtime',
     [string]$PythonExe = '',
     [string]$EmbeddedPython = '',
     [string]$IndexUrl = '',
@@ -115,19 +118,35 @@ if (-not (Test-Path -LiteralPath $requirements)) {
 
 Write-Host "仓库根：$repoRoot"
 
+# ------------------------------------------------------------------ 临时目录：钉到仓库内
+#
+# **必须在任何 pip 调用之前**：本机沙箱会**拒写 `%TEMP%`** ✗，而 pip 的构建/解包目录
+# 只看 `TEMP`/`TMP` —— 写不进去时它会**退化成用当前目录**，于是每跑一次本脚本，
+# 仓库根就多几个 `pip-build-env-*` / `pip-unpack-*` / `pip-install-*`
+# （2026-09-29 实测：这类目录积累过 114 个 / 124.2 MB，`git status` 全是未跟踪垃圾）。
+# 指到仓库内的 `.tmp/` 之后，就算环境再变，临时文件也落在被忽略的目录里。
+$tmpDir = Join-Path $repoRoot '.tmp'
+if (-not (Test-Path -LiteralPath $tmpDir)) {
+    New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null
+}
+$env:TEMP = $tmpDir
+$env:TMP = $tmpDir
+$env:TMPDIR = $tmpDir
+Write-Host "临时目录：$tmpDir（pip 的构建与解包目录都落这儿）"
+
 # ------------------------------------------------------------------ 红线检查
 $resolvedOut = [System.IO.Path]::GetFullPath((Join-Path $repoRoot $OutDir))
 $devVenv = Join-Path $backendDir '.venv'
 $appSource = Join-Path $backendDir 'app'
-$repoDist = Join-Path $repoRoot 'dist'
+$repoBuild = Join-Path $repoRoot 'build'
 
 foreach ($forbidden in @($devVenv, $appSource, $backendDir)) {
     if ($resolvedOut.StartsWith($forbidden, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "产物目录不能在 $forbidden 里面（红线 1：绝不打包 dev venv / 源码目录）"
     }
 }
-if (-not $resolvedOut.StartsWith($repoDist, [System.StringComparison]::OrdinalIgnoreCase)) {
-    Write-Host "注意：产物目录不在 dist\ 下（$resolvedOut）—— 只要不是 dev venv 就不拦。" -ForegroundColor Yellow
+if (-not $resolvedOut.StartsWith($repoBuild, [System.StringComparison]::OrdinalIgnoreCase)) {
+    Write-Host "注意：产物目录不在 build\ 下（$resolvedOut）—— 只要不是 dev venv 就不拦。" -ForegroundColor Yellow
 }
 
 # ------------------------------------------------------------------ 解释器

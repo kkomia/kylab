@@ -37,6 +37,30 @@ __all__ = ["MIN_TERM_CHARS", "content_terms", "term_coverage"]
 _JIEBA: Any = None
 
 
+def _jieba_cache_file() -> str | None:
+    """jieba 的缓存该落在**数据目录**，而不是进程的 cwd。
+
+    为什么必须显式设：jieba 的 ``cache_file`` 默认是 ``None``，此时它用
+    ``os.path.join(tmp_dir or tempfile.gettempdir(), "jieba.cache")`` ——
+    而本机沙箱**拒写 %TEMP%**，``tempfile.gettempdir()`` 会静默回退到 **cwd**，
+    于是跑一次检索用例，仓库根就冒出一个 ``jieba.cache``（约 9 MB，实测过）。
+
+    **行为不变**：缓存里只是前缀词典的概率表，谁写都一样 —— 切词结果一字不差，
+    只是它不再落在 cwd。取不到数据目录时返回 ``None``（退回 jieba 自己的默认）：
+    别为了一个缓存路径让切词挂掉。
+    """
+    try:
+        from pathlib import Path
+
+        from app.core.config import get_settings
+
+        data_dir = Path(get_settings().data_dir)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return str(data_dir / "jieba.cache")
+    except Exception:
+        return None
+
+
 def _jieba() -> Any:
     """第一次用到时才导入 jieba（模块级导入会让**客户端运行时**凭空多背 40.9 MB ✗）。
 
@@ -52,6 +76,11 @@ def _jieba() -> Any:
     global _JIEBA
     if _JIEBA is None:
         import jieba
+
+        # 缓存落哪儿：**数据目录**，不是 cwd（见 `_jieba_cache_file()` 的说明）
+        cache = _jieba_cache_file()
+        if cache:
+            jieba.dt.cache_file = cache
 
         _JIEBA = jieba
     return _JIEBA

@@ -297,7 +297,7 @@ pub fn python_exe(runtime_root: &Path) -> Result<PathBuf, String> {
         return Ok(candidate);
     }
     Err(format!(
-        "边车运行时不在包里：{}（出包前先跑 scripts/build-sidecar-runtime.ps1，它会生成 dist/sidecar-runtime）",
+        "边车运行时不在包里：{}（出包前先跑 scripts/build-sidecar-runtime.ps1，它会生成 build/sidecar-runtime）",
         candidate.display()
     ))
 }
@@ -307,13 +307,16 @@ pub fn bundled_runtime(resource_dir: &Path) -> PathBuf {
     resource_dir.join(RUNTIME_DIRNAME)
 }
 
-/// 开发时的运行时目录：仓库根的 `dist/sidecar-runtime`
+/// 开发时的运行时目录：仓库根的 `build/sidecar-runtime`
 /// （`cargo run` 时 `resource_dir()` 指向 target 目录，里面没有它）。
+///
+/// 落在 `build/` 而不是 `dist/`（2026-09-29 搬家）：`dist/` 这个名字在前后端工具链里
+/// 到处都是（`frontend/dist/` 是前端产物），仓库根再放一份边车运行时容易看错。
 pub fn dev_runtime() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
-        .join("dist")
+        .join("build")
         .join(RUNTIME_DIRNAME)
 }
 

@@ -72,18 +72,20 @@ cargo run --release    # 快得多，推荐
 
 ### 出包前先造运行时
 
-**`dist/` 被 gitignore**，所以打包前必须先造出边车运行时，否则包里没有它、
+**`build/` 被 gitignore**，所以打包前必须先造出边车运行时，否则包里没有它、
 装出来的壳连不上边车：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/build-sidecar-runtime.ps1 -Offline
 ```
 
-- `tauri.conf.json` 的 `bundle.resources` 把 `../../dist/sidecar-runtime` 映射成包内
+- `tauri.conf.json` 的 `bundle.resources` 把 `../../build/sidecar-runtime` 映射成包内
   `sidecar-runtime\`；
 - **绿色版**（`target/release/kylab-desktop.exe`）要**连 `sidecar-runtime\` 一起拷**——
   单拷 exe 的话界面能用、对话会回退到服务器那条链；
-- 开发态（`cargo run`）没有包内资源目录，壳会退到仓库根的 `dist/sidecar-runtime`（日志里会写用的是哪一份）。
+- 开发态（`cargo run`）没有包内资源目录，壳会退到仓库根的 `build/sidecar-runtime`（日志里会写用的是哪一份）。
+- 为什么是 `build/` 而不是 `dist/`（2026-09-29 搬家）：`dist/` 这个名字在前后端工具链里到处都是
+  （`frontend/dist/` 是前端产物），仓库根再放一份边车运行时容易看错。
 
 ### 已知限制（v0.1）
 
@@ -115,7 +117,7 @@ pnpm dlx @tauri-apps/cli@latest build      # 或者 npx @tauri-apps/cli@latest b
 | `src-tauri/target/release/bundle/msi/KYLAB_0.1.0_x64_zh-CN.msi` | 12.17 MiB | 给要批量部署 / 走组策略的场合 |
 
 比"没装边车"的那一版大了约 3.5–4.8 MiB：包里多了一份**边车运行时**
-（`dist/sidecar-runtime`，实测 16.8 MB / 975 个文件，压缩后约 8–9 MiB）——
+（`build/sidecar-runtime`，出厂 16.8 MB / 975 个文件，压缩后约 8–9 MiB）——
 这是"对话在本机跑"必须付的那份体积。
 
 三处刻意的设置：
