@@ -17,13 +17,14 @@ import {
   thinkingParagraphs,
   type TraceStep,
 } from '@/features/chat/model/turns'
+import { webSitesOfSteps } from '@/features/chat/model/webSites'
 import { formatCount } from '@/lib/format'
 
 /** 没有名字表时用的空表（**常量**：`) => new Map()` 会每次渲染换一个引用）。 */
 const EMPTY_NAMES: ReadonlyMap<string, string> = new Map()
 
 import { LinkText } from './LinkText'
-import { StepIcon, StepSpinner } from './stepIcons'
+import { StepIcon, StepOutcomeBadge, StepSpinner, type StepOutcome } from './stepIcons'
 import {
   STEP_BODY,
   STEP_DETAIL,
@@ -41,6 +42,7 @@ import {
   RAW_NOTE,
   stepIconClass,
 } from './traceStyles'
+import { WebSiteList } from './WebSiteList'
 
 /**
  * 结论那一行是**原始 JSON** 吗（v0.26）。
@@ -78,6 +80,23 @@ export function isRefusalDetail(detail: string): boolean {
 }
 
 /**
+ * 这一步的**结果类别**里"要人看一眼"的那三档（§12.334 第二节要的那枚状态灯）。
+ *
+ * **判据只写在这里**：`outcome` 是后端给的结构化事实（`ToolOutcome.outcome`），
+ * 三个取值之外的（`""` = 正常、老快照的 `undefined`、将来多出来的档）一律当
+ * "**没有状态位**"——不猜、也不拿句式去补。给状态灯用的（`StepOutcomeBadge`）
+ * 与"必须看得见"用的（`forceExpand`）都问它，两处不会再分头判一次。
+ *
+ * 为什么老快照（`outcome` 缺省）不认句式：句式只说得清"这一行不是成功"，
+ * 说不清它是被拦下、在等确认还是自己出错，而三枚状态灯**互斥**——
+ * 硬挑一枚出来就是把一个猜的结论画成事实。
+ */
+export function stepOutcome(step: { outcome?: string }): StepOutcome | undefined {
+  const value = step.outcome
+  return value === 'failed' || value === 'blocked' || value === 'awaiting' ? value : undefined
+}
+
+/**
  * 这一步**必须看得见**吗——不成功的那几档一律强制展开。
  *
  * 这是"什么必须摊在用户眼前"的**唯一判据**：单步那一行（本文件）、组那一行
@@ -103,11 +122,25 @@ export function isRefusalDetail(detail: string): boolean {
  *    整块面板锁住）。两层判据不同不是重复，而是两种动作的代价不同。
  */
 export function forceExpand(step: { outcome?: string; detail: string }): boolean {
-  // **字段在就听它的**（`""` = 正常也是它的结论）；字段不在（老快照）才回退认句式
-  if (step.outcome !== undefined) {
-    return step.outcome === 'blocked' || step.outcome === 'awaiting' || step.outcome === 'failed'
-  }
+  // **字段在就听它的**（`""` = 正常也是它的结论）；字段不在（老快照）才回退认句式。
+  // 三档的判据在 `stepOutcome` 那一处，这里只问"有没有状态位"
+  if (step.outcome !== undefined) return stepOutcome(step) !== undefined
   return isRefusalDetail(step.detail)
+}
+
+/**
+ * 一组（同类工具并成的那一行）要挂哪一枚状态灯：**组内第一条带状态位的调用**。
+ *
+ * 与组行的图标取组内第一步（`turns.groupBlock` 的 `icon: group[0].icon`）同一个口径——
+ * 组行代表的是"这一组里最靠前的那次异常"，而不是另排一套优先级
+ * （三档谁更严重是主观的：等确认要用户动手、失败要用户排查，硬排会变成新的判断）。
+ */
+export function stepsOutcome(steps: readonly { outcome?: string }[]): StepOutcome | undefined {
+  for (const step of steps) {
+    const outcome = stepOutcome(step)
+    if (outcome) return outcome
+  }
+  return undefined
 }
 
 /**
@@ -206,6 +239,21 @@ export function TraceStepRow({
    */
   const running = isRunningStep(step)
 
+  /**
+   * 这一步的结果状态（见 `stepOutcome`）。**同一格只放一枚**：状态灯压过转圈——
+   * 「不是成功」比「还在跑」重要，而两者在真实数据里也不会同时出现
+   * （后端先发 `running` 占位、跑完才发带 `outcome` 的那一条）。
+   */
+  const outcome = stepOutcome(step)
+
+  /**
+   * 这一步查了哪些站点（§12.334 第二节，见 `model/webSites`）。
+   *
+   * 只有**父行**画：组那一行已经把这一组查过的站点汇总了（见 `TracePanel`），
+   * 子行再逐条列一遍就是同一件事说两遍（"合并的是入口，不是信息"）。
+   */
+  const sites = child ? null : webSitesOfSteps([step])
+
   return (
     <li
       // 子行换的是**外壳的行内间距**，不是再补一层左内边距：两笔叠加才是缩进过深的原因
@@ -213,6 +261,8 @@ export function TraceStepRow({
       data-kind={step.kind ?? step.icon}
       // "还在跑"在这一行上留一笔：外观上靠那枚转圈，用例与无障碍靠它
       data-running={running ? '' : undefined}
+      // "不是成功"同上：外观上靠右下角那枚状态灯，用例与无障碍靠它
+      data-outcome={outcome}
     >
       {child ? (
         <span
@@ -221,8 +271,8 @@ export function TraceStepRow({
         />
       ) : (
         <span className={stepIconClass(step.icon)}>
-          <StepIcon icon={step.icon} />
-          {running ? <StepSpinner /> : null}
+          <StepIcon icon={step.icon} tool={step.tool} label={step.label} />
+          {outcome ? <StepOutcomeBadge outcome={outcome} /> : running ? <StepSpinner /> : null}
         </span>
       )}
 
@@ -249,6 +299,14 @@ export function TraceStepRow({
           ) : (
             <p className={STEP_LABEL}>{step.label}</p>
           )}
+
+          {/*
+            联网那一步"查了哪些站点"（§12.334 第二节）：排在标签与结论之间，
+            位置与参照图那一行的「标签 · 具体对象」一致——先看出它在哪儿翻，
+            再看它翻回了什么（结论在下一行）。非 web 步骤、以及没带回网址的那些，
+            这里什么都不画（判据在 `model/webSites`，不在这里另写一遍）。
+          */}
+          {sites ? <WebSiteList sites={sites.sites} more={sites.more} /> : null}
 
           {step.detail && !detailIsRawJson(step.detail) ? (
             <LinkText

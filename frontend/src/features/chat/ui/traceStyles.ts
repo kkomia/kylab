@@ -129,6 +129,31 @@ export const THINK_PARAGRAPH = `block min-w-0 text-[length:var(--text-micro-size
 export const RAW_NOTE =
   'ml-[var(--space-2)] text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]'
 
+/**
+ * 「这一步查了哪些站点」那一行（v0.56，§12.334 第二节）。
+ *
+ * 为什么是**行内一排小牌子**而不是一行一个：用户要的是"扫一眼知道在查哪些常见的网页"，
+ * 一排紧凑的牌子才扫得动；字号与标签同级（`--text-micro-size`），不抢标签的位置。
+ * 牌子本身是**本机站点表**给的（不拉 favicon，理由见 `model/webSites.ts`）。
+ *
+ * 尺寸用 em（跟着这一行自己的字号走），颜色与圆角全部取令牌
+ * ——与这一族其余类名同一条纪律。
+ */
+export const SITE_STRIP =
+  'mt-[var(--space-1)] flex flex-wrap items-center gap-x-[var(--space-2)] gap-y-[var(--space-1)]'
+
+export const SITE_CHIP =
+  'inline-flex items-center gap-[var(--space-1)] text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]'
+
+/** 那枚"牌子"：一枚字母/字（认出来的站点）或一枚通用地球（没认出来的）。 */
+export const SITE_TILE =
+  'inline-flex h-[1.2em] min-w-[1.2em] items-center justify-center rounded-[var(--radius-control)] ' +
+  'border border-[var(--border)] bg-[var(--bg-subtle)] px-[0.15em] text-[0.82em] leading-none ' +
+  'text-[var(--text-secondary)]'
+
+/** 多出来的站点收成 `+N`。 */
+export const SITE_MORE = 'text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]'
+
 export const RAW_MORE =
   'mt-[var(--space-1)] p-0 text-[length:var(--text-micro-size)] text-[var(--accent-text)] ' +
   '[transition:var(--transition-ui)] hover:underline'

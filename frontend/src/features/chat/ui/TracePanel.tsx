@@ -33,12 +33,13 @@ import {
   type Turn,
   type TraceEntry,
 } from '@/features/chat/model/turns'
+import { webSitesOfSteps } from '@/features/chat/model/webSites'
 import type { ChatSource } from '@/api/chat'
 import { formatCount } from '@/lib/format'
 
 import { LinkText } from './LinkText'
-import { StepIcon, StepSpinner } from './stepIcons'
-import { forceExpand, TraceStepRow } from './TraceStepRow'
+import { StepIcon, StepOutcomeBadge, StepSpinner } from './stepIcons'
+import { forceExpand, stepsOutcome, TraceStepRow } from './TraceStepRow'
 import {
   STEP_BODY,
   STEP_ROW,
@@ -48,6 +49,7 @@ import {
   caretClass,
   stepIconClass,
 } from './traceStyles'
+import { WebSiteList } from './WebSiteList'
 import { useChat, type ChatMessage } from '../runtime/ChatProvider'
 
 /** 出处列表默认铺几条（多出来的折起来）。 */
@@ -116,12 +118,29 @@ function EntryRow({
     chat.toggleGroup(key)
   }
 
+  /**
+   * 这一组查了哪些站点（§12.334 第二节）。
+   *
+   * **汇总在组行上**：联网搜索动辄七八次、默认折着（`traceEntries` 把同类工具并成一行），
+   * 如果只在每个子行上画牌子，用户要连点好几次才看得出"它在查哪些常见的网页"——
+   * 而那正是用户提这件事的目的。汇总与单步走的是同一个 `webSitesOfSteps`
+   * （组内几步并起来喂给它），不另写一套判据。
+   */
+  const sites = webSitesOfSteps(entry.steps)
+  /** 组行的状态灯：组内第一条带状态位的调用（见 `stepsOutcome`）。 */
+  const outcome = stepsOutcome(entry.steps)
+
   return (
-    <li className={STEP_ROW} data-kind={entry.icon} data-running={groupRunning ? '' : undefined}>
+    <li
+      className={STEP_ROW}
+      data-kind={entry.icon}
+      data-running={groupRunning ? '' : undefined}
+      data-outcome={outcome}
+    >
       {/* 组那一行与单步**共用外壳**：图标位、圆底、起始线都走同一份取值 */}
       <span className={stepIconClass(entry.icon)}>
-        <StepIcon icon={entry.icon} />
-        {groupRunning ? <StepSpinner /> : null}
+        <StepIcon icon={entry.icon} tool={entry.tool} label={entry.label} />
+        {outcome ? <StepOutcomeBadge outcome={outcome} /> : groupRunning ? <StepSpinner /> : null}
       </span>
       <div className={STEP_BODY}>
         <button type="button" className={STEP_TOGGLE} aria-expanded={open} onClick={toggle}>
@@ -131,6 +150,8 @@ function EntryRow({
           </span>
           <ChevronDown className={caretClass(open)} size={12} />
         </button>
+        {/* 组行上那一排站点：默认折着的时候也看得见（见上面 `sites` 的说明） */}
+        <WebSiteList sites={sites.sites} more={sites.more} />
         {open ? (
           <ol className="m-0 flex list-none flex-col p-0">
             {entry.steps.map((child) => (

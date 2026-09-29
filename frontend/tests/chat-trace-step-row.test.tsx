@@ -196,6 +196,92 @@ describe('必须看得见：组那一行也走同一个 forceExpand', () => {
   })
 })
 
+describe('§12.334：组那一行的状态灯与站点（两件事都要在**折叠态**就看得见）', () => {
+  it('组行的 data-outcome 取组内第一条带状态位的那次调用', () => {
+    reset()
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf([
+          step({ detail: '第一条' }),
+          step({ detail: '工具内部错误：服务连不上', outcome: 'failed' }),
+          step({ detail: '等待确认', outcome: 'awaiting' }),
+        ])}
+      />,
+    )
+
+    // 组行（`data-kind` 与单步同源，取组内第一步的种类）
+    const group = document.querySelector('li[data-kind="search"]')
+    expect(group).toHaveAttribute('data-outcome', 'failed')
+    expect(within(group as HTMLElement).getByTestId('step-outcome')).toHaveAttribute(
+      'data-outcome',
+      'failed',
+    )
+  })
+
+  it('组里没有状态位 → 组行也不带 data-outcome（不猜）', () => {
+    reset()
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf([step({ detail: '第一条' }), step({ detail: '第二条' })])}
+      />,
+    )
+
+    expect(document.querySelector('li[data-kind="search"]')).not.toHaveAttribute('data-outcome')
+    expect(screen.queryByTestId('step-outcome')).toBeNull()
+  })
+
+  it('联网并成一组时，**站点汇总在组行上**：不点开也看得出查了哪些站', () => {
+    reset()
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf([
+          step({
+            detail: '第一条',
+            args: '{"query":"a"}',
+            result: 'https://github.com/anthropics/skills',
+          }),
+          step({ detail: '第二条', args: '{"query":"b"}', result: 'https://arxiv.org/abs/2401.1' }),
+        ])}
+      />,
+    )
+
+    // 默认折着：组内那两条结论都不在文档里
+    expect(screen.queryByText('第一条')).toBeNull()
+    // 而站点牌子在（这正是用户提这件事的目的：扫一眼看得出在查哪些常见的网页）
+    const strip = screen.getByTestId('web-sites')
+    expect(within(strip).getByText('GitHub')).toHaveAttribute('data-domain', 'github.com')
+    expect(within(strip).getByText('arXiv')).toHaveAttribute('data-domain', 'arxiv.org')
+  })
+
+  it('展开之后子行**不重复**画站点（组行已经汇总过一遍）', async () => {
+    reset()
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf([
+          step({
+            detail: '第一条',
+            args: '{"query":"a"}',
+            result: 'https://github.com/anthropics/skills',
+          }),
+          step({ detail: '第二条', args: '{"query":"b"}', result: 'https://arxiv.org/abs/2401.1' }),
+        ])}
+      />,
+    )
+
+    await userEvent.setup().click(screen.getByRole('button', { name: /联网搜索/ }))
+
+    // 两条结论照旧逐条在（合的是入口，不是信息）
+    expect(screen.getByText('第一条')).toBeInTheDocument()
+    expect(screen.getByText('第二条')).toBeInTheDocument()
+    // 但站点那一行只有组行上那一份
+    expect(screen.getAllByTestId('web-sites')).toHaveLength(1)
+  })
+})
+
 describe('思考那一行上的耗时', () => {
   it('当场看着跑完的那一轮：收起摘要有耗时，字数照旧', () => {
     reset()

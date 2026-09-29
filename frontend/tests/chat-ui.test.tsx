@@ -684,8 +684,14 @@ describe('过程面板：图标按 kind、同类工具并成一行', () => {
     // 只调用一次的工具不并（那一档不该多一层点击）
     expect(screen.getByText('写笔记')).toBeInTheDocument()
 
-    // 图标按语义种类选：检索是放大镜（search），写入是笔（write），思考是机器人（think）
-    expect(document.querySelector('[data-icon="search"]')).not.toBeNull()
+    /*
+      图标按语义种类选：**联网**是地球（`data-icon="web"`）、写入是笔（write）、思考是脑子（think）。
+      联网那一步与"检索知识库"在后端同归 `kind=search`（都是只读 + 影响面 network），
+      而 §12.334 要的是"检索 → 放大镜、联网 → 地球"，所以**图形只多一层按工具名的分档**：
+      `data-icon` 报画出来的那一张（web），`data-kind` 仍然是语义种类（search）——
+      两条一起钉，两个口径都不会被悄悄改掉。
+    */
+    expect(document.querySelector('li[data-kind="search"] [data-icon="web"]')).not.toBeNull()
     expect(document.querySelector('[data-icon="write"]')).not.toBeNull()
     expect(document.querySelector('[data-icon="think"]')).not.toBeNull()
 
