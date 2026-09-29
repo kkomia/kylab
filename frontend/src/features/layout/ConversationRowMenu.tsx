@@ -40,6 +40,7 @@ import { useEffect, useState } from 'react'
 import {
   RiArchiveLine,
   RiDeleteBinLine,
+  RiDownloadLine,
   RiEditLine,
   RiFolderLine,
   RiInboxUnarchiveLine,
@@ -49,7 +50,8 @@ import {
 } from '@remixicon/react'
 import { toast } from 'sonner'
 
-import type { ConversationSummary } from '@/api/conversations'
+import { getConversation, type ConversationSummary } from '@/api/conversations'
+import { transcriptFileName, transcriptMarkdown } from '@/features/chat/model/transcript'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -82,6 +84,40 @@ import { useConversationStore } from './conversations'
 import { ensureWorkspacesLoaded, useWorkspaceStore } from './workspaces'
 
 const ICON = 14
+
+/**
+ * 导出这一条会话（D13，2026-09-28 走查）。
+ *
+ * 走查实测：会话**没有任何导出 / 分享出口**，想留档只能一条条手抄。这里做"留档"那一半
+ * （分享链接要后端配合，是另一件事）：拉一次详情 → 当场拼一份 Markdown → 走浏览器下载。
+ *
+ * 三个细节：
+ *
+ * 1. **文稿是当场拼的**，不是服务端的文件 —— 所以不能用「产物下载」那条签名链接的路，
+ *    这里用 Blob + 临时 `<a download>`；
+ * 2. **`revokeObjectURL` 立刻撤掉**：不撤的话每导一次就多占一份内存，直到刷新页面
+ *    （blob URL 最常见的泄漏方式）；
+ * 3. 失败**如实报**（`toast.error`）：导出是用户明确点的一次动作，静默失败会让他以为
+ *    "文件在别处"。
+ */
+async function exportTranscript(conversationId: string, fallbackTitle: string): Promise<void> {
+  try {
+    const detail = await getConversation(conversationId)
+    const title = detail.title || fallbackTitle || '未命名对话'
+    const markdown = transcriptMarkdown(title, detail.messages ?? [], new Date())
+    const url = URL.createObjectURL(new Blob([markdown], { type: 'text/markdown;charset=utf-8' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = transcriptFileName(title)
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+    toast.success(`已导出「${title}」`)
+  } catch (cause) {
+    toast.error(cause instanceof Error ? cause.message : '导出失败')
+  }
+}
 
 /** 「移至项目」列表里一行：与 `@/ui/dropdown-menu` 的项同高，当前那个用选中底。 */
 const MOVE_ROW =
@@ -229,6 +265,9 @@ export function ConversationRowMenu({
               <RiArchiveLine size={ICON} aria-hidden="true" />
             )}
             {item.archived_at ? '取消归档' : '归档'}
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => void exportTranscript(item.id, item.title)}>
+            <RiDownloadLine size={ICON} aria-hidden="true" /> 导出为 Markdown
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem

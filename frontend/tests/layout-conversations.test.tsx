@@ -639,3 +639,43 @@ describe('会话行显示"什么时候聊的"（D14，2026-09-28 走查）', () 
     expect(screen.queryByText('—')).not.toBeInTheDocument()
   })
 })
+
+it('会话行菜单能导出 Markdown（D13，2026-09-28 走查）', async () => {
+  // 病灶：会话**没有任何导出/分享出口** —— 想留档只能一条条手抄。
+  const { getConversation } = await import('@/api/conversations')
+  vi.mocked(getConversation).mockResolvedValue({
+    id: 'c1',
+    title: '会话 A',
+    messages: [
+      { role: 'user', content: '眼轴随访怎么看？', sources: [] },
+      { role: 'assistant', content: '先看随访月数。', sources: [] },
+    ],
+  } as never)
+
+  // jsdom 没有这两个 API；补上才能把"下载"这一步跑完（并顺便钉住**回收**那一步）
+  const createUrl = vi.fn((blob: Blob) => {
+    void blob
+    return 'blob:fake'
+  })
+  const revokeUrl = vi.fn()
+  URL.createObjectURL = createUrl as never
+  URL.revokeObjectURL = revokeUrl as never
+
+  listConversationsMock.mockResolvedValue({
+    items: [conversation({ id: 'c1', title: '会话 A' })],
+  })
+  renderShell()
+
+  const user = userEvent.setup()
+  await openRowMenu(user)
+  await user.click(await screen.findByRole('menuitem', { name: /导出为 Markdown/ }))
+
+  await waitFor(() => expect(createUrl).toHaveBeenCalledTimes(1))
+  // 文稿内容对得上（标题 + 问答原文），而且 blob URL **撤掉了**（不撤就是内存泄漏）
+  const blob = createUrl.mock.calls[0][0] as Blob
+  const text = await blob.text()
+  expect(text).toContain('# 会话 A')
+  expect(text).toContain('眼轴随访怎么看？')
+  expect(text).toContain('先看随访月数。')
+  expect(revokeUrl).toHaveBeenCalledWith('blob:fake')
+})
