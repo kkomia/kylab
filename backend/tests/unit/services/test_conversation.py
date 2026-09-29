@@ -369,3 +369,51 @@ def test_search_returns_a_conversation_once_even_with_many_hits(service) -> None
     hits = service.list(q="眼轴")
 
     assert [item.id for item in hits] == [record.id]
+
+
+def test_title_from_question_keeps_a_readable_title() -> None:
+    """D15：标题不该是"首问压平后的前 24 字"。
+
+    期望值全是**真库数据跑出来的**（`.cache/compare_d15.py` 拿 12 条真实首问对新旧两版
+    逐条对照），不是手编的例子。
+    """
+    from app.services.conversation import TITLE_MAX_CHARS, _title_from
+
+    # 礼貌引导词去掉（去掉之后这一条刚好把"分 8 个小标题"完整放下）
+    assert (
+        _title_from("请写一段 600 字左右的说明，分 8 个小标题，中间夹一个表格。不要用工具。")
+        == "写一段 600 字左右的说明，分 8 个小标题"
+    )
+    # 句末标点处收尾，且不留悬空的「。」
+    assert (
+        _title_from("做一个ppt出来 内容是今日国内新闻。尽量调用工具。")
+        == "做一个ppt出来 内容是今日国内新闻"
+    )
+    # 整句都放得下时原样保留（只去掉结尾那个悬空的标点）
+    assert (
+        _title_from("请写一段 400 字左右的说明。不要用工具。")
+        == "写一段 400 字左右的说明。不要用工具"
+    )
+    # 短问题原样
+    assert _title_from("把这篇文章上传到 测试知识库里面") == "把这篇文章上传到 测试知识库里面"
+    # 上限仍然是那个数（改标题规则不该顺手把上限改掉）
+    assert len(_title_from("用" * 100)) <= TITLE_MAX_CHARS
+
+
+def test_title_from_never_ends_with_punctuation_or_particle() -> None:
+    """标题结尾不能是标点或悬空虚词——用户看到的就是被切断的样子。"""
+    from app.services.conversation import TITLE_MAX_CHARS, _title_from
+
+    samples = [
+        "用 Markdown 表格列出 12 个中国省份的省会、常住人口与面积，然后逐条说明其中 6 个",
+        "请调用文件列表工具，列出当前文件根的目录内容——不要传 where、也不要传 path",
+        "把这篇文章上传到 测试知识库里面",
+        "请记住这个口令：ZQ7K-凌云。只回复「记住了」",
+        "做一个ppt出来 内容是今日国内新闻。尽量调用工具。",
+    ]
+    for question in samples:
+        title = _title_from(question)
+        assert title, question
+        assert len(title) <= TITLE_MAX_CHARS, (title, question)
+        assert title[-1] not in "。，、；：！？!?,;: ", (title, question)
+        assert title[-1] not in "的了和与及把被在是对着给让使", (title, question)

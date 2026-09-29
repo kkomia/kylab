@@ -554,6 +554,73 @@ def _title_from(question: str) -> str:
 
     压平空白再截断：用户可能粘一整段带换行的文本进来，标题里带换行会撑坏左栏。
     截断处不加省略号——中文标题里"…"占一个字宽，而左栏本来就会用 CSS 省略。
+
+    **比"硬切前 24 字"多做的三件事**（D15，2026-09-28 走查；规则都是从真库里那批标题
+    反推出来的——实测 11/14 条标题**就是**首问压平后的前 24 字）：
+
+    1. **去掉开头的礼貌/意图引导词**：「请用 Markdown 表格列出 12 个中国省」这类标题，
+       前两个字不承载任何信息，却把真正的意思挤掉一截（去掉之后那一条刚好完整放得下）；
+    2. **优先在自然断点收尾**：限长之内、且位置够靠后（≥ 60%）的最后一个句读，
+       比硬切好读（实测有一批标题以「。」「，」结尾）；
+    3. **去掉结尾悬空的标点与虚词**：中文里「…的」「…，」这样的收尾读起来是被切断了，
+       而不是"这就是标题"。
+
+    一件事**没做**：不调模型重新起名。那要多一次模型调用（并且要处理异步、失败、
+    计费），而这一条要解决的只是"标题读起来像被切断的"——先把它做扎实。
     """
     flat = " ".join(question.split())
-    return flat[:TITLE_MAX_CHARS]
+    for lead in _TITLE_LEAD_INS:
+        # 只去一次，且别把整句话都削没了（`请记住这个口令：…` 削掉「请」还剩 10 个字以上）
+        if flat.startswith(lead) and len(flat) > len(lead) + 4:
+            flat = flat[len(lead) :].lstrip("，,：: ")
+            break
+    if len(flat) <= TITLE_MAX_CHARS:
+        return _strip_title_tail(flat)
+    window = flat[:TITLE_MAX_CHARS]
+    # 够靠后的**句末**标点优先（太靠前的断点会把标题削得太短，还不如硬切）。
+    # **只认句末**：「，」是句内停顿，在那里断会把"分 5 个小标题"这种真信息丢掉
+    # ——第一版就是那么写的，对照真库数据当场看出来退步了。
+    floor = int(TITLE_MAX_CHARS * _TITLE_BREAK_RATIO)
+    for mark in ("。", "！", "？", ".", "!", "?"):
+        index = window.rfind(mark)
+        if index >= floor:
+            return _strip_title_tail(window[:index])
+    return _strip_title_tail(window)
+
+
+#: 标题开头那些**礼貌 / 意图**引导词：占着前几个字却不带信息（D15）。
+#: 按长度从长到短排，先匹配长的那条（不然「请」会先把「请帮我」削掉一半）。
+_TITLE_LEAD_INS = (
+    "请帮我",
+    "麻烦你",
+    "麻烦",
+    "帮我",
+    "请问",
+    "我想",
+    "能不能",
+    "可以帮我",
+    "请",
+)
+
+#: 限长之内若在这个比例之后遇到句读，就在那里收尾（见 `_title_from` 第 2 条）。
+_TITLE_BREAK_RATIO = 0.6
+
+#: 结尾悬空的标点与虚词（见 `_title_from` 第 3 条）。
+_TITLE_TAIL_CHARS = "。，、；：！？!?,;:., "
+
+
+def _strip_title_tail(text: str) -> str:
+    """去掉标题结尾悬空的标点与虚词。
+
+    **逐字往回剥**：实测「用 Markdown 表格列出 12 个中国省份的」这种收尾很常见
+    （硬切正好切在「的」前面），剥掉之后才像一句标题。剥到没有可剥的为止，
+    但**不为空**——全是标点的标题比"被切断的标题"更糟。
+    """
+    stripped = text.rstrip(_TITLE_TAIL_CHARS)
+    while stripped and stripped[-1] in _TITLE_DANGLING:
+        stripped = stripped[:-1].rstrip(_TITLE_TAIL_CHARS)
+    return stripped or text.rstrip(_TITLE_TAIL_CHARS)
+
+
+#: 结尾不该出现的虚词（助词 / 连词 / 介词）。**只剥结尾**：标题中间出现它们很正常。
+_TITLE_DANGLING = "的了和与及把被在是对着给让使"
