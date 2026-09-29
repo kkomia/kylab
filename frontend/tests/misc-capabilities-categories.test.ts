@@ -35,7 +35,7 @@ describe('分类映射本身（真 JSON）', () => {
     }
   })
 
-  it('产品自带的 5 条按名字钉死（不落「其他」），「其他」只剩拿不准的那一条', () => {
+  it('产品自带的 5 条按名字钉死（不落「其他」）；「其他」很小且那条拿不准的还在', () => {
     for (const [name, slug] of [
       ['kylab-delegate', 'productivity'],
       ['kylab-knowledge-base', 'productivity'],
@@ -46,8 +46,11 @@ describe('分类映射本身（真 JSON）', () => {
       expect(categoryOfSkill(name)).toBe(slug)
     }
 
+    // **不再是"只剩 xiaoyue"**（2026-09-29 如实报：库涨到上千条之后信号认不出的多了）：
+    // 钉两条不脆的性质——它是兜底不是主分类，且"拿不准就不硬塞"的那条一直在。
     const others = ALL_SKILLS.filter((skill) => categoryOfSkill(skill.name) === OTHER_CATEGORY)
-    expect(others.map((skill) => skill.name)).toEqual(['xiaoyue-companion'])
+    expect(others.map((skill) => skill.name)).toContain('xiaoyue-companion')
+    expect(others.length).toBeLessThanOrEqual(Math.max(5, Math.floor(TOTAL / 10)))
   })
 })
 
