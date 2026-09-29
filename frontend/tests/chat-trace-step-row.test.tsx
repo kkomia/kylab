@@ -124,16 +124,16 @@ function groupBody(): HTMLElement {
 }
 
 describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
-  it('running 的那一行带 data-running 与转圈；转圈尊重"减少动态效果"', () => {
+  it('running 的那一行带 data-running 与那句静态「进行中」；旧的花圈图标不再出现', () => {
     reset()
     render(<TracePanel turnIndex={0} turn={turnOf([step({ status: 'running' })])} />)
 
     const row = document.querySelector('li[data-running]')
     expect(row).not.toBeNull()
-    const spinner = within(row as HTMLElement).getByTestId('step-spinner')
-    // 动起来才是"还在跑"最直接的画面；系统说减少动态效果时停住，但**位置仍在**
-    expect(spinner).toHaveClass('animate-spin')
-    expect(spinner).toHaveClass('motion-reduce:animate-none')
+    // 状态一位都没丢：机器属性 + 一句看得见的文字
+    expect(row).toHaveTextContent('进行中')
+    // 2026-09-29 用户："那个蓝色循环圈没有用" → 那枚图标整枚删掉
+    expect(screen.queryByTestId('step-spinner')).toBeNull()
   })
 
   it('跑完的那一行没有这一笔（两种状态必须看得出区别）', () => {
@@ -142,9 +142,10 @@ describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
 
     expect(document.querySelector('li[data-running]')).toBeNull()
     expect(screen.queryByTestId('step-spinner')).toBeNull()
+    expect(screen.queryByText('进行中')).toBeNull()
   })
 
-  it('组里有一次调用还在跑 → 组那一行带 data-running 与转圈，标题写"在做什么 + 进度"', () => {
+  it('组里有一次调用还在跑 → 组那一行带 data-running 与「进行中」，标题写"在做什么 + 进度"', () => {
     reset()
     render(
       <TracePanel
@@ -159,7 +160,8 @@ describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
     const group = document.querySelector('li[data-running]')
     expect(group).not.toBeNull()
     expect(group).toHaveTextContent('正在联网搜索 第二条… 1/2')
-    expect(within(group as HTMLElement).getByTestId('step-spinner')).toBeInTheDocument()
+    expect(within(group as HTMLElement).getByText('进行中')).toBeInTheDocument()
+    expect(within(group as HTMLElement).queryByTestId('step-spinner')).toBeNull()
   })
 
   it('跑着的组**默认就展开**（组在进行过程中展开）；点一下收起，之后就听用户的', async () => {
@@ -403,9 +405,11 @@ describe('折叠树的 a11y：aria-expanded / aria-controls / role（§12.333）
     const body = document.getElementById(id as string) as HTMLElement
     expect(body).not.toBeNull()
     expect(body).toHaveAttribute('role', 'group')
-    // 容器的名字就是这一行写着的那句（收起态也有名字，不再是个没名字的按钮）
+    // 名字仍在（无障碍与用例要有稳定落点）：**但它只活在 aria-label 上**——
+    // 可见文字一个都不印（2026-09-29 用户："把「执行过程」那几个字删掉"）。
     expect(body).toHaveAttribute('aria-label', '执行过程')
-    expect(toggle).toHaveTextContent('执行过程')
+    expect(toggle).toHaveAttribute('aria-label', '执行过程')
+    expect(toggle).not.toHaveTextContent('执行过程')
   })
 
   it('组头：aria-controls 指向组的容器；**折叠时容器也在文档里**（id 不许悬空）', () => {
@@ -600,8 +604,8 @@ describe('思考那一行上的耗时', () => {
   })
 })
 
-describe('面板那一行：跑着写短名，**跑完没出处也写短名**', () => {
-  it('流式期间写「执行过程」，那条会滚的实时文案一个字都不出现', () => {
+describe('面板那一行：可见文字按用户要求删了，名字改由 aria-label 给', () => {
+  it('流式期间**不印**那几个字，那条会滚的实时文案也不出现', () => {
     reset()
     // 正在跑一次「联网搜索」——那条老文案在这种情况下会写出「正在联网搜索…」
     render(
@@ -612,21 +616,21 @@ describe('面板那一行：跑着写短名，**跑完没出处也写短名**', 
     )
 
     const row = screen.getByTestId('trace-toggle')
-    // 这一行是**唯一**能点开过程面板的地方：它必须看得出是什么，不能只剩一枚箭头
-    expect(row).toHaveTextContent('执行过程')
+    // 可见文字为空：只剩那枚图标与箭头（行仍然是唯一能点开面板的地方，且点得动）
+    expect(row).not.toHaveTextContent('执行过程')
+    expect(row).toHaveAttribute('aria-label', '执行过程')
     expect(row).not.toHaveTextContent('正在联网搜索…')
   })
 
-  it('跑完又**没有出处**：这一行写固定短名「执行过程」（不再只剩一枚箭头）', () => {
+  it('跑完又**没有出处**：可见文字同样为空（不再只剩一枚箭头的是"名字"，不是文字）', () => {
     reset()
     render(<TracePanel turnIndex={0} turn={turnOf([step()])} />)
 
     const row = screen.getByTestId('trace-toggle')
-    // 这一行是唯一能点开过程面板的地方：没有出处时它也得说得出自己叫什么
-    expect(row).toHaveTextContent('执行过程')
-    // 但**当年那条动态摘要一个字都不许回来**：它是替这一轮编一段经过
-    //（"本轮没有命中资料 / 直接作答"），用户原话是"没啥用"；这里补的是**名字**，
-    // 不声称任何发生过的事（见 `TracePanel` 里 `TRACE_PANEL_NAME` 的说明）。
+    // 这一行是唯一能点开过程面板的地方：**名字**给得出（aria-label），可见文字为空
+    expect(row).toHaveAttribute('aria-label', '执行过程')
+    // 当年那条动态摘要一个字都不许回来：它是替这一轮编一段经过
+    //（"本轮没有命中资料 / 直接作答"），用户原话是"没啥用"
     expect(row).not.toHaveTextContent('本轮没有命中资料')
     expect(row).not.toHaveTextContent('直接作答')
   })
@@ -688,5 +692,99 @@ describe('标签左对齐（D11-①：换行后每一行各自居中的那条回
 
     const groupToggle = screen.getByRole('button', { name: /联网搜索/ })
     expect(groupToggle.className).toContain('text-left')
+  })
+})
+
+/*
+ * 2026-09-29 用户两条（②③ 的判据 + ④ 的面板头结构）：
+ *
+ * - "每一步的 token/字数不标，只在最后标一个总的"；
+ * - "这不还是没对齐吗"：面板头那一行改前是「箭头 12 + 间距 4 + 图标 13 + 间距 4」
+ *   凑出 461 的——文字对了，但图标落在 444，比行内那条图标线右 16px。
+ *   现在面板头与行内**同构**：同一个 21px 圆底（`STEP_ICON`）+ 同一个 `--space-3`。
+ *
+ * 这里钉**DOM 结构与类名**（真浏览器那条数字链在 `.shots/trace-cleanup/`，
+ * 不起浏览器也能红——回归是"顺手改回去"）。
+ */
+describe('过程总计（②）：只在末尾一处，逐步的字数一个都不印', () => {
+  it('末尾那一处按"思考 + 结论 + 入参 + 返回"的字符数给总计', () => {
+    reset()
+    render(<TracePanel turnIndex={0} turn={turnOf([timed(3200)])} />)
+
+    const total = screen.getByTestId('trace-total')
+    // 「先查一下再回答。」(8 个字符) + 「查 A」(3) = 11；args/result 这两处没给
+    expect(total).toHaveTextContent('共 11 字')
+    // 有耗时（当场看着它跑完的那一轮）才写用时
+    expect(total).toHaveTextContent('用时 3.2s')
+  })
+
+  it('逐步的「N 字」一个都不印（用户点名的就是那一行）', () => {
+    reset()
+    render(<TracePanel turnIndex={0} turn={turnOf([timed(3200)])} />)
+
+    // 面板里所有"数字 + 字"的文本，只允许末尾那一条（以及它内部那层 span）
+    const charty = screen
+      .getAllByText(/[\d,]+ 字/)
+      .filter((el) => !el.closest('[data-testid="trace-total"]'))
+    expect(charty).toHaveLength(0)
+    // 逐步的耗时仍然留着（那不是"字数"，是唯一还说得出的读数）
+    expect(screen.getByTestId('step-elapsed')).toHaveTextContent('3.2s')
+  })
+
+  it('历史那一轮没有耗时（`durationMs` 缺席）→ 只报字数，**不猜**一个用时', () => {
+    reset()
+    render(<TracePanel turnIndex={0} turn={turnOf([step()])} />)
+
+    const total = screen.getByTestId('trace-total')
+    expect(total).toHaveTextContent('共 3 字')
+    expect(total).not.toHaveTextContent('用时')
+  })
+})
+
+describe('面板头的图标落在行内那条图标线上（④）', () => {
+  const withSource = {
+    sources: [
+      {
+        index: 1,
+        chunk_id: 'c1',
+        document_id: 'd1',
+        document_name: '报告.pdf',
+        heading_path: null,
+        page: null,
+        score: 0.5,
+        preview: '原文',
+        knowledge_base_id: 'kb1',
+      },
+    ],
+  }
+
+  it('面板头用同一个 21px 图标沟 + 同一个 `--space-3`：三者同构', () => {
+    reset()
+    // 有出处时这一行才有可见文字（摘要那句），所以拿它量"图标位 + 文字位"两笔
+    render(<TracePanel turnIndex={0} turn={turnOf([step()], withSource)} />)
+
+    const toggle = screen.getByTestId('trace-toggle')
+    // 图标沟就是行内那一个类名（21px 圆底，见 `STEP_ICON`）
+    const slot = toggle.querySelector(':scope > span') as HTMLElement
+    expect(slot.className).toContain('w-[21px]')
+    expect(slot.className).toContain('h-[21px]')
+    // 间距是行内那一笔（`--space-3` = 12）——21 + 12 才是标签那条 461 的来历
+    expect(toggle.className).toContain('gap-[var(--space-3)]')
+    // 箭头排在文字之后（与 `STEP_TOGGLE`「标签 + 箭头」同款），不再自己占一条线
+    const tail = toggle.lastElementChild as HTMLElement
+    expect(tail.tagName.toLowerCase()).toBe('span')
+    expect(tail.querySelector('svg')).not.toBeNull()
+    // 面板头那一层不再有"独立排在开头的箭头"（改前它是 12px 的 svg，排在图标之前）
+    expect(toggle.firstElementChild?.tagName.toLowerCase()).toBe('span')
+  })
+
+  it('没有可见文字时也只剩"图标沟 + 箭头"两个元素（不再多一条线）', () => {
+    reset()
+    render(<TracePanel turnIndex={0} turn={turnOf([step()])} />)
+
+    const toggle = screen.getByTestId('trace-toggle')
+    expect(toggle.children).toHaveLength(2)
+    expect((toggle.children[0] as HTMLElement).className).toContain('w-[21px]')
+    expect(toggle.children[1].tagName.toLowerCase()).toBe('svg')
   })
 })

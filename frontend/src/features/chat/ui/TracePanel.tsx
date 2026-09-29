@@ -23,7 +23,6 @@
  */
 import { ChevronDown, ListTree } from 'lucide-react'
 import { useRef, useState } from 'react'
-
 import {
   groupHeading,
   isBlockRunning,
@@ -43,11 +42,13 @@ import { formatCount } from '@/lib/format'
 
 import { Fold } from './Fold'
 import { LinkText } from './LinkText'
-import { StepIcon, StepOutcomeBadge, StepSpinner } from './stepIcons'
-import { forceExpand, stepsOutcome, TraceStepRow } from './TraceStepRow'
+import { StepIcon, StepOutcomeBadge } from './stepIcons'
+import { forceExpand, formatElapsed, stepsOutcome, TraceStepRow } from './TraceStepRow'
 import {
   STEP_BODY,
+  STEP_ICON,
   STEP_ROW,
+  STEP_RUNNING,
   STEP_TOGGLE,
   THINK_BLOCK,
   THINK_PARAGRAPH,
@@ -62,16 +63,16 @@ import { useChatRows, type ChatMessage, type ChatRowApi } from '../runtime/ChatP
 const CITE_FOLD_LIMIT = 3
 
 /**
- * 面板那一行的**固定短名**（§12.334 的"图标 + 文字"：每一行都得说得出自己是什么）。
+ * 面板那一行的**无障碍名字**（2026-09-29 用户："把「执行过程」那几个字删掉"）。
  *
- * 用它的两种情况：**跑着的时候**，以及**跑完又没有出处的时候**——后者原先什么都不写，
- * 整行只剩一枚箭头（用户看不出这里能点开，而这是**唯一**能点开过程面板的地方）。
+ * 可见文字**一个都不印**了（用户原话："用不上"），但这一行**不能没有名字**：
+ * 它是唯一能点开过程面板的地方，而收起态可能只剩一枚图标（跑着、或跑完没出处时），
+ * 读屏器与用例都得有个稳定的落点。所以这个名字只活在 `aria-label` 上——**不占任何像素**。
  *
- * **这不是把当年那条动态摘要恢复回来**：用户否掉的是「本轮没有命中资料 / 直接作答」
- * 那种替它编一段经过的话（判据见 `turns.traceSummary`），这一条只回答"这一行叫什么"，
- * 不声称任何发生过的事；两个分支共用一个词，也就不会分成两句不一样的话。
+ * 跑完且有出处时，可见文字仍然是 `traceSummary` 那句摘要（那是**真发生过的事**，
+ * 与当年被否掉的"替这轮编一段经过"不是一回事）。
  */
-const TRACE_PANEL_NAME = '执行过程'
+const TRACE_PANEL_ARIA = '执行过程'
 
 /** 组容器 / 面板容器的 DOM id：`aria-controls` 要用它，而 key 里带 `:` 之类不能直接用。 */
 function domId(prefix: string, raw: string): string {
@@ -176,19 +177,23 @@ function EntryRow({
       {/* 组那一行与单步**共用外壳**：图标位、圆底、起始线都走同一份取值 */}
       <span className={stepIconClass(entry.icon)}>
         <StepIcon icon={entry.icon} tool={entry.tool} label={entry.label} />
-        {outcome ? <StepOutcomeBadge outcome={outcome} /> : groupRunning ? <StepSpinner /> : null}
+        {outcome ? <StepOutcomeBadge outcome={outcome} /> : null}
       </span>
       <div className={STEP_BODY}>
-        <button
-          type="button"
-          className={STEP_TOGGLE}
-          aria-expanded={groupOpen}
-          aria-controls={bodyId}
-          onClick={toggle}
-        >
-          {heading}
-          <ChevronDown className={caretClass(groupOpen)} size={12} aria-hidden />
-        </button>
+        <div className="flex min-w-0 items-start gap-[var(--space-2)]">
+          <button
+            type="button"
+            className={STEP_TOGGLE}
+            aria-expanded={groupOpen}
+            aria-controls={bodyId}
+            onClick={toggle}
+          >
+            {heading}
+            <ChevronDown className={caretClass(groupOpen)} size={12} aria-hidden />
+          </button>
+          {/* "还在跑"只留文字（2026-09-29 用户："那个蓝色循环圈没有用"）：见 `STEP_RUNNING` */}
+          {groupRunning ? <span className={STEP_RUNNING}>进行中</span> : null}
+        </div>
         {/* 组行上那一排站点：默认折着的时候也看得见（见上面 `sites` 的说明） */}
         <WebSiteList sites={sites.sites} more={sites.more} />
         {/*
@@ -329,16 +334,46 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
   const trailingThinkingText = trailingThinking(reply)
 
   /**
-   * 这一行此刻写什么：**有出处就报出处摘要**（`traceSummary`），**没有就写固定短名**
-   * （见 `TRACE_PANEL_NAME`）——跑着的时候本来也走这一条。
+   * 这一行此刻写什么：**有出处就报出处摘要**（`traceSummary`），否则**什么都不写**。
    *
-   * 顺带解决了一件无障碍上的事：收起态原先可能一个字都没有（只剩一枚箭头），
-   * 于是这个按钮**没有可读的名字**；现在两种状态都有一句文字，名字就是它。
+   * 2026-09-29 用户要把「执行过程」那几个字删掉（"用不上"，与上一轮删「全部展开/收起」
+   * 同一个口径）——可见文字因此只剩"真发生过的事"那一句；名字改由 `aria-label` 给
+   * （见 `TRACE_PANEL_ARIA`），读屏器与用例都还有落点。
    */
-  const headline =
-    reply.streaming || reply.sources.length === 0 ? TRACE_PANEL_NAME : traceSummary(reply)
+  const headline = reply.streaming || reply.sources.length === 0 ? '' : traceSummary(reply)
+  /**
+   * 这一行的名字：可见文字给得出就用它，给不出就用固定那个（跑着 / 没出处）。
+   * 面板容器（`Fold` 的 `aria-label`）与按钮共用**同一句**，不再分头写一份。
+   */
+  const panelName = headline || TRACE_PANEL_ARIA
   /** 折起来的那一块要有个 id 指着（`aria-controls`）；同一页可能有好几轮。 */
   const panelId = domId('trace-panel', String(turnIndex))
+
+  /**
+   * 整段过程的**总计**（2026-09-29 用户：逐步的字数都别标，只在最后给一个总的）。
+   *
+   * 数的是**这一页已经取回来的那几步**的文字量：思考 + 结论 + 入参 + 返回。
+   * 两个取舍写在这里：
+   *
+   * 1. **不叫 token**：后端给的是**字符数**，与模型的 token 不是一回事——冒称 token
+   *    是编数据（真 token 数这条链路上拿不到，见交卷说明）；
+   * 2. **用时是"各步耗时之和"**：它由界面自己量（`liveTurn.observeStep`），
+   *    **只有当场看着它跑的那一轮才有**；历史 / 刷新 / 补发都没有 → 那时这一句只剩字数，
+   *    绝不拿一个猜的数顶上（与 `step.durationMs` 同一条纪律）。
+   */
+  const measured = view.entries.flatMap((entry) =>
+    entry.kind === 'step' ? [entry.step] : entry.steps,
+  )
+  const traceChars = measured.reduce(
+    (total, item) =>
+      total +
+      (item.thinking?.length ?? 0) +
+      (item.detail?.length ?? 0) +
+      (item.args?.length ?? 0) +
+      (item.result?.length ?? 0),
+    0,
+  )
+  const traceMs = measured.reduce((total, item) => total + (item.durationMs ?? 0), 0)
 
   return (
     <>
@@ -353,48 +388,43 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
       <button
         type="button"
         /**
-         * 面板收起时这一行**只剩一枚箭头与一句短名**，测试要按它开合面板，
-         * 这里给它一个稳定的抓点（P0 的用例正是"默认收起 → 点一下才摊开"）。
+         * 面板收起时这一行可能**只剩一枚图标**（可见文字按用户要求删掉了），
+         * 用例与读屏器靠这两个抓点认它：`data-testid` 定位、`aria-label` 取名字。
          */
         data-testid="trace-toggle"
-        className="flex w-full cursor-pointer items-center gap-[var(--space-1)] bg-transparent p-0 text-left"
+        aria-label={panelName}
+        className="flex w-full cursor-pointer items-center gap-[var(--space-3)] bg-transparent p-0 text-left"
         aria-expanded={open}
         aria-controls={panelId}
         onClick={() => chat.toggleTrace(reply)}
       >
         {/*
-          箭头与那枚过程图标都是**装饰**：名字由这一行的文字给（本仓口径）。
+          图标与文字（2026-09-29 用户："这不还是没对齐吗"）。
 
-          **箭头取 12px 是为了让这一行的文字与行内标签落在同一条左边缘**（用户点名的
-          "图标对齐"，2026-09-29）。真浏览器量出来的账（`.shots/d11b-align/`，会话
-          `conv_615c4ac504fe`）：
+          **这一行现在与"行内的一行"同构**：左边是同一个 21px 图标沟、间距同样是
+          `--space-3`（12），于是三样东西落在同一条线上——
 
-          - 行内那一条沟 = 图标圆底 21 + 间距 12（`--space-3`）= **33** → 标签文字 x=461；
-          - 这一行改前 = 箭头 14 + 间距 4（`--space-1`）+ 图标 13 + 间距 4 = **35**
-            → 文字 x=**463**（比标签右 2px ✗）；
-          - 在这一层把箭头收成 12（面板里其余的开关本来都是 12：组行、子行、思考那一行）
-            → 12+4+13+4 = **33**，与行内那条沟**逐字相同** → 文字 x=461 ✓。
+          - 面板头的图标 = 每一行的图标沟（`STEP_ICON` 那 21px 圆底，左边缘 428、中心 438.5）；
+          - 面板头的文字 = 行内标签 / 明细列的左边缘（**461**，这条契约不许破）；
+          - 箭头挪到文字之后（与 `STEP_TOGGLE`「标签 + 箭头」同款）。
 
-          为什么不直接改 `gap`：那要么引进一个 3px 的字面量（这一族取值都走令牌），
-          要么把两个间距拆成两种取值；而"面板头的箭头和别的开关一样大"本来就更该成立。
+          改前是「箭头 12 + 间距 4 + 图标 13 + 间距 4 = 33」凑出 461 的：文字确实在 461，
+          但**图标落在 444**，比行内那条图标线右 16px——面板头那一行因此多出一条
+          谁也说不清来历的竖线（真浏览器实测，见 `.shots/trace-cleanup/`）。
+          箭头是**装饰**（整行都是按钮）：挪到文字后面之后，它所处的那条线不再冒充
+          "图标列"，而 21+12 两个令牌值都是这一族本来就有的。
         */}
-        <ChevronDown className={caretClass(open)} size={12} aria-hidden />
-        <ListTree size={13} aria-hidden className="shrink-0 text-[var(--text-quaternary)]" />
-        {/*
-          执行期间这一行只写一个**静态名字**（现在它与"跑完没出处"共用同一个词）。
-
-          原先这里是那条会滚的实时文案（「正在抓取网页…」/ 思考的尾巴 /
-          「正在处理…」，由 `turns.liveLine` 给）：它挂在助手列的第一个节点上，
-          与头像齐平，用户原话是"把 agent 执行中跟头像齐平的那个流式输出干掉"——
-          整条删掉了（函数与它的用例一起，见 `model/README.md` §3.3）。
-
-          但删掉之后这一行会只剩一枚箭头，看起来像残留符号，而它恰恰是**唯一**
-          能点开这一块的地方。所以补一个静态短标签说明"这一行是什么"：
-          它不随任何状态变化（没有要实时报告的东西了），只负责让人看出这里能点开。
-        */}
-        <span className="text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
-          {headline}
+        <span className={STEP_ICON}>
+          <ListTree size={13} aria-hidden className="text-[var(--text-quaternary)]" />
         </span>
+        {headline ? (
+          <span className="inline-flex min-w-0 items-center gap-[var(--space-1)] text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
+            <span className="min-w-0 truncate">{headline}</span>
+            <ChevronDown className={caretClass(open)} size={12} aria-hidden />
+          </span>
+        ) : (
+          <ChevronDown className={caretClass(open)} size={12} aria-hidden />
+        )}
       </button>
 
       {/*
@@ -408,7 +438,7 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
         容器上那三笔（`id` / `role="group"` / `aria-label`）是给读屏器与用例的：
         开关报 `aria-expanded`，这一块报"归谁管、叫什么"；图标全部 `aria-hidden`。
       */}
-      <Fold id={panelId} role="group" aria-label={headline} open={open}>
+      <Fold id={panelId} role="group" aria-label={panelName} open={open}>
         <div className={TRACE_FOLD_CONTENT}>
           <ol className="relative m-0 flex list-none flex-col p-0">
             {view.entries.map((entry) => (
@@ -461,9 +491,6 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
                 onClick={() => setTrailingOpen((value) => !value)}
               >
                 思考过程
-                <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
-                  {formatCount(trailingThinkingText.length)} 字
-                </span>
                 <ChevronDown className={caretClass(trailingOpen)} size={12} aria-hidden />
               </button>
               {/*
@@ -480,6 +507,38 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
                 </div>
               </Fold>
             </div>
+          ) : null}
+
+          {/*
+            整段过程的**总计**（2026-09-29 用户："每一步的 token/字数不标，只在最后标一个总的"）。
+
+            放这里 = "过程面板的末尾"：它统计的正是上面这几步，位置与它统计的对象挨着；
+            回答正文在面板之外，回答底下不再另标一处（**一处、只一处**，见上面的算法说明）。
+            取 `traceChars`（思考 + 结论 + 入参 + 返回的字符数）：**不叫 token**——
+            后端只给得出字数，token 是另一回事。用时是各步耗时之和，只有当场看着它跑的
+            那一轮才有，没有就只报字数（不猜）。
+          */}
+          {measured.length > 0 ? (
+            /*
+              放这里 = "过程面板的末尾"：它统计的正是上面这几步，位置与它统计的对象挨着；
+              回答正文在面板之外，回答底下不再另标一处（**一处、只一处**）。
+
+              **与行内同构**：左边留出图标沟那 21px（`STEP_ICON` 的宽度）再排文字，
+              于是它落在行内标签 / 明细那一条 **461** 上——不收进图标沟的话它会贴在 428
+              （行的左边缘），看上去像"另一列"，而用户这一轮要的正是"把线收少"。
+            */
+            <p
+              className="m-0 mt-[var(--space-3)] flex items-baseline gap-[var(--space-3)] text-[length:var(--text-micro-size)] text-[var(--text-quaternary)] tabular"
+              data-testid="trace-total"
+              title="按当前已显示的过程统计：思考、结论、入参与返回的字符数；用时是各步耗时之和（只有当场看着它跑的那一轮才有）"
+            >
+              {/* 图标沟的占位：宽度与 `STEP_ICON` 同一个数（21），别改一处漏一处 */}
+              <span aria-hidden className="w-[21px] shrink-0" />
+              <span>
+                共 {formatCount(traceChars)} 字
+                {traceMs > 0 ? ` · 用时 ${formatElapsed(traceMs)}` : ''}
+              </span>
+            </p>
           ) : null}
         </div>
       </Fold>

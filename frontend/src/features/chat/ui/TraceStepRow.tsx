@@ -26,7 +26,7 @@ const EMPTY_NAMES: ReadonlyMap<string, string> = new Map()
 
 import { Fold } from './Fold'
 import { LinkText } from './LinkText'
-import { StepIcon, StepOutcomeBadge, StepSpinner, type StepOutcome } from './stepIcons'
+import { StepIcon, StepOutcomeBadge, type StepOutcome } from './stepIcons'
 import { StepResult } from './StepResult'
 import {
   STEP_BODY,
@@ -35,6 +35,7 @@ import {
   STEP_LABEL,
   STEP_ROW,
   STEP_ROW_CHILD,
+  STEP_RUNNING,
   STEP_TOGGLE,
   THINK_BLOCK,
   THINK_PARAGRAPH,
@@ -239,8 +240,13 @@ export function TraceStepRow({
   /**
    * 这一步还在跑（见 `turns.isRunningStep`）。
    *
-   * 只有**父行**画那枚转圈：子行的那个位置是一颗 5px 的圆点（它标的是"组内第几次"），
-   * 塞不进一枚状态灯；子行因此只带 `data-running`，由外层那一组替它显示"还在跑"。
+   * **不再画那枚转圈**（2026-09-29 用户："那个蓝色循环圈没有用"）：状态只留两样不占新列的
+   * 东西——行上的 `data-running`（用例与无障碍读它）与标签后面那句静态「进行中」
+   * （见下面第一行里的 `STEP_RUNNING`）。"看得出在跑"这条要求一位都没减，减的只是那枚图标：
+   * 它原本压在图标圆底的右下角，与状态灯同一格，而那一格本来就靠"图标 + 文字"说清了是什么。
+   *
+   * 子行的那个位置是一颗 5px 的圆点（它标的是"组内第几次"）：子行只带 `data-running`，
+   * 由外层那一组替它显示"还在跑"。
    */
   const running = isRunningStep(step)
 
@@ -277,7 +283,7 @@ export function TraceStepRow({
       ) : (
         <span className={stepIconClass(step.icon)}>
           <StepIcon icon={step.icon} tool={step.tool} label={step.label} />
-          {outcome ? <StepOutcomeBadge outcome={outcome} /> : running ? <StepSpinner /> : null}
+          {outcome ? <StepOutcomeBadge outcome={outcome} /> : null}
         </span>
       )}
 
@@ -305,6 +311,14 @@ export function TraceStepRow({
           ) : (
             <p className={STEP_LABEL}>{step.label}</p>
           )}
+
+          {/*
+            "还在跑"只有这一句静态文字（2026-09-29 用户："那个蓝色循环圈没有用"）。
+            放在标签后面而不是另起一格：另起一格会让这一行在"跑完"的那一刻往左跳一下——
+            原先那枚转圈正是为了避开这一下才挤在图标圆底上的。文字不跳、也不动，
+            而"进行中"三个字比一枚小图标更直白（见 `STEP_RUNNING`）。
+          */}
+          {running && !child ? <span className={STEP_RUNNING}>进行中</span> : null}
 
           {/*
             联网那一步"查了哪些站点"（§12.334 第二节）：排在标签与结论之间，
@@ -350,7 +364,11 @@ export function TraceStepRow({
             答完就自动折起，用户能看见的只剩这一行，而"想了 3 秒还是 3 分钟"是它
             唯一还说得出的读数。时长**只有当场看着它跑的那一轮才有**（`step.durationMs`，
             见 `liveTurn.observeStep`）——历史、刷新、补发都没有，于是这一句就不出现，
-            绝不拿一个猜的数顶上。 */}
+            绝不拿一个猜的数顶上。
+
+            **这里不再标"多少字"**（2026-09-29 用户："每一步的 token/字数不标，只在最后
+            标一个总的"）：逐步的字数只是噪声，整段过程末尾那个总计才是要看的读数
+            （见 `TracePanel` 的 `trace-total`）。 */}
         {thinking.trim() ? (
           <div className="mt-[var(--space-1)]">
             <button
@@ -369,10 +387,7 @@ export function TraceStepRow({
                   {formatElapsed(step.durationMs)}
                 </span>
               )}
-              <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
-                {formatCount(thinking.length)} 字
-              </span>
-              <ChevronDown className={caretClass(thinkingOpen)} size={12} />
+              <ChevronDown className={caretClass(thinkingOpen)} size={12} aria-hidden />
             </button>
             {/*
               思考正文也走 `Fold`（§12.335："单步那一处，思考那一段同理"）：

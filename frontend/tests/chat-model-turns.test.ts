@@ -154,7 +154,9 @@ describe('traceSteps', () => {
     expect(steps[0].detail).toContain('1 个片段')
     expect(steps[1].detail).toBe('强度：高')
     expect(steps[2].label).toBe('已生成回答')
-    expect(steps[2].detail).toBe('共 4 字')
+    // 回答那一步**不报字数**（2026-09-29 用户："每一步的 token/字数不标，只在最后标一个总的"）
+    // ——整段过程末尾那一处总计由 `TracePanel` 给（`data-testid="trace-total"`）。
+    expect(steps[2].detail).toBe('')
   })
 
   it('这一轮没开思考就不显示思考这一步——不摆假动作', () => {
@@ -229,7 +231,8 @@ describe('Agent 步骤（v20）', () => {
       '组织回答',
     ])
     expect(steps.map((item) => item.icon)).toEqual(['think', 'search', 'search', 'build'])
-    expect(steps.at(-1)?.detail).toBe('共 1 字') // 回答那一步就地补字数
+    // 回答那一步不再"就地补字数"（同上一条：逐步不标，只在过程末尾给一个总计）
+    expect(steps.at(-1)?.detail).toBe('')
   })
 
   it('渲染思考步骤时不与 Agent 步骤里的 think 重复', () => {

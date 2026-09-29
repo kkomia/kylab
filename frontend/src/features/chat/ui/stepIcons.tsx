@@ -30,7 +30,6 @@ import {
   FileText,
   Globe,
   Hand,
-  LoaderCircle,
   MessageSquare,
   MessagesSquare,
   Pencil,
@@ -141,8 +140,7 @@ export function StepIcon({
  *
  * 为什么要有它：这一列原先只有"这一步干了什么"，没有"这一步成没成"——
  * 用户扫过去时默认每一行都做成了，而实际上有的被模式拦下、有的在等他点头、
- * 有的工具自己出错了。三档各一枚，**挂在图标圆底的右下角**（与 `StepSpinner`
- * 同一格、同一理由：另起一列会让整行文字在状态变化时往左跳一下）。
+ * 有的工具自己出错了。三档各一枚，**挂在图标圆底的右下角**。
  *
  * 底色取画布色，把它压出一个小缺口；颜色只取自 `--status-*` 那几枚令牌。
  *
@@ -163,31 +161,11 @@ export function StepOutcomeBadge({ outcome }: { outcome: StepOutcome }) {
   )
 }
 
-/**
- * 「这一步**还在跑**」的那一枚小转圈。
+/*
+ * 「还在跑」那枚**转圈**（`StepSpinner`，`LoaderCircle` + `animate-spin`）**已删除**
+ * （2026-09-29 用户："那个蓝色循环圈没有用"）。
  *
- * 为什么不是"把图标本身转起来"：图标回答的是"这一步干了什么"（检索是放大镜、
- * 写入是笔），转起来就把它变成了一个不说明任何事情的动作；而且后端的工具步骤
- * 本来就有 `running` / `done` 两态（见 `services/tool_loop.py`），两者该在同一格里
- * 同时看得见"是什么"与"在不在跑"。
- *
- * 位置取图标圆底的**右下角**（不是另起一列）：另起一列会让整行文字在
- * "跑完"的那一刻往左跳一下，而这个过程面板里每一行都会经历那一下。
- * 底色取画布色，好让它把圆底压出一个小缺口、看上去是一枚挂在边上的状态灯。
- *
- * `motion-reduce:animate-none` 尊重系统里那个"减少动态效果"（与 `App.tsx` 的骨架屏
- * 同一条口径）——转不动的时候它仍在那一格上，位置本身就是"还在跑"的读数。
- *
- * **与状态灯共用这一格**：真实数据里两者不会同时出现（后端先发 `running` 占位、
- * 跑完才发带 `outcome` 的那一条），调用方仍按"状态灯优先"渲染，只放一枚。
+ * 删掉的是**图标**，不是状态：并行还留两样——行上的 `data-running`（用例与无障碍）
+ * 与标签后面那句静态「进行中」（`traceStyles.STEP_RUNNING`）。
+ * 见到旧代码引用 `StepSpinner` 时，是"删了"，不是"忘了"。
  */
-export function StepSpinner() {
-  return (
-    <LoaderCircle
-      size={12}
-      aria-hidden
-      data-testid="step-spinner"
-      className="absolute -right-[4px] -bottom-[4px] rounded-[var(--radius-pill)] bg-[var(--bg-canvas)] text-[var(--accent-text)] animate-spin motion-reduce:animate-none"
-    />
-  )
-}

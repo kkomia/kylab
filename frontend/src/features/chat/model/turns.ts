@@ -1177,7 +1177,14 @@ function thinkingStep(message: Message): TraceStep[] {
 
 function answerDetail(message: Message): string {
   if (message.streaming) return '正在生成…'
-  return message.text.length > 0 ? `共 ${formatCount(message.text.length)} 字` : ''
+  /*
+   * 答完之后**不再报字数**（2026-09-29 用户："每一步的 token/字数不标，只在最后标一个总的"）。
+   *
+   * 那一行原先写「共 N 字」——它是**这一步**的字数，而"整段过程一共多少"才是要看的读数，
+   * 后者由 `TracePanel` 在过程末尾给一处（`data-testid="trace-total"`）。
+   * 这里刻意**不留一个近似的替代**：回答正文就在下面，用户数得出来；再印一个数只是噪声。
+   */
+  return ''
 }
 
 /**
