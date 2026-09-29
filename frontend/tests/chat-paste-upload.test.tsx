@@ -21,6 +21,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChatProvider } from '@/features/chat/runtime/ChatProvider'
 import { ChatRuntime } from '@/features/chat/runtime/ChatRuntime'
 import { Composer } from '@/features/chat/ui/Composer'
+import { Toaster } from '@/ui/sonner'
 
 vi.mock('@/api/chat', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/chat')>()
@@ -157,11 +158,16 @@ function withComposer() {
           <Route
             path="/chat/:conversationId?"
             element={
-              <ChatProvider>
-                <ChatRuntime>
-                  <Composer />
-                </ChatRuntime>
-              </ChatProvider>
+              <>
+                {/* 壳那个 `<Toaster/>` 不在这个夹具里，补一个：D21 那句"文件太大"的提示
+                    要有人接（与 D32 之后 `chat-workspace-entry` 的夹具同一处理）。 */}
+                <Toaster />
+                <ChatProvider>
+                  <ChatRuntime>
+                    <Composer />
+                  </ChatRuntime>
+                </ChatProvider>
+              </>
             }
           />
         </Routes>
@@ -400,5 +406,41 @@ describe('超长粘贴与输入框长高（D02/D06，2026-09-28 走查）', () =
     await userEvent.type(field, '写点东西')
 
     expect(field.style.height).toBe('300px')
+  })
+})
+
+describe('对话上传的大小预校验（D21，2026-09-28 走查）', () => {
+  /** 造一份"体积很大"的文件（不真占内存：只把 size 报大）。 */
+  function huge(name: string, bytes = 210 * 1024 * 1024): File {
+    const file = new File(['x'], name, { type: 'application/octet-stream' })
+    Object.defineProperty(file, 'size', { value: bytes })
+    return file
+  }
+
+  it('超过单文件上限的那份**不加进来**，并说清是哪一份、多大、上限多少', async () => {
+    // 病灶：后端的限是"整个 body 读完才判"，而对话上传这条路上**一处预校验都没有**
+    // ——用户要等整份传完才拿到一句失败（知识库上传那边早就有前置校验）。
+    withComposer()
+    const field = screen.getByRole('textbox', { name: '消息输入框' })
+
+    await paste(field, [huge('大文件.bin')])
+
+    const notice = await screen.findByText(/大文件\.bin/)
+    expect(notice).toHaveTextContent('超过单文件上限')
+    expect(notice).toHaveTextContent('200 MB')
+    // 它没有进附件区
+    expect(screen.queryByLabelText('待发送的附件')).not.toBeInTheDocument()
+  })
+
+  it('一批里只有超限的被丢掉，别的照常加进来', async () => {
+    withComposer()
+    const field = screen.getByRole('textbox', { name: '消息输入框' })
+    const ok = new File(['ok'], '正常.txt', { type: 'text/plain' })
+
+    await paste(field, [ok, huge('大文件.bin')])
+
+    const tray = await screen.findByLabelText('待发送的附件')
+    expect(within(tray).getByText('正常.txt')).toBeInTheDocument()
+    expect(within(tray).queryByText('大文件.bin')).not.toBeInTheDocument()
   })
 })

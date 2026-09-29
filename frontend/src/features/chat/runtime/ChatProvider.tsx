@@ -76,6 +76,9 @@ import { useConversationStore } from '@/features/layout/conversations'
 // 项目清单（壳那一层）：`?workspace=` 那条新建链路要说清"这一条会落在哪个项目"。
 // 侧栏是发起方，这份清单通常已经在手上（`ensureWorkspacesLoaded` 那一下就是补这个）。
 import { ensureWorkspacesLoaded, useWorkspaceStore } from '@/features/layout/workspaces'
+// 单文件上限（D21）：对话上传这条路上原先一处预校验都没有，而知识库那边早就有——
+// 那个模块存在的理由正是"别到处各写一个 200"，所以这里引它、不再抄一份数字。
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_MB } from '@/features/knowledge/uploadLimits'
 
 import { liveActions, useLiveTurnState, type LiveThinking, type LiveTurnState } from './liveAdapter'
 import { notifyError, notifySuccess, notifyWarning } from './notify'
@@ -1010,9 +1013,27 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    */
   const addAttachments = useCallback((files: File[]) => {
     if (files.length === 0) return
+    // **先按单文件上限筛一遍**（D21，2026-09-28 走查）。
+    //
+    // 后端的限也是 200 MB，但它是"整个 body 读完才判"——前端不先拦的话，用户要等
+    // 整份传完才拿到一句失败，白等一场（走查实测：对话上传这条路上**一处预校验都没有**，
+    // 而知识库上传那边早就有）。数字与后端 `api/v1/conversations.py` 的 `MAX_UPLOAD_BYTES`
+    // 同源，这里直接引 `uploadLimits.ts`（那个模块存在的理由就是"别到处各写一个 200"）。
+    const accepted = files.filter((file) => file.size <= MAX_UPLOAD_BYTES)
+    const tooBig = files.filter((file) => file.size > MAX_UPLOAD_BYTES)
+    if (tooBig.length > 0) {
+      const first = tooBig[0]
+      notifyWarning(
+        tooBig.length === 1
+          ? `「${first.name}」有 ${formatBytes(first.size)}，超过单文件上限 ${MAX_UPLOAD_MB} MB，没有加进来。`
+          : `有 ${tooBig.length} 份超过单文件上限 ${MAX_UPLOAD_MB} MB（第一份「${first.name}」` +
+              `${formatBytes(first.size)}），都没有加进来。`,
+      )
+    }
+    if (accepted.length === 0) return
     setAttachments((prev) => [
       ...prev,
-      ...files.map((file) => {
+      ...accepted.map((file) => {
         attachmentSeq += 1
         return { id: `att${attachmentSeq}`, file, preview: imagePreview(file) }
       }),
