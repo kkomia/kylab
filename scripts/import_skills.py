@@ -194,18 +194,20 @@ def _download(url: str, target: Path, *, retries: int, log) -> tuple[str, str]:
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "kylab-skill-import"})
             written = 0
-            with urllib.request.urlopen(request, timeout=120) as response:
-                with target.open("wb") as handle:
-                    while True:
-                        chunk = response.read(256 * 1024)
-                        if not chunk:
-                            break
-                        written += len(chunk)
-                        if written > REPO_SIZE_LIMIT:
-                            handle.close()
-                            target.unlink(missing_ok=True)
-                            return "big", f"tarball 超过 {REPO_SIZE_LIMIT // (1024 * 1024)}MB"
-                        handle.write(chunk)
+            with (
+                urllib.request.urlopen(request, timeout=120) as response,
+                target.open("wb") as handle,
+            ):
+                while True:
+                    chunk = response.read(256 * 1024)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > REPO_SIZE_LIMIT:
+                        handle.close()
+                        target.unlink(missing_ok=True)
+                        return "big", f"tarball 超过 {REPO_SIZE_LIMIT // (1024 * 1024)}MB"
+                    handle.write(chunk)
             return "ok", str(written)
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             if attempt >= retries:
@@ -225,7 +227,9 @@ def _extract(archive: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, "r:gz") as bundle:
         members = [item for item in bundle.getmembers() if item.isfile() or item.isdir()]
-        bundle.extractall(destination, members=members)
+        # `filter="data"`：Python 3.12+ 的官方过滤（拒绝绝对路径、上跳、链接与设备文件）。
+        # 与上面"只留普通文件与目录"是两道闸，缺一道在 3.14 默认开启过滤时行为就变了。
+        bundle.extractall(destination, members=members, filter="data")
 
 
 # ---------------------------------------------------------------- 技能识别与安装
@@ -404,7 +408,11 @@ def process_repo(repo: Repo, *, data_dir: Path, tmp_dir: Path, retries: int, log
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="按抓取索引重装完整技能（见文件头）")
-    parser.add_argument("--doc", default=str(DOC))
+    parser.add_argument("--doc", default=str(DOC), help="技能总表（仓库清单的第一来源）")
+    parser.add_argument(
+        "--index", default=str(INDEX),
+        help="抓取索引 index.json（**并集的第二来源**：它比文档多 148 个仓库）",
+    )
     parser.add_argument("--data", default=str(DEFAULT_DATA))
     parser.add_argument("--tmp", default=str(DEFAULT_TMP))
     parser.add_argument("--concurrency", type=int, default=2)
@@ -427,10 +435,14 @@ def main(argv: list[str] | None = None) -> int:
         with lock:
             print(message, flush=True)
 
-    repos = load_repos(Path(args.doc), args.only, args.skip)
+    repos, sources = load_repos(Path(args.doc), Path(args.index), args.only, args.skip)
     if args.limit:
         repos = repos[: args.limit]
-    print(f"文档里可导入的仓库：{len(repos)} 个；目标技能库：{data_dir}；临时目录：{tmp_dir}")
+    print(
+        f"仓库清单（文档 ∪ 索引）：**{len(repos)} 个**"
+        f"（文档 {sources['doc']} + 索引补 {sources['index_added']}）"
+        f"；目标技能库：{data_dir}；临时目录：{tmp_dir}"
+    )
     if args.dry_run:
         for repo in repos[:20]:
             print(f"  {repo.key}")
