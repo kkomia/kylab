@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Sequence
 
@@ -28,6 +29,8 @@ from psycopg import Connection
 
 from app.storage.base import VectorDimensionMismatch, VectorMatch, VectorStore
 from app.storage.postgres_impl.connection import Database
+
+logger = logging.getLogger(__name__)
 
 _TABLE_PREFIX = "vec_"
 _SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -43,6 +46,16 @@ EF_SEARCH = 100
 """查询期候选队列长度。**每次检索逐条设置**（``SET LOCAL``），
 因为它直接决定"召回率 ↔ 延迟"这组权衡，且不同查询可以不同——
 把它钉死在索引里反而失去了按查询调节的余地。"""
+
+HNSW_MAX_DIM = 2000
+"""HNSW 索引能建的最大维度（pgvector 的硬限制）。
+
+超过它时 ``CREATE INDEX ... USING hnsw`` 直接失败——实测 2048 维的原文是
+``column cannot have more than 2000 dimensions for hnsw index``。
+**这不代表那个库不能用**：分区照建、写入与检索照常，只是没有索引、走精确扫描；
+小库完全没问题，大库会明显变慢。所以这里不报错、只如实说清
+（见 `ensure_partition` 的返回值：那句话必须让用户看到）。
+"""
 
 _DIM_SQL = """
 select a.atttypmod as dim
@@ -74,7 +87,16 @@ class PostgresVectorStore(VectorStore):
 
     # ------------------------------------------------------------------ 分区
 
-    def ensure_partition(self, kb_id: str, *, dim: int) -> None:
+    def ensure_partition(self, kb_id: str, *, dim: int) -> str | None:
+        """建分区；**维度超过 HNSW 上限时只建表、不建索引**，并回一句要告诉用户的话。
+
+        为什么不是报错：那个库仍然完全可用（写入、检索、余弦排序都对），只是**精确扫描**。
+        把它拦下来等于"因为建不了索引就不许用 2048 维"——那是我们的限制，不是用户的问题。
+
+        为什么必须说清：不说的话用户会以为索引建好了、只是这次慢，然后在几十万条之后
+        才发现每一次检索都在全表扫。返回值与日志**两处都给**：返回给调用方去落（界面那面
+        迟早要显示），日志给当时就在看服务端的人。
+        """
         if dim <= 0:
             raise ValueError("向量维度必须为正整数")
         table = self._table(kb_id)
@@ -87,6 +109,16 @@ class PostgresVectorStore(VectorStore):
                     f"  chunk_id text PRIMARY KEY,"
                     f"  embedding vector({int(dim)}) NOT NULL)"
                 )
+                if dim > HNSW_MAX_DIM:
+                    advisory = (
+                        f"知识库 {kb_id} 的向量维度是 {dim}，超过向量索引上限 "
+                        f"（pgvector 的 HNSW 最多 {HNSW_MAX_DIM} 维）：这个库**没有向量索引**，"
+                        "检索走精确扫描——数据量小时没差别，数据量大时会明显变慢。"
+                        "想用索引就把嵌入模型的维度改成 1024（支持 Matryoshka 的模型会取前 "
+                        "1024 维并重新归一化，检索结果仍然正确），然后新建一个库。"
+                    )
+                    logger.warning("%s", advisory)
+                    return advisory
                 # 索引名由表名派生；kb_id 白名单限长 64，极端长度下 PG 会截断
                 # 标识符（63 字节），实际 ID 远短于此
                 conn.execute(
@@ -99,6 +131,23 @@ class PostgresVectorStore(VectorStore):
                     f"知识库 {kb_id} 的向量分区已是 {existing} 维，"
                     f"不能按 {dim} 维写入（架构 §6.4：维度不同不可混用）"
                 )
+        return None
+
+    def has_hnsw_index(self, kb_id: str) -> bool:
+        """这个库到底有没有 HNSW 索引。
+
+        "没有索引"是**要告诉用户的事**（见 `ensure_partition` 的返回值），所以它得能被
+        查证：用例据此钉住">2000 维不建索引"，将来界面/运维页也可以直接显示"检索方式"。
+        分区不存在时返回 False。
+        """
+        with self._db.read() as conn:
+            row = conn.execute(
+                "select 1 from pg_indexes"
+                " where schemaname = current_schema() and tablename = %s"
+                "   and indexdef ilike %s",
+                (self._table(kb_id), "%using hnsw%"),
+            ).fetchone()
+        return row is not None
 
     def drop_partition(self, kb_id: str) -> None:
         with self._db.session() as conn:

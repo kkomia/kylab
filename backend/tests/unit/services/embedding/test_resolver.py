@@ -214,3 +214,156 @@ def test_batch_change_invalidates_the_cached_embedder(registry: ModelRegistrySer
     resolver.for_model_pk(pk)
 
     assert seen == [32, 8]
+
+
+# ---------------------------------------------------------------------- 协议（WeMM）
+
+
+class _FakeRegistry:
+    """只回答一件事：这个 ``model_pk`` 指向哪个供应商与模型。
+
+    下面两条用例问的是"**协议**决定建哪个客户端"，与"注册表里存了什么"无关，
+    所以不必真的建库（本机没有测试库时也能跑）。
+    """
+
+    def __init__(self, provider: ModelProviderRecord, model: RegisteredModelRecord) -> None:
+        self._provider = provider
+        self._model = model
+
+    def embedding_target(
+        self, model_pk: str
+    ) -> tuple[ModelProviderRecord, RegisteredModelRecord]:
+        return self._provider, self._model
+
+
+def _lan_registry() -> _FakeRegistry:
+    provider = ModelProviderRecord(
+        id="p1",
+        kind="embedding",
+        name="局域网 WeMM",
+        base_url="http://192.168.31.18:8234",
+        api_key="",  # 那台没有鉴权
+    )
+    model = RegisteredModelRecord(
+        id="m1",
+        provider_id="p1",
+        model_id="WeMM-Embedding-2B-Q4_K_M.gguf",
+        dim=2048,
+        capabilities=["embedding"],
+    )
+    return _FakeRegistry(provider, model)
+
+
+def test_protocol_wemm_builds_the_media_capable_client() -> None:
+    """协议切到 WeMM 之后**按库解析**这条主路径也要换：否则媒体那条路被绕过去。
+
+    （"按库选模型"是嵌入模型的主路径，设置页那个全局协议如果不在这里生效，
+    表现就是"文本换了模型、图片还是没人嵌"。）
+    """
+    from app.services.embedding.wemm import WeMMEmbedder
+
+    resolver = EmbeddingResolver(
+        _lan_registry(),  # type: ignore[arg-type]
+        fallback=_FakeEmbedder(model_id="fallback", dim=8),
+        protocol=lambda: "wemm",
+    )
+
+    embedder = resolver.for_model_pk("m1")
+
+    assert isinstance(embedder, WeMMEmbedder)
+    assert embedder.model_id == "WeMM-Embedding-2B-Q4_K_M.gguf"
+    assert embedder.dim == 2048
+    assert embedder.supports_media is True
+
+
+def test_switching_protocol_invalidates_the_cached_embedder() -> None:
+    """协议进缓存键：切了协议还复用旧客户端，就会"设置改了但媒体那条路没接上"。"""
+    from app.services.embedding.openai_compat import OpenAICompatEmbedder
+    from app.services.embedding.wemm import WeMMEmbedder
+
+    current = {"protocol": "openai"}
+    resolver = EmbeddingResolver(
+        _lan_registry(),  # type: ignore[arg-type]
+        fallback=_FakeEmbedder(model_id="fallback", dim=8),
+        protocol=lambda: current["protocol"],
+    )
+
+    assert isinstance(resolver.for_model_pk("m1"), OpenAICompatEmbedder)
+
+    current["protocol"] = "wemm"
+
+    assert isinstance(resolver.for_model_pk("m1"), WeMMEmbedder)
+
+
+def test_default_protocol_keeps_building_the_openai_client() -> None:
+    """没注入协议取值函数时（既有调用点）行为不变：还是 OpenAI 兼容那一个。"""
+    from app.services.embedding.openai_compat import OpenAICompatEmbedder
+
+    resolver = EmbeddingResolver(
+        _lan_registry(),  # type: ignore[arg-type]
+        fallback=_FakeEmbedder(model_id="fallback", dim=8),
+    )
+
+    assert isinstance(resolver.for_model_pk("m1"), OpenAICompatEmbedder)
+
+
+def _registry_with_options(options: dict[str, object]) -> _FakeRegistry:
+    """同一个局域网供应商，但模型登记里带了 ``options``（按模型声明协议那一栏）。"""
+    provider = ModelProviderRecord(
+        id="p1", kind="embedding", name="局域网 WeMM", base_url="http://192.168.31.18:8234"
+    )
+    model = RegisteredModelRecord(
+        id="m1",
+        provider_id="p1",
+        model_id="WeMM-Embedding-2B-Q4_K_M.gguf",
+        dim=1024,
+        capabilities=["embedding"],
+        options=options,
+    )
+    return _FakeRegistry(provider, model)
+
+
+def test_model_declared_protocol_wins_over_the_global_default() -> None:
+    """协议按**模型**定：全局默认是 openai，这个模型声明了 wemm 就该用它。
+
+    这是"一个进程里同时接两家不同协议的服务"那条需求的关键一步。
+    """
+    from app.services.embedding.wemm import WeMMEmbedder
+
+    resolver = EmbeddingResolver(
+        _registry_with_options({"protocol": "wemm"}),  # type: ignore[arg-type]
+        fallback=_FakeEmbedder(model_id="fallback", dim=8),
+        protocol=lambda: "openai",  # 全局默认还是 OpenAI 兼容
+    )
+
+    embedder = resolver.for_model_pk("m1")
+
+    assert isinstance(embedder, WeMMEmbedder)
+    # 维度是**库记录里冻结的那个**：WeMM 客户端按 1024 做 Matryoshka 截断 + 重归一化
+    assert embedder.dim == 1024
+
+
+def test_model_declared_protocol_falls_back_to_the_setting_when_unknown() -> None:
+    """声明了一个不认识的值：退回全局设置，而不是让这个库的向量通道整个不可用。"""
+    from app.services.embedding.wemm import WeMMEmbedder
+
+    resolver = EmbeddingResolver(
+        _registry_with_options({"protocol": "wemmm"}),  # type: ignore[arg-type]
+        fallback=_FakeEmbedder(model_id="fallback", dim=8),
+        protocol=lambda: "wemm",
+    )
+
+    assert isinstance(resolver.for_model_pk("m1"), WeMMEmbedder)
+
+
+def test_model_without_the_option_uses_the_setting() -> None:
+    """没声明这一栏的模型（绝大多数）走全局设置——这是"默认值"的含义。"""
+    from app.services.embedding.openai_compat import OpenAICompatEmbedder
+
+    resolver = EmbeddingResolver(
+        _registry_with_options({}),  # type: ignore[arg-type]
+        fallback=_FakeEmbedder(model_id="fallback", dim=8),
+        protocol=lambda: "openai",
+    )
+
+    assert isinstance(resolver.for_model_pk("m1"), OpenAICompatEmbedder)

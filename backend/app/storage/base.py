@@ -2457,8 +2457,15 @@ class VectorStore(ABC):
     """向量仓储：按知识库分区（架构 §8.3），维度在分区创建时确定。"""
 
     @abstractmethod
-    def ensure_partition(self, kb_id: str, *, dim: int) -> None:
-        """为知识库建向量分区；已存在且维度不一致时必须报错而不是静默写入。"""
+    def ensure_partition(self, kb_id: str, *, dim: int) -> str | None:
+        """为知识库建向量分区；已存在且维度不一致时必须报错而不是静默写入。
+
+        **返回一句"要告诉用户的话"**（没有该说的事就是 ``None``）。目前唯一的来源是
+        "维度超过索引上限、这个库只能走**精确检索**"（见 ``PostgresVectorStore``）。
+        做成返回值而不是只写日志：这件事**用户必须知道**（否则他会以为索引建好了、
+        只是慢），而存储层够不着界面——把那句话交给调用方去落（摄入那一层会记日志，
+        界面那面迟早按同一句话显示）。调用方可以忽略返回值，行为与从前一致。
+        """
 
     @abstractmethod
     def upsert_vectors(self, kb_id: str, *, items: Sequence[tuple[str, Sequence[float]]]) -> None:

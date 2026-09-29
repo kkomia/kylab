@@ -141,6 +141,14 @@ class Settings(BaseSettings):
     # 统一由模型注册表（供应商 → 模型）承担，见 services/model_registry.py。
     # 这里是**行为参数**，不是模型身份。
     embedding_batch_size: int = 32
+    embedding_protocol: str = "openai"
+    """嵌入协议（``openai`` / ``wemm``），默认 ``openai``——既有部署一位不变。
+
+    只作为 ``.env`` 里的**引导值**（``KYLAB_EMBEDDING_PROTOCOL``）：部署时预设一次，
+    之后以设置页里的值为准（与批大小同一条规则）。**地址不在 .env 里**：那台 WeMM 服务
+    的 ``base_url`` 是"注册了哪个供应商"的一部分，由模型注册表承担——本机部署示例见
+    ``backend/.env.example`` 与 ``docs/调研/WeMM-Embedding-2B-接入文档-v0.1.md``。
+    """
 
     dev_embedding: bool = False
     """开发用确定性嵌入（哈希）开关，**默认关闭，生产不要开**。

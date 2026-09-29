@@ -30,6 +30,14 @@ from app.core.exceptions import InvalidRequestError
 from app.parsers.mineru_cloud import MinerUConfig
 from app.parsers.paddleocr_api import PaddleOCRConfig
 from app.services import modes
+from app.services.embedding.protocols import (
+    DEFAULT_PROTOCOL,
+    PROTOCOL_OPTIONS,
+    WEMM_PROTOCOL,
+    normalize_protocol,
+    protocol_for_model,
+    supports_media,
+)
 from app.services.llm import LLMConfig
 from app.services.thinking import normalize_effort
 from app.storage.base import StoreBundle
@@ -63,6 +71,16 @@ SETTING_GROUPS: dict[str, Any] = {
         "label": "向量化",
         "fields": [
             {"key": "embedding.batch_size", "label": "批大小", "type": "int"},
+            {
+                "key": "embedding.protocol",
+                "label": "嵌入协议",
+                "type": "select",
+                # 值表来自 `services/embedding/protocols.py`（一处定义，别处只 import）：
+                # 这里再抄一份字符串，改协议名时就会漏掉一处
+                "options": [
+                    {"value": value, "label": label} for value, label in PROTOCOL_OPTIONS
+                ],
+            },
         ],
     },
     "mineru": {
@@ -288,6 +306,9 @@ SETTING_GROUPS: dict[str, Any] = {
 #: 代码默认值。**只有行为参数**：模型身份来自注册表，没有默认模型这回事。
 DEFAULTS: dict[str, str] = {
     "embedding.batch_size": "32",
+    # 默认协议 = OpenAI 兼容：没动过这一位时，既有部署的行为一位不变
+    # （`services/embedding/protocols.py` 是这张表的定义处）。
+    "embedding.protocol": DEFAULT_PROTOCOL,
     "mineru.endpoint": "https://mineru.net/api/v4",
     "mineru.token": "",
     "mineru.model_version": "vlm",
@@ -470,11 +491,27 @@ class EmbeddingSettings:
     model_id: str
     dim: int
     batch_size: int
+    protocol: str = DEFAULT_PROTOCOL
+    """走哪套嵌入协议（``openai`` / ``wemm``，见 `services/embedding/protocols.py`）。
+
+    它是**行为参数**（与批大小同族）而不是模型身份，所以留在设置页那一层：
+    模型身份（地址 / 密钥 / 模型名 / 维度）在模型注册表里按库冻结。
+    """
 
     @property
     def is_configured(self) -> bool:
-        """有 key、有模型、维度为正，才算配好。"""
-        return bool(self.api_key and self.model_id and self.dim > 0)
+        """有（协议需要的）凭据、有模型、维度为正，才算配好。
+
+        **"必须有 key"只对 OpenAI 兼容那一档成立**：局域网那台 WeMM 没有鉴权
+        （接入文档 §5 的客户端一个 Authorization 都不发），要求它填 key 等于逼用户编一个
+        假值；反过来 OpenAI 兼容没 key 基本就是没配好（401 会一直失败），所以那条照旧。
+        两档都要有**地址**：一个没有地址的嵌入模型无从调用。
+        """
+        if not (self.model_id and self.dim > 0):
+            return False
+        if self.protocol == WEMM_PROTOCOL:
+            return bool(self.base_url)
+        return bool(self.api_key)
 
 
 @dataclass(frozen=True, slots=True)
@@ -689,16 +726,22 @@ class RuntimeConfigService:
     # ------------------------------------------------------------------ 快照
 
     def embedding(self) -> EmbeddingSettings:
-        """向量化配置快照——**只来自模型注册表**（v0.8 归属整理）。
+        """向量化配置快照——**模型身份只来自模型注册表**（v0.8 归属整理）。
 
         没绑定「向量化」用途就是没配：``is_configured`` 为假，调用方据此报错，
-        而不是退回某个"看起来能用"的实现。批大小是行为参数，仍在设置页。
+        而不是退回某个"看起来能用"的实现。批大小与**协议**是行为参数，仍在设置页。
         """
         batch_size = _as_int(self.get("embedding.batch_size"), 32) or 32
+        protocol = normalize_protocol(self.get("embedding.protocol"))
         bound = self._bound("embedding")
         if bound is None:
             return EmbeddingSettings(
-                base_url="", api_key="", model_id="", dim=0, batch_size=batch_size
+                base_url="",
+                api_key="",
+                model_id="",
+                dim=0,
+                batch_size=batch_size,
+                protocol=protocol,
             )
         provider, model = bound
         return EmbeddingSettings(
@@ -708,6 +751,34 @@ class RuntimeConfigService:
             # 维度是模型属性：注册表登记了才算数，不再从设置页补
             dim=model.dim or 0,
             batch_size=batch_size,
+            protocol=protocol,
+        )
+
+    def embedding_supports_media(self) -> bool:
+        """这台机器上**有没有任何一处**能嵌图片 / 视频。
+
+        **门控不能只看全局默认协议**：协议现在是按模型的（`protocols.protocol_for_model`），
+        "全局默认还是 openai、但某个库绑的是 WeMM 模型"是完全正常的组合——那种情况下
+        媒体直通解析器也必须挂上，否则那个库的图片 / 视频连进都进不来（解析阶段就被
+        "暂不支持"拦掉了，走不到向量那一步）。
+
+        判据两条：全局默认协议本身支持媒体，或者**任一已登记的嵌入模型**在 ``options``
+        里声明了一个支持媒体的协议。注册器缺席（老部署、手工构造的配置）时只看全局默认。
+        """
+        if supports_media(self.embedding().protocol):
+            return True
+        lister = getattr(self._registry, "list_models", None)
+        if lister is None:
+            return False
+        try:
+            models = lister()
+        except Exception:
+            # 注册表读不到（库抖动 / 权限）不该让整条解析链挂掉：退回"只看全局默认"，
+            # 这是配置缺失而不是文档处理失败——与 `_bound` 的宽容口径一致。
+            return False
+        return any(
+            supports_media(protocol_for_model(getattr(model, "options", None), ""))
+            for model in models
         )
 
     def rerank(self) -> RerankSettings:
@@ -863,6 +934,7 @@ class RuntimeConfigService:
             return ""
         mapping = {
             "embedding.batch_size": settings.embedding_batch_size,
+            "embedding.protocol": settings.embedding_protocol,
             "mineru.token": settings.mineru_token,
             "paddleocr.token": settings.paddleocr_token,
             "llm.temperature": settings.llm_temperature,

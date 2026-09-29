@@ -8,6 +8,7 @@
 import pytest
 
 from app.storage.base import VectorDimensionMismatch, VectorStore
+from app.storage.postgres_impl.vector_store import HNSW_MAX_DIM, PostgresVectorStore
 
 DIM = 4
 
@@ -21,6 +22,56 @@ def test_partition_is_created_lazily_and_idempotently(vector_store: VectorStore)
     vector_store.ensure_partition("kb_1", dim=DIM)
     vector_store.ensure_partition("kb_1", dim=DIM)  # 重复调用不应报错
     assert vector_store.declared_dim("kb_1") == DIM
+
+
+def test_indexed_dimensions_get_an_hnsw_index(vector_store: PostgresVectorStore) -> None:
+    """≤2000 维照旧建 HNSW：这是绝大多数库走的那条路，行为一位不变。"""
+    assert vector_store.ensure_partition("kb_hnsw", dim=HNSW_MAX_DIM) is None
+
+    assert vector_store.has_hnsw_index("kb_hnsw") is True
+
+
+def test_dimensions_above_the_limit_still_work_without_an_index(
+    vector_store: PostgresVectorStore,
+) -> None:
+    """>2000 维：**精确检索**（不建索引）——库照用，但必须回一句话告诉用户。
+
+    2048 正是 WeMM 的原生维度：pgvector 会拒绝给这个维度建 HNSW
+    （``column cannot have more than 2000 dimensions for hnsw index``），
+    所以处置是"不建索引 + 如实说清代价"，而不是让建库失败。
+    """
+    dim = HNSW_MAX_DIM + 48
+
+    advisory = vector_store.ensure_partition("kb_exact", dim=dim)
+
+    assert advisory is not None
+    assert str(dim) in advisory and "1024" in advisory
+    assert vector_store.has_hnsw_index("kb_exact") is False
+    assert vector_store.declared_dim("kb_exact") == dim
+
+    # 没有索引不代表不能用：写入与检索照常，而且精确扫描的结果**更准**
+    vector_store.upsert_vectors(
+        "kb_exact",
+        items=[
+            ("c_match", [1.0] + [0.0] * (dim - 1)),
+            ("c_other", [0.0] * (dim - 1) + [1.0]),
+        ],
+    )
+    matches = vector_store.search(
+        "kb_exact", query_vector=[1.0] + [0.0] * (dim - 1), top_k=2
+    )
+
+    assert matches[0].chunk_id == "c_match"
+    assert matches[0].distance == pytest.approx(0.0, abs=1e-6)
+
+
+def test_the_sentence_is_only_returned_above_the_limit(
+    vector_store: PostgresVectorStore,
+) -> None:
+    """那句话只在 >2000 维时出现（否则它会变成噪声，用户会开始无视它）。"""
+    assert vector_store.ensure_partition("kb_a", dim=1024) is None
+    assert vector_store.ensure_partition("kb_b", dim=HNSW_MAX_DIM) is None
+    assert vector_store.ensure_partition("kb_c", dim=HNSW_MAX_DIM + 1) is not None
 
 
 def test_search_returns_exact_match_first(vector_store: VectorStore) -> None:

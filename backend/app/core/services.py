@@ -266,11 +266,30 @@ class _RuntimeEmbedder(EmbeddingProvider):
         """只有在**没配模型但显式开了开发兜底**时才为真。"""
         return self._dev_embedding and not self._runtime.embedding().is_configured
 
+    @property
+    def supports_media(self) -> bool:
+        """当前配置的实现能不能嵌图片 / 视频。
+
+        **问的是"这一档配置"而不是自己**：这一层只是个转发壳，真正的能力在
+        `build_embedder` 按协议建出来的那个实现身上（`EmbeddingProvider.supports_media`）。
+        摄入与解析路由据此决定"媒体文件走不走媒体接口"。
+        """
+        return bool(self.current.supports_media)
+
     def embed(self, texts):  # type: ignore[no-untyped-def]
         started = time.monotonic()
         vectors = self.current.embed(texts)
         self._record(texts, started)
         return vectors
+
+    def embed_media(self, data: bytes) -> list[float]:
+        """媒体向量：**转发给当前配置的实现**（不支持时它自己会报错说明原因）。
+
+        用量**不在这里记**：`_record` 记的是文本条数与按字符数估的 token，
+        对一份几 MB 的视频没有意义（会得出一个荒唐的"token 数"）。媒体那条路的
+        耗时与成败在日志里可见——宁可少一行仪表，也不要一行假数字。
+        """
+        return self.current.embed_media(data)
 
     def embed_query(self, text: str) -> list[float]:
         """查询向量化。
@@ -350,7 +369,12 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     # 否则回退到上面的全局 embedder——老库与"不挑模型"的库行为不变。
     # 批大小取运行期配置（取值函数而不是常量）：否则设置页那个项对这条路径是 no-op
     embedding_resolver = EmbeddingResolver(
-        registry, fallback=embedder, batch_size=lambda: runtime.embedding().batch_size
+        registry,
+        fallback=embedder,
+        batch_size=lambda: runtime.embedding().batch_size,
+        # 协议也跟着运行期配置走：设置页切成 WeMM 之后，按库解析出来的那一条
+        # 也立刻换成 WeMM 客户端（否则"按库选模型"这条主路径会绕过协议）
+        protocol=lambda: runtime.embedding().protocol,
     )
     retrieval = RetrievalService(
         bundle,

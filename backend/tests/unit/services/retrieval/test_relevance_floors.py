@@ -57,6 +57,50 @@ def test_calibrated_model_turns_both_floors_on() -> None:
     assert coverage == DEFAULT_MIN_TERM_COVERAGE
 
 
+def test_wemm_models_get_their_own_conservative_floor() -> None:
+    """WeMM 多模态那台也标定过：**0.35**（实测相关下限 0.40 之下留了余量）。
+
+    用户登记的模型名带量化后缀（``WeMM-Embedding-2B-Q4_K_M.gguf``），查表用"包含"
+    匹配，所以两种写法都命中——要求把名字写得一字不差，等于这条标定对大多数人不生效。
+    """
+    for model_id in ("WeMM-Embedding-2B-Q4_K_M.gguf", "WeMM-Embedding-2B", "wemm-embedding-2b"):
+        assert _floors(model_id) == (0.35, DEFAULT_MIN_TERM_COVERAGE), model_id
+
+    # 它比 bge-m3 那个 0.89 低得多——两个模型的余弦尺度本来就不是一回事
+    assert MIN_VECTOR_SCORE_BY_MODEL["wemm-embedding-2b"] < MIN_VECTOR_SCORE_BY_MODEL["bge-m3"]
+
+
+def test_wemm_floor_lets_real_hits_through_and_stops_noise() -> None:
+    """地板两侧的行为：低于它走"资料里没有"，高于它**不误杀**。
+
+    数字取自真机实测（相关 ≈0.40–0.52、不相关 ≈0.07–0.20），见
+    ``MIN_VECTOR_SCORE_BY_MODEL`` 上面那段标定依据。
+    """
+    from app.services.retrieval.distribution import FIT_NONE, FIT_STRONG, summarize
+
+    floor = MIN_VECTOR_SCORE_BY_MODEL["wemm-embedding-2b"]
+
+    def verdict(scores: list[float]):
+        return summarize(
+            [(f"doc_{index}", score, f"d{index}") for index, score in enumerate(scores)],
+            floor=0.0,
+            baseline=floor,
+            keep_cap=6,
+        )
+
+    # 噪声（同一张文不对题的查询：0.14 / 0.07 / 0.20）→ 判"答不了"，建议条数 0
+    noise = verdict([0.20, 0.14, 0.07])
+    assert noise.fit == FIT_NONE
+    assert noise.suggested_keep == 0
+    assert "答不了" in noise.note
+
+    # 真命中（0.49 / 0.40 / 0.42）→ 不误杀：判 strong、建议条数 > 0
+    hits = verdict([0.4929, 0.4203, 0.4044])
+    assert hits.fit == FIT_STRONG
+    assert hits.suggested_keep > 0
+    assert "答不了" not in hits.note
+
+
 def test_uncalibrated_model_keeps_both_floors_off() -> None:
     """没标定过的模型（含开发用哈希、别的供应商）：**整套关闭**。
 

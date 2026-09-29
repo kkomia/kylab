@@ -4,11 +4,17 @@
 以及去重、失败定位、断点续跑与模型锁定。
 """
 
+import os
+import pathlib
+import struct
+import zlib
+
 import pytest
 
 from app.core.exceptions import ConflictError, InvalidRequestError
 from app.models.enums import DocumentStage
 from app.parsers.base import ParseError
+from app.parsers.media_direct import MediaDirectParser
 from app.parsers.plain_text import PlainTextParser
 from app.services.chunking import ChunkingConfig
 from app.services.documents import DocumentService
@@ -60,6 +66,47 @@ def test_create_knowledge_base_freezes_model_and_dim(kb) -> None:
     """架构 §6.4：模型与维度随库冻结，作为后续写入的校验依据。"""
     assert kb.embedding_model_id == "dev/deterministic-hash"
     assert kb.embedding_dim == DIM
+
+
+def test_ingest_above_the_index_limit_works_and_says_so(
+    bundle: StoreBundle, caplog
+) -> None:  # type: ignore[no-untyped-def]
+    """>2000 维的库：**照常入库**（精确检索），但要在日志里说清"没有向量索引"。
+
+    实测踩到的原文：``column cannot have more than 2000 dimensions for hnsw index``
+    （pgvector 的 HNSW 上限）。处置是"不建索引 + 如实说清"，**不是**让建库失败——
+    2048 正是 WeMM 的原生维度，把它拦下来等于因为建不了索引就不许用原生精度。
+    """
+    from app.storage.postgres_impl.vector_store import HNSW_MAX_DIM, PostgresVectorStore
+
+    big_dim = HNSW_MAX_DIM + 48
+    embedder = DeterministicEmbedder(dim=big_dim)
+    kb = KnowledgeBaseService(bundle, embedder=embedder).create(kb_id="kb_big", name="大维度库")
+    service = IngestService(
+        bundle,
+        router=ParserRouter([PlainTextParser()]),
+        embedder=embedder,
+        chunk_config=ChunkingConfig(size=64, overlap=8),
+    )
+
+    with caplog.at_level("WARNING", logger="app.services.ingest"):
+        outcome = service.submit(
+            knowledge_base_id=kb.id, filename="kb.md", content=MARKDOWN.encode()
+        )
+        result = service.ingest(outcome.document.id)
+
+    assert result.document.stage is DocumentStage.INDEXED
+    assert result.chunk_count > 0
+    assert bundle.vectors.declared_dim(kb.id) == big_dim
+    # 没有索引这件事必须留在日志里（那句话同时由 `ensure_partition` 返回给调用方）
+    assert any("没有向量索引" in record.getMessage() for record in caplog.records)
+    vectors = bundle.vectors
+    assert isinstance(vectors, PostgresVectorStore)
+    assert vectors.has_hnsw_index(kb.id) is False
+    # 而且检索照常（精确扫描）：刚写进去的那一条能被召回
+    assert bundle.vectors.search(
+        kb.id, query_vector=embedder.embed([MARKDOWN])[0], top_k=1
+    ), "没有索引不等于查不到——精确扫描必须仍然返回结果"
 
 
 def test_kb_service_raises_for_missing_kb(kb_service: KnowledgeBaseService) -> None:
@@ -869,3 +916,109 @@ def test_generate_questions_without_the_service_is_rejected(
 
     with pytest.raises(InvalidRequestError, match="出题能力"):
         ingest_service.generate_questions(outcome.document.id)
+
+
+# ------------------------------------------------- 媒体（图片 / 视频）真机入库（按需开）
+
+
+#: 真机 WeMM 服务的地址。**不设就跳过**：这一条要一台局域网 GPU 服务，CI 上没有。
+#: 例：``KYLAB_WEMM_E2E_URL=http://192.168.31.18:8234``（地址只在环境里，不进源码）。
+WEMM_E2E_URL_ENV = "KYLAB_WEMM_E2E_URL"
+#: 想换成一段真视频时给它的路径（不给就用下面生成的那张 8x8 PNG）。
+#: 媒体这条路对图片与视频是**同一套三步协议**，所以两种都能验；视频那条真机数字
+#: 见《开发计划》那条记录与接入文档。
+WEMM_E2E_MEDIA_ENV = "KYLAB_WEMM_E2E_MEDIA"
+#: 目标维度。默认 **1024**，不是原生 2048——原因是一条硬限制：
+#: **pgvector 的 HNSW 索引最多 2000 维**（实测 2048 会在建分区时报
+#: ``column cannot have more than 2000 dimensions for hnsw index``）。
+#: 1024 正是接入文档列出的 Matryoshka 截断档位，于是"用 WeMM"这条路上
+#: 维度 = 1024 是**能索引**的那个选择（2048 要么不用 HNSW、要么等存储层支持 halfvec，
+#: 两件都需要更大的一次决定，见报告）。
+WEMM_E2E_DIM_ENV = "KYLAB_WEMM_E2E_DIM"
+WEMM_MODEL_ID = "WeMM-Embedding-2B-Q4_K_M.gguf"
+
+
+def tiny_png() -> bytes:
+    """生成一张 8x8 纯红 PNG（纯标准库）。
+
+    为什么不往仓库放一份图片 fixture：几十 KB 的二进制进 git，只为一条**按需跑**的
+    用例不值当；而这一侧要的只是"一段真能被解码器读出来的图片字节"。
+    """
+    width = height = 8
+    raw = b"".join(b"\x00" + b"\xff\x00\x00" * width for _ in range(height))
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        crc = zlib.crc32(tag + data) & 0xFFFFFFFF
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+@pytest.mark.skipif(
+    not os.environ.get(WEMM_E2E_URL_ENV),
+    reason=f"需要真机的 WeMM 多模态嵌入服务：设 {WEMM_E2E_URL_ENV} 后才会跑",
+)
+def test_media_document_is_indexed_with_the_media_vector(bundle: StoreBundle) -> None:
+    """真机端到端：图片 / 视频 → 媒体接口的向量 → **落库** → 用同一份向量精确召回它。
+
+    这条补的是"单元用例只到向量为止"的那一段（解析产物、分段、pgvector 分区、检索）。
+    断言刻意只落在**机械事实上**，不押模型语义：
+
+    1. 文档走到 ``indexed``、只有一段、段正文里如实写着"媒体向量索引"；
+    2. 分区维度 = 目标维度（默认 1024）、库记录里冻结的也是它；
+    3. 用**同一份媒体向量**去搜 → 距离 ≈ 0（证明库里存的就是它）；
+    4. 用**这段文字**的文本向量去搜 → 距离明显大于 0（证明存的不是文本向量）。
+
+    第 3、4 条合起来才是"向量真的来自媒体接口"的证据——只看"能搜到"是不够的，
+    文本向量同样能搜到它自己。
+    """
+    from app.services.embedding.wemm import WeMMEmbedder
+
+    base_url = os.environ[WEMM_E2E_URL_ENV]
+    dim = int(os.environ.get(WEMM_E2E_DIM_ENV) or 1024)
+    embedder = WeMMEmbedder(base_url=base_url, model_id=WEMM_MODEL_ID, dim=dim)
+    kb = KnowledgeBaseService(bundle, embedder=embedder).create(kb_id="kb_wemm", name="WeMM 真机库")
+
+    media_path = os.environ.get(WEMM_E2E_MEDIA_ENV, "")
+    if media_path and pathlib.Path(media_path).is_file():
+        content = pathlib.Path(media_path).read_bytes()
+        filename = pathlib.Path(media_path).name
+    else:
+        content = tiny_png()
+        filename = "一面红旗.png"
+
+    service = IngestService(
+        bundle,
+        # 这一条验的是媒体那条路本身；"门控在什么条件下才挂它"由解析路由的单测钉
+        router=ParserRouter([MediaDirectParser()]),
+        embedder=embedder,
+        chunk_config=ChunkingConfig(size=512, overlap=0),
+    )
+    submitted = service.submit(knowledge_base_id=kb.id, filename=filename, content=content)
+    result = service.ingest(submitted.document.id)
+
+    assert result.document.stage is DocumentStage.INDEXED
+    assert result.document.error is None
+
+    chunks = list(bundle.meta.iter_chunks(submitted.document.id))
+    assert len(chunks) == 1
+    assert "媒体向量索引" in chunks[0].text
+    assert "媒体向量索引" in chunks[0].index_text
+
+    assert bundle.vectors.declared_dim(kb.id) == dim
+    assert bundle.meta.get_knowledge_base(kb.id).embedding_dim == dim
+
+    media_vector = embedder.embed_media(content)
+    hits = bundle.vectors.search(kb.id, query_vector=media_vector, top_k=1)
+    assert hits[0].chunk_id == chunks[0].chunk_id
+    assert hits[0].distance == pytest.approx(0.0, abs=1e-6), "库里存的不是刚刚那份媒体向量"
+
+    text_vector = embedder.embed([chunks[0].index_text])[0]
+    other = bundle.vectors.search(kb.id, query_vector=text_vector, top_k=1)
+    assert other[0].distance > 0.01, "存的像是文本向量——那说明媒体那条路根本没走到"

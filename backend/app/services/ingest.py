@@ -23,6 +23,7 @@ from urllib.parse import quote
 from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
 from app.models.enums import DataSourceKind, DocumentStage
 from app.parsers.base import ParseError, ParseResult, ParserProvider
+from app.parsers.media_direct import MediaDirectParser
 from app.parsers.probe import probe, suffix_of
 from app.pipeline.state_machine import InvalidTransition, assert_transition
 from app.services.chunking import ChunkingConfig, chunk_markdown, config_from_record
@@ -678,16 +679,57 @@ class IngestService:
             return
 
         embedder = self._embedder_for(kb)
-        self._stores.vectors.ensure_partition(kb.id, dim=embedder.dim)
+        # 维度超过索引上限时仓储会把"这个库没有向量索引"作为一句话回给我们
+        # （不报错：库照用，只是精确扫描）。**必须落日志**——否则用户只会觉得"检索变慢了"。
+        advisory = self._stores.vectors.ensure_partition(kb.id, dim=embedder.dim)
+        if advisory:
+            logger.warning("文档 %s：%s", document.id, advisory)
         # **index_text 而不是 text**：含该段生成的问题，于是"换个问法"也能命中
         # （见 ChunkRecord.index_text）。原文那一列不动，引用预览里不会多出问题。
         texts = [chunk.index_text for chunk in chunks]
-        vectors = embedder.embed(texts)
+        media = self._media_blob(document, embedder)
+        vectors = vectors_for(embedder, texts=texts, media=media)
+        if media is not None:
+            logger.info(
+                "文档 %s 的向量来自媒体接口（%d 个分段共用同一份媒体向量）",
+                document.id,
+                len(chunks),
+            )
         self._stores.vectors.upsert_vectors(
             kb.id,
             items=[(chunk.chunk_id, vector) for chunk, vector in zip(chunks, vectors, strict=True)],
         )
         self._advance(document, DocumentStage.INDEXED)
+
+    def _media_blob(
+        self, document: DocumentRecord, embedder: EmbeddingProvider
+    ) -> bytes | None:
+        """这份文档的向量该不该由**媒体接口**给（图片 / 视频）。
+
+        第一条判据是**它是媒体直通解析出来的**（``parse_results.parser_name``）——
+        **不能只看后缀**：配了 OCR 的图片走的是 OCR 文本，它的向量必须还是文本向量，
+        否则同一张图"配没配 OCR"会落进两个不同的语义空间，检索结果前后矛盾而没有人
+        看得出来。
+
+        第二条判据是当前嵌入实现**支持媒体**。这里**报错而不是退回文本**：那份最小
+        Markdown 里写着"本文件由媒体向量索引"，退回文本就等于让出处说假话（用户点开
+        看到的是文件名，而向量其实来自这段文字）。报错会说清该改哪一栏。
+
+        读的是**原文**：媒体向量必须来自文件本身（服务端自己解码），而不是我们转出来的
+        Markdown。整份文件会进一次内存——这与解析那一侧同一条路（原文本来就在内存里），
+        不额外引入一个"分片读文件"的复杂度。
+        """
+        parsed = self._stores.meta.get_parse_result(document.id)
+        if parsed is None or parsed.parser_name != MediaDirectParser.name:
+            return None
+        if not embedder.supports_media:
+            raise EmbeddingError(
+                f"「{document.name}」是图片 / 视频，但知识库当前用的嵌入模型 "
+                f"{embedder.model_id or '(未配置)'} 不支持媒体向量。请在「设置 → 模型注册」"
+                "里给这个模型声明协议 wemm（或在「向量化」里把它设为默认），"
+                "或者换一个支持图片 / 视频的嵌入模型"
+            )
+        return self._read_original(document)
 
     # ------------------------------------------------------------------ 补出题（v24）
 
@@ -853,6 +895,35 @@ def _before(current: DocumentStage, target: DocumentStage) -> bool:
 
 def _suffix_of(filename: str) -> str:
     return suffix_of(filename)
+
+
+#: 超过这个维度的库**没有向量索引**（pgvector 的 HNSW 上限，见
+#: `storage/postgres_impl/vector_store.HNSW_MAX_DIM`）：仍然完全可用，只是检索走
+#: 精确扫描。仓储那一层会把这件事作为一句"要告诉用户的话"**返回**（`ensure_partition`），
+#: 摄入这一层负责写进日志——用户不必从"检索怎么变慢了"里猜出来。
+HNSW_MAX_DIM = 2000
+
+
+def vectors_for(
+    embedder: EmbeddingProvider,
+    *,
+    texts: list[str],
+    media: bytes | None,
+) -> list[list[float]]:
+    """这一份文档的向量：**文本批量**，或者**一份媒体向量**（每个分段一份）。
+
+    "文本还是媒体"这件事**只在这里分岔一次**（`_embed_and_index` 只负责把
+    `media` 算出来）。分成两处判会出现"算的是媒体向量、记的是文本通道"这种错位，
+    而它只在检索结果里显形。
+
+    为什么一份媒体向量可以给多个分段：媒体向量描述的是**整份文件**（"这段视频里是什么"），
+    而媒体直通那份 Markdown 只有两三行、通常只切出一个分段；真有多个分段时，
+    "它们说的都是这一份文件"本身就是对的（语义上不该为此编出几份不同的向量）。
+    """
+    if media is None:
+        return embedder.embed(texts)
+    vector = embedder.embed_media(media)
+    return [vector for _ in texts]
 
 
 def normalize_filename(filename: str) -> str:

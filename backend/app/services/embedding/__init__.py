@@ -18,16 +18,36 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from app.services.embedding.base import (
     EmbeddingError,
     EmbeddingNotConfiguredError,
     EmbeddingProvider,
+    fit_dimension,
     l2_normalize,
 )
 from app.services.embedding.deterministic import DeterministicEmbedder
 from app.services.embedding.openai_compat import OpenAICompatEmbedder
-from app.services.runtime_config import RuntimeConfigService
+from app.services.embedding.protocols import (
+    DEFAULT_PROTOCOL,
+    OPENAI_PROTOCOL,
+    PROTOCOL_OPTIONS,
+    WEMM_PROTOCOL,
+    implementation_for,
+    normalize_protocol,
+    supports_media,
+)
+from app.services.embedding.wemm import WeMMEmbedder
+
+if TYPE_CHECKING:  # 只为标注 `build_embedder` 的参数类型
+    # **不能**写在模块级：`runtime_config` 反过来要 import 本包的 `protocols`
+    # （协议那张表要进设置页），于是成环 —— 包 `__init__` → `runtime_config` →
+    # `embedding.protocols` → 又回到包 `__init__`，而那一刻它还没执行完 →
+    # 任何 `import app.services.embedding.*` 都会抛
+    # `ImportError: cannot import name 'RuntimeConfigService' from partially initialized module`。
+    # 注解本身因为有 `from __future__ import annotations` 而是字符串，运行时不需要这个名字。
+    from app.services.runtime_config import RuntimeConfigService
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +59,23 @@ NOT_CONFIGURED_HINT = (
 )
 
 __all__ = [
+    "DEFAULT_PROTOCOL",
     "NOT_CONFIGURED_HINT",
+    "OPENAI_PROTOCOL",
+    "PROTOCOL_OPTIONS",
+    "WEMM_PROTOCOL",
     "DeterministicEmbedder",
     "EmbeddingError",
     "EmbeddingNotConfiguredError",
     "EmbeddingProvider",
     "OpenAICompatEmbedder",
+    "WeMMEmbedder",
     "build_embedder",
+    "fit_dimension",
+    "implementation_for",
     "l2_normalize",
+    "normalize_protocol",
+    "supports_media",
 ]
 
 
@@ -55,7 +84,10 @@ def build_embedder(
 ) -> EmbeddingProvider:
     """按**运行期配置**选实现。没配嵌入模型时抛错，不退回兜底。
 
-    每次调用都重新读配置，因此用户在设置页选完模型立刻生效，不必重启进程。
+    每次调用都重新读配置，因此用户在设置页选完模型 / 换了协议立刻生效，不必重启进程。
+
+    **协议决定用哪个实现**（`services/embedding/protocols.py` 那张表）：默认
+    ``openai``——没动过这一位时，走的还是从前那条 OpenAI 兼容实现，行为一位不变。
 
     ``dev_embedding`` 由 ``KYLAB_DEV_EMBEDDING`` 显式打开（组合根传入）：
     测试与离线开发要一条不联网的链路，但它**必须是有人主动开的一步**，
@@ -63,7 +95,9 @@ def build_embedder(
     """
     config = runtime.embedding()
     if config.is_configured:
-        return OpenAICompatEmbedder(
+        # 两个实现的构造参数**刻意保持一致**（见 protocols.implementation_for）：
+        # 换协议只换类，不换接线
+        return implementation_for(config.protocol)(
             base_url=config.base_url,
             api_key=config.api_key,
             model_id=config.model_id,

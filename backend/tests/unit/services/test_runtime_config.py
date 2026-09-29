@@ -159,6 +159,62 @@ def test_embedding_snapshot_takes_identity_from_the_registry(
     )
     assert (snapshot.dim, snapshot.batch_size) == (1024, 16)
     assert snapshot.is_configured is True
+    # 协议是行为参数：没设过就是默认（OpenAI 兼容），既有部署一位不变
+    assert snapshot.protocol == "openai"
+
+
+def test_embedding_protocol_comes_from_the_setting(
+    runtime: RuntimeConfigService,
+) -> None:
+    """`embedding.protocol` 是设置页那一栏（也能由 .env 引导），默认 openai。"""
+    runtime.set({"embedding.protocol": "wemm"})
+
+    assert runtime.embedding().protocol == "wemm"
+
+    # 不认识的值归一化成默认，而不是让整条向量通道不可用
+    runtime.set({"embedding.protocol": "ollama"})
+
+    assert runtime.embedding().protocol == "openai"
+
+
+def test_media_capability_is_declared_per_registered_model(
+    runtime: RuntimeConfigService, bundle
+) -> None:  # type: ignore[no-untyped-def]
+    """门控要问"**这台机器上有没有任何一处**能嵌媒体"。
+
+    协议是按模型的：全局默认还是 openai，只要某一个库绑的模型声明了 wemm，
+    媒体直通解析器就得挂上——否则那个库的图片 / 视频在解析阶段就被"暂不支持"挡掉了。
+    """
+    registry = ModelRegistryService(bundle)
+
+    assert runtime.embedding_supports_media() is False  # 什么都没配
+
+    # 一个 OpenAI 兼容的模型：与从前一样，没有媒体能力
+    bind_model(registry, "embedding", model_id="bge-m3", capabilities=["embedding"], dim=1024)
+    assert runtime.embedding_supports_media() is False
+
+    # 另一个模型声明了 wemm（按模型设的那一栏）——门控必须开
+    provider = registry.create_provider(
+        kind="embedding", name="局域网 WeMM", base_url="http://192.168.31.18:8234"
+    )
+    registry.register_model(
+        provider_id=provider.id,
+        model_id="WeMM-Embedding-2B-Q4_K_M.gguf",
+        dim=1024,
+        capabilities=["embedding"],
+        options={"protocol": "wemm"},
+    )
+
+    assert runtime.embedding_supports_media() is True
+
+
+def test_global_wemm_protocol_opens_the_media_gate_without_any_model(
+    runtime: RuntimeConfigService,
+) -> None:
+    """全局协议切成 wemm 时，连模型都不用登记就该开（另一条判据）。"""
+    runtime.set({"embedding.protocol": "wemm"})
+
+    assert runtime.embedding_supports_media() is True
 
 
 def test_llm_snapshot_lets_model_options_override_sampling(

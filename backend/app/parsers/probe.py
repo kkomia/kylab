@@ -27,10 +27,22 @@ OFFICE_EXTENSIONS = frozenset(
 IMAGE_EXTENSIONS = frozenset(
     {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff", ".jp2"}
 )
+VIDEO_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v", ".mpeg", ".mpg"})
+"""视频容器后缀。
+
+今天它唯一的去处是**媒体向量**（`parsers/media_direct.py`）：本地没有解码器，
+云端两家 OCR 也不接视频；而服务端的 ffmpeg 能解（接入文档 §4）。所以探测给出的结论
+是"需要外部能力"，具体的路在解析路由那里按配置决定。"""
 
 #: 二进制容器格式：无论抽样看起来多像文本，都不许当纯文本处理
-BINARY_EXTENSIONS = PDF_EXTENSIONS | OFFICE_EXTENSIONS | IMAGE_EXTENSIONS | frozenset(
-    {".zip", ".gz", ".tar", ".7z", ".rar", ".exe", ".dll", ".so", ".bin", ".db", ".sqlite"}
+BINARY_EXTENSIONS = (
+    PDF_EXTENSIONS
+    | OFFICE_EXTENSIONS
+    | IMAGE_EXTENSIONS
+    | VIDEO_EXTENSIONS
+    | frozenset(
+        {".zip", ".gz", ".tar", ".7z", ".rar", ".exe", ".dll", ".so", ".bin", ".db", ".sqlite"}
+    )
 )
 
 _SAMPLE_BYTES = 64 * 1024
@@ -153,6 +165,16 @@ def probe(
             kind=ProbeKind.SCANNED,
             text_coverage=0.0,
             detail={"reason": "图片文件，需走 OCR", "suffix": suffix},
+        )
+
+    if suffix in VIDEO_EXTENSIONS or mime.startswith("video/"):
+        # 视频没有"文本层"这回事（探测能说的只有"它不是文本"）。**不要**在这里下
+        # "不支持"的结论：配了多模态嵌入之后它有一条真正的路（媒体直通解析器），
+        # 走不走那条路由解析路由按配置决定（见 `services/parser_router.py`）。
+        return ProbeResult(
+            kind=ProbeKind.SCANNED,
+            text_coverage=0.0,
+            detail={"reason": "视频文件，需走媒体向量（服务端 ffmpeg 解码）", "suffix": suffix},
         )
 
     if suffix in OFFICE_EXTENSIONS:

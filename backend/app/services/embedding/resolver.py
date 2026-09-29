@@ -18,7 +18,11 @@ import logging
 from collections.abc import Callable
 
 from app.services.embedding.base import EmbeddingProvider
-from app.services.embedding.openai_compat import OpenAICompatEmbedder
+from app.services.embedding.protocols import (
+    DEFAULT_PROTOCOL,
+    implementation_for,
+    protocol_for_model,
+)
 from app.services.model_registry import ModelRegistryService
 from app.storage.base import KnowledgeBaseRecord
 
@@ -36,15 +40,21 @@ class EmbeddingResolver:
         *,
         fallback: EmbeddingProvider,
         batch_size: int | Callable[[], int] = 32,
-        factory: Callable[..., EmbeddingProvider] = OpenAICompatEmbedder,
+        factory: Callable[..., EmbeddingProvider] | None = None,
+        protocol: Callable[[], str] | None = None,
     ) -> None:
         self._registry = registry
         self._fallback = fallback
         # 可以是常量，也可以是**取值函数**（读运行期配置）：批大小在设置页可改，
         # 直接固化成一个数字会让那个设置项对"按库选模型"这条主路径变成 no-op
         self._batch_size = batch_size
-        # 构造器做成可注入的：测试要验"按库选对了模型"，不该为此发真实 HTTP
+        # 构造器做成可注入的：测试要验"按库选对了模型"，不该为此发真实 HTTP。
+        # 没注入时按**协议**取实现（默认协议就是 OpenAI 兼容那一个，与从前的默认值等价）
         self._factory = factory
+        # 协议同样是**取值函数**（与批大小同一条理由）：用户在设置页把协议切成
+        # WeMM 之后，按库解析出来的那一条也应当立刻换成 WeMM 客户端。
+        # 没给取值函数时恒为默认协议——既有调用点与既有测试因此一位不变。
+        self._protocol = protocol or (lambda: DEFAULT_PROTOCOL)
         # 缓存按「模型 + 生效配置」而不是只按 model_pk：一次摄入要分批嵌入几百个 chunk，
         # 每批重建客户端是浪费；但只按 pk 缓存会让"改了地址/密钥/维度"要重启才生效
         # （v0.12 review 抓到的静默问题）。
@@ -72,6 +82,8 @@ class EmbeddingResolver:
             return self._fallback
 
         batch = self.batch_size()
+        # **按模型定协议**：模型登记里声明了就用它，否则用全局设置（见 `protocol_for_model`）
+        protocol = protocol_for_model(model.options, self._protocol())
         key = (
             model_pk,
             provider.base_url,
@@ -79,6 +91,9 @@ class EmbeddingResolver:
             model.model_id,
             model.dim or 0,
             batch,
+            # 协议也要进 key：否则切了协议之后旧客户端会被一直复用，
+            # 表现就是"设置改了但媒体那条路还是没接上"
+            protocol,
         )
         cached = self._cache.get(key)
         if cached is not None:
@@ -87,7 +102,10 @@ class EmbeddingResolver:
         # 免得缓存随"改了几次配置"一直长
         for stale in [item for item in self._cache if item[0] == model_pk]:
             del self._cache[stale]
-        embedder = self._factory(
+        # 协议决定实现；注入了 factory 的调用点优先——它们验的是"按库选对了模型"，
+        # 不该被协议表牵动（既有测试就是这么用的）
+        builder = self._factory or implementation_for(protocol)
+        embedder = builder(
             base_url=provider.base_url,
             api_key=provider.api_key,
             model_id=model.model_id,

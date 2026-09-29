@@ -19,10 +19,17 @@ from app.parsers.base import ParseError, ParserProvider, ProbeKind, ProbeResult
 from app.parsers.html_upload import HtmlUploadParser
 from app.parsers.local_office import LOCAL_OFFICE_EXTENSIONS, LocalOfficeParser
 from app.parsers.local_pdf import LocalPdfTextParser
+from app.parsers.media_direct import MediaDirectParser
 from app.parsers.mineru_cloud import MinerUCloudParser
 from app.parsers.paddleocr_api import PaddleOCRApiParser
 from app.parsers.plain_text import PlainTextParser
-from app.parsers.probe import IMAGE_EXTENSIONS, OFFICE_EXTENSIONS, PDF_EXTENSIONS, suffix_of
+from app.parsers.probe import (
+    IMAGE_EXTENSIONS,
+    OFFICE_EXTENSIONS,
+    PDF_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    suffix_of,
+)
 from app.parsers.tabular import TabularParser
 from app.services.runtime_config import RuntimeConfigService
 
@@ -42,8 +49,13 @@ def build_parsers(runtime: RuntimeConfigService) -> list[ParserProvider]:
        没凭据时文字型 PDF 与 docx/pptx 仍然能用（v17 之前它们直接"暂不支持"）。
     云端解析器都会在 ``supports()`` 里排除纯文本类文件，所以顺序不会误伤本地直读；
     未配置 token 时它们的 ``supports()`` 恒为 False —— 没凭据也能跑通整条链路。
+
+    **6（条件项）媒体直通**（图片 / 视频）：只有当前嵌入协议**支持媒体**时才追加，
+    而且永远排最后——它接的是"前面谁都不认"的那一类（视频从来没人认，没配 OCR 的图片
+    也没人认）。配了 OCR 的图片照旧被 MinerU/PaddleOCR 接走，行为一位不变；
+    默认的 OpenAI 兼容那一档下这个解析器根本不存在（见 `parsers/media_direct.py`）。
     """
-    return [
+    parsers: list[ParserProvider] = [
         TabularParser(),
         HtmlUploadParser(),
         PlainTextParser(),
@@ -53,6 +65,9 @@ def build_parsers(runtime: RuntimeConfigService) -> list[ParserProvider]:
         LocalPdfTextParser(),
         LocalOfficeParser(),
     ]
+    if runtime.embedding_supports_media():
+        parsers.append(MediaDirectParser())
+    return parsers
 
 
 def _hint_for(probe: ProbeResult, filename: str) -> str:
@@ -63,8 +78,18 @@ def _hint_for(probe: ProbeResult, filename: str) -> str:
     """
     suffix = suffix_of(filename)
     needs_ocr = suffix in PDF_EXTENSIONS or suffix in IMAGE_EXTENSIONS
+    if suffix in VIDEO_EXTENSIONS:
+        # 视频走不了 OCR（云端两家都不接），唯一的出路就是多模态嵌入——不说这一句，
+        # 用户手上那份视频的报错里没有任何可执行的下一步
+        return (
+            "。视频只能走多模态嵌入：请到「设置 → 向量化 → 嵌入协议」选 WeMM 多模态，"
+            "并在「设置 → 模型注册」登记那台服务的地址"
+        )
     if needs_ocr and probe.kind in {ProbeKind.SCANNED, ProbeKind.MIXED}:
-        return "。这个文件需要 OCR：请到「设置 → 服务配置」配置 MinerU 或 PaddleOCR"
+        return (
+            "。这个文件需要 OCR：请到「设置 → 服务配置」配置 MinerU 或 PaddleOCR；"
+            "或者到「设置 → 向量化 → 嵌入协议」选 WeMM 多模态，让图片本身进向量空间"
+        )
     if suffix in OFFICE_EXTENSIONS and suffix not in LOCAL_OFFICE_EXTENSIONS:
         return "。旧的二进制 Office 格式只能走云端：请配置 MinerU，或先另存为 .docx / .pptx"
     return ""
