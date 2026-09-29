@@ -523,6 +523,18 @@ def build_clients(
     return Clients(base_url, token, workspace=workspace, data_dir=data_dir)
 
 
+class HistoryIn(BaseModel):
+    """历史里的一条（与前端 `ChatHistoryMessage` 同形 ✓：`role` + `content` ✓）。"""
+
+    role: str = Field(description="user 或 assistant（其它角色一律忽略 ✓）")
+    content: str = ""
+
+
+#: 历史条数的**硬上限**：前端已经截过一次（最近 20 条 ✓），这里是服务端侧的兜底 ✓ ——
+#: 别让"把整个会话灌进来"这件事靠调用方自觉 ✗（提示词预算是有限的 ✓）。
+MAX_HISTORY_MESSAGES = 20
+
+
 class TurnIn(BaseModel):
     """一条用户消息（**为 SSE 留位**：`stream` 打开时走 `text/event-stream` ✓）。"""
 
@@ -532,7 +544,33 @@ class TurnIn(BaseModel):
         default_factory=list,
         description="这一轮允许查的库；**留空 = 知识库关着** ✓（与服务器同口径 ✓）",
     )
+    history: list[HistoryIn] = Field(
+        default_factory=list,
+        description=(
+            "最近的对话历史（**可选，默认空 = 行为与以前完全一样** ✓）。"
+            "为什么要有它：服务器那条链以**库里的历史**为准 ✓；边车这一侧没有库 ✗，"
+            "前端不把最近几条带上，切到边车的那一轮就是**失忆的一轮** ✗（用户会立刻感觉到"
+            "『它忘了上文』，而界面看不出来 ✗）。只取最近 `MAX_HISTORY_MESSAGES` 条 ✓。"
+        ),
+    )
     stream: bool = Field(default=False, description="预留：P4 与前端一起做 SSE ✓")
+
+
+def _messages_of(payload: TurnIn) -> list[ChatMessage]:
+    """`TurnIn` → 循环要的消息（**顺序**：system → 历史 → 本轮 user ✓）。
+
+    两处与服务器那条链刻意对齐 ✓：
+    - 历史放在 system 之后、本轮 user 之前 ✓（顺序错了模型会把历史当"新指令" ✗）；
+    - **只认 `user` / `assistant` 两个角色** ✓ —— 别让调用方从这里塞进第二条 system ✗
+      （那等于绕过我们这条链的提示词 ✓）。
+    """
+    messages = [ChatMessage(role="system", content=SIDECAR_SYSTEM_PROMPT)]
+    for item in payload.history[-MAX_HISTORY_MESSAGES:]:
+        if item.role not in ("user", "assistant") or not item.content.strip():
+            continue
+        messages.append(ChatMessage(role=item.role, content=item.content))
+    messages.append(ChatMessage(role="user", content=payload.message))
+    return messages
 
 
 class TurnOut(BaseModel):
@@ -616,10 +654,7 @@ def create_app(
         target = _check_workspace(payload.workspace) if payload.workspace else workspace
         notes = _notes(clients)
         loop = clients.tool_loop(kb_ids=payload.kb_ids)
-        messages = [
-            ChatMessage(role="system", content=SIDECAR_SYSTEM_PROMPT),
-            ChatMessage(role="user", content=payload.message),
-        ]
+        messages = _messages_of(payload)
         answer = ""
         steps: list[dict[str, Any]] = []
         reasoning: list[str] = []
@@ -704,10 +739,7 @@ def create_app(
         def gen() -> Iterator[str]:
             target = _check_workspace(payload.workspace) if payload.workspace else workspace
             loop = clients.tool_loop(kb_ids=payload.kb_ids)
-            messages = [
-                ChatMessage(role="system", content=SIDECAR_SYSTEM_PROMPT),
-                ChatMessage(role="user", content=payload.message),
-            ]
+            messages = _messages_of(payload)
             answer = ""
             steps: list[dict[str, Any]] = []
             reasoning: list[str] = []

@@ -12,6 +12,7 @@
  */
 
 import { API_BASE, authHeaders, handleUnauthorized, request, type ApiErrorBody } from './client'
+import { resolveTurnTarget, toSidecarTurnBody } from './sidecar'
 import type { components } from './schema'
 import { createDisplayPacer } from '@/lib/pacer'
 
@@ -609,7 +610,20 @@ export async function chatStream(
   signal?: AbortSignal,
   options: { smooth?: boolean } = {},
 ): Promise<ChatStreamHandle> {
-  return openStream(`${API_BASE}/chat/stream`, handlers, { signal, body: payload, ...options })
+  // **按接口类别分派基址**（P4 第 2 片，判定只有 `api/sidecar.ts` 那一处）：
+  //   边车活着且开关开着 → 打本地边车 `/turn/stream`（模型与工具在这台机器上跑）；
+  //   否则 → 服务器 `/chat/stream`（**回退路径**，这条链一直可用）。
+  // 适配（请求体换成边车认识的字段、历史随体带上）**只在这一层做** ——
+  // UI 里不许出现 `if (是边车)`，否则分派逻辑就散到界面里去了。
+  const target = await resolveTurnTarget()
+  if (target.kind === 'sidecar') {
+    return openStream(target.url, handlers, {
+      signal,
+      body: toSidecarTurnBody(payload),
+      ...options,
+    })
+  }
+  return openStream(target.url, handlers, { signal, body: payload, ...options })
 }
 
 /**
