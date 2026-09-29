@@ -61,3 +61,33 @@ body,
 }
 
 /* KaTeX 的样式表在 `main.tsx` 里引（它自己带字体文件，交给打包器处理）。 */
+
+/*
+ * 系统要求"减少动态效果"时，把动效压到瞬时。
+ *
+ * **为什么是这一条全局规则，而不是逐个组件加 `motion-reduce:`**：
+ *
+ * 1. `src/ui/` 那十几份共享原语（弹窗 / 抽屉 / 菜单 / 气泡 / 骨架屏…）里的
+ *    `animate-in` / `animate-out` / `animate-spin` / `animate-pulse` 全部来自上游，
+ *    而 `src/ui/README.md` 明写"上游那套原样保留，不必再动 `ui/` 里的文件"——
+ *    于是它们一直无视这个开关（量过：`src/ui/` 下 `motion-reduce` 零命中）；
+ * 2. 组件是**跨域共用**的：对话、知识库、笔记、设置挂的是同一批弹窗。逐个组件补
+ *    等于同一件事写十几遍，而且以后新引一个上游原语又会漏一处；
+ * 3. 各域自己那几份 `@media (prefers-reduced-motion: reduce)` 块（`layout` /
+ *    `knowledge` / `notes` / `misc`）**保留不动**：它们管各自那几处具体动效，
+ *    这一条兜的是"剩下的"，两者不冲突。
+ *
+ * 时长取 0.01ms 而不是 0：**状态照样变，只是看不出过程**——写 `display: none`
+ * 那类做法会连过渡结束事件一起吞掉，界面逻辑会以为"它没动过"。
+ * `scroll-behavior: auto` 一并关掉平滑滚动（减少动态效果的人尤其不该被拖着滚）。
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

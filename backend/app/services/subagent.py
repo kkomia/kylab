@@ -50,6 +50,12 @@ logger = logging.getLogger(__name__)
 MAX_DEPTH = 1
 
 #: 一个子任务最多几轮（一次工具调用算一轮）。
+#:
+#: **今天的实现够不到这个数**：`ChatService.run_subagent` 是"一次检索 + 一次作答"，
+#: 不是循环（子 Agent 没有任何工具面），实际只走 1 轮。这道闸与时限一起留着，
+#: 是给"将来子 Agent 自己带工具"准备的 —— 那时多轮才成立，而预算得先有。
+#: （`max_searches` 与 `remaining_turns` 今天也只有用例在读，见
+#: `tests/unit/services/test_subagent.py`。）
 MAX_TURNS = 3
 
 #: 一个子任务的总时限（秒）。与轮次上限是两道独立的闸：
@@ -114,6 +120,11 @@ class SubAgentResult:
     elapsed_seconds: float = 0.0
     stopped_reason: str = ""
     """为什么停下来：``answered`` / ``budget`` / ``timeout`` / ``error``。
+
+    **今天实际只会给三种**：``answered`` / ``timeout`` / ``error`` ——
+    实现是一次检索 + 一次作答，走不到"轮次或检索次数用尽"那一档，
+    ``budget`` 是给将来真做成多轮循环时留的。写在这里免得读的人以为子 Agent
+    在循环、把 `MAX_TURNS` 当成今天就会撞到的闸。
 
     带上它是为了**不把"没查完"说成"查完了"**——父 Agent 需要知道这段结论
     有多可靠。
