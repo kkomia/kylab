@@ -21,6 +21,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 
 from app.core.exceptions import InvalidRequestError
+from app.core.text_hygiene import sanitize_prompt_text
 from app.services import modes, plan_gate
 from app.services import subagent as subagent_service
 from app.services.approvals import ApprovalRegistry
@@ -1632,10 +1633,15 @@ def build_messages(
             "【此前对话的摘要】（用于保持上下文，引用编号仍以本轮资料为准）\n" + neutralize(summary)
         )
 
-    messages: list[ChatMessage] = [ChatMessage(role="system", content="\n\n".join(parts))]
+    # **进提示词前的最后一道**（D16 P0）：技能、记忆、资料、历史、查询全在上面拼好了，
+    # 这里统一过一遍「合并代理对 / 换掉仍孤立的 / 去控制字符」——
+    # 任何来源都不可能再把不可编码的字符送到 httpx（那会让整句对话 500，老会话也一起救活）。
+    messages: list[ChatMessage] = [
+        ChatMessage(role="system", content=sanitize_prompt_text("\n\n".join(parts)))
+    ]
     for item in history or []:
-        messages.append(item)
-    messages.append(ChatMessage(role="user", content=query))
+        messages.append(dataclasses.replace(item, content=sanitize_prompt_text(item.content)))
+    messages.append(ChatMessage(role="user", content=sanitize_prompt_text(query)))
     return messages
 
 

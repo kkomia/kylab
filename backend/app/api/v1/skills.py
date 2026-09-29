@@ -143,8 +143,12 @@ def get_skill(
     **被丢弃的技能这里也读得出来**（``allow_discarded=True``）：模型那条路
     （``read_skill`` 工具）读不到，但人要看的就是"它到底写了什么、为什么被丢掉"
     ——详情页是排错的地方，藏起来等于让人只能去翻磁盘。
+
+    ``translate_names=False``：这一份是给人看的，**照上游原文给**
+    （模型那一份会把 Claude Code 的工具名换掉，见 ``services/skill_tools.py``）——
+    用户要能对着上游核对"这个技能到底教了什么"。
     """
-    record, body = services.skills.read(name, allow_discarded=True)
+    record, body = services.skills.read(name, allow_discarded=True, translate_names=False)
     return SkillDetailOut(
         **_out(record, _summaries(services).get(record.name, "")).model_dump(), body=body
     )

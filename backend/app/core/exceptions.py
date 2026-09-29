@@ -4,10 +4,14 @@
 业务错误一律以本模块的领域异常从 ``services/`` 抛出，由处理器统一转成响应体。
 """
 
+import logging
+
 from fastapi import FastAPI, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
+
+logger = logging.getLogger(__name__)
 
 
 class KylabError(Exception):
@@ -178,4 +182,18 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "message": str(exc.detail),
             },
             headers=getattr(exc, "headers", None),
+        )
+
+    @app.exception_handler(Exception)
+    async def _handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
+        """**兜底：没被认领的异常也要留下完整栈**（D16，2026-09-29 实测的洞）。
+
+        之前 500 只回一句 ``Internal Server Error``、日志里**一条 traceback 都没有** ——
+        "报错但没有栈"等于没法排障（那次排查只能靠排除法，代价很大）。
+        这里只补日志，响应形状与 FastAPI 默认那条保持一致，
+        免得下游解析器因为换形状而二次受伤。
+        """
+        logger.exception("服务端未处理异常：%s %s", request.method, request.url.path)
+        return JSONResponse(
+            status_code=500, content={"code": "internal_error", "message": "服务端出错了"}
         )

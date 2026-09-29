@@ -60,6 +60,7 @@ from app.services.llm import ToolSpec
 from app.services.mcp_client import normalized_server_name, split_qualified
 from app.services.memory import WRITABLE_PERSONA_FILES
 from app.services.schedules import timezone_name
+from app.services.skills import recombine_surrogates, text_problem
 from app.services.subagent import parse_tool_content as parse_subagent_content
 from app.services.tool_loop import ToolOutcome, ToolRunner
 from app.services.tools import ARTIFACT_KEY, MAX_UPLOAD_BYTES, call_tool, tool_definitions
@@ -2037,6 +2038,13 @@ def _read_skill(services: Any, args: dict[str, Any]) -> str:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return f"读不出来：{exc}"
+    # 附属文件同样是**第三方内容**：先合并"转义写坏的代理对"，合并后仍非法的**拒绝读**
+    # （`errors="replace"` 只挡解码错误，挡不住文件里真有的孤立代理项；
+    # 而它一旦进提示词，httpx 编码就抛 UnicodeEncodeError —— **整句对话全废**，D16 P0）
+    text = recombine_surrogates(text)
+    problem = text_problem(text)
+    if problem:
+        return f"这个附属文件读不了：{problem}"
     return text[:MAX_ATTACHMENT_CHARS]
 
 

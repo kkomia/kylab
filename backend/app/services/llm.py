@@ -26,6 +26,7 @@ import httpx
 
 from app.core.exceptions import UpstreamError
 from app.core.http import shared_client
+from app.core.text_hygiene import sanitize_prompt_text
 from app.services.thinking import DEFAULT_EFFORT, build_thinking_payload, echoes_reasoning
 
 __all__ = [
@@ -639,14 +640,20 @@ def _message_wire(message: ChatMessage, *, echo_reasoning: bool = False) -> dict
 
     ``echo_reasoning`` 见 ``thinking.ECHO_DIALECTS``：它是**端点级别的开关**，
     不是消息自己的属性——所以由调用方按这一轮的配置算好，这里只管把字段补上。
+
+    **这里是进提示词的唯一咽喉**（D16 P0）：`content` 与工具参数的 `arguments`
+    都过一遍 `sanitize_prompt_text`（合并代理对 → 仍孤立的换 U+FFFD → 去控制字符）。
+    放在这一层而不是各个上游：历史 / 记忆 / 技能 / 工具返回**全都得从它过**——
+    上游无论谁漏一个不可编码的字符，httpx 都会 `UnicodeEncodeError: surrogates not allowed`，
+    结果是**整句话都问不出去**（实测两条真会话全废）。清洗是幂等的。
     """
-    body: dict = {"role": message.role, "content": message.content}
+    body: dict = {"role": message.role, "content": sanitize_prompt_text(message.content)}
     if message.tool_calls:
         body["tool_calls"] = [
             {
                 "id": call.id,
                 "type": "function",
-                "function": {"name": call.name, "arguments": call.arguments},
+                "function": {"name": call.name, "arguments": sanitize_prompt_text(call.arguments)},
             }
             for call in message.tool_calls
         ]

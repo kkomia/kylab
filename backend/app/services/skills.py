@@ -77,6 +77,7 @@ from typing import Any
 from app.core.exceptions import NotFoundError
 from app.services.memory_files import parse_frontmatter
 from app.services.runtime_config import SETTING_GROUPS
+from app.services.skill_tools import catalog_note, translate_tool_names
 
 __all__ = [
     "AGENTS_SKILLS_SUBPATH",
@@ -291,16 +292,31 @@ def _drop_reason(*, name: str, description: str) -> str:
 
 def _catalog_line(item: SkillRecord) -> str:
     """目录里的一行。格式照 ZCode（调研 §2.3）：
-    ``- {name}: {description - when_to_use} (file: {path})``，把"何时用"标了出来。
+    ``- {name}: {description - when_use} (file: {path})``，把"何时用"标了出来。
+
+    **描述与"何时用"都先压平空白**（D16 P0）：第三方技能里有把换行写在 description 里的
+    （实测：60 条技能渲染出 62 行）——多出来的那半行会被模型当成一个**技能名**去 read，
+    而它根本不存在。一行就是一行。
     """
-    line = f"- {item.name}: {_clip(item.description, CATALOG_DESCRIPTION_CHARS)}"
+    description = " ".join(item.description.split())
+    line = f"- {item.name}: {_clip(description, CATALOG_DESCRIPTION_CHARS)}"
     if item.when_to_use:
-        line += f"（何时用：{_clip(item.when_to_use, CATALOG_DESCRIPTION_CHARS)}）"
+        when = " ".join(item.when_to_use.split())
+        line += f"（何时用：{_clip(when, CATALOG_DESCRIPTION_CHARS)}）"
     elif item.relative_path:
         line += " "  # 没有"何时用"时要留一个空格，别和后面的路径粘在一起
     if item.relative_path:
         line += f"(file: {item.relative_path})"
     return line
+
+
+# 文本卫生那一族（合并代理对 / 判非法 / 清洗）在 `app/core/text_hygiene.py`：
+# 请求组装处（`services/llm.py`）也要用同一套判断，而 llm 与 skills 互相 import 会成环
+# （`llm → skills → runtime_config → llm`，真踩过）→ 放到 core 那一层，一处实现两处用。
+from app.core.text_hygiene import (  # noqa: E402  （放在这里是为了贴着用它的那几段）
+    recombine_surrogates,
+    text_problem,
+)
 
 
 class SkillService:
@@ -420,12 +436,18 @@ class SkillService:
                 return record
         raise NotFoundError(f"没有这个技能：{name}")
 
-    def read(self, name: str, *, allow_discarded: bool = False) -> tuple[SkillRecord, str]:
+    def read(
+        self, name: str, *, allow_discarded: bool = False, translate_names: bool = True
+    ) -> tuple[SkillRecord, str]:
         """取技能正文（按需展开那一步）。
 
         **被丢弃的技能读不出来**（``allow_discarded=True`` 只给人在界面上核对用，
         见 ``api/v1/skills.py`` 的详情端点）：丢弃的含义就是"这个技能不算数"，
         而模型手里的入口是 ``read_skill`` 工具——它必须也拿不到正文。
+
+        ``translate_names``：默认把正文里的 Claude Code 工具名换成我们的
+        （第三方技能全按那套名字写，见 ``services/skill_tools.py``）。
+        **界面那一侧传 False**：人要对着上游原文核对时，看到的该是原文。
         """
         record = self.get(name)
         if record.discarded and not allow_discarded:
@@ -433,7 +455,16 @@ class SkillService:
             raise NotFoundError(f"技能「{record.name}」已被丢弃：{reason}")
         text = (Path(record.directory) / SKILL_FILE).read_text(encoding="utf-8")
         _, body = parse_frontmatter(text)
-        return record, body.strip()
+        # 读这一侧再兜一道（扫描与读取是两条路：技能可能是**装进来之后**才被写坏的）：
+        # 先合并转义写坏的代理对，合并后仍非法就按"丢弃"拒绝——**绝不把非法字符
+        # 送进提示词**（那会让整句对话编码失败，见 `text_problem`）。
+        clean = recombine_surrogates(body.strip())
+        problem = text_problem(clean)
+        if problem:
+            raise NotFoundError(f"技能「{record.name}」已被丢弃：{problem}")
+        if translate_names:
+            clean = translate_tool_names(clean)
+        return record, clean
 
     def catalog(self) -> str:
         """拼成注入 system prompt 的**目录**；没有可用技能时是空串。
@@ -458,8 +489,11 @@ class SkillService:
             "需要按某个技能的流程做事时，**先用 `read_skill` 把它的正文读出来**，"
             "不要只凭这一行描述就动手——细节在正文里。"
         )
+        # 第三方技能全按 Claude Code 的工具名写（`Read`/`Bash`/`Skill`…）：
+        # 这张对照表与目录一起给，模型调用时才会用我们的名字（见 services/skill_tools.py）。
+        note = catalog_note()
         lines: list[str] = []
-        used = len(header)
+        used = len(header) + len(note) + 1
         for item in usable:
             line = _catalog_line(item)
             # 预算按字符算（与 ZCode 的常数同一口径）。超预算就**从这里截断**，
@@ -470,7 +504,7 @@ class SkillService:
             used += len(line) + 1
         if not lines:
             return ""
-        return f"{header}\n" + "\n".join(lines)
+        return f"{header}\n{note}\n" + "\n".join(lines)
 
     # ------------------------------------------------------------------ 内部
 
@@ -516,15 +550,20 @@ class SkillService:
         except (OSError, UnicodeDecodeError):
             logger.warning("读技能失败（跳过）：%s", path, exc_info=True)
             return None
-        meta, _body = parse_frontmatter(text)
-        name = str(meta.get("name") or "").strip()
-        description = str(meta.get("description") or "").strip()
+        meta, body = parse_frontmatter(text)
+        # 上游常把 emoji 写成**字面转义**（`"\ud83e\udd16"`）：YAML 解出来是两个孤立代理项。
+        # 提示词里带上它，httpx 一编码就 `UnicodeEncodeError: surrogates not allowed` ——
+        # **整句对话全废**（D16 P0，2026-09-29 两条真会话实测）。所以这里两道：
+        # ① 先把成对的代理项合并回正常码位（那是"转义写坏了"，不是存心放非法字符）；
+        # ② 合并后仍非法的（真·孤立代理项、控制字符、名字里有换行）→ 走既有的"丢弃 + 理由"。
+        name = recombine_surrogates(str(meta.get("name") or "").strip())
+        description = recombine_surrogates(str(meta.get("description") or "").strip())
         # 认 name / description / when_to_use / license / metadata 五个键（ZCode 同一批）
         # 加上我们自己扩展的 ``summary``；其余键一律忽略，不当错误——事实标准是"多写的不算错"。
-        when_to_use = str(meta.get("when_to_use") or "").strip()
+        when_to_use = recombine_surrogates(str(meta.get("when_to_use") or "").strip())
         # summary 是**给人看的中文简介**（见 SkillRecord）：市场装的技能那份存在安装清单里，
         # 仓库自带的没有安装那一步，就写在 frontmatter 里——两条路的数据形状一样
-        summary = str(meta.get("summary") or "").strip()
+        summary = recombine_surrogates(str(meta.get("summary") or "").strip())
         common = {
             # 缺 name 时退回目录名**只为了界面上指认得出来**（否则是一行空白），
             # 它照样是被丢弃的，不会进目录、也读不出正文。
@@ -538,6 +577,17 @@ class SkillService:
             "relative_path": _relative_skill_path(directory, root),
         }
         dropped = _drop_reason(name=name, description=description)
+        if not dropped:
+            # 过了 frontmatter 那道之后再看"这段字能不能进提示词"：
+            # name 是**单行**的（带换行会把目录多撑出一行，模型会把后半行当成另一个技能），
+            # 其余三处与正文只要求没有非法字符。
+            dropped = (
+                text_problem(name, single_line=True)
+                or text_problem(description)
+                or text_problem(when_to_use)
+                or text_problem(summary)
+                or text_problem(body)
+            )
         if dropped:
             # 丢弃的就不再往下判扫描与 requires：要修的是 frontmatter，
             # 一次给一条能动手的理由比堆四条更有用（它们都不进目录，没有风险差别）。
