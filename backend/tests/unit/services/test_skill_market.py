@@ -25,6 +25,8 @@ from pathlib import Path
 import pytest
 
 from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
+from app.core.text_hygiene import recombine_surrogates
+from app.services.memory_files import parse_frontmatter
 from app.services.skill_market import (
     SNIFF_BYTES,
     SkillMarketService,
@@ -654,6 +656,41 @@ def test_a_bundle_with_a_binary_is_refused(tmp_path: Path) -> None:
             {"SKILL.md": b"---\nname: bin\ndescription: x\n---\n", "run.exe": b"MZ"},
             origin="x",
         )
+
+
+def test_a_bundle_with_an_unencodable_surrogate_is_refused(tmp_path: Path) -> None:
+    """**装这一侧也要挡住"过不了提示词的字符"**（D16 P0）。
+
+    不挡的话它会以一个"装上了却读不出来"的样子留在库里 ✗——用户看到的是
+    "装成功了但技能不出现"，比当场报错更难查（读那一侧已经会丢弃它 ✓）。
+
+    **形状按现场那个来**：frontmatter 里写成**落单的 `\\u` 转义** ✓
+    （`"\\ud83e"` 只有半个代理对 ✗ —— 合并也救不回来 ✓，正是要拒的那种）。
+    """
+    service = _service(tmp_path)
+    body = b'---\nname: broken\ndescription: "\\ud83e"\n---\n\nbody\n'
+
+    with pytest.raises(InvalidRequestError) as excinfo:
+        service.install_files("broken", {"SKILL.md": body}, origin="x")
+
+    assert "进不了提示词" in str(excinfo.value)
+
+
+def test_a_bundle_with_escaped_emoji_installs_fine(tmp_path: Path) -> None:
+    """**转义写坏的那种是能救的**：`"\\ud83e\\udd16"` 合并回来就放行 ✓。
+
+    （这是现场那个 `00-andruia-consultant-v2` 的形状：上游把 emoji 写成字面转义 ✓，
+    它不该被拒装 ✗，只是读的时候先合并 ✓。）
+    """
+    service = _service(tmp_path)
+    body = b'---\nname: escaped\ndescription: "\\ud83e\\udd16 icon"\n---\n\nbody\n'
+
+    service.install_files("escaped", {"SKILL.md": body}, origin="x")
+
+    # 装进去的那份原文没被改写；**读出来时**才合并（判据与读侧同一套）
+    installed = (service.install_root / "escaped" / SKILL_FILE).read_text("utf-8")
+    meta, _body = parse_frontmatter(installed)
+    assert recombine_surrogates(str(meta.get("description") or "")) == "🤖 icon"
 
 
 def test_an_injecting_bundle_is_refused_and_leaves_nothing_behind(tmp_path: Path) -> None:

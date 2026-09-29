@@ -168,8 +168,12 @@ _LOCAL_TOOLS: tuple[dict[str, Any], ...] = (
         "description": (
             "读一个文本文件的内容（按行分页，默认前 400 行）。"
             "**想看某个文件里到底写了什么时用它**；文件很长时会告诉你总行数，"
-            "接着读用 offset。图片、压缩包、Office 文档读不了——"
-            "要读那些的内容，先把它们加进知识库。"
+            "接着读用 offset。压缩包 / 图片 / Office 读不出文本，出路按这个顺序："
+            "**① 压缩包先用 `run_command` 解开**（`unzip -o 包 -d 临时目录`）"
+            "**再读解压出来的文件**；"
+            "② 想先了解它是什么，用 `run_command` 跑 `file` / `ls -l` 看元信息；"
+            "**③ 只有在用户明确要求把这份材料收进知识库时**才用 `ingest_file` —— "
+            "别把知识库当「读不了时的迂回手段」，那是替用户做决定。"
         ),
         "inputSchema": {
             "type": "object",
@@ -337,8 +341,12 @@ _LOCAL_TOOLS: tuple[dict[str, Any], ...] = (
         "name": "read_conversation_file",
         "description": (
             "读会话文件区里的一份**文本**文件（按行分页，key 用 list_conversation_files 给的）。"
-            "图片 / PDF / Office 这类二进制读不出来——那种要先用 `ingest_file` 加进知识库，"
-            "切块完成后再用 `search` 检索它的内容。"
+            "图片 / PDF / Office 这类二进制读不出文本，出路按这个顺序："
+            "**① 压缩包先用 `run_command` 解开**（`unzip -o 包 -d 临时目录`）"
+            "**再读里面的文件**；"
+            "② 想先了解它是什么，用 `run_command` 跑 `file` / `ls -l`；"
+            "**③ 只有在用户明确要求时**才用 `ingest_file` 加进知识库，"
+            "切块完成后再 `search` 检索它。"
         ),
         "inputSchema": {
             "type": "object",
@@ -1655,16 +1663,27 @@ def _text_or_none(content: bytes) -> str | None:
 
 
 def _binary_file_outcome(filename: str, key: str) -> ToolOutcome:
-    """二进制读不了——**如实说，并给出下一步**（入库 → 检索）。
+    """二进制读不了——**如实说，并给出下一步**（按"代价最小、最不越权"排序）。
 
-    这条出路是这个工具存在的另一半：图片与 PDF 的内容，当前链路**没有多模态**
-    可以"看"，唯一能读到的办法就是先进知识库、让解析器把它转成文本再检索。
+    顺序是刻意的（用户点名的 2026-09-29 走查）：
+
+    1. **压缩包先解压再读**：`unzip` 就能读，绕去知识库是**缘木求鱼**（用户原话）；
+    2. 再是"看元信息"（`file` / `ls -l`），用来判断它到底是什么；
+    3. **最后**才是入库（`ingest_file`）——而且**只在用户明确要求时**：
+       知识库是用户的资产，**模型不该替用户往里塞东西**（同一批走查的机制那一条）。
+
+    以前这里把"加进知识库"写成**首选** ✗，于是读文件失败就变成一次入库动作。
     """
     return ToolOutcome(
         content=(
             f"{filename} 是二进制文件（图片 / PDF / Office 之类），读不出文本。"
-            "要看它的内容：先用 ingest_file 把它加进知识库"
-            f"（path 给同一个 key：{key}），处理完再用 search 检索。"
+            "下一步按这个顺序试："
+            "① **是压缩包就用 `run_command` 解开再读**"
+            "（例如 `unzip -o 包 -d /tmp/解压处`，然后 read_file 读解压出来的文件）；"
+            "② 想先了解它是什么，用 `run_command` 跑 `file` / `ls -l`；"
+            "③ **只有在用户明确要求把这份材料收进知识库时**，才用 `ingest_file`"
+            f"（path 给同一个 key：{key}），处理完再用 `search` 检索。"
+            "**不要替用户决定往知识库里塞东西。**"
         ),
         summary="二进制文件，读不出文本",
     )

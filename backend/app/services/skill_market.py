@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError, UpstreamError
+from app.core.text_hygiene import recombine_surrogates, text_problem
 from app.services.memory_files import parse_frontmatter
 from app.services.skills import SKILL_FILE, SkillService, _scan, normalize_name
 
@@ -342,6 +343,19 @@ class SkillMarketService:
             raise ConflictError(f"已经装过「{clean}」了。要更新请先卸载，或换个名字装成两份。")
         if SKILL_FILE not in files:
             raise InvalidRequestError(f"这不是一个技能：里面没有 {SKILL_FILE}")
+        # **装这一侧也要挡一次"过不了提示词的字符"**（D16 P0，2026-09-29）：
+        # 读那一侧（`services/skills.py` 的扫描与读取）已经有"合并成对代理项 + 非法就丢弃"，
+        # 但装的时候就该让调用方知道——不然它会以一个"装上了却读不出来"的样子留在库里，
+        # 用户看到的是"装成功了但技能不出现"（比直接报错更难查）。判据与读侧**同一套**
+        # （`app/core/text_hygiene.py`）：**先合并**成对代理项（`"\ud83e\udd16"` 那种转义
+        # 写坏是能救的，救完就放行），合并后仍非法的（真孤立代理项 / 控制字符 / 名字带换行）
+        # 才拒装。
+        problem = _prompt_text_problem(files[SKILL_FILE])
+        if problem:
+            raise InvalidRequestError(
+                f"这个技能里有进不了提示词的字符：{problem}"
+                "（技能正文会被拼进模型请求，一个不可编码的字符会让整句对话失败）"
+            )
 
         try:
             total = 0
@@ -681,6 +695,23 @@ def _strip_common_root(files: dict[str, bytes]) -> dict[str, bytes]:
         return files
     prefix = f"{root}/"
     return {path[len(prefix) :]: blob for path, blob in files.items() if path.startswith(prefix)}
+
+
+def _prompt_text_problem(raw: bytes) -> str:
+    """这份 `SKILL.md` 里有没有**过不了提示词**的字符；有就说清为什么（空串 = 没问题）。
+
+    判据与读侧（`services/skills.py` 的扫描/读取）**同一套**，来自 `app/core/text_hygiene.py`：
+    **先合并**成对代理项（上游常把 emoji 写成字面转义 `"\\ud83e\\udd16"`，那是能救的 ✓），
+    合并后仍非法的才算（真孤立代理项 / 控制字符 / 技能名里的换行）。
+    """
+    text = raw.decode("utf-8", errors="replace")
+    meta, body = parse_frontmatter(text)
+    for key in ("name", "description", "when_to_use", "summary"):
+        value = recombine_surrogates(str(meta.get(key) or ""))
+        problem = text_problem(value, single_line=(key == "name"))
+        if problem:
+            return f"{key}：{problem}"
+    return text_problem(recombine_surrogates(body))
 
 
 def _skill_name(files: Mapping[str, bytes]) -> str:

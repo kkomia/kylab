@@ -42,9 +42,33 @@ def test_every_builtin_tool_declares_its_metadata() -> None:
 
 
 def test_the_table_has_no_ghosts() -> None:
-    """反过来也要查：表里不该有已经不存在的工具名（改名后忘了删）。"""
-    ghosts = sorted(set(TOOL_META) - _builtin_names())
+    """反过来也要查：表里不该有已经不存在的工具名（改名后忘了删）。
+
+    **两个例外：暴露网关自己发的那两个**（`find_tools` / `use_tool`）。
+    它们**刻意不在** `tool_specs()` 里——网关把"发现通道"（`find_tools`）与
+    "转发通道"（`use_tool`）从常规清单里摘出去、由网关那一支单独发出去
+    （见 `tool_meta.py` 里那两条的注释与 `agent_tools` 的"暴露：核心常驻 + 外围可发现"一节）。
+    所以判据是"**既不在内置清单、也不是网关发的那两个**"，而不是简单的差集：
+    简单差集会把一个**设计决定**报成"改名忘删" ✗。
+
+    为什么仍要保留这条用例：别的确有幽灵的风险（改名后忘删元数据、删工具留元数据）——
+    只是这两个名字属于被网关接管的例外，删它们的元数据会**弄坏网关那一侧** ✗。
+    """
+    gateway_issued = {"find_tools", "use_tool"}
+    ghosts = sorted(set(TOOL_META) - _builtin_names() - gateway_issued)
     assert ghosts == [], f"表里有已经不存在的工具：{ghosts}"
+
+
+def test_the_gateway_exception_stays_a_deliberate_one() -> None:
+    """把那个例外钉住：网关那两个字**不得**回到内置清单里（那会破坏暴露设计 ✗）。
+
+    这条同时挡住"顺手把它们加回 `tool_specs()` 让上面那条变绿"这种修法 ✗。
+    """
+    from app.services.tool_meta import TOOL_META as meta_table
+
+    assert "find_tools" in meta_table and "use_tool" in meta_table
+    assert "find_tools" not in _builtin_names()
+    assert "use_tool" not in _builtin_names()
 
 
 def test_values_are_from_the_agreed_vocabulary() -> None:
