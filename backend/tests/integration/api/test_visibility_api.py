@@ -153,6 +153,39 @@ def test_member_cannot_chat_with_others_conversation(two_users) -> None:  # type
     assert response.status_code == 404
 
 
+def test_member_cannot_branch_from_others_conversation(two_users) -> None:  # type: ignore[no-untyped-def]
+    """**分叉 = 把整段历史复制一份**，所以越权一次比"看"更严重：必须 404。
+
+    与上面那条同一个道理（不暴露存在性），但这里多一层——分叉出来的是**他自己名下的
+    新会话**，给出去就等于把别人的历史搬到了他的列表里。
+    """
+    from app.core.services import get_services
+
+    client, admin, member = two_users
+    conv = client.post("/api/v1/conversations", json={}, headers=_as(admin["token"])).json()
+    # 造一轮真历史（直接落库，不走模型）：分叉要有东西可抄，才测得出"抄没抄到"
+    services = get_services()
+    services.conversations.append(conv["id"], role="user", content="管理员的私事")
+    services.conversations.append(conv["id"], role="assistant", content="管理员才看得到的回答")
+
+    stolen = client.post(
+        f"/api/v1/conversations/{conv['id']}/branch",
+        json={"turn": 1},
+        headers=_as(member["token"])
+    )
+
+    assert stolen.status_code == 404
+    # 成员名下一条新会话都不该多出来
+    assert client.get("/api/v1/conversations", headers=_as(member["token"])).json()["items"] == []
+    # 管理员那条会话一个字节没动
+    assert (
+        client.get(f"/api/v1/conversations/{conv['id']}", headers=_as(admin["token"])).json()[
+            "message_count"
+        ]
+        == 2
+    )
+
+
 # --------------------------------------------------------------------- 任务与统计
 
 

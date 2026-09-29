@@ -464,6 +464,150 @@ def test_rewind_without_a_question_is_422(client: TestClient) -> None:
     assert "没有可回退" in response.json()["message"]
 
 
+# --------------------------------------------------------- 从这里重开（D11）
+
+
+def _three_turns(client: TestClient, kb_id: str) -> str:
+    """三轮问答的会话（**走 /chat 真链路**落库：提问与回答都经过那一轮的正常路径）。"""
+    conv_id = _conversation(client, kb_id)
+    for index in (1, 2, 3):
+        response = client.post(
+            "/api/v1/chat",
+            json={"query": f"第{index}问", "kb_ids": [kb_id], "conversation_id": conv_id},
+        )
+        assert response.status_code == 200, response.text
+    return conv_id
+
+
+def test_branch_carries_the_history_and_can_be_continued(
+    client: TestClient, kb_id: str
+) -> None:
+    """**D11 的主验收**：从第 N 轮分叉 → 新会话带着到那一轮为止的历史 → 能在里面继续提问。"""
+    source = _three_turns(client, kb_id)
+
+    response = client.post(f"/api/v1/conversations/{source}/branch", json={"turn": 2})
+
+    assert response.status_code == 201, response.text
+    branch = response.json()
+    assert branch["id"] != source
+    # 标题看得出是从哪儿分出来的（照抄源标题会让侧栏出现两条同名会话）
+    assert branch["title"].endswith("（分支 · 第 2 轮）")
+    # 只带前两轮（假模型的回答固定是那句，所以这里能逐条比）
+    detail = client.get(f"/api/v1/conversations/{branch['id']}").json()
+    assert [m["content"] for m in detail["messages"]] == [
+        "第1问",
+        "这是回答。[1]",
+        "第2问",
+        "这是回答。[1]",
+    ]
+
+    # 在分叉出的会话里继续提问：走的是同一条 `/chat` 链路
+    follow_up = client.post(
+        "/api/v1/chat",
+        json={"query": "换个方向再问", "kb_ids": [kb_id], "conversation_id": branch["id"]},
+    )
+    assert follow_up.status_code == 200, follow_up.text
+    after = client.get(f"/api/v1/conversations/{branch['id']}").json()
+    assert [m["content"] for m in after["messages"]][-2] == "换个方向再问"
+    assert after["message_count"] == 6
+
+
+def test_branch_keeps_the_source_untouched_and_both_are_independent(
+    client: TestClient, kb_id: str
+) -> None:
+    """**两条真的独立**：在分叉出的会话里加一轮，原会话的轮数与事件数一个都不变。"""
+    source = _three_turns(client, kb_id)
+    before = client.get(f"/api/v1/conversations/{source}").json()["message_count"]
+    source_events = len(client.get(f"/api/v1/conversations/{source}/events").json()["items"])
+
+    branch = client.post(f"/api/v1/conversations/{source}/branch", json={"turn": 1}).json()
+    client.post(
+        "/api/v1/chat",
+        json={"query": "分支里的新问题", "kb_ids": [kb_id], "conversation_id": branch["id"]},
+    )
+
+    after = client.get(f"/api/v1/conversations/{source}").json()
+    assert after["message_count"] == before
+    assert (
+        len(client.get(f"/api/v1/conversations/{source}/events").json()["items"]) == source_events
+    )
+
+
+def test_branch_keeps_the_file_area_empty(client: TestClient, kb_id: str) -> None:
+    """**分叉不带文件区**（用户能感知到的边界，写进《API 接口规范》§1.9）。
+
+    产物记录与对象存储里的字节都不搬：新会话"历史正文在、文件区是空的"；
+    原会话那份一个字节不动。
+    """
+    source = _two_turns(client)
+    upload = client.post(
+        f"/api/v1/conversations/{source}/files",
+        files={"file": ("报告.md", "# 报告".encode(), "text/markdown")},
+    )
+    assert upload.status_code == 201, upload.text
+
+    branch = client.post(f"/api/v1/conversations/{source}/branch", json={"turn": 1}).json()
+
+    assert client.get(f"/api/v1/conversations/{branch['id']}/files").json()["entries"] == []
+    # 原会话那份还在（没有被搬走，也没有被删）
+    assert len(client.get(f"/api/v1/conversations/{source}/files").json()["entries"]) == 1
+
+
+def test_branch_carries_the_knowledge_base_scope(client: TestClient, kb_id: str) -> None:
+    """知识库范围跟着走：分叉出来的会话继续用同一批资料。"""
+    source = _three_turns(client, kb_id)
+
+    branch = client.post(f"/api/v1/conversations/{source}/branch", json={"turn": 1}).json()
+
+    assert branch["kb_ids"] == [kb_id]
+
+
+def test_branch_of_a_branch_says_the_new_cut(client: TestClient, kb_id: str) -> None:
+    """分叉出的会话再分叉是允许的；标题上的标记换成**新的那一处**，不一路接下去。"""
+    source = _three_turns(client, kb_id)
+    once = client.post(f"/api/v1/conversations/{source}/branch", json={"turn": 2}).json()
+    assert once["title"].endswith("（分支 · 第 2 轮）")
+
+    # 分叉出来的会话里有 2 轮，所以这里还能再往前分一次
+    twice = client.post(f"/api/v1/conversations/{once['id']}/branch", json={"turn": 1})
+
+    assert twice.status_code == 201, twice.text
+    assert twice.json()["title"].endswith("（分支 · 第 1 轮）")
+    assert twice.json()["title"].count("（分支") == 1
+
+
+def test_branch_turn_beyond_the_end_is_422(client: TestClient, kb_id: str) -> None:
+    source = _two_turns(client)
+
+    response = client.post(f"/api/v1/conversations/{source}/branch", json={"turn": 3})
+
+    assert response.status_code == 422
+    assert "没有第 3 轮" in response.json()["message"]
+
+
+def test_branch_turn_zero_is_422(client: TestClient, kb_id: str) -> None:
+    """``0`` 不是"从头"——静默夹到边界会让用户以为分叉点就是他点的那一处。"""
+    source = _two_turns(client)
+
+    response = client.post(f"/api/v1/conversations/{source}/branch", json={"turn": 0})
+
+    assert response.status_code == 422
+
+
+def test_branch_turn_must_be_an_integer(client: TestClient, kb_id: str) -> None:
+    source = _two_turns(client)
+
+    response = client.post(f"/api/v1/conversations/{source}/branch", json={"turn": 1.5})
+
+    assert response.status_code == 422
+
+
+def test_branch_of_an_unreadable_conversation_is_404(client: TestClient) -> None:
+    response = client.post("/api/v1/conversations/conv_不存在/branch", json={"turn": 1})
+
+    assert response.status_code == 404
+
+
 def test_archived_conversations_leave_the_default_list(client: TestClient) -> None:
     """**归档不是删除**：它从默认列表里消失，但内容还在，能取消归档。
 
@@ -760,3 +904,147 @@ def test_project_scope_without_a_workspace_says_so(client: TestClient) -> None:
 
     assert response.status_code == 422, response.text
     assert "没有挂工作区" in response.json()["message"]
+
+
+# ----------------------------------------- D20：会话档的目录层级 + 取进本会话
+
+
+def test_conversation_files_show_directory_layers(client: TestClient) -> None:
+    """上传文件夹（名字里带相对路径）→ 会话档也**按目录分层**（D20）。
+
+    走的是真 multipart：前端把 ``图表/一.md`` 当 filename 交过来（`Composer` 那条路）。
+    """
+    conversation = client.post("/api/v1/conversations", json={"title": "分层"}).json()
+    base = f"/api/v1/conversations/{conversation['id']}/files"
+
+    client.post(base, files={"file": ("说明.txt", "根上的".encode(), "text/plain")})
+    created = client.post(base, files={"file": ("图表/一.md", b"# x", "text/markdown")})
+    assert created.status_code == 201, created.text
+
+    root = client.get(base).json()
+    assert root["path"] == "" and root["parent"] is None
+    assert [item["name"] for item in root["entries"]] == ["图表", "说明.txt"]
+    assert root["entries"][0]["is_dir"] is True and root["entries"][0]["kind"] == "dir"
+    # 目录项的 key 是它在这一档里的路径（界面点它就是 `path=key`）
+    assert root["entries"][0]["key"] == "图表"
+
+    inner = client.get(base, params={"path": "图表"}).json()
+    assert [item["name"] for item in inner["entries"]] == ["一.md"]
+    assert inner["path"] == "图表" and inner["parent"] == ""
+    # 文件项的 key 仍是产物 id：预览 / 下载那条路与以前一样
+    assert inner["entries"][0]["key"] == created.json()["key"]
+
+
+def test_import_project_file_into_the_conversation(client: TestClient, tmp_path) -> None:
+    """「取进本会话」：项目档那一行点一下 → 会话档多一份，项目里那份不动。"""
+    services = get_services()
+    root = tmp_path / "proj"
+    (root / "docs").mkdir(parents=True)
+    (root / "docs" / "报告.md").write_text("正文", encoding="utf-8")
+    workspace = services.workspaces.create(name="我的项目", root_path=str(root), user_id=None)
+    conversation = client.post(
+        "/api/v1/conversations", json={"title": "工作区的", "workspace_id": workspace.id}
+    ).json()
+    base = f"/api/v1/conversations/{conversation['id']}/files"
+
+    imported = client.post(f"{base}/import", json={"path": "docs/报告.md"})
+
+    assert imported.status_code == 201, imported.text
+    entry = imported.json()
+    # 回给界面的是**会话文件区里的那一行**：名字保留项目里的相对位置，key 是新的产物 id
+    assert entry["name"] == "docs/报告.md" and entry["kind"] == "md" and entry["size_bytes"] == 6
+    assert entry["key"].startswith("art_")
+
+    # 会话档的根那层因此多出一个目录，进去就是刚取的那份
+    assert [item["name"] for item in client.get(base).json()["entries"]] == ["docs"]
+    inner = client.get(base, params={"path": "docs"}).json()
+    assert [item["name"] for item in inner["entries"]] == ["报告.md"]
+    assert inner["entries"][0]["key"] == entry["key"]
+
+    # 内容取得回来；项目里那份一个字节没动
+    url = client.get(f"{base}/download-url", params={"key": entry["key"]}).json()["url"]
+    assert client.get(url).content == "正文".encode()
+    assert (root / "docs" / "报告.md").read_text(encoding="utf-8") == "正文"
+
+
+def test_import_project_file_refuses_traversal(client: TestClient, tmp_path) -> None:
+    """路径是浏览器回来的：`..` 与绝对路径都拒（工作区那道闸）。"""
+    services = get_services()
+    root = tmp_path / "proj"
+    root.mkdir()
+    workspace = services.workspaces.create(name="我的项目", root_path=str(root), user_id=None)
+    conversation = client.post(
+        "/api/v1/conversations", json={"title": "越界", "workspace_id": workspace.id}
+    ).json()
+
+    for bad in ["../外面.txt", "/etc/passwd"]:
+        response = client.post(
+            f"/api/v1/conversations/{conversation['id']}/files/import", json={"path": bad}
+        )
+        assert response.status_code == 422, response.text
+
+
+def test_import_project_file_without_a_workspace_says_so(client: TestClient) -> None:
+    """没挂工作区的会话没有「项目文件」可取——明确说清，不给一个空结果。"""
+    conversation = client.post("/api/v1/conversations", json={"title": "没项目"}).json()
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation['id']}/files/import", json={"path": "任意.txt"}
+    )
+
+    assert response.status_code == 422, response.text
+    assert "没有挂工作区" in response.json()["message"]
+
+
+def test_import_project_file_refuses_another_conversations_file(
+    client: TestClient, tmp_path
+) -> None:
+    """跨工作区越权：A 会话取不到 B 会话项目里的文件（各看各的根）。"""
+    services = get_services()
+    first_root = tmp_path / "a"
+    first_root.mkdir()
+    second_root = tmp_path / "b"
+    second_root.mkdir()
+    (second_root / "别人的.txt").write_text("b", encoding="utf-8")
+    first = client.post(
+        "/api/v1/conversations",
+        json={
+            "title": "a",
+            "workspace_id": services.workspaces.create(
+                name="A", root_path=str(first_root), user_id=None
+            ).id,
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/v1/conversations/{first['id']}/files/import", json={"path": "别人的.txt"}
+    )
+
+    assert response.status_code == 404, response.text
+
+
+def test_import_project_file_needs_a_write_key(client: TestClient, tmp_path) -> None:
+    """取进会话是**写**动作（往文件区里加东西）：只读密钥不许。"""
+    console = dict(client.headers)
+    services = get_services()
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "a.txt").write_text("a", encoding="utf-8")
+    workspace = services.workspaces.create(name="我的项目", root_path=str(root), user_id=None)
+    conversation = client.post(
+        "/api/v1/conversations", json={"title": "只读", "workspace_id": workspace.id}
+    ).json()
+    issued = client.post(
+        "/api/v1/api-keys",
+        json={"name": "只读", "permission": "readonly", "knowledge_base_ids": []},
+        headers=console,
+    ).json()
+    readonly = {"Authorization": f"Bearer {issued['token']}"}
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation['id']}/files/import",
+        json={"path": "a.txt"},
+        headers=readonly,
+    )
+
+    assert response.status_code == 403, response.text

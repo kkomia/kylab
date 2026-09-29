@@ -12,6 +12,7 @@ import pytest
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.conversation import TITLE_MAX_CHARS, ConversationService
+from app.services.session_events import TURN_OK, turn_end_draft, turn_start_draft
 
 
 @pytest.fixture
@@ -417,3 +418,271 @@ def test_title_from_never_ends_with_punctuation_or_particle() -> None:
         assert len(title) <= TITLE_MAX_CHARS, (title, question)
         assert title[-1] not in "。，、；：！？!?,;: ", (title, question)
         assert title[-1] not in "的了和与及把被在是对着给让使", (title, question)
+
+
+# ------------------------------------------------------- 从这里重开（D11）
+
+
+def _turn(service: ConversationService, conv_id: str, question: str, answer: str) -> None:
+    """落一轮**带事件日志**的问答（与 `/chat` 那条路同一个形状：turn/start … turn/end）。
+
+    分支要抄的东西里有一半在事件日志里，所以造数据时不能只 `append` 两条消息——
+    那样抄出来的"事件前缀"永远是空的，用例就测不到它在不在。
+    """
+    service.record_turn(
+        conv_id,
+        question=question,
+        answer=answer,
+        sources=[{"index": 1, "chunk_id": f"c_{question}", "preview": "原文"}],
+        steps=[{"phase": "answer", "label": "组织回答", "detail": answer, "status": "done"}],
+        thinking=f"{question} 的推理",
+        events=[
+            turn_start_draft(query=question, model_pk="m1"),
+            turn_end_draft(status=TURN_OK, answer_chars=len(answer), steps=1),
+        ],
+    )
+
+
+def test_branch_copies_the_history_up_to_that_turn(service: ConversationService) -> None:
+    """**从这里重开**：到第 N 轮为止的历史进新会话，原会话一个字节不动。"""
+    source = service.create(kb_ids=["kb_1"], title="眼科问答", model_pk="mdl_a", thinking=True)
+    _turn(service, source.id, "第一问", "第一答")
+    _turn(service, source.id, "第二问", "第二答")
+    _turn(service, source.id, "第三问", "第三答")
+
+    branch = service.branch(source.id, turn=2)
+
+    assert branch.id != source.id
+    # 新会话只带着前两轮（提问 + 回答都在，第三轮不进来）
+    assert [item.content for item in service.messages(branch.id)] == [
+        "第一问",
+        "第一答",
+        "第二问",
+        "第二答",
+    ]
+    # 原会话照旧三轮
+    assert service.message_count(source.id) == 6
+    # 会话档位跟着走：知识库 / 模型 / 思考偏好
+    assert list(branch.kb_ids) == ["kb_1"]
+    assert branch.model_pk == "mdl_a"
+    assert branch.thinking is True
+
+
+def test_branch_message_snapshots_are_carried_over(service: ConversationService) -> None:
+    """出处 / 步骤 / 思考快照都带走——回看时"当时依据哪几段"不能丢。"""
+    source = service.create(kb_ids=["kb_1"], title="会话")
+    _turn(service, source.id, "问", "答")
+
+    branch = service.branch(source.id, turn=1)
+    answer = service.messages(branch.id)[1]
+
+    assert [dict(item)["chunk_id"] for item in answer.sources] == ["c_问"]
+    assert [dict(item)["label"] for item in answer.steps] == ["组织回答"]
+    assert answer.thinking == "问 的推理"
+
+
+def test_branch_copies_the_event_log_with_fresh_seq(service: ConversationService) -> None:
+    """事件日志跟着抄，但 ``seq`` 是**新会话自己的**编号（从 1 重算）。"""
+    source = service.create(title="会话")
+    _turn(service, source.id, "第一问", "第一答")
+    _turn(service, source.id, "第二问", "第二答")
+
+    branch = service.branch(source.id, turn=1)
+    events = service.session_events(branch.id)
+
+    # 第一轮那两条（turn/start + turn/end）
+    assert [item.kind for item in events] == ["turn/start", "turn/end"]
+    assert [item.seq for item in events] == [1, 2]
+    assert events[0].payload["query"] == "第一问"
+    # 原会话两条都在（一个字节没动）
+    assert len(service.session_events(source.id)) == 4
+
+
+def test_branch_event_prefix_ignores_turns_without_messages(
+    service: ConversationService,
+) -> None:
+    """**消息轮次与事件轮次不一一对应**：被打断的那一轮不留消息但事件照记。
+
+    场景：第一轮在流里出错（只有事件、没有消息），第二轮正常。这时"到第 1 轮为止"
+    指的是**第二轮**那段历史（消息里唯一的一轮），抄过来的事件也必须是它的——
+    按事件里的第 1 个 `turn/start` 切会把第一轮那段失败的过程抄进新会话。
+    """
+    source = service.create(title="会话")
+    # 第一轮：被打断/失败——**只写事件**（这正是 chat.py 那两条路的形状）
+    service.append_events(
+        source.id,
+        [
+            turn_start_draft(query="第一问（根本没答）", model_pk=None),
+            turn_end_draft(status="error", answer_chars=0, steps=0),
+        ],
+    )
+    _turn(service, source.id, "第二问", "第二答")
+
+    branch = service.branch(source.id, turn=1)
+
+    assert [item.content for item in service.messages(branch.id)] == ["第二问", "第二答"]
+    events = service.session_events(branch.id)
+    # 抄过来的是**第二问那一轮**的两条事件，被中断那一轮一条都不带
+    assert [item.kind for item in events] == ["turn/start", "turn/end"]
+    assert [item.payload.get("query") for item in events if item.kind == "turn/start"] == ["第二问"]
+
+
+def test_branch_inherits_the_owner(service: ConversationService) -> None:
+    """**归属继承源会话**：成员分叉自己的会话，新会话还是他的（管理员替成员分叉也一样）。"""
+    source = service.create(title="会话", owner_id="user_member")
+    _turn(service, source.id, "问", "答")
+
+    branch = service.branch(source.id, turn=1)
+
+    assert branch.owner_id == "user_member"
+
+
+def test_branch_title_says_where_it_came_from(service: ConversationService) -> None:
+    """标题不能被照抄（侧栏会出现两条同名会话，用户分不清）。"""
+    source = service.create(title="眼科问答")
+    service.append(source.id, role="user", content="问")
+
+    branch = service.branch(source.id, turn=1)
+
+    assert branch.title == "眼科问答（分支 · 第 1 轮）"
+
+
+def test_branch_title_does_not_pile_up_markers(service: ConversationService) -> None:
+    """分叉出的会话再分叉是允许的——但标记不该一路接成一长串括号。"""
+    source = service.create(title="眼科问答")
+    service.append(source.id, role="user", content="问")
+
+    once = service.branch(source.id, turn=1)
+    twice = service.branch(once.id, turn=1)
+
+    assert twice.title == "眼科问答（分支 · 第 1 轮）"
+
+
+def test_branch_does_not_copy_attachment_snapshots(service: ConversationService) -> None:
+    """**附件快照不抄**（`branch` 的说明里那条边界）。
+
+    那份 key 指向**源会话**的文件区记账（对象存储里按会话分前缀），抄到新会话里点开
+    必然 404；而共享同一个对象 key 更糟——删掉源会话会把分叉的附件一起带走。
+    所以分叉出来的会话"历史正文在、附件片不在"，用户的感受就是这一条。
+    """
+    source = service.create(title="会话")
+    snapshot = [{"key": "art_1", "name": "指南.pdf", "kind": "pdf", "size_bytes": 10}]
+    service.record_turn(source.id, question="看看这份", answer="好", attachments=snapshot)
+
+    branch = service.branch(source.id, turn=1)
+
+    assert list(service.messages(branch.id)[0].attachments) == []
+    # 原会话那条仍然带着它（一个字节没动）
+    assert [dict(item) for item in service.messages(source.id)[0].attachments] == snapshot
+
+
+def test_branch_copies_the_compaction_summary_only_when_it_covers_the_cut(
+    service: ConversationService,
+) -> None:
+    """压缩摘要**只在它的覆盖标记落在这段历史里**时才带。
+
+    标记在 cut 之外说明那份摘要讲的是**后面**那些轮次——带过去等于把未来塞进分支。
+    """
+    source = service.create(title="长会话")
+    _turn(service, source.id, "第一问", "第一答")
+    _turn(service, source.id, "第二问", "第二答")
+    first_answer = service.messages(source.id)[1]
+    second_answer = service.messages(source.id)[3]
+
+    # 摘要覆盖到第一轮（在 cut 内）：带过去，且标记指向**新会话里**的那条消息
+    service.set_summary(source.id, "早期对话的摘要", first_answer.id)
+    kept = service.branch(source.id, turn=1)
+    assert service.summary(kept.id)[0] == "早期对话的摘要"
+    assert service.summary(kept.id)[1] == service.messages(kept.id)[1].id
+
+    # 摘要覆盖到第二轮（在 cut 之外）：不带（它讲的是分支没有的那一段）
+    service.set_summary(source.id, "含第二轮的摘要", second_answer.id)
+    without = service.branch(source.id, turn=1)
+    assert service.summary(without.id) == ("", None)
+
+
+def test_branch_rejects_a_turn_beyond_the_end(service: ConversationService) -> None:
+    source = service.create(title="会话")
+    _turn(service, source.id, "问", "答")
+
+    with pytest.raises(InvalidRequestError, match="没有第 3 轮"):
+        service.branch(source.id, turn=3)
+
+
+def test_branch_rejects_a_conversation_without_turns(service: ConversationService) -> None:
+    source = service.create(title="空会话")
+
+    with pytest.raises(InvalidRequestError, match="只有 0 轮"):
+        service.branch(source.id, turn=1)
+
+
+def test_branch_rejects_turn_zero(service: ConversationService) -> None:
+    """``0`` 不是"从头"，是越界——夹到边界会让用户以为分叉点就是他点的那一处。"""
+    source = service.create(title="会话")
+    _turn(service, source.id, "问", "答")
+
+    with pytest.raises(InvalidRequestError):
+        service.branch(source.id, turn=0)
+
+
+def test_branch_accepts_a_turn_that_has_no_answer_yet(service: ConversationService) -> None:
+    """被打断 / 续跑正在跑的那一轮只有提问——照样能当分叉点（带着那句提问继续聊）。"""
+    source = service.create(title="会话")
+    _turn(service, source.id, "第一问", "第一答")
+    service.append(source.id, role="user", content="第二问（还没答）")
+
+    branch = service.branch(source.id, turn=2)
+
+    assert [item.content for item in service.messages(branch.id)] == [
+        "第一问",
+        "第一答",
+        "第二问（还没答）",
+    ]
+
+
+def test_branch_and_source_are_independent(service: ConversationService) -> None:
+    """**两条真的独立**：在分叉出的会话里加一轮，原会话的轮数与事件数一个都不变。"""
+    source = service.create(title="会话")
+    _turn(service, source.id, "第一问", "第一答")
+    _turn(service, source.id, "第二问", "第二答")
+    source_count = service.message_count(source.id)
+    source_events = len(service.session_events(source.id))
+
+    branch = service.branch(source.id, turn=1)
+    _turn(service, branch.id, "分支里的新问题", "分支里的新回答")
+
+    assert service.message_count(source.id) == source_count
+    assert len(service.session_events(source.id)) == source_events
+    assert [item.content for item in service.messages(source.id)] == [
+        "第一问",
+        "第一答",
+        "第二问",
+        "第二答",
+    ]
+    # 反过来也一样：原会话再加一轮，分支不动
+    _turn(service, source.id, "原会话的第三问", "原会话的第三答")
+    assert [item.content for item in service.messages(branch.id)] == [
+        "第一问",
+        "第一答",
+        "分支里的新问题",
+        "分支里的新回答",
+    ]
+
+
+def test_branch_of_a_branch_is_allowed_and_stays_independent(
+    service: ConversationService,
+) -> None:
+    """分叉出的会话再分叉只是又一次新建——三条互不影响。"""
+    source = service.create(title="会话")
+    _turn(service, source.id, "第一问", "第一答")
+
+    once = service.branch(source.id, turn=1)
+    twice = service.branch(once.id, turn=1)
+
+    assert twice.id not in {source.id, once.id}
+    assert service.message_count(twice.id) == 2
+    assert service.message_count(once.id) == 2
+    # 各自的消息 id 也不重（新记录，不是把行搬过去）
+    assert {item.id for item in service.messages(twice.id)}.isdisjoint(
+        {item.id for item in service.messages(source.id)}
+    )

@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -29,6 +30,10 @@ from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.llm import ChatMessage
 from app.services.session_events import (
     EVENT_KINDS,
+    KIND_TURN_END,
+    KIND_TURN_START,
+    TURN_DEGRADED,
+    TURN_OK,
     EventDraft,
     SessionEvent,
 )
@@ -42,6 +47,13 @@ from app.storage.base import (
 __all__ = ["TITLE_MAX_CHARS", "ConversationService"]
 
 logger = logging.getLogger(__name__)
+
+#: 事件日志里"这一轮**真的产出过回答**"的那两个收尾状态（见 `_event_prefix`）。
+#:
+#: 为什么只认这两个：按 v0.12 起的取舍，出错（``error``）与"一个字都没吐"（``empty``）
+#: 的那两轮**不留消息**，可它们的事件照样在日志里。所以"消息里的第 N 轮"与
+#: "事件里的第 N 个 ``turn/start``"对不上，得靠这个状态把两边数到同一处。
+_MESSAGE_TURN_STATUSES = frozenset({TURN_OK, TURN_DEGRADED})
 
 #: 自动标题长度。够认出"这是哪一次"，又不至于把整个问题塞进左栏。
 TITLE_MAX_CHARS = 24
@@ -259,6 +271,106 @@ class ConversationService:
         return query
 
     # ------------------------------------------------------------------ 消息
+
+    def branch(self, conversation_id: str, *, turn: int) -> ConversationRecord:
+        """**从这里重开**（D11，2026-09-28 走查）：以第 ``turn`` 轮为界，把到那一轮
+        为止的历史复制进一条**新会话**，然后在那条新会话里继续。
+
+        为什么是"复制一段历史"而不是"给消息加 ``parent_message_id``"（走查报告的建议）：
+        走查要的是"保留原分支、另起一条"（"用户不敢乱试就是因为一改就回不去"）。
+        做对话树要动 ``chat_messages`` 的模型（parent / 版本号）、读侧要选版本、
+        回看时还要回答"这是哪条分支"——而用户手上要的只是**另一条能接着聊的会话**。
+        复制一份历史是同一件事，代价却小一个量级：原会话**一个字节都不动**，
+        两条会话各自可继续，符合"分支"的全部外部行为。
+
+        **第 ``turn`` 轮 = 第 ``turn`` 个提问**（它后面紧跟的那条回答也算这一轮）。
+        还没有回答的那一轮（被打断、或续跑正在跑）**照样能当分叉点**：复制出来的
+        会话带着那句提问，接着往下聊就是。
+
+        带走的东西（"能带多少带多少"）：
+
+        - 消息（含**出处 / 步骤 / 思考快照**）与它们之间的**事件日志**——
+          一次事务写进去，与 ``record_turn`` 同一条纪律（"消息在、事件不在"的窗口
+          在这里同样不能有）；
+        - 会话档位：``kb_ids`` / 模型 / 思考偏好 / 工作区 / **归属**（``owner_id``
+          继承源会话：分叉出来的历史是同一个人的，管理员替成员分叉也一样）；
+        - 压缩摘要——**只有它的覆盖标记落在这段历史里**才带（标记在 cut 之外说明
+          那份摘要讲的是**后面**那些轮次，带过去等于把未来塞进分支）。
+
+        **不带走文件区**（产物记录与对象存储里的字节一个都不动），所以用户消息上的
+        **附件快照也不抄**：那份快照里的 key 指向源会话的对象存储记账，抄过去在
+        新会话里点开必然 404（文件抽屉按本会话的产物记录找它）；而共享同一个对象
+        key 更糟——删掉源会话会把分叉的文件一起带走，"两条真的独立"就不成立了。
+
+        ``created_at`` **照抄**：消息顺序就是对话顺序，重打一遍时间戳等于让"哪条在前"
+        取决于插入的物理位置（``list_messages`` 按 ``(created_at, ctid)`` 排）。
+        事件的 ``seq`` 不抄——那是**新会话自己的**编号，由存储层在写事务里从 1 重算。
+        """
+        source = self.get(conversation_id)
+        messages = self._stores.meta.list_messages(conversation_id)
+        kept = _turn_prefix(messages, turn)
+        if kept is None:
+            raise InvalidRequestError(
+                f"这段对话只有 {_turn_count(messages)} 轮，没有第 {turn} 轮可作分叉点"
+            )
+
+        created = self.create(
+            kb_ids=list(source.kb_ids),
+            title=_branch_title(source.title, turn),
+            owner_id=source.owner_id,
+            model_pk=source.model_pk,
+            thinking=source.thinking,
+            thinking_effort=source.thinking_effort,
+            workspace_id=source.workspace_id,
+        )
+
+        # 旧 id → 新 id 的对照表：摘要那份标记指向的是一条**消息 id**，
+        # 而抄过来的每条消息都是新记录，标记要跟着映射（否则它指向源会话的消息）。
+        id_map: dict[str, str] = {}
+        copies: list[ChatMessageRecord] = []
+        for item in kept:
+            new_id = f"msg_{uuid.uuid4().hex[:12]}"
+            id_map[item.id] = new_id
+            copies.append(
+                ChatMessageRecord(
+                    id=new_id,
+                    conversation_id=created.id,
+                    role=item.role,
+                    content=item.content,
+                    sources=tuple(item.sources),
+                    steps=tuple(item.steps),
+                    thinking=item.thinking,
+                    attachments=(),
+                    created_at=item.created_at,
+                )
+            )
+        events = [
+            SessionEventRecord(
+                conversation_id=created.id,
+                kind=item.kind,
+                payload=dict(item.payload),
+                created_at=item.created_at,
+            )
+            for item in _event_prefix(
+                self._stores.meta.list_session_events(conversation_id),
+                turns=sum(1 for item in kept if item.role == "assistant"),
+            )
+        ]
+        try:
+            self._stores.meta.append_turn(messages=copies, events=events)
+        except Exception:
+            # **半条分叉比没分叉更糟**：用户会在列表里看到一条空会话，以为成功了。
+            # 消息与事件本来就写在一个事务里，这里只需把这层空壳收掉（级联删消息）。
+            try:
+                self._stores.meta.delete_conversation(created.id)
+            except Exception:  # pragma: no cover - 兜底清理失败不该盖住原始错误
+                logger.exception("分叉失败后清理空会话也失败：%s", created.id)
+            raise
+
+        summary, upto = self.summary(conversation_id)
+        if summary and upto is not None and upto in id_map:
+            self.set_summary(created.id, summary, id_map[upto])
+        return self.get(created.id)
 
     def last_turn(self, conversation_id: str) -> LastTurn | None:
         """最后一轮的快照。**给续跑用**，没有就返回 None。
@@ -547,6 +659,98 @@ class ConversationService:
         self, conversation_id: str, summary: str, upto_message_id: str | None
     ) -> None:
         self._stores.meta.set_conversation_summary(conversation_id, summary, upto_message_id)
+
+
+def _turn_count(messages: Sequence[ChatMessageRecord]) -> int:
+    """这段对话有几轮（一轮 = 一次提问）。"""
+    return sum(1 for item in messages if item.role == "user")
+
+
+def _turn_prefix(
+    messages: Sequence[ChatMessageRecord], turn: int
+) -> list[ChatMessageRecord] | None:
+    """到第 ``turn`` 轮为止的消息前缀；没有第 ``turn`` 轮就返回 ``None``。
+
+    一轮从**提问**开始；它后面紧跟的那条回答也算这一轮。被打断、或续跑正在跑的那一轮
+    只有提问本身——照样是合法的分叉点（复制出来的会话带着那句提问，接着往下聊就是）。
+    """
+    if turn < 1:
+        return None
+    seen = 0
+    for index, item in enumerate(messages):
+        if item.role != "user":
+            continue
+        seen += 1
+        if seen == turn:
+            end = index + 1
+            if end < len(messages) and messages[end].role == "assistant":
+                end += 1
+            return list(messages[:end])
+    return None
+
+
+def _event_prefix(
+    events: Sequence[SessionEventRecord], *, turns: int
+) -> list[SessionEventRecord]:
+    """前 ``turns`` 轮**产出过回答**的历史事件。
+
+    三件事都是刻意的：
+
+    1. **按"产出过回答"的轮次数，不按第 N 个 ``turn/start``**：消息轮次与事件轮次
+       并不一一对应——出错（``error``）与"一个字都没吐"（``empty``）的那两轮按 v0.12
+       起的取舍**不留消息**（``chat.py::_record_turn`` 只在拿到正文时才写两条），
+       而它们的事件照样在日志里。所以要按收尾状态（``ok`` / ``degraded`` = 这一轮
+       写出了回答）数轮次；
+    2. **没产出回答的那几轮整块丢掉**：新会话的消息里没有它们，事件留着就对不上——
+       读侧是按"每条 assistant 消息配一段事件"配对的（``session_events.steps_per_turn``
+       + ``fill_missing_thinking``），多出一段会把某一步的推理挂到**错的**那一轮上，
+       而那种错不报错、只是回看时内容错位。原会话的日志一个字没动，那些事件仍在原处；
+    3. **轮次之间的"无主"事件**（模式切换、命令）只要落在这一段里就带上——它们没有
+       配对的消息，但解释了后面那一轮是在什么档下跑的。数满之后的一律不带。
+
+    没有 ``turn/end`` 的那一轮（进程崩过、或还在跑）同样不进结果：它没有消息可对应。
+    """
+    kept: list[SessionEventRecord] = []
+    pending: list[SessionEventRecord] = []
+    produced = 0
+    for event in events:
+        if event.kind == KIND_TURN_START:
+            if produced >= turns:
+                break
+            pending = [event]
+            continue
+        if not pending:
+            if produced >= turns:
+                break
+            kept.append(event)
+            continue
+        pending.append(event)
+        if event.kind != KIND_TURN_END:
+            continue
+        if event.payload.get("status") in _MESSAGE_TURN_STATUSES:
+            kept.extend(pending)
+            produced += 1
+        pending = []
+    return kept
+
+
+#: 分叉会话标题里那截标记（见 `_branch_title`）。
+_BRANCH_MARK = re.compile(r"（分支 · 第 \d+ 轮）$")
+
+
+def _branch_title(title: str, turn: int) -> str:
+    """分叉会话的标题：源标题 + 「（分支 · 第 N 轮）」。
+
+    为什么必须带标记：照抄源标题会让侧栏出现两条**一模一样**的会话，用户分不清
+    哪条是哪条；而"从第几轮分出来"正是这条会话唯一可说的话（也是分叉相对
+    "重新生成"的唯一可见差别）。
+
+    **旧的标记要先去掉再接新的**：分叉出的会话再分叉是允许的，一路接下去标题会变成
+    一长串括号（侧栏放不下）。这里不另加长度上限——标题列是 ``text``，而多出来的
+    只有这截标记本身（源标题本来就已经过接口那道上限）。
+    """
+    base = _BRANCH_MARK.sub("", title.strip()).rstrip()
+    return f"{base or '新对话'}（分支 · 第 {turn} 轮）"
 
 
 def _title_from(question: str) -> str:
