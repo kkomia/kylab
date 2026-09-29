@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -393,6 +394,42 @@ def test_without_isolation_degrades_to_direct_by_default(workspace, monkeypatch)
     isolation = seen["isolation"]
     assert getattr(isolation, "backend", "") == "direct"
     assert "未隔离" in outcome.text
+
+
+def test_utf8_command_output_comes_back_instead_of_a_decode_crash(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """命令吐 UTF-8 中文时，`run_command` 要**拿到输出**（不是"命令没能跑起来"）。
+
+    这条钉的是野外实测到的那一批（`.shots/cases-api/G-03.json` 21 处、`K-03.json` 17 处，
+    原始报错都是 `命令没能跑起来：object of type 'NoneType' has no len()`）：出事的命令
+    一类是 `print(open('.../artifacts.py', encoding='utf-8').read())`（源文件里全是中文注释），
+    一类是 `uv pip install`（uv 的进度框/勾是 UTF-8）——**输出里只要有一个非 GBK 的字节**，
+    `run_isolated` 里 `text=True`（挑的是 locale = cp936）的读线程就抛 `UnicodeDecodeError`，
+    `stdout/stderr` 变成 `None`，`_clip(None)` 再抛 `TypeError`，报出来的就是那句话。
+    没出事的那一批（`os.listdir`、`os.path.getsize`、版本号、sqlite 查询）**输出全是 ASCII**。
+
+    这里走的是**真链路**（不再 monkeypatch `run_isolated`）：权限扳到完全访问、
+    探测结果装成"没有隔离"（于是降级成 direct 真跑），命令用 `sys.stdout.buffer`
+    写**字节**，免得通过 locale 的子进程编码被"顺手救活"。
+    """
+    _allow_all(workspace)
+    monkeypatch.setattr(
+        agent_exec, "_detect", lambda force=False: isolation_service.detect(prefer="none")
+    )
+    child = (
+        "import sys;"
+        "sys.stdout.buffer.write('中文输出\\n'.encode('utf-8'));sys.stdout.flush()"
+    )
+    outcome = run_command(
+        workspace,
+        _admin(),
+        conversation_id=None,
+        args={"argv": [sys.executable, "-c", child]},
+    )
+
+    assert outcome.ran is True, outcome.text
+    assert outcome.ok is True, outcome.text
+    assert "中文输出" in outcome.text
+    assert "NoneType" not in outcome.text
 
 
 def test_runs_when_policy_and_isolation_are_both_ready(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]

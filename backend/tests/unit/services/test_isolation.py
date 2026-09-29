@@ -335,3 +335,73 @@ def test_clip_keeps_short_output_untouched() -> None:
     text, cut = iso._clip("short")
 
     assert (text, cut) == ("short", False)
+
+
+# ------------------------------------------------- 子进程输出的解码（不要用 locale）
+
+
+def test_chinese_output_survives_the_reader_thread(tmp_path: Path) -> None:
+    """命令吐 UTF-8 中文时，**输出要能原样回来**，而不是读线程抛 `UnicodeDecodeError`。
+
+    这是这台机器上真实踩过的一条（中文 Windows，locale = cp936）：`subprocess.run` 只写
+    `text=True` 时挑的是 **locale**，命令的输出里只要有一个非 GBK 的字节，`Popen` 的读线程
+    就死掉、`stdout/stderr` 变成 `None`，`_clip(None)` 再抛 `TypeError` —— 用户看到的是
+    "这个工具这次没能跑起来（内部错误）"，而真正的原因只是"输出不是 GBK"。
+    把下面那个子进程的写法拿到裸 `subprocess.run(..., text=True)` 里跑一遍，报的就是
+    `UnicodeDecodeError: 'gbk' codec can't decode byte 0xad in position 2`。
+
+    子进程刻意用 `sys.stdout.buffer` 写**字节**：这样它吐出来的就是货真价实的 UTF-8，
+    与它自己的 stdio 编码（在 Windows 上也是 locale）无关——否则这条用例会被子进程的
+    编码"顺手救活"，测不到母进程那一侧。
+    """
+    box = tmp_path / "box"
+    box.mkdir()
+    child = (
+        "import sys;"
+        "sys.stdout.buffer.write('中文输出\\n'.encode('utf-8'));sys.stdout.flush();"
+        "sys.stderr.buffer.write('中文报错\\n'.encode('utf-8'));sys.stderr.flush()"
+    )
+
+    result = iso.run_isolated(
+        [sys.executable, "-c", child],
+        workspace_root=tmp_path,
+        sandbox_dir=box,
+        isolation=iso.direct_isolation(),
+        timeout=60,
+    )
+
+    assert result.ok, result
+    # **逐字**相等（不是"包含"）：GBK + errors="replace" 也能拿到字符串，
+    # 但那是一串 U+FFFD——这条用例要钉的是"用 utf-8 解"这个选择本身
+    assert result.stdout.strip() == "中文输出"
+    assert result.stderr.strip() == "中文报错"
+
+
+def test_docker_probe_asks_for_utf8_explicitly(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """docker 探测那条路同样要**显式**要 utf-8。
+
+    这条路没装 Docker 就走不到真跑（本机就是），所以这里钉的是**调用参数**：
+    少了 `encoding`，`_probe` 就会拿 locale 去解 `docker info` 的输出——
+    而那台机器上只要 docker 的报错是本地化的（中文），整个 `detect()` 就被带崩。
+    """
+    from types import SimpleNamespace
+
+    seen: dict = {}  # type: ignore[type-arg]
+
+    def fake_run(argv: list[str], **kwargs: object) -> object:
+        seen["argv"] = argv
+        seen.update(kwargs)
+        return SimpleNamespace(returncode=0, stdout="27.0.3\n", stderr="")
+
+    monkeypatch.setattr(iso.shutil, "which", lambda name: r"C:\fake\docker.exe")
+    monkeypatch.setattr(
+        iso,
+        "subprocess",
+        SimpleNamespace(run=fake_run, SubprocessError=Exception, TimeoutExpired=Exception),
+    )
+
+    found = iso._probe(iso.BACKEND_DOCKER)
+
+    assert found.available is True, found.detail
+    assert seen["encoding"] == "utf-8"
+    assert seen["errors"] == "replace"

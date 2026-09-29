@@ -230,10 +230,17 @@ def _probe(name: str) -> Isolation:
         try:
             # S603：这里的 argv 是**我们自己拼的常量**（docker + 固定子命令），
             # 不含任何用户输入，也没有 shell=True —— bandit 只是看到 subprocess 就报。
+            #
+            # **编码必须显式给**（`text=True` 不够，它用 locale）：这台机器（中文
+            # Windows）的 locale 是 GBK，而 docker CLI 的输出里只要有一个非 GBK 的
+            # 字节（本地化的报错、带中文的路径…），读线程就抛 `UnicodeDecodeError`，
+            # 于是"探测一个隔离后端"这条本该无害的路把整个调用带崩。
             probe = subprocess.run(  # noqa: S603
                 [path, "info", "--format", "{{.ServerVersion}}"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=8,
             )
         except (OSError, subprocess.SubprocessError) as exc:
@@ -470,11 +477,22 @@ def run_isolated(
         # S603：整条链路就是为了"在隔离里执行用户要跑的命令"而存在的，
         # 而且传的是**数组**（没有 shell 解析），并被隔离后端包着——
         # 这正是本模块的职责，不是注入面。见模块头的三层说明。
+        #
+        # **编码必须显式给**（`text=True` 只说明"要文本"，它挑的是 locale）：
+        # 这台机器（中文 Windows）的 locale 是 GBK，而命令吐出 UTF-8 是常态
+        # （`git log`、`pytest`、带中文的文件名…）。不带 `encoding` 时读线程会抛
+        # `UnicodeDecodeError`，`Popen` 那一侧的 `stdout/stderr` 变成 `None`，
+        # 下面 `_clip(None)` 再抛 `TypeError` —— 用户看到的是"这个工具这次没能跑起来
+        # （内部错误）"，而真正的原因只是"输出不是 GBK"。
+        # `errors="replace"`：真遇到非 UTF-8 的（例如 cmd 自己在 GBK 下吐的中文）
+        # 也要把结果交出去（乱码可辨认），而不是整条命令失败。
         finished = subprocess.run(  # noqa: S603
             plan.argv,
             cwd=str(sandbox_dir),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             env=env,
         )
