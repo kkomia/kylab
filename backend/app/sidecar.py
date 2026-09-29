@@ -78,9 +78,35 @@ FORBIDDEN_ROOTS = (
 
 
 def default_workspace() -> Path:
-    """默认工作区目录（不存在就建 ✓）。"""
-    DEFAULT_WORKSPACE.mkdir(parents=True, exist_ok=True)
-    return DEFAULT_WORKSPACE
+    """默认工作区目录 —— **按可写性逐级回退** ✓（P3 烟测抓到：`~/.kylab` 建不出来 ✗）。
+
+    实测（2026-09-29 真烟测）：在这台机器上 `Path.home()/".kylab"` 直接
+    `PermissionError: [WinError 5]` ✗ —— 用户目录并不总是可写的（受限配置、
+    受管终端、沙箱策略都会这样 ✓）。而边车**必须能起来** ✓，所以按顺序试：
+
+    1. `~/.kylab/workspace`（首选 ✓，用户看得见、好备份 ✓）；
+    2. `%LOCALAPPDATA%\\kylab\\workspace`（Windows）/ `$XDG_DATA_HOME`（*nix）✓；
+    3. 系统临时目录下的 `kylab-workspace` ✓（最后兜底 ✓）。
+
+    三处都写不了才抛 ✗（那时如实报出来，而不是假装起来了 ✓）。
+    """
+    candidates: list[Path] = [DEFAULT_WORKSPACE]
+    local = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME")
+    if local:
+        candidates.append(Path(local) / "kylab" / "workspace")
+    import tempfile
+
+    candidates.append(Path(tempfile.gettempdir()) / "kylab-workspace")
+
+    problems: list[str] = []
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            problems.append(f"{candidate}（{type(exc).__name__}: {exc}）")
+            continue
+        return candidate
+    raise RuntimeError("找不到可写的工作区目录：" + "；".join(problems))
 
 
 def _check_workspace(raw: str | None) -> Path:
