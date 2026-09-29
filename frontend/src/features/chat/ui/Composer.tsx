@@ -258,6 +258,18 @@ export function Composer() {
    * 单独按回车仍然能换行的原因。
    */
   function onKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>): void {
+    /**
+     * **合成态一律不当作按键**（D05，2026-09-28 走查）。
+     *
+     * 中文输入法选词时按的回车/方向键是"输入法在用"，不是用户在跟界面说话。原先只保护了
+     * "发送"那一条路（`shortcutPrefs` 里 `if (event.isComposing) return ''`），而 `/` 与
+     * `@` 两个菜单的 Enter 分支没判——实测：菜单开着时按一次合成态回车，输入框从 `/`
+     * 变成了 `/compact`（菜单里那一项被选中了），用户想打的字被顶掉。
+     *
+     * 判据只写这一处（而不是两条分支各写一遍）：它是"这次按键算不算数"的总闸，
+     * 落在这里之后两条分支与下面那条快捷键路都自然被覆盖。
+     */
+    if (event.nativeEvent.isComposing) return
     if (mentionVisible) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault()

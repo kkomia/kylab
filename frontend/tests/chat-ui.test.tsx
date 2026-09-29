@@ -15,7 +15,7 @@
  * 所以界面里的"事件 → 画面"这条链路是真的在跑。
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, Link } from 'react-router'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -1919,5 +1919,48 @@ describe('Toast 只由壳挂（D32，2026-09-28 走查）', () => {
     // 数全局 DOM 会把同一文件里先前用例留下的东西一起算进来（第一版单独跑绿、整文件跑红）。
     // 文案是这条用例独有的，所以 1 就是 1。
     await waitFor(() => expect(screen.getAllByText('这条通知只该出现一次')).toHaveLength(1))
+  })
+})
+
+describe('输入法合成态（D05，2026-09-28 走查）', () => {
+  const PLAN = {
+    name: 'plan',
+    summary: '先给计划再动手',
+    usage: '/plan <描述>',
+    group: 'builtin',
+    details: [],
+    argument_hint: '<描述>',
+    short_circuit: true,
+    shadowed_by: '',
+    error: '',
+    path: '',
+  }
+
+  /** 打开 `/` 菜单（有匹配项时回车才会被菜单"选中"）。 */
+  async function openSlashMenu() {
+    vi.mocked(listCommands).mockResolvedValue([PLAN] as never)
+    renderPage()
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
+    await userEvent.setup().type(field, '/')
+    await waitFor(() => expect(screen.getAllByText(/plan/).length).toBeGreaterThan(0))
+    return field as HTMLTextAreaElement
+  }
+
+  it('合成态的回车**不选菜单项**：输入法选词那一下不该把「/」改写成命令', async () => {
+    // 病灶（复核实测）：菜单开着时按一次合成态回车，输入框从 `/` 变成 `/compact`
+    // —— 用户在打中文，菜单却把那一下当成了"选中"。
+    const field = await openSlashMenu()
+
+    fireEvent.keyDown(field, { key: 'Enter', code: 'Enter', keyCode: 229, isComposing: true })
+
+    expect(field).toHaveValue('/')
+  })
+
+  it('对照：非合成态的回车照旧选中菜单项（别把功能一起关掉）', async () => {
+    const field = await openSlashMenu()
+
+    fireEvent.keyDown(field, { key: 'Enter', code: 'Enter', isComposing: false })
+
+    await waitFor(() => expect(field.value).not.toBe('/'))
   })
 })
