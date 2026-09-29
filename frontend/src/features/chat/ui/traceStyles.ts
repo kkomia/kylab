@@ -70,6 +70,31 @@ export function stepIconClass(icon: string): string {
   return `${STEP_ICON} ${KIND_ICON[icon] ?? ''}`
 }
 
+/**
+ * 过程面板那一块的**折叠容器**（§12.333：高度过渡只加在**面板级**）。
+ *
+ * 行高走 `grid-template-rows`（`0fr ↔ 1fr`），高度由内容自己决定——不量像素，
+ * 内容长短变了也不用跟着改（`min-h-0` + `overflow-hidden` 让 0fr 时真的贴成 0）。
+ *
+ * 过渡写在**类里**、不写在 `style` 里：内联样式优先级更高，`motion-reduce:transition-none`
+ * 就压不住它，"减少动态效果直落"那一半会失效（与 `ComposerControls` 那条进度圈
+ * 同一条教训）。`grid-template-rows` 的内联值是另一件事（开合态只有组件知道）。
+ *
+ * 200ms + `cubic-bezier(0.4, 0, 0.2, 1)`：开合动效五家都收敛在 200ms（调研 §4.8），
+ * 曲线就是本仓发送按钮那一档（`tokens.css` 的 `--motion-send`）。
+ *
+ * **内容是条件渲染的**（收起时不在文档里，DOM 开销的取舍见 `TracePanel` 头注），
+ * 所以实际效果是**展开有过渡、收起直落**——这一半是刻意的。
+ */
+export const TRACE_FOLD =
+  'grid transition-[grid-template-rows] duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none'
+
+/** 折叠容器的内层：0fr 时要能真的收到 0（自动最小尺寸是 grid 行不肯收的常见原因）。 */
+export const TRACE_FOLD_BODY = 'min-h-0 overflow-hidden'
+
+/** 面板内容与开关那一行之间的间距（原先在条件渲染的那一层上）。 */
+export const TRACE_FOLD_CONTENT = 'mt-[var(--space-3)]'
+
 /** 正文列。 */
 export const STEP_BODY = 'min-w-0 pt-px'
 

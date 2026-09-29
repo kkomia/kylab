@@ -14,7 +14,9 @@ import {
   degradedReason,
   hasToolCallMarkup,
   buildTurns,
+  groupHeading,
   humanizeArtifactKeys,
+  isBlockRunning,
   isTraceOpen,
   readTraceOpenMemory,
   writeTraceOpenMemory,
@@ -346,6 +348,27 @@ describe('isTraceOpen（P0：过程默认收起、答案常显）', () => {
     expect(traceForceExpanded(hidden)).toBe(false)
     expect(isTraceOpen(hidden)).toBe('collapsed')
   })
+
+  /*
+   * §12.333：面板级与组级是**同一条规则的两个层级**，所以"这一块还在跑吗"
+   * 只有一处判据（`isBlockRunning`），两层都问它。这一条钉的是"面板级真的问的是它"：
+   * 流断在半路（`streaming` 已经是 false）但还有一步是 `running` 时，
+   * 面板仍然算进行中——旧写法（只看 `message.streaming`）会把它当成跑完而折起来。
+   */
+  it('面板级也问 `isBlockRunning`：流断了但还有一步在跑，仍算进行中', () => {
+    const half = message('assistant', {
+      text: '断在半路',
+      steps: [step('tool', { tool: 'read_file', label: '读文件', status: 'running' })],
+    })
+
+    expect(isBlockRunning(half)).toBe(true)
+    expect(isTraceOpen(half)).toBe('full')
+
+    // 老快照没有 `status`：一律当"跑完了"，不会因为少了这一位就一直摊着
+    expect(
+      isTraceOpen(message('assistant', { steps: [step('tool', { tool: 'read_file' })] })),
+    ).toBe('collapsed')
+  })
 })
 
 describe('过程面板的手动干预记忆（P0 改语义：从"上次开合"到"用户手动开过没有"）', () => {
@@ -409,6 +432,134 @@ describe('单步 / 分组的 key 带轮次命名空间（P0，修跨轮串号）
     // 组 key 里包着**第一次调用**的原始 key（同一轮内稳定，展开态才不会自己收起来）
     expect(entries[0].kind === 'group' && entries[0].key).toContain('tool-0')
     expect(entries[0].kind === 'group' && entries[0].key.startsWith('t')).toBe(false)
+  })
+})
+
+/*
+ * §12.333 / §12.334：组行的**标题**（调研 §4.8 规律 7 的 P1）。
+ *
+ * 病灶是「联网搜索 18 次」那句：它说不出"对什么做的"，还让人以为每一次都成了。
+ * 新口径两态——跑着说"最新一步在干嘛 + `{done}/{total}`"，跑完换成**与对象绑定**的
+ * 聚合句。这一节是纯输入输出：组由 `traceEntries` 真的并出来（不自己拼一个形状），
+ * 对象优先取入参、解析不了才退回结论。
+ */
+describe('组行标题：跑着说进度、跑完与对象绑定（§12.333）', () => {
+  /** 一组同类调用并出来的那一行（走真数据层）。 */
+  function groupOf(steps: ChatStep[]) {
+    const turn = { user: message('user', { text: '问' }), reply: message('assistant', { steps }) }
+    const [entry] = traceEntries(turn)
+    if (!entry || entry.kind !== 'group') throw new Error('这组数据没有并成组')
+    return entry
+  }
+
+  /** 一次「读文件」调用：文件名只在 `args.path` 里（真实形状，`detail` 只有"读了 N 行"）。 */
+  function read(path: string, extra: Partial<ChatStep> = {}): ChatStep {
+    return step('tool', {
+      label: '读文件',
+      tool: 'read_file',
+      kind: 'read',
+      detail: '读了 12 行',
+      args: JSON.stringify({ path }),
+      ...extra,
+    })
+  }
+
+  it('跑着的时候：动词 + 最新那一步的对象 + done/total', () => {
+    const entry = groupOf([read('docs/a.md'), read('docs/b.md', { status: 'running' })])
+
+    expect(groupHeading(entry)).toBe('正在读取 docs/b.md… 1/2')
+  })
+
+  it('跑着的占位**没有入参**时只说动词与进度（不拿上一次的对象顶替）', () => {
+    // 后端先发 running 占位、跑完才发带 args 的那一条（见 `services/tool_loop.py`）
+    const entry = groupOf([
+      read('docs/a.md'),
+      step('tool', { label: '读文件', tool: 'read_file', kind: 'read', status: 'running' }),
+    ])
+
+    expect(groupHeading(entry)).toBe('正在读取… 1/2')
+  })
+
+  it('跑完换成聚合句：数的是**对象**，并把对象列出来', () => {
+    const entry = groupOf([read('docs/a.md'), read('docs/b.md')])
+
+    expect(groupHeading(entry)).toBe('读取 2 个文件 · docs/a.md、docs/b.md')
+  })
+
+  it('同一个对象调了两次只算一个（数目与右边列出来的那些对得上）', () => {
+    const entry = groupOf([read('docs/a.md'), read('docs/a.md')])
+
+    expect(groupHeading(entry)).toBe('读取 1 个文件 · docs/a.md')
+  })
+
+  it('正好 3 条列全', () => {
+    const entry = groupOf([read('a.md'), read('b.md'), read('c.md')])
+
+    expect(groupHeading(entry)).toBe('读取 3 个文件 · a.md、b.md、c.md')
+  })
+
+  it('超过 3 条：列前 2 条 + 「… 还有 N 个」', () => {
+    const entry = groupOf([read('a'), read('b'), read('c'), read('d'), read('e'), read('f')])
+
+    expect(groupHeading(entry)).toBe('读取 6 个文件 · a、b… 还有 4 个')
+  })
+
+  it('入参被截断（解析不了）→ 退回结论，不抛也不显示半截 JSON', () => {
+    const entry = groupOf([
+      read('x', { args: '{"path": "docs/a', detail: '读了 12 行' }),
+      read('y', { args: '{"path": "docs/b', detail: '读了 30 行' }),
+    ])
+
+    expect(groupHeading(entry)).toBe('读取 2 个文件 · 读了 12 行、读了 30 行')
+  })
+
+  it('结论是**原始 JSON** 就不当对象（老快照那种 exports / remember 的形状）', () => {
+    const entry = groupOf([
+      step('tool', {
+        label: '读文件',
+        tool: 'read_file',
+        kind: 'read',
+        detail: '{"artifact_id": "art_1", "name": "报告.md"}',
+      }),
+      step('tool', {
+        label: '读文件',
+        tool: 'read_file',
+        kind: 'read',
+        detail: '{"artifact_id": "art_2", "name": "方案.md"}',
+      }),
+    ])
+
+    // 一句对象都取不到 → 退回老的"N 次"，而不是把 JSON 印在标题上
+    expect(groupHeading(entry)).toBe('读文件 2 次')
+  })
+
+  it('入参里是内部 key（`art_*`）→ 走 D19 那张表换成文件名，标题上不留 key', () => {
+    const names = artifactNameMap([
+      {
+        user: message('user', {
+          attachments: [{ key: 'art_abc', name: '走查样例.md', kind: 'md', size_bytes: 10 }],
+        }),
+        reply: null,
+      },
+    ])
+    const entry = groupOf([
+      step('tool', {
+        label: '读上传的文件',
+        tool: 'read_conversation_file',
+        kind: 'read',
+        detail: '读了 20 行',
+        args: '{"path": "art_abc"}',
+      }),
+      step('tool', {
+        label: '读上传的文件',
+        tool: 'read_conversation_file',
+        kind: 'read',
+        detail: '读了 30 行',
+        args: '{"path": "art_abc"}',
+      }),
+    ])
+
+    expect(groupHeading(entry, names)).toBe('读取 1 个文件 · 走查样例.md')
   })
 })
 

@@ -206,6 +206,25 @@ export function isRunningStep(step: { status?: string }): boolean {
   return step.status === 'running'
 }
 
+/**
+ * 这一段过程**还在跑**吗——面板级（整轮）与组级共用的**唯一**判据（§12.333）。
+ *
+ * 两个层级问的是同一件事（"这一块的内容跑完了吗"），只是"这一块"不同：
+ * 面板那一块的进行时是**整轮还在流式**（`message.streaming`），组那一块的进行时是
+ * **组里还有一次调用是 `running`**（后端一直先发占位再发结果，见 `services/tool_loop.py`）。
+ * 合起来写一处，两层就不会各自判出一个不同的答案（"同一条规则的两个层级，
+ * 实现上也只写一处"）。
+ *
+ * 两个输入都是**当场的事实**：历史回放里 `streaming` 是 false、步骤是 `done`，
+ * 于是完成的一轮照旧收起——不会因为"读库读回来"就把整块面板锁在展开态。
+ */
+export function isBlockRunning(block: {
+  streaming?: boolean
+  steps: readonly { status?: string }[]
+}): boolean {
+  return Boolean(block.streaming) || block.steps.some(isRunningStep)
+}
+
 /** 提问原文在面板里只显示一小段：它是"检索了什么"的提示，不是内容主体。 */
 export const TRACE_QUERY_CHARS = 44
 
@@ -789,6 +808,220 @@ function groupBlock(block: TraceStep[]): TraceEntry[] {
 }
 
 /**
+ * 结论那一行是**原始 JSON** 吗（v0.26；原先在 `TraceStepRow` 里，这一批挪到模型层）。
+ *
+ * 判据是结构而不是 `JSON.parse`：老快照里那条被裁到 120 字，**根本解析不了**，
+ * 而它恰恰是这里要挡的东西。所以只认"以 `{` 开头、紧跟着一个 `"键":`"。
+ *
+ * 为什么要挡：后端在没有摘要时会**回退到结果的开头**，而 exports / remember
+ * 这几个工具回的是 dict——于是过程面板里铺出的是
+ * `{"artifact_id": "art_89cb…", "name": …}` 这样的原文。
+ * 宁可那一行什么都不写，也不要把 JSON 当句子印出来；原始载荷没丢，
+ * 点开这一步的「入参 / 返回」就是它。
+ *
+ * **挪到这一层**是组行标题也要用它：标题同样从 `detail` 里取对象，同样不能把 JSON
+ * 印上去——一处判断，两个问的人（`TraceStepRow` 从这里引）。
+ */
+export function detailIsRawJson(detail: string): boolean {
+  return /^\s*\{\s*"[\w.]+"\s*:/.test(detail)
+}
+
+/** 组那一行的标题里最多列几个对象（多出来的收成「… 还有 N 个」，与出处那 3 条同一口径）。 */
+export const GROUP_OBJECT_LIMIT = 3
+
+/** 标题上每个对象最多几个字：这一行是**一句话**，不是把每一步的结论抄一遍。 */
+const GROUP_OBJECT_CHARS = 24
+
+/** 没有名字表时用的空表（**常量**：省得每渲染一次就造一个 Map）。 */
+const NO_NAMES: ReadonlyMap<string, string> = new Map()
+
+/**
+ * 每个工具组在标题里**怎么说**（动词 + 量词）。
+ *
+ * 键是**后端给的标签**（`TraceStep.label`，见 `services/tool_loop._LABELS`），不是工具名：
+ * 老快照没有工具名、只有同一批中文标签，用标签当键**一份表就同时覆盖新旧两批数据**
+ * （与 `LEGACY_LABEL_KINDS` 同一个做法）。查不到的标签退回「{标签} N 次」——
+ * 那句话没错，只是不如带量词的那句有信息。
+ *
+ * 为什么必须有量词：用户看「联网搜索 18 次」会以为每一次都成了，而「读取 2 个文件」
+ * 说的是**结果**（调研 §4.8 规律 7：「在做什么 / 做成了什么」>「做了几次」）。
+ * 但**只有数目是不够的**——Trae 那种「已编辑 3 个文件，读取 2 个文件」被开发者评为
+ * "没有营养"，所以每一句都还要把**对象列出来**（见下面 `groupHeading` 的 `·` 那一段）。
+ */
+const GROUP_PHRASES: Readonly<Record<string, { verb: string; unit: string }>> = {
+  // 读 / 查（这一族最容易并成一大组，也最需要说清"读了哪些"）
+  读文件: { verb: '读取', unit: '个文件' },
+  读上传的文件: { verb: '读取', unit: '个文件' },
+  在文件里搜: { verb: '在文件里搜', unit: '个关键词' },
+  查看文件: { verb: '查看', unit: '个目录' },
+  检索知识库: { verb: '检索', unit: '个问题' },
+  回忆: { verb: '回忆', unit: '个主题' },
+  查表格: { verb: '查', unit: '张表' },
+  // 联网
+  联网搜索: { verb: '联网搜索', unit: '个关键词' },
+  抓取网页: { verb: '抓取', unit: '个网页' },
+  // 写 / 产出
+  写笔记: { verb: '写', unit: '条笔记' },
+  导出文档: { verb: '导出', unit: '份文档' },
+  导出表格: { verb: '导出', unit: '份表格' },
+  导出幻灯: { verb: '导出', unit: '份幻灯' },
+  上传文档: { verb: '上传', unit: '份文档' },
+  存进知识库: { verb: '存进知识库', unit: '份文件' },
+  把文件加入知识库: { verb: '加入知识库', unit: '份文件' },
+  记住: { verb: '记下', unit: '条记忆' },
+  // 这台机器上 / 技能 / 子 Agent
+  执行命令: { verb: '执行', unit: '条命令' },
+  挂定时任务: { verb: '挂', unit: '个定时任务' },
+  读技能: { verb: '读', unit: '份技能' },
+  查看技能目录: { verb: '查看', unit: '个技能' },
+  '派子 Agent': { verb: '派', unit: '个子 Agent' },
+  删除文档: { verb: '删除', unit: '份文档' },
+  新建知识库: { verb: '新建', unit: '个知识库' },
+}
+
+/**
+ * 入参里"人对得上号的那个东西"按这个顺序找。
+ *
+ * 只认这几个键：它们就是**模型传进来的对象本身**（路径 / 检索词 / 命令 / 网址 / 名字），
+ * 其余键（`offset` / `limit` / `ignore_case`…）是参数，不是"它是对什么做的"。
+ */
+const OBJECT_KEYS: readonly string[] = [
+  'path',
+  'file',
+  'query',
+  'pattern',
+  'url',
+  'urls',
+  'command',
+  'cmd',
+  'name',
+  'title',
+  'key',
+  'topic',
+  'target',
+]
+
+/**
+ * 对象里的内部 key（`art_*`）换成文件名——**复用 D19 那一份**（`artifactNameMap` 那张表
+ * + `humanizeArtifactKeys` 那次改写），不另写一套 args 解析（两份迟早不一致）。
+ *
+ * 与入参原文那处只差一点：标题上**不保留 key**——`art_xxx（文件名）` 那个形状是给
+ * "对着日志核 key"用的，而标题只要那个名字。
+ */
+function displayObject(raw: string, names: ReadonlyMap<string, string>): string {
+  const text = raw.trim()
+  if (!text) return ''
+  const name = names.get(text)
+  if (name) return name
+  return clipObject(humanizeArtifactKeys(text, names))
+}
+
+/** 空白压成一个空格再截断：标题是一行，而 `detail` / 入参里常有换行。 */
+function clipObject(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > GROUP_OBJECT_CHARS ? `${flat.slice(0, GROUP_OBJECT_CHARS)}…` : flat
+}
+
+/**
+ * 入参里取对象：**解析不了就当没有**（不抛、也不显示半截 JSON）。
+ *
+ * 入参是发到界面时**被截过**的字符串（后端 `MAX_STEP_PREVIEW_CHARS` 那一刀），
+ * 截断的 JSON 解析不了——那不是异常，是常态，所以这里悄声退回 `detail`。
+ */
+function objectFromArgs(args: string | undefined, names: ReadonlyMap<string, string>): string {
+  if (!args) return ''
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(args)
+  } catch {
+    return ''
+  }
+  if (!parsed || typeof parsed !== 'object') return ''
+  const record = parsed as Record<string, unknown>
+  for (const key of OBJECT_KEYS) {
+    const value = record[key]
+    const text =
+      typeof value === 'string'
+        ? value
+        : Array.isArray(value) && typeof value[0] === 'string'
+          ? value[0]
+          : ''
+    const object = displayObject(text, names)
+    if (object) return object
+  }
+  return ''
+}
+
+/**
+ * 这一步"是对什么做的"。
+ *
+ * 两步，顺序就是优先级：**入参**（对象本身）→ **结论**（后端写给人看的那一句）。
+ * 结论为空、或是原始 JSON 就不取——那种"对象"印在标题上比不写还糟（D19 修的正是这个）。
+ *
+ * **标签不当对象**：它是**动作**（"读文件"），不是"对什么做的"。硬拿它顶上会得出
+ * 「读取 1 个文件 · 读文件」这种句子；标签参与的是"怎么说"那一层（`GROUP_PHRASES`）。
+ */
+function stepObject(step: TraceStep, names: ReadonlyMap<string, string>): string {
+  const fromArgs = objectFromArgs(step.args, names)
+  if (fromArgs) return fromArgs
+  const detail = step.detail.trim()
+  if (detail && !detailIsRawJson(detail)) return clipObject(detail)
+  return ''
+}
+
+/** 组内每一步的对象（去重、保持先后）。 */
+function stepObjects(steps: readonly TraceStep[], names: ReadonlyMap<string, string>): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const step of steps) {
+    const object = stepObject(step, names)
+    if (!object || seen.has(object)) continue
+    seen.add(object)
+    out.push(object)
+  }
+  return out
+}
+
+/**
+ * 组那一行的标题（§12.333，落点是调研 §4.8 规律 7 的 P1）。
+ *
+ * - **跑着的时候**：说"正在做什么" + `{done}/{total}`——用户看着它跑，要知道卡在哪一步；
+ * - **跑完之后**：聚合句 + **对象**。数目数的是**对象**（与右边列出来的那些对得上），
+ *   不是调用次数：这样「18 次」那种"看起来每次都成了"的读法就不存在了，
+ *   而重复的同一个对象（同一个文件读两遍）也不会被说成两份。
+ *   对象最多列 3 个，多出来的收成「… 还有 N 个」（与出处那一行同一条口径）。
+ *
+ * 两条刻意的分寸：
+ *
+ * 1. **跑着的时候常常只有动词与计数**：后端的 `running` 占位**不带入参**（先发占位、
+ *    跑完才发带 `args` 的那一条，见 `services/tool_loop.py`），那一步此刻真的没有对象可说；
+ *    这里**不拿"上一次调用的对象"顶替**——那会把"正在做的事"说错；
+ * 2. **一个对象都取不到时不编**：退回「{标签} N 次」（老快照没有入参时就是这种）。
+ */
+export function groupHeading(
+  entry: { label: string; steps: readonly TraceStep[] },
+  names: ReadonlyMap<string, string> = NO_NAMES,
+): string {
+  const total = entry.steps.length
+  const phrase = GROUP_PHRASES[entry.label] ?? { verb: entry.label, unit: '项' }
+  if (isBlockRunning({ steps: entry.steps })) {
+    const done = entry.steps.filter((step) => !isRunningStep(step)).length
+    // "最新一步" = 最后那条还在跑的；一条都没有（刚跑完、下一批还没发）就退回最后一条
+    const latest = entry.steps.filter(isRunningStep).at(-1) ?? entry.steps.at(-1)
+    const object = latest ? stepObject(latest, names) : ''
+    const progress = `${formatCount(done)}/${formatCount(total)}`
+    return object ? `正在${phrase.verb} ${object}… ${progress}` : `正在${phrase.verb}… ${progress}`
+  }
+  const objects = stepObjects(entry.steps, names)
+  if (objects.length === 0) return `${entry.label} ${formatCount(total)} 次`
+  const listed =
+    objects.length <= GROUP_OBJECT_LIMIT
+      ? objects.join('、')
+      : `${objects.slice(0, 2).join('、')}… 还有 ${formatCount(objects.length - 2)} 个`
+  return `${phrase.verb} ${formatCount(objects.length)} ${phrase.unit} · ${listed}`
+}
+
+/**
  * 过程步骤。
  *
  * 有 Agent 步骤就**如实照搬**（理解问题 → 优化检索词 → 第 N 轮检索 → 组织回答），
@@ -980,7 +1213,8 @@ export function traceForceExpanded(message: Message): boolean {
  *
  * 四条规则照 LobeHub 的 `WorkflowCollapse`（调研 §5.2 的 P0①，依据 §4.7 / §4.8）：
  *
- * (a) **流式中 `full`、这一轮完成之后 `collapsed`**。十一个能确证的样本里没有一个
+ * (a) **进行中 `full`、这一轮完成之后 `collapsed`**（"还在跑吗"问的是 `isBlockRunning`，
+ *     组级那一行也走它）。十一个能确证的样本里没有一个
  *     把过程摊在正文里（Cline / Roo / Cherry / LobeHub / WeKnora / MaxKB / Trae /
  *     Qoder / OpenHands 全默认折），只有我们（v0.25 起）是；但"执行中就折"是有害的——
  *     Trae 的用户原话是"展开了，过一会……又给折叠掉了，AI 在干啥都不知道"，
@@ -1001,8 +1235,8 @@ export function isTraceOpen(message: Message, state: TraceOpenState = {}): Trace
   if (traceForceExpanded(message)) return 'full'
   // (b) 这一轮他自己点过：完全听他的，流式与否都不覆盖
   if (state.chosen) return state.chosen
-  // (a) 流式中它就是进度条，摊开；这一轮结束之后再收起
-  if (message.streaming) return 'full'
+  // (a) 进行中它就是进度条，摊开；这一块跑完之后再收起
+  if (isBlockRunning(message)) return 'full'
   // (b) 跨轮次那一半：他手动开过，就不再替他折
   return state.userOpened ? 'full' : 'collapsed'
 }

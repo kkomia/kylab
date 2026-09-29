@@ -11,6 +11,7 @@ import { ChevronDown } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import {
+  detailIsRawJson,
   humanizeArtifactKeys,
   isRunningStep,
   resultPreview,
@@ -43,22 +44,6 @@ import {
   stepIconClass,
 } from './traceStyles'
 import { WebSiteList } from './WebSiteList'
-
-/**
- * 结论那一行是**原始 JSON** 吗（v0.26）。
- *
- * 判据是结构而不是 `JSON.parse`：老快照里那条被裁到 120 字，**根本解析不了**，
- * 而它恰恰是这里要挡的东西。所以只认"以 `{` 开头、紧跟着一个 `"键":`"。
- *
- * 为什么要挡：后端在没有摘要时会**回退到结果的开头**，而 exports / remember
- * 这几个工具回的是 dict——于是过程面板里铺出的是
- * `{"artifact_id": "art_89cb…", "name": …}` 这样的原文。
- * 宁可那一行什么都不写，也不要把 JSON 当句子印出来；原始载荷没丢，
- * 点开这一步的「入参 / 返回」就是它。
- */
-function detailIsRawJson(detail: string): boolean {
-  return /^\s*\{\s*"[\w.]+"\s*:/.test(detail)
-}
 
 /**
  * "这一步不成功"的那几个摘要（这一行**默认展开**）。

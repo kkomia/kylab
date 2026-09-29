@@ -3,8 +3,9 @@
  *
  * 装四样东西，各有各的来历：
  *
- * 1. **时间线**：只列真发生过的步骤；同类工具**并成一行 + 次数**（合并的是入口，
- *    不是信息——点开才是每一次的结论与原文）；
+ * 1. **时间线**：只列真发生过的步骤；同类工具**并成一行**，行标题是人话
+ *    （跑着说"在做什么 + 进度"，跑完说"做了什么、对哪些对象做的"，见 `turns.groupHeading`）
+ *    ——合并的是入口，不是信息：点开才是每一次的结论与原文；
  * 2. **大输出的两级懒加载**：一轮几十次工具调用时先画前 20 条（`TRACE_PAGE_SIZE`），
  *    这一行如实报出"画了多少 / 一共多少"；单条原文再切到 600 字（见 `TraceStepRow`）；
  * 3. **思考过程**：推理模型的 `reasoning_content`，它是过程的一部分，收在面板里、
@@ -16,14 +17,20 @@
  *
  * 折叠用的是 `v-if` 那种"不是就不在文档里"的做法（React 里就是条件渲染）：
  * 这一块装着步骤、思考全文与每条出处的正文预览，聊到几十轮时它们只是被 CSS 藏起来，
- * DOM 开销一直在。
+ * DOM 开销一直在。**内容照旧条件渲染，外层容器是常驻的一个 grid**——换来的是
+ * **展开那一刻的高度过渡**（`0fr → 1fr`，见 `traceStyles.TRACE_FOLD`）；
+ * **收起是直落**：内容与行高在同一个提交里变（内容卸载了），没有东西可以过渡。
+ * 这一半是刻意取舍：收起本来就快，用户感知最强的是内容出现那一刻；
+ * 为双向过渡把内容常驻，就把上面那条 DOM 开销的取舍推翻了。
+ * （真浏览器里量过：内容与行高同帧变也能播，见 `.shots/.probe-trace-fold.cjs`。）
  */
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, ListTree } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import {
   artifactNameMap,
-  isRunningStep,
+  groupHeading,
+  isBlockRunning,
   sourcePreview,
   sourceWhere,
   thinkingParagraphs,
@@ -46,6 +53,9 @@ import {
   STEP_TOGGLE,
   THINK_BLOCK,
   THINK_PARAGRAPH,
+  TRACE_FOLD,
+  TRACE_FOLD_BODY,
+  TRACE_FOLD_CONTENT,
   caretClass,
   stepIconClass,
 } from './traceStyles'
@@ -54,6 +64,23 @@ import { useChat, type ChatMessage } from '../runtime/ChatProvider'
 
 /** 出处列表默认铺几条（多出来的折起来）。 */
 const CITE_FOLD_LIMIT = 3
+
+/**
+ * 面板那一行的**固定短名**（§12.334 的"图标 + 文字"：每一行都得说得出自己是什么）。
+ *
+ * 用它的两种情况：**跑着的时候**，以及**跑完又没有出处的时候**——后者原先什么都不写，
+ * 整行只剩一枚箭头（用户看不出这里能点开，而这是**唯一**能点开过程面板的地方）。
+ *
+ * **这不是把当年那条动态摘要恢复回来**：用户否掉的是「本轮没有命中资料 / 直接作答」
+ * 那种替它编一段经过的话（判据见 `turns.traceSummary`），这一条只回答"这一行叫什么"，
+ * 不声称任何发生过的事；两个分支共用一个词，也就不会分成两句不一样的话。
+ */
+const TRACE_PANEL_NAME = '执行过程'
+
+/** 组容器 / 面板容器的 DOM id：`aria-controls` 要用它，而 key 里带 `:` 之类不能直接用。 */
+function domId(prefix: string, raw: string): string {
+  return `${prefix}-${raw.replace(/[^0-9a-zA-Z]+/g, '-')}`
+}
 
 /** 过程面板的一行：单独一步，或**同类工具并成的一组**。 */
 function EntryRow({
@@ -84,20 +111,27 @@ function EntryRow({
   const key = traceKey(turnIndex, entry.key)
 
   /**
-   * 组那一行的开合：**默认开着的情况有两种**——用户自己开过，或者组里有一行
-   * "必须看得见"（`forceExpand`，与单步那一行走的是同一个判据）。
+   * 组那一行的开合：**进行中展开、内容跑完折叠**（§12.333，与面板级同一条规则）。
    *
-   * 为什么组也要管这一件：不成功的步骤折在组里等于没展开——用户扫过面板时看到的
-   * 只是「联网搜索 3 次」，而其中一次其实是"没有执行"。判据不在这里另写一遍。
+   * 优先级三层，从强到弱：
    *
-   * 用户的点击照样压过默认值（与 `TraceStepRow` 同一个分寸）：默认展开不等于折不起来。
-   * 这个钩子与下面两个判据**必须写在"单独一步"的提前 return 之前**：钩子的顺序不能随
-   * 渲染分支变（写在 return 之后会被 lint 判成"条件调用"）。
+   * 1. **组里有 `awaiting` / `failed`**（`forceExpand`，单步那一行也走它）：强制展开，
+   *    而且**拒绝收起**（见下面 `toggle`）——"要你动手 / 它没做成"是三家收敛的安全语义，
+   *    折起来等于把它藏进一次点击后面；
+   * 2. **用户手动干预过**（`groupChose` 是当场那一下，宿主的 `openGroups` 跨挂载）：
+   *    完全听他的 —— 默认档听用户的，**进入 forceExpand 那三档之后不再听**；
+   * 3. **默认档**：这一组还在跑就展开（那就是进度条），跑完就折叠。
+   *
+   * "这一组还在跑吗"问的是 `turns.isBlockRunning`（面板级那条规则问同一个函数），
+   * 两层不会各判出一个答案。
+   *
+   * 这几个判据与下面两个 `useState` **必须写在"单独一步"的提前 return 之前**：
+   * 钩子的顺序不能随渲染分支变（写在 return 之后会被 lint 判成"条件调用"）。
    */
   const [groupChose, setGroupChose] = useState<boolean | null>(null)
   const groupForced = entry.kind === 'group' && entry.steps.some(forceExpand)
-  /** 组里还有一次调用在跑（见 `turns.isRunningStep`）：那一行也要看得出来。 */
-  const groupRunning = entry.kind === 'group' && entry.steps.some(isRunningStep)
+  /** 组里还有一次调用在跑：那一行也要看得出来。 */
+  const groupRunning = entry.kind === 'group' && isBlockRunning({ steps: entry.steps })
 
   // 单独一步：绝大多数工具只调一次，那一档不该多一层点击
   if (entry.kind === 'step') {
@@ -112,10 +146,22 @@ function EntryRow({
     )
   }
 
-  const open = groupChose ?? (chat.isGroupOpen(key) || groupForced)
+  const open = groupForced || (groupChose ?? (chat.isGroupOpen(key) || groupRunning))
   const toggle = () => {
-    setGroupChose(!open)
-    chat.toggleGroup(key)
+    // 第 2 层那一档不收（与宿主 `toggleTrace` 拒绝收起同一个写法：连档位都不留）
+    if (groupForced) return
+    const next = !open
+    setGroupChose(next)
+    /*
+      宿主那张表只有"开过"这一档（`toggleGroup` 是翻转型的 Set，记不了"他收过"），
+      所以**只在它能记对的时候**动它：用户把默认展开的组收起来时，表里本来没有这个 key，
+      翻一下反而记成"他开过"——下次挂载（收起面板再打开）就会把这一组弹开，
+      与用户刚做的事相反。
+
+      代价写在这里：他收起一个"默认开着"的组，这一下只在本挂载内有效
+      （表里没有第二档可以记"他收过"）；跨挂载仍按默认档走（还在跑就展开）。
+    */
+    if (chat.isGroupOpen(key) !== next) chat.toggleGroup(key)
   }
 
   /**
@@ -129,6 +175,10 @@ function EntryRow({
   const sites = webSitesOfSteps(entry.steps)
   /** 组行的状态灯：组内第一条带状态位的调用（见 `stepsOutcome`）。 */
   const outcome = stepsOutcome(entry.steps)
+  /** 组行标题：跑着说"正在做什么 + 进度"，跑完换成与对象绑定的聚合句（`turns.groupHeading`）。 */
+  const heading = groupHeading(entry, artifactNames)
+  /** 展开的容器（`aria-controls` 指着它）；组 key 在同一轮内唯一，套上轮次便整页唯一。 */
+  const bodyId = domId('trace-group', key)
 
   return (
     <li
@@ -143,31 +193,41 @@ function EntryRow({
         {outcome ? <StepOutcomeBadge outcome={outcome} /> : groupRunning ? <StepSpinner /> : null}
       </span>
       <div className={STEP_BODY}>
-        <button type="button" className={STEP_TOGGLE} aria-expanded={open} onClick={toggle}>
-          {entry.label}
-          <span className="text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
-            {formatCount(entry.steps.length)} 次
-          </span>
-          <ChevronDown className={caretClass(open)} size={12} />
+        <button
+          type="button"
+          className={STEP_TOGGLE}
+          aria-expanded={open}
+          aria-controls={bodyId}
+          onClick={toggle}
+        >
+          {heading}
+          <ChevronDown className={caretClass(open)} size={12} aria-hidden />
         </button>
         {/* 组行上那一排站点：默认折着的时候也看得见（见上面 `sites` 的说明） */}
         <WebSiteList sites={sites.sites} more={sites.more} />
-        {open ? (
-          <ol className="m-0 flex list-none flex-col p-0">
-            {entry.steps.map((child) => (
-              <TraceStepRow
-                key={child.key}
-                step={child}
-                variant="child"
-                streaming={streaming}
-                names={artifactNames}
-                // 组内每一次调用同样是"哪一轮的第几步"：不带轮次会跨轮串号
-                open={chat.isStepOpen(traceKey(turnIndex, child.key))}
-                onToggle={() => chat.toggleStep(traceKey(turnIndex, child.key))}
-              />
-            ))}
-          </ol>
-        ) : null}
+        {/*
+          展开的那一块：外层只管"它归谁管"（id + 角色 + 名字），内容是条件渲染——
+          组里是同一批步骤的完整行，几十次调用时没理由一直挂在文档里（与面板级同一条）。
+          `role="group"` + `aria-label` 是本仓既有的容器做法（见设置页那几个分组）。
+        */}
+        <div id={bodyId} role="group" aria-label={heading}>
+          {open ? (
+            <ol className="m-0 flex list-none flex-col p-0">
+              {entry.steps.map((child) => (
+                <TraceStepRow
+                  key={child.key}
+                  step={child}
+                  variant="child"
+                  streaming={streaming}
+                  names={artifactNames}
+                  // 组内每一次调用同样是"哪一轮的第几步"：不带轮次会跨轮串号
+                  open={chat.isStepOpen(traceKey(turnIndex, child.key))}
+                  onToggle={() => chat.toggleStep(traceKey(turnIndex, child.key))}
+                />
+              ))}
+            </ol>
+          ) : null}
+        </div>
       </div>
     </li>
   )
@@ -258,122 +318,154 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
   const view = chat.traceView(turnIndex, turn)
   const trailingThinkingText = trailingThinking(reply)
 
+  /**
+   * 这一行此刻写什么：**有出处就报出处摘要**（`traceSummary`），**没有就写固定短名**
+   * （见 `TRACE_PANEL_NAME`）——跑着的时候本来也走这一条。
+   *
+   * 顺带解决了一件无障碍上的事：收起态原先可能一个字都没有（只剩一枚箭头），
+   * 于是这个按钮**没有可读的名字**；现在两种状态都有一句文字，名字就是它。
+   */
+  const headline =
+    reply.streaming || reply.sources.length === 0 ? TRACE_PANEL_NAME : traceSummary(reply)
+  /** 折起来的那一块要有个 id 指着（`aria-controls`）；同一页可能有好几轮。 */
+  const panelId = domId('trace-panel', String(turnIndex))
+
   return (
     <>
       {/*
         依据摘要那一行：**它同时是过程面板的开合开关**（左边那个箭头）。
 
         三种状态各写什么：**执行期间**一个静态短标签（见下面那段，实时文案已按用户
-        要求整条删掉）；**跑完且有出处**写 `traceSummary`；跑完又没出处则**只留箭头**——
-        那时它会说"本轮没有命中资料 / 直接作答"，用户原话是"没啥用"。
-        无论哪一种，收起/展开都点得到。
+        要求整条删掉）；**跑完且有出处**写 `traceSummary`；跑完又没出处则写**固定短名**——
+        那时它会说"本轮没有命中资料 / 直接作答"，用户原话是"没啥用"，所以那句话不回来；
+        但那一行不能只剩一枚箭头（看不出这里能点开）。无论哪一种，收起/展开都点得到。
       */}
       <button
         type="button"
         /**
-         * 面板收起时这一行**只剩一枚箭头与一句摘要**（没出处时连摘要都没有），
-         * 于是它没有可读的无障碍名字。测试要按它开合面板，这里给它一个稳定的抓点
-         * （P0 的用例正是"默认收起 → 点一下才摊开"）。
+         * 面板收起时这一行**只剩一枚箭头与一句短名**，测试要按它开合面板，
+         * 这里给它一个稳定的抓点（P0 的用例正是"默认收起 → 点一下才摊开"）。
          */
         data-testid="trace-toggle"
         className="flex w-full cursor-pointer items-center gap-[var(--space-1)] bg-transparent p-0 text-left"
         aria-expanded={open}
+        aria-controls={panelId}
         onClick={() => chat.toggleTrace(reply)}
       >
-        <ChevronDown className={caretClass(open)} size={14} />
-        {reply.streaming ? (
-          /*
-            执行期间这一行只写一个**静态名字**。
+        {/* 箭头与那枚过程图标都是**装饰**：名字由这一行的文字给（本仓口径） */}
+        <ChevronDown className={caretClass(open)} size={14} aria-hidden />
+        <ListTree size={13} aria-hidden className="shrink-0 text-[var(--text-quaternary)]" />
+        {/*
+          执行期间这一行只写一个**静态名字**（现在它与"跑完没出处"共用同一个词）。
 
-            原先这里是那条会滚的实时文案（「正在抓取网页…」/ 思考的尾巴 /
-            「正在处理…」，由 `turns.liveLine` 给）：它挂在助手列的第一个节点上，
-            与头像齐平，用户原话是"把 agent 执行中跟头像齐平的那个流式输出干掉"——
-            整条删掉了（函数与它的用例一起，见 `model/README.md` §3.3）。
+          原先这里是那条会滚的实时文案（「正在抓取网页…」/ 思考的尾巴 /
+          「正在处理…」，由 `turns.liveLine` 给）：它挂在助手列的第一个节点上，
+          与头像齐平，用户原话是"把 agent 执行中跟头像齐平的那个流式输出干掉"——
+          整条删掉了（函数与它的用例一起，见 `model/README.md` §3.3）。
 
-            但删掉之后这一行会只剩一枚箭头，看起来像残留符号，而它恰恰是**唯一**
-            能点开这一块的地方。所以补一个静态短标签说明"这一行是什么"：
-            它不随任何状态变化（没有要实时报告的东西了），只负责让人看出这里能点开。
-          */
-          <span className="text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
-            执行过程
-          </span>
-        ) : reply.sources.length > 0 ? (
-          <span className="text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
-            {traceSummary(reply)}
-          </span>
-        ) : null}
+          但删掉之后这一行会只剩一枚箭头，看起来像残留符号，而它恰恰是**唯一**
+          能点开这一块的地方。所以补一个静态短标签说明"这一行是什么"：
+          它不随任何状态变化（没有要实时报告的东西了），只负责让人看出这里能点开。
+        */}
+        <span className="text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
+          {headline}
+        </span>
       </button>
 
-      {open ? (
-        <div className="mt-[var(--space-3)]">
-          <ol className="relative m-0 flex list-none flex-col p-0">
-            {view.entries.map((entry) => (
-              <EntryRow
-                key={entry.key}
-                turnIndex={turnIndex}
-                entry={entry}
-                streaming={Boolean(reply.streaming)}
-              />
-            ))}
-          </ol>
+      {/*
+        折叠那一块：**容器一直在文档里**（一个 grid），内容是条件渲染。
 
-          {view.hidden > 0 ? (
-            <div className="mt-[var(--space-3)] flex items-center gap-[var(--space-2)]">
-              {view.total > 0 ? (
-                <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
-                  当前已显示 {formatCount(view.shown)} / {formatCount(view.total)} 条工具调用
-                </span>
-              ) : (
-                <span className="text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
-                  还有 {formatCount(view.hidden)} 段过程没显示
-                </span>
-              )}
-              <button
-                type="button"
-                className="cursor-pointer text-[length:var(--text-micro-size)] text-[var(--accent-text)] hover:underline"
-                onClick={() => chat.showMoreTrace(turnIndex)}
-              >
-                加载更多
-              </button>
-            </div>
-          ) : null}
+        为什么内容仍是条件渲染（而不是也改成"CSS 藏起来 + 双向过渡"）：这一块装着步骤、
+        思考全文与每条出处的正文预览（见文件头注），聊到几十轮时它们被 CSS 藏起来、
+        DOM 开销一直在。所以这里换来的过渡只有**展开那一刻**（`0fr → 1fr`，200ms、
+        `cubic-bezier(0.4,0,0.2,1)`，见 `TRACE_FOLD`）：展开时容器早就在、行高从 0 变到
+        内容高度，浏览器会播；**收起是直落**——内容与行高在同一个提交里变，没有东西可以
+        过渡。这是刻意的取舍（收起本来就快，用户感知最强的是内容出现那一刻），
+        不是漏了一半。
 
-          {/*
-            整轮那一串思考（v0.54 改）：**只有"没有任何一步带自己的推理"时才画**，
-            而且**默认折叠**——用户原话："他是把所有思考的内容全部放在一起了。很难看……
-            输出最终结果完毕后，把思考折叠起来，就显示工具调用信息就行了。当然用户也可以展开查看。"
+        容器上那三笔（`id` / `role="group"` / `aria-label`）是给读屏器与用例的：
+        开关报 `aria-expanded`，这一块报"归谁管、叫什么"；图标全部 `aria-hidden`。
+      */}
+      <div
+        id={panelId}
+        role="group"
+        aria-label={headline}
+        className={TRACE_FOLD}
+        style={{ gridTemplateRows: open ? '1fr' : '0fr' }}
+      >
+        <div className={TRACE_FOLD_BODY}>
+          {open ? (
+            <div className={TRACE_FOLD_CONTENT}>
+              <ol className="relative m-0 flex list-none flex-col p-0">
+                {view.entries.map((entry) => (
+                  <EntryRow
+                    key={entry.key}
+                    turnIndex={turnIndex}
+                    entry={entry}
+                    streaming={Boolean(reply.streaming)}
+                  />
+                ))}
+              </ol>
 
-            新数据不走这里：每一步的推理已经落在它自己那行里（见 `TraceStepRow`），
-            再在末尾铺一遍是把同一件事说两遍（`trailingThinking` 会返回空串）。
-            这里兜的是**老消息**（这条规则上线前落库的、整轮只有一串的那种）——
-            用户手上正开着的就是它们；拆不出来就只能整块给，但至少不再一直摊着。
-          */}
-          {trailingThinkingText ? (
-            <div className="mt-[var(--space-4)]">
-              <button
-                type="button"
-                className={STEP_TOGGLE}
-                aria-expanded={trailingOpen}
-                onClick={() => setTrailingOpen((value) => !value)}
-              >
-                思考过程
-                <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
-                  {formatCount(trailingThinkingText.length)} 字
-                </span>
-                <ChevronDown className={caretClass(trailingOpen)} size={12} />
-              </button>
-              {trailingOpen ? (
-                <div className={THINK_BLOCK} data-testid="thinking-block">
-                  {thinkingParagraphs(trailingThinkingText).map((paragraph, index) => (
-                    // 段落是**同一段文本按空行切出来的**，没有稳定 id；下标即位置
-                    <LinkText key={index} className={THINK_PARAGRAPH} text={paragraph} />
-                  ))}
+              {view.hidden > 0 ? (
+                <div className="mt-[var(--space-3)] flex items-center gap-[var(--space-2)]">
+                  {view.total > 0 ? (
+                    <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
+                      当前已显示 {formatCount(view.shown)} / {formatCount(view.total)} 条工具调用
+                    </span>
+                  ) : (
+                    <span className="text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
+                      还有 {formatCount(view.hidden)} 段过程没显示
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="cursor-pointer text-[length:var(--text-micro-size)] text-[var(--accent-text)] hover:underline"
+                    onClick={() => chat.showMoreTrace(turnIndex)}
+                  >
+                    加载更多
+                  </button>
+                </div>
+              ) : null}
+
+              {/*
+                整轮那一串思考（v0.54 改）：**只有"没有任何一步带自己的推理"时才画**，
+                而且**默认折叠**——用户原话："他是把所有思考的内容全部放在一起了。很难看……
+                输出最终结果完毕后，把思考折叠起来，就显示工具调用信息就行了。当然用户也可以展开查看。"
+
+                新数据不走这里：每一步的推理已经落在它自己那行里（见 `TraceStepRow`），
+                再在末尾铺一遍是把同一件事说两遍（`trailingThinking` 会返回空串）。
+                这里兜的是**老消息**（这条规则上线前落库的、整轮只有一串的那种）——
+                用户手上正开着的就是它们；拆不出来就只能整块给，但至少不再一直摊着。
+              */}
+              {trailingThinkingText ? (
+                <div className="mt-[var(--space-4)]">
+                  <button
+                    type="button"
+                    className={STEP_TOGGLE}
+                    aria-expanded={trailingOpen}
+                    onClick={() => setTrailingOpen((value) => !value)}
+                  >
+                    思考过程
+                    <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
+                      {formatCount(trailingThinkingText.length)} 字
+                    </span>
+                    <ChevronDown className={caretClass(trailingOpen)} size={12} aria-hidden />
+                  </button>
+                  {trailingOpen ? (
+                    <div className={THINK_BLOCK} data-testid="thinking-block">
+                      {thinkingParagraphs(trailingThinkingText).map((paragraph, index) => (
+                        // 段落是**同一段文本按空行切出来的**，没有稳定 id；下标即位置
+                        <LinkText key={index} className={THINK_PARAGRAPH} text={paragraph} />
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
             </div>
           ) : null}
         </div>
-      ) : null}
+      </div>
 
       {/*
         出处**不跟着过程一起折**（P0 的规则 d：答案常显）。

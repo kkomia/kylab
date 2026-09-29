@@ -29,6 +29,7 @@ import {
   makeMessage,
   traceEntries,
   type ObservedStep,
+  type TraceOpen,
   type Turn,
 } from '@/features/chat/model/turns'
 import { formatElapsed } from '@/features/chat/ui/TraceStepRow'
@@ -39,9 +40,11 @@ const openSteps = new Set<string>()
 const openGroups = new Set<string>()
 
 const stubs = {
-  // 这一节只关心"一行怎么画"，面板一律给摊开那一档；面板自己的开合规则由
-  // `chat-trace-fold` 与 `chat-model-turns` 两个文件盯
-  traceOpen: () => 'full' as const,
+  // 这一节只关心"一行怎么画"，面板默认给摊开那一档；面板自己的开合规则由
+  // `chat-trace-fold` 与 `chat-model-turns` 两个文件盯。
+  // 写成 TraceOpen 而不是字面量 'full'：有几条用例要临时改成收起那一档
+  // （面板折叠容器的 0fr/1fr 与 a11y 都要两种状态各看一眼）。
+  traceOpen: (): TraceOpen => 'full',
   traceView: (_index: number, turn: Turn) => ({
     // 条目走真的数据层：分组、key、以及 `status` / `durationMs` 的映射都是这里要钉的
     entries: traceEntries(turn),
@@ -123,7 +126,7 @@ describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
     expect(screen.queryByTestId('step-spinner')).toBeNull()
   })
 
-  it('组里有一次调用还在跑 → 组那一行也带 data-running 与转圈', () => {
+  it('组里有一次调用还在跑 → 组那一行带 data-running 与转圈，标题写"在做什么 + 进度"', () => {
     reset()
     render(
       <TracePanel
@@ -132,14 +135,16 @@ describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
       />,
     )
 
-    // 两次同名调用并成一行（合并的是入口），那一行代表的是"这一组还在跑"
+    // 两次同名调用并成一行（合并的是入口）——整块面板里只有一个"组头"按钮。
+    // 这正是原先按「2 次」钉住的那件事，现在的措辞是"正在…… 1/2"。
+    expect(document.querySelectorAll('button[aria-controls^="trace-group-"]')).toHaveLength(1)
     const group = document.querySelector('li[data-running]')
     expect(group).not.toBeNull()
-    expect(within(group as HTMLElement).getByText('2 次')).toBeInTheDocument()
+    expect(group).toHaveTextContent('正在联网搜索 第二条… 1/2')
     expect(within(group as HTMLElement).getByTestId('step-spinner')).toBeInTheDocument()
   })
 
-  it('组展开后：还在跑的那一次自己带 data-running，另外几条不带', async () => {
+  it('跑着的组**默认就展开**（组在进行过程中展开）；点一下收起，之后就听用户的', async () => {
     reset()
     render(
       <TracePanel
@@ -148,12 +153,16 @@ describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
       />,
     )
 
-    await userEvent.setup().click(screen.getByRole('button', { name: /联网搜索/ }))
-
-    const childRows = document.querySelectorAll('li[data-kind="search"] li')
+    const group = document.querySelector('li[data-running]') as HTMLElement
+    // §12.333：组里还有 running 的步骤 → 这一组展开，组内两次调用直接看得见
+    const childRows = group.querySelectorAll('li[data-kind="search"] li')
     expect(childRows).toHaveLength(2)
     expect(childRows[0]).not.toHaveAttribute('data-running')
     expect(childRows[1]).toHaveAttribute('data-running')
+
+    // 用户点一下：**完全听他的**（"他收起过，就别自动开"）——即使这一步还在跑
+    await userEvent.setup().click(within(group).getByRole('button', { name: /正在联网搜索/ }))
+    expect(group.querySelectorAll('li[data-kind="search"] li')).toHaveLength(0)
   })
 
   it('纯判据：只有 running 算在跑', () => {
@@ -193,6 +202,170 @@ describe('必须看得见：组那一行也走同一个 forceExpand', () => {
 
     expect(screen.queryByText('第一条')).toBeNull()
     expect(screen.queryByText('第二条')).toBeNull()
+  })
+})
+
+/*
+ * §12.333：组级也按面板级那一条规则——**进行中展开、内容跑完折叠**，
+ * 三条约束照旧（用户干预优先 / awaiting 与 failed 强制展开并拒绝收起 / 回答与出处不在折叠里）。
+ *
+ * 判据不是这里新写的：这一节钉的是**接线**（组件有没有按 `turns` 里那一份判据画），
+ * 纯判据本身（`isBlockRunning` / `groupHeading`）由 `chat-model-turns` 那一节盯。
+ */
+describe('组级开合：进行中展开、内容跑完折叠（§12.333）', () => {
+  /** 跑完的两次同名调用：一个正常的组。 */
+  const doneGroup = () => turnOf([step({ detail: '第一条' }), step({ detail: '第二条' })])
+
+  it('内容跑完 → 这一组默认折叠（与面板级同一条规则的另一半）', () => {
+    reset()
+    render(<TracePanel turnIndex={0} turn={doneGroup()} />)
+
+    expect(screen.getByRole('button', { name: /联网搜索/ })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    )
+    expect(screen.queryByText('第一条')).toBeNull()
+  })
+
+  it('用户点开跑完的组 → 听他的（宿主的表也记着"他开过"，跨挂载认得）', async () => {
+    reset()
+    render(<TracePanel turnIndex={0} turn={doneGroup()} />)
+
+    await userEvent.setup().click(screen.getByRole('button', { name: /联网搜索/ }))
+
+    expect(screen.getByText('第一条')).toBeInTheDocument()
+    // 宿主那张表只记"开过"这一档（记不了"他收过"，见 `TracePanel` 里 `toggle` 的说明）
+    expect([...openGroups]).toEqual(['t0:group:tool-0:web_search'])
+  })
+
+  it('组里有 failed → 强制展开，而且点它**收不起来**（安全语义压过用户这一下点击）', async () => {
+    reset()
+    // 他早先自己开过这一组（宿主表里有记录）：进入 forced 之后那一下点击**不许把它抹掉**——
+    // 否则"拒绝收起"只是当场看着像，等这一步不再 forced 时它会突然自己折起来
+    openGroups.add('t0:group:tool-0:web_search')
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf([
+          step({ detail: '第一条' }),
+          step({ detail: '工具内部错误：服务连不上', outcome: 'failed' }),
+        ])}
+      />,
+    )
+
+    const head = screen.getByRole('button', { name: /联网搜索/ })
+    expect(head).toHaveAttribute('aria-expanded', 'true')
+
+    await userEvent.setup().click(head)
+
+    // 拒绝收起：还是摊着；他早先那条记录也一个字没动
+    expect(head).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('第一条')).toBeInTheDocument()
+    expect([...openGroups]).toEqual(['t0:group:tool-0:web_search'])
+  })
+})
+
+/*
+ * 折叠树的 a11y（§12.333 的收尾项）。
+ *
+ * 三个开关（面板头、组头、单步原文）里前两个原先只有 `aria-expanded`：
+ * 读屏器不知道"展开的那一摊归谁管"，而这一页里同一时刻可能有好几轮、好几组。
+ * 所以补上 `aria-controls` + 容器上的 id / 角色 / 名字；图标一律 `aria-hidden`
+ * （名字由外面那个交互元素给，这是本仓口径）。
+ */
+describe('折叠树的 a11y：aria-expanded / aria-controls / role（§12.333）', () => {
+  it('面板头：aria-controls 指向面板容器，容器有 id、名字与角色', () => {
+    reset()
+    render(<TracePanel turnIndex={3} turn={turnOf([step()])} />)
+
+    const toggle = screen.getByTestId('trace-toggle')
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    const id = toggle.getAttribute('aria-controls')
+    expect(id).toBe('trace-panel-3')
+
+    const body = document.getElementById(id as string) as HTMLElement
+    expect(body).not.toBeNull()
+    expect(body).toHaveAttribute('role', 'group')
+    // 容器的名字就是这一行写着的那句（收起态也有名字，不再是个没名字的按钮）
+    expect(body).toHaveAttribute('aria-label', '执行过程')
+    expect(toggle).toHaveTextContent('执行过程')
+  })
+
+  it('组头：aria-controls 指向组的容器；**折叠时容器也在文档里**（id 不许悬空）', () => {
+    reset()
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf([step({ detail: '第一条' }), step({ detail: '第二条' })])}
+      />,
+    )
+
+    const head = screen.getByRole('button', { name: /联网搜索/ })
+    expect(head).toHaveAttribute('aria-expanded', 'false')
+
+    const body = document.getElementById(
+      head.getAttribute('aria-controls') as string,
+    ) as HTMLElement
+    expect(body).not.toBeNull()
+    expect(body).toHaveAttribute('role', 'group')
+    // 名字跟着组行标题走（同一条句子，不另写一份）
+    expect(body).toHaveAttribute('aria-label', '联网搜索 2 个关键词 · 第一条、第二条')
+    // 收起时内容不在文档里（条件渲染），但容器在
+    expect(body.textContent).toBe('')
+  })
+
+  it('图标都是 aria-hidden：名字由外面那个交互元素给', () => {
+    reset()
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf([step({ detail: '第一条' }), step({ detail: '第二条' })])}
+      />,
+    )
+
+    for (const element of [
+      screen.getByTestId('trace-toggle'),
+      screen.getByRole('button', { name: /联网搜索/ }),
+    ]) {
+      expect(element.querySelectorAll('svg:not([aria-hidden="true"])')).toHaveLength(0)
+    }
+  })
+})
+
+/*
+ * 面板级的**高度过渡**（§12.333：动效只加这一级，单步级照旧条件渲染）。
+ *
+ * 收起仍然是条件渲染——这是刻意的（这一块装着步骤、思考全文与出处预览，
+ * 几十轮时 DOM 开销一直在，见 `TracePanel` 头注）。所以这里的读法是：
+ * 容器一直在、行高在 0fr/1fr 之间；**展开有过渡，收起是直落**。
+ * jsdom 不跑 CSS 动画，这一节钉的是"接线"（类名与行高到底挂没挂上），
+ * 真实浏览器里的观感要肉眼看（`.shots`）。
+ */
+describe('面板折叠容器：展开有高度过渡、收起直落（§12.333）', () => {
+  it('容器一直在文档里：行高 0fr ↔ 1fr、200ms、减少动态效果时直落', () => {
+    reset()
+    const { rerender } = render(<TracePanel turnIndex={0} turn={turnOf([step()])} />)
+
+    const open = document.getElementById('trace-panel-0') as HTMLElement
+    expect(open.className).toContain('grid')
+    expect(open.className).toContain('transition-[grid-template-rows]')
+    expect(open.className).toContain('duration-200')
+    expect(open.className).toContain('ease-[cubic-bezier(0.4,0,0.2,1)]')
+    // 过渡写在类里（不是 style），这一条才压得住它
+    expect(open.className).toContain('motion-reduce:transition-none')
+    expect(open.style.gridTemplateRows).toBe('1fr')
+
+    stubs.traceOpen = () => 'collapsed'
+    try {
+      rerender(<TracePanel turnIndex={0} turn={turnOf([step()])} />)
+
+      const collapsed = document.getElementById('trace-panel-0') as HTMLElement
+      expect(collapsed.style.gridTemplateRows).toBe('0fr')
+      // 收起时**内容仍然不在文档里**：动画没有把条件渲染这个取舍吃掉
+      expect(screen.queryByText('联网搜索')).toBeNull()
+    } finally {
+      stubs.traceOpen = () => 'full'
+    }
   })
 })
 
@@ -310,7 +483,7 @@ describe('思考那一行上的耗时', () => {
   })
 })
 
-describe('面板那一行：执行期间只写一个静态名字', () => {
+describe('面板那一行：跑着写短名，**跑完没出处也写短名**', () => {
   it('流式期间写「执行过程」，那条会滚的实时文案一个字都不出现', () => {
     reset()
     // 正在跑一次「联网搜索」——那条老文案在这种情况下会写出「正在联网搜索…」
@@ -327,10 +500,45 @@ describe('面板那一行：执行期间只写一个静态名字', () => {
     expect(row).not.toHaveTextContent('正在联网搜索…')
   })
 
-  it('跑完之后不再写这个名字（收尾那一行只报出处摘要，没出处就只留箭头）', () => {
+  it('跑完又**没有出处**：这一行写固定短名「执行过程」（不再只剩一枚箭头）', () => {
     reset()
     render(<TracePanel turnIndex={0} turn={turnOf([step()])} />)
 
-    expect(screen.getByTestId('trace-toggle')).not.toHaveTextContent('执行过程')
+    const row = screen.getByTestId('trace-toggle')
+    // 这一行是唯一能点开过程面板的地方：没有出处时它也得说得出自己叫什么
+    expect(row).toHaveTextContent('执行过程')
+    // 但**当年那条动态摘要一个字都不许回来**：它是替这一轮编一段经过
+    //（"本轮没有命中资料 / 直接作答"），用户原话是"没啥用"；这里补的是**名字**，
+    // 不声称任何发生过的事（见 `TracePanel` 里 `TRACE_PANEL_NAME` 的说明）。
+    expect(row).not.toHaveTextContent('本轮没有命中资料')
+    expect(row).not.toHaveTextContent('直接作答')
+  })
+
+  it('有出处时照旧报出处摘要（短名只在"没话说"的时候顶上来）', () => {
+    reset()
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf([step()], {
+          sources: [
+            {
+              index: 1,
+              chunk_id: 'c1',
+              document_id: 'd1',
+              document_name: '报告.pdf',
+              heading_path: null,
+              page: null,
+              score: 0.5,
+              preview: '原文',
+              knowledge_base_id: 'kb1',
+            },
+          ],
+        })}
+      />,
+    )
+
+    const row = screen.getByTestId('trace-toggle')
+    expect(row).toHaveTextContent('检索完成')
+    expect(row).not.toHaveTextContent('执行过程')
   })
 })

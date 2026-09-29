@@ -634,7 +634,7 @@ describe('知识库：一颗胶囊 = 开关 + 名字，选择在面板里', () =
 })
 
 describe('过程面板：图标按 kind、同类工具并成一行', () => {
-  it('工具步骤按 kind 出图标，同一个工具并成一行 + 次数', async () => {
+  it('工具步骤按 kind 出图标，同一个工具并成一行（标题是与对象绑定的聚合句）', async () => {
     vi.mocked(getConversation).mockResolvedValue(
       detail([
         stored('user', '查一下'),
@@ -678,9 +678,17 @@ describe('过程面板：图标按 kind、同类工具并成一行', () => {
     */
     await userEvent.setup().click(await screen.findByTestId('trace-toggle'))
 
-    // 同一工具两次 → 一行「联网搜索 2 次」（合并的是入口，不是信息）
-    expect(await screen.findByText('联网搜索')).toBeInTheDocument()
-    expect(screen.getByText('2 次')).toBeInTheDocument()
+    /*
+      同一工具两次 → **一行**，标题换成与对象绑定的聚合句（§12.333 的组行标题）：
+      原先这里写「联网搜索 2 次」，用户看到"2 次"会以为都成功了、也不知道是对什么做的；
+      现在数的是**对象**、并且把对象列出来（"合并的是入口，不是信息"仍然成立）。
+      合并这件事就钉在"只有一个组头按钮"与那一句上——两次调用各占一行时，
+      组头按钮一个都不会有。
+    */
+    expect(document.querySelectorAll('button[aria-controls^="trace-group-"]')).toHaveLength(1)
+    expect(
+      await screen.findByText('联网搜索 2 个关键词 · 「芯片 出口」命中 3 条、「光刻机」命中 5 条'),
+    ).toBeInTheDocument()
     // 只调用一次的工具不并（那一档不该多一层点击）
     expect(screen.getByText('写笔记')).toBeInTheDocument()
 
@@ -697,8 +705,11 @@ describe('过程面板：图标按 kind、同类工具并成一行', () => {
 
     // 展开这一组：里面每一次调用**保持原来的先后**，逐条给结论
     await userEvent.setup().click(screen.getByRole('button', { name: /联网搜索/ }))
-    expect(await screen.findByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()
-    expect(screen.getByText(/「光刻机」命中 5 条/)).toBeInTheDocument()
+    // 只看组里那一块：标题上也出现了同样两个对象（那是聚合句的一部分），
+    // 所以这里按容器缩进查，钉的仍然是"展开后逐条保序"
+    const groupBody = document.querySelector('[id^="trace-group-"]') as HTMLElement
+    expect(within(groupBody).getByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()
+    expect(within(groupBody).getByText(/「光刻机」命中 5 条/)).toBeInTheDocument()
   })
 })
 
