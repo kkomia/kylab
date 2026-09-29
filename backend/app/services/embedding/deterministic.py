@@ -14,14 +14,34 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Sequence
-
-import jieba
+from typing import Any
 
 from app.services.embedding.base import EmbeddingProvider, l2_normalize
 
 DEFAULT_DEV_DIM = 256
 MAX_TOKENS_PER_TEXT = 512
 """截断上限：开发兜底不追求长文建模，避免超长文本拖慢测试。"""
+
+#: 惰性拿到的 jieba（**故意不是模块级导入** ✗）。
+_JIEBA: Any = None
+
+
+def _jieba() -> Any:
+    """第一次用到时才导入 jieba（模块级导入会让**客户端运行时**凭空多背 40.9 MB ✗）。
+
+    与 ``app/storage/text.py::_jieba``、``app/services/retrieval/coverage.py::_jieba`` 同一个
+    道理（P4-3，2026-09-29 实测）：这个模块挂在 ``app.services.embedding`` 的导入链上 ✓，
+    而"切词"只有**服务器**那条向量化链会用 ✓，边车从不切词 ✓。
+
+    **行为一个字没变** ✗：第一次调用时才导入 ✓，jieba 真的不在时仍在**调用那一刻**
+    抛 ``ModuleNotFoundError`` ✓（只是从导入期挪到了调用期 ✓）。
+    """
+    global _JIEBA
+    if _JIEBA is None:
+        import jieba
+
+        _JIEBA = jieba
+    return _JIEBA
 
 
 def tokenize(text: str) -> list[str]:
@@ -30,6 +50,7 @@ def tokenize(text: str) -> list[str]:
     补单字是因为查询常常很短（"检索"），而 jieba 可能把它切成一整词，
     单字能提高短查询与长文档的碰撞概率，让开发期的召回看起来更合理。
     """
+    jieba = _jieba()
     tokens = [word.strip().lower() for word in jieba.cut_for_search(text) if word.strip()]
     tokens.extend(char for char in text if "\u4e00" <= char <= "\u9fff")
     return tokens[:MAX_TOKENS_PER_TEXT]
@@ -55,6 +76,7 @@ class DeterministicEmbedder(EmbeddingProvider):
             raise ValueError("维度必须为正整数")
         self.dim = dim
         self.max_batch = max_batch
+        jieba = _jieba()
         jieba.initialize()
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
