@@ -41,11 +41,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI
@@ -65,6 +67,8 @@ from app.services.remote_clients import (
 )
 from app.services.runtime_config import RuntimeConfigService
 from app.services.tool_loop import ToolLoop
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["SIDECAR_VERSION", "build_clients", "create_app", "default_workspace"]
 
@@ -450,6 +454,9 @@ class Clients:
         model: Any = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        #: 用户会话令牌：**写回那一轮**要用它（`POST /chat/turns/record` ✓ require_write ✓）。
+        #: 两个远端客户端各自也拿了一份 ✓，这里存一份是为了让"写回"这件事不用绕路 ✓。
+        self.token = token
         #: 打服务器自己的健康端点（探活很便宜，不占用模型的额度 ✓）
         self.health_url = self.base_url.rsplit("/api/v1", 1)[0] + "/api/v1/health"
         # 两端可注入（用例给假实现 ✓）——**默认就是 P2 的远端实现** ✓。
@@ -554,6 +561,22 @@ class TurnIn(BaseModel):
         ),
     )
     stream: bool = Field(default=False, description="预留：P4 与前端一起做 SSE ✓")
+    conversation_id: str = Field(
+        default="",
+        description=(
+            "这一轮归属的会话（**可选，默认空**）。空 = **不写回服务器** ✓ —— 但要在 `notes` 里"
+            "如实说明「未带会话 id，本轮未写回」✗（**不许静默丢** ✓：会话是服务器权威，"
+            "没写回的这一轮刷新后就没了 ✓）。"
+        ),
+    )
+    turn_id: str = Field(
+        default="",
+        description=(
+            "这一轮的**幂等键**（可选，默认空 = 边车自己生成 uuid4 ✓）。"
+            "**同一轮重试必须复用同一个** ✓（否则服务器会当成两轮 ✗）；"
+            "服务器那边「标记与两条消息同一事务」✓，所以跨重启也幂等 ✓。"
+        ),
+    )
 
 
 def _messages_of(payload: TurnIn) -> list[ChatMessage]:
@@ -581,6 +604,15 @@ class TurnOut(BaseModel):
     workspace: str
     notes: list[str] = Field(default_factory=list, description="这一侧有什么/没有什么（如实写 ✓）")
     sse: bool = Field(default=False, description="预留：true 时可用 /turn/stream 取 SSE ✓")
+    turn_id: str = Field(default="", description="这一轮的幂等键（写回服务器时用它 ✓）")
+    recorded: bool | None = Field(
+        default=None,
+        description=(
+            "写回服务器的结果：`True` 已入库 ✓ / `False` 写回失败 ✗ / `None` 没写回"
+            "（例如请求没带 `conversation_id` ✓）。"
+            "**它不影响 `answer`** ✗ —— 写回失败时答案照旧返回，原因写在 `notes` 里 ✓。"
+        ),
+    )
     error: str = Field(
         default="",
         description=(
@@ -598,6 +630,74 @@ class HealthOut(BaseModel):
     kb_reachable: bool
     model_reachable: bool
     note: str = ""
+
+
+#: 写回那一轮的**超时上限**（秒）。刻意给得短：用户已经拿到答案了 ✓，
+#: 写回是**记账**不是作答 ✗ —— 让他为一个记账再等十几秒是错的 ✓，失败就如实报 ✓。
+RECORD_TIMEOUT_SECONDS = 8.0
+
+
+def _record_turn(
+    clients: Clients,
+    *,
+    conversation_id: str,
+    turn_id: str,
+    question: str,
+    answer: str,
+    steps: list[dict[str, Any]],
+    thinking: str,
+) -> tuple[bool | None, str]:
+    """把这一轮写回服务器（**best-effort** ✓）。返回 ``(recorded, 原因)``。
+
+    三条铁律（派单钉的 ✓）：
+
+    1. **写回失败绝不许影响回答** ✗ —— 调用方拿到的是 `answer` 与这里返回的原因，
+       `answer` 原样返回 ✓（原因进 `notes` / SSE 的 note 步 ✓）；
+    2. **超时要克制** ✓（`RECORD_TIMEOUT_SECONDS` = 8 秒，**不重试** ✗）——
+       重试是服务器那侧的事：`turn_id` 是幂等键 ✓，真要重试由调用方带着**同一个**
+       `turn_id` 再来一轮 ✓；
+    3. **没带 `conversation_id` 就跳过** ✓，但**必须说明** ✗（静默丢一轮 = 数据丢失 ✓）。
+
+    `recorded=False` 是**幂等命中**（服务器已有这条 `turn_id` ✓），**不是失败** ✓。
+    """
+    if not conversation_id:
+        return None, (
+            "未带会话 id（conversation_id），本轮**未写回**服务器"
+            "（刷新后这一轮不会留在会话里）"
+        )
+    url = f"{clients.base_url}/chat/turns/record"
+    body = {
+        "conversation_id": conversation_id,
+        "turn_id": turn_id,
+        "question": question,
+        "answer": answer,
+        "steps": steps,
+        "thinking": thinking,
+    }
+    try:
+        response = httpx.post(
+            url,
+            json=body,
+            headers={"Authorization": f"Bearer {clients.token}"},
+            timeout=RECORD_TIMEOUT_SECONDS,
+        )
+    except httpx.HTTPError as exc:
+        return False, f"写回服务器失败（这一轮已跑完，答案不受影响）：{type(exc).__name__}: {exc}"
+    if response.status_code >= 400:
+        return False, (
+            f"写回服务器失败（这一轮已跑完，答案不受影响）：HTTP {response.status_code} "
+            f"{response.text[:200]}"
+        )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    recorded = bool(payload.get("recorded", True)) if isinstance(payload, dict) else True
+    if not recorded:
+        # 幂等命中：服务器已经有这个 turn_id 了 ✓ —— 对用户无感，只留一条 debug 痕迹 ✓
+        logger.debug("这一轮已写回过（幂等命中）：turn_id=%s", turn_id)
+        return False, ""
+    return True, ""
 
 
 def _probe_health(url: str, timeout: float = 5.0) -> tuple[bool, str]:
@@ -682,6 +782,20 @@ def create_app(
                 error=str(exc),
             )
         _close_trailing_answer_step(steps)
+        # **写回这一轮**（best-effort ✓）：跑在本机、账在服务器 ✓。
+        # 失败**绝不影响回答** ✗ —— 原因进 `notes`，`answer` 原样返回 ✓。
+        turn_id = payload.turn_id or uuid4().hex
+        recorded, why = _record_turn(
+            clients,
+            conversation_id=payload.conversation_id,
+            turn_id=turn_id,
+            question=payload.message,
+            answer=answer,
+            steps=steps,
+            thinking="".join(reasoning),
+        )
+        if why:
+            notes = [*notes, why]
         if not answer.strip():
             # **绝不返回"空成功"** ✗✗（2026-09-29 烟测现场：`answer:""` + `steps:[]` + HTTP 200 ✓
             # 是这条链路里最危险的形态 ✗ —— 调用方以为成功 ✓、用户拿到空白 ✓）。
@@ -709,7 +823,14 @@ def create_app(
                 *notes,
                 "这一轮没有调用任何工具（模型直接作答；需要本机动作时请把要求说得更具体）。",
             ]
-        return TurnOut(answer=answer, steps=steps, workspace=str(target), notes=notes)
+        return TurnOut(
+            answer=answer,
+            steps=steps,
+            workspace=str(target),
+            notes=notes,
+            turn_id=turn_id,
+            recorded=recorded,
+        )
 
     @app.post("/turn/stream", summary="走一轮（SSE：步骤 / 思考 / 正文增量 / 收尾 / 失败）")
     def turn_stream(payload: TurnIn) -> StreamingResponse:
@@ -778,6 +899,34 @@ def create_app(
             for old, new in zip(before, steps, strict=True):
                 if old != new:
                     yield _sse({"type": "step", **new})
+
+            # **写回这一轮**（best-effort ✓）：失败绝不影响已经流出去的答案 ✗ ——
+            # 用一条 `phase="note"` 的 step 如实说出来 ✓（不发明新的 `type` ✗：
+            # 事件形状照服务器那条链的五个 `type` ✓）。
+            turn_id = payload.turn_id or uuid4().hex
+            recorded, why = _record_turn(
+                clients,
+                conversation_id=payload.conversation_id,
+                turn_id=turn_id,
+                question=payload.message,
+                answer=answer,
+                steps=steps,
+                thinking="".join(reasoning),
+            )
+            if why:
+                yield _sse(
+                    {
+                        "type": "step",
+                        "phase": "note",
+                        "label": "写回服务器",
+                        "detail": why,
+                        "status": "done",
+                        "tool": "",
+                        "outcome": "recorded" if recorded else "not-recorded",
+                        "args": "",
+                        "result": turn_id,
+                    }
+                )
 
             if not answer.strip():
                 # **绝不发"空成功"的 done** ✗✗（与 `/turn` 同一段判据与同一套措辞 ✓）

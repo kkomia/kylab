@@ -492,3 +492,133 @@ def test_turn_stream_closes_the_trailing_answer_step(tmp_path, monkeypatch) -> N
     assert answer_steps, f"没有回答步：{events}"
     assert answer_steps[-1]["status"] == "done", answer_steps
 
+
+# ------------------------------------------------------------------ 写回服务器
+
+def _patch_post(monkeypatch, handler) -> None:  # type: ignore[no-untyped-def]
+    """把写回那个 `httpx.post` 换成假传输（**用例里不打真网络** ✓）。"""
+    transport = httpx.MockTransport(handler)
+
+    def fake_post(url, **kwargs):  # type: ignore[no-untyped-def]
+        return httpx.Client(transport=transport).post(url, **kwargs)
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(sidecar.httpx, "post", fake_post)
+
+
+def test_turn_records_the_turn_to_the_server(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**成功写回**：请求体字段对（会话 id / 幂等键 / 问 / 答 / 步骤）+ `recorded=true` ✓。"""
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["body"] = json.loads(request.read().decode())
+        seen["auth"] = request.headers.get("authorization")
+        return httpx.Response(
+            200, json={"conversation_id": "conv_1", "turn_id": "t1", "recorded": True}
+        )
+
+    client = _client(tmp_path, monkeypatch, _FakeModel("答案在这里"))
+    _patch_post(monkeypatch, handler)
+
+    response = client.post(
+        "/turn", json={"message": "问一句", "conversation_id": "conv_1", "turn_id": "t1"}
+    )
+
+    payload = response.json()
+    assert payload["answer"] == "答案在这里"
+    assert payload["recorded"] is True
+    assert payload["turn_id"] == "t1"
+    assert seen["url"].endswith("/chat/turns/record")
+    assert seen["body"]["conversation_id"] == "conv_1"
+    assert seen["body"]["turn_id"] == "t1"
+    assert seen["body"]["question"] == "问一句"
+    assert seen["body"]["answer"] == "答案在这里"
+    assert isinstance(seen["body"]["steps"], list)
+    assert seen["auth"] == "Bearer t"
+
+
+def test_turn_write_back_failure_keeps_the_answer(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**写回失败绝不许影响回答**：answer 仍在 ✓、notes 里如实写明 ✓、`recorded=false` ✓。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    client = _client(tmp_path, monkeypatch, _FakeModel("答案照旧"))
+    _patch_post(monkeypatch, handler)
+
+    payload = client.post(
+        "/turn", json={"message": "问一句", "conversation_id": "conv_1", "turn_id": "t2"}
+    ).json()
+
+    assert payload["answer"] == "答案照旧", "写回失败把答案弄丢了"
+    assert payload["recorded"] is False
+    assert any("写回服务器失败" in note for note in payload["notes"]), payload["notes"]
+    # 失败**不算这一轮失败**：error 仍然只表示"没有正常作答"
+    assert payload["error"] == ""
+
+
+def test_turn_without_conversation_id_skips_write_back_but_says_so(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """没带会话 id → **跳过写回**，但 `notes` 里如实说明（不许静默丢一轮）✓。"""
+    called: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - 不该被调用
+        called.append(str(request.url))
+        return httpx.Response(200, json={"recorded": True})
+
+    client = _client(tmp_path, monkeypatch, _FakeModel("答案"))
+    _patch_post(monkeypatch, handler)
+
+    payload = client.post("/turn", json={"message": "问一句"}).json()
+
+    assert called == [], "没带会话 id 却还是去写回了"
+    assert payload["recorded"] is None
+    assert any("未写回" in note for note in payload["notes"]), payload["notes"]
+
+
+def test_turn_write_back_is_idempotent_on_retry(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """同一个 `turn_id` 重试 → 服务器答 `recorded=false`（幂等命中）→ 对用户**无感** ✓。"""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.read().decode())
+        seen.append(body["turn_id"])
+        return httpx.Response(200, json={"recorded": False})
+
+    client = _client(tmp_path, monkeypatch, _FakeModel("答案"))
+    _patch_post(monkeypatch, handler)
+
+    for _ in range(2):
+        payload = client.post(
+            "/turn", json={"message": "问一句", "conversation_id": "conv_1", "turn_id": "same"}
+        ).json()
+        # 幂等命中**不是失败**：answer 照旧、error 空、notes 里不加吓人的话
+        assert payload["answer"] == "答案"
+        assert payload["error"] == ""
+        assert payload["recorded"] is False
+
+    assert seen == ["same", "same"], "重试没有复用同一个幂等键"
+
+
+def test_turn_stream_notes_a_failed_write_back_without_touching_the_answer(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """流式那条也一样：写回失败只发一条 `phase="note"` 的 step，`done.answer` 不变 ✓。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("nope")
+
+    client = _client(tmp_path, monkeypatch, _FakeModel("流式答案"))
+    _patch_post(monkeypatch, handler)
+
+    events = _events(
+        client.post("/turn/stream", json={"message": "问一句", "conversation_id": "conv_1"})
+    )
+
+    notes = [event for event in events if event["type"] == "step" and event["phase"] == "note"]
+    assert notes and "写回服务器失败" in notes[0]["detail"], events
+    done = [event for event in events if event["type"] == "done"]
+    assert done and done[-1]["answer"] == "流式答案"
+    # 写不回去**不是**这一轮的失败：没有 error 事件
+    assert not [event for event in events if event["type"] == "error"]
+
