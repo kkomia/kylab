@@ -208,24 +208,28 @@ export function ChatThread() {
     [pinToBottom],
   )
 
-  const headId = chat.messages[0]?.id ?? ''
-  const lastUserId = chat.messages.reduce<string>(
-    (found, message) => (message.role === 'user' ? message.id : found),
-    '',
+  const conversation = chat.conversationId
+  const userTurns = chat.messages.reduce(
+    (count, message) => count + (message.role === 'user' ? 1 : 0),
+    0,
   )
 
   /**
    * "这一刻用户要看的是最新那一头"的三个时刻：刚进会话、换了另一条会话、刚发出提问。
    *
-   * 用**第一条消息的 id** 认前两个（内容整块换上来，头一条必然换人），用**最后一条提问的
-   * id** 认第三个（重试 / 重新生成也会新发一条，同样算）。这三个动作都是用户主动把视线
-   * 放到最新，与"往上读旧内容"相反，所以不受跟随状态限制——而且库原先那三条自动落底
-   * （初始化 / 开跑 / 换会话）已经关掉，落底时机只有这一处。
+   * 只认两件**回合级**的事实：**会话 id 换了没有**（`conversationId` 就是路由参数，
+   * `/chat` 那条新会话在第一条消息落定之后才拿到 id）、**提问多了几条**。
+   *
+   * **不许拿消息 id 当判据**（第一版就是那么写的，被真浏览器探针抓出来）：一轮跑完时
+   * 详情会从库里重画一次（乐观消息整批换成库里那份），id 全变——按 id 判就会在那一刻
+   * 把正在往上读的人再拽回底部（实测：这一轮跑完 8 秒后一次 **2139px** 的回拽，
+   * 写入的调用栈正落在这一行的 `pinToBottom` 上）。会话 id 与提问条数在"换会话 / 新提问"
+   * 之外都不会变，所以详情重画、内容增长、过程面板更新都不会误触。
    */
   useEffect(() => {
     followRef.current = true
     pinToBottom()
-  }, [headId, lastUserId, pinToBottom])
+  }, [conversation, userTurns, pinToBottom])
 
   return (
     <ThreadPrimitive.Root
