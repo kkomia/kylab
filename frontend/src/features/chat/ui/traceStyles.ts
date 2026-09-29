@@ -17,8 +17,11 @@
  *
  * 行内间距（图标位与正文列之间那一笔）**父子两档不一样**，所以在下面各给一份，
  * 而不是在子行上再补一层左内边距：两种做法叠起来就是用户报的"缩进得太多了"。
+ * 行与行之间用 `--space-2`（8px，原先是 `--space-3` 12px）：这一族是**元信息**，
+ * 行距不该与正文的段距同宽——正文段距正是 `--space-3`（`chat.css` 的 `.md-p`），
+ * 过程行之间再用 12px，扫起来就与"一段正文"的间隔一样松了。
  */
-const STEP_ROW_SHELL = 'flex items-start [&+&]:mt-[var(--space-3)]'
+const STEP_ROW_SHELL = 'flex items-start [&+&]:mt-[var(--space-2)]'
 
 /** 父行（单独一步 / 同类工具并成的一组）：21px 的图标沟配 `--space-3`。 */
 export const STEP_ROW = `${STEP_ROW_SHELL} gap-[var(--space-3)]`
@@ -125,12 +128,34 @@ export const TRACE_BULK =
 /** 正文列。 */
 export const STEP_BODY = 'min-w-0 pt-px'
 
-/** 标签：12px 二级灰；可点的那一版只是把光标与悬停提亮交给按钮。 */
-export const STEP_LABEL = 'm-0 text-[length:var(--text-micro-size)] text-[var(--text-secondary)]'
+/**
+ * 标签：14px（`--text-meta-size`）二级灰。
+ *
+ * 这是"过程 vs 正文"那条层级线的上半截：正文是 `--text-body-size`(15) + `--text-primary`，
+ * 过程标签落在**更小一档的字号 + 更淡一档的颜色**上，扫过去才分得清"这是它干的过程"
+ * 与"这是回答本身"（用户原话："工具调用过程的字体设计跟正文意义导致没区分度"）。
+ * 行高显式给 `--line-ui`(1.47)：这一族是元信息，不该跟着正文那档 1.7 走。
+ */
+export const STEP_LABEL =
+  'm-0 text-[length:var(--text-meta-size)] text-[var(--text-secondary)] leading-[var(--line-ui)]'
 
-/** 可点的标签（标签 + 箭头）：不加下划线也不加底色，整块面板里已经有一层层级了。 */
+/**
+ * 可点的标签（标签 + 箭头）：字号与颜色与 `STEP_LABEL` **同一档**。
+ *
+ * **这一档原先漏了**：这里只有 `font-[inherit]`，一个字号/颜色都没给，于是按钮版标签
+ * 继承到父级——实测 computed 是 15px / `rgba(0, 0, 0, 0.9)`，与答案段落**逐项相同**
+ * （字号、颜色、字重全一样）。用户截图里"跟正文没区分度"的那些行就是它
+ * （`执行命令` / `查看上传的文件` / `思考` / 组行的 `联网搜索 11 个关键词`）。
+ * 单步行与组行共用这一个类名，所以改这一处两处一起变。
+ *
+ * 去掉 `font-[inherit]` 是刻意的：`font: inherit` 会把字号/字重/行高一起交回父级，
+ * 与上面那两笔冲突，**谁赢取决于打包后的声明顺序**（同一层里逐条比先后）；
+ * 字体族交给 preflight（`button { font: inherit }`）就够了——那一条在 base 层，
+ * utilities 里的字号/行高照样压得住它（实测字体族与正文段落逐字相同）。
+ */
 export const STEP_TOGGLE =
-  'inline-flex items-center gap-[var(--space-1)] p-0 border-none bg-transparent font-[inherit] ' +
+  'inline-flex items-center gap-[var(--space-1)] p-0 border-none bg-transparent ' +
+  'text-[length:var(--text-meta-size)] text-[var(--text-secondary)] leading-[var(--line-ui)] ' +
   'cursor-pointer [transition:var(--transition-ui)] hover:text-[var(--text-primary)]'
 
 /** 箭头：展开时转 180°。 */
@@ -140,7 +165,14 @@ export function caretClass(open: boolean): string {
   }`
 }
 
-/** 结论那一行：独占一行、三级灰。 */
+/**
+ * 结论那一行：独占一行、三级灰、比标签再小一档（12 对 14）。
+ *
+ * 层级是"标签说做了什么、结论说做成了什么"：结论是标签的注解，所以更小更淡，
+ * 而两者都在正文（15px / 一级色）之下。这一档本来就在 `--text-micro-size` +
+ * `--text-tertiary` 上（真浏览器实测 12px / `rgba(0, 0, 0, 0.55)`），
+ * 本轮要修的是上面那个**漏了字号**的标签，不是它。
+ */
 export const STEP_DETAIL =
   'block mt-[var(--space-pair)] text-[length:var(--text-micro-size)] text-[var(--text-tertiary)] ' +
   'break-words [overflow-wrap:anywhere]'
