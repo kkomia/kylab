@@ -2695,6 +2695,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/skills/{name}/enabled": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * 开/关一条技能
+         * @description 单条技能的启停（D23，2026-09-28 走查）。
+         *
+         *     **关掉 = 不进提示词**：文件不动、市场那边的安装记录也不动，只是"这一轮不给模型看"。
+         *     权限与装/卸插件同一档（``require_admin``）：技能会改变模型的行为，这是一件
+         *     **部署级**的事，与"改我自己的偏好"不是一类。
+         */
+        put: operations["set_skill_enabled_api_v1_skills__name__enabled_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/skills/{name}": {
         parameters: {
             query?: never;
@@ -6918,6 +6942,11 @@ export interface components {
              * @default true
              */
             used_by_prompt: boolean;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
             /** Flagged */
             flagged?: string[];
             /**
@@ -6930,6 +6959,17 @@ export interface components {
              * @default
              */
             body: string;
+        };
+        /**
+         * SkillEnabledIn
+         * @description 开/关一条技能（D23）。
+         */
+        SkillEnabledIn: {
+            /**
+             * Enabled
+             * @description ``False`` = 关掉：不进提示词，模型也不知道有它（文件不动）。
+             */
+            enabled: boolean;
         };
         /**
          * SkillFileOut
@@ -7069,6 +7109,11 @@ export interface components {
              * @default true
              */
             used_by_prompt: boolean;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
             /** Flagged */
             flagged?: string[];
             /**
@@ -13501,6 +13546,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SkillListOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_skill_enabled_api_v1_skills__name__enabled_put: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SkillEnabledIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SkillOut"];
                 };
             };
             /** @description Validation Error */
