@@ -22,6 +22,9 @@
       "icons/128x128.png",
       "icons/icon.ico"
     ],
+    "resources": {
+      "../../dist/sidecar-runtime": "sidecar-runtime"
+    },
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
