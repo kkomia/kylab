@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -390,3 +391,101 @@ def test_probe_health_is_false_on_network_error() -> None:
         assert "网络不可达" in reason and "ConnectError" in reason
     finally:
         httpx.get = original  # type: ignore[assignment]
+
+
+# ------------------------------------------------------------------ 流式（P4）
+
+def _events(response) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
+    """把 SSE 响应拆成事件载荷（**按线上形状解析** ✓，不猜内部对象 ✗）。"""
+    out: list[dict[str, Any]] = []
+    for line in response.text.splitlines():
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if payload:
+            out.append(json.loads(payload))
+    return out
+
+
+def test_turn_stream_runs_a_tool_and_streams_the_answer(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**流式那条完整链** ✓：模型要工具 → 本地真执行 → 结果回灌 → 分块出正文 ✓。
+
+    这是派单点名的那条用例 ✓ —— 它同时钉住四件事：
+    ① 有**工具步**（且本地真的执行了：`result` 是文件内容 ✓）；
+    ② 有**正文增量**，且增量拼起来 == `done.answer` ✓（前端兜底不会与流打架 ✓）；
+    ③ `done` 是最后一条 ✓（收尾 ✓）；
+    ④ 事件形状与服务器那条链同一套（`type` 字段 ✓）。
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "hello.txt").write_text("流式读到你了", encoding="utf-8")
+
+    model = _ToolCallingModel("read_file", '{"path": "hello.txt"}', "文件里写着：流式读到你了")
+    client = _client(tmp_path, monkeypatch, model)
+
+    response = client.post("/turn/stream", json={"message": "读 hello.txt"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = _events(response)
+    kinds = [event["type"] for event in events]
+
+    # ① 工具步：本地真的执行了（结果里有文件内容 ✓，不是"宣布要读" ✗）
+    tool_steps = [event for event in events if event["type"] == "step" and event.get("tool")]
+    assert tool_steps, f"没有工具步：{events}"
+    assert any("流式读到你了" in str(step.get("result") or "") for step in tool_steps), tool_steps
+    # ② 正文增量：拼起来等于 done 里那份全文 ✓
+    deltas = "".join(event["text"] for event in events if event["type"] == "delta")
+    done = [event for event in events if event["type"] == "done"]
+    assert deltas == "文件里写着：流式读到你了"
+    assert done and done[-1]["answer"] == deltas
+    # ③ 收尾形状与服务器同一套 ✓（最后一条就是 done ✓）
+    assert kinds[-1] == "done"
+    assert set(kinds) <= {"step", "thinking", "delta", "done", "error"}
+    # ④ 没有失败事件 ✓（这一轮是成功的 ✓）
+    assert "error" not in kinds
+
+
+def test_turn_stream_reports_empty_answer_as_failure(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**正文为空绝不当成功** ✗✗：只流思考的模型 → `error` + 如实的 `done` ✓。
+
+    与 `/turn` 的护栏同一套措辞 ✓（`empty-answer: …` ✓）。这条是派单点名的第 5 条 ✓。
+    """
+    client = _client(tmp_path, monkeypatch, _ThinkingOnlyModel())
+
+    events = _events(client.post("/turn/stream", json={"message": "在吗"}))
+    kinds = [event["type"] for event in events]
+
+    assert "error" in kinds, f"空正文没有报失败：{events}"
+    error = next(event for event in events if event["type"] == "error")
+    assert error["message"].startswith("empty-answer:")
+    assert "思考" in error["message"]
+    done = [event for event in events if event["type"] == "done"]
+    assert done and "边车报告" in done[-1]["answer"]
+    # 思考照发 ✓（前端过程面板要用），但它**不是** answer ✗
+    assert [event["text"] for event in events if event["type"] == "thinking"] == ["先看看", "再想想"]
+    assert not [event for event in events if event["type"] == "delta"]
+
+
+def test_turn_stream_reports_remote_failure_instead_of_pretending(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """远端不可用 → `error` + 如实 `done` ✓（不许伪装成成功 ✗）。"""
+    client = _client(tmp_path, monkeypatch, _BrokenModel())
+
+    events = _events(client.post("/turn/stream", json={"message": "在吗"}))
+
+    error = next(event for event in events if event["type"] == "error")
+    assert "boom" in error["message"]
+    done = [event for event in events if event["type"] == "done"]
+    assert done and "边车报告" in done[-1]["answer"]
+
+
+def test_turn_stream_closes_the_trailing_answer_step(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """收尾的"组织回答"步必须**再发一次且是 `done`** ✓（否则前端一直显示"正在回答" ✗）。"""
+    client = _client(tmp_path, monkeypatch, _FakeModel("就这样"))
+
+    events = _events(client.post("/turn/stream", json={"message": "在吗"}))
+    answer_steps = [event for event in events if event["type"] == "step" and event["phase"] == "answer"]
+
+    assert answer_steps, f"没有回答步：{events}"
+    assert answer_steps[-1]["status"] == "done", answer_steps
+

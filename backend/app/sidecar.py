@@ -341,6 +341,21 @@ SIDECAR_SYSTEM_PROMPT = (
 )
 
 
+def _sse(payload: dict[str, Any]) -> str:
+    """一条 SSE 事件。**形状与服务器那条链逐字一致** ✓（见 `api/v1/chat.py` 模块头那五行）：
+
+    ``data: {"type":"step",…}`` / ``{"type":"thinking","text":…}`` / ``{"type":"delta","text":…}``
+    / ``{"type":"done","answer":…}`` / ``{"type":"error","message":…}`` ✓
+    —— 前端解析那一侧**同一套** ✓，所以这里**不另创形状** ✗（也不带 `seq`：边车这一侧没有会话
+    事件日志，没有可补发的地方 ✓）。
+    """
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+#: SSE 的媒体类型（与服务器/壳那侧同一口径 ✓）。
+SSE_MEDIA_TYPE = "text/event-stream"
+
+
 def _close_trailing_answer_step(steps: list[dict[str, Any]]) -> None:
     """把"回答"那一步收尾成 `done` ✓（**就地改** `steps`）。
 
@@ -661,20 +676,95 @@ def create_app(
             ]
         return TurnOut(answer=answer, steps=steps, workspace=str(target), notes=notes)
 
-    @app.post("/turn/stream", summary="预留：SSE（P4 与前端一起做）")
+    @app.post("/turn/stream", summary="走一轮（SSE：步骤 / 思考 / 正文增量 / 收尾 / 失败）")
     def turn_stream(payload: TurnIn) -> StreamingResponse:
-        """**占位**：结构与 `/turn` 同源 ✓，只为让 P4 有落点 ✓（本轮不实现流式渲染 ✗）。"""
+        """与 `/turn` **同一个循环、同一套语义** ✓，只是把过程**边跑边发** ✓。
+
+        为什么要有它（P4 前置）：前端对话是**流式**的 ✓（服务器那条 `/api/v1/chat` 就是 SSE ✓）；
+        边车这一侧不先把流做实 ✗，前端切过来就会**丢流** ✗（整段等完才出字 ✓ 体验断档）。
+
+        事件形状**照服务器那条链**（`api/v1/chat.py` 模块头那五行 ✓，逐条对齐 ✗ 不另创 ✓）::
+
+            data: {"type":"step", phase,label,detail,status,tool,outcome,args,result}
+            data: {"type":"thinking","text":"…"}
+            data: {"type":"delta","text":"…"}
+            data: {"type":"done","answer":"…"}
+            data: {"type":"error","message":"…"}
+
+        护栏与 `/turn` **一字不差** ✓：
+        - **正文为空绝不当成功** ✗✗ → 先发 `error`（`empty-answer: …` ✓）再发 `done`（如实说明 ✓）；
+        - 远端不可用/被拒 → `error` + 如实的 `answer` ✓（不当成"空回答" ✗）；
+        - `done.answer` 与流出去的 `delta` 拼起来的是**同一份** ✓（前端兜底不会与增量打架 ✓）。
+
+        与 `/turn` 唯一有意的差别：`/turn` 末尾会往 `notes` 里加一句"这一轮没有调用任何工具" ✗，
+        流式这条路**不加** ✓ —— 那件事在事件流里**本来就看得见**（一个 `tool` 步都没发过 ✓），
+        再塞一句反而要发明一个形状 ✗（`done` 只有 `answer` ✓）。
+        """
 
         def gen() -> Iterator[str]:
-            messages = [ChatMessage(role="user", content=payload.message)]
+            target = _check_workspace(payload.workspace) if payload.workspace else workspace
+            loop = clients.tool_loop(kb_ids=payload.kb_ids)
+            messages = [
+                ChatMessage(role="system", content=SIDECAR_SYSTEM_PROMPT),
+                ChatMessage(role="user", content=payload.message),
+            ]
+            answer = ""
+            steps: list[dict[str, Any]] = []
+            reasoning: list[str] = []
             try:
-                for delta in clients.model.stream_events(messages):
-                    yield f"data: {delta.text}\n\n"
+                for event in loop.run(messages=messages):
+                    if isinstance(event, StepEvent):
+                        step = _step_payload(event)
+                        steps.append(step)
+                        yield _sse({"type": "step", **step})
+                    elif isinstance(event, DeltaEvent):
+                        # **边到边发** ✓：这里不做任何缓冲/攒批 ✗（攒了就等于没做流式 ✓）
+                        answer += event.text
+                        yield _sse({"type": "delta", "text": event.text})
+                    elif isinstance(event, ThinkingEvent):
+                        # 思考也照发 ✓（前端的过程面板用它 ✓）；但它**不进 `answer`** ✗
+                        reasoning.append(event.text)
+                        yield _sse({"type": "thinking", "text": event.text})
+                    elif isinstance(event, DoneEvent):
+                        # 收尾那条带拼好的全文，**以它为准** ✓（与 `/turn` 同一口径 ✓）
+                        answer = event.answer or answer
+                    elif isinstance(event, ApprovalEvent):
+                        step = _approval_step(event)
+                        steps.append(step)
+                        yield _sse({"type": "step", **step})
             except RemoteClientError as exc:
-                yield f"data: （边车报告：{exc}）\n\n"
-            yield "data: [DONE]\n\n"
+                # **失败如实报** ✗（分档照旧：不可用 / 被拒 ✓，不伪装成空回答 ✓）
+                yield _sse({"type": "error", "message": str(exc)})
+                yield _sse({"type": "done", "answer": f"（边车报告：{exc}）"})
+                return
 
-        return StreamingResponse(gen(), media_type="text/event-stream")
+            # 收尾那一步要**再发一次**：它先前以 `running` 出去过 ✓，而循环从不给它 `done` ✗
+            #（与 `/turn` 同一个 `_close_trailing_answer_step` ✓）—— 不发这一次，
+            # 前端会一直显示"正在组织回答" ✗，而这一轮其实已经结束了 ✓。
+            before = [dict(step) for step in steps]
+            _close_trailing_answer_step(steps)
+            for old, new in zip(before, steps, strict=True):
+                if old != new:
+                    yield _sse({"type": "step", **new})
+
+            if not answer.strip():
+                # **绝不发"空成功"的 done** ✗✗（与 `/turn` 同一段判据与同一套措辞 ✓）
+                detail = (
+                    f"模型只返回了思考过程、没有正文与工具调用（思考 {len(reasoning)} 段）"
+                    if reasoning
+                    else "模型没有返回任何内容"
+                )
+                hint = (
+                    "这一轮没有执行任何工具。要本机动作就把要读/要跑的东西说具体些再试；"
+                    "本机没有隔离后端时命令会被拒绝，拒绝原因会写在回答里。"
+                )
+                yield _sse({"type": "error", "message": f"empty-answer: {detail}"})
+                yield _sse({"type": "done", "answer": f"（边车报告：{detail}。{hint}）"})
+                return
+
+            del target  # 工作区已在校验时定下 ✓（响应里不再回它：流式的载荷形状照服务器那条链 ✓）
+            yield _sse({"type": "done", "answer": answer})
+        return StreamingResponse(gen(), media_type=SSE_MEDIA_TYPE)
 
     return app
 
