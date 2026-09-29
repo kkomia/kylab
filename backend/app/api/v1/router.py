@@ -23,6 +23,7 @@ from app.api.v1 import (
     maintenance,
     mcp_servers,
     memory,
+    model_proxy,
     model_registry,
     notes,
     plugins,
@@ -88,3 +89,5 @@ api_router.include_router(mcp_servers.router)
 api_router.include_router(sandbox.router)
 # 站点图标（D11-②）：浏览器不直连第三方站点，图标由本机缓存代理
 api_router.include_router(site_icons.router)
+# 模型代理（Phase B · P2）：服务器用自己的 key 调模型，把增量透传给边车/壳
+api_router.include_router(model_proxy.router)
