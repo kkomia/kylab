@@ -46,12 +46,13 @@ import threading
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from queue import Empty, Queue
-from typing import NamedTuple
+from typing import Annotated, Any, NamedTuple
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
-from app.api.auth import check_kb_scope, require_admin, require_read
+from app.api.auth import check_kb_scope, require_admin, require_read, require_write
 from app.api.v1.schemas import (
     ChatApprovalIn,
     ChatApprovalOut,
@@ -102,6 +103,7 @@ from app.services.session_events import (
     KIND_ERROR,
     KIND_INTERRUPTED,
     KIND_STEP,
+    KIND_TURN_START,
     TURN_DEGRADED,
     TURN_EMPTY,
     TURN_ERROR,
@@ -2481,6 +2483,117 @@ def _record_turn(  # type: ignore[no-untyped-def]
         return
     # 落库成功之后才谈沉淀：消息没进库就沉淀，记忆会指向一个空会话
     _maybe_capture_memory(services, conversation_id, caller=caller)
+
+
+class TurnRecordIn(BaseModel):
+    """边车（P4-2b）在本机跑完一轮后**写回**服务器的一份已完成对话。
+
+    会话是**服务器权威** ✓：边车那一侧跑得再对，这一轮也必须记回服务器 ✓ ——
+    否则前端一切到边车，刷新之后那一轮就消失了 ✗✗（数据丢失）。
+    """
+
+    conversation_id: str = Field(min_length=1, description="记到哪条会话（必须可见/属于调用方）")
+    turn_id: str = Field(
+        min_length=1,
+        description=(
+            "**幂等键（必填）**：同一轮上报两次只落一次 ✓（边车重试、网络重发都是常态）"
+        ),
+    )
+    question: str = Field(min_length=1, max_length=32_000, description="用户那条消息")
+    answer: str = Field(default="", description="助手那条回答")
+    steps: list[dict[str, Any]] = Field(
+        default_factory=list, description="过程快照（与前端「执行过程」同形）"
+    )
+    thinking: str = Field(default="", description="这一轮的思考（可空）")
+    sources: list[dict[str, Any]] = Field(default_factory=list, description="引用快照（可空）")
+
+
+class TurnRecordOut(BaseModel):
+    """写回的结果。``recorded=False`` **不是失败** ✓ —— 是幂等命中（之前已经记过 ✓）。"""
+
+    conversation_id: str
+    turn_id: str
+    recorded: bool = Field(description="true=这次真的写进去了；false=之前已经记过（没有重复写）")
+
+
+@router.post(
+    # **路径要带 `/chat`** ✗✓（2026-09-29 实测 404 的根因）：这个模块的 `router` 是
+    # `APIRouter(tags=["chat"])`（`chat.py:143`，**没有 prefix** ✗），
+    # 所以每条路径都自己写全 —— 隔壁那条就是 `/chat/turns/{id}/live` ✗。
+    # 原先这里只写 `/turns/record` ✓，于是它注册成了 `/api/v1/turns/record` ✓，
+    # 而所有人（边车、文档、用例）打的是 `/api/v1/chat/turns/record` ✗ → 404 ✓。
+    "/chat/turns/record",
+    response_model=TurnRecordOut,
+    summary="记录一轮已完成的对话（边车写回）",
+)
+def record_turn_endpoint(
+    payload: TurnRecordIn,
+    services: Annotated[Services, Depends(get_services)],
+    # **写端点用写档**（照 `router.py` 那条"逐个端点显式声明"的规矩 ✓）：
+    # 成员会话与管理员不受影响 ✓（`check_access` 对 `caller.user` 不判档位 ✓）；
+    # 真正的区别在 **API Key 通道** ✗ —— 只读 Key 原先能靠这个端点往会话里写 ✗。
+    caller: Annotated[Caller, Depends(require_write)],
+) -> TurnRecordOut:
+    """把本机跑完的一轮记回服务器（P4-2b）。
+
+    三条口径：
+
+    - **复用 `ConversationService.record_turn`**（`services/conversation.py:453` ✓）——
+      与服务器自己那条链路**同一份记录器** ✗（两条消息 + 事件日志同一个事务 ✓），
+      绝不另写一份 ✗（两份必然漂移）；
+    - **幂等**：`turn_id` 是我们自己写在 `turn/start` 事件载荷里的标记 ✓ → 上报前先查
+      **这次记录之前有没有同一轮** ✓（有就原样返回 `recorded=False` ✓，不重复插 ✓）；
+    - **鉴权与所有权照旧**：普通成员只能写自己的会话 ✓（别人的 → 404 ✓，与
+      `conversations._get_visible` 同口径 ✓，不暴露存在性 ✓）；写不进去就抛错 ✓ ——
+      **绝不 200 假装成功** ✗。
+    """
+    conversation_id = payload.conversation_id
+    owner = caller.user.id if (caller.user is not None and not caller.is_admin) else None
+    if owner is None:
+        services.conversations.get(conversation_id)
+    else:
+        services.conversations.get_for_owner(conversation_id, owner)
+
+    # 幂等：这一轮的标记（写在 `turn/start` 载荷里的 `turn_id`）已经在事件日志里 → 记过了
+    #
+    # **为什么是"查事件日志"而不是进程内的一张回执表** ✗：标记与消息在**同一个事务**里落库 ✓
+    # （`record_turn` 的 `events=[marker]` ✓），所以这份回执**跨进程重启仍然有效** ✓ ——
+    # 而进程内集合一重启就空了 ✗，那时边车重发（它本来就允许重试 ✓）会**重复一轮** ✓。
+    # 换句话说：进程内回执只是"尽力而为" ✓，这条是**真的幂等** ✓，别把它降级成前者 ✗。
+    # 台账（持久回执表）留给 P4-2c ✓；那一轮要解决的是"按 turn_id 反查/对账"，
+    # 不是"要不要重复插" ✓（后者这一行已经答完 ✓）。
+    for event in services.conversations.session_events(conversation_id):
+        recorded_id = (getattr(event, "payload", None) or {}).get("turn_id")
+        if recorded_id and str(recorded_id) == payload.turn_id:
+            return TurnRecordOut(
+                conversation_id=conversation_id, turn_id=payload.turn_id, recorded=False
+            )
+
+    marker = EventDraft(
+        kind=KIND_TURN_START,
+        payload={"query": payload.question, "turn_id": payload.turn_id},
+    )
+    services.conversations.record_turn(
+        conversation_id,
+        question=payload.question,
+        answer=payload.answer,
+        sources=payload.sources,
+        steps=payload.steps,
+        thinking=payload.thinking,
+        events=[marker],
+    )
+    services.conversations.ensure_title(conversation_id, payload.question)
+    # **落库成功之后才谈沉淀** ✓（与服务器自己那条链路同一个口径 ✓，见 `chat.py:2485`）：
+    # 边车写回的轮次与人在网页里问的那一轮在库里长得一模一样 ✓，
+    # 不在这里接一下 ✗，这些轮次就**永远不进长期记忆** ✗ —— 而"记忆里少了边车那几轮"
+    # 是用户事后才发现、且无法补回的那类丢失 ✓。
+    #
+    # 位置就在**幂等命中之后** ✗：同一轮上报两次时上面已经 `return` ✓，
+    # 于是重复上报不会把同一轮再送进记忆一遍 ✓（`_maybe_capture_memory` 自己还有节流 ✓）。
+    _maybe_capture_memory(services, conversation_id, caller=caller)
+    return TurnRecordOut(
+        conversation_id=conversation_id, turn_id=payload.turn_id, recorded=True
+    )
 
 
 def _turn_attachments(
