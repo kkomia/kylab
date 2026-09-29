@@ -24,8 +24,10 @@ import { formatCount } from '@/lib/format'
 /** 没有名字表时用的空表（**常量**：`) => new Map()` 会每次渲染换一个引用）。 */
 const EMPTY_NAMES: ReadonlyMap<string, string> = new Map()
 
+import { Fold } from './Fold'
 import { LinkText } from './LinkText'
 import { StepIcon, StepOutcomeBadge, StepSpinner, type StepOutcome } from './stepIcons'
+import { StepResult } from './StepResult'
 import {
   STEP_BODY,
   STEP_DETAIL,
@@ -180,13 +182,20 @@ export function TraceStepRow({
   const hasDetail = Boolean(step.args || step.result)
 
   /**
-   * **用户的点击压过默认值**（`null` = 他还没点过）。
+   * 「这一步的原文（入参 / 返回）摊不摊开」的取值：**宿主那张表说了算**，
+   * 只有"必须看得见"那一档例外。
    *
-   * 不成功的行默认展开（判据是 `forceExpand`，见它上面的说明），但**不能变成折不起来**：
-   * 点一下就该收起。所以真正的取值是"他选了就听他的，否则看默认值"，而宿主那份状态照样
-   * 同步（`onToggle`）——两处一起更新，下一次重渲染才不会把用户刚收起的那一行弹回去。
+   * - **普通的一步**（`forceExpand` 为假）：完全看宿主给的 `open` 这一位——用户点这一行
+   *   走 `onToggle`（宿主把它记下来），面板顶上那两个批量入口（「全部展开 / 全部收起」）
+   *   写的也是**同一张表**。原先这里还压着一份"用户点过"的本地记忆，于是批量那一下
+   *   收不动他早先点开过的行（本地那一位在组件里，批量写在宿主上）。这一批把那一位
+   *   删掉了，**记账只留一处**：宿主表。
+   * - **强制展开那几档**（`awaiting` / `failed` / `blocked`，判据是 `forceExpand`）：
+   *   **默认摊开**，而"他仍然可以折起来"这件事宿主那张 `Set` 记不住（"他收过"与
+   *   "没碰过"都是不在表里），所以只有这一档留一位本地的"他折过"，并且**不往宿主表里写**
+   *   ——写了就是一条与实际画面相反的记录。这一档也不参与批量：它的默认值就是摊开。
    *
-   * 这一条"可以折起来"**只在单步这一层**成立（与面板 / 组不对称，而那个不对称是有道理的）：
+   * "可以折起来"**只在单步这一层**成立（与面板 / 组不对称，而那个不对称是有道理的）：
    *
    * 折这一行藏掉的是**原文（入参 / 返回）**：标签、结论与图标圆底上的那枚**状态灯**
    * 都还在文档里。"这一步没做成 / 在等你确认"这个**事实**因此没有被藏起来——
@@ -194,13 +203,15 @@ export function TraceStepRow({
    *
    * 而面板与组折起来会**一次藏掉整块**：组头一收，组内所有行连同它们的状态一起没了。
    * 所以那两层**拒绝收起**（`turns.traceForceExpanded` 与 `TracePanel` 里 forced 那一下
-   * 直接 return）——"安全语义高于用户这一下点击"说的是**那两层**，不是这一行。
+   * 直接 return），而且**不被「全部收起」收掉**——"安全语义高于用户这一下点击"说的是
+   * **那两层**（以及单步这一行的**默认值**），不是单步这一行的本地那一位。
    */
-  const [userChose, setUserChose] = useState<boolean | null>(null)
-  const open = userChose ?? (hostOpen || forceExpand(step))
+  const forced = forceExpand(step)
+  const [forcedClosed, setForcedClosed] = useState(false)
+  const open = forced ? !forcedClosed : hostOpen
   const toggle = () => {
-    setUserChose(!open)
-    onToggle()
+    if (forced) setForcedClosed(open)
+    else onToggle()
   }
 
   /**
@@ -364,60 +375,78 @@ export function TraceStepRow({
               </span>
               <ChevronDown className={caretClass(thinkingOpen)} size={12} />
             </button>
-            {thinkingOpen ? (
+            {/*
+              思考正文也走 `Fold`（§12.335："单步那一处，思考那一段同理"）：
+              展开过一次之后常驻，收起/展开两个方向都有过渡。
+            */}
+            <Fold open={thinkingOpen} data-testid="step-thinking-fold">
               <div className={THINK_BLOCK} data-testid="step-thinking">
                 {thinkingParagraphs(thinking).map((paragraph, index) => (
                   // 段落是同一段文本按空行切出来的，没有稳定 id；下标即位置
                   <LinkText key={index} className={THINK_PARAGRAPH} text={paragraph} />
                 ))}
               </div>
-            ) : null}
+            </Fold>
           </div>
         ) : null}
 
-        {/* 入参与返回是**原始载荷**（JSON / 工具正文），走等宽 `<pre>`，里面网址同样要能点 */}
-        {hasDetail && open ? (
-          <div className="mt-[var(--space-1)]">
-            {step.args ? (
-              <>
-                <p className={RAW_LABEL}>入参</p>
-                <pre className={RAW_BODY}>
-                  {/* 入参里的 `art_*` 缀上文件名（D19）：key 保留，用户看得懂那是什么 */}
-                  <LinkText text={humanizeArtifactKeys(step.args, names ?? EMPTY_NAMES)} />
-                </pre>
-              </>
-            ) : null}
-            {step.result ? (
-              <>
-                <p className={RAW_LABEL}>
-                  返回
-                  {/*
+        {/*
+          入参与返回是**原始载荷**（JSON / 工具正文），走等宽 `<pre>`（返回还可能换档，
+          见下面 `StepResult`），里面网址同样要能点。
+
+          折叠交给 `Fold`（§12.335）：行高 0fr ↔ 1fr、双向 200ms 过渡；
+          "展开过一次之后内容才常驻"那一层账也在它那儿——从没点开过的一行
+          在 DOM 上仍然只有这个空容器。
+        */}
+        {hasDetail ? (
+          <Fold open={open} data-testid="step-raw">
+            <div className="mt-[var(--space-1)]">
+              {step.args ? (
+                <>
+                  <p className={RAW_LABEL}>入参</p>
+                  <pre className={RAW_BODY}>
+                    {/* 入参里的 `art_*` 缀上文件名（D19）：key 保留，用户看得懂那是什么 */}
+                    <LinkText text={humanizeArtifactKeys(step.args, names ?? EMPTY_NAMES)} />
+                  </pre>
+                </>
+              ) : null}
+              {step.result ? (
+                <>
+                  <p className={RAW_LABEL}>
+                    返回
+                    {/*
                     只给了预览时**如实标出来**：不标的话，用户会以为这就是工具返回的全部，
                     而截断处常在他要的那一段之前
                   */}
+                    {preview !== null ? (
+                      <span className={`${RAW_NOTE} tabular`}>
+                        仅预览 {formatCount(preview.length)} / {formatCount(step.result.length)} 字
+                      </span>
+                    ) : null}
+                  </p>
+                  {/*
+                  返回**按类型分派**（调研 §5.2 P2）：JSON 缩进排版、Markdown 表格画成真表格、
+                  其余（含半截 JSON / 半截表格 / 各种正文）落到原先那块等宽 `<pre>`。
+                  判据只有一处（`resultDisplay.displayType`），分派表在 `StepResult` 里。
+                  这里喂的是 `shownResult`——**屏幕上真正要画的那一段**：
+                  预览态只有 600 字，按 `step.result` 整段判会判成 JSON 却画不出来。
+                */}
+                  <StepResult text={shownResult} />
                   {preview !== null ? (
-                    <span className={`${RAW_NOTE} tabular`}>
-                      仅预览 {formatCount(preview.length)} / {formatCount(step.result.length)} 字
-                    </span>
+                    <button
+                      type="button"
+                      className={RAW_MORE}
+                      onClick={() => setFullResult((value) => !value)}
+                    >
+                      {fullResult
+                        ? '收起，只看预览'
+                        : `加载全部（${formatCount(step.result.length)} 字）`}
+                    </button>
                   ) : null}
-                </p>
-                <pre className={RAW_BODY}>
-                  <LinkText text={shownResult} />
-                </pre>
-                {preview !== null ? (
-                  <button
-                    type="button"
-                    className={RAW_MORE}
-                    onClick={() => setFullResult((value) => !value)}
-                  >
-                    {fullResult
-                      ? '收起，只看预览'
-                      : `加载全部（${formatCount(step.result.length)} 字）`}
-                  </button>
-                ) : null}
-              </>
-            ) : null}
-          </div>
+                </>
+              ) : null}
+            </div>
+          </Fold>
         ) : null}
       </div>
     </li>

@@ -71,7 +71,10 @@ export function stepIconClass(icon: string): string {
 }
 
 /**
- * 过程面板那一块的**折叠容器**（§12.333：高度过渡只加在**面板级**）。
+ * 过程面板里**每一处折叠**的容器（§12.335：动效优先，三处共用一份取值）。
+ *
+ * 用它的地方：面板（`TracePanel`）、组（同一文件里的组行）、单步的原文与思考
+ * （`TraceStepRow`）——都在 `ui/Fold.tsx` 那一层引用，所以这里只有类名。
  *
  * 行高走 `grid-template-rows`（`0fr ↔ 1fr`），高度由内容自己决定——不量像素，
  * 内容长短变了也不用跟着改（`min-h-0` + `overflow-hidden` 让 0fr 时真的贴成 0）。
@@ -83,8 +86,9 @@ export function stepIconClass(icon: string): string {
  * 200ms + `cubic-bezier(0.4, 0, 0.2, 1)`：开合动效五家都收敛在 200ms（调研 §4.8），
  * 曲线就是本仓发送按钮那一档（`tokens.css` 的 `--motion-send`）。
  *
- * **内容是条件渲染的**（收起时不在文档里，DOM 开销的取舍见 `TracePanel` 头注），
- * 所以实际效果是**展开有过渡、收起直落**——这一半是刻意的。
+ * **展开与收起两个方向都过渡**（§12.335 推翻了"收起直落"那个旧取舍）：内容由 `Fold`
+ * 按"展开过一次就常驻"挂着，0fr ↔ 1fr 两头都有东西可以动；DOM 开销怎么挡、
+ * "从没展开过的那一轮"为什么仍然零成本，见 `Fold.tsx` 的头注。
  */
 export const TRACE_FOLD =
   'grid transition-[grid-template-rows] duration-200 ease-[cubic-bezier(0.4,0,0.2,1)] motion-reduce:transition-none'
@@ -94,6 +98,24 @@ export const TRACE_FOLD_BODY = 'min-h-0 overflow-hidden'
 
 /** 面板内容与开关那一行之间的间距（原先在条件渲染的那一层上）。 */
 export const TRACE_FOLD_CONTENT = 'mt-[var(--space-3)]'
+
+/**
+ * 面板内容顶上那一行「全部展开 / 全部收起」（调研 §5.2 P2）。
+ *
+ * 右对齐一行小字，与时间线隔开一点：它是**整块的批量动作**，不是某一行的一部分，
+ * 所以既不上"执行过程"那一行（那是面板的开关），也不与「加载更多」同排（那是分页）。
+ */
+export const TRACE_BULK_BAR = 'mb-[var(--space-2)] flex justify-end gap-[var(--space-3)]'
+
+/**
+ * 批量动作那两个文字按钮。
+ *
+ * **无障碍名字就用可见文字本身**（不另加 `aria-label`）：名字与可见文字一致，
+ * 语音控制才点得到"全部展开"；作用范围写在注释与用例里，不靠一个读屏器才听得到的名字。
+ */
+export const TRACE_BULK =
+  'cursor-pointer p-0 text-[length:var(--text-micro-size)] text-[var(--accent-text)] ' +
+  '[transition:var(--transition-ui)] hover:underline'
 
 /** 正文列。 */
 export const STEP_BODY = 'min-w-0 pt-px'
@@ -125,8 +147,17 @@ export const STEP_EMPTY_DIM = 'opacity-70'
 export const RAW_LABEL =
   'mt-[var(--space-2)] mb-[var(--space-1)] m-0 text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]'
 
+/**
+ * 原文那一块的限高（220px，P2-1 就定下的）：后端已把返回裁到 2000 字，
+ * 一屏里连着展开十条仍是一屏正文墙。
+ *
+ * 提成一个常量是**给"返回"的几种渲染器共用**（等宽 `<pre>`、缩进 JSON、真表格）：
+ * 换档不许把限高换掉——那是"这一段是原文、看一眼就好"的同一套取舍。
+ */
+const RAW_MAX_HEIGHT = 'max-h-[220px]'
+
 export const RAW_BODY =
-  'm-0 p-[var(--space-2)] max-h-[220px] overflow-auto rounded-[var(--radius-control)] ' +
+  `m-0 p-[var(--space-2)] ${RAW_MAX_HEIGHT} overflow-auto rounded-[var(--radius-control)] ` +
   'bg-[var(--bg-subtle)] font-mono text-[length:var(--text-micro-size)] ' +
   'leading-[var(--line-code)] text-[var(--text-secondary)] whitespace-pre-wrap ' +
   '[overflow-wrap:anywhere]'
@@ -182,3 +213,27 @@ export const SITE_MORE = 'text-[length:var(--text-micro-size)] text-[var(--text-
 export const RAW_MORE =
   'mt-[var(--space-1)] p-0 text-[length:var(--text-micro-size)] text-[var(--accent-text)] ' +
   '[transition:var(--transition-ui)] hover:underline'
+
+/**
+ * 返回是 **Markdown 表格**时的那张真表格（调研 §5.2 P2 的结果分派）。
+ *
+ * 与等宽 `<pre>` 同一个**限高常量**：换的是排版，不是"这一段是原文、看一眼就好"
+ * 那套取舍（长表格照样在 220px 里自己滚）。
+ *
+ * 取值全部来自令牌：表格线用 `--border-hairline`（与别的分隔线同一档），
+ * 表头底用 `--bg-subtle`（与原文块同一个底），单元格留白用 `--space-*`。
+ * 表头 `sticky` 是刻意的：限高里滚动时列名得一直看得见，否则读第二屏就不知道哪一列是什么。
+ */
+export const RESULT_TABLE_WRAP = `m-0 ${RAW_MAX_HEIGHT} overflow-auto rounded-[var(--radius-control)] bg-[var(--bg-subtle)]`
+
+export const RESULT_TABLE =
+  'w-full border-collapse text-[length:var(--text-micro-size)] leading-[var(--line-code)] ' +
+  'text-[var(--text-secondary)]'
+
+export const RESULT_TH =
+  'sticky top-0 border-b border-[var(--border-hairline)] bg-[var(--bg-subtle)] ' +
+  'px-[var(--space-2)] py-[var(--space-1)] text-left font-medium text-[var(--text-primary)]'
+
+export const RESULT_TD =
+  'border-b border-[var(--border-hairline)] px-[var(--space-2)] py-[var(--space-1)] align-top ' +
+  'break-words [overflow-wrap:anywhere]'

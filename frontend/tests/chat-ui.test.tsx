@@ -119,7 +119,6 @@ vi.mock('@/api/settings', async (importOriginal) => {
       embedding_is_development: false,
       rerank_enabled: false,
     })),
-    getChatMode: vi.fn(async () => ({ mode: '', options: [] })),
   }
 })
 
@@ -752,6 +751,41 @@ describe('过程面板的默认档与强制展开（P0）', () => {
     expect(await screen.findByText('联网搜索')).toBeInTheDocument()
   })
 
+  /*
+   * §12.335（D）：用户原话"那个记忆可以不要"——`kylab-trace-open` 与它的读写函数**整档删掉**，
+   * 豁免只作用于这一轮。所以哪怕本机留着一个旧版本的"开过"（老键还躺在 localStorage 里），
+   * 新打开一条会话时那一轮也该是自动折的。走真宿主，钉的正是"本机那一头有没有接线"。
+   */
+  it('§12.335：本机留着旧键也不影响——没点过的完成轮一律自动折', async () => {
+    window.localStorage.setItem('kylab-trace-open', '1')
+    try {
+      vi.mocked(getConversation).mockResolvedValue(
+        detail([
+          stored('user', '查一下'),
+          stored('assistant', '查到了。', {
+            steps: [
+              {
+                phase: 'tool',
+                label: '联网搜索',
+                detail: '「芯片 出口」命中 3 条',
+                status: 'done',
+                tool: 'web_search',
+                kind: 'search',
+              },
+            ],
+          }),
+        ]),
+      )
+      renderPage()
+
+      expect(await screen.findByTestId('reply-text')).toHaveTextContent('查到了。')
+      expect(screen.getByTestId('trace-toggle')).toHaveAttribute('aria-expanded', 'false')
+      expect(screen.queryByText('联网搜索')).toBeNull()
+    } finally {
+      window.localStorage.clear()
+    }
+  })
+
   it('规则 c：有步骤在等人工介入时强制摊开，点标题也收不起来', async () => {
     vi.mocked(getConversation).mockResolvedValue(
       detail([
@@ -836,19 +870,24 @@ describe('组级开合记在宿主上（§12.333 约束 1）', () => {
     expect(group().head).toHaveAttribute('aria-expanded', 'true')
     expect(within(group().body).getByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()
 
-    // 他收起这一组（"还在跑"的默认档被他的点击压过）
+    // 他收起这一组（"还在跑"的默认档被他的点击压过）。
+    // §12.335 起"收起"读的是那一块的行高与 `data-fold`：内容为双向动效常驻（见 `Fold`），
+    // 不再用"内容不在文档里"来读收起。
     const user = userEvent.setup()
     await user.click(group().head)
     expect(group().head).toHaveAttribute('aria-expanded', 'false')
-    expect(group().body.textContent).toBe('')
+    expect(group().body).toHaveAttribute('data-fold', 'closed')
+    expect(group().body.style.gridTemplateRows).toBe('0fr')
 
-    // 换会话再回来：内容重画，但**他选的那一档还在**
+    // 换会话再回来：内容重画，但**他选的那一档还在**。
+    // 新挂载里这一组从没展开过，所以它连内容都不挂（DOM 开销那一条不变）。
     await user.click(screen.getByRole('link', { name: '去新对话' }))
     await waitFor(() => expect(screen.queryByTestId('reply-text')).not.toBeInTheDocument())
     await user.click(screen.getByRole('link', { name: '回 c1' }))
 
     expect(await screen.findByTestId('reply-text')).toHaveTextContent('查到了。')
     expect(group().head).toHaveAttribute('aria-expanded', 'false')
+    expect(group().body).toHaveAttribute('data-fold', 'closed')
     expect(group().body.textContent).toBe('')
   })
 })

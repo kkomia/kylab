@@ -108,6 +108,18 @@ function reset(): void {
   openGroups.clear()
 }
 
+/**
+ * 组容器：`aria-controls` 指着它。
+ *
+ * §12.335 起"收起"**不再等于"内容不在文档里"**（内容为双向动效常驻，见 `Fold`），
+ * 所以收起读的是容器上的镜像：`data-fold="closed"` + 行高 `0fr`。
+ * "从没展开过就不挂内容"那一条由组容器为空 + `chat-trace-fold` 里那条用例钉。
+ */
+function groupBody(): HTMLElement {
+  const head = document.querySelector('button[aria-controls^="trace-group-"]') as HTMLElement
+  return document.getElementById(head.getAttribute('aria-controls') as string) as HTMLElement
+}
+
 describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
   it('running 的那一行带 data-running 与转圈；转圈尊重"减少动态效果"', () => {
     reset()
@@ -167,7 +179,9 @@ describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
     */
     rerender(<TracePanel turnIndex={0} turn={turn} />)
 
-    expect(document.querySelectorAll('li[data-kind="search"] li')).toHaveLength(0)
+    // §12.335：收起读的是行高与 `data-fold`（内容为双向动效常驻，不再卸载）
+    expect(groupBody()).toHaveAttribute('data-fold', 'closed')
+    expect(groupBody().style.gridTemplateRows).toBe('0fr')
   })
 
   it('纯判据：只有 running 算在跑', () => {
@@ -233,8 +247,13 @@ describe('单步级：折起来的一行仍然看得见状态灯（不对称是�
     // 单步那一行默认展开（`forceExpand`）：先点一下折起来
     await userEvent.setup().click(screen.getByRole('button', { name: /联网搜索/ }))
 
-    // 折起来 = 原文不在文档里（折的是**原因**那一层）
-    expect(screen.queryByText('入参')).toBeNull()
+    /*
+      折起来 = **那一块的原文折成 0fr**（§12.335：内容为双向动效常驻，所以不再用
+      "不在文档里"来读收起；`Fold` 的 `data-fold` 就是这个读数）。
+      折的是**原因**那一层：原文（入参 / 返回）收起来了。
+    */
+    expect(screen.getByTestId('step-raw')).toHaveAttribute('data-fold', 'closed')
+    expect(screen.getByTestId('step-raw').style.gridTemplateRows).toBe('0fr')
 
     // 但"这一步没做成"这个**事实**没被藏起来：行上的 `data-outcome` 与那枚状态灯都还在
     const row = document.querySelector('li[data-outcome="failed"]') as HTMLElement
@@ -242,6 +261,22 @@ describe('单步级：折起来的一行仍然看得见状态灯（不对称是�
     expect(within(row).getByTestId('step-outcome')).toHaveAttribute('data-outcome', 'failed')
     // 结论那一行也照旧在（它不是原文那一段）
     expect(screen.getByText('工具内部错误：服务连不上')).toBeInTheDocument()
+  })
+
+  it('**从没展开过**的一行：原文那一块只有空容器，内容根本不挂（DOM 开销那一条不变）', () => {
+    reset()
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf([step({ detail: '跑完了，输出 3 行', args: '{"cmd":"ls"}' })])}
+      />,
+    )
+
+    // 容器在（`aria-controls` 要有落点、动效要有东西可动），但里面一个字都没有
+    const raw = screen.getByTestId('step-raw')
+    expect(raw).toHaveAttribute('data-fold', 'closed')
+    expect(raw.textContent).toBe('')
+    expect(screen.queryByText('入参')).toBeNull()
   })
 })
 
@@ -296,16 +331,19 @@ describe('组级开合：进行中展开、内容跑完折叠（§12.333）', ()
     await userEvent.setup().click(screen.getByRole('button', { name: /正在联网搜索/ }))
     // 桩的表不是响应式的：重画一次让"他选的那一档"反映到画面上（真宿主是 `setState`）
     rerender(panel(0))
-    expect(screen.queryByText('第一条')).toBeNull()
+    // §12.335：收起读的是那一块的行高（内容为双向动效常驻，不再卸载）
+    expect(groupBody()).toHaveAttribute('data-fold', 'closed')
     expect(openGroups.get('t0:group:tool-0:web_search')).toBe(false)
 
     // 换挂载（收起面板再打开 / 换会话再回来那条路）：**仍然按他选的"收"画**——
-    // 默认档（还在跑就展开）不许把他那一下盖掉
+    // 默认档（还在跑就展开）不许把他那一下盖掉。新挂载里这一组从没展开过，
+    // 所以它连内容都不挂（DOM 开销那一条不变），读数仍是"收起"。
     rerender(panel(1))
     expect(screen.getByRole('button', { name: /正在联网搜索/ })).toHaveAttribute(
       'aria-expanded',
       'false',
     )
+    expect(groupBody()).toHaveAttribute('data-fold', 'closed')
     expect(screen.queryByText('第一条')).toBeNull()
 
     // 他再点开 → 也记下来，换挂载之后同样算数
@@ -409,15 +447,15 @@ describe('折叠树的 a11y：aria-expanded / aria-controls / role（§12.333）
 })
 
 /*
- * 面板级的**高度过渡**（§12.333：动效只加这一级，单步级照旧条件渲染）。
+ * 面板级的**高度过渡**（§12.335：面板 / 组 / 单步三处都走 `ui/Fold.tsx`，双向都动）。
  *
- * 收起仍然是条件渲染——这是刻意的（这一块装着步骤、思考全文与出处预览，
- * 几十轮时 DOM 开销一直在，见 `TracePanel` 头注）。所以这里的读法是：
- * 容器一直在、行高在 0fr/1fr 之间；**展开有过渡，收起是直落**。
+ * 这里的读法是：容器一直在、行高在 0fr/1fr 之间、`data-fold` 报开合；
+ * **展开与收起两头都有东西可以动**（内容按"展开过一次才常驻"挂着，见 `Fold` 头注）。
+ * "从没展开过的那一轮内容根本不挂"（DOM 开销那一条）由 `chat-trace-fold` 那一条钉。
  * jsdom 不跑 CSS 动画，这一节钉的是"接线"（类名与行高到底挂没挂上），
  * 真实浏览器里的观感要肉眼看（`.shots`）。
  */
-describe('面板折叠容器：展开有高度过渡、收起直落（§12.333）', () => {
+describe('面板折叠容器：双向都有高度过渡（§12.335）', () => {
   it('容器一直在文档里：行高 0fr ↔ 1fr、200ms、减少动态效果时直落', () => {
     reset()
     const { rerender } = render(<TracePanel turnIndex={0} turn={turnOf([step()])} />)
@@ -430,6 +468,7 @@ describe('面板折叠容器：展开有高度过渡、收起直落（§12.333�
     // 过渡写在类里（不是 style），这一条才压得住它
     expect(open.className).toContain('motion-reduce:transition-none')
     expect(open.style.gridTemplateRows).toBe('1fr')
+    expect(open).toHaveAttribute('data-fold', 'open')
 
     stubs.traceOpen = () => 'collapsed'
     try {
@@ -437,8 +476,9 @@ describe('面板折叠容器：展开有高度过渡、收起直落（§12.333�
 
       const collapsed = document.getElementById('trace-panel-0') as HTMLElement
       expect(collapsed.style.gridTemplateRows).toBe('0fr')
-      // 收起时**内容仍然不在文档里**：动画没有把条件渲染这个取舍吃掉
-      expect(screen.queryByText('联网搜索')).toBeNull()
+      expect(collapsed).toHaveAttribute('data-fold', 'closed')
+      // 收起之后内容**仍然挂着**：§12.335 要的双向过渡就是这么换来的
+      expect(screen.getByText('联网搜索')).toBeInTheDocument()
     } finally {
       stubs.traceOpen = () => 'full'
     }

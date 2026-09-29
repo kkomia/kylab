@@ -15,14 +15,11 @@
  *    它会长成一面比回答还长的墙（用户报的"很长的会话"）。行内徽标 `[n]` 点进来时
  *    会自动展开（见 `revealSource`），否则会滚到一个不存在的节点上。
  *
- * 折叠用的是 `v-if` 那种"不是就不在文档里"的做法（React 里就是条件渲染）：
- * 这一块装着步骤、思考全文与每条出处的正文预览，聊到几十轮时它们只是被 CSS 藏起来，
- * DOM 开销一直在。**内容照旧条件渲染，外层容器是常驻的一个 grid**——换来的是
- * **展开那一刻的高度过渡**（`0fr → 1fr`，见 `traceStyles.TRACE_FOLD`）；
- * **收起是直落**：内容与行高在同一个提交里变（内容卸载了），没有东西可以过渡。
- * 这一半是刻意取舍：收起本来就快，用户感知最强的是内容出现那一刻；
- * 为双向过渡把内容常驻，就把上面那条 DOM 开销的取舍推翻了。
- * （真浏览器里量过：内容与行高同帧变也能播，见 `.shots/.probe-trace-fold.cjs`。）
+ * 折叠那一块（§12.335 起）：三处折叠（面板、组、单步）共用 `ui/Fold.tsx` 那一个容器，
+ * 行高走 `0fr ↔ 1fr`、**双向**都有 200ms 过渡（`traceStyles.TRACE_FOLD`），
+ * `prefers-reduced-motion` 直落。**DOM 开销这样挡住**：内容在**第一次展开之后才常驻**
+ * ——从没被点开过的那一轮，子内容根本不渲染（DOM 上与改造前同一档），
+ * 而"展开 → 收起 → 再展开"每一次都有动效。取舍与细节见 `Fold.tsx` 头注。
  */
 import { ChevronDown, ListTree } from 'lucide-react'
 import { useMemo, useState } from 'react'
@@ -34,6 +31,7 @@ import {
   sourcePreview,
   sourceWhere,
   thinkingParagraphs,
+  traceEntries,
   traceKey,
   traceSummary,
   trailingThinking,
@@ -44,6 +42,7 @@ import { webSitesOfSteps } from '@/features/chat/model/webSites'
 import type { ChatSource } from '@/api/chat'
 import { formatCount } from '@/lib/format'
 
+import { Fold } from './Fold'
 import { LinkText } from './LinkText'
 import { StepIcon, StepOutcomeBadge, StepSpinner } from './stepIcons'
 import { forceExpand, stepsOutcome, TraceStepRow } from './TraceStepRow'
@@ -53,8 +52,8 @@ import {
   STEP_TOGGLE,
   THINK_BLOCK,
   THINK_PARAGRAPH,
-  TRACE_FOLD,
-  TRACE_FOLD_BODY,
+  TRACE_BULK,
+  TRACE_BULK_BAR,
   TRACE_FOLD_CONTENT,
   caretClass,
   stepIconClass,
@@ -146,12 +145,12 @@ function EntryRow({
     )
   }
 
-  const open = groupForced || (chat.groupOpenChoice(key) ?? groupRunning)
+  const groupOpen = groupForced || (chat.groupOpenChoice(key) ?? groupRunning)
   const toggle = () => {
     // 第 1 层那一档不收（与宿主 `toggleTrace` 拒绝收起同一个写法）：连"他选过"都不留，
     // 否则这一步不再 forced 时，会突然按那一下无效的点击折起来
     if (groupForced) return
-    chat.chooseGroupOpen(key, !open)
+    chat.chooseGroupOpen(key, !groupOpen)
   }
 
   /**
@@ -186,38 +185,36 @@ function EntryRow({
         <button
           type="button"
           className={STEP_TOGGLE}
-          aria-expanded={open}
+          aria-expanded={groupOpen}
           aria-controls={bodyId}
           onClick={toggle}
         >
           {heading}
-          <ChevronDown className={caretClass(open)} size={12} aria-hidden />
+          <ChevronDown className={caretClass(groupOpen)} size={12} aria-hidden />
         </button>
         {/* 组行上那一排站点：默认折着的时候也看得见（见上面 `sites` 的说明） */}
         <WebSiteList sites={sites.sites} more={sites.more} />
         {/*
-          展开的那一块：外层只管"它归谁管"（id + 角色 + 名字），内容是条件渲染——
-          组里是同一批步骤的完整行，几十次调用时没理由一直挂在文档里（与面板级同一条）。
+          展开的那一块：外层只管"它归谁管"（id + 角色 + 名字），折叠与"内容挂不挂"
+          都交给 `Fold`（§12.335：双向过渡 + 第一次展开之后才常驻）。
           `role="group"` + `aria-label` 是本仓既有的容器做法（见设置页那几个分组）。
         */}
-        <div id={bodyId} role="group" aria-label={heading}>
-          {open ? (
-            <ol className="m-0 flex list-none flex-col p-0">
-              {entry.steps.map((child) => (
-                <TraceStepRow
-                  key={child.key}
-                  step={child}
-                  variant="child"
-                  streaming={streaming}
-                  names={artifactNames}
-                  // 组内每一次调用同样是"哪一轮的第几步"：不带轮次会跨轮串号
-                  open={chat.isStepOpen(traceKey(turnIndex, child.key))}
-                  onToggle={() => chat.toggleStep(traceKey(turnIndex, child.key))}
-                />
-              ))}
-            </ol>
-          ) : null}
-        </div>
+        <Fold id={bodyId} role="group" aria-label={heading} open={groupOpen}>
+          <ol className="m-0 flex list-none flex-col p-0">
+            {entry.steps.map((child) => (
+              <TraceStepRow
+                key={child.key}
+                step={child}
+                variant="child"
+                streaming={streaming}
+                names={artifactNames}
+                // 组内每一次调用同样是"哪一轮的第几步"：不带轮次会跨轮串号
+                open={chat.isStepOpen(traceKey(turnIndex, child.key))}
+                onToggle={() => chat.toggleStep(traceKey(turnIndex, child.key))}
+              />
+            ))}
+          </ol>
+        </Fold>
       </div>
     </li>
   )
@@ -296,6 +293,39 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
    * （写在 return 之后会被 lint 判成"条件调用"）。
    */
   const [trailingOpen, setTrailingOpen] = useState(false)
+
+  /**
+   * 「全部展开 / 全部收起」要动的那两批 key（调研 §5.2 P2）。
+   *
+   * 三件事在这里定死：
+   *
+   * 1. **范围是这一轮**，而且是**这一轮的全部条目**，不只是当前画出来的前 20 条：
+   *    只作用于看得见的那几行的话，点完「全部展开」再点「加载更多」，后半截又冒出一批
+   *    折着的行——那正是这件事要省掉的那一步（分页切的是渲染，不是数据，见 `tracePage`）。
+   * 2. **单步与组两级一起**：组那一行摊开、里面每一次调用还折着的话，用户点完还得再点一层。
+   * 3. **强制展开的那些一律不进名单**（`forceExpand`；§12.333 约束 2）：`awaiting` /
+   *    `failed` / `blocked` 的组与单步不能被「全部收起」收掉——安全语义高于用户这一下点击；
+   *    「全部展开」方向本来也不必动它们（它们就是摊着的）。
+   *
+   * 判据用的是 `forceExpand` 本身，不在这里另写一遍"哪种算强制"。
+   */
+  const bulkKeys = useMemo(() => {
+    const steps: string[] = []
+    const groups: string[] = []
+    for (const entry of traceEntries(turn)) {
+      if (entry.kind === 'step') {
+        if (!forceExpand(entry.step)) steps.push(traceKey(turnIndex, entry.key))
+        continue
+      }
+      // 组里只要有一档强制展开，这一组的开合就归那条规则管（它拒绝收起）
+      if (!entry.steps.some(forceExpand)) groups.push(traceKey(turnIndex, entry.key))
+      for (const child of entry.steps) {
+        if (!forceExpand(child)) steps.push(traceKey(turnIndex, child.key))
+      }
+    }
+    return { steps, groups }
+  }, [turn, turnIndex])
+
   const reply = turn.reply as ChatMessage | null
   if (!reply) return null
 
@@ -307,6 +337,19 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
   const open = chat.traceOpen(reply) === 'full'
   const view = chat.traceView(turnIndex, turn)
   const trailingThinkingText = trailingThinking(reply)
+
+  /**
+   * 那一下点击：两批 key 各写**一次**（宿主那两位就是为此存在的，见 `ChatProvider`）。
+   *
+   * **不动面板自己那一档**：这两个入口就画在面板内容里，面板收着时它们同内容一起
+   * 不在文档里（条件渲染），所以"要不要顺带摊开面板"这件事不存在；面板那一行
+   * （`trace-toggle`）是用户自己的开关，「全部收起」也不替他把整块过程折掉——
+   * 折掉之后他连自己刚收起的结果都看不见了。
+   */
+  const bulkOpen = (next: boolean) => {
+    chat.chooseStepsOpen(bulkKeys.steps, next)
+    chat.chooseGroupsOpen(bulkKeys.groups, next)
+  }
 
   /**
    * 这一行此刻写什么：**有出处就报出处摘要**（`traceSummary`），**没有就写固定短名**
@@ -363,62 +406,84 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
       </button>
 
       {/*
-        折叠那一块：**容器一直在文档里**（一个 grid），内容是条件渲染。
+        折叠那一块（§12.335）：容器一直在文档里（一个 grid），折叠与"内容挂不挂"交给 `Fold`。
 
-        为什么内容仍是条件渲染（而不是也改成"CSS 藏起来 + 双向过渡"）：这一块装着步骤、
-        思考全文与每条出处的正文预览（见文件头注），聊到几十轮时它们被 CSS 藏起来、
-        DOM 开销一直在。所以这里换来的过渡只有**展开那一刻**（`0fr → 1fr`，200ms、
-        `cubic-bezier(0.4,0,0.2,1)`，见 `TRACE_FOLD`）：展开时容器早就在、行高从 0 变到
-        内容高度，浏览器会播；**收起是直落**——内容与行高在同一个提交里变，没有东西可以
-        过渡。这是刻意的取舍（收起本来就快，用户感知最强的是内容出现那一刻），
-        不是漏了一半。
+        为什么不在这里再做条件渲染（旧做法）：那样**收起是直落**——内容与行高在同一个提交
+        里变，没有东西可以过渡；而用户这一批要的是"以动效最好为优先"，两个方向都得动。
+        `Fold` 里那一层"展开过一次才常驻"就是这笔账的另一半：从没点开过的一轮，子内容
+        根本不渲染（DOM 开销与旧做法同一档），代价只落在用户真的看过的那几块上。
 
         容器上那三笔（`id` / `role="group"` / `aria-label`）是给读屏器与用例的：
         开关报 `aria-expanded`，这一块报"归谁管、叫什么"；图标全部 `aria-hidden`。
       */}
-      <div
-        id={panelId}
-        role="group"
-        aria-label={headline}
-        className={TRACE_FOLD}
-        style={{ gridTemplateRows: open ? '1fr' : '0fr' }}
-      >
-        <div className={TRACE_FOLD_BODY}>
-          {open ? (
-            <div className={TRACE_FOLD_CONTENT}>
-              <ol className="relative m-0 flex list-none flex-col p-0">
-                {view.entries.map((entry) => (
-                  <EntryRow
-                    key={entry.key}
-                    turnIndex={turnIndex}
-                    entry={entry}
-                    streaming={Boolean(reply.streaming)}
-                  />
-                ))}
-              </ol>
+      <Fold id={panelId} role="group" aria-label={headline} open={open}>
+        <div className={TRACE_FOLD_CONTENT}>
+          {/*
+                「全部展开 / 全部收起」（调研 §5.2 P2）：LobeHub 放在消息动作条上、
+                Qwen 给了 `Ctrl+O` / `Alt+T`，十二个样本里没有这一条的只有少数几家，
+                而我们的过程默认"进行中展开、内容跑完折叠"，长回合要一条条点开确实累。
 
-              {view.hidden > 0 ? (
-                <div className="mt-[var(--space-3)] flex items-center gap-[var(--space-2)]">
-                  {view.total > 0 ? (
-                    <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
-                      当前已显示 {formatCount(view.shown)} / {formatCount(view.total)} 条工具调用
-                    </span>
-                  ) : (
-                    <span className="text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
-                      还有 {formatCount(view.hidden)} 段过程没显示
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    className="cursor-pointer text-[length:var(--text-micro-size)] text-[var(--accent-text)] hover:underline"
-                    onClick={() => chat.showMoreTrace(turnIndex)}
-                  >
-                    加载更多
-                  </button>
-                </div>
-              ) : null}
+                入口**画在面板内容里**（不是"执行过程"那一行、也不是「加载更多」那一行）：
+                它管的是这一块里的行，和那两行各管各的（那两行一个是面板开关、一个是分页）。
+                面板收着时这一行不在文档里——批量动作不顺带摊开面板，理由见上面 `bulkOpen`。
 
-              {/*
+                名字就用可见文字本身（无障碍名字与可见文字一致才点得到），
+                作用范围与"跳过强制展开"那两条都写在 `bulkKeys` 上，并有定向用例钉着。
+              */}
+          {view.entries.length > 0 ? (
+            <div className={TRACE_BULK_BAR}>
+              <button
+                type="button"
+                data-testid="trace-bulk-expand"
+                className={TRACE_BULK}
+                onClick={() => bulkOpen(true)}
+              >
+                全部展开
+              </button>
+              <button
+                type="button"
+                data-testid="trace-bulk-collapse"
+                className={TRACE_BULK}
+                onClick={() => bulkOpen(false)}
+              >
+                全部收起
+              </button>
+            </div>
+          ) : null}
+
+          <ol className="relative m-0 flex list-none flex-col p-0">
+            {view.entries.map((entry) => (
+              <EntryRow
+                key={entry.key}
+                turnIndex={turnIndex}
+                entry={entry}
+                streaming={Boolean(reply.streaming)}
+              />
+            ))}
+          </ol>
+
+          {view.hidden > 0 ? (
+            <div className="mt-[var(--space-3)] flex items-center gap-[var(--space-2)]">
+              {view.total > 0 ? (
+                <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
+                  当前已显示 {formatCount(view.shown)} / {formatCount(view.total)} 条工具调用
+                </span>
+              ) : (
+                <span className="text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
+                  还有 {formatCount(view.hidden)} 段过程没显示
+                </span>
+              )}
+              <button
+                type="button"
+                className="cursor-pointer text-[length:var(--text-micro-size)] text-[var(--accent-text)] hover:underline"
+                onClick={() => chat.showMoreTrace(turnIndex)}
+              >
+                加载更多
+              </button>
+            </div>
+          ) : null}
+
+          {/*
                 整轮那一串思考（v0.54 改）：**只有"没有任何一步带自己的推理"时才画**，
                 而且**默认折叠**——用户原话："他是把所有思考的内容全部放在一起了。很难看……
                 输出最终结果完毕后，把思考折叠起来，就显示工具调用信息就行了。当然用户也可以展开查看。"
@@ -428,39 +493,42 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
                 这里兜的是**老消息**（这条规则上线前落库的、整轮只有一串的那种）——
                 用户手上正开着的就是它们；拆不出来就只能整块给，但至少不再一直摊着。
               */}
-              {trailingThinkingText ? (
-                <div className="mt-[var(--space-4)]">
-                  <button
-                    type="button"
-                    className={STEP_TOGGLE}
-                    aria-expanded={trailingOpen}
-                    onClick={() => setTrailingOpen((value) => !value)}
-                  >
-                    思考过程
-                    <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
-                      {formatCount(trailingThinkingText.length)} 字
-                    </span>
-                    <ChevronDown className={caretClass(trailingOpen)} size={12} aria-hidden />
-                  </button>
-                  {trailingOpen ? (
-                    <div className={THINK_BLOCK} data-testid="thinking-block">
-                      {thinkingParagraphs(trailingThinkingText).map((paragraph, index) => (
-                        // 段落是**同一段文本按空行切出来的**，没有稳定 id；下标即位置
-                        <LinkText key={index} className={THINK_PARAGRAPH} text={paragraph} />
-                      ))}
-                    </div>
-                  ) : null}
+          {trailingThinkingText ? (
+            <div className="mt-[var(--space-4)]">
+              <button
+                type="button"
+                className={STEP_TOGGLE}
+                aria-expanded={trailingOpen}
+                onClick={() => setTrailingOpen((value) => !value)}
+              >
+                思考过程
+                <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
+                  {formatCount(trailingThinkingText.length)} 字
+                </span>
+                <ChevronDown className={caretClass(trailingOpen)} size={12} aria-hidden />
+              </button>
+              {/*
+                    整轮那一串思考答完就折起（v0.54）：这里也走 `Fold`
+                    （§12.335 的三处折叠之外，这一块是老消息专用的第四处），
+                    展开过一次之后它同样常驻——动效与 DOM 开销的账见 `Fold.tsx`。
+                  */}
+              <Fold open={trailingOpen} data-testid="thinking-block-fold">
+                <div className={THINK_BLOCK} data-testid="thinking-block">
+                  {thinkingParagraphs(trailingThinkingText).map((paragraph, index) => (
+                    // 段落是**同一段文本按空行切出来的**，没有稳定 id；下标即位置
+                    <LinkText key={index} className={THINK_PARAGRAPH} text={paragraph} />
+                  ))}
                 </div>
-              ) : null}
+              </Fold>
             </div>
           ) : null}
         </div>
-      </div>
+      </Fold>
 
       {/*
         出处**不跟着过程一起折**（P0 的规则 d：答案常显）。
 
-        它折进去之前的位置就在上面那个 `open ?` 里，于是"过程默认收起"会顺手把
+        它折进去之前的位置就在上面那一个折叠容器里，于是"过程默认收起"会顺手把
         "这一轮引了哪几篇文档"一起藏起来——那正是回答的依据，用户看答案时就要能一眼扫到
         （默认铺前 3 条、多出来的折一行，是 `Citations` 自己那一套）。过程可以收起，
         **依据不能**：收起来的信息等于没有（v0.25 那条判断在依据这一块仍然成立）。

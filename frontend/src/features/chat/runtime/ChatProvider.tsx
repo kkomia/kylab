@@ -60,11 +60,9 @@ import {
   buildTurns,
   isTraceOpen,
   makeMessage,
-  readTraceOpenMemory,
   traceForceExpanded,
   tracePage,
   TRACE_PAGE_SIZE,
-  writeTraceOpenMemory,
   type Message,
   type TraceOpen,
   type TracePage,
@@ -349,6 +347,21 @@ export interface ChatApi {
   groupOpenChoice: (key: string) => boolean | undefined
   /** 记下用户对某一组的选择（`open` = 他点完之后是开着还是收着）。 */
   chooseGroupOpen: (key: string, open: boolean) => void
+  /**
+   * **批量**把某一轮里的若干行设成同一档（「全部展开 / 全部收起」，调研 §5.2 P2）。
+   *
+   * 为什么一次把 key 给全、而不是在界面那一层逐个 `toggleStep` / `chooseGroupOpen`：
+   * 那会写出 N 个中间态（React 会合批成一次渲染，但**记账**仍是 N 次"翻一下"），
+   * 而这一下点击在语义上**是一件事**（用户原话要的是"一下摊开这一轮"）。
+   *
+   * 写的是**同一张表**（`openSteps` / `openGroups`）：所以"用户选过"那一档照旧记得住，
+   * 收起面板再打开、换会话再回来还是他选的那一档（不另造一套记账）。
+   *
+   * 注意：调用方（`TracePanel`）**不许把强制展开的那些 key 递进来**：`awaiting` / `failed` /
+   * `blocked` 是安全语义，优先级高于用户这一下点击（§12.333 约束 2）。
+   */
+  chooseStepsOpen: (keys: readonly string[], open: boolean) => void
+  chooseGroupsOpen: (keys: readonly string[], open: boolean) => void
   citesExpanded: (turnIndex: number) => boolean
   toggleCites: (turnIndex: number) => void
   flashCite: string
@@ -632,7 +645,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [flashCite, setFlashCite] = useState('')
   const [sampleOffset, setSampleOffset] = useState(0)
 
-  // 过程面板的展开态：两张表分开（"看某一步的原文"与"看这一组有哪些调用"同时开着是正常的）
+  /**
+   * 过程面板的展开态：两张表分开（"看某一步的原文"与"看这一组有哪些调用"同时开着是正常的）。
+   *
+   * 单步这张是 `Set`（在表里 = 摊开），与组那张的 `Map` 形状不同，而这个不同是有理由的：
+   * **单步没有自动档**（不像组那样"还在跑就展开"），默认就是折着——于是"不在表里"
+   * 与"他收过"落在同一个画面上，不需要分出第二档；组必须分得清（见下面 `openGroups`）。
+   *
+   * 「全部展开 / 全部收起」（调研 §5.2 P2）写的就是**这张表**（`chooseStepsOpen`），
+   * 不另记一笔：收起来之后换挂载、换会话回来看见的还是它。
+   */
   const [openSteps, setOpenSteps] = useState<ReadonlySet<string>>(new Set())
   /**
    * 组的开合那张表的键：**会话 id + 组 key**（见下面 `openGroups` 的说明）。
@@ -656,8 +678,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * （与 `traceKey` 修的跨轮串号是同一类 bug）。默认档只在**没碰过**时生效。
    *
    * **forced（在等确认 / 没做成）仍然压过用户**这一档（三层优先级见 `TracePanel`）。
-   * 只活在这一次会话的内存里（不做本机记忆）：面板级那一位（`traceOpenMemory`）
-   * 记的是"他手动干预过没有"，语义不同，别混在一起。
+   * 只活在这一次会话的内存里（不做本机记忆）：它记的是"他点过这一组没有"，
+   * 与单步那张表（`openSteps`）同一档——面板级原先那份"手动开过没有"的本机记忆
+   * 已按用户要求整档删掉（见 `traceOpen`），别把这张表也当成那种东西。
    */
   const [openGroups, setOpenGroups] = useState<ReadonlyMap<string, boolean>>(new Map())
   const [traceExtraPages, setTraceExtraPages] = useState<ReadonlyMap<number, number>>(new Map())
@@ -666,11 +689,10 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * 某一轮自己的展开档（用户点过就按点的那一档；`undefined` = 没点过，问自动规则）。
    *
    * 从布尔改成 `'collapsed' | 'full'`（P0）：这一档要能与"自动折出来的收起"分开说，
-   * 见 `turns.ts::isTraceOpen`。
+   * 见 `turns.ts::isTraceOpen`。**就这一位**——跨轮次的本机豁免删掉之后，
+   * "手动干预"只在这里留痕（用户 2026-09-29："那个记忆可以不要"）。
    */
   const [traceOpenIds, setTraceOpenIds] = useState<Record<string, TraceOpen>>({})
-  /** 用户手动开过过程面板没有（本机记忆，跨轮次与刷新都算数）。 */
-  const [traceOpenMemory, setTraceOpenMemory] = useState<boolean>(() => readTraceOpenMemory())
 
   // 出处原文弹窗 / 文件区抽屉 / 存进知识库弹窗 / 拖拽落法
   const [sourceOpen, setSourceOpen] = useState(false)
@@ -1538,18 +1560,16 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   /**
    * 面板这一轮该摊开还是收起。
    *
-   * **判断只有一处**（`turns.ts::isTraceOpen`）：这里只负责把两个事实递过去——
-   * 用户在**这一轮**点过的那一档（`traceOpenIds`），以及他**手动开过没有**（记忆）。
-   * 两条流水线（流式中 / 完成）与"待确认强制展开"的规则都写在那个纯函数里，
-   * 免得同一件事在宿主与界面各判一遍、判出两个结果。
+   * **判断只有一处**（`turns.ts::isTraceOpen`）：这里只负责把**一个**事实递过去——
+   * 用户在**这一轮**点过的那一档（`traceOpenIds`）。两条流水线（流式中 / 完成）与
+   * "待确认强制展开"的规则都写在那个纯函数里，免得同一件事在宿主与界面各判一遍。
+   *
+   * 原先这里还递第二个事实（"他手动开过面板没有"，一份本机记忆）：用户 2026-09-29
+   * 拍板"那个记忆可以不要"，整档删了——**豁免只作用于这一轮**，没点过的完成轮一律自动折。
    */
   const traceOpen = useCallback(
-    (message: Message): TraceOpen =>
-      isTraceOpen(message, {
-        chosen: traceOpenIds[idOf(message)],
-        userOpened: traceOpenMemory,
-      }),
-    [traceOpenIds, traceOpenMemory],
+    (message: Message): TraceOpen => isTraceOpen(message, { chosen: traceOpenIds[idOf(message)] }),
+    [traceOpenIds],
   )
 
   const toggleTrace = useCallback(
@@ -1557,13 +1577,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       // (c) 有步骤在等人工介入：这一下不收（理由见 `traceForceExpanded` 的注释）
       if (traceForceExpanded(message)) return
       const next: TraceOpen = traceOpen(message) === 'full' ? 'collapsed' : 'full'
+      // 只记"这一轮他选了哪一档"（`chosen`）：跨轮次那档豁免已经删掉，
+      // 所以这里不再往任何本机记忆里写东西（见 `traceOpen` 的说明）。
       setTraceOpenIds((prev) => ({ ...prev, [idOf(message)]: next }))
-      // 这一个动作有两层意思，**分开记**：这一轮按哪一档画（上面那张表），
-      // 以及"他手动开过面板"这件事（下面这位，跨轮次、跨刷新都算数）。
-      // 合上的那一下把自动折交还回来（见 `writeTraceOpenMemory`）。
-      const opened = next === 'full'
-      setTraceOpenMemory(opened)
-      writeTraceOpenMemory(opened)
     },
     [traceOpen],
   )
@@ -2134,6 +2150,34 @@ export function ChatProvider({ children }: { children: ReactNode }) {
         const next = new Map(prev)
         next.set(groupScopeKey(key), open)
         return next
+      }),
+    /*
+      批量那两位：**一次 setState 把整批写进去**（见接口上的说明）。
+      没有一行要改时把**原引用还回去**——空写会让整棵消息树白白重渲染一次，
+      而这一下点击在"全都是这一档"的时候本来就什么都不该做。
+    */
+    chooseStepsOpen: (keys, open) =>
+      setOpenSteps((prev) => {
+        const next = new Set(prev)
+        let changed = false
+        for (const key of keys) {
+          if (next.has(key) === open) continue
+          if (open) next.add(key)
+          else next.delete(key)
+          changed = true
+        }
+        return changed ? next : prev
+      }),
+    chooseGroupsOpen: (keys, open) =>
+      setOpenGroups((prev) => {
+        let next: Map<string, boolean> | null = null
+        for (const key of keys) {
+          const scoped = groupScopeKey(key)
+          if (prev.get(scoped) === open) continue
+          if (!next) next = new Map(prev)
+          next.set(scoped, open)
+        }
+        return next ?? prev
       }),
     citesExpanded: (turnIndex) => expandedCites.has(turnIndex),
     toggleCites: (turnIndex) =>

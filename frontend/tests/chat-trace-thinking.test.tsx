@@ -97,8 +97,24 @@ describe('过程面板：思考落在它调用的那个工具上（v0.54）', ()
       />,
     )
     expect(screen.getByTestId('step-thinking')).toBeInTheDocument()
+    expect(screen.getByTestId('step-thinking-fold')).toHaveAttribute('data-fold', 'open')
 
     rerender(<TracePanel turnIndex={0} turn={turnOf([step({ thinking: '边想边说。' })])} />)
+    /*
+      §12.335 起"答完自动收起"读的是**那一块的行高**：内容为双向动效常驻
+      （展开过一次之后不卸载，见 `Fold`），所以不再用"不在文档里"来读收起。
+      "从没展开过就不挂内容"那一条另有用例（下面那条 + `chat-trace-step-row`）。
+    */
+    expect(screen.getByTestId('step-thinking-fold')).toHaveAttribute('data-fold', 'closed')
+    expect(screen.getByTestId('step-thinking-fold').style.gridTemplateRows).toBe('0fr')
+  })
+
+  it('**从没展开过**的思考：那一块只有空容器，正文根本不挂（DOM 开销那一条不变）', () => {
+    render(<TracePanel turnIndex={0} turn={turnOf([step({ thinking: '先搜官方发布页。' })])} />)
+
+    const fold = screen.getByTestId('step-thinking-fold')
+    expect(fold).toHaveAttribute('data-fold', 'closed')
+    expect(fold.textContent).toBe('')
     expect(screen.queryByTestId('step-thinking')).not.toBeInTheDocument()
   })
 

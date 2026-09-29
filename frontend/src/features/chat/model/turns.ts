@@ -18,8 +18,10 @@
  *    全是纯函数，所以这里**一个 hook 都没加**，调用方自己 `useMemo` 就好；
  * 2. `Session`/`ChatView` 这类 Vue 组件的名字换成 React 侧的说法（`ChatPage`）。
  *
- * 唯一读外部世界的是 `readTraceOpenMemory`/`writeTraceOpenMemory`（localStorage），
- * 键名与旧实现逐字一致（`kylab-trace-open`）。
+ * 这个文件里**不读任何外部世界**（localStorage、时间、随机数都没有）：全是纯函数，
+ * 调用方自己 `useMemo` 就好。原先唯一的那一处例外是"手动开过面板没有"的本机记忆
+ * （`kylab-trace-open`）——用户 2026-09-29 拍板"那个记忆可以不要"，整档删掉了
+ * （过程面板的开合只按**这一轮**点过的那一档 + 自动规则，见 `isTraceOpen`）。
  */
 
 import type { ChatArtifact, ChatAttachment, ChatSource, ChatStep } from '@/api/chat'
@@ -1182,18 +1184,21 @@ function answerDetail(message: Message): string {
  * 过程面板的展开档（P0）。
  *
  * 为什么不是布尔（v0.25 起用的是 `boolean`）：这次要同时表达"流式中摊开"
- * "这一轮完成之后收起"与"手动开过就别自动折"，布尔会把**自动折出来的开**
+ * "这一轮完成之后收起"与"他手动点过这一轮"，布尔会把**自动折出来的开**
  * 与**用户手动点出来的开**混成同一个 `true`，而这次的核心规则恰恰要求把它们分开。
  * 两档的取值照抄 LobeHub `WorkflowCollapse` 的 `collapsed | full`。
  */
 export type TraceOpen = 'collapsed' | 'full'
 
-/** 判定开合要用到的、由宿主持有的事实（见 `ChatProvider` 的 `traceOpenIds` 与记忆）。 */
+/** 判定开合要用到的、由宿主持有的事实（见 `ChatProvider` 的 `traceOpenIds`）。 */
 export interface TraceOpenState {
-  /** 用户对**这一轮**点过的那一档；`undefined` = 没点过。 */
+  /**
+   * 用户对**这一轮**点过的那一档；`undefined` = 没点过。
+   *
+   * 只有这一位：跨轮次的"他手动开过面板"那档本机记忆，用户 2026-09-29 拍板不要了
+   * （原话"那个记忆可以不要"）——豁免**只作用于这一轮**，没点过的完成轮一律自动折。
+   */
   chosen?: TraceOpen
-  /** 用户手动开过过程面板没有（见 `readTraceOpenMemory`）。 */
-  userOpened?: boolean
 }
 
 /**
@@ -1219,9 +1224,11 @@ export function traceForceExpanded(message: Message): boolean {
  *     Qoder / OpenHands 全默认折），只有我们（v0.25 起）是；但"执行中就折"是有害的——
  *     Trae 的用户原话是"展开了，过一会……又给折叠掉了，AI 在干啥都不知道"，
  *     所以折只发生在**这一轮真的结束之后**。
- * (b) **用户手动开过就不自动折**：轮内是 `chosen`（他在这一轮点过），
- *     跨轮次是 `userOpened`（他点过任何一轮）。没有这一条，用户刚点开就被下一次
- *     渲染收回去（LobeHub 用 `userOpenedRef` 明写这条，Trae 是反面教材）。
+ * (b) **用户点过这一轮就完全听他的**（`chosen`）。**豁免只作用于这一轮**：
+ *     跨轮次的"他手动开过面板"那档本机记忆（`kylab-trace-open`）用户 2026-09-29 拍板删了
+ *     （原话"那个记忆可以不要"）——**没点过的完成轮一律自动折**，刷新也不改变这一条
+ *     （不再有"上次开过所以这次也开"）。旧实现那种全局豁免还有个更坏的后果：
+ *     只要他开过一次，"答完就折"这条规则就**永远不会再发生**了。
  * (c) **有待确认的步骤时强制展开、且拒绝收起**（`traceForceExpanded`）。这类步骤说的是
  *     "卡住了，在等你动手"，折起来等于把"要你动手"藏进一次点击后面。
  * (d) **正文永远不在这里面**：这一档只决定"过程"那块的画法，回答正文由 `MessageView`
@@ -1237,43 +1244,8 @@ export function isTraceOpen(message: Message, state: TraceOpenState = {}): Trace
   if (state.chosen) return state.chosen
   // (a) 进行中它就是进度条，摊开；这一块跑完之后再收起
   if (isBlockRunning(message)) return 'full'
-  // (b) 跨轮次那一半：他手动开过，就不再替他折
-  return state.userOpened ? 'full' : 'collapsed'
-}
-
-/** "用户手动开过过程面板没有"的本机记忆（P2-1 起，P0 改语义）。键与侧栏折叠同族（`kylab-*`）。 */
-export const TRACE_OPEN_STORAGE_KEY = 'kylab-trace-open'
-
-/**
- * 用户手动**开过**过程面板没有（P0 改的就是这一位的语义）。
- *
- * 旧语义是"记住上一次手动选的那一档"，再把它当之后每一轮的**默认档位**——那么只要
- * 用户（或 v0.25 那个默认展开）留下过一个"开着"，自动折叠就**永远不发生**：
- * 新加的"答完就折"一次都见不到（调研 §4.8 规律 1/2/4 的反面：手动展开只该**豁免**
- * 自动折，不该反过来把自动折整个关掉）。旧值 `'1'`/`'0'` 正好也是这个问题的形状。
- *
- * 现在这一位只回答一个问题：**要不要豁免自动折**（`isTraceOpen` 的规则 b）。
- * - 没有这个键、或最近一次手动动作是"合上"（`'0'`）→ 不豁免，答完照折；
- * - 手动开过（`'1'`）→ 完成的一轮不再替他折；他合一次就把自动折交还回来。
- *
- * 档位本身不在这里存：那是"哪一轮"的事（宿主按消息 id 记着，见 `TraceOpenState.chosen`）。
- * 读不到 localStorage（隐私模式）一律当"没手动开过"——**读不到不改变规则**。
- */
-export function readTraceOpenMemory(): boolean {
-  try {
-    return window.localStorage.getItem(TRACE_OPEN_STORAGE_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-/** 记下用户这一次手动动作的意图：`true` = 他开过（豁免自动折），`false` = 交还自动折。 */
-export function writeTraceOpenMemory(opened: boolean): void {
-  try {
-    window.localStorage.setItem(TRACE_OPEN_STORAGE_KEY, opened ? '1' : '0')
-  } catch {
-    // 存不上就只在本次会话生效（与侧栏折叠同一条）
-  }
+  // 没点过的完成轮：一律自动折（没有跨轮次的豁免了，见上面规则 b）
+  return 'collapsed'
 }
 
 /** 引用一行："文档名 › 章节（第 N 页）"——章节与页码可能缺，缺了就不占位。 */

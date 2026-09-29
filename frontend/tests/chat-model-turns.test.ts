@@ -18,8 +18,6 @@ import {
   humanizeArtifactKeys,
   isBlockRunning,
   isTraceOpen,
-  readTraceOpenMemory,
-  writeTraceOpenMemory,
   resultPreview,
   makeMessage,
   mergeStep,
@@ -313,11 +311,29 @@ describe('isTraceOpen（P0：过程默认收起、答案常显）', () => {
     expect(isTraceOpen(live, { chosen: 'collapsed' })).toBe('collapsed')
   })
 
-  it('用户手动开过面板（跨轮次）就不自动折', () => {
+  /*
+   * §12.335（用户 2026-09-29："那个记忆可以不要"）：**跨轮次的豁免整档删掉了**。
+   *
+   * 现在"手动干预"只有一位事实——**这一轮**点过的那一档（`chosen`）。
+   * 于是没点过的完成轮一律自动折，**刷新、换会话回来都不改变这一条**：
+   * 不再有"上次开过所以这次也开"这种东西（`kylab-trace-open` 那个键已经不存在）。
+   */
+  it('没点过态的完成轮一律自动折——它不看任何"上次开过"的本机记忆', () => {
     const done = message('assistant', { text: '写完了' })
-    expect(isTraceOpen(done, { userOpened: true })).toBe('full')
-    // 但流式与否仍然是"当场"的事实：他合过之后，新的一轮答完照折
-    expect(isTraceOpen(done, { userOpened: false })).toBe('collapsed')
+    // 旧版本里留过值的那种键：现在没有消费者，**放一个进去也不改变规则**
+    window.localStorage.setItem('kylab-trace-open', '1')
+    expect(isTraceOpen(done)).toBe('collapsed')
+    expect(isTraceOpen(done, {})).toBe('collapsed')
+    window.localStorage.clear()
+  })
+
+  it('刷新之后（重新读本机）也不会因为上次开过就自动摊开', () => {
+    const done = message('assistant', { text: '写完了' })
+    // "刷新"= 进程里的这一轮选择全丢（宿主 `traceOpenIds` 是内存态），只剩本机可读的东西。
+    // 本机那份记忆已经不存在了，所以结果只能是自动折的那一档。
+    window.localStorage.setItem('kylab-trace-open', '1')
+    expect(isTraceOpen(done, { chosen: undefined })).toBe('collapsed')
+    window.localStorage.clear()
   })
 
   it('规则 c：有步骤在等人工介入时强制摊开，并且盖过用户刚点的那一下', () => {
@@ -371,39 +387,27 @@ describe('isTraceOpen（P0：过程默认收起、答案常显）', () => {
   })
 })
 
-describe('过程面板的手动干预记忆（P0 改语义：从"上次开合"到"用户手动开过没有"）', () => {
-  it('没手动开过（没有这个键）→ 完成的一轮按自动规则收起', () => {
-    window.localStorage.clear()
-    expect(readTraceOpenMemory()).toBe(false)
-    // 这正是旧语义坏掉的地方：旧实现把"没表过态"当**展开**，
-    // 于是"答完自动折"这条规则一次都不会发生
-    expect(isTraceOpen(message('assistant'), { userOpened: readTraceOpenMemory() })).toBe(
-      'collapsed',
-    )
+describe('§12.335：手动干预**只作用于这一轮**（本机记忆整档删掉）', () => {
+  it('这一轮点开 → 听他的；点收 → 也听他的（两档都在 `chosen` 上）', () => {
+    const done = message('assistant', { text: '写完了' })
+    expect(isTraceOpen(done, { chosen: 'full' })).toBe('full')
+    expect(isTraceOpen(done, { chosen: 'collapsed' })).toBe('collapsed')
   })
 
-  it('手动开过一次 → 完成的一轮不再替他折（刷新之后仍然算数）', () => {
-    writeTraceOpenMemory(true)
-    expect(readTraceOpenMemory()).toBe(true)
-    expect(isTraceOpen(message('assistant'), { userOpened: readTraceOpenMemory() })).toBe('full')
+  it('**别的轮次点过不影响这一轮**：豁免没有跨轮次那一半', () => {
+    // 同一句话（完成态）在"他没点过"的档上：只能自动折。
+    // 旧实现里这里会被那份**全局**记忆顶成摊开——那正是这一批删掉的东西。
+    const done = message('assistant', { text: '写完了' })
+    window.localStorage.setItem('kylab-trace-open', '1')
+    expect(isTraceOpen(done)).toBe('collapsed')
     window.localStorage.clear()
   })
 
-  it('他合上一次就把自动折交还回来（记忆不是"永远别折"）', () => {
-    writeTraceOpenMemory(true)
-    writeTraceOpenMemory(false)
-    expect(readTraceOpenMemory()).toBe(false)
-    expect(isTraceOpen(message('assistant'), { userOpened: readTraceOpenMemory() })).toBe(
-      'collapsed',
-    )
-  })
-
-  it('**这一轮自己点过的档位优先**：全局记忆不覆盖用户当场的那一下', () => {
-    writeTraceOpenMemory(true)
-    expect(
-      isTraceOpen(message('assistant'), { chosen: 'collapsed', userOpened: readTraceOpenMemory() }),
-    ).toBe('collapsed')
-    window.localStorage.clear()
+  it('删掉的键与函数都不再存在（不留死代码）', async () => {
+    const turns = await import('@/features/chat/model/turns')
+    expect('TRACE_OPEN_STORAGE_KEY' in turns).toBe(false)
+    expect('readTraceOpenMemory' in turns).toBe(false)
+    expect('writeTraceOpenMemory' in turns).toBe(false)
   })
 })
 
