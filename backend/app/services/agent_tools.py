@@ -667,6 +667,14 @@ def _mcp_specs(services: Any, owner_id: str | None) -> list[ToolSpec]:
     return specs
 
 
+#: 子 Agent 那一步的结论行里，任务摘要留几个字。
+#:
+#: 那一行是**给用户看的**（"它派去干什么了"），不是给模型的：子任务本身就是一句自足的话
+#: （见 `services/subagent.build_task_prompt` 的长度校验），开头那句最能说明它在查什么。
+#: 留太长会把过程面板那一行撑爆、也不利于扫读，60 字够看出主题。
+_SUMMARY_TASK_CHARS = 60
+
+
 def build_runner(
     services: Any,
     caller: Caller,
@@ -758,10 +766,16 @@ def build_runner(
                 logger.info("子 Agent 失败：%s", exc)
                 return ToolOutcome(content=f"子 Agent 没跑成：{exc}")
             refs = _record(list(sources))
+            # 结论行要说清"派去干什么了"：只写"回报了结论"对用户等于没说 ——
+            # 过程面板那一行与 `tool_loop._LABELS` 是同一条取舍：名字要说清"它替我做了什么"。
+            # 换行折成空格，免得把那一行撑成多行。
+            brief = " ".join(task.split())
+            if len(brief) > _SUMMARY_TASK_CHARS:
+                brief = f"{brief[:_SUMMARY_TASK_CHARS]}…"
             return ToolOutcome(
                 content=answer or "（子 Agent 没有给出结论）",
                 sources=_snapshot(),
-                summary="子 Agent 回报了结论",
+                summary=f"子 Agent 回报了结论：{brief}",
                 added=len(refs),
             )
         if name == "list_skills":

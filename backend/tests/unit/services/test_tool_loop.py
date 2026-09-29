@@ -521,7 +521,7 @@ def test_spawn_subagent_is_offered_and_returned_with_sources() -> None:
     出处要带回来（`SourcesEvent`）：子 Agent 查到的原文同样是这次回答的依据，
     丢了它，界面会显示"没有出处"而实际上是有的。
     """
-    from app.services.agent_tools import build_runner
+    from app.services.agent_tools import _SUMMARY_TASK_CHARS, build_runner
 
     seen: list[str] = []
 
@@ -543,6 +543,19 @@ def test_spawn_subagent_is_offered_and_returned_with_sources() -> None:
     assert seen == ["这批文献的结论一致吗"]
     assert "结论：是的" in outcome.content
     assert outcome.sources and outcome.sources[0].document_name == "指南.pdf"
+    # 结论行要说清"派去干什么了"：那一行是**给用户看的**，只写"回报了结论"等于没说
+    # （过程面板里那一步会显示它，见 `agent_tools._SUMMARY_TASK_CHARS` 的注释）
+    assert outcome.summary == "子 Agent 回报了结论：这批文献的结论一致吗"
+
+    # 超长任务摘要要截断（子任务最长 2000 字，那一行放不下）
+    long_outcome = runner("spawn_subagent", {"task": "把这份材料的每一个结论都核一遍，" * 10})
+    assert long_outcome.summary.startswith("子 Agent 回报了结论：")
+    assert long_outcome.summary.endswith("…")
+    assert len(long_outcome.summary) <= len("子 Agent 回报了结论：") + _SUMMARY_TASK_CHARS + 1
+
+    # 任务里的换行折成空格：那一行不该被撑成多行
+    multi = runner("spawn_subagent", {"task": "第一行\n第二行"})
+    assert multi.summary == "子 Agent 回报了结论：第一行 第二行"
 
 
 def test_spawn_subagent_says_so_when_unavailable() -> None:
