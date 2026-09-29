@@ -463,7 +463,8 @@ def test_turn_stream_reports_empty_answer_as_failure(tmp_path, monkeypatch) -> N
     done = [event for event in events if event["type"] == "done"]
     assert done and "边车报告" in done[-1]["answer"]
     # 思考照发 ✓（前端过程面板要用），但它**不是** answer ✗
-    assert [event["text"] for event in events if event["type"] == "thinking"] == ["先看看", "再想想"]
+    thinking = [event["text"] for event in events if event["type"] == "thinking"]
+    assert thinking == ["先看看", "再想想"]
     assert not [event for event in events if event["type"] == "delta"]
 
 
@@ -484,7 +485,9 @@ def test_turn_stream_closes_the_trailing_answer_step(tmp_path, monkeypatch) -> N
     client = _client(tmp_path, monkeypatch, _FakeModel("就这样"))
 
     events = _events(client.post("/turn/stream", json={"message": "在吗"}))
-    answer_steps = [event for event in events if event["type"] == "step" and event["phase"] == "answer"]
+    answer_steps = [
+        event for event in events if event["type"] == "step" and event["phase"] == "answer"
+    ]
 
     assert answer_steps, f"没有回答步：{events}"
     assert answer_steps[-1]["status"] == "done", answer_steps
