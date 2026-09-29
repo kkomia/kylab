@@ -288,12 +288,18 @@ describe('数据源面板', () => {
     await user.type(screen.getByLabelText('地址'), '  https://example.com/feed.xml ')
     await user.click(screen.getByRole('button', { name: '登记' }))
 
-    await waitFor(() =>
-      expect(createSourceMock).toHaveBeenCalledWith('kb-1', {
-        kind: 'rss',
-        name: '周刊',
-        url: 'https://example.com/feed.xml',
-      }),
+    // 全量并发下这条要等一次**真实的数据源拉取**（单跑实测 984ms ✓，
+    // 已经贴着 `waitFor`/`findBy*` 默认的 1000ms 等待器 ✗ → 全量并行时擦线超时 ✗）。
+    // 所以只把**这一处**等待放宽到 3s ✓ —— **不动全量 `testTimeout`** ✗、
+    // 其余 `findBy*` 一律不动 ✗（这条用例的定性是"抖动"，不是断言过期 ✗）。
+    await waitFor(
+      () =>
+        expect(createSourceMock).toHaveBeenCalledWith('kb-1', {
+          kind: 'rss',
+          name: '周刊',
+          url: 'https://example.com/feed.xml',
+        }),
+      { timeout: 3000, interval: 50 },
     )
     expect(syncSourceMock).not.toHaveBeenCalled()
   })
