@@ -1121,7 +1121,34 @@ function agentTraceSteps(message: Message): TraceStep[] {
   if (message.thinking?.enabled && !steps.some((item) => item.icon === 'think')) {
     steps.unshift(...thinkingStep(message))
   }
-  return steps
+  return settleStaleRunning(steps, Boolean(message.streaming))
+}
+
+/**
+ * 把"**已经不可能还在跑**"的步骤从 `running` 收掉（2026-09-29 用户报的 bug）。
+ *
+ * 现场：回答正文已经打完、后面还跟着别的步骤，而「组织回答」那一行仍写着
+ * 「进行中」（原话："这个回答都已经结束了 为啥还显示进行中"）。真机抓到的原始事实：
+ * 库里那条消息的 `steps` 里，`phase: "answer"` 那一步的 `status` **就是 `"running"`**，
+ * 而它的正文早已完整——**后端从不为这一步发 `done`**（它把 answer 之后的步骤接着往后推，
+ * 那一步就永远停在进行态）。所以这不是"前端漏清"，是**把后端的未收尾当成了事实**。
+ *
+ * 判据（两条，任一成立就不可能在跑）：
+ *
+ * 1. **这一轮不再产出**（`streaming` 为假）：历史回放、刷新、已完成的轮次里，
+ *    没有任何步骤还能"继续跑"——后端的 `running` 只是当初那一拍留下的占位；
+ * 2. **它后面还有别的步骤**：过程面板里的步骤是**顺序执行**的（工具一次一个），
+ *    后面那步都开始了，前面那步当然已经结束。
+ *
+ * 反过来的那一半也要保住（别把一个还在跑的收掉）：**这一轮还在流式、而且它是最后一步**
+ * → 保持 `running`（回答正在生成时，「组织回答」写着「进行中」是对的）。
+ */
+function settleStaleRunning(steps: TraceStep[], streaming: boolean): TraceStep[] {
+  return steps.map((step, index) =>
+    isRunningStep(step) && (!streaming || index < steps.length - 1)
+      ? { ...step, status: 'done' }
+      : step,
+  )
 }
 
 /** 界面量出来的耗时（见 `ObservedStep`）：不是个正经数字就当作没有。 */

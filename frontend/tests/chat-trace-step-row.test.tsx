@@ -126,7 +126,13 @@ function groupBody(): HTMLElement {
 describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
   it('running 的那一行带 data-running 与那句静态「进行中」；旧的花圈图标不再出现', () => {
     reset()
-    render(<TracePanel turnIndex={0} turn={turnOf([step({ status: 'running' })])} />)
+    // **必须是一轮还在流式**：一轮结束之后就没有"还在跑"这回事了（见下面两条 bug 用例）
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf([step({ status: 'running' })], { streaming: true })}
+      />,
+    )
 
     const row = document.querySelector('li[data-running]')
     expect(row).not.toBeNull()
@@ -145,12 +151,45 @@ describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
     expect(screen.queryByText('进行中')).toBeNull()
   })
 
+  it('**一轮已经结束**：残留的 running 不再写「进行中」（用户报的那个 bug）', () => {
+    reset()
+    // 真机原始事实：库里那条消息 `phase:"answer"` 那一步的 status 就是 "running"，
+    // 而正文早已完整（后端从不为这一步发 done）——不能再把它当"还在跑"画出来
+    render(<TracePanel turnIndex={0} turn={turnOf([step({ status: 'running' })])} />)
+
+    expect(document.querySelector('li[data-running]')).toBeNull()
+    expect(screen.queryByText('进行中')).toBeNull()
+  })
+
+  it('**后面还有别的步骤**：前面那一步不可能还在跑（步骤是顺序执行的）', () => {
+    reset()
+    render(
+      <TracePanel
+        turnIndex={0}
+        turn={turnOf(
+          [
+            step({ status: 'running', detail: '第一条' }),
+            step({ detail: '第二条', status: 'done' }),
+          ],
+          { streaming: true },
+        )}
+      />,
+    )
+
+    // 这一轮还在流式，但最后一步是"第二条"——第一条早跑完了
+    const rows = [...document.querySelectorAll('li[data-kind]')]
+    expect(rows.some((row) => row.hasAttribute('data-running'))).toBe(false)
+    expect(screen.queryByText('进行中')).toBeNull()
+  })
+
   it('组里有一次调用还在跑 → 组那一行带 data-running 与「进行中」，标题写"在做什么 + 进度"', () => {
     reset()
     render(
       <TracePanel
         turnIndex={0}
-        turn={turnOf([step({ detail: '第一条' }), step({ detail: '第二条', status: 'running' })])}
+        turn={turnOf([step({ detail: '第一条' }), step({ detail: '第二条', status: 'running' })], {
+          streaming: true,
+        })}
       />,
     )
 
@@ -166,7 +205,11 @@ describe('每一步的真实状态：跑着和跑完不再长得一样', () => {
 
   it('跑着的组**默认就展开**（组在进行过程中展开）；点一下收起，之后就听用户的', async () => {
     reset()
-    const turn = turnOf([step({ detail: '第一条' }), step({ detail: '第二条', status: 'running' })])
+    // 还在跑 = 这一轮还在流式（一轮结束之后残留的 running 会被收掉，见那两条 bug 用例）
+    const turn = turnOf(
+      [step({ detail: '第一条' }), step({ detail: '第二条', status: 'running' })],
+      { streaming: true },
+    )
     const { rerender } = render(<TracePanel turnIndex={0} turn={turn} />)
 
     const group = document.querySelector('li[data-running]') as HTMLElement
@@ -322,7 +365,10 @@ describe('组级开合：进行中展开、内容跑完折叠（§12.333）', ()
 
   it('他收起一个"还在跑"的组 → **换挂载之后仍然是收起的**（他选的那一档记在宿主上）', async () => {
     reset()
-    const turn = turnOf([step({ detail: '第一条' }), step({ detail: '第二条', status: 'running' })])
+    const turn = turnOf(
+      [step({ detail: '第一条' }), step({ detail: '第二条', status: 'running' })],
+      { streaming: true },
+    )
     /** 换挂载：根上换 key，整棵卸载重挂——"用户选过什么"必须活在组件之外。 */
     const panel = (mount: number) => (
       <div key={mount}>

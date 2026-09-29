@@ -451,9 +451,17 @@ describe('单步 / 分组的 key 带轮次命名空间（P0，修跨轮串号）
  * 对象优先取入参、解析不了才退回结论。
  */
 describe('组行标题：跑着说进度、跑完与对象绑定（§12.333）', () => {
-  /** 一组同类调用并出来的那一行（走真数据层）。 */
-  function groupOf(steps: ChatStep[]) {
-    const turn = { user: message('user', { text: '问' }), reply: message('assistant', { steps }) }
+  /**
+   * 一组同类调用并出来的那一行（走真数据层）。
+   *
+   * `streaming` 默认**开**：这一节说的就是"跑着的时候"——一轮结束之后没有任何步骤
+   * 还在跑（残留的 `running` 会被收掉，见 `turns.settleStaleRunning` 与那两条 bug 用例）。
+   */
+  function groupOf(steps: ChatStep[], streaming = true) {
+    const turn = {
+      user: message('user', { text: '问' }),
+      reply: message('assistant', { steps, streaming }),
+    }
     const [entry] = traceEntries(turn)
     if (!entry || entry.kind !== 'group') throw new Error('这组数据没有并成组')
     return entry

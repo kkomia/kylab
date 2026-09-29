@@ -829,7 +829,16 @@ describe('过程面板的默认档与强制展开（P0）', () => {
  * （还在跑）的组时那一下没地方记，回来又按默认档弹开。
  */
 describe('组级开合记在宿主上（§12.333 约束 1）', () => {
-  it('他收起一个还在跑的组 → 换会话再回来仍然是收起的', async () => {
+  it('他展开一个跑完的组 → 换会话再回来仍然是展开的', async () => {
+    /*
+     * 这一条原先叫"他收起一个**还在跑**的组"：那时一个"存在库里的 `running` 步骤"
+     * 会让组默认展开。2026-09-29 用户报了"回答都已经结束了为啥还显示进行中"之后，
+     * 一轮结束的残留 `running` 会被收掉（`turns.settleStaleRunning`）——
+     * 历史回放里**不存在**"还在跑"的组，默认档因此是收起。
+     *
+     * 这一条要钉的那件事没变：**用户点过的那一档记在宿主上，换会话再回来还在**。
+     * 只是方向反过来（默认收起 → 他展开 → 回来仍然展开）。
+     */
     vi.mocked(getConversation).mockResolvedValue(
       detail([
         stored('user', '查一下'),
@@ -859,37 +868,33 @@ describe('组级开合记在宿主上（§12.333 约束 1）', () => {
 
     /** 组那一行与它的展开容器（标题里也会出现同样的对象，所以断言都缩进容器里查）。 */
     function group() {
-      const head = screen.getByRole('button', { name: /正在联网搜索/ })
+      const head = screen.getByRole('button', { name: /联网搜索/ })
       const body = document.getElementById(
         head.getAttribute('aria-controls') as string,
       ) as HTMLElement
       return { head, body }
     }
 
-    // 组里还有一步在跑 → 面板与组都默认展开（同一条 `isBlockRunning` 判据的两层）
+    // 跑完的一轮：组默认收起（`isBlockRunning` 在这里的两个输入都是假）
     expect(await screen.findByTestId('reply-text')).toHaveTextContent('查到了。')
+    expect(group().head).toHaveAttribute('aria-expanded', 'false')
+
+    // 他展开这一组。§12.335 起"收起/展开"读的是那一块的行高与 `data-fold`
+    //（内容为双向动效常驻，见 `Fold`），不再用"内容在不在文档里"来读。
+    const user = userEvent.setup()
+    await user.click(group().head)
     expect(group().head).toHaveAttribute('aria-expanded', 'true')
     expect(within(group().body).getByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()
 
-    // 他收起这一组（"还在跑"的默认档被他的点击压过）。
-    // §12.335 起"收起"读的是那一块的行高与 `data-fold`：内容为双向动效常驻（见 `Fold`），
-    // 不再用"内容不在文档里"来读收起。
-    const user = userEvent.setup()
-    await user.click(group().head)
-    expect(group().head).toHaveAttribute('aria-expanded', 'false')
-    expect(group().body).toHaveAttribute('data-fold', 'closed')
-    expect(group().body.style.gridTemplateRows).toBe('0fr')
-
-    // 换会话再回来：内容重画，但**他选的那一档还在**。
-    // 新挂载里这一组从没展开过，所以它连内容都不挂（DOM 开销那一条不变）。
+    // 换会话再回来：内容重画，但**他选的那一档还在**
     await user.click(screen.getByRole('link', { name: '去新对话' }))
     await waitFor(() => expect(screen.queryByTestId('reply-text')).not.toBeInTheDocument())
     await user.click(screen.getByRole('link', { name: '回 c1' }))
 
     expect(await screen.findByTestId('reply-text')).toHaveTextContent('查到了。')
-    expect(group().head).toHaveAttribute('aria-expanded', 'false')
-    expect(group().body).toHaveAttribute('data-fold', 'closed')
-    expect(group().body.textContent).toBe('')
+    expect(group().head).toHaveAttribute('aria-expanded', 'true')
+    expect(group().body).toHaveAttribute('data-fold', 'open')
+    expect(within(group().body).getByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()
   })
 })
 

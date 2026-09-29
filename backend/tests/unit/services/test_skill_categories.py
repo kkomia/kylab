@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -67,6 +68,31 @@ def test_the_mapping_file_is_in_sync_with_the_rules() -> None:
 
     assert payload["assignments"] == assignments
     assert payload["categories"] == {item.slug: item.label for item in sc.CATEGORIES}
+
+
+def test_the_frontend_mirror_is_byte_identical() -> None:
+    """前端那份是**镜像**：两份必须逐字节相同（页面读镜像，不赌 Vite 跨目录）。
+
+    **哪份是源**：后端 `app/services/skill_categories.json`——它由
+    `python -m app.services.skill_categories --write` 生成。前端那份只是副本：
+    改了判据要 `--write`，再把文件复制到页面那个特性目录
+    （`frontend/src/features/misc/capabilities/`）。这里就是那道闸——**不复制就红**。
+    """
+    mirror = (
+        # parents: [0]=services [1]=unit [2]=tests [3]=backend [4]=仓库根
+        Path(__file__).resolve().parents[4]
+        / "frontend"
+        / "src"
+        / "features"
+        / "misc"
+        / "capabilities"
+        / "skillCategories.json"
+    )
+    assert mirror.exists(), f"前端镜像不在：{mirror}"
+    assert mirror.read_bytes() == sc.MAPPING_PATH.read_bytes(), (
+        "两份分类映射不一致：改了判据就跑 --write，然后把 "
+        "backend/app/services/skill_categories.json 复制成前端那一份"
+    )
 
 
 @requires_data
