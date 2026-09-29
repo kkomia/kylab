@@ -23,7 +23,10 @@ import { TracePanel } from '@/features/chat/ui/TracePanel'
 
 /** `TracePanel` 只从上下文读这几件事；给一份最小的桩就够了。 */
 const stubs = {
-  traceOpen: () => true,
+  // 这一节只关心"一步的思考怎么画"，所以面板一律给摊开那一档（P0 起档位是
+  // `'collapsed' | 'full'`，不再是布尔）；面板自己的开合规则由 `chat-model-turns`
+  // 与 `chat-trace-fold` 两个文件盯。
+  traceOpen: () => 'full' as const,
   traceView: (_index: number, turn: Turn) => ({
     entries: (turn.reply?.steps ?? []).map((step, index) => ({
       kind: 'step' as const,

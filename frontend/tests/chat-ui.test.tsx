@@ -591,6 +591,46 @@ describe('知识库：一颗胶囊 = 开关 + 名字，选择在面板里', () =
     await openPanel(user)
     expect(checkedInPanel()).toEqual(['我的资料', '笔记', '论文库'])
   })
+
+  it('开关的滑块靠 transform 滑（原先位移写在 `left` 上，而它不在过渡属性里）', async () => {
+    await renderWithThreeKbs()
+    const user = userEvent.setup()
+
+    /** 滑块 = 槽（`aria-hidden`）里那一颗。 */
+    const knob = (): HTMLElement =>
+      kbSwitch().querySelector('span[aria-hidden="true"] > span') as HTMLElement
+    const ON = 'translate-x-[12px]'
+
+    // `left` 恒为 2px、位移只有一档 12px（28px 的槽 − 12px 的滑块 − 两侧各 2px）。
+    // 原先写的是 `left-[14px]` + `transition-all [transition:var(--transition-ui)]`，
+    // 而 `--transition-ui` 里没有 `left`——点开关时滑块是"啪"地跳过去，不是滑过去
+    // （同一排「思考」那颗是滑的，用户看到的正是这个不一致）。
+    expect(knob().className).toContain('left-[2px]')
+    expect(knob().className).toContain('transition-transform')
+    expect(knob().className).not.toContain('transition-all')
+    expect(knob().className).not.toContain('left-[14px]')
+
+    const wasOn = kbSwitch().getAttribute('aria-checked') === 'true'
+    expect(knob().className).toContain(wasOn ? ON : 'translate-x-0')
+
+    // 拨一下：状态与那一档位移一起翻
+    await user.click(kbSwitch())
+    expect(kbSwitch()).toHaveAttribute('aria-checked', wasOn ? 'false' : 'true')
+    expect(knob().className).toContain(wasOn ? 'translate-x-0' : ON)
+  })
+
+  it('面板里一条分隔线都没有：第一条就是内容（原先最上面一条孤零零的横线）', async () => {
+    await renderWithThreeKbs()
+    const user = userEvent.setup()
+    await openPanel(user)
+
+    const panel = screen.getByRole('menu')
+    // 那条线的上面什么都没有，打开面板第一眼是一条孤零零的横线，读起来像"内容漏了一段"
+    expect(panel.querySelectorAll('[role="separator"]')).toHaveLength(0)
+    // 第一件东西就是「全选 / 清空」那一行动作
+    expect(panel.firstElementChild).toHaveTextContent('全选')
+    expect(panel.firstElementChild).toHaveTextContent('清空')
+  })
 })
 
 describe('过程面板：图标按 kind、同类工具并成一行', () => {
@@ -631,6 +671,13 @@ describe('过程面板：图标按 kind、同类工具并成一行', () => {
     )
     renderPage()
 
+    /*
+      P0 起**完成的一轮默认收起**（过程不再常驻正文），所以这一节先点开面板——
+      这里钉的仍然是原来那几件事：kind → 图标、同工具并成一行、展开后逐条保序。
+      点开的那一下走的是真按钮（`trace-toggle`），顺带钉住"收起态点得开"。
+    */
+    await userEvent.setup().click(await screen.findByTestId('trace-toggle'))
+
     // 同一工具两次 → 一行「联网搜索 2 次」（合并的是入口，不是信息）
     expect(await screen.findByText('联网搜索')).toBeInTheDocument()
     expect(screen.getByText('2 次')).toBeInTheDocument()
@@ -646,6 +693,78 @@ describe('过程面板：图标按 kind、同类工具并成一行', () => {
     await userEvent.setup().click(screen.getByRole('button', { name: /联网搜索/ }))
     expect(await screen.findByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()
     expect(screen.getByText(/「光刻机」命中 5 条/)).toBeInTheDocument()
+  })
+})
+
+/**
+ * P0①：过程默认收起、答案常显（照 LobeHub `WorkflowCollapse`；判定在
+ * `turns.ts::isTraceOpen`，接线在 `ChatProvider`）。
+ *
+ * 这两条走真宿主（不是桩）：要钉的正是"面板 + 宿主 + 本机记忆"这条线上有没有接错——
+ * 纯函数单测与面板桩测都测不出接线被删（D19 的教训）。
+ */
+describe('过程面板的默认档与强制展开（P0）', () => {
+  it('完成的一轮过程默认收起，但**正文照旧常显**；点一下才摊开', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([
+        stored('user', '查一下'),
+        stored('assistant', '查到了。', {
+          steps: [
+            {
+              phase: 'tool',
+              label: '联网搜索',
+              detail: '「芯片 出口」命中 3 条',
+              status: 'done',
+              tool: 'web_search',
+              kind: 'search',
+            },
+          ],
+        }),
+      ]),
+    )
+    renderPage()
+
+    // 规则 d：回答**永远留在折叠之外**（它是面板的兄弟节点，不在那一块里）
+    expect(await screen.findByTestId('reply-text')).toHaveTextContent('查到了。')
+    // 默认收起：步骤行一条都不在文档里
+    expect(screen.queryByText('联网搜索')).toBeNull()
+
+    const toggle = screen.getByTestId('trace-toggle')
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await userEvent.setup().click(toggle)
+    expect(await screen.findByText('联网搜索')).toBeInTheDocument()
+  })
+
+  it('规则 c：有步骤在等人工介入时强制摊开，点标题也收不起来', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([
+        stored('user', '跑一下'),
+        stored('assistant', '等你确认。', {
+          steps: [
+            {
+              phase: 'tool',
+              label: '执行命令',
+              detail: '等待确认',
+              status: 'done',
+              tool: 'run_command',
+              outcome: 'awaiting',
+            },
+          ],
+        }),
+      ]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    // forceExpanded：完成的一轮也摊开（这一步说的是"卡住了，在等你"）
+    const toggle = screen.getByTestId('trace-toggle')
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('执行命令')).toBeInTheDocument()
+
+    // 拒绝收起：点它还是摊着（折起来等于把"要你动手"藏进一次点击后面）
+    await userEvent.setup().click(toggle)
+    expect(screen.getByTestId('trace-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('执行命令')).toBeInTheDocument()
   })
 })
 
@@ -1173,6 +1292,71 @@ describe('停止与回到最新', () => {
     // 已经流出来的部分留着——它仍然是有用的
     expect(screen.getByTestId('reply-text')).toHaveTextContent('开头')
     await waitFor(() => expect(screen.getByRole('button', { name: '发送' })).toBeInTheDocument())
+  })
+})
+
+/**
+ * 控件取值收口（`DropdownShell` 的 `MENU_PANEL` / `CONTROL_TRIGGER` 与上下文环）。
+ *
+ * 三条都是"一屏里别处已经有了、这一处独缺"的漏项，所以钉的是**取值本身**：
+ * jsdom 不跑 CSS（`test.css = false`），"类名有没有落上去"是这一层唯一钉得住的东西。
+ */
+describe('控件取值收口：菜单进出场、禁用外形、环的过渡', () => {
+  it('菜单面带进出场（150ms）：原先 0ms，一屏里只有菜单是凭空出现的', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    await userEvent.setup().click(screen.getByRole('button', { name: '知识库范围' }))
+    const panel = await screen.findByRole('menu')
+    const klass = panel.className
+    expect(klass).toContain('data-[state=open]:animate-in')
+    expect(klass).toContain('data-[state=open]:fade-in-0')
+    expect(klass).toContain('data-[state=closed]:animate-out')
+    expect(klass).toContain('data-[state=closed]:fade-out-0')
+    // 150ms = `--motion-fast` 那一档（弹窗 200ms、抽屉 300/500ms，菜单是"轻"的那一类）
+    expect(klass).toContain('duration-150')
+  })
+
+  it('没有可用模型时那一颗看得出禁用（原先点下去没反应，外形却和能点的没两样）', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    // 这个文件里 `getRegistry` 的 mock 是空清单 → 模型那一格就是 `disabled`（判据在 `ModelPicker`）
+    const trigger = screen.getByRole('button', { name: '选择对话模型' })
+    expect(trigger).toBeDisabled()
+    expect(trigger.className).toContain('disabled:cursor-default')
+    expect(trigger.className).toContain('disabled:opacity-50')
+  })
+
+  it('上下文环的读数变化有过渡，且「减少动态效果」下直落', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    await userEvent.setup().click(screen.getByRole('button', { name: '选择对话模型' }))
+    const summary = await screen.findByText('上下文')
+    const ring = (summary.parentElement as HTMLElement).querySelector(
+      'svg[role="img"]',
+    ) as SVGElement
+    const progress = ring.querySelectorAll('circle')[1]
+    const klass = progress.getAttribute('class') ?? ''
+
+    // 过渡必须落在**类**里：内联 `style` 的优先级高于任何类，`motion-reduce:transition-none`
+    // 压不住写在 `style` 里的 transition（那一半会变成摆设）
+    expect(klass).toContain('stroke-dashoffset')
+    expect(klass).toContain('var(--motion-slow)')
+    expect(klass).toContain('var(--motion-ease-inout)')
+    expect(klass).toContain('motion-reduce:transition-none')
+    // 起笔那一下的旋转仍在内联样式里（它不需要"减动态"那一档）
+    expect(progress.getAttribute('style')).toContain('rotate(-90deg)')
   })
 })
 

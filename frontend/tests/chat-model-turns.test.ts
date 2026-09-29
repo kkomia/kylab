@@ -33,6 +33,8 @@ import {
   replyArtifacts,
   stepIcon,
   traceEntries,
+  traceForceExpanded,
+  traceKey,
   tracePage,
   traceSteps,
   traceSummary,
@@ -332,41 +334,125 @@ describe('Agent 步骤（v20）', () => {
   })
 })
 
-describe('isTraceOpen', () => {
-  it('默认展开（还没吐字时也一样）', () => {
-    expect(isTraceOpen(message('assistant', { streaming: true }))).toBe(true)
+describe('isTraceOpen（P0：过程默认收起、答案常显）', () => {
+  it('流式中摊开：它就是进度条，用户正在等', () => {
+    expect(isTraceOpen(message('assistant', { streaming: true }))).toBe('full')
   })
 
-  it('吐了字也不收起——过程是答案的一部分，不该在用户想看的时候消失', () => {
-    expect(isTraceOpen(message('assistant', { streaming: true, text: '开始写了' }))).toBe(true)
-    expect(isTraceOpen(message('assistant', { text: '写完了' }))).toBe(true)
+  it('流式吐了字也仍然摊开——折只发生在**这一轮真的结束之后**', () => {
+    expect(isTraceOpen(message('assistant', { streaming: true, text: '开始写了' }))).toBe('full')
   })
 
-  it('用户点过之后完全听用户的（不受流式状态影响）', () => {
-    expect(isTraceOpen(message('assistant', { streaming: true, traceOpen: false }))).toBe(false)
-    expect(isTraceOpen(message('assistant', { traceOpen: true }))).toBe(true)
+  it('这一轮完成之后默认收起（调研 §4.7：十一个样本全默认折，只有我们不是）', () => {
+    expect(isTraceOpen(message('assistant', { text: '写完了' }))).toBe('collapsed')
+  })
+
+  it('用户在这一轮点过就完全听他的（规则 b：手动展开压过自动折叠）', () => {
+    const done = message('assistant', { text: '写完了' })
+    expect(isTraceOpen(done, { chosen: 'full' })).toBe('full')
+
+    const live = message('assistant', { streaming: true, text: '正在写' })
+    expect(isTraceOpen(live, { chosen: 'collapsed' })).toBe('collapsed')
+  })
+
+  it('用户手动开过面板（跨轮次）就不自动折', () => {
+    const done = message('assistant', { text: '写完了' })
+    expect(isTraceOpen(done, { userOpened: true })).toBe('full')
+    // 但流式与否仍然是"当场"的事实：他合过之后，新的一轮答完照折
+    expect(isTraceOpen(done, { userOpened: false })).toBe('collapsed')
+  })
+
+  it('规则 c：有步骤在等人工介入时强制摊开，并且盖过用户刚点的那一下', () => {
+    const awaiting = message('assistant', {
+      text: '等你确认',
+      steps: [step('tool', { outcome: 'awaiting', label: '等待确认' })],
+    })
+
+    expect(traceForceExpanded(awaiting)).toBe(true)
+    expect(isTraceOpen(awaiting)).toBe('full')
+    expect(isTraceOpen(awaiting, { chosen: 'collapsed' })).toBe('full')
+  })
+
+  it('规则 c 只认 awaiting：blocked（已经被拦下）不强制摊开整块面板', () => {
+    const blocked = message('assistant', {
+      steps: [step('tool', { outcome: 'blocked', label: '跑命令' })],
+    })
+
+    expect(traceForceExpanded(blocked)).toBe(false)
+    expect(isTraceOpen(blocked)).toBe('collapsed')
+  })
+
+  it('规则 c：隐藏步骤不算（它画都不画，为它撑开整块面板说不通）', () => {
+    const hidden = message('assistant', {
+      steps: [step('tool', { outcome: 'awaiting', tool: 'read_memory', label: '读记忆' })],
+    })
+
+    expect(traceForceExpanded(hidden)).toBe(false)
+    expect(isTraceOpen(hidden)).toBe('collapsed')
   })
 })
 
-describe('过程面板的收起态可记忆（P2-1）', () => {
-  it('没表过态时默认仍是展开（v0.25 的选择不改）', () => {
+describe('过程面板的手动干预记忆（P0 改语义：从"上次开合"到"用户手动开过没有"）', () => {
+  it('没手动开过（没有这个键）→ 完成的一轮按自动规则收起', () => {
     window.localStorage.clear()
-    expect(readTraceOpenMemory()).toBeUndefined()
-    // 兜底值仍是 true：**"过程常驻在正文里"是刻意的决定**，这次不推翻它
-    expect(isTraceOpen(message('assistant'), readTraceOpenMemory() ?? true)).toBe(true)
+    expect(readTraceOpenMemory()).toBe(false)
+    // 这正是旧语义坏掉的地方：旧实现把"没表过态"当**展开**，
+    // 于是"答完自动折"这条规则一次都不会发生
+    expect(isTraceOpen(message('assistant'), { userOpened: readTraceOpenMemory() })).toBe(
+      'collapsed',
+    )
   })
 
-  it('用户收起过之后，新的一轮就按收起画（刷新也还在）', () => {
+  it('手动开过一次 → 完成的一轮不再替他折（刷新之后仍然算数）', () => {
+    writeTraceOpenMemory(true)
+    expect(readTraceOpenMemory()).toBe(true)
+    expect(isTraceOpen(message('assistant'), { userOpened: readTraceOpenMemory() })).toBe('full')
+    window.localStorage.clear()
+  })
+
+  it('他合上一次就把自动折交还回来（记忆不是"永远别折"）', () => {
+    writeTraceOpenMemory(true)
     writeTraceOpenMemory(false)
     expect(readTraceOpenMemory()).toBe(false)
-    expect(isTraceOpen(message('assistant'), readTraceOpenMemory() ?? true)).toBe(false)
+    expect(isTraceOpen(message('assistant'), { userOpened: readTraceOpenMemory() })).toBe(
+      'collapsed',
+    )
   })
 
-  it('**这一轮自己点开的态优先**：全局记忆不覆盖用户当场的那一下', () => {
-    writeTraceOpenMemory(false)
-    const opened = message('assistant', { traceOpen: true })
-    expect(isTraceOpen(opened, readTraceOpenMemory() ?? true)).toBe(true)
+  it('**这一轮自己点过的档位优先**：全局记忆不覆盖用户当场的那一下', () => {
+    writeTraceOpenMemory(true)
+    expect(
+      isTraceOpen(message('assistant'), { chosen: 'collapsed', userOpened: readTraceOpenMemory() }),
+    ).toBe('collapsed')
     window.localStorage.clear()
+  })
+})
+
+describe('单步 / 分组的 key 带轮次命名空间（P0，修跨轮串号）', () => {
+  it('同一个 key 在两轮里是两个 key：展开态不会再互相影响', () => {
+    expect(traceKey(0, 'tool-0')).toBe('t0:tool-0')
+    expect(traceKey(0, 'tool-0')).not.toBe(traceKey(1, 'tool-0'))
+    // 分组 key 也要带（`groupBlock` 拼出来的那个 key 同样每轮重名）
+    expect(traceKey(2, 'group:tool-0:web_search')).toBe('t2:group:tool-0:web_search')
+  })
+
+  it('数据层给的 key 本身**不动**：分组、分页、计数都还按同一轮的原始 key 走', () => {
+    const turn = {
+      user: message('user', { text: '问' }),
+      reply: message('assistant', {
+        steps: [
+          step('tool', { tool: 'web_search', label: '联网搜索', detail: '查 A' }),
+          step('tool', { tool: 'web_search', label: '联网搜索', detail: '查 B' }),
+        ],
+      }),
+    }
+
+    const entries = traceEntries(turn)
+    expect(entries).toHaveLength(1)
+    expect(entries[0].kind).toBe('group')
+    // 组 key 里包着**第一次调用**的原始 key（同一轮内稳定，展开态才不会自己收起来）
+    expect(entries[0].kind === 'group' && entries[0].key).toContain('tool-0')
+    expect(entries[0].kind === 'group' && entries[0].key.startsWith('t')).toBe(false)
   })
 })
 

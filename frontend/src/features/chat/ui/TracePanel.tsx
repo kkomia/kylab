@@ -27,6 +27,7 @@ import {
   sourcePreview,
   sourceWhere,
   thinkingParagraphs,
+  traceKey,
   traceSummary,
   trailingThinking,
   type Turn,
@@ -53,7 +54,15 @@ import { useChat, type ChatMessage } from '../runtime/ChatProvider'
 const CITE_FOLD_LIMIT = 3
 
 /** 过程面板的一行：单独一步，或**同类工具并成的一组**。 */
-function EntryRow({ entry, streaming }: { entry: TraceEntry; streaming: boolean }) {
+function EntryRow({
+  turnIndex,
+  entry,
+  streaming,
+}: {
+  turnIndex: number
+  entry: TraceEntry
+  streaming: boolean
+}) {
   const chat = useChat()
   /**
    * `art_*` → 文件名（D19，2026-09-28 走查）。
@@ -63,6 +72,15 @@ function EntryRow({ entry, streaming }: { entry: TraceEntry; streaming: boolean 
    */
   const artifactNames = useMemo(() => artifactNameMap(chat.turns), [chat.turns])
 
+  /**
+   * 这一行的开合 key **带上轮次**（P0，真 bug）。
+   *
+   * 数据层给的 key 只保证"同一轮内唯一"，而宿主的展开表是整个会话共用的一张——
+   * 不套这一层前缀，"第 2 轮第 1 步"与"第 5 轮第 1 步"就是同一个 key，
+   * 点开一个另一个跟着开（见 `turns.ts::traceKey`）。
+   */
+  const key = traceKey(turnIndex, entry.key)
+
   // 单独一步：绝大多数工具只调一次，那一档不该多一层点击
   if (entry.kind === 'step') {
     return (
@@ -70,13 +88,13 @@ function EntryRow({ entry, streaming }: { entry: TraceEntry; streaming: boolean 
         step={entry.step}
         streaming={streaming}
         names={artifactNames}
-        open={chat.isStepOpen(entry.step.key)}
-        onToggle={() => chat.toggleStep(entry.step.key)}
+        open={chat.isStepOpen(key)}
+        onToggle={() => chat.toggleStep(key)}
       />
     )
   }
 
-  const open = chat.isGroupOpen(entry.key)
+  const open = chat.isGroupOpen(key)
   return (
     <li className={STEP_ROW} data-kind={entry.icon}>
       {/* 组那一行与单步**共用外壳**：图标位、圆底、起始线都走同一份取值 */}
@@ -88,7 +106,7 @@ function EntryRow({ entry, streaming }: { entry: TraceEntry; streaming: boolean 
           type="button"
           className={STEP_TOGGLE}
           aria-expanded={open}
-          onClick={() => chat.toggleGroup(entry.key)}
+          onClick={() => chat.toggleGroup(key)}
         >
           {entry.label}
           <span className="text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
@@ -105,8 +123,9 @@ function EntryRow({ entry, streaming }: { entry: TraceEntry; streaming: boolean 
                 variant="child"
                 streaming={streaming}
                 names={artifactNames}
-                open={chat.isStepOpen(child.key)}
-                onToggle={() => chat.toggleStep(child.key)}
+                // 组内每一次调用同样是"哪一轮的第几步"：不带轮次会跨轮串号
+                open={chat.isStepOpen(traceKey(turnIndex, child.key))}
+                onToggle={() => chat.toggleStep(traceKey(turnIndex, child.key))}
               />
             ))}
           </ol>
@@ -192,7 +211,12 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
   const reply = turn.reply as ChatMessage | null
   if (!reply) return null
 
-  const open = chat.traceOpen(reply)
+  /**
+   * 面板的档位来自宿主（判定在 `turns.ts::isTraceOpen`，这里只把"是不是摊开"翻出来用）。
+   * 收起时**只剩摘要那一行**：步骤与整轮思考都不进文档（条件渲染），
+   * 而回答正文与出处都在面板之外——**正文永远不在这块折叠里**（规则 d）。
+   */
+  const open = chat.traceOpen(reply) === 'full'
   const view = chat.traceView(turnIndex, turn)
   const trailingThinkingText = trailingThinking(reply)
 
@@ -208,6 +232,12 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
       */}
       <button
         type="button"
+        /**
+         * 面板收起时这一行**只剩一枚箭头与一句摘要**（没出处时连摘要都没有），
+         * 于是它没有可读的无障碍名字。测试要按它开合面板，这里给它一个稳定的抓点
+         * （P0 的用例正是"默认收起 → 点一下才摊开"）。
+         */
+        data-testid="trace-toggle"
         className="flex w-full cursor-pointer items-center gap-[var(--space-1)] bg-transparent p-0 text-left"
         aria-expanded={open}
         onClick={() => chat.toggleTrace(reply)}
@@ -227,7 +257,12 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
         <div className="mt-[var(--space-3)]">
           <ol className="relative m-0 flex list-none flex-col p-0">
             {view.entries.map((entry) => (
-              <EntryRow key={entry.key} entry={entry} streaming={Boolean(reply.streaming)} />
+              <EntryRow
+                key={entry.key}
+                turnIndex={turnIndex}
+                entry={entry}
+                streaming={Boolean(reply.streaming)}
+              />
             ))}
           </ol>
 
@@ -286,11 +321,19 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
               ) : null}
             </div>
           ) : null}
-
-          {reply.sources.length > 0 ? (
-            <Citations turnIndex={turnIndex} sources={reply.sources} />
-          ) : null}
         </div>
+      ) : null}
+
+      {/*
+        出处**不跟着过程一起折**（P0 的规则 d：答案常显）。
+
+        它折进去之前的位置就在上面那个 `open ?` 里，于是"过程默认收起"会顺手把
+        "这一轮引了哪几篇文档"一起藏起来——那正是回答的依据，用户看答案时就要能一眼扫到
+        （默认铺前 3 条、多出来的折一行，是 `Citations` 自己那一套）。过程可以收起，
+        **依据不能**：收起来的信息等于没有（v0.25 那条判断在依据这一块仍然成立）。
+      */}
+      {reply.sources.length > 0 ? (
+        <Citations turnIndex={turnIndex} sources={reply.sources} />
       ) : null}
     </>
   )

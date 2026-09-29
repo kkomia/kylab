@@ -58,12 +58,15 @@ import { formatBytes, formatCount } from '@/lib/format'
 
 import {
   buildTurns,
+  isTraceOpen,
   makeMessage,
   readTraceOpenMemory,
+  traceForceExpanded,
   tracePage,
   TRACE_PAGE_SIZE,
   writeTraceOpenMemory,
   type Message,
+  type TraceOpen,
   type TracePage,
   type Turn,
 } from '@/features/chat/model/turns'
@@ -329,7 +332,8 @@ export interface ChatApi {
   useSample: (question: string) => void
 
   // —— 过程面板
-  traceOpen: (message: Message) => boolean
+  /** 这一轮的面板档位（`'collapsed' | 'full'`）：判定在 `turns.ts::isTraceOpen` 里。 */
+  traceOpen: (message: Message) => TraceOpen
   toggleTrace: (message: Message) => void
   traceView: (turnIndex: number, turn: Turn) => TracePage
   showMoreTrace: (turnIndex: number) => void
@@ -625,11 +629,15 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set())
   const [traceExtraPages, setTraceExtraPages] = useState<ReadonlyMap<number, number>>(new Map())
   const [expandedCites, setExpandedCites] = useState<ReadonlySet<number>>(new Set())
-  /** 某一轮自己的展开态（点过就按点的那一档，`undefined` = 跟随"上次那一档"）。 */
-  const [traceOpenIds, setTraceOpenIds] = useState<Record<string, boolean>>({})
-  const [traceOpenMemory, setTraceOpenMemory] = useState<boolean | undefined>(() =>
-    readTraceOpenMemory(),
-  )
+  /**
+   * 某一轮自己的展开档（用户点过就按点的那一档；`undefined` = 没点过，问自动规则）。
+   *
+   * 从布尔改成 `'collapsed' | 'full'`（P0）：这一档要能与"自动折出来的收起"分开说，
+   * 见 `turns.ts::isTraceOpen`。
+   */
+  const [traceOpenIds, setTraceOpenIds] = useState<Record<string, TraceOpen>>({})
+  /** 用户手动开过过程面板没有（本机记忆，跨轮次与刷新都算数）。 */
+  const [traceOpenMemory, setTraceOpenMemory] = useState<boolean>(() => readTraceOpenMemory())
 
   // 出处原文弹窗 / 文件区抽屉 / 存进知识库弹窗 / 拖拽落法
   const [sourceOpen, setSourceOpen] = useState(false)
@@ -1486,22 +1494,35 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   // ---------------------------------------------------------------- 过程面板与消息动作
 
+  /**
+   * 面板这一轮该摊开还是收起。
+   *
+   * **判断只有一处**（`turns.ts::isTraceOpen`）：这里只负责把两个事实递过去——
+   * 用户在**这一轮**点过的那一档（`traceOpenIds`），以及他**手动开过没有**（记忆）。
+   * 两条流水线（流式中 / 完成）与"待确认强制展开"的规则都写在那个纯函数里，
+   * 免得同一件事在宿主与界面各判一遍、判出两个结果。
+   */
   const traceOpen = useCallback(
-    (message: Message) => {
-      const own = traceOpenIds[idOf(message)]
-      if (own !== undefined) return own
-      return traceOpenMemory ?? true
-    },
+    (message: Message): TraceOpen =>
+      isTraceOpen(message, {
+        chosen: traceOpenIds[idOf(message)],
+        userOpened: traceOpenMemory,
+      }),
     [traceOpenIds, traceOpenMemory],
   )
 
   const toggleTrace = useCallback(
     (message: Message) => {
-      const next = !traceOpen(message)
+      // (c) 有步骤在等人工介入：这一下不收（理由见 `traceForceExpanded` 的注释）
+      if (traceForceExpanded(message)) return
+      const next: TraceOpen = traceOpen(message) === 'full' ? 'collapsed' : 'full'
       setTraceOpenIds((prev) => ({ ...prev, [idOf(message)]: next }))
-      // **收起态可记忆**：点这一下的意思不只是"这一轮收起来"，还有"以后别默认摊开"
-      setTraceOpenMemory(next)
-      writeTraceOpenMemory(next)
+      // 这一个动作有两层意思，**分开记**：这一轮按哪一档画（上面那张表），
+      // 以及"他手动开过面板"这件事（下面这位，跨轮次、跨刷新都算数）。
+      // 合上的那一下把自动折交还回来（见 `writeTraceOpenMemory`）。
+      const opened = next === 'full'
+      setTraceOpenMemory(opened)
+      writeTraceOpenMemory(opened)
     },
     [traceOpen],
   )

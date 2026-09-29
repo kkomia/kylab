@@ -197,8 +197,13 @@ liveAnchor(id) / clearLiveAnchors() // 重连锚点（模块作用域，用例�
 - `turns.ts` 一个字符都没改行为：`buildTurns` / `mergeStep` / `traceSteps` /
   `traceEntries` / `tracePage` / `stepIcon`（含 `LEGACY_*` 两张老快照兜底表）/
   `replyArtifacts` / `wasDegraded` / `degradedReason` / `hasToolCallMarkup` /
-  `sourceWhere` / `sourcePreview` / `isTraceOpen` / `liveLine` / `traceSummary`；
-- 收起态记忆的键名 `kylab-trace-open`；
+  `sourceWhere` / `sourcePreview` / `liveLine` / `traceSummary`；
+  - ⚠️ **`isTraceOpen` 后来改过**（2026-09-29，用户明确推翻 v0.25 那条"默认展开、不再自动收起"，
+    改按成熟产品：**进行中展开、跑完折叠**）—— 它现在是纯函数，档位从布尔变成
+    `'collapsed' | 'full'`，本机记忆的语义也从"记住上次开合"改成"记住用户是否手动干预过"。
+    同一条规则还加了渲染层的 `traceKey(turnIndex, key)`（修跨轮串号）。上面这份"一字未改"的
+    名单**不再包含它**；细节见 `docs/计划与记录/开发计划-v0.1.md` §12.333；
+- 收起态记忆的键名 `kylab-trace-open`（键名没变，旧值 `'1'`/`'0'` 自然迁移）；
 - `liveTurn.ts` 的锚点、重连预算、`done(recovered)` 收口、"停止之后不重连"、
   "接不上就什么都不留"、"别的会话不抢位置"；
 - 裸链接的两条边界（前面不是字母数字就算开头、网址体里不许有中文标点）与

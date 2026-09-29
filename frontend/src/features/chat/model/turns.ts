@@ -68,8 +68,6 @@ export interface Message {
    * 那一轮（`streamTurn`）都要能画出文件片，两处都拿到同一份数据才不会一边有一边没有。
    */
   attachments: ChatAttachment[]
-  /** 过程面板的展开态；`undefined` = 跟随默认（流式中、还没吐字时默认展开）。 */
-  traceOpen?: boolean
 }
 
 /**
@@ -622,6 +620,24 @@ export function replyArtifacts(turn: Turn): ChatArtifact[] {
 }
 
 /**
+ * 「哪一轮的第几行」——把条目 key 加上**轮次命名空间**（P0，修的是跨轮串号）。
+ *
+ * 步骤 key 是 `${phase}-${index}`（`agentTraceSteps`），组 key 是
+ * `group:${第一次调用的 key}:${工具名}`（`groupBlock`）——**两者都只在同一轮内唯一**。
+ * 而"哪一行摊开着"是宿主上的一张全局表（`ChatProvider` 的 `openSteps` / `openGroups`）。
+ * 于是"第 2 轮第 1 步"与"第 5 轮第 1 步"是同一个 key：点开其中一个，所有轮次里
+ * 同一个下标的行一起摊开（老链路的 `retrieve` / `answer` / `think` 更是一字不差地每轮重名）。
+ *
+ * 为什么加在**渲染这一层**而不是数据层：`turns.ts` 那些 key 还要当 React 列表 key
+ * 与分组依据，它们只需要"同一轮内稳定"；轮次是渲染时才知道的事（`TracePanel` 拿得到
+ * `turnIndex`）。在这一层套一层前缀，分组、分页、计数那些口径一个字都不用改，
+ * 也就不会碰坏"同一种工具并成一组"。
+ */
+export function traceKey(turnIndex: number, key: string): string {
+  return `t${turnIndex}:${key}`
+}
+
+/**
  * 把步骤列表并成"一行一组"（v0.26，用户要求"同类工具合并为一个入口"）。
  *
  * 规则三条，都是为了让它在长回合里仍然说得清：
@@ -841,6 +857,8 @@ function agentTraceSteps(message: Message): TraceStep[] {
   const steps: TraceStep[] = message.steps
     .filter((step) => !isHiddenTraceStep(step))
     .map((step, index) => ({
+      // 这个 key 只保证**同一轮内**唯一（它同时是 React 列表 key）；跨轮的唯一性由
+      // 渲染层的轮次前缀给（`traceKey`），别在这里拼轮次——这里拿不到轮次
       key: `${step.phase}-${index}`,
       icon: stepIcon(step),
       // 原始种类：工具步骤与 icon 同值，但"原始的那一档"单独留一份——
@@ -921,56 +939,97 @@ function answerDetail(message: Message): string {
 }
 
 /**
- * 面板是否展开。
+ * 过程面板的展开档（P0）。
  *
- * **默认展开，而且不再自动收起**（v0.25，照 Kimi 的对话页）。
- *
- * 改之前是"边等边看"：还没吐字的那几秒展开（那时它就是进度条），
- * 第一个字一到就自动收起。问题是**用户永远看不到它**——
- * 他盯着屏幕的那一刻，面板正好收起来了；想再看一眼刚才调了什么，
- * 得先意识到"刚才有那么一块"，再去点那一行标题。
- *
- * Kimi 的做法是过程**常驻在正文里**：调了哪个工具、搜了几个结果，
- * 一直是答案的一部分。所以这里也改成默认展开；`traceOpen` 有值时仍完全听用户的
- * （点标题收起是明确表达过的意愿，不该被流式状态覆盖）。
- *
- * 代价是每一轮都多占几行。可接受：那些行本身就是"这句回答是怎么来的"，
- * 而收起来的信息等于没有。
- *
- * **P2-1 的取舍**：调研报告里还有一条"过程折叠、最终答案常显"（DSH 的做法），
- * 这里**刻意不做成默认**——默认折叠会推翻 v0.25 那次选择（用户当时要的就是
- * "过程常驻在正文里"）。改成**收起状态可记忆**：用户自己收起过，之后新出现的回合
- * 就按收起画（`fallback`），而**没表过态的默认仍是展开**。
- * 一个是"我们替你决定收起来"，一个是"记住你上次那一下"，两件事不能混。
+ * 为什么不是布尔（v0.25 起用的是 `boolean`）：这次要同时表达"流式中摊开"
+ * "这一轮完成之后收起"与"手动开过就别自动折"，布尔会把**自动折出来的开**
+ * 与**用户手动点出来的开**混成同一个 `true`，而这次的核心规则恰恰要求把它们分开。
+ * 两档的取值照抄 LobeHub `WorkflowCollapse` 的 `collapsed | full`。
  */
-export function isTraceOpen(message: Message, fallback = true): boolean {
-  if (message.traceOpen !== undefined) return message.traceOpen
-  return fallback
+export type TraceOpen = 'collapsed' | 'full'
+
+/** 判定开合要用到的、由宿主持有的事实（见 `ChatProvider` 的 `traceOpenIds` 与记忆）。 */
+export interface TraceOpenState {
+  /** 用户对**这一轮**点过的那一档；`undefined` = 没点过。 */
+  chosen?: TraceOpen
+  /** 用户手动开过过程面板没有（见 `readTraceOpenMemory`）。 */
+  userOpened?: boolean
 }
 
-/** 过程面板收起态的本机记忆（P2-1）。键与侧栏折叠同一族（`kylab-*`）。 */
+/**
+ * 有没有步骤在**等人工介入**（规则 c：`forceExpanded` 且拒绝收起）。
+ *
+ * 判据只看结构化的 `outcome === 'awaiting'`（后端执行器给的字段），不去匹配句式——
+ * 句式那套（`TraceStepRow.isRefusalDetail`）只是老快照的兜底，这里不抄第二遍。
+ * 隐藏的步骤不算：它们画都不画，为一个看不见的步骤把整块面板撑开没有意义
+ * （所以复用 `isHiddenTraceStep`，与 `agentTraceSteps` 的过滤条件是同一份）。
+ */
+export function traceForceExpanded(message: Message): boolean {
+  return message.steps.some((step) => step.outcome === 'awaiting' && !isHiddenTraceStep(step))
+}
+
+/**
+ * 过程面板该摊开还是收起——**这条判断只写在这里**（宿主与界面都问它，不各自再判一次）。
+ *
+ * 四条规则照 LobeHub 的 `WorkflowCollapse`（调研 §5.2 的 P0①，依据 §4.7 / §4.8）：
+ *
+ * (a) **流式中 `full`、这一轮完成之后 `collapsed`**。十一个能确证的样本里没有一个
+ *     把过程摊在正文里（Cline / Roo / Cherry / LobeHub / WeKnora / MaxKB / Trae /
+ *     Qoder / OpenHands 全默认折），只有我们（v0.25 起）是；但"执行中就折"是有害的——
+ *     Trae 的用户原话是"展开了，过一会……又给折叠掉了，AI 在干啥都不知道"，
+ *     所以折只发生在**这一轮真的结束之后**。
+ * (b) **用户手动开过就不自动折**：轮内是 `chosen`（他在这一轮点过），
+ *     跨轮次是 `userOpened`（他点过任何一轮）。没有这一条，用户刚点开就被下一次
+ *     渲染收回去（LobeHub 用 `userOpenedRef` 明写这条，Trae 是反面教材）。
+ * (c) **有待确认的步骤时强制展开、且拒绝收起**（`traceForceExpanded`）。这类步骤说的是
+ *     "卡住了，在等你动手"，折起来等于把"要你动手"藏进一次点击后面。
+ * (d) **正文永远不在这里面**：这一档只决定"过程"那块的画法，回答正文由 `MessageView`
+ *     画在面板之外（同一个分支里的下一个兄弟），收起到哪一档都不会把答案折进去。
+ *
+ * 这一档由宿主持有、作为参数传进来，**不挂在 `Message` 上**：流式每吐一次字，
+ * 消息对象就重建一份（`mirrorLive`），挂在消息上的选择会被冲掉。
+ */
+export function isTraceOpen(message: Message, state: TraceOpenState = {}): TraceOpen {
+  // (c) 先于一切：有步骤在等确认，任何档位都让路（包括用户刚刚点的那一下）
+  if (traceForceExpanded(message)) return 'full'
+  // (b) 这一轮他自己点过：完全听他的，流式与否都不覆盖
+  if (state.chosen) return state.chosen
+  // (a) 流式中它就是进度条，摊开；这一轮结束之后再收起
+  if (message.streaming) return 'full'
+  // (b) 跨轮次那一半：他手动开过，就不再替他折
+  return state.userOpened ? 'full' : 'collapsed'
+}
+
+/** "用户手动开过过程面板没有"的本机记忆（P2-1 起，P0 改语义）。键与侧栏折叠同族（`kylab-*`）。 */
 export const TRACE_OPEN_STORAGE_KEY = 'kylab-trace-open'
 
 /**
- * 上一次用户把过程面板**收起/展开**之后选的那一档。
+ * 用户手动**开过**过程面板没有（P0 改的就是这一位的语义）。
  *
- * 只在用户明确点过之后才有值：没点过 = `undefined`（默认展开，与 v0.25 一样）。
- * 读不到 localStorage（隐私模式）就当没记过——**不因为读不到就改变默认**。
+ * 旧语义是"记住上一次手动选的那一档"，再把它当之后每一轮的**默认档位**——那么只要
+ * 用户（或 v0.25 那个默认展开）留下过一个"开着"，自动折叠就**永远不发生**：
+ * 新加的"答完就折"一次都见不到（调研 §4.8 规律 1/2/4 的反面：手动展开只该**豁免**
+ * 自动折，不该反过来把自动折整个关掉）。旧值 `'1'`/`'0'` 正好也是这个问题的形状。
+ *
+ * 现在这一位只回答一个问题：**要不要豁免自动折**（`isTraceOpen` 的规则 b）。
+ * - 没有这个键、或最近一次手动动作是"合上"（`'0'`）→ 不豁免，答完照折；
+ * - 手动开过（`'1'`）→ 完成的一轮不再替他折；他合一次就把自动折交还回来。
+ *
+ * 档位本身不在这里存：那是"哪一轮"的事（宿主按消息 id 记着，见 `TraceOpenState.chosen`）。
+ * 读不到 localStorage（隐私模式）一律当"没手动开过"——**读不到不改变规则**。
  */
-export function readTraceOpenMemory(): boolean | undefined {
+export function readTraceOpenMemory(): boolean {
   try {
-    const raw = window.localStorage.getItem(TRACE_OPEN_STORAGE_KEY)
-    if (raw === null) return undefined
-    return raw === '1'
+    return window.localStorage.getItem(TRACE_OPEN_STORAGE_KEY) === '1'
   } catch {
-    return undefined
+    return false
   }
 }
 
-/** 记下用户这一次的选择（`undefined` = 忘掉它，回到"默认展开"）。 */
-export function writeTraceOpenMemory(open: boolean): void {
+/** 记下用户这一次手动动作的意图：`true` = 他开过（豁免自动折），`false` = 交还自动折。 */
+export function writeTraceOpenMemory(opened: boolean): void {
   try {
-    window.localStorage.setItem(TRACE_OPEN_STORAGE_KEY, open ? '1' : '0')
+    window.localStorage.setItem(TRACE_OPEN_STORAGE_KEY, opened ? '1' : '0')
   } catch {
     // 存不上就只在本次会话生效（与侧栏折叠同一条）
   }
