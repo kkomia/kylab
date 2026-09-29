@@ -227,9 +227,19 @@ describe('chatStream', () => {
       vi.fn(
         (_input: unknown, init?: RequestInit) =>
           new Promise<Response>((_resolve, reject) => {
-            init?.signal?.addEventListener('abort', () =>
-              reject(Object.assign(new Error('aborted'), { name: 'AbortError' })),
-            )
+            const fail = () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+            // **真 fetch 的语义**：交给它的 signal 在那之前就已经取消的话，
+            // 请求当场就拒（不会再等一个 abort 事件——事件早就发过了）。
+            // 替身原先只挂监听 ✗：而 `openStream` 在"外部 signal 已取消"时
+            // 是**先** abort 内部 controller、**再** fetch（chat.ts:720-724 ✓），
+            // 于是监听永远等不到事件、这条 promise 永不 settle → 用例超时 ✗。
+            // 补上这一支，替身才与真 fetch 同形，用例验的仍是同一条产品行为：
+            // 调用方自己的取消，最终以一个 AbortError 抛出来 ✓。
+            if (init?.signal?.aborted) {
+              fail()
+              return
+            }
+            init?.signal?.addEventListener('abort', fail, { once: true })
           }),
       ),
     )
