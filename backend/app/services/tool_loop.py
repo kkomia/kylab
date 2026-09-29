@@ -307,7 +307,7 @@ class ToolOutcome:
 
     outcome: str = ""
     """这一步的**结果类别**（D22，2026-09-28 走查）：``""`` 正常 / ``"blocked"`` 被拦下 /
-    ``"awaiting"`` 在等用户确认。
+    ``"awaiting"`` 在等用户确认 / ``"failed"`` 这一步没做成（工具内部错误、业务规则拦下）。
 
     **为什么要有它**：`StepEvent` 原先只有 ``status``（``running``/``done``）——
     被拦下与跑完都是 ``done``。界面因此只能**匹配句式**（「没有执行」「等待确认」
@@ -594,7 +594,10 @@ class ToolLoop:
             # 这一类是**我们自己写给用户看**的话（"这条会话没有挂工作区…"、
             # "没有这个目录：x"）：原样交给模型，它据此换一步走。
             logger.info("工具 %s 被业务规则拦下：%s", call.name, sanitize_log_value(exc))
-            return ToolOutcome(content=f"工具执行失败：{exc}")
+            # 也要**结构化**标成 failed：这一类是"这一步没做成"（会话没挂工作区、没有这个目录…），
+            # 界面靠 `forceExpand` 把它默认摊开——只给模型一句话、界面上却像正常跑完，
+            # 正是 §12.325 那个"用户会以为它做了"的坑。
+            return ToolOutcome(content=f"工具执行失败：{exc}", outcome="failed")
         except Exception as exc:  # 工具是外部世界，什么都能抛
             # 其余的是**我们的 bug**（AttributeError / KeyError 之类）：日志里留全文与
             # 栈，**交给模型的只给人话**。原先这里把 `{exc}` 原样写进内容——2026-09-28
@@ -622,6 +625,10 @@ class ToolLoop:
                 #   在过程面板里，不能悄悄吞掉"——`tests/integration/api/test_chat_api.py`
                 #   那条集成用例钉的就是它，改成只给人话会把这条判据弄丢）。
                 summary=f"工具内部错误：{_clip(str(exc), 120)}",
+                # 结果类别（D22）：这一幕是**这一步自己出错了**，不是"跑完了"。
+                # 界面据此把这一行默认展开（见前端 `TraceStepRow.forceExpand`）——
+                # `summary` 给的是真原因，可它原先折在下面，用户看到的只是一行成功的工具名。
+                outcome="failed",
             )
         return _truncate(outcome)
 

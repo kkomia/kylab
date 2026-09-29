@@ -197,7 +197,12 @@ liveAnchor(id) / clearLiveAnchors() // 重连锚点（模块作用域，用例�
 - `turns.ts` 一个字符都没改行为：`buildTurns` / `mergeStep` / `traceSteps` /
   `traceEntries` / `tracePage` / `stepIcon`（含 `LEGACY_*` 两张老快照兜底表）/
   `replyArtifacts` / `wasDegraded` / `degradedReason` / `hasToolCallMarkup` /
-  `sourceWhere` / `sourcePreview` / `liveLine` / `traceSummary`；
+  `sourceWhere` / `sourcePreview` / `traceSummary`；
+  - ⚠️ **`liveLine`（连同 `LIVE_TAIL_CHARS` 与它内部的 `tailOf`）已删**（用户要求：
+    "把 agent 执行中跟头像齐平的那个流式输出干掉"）。它给的是流式期间那一行会滚的
+    实时文案，而那一行挂在过程面板的开合开关上、位于助手列第一个节点（与头像齐平）。
+    删掉之后那一行在流式期间改用一个**静态短标签**（「执行过程」）说明"这里能点开"，
+    免得只剩一枚箭头；面板自己的开合规则（进行中展开、跑完折叠）与那条摘要素一个字都没动；
   - ⚠️ **`isTraceOpen` 后来改过**（2026-09-29，用户明确推翻 v0.25 那条"默认展开、不再自动收起"，
     改按成熟产品：**进行中展开、跑完折叠**）—— 它现在是纯函数，档位从布尔变成
     `'collapsed' | 'full'`，本机记忆的语义也从"记住上次开合"改成"记住用户是否手动干预过"。

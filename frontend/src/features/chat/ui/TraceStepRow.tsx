@@ -12,6 +12,7 @@ import { useMemo, useState } from 'react'
 
 import {
   humanizeArtifactKeys,
+  isRunningStep,
   resultPreview,
   thinkingParagraphs,
   type TraceStep,
@@ -22,7 +23,7 @@ import { formatCount } from '@/lib/format'
 const EMPTY_NAMES: ReadonlyMap<string, string> = new Map()
 
 import { LinkText } from './LinkText'
-import { StepIcon } from './stepIcons'
+import { StepIcon, StepSpinner } from './stepIcons'
 import {
   STEP_BODY,
   STEP_DETAIL,
@@ -58,18 +59,16 @@ function detailIsRawJson(detail: string): boolean {
 }
 
 /**
- * "被拦下 / 在等确认"的那几个摘要（二：这一行**默认展开**）。
+ * "这一步不成功"的那几个摘要（这一行**默认展开**）。
  *
- * 判据只能是这句话本身：`StepEvent` 没有"成功/失败"这一维度，
- * 拦下与跑完都是 `status: done`。所以按**执行器写死的句式**认——
+ * 判据只能是这句话本身：老快照里 `StepEvent` 只有 ``status``（``running``/``done``），
+ * 拦下与跑完都是 `done`。所以按**执行器写死的句式**认——
  * `agent_exec._refused` / `_awaiting` 与 `tool_loop._blocked_by_mode` 的摘要
  * 都是「没有执行（…拦下）」「等待确认」，还有权限与隔离那两条
  * （「…不能执行命令」「…拒绝执行」）。老快照里的措辞（"计划档拦下"）也在词表里，
  * 因为它就躺在用户正打开的那些会话里。
  *
- * 为什么值得默认展开：用户问"它怎么没做成这件事"时，答案就在这一行下面
- * （被哪条规则拦的、等的是哪一次确认、原文是什么）。折起来等于把答案藏在一次点击后面，
- * 而"这一行说的不是成功，是拦截"恰恰是最需要一眼看见的一句。
+ * **它只是兜底**：新数据一律走 `step.outcome`（见 `forceExpand`）。
  */
 const REFUSAL_MARKS = ['没有执行', '等待确认', '拒绝执行', '不能执行命令']
 
@@ -79,20 +78,51 @@ export function isRefusalDetail(detail: string): boolean {
 }
 
 /**
- * 这一步是不是"被拦下 / 在等确认"（D22，2026-09-28 走查）。
+ * 这一步**必须看得见**吗——不成功的那几档一律强制展开。
  *
- * **优先看结构化字段** `step.outcome`（后端由执行器给：`blocked` = 被模式/权限/隔离/
- * 成员身份拦下，`awaiting` = 在等用户确认）——这正是把上面那张词表降级成兜底的原因：
- * 靠句式认拦截，措辞一改就瞎，而这一行是**默认展开**的（用户会以为它做了）。
+ * 这是"什么必须摊在用户眼前"的**唯一判据**：单步那一行（本文件）、组那一行
+ * （`TracePanel` 的 `EntryRow`）都问它，别处不许再各判一遍。
  *
- * `outcome` 缺省（**老快照**，DB 里那些会话还在）才回退去认句式。
+ * 三档，都由后端给的结构化事实决定（`StepEvent.outcome`，见 `ToolOutcome.outcome`）：
+ *
+ * - `blocked`：被模式 / 权限 / 隔离 / 成员身份拦下；
+ * - `awaiting`：卡在"等你点头"上；
+ * - `failed`：这一步自己出错了（工具内部异常——`summary` 里有真原因，
+ *   而它恰恰是用户排查"它怎么没做成"的唯一线索）。
+ *
+ * 为什么宁可默认展开：折起来等于把"这一步没有成功"藏进一次点击后面，而用户扫过
+ * 面板时默认会以为每一行都做成了。调研发现在这一点上三家（Qwen / Kimi / LobeHub）
+ * 是收敛的：**出错与待确认强制展开**。
+ *
+ * 两处刻意的分寸：
+ *
+ * 1. `outcome` **缺省（老快照）才回退认句式**：靠句式认拦截，措辞一改就瞎；
+ *    而 `outcome` 说 `""`（正常）时也不许句式翻案（既有用例钉着这一条）。
+ * 2. 这里管的是**行**（与组），不管**整块面板**：面板那一层的规则 c 只管 `awaiting`
+ *    （`turns.traceForceExpanded`，"拒绝收起"是更强的一档，一个失败步骤不该把
+ *    整块面板锁住）。两层判据不同不是重复，而是两种动作的代价不同。
  */
-export function isRefusalStep(step: { outcome?: string; detail: string }): boolean {
+export function forceExpand(step: { outcome?: string; detail: string }): boolean {
   // **字段在就听它的**（`""` = 正常也是它的结论）；字段不在（老快照）才回退认句式
   if (step.outcome !== undefined) {
-    return step.outcome === 'blocked' || step.outcome === 'awaiting'
+    return step.outcome === 'blocked' || step.outcome === 'awaiting' || step.outcome === 'failed'
   }
   return isRefusalDetail(step.detail)
+}
+
+/**
+ * 「跑了多久」那一小句（照 LobeHub `ExecutionTime` 的三档）。
+ *
+ * - 不足 1 秒给毫秒（`123ms`）——这一档才是"快"，写成 `0.1s` 反而看不出差别；
+ * - 不足 1 分钟给一位小数（`3.2s`，取的是**向下**的那一位：59.96s 不许印成 `60.0s`）；
+ * - 再长就给 `Xm Ys`。
+ */
+export function formatElapsed(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  if (ms < 60_000) return `${(Math.floor(ms / 100) / 10).toFixed(1)}s`
+  const minutes = Math.floor(ms / 60_000)
+  const seconds = Math.floor((ms - minutes * 60_000) / 1000)
+  return `${minutes}m ${seconds}s`
 }
 
 export function TraceStepRow({
@@ -134,13 +164,12 @@ export function TraceStepRow({
   /**
    * **用户的点击压过默认值**（`null` = 他还没点过）。
    *
-   * 拦下的行默认展开，但**不能变成折不起来**：点一下就该收起。
-   * 所以真正的取值是"他选了就听他的，否则看默认值"，而宿主那份状态照样同步
-   * （`onToggle`）——两处一起更新，下一次重渲染才不会把用户刚收起的那一行弹回去。
+   * 不成功的行默认展开（判据是 `forceExpand`，见它上面的说明），但**不能变成折不起来**：
+   * 点一下就该收起。所以真正的取值是"他选了就听他的，否则看默认值"，而宿主那份状态照样
+   * 同步（`onToggle`）——两处一起更新，下一次重渲染才不会把用户刚收起的那一行弹回去。
    */
   const [userChose, setUserChose] = useState<boolean | null>(null)
-  const refusal = isRefusalStep(step)
-  const open = userChose ?? (hostOpen || refusal)
+  const open = userChose ?? (hostOpen || forceExpand(step))
   const toggle = () => {
     setUserChose(!open)
     onToggle()
@@ -169,12 +198,21 @@ export function TraceStepRow({
   const shownResult = preview !== null && !fullResult ? preview : (step.result ?? '')
 
   const child = variant === 'child'
+  /**
+   * 这一步还在跑（见 `turns.isRunningStep`）。
+   *
+   * 只有**父行**画那枚转圈：子行的那个位置是一颗 5px 的圆点（它标的是"组内第几次"），
+   * 塞不进一枚状态灯；子行因此只带 `data-running`，由外层那一组替它显示"还在跑"。
+   */
+  const running = isRunningStep(step)
 
   return (
     <li
       // 子行换的是**外壳的行内间距**，不是再补一层左内边距：两笔叠加才是缩进过深的原因
       className={`${child ? STEP_ROW_CHILD : STEP_ROW} ${step.empty ? STEP_EMPTY_DIM : ''}`}
       data-kind={step.kind ?? step.icon}
+      // "还在跑"在这一行上留一笔：外观上靠那枚转圈，用例与无障碍靠它
+      data-running={running ? '' : undefined}
     >
       {child ? (
         <span
@@ -184,6 +222,7 @@ export function TraceStepRow({
       ) : (
         <span className={stepIconClass(step.icon)}>
           <StepIcon icon={step.icon} />
+          {running ? <StepSpinner /> : null}
         </span>
       )}
 
@@ -241,7 +280,13 @@ export function TraceStepRow({
 
         {/* 这一步自己的思考（v0.54）：折叠入口那一行 + 展开后的按段正文。
             位置刻意在**标签之下、入参/返回之上**——它讲的是"这次调用是怎么想出来的"，
-            顺序上先有想法才有调用；而标签仍然是这一行的头一句，所以它看上去仍是一次工具调用。 */}
+            顺序上先有想法才有调用；而标签仍然是这一行的头一句，所以它看上去仍是一次工具调用。
+
+            入口那一行上还带一句**跑了多久**（Qwen 的 "Thought for 3.2s"）：思考正文
+            答完就自动折起，用户能看见的只剩这一行，而"想了 3 秒还是 3 分钟"是它
+            唯一还说得出的读数。时长**只有当场看着它跑的那一轮才有**（`step.durationMs`，
+            见 `liveTurn.observeStep`）——历史、刷新、补发都没有，于是这一句就不出现，
+            绝不拿一个猜的数顶上。 */}
         {thinking.trim() ? (
           <div className="mt-[var(--space-1)]">
             <button
@@ -252,6 +297,14 @@ export function TraceStepRow({
               onClick={() => setThinkingChose(!thinkingOpen)}
             >
               思考
+              {step.durationMs === undefined ? null : (
+                <span
+                  className="tabular text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]"
+                  data-testid="step-elapsed"
+                >
+                  {formatElapsed(step.durationMs)}
+                </span>
+              )}
               <span className="tabular text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
                 {formatCount(thinking.length)} 字
               </span>

@@ -506,3 +506,87 @@ describe('换会话之后，上一条流晚到的增量不许串进来（D16）'
     expect(after?.text).toBe('B 自己的正文')
   })
 })
+
+/**
+ * 「这一步跑了多久」是**本页看着它跑量出来的**（lane 3）。
+ *
+ * 判据只有一条：先看见 `running`、**跨过一次事件循环**又看见 `done`。
+ * 于是它天然只存在于当场看着跑的那一轮——
+ *
+ * - 历史回放（读库）根本没有 `running` 事件；
+ * - 补发（刷新 / 断线重连）把整圈事件在一个同步任务里前后脚送达，用户一帧都没看见；
+ * - 换轮次 / 换会话之后，上一条流留下的起点不许算到新的一条上。
+ *
+ * 后三条都不是"算法不精确"，而是**不许编数字**：宁可没有耗时，也不给一个假的。
+ */
+describe('步骤耗时：只有当场看着它跑的那一轮算得出来', () => {
+  const running = () =>
+    ({ phase: 'tool', label: '联网搜索', status: 'running', tool: 'web_search' }) as never
+  const done = () =>
+    ({
+      phase: 'tool',
+      label: '联网搜索',
+      detail: '8 条',
+      status: 'done',
+      tool: 'web_search',
+    }) as never
+
+  async function beginTurn() {
+    const box = capture()
+    await startChatTurn(
+      { query: '问', kb_ids: [], conversation_id: 'c1' },
+      { conversationId: 'c1', query: '问', thinking: null },
+    )
+    return box
+  }
+
+  it('running →（跨过一次事件循环）→ done：差值就是耗时', async () => {
+    const box = await beginTurn()
+    // 时钟是注入的：这条用例钉的是"起点与终点怎么配对"，不是"这会儿几点"
+    const clock = vi.spyOn(Date, 'now')
+    clock.mockReturnValueOnce(1_000).mockReturnValueOnce(4_200)
+    try {
+      box.handlers!.onStep!(running())
+      // 跨过一次事件循环 = React 已经把"它在跑"画出来了（见 `observeStep` 的说明）
+      await Promise.resolve()
+      box.handlers!.onStep!(done())
+    } finally {
+      clock.mockRestore()
+    }
+
+    expect(liveTurnState()?.steps[0]).toMatchObject({ detail: '8 条', durationMs: 3_200 })
+  })
+
+  it('同一批补发（running 与 done 前后脚到）不算耗时，但这一步照旧画出来', async () => {
+    const box = await beginTurn()
+
+    // 补发就是同一个同步任务里连着送：中间没有一次事件循环，用户没看见它在跑
+    box.handlers!.onStep!(running())
+    box.handlers!.onStep!(done())
+
+    expect(liveTurnState()?.steps[0]).toMatchObject({ detail: '8 条' })
+    expect(liveTurnState()?.steps[0]).not.toHaveProperty('durationMs')
+  })
+
+  it('没有 running 占位、直接来 done（老快照 / 补发的中段）：不给耗时', async () => {
+    const box = await beginTurn()
+
+    box.handlers!.onStep!(done())
+
+    expect(liveTurnState()?.steps[0]).not.toHaveProperty('durationMs')
+  })
+
+  it('换一轮之后，上一条流留下的起点不许算到新的一条上（下标是会被复用的）', async () => {
+    const first = await beginTurn()
+    first.handlers!.onStep!(running())
+    await Promise.resolve()
+
+    // 第二轮：新的 `install` 要把那张起点表清掉，否则"这一轮第 1 步"会捡到
+    // 上一轮第 1 步的起点，算出一个荒唐的耗时（这正是"切会话/换轮次要清"的理由）
+    const box = await beginTurn()
+    box.handlers!.onStep!(done())
+
+    expect(liveTurnState()?.steps[0]).toMatchObject({ detail: '8 条' })
+    expect(liveTurnState()?.steps[0]).not.toHaveProperty('durationMs')
+  })
+})

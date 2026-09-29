@@ -2204,7 +2204,10 @@ describe('首字之前正文区不空着（D27，2026-09-28 走查）', () => {
   it('流式中且还没有正文 → 正文区给一句"正在生成…"；首字一到就撤掉', async () => {
     // 病灶（走查实测）：长文提问后 1s / 3s / 9s 三个采样点，正文区都是
     // `replyTextLen = 0`、`replyTextChildElements = 0`——那一栏**完全是空白**，
-    // 同时只有过程面板在动（"正在处理…｜深度思考｜正在生成回答" 都在面板里）。
+    // 同时只有过程面板在动（走查现场抓到的 `lastAssistantText` 是"正在处理…｜深度思考｜
+    // 正在生成回答"，都在面板里；其中"正在处理…"那句由 `liveLine` 给的实时文案
+    // **后来按用户要求整条删掉了**，面板里那些步骤标签照旧在——那一行现在写的是
+    // 一个静态短标签，见 `chat-trace-step-row.test.tsx`）。
     const box = capture()
     renderPage()
     await screen.findByRole('textbox', { name: '消息输入框' })

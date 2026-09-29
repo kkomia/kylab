@@ -116,13 +116,32 @@ export interface TraceStep {
   empty?: boolean
   /**
    * 这一步的**结果类别**（D22，2026-09-28 走查）：`"blocked"` 被拦下（模式/权限/隔离/
-   * 成员身份）、`"awaiting"` 在等用户确认；`""` 或**没有这个字段** = 正常。
+   * 成员身份）、`"awaiting"` 在等用户确认、`"failed"` 这一步自己出错了
+   * （工具内部异常，见 `services/tool_loop` 那条 `outcome="failed"`）；
+   * `""` 或**没有这个字段** = 正常。
    *
-   * 界面据此知道"这一行说的不是成功，是拦截"——原先只能**匹配句式**
+   * 界面据此知道"这一行说的不是成功"——原先只能**匹配句式**
    * （见 `TraceStepRow.isRefusalDetail` 那张词表），而那一行是默认展开的。
    * 老快照里没有它，所以词表作为兜底保留。
    */
   outcome?: string
+  /**
+   * 这一步**还在跑**（后端 `StepEvent.status`：`"running"` / `"done"`）。
+   *
+   * 为什么必须带到这一层：后端的工具步骤**一直**是先发一条 `running` 占位、跑完再发
+   * 同名的 `done`（见 `services/tool_loop.py`），而映射这里原先把它丢了——于是界面上
+   * "正在跑的那一步"与"已经跑完的那一步"长得一模一样（用户看不出卡在哪）。
+   * 老快照的步骤没有它，于是 `undefined`（那种步骤一律当"跑完了"画）。
+   */
+  status?: string
+  /**
+   * 这一步**当场跑了多久**（毫秒）——由界面自己量出来的，**不是后端字段**。
+   *
+   * 来源只有一个：本页看着它从 `running` 走到 `done`（见 `liveTurn.observeStep`）。
+   * 历史回放、刷新之后重读的步骤、以及补发的那一批**都没有它**——那时界面并没有
+   * 看着它跑，宁可什么都不显示，也不编一个数字出来。
+   */
+  durationMs?: number
   /**
    * 这一步的**原文**：模型传的入参与工具返回的正文（v0.25）。
    * 有值才给展开入口；老链路与回放的历史数据里都没有，于是那些步骤是纯文本。
@@ -163,6 +182,28 @@ export interface TraceStep {
    * 那种数据由 `trailingThinking` 兜底渲染成"默认折叠的一整块"。
    */
   thinking?: string
+}
+
+/**
+ * 后端那条步骤（`ChatStep`）**加上界面自己量出来的耗时**。
+ *
+ * 为什么不加在 `api/chat.ts` 的 `ChatStep` 上：它不是契约的一部分——后端一个字节
+ * 都不知道它，历史快照里也永远不会出现。它是**本页看着这一步跑完之后**顺手盖上去的
+ * 一个印记（见 `liveTurn.observeStep`），跟着步骤对象一路走到渲染层；
+ * 谁没看着它跑（历史、刷新、补发），谁就没有这个字段。
+ */
+export interface ObservedStep extends ChatStep {
+  durationMs?: number
+}
+
+/**
+ * 这一步**还在跑**吗（后端 `StepEvent.status` 的那一半）。
+ *
+ * 收在一处是因为两个渲染位置都要问它：单步那一行（`TraceStepRow`）与
+ * "同类工具并成的一组"（`TracePanel`）——组里只要有一次调用还在跑，那组就还在跑。
+ */
+export function isRunningStep(step: { status?: string }): boolean {
+  return step.status === 'running'
 }
 
 /** 提问原文在面板里只显示一小段：它是"检索了什么"的提示，不是内容主体。 */
@@ -215,51 +256,6 @@ export function buildTurns(messages: readonly Message[]): Turn[] {
     }
   }
   return out
-}
-
-/**
- * 一轮里"实时状态"那一行最多留多少个字（v0.27）。
- *
- * 取的是**尾巴**：思考是往前滚的，用户要看的是它此刻在想什么，
- * 而不是十分钟前那句开头。120 字在常见宽度下大约占满一行多一点，
- * 配合左边的淡出，读起来是"它在飞快地往前写"。
- */
-export const LIVE_TAIL_CHARS = 120
-
-/**
- * 流式期间那一行实时状态（v0.27，照 DeepSeek 的 harness）。
- *
- * 它替掉了"思考像一堵墙一样长高"的观感：**干活的过程只占一行**，
- * 最新吐出来的字从右边进来、旧的往左边淡出。一轮里想了几千字，
- * 屏幕上始终是一行在滚——这是"它在飞快地做事"最直接的画面。
- *
- * 三种内容，按优先级：
- *
- * 1. **正在跑的工具**：「正在抓取网页…」。工具名比思考片段具体，
- *    而且这一步真的可能跑几秒，用户需要知道卡在哪；
- * 2. **正在想的思考**：思考正文的尾巴（见 `LIVE_TAIL_CHARS`）——
- *    这是"思考只显示一行"那一半；
- * 3. 其余情况**退回原来的摘要措辞**（`traceSummary`），不在这一行上另造一套说法。
- *
- * 正文开始吐字之后就**不再抢这一行**：那时用户的注意力已经在正文上，
- * 这里回到摘要（"正在处理…"这类）。
- */
-export function liveLine(message: Message): string {
-  if (!message.streaming) return ''
-  const last = message.steps.at(-1)
-  if (last?.phase === 'tool' && last.status === 'running') {
-    return last.label ? `正在${last.label}…` : '正在调用工具…'
-  }
-  if (!message.text && message.thinkingText.trim()) {
-    return tailOf(message.thinkingText, LIVE_TAIL_CHARS)
-  }
-  return traceSummary(message)
-}
-
-/** 取文本的尾巴（压掉换行，超长时前面给一个省略号）。 */
-function tailOf(text: string, limit: number): string {
-  const flat = text.replace(/\s+/g, ' ').trim()
-  return flat.length > limit ? `…${flat.slice(-limit)}` : flat
 }
 
 /**
@@ -871,9 +867,14 @@ function agentTraceSteps(message: Message): TraceStep[] {
       detail: step.phase === 'answer' ? answerDetail(message) : step.detail,
       // "这一轮什么新东西都没找到"在过程面板里要轻一档：它是一句交代，不是一次收获
       empty: step.added === 0,
-      // 结果类别（D22）：`blocked` / `awaiting`。老快照里没有它，于是 undefined
-      // （`TraceStepRow.isRefusalStep` 据此决定"听结构化字段"还是"回退认句式"）
+      // 结果类别（D22）：`blocked` / `awaiting` / `failed`。老快照里没有它，于是 undefined
+      // （`TraceStepRow.forceExpand` 据此决定"听结构化字段"还是"回退认句式"）
       outcome: step.outcome,
+      // **这一步还在不在跑**（后端一直发，原先在这一层被丢掉）：界面据此把
+      // "正在跑的那一步"画成另一副样子（见 `TraceStepRow` 与 `isRunningStep`）
+      status: step.status,
+      // 耗时是**本页量出来的**（见 `ObservedStep`）：历史与补发里没有，于是不显示
+      durationMs: observedDuration(step),
       // 原文只在真有的时候带上（"组织回答"那一步没有）
       args: step.args,
       result: step.result,
@@ -886,6 +887,12 @@ function agentTraceSteps(message: Message): TraceStep[] {
     steps.unshift(...thinkingStep(message))
   }
   return steps
+}
+
+/** 界面量出来的耗时（见 `ObservedStep`）：不是个正经数字就当作没有。 */
+function observedDuration(step: ChatStep): number | undefined {
+  const value = (step as ObservedStep).durationMs
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
 }
 
 /** 老链路（Agent 关闭，或回放没有步骤的历史）：只有检索与生成两步。 */

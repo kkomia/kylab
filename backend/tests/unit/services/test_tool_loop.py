@@ -281,6 +281,11 @@ def test_tool_failure_returns_to_the_model_instead_of_raising() -> None:
     # 这里从单测这一侧把同一件事再钉一遍（少一半就会变成"悄悄吞掉"）。
     details = [e.detail for e in events if isinstance(e, StepEvent)]
     assert any("服务连不上" in item for item in details), details
+    # **而且这一行要带上结果类别**（D22 补的第三档 `failed`）：界面对不成功的步骤
+    # 一律默认展开（见前端 `TraceStepRow.forceExpand`）——少了这一位，用户看到的是
+    # 一行"成功"的工具调用，上面那句真原因折在它下面，等于没给
+    failed = next(e for e in events if isinstance(e, StepEvent) and "内部错误" in e.detail)
+    assert failed.outcome == "failed"
     # 整轮照常收尾
     assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
 
@@ -1867,8 +1872,11 @@ def test_a_business_rule_message_still_reaches_the_model() -> None:
         runner=runner,
     )
 
-    list(loop.run(messages=[]))
+    events = list(loop.run(messages=[]))
 
     tool_message = next(m for m in client.answer_messages or [] if m.role == "tool")
     assert "工具执行失败" in tool_message.content
     assert "没有挂工作区" in tool_message.content
+    # 除了给模型那句话，还要**结构化**标成 failed（界面据此 `forceExpand` 默认摊开）：
+    # "这一步没做成"不该在过程面板里看起来和跑完一样（§12.325 / §12.333）
+    assert "failed" in [s.outcome for s in _steps(events) if s.status == "done"]

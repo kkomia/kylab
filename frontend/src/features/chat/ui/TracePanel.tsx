@@ -19,11 +19,11 @@
  * DOM 开销一直在。
  */
 import { ChevronDown } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import {
   artifactNameMap,
-  liveLine,
+  isRunningStep,
   sourcePreview,
   sourceWhere,
   thinkingParagraphs,
@@ -37,8 +37,8 @@ import type { ChatSource } from '@/api/chat'
 import { formatCount } from '@/lib/format'
 
 import { LinkText } from './LinkText'
-import { StepIcon } from './stepIcons'
-import { TraceStepRow } from './TraceStepRow'
+import { StepIcon, StepSpinner } from './stepIcons'
+import { forceExpand, TraceStepRow } from './TraceStepRow'
 import {
   STEP_BODY,
   STEP_ROW,
@@ -81,6 +81,22 @@ function EntryRow({
    */
   const key = traceKey(turnIndex, entry.key)
 
+  /**
+   * 组那一行的开合：**默认开着的情况有两种**——用户自己开过，或者组里有一行
+   * "必须看得见"（`forceExpand`，与单步那一行走的是同一个判据）。
+   *
+   * 为什么组也要管这一件：不成功的步骤折在组里等于没展开——用户扫过面板时看到的
+   * 只是「联网搜索 3 次」，而其中一次其实是"没有执行"。判据不在这里另写一遍。
+   *
+   * 用户的点击照样压过默认值（与 `TraceStepRow` 同一个分寸）：默认展开不等于折不起来。
+   * 这个钩子与下面两个判据**必须写在"单独一步"的提前 return 之前**：钩子的顺序不能随
+   * 渲染分支变（写在 return 之后会被 lint 判成"条件调用"）。
+   */
+  const [groupChose, setGroupChose] = useState<boolean | null>(null)
+  const groupForced = entry.kind === 'group' && entry.steps.some(forceExpand)
+  /** 组里还有一次调用在跑（见 `turns.isRunningStep`）：那一行也要看得出来。 */
+  const groupRunning = entry.kind === 'group' && entry.steps.some(isRunningStep)
+
   // 单独一步：绝大多数工具只调一次，那一档不该多一层点击
   if (entry.kind === 'step') {
     return (
@@ -94,20 +110,21 @@ function EntryRow({
     )
   }
 
-  const open = chat.isGroupOpen(key)
+  const open = groupChose ?? (chat.isGroupOpen(key) || groupForced)
+  const toggle = () => {
+    setGroupChose(!open)
+    chat.toggleGroup(key)
+  }
+
   return (
-    <li className={STEP_ROW} data-kind={entry.icon}>
+    <li className={STEP_ROW} data-kind={entry.icon} data-running={groupRunning ? '' : undefined}>
       {/* 组那一行与单步**共用外壳**：图标位、圆底、起始线都走同一份取值 */}
       <span className={stepIconClass(entry.icon)}>
         <StepIcon icon={entry.icon} />
+        {groupRunning ? <StepSpinner /> : null}
       </span>
       <div className={STEP_BODY}>
-        <button
-          type="button"
-          className={STEP_TOGGLE}
-          aria-expanded={open}
-          onClick={() => chat.toggleGroup(key)}
-        >
+        <button type="button" className={STEP_TOGGLE} aria-expanded={open} onClick={toggle}>
           {entry.label}
           <span className="text-[length:var(--text-micro-size)] text-[var(--text-quaternary)]">
             {formatCount(entry.steps.length)} 次
@@ -225,10 +242,10 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
       {/*
         依据摘要那一行：**它同时是过程面板的开合开关**（左边那个箭头）。
 
-        右侧那句话（`traceSummary`）**只在真的有出处时才说**：有出处时它报的是
-        「检索完成 · 引用了 N 个片段 · M 篇文档」，那是这一行唯一有用的读数。
-        没有出处时它会说"本轮没有命中资料 / 直接作答"——用户原话是"没啥用"，
-        所以那两种情况**只留箭头**（收起/展开照样点得到）。
+        三种状态各写什么：**执行期间**一个静态短标签（见下面那段，实时文案已按用户
+        要求整条删掉）；**跑完且有出处**写 `traceSummary`；跑完又没出处则**只留箭头**——
+        那时它会说"本轮没有命中资料 / 直接作答"，用户原话是"没啥用"。
+        无论哪一种，收起/展开都点得到。
       */}
       <button
         type="button"
@@ -244,8 +261,21 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
       >
         <ChevronDown className={caretClass(open)} size={14} />
         {reply.streaming ? (
-          /* 流式时这一行是**滚动的实时状态**：工具在跑就报工具名，思考在写就给它最新的那一截 */
-          <LiveLine text={liveLine(reply)} />
+          /*
+            执行期间这一行只写一个**静态名字**。
+
+            原先这里是那条会滚的实时文案（「正在抓取网页…」/ 思考的尾巴 /
+            「正在处理…」，由 `turns.liveLine` 给）：它挂在助手列的第一个节点上，
+            与头像齐平，用户原话是"把 agent 执行中跟头像齐平的那个流式输出干掉"——
+            整条删掉了（函数与它的用例一起，见 `model/README.md` §3.3）。
+
+            但删掉之后这一行会只剩一枚箭头，看起来像残留符号，而它恰恰是**唯一**
+            能点开这一块的地方。所以补一个静态短标签说明"这一行是什么"：
+            它不随任何状态变化（没有要实时报告的东西了），只负责让人看出这里能点开。
+          */
+          <span className="text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
+            执行过程
+          </span>
         ) : reply.sources.length > 0 ? (
           <span className="text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
             {traceSummary(reply)}
@@ -336,37 +366,5 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
         <Citations turnIndex={turnIndex} sources={reply.sources} />
       ) : null}
     </>
-  )
-}
-
-/**
- * 流式期间那一行实时状态（旧 `components/chat/LiveLine.vue`）。
- *
- * **只有一行**，最新吐出来的字从右边进来、旧的往左边滚出去（左边淡出）。
- * 它替掉的是"思考像一堵墙一样长高"那种观感：一轮里想了几千字，屏幕上始终是
- * 一行在滚——这是"它在飞快地做事"最直接的画面。
- *
- * 两处实现上的取舍（照旧）：用 `scrollLeft` 而不是动画库（零额外状态、零计时器）；
- * 左侧用 `mask-image` 淡出（滚出去的是半句话，硬切会留下一排断口）。
- */
-function LiveLine({ text }: { text: string }) {
-  const line = useRef<HTMLSpanElement>(null)
-  useEffect(() => {
-    // 内容还在变宽时才要滚；`scrollLeft` 直接给到最右，mid-roll 的新内容不会跳
-    const node = line.current
-    if (node) node.scrollLeft = node.scrollWidth
-  }, [text])
-
-  return (
-    <span
-      ref={line}
-      // 这里那个 `#000` 是**蒙版的截止色**（纯黑=完全不透明），不是界面上的颜色：
-      // 它必须是固定值——换成主题色的话，浅色主题那种带透明度的值会让淡出失效
-      className="block min-w-0 overflow-hidden whitespace-nowrap [scroll-behavior:smooth] [mask-image:linear-gradient(to_right,transparent,#000_28px)]"
-    >
-      <span className="inline-block text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
-        {text}
-      </span>
-    </span>
   )
 }

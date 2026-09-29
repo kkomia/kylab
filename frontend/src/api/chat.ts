@@ -175,7 +175,9 @@ export interface ChatStep {
   added?: number
   /**
    * 这一步的**结果类别**（D22，2026-09-28 走查）：`""` / 缺省 = 正常，
-   * `"blocked"` = 被拦下（模式、权限、隔离、成员身份），`"awaiting"` = 在等用户确认。
+   * `"blocked"` = 被拦下（模式、权限、隔离、成员身份），`"awaiting"` = 在等用户确认，
+   * `"failed"` = 这一步没做成（工具内部错误、业务规则拦下）—— 后三档界面都**默认摊开**
+   * （`TraceStepRow.forceExpand`：失败 / 被拦下 / 等确认都属于"必须看得见"）。
    *
    * **为什么要有它**：原先只有 `status`（`"running"` / `"done"`）——被拦下与跑完都是
    * `done`，界面判断"这一行说的不是成功，是拦截"只能**匹配句式**（见
@@ -402,7 +404,7 @@ export type ChatStreamEvent = SeqStamp &
         status: string
         degraded?: boolean
         added?: number
-        /** 结果类别（D22）：`blocked` / `awaiting`；空串时后端不发这个键 */
+        /** 结果类别（D22）：`blocked` / `awaiting` / `failed`；空串时后端不发这个键 */
         outcome?: string
         /** 入参与原文（v0.25）：空串时后端不发这个键，见 `ChatStep` 的说明 */
         args?: string

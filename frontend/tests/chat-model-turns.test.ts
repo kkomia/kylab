@@ -19,8 +19,6 @@ import {
   readTraceOpenMemory,
   writeTraceOpenMemory,
   resultPreview,
-  LIVE_TAIL_CHARS,
-  liveLine,
   makeMessage,
   mergeStep,
   sourcePreview,
@@ -102,48 +100,6 @@ describe('buildTurns', () => {
     expect(turns).toHaveLength(2)
     expect(turns[1].user).toBeNull()
     expect(turns[1].reply?.text).toBe('再来一段')
-  })
-})
-
-describe('liveLine：流式期间那一行实时状态', () => {
-  it('正在跑的工具优先：说"正在抓取网页…"而不是贴思考片段', () => {
-    const line = liveLine(
-      message('assistant', {
-        streaming: true,
-        thinkingText: '我想想，先看看这一页讲了什么……',
-        steps: [{ phase: 'tool', label: '抓取网页', detail: '', status: 'running' }],
-      }),
-    )
-
-    expect(line).toBe('正在抓取网页…')
-  })
-
-  it('思考中贴的是**最新的那一截**，不是开头', () => {
-    const thinking = `${'前面的话。'.repeat(40)}最后一句才是重点。`
-    const line = liveLine(message('assistant', { streaming: true, thinkingText: thinking }))
-
-    expect(line.startsWith('…')).toBe(true)
-    expect(line.endsWith('最后一句才是重点。')).toBe(true)
-    expect(line.length).toBeLessThanOrEqual(LIVE_TAIL_CHARS + 1)
-  })
-
-  it('短思考原样给，不加省略号', () => {
-    expect(
-      liveLine(message('assistant', { streaming: true, thinkingText: ' 先确认  它的定位 ' })),
-    ).toBe('先确认 它的定位')
-  })
-
-  it('正文开始吐字之后**不再抢这一行**：回到原来的摘要措辞', () => {
-    // 注意力已经在正文上了，这一行只是角落里的过程播报
-    const line = liveLine(
-      message('assistant', { streaming: true, text: '答案是……', thinkingText: '很长很长的思考' }),
-    )
-
-    expect(line).toBe('正在处理…')
-  })
-
-  it('这一轮结束（不流式）时没有实时行——那一行是"正在发生"才有的', () => {
-    expect(liveLine(message('assistant', { streaming: false, thinkingText: '想过' }))).toBe('')
   })
 })
 

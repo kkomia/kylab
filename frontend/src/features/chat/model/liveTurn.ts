@@ -69,7 +69,7 @@ import {
   type ThinkingEffort,
 } from '@/api/chat'
 
-import { mergeStep } from './turns'
+import { mergeStep, type ObservedStep } from './turns'
 
 /** `append` = 新起一轮；`patch` = 续写最后一条回答；`recover` = 刷新后接回来的那一轮；
  *  `command` = 一条斜杠命令（有没有回答要等结果，见 `startCommandTurn`）。 */
@@ -151,6 +151,9 @@ let liveRevision = 0
 /** 换掉整份状态（新一轮、清空、接回来时登记）。 */
 function install(next: LiveTurnState | null): void {
   liveRevision += 1
+  // 换会话 / 重新开一轮：那些"看着它跑"的起点作废（见 `stepClocks`）——
+  // 上一轮第 3 步的起点要是留着，这一轮第 3 步跑完会算出一个离谱的数
+  stepClocks.clear()
   useLiveTurnStore.setState({ live: next })
 }
 
@@ -288,6 +291,61 @@ function pushThinking(chunk: string, logSeq?: number): void {
 }
 
 /**
+ * 本页**亲眼看着它跑**的那几步的起点：键 = 它在 `steps` 里的下标。
+ *
+ * 下标能当身份，是因为 `mergeStep` 只有两种动作——把一条新的 `running` 追加到末尾，
+ * 或者**就地替换**同名的那个 `running`：两种情况下标都不动（这也是 `TraceStep.key`
+ * 用 `${phase}-${index}` 的同一条依据）。
+ *
+ * 它是**模块作用域**、随 `install` 清掉（换会话 / 重新开一轮）：记的是"这一趟看着它
+ * 跑的那一刻"，不是会话内容，所以不进 store、也不落库。
+ */
+const stepClocks = new Map<number, { at: number; rendered: boolean }>()
+
+/**
+ * 把"看着它跑"这件事记下来，并在它跑完时给那一步**盖上耗时**（`ObservedStep.durationMs`）。
+ *
+ * 为什么耗时由界面自己量、后端一个字段都不加：只有**看着它跑的那一双眼睛**知道
+ * "它显示成在跑"有多久，而这件事恰恰是用户想看的读数（Qwen 的 "Thought for 3.2s"）。
+ * 后端只管发 `running` / `done` 两个事实（它一直在发），时长是看的人算的。
+ *
+ * 判据只有一条：先看见 `running`、后来又看见 `done`。于是它**天然只存在于当场看着
+ * 跑的那一轮**——历史回放（读库）里根本没有 `running` 事件，而**补发**（刷新 /
+ * 断线重连）是把整圈事件在一个同步任务里前后脚送来的：那种情况要挡掉，判据就是
+ * 下面那个微任务。真跑起来的一步至少跨过一次事件循环（React 至少画过一帧，
+ * 而每个 SSE chunk 之间隔着一次 `reader.read()`），同一个任务里前后脚到的两条
+ * 则连一帧都没画过——那种数字是假的，宁可没有。
+ *
+ * 已知的一个漏口：补发被网络切成两块（`running` 在前一块、`done` 在后一块）时，
+ * 两者之间确实隔了一次事件循环，这一招看不出来，会算出一个很小的数。不用
+ * "小于 N 毫秒就算假的"去堵——那是个猜出来的阈值，而这一条宁可漏，不猜。
+ */
+function observeStep(steps: readonly ChatStep[], step: ChatStep, now: number): ChatStep[] {
+  const merged = mergeStep(steps, step)
+  // 这一次事件动过的是哪一条：`mergeStep` 的两种动作都会换一个新对象出来
+  const index = merged.findIndex((item, i) => item !== steps[i])
+  if (index < 0) return merged
+  if (step.status === 'running') {
+    // 起点只记第一次：同一批里重发的 `running` 不该把起点往后推
+    if (!stepClocks.has(index)) {
+      const clock = { at: now, rendered: false }
+      stepClocks.set(index, clock)
+      // 跨过一次事件循环才算"用户看见过它在跑"（见上面那段"已知的一个漏口"）
+      queueMicrotask(() => {
+        clock.rendered = true
+      })
+    }
+    return merged
+  }
+  const clock = stepClocks.get(index)
+  if (!clock) return merged
+  stepClocks.delete(index)
+  if (!clock.rendered) return merged
+  const durationMs = now - clock.at
+  return merged.map((item, i): ObservedStep => (i === index ? { ...item, durationMs } : item))
+}
+
+/**
  * 这一轮的事件要怎么写进状态——**只此一份**（P2-2）。
  *
  * 发起（`begin`）与接回来（`attachLiveTurn`）用的是同一个工厂：补发的事件与实时收到的
@@ -322,7 +380,9 @@ function liveHandlers(token: number, revision: number): ChatHandlers {
     onStep: (step) => {
       if (!alive()) return
       const state = liveTurnState()
-      if (state) update({ steps: mergeStep(state.steps, step) })
+      // 走 `observeStep` 而不是直接 `mergeStep`：它顺带把这步的耗时量出来（见那里的说明），
+      // 而"running 与哪一条 done 配对"仍然只由 `mergeStep` 一处说了算
+      if (state) update({ steps: observeStep(state.steps, step, Date.now()) })
     },
     onSources: (items) => {
       if (!alive()) return
