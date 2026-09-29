@@ -117,6 +117,15 @@ export interface TraceStep {
   /** 这一步一个片段都没新增（只有检索步骤有）：界面上弱化它，别和"有收获"的轮次一样重。 */
   empty?: boolean
   /**
+   * 这一步的**结果类别**（D22，2026-09-28 走查）：`"blocked"` 被拦下（模式/权限/隔离/
+   * 成员身份）、`"awaiting"` 在等用户确认；`""` 或**没有这个字段** = 正常。
+   *
+   * 界面据此知道"这一行说的不是成功，是拦截"——原先只能**匹配句式**
+   * （见 `TraceStepRow.isRefusalDetail` 那张词表），而那一行是默认展开的。
+   * 老快照里没有它，所以词表作为兜底保留。
+   */
+  outcome?: string
+  /**
    * 这一步的**原文**：模型传的入参与工具返回的正文（v0.25）。
    * 有值才给展开入口；老链路与回放的历史数据里都没有，于是那些步骤是纯文本。
    */
@@ -844,6 +853,9 @@ function agentTraceSteps(message: Message): TraceStep[] {
       detail: step.phase === 'answer' ? answerDetail(message) : step.detail,
       // "这一轮什么新东西都没找到"在过程面板里要轻一档：它是一句交代，不是一次收获
       empty: step.added === 0,
+      // 结果类别（D22）：`blocked` / `awaiting`。老快照里没有它，于是 undefined
+      // （`TraceStepRow.isRefusalStep` 据此决定"听结构化字段"还是"回退认句式"）
+      outcome: step.outcome,
       // 原文只在真有的时候带上（"组织回答"那一步没有）
       args: step.args,
       result: step.result,

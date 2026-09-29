@@ -305,6 +305,18 @@ class ToolOutcome:
     所以摘要由它给（如「23 篇文档」「命中 8 段」）。
     """
 
+    outcome: str = ""
+    """这一步的**结果类别**（D22，2026-09-28 走查）：``""`` 正常 / ``"blocked"`` 被拦下 /
+    ``"awaiting"`` 在等用户确认。
+
+    **为什么要有它**：`StepEvent` 原先只有 ``status``（``running``/``done``）——
+    被拦下与跑完都是 ``done``。界面因此只能**匹配句式**（「没有执行」「等待确认」
+    「拒绝执行」…）判断"这一行说的不是成功，是拦截"，而那一行是**默认展开**的
+    （见 `TraceStepRow.isRefusalDetail`）：措辞一改，用户看到的就是"它好像做了"。
+    由执行器给结构化事实（``agent_tools`` 从 ``ExecOutcome`` 的 ``approval`` / ``ran`` 推），
+    界面不再猜。
+    """
+
     added: int | None = None
     """这一步带回的**新增**资料条数（``None`` = 这不是检索类调用）。
 
@@ -522,7 +534,7 @@ class ToolLoop:
             summary = f"没有执行（模式「{modes.label_of(self._mode)}」拦下）"
         else:
             summary = f"没有执行（权限「{modes.permission_label_of(self._permission)}」拦下）"
-        return ToolOutcome(content=reason, summary=summary)
+        return ToolOutcome(content=reason, summary=summary, outcome="blocked")
 
     def _expired(self, started_at: float) -> bool:
         """这一轮是否已经用满墙钟（见 `DEFAULT_MAX_SECONDS`）。"""
@@ -888,6 +900,8 @@ class ToolLoop:
                 kind=kind_of(call.name),
                 detail=outcome.step_detail(),
                 added=outcome.added,
+                # 结果类别（D22）：界面据此知道"这一行不是成功，是拦截"，不再匹配句式
+                outcome=outcome.outcome,
                 # 入参与原文：界面默认只看 `detail` 那一行结论，
                 # 点开才看这两个（v0.25，照 Kimi 的"可以看每个工具调用的内容"）
                 args=_clip(call.arguments, MAX_STEP_PREVIEW_CHARS),
@@ -991,6 +1005,8 @@ def _with_reason(outcome: ToolOutcome, answer: ApprovalDecision) -> ToolOutcome:
         artifacts=outcome.artifacts,
         summary=outcome.summary,
         added=outcome.added,
+        # 类别要带过去：被拒绝**本身就是**拦截，别在这一步把它丢掉
+        outcome=outcome.outcome or "blocked",
     )
 
 

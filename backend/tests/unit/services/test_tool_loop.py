@@ -1517,6 +1517,9 @@ def test_plan_mode_blocks_a_write_and_feeds_the_reason_back_to_the_model() -> No
     # 结论在第二条上——第一条的 detail 是空的（"这件事开始了"，还没结果）
     done = [s for s in _steps(events) if s.tool == "create_note" and s.status == "done"]
     assert [s.detail for s in done] == ["没有执行（模式「计划」拦下）"]
+    # 除了那句话，还要有**结构化**的类别（D22）：界面据此知道"这一行不是成功，是拦截"，
+    # 不再去匹配句式（走查实测：原先只认「没有执行」「等待确认」这类措辞）
+    assert [s.outcome for s in done] == ["blocked"]
 
 
 def test_plan_mode_lets_read_only_tools_run() -> None:

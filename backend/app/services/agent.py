@@ -64,6 +64,16 @@ class StepEvent:
     「这轮没找到新资料」——**"又查了一次但什么都没多出来"与"查到了新东西"
     对用户是两件不同的事**，而只看「命中 8 段」看不出来（见 ``agent_tools._absorb``）。
     """
+    outcome: str = ""
+    """这一步的**结果类别**（D22，2026-09-28 走查）：``""`` 正常 /
+    ``"blocked"`` 被拦下 / ``"awaiting"`` 在等用户确认。
+
+    原先只有 ``status``（``running``/``done``）——被拦下与跑完都是 ``done``，
+    界面就只能**匹配句式**（「没有执行」「等待确认」「拒绝执行」…）来判断
+    "这一行说的不是成功，是拦截"，而那一行是**默认展开**的
+    （见 ``TraceStepRow.isRefusalDetail``）：措辞一改，用户就会以为它做了。
+    由执行器给结构化事实（``ToolOutcome.outcome``），这里原样带上去。
+    """
 
     args: str = ""
     """模型给这个工具的**原始入参**（JSON 字符串，v0.25）。
@@ -258,6 +268,9 @@ def step_snapshot(
         # 不落库的话，刷一次页面之后那一列就退回"按工具名猜"——正是这次要拆掉的东西
         **({"kind": event.kind} if event.kind else {}),
         **({"added": event.added} if event.added is not None else {}),
+        # 结果类别要落库（D22）：与 `degraded` 同一个理由——只发给流的话，
+        # 刷新一次页面，"这一步是被拦下的"就退回去靠匹配句式猜了
+        **({"outcome": event.outcome} if event.outcome else {}),
         **({"args": event.args} if event.args else {}),
         **({"result": event.result} if event.result else {}),
         **({"artifacts": [dict(item) for item in event.artifacts]} if event.artifacts else {}),

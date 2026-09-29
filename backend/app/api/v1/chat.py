@@ -903,6 +903,9 @@ class _TurnSink:
                     # degraded 让界面给续跑/重试入口，added 让界面说清这轮找了几条新资料
                     **({"degraded": True} if event.degraded else {}),
                     **({"added": event.added} if event.added is not None else {}),
+                    # 结果类别（D22）：界面据此知道"这一行不是成功，是拦截"，
+                    # 不再去匹配句式。空串不发（与上面同一个理由：别给每条步骤白扛一个空字段）
+                    **({"outcome": event.outcome} if event.outcome else {}),
                     # 入参与原文（v0.25）：界面默认不展开，点开才看。
                     # 空串就**不发这个键**——每一条步骤都带两个空字段，
                     # 一个二十步的长会话会白扛几十 KB

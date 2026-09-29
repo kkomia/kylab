@@ -782,8 +782,23 @@ def build_runner(
             outcome = run_command(
                 services, caller, conversation_id=conversation_id, args=args, approval=approval
             )
+            # **结构化地标出"这一轮到底执行了没有"**（D22，2026-09-28 走查）。
+            #
+            # 界面原先靠**匹配句式**认"被拦下"（「没有执行」「等待确认」「拒绝执行」…），
+            # 措辞一改就瞎；而这一行是**默认展开**的，认错的代价不小（用户会以为它做了）。
+            # 这里不改执行器、也不新增分支：从它**已经给出**的结构化事实推——
+            # 在等确认 → ``awaiting``；连进程都没起 → ``blocked``（跑起来但失败的不算拦截）。
+            if outcome.approval is not None:
+                blocked_kind = "awaiting"
+            elif not outcome.ran:
+                blocked_kind = "blocked"
+            else:
+                blocked_kind = ""
             return ToolOutcome(
-                content=outcome.text, summary=outcome.summary, approval=outcome.approval
+                content=outcome.text,
+                summary=outcome.summary,
+                approval=outcome.approval,
+                outcome=blocked_kind,
             )
         if name == "list_tables":
             return _list_tables(services, scope)

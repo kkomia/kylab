@@ -174,6 +174,16 @@ export interface ChatStep {
   /** 这一步带来的**新增**资料条数（只有检索步骤有）。0 表示换了个问法也没挖出新东西。 */
   added?: number
   /**
+   * 这一步的**结果类别**（D22，2026-09-28 走查）：`""` / 缺省 = 正常，
+   * `"blocked"` = 被拦下（模式、权限、隔离、成员身份），`"awaiting"` = 在等用户确认。
+   *
+   * **为什么要有它**：原先只有 `status`（`"running"` / `"done"`）——被拦下与跑完都是
+   * `done`，界面判断"这一行说的不是成功，是拦截"只能**匹配句式**（见
+   * `TraceStepRow.isRefusalDetail` 那张词表），而那一行是**默认展开**的：措辞一改，
+   * 用户就会以为它做了。老快照里没有这个字段，所以词表只作**兜底**保留。
+   */
+  outcome?: string
+  /**
    * 模型给这个工具的**原始入参**（JSON 字符串，v0.25）。
    *
    * 与 `detail` 的分工：`detail` 是**结论**（「命中 8 段」），这两个是**原文**。
@@ -392,6 +402,8 @@ export type ChatStreamEvent = SeqStamp &
         status: string
         degraded?: boolean
         added?: number
+        /** 结果类别（D22）：`blocked` / `awaiting`；空串时后端不发这个键 */
+        outcome?: string
         /** 入参与原文（v0.25）：空串时后端不发这个键，见 `ChatStep` 的说明 */
         args?: string
         result?: string
@@ -780,6 +792,8 @@ async function pump(
         // 新增条数让"这一轮有没有挖到新东西"可见（v25）
         ...(event.degraded ? { degraded: event.degraded } : {}),
         ...(event.added === undefined ? {} : { added: event.added }),
+        // 结果类别（D22）：后端空串时不发这个键，这里也就不带——界面据此走"老快照"那条兜底
+        ...(event.outcome ? { outcome: event.outcome } : {}),
         // 入参与原文（v0.25）：后端空串时**不发这个键**，这里也就不会带上——
         // 界面靠"有没有这两个字段"决定给不给展开入口
         ...(event.args ? { args: event.args } : {}),

@@ -73,8 +73,26 @@ function detailIsRawJson(detail: string): boolean {
  */
 const REFUSAL_MARKS = ['没有执行', '等待确认', '拒绝执行', '不能执行命令']
 
+/** **老快照**的兜底：那时步骤里还没有 `outcome` 这个字段，只能按词表认。 */
 export function isRefusalDetail(detail: string): boolean {
   return REFUSAL_MARKS.some((mark) => detail.includes(mark))
+}
+
+/**
+ * 这一步是不是"被拦下 / 在等确认"（D22，2026-09-28 走查）。
+ *
+ * **优先看结构化字段** `step.outcome`（后端由执行器给：`blocked` = 被模式/权限/隔离/
+ * 成员身份拦下，`awaiting` = 在等用户确认）——这正是把上面那张词表降级成兜底的原因：
+ * 靠句式认拦截，措辞一改就瞎，而这一行是**默认展开**的（用户会以为它做了）。
+ *
+ * `outcome` 缺省（**老快照**，DB 里那些会话还在）才回退去认句式。
+ */
+export function isRefusalStep(step: { outcome?: string; detail: string }): boolean {
+  // **字段在就听它的**（`""` = 正常也是它的结论）；字段不在（老快照）才回退认句式
+  if (step.outcome !== undefined) {
+    return step.outcome === 'blocked' || step.outcome === 'awaiting'
+  }
+  return isRefusalDetail(step.detail)
 }
 
 export function TraceStepRow({
@@ -121,7 +139,7 @@ export function TraceStepRow({
    * （`onToggle`）——两处一起更新，下一次重渲染才不会把用户刚收起的那一行弹回去。
    */
   const [userChose, setUserChose] = useState<boolean | null>(null)
-  const refusal = isRefusalDetail(step.detail)
+  const refusal = isRefusalStep(step)
   const open = userChose ?? (hostOpen || refusal)
   const toggle = () => {
     setUserChose(!open)
