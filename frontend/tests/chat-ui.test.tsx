@@ -2176,3 +2176,45 @@ describe('上下文读数常驻可见（D08，2026-09-28 走查）', () => {
     expect(screen.queryByText('上下文')).not.toBeInTheDocument()
   })
 })
+
+describe('发送链路的异常流（D28，2026-09-28 走查；报告自己的建议是"补自动化用例"）', () => {
+  it('网络中断：流**直接 reject** → 也是人话的失败气泡，且「重试」在', async () => {
+    // 走查把这条列为"未测"。实现上它走的是 `liveTurn.begin()` 的 catch
+    // （`failWith(cause.message)`）——这条用例把它钉住：
+    // 网络断了不等于"什么都没发生"，用户必须看得到原因与出口。
+    vi.mocked(chatStream).mockRejectedValueOnce(new Error('Failed to fetch'))
+    renderPage()
+    await screen.findByRole('textbox', { name: '消息输入框' })
+
+    await ask('这些资料说什么？')
+
+    const line = await screen.findByTestId('reply-error')
+    // `failureText` 会把浏览器那串英文翻成人话（`NETWORK_FAILURES` 那张表）——
+    // 这正是"网络中断时的发送失败提示"该有的样子，所以这里钉的是**那句人话**
+    expect(line).toHaveTextContent('这一轮没跑起来：网络没连上（这条请求没有发出去）')
+    expect(screen.getByRole('button', { name: /重试/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /复制问题/ })).toBeInTheDocument()
+  })
+
+  it('后端 5xx：文案就是后端给的那句，不换成"请稍后重试"', async () => {
+    // `api/chat.ts` 对非 2xx 是 `throw errorFromResponse(response)` —— 那句已经是人话，
+    // 界面**不许**再包一层（包了就丢掉了"是哪一侧出的问题"）。
+    vi.mocked(chatStream).mockRejectedValueOnce(new Error('服务内部错误（500）'))
+    renderPage()
+    await screen.findByRole('textbox', { name: '消息输入框' })
+
+    await ask('这些资料说什么？')
+
+    const line = await screen.findByTestId('reply-error')
+    expect(line).toHaveTextContent('这一轮没跑起来：服务内部错误（500）')
+  })
+
+  it('超长：输入框自带 maxLength（32000），超过的字进不来', async () => {
+    // D06 把上限定在 32000，这里钉的是"打字那条路也受它管"
+    // （粘贴那条路另有用例：超限直接拒收并给提示）。
+    renderPage()
+    const field = await screen.findByRole('textbox', { name: '消息输入框' })
+
+    expect(field).toHaveAttribute('maxlength', '32000')
+  })
+})
