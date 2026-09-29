@@ -19,10 +19,11 @@ mod config;
 mod logfile;
 mod probe;
 mod resources;
+mod sidecar;
 mod signin;
 
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tauri::menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem};
@@ -121,6 +122,9 @@ struct Shell {
     /// 清理资源不该顺手把用户填的服务器地址一起清了。
     data_dir: std::path::PathBuf,
     config: Mutex<config::Config>,
+    /// 边车（本地 Python 运行时）的起停。**一个进程一个**，用 `Arc` 是为了能把它
+    /// 挪进阻塞线程（起边车要等它 import 完，不能按住 async 运行时）。
+    sidecar: Arc<sidecar::Manager>,
 }
 
 impl Shell {
@@ -159,11 +163,15 @@ struct StartupInfo {
     /// 钥匙名字与账号显示名：页面上说"你是谁、用的哪把钥匙"。
     key_name: Option<String>,
     user_name: Option<String>,
+    /// 边车现在活着吗（活着就给端口）：引导页据此说"本地边车已就绪/没起来"。
+    sidecar_port: Option<u16>,
+    sidecar_base: Option<String>,
 }
 
 #[tauri::command]
 fn startup(window: WebviewWindow, shell: State<'_, Shell>) -> StartupInfo {
     let config = shell.config.lock().expect("配置锁被污染了");
+    let running = shell.sidecar.info();
     StartupInfo {
         role: window.label().to_string(),
         server: config.server.clone(),
@@ -178,6 +186,8 @@ fn startup(window: WebviewWindow, shell: State<'_, Shell>) -> StartupInfo {
             .unwrap_or(false),
         key_name: config.key_name.clone(),
         user_name: config.user_name.clone(),
+        sidecar_port: running.as_ref().map(|info| info.port),
+        sidecar_base: running.map(|info| info.base),
     }
 }
 
@@ -316,6 +326,52 @@ async fn connect(
         );
     }
 
+    // ---------------------------------------------------------------- 起边车（P4-4 片②）
+    //
+    // 顺序**必须在导航之前**：前端一加载就可能打 `/turn/stream`，那时边车得已经在听。
+    // 用户在表单里主动点连接（`remember`）或刚换了钥匙 → 先把旧的停掉再起新的
+    // （换服务器/换账号都得换一套 base+token）。
+    let key = {
+        let config = shell.config.lock().map_err(|_| "配置锁被污染了".to_string())?;
+        config.api_key.clone()
+    };
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let runtime_root = sidecar::resolve_runtime(&resource_dir, &shell.dir);
+    let log_dir = shell.dir.clone();
+    let data_dir = shell.data_dir.clone();
+    let workspace = data_dir.join("workspace");
+    let manager = Arc::clone(&shell.sidecar);
+    let restart = remember || fresh_key.is_some();
+    let api_base = format!("{}/api/v1", probed.url.trim_end_matches('/'));
+    let token = key.unwrap_or_default();
+    let started = tauri::async_runtime::spawn_blocking(move || {
+        if restart {
+            manager.stop();
+        }
+        manager.ensure(
+            &runtime_root,
+            &log_dir,
+            &data_dir,
+            &workspace,
+            &api_base,
+            &token,
+        )
+    })
+    .await
+    .map_err(|error| format!("起边车没跑起来：{error}"))?;
+
+    // 边车起不来**不阻断连接**：界面还能用（走服务器那条链），但必须如实说出来
+    let (sidecar_port, sidecar_base, sidecar_note) = match started {
+        Ok(info) => (Some(info.port), Some(info.base), String::new()),
+        Err(error) => {
+            logfile::log(&shell.dir, &format!("边车没起来：{error}"));
+            (None, None, error)
+        }
+    };
+
     let url = Url::parse(&probed.url).map_err(|error| format!("地址拼不出来：{error}"))?;
     let window = app
         .get_webview_window(MAIN_WINDOW)
@@ -362,10 +418,13 @@ async fn connect(
         key_prefix,
         key_permission,
         has_key: has_key || fresh_key.is_some(),
+        sidecar_port,
+        sidecar_base,
+        sidecar_note,
     })
 }
 
-/// `connect` 的结果（页面主要看 `signed_in` / `key_name`，其余是排障用的）。
+/// `connect` 的结果（页面主要看 `signed_in` / `key_name` / `sidecar_port`）。
 #[derive(Serialize)]
 struct Connected {
     origin: String,
@@ -383,6 +442,16 @@ struct Connected {
     key_permission: Option<String>,
     /// 这一轮结束后壳手里有没有能用的钥匙。
     has_key: bool,
+    /// 边车端口与基址（没起来则是 `None`）；`sidecar_note` 是没起来的原因。
+    sidecar_port: Option<u16>,
+    sidecar_base: Option<String>,
+    sidecar_note: String,
+}
+
+/// 边车现在活着吗（页面轮询用；`null` = 没活着）。
+#[tauri::command]
+fn sidecar_info(shell: State<'_, Shell>) -> Option<sidecar::Info> {
+    shell.sidecar.info()
 }
 
 /// 问一句"这台服务器要不要先建管理员"。
@@ -657,7 +726,13 @@ fn handle_menu(app: &AppHandle, id: &str) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![startup, connect, note, signin_status])
+        .invoke_handler(tauri::generate_handler![
+            startup,
+            connect,
+            note,
+            signin_status,
+            sidecar_info
+        ])
         .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
         /*
          * `app://` 协议：真实前端的**所有静态资源**都从这里出（规格 §5.2）。
@@ -734,6 +809,7 @@ fn main() {
                 dir: dir.clone(),
                 data_dir,
                 config: Mutex::new(config),
+                sidecar: Arc::new(sidecar::Manager::new()),
             });
 
             // 菜单**只在 macOS 上挂**：那里没有应用菜单就没有 ⌘C / ⌘V
@@ -772,8 +848,19 @@ fn main() {
                 .build()?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("KYLAB 桌面壳启动失败");
+        .build(tauri::generate_context!())
+        .expect("KYLAB 桌面壳启动失败")
+        .run(|app, event| {
+            // **退出时把边车收干净**（不留孤儿 python ✗）。这里只是"正常退出"那一路：
+            // 托盘退出 / 关窗（Windows 上关主窗就是退出）/ 系统要求退出都会走到。
+            // 壳**崩了**这一路没有代码会跑——那一路靠 sidecar.rs 里的 Job Object
+            // （KILL_ON_JOB_CLOSE）把子进程一起收走。
+            if let tauri::RunEvent::Exit = event {
+                let shell = app.state::<Shell>();
+                shell.sidecar.stop();
+                logfile::log(&shell.dir, "壳要退出了：边车已停");
+            }
+        });
 }
 
 #[cfg(test)]

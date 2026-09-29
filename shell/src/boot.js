@@ -22,9 +22,6 @@
 const tauri = window.__TAURI__ && window.__TAURI__.core
 const invoke = tauri ? tauri.invoke : null
 
-/** 本地资源加载用的入口 URL。**由 Rust 给**（平台不同写法不同，见 `resources::app_url`）。 */
-let APP_URL = 'app://localhost/'
-
 const el = (id) => document.getElementById(id)
 const spinner = el('spinner')
 const title = el('title')
@@ -148,6 +145,12 @@ async function run(target, remember, credentials) {
     if (result && result.signed_in) {
       note('已领到钥匙：' + (result.key_name || '?') + ' / ' + (result.key_prefix || '?'))
     }
+    if (result && result.sidecar_port) {
+      note('边车已就绪：' + result.sidecar_base)
+    } else if (result && result.sidecar_note) {
+      // 起不来不阻断连接（界面照常走服务器那条链），但**必须说出来**
+      note('边车没起来：' + result.sidecar_note)
+    }
   } catch (message) {
     setBusy(false)
     showError(String(message))
@@ -229,25 +232,24 @@ async function main() {
   version.textContent = 'KYLAB 桌面壳 ' + info.shell_version
   renderRecent(info.recent)
   if (info.server) address.value = info.server
-  // 入口 URL 由 Rust 给：Windows 是 http://app.localhost/，macOS/Linux 才是 app://localhost/
-  if (info.app_url) APP_URL = info.app_url
 
   const resources = info.resources || {}
 
   /*
-   * 主窗 + 地址已配 + **本地有可用资源** + **手里有钥匙** → 直接进应用（`app://`）。
-   * 这一跳是"切页面不再等网络"的起点：之后所有 `.js` / `.css` 都由协议层
-   * 从本地磁盘给，只有 `/api/**` 转发到远端那台服务器。
+   * 主窗 + 地址已配 + **本地有可用资源** + **手里有钥匙** → 直接连
+   * （`connect` 会把主窗导航到 `app://` 本地资源）。
    *
-   * 为什么要 `has_key`：没有钥匙时进了应用也连不上服务器（边车拿不到 token），
-   * 不如当场让用户登录一次——那一次之后 `has_key` 就一直是真。
+   * 为什么不直接 `window.location.replace(APP_URL)`：那条路**不会起边车** ——
+   * 而"对话轮次走本地边车"是默认行为（`frontend/src/api/sidecar.ts`）；
+   * 边车没起来时那一轮会回退到服务器，用户看到的是"有时快有时慢"这种说不清的现象。
+   * 走 `connect` 顺带探活 + 起边车 + 起不来时说清原因。
    */
   const canUseLocalApp =
     info.role === 'main' && info.server && info.has_key === true && resources.has_app === true
   if (canUseLocalApp) {
-    note('引导：本地资源就绪（' + (resources.version || '未知版本') + '），跳 app://')
+    note('引导：本地资源就绪（' + (resources.version || '未知版本') + '），自动连接并起边车')
     sub.textContent = '正在从本地加载界面（' + (resources.version || '') + '）…'
-    window.location.replace(APP_URL)
+    void run(address.value.trim(), false, null)
     return
   }
 

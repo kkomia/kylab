@@ -45,6 +45,60 @@ cargo run --release    # 快得多，推荐
 
 「连接 → 在浏览器里打开」等入口**用系统浏览器打开同一台服务器**——壳出问题时这是个逃生门。
 
+## 边车（本地 Python 运行时）
+
+**连接成功之后，壳会把边车起起来**：对话轮次的模型调用与工具执行在本机跑
+（`frontend/src/api/sidecar.ts` 默认就走它），知识库与模型凭据仍走服务器。
+
+```
+<resource_dir>\sidecar-runtime\Scripts\python.exe -m app.sidecar
+    --server {base}/api/v1 --token {config.json 里的 api_key} --port 8765
+    --workspace <壳数据目录>\workspace --data-dir <壳数据目录>
+```
+
+三件必须知道的事：
+
+1. **端口优先抢 8765**。前端那份边车基址是**构建期**定的
+   （`frontend/src/api/sidecar.ts::DEFAULT_SIDECAR_BASE = http://127.0.0.1:8765`），
+   壳只在 8765 被占时才顺延到 8766–8769——**顺延之后前端会找不到它**（回到服务器那条链），
+   所以那种情况壳会写一条日志、"配置与日志"里能查到，必要时用 `VITE_SIDECAR_URL`
+   重新构建前端来对齐；
+2. **`--token` 只在命令行上传**：argv 同机器上的别的进程**看得到**，所以壳**不把它写进日志** ✗
+   （日志里只有端口、工作区、钥匙的名字/前缀）。真要在多用户机器上防这一手，
+   得让边车支持"从文件描述符读 token"，那是后置项；
+3. **不留孤儿 python**：正常退出（托盘退出 / 关窗）走 `RunEvent::Exit` 里的 `stop()`；
+   壳**崩了**这一路靠 Windows 的 Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`）——
+   壳进程一没，边车跟着被收走。
+
+### 出包前先造运行时
+
+**`dist/` 被 gitignore**，所以打包前必须先造出边车运行时，否则包里没有它、
+装出来的壳连不上边车：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build-sidecar-runtime.ps1 -Offline
+```
+
+- `tauri.conf.json` 的 `bundle.resources` 把 `../../dist/sidecar-runtime` 映射成包内
+  `sidecar-runtime\`；
+- **绿色版**（`target/release/kylab-desktop.exe`）要**连 `sidecar-runtime\` 一起拷**——
+  单拷 exe 的话界面能用、对话会回退到服务器那条链；
+- 开发态（`cargo run`）没有包内资源目录，壳会退到仓库根的 `dist/sidecar-runtime`（日志里会写用的是哪一份）。
+
+### 已知限制（v0.1）
+
+- **桌面壳只给管理员用**：领钥匙打的是 `POST /api/v1/api-keys`，而它按设计**只认管理员**
+  （`backend/app/api/v1/api_keys.py` 的纪律：能签发钥匙的接口如果也能被钥匙打开，
+  一把泄露的只读密钥就能给自己再发一把读写密钥）。成员登录会成功、领钥匙拿 403，
+  界面会如实说明。**后置项**：服务端将来开一条"只能给自己发、且必须限定知识库范围"的
+  设备钥匙端点，成员才能用桌面壳；
+- **本仓库的 `cargo test` 需要一个工作区内的临时目录**（某些受限会话不让写 `%TEMP%`，
+  于是 `config` / `resources` / `logfile` 那些写盘的用例会报 `Os code 5 拒绝访问`）：
+
+  ```powershell
+  $env:TEMP='E:\gitlab\kylab\.shots\tmp'; $env:TMP=$env:TEMP; cargo test
+  ```
+
 ## 打包安装包
 
 ```powershell
@@ -52,13 +106,17 @@ cd desktop
 pnpm dlx @tauri-apps/cli@latest build      # 或者 npx @tauri-apps/cli@latest build
 ```
 
-产物（v0.1.0；下表是 v0.41 换图标那次重建的数字）：
+产物（v0.1.0；下表是**装了边车运行时之后**重建的那次数字）：
 
 | 文件 | 大小 | 给谁用 |
 | --- | --- | --- |
-| `src-tauri/target/release/kylab-desktop.exe` | 7.7 MB | **绿色版**：拷过去双击就能跑，不写注册表 |
-| `src-tauri/target/release/bundle/nsis/KYLAB_0.1.0_x64-setup.exe` | 2.2 MB | 双击安装（简体中文 / English，按系统语言自动选） |
-| `src-tauri/target/release/bundle/msi/KYLAB_0.1.0_x64_zh-CN.msi` | 3.3 MB | 给要批量部署 / 走组策略的场合 |
+| `src-tauri/target/release/kylab-desktop.exe` | 7.83 MiB | **绿色版**：拷过去双击就能跑，不写注册表（**要连 `sidecar-runtime\` 一起拷**） |
+| `src-tauri/target/release/bundle/nsis/KYLAB_0.1.0_x64-setup.exe` | 7.45 MiB | 双击安装（简体中文 / English，按系统语言自动选） |
+| `src-tauri/target/release/bundle/msi/KYLAB_0.1.0_x64_zh-CN.msi` | 12.17 MiB | 给要批量部署 / 走组策略的场合 |
+
+比"没装边车"的那一版大了约 3.5–4.8 MiB：包里多了一份**边车运行时**
+（`dist/sidecar-runtime`，实测 16.8 MB / 975 个文件，压缩后约 8–9 MiB）——
+这是"对话在本机跑"必须付的那份体积。
 
 三处刻意的设置：
 

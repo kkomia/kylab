@@ -1940,6 +1940,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "ureq",
+ "windows",
 ]
 
 [[package]]

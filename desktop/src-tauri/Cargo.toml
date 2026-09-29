@@ -10,13 +10,24 @@ rust-version = "1.77.2"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# 壳只做三件事：开窗、记住地址、探活。所以依赖就三个：
-# tauri（窗口与 IPC）、ureq（探活要发一个 HTTP 请求）、serde/serde_json（配置文件与探针响应）。
+# 壳做四件事：开窗、记住地址、探活、**起停边车**。依赖仍然很少：
+# tauri（窗口与 IPC）、ureq（探活与边车 /health）、serde/serde_json（配置与探针响应）。
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", features = ["json"] }
+
+# Windows：Job Object —— 让边车（python 子进程）**随壳一起退出**（壳崩了也不留孤儿 python）。
+# 用 `windows`（高阶层）而不是 `windows-sys`：实测 windows-sys 0.52/0.59/0.61 的
+# `Win32::System::JobObjects` 里**只有常量与结构体、没有那几个函数** ✗。
+# 只在 Windows 上编译；别的平台靠 `RunEvent::Exit` 里的 stop()（见 src/sidecar.rs 的 job 模块）。
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+] }
 
 [profile.release]
 codegen-units = 1
