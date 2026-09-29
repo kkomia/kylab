@@ -205,12 +205,37 @@ def test_upload_to_unknown_kb_fails(client: TestClient) -> None:
 
 
 def test_upload_rejects_oversized_file(client: TestClient, kb_id: str, monkeypatch) -> None:
-    """上限在入口挡住，不要等跑到云端解析才失败。"""
+    """上限在入口挡住，不要等跑到云端解析才失败。
+
+    P1（2026-09-29 能力实测第 10 条）复核过一遍：**闸本来就在服务端**
+    （`app/api/v1/documents.py` 的 `MAX_UPLOAD_BYTES` = 200 MB，与前端
+    `knowledge/uploadLimits.ts` 同一个数字）。那条"30 MB 被 202 收下"不是缺闸，
+    而是 30 MB **本来就小于 200 MB**——实测那次是 `31,457,280` 字节。
+    这条用例按同一常量验判定与**人话**（把上限压到 8 字节来跑，不必造 200 MB）。
+    """
     import app.api.v1.documents as documents_api
 
     monkeypatch.setattr(documents_api, "MAX_UPLOAD_BYTES", 8)
     response = _upload(client, kb_id)
+
     assert response.status_code == 413
+    body = response.json()
+    assert body["error"]["code"] == "payload_too_large"
+    assert "上限" in body["error"]["message"], "4xx 要说人话：告诉用户是大小限制"
+
+
+def test_upload_limit_is_the_documented_one() -> None:
+    """上限就是那个**既有常量**：两条上传路（文档 / 会话文件）与前端三处同值。
+
+    钉住它是为了防"改一处漏一处"：D21 的结论是"超限要等传到服务端才报错"，
+    前端预校验补上之后，两边的数字必须是同一个，否则会出现"前端放行、后端 413"
+    这种最难解释的组合。
+    """
+    import app.api.v1.conversations as conversations_api
+    import app.api.v1.documents as documents_api
+
+    assert documents_api.MAX_UPLOAD_BYTES == 200 * 1024 * 1024
+    assert conversations_api.MAX_UPLOAD_BYTES == documents_api.MAX_UPLOAD_BYTES
 
 
 def test_upload_keeps_chinese_filename_readable(client: TestClient, kb_id: str) -> None:
@@ -448,9 +473,14 @@ def test_settings_reports_whether_embedding_is_configured(client: TestClient) ->
     # 测试环境显式开着开发兜底，因此没绑定注册模型 → 未配置
     assert body["embedding_configured"] is False
     assert body["embedding_is_development"] is True
-    # 模型身份不在设置页分组里了（v0.8）：那里只剩行为参数
+    # 模型身份不在设置页分组里了（v0.8）：那里只剩行为参数。
+    # `embedding.protocol` 也是行为参数（"这个端点说哪套协议"），所以它在这一组里；
+    # 地址 / 密钥 / 模型名 / 维度仍然只在注册表里，一个都不许漏到这一层。
     embedding_group = next(g for g in body["groups"] if g["key"] == "embedding")
-    assert [f["key"] for f in embedding_group["fields"]] == ["embedding.batch_size"]
+    assert [f["key"] for f in embedding_group["fields"]] == [
+        "embedding.batch_size",
+        "embedding.protocol",
+    ]
 
 
 # ------------------------------------------------- 切分参数可调（v17）

@@ -82,6 +82,11 @@ def test_take_top_truncates() -> None:
 
 
 # --------------------------------------------------------------------- 相似度换算
+#
+# **盯住"仓储给的是哪个距离"**：pgvector 那边用的是 ``<=>``（余弦距离 = 1 - cos），
+# 所以换算是一句减法。曾经这里用欧氏公式 ``1 - d²/2``，在 d = 0 处两者一致（所以
+# "精确命中"的用例一直是绿的），但只要有一点差异就虚高：实测 d = 0.483245
+# （真余弦 0.5168）被算成 0.883237，于是界面上所有"相似度"都虚高。
 
 
 def test_zero_distance_means_full_similarity() -> None:
@@ -92,9 +97,23 @@ def test_similarity_decreases_with_distance() -> None:
     assert similarity_from_distance(0.5) > similarity_from_distance(1.0)
 
 
+def test_cosine_distance_maps_to_the_real_cosine() -> None:
+    """余弦距离 → 余弦相似度：**一句减法**（实测值那一组就是这条的现场）。"""
+    # 实测：文本查询与媒体向量的真余弦 0.5168，仓储给的距离 0.483245
+    assert similarity_from_distance(0.483245) == pytest.approx(0.516755, abs=1e-6)
+    # 摆好的 0.95 / 0.70：仓储会给 0.05 / 0.30
+    assert similarity_from_distance(0.05) == pytest.approx(0.95, abs=1e-9)
+    assert similarity_from_distance(0.30) == pytest.approx(0.70, abs=1e-9)
+
+
 def test_orthogonal_vectors_give_zero_similarity() -> None:
-    """归一化向量的 L2 距离为 √2 时夹角 90°，余弦相似度应为 0。"""
-    assert similarity_from_distance(2**0.5) == pytest.approx(0.0, abs=1e-9)
+    """正交时余弦距离是 **1**（不是 √2——那是欧氏距离的写法），相似度 0。"""
+    assert similarity_from_distance(1.0) == pytest.approx(0.0, abs=1e-9)
+
+
+def test_opposite_vectors_give_minus_one() -> None:
+    """余弦距离最大是 2（完全相反）→ -1，正好落在合法区间端点。"""
+    assert similarity_from_distance(2.0) == pytest.approx(-1.0, abs=1e-9)
 
 
 def test_similarity_is_clamped_to_valid_range() -> None:

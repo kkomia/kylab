@@ -3,6 +3,7 @@
 先用真实的摄入链路把文档灌进库，再验证召回、融合、过滤、rerank 与调试信息。
 """
 
+import math
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -643,3 +644,165 @@ def test_vector_mode_without_candidates_does_not_judge(
 
     assert response.hits
     assert response.filtered_out == without.filtered_out
+
+
+# ------------------------------------------------- 相关度地板：比的是余弦，不是名次分
+#
+# 现场（方案 14，真机实测）：一条明显不相关的查询照样回满 top_k=8，而向量第 1 名的
+# `score` 恒为 0.0164（hybrid 档 0.0328）——那是**名次分**（``1/(k+rank)``）。
+# 所以必须钉住两件事：
+#   1. 地板比的是**真实余弦**（``similarity`` / ``raw_scores['vector']``）；
+#   2. 命中上给出的 ``score`` 与 ``similarity`` 是两个东西，别混用。
+# 做法：把候选的余弦**精确摆好**（直接覆盖向量），查询向量固定为 [1,0,0,…]，
+# 于是"该拦谁、该留谁"没有随机性。
+
+WEMM_MODEL_ID = "WeMM-Embedding-2B-Q4_K_M.gguf"
+"""用它当库的嵌入模型 → 命中标定表，地板 0.78（见 ``MIN_VECTOR_SCORE_BY_MODEL``）。"""
+
+UNCALIBRATED_MODEL_ID = "text-embedding-3-small"
+"""没标定过的模型 → 地板 0.0（不设限）：这条也要钉住，别被"顺手加个默认值"改掉。"""
+
+
+def _unit_vector(cosine: float) -> list[float]:
+    """与 ``[1, 0, 0, …]`` 的余弦**正好**是 ``cosine`` 的单位向量。"""
+    orthogonal = math.sqrt(max(0.0, 1.0 - cosine * cosine))
+    return [cosine, orthogonal] + [0.0] * (DIM - 2)
+
+
+class _FixedQueryEmbedder:
+    """固定的查询向量 + 一个说得出口的模型身份（不外呼）。"""
+
+    is_development = False
+    supports_media = False
+
+    def __init__(self, model_id: str, vector: list[float]) -> None:
+        self.model_id = model_id
+        self.dim = DIM
+        self._vector = vector
+
+    def embed(self, texts):  # type: ignore[no-untyped-def]
+        return [list(self._vector) for _ in texts]
+
+
+class _FixedResolver:
+    """``EmbeddingResolver`` 的替身：这个库用哪个模型由我说了算。"""
+
+    def __init__(self, embedder: _FixedQueryEmbedder) -> None:
+        self._embedder = embedder
+
+    def for_kb(self, kb: object) -> object:  # type: ignore[no-untyped-def]
+        return self._embedder
+
+
+def _seed_two_documents(
+    bundle: StoreBundle, ingest_service: IngestService, embedder: DeterministicEmbedder
+) -> tuple[str, str]:
+    """一个库、两篇文档（各一段），返回它们的 chunk_id（先"近"后"远"）。"""
+    KnowledgeBaseService(bundle, embedder=embedder).create(kb_id="kb_floor", name="地板库")
+    chunk_ids: list[str] = []
+    for name, text in (
+        ("near.md", "# 近\n\n这段文字与查询讲的是同一件事。\n"),
+        ("far.md", "# 远\n\n这段文字与查询毫无关系。\n"),
+    ):
+        outcome = ingest_service.submit(
+            knowledge_base_id="kb_floor", filename=name, content=text.encode()
+        )
+        ingest_service.ingest(outcome.document.id)
+        chunk_ids.append(next(iter(bundle.meta.iter_chunks(outcome.document.id))).chunk_id)
+    return chunk_ids[0], chunk_ids[1]
+
+
+def _floor_service(
+    bundle: StoreBundle, model_id: str, query_vector: list[float]
+) -> RetrievalService:
+    embedder = _FixedQueryEmbedder(model_id, query_vector)
+    return RetrievalService(
+        bundle,
+        embedder=embedder,
+        reranker=NoopReranker(),
+        embedders=_FixedResolver(embedder),  # type: ignore[arg-type]
+    )
+
+
+def _search_vector_only(
+    service: RetrievalService, query_vector: list[float], **overrides: float
+):  # type: ignore[no-untyped-def]
+    return service.search(
+        RetrievalQuery(
+            query="问点什么",
+            kb_ids=["kb_floor"],
+            mode=RetrievalMode.VECTOR,
+            **overrides,
+        ),
+        query_vector=query_vector,
+    )
+
+
+def test_the_floor_compares_the_real_cosine_not_the_rank_score(
+    bundle: StoreBundle, ingest_service: IngestService, embedder: DeterministicEmbedder
+) -> None:
+    """摆好的 0.60 留、0.20 拦——地板比的是**真实余弦**（WeMM 那条地板是 0.35）。
+
+    如果哪天有人把判据改成 ``score``（名次分，0.016 量级），这条会**一条都不回**：
+    0.60 那条也会低于 0.0164…… 反过来，真命中被误杀。这正是"地板永远不触发"的镜像错误。
+    """
+    near_id, far_id = _seed_two_documents(bundle, ingest_service, embedder)
+    query_vector = _unit_vector(1.0)
+    bundle.vectors.upsert_vectors(
+        "kb_floor",
+        items=[(near_id, _unit_vector(0.60)), (far_id, _unit_vector(0.20))],
+    )
+    service = _floor_service(bundle, WEMM_MODEL_ID, query_vector)
+
+    response = _search_vector_only(service, query_vector)
+
+    assert [hit.chunk_id for hit in response.hits] == [near_id]
+    assert response.filtered_out == 1
+    hit = response.hits[0]
+    assert hit.similarity == pytest.approx(0.60, abs=1e-6)  # 真实余弦
+    assert hit.score < 0.05  # 融合/名次分：一个很小的常数，**不能**当相似度用
+    assert hit.raw_scores["vector"] == pytest.approx(0.60, abs=1e-6)
+
+    # 显式关掉地板 → 两条都回来。证明"少了一条"是地板干的，不是别的过滤
+    off = _search_vector_only(service, query_vector, min_vector_score=0.0)
+    assert {hit.chunk_id for hit in off.hits} == {near_id, far_id}
+
+
+def test_the_floor_does_not_kill_real_hits(
+    bundle: StoreBundle, ingest_service: IngestService, embedder: DeterministicEmbedder
+) -> None:
+    """真命中那一侧：0.717 / 0.510（实测的正面区间）都留，一条都不许被误杀。"""
+    near_id, far_id = _seed_two_documents(bundle, ingest_service, embedder)
+    query_vector = _unit_vector(1.0)
+    bundle.vectors.upsert_vectors(
+        "kb_floor",
+        items=[(near_id, _unit_vector(0.717)), (far_id, _unit_vector(0.510))],
+    )
+    service = _floor_service(bundle, WEMM_MODEL_ID, query_vector)
+
+    response = _search_vector_only(service, query_vector)
+
+    assert {hit.chunk_id for hit in response.hits} == {near_id, far_id}
+    assert response.filtered_out == 0
+
+
+def test_uncalibrated_models_are_not_filtered(
+    bundle: StoreBundle, ingest_service: IngestService, embedder: DeterministicEmbedder
+) -> None:
+    """没标定过的模型**不设限**（既有行为，刻意保留）。
+
+    说不出"这个模型上多少算相关"时，拦下来只会误杀——这是"宁可漏也别误杀"的落点。
+    这里的 0.30 换成 WeMM 就会被拦（低于 0.35），未标定时必须留下。
+    """
+    near_id, far_id = _seed_two_documents(bundle, ingest_service, embedder)
+    query_vector = _unit_vector(1.0)
+    bundle.vectors.upsert_vectors(
+        "kb_floor",
+        items=[(near_id, _unit_vector(0.95)), (far_id, _unit_vector(0.30))],
+    )
+    service = _floor_service(bundle, UNCALIBRATED_MODEL_ID, query_vector)
+
+    response = _search_vector_only(service, query_vector)
+
+    assert {hit.chunk_id for hit in response.hits} == {near_id, far_id}
+    assert response.filtered_out == 0

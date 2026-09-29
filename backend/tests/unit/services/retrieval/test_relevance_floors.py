@@ -58,7 +58,7 @@ def test_calibrated_model_turns_both_floors_on() -> None:
 
 
 def test_wemm_models_get_their_own_conservative_floor() -> None:
-    """WeMM 多模态那台也标定过：**0.35**（实测相关下限 0.40 之下留了余量）。
+    """WeMM 多模态那台也标定过：**0.35**（真库噪声头 0.305 之上、真命中 0.51 之下）。
 
     用户登记的模型名带量化后缀（``WeMM-Embedding-2B-Q4_K_M.gguf``），查表用"包含"
     匹配，所以两种写法都命中——要求把名字写得一字不差，等于这条标定对大多数人不生效。
@@ -66,14 +66,32 @@ def test_wemm_models_get_their_own_conservative_floor() -> None:
     for model_id in ("WeMM-Embedding-2B-Q4_K_M.gguf", "WeMM-Embedding-2B", "wemm-embedding-2b"):
         assert _floors(model_id) == (0.35, DEFAULT_MIN_TERM_COVERAGE), model_id
 
-    # 它比 bge-m3 那个 0.89 低得多——两个模型的余弦尺度本来就不是一回事
+    # 它比 bge-m3 那个 0.531 低——两个模型的余弦尺度本来就不是一回事
     assert MIN_VECTOR_SCORE_BY_MODEL["wemm-embedding-2b"] < MIN_VECTOR_SCORE_BY_MODEL["bge-m3"]
+
+
+def test_the_old_scale_and_the_new_scale_agree_point_by_point() -> None:
+    """bge-m3 那条是**旧刻度 0.89 的逐点换算**（0.531），判定要与改动前一致。
+
+    旧刻度是欧氏公式算出来的虚高值（``1 - d²/2``），换算回真余弦是
+    ``v = 1 - √(2(1 - 旧值))``。同一条射线上的候选，两个刻度给出的"过不过线"
+    必须**完全相同**——否则改相似度换算就等于悄悄改了检索行为。
+    """
+    old_floor, new_floor = 0.89, MIN_VECTOR_SCORE_BY_MODEL["bge-m3"]
+
+    def old_scale(true_cosine: float) -> float:
+        distance = 1.0 - true_cosine  # 仓储给的余弦距离
+        return 1.0 - distance * distance / 2.0
+
+    assert new_floor == pytest.approx(1.0 - (2.0 * (1.0 - old_floor)) ** 0.5, abs=1e-3)
+    for true_cosine in (0.30, 0.45, 0.514, 0.52, 0.531, 0.55, 0.60, 0.70, 0.90):
+        assert (old_scale(true_cosine) >= old_floor) is (true_cosine >= new_floor), true_cosine
 
 
 def test_wemm_floor_lets_real_hits_through_and_stops_noise() -> None:
     """地板两侧的行为：低于它走"资料里没有"，高于它**不误杀**。
 
-    数字取自真机实测（相关 ≈0.40–0.52、不相关 ≈0.07–0.20），见
+    数字取自真机实测（真余弦：相关 0.510–0.717、不相关 0.131–0.305），见
     ``MIN_VECTOR_SCORE_BY_MODEL`` 上面那段标定依据。
     """
     from app.services.retrieval.distribution import FIT_NONE, FIT_STRONG, summarize
@@ -88,14 +106,14 @@ def test_wemm_floor_lets_real_hits_through_and_stops_noise() -> None:
             keep_cap=6,
         )
 
-    # 噪声（同一张文不对题的查询：0.14 / 0.07 / 0.20）→ 判"答不了"，建议条数 0
-    noise = verdict([0.20, 0.14, 0.07])
+    # 噪声（「有人在弹钢琴」那 8 条里的 3 条）→ 判"答不了"，建议条数 0
+    noise = verdict([0.305, 0.170, 0.131])
     assert noise.fit == FIT_NONE
     assert noise.suggested_keep == 0
     assert "答不了" in noise.note
 
-    # 真命中（0.49 / 0.40 / 0.42）→ 不误杀：判 strong、建议条数 > 0
-    hits = verdict([0.4929, 0.4203, 0.4044])
+    # 真命中（"文案描述画面"那几条）→ 不误杀：判 strong、建议条数 > 0
+    hits = verdict([0.717, 0.642, 0.510])
     assert hits.fit == FIT_STRONG
     assert hits.suggested_keep > 0
     assert "答不了" not in hits.note

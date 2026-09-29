@@ -109,6 +109,20 @@ class RetrievalHit:
     knowledge_base_id: str
     text: str
     score: float
+    """**融合分**（RRF 家族：``1/(k+rank)`` 量级），只反映**名次**，不是相似度。
+
+    它用来排序、也用来做"相对阈值"（``score / top_score``）那一档判断。
+    **千万别把它当相似度**：向量通道第 1 名的融合分恒为一个很小的常数
+    （实测 0.0164；hybrid 第 1 名 0.0328），拿它跟"相关度地板"比会永远不触发。
+    要看真实相似度用 ``similarity``。
+    """
+    similarity: float | None = None
+    """这条命中的**真实余弦相似度**（向量通道的原始分）。
+
+    ``None`` = 这条只被全文通道捞上来、没有向量分（那时"像不像"我们说不出来）。
+    相关度地板（``MIN_VECTOR_SCORE_BY_MODEL``）比的就是它——**不是** ``score``；
+    界面要显示"相似度"或做"到此为止"的判断，也必须读它（见 ``raw_scores`` 的说明）。
+    """
     page: int | None = None
     heading_path: str | None = None
     image_ids: Sequence[str] = field(default_factory=tuple)
@@ -117,7 +131,8 @@ class RetrievalHit:
     ranks: dict[str, int] = field(default_factory=dict)
     raw_scores: dict[str, float] = field(default_factory=dict)
     """各路原始分：向量侧是**余弦相似度**（已由距离换算），全文侧是 -bm25。
-    调试台要显示"相似度"，靠的就是它——融合分只反映名次，不是相似度。"""
+    调试台要显示"相似度"，靠的就是它——融合分只反映名次，不是相似度。
+    逐条读它容易拿错路（全文那一路的量纲完全不同），所以命中上另给了 ``similarity``。"""
     rerank_score: float | None = None
 
 

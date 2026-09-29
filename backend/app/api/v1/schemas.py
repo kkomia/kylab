@@ -589,6 +589,18 @@ class SearchHitOut(BaseModel):
     knowledge_base_id: str
     text: str
     score: float
+    """**融合分**（RRF 家族：``1/(k+rank)`` 量级），只反映**名次**、不是相似度。
+
+    实测：向量档第 1 名恒为 ``0.0164``、hybrid 档第 1 名恒为 ``0.0328``——
+    它随名次走，不随"像不像"走。**界面不要把它显示成"相似度"**，
+    也不要拿它跟"相关度下限"比（那是 ``similarity`` 的活）。
+    """
+    similarity: float | None = None
+    """这条命中的**真实余弦相似度**（向量通道的原始分；``None`` = 只被全文捞到）。
+
+    **这个才是"相似度"**：相关度地板比的是它（bge-m3 0.531 / WeMM 0.35，按模型标定，
+    见 `services/retrieval/service.py` 的 `MIN_VECTOR_SCORE_BY_MODEL`）。
+    界面要显示相似度、或要判断"到此为止"，读这一位。"""
     page: int | None = None
     heading_path: str | None = None
     image_ids: list[str] = Field(default_factory=list)
