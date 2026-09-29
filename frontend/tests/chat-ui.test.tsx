@@ -1881,3 +1881,43 @@ describe('用户消息随发的附件（v0.55）', () => {
     expect(screen.getAllByRole('button', { name: /^预览 / })).toHaveLength(1)
   })
 })
+
+describe('Toast 只由壳挂（D32，2026-09-28 走查）', () => {
+  it('同一条提示**只出现一次**：壳那个 + 页面（页面不许再挂一个）', async () => {
+    // 必须按**真实组合**摆：壳的 `<Toaster/>` 与页面一起。只挂页面的话重复根本复现不出来
+    // （第一版就是这么写的，反向验证时它**没红**——那不是用例，是个装饰）。
+    const { Toaster } = await import('@/ui/sonner')
+    const { notifyError } = await import('@/features/misc/shared/toast')
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/chat/c1']}>
+          <Routes>
+            <Route
+              path="/chat/:conversationId?"
+              element={
+                <>
+                  <Toaster />
+                  <ChatPage />
+                </>
+              }
+            />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    )
+    await screen.findByRole('textbox', { name: '消息输入框' })
+
+    await act(async () => {
+      notifyError('这条通知只该出现一次')
+    })
+
+    // 壳那一个容器在，**页面不许再挂第二个**。走查实测（两个都挂时）：
+    // `[data-sonner-toaster]` = 2、`[data-sonner-toast]` = 2 —— 同一条提示显示两遍。
+    // 判据取**这一条唯一文案出现的次数**（而不是数容器）：sonner 挂在 portal 里，
+    // 数全局 DOM 会把同一文件里先前用例留下的东西一起算进来（第一版单独跑绿、整文件跑红）。
+    // 文案是这条用例独有的，所以 1 就是 1。
+    await waitFor(() => expect(screen.getAllByText('这条通知只该出现一次')).toHaveLength(1))
+  })
+})

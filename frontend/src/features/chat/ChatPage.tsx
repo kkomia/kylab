@@ -20,8 +20,6 @@
  * 路由与页面壳由主控接（`src/app/**`）：这一页只管 `/chat/:conversationId?`
  * 那三个参数（会话 id、`?new=1`、`?workspace=<id>`），其余入口一律不改路径。
  */
-import { Toaster } from 'sonner'
-
 // 回答正文的排版（`md-p` / `md-ul` / `md-cite` 那一族，渲染器一直在发这些类名）。
 // 挂在页面这一层而不是某个组件里：消息列表、过程面板、出处列表都要它
 import './ui/chat.css'
@@ -78,10 +76,14 @@ export function ChatPage() {
         <SourceSheet />
         <IngestDialog />
         {/*
-          Toast 挂在这一页上：P2 的壳会带自己的 Toaster，届时这一个删掉即可
-          （两个同时挂会让同一条提示出现两遍）。
+          **这一页不许自己挂 `<Toaster/>`**（D32，2026-09-28 走查）。
+
+          原先这里挂了一个（`position="top-center"`），而壳 `app/App.tsx` 里也有一个——
+          两个同时挂，**同一条提示会出现两遍**（走查实测：`[data-sonner-toaster]` = 2、
+          `[data-sonner-toast]` = 2）。壳那个本来就长在 `@/ui/sonner`，位置也是
+          `top-center`（见那个模块头的第 2 条），所以删掉这一个**观感一模一样**，
+          只是不再重复。
         */}
-        <Toaster position="top-center" />
       </ChatRuntime>
     </ChatProvider>
   )

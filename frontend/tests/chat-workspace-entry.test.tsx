@@ -25,6 +25,7 @@ import { chatStream, getContextUsage, getSuggestedQuestions, listCommands } from
 import { ChatPage } from '@/features/chat/ChatPage'
 import { clearLiveAnchors, clearLiveTurn } from '@/features/chat/model/liveTurn'
 import { useWorkspaceStore } from '@/features/layout/workspaces'
+import { Toaster } from '@/ui/sonner'
 
 vi.mock('@/api/chat', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/chat')>()
@@ -194,7 +195,20 @@ function renderPage(route: string) {
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[route]}>
         <Routes>
-          <Route path="/chat/:conversationId?" element={<ChatPage />} />
+          {/*
+            `<Toaster/>` 按**真实组合**摆在这里（D32 起）：壳（`app/App.tsx`）负责挂它，
+            页面自己**不再挂**——原先页面也挂了一个，于是真应用里同一条提示出现两遍。
+            夹具里没有壳，所以补一个，否则"提示里说了什么"这几条断言会看不到提示。
+          */}
+          <Route
+            path="/chat/:conversationId?"
+            element={
+              <>
+                <Toaster />
+                <ChatPage />
+              </>
+            }
+          />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
