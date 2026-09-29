@@ -25,11 +25,52 @@ pub struct Config {
     /// 用过的地址，最近的在前面。
     #[serde(default)]
     pub recent: Vec<String>,
+    /// **长期凭据**：桌面壳替用户领到的 API Key（`kylab_sk_…`）。
+    ///
+    /// 为什么是它而不是密码：会话令牌 7 天滑动续期，到期就得再登一次；而 API Key
+    /// 是长期的那个（吊销在服务器的「API Keys」页），用户"配一次就一直用"。
+    /// **密码一个字节都不落盘**（用户不该在配置文件里留下一份明文口令）。
+    ///
+    /// 明文落盘是**有意的**：这台机器的这个用户目录本来就是"装着它就等于有权限"的边界；
+    /// 但**日志里绝不许出现它**（见 `main.rs` 里日志只写 id / 名字 / 前缀）。
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// 钥匙的 id（`key_…`）：日志与界面用它来指认"是哪一把"。
+    #[serde(default)]
+    pub key_id: Option<String>,
+    /// 钥匙的名字（领的时候填的，一般含主机名）。
+    #[serde(default)]
+    pub key_name: Option<String>,
+    /// 领钥匙的那个账号（显示名优先，退回用户名）：只用于界面上说"你是谁"。
+    #[serde(default)]
+    pub user_name: Option<String>,
 }
 
 impl Config {
     pub fn path(dir: &Path) -> PathBuf {
         dir.join("config.json")
+    }
+
+    /// **这份配置里有能用的长期凭据吗**（而且是给这一个源的）。
+    ///
+    /// 比对 `server` 而不是另加一个 `key_origin` 字段：地址与钥匙本来就是一起配的
+    /// （换服务器要重新领钥匙），多一个字段就多一处可能不一致的状态。
+    pub fn has_key_for(&self, origin: &str) -> bool {
+        self.api_key.is_some() && self.server.as_deref() == Some(origin)
+    }
+
+    /// 记下刚领到的钥匙（**不碰 `server`**：那是 `remember` 的事）。
+    pub fn remember_key(
+        &mut self,
+        key_id: &str,
+        key_name: &str,
+        user_name: &str,
+        api_key: &str,
+    ) {
+        self.key_id = Some(key_id.to_string());
+        self.key_name = Some(key_name.to_string());
+        self.user_name = Some(user_name.to_string());
+        self.api_key = Some(api_key.to_string());
     }
 
     /// 读配置。**读不出来就当没配过**（不 panic）：一个坏掉的配置文件不该让壳打不开，
@@ -68,7 +109,6 @@ impl Config {
         self.recent.truncate(MAX_RECENT);
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +176,55 @@ mod tests {
         }
         assert_eq!(config.recent.len(), MAX_RECENT);
         assert_eq!(config.recent[0], format!("http://host-{}", MAX_RECENT + 2));
+    }
+
+    /// **老配置文件必须照旧能读**：升级前写的 `config.json` 里没有钥匙那几栏，
+    /// 这时不能因为"缺字段"就把用户填过的地址一起丢掉（`#[serde(default)]` 就是为它）。
+    #[test]
+    fn an_old_config_without_the_key_fields_still_loads() {
+        let dir = temp_dir("old-config");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            Config::path(&dir),
+            r#"{"server":"http://192.168.1.10:8000","recent":["http://192.168.1.10:8000"]}"#,
+        )
+        .unwrap();
+
+        let loaded = Config::load(&dir);
+        assert_eq!(loaded.server.as_deref(), Some("http://192.168.1.10:8000"));
+        assert!(loaded.api_key.is_none());
+        assert!(loaded.key_id.is_none());
+        assert!(loaded.key_name.is_none());
+        assert!(loaded.user_name.is_none());
+        assert!(!loaded.has_key_for("http://192.168.1.10:8000"));
+    }
+
+    #[test]
+    fn a_key_round_trips_and_is_tied_to_its_origin() {
+        let dir = temp_dir("key-roundtrip");
+        let mut config = Config::default();
+        config.remember("http://nas:8000");
+        config.remember_key("key_abc", "桌面端 NAS", "小又", "kylab_sk_secret");
+        config.save(&dir).expect("写配置");
+
+        let loaded = Config::load(&dir);
+        assert_eq!(loaded.api_key.as_deref(), Some("kylab_sk_secret"));
+        assert_eq!(loaded.key_id.as_deref(), Some("key_abc"));
+        assert_eq!(loaded.key_name.as_deref(), Some("桌面端 NAS"));
+        assert_eq!(loaded.user_name.as_deref(), Some("小又"));
+        // 只认配它的那一个源：换了服务器就得重新领（免得把 A 的钥匙发给 B）
+        assert!(loaded.has_key_for("http://nas:8000"));
+        assert!(!loaded.has_key_for("http://other:8000"));
+    }
+
+    /// **密码不许落盘**：类型里就没有 `password` 这一栏，这条测试钉住这个事实
+    /// （有人"顺手"加一栏存密码时，它应该红）。
+    #[test]
+    fn the_config_never_contains_a_password_field() {
+        let mut config = Config::default();
+        config.remember("http://nas:8000");
+        config.remember_key("key_abc", "桌面端 NAS", "小又", "kylab_sk_secret");
+        let text = serde_json::to_string(&config).expect("能序列化");
+        assert!(!text.contains("password"), "{text}");
     }
 }

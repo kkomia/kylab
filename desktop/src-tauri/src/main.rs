@@ -19,6 +19,7 @@ mod config;
 mod logfile;
 mod probe;
 mod resources;
+mod signin;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -150,6 +151,14 @@ struct StartupInfo {
     /// 应用入口 URL（**平台不同写法不同**，见 `resources::app_url`）。
     /// 页面不许自己拼 `app://localhost/`——Windows 上那样写会被静默拦掉。
     app_url: String,
+    /// **壳手里有没有能用的长期凭据**（给这个源）。
+    ///
+    /// 页面靠它决定"直接进应用"还是"先登录一次"：没有钥匙时进应用也连不上服务器
+    /// （边车没有 token），不如当场让用户登录 —— 登录一次之后这一栏就一直是 `true`。
+    has_key: bool,
+    /// 钥匙名字与账号显示名：页面上说"你是谁、用的哪把钥匙"。
+    key_name: Option<String>,
+    user_name: Option<String>,
 }
 
 #[tauri::command]
@@ -162,6 +171,13 @@ fn startup(window: WebviewWindow, shell: State<'_, Shell>) -> StartupInfo {
         shell_version: env!("CARGO_PKG_VERSION").to_string(),
         resources: resources::status(&shell.data_dir),
         app_url: resources::app_url().to_string(),
+        has_key: config
+            .server
+            .as_deref()
+            .map(|origin| config.has_key_for(origin))
+            .unwrap_or(false),
+        key_name: config.key_name.clone(),
+        user_name: config.user_name.clone(),
     }
 }
 
@@ -176,44 +192,129 @@ fn note(shell: State<'_, Shell>, message: String) {
     logfile::log(&shell.dir, &format!("[页面] {line}"));
 }
 
-/// 探活 → （用户主动改过就）写入配置 → 把主窗导航过去 → 关掉设置窗。
+/// 探活 → （没有钥匙时）登录并领钥匙 → 写配置 → 把主窗导航过去 → 关掉设置窗。
 ///
 /// `remember` 由页面给：启动时自动连接传 `false`（**不要写配置**，那本来就是配置里
 /// 那份），用户在表单里点了连接传 `true`。这一条就是"配了就一直用它"的落点——
 /// 自动重连不会把地址改掉，连不上也不会把它清掉。
+///
+/// ## 连接即登录（P4-4 片①）
+///
+/// 壳要拿去调服务器的是**长期凭据**（API Key）。所以第一次连接时：
+/// `probe` → `signin::status` →（`setup` 或 `login`）→ `signin::issue_key` → 写配置。
+/// **会话令牌只在这次调用里活一下，用完即弃、不落盘**；密码一个字节都不留。
+///
+/// 已经有钥匙（且地址没变）就直接复用——启动自动连接走这条路，用户不必每次开机登录。
+/// 用户在表单里重新填了用户名密码，则**重新登一次并换一把新钥匙**（例如换账号）。
 #[tauri::command]
 async fn connect(
     app: AppHandle,
     shell: State<'_, Shell>,
     address: String,
     remember: bool,
-) -> Result<probe::Probed, String> {
+    username: Option<String>,
+    password: Option<String>,
+) -> Result<Connected, String> {
     // 探活是阻塞的（最长 4 秒）：放到阻塞线程上，别按住 async 运行时
     let asked = address.clone();
     let probed = tauri::async_runtime::spawn_blocking(move || probe::check(&asked))
         .await
         .map_err(|error| format!("探活没跑起来：{error}"))??;
 
-    if remember {
+    let (has_key, saved_key_name) = {
+        let config = shell.config.lock().map_err(|_| "配置锁被污染了".to_string())?;
+        (
+            config.has_key_for(&probed.origin),
+            config.key_name.clone(),
+        )
+    };
+    let username = username.unwrap_or_default();
+    let password = password.unwrap_or_default();
+    let wants_sign_in = !username.trim().is_empty() || !password.is_empty();
+
+    let mut signed_in = false;
+    let mut key_name = saved_key_name;
+    let mut user_name: Option<String> = None;
+    let mut key_prefix: Option<String> = None;
+    let mut key_permission: Option<String> = None;
+    let mut fresh_key: Option<(signin::IssuedKey, String)> = None;
+
+    if !has_key || wants_sign_in {
+        if username.trim().is_empty() || password.is_empty() {
+            return Err(if has_key {
+                "请填用户名与密码；或者把这两栏留空，直接用已经存下的钥匙".to_string()
+            } else {
+                "这台机器还没有钥匙：填上用户名与密码，壳会登录一次并领一把长期钥匙".to_string()
+            });
+        }
+        let base = probed.url.clone();
+        let device = device_name();
+        let (session, key) = tauri::async_runtime::spawn_blocking(move || {
+            let needs_setup = signin::status(&base)?;
+            let session = if needs_setup {
+                signin::setup(&base, &username, &password)?
+            } else {
+                signin::login(&base, &username, &password)?
+            };
+            let key = signin::issue_key(&base, &session.token, &device)?;
+            Ok::<_, String>((session, key))
+        })
+        .await
+        .map_err(|error| format!("登录没跑起来：{error}"))??;
+
+        signed_in = true;
+        user_name = Some(session.display_name());
+        key_name = Some(key.name.clone());
+        key_prefix = Some(key.prefix.clone());
+        key_permission = Some(key.permission.clone());
+        fresh_key = Some((key, session.display_name()));
+    }
+
+    {
         let mut config = shell.config.lock().map_err(|_| "配置锁被污染了".to_string())?;
-        config.remember(&probed.origin);
-        // 写不进去要说，但**不阻断这次连接**：地址已经探通了，先让人进去，
-        // 下次打开重填一遍是小事，卡在这儿是大事。
-        if let Err(error) = config.save(&shell.dir) {
-            logfile::log(&shell.dir, &format!("配置写不进去（{error}）"));
+        if remember {
+            config.remember(&probed.origin);
+        }
+        if let Some((key, display_name)) = &fresh_key {
+            // 钥匙是**绑定这个源**的：领到新钥匙时把源一起记下（`has_key_for` 靠它判等），
+            // 否则下次启动会以为"没有钥匙"而再来一次登录。
+            config.remember(&probed.origin);
+            config.remember_key(&key.id, &key.name, display_name, &key.token);
+        }
+        if remember || fresh_key.is_some() {
+            // 写不进去要说，但**不阻断这次连接**：已经连上了，先让人进去，
+            // 下次打开重填一遍是小事，卡在这儿是大事。
+            if let Err(error) = config.save(&shell.dir) {
+                logfile::log(&shell.dir, &format!("配置写不进去（{error}）"));
+            }
         }
     }
+    // ⚠️ 日志里**只写 id / 名字 / 前缀**，绝不写钥匙明文（那等同于把凭据抄进日志文件）。
     logfile::log(
         &shell.dir,
         &format!(
-            "连接成功：{}（{} {} / api {}）{}",
+            "连接成功：{}（{} {} / api {}）{}{}",
             probed.origin,
             probed.app,
             probed.version,
             probed.api_version,
-            if remember { "，已记为默认地址" } else { "" }
+            if remember { "，已记为默认地址" } else { "" },
+            match (&key_name, &key_prefix) {
+                (Some(name), Some(prefix)) => format!(
+                    "；钥匙 {name}（{prefix}，权限 {}）",
+                    key_permission.clone().unwrap_or_default()
+                ),
+                (Some(name), None) => format!("；复用已存下的钥匙 {name}"),
+                _ => String::new(),
+            },
         ),
     );
+    if signed_in {
+        logfile::log(
+            &shell.dir,
+            "登录成功：会话令牌用完即弃（**没有落盘**），长期凭据是配置里那把 API Key",
+        );
+    }
 
     let url = Url::parse(&probed.url).map_err(|error| format!("地址拼不出来：{error}"))?;
     let window = app
@@ -249,7 +350,79 @@ async fn connect(
     if let Some(settings) = app.get_webview_window(SETTINGS_WINDOW) {
         let _ = settings.close();
     }
-    Ok(probed)
+    Ok(Connected {
+        origin: probed.origin,
+        url: probed.url,
+        app: probed.app,
+        version: probed.version,
+        api_version: probed.api_version,
+        signed_in,
+        user_name,
+        key_name,
+        key_prefix,
+        key_permission,
+        has_key: has_key || fresh_key.is_some(),
+    })
+}
+
+/// `connect` 的结果（页面主要看 `signed_in` / `key_name`，其余是排障用的）。
+#[derive(Serialize)]
+struct Connected {
+    origin: String,
+    url: String,
+    app: String,
+    version: String,
+    api_version: String,
+    /// 这一轮真去登录了吗（有钥匙直接用则为 `false`）。
+    signed_in: bool,
+    /// 账号显示名（这一轮登录才有）。
+    user_name: Option<String>,
+    key_name: Option<String>,
+    /// 钥匙展示前缀（`kylab_sk_ab12…`）—— **不是明文**。
+    key_prefix: Option<String>,
+    key_permission: Option<String>,
+    /// 这一轮结束后壳手里有没有能用的钥匙。
+    has_key: bool,
+}
+
+/// 问一句"这台服务器要不要先建管理员"。
+///
+/// 页面据此把文案换成「首次设置管理员」并显示"确认密码"栏——**先问再做**，
+/// 而不是让用户点了连接再看服务端报 409。
+#[derive(Serialize)]
+struct SignInStatus {
+    origin: String,
+    needs_setup: bool,
+}
+
+#[tauri::command]
+async fn signin_status(address: String) -> Result<SignInStatus, String> {
+    let asked = address.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let target = probe::normalize(&asked)?;
+        let needs_setup = signin::status(&target.url)?;
+        Ok(SignInStatus {
+            origin: target.origin,
+            needs_setup,
+        })
+    })
+    .await
+    .map_err(|error| format!("登录状态没查成：{error}"))?
+}
+
+/// 领钥匙时填的名字（服务器那边 `name` 上限 64）。带上主机名，用户在多台机器上
+/// 装壳时能在「API Keys」页一眼分清哪把是哪台。
+fn device_name() -> String {
+    let host = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_default();
+    let host = host.trim();
+    let name = if host.is_empty() {
+        "桌面端".to_string()
+    } else {
+        format!("桌面端 {host}")
+    };
+    name.chars().take(64).collect()
 }
 
 // ---------------------------------------------------------------- 导航策略
@@ -484,7 +657,7 @@ fn handle_menu(app: &AppHandle, id: &str) {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![startup, connect, note])
+        .invoke_handler(tauri::generate_handler![startup, connect, note, signin_status])
         .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
         /*
          * `app://` 协议：真实前端的**所有静态资源**都从这里出（规格 §5.2）。

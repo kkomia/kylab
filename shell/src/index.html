@@ -182,6 +182,31 @@
             placeholder="http://192.168.1.10:8000"
           />
         </div>
+        <!-- 账号密码：**只用来登录一次**。壳不存密码，登录后领一把长期 API Key 存进配置。 -->
+        <div class="field">
+          <label for="username">用户名</label>
+          <input
+            id="username"
+            type="text"
+            autocomplete="username"
+            autocapitalize="off"
+            spellcheck="false"
+            placeholder="服务器上的账号"
+          />
+        </div>
+        <div class="field">
+          <label for="password">密码</label>
+          <input
+            id="password"
+            type="password"
+            autocomplete="current-password"
+            placeholder="服务器上的密码"
+          />
+        </div>
+        <div class="field" id="confirm-field" hidden>
+          <label for="confirm">确认密码</label>
+          <input id="confirm" type="password" autocomplete="new-password" />
+        </div>
         <button id="submit" type="submit">连接并进入</button>
         <p class="status" id="status" role="status" hidden></p>
         <p class="error" id="error" role="alert" hidden></p>
