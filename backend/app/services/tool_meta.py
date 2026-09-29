@@ -166,6 +166,9 @@ TOOL_META: dict[str, ToolMeta] = {
     "export_document": ToolMeta(side_effect_scope="session", risk_level="low"),
     "export_table": ToolMeta(side_effect_scope="session", risk_level="low"),
     "export_deck": ToolMeta(side_effect_scope="session", risk_level="low"),
+    # 交付沙箱里那份文件（v0.56）：它读沙箱、写的仍是**这一轮的产物区**——
+    # 与上面三个同一档。不改用户的东西，所以既不必并发也不必问
+    "export_file": ToolMeta(side_effect_scope="session", risk_level="low"),
     # 把它自己产出的东西收进库里：动的是长期数据
     "ingest_artifact": ToolMeta(side_effect_scope="workspace", risk_level="medium"),
     # 联网：只读且**最该并发**（一批抓三页是常态）
@@ -247,6 +250,11 @@ _KIND_OVERRIDES: dict[str, str] = {
     "export_document": "write",
     "export_table": "write",
     "export_deck": "write",
+    # 交付沙箱里那份文件（v0.56）：同样是"它做出来一份东西"（用户看到的是
+    # 「交付文件」+ 一张卡片），与上面三个走同一档图标与配色。
+    # 按元数据推会得到 session（scope 是 session），那在界面上是"另开一段对话"的意思，
+    # 说错了这一件事
+    "export_file": "write",
 }
 
 

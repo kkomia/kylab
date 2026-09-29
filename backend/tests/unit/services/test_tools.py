@@ -849,6 +849,48 @@ def test_export_table_keeps_numbers_as_numbers(services: Services, kb: str, admi
     assert sheet.cell(row=2, column=3).value == 4
 
 
+def test_suffix_of_treats_a_dotless_name_as_no_extension() -> None:
+    """**没有点就是没有扩展名**（v0.56 修的一个真 bug）。
+
+    原来那句是 `_, _, tail = name.rpartition(".")`，而 `rpartition` 在**找不到分隔符**时
+    把第三个元素设成**整个原串**——于是 `_suffix_of("noext")` 返回 `"noext"`，
+    三条导出路径的"没扩展名就报错"那道校验**从来没生效过**。
+    判据改成"最后一个点在不在、且不在开头"。
+
+    `.gitignore` 与 `报告.` 都算没有扩展名（前者与 `artifacts.split_filename` 同口径，
+    后者的点在末尾、切出来是空串）。
+    """
+    from app.services.tools import _suffix_of
+
+    assert _suffix_of("报告.xlsx") == "xlsx"
+    assert _suffix_of("报告.XLSX") == "xlsx"
+    assert _suffix_of("归档.tar.gz") == "gz"
+    assert _suffix_of("noext") == ""
+    assert _suffix_of(".gitignore") == ""
+    assert _suffix_of("报告.") == ""
+    assert _suffix_of("") == ""
+    assert _suffix_of("  ") == ""
+
+
+def test_export_document_refuses_a_name_without_an_extension(
+    services: Services, kb: str, admin: Caller
+) -> None:
+    """文件名没有扩展名时**当场说清**，而不是按"扩展名 = 整个名字"落一份打不开的文件。
+
+    这条是上面那个 bug 的**行为面**：那条 bug 在位时 `_suffix_of("没有扩展名")`
+    返回 `"没有扩展名"`，于是它会被当成"扩展名是 没有扩展名"而走到"不认识的产出格式"
+    ——听起来也像报错，其实**判据是错的**（正确的那句是"只做 .docx / .pdf / …"）。
+    所以这里断言的**不是"抛了异常"，而是抛的是哪一句**。
+    """
+    with pytest.raises(InvalidRequestError, match=r"export_document 只做"):
+        call_tool(
+            services,
+            "export_document",
+            {"knowledge_base_id": kb, "filename": "没有扩展名", "markdown": "正文"},
+            caller=admin,
+        )
+
+
 def test_export_deck_builds_slides(services: Services, kb: str, admin: Caller) -> None:
     """幻灯：封面 + 每页标题与要点，读回来能对上。"""
     from app.parsers.base import ProbeResult

@@ -108,6 +108,7 @@ TOOL_NAMES = (
     "export_table",
     "export_deck",
     "ingest_artifact",
+    "export_file",
     "web_search",
     "web_fetch",
 )
@@ -500,6 +501,9 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "**当结果是「一张表」时用它**（清单、对照、逐项统计）——"
                 "表格塞进文档里就没法排序与计算了。"
                 "第一行当表头；数字直接给数字，不要给字符串。"
+                "**要带图表就在这里给 `charts`**（图与数在同一份文件里、引用同一批单元格）："
+                "对方说「画个图」「带趋势图」「柱状图看占比」时都用它，"
+                "**不要去沙箱里自己画一张再想办法塞进来**（那条路做出来的图与表是两份东西）。"
                 "文件落在这条会话的产物区，**不进知识库**（要入用 ingest_artifact）。"
             ),
             "inputSchema": {
@@ -516,6 +520,39 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "description": "二维数组，第一行是表头",
                     },
                     "sheet_name": {"type": "string", "description": "工作表名；留空为 Sheet1"},
+                    "charts": {
+                        "type": "array",
+                        "description": (
+                            "可选：内嵌到这张表里的图表。列用**第一行的表头名**（推荐）"
+                            "或列字母指代。示例："
+                            '[{"type":"line","title":"月度销量",'
+                            '"categories":"月份","series":["销量"]}]'
+                        ),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": {
+                                    "type": "string",
+                                    "enum": list(office.CHART_TYPES),
+                                    "description": "图表类型；省略为 bar",
+                                },
+                                "title": {"type": "string", "description": "图表标题"},
+                                "categories": {
+                                    "type": "string",
+                                    "description": "类别轴那一列（表头名或字母）；省略用第一列",
+                                },
+                                "series": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": "要画的一列或多列；省略用除类别列以外的全部列",
+                                },
+                                "x_title": {"type": "string", "description": "横轴标题"},
+                                "y_title": {"type": "string", "description": "纵轴标题"},
+                            },
+                            "required": ["type"],
+                            "additionalProperties": False,
+                        },
+                    },
                 },
                 "required": ["filename", "rows"],
                 "additionalProperties": False,
@@ -585,13 +622,52 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "additionalProperties": False,
             },
         },
+        {
+            "name": "export_file",
+            "description": (
+                "把**沙箱里已经生成好的一个文件**交付给对方（登记成产物，对话里挂一张卡片）。"
+                "用它交付的是**用代码做出来的东西**：matplotlib 画的图（.png）、"
+                "openpyxl / python-docx 自己拼的文件、跑脚本产出的 .csv / .json / .zip、"
+                "以及任何**必须由代码生成**、没法用 rows / markdown 描述的文件。"
+                "`path` 是**相对沙箱目录**的路径（就是刚才 run_command 里写文件的地方，"
+                "如 `squares.png` 或 `out/chart.png`）；绝对路径与 `..` 会被拒。"
+                "**能用 export_document / export_table / export_deck 描述的内容不要用它**——"
+                "那三个能保证文件结构正确，这一个只是把字节交出去。"
+                "文件落在**这条会话的产物区**，不进知识库（要入用 ingest_artifact）。"
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "相对沙箱目录的路径（如 squares.png、out/chart.png）",
+                    },
+                    "filename": {
+                        "type": "string",
+                        "description": (
+                            "交付时显示的文件名（含扩展名，决定对方看到的是图还是文件）；"
+                            "留空就用 path 里那个名字"
+                        ),
+                    },
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
     ]
 
 
 #: 需要"这一轮在哪条会话里"的工具（v0.26）——导出类的产物要落到会话的临时位置
-#: 或它所属工作区的目录里。**只有这三个**：其余工具与"在哪条会话里"无关，
+#: 或它所属工作区的目录里。**只有这些**：其余工具与"在哪条会话里"无关，
 #: 给它们一律加一个用不上的参数，会让"哪些工具依赖会话上下文"在签名里读不出来。
-_CONTEXTUAL_TOOLS = frozenset({"export_document", "export_table", "export_deck"})
+#:
+#: ``export_file``（v0.56）排在这里的理由与那三个不同：它不"造"文件，
+#: 而是把**沙箱里的一份文件**登记成产物——而沙箱是**按会话**分的
+#: （``data/sandbox/<会话 id>/``，见 `services/sandbox.sandbox_for`），
+#: 所以"哪条会话"是它唯一能定位到那份文件的东西，拿不到会话时它只能明确报错。
+_CONTEXTUAL_TOOLS = frozenset(
+    {"export_document", "export_table", "export_deck", "export_file"}
+)
 
 
 def call_tool(
@@ -859,14 +935,25 @@ def _get_document_status(
 ) -> dict[str, Any]:
     document_id = _require(args, "document_id")
     record = _document_or_403(services, document_id, caller=caller)
+    chunks = services.documents.chunk_count(record.id)
+    # `searchable` 按**产物**算而不是按 stage（见 DocumentsService.is_searchable 的说明）：
+    # 卡在 embedding 但已经切好块/落了向量的文档**查得到**，原先这里回 false，
+    # 模型据此就不搜了。
+    searchable = services.documents.is_searchable(record, chunks=chunks)
     return {
         "document_id": record.id,
         "name": record.name,
         "stage": record.stage.value,
-        "chunks": services.documents.chunk_count(record.id),
+        "chunks": chunks,
         "error": record.error,
-        "searchable": record.stage.value == "indexed",
-        "note": ("已可检索" if record.stage.value == "indexed" else "尚未完成处理，此时检索不到它"),
+        "searchable": searchable,
+        "note": (
+            "已可检索"
+            if searchable
+            else "尚未完成处理，此时检索不到它"
+            if not record.disabled
+            else "这份文档已停用，不参与检索"
+        ),
     }
 
 
@@ -973,6 +1060,8 @@ def _list_documents(services: Services, args: dict[str, Any], *, caller: Caller)
     records = services.documents.list_documents(
         kb_id, q=str(args.get("query") or "").strip() or None, limit=limit
     )
+    # 批量取切块数（一次查询），`searchable` 由此按产物算——见 DocumentsService.is_searchable
+    counts = services.documents.chunk_counts([item.id for item in records])
     return {
         "knowledge_base_id": kb_id,
         "total": services.documents.count_documents(kb_id),
@@ -981,12 +1070,14 @@ def _list_documents(services: Services, args: dict[str, Any], *, caller: Caller)
                 "document_id": item.id,
                 "name": item.name,
                 "stage": item.stage.value,
-                "searchable": item.stage.value == "indexed",
+                "searchable": services.documents.is_searchable(
+                    item, chunks=counts.get(item.id, 0)
+                ),
                 "disabled": item.disabled,
             }
             for item in records
         ],
-        "note": "只有 searchable 为 true 的文档能被 search 检索到",
+        "note": "searchable 为 true 的文档现在就能被 search 检索到（按已落库的切块算，不按阶段）",
     }
 
 
@@ -1298,12 +1389,41 @@ def _export_table(
     kind = _suffix_of(_require(args, "filename"))
     if kind != "xlsx":
         raise InvalidRequestError(f"export_table 只做 .xlsx（收到 .{kind}）")
+    charts = _chart_specs(args.get("charts"))
     content = _build(
-        kind, office.build_xlsx, rows, sheet_name=str(args.get("sheet_name") or "Sheet1")
+        kind,
+        office.build_xlsx,
+        rows,
+        sheet_name=str(args.get("sheet_name") or "Sheet1"),
+        charts=charts,
     )
     return _save_export(
         services, args, content, caller=caller, kind=kind, conversation_id=conversation_id
     )
+
+
+def _chart_specs(raw: Any) -> list[dict[str, Any]]:
+    """``charts`` 参数先过一遍形状，再交给 `office.build_xlsx`。
+
+    两道（张数、是不是对象）在这里判，是因为它们与"这份输入造不出来"同类；
+    列名对不对、类型认不认识那些**交给 office**——它手里才有表头，
+    而"这一列不存在"的报错必须带上当前表头才改得动（见 `office._column_index`）。
+    """
+    if raw is None or raw == []:
+        return []
+    if not isinstance(raw, list):
+        raise InvalidRequestError("charts 要是一个数组，每项是 {type, title, categories, series}")
+    if len(raw) > office.MAX_CHARTS:
+        raise InvalidRequestError(
+            f"图表太多（{len(raw)} 张，上限 {office.MAX_CHARTS} 张）。"
+            "超过这个数就该拆成两份文件——一张表变成画廊没人看"
+        )
+    for item in raw:
+        if not isinstance(item, dict):
+            raise InvalidRequestError(
+                "charts 里每一项都要是对象：{type, title, categories, series}"
+            )
+    return [dict(item) for item in raw]
 
 
 def _export_deck(
@@ -1479,15 +1599,124 @@ def _ingest_artifact(services: Services, args: dict[str, Any], *, caller: Caller
     }
 
 
+# ------------------------------------------------------------------ 交付沙箱里的文件
+
+
+def _export_file(
+    services: Services,
+    args: dict[str, Any],
+    *,
+    caller: Caller,
+    conversation_id: str | None = None,
+) -> dict[str, Any]:
+    """把**沙箱里已经生成的一份文件**登记成交付物（v0.56）。
+
+    为什么需要它：交付这条路上原先只有"把内容描述出来"的三个口
+    （``export_document`` / ``export_table`` / ``export_deck``），
+    而**用代码做出来的东西描述不出来**——matplotlib 画的 PNG、pandas 算完直接落的
+    CSV、脚本自己拼的 zip。实测 K-03（"运行代码并把图给我"）就是卡在这里：
+    它在沙箱里真的写出了图，却没有任何一个工具能把那份文件变成"对方点得到的东西"，
+    于是一整轮 60 步 / 361 秒之后**交付物是 0**。
+
+    三处刻意：
+    1. **路径只走 `sandbox.resolve_in`**：那条路径由模型生成，它会写
+       ``../../backend/.env`` 或 ``C:/Windows/...``——不是恶意，是它在猜这个项目的结构。
+       ``resolve_in`` 的四道检查（绝对路径 / ``..`` / 解析后越界 / 敏感文件）就是为这件事而写的，
+       这里一行都不另写（自建一套判据迟早与它漂）；
+    2. **只认沙箱里的文件**：工作区与对象存储里的东西**不从这里走**——
+       前者用户可以自己在项目目录里看到、后者是上传那半边的事，
+       把三条来源混进一个工具，它迟早被用来绕过 `resolve_in`；
+    3. **失败要如实说清哪一种**：文件不存在、路径指向目录、超过大小上限——
+       三种要给模型的话完全不同（换个名字 / 换个文件 / 拆小），
+       糊成"导出失败"它只能瞎试。
+    """
+    if not conversation_id:
+        raise InvalidRequestError(
+            "export_file 只能在这条对话里用（它交付的是这次会话沙箱里的文件）。"
+            "要交付内容：用 export_document / export_table / export_deck"
+        )
+
+    relative = _require(args, "path")
+    from app.services.sandbox import resolve_in, sandbox_for
+
+    # 与 `run_command` 落盘时**同一个**沙箱（同一个函数、同一个入参）：
+    # 两处各算一遍路径，迟早会出现"命令写在这儿、交付去那儿找"
+    box = sandbox_for(services.runtime.data_dir, conversation_id).ensure()
+    target = resolve_in(box, relative)
+
+    if not target.is_file():
+        raise InvalidRequestError(
+            f"沙箱里没有这个文件：{relative}"
+            + ("（它是个目录）" if target.is_dir() else "")
+            + "。`path` 要写**相对沙箱目录**的路径（就是刚才那条命令写文件的相对路径）"
+        )
+
+    try:
+        size = target.stat().st_size
+    except OSError as exc:
+        raise InvalidRequestError(f"读不了这个文件（{relative}）：{exc}") from exc
+    if size > MAX_UPLOAD_BYTES:
+        raise InvalidRequestError(
+            f"这个文件 {size // (1024 * 1024)}MB，超过交付上限 "
+            f"{MAX_UPLOAD_BYTES // (1024 * 1024)}MB。把它拆小，"
+            "或者告诉对方在沙箱目录里取"
+        )
+    try:
+        content = target.read_bytes()
+    except OSError as exc:
+        raise InvalidRequestError(f"读不了这个文件（{relative}）：{exc}") from exc
+
+    # 显示名：模型给了就用它（它知道对方要看的是什么），但**名字里不许有路径**
+    # （`_save_export` 会再过一遍 `safe_filename`，这里先取基名，免得那句报错来得莫名）
+    wanted = str(args.get("filename") or "").strip().replace("\\", "/").split("/")[-1]
+    filename = wanted or target.name
+    kind = _suffix_of(filename)
+    if not kind:
+        # 扩展名不是装饰：对方双击它时**按扩展名选程序**，而产物区也按它选预览器
+        # （`FileEntry.kind` 就是它）。没有扩展名的交付物在界面上是一个打不开的文件。
+        # **这条判据能成立全靠 `_suffix_of` 在 v0.56 被修对**——它此前对"没有点"的名字
+        # 返回整个名字（见那个函数），于是这里永远不成立。
+        raise InvalidRequestError(
+            f"交付的文件要有扩展名（收到「{filename}」）——"
+            "对方打开它时按扩展名选程序；给图就用 .png，给数据就用 .csv"
+        )
+
+    return _save_export(
+        services, {"filename": filename}, content, caller=caller, kind=kind,
+        conversation_id=conversation_id,
+    )
+
+
 #: 工具结果里那个"给界面用"的键。`agent_tools.py` 的执行器按它摘出 `artifacts`，
 #: 之后这个键会**从回给模型的文本里去掉**——模型不需要看一份自己的结果的副本。
 ARTIFACT_KEY = "__artifact__"
 
 
 def _suffix_of(filename: str) -> str:
-    """取扩展名（小写、不带点）。没有扩展名时回空串，由调用方给出可读的报错。"""
+    """取扩展名（小写、不带点）。没有扩展名时回空串，由调用方给出可读的报错。
+
+    **这里原先的判断是错的（v0.56 修）**：原来写
+
+    ```python
     _, _, tail = (filename or "").rpartition(".")
     return tail.strip().lower() if tail else ""
+    ```
+
+    `str.rpartition` 在**找不到分隔符**时把第三个元素设成**整个原串**、而不是空串，
+    所以 `_suffix_of("noext")` 返回的是 `"noext"` —— 三条导出路径都在拿"非空"
+    当"有扩展名"，于是**"没有扩展名得当场报错"那道校验从来没生效过**：
+    一个叫 `noext` 的文件会被当成"扩展名是 noext"照常落盘（实测在
+    `export_file` 上踩到，产物区里那份文件没有程序能打开）。
+
+    判据改成"**最后一个点在不在、且不在开头**"：`rpartition` 那半句只用来切串，
+    有没有扩展名这件事单独判——`.gitignore` 这种"点在开头"的不是扩展名，
+    与 `artifacts.split_filename` 的口径一致（那里也是 `dot <= 0` 就回空后缀）。
+    """
+    text = (filename or "").strip()
+    dot = text.rfind(".")
+    if dot <= 0 or dot == len(text) - 1:
+        return ""
+    return text[dot + 1 :].strip().lower()
 
 
 _HANDLERS = {
@@ -1509,6 +1738,7 @@ _HANDLERS = {
     "export_document": _export_document,
     "export_table": _export_table,
     "export_deck": _export_deck,
+    "export_file": _export_file,
     "ingest_artifact": _ingest_artifact,
 }
 

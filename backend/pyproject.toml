@@ -67,6 +67,16 @@ office = [
     # PDF 产出。中文必须有一个 CJK 字体，reportlab 自带 CID 字体（STSong-Light）
     # 不需要额外字体文件，所以没有其它 PDF 库的字体配置负担
     "reportlab>=4.2",
+    # 图表（v0.56，见《开发计划》§12.338 完善方案 2）。放在 office 这一档而不是
+    # 新开一个 extra：**"画一张图"与"导出一份文件"是同一件事的两半**——图要么作为
+    # 图片交付物单独给出，要么由 openpyxl 内嵌进 .xlsx（见 `office.build_xlsx` 的
+    # `charts` 参数）。分开两档的后果是"装了导出没装图"，而那恰好是 G-03 的形状
+    # （xlsx 数字全对、没有图表）。
+    #
+    # 为什么是**预装**而不是"让它自己 pip install"：实测 K-03 用 60 步 / 361 秒
+    # 全耗在装它上面（pip 被 60 秒上限反复掐断、换镜像、建 venv、uv 也失败），
+    # 最后交白卷。画一张图需要的解析器不该由模型在沙箱里现装。
+    "matplotlib>=3.9",
 ]
 # MCP 接入层（M4 起启用）
 mcp = [
@@ -83,6 +93,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "pytest-cov>=6.0",
     "respx>=0.22",
+    "pytest-xdist>=3.8.0",
 ]
 
 [build-system]

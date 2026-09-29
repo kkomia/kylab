@@ -170,6 +170,145 @@ def test_xlsx_sheet_name_is_clipped_to_excels_limit() -> None:
     assert len(openpyxl.load_workbook(io.BytesIO(raw)).sheetnames[0]) == 31
 
 
+# ------------------------------------------------------------------ xlsx 内嵌图表
+#
+# 这一组对着 **G-03 那个缺口**：xlsx 的数字全对、但"要求带图表"而没图表
+# （§12.338 第五节 2）。手法沿用文件头那条——**写出去再读回来**，
+# 只是这回回读的判据是 `ws._charts` 与它引用的单元格范围：
+# "图表对象在文档里"与"图表指着那几列数"是两件事，少检一样都会漏掉
+# "图在、但引用的是空区域"这种打开后一片空白的交付物。
+
+CHART_ROWS = [
+    ["月份", "销量", "退货"],
+    ["1月", 120, 3],
+    ["2月", 150, 4],
+    ["3月", 90, 2],
+]
+
+
+def _sheet(raw: bytes):  # type: ignore[no-untyped-def]
+    import openpyxl
+
+    return openpyxl.load_workbook(io.BytesIO(raw)).active
+
+
+def test_xlsx_without_charts_stays_a_plain_table() -> None:
+    """不给 ``charts`` 时**一个字都不多**：这条守住"老调用方行为不变"。
+
+    多了个默认图的话，所有既有导出的表都会突然多出一张图——
+    而那不是任何人要的。
+    """
+    assert _sheet(office.build_xlsx(CHART_ROWS))._charts == []
+
+
+def test_xlsx_embeds_a_chart_that_points_at_the_named_columns() -> None:
+    """按**表头名**指列：图与数在同一份文件里，且引用的是那几列真实单元格。"""
+    raw = office.build_xlsx(
+        CHART_ROWS,
+        sheet_name="销量",
+        charts=[
+            {
+                "type": "line",
+                "title": "月度销量",
+                "categories": "月份",
+                "series": ["销量", "退货"],
+                "x_title": "月份",
+                "y_title": "件",
+            }
+        ],
+    )
+
+    sheet = _sheet(raw)
+    assert len(sheet._charts) == 1
+    chart = sheet._charts[0]
+    assert type(chart).__name__ == "LineChart"
+    # 标题与两个系列都在（系列名取的是表头那一格）
+    assert chart.title is not None
+    assert [series.tx.strRef.f for series in chart.series] == ["'销量'!B1", "'销量'!C1"]
+    # 类别轴指着 A 列的数据行（**不含表头**：带上表头 Excel 会把"月份"当成一个类别）。
+    # openpyxl 给类别用的是 `numRef`（数值轴引用）——`strRef` 那一支是给"类别是纯文本"
+    # 的写法留的，这里断言的是**范围对不对**，不是它落在哪一支上。
+    assert chart.series[0].cat.numRef.f == "'销量'!$A$2:$A$4"
+    # 锚在数据右边两列：压在数据上会把表盖住
+    assert chart.anchor._from.col == 4  # E 列 = 3 列数据 + 2
+
+
+def test_xlsx_chart_columns_can_be_given_as_letters() -> None:
+    """列也能写成字母：模型手里既有表头也有 A/B/C，两种都收才不会逼它猜。"""
+    sheet = _sheet(
+        office.build_xlsx(CHART_ROWS, charts=[{"type": "bar", "categories": "A", "series": ["B"]}])
+    )
+
+    chart = sheet._charts[0]
+    assert type(chart).__name__ == "BarChart"
+    assert [series.tx.strRef.f for series in chart.series] == ["'Sheet1'!B1"]
+
+
+def test_xlsx_chart_defaults_to_every_column_but_the_categories() -> None:
+    """不给 ``series`` 就画**除类别列以外的全部**列：这是最常用的那一档
+    （"这张表画个图"），让它必须逐个点名列是白加一道门槛。"""
+    sheet = _sheet(office.build_xlsx(CHART_ROWS, charts=[{"type": "bar", "categories": "月份"}]))
+
+    assert len(sheet._charts[0].series) == 2
+    # bar 是**横向的条**（column 才是竖着的柱），这一位决定它挂哪边
+    assert sheet._charts[0].type == "bar"
+
+
+def test_xlsx_pie_chart_ignores_axis_titles() -> None:
+    """饼图没有坐标轴——给它设轴标题会让一张画得出来的图变成一次报错。"""
+    sheet = _sheet(
+        office.build_xlsx(
+            CHART_ROWS,
+            charts=[
+                {
+                    "type": "pie",
+                    "title": "占比",
+                    "categories": "月份",
+                    "series": ["销量"],
+                    "x_title": "月份",
+                    "y_title": "件",
+                }
+            ],
+        )
+    )
+
+    assert type(sheet._charts[0]).__name__ == "PieChart"
+
+
+def test_xlsx_chart_says_which_column_is_missing() -> None:
+    """列名对不上时报错要**带上当前表头**：模型据此能自己改对，
+    而"生成失败"只能让它换个工具重试（G-03 的 80 步里有一半是这种重试）。"""
+    with pytest.raises(RuntimeError) as excinfo:
+        office.build_xlsx(CHART_ROWS, charts=[{"type": "line", "categories": "不存在的列"}])
+    message = str(excinfo.value)
+    assert "不存在的列" in message
+    # 当前表头被带出来了（这条报错要能照着改一次就成）
+    assert "月份" in message and "销量" in message
+
+    with pytest.raises(RuntimeError, match="没有列「也不是这列」"):
+        office.build_xlsx(
+            CHART_ROWS,
+            charts=[{"type": "line", "categories": "月份", "series": ["也不是这列"]}],
+        )
+
+
+def test_xlsx_chart_needs_a_numeric_column_to_plot() -> None:
+    """只有一列时画不出图——**当场说清**，而不是交一份空图表。"""
+    with pytest.raises(RuntimeError, match="没有可画的数值列"):
+        office.build_xlsx([["月份"], ["1月"]], charts=[{"type": "line", "categories": "月份"}])
+
+
+def test_xlsx_unknown_chart_type_lists_what_is_available() -> None:
+    with pytest.raises(RuntimeError, match="不认识的图表类型：donut"):
+        office.build_xlsx(CHART_ROWS, charts=[{"type": "donut", "categories": "月份"}])
+
+
+def test_xlsx_chart_needs_a_data_row() -> None:
+    """只有表头时画不出图——**当场说清**，而不是交一份空图表。"""
+    with pytest.raises(RuntimeError, match="至少要有一行表头加一行数据"):
+        office.build_xlsx([["月份", "销量"]], charts=[{"type": "line", "categories": "月份"}])
+
+
 # ------------------------------------------------------------------ pptx
 
 

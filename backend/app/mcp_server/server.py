@@ -43,9 +43,14 @@ _PARAMS: dict[str, tuple[str, ...]] = {
     "recall": ("query", "limit"),
     "remember": ("content", "tags"),
     "export_document": ("knowledge_base_id", "filename", "markdown", "title"),
-    "export_table": ("knowledge_base_id", "filename", "rows", "sheet_name"),
+    "export_table": ("knowledge_base_id", "filename", "rows", "sheet_name", "charts"),
     "export_deck": ("knowledge_base_id", "filename", "slides", "title"),
     "ingest_artifact": ("artifact_id", "knowledge_base_id"),
+    # 交付沙箱里那份文件（v0.56）。外部 MCP 通道**没有会话上下文**，
+    # 所以它在这个门里只会回一句"只能在这条对话里用"——参数仍要列全，
+    # 否则 `_PARAMS` 与 `TOOL_NAMES` 的那条门禁（见 test_tools 里那条用例）
+    # 会先红，而那个红说的是另一件事（有人漏了挂工具）
+    "export_file": ("path", "filename"),
     "web_search": ("query", "limit"),
     "web_fetch": ("url", "urls"),
 }

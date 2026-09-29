@@ -34,7 +34,9 @@ from dataclasses import dataclass
 from typing import Any
 
 __all__ = [
+    "CHART_TYPES",
     "MAX_CHARS",
+    "MAX_CHARTS",
     "MAX_ROWS",
     "MAX_SLIDES",
     "PLAIN_TEXT_KINDS",
@@ -55,6 +57,18 @@ MAX_COLUMNS = 100
 #: 幻灯片上限。一页一页写出来的是沟通材料，不是归档材料。
 MAX_SLIDES = 60
 MAX_BULLETS_PER_SLIDE = 20
+
+#: 一张表里最多内嵌几张图（v0.56）。上限低是**刻意的**：这张表的读者是人，
+#: 四张图已经要滚一屏；再多就该拆成两份文件，而不是把一张表变成画廊。
+MAX_CHARTS = 8
+
+#: 支持的图表类型（v0.56，见 :func:`build_xlsx` 的 ``charts`` 参数）。
+#:
+#: 取值与 openpyxl 的类一一对应，不发明第二套词汇：模型给的就是这里这几个词，
+#: 认不出来时**报错并列出可用值**（而不是悄悄退回柱形——那会让它以为图已经画上了）。
+#: ``column`` / ``bar`` 都收：前者是竖着的柱、后者是横着的条，
+#: 而"柱子"这个词在中英文里都有人用来指这两个方向，所以 ``column`` 单独列一档。
+CHART_TYPES: tuple[str, ...] = ("bar", "column", "line", "pie", "area")
 
 #: **纯文本类产出**：正文原样落字节，不做任何转换，也不需要任何库。
 #:
@@ -279,11 +293,37 @@ def _docx_table(document: Any, block: Block) -> None:
 # ------------------------------------------------------------------ xlsx
 
 
-def build_xlsx(rows: list[list[Any]], *, sheet_name: str = "Sheet1") -> bytes:
+def build_xlsx(
+    rows: list[list[Any]], *, sheet_name: str = "Sheet1", charts: list[dict[str, Any]] | None = None
+) -> bytes:
     """二维数据 → .xlsx。**只写值**：数值写数值、其余写文本。
 
     数值要按数值写（而不是一律转成字符串）：Excel 里的求和、排序、图表都依赖
     单元格类型，全写成文本的话它们全部失效——而用户会以为是我们算错了。
+
+    ``charts``（v0.56，见《开发计划》§12.338 完善方案 2）是可选的图表规格列表。
+    为什么图表长在这一层而不是"另做一个画图工具"：**"带图表的 Excel"是一个交付物**，
+    图与数必须在同一份文件里、引用同一批单元格，分成两个工具之后
+    "数据和图对不上"就成了必然会发生的事（数据改了、图还指着老范围）。
+
+    每张图的形状（列用**表头名**或**字母**指代，两者都支持）：
+
+    ```python
+    {"type": "line", "title": "月度销量", "categories": "月份", "series": ["销量"]}
+    ```
+
+    - ``type``：见 :data:`CHART_TYPES`，认不出来时**报错并列出可用值**；
+    - ``categories``：横轴那一列（表头名或字母）；省略时用第一列；
+    - ``series``：要画的一列或多列；省略时用除类别列以外的全部列；
+    - ``title`` / ``x_title`` / ``y_title``：可选的三个标题（饼图不看后两个）。
+
+    三处刻意：
+    1. **先查表头名、再当字母认**：模型手里是它自己写的表头，
+       而它常常分别不出"我给的这列叫 ``B``"与"B 列"；
+    2. **类别或数值一列都没有 → 说清是哪张图的哪个字段**，不说"生成失败"——
+       模型据此能自己改对，而不是换个工具重试；
+    3. 图锚在**数据右边两列**（``max_column + 2``）：压在数据上会把表盖住，
+       而"打开就是一张盖着数据的图"比没有图更糟。
     """
     problem = missing_requirement("xlsx")
     if problem:
@@ -306,9 +346,111 @@ def build_xlsx(rows: list[list[Any]], *, sheet_name: str = "Sheet1") -> bytes:
     for column, width in widths.items():
         sheet.column_dimensions[get_column_letter(column)].width = width
 
+    for offset, chart in enumerate(charts or []):
+        _add_chart(sheet, chart, rows=rows, offset=offset)
+
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
+
+
+def _add_chart(
+    sheet: Any, chart: dict[str, Any], *, rows: list[list[Any]], offset: int = 0
+) -> None:
+    """把一张图表规格挂到工作表上（见 :func:`build_xlsx` 的 ``charts``）。"""
+    from openpyxl.chart import AreaChart, BarChart, LineChart, PieChart, Reference
+    from openpyxl.utils import get_column_letter
+
+    if not isinstance(chart, dict):
+        raise RuntimeError("charts 里每一项都要是对象：{type, title, categories, series}")
+
+    kind = str(chart.get("type") or "bar").strip().lower()
+    builders: dict[str, tuple[Any, bool]] = {
+        # 值：类，是不是"条"（决定横竖与类别轴挂哪一边）
+        "bar": (BarChart, True),
+        "column": (BarChart, False),
+        "line": (LineChart, False),
+        "pie": (PieChart, False),
+        "area": (AreaChart, False),
+    }
+    entry = builders.get(kind)
+    if entry is None:
+        raise RuntimeError(
+            f"不认识的图表类型：{kind}（可用：{'、'.join(CHART_TYPES)}）。"
+            "改一个类型重试，不要换成别的工具"
+        )
+    chart_obj, horizontal = entry
+
+    data_rows = len(rows)
+    if data_rows < 2:
+        raise RuntimeError("图表至少要有一行表头加一行数据，这张表只有表头")
+    max_column = max(len(row) for row in rows)
+
+    categories = _column_index(sheet, chart.get("categories"), rows=rows)
+    wanted = chart.get("series")
+    if wanted is None or wanted == []:
+        # 没点名要哪几列：**除类别列以外的全部**（表头行不算数据，所以是 1..max）
+        indices = [index for index in range(1, max_column + 1) if index != categories]
+    elif isinstance(wanted, list):
+        indices = [_column_index(sheet, item, rows=rows) for item in wanted]
+    else:
+        raise RuntimeError("series 要是一个数组（每项是一列的表头名或字母）")
+    if not indices:
+        raise RuntimeError(
+            "这张表只有一列，没有可画的数值列。把数值放进第二列，"
+            "或者用 categories 指定哪一列是类别"
+        )
+
+    plot = chart_obj()
+    if horizontal:
+        plot.type = "bar"  # 横向的条
+    for index in indices:
+        reference = Reference(sheet, min_col=index, max_col=index, min_row=1, max_row=data_rows)
+        plot.add_data(reference, titles_from_data=True)
+    plot.set_categories(
+        Reference(sheet, min_col=categories, max_col=categories, min_row=2, max_row=data_rows)
+    )
+    plot.title = str(chart.get("title") or "").strip()
+    if kind != "pie":
+        # 饼图没有坐标轴（openpyxl 的 PieChart 上这两个属性根本不存在），
+        # 不问一句就设会把一张画得出来的图变成一次报错
+        x_title = str(chart.get("x_title") or "").strip()
+        y_title = str(chart.get("y_title") or "").strip()
+        if x_title:
+            plot.x_axis.title = x_title
+        if y_title:
+            plot.y_axis.title = y_title
+    # 图锚在数据右边两列：压在数据上会把表盖住（见表头注第 3 条）
+    plot.anchor = f"{get_column_letter(max_column + 2)}{2 + offset * 16}"
+    sheet.add_chart(plot)
+
+
+def _column_index(sheet: Any, reference: Any, *, rows: list[list[Any]]) -> int:
+    """``"B"`` / ``"销量"`` → 1 起的列号（见 :func:`build_xlsx` 表头注第 1 条）。
+
+    只认**表头名**与**单个字母**两种写法：范围（``"B:D"``）不收——
+    它看起来"更省事"，但一旦与表头名混着写（``"月份:B"``）语义就说不清了，
+    而这个参数错了画出来的图是**对不上数**的，比报错难查得多。
+    """
+    from openpyxl.utils import column_index_from_string
+
+    text = str(reference or "").strip()
+    if not text:
+        raise RuntimeError("缺少 categories：要给出类别列的表头名或字母")
+
+    headers = [str(cell) for cell in (rows[0] if rows else [])]
+    if text in headers:
+        return headers.index(text) + 1
+
+    if len(text) == 1 and text.isalpha() and text.isascii():
+        index = column_index_from_string(text.upper())
+        if index <= max(1, len(headers)):
+            return index
+
+    raise RuntimeError(
+        f"这张表里没有列「{text}」。用**第一行的表头名**（如「月份」）"
+        f"或列字母（如「B」）；当前表头是：{'、'.join(headers) or '（空表）'}"
+    )
 
 
 def _cell_value(value: Any) -> Any:
