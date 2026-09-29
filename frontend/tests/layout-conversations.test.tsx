@@ -188,8 +188,8 @@ describe('侧栏的会话分区', () => {
     })
     renderShell('/chat/c1')
 
-    const current = await screen.findByRole('link', { name: '会话 A' })
-    const other = screen.getByRole('link', { name: '会话 B' })
+    const current = await screen.findByRole('link', { name: /会话 A/ })
+    const other = screen.getByRole('link', { name: /会话 B/ })
     // 选中态：语义（aria-current）+ 视觉（`--bg-selected` 底）两处一起，缺一不可
     expect(current).toHaveAttribute('aria-current', 'page')
     expect(current.className).toContain('bg-[var(--bg-selected)]')
@@ -209,8 +209,8 @@ describe('侧栏的会话分区', () => {
     })
     renderShell('/chat/c1')
 
-    const current = await screen.findByRole('link', { name: '会话 A' })
-    const other = screen.getByRole('link', { name: '会话 B' })
+    const current = await screen.findByRole('link', { name: /会话 A/ })
+    const other = screen.getByRole('link', { name: /会话 B/ })
     expect(current).toHaveAttribute('aria-current', 'page')
     expect(current.className).toContain('bg-[var(--bg-selected)]')
     expect(current.className).not.toContain('text-text-secondary')
@@ -275,7 +275,8 @@ describe('侧栏的会话分区', () => {
     expect(await screen.findByText('会话 B')).toBeInTheDocument()
     // 刚建的那条排在最前：与后端同一口径（置顶优先，其次最近更新），不是插到哪算哪
     const titles = screen.getAllByRole('link').map((link) => link.textContent)
-    expect(titles.indexOf('会话 B')).toBeLessThan(titles.indexOf('会话 A'))
+    const indexOf = (title: string) => titles.findIndex((item) => (item ?? '').startsWith(title))
+    expect(indexOf('会话 B')).toBeLessThan(indexOf('会话 A'))
     // 就地插入：整份清单不重建（重拉会让侧栏在点击后闪一下）
     expect(listConversationsMock.mock.calls.length).toBe(callsAfterMount)
 
@@ -310,7 +311,8 @@ describe('会话行菜单', () => {
     // 重排后它排在最前（同一节里）
     await waitFor(() => {
       const titles = screen.getAllByRole('link').map((link) => link.textContent)
-      expect(titles.indexOf('会话 B')).toBeLessThan(titles.indexOf('会话 A'))
+      const indexOf = (title: string) => titles.findIndex((item) => (item ?? '').startsWith(title))
+      expect(indexOf('会话 B')).toBeLessThan(indexOf('会话 A'))
     })
   })
 
@@ -608,5 +610,32 @@ describe('悬停预热（审计 F18：旧版"点进去就有"，新版补回来�
     await user.hover(row)
 
     await waitFor(() => expect(vi.mocked(getConversation)).toHaveBeenCalledWith('c9'))
+  })
+})
+
+describe('会话行显示"什么时候聊的"（D14，2026-09-28 走查）', () => {
+  it('每一行标题后面跟着相对时间（与知识库列表同一个格式器）', async () => {
+    // 病灶：整行只有标题，用户在一屏会话里分不出"这是上午那条还是上周那条"。
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60_000).toISOString()
+    listConversationsMock.mockResolvedValue({
+      items: [conversation({ id: 'c1', title: '会话 A', updated_at: fiveMinutesAgo })],
+    })
+
+    renderShell()
+
+    expect(await screen.findByText('5 分钟前')).toBeInTheDocument()
+    // 那一行还在（时间没有把它挤掉）
+    expect(screen.getByRole('link', { name: /会话 A/ })).toBeInTheDocument()
+  })
+
+  it('没有 `updated_at` 的行不显示时间（不写"—"占位）', async () => {
+    listConversationsMock.mockResolvedValue({
+      items: [conversation({ id: 'c1', title: '会话 A', updated_at: null })],
+    })
+
+    renderShell()
+
+    expect(await screen.findByRole('link', { name: /会话 A/ })).toBeInTheDocument()
+    expect(screen.queryByText('—')).not.toBeInTheDocument()
   })
 })

@@ -257,6 +257,14 @@
     opacity: 1;
   }
 
+  /* 同一时刻**让位给「⋯」**（D14）：时间与菜单都长在行尾，两个一起显形会叠在一起。
+     与上面那条同属文件头第 3 类（"悬停才显形 / 悬停就让位"），所以写在这里而不是
+     调用点——`group-hover:` 那套在 Tailwind 里生不出来（实测划过时透明度还是 1）。 */
+  .ly-side-row-wrap:hover .ly-row-time,
+  .ly-side-row-wrap:focus-within .ly-row-time {
+    opacity: 0;
+  }
+
   .ly-nav-item:hover .ly-nav-motion-drop {
     animation: ly-nav-drop-in 200ms linear both;
   }

@@ -108,7 +108,7 @@ import {
 import { WorkspaceCreateDialog } from '@/features/misc/workspaces/WorkspaceCreateDialog'
 import { toggleSidebarPreference } from '@/features/chat/runtime/shortcutPrefs'
 import type { ConversationSummary } from '@/api/conversations'
-import { formatCount } from '@/lib/format'
+import { formatCount, formatRelativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 import { AccountMenu } from './AccountMenu'
@@ -313,6 +313,17 @@ function ConversationRow({
         }}
       >
         <span className="min-w-0 flex-1 truncate">{title}</span>
+        {/*
+          **这一条是什么时候聊的**（D14，2026-09-28 走查）。
+          原先整行只有标题——用户在一屏会话里分不出"这是上午那条还是上周那条"。
+          用与知识库列表**同一个** `formatRelativeTime`（口径一致，不另造一套）。
+          划过时让位给右端的「⋯」菜单（那条规则在 `layout.css` 的 `.ly-row-time`）。
+        */}
+        {item.updated_at ? (
+          <span className="ly-row-time ml-[var(--space-2)] shrink-0 text-[length:var(--text-micro-size)] text-[var(--text-quaternary)] transition-opacity">
+            {formatRelativeTime(item.updated_at)}
+          </span>
+        ) : null}
       </Link>
       {/* **菜单不能放进 Link 里**：点菜单会先触发跳转。它是链接的兄弟，
           绝对定位浮在行右端（见 layout.css）。 */}
