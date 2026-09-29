@@ -16,8 +16,6 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import mapping from '@/features/misc/capabilities/skillCategories.json'
-
 vi.mock('@/api/capabilities', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/capabilities')>()
   return {
@@ -466,40 +464,45 @@ describe('能力页', () => {
     expect(screen.queryByRole('switch')).not.toBeInTheDocument()
   })
 
-  it('技能按分类分组：初始技能集 178 条按类列出、每类头带条数、可收合，搜索在类内生效', async () => {
+  it('技能按分类分组：每类头带条数、可收合，搜索在类内生效', async () => {
     /*
-     * 用的是**真映射**（页面读的那份镜像 JSON）而不是手写桩：178 条从它的
-     * `assignments` 取，于是"每类条数之和 = 178"这条读数是数据说的。
+     * **夹具刻意小**（不拿真映射那 183 条来渲染）：这一条验的是**页面的分组交互**
+     * （头 + 条数 + 收合 + 类内搜索 ✓），渲染 183 张卡再逐个点/搜会把这条用例顶到
+     * vitest 默认 5 秒超时边上 ✗（2026-09-29 全量并发时真翻过：单跑 1.5 秒 ✓、
+     * 全量并发时 5.2 秒 ✗）。"**每类条数之和 = 真映射的条数、每条只出现一次**"
+     * 这条性质由纯函数用例钉着（`tests/misc-capabilities-categories.test.ts` ✓，
+     * 读的就是那份真镜像 JSON ✓）——两层各管一件事 ✓。
      */
-    const names = Object.keys(mapping.assignments)
-    listSkillsMock.mockResolvedValue({
-      items: names.map((name) => skill({ name })),
-      usable: names.length,
-    })
+    const items = [
+      skill({ name: 'pptx' }), // 演示与幻灯片
+      skill({ name: 'slide-skill' }),
+      skill({ name: 'xlsx' }), // 表格与数据
+      skill({ name: 'pdf-pro' }), // 文档与办公
+      skill({ name: 'my-own-skill' }), // 不在映射里 → 「其他」
+    ]
+    listSkillsMock.mockResolvedValue({ items, usable: items.length })
 
     renderMisc(<CapabilitiesPage />)
 
     const headers = await screen.findAllByTestId('skill-category')
-    expect(headers.length).toBeGreaterThan(5)
-    // 每个头里那颗数：类别名后面跟着条数（数字单独一格，靠 `tabular` 那层 span 找）
+    expect(headers.length).toBeGreaterThanOrEqual(3)
     const counts = headers.map((header) => {
       const number = [...header.querySelectorAll('span')].find((el) =>
         /^\d+$/.test(el.textContent ?? ''),
       )
       return Number(number?.textContent ?? '0')
     })
-    expect(counts.reduce((total, value) => total + value, 0)).toBe(names.length)
-    // 178 张卡都画出来了（收合之前）
-    expect(document.querySelectorAll('li.m-card')).toHaveLength(names.length)
+    expect(counts.reduce((total, value) => total + value, 0)).toBe(items.length)
+    expect(document.querySelectorAll('li.m-card')).toHaveLength(items.length)
 
     // 收合第一类：它那一组从画面上消失，别的类还在
     const first = headers[0] as HTMLElement
     await userEvent.click(first)
     expect(first).toHaveAttribute('aria-expanded', 'false')
-    expect(document.querySelectorAll('li.m-card')).toHaveLength(names.length - counts[0])
-    // 再点开：回到 178
+    expect(document.querySelectorAll('li.m-card')).toHaveLength(items.length - counts[0])
+    // 再点开：回到全部
     await userEvent.click(first)
-    expect(document.querySelectorAll('li.m-card')).toHaveLength(names.length)
+    expect(document.querySelectorAll('li.m-card')).toHaveLength(items.length)
 
     // 搜索在类内生效：只剩命中的那一条，其余类的头也不画
     await userEvent.type(screen.getByLabelText('搜索技能'), 'pdf-pro')
