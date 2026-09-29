@@ -53,7 +53,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from markdown_it import MarkdownIt
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.services.retrieval.coverage import content_terms
@@ -169,12 +168,26 @@ MAX_HIT_CHARS = 600
 #: 但没有空行的大段正文也是常见的——不切的话，一次命中会把整节内容全带走。
 MAX_BLOCK_LINES = 24
 
-#: Markdown 解析器（模块级复用：它是无状态的，每次新建纯属浪费）。
+#: Markdown 解析器（**惰性新建、之后复用**：它是无状态的，每次新建纯属浪费）。
 #:
 #: **不开 linkify**：那条规则要额外的 ``linkify-it-py``，而它对"切块"没有任何用。
 #: **不开表格**：GFM 表格遇到空行就终止，所以它不可能被空行切开——开了也没有用武之地。
 #: 解析开销实测约 0.2ms/份（200 次 37ms），相对"每次召回都要读盘"可以忽略。
-_MARKDOWN = MarkdownIt("commonmark")
+#:
+#: **为什么不像原先那样在模块级构造**（P4-3）：那会把 ``markdown_it`` 拖进**客户端运行时**的
+#: 导入闭包 ✗ —— 边车（客户端）不读记忆文件，一次都用不到它 ✓。
+#: **行为不变**：首次真正解析时才导入与构造 ✓，之后复用同一个实例 ✓。
+_MARKDOWN: Any = None
+
+
+def _markdown() -> Any:
+    """惰性拿 MarkdownIt（第一次调用时导入 + 构造）。"""
+    global _MARKDOWN
+    if _MARKDOWN is None:
+        from markdown_it import MarkdownIt
+
+        _MARKDOWN = MarkdownIt("commonmark")
+    return _MARKDOWN
 
 #: 标题多过这个数就**退回按行切**（照 QwenPaw 的 ``max_ast_sections``）。
 #: 那种形状多半是机器生成的目录/日志：为它建树不划算，而按行切在它上面本来就够用。
@@ -1054,7 +1067,7 @@ def _structure(body: str) -> tuple[list[tuple[int, int, int, str]], list[tuple[i
     """
     headings: list[tuple[int, int, int, str]] = []
     protected: list[tuple[int, int]] = []
-    tokens = _MARKDOWN.parse(body)
+    tokens = _markdown().parse(body)
     for index, token in enumerate(tokens):
         if token.map is None:
             continue

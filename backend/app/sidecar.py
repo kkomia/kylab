@@ -49,7 +49,6 @@ from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
-import httpx
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -69,6 +68,33 @@ from app.services.runtime_config import RuntimeConfigService
 from app.services.tool_loop import ToolLoop
 
 logger = logging.getLogger(__name__)
+
+#: 惰性拿到的 httpx（**模块级不 import 它** ✗）。
+_HTTPX: Any = None
+
+
+def _httpx() -> Any:
+    """惰性拿 httpx —— 既是"不进导入闭包"的手法，也是**用例的注入接缝** ✓。
+
+    为什么模块级不 import：`httpx/__init__.py` 里那句 `from ._main import main`
+    （它自带的 CLI 入口）会把 `click` + `pygments` + `rich` 一起拉进来 ✗ ——
+    而客户端运行时（边车）只需要它"发请求"那一部分能力 ✓。
+    实测：这一处不改，导入闭包里就一直挂着 click/pygments（约 5.5 MB ✗）。
+
+    **行为不变**：缺包时仍在**第一次调用那一刻**抛 `ModuleNotFoundError` ✓
+    （原先在导入模块那一刻抛 ✓）；判据见 `scripts/sidecar-closure.py`（重跑闭包 ✓）。
+
+    **为什么是函数而不是散落的函数内 import**：用例要能换掉这一侧的传输
+    （`monkeypatch.setattr(sidecar, "_httpx", …)` ✓）—— 散着写 import，测试就只能去改
+    真模块的全局属性 ✗（那种 patch 会漏、也会互相干扰）。
+    """
+    global _HTTPX
+    if _HTTPX is None:
+        import httpx
+
+        _HTTPX = httpx
+    return _HTTPX
+
 
 __all__ = ["SIDECAR_VERSION", "build_clients", "create_app", "default_workspace"]
 
@@ -665,6 +691,11 @@ def _record_turn(
             "未带会话 id（conversation_id），本轮**未写回**服务器"
             "（刷新后这一轮不会留在会话里）"
         )
+    # httpx **按需导入**（P4-3）：`httpx/__init__.py` 会顺带拖进 click + pygments + rich ✗，
+    # 而客户端运行时只在"真要写回一轮"时才需要它 ✓。行为不变：缺包仍在**调用的那一刻**报错 ✓。
+    # 走 `_httpx()` 这个**可注入接缝**：用例 monkeypatch 它就能换掉这一侧的传输 ✓。
+    httpx = _httpx()
+
     url = f"{clients.base_url}/chat/turns/record"
     body = {
         "conversation_id": conversation_id,
@@ -709,6 +740,8 @@ def _probe_health(url: str, timeout: float = 5.0) -> tuple[bool, str]:
     - **网络层不可达**（连不上/超时/DNS）→ 带上异常原文 ✓；
     - **端点答了但不是 2xx** → 带上**状态码 + 正文前 200 字** ✓（那条才是真正要看的 ✓）。
     """
+    httpx = _httpx()  # 按需导入 + 可注入接缝（理由见 `_httpx()` 的说明）
+
     try:
         response = httpx.get(url, timeout=timeout)
     except httpx.HTTPError as exc:

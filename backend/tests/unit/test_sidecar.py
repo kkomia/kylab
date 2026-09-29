@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -496,14 +497,19 @@ def test_turn_stream_closes_the_trailing_answer_step(tmp_path, monkeypatch) -> N
 # ------------------------------------------------------------------ 写回服务器
 
 def _patch_post(monkeypatch, handler) -> None:  # type: ignore[no-untyped-def]
-    """把写回那个 `httpx.post` 换成假传输（**用例里不打真网络** ✓）。"""
+    """把写回那个 `httpx.post` 换成假传输（**用例里不打真网络** ✓）。
+
+    P4-3 之后 `sidecar` **不再在模块级 import httpx**（那会把 click/pygments/rich
+    拖进客户端运行时的导入闭包 ✗）→ 用例改打**新的接缝**：`sidecar._httpx()` ✓
+    （它是个惰性取值器，`monkeypatch` 换掉它就等于换掉这一侧的传输 ✓）。
+    """
     transport = httpx.MockTransport(handler)
 
     def fake_post(url, **kwargs):  # type: ignore[no-untyped-def]
         return httpx.Client(transport=transport).post(url, **kwargs)
 
-    monkeypatch.setattr(httpx, "post", fake_post)
-    monkeypatch.setattr(sidecar.httpx, "post", fake_post)
+    fake_httpx = SimpleNamespace(post=fake_post, HTTPError=httpx.HTTPError)
+    monkeypatch.setattr(sidecar, "_httpx", lambda: fake_httpx)
 
 
 def test_turn_records_the_turn_to_the_server(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

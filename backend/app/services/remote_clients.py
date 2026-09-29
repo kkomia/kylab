@@ -26,8 +26,10 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Sequence
+from typing import TYPE_CHECKING
 
-import httpx
+if TYPE_CHECKING:  # 只为类型标注：**模块级不 import httpx**（见下面 `_httpx()` 的说明）
+    import httpx
 
 from app.services.chat import SourceRef
 from app.services.llm import ChatMessage, LLMDelta, ToolCallDelta, ToolSpec, _call_deltas
@@ -42,6 +44,28 @@ __all__ = [
 
 #: 默认超时：检索要等嵌入+向量+回表，给 30s；模型补全另算（见各类构造参数）。
 DEFAULT_KB_TIMEOUT = 30.0
+
+
+def _httpx():  # type: ignore[no-untyped-def]
+    """第一次用到时才导入 httpx（**模块级导入会让客户端运行时多背 click + pygments + rich** ✗）。
+
+    为什么：`httpx/__init__.py` 里有一句 `from ._main import main`（它自带的 CLI 入口 ✓），
+    于是**任何** `import httpx` 都会顺带拉进 `click` + `pygments` + `rich`（实测约 5.5 MB ✗）。
+    而客户端（边车）只需要它**发请求**那部分能力 ✓ —— 按需导入即可：
+    包里照旧装着 httpx ✓（调用那一刻导得进来 ✓），只是它不再出现在**导入闭包**里 ✓。
+
+    **行为一个字没变**：缺包时仍在**第一次调用那一刻**抛 `ModuleNotFoundError` ✓
+    （原先在导入模块那一刻抛 ✓）。判据见 `scripts/sidecar-closure.py`（重跑闭包看它是否消失 ✓）。
+    """
+    global _HTTPX
+    if _HTTPX is None:
+        import httpx
+
+        _HTTPX = httpx
+    return _HTTPX
+
+
+_HTTPX = None
 
 
 class RemoteClientError(RuntimeError):
@@ -123,6 +147,7 @@ class RemoteKnowledgeClient:
     # ------------------------------------------------------------------ 内部
 
     def _post(self, path: str, body: dict[str, object]) -> dict:
+        httpx = _httpx()
         try:
             with httpx.Client(
                 base_url=self._base,
@@ -195,7 +220,8 @@ class RemoteModelClient:
 
     # ------------------------------------------------------------------ 内部
 
-    def _client(self) -> httpx.Client:
+    def _client(self):  # type: ignore[no-untyped-def]
+        httpx = _httpx()
         return httpx.Client(
             base_url=self._base,
             timeout=self._timeout,
@@ -204,6 +230,7 @@ class RemoteModelClient:
         )
 
     def _post_json(self, path: str, body: dict[str, object]) -> dict:
+        httpx = _httpx()
         try:
             with self._client() as client:
                 response = client.post(path, json=body)
@@ -225,6 +252,7 @@ class RemoteModelClient:
 
         **分片要能重组** ✓：增量可能被 TCP 切成任意片段，所以按行缓冲 ✗ 不按 chunk 猜 ✗。
         """
+        httpx = _httpx()
         try:
             with (
                 self._client() as client,
