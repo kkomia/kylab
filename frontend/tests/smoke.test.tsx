@@ -127,21 +127,27 @@ describe('应用壳', () => {
     expect(source).toMatch(
       /it\(\s*'`\/chat` 落在对话页（壳的内容区里）'\s*,\s*\{\s*timeout:\s*15_000\s*\}/,
     )
+    // **内层那一处也要显式放宽**：它等的正是懒加载 chunk + Provider 挂载链。
+    // 原先 5s，满载实测这条用例 7014ms ✗（> 内层 5s ⇒ 是**它**先超时）→ 提到 12s。
+    // 把这一处改回默认（或调小）就红——不依赖负载，单跑也能抓到。
+    expect(source).toMatch(/getByLabelText\('对话内容'\)[\s\S]{0,120}?timeout:\s*1[0-9]_000/)
   })
 
   // **放宽这一处**（不是放宽全局 `testTimeout`）：要等懒加载 chunk + Provider 挂载链，
-  // CPU 型重活，全量 1082 条并发时被挤过默认 5s（实测 5120ms）；单跑 ~2.4s。
+  // CPU 型重活，全量并发时被挤过默认 5s（实测 5120ms → 那次放宽到 5s；后来又实测
+  // **7014ms ✗**（全量 1084 条）→ 内层这一处再抬到 12s）。外层 15s 是兜底，不动。
   it('`/chat` 落在对话页（壳的内容区里）', { timeout: 15_000 }, async () => {
     window.history.pushState({}, '', '/chat')
     render(<App />)
 
     // 对话页是**懒加载**的（chunk 里有 assistant-ui + katex + highlight，静态 import 会把
-    // 主 chunk 顶到 1.4 MB）：这里要等一次动态 import，给足超时，别用默认的 1 秒
+    // 主 chunk 顶到 1.4 MB）：这里要等一次动态 import + 整壳 Provider 挂载，
+    // 满载并发下实测到 7s ✗ —— 只放宽**这一处内层等待**，别用默认的 1 秒、也别动全局。
     await waitFor(
       () => {
         expect(screen.getByLabelText('对话内容')).toBeInTheDocument()
       },
-      { timeout: 5000 },
+      { timeout: 12_000, interval: 50 },
     )
   })
 
