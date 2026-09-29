@@ -185,7 +185,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **191** 条端点。
+共 **195** 条端点。
 
 ### `api-keys`
 
@@ -224,6 +224,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/chat/context-usage` | 上下文用量（按来源分解，估算） |
 | `POST` | `/api/v1/chat/stream` | 快速检索问答（流式） |
 | `GET` | `/api/v1/chat/suggested-questions` | 推荐问题（取自入库时为各分段生成的问题） |
+| `POST` | `/api/v1/chat/turns/record` | 记录一轮已完成的对话（边车写回） |
 | `GET` | `/api/v1/chat/turns/{conversation_id}/live` | 接上这条会话正在跑（或刚跑完）的那一轮 |
 | `GET` | `/api/v1/conversations/{conversation_id}/events` | 会话事件日志（只追加，按 seq 正序） |
 | `POST` | `/api/v1/conversations/{conversation_id}/messages/{message_id}/steps/{step_index}/retry` | 重跑这一轮里的某一步（工具级重试），再从那里接着答完 |
@@ -359,6 +360,14 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `GET` | `/api/v1/memory/graph` | 记忆的 wikilink 图谱 |
 | `POST` | `/api/v1/memory/recall` | 在记忆里召回 |
 | `POST` | `/api/v1/memory/remember` | 记一条长期事实 |
+
+### `model-proxy`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/api/v1/model-proxy/complete` | 模型代理：一次性补全 |
+| `POST` | `/api/v1/model-proxy/events` | 模型代理：流式 + 工具调用（SSE 透传） |
+| `POST` | `/api/v1/model-proxy/stream` | 模型代理：流式（只要正文） |
 
 ### `model-registry`
 
