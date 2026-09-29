@@ -43,7 +43,9 @@ import {
 // ② 函数形态（返回 ReactNode，不是 HTML 字符串）
 renderAnswerMarkdown(text)
 renderAnswerWithCitations(text, sources) // sources 为空时退回普通渲染
-renderPlainMarkdown(text) // 只读：不挂复制 / 下载按钮（文件预览用）
+renderPlainMarkdown(text) // 只读那一档（文件预览用）：不挂复制 / 下载按钮、
+// 标题保留原文层级（`#` 就是 `h1`，不夹到 2–4 级）、
+// 单换行不换成 `<br>`（文档里那是 CommonMark 的一个空格）
 ```
 
 **`Answer` 不包外层 div**（只有给 `className` 时才包一层）。`ui/AnswerText.tsx` 自己那层

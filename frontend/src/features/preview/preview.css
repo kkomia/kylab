@@ -9,18 +9,19 @@
  * 3. 三个库都自带样式，其中两个**带灰底/黑底**（见下面各自的段落）——这是本文件存在
  *    的主要理由，覆盖处都写了为什么。
  *
- * **除 docx-preview 那三条覆盖外，整份规则收在 `@layer components` 里（2026-09-24
- * 第五批）**，理由与 `tokens.css` 那段元素重置、`misc.css` 的 `.m-*`、
- * `knowledge.css` 的 `.kb-*` 逐字相同：**未分层的声明永远压过 `@layer utilities`**
- * （分层规则与优先级无关）。本文件里的类名都在库画出来的 DOM 上，调用点不给它们
- * 加工具类，收层不改任何取值——但"不改"要拿探针说话，不是靠读一遍
- * （`.shots/batch5-probe-preview.cjs`：层内 vs 层外逐元素比计算样式，差异须逐条为空）。
+ * **除两类层外例外（docx-preview 那三条、Markdown 代码块的 `highlight.js` 配色）外，
+ * 整份规则收在 `@layer components` 里（2026-09-24 第五批）**，理由与 `tokens.css`
+ * 那段元素重置、`misc.css` 的 `.m-*`、`knowledge.css` 的 `.kb-*` 逐字相同：
+ * **未分层的声明永远压过 `@layer utilities`**（分层规则与优先级无关）。本文件里的类名
+ * 都在库画出来的 DOM 上，调用点不给它们加工具类，收层不改任何取值——但"不改"要拿探针
+ * 说话，不是靠读一遍（`.shots/batch5-probe-preview.cjs`：层内 vs 层外逐元素比计算样式，
+ * 差异须逐条为空）。
  *
- * **三条必须留在层外**（`docx-preview` 那一段，逐条标了 `@unlayered`）：库把它的
- * 默认样式以 `<style>` **注入到容器内部**，那是一条层外的规则；**层外的声明压过任何
- * 层的规则，选择器写得再具体也没用**。所以那三条覆盖只能自己也不进层——
- * 这不是"没收干净"，是这里只有层外身份才成立（`tokens.css` 的全局 `:focus-visible`
- * 是同一种性质的例外）。
+ * **两类必须留在层外**（逐条标了 `@unlayered`）：`docx-preview` 把默认样式以 `<style>`
+ * **注入到容器内部**；`highlight.js/styles/github.css` 那份主题也由 `main.tsx` 作为
+ * 独立样式表引进。两者都是**层外**的规则；**层外的声明压过任何层的规则，选择器写得再
+ * 具体也没用**。所以覆盖它们的规则也只能自己不进层——这不是"没收干净"，是这里只有层外
+ * 身份才成立（`tokens.css` 的全局 `:focus-visible` 是同一种性质的例外）。
  *
  * 只有一份 `@layer components` 不好吗——文件中间夹着那段层外例外，所以下面有两个
  * `@layer components` 块（**同名层会被合并，顺序仍按第一次出现算**，写法与
@@ -129,6 +130,11 @@
   .kylab-md h5,
   .kylab-md h6 {
     margin: var(--space-5) 0 var(--space-2);
+    /* 字重与对话页那一档（`chat.css` 的 `.md-h`：600）对齐。**不写这一条，
+       标题粗细就取决于"用户有没有先去过对话页"**——两套样式同时在时 600，
+       只在 preview.css 里时是 preflight 继承下来的 400（探针实测，见
+       `.shots/hygiene-md-code-contrast.json`）。 */
+    font-weight: 600;
     line-height: 1.35;
   }
 
@@ -155,9 +161,65 @@
     margin: 0 0 var(--space-3);
   }
 
+  /* **段落里的单换行按 CommonMark 走**（= 一个空格），所以这里显式 `normal`。
+     渲染器那一档已经不把单换行换成 `<br>` 了（`markdown.tsx` 的 `plain` 插件表），
+     但对话页那份 `chat.css` 的 `.md-p` 是 `white-space: pre-wrap`——两套样式同时在时
+     它会把单换行又变回视觉换行（探针实测：两套都在 → pre-wrap，只装 preview.css → normal）。
+     不显式写这一条，"文档语义"就只在文档页成立。 */
+  .kylab-md p {
+    white-space: normal;
+  }
+
   .kylab-md ul,
   .kylab-md ol {
     padding-left: var(--space-6);
+  }
+
+  /*
+   * 列表符号与条目间距：preflight 把 `ul/ol` 的符号一并去掉了（`list-style: none`），
+   * 不显式还原，Markdown 的条目就只是"几行缩进文字"——层级与"这是第几步"全丢
+   * （`chat.css` 与 `knowledge.css` 里都为各自那份写过同一段说明）。
+   *
+   * **为什么这里也要写一遍**：那两份是各自的域样式，知识库 / 文档页只有
+   * `preview.css`——实测（`.shots/hygiene-md-code-contrast.json`）：只装 preview.css 时
+   * `list-style-type` 是 `none`、`li + li` 的间距是 0、宽松列表里那层 `<p>` 还多带
+   * 12px 下边距，于是**同一条列表在两条路上长得不一样**。取值全部照 `chat.css` 那一套，
+   * 写在这一层之后两条路收敛到同一个样子。
+   */
+  .kylab-md ul {
+    list-style: disc;
+  }
+
+  .kylab-md ol {
+    list-style: decimal;
+  }
+
+  /* 嵌套一层：符号换样式、间距收紧一档（内层列表不再各带一份下边距） */
+  .kylab-md ul ul {
+    list-style: circle;
+  }
+
+  .kylab-md ul ul,
+  .kylab-md ol ol,
+  .kylab-md ul ol,
+  .kylab-md ol ul {
+    margin: var(--space-1) 0 0;
+  }
+
+  /* 条目之间留半档：多行条目不给间距会连成一段 */
+  .kylab-md li + li {
+    margin-top: var(--space-2);
+  }
+
+  /* GFM 的宽松列表会给条目里的文字包一层 `<p>`：那一层**不该再带下边距**——
+     条目之间的间隔由 `li + li` 管（8px），包一层段落等于每条后面再多 12px，
+     列表会散成互不相干的行。条目内部的多个段落之间给半档。与 `chat.css` 同口径。 */
+  .kylab-md li > p {
+    margin-bottom: 0;
+  }
+
+  .kylab-md li > p + p {
+    margin-top: var(--space-2);
   }
 
   .kylab-md blockquote {
@@ -212,8 +274,16 @@
     font-size: var(--text-meta-size);
   }
 
+  /*
+   * 单元格**只画行分隔线**（整表的框由上面 `.kylab-md table` 给）。
+   * `border: 0` 这一条是必须的：对话页那份 `chat.css` 的 `.md-table th, .md-table td`
+   * 是"逐格细线"（`border: 1px`），两套样式同时在时它会落到预览里（同权重，且声明了
+   * 本规则没声明的三条边），于是同一个 md 预览在对话页与文档页画得不一样
+   * （探针实测：td 的 border-top 1px vs 0px）。这里把三边显式清零、再补行分隔线。
+   */
   .kylab-md th,
   .kylab-md td {
+    border: 0;
     padding: var(--space-2);
     border-bottom: 1px solid var(--border-hairline);
     text-align: left;
@@ -283,7 +353,8 @@
  * 规则，**选择器写得更具体也救不了**——原来这里写着"靠更高的特异性取胜"（两段类名
  * 压库的一段），收层那一刻就不成立了（探针实测：`.kylab-docx-wrapper` 的底色变回
  * 库的 `gray`、内边距变回 30px，`section` 重新带上白底与阴影）。
- * 这三条是本文件里**唯一**必须留在层外的规则，逐条用 `@unlayered` 标着；
+ * 这三条与后面那段 Markdown 代码高亮配色本文件里**两类**必须留在层外的规则，逐条用
+ * `@unlayered` 标着；
  * 结构检查（`scripts/check_layering.py` 的 C1）认这个标记，但要求写明理由。
  *
  * 之所以要覆盖而不是照单全收：灰底 + 白纸的观感是为"独立网页"设计的，
@@ -316,6 +387,124 @@
 /* @unlayered: 同上（库的 `.kylab-docx { color: black }`）。 */
 .kylab-docx-pane .kylab-docx {
   color: var(--text-primary);
+}
+
+/*
+ * 代码块的颜色（`hljs-*` 类名由 `rehype-highlight` 发，`markdown.tsx` 那一层不管颜色）。
+ *
+ * **为什么在层外**：`main.tsx` 引进来的 `highlight.js/styles/github.css` 在层外
+ * （`.hljs { color: #24292e; background: #fff }` 与 `.hljs-*` 一族都在），
+ * 层外压过任何层——写进 `@layer components` 就等于没写（与 `chat.css` 末尾那条同源，
+ * 也是本文件第二类必须留在层外的规则）。
+ *
+ * **那份配色在深色主题下不能用**：它是**浅色**主题。深色下 `.hljs` 的 `#24292e`
+ * 压在代码块底色（`--bg-subtle` = `#1f1f1f`）上，实测对比度 **1.12:1**
+ * （WCAG 2.x 口径：正文/注释要 ≥4.5:1，关键字/字符串/数字这类 ≥3:1）——等于看不见；
+ * 同一份里字符串 1.25、数字 2.62、注释 3.42、标题 2.53，也都不达标。
+ *
+ * **换成什么**：底色与前景走令牌，其余按语义借主题里已有的那几档
+ * （危险 / 成功 / 强调 / 次强调 / 二级文字），两套主题各自取自己那一份——
+ * 不新增"语法色令牌"是因为那要对两个主题文件各加一份，超出本轮范围。
+ * 浅色主题下那份 github 配色本来就够用（正文 13.45、关键字 4.2、字符串 12.14、
+ * 数字 5.77），**只有注释 4.42 差一点点**，所以浅色只补注释这一档（`--text-secondary`）。
+ *
+ * 实测（真浏览器，亮/暗各一组；数字与口径落在 `.shots/hygiene-md-code-contrast.json`，
+ * 前景带 alpha 时先与代码块底色做合成——`--text-primary` 这类是带 alpha 的）：
+ *   亮色：正文 16.2 / 注释 5.6 / 关键字 4.2 / 字符串 12.1 / 数字 5.8
+ *   暗色：正文 11.9 / 注释 6.0 / 关键字 4.9 / 字符串 7.1 / 数字 5.4
+ * 改这份配色时照同一支探针再量一次（亮/暗两主题、两种样式组合），别只看截图。
+ *
+ * 选择器用 `.md-pre`（不是 `.kylab-md`）：对话页**回答**里的代码块与文件预览的代码块
+ * 都是这个类，同一个缺陷不该只修一半；`preview.css` 在两条路上都会加载
+ * （对话页经 `Sheets` → `FilePreview`，文档页经 `DocumentDrawer`）。
+ */
+
+/* @unlayered: github 那份主题在层外（见上），只有层外的声明压得住它。 */
+.md-pre code {
+  background: none;
+  color: var(--text-primary);
+}
+
+/* @unlayered: 同上（`.hljs-comment` 是 github 主题里的层外规则）。注释档两套主题共用一个令牌。 */
+.md-pre .hljs-comment,
+.md-pre .hljs-code,
+.md-pre .hljs-formula {
+  color: var(--text-secondary);
+}
+
+/* @unlayered: 同上。以下六条是**深色主题**专用的令牌配色——浅色那份 github 配色继续用。 */
+[data-theme='dark'] .md-pre .hljs-doctag,
+[data-theme='dark'] .md-pre .hljs-keyword,
+[data-theme='dark'] .md-pre .hljs-meta .hljs-keyword,
+[data-theme='dark'] .md-pre .hljs-template-tag,
+[data-theme='dark'] .md-pre .hljs-template-variable,
+[data-theme='dark'] .md-pre .hljs-type,
+[data-theme='dark'] .md-pre .hljs-variable.language_ {
+  color: var(--status-danger);
+}
+
+/* @unlayered: 同上。 */
+[data-theme='dark'] .md-pre .hljs-regexp,
+[data-theme='dark'] .md-pre .hljs-string,
+[data-theme='dark'] .md-pre .hljs-meta .hljs-string,
+[data-theme='dark'] .md-pre .hljs-name,
+[data-theme='dark'] .md-pre .hljs-quote,
+[data-theme='dark'] .md-pre .hljs-selector-tag,
+[data-theme='dark'] .md-pre .hljs-selector-pseudo {
+  color: var(--status-success);
+}
+
+/* @unlayered: 同上。 */
+[data-theme='dark'] .md-pre .hljs-attr,
+[data-theme='dark'] .md-pre .hljs-attribute,
+[data-theme='dark'] .md-pre .hljs-literal,
+[data-theme='dark'] .md-pre .hljs-meta,
+[data-theme='dark'] .md-pre .hljs-number,
+[data-theme='dark'] .md-pre .hljs-operator,
+[data-theme='dark'] .md-pre .hljs-variable,
+[data-theme='dark'] .md-pre .hljs-selector-attr,
+[data-theme='dark'] .md-pre .hljs-selector-class,
+[data-theme='dark'] .md-pre .hljs-selector-id,
+[data-theme='dark'] .md-pre .hljs-section {
+  color: var(--accent-text);
+}
+
+/* @unlayered: 同上。 */
+[data-theme='dark'] .md-pre .hljs-title,
+[data-theme='dark'] .md-pre .hljs-title.class_,
+[data-theme='dark'] .md-pre .hljs-title.class_.inherited__,
+[data-theme='dark'] .md-pre .hljs-title.function_ {
+  color: var(--accent-2-text);
+}
+
+/* @unlayered: 同上。 */
+[data-theme='dark'] .md-pre .hljs-built_in,
+[data-theme='dark'] .md-pre .hljs-symbol,
+[data-theme='dark'] .md-pre .hljs-bullet {
+  color: var(--status-warning);
+}
+
+/* @unlayered: 同上（`subst` / `emphasis` / `strong` 在 github 那份里也被写死了 #24292e）。 */
+[data-theme='dark'] .md-pre .hljs-subst,
+[data-theme='dark'] .md-pre .hljs-emphasis,
+[data-theme='dark'] .md-pre .hljs-strong {
+  color: var(--text-primary);
+}
+
+/* @unlayered: 同上（diff 那两档 github 带浅色底：深色主题下就是两块白斑）。 */
+[data-theme='dark'] .md-pre .hljs-addition,
+[data-theme='dark'] .md-pre .hljs-deletion {
+  background: none;
+}
+
+/* @unlayered: 同上。 */
+[data-theme='dark'] .md-pre .hljs-addition {
+  color: var(--status-success);
+}
+
+/* @unlayered: 同上。 */
+[data-theme='dark'] .md-pre .hljs-deletion {
+  color: var(--status-danger);
 }
 
 @layer components {

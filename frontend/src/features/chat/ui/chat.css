@@ -381,6 +381,12 @@
  * - 把取值挪到调用点（`.kb-switch` 那个做法）→ 调用点只能写 utilities，
  *   而 utilities 也在层里，同样压不过层外的它。
  *
+ * **这一段只负责"底色与前景跟主题走"**。那一族 `hljs-*` 的**配色**（含深色主题下
+ * 换掉整份浅色主题）归 `preview.css` 末尾的层外段：它按 `.md-pre` 选择，对话页的
+ * 回答代码块同样命中（`preview.css` 会随对话页一起加载——`Sheets` → `FilePreview`）。
+ * 这里再写一遍 `color` 不是重复：**两份样式表各自都要能单独成立**，
+ * 哪天对话页不再经预览域加载那份 CSS，回答里的代码块也不该变成暗字压暗底。
+ *
  * 结构检查（`scripts/check_layering.py` 的 C1）认「写在注释开头的 `@unlayered`」这个标记，
  * 但要求把理由写清楚——不留标记的层外规则一律报红（注释里提到这个标记不算数）。
  */
@@ -388,4 +394,5 @@
 /* @unlayered: highlight.js 的主题在层外（见上），只有层外的声明压得住它。 */
 .md-pre code {
   background: none;
+  color: var(--text-primary);
 }
