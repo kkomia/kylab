@@ -25,6 +25,15 @@ import { notifyError, notifyWarning } from '../runtime/notify'
 
 export interface AnswerTextProps {
   text: string
+  /**
+   * 这一轮**还在流，而且一个字都还没到**（D27，2026-09-28 走查）。
+   *
+   * 为什么要给它一个落点：正文区在首字之前**完全是空白**——走查实测长文提问后 1s / 3s / 9s
+   * 三个采样点都是 `replyTextLen = 0`、`replyTextChildElements = 0`，同一时刻只有过程面板在动
+   * （`lastAssistantText` 里有"正在处理…｜深度思考｜正在生成回答"，那些都在**面板**里）。
+   * 用户在正文这一栏看到的就是"什么都没有"，像是没反应。
+   */
+  pending?: boolean
   sources: ChatSource[]
   /** 点行内徽标 `[n]`：展开过程面板 → 滚到那一条出处 → 闪一下。 */
   onCite: (sourceIndex: number) => void
@@ -53,7 +62,14 @@ function toCsv(table: MarkdownTable): string {
   return rows.join('\r\n')
 }
 
-export function AnswerText({ text, sources, onCite, citeFallback, className }: AnswerTextProps) {
+export function AnswerText({
+  text,
+  pending,
+  sources,
+  onCite,
+  citeFallback,
+  className,
+}: AnswerTextProps) {
   const copyBlock = useCallback(async (body: string, what: string) => {
     if (await copyText(body)) return
     // 连兜底那条路都没成：如实说，别假装复制成功
@@ -78,6 +94,19 @@ export function AnswerText({ text, sources, onCite, citeFallback, className }: A
     // `md-body`：正文排版的根（段距 / 列表符号 / 小标题那几条在 `chat.css` 里）。
     // 它只是**作用域**，不是布局——行宽与字号仍由调用方给的 `className` 说了算
     <div data-testid="reply-text" className={`md-body ${className ?? ''}`}>
+      {/*
+        首字之前的那一行（D27）。**只在"还在流 + 一个字都没有"时出现**：
+        正文一旦到了就撤掉，收尾之后也不再留（那时要么有正文、要么走错误/降级那两条路）。
+
+        写成一句朴素的话而不是骨架块：这一栏随后的内容是文字，摆几条灰条反而更晃眼；
+        `animate-pulse` 让它有"在动"的意思，`motion-reduce:animate-none` 尊重系统里
+        那个"减少动态效果"（与样式层同一条口径）。
+      */}
+      {pending && !text ? (
+        <p className="md-p animate-pulse text-[var(--text-tertiary)] motion-reduce:animate-none">
+          正在生成…
+        </p>
+      ) : null}
       <AnswerMarkdown
         text={text}
         sources={sources}

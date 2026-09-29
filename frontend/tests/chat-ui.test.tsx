@@ -1964,3 +1964,30 @@ describe('输入法合成态（D05，2026-09-28 走查）', () => {
     await waitFor(() => expect(field.value).not.toBe('/'))
   })
 })
+
+describe('首字之前正文区不空着（D27，2026-09-28 走查）', () => {
+  it('流式中且还没有正文 → 正文区给一句"正在生成…"；首字一到就撤掉', async () => {
+    // 病灶（走查实测）：长文提问后 1s / 3s / 9s 三个采样点，正文区都是
+    // `replyTextLen = 0`、`replyTextChildElements = 0`——那一栏**完全是空白**，
+    // 同时只有过程面板在动（"正在处理…｜深度思考｜正在生成回答" 都在面板里）。
+    const box = capture()
+    renderPage()
+    await screen.findByRole('textbox', { name: '消息输入框' })
+    await ask('写一篇长文')
+
+    // 还没有任何正文：那一栏要有落点
+    await waitFor(() =>
+      expect(within(screen.getByTestId('reply-text')).getByText('正在生成…')).toBeInTheDocument(),
+    )
+
+    await act(async () => {
+      box.handlers!.onDelta!('开头')
+    })
+
+    // 首字到了：那句话撤掉，正文接管
+    await waitFor(() => {
+      expect(within(screen.getByTestId('reply-text')).queryByText('正在生成…')).toBeNull()
+      expect(screen.getByTestId('reply-text')).toHaveTextContent('开头')
+    })
+  })
+})

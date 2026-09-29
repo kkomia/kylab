@@ -207,6 +207,9 @@ function AssistantMessage({
               <AnswerText
                 className="mt-[var(--space-3)] max-w-[var(--measure)] text-[length:var(--text-body-size)] leading-[var(--line-prose)] text-[var(--text-primary)]"
                 text={message.text}
+                // 流式中且还没有正文 → 正文区给一句"正在生成…"（D27）。消息上的 `streaming`
+                // 由镜像层按 live 状态写着（见 ChatProvider 的 mirrorLive）。
+                pending={message.streaming === true}
                 sources={message.sources}
                 citeFallback={citeFallback}
                 onCite={(sourceIndex) => chat.revealSource(turnIndex, sourceIndex)}
