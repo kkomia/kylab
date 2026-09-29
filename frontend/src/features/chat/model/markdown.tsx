@@ -34,6 +34,7 @@ import { ChevronDown, ChevronUp } from 'lucide-react'
 import {
   createContext,
   createElement,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -889,15 +890,40 @@ function MarkdownPre(props: PropsOf<'pre'>) {
   /**
    * 这一块代码是不是**超过了限高**（D04，2026-09-28 走查）。
    *
-   * 量一次就够：`.md-pre` 是等宽、按行折行的，内容不变高度就不变（`[codeText]` 是它的
-   * 全部依赖）。**只有真的超出才给展开按钮**——每一块都挂一个永远用不上的按钮，
-   * 比没有更烦人。
+   * 只量**不受限高影响**的那部分：`scrollHeight` 是内容自然高度，`maxHeight` 压的只是
+   * 显示框，所以"超了"和"限高"互不干扰，可以反复量、量出来的判据始终是同一个。
+   * **只有真的超出才给展开按钮**——每一块都挂一个永远用不上的按钮，比没有更烦人。
+   */
+  const measureOverflow = useCallback((element: HTMLElement | null): void => {
+    if (!element) return
+    setOverflowing(element.scrollHeight > CODE_MAX_HEIGHT_PX + 1)
+  }, [])
+
+  /**
+   * 内容或**排版**一变就重新量。
+   *
+   * 为什么用 `ResizeObserver` 而不是"再挂几个依赖"：让这一块变高的，除了代码文本，
+   * 还有字阶（根节点上的 `--font-scale`）与窗口宽度——它们改的是**折行**，不是
+   * `codeText`，只依赖 `[codeText]` 就永远不重量（症状：调完字号，长代码块的展开键
+   * 不出现、短代码块反倒挂着按钮，用户读不全代码）。而"字号/宽度变了"没有一条能订阅的
+   * 回调：`--font-scale` 是写在 `<html>` 的 style 上的，改它不派发任何事件，
+   * `matchMedia` 也不知道中栏容器被侧栏挤窄了多少。`ResizeObserver` 看的正是
+   * **观察对象自己的盒子**——字号与宽度最终都会落到 `.md-pre` 的尺寸上，所以它一种机制
+   * 就把两条路都盖住，且比"再叠一个 window resize 监听 / 轮询计算样式"更准也更省
+   * （不变化时不回调）。
+   *
+   * 依赖里的 `codeText` 不是用来判断尺寸的，而是**换内容就换一个观察对象**：
+   * 断开旧元素、重新观察新的那个，顺带立刻量一次（`ResizeObserver` 的首次回调
+   * 只保证"观察之后"，不等它也能出结果）。卸载时同一段清理把观察断开。
    */
   useEffect(() => {
     const element = preRef.current
-    if (!element) return
-    setOverflowing(element.scrollHeight > CODE_MAX_HEIGHT_PX + 1)
-  }, [codeText])
+    measureOverflow(element)
+    if (!element || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(() => measureOverflow(element))
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [codeText, measureOverflow])
   return createElement(
     'div',
     { className: 'md-code' },

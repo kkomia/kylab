@@ -19,7 +19,7 @@
  */
 
 import { fireEvent, render } from '@testing-library/react'
-import { createElement, Fragment, type ReactNode } from 'react'
+import { act, createElement, Fragment, type ReactNode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
@@ -870,5 +870,77 @@ describe('长代码块限高与展开（D04）', () => {
 
     expect(container.querySelector('.md-pre')).not.toBeNull()
     expect(container.querySelector('[data-toggle-code]')).toBeNull()
+  })
+
+  it('排版变了就重量：字号/窗口宽度改完，长代码块的展开键要补上，变短了要收掉', () => {
+    // 病灶：测量只挂在 `[codeText]` 上——字号（`--font-scale`）与窗口宽度改的是**折行**，
+    // 代码文本一个字没动，于是永远不重量：调完字号长代码块的展开键不出现，用户读不全代码
+    // （反过来，调小之后短代码块还挂着按钮）。
+    //
+    // jsdom 不做排版，`scrollHeight` 与"容器被重新观察"都得自己摆：
+    // `tests/setup.ts` 里的 `ResizeObserver` 替身是空实现，这里换一个**留得住回调**的，
+    // 摆完 `scrollHeight` 再敲一下回调，就等于浏览器里那次"盒子尺寸变了"。
+    const callbacks: ResizeObserverCallback[] = []
+    const disconnect = vi.fn()
+    class TriggerableResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        callbacks.push(callback)
+      }
+      observe() {}
+      unobserve() {}
+      disconnect = disconnect
+    }
+    vi.stubGlobal('ResizeObserver', TriggerableResizeObserver)
+    // 先摆成"没超限"（短代码），再摆成"超了"：中间那一下就是排版变化
+    let scrollHeight = 100
+    const spy = vi
+      .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+      .mockImplementation(() => scrollHeight)
+    const triggerResize = (): void => {
+      // 回调里会 `setState`（重量结果），所以这一下要走 `act`：不然 React 会把
+      // 状态更新当成测试外的更新，读到的是还没重渲染的 DOM。
+      // `IS_REACT_ACT_ENVIRONMENT` 要自己置位：RTL 只在它自己的 `render`/`fireEvent`
+      // 里管这个开关，这里是在用例里直接敲观察回调。
+      const host = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+      const previous = host.IS_REACT_ACT_ENVIRONMENT
+      host.IS_REACT_ACT_ENVIRONMENT = true
+      try {
+        act(() => {
+          for (const callback of callbacks) callback([], {} as ResizeObserver)
+        })
+      } finally {
+        host.IS_REACT_ACT_ENVIRONMENT = previous
+      }
+    }
+    try {
+      const node = renderAnswerMarkdown('```ts\nconst x = 1\n```')
+      const { container, unmount } = render(createElement(Fragment, null, node))
+      const pre = container.querySelector('.md-pre') as HTMLElement
+
+      // 挂载时量过一次：没超 → 没按钮、没限高
+      expect(container.querySelector('[data-toggle-code]')).toBeNull()
+      expect(pre.style.maxHeight).toBe('')
+
+      // 字号调大（等价的：窗口变窄）→ `pre` 的盒子变了 → 观察回调 → 超限要补按钮与限高
+      scrollHeight = 1200
+      triggerResize()
+      expect(pre.style.maxHeight).toBe('400px')
+      expect(
+        (container.querySelector('[data-toggle-code]') as HTMLElement).getAttribute('aria-label'),
+      ).toBe('展开代码')
+
+      // 反向：又变回放得下 → 按钮与限高都得收掉（不许留一个用不上的按钮）
+      scrollHeight = 100
+      triggerResize()
+      expect(pre.style.maxHeight).toBe('')
+      expect(container.querySelector('[data-toggle-code]')).toBeNull()
+
+      // 退出时观察要断开（不断就是泄漏：元素没了回调还在改 state）
+      unmount()
+      expect(disconnect).toHaveBeenCalled()
+    } finally {
+      spy.mockRestore()
+      vi.unstubAllGlobals()
+    }
   })
 })
