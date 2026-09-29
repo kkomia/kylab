@@ -522,6 +522,45 @@ function commandProducedContent(state: LiveTurnState): boolean {
 }
 
 /**
+ * 接回来的那一轮**手里有没有能画的东西**（D10，2026-09-28 走查）。
+ *
+ * 原先 `recover` 只认正文（`state.text.length > 0`，理由是"有正文就等于这一轮还活着"）。
+ * 但补发里**正文增量是不重放的**（见 `live_turns.LiveEmit` 的 `keep`：只留进缓冲的那几条），
+ * 而步骤 / 出处 / 思考恰恰是重放的。于是刷新正好落在**工具阶段**（正文一个字还没出）时，
+ * 界面在"步骤已经跑过好几步"的整段时间里一片空白：过程面板不在文档里、消息数是 0，
+ * 那一轮看起来像没了（真浏览器实测：刷新后 **4.9 秒**里消息数一直是 0，等它终于出来时
+ * 正文已经 52 个字了）。
+ *
+ * 判据换成"有任何一样"：这三样与正文是**同一批事件**补发来的，一样能证明这一轮还活着
+ * （`adoptHandlers` 认的也是"第一条事件到了"）。
+ */
+function hasLiveContent(state: LiveTurnState): boolean {
+  return (
+    state.text.length > 0 ||
+    state.steps.length > 0 ||
+    state.sources.length > 0 ||
+    state.thinkingText.length > 0
+  )
+}
+
+/*
+ * D10 **没做的那一半**：提问补不回来（这段是留给下一个动手的人看的）。
+ *
+ * 刷新之后这一轮还在跑时，提问在**任何一侧都拿不到**：库里要等这一轮落库才有
+ * （`record_turn` 在收尾那一刻才写），直播流里也不带它（`step` / `thinking` /
+ * `sources` / `delta` / `done` 里都没有 query）。所以画面上的这一段只有"回答 + 过程"，
+ * 提问要等用户再进一次这条会话才回来。
+ *
+ * 收尾之后**倒是**可以从库里重读那份详情把它接回来（后端是先落库、后发 `done`），
+ * 但那一下必然动到 `ui/ChatThread.tsx` 落底那一处认的两个键：重读会把整批消息换成
+ * **新的 id**、把**提问条数 +1**——真浏览器实测（id 那一版判据）：在"接着一条刚收尾的
+ * 轮次、用户正往上翻着读"的窗口里重读一次，`scrollTop` 被拽回 **2688px**（51 次写入），
+ * 正是 D31 修掉的那条。改成"会话 id + 提问条数"之后 id 那一半不再受影响，**提问条数
+ * 那一半照旧**会踩到。所以这一半**按兵不动**：等那条判据与"消息内容怎么变"彻底脱钩
+ * （比如只认用户自己那一次发送）之后再补回来。
+ */
+
+/**
  * 把"正在流式的那一轮"**镜像**进本页的消息数组（旧 `ChatView.syncLive`，逐条照搬）。
  *
  * 规则四支：
@@ -529,8 +568,10 @@ function commandProducedContent(state: LiveTurnState): boolean {
  *   命令可能只是系统的回话（`/help`），那不该在对话流里留下气泡；
  * - **`append`（新起一轮）且画面上没有那一对**（用户离开期间流还在跑，回来时组件是新挂载的）
  *   → 用 live 里的提问与已经流出的字补出一对；
- * - **`recover`（刷新之后接回来的那一轮）**：只补回答那一条，而且**只有正文到了才补**
- *   （正文增量不补发，"有正文"就等于"这一轮还活着"；提问随落库才有，补不出来）；
+ * - **`recover`（刷新之后接回来的那一轮）**：只补回答那一条，而且**有内容就补**
+ *   （见 `hasLiveContent`——工具阶段只有步骤/思考时也必须补，否则过程看不见）；
+ *   提问随落库才有，这里补不出来（收尾之后能不能重读库里那份把它接回来，
+ *   见这个文件里 `mirrorLive` 上方那段"D10 没做的那一半"的说明）；
  * - 其余只管把最后一条助手消息的字段刷成最新值。
  */
 function mirrorLive(
@@ -563,7 +604,7 @@ function mirrorLive(
         makeChatMessage('user', state.query),
         makeChatMessage('assistant', state.text, { streaming: true, thinking: state.thinking }),
       ]
-    } else if (state.mode === 'recover' && state.text.length > 0) {
+    } else if (state.mode === 'recover' && hasLiveContent(state)) {
       next = [
         ...prev,
         makeChatMessage('assistant', state.text, { streaming: true, thinking: state.thinking }),
@@ -1040,6 +1081,35 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     void refreshArtifacts(detail.id)
     void liveActions.attachLiveTurn(detail.id)
   }, [detail, conversationId, kbs, setModelPk, setThinkingOn, refreshArtifacts])
+
+  /**
+   * 补发到的 `done(recovered)` **画面里已经画过**：把画面按库里那份重铺一次（D10）。
+   *
+   * 为什么会出现"多出来的一条"：刷新一条**刚跑完**的会话时，库里那份（提问 + 回答）已经
+   * 画在画面上了，而环形缓冲里那一轮还留着（十分钟），于是补发把同一轮的步骤又送一遍。
+   * 那批事件与收尾的 `done` 分在两三个渲染里到，`recover` 那条支路就按"有内容就补"
+   * **多补出一条回答**（真浏览器实测：刷新一条刚跑完的会话后，消息数 3、回答气泡 2）。
+   *
+   * 判据只有一条：**画面里同一条回答出现了两次**（正文逐字相同）。库里那份就是权威的
+   * （页面上本来这份就是它），铺回去把多出来的那条收掉；也不用重读接口——现在手里这份
+   * `detail` 就是它的来源，而且这一铺**不新增提问**，动不到 `ui/ChatThread.tsx` 落底
+   * 那一处认的键（换会话 / 提问条数）。
+   *
+   * 按状态对象只做一次（同一份状态里两条一模一样的回答也可能是库里本来就有的——
+   * 比如同一句话问了两次、答案又相同，那样这条判据会一直成立）。
+   */
+  const recoverDeduped = useRef<LiveTurnState | null>(null)
+  useEffect(() => {
+    if (!detail || detail.id !== conversationId) return
+    if (!live || live.conversationId !== conversationId) return
+    // "这一轮早就收尾"（补发到的那条 done 带 `recovered`）+ 正文到位，才谈得上"画了两遍"
+    if (!live.recovered || live.text.length === 0) return
+    const drawn = messages.filter((item) => item.role === 'assistant' && item.text === live.text)
+    if (drawn.length < 2) return
+    if (recoverDeduped.current === live) return
+    recoverDeduped.current = live
+    setMessages(messagesFromDetail(detail))
+  }, [detail, conversationId, live, messages])
 
   /**
    * 停在 `/chat`（没有 id）时该显示什么：最近一次对话，或者空态。

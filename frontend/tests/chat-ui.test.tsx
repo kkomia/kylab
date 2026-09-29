@@ -26,6 +26,7 @@ import {
   getContextUsage,
   getSuggestedQuestions,
   listCommands,
+  openLiveTurn,
   type ChatHandlers,
 } from '@/api/chat'
 import { clearLiveAnchors, clearLiveTurn } from '@/features/chat/model/liveTurn'
@@ -2351,6 +2352,113 @@ describe('首字之前正文区不空着（D27，2026-09-28 走查）', () => {
       expect(within(screen.getByTestId('reply-text')).queryByText('正在生成…')).toBeNull()
       expect(screen.getByTestId('reply-text')).toHaveTextContent('开头')
     })
+  })
+})
+
+/**
+ * 「刷新接回来的那一轮」（D10，2026-09-28 走查）。
+ *
+ * 走查原话："回来只剩最后一条回答：已经发生过的步骤、出处、思考全没了，
+ * 过程的『进行中』也看不出来。"真浏览器（`.shots/d10-recover.cjs`）量到的两个洞：
+ *
+ * 1. **工具阶段整段空白**：`recover` 那条支路原先只认正文（理由写在 `mirrorLive` 上：
+ *    "有正文就等于这一轮还活着"），可补发里**正文增量是不重放的**——于是"步骤已经跑过
+ *    好几步、正文一个字还没出"的那几秒里，消息区里什么都没有（实测：刷新后 4.6 秒内
+ *    消息数是 0），过程面板根本不在文档里，那一轮看起来像没了；
+ * 2. **收尾之后提问不回来**：补出来的那条只有回答（提问随落库才有），而"详情只画一次"
+ *    那道闸让收尾后的重读白读——库里明明有提问，画面到下次刷新为止都只剩回答。
+ *
+ * 下面两条各钉一个。**刷新本身** jsdom 复现不了，交给真浏览器那支探针。
+ */
+describe('刷新接回来的那一轮（D10，2026-09-28 走查）', () => {
+  /**
+   * 让这一页走"接回来"那条路：库里的详情此刻还没有这一轮（后端只在跑完时落库），
+   * 补发的那条流由用例自己推——与真链路同一形状。
+   */
+  function captureLive(): () => ChatHandlers {
+    const box: { handlers: ChatHandlers | null } = { handlers: null }
+    vi.mocked(openLiveTurn).mockImplementation(async (_id, _after, handlers) => {
+      box.handlers = handlers
+      return { abort: () => undefined }
+    })
+    return () => box.handlers!
+  }
+
+  it('工具阶段（正文一个字都没出）：步骤与「进行中」也必须在画面上', async () => {
+    vi.mocked(getConversation).mockResolvedValue(detail([]))
+    const live = captureLive()
+    renderPage()
+    await screen.findByRole('textbox', { name: '消息输入框' })
+    await waitFor(() => expect(openLiveTurn).toHaveBeenCalled())
+
+    // 补发的那几条：一段思考 + 一条跑完的步骤 + 一条还在跑的步骤，**没有正文增量**
+    await act(async () => {
+      live().onSeq!(4)
+      live().onThinking!('先看一眼库里有什么', { logSeq: 2 })
+      live().onStep!({
+        phase: 'tool',
+        label: '查看文件',
+        detail: 'pyproject.toml',
+        status: 'done',
+        tool: 'read_file',
+      } as never)
+      live().onStep!({
+        phase: 'tool',
+        label: '联网搜索',
+        detail: '',
+        status: 'running',
+        tool: 'web_search',
+      } as never)
+    })
+
+    // "已经发生过的步骤"仍在
+    expect(screen.getByText('查看文件')).toBeInTheDocument()
+    // "还在跑的那一步"也在（面板进行中就该摊开，见 `isTraceOpen`）
+    expect(screen.getByText('联网搜索')).toBeInTheDocument()
+    // 「进行中」看得出来：输入框那一格是「停止生成」，线程根上也标着在跑
+    expect(screen.getByRole('button', { name: '停止生成' })).toBeInTheDocument()
+    expect(document.querySelector('[data-running]')).toHaveAttribute('data-running', 'true')
+  })
+
+  it('刷新一条**刚跑完**的会话：补发的那一圈不会再补出一条回答', async () => {
+    // 与上面那条成对：库里那一轮**已经画在画面上了**（刷新前它就落库了），而环形缓冲里
+    // 那一轮还在（十分钟）——补发会把同一轮的步骤再送一遍。上面那条修好之后，
+    // `recover` 支路会照"有内容就补"再补一条回答出来，这一条钉的是"多出来的那条要收掉"。
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([
+        stored('user', '这些资料的结论是什么？'),
+        stored('assistant', '资料里反复提到同一件事。', {
+          steps: [{ phase: 'tool', label: '查看文件', detail: '', status: 'done' }],
+        }),
+      ]),
+    )
+    const live = captureLive()
+    renderPage()
+    await screen.findByRole('textbox', { name: '消息输入框' })
+    await waitFor(() => expect(openLiveTurn).toHaveBeenCalled())
+    await screen.findByText('这些资料的结论是什么？')
+
+    // 补发的步骤先到（单独一次渲染）：`recover` 支路补出那一条回答
+    await act(async () => {
+      live().onStep!({
+        phase: 'tool',
+        label: '查看文件',
+        detail: '',
+        status: 'done',
+        tool: 'read_file',
+      } as never)
+    })
+    // 收尾那条到（补发到的是"已经收尾"）：正文落到多出来的那一条上
+    await act(async () => {
+      live().onDone!('资料里反复提到同一件事。', {
+        recovered: true,
+        detail: '这一轮已经收尾了：补发到此为止（正文增量不重发，这里给的是完整答复）。',
+      })
+    })
+
+    // 库里那份是权威的：多出来的那一条被收掉——提问与回答各一份
+    await waitFor(() => expect(screen.getAllByTestId('reply-text')).toHaveLength(1))
+    expect(screen.getAllByText('这些资料的结论是什么？')).toHaveLength(1)
   })
 })
 
