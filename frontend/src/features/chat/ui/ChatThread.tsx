@@ -17,6 +17,7 @@
  * 过程面板那类"我们的字段"就不会在骨架里被磨掉。
  */
 import { ThreadPrimitive, useAuiState } from '@assistant-ui/react'
+import { useCallback, useEffect, useRef } from 'react'
 
 import { buildTurns } from '@/features/chat/model/turns'
 
@@ -24,6 +25,17 @@ import { ChatHeader } from './ChatHeader'
 import { MessageView } from './MessageView'
 import { Welcome } from './Welcome'
 import { useChat, type ChatMessage } from '../runtime/ChatProvider'
+
+/**
+ * 离底多少像素以内算"还贴着底"（可以继续跟随）。
+ *
+ * 不取 0/1px：贴底那一头本来就有取整误差（子像素布局、`scrollHeight` 取整到整数），
+ * 判得比浏览器真能落到的位置更严，跟随会在正常落底的最后一两帧里自己关掉。
+ */
+const FOLLOW_THRESHOLD_PX = 24
+
+/** 这几个键的含义就是"用户自己在往上翻"（和滚轮同一类意图，不必等 `scroll` 事件）。 */
+const SCROLL_UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home'])
 
 /** 轮次号：一条提问与它后面那条回答共享同一个号（0 起，与旧 `turns` 的下标一致）。 */
 function turnIndexes(messages: ChatMessage[]): Map<string, number> {
@@ -64,6 +76,157 @@ export function ChatThread() {
   // `buildTurns`，这里按轮次号取回来——「存为笔记」的标题、出处、交付物都按它对
   const turns = buildTurns(chat.messages)
 
+  /**
+   * 「用户还在最新那一头」——内容再长就贴回底部；他往上翻过就不再抢。
+   *
+   * 这一条状态**只由三处改**：滚轮/触摸/翻页键（停）、滚回贴底（恢复）、
+   * 换会话或新发出提问（回到最新）。库自带的那套自动落底已经全关（见下面视口那一段），
+   * 所以"把翻上去的人拽回底部"不再有第二条路。
+   */
+  const followRef = useRef(true)
+  /** 视口节点：由回调 ref 交上来（落底与量"离底多远"都要它）。 */
+  const viewportRef = useRef<HTMLDivElement | null>(null)
+  /** 已经排队、还没执行的那一次落底——用户一翻页就要把它撤掉。 */
+  const frameRef = useRef<number | null>(null)
+  /** 当前节点上那批监听/观察者的拆除函数（ref 换了节点时必须成对摘掉）。 */
+  const detachRef = useRef<(() => void) | null>(null)
+
+  /**
+   * 贴到最底下。
+   *
+   * **已经贴底（或内容压根没溢出）就一个字都不写**：那一写会连带发出一次 `scroll` 事件，
+   * 也会把"用户自己摆的那个位置"擦掉——jsdom 不算版面（`scrollHeight` 恒为 0），
+   * 这一条在那里就是"视口本来就没得滚却把人摆的位置改成 0"，
+   * `chat-ui.test.tsx` 的「开抽屉不动底下对话的滚动位置」正是这么红过一次。
+   */
+  const pinToBottom = useCallback(() => {
+    const el = viewportRef.current
+    if (!el) return
+    if (el.scrollHeight - el.scrollTop - el.clientHeight <= 0) return
+    el.scrollTop = el.scrollHeight
+  }, [])
+
+  /**
+   * 视口的监听与观察者都挂在**回调 ref** 里，不放进 `useEffect(…, [])`。
+   *
+   * 为什么非得是回调 ref：本版 assistant-ui 的 `ThreadPrimitive.Viewport` 自己组合了一个
+   * `autoScrollRef`，节点交给外面是**晚一步**的——`useEffect(…, [])` 跑到时 `current`
+   * 还是 `null`，监听一个都没装上，而库里那个 ResizeObserver 是当场读 ref 的，照写不误，
+   * 表现成"用户往上翻、程序还在把人拽回底部"。
+   *
+   * 但**光用回调 ref 还不够**（上一轮就停在这儿）：本版库里那个组合 ref 的**函数身份每次
+   * 渲染都换**（`useManagedRef` 收到的是内联箭头，而 radix 的 `useComposedRefs` 把 `refs`
+   * 当依赖），于是 React 每渲染一次就先 `ref(null)` 再 `ref(node)` 重交一次。流式每来一个
+   * 字都要重渲染，实测 6 秒里视口上的监听被摘掉重挂 **1930 次**、挂在它上面的
+   * MutationObserver 重绑 **772 次**——监听确实挂上了，但下一帧就被拆掉，**连已经排队的那
+   * 一次贴底也一起撤了**，所以看起来还是"没生效"。节点本身从头到尾没换过
+   * （`.shots/d31-remount.cjs`），所以这里：`null` 一律忽略，只有**真换了节点**才拆旧的。
+   */
+  const attachViewport = useCallback(
+    (node: HTMLDivElement | null) => {
+      // 见上面：`null` 是"ref 函数换身份"的伴生调用，不是卸载（真卸载时这个闭包连同节点
+      // 一起变成不可达，会被回收，所以不拆也不漏）
+      if (node === null || node === viewportRef.current) return
+      detachRef.current?.()
+      detachRef.current = null
+      viewportRef.current = node
+
+      /** 内容长了一截 → 一帧内补到新的底部（贴底那一档才补）。 */
+      const scheduleFollow = () => {
+        if (frameRef.current !== null) return
+        frameRef.current = requestAnimationFrame(() => {
+          frameRef.current = null
+          if (followRef.current) pinToBottom()
+        })
+      }
+
+      /**
+       * 停止跟随。**已经排队的那一次落底要一起撤掉**——上一轮查到的那一次回拽，
+       * 就是"滚轮之前最后一批内容增长把帧排上了，滚轮之后它照跑"。
+       */
+      const stopFollowing = () => {
+        followRef.current = false
+        if (frameRef.current !== null) {
+          cancelAnimationFrame(frameRef.current)
+          frameRef.current = null
+        }
+      }
+
+      const onWheel = (event: WheelEvent) => {
+        /*
+          判"用户在往上翻"只认 `wheel` 的方向，不认 `scroll` 的位置。
+
+          两个理由：① `wheel` 在浏览器真正滚动**之前**就到，判据落地时位置还没变；
+          ② `scroll` 那一头分不清是谁改的——浏览器滚动锚定会自己补偿 `scrollTop`
+          （实测：一次滚轮之后 JS 一次都没写，位置却被挪了 324px），`scrollHeight`
+          在流式期间又一直在变，把"用户往上翻"挂在 `scroll` 上两头都会误判。
+        */
+        if (event.deltaY < 0) stopFollowing()
+      }
+      // 触摸一上来就先停：手指的意图没法像 `wheel` 那样只看一个数
+      const onTouchMove = () => stopFollowing()
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (SCROLL_UP_KEYS.has(event.key)) stopFollowing()
+      }
+
+      /*
+        `scroll` 只用来做一件事：**回到贴底就把跟随接回来**。
+
+        点浮标、自己滚到底、换会话之后落底，走的都是这里；其余任何位置变化都不改跟随，
+        所以浏览器滚动锚定的补偿、内容长高之后的位移，都不会被误读成"用户在看旧内容"。
+      */
+      const onScroll = () => {
+        const el = viewportRef.current
+        if (!el) return
+        if (el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_THRESHOLD_PX) {
+          followRef.current = true
+        }
+      }
+
+      // 流式的每一个字都是一次 `characterData` 变更，所以这个观察者就是"内容长了"的信号。
+      // 不观察 `attributes`：视口里不少元素靠 class 开关做过渡，那些变更不代表内容变高。
+      const growth = new MutationObserver(scheduleFollow)
+      growth.observe(node, { childList: true, subtree: true, characterData: true })
+
+      node.addEventListener('wheel', onWheel, { passive: true })
+      node.addEventListener('touchmove', onTouchMove, { passive: true })
+      node.addEventListener('keydown', onKeyDown)
+      node.addEventListener('scroll', onScroll, { passive: true })
+
+      detachRef.current = () => {
+        growth.disconnect()
+        node.removeEventListener('wheel', onWheel)
+        node.removeEventListener('touchmove', onTouchMove)
+        node.removeEventListener('keydown', onKeyDown)
+        node.removeEventListener('scroll', onScroll)
+        if (frameRef.current !== null) {
+          cancelAnimationFrame(frameRef.current)
+          frameRef.current = null
+        }
+      }
+    },
+    [pinToBottom],
+  )
+
+  const headId = chat.messages[0]?.id ?? ''
+  const lastUserId = chat.messages.reduce<string>(
+    (found, message) => (message.role === 'user' ? message.id : found),
+    '',
+  )
+
+  /**
+   * "这一刻用户要看的是最新那一头"的三个时刻：刚进会话、换了另一条会话、刚发出提问。
+   *
+   * 用**第一条消息的 id** 认前两个（内容整块换上来，头一条必然换人），用**最后一条提问的
+   * id** 认第三个（重试 / 重新生成也会新发一条，同样算）。这三个动作都是用户主动把视线
+   * 放到最新，与"往上读旧内容"相反，所以不受跟随状态限制——而且库原先那三条自动落底
+   * （初始化 / 开跑 / 换会话）已经关掉，落底时机只有这一处。
+   */
+  useEffect(() => {
+    followRef.current = true
+    pinToBottom()
+  }, [headId, lastUserId, pinToBottom])
+
   return (
     <ThreadPrimitive.Root
       /*
@@ -81,7 +244,36 @@ export function ChatThread() {
       {/* 抬头**在视口之外**（不跟着消息滚走）：常驻的"这是哪条会话、属于哪个项目"。
           它同时给消息区一条上边界——原先正文直接贴在窗口顶端 */}
       <ChatHeader />
-      <ThreadPrimitive.Viewport className="min-h-0 flex-1 overflow-y-auto" aria-label="对话内容">
+      <ThreadPrimitive.Viewport
+        /*
+          **库的整套自动落底都关掉**（`autoScroll` + 那三条"到某个时刻落底"），
+          跟随改由上面 `attachViewport` 自己判。为什么非关不可：
+
+          `useThreadViewportAutoScroll` 的判据是 `isUserScrollUp`——它要求两次读数之间
+          `scrollHeight` **一模一样**才算"用户往上翻"。流式期间内容每一帧都在长，这个等号
+          几乎从不成立，于是真实的滚轮被读成"内容长了"，`followBottomRef` 一直是真的，
+          下一次内容增长就 `scrollToBottom` 把人拽回底部（上一轮基线：翻上去 400px 被拽回
+          正好 400px、浮标一次都没出现；本轮反向验证在这支探针上量到一次 **3192px** 的回拽，
+          伴随 239 次 `scrollTop` 写入、86 次 `scrollTo`）。这条判据在库内部，外面改不了，
+          只能不用它。三条"到某个时刻落底"各自还会先种下一个**待落底意图**：内容还没
+          溢出时它既不落底也不清掉（库自己用 `pointerdown` 兜的就是这个坑，而滚轮用户
+          不会触发 `pointerdown`），会在后面某次内容增长时补上一记——所以一并关掉，
+          落底时机集中在上面那个 effect 里。
+
+          `overflow-anchor: none` 是**关掉浏览器滚动锚定**：视口里那块 markdown 长高时，
+          浏览器会自己改 `scrollTop` 去补偿（实测 324px，且 JS 一次没写）。那是浏览器行为，
+          不是用户也不是我们写的——留着它，用户读到一半位置会被挪走，而"谁动了 scrollTop"
+          这件事也永远查不清。关掉之后 `scrollTop` 只会因为两件事变：用户的手势，
+          和我们自己那次贴底。
+        */
+        autoScroll={false}
+        scrollToBottomOnRunStart={false}
+        scrollToBottomOnInitialize={false}
+        scrollToBottomOnThreadSwitch={false}
+        className="min-h-0 flex-1 overflow-y-auto [overflow-anchor:none]"
+        aria-label="对话内容"
+        ref={attachViewport}
+      >
         {/* 正文列：**与输入卡片同一条 768px 的居中窄列**（`--chat-measure`），内边距照旧
             `ChatView.vue` 的 `.chat-inner`（`space-6 / gutter / space-4`）；空态那一条把
             **下内边距归零**（旧 `.chat-centered .chat-inner { padding-bottom: 0 }`）——
