@@ -560,6 +560,8 @@ def context_usage(
                 label=part.label,
                 chars=part.chars,
                 tokens=part.tokens,
+                # 注入内容的开头一段（D09）：界面上给"本轮注入了什么"一个内容级入口
+                preview=part.preview,
                 share=(part.tokens / usage.used) if usage.used else 0.0,
             )
             for part in usage.parts

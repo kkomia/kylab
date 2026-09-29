@@ -629,6 +629,11 @@ export function ContextDetails() {
   const chat = useChat()
   const usage = chat.contextUsage.data
   const error = chat.contextUsage.error
+  /**
+   * 哪一项的注入内容摊开着（D09）：一次只摊一项——同时摊五六段，这一格会从"读数"
+   * 变成一份要滚的文档，而用户点它的目的通常只是"核一眼我设的人设进去了没有"。
+   */
+  const [openPart, setOpenPart] = useState<string | null>(null)
   if (!chat.conversationId) return null
   // 详情里那行括号用整数百分比（口径与旧版一致：那一行给整数，行上给小数的读数）
   const percent = usage ? Math.round(Math.min(1, Math.max(0, usage.ratio)) * 100) : 0
@@ -641,25 +646,56 @@ export function ContextDetails() {
             已用 {formatCount(usage.used)} / {formatCount(usage.total)} tokens
             <span className="text-[var(--text-tertiary)]">（{percent}%）</span>
           </p>
-          {/* 按来源分解：**label 用后端给的中文**（口径在服务端，界面不翻译 kind） */}
+          {/* 按来源分解：**label 用后端给的中文**（口径在服务端，界面不翻译 kind）。
+              点标题可以展开**这一段实际注入了什么**（D09）——`preview` 由服务端截好
+              （600 字），界面不自己再截；没有 preview 的那些（比如"其它"）就不摆入口。 */}
           <ul className="m-0 mt-[var(--space-1)] flex list-none flex-col gap-[var(--space-1)] p-0">
             {usage.items.map((part) => (
-              <li
-                key={part.kind}
-                className="grid grid-cols-[1fr_auto_64px] items-center gap-[var(--space-2)] text-[length:var(--text-meta-size)] text-[var(--text-secondary)]"
-              >
-                <span className="truncate" title={part.label}>
-                  {part.label}
-                </span>
-                <span className="tabular text-[var(--text-tertiary)]">
-                  {formatCount(part.tokens)}
-                </span>
-                <span className="block h-[4px] overflow-hidden rounded-[2px] bg-[var(--bg-active)]">
-                  <span
-                    className="block h-full bg-[var(--accent)]"
-                    style={{ width: `${Math.round(part.share * 100)}%` }}
-                  />
-                </span>
+              <li key={part.kind} className="flex flex-col">
+                <div className="grid grid-cols-[1fr_auto_64px] items-center gap-[var(--space-2)] text-[length:var(--text-meta-size)] text-[var(--text-secondary)]">
+                  {part.preview ? (
+                    <button
+                      type="button"
+                      className="flex min-w-0 cursor-pointer items-center gap-[var(--space-1)] text-left hover:text-[var(--text-primary)]"
+                      aria-expanded={openPart === part.kind}
+                      aria-label={`${part.label}：看本轮注入了什么`}
+                      title="看本轮注入了什么"
+                      onClick={() =>
+                        setOpenPart((current) => (current === part.kind ? null : part.kind))
+                      }
+                    >
+                      <span className="truncate">{part.label}</span>
+                      <ChevronDown
+                        size={12}
+                        aria-hidden="true"
+                        className={`shrink-0 text-[var(--text-quaternary)] transition-transform ${
+                          openPart === part.kind ? 'rotate-180' : ''
+                        }`}
+                      />
+                    </button>
+                  ) : (
+                    <span className="truncate" title={part.label}>
+                      {part.label}
+                    </span>
+                  )}
+                  <span className="tabular text-[var(--text-tertiary)]">
+                    {formatCount(part.tokens)}
+                  </span>
+                  <span className="block h-[4px] overflow-hidden rounded-[2px] bg-[var(--bg-active)]">
+                    <span
+                      className="block h-full bg-[var(--accent)]"
+                      style={{ width: `${Math.round(part.share * 100)}%` }}
+                    />
+                  </span>
+                </div>
+                {openPart === part.kind && part.preview ? (
+                  <pre
+                    data-testid={`context-part-preview-${part.kind}`}
+                    className="m-0 mt-[var(--space-1)] max-h-[240px] overflow-auto rounded-[var(--radius-control)] bg-[var(--bg-active)] p-[var(--space-2)] text-[length:var(--text-micro-size)] leading-[var(--line-code)] whitespace-pre-wrap text-[var(--text-secondary)]"
+                  >
+                    {part.preview}
+                  </pre>
+                ) : null}
               </li>
             ))}
             {usage.items.length === 0 ? (

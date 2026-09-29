@@ -2052,3 +2052,49 @@ describe('失败气泡的「重试」（D35，2026-09-28 走查）', () => {
     await waitFor(() => expect(rewindConversation).toHaveBeenCalledWith('c1', 1))
   })
 })
+
+describe('上下文分解能看"本轮注入了什么"（D09，2026-09-28 走查）', () => {
+  it('点一项的标题 → 摊开那一段实际文本；再点一下收起', async () => {
+    vi.mocked(getContextUsage).mockResolvedValue({
+      items: [
+        {
+          kind: 'system_prompt',
+          label: '系统提示词',
+          chars: 1378,
+          tokens: 1378,
+          share: 0.62,
+          preview: '你是 KYLAB。\n下面是你的身份与长期设定……',
+        },
+        { kind: 'other', label: '其它', chars: 328, tokens: 328, share: 0.15, preview: '' },
+      ],
+      used: 11008,
+      total: 1_000_000,
+      ratio: 0.011,
+      compress_at: 70,
+      compress_budget: 700000,
+      estimated: true,
+      note: '按字符数估算：中日韩 1 字约 1 token',
+    } as never)
+    renderPage()
+    // 等输入框 = 这一页真的挂上了（这条用例不关心消息，所以不等回答气泡）
+    await screen.findByRole('textbox', { name: '消息输入框' })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: '选择对话模型' }))
+
+    const toggle = await screen.findByRole('button', { name: '系统提示词：看本轮注入了什么' })
+    expect(screen.queryByTestId('context-part-preview-system_prompt')).not.toBeInTheDocument()
+
+    await user.click(toggle)
+
+    const preview = await screen.findByTestId('context-part-preview-system_prompt')
+    expect(preview).toHaveTextContent('你是 KYLAB')
+
+    // 再点一下收起
+    await user.click(toggle)
+    await waitFor(() =>
+      expect(screen.queryByTestId('context-part-preview-system_prompt')).not.toBeInTheDocument(),
+    )
+    // 没有 preview 的那一项**不摆入口**（"其它"只有数字）
+    expect(screen.queryByRole('button', { name: '其它：看本轮注入了什么' })).not.toBeInTheDocument()
+  })
+})

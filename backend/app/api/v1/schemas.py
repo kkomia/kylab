@@ -1089,6 +1089,13 @@ class ContextUsageItemOut(BaseModel):
     """按字符数估的 token（见 ``estimated``）。"""
     share: float = 0.0
     """占**已用**的比例（0~1）。界面画分解条用它，比每次自己除一遍稳。"""
+    preview: str = ""
+    """这一项**实际文本的开头一段**（D09，2026-09-28 走查）。
+
+    这一排原先只有数字：能看出"系统提示词占多少 token"，但"本轮到底给它灌了什么"
+    没有入口（同一页里工具结果与出处早就有"加载全部 / 看全文"）。
+    截断长度是服务端定的（``services/chat.CONTEXT_PART_PREVIEW_CHARS``，600 字），
+    前端只负责显示，别自己再截一遍。"""
 
 
 class ContextUsageOut(BaseModel):

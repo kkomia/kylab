@@ -898,3 +898,24 @@ def test_no_kb_round_says_so_in_the_prompt(runtime, bind_slot) -> None:  # type:
     # 说清楚**不是"什么都查不了"**：记忆与笔记照旧
     assert "recall" in no_kb_text
     assert "这一轮没有知识库" not in str(with_kb[0].content)
+
+
+def test_usage_part_carries_a_clipped_preview() -> None:
+    """D09：用量分解的每一项要带**这一项实际文本的开头一段**。
+
+    病灶：这一排原先只有数字——"系统提示词占 1378 token"回答了"多少"，而"本轮到底给它
+    灌了什么"没有入口（同页里工具结果与出处早就有"加载全部 / 看全文"）。
+    """
+    from app.services.chat import CONTEXT_PART_PREVIEW_CHARS, _usage_part
+
+    long_body = "字" * (CONTEXT_PART_PREVIEW_CHARS + 200)
+    part = _usage_part("system_prompt", "系统提示词", [long_body])
+
+    assert part.chars == len(long_body)
+    assert len(part.preview) == CONTEXT_PART_PREVIEW_CHARS
+    assert long_body.startswith(part.preview)
+    # 短的那一段原样给全（不补、不截）
+    short = _usage_part("skills", "技能目录", ["技能一"])
+    assert short.preview == "技能一"
+    # 空来源给空串（界面据此不摆展开入口）
+    assert _usage_part("other", "其它", []).preview == ""

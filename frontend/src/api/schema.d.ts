@@ -3812,6 +3812,17 @@ export interface components {
              * @default 0
              */
             share: number;
+            /**
+             * Preview
+             * @description 这一项**实际文本的开头一段**（D09，2026-09-28 走查）。
+             *
+             *     这一排原先只有数字：能看出"系统提示词占多少 token"，但"本轮到底给它灌了什么"
+             *     没有入口（同一页里工具结果与出处早就有"加载全部 / 看全文"）。
+             *     截断长度是服务端定的（``services/chat.CONTEXT_PART_PREVIEW_CHARS``，600 字），
+             *     前端只负责显示，别自己再截一遍。
+             * @default
+             */
+            preview: string;
         };
         /**
          * ContextUsageOut
@@ -10179,7 +10190,7 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: number;
-                /** @description 按标题搜索（包含匹配） */
+                /** @description 按标题**或消息正文**搜索（包含匹配，忽略大小写） */
                 q?: string | null;
                 /** @description 只看这个工作区下的会话（v0.15） */
                 workspace_id?: string | null;

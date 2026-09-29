@@ -1034,6 +1034,13 @@ export interface ContextUsagePart {
   tokens: number
   /** 占**已用**的比例（0~1）。画分解条用它，比每次自己除一遍稳。 */
   share: number
+  /**
+   * 这一项**实际文本的开头一段**（D09，2026-09-28 走查）。
+   *
+   * 截断在服务端（600 字），界面只负责显示——"本轮注入了什么"因此有了内容级入口，
+   * 与工具结果那套"预览 + 展开"同一口径。
+   */
+  preview: string
 }
 
 /**
@@ -1078,6 +1085,8 @@ export async function getContextUsage(conversationId: string): Promise<ContextUs
       chars: item.chars ?? 0,
       tokens: item.tokens ?? 0,
       share: item.share ?? 0,
+      // 老后端没有这一段时就当"没有内容可看"（界面据此不摆展开入口）
+      preview: item.preview ?? '',
     })),
     used: raw.used ?? 0,
     total: raw.total ?? 0,

@@ -515,6 +515,13 @@ class ContextPart:
     label: str
     chars: int
     tokens: int
+    #: 这一项**实际文本的开头一段**（D09，2026-09-28 走查）。
+    #:
+    #: 为什么要有它：这一排原先只有数字——"系统提示词占 1378 token"回答了"多少"，
+    #: 但"本轮到底给它灌了什么"没有入口（同页面里工具结果与出处**早就有**"加载全部 /
+    #: 看全文"，唯独注入内容没有）。给一段开头，用户就能自己核"我设的人设/记忆进去了没有"。
+    #: 截断长度见 `CONTEXT_PART_PREVIEW_CHARS`（与界面里那套 600 字预览同口径）。
+    preview: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -1573,6 +1580,11 @@ def build_messages(
     return messages
 
 
+#: 注入内容那一项给用户看的**开头长度**（D09）。与界面里工具结果那套"600 字预览"同一个量级：
+#: 够看出"这一段是不是我设的东西"，又不至于把面板撑成一份可滚动的文档。
+CONTEXT_PART_PREVIEW_CHARS = 600
+
+
 def _usage_part(kind: str, label: str, texts: Sequence[str]) -> ContextPart:
     """用量分解的一项：把这一来源的几段文本拼起来，按字符数估 token。
 
@@ -1580,7 +1592,14 @@ def _usage_part(kind: str, label: str, texts: Sequence[str]) -> ContextPart:
     段一多就虚高；先拼成"模型实际读到的那一段"再估，数量级才对得上。
     """
     body = "\n".join(item for item in texts if item)
-    return ContextPart(kind=kind, label=label, chars=len(body), tokens=estimate_tokens(body))
+    return ContextPart(
+        kind=kind,
+        label=label,
+        chars=len(body),
+        tokens=estimate_tokens(body),
+        # 预览就是这一整段文本的开头（D09）：**不另拼一份**，免得"看到的"与"算进去的"不同源
+        preview=body[:CONTEXT_PART_PREVIEW_CHARS],
+    )
 
 
 def _tool_spec_text(spec: object) -> str:
