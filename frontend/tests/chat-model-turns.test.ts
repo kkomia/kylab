@@ -10,9 +10,11 @@ import { describe, expect, it } from 'vitest'
 
 import type { ChatSource, ChatStep } from '@/api/chat'
 import {
+  artifactNameMap,
   degradedReason,
   hasToolCallMarkup,
   buildTurns,
+  humanizeArtifactKeys,
   isTraceOpen,
   readTraceOpenMemory,
   writeTraceOpenMemory,
@@ -978,5 +980,49 @@ describe('每步自己的思考（v0.54）', () => {
     })
 
     expect(trailingThinking(reply)).toBe('整串还在。')
+  })
+})
+
+describe('art_* 的 key → 文件名（D19，2026-09-28 走查）', () => {
+  it('入参里的 key 缀上文件名，**键本身保留**', () => {
+    // 病灶（走查实测）：入参那一行原样打印 `{"key": "art_7e7aecbd2ca0"}`，
+    // 用户不知道那是哪一份文件。键要留着（它才是真正传给工具的值），后面缀名字。
+    const turns = [
+      {
+        user: message('user', {
+          attachments: [{ key: 'art_1', name: '走查样例.md', kind: 'md', size_bytes: 549 }],
+        }),
+        reply: null,
+      },
+    ]
+
+    const names = artifactNameMap(turns)
+
+    expect(names.get('art_1')).toBe('走查样例.md')
+    expect(humanizeArtifactKeys('{"key": "art_1"}', names)).toBe('{"key": "art_1（走查样例.md）"}')
+  })
+
+  it('步骤产物那份也进表（键在 `artifact_id` 上）', () => {
+    const reply = message('assistant', {
+      steps: [
+        step('export', {
+          artifacts: [{ artifact_id: 'art_9', name: 'eye.md', kind: 'md', size_bytes: 11185 }],
+        } as never),
+      ],
+    })
+
+    const names = artifactNameMap([{ user: null, reply }])
+
+    expect(names.get('art_9')).toBe('eye.md')
+  })
+
+  it('查不到就原样留着（不编、不猜）', () => {
+    const empty = artifactNameMap([])
+    expect(empty.size).toBe(0)
+    expect(humanizeArtifactKeys('{"key": "art_unknown"}', empty)).toBe('{"key": "art_unknown"}')
+    // 表里有别的、这一份没有：同样不许乱缀
+    expect(humanizeArtifactKeys('{"key": "art_unknown"}', new Map([['art_1', 'x']]))).toBe(
+      '{"key": "art_unknown"}',
+    )
   })
 })

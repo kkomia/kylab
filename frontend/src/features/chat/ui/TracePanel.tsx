@@ -19,9 +19,10 @@
  * DOM 开销一直在。
  */
 import { ChevronDown } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import {
+  artifactNameMap,
   liveLine,
   sourcePreview,
   sourceWhere,
@@ -54,6 +55,13 @@ const CITE_FOLD_LIMIT = 3
 /** 过程面板的一行：单独一步，或**同类工具并成的一组**。 */
 function EntryRow({ entry, streaming }: { entry: TraceEntry; streaming: boolean }) {
   const chat = useChat()
+  /**
+   * `art_*` → 文件名（D19，2026-09-28 走查）。
+   *
+   * 在这一层算一次、发给行用：行里只显示，不该各自去扫一遍会话；
+   * 表里同时收了**消息附件**（用户上传）与**步骤产物**（工具导出）两处。
+   */
+  const artifactNames = useMemo(() => artifactNameMap(chat.turns), [chat.turns])
 
   // 单独一步：绝大多数工具只调一次，那一档不该多一层点击
   if (entry.kind === 'step') {
@@ -61,6 +69,7 @@ function EntryRow({ entry, streaming }: { entry: TraceEntry; streaming: boolean 
       <TraceStepRow
         step={entry.step}
         streaming={streaming}
+        names={artifactNames}
         open={chat.isStepOpen(entry.step.key)}
         onToggle={() => chat.toggleStep(entry.step.key)}
       />
@@ -95,6 +104,7 @@ function EntryRow({ entry, streaming }: { entry: TraceEntry; streaming: boolean 
                 step={child}
                 variant="child"
                 streaming={streaming}
+                names={artifactNames}
                 open={chat.isStepOpen(child.key)}
                 onToggle={() => chat.toggleStep(child.key)}
               />

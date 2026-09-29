@@ -987,3 +987,39 @@ export function sourcePreview(source: ChatSource): string {
  * 而出处本来是看回答时顺手一瞥的动作；抽屉只需要 `document_id` 与页码，
  * 于是"历史快照缺 knowledge_base_id 就退回 /documents"那条分支也一并没了。
  */
+
+/**
+ * 会话里所有 `art_*` 的 key → 文件名（D19，2026-09-28 走查）。
+ *
+ * 两处来源都要：**消息附件**（用户上传的，快照里带名字）与**步骤产物**（工具导出的，
+ * 键在 `artifact_id` 上）。工具入参里传的是 key——界面原样打印 `{"key":"art_7e7aecbd2ca0"}`
+ * 的话，用户根本不知道那是哪一份文件（走查 D19 实测）。
+ */
+export function artifactNameMap(turns: readonly Turn[]): Map<string, string> {
+  const names = new Map<string, string>()
+  for (const turn of turns) {
+    for (const item of turn.user?.attachments ?? []) {
+      if (item.key && item.name) names.set(item.key, item.name)
+    }
+    for (const step of turn.reply?.steps ?? []) {
+      for (const file of step.artifacts ?? []) {
+        if (file.artifact_id && file.name) names.set(file.artifact_id, file.name)
+      }
+    }
+  }
+  return names
+}
+
+/**
+ * 入参文本里的 `art_xxx` **后面缀上文件名**：`art_xxx（走查样例.md）`。
+ *
+ * 键本身**保留**：它才是真正传给工具的那个值，用户要对着日志看、要拿它去下载时得看得见。
+ * 只处理**原始入参**（不回灌自己的输出），所以不必担心缀两遍。
+ */
+export function humanizeArtifactKeys(args: string, names: ReadonlyMap<string, string>): string {
+  if (!args || names.size === 0) return args
+  return args.replace(/art_[0-9a-zA-Z]+/g, (key) => {
+    const name = names.get(key)
+    return name ? `${key}（${name}）` : key
+  })
+}

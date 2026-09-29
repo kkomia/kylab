@@ -10,8 +10,16 @@
 import { ChevronDown } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
-import { resultPreview, thinkingParagraphs, type TraceStep } from '@/features/chat/model/turns'
+import {
+  humanizeArtifactKeys,
+  resultPreview,
+  thinkingParagraphs,
+  type TraceStep,
+} from '@/features/chat/model/turns'
 import { formatCount } from '@/lib/format'
+
+/** 没有名字表时用的空表（**常量**：`) => new Map()` 会每次渲染换一个引用）。 */
+const EMPTY_NAMES: ReadonlyMap<string, string> = new Map()
 
 import { LinkText } from './LinkText'
 import { StepIcon } from './stepIcons'
@@ -75,6 +83,7 @@ export function TraceStepRow({
   onToggle,
   variant = 'plain',
   streaming = false,
+  names,
 }: {
   step: TraceStep
   /** 原文（入参 / 返回）是否展开。由宿主持有——它才管得住"哪几行开着"。 */
@@ -92,6 +101,14 @@ export function TraceStepRow({
    * 当然用户也可以展开查看。"
    */
   streaming?: boolean
+  /**
+   * `art_*` → 文件名（D19，2026-09-28 走查）。来自 `model/turns.ts::artifactNameMap`。
+   *
+   * 只影响**入参那一行的显示**：工具调用里传的是文件 key，原样打印的话用户不知道那是
+   * 哪一份文件（走查实测的原文就是 `{"key": "art_7e7aecbd2ca0"}`）。key 仍然保留，
+   * 只是后面缀上名字。不给（或表里查不到）就照旧原样显示——不编、不猜。
+   */
+  names?: ReadonlyMap<string, string>
 }) {
   /** 展开入口只在真有原文时给：没有原文却画个能点的箭头，点了什么都不变。 */
   const hasDetail = Boolean(step.args || step.result)
@@ -240,7 +257,8 @@ export function TraceStepRow({
               <>
                 <p className={RAW_LABEL}>入参</p>
                 <pre className={RAW_BODY}>
-                  <LinkText text={step.args} />
+                  {/* 入参里的 `art_*` 缀上文件名（D19）：key 保留，用户看得懂那是什么 */}
+                  <LinkText text={humanizeArtifactKeys(step.args, names ?? EMPTY_NAMES)} />
                 </pre>
               </>
             ) : null}
