@@ -59,6 +59,7 @@ from app.services.llm import ToolSpec
 from app.services.mcp_client import normalized_server_name, split_qualified
 from app.services.memory import WRITABLE_PERSONA_FILES
 from app.services.schedules import timezone_name
+from app.services.subagent import parse_tool_content as parse_subagent_content
 from app.services.tool_loop import ToolOutcome, ToolRunner
 from app.services.tools import ARTIFACT_KEY, MAX_UPLOAD_BYTES, call_tool, tool_definitions
 
@@ -92,6 +93,10 @@ _SKILL_TOOLS: tuple[dict[str, Any], ...] = (
             "它看不到我们这段对话，所以任务描述要写全（问什么、依据什么）。"
             "适合「需要啃一批资料才能得到一句话结论」的活；"
             "**它没有派生能力、有轮次与时限**，简单的事自己做更快。"
+            "它交回的是**结论 + 六项结构化结果**（关键发现 / 证据或引用 / 已做的决策 / "
+            "更改的文件 / 风险与置信度 / 建议的下一步）：引用它的结论前先看**置信度与风险**，"
+            "下一步可以照它给的建议走；某一项是空的，就是**它这一项没交回来**，"
+            "不要当成「它没有这件事」。"
         ),
         "inputSchema": {
             "type": "object",
@@ -772,10 +777,29 @@ def build_runner(
             brief = " ".join(task.split())
             if len(brief) > _SUMMARY_TASK_CHARS:
                 brief = f"{brief[:_SUMMARY_TASK_CHARS]}…"
+            # 交回的东西是**结构化的**（D15）：把六项里用户最该先知道的两项提到那一行上
+            # ——置信度（这段结论有多可靠）与建议下一步（接下来该干什么）。
+            # **只有真解析出那一块才加**：拿不到结构就照旧只说"回报了结论"，
+            # 不猜、也不给一行看起来像结构化结果的东西。
+            prefix = "子 Agent 回报了结论"
+            structured = parse_subagent_content(answer)
+            if structured:
+                extra: list[str] = []
+                confidence = structured.get("confidence")
+                if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
+                    extra.append(f"置信度 {confidence:g}")
+                risks = structured.get("risks")
+                if isinstance(risks, list) and risks:
+                    extra.append(f"风险 {len(risks)} 条")
+                steps = structured.get("next_steps")
+                if isinstance(steps, list) and steps:
+                    extra.append(f"建议下一步 {len(steps)} 条")
+                if extra:
+                    prefix = f"{prefix}（{'，'.join(extra)}）"
             return ToolOutcome(
                 content=answer or "（子 Agent 没有给出结论）",
                 sources=_snapshot(),
-                summary=f"子 Agent 回报了结论：{brief}",
+                summary=f"{prefix}：{brief}",
                 added=len(refs),
             )
         if name == "list_skills":

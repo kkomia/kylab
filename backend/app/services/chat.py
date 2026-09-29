@@ -61,6 +61,11 @@ DEFAULT_COMPRESS_AT = 70
 #: 才可能触发，等于这个功能不存在（走查 D37）。12 万这个数取在"主流模型仍然答得稳"
 #: 的区间里：比默认窗口（65536）的 70% 高，所以**默认配置下不改变任何现有行为**——
 #: 它只在用户把窗口调得很大时才起作用。
+#:
+#: **复核过 Kimi 的 300K**（照搬清单第 4 条，机制级：`/blog/kimi-k3` 行 173），
+#: **结论是保持 12 万不动**：那个 300K 是在 256K～1M 窗口、且**不做上下文管理**的
+#: 前提下定的触发点，而我们的默认窗口只有 65536、而且还有两级压缩兜着——两者不在同一个
+#: 坐标系里；照抄成 300K 会让上面那句"默认配置下不改变任何现有行为"直接失效。
 DEFAULT_COMPRESS_MAX_TOKENS = 120_000
 #: 压缩时保留最近几条消息**原样**不进摘要：指代几乎总指向最近一两轮。
 DEFAULT_COMPRESS_KEEP = 6
@@ -120,6 +125,30 @@ PRUNE_KEEP_TOOL_RESULTS = 5
 #: 阈值与 ZCode 的 microcompact 同一个量级（那儿是 256 字）：一条 200 字的结果
 #: 剪掉只省下 200 字，而它往往就是"已保存 / 命中 3 条"这种关键结论。
 PRUNE_MIN_CHARS = 256
+
+#: 「第一级压缩保留最近几条工具结果」的**可配键**（照搬清单第 4 条）。
+#:
+#: Kimi K2.6 自述的上下文策略是 **simple**（超过阈值只保留最近一轮工具相关消息），
+#: K3 的压缩在 300K 触发。**我们不加第三套压缩**——第一级（这里）已经等价于它那一套，
+#: 只是保留得更宽（5 条）。研究型任务可以把它调小（1~3 轮），对齐他们的 discard-all。
+#: 不配这个键时行为与从前**逐字一致**（`PRUNE_KEEP_TOOL_RESULTS`）。
+PRUNE_KEEP_SETTING = "chat.prune_keep_tool_results"
+
+
+def prune_keep_from(raw: object) -> int:
+    """设置里那个"保留最近几条" → 一个可用的条数（**读不懂就回默认**）。
+
+    三条分寸：
+    - 不是整数（没配 / 写了字）→ `PRUNE_KEEP_TOOL_RESULTS`：**默认档不许因为一个坏值变**；
+    - 负数当 0（等价于"只留最近 0 条"= 全剪，是 Kimi 那条 discard-all 的极端档）；
+    - 上限 50：再大就等于"不剪"，而那会让这条压缩静默失效（想关就该显式调窗口）。
+    """
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return PRUNE_KEEP_TOOL_RESULTS
+    return max(0, min(value, 50))
+
 
 
 def prune_tool_results(
@@ -562,8 +591,10 @@ class _PruningChat:
     （见 ``ChatService._record_usage``）。
     """
 
-    def __init__(self, inner: object) -> None:
+    def __init__(self, inner: object, *, keep: int = PRUNE_KEEP_TOOL_RESULTS) -> None:
         self._inner = inner
+        #: 保留最近几条工具结果原文（可配，见 `PRUNE_KEEP_SETTING`）
+        self._keep = keep
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._inner, name)
@@ -582,7 +613,7 @@ class _PruningChat:
 
     def _prune(self, messages: list[ChatMessage]) -> None:
         try:
-            pruned = prune_tool_results(messages)
+            pruned = prune_tool_results(messages, keep=self._keep)
         except Exception:  # 剪枝是优化：它自己坏了不该把这一轮问答拖垮
             logger.warning("第一级压缩（剪旧工具结果）失败，本步不剪", exc_info=True)
             return
@@ -943,7 +974,13 @@ class ChatService:
         stopped = "answered"
         try:
             if task.kb_ids:
-                sources = self.retrieve_sources(task.question, kb_ids=task.kb_ids, top_k=top_k)
+                # `query` 是**关键字参数**（`retrieve_sources` 的定义里 `*` 在它前面）：
+                # 这里原先写成位置参数，于是子 Agent 只要带知识库范围就抛 TypeError、
+                # 被下面那个 except 收成 `error`——"派了但什么都没查"却看起来像模型不行。
+                # 2026-09-29 真跑一次子 Agent 时抓到的（见 D15 交卷）。
+                sources = self.retrieve_sources(
+                    query=task.question, kb_ids=task.kb_ids, top_k=top_k
+                )
                 searches += 1
             turns += 1
             if budget.expired:
@@ -965,8 +1002,11 @@ class ChatService:
                 answer = chat.complete(messages)
                 self._record_usage(chat, started, items=1, config=config)
                 turns += 1
-                return subagent_service.SubAgentResult(
-                    answer=answer.strip(),
+                # 交回的东西要结构化（D15）：结论 + 六项由 `from_reply` 解析，
+                # 解析不出来就六项空着——不拿正文猜哪一句是风险、哪一句是下一步
+                result = subagent_service.SubAgentResult.from_reply(answer)
+                return dataclasses.replace(
+                    result,
                     sources=sources,
                     turns=turns,
                     searches=searches,
@@ -1352,8 +1392,24 @@ class ChatService:
             subagent_service.SubAgentTask(question=question, kb_ids=list(kb_ids), depth=0),
             config=config,
         )
-        # 停下来时如实说：把"预算用完"说成"查完了"，父 Agent 会拿半截结论当完整的用
-        answer = result.answer
+        # ② 证据或引用：子 Agent 没写证据点时，把它**真正检索到**的那几份材料写进去。
+        #    这不是"拿正文硬塞"——`sources` 本来就是那次检索的产物（真实、可点），
+        #    而父 Agent 要靠这一项才知道这段结论是从哪几份材料里来的。
+        if not result.evidence and result.sources:
+            result = dataclasses.replace(
+                result,
+                evidence=[
+                    " · ".join(
+                        part
+                        for part in (source.document_name, source.heading_path)  # type: ignore[attr-defined]
+                        if part
+                    )
+                    for source in result.sources[: subagent_service.RESULT_MAX_ITEMS]
+                ],
+            )
+        # 停下来时如实说：把"预算用完"说成"查完了"，父 Agent 会拿半截结论当完整的用。
+        # 六项与结论一起进父 Agent 的上下文（见 `SubAgentResult.as_context_block`）。
+        answer = result.as_context_block()
         if result.stopped_reason:
             answer = f"{answer}\n\n（子 Agent 停止原因：{result.stopped_reason}）"
         return answer, list(result.sources)
@@ -1404,7 +1460,10 @@ class ChatService:
             # **每一步的模型调用都先做第一级压缩**（P1-3）：工具结果是在循环跑的过程里
             # 长出来的，只有客户端这一层能"每次都看到最新那份"（见 ``_PruningChat``）
             client_factory=lambda: _PruningChat(
-                self._build_chat(model_pk, thinking, thinking_effort)
+                self._build_chat(model_pk, thinking, thinking_effort),
+                # 保留几条工具结果是**可配档**（照搬清单第 4 条：研究型可设 1~3 轮，
+                # 对齐 Kimi K2.6 的 discard-all）；读不懂就回默认，见 `prune_keep_from`
+                keep=prune_keep_from(self._runtime.get(PRUNE_KEEP_SETTING)),
             ),
             tools=list(tools),
             runner=runner,
