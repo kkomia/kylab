@@ -56,15 +56,13 @@ export const STEP_ROW_CHILD = `${STEP_ROW_SHELL} gap-[var(--space-1)]`
  */
 export const STEP_ICON =
   'relative z-[1] inline-flex shrink-0 items-center justify-center w-[21px] h-[21px] ' +
-  // 纵向：**图标中心 = 首行行盒中心**（用户 2026-09-29："你的图标大小比文字要高啊，肯定要用中心对齐"）。
-  // 为什么不是 items-center：那是按**整个文字块**居中，标签换行（组行标题实测会换到两行）时
-  // 图标会跟着块中心下沉，反而更歪；所以留着父级的 items-start，只在图标上补一个精确偏移：
-  //   首行行盒高 = --text-meta-size × --line-ui = 14 × 1.47 = 20.58px（tokens.css 实测值，
-  //   标签那一档显式 leading-[var(--line-ui)]）；STEP_BODY 有 pt-px(1px)，所以
-  //   偏移 = (20.58 − 21) / 2 + 1 = +0.79px。
-  // 真浏览器量法（另一条 lane 给的口径）：行盒中心 ≠ 字形盒中心（14px 字号 Range 给 16px 字形盒，
-  // 两者中心差 ≈2.3px）—— 所以必须按行盒量，否则会把"已经对齐"看成差 2px。
-  'mt-[calc(var(--text-meta-size)*var(--line-ui)/2-10.5px+1px)] ' +
+  // 纵向对齐：**靠结构，不靠算偏移**（用户 2026-09-29："你就把图标的占用高度确定了，
+  // 然后文字也占用这么高居中显示不就完了？"）。做法：这里 21px 的盒子 + 行首那层
+  // `STEP_LABEL` / `STEP_TOGGLE` 的 `min-h-[21px] items-center` → **两边都是 21px 的带子、
+  // 都从行顶开始**，中心自然重合（换行的标签也只影响第二行起，图标仍对首行）。
+  // 上一版我在这里写过 `mt-[calc(var(--text-meta-size)*var(--line-ui)/2-10.5px+1px)]` ✗ ——
+  // Tailwind 的任意值里带 `*` 与 `/` 生成不出类名，等于没改（用户看到"还是没对齐"就是这个）；
+  // 教训：像素类改动**必须真浏览器复量**，别只看类名。
   'rounded-[var(--radius-pill)] border border-[var(--border)] bg-[var(--bg-canvas)] ' +
   'text-[var(--text-tertiary)]'
 
@@ -129,8 +127,14 @@ export const TRACE_FOLD_CONTENT = 'mt-[var(--space-3)]'
  * 这里只留这一句：见到旧代码或旧文档引用它们时，是"删了"，不是"忘了"。
  */
 
-/** 正文列。 */
-export const STEP_BODY = 'min-w-0 pt-px'
+/**
+ * 正文列。
+ *
+ * 这里**不再有 `pt-px`** ✗（2026-09-29 去掉）：那 1px 是上一版为了"图标 21px 对文字行盒 20.58px"
+ * 凑中心用的，现在改成**结构对齐**（见 `STEP_LABEL` 的 `min-h-[21px]`）就不需要了 ——
+ * 留着它反而会让首行带子比图标低 1px。
+ */
+export const STEP_BODY = 'min-w-0'
 
 /**
  * 标签：14px（`--text-meta-size`）二级灰。
@@ -141,9 +145,15 @@ export const STEP_BODY = 'min-w-0 pt-px'
  * 行高显式给 `--line-ui`(1.47)：这一族是元信息，不该跟着正文那档 1.7 走。
  *
  * `text-left` 与 `STEP_TOGGLE` 同一处理由（见那一段），两处是同一个视觉档。
+ *
+ * **首行带子 `min-h-[21px]` + `items-center`**（2026-09-29，用户："你就把图标的占用高度确定了，
+ * 然后文字也占用这么高居中显示不就完了"）：与 `STEP_ICON` 的 21px 盒子成对 ——
+ * 两边都从行顶开始、都是 21px，中心自然重合；**换行的标签**也只会让第二行往下长，
+ * 图标仍对着首行，所以不需要 `items-center` 那种"按整块居中"（那会让换行时图标下沉 ✗）。
  */
 export const STEP_LABEL =
-  'm-0 text-left text-[length:var(--text-meta-size)] text-[var(--text-secondary)] leading-[var(--line-ui)]'
+  'm-0 flex min-h-[21px] items-center text-left text-[length:var(--text-meta-size)] ' +
+  'text-[var(--text-secondary)] leading-[var(--line-ui)]'
 
 /**
  * 可点的标签（标签 + 箭头）：字号与颜色与 `STEP_LABEL` **同一档**。
@@ -173,7 +183,7 @@ export const STEP_LABEL =
  * 「标签类名带 text-left」那两条（类名级，不用起浏览器）。
  */
 export const STEP_TOGGLE =
-  'inline-flex items-center gap-[var(--space-1)] p-0 border-none bg-transparent ' +
+  'inline-flex min-h-[21px] items-center gap-[var(--space-1)] p-0 border-none bg-transparent ' +
   'text-left text-[length:var(--text-meta-size)] text-[var(--text-secondary)] ' +
   'leading-[var(--line-ui)] cursor-pointer [transition:var(--transition-ui)] ' +
   'hover:text-[var(--text-primary)]'
