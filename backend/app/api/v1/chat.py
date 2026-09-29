@@ -71,7 +71,7 @@ from app.api.v1.schemas import (
 )
 from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
 from app.core.services import Services, get_services
-from app.services import commands, live_turns, modes
+from app.services import commands, live_turns, modes, plan_gate
 from app.services import resume as resume_service
 from app.services.agent import (
     ApprovalEvent,
@@ -85,6 +85,7 @@ from app.services.agent import (
 )
 from app.services.agent_tools import build_runner, tool_specs
 from app.services.api_key import Caller
+from app.services.approvals import ALLOW_ALWAYS, ALLOW_ONCE
 from app.services.chat import ChatTurn, SourceRef
 from app.services.conversation import LastTurn
 from app.services.failures import failure_text
@@ -128,6 +129,9 @@ from app.services.tool_loop import (
     DEFAULT_MAX_STEPS,
     MARKER_ONLY_ANSWER,
     MARKER_STEP_LABEL,
+    # 计划卡与工具确认发的是**同一个事件形状**（照搬清单第 1 条要求复用审批通道）。
+    # 借用那个私有构造器而不是复制一遍字段映射：复制一份迟早与 ApprovalEvent 的字段漂开。
+    _approval_event,
     text_marker_step,
     tool_label,
 )
@@ -1132,6 +1136,7 @@ def _agent_loop(
     seed_sources: Sequence[SourceRef] = (),
     max_steps: int | None = None,
     max_seconds: float | None = None,
+    planning: bool = False,
 ):
     """建这一轮的工具循环（工具表 + 执行器 + 预算）。
 
@@ -1141,6 +1146,10 @@ def _agent_loop(
 
     ``seed_sources`` 只有续跑用：把上一轮已经拿到的出处接进来源账本
     （见 ``services/resume.py`` 模块头——编号必须与交给模型的说明一致）。
+
+    ``planning=True``：**研究流程的开场那一轮**（出澄清问题 / 出计划）——
+    工具表是**空的**，模型只能说话、不能动手（照搬清单第 1 条：正式检索前先出计划）。
+    执行器照旧传着（空工具表下它不会被调用），这样这一条链路与正常那条只差一个工具表。
     """
     return services.chat.tool_loop(
         model_pk=model_pk,
@@ -1152,8 +1161,11 @@ def _agent_loop(
         conversation_id=conversation_id,
         # **工具表含外部 MCP 服务的工具**（v0.20）：用户在能力页接进来的
         # 服务，它们的工具与内置工具一起交给模型；能不能真的调起来由
-        # 执行器那一刻的准入策略决定（见 agent_tools._call_mcp）
-        tools=tool_specs(
+        # 执行器那一刻的准入策略决定（见 agent_tools._call_mcp）。
+        # 开场那一轮给空表：这一轮只准说、不准动手。
+        tools=[]
+        if planning
+        else tool_specs(
             services,
             owner_id=caller.owner_id,
             # 这一轮允许查的库（空 = 用户关掉了知识库开关）：
@@ -1308,18 +1320,42 @@ def _turn_events(
         # 事件怎么摊成 SSE、快照怎么攒，全在 `_TurnSink` 里（与续跑共用一份：
         # 那段映射里有好几处踩过才知道的细节，复制一份就一定会分叉）。
         try:
-            loop = _agent_loop(
-                services,
-                caller,
-                kb_ids=payload.kb_ids,
-                conversation_id=payload.conversation_id,
-                model_pk=model_pk,
-                thinking=thinking,
-                effort=effort,
-            )
+            # ---- 研究型任务的状态机（照搬清单第 1 条：澄清 → 出计划 → 等确认 → 执行）----
+            #
+            # 判据是**可计算**的（``plan_gate.decide_research``：缺哪几样 / 预计几步 vs
+            # 预算一半的阈值），状态是**显式**的。这一段只做三件事：落状态、跑一次
+            # **没有工具**的开场调用（只出澄清问题或只出计划）、在计划卡上等确认。
+            #
+            # 只有"用户正常提问"这一条路进来；续跑与重试那条路不判
+            # （它们不是新题目，见 ``_resume_events`` / ``_retry_events``）。
+            gate = plan_gate.gate_for(payload.conversation_id)
+            decision = plan_gate.decide_research(prompt_query)
+            extra_note = ""
             stopped = False
-            run = loop.run(
-                messages=chat.agent_messages(
+            if gate.stage == plan_gate.STAGE_AWAITING:
+                # 计划卡还挂着（超时没点、或用户去改需求了）：**这一轮的文字就是那个决定**。
+                # 短句同意 → 接着执行；别的一律当"改了需求/换了话题"，拿新文本重新判。
+                if plan_gate.is_affirmative(prompt_query) and gate.confirm_by_text():
+                    extra_note = plan_gate.confirmed_note(gate.research_plan())
+                else:
+                    gate.clear_research()
+                    decision = plan_gate.decide_research(prompt_query)
+            done_after_opening = False
+            if decision.needs_opening:
+                gate.open_research(decision)
+                yield from sink.feed(plan_gate.opening_step(decision))
+                # **没有工具**的那一次调用（``planning=True``）：这一轮只准说、不准动手
+                opening = _agent_loop(
+                    services,
+                    caller,
+                    kb_ids=payload.kb_ids,
+                    conversation_id=payload.conversation_id,
+                    model_pk=model_pk,
+                    thinking=thinking,
+                    effort=effort,
+                    planning=True,
+                )
+                opening_messages = chat.agent_messages(
                     query=prompt_query,
                     history=history,
                     summary=summary,
@@ -1328,20 +1364,94 @@ def _turn_events(
                     model_pk=model_pk,
                     owner_id=_memory_owner(caller),
                 )
-            )
-            try:
-                for event in run:
-                    yield from sink.feed(event)
-                    # **/stop 的落点**（P1-2）：在两次事件之间看一眼有没有人叫停
-                    # （见 services/commands.TurnControl：停止是协作式的，
-                    # 从外面掐线程会让这一轮没有任何收尾）
-                    if services.commands.turns.stop_requested(payload.conversation_id):
-                        stopped = True
-                        break
-            finally:
-                # 收掉那一头的生成器：它可能还停在 `yield` 上（那些还没跑完的
-                # 工具调用会跑完当前这一步，这正是"停在哪一步"要记的东西）
-                run.close()
+                opening_messages.append(
+                    ChatMessage(role="user", content=plan_gate.opening_note(decision))
+                )
+                opening_run = opening.run(messages=opening_messages)
+                try:
+                    for event in opening_run:
+                        yield from sink.feed(event)
+                        if services.commands.turns.stop_requested(payload.conversation_id):
+                            break
+                finally:
+                    opening_run.close()
+                # 开场那一轮的正文就是"澄清问题"或"计划"（此前一个 delta 都没有）
+                opening_text = "".join(sink.deltas).strip()
+                if decision.stage == plan_gate.STAGE_CLARIFY:
+                    # 澄清问出去就收尾：用户补充之后下一轮拿新题目重新判
+                    done_after_opening = True
+                else:
+                    request = services.approvals.open(
+                        tool="research_plan",
+                        label="研究计划",
+                        # 卡片上那一行就是计划正文（压成一行）
+                        args=plan_gate.plan_summary(opening_text),
+                        detail=f"{decision.reason}；确认后开始检索与产出",
+                        timeout=plan_gate.PLAN_CONFIRM_TIMEOUT_SECONDS,
+                    )
+                    if not gate.await_confirm(opening_text, request.approval_id):
+                        # 一个字的计划都没有（端点抽风）：不挂一张空卡片，如实收尾
+                        logger.warning(
+                            "研究计划为空，未挂确认卡片：conversation=%s",
+                            payload.conversation_id,
+                        )
+                        done_after_opening = True
+                    else:
+                        # 复用审批通道与前端已有卡片：**不另造一套审批**
+                        yield from sink.feed(_approval_event(request))
+                        verdict = services.approvals.wait_decision(request.approval_id)
+                        if verdict.decision in (ALLOW_ONCE, ALLOW_ALWAYS):
+                            gate.confirm_plan(request.approval_id)
+                            yield from sink.feed(plan_gate.confirmed_step())
+                            extra_note = plan_gate.confirmed_note(gate.research_plan())
+                        else:
+                            # 没确认：计划留在状态里（下一轮说"确认"接得上），执行权不给
+                            gate.reject_plan(verdict.reason, request.approval_id)
+                            done_after_opening = True
+                            yield from sink.feed(
+                                StepEvent(
+                                    phase="plan",
+                                    label="计划待确认",
+                                    detail="没收到确认：下一轮说「确认」就开始，或直接说改哪里",
+                                    status="done",
+                                )
+                            )
+            if not done_after_opening:
+                loop = _agent_loop(
+                    services,
+                    caller,
+                    kb_ids=payload.kb_ids,
+                    conversation_id=payload.conversation_id,
+                    model_pk=model_pk,
+                    thinking=thinking,
+                    effort=effort,
+                )
+                turn_messages = chat.agent_messages(
+                    query=prompt_query,
+                    history=history,
+                    summary=summary,
+                    kb_ids=payload.kb_ids,
+                    skill_names=payload.skill_names,
+                    model_pk=model_pk,
+                    owner_id=_memory_owner(caller),
+                )
+                if extra_note:
+                    # 已确认的计划挂在 user 那一侧（见 ``plan_gate.confirmed_note`` 的说明）
+                    turn_messages.append(ChatMessage(role="user", content=extra_note))
+                run = loop.run(messages=turn_messages)
+                try:
+                    for event in run:
+                        yield from sink.feed(event)
+                        # **/stop 的落点**（P1-2）：在两次事件之间看一眼有没有人叫停
+                        # （见 services/commands.TurnControl：停止是协作式的，
+                        # 从外面掐线程会让这一轮没有任何收尾）
+                        if services.commands.turns.stop_requested(payload.conversation_id):
+                            stopped = True
+                            break
+                finally:
+                    # 收掉那一头的生成器：它可能还停在 `yield` 上（那些还没跑完的
+                    # 工具调用会跑完当前这一步，这正是"停在哪一步"要记的东西）
+                    run.close()
             if stopped:
                 # **如实收尾**：已经流出来的正文留着（它仍然有用），过程日志补一条
                 # interrupted（含"哪些调用没有结果"），与用户点停止那条路同一处置
