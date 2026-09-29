@@ -1893,3 +1893,180 @@ def test_a_business_rule_message_still_reaches_the_model() -> None:
     # 除了给模型那句话，还要**结构化**标成 failed（界面据此 `forceExpand` 默认摊开）：
     # "这一步没做成"不该在过程面板里看起来和跑完一样（§12.325 / §12.333）
     assert "failed" in [s.outcome for s in _steps(events) if s.status == "done"]
+
+
+# ------------------------------------------------------------------ 止损与交卷（§12.338 方案 3）
+#
+# 来历是能力清单实测里那两个真现场（`.shots/cases-api/G-03.json` / `K-03.json`）：
+# G-03（带图表的 Excel）80 步 / 205s，模型自陈"中间走偏了……把工具步数用完了"；
+# K-03（跑代码画图）60 步 / 361s、交付物 0，收尾还是悬着的（"再重跑一次补完"）。
+# 三条用例对应任务书的三条要求：**别误伤正常任务 / 提醒还剩多少 / 收尾必须交底**。
+#
+# 断言都在**模型看到的 messages** 上：那两段话不是说给用户看的，
+# 而是"这一刻必须让模型读到什么"。
+
+
+def _notes_of_call(client: _FakeClient, index: int, marker: str) -> list[str]:
+    """第 ``index`` 次模型调用见过的、带某个标记的用户消息。"""
+    return [
+        str(message.content)
+        for message in client.calls[index]
+        if getattr(message, "role", "") == "user" and marker in str(message.content)
+    ]
+
+
+def _notes(client: _FakeClient, marker: str) -> list[str]:
+    """这一轮里模型见过的、带某个标记的消息（按调用顺序拉平）。"""
+    return [
+        note
+        for index in range(len(client.calls))
+        for note in _notes_of_call(client, index, marker)
+    ]
+
+
+def test_plenty_of_budget_sends_no_convergence_or_wrap_up_note() -> None:
+    """预算充足时**一个字都不加**（§12.338 第三条：不许误伤正常的长任务）。
+
+    这条要能测，否则"多加一句"永远没人拦：正常一轮（默认 30 步预算、三步收口）
+    里模型看到的每一条消息都不该带预算标记，回答也照旧是它自己写的那句。
+    """
+    always = LLMReply(tool_calls=(ToolCall(id="c", name="search", arguments="{}"),))
+    loop, client = _loop(
+        [always, always, LLMReply(text="做完了")], runner=lambda n, a: ToolOutcome("x")
+    )
+
+    events = list(loop.run(messages=[]))
+
+    assert _notes(client, "【预算提醒】") == []
+    assert _notes(client, "【收尾要求") == []
+    assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["做完了"]
+
+
+def test_near_budget_tells_the_model_how_many_steps_are_left() -> None:
+    """预算到八成：**如实报还剩几步**（§12.338 方案 3 的第一半），一轮只送一次。
+
+    G-03 / K-03 的病根是"没人叫停"——模型不知道预算还剩多少，于是一直试到打满。
+    10 步预算时提醒落在第 8 次调用之前（0.8），那一刻**还能再执行 2 批**，
+    报给它的数必须是 2（报大了它会以为还能再试两次）。
+    """
+    always = LLMReply(tool_calls=(ToolCall(id="c", name="search", arguments="{}"),))
+    # 剧本给足：前 10 次一直要工具，第 11 次（步数用尽后的收尾）作答
+    loop, client = _loop(
+        [always] * 10 + [LLMReply(text="收尾")],
+        runner=lambda n, a: ToolOutcome("x"),
+        max_steps=10,
+    )
+
+    list(loop.run(messages=[]))
+
+    # 位置钉住：第 7 次调用（0 基）还没有它，第 8 次才有（早了会提前收口）
+    assert _notes_of_call(client, 6, "【预算提醒】") == []
+    first = _notes_of_call(client, 7, "【预算提醒】")
+    assert first != []
+    assert "还剩 2 步" in first[0]
+    # **一轮只加一条**：它写进对话之后就一直跟着（后面的调用当然还看得到），
+    # 所以数的是"最后一次调用里有几条"，不是"出现过几次"
+    assert len(_notes_of_call(client, len(client.calls) - 1, "【预算提醒】")) == 1
+
+
+def test_near_budget_also_catches_the_clock_not_only_the_steps() -> None:
+    """时间那条闸同样会提醒：**"某一步卡了很久"的那一轮收不到提醒是不对的**。
+
+    步数与时间是同一个预算的两种量法——只按步数算的话，60 秒上限里用了 55 秒
+    而只走了 3 步的那一轮，会一直到"时间已用尽"才被发现。
+    """
+    ticks = iter([0.0, 0.0, 0.0, 55.0])
+
+    def clock() -> float:
+        return next(ticks, 55.0)
+
+    loop, client = _loop(
+        [
+            LLMReply(tool_calls=(ToolCall(id="c", name="search", arguments="{}"),)),
+            LLMReply(text="收尾"),
+        ],
+        runner=lambda n, a: ToolOutcome("x"),
+        max_steps=30,
+        max_seconds=60.0,
+        clock=clock,
+    )
+
+    list(loop.run(messages=[]))
+
+    notes = _notes_of_call(client, 1, "【预算提醒】")
+    assert len(notes) == 1
+    assert "秒" in notes[0]
+
+
+def test_wrap_up_is_demanded_when_the_budget_runs_out() -> None:
+    """预算用尽：收尾那一次调用**必须**看到"四件事"那张清单（§12.338 方案 3 的第二半）。
+
+    夹具就是 G-03 / K-03 的形状：一直调工具直到步数用尽，最后一次作答。
+    模型在这种时刻最容易写"我再跑一次补完"——而这一轮已经结束了，那句话等于没交代。
+    """
+    always = LLMReply(tool_calls=(ToolCall(id="c", name="search", arguments="{}"),))
+    loop, client = _loop(
+        [always, always, LLMReply(text="没装成，图没出来")],
+        runner=lambda n, a: ToolOutcome("x"),
+        max_steps=2,
+    )
+
+    list(loop.run(messages=[]))
+
+    note = next(
+        m.content
+        for m in client.calls[-1]
+        if getattr(m, "role", "") == "user" and "【收尾要求" in str(m.content)
+    )
+    # 四件事都要点到：做成了什么 / 没做成哪部分 / 为什么 / 下一步
+    for fragment in ("做成了什么", "没做成", "原因", "下一步"):
+        assert fragment in note
+    # **悬着的收尾明确禁止**（模型会在提示里读到这条反例）
+    assert "悬着" in note and "我再跑一次补完" in note
+
+
+def test_wrap_up_is_also_demanded_when_the_clock_runs_out() -> None:
+    """时间那条闸到点时**同样**强制交底（与步数用尽走同一条路，只有原因不同）。
+
+    时钟可注入（`ToolLoop(clock=…)`），所以不必真等：第二次模型调用之前就跨过上限。
+    两条闸共用这一份收尾要求——只给步数那条闸加，K-03 那种"某一步卡很久"的回合
+    就还是悬着收尾。
+    """
+    ticks = iter([0.0, 0.0, 70.0])
+
+    def clock() -> float:
+        return next(ticks, 70.0)
+
+    loop, client = _loop(
+        [
+            LLMReply(tool_calls=(ToolCall(id="c", name="search", arguments="{}"),)),
+            LLMReply(text="收尾"),
+        ],
+        runner=lambda n, a: ToolOutcome("x"),
+        max_seconds=60.0,
+        clock=clock,
+    )
+
+    events = list(loop.run(messages=[]))
+
+    assert any(s.label == "本轮时间已用尽" and s.degraded for s in _steps(events))
+    note = next(
+        m.content
+        for m in client.calls[-1]
+        if getattr(m, "role", "") == "user" and "【收尾要求" in str(m.content)
+    )
+    assert "没做成" in note and "下一步" in note
+
+
+def test_a_round_that_ends_by_itself_is_not_forced_into_the_wrap_up_format() -> None:
+    """它自己判断做完了而收口的那一轮**不套收尾格式**：那是正常回答，不是降级。
+
+    与上一条成对：只有"预算被用尽"才强制交底。否则每一次正常回答都会被要求
+    写一段"哪部分没做成"，用户读到的就是没事找事的道歉（§12.338 第三条）。
+    """
+    loop, client = _loop([LLMReply(text="做完了")], runner=lambda n, a: ToolOutcome("x"))
+
+    events = list(loop.run(messages=[]))
+
+    assert _notes(client, "【收尾要求") == []
+    assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["做完了"]

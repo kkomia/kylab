@@ -91,9 +91,14 @@ from app.services.llm import (
     ToolSpec,
     assemble_tool_calls,
 )
+
+# 「该收尾了」与「收尾必须交代什么」那两段话在 `prompt`（写给模型的措辞归它管），
+# 这里只负责**什么时候**把它们送进去（§12.338 方案 3）
+from app.services.prompt import WRAP_UP_NOTE, converge_note
 from app.services.tool_meta import kind_of, meta_of, parallel_groups
 
 __all__ = [
+    "CONVERGE_RATIO",
     "DEFAULT_MAX_STEPS",
     "MARKER_ONLY_ANSWER",
     "MARKER_STEP_LABEL",
@@ -136,6 +141,16 @@ DEFAULT_MAX_SECONDS = 300.0
 #: 悄悄截断会让它以为"这就是全部"，而截断常常正好丢在它要的那一段之后。
 MAX_RESULT_CHARS = 12000
 
+#: 预算用到几成时给模型发那条「该收尾了」的提示（§12.338 方案 3）。
+#:
+#: 为什么是 0.8：实测里两次把预算打满的回合（G-03 的 80 步 / K-03 的 60 步）都是
+#: **打满之后**才收尾，最后那几步全花在"再试一种装法"上。留两成余量，模型才有机会
+#: 把已经拿到的东西整理成回答（而不是在最后一步仓促作答）。
+#:
+#: **步数与时间共用这一个比例**：它们是同一个"这一轮还剩多少余量"的两种量法，
+#: 分别定一个数只会让两条闸的松紧不一致（见 `DEFAULT_MAX_SECONDS` 那段的分工）。
+CONVERGE_RATIO = 0.8
+
 #: 一轮里最多重试几次**流式失败**（P2-2，见 ``_answer``）。
 #:
 #: 抄的是 ZCode 那条"可重试错误白名单"（调研报告 §2.1 第 3 条）：网络抖一下不该
@@ -175,6 +190,10 @@ _LABELS = {
     "export_document": "导出文档",
     "export_table": "导出表格",
     "export_deck": "导出幻灯",
+    # 交付**沙箱里已经做出来的**那份文件（v0.56）：标签要说清"它是把东西交出来"，
+    # 而不是再说一次"导出"——否则面板上「导出图表」与「交付文件」看起来是同一件事，
+    # 而前者是"我描述内容你造文件"、后者是"我把刚才那个文件给你"
+    "export_file": "交付文件",
     "ingest_artifact": "存进知识库",
     "web_search": "联网搜索",
     "web_fetch": "抓取网页",
@@ -434,6 +453,8 @@ class ToolLoop:
         started_at = self._clock()
         # 重试预算同理，**每一轮重新给满**（见 ``MAX_STREAM_RETRIES``）
         self._stream_retries_left = MAX_STREAM_RETRIES
+        # 「预算快到八成，该收尾了」那条提示一轮只送一次（见 `_near_budget`）
+        warned = False
 
         for step in range(self._max_steps):
             if self._expired(started_at):
@@ -441,8 +462,31 @@ class ToolLoop:
                 # 直接收尾作答。**与步数用尽走同一条降级路径**——用户看到的东西一样，
                 # 只是原因不同（见下面那条 StepEvent 的措辞）。
                 yield self._timeout_step(started_at)
+                # 收尾前把「必须交代什么」写给它：这一轮的预算确实用尽了（§12.338 方案 3）
+                self._request_wrap_up(messages)
                 yield from self._answer(messages)
                 return
+            # 预算快到八成：**提醒它该收尾了**（还剩几步如实告诉它），一轮只送一次。
+            # 放在这一步的模型调用**之前**：那一次调用本身就是它决定"继续做还是收口"的地方
+            if not warned and self._near_budget(step, started_at):
+                warned = True
+                messages.append(
+                    ChatMessage(
+                        role="user",
+                        content=converge_note(
+                            steps_left=self._steps_left(step),
+                            seconds_left=self._seconds_left(started_at),
+                        ),
+                    )
+                )
+                # 记一行日志：这两条提示是"看不见的"（不进步骤事件），
+                # 而"这一轮到底提醒没提醒"是事后最常问的那件事（含真跑对照）
+                logger.info(
+                    "预算到 %d%%：提醒模型收尾（还剩 %d 步 / %d 秒）",
+                    int(CONVERGE_RATIO * 100),
+                    self._steps_left(step),
+                    int(self._seconds_left(started_at)),
+                )
             # **每一步就是一次流式调用**（v0.40）：它要么给出一批工具调用、
             # 要么给出正文，一次说清。以前分成"非流式选工具 + 流式作答"两次——
             # 实测（2026-09-21，一轮三步）那两次做的是同一件事：
@@ -456,7 +500,8 @@ class ToolLoop:
             outcome = yield from self._answer(messages, tools=self._tools)
             if not outcome.wants_tools:
                 # **这一轮以正文收尾**：``plan`` 档下就算"计划已经给了"
-                # （见 ``plan_gate`` 模块头"什么时候算已给出计划"）。
+                # （见 `plan_gate` 模块头"什么时候算已给出计划"）。
+                # 这是它**自己**判断做完了——不套收尾格式（见 `_request_wrap_up` 的说明）
                 self._note_plan(outcome.text)
                 return
             yield from self._perform(
@@ -479,7 +524,50 @@ class ToolLoop:
             detail=f"本轮最多 {self._max_steps} 步，按现有信息作答",
             degraded=True,
         )
+        # 收尾前把「必须交代什么」写给它（§12.338 方案 3 的第二半）：实测两次把预算
+        # 打满的回合（G-03 / K-03）都以"我再跑一次补完"收尾，而那一轮已经结束了
+        self._request_wrap_up(messages)
         yield from self._answer(messages)
+
+    def _steps_left(self, step: int) -> int:
+        """还能再执行几批工具。
+
+        最后一步（``step == max_steps - 1``）是**留给收尾作答**的（见 `_stop_reason`），
+        所以此刻还剩 ``max_steps - 1 - step`` 批。报给模型的数与真正能被执行的批数一致，
+        它才换算得准——报大了它会以为还能再试两次。
+        """
+        return max(0, self._max_steps - 1 - step)
+
+    def _seconds_left(self, started_at: float) -> float:
+        """墙钟还剩多少秒（可能为 0：刚好卡在闸上）。"""
+        return max(0.0, self._max_seconds - (self._clock() - started_at))
+
+    def _near_budget(self, step: int, started_at: float) -> bool:
+        """这一步是否已经进入"预算快用完"那一段（见 `CONVERGE_RATIO`）。
+
+        两道闸谁先到算谁：步数与时间**是同一个预算的两种量法**，任一进入那一段就该提醒
+        （只按步数算的话，"某一步卡了很久"的那一轮永远收不到提醒）。
+        """
+        if (step + 1) >= self._max_steps * CONVERGE_RATIO:
+            return True
+        return (self._clock() - started_at) >= self._max_seconds * CONVERGE_RATIO
+
+    def _request_wrap_up(self, messages: list[ChatMessage]) -> None:
+        """收尾前把「必须交代哪四件事」作为一条用户消息写进对话（§12.338 方案 3）。
+
+        为什么塞进 `messages` 而不是只写在系统提示词里：系统提示词**每一轮都在**，
+        模型读到它时离收尾还很远；这一条只在预算真的用尽的那一刻出现，紧挨着
+        "刚刚被闸拦住"的上下文，它才会照着格式写。
+
+        为什么只在**用尽**时强制（"接近耗尽"那一条只提醒、不强制）：模型自己判断
+        做完了而收口的那一轮是正常回答，硬套"哪部分没做成"这种格式反而会让它
+        没事找事地写一段道歉（§12.338 的第三条要求：预算充足时不误伤正常回答）。
+
+        只往 `messages` **追加**，不改它的语义：那是这一轮现拼的模型输入
+        （见 `api/v1/chat.agent_messages`）；落库用的是事件流里那条回答，不是这份 list。
+        """
+        logger.info("收尾：把「必须交代哪四件事」写进对话（预算已用尽）")
+        messages.append(ChatMessage(role="user", content=WRAP_UP_NOTE))
 
     def retry_step(
         self,

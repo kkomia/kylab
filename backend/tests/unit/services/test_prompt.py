@@ -26,8 +26,10 @@ from app.services.memory import (
 from app.services.prompt import (
     PRIORITY_BASE,
     PRIORITY_PERSONA,
+    WRAP_UP_NOTE,
     PromptContext,
     build_system_prompt,
+    converge_note,
     default_contributors,
 )
 
@@ -72,7 +74,15 @@ def test_order_comes_from_the_priority_numbers() -> None:
 
 
 def test_empty_fragments_are_skipped_without_blank_lines() -> None:
-    text = build_system_prompt(PromptContext(base="只有基础"))
+    """空块不留空行。
+
+    这里**显式给一张单来源的表**：默认表里现在还有两段常驻规矩
+    （§12.338 后续的澄清 / 检索收敛），它们不是空块——用默认表断言"只剩基础"
+    会把那两段一起判成多余（它们各自的用例在下面那一组）。
+    """
+    only_base = [(PRIORITY_BASE, "base", lambda ctx: ctx.base)]
+
+    text = build_system_prompt(PromptContext(base="只有基础"), only_base)
 
     assert text == "只有基础"
 
@@ -153,10 +163,19 @@ def test_persona_block_opens_with_a_do_follow_this_instruction() -> None:
 
 
 def test_no_persona_files_no_dangling_instruction() -> None:
-    """一份文件都没有时，**总起句也不出现**：空喊一句"请遵守以下设定"比不写更糟。"""
-    assert build_system_prompt(PromptContext(base="底")) == "底"
+    """一份文件都没有时，**总起句也不出现**：空喊一句"请遵守以下设定"比不写更糟。
+
+    与上一条同理，显式给一张单来源的表：要钉的是"人设这一块自身不产生悬空的话"，
+    而不是"默认表里只有基础提示词"（默认表还带着两段常驻规矩）。
+    """
+    only_base = [(PRIORITY_BASE, "base", lambda ctx: ctx.base)]
+
+    assert build_system_prompt(PromptContext(base="底"), only_base) == "底"
     # 文件存在但内容为空（只有空白）时同样不带总起句
-    assert build_system_prompt(PromptContext(base="底", persona=((SOUL_FILE, "  \n"),))) == "底"
+    assert (
+        build_system_prompt(PromptContext(base="底", persona=((SOUL_FILE, "  \n"),)), only_base)
+        == "底"
+    )
 
 
 def test_memory_is_marked_as_possibly_stale() -> None:
@@ -488,3 +507,90 @@ def test_the_persona_lead_forbids_chasing_placeholder_fields() -> None:
     assert "追问" in text
     # 点名那几个占位词：不点名的话，模型未必把「待补」也当成同一类
     assert "待确认" in text and "待补" in text
+
+
+# ------------------------------------------------- 这一轮怎么做事（§12.338 后续两条政策）
+
+
+def test_the_default_prompt_carries_both_conduct_blocks() -> None:
+    """两段常驻规矩**在默认提示词里**，而且顺序是"先决定要不要问，再决定查多少"。
+
+    走查实测（§12.338）：D-03 一句没问就跑 39 步、B-06 为一本不存在的书搜了 9 次。
+    两条都不是能力问题，是**没有判据**——所以它们必须常驻（不是只在某个分支里）。
+    """
+    text = build_system_prompt(PromptContext(base="底"))
+
+    assert "什么时候先问一句" in text
+    assert "检索什么时候算够" in text
+    # 顺序：澄清在检索之前（先决定要不要问，再决定查多少）
+    assert text.index("什么时候先问一句") < text.index("检索什么时候算够")
+
+
+def test_the_clarify_block_asks_only_when_both_conditions_hold() -> None:
+    """判据的**形状**要能照着判：歧义大 + 代价高，两条**同时**成立才问。
+
+    只有一半就问，会把日常小事变成问卷；一条判据都写不出的话，
+    模型只能凭感觉（实测就是"有时问 4 句、有时一句不问"）。
+    """
+    text = build_system_prompt(PromptContext(base="底"))
+
+    assert "歧义大" in text and "代价高" in text
+    assert "两条同时成立" in text or "两条都成立" in text
+    # 不澄清时的另一半：**必须写明假设**（只写"可以问"等于把假设那一半丢掉）
+    assert "假设" in text and "直接开跑" in text
+    # 明确的需求不许反问（用户拍板的边界）
+    assert "不许再问" in text
+
+
+def test_the_search_block_says_when_to_stop() -> None:
+    """"够用就停"要给出**可判定的停点**，而不是"搜到满意为止"。
+
+    三类停点各自对应一次实测浪费：重复同参（B-06 / Z-01）、零命中一直搜（B-06 9 次）、
+    以及没有"够了"的定义（Z-01 搜了 35 次）。
+    """
+    text = build_system_prompt(PromptContext(base="底"))
+
+    assert "同一个查询不要重复发" in text
+    assert "2 个相互独立" in text, "同一事实两个独立来源就该停"
+    assert "零命中" in text and "没有找到" in text, "零命中要换路子，换不动就如实说没找到"
+    assert "最多再试两轮" in text
+
+
+def test_the_budget_notes_are_not_part_of_the_system_prompt() -> None:
+    """预算提示那两段**不进** system prompt：它们只在预算那一刻插进对话（见 `tool_loop`）。
+
+    常驻的话模型每一轮都读到"预算用尽"，正常任务会被它带着提前收口。
+    """
+    text = build_system_prompt(PromptContext(base="底"))
+
+    assert "【预算提醒】" not in text
+    assert "【收尾要求" not in text
+
+
+def test_converge_note_reports_the_real_numbers() -> None:
+    """提醒里给的是**具体数字**：含糊说"快没时间了"，模型换算不出"该收口了"。"""
+    note = converge_note(steps_left=6, seconds_left=42.7)
+
+    assert "还剩 6 步" in note
+    assert "42 秒" in note
+    assert "收尾" in note
+
+
+def test_converge_note_without_numbers_still_says_the_budget_is_nearly_gone() -> None:
+    """两个数都不给时也要说得出"预算快用完了"（别拼出"【预算提醒】。"这种空句）。"""
+    note = converge_note()
+
+    assert "预算" in note and "收尾" in note
+    assert note.count("还剩") == 0
+
+
+def test_wrap_up_note_demands_four_things_and_forbids_a_dangling_ending() -> None:
+    """收尾清单：做成了什么 / 没做成什么 / 为什么 / 下一步；并**明确禁掉悬着的收尾**。
+
+    G-03 / K-03 的原文都是"我再跑一次补完"——那一轮已经结束了，
+    那句话对用户没有任何可执行的信息。
+    """
+    for fragment in ("做成了什么", "没做成", "原因", "下一步"):
+        assert fragment in WRAP_UP_NOTE, fragment
+    assert "我再跑一次补完" in WRAP_UP_NOTE, "要拿它当反例点名"
+    assert "悬着" in WRAP_UP_NOTE
