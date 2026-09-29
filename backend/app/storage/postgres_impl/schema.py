@@ -13,10 +13,29 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-
-import psycopg
+from typing import Any
 
 from app.storage.postgres_impl.connection import Database
+
+#: 惰性拿到的 psycopg（**故意不是模块级导入** ✗）。
+_PSYCOPG: Any = None
+
+
+def _psycopg() -> Any:
+    """第一次真用 psycopg 时才导入它（模块级导入会让**客户端运行时**凭空多背一份 ✗）。
+
+    为什么惰性：这个模块挂在 ``app.storage`` 的导入链上 ✓，而"建库 / 加索引"只有
+    **服务器**启动那条路会做 ✓ —— 边车（客户端运行时）不碰 PostgreSQL 的 schema ✓。
+
+    **行为一个字没变** ✗：第一次调用时才导入 ✓，psycopg 真的不在时仍在**调用那一刻**
+    抛 ``ModuleNotFoundError`` ✓（只是从导入期挪到了调用期 ✓）。
+    """
+    global _PSYCOPG
+    if _PSYCOPG is None:
+        import psycopg
+
+        _PSYCOPG = psycopg
+    return _PSYCOPG
 
 logger = logging.getLogger(__name__)
 
@@ -442,7 +461,7 @@ def ensure_schema(db: Database) -> int:
             with db.session() as conn:
                 # schema.sql 是无参数多语句脚本，psycopg 会用简单查询协议整段执行
                 conn.execute(ddl)
-        except psycopg.errors.UndefinedFile as exc:
+        except _psycopg().errors.UndefinedFile as exc:
             # 58P01：扩展的控制文件不在磁盘上——镜像里根本没带 pgvector。
             # 这是本次切换最常见的一种部署错误，单独给一句可操作的提示。
             raise SchemaError(f"基线 schema 执行失败：{exc}\n{_MISSING_VECTOR_HINT}") from exc

@@ -17,19 +17,33 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.core.config import Settings, get_settings
 from app.storage.base import FullTextStore, MetaStore, ObjectStore, StoreBundle, VectorStore
-from app.storage.duckdb_impl.tabular_store import DuckDbTabularStore
-from app.storage.local_impl.object_store import LocalObjectStore
-from app.storage.postgres_impl.connection import Database as PgDatabase
-from app.storage.postgres_impl.fulltext_store import PostgresFullTextStore
-from app.storage.postgres_impl.meta_store import PostgresMetaStore
-from app.storage.postgres_impl.schema import prepare as prepare_pg_schema
-from app.storage.postgres_impl.vector_store import PostgresVectorStore
-from app.storage.s3_impl.object_store import S3ObjectStore, build_client
+
+if TYPE_CHECKING:  # 只为类型标注：**模块级不 import 具体后端**（见下面那段"为什么惰性"）
+    from app.storage.postgres_impl.connection import Database as PgDatabase
 
 __all__ = ["STORAGE_SUBDIRS", "build_stores", "close_stores", "get_stores", "reset_stores"]
+
+# ---------------------------------------------------------------- 为什么具体后端是**惰性导入**
+#
+# 这个模块是"**唯一允许 import 具体实现**"的地方（模块头那句话），而它自己会被
+# **客户端那条链**（`app.sidecar` → `agent_tools` → … → `app.core.storage`）带着走 ✗。
+# 模块级 import 三个后端，等于让客户端运行时凭空背上：
+#
+# - `postgres_impl` → **psycopg**（约 9.5 MB，含二进制扩展）
+# - `s3_impl` → **boto3 + botocore**（约 21.8 MB）
+# - `duckdb_impl` → **duckdb**（约 35.6 MB）
+#
+# 而按已定的裁定「**客户端永不直连 PG / S3 / DuckDB**」（客户端那条装配路径是
+# `sidecar.Clients` / `LocalServices`），这些后端**客户端一个都用不到** ✗ ——
+# 它们只是被导入链顺带拽进来的（与 `services/retrieval/coverage.py::_jieba` 同一类问题）。
+#
+# 所以：**按需导入** ✓ —— 只有真正要装配后端时（`build_stores`，服务器启动那条路 ✓）
+# 才 import 它们。**行为不变**：`build_stores` 之前是"导入模块时"就会炸缺包，
+# 现在是"调用 build_stores 时"炸 —— 而唯一调用点就是启动时的组合根 ✓（失败时机一样 ✓）。
 
 ORIGINALS_DIR = "originals"
 MARKDOWN_DIR = "markdown"
@@ -52,6 +66,9 @@ def _build_object_store(settings: Settings, data_dir: Path) -> ObjectStore:
     就会变成"上传时才发现"。
     """
     if not settings.s3_endpoint:
+        # 惰性：本地实现没有第三方依赖，但同一条链上另一支是 S3（boto3+botocore 约 21.8 MB）
+        from app.storage.local_impl.object_store import LocalObjectStore
+
         store = LocalObjectStore(data_dir)
         for subdir in STORAGE_SUBDIRS:
             (data_dir / subdir).mkdir(parents=True, exist_ok=True)
@@ -63,6 +80,8 @@ def _build_object_store(settings: Settings, data_dir: Path) -> ObjectStore:
             f"配置了 KYLAB_S3_ENDPOINT 但缺少 {missing}；"
             "要么补齐凭据，要么清空端点以使用本地文件系统"
         )
+
+    from app.storage.s3_impl.object_store import S3ObjectStore, build_client
 
     client = build_client(
         endpoint=settings.s3_endpoint,
@@ -86,6 +105,12 @@ def _build_pg_stores(
     连接池要显式收（``close_stores``）：它是进程级资源，进程退出前不还回去，
     反复 build/reset（测试、配置热更）会把连接攒起来。
     """
+    from app.storage.postgres_impl.connection import Database as PgDatabase
+    from app.storage.postgres_impl.fulltext_store import PostgresFullTextStore
+    from app.storage.postgres_impl.meta_store import PostgresMetaStore
+    from app.storage.postgres_impl.schema import prepare as prepare_pg_schema
+    from app.storage.postgres_impl.vector_store import PostgresVectorStore
+
     database = PgDatabase(dsn)
     try:
         database.open()
@@ -124,6 +149,9 @@ def build_stores(settings: Settings | None = None) -> StoreBundle:
     meta, vectors, fulltext = _build_pg_stores(
         resolved.database_url, slow_query_ms=resolved.slow_query_ms
     )
+
+    # DuckDB（约 35.6 MB）同理惰性：只有真要用"表格型文档的结构化副本"时才 import
+    from app.storage.duckdb_impl.tabular_store import DuckDbTabularStore
 
     return StoreBundle(
         meta=meta,

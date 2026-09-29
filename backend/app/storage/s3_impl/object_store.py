@@ -24,15 +24,46 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import boto3
-from botocore.config import Config as BotoConfig
-from botocore.exceptions import ClientError
+if TYPE_CHECKING:
+    # 只在注解里用到（``_code_of(exc: ClientError)`` ✓）：`from __future__ import annotations`
+    # 之下注解不求值 ✓，所以这一句**不进运行时**、也就不进客户端的导入闭包 ✓。
+    from botocore.exceptions import ClientError
 
 from app.storage.base import SAFE_KEY_CHARS, TRASH, ObjectStore
 
 __all__ = ["S3ObjectStore", "build_client"]
+
+#: 惰性拿到的 (boto3, Config, ClientError)（**故意不是模块级导入** ✗）。
+_BOTO: tuple[Any, Any, Any] | None = None
+
+
+def _boto() -> tuple[Any, Any, Any]:
+    """第一次用对象存储时才导入 boto3 / botocore（模块级导入会多背十几 MB ✗）。
+
+    为什么惰性：这个模块挂在 ``app.storage`` 的导入链上 ✓，而"对象存储"只有**服务器**
+    那条链会碰 ✓ —— 边车（客户端运行时）跑循环 + 工具 + 沙箱 ✓，产物落在本机目录 ✓，
+    从来不往 S3 / MinIO 发东西。
+
+    **行为一个字没变** ✗：第一次调用时才导入 ✓，boto3 真的不在时仍在**调用那一刻**
+    抛 ``ModuleNotFoundError`` ✓（只是从导入期挪到了调用期 ✓）。
+
+    返回 ``(boto3, botocore.config.Config, botocore.exceptions.ClientError)`` ✓。
+    """
+    global _BOTO
+    if _BOTO is None:
+        import boto3 as _boto3
+        from botocore.config import Config as _Config
+        from botocore.exceptions import ClientError as _ClientError
+
+        _BOTO = (_boto3, _Config, _ClientError)
+    return _BOTO
+
+
+def _client_error() -> Any:
+    """``botocore.exceptions.ClientError`` —— ``except`` 那一行要用它 ✓。"""
+    return _boto()[2]
 
 #: 对象不存在的几种表达：get_object 给 NoSuchKey，head_object 给 404。
 _MISSING_CODES = frozenset({"NoSuchKey", "NotFound", "404"})
@@ -55,6 +86,7 @@ def build_client(
     region，但 SDK 要求一个非空值。超时显式给死：默认值接近"无限等"，
     对象存储挂掉时会把请求线程连同连接池一起拖住。
     """
+    boto3, BotoConfig, _ = _boto()
     return boto3.client(
         "s3",
         endpoint_url=endpoint,
@@ -98,7 +130,7 @@ class S3ObjectStore(ObjectStore):
     def read(self, path: str) -> bytes:
         try:
             response = self._client.get_object(Bucket=self._bucket, Key=self._key(path))
-        except ClientError as exc:
+        except _client_error() as exc:
             if self._code_of(exc) in _MISSING_CODES:
                 # 与本地实现对齐：读不到就抛 FileNotFoundError，而不是驱动异常
                 raise FileNotFoundError(path) from exc
@@ -108,7 +140,7 @@ class S3ObjectStore(ObjectStore):
     def exists(self, path: str) -> bool:
         try:
             self._client.head_object(Bucket=self._bucket, Key=self._key(path))
-        except ClientError as exc:
+        except _client_error() as exc:
             if self._code_of(exc) in _MISSING_CODES:
                 return False
             raise
@@ -131,7 +163,7 @@ class S3ObjectStore(ObjectStore):
                 CopySource={"Bucket": self._bucket, "Key": self._key(relative)},
                 Key=self._key(target),
             )
-        except ClientError as exc:
+        except _client_error() as exc:
             if self._code_of(exc) in _MISSING_CODES:
                 raise FileNotFoundError(path) from exc
             raise

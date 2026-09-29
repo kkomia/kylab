@@ -21,12 +21,33 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Sequence
-
-import jieba
+from typing import Any
 
 from app.storage.base import ChunkRecord, FullTextStore, SearchHit
 from app.storage.postgres_impl.connection import Database
 from app.storage.text import cut, tokenize
+
+#: 惰性拿到的 jieba（**故意不是模块级导入** ✗）。
+_JIEBA: Any = None
+
+
+def _jieba() -> Any:
+    """第一次用到时才导入 jieba（模块级导入会让**客户端运行时**多背 40.9 MB ✗）。
+
+    与 ``app/storage/text.py::_jieba``、``app/services/retrieval/coverage.py::_jieba``、
+    ``app/services/embedding/deterministic.py::_jieba`` 同一个手法 ✓：这个模块挂在
+    ``app.storage`` 的导入链上 ✓，而"预热词典"只有**服务器**那条全文检索链会做 ✓ ——
+    边车（客户端运行时）只跑循环 + 工具 + 沙箱 ✓，从不建全文索引。
+
+    **行为一个字没变** ✗：第一次调用时才导入 ✓，jieba 真的不在时仍在**调用那一刻**
+    抛 ``ModuleNotFoundError`` ✓（只是从导入期挪到了调用期 ✓）。
+    """
+    global _JIEBA
+    if _JIEBA is None:
+        import jieba
+
+        _JIEBA = jieba
+    return _JIEBA
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +86,7 @@ class PostgresFullTextStore(FullTextStore):
     def _ensure_jieba(self) -> None:
         """jieba 首次调用要加载词典（约 1 秒），预热一次后续都快。"""
         if not self._jieba_ready:
-            jieba.initialize()
+            _jieba().initialize()
             self._jieba_ready = True
 
     # ------------------------------------------------------------------ 写入

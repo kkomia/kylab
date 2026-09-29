@@ -21,10 +21,34 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import TYPE_CHECKING, Any
 
-from psycopg import Connection
-from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+if TYPE_CHECKING:
+    # 只在注解里用到（``Iterator[Connection]`` ✓）：`from __future__ import annotations`
+    # 之下注解不求值 ✓，所以这一句**不进运行时**、也就不进客户端的导入闭包 ✓。
+    from psycopg import Connection
+
+#: 惰性拿到的 (ConnectionPool, dict_row)（**故意不是模块级导入** ✗）。
+_POOL_PIECES: tuple[Any, Any] | None = None
+
+
+def _pool_pieces() -> tuple[Any, Any]:
+    """第一次**建连接池**时才导入 psycopg / psycopg_pool（模块级导入会多背一份 ✗）。
+
+    为什么惰性：这个模块挂在 ``app.storage`` 的导入链上 ✓，而"连 PostgreSQL"只有
+    **服务器**那条链会做 ✓ —— 边车（客户端运行时）只跑循环 + 工具 + 沙箱 ✓，
+    它的会话权威与库都在**远端**（走 HTTP ✓，不走 psycopg）。
+
+    **行为一个字没变** ✗：第一次调用时才导入 ✓，psycopg 真的不在时仍在**调用那一刻**
+    抛 ``ModuleNotFoundError`` ✓（只是从导入期挪到了调用期 ✓）。
+    """
+    global _POOL_PIECES
+    if _POOL_PIECES is None:
+        from psycopg.rows import dict_row as _dict_row
+        from psycopg_pool import ConnectionPool as _ConnectionPool
+
+        _POOL_PIECES = (_ConnectionPool, _dict_row)
+    return _POOL_PIECES
 
 DEFAULT_POOL_MIN = 1
 DEFAULT_POOL_MAX = 20
@@ -54,6 +78,7 @@ class Database:
         max_size: int = DEFAULT_POOL_MAX,
     ) -> None:
         self._dsn = dsn
+        ConnectionPool, dict_row = _pool_pieces()
         self._pool = ConnectionPool(
             dsn,
             min_size=min_size,

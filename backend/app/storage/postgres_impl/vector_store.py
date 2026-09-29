@@ -24,8 +24,13 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
-from psycopg import Connection
+if TYPE_CHECKING:
+    # 只在注解里用到（``_declared_dim(conn: Connection, …)`` ✓）：`from __future__ import
+    # annotations` 之下注解不求值 ✓，所以这一句**不进运行时**、也就不进客户端的导入闭包 ✓
+    # （边车不连 PostgreSQL ✓）。
+    from psycopg import Connection
 
 from app.storage.base import VectorDimensionMismatch, VectorMatch, VectorStore
 from app.storage.postgres_impl.connection import Database

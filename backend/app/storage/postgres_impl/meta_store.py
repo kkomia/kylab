@@ -32,10 +32,14 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable, Sequence
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
-import psycopg
-from psycopg import Connection
-from psycopg.types.json import Jsonb
+if TYPE_CHECKING:
+    # 只在注解里用到（``_executemany(conn: Connection, …)`` / ``_json(value) -> Jsonb`` ✓）：
+    # `from __future__ import annotations` 之下注解不求值 ✓，所以这两句**不进运行时**、
+    # 也就不进客户端的导入闭包 ✓。
+    from psycopg import Connection
+    from psycopg.types.json import Jsonb
 
 from app.core.exceptions import ConflictError, InvalidRequestError
 from app.models.enums import (
@@ -87,6 +91,32 @@ from app.storage.base import (
 )
 from app.storage.postgres_impl.connection import Database
 
+#: 惰性拿到的 psycopg（**故意不是模块级导入** ✗）。
+_PSYCOPG: Any = None
+
+
+def _psycopg() -> Any:
+    """第一次真用 psycopg 时才导入它（模块级导入会让**客户端运行时**凭空多背一份 ✗）。
+
+    为什么惰性：这个模块挂在 ``app.storage`` 的导入链上 ✓，而"连 PostgreSQL"只有
+    **服务器**那条链会做 ✓ —— 边车（客户端运行时）只跑循环 + 工具 + 沙箱 ✓，
+    它的会话权威与库都在**远端**（走 HTTP ✓，不走 psycopg）。
+
+    **行为一个字没变** ✗：第一次调用时才导入 ✓，psycopg 真的不在时仍在**调用那一刻**
+    抛 ``ModuleNotFoundError`` ✓（只是从导入期挪到了调用期 ✓）。
+    """
+    global _PSYCOPG
+    if _PSYCOPG is None:
+        import psycopg
+
+        _PSYCOPG = psycopg
+    return _PSYCOPG
+
+
+def _jsonb() -> Any:
+    """``psycopg.types.json.Jsonb``（每写一个 jsonb 列都要用它包一层 ✓）。"""
+    return _psycopg().types.json.Jsonb
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
@@ -112,6 +142,7 @@ def _json(value: object) -> Jsonb:
 
     读侧不需要 ``json.loads``——psycopg 会把 jsonb 直接反序列化成 Python 对象。
     """
+    Jsonb = _jsonb()
     return Jsonb(value)
 
 
@@ -318,7 +349,7 @@ class PostgresMetaStore(MetaStore):
         它会重写相关堆表并可能较慢，所以只应由显式的用户动作触发，
         而不是每次删除后自动跑。
         """
-        with psycopg.connect(self._db.dsn, autocommit=True) as conn:
+        with _psycopg().connect(self._db.dsn, autocommit=True) as conn:
             conn.execute("VACUUM (ANALYZE)")
 
     def document_stats_by_kbs(self) -> dict[str, tuple[int, datetime | None]]:
@@ -550,7 +581,7 @@ class PostgresMetaStore(MetaStore):
                         _dump(record.created_at),
                     ),
                 )
-            except psycopg.IntegrityError as exc:
+            except _psycopg().IntegrityError as exc:
                 # 同库重名由 UNIQUE(kb_id, name) 兜底；服务层也会先查一次给出可读文案，
                 # 这里是并发/直连场景的最后一道
                 raise ConflictError(f"目录已存在：{record.name}") from exc
@@ -575,7 +606,7 @@ class PostgresMetaStore(MetaStore):
         with self._db.session() as conn:
             try:
                 conn.execute("UPDATE kb_folders SET name = %s WHERE id = %s", (name, folder_id))
-            except psycopg.IntegrityError as exc:
+            except _psycopg().IntegrityError as exc:
                 raise ConflictError(f"目录已存在：{name}") from exc
 
     def delete_folder(self, folder_id: str) -> None:
@@ -2218,7 +2249,7 @@ class PostgresMetaStore(MetaStore):
                         _dump(record.created_at),
                     ),
                 )
-        except psycopg.IntegrityError as exc:
+        except _psycopg().IntegrityError as exc:
             raise ConflictError(f"幂等键已被占用：{record.key}") from exc
         return record
 
@@ -2321,7 +2352,7 @@ class PostgresMetaStore(MetaStore):
                         _dump(record.created_at),
                     ),
                 )
-        except psycopg.IntegrityError as exc:
+        except _psycopg().IntegrityError as exc:
             # 冲突可能来自 id 主键、name 或 username 两个唯一索引，查出是哪个再给文案：
             # 管理员开通账号时，"用户名被占"与"花名册里有同名的人"是两种不同的处理。
             # 注意：这里已经在 session() 之外（事务已回滚），下面的读走独立连接。
@@ -2438,7 +2469,7 @@ class PostgresMetaStore(MetaStore):
                         _dump(record.last_seen_at),
                     ),
                 )
-        except psycopg.IntegrityError as exc:
+        except _psycopg().IntegrityError as exc:
             # 主键撞车（哈希碰撞，实际不可能）与外键违例（账号不存在）都落这里；
             # 对上层都是"这条会话建不成"，翻成领域错误而不是漏原生驱动异常
             raise InvalidRequestError("会话创建失败：账号不存在或会话标识冲突") from exc
@@ -2503,7 +2534,7 @@ class PostgresMetaStore(MetaStore):
                         _dump(record.created_at),
                     ),
                 )
-        except psycopg.IntegrityError as exc:
+        except _psycopg().IntegrityError as exc:
             # 复合主键冲突已被 ON CONFLICT 接住，能落到这里的只剩外键违例
             raise InvalidRequestError("知识库或使用者不存在，无法分享") from exc
         # 重授只改档位：``created_at`` 要保留**首次授予**的时间，不随调整刷新——
@@ -2704,7 +2735,7 @@ class PostgresMetaStore(MetaStore):
                         _dump(record.updated_at),
                     ),
                 )
-        except psycopg.IntegrityError as exc:
+        except _psycopg().IntegrityError as exc:
             raise ConflictError(f"该供应商下已经登记过模型 {record.model_id}") from exc
         return record
 
