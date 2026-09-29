@@ -18,6 +18,7 @@
 mod config;
 mod logfile;
 mod probe;
+mod resources;
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -31,8 +32,15 @@ use tauri::{
 };
 use tauri_plugin_opener::OpenerExt;
 
-/// 本地配置页（`desktop/src/index.html`）。两个窗口都从这里起。
+/// 本地配置页 / 引导页（`shell/src/index.html`，编译进 exe）。
+/// 窗口先落在这里——**这一页能调 Tauri 命令**（它是壳自己的页面），
+/// 由它决定要不要跳到 `app://` 去加载真实前端。
 const PAGE: &str = "index.html";
+
+/// 自定义协议 scheme（规格 §5.2）。真实前端的所有静态资源都从它出。
+/// 入口 URL 由 `resources::app_url()` 给——**平台不同写法不同**，别在这里再拼一遍。
+const APP_SCHEME: &str = "app";
+
 
 /// 「更换服务器」开出来的那个小窗口的标签。
 const SETTINGS_WINDOW: &str = "connect";
@@ -105,14 +113,24 @@ fn window_size_for(area: Option<(f64, f64)>) -> (f64, f64) {
 
 /// 壳的状态：内存里的配置 + 它落在哪个目录。
 struct Shell {
+    /// 配置目录（`config.json` 在这儿）。
     dir: std::path::PathBuf,
+    /// 数据目录（`<data_dir>/frontend-resources/` 在这儿）。**两处刻意分开**：
+    /// 配置是"壳自己的偏好"，资源是"可以整份删掉重下"的东西——
+    /// 清理资源不该顺手把用户填的服务器地址一起清了。
+    data_dir: std::path::PathBuf,
     config: Mutex<config::Config>,
 }
 
 impl Shell {
-    /// 配置里的服务器源（`scheme://host[:port]`）。导航白名单认的就是它。
+    /// 配置里的服务器源（`scheme://host[:port]`）。导航白名单与 API 转发都认它。
     fn origin(&self) -> Option<String> {
         self.config.lock().ok().and_then(|config| config.server.clone())
+    }
+
+    /// 资源目录的绝对路径（`<app_data_dir>/frontend-resources`）。
+    fn resources_root(&self) -> std::path::PathBuf {
+        resources::resources_root(&self.data_dir)
     }
 }
 
@@ -127,6 +145,11 @@ struct StartupInfo {
     server: Option<String>,
     recent: Vec<String>,
     shell_version: String,
+    /// 本地资源状态（规格 §3）。页面据此决定"直接进应用"还是"留在配置页"。
+    resources: resources::ResourceStatus,
+    /// 应用入口 URL（**平台不同写法不同**，见 `resources::app_url`）。
+    /// 页面不许自己拼 `app://localhost/`——Windows 上那样写会被静默拦掉。
+    app_url: String,
 }
 
 #[tauri::command]
@@ -137,6 +160,8 @@ fn startup(window: WebviewWindow, shell: State<'_, Shell>) -> StartupInfo {
         server: config.server.clone(),
         recent: config.recent.clone(),
         shell_version: env!("CARGO_PKG_VERSION").to_string(),
+        resources: resources::status(&shell.data_dir),
+        app_url: resources::app_url().to_string(),
     }
 }
 
@@ -194,9 +219,32 @@ async fn connect(
     let window = app
         .get_webview_window(MAIN_WINDOW)
         .ok_or_else(|| "主窗口不见了".to_string())?;
+
+    /*
+     * **导航到本地资源，而不是远端那台服务器**（这是本次改造的核心一跳）。
+     *
+     * 以前这里是 `window.navigate(远端 URL)`：于是 WebView 的文档与它依赖的每个
+     * chunk 都要去 NAS 上取——切一次页面就是一次网络往返（用户报的"页面切换都有
+     * 加载延迟"）。现在文档来自 `app://`（协议层读本地磁盘），
+     * 只有 API 路径（`/api/…`）由协议层转发到这台服务器。
+     *
+     * `probed.url` 仍然要探（它证明"这台服务器是活的、是 KYLAB、版本对得上"），
+     * 但**不再拿它当文档地址**。
+     */
+    let target =
+        Url::parse(resources::app_url()).map_err(|error| format!("本地地址拼不出来：{error}"))?;
     window
-        .navigate(url)
-        .map_err(|error| format!("导航失败：{error}"))?;
+        .navigate(target)
+        .map_err(|error| format!("导航到本地资源失败：{error}"))?;
+    logfile::log(
+        &shell.dir,
+        &format!(
+            "已导航到本地资源 {}（文档不再走网络；API 转发到 {}；探活地址 {}）",
+            resources::app_url(),
+            shell.origin().unwrap_or_else(|| "（无）".into()),
+            url
+        ),
+    );
 
     if let Some(settings) = app.get_webview_window(SETTINGS_WINDOW) {
         let _ = settings.close();
@@ -221,12 +269,17 @@ fn origin_of(url: &Url) -> String {
     )
 }
 
-/// 顶层导航放行规则：本地配置页 + 配置里的那个源，别的都不许。
+/// 顶层导航放行规则：壳自己的页面 + `app://` 本地资源 + 配置里的那个源，别的都不许。
 ///
 /// 拦下来的**外链交给系统浏览器**而不是静默丢弃：回答里的链接本来就该在浏览器里开，
 /// 而在这个壳里导航过去，用户就回不来了（没有地址栏，也没有后退按钮）。
 fn allow_navigation(app: &AppHandle, url: &Url) -> bool {
-    if is_local_page(url) || url.scheme() == "about" {
+    if is_local_page(url) || url.scheme() == "about" || url.scheme() == APP_SCHEME {
+        return true;
+    }
+    // Windows 上自定义 scheme 落在 `http://app.localhost/…`（见 `resources::app_url`），
+    // 它的 scheme 是 http——按源判，不然本地资源那一跳会被自己拦掉
+    if url.as_str().starts_with(resources::app_origin()) {
         return true;
     }
     let shell = app.state::<Shell>();
@@ -433,22 +486,80 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![startup, connect, note])
         .on_menu_event(|app, event| handle_menu(app, event.id().as_ref()))
+        /*
+         * `app://` 协议：真实前端的**所有静态资源**都从这里出（规格 §5.2）。
+         *
+         * 为什么走**异步**注册：这个处理器里要发 HTTP（把 `/api/…` 转发到远端），
+         * 而同步版本的签名是 `Fn(...) -> Response`——在里面阻塞会按住 WebView 的
+         * 协议线程。异步版把活交给自己的线程，协议线程立刻返回。
+         *
+         * 闭包能拿到的事实只有两样：`AppHandle`（→ 配置里的服务器地址 + 数据目录）
+         * 与这次请求（方法 / 路径 / 正文）。**判据全在 `resources::handle` 里**，
+         * 那是纯函数、有 11 条用例——协议这一层只做搬运。
+         */
+        .register_asynchronous_uri_scheme_protocol(APP_SCHEME, |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let method = request.method().as_str().to_string();
+            let path = request.uri().path().to_string();
+            let body = request.body();
+            let payload = if body.is_empty() { None } else { Some(body.clone()) };
+            // **请求头要转发**（Authorization 尤其）：不转发的话每个要登录的接口都 401
+            let headers: Vec<(String, String)> = request
+                .headers()
+                .iter()
+                .filter_map(|(name, value)| {
+                    value
+                        .to_str()
+                        .ok()
+                        .map(|value| (name.as_str().to_string(), value.to_string()))
+                })
+                .collect();
+            std::thread::spawn(move || {
+                let state = app.state::<Shell>();
+                let root = state.resources_root();
+                let server = state.origin();
+                let response = resources::handle(
+                    &root,
+                    server.as_deref(),
+                    &method,
+                    &path,
+                    payload.as_deref(),
+                    &headers,
+                );
+                responder.respond(response);
+            });
+        })
         .setup(|app| {
             let dir = app
                 .path()
                 .app_config_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
             let config = config::Config::load(&dir);
+            // 资源目录**启动时确保存在**（规格 §5.3 第一条）：不存在时协议层要读它，
+            // 而"目录不存在"与"目录里没有可用版本"在日志里该是两件事
+            let resources_root = resources::resources_root(&data_dir);
+            if let Err(error) = std::fs::create_dir_all(&resources_root) {
+                logfile::log(&dir, &format!("资源目录建不出来（{error}）：{}", resources_root.display()));
+            }
+            let status = resources::status(&data_dir);
             logfile::log(
                 &dir,
                 &format!(
-                    "启动（壳 {}），配置里的地址：{}",
+                    "启动（壳 {}），配置里的地址：{}；资源：{}（版本 {}，目录 {}）",
                     env!("CARGO_PKG_VERSION"),
-                    config.server.as_deref().unwrap_or("（还没配过）")
+                    config.server.as_deref().unwrap_or("（还没配过）"),
+                    status.mode,
+                    status.version.as_deref().unwrap_or("无"),
+                    status.root
                 ),
             );
             app.manage(Shell {
                 dir: dir.clone(),
+                data_dir,
                 config: Mutex::new(config),
             });
 

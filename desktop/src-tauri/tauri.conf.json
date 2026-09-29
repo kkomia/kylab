@@ -4,13 +4,13 @@
   "version": "0.1.0",
   "identifier": "com.kylab.desktop",
   "build": {
-    "frontendDist": "../src"
+    "frontendDist": "../../shell/src"
   },
   "app": {
     "withGlobalTauri": true,
     "windows": [],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost"
+      "csp": "default-src 'self' app:; script-src 'self' app:; style-src 'self' app: 'unsafe-inline'; img-src 'self' app: data: blob:; font-src 'self' app: data:; connect-src 'self' app: ipc: http://ipc.localhost; media-src 'self' app: data: blob:; worker-src 'self' app: blob:; frame-src 'self' app:"
     }
   },
   "bundle": {

@@ -34,12 +34,17 @@ impl Config {
 
     /// 读配置。**读不出来就当没配过**（不 panic）：一个坏掉的配置文件不该让壳打不开，
     /// 用户还能在配置页里重新填一遍覆盖掉它。
+    ///
+    /// **BOM 要先剥掉**（这一次实测踩到）：托盘的「配置与日志」会把目录打开给用户，
+    /// 而 Windows 记事本存 UTF-8 默认带 BOM；`serde_json::from_str` 见到 BOM 直接报错，
+    /// 于是"我明明填了地址，壳却说没配过"——而配置页里地址栏是空的，用户只能再填一遍。
     pub fn load(dir: &Path) -> Config {
         let path = Self::path(dir);
         let Ok(text) = fs::read_to_string(&path) else {
             return Config::default();
         };
-        serde_json::from_str(&text).unwrap_or_else(|error| {
+        let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+        serde_json::from_str(text).unwrap_or_else(|error| {
             crate::logfile::log(dir, &format!("配置文件读不出来（{error}），按没配过处理：{}", path.display()));
             Config::default()
         })
@@ -97,6 +102,20 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(Config::path(&dir), "{ 这不是 JSON").unwrap();
         assert!(Config::load(&dir).server.is_none());
+    }
+
+    /// **带 BOM 的配置也要能读**（2026-09-29 实测：Windows 记事本存 UTF-8 会加 BOM，
+    /// 而 `serde_json::from_str` 见到 BOM 直接报错 → 用户填的地址像凭空消失了）。
+    #[test]
+    fn a_config_file_with_a_bom_is_still_read() {
+        let dir = temp_dir("bom");
+        fs::create_dir_all(&dir).unwrap();
+        let body = "{\"server\":\"http://192.168.1.10:8000\",\"recent\":[]}";
+        fs::write(Config::path(&dir), format!("\u{feff}{body}")).unwrap();
+        assert_eq!(
+            Config::load(&dir).server.as_deref(),
+            Some("http://192.168.1.10:8000")
+        );
     }
 
     #[test]
