@@ -1051,3 +1051,15 @@ def test_memory_is_not_handed_over_when_the_switch_is_off(client: TestClient, kb
     assert all(
         step["phase"] != "memory" for item in messages for step in item["steps"]
     )
+
+
+def test_an_overlong_query_is_rejected_before_anything_runs(client: TestClient) -> None:
+    """D06：几十万字的提问在**入参那一层**就被挡住（422），不进上下文、也不调模型。
+
+    防线有两道、数字必须一致：前端 `Composer.tsx` 的 `MAX_QUERY_CHARS` 负责先拦下并
+    给一句能照做的话（"存成文件后用附件传"），这里是后端这一道——没有它，
+    一个 50 万字的 query 会照单全收，既吃满窗口也让这一轮的答案变差。
+    """
+    response = client.post("/api/v1/chat", json={"query": "字" * 32_001, "kb_ids": []})
+
+    assert response.status_code == 422

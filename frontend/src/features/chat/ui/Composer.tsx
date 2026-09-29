@@ -187,6 +187,37 @@ export function Composer() {
   const mentionHandle = useRef<MenuHandle | null>(null)
   const [slashDismissed, setSlashDismissed] = useState(false)
   const [mentionDismissed, setMentionDismissed] = useState(false)
+  /** 超长粘贴被拦下时的那句话（D06）。空串 = 没有要说的。 */
+  const [pasteNotice, setPasteNotice] = useState('')
+
+  /**
+   * 单次提问的字数上限（D06，2026-09-28 走查）。
+   *
+   * 走查实测：一次粘 5.6 万字进输入框——**无上限、无提示、不折叠**，用户只看到一个
+   * 两行高的框（配上 D02 那个"不随内容长高"，等于盲写）。而且这么长的提问会吃掉
+   * 上下文窗口的一大块，答案质量反而下降。
+   *
+   * 3.2 万字 ≈ 中文 3.2 万 token，是默认窗口（65536）的一半：再长的东西本来就该
+   * **当附件传**（走附件那条路会进知识库、能检索、还能带着出处回答）。
+   * 后端 `api/v1/schemas.py` 的 `ChatRequestIn.query` 有**同一条**上限（那边是防线，
+   * 这边是提示）；两处必须同步——前端先拦是为了给一句能照做的话，而不是等 422。
+   */
+  const MAX_QUERY_CHARS = 32_000
+
+  /**
+   * 输入框**随内容长高**（D02，2026-09-28 走查），封顶交给 CSS 的 `max-h-[240px]`。
+   *
+   * 原来只有 `rows={2}`：那是**初始**行数，textarea 自己不会跟着内容长——实测 6400 字时
+   * `clientHeight` 仍是 44.09、`scrollHeight` 2954，用户只能在两行高的窗口里翻自己刚写的
+   * 东西。这里每次内容变化把 `height` 设成 `scrollHeight`；先置 `auto` 再读，否则删字之后
+   * 高度收不回去（`scrollHeight` 会被旧高度撑住）。超过 240px 由 `overflow-y: auto` 接管。
+   */
+  useEffect(() => {
+    const element = field.current
+    if (!element) return
+    element.style.height = 'auto'
+    element.style.height = `${element.scrollHeight}px`
+  }, [chat.query])
 
   /**
    * `webkitdirectory` 是目录选择的非标准属性，React 的类型里没有它——挂载后直接给节点
@@ -415,7 +446,22 @@ export function Composer() {
    */
   function onPaste(event: React.ClipboardEvent<HTMLTextAreaElement>): void {
     const pasted = Array.from(event.clipboardData?.files ?? [])
-    if (pasted.length === 0) return
+    if (pasted.length === 0) {
+      // 纯文本这条路（D06）：**超长就拦下并说清怎么办**，而不是静默截断——
+      // 截断会让人以为"粘进去了"，实际上丢掉的是后半篇。
+      const text = event.clipboardData?.getData('text/plain') ?? ''
+      if (text.length > MAX_QUERY_CHARS) {
+        event.preventDefault()
+        setPasteNotice(
+          `这次粘贴有 ${text.length.toLocaleString()} 字，超过单次上限 ` +
+            `${MAX_QUERY_CHARS.toLocaleString()} 字。这么长的内容请存成文件后用「加号 → 添加文件」` +
+            `传进来——那样能进知识库、回答还会带出处。`,
+        )
+      } else if (pasteNotice) {
+        setPasteNotice('')
+      }
+      return
+    }
     event.preventDefault()
     chat.addAttachments(pasted.map(namePastedFile))
   }
@@ -593,10 +639,26 @@ export function Composer() {
           所以补一个不显示的 `aria-label`：界面上看不见，但读屏、以及
           `tests/chat-paste-upload.test.tsx` 这类用例仍然认得出它是哪一个框。
         */}
+        {/*
+          **超长粘贴的那句话**（D06）：只说事实与下一步，不拦着用户继续做别的。
+          放在输入框**上面**：它是"你刚粘的那次没进来"，摆在框上方比塞在下面更像即时反馈。
+        */}
+        {pasteNotice ? (
+          <p
+            role="status"
+            className="m-0 mb-[var(--space-1)] text-[length:var(--text-micro-size)] leading-[1.5] text-[var(--status-warning)]"
+          >
+            {pasteNotice}
+          </p>
+        ) : null}
+
         <textarea
           id="chat-query"
           ref={field}
           rows={2}
+          // 硬上限（与 `MAX_QUERY_CHARS` 同一个数）：打字打到头就停住。
+          // 超长**粘贴**在 `onPaste` 里被拦下并给出那一句提示，而不是靠这里静默截断。
+          maxLength={MAX_QUERY_CHARS}
           aria-label="消息输入框"
           className="max-h-[240px] min-h-[44px] w-full resize-none border-none bg-transparent text-[length:var(--text-body-size)] text-[var(--text-primary)] outline-none"
           value={chat.query}

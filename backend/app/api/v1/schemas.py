@@ -748,7 +748,10 @@ class ChatAttachmentIn(BaseModel):
 
 
 class ChatRequestIn(BaseModel):
-    query: str = Field(min_length=1)
+    # 上限与前端 `Composer.tsx` 的 `MAX_QUERY_CHARS` **同一个数**（D06，2026-09-28 走查）：
+    # 那边先拦是为了给用户一句能照做的话（"存成文件用附件传"），这里是防线——
+    # 没有它，一个几十万字的 query 会照单全收，既吃满上下文窗口，也让这一轮的答案变差。
+    query: str = Field(min_length=1, max_length=32_000)
     kb_ids: list[str] = Field(
         default_factory=list,
         description="这一轮依据哪些知识库；**空 = 不使用知识库**（界面上那个开关关掉时）",

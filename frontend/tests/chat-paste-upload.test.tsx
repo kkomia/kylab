@@ -361,3 +361,44 @@ describe('文件夹上传：相对路径当 filename', () => {
     expect(vi.mocked(uploadFile)).not.toHaveBeenCalled()
   })
 })
+
+describe('超长粘贴与输入框长高（D02/D06，2026-09-28 走查）', () => {
+  it('一次粘 5.6 万字：**拦下并说清怎么办**，而不是静默截断', async () => {
+    withComposer()
+    const field = screen.getByRole('textbox', { name: '消息输入框' })
+    const event = await paste(field, [], '字'.repeat(56_000))
+
+    // 拦下这一次粘贴，而且**一个字都不进去**——截断会让人以为"粘成功了"
+    expect(event.defaultPrevented).toBe(true)
+    expect(field).toHaveValue('')
+    // 提示要可执行：说清这次多少字、上限多少、该走哪条路
+    const notice = screen.getByRole('status')
+    expect(notice).toHaveTextContent('56,000')
+    expect(notice).toHaveTextContent('32,000')
+    expect(notice).toHaveTextContent('添加文件')
+  })
+
+  it('正常长度的粘贴不被拦（也不弹那句话）', async () => {
+    withComposer()
+    const field = screen.getByRole('textbox', { name: '消息输入框' })
+    const event = await paste(field, [], '短的一段文字')
+
+    expect(event.defaultPrevented).toBe(false)
+    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    // **这里不断言输入框的值**：`paste` 是手工派发的合成事件，jsdom 不会替浏览器执行
+    // "把文本插到光标处"那个默认动作——所以"拦没拦、有没有那句话"才是这条链路里可观测的部分。
+  })
+
+  it('输入框随内容长高：高度按 `scrollHeight` 给（封顶交给 CSS 的 max-height）', async () => {
+    // 病灶（走查 D02）：只有 `rows={2}` 时 textarea 自己不长——实测 6400 字时
+    // clientHeight 仍是 44.09、scrollHeight 2954，用户只能在两行高的窗口里翻自己写的东西。
+    withComposer()
+    const field = screen.getByRole('textbox', { name: '消息输入框' }) as HTMLTextAreaElement
+    // jsdom 不做排版，scrollHeight 恒为 0：给一个可观测的值，验证"读了它、写进了 height"
+    Object.defineProperty(field, 'scrollHeight', { value: 300, configurable: true })
+
+    await userEvent.type(field, '写点东西')
+
+    expect(field.style.height).toBe('300px')
+  })
+})
