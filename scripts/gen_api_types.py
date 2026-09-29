@@ -38,7 +38,13 @@ from pathlib import Path
 # 挂的日志会落到 ``<仓库根>/data/logs``，多跑几次就在仓库里长出一个数据目录
 # （历史上那份 ``data/kylab.db`` 就是这么来的，直到存储换 PostgreSQL 才成死文件）。
 # 本脚本只读 OpenAPI，不需要真实数据目录，显式指到临时目录即可。
-os.environ["KYLAB_DATA_DIR"] = tempfile.mkdtemp(prefix="kylab-openapi-")
+#
+# **`dir=` 必须显式给**（2026-09-29 整改，与 gen_api_spec.py 同一处病）：本机沙箱会
+# **拒写 `%TEMP%`**，`tempfile` 在那种情况下**静默回退到 cwd** ✗ —— 每跑一次就在仓库根
+# 多一个 `kylab-openapi-*`。指到仓库内 `.tmp/` 之后，回退路径也落在被忽略的目录里。
+_TMP_DIR = Path(__file__).resolve().parents[1] / ".tmp"
+_TMP_DIR.mkdir(parents=True, exist_ok=True)
+os.environ["KYLAB_DATA_DIR"] = tempfile.mkdtemp(prefix="kylab-openapi-", dir=_TMP_DIR)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -75,7 +81,7 @@ def _generate(spec: dict, out: Path) -> str:
             "找不到 openapi-typescript：先在 frontend/ 里 `pnpm install`"
             "（它是 devDependency，前端门禁本来就需要 node_modules）"
         )
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(dir=_TMP_DIR) as tmp:
         source = Path(tmp) / "openapi.json"
         source.write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
         result = subprocess.run(
@@ -97,7 +103,7 @@ def main() -> int:
         print(__doc__.split("用法::")[1].strip())
         return 2
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(dir=_TMP_DIR) as tmp:
         scratch = Path(tmp) / "schema.d.ts"
         generated = HEADER + _generate(_openapi(), scratch)
 
