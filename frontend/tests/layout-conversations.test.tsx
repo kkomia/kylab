@@ -536,21 +536,39 @@ describe('历史会话面板', () => {
     expect(screen.queryByRole('dialog', { name: '历史会话' })).not.toBeInTheDocument()
   })
 
-  it('空态：没搜索也没归档时说「还没有会话」，搜索无果时说「没有匹配的会话」', async () => {
-    const user = userEvent.setup()
-    listConversationsMock.mockResolvedValue({ items: [] })
-    renderShell()
-    await user.click(await screen.findByRole('button', { name: '查看全部会话' }))
-    expect(await screen.findByText('还没有会话')).toBeInTheDocument()
-
-    await user.click(screen.getByRole('button', { name: '已归档' }))
-    await waitFor(() => expect(screen.getByText('还没有归档的会话')).toBeInTheDocument())
-
-    await user.type(screen.getByLabelText('搜索历史会话'), '合同')
-    await waitFor(() => expect(screen.getByText('没有匹配的会话')).toBeInTheDocument(), {
-      timeout: 2000,
-    })
+  // 反向验证的**确定性守卫**（与 smoke 那条同一套理由）：这一条要等历史面板挂载 + 那份
+  // 带预览清单的查询链 settle，全量并发时超过默认 5s（实测 5257ms），而单跑只有 ~1.7s、
+  // 撤掉超时照样绿 → 只能靠源码断言把"这一处被放宽过"钉住。
+  it('重挂载类用例带着显式超时（删了就红）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const source = readFileSync(fileURLToPath(import.meta.url), 'utf8')
+    expect(source).toMatch(
+      /it\(\s*'空态：没搜索也没归档时说「还没有会话」，搜索无果时说「没有匹配的会话」'\s*,\s*\{\s*timeout:\s*15_000\s*\}/,
+    )
   })
+
+  // **放宽这一处**（不是放宽全局 `testTimeout`）：面板挂载 + 查询链是 CPU 型重活，
+  // 全量 1082 条并发时被挤过默认 5s（实测 5257ms）；单跑 ~1.7s。
+  it(
+    '空态：没搜索也没归档时说「还没有会话」，搜索无果时说「没有匹配的会话」',
+    { timeout: 15_000 },
+    async () => {
+      const user = userEvent.setup()
+      listConversationsMock.mockResolvedValue({ items: [] })
+      renderShell()
+      await user.click(await screen.findByRole('button', { name: '查看全部会话' }))
+      expect(await screen.findByText('还没有会话')).toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: '已归档' }))
+      await waitFor(() => expect(screen.getByText('还没有归档的会话')).toBeInTheDocument())
+
+      await user.type(screen.getByLabelText('搜索历史会话'), '合同')
+      await waitFor(() => expect(screen.getByText('没有匹配的会话')).toBeInTheDocument(), {
+        timeout: 2000,
+      })
+    },
+  )
 
   it('面板里的「⋯」改完会重新拉一次那份带预览的清单', async () => {
     const user = userEvent.setup()

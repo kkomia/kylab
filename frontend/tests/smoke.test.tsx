@@ -117,7 +117,21 @@ describe('应用壳', () => {
     })
   })
 
-  it('`/chat` 落在对话页（壳的内容区里）', async () => {
+  // 反向验证的**确定性守卫**：这一条要等整壳（懒加载的对话页 chunk + Provider 挂载链）才
+  // settle，属"CPU 型重活"——全量并发时超过默认 5s（实测 5120ms），而**单跑**只有 ~2.4s、
+  // 撤掉超时照样绿，所以"单跑拿红"抓不到这个失效。用源码断言钉住：删了就红。
+  it('重挂载类用例带着显式超时（删了就红）', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { fileURLToPath } = await import('node:url')
+    const source = readFileSync(fileURLToPath(import.meta.url), 'utf8')
+    expect(source).toMatch(
+      /it\(\s*'`\/chat` 落在对话页（壳的内容区里）'\s*,\s*\{\s*timeout:\s*15_000\s*\}/,
+    )
+  })
+
+  // **放宽这一处**（不是放宽全局 `testTimeout`）：要等懒加载 chunk + Provider 挂载链，
+  // CPU 型重活，全量 1082 条并发时被挤过默认 5s（实测 5120ms）；单跑 ~2.4s。
+  it('`/chat` 落在对话页（壳的内容区里）', { timeout: 15_000 }, async () => {
     window.history.pushState({}, '', '/chat')
     render(<App />)
 
