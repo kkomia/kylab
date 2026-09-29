@@ -97,15 +97,21 @@ def test_the_builtin_skills_are_pinned_by_name() -> None:
 
 @requires_data
 def test_only_the_unclassifiable_one_is_left_in_other() -> None:
-    """「其他」只剩 `xiaoyue-companion` 一条（**拿不准就不硬塞**，但要说得出来）。
+    """「其他」应当**很小**，而且那条拿不准的一直在（`xiaoyue-companion`）。
 
-    它是"虚拟伴侣"——描述里没有任何领域信号（不是文档、数据、论文、代码、设计或营销），
-    按当初定下的口径进「其他」。产品自带的 5 条加进来之后，仍然只剩它一条。
+    **不再是"只剩它一条"**（2026-09-29 如实报）：库从初始技能集涨到上千条之后，
+    信号表认不出的名字变多了（当前 16 条，见 `--check` 的清单）。这里钉的是
+    **两条不脆的性质**：
+    ① 「其他」占整体的比例很小（≤ 10%，当前 16/183 ≈ 8.7%）——它是兜底，不是主分类；
+    ② `xiaoyue-companion`（虚拟伴侣：描述里没有任何领域信号）仍然在里面——
+       写这一条是为了防止有人为了让数字好看，随便给它塞一个类别。
     """
     assignments = sc.all_assignments()
     others = sorted(slug for slug, category in assignments.items() if category == sc.OTHER)
 
-    assert others == ["xiaoyue-companion"]
+    assert "xiaoyue-companion" in others
+    too_many = f"「其他」太多了（{len(others)}）：{others}"
+    assert len(others) <= max(5, len(assignments) // 10), too_many
 
 
 def test_the_frontend_mirror_is_byte_identical() -> None:
@@ -135,23 +141,35 @@ def test_the_frontend_mirror_is_byte_identical() -> None:
 
 @requires_data
 def test_unmistakable_skills_land_in_the_expected_category() -> None:
-    """几条"名字就说明了一切"的锚点：规则被改坏时它们先红。"""
+    """几条"名字就说明了一切"的锚点：规则被改坏时它们先红。
+
+    **只用名字判**（`category_of(slug, slug, "")`）：这一节验的是**规则表**，
+    不是库里那条技能的实时描述——导入器（2026-09-29 那批 12k 技能）会重写描述，
+    拿它当断言对象等于让用例随数据漂（真发生过：`academic-poster` 的描述被改过之后
+    这一条就红了，而规则一个字没动）。
+
+    最后两条**本来就靠描述才认得出**（名字里没有"论文/学术"这类信号），
+    所以给它们**测试自己持有的描述**：仍然是钉规则，仍然不看库里的那份。
+    """
     anchors = {
         "pdf-pro": "documents",
         "image-to-editable-ppt": "slides",
-        "academic-poster": "research",
         "knowledge-graph": "learning",
         "playwright-skill": "code",
         "code-review-skill": "code",
-        "sci-download": "research",
         "seo-geo-aeo": "marketing",
         "personal-finance-skill": "business",
         "tasknotes": "productivity",
     }
-    assignments = sc.classify(_rows())
-
     for slug, expected in anchors.items():
-        assert assignments.get(slug) == expected, f"{slug} 应当属于 {expected}"
+        assert sc.category_of(slug, slug, "") == expected, f"{slug} 应当属于 {expected}"
+
+    description_driven = {
+        "academic-poster": ("学术会议海报：把论文做成一张 research poster", "research"),
+        "sci-download": ("下载论文全文（paper / PDF / 文献）", "research"),
+    }
+    for slug, (description, expected) in description_driven.items():
+        assert sc.category_of(slug, slug, description) == expected, f"{slug} 应当属于 {expected}"
 
 
 def test_no_signal_means_other_and_the_rule_table_explains_itself() -> None:

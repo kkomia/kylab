@@ -72,8 +72,25 @@ SKILL_SIZE_LIMIT = 50 * 1024 * 1024
 REPO_SIZE_LIMIT = 400 * 1024 * 1024
 #: 只装这几样（体量闸生效时）。
 KEEP_WHEN_BIG = ("SKILL.md", "scripts", "references")
-#: 装进技能库时只保留这些字符（与 `skills.normalize_name` 同一口径）。
-SAFE_NAME = re.compile(r"[^0-9A-Za-z._-]")
+#: 装进技能库时**要净化掉的字符**——只有 Windows 的硬限制，不是"只许 ASCII"。
+#:
+#: 为什么不再用 `[^0-9A-Za-z._-]`（第一版就是它，把 78 个中文名技能清成了空串）：
+#: 后端的取名口径**不限制字符集**：
+#: - `skills.normalize_name`（`backend/app/services/skills.py:262-263`）只做"空白折叠 + casefold"；
+#: - `skill_market._safe_relative`（`backend/app/services/skill_market.py:761-773`）只管
+#:   绝对路径 / `..` / 反斜杠三种越界，不查字符集；
+#: - 技能发现走 `<root>/<目录名>/SKILL.md`（`skills.py:511-531`），显示名取自 frontmatter，
+#:   所以目录名带中文完全没问题。
+#: 反过来，`\ / : * ? " < > |` 与结尾的空格/点在 Windows 上**建不出目录、或被静默改名**
+#: （实测：`ckm:brand` 直接 `NotADirectoryError: [WinError 267]`）——按"最严的那套平台"净化。
+ILLEGAL_IN_NAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
+
+#: Windows 保留设备名：这些名字在那台机器上建不出目录，加后缀绕开。
+RESERVED_NAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{index}" for index in range(1, 10)}
+    | {f"lpt{index}" for index in range(1, 10)}
+)
 #: 这些名字**绝不覆盖**：内置技能（仓库自带的那五个）与本次导入之外的既有技能。
 PROTECTED_PREFIX = "kylab-"
 
@@ -218,18 +235,41 @@ def _download(url: str, target: Path, *, retries: int, log) -> tuple[str, str]:
     return "fail", "重试次数用尽"
 
 
+def _sanitise_member(member: tarfile.TarInfo) -> tarfile.TarInfo:
+    """把 tarball 里**每一段路径**的 Windows 非法字符换掉。
+
+    为什么要在**解包时**就做（而不是只在装的时候）：`bg-szy/TOP-SKILLS` 的技能目录叫
+    `ckm:brand`，Windows 上 `tarfile` **解都解不出来**（`NotADirectoryError: [WinError 267]`），
+    于是脚本在 `install_skill` 之前就炸了——`safe_name` 根本没机会跑。
+    名字最终以 frontmatter 的 `name` 为准（`install_skill` 仍走一遍 `safe_name`），
+    所以这里改名只影响临时目录，不影响落库名。
+    """
+    parts = []
+    for part in member.name.split("/"):
+        cleaned = ILLEGAL_IN_NAME.sub("-", part).strip(" .")
+        parts.append(cleaned or "_")
+    member.name = "/".join(parts)
+    return member
+
+
+def _extract_filter(member: tarfile.TarInfo, path: str):  # type: ignore[no-untyped-def]
+    """`tarfile` 的 filter：**先净化名字，再过官方 `data_filter`**（两道都要）。"""
+    return tarfile.data_filter(_sanitise_member(member), path)
+
+
 def _extract(archive: Path, destination: Path) -> None:
     """解包（用 `tarfile`，它自己处理 gzip）。
 
-    **只解普通文件与目录**：tarball 是 GitHub 生成的，但"解包时顺手写出一个符号链接"
-    是这类代码最常见的洞（zip-slip 的同族）——这里显式跳过链接与设备文件。
+    **只解普通文件与目录**，并且过 `_extract_filter`：
+    - 只留 file/dir：tarball 是 GitHub 生成的，但"解包时顺手写出一个符号链接"是这类代码
+      最常见的洞（zip-slip 的同族）；
+    - `filter=` 两件事一起做：**净化 Windows 非法路径段** + `data_filter` 的官方校验
+      （绝对路径、上跳、链接、设备文件）。
     """
     destination.mkdir(parents=True, exist_ok=True)
     with tarfile.open(archive, "r:gz") as bundle:
         members = [item for item in bundle.getmembers() if item.isfile() or item.isdir()]
-        # `filter="data"`：Python 3.12+ 的官方过滤（拒绝绝对路径、上跳、链接与设备文件）。
-        # 与上面"只留普通文件与目录"是两道闸，缺一道在 3.14 默认开启过滤时行为就变了。
-        bundle.extractall(destination, members=members, filter="data")
+        bundle.extractall(destination, members=members, filter=_extract_filter)
 
 
 # ---------------------------------------------------------------- 技能识别与安装
@@ -264,8 +304,19 @@ def find_skill_dirs(root: Path) -> list[Path]:
 
 
 def safe_name(raw: str) -> str:
-    name = SAFE_NAME.sub("-", raw.strip()).strip("-._")
-    return name[:120]
+    """技能名 → 能落盘的目录名。**保留中文与 Unicode**，只清 Windows 的非法字符。
+
+    净化四步（顺序有意）：替换非法字符 → 去掉结尾的空格与点（Windows 会静默吃掉它们）
+    → 保留设备名加后缀 → 限长。
+    返回空串 = 这个名字一个可用字符都不剩（调用方按"过滤"记一笔）。
+    """
+    text = ILLEGAL_IN_NAME.sub("-", (raw or "").strip())
+    text = text.strip(" .")
+    if not text:
+        return ""
+    if text.casefold() in RESERVED_NAMES:
+        text = f"{text}-skill"
+    return text[:120]
 
 
 def skill_files(directory: Path, *, big: bool) -> list[tuple[Path, Path]]:

@@ -509,10 +509,23 @@ class SkillService:
         self._scan_memo = None
 
     def _scan(self) -> list[SkillRecord]:
-        """扫一遍三个来源（**带复用窗口**，见 `SCAN_TTL_SECONDS`）。"""
+        """扫一遍三个来源（**带复用窗口**，见 `SCAN_TTL_SECONDS`）。
+
+        窗口的key是**两个**东西：**各个根目录的 mtime 签名** + 时间。
+        少了前者就会出现真回归（2026-09-29 用例抓住的）：市场那边刚把一个技能写进
+        ``data/skills/``，同一个进程里的 `list()` 却因为"30 秒还没到"仍然交回旧列表，
+        于是那条技能被判成 ``installed=False`` ✗。**目录项增删是廉价的**（每个根一次
+        `stat`），所以它必须**立刻**生效；只有"某个 `SKILL.md` 的内容改了"这种
+        不改任何目录 mtime 的变化，才交给窗口（与 `invalidate()`）。
+        """
         now = time.monotonic()
-        if self._scan_memo is not None and now - self._scan_memo[0] < self._scan_ttl:
-            return self._scan_memo[1]
+        signature = self._roots_signature()
+        if (
+            self._scan_memo is not None
+            and self._scan_memo[0] == signature
+            and now - self._scan_memo[1] < self._scan_ttl
+        ):
+            return self._scan_memo[2]
         found: dict[str, SkillRecord] = {}
         for source, root in self._roots():
             for directory in self._skill_dirs(root):
@@ -526,8 +539,22 @@ class SkillService:
                 if current is None or (current.discarded and not record.discarded):
                     found[record.slug] = record
         records = sorted(found.values(), key=lambda item: (item.source != "builtin", item.name))
-        self._scan_memo = (now, records)
+        self._scan_memo = (signature, now, records)
         return records
+
+    def _roots_signature(self) -> tuple[tuple[str, int], ...]:
+        """各个根的 mtime 签名（**每个根一次 `stat`**）。
+
+        目录项增删会改父目录的 mtime，所以这一层能"立刻"发现技能装上/删掉；
+        而它便宜到可以每次调用都算（三个根三次 stat）。
+        """
+        out: list[tuple[str, int]] = []
+        for source, root in self._roots():
+            try:
+                out.append((source, root.stat().st_mtime_ns))
+            except OSError:
+                out.append((source, 0))
+        return tuple(out)
 
     def _disabled(self) -> set[str]:
         """用户关掉了哪些技能（D23）。**读不到就是空集**：没接配置的部署照旧全开。"""
