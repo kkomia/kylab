@@ -491,6 +491,43 @@ def test_the_bootstrap_is_absent_when_the_service_says_nothing() -> None:
     assert "引导正文" not in text
 
 
+def test_the_skill_use_block_forbids_scanning_the_disk_for_skills() -> None:
+    """③：技能要用 `list_skills` / `read_skill` 查，**不许扫盘**（§12.341）。
+
+    现场（`conv_a5f4628f405f`）：为了找"下载论文"的技能，它**连 6 步**用 `..\\..\\`
+    扫**服务端**磁盘（`dir /a ..\\..\\..`、`findstr /s … ..\\..\\skills\\*\\SKILL.md`），
+    而不是走技能工具。这一句就是堵那条路。
+    """
+    text = build_system_prompt(PromptContext(base="底", skills="技能正文"))
+
+    assert "list_skills" in text and "read_skill" in text
+    assert "find" in text and "dir" in text, "要点名那几个不该用的命令"
+    assert "扫" in text, "要说清「不许扫盘」这件事"
+    # 它必须落在技能目录那一段之后（挨着读才不会"看完目录不知道用哪个口"）
+    assert text.index("技能正文") < text.index("list_skills")
+
+
+def test_the_skill_use_block_says_skills_need_no_find_tools() -> None:
+    """④：技能目录每轮已注入，**找技能不必先 `find_tools`**（§12.341）。
+
+    现场先调了两次 `find_tools{"query":"列出/搜索技能目录"}` 才找到技能。
+    """
+    text = build_system_prompt(PromptContext(base="底", skills="技能正文"))
+
+    assert "find_tools" in text
+    assert "每轮已经注入" in text or "每轮已注入" in text
+
+
+def test_the_skill_use_block_only_rides_along_with_a_skill_directory() -> None:
+    """一个技能都没有时不许说这两句：那时"目录每轮已注入"是假话。"""
+    without = build_system_prompt(PromptContext(base="底"))
+    assert "find_tools" not in without
+    assert "不许用" not in without
+
+    with_skills = build_system_prompt(PromptContext(base="底", skills="技能正文"))
+    assert "不许用" in with_skills
+
+
 def test_the_persona_lead_forbids_chasing_placeholder_fields() -> None:
     """D26：文件里写着「待确认」「待补」这类占位词时，**不许每一轮都去追问对方**。
 

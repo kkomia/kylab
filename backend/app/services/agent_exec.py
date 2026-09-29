@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import shlex
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -405,6 +406,44 @@ def _awaiting(
     )
 
 
+def _executable_note(argv: list[str], backend: str) -> str:
+    """这条命令**实际启动的是哪一个可执行文件**（§12.341 ⑥）。
+
+    现场（2026-09-29 用户点名的会话 `conv_a5f4628f405f`）：模型在回答里说
+    "Python 环境是 `E:\\gitlab\\kylab\\backend\\.venv`，里面没装 pip"——
+    它验的其实是**沙箱目录里 `python` 解析到的那个解释器**，而 `.venv` 是它自己**外推**出来的
+    （结果里从来没有出现过解释器路径）。这类"外推事实"没法靠提示词堵，
+    只能**把事实摆出来**：把 `argv[0]` 在本机 PATH 上解析到的**绝对路径**写进结果。
+
+    两档的诚实度不一样，所以分开说：
+
+    - **直接执行**（``BACKEND_DIRECT``）：命令就是在**本机**跑的，`shutil.which` 解析到的
+      那个路径**就是**它启动的进程 ✓（找不到时也如实说"PATH 上没有它"——那说明这条命令
+      根本起不来，而现场第二问正是这种：这台机器没有 `ls`）；
+    - **隔离执行**：`which` 是在**本机**解析的，隔离里那套 PATH 由后端自己的镜像决定，
+      两者不一定同一个 ✗ —— 所以这里**只报事实、不给结论**：写清"本机解析到 X，
+      但隔离里用的不是这一套"。宁可说"不确定"，也不要制造一个新的外推。
+    """
+    if not argv:
+        return ""
+    name = argv[0]
+    found = shutil.which(name)
+    if backend == isolation_service.BACKEND_DIRECT:
+        if found:
+            return (
+                f"本条命令启动的可执行文件：`{name}` → `{found}`"
+                "（本机 PATH 上解析到的那个，**不是**项目里的虚拟环境）"
+            )
+        return f"本机 PATH 上找不到 `{name}`：这条命令不由本机的同名程序执行（它起不来）。"
+    if found:
+        return (
+            f"可执行文件：本机 PATH 上 `{name}` → `{found}`；"
+            "**但这一条是在隔离里跑的**，隔离内用的是那个后端镜像自己的 PATH，"
+            "与上面这个路径不是一回事（别把它当成隔离里的解释器）。"
+        )
+    return f"可执行文件：本机 PATH 上没有 `{name}`；这一条在隔离里跑，由那个后端自己的 PATH 决定。"
+
+
 def _summary(result: isolation_service.ExecutionResult) -> str:
     if result.timed_out:
         return "命令超时被终止"
@@ -440,6 +479,9 @@ def _render(
         )
     )
     parts = [f"$ {' '.join(argv)}", where]
+    executable = _executable_note(argv, result.backend)
+    if executable:
+        parts.append(executable)
     if result.timed_out:
         parts.append(
             f"命令超过 {timeout:g} 秒被终止。要跑更久的事，请把它拆小，或者告诉对方改超时。"

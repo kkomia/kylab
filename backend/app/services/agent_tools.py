@@ -77,6 +77,12 @@ MAX_ATTACHMENT_CHARS = 20000
 #: 整个网页塞回来。
 MAX_MCP_RESULT_CHARS = 8000
 
+#: `list_skills` 一页列几条（§12.341 ⑤）。近两百个技能全量输出一次是 12,024 字（被截断），
+#: 而这一条是"看状态"，不是把目录搬进上下文——所以默认一页 40 条（约 40 行）。
+SKILLS_PAGE_SIZE = 40
+#: 单次最多列几条：调用方要更多也不给（否则分页形同虚设，那个 12,024 字又回来了）。
+SKILLS_PAGE_MAX = 60
+
 _SKILL_TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "list_skills",
@@ -85,8 +91,26 @@ _SKILL_TOOLS: tuple[dict[str, Any], ...] = (
             "**可用技能的名字、描述与文件位置每一轮已经在你的系统提示词里**（"
             "「可用技能」那一段），所以平时不必调它；"
             "只有要确认「某个技能为什么不可用」（被安全扫描拦下、依赖没满足、或被丢弃）时才看。"
+            f"**一次最多列 {SKILLS_PAGE_SIZE} 条**（列表长了会挤出上下文）："
+            "还有更多就用 `offset` 翻页（返回里会告诉你下一页的 offset）。"
         ),
-        "inputSchema": {"type": "object", "properties": {}},
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "offset": {
+                    "type": "integer",
+                    "description": (
+                        f"从第几个开始列（默认 0）：翻页时用它，每页 {SKILLS_PAGE_SIZE} 条。"
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": (
+                        f"这一页列几条（默认 {SKILLS_PAGE_SIZE}，最多 {SKILLS_PAGE_MAX}）。"
+                    ),
+                },
+            },
+        },
     },
     {
         "name": "spawn_subagent",
@@ -1228,7 +1252,7 @@ def build_runner(
                 added=len(refs),
             )
         if name == "list_skills":
-            return ToolOutcome(content=_render_skills(services))
+            return ToolOutcome(content=_render_skills(services, args))
         if name == "read_skill":
             return ToolOutcome(content=_read_skill(services, args))
         if name in _FILE_TOOLS:
@@ -2016,8 +2040,14 @@ _NO_KB_SCOPE = (
 # ------------------------------------------------------------------ 技能
 
 
-def _render_skills(services: Any) -> str:
-    """列全部技能（这是"想看全部字段"时才调的——目录每轮已经在提示词里了）。
+def _render_skills(services: Any, args: dict[str, Any] | None = None) -> str:
+    """列技能（**一页**）：这是"想看全部字段/状态"时才调的——目录每轮已经在提示词里了。
+
+    为什么要分页（§12.341 ⑤，2026-09-29 用户点名的会话 `conv_a5f4628f405f`）：
+    这台机器上有近两百个技能，全量输出一次是 **12,024 字**（结果被截断），
+    而模型要的通常只是"有没有某个能力"或"某个为什么不可用"——一条一条铺满上下文，
+    既挤掉别的资料，也让它读不完。所以：**默认一页 40 条**、`offset` 翻页、
+    返回里直说"共几个、这是第几条到第几条、下一页从哪开始"。
 
     两种"不可用"要**分开说**（v0.43）：`discarded` 是没通过格式校验的
     （缺字段、描述超 1024——照 ZCode 的规则丢弃），`used_by_prompt=False`
@@ -2027,8 +2057,18 @@ def _render_skills(services: Any) -> str:
     records = services.skills.list()
     if not records:
         return "这台机器上还没有安装技能。"
+    options = args or {}
+    offset = max(0, _as_int(options.get("offset"), 0))
+    limit = min(max(1, _as_int(options.get("limit"), SKILLS_PAGE_SIZE)), SKILLS_PAGE_MAX)
+    page = records[offset : offset + limit]
+    if not page:
+        return (
+            f"技能一共 {len(records)} 个，offset={offset} 已经越界了。"
+            "从头看就再调一次 `list_skills(offset=0)`。"
+        )
+
     lines = []
-    for record in records:
+    for record in page:
         if getattr(record, "discarded", False):
             reason = str(getattr(record, "flagged", "") or "没通过格式校验")
             usable = f"已丢弃（{reason}）"
@@ -2037,7 +2077,35 @@ def _render_skills(services: Any) -> str:
         else:
             usable = "被同名技能遮蔽（不进提示词）"
         lines.append(f"- {record.name}（{usable}）：{record.description}")
-    return "全部技能：\n" + "\n".join(lines)
+
+    first, last = offset + 1, offset + len(page)
+    head = f"技能 {first}–{last} / 共 {len(records)} 个："
+    tail = ""
+    if last < len(records):
+        tail = (
+            f"\n\n（后面还有 {len(records) - last} 个："
+            f"再调一次 `list_skills(offset={last})` 看下一页；"
+            "要某个技能的正文用 `read_skill`）"
+        )
+    return f"{head}\n" + "\n".join(lines) + tail
+
+
+def _as_int(value: object, default: int) -> int:
+    """把模型给的数当数看（它可能给字符串、也可能给 `true` 这类东西）。
+
+    解析不了就用默认值：**翻页参数出错不该让这次调用失败**——最坏是回到第一页，
+    模型的下一步是再调一次，而不是拿到一句"参数非法"再猜。
+    """
+    if isinstance(value, bool):  # bool 是 int 的子类，得先挡掉
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    return default
 
 
 def _read_skill(services: Any, args: dict[str, Any]) -> str:

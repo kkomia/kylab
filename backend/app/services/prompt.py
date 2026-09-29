@@ -39,6 +39,11 @@ PRIORITY_PERSONA = 20
 PRIORITY_KB_PROMPT = 30
 PRIORITY_MEMORY = 40
 PRIORITY_SKILLS = 50
+PRIORITY_SKILL_USE = 51
+"""「技能怎么查」那两句（§12.341 ③④）。
+
+紧跟技能目录那一档：目录是**资料**，这两句是**用法**，挨着读才不会"看完目录不知道用哪个口"。
+"""
 PRIORITY_SUMMARY = 60
 PRIORITY_CLARIFY = 65
 """「要不要先问一句」那一档（§12.338 后续：D-03 的裁定）。
@@ -109,6 +114,7 @@ def default_contributors() -> list[PromptContributor]:
         (PRIORITY_KB_PROMPT, "kb_prompt", lambda ctx: ctx.kb_prompt),
         (PRIORITY_MEMORY, "memory", lambda ctx: ctx.memory),
         (PRIORITY_SKILLS, "skills", lambda ctx: ctx.skills),
+        (PRIORITY_SKILL_USE, "skill_use", _skill_use_block),
         (PRIORITY_SUMMARY, "summary", _summary_block),
         (PRIORITY_CLARIFY, "clarify", _clarify_block),
         (PRIORITY_SEARCH, "search", _search_block),
@@ -307,6 +313,36 @@ def _clarify_block(_context: PromptContext) -> str:
 def _search_block(_context: PromptContext) -> str:
     """「检索什么时候算够」那段（常驻）。同上，不看上下文。"""
     return _SEARCH_BLOCK
+
+
+#: 「技能怎么查」那两句（§12.341 ③④，2026-09-29 用户点名的会话 `conv_a5f4628f405f`）。
+#:
+#: 现场：为了"下载知网论文"，它**连 6 步**用 `..\..\` 去扫**服务端**磁盘找技能
+#: （`dir /a ..\..\..`、`findstr /s … ..\..\skills\*\SKILL.md`），而不是用技能工具；
+#: 而在那之前还先调了两次 `find_tools` 才找到技能——技能目录**每一轮都注入在提示词里**。
+#:
+#: 两句各堵一条路，都写成"不许做什么"（比"建议用什么"更能拦住一次已经跑偏的选择）：
+#:
+#: 1. **用技能工具，不许扫盘**：`find`/`dir`/`ls`/`findstr` 找 `SKILL.md` 既慢、
+#:    又会扫到服务端别的目录，而 `list_skills`/`read_skill` 本来就是给这件事的通道
+#:    （还知道"哪些被丢弃 / 被同名遮蔽"，扫盘看不到这层信息）；
+#: 2. **找技能不必先 `find_tools`**：技能不在那张工具表里（它是"读自己身上的说明书"，
+#:    见 `agent_tools` 模块头），先查一遍工具表纯属白跑两步。
+#:
+#: 只在**真有技能目录**时给（`context.skills` 非空）：一份技能都没有时，
+#: 上面那句"目录每轮已注入"是假话，说了只会让模型去找不存在的东西。
+_SKILL_USE_BLOCK = (
+    "【技能怎么查】\n"
+    "1. 技能目录已经在上面了，要用哪个技能直接读：`list_skills` 看状态、`read_skill` 读正文；"
+    "**不许用 `find` / `dir` / `ls` / `findstr` 去磁盘上扫技能**"
+    "（那样会扫到服务端的目录，慢且容易找错）。\n"
+    "2. **找技能不必先 `find_tools`**：它不在那张工具表里，技能目录每轮已经注入过了。"
+)
+
+
+def _skill_use_block(context: PromptContext) -> str:
+    """「技能怎么查」：只有真有技能目录时才给（理由见 `_SKILL_USE_BLOCK`）。"""
+    return _SKILL_USE_BLOCK if context.skills.strip() else ""
 
 
 # --------------------------------------------------------------------- 预算提示（§12.338 方案 3）

@@ -483,6 +483,70 @@ def test_runs_when_policy_and_isolation_are_both_ready(workspace, monkeypatch) -
     assert str(workspace.runtime.data_dir) in outcome.text
 
 
+def test_the_result_says_which_executable_actually_runs(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """⑥：结果里要写出**这条命令实际启动的可执行文件**（§12.341）。
+
+    现场（`conv_a5f4628f405f`）：模型在回答里说"Python 环境是
+    `E:\\gitlab\\kylab\\backend\\.venv`，里面没装 pip"——它验的是沙箱里解析到的那个
+    python，`.venv` 是它自己**外推**的（结果里从来没有解释器路径）。这类外推只能靠
+    "把事实摆出来"堵：写清 `argv[0]` 在本机 PATH 上解析到哪个绝对路径。
+    """
+    _allow_all(workspace)
+    _available(monkeypatch)
+    monkeypatch.setattr(
+        isolation_service,
+        "run_isolated",
+        lambda argv, **kwargs: isolation_service.ExecutionResult(
+            exit_code=0,
+            stdout="3.12.11\n",
+            stderr="",
+            truncated=False,
+            backend=isolation_service.BACKEND_DIRECT,
+        ),
+    )
+
+    outcome = run_command(
+        workspace,
+        _admin(),
+        conversation_id=None,
+        args={"command": "python -c 'import sys; print(sys.version)'"},
+    )
+
+    assert "本条命令启动的可执行文件" in outcome.text
+    assert "python" in outcome.text
+    # 直连执行时那个路径就是**真启动的进程**；结果里必须点明"不是项目虚拟环境"
+    assert "不是" in outcome.text
+
+    # 本机没有的可执行文件：如实说"PATH 上找不到"，而不是编一个路径
+    missing = run_command(
+        workspace,
+        _admin(),
+        conversation_id=None,
+        args={"command": "definitely-not-a-real-binary-xyz --version"},
+    )
+    assert "本机 PATH 上找不到" in missing.text
+
+
+def test_the_result_does_not_claim_the_host_path_inside_isolation(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """隔离里跑时**不许**把本机解析到的路径说成"隔离里的解释器"（那是新的外推）。"""
+    _allow_all(workspace)
+    _available(monkeypatch)
+    monkeypatch.setattr(
+        isolation_service,
+        "run_isolated",
+        lambda argv, **kwargs: isolation_service.ExecutionResult(
+            exit_code=0, stdout="", stderr="", truncated=False, backend="bwrap"
+        ),
+    )
+
+    outcome = run_command(
+        workspace, _admin(), conversation_id=None, args={"command": "python -c pass"}
+    )
+
+    assert "隔离" in outcome.text
+    assert "不是一回事" in outcome.text or "由那个后端自己的 PATH 决定" in outcome.text
+
+
 def test_network_is_off_unless_asked(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     _allow_all(workspace)
     _available(monkeypatch)

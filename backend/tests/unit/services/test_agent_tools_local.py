@@ -715,3 +715,99 @@ def test_ordinary_text_files_are_not_mistaken_for_binary(tmp_path: Path) -> None
         path.write_text("普通文本\n", encoding="utf-8")
         assert agent_files._looks_binary(path) is False, name
         assert agent_files.looks_binary_name(name) is False, name
+
+
+# --------------------------------------------------------- list_skills 分页（§12.341 ⑤）
+
+
+def _skill_record(
+    name: str,
+    *,
+    usable: bool = True,
+    discarded: bool = False,
+    flagged: str = "",
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        name=name,
+        description=f"{name} 的说明",
+        used_by_prompt=usable,
+        discarded=discarded,
+        flagged=flagged,
+    )
+
+
+def _skills_services(records: list[SimpleNamespace]) -> SimpleNamespace:
+    """只需要 `services.skills.list()` 这一件事。"""
+    return SimpleNamespace(skills=SimpleNamespace(list=lambda: records))
+
+
+def test_list_skills_pages_instead_of_dumping_everything() -> None:
+    """一次只给一页（默认 40 条），并说清"共几个、下一页从哪儿看"。
+
+    现场（`conv_a5f4628f405f`）：近两百个技能全量输出是 **12,024 字**（结果被截断），
+    而那一问只是要"有没有下载论文的技能"。
+    """
+    records = [_skill_record(f"skill-{index:03d}") for index in range(95)]
+    text = agent_tools._render_skills(_skills_services(records))
+
+    assert text.startswith("技能 1–40 / 共 95 个：")
+    assert len([line for line in text.splitlines() if line.startswith("- ")]) == 40
+    assert "offset=40" in text, "要告诉它下一页从哪儿开始"
+    # 比全量短得多（这一条才是分页的意义）
+    full = "\n".join(f"- {item.name}（可用）：{item.description}" for item in records)
+    assert len(text) < len(full)
+
+
+def test_list_skills_offset_walks_to_the_last_page() -> None:
+    """`offset` 翻页；最后一页不再提"后面还有"。"""
+    records = [_skill_record(f"skill-{index:03d}") for index in range(95)]
+    text = agent_tools._render_skills(_skills_services(records), {"offset": 80})
+
+    assert text.startswith("技能 81–95 / 共 95 个：")
+    assert len([line for line in text.splitlines() if line.startswith("- ")]) == 15
+    assert "后面还有" not in text
+
+
+def test_list_skills_clamps_the_page_size() -> None:
+    """调用方要再多也不给：分页上限是硬的（否则那个 12,024 字又回来了）。"""
+    records = [_skill_record(f"skill-{index:03d}") for index in range(200)]
+    text = agent_tools._render_skills(_skills_services(records), {"limit": 1000})
+
+    assert len([line for line in text.splitlines() if line.startswith("- ")]) == 60
+
+
+def test_list_skills_survives_garbage_paging_arguments() -> None:
+    """翻页参数是模型给的：给字符串 / 布尔 / 越界值都不许把这次调用弄失败。"""
+    records = [_skill_record(f"skill-{index:03d}") for index in range(95)]
+
+    weird = agent_tools._render_skills(_skills_services(records), {"offset": "x", "limit": True})
+    assert weird.startswith("技能 1–40 / 共 95 个："), "解析不了就回到第一页"
+
+    beyond = agent_tools._render_skills(_skills_services(records), {"offset": 500})
+    assert "越界" in beyond and "95" in beyond
+
+
+def test_list_skills_keeps_the_two_unavailable_reasons_apart() -> None:
+    """分页没有把 v0.43 那条口径弄丢：**被丢弃**与**被同名遮蔽**要分开说。"""
+    records = [
+        _skill_record("ok"),
+        _skill_record("bad", usable=False, discarded=True, flagged="缺 name"),
+        _skill_record("shadowed", usable=False),
+    ]
+    text = agent_tools._render_skills(_skills_services(records))
+
+    assert "已丢弃（缺 name）" in text
+    assert "被同名技能遮蔽" in text
+
+
+def test_list_skills_schema_advertises_the_paging_arguments() -> None:
+    """工具表里那一份 schema 也得说清怎么翻页（模型照它填参数）。"""
+    schema = next(item for item in agent_tools._SKILL_TOOLS if item["name"] == "list_skills")
+    properties = schema["inputSchema"]["properties"]
+
+    assert set(properties) == {"offset", "limit"}
+    assert str(agent_tools.SKILLS_PAGE_SIZE) in schema["description"]
+
+
+def test_list_skills_says_so_when_nothing_is_installed() -> None:
+    assert agent_tools._render_skills(_skills_services([])) == "这台机器上还没有安装技能。"
