@@ -39,8 +39,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
-import httpx
-
+from app.core.lazy_httpx import httpx  # 惰性代理：不让 click/pygments/rich 进导入闭包（P4-3）
 from app.storage.base import StoreBundle, WebhookRecord
 
 __all__ = [

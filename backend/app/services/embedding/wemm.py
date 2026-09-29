@@ -37,9 +37,8 @@ import math
 import time
 from collections.abc import Callable, Sequence
 
-import httpx
-
 from app.core.http import shared_client
+from app.core.lazy_httpx import httpx  # 惰性代理：不让 click/pygments/rich 进导入闭包（P4-3）
 from app.services.embedding.base import EmbeddingError, EmbeddingProvider, fit_dimension
 
 __all__ = ["WeMMEmbedder"]

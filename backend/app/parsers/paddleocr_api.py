@@ -27,8 +27,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 
-import httpx
-
+from app.core.lazy_httpx import httpx  # 惰性代理：不让 click/pygments/rich 进导入闭包（P4-3）
 from app.core.page_markers import page_marker
 from app.parsers.base import ParseError, ParseResult, ParserProvider, ProbeKind, ProbeResult
 from app.parsers.probe import IMAGE_EXTENSIONS, PDF_EXTENSIONS, suffix_of

@@ -26,8 +26,7 @@ import time
 import zipfile
 from dataclasses import dataclass, field
 
-import httpx
-
+from app.core.lazy_httpx import httpx  # 惰性代理：不让 click/pygments/rich 进导入闭包（P4-3）
 from app.core.page_markers import insert_page_markers, locate_block_offsets
 from app.parsers.base import ParseError, ParseResult, ParserProvider, ProbeKind, ProbeResult
 from app.parsers.probe import IMAGE_EXTENSIONS, OFFICE_EXTENSIONS, PDF_EXTENSIONS, suffix_of

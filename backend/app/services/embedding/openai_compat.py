@@ -8,9 +8,8 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import httpx
-
 from app.core.http import shared_client
+from app.core.lazy_httpx import httpx  # 惰性代理：不让 click/pygments/rich 进导入闭包（P4-3）
 from app.services.embedding.base import EmbeddingError, EmbeddingProvider, l2_normalize
 
 DEFAULT_TIMEOUT_SECONDS = 60.0

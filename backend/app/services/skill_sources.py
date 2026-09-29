@@ -45,10 +45,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
-import httpx
-
 from app.core.exceptions import InvalidRequestError, NotFoundError, UpstreamError
 from app.core.http import shared_client
+from app.core.lazy_httpx import httpx  # 惰性代理：不让 click/pygments/rich 进导入闭包（P4-3）
 from app.services.memory_files import parse_frontmatter
 from app.services.skill_blurb import Translator
 from app.services.skills import SKILL_FILE

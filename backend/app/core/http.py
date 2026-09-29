@@ -19,17 +19,22 @@ from __future__ import annotations
 
 import threading
 
-import httpx
-
-#: 并发上限：一轮对话最多十几次出站，32 条连接足够几十个并发请求共用；
-#: keep-alive 留 16 条，免得每次把刚建好的连接挤出去——那等于又回到"每次握手"。
-_LIMITS = httpx.Limits(max_connections=32, max_keepalive_connections=16)
+from app.core.lazy_httpx import httpx  # 惰性代理：不让 click/pygments/rich 进导入闭包（P4-3）
 
 #: 兜底超时。真正生效的是各调用点显式传的那个，见模块注释。
 _FALLBACK_TIMEOUT = 120.0
 
 _client: httpx.Client | None = None
 _lock = threading.Lock()
+
+
+def _limits():  # type: ignore[no-untyped-def]
+    """并发上限（**惰性建**：写成模块级原件的话，导入期就会把 httpx 拉进来 ✗）。
+
+    一轮对话最多十几次出站，32 条连接足够几十个并发请求共用；
+    keep-alive 留 16 条，免得每次把刚建好的连接挤出去——那等于又回到"每次握手"。
+    """
+    return httpx.Limits(max_connections=32, max_keepalive_connections=16)
 
 
 def shared_client() -> httpx.Client:
@@ -43,7 +48,7 @@ def shared_client() -> httpx.Client:
     if _client is None:
         with _lock:
             if _client is None:
-                _client = httpx.Client(timeout=_FALLBACK_TIMEOUT, limits=_LIMITS)
+                _client = httpx.Client(timeout=_FALLBACK_TIMEOUT, limits=_limits())
     return _client
 
 

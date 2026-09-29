@@ -23,14 +23,13 @@ from __future__ import annotations
 import logging
 import uuid
 
-import httpx
-
 from app.core.exceptions import (
     ConflictError,
     InvalidRequestError,
     NotFoundError,
     UpstreamError,
 )
+from app.core.lazy_httpx import httpx  # 惰性代理：不让 click/pygments/rich 进导入闭包（P4-3）
 from app.storage.base import ModelProviderRecord, RegisteredModelRecord, StoreBundle
 
 __all__ = ["SLOTS", "ModelRegistryService"]

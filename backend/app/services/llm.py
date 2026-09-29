@@ -22,10 +22,9 @@ from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
 
-import httpx
-
 from app.core.exceptions import UpstreamError
 from app.core.http import shared_client
+from app.core.lazy_httpx import httpx  # 惰性代理：不让 click/pygments/rich 进导入闭包（P4-3）
 from app.core.text_hygiene import sanitize_prompt_text
 from app.services.thinking import DEFAULT_EFFORT, build_thinking_payload, echoes_reasoning
 
