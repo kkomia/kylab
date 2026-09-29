@@ -327,3 +327,57 @@ def test_the_default_cap_does_not_change_the_default_window() -> None:
     )
 
     assert DEFAULT_COMPRESS_MAX_TOKENS > DEFAULT_CONTEXT_WINDOW * DEFAULT_COMPRESS_AT // 100
+
+
+# ------------------------------------------- 第一级压缩的"保留几条"可配档（照搬清单第 4 条）
+
+
+def test_keep_count_reads_the_setting_and_falls_back_to_the_default() -> None:
+    """设置里那个"保留最近几条" → 一个可用的条数：**读不懂就回默认**。
+
+    照搬清单第 4 条：Kimi K2.6 是"只保留最近一轮"、K3 在 300K 触发；我们**不加第三套压缩**，
+    只把第一级这个"保留 N 条"做成可配档（研究型可设 1~3 轮，对齐它的 discard-all）。
+    """
+    from app.services.chat import PRUNE_KEEP_TOOL_RESULTS, prune_keep_from
+
+    # 没配 / 写了字 → 默认档（**一个坏值不许改默认行为**）
+    assert prune_keep_from(None) == PRUNE_KEEP_TOOL_RESULTS
+    assert prune_keep_from("") == PRUNE_KEEP_TOOL_RESULTS
+    assert prune_keep_from("随便写的") == PRUNE_KEEP_TOOL_RESULTS
+    # 配了就听它的（研究型那条 1~3 轮）
+    assert prune_keep_from("1") == 1
+    assert prune_keep_from(3) == 3
+    # 极端档：0 = 只留最近 0 条（等价于 discard-all 那种"全剪"）
+    assert prune_keep_from("-3") == 0
+    # 上限：再大就等于"不剪"，而那会让这条压缩静默失效（想关应当调窗口）
+    assert prune_keep_from("999") == 50
+
+
+def test_the_pruning_shell_honours_the_configured_keep() -> None:
+    """薄壳真的把它传下去了（不是读了一个数没用）。
+
+    直接调 `_PruningChat.complete`：它会在转发给内层之前剪一遍——**内层看到的就是**剪过的那份。
+    """
+    from app.services.chat import _PruningChat
+
+    class _Inner:
+        def __init__(self) -> None:
+            self.seen: list[ChatMessage] = []
+
+        def complete(self, messages):  # type: ignore[no-untyped-def]
+            self.seen = list(messages)
+            return "ok"
+
+    inner = _Inner()
+    messages = [
+        ChatMessage(role="tool", content="旧" * 300, tool_call_id=f"c{i}") for i in range(4)
+    ]
+
+    assert _PruningChat(inner, keep=1).complete(messages) == "ok"
+
+    assert [item.content == TOOL_RESULT_PLACEHOLDER for item in inner.seen] == [
+        True,
+        True,
+        True,
+        False,
+    ]

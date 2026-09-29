@@ -24,6 +24,7 @@ from app.services.memory import (
     MemoryService,
 )
 from app.services.prompt import (
+    _SEARCH_BLOCK,
     PRIORITY_BASE,
     PRIORITY_PERSONA,
     WRAP_UP_NOTE,
@@ -521,9 +522,9 @@ def test_the_default_prompt_carries_both_conduct_blocks() -> None:
     text = build_system_prompt(PromptContext(base="底"))
 
     assert "什么时候先问一句" in text
-    assert "检索什么时候算够" in text
+    assert "检索到什么时候算够" in text
     # 顺序：澄清在检索之前（先决定要不要问，再决定查多少）
-    assert text.index("什么时候先问一句") < text.index("检索什么时候算够")
+    assert text.index("什么时候先问一句") < text.index("检索到什么时候算够")
 
 
 def test_the_clarify_block_asks_only_when_both_conditions_hold() -> None:
@@ -542,28 +543,71 @@ def test_the_clarify_block_asks_only_when_both_conditions_hold() -> None:
     assert "不许再问" in text
 
 
-def test_the_search_block_says_when_to_stop() -> None:
-    """"够用就停"要给出**可判定的停点**，而不是"搜到满意为止"。
+def test_the_search_block_stops_on_the_report_and_the_budget_not_on_a_count() -> None:
+    """停止判据**照搬 Kimi**：够不够写一份完整报告 + 预算闸；**不许再留数字阈**。
 
-    三类停点各自对应一次实测浪费：重复同参（B-06 / Z-01）、零命中一直搜（B-06 9 次）、
-    以及没有"够了"的定义（Z-01 搜了 35 次）。
+    出处：`docs/调研/Kimi-Resources-能力与实现-照搬清单.md` 第 2 条（机制级）——
+    他们每个研究任务「执行**数十次**精准检索」，停点是「积累足够内容撰写全面报告」。
+    我们原先那三个数字（先 2~3 次 / 同一事实 ≥2 来源就停 / 零命中最多两轮）
+    与它**方向相反**，会把研究型任务提前掐断，所以这一条同时钉住"新的在、旧的不在"。
     """
     text = build_system_prompt(PromptContext(base="底"))
 
+    # 新的两条：产出判据 + 预算判据（预算提醒由 `converge_note` 送，见 tool_loop）
+    assert "够不够写出一份覆盖问题各面的完整报告" in text
+    assert "数十次精准检索是正常的" in text
+    assert "预算提醒" in text
+    # 旧的那三个数字**必须消失**（这是这次替换的全部意义）
+    assert "先做 2~3 次" not in text
+    assert "2 个相互独立" not in text
+    assert "最多再试两轮" not in text
+
+
+def test_the_search_block_keeps_the_two_machine_checkable_rules() -> None:
+    """两条**可机器核对**的纪律保留（官方轨迹也支持）：同参不重复发、已有正文不抓页。"""
+    text = build_system_prompt(PromptContext(base="底"))
+
     assert "同一个查询不要重复发" in text
-    assert "2 个相互独立" in text, "同一事实两个独立来源就该停"
-    assert "零命中" in text and "没有找到" in text, "零命中要换路子，换不动就如实说没找到"
-    assert "最多再试两轮" in text
+    assert "不必再抓页" in text
+    # 零命中要换路子、换不动就如实说——但**没有次数上限**了
+    assert "零命中" in text and "没有找到" in text
+
+
+def test_the_search_block_snapshot() -> None:
+    """提示词快照：这一段的措辞一改就红，改的人必须**显式**来这一行更新。
+
+    为什么值得一条快照：它是**照搬来的口径**（不是我们自己的判断），
+    改它等于改产品行为；而"某个字被顺手改掉"在 diff 里最难被看见。
+    """
+    assert _SEARCH_BLOCK == (
+        "【检索到什么时候算够：够写一份完整报告 + 预算闸】\n"
+        "（这一轮手上有检索 / 联网工具时才适用。）\n"
+        "- **产出判据**：停下与否看手里攒到的东西**够不够写出一份覆盖问题各面的完整报告**。"
+        "研究 / 调研这类活**执行数十次精准检索是正常的**，不要因为「已经搜了几次」就提前收尾；\n"
+        "- **预算判据**：步数或时间快到上限时，系统会给你一条【预算提醒】"
+        "（如实报还剩几步 / 几秒），"
+        "**那才是该收尾的信号**；不要自己另定一个搜索次数上限；\n"
+        "- 两条一直适用的纪律（可机器核对）：\n"
+        "  1. **同一个查询不要重复发**——参数一模一样的那一次不会带来新信息；\n"
+        "  2. **返回里已经有正文的，不必再抓页**；只有需要原文细节（具体数字、引文、表格）时，"
+        "才去抓那一两个最有希望的候选页；\n"
+        "- 一次检索**零命中**就换关键词或换路子（换措辞、换语言、换更宽或更窄的说法）——"
+        "没有次数上限，停不停由上面两条判据决定；确实找不到时，**如实说「没有找到」**"
+        "并给出你能确定的那部分。"
+    )
 
 
 def test_the_budget_notes_are_not_part_of_the_system_prompt() -> None:
     """预算提示那两段**不进** system prompt：它们只在预算那一刻插进对话（见 `tool_loop`）。
 
     常驻的话模型每一轮都读到"预算用尽"，正常任务会被它带着提前收口。
+    （检索那一段会**指着它说**"那才是该收尾的信号"，所以这里断言的是那两条提示
+    **本身的句子**不在系统提示里，而不是"预算提醒"这四个字不能出现。）
     """
     text = build_system_prompt(PromptContext(base="底"))
 
-    assert "【预算提醒】" not in text
+    assert "请开始收尾" not in text
+    assert "工具调用还剩" not in text
     assert "【收尾要求" not in text
 
 

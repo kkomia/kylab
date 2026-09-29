@@ -102,6 +102,11 @@ __all__ = [
     "DEFAULT_MAX_STEPS",
     "MARKER_ONLY_ANSWER",
     "MARKER_STEP_LABEL",
+    "STOP_ANSWERED",
+    "STOP_CONTEXT",
+    "STOP_STEPS",
+    "STOP_TIME",
+    "StopReason",
     "ToolLoop",
     "text_marker_step",
     "tool_label",
@@ -141,8 +146,45 @@ DEFAULT_MAX_SECONDS = 300.0
 #: 悄悄截断会让它以为"这就是全部"，而截断常常正好丢在它要的那一段之后。
 MAX_RESULT_CHARS = 12000
 
-#: 预算用到几成时给模型发那条「该收尾了」的提示（§12.338 方案 3）。
+#: 这一轮的**结局**（照搬清单第 3 条：止损结局要显式）。
 #:
+#: 为什么要它：Kimi 对"超出上下文长度"的任务**直接计为失败**并如实说
+#: （`docs/调研/Kimi-Resources-能力与实现-照搬清单.md` 第 3 条，机制级），
+#: 而我们从前只说一句"按现有信息作答"——"没查完"与"查完了"于是分不出来。
+#: `subagent.py` 早有同形状的 `stopped_reason`（answered/budget/timeout/error），
+#: 这里把它推广到主循环：**结局是枚举**，一句话只是它的渲染。
+STOP_ANSWERED = "answered"
+"""模型自己判断做完了（正常结局）。"""
+STOP_STEPS = "steps"
+"""工具步数用尽（阈值沿用 `DEFAULT_MAX_STEPS`，不新造）。"""
+STOP_TIME = "time"
+"""墙钟用尽（阈值沿用 `DEFAULT_MAX_SECONDS`）。"""
+STOP_CONTEXT = "context"
+"""上下文用尽——**留位**：Kimi 那边是"超限直接失败"，而我们有两级压缩，
+不以此收尾，所以这一档目前没有产生者（写出来是为了枚举本身完整）。"""
+
+
+@dataclass(frozen=True, slots=True)
+class StopReason:
+    """这一轮为什么停下——枚举取值 + 两句给人看的话。
+
+    ``kind`` 是**机器读的**（落库 / 前端文案按它分档），``label`` / ``detail``
+    是**人读的**（过程面板那一步），``note`` 是**回给模型**的那一句
+    （最后一步还想调工具时用它拒绝，见 `_execute` 的 ``stop``）。
+    """
+
+    kind: str
+    label: str
+    detail: str
+    note: str = ""
+
+    @property
+    def incomplete(self) -> bool:
+        """这一轮**没按设计走完**吗（界面据此摆重试入口）。"""
+        return self.kind != STOP_ANSWERED
+
+
+#: 预算用到几成时给模型发那条「该收尾了」的提示（§12.338 方案 3）。
 #: 为什么是 0.8：实测里两次把预算打满的回合（G-03 的 80 步 / K-03 的 60 步）都是
 #: **打满之后**才收尾，最后那几步全花在"再试一种装法"上。留两成余量，模型才有机会
 #: 把已经拿到的东西整理成回答（而不是在最后一步仓促作答）。
@@ -417,6 +459,20 @@ class ToolLoop:
         #: 这一轮还剩几次"流中断重试"（见 ``MAX_STREAM_RETRIES``）。
         #: 在 ``run`` 里每一轮重新给满，不是构造时定死——对象可能被复用几轮。
         self._stream_retries_left = MAX_STREAM_RETRIES
+        #: 这一轮的**结局**（`StopReason`）；`None` = 这一轮还没跑（或正在跑）。
+        #: 给调用方读的：落库/前端要按 `kind` 分"未查完"与"已作答"，
+        #: 而事件流里只有渲染出来的 `label`/`detail`（见 `last_stop`）。
+        self._last_stop: StopReason | None = None
+
+    @property
+    def last_stop(self) -> StopReason | None:
+        """这一轮怎么结束的（`run` 跑完之后读；跑之前是 `None`）。
+
+        为什么要有这个读数：事件流里那一步只有**给人看的两句话**，
+        而"未查完"这件事要能机器分档（落库、前端文案、统计各要各的）。
+        阈值一律沿用现成的两道闸，不在这里另定（照搬清单第 3 条）。
+        """
+        return self._last_stop
 
     @property
     def tools(self) -> list[ToolSpec]:
@@ -455,13 +511,17 @@ class ToolLoop:
         self._stream_retries_left = MAX_STREAM_RETRIES
         # 「预算快到八成，该收尾了」那条提示一轮只送一次（见 `_near_budget`）
         warned = False
+        # 这一轮的结局：先按"还没结束"放着，三条出口各自写它（见 `last_stop`）
+        self._last_stop = None
 
         for step in range(self._max_steps):
             if self._expired(started_at):
                 # 时间到：不再开新的一轮 LLM 调用（它自己也要时间），
                 # 直接收尾作答。**与步数用尽走同一条降级路径**——用户看到的东西一样，
-                # 只是原因不同（见下面那条 StepEvent 的措辞）。
-                yield self._timeout_step(started_at)
+                # 只是原因不同（结局枚举见 `StopReason`）。
+                reason = self._time_stop(started_at)
+                self._last_stop = reason
+                yield self._stop_step(reason)
                 # 收尾前把「必须交代什么」写给它：这一轮的预算确实用尽了（§12.338 方案 3）
                 self._request_wrap_up(messages)
                 yield from self._answer(messages)
@@ -502,6 +562,11 @@ class ToolLoop:
                 # **这一轮以正文收尾**：``plan`` 档下就算"计划已经给了"
                 # （见 `plan_gate` 模块头"什么时候算已给出计划"）。
                 # 这是它**自己**判断做完了——不套收尾格式（见 `_request_wrap_up` 的说明）
+                self._last_stop = StopReason(
+                    kind=STOP_ANSWERED,
+                    label="已作答",
+                    detail="模型自己判断做完了",
+                )
                 self._note_plan(outcome.text)
                 return
             yield from self._perform(
@@ -518,12 +583,13 @@ class ToolLoop:
         # `degraded=True` 就是这件事：这一轮**没按设计走完**（它还想继续查，
         # 但没机会了）。界面据此给出重试入口——"这次答得浅"与"链路退化了，
         # 你可以再要一次"对用户是两件事，不说清楚他只会觉得模型不行。
-        yield StepEvent(
-            phase="tool",
-            label="工具步数已达上限",
-            detail=f"本轮最多 {self._max_steps} 步，按现有信息作答",
-            degraded=True,
-        )
+        #
+        # 从照搬清单第 3 条起，这一步的**结局是枚举**（`StopReason`）：label 里那句
+        # 「未查完」就是要让"没查完"与"查完了"在界面上分得开（Kimi 对超限任务
+        # 直接计为失败并如实说；我们从前只说"按现有信息作答"，两者读起来一样）。
+        reason = self._steps_stop()
+        self._last_stop = reason
+        yield self._stop_step(reason)
         # 收尾前把「必须交代什么」写给它（§12.338 方案 3 的第二半）：实测两次把预算
         # 打满的回合（G-03 / K-03）都以"我再跑一次补完"收尾，而那一轮已经结束了
         self._request_wrap_up(messages)
@@ -699,19 +765,49 @@ class ToolLoop:
         """这一轮是否已经用满墙钟（见 `DEFAULT_MAX_SECONDS`）。"""
         return self._clock() - started_at >= self._max_seconds
 
-    def _timeout_step(self, started_at: float) -> StepEvent:
-        """时间到的那一步。措辞与步数用尽**分开**：用户看到"慢"和"多"要能区分——
+    # ------------------------------------------------------------ 结局（`StopReason`）
+
+    def _steps_stop(self) -> StopReason:
+        """步数用尽的结局。"""
+        return StopReason(
+            kind=STOP_STEPS,
+            label="未查完（工具步数用尽）",
+            detail=(
+                f"本轮最多 {self._max_steps} 步，到这里停下——按现有信息作答，"
+                "并说清还差什么"
+            ),
+            note="本轮工具步数已用完",
+        )
+
+    def _time_stop(self, started_at: float) -> StopReason:
+        """时间用尽的结局。措辞与步数用尽**分开**：用户看到"慢"和"多"要能区分——
         前者是这次的网络/服务慢，后者是这题要查的东西太多，下一步该做的事不一样。"""
         used = round(self._clock() - started_at)
+        return StopReason(
+            kind=STOP_TIME,
+            label="未查完（本轮时间已用尽）",
+            detail=(
+                f"本轮最多 {int(self._max_seconds)} 秒，已用 {used} 秒，到这里停下——"
+                "按现有信息作答，并说清还差什么"
+            ),
+            note="本轮时间已用尽",
+        )
+
+    def _stop_step(self, reason: StopReason) -> StepEvent:
+        """把结局渲染成过程面板那一步。
+
+        **`degraded=True` 跟着 `incomplete` 走**：这一轮没按设计走完才摆重试入口，
+        而"已作答"那一档没有这一步（它不发事件）。
+        """
         return StepEvent(
             phase="tool",
-            label="本轮时间已用尽",
-            detail=f"本轮最多 {int(self._max_seconds)} 秒，已用 {used} 秒，按现有信息作答",
-            degraded=True,
+            label=reason.label,
+            detail=reason.detail,
+            degraded=reason.incomplete,
         )
 
     def _execute(
-        self, call: ToolCall, *, stop: str | None, approval: str | None = None
+        self, call: ToolCall, *, stop: StopReason | None, approval: str | None = None
     ) -> ToolOutcome:
         """执行一次调用。**所有失败都变成回给模型的文本**，不往上抛。
 
@@ -734,7 +830,7 @@ class ToolLoop:
         if stop is not None:
             # 最后一步还调工具（或时间已经用完）：不执行了，直接告诉它没机会了，
             # 省下一次真实调用（它通常只是想再确认一遍）
-            return ToolOutcome(content=f"（{stop}，请直接给出回答）")
+            return ToolOutcome(content=f"（{stop.note}，请直接给出回答）")
         try:
             args = _parse_arguments(call.arguments)
         except ValueError as exc:
@@ -817,7 +913,7 @@ class ToolLoop:
         self,
         calls: Sequence[ToolCall],
         *,
-        stop: str | None,
+        stop: StopReason | None,
         approvals: Sequence[str | None] | None = None,
     ) -> list[ToolOutcome]:
         """执行**同一批**调用：能并发的并发，返回顺序与传入一致。
@@ -982,16 +1078,17 @@ class ToolLoop:
             reasoning="".join(reasoning_parts),
         )
 
-    def _stop_reason(self, step: int, started_at: float) -> str | None:
+    def _stop_reason(self, step: int, started_at: float) -> StopReason | None:
         """这一步的调用该不该真的执行（见 ``_execute`` 的 ``stop``）。
 
         两道闸共用"这一批不执行"这条路，但**理由要分开告诉模型**：
         它下一轮得知道是"步数没了"还是"时间没了"（两者的应对不一样）。
+        回给模型的那句话在 `StopReason.note` 里，这里只负责选哪一档。
         """
         if step == self._max_steps - 1:
-            return "本轮工具步数已用完"
+            return self._steps_stop()
         if self._expired(started_at):
-            return "本轮时间已用尽"
+            return self._time_stop(started_at)
         return None
 
     def _perform(
@@ -1001,7 +1098,7 @@ class ToolLoop:
         text: str,
         reasoning: str,
         calls: Sequence[ToolCall],
-        stop: str | None,
+        stop: StopReason | None,
     ) -> Iterator[object]:
         """把一批调用跑掉：助手消息入队 → 执行 → 结果按序回灌。
 

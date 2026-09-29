@@ -25,7 +25,15 @@ from app.services.agent_tools import _scope_search
 from app.services.approvals import ApprovalRegistry
 from app.services.chat import SourceRef
 from app.services.llm import ChatError, LLMDelta, LLMReply, ToolCall, ToolCallDelta, ToolSpec
-from app.services.tool_loop import ToolLoop, ToolOutcome, _parse_arguments, _truncate
+from app.services.tool_loop import (
+    STOP_ANSWERED,
+    STOP_STEPS,
+    STOP_TIME,
+    ToolLoop,
+    ToolOutcome,
+    _parse_arguments,
+    _truncate,
+)
 
 SEARCH = ToolSpec(name="search", description="查", parameters={"type": "object"})
 
@@ -314,6 +322,9 @@ def test_step_budget_says_so_instead_of_pretending() -> None:
     同时它是**这一轮唯一的降级情形**：`degraded=True` 让界面给出重试入口——
     "这次答得浅"与"链路退化了，你可以再要一次"对用户是两件事，
     不说清楚他只会觉得模型不行。
+
+    照搬清单第 3 条起，这一步的**结局是显式枚举**：label 里带「未查完」，
+    `loop.last_stop.kind` 给机器分档（Kimi 对超限任务直接计为失败并如实说）。
     """
     always = LLMReply(tool_calls=(ToolCall(id="c", name="search", arguments="{}"),))
     # 两步都用掉 + 最后那次"按现有信息作答"（终端那一步不带工具，见 run）
@@ -321,9 +332,28 @@ def test_step_budget_says_so_instead_of_pretending() -> None:
 
     events = list(loop.run(messages=[]))
 
-    limit = next(s for s in _steps(events) if s.label == "工具步数已达上限")
+    limit = next(s for s in _steps(events) if "未查完" in s.label)
     assert limit.degraded is True
     assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
+    assert loop.last_stop is not None
+    assert loop.last_stop.kind == STOP_STEPS
+    assert loop.last_stop.incomplete is True
+
+
+def test_answering_by_itself_is_the_answered_outcome_not_an_incomplete_one() -> None:
+    """它自己作答收口 → 结局是 `answered`（**不是**"未查完"），也不发那一步。
+
+    这一条与上一条成对：枚举的意义就是两档分得开——分不开的话，
+    "预算用尽"会被读成"它查完了"（Kimi 那篇的教训），或者反过来把正常一轮误报成降级。
+    """
+    loop, _ = _loop([LLMReply(text="答完了")], runner=lambda n, a: ToolOutcome("x"))
+
+    events = list(loop.run(messages=[]))
+
+    assert loop.last_stop is not None and loop.last_stop.kind == STOP_ANSWERED
+    assert loop.last_stop.incomplete is False
+    assert not any("未查完" in s.label for s in _steps(events))
+    assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答完了"]
 
 
 def test_a_normal_run_is_not_degraded() -> None:
@@ -1173,7 +1203,7 @@ def test_wall_clock_expiry_says_so_and_answers_with_what_it_has() -> None:
 
     events = list(loop.run(messages=[]))
 
-    timeout = next(s for s in _steps(events) if s.label == "本轮时间已用尽")
+    timeout = next(s for s in _steps(events) if "未查完" in s.label)
     assert timeout.degraded is True
     assert "最多 10 秒" in (timeout.detail or "")
     # 慢工具只跑了一次：时间到之后**没有再开新的一轮工具调用**
@@ -1181,8 +1211,10 @@ def test_wall_clock_expiry_says_so_and_answers_with_what_it_has() -> None:
     assert ran == ["search"]
     assert client.answer_tools == []
     assert [e.answer for e in events if isinstance(e, DoneEvent)] == ["答案"]
+    # 结局是枚举（照搬清单第 3 条）：这一档是 `time`，不是 `steps`
+    assert loop.last_stop is not None and loop.last_stop.kind == STOP_TIME
     # 与"步数用尽"是**两条不同的提示**：用户看到"慢"和看到"多"，下一步该做的事不一样
-    assert not any(s.label == "工具步数已达上限" for s in _steps(events))
+    assert not any("步数用尽" in s.label for s in _steps(events))
 
 
 def test_expired_clock_blocks_the_batch_before_it_runs() -> None:
@@ -1216,7 +1248,7 @@ def test_expired_clock_blocks_the_batch_before_it_runs() -> None:
     tool_messages = [m for m in messages if getattr(m, "role", "") == "tool"]
     assert len(tool_messages) == 1
     assert "时间已用尽" in (tool_messages[0].content or "")
-    timeout = next(s for s in _steps(events) if s.label == "本轮时间已用尽")
+    timeout = next(s for s in _steps(events) if "未查完" in s.label)
     assert timeout.degraded is True
 
 
@@ -2049,7 +2081,8 @@ def test_wrap_up_is_also_demanded_when_the_clock_runs_out() -> None:
 
     events = list(loop.run(messages=[]))
 
-    assert any(s.label == "本轮时间已用尽" and s.degraded for s in _steps(events))
+    assert any("未查完" in s.label and s.degraded for s in _steps(events))
+    assert loop.last_stop is not None and loop.last_stop.kind == STOP_TIME
     note = next(
         m.content
         for m in client.calls[-1]
