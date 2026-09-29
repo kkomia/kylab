@@ -74,6 +74,29 @@ class _ToolCallingModel:
         yield LLMDelta(text=self.reply)
 
 
+class _ThinkingOnlyModel:
+    """**只流思考、不给正文**的假模型（2026-09-29 烟测现场那条真形态 ✓）。
+
+    真机证据：`[DIAG] 事件序列 [ThinkingEvent ×33, DoneEvent]；answer=''；steps=0` ✗ ——
+    推理模型把话都说在 reasoning 通道里，而旧代码把它判成 `answered` ✓ 于是回了
+    `answer:""` + `steps:[]` + HTTP 200 ✓ = **空成功** ✗✗。
+
+    假端喂的是**客户端那一层的形状**（`LLMDelta(reasoning=…)` ✓，与
+    `RemoteModelClient` 解析出来的东西同形 ✓）——那个 `ThinkingEvent` 是**循环自己发的**
+    （照"假两端"的老实做法：喂进来的东西必须与真客户端同形 ✓，否则测的是不存在的分支 ✗）。
+    """
+
+    def complete(self, messages):  # type: ignore[no-untyped-def]
+        return ""
+
+    def stream(self, messages):  # type: ignore[no-untyped-def]
+        return iter(())
+
+    def stream_events(self, messages, tools=None):  # type: ignore[no-untyped-def]
+        yield LLMDelta(reasoning="先看看")
+        yield LLMDelta(reasoning="再想想")
+
+
 class _BrokenModel:
     def complete(self, messages):  # type: ignore[no-untyped-def]
         raise RemoteUnavailableError("模型代理连不上：boom")
@@ -126,8 +149,11 @@ def test_turn_runs_a_round_with_a_fake_model(tmp_path, monkeypatch) -> None:  # 
     assert response.status_code == 200
     payload = response.json()
     assert payload["answer"] == "你好，这是边车回答"
-    # 消息真的送到了模型那一端 ✓（内容与角色 ✓）
-    assert model.seen and model.seen[0][0].content == "在吗"
+    # 消息真的送到了模型那一端 ✓（内容与角色 ✓）。
+    # `[-1]` 而不是 `[0]`：现在前面还有一条 `system`（`SIDECAR_SYSTEM_PROMPT` ✓ ——
+    # 那条是"直接动手、别只宣布意图" ✓），用户那条**在最后** ✓。
+    assert model.seen and model.seen[0][-1].role == "user"
+    assert model.seen[0][-1].content == "在吗"
     # **工具表也真的发过去了** ✓（不是"只走模型"✗）：至少带上本机能服务的那些 ✓
     assert model.tools_seen and {spec.name for spec in model.tools_seen[0]} >= {
         "read_file",
@@ -139,6 +165,29 @@ def test_turn_runs_a_round_with_a_fake_model(tmp_path, monkeypatch) -> None:  # 
     # **如实说明**：本机没有技能目录 ✓
     assert any("技能目录" in note for note in payload["notes"])
     assert payload["sse"] is False
+
+
+def test_a_thinking_only_turn_is_a_reported_failure_not_an_empty_success(  # type: ignore[no-untyped-def]
+    tmp_path, monkeypatch
+) -> None:
+    """**空答案绝不算作答** ✗✗（2026-09-29 烟测现场那条真形态）。
+
+    真机证据：`[DIAG] 事件序列 [ThinkingEvent ×33, DoneEvent]；answer=''；steps=0` ✓ ——
+    推理模型把话都说在**思考通道**里、正文一个字没有 ✓，而旧代码把它判成
+    `answered`（"模型自己判断做完了"）✓ → HTTP 200 + `answer:""` + `steps:[]` ✗
+    = **调用方以为成功、用户拿到空白** ✗✗。
+
+    这条同时补上假端的盲区：**假模型必须按真实事件顺序吐 `ThinkingEvent`** ✓
+    （真链路第一条事件就是它 ✓；不覆盖就永远照不到这条分支 ✓ —— 上一版正是这样漏掉了
+    一个 `NameError` ✗）。
+    """
+    client = _client(tmp_path, monkeypatch, _ThinkingOnlyModel())
+
+    payload = client.post("/turn", json={"message": "跑一条命令"}).json()
+
+    assert payload["answer"].strip(), "不许回空答案（那是最危险的形态）"
+    assert "思考" in payload["answer"] or "没有返回" in payload["answer"]
+    assert payload["error"], "要有一个可判定的失败标记（调用方据此区分成功与空）"
 
 
 def test_turn_really_runs_a_tool_in_the_local_workspace(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -186,9 +235,8 @@ def test_run_command_is_refused_without_isolation_instead_of_pretending(
 
     两种机器、两条诚实路径，都是 `blocked` ✓：
 
-    - **这台机器**（没有 Docker/bwrap ✓）：`require_isolation` 默认 `"true"` ✓ → 隔离那一道闸拒绝 ✓；
-    - **装了 Docker 的机器**：走到"问一句"那一档 ✓，而边车这一侧还没有确认入口 ✗ → 等到超时按
-      "没批准"处理 ✓。
+    - **这台机器**（没有 Docker/bwrap ✓）：`require_isolation` 默认 `"true"` ✓ → 隔离闸拒绝 ✓；
+    - **装了 Docker 的机器**：走到"问一句"那一档 ✓，而边车还没有确认入口 ✗ → 超时按"没批准"✓。
 
     这条同时钉住"边车没有偷偷把严格档关掉"✓ —— 断言里说明了理由来自哪一道闸 ✓。
     """

@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -160,8 +162,100 @@ def test_remote_model_stream_reassembles_split_sse_chunks() -> None:
     assert deltas[1].reasoning == "想"
 
 
+def test_remote_model_stream_reads_the_proxy_flat_tool_call_shape() -> None:
+    """代理发的是**扁平**形状（`{index,id,name,arguments}`），名字与参数不能丢 ✓。
+
+    这是 P3 收口的最后一环，也是"**只有真实帧才走得到**"那条教训的第二次落实：
+    - 代理侧 `model_proxy._sse` 发的是**扁平**形状 ✓（它自己拼的，不是上游原样透传）；
+    - 而 `llm._call_deltas` 认的是 **OpenAI 嵌套**形状 ``{index,id,function:{name,arguments}}`` ✓；
+    - 差一层 `function` → name/arguments 全取成空串 ✗。
+
+    现场数字（`.shots/sidecar-path-probe.json`，真实一轮、8 件工具）：
+    修之前 **13 个碎片、名字与参数全是空** ✗；修之后 **第一个碎片 `name=read_file`、
+    `arguments={"path": "hello.txt"}`** ✓ —— 而"名字是空的"在循环那边的表现就是
+    "**模型手上有 8 件工具却只宣布意图**" ✓。
+
+    所以这条用例故意喂**扁平**形状：`_call_deltas` 单独用在这里会失败 ✗，
+    必须经 `_proxy_call_deltas` 归一 ✓。
+    """
+    # 形状与 `model_proxy._sse` 逐字一致：**扁平**的 index/id/name/arguments
+    arguments = json.dumps({"path": "hello.txt"}, ensure_ascii=False)
+    body = (
+        "data: "
+        + json.dumps(
+            {
+                "text": "",
+                "reasoning": "",
+                "tool_calls": [
+                    {"index": 0, "id": "call_9", "name": "read_file", "arguments": arguments}
+                ],
+            },
+            ensure_ascii=False,
+        )
+        + "\n\ndata: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    deltas = list(
+        _model(handler).stream_events(
+            [ChatMessage(role="user", content="读 hello.txt")],
+            [ToolSpec(name="read_file", description="读文件", parameters={})],
+        )
+    )
+
+    calls = [call for delta in deltas for call in delta.tool_calls]
+    assert calls, "扁平形状的工具调用碎片被丢了（这就是'模型只宣布意图'的根因）"
+    assert calls[0].name == "read_file", f"工具名丢了：{calls[0]!r}"
+    assert calls[0].arguments == '{"path": "hello.txt"}'
+    assert calls[0].id == "call_9"
+    assert calls[0].index == 0
+
+
 def test_remote_model_stream_raises_on_5xx() -> None:
     client = _model(lambda request: httpx.Response(503, text="down"))
 
     with pytest.raises(RemoteUnavailableError):
         list(client.stream([ChatMessage(role="user", content="q")]))
+
+
+def test_remote_model_stream_carries_tool_call_fragments() -> None:
+    """**带 `tool_calls` 的帧必须转出去** ✓（2026-09-29 查实的根因）。
+
+    为什么这条用例是必要的：代理那侧（`api/v1/model_proxy.py::_sse`）一直把
+    `tool_calls` 发出去 ✓，而 `remote_clients._stream` 当时只拼了 `text` / `reasoning` ✗
+    → 工具循环永远看不到调用 ✗ → 真模型上**任何工具都调不起来**，症状是"空回答" ✓。
+
+    这一条**只有真实帧的形状才走得到**（假传输里塞一段带 `tool_calls` 的 SSE）：
+    之前的用例只喂了 `text`/`reasoning` ✗，所以这个分支没被覆盖 ✗。
+    """
+    body = (
+        'data: {"tool_calls": [{"index": 0, "id": "call_1", "function": '
+        '{"name": "read_file", "arguments": "{\\"path\\": \\"a.txt\\"}"}}]}\n\n'
+        'data: {"text": "读到了"}\n\n'
+        'data: [DONE]\n\n'
+    ).encode()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=body, headers={"content-type": "text/event-stream"})
+
+    deltas = list(
+        _model(handler).stream_events(
+            [ChatMessage(role="user", content="读一下 a.txt")],
+            [ToolSpec(name="read_file", description="读文件", parameters={})],
+        )
+    )
+
+    assert deltas, "SSE 帧没解析出来"
+    # 第一块：只有工具调用碎片，没有正文
+    assert deltas[0].tool_calls, "工具调用碎片被丢了（这正是空回答的根因）"
+    call = deltas[0].tool_calls[0]
+    assert call.index == 0
+    assert call.id == "call_1"
+    assert call.name == "read_file"
+    assert "a.txt" in call.arguments
+    # 工具调用与正文可以同流共存：后面那块正文照旧要出来
+    assert [delta.text for delta in deltas if delta.text] == ["读到了"]
+    # 不带 tool_calls 的帧仍然是空元组（别为了这条把没调用的块也填上东西）
+    assert deltas[1].tool_calls == ()

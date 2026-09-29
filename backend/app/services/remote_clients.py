@@ -30,7 +30,7 @@ from collections.abc import Iterator, Sequence
 import httpx
 
 from app.services.chat import SourceRef
-from app.services.llm import ChatMessage, LLMDelta, ToolSpec
+from app.services.llm import ChatMessage, LLMDelta, ToolCallDelta, ToolSpec, _call_deltas
 
 __all__ = [
     "RemoteClientError",
@@ -252,9 +252,50 @@ class RemoteModelClient:
                     yield LLMDelta(
                         text=str(chunk.get("text") or ""),
                         reasoning=str(chunk.get("reasoning") or ""),
+                        # **工具调用碎片必须转出去**（2026-09-29 查实的根因）：代理那侧
+                        # `model_proxy._sse` 一直在发 `tool_calls` ✓，而这里只拼了 text/reasoning ✗
+                        # → 工具循环永远看不到调用 ✗ → 真模型上**任何工具都调不起来** ✗，
+                        # 而"模型只吐工具调用、没有正文"的表现就是**空回答** ✓。
+                        # 映射复用 `llm._call_deltas`：碎片形状（index/id/name/arguments）
+                        # 与逐块容错都只有那一处实现，别在这儿再写一份 ✓。
+                        # `_proxy_call_deltas` 只做一件事：把代理的**扁平**形状
+                        # 归一成嵌套形状 ✓（见它的说明）。
+                        tool_calls=_proxy_call_deltas(chunk.get("tool_calls")),
                     )
         except httpx.HTTPError as exc:
             raise RemoteUnavailableError(f"模型代理连不上：{type(exc).__name__}: {exc}") from exc
+
+
+def _proxy_call_deltas(raw_calls: object) -> tuple[ToolCallDelta, ...]:
+    """代理 SSE 的 `tool_calls` → **归一成 OpenAI 嵌套形状**，再交给 `llm._call_deltas`。
+
+    **这是 P3 收口的最后一环**（2026-09-29，实测数字）：代理那侧 `model_proxy._sse`
+    发的是**扁平**形状 ``{index, id, name, arguments}`` ✓，而上游与 `llm._call_deltas`
+    认的是 **OpenAI 嵌套**形状 ``{index, id, function: {name, arguments}}`` ✓ ——
+    差一层 `function` ✗，于是 `_call_deltas` 取到的 name/arguments 全是空串 ✗。
+
+    现场数字（`.shots/sidecar-path-probe.json`，真实一轮）：
+    **工具 8 件都传下去了 ✓、`tool_calls` 碎片回来了 13 个 ✓，但 13 个的名字与参数全是空** ✗
+    → 循环拼不出一个能执行的调用 ✓ → 现象就是"模型手上有 8 件工具却只宣布意图" ✓。
+
+    ⚠️ 这里**只做形状归一**，解析仍然只有 `llm._call_deltas` 那一份实现 ✗（不写第二份 ✗）：
+    两种形状都能过（带 `function` 的原样放行 ✓），这样无论代理以后改成嵌套还是保持扁平 ✓ 都对。
+    """
+    if not isinstance(raw_calls, list):
+        return ()
+    normalised: list[object] = []
+    for raw in raw_calls:
+        if not isinstance(raw, dict) or "function" in raw:
+            normalised.append(raw)
+            continue
+        normalised.append(
+            {
+                "index": raw.get("index"),
+                "id": raw.get("id"),
+                "function": {"name": raw.get("name"), "arguments": raw.get("arguments")},
+            }
+        )
+    return _call_deltas(normalised)
 
 
 def _wire_messages(messages: Sequence[ChatMessage]) -> list[dict[str, object]]:

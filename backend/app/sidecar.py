@@ -55,7 +55,7 @@ from pydantic import BaseModel, Field
 from app.core.exceptions import NotFoundError
 from app.services import agent_tools, plan_gate
 from app.services import approvals as approval_service
-from app.services.agent import ApprovalEvent, DeltaEvent, DoneEvent, StepEvent
+from app.services.agent import ApprovalEvent, DeltaEvent, DoneEvent, StepEvent, ThinkingEvent
 from app.services.api_key import Caller
 from app.services.llm import ChatMessage, ToolSpec
 from app.services.remote_clients import (
@@ -323,6 +323,38 @@ SIDECAR_TOOL_NAMES = frozenset(
 )
 
 
+#: 边车这一侧的**最小**系统提示词（**不是**服务器那一份 ✗）。
+#:
+#: 服务器那份要 `Services`（知识库范围、技能目录、人设、记忆 ✓），边车这一轮没有那些 ✓；
+#: 但**必须有一句"直接动手"** ✗ —— 真烟测实测（2026-09-29）：没有它时模型回的是
+#: 「我先读一下这个文件。」**一个工具都没调** ✗，于是"工具真的执行"在真模型上根本不发生 ✓。
+#: 完整提示词与 P4 的会话口径一起接 ✓。
+SIDECAR_SYSTEM_PROMPT = (
+    "你是这台电脑上的本地 Agent。**需要本机信息时（读文件、列目录、搜文件、跑命令、查网页）"
+    "必须先调用对应工具**：list_files / read_file / search_files / run_command / "
+    "web_search / web_fetch（技能用 list_skills / read_skill）——"
+    "**不许只用文字描述你将要做什么** ✗（「我这就去读」「我马上跑」都算没做）。"
+    "拿到工具结果之后再作答。"
+    "工具报错或被拒绝时**如实转述**（连同理由），不要假装成功、也不要编结果；"
+    "本机没有你要的工具时**直说没有**，不要编造。"
+    "回答用简体中文。"
+)
+
+
+def _close_trailing_answer_step(steps: list[dict[str, Any]]) -> None:
+    """把"回答"那一步收尾成 `done` ✓（**就地改** `steps`）。
+
+    为什么（2026-09-29 烟测）：`tool_loop` **从不给"组织回答"这一步发 `done`**（服务器那条链路
+    靠前端收敛 ✓）——所以 `/turn` 的响应里它一直是 `status:"running"` ✗，调用方会以为
+    "还在跑" ✗。而 `/turn` 是**一次请求一次答复**：返回时这一轮**已经结束** ✓，
+    所以这里把最后那一步如实收掉 ✓。只动边车这一侧的响应形状 ✗，循环本体一个字不改 ✓。
+    """
+    for step in reversed(steps):
+        if step["phase"] == "answer":
+            step["status"] = "done"
+            return
+
+
 def _step_payload(event: StepEvent) -> dict[str, Any]:
     """`StepEvent` → 响应里的 dict ✓（字段与服务器那条链路同一套名字 ✓）。"""
     return {
@@ -496,6 +528,13 @@ class TurnOut(BaseModel):
     workspace: str
     notes: list[str] = Field(default_factory=list, description="这一侧有什么/没有什么（如实写 ✓）")
     sse: bool = Field(default=False, description="预留：true 时可用 /turn/stream 取 SSE ✓")
+    error: str = Field(
+        default="",
+        description=(
+            "非空 = **这一轮没有正常作答**（可判定的标记 ✓）：远端不可用/被拒、或模型没产出正文。"
+            "**空 `answer` 绝不等于成功** ✗ —— 调用方据此区分「成功」与「空」✓。"
+        ),
+    )
 
 
 class HealthOut(BaseModel):
@@ -562,15 +601,23 @@ def create_app(
         target = _check_workspace(payload.workspace) if payload.workspace else workspace
         notes = _notes(clients)
         loop = clients.tool_loop(kb_ids=payload.kb_ids)
-        messages = [ChatMessage(role="user", content=payload.message)]
+        messages = [
+            ChatMessage(role="system", content=SIDECAR_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=payload.message),
+        ]
         answer = ""
         steps: list[dict[str, Any]] = []
+        reasoning: list[str] = []
         try:
             for event in loop.run(messages=messages):
                 if isinstance(event, StepEvent):
                     steps.append(_step_payload(event))
                 elif isinstance(event, DeltaEvent):
                     answer += event.text
+                elif isinstance(event, ThinkingEvent):
+                    # 思考过程收着**只为解释"为什么一个字都没有"** ✓——它不进 `answer` ✗：
+                    # 那是模型的思考，不是给用户的回答 ✓。
+                    reasoning.append(event.text)
                 elif isinstance(event, DoneEvent):
                     # 收尾那条带的是拼好的全文，**以它为准** ✓（个别增量丢了也不会与步骤对不上 ✓）
                     answer = event.answer or answer
@@ -578,7 +625,40 @@ def create_app(
                     steps.append(_approval_step(event))
         except RemoteClientError as exc:
             # **失败分档照旧** ✓：远端不可用/被拒都要如实说出来 ✗（不当成"空回答" ✓）
-            return TurnOut(answer=f"（边车报告：{exc}）", workspace=str(target), notes=notes)
+            return TurnOut(
+                answer=f"（边车报告：{exc}）",
+                workspace=str(target),
+                notes=notes,
+                error=str(exc),
+            )
+        _close_trailing_answer_step(steps)
+        if not answer.strip():
+            # **绝不返回"空成功"** ✗✗（2026-09-29 烟测现场：`answer:""` + `steps:[]` + HTTP 200 ✓
+            # 是这条链路里最危险的形态 ✗ —— 调用方以为成功 ✓、用户拿到空白 ✓）。
+            # 两种成因都要写清：模型只给了思考（推理模型常见 ✓）、或者什么都没给 ✓。
+            detail = (
+                f"模型只返回了思考过程、没有正文与工具调用（思考 {len(reasoning)} 段）"
+                if reasoning
+                else "模型没有返回任何内容"
+            )
+            hint = (
+                "这一轮没有执行任何工具。要本机动作就把要读/要跑的东西说具体些再试；"
+                "本机没有隔离后端时命令会被拒绝，拒绝原因会写在回答里。"
+            )
+            return TurnOut(
+                answer=f"（边车报告：{detail}。{hint}）",
+                steps=steps,
+                workspace=str(target),
+                notes=notes,
+                error=f"empty-answer: {detail}",
+            )
+        if not any(step["tool"] for step in steps):
+            # 有正文但**一次工具都没调**（模型直接作答）：如实标出来 ✓ ——
+            # 不许把"只宣布意图"当成"做了" ✗（从 notes 就看得出这一轮没有本机动作 ✓）。
+            notes = [
+                *notes,
+                "这一轮没有调用任何工具（模型直接作答；需要本机动作时请把要求说得更具体）。",
+            ]
         return TurnOut(answer=answer, steps=steps, workspace=str(target), notes=notes)
 
     @app.post("/turn/stream", summary="预留：SSE（P4 与前端一起做）")
