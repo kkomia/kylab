@@ -804,16 +804,18 @@ describe('面板头的图标落在行内那条图标线上（④）', () => {
     ],
   }
 
-  it('面板头用同一个 21px 图标沟 + 同一个 `--space-3`：三者同构', () => {
+  it('面板头用同一个图标沟 + 同一个 `--space-3`：三者同构', () => {
     reset()
     // 有出处时这一行才有可见文字（摘要那句），所以拿它量"图标位 + 文字位"两笔
     render(<TracePanel turnIndex={0} turn={turnOf([step()], withSource)} />)
 
     const toggle = screen.getByTestId('trace-toggle')
-    // 图标沟就是行内那一个类名（21px 圆底，见 `STEP_ICON`）
+    // 图标沟就是行内那一个类名（方形圆底，边长是**那一个变量**，见 `STEP_ICON` / `STEP_BAND`）
     const slot = toggle.querySelector(':scope > span') as HTMLElement
-    expect(slot.className).toContain('w-[21px]')
-    expect(slot.className).toContain('h-[21px]')
+    expect(slot.className).toContain('w-[var(--step-band)]')
+    expect(slot.className).toContain('h-[var(--step-band)]')
+    // 变量在面板头这一层也声明了（否则 var() 解析不出来 = 0）
+    expect(toggle.className).toContain('[--step-band:21px]')
     // 间距是行内那一笔（`--space-3` = 12）——21 + 12 才是标签那条 461 的来历
     expect(toggle.className).toContain('gap-[var(--space-3)]')
     // 箭头排在文字之后（与 `STEP_TOGGLE`「标签 + 箭头」同款），不再自己占一条线
@@ -830,7 +832,23 @@ describe('面板头的图标落在行内那条图标线上（④）', () => {
 
     const toggle = screen.getByTestId('trace-toggle')
     expect(toggle.children).toHaveLength(2)
-    expect((toggle.children[0] as HTMLElement).className).toContain('w-[21px]')
+    expect((toggle.children[0] as HTMLElement).className).toContain('w-[var(--step-band)]')
     expect(toggle.children[1].tagName.toLowerCase()).toBe('svg')
+  })
+
+  it('尺寸只在一处定义：图标盒与所有标签带子都引用同一个变量（D11-②）', () => {
+    reset()
+    render(<TracePanel turnIndex={0} turn={turnOf([step()], withSource)} />)
+
+    // 行外壳声明变量；标签带子与图标盒引用它 —— 改一处两边一起变（用户："可以动态计算的嘛"）
+    const row = document.querySelector('li[data-kind]') as HTMLElement
+    expect(row.className).toContain('[--step-band:21px]')
+    const slot = row.firstElementChild as HTMLElement
+    expect(slot.className).toContain('var(--step-band)')
+    // 标签那一档：块级 flex（基线对齐会把 inline-flex 压下约 1.8px —— 真浏览器量到过 −1.59）
+    const label = row.querySelector('p, button') as HTMLElement
+    expect(label.className).toContain('min-h-[var(--step-band)]')
+    expect(label.className).toMatch(/(^|\s)flex(\s|$)/)
+    expect(label.className).not.toContain('inline-flex')
   })
 })

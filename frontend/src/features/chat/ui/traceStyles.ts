@@ -21,7 +21,20 @@
  * 行距不该与正文的段距同宽——正文段距正是 `--space-3`（`chat.css` 的 `.md-p`），
  * 过程行之间再用 12px，扫起来就与"一段正文"的间隔一样松了。
  */
-const STEP_ROW_SHELL = 'flex items-start [&+&]:mt-[var(--space-2)]'
+/**
+ * **这一族唯一的尺寸来源**：图标沟与所有标签带子的高度（用户 2026-09-29：
+ * "你不用定死啊，可以动态计算的嘛"）。
+ *
+ * 用法：**在行外壳上写一次** `STEP_BAND`（声明变量），图标盒与每个标签带子都
+ * `var(--step-band)` 引用它 —— 改一处，两边一起变；面板头也用同一个变量，
+ * 于是"面板头 12px 字 / 行内 14px 字"的差异不再需要各自算偏移（都在同高的带子里居中）。
+ *
+ * 放在最前面：下面 `STEP_ROW_SHELL` 就要用它（`const` 是块级作用域，
+ * 写在后面会 TDZ 报错——真踩过，页面直接白 ✗）。
+ */
+export const STEP_BAND = '[--step-band:21px]'
+
+const STEP_ROW_SHELL = `flex items-start [&+&]:mt-[var(--space-2)] ${STEP_BAND}`
 
 /** 父行（单独一步 / 同类工具并成的一组）：21px 的图标沟配 `--space-3`。 */
 export const STEP_ROW = `${STEP_ROW_SHELL} gap-[var(--space-3)]`
@@ -42,7 +55,7 @@ export const STEP_ROW = `${STEP_ROW_SHELL} gap-[var(--space-3)]`
 export const STEP_ROW_CHILD = `${STEP_ROW_SHELL} gap-[var(--space-1)]`
 
 /**
- * 图标位：21px 的圆底。
+ * 图标位：**正方形圆底**，边长就是上面那个变量。
  *
  * （旧实现那一列是"时间轴"—— 步骤之间连着一条竖线，圆心要对齐那条线；
  * 这一版**没有竖线**，圆底只负责把图标与文字对齐。）
@@ -50,16 +63,17 @@ export const STEP_ROW_CHILD = `${STEP_ROW_SHELL} gap-[var(--space-1)]`
  * **面板头也用这一个类名**（2026-09-29 用户："这不还是没对齐吗"）：那之前面板头是
  * 「箭头 12 + 间距 4 + 图标 13 + 间距 4」凑出 33 得到 461 的——文字对了，但那条
  * 13px 的图标落在 444，比这一列右 16px，于是面板头多出一条说不清来历的竖线。
- * 现在面板头与行内同构：**同一个 21px 圆底 + 同一个 `--space-3`（12）** →
+ * 现在面板头与行内同构：**同一个 `--step-band` 圆底 + 同一个 `--space-3`（12）** →
  * 图标左边缘 428 / 中心 438.5、文字 461，三样都落在行内那几条线上（真浏览器实测见
- * `.shots/trace-cleanup/`）。
+ * `.shots/trace-cleanup/` 与 `.shots/verify-icon-center.cjs`）。
  */
 export const STEP_ICON =
-  'relative z-[1] inline-flex shrink-0 items-center justify-center w-[21px] h-[21px] ' +
+  'relative z-[1] inline-flex shrink-0 items-center justify-center ' +
+  'w-[var(--step-band)] h-[var(--step-band)] ' +
   // 纵向对齐：**靠结构，不靠算偏移**（用户 2026-09-29："你就把图标的占用高度确定了，
-  // 然后文字也占用这么高居中显示不就完了？"）。做法：这里 21px 的盒子 + 行首那层
-  // `STEP_LABEL` / `STEP_TOGGLE` 的 `min-h-[21px] items-center` → **两边都是 21px 的带子、
-  // 都从行顶开始**，中心自然重合（换行的标签也只影响第二行起，图标仍对首行）。
+  // 然后文字也占用这么高居中显示不就完了？"）。做法：这个正方形盒子 + 行首那层
+  // `STEP_LABEL` / `STEP_TOGGLE` 的 `min-h-[var(--step-band)]` → **两边同高、同从行顶开始**，
+  // 中心自然重合（换行的标签也只影响第二行起，图标仍对首行）。
   // 上一版我在这里写过 `mt-[calc(var(--text-meta-size)*var(--line-ui)/2-10.5px+1px)]` ✗ ——
   // Tailwind 的任意值里带 `*` 与 `/` 生成不出类名，等于没改（用户看到"还是没对齐"就是这个）；
   // 教训：像素类改动**必须真浏览器复量**，别只看类名。
@@ -152,7 +166,7 @@ export const STEP_BODY = 'min-w-0'
  * 图标仍对着首行，所以不需要 `items-center` 那种"按整块居中"（那会让换行时图标下沉 ✗）。
  */
 export const STEP_LABEL =
-  'm-0 flex min-h-[21px] items-center text-left text-[length:var(--text-meta-size)] ' +
+  'm-0 flex min-h-[var(--step-band)] items-center text-left text-[length:var(--text-meta-size)] ' +
   'text-[var(--text-secondary)] leading-[var(--line-ui)]'
 
 /**
@@ -169,6 +183,15 @@ export const STEP_LABEL =
  * 字体族交给 preflight（`button { font: inherit }`）就够了——那一条在 base 层，
  * utilities 里的字号/行高照样压得住它（实测字体族与正文段落逐字相同）。
  *
+ * ## 为什么是 `flex`（块级）而不是 `inline-flex`（2026-09-29 复量抓出来的 1.59px）
+ *
+ * 图标与标签的**高度一样、都从行顶开始**，但按钮那一档仍然歪了 **−1.59px**
+ * （真浏览器：`.shots/verify-icon-center.cjs`；那一行的图标中心 −1142.02、
+ * 首行中心 −1140.43）。原因不是高度，而是**行内级盒子的基线对齐** ✗：
+ * `inline-flex` 会坐在父行盒的基线上，父级行高（22.05px）与它自己的 21px 不同高，
+ * 于是整个盒子被压下约 1.8px；而 `p` 那一档是**块级** flex，从行顶开始 ✓。
+ * 所以这里用 `flex w-fit`：**块级（顶对齐、不受基线影响）+ 收缩到内容宽（保留原来的点击区）**。
+ *
  * ## `text-left` 不是装饰（D11-①，2026-09-29 走查："标签与文字没对齐"）
  *
  * `<button>` 的 UA 默认是 **`text-align: center`**，而这一档的标签**会换行**：
@@ -183,7 +206,8 @@ export const STEP_LABEL =
  * 「标签类名带 text-left」那两条（类名级，不用起浏览器）。
  */
 export const STEP_TOGGLE =
-  'inline-flex min-h-[21px] items-center gap-[var(--space-1)] p-0 border-none bg-transparent ' +
+  'flex w-fit min-h-[var(--step-band)] items-center gap-[var(--space-1)] p-0 border-none ' +
+  'bg-transparent ' +
   'text-left text-[length:var(--text-meta-size)] text-[var(--text-secondary)] ' +
   'leading-[var(--line-ui)] cursor-pointer [transition:var(--transition-ui)] ' +
   'hover:text-[var(--text-primary)]'

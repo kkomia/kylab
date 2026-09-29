@@ -19,14 +19,14 @@ import {
   groupSkills,
 } from '@/features/misc/capabilities/skillCategories'
 
-/** 真映射里那 178 条技能（拿名字造一份最小技能对象；分组只认名字）。 */
+/** 真映射里那一批技能（本机 178 + 产品自带 5）：只认名字，造一份最小技能对象。 */
 const ALL_SKILLS = Object.keys(mapping.assignments).map((name) => ({ name }))
 const TOTAL = Object.keys(mapping.assignments).length
 
 describe('分类映射本身（真 JSON）', () => {
-  it('178 条、每类都有中文名、顺序里登记了每一个类别且「其他」在最后', () => {
-    expect(TOTAL).toBe(178)
-    expect(ALL_SKILLS).toHaveLength(178)
+  it('183 条（本机装的 178 + 产品自带的 5）、每类都有中文名、顺序登记齐且「其他」在最后', () => {
+    expect(TOTAL).toBe(183)
+    expect(ALL_SKILLS).toHaveLength(183)
     expect(CATEGORY_ORDER.at(-1)).toBe(OTHER_CATEGORY)
     // 顺序表与中文名表覆盖同一批 key（漂一个就会红）
     expect([...CATEGORY_ORDER].sort()).toEqual(Object.keys(CATEGORY_LABELS).sort())
@@ -34,10 +34,25 @@ describe('分类映射本身（真 JSON）', () => {
       expect(CATEGORY_LABELS[slug]).toBeTruthy()
     }
   })
+
+  it('产品自带的 5 条按名字钉死（不落「其他」），「其他」只剩拿不准的那一条', () => {
+    for (const [name, slug] of [
+      ['kylab-delegate', 'productivity'],
+      ['kylab-knowledge-base', 'productivity'],
+      ['kylab-memory', 'productivity'],
+      ['kylab-web', 'productivity'],
+      ['kylab-office-export', 'documents'],
+    ]) {
+      expect(categoryOfSkill(name)).toBe(slug)
+    }
+
+    const others = ALL_SKILLS.filter((skill) => categoryOfSkill(skill.name) === OTHER_CATEGORY)
+    expect(others.map((skill) => skill.name)).toEqual(['xiaoyue-companion'])
+  })
 })
 
 describe('按分类分组（页面用的纯函数）', () => {
-  it('每类条数之和 = 178，且每条技能**出现且只出现一次**', () => {
+  it('每类条数之和 = 183，且每条技能**出现且只出现一次**', () => {
     const groups = groupSkills(ALL_SKILLS)
 
     const sum = groups.reduce((total, group) => total + group.skills.length, 0)

@@ -46,6 +46,7 @@ import { StepIcon, StepOutcomeBadge } from './stepIcons'
 import { forceExpand, formatElapsed, stepsOutcome, TraceStepRow } from './TraceStepRow'
 import {
   STEP_BODY,
+  STEP_BAND,
   STEP_ICON,
   STEP_ROW,
   STEP_RUNNING,
@@ -393,7 +394,7 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
          */
         data-testid="trace-toggle"
         aria-label={panelName}
-        className="flex w-full cursor-pointer items-center gap-[var(--space-3)] bg-transparent p-0 text-left"
+        className={`flex w-full cursor-pointer items-center gap-[var(--space-3)] bg-transparent p-0 text-left ${STEP_BAND}`}
         aria-expanded={open}
         aria-controls={panelId}
         onClick={() => chat.toggleTrace(reply)}
@@ -528,12 +529,12 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
               （行的左边缘），看上去像"另一列"，而用户这一轮要的正是"把线收少"。
             */
             <p
-              className="m-0 mt-[var(--space-3)] flex items-baseline gap-[var(--space-3)] text-[length:var(--text-micro-size)] text-[var(--text-quaternary)] tabular"
+              className="m-0 mt-[var(--space-3)] flex items-baseline gap-[var(--space-3)] text-[length:var(--text-micro-size)] text-[var(--text-quaternary)] tabular [--step-band:21px]"
               data-testid="trace-total"
               title="按当前已显示的过程统计：思考、结论、入参与返回的字符数；用时是各步耗时之和（只有当场看着它跑的那一轮才有）"
             >
-              {/* 图标沟的占位：宽度与 `STEP_ICON` 同一个数（21），别改一处漏一处 */}
-              <span aria-hidden className="w-[21px] shrink-0" />
+              {/* 图标沟的占位：宽度与 `STEP_ICON` 同一个变量（`--step-band`），别改一处漏一处 */}
+              <span aria-hidden className="w-[var(--step-band)] shrink-0" />
               <span>
                 共 {formatCount(traceChars)} 字
                 {traceMs > 0 ? ` · 用时 ${formatElapsed(traceMs)}` : ''}
