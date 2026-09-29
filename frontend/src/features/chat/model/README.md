@@ -111,7 +111,8 @@ liveAnchor(id) / clearLiveAnchors() // 重连锚点（模块作用域，用例�
 ```
 
 `RECONNECT_MAX = 3`、`RECONNECT_DELAY_MS = 800`、`scheduleReconnect(reason)` 都照旧
-（前两个现在**导出**了，用例与页面可以据此显示"重连中"）。
+（前两个现在**导出**了：用例据此钉住重连预算。**页面当前没有任何"重连中"状态** ——
+`liveTurn` 只在内部排重连、不往外报"正在重连"，要加得另做，别以为它已经存在）。
 
 ---
 

@@ -38,7 +38,12 @@ export const STEP_ROW = `${STEP_ROW_SHELL} gap-[var(--space-3)]`
  */
 export const STEP_ROW_CHILD = `${STEP_ROW_SHELL} gap-[var(--space-1)]`
 
-/** 图标位：21px 的圆底，圆心正落在时间轴那条竖线上。 */
+/**
+ * 图标位：21px 的圆底。
+ *
+ * （旧实现那一列是"时间轴"—— 步骤之间连着一条竖线，圆心要对齐那条线；
+ * 这一版**没有竖线**，圆底只负责把图标与文字对齐。别再照着"时间轴"去改它。）
+ */
 export const STEP_ICON =
   'relative z-[1] inline-flex shrink-0 items-center justify-center w-[21px] h-[21px] ' +
   'rounded-[var(--radius-pill)] border border-[var(--border)] bg-[var(--bg-canvas)] ' +
