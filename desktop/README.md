@@ -113,11 +113,15 @@ pnpm dlx @tauri-apps/cli@latest build      # 或者 npx @tauri-apps/cli@latest b
 | 文件 | 大小 | 给谁用 |
 | --- | --- | --- |
 | `src-tauri/target/release/kylab-desktop.exe` | 7.83 MiB | **绿色版**：拷过去双击就能跑，不写注册表（**要连 `sidecar-runtime\` 一起拷**） |
-| `src-tauri/target/release/bundle/nsis/KYLAB_0.1.0_x64-setup.exe` | 7.45 MiB | 双击安装（简体中文 / English，按系统语言自动选） |
-| `src-tauri/target/release/bundle/msi/KYLAB_0.1.0_x64_zh-CN.msi` | 12.17 MiB | 给要批量部署 / 走组策略的场合 |
+| `src-tauri/target/release/bundle/nsis/KYLAB_0.1.0_x64-setup.exe` | 7.48 MiB | 双击安装（简体中文 / English，按系统语言自动选） |
+| `src-tauri/target/release/bundle/msi/KYLAB_0.1.0_x64_zh-CN.msi` | 12.36 MiB | 给要批量部署 / 走组策略的场合 |
+
+⚠️ **打包前先跑一次 `scripts/build-sidecar-runtime.ps1`**：它是**唯一**会清 `__pycache__` 的地方，
+而边车一跑起来就会重新生成那些 `.pyc`（实测运行时因此从出厂 17.3 MB 涨到 24.6 MB）——
+想让安装包最小，就在打包前重建一次运行时。
 
 比"没装边车"的那一版大了约 3.5–4.8 MiB：包里多了一份**边车运行时**
-（`build/sidecar-runtime`，出厂 16.8 MB / 975 个文件，压缩后约 8–9 MiB）——
+（`build/sidecar-runtime`，出厂 **17.3 MB / 975 个文件**，压缩后约 8–9 MiB）——
 这是"对话在本机跑"必须付的那份体积。
 
 三处刻意的设置：

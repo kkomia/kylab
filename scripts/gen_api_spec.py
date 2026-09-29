@@ -17,7 +17,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-
 # **别把仓库根的 ``data/`` 当数据目录**：门禁从仓库根执行本脚本，而
 # ``KYLAB_DATA_DIR`` 的默认值是**相对路径** ``./data``——于是 ``create_app()``
 # 挂的日志会落到 ``<仓库根>/data/logs``，多跑几次就在仓库里长出一个数据目录
