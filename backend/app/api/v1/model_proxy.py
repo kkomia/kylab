@@ -26,7 +26,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.api.auth import require_read
 from app.core.services import Services, get_services
@@ -56,6 +56,18 @@ class ProxyRequest(BaseModel):
     messages: list[_WireMessage] = Field(default_factory=list)
     tools: list[_WireTool] = Field(default_factory=list)
     model_pk: str | None = Field(default=None, description="留空用全局默认模型")
+
+    @model_validator(mode="after")
+    def _require_messages(self) -> ProxyRequest:
+        """**空 body 必须 422，不能变成 502** ✗（P2 复盘：真请求打过一次空 body → 502 ✓）。
+
+        502 的意思是"上游不可用" ✗，而空 body 是**参数问题** ✓。把参数问题报成上游故障，
+        正是"失败分档"要防的误导（离线明示、排障、配额统计都会跟着错 ✗）。
+        所以先校验：一条消息都没有就拒（422 ✓），根本不去碰模型 ✓。
+        """
+        if not self.messages:
+            raise ValueError("messages 不能为空：至少给一条消息（role + content）")
+        return self
 
 
 class ProxyTextOut(BaseModel):
