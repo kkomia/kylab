@@ -117,8 +117,46 @@ function AuthGate({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname])
 
-  if (!ready) return <div className="h-dvh bg-canvas" />
+  if (!ready) return <BootSkeleton />
   return <>{children}</>
+}
+
+/**
+ * **启动期的骨架**（D30，2026-09-28 走查）。
+ *
+ * 两处用过它：`AuthGate` 还没判完身份时（实测那一段是 **146–513ms** 的纯空白），
+ * 以及路由懒加载那一段（`Suspense` 的兜底，20–62ms）。原先两处都是
+ * `<div className="h-dvh bg-canvas" />`——**一块什么都没有的画布**，用户看到的是"白屏"，
+ * 分不清是在加载还是坏了。
+ *
+ * 形状照着真实的应用壳摆（左侧一栏 + 右侧内容），所以内容到位时**不跳**：
+ * 两块的位置与尺寸都对得上，只是从灰块换成真东西。用 `animate-pulse` 表示"在动"，
+ * `motion-reduce:animate-none` 尊重系统里那个"减少动态效果"（与样式层同一条口径）。
+ */
+function BootSkeleton() {
+  return (
+    <div
+      data-testid="app-boot-skeleton"
+      aria-hidden="true"
+      className="flex h-dvh bg-[var(--bg-canvas)]"
+    >
+      {/* 侧栏那一栏：宽屏才有（窄屏下真实的侧栏也是收起的，见 §12.305） */}
+      <div className="hidden w-[var(--sidebar-width)] shrink-0 flex-col gap-[var(--space-2)] border-r border-[var(--border-hairline)] p-[var(--space-3)] sm:flex">
+        {[0, 1, 2, 3, 4].map((row) => (
+          <span
+            key={row}
+            className="block h-[28px] animate-pulse rounded-[var(--radius-control)] bg-[var(--bg-active)] motion-reduce:animate-none"
+          />
+        ))}
+      </div>
+      {/* 内容那一栏：标题块 + 两段正文块，与对话页的骨架同一节奏 */}
+      <div className="flex min-w-0 flex-1 flex-col gap-[var(--space-3)] p-[var(--page-gutter)]">
+        <span className="block h-[24px] w-[40%] animate-pulse rounded-[var(--radius-control)] bg-[var(--bg-active)] motion-reduce:animate-none" />
+        <span className="block h-[120px] animate-pulse rounded-[var(--radius-panel)] bg-[var(--bg-active)] motion-reduce:animate-none" />
+        <span className="block h-[120px] w-[70%] animate-pulse rounded-[var(--radius-panel)] bg-[var(--bg-active)] motion-reduce:animate-none" />
+      </div>
+    </div>
+  )
 }
 
 /** 会话恢复之后拉一次名册：上传者列、归属标注都要它（拿不到不影响使用）。 */
@@ -147,7 +185,7 @@ export function App() {
         <TitleSync />
         <RosterBoot />
         <AuthGate>
-          <Suspense fallback={<div className="h-dvh bg-canvas" />}>
+          <Suspense fallback={<BootSkeleton />}>
             <Routes>
               {/* 登录页在壳外：它没有侧栏（旧前端 `/login` 也是独立一页） */}
               <Route path="/login" element={<LoginPage />} />

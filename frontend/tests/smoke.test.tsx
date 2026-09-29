@@ -4,11 +4,11 @@
  * 钉住三件事：路由挂得上、登录守卫拦得住、全局容器（Toaster）在。
  * 守卫要的两件网络事（引导状态、会话恢复）都在 `@/api/auth` 这一层 mock 掉。
  */
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { App } from '@/app/App'
-import { SESSION_TOKEN_STORAGE_KEY, setSessionToken } from '@/lib/session'
+import { SESSION_TOKEN_STORAGE_KEY, setSessionToken, useSessionStore } from '@/lib/session'
 
 vi.mock('@/api/auth', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/auth')>()
@@ -142,5 +142,35 @@ describe('应用壳', () => {
     })
     // 落地页是概览（`/`），所以 redirect 记的是它
     expect(window.location.search).toContain('redirect=%2F')
+  })
+})
+
+describe('启动期的骨架（D30，2026-09-28 走查）', () => {
+  it('启动期显示骨架，而不是一块白画布', async () => {
+    // 把"探身份"挂住不放行 → `AuthGate` 的 `ready` 停在 false，正是真实启动期那一段
+    // （走查实测 146–513ms 里 `bodyText` 是空的、也没有任何骨架）。
+    // **先清掉"已经探过身份"的缓存**：`ensureAuthStatus` 把结果存在 store 里，
+    // 前面的用例填过之后，这一条会直接拿到 ready=true、根本不经过启动期那一帧
+    // （症状就是"单跑绿、整文件跑红"）。
+    useSessionStore.setState({ authStatus: null })
+    const auth = await import('@/api/auth')
+    let release: ((value: { needs_setup: boolean; auth_enabled: boolean }) => void) | null = null
+    vi.mocked(auth.getAuthBootstrapStatus).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve
+        }) as never,
+    )
+
+    render(<App />)
+
+    // 那段空白里现在有骨架（形状照着应用壳摆：侧栏一栏 + 内容块）
+    expect(await screen.findByTestId('app-boot-skeleton')).toBeInTheDocument()
+
+    // 放行之后骨架让位
+    await act(async () => {
+      release?.({ needs_setup: false, auth_enabled: true })
+    })
+    await waitFor(() => expect(screen.queryByTestId('app-boot-skeleton')).not.toBeInTheDocument())
   })
 })
