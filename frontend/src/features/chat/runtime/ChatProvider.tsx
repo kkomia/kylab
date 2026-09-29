@@ -1621,6 +1621,17 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       const text = turn.user.text
       const context = historyOf(messages.slice(0, turnIndex * 2))
       const model = modelPk || undefined
+      // **这一轮之后、已经在库里的那几轮要一起撤掉**（D35，2026-09-28 走查）。
+      //
+      // 失败这一轮从来没落过库（见上面那段），所以它自己不用删；但它**后面**的轮次
+      // 可能已经落库了——本地切掉、库里留着的话，一刷新那几轮又冒出来，与新发的这一轮
+      // 前后错位。原先靠"只给最后一轮重试"绕开这件事，代价是**前面失败的轮次没有重试入口**
+      // （走查实测：两条都失败之后，第一个气泡只剩「复制问题」）。
+      // 判据用 `reply.error`：有错的没落库，没落的不用删。
+      const laterPersisted = turns
+        .slice(turnIndex + 1)
+        .filter((item) => item.reply !== null && item.reply.error === '').length
+      if (laterPersisted > 0) await rewindConversation(id, laterPersisted)
       setMessages((prev) => prev.slice(0, turnIndex * 2))
       await streamTurn(text, context, model, id)
     },

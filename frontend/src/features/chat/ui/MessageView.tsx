@@ -106,6 +106,11 @@ function AssistantMessage({
   const chat = useChat()
   const artifacts = replyArtifacts(turn)
   const isLastTurn = turnIndex === chat.turns.length - 1
+  /**
+   * 这一轮**后面**还有几轮（D35）：失败气泡上那个「重试」会把它们一起撤掉，
+   * 所以标题里要把代价说清楚（`retryTurn` 那边同时会把已落库的那几轮从库里撤掉）。
+   */
+  const laterTurns = chat.turns.length - turnIndex - 1
   const copied = chat.copiedKey === `${turnIndex}:assistant`
   /** 「复制问题」与提问气泡上那枚复制共用一份状态（同一个键）。 */
   const questionCopied = chat.copiedKey === `${turnIndex}:user`
@@ -151,12 +156,24 @@ function AssistantMessage({
               <span>这一轮没跑起来：{failureText(message.error)}</span>
             </p>
             <div className="mt-[var(--space-2)] flex items-center gap-[var(--space-3)]">
-              {isLastTurn && !chat.sending ? (
+              {/*
+                失败的那一轮**每一轮都给重试**（D35，2026-09-28 走查）。
+                原先这里还有 `isLastTurn`：非最后一轮的失败气泡只剩「复制问题」，
+                而用户看到的正是一个可以再试一次的失败。现在放开了——
+                `retryTurn` 那边已经会把"这一轮之后**已落库**的轮次"一起撤掉
+                （本地切掉而库里留着会错位，那正是当初加这道限制的原因）；
+                后面真有轮次要撤时，标题里把代价说清楚。
+              */}
+              {!chat.sending ? (
                 <button
                   type="button"
                   className="inline-flex cursor-pointer items-center gap-[var(--space-1)] text-[length:var(--text-micro-size)] font-medium text-[var(--accent-text)] hover:underline disabled:cursor-default disabled:opacity-60"
                   disabled={chat.regenerating}
-                  title="把这一轮原样再发一次"
+                  title={
+                    laterTurns > 0
+                      ? `把这一轮原样再发一次（后面的 ${laterTurns} 轮会一起撤掉）`
+                      : '把这一轮原样再发一次'
+                  }
                   onClick={() => chat.retryTurn(turnIndex)}
                 >
                   <RotateCcw size={13} />

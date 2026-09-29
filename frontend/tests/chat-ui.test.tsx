@@ -1991,3 +1991,64 @@ describe('首字之前正文区不空着（D27，2026-09-28 走查）', () => {
     })
   })
 })
+
+describe('失败气泡的「重试」（D35，2026-09-28 走查）', () => {
+  /** 让当前这一轮失败（走的是界面上那条收尾路：`onError`）。 */
+  async function fail(box: { handlers: ChatHandlers | null }) {
+    await act(async () => {
+      box.handlers!.onError!('这一轮没跑起来：网络没连上')
+    })
+  }
+
+  it('两条都失败之后，**第一个**失败气泡也有「重试」', async () => {
+    // 病灶：那个按钮原先还挂着 `isLastTurn`，于是"非最后一轮"的失败只剩「复制问题」
+    // ——而用户看到的正是一条可以再试一次的失败。
+    const first = capture()
+    renderPage()
+    await screen.findByRole('textbox', { name: '消息输入框' })
+    await ask('第一问')
+    await fail(first)
+
+    const second = capture()
+    await ask('第二问')
+    await fail(second)
+
+    const rows = await screen.findAllByTestId('reply-error')
+    expect(rows).toHaveLength(2)
+    // 每个失败气泡后面紧跟的那一行就是它的按钮组（见 MessageView 的结构）
+    const firstButtons = rows[0].nextElementSibling as HTMLElement
+    expect(within(firstButtons).getByRole('button', { name: '重试' })).toBeInTheDocument()
+    // 标题里把代价说清楚：后面还有一轮，重试会把它一起撤掉
+    expect(within(firstButtons).getByRole('button', { name: '重试' })).toHaveAttribute(
+      'title',
+      expect.stringContaining('后面的 1 轮'),
+    )
+  })
+
+  it('重试一个**前面**的失败轮次时，把后面已落库的轮次从库里一起撤掉', async () => {
+    // 失败的那一轮从来没落过库，所以它自己不用删；但它后面**成功过**的轮次必须在库里
+    // 一起撤掉——本地切掉而库里留着，一刷新那几轮又冒出来，与新发的这一轮错位。
+    const box = capture()
+    renderPage()
+    await screen.findByRole('textbox', { name: '消息输入框' })
+    await ask('第一问')
+    await fail(box)
+
+    const second = capture()
+    await ask('第二问')
+    await act(async () => {
+      second.handlers!.onDelta!('答')
+      second.handlers!.onDone!('答', liveDone)
+    })
+    // 第二轮成功 = 已落库
+    await waitFor(() => expect(screen.getAllByTestId('reply-error')).toHaveLength(1))
+
+    vi.mocked(rewindConversation).mockClear()
+    const rows = screen.getAllByTestId('reply-error')
+    const buttons = rows[0].nextElementSibling as HTMLElement
+    await userEvent.setup().click(within(buttons).getByRole('button', { name: '重试' }))
+
+    // 第二问、答 两轮之后被撤掉 —— 计数是 1（那一轮已落库）
+    await waitFor(() => expect(rewindConversation).toHaveBeenCalledWith('c1', 1))
+  })
+})
