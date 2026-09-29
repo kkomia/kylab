@@ -362,8 +362,23 @@ export function TracePanel({ turnIndex, turn }: { turnIndex: number; turn: Turn 
         aria-controls={panelId}
         onClick={() => chat.toggleTrace(reply)}
       >
-        {/* 箭头与那枚过程图标都是**装饰**：名字由这一行的文字给（本仓口径） */}
-        <ChevronDown className={caretClass(open)} size={14} aria-hidden />
+        {/*
+          箭头与那枚过程图标都是**装饰**：名字由这一行的文字给（本仓口径）。
+
+          **箭头取 12px 是为了让这一行的文字与行内标签落在同一条左边缘**（用户点名的
+          "图标对齐"，2026-09-29）。真浏览器量出来的账（`.shots/d11b-align/`，会话
+          `conv_615c4ac504fe`）：
+
+          - 行内那一条沟 = 图标圆底 21 + 间距 12（`--space-3`）= **33** → 标签文字 x=461；
+          - 这一行改前 = 箭头 14 + 间距 4（`--space-1`）+ 图标 13 + 间距 4 = **35**
+            → 文字 x=**463**（比标签右 2px ✗）；
+          - 在这一层把箭头收成 12（面板里其余的开关本来都是 12：组行、子行、思考那一行）
+            → 12+4+13+4 = **33**，与行内那条沟**逐字相同** → 文字 x=461 ✓。
+
+          为什么不直接改 `gap`：那要么引进一个 3px 的字面量（这一族取值都走令牌），
+          要么把两个间距拆成两种取值；而"面板头的箭头和别的开关一样大"本来就更该成立。
+        */}
+        <ChevronDown className={caretClass(open)} size={12} aria-hidden />
         <ListTree size={13} aria-hidden className="shrink-0 text-[var(--text-quaternary)]" />
         {/*
           执行期间这一行只写一个**静态名字**（现在它与"跑完没出处"共用同一个词）。

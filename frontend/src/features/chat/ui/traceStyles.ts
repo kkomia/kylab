@@ -107,23 +107,11 @@ export const TRACE_FOLD_BODY = 'min-h-0 overflow-hidden'
 /** 面板内容与开关那一行之间的间距（原先在条件渲染的那一层上）。 */
 export const TRACE_FOLD_CONTENT = 'mt-[var(--space-3)]'
 
-/**
- * 面板内容顶上那一行「全部展开 / 全部收起」（调研 §5.2 P2）。
- *
- * 右对齐一行小字，与时间线隔开一点：它是**整块的批量动作**，不是某一行的一部分，
- * 所以既不上"执行过程"那一行（那是面板的开关），也不与「加载更多」同排（那是分页）。
+/*
+ * 「全部展开 / 全部收起」那两条类名（`TRACE_BULK_BAR` / `TRACE_BULK`）**已随功能一起删掉**
+ * （2026-09-29，用户要求把批量入口去掉，只留单行/单组各自开合）。
+ * 这里只留这一句：见到旧代码或旧文档引用它们时，是"删了"，不是"忘了"。
  */
-export const TRACE_BULK_BAR = 'mb-[var(--space-2)] flex justify-end gap-[var(--space-3)]'
-
-/**
- * 批量动作那两个文字按钮。
- *
- * **无障碍名字就用可见文字本身**（不另加 `aria-label`）：名字与可见文字一致，
- * 语音控制才点得到"全部展开"；作用范围写在注释与用例里，不靠一个读屏器才听得到的名字。
- */
-export const TRACE_BULK =
-  'cursor-pointer p-0 text-[length:var(--text-micro-size)] text-[var(--accent-text)] ' +
-  '[transition:var(--transition-ui)] hover:underline'
 
 /** 正文列。 */
 export const STEP_BODY = 'min-w-0 pt-px'
