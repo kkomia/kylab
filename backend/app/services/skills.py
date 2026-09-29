@@ -69,7 +69,8 @@ import os
 import re
 import shutil
 import sys
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -131,6 +132,57 @@ MAX_BODY_CHARS = 60_000
 #: 与 ``CATALOG_BUDGET_CHARS`` 的关系：描述按上面的常数截断后，60 条 ≈ 1.8 万字符，
 #: 所以**正常情况下先撞上的是这个条数上限**；字符预算是给"名字很长"这类病态目录兜底的。
 MAX_CATALOG = 60
+
+#: **整次扫描结果的复用窗口**（秒）。
+#:
+#: 为什么还需要它（两层缓存之后剩下的那点成本）：单条记录按 `SKILL.md` 的
+#: mtime+size 校验，**每条都是一次 `stat`**；这个库有 6,000+ 条，在 Windows 上
+#: 那 6,000 次 stat 就是几百毫秒——而"上一轮刚扫过、这一轮又扫"之间，
+#: 没有任何人可能改文件（目录注入是每轮都做的事）。
+#:
+#: 到期之后**照样逐个校验**（记录缓存负责只重读变了的那几个），但那次校验本身
+#: 在 Windows 上要 **2.7 秒**（2026-09-29 实测：12,337 条技能、每条一次 `stat`）——
+#: 所以窗口不能太短：它是"每轮对话都会走的那条路"，不能每几秒就撞上一次。
+#: 取 30 秒的账是：稳态每轮 **15–90 毫秒** ✓，最坏撞上窗口到期的那一次多花 2.7 秒
+#: （30 秒里最多一次），而"改完立刻可见"由 `invalidate()` 与 `scan_ttl_seconds=0` 负责。
+#:
+#: 库再涨（上万条、几十万文件）时的下一步不是调这个数，而是**换失效信号**：
+#: 让导入器在写完时调一次 `invalidate()`，或者挂一个文件系统监听——两者都能
+#: 把"全量 stat"彻底从请求路径上拿掉。
+SCAN_TTL_SECONDS = 30.0
+
+#: **永远在目录里的那几条**（产品自带能力，见 `BUILTIN_SKILLS` 那张表的同一批）。
+#:
+#: 库涨到几千条之后，"目录里露哪 60 条"成了一个真问题：原先按扫描顺序取前 60，
+#: 于是模型很可能看不到"交付一个 PPT / 存一份文件到知识库"这类**产品自带**的动作。
+#: 这几条是产品能力，不是"某个第三方技能"，**任何库规模下都得在**。
+CORE_SKILLS: tuple[str, ...] = (
+    "kylab-delegate",
+    "kylab-knowledge-base",
+    "kylab-memory",
+    "kylab-office-export",
+    "kylab-web",
+)
+
+#: **策展清单**：办公 / PPT / 表格 / 文档这几套最常用的（名字按本机实际存在的挑）。
+#:
+#: 与 `CORE_SKILLS` 的区别：这几条是**第三方技能里最该常驻的一批**，但它们是可替换的
+#: ——名字对不上时只是少排一条，不会出错（`_pick_catalog` 会跳过库里没有的）。
+#: 要改就改这份清单（一处常量），别去动排序逻辑。
+CURATED_SKILLS: tuple[str, ...] = (
+    "pptx",
+    "html2pptx",
+    "slide-skill",
+    "presentation-skill",
+    "xlsx",
+    "excel-analyst-pro",
+    "preview-csv",
+    "ai-config-table",
+    "docx",
+    "pdf",
+    "pdf-pro",
+    "office-automation",
+)
 
 #: ``requires`` 里认识的四个键。**与 OpenClaw 的门控字段是同一批**
 #: （见《预装技能选型》§4.2）：它们都是"这个技能在这台机器上跑不跑得起来"的
@@ -290,6 +342,40 @@ def _drop_reason(*, name: str, description: str) -> str:
     return ""
 
 
+def _pick_catalog(usable: list[SkillRecord]) -> list[SkillRecord]:
+    """目录里露哪几条：**核心固定 → 策展 → 其余按名字**，最后截到 `MAX_CATALOG`。
+
+    为什么不能"按扫描顺序取前 60"（2026-09-29 的现场）：这个库有几千条技能，
+    扫描顺序取决于目录遍历与来源层，于是"哪 60 条被模型看见"其实是个**偶然**——
+    产品自带的 5 条与办公那几套都可能不在里面，而它们恰恰是最该常驻的。
+
+    三条性质都是刻意要的：
+
+    - **核心永远在**：`CORE_SKILLS` 里的名字只要库里真有就一定排在最前（库再大也一样）；
+    - **可复现**：同样的库给同样的 60 条（其余按名字排序，不用随机/哈希）。
+      库变了只影响尾部，不重排前面那些；
+    - **看不见的那些是可发现的**：目录尾部会报"另有 N 个"，用 `list_skills` 按页看
+      （那条提示在 `catalog()` 里拼，不在这里）。
+
+    清单里写了但库里没有的名字直接跳过（清单写错不该让目录少一条或报错）。
+    """
+    by_name: dict[str, SkillRecord] = {}
+    for record in usable:
+        by_name.setdefault(record.name, record)
+    picked: list[SkillRecord] = []
+    seen: set[str] = set()
+    for name in (*CORE_SKILLS, *CURATED_SKILLS):
+        record = by_name.get(name)
+        if record is not None and name not in seen:
+            picked.append(record)
+            seen.add(name)
+    rest = sorted(
+        (record for name, record in by_name.items() if name not in seen),
+        key=lambda item: item.name,
+    )
+    return [*picked, *rest][:MAX_CATALOG]
+
+
 def _catalog_line(item: SkillRecord) -> str:
     """目录里的一行。格式照 ZCode（调研 §2.3）：
     ``- {name}: {description - when_use} (file: {path})``，把"何时用"标了出来。
@@ -336,6 +422,7 @@ class SkillService:
         config_value: Callable[[str], str] | None = None,
         config_set: Callable[[dict[str, str]], None] | None = None,
         binaries: Callable[[str], str | None] | None = None,
+        scan_ttl_seconds: float = SCAN_TTL_SECONDS,
     ) -> None:
         #: 读一个运行期配置的值（``requires.config`` 用它判定）。
         #: **不给就是"读不到"**，于是带 requires 的技能不出现——那一侧的默认必须是
@@ -347,6 +434,10 @@ class SkillService:
         #: 与 `config_value` 一样只注入 callable —— 技能服务不必认识设置服务本身。
         self._config_set = config_set
         self._binaries = binaries or shutil.which
+        #: 整次扫描结果的复用窗口（见 `SCAN_TTL_SECONDS`）：窗口内直接交回上一条列表。
+        #: 用例与"重新扫描"传 0 / 调 `invalidate()`，那时每次调用都会逐个 stat 校验。
+        self._scan_ttl = max(0.0, float(scan_ttl_seconds))
+        self._scan_memo: tuple[float, list[SkillRecord]] | None = None
         self._data_dir = data_dir
         # 仓库自带的技能目录（三种来源见模块头）：显式注入 > KYLAB_SKILLS_DIR >
         # 按代码位置推。显式注入排最前是为了测试与工具能指到临时目录——
@@ -355,6 +446,26 @@ class SkillService:
         # 跨工具共享的那一层（P0-3）：默认 ``~/.agents/skills``，可注入——
         # **用例不该去读真实的家目录**，那是"机器上恰好装了什么"就跟着变的断言。
         self._agents_dir = agents_dir or _agents_skills_dir()
+        #: **技能目录清单的缓存**（`root → 签名 + 目录列表`）。
+        #:
+        #: 为什么必须缓存（2026-09-29 性能事故，用户可见）：这个库涨到 6,200+ 条之后，
+        #: `GET /api/v1/skills` 要 **18.6 秒**，而**每一轮对话的目录注入走的是同一条路**。
+        #: 6,000 次"read + 解析 frontmatter + 安全扫描 + 丢弃判据"就是那个 18 秒；
+        #: 目录树没变时没有理由再走一遍。
+        #:
+        #: **签名只花两次 stat**（根目录 + 每个"一层分组的子目录"）：目录项增删都会改
+        #: 父目录的 mtime（NTFS/ext4 都是），所以"技能装上/删掉"照样能被发现 ✓；
+        #: 而"某个 SKILL.md 改了内容"不改任何目录的 mtime —— 那条由下一层的
+        #: 单条记录缓存（按文件 mtime+size）负责 ✓。两层各管一件事，谁也不越界。
+        self._dirs_cache: dict[Path, tuple[object, list[Path]]] = {}
+        #: **单条技能处理链的缓存**（`SKILL.md 路径 → (文件 mtime+size, 记录, frontmatter)`）。
+        #:
+        #: 进缓存的**是整条链**：读文件、解析 frontmatter、安全扫描（`_scan`）、丢弃判据、
+        #: 以及那一份 `meta`。唯一不进缓存的是 `requires` 的判定（`_unmet`）——
+        #: 它看的是**运行期**（配置值、机器上有没有那个可执行文件），与文件一个字的关系都没有，
+        #: 而缓存键里没有它们；所以每次调用都重判一遍（代价是几次字典查找）。
+        #: 宁可多算这一下，也不要"用户刚配好 key，技能却还显示缺依赖"。
+        self._record_cache: dict[Path, tuple[tuple[int, int], SkillRecord, dict[str, Any]]] = {}
 
     # ------------------------------------------------------------------ 读
 
@@ -374,6 +485,34 @@ class SkillService:
 
     def list(self) -> list[SkillRecord]:
         """全部技能（含被拦下与被丢弃的）。顺序：仓库自带在前，然后按名字。"""
+        records = self._scan()
+        disabled = self._disabled()
+        if not disabled:
+            return list(records)
+        # **用户关掉的 = 不进提示词**（D23）：折进 `used_by_prompt` 这个**已有**判据。
+        # 被丢弃的技能不动——它本来就不进，而且"没通过校验"比"你关掉了"更该先说。
+        return [
+            replace(record, used_by_prompt=False, flagged=(*record.flagged, DISABLED_REASON))
+            if record.slug in disabled and not record.discarded
+            else record
+            for record in records
+        ]
+
+    def invalidate(self) -> None:
+        """把三层缓存全丢掉（"重新扫描"、用例、以及任何要立刻看到磁盘现状的地方）。
+
+        目录清单与单条记录两层本身都有签名校验（改了就会被发现），清掉它们只是为了让
+        "现在立刻重扫"这件事有一个明确入口。**不主动调用也没关系**：窗口一过就重扫。
+        """
+        self._dirs_cache.clear()
+        self._record_cache.clear()
+        self._scan_memo = None
+
+    def _scan(self) -> list[SkillRecord]:
+        """扫一遍三个来源（**带复用窗口**，见 `SCAN_TTL_SECONDS`）。"""
+        now = time.monotonic()
+        if self._scan_memo is not None and now - self._scan_memo[0] < self._scan_ttl:
+            return self._scan_memo[1]
         found: dict[str, SkillRecord] = {}
         for source, root in self._roots():
             for directory in self._skill_dirs(root):
@@ -387,17 +526,8 @@ class SkillService:
                 if current is None or (current.discarded and not record.discarded):
                     found[record.slug] = record
         records = sorted(found.values(), key=lambda item: (item.source != "builtin", item.name))
-        disabled = self._disabled()
-        if not disabled:
-            return records
-        # **用户关掉的 = 不进提示词**（D23）：折进 `used_by_prompt` 这个**已有**判据。
-        # 被丢弃的技能不动——它本来就不进，而且"没通过校验"比"你关掉了"更该先说。
-        return [
-            replace(record, used_by_prompt=False, flagged=(*record.flagged, DISABLED_REASON))
-            if record.slug in disabled and not record.discarded
-            else record
-            for record in records
-        ]
+        self._scan_memo = (now, records)
+        return records
 
     def _disabled(self) -> set[str]:
         """用户关掉了哪些技能（D23）。**读不到就是空集**：没接配置的部署照旧全开。"""
@@ -480,7 +610,7 @@ class SkillService:
         直接答——那正是技能最容易被用错的方式（它以为知道流程，其实细节在正文里）。
         而**正文一个字都不在这里**（这是"装很多技能也不贵"的原因，也是文档双分段的全部）。
         """
-        usable = [item for item in self.list() if item.used_by_prompt][:MAX_CATALOG]
+        usable = [item for item in self.list() if item.used_by_prompt]
         if not usable:
             return ""
         header = (
@@ -494,7 +624,7 @@ class SkillService:
         note = catalog_note()
         lines: list[str] = []
         used = len(header) + len(note) + 1
-        for item in usable:
+        for item in _pick_catalog(usable):
             line = _catalog_line(item)
             # 预算按字符算（与 ZCode 的常数同一口径）。超预算就**从这里截断**，
             # 不写半行、也不挤掉别的来源——目录是可选的增强，对话本身才是必需的。
@@ -504,7 +634,16 @@ class SkillService:
             used += len(line) + 1
         if not lines:
             return ""
-        return f"{header}\n{note}\n" + "\n".join(lines)
+        hidden = len(usable) - len(lines)
+        tail = (
+            ""
+            if hidden <= 0
+            else (
+                f"\n（另有 {hidden} 个技能没在这里列出：用 `list_skills` 按页查看，"
+                "或者用 `find_tools` 找具体能力。）"
+            )
+        )
+        return f"{header}\n{note}\n" + "\n".join(lines) + tail
 
     # ------------------------------------------------------------------ 内部
 
@@ -513,22 +652,53 @@ class SkillService:
 
         **只走两层**：再深就是"把别人的仓库整个拷进来"，那会让扫描变成遍历。
         跳过隐藏目录与 ``node_modules``／``__pycache__`` 这类明显的非技能目录。
+
+        **按目录签名缓存**（见 `_dirs_cache` 的说明）：根目录 mtime + 每个"一层分组"
+        的 mtime 都没变 ⇒ 目录项集合没变 ⇒ 直接交回上次那份列表。热路径因此只有
+        **两次 stat**（根 + 分组），与库有多大无关。
         """
         out: list[Path] = []
         if not root.is_dir():
             return out
+        try:
+            root_mtime = root.stat().st_mtime_ns
+        except OSError:  # pragma: no cover - 目录正好在这一刻被删掉
+            return out
+        cached = self._dirs_cache.get(root)
+        if cached is not None:
+            signature, dirs = cached
+            if signature[0] == root_mtime and self._groups_unchanged(signature[1]):
+                return dirs
+        groups: list[tuple[Path, int]] = []
         for first in sorted(root.iterdir()):
             if not first.is_dir() or first.name.startswith((".", "_")):
                 continue
             if (first / SKILL_FILE).is_file():
                 out.append(first)
                 continue
+            try:
+                # 一层分组：它自己也要进签名（往它里面加/删技能只改它的 mtime）
+                groups.append((first, first.stat().st_mtime_ns))
+            except OSError:  # pragma: no cover - 分组正好在这一刻被删掉
+                continue
             for second in sorted(first.iterdir()):
                 if not second.is_dir() or second.name.startswith((".", "_")):
                     continue
                 if (second / SKILL_FILE).is_file():
                     out.append(second)
+        self._dirs_cache[root] = ((root_mtime, tuple(groups)), out)
         return out
+
+    @staticmethod
+    def _groups_unchanged(groups: Sequence[tuple[Path, int]]) -> bool:
+        """那几个"一层分组"的 mtime 还在不在原处（往分组里加技能就靠它发现）。"""
+        for path, mtime in groups:
+            try:
+                if path.stat().st_mtime_ns != mtime:
+                    return False
+            except OSError:
+                return False
+        return True
 
     def _load(self, directory: Path, *, source: str, root: Path) -> SkillRecord | None:
         """读一个技能目录。**坏文件不抛错**：一个技能写坏了不该让整个列表 500。
@@ -543,13 +713,53 @@ class SkillService:
         **frontmatter 校验在这里（前置）**：不合规的技能不返回"可用"记录，而是返回一条
         ``discarded=True`` 的记录（理由在 ``flagged`` 里）。这样"丢弃"与"为什么"
         是同一次扫描的产物，能力页与提示词两条路看到的是同一份判断。
+
+        **整条链按 `SKILL.md` 的 mtime + size 缓存**（见 `_record_cache`）：
+        命中时只重判一次 `requires`（它看运行期，与文件无关）。文件改一个字，
+        mtime/size 就变 ⇒ 自动重读重解析 ⇒ 不存在"缓存住旧描述"这回事。
         """
         path = directory / SKILL_FILE
         try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            logger.warning("读技能失败（跳过）：%s", path, exc_info=True)
+            stat = path.stat()
+        except OSError:
+            # 文件被删了/读不到：连缓存一起丢掉，别留一条指向不存在文件的记录
+            self._record_cache.pop(path, None)
             return None
+        key = (stat.st_mtime_ns, stat.st_size)
+        cached = self._record_cache.get(path)
+        if cached is not None and cached[0] == key:
+            parsed, meta = cached[1], cached[2]
+        else:
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                logger.warning("读技能失败（跳过）：%s", path, exc_info=True)
+                self._record_cache.pop(path, None)
+                return None
+            parsed, meta = self._parse(
+                text, directory=directory, source=source, root=root, path=path
+            )
+            if parsed is not None:
+                self._record_cache[path] = (key, parsed, meta)
+        if parsed is None:
+            return None
+        if parsed.discarded:
+            # 被丢弃的不再往下判 requires：要修的是 frontmatter（同下面那段说明）
+            return parsed
+        # `requires` 每次都重判：它看的是运行期（配置值 / 机器上有没有那个可执行文件）
+        unmet = self._unmet(meta)
+        if not unmet:
+            return parsed
+        return replace(parsed, used_by_prompt=False, flagged=(*parsed.flagged, *unmet))
+
+    def _parse(
+        self, text: str, *, directory: Path, source: str, root: Path, path: Path
+    ) -> tuple[SkillRecord | None, dict[str, Any]]:
+        """把一份 `SKILL.md` 解析成记录（**纯函数那一段**，可缓存的部分都在这里）。
+
+        与运行期无关：只看这份文本与它所在的位置。`requires` 的判定**不在这里**
+        （那是 `_unmet`，每次调用重判，理由见 `_load`）。
+        """
         meta, body = parse_frontmatter(text)
         # 上游常把 emoji 写成**字面转义**（`"\ud83e\udd16"`）：YAML 解出来是两个孤立代理项。
         # 提示词里带上它，httpx 一编码就 `UnicodeEncodeError: surrogates not allowed` ——
@@ -592,17 +802,22 @@ class SkillService:
             # 丢弃的就不再往下判扫描与 requires：要修的是 frontmatter，
             # 一次给一条能动手的理由比堆四条更有用（它们都不进目录，没有风险差别）。
             logger.info("技能被丢弃（%s）：%s", directory.name, dropped)
-            return SkillRecord(**common, used_by_prompt=False, flagged=(dropped,), discarded=True)
-        flagged: list[str] = []
-        flagged.extend(_scan(text))
-        flagged.extend(self._unmet(meta))
-        return SkillRecord(
+            record = SkillRecord(
+                **common, used_by_prompt=False, flagged=(dropped,), discarded=True
+            )
+            return record, meta
+        # **只算"与文件有关"的那一半**：安全扫描。`requires` 由 `_load` 每次重判
+        # （它看运行期），所以这里不能把它折进 `used_by_prompt` —— 那会把一个
+        # "今天缺依赖、配好就该能用的技能"永久缓存成不可用。
+        flagged = _scan(text)
+        record = SkillRecord(
             **common,
-            # 被安全扫描拦下或门控没满足的技能**不进目录但在列表里**：
+            # 被安全扫描拦下的技能**不进目录但在列表里**：
             # 静默藏掉会让用户以为技能装失败了（见模块头的安全那一段）。
             used_by_prompt=not flagged,
             flagged=tuple(flagged),
         )
+        return record, meta
 
 
 

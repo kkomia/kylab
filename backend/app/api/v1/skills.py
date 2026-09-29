@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile, status
 
 from app.api.auth import require_admin, require_read
 from app.api.v1.schemas import (
@@ -104,13 +104,25 @@ def _summaries(services) -> dict[str, str]:  # type: ignore[no-untyped-def]
 def list_skills(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_read)],
+    limit: Annotated[int | None, Query(ge=1, le=1000)] = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> SkillListOut:
     """**每次都重新扫磁盘**：用户可能刚往 ``data/skills/`` 丢了一个技能，
-    而那正是"技能比插件轻"的地方——不该要求他重启或点"重新加载"。"""
+    而那正是"技能比插件轻"的地方——不该要求他重启或点"重新加载"。
+
+    （"每次重新扫"现在由 `SkillService` 的目录签名 + 单条记录缓存兜着：
+    目录没变、文件没改时只花两次 stat；见 `SCAN_TTL_SECONDS`。）
+
+    **分页是后加的（2026-09-29 性能事故）**：库涨到 6,000+ 条之后，一次返回全部
+    既是 18 秒的另一半原因，也没人真的会一屏看 6,000 行。**默认行为一位不变**
+    （不传 `limit` 就是全部，向后兼容），前端以后再逐步采用。
+    `total` 与 `usable` 报的是**全库**的数，不是这一页的（否则界面上"共几条"会随着
+    翻页变来变去）。"""
     items = services.skills.list()
     summaries = _summaries(services)
+    window = items if limit is None else items[offset : offset + limit]
     return SkillListOut(
-        items=[_out(item, summaries.get(item.name, "")) for item in items],
+        items=[_out(item, summaries.get(item.name, "")) for item in window],
         usable=sum(1 for item in items if item.used_by_prompt),
     )
 
