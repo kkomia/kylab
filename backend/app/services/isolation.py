@@ -423,6 +423,11 @@ def _docker_plan(
 #: 项目虚拟环境里放解释器的那个目录名与可执行文件名（Windows 与 POSIX 两套）。
 _VENV_LAYOUTS = (("Scripts", "python.exe"), ("bin", "python"))
 
+#: 裸名字的别名：Windows 上**没有** ``python3`` 这个可执行文件，而模型十有八九会写它
+#: （2026-09-29 实测 Z-04 那两次 `[WinError 2] 系统找不到指定的文件` 就是这么来的）。
+#: 只在"项目虚拟环境里真有那个东西"时才替，命中不到照旧原样返回。
+_VENV_ALIASES: dict[str, tuple[str, ...]] = {"python3": ("python.exe", "python")}
+
 
 def _project_scripts_dir() -> Path | None:
     """项目**自己**的虚拟环境里放解释器的那个目录；找不到就 ``None``。
@@ -473,6 +478,10 @@ def _direct_argv(argv: list[str]) -> list[str]:
     带路径的（``E:\\…\\python.exe``、``./x``）照旧；项目虚拟环境里没有这个名字的
     （``ls``、``git``、``node``）**原样返回**——一个都不动。
 
+    ``python3`` 另算（见 ``_VENV_ALIASES``）：Windows 上没有这个可执行文件，而模型
+    经常写它，于是那条命令会以"起不了进程"收场（Z-04 实测两次）。这里把它接到项目
+    解释器上——只在**接得到**的时候，接不到仍然原样抛出，不假装成功。
+
     **为什么光给子进程 env 里的 PATH 不够**（2026-09-29 能力实测 K-03 的根因）：
     Windows 的 ``CreateProcess`` 找可执行文件**不看**我们传下去的那份 ``env``
     （实测：``subprocess.run(["python", …], env={"PATH": "<venv>\\Scripts;…"})`` 仍旧落到
@@ -488,9 +497,10 @@ def _direct_argv(argv: list[str]) -> list[str]:
     scripts = _project_scripts_dir()
     if scripts is None:
         return list(argv)
-    for candidate in (scripts / head, scripts / f"{head}.exe"):
-        if candidate.exists():
-            return [str(candidate), *argv[1:]]
+    for name in (head, *_VENV_ALIASES.get(head, ())):
+        for candidate in (scripts / name, scripts / f"{name}.exe"):
+            if candidate.exists():
+                return [str(candidate), *argv[1:]]
     return list(argv)
 
 

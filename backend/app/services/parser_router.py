@@ -70,11 +70,16 @@ def build_parsers(runtime: RuntimeConfigService) -> list[ParserProvider]:
     return parsers
 
 
-def _hint_for(probe: ProbeResult, filename: str) -> str:
+def hint_for(probe: ProbeResult, filename: str) -> str:
     """说不支持之后，再告诉用户**下一步做什么**。
 
     最需要这句的是"扫描件 + 没配云端引擎"：`暂不支持` 本身没给任何出路，
     而用户手上就有一个打不开的 PDF。这里直接指向设置页那两栏。
+
+    **两个地方都用它**（所以是公开函数）：一个是"一个候选都没有"（`decide`），
+    另一个是"候选全失败了"（`ingest._probe_and_parse`）——实测 .webm 上传正是后者：
+    MinerU 拒收它，而那时没配多模态、媒体直通压根不在候选里，用户看到的
+    就只有"MinerU 不支持该文件格式"这一句，手上那份视频其实一配就能进库。
     """
     suffix = suffix_of(filename)
     needs_ocr = suffix in PDF_EXTENSIONS or suffix in IMAGE_EXTENSIONS
@@ -164,6 +169,6 @@ class ParserRouter:
             return decisions[0]
         raise ParseError(
             f"暂不支持的文件类型：{filename or '(未命名)'}（探测结论：{probe.kind}）"
-            + _hint_for(probe, filename),
+            + hint_for(probe, filename),
             stage="probing",
         )

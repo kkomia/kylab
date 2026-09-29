@@ -20,7 +20,7 @@ from datetime import UTC, datetime, timedelta
 
 from app.core.exceptions import NotFoundError
 from app.models.enums import TaskKind, TaskState
-from app.services.ingest import IngestCanceled, IngestService
+from app.services.ingest import IngestCanceled, IngestService, sweep_stalled
 from app.storage.base import StoreBundle, TaskRecord
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,13 @@ DEFAULT_BASE_BACKOFF = 2.0
 DEFAULT_MAX_BACKOFF = 60.0
 DEFAULT_MAINTAIN_INTERVAL = 3600.0
 """空闲维护间隔（秒）。一小时一次：清理是"防表无限长大"，不必更勤。"""
+
+DEFAULT_WATCHDOG_INTERVAL = 60.0
+"""入库看门狗扫描间隔（秒）。
+
+一分钟一次：看门狗的门槛是 `ingest.STALL_SECONDS`（4 分钟），再加上这个间隔，
+一份卡住的文档最迟 **5 分钟**被发现——与方案 8 要的"≤5 分钟自动完成或失败"对齐。
+比这更勤没有意义（判定门槛是分钟级），更懒则会把"最迟多久被发现"顶到 5 分钟以上。"""
 
 DEFAULT_SCHEDULE_INTERVAL = 20.0
 """扫一遍"有没有定时任务到点"的间隔（秒）。
@@ -131,6 +138,9 @@ class TaskWorker:
         # 默认跟着租约时长走：租约过期多久，就该在多久内被发现。
         self._reclaim_interval = float(lease_seconds)
         self._last_reclaim = 0.0
+        # 入库看门狗的节奏：与租约回收**分开**（见 `_watchdog_loop`），一秒都别共用节拍
+        self._watchdog_interval = DEFAULT_WATCHDOG_INTERVAL
+        self._last_watchdog = 0.0
         self._current_task_id: str | None = None
         self._thread: asyncio.Task[None] | None = None
         #: 租约已易主的标志。见 ``_mark_lease_lost`` 的说明：它必须活在 worker 级，
@@ -211,6 +221,7 @@ class TaskWorker:
                 group.create_task(self._beat_loop(stopping))
                 group.create_task(self._schedule_loop(stopping))
                 group.create_task(self._reclaim_loop(stopping))
+                group.create_task(self._watchdog_loop(stopping))
         finally:
             await self._drain_thread()
 
@@ -252,6 +263,42 @@ class TaskWorker:
             self._reclaim_expired(force=True)
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(stopping.wait(), timeout=self._reclaim_interval)
+
+    async def _watchdog_loop(self, stopping: asyncio.Event) -> None:
+        """入库看门狗：把"任务已经没了、文档却停在半路"的那些捞回来（P0）。
+
+        **为什么要单起一条循环**：与 `_reclaim_loop` / `_schedule_loop` 同一条理由——
+        它做的事与手上有没有活**无关**。挂在空闲分支上的话，队列一忙它就永远不跑，
+        而"卡住"恰恰最可能发生在队列很忙的时候（那份文件就是在长任务间隙里被丢下的）。
+
+        它与租约回收是**两件不同的事**，别指望后者兜住：
+
+        - 租约回收管的是"任务还写着 running、租约过期了"（进程崩了、被 kill 了）；
+        - 看门狗管的是"任务已经收场（成功/失败/重试次数用尽）但文档阶段停在中间"
+          ——实测那三份素材就是后者：停在 `embedding` 15~30 分钟、`error` 为空、
+          没有待领任务，界面只会说"还在处理"。
+
+        异常一律吞掉：看门狗失败不该带走消费者，下一轮再扫一遍是免费的。
+        """
+        while not stopping.is_set() and not self._lease_lost.is_set():
+            self._sweep_stalled()
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stopping.wait(), timeout=self._watchdog_interval)
+
+    def _sweep_stalled(self) -> None:
+        """扫一轮。判定与动作都在 `ingest.sweep_stalled`（纯函数，可单测）。"""
+        try:
+            outcome = sweep_stalled(self._stores)
+        except Exception:
+            logger.exception("入库看门狗这一轮失败，跳过（下一轮再试）")
+            return
+        if outcome.touched:
+            logger.info(
+                "入库看门狗这一轮：重排 %d 份、判失败 %d 份",
+                len(outcome.requeued),
+                len(outcome.failed),
+            )
+
     async def _schedule_loop(self, stopping: asyncio.Event) -> None:
         """到点就把定时任务放进队列，**独立成一条循环**（v0.33）。
 

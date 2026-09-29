@@ -261,6 +261,28 @@ class DocumentService:
         """批量取切块数。列表页用它，避免每个文档查一次库。"""
         return self._stores.meta.count_chunks_by_documents(document_ids)
 
+    @staticmethod
+    def is_searchable(record: DocumentRecord, *, chunks: int) -> bool:
+        """这份文档**现在**能不能被检索到（对外语义，P1 修）。
+
+        判据**不是** ``stage``：``stage`` 是**流水线的进度**，与"检索索引里有没有它"
+        是两件事。切块与全文索引在 ``ingest._chunk`` 里是紧挨着落的（``chunked`` 起
+        关键词就查得到），向量在 ``embedding`` 的末尾落库；而阶段推进是**之后再写**的
+        一次更新。中间那一瞬——或者进程正好在两次写入之间被杀——会让一份
+        **已经能检索**的文档停在 ``embedding``。实测那三份卡住的素材里 xlsx 正是如此：
+        卡在 ``embedding``，检索能命中它，而模型读到 ``searchable=false`` 就不再搜了
+        （2026-09-29 能力实测第 6 条）。
+
+        所以判据落到**产物**上：有切块（全文索引与切块同一步落库）且**没被停用**
+        （停用语义就是"不参与检索"，见 ``DocumentRecord.disabled``）。
+
+        **宁可高估也不低估**：高估的代价是模型搜一次、没命中就如实说"库里没有"；
+        低估的代价是它**根本不去搜**——那正是上面那条实测里丢掉答案的方式。
+        残留的一处不精确：全文索引那一步单独失败时会高估（切块已落、索引没落），
+        而那种情况任务会重试，下一次成功即对齐。
+        """
+        return not record.disabled and chunks > 0
+
     def question_stats(self, document_ids: list[str]) -> dict[str, tuple[int, int]]:
         """批量取 ``{document_id: (有题块数, 问题总数)}``（v24，列表页显示出题情况）。"""
         return self._stores.meta.question_stats_by_documents(document_ids)

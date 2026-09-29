@@ -220,8 +220,8 @@ def test_upload_rejects_oversized_file(client: TestClient, kb_id: str, monkeypat
 
     assert response.status_code == 413
     body = response.json()
-    assert body["error"]["code"] == "payload_too_large"
-    assert "上限" in body["error"]["message"], "4xx 要说人话：告诉用户是大小限制"
+    assert body["code"] == "payload_too_large"
+    assert "上限" in body["message"], "4xx 要说人话：告诉用户是大小限制"
 
 
 def test_upload_limit_is_the_documented_one() -> None:

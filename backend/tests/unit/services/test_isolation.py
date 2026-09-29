@@ -455,3 +455,38 @@ def test_direct_backend_puts_the_project_interpreter_first(tmp_path, monkeypatch
     assert lines and Path(lines[0]).parent.resolve() == scripts.resolve(), lines
     # 第二行是 numpy 的版本 = `import numpy` 真的成了（K-03 那条路的判据）
     assert len(lines) >= 2 and lines[1], lines
+
+
+def test_python3_is_aliased_to_the_project_interpreter(tmp_path) -> None:
+    """``python3`` 要接到项目解释器上：Windows 上**没有**这个可执行文件。
+
+    2026-09-29 实测 Z-04 那两次 `起不了隔离进程（direct）：[WinError 2] 系统找不到
+    指定的文件。` 就是模型写了 ``python3``——命令压根没起来（而它是这台机器上很自然
+    的一个写法）。这里**真跑一条**，拿命令自己报的解释器当判据；同时确认**命中不到
+    的名字一个都不动**（不是把所有裸名字都换掉）。
+    """
+    scripts = iso._project_scripts_dir()
+    if scripts is None:
+        pytest.skip("这台机器上没有 backend/.venv，推导不到项目解释器")
+
+    box = tmp_path / "box"
+    box.mkdir()
+    result = iso.run_isolated(
+        ["python3", "-c", "import sys; print(sys.executable)"],
+        workspace_root=tmp_path,
+        sandbox_dir=box,
+        isolation=iso.direct_isolation(),
+        timeout=60,
+    )
+
+    assert result.ok, result.stderr or result.stdout
+    assert Path(result.stdout.strip()).parent.resolve() == scripts.resolve()
+
+    # 反面：项目虚拟环境里没有的名字（这里用 `node`，脚本目录里不会有）原样保留
+    plan = iso.build_plan(
+        ["node", "-v"],
+        workspace_root=tmp_path,
+        sandbox_dir=box,
+        isolation=iso.direct_isolation(),
+    )
+    assert plan.argv[0] == "node"

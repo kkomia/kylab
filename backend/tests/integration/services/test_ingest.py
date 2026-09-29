@@ -1022,3 +1022,231 @@ def test_media_document_is_indexed_with_the_media_vector(bundle: StoreBundle) ->
     text_vector = embedder.embed([chunks[0].index_text])[0]
     other = bundle.vectors.search(kb.id, query_vector=text_vector, top_k=1)
     assert other[0].distance > 0.01, "存的像是文本向量——那说明媒体那条路根本没走到"
+
+
+# --------------------------------------------------------------- 入库看门狗（P0）
+
+
+def _document(bundle: StoreBundle, ingest_service: IngestService, *, name: str = "看门狗.md"):
+    """造一份刚上传的文档（还没人跑它）。"""
+    return ingest_service.submit(
+        knowledge_base_id="kb_1", filename=name, content=(MARKDOWN + name).encode()
+    ).document
+
+
+def _watchdog_task(bundle: StoreBundle, document_id: str, *, round_: int, state=None):
+    from app.models.enums import TaskKind, TaskState
+    from app.storage.base import TaskRecord
+
+    return bundle.meta.enqueue_task(
+        TaskRecord(
+            id=f"task_wd_{document_id}_{round_}",
+            kind=TaskKind.PARSE,
+            state=state or TaskState.SUCCEEDED,
+            payload={"document_id": document_id, "watchdog_round": round_},
+            document_id=document_id,
+        )
+    )
+
+
+def test_watchdog_requeues_a_document_whose_task_is_gone(bundle: StoreBundle, kb,
+                                                         ingest_service: IngestService) -> None:
+    """卡在中间阶段、又**没有任何待领任务**的文档要被自动重排（P0，实测那 3/6 份）。
+
+    复现方式：把一份文档推进到 `embedding` 之后**谁都不管它**（这正是实测现场：
+    `stage=embedding` 停 15~30 分钟、`error` 为空、任务已经收场）。判据用的时间是
+    `now`，所以这里把"现在"往后拨 5 分钟，不用真等。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.enums import DocumentStage
+    from app.services.ingest import sweep_stalled
+
+    document = _document(bundle, ingest_service)
+    bundle.meta.update_document_stage(document.id, DocumentStage.EMBEDDING)
+
+    outcome = sweep_stalled(bundle, now=datetime.now(UTC) + timedelta(minutes=5))
+
+    assert [item[0] for item in outcome.requeued] == [document.id]
+    assert outcome.requeued[0][1] == "embedding"
+    assert outcome.requeued[0][2] == 1, "第一次重排"
+    assert not outcome.failed
+    queued = bundle.meta.active_tasks_by_documents([document.id])
+    assert queued[document.id].payload["watchdog_round"] == 1
+
+
+def test_watchdog_keeps_its_hands_off_a_live_task(bundle: StoreBundle, kb,
+                                                  ingest_service: IngestService) -> None:
+    """**还在跑/还在排队**的文档一根汗毛都不许动（否则等于和正在干活的 worker 抢）。"""
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.enums import DocumentStage, TaskKind, TaskState
+    from app.services.ingest import sweep_stalled
+    from app.storage.base import TaskRecord
+
+    document = _document(bundle, ingest_service, name="在跑.md")
+    bundle.meta.update_document_stage(document.id, DocumentStage.PARSING)
+    bundle.meta.enqueue_task(
+        TaskRecord(
+            id="task_live_1",
+            kind=TaskKind.PARSE,
+            state=TaskState.RUNNING,
+            payload={"document_id": document.id},
+            document_id=document.id,
+        )
+    )
+
+    outcome = sweep_stalled(bundle, now=datetime.now(UTC) + timedelta(hours=1))
+
+    assert outcome.requeued == ()
+    assert outcome.failed == ()
+
+
+def test_watchdog_backs_off_before_the_next_round(bundle: StoreBundle, kb,
+                                                  ingest_service: IngestService) -> None:
+    """重排过一次之后，阈值翻倍：第 5 分钟不碰它，第 9 分钟才碰（退避，别把库刷爆）。"""
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.enums import DocumentStage
+    from app.services.ingest import sweep_stalled
+
+    document = _document(bundle, ingest_service, name="退避.md")
+    bundle.meta.update_document_stage(document.id, DocumentStage.EMBEDDING)
+    _watchdog_task(bundle, document.id, round_=1)
+
+    early = sweep_stalled(bundle, now=datetime.now(UTC) + timedelta(minutes=5))
+    assert early.requeued == (), "阈值已翻倍到 8 分钟，5 分钟时不该再排"
+
+    late = sweep_stalled(bundle, now=datetime.now(UTC) + timedelta(minutes=9))
+    assert [item[2] for item in late.requeued] == [2], "第二轮"
+
+
+def test_watchdog_gives_up_with_a_human_reason(bundle: StoreBundle, kb,
+                                               ingest_service: IngestService) -> None:
+    """重排到上限还不行 → **明确 failed 并写清原因**，不许继续无声无息（P0 的另一半）。"""
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.enums import DocumentStage, TaskState
+    from app.services.ingest import sweep_stalled
+
+    document = _document(bundle, ingest_service, name="到头.md")
+    bundle.meta.update_document_stage(document.id, DocumentStage.EMBEDDING)
+    for round_ in (1, 2, 3):
+        _watchdog_task(bundle, document.id, round_=round_, state=TaskState.FAILED)
+
+    outcome = sweep_stalled(bundle, now=datetime.now(UTC) + timedelta(minutes=60))
+
+    assert outcome.requeued == ()
+    assert [item[0] for item in outcome.failed] == [document.id]
+    refreshed = bundle.meta.get_document(document.id)
+    assert refreshed.stage is DocumentStage.FAILED
+    assert refreshed.error and "watchdog" in refreshed.error
+    assert "自动重排 3 次" in refreshed.error
+    assert "重新处理" in refreshed.error, "要给人一条出路，不能只说失败"
+
+
+def test_watchdog_leaves_terminal_and_fresh_documents_alone(bundle: StoreBundle, kb,
+                                                            ingest_service: IngestService) -> None:
+    """终态（已索引/失败/用户取消）与**刚刚**进来的文档都不该被看门狗碰。
+
+    另外钉住一个**有意的**行为：一份"刚上传、还没有任何任务"的文档，过了阈值之后
+    **是要被重排的**——"上传成功了但任务根本没建出来"本身就是同一种泄漏
+    （实测那 3 份素材就是这个形状：文档在，任务没了），不该因为"它看起来刚到"放过。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from app.models.enums import DocumentStage
+    from app.services.ingest import sweep_stalled
+
+    indexed = _document(bundle, ingest_service, name="已完成.md")
+    bundle.meta.update_document_stage(indexed.id, DocumentStage.INDEXED)
+    fresh = _document(bundle, ingest_service, name="刚到.md")
+    canceled = _document(bundle, ingest_service, name="取消了.md")
+    bundle.meta.update_document_stage(canceled.id, DocumentStage.CANCELED)
+
+    now = datetime.now(UTC)
+    outcome_now = sweep_stalled(bundle, now=now)
+    assert outcome_now.requeued == (), "刚进来的还不该被碰"
+    assert outcome_now.failed == ()
+
+    later = sweep_stalled(bundle, now=now + timedelta(hours=2))
+    assert [item[0] for item in later.requeued] == [fresh.id], "只碰那个非终态、没人管的"
+    assert later.failed == ()
+
+
+def test_searchable_follows_the_artifacts_not_the_stage(bundle: StoreBundle, kb,
+                                                        ingest_service: IngestService) -> None:
+    """`searchable` 按**产物**算：卡在 `embedding` 但切块已落库的文档**查得到**（P1）。
+
+    实测（2026-09-29 第 6 条）：xlsx 卡在 `embedding` 时已经能被检索到，而模型从
+    `get_document_status` 读到 `searchable=false`（旧口径 = `stage == indexed`），
+    于是它根本不去搜。这条把口径钉在"切块在不在"上，并覆盖停用与空文档两个反面。
+    """
+    from app.models.enums import DocumentStage
+    from app.services.documents import DocumentService
+
+    outcome = ingest_service.submit(knowledge_base_id="kb_1", filename="卡住.md",
+                                    content=(MARKDOWN + "卡住").encode())
+    ingest_service.ingest(outcome.document.id)  # 走完一遍：切块 + 全文 + 向量都落库
+    bundle.meta.update_document_stage(outcome.document.id, DocumentStage.EMBEDDING)
+
+    record = bundle.meta.get_document(outcome.document.id)
+    chunks = bundle.meta.count_chunks(record.id)
+    assert chunks > 0
+    assert DocumentService.is_searchable(record, chunks=chunks) is True
+    # 它真的查得到（不是"我们以为它查得到"）
+    hits = bundle.fulltext.search(query="混合召回", top_k=5, kb_id="kb_1")
+    assert hits and hits[0].document_id == record.id
+
+    fresh = _document(bundle, ingest_service, name="空.md")
+    assert DocumentService.is_searchable(fresh, chunks=bundle.meta.count_chunks(fresh.id)) is False
+
+    bundle.meta.set_document_disabled(record.id, True)
+    disabled = bundle.meta.get_document(record.id)
+    assert DocumentService.is_searchable(disabled, chunks=chunks) is False
+
+
+def test_a_video_that_every_channel_rejects_says_what_to_configure(bundle: StoreBundle, kb) -> None:  # type: ignore[no-untyped-def]
+    """视频被云端拒收、又没配多模态时，错误里要带**去哪一栏配置**（方案 13）。
+
+    真现场：一份自造 `.webm`（浏览器给的 mime 是 `application/octet-stream`，探测结论
+    落到 `scanned`）被 MinerU 拒收（-60002），而那一刻"媒体直通"不在候选里
+    （当时嵌入协议还不支持媒体）→ 候选只剩一个 → 用户看到的只有
+    "MinerU 不支持该文件格式"，手上那份视频其实**配一下就能进库**。
+    这里钉住那句下一步，同时确认**原始原因不被吞掉**。
+    """
+    class _MinerUish(PlainTextParser):
+        """像 MinerU 那样：**先认下**再拒（探测结论 `scanned` 的它都收）。"""
+
+        name = "MinerUFake"
+
+        def supports(self, **_kwargs) -> bool:  # type: ignore[override]
+            return True
+
+        def parse(self, **_kwargs):  # type: ignore[override]
+            raise ParseError(
+                "MinerU 申请上传地址失败（-60002）：MinerU 不支持该文件格式", stage="parsing"
+            )
+
+    service = IngestService(
+        bundle,
+        router=ParserRouter([_MinerUish()]),
+        embedder=DeterministicEmbedder(dim=DIM),
+    )
+    outcome = service.submit(
+        knowledge_base_id="kb_1",
+        filename="录屏.webm",
+        content=b"\x1aE\xdf\xa3" + b"webm-ish bytes",
+        mime_type="application/octet-stream",
+    )
+
+    with pytest.raises(IngestError) as excinfo:
+        service.ingest(outcome.document.id)
+
+    message = str(excinfo.value)
+    assert "-60002" in message, "原始原因不能丢"
+    assert "视频只能走多模态嵌入" in message, "要告诉用户下一步去哪一栏"
+    assert "设置" in message
+    failed = bundle.meta.get_document(outcome.document.id)
+    assert failed.stage is DocumentStage.FAILED
+    assert failed.error and "多模态" in failed.error

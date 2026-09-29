@@ -18,18 +18,19 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 from app.core.exceptions import ConflictError, InvalidRequestError, NotFoundError
-from app.models.enums import DataSourceKind, DocumentStage
+from app.models.enums import TERMINAL_STAGES, DataSourceKind, DocumentStage, TaskKind, TaskState
 from app.parsers.base import ParseError, ParseResult, ParserProvider
 from app.parsers.media_direct import MediaDirectParser
-from app.parsers.probe import probe, suffix_of
+from app.parsers.probe import ProbeResult, probe, suffix_of
 from app.pipeline.state_machine import InvalidTransition, assert_transition
 from app.services.chunking import ChunkingConfig, chunk_markdown, config_from_record
 from app.services.embedding.base import EmbeddingError, EmbeddingProvider
 from app.services.embedding.resolver import EmbeddingResolver
-from app.services.parser_router import ParserRouter, RoutingDecision
+from app.services.parser_router import ParserRouter, RoutingDecision, hint_for
 from app.services.splitting import (
     PageRangeSplitter,
     PartOutcome,
@@ -49,6 +50,7 @@ from app.storage.base import (
     KnowledgeBaseRecord,
     ParseResultRecord,
     StoreBundle,
+    TaskRecord,
     content_key,
 )
 
@@ -72,6 +74,20 @@ def _degrade_message(filename: str, failures: list[tuple[str, str]]) -> str:
     """
     detail = "；".join(f"{name}：{reason}" for name, reason in failures)
     return f"所有解析通道都失败了（{filename}）：{detail}"
+
+
+def _parse_hint(document: DocumentRecord, probe_result: ProbeResult) -> str:
+    """解析通道全失败之后，补一句"下一步怎么办"（视频 / 扫描件那两类最需要）。
+
+    走的是路由那一层**同一句** `hint_for`，这里不另写文案：那句话同时用在
+    "一个候选都没有"的路径上，两处说法不一致会让人怀疑自己看错了设置。
+
+    实测（方案 13，2026-09-29）：一份自造 `.webm` 上传即失败，原文只有
+    ``[parsing] MinerU 申请上传地址失败（-60002）：MinerU 不支持该文件格式`` ——
+    而它其实是**能进库的**（配好多模态之后同一条链路 3.7 秒就 indexed）。
+    缺的就是这一句"视频只能走多模态嵌入：请到设置…"。
+    """
+    return hint_for(probe_result, document.name)
 
 
 def _part_id(document_id: str, index: int) -> str:
@@ -400,12 +416,19 @@ class IngestService:
                 # 触发"再试下一个引擎"——那会把"用户不想跑了"变成"换个引擎继续花钱"
                 failures.append((decision.parser_name, str(exc)))
                 if index == len(decisions) - 1:
+                    hint = _parse_hint(document, probe_result)
                     # **只有一个候选时原样抛出**：包一层"所有通道都失败"只会让
-                    # 那条本来可读的原因（"云端额度用尽"）前面多一段废话
+                    # 那条本来可读的原因（"云端额度用尽"）前面多一段废话——
+                    # 但**下一步怎么办**要补上（见 `_parse_hint`）：
+                    # 实测 .webm 上传就是这么失败的（MinerU 拒收 + 没配多模态，
+                    # 用户看到的只有"MinerU 不支持该文件格式"，而手上那份视频
+                    # 其实一配就能进库——补上那句之后他知道该去哪一栏）。
                     if len(failures) == 1:
-                        raise
+                        if not hint:
+                            raise
+                        raise ParseError(f"{exc}{hint}", stage="parsing") from exc
                     raise ParseError(
-                        _degrade_message(document.name, failures), stage="parsing"
+                        _degrade_message(document.name, failures) + hint, stage="parsing"
                     ) from exc
                 logger.warning(
                     "文档 %s 用 %s 解析失败，降级到 %s：%s",
@@ -895,6 +918,170 @@ def _before(current: DocumentStage, target: DocumentStage) -> bool:
 
 def _suffix_of(filename: str) -> str:
     return suffix_of(filename)
+
+
+# --------------------------------------------------------------- 入库看门狗（P0）
+
+STALL_SECONDS = 240.0
+"""卡住多久算"这个任务丢了"（首轮阈值）。
+
+**依据**：2026-09-29 能力实测里那 3 份素材（`probe-shapes.jpg` 43 KB、
+`probe-复杂表头.xlsx` 5.3 KB、`probe-pure-pixels.png` 5.7 KB）停在 `embedding`
+**15~30 分钟**、`error` 为空；而同一天对它们各点一次"重新处理"，**每份约 3 秒**
+就跑完了——也就是说"正常该跑多久"是**秒级**，4 分钟离它有三个数量级的余量，
+不会被一次慢解析误判（真在跑的解析有租约，压根进不了这个判据，见 `sweep_stalled`）。
+看门狗每分钟扫一次（`DEFAULT_WATCHDOG_INTERVAL`），所以最迟 **5 分钟**被发现——
+正好落在方案 8 要的"≤5 分钟自动完成或失败"。
+"""
+
+STALL_MAX_ROUNDS = 3
+"""最多自动重排几次。
+
+**别无限重排**：一次重排可能真的再去花云端额度与 embedding 配额，而卡住的原因
+（比如那份文件的解析产物根本对不上）重排 100 次也一样。3 次之后**明确置 `failed`
+并写清卡在哪一步、重排过几次**——把它从"无声无息"变成一条用户看得见的原因，
+那正是这条 P0 要的东西。"""
+
+STALL_BACKOFF = 2.0
+"""每重排一次，下一次判定的阈值翻倍（4 → 8 → 16 分钟）。
+
+与队列自己的指数退避同一个思路（见 `queue_worker.backoff_for`）：真在慢慢跑的任务
+（大 PDF 的云端解析）第一轮误判之后，第二轮要等更久才轮得到它，避免反复插队
+把正在干活的那一份搅乱。"""
+
+
+@dataclass(frozen=True, slots=True)
+class StalledSweep:
+    """一轮看门狗做了什么（便于日志、测试与调用方观察）。"""
+
+    requeued: tuple[tuple[str, str, int], ...] = ()
+    """``(document_id, stage, 第几次重排)``。"""
+
+    failed: tuple[tuple[str, str], ...] = ()
+    """``(document_id, 给人看的原因)``。"""
+
+    @property
+    def touched(self) -> bool:
+        return bool(self.requeued or self.failed)
+
+
+def sweep_stalled(
+    stores: StoreBundle,
+    *,
+    now: datetime | None = None,
+    stall_seconds: float = STALL_SECONDS,
+    max_rounds: int = STALL_MAX_ROUNDS,
+) -> StalledSweep:
+    """找出"任务已经没了、文档却停在半路"的那些，重排或判失败。
+
+    **为什么需要它**（这是既有机制的一个真空）：租约回收（`reclaim_expired_tasks`）
+    只管"任务还是 `running`、租约过期了"；而**任务已经收场**（成功、失败、
+    或重试次数用尽被判失败）**但文档阶段停在主链路中间**时，谁都不会再碰它一下：
+    没有待领任务、没有 `error`、界面只说"还在处理"。实测就是这么停 15~30 分钟的。
+
+    判据三条，缺一条都会误伤正在干活的任务：
+
+    1. **文档阶段不是终态**（`TERMINAL_STAGES` 之外）——`indexed` / `failed` /
+       `canceled` 都不管，取消是用户的决定，不该被"救"回来；
+    2. **它身上没有待执行/执行中的任务**（`active_tasks_by_documents`）——排队中或
+       正跑着的一律跳过，这一步让"真在慢慢解析"天然免疫（那些任务还在，且有租约）；
+    3. **离最近一次阶段变更已超过本轮阈值**（阈值 = `STALL_SECONDS` × 退避）。
+
+    时间取的是**阶段事件表**里最后一条（`list_document_stage_events`）而不是
+    `documents.updated_at`：后者会被改名、写摘要、归档目录这些**与摄入无关**的动作
+    顺手刷新，用它当"卡了多久"会让一份真的卡住的文档因为改了个名字就重新计时。
+    """
+    moment = now or datetime.now(UTC)
+    documents = [
+        document
+        for kb in stores.meta.list_knowledge_bases()
+        for document in stores.meta.list_documents(kb.id)
+    ]
+    candidates = [doc for doc in documents if doc.stage not in TERMINAL_STAGES]
+    if not candidates:
+        return StalledSweep()
+
+    active = stores.meta.active_tasks_by_documents([doc.id for doc in candidates])
+    rounds = _watchdog_rounds(stores)
+
+    requeued: list[tuple[str, str, int]] = []
+    failed: list[tuple[str, str]] = []
+    for document in candidates:
+        if document.id in active:
+            # 还有活在它身上：排队中或正在跑（后者有租约在续），不插手
+            continue
+        done = rounds.get(document.id, 0)
+        limit = stall_seconds * (STALL_BACKOFF**done)
+        stuck = _stalled_seconds(stores, document, moment)
+        if stuck is None or stuck < limit:
+            continue
+
+        minutes = stuck / 60.0
+        if done >= max_rounds:
+            reason = (
+                f"[watchdog] 这份文档在「{document.stage.value}」停了 {minutes:.0f} 分钟，"
+                f"已自动重排 {done} 次仍未完成；请点「重新处理」，"
+                "或到任务中心看它的失败原因（最近一条任务里写着）"
+            )
+            stores.meta.update_document_stage(document.id, DocumentStage.FAILED, error=reason)
+            logger.error(
+                "入库看门狗：文档 %s「%s」在 %s 停了 %.0f 分钟，重排 %d 次仍未完成，判为失败",
+                document.id,
+                document.name,
+                document.stage.value,
+                minutes,
+                done,
+            )
+            failed.append((document.id, reason))
+            continue
+
+        stores.meta.enqueue_task(
+            TaskRecord(
+                id=f"task_{uuid.uuid4().hex[:12]}",
+                kind=TaskKind.PARSE,
+                state=TaskState.PENDING,
+                # `watchdog_round` 是**重排次数唯一的落地处**：任务中心里也看得见
+                # "这条为什么又冒出来一条"，而下一轮扫描据此算退避与上限。
+                payload={"document_id": document.id, "watchdog_round": done + 1},
+                document_id=document.id,
+            )
+        )
+        logger.warning(
+            "入库看门狗：文档 %s「%s」在 %s 停了 %.0f 分钟（没人跑它了），第 %d 次自动重排",
+            document.id,
+            document.name,
+            document.stage.value,
+            minutes,
+            done + 1,
+        )
+        requeued.append((document.id, document.stage.value, done + 1))
+
+    return StalledSweep(requeued=tuple(requeued), failed=tuple(failed))
+
+
+def _watchdog_rounds(stores: StoreBundle) -> dict[str, int]:
+    """每份文档已经被看门狗重排过几次（取它所有看门狗任务里最大的那个轮次）。"""
+    rounds: dict[str, int] = {}
+    for task in stores.meta.list_tasks():
+        if not task.document_id:
+            continue
+        value = task.payload.get("watchdog_round")
+        if isinstance(value, int):
+            rounds[task.document_id] = max(rounds.get(task.document_id, 0), value)
+    return rounds
+
+
+def _stalled_seconds(
+    stores: StoreBundle, document: DocumentRecord, moment: datetime
+) -> float | None:
+    """这份文档处在当前阶段多久了（秒）。取不到时间就返回 ``None`` = 不判它。"""
+    events = stores.meta.list_document_stage_events(document.id)
+    entered = events[-1].entered_at if events else document.updated_at
+    if entered is None:
+        return None
+    if entered.tzinfo is None:
+        entered = entered.replace(tzinfo=UTC)
+    return max(0.0, (moment - entered).total_seconds())
 
 
 #: 超过这个维度的库**没有向量索引**（pgvector 的 HNSW 上限，见
