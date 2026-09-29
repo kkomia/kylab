@@ -3236,13 +3236,25 @@ class PostgresMetaStore(MetaStore):
     def list_conversations(
         self, *, limit: int | None = None, q: str | None = None
     ) -> list[ConversationRecord]:
-        """置顶优先，其次最近更新；``q`` 按标题包含匹配（忽略大小写）。"""
+        """置顶优先，其次最近更新；``q`` 按**标题或消息正文**包含匹配（忽略大小写）。"""
         sql = "SELECT * FROM conversations"
         params: list[object] = []
         if q:
             # 与文档搜索同一套转义：用户搜 "a_b" 要字面匹配，而不是"a 后跟任意一字符"
             escaped = q.replace("\\", r"\\").replace("%", r"\%").replace("_", r"\_")
-            sql += r" WHERE title ILIKE %s ESCAPE '\'"
+            # **标题或正文**（D12，2026-09-28 走查）：原先只比 `title`，于是
+            # "搜一句我记得说过的话"永远搜不到——走查实测同一个词在正文里命中 3 行 /
+            # 2 条会话，而列表接口 0 命中。
+            #
+            # 用 `EXISTS` 而不是 JOIN：一条会话可能有多条消息命中，JOIN 会把它复制成
+            # 多行，而调用方的 LIMIT 语义是"前 N 条**会话**"，不是"前 N 条消息"。
+            sql += (
+                r" WHERE title ILIKE %s ESCAPE '\'"
+                r" OR EXISTS (SELECT 1 FROM chat_messages m"
+                r" WHERE m.conversation_id = conversations.id"
+                r" AND m.content ILIKE %s ESCAPE '\')"
+            )
+            params.append(f"%{escaped}%")
             params.append(f"%{escaped}%")
         # **置顶的排最前**，其余按最近更新。PG 的 pinned 是 boolean，DESC 把 true 排前
         sql += " ORDER BY pinned DESC, updated_at DESC"

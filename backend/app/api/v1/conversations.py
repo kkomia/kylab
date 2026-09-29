@@ -96,7 +96,9 @@ def list_conversations(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_read)],
     limit: int = Query(default=50, ge=1, le=200),
-    q: str | None = Query(default=None, description="按标题搜索（包含匹配）"),
+    q: str | None = Query(
+        default=None, description="按标题**或消息正文**搜索（包含匹配，忽略大小写）"
+    ),
     workspace_id: str | None = Query(default=None, description="只看这个工作区下的会话（v0.15）"),
     ungrouped: bool = Query(default=False, description="只看**未归档**的会话（不属于任何工作区）"),
     archived: bool = Query(

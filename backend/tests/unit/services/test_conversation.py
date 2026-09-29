@@ -341,3 +341,31 @@ def test_rewind_two_turns(service) -> None:  # type: ignore[no-untyped-def]
 
     assert query == "一"
     assert service.messages(record.id) == []
+
+
+def test_search_also_matches_message_content(service) -> None:  # type: ignore[no-untyped-def]
+    """D12：搜索要**同时**看标题与消息正文。
+
+    走查实测：同一个词在正文里命中 3 行 / 2 条会话，而列表接口 0 命中——
+    "搜一句我记得说过的话"这个最常见的用法直接失效。
+    """
+    _seed(service, 2)
+    target = service.create(kb_ids=["kb_1"], title="随便一个标题")
+    service.append(target.id, role="user", content="帮我看看眼轴长度的随访数据")
+    service.append(target.id, role="assistant", content="眼轴随访 18 个月")
+
+    hits = service.list(q="眼轴")
+
+    assert [item.id for item in hits] == [target.id]
+
+
+def test_search_returns_a_conversation_once_even_with_many_hits(service) -> None:  # type: ignore[no-untyped-def]
+    """一条会话里命中多条消息时**只出现一次**——这正是那条 SQL 用 `EXISTS` 而不是
+    JOIN 的原因（JOIN 会把它复制成多行，而 LIMIT 的语义是"前 N 条会话"）。"""
+    record = service.create(kb_ids=["kb_1"], title="标题里没有那个词")
+    for index in range(3):
+        service.append(record.id, role="user", content=f"第{index}条都提到眼轴")
+
+    hits = service.list(q="眼轴")
+
+    assert [item.id for item in hits] == [record.id]
