@@ -679,3 +679,73 @@ it('会话行菜单能导出 Markdown（D13，2026-09-28 走查）', async () =>
   expect(text).toContain('先看随访月数。')
   expect(revokeUrl).toHaveBeenCalledWith('blob:fake')
 })
+
+it('另一条会话在生成时，侧栏那一行有小点（D17，2026-09-28 走查）', async () => {
+  // 病灶：切走之后**没有任何提示** —— 用户只能靠"回来时回答有没有变长"猜
+  const { useLiveTurnStore } = await import('@/features/chat/model/liveTurn')
+  listConversationsMock.mockResolvedValue({
+    items: [
+      conversation({ id: 'c1', title: '会话 A' }),
+      conversation({ id: 'c2', title: '会话 B' }),
+    ],
+  })
+  // live 槽：**c2 在跑**，而这一页停在 /notes（两条都不是"当前打开的那条"）
+  useLiveTurnStore.setState({
+    live: {
+      conversationId: 'c2',
+      mode: 'append',
+      query: '问一句',
+      thinking: null,
+      text: '',
+      thinkingText: '',
+      steps: [],
+      sources: [],
+      streaming: true,
+      error: '',
+      recovered: false,
+    } as never,
+  })
+
+  try {
+    renderShell()
+
+    expect(await screen.findByTestId('generating-c2')).toBeInTheDocument()
+    // **在跑的那条**才有；别的不许有
+    expect(screen.queryByTestId('generating-c1')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('正在生成')).toBeInTheDocument()
+  } finally {
+    useLiveTurnStore.setState({ live: null })
+  }
+})
+
+it('当前正看的那条会话**不**另外加点（D17：它已经有「停止生成」）', async () => {
+  const { useLiveTurnStore } = await import('@/features/chat/model/liveTurn')
+  listConversationsMock.mockResolvedValue({
+    items: [conversation({ id: 'c2', title: '会话 B' })],
+  })
+  useLiveTurnStore.setState({
+    live: {
+      conversationId: 'c2',
+      mode: 'append',
+      query: '问一句',
+      thinking: null,
+      text: '',
+      thinkingText: '',
+      steps: [],
+      sources: [],
+      streaming: true,
+      error: '',
+      recovered: false,
+    } as never,
+  })
+
+  try {
+    // 就停在这条会话上（`current`）—— 这时输入框上已经有「停止生成」
+    renderShell('/chat/c2')
+
+    expect(await screen.findByRole('link', { name: /会话 B/ })).toBeInTheDocument()
+    expect(screen.queryByTestId('generating-c2')).not.toBeInTheDocument()
+  } finally {
+    useLiveTurnStore.setState({ live: null })
+  }
+})

@@ -83,6 +83,7 @@ import { useQueryClient } from '@tanstack/react-query'
 
 import { preloadPage, type PageName } from '@/app/routes'
 import { prefetchConversationDetail } from '@/features/chat/runtime/useChatData'
+import { useLiveTurn } from '@/features/chat/model/liveTurn'
 import {
   RiAddLine,
   RiArrowDownSLine,
@@ -293,6 +294,8 @@ function ConversationRow({
 }) {
   const title = item.title || '未命名对话'
   const queryClient = useQueryClient()
+  // 哪条会话在生成（D17）：live 槽同时只有一条，但它带着 `conversationId`
+  const live = useLiveTurn()
   return (
     <div className="ly-side-row-wrap">
       <Link
@@ -313,6 +316,23 @@ function ConversationRow({
         }}
       >
         <span className="min-w-0 flex-1 truncate">{title}</span>
+        {/*
+          **"这条会话还在生成"**（D17，2026-09-28 走查）：live 槽同时只有一条在跑，
+          但它带着 `conversationId`——所以切到别的会话之后，界面完全知道"哪条还在跑"。
+          原先什么都不显示：用户切走再回来，只能靠"回答有没有变长"猜。
+
+          **当前正看的那条不显示**：那条会话的输入框上就有「停止生成」，
+          再点一颗小点只是噪音（走查原话也是"切走之后"看不到）。
+        */}
+        {!current && live?.conversationId === item.id ? (
+          <span
+            role="status"
+            aria-label="正在生成"
+            title="这条会话正在生成"
+            data-testid={`generating-${item.id}`}
+            className="h-[6px] w-[6px] shrink-0 animate-pulse rounded-full bg-[var(--accent)] motion-reduce:animate-none"
+          />
+        ) : null}
         {/*
           **这一条是什么时候聊的**（D14，2026-09-28 走查）。
           原先整行只有标题——用户在一屏会话里分不出"这是上午那条还是上周那条"。
