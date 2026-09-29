@@ -96,6 +96,22 @@ CATEGORIES: tuple[SkillCategory, ...] = (
 
 OTHER = "other"
 
+#: **产品自带**的技能：它们**不在** `backend/data/installed.json` 里——那份记的是
+#: "装进来的"，而这几条随产品一起发布，`GET /api/v1/skills` 一样会把它们列出来。
+#: 所以这里给一张**按名字钉死**的表（2026-09-29 用户裁定：它们是产品自带的能力，
+#: 排在最前还是落「其他」对用户差别很大）。
+#:
+#: 为什么不给它们写正则：打分那套的坑就是"泛词抢技能"，而这几条的名字里
+#: （`kylab-web` / `kylab-memory`…）本来就没有足够独特的词——钉名字既明确又不会误伤。
+#: 将来产品又添自带技能时，**在这里加一行**（并跑 `--write`）。
+BUILTIN_SKILLS: dict[str, str] = {
+    "kylab-delegate": "productivity",
+    "kylab-knowledge-base": "productivity",
+    "kylab-memory": "productivity",
+    "kylab-web": "productivity",
+    "kylab-office-export": "documents",
+}
+
 #: 每类的**加权信号**（权重含义见模块头注）。顺序在打分里不重要，只影响打平时的先后。
 SIGNALS: tuple[tuple[str, tuple[tuple[int, str], ...]], ...] = (
     (
@@ -293,7 +309,14 @@ def scores_for(slug: str, name: str = "", description: str = "") -> dict[str, in
 
 
 def category_of(slug: str, name: str = "", description: str = "") -> str:
-    """这一条归哪一类：**分最高的胜出**；平分按 `CATEGORIES` 顺序；全零 → 「其他」。"""
+    """这一条归哪一类：**分最高的胜出**；平分按 `CATEGORIES` 顺序；全零 → 「其他」。
+
+    **产品自带的那几条按名字钉死**（见 `BUILTIN_SKILLS`），不进打分：
+    它们就那么几条，钉住比"再写一条正则"稳——泛词抢技能是这套打法唯一的坑
+    （`required` 里的 `ui` 那类），自带技能不值得再冒一次这个险。
+    """
+    if slug in BUILTIN_SKILLS:
+        return BUILTIN_SKILLS[slug]
     scores = scores_for(slug, name, description)
     if not scores:
         return OTHER
@@ -352,17 +375,27 @@ def _rows_from_disk() -> list[dict[str, str]]:
     return rows
 
 
+def all_assignments() -> dict[str, str]:
+    """**页面会看到的那一批**：本机装进来的 178 条 + 产品自带的 5 条。
+
+    分开写是因为数据来源不同（前者读 `installed.json`，后者是随产品发布的常量），
+    而页面/生成物要的是**合成之后**的那一份——少写一半就会出现"自带技能落其他"。
+    """
+    merged = classify(_rows_from_disk())
+    merged.update(BUILTIN_SKILLS)
+    return merged
+
+
 def build_mapping() -> dict[str, object]:
     """生成物内容：类别顺序 + `{slug: 中文名}` + `{技能: 类别}`。
 
     `order` 是**展示顺序**：JSON 落盘时键名排过序（`sort_keys=True`，为的是 diff 稳定），
     光看 `categories` 那个对象读不出"先给用户看哪一类"——所以顺序单独给一份列表。
     """
-    assignments = classify(_rows_from_disk())
     return {
         "order": [item.slug for item in CATEGORIES],
         "categories": {item.slug: item.label for item in CATEGORIES},
-        "assignments": assignments,
+        "assignments": all_assignments(),
     }
 
 
@@ -375,6 +408,8 @@ def main(argv: list[str] | None = None) -> int:
     if not rows:
         print("没读到 installed.json（本机数据不在）——分类判据本身仍然可用")
         return 1
+    for slug in BUILTIN_SKILLS:
+        rows.append({"slug": slug, "name": slug, "description": "(产品自带，按名字钉死)"})
     assignments = classify(rows)
     counts: dict[str, int] = {item.slug: 0 for item in CATEGORIES}
     for category in assignments.values():

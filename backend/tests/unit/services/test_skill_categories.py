@@ -64,10 +64,48 @@ def test_the_mapping_file_is_in_sync_with_the_rules() -> None:
     而"分类"的唯一真相是 `SIGNALS`。
     """
     payload = json.loads(sc.MAPPING_PATH.read_text(encoding="utf-8"))
-    assignments = sc.classify(_rows())
+    assignments = sc.all_assignments()
 
     assert payload["assignments"] == assignments
     assert payload["categories"] == {item.slug: item.label for item in sc.CATEGORIES}
+
+
+def test_the_builtin_skills_are_pinned_by_name() -> None:
+    """**产品自带**的几条按名字钉死（2026-09-29 用户裁定），别落进「其他」。
+
+    它们不在 `installed.json` 里（那份记的是"装进来的"），但接口一样会列出来：
+    `kylab-delegate` / `kylab-knowledge-base` / `kylab-memory` / `kylab-web` → 效率与自动化，
+    `kylab-office-export` → 文档与办公。
+    """
+    assert sc.BUILTIN_SKILLS == {
+        "kylab-delegate": "productivity",
+        "kylab-knowledge-base": "productivity",
+        "kylab-memory": "productivity",
+        "kylab-web": "productivity",
+        "kylab-office-export": "documents",
+    }
+    for slug, expected in sc.BUILTIN_SKILLS.items():
+        assert sc.category_of(slug) == expected
+        # 钉死归钉死，类别本身必须登记过（否则页面上会被当未知分类再兜一次）
+        assert expected in {item.slug for item in sc.CATEGORIES}
+
+    # 生成物里也要有它们（否则页面读 JSON 时仍然落「其他」）
+    payload = json.loads(sc.MAPPING_PATH.read_text(encoding="utf-8"))
+    for slug, expected in sc.BUILTIN_SKILLS.items():
+        assert payload["assignments"][slug] == expected
+
+
+@requires_data
+def test_only_the_unclassifiable_one_is_left_in_other() -> None:
+    """「其他」只剩 `xiaoyue-companion` 一条（**拿不准就不硬塞**，但要说得出来）。
+
+    它是"虚拟伴侣"——描述里没有任何领域信号（不是文档、数据、论文、代码、设计或营销），
+    按当初定下的口径进「其他」。产品自带的 5 条加进来之后，仍然只剩它一条。
+    """
+    assignments = sc.all_assignments()
+    others = sorted(slug for slug, category in assignments.items() if category == sc.OTHER)
+
+    assert others == ["xiaoyue-companion"]
 
 
 def test_the_frontend_mirror_is_byte_identical() -> None:
