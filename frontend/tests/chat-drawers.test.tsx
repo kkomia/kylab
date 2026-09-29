@@ -171,6 +171,38 @@ function SourceHost() {
   )
 }
 
+/** 第二条引用（用来复现"关掉之后马上换一条"）。 */
+const source2: ChatSource = {
+  ...source,
+  index: 2,
+  chunk_id: 'chunk-2',
+  document_name: '报告2.pdf',
+  heading_path: '第二章',
+  page: 2,
+  preview: '第 2 段的原文',
+} as ChatSource
+
+/**
+ * 第二个出处宿主：`<SourceSheet/>` **常挂**（与 `ChatPage` 同一种挂法——它自己按
+ * `sourceOpen` 决定画不画）。这一条是复现那个 bug 的关键：宿主不卸抽屉，
+ * 同一个抽屉实例要在"收起还没走完"的时候再被要求开一条。
+ */
+function SourceHostSwitch() {
+  const chat = useChat()
+  return (
+    <>
+      <output data-testid="source-open">{String(chat.sourceOpen)}</output>
+      <button type="button" onClick={() => chat.openSource(source)}>
+        看全文
+      </button>
+      <button type="button" onClick={() => chat.openSource(source2)}>
+        看第二条
+      </button>
+      <SourceSheet />
+    </>
+  )
+}
+
 /** 文件抽屉的宿主：与 `Composer` 同一种挂法（开着才挂、通知到了才卸）。 */
 function FilesHost() {
   const [open, setOpen] = useState(false)
@@ -181,6 +213,34 @@ function FilesHost() {
         浏览文件
       </button>
       {open ? <FilesSheet onClose={() => setOpen(false)} /> : null}
+    </>
+  )
+}
+
+/**
+ * 带"直落哪一份"的文件抽屉宿主：产物卡片上的「预览」就是这个形状
+ * （`Composer` 里 `initialKey={chat.filesSeed?.key ?? null}`）。
+ * 第二个按钮是"换一份"——收起还没走完时点它，就是同一个抽屉实例被要求换目标。
+ */
+function FilesHostWithSeed() {
+  const chat = useChat()
+  const seed = (key: string, name: string) => () => chat.openFiles({ key, name, kind: 'txt' })
+  return (
+    <>
+      <output data-testid="files-open">{String(chat.filesOpen)}</output>
+      <button type="button" onClick={seed('out/a.txt', 'a.txt')}>
+        预览 a
+      </button>
+      <button type="button" onClick={seed('out/b.txt', 'b.txt')}>
+        预览 b
+      </button>
+      {chat.filesOpen ? (
+        <FilesSheet
+          initialKey={chat.filesSeed?.key ?? null}
+          initialEntry={chat.filesSeed}
+          onClose={chat.closeFiles}
+        />
+      ) : null}
     </>
   )
 }
@@ -210,6 +270,93 @@ describe('出处抽屉：先滑回去，再通知宿主', () => {
     expect(await screen.findByRole('dialog', { name: /引用原文/ })).toHaveTextContent(
       '第 1 段的原文',
     )
+  })
+})
+
+/**
+ * 收起那 300ms 里换一条：宿主的 `sourceOpen` 在这段时间里**一直是真的**（关闭通知要等
+ * `LEAVE_MS` 才上去），所以给宿主看的状态位根本没有"由假变真"可等——"再点开一条"这件事
+ * 只能从"要看的目标换了"认出来（见 `Sheets.tsx` 的 `useSlideOut`）。
+ */
+describe('出处抽屉：收起还没走完就换一条', () => {
+  it('换了引用的那一刻就滑回来换成新的那条；原来那次收起作废（宿主不收到关闭）', async () => {
+    withProviders(<SourceHostSwitch />)
+    const user = userEvent.setup()
+
+    await user.click(screen.getByRole('button', { name: '看全文' }))
+    expect(await screen.findByRole('dialog', { name: /引用原文/ })).toHaveTextContent(
+      '第 1 段的原文',
+    )
+
+    // 收起：这一刻只是抽屉自己滑出，宿主还没收到（同上面那条"先滑回去再通知宿主"）
+    await user.keyboard('{Escape}')
+    expect(screen.getByTestId('source-open')).toHaveTextContent('true')
+
+    // **同步**点下第二条：不等收起那个窗口走完（`fireEvent` 不排等待，稳稳落在 300ms 之内）
+    fireEvent.click(screen.getByRole('button', { name: '看第二条' }))
+
+    expect(await screen.findByRole('dialog', { name: /引用原文/ })).toHaveTextContent(
+      '第 2 段的原文',
+    )
+
+    // 超过收起窗口之后仍然是它：那次收起已经被收回，不会再把宿主置假、把新的一条一起收走
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(screen.getByTestId('source-open')).toHaveTextContent('true')
+    expect(screen.getByRole('dialog', { name: /引用原文/ })).toHaveTextContent('第 2 段的原文')
+
+    // 锁也放掉了：紧接着再按 Esc 仍然关得掉（锁要留到"宿主状态翻面"才清的话，这一下会被吞）
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.getByTestId('source-open')).toHaveTextContent('false'), {
+      timeout: 2000,
+    })
+  })
+})
+
+/** 文件抽屉那一头同一条毛病：收起还没走完就点了另一份文件的「预览」。 */
+describe('文件抽屉：收起还没走完就换一份', () => {
+  it('换一份文件的那一刻就滑回来直落新那份；原来那次收起作废（宿主不收到关闭）', async () => {
+    vi.mocked(listFiles).mockResolvedValue({
+      mode: 'object',
+      label: '本会话',
+      path: '',
+      parent: null,
+      entries: [
+        {
+          key: 'out/a.txt',
+          name: 'a.txt',
+          is_dir: false,
+          size_bytes: 1,
+          modified_at: null,
+          kind: 'txt',
+        },
+        {
+          key: 'out/b.txt',
+          name: 'b.txt',
+          is_dir: false,
+          size_bytes: 1,
+          modified_at: null,
+          kind: 'txt',
+        },
+      ],
+      truncated: false,
+    })
+    withProviders(<FilesHostWithSeed />)
+    const user = userEvent.setup()
+
+    // 直落 a.txt（标题行就是它）
+    await user.click(screen.getByRole('button', { name: '预览 a' }))
+    expect(await screen.findByRole('dialog', { name: 'a.txt' })).toBeInTheDocument()
+
+    // 收起还没走完（`filesOpen` 一直是真）就换 b.txt：要按新那份滑回来
+    await user.keyboard('{Escape}')
+    expect(screen.getByTestId('files-open')).toHaveTextContent('true')
+    fireEvent.click(screen.getByRole('button', { name: '预览 b' }))
+    expect(await screen.findByRole('dialog', { name: 'b.txt' })).toBeInTheDocument()
+
+    // 那次收起作废：过了收起窗口宿主仍是开的，抽屉也还在（不是"关掉之后又自己弹一下"）
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(screen.getByTestId('files-open')).toHaveTextContent('true')
+    expect(screen.getByRole('dialog', { name: 'b.txt' })).toBeInTheDocument()
   })
 })
 

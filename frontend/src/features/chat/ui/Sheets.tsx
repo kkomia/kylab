@@ -83,11 +83,21 @@ const ROW_ACTION =
  * 滑到一半时把节点摘掉，看起来像"闪一下就没了"（旧 `DocumentDrawer` 同一条做法）。
  *
  * 关一次就锁上 `closing`：连点两下 Esc / 遮罩会排两个定时器，那样宿主要被通知两次。
- * `shouldOpen` 变回真（宿主又展开了）就解锁——那时再从收起态滑出来。
+ *
+ * 锁**必须在这一段滑出结束的那一刻放掉**，不能等到 `shouldOpen` 由假翻真：宿主那份
+ * "该不该开"是**过了 `LEAVE_MS` 才**收到关闭通知的，所以"关掉之后马上换一条"的这段
+ * 时间里它一直是真的、根本不翻面——指望翻面来解锁，等于把用户那一次点击吞掉
+ * （他要再点一次才开得出来）。这一段滑出有两种结束方式，两种都要放锁：
+ * 走完（定时器那一头）与被撤销（见 `target`）。
+ *
+ * `target` 是"这一次要看的是哪一条"（出处那份引用 / 文件抽屉要直落的那一份）：
+ * 它与 `shouldOpen` 合起来才认得出"宿主又在要求开一条"——收起期间那个位始终是真的
+ * （见上），只看它什么也认不出来。
  */
 function useSlideOut(
   shouldOpen: boolean,
   onClose: () => void,
+  target?: unknown,
 ): {
   open: boolean
   requestClose: () => void
@@ -98,9 +108,21 @@ function useSlideOut(
 
   useEffect(() => {
     if (!shouldOpen) return
+    /*
+      目标换了 = 宿主又点名要看另一条（它那份状态位没变，所以只能从这儿认出来）。
+      这一下把正在走的收起**撤销**掉：
+      - 待发的关闭通知要撤掉，留着它会在 `LEAVE_MS` 之后把宿主置假，新的一条被一起收走；
+      - 锁当场放掉：这段滑出已经不算数了，锁留到"下次翻面"才清的话，用户紧接着按 Esc
+        会被 `requestClose` 当成"重复关闭"吞掉；
+      - 然后重新展开（Radix 从当前状态滑回来），换上新那条的内容。
+    */
+    if (timer.current !== undefined) {
+      window.clearTimeout(timer.current)
+      timer.current = undefined
+    }
     closing.current = false
     setOpen(true)
-  }, [shouldOpen])
+  }, [shouldOpen, target])
 
   useEffect(
     () => () => {
@@ -113,7 +135,14 @@ function useSlideOut(
     if (closing.current) return
     closing.current = true
     setOpen(false)
-    timer.current = window.setTimeout(onClose, LEAVE_MS)
+    timer.current = window.setTimeout(() => {
+      timer.current = undefined
+      // 滑出到此结束，锁的寿命也到此为止：**先清锁、再通知宿主**。清锁不必等宿主反应
+      // （它那份状态位可能压根不翻面，见上），但通知仍然压在这个窗口之后——先滑回去、
+      // 再告诉宿主，顺序没动。
+      closing.current = false
+      onClose()
+    }, LEAVE_MS)
   }, [onClose])
 
   return { open, requestClose }
@@ -193,8 +222,9 @@ export function SourceSheet() {
   const chat = useChat()
   const source = chat.activeSource
   // 关闭时**不清 `activeSource`**（宿主的口径）：那句话还在，收起只是不看它了；
-  // 下一次 `openSource` 换进新的引用、`sourceOpen` 变真，抽屉从收起态再滑出来
-  const { open, requestClose } = useSlideOut(chat.sourceOpen, chat.closeSource)
+  // 下一次 `openSource` 换进新的引用时，`sourceOpen` 一直在真上（关闭通知还没上去），
+  // 所以"换了一条"这件事要由 `activeSource` 自己告诉 `useSlideOut`（见那里的 `target`）
+  const { open, requestClose } = useSlideOut(chat.sourceOpen, chat.closeSource, chat.activeSource)
   if (!source) return null
   return (
     <Drawer title="引用原文" open={open} requestClose={requestClose}>
@@ -323,8 +353,10 @@ export function FilesSheet({
 }) {
   const chat = useChat()
   // 宿主只在"开着"时才挂这一个组件，所以"该开着"恒为真；
-  // 关的动作仍然先滑回去、`LEAVE_MS` 之后才回调 `onClose` 让宿主卸掉它
-  const { open, requestClose } = useSlideOut(true, onClose)
+  // 关的动作仍然先滑回去、`LEAVE_MS` 之后才回调 `onClose` 让宿主卸掉它。
+  // 收起那一段里如果又点了另一份文件的「预览」（`initialKey` 换了），宿主那边
+  // `filesOpen` 同样是真、不翻面——所以这份"要直落哪一份"就是这里认"又要开一条"的凭据
+  const { open, requestClose } = useSlideOut(true, onClose, initialKey)
 
   /**
    * 看的是**哪一档**（v0.55）：默认「本会话」——打开文件抽屉先要看到的是"这次对话的
