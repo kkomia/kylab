@@ -1,5 +1,6 @@
 /**
- * 预览域的四组用例：**分派、失败态、两个命令式渲染器的挂载调用、表格的多 sheet**。
+ * 预览域的五组用例：**分派、失败态、md 走只读那一档渲染器、两个命令式渲染器的挂载调用、
+ * 表格的多 sheet**。
  *
  * 三个上游库（`docx-preview` / `pptx-preview` / `exceljs`）全部 `vi.mock` 掉：
  *
@@ -177,9 +178,14 @@ describe('失败说明的措辞', () => {
 })
 
 describe('FilePreview 分派到具体渲染器', () => {
-  it('md：把内联内容按 Markdown 画出来', () => {
+  it('md：把内联内容按 Markdown 画出来', async () => {
     render(<FilePreview name="说明.md" kind="md" text={'# 标题\n\n正文'} />)
-    expect(screen.getByRole('heading', { name: '标题' })).toBeInTheDocument()
+    // 渲染器是**按需 import** 的（见 `PlainMarkdown`）：第一帧是加载态，等它到位。
+    // 超时放宽到 5s：模块本身很快，但**多个测试文件并行**时这一下会被拖到 1s 以上
+    // （实测组合跑等了 1186ms 才失败），默认 1s 会变成随机红——那是测试脆弱，不是产品慢。
+    expect(
+      await screen.findByRole('heading', { name: '标题' }, { timeout: 5000 }),
+    ).toBeInTheDocument()
   })
 
   it('txt 与代码：走等宽 pre，内容从链接取', async () => {
@@ -278,7 +284,7 @@ describe('FilePreview 分派到具体渲染器', () => {
     )
   })
 
-  it('文档页可以把整份「阅读视角」返回递进来，不必拆字段', () => {
+  it('文档页可以把整份「阅读视角」返回递进来，不必拆字段', async () => {
     render(
       <FilePreview
         preview={{
@@ -291,7 +297,7 @@ describe('FilePreview 分派到具体渲染器', () => {
         }}
       />,
     )
-    expect(screen.getByRole('heading', { name: '解析结果' })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: '解析结果' })).toBeInTheDocument()
   })
 
   it('整份返回说 binary：不假装能预览（连链接都不试）', () => {
@@ -310,6 +316,73 @@ describe('FilePreview 分派到具体渲染器', () => {
     )
     expect(screen.getByText(/「老文件.doc」这个格式不能在这里预览/)).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * md 这一档**用的是对话页那份 `renderPlainMarkdown`**（只读档），不是自己搭一个渲染器；
+ * 而它是**按需 import** 的（见 `FilePreview` 的 `PlainMarkdown`），所以每条都要等它到位。
+ *
+ * 这几条钉的正是"换渲染器会丢什么"：类名（口径合成一份的凭据）、标题按文档的层级、
+ * 只读（不挂复制 / 下载）、危险协议退回原文、外链开新窗口、HTML 不当标记。
+ * **任何一条都只在真的接上那份渲染器时成立**——本文件原先那份"自己一份 `ReactMarkdown`"
+ * 会让第一、二、四条直接变红。
+ */
+describe('md 预览：只读那一档渲染器', () => {
+  it('类名来自渲染器（md-p / md-h），标题按原文层级', async () => {
+    render(<FilePreview name="说明.md" kind="md" text={'# 标题\n\n正文'} />)
+    // 只读档**不夹层**：`#` 出 h1（不是对话页那种夹到 2–4 级的 h2），
+    // 预览里 page-title 那一档样式才命中（夹层会让它掉到 section 字号）
+    expect(await screen.findByRole('heading', { name: '标题', level: 1 })).toHaveClass(
+      'md-h',
+      'md-h1',
+    )
+    expect(document.querySelector('p.md-p')?.textContent).toBe('正文')
+  })
+
+  it('单换行不成 `<br>`（预览里那份是文档，按 CommonMark 是一个空格）', async () => {
+    const { container } = render(<FilePreview name="说明.md" kind="md" text={'第一行\n第二行'} />)
+    // 先等渲染器到位：不等的话"没有 <br>"在一个还没画出来的 DOM 上也成立，等于没测
+    await screen.findByText(/第一行/)
+    expect(container.querySelector('br')).toBeNull()
+    expect(container.textContent).toBe('第一行\n第二行')
+  })
+
+  it('只读：不挂复制 / 下载按钮（预览是"看"，不是"操作这份内容"）', async () => {
+    render(
+      <FilePreview
+        name="台账.md"
+        kind="md"
+        text={'```js\nconst a = 1\n```\n\n| A |\n| --- |\n| 1 |'}
+      />,
+    )
+    // 先等代码块与表格真画出来，再断言"没有那两个按钮"
+    // （按文本找不行：高亮把代码切成了 span，`const a = 1` 不是一整个文本节点）
+    await waitFor(() => expect(document.querySelector('pre.md-pre')).not.toBeNull())
+    expect(document.querySelector('table.md-table')).not.toBeNull()
+    expect(document.querySelector('[data-copy-code]')).toBeNull()
+    expect(document.querySelector('[data-copy-table]')).toBeNull()
+    expect(document.querySelector('[data-download-table]')).toBeNull()
+  })
+
+  it('危险协议的链接退回原文，不做成可点的锚', async () => {
+    render(<FilePreview name="说明.md" kind="md" text={'[点我](javascript:alert(1))'} />)
+    expect(await screen.findByText(/javascript:alert\(1\)/)).toBeInTheDocument()
+    expect(document.querySelector('a')).toBeNull()
+  })
+
+  it('外链开新窗口并带 rel（与对话页同一条开法）', async () => {
+    render(<FilePreview name="说明.md" kind="md" text={'[文档](https://example.com/doc)'} />)
+    const link = await screen.findByRole('link', { name: '文档' })
+    expect(link).toHaveAttribute('href', 'https://example.com/doc')
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('文档里的 HTML 不被当标记执行（不开 rehype-raw）', async () => {
+    render(<FilePreview name="说明.md" kind="md" text={'<script>alert(1)</script>'} />)
+    expect(await screen.findByText(/<script>alert\(1\)<\/script>/)).toBeInTheDocument()
+    expect(document.querySelector('script')).toBeNull()
   })
 })
 

@@ -26,8 +26,10 @@
  *   / `renderPlainMarkdown(text)`：**返回 ReactNode**（旧实现返回 HTML 字符串），
  *   名称与旧实现一致，方便逐条对照；`data-*` 也照旧，页面可以继续用委托。
  *
- * 两个使用注意写在 README：KaTeX 的样式表要自己引；`renderPlainMarkdown` 不挂按钮
- * （文件预览是"看"，不是"操作这份内容"）。
+ * 两个使用注意写在 README：KaTeX 的样式表要自己引；`renderPlainMarkdown` 是**只读那一档**，
+ * 它与富文本档有三处不同（见 `PLAIN_COMPONENTS` 与 `renderMarkdown` 的插件表）：
+ * 不挂复制 / 下载按钮；**标题保留原文层级**（不夹到 2–4 级）；**单换行不换成 `<br>`**。
+ * 后两条是"对话里那份是模型的回复、预览里那份是一份文档"这条区别落下来的。
  */
 
 import { ChevronDown, ChevronUp } from 'lucide-react'
@@ -345,7 +347,11 @@ function linkifyText(value: string): HastNode[] | null {
  * 段落里的软换行 → `<br />`（旧实现："段落内的换行折成 br，而不是各起一段"）。
  *
  * 块级切分交给 remark，只有这一条排版规则要自己接：Markdown 的软换行渲染成一个
- * 空格，而这份语料（模型写的回答、解析出来的文档）里换行就是换行。
+ * 空格，而**模型的回答**里换行就是换行（口语、行短，模型写的换行是有意断行）。
+ *
+ * **只挂在富文本那一档**：文件预览渲染的是一份文档，文档里的单换行就是 CommonMark
+ * 说的那个空格（按 `\n` 断行会把原文的段落折行当成作者的手动断行，排版被改写）。
+ * 差异由调用方决定，见 `renderMarkdown` 的插件表。
  *
  * **只管 `p` 里的文本**：两处坑都踩过——
  * 块与块之间（`</p>\n<p>`、列表项之间、`blockquote` 里包着的那一层）也有换行，
@@ -1100,21 +1106,48 @@ const COMPONENTS = {
 }
 
 /**
+ * 只读那一档的标题：**保留原文层级**（`#` 就是 `<h1>`，不夹到 2–4 级）。
+ *
+ * 对话页把层级夹到 2–4 级（见 `HEADING_CLASS`）是因为那一份是**模型的回复**：
+ * 口语、行短，`#` 出现在回答里多半只是个"小节"，h1 太吵。
+ * 而 `renderPlainMarkdown` 渲染的是**一份文档**：`#` 就是这篇文档的最外层标题，
+ * 降一档会让层级与原文对不上；落到预览的样式上还会从 `.kylab-md h1` 的 page-title
+ * 字号掉到 section 字号（换渲染器时实测到的回退，见 `preview/FilePreview.tsx` 的头注）。
+ *
+ * 类名照旧给 `md-h md-hN`：样式钩子与对话页一致，变的只是 h 标签的层级。
+ */
+function plainHeading(level: 1 | 2 | 3 | 4 | 5 | 6) {
+  const tag = `h${level}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6'
+  return function PlainHeading({ children }: PropsOf<'h1'>) {
+    return createElement(tag, { className: `md-h md-h${level}` }, children as ReactNode)
+  }
+}
+
+/**
  * ``plain``：**只读**的那一套（文件预览用）。
  *
  * 对话里的答案要能复制代码、下载表格，那两个按钮的点击由页面接住；
  * 而文件预览里没有那条委托（也不该有——预览是"看"，不是"操作这份内容"）。
  * 所以同一套解析、两种收尾：``plain`` 只出内容，不出按钮。
+ *
+ * 与富文本档的另外两处差别也在这一档里：标题**不夹层**（见 `plainHeading`）、
+ * 段落里的单换行**不换成 `<br>`**（见 `renderMarkdown` 的插件表）——预览里那份是文档。
  */
 const PLAIN_COMPONENTS = {
   ...COMPONENTS,
+  h1: plainHeading(1),
+  h2: plainHeading(2),
+  h3: plainHeading(3),
+  h4: plainHeading(4),
+  h5: plainHeading(5),
+  h6: plainHeading(6),
   pre: ({ children }: PropsOf<'pre'>) =>
     createElement('pre', { className: 'md-pre' }, children as ReactNode),
   table: ({ children }: PropsOf<'table'>) =>
     createElement('table', { className: 'md-table' }, children as ReactNode),
 }
 
-/** 渲染参数（这一层只认"要不要徽标、要不要按钮"）。 */
+/** 渲染参数（这一层只认"要不要徽标、要不要按钮、是不是文档那一档"）。 */
 interface RenderOptions {
   sources?: readonly CitationSource[]
   plain?: boolean
@@ -1137,7 +1170,9 @@ function renderMarkdown(text: string, options: RenderOptions = {}): ReactNode {
   const rehypePlugins: NonNullable<Options['rehypePlugins']> = [
     rehypeUnwrapLinks,
     rehypeCodeText,
-    rehypeSoftBreaks,
+    // 软换行只在**富文本那一档**：模型回复的换行是有意断行；
+    // 文档预览里那是一个空格（CommonMark 口径），见 `rehypeSoftBreaks` 的说明
+    ...(plain ? [] : [rehypeSoftBreaks]),
     rehypeTrimBlocks,
     rehypeBareUrls,
   ]
@@ -1289,8 +1324,14 @@ function camelCaseStyle(property: string): string {
 /**
  * 把一段 Markdown 渲染成**只读**的结果（文件预览用）。
  *
- * 与 `renderAnswerMarkdown` 同一套解析，只是不挂复制 / 下载按钮——
- * 那些按钮的点击由对话页接住，而预览里没有那条委托，按钮会变成"点了没反应"的假控件。
+ * 与 `renderAnswerMarkdown` 同一套解析与安全管线，三处按"文档"而不是"回复"来：
+ *
+ * 1. **不挂复制 / 下载按钮**——那些按钮的点击由对话页接住，而预览里没有那条委托，
+ *    按钮会变成"点了没反应"的假控件（见 `PLAIN_COMPONENTS`）；
+ * 2. **标题不夹层**：`#` 出 `<h1>`，按原文层级（见 `plainHeading`）；
+ * 3. **单换行不换 `<br>`**：文档里的软换行就是 CommonMark 说的那个空格。
+ *
+ * 安全那几条一个字不差：HTML 不解析、非白名单协议退回原文、KaTeX 与代码高亮都照旧。
  * 不走缓存：它用在文件预览里，一次只渲染一份，没有"每个 tick 重算历史"那种模式。
  */
 export function renderPlainMarkdown(text: string): ReactNode {

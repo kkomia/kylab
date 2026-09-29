@@ -662,6 +662,35 @@ describe('只读渲染（文件预览）与数学（P1）', () => {
     expect(markup).not.toContain('data-download-table')
   })
 
+  it('只读档的标题按**原文层级**（预览里那份是文档，不夹到 2–4 级）', () => {
+    // 夹层是对话页的口径（模型回复里 `#` 多半只是小节）；文档里 `#` 就是最外层标题。
+    // 对照：上面 `renderAnswerMarkdown` 那一组里 `# 一级` 出的是 `<h2 class="md-h md-h2">`
+    const markup = html(renderPlainMarkdown('# 一级\n\n###### 六级'))
+
+    expect(markup).toContain('<h1 class="md-h md-h1">一级</h1>')
+    expect(markup).toContain('<h6 class="md-h md-h6">六级</h6>')
+  })
+
+  it('只读档不把单换行换成 `<br>`（文档里那是 CommonMark 的空格）', () => {
+    // 对照：富文本档同一条输入会出 `<br>`（见上面 `renderAnswerMarkdown` 那组用例）——
+    // 预览里把原文的段落折行当手动断行，等于改写作者的排版
+    const source = '第一行\n第二行'
+
+    expect(html(renderPlainMarkdown(source))).not.toContain('<br')
+    expect(text(renderPlainMarkdown(source))).toBe(source)
+  })
+
+  it('只读档的安全管线不变：HTML 不解析、非白名单协议退回原文', () => {
+    const markup = html(
+      renderPlainMarkdown('<script>alert(1)</script>\n\n[点我](javascript:alert(1))'),
+    )
+
+    expect(markup).not.toContain('<script')
+    expect(markup).toContain('&lt;script&gt;')
+    expect(markup).not.toContain('href="javascript')
+    expect(markup).toContain('[点我](javascript:alert(1))')
+  })
+
   it('认得出的 `$…$` 交给 KaTeX 排版（rehype-katex）', () => {
     const markup = html(renderAnswerMarkdown('当 $x^{2}$ 时'))
 

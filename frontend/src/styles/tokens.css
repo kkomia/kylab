@@ -387,7 +387,6 @@
      `calc(var(--chat-measure) + 2 * var(--page-gutter))`（含左右各一条 gutter），
      消息列、输入卡片、待批准条、命令回话都从它里头对齐。 */
   --chat-measure: var(--chat-input-max-width);
-  --chat-input-radius: var(--radius-input);
   /* **侧栏固定 240px**：Kimi 的实测值是写死的 240（`.sidebar-shell .sidebar`、
      `.next-sidebar`、`.sidebar-slot--fixed` 三处一致），不随视口变。
      我们此前用 `clamp(248px, 18vw, 320px)`：宽屏上会涨到 320px，

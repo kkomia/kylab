@@ -9,7 +9,7 @@
  *
  * | 后缀 / kind | 旧实现 | 这里 |
  * | --- | --- | --- |
- * | `md` / `markdown` | `renderPlainMarkdown` | `react-markdown` + `remark-gfm` |
+ * | `md` / `markdown` | `renderPlainMarkdown` | 同一份 `renderPlainMarkdown`（只读那一档） |
  * | `txt` / `log` / `csv` / 各种代码 | `<pre>` | `<pre class="kylab-text">` |
  * | `png` / `jpg` / `gif` / `webp` / `bmp` / `avif` | `<img>` | `<img>` |
  * | `pdf` | `<iframe>` 指向签名链接 | `<iframe>` 指向签名链接（挂之前先探一次，见 `PdfPane`） |
@@ -22,11 +22,12 @@
  * （它能在本站 origin 下执行脚本，服务端也不给它 `inline`）；`csv` 的落点取决于
  * 调用方给的是后缀还是后端 kind——两份输入本来就不一样。
  *
- * 一条安全说明：Markdown 分支用 react-markdown，**不开 `rehype-raw`**，
- * 所以文档里的 HTML 不会被当标记执行（与旧前端"先整体转义、再白名单还原"同一个结果）。
+ * 一条安全说明：Markdown 走 `features/chat/model/markdown.tsx` 的
+ * `renderPlainMarkdown`（"只读"那一档，**按需 import**，见 `PlainMarkdown`），
+ * **不开 `rehype-raw`**，所以文档里的 HTML 不会被当标记执行
+ * （与旧前端"先整体转义、再白名单还原"同一个结果）。
  */
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { useEffect, useState, type ReactNode } from 'react'
 
 import type { DocumentPreview } from '@/api/documents'
 
@@ -85,7 +86,55 @@ function missingReason(reason?: string | null): string {
 }
 
 /**
- * Markdown：与对话页同一套规则（GFM），HTML 不解析（见文件头注）。
+ * 把只读渲染器**按需**拉进来。
+ *
+ * 为什么不像最初那样写 `import { renderPlainMarkdown } from '…/markdown'`：
+ * 那一份渲染器身后是一整串重依赖（react-markdown + remark-gfm/math + rehype-katex/
+ * highlight + KaTeX），**实测 451 kB（gzip 139 kB）**。静态 import 会把这些塞进
+ * `FilePreview` 所在的**共享预览 chunk**——而那个 chunk 是"打开任何一份文件预览"
+ * 都要加载的：知识库/文档页看一个 pdf、图片、docx 也不例外。实测那份 chunk 因此
+ * 从 **41.35 kB（gzip 13.49）涨到 492.46 kB（gzip 152.97）**，全是给 Markdown 付的钱。
+ *
+ * 动态 import 之后，只有**真的要看 Markdown** 的那一次才付这趟下载（对话页本来就
+ * 静态带着这份渲染器，所以那边一行没多）；代价是首帧要等一次模块解析——那段时间
+ * 走本文件统一的加载态，不白屏。
+ *
+ * `setRenderer(() => module.renderPlainMarkdown)` 用函数式更新存函数：
+ * 直接 `setRenderer(module.renderPlainMarkdown)` 会被 React 当成"更新函数"调用。
+ */
+function PlainMarkdown({ text }: { text: string }) {
+  const [renderer, setRenderer] = useState<((value: string) => ReactNode) | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    void import('@/features/chat/model/markdown').then((module) => {
+      if (alive) setRenderer(() => module.renderPlainMarkdown)
+    })
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  if (!renderer) return <PreviewLoading />
+  return renderer(text)
+}
+
+/**
+ * Markdown：**用对话页同一份渲染器的只读档**（`renderPlainMarkdown`），HTML 不解析。
+ *
+ * 为什么不再自己搭一个 `ReactMarkdown`：这个文件的对照表一直写着 md 走
+ * `renderPlainMarkdown`，实现却自成一份——注释与实现不符只是表面症状，真正的问题是
+ * **解析口径有了两份**：自己那一份没有公式（`$…$` 原样显示）、没有代码高亮，
+ * 危险协议的链接也被 react-markdown 的默认清洗抹成空 `href`（看不见原文）。
+ * 合成一份之后，安全规则（HTML 不当标记、非白名单协议退回原文）、GFM 表格、
+ * KaTeX 公式、highlight.js 高亮都跟着对话页走，改一处两边同时生效。
+ *
+ * 只读档**不挂复制 / 下载按钮**——预览是"看"，不是"操作这份内容"，
+ * 与那个渲染器自己的注释同一条（`model/markdown.tsx` 的 `PLAIN_COMPONENTS`）。
+ * 它给预览的另外两处"文档语义"也一并在那边：标题按原文层级（不夹层）、单换行不换 `<br>`。
+ *
+ * 外层 `kylab-md` 保留：预览自己的排版（颜色、字号、行高、表格外框）挂在它上面，
+ * 渲染器发的 `md-*` 类名是另一套钩子，两边取值同源（都来自 `tokens.css`）。
  *
  * 内容是**取回来的**：文档接口的阅读视角会内联给 `text`，会话文件区只有链接，
  * 两条路都在 `useRemoteText` 里（内联优先，不会再跑一趟网络）。
@@ -104,7 +153,7 @@ function MarkdownPane({
   if (loading) return <PreviewLoading />
   return (
     <div className="kylab-md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      <PlainMarkdown text={text} />
     </div>
   )
 }

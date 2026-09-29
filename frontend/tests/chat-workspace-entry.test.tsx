@@ -115,7 +115,6 @@ vi.mock('@/api/settings', async (importOriginal) => {
       embedding_is_development: false,
       rerank_enabled: false,
     })),
-    getChatMode: vi.fn(async () => ({ mode: '', options: [] })),
   }
 })
 

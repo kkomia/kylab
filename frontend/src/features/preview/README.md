@@ -34,16 +34,16 @@ const { url } = await getFileUrl(conversationId, file.key, 'inline')
 分派表在 `kinds.ts` 的 `resolveRenderer()`——**纯函数，界面与测试都对着它**。
 认的顺序：后端 `kind` → `kind` 本身当后缀 → `mime` → 文件名后缀。
 
-| 输入（后缀 / 后端 kind）                                | 走哪条路                 | 用什么                                              |
-| ------------------------------------------------------- | ------------------------ | --------------------------------------------------- |
-| `md` / `markdown`                                       | Markdown                 | `react-markdown` 10 + `remark-gfm` 4（HTML 不解析） |
-| `txt` `log` `csv` `tsv` `json` `yaml` `py` `ts` `sql` … | 纯文本 `<pre>`           | 浏览器自带                                          |
-| `png` `jpg` `jpeg` `gif` `webp` `bmp` `avif` / `image`  | `<img>`                  | 浏览器自带                                          |
-| `pdf` / `pdf`                                           | `<iframe>`               | 浏览器内置 PDF 阅读器（不引 pdf.js）                |
-| `docx` / `docx`                                         | `DocxPreview`            | `docx-preview` 0.4.1                                |
-| `pptx` / `pptx`                                         | `PptxPreview`            | `pptx-preview` 1.0.7                                |
-| `xlsx` `xls` / `excel`                                  | `SpreadsheetPreview`     | `exceljs` 4.4.0 + `@tanstack/react-virtual` 3       |
-| 其它 / `binary`                                         | **一句"不能在这里预览"** | 不假装能预览                                        |
+| 输入（后缀 / 后端 kind）                                | 走哪条路                 | 用什么                                                                                                  |
+| ------------------------------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------- |
+| `md` / `markdown`                                       | Markdown                 | `features/chat/model/markdown.tsx` 的 **`renderPlainMarkdown`**（只读档，**按需 import**；HTML 不解析） |
+| `txt` `log` `csv` `tsv` `json` `yaml` `py` `ts` `sql` … | 纯文本 `<pre>`           | 浏览器自带                                                                                              |
+| `png` `jpg` `jpeg` `gif` `webp` `bmp` `avif` / `image`  | `<img>`                  | 浏览器自带                                                                                              |
+| `pdf` / `pdf`                                           | `<iframe>`               | 浏览器内置 PDF 阅读器（不引 pdf.js）                                                                    |
+| `docx` / `docx`                                         | `DocxPreview`            | `docx-preview` 0.4.1                                                                                    |
+| `pptx` / `pptx`                                         | `PptxPreview`            | `pptx-preview` 1.0.7                                                                                    |
+| `xlsx` `xls` / `excel`                                  | `SpreadsheetPreview`     | `exceljs` 4.4.0 + `@tanstack/react-virtual` 3                                                           |
+| 其它 / `binary`                                         | **一句"不能在这里预览"** | 不假装能预览                                                                                            |
 
 `csv` 在两条路上落点不同，这是刻意的：会话文件区给的是后缀（`kind: "csv"`）→ 纯文本；
 文档接口给的是后端算的 kind（`backend/app/services/documents.py` 把 `.csv` 归到
@@ -85,7 +85,7 @@ const { url } = await getFileUrl(conversationId, file.key, 'inline')
 | xlsx 的工作表     | 隐藏的工作表也列在标签里（不区分显示状态）                                                                      | 与 Excel 的默认视图略有差别                                                     |
 | 图片              | `svg` **不预览**（能在本站 origin 下执行脚本；服务端也不给它 `inline`）                                         | 与后端 `INLINE_SAFE_KINDS` 两处口径一致                                         |
 | PDF               | 用浏览器内置阅读器，样式与能力跟着浏览器走                                                                      | 零体积、零维护的代价                                                            |
-| 打包体积          | 三个引擎都是**动态 import**（实测：入口 chunk 200KB，三个引擎各自成块）                                         | 首屏不受影响                                                                    |
+| 打包体积          | 三个引擎都是**动态 import**；Markdown 那一档的渲染器（451 KB / gzip 140 KB）同样按需（见下面「体积」）          | 首屏不受影响                                                                    |
 
 ## 样式
 
@@ -102,26 +102,44 @@ const { url } = await getFileUrl(conversationId, file.key, 'inline')
 不需要新增。用到的都已在新前端的 `package.json` 里：
 
 `docx-preview@0.4.1`、`pptx-preview@1.0.7`、`exceljs@4.4.0`、
-`@tanstack/react-virtual@3.14.13`、`react-markdown@10`、`remark-gfm@4`、`lucide-react`。
+`@tanstack/react-virtual@3.14.13`、`lucide-react`。
+
+Markdown 那一档**不在这里直接依赖 `react-markdown`**：它走
+`features/chat/model/markdown.tsx` 的只读档（`renderPlainMarkdown`），
+那串依赖（`react-markdown@10` + `remark-gfm@4` + `remark-math` + `rehype-katex` +
+`rehype-highlight` + `katex`）跟着**对话页那份实现**走，本域只按需 `import()` 它。
 
 没有引 `@vue-office/*`（Vue 专属）、也没有引第二套表格组件
 （`x-data-spreadsheet` / `react-spreadsheet`）：exceljs + 虚拟化已经够画一张只读的表，
 再引一套等于多一份样式体系要跟主题对齐。
 
-**体积**（一处真实的构建产物，gzip 后/原始）：
+**体积**（`pnpm exec vite build` 实测，gzip 后/原始；一轮构造产物，日期见仓库记录）：
 
-| chunk                                   | 内容                                                   | gzip             |
-| --------------------------------------- | ------------------------------------------------------ | ---------------- |
-| 入口（`FilePreview` + Markdown + 外框） | 我们的代码                                             | 60 KB（200 KB）  |
-| `docx-preview`                          | docx 引擎                                              | 20 KB（76 KB）   |
-| `jszip`                                 | docx 用（pptx 自带一份自己的）                         | 28 KB（96 KB）   |
-| `pptx-preview`                          | pptx 引擎 + 它自带的 jszip + **echarts**（图表页要它） | 375 KB（1.2 MB） |
-| `exceljs`                               | 表格引擎（浏览器版）                                   | 250 KB（908 KB） |
+| chunk                            | 内容                                                           | gzip                 |
+| -------------------------------- | -------------------------------------------------------------- | -------------------- |
+| 入口（`FilePreview` + 各域骨架） | 我们的代码（**不含** Markdown 渲染器）                         | 13.6 KB（41.7 KB）   |
+| Markdown 渲染器（**按需**）      | `features/chat/model/markdown.tsx` + react-markdown + KaTeX 等 | 139.9 KB（451.2 KB） |
+| `docx-preview`                   | docx 引擎                                                      | 20.6 KB（75.5 KB）   |
+| `jszip`                          | docx 用（pptx 自带一份自己的）                                 | 28.5 KB（96.0 KB）   |
+| `pptx-preview`                   | pptx 引擎 + 它自带的 jszip + **echarts**（图表页要它）         | 387.6 KB（1.2 MB）   |
+| `exceljs`                        | 表格引擎（浏览器版）                                           | 256.4 KB（929.6 KB） |
 
-看 Word 不会下载 Excel 的引擎——三块各自独立，只有真的预览那一类文件时才取。
+看 Word 不会下载 Excel 的引擎——各块独立，只有真的预览那一类文件时才取。
+
+**Markdown 渲染器为什么必须按需**：它身后是 451 KB（gzip 140 KB）。曾经直接
+`import { renderPlainMarkdown }`，那份代码就被塞进 `FilePreview` 所在的共享 chunk——
+而那个 chunk 是**打开任何一份预览**都要加载的（pdf / 图片 / docx 也一样），
+实测它从 41.4 KB（gzip 13.5）涨到 492.5 KB（gzip 153.0）；改成动态 import 之后
+回到 41.7 KB（gzip 13.6），只有真的渲染 Markdown 才付那 451 KB。
+对话页一直是静态带着这份渲染器，所以那边一分没省、也一分没多。
 
 ## 测试
 
 `frontend-react/tests/preview.test.tsx`：分派表（后缀 / 后端 kind / mime）、
-失败态（取不到 blob 时显示原因）、docx 与 pptx 的"容器挂载后调用上游 API"
+失败态（取不到 blob 时显示原因）、**md 预览的只读档**（类名来自渲染器、标题按原文层级、
+单换行不换 `<br>`、不挂复制/下载按钮、危险协议退回原文、外链带 `target`/`rel`、
+HTML 不当标记）、docx 与 pptx 的"容器挂载后调用上游 API"
 （把 `docx-preview` / `pptx-preview` / `exceljs` 都 `vi.mock` 掉，断言调用参数）。
+
+Markdown 那一档的渲染器是**按需 `import()`** 的，所以那组用例都从"等渲染器到位"开始
+（`await screen.findBy…` / `waitFor`）——这一点也是契约的一部分。

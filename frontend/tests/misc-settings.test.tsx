@@ -16,7 +16,6 @@ vi.mock('@/api/settings', () => ({
   updateSettings: vi.fn(),
   testConnection: vi.fn(),
   getAuthStatus: vi.fn(async () => ({ needs_setup: false })),
-  CHAT_MODE_KEY: 'chat.mode',
 }))
 
 vi.mock('@/api/modelRegistry', () => ({
