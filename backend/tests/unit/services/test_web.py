@@ -293,7 +293,10 @@ def test_search_without_a_key_says_where_to_configure_it() -> None:
         web.search_web("新闻", api_key="")
 
     message = str(excinfo.value)
-    assert "设置" in message and "Tavily" in message
+    # 地点要指**用户真能摸到的那一处**：能力页上的「联网」区块。
+    # 原来说的是「设置 → 联网」——那是**总设置**，而联网早就不在那儿了（v0.26 搬走），
+    # 用户顺着这句话去找只会扑空（2026-09-30 用户反馈的原话就是"找不到"）。
+    assert "能力" in message and "联网" in message and "Tavily" in message
     assert "web_fetch" in message, "顺带告诉它还有不需要密钥的那条路"
 
 

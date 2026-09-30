@@ -335,7 +335,7 @@ def search_web(
         )
     if not (api_key or "").strip():
         raise InvalidRequestError(
-            "没有配置联网搜索的密钥。到「设置 → 联网」里填一个搜索服务商的密钥"
+            "没有配置联网搜索的密钥。到「能力」页的「联网」里填一个搜索服务商的密钥"
             "（支持 Tavily 与博查），或者改用 web_fetch 直接抓一个你知道的网址"
         )
     count = max(1, min(int(limit), MAX_HITS))

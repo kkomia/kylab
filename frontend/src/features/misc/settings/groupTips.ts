@@ -25,7 +25,7 @@ export function groupTip(key: string): string {
 export function editHint(key: string): string {
   const hints: Record<string, string> = {
     llm: '打开会更慢、更费 token；关掉更快，但难题上的推导会浅一些。',
-    web: '密钥只回显掩码。留空表示不改动；要清掉它请用下方「清除」入口。',
+    web: '密钥只回显掩码。留空表示不改动；要换一把就整个粘进去覆盖。',
     sandbox: '三张清单的语法照抄 Claude Code：Bash(git status:*) 这样写，拒绝优先于放行。',
   }
   return hints[key] ?? ''

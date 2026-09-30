@@ -40,6 +40,7 @@ from app.services.embedding.protocols import (
 )
 from app.services.llm import LLMConfig
 from app.services.thinking import normalize_effort
+from app.services.web import SEARCH_PROVIDERS
 from app.storage.base import StoreBundle
 
 __all__ = [
@@ -210,8 +211,16 @@ SETTING_GROUPS: dict[str, Any] = {
         "fields": [
             {
                 "key": "web.search_provider",
-                "label": "搜索服务商（tavily / bocha）",
-                "type": "text",
+                "label": "搜索服务商",
+                # 两家的名字与取值**只有一处来源**（`services/web.py` 的 SEARCH_PROVIDERS）：
+                # 在这里再抄一份，加第三家时就会漏掉一处（与嵌入协议那张表同一个理由）。
+                # 它是 `select` 而不是自由文本：原先标签里写着「（tavily / bocha）」
+                # 让人照着**手打**，打错一个字母就是一句"不认识的搜索供应商"。
+                "type": "select",
+                "options": [
+                    {"value": value, "label": spec["label"]}
+                    for value, spec in SEARCH_PROVIDERS.items()
+                ],
             },
             {
                 "key": "web.search_api_key",

@@ -1,7 +1,7 @@
 /**
  * 能力页（旧 `views/CapabilitiesView.vue` + `components/capabilities/**`）的用例。
  *
- * 六条刻意设计的验证：
+ * 七条刻意设计的验证：
  * 1. **被拦下/被丢弃的技能要显示原因**（`flagged` + `discarded` 分开标）；
  * 2. **插件包的"未实现"原样显示**（四类能力面的 status 是后端给的，界面不改写）；
  * 3. **探活连不上不是错误、是结果**：`reachable:false` + `detail` 要显示出来；
@@ -10,7 +10,9 @@
  *    自己的 `data-[state=active]:bg-surface` 画，第一批那层临时垫底 span 不再出现；
  * 5. **技能卡紧凑**（评审 G2）：一行摘要、来源不逐卡重复、长描述进详情弹窗；
  * 6. **技能正文按 markdown 渲染**：用户看到的是文档，不是 `SKILL.md` 源码
- *    （`#` 成标题、`**` 成加粗），且首行那句解释小字已按 U1 删掉。
+ *    （`#` 成标题、`**` 成加粗），且首行那句解释小字已按 U1 删掉；
+ * 7. **联网搜索的配置区就摆在页面上**、保存不会把留空的密钥发出去（2026-09-30：
+ *    用户"找不到哪儿能填 API key"，而密钥被抹掉是同一处的另一半）。
  */
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -65,6 +67,7 @@ import {
   type Skill,
 } from '@/api/capabilities'
 import { listPlugins, type PluginPack } from '@/api/plugins'
+import { getSettings, updateSettings, type SettingGroup } from '@/api/settings'
 import { CapabilitiesPage } from '@/features/misc/capabilities/CapabilitiesPage'
 import { renderMisc } from '@/features/misc/testing/harness'
 import { resetToasts } from '@/features/misc/shared/toast'
@@ -75,6 +78,35 @@ const listInstalledMock = vi.mocked(listInstalledSkills)
 const listServersMock = vi.mocked(listMCPServers)
 const probeMock = vi.mocked(probeMCPServer)
 const listPluginsMock = vi.mocked(listPlugins)
+const getSettingsMock = vi.mocked(getSettings)
+const updateSettingsMock = vi.mocked(updateSettings)
+
+/** 联网那一组（后端的 `SETTING_GROUPS['web']`，密钥已配过 → 只回掩码） */
+const WEB_GROUP: SettingGroup = {
+  key: 'web',
+  label: '联网',
+  fields: [
+    {
+      key: 'web.search_provider',
+      label: '搜索服务商',
+      type: 'select',
+      value: 'tavily',
+      configured: true,
+      options: [
+        { value: 'tavily', label: 'Tavily' },
+        { value: 'bocha', label: '博查 Bocha' },
+      ],
+    },
+    {
+      key: 'web.search_api_key',
+      label: '搜索 API 密钥',
+      type: 'secret',
+      value: 'tvl…lTV',
+      configured: true,
+      options: [],
+    },
+  ],
+}
 
 function skill(overrides: Partial<Skill> = {}): Skill {
   return {
@@ -508,5 +540,46 @@ describe('能力页', () => {
     await userEvent.type(screen.getByLabelText('搜索技能'), 'pdf-pro')
     await waitFor(() => expect(document.querySelectorAll('li.m-card')).toHaveLength(1))
     expect(screen.getAllByTestId('skill-category')).toHaveLength(1)
+  })
+
+  it('联网搜索的配置区直接摆在页面上，且保存不会把留空的密钥抹掉', async () => {
+    /*
+     * 2026-09-30 用户反馈的原话是"界面上找不到任何地方能填 Tavily 的 API key"：
+     * 它原来跟着沙箱一起收在页头那颗「设置」弹窗里，而后端报错文案说的是
+     * 「设置 → 联网」——用户顺着那句话去**总设置**里找（那儿早就不放联网了）。
+     * 所以这一条钉两件事：
+     *
+     * 1. **不点任何按钮就看得见**（页面上常驻的区块）；
+     * 2. 密钥那一栏是 password 型，且"只改了服务商、密钥留空"时**一个密钥字段都不发**
+     *    ——后端把空值当**清除**，发出去就是把用户真配过的密钥抹掉。
+     *
+     * 这条用例与别的不同：它需要设置接口返回真形状的 `web` 组，所以
+     * `getSettings` 的实现留在这里（`vi.clearAllMocks` 只清调用记录，不清实现，
+     * 因此这条放在文件末尾）。
+     */
+    getSettingsMock.mockResolvedValue({
+      groups: [WEB_GROUP],
+      embedding_model_id: '',
+      embedding_dim: 0,
+      embedding_configured: false,
+      embedding_is_development: false,
+      rerank_enabled: false,
+    })
+    updateSettingsMock.mockResolvedValue({ updated: 1, rejected: [] })
+
+    renderMisc(<CapabilitiesPage />)
+
+    expect(await screen.findByRole('heading', { name: /联网/ })).toBeInTheDocument()
+    expect(screen.getByText('已配置')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByRole('button', { name: '编辑' }))
+
+    expect(screen.getByLabelText('搜索 API 密钥')).toHaveAttribute('type', 'password')
+
+    await userEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(updateSettingsMock).toHaveBeenCalledWith([
+      { key: 'web.search_provider', value: 'tavily' },
+    ])
   })
 })

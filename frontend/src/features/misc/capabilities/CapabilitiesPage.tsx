@@ -203,7 +203,10 @@ export function CapabilitiesPage() {
   const isAdmin = useSessionStore((store) => store.currentUser?.role === 'admin')
 
   const [tab, setTab] = useState<'skills' | 'mcp' | 'packs'>('skills')
-  /** 能力设置弹窗（v0.26）：联网搜索与沙箱执行从「总设置 → 功能」搬到了这里。 */
+  /**
+   * 沙箱设置的弹窗（v0.26 起：这一层从「总设置 → 功能」搬到了能力页）。
+   * **联网搜索不在这里**——它常驻页面上（见 `return` 里那一块）。
+   */
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   const [skillQuery, setSkillQuery] = useState('')
@@ -468,7 +471,8 @@ export function CapabilitiesPage() {
             label={`插件包 ${formatCount(packStats.enabled)} / ${formatCount(packStats.total)}`}
             tone={packStats.failed > 0 ? 'warning' : 'neutral'}
           />
-          {/* 联网搜索与执行策略在这后面。**只给管理员**：后端 `/settings` 是管理员端点 */}
+          {/* 沙箱执行在这后面（联网搜索在页面正文里，见下）。**只给管理员**：后端 `/settings` 是管理员端点。
+              按钮照旧叫「设置」（与记忆页那颗同一档，那里也只剩一组） */}
           {isAdmin && (
             <Button onClick={() => setSettingsOpen(true)}>
               <Settings2 size={15} />
@@ -478,7 +482,22 @@ export function CapabilitiesPage() {
         </>
       }
     >
-      <CapabilityTabs value={tab} onChange={setTab} />
+      {/* 联网搜索**常驻在页面上**，不跟沙箱一起收进弹窗（2026-09-30 用户反馈：
+          「界面上找不到任何地方能填 Tavily 的 API key」）。它原来在那颗「设置」里，
+          而后端报错文案说的是「设置 → 联网」——用户顺着那句话去**总设置**里找，
+          而联网早就不放那儿了（见 SettingsModal 的 MODULE_GROUP_KEYS）。
+
+          分两处摆的理由不是重要性，是**形状**：联网只有两项，且没填就是一句报错
+          （换第二家的 key 时要常常回来填）；沙箱是三张清单，低频、占地。
+          **只给管理员**：后端 `/settings` 是管理员端点。 */}
+      {isAdmin && (
+        <section className="page-shell-body" aria-label="联网搜索">
+          <SettingGroupPanel keys={['web']} />
+        </section>
+      )}
+      <div className="page-shell-body">
+        <CapabilityTabs value={tab} onChange={setTab} />
+      </div>
       {tab === 'skills' && (
         <section className="page-shell-body" role="tabpanel" aria-label="技能">
           <header className="m-toolbar">
@@ -1067,10 +1086,12 @@ export function CapabilitiesPage() {
         onConfirm={() => uninstallTarget && uninstall.mutate(uninstallTarget)}
       />
 
-      {/* 能力设置：联网搜索 + 沙箱执行。两组一起给，它们回答的是同一个问题
-          （"它能自己去做哪些事、做到什么程度"） */}
-      <Modal open={settingsOpen} title="能力设置" onClose={() => setSettingsOpen(false)} size="md">
-        <SettingGroupPanel keys={['web', 'sandbox']} />
+      {/* 沙箱执行：三张清单（放行 / 需确认 / 拒绝）+ 只读挂载 + 无隔离时要不要拒绝执行。
+          低频、占地，收在弹窗里——**联网搜索不在这里**，它常驻页面上（见上面那一块）。
+          标题写成「沙箱设置」而不是「能力设置」：这一屏只剩沙箱一组，而里面那个
+          小节标题已经是「沙箱执行」，同名会变成同一句话说两遍 */}
+      <Modal open={settingsOpen} title="沙箱设置" onClose={() => setSettingsOpen(false)} size="md">
+        <SettingGroupPanel keys={['sandbox']} />
       </Modal>
     </PageShell>
   )

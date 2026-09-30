@@ -14,6 +14,7 @@
  */
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Eye, EyeOff } from 'lucide-react'
 
 import { getSettings, updateSettings, type SettingField, type SettingGroup } from '@/api/settings'
 
@@ -49,6 +50,27 @@ export function fieldSummary(field: SettingField): string {
   return field.value || '—'
 }
 
+/**
+ * 一次保存该发出去的（键, 值）：**留空的密钥不发**。
+ *
+ * 服务端把空值当**清除**（`runtime_config.set`），而界面这一侧的承诺是
+ * "留空表示不改动"——掩码永不回填，所以密钥那一格打开时本来就是空的。
+ * 照原样发出去，就会出现"只想换个搜索服务商，顺手把密钥抹掉了"，
+ * 而两次保存之间没有任何提示（**最难查的一类故障**）。
+ *
+ * 真要清除密钥得显式送一个空值，那是另一个动作：后端 `set(clear_secrets=…)`
+ * 支持它，界面上暂时没有入口（`groupTips` 里原本写着"用下方「清除」入口"，
+ * 而那个入口并不存在——那句话已经删掉）。
+ */
+export function settingsPayloadOf(
+  group: SettingGroup,
+  draft: Record<string, string>,
+): { key: string; value: string }[] {
+  return group.fields
+    .filter((field) => !(field.type === 'secret' && !(draft[field.key] ?? '').trim()))
+    .map((field) => ({ key: field.key, value: draft[field.key] ?? '' }))
+}
+
 export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?: () => void }) {
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState<SettingGroup | null>(null)
@@ -62,10 +84,7 @@ export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?:
     .filter((item): item is SettingGroup => item !== undefined)
 
   const save = useMutation({
-    mutationFn: (group: SettingGroup) =>
-      updateSettings(
-        group.fields.map((field) => ({ key: field.key, value: draft[field.key] ?? '' })),
-      ),
+    mutationFn: (group: SettingGroup) => updateSettings(settingsPayloadOf(group, draft)),
     onSuccess: async (result) => {
       if (result.rejected.length > 0) {
         notifyError(`以下配置项不被接受：${result.rejected.join('、')}`)
@@ -141,14 +160,31 @@ export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?:
                       </label>
                     )
                   }
+                  // 密钥单独一支：里面那颗「显示 / 隐藏」是个 button，**不能待在 `<label>` 里**
+                  // （label 会把交互元素算成"被标注的控件"，与 `Field` 的 `tip` 同一条理由）。
+                  // 控件的可访问名由 `aria-label` 给。
+                  if (field.type === 'secret') {
+                    return (
+                      <div key={field.key} className="m-edit-field">
+                        <span className="m-edit-label">
+                          {field.label}
+                          {field.configured && (
+                            <span className="m-edit-current">当前 {field.value}</span>
+                          )}
+                        </span>
+                        <SecretInput
+                          label={field.label}
+                          value={draft[field.key] ?? ''}
+                          onChange={(next) =>
+                            setDraft((current) => ({ ...current, [field.key]: next }))
+                          }
+                        />
+                      </div>
+                    )
+                  }
                   return (
                     <label key={field.key} className="m-edit-field">
-                      <span className="m-edit-label">
-                        {field.label}
-                        {field.type === 'secret' && field.configured && (
-                          <span className="m-edit-current">当前 {field.value}</span>
-                        )}
-                      </span>
+                      <span className="m-edit-label">{field.label}</span>
                       {field.type === 'textarea' ? (
                         <Textarea
                           rows={5}
@@ -161,7 +197,6 @@ export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?:
                       ) : (
                         <Input
                           type={field.type === 'int' ? 'number' : 'text'}
-                          placeholder={field.type === 'secret' ? '留空表示不改动' : undefined}
                           value={draft[field.key] ?? ''}
                           onChange={(event) =>
                             setDraft((current) => ({ ...current, [field.key]: event.target.value }))
@@ -215,4 +250,50 @@ export function SettingGroupPanel({ keys, onSaved }: { keys: string[]; onSaved?:
 
 function messageOf(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
+}
+
+/**
+ * 密钥输入框：`type="password"` + 一颗「显示 / 隐藏」（2026-09-30）。
+ *
+ * 原先密钥与普通文本共用同一个 `Input`，也就是**明文摊在屏幕上**。填进这一格的
+ * 是从服务商后台复制来的一把串，粘错了多半**看不出来**——而"看不出哪里错了"
+ * 正是 401 排查最难的一步。所以要给一个能看一眼的开关；但默认仍然是遮住的，
+ * 明文不该是默认（肩窥是常态）。
+ *
+ * 显示状态是**这一个输入框自己的**：它不进 `draft`、不落库，面板关掉即复位——
+ * 它不是配置，是"我刚才想确认一下"。
+ */
+function SecretInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string
+  onChange: (next: string) => void
+}) {
+  const [revealed, setRevealed] = useState(false)
+  return (
+    <div className="relative">
+      <Input
+        type={revealed ? 'text' : 'password'}
+        className="pr-9"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="留空表示不改动"
+        aria-label={label}
+        autoComplete="off"
+      />
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        className="absolute top-0.5 right-0.5"
+        aria-label={revealed ? '隐藏密钥' : '显示密钥'}
+        onClick={() => setRevealed((current) => !current)}
+      >
+        {revealed ? <EyeOff size={14} /> : <Eye size={14} />}
+      </Button>
+    </div>
+  )
 }

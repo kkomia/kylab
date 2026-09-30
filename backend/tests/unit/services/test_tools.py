@@ -1243,7 +1243,9 @@ def test_web_search_without_a_key_says_where_to_configure(
     with pytest.raises(InvalidRequestError) as excinfo:
         call_tool(services, "web_search", {"query": "今天"}, caller=admin)
 
-    assert "设置" in str(excinfo.value)
+    # 地点指**能力页上的「联网」**：那句话原来说的是「设置 → 联网」，
+    # 而联网在 v0.26 就从总设置搬走了——用户照着找会扑空（2026-09-30 反馈）
+    assert "能力" in str(excinfo.value) and "联网" in str(excinfo.value)
 
 
 def test_web_fetch_returns_the_page_with_its_source(

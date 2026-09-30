@@ -287,6 +287,26 @@ def test_describe_exposes_thinking_effort_as_a_select(runtime: RuntimeConfigServ
     assert effort["value"] == "medium"
 
 
+def test_describe_exposes_search_providers_as_a_select(runtime: RuntimeConfigService) -> None:
+    """搜索服务商同样由后端给候选值（**从 `web.SEARCH_PROVIDERS` 派生**）。
+
+    原先它是自由文本框、标签里写着「（tavily / bocha）」，等于让用户照着**手打**——
+    打错一个字母就是一句"不认识的搜索供应商"。这里钉住三件事：
+    是 `select`、候选值来自那张表、并且默认值确实落在候选里。
+    """
+    from app.services.web import SEARCH_PROVIDERS
+
+    groups = {group["key"]: group for group in runtime.describe()["groups"]}
+    fields = {field["key"]: field for field in groups["web"]["fields"]}
+
+    provider = fields["web.search_provider"]
+    assert provider["type"] == "select"
+    assert [option["value"] for option in provider["options"]] == list(SEARCH_PROVIDERS)
+    # 密钥仍是 secret：对外只有掩码与"是否已配置"
+    assert fields["web.search_api_key"]["type"] == "secret"
+    assert provider["value"] in SEARCH_PROVIDERS
+
+
 def test_cloud_parser_snapshots_come_from_settings(runtime: RuntimeConfigService) -> None:
     runtime.set({"mineru.token": "m-token", "paddleocr.token": "p-token"})
 

@@ -78,7 +78,7 @@ import {
 } from '../shared/composites'
 import { AppearanceSection } from './AppearanceSection'
 import { ModelRegistryPanel, REGISTRY_QUERY_KEY } from './ModelRegistryPanel'
-import { SettingGroupPanel, SETTINGS_QUERY_KEY } from './SettingGroupPanel'
+import { SettingGroupPanel, SETTINGS_QUERY_KEY, settingsPayloadOf } from './SettingGroupPanel'
 import { ShortcutsSection } from './ShortcutsSection'
 import { StorageSection } from './StorageSection'
 
@@ -280,10 +280,9 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     typeof section === 'string' && section.startsWith('feature:') ? section.slice(8) : ''
 
   const save = useMutation({
-    mutationFn: (target: SettingGroup) =>
-      updateSettings(
-        target.fields.map((field) => ({ key: field.key, value: draft[field.key] ?? '' })),
-      ),
+    // 与 `SettingGroupPanel` 用同一条整理：**留空的密钥不发**。这一页编辑
+    // MinerU / PaddleOCR 时会走到它，照发同样会把 token 抹掉（见 `settingsPayloadOf`）
+    mutationFn: (target: SettingGroup) => updateSettings(settingsPayloadOf(target, draft)),
     onSuccess: async (result) => {
       if (result.rejected.length > 0) {
         notifyError(`以下配置项不被接受：${result.rejected.join('、')}`)
