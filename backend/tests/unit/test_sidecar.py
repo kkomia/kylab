@@ -334,7 +334,8 @@ def test_workspace_fallbacks_never_land_inside_the_repo(monkeypatch) -> None:  #
 def test_knowledge_client_is_the_remote_one(tmp_path) -> None:  # type: ignore[no-untyped-def]
     """装配出来的两端**就是 P2 的远端实现** ✓（"循环本地、KB 与模型远端"落在这一行 ✓）。
 
-    同时钉住本地那一侧的三条口径：`require_isolation` 仍是 `true` ✓（闸不许绕 ✗）、
+    同时钉住本地那一侧的三条口径：默认**无隔离时直接执行**（`require_isolation` 默认 `false` ✓，
+    不装 Docker 也要能跑 ✓），但**用户显式要求严格时必须被尊重** ✓（闸可开、不可被偷偷绕 ✗）、
     审批注册表**带过来了** ✓、KB 接缝指向的**是远端实现** ✓（不是进程内检索 ✗）。
     """
     clients = sidecar.build_clients(
@@ -347,6 +348,11 @@ def test_knowledge_client_is_the_remote_one(tmp_path) -> None:  # type: ignore[n
     # 探活打的是后端自己的 health（不花模型额度 ✓）
     assert clients.health_url == "http://server.test/api/v1/health"
     # 本地那一侧：严格档没被绕 ✓、审批整套在 ✓
+    # 2026-09-30 用户裁定：默认**无隔离时直接执行**（"不装 Docker 也要能跑命令"）——
+    # 所以默认值钉 `false` ✓；但下面这一步同样必须成立：**用户打开严格档后，值就得是 true** ✓
+    # （闸可以开、也可以关，但**不能被偷偷绕** ✗ —— 那才是这条用例真正守的东西 ✓）
+    assert clients.runtime.get("sandbox.require_isolation") == "false"
+    clients.runtime.set({"sandbox.require_isolation": "true"})
     assert clients.runtime.get("sandbox.require_isolation") == "true"
     assert clients.approvals is clients.services.approvals
 
