@@ -446,3 +446,26 @@ button.ch-row:hover {
   color: var(--Labels-Quaternary);
   font-variant-numeric: tabular-nums;
 }
+
+/* ---- 骨架屏（三种行为归一：这里是 shimmer 扫光，替换原先的静止灰条） ---- */
+.ch-skeleton {
+  padding: var(--space-6) 0;
+}
+.ch-skeleton-bar {
+  height: 14px;
+  margin-bottom: var(--space-3);
+  border-radius: var(--radius-control);
+  background: linear-gradient(
+    90deg,
+    var(--Bg-Secondary) 25%,
+    color-mix(in srgb, var(--Bg-Secondary) 55%, var(--Bg-Primary)) 50%,
+    var(--Bg-Secondary) 75%
+  );
+  background-size: 200% 100%;
+  animation: ch-shimmer 1.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ch-skeleton-bar {
+    animation: none !important;
+  }
+}

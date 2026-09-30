@@ -102,15 +102,13 @@ function useStableTurns(messages: ChatMessage[]): Turn[] {
   }, [messages])
 }
 
-/** 骨架屏：只画有把握的结构（几行灰条），不画"空对话"的欢迎层，也别让人干等一屏白。 */ function LoadingSkeleton() {
+/** 骨架屏：只画有把握的结构（几行灰条），不画"空对话"的欢迎层，也别让人干等一屏白。
+    灰条走 Kimi 的 shimmer 扫光（`ch-shimmer`，与工具链块的加载语言同一条）。 */
+function LoadingSkeleton() {
   return (
-    <div className="py-[var(--space-6)]" aria-hidden>
+    <div className="ch-skeleton" aria-hidden>
       {[92, 78, 85, 64].map((width, row) => (
-        <div
-          key={row}
-          className="mb-[var(--space-3)] h-[14px] rounded-[var(--radius-control)] bg-[var(--bg-subtle)]"
-          style={{ width: `${width}%` }}
-        />
+        <div key={row} className="ch-skeleton-bar" style={{ width: `${width}%` }} />
       ))}
     </div>
   )

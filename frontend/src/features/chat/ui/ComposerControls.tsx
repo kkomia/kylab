@@ -266,7 +266,12 @@ export function KnowledgeBaseControl() {
         `知识库 · 已关`）：那个词每变一次，这一颗的宽度就跟着跳一次，而"开没开"本来就
         该用开关表达，不该再写一遍。**状态一个字都不印**，选择结果在面板的勾上。
       */}
-      <span className={`${TRIGGER} gap-[var(--space-2)] pr-[var(--space-1)]`}>
+      {/* 展开态整个胶囊亮一档：`data-state` 落在内层 `Trigger` 上（这一层拿不到），
+          所以用 `:has()` 从外层认它——审计 §6.2-10：原先 `data-[state=open]` 挂在
+          这一层，展开时颜色一动不动 */}
+      <span
+        className={`${TRIGGER} gap-[var(--space-2)] pr-[var(--space-1)] has-[[data-state=open]]:bg-[var(--bg-hover)] has-[[data-state=open]]:text-[var(--text-primary)]`}
+      >
         <button
           type="button"
           role="switch"

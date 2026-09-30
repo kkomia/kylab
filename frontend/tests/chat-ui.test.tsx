@@ -1483,8 +1483,31 @@ describe('控件取值收口：菜单进出场、禁用外形、环的过渡', (
     expect(klass).toContain('data-[state=open]:fade-in-0')
     expect(klass).toContain('data-[state=closed]:animate-out')
     expect(klass).toContain('data-[state=closed]:fade-out-0')
+    // Kimi 式"轻滑入"：4px 从上往下（只有 fade 还是太平）
+    expect(klass).toContain('data-[state=open]:slide-in-from-top-1')
+    expect(klass).toContain('data-[state=closed]:slide-out-to-top-1')
     // 150ms = `--motion-fast` 那一档（弹窗 200ms、抽屉 300/500ms，菜单是"轻"的那一类）
     expect(klass).toContain('duration-150')
+  })
+
+  it('知识库胶囊展开时整颗亮一档：data-state 在内层 Trigger 上，外层用 :has() 认它', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    // 先抓住引用再点：菜单打开后 Radix 会把其余内容 aria-hidden，按角色就查不到它了
+    const trigger = screen.getByRole('button', { name: '知识库范围' })
+    await userEvent.setup().click(trigger)
+    // 内层 Trigger 真的带着 open：外层那条 :has() 才有东西可认
+    expect(trigger).toHaveAttribute('data-state', 'open')
+    // 外层胶囊上挂着认它的类（审计 §6.2-10 的那条修复）
+    const capsule = trigger.closest('span[class*="has-"]')
+    expect(capsule).not.toBeNull()
+    expect((capsule as HTMLElement).className).toContain(
+      'has-[[data-state=open]]:bg-[var(--bg-hover)]',
+    )
   })
 
   it('没有可用模型时那一颗看得出禁用（原先点下去没反应，外形却和能点的没两样）', async () => {

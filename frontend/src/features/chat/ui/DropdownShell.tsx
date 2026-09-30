@@ -48,7 +48,7 @@ export const CONTROL_TRIGGER =
  * 菜单是"轻"的那一类，不该跟弹窗同一档（Radix 靠这段动画名把关闭也演完再卸载）。
  */
 export const MENU_PANEL =
-  'z-50 min-w-[220px] max-h-[420px] overflow-y-auto rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-menu)] p-[var(--space-2)] shadow-[var(--shadow-popover)] duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0'
+  'z-50 min-w-[220px] max-h-[420px] overflow-y-auto rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-menu)] p-[var(--space-2)] shadow-[var(--shadow-popover)] duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-1 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-1'
 
 /** 菜单项的形状（+ 菜单、模型菜单、命令/模式子菜单共用）。 */
 export const MENU_ITEM =
