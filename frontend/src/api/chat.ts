@@ -891,8 +891,8 @@ async function pump(
       else handlers.onDelta?.(event.text)
       return
     }
-    delivered = true
     if (event.type === 'done') {
+      delivered = true
       finalAnswer = event.answer
       finalInfo = { recovered: event.recovered === true, detail: event.detail ?? '' }
       // 思考先落地（它是已完成的过程），再让正文按自己的节奏收尾
@@ -902,10 +902,25 @@ async function pump(
       }
       if (pacer) pacer.finish(event.answer)
       else handlers.onDone?.(event.answer, finalInfo)
-    } else {
+      return
+    }
+    if (event.type === 'error') {
+      delivered = true
       // 报错时把已经收到、还没显示的字先亮完，否则它们会凭空消失
       flushAll()
       handlers.onError?.(event.message)
+      return
+    }
+    /*
+      **未知事件类型：安静跳过**（前向兼容，审计 §6.1-2/3）。
+      原先这里是 `else → onError`：后端将来新增任何一种带 `data:` 的事件类型，
+      旧前端都会把它当成"没有 message 的错误"弹出去（后端现在的 `ping` 不带 `data:`
+      行，正是为了绕开这条）。未知类型不是错误——它只是这台前端还不认识的一段数据；
+      静默跳过、把名字留在控制台，旧前端对新后端就不再是硬约束。
+      注意**不动 `delivered`**：未知类型不算"已交付"，流若随后断掉，仍该走补错那条路。
+    */
+    if (typeof console !== 'undefined' && console.debug) {
+      console.debug('[chat] 未知事件类型，已忽略：', (event as { type?: unknown }).type)
     }
   }
 

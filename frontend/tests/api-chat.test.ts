@@ -291,6 +291,34 @@ describe('chatStream', () => {
     expect(answer).toBe('半句')
   })
 
+  it('未知事件类型安静跳过（前向兼容）：不当错误弹、不打断这一轮', async () => {
+    // 后端将来新增任何一种带 `data:` 的事件类型，旧前端都该忽略它继续跑——
+    // 原先它会落到 `else → onError(undefined)`，逼得后端连 `ping` 都得不带 data 行
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseResponse([
+          events([
+            { type: 'brand_new_thing', payload: { any: 1 } },
+            { type: 'delta', text: '正文照常' },
+            { type: 'done', answer: '正文照常' },
+          ]),
+        ]),
+      ),
+    )
+
+    const errors: string[] = []
+    let answer = ''
+    await noPace(
+      { query: 'q', kb_ids: ['kb_1'] },
+      { onError: (m) => errors.push(String(m)), onDone: (a) => (answer = a) },
+    )
+    await settle()
+
+    expect(errors).toEqual([])
+    expect(answer).toBe('正文照常')
+  })
+
   it('平滑模式：整段一次到达也分拍显示，排空后才交付全文', async () => {
     vi.useFakeTimers()
     try {
