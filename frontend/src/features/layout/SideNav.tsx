@@ -373,6 +373,7 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const workspaceConversations = useConversationStore((state) => state.workspaceItems)
   const workspaces = useWorkspaceStore((state) => state.items)
   const archivedProjects = useWorkspaceStore((state) => state.archived)
+  const archivedProjectsLoaded = useWorkspaceStore((state) => state.archivedLoaded)
   const loadArchivedProjects = useWorkspaceStore((state) => state.loadArchived)
   const workspaceError = useWorkspaceStore((state) => state.error)
   const loadWorkspaces = useWorkspaceStore((state) => state.load)
@@ -509,11 +510,21 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   /**
    * 没归项目的会话（对话那一节铺的就是它们）。
    * **已归档的不在这里**：归档后 store 会把它从这份清单里摘掉，它们只在「已归档」视图里。
+   *
+   * **挂在别台设备项目下的会话也进这一节**（工作区按设备隔离，2026-09-30 起）：
+   * 项目清单只列本机的，`workspace_id` 指向本机看不见的项目的会话，在这里按未归档
+   * 渲染——不然它进不了项目节、也不在这一节，整条静默消失（会话权威在服务器、
+   * 跨设备可见，见《数据归属与同步》§3）。已归档项目的会话**不算**进来：那是跟着
+   * 项目一起收起来的，不是没地方去。所以这条兜底要等归档清单落地才启用，免得加载
+   * 窗口里它们在「对话」节闪一下又没了。
    */
-  const looseConversations = useMemo(
-    () => conversations.filter((item) => !item.workspace_id),
-    [conversations],
-  )
+  const looseConversations = useMemo(() => {
+    const known = new Set(workspaces.map((item) => item.id))
+    for (const item of archivedProjects) known.add(item.id)
+    return conversations.filter(
+      (item) => !item.workspace_id || (archivedProjectsLoaded && !known.has(item.workspace_id)),
+    )
+  }, [conversations, workspaces, archivedProjects, archivedProjectsLoaded])
 
   function shownConversations(workspaceId: string): ConversationSummary[] {
     const all = byWorkspace.get(workspaceId) ?? []

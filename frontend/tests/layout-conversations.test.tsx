@@ -171,6 +171,35 @@ describe('侧栏的会话分区', () => {
     expect(screen.getByRole('button', { name: '对话' })).toBeInTheDocument()
   })
 
+  it('挂在别台设备项目下的会话：本机按未归档渲染（工作区按设备隔离）', async () => {
+    // 项目清单被后端按设备过滤：ws-other-device 不在返回里；但会话权威在服务器、
+    // 跨设备可见——这条会话的 workspace_id 指向一个本机看不见的项目。
+    // 它不能因此从侧栏消失（进不了项目节、又不在「对话」节 = 静默没了）。
+    listConversationsMock.mockResolvedValue({
+      items: [
+        conversation({ id: 'c1', title: '本机这条' }),
+        conversation({ id: 'c2', title: '别机项目里的会话', workspace_id: 'ws-other-device' }),
+      ],
+    })
+    renderShell()
+
+    expect(await screen.findByText('本机这条')).toBeInTheDocument()
+    expect(screen.getByText('别机项目里的会话')).toBeInTheDocument()
+  })
+
+  it('已归档项目的会话不算「没地方去」：跟着项目收起来，不进「对话」节', async () => {
+    listWorkspacesMock.mockImplementation(async (archived?: boolean) =>
+      archived ? { items: [workspace({ id: 'w-arch', name: '收起來的項目' })] } : { items: [] },
+    )
+    listConversationsMock.mockResolvedValue({
+      items: [conversation({ id: 'c1', title: '已归档项目里的会话', workspace_id: 'w-arch' })],
+    })
+    renderShell()
+
+    // 归档清单一加载完它就该不在（而不是在「对话」节出现）
+    await waitFor(() => expect(screen.queryByText('已归档项目里的会话')).not.toBeInTheDocument())
+  })
+
   it('一条会话都没有时说一句状态，不给操作指引', async () => {
     renderShell()
     expect(await screen.findByText('还没有对话')).toBeInTheDocument()
