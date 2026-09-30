@@ -26,9 +26,14 @@ python -m app.sidecar --port 8765
 - ✓ `POST /turn`：吃一条用户消息 → 建**同一个 `ToolLoop`** ✓（循环本体一行没改 ✗）
   → 工具在**本机执行** ✓ → 结果回灌模型 → 返回 `{answer, steps, notes, sse}` ✓；
 - ✓ `steps` 现在是**真的**：`ToolLoop` 产出的 `StepEvent` 逐条转成 dict ✓；
-- ✗ SSE 端点：结构留了位（`sse` 字段 + `text/event-stream` 的说明 ✓），端点本身 P4 与前端一起做 ✓；
-- ✗ 审批的**确认入口**：整套 `ApprovalRegistry` 带过来了 ✓（`ask` 档的行为与服务器一致 ✓），
-  但边车这一侧还没有界面能点头 → 需要确认的调用会等到超时按"没批准"处理 ✓（P4 与前端一起做）。
+- ✓ `POST /turn/stream`：SSE（`step` / `thinking` / `delta` / **`approval`** /
+  `done` / `error` ✓），事件形状与服务器那条链**逐字对齐** ✓；
+- ✓ 审批的**确认入口**（2026-09-29 接上 ✓）：`ask` 档走到"要问"时发一条 `type=approval` ✓、
+  循环停在 `ApprovalRegistry.wait_decision` 上等人 ✓；用户在界面上点的那一下走
+  `POST /turn/approvals/{approval_id}` ✓（与服务器 `ChatApprovalIn/Out` 同形 ✓，
+  复用**同一个登记表** ✓ 不另造一套 ✗）。**没有通道的链路**（`/turn` 那条非流式、
+  以及脚本 / 单测这种没登记表的）照旧走 `UNAVAILABLE` —— 如实回"待确认"，
+  **绝不静默当成用户拒绝** ✗✓。
 
 ## 工作区与沙箱
 
@@ -47,10 +52,10 @@ from collections.abc import Iterator, Sequence
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -897,20 +902,25 @@ def _step_payload(event: StepEvent) -> dict[str, Any]:
     }
 
 
-def _approval_step(event: ApprovalEvent) -> dict[str, Any]:
-    """边车这一侧**还没有确认入口** ✗ → 把这条待确认如实记成一步 ✓（别吞掉 ✗）。"""
+def _approval_payload(event: ApprovalEvent) -> dict[str, Any]:
+    """一条待确认 → SSE 载荷（字段与**服务器那条链逐字对齐** ✓）。
+
+    照 `api/v1/chat.py` 那段 `{"type": "approval", …}` ✓：`approval_id` / `tool` / `label` /
+    `args` / `detail` / `rule` / `timeout_seconds` ✓ —— 界面那三个按钮（允许一次 / 这类都允许 /
+    拒绝）与"这类都允许会写下哪条规则"全都靠这几个字段 ✓，少一个就得在前端另做推断 ✗。
+
+    **不是"过程里的一步"** ✗：过程快照记的是"这一轮做过什么"，而这是一句**还没被回答**的问题 ✓
+    （服务器那条链也是这么分的 ✓）。所以它**不进 `steps`** ✗ —— 进了就会跟着这一轮写回服务器，
+    用户回看历史时会冒出一条永远等不到人点的确认 ✗。
+    """
     return {
-        "phase": "tool",
-        "label": f"在等确认：{event.label}",
-        "detail": (
-            f"{event.args}（边车这一侧还没有确认入口，等不到就按「没批准」处理："
-            f"{int(event.timeout_seconds)} 秒）"
-        ),
-        "status": "done",
+        "approval_id": event.approval_id,
         "tool": event.tool,
-        "outcome": "awaiting",
+        "label": event.label,
         "args": event.args,
-        "result": "",
+        "detail": event.detail,
+        "rule": event.rule,
+        "timeout_seconds": event.timeout_seconds,
     }
 
 
@@ -1023,6 +1033,13 @@ class Clients:
         #: 这一轮归属的会话：**导出那一族要靠它**（产出物上传到 `/conversations/{id}/files` ✓）。
         #: 没带会话 id 的老调用方落回 `LOCAL_CONVERSATION`（那时候导出会如实报"没有会话" ✓）。
         conversation_id: str = LOCAL_CONVERSATION,
+        #: **这一轮有没有"问用户"的通道** ✓。
+        #:
+        #: - `True`（默认，`/turn/stream` 用 ✓）：`ask` 档走到"要问"时**发一条 `type=approval`**
+        #:   并停下来等人 ✓ —— 这一侧唯一的通道就是 SSE 那条流 ✓，所以只有流式那条路配它 ✓；
+        #: - `False`（`/turn` 用 ✗）：整段响应发不出一句询问 ✗（调用方拿到响应前不知道
+        #:   `approval_id` ✓）→ 交给循环的 `UNAVAILABLE` 那条路 ✓，回给模型的是"待确认" ✓。
+        interactive: bool = True,
     ) -> ToolLoop:
         """把**远端两端 + 本地那一侧**拼成一个 `ToolLoop` ✓（循环本体一行不改 ✗）。
 
@@ -1047,7 +1064,11 @@ class Clients:
             client_factory=lambda: self.model,
             tools=self.tool_specs(kb_ids=kb_ids),
             runner=runner,
-            approvals=self.approvals,
+            # **通道就是这一件事**：登记表非空 → 循环走到"要问"时发事件、停下来等人 ✓；
+            # 为空 → 直接按 `UNAVAILABLE` 回"待确认" ✓（**绝不静默当成用户拒绝** ✗）。
+            # 复用**同一个** `ApprovalRegistry`（`Clients.__init__` 那份 ✓）——它是
+            # `POST /turn/approvals/{id}` 与正在等它的那一步之间的唯一交接点 ✓，不另造一套 ✗。
+            approvals=self.approvals if interactive else None,
             mode=self.runtime.get("chat.mode"),
             permission=self.runtime.get("chat.permission"),
             gate=plan_gate.gate_for(LOCAL_CONVERSATION),
@@ -1161,6 +1182,31 @@ class HealthOut(BaseModel):
     kb_reachable: bool
     model_reachable: bool
     note: str = ""
+
+
+class ApprovalDecisionIn(BaseModel):
+    """界面在确认条上点的那一下（形状与服务器 `ChatApprovalIn` **逐字对齐** ✓）。
+
+    **只有三个取值** ✓，都是用户明确点出来的：允许一次 / 这类都允许 / 拒绝 ✓。
+    "超时"与"这条链路没人可问"**不是请求参数** ✗ —— 它们是执行侧自己的结论 ✓
+    （能从外面伪造就等于开了一条绕过"等用户点头"的路 ✗，见 `services/approvals.py`）。
+    """
+
+    decision: Literal["allow_once", "allow_always", "deny"] = Field(
+        description="允许一次 / 这类都允许（写进放行清单）/ 拒绝"
+    )
+    reason: str = Field(
+        default="",
+        max_length=500,
+        description="拒绝时给模型的一句话（可空 ✓）；空 = 与没有这个输入框时一字不差 ✓",
+    )
+
+
+class ApprovalDecisionOut(BaseModel):
+    """决定有没有真的交到**正在等它的那一步** ✓（照服务器 `ChatApprovalOut` ✓）。"""
+
+    accepted: bool = Field(description="true = 那一头已经收到它，会立刻接着往下跑 ✓")
+    detail: str = Field(default="", description="给人看的一句话 ✓")
 
 
 #: 写回那一轮的**超时上限**（秒）。刻意给得短：用户已经拿到答案了 ✓，
@@ -1308,9 +1354,15 @@ def create_app(
         """
         target = _check_workspace(payload.workspace) if payload.workspace else workspace
         notes = _notes(clients)
+        # **非流式这条没有通道**（`interactive=False` ✓）：响应是**整段**回来的，
+        # 询问发不出去（调用方在拿到响应之前根本不知道 `approval_id` ✗）→ 让人等 120 秒
+        # 是白等 ✓。所以按"这条链路上没人可以问"走 `UNAVAILABLE` ✓ —— 回给模型的是
+        # "待确认"，**不是**"用户拒绝了" ✗（分档见 `services/approvals.py` 模块头 ✓）。
+        # 要真正弹确认条就用 `/turn/stream` ✓（它把询问当成一条 SSE 发出去 ✓）。
         loop = clients.tool_loop(
             kb_ids=payload.kb_ids,
             conversation_id=payload.conversation_id or LOCAL_CONVERSATION,
+            interactive=False,
         )
         messages = _messages_of(payload)
         answer = ""
@@ -1330,7 +1382,24 @@ def create_app(
                     # 收尾那条带的是拼好的全文，**以它为准** ✓（个别增量丢了也不会与步骤对不上 ✓）
                     answer = event.answer or answer
                 elif isinstance(event, ApprovalEvent):
-                    steps.append(_approval_step(event))
+                    # 这条路上**没有通道**（`interactive=False` ✓）→ 循环不会走到这里 ✗。
+                    # 真出现了就说明"通道接上了而这条链路没接" ✗ —— 如实记一条 step（不吞 ✗），
+                    # 因为静默丢掉一句"要用户点头"的询问，用户看到的就是"命令被拒" ✗。
+                    steps.append(
+                        {
+                            "phase": "tool",
+                            "label": f"待确认：{event.label}",
+                            "detail": (
+                                f"{event.args}（非流式这条没有确认通道："
+                                f"要弹确认条请用 /turn/stream ✓）"
+                            ),
+                            "status": "done",
+                            "tool": event.tool,
+                            "outcome": "awaiting",
+                            "args": event.args,
+                            "result": "",
+                        }
+                    )
         except RemoteClientError as exc:
             # **失败分档照旧** ✓：远端不可用/被拒都要如实说出来 ✗（不当成"空回答" ✓）
             return TurnOut(
@@ -1402,8 +1471,13 @@ def create_app(
             data: {"type":"step", phase,label,detail,status,tool,outcome,args,result}
             data: {"type":"thinking","text":"…"}
             data: {"type":"delta","text":"…"}
+            data: {"type":"approval", approval_id,tool,label,args,detail,rule,timeout_seconds}
             data: {"type":"done","answer":"…"}
             data: {"type":"error","message":"…"}
+
+        `approval` 那一条是**要用户点头**的询问 ✓（v0.41）：发出去之后这一轮的循环就停在
+        `ApprovalRegistry.wait_decision` 上 ✓，等 `POST /turn/approvals/{approval_id}` 那一下 ✓。
+        所以它必须**原样、立刻**发出去 ✗（攒着不发 = 两边一起等死 ✓）。
 
         护栏与 `/turn` **一字不差** ✓：
         - **正文为空绝不当成功** ✗✗ → 先发 `error`（`empty-answer: …` ✓）再发 `done`（如实说明 ✓）；
@@ -1443,9 +1517,13 @@ def create_app(
                         # 收尾那条带拼好的全文，**以它为准** ✓（与 `/turn` 同一口径 ✓）
                         answer = event.answer or answer
                     elif isinstance(event, ApprovalEvent):
-                        step = _approval_step(event)
-                        steps.append(step)
-                        yield _sse({"type": "step", **step})
+                        # **问用户**（v0.41）：这一条发出去之后，循环那边就停在
+                        # `approvals.wait_decision` 上了 ✓ —— 所以必须**原样、立刻**发出去 ✗
+                        # （攒着不发 = 两边一起等死 ✓，见 `services/approvals.py` 模块头第 1 条）。
+                        #
+                        # **不进 `steps`** ✗：这是一句还没被回答的问题，不是"做过的一步" ✓
+                        # （服务器那条链同样把它排除在快照之外 ✓）。
+                        yield _sse({"type": "approval", **_approval_payload(event)})
             except RemoteClientError as exc:
                 # **失败如实报** ✗（分档照旧：不可用 / 被拒 ✓，不伪装成空回答 ✓）
                 yield _sse({"type": "error", "message": str(exc)})
@@ -1507,6 +1585,40 @@ def create_app(
             del target  # 工作区已在校验时定下 ✓（响应里不再回它：流式的载荷形状照服务器那条链 ✓）
             yield _sse({"type": "done", "answer": answer})
         return StreamingResponse(gen(), media_type=SSE_MEDIA_TYPE)
+
+    @app.post(
+        "/turn/approvals/{approval_id}",
+        response_model=ApprovalDecisionOut,
+        summary="对一条待确认做出决定（允许一次 / 这类都允许 / 拒绝）",
+    )
+    def decide_turn_approval(approval_id: str, payload: ApprovalDecisionIn) -> ApprovalDecisionOut:
+        """把界面点的那一下，交给**正在等它的那一步** ✓（v0.41 同一套语义 ✓）。
+
+        与 `/turn/stream` 的关系就是这条协议的全部要点：那条流**还开着**、停在
+        `ApprovalRegistry.wait_decision` 上 ✓（见 `services/approvals.py` 模块头），
+        这一条请求只是把决定送回它手里 ✓。所以**不另造一套** ✗：登记表与判定都复用
+        `clients.approvals`（`Clients.__init__` 里那一份 ✓，`tool_loop` 拿的也是它 ✓）。
+
+        两处口径与**服务器那条链逐条对齐**（`api/v1/chat.py` 的 `decide_approval` ✓）：
+
+        - **送到了** → `accepted=true` ✓；
+        - **已经失效**（超时 / 已经点过一次）→ **409** ✗，而不是回一句"已记录" ✓ ——
+          否则用户以为命令跑了 ✗，而那一头其实早按超时处理完了 ✓（同一个登记表的
+          `decide` 就是靠"条目还在、还没过期"来回答这件事的 ✓）。
+
+        鉴权：边车**只监听本机** ✓（`--host` 默认 127.0.0.1 ✓），能打到这个端口的就是
+        这台机器的主人 ✓ —— 与服务器那条要 `require_admin` 的口径同源 ✓
+        （服务器管的是"服务器上的执行" ✓，而这里执行的是**用户自己机器上**的命令 ✓）。
+        """
+        if not clients.approvals.decide(approval_id, payload.decision, payload.reason):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "这条确认已经失效了（可能等得太久超时了，或者已经点过一次）："
+                    "那一轮会按「没有批准」继续，模型那边会收到这个结论。请让它再来一次。"
+                ),
+            )
+        return ApprovalDecisionOut(accepted=True, detail="已经交给正在等它的那一步")
 
     return app
 
