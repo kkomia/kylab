@@ -110,15 +110,56 @@ describe('工具链块', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('头的摘要行 + 步数；点头 = 点宿主的开合开关', () => {
+  it('头的总名（`使用 N 个工具，动作短语`）；点头 = 点宿主的开合开关', () => {
     const { onToggle } = flowOf(
       makeMessage('assistant', '答案', {
         steps: [step(), step({ label: '抓取网页', tool: 'fetch' })],
       }),
     )
-    expect(screen.getByText('2 步')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /本轮没有命中资料/ }))
+    /*
+      头部是**动作态**总名（2026-09-30 R3 批注，照 Kimi「使用 19 个工具，生成今日早报…」）：
+      `使用 {T} 个工具，{动作短语}`——T 是**原始工具步数**（聚合前每一次调用都算），
+      短语与行文案**同源**（这里是两条单步，所以短语就是两个 label），按顺序去重、顿号连接。
+      右侧**没有**「N 步」计数（计数已在前缀里）。
+    */
+    const toggle = screen.getByRole('button', { name: /使用 2 个工具/ })
+    expect(toggle).toHaveTextContent('使用 2 个工具，联网搜索、抓取网页')
+    // 右侧原先那枚「N 步」计数撤掉了（R3）：计数已经在 `使用 2 个工具` 这个前缀里
+    expect(toggle).not.toHaveTextContent(/\d+ 步/)
+    fireEvent.click(toggle)
     expect(onToggle).toHaveBeenCalledTimes(1)
+  })
+
+  it('头部总名的口径：T 数的是**原始调用次数**，短语取聚合后的动作（重复动作只列一次）', () => {
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          // 三次同一个工具 → 并成一行「检索 3 个问题」（短语取聚合句的标签段）
+          step({ label: '检索知识库', tool: 'search', detail: '命中 1 条' }),
+          step({ label: '检索知识库', tool: 'search', detail: '命中 2 条' }),
+          step({ label: '检索知识库', tool: 'search', detail: '命中 3 条' }),
+          // 只调用一次的工具不并 → 短语就是它自己的标签
+          step({ label: '导出文档', tool: 'export_document', detail: '已导出' }),
+        ],
+      }),
+    )
+    const toggle = screen.getByTestId('trace-toggle')
+    // T = 3 + 1 = 4（**调用次数**，不是聚合后的行数）；短语按出现顺序去重后顿号连接
+    expect(toggle).toHaveTextContent('使用 4 个工具，检索 3 个问题、导出文档')
+  })
+
+  it('头部总名：块内没有工具步（只有组织回答）时仍是「直接作答」', () => {
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [{ phase: 'answer', label: '已生成回答', detail: '', status: 'done' }],
+        sources: [source()],
+      }),
+    )
+    // 「直接作答」的语义没变（这一轮没调工具）；「拒识 / 命中」那些结果态文案不再进头部
+    // ——哪怕这一轮有出处（`sources`），头部也只说这一句，不发「检索完成 · 引用了 N 个片段」
+    const toggle = screen.getByTestId('trace-toggle')
+    expect(toggle).toHaveTextContent('直接作答')
+    expect(toggle).not.toHaveTextContent(/命中|检索完成/)
   })
 
   it('档位：open=false 时折叠体是 data-open=false（内容从没展开过则不上 DOM）', () => {
@@ -175,7 +216,12 @@ describe('工具链块', () => {
         steps: [step({ detail: '第一次' }), step({ detail: '第二次', result: '搜索结果正文' })],
       }),
     )
-    const groupRow = screen.getByRole('button', { name: /联网搜索/ })
+    /*
+      组头按钮按"只有组行才有的 `aria-controls`"查，不按名字查：R3 起**头部总名里
+      也会出现「联网搜索」**（`使用 N 个工具，联网搜索 2 个关键词`），按名字查会同时
+      命中头部的那个按钮。
+    */
+    const groupRow = document.querySelector('button[aria-controls^="flow-group-"]') as HTMLElement
     // 组行标题是聚合句（`groupHeading`：数目数对象、对象列出来），不再是干巴巴的「N 次」
     expect(groupRow.textContent).toContain('联网搜索')
     // 组体展开（没碰过的组看默认档：跑完的组是收起的）

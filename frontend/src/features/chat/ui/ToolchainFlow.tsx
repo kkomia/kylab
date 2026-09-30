@@ -19,7 +19,8 @@
  *    - 滚动区 35px 五段阶梯渐隐 + 隐藏原生滚动条。
  *
  * 数据全部来自 `model/turns.ts` 的派生层（`traceEntries` / `trailingThinking` /
- * `traceSummary`）——这一层不重新发明任何判定。
+ * `groupHeading`）——这一层不重新发明任何判定；这里唯一的"策略"是**头部总名怎么拼**
+ * （`toolTotal`：`使用 N 个工具，动作短语`），它也只是把那一层的输出接起来。
  *
  * **开合状态是宿主给的**（`expansion`）：单步/组的"他点开过没有"挂在
  * `ChatProvider` 上（换会话再回来还在），本组件自己不存——所以这里的 key 一律先过
@@ -46,7 +47,6 @@ import {
   traceEntries,
   traceKey,
   traceSteps,
-  traceSummary,
   trailingThinking,
   type TraceEntry,
   type TraceIcon,
@@ -94,6 +94,45 @@ function splitLabel(text: string): { label: string; detail: string } {
   const at = text.indexOf(' · ')
   if (at < 0) return { label: text, detail: '' }
   return { label: text.slice(0, at), detail: text.slice(at + 3) }
+}
+
+/**
+ * 头部总名的两个数——**Kimi 的"动作态"策略**（2026-09-30 R3 批注）。
+ *
+ * 生产里工具链头部不是"结果态"（「本轮没有命中资料」这种），而是「使用 19 个工具，
+ * 生成今日早报并列出工具」——**用了几个工具 + 干了什么**。所以这一层按同一形状派生：
+ *
+ * - `count` = **原始工具步数**：聚合前的每一次调用都算一次（两次读文件 = 2 次），
+ *   与 Kimi「19 个工具」同口径。非工具步（组织回答 / 思考）一律不计。
+ * - `phrases` = **聚合后的动作短语**，与行文案**同源**、不新造词表：组行取
+ *   `groupHeading` 那句的标签段（「检索 3 个问题」「回忆 1 个主题」…），
+ *   单条工具步取它自己的 `label`（「导出文档」「抓取网页」…）；按出现顺序去重、
+ *   顿号连接，太长由头部的单行省略自然截断。
+ *
+ * 吃的是**本组件已经算好的** `traceEntries(turn)`（就是渲染成一行的那个口径），
+ * 所以头部的数与展开后看到的行天然对得上——组行的数是"对象数"、这里数是"调用次数"，
+ * 两者按生产各说各的（Kimi 也是这样：19 个工具，但行里是「读取 2 个文件」）。
+ * `count` 的口径与 `model/turns.ts::countCalls`（「已显示 X/Y 条工具调用」用的那个）逐字相同。
+ */
+function toolTotal(entries: readonly TraceEntry[]): { count: number; phrases: string[] } {
+  const phrases: string[] = []
+  const seen = new Set<string>()
+  let count = 0
+  for (const entry of entries) {
+    // 非工具步（组织回答 / 思考）在 `TraceStep` 上没有 `tool`，天然被排除
+    const phrase =
+      entry.kind === 'group'
+        ? splitLabel(groupHeading(entry)).label
+        : entry.step.tool
+          ? entry.step.label
+          : ''
+    if (!phrase) continue
+    count += entry.kind === 'group' ? entry.steps.length : 1
+    if (seen.has(phrase)) continue
+    seen.add(phrase)
+    phrases.push(phrase)
+  }
+  return { count, phrases }
 }
 
 /**
@@ -616,6 +655,18 @@ export function ToolchainFlow({
   if (!hasTraceContent(message)) return null
   const thinking = trailingThinking(message)
   const entries = traceEntries(turn)
+  /*
+    头部总名（R3 批注）。没有工具步的那一轮仍是「直接作答」——那是**语义照旧**的一句话
+    （"这一轮没调工具"），不是结果态文案；「拒识 / 命中」那几档（本轮没有命中资料 /
+    检索完成 · 引用了 N 个片段…）不再出现在头部，答案正文自己会说。
+    流式进行中走同一条规则（T 随步数实时增长），不另搞"正在…"变体——行内的 `.ch-live`
+    已经在承担进行态。
+  */
+  const tools = toolTotal(entries)
+  const summary =
+    tools.count > 0
+      ? `使用 ${formatCount(tools.count)} 个工具，${tools.phrases.join('、')}`
+      : '直接作答'
 
   const running = isBlockRunning({ streaming: message.streaming, steps: traceSteps(turn) })
   // 过程总计的两个数：思考 + 结论 + 入参 + 返回的字符量；耗时是各步之和
@@ -648,13 +699,9 @@ export function ToolchainFlow({
         <span className="ch-head-icon" aria-hidden>
           <FileText size={16} />
         </span>
-        <span className={running ? 'ch-summary ch-live' : 'ch-summary'}>
-          {traceSummary(message)}
-        </span>
-        {message.steps.length > 0 && (
-          <span className="ch-head-meta">{formatCount(message.steps.length)} 步</span>
-        )}
-        {/* 头部那枚箭头：生产是**右向 chevron**，展开时由 CSS 转 90°（见 flow.css 的 `.ch-chev`） */}
+        <span className={running ? 'ch-summary ch-live' : 'ch-summary'}>{summary}</span>
+        {/* 头部那枚箭头：生产是**右向 chevron**，展开时由 CSS 转 90°（见 flow.css 的 `.ch-chev`）。
+            右侧**没有计数**（R3 批注：Kimi 的头部只有这一句总名，计数已经在 `使用 N 个工具` 里）。 */}
         <ChevronRight size={16} className="ch-chev" aria-hidden />
       </button>
       <FlowFold open={bodyOpen}>

@@ -709,8 +709,14 @@ describe('过程面板：图标按 kind、同类工具并成一行', () => {
     expect(document.querySelector('[data-icon="write"]')).not.toBeNull()
     expect(document.querySelector('[data-icon="think"]')).not.toBeNull()
 
-    // 展开这一组：里面每一次调用**保持原来的先后**，逐条给结论
-    await userEvent.setup().click(screen.getByRole('button', { name: /联网搜索/ }))
+    /*
+      展开这一组：里面每一次调用**保持原来的先后**，逐条给结论。
+      组头按钮按"只有组行才有的 `aria-controls`"来查：R3 起**头部总名里也会出现
+      「联网搜索」**（`使用 N 个工具，联网搜索 2 个关键词`），按名字查会同时命中头部。
+    */
+    await userEvent
+      .setup()
+      .click(document.querySelector('button[aria-controls^="flow-group-"]') as HTMLElement)
     // 只看组里那一块：标题上也出现了同样两个对象（那是聚合句的一部分），
     // 所以这里按容器缩进查，钉的仍然是"展开后逐条保序"
     const groupBody = document.querySelector('[id^="flow-group-"]') as HTMLElement

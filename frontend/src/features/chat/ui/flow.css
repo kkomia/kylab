@@ -183,15 +183,11 @@
   color: transparent;
   animation: ch-shimmer 1.4s linear infinite;
 }
-.ch-head-meta {
-  flex: none;
-  font-size: calc(12px * var(--font-scale, 1)); /* --ui-C1 */
-  line-height: 18px;
-  color: var(--Labels-Tertiary);
-}
 /* 箭头（行与头部共用这一类）：生产里是**右向 chevron**，展开时转 90° 变"∨"。
    行上平时 `opacity:0` + `translateX(-2px)`，悬停 / 聚焦 / 展开才出现
-   （见下面 `.ch-row .ch-chev`）；头部那枚常显、16px（`.toolcall-flow__summary-arrow`）。 */
+   （见下面 `.ch-row .ch-chev`）；头部那枚常显、16px（`.toolcall-flow__summary-arrow`）。
+   （原先这里还有一条 `.ch-head-meta`——头部右侧的「N 步」计数，R3 批注撤掉了：
+   Kimi 的头部只有一句总名，计数已经在 `使用 N 个工具` 前缀里。） */
 .ch-chev {
   flex: none;
   color: var(--Labels-Quaternary);
