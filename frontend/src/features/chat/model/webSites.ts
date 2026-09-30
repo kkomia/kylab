@@ -20,6 +20,10 @@
  * 3. **未命中的站点不猜**：名字就是域名本身（`· arxiv.example`），界面退化成一枚通用地球。
  *    硬编一个"常见站点表"只为了认得出那几个常客，认不出来就如实显示域名。
  *
+ * 另外，**"哪些步算联网、哪一步是抓页"这两个判据也只有这一份**（`isWebStep` /
+ * `isFetchStep`）：图标那一档、行尾站点那一档、清单与解析那几档全都 import 它们，
+ * 不各自写词表（`web_search` 与 `web_fetch` 后端同归 `kind=search`，只能靠工具名分）。
+ *
  * 这一层不认识 React，也不发任何请求：输入是步骤里的字符串，输出是站点表。
  */
 
@@ -31,6 +35,10 @@ const WEB_TOOLS: ReadonlySet<string> = new Set(['web_search', 'web_fetch'])
  * （见 `services/tool_loop.TOOL_LABELS`）。那批数据正躺在用户手上的会话里。
  */
 const WEB_LABELS: ReadonlySet<string> = new Set(['联网搜索', '抓取网页'])
+
+/** 抓页的那一个工具名与那一个标签（`web_fetch`；两条表从上面那对里各取一半）。 */
+const FETCH_TOOLS: ReadonlySet<string> = new Set(['web_fetch'])
+const FETCH_LABELS: ReadonlySet<string> = new Set(['抓取网页'])
 
 /**
  * 这一步是"上网"吗。
@@ -44,6 +52,22 @@ const WEB_LABELS: ReadonlySet<string> = new Set(['联网搜索', '抓取网页']
 export function isWebStep(step: { tool?: string; label?: string }): boolean {
   if (step.tool) return WEB_TOOLS.has(step.tool)
   return step.label !== undefined && WEB_LABELS.has(step.label)
+}
+
+/**
+ * 这一步是"抓了一页网页"吗——**`isWebStep` 里只留 `web_fetch` 那一半**，
+ * 规则与它逐字相同（工具名优先、老快照退标签）。
+ *
+ * 为什么要单拎出来、又为什么搁在这一层：2026-09-30 用户批注
+ * "获取网页用的是不同于搜索网页的图标"、"搜索网页的不显示 request 和 response，
+ * 只显示网页列表"。于是**图标那一档**（`ui/stepIcons.tsx` 的窗口那枚）、**清单那一档**
+ * （`ui/SearchHits.tsx` 的抓页清单）与**解析那一档**（`model/sourceCitations.ts`）
+ * 都要问同一个问题；三处各写一份词表迟早漂掉，所以词表与判据都在这里，
+ * 别处一律 import 这一份。
+ */
+export function isFetchStep(step: { tool?: string; label?: string }): boolean {
+  if (step.tool) return FETCH_TOOLS.has(step.tool)
+  return step.label !== undefined && FETCH_LABELS.has(step.label)
 }
 
 /** 一个站点在界面上的样子。 */

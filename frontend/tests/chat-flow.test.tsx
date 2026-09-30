@@ -4,13 +4,18 @@
  * 钉住的是**新结构的行为默认值**：
  *
  * 1. 直接作答（无步骤/无思考/无来源）整块不画（legacy 兜底行不算数）；
- * 2. 头的总名（`使用 N 个工具，动作短语`；右侧没有计数）；点块头 = 点宿主的开合开关；
+ * 2. 头的总名（`使用 N 个工具，动作短语`；右侧没有计数；**总标题不加图标**）；
+ *    点块头 = 点宿主的开合开关；
  * 3. running 行 = 流光 +「进行中」+ 图标位那枚**半月 dot**（`.ch-loading-dot`）；
  *    行级耗时**全撤**（单步行与组行都不印，只有整轮那一处总计报耗时本身）；
  *    被拦下/等确认的行**前置展开**；
  * 4. 同工具并组（「N 次」、没碰过的组看"还在跑就摊开"、他点过的组听他的——
  *    开合状态在宿主手里，这里的夹具就是它的替身）；
  * 5. 行体（入参/返回/思考）默认**不上 DOM**，点开才挂（`everOpened` 的 DOM 开销纪律）；
+ *    **联网那两档（联网搜索 / 抓取网页）的展开只有一张网页清单**（2026-09-30 用户批注
+ *    原话"搜索网页的不显示 request 和 response，只显示网页列表"）：没有 Request /
+ *    Response 面板，也没有原先接在清单下面那段原文；其余工具行（`find_tools` 等）
+ *    那两块面板照旧。**清单也解不出来时这一行不给"能点开"的许诺**（判据在 `StepRow`）；
  * 6. 整轮思考（老消息兜底）与来源清单各自成行、默认收起；思考行的标题跟着开合走
  *    （收起是描述性首行、点开固定「思考已完成」）；来源行带 `data-source`
  *    与 `data-flash`（点正文徽标那条链路的物证）。
@@ -129,6 +134,13 @@ describe('工具链块', () => {
     expect(toggle).toHaveTextContent('使用 2 个工具，联网搜索、抓取网页')
     // 右侧原先那枚「N 步」计数撤掉了（R3）：计数已经在 `使用 2 个工具` 这个前缀里
     expect(toggle).not.toHaveTextContent(/\d+ 步/)
+    /*
+      **总标题不加图标**（2026-09-30 用户批注，推翻此前"Kimi 是图标 + 摘要"那条）：
+      头部只剩总名 + chevron——原先段首那格 `.ch-head-icon`（`<FileText>`）整个拿掉，
+      所以头部里除了箭头那枚 svg，不该再有别的图标位（`data-icon` 一个都没有）。
+    */
+    expect(toggle.querySelector('.ch-head-icon')).toBeNull()
+    expect(toggle.querySelector('[data-icon]')).toBeNull()
     fireEvent.click(toggle)
     expect(onToggle).toHaveBeenCalledTimes(1)
   })
@@ -199,11 +211,21 @@ describe('工具链块', () => {
   })
 
   it('档位：open=false 时折叠体是 data-open=false（内容从没展开过则不上 DOM）', () => {
-    flowOf(makeMessage('assistant', '答案', { steps: [step({ args: '{"q":"x"}' })] }), false)
+    /*
+      夹具用**非联网的那一档**（读文件）：联网搜索 / 抓取网页的展开只剩网页清单
+      （2026-09-30 用户批注），"入参上不上 DOM"要在还会画 Request 面板的行上看
+      ——否则这条用例验的是一个本来就不会出现的东西。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [step({ label: '读取文件', tool: 'read_file', args: '{"path":"a.md"}' })],
+      }),
+      false,
+    )
     const fold = document.querySelector('.ch-flow > .ch-clp')
     expect(fold).toHaveAttribute('data-open', 'false')
     // 从没展开过：行体里的入参不在文档里
-    expect(screen.queryByText('{"q":"x"}')).not.toBeInTheDocument()
+    expect(screen.queryByText('{"path":"a.md"}')).not.toBeInTheDocument()
   })
 
   it('running 的行是流光 +「进行中」+ 图标位那枚半月 dot；行级耗时不再印', () => {
@@ -287,10 +309,15 @@ describe('工具链块', () => {
     expect(screen.getByText('等待确认')).toBeInTheDocument()
   })
 
-  it('同类工具并成一组：「2 次」；展开后子行是圆点，各次仍可再展开看原文', () => {
+  it('同类工具并成一组：「2 次」；展开后子行是圆点，各次仍可再展开看那一张清单', () => {
     flowOf(
       makeMessage('assistant', '答案', {
-        steps: [step({ detail: '第一次' }), step({ detail: '第二次', result: '搜索结果正文' })],
+        steps: [
+          step({ detail: '第一次' }),
+          // 联网搜索那一档的展开只剩网页清单（2026-09-30 用户批注），所以夹具给一段真能
+          // 解析出结果行的返回（`[n] 标题 / 网址 / 摘要`，后端 `_web_search` 的形状）
+          step({ detail: '第二次', result: '[1] 一条结果\nhttps://github.com/a\n摘要' }),
+        ],
       }),
     )
     /*
@@ -306,10 +333,12 @@ describe('工具链块', () => {
     expect(screen.getByText('第一次')).toBeInTheDocument()
     expect(screen.getByText('第二次')).toBeInTheDocument()
     expect(document.querySelectorAll('.ch-sub-dot').length).toBe(2)
-    // 单次的返回默认不上 DOM；点开那一行才挂
-    expect(screen.queryByText('搜索结果正文')).not.toBeInTheDocument()
+    // 单次的清单默认不上 DOM；点开那一行才挂（联网那一档点开看到的就是这张清单）
+    expect(document.querySelector('.ch-hit')).toBeNull()
     fireEvent.click(screen.getByText('第二次'))
-    expect(screen.getByText('搜索结果正文')).toBeInTheDocument()
+    const hit = document.querySelector('.ch-hit') as HTMLAnchorElement
+    expect(hit).toHaveAttribute('href', 'https://github.com/a')
+    expect(hit).toHaveTextContent('一条结果')
   })
 
   it('整轮思考（老消息兜底）：收起时标题是正文首段首行，点开后固定「思考已完成」', () => {
@@ -372,14 +401,24 @@ describe('工具链块', () => {
   })
 
   it('入参里的 art_* 键缀上真实文件名（键保留：那才是传给工具的值）', () => {
+    /*
+      走**非联网**的一行（导出文档）：联网那两档的展开只剩网页清单（2026-09-30 用户批注），
+      Request 面板（入参）只在其余工具行上画。
+    */
     flowOf(
       makeMessage('assistant', '答案', {
-        steps: [step({ args: '{"file": "art_ab12", "q": "x"}' })],
+        steps: [
+          step({
+            label: '导出文档',
+            tool: 'export_document',
+            args: '{"file": "art_ab12", "q": "x"}',
+          }),
+        ],
       }),
       true,
       { artifactNames: new Map([['art_ab12', '季度报告.docx']]) },
     )
-    fireEvent.click(screen.getByText('联网搜索'))
+    fireEvent.click(screen.getByText('导出文档'))
     const args = document.querySelector('[data-args]')!
     expect(args.textContent).toContain('art_ab12（季度报告.docx）')
   })
@@ -460,9 +499,17 @@ describe('工具链块', () => {
   })
 
   it('长返回：默认只铺预览，「加载全部」就地看全', () => {
+    /*
+      这一档是**非联网行**的行为（Response 面板的"预览 / 加载全部"）：联网那两档的展开
+      只剩网页清单（2026-09-30 用户批注），长原文本来就不再铺，所以夹具换成读文件那一档。
+    */
     const long = '这一段很长。'.repeat(200) // 1200 字 > 预览上限 600
-    flowOf(makeMessage('assistant', '答案', { steps: [step({ result: long })] }))
-    fireEvent.click(screen.getByText('联网搜索'))
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [step({ label: '读取文件', tool: 'read_file', result: long })],
+      }),
+    )
+    fireEvent.click(screen.getByText('读取文件'))
     // 预览在、全文不在；点「加载全部」后全文在
     expect(screen.getByText(/加载全部（1,200 字）/)).toBeInTheDocument()
     expect(screen.queryByText(long)).not.toBeInTheDocument()
@@ -500,7 +547,7 @@ describe('工具链块', () => {
     ).toBeNull()
   })
 
-  it('抓页那一档展开：**与搜索结果同一套清单**（favicon / 标题 / 域名 / 可点）', () => {
+  it('抓页那一档展开：**只留网页清单**（favicon + 完整 URL，Kimi 的 fetch-urls-item）', () => {
     flowOf(
       makeMessage('assistant', '答案', {
         steps: [
@@ -518,17 +565,84 @@ describe('工具链块', () => {
         ],
       }),
     )
+    const row = screen.getByText('抓取网页').closest('.ch-row') as HTMLElement
+    // 行图标是抓页那一枚（2026-09-30 用户批注：获取网页与搜索网页分家），data-icon 如实报新档
+    expect(row.querySelector('[data-icon="fetch"]')).not.toBeNull()
     fireEvent.click(screen.getByText('抓取网页'))
-    const hit = document.querySelector('.ch-hit') as HTMLAnchorElement
-    // 清单行 = 标题（有 title 用 title）+ 域名；抬头那两行不再铺一遍，正文留在 Response 面板里
-    expect(hit).toHaveTextContent('Moonshot 新闻页')
-    expect(hit).toHaveTextContent('moonshot.cn')
-    expect(hit).toHaveAttribute('href', 'https://moonshot.cn/news')
-    expect(screen.getByText('正文第一段。')).toBeInTheDocument()
-    // 面板按 Kimi 那套：Request（入参）/ Response（返回）——抓页这一步两块都有
-    const heads = [...document.querySelectorAll('.ch-panel-head')].map((el) => el.textContent)
-    expect(heads).toContain('Request')
-    expect(heads).toContain('Response')
+    /*
+      展开 = **一张网页清单**（用户批注"搜索网页的不显示 request 和 response，只显示网页列表"、
+      "注意看获取网页列表的样式"、"注意网页 logo 的显示"）：一行 = favicon 16px +
+      **完整 URL**（链接色），整行可点、新标签打开——不是"标题 + 域名"那一套。
+    */
+    const item = document.querySelector('.ch-fetch') as HTMLAnchorElement
+    expect(item).toHaveAttribute('href', 'https://moonshot.cn/news')
+    expect(item).toHaveAttribute('target', '_blank')
+    expect(item).toHaveTextContent('https://moonshot.cn/news')
+    expect(item.querySelector('.ch-hit-logo')).not.toBeNull()
+    // 这一档**没有** Request / Response 面板，也没有"去掉抬头之后的正文"那段原文
+    expect(document.querySelectorAll('.ch-panel-head')).toHaveLength(0)
+    expect(screen.queryByText('正文第一段。')).toBeNull()
+    expect(screen.queryByText('【Moonshot 新闻页】')).toBeNull()
+  })
+
+  it('联网搜索那一档展开：只留搜索结果清单（Request / Response 与列表外的原文都不画）', () => {
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          step({
+            args: '{"query": "agent skills"}',
+            result: [
+              '检索词：agent skills，共 2 条：',
+              '[1] Anthropic 的官方仓库',
+              'https://github.com/anthropics/skills',
+              '官方维护的仓库。',
+              '[2] 一篇论文',
+              'https://arxiv.org/abs/2401.00001',
+              '工具调用可靠性的综述。',
+              '',
+              '【前 2 条的正文开头】（每条最多 2000 字；要读全文用 web_fetch）',
+              '【Anthropic 的官方仓库】https://github.com/anthropics/skills',
+              '仓库正文……',
+            ].join('\n'),
+          }),
+        ],
+      }),
+    )
+    fireEvent.click(screen.getByText('联网搜索'))
+    // 搜索结果清单照旧（favicon + 标题 + 域名 + 可点）：这一档**一个字没动**
+    const hits = [...document.querySelectorAll('.ch-hit')] as HTMLAnchorElement[]
+    expect(hits).toHaveLength(2)
+    expect(hits[0]).toHaveTextContent('Anthropic 的官方仓库')
+    expect(hits[0]).toHaveTextContent('github.com')
+    expect(hits[0]).toHaveAttribute('href', 'https://github.com/anthropics/skills')
+    // 这一档没有 Request / Response，也没有"前 N 条的正文开头"那段原文（用户批注原话）
+    expect(document.querySelectorAll('.ch-panel-head')).toHaveLength(0)
+    expect(screen.queryByText('{"query": "agent skills"}')).toBeNull()
+    expect(screen.queryByText(/前 2 条的正文开头/)).toBeNull()
+    expect(screen.queryByText('仓库正文……')).toBeNull()
+  })
+
+  it('联网那一档解不出清单时**不给"能点开"的许诺**（展开区里本来就没东西了）', () => {
+    /*
+      联网两档的展开只剩清单之后，"有没有东西可展开"就要照清单算：返回解不出清单时
+      （比如搜索没做成、后端只回一句人话），这一行不再挂行尾箭头、`aria-expanded` 也不给
+      ——否则点开的是一个空盒子。行上那一格（`displayDetail`）照旧说着这句结论，信息没丢。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          step({
+            detail: '联网搜索没做成：没有可用的搜索服务',
+            result: '联网搜索没做成：没有可用的搜索服务',
+          }),
+        ],
+      }),
+    )
+    const row = screen.getByText('联网搜索').closest('.ch-row') as HTMLElement
+    expect(row).toHaveAttribute('aria-disabled', 'true')
+    expect(row).not.toHaveAttribute('aria-expanded')
+    expect(row.querySelector('.ch-chev')).toBeNull()
+    expect(row.querySelector('.ch-row-detail')).toHaveTextContent('联网搜索没做成')
   })
 
   it('点正文徽标那一路：来源清单开着时块体也跟着开（否则滚不到那一行）', () => {

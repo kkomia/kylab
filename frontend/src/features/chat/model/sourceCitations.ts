@@ -28,7 +28,7 @@
  * 宁可少一枚徽章，也不猜一个编号对应哪一页。
  */
 
-import { hostOfUrl, siteOfDomain, urlsIn, type WebSite } from './webSites'
+import { hostOfUrl, isFetchStep, siteOfDomain, urlsIn, type WebSite } from './webSites'
 
 /** 一枚网页引用（回答里那个编号指的东西）。 */
 export interface WebCitation {
@@ -119,10 +119,11 @@ function isSearchStep(step: { tool?: string; label?: string }): boolean {
 /**
  * 编号列表**之后**那一段原文（`【前 N 条的正文开头】…`），没有就给空串。
  *
- * 为什么单独取这一段：搜索步展开时，编号列表已经由 `ui/SearchHits.tsx` 画成清单了
- * （标题 / 域名 / 可点），再铺一遍原文是同一件事说两遍；而**正文开头那几段清单里没有**
- * （它不是"一条结果"，是被抓回来的页面内容）。所以列表画列表的、这一段照旧给原文，
- * 两者合起来才是这一步返回的全部内容（不丢信息）。
+ * ⚠️ **现在没有任何渲染路径调用它**（2026-09-30 用户批注："搜索网页的不显示 request
+ * 和 response，只显示网页列表"）——搜索步展开时只画 `ui/SearchHits.tsx` 那张清单，
+ * 清单之外的这段原文**整档不再渲染**（抓页那一档同理，见 `fetchedBodies`）。
+ * 撤掉的是**渲染那一侧**（调用点在 `ui/ToolchainFlow.tsx`）：这一段文本本身仍在返回里，
+ * 这一支取文函数留着；真要把"不再渲染"落成"不再解析"时，它和 `fetchedBodies` 一起删。
  *
  * 判据就是解析时用的那个抬头（`EXCERPT_MARK`）：解析到它就停，这里从它开始取。
  */
@@ -132,9 +133,10 @@ export function searchExcerptTail(result: string): string {
 }
 
 /**
- * 抓页那一档"读到了哪几页"——抓页步展开时画成清单（与搜索结果**同一套排版**，
- * 2026-09-30 R4 批注）。数据同样**不新增后端字段**：`web_fetch` 的返回就是
- * 一页一块的文本（`services/tools.py::_fetch_one`）：
+ * 抓页那一档"读到了哪几页"——抓页步展开时画成清单（2026-09-30 用户批注："获取网页
+ * 用的是不同于搜索网页的图标""注意看获取网页列表的样式"，Kimi 的 `fetch-urls-item`）。
+ * 数据同样**不新增后端字段**：`web_fetch` 的返回就是一页一块的文本
+ * （`services/tools.py::_fetch_one`）：
  *
  * ```
  * 【标题】
@@ -144,7 +146,7 @@ export function searchExcerptTail(result: string): string {
  * ```
  *
  * 一页读不到时后端把标题写成「这一页没抓成」，照样解析得出来（清单里如实显示）——
- * 那样的行点开就是原文，不比"假装没这一页"差。
+ * 那样的行点开就是清单里的这一条（正文那一段不再渲染，见 `fetchedBodies`）。
  * 标题 / 网址解析不出来时**退回入参里的网址**、标题用域名顶（"没有 title 就用域名当标题"）。
  */
 export interface FetchedPage {
@@ -158,12 +160,6 @@ export interface FetchedPage {
 const PAGE_TITLE_RE = /^【(.+)】$/
 /** `来源：https://…` 那一行（后端渲染的抬头第二行）。 */
 const PAGE_SOURCE_RE = /^来源：(https?:\/\/\S+)$/i
-
-/** 这一步是不是"抓了一页网页"（与 `webSites.ts::isWebStep` 同一份口径，只留抓页）。 */
-function isFetchStep(step: { tool?: string; label?: string }): boolean {
-  if (step.tool) return step.tool === 'web_fetch'
-  return step.label === '抓取网页'
-}
 
 /** 这几步抓回来的网页（去重、保持先后）。 */
 export function fetchedPagesOfSteps(
@@ -200,8 +196,10 @@ export function fetchedPagesOfSteps(
 /**
  * 抓页返回里**去掉每一页的抬头**（`【标题】` 与 `来源：url` 两行）之后剩下的正文。
  *
- * 与 `searchExcerptTail` 同一个位置：清单（`ui/SearchHits`）已经把"读了哪几页"说完了，
- * 抬头那两行再铺一遍就是同一件事说两遍；剩下的正文是清单里没有的东西，照旧给原文。
+ * ⚠️ 与 `searchExcerptTail` 同一档：**现在没有任何渲染路径调用它**。抓页步展开只剩
+ * 一张网页清单（2026-09-30 用户批注"搜索网页的不显示 request 和 response，只显示网页列表"，
+ * 抓页同档处理），抬头之后的正文**整档不再渲染**；真要把这一档从解析层也撤掉时，
+ * 它和 `searchExcerptTail` 一起删。
  */
 export function fetchedBodies(text: string): string {
   return text

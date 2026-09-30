@@ -21,9 +21,16 @@
  *    - 入场：`ch-in`（blur→0 + 8px 上浮，链内 .38s，**没有逐项 delay**）；
  *    - 行尾箭头平时不出现，悬停/聚焦才滑入，展开态常显并转 90°；
  *    - 滚动区 35px 五段阶梯渐隐 + 隐藏原生滚动条。
- * 5. **R4 三件**：原文用 **Request / Response 面板**（JSON 缩进着色 + 行号槽，见 `StepPayload`）；
- *    抓页那一档的行是「[favicon] N 个网页」、展开与搜索结果同一套清单；落定后的
- *    「组织回答」行不画（判据 `visibleEntries`，块出不出问 `hasFlow`）。
+ * 5. **R4 三件**（2026-09-30 用户批注后口径更新）：原文用 **Request / Response 面板**
+ *    （JSON 缩进着色 + 行号槽，见 `StepPayload`）——**联网那两档除外**：联网搜索与
+ *    抓取网页的展开**只留网页清单**（搜索是 favicon + 标题 + 域名，抓页是 favicon +
+ *    完整 URL），面板与"列表之外的那段原文"一并撤（用户原话"搜索网页的不显示 request
+ *    和 response，只显示网页列表"；抓页同档处理，与 Kimi 一致）；抓页那一档的行是
+ *    「[favicon] N 个网页」；落定后的「组织回答」行不画（判据 `visibleEntries`，
+ *    块出不出问 `hasFlow`）。
+ * 6. **头部只有总名与箭头**（2026-09-30 用户批注：总标题不加图标）——此前那条
+ *    "Kimi 的工具链标题是图标 + 摘要"的判断已被用户推翻：段首那枚 `FileText` 图标槽
+ *    连同它在 `flow.css` 里的 `.ch-head-icon` 一并撤掉，头部只剩总名 + chevron。
  *
  * 数据全部来自 `model/turns.ts` 的派生层（`traceEntries` / `trailingThinking` /
  * `groupHeading`）——这一层不重新发明任何判定；这里唯一的"策略"是**头部总名怎么拼**
@@ -41,7 +48,7 @@ import { ChevronRight, FileText } from 'lucide-react'
 import type { ChatSource } from '@/api/chat'
 import { formatCount } from '@/lib/format'
 
-import { searchExcerptTail, webCitationsOfSteps } from '../model/sourceCitations'
+import { fetchedPagesOfSteps, webCitationsOfSteps } from '../model/sourceCitations'
 import {
   displayDetail,
   groupHeading,
@@ -62,10 +69,9 @@ import {
   type TraceStep,
   type Turn,
 } from '../model/turns'
-import { webSitesOfSteps } from '../model/webSites'
-import { fetchedBodies, fetchedPagesOfSteps } from '../model/sourceCitations'
+import { isWebStep, webSitesOfSteps } from '../model/webSites'
 import './flow.css'
-import { SearchHits } from './SearchHits'
+import { FetchPages, SearchHits } from './SearchHits'
 import { StepDot, StepIcon, StepOutcomeBadge, type StepOutcome } from './stepIcons'
 import { RequestPanel } from './StepPayload'
 import { StepResult } from './StepResult'
@@ -320,7 +326,11 @@ function StepRow({
 }) {
   const running = isRunningStep(step)
   const outcome = outcomeOf(step)
-  const hasBody = Boolean(step.args || step.result || (step.thinking ?? '').trim())
+  /**
+   * 这一步是不是"上网"那一档（联网搜索 / 抓取网页）——判据取自 `model/webSites.ts`
+   * 那一份（`isWebStep`），与图标分档、清单解析**同源**，不在这里另认一遍工具名。
+   */
+  const web = isWebStep({ tool: step.tool, label: step.label })
   /**
    * 行详情那一格印什么：普通结论原样，**原始 JSON 一律不印**（2026-09-30 用户批注；
    * `find_tools` 那种返回换成它 `found` 里的工具名，取不到就是空串——判据与分寸
@@ -348,9 +358,9 @@ function StepRow({
     [step.result, step.tool, step.label],
   )
   /**
-   * 抓页那一档**读到的页**（行上的 favicon + 页数、展开后的清单都用它）。
+   * 抓页那一档**读到的页**（行上的 favicon + 页数、**展开后的清单**都用它）。
    *
-   * 不是抓页、或解析不出来就是空数组——那时这一行照旧铺后端给的结论（不造内容）。
+   * 不是抓页、或解析不出来就是空数组——行上那一格照旧铺后端给的结论（不造内容）。
    * `useMemo` 的依赖只写四个**原始值**：这一步在流式里每一拍都会重渲染。
    */
   const pages = useMemo(
@@ -360,10 +370,19 @@ function StepRow({
       ]),
     [step.tool, step.label, step.args, step.result],
   )
-  // 编号列表已经画成清单了，剩下的"正文开头"那一段清单里没有，照旧给原文（不丢内容）
-  const excerptTail = hits.length > 0 ? searchExcerptTail(step.result ?? '') : ''
-  /** 抓页那一档：**去掉抬头**（`【标题】` / `来源：url`）之后的正文——抬头已由清单说完。 */
-  const bodyTail = pages.length > 0 ? fetchedBodies(step.result ?? '') : ''
+  /** 这一档的展开内容 = **网页清单**（搜到的那几条 / 抓回来的那几页，两者互斥）。 */
+  const hasList = hits.length > 0 || pages.length > 0
+  /**
+   * 展开区里**有没有东西**。
+   *
+   * 非联网的行照旧（入参 / 返回 / 行内思考任一有就算）；**联网那两档只认网页清单**——
+   * 2026-09-30 用户批注之后它们的展开区里只剩清单（Request / Response 面板与清单之外的
+   * 原文都不再画，见下面的行体），清单也解不出来时这一行就不给"能点开"的许诺
+   * （点了是个空盒子，箭头也是假的）。行内思考仍算数：它是这一步自己的话，不是原文。
+   */
+  const hasBody = web
+    ? hasList || (step.thinking ?? '').trim() !== ''
+    : Boolean(step.args || step.result || (step.thinking ?? '').trim())
   /**
    * 这一步是**前置展开**的（失败 / 被拦下 / 等确认：`forceExpand`）——那种行 `open` 恒为真、
    * 点也收不起来，所以**不画行尾那枚箭头**（摆了等于许诺一个点不动的动作）。
@@ -445,49 +464,46 @@ function StepRow({
       {hasBody && (
         <FlowFold row open={open}>
           {(step.thinking ?? '').trim() && <Thinking text={step.thinking ?? ''} />}
-          {step.args && <RequestPanel text={humanizeArtifactKeys(step.args, names)} />}
-          {step.result &&
-            (pages.length > 0 ? (
-              /*
-                抓页那一档：**与搜索结果同一套清单**（R4 批注）——favicon 16px 圆 /
-                标题（单行省略）/ 域名（右，三级灰）/ 整行可点。抬头那两行
-                （`【标题】` 与 `来源：url`）已经由清单说完了，下面接的是**去掉抬头之后的正文**
-                （Response 面板，带行号槽）——两段合起来仍是这一步返回的全部内容。
-              */
-              <>
-                <FadeScroll sites>
-                  <SearchHits hits={pages} />
-                </FadeScroll>
-                {bodyTail && <StepResult text={bodyTail} />}
-              </>
-            ) : hits.length > 0 ? (
-              /*
-                联网搜索：**结果清单**（Kimi 排版，用户批注 §3）——标题 / 域名 / 可点，
-                比原来那一坨等宽原文读得出"查到了哪几个网页"。清单画不出的那一段
-                （"前 N 条的正文开头"）接在下面照旧给原文，信息一条不丢。
-              */
-              <>
-                {/* 结果清单包在 `FadeScroll` 里（用户批注 §10）：限高 256px + 底部 35px
-                    阶梯渐隐 + 隐藏原生滚动条这一套，只有滚动盒给得出来（渐隐层是 sticky 的） */}
-                <FadeScroll sites>
-                  <SearchHits hits={hits} />
-                </FadeScroll>
-                {excerptTail && <StepResult text={excerptTail} />}
-              </>
-            ) : (
-              <>
-                <StepResult text={showAll ? step.result : (preview ?? step.result)} />
-                {preview !== null && (
-                  <button
-                    type="button"
-                    className="ch-more"
-                    onClick={() => setShowAll((value) => !value)}
-                  >
-                    {showAll ? '收起' : `加载全部（${formatCount(step.result.length)} 字）`}
-                  </button>
-                )}
-              </>
-            ))}
+          {web ? (
+            /*
+              **联网那两档的展开只剩一张网页清单**（2026-09-30 用户批注原话"搜索网页的
+              不显示 request 和 response，只显示网页列表"；抓页同档处理，与 Kimi 一致）：
+
+              - 抓取网页 → `FetchPages`（Kimi 的 `fetch-urls-item`：favicon + 完整 URL）；
+              - 联网搜索 → `SearchHits`（favicon + 标题 + 域名，用户批注 §3 那套，一个字没动）。
+
+              于是这一档里**没有** Request 面板（入参）、**也没有** Response 面板——连同
+              原先接在清单下面的那段原文（搜索的"前 N 条的正文开头"、抓页去掉抬头后的正文）
+              一并撤掉。行上那一格（详情 / `displayDetail`）仍然说着这一步的结论，
+              清单之外的原始载荷不再铺（撤是用户点名的，不在这里找回）。
+
+              清单包在 `FadeScroll` 里（用户批注 §10）：限高 256px + 底部 35px 阶梯渐隐 +
+              隐藏原生滚动条，只有滚动盒给得出来（渐隐层是 sticky 的）。
+            */
+            <FadeScroll sites>
+              {pages.length > 0 && <FetchPages hits={pages} />}
+              {hits.length > 0 && <SearchHits hits={hits} />}
+            </FadeScroll>
+          ) : (
+            <>
+              {/* 其余工具行照旧：入参 / 返回两块 Request / Response 面板（`StepPayload`） */}
+              {step.args && <RequestPanel text={humanizeArtifactKeys(step.args, names)} />}
+              {step.result && (
+                <>
+                  <StepResult text={showAll ? step.result : (preview ?? step.result)} />
+                  {preview !== null && (
+                    <button
+                      type="button"
+                      className="ch-more"
+                      onClick={() => setShowAll((value) => !value)}
+                    >
+                      {showAll ? '收起' : `加载全部（${formatCount(step.result.length)} 字）`}
+                    </button>
+                  )}
+                </>
+              )}
+            </>
+          )}
         </FlowFold>
       )}
     </div>
@@ -781,12 +797,10 @@ export function ToolchainFlow({
         onClick={onToggle}
         data-running={running || undefined}
       >
-        {/* 段首的**图标槽**（15px，与子项图标同宽）：Kimi 的工具链标题是「图标 + 摘要」
-            （设计文档 §1.1），而且**头部文字与子项标签落在同一条竖线上**——没有这一格，
-            头部会顶到体的左边缘、与子项错开 25px（证据图 evidence-web-1 里两者同列）。 */}
-        <span className="ch-head-icon" aria-hidden>
-          <FileText size={16} />
-        </span>
+        {/* 头部**只有总名与箭头**（2026-09-30 用户批注：总标题不加图标）。改前这里有一格
+            20×20 的图标槽（`<FileText>` + `flow.css` 的 `.ch-head-icon`），依据是当时那条
+            "Kimi 的工具链标题是图标 + 摘要"（设计文档 §1.1）——用户已推翻，槽与图标一并撤掉；
+            样式里那条规则也清了，头部不再为图标留位置。 */}
         <span className={running ? 'ch-summary ch-live' : 'ch-summary'}>{summary}</span>
         {/* 头部那枚箭头：生产是**右向 chevron**，展开时由 CSS 转 90°（见 flow.css 的 `.ch-chev`）。
             右侧**没有计数**（R3 批注：Kimi 的头部只有这一句总名，计数已经在 `使用 N 个工具` 里）。 */}

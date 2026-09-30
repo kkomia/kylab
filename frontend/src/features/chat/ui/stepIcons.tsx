@@ -20,9 +20,11 @@
  *    跑的是命令（`ls` / 构建 / 脚本），不一定是代码；
  * 3. `skill → ListTodo`、`session → MessagesSquare`：技能是"一份可以逐条打勾的清单"
  *    （Kimi 待办清单同款），会话/子智能体是"几个来回的对话"，都是一眼认得出的形状；
- * 4. **联网单独一枚 `Globe`**（见下面 `StepIcon`）：它与"检索知识库"在后端是同一个
+ * 4. **联网那两枚单独分档**（见下面 `StepIcon`）：联网与"检索知识库"在后端是同一个
  *    kind（`search`：只读 + 影响面 network，见 `tool_meta._derive_kind`），
- *    但"在库里翻"与"去外面的世界翻"对用户是两件事——后者要认得出"它上网了"。
+ *    但"在库里翻"与"去外面的世界翻"对用户是两件事——后者要认得出"它上网了"；
+ *    而**联网自己又分两档**（2026-09-30 用户批注"获取网页用的是不同于搜索网页的图标"）：
+ *    搜索 = `Globe`、抓页 = `PanelTop`（Kimi 的 Browser 那一枚）。
  */
 import {
   CircleX,
@@ -33,6 +35,7 @@ import {
   ListTodo,
   MessageSquare,
   MessagesSquare,
+  PanelTop,
   Pencil,
   PenLine,
   Search,
@@ -44,7 +47,7 @@ import {
 } from 'lucide-react'
 
 import type { TraceIcon } from '@/features/chat/model/turns'
-import { isWebStep } from '@/features/chat/model/webSites'
+import { isFetchStep, isWebStep } from '@/features/chat/model/webSites'
 
 export const STEP_ICONS: Record<TraceIcon, LucideIcon> = {
   /*
@@ -100,15 +103,26 @@ const STEP_OUTCOME_CLASS: Record<StepOutcome, string> = {
 }
 
 /**
- * 「联网」那一枚（§12.334 的选型表把"检索"与"联网"分成两档）。
+ * 「上了一趟网」那两枚（§12.334 的选型表把"检索"与"联网"分成两档；
+ * 2026-09-30 用户批注把"联网"再分成"搜"与"抓"两档）。
  *
- * 为什么要单独一层判断：后端 `tool_meta.kind_of('web_search')` 给的是 `search`
- * （只读 + 影响面 network，与"检索知识库"同一个 kind），而 §12.334 要的是
- * "检索 → 放大镜、联网 → 地球"。所以**图形在这里按工具名再分一档**——
+ * 为什么要单独一层判断：后端 `tool_meta.kind_of('web_search')` 与 `kind_of('web_fetch')`
+ * 给的都是 `search`（只读 + 影响面 network，与"检索知识库"同一个 kind），而 §12.334
+ * 要的是"检索 → 放大镜、联网 → 地球"。所以**图形在这里按工具名再分档**——
  * `TraceStep.icon` 仍是 `search`（纯逻辑层一字不动，`chat-model-turns` 那批
- * `stepIcon` 断言照样绿），只有画的时候换成地球，`data-icon` 也如实报 `web`。
+ * `stepIcon` 断言照样绿），只有画的时候换图形，`data-icon` 也如实报出来。
+ *
+ * 两枚各自的取法与出处：
+ *
+ * - **`Globe`（联网搜索）**：去外面的世界翻——"它上网了"；
+ * - **`PanelTop`（抓取网页）**：参考 Kimi 的 Browser 那一枚（浏览器窗口形）——
+ *   窗口顶上那一条横栏就是地址栏的位置。用户原话"获取网页用的是不同于搜索网页的图标"：
+ *   抓页读的是"打开这一页"，与"又搜了一次"是两件事。
+ *   备选是 `AppWindow`（窗口 + 三条小竖痕），15px 下那几道小痕糊成一团，故取 `PanelTop`；
+ *   两枚都在 `lucide-react` 里（不是自画 SVG），与其余图标同一套画法。
  */
 const WEB_ICON: LucideIcon = Globe
+const FETCH_ICON: LucideIcon = PanelTop
 
 /**
  * 每种类别配一个**可断言、可测**的标记（`data-icon`）。
@@ -117,11 +131,12 @@ const WEB_ICON: LucideIcon = Globe
  * 最难在用例里断言的东西（SVG 的形状说明不了它是哪一张）。留一个稳定的
  * 数据属性之后，"联网搜索画的是放大镜"这件事就能被钉住。
  *
- * `data-icon` 报的是**画出来的那一张**：联网那两步画的是地球，就写 `web`
- * （`web` 不在逻辑层的 `TraceIcon` 里，它是渲染层的一档，见 `WEB_ICON`）。
- * 要知道它属于哪个语义种类仍然看 `data-kind`（那一栏是纯逻辑层的 `kind`）。
+ * `data-icon` 报的是**画出来的那一张**：联网搜索画的是地球就写 `web`、抓取网页画的是
+ * 浏览器窗口就写 `fetch`（`web` / `fetch` 都不在逻辑层的 `TraceIcon` 里，它们是渲染层的
+ * 两档，见 `WEB_ICON` / `FETCH_ICON`）。要知道它属于哪个语义种类仍然看 `data-kind`
+ * （那一栏是纯逻辑层的 `kind`）。
  *
- * `tool` / `label` 只为"是不是联网"这一档存在；都不给就按 `icon` 画。
+ * `tool` / `label` 只为"是不是联网、是搜还是抓"这两档存在；都不给就按 `icon` 画。
  */
 export function StepIcon({
   icon,
@@ -130,14 +145,20 @@ export function StepIcon({
   size = 15,
 }: {
   icon: TraceIcon
-  /** 原始工具名（`TraceStep.tool`）；只有联网那一档用得上。 */
+  /** 原始工具名（`TraceStep.tool`）；只有联网那两档用得上。 */
   tool?: string
   /** 老快照的中文标签（没有工具名时的兜底判据）。 */
   label?: string
   size?: number
 }) {
   if (icon === 'search' && isWebStep({ tool, label })) {
-    return <WEB_ICON size={size} aria-hidden data-icon="web" />
+    // 联网里再分"搜"与"抓"（2026-09-30 用户批注）：判据取自 `model/webSites.ts`
+    // 那一份（`isWebStep` 是全集、`isFetchStep` 是抓页那一半），这里不另立词表。
+    return isFetchStep({ tool, label }) ? (
+      <FETCH_ICON size={size} aria-hidden data-icon="fetch" />
+    ) : (
+      <WEB_ICON size={size} aria-hidden data-icon="web" />
+    )
   }
   const Component = STEP_ICONS[icon] ?? Server
   return <Component size={size} aria-hidden data-icon={icon} />

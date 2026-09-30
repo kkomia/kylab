@@ -2,7 +2,17 @@
  * 一条消息（旧 `ChatView.vue` 模板里的 `.ask` 与 `.reply` 两块）。
  *
  * 提问是**右对齐气泡**（位置与形状已经说明它是谁说的，不再有"我的问题"这类标签）；
- * 回答左侧留一条头像沟槽（40px），正文与它下面的动作都归右边那一列。
+ * 回答左侧留一条头像位（`.ch-avatar`：56px，`margin-right:-12px` 让视觉宽收到 44px），
+ * 正文与它下面的动作都归右边那一列。
+ *
+ * **竖向那两条间距**（2026-09-30 用户批注「间距与头像对齐」，两个数都是 Kimi 实测值，
+ * 口径写在各自的调用点上）：
+ * - 提问气泡底 → 回复行顶（回复行是**头像顶对齐**的，行顶就是头像顶）**34px**：
+ *   改前这一档与"两组问答之间"共用 12px，气泡与回复贴得像同一条消息；
+ * - 头像顶 → 回复首行顶 **16px**：56px 头像的**垂直中心**因此落在回复首行的中心上
+ *   （首行 = 工具链总标题那种 24px 行，没有工具链时是正文首行）。这个 16px 就是
+ *   `(56 - 24) / 2`，与《对话UI-重做-设计-v0.1》§5.2「助手段容器
+ *   `padding: 16px 0 12px 16px`（源码值）」里那 16px 同值。
  *
  * 消息的原对象从 `getExternalStoreMessages` 回读——assistant-ui 只管"这是第几条、
  * 谁说的"，过程面板/出处/交付物这些属于我们的字段一个字都没经过它。
@@ -43,6 +53,18 @@ import { useChatRows, type ChatMessage } from '../runtime/ChatProvider'
  * `onCite` 在 `AssistantMessage` 里各做了一次稳定化（见那里的注释）。
  */
 const MemoAnswerText = memo(AnswerText)
+
+/**
+ * 正文那一块的类名——**两串都在模块加载时定好、之后不再变**：上面那段说的"`className`
+ * 写成字面量"，要的就是"每一拍交下去的 `className` 是同一个字符串"。
+ *
+ * 两串只差开头那一档 `mt-3`（12px = 过程块与正文之间的那口气）：**上面真有过程块时才挂**
+ * （`ANSWER_CLASS_AFTER_FLOW`），理由见 `gapAfterFlow`。
+ */
+const ANSWER_CLASS_BASE =
+  'max-w-[var(--measure)] text-[length:calc(16px*var(--font-scale))] leading-[1.625] text-[var(--Labels-Primary)]'
+const ANSWER_GAP = 'mt-[var(--space-3)]'
+const ANSWER_CLASS_AFTER_FLOW = `${ANSWER_GAP} ${ANSWER_CLASS_BASE}`
 
 function UserMessage({ message, turnIndex }: { message: ChatMessage; turnIndex: number }) {
   const chat = useChatRows()
@@ -117,6 +139,20 @@ function AssistantMessage({
    */
   const { revealSource } = chat
   const artifacts = replyArtifacts(turn)
+  /**
+   * 这一轮的工具链块（以及正文上面那条灰线）出不出——**判据只有一处**（`hasFlow`）：
+   * 灰线、正文上面那一档间距、以及"这一列的首行是谁"问的都是它。
+   */
+  const flow = hasFlow(turn)
+  /**
+   * 过程块与正文之间那一档间距（12px = `--space-3`）：**上面真有过程块时才给**。
+   *
+   * 没有过程块的那些轮次（纯直接作答、只剩一句"只返回了工具调用标记"），正文自己就是
+   * 这一列的**首行**——首行的位置由列上的 `pt-[16px]` 说了算（见文件头那两条间距）。
+   * 这里再补一次 `mt-3`，首行顶就落到 +28px、中心落到 +40px 上，比头像中心（+28px）
+   * 低出**半行**（12px = 首行行高 24px 的一半）——肉眼看到的就是用户批注②那句「没对齐」。
+   */
+  const gapAfterFlow = flow ? ANSWER_GAP : ''
   const isLastTurn = turnIndex === chat.turnCount - 1
   /**
    * 这一轮**后面**还有几轮（D35）：失败气泡上那个「重试」会把它们一起撤掉，
@@ -164,7 +200,19 @@ function AssistantMessage({
   return (
     <div className="flex items-start gap-[var(--space-3)]">
       <AssistantAvatar live={message.streaming === true && !message.error} />
-      <div className="min-w-0 flex-1">
+      {/*
+        回复列：`pt-[16px]` 是**头像与首行对齐**那一条（2026-09-30 用户批注②）——
+        头像是这一行里 `items-start` 顶对齐的第一个孩子，所以列的 `padding-top` 就是
+        "首行比头像顶低多少"。56px 的头像与 24px 的首行要**中心重合**，这个下沉量就是
+        `(56 - 24) / 2 = 16px`（首行是 `.ch-head`，`min-height:24px` + `line-height:24px`；
+        没有工具链的那一轮首行换成正文首行，16px/1.625 = 26px，中心只差 1px；
+        工具链那一档的 24px 是写死的，所以任何字号档（`--font-scale`）都对得上）。
+
+        16px 是 `--space-4` 的档位值，但这里**不写成 `pt-[var(--space-4)]`**：它是从
+        头像与首行两个高度**算出来的**光学对齐量（头像改高、首行改行高都要跟着重算），
+        不是间距阶梯上的一次选择——写成令牌会让人以为改令牌是安全的。
+      */}
+      <div className="min-w-0 flex-1 pt-[16px]">
         {message.error ? (
           /*
             失败那一轮（第四批评审 B①）：原先这里只有一句红字，**没有任何出口**——
@@ -252,9 +300,10 @@ function AssistantMessage({
             {/*
               **工具链与正文之间的那条灰色分隔线**（2026-09-30 用户批注：对照 Kimi
               最初的设计，过程与最终回答要有灰线分开）。出不出与块**同一个判据**
-              （`hasFlow`）——块不出的时候也不该留一条空线（R4 起纯直接作答那轮就是这种）。
+              （`flow`，就是 `hasFlow(turn)`）——块不出的时候也不该留一条空线
+              （R4 起纯直接作答那轮就是这种）。
             */}
-            {hasFlow(turn) ? <div className="ch-divider" role="separator" aria-hidden /> : null}
+            {flow ? <div className="ch-divider" role="separator" aria-hidden /> : null}
 
             {/*
               模型把工具调用写进正文（§12.219）：**标记永远不进正文**（2026-09-30
@@ -265,9 +314,11 @@ function AssistantMessage({
             {answerText || message.streaming ? (
               /* 正文排版对标 Kimi markdown B1：16px/1.625（=26px 行高），
                  字号仍乘全局 `--font-scale`（用户的字号设置不能失效）。
-                 `max-w-[var(--measure)]`：行宽 66ch 上限照旧（阅读型界面的口径）。 */
+                 `max-w-[var(--measure)]`：行宽 66ch 上限照旧（阅读型界面的口径）。
+                 两串类名在模块顶上定好了（`ANSWER_CLASS_*`）：上面有过程块时才多那一档
+                 `mt-3`，没有过程块时正文就是这一列的首行（见 `gapAfterFlow`）。 */
               <MemoAnswerText
-                className="mt-[var(--space-3)] max-w-[var(--measure)] text-[length:calc(16px*var(--font-scale))] leading-[1.625] text-[var(--Labels-Primary)]"
+                className={flow ? ANSWER_CLASS_AFTER_FLOW : ANSWER_CLASS_BASE}
                 text={answerText}
                 // 流式中且还没有正文 → 正文区给一句"正在生成…"（D27）。消息上的 `streaming`
                 // 由镜像层按 live 状态写着（见 ChatProvider 的 mirrorLive）。
@@ -278,7 +329,7 @@ function AssistantMessage({
               />
             ) : rawTools ? (
               <p
-                className="mt-[var(--space-3)] mb-0 text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]"
+                className={`${gapAfterFlow} mb-0 text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]`}
                 data-testid="reply-raw-tools"
               >
                 这一轮只返回了工具调用标记，没有正文。
@@ -388,8 +439,16 @@ export const MessageView = memo(function MessageView({
   isFirst: boolean
   role: 'user' | 'assistant'
 }) {
-  // 回答紧跟着自己的提问：24px 是"两组问答之间"的距离，组内不该有那么大空隙
-  const spacing = isFirst ? '' : role === 'user' ? 'mt-[var(--space-6)]' : 'mt-[var(--space-3)]'
+  /*
+    两种间距，各一条：
+    - **两组问答之间 24px**（`--space-6`）：组与组要能一眼分开，所以比组内大一档；
+    - **提问气泡 → 它那条回复 34px**（2026-09-30 用户批注①，Kimi 实测值）：改前这里与
+      上一档共用 `mt-3`（12px），气泡底到回复第一行只有 12px，贴得像同一条消息。
+      这 34px 量的是**气泡底 → 回复行顶**，而回复行是头像顶对齐的（头像就是这个行的顶，
+      见文件头），所以写在这一行的上边距上；行内到首行还有 16px（回复列的 `pt-[16px]`），
+      两段加起来 50px 才是"气泡底 → 回复第一行文字"。真机复量时按同样两段认。
+  */
+  const spacing = isFirst ? '' : role === 'user' ? 'mt-[var(--space-6)]' : 'mt-[34px]'
 
   return (
     <div className={spacing} data-turn={turnIndex} data-role={role}>

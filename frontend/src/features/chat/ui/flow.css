@@ -154,8 +154,12 @@
 .ch-head {
   display: flex;
   align-items: center;
-  /* 与行同一条缩进轴（生产：头部 icon 槽 20px + 间距 8px，行内同值）——
-     头部文字与子项标签因此落在同一列上。字号/行高（16px/24px）继承 `.ch-flow`。 */
+  /*
+    头部**只有总名与箭头**（2026-09-30 用户批注：总标题不加图标）。改前这里还有一格
+    20×20 的图标槽（`.ch-head-icon` + `<FileText>`，依据是当时对 Kimi 头部的判断
+    "标题 = 图标 + 摘要"）——用户已推翻那条，图标槽**整个拿掉**，总名因此从块的左边缘起排。
+    字号/行高（16px/24px）继承 `.ch-flow`。
+  */
   gap: 8px;
   width: 100%;
   min-height: 24px;
@@ -166,17 +170,6 @@
   text-align: left;
   color: var(--Labels-Secondary);
   border-radius: 6px;
-}
-/* 段首那一枚图标槽：**20×20**（生产 `.toolcall-flow__summary-icon { flex:0 0 20px }`），
-   与行内图标槽同宽——两列的图标因此同轴、文字同列。 */
-.ch-head-icon {
-  flex: 0 0 20px;
-  width: 20px;
-  height: 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--Labels-Secondary);
 }
 .ch-head:hover .ch-summary {
   color: var(--Labels-Primary);
@@ -580,12 +573,44 @@ button.ch-row:not([aria-disabled='true']):hover {
    行高 32px、内边距 6/8、圆角 8px、hover 浅底；整行可点、新标签打开（`SearchHits`）。
    ⚠️ 限高与滚动**不在这里**：用户批注 §10 要的"底部 35px 阶梯渐隐 + 隐藏原生滚动条"
    只能挂在滚动盒上（渐隐层是 `sticky` 的），所以清单改由外层 `FadeScroll` 包住
-   （`.ch-scroll-box--sites` 的 `max-height: 256px`，Kimi 那个值）。 */
+   （`.ch-scroll-box--sites` 的 `max-height: 256px`，Kimi 那个值）。
+   这一档**一个字没动**（2026-09-30 用户批注只动了抓页那一张清单，见下面 `.ch-fetch`）。 */
 .ch-hits {
   margin: 0;
   font-size: calc(14px * var(--font-scale, 1)); /* 列表行 B2：14px */
   line-height: 20px;
 }
+
+/* ---- 抓页清单（Kimi `fetch-urls-item`；2026-09-30 用户批注"注意看获取网页列表的样式"、
+   "注意网页 logo 的显示"）----
+   与搜索清单同一副骨架（行高 32px、内边距 6/8、圆角 8px、悬停灰底圆角条、整行可点、
+   字体走 `.ch-hits` 那一档 14/20），差别只有**一行里写什么**：抓页要回答"它打开了哪几页"，
+   所以是 favicon + **完整 URL**（链接色）——标题与域名都在这条 URL 里，不再各占一格。
+   favicon 仍是 `.ch-hit-logo`（16px 圆；取不到真实 logo 就退域名首字母的灰圆——
+   与搜索清单里那一枚逐像素同款，"注意网页 logo 的显示"要的就是它）。 */
+.ch-fetch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  text-decoration: none;
+}
+.ch-fetch:hover {
+  background: color-mix(in srgb, var(--Labels-Primary) 4%, transparent);
+}
+.ch-fetch-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* 链接色（用户批注"URL 用链接色"）：就是全站链接在用的那一枚令牌 `--accent-text`
+     （浅色下 5.38:1、暗色同构），不新造色值；整行可点，所以这一格不走次要文字色。 */
+  color: var(--accent-text);
+}
+
 .ch-hit {
   display: flex;
   align-items: center;

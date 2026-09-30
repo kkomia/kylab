@@ -9,6 +9,10 @@
  * 第二组用例钉的是一件容易做丢的事：**联网与"检索知识库"在后端是同一个 `kind`**
  * （`search`：只读 + 影响面 network），而 §12.334 要的是"检索 → 放大镜、联网 → 地球"。
  * 所以图形在渲染层按工具名再分一档——这组用例同时钉住"联网变地球"与"本地的检索没跟着变"。
+ *
+ * 2026-09-30 用户批注又把**联网自己**分成两档（"获取网页用的是不同于搜索网页的图标"）：
+ * 联网搜索仍是地球、抓取网页换成浏览器窗口那一枚（`PanelTop`，参考 Kimi 的 Browser）。
+ * 于是这一组钉住的是三件事：**搜索 = 地球、抓页 = 窗口、本地的检索照旧放大镜**。
  */
 import { render } from '@testing-library/react'
 import type { ReactElement } from 'react'
@@ -51,13 +55,26 @@ describe('图标选型：每一档画哪一张（§12.334）', () => {
   })
 })
 
-describe('联网单独一档：与"检索知识库"分开画（两者同 kind=search）', () => {
-  it('web_search / web_fetch 画地球，data-icon 报 web', () => {
+describe('联网的两档：搜索与抓页分开画（三者同 kind=search）', () => {
+  it('web_search 画地球，data-icon 报 web', () => {
     const search = glyph(<StepIcon icon="search" tool="web_search" />)
     expect(search).toHaveClass('lucide-globe')
     expect(search).toHaveAttribute('data-icon', 'web')
+  })
 
-    expect(glyph(<StepIcon icon="search" tool="web_fetch" />)).toHaveClass('lucide-globe')
+  it('web_fetch 画浏览器窗口（PanelTop），data-icon 报 fetch', () => {
+    /*
+      2026-09-30 用户批注"获取网页用的是不同于搜索网页的图标"：抓页读的是"打开这一页"，
+      与"又搜了一次"是两件事，两枚图形。形状参考 Kimi 的 Browser 那一枚（窗口顶上一条
+      横栏就是地址栏的位置），落在 `lucide` 的 `PanelTop` 上；备选 `AppWindow` 那三条
+      小竖痕在 15px 下糊成一团，所以是二选一里的这一枚。
+
+      顺带钉住 `data-icon`：它报的是**画出来的那一张**（`fetch`），而 `data-kind` 仍然是
+      后端那个语义种类（`search`）——两个口径各自都对。
+    */
+    const fetch = glyph(<StepIcon icon="search" tool="web_fetch" />)
+    expect(fetch).toHaveClass('lucide-panel-top')
+    expect(fetch).toHaveAttribute('data-icon', 'fetch')
   })
 
   it('本地的两档照旧是放大镜（别把"在本地翻"也画成上网）', () => {
@@ -68,9 +85,9 @@ describe('联网单独一档：与"检索知识库"分开画（两者同 kind=se
     expect(glyph(<StepIcon icon="search" />)).toHaveClass('lucide-search')
   })
 
-  it('老快照（没有工具名）按当时的标签认：联网搜索 / 抓取网页 → 地球', () => {
+  it('老快照（没有工具名）按当时的标签认：联网搜索 → 地球、抓取网页 → 窗口', () => {
     expect(glyph(<StepIcon icon="search" label="联网搜索" />)).toHaveClass('lucide-globe')
-    expect(glyph(<StepIcon icon="search" label="抓取网页" />)).toHaveClass('lucide-globe')
+    expect(glyph(<StepIcon icon="search" label="抓取网页" />)).toHaveClass('lucide-panel-top')
     // 同期的"检索知识库"仍然是放大镜
     expect(glyph(<StepIcon icon="search" label="检索知识库" />)).toHaveClass('lucide-search')
   })

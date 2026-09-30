@@ -1283,6 +1283,67 @@ describe('降级与"工具标记"两种异常收尾', () => {
   })
 })
 
+/**
+ * 消息列的间距与头像对齐（2026-09-30 用户批注第二批的两条）。
+ *
+ * **钉的是类名，不是像素**：`vite.config.ts` 里 `test.css: false`，jsdom 不算版面
+ * （没有 56px 的头像、也没有 24px 的首行），"中心重不重合"在这里量不出来。
+ * 所以用例只管**那两个数落在了哪两个元素上**、以及**首行那一档只在该有的时候才有**；
+ * 数本身与算法（34px 与 16px 的出处）写在 `MessageView.tsx` 的调用点与文件头。
+ */
+describe('消息列的间距与头像对齐（2026-09-30 用户批注）', () => {
+  it('气泡 → 回复 34px 挂在整行上；回复列的 16px 让 56px 头像与 24px 首行中心重合', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([
+        stored('user', '先问一句'),
+        stored('assistant', '先答一句'),
+        stored('user', '再查一下'),
+        stored('assistant', '查到了。', {
+          steps: [
+            { phase: 'tool', label: '联网搜索', detail: '', status: 'done', tool: 'web_search' },
+          ],
+        }),
+      ]),
+    )
+    renderPage()
+    await screen.findAllByTestId('reply-text')
+
+    // ① 34px 量的是**气泡底 → 头像顶**：回复行是头像顶对齐的（头像是行里第一个孩子），
+    //    所以这个数就写在这一行的上边距上。第二轮的回复（有过程块那个）才是这一条。
+    const replyRows = document.querySelectorAll('[data-role="assistant"]')
+    const replyRow = replyRows[replyRows.length - 1] as HTMLElement
+    expect(replyRow.className).toContain('mt-[34px]')
+
+    // ② 16px = 头像顶 → 首行顶 = (56 - 24) / 2：挂在**回复列**上，
+    //    头像自己仍然顶对齐（改的是列的下沉量，不是头像的位置）
+    const avatar = replyRow.querySelector('.ch-avatar') as HTMLElement
+    expect(avatar).not.toBeNull()
+    expect((avatar.nextElementSibling as HTMLElement).className).toContain('pt-[16px]')
+
+    // 首行那一档 12px（灰线之下、正文之上）：**上面真有过程块的那一轮才有**
+    const texts = screen.getAllByTestId('reply-text')
+    expect(texts[0]).not.toHaveClass('mt-[var(--space-3)]') // 直接作答：正文自己就是首行
+    expect(texts[texts.length - 1]).toHaveClass('mt-[var(--space-3)]') // 有过程块：照旧那一档
+
+    // 两组问答之间还是 24px——这条批注没有把它一起带走（第二条提问行才是它）
+    const askRows = document.querySelectorAll('[data-role="user"]')
+    expect((askRows[askRows.length - 1] as HTMLElement).className).toContain('mt-[var(--space-6)]')
+  })
+
+  it('只剩工具调用标记那一轮：那句说明也是这一列的首行，同样不吃那 12px', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([
+        stored('user', '帮我查'),
+        stored('assistant', '<tool_call>{"name":"web_search","arguments":{}}</tool_call>'),
+      ]),
+    )
+    renderPage()
+
+    // 这一轮没有链项 / 思考 / 来源（`hasFlow` 为假）→ 首行由列的 `pt-[16px]` 定位
+    expect(await screen.findByTestId('reply-raw-tools')).not.toHaveClass('mt-[var(--space-3)]')
+  })
+})
+
 describe('停止与回到最新', () => {
   /**
    * 第三批评审 A①：那个"无标签的孤立「∨」"就是这枚浮标。
