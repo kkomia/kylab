@@ -202,7 +202,7 @@ def direct_isolation() -> Isolation:
         available=True,
         detail=(
             "这台机器上没有可用的内核级隔离，当前**直接在本机执行（未隔离）**："
-            "命令以这次会话的沙箱目录为 cwd、工作区路径越界仍会被拒，"
+            "命令以**你的工作区目录**为 cwd（未隔离时就是那个项目文件夹）、工作区路径越界仍会被拒，"
             "但进程本身能碰到本机的东西，网络也不受限。"
             "要开启隔离：Linux 装 bubblewrap、macOS 用 sandbox-exec、任意平台装 Docker。"
             "要让它在无隔离时严格拒绝而不是降级，把设置里的「无隔离时拒绝执行」打开。"
@@ -584,7 +584,13 @@ def run_isolated(
         # 也要把结果交出去（乱码可辨认），而不是整条命令失败。
         finished = subprocess.run(  # noqa: S603
             plan.argv,
-            cwd=str(sandbox_dir),
+            # cwd **按档分**（2026-09-30 用户裁定，对齐 Kimi Work 的口径：
+            # "所有命令的工作目录默认就是该项目文件夹" ✓）：
+            # - 直接执行（无内核隔离 ✓ 本机直接跑）→ cwd = **工作区根目录** ✓，
+            #   于是命令就在用户指定的文件夹里跑、产物也直接写回那里 ✓；
+            # - 隔离档（bwrap/seatbelt/docker）→ 仍落在这次会话的沙箱目录 ✓
+            #   （那是隔离的容器；它与工作区根之间的可见性由各后端自己的挂载规则决定 ✓）。
+            cwd=str(workspace_root if plan.backend == BACKEND_DIRECT else sandbox_dir),
             capture_output=True,
             text=True,
             encoding="utf-8",
