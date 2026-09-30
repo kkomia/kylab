@@ -52,6 +52,15 @@ const chatStub = {
   traceOpen: (message: Message) => isTraceOpen(message),
   toggleTrace: () => undefined,
   traceView: (_turnIndex: number, turn: Turn) => tracePage(turn),
+  // 工具链块（ToolchainFlow）的行级开合与来源清单：测试里各给一份空表即可
+  isStepOpen: () => false,
+  toggleStep: () => undefined,
+  groupOpenChoice: () => undefined,
+  chooseGroupOpen: () => undefined,
+  citesExpanded: () => false,
+  toggleCites: () => undefined,
+  flashCite: '',
+  openSource: () => undefined,
 }
 
 vi.mock('@/features/chat/runtime/ChatProvider', async (importOriginal) => {

@@ -15,6 +15,7 @@ import {
   failureText,
   hasToolCallMarkup,
   replyArtifacts,
+  stripToolCallMarkup,
   usedWebSearch,
   wasDegraded,
   type Message,
@@ -26,7 +27,7 @@ import { formatBytes } from '@/lib/format'
 import { AnswerText } from './AnswerText'
 import { Deliverables } from './Deliverables'
 import { Logo } from './Logo'
-import { TracePanel } from './TracePanel'
+import { ToolchainFlow } from './ToolchainFlow'
 import { useChatRows, type ChatMessage } from '../runtime/ChatProvider'
 
 /**
@@ -138,6 +139,8 @@ function AssistantMessage({
   const saved = chat.savedTurns.includes(turnIndex)
   const degraded = !message.streaming && wasDegraded(message)
   const rawTools = hasToolCallMarkup(message.text)
+  /** 正文先把工具调用标记剥掉（只动显示，库里原文不改），再进 Markdown。 */
+  const answerText = useMemo(() => stripToolCallMarkup(message.text), [message.text])
   /**
    * 正文里对不上出处的编号怎么画（A6）。
    *
@@ -238,34 +241,36 @@ function AssistantMessage({
         ) : (
           <>
             {/* 出错的那一轮没有过程可讲，只报错 */}
-            <TracePanel turnIndex={turnIndex} turn={turn} />
+            <ToolchainFlow
+              turn={turn}
+              turnIndex={turnIndex}
+              open={chat.traceOpen(message) === 'full'}
+              onToggle={() => chat.toggleTrace(message)}
+              expansion={{
+                isOpen: chat.isStepOpen,
+                toggle: chat.toggleStep,
+                groupChoice: chat.groupOpenChoice,
+                chooseGroup: chat.chooseGroupOpen,
+              }}
+              citesOpen={chat.citesExpanded(turnIndex)}
+              onToggleCites={() => chat.toggleCites(turnIndex)}
+              flashSource={chat.flashCite}
+              onOpenSource={(item) => chat.openSource(item)}
+            />
 
             {/*
-              模型把工具调用写进正文（§12.219）：**不当回答渲染**。
-              原文照旧显示（只是按原文排版、不走 Markdown），上面加一个短标签说明
-              这一段不是回答。原来那句是"这一段是模型写出来的工具调用标记，没有执行。"
-              ——"这一段是…"正是在替用户认这是什么，2026-09-24 按用户要求压成标签。
+              模型把工具调用写进正文（§12.219）：**标记永远不进正文**（2026-09-30
+              《对话UI-重做-设计》§5.1）——剥掉再排，只动显示、库里的原文不改。
+              剥完什么都不剩的那一轮（整条回答只有标记）给一句安静的说明，
+              而不是旧版那一大块等宽原文。
             */}
-            {rawTools ? (
-              <>
-                <p className="mt-[var(--space-3)] mb-0 flex items-center gap-[var(--space-1)] text-[length:var(--text-micro-size)] text-[var(--text-secondary)]">
-                  <TriangleAlert size={13} />
-                  未执行的工具调用标记
-                </p>
-                <div
-                  data-testid="reply-raw-tools"
-                  className="mt-[var(--space-2)] max-w-[var(--measure)] font-mono text-[length:var(--text-micro-size)] whitespace-pre-wrap text-[var(--text-secondary)] [overflow-wrap:anywhere]"
-                >
-                  {message.text}
-                </div>
-              </>
-            ) : (
+            {answerText || message.streaming ? (
               /* `max-w-[var(--measure)]`：旧 `.reply-text { max-width: var(--measure) }`
                  ——正文列是 768px，但**行宽**另有 66ch 的上限（阅读型界面的口径），
                  照旧版补齐（对照记录 §3 第 5 条）。 */
               <MemoAnswerText
                 className="mt-[var(--space-3)] max-w-[var(--measure)] text-[length:var(--text-body-size)] leading-[var(--line-prose)] text-[var(--text-primary)]"
-                text={message.text}
+                text={answerText}
                 // 流式中且还没有正文 → 正文区给一句"正在生成…"（D27）。消息上的 `streaming`
                 // 由镜像层按 live 状态写着（见 ChatProvider 的 mirrorLive）。
                 pending={message.streaming === true}
@@ -273,7 +278,14 @@ function AssistantMessage({
                 citeFallback={citeFallback}
                 onCite={revealCite}
               />
-            )}
+            ) : rawTools ? (
+              <p
+                className="mt-[var(--space-3)] mb-0 text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]"
+                data-testid="reply-raw-tools"
+              >
+                这一轮只返回了工具调用标记，没有正文。
+              </p>
+            ) : null}
 
             {/*
               降级提示：**没按设计走完**是这一轮唯一的降级情形。两个出口是两件不同的事：

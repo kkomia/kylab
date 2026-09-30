@@ -685,7 +685,7 @@ describe('过程面板：图标按 kind、同类工具并成一行', () => {
       合并这件事就钉在"只有一个组头按钮"与那一句上——两次调用各占一行时，
       组头按钮一个都不会有。
     */
-    expect(document.querySelectorAll('button[aria-controls^="trace-group-"]')).toHaveLength(1)
+    expect(document.querySelectorAll('button[aria-controls^="flow-group-"]')).toHaveLength(1)
     expect(
       await screen.findByText('联网搜索 2 个关键词 · 「芯片 出口」命中 3 条、「光刻机」命中 5 条'),
     ).toBeInTheDocument()
@@ -699,7 +699,7 @@ describe('过程面板：图标按 kind、同类工具并成一行', () => {
       `data-icon` 报画出来的那一张（web），`data-kind` 仍然是语义种类（search）——
       两条一起钉，两个口径都不会被悄悄改掉。
     */
-    expect(document.querySelector('li[data-kind="search"] [data-icon="web"]')).not.toBeNull()
+    expect(document.querySelector('.ch-row[data-kind="search"] [data-icon="web"]')).not.toBeNull()
     expect(document.querySelector('[data-icon="write"]')).not.toBeNull()
     expect(document.querySelector('[data-icon="think"]')).not.toBeNull()
 
@@ -707,7 +707,7 @@ describe('过程面板：图标按 kind、同类工具并成一行', () => {
     await userEvent.setup().click(screen.getByRole('button', { name: /联网搜索/ }))
     // 只看组里那一块：标题上也出现了同样两个对象（那是聚合句的一部分），
     // 所以这里按容器缩进查，钉的仍然是"展开后逐条保序"
-    const groupBody = document.querySelector('[id^="trace-group-"]') as HTMLElement
+    const groupBody = document.querySelector('[id^="flow-group-"]') as HTMLElement
     expect(within(groupBody).getByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()
     expect(within(groupBody).getByText(/「光刻机」命中 5 条/)).toBeInTheDocument()
   })
@@ -866,9 +866,9 @@ describe('组级开合记在宿主上（§12.333 约束 1）', () => {
     )
     renderNavigable()
 
-    /** 组那一行与它的展开容器（标题里也会出现同样的对象，所以断言都缩进容器里查）。 */
+    /** 组那一行与它的展开容器（组头是带 aria-controls 的那颗；标题里也会出现同样的对象）。 */
     function group() {
-      const head = screen.getByRole('button', { name: /联网搜索/ })
+      const head = document.querySelector('button[aria-controls^="flow-group-"]') as HTMLElement
       const body = document.getElementById(
         head.getAttribute('aria-controls') as string,
       ) as HTMLElement
@@ -1175,7 +1175,7 @@ describe('降级与"工具标记"两种异常收尾', () => {
     expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument()
   })
 
-  it('正文里的工具调用标记按原文显示并加一句说明，不当回答渲染', async () => {
+  it('正文里的工具调用标记**剥离**：只剩标记时给一句说明，不把它当回答渲染', async () => {
     vi.mocked(getConversation).mockResolvedValue(
       detail([
         stored('user', '帮我查'),
@@ -1184,13 +1184,35 @@ describe('降级与"工具标记"两种异常收尾', () => {
     )
     renderPage()
 
-    // 标签在 2026-09-24 压短（原句"这一段是模型写出来的工具调用标记，没有执行。"是在替
-    // 用户认"这一段是什么"，按用户要求删成标签）：断言的**是同一件事**——那段标记不当回答渲染
-    expect(await screen.findByText('未执行的工具调用标记')).toBeInTheDocument()
-    // 原文照旧显示（那是当时真实返回的东西），只是按原文排版
-    expect(screen.getByTestId('reply-raw-tools')).toHaveTextContent('<tool_call>')
-    // 而且**没有**走 Markdown 那条渲染路径
+    /*
+      2026-09-30 起的新口径（《对话UI-重做-设计》§5.1，用户：「调用工具思考也放到正文里面去」）：
+      标记**永远不进正文**——剥掉再排（只动显示，库里的原文不改）。这一条钉三件事：
+      整段都是标记时只剩一句安静的说明、标记原文一个字符都不上屏、Markdown 那条路不走空。
+    */
+    expect(await screen.findByTestId('reply-raw-tools')).toHaveTextContent(
+      '这一轮只返回了工具调用标记，没有正文。',
+    )
+    expect(screen.queryByText(/web_search/)).toBeNull()
     expect(screen.queryByTestId('reply-text')).toBeNull()
+  })
+
+  it('正文里混着工具调用标记：标记剥掉、正文照常走 Markdown', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([
+        stored('user', '帮我查'),
+        stored(
+          'assistant',
+          '查到了，重点是这一条。\n<tool_call>{"name":"web_search","arguments":{"q":"x"}}</tool_call>\n引用见上。',
+        ),
+      ]),
+    )
+    renderPage()
+
+    const reply = await screen.findByTestId('reply-text')
+    expect(reply).toHaveTextContent('查到了，重点是这一条。')
+    expect(reply).toHaveTextContent('引用见上。')
+    expect(reply.textContent).not.toContain('tool_call')
+    expect(reply.textContent).not.toContain('web_search')
   })
 })
 
@@ -1504,30 +1526,31 @@ describe('出处列表与交付物（§6 的两条）', () => {
     score: 0.9,
   }))
 
-  it('默认只铺前 3 条，其余折成一行；点开才铺满；「看全文」就地看全', async () => {
+  it('来源收成一行（「N 个来源」）；展开铺满；点一条就地滑出原文', async () => {
     vi.mocked(getConversation).mockResolvedValue(
       detail([stored('user', '这些都说了什么'), stored('assistant', '见 [1][4]。', { sources })]),
     )
     renderPage()
 
-    // 前三条永远显示（回答有没有依据是这一页存在的理由），多出来的折成一行
-    expect(await screen.findByText('报告1.pdf')).toBeInTheDocument()
-    expect(screen.getByText('报告3.pdf')).toBeInTheDocument()
-    expect(screen.queryByText('报告4.pdf')).toBeNull()
-    expect(screen.getByText('还有 2 条出处')).toBeInTheDocument()
-
+    // 完成轮的工具链块默认收起，来源行在块里——先点块头摊开（这一条顺带钉住"点得开"）
+    expect(screen.queryByText('报告1.pdf')).toBeNull()
     const user = userEvent.setup()
-    await user.click(screen.getByText('还有 2 条出处'))
-    expect(screen.getByText('报告5.pdf')).toBeInTheDocument()
-    expect(screen.getByText('收起出处')).toBeInTheDocument()
+    await user.click(await screen.findByTestId('trace-toggle'))
+    // 来源行默认收起：摘要说清有几条几篇，列表一条都不铺
+    const sourcesRow = await screen.findByTestId('flow-sources')
+    expect(sourcesRow).toHaveTextContent('5 个来源 · 5 篇文档')
+    expect(screen.queryByText('报告1.pdf')).toBeNull()
 
-    // 「看全文」：就地看这一段原文，不必先跳去文档页
-    await user.click(
-      within(screen.getByText('报告1.pdf').closest('li') as HTMLElement).getByText('看全文'),
-    )
-    const dialog = await screen.findByRole('dialog')
-    expect(dialog).toHaveTextContent('第 1 段的原文')
-    expect(dialog).toHaveTextContent('第一章 › 第 1 页')
+    // 展开：五条全在（滚动盒限高自己滚，不再"铺 3 条折 2 条"）
+    await user.click(sourcesRow)
+    expect(screen.getByText('报告1.pdf')).toBeInTheDocument()
+    expect(screen.getByText('报告5.pdf')).toBeInTheDocument()
+
+    // 点一条 → 那段原文就地滑出（不必先跳去文档页）
+    await user.click(screen.getByText('报告1.pdf'))
+    const drawer = await screen.findByRole('dialog', { name: /引用原文/ })
+    expect(drawer).toHaveTextContent('第 1 段的原文')
+    expect(drawer).toHaveTextContent('第一章 › 第 1 页')
   })
 
   it('交付物卡片：点「存进知识库」走显式那一步，入库后卡片改成已存', async () => {
@@ -2116,8 +2139,10 @@ describe('两个抽屉（引用原文 / 产物与文件）', () => {
     renderPage()
     const user = userEvent.setup()
 
-    // 出处列表里每一条都有自己的「看全文」：点第一条（编号 1 那条）
-    await user.click((await screen.findAllByText('看全文'))[0])
+    // 来源清单里每一条都可点：摊开块 → 展开来源 → 点第一条（编号 1 那条）
+    await user.click(await screen.findByTestId('trace-toggle'))
+    await user.click(await screen.findByTestId('flow-sources'))
+    await user.click(await screen.findByText('报告1.pdf'))
     const drawer = await screen.findByRole('dialog', { name: /引用原文/ })
     expect(drawer).toHaveTextContent('第 1 段的原文')
     expect(drawer).toHaveTextContent('第一章 › 第 1 页')
@@ -2171,7 +2196,9 @@ describe('两个抽屉（引用原文 / 产物与文件）', () => {
     const viewport = await screen.findByLabelText('对话内容')
     viewport.scrollTop = 123
 
-    await user.click((await screen.findAllByText('看全文'))[0])
+    await user.click(await screen.findByTestId('trace-toggle'))
+    await user.click(await screen.findByTestId('flow-sources'))
+    await user.click(await screen.findByText('报告1.pdf'))
     await screen.findByRole('dialog', { name: /引用原文/ })
     await user.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('dialog', { name: /引用原文/ })).toBeNull())

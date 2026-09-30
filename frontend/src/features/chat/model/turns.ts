@@ -412,6 +412,38 @@ export function hasToolCallMarkup(text: string): boolean {
   return TOOL_MARKUP_PATTERNS.some((pattern) => pattern.test(text))
 }
 
+/*
+ * 剥离用的版本（《对话UI-重做-设计》§5.1）：与 `TOOL_MARKUP_PATTERNS` 同一批形状，
+ * 全部带 `g`（一段回答里可以有不止一块）。**判"像不像"的严格度与检测版一字不差**
+ * （闭合 / 标签紧跟载荷才算）——问「`<tool_call>` 是什么意思」的正常回答不会被误伤。
+ */
+const TOOL_MARKUP_STRIP_PATTERNS: RegExp[] = [
+  /<tool_calls?\s*>[\s\S]*?<\/tool_calls?\s*>/gi,
+  // 截断的那一族（标签后**紧跟** JSON 载荷才算）：截断意味着它吊在末尾，从标签剥到结尾
+  /<tool_calls?\s*>\s*(?:\{[\s\S]*|[A-Za-z_][\w.]*\s*\{[\s\S]*)$/i,
+  /<[｜|]{1,2}\s*tool[▁_ ]?calls?[▁_ ]?(?:begin|end)?[｜|]{1,2}>/gi,
+  // DSML 的标记剥到 `>` 为止（属性段不是正文）
+  /<[｜|]{1,2}\s*\/?\s*DSML[^>]*>/gi,
+  // `<function=…>`：有闭合剥到闭合；没有闭合且紧跟 JSON 载荷的（截断族）剥到结尾
+  /<function\s*(?:=[^>]*|name\s*=\s*["'][^"']*["'][^>]*)>[\s\S]*?<\/function\s*>/gi,
+  /<function\s*(?:=[^>]*|name\s*=\s*["'][^"']*["'][^>]*)>(?=\s*\{)[\s\S]*$/gi,
+]
+
+/**
+ * 把正文里的工具调用标记**剥掉再显示**（2026-09-30，用户：「调用工具思考也放到正文里面去」）。
+ *
+ * 与旧的「整段原文 + 一行说明」兜底（已删）相比：标记**永远不进正文**——它不是回答，
+ * 真执行的步骤在工具链块里，没执行的标记连排版都不配占。判"是不是标记"仍然严格
+ * （见 `TOOL_MARKUP_PATTERNS` 的说明），剥完顺手把剥出来的连续空行压回一个。
+ *
+ * 只动**显示**这一层：库里的原文一个字不改（回看时"它到底写了什么"仍然是真相）。
+ */
+export function stripToolCallMarkup(text: string): string {
+  let out = text
+  for (const pattern of TOOL_MARKUP_STRIP_PATTERNS) out = out.replace(pattern, '')
+  return out.replace(/\n{3,}/g, '\n\n').trim()
+}
+
 /**
  * 这一轮**跑过联网搜索**没有（v0.28，第二批评审 A6）。
  *

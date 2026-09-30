@@ -1,0 +1,379 @@
+/**
+ * 工具链块（ToolchainFlow）样式——Kimi 设计系统落地层（《对话UI-重做-设计》§3/§4）。
+ *
+ * 取值**逐字抄** kimi.com 生产 CSS（用户提供的源码级提取文档 §2/§12），
+ * 落在 `ch-*` 这套**只服务对话域**的变量上：全局 token（`tokens.css`）一个字不动，
+ * 笔记/知识库/设置各页不受这次重做的影响。
+ *
+ * 与旧 `traceStyles` 的关系：那一套随旧 TracePanel 一起退役（P2 收编），
+ * 这里不引用它、它也不引用这里。
+ */
+
+.ch-flow {
+  /* ---- Kimi 官方 token（浅色；源码 `:root` 原文换算） ---- */
+  --ch-label-1: #000000e6; /* 0.90 黑：正文（这块里不用，留给 P2 的正文） */
+  --ch-label-2: #0009; /* 0.60 黑：工具链标题、思考正文、结果标题 */
+  --ch-label-3: #00000073; /* 0.45 黑：域名、chevron、辅助 */
+  --ch-label-4: #0000004d; /* 0.30 黑：更弱提示 */
+  --ch-bg-1: #fff;
+  --ch-bg-2: #f5f5f5;
+  --ch-hairline: #00000021; /* 0.13 黑：0.5px 描边、引导线 */
+  --ch-accent: #1783ff; /* KMBlue */
+  /* 渐隐跟着**真实画布**走（我们的产品画布不一定是 #fff） */
+  --ch-canvas: var(--bg-canvas, #fff);
+  /* 缓动：收起快出 / 展开缓入（源码原文） */
+  --ch-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ch-ease-close: cubic-bezier(0.55, 0, 0.18, 1);
+
+  color: var(--ch-label-2);
+  font-size: calc(14px * var(--font-scale, 1));
+  line-height: 1.45;
+}
+
+[data-theme='dark'] .ch-flow {
+  --ch-label-1: #ffffffd6;
+  --ch-label-2: #ffffff8f;
+  --ch-label-3: #ffffff6b;
+  --ch-label-4: #ffffff4d;
+  --ch-bg-1: #121212;
+  --ch-bg-2: #1f1f1f;
+  --ch-hairline: #ffffff1f;
+}
+
+/* ---- 签名动效（源码 keyframes 原文，加 `ch-` 前缀防撞名） ---- */
+
+/* 「blur 即转场」：任何新块的入场 */
+@keyframes ch-in {
+  from {
+    opacity: 0;
+    filter: blur(5px);
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+/* 思考中 / 进行中的流光文字 */
+@keyframes ch-shimmer {
+  from {
+    background-position: 100% center;
+  }
+  to {
+    background-position: -100% center;
+  }
+}
+
+/* ---- 折叠：grid-rows 技巧 + blur + 延迟编排（源码 §6 完整破解） ----
+   收起：内容 150ms 内 blur(10px) 淡出 → 高度 250ms 收拢（先消失再收）；
+   展开：高度 380ms 先展开 → 内容延迟 300ms 再 180ms 淡入（先腾地方再出现）。 */
+.ch-clp {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.25s var(--ch-ease-out);
+}
+.ch-clp[data-open='true'] {
+  grid-template-rows: 1fr;
+  transition: grid-template-rows 0.38s var(--ch-ease-close);
+}
+.ch-clp-in {
+  overflow: hidden;
+  min-height: 0;
+  opacity: 0;
+  filter: blur(10px);
+  visibility: hidden;
+  transform: translateY(-6px);
+  transition:
+    opacity 0.15s ease,
+    filter 0.15s ease,
+    transform 0.25s var(--ch-ease-out),
+    visibility 0s linear 0.26s;
+}
+.ch-clp[data-open='true'] > .ch-clp-in {
+  opacity: 1;
+  filter: blur(0);
+  visibility: visible;
+  transform: translateY(0);
+  transition:
+    opacity 0.18s ease 0.3s,
+    filter 0.2s ease 0.3s,
+    transform 0.38s var(--ch-ease-close),
+    visibility 0s;
+}
+
+/* ---- 头（整行可点，24px 高） ---- */
+.ch-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: calc(16px * var(--font-scale, 1)); /* --ui-T2 */
+  line-height: 24px;
+  color: var(--ch-label-2);
+  border-radius: 6px;
+}
+.ch-head:hover .ch-summary {
+  color: var(--ch-label-1);
+}
+.ch-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 进行中的摘要是流光字（不是转圈——「那个蓝色循环圈没有用」是用户原话） */
+.ch-live {
+  background: linear-gradient(
+    90deg,
+    var(--ch-label-2) 25%,
+    var(--ch-label-4) 50%,
+    var(--ch-label-2) 75%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ch-shimmer 1.4s linear infinite;
+}
+.ch-head-meta {
+  flex: none;
+  font-size: calc(12px * var(--font-scale, 1)); /* --ui-C1 */
+  line-height: 18px;
+  color: var(--ch-label-3);
+}
+.ch-chev {
+  flex: none;
+  color: var(--ch-label-3);
+  transition: transform 0.25s var(--ch-ease-out);
+}
+.ch-head[aria-expanded='true'] .ch-chev {
+  transform: rotate(180deg);
+}
+
+/* ---- 体：一条缩进轴 + 竖向引导线（设计原则 1） ---- */
+.ch-body {
+  margin-left: 10px; /* 轴心对齐头部图标的中心 */
+  padding: 4px 0 2px 17px;
+  border-left: 0.5px solid var(--ch-hairline);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 行：子项逐项入场（源码 toolCallFlowItemIn） */
+.ch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 8px;
+  color: var(--ch-label-2);
+  animation: ch-in 0.3s var(--ch-ease-out) both;
+}
+button.ch-row {
+  width: 100%;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+}
+button.ch-row:hover {
+  background: color-mix(in srgb, var(--ch-label-1) 4%, transparent);
+}
+.ch-row-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ch-row-detail {
+  font-size: calc(12px * var(--font-scale, 1));
+  color: var(--ch-label-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.ch-row-right {
+  flex: none;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: calc(12px * var(--font-scale, 1));
+  color: var(--ch-label-3);
+}
+/* 子弹头行（子目标 / 思考已完成） */
+.ch-bullet {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--ch-label-3);
+}
+/* 组内子行：5px 圆点（沿用旧面板的层级语言） */
+.ch-sub-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ch-label-4);
+  margin: 0 5px;
+}
+.ch-sub {
+  margin-left: 14px;
+}
+
+/* 被拦下 / 等确认 / 失败：这一行说的不是成功 */
+.ch-row[data-outcome] > .ch-row-label {
+  color: var(--status-danger, #d92d20);
+}
+.ch-row[data-outcome='awaiting'] > .ch-row-label {
+  color: var(--status-warning, #b54708);
+}
+
+/* ---- 思考正文：B3（14/22）+ 二级色，草稿与成品分色（设计原则 3） ---- */
+.ch-think {
+  margin: 2px 0 4px;
+  padding: 8px 10px;
+  font-size: calc(14px * var(--font-scale, 1));
+  line-height: 22px;
+  color: var(--ch-label-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ch-think p + p {
+  margin-top: 8px;
+}
+
+/* ---- 原文（入参 / 返回）：等宽，限高自己滚 ---- */
+.ch-raw {
+  margin: 2px 0 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--ch-bg-2);
+  font-size: calc(12px * var(--font-scale, 1));
+  line-height: 1.6;
+  color: var(--ch-label-2);
+  overflow-x: auto;
+}
+
+/* ---- 滚动容器 + 35px 五段阶梯渐隐（源码 §5.2 完整破解） ---- */
+.ch-scroll {
+  position: relative;
+}
+.ch-scroll-box {
+  max-height: 268px; /* 思考容器（源码值；搜索列表是 256，见 SourcesRow） */
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.ch-scroll-box--sites {
+  max-height: 256px;
+}
+.ch-fade {
+  position: sticky;
+  height: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s linear;
+}
+.ch-fade::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 35px;
+}
+.ch-fade-top {
+  top: 0;
+}
+.ch-fade-top::before {
+  top: 0;
+  background: linear-gradient(
+    to bottom,
+    var(--ch-canvas) 0,
+    color-mix(in srgb, var(--ch-canvas) 65%, transparent) 8.75px,
+    color-mix(in srgb, var(--ch-canvas) 35%, transparent) 17.5px,
+    color-mix(in srgb, var(--ch-canvas) 12%, transparent) 26.25px,
+    transparent 35px
+  );
+}
+.ch-fade-bottom {
+  bottom: 0;
+}
+.ch-fade-bottom::before {
+  bottom: 0;
+  background: linear-gradient(
+    to top,
+    var(--ch-canvas) 0,
+    color-mix(in srgb, var(--ch-canvas) 65%, transparent) 8.75px,
+    color-mix(in srgb, var(--ch-canvas) 35%, transparent) 17.5px,
+    color-mix(in srgb, var(--ch-canvas) 12%, transparent) 26.25px,
+    transparent 35px
+  );
+}
+.ch-fade[data-on='true'] {
+  opacity: 1;
+}
+
+/* ---- 来源行 ---- */
+.ch-src {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px; /* 搜索结果行高（实测值） */
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--ch-label-2);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.3s ease-in-out;
+}
+.ch-src[data-flash='true'] {
+  background: var(--accent-soft, color-mix(in srgb, var(--ch-accent) 14%, transparent));
+}
+.ch-src:hover {
+  background: color-mix(in srgb, var(--ch-label-1) 4%, transparent);
+}
+.ch-src-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ch-src-where {
+  flex: none;
+  color: var(--ch-label-3);
+  font-size: calc(12px * var(--font-scale, 1));
+}
+
+/* ---- reduced-motion：对话域从「零覆盖」到「一刀切降级」（审计 §4.6） ---- */
+@media (prefers-reduced-motion: reduce) {
+  .ch-clp,
+  .ch-clp-in,
+  .ch-row,
+  .ch-chev,
+  .ch-fade {
+    transition: none !important;
+    animation: none !important;
+  }
+  .ch-live {
+    animation: none !important;
+    background: none;
+    color: var(--ch-label-2);
+  }
+}

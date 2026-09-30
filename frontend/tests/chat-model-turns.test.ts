@@ -23,6 +23,7 @@ import {
   mergeStep,
   sourcePreview,
   sourceWhere,
+  stripToolCallMarkup,
   THINKING_EFFORTS,
   TRACE_PAGE_SIZE,
   thinkingParagraphs,
@@ -746,6 +747,29 @@ describe('降级与"这一轮没找到新东西"（v25）', () => {
     expect(hasToolCallMarkup('那个 `<tool_call>` 标签是模型想调工具时写的。')).toBe(false)
     expect(hasToolCallMarkup('眼轴长度是 24mm 上下。')).toBe(false)
     expect(hasToolCallMarkup('')).toBe(false)
+  })
+
+  it('剥离（§5.1 重做）：闭合块、截断族、特殊 token 都剥，正文一个字不动', () => {
+    // 闭合块：前后正文保留，剥出来的连续空行压成一个段距
+    expect(stripToolCallMarkup('前文。\n<tool_call>\n{"name":"x"}\n</tool_call>\n\n后文。')).toBe(
+      '前文。\n\n后文。',
+    )
+    // 截断族：标签紧跟载荷 → 从标签剥到结尾
+    expect(stripToolCallMarkup('先查一下。\n<tool_call>web_search\n{"query": "眼轴"}')).toBe(
+      '先查一下。',
+    )
+    // DeepSeek 特殊 token / DSML / <function=…>
+    expect(stripToolCallMarkup('<｜tool▁calls▁begin｜>ok<｜tool▁calls▁end｜>')).toBe('ok')
+    expect(stripToolCallMarkup('答。<|DSML| invoke name="web_fetch">')).toBe('答。')
+    expect(stripToolCallMarkup('<function=web_search>{"query":"x"}')).toBe('')
+    // 多块
+    expect(stripToolCallMarkup('<tool_call>{}</tool_call>中<tool_call>{}</tool_call>')).toBe('中')
+  })
+
+  it('剥离不误伤：只是提到标签的回答原样保留', () => {
+    const question = '那个 `<tool_call>` 标签是模型想调工具时写的。'
+    expect(stripToolCallMarkup(question)).toBe(question)
+    expect(stripToolCallMarkup('')).toBe('')
   })
 
   it('marks a round that added nothing as empty', () => {
