@@ -488,7 +488,7 @@ export function ToolchainFlow({
   }
   const entries = traceEntries(turn)
 
-  const running = isBlockRunning(message)
+  const running = isBlockRunning({ streaming: message.streaming, steps: traceSteps(turn) })
   // 过程总计的两个数：思考 + 结论 + 入参 + 返回的字符量；耗时是各步之和
   const stepsAll = traceSteps(turn)
   const traceChars = stepsAll.reduce(

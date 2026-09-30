@@ -16,7 +16,6 @@ import {
   buildTurns,
   groupHeading,
   humanizeArtifactKeys,
-  isBlockRunning,
   isTraceOpen,
   resultPreview,
   makeMessage,
@@ -371,18 +370,31 @@ describe('isTraceOpen（P0：过程默认收起、答案常显）', () => {
 
   /*
    * §12.333：面板级与组级是**同一条规则的两个层级**，所以"这一块还在跑吗"
-   * 只有一处判据（`isBlockRunning`），两层都问它。这一条钉的是"面板级真的问的是它"：
-   * 流断在半路（`streaming` 已经是 false）但还有一步是 `running` 时，
-   * 面板仍然算进行中——旧写法（只看 `message.streaming`）会把它当成跑完而折起来。
+   * 只有一处判据（`isBlockRunning`），两层都问它。
+   *
+   * **2026-09-30 真链路修**：`running` 步骤只在**这一轮还在流式**时算数。
+   * 原先的钉法是反过来的（`streaming:false` + 还有一步 `running` 也算进行中），
+   * 而真机上后端落库的步骤**大量残留 `running`**（「组织回答」那类收尾步收不到
+   * `done`）——于是每一个答完的块都永远摊在正文上方，正是用户报的
+   * "输出混乱 / 块压正文"的根子。`settleStaleRunning` 早就说过"这一轮不再产出时
+   * 没有任何步骤还能继续跑"，那一条只修行画法，这一个判据当时漏了。
    */
-  it('面板级也问 `isBlockRunning`：流断了但还有一步在跑，仍算进行中', () => {
-    const half = message('assistant', {
-      text: '断在半路',
+  it('面板级也问 `isBlockRunning`：原始 steps 里残留的 running 不算"还在跑"（真链路修）', () => {
+    // 流式中的 running 占位：算进行中，块摊开（它是进度条）
+    const live = message('assistant', {
+      streaming: true,
+      text: '正在写',
       steps: [step('tool', { tool: 'read_file', label: '读文件', status: 'running' })],
     })
+    expect(isTraceOpen(live)).toBe('full')
 
-    expect(isBlockRunning(half)).toBe(true)
-    expect(isTraceOpen(half)).toBe('full')
+    // 答完（streaming=false）但库里残留 running：`isTraceOpen` 问的是**派生后**的步骤
+    // （settleStaleRunning 把答完轮的 running 收掉）→ 块要能收起来
+    const stale = message('assistant', {
+      text: '答完了',
+      steps: [step('tool', { tool: 'read_file', label: '读文件', status: 'running' })],
+    })
+    expect(isTraceOpen(stale)).toBe('collapsed')
 
     // 老快照没有 `status`：一律当"跑完了"，不会因为少了这一位就一直摊着
     expect(

@@ -876,23 +876,26 @@ describe('组级开合记在宿主上（§12.333 约束 1）', () => {
       return { head, body }
     }
 
-    // 跑完的一轮：组默认收起（`isBlockRunning` 在这里的两个输入都是假）
+    // 跑完的一轮：**块级先收起**（真链路修：原始 steps 里的残留 running 不再让它永远摊着），
+    // 组级在块内默认也收起——先点块头摊开，才看得到组那一行
     expect(await screen.findByTestId('reply-text')).toHaveTextContent('查到了。')
+    const user = userEvent.setup()
+    await user.click(screen.getByTestId('trace-toggle'))
     expect(group().head).toHaveAttribute('aria-expanded', 'false')
 
     // 他展开这一组。§12.335 起"收起/展开"读的是那一块的行高与 `data-fold`
-    //（内容为双向动效常驻，见 `Fold`），不再用"内容在不在文档里"来读。
-    const user = userEvent.setup()
+    //（内容为双向动效常驻，见 `FlowFold`），不再用"内容在不在文档里"来读。
     await user.click(group().head)
     expect(group().head).toHaveAttribute('aria-expanded', 'true')
     expect(within(group().body).getByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()
 
-    // 换会话再回来：内容重画，但**他选的那一档还在**
+    // 换会话再回来：内容重画、块又默认收起，但**他对组选的那一档还在**
     await user.click(screen.getByRole('link', { name: '去新对话' }))
     await waitFor(() => expect(screen.queryByTestId('reply-text')).not.toBeInTheDocument())
     await user.click(screen.getByRole('link', { name: '回 c1' }))
 
     expect(await screen.findByTestId('reply-text')).toHaveTextContent('查到了。')
+    await user.click(screen.getByTestId('trace-toggle'))
     expect(group().head).toHaveAttribute('aria-expanded', 'true')
     expect(group().body).toHaveAttribute('data-fold', 'open')
     expect(within(group().body).getByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()

@@ -210,11 +210,12 @@ export function isRunningStep(step: { status?: string }): boolean {
 /**
  * 这一段过程**还在跑**吗——面板级（整轮）与组级共用的**唯一**判据（§12.333）。
  *
- * 两个层级问的是同一件事（"这一块的内容跑完了吗"），只是"这一块"不同：
- * 面板那一块的进行时是**整轮还在流式**（`message.streaming`），组那一块的进行时是
- * **组里还有一次调用是 `running`**（后端一直先发占位再发结果，见 `services/tool_loop.py`）。
- * 合起来写一处，两层就不会各自判出一个不同的答案（"同一条规则的两个层级，
- * 实现上也只写一处"）。
+ * ⚠️ **传进来的 `steps` 必须是"派生后"的**（`agentTraceSteps` 那一层已过
+ * `settleStaleRunning`）。后端落库的原始步骤里**大量残留 `running` 占位**
+ * （「组织回答」那类收尾步收不到 `done`）——直接拿原始 steps 问这一句，答完的块
+ * 会永远判"还在跑"（2026-09-30 真链路实测：用户报的"输出混乱 / 块压正文"根子之一）。
+ * 两个调用方都按这条来：`isTraceOpen` 用 `agentTraceSteps(message)`，
+ * `ToolchainFlow` 用 `traceSteps(turn)`。
  *
  * 两个输入都是**当场的事实**：历史回放里 `streaming` 是 false、步骤是 `done`，
  * 于是完成的一轮照旧收起——不会因为"读库读回来"就把整块面板锁在展开态。
@@ -1307,8 +1308,13 @@ export function isTraceOpen(message: Message, state: TraceOpenState = {}): Trace
   if (traceForceExpanded(message)) return 'full'
   // (b) 这一轮他自己点过：完全听他的，流式与否都不覆盖
   if (state.chosen) return state.chosen
-  // (a) 进行中它就是进度条，摊开；这一块跑完之后再收起
-  if (isBlockRunning(message)) return 'full'
+  // (a) 进行中它就是进度条，摊开；这一块跑完之后再收起。
+  //     问的是**派生后**的步骤（`agentTraceSteps` 已把答完轮里的 running 占位
+  //     settle 掉）——原始 steps 里的残留 running 会让每一个答完的块永不收起
+  //     （2026-09-30 真链路实测）
+  if (isBlockRunning({ streaming: message.streaming, steps: agentTraceSteps(message) })) {
+    return 'full'
+  }
   // 没点过的完成轮：一律自动折（没有跨轮次的豁免了，见上面规则 b）
   return 'collapsed'
 }
