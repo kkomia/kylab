@@ -117,8 +117,8 @@ describe('边车分派：判定只有一处', () => {
     expect(target.reason).toContain('503')
   })
 
-  it('请求体只挑边车认识的字段（不多塞）', () => {
-    // 多余的字段（conversation_id / mode / permission）用一个变量传进去 ——
+  it('请求体只挑边车认识的字段：conversation_id 要带，mode/permission 不带', () => {
+    // 多余的字段（mode / permission）用一个变量传进去 ——
     // 字面量直接传会触发 TS 的"多余属性"检查（那是故意的：这函数只挑它认识的字段）
     const serverPayload = {
       query: '读一下 hello.txt',
@@ -129,9 +129,17 @@ describe('边车分派：判定只有一处', () => {
     }
     const body = toSidecarTurnBody(serverPayload)
 
-    // `query` → `message` 的字段名适配就在这一处（服务器叫 query、边车叫 message）
-    expect(body).toEqual({ message: '读一下 hello.txt', kb_ids: ['kb_1'] })
-    // 没有 kb_ids 时不发空数组（边车按"没选知识库"处理，发空数组是另一层意思）
+    // `query` → `message` 的字段名适配就在这一处（服务器叫 query、边车叫 message）；
+    // `conversation_id` **必须带上**：边车靠它写回服务器——不带这一轮刷新就没了（2026-09-30 实测的丢数据）。
+    expect(body).toEqual({
+      message: '读一下 hello.txt',
+      kb_ids: ['kb_1'],
+      conversation_id: 'conv_1',
+    })
+    // mode / permission 边车没有对应语义，仍然不塞（多发只会让人以为它们生效了）
+    expect(body).not.toHaveProperty('mode')
+    expect(body).not.toHaveProperty('permission')
+    // 没有 kb_ids / conversation_id 时不发空值（边车按"没选知识库 / 不写回"处理）
     expect(toSidecarTurnBody({ query: '在吗' })).toEqual({ message: '在吗' })
   })
 

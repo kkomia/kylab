@@ -2,6 +2,15 @@
 .SYNOPSIS
     构建"客户端运行时"：一份干净的 venv + 边车依赖 + 我们自己的后端代码 + 启动入口。
 
+.NOTES
+    ⚠️ **本文件必须存成 UTF-8 with BOM**（与 `scripts/test-changed.ps1` 同一纪律）：
+    PowerShell 5.1 对**无 BOM** 的脚本会按系统 ANSI（GBK）解码 —— 下面的中文注释与字符串
+    直接变成乱码、甚至解析失败（2026-09-30 实测：某个编辑器保存时把 BOM 吃掉，脚本就报
+    `ParserError`）。同一个坑还有第二张脸：**读**别处的无 BOM UTF-8 文件（`requirements-sidecar.txt`）
+    时，默认解码会把中文注释吃掉、**连带把后面的换行也吃掉** —— 清单 103 行只读出 54 行、
+    33 个 pin 只认出 13 个，于是新加的依赖整段被吞（脚本"成功"了，运行时却缺包）。
+    所以本脚本里读清单那一处**显式**写了 `-Encoding UTF8`（见"离线装配"那段）。
+
 .DESCRIPTION
     为什么要有这个脚本（P4-3）：客户端（壳/边车）不该拖着 400 MB 的服务器依赖走。
     边车那条链真正需要的第三方只有四个：fastapi / uvicorn / httpx / pydantic
@@ -209,7 +218,12 @@ if ($Offline) {
     if (-not (Test-Path -LiteralPath $sourceSite)) { throw "源 venv 不在：$sourceSite" }
     $targetSite = Join-Path $resolvedOut 'Lib\site-packages'
     New-Item -ItemType Directory -Path $targetSite -Force | Out-Null
-    $pins = Get-Content -LiteralPath $requirements |
+    # ⚠️ **必须显式 `-Encoding UTF8`**（2026-09-30 实测的真 bug）：清单是 UTF-8 **无 BOM**
+    # 且带中文注释，而 PowerShell 5.1 的 `Get-Content` 默认按**系统 ANSI（GBK）**解码 ——
+    # 错解的中文会把**后面的换行也吃掉**：103 行的清单只读出 54 行、33 个 pin 只认出 13 个，
+    # 于是新加的 `openpyxl / lxml / python-docx / python-pptx / et-xmlfile` 整段被吞 ✗
+    # （表现：脚本"成功"了，但运行时里没有这几个包 → 桌面导出"一调就失败"）✓。
+    $pins = Get-Content -LiteralPath $requirements -Encoding UTF8 |
         Where-Object { $_ -match '^\s*[A-Za-z0-9][A-Za-z0-9_.\-]*\s*==' }
     Write-Host ("要装的包 {0} 个（清单：{1}）" -f $pins.Count, (Split-Path -Leaf $requirements))
     $totalCopied = 0

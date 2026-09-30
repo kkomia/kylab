@@ -227,7 +227,7 @@ export function ConversationHistoryPanel({
     <section
       role="dialog"
       aria-label="历史会话"
-      className="fixed inset-y-0 right-0 z-40 overflow-y-auto bg-[var(--bg-surface)]"
+      className="fixed inset-y-0 right-0 z-40 overflow-y-auto bg-[var(--bg-canvas)]"
       style={{ left: sidebarWidth }}
     >
       <button

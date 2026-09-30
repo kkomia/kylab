@@ -185,7 +185,7 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 
 ## 2. 端点清单（由 OpenAPI 生成，有测试核对）
 
-共 **195** 条端点。
+共 **197** 条端点。
 
 ### `api-keys`
 
@@ -300,6 +300,13 @@ data: {"type":"error","message":"…"}    # 任何失败都在流内报
 | `PATCH` | `/api/v1/folders/{folder_id}` | 重命名目录 |
 | `GET` | `/api/v1/knowledge-bases/{kb_id}/folders` | 知识库的目录列表（含每个目录的文档数） |
 | `POST` | `/api/v1/knowledge-bases/{kb_id}/folders` | 新建目录 |
+
+### `frontend`
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/v1/app/frontend/manifest` | 前端资源包的版本清单 |
+| `GET` | `/api/v1/app/frontend/package` | 前端资源包（整份 dist 的 zip） |
 
 ### `health`
 

@@ -528,8 +528,8 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
     <aside
       className={
         collapsed
-          ? 'ly-sidebar ly-sidebar-collapsed flex w-[var(--sidebar-collapsed-width)] flex-[0_0_var(--sidebar-collapsed-width)] flex-col border-r border-[var(--border-hairline)] bg-[var(--bg-canvas)]'
-          : 'ly-sidebar flex w-[var(--sidebar-width)] flex-[0_0_var(--sidebar-width)] flex-col overflow-hidden border-r border-[var(--border-hairline)] bg-[var(--bg-canvas)]'
+          ? 'ly-sidebar ly-sidebar-collapsed flex w-[var(--sidebar-collapsed-width)] flex-[0_0_var(--sidebar-collapsed-width)] flex-col bg-[var(--bg-canvas)]'
+          : 'ly-sidebar flex w-[var(--sidebar-width)] flex-[0_0_var(--sidebar-width)] flex-col overflow-hidden bg-[var(--bg-canvas)]'
       }
       aria-label="侧栏"
     >

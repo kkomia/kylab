@@ -601,7 +601,7 @@ export function Composer() {
         </div>
       ) : null}
 
-      <div className="mx-auto flex w-full max-w-[var(--chat-measure)] flex-col gap-[var(--space-1)] rounded-[var(--radius-input)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-[var(--space-3)] py-[var(--space-2)] shadow-[var(--shadow-input)]">
+      <div className="mx-auto flex w-full max-w-[var(--chat-measure)] flex-col gap-[var(--space-1)] rounded-[var(--radius-input)] border border-[var(--border-hairline)] bg-[var(--bg-subtle)] px-[var(--space-3)] py-[var(--space-2)] shadow-[var(--shadow-input)]">
         {/*
           暂存的附件（v0.55）：**发送前就摆在这里**，图片给缩略图、别的给一个文件片，
           每份都能单独拿掉。用户报的正是这件事——"文件和图片应该通过缩略图的形式保留在

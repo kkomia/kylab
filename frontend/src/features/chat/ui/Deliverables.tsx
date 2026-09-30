@@ -58,7 +58,7 @@ export function Deliverables({ files }: { files: ChatArtifact[] }) {
       {files.map((file) => (
         <li
           key={file.artifact_id}
-          className="flex items-center gap-[var(--space-3)] rounded-[var(--radius-row)] border border-[var(--border)] bg-[var(--bg-surface)] px-[var(--space-3)] py-[var(--space-2)]"
+          className="flex items-center gap-[var(--space-3)] rounded-[var(--radius-row)] border border-[var(--border)] bg-[var(--bg-subtle)] px-[var(--space-3)] py-[var(--space-2)]"
         >
           <span className="flex h-[28px] w-[40px] shrink-0 items-center justify-center rounded-[var(--radius-control)] bg-[var(--bg-subtle)] text-[length:var(--text-c2-size)] font-medium text-[var(--text-tertiary)]">
             {file.format.toUpperCase()}

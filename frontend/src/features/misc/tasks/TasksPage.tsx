@@ -384,7 +384,7 @@ export function TasksPage() {
                   类型列给了表头「类型」而不是留白：这一列有内容（解析 / 切分 / 向量化），
                   没有表头的话读者只能靠猜它与标题的关系。
                 */}
-                <div className="panel-head m-list-head" aria-hidden="true">
+                <div className="panel-head m-list-head min-w-[680px]" aria-hidden="true">
                   <span className="m-head-kind">类型</span>
                   <span className="m-head-task">任务</span>
                   <span className="m-head-col-status">状态</span>
@@ -407,7 +407,7 @@ export function TasksPage() {
                     滚进来，所以这个滚动容器不需要 `tabIndex` 去抢一个焦点位（§8）。
                     底部那层渐隐只在**下面确实还有没露出来的行**时出现。
                   */
-                  <div className="relative">
+                  <div className="relative min-w-[680px]">
                     <div
                       ref={listRef}
                       onScroll={(event) => setListAtEnd(scrolledToEnd(event.currentTarget))}
@@ -463,7 +463,7 @@ export function TasksPage() {
                     {!listAtEnd && (
                       <div
                         aria-hidden="true"
-                        className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-[var(--bg-surface)] to-transparent"
+                        className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-[var(--bg-subtle)] to-transparent"
                       />
                     )}
                   </div>

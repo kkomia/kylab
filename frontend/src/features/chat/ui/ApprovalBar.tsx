@@ -91,7 +91,7 @@ export function ApprovalBar({
           {approval.label || '要执行一个动作'}
         </span>
         {/* 命令原文用等宽字体、可以横向滚：它是给人**核对**的，不能被省略号截掉中间那段 */}
-        <code className="max-w-full overflow-x-auto rounded-[var(--radius-control)] bg-[var(--bg-surface)] px-[var(--space-2)] py-[2px] font-mono text-[length:var(--text-meta-size)] text-[var(--text-primary)]">
+        <code className="max-w-full overflow-x-auto rounded-[var(--radius-control)] bg-[var(--bg-subtle)] px-[var(--space-2)] py-[2px] font-mono text-[length:var(--text-meta-size)] text-[var(--text-primary)]">
           {approval.args}
         </code>
       </div>
@@ -111,7 +111,7 @@ export function ApprovalBar({
       <div className="flex flex-col gap-[var(--space-1)]">
         <input
           id="kylab-approval-reason"
-          className="h-[var(--control-height)] rounded-[var(--radius-control)] border border-[var(--border)] bg-[var(--bg-surface)] px-[var(--space-3)] text-[length:var(--text-meta-size)] text-[var(--text-primary)] placeholder:text-[var(--text-quaternary)]"
+          className="h-[var(--control-height)] rounded-[var(--radius-control)] border border-[var(--border)] bg-[var(--bg-subtle)] px-[var(--space-3)] text-[length:var(--text-meta-size)] text-[var(--text-primary)] placeholder:text-[var(--text-quaternary)]"
           value={reason}
           disabled={busy}
           placeholder="拒绝时补一句理由，例如「这条别动生产库」（可空）"

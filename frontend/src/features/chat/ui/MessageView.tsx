@@ -88,7 +88,7 @@ function UserMessage({ message, turnIndex }: { message: ChatMessage; turnIndex: 
               <li key={file.key}>
                 <button
                   type="button"
-                  className="inline-flex max-w-[220px] cursor-pointer items-center gap-[var(--space-1)] rounded-[var(--radius-control)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-[var(--space-2)] py-[var(--space-1)] text-left text-[length:var(--text-micro-size)] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
+                  className="inline-flex max-w-[220px] cursor-pointer items-center gap-[var(--space-1)] rounded-[var(--radius-control)] border border-[var(--border-hairline)] bg-[var(--bg-subtle)] px-[var(--space-2)] py-[var(--space-1)] text-left text-[length:var(--text-micro-size)] text-[var(--text-secondary)] transition-colors hover:text-[var(--text-primary)]"
                   aria-label={`预览 ${file.name}`}
                   title={file.name}
                   onClick={() =>

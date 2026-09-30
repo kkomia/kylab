@@ -378,7 +378,7 @@
     top: 50%;
     width: 9px;
     height: 9px;
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     border: 2px solid var(--text-tertiary);
     border-radius: 50%;
     transform: translate(-50%, -50%);
@@ -419,7 +419,7 @@
     padding: 0 var(--space-2);
     font: inherit;
     font-size: var(--text-meta-size);
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     border: 1px solid var(--border);
     border-radius: var(--radius-control);
     outline: none;
@@ -477,7 +477,7 @@
     padding: var(--space-4);
     color: inherit;
     text-decoration: none;
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     border: 1px solid var(--border-hairline);
     border-radius: var(--radius-panel);
     transition:
@@ -957,6 +957,11 @@
     display: flex;
     align-items: center;
     gap: var(--space-3);
+    /* 窄窗兜底（2026-10-01，与任务表 `.m-task-row` 同款）：列放不下时由外层 `.panel`
+       横向滚动（tokens.css 那处 `overflow: auto`），而不是把「文件」列压到 0、
+       徽章与数字叠在一起。720 = 各固定列（<1200px 档隐藏上传者/大小）合计
+       ~510 + 文件名列至少 ~200。 */
+    min-width: 720px;
   }
 
   .kb-doc-head {
@@ -1176,7 +1181,7 @@
     padding: var(--space-2) var(--space-3);
     font-size: var(--text-meta-size);
     color: var(--text-tertiary);
-    background: var(--bg-canvas);
+    background: var(--bg-subtle);
     border: 1px solid var(--border-hairline);
     border-radius: 0 0 var(--radius-panel) var(--radius-panel);
     box-shadow: 0 -1px 0 var(--border-hairline);
@@ -1232,7 +1237,7 @@
     display: flex;
     flex-direction: column;
     width: min(720px, 46vw);
-    background: var(--bg-surface);
+    background: var(--bg-canvas);
     border-left: 1px solid var(--border);
     box-shadow: -10px 0 28px rgb(0 0 0 / 12%);
     animation: kb-drawer-in 180ms ease-out;
@@ -1315,7 +1320,7 @@
     grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
     margin: 0;
     padding: var(--space-4) var(--space-5);
-    background: var(--bg-canvas);
+    background: var(--bg-subtle);
     border: 1px solid var(--border-hairline);
     border-radius: var(--radius-panel);
   }
@@ -1398,7 +1403,7 @@
 
   .kb-source-tab-on {
     color: var(--text-primary);
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     box-shadow: 0 1px 2px rgb(0 0 0 / 10%);
   }
 
@@ -1437,7 +1442,7 @@
 
   .kb-chunk {
     padding: var(--space-4) var(--space-5);
-    background: var(--bg-canvas);
+    background: var(--bg-subtle);
     border: 1px solid var(--border-hairline);
     border-radius: var(--radius-panel);
   }
@@ -2204,7 +2209,7 @@
     align-items: center;
     gap: var(--space-3);
     padding: var(--space-3) var(--space-4);
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     border: 1px solid var(--border-hairline);
     border-radius: var(--radius-panel);
   }
@@ -2389,7 +2394,7 @@
 
   .kb-hit {
     padding: var(--space-4);
-    background: var(--bg-canvas);
+    background: var(--bg-subtle);
     border: 1px solid var(--border-hairline);
     border-radius: var(--radius-panel);
   }

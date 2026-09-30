@@ -131,8 +131,12 @@ export function AppShell({ children }: { children?: React.ReactNode }) {
   return (
     <div className="flex h-full">
       {!bare && <SideNav onOpenHistory={() => setHistoryOpen(true)} />}
-      {/* 内容区是**暖底的地面**，面板/卡片才是抬起来的白层（Kimi 的层级方向） */}
-      <main className="min-w-0 flex-1 overflow-y-auto bg-[var(--bg-canvas)]">
+      {/* 内容区是**抬起来的卡片**（Kimi 的层级方向，§8）：上/右/下留 6px 露出画布底，
+          左侧与侧栏相接——边界就是"两块不同颜色的面"，没有分隔线（Kimi 实测无 border-right）；
+          登录页（bare）没有侧栏，四边都留。 */}
+      <main
+        className={`${bare ? 'm-[6px]' : 'my-[6px] mr-[6px]'} min-w-0 flex-1 overflow-y-auto rounded-[var(--radius-panel)] bg-[var(--bg-surface)]`}
+      >
         {children ?? <Outlet />}
       </main>
 

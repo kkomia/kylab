@@ -615,10 +615,14 @@
  * 用法：容器加 `.panel`，表头行加 `.panel-head`，数据行加 `.panel-row`。
  */
 .panel {
-  overflow: hidden;
-  /* 面板是"抬起来的那一层"：暖底之上放白色面板，层级才看得出来。
-     此前是 canvas 底色 + 白色内容区，方向正好相反，等于没有层级。 */
-  background: var(--bg-surface);
+  /* `auto` 而不是 `hidden`（2026-10-01，P2-9）：**窄窗的横向兜底**——列放不下时
+     由这张面板横向滚动，而不是把标题列压到叠字、把末列裁掉。表头与行是兄弟节点：
+     两边都设了同一个 `min-w`，滚动发生在面板这一层，所以它们**一起位移、不会错位**。
+     圆角裁切照旧（`auto` 同样裁）。内容不溢出的面板行为与 `hidden` 别无二致。 */
+  overflow: auto;
+  /* 面板是**卡片里的一层**（2026-10-01 §8 卡片化后）：页面底是画布、内容区是
+     抬起的卡片（`--bg-surface`），面板再往上一层用 `--bg-subtle`（深色下更亮）。 */
+  background: var(--bg-subtle);
   border: 1px solid var(--border-hairline);
   border-radius: var(--radius-panel);
 }

@@ -75,7 +75,7 @@ const NOTE = 'm-0 text-[length:var(--text-meta-size)] text-[var(--text-tertiary)
 const NOTE_BAD = `${NOTE} text-[var(--status-danger)]`
 /** 头部那一排动作（上传 / 下载）。 */
 const HEAD_ACTION =
-  'inline-flex shrink-0 cursor-pointer items-center gap-[var(--space-1)] rounded-[var(--radius-control)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-[var(--space-2)] py-[var(--space-1)] text-[length:var(--text-meta-size)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:cursor-default disabled:opacity-50'
+  'inline-flex shrink-0 cursor-pointer items-center gap-[var(--space-1)] rounded-[var(--radius-control)] border border-[var(--border-hairline)] bg-[var(--bg-subtle)] px-[var(--space-2)] py-[var(--space-1)] text-[length:var(--text-meta-size)] text-[var(--text-secondary)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)] disabled:cursor-default disabled:opacity-50'
 /** 行尾的小动作（下载）：图标按钮，行里常驻（见旧 `FileDrawer` 的 `.file-download` 注释）。 */
 const ROW_ACTION =
   'inline-flex shrink-0 cursor-pointer items-center justify-center rounded-[var(--radius-control)] p-[var(--space-1)] text-[var(--text-tertiary)] hover:bg-[var(--bg-active)] hover:text-[var(--text-primary)]'

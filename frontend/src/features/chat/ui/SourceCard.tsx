@@ -96,7 +96,7 @@ function BadgeLogo({ citation, size = '1em' }: { citation: WebCitation; size?: s
       <span
         aria-hidden
         style={box}
-        className="inline-flex shrink-0 items-center justify-center rounded-[2px] bg-[var(--bg-surface)] text-[0.72em] leading-none text-[var(--text-tertiary)]"
+        className="inline-flex shrink-0 items-center justify-center rounded-[2px] bg-[var(--bg-subtle)] text-[0.72em] leading-none text-[var(--text-tertiary)]"
       >
         {citation.site.badge}
       </span>
@@ -201,7 +201,7 @@ export function SourceCardHost() {
       role="dialog"
       aria-label={`来源 ${citation.index}：${citation.title || citation.domain}`}
       data-testid="source-card"
-      className="fixed z-[var(--z-popover,60)] flex flex-col gap-[var(--space-2)] rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-surface)] p-[var(--space-3)] text-[length:var(--text-micro-size)] shadow-[var(--shadow-popover)]"
+      className="fixed z-[var(--z-popover,60)] flex flex-col gap-[var(--space-2)] rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-menu)] p-[var(--space-3)] text-[length:var(--text-micro-size)] shadow-[var(--shadow-popover)]"
       style={{ left: placement.left, top: placement.top, width: CARD_WIDTH }}
       onMouseEnter={() => showCitation(citation, active.anchor)}
       onMouseLeave={hideCitation}

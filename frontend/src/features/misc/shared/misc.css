@@ -284,7 +284,7 @@
     padding: 0 var(--space-3);
     border: 1px solid var(--border);
     border-radius: var(--radius-control);
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     color: var(--text-tertiary);
   }
 
@@ -360,7 +360,7 @@
     align-items: flex-start;
     gap: var(--space-3);
     padding: var(--space-3) var(--space-4);
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     border: 1px solid var(--border-hairline);
     border-radius: var(--radius-panel);
   }
@@ -843,7 +843,7 @@
     padding: var(--space-4);
     border: 1px solid var(--border-hairline);
     border-radius: var(--radius-panel);
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
   }
 
   .m-editor-body {
@@ -852,7 +852,7 @@
     padding: var(--space-4);
     border: 1px solid var(--border-hairline);
     border-radius: var(--radius-panel);
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     color: var(--text-primary);
     font-family: var(--font-mono);
     font-size: var(--text-meta-size);
@@ -1155,7 +1155,7 @@
     gap: var(--space-0-5);
     min-width: 0;
     padding: var(--space-3) var(--space-4);
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     border: 1px solid var(--border-hairline);
     border-radius: var(--radius-panel);
   }
@@ -1620,7 +1620,7 @@
     flex-direction: column;
     gap: var(--space-3);
     padding: var(--space-3);
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     border: 1px solid var(--border-hairline);
     border-radius: var(--radius-row);
   }
@@ -1793,7 +1793,7 @@
     padding: var(--space-2) var(--space-3);
     border: 1px solid var(--border);
     border-radius: var(--radius-row);
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     color: var(--text-secondary);
     font: inherit;
     text-align: left;
@@ -1887,7 +1887,7 @@
     padding: var(--space-0-5) var(--space-1);
     border: 1px solid var(--border);
     border-radius: var(--radius-control);
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     color: var(--text-primary);
     font: inherit;
     cursor: pointer;
@@ -2426,7 +2426,7 @@
     align-items: flex-start;
     gap: var(--space-2-5);
     padding: var(--space-3);
-    background: var(--bg-surface);
+    background: var(--bg-subtle);
     border: 1px solid var(--border-hairline);
     border-radius: var(--radius-row);
   }

@@ -288,13 +288,21 @@ export interface ServerTurnPayload {
   query: string
   kb_ids?: string[]
   history?: { role: 'user' | 'assistant'; content: string }[]
+  /**
+   * 这一轮归属的会话。**必须带**（2026-09-30 修的真 bug）：边车拿它写回服务器
+   * （`POST /api/v1/chat/turns/record`）；不带 = 这一轮**不入库**——刷新就没了，
+   * 界面上只多一行"未写回"的小字，用户基本不会注意到。
+   */
+  conversation_id?: string
 }
 
 /**
- * 服务器请求体 → 边车请求体（`sidecar.TurnIn`：`message` / `kb_ids` / `history`）。
+ * 服务器请求体 → 边车请求体（`sidecar.TurnIn`：`message` / `kb_ids` / `history` / `conversation_id`）。
  *
- * 只挑边车认识的字段：其余（`conversation_id`、`mode`、`permission`、附件……）边车这一侧
- * 没有对应语义，硬塞过去只会被忽略（或更糟：让人以为它们生效了）。
+ * 只挑边车认识的字段：其余（`mode`、`permission`、附件……）边车这一侧没有对应语义，
+ * 硬塞过去只会被忽略（或更糟：让人以为它们生效了）。
+ * ⚠️ **`conversation_id` 不属于"其余"那一类**：边车的 `TurnIn` 有它，写回那一环全靠它——
+ * 之前漏在门外，实测表现是每一轮的 note 都写着"未带会话 id，本轮未写回服务器"（真丢数据）。
  * `workspace` 由边车自己按启动参数定 —— 前端不指定，避免"浏览器决定本机路径"这种危险默认。
  *
  * **历史带上**（最近 `MAX_HISTORY_MESSAGES` 条）：不带就是失忆的一轮。
@@ -303,6 +311,8 @@ export function toSidecarTurnBody(payload: ServerTurnPayload): Record<string, un
   // `query` → `message`：**字段名的适配只在这一处**（服务器叫 query、边车叫 message）
   const body: Record<string, unknown> = { message: payload.query }
   if (payload.kb_ids?.length) body.kb_ids = payload.kb_ids
+  // 会话 id 照传：边车用它写回服务器（不带就静默丢这一轮，见上面的说明）
+  if (payload.conversation_id) body.conversation_id = payload.conversation_id
   const history = (payload.history ?? [])
     .filter((item) => item.role === 'user' || item.role === 'assistant')
     .filter((item) => typeof item.content === 'string' && item.content.trim().length > 0)

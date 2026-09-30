@@ -66,7 +66,7 @@ export function ChatPage() {
             它不重复侧栏的"对话"，只回答"我现在在哪条会话里"；这是 2026-09-24 界面评审
             对着 DeepSeek / Kimi 补上的（原先完全无页头，长会话里滚动后不知道在哪）。
             会话条本身在 `ChatThread` 里、不随消息滚走。 */}
-        <div className="flex h-dvh flex-col bg-[var(--bg-canvas)] text-[var(--text-primary)]">
+        <div className="flex h-full flex-col text-[var(--text-primary)]">
           <NewChatScope />
           <ChatThread />
           <Composer />

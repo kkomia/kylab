@@ -61,7 +61,7 @@ export function Welcome() {
                 type="button"
                 // 有边框、有底色、悬停变深：它是**能点的**（改之前与页面上的普通灰字
                 // 没有区别，全靠"猜"才知道能按）
-                className="w-full cursor-pointer rounded-[var(--radius-panel)] border border-[var(--border-hairline)] bg-[var(--bg-surface)] px-[var(--space-4)] py-[var(--space-3)] text-left text-[length:var(--text-meta-size)] text-[var(--text-secondary)] [transition:var(--transition-ui)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
+                className="w-full cursor-pointer rounded-[var(--radius-panel)] border border-[var(--border-hairline)] bg-[var(--bg-subtle)] px-[var(--space-4)] py-[var(--space-3)] text-left text-[length:var(--text-meta-size)] text-[var(--text-secondary)] [transition:var(--transition-ui)] hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] hover:text-[var(--text-primary)]"
                 onClick={() => chat.useSample(sample)}
               >
                 {sample}
