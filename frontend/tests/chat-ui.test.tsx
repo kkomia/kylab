@@ -33,6 +33,7 @@ import { clearLiveAnchors, clearLiveTurn } from '@/features/chat/model/liveTurn'
 import { ChatPage } from '@/features/chat/ChatPage'
 import { useWorkspaceStore } from '@/features/layout/workspaces'
 import { useFollowStore } from '@/features/chat/ui/followStore'
+import { AssistantAvatar } from '@/features/chat/ui/AssistantAvatar'
 
 vi.mock('@/api/chat', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/chat')>()
@@ -1219,7 +1220,7 @@ describe('降级与"工具标记"两种异常收尾', () => {
     expect(reply.textContent).not.toContain('web_search')
   })
 
-  it('助手头像：Kimi 式 56px 槽位 + 双柱；流式中 data-live（双柱起伏+呼吸），停下即静', async () => {
+  it('助手头像：品牌行星标（环 + 行星点两层）；不在流式时 data-live 不挂', async () => {
     vi.mocked(getConversation).mockResolvedValue(
       detail([stored('user', '你好'), stored('assistant', '你好呀')]),
     )
@@ -1228,9 +1229,17 @@ describe('降级与"工具标记"两种异常收尾', () => {
 
     const avatar = document.querySelector('.ch-avatar')
     expect(avatar).not.toBeNull()
-    expect(avatar!.querySelectorAll('.ch-avatar-bar')).toHaveLength(2)
+    // 标的两层都在：环（动效转的是它）与行星点（脉动）
+    expect(avatar!.querySelector('.ch-orbit ellipse')).not.toBeNull()
+    expect(avatar!.querySelector('.ch-planet')).not.toBeNull()
+    expect(avatar!.querySelector('svg')).not.toBeNull()
     // 回放的历史轮：不在流式，不许带着"还在跑"的动画
     expect(avatar!).not.toHaveAttribute('data-live')
+  })
+
+  it('助手头像：流式中挂 data-live（环进动/点脉动/呼吸/声纳四层动画的同一个开关）', () => {
+    const { container } = render(<AssistantAvatar live />)
+    expect(container.querySelector('.ch-avatar')).toHaveAttribute('data-live')
   })
 })
 

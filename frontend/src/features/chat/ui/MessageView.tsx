@@ -25,6 +25,7 @@ import { webCitationsOfSteps } from '@/features/chat/model/sourceCitations'
 import { formatBytes } from '@/lib/format'
 
 import { AnswerText } from './AnswerText'
+import { AssistantAvatar } from './AssistantAvatar'
 import { Deliverables } from './Deliverables'
 import { ToolchainFlow } from './ToolchainFlow'
 import { useChatRows, type ChatMessage } from '../runtime/ChatProvider'
@@ -43,19 +44,6 @@ import { useChatRows, type ChatMessage } from '../runtime/ChatProvider'
  */
 const MemoAnswerText = memo(AnswerText)
 
-/**
- * 助手头像（Kimi §4 的 CSS 平替）：56px 槽位、蓝圆底 + 双白胶囊竖条；
- * 这一轮还在流式时双柱反相起伏 + 整体呼吸（`data-live`），停下来就静着。
- * Rive 素材不引入（《对话UI-重做-设计》§8）。
- */
-function AssistantAvatar({ live }: { live: boolean }) {
-  return (
-    <span className="ch-avatar" data-live={live || undefined} aria-hidden>
-      <i className="ch-avatar-bar" />
-      <i className="ch-avatar-bar" />
-    </span>
-  )
-}
 
 function UserMessage({ message, turnIndex }: { message: ChatMessage; turnIndex: number }) {
   const chat = useChatRows()
