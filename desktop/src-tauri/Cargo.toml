@@ -17,6 +17,12 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "2", features = ["json"] }
+# 资源热更新那一半（规格 §4/§5）：拿清单 → 下包 → **校验 sha256** → 解压 → 原子切指针。
+# `zip` 是新引入的（tauri 的依赖树里只有 flate2/miniz_oxide，没有 zip 这一层）；
+# `sha2` 本来就在依赖树里（传递依赖），这里提成直接依赖。两者都关掉默认特性，
+# 只留 deflate（包是我们自己的 `pnpm build` 产物，用不到 bzip2/zstd 那些分支）。
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Windows：Job Object —— 让边车（python 子进程）**随壳一起退出**（壳崩了也不留孤儿 python）。
 # 用 `windows`（高阶层）而不是 `windows-sys`：实测 windows-sys 0.52/0.59/0.61 的

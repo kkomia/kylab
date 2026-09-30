@@ -743,12 +743,19 @@ fn main() {
          *
          * 闭包能拿到的事实只有两样：`AppHandle`（→ 配置里的服务器地址 + 数据目录）
          * 与这次请求（方法 / 路径 / 正文）。**判据全在 `resources::handle` 里**，
-         * 那是纯函数、有 11 条用例——协议这一层只做搬运。
+         * 那是纯函数、有 13 条用例（含"查询串原样转发"那条）——协议这一层只做搬运。
          */
         .register_asynchronous_uri_scheme_protocol(APP_SCHEME, |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let method = request.method().as_str().to_string();
-            let path = request.uri().path().to_string();
+            // **路径要带查询串**（`/api/v1/x?k=v`）：只取 `Uri::path()` 会把 `conversation_id`
+            // 这类参数丢在壳里——2026-09-30 实测，带 query 的请求在页面里 422、直连服务器 200，
+            // 界面上的表现是上下文用量环永远"不可用"（拆分与转发判据见 `resources::handle`）。
+            let path = request
+                .uri()
+                .path_and_query()
+                .map(|pq| pq.as_str().to_string())
+                .unwrap_or_else(|| request.uri().path().to_string());
             let body = request.body();
             let payload = if body.is_empty() { None } else { Some(body.clone()) };
             // **请求头要转发**（Authorization 尤其）：不转发的话每个要登录的接口都 401
@@ -811,6 +818,43 @@ fn main() {
                 config: Mutex::new(config),
                 sidecar: Arc::new(sidecar::Manager::new()),
             });
+
+            /*
+             * **资源热更新**（Phase 2，规格 §4）：后台拉一次清单，有新版就下载 → 校验 sha256 →
+             * 原子切指针 —— **下次启动生效**（不打断这一次的使用）。
+             *
+             * 放在这里、**不进任何 await 路径**：拉不到清单是常态（NAS 没开、断网），
+             * 那种时候这一句只该让日志多一行，绝不能让壳起不来或弹窗。
+             */
+            {
+                /// 一次更新的墙钟上限：清单 + 包（现在约 2.6 MB）在局域网里几秒就完，
+                /// 给 30 秒是"慢网络也别卡在后台线程上"的余量。
+                const UPDATE_TIMEOUT_SECONDS: u64 = 30;
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let shell = handle.state::<Shell>();
+                    // 还没配服务器（首次打开、停在引导页）：等用户登录之后再谈更新
+                    let Some(origin) = shell.origin() else {
+                        return;
+                    };
+                    let outcome = resources::sync(
+                        &origin,
+                        &shell.data_dir,
+                        env!("CARGO_PKG_VERSION"),
+                        std::time::Duration::from_secs(UPDATE_TIMEOUT_SECONDS),
+                    );
+                    let line = match outcome {
+                        resources::SyncOutcome::UpToDate => "资源更新：已是最新".to_string(),
+                        resources::SyncOutcome::Installed { version } => {
+                            format!("资源更新：装好 {version}（**下次启动生效**）")
+                        }
+                        resources::SyncOutcome::Skipped { reason } => {
+                            format!("资源更新：这次跳过（{reason}）")
+                        }
+                    };
+                    logfile::log(&shell.dir, &line);
+                });
+            }
 
             // 菜单**只在 macOS 上挂**：那里没有应用菜单就没有 ⌘C / ⌘V
             // （Tauri 官方文档明说要用菜单加速键）。Windows/Linux 上网页的

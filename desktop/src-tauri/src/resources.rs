@@ -44,7 +44,10 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use tauri::http::{header, Response, StatusCode};
 
 /// 资源目录名（规格 §3）。
@@ -374,6 +377,23 @@ fn boot_asset_response(requested: &str) -> Option<Response<Vec<u8>>> {
 ///
 /// **这条路径上的每一个判断都必须能在没有 Tauri 的情况下测**：所以它只收
 /// `resources_root` 与 `server` 两个事实，剩下的是纯逻辑（见文件末的用例）。
+/// 把请求路径拆成「路径」与「查询串」两半（`/api/v1/x?k=v` → （`/api/v1/x`, `Some("k=v")`））。
+///
+/// **为什么必须有这一步**（2026-09-30 用户实测发现）：协议层原来只取 `Uri::path()`，
+/// 于是**查询串被整段丢掉**——`/chat/context-usage?conversation_id=…` 到服务器手里
+/// 就是"没带参数"（422；界面上的表现是上下文用量环永远显示"不可用"），
+/// `?q=…` / `?limit=…` 这类可选参数则**静默走默认值**（看起来像搜索没生效）。
+/// 现在协议层用 `path_and_query()` 取全串，由这里拆开：
+/// - `/api/**` 分支**原样转发**（连 query 一起）；
+/// - 静态资源分支**只用路径那一半**——`?v=1` 这类缓存串不参与"找文件"
+///   （参与的话本来命中的文件会平白掉进兜底页，见文件末用例）。
+fn split_query(uri_path: &str) -> (&str, Option<&str>) {
+    match uri_path.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (uri_path, None),
+    }
+}
+
 pub fn handle(
     resources_root: &Path,
     server: Option<&str>,
@@ -382,7 +402,10 @@ pub fn handle(
     body: Option<&[u8]>,
     headers: &[(String, String)],
 ) -> Response<Vec<u8>> {
-    if uri_path.starts_with("/api/") {
+    // `uri_path` 可能带查询串（协议层传的是 `path_and_query`）：API 原样转发，
+    // 静态资源只用路径（见 `split_query` 的说明）。
+    let (path_only, _query) = split_query(uri_path);
+    if path_only.starts_with("/api/") {
         return match server {
             Some(origin) => proxy(origin, method, uri_path, body, headers),
             None => respond(
@@ -394,7 +417,7 @@ pub fn handle(
         };
     }
 
-    let Some(segments) = safe_relative(uri_path) else {
+    let Some(segments) = safe_relative(path_only) else {
         // 越界：**给兜底页而不是 404**。用户看到的仍然是一个能操作的界面，
         // 而不是 WebView 那张"打不开"的错误页。
         return boot_response(StatusCode::OK);
@@ -572,6 +595,290 @@ pub fn status(app_data_dir: &Path) -> ResourceStatus {
     }
 }
 
+// ---------------------------------------------------------------- 热更新（Phase 2，**客户端半边**）
+//
+// 服务器那份清单与包由 `backend/app/api/v1/frontend.py` 提供（规格 §4 的服务半边）：
+//
+// ```text
+// GET {origin}/api/v1/app/frontend/manifest → {version, package_url, sha256, size, min_shell_version, …}
+// GET {origin}/api/v1/app/frontend/package  → zip（整份 dist，**确定性打包** ⇒ 指纹可比）
+// ```
+//
+// 流程（规格 §4.2 的 1→7）：拉清单 → 与本地 `current` 比（一样就收工）→ 下载 →
+// **校验 sha256** → 解压到 staging → 校验含 `index.html` → 移到 `v{version}/` →
+// **原子切 `current`**（写 `current.tmp` 再 rename）→ 只留当前 + 上一版。
+//
+// 三条纪律：
+// 1. **更新是背景动作、下次启动生效**（规格 §1）：不打断用户，也不在这一次里换掉正开着的界面；
+// 2. **校验不过就整包丢弃**：宁可这次不用新版，也不用一份来路不明的包（清单是服务器给的）；
+// 3. **失败只记日志**：拉不到清单（NAS 没开、断网）是常态，绝不能让壳起不来或弹窗。
+
+/// 一次同步的结果——**只说给日志听**（更新不弹窗）。
+#[derive(Debug, PartialEq, Eq)]
+pub enum SyncOutcome {
+    /// 本地已经是最新（指纹一致）
+    UpToDate,
+    /// 装好了（**下次启动生效**）
+    Installed { version: String },
+    /// 没做（网络/校验/安装失败），原因如实带出来
+    Skipped { reason: String },
+}
+
+/// 服务端那份清单（规格 §4.1）。
+///
+/// **不 `deny_unknown_fields`**：服务端将来加字段，不该让旧壳罢工。
+#[derive(Debug, Clone, Deserialize)]
+pub struct Manifest {
+    pub version: String,
+    pub package_url: String,
+    pub sha256: String,
+    pub size: u64,
+    #[serde(default)]
+    pub min_shell_version: Option<String>,
+}
+
+/// 包大小上限：现在压出来约 2.6 MB，留 32 MB 余量。
+///
+/// 为什么要有这条：**清单是服务器给的**，一个畸形条目不该把用户的磁盘写满。
+const MAX_PACKAGE_BYTES: u64 = 32 * 1024 * 1024;
+
+/// 拉清单（同步动作；调用方把它放到后台线程上）。
+pub fn fetch_manifest(origin: &str, timeout: Duration) -> Result<Manifest, String> {
+    let url = format!(
+        "{}/api/v1/app/frontend/manifest",
+        origin.trim_end_matches('/')
+    );
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let response = agent
+        .get(&url)
+        .call()
+        .map_err(|error| format!("清单拿不到（{url}）：{error}"))?;
+    response
+        .into_json::<Manifest>()
+        .map_err(|error| format!("清单读不懂（{url}）：{error}"))
+}
+
+/// 下载整包并**校验**（大小 + sha256）：对不上就整包丢弃。
+pub fn download_package(
+    origin: &str,
+    manifest: &Manifest,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    let url = if manifest.package_url.starts_with("http") {
+        manifest.package_url.clone()
+    } else {
+        format!("{}{}", origin.trim_end_matches('/'), manifest.package_url)
+    };
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let response = agent
+        .get(&url)
+        .call()
+        .map_err(|error| format!("下载失败（{url}）：{error}"))?;
+    let mut bytes: Vec<u8> = Vec::new();
+    // 多读 1 字节：真到上限时能看出"被截断了"（而不是当成一份完整的小包）
+    response
+        .into_reader()
+        .take(MAX_PACKAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("下载读到一半失败（{url}）：{error}"))?;
+    verify_package(manifest, &bytes)?;
+    Ok(bytes)
+}
+
+/// 校验一个包：**大小与 sha256 都要与清单一致**（纯函数，离线可测）。
+pub fn verify_package(manifest: &Manifest, package: &[u8]) -> Result<(), String> {
+    if package.len() as u64 != manifest.size {
+        return Err(format!(
+            "包大小不对（清单 {} B，实收 {} B）",
+            manifest.size,
+            package.len()
+        ));
+    }
+    if package.len() as u64 > MAX_PACKAGE_BYTES {
+        return Err(format!("包超过上限（{} B）", MAX_PACKAGE_BYTES));
+    }
+    let digest = hex(&Sha256::digest(package));
+    if digest != manifest.sha256 {
+        return Err(format!(
+            "包内容对不上（清单 {}，实收 {}）",
+            manifest.sha256, digest
+        ));
+    }
+    Ok(())
+}
+
+/// 这份清单**能不能用**（纯函数）：版本号字符集、包大小、最低壳版本。
+pub fn check_manifest(manifest: &Manifest, shell_version: &str) -> Result<(), String> {
+    if manifest.version.is_empty()
+        || !manifest
+            .version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    {
+        // 与 `read_current` 同一判据：版本号会变成**目录名**、还会写进 `current` 指针
+        return Err(format!("版本号不合法：{:?}", manifest.version));
+    }
+    if manifest.size == 0 || manifest.size > MAX_PACKAGE_BYTES {
+        return Err(format!("包大小不在合理范围：{} B", manifest.size));
+    }
+    if let Some(minimum) = manifest.min_shell_version.as_deref() {
+        if newer(minimum, shell_version) {
+            return Err(format!(
+                "这份前端要求壳 ≥ {minimum}（当前 {shell_version}）：请更新客户端"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// 把包**装成一份可用版本**：解压到 staging → 校验 `index.html` → 移到 `v{version}/` →
+/// 原子切 `current` → 清掉更老的版本。
+pub fn install_package(
+    resources_root: &Path,
+    manifest: &Manifest,
+    package: &[u8],
+) -> Result<(), String> {
+    verify_package(manifest, package)?;
+    let version = manifest.version.as_str();
+    // 包 = **`dist/` 里的内容**（服务器那份就是拿 `frontend/dist` 打的），而壳的布局是
+    // `<资源目录>/v<版本>/dist/...`（`resolve_in_version` 认这一层）——所以在**解压这一层**
+    // 补上 `dist/`。把这条写在这里，是因为"少一层 dist"的表现是"装好了、界面却回到兜底页"。
+    let staging = resources_root.join(format!("staging-{version}"));
+    let _ = std::fs::remove_dir_all(&staging);
+    let dist = staging.join("dist");
+    std::fs::create_dir_all(&dist)
+        .map_err(|error| format!("staging 建不出来（{}）：{error}", dist.display()))?;
+
+    let prepared = extract(package, &dist).and_then(|()| {
+        if dist.join("index.html").is_file() {
+            Ok(())
+        } else {
+            Err("包里没有 index.html（这不是一份能用的前端）".to_string())
+        }
+    });
+    if let Err(error) = prepared {
+        // 半份 staging 留着只会让下一次撞上（而且它长得像一份可用版本）
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+
+    let target = resources_root.join(format!("v{version}"));
+    if target.exists() {
+        let _ = std::fs::remove_dir_all(&target);
+    }
+    std::fs::rename(&staging, &target)
+        .map_err(|error| format!("落成 {} 失败：{error}", target.display()))?;
+
+    // **原子切指针**：写 `current.tmp` 再 rename（同目录 rename 是原子的，规格 §4.2 e/f）
+    let pointer = resources_root.join(POINTER_FILE);
+    let tmp = resources_root.join(format!("{POINTER_FILE}.tmp"));
+    std::fs::write(&tmp, version)
+        .map_err(|error| format!("写指针失败（{}）：{error}", tmp.display()))?;
+    std::fs::rename(&tmp, &pointer)
+        .map_err(|error| format!("切指针失败（{}）：{error}", pointer.display()))?;
+
+    prune_versions(resources_root, version);
+    Ok(())
+}
+
+/// 一次完整同步（背景线程里跑）：拉清单 → 比版本 → 下载 → 安装。
+pub fn sync(
+    origin: &str,
+    app_data_dir: &Path,
+    shell_version: &str,
+    timeout: Duration,
+) -> SyncOutcome {
+    let root = resources_root(app_data_dir);
+    let manifest = match fetch_manifest(origin, timeout) {
+        Ok(manifest) => manifest,
+        Err(reason) => return SyncOutcome::Skipped { reason },
+    };
+    if let Err(reason) = check_manifest(&manifest, shell_version) {
+        return SyncOutcome::Skipped { reason };
+    }
+    if read_current(&root).as_deref() == Some(manifest.version.as_str()) {
+        return SyncOutcome::UpToDate;
+    }
+    let package = match download_package(origin, &manifest, timeout) {
+        Ok(package) => package,
+        Err(reason) => return SyncOutcome::Skipped { reason },
+    };
+    match install_package(&root, &manifest, &package) {
+        Ok(()) => SyncOutcome::Installed {
+            version: manifest.version,
+        },
+        Err(reason) => SyncOutcome::Skipped { reason },
+    }
+}
+
+/// 解压到 `target`。**zip-slip 挡在 `enclosed_name` 上**：它拒绝 `..` 与绝对路径，
+/// 拿不到就整包不装（与 `safe_relative` 是同一条纪律，只是入口不同）。
+fn extract(package: &[u8], target: &Path) -> Result<(), String> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(package))
+        .map_err(|error| format!("包不是合法的 zip：{error}"))?;
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|error| format!("包里的第 {} 个条目读不了：{error}", index + 1))?;
+        let Some(relative) = file.enclosed_name() else {
+            return Err(format!("包里有越界路径：{}", file.name()));
+        };
+        let destination = target.join(relative);
+        if file.is_dir() {
+            std::fs::create_dir_all(&destination)
+                .map_err(|error| format!("建目录失败（{}）：{error}", destination.display()))?;
+            continue;
+        }
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("建目录失败（{}）：{error}", parent.display()))?;
+        }
+        let mut sink = std::fs::File::create(&destination)
+            .map_err(|error| format!("写文件失败（{}）：{error}", destination.display()))?;
+        std::io::copy(&mut file, &mut sink)
+            .map_err(|error| format!("写文件失败（{}）：{error}", destination.display()))?;
+    }
+    Ok(())
+}
+
+/// 只留**当前 + 上一版**（规格 §4.2 g）：`other_versions` 已按 mtime 新→旧排序，
+/// 列表里第一个就是"上一版"，其余都删。
+fn prune_versions(resources_root: &Path, current: &str) {
+    for stale in other_versions(resources_root, current).into_iter().skip(1) {
+        let _ = std::fs::remove_dir_all(resources_root.join(format!("v{stale}")));
+    }
+}
+
+/// `a` 比 `b` 新吗。按 `.` 分段、数字段比数字、其余退字典序 —— 版本号是我们自己产出的
+/// `x.y.z` 或内容指纹，够用且不为它引 semver 那套依赖。
+fn newer(a: &str, b: &str) -> bool {
+    let left: Vec<&str> = a.split('.').collect();
+    let right: Vec<&str> = b.split('.').collect();
+    for index in 0..left.len().max(right.len()) {
+        let one = left.get(index).copied().unwrap_or("");
+        let two = right.get(index).copied().unwrap_or("");
+        match (one.parse::<u64>(), two.parse::<u64>()) {
+            (Ok(one), Ok(two)) if one != two => return one > two,
+            (Ok(_), Ok(_)) => continue,
+            _ => {
+                if one != two {
+                    return one > two;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// 小写 hex（sha256 的小写十六进制；为它引 `hex` 这个依赖不值当）。
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
 // ---------------------------------------------------------------- 用例
 
 #[cfg(test)]
@@ -711,5 +1018,202 @@ mod tests {
             "public, max-age=31536000, immutable"
         );
         assert_eq!(cache_control(&["index.html".into()]), "no-cache");
+    }
+
+    #[test]
+    fn split_query_separates_the_path_from_the_query() {
+        assert_eq!(split_query("/a/b"), ("/a/b", None));
+        assert_eq!(
+            split_query("/api/v1/chat/context-usage?conversation_id=conv_1&x=2"),
+            ("/api/v1/chat/context-usage", Some("conversation_id=conv_1&x=2"))
+        );
+        // 只切第一个 `?`：后面的问号归查询串自己
+        assert_eq!(split_query("/a?b?c"), ("/a", Some("b?c")));
+    }
+
+    #[test]
+    fn a_static_request_with_a_cache_buster_still_hits_the_local_file() {
+        // `?v=1` 这类缓存串**不能**参与"找文件"：参与的话本来命中的文件会掉进兜底页
+        let root = temp_root("cache-buster");
+        put(&root, "1.0.0", "assets/app.js", "console.log(1)");
+        std::fs::write(root.join(POINTER_FILE), "1.0.0").unwrap();
+
+        let response = handle(&root, None, "GET", "/assets/app.js?v=1", None, &[]);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.body().as_slice(), b"console.log(1)");
+    }
+
+    /// 2026-09-30 的真 bug 钉在这里：协议层原来只取 `Uri::path()` ⇒ 查询串整段丢掉，
+    /// 于是上下文用量环永远"不可用"（`conversation_id` 必填 → 422）、
+    /// 搜索的 `q=` 与分页的 `limit=` 则静默走默认值。
+    #[test]
+    fn api_requests_forward_the_query_string_to_the_server() {
+        // 一个只接一次的最小 HTTP 服务：把收到的请求头抄下来当物证
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut buf = [0u8; 2048];
+                        let n = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
+                        let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let _ = std::io::Write::write_all(
+                            &mut stream,
+                            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+                        );
+                        return head;
+                    }
+                    Err(ref error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if std::time::Instant::now() > deadline {
+                            return String::new();
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    Err(_) => return String::new(),
+                }
+            }
+        });
+
+        let root = temp_root("query-forward");
+        let origin = format!("http://{addr}");
+        let response = handle(
+            &root,
+            Some(&origin),
+            "GET",
+            "/api/v1/chat/context-usage?conversation_id=conv_1&x=2",
+            None,
+            &[],
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let head = server.join().unwrap();
+        let request_line = head.lines().next().unwrap_or_default().to_string();
+        assert!(
+            request_line.contains("?conversation_id=conv_1&x=2"),
+            "上游收到的请求行应当带查询串，实际是：{request_line:?}"
+        );
+    }
+
+    // ------------------------------------------------------------ 热更新（Phase 2，客户端半边）
+
+    fn manifest_of(version: &str, package: &[u8]) -> Manifest {
+        Manifest {
+            version: version.to_string(),
+            package_url: "/api/v1/app/frontend/package".to_string(),
+            sha256: hex(&Sha256::digest(package)),
+            size: package.len() as u64,
+            min_shell_version: Some("0.1.0".to_string()),
+        }
+    }
+
+    /// 现写一个包（与服务器那份同形：`index.html` + `assets/…`）
+    fn package_with(files: &[(&str, &str)]) -> Vec<u8> {
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut buffer);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            for (name, body) in files {
+                writer.start_file(*name, options).unwrap();
+                std::io::Write::write_all(&mut writer, body.as_bytes()).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        buffer.into_inner()
+    }
+
+    #[test]
+    fn a_package_that_does_not_match_the_manifest_is_refused() {
+        let package = package_with(&[("index.html", "<html>new</html>")]);
+        let manifest = manifest_of("abc123", &package);
+
+        assert!(verify_package(&manifest, &package).is_ok());
+
+        // 等长篡改一个字节：大小那关过得去，**撞的正是哈希那关**
+        let mut tampered = package.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+        let error = verify_package(&manifest, &tampered).unwrap_err();
+        assert!(error.contains("对不上"), "{error}");
+
+        // 大小对不上（比哈希便宜的那一关先报）
+        let mut shorter = package.clone();
+        shorter.pop();
+        let error = verify_package(&manifest, &shorter).unwrap_err();
+        assert!(error.contains("包大小不对"), "{error}");
+    }
+
+    #[test]
+    fn a_manifest_with_a_bad_version_or_a_too_new_shell_is_refused() {
+        let package = package_with(&[("index.html", "<html>x</html>")]);
+
+        // 版本号会变成**目录名**（还会写进 current 指针）→ 与 read_current 同一判据
+        let mut manifest = manifest_of("../evil", &package);
+        assert!(check_manifest(&manifest, "0.1.0").is_err());
+
+        manifest = manifest_of("abc123", &package);
+        assert!(check_manifest(&manifest, "0.1.0").is_ok());
+
+        // 这份前端要求更高的壳 → 如实说"请更新客户端"，而不是硬装
+        manifest.min_shell_version = Some("9.9.9".to_string());
+        let error = check_manifest(&manifest, "0.1.0").unwrap_err();
+        assert!(error.contains("请更新客户端"), "{error}");
+    }
+
+    #[test]
+    fn installing_switches_the_pointer_and_keeps_two_versions() {
+        let root = temp_root("hot-update");
+        let first = package_with(&[("index.html", "<html>one</html>")]);
+        let second = package_with(&[("index.html", "<html>two</html>")]);
+        let third = package_with(&[("index.html", "<html>three</html>")]);
+
+        install_package(&root, &manifest_of("aaa", &first), &first).unwrap();
+        assert_eq!(read_current(&root).as_deref(), Some("aaa"));
+        // 新的那份真的能被协议层读出来（"本地磁盘加载"这条就落在这上面）
+        assert_eq!(
+            resolve_file(&root, &[]).unwrap().version.as_deref(),
+            Some("aaa")
+        );
+
+        // 再装一版：指针切过去，staging 不留残渣
+        install_package(&root, &manifest_of("bbb", &second), &second).unwrap();
+        assert_eq!(read_current(&root).as_deref(), Some("bbb"));
+        assert!(!root.join("staging-bbb").exists());
+
+        // 第三版：只留**当前 + 上一版**（规格 §4.2 g）
+        install_package(&root, &manifest_of("ccc", &third), &third).unwrap();
+        assert_eq!(read_current(&root).as_deref(), Some("ccc"));
+        assert!(root.join("vccc").join("dist").join("index.html").is_file());
+        assert!(root.join("vbbb").is_dir(), "上一版要留着（回退用）");
+        assert!(!root.join("vaaa").exists(), "更老的版本该被清掉");
+    }
+
+    #[test]
+    fn a_package_without_index_html_is_refused_and_staging_is_cleaned() {
+        let root = temp_root("hot-update-broken");
+        let package = package_with(&[("assets/app.js", "console.log(1)")]);
+
+        let error = install_package(&root, &manifest_of("ddd", &package), &package).unwrap_err();
+
+        assert!(error.contains("index.html"), "{error}");
+        assert!(!root.join("staging-ddd").exists(), "半份 staging 不该留着");
+        assert_eq!(read_current(&root), None, "失败不该动指针");
+    }
+
+    #[test]
+    fn a_zip_with_a_traversal_entry_is_refused() {
+        let root = temp_root("hot-update-slip");
+        let package = package_with(&[("index.html", "x"), ("../escaped.txt", "nope")]);
+
+        let error = install_package(&root, &manifest_of("eee", &package), &package).unwrap_err();
+
+        assert!(error.contains("越界"), "{error}");
+        assert!(
+            !root.parent().unwrap().join("escaped.txt").exists(),
+            "zip-slip 的条目绝不能落到资源目录之外"
+        );
     }
 }

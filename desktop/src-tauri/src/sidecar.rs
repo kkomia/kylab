@@ -152,6 +152,12 @@ impl Manager {
         }
 
         let python = python_exe(runtime_root)?;
+        // **用了哪一份运行时写进日志**（README 一直这么承诺，直到今天才真的写）：
+        // 开发机上"包内那份（`target/release/sidecar-runtime`，`tauri build` 留下的）
+        // 与仓库那份（`build/sidecar-runtime`）谁生效"是最容易踩的一处 —— 2026-09-30
+        // 实测：改完 `build/` 重建，边车却一直跑旧代码，就是因为 `target/release/`
+        // 里那份旧的**优先**。
+        crate::logfile::log(log_dir, &format!("边车运行时：{}", runtime_root.display()));
         let port = pick_port()?;
         if port != *PORT_RANGE.start() {
             crate::logfile::log(

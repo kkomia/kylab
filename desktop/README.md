@@ -83,7 +83,11 @@ powershell -ExecutionPolicy Bypass -File scripts/build-sidecar-runtime.ps1 -Offl
   `sidecar-runtime\`；
 - **绿色版**（`target/release/kylab-desktop.exe`）要**连 `sidecar-runtime\` 一起拷**——
   单拷 exe 的话界面能用、对话会回退到服务器那条链；
-- 开发态（`cargo run`）没有包内资源目录，壳会退到仓库根的 `build/sidecar-runtime`（日志里会写用的是哪一份）。
+- **哪一份运行时生效看目录，日志里会写**（`边车运行时：…` 那一行）：壳先在 **exe 旁边**找
+  （`target/<profile>/sidecar-runtime` —— `tauri build` 会把 `build/sidecar-runtime` 拷到那儿），
+  找不到再退到仓库根的 `build/sidecar-runtime`。**坑**：只要跑过一次 `tauri build`，
+  `target/release/` 里就留着一份旧拷贝，它会**优先**被用上——改完运行时要么重跑
+  `build-sidecar-runtime.ps1`，要么把那份拷贝同步/删掉（2026-09-30 实测踩过）。
 - 为什么是 `build/` 而不是 `dist/`（2026-09-29 搬家）：`dist/` 这个名字在前后端工具链里到处都是
   （`frontend/dist/` 是前端产物），仓库根再放一份边车运行时容易看错。
 
