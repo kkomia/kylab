@@ -11,8 +11,15 @@
  * 而且卡住时能立刻看出是模型在胡扯还是检索没命中。
  */
 
-import { API_BASE, authHeaders, handleUnauthorized, request, type ApiErrorBody } from './client'
-import { resolveTurnTarget, toSidecarTurnBody } from './sidecar'
+import {
+  API_BASE,
+  authHeaders,
+  handleUnauthorized,
+  request,
+  requestUrl,
+  type ApiErrorBody,
+} from './client'
+import { resolveApprovalTarget, resolveTurnTarget, toSidecarTurnBody } from './sidecar'
 import type { components } from './schema'
 import { createDisplayPacer } from '@/lib/pacer'
 
@@ -1027,7 +1034,7 @@ async function pump(
  * `reason`（P2-1）：拒绝时用户在确认条上写的那句给模型的话。有了它，
  * **下一轮模型才能据此改路子**，而不是把同一条命令原样再试一次（调研报告 §2.5 第 5 条）。
  */
-export function decideApproval(
+export async function decideApproval(
   approvalId: string,
   decision: ApprovalDecision,
   reason = '',
@@ -1035,7 +1042,9 @@ export function decideApproval(
   // `reason`（P2-1）：拒绝时用户填的那句给模型的话。**空就不发这个键**——
   // 请求体与加这个输入框之前逐字相同，后端"没填理由"那条路也就无从分叉。
   const trimmed = reason.trim()
-  return request(`/chat/approvals/${encodeURIComponent(approvalId)}`, {
+  // 选址与对话轮次同一套（`resolveApprovalTarget`）：流停在边车那台，决定就送回那台
+  const target = await resolveApprovalTarget(approvalId)
+  return requestUrl(target.url, {
     method: 'POST',
     body: JSON.stringify(trimmed ? { decision, reason: trimmed } : { decision }),
   })

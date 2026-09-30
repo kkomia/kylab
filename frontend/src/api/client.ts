@@ -88,6 +88,21 @@ export async function request<T>(
   init?: RequestInit,
   options: RequestOptions = {},
 ): Promise<T> {
+  return requestUrl<T>(`${API_BASE}${path}`, init, options)
+}
+
+/**
+ * 与 `request` 同一条链，但吃**绝对 URL**（`request` 那个 API_BASE 前缀在这里由调用方给）。
+ *
+ * 为什么要有它：对话轮次与审批决定在边车模式下要打到**边车那台**（`http://127.0.0.1:8765`）
+ * ——那是另一个源，`request('/path')` 够不着。**只加这一条缝**：错误信封、401 处理、
+ * multipart 的 Content-Type 判定全都与 `request` 共用，两处不再各写一套。
+ */
+export async function requestUrl<T>(
+  url: string,
+  init?: RequestInit,
+  options: RequestOptions = {},
+): Promise<T> {
   // **`FormData` 的 Content-Type 必须由浏览器自己写**：它要带 `boundary`，
   // 而手写一个 `application/json` 会让后端解析不出任何字段——实测的表现是
   // `422 {"message": "file: Field required"}`，看着像"请求里没带文件"，
@@ -95,7 +110,7 @@ export async function request<T>(
   // 所有上传（文档、会话文件、技能、头像）都走这条路，所以判断放在这一处。
   const multipart = typeof FormData !== 'undefined' && init?.body instanceof FormData
   return unwrap<T>(
-    await fetch(`${API_BASE}${path}`, {
+    await fetch(url, {
       ...init,
       headers: {
         ...(multipart ? {} : { 'Content-Type': 'application/json' }),

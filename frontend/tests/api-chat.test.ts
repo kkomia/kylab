@@ -27,6 +27,7 @@ import {
   type ChatSource,
 } from '@/api/chat'
 import { clearSessionToken, setSessionToken } from '@/lib/session'
+import { DEFAULT_SIDECAR_BASE, resetSidecarProbe, setSidecarTurnsForTest } from '@/api/sidecar'
 
 /**
  * 协议用例不看显示节流：关掉它，事件立即派发，断言才好写。
@@ -656,9 +657,15 @@ describe('openLiveTurn（P2-2 的重连端点）', () => {
 })
 
 describe('decideApproval', () => {
-  it('POST 到那条确认的端点，并把决定原样放进请求体', async () => {
-    // 端点是**按 id 拼出来的**：拼错了等于把决定发给一条不存在的确认（回 409），
-    // 而界面上看起来只是"点了没反应"
+  afterEach(() => {
+    setSidecarTurnsForTest(undefined)
+    resetSidecarProbe()
+  })
+
+  it('POST 到那条确认的端点，并把决定原样放进请求体（服务器链）', async () => {
+    // 端点与 id 拼接：拼错等于把决定发给一条不存在的确认（409），界面看着只是"点了没反应"。
+    // 这一条钉**服务器链**（边车显式关掉），边车那条链由下面一条钉
+    setSidecarTurnsForTest(false)
     let url = ''
     let body = ''
     vi.stubGlobal(
@@ -674,6 +681,27 @@ describe('decideApproval', () => {
 
     expect(url).toBe('/api/v1/chat/approvals/ap%201%2F2')
     expect(JSON.parse(body)).toEqual({ decision: 'allow_always' })
+    expect(result.accepted).toBe(true)
+  })
+
+  it('边车模式：决定打到**边车那台**的 /turn/approvals/{id}（交接文档点名的缺口）', async () => {
+    setSidecarTurnsForTest(true)
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string) => {
+        calls.push(String(input))
+        if (String(input).endsWith('/health')) {
+          return new Response(JSON.stringify({ version: '0.2.0' }), { status: 200 })
+        }
+        return new Response(JSON.stringify({ accepted: true, detail: '' }), { status: 200 })
+      }),
+    )
+
+    const result = await decideApproval('ap_1', 'allow_once')
+
+    expect(calls[0]).toBe(`${DEFAULT_SIDECAR_BASE}/health`)
+    expect(calls[1]).toBe(`${DEFAULT_SIDECAR_BASE}/turn/approvals/ap_1`)
     expect(result.accepted).toBe(true)
   })
 

@@ -13,10 +13,12 @@ import {
   baseForPath,
   isSidecarPath,
   resetSidecarProbe,
+  resolveApprovalTarget,
   resolveTurnTarget,
   setSidecarTurnsForTest,
   sidecarAvailable,
   sidecarBase,
+  SIDECAR_APPROVAL_PATH,
   sidecarStatus,
   sidecarTurnsEnabled,
   sidecarTurnsEnabledFrom,
@@ -280,5 +282,39 @@ describe('边车轮次开关：默认开，显式关是逃生门', () => {
     expect(status.reason).toContain(DEFAULT_SIDECAR_BASE)
     // reason **不许空着**：三种状态都要能据它判断"当前走哪条链"
     expect(status.reason.length).toBeGreaterThan(0)
+  })
+})
+
+describe('审批决定的选址（与轮次同一套，交接文档点名的缺口）', () => {
+  beforeEach(() => {
+    resetSidecarProbe()
+    setSidecarTurnsForTest(true)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    setSidecarTurnsForTest(undefined)
+  })
+
+  it('边车可用 → 决定打到**边车那台**的 /turn/approvals/{id}', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(okJson({ ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const target = await resolveApprovalTarget('appr_1')
+
+    expect(target.kind).toBe('sidecar')
+    expect(target.url).toBe(`${DEFAULT_SIDECAR_BASE}${SIDECAR_APPROVAL_PATH}/appr_1`)
+    expect(target.fallback).toBe(false)
+  })
+
+  it('边车不可用 → 回退服务器 /chat/approvals/{id}，回退是显式的', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const target = await resolveApprovalTarget('appr_2')
+
+    expect(target.kind).toBe('server')
+    expect(target.url).toBe(`${API_BASE}/chat/approvals/appr_2`)
+    expect(target.fallback).toBe(true)
+    expect(target.reason).not.toBe('')
   })
 })

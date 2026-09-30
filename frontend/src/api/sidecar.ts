@@ -62,6 +62,13 @@ export const SIDECAR_TURN_PATH = '/chat/stream'
 /** 边车那一侧对应的路径（`remote_clients.py` 打的就是这个）。 */
 export const SIDECAR_STREAM_PATH = '/turn/stream'
 
+/**
+ * 边车那台的**审批决定**端点（`app/sidecar.py` 的 `POST /turn/approvals/{id}`，
+ * 与服务器 `/chat/approvals/{id}` 同形）。挂 `SIDECAR_STREAM_PATH` 的兄弟位置，
+ * 是因为两者服务的是同一条轮次：流停在边车的 `wait` 上，决定就必须送回**那台**。
+ */
+export const SIDECAR_APPROVAL_PATH = '/turn/approvals'
+
 /** 探测结果的缓存时长：太短会每轮都探、太长会让"边车刚起来"要等。 */
 export const PROBE_TTL_MS = 5_000
 
@@ -274,6 +281,39 @@ export async function resolveTurnTarget(): Promise<TurnTarget> {
   const reason = `${probe.reason || '边车不可用'}；已回退到服务器 ${API_BASE}（这条链仍然可用）`
   console.warn(`[sidecar] ${reason}`)
   return { ...server, reason }
+}
+
+/**
+ * 审批决定该打到哪边——**与 `resolveTurnTarget` 同一套选址**（边车可用 → 边车；
+ * 被显式关/不可用 → 服务器）。
+ *
+ * 为什么要这一条（交接文档点名的缺口）：流在边车那台停在 `wait` 上等这一下，
+ * 而 `decideApproval` 原先写死 `/chat/approvals/{id}` 打服务器——桌面壳（边车模式）
+ * 里点「允许一次」，服务器根本不知道这个 id（404），那一轮只能等超时按拒绝走。
+ */
+export async function resolveApprovalTarget(approvalId: string): Promise<TurnTarget> {
+  const encoded = encodeURIComponent(approvalId)
+  const server: TurnTarget = {
+    kind: 'server',
+    base: API_BASE,
+    url: `${API_BASE}/chat/approvals/${encoded}`,
+    fallback: true,
+    reason: '',
+  }
+  if (!sidecarTurnsEnabled()) {
+    return { ...server, reason: explicitOffReason() }
+  }
+  const base = sidecarBase()
+  if (await sidecarAvailable()) {
+    return {
+      kind: 'sidecar',
+      base,
+      url: `${base}${SIDECAR_APPROVAL_PATH}/${encoded}`,
+      fallback: false,
+      reason: '',
+    }
+  }
+  return { ...server, reason: `${probe.reason || '边车不可用'}；已回退到服务器 ${API_BASE}` }
 }
 
 /**
