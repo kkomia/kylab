@@ -108,6 +108,78 @@ const MAX_PROXY_BYTES: u64 = 32 * 1024 * 1024;
 /// 卡在这里会比"慢"更糟（用户看到的是明明在跑却断了）。
 const PROXY_TIMEOUT_SECONDS: u64 = 900;
 
+// ---------------------------------------------------------------- 设备标记
+
+/// 转发时注进请求头的设备身份（`X-Kylab-Device`）。**同一台服务器被多台电脑连**，
+/// 服务器拿这个值把各自的工作区分开。
+///
+/// 值是 `config.json` 里的 `device_id`（第一次连上服务器时生成的 UUID v4，
+/// 之后一直不变，见 `config::Config::ensure_device_id`）——**不是**主机名：
+/// 同型号机器的默认主机名会撞，而它是"这台电脑"的标识，撞了就等于两台电脑
+/// 共用一个工作区。
+pub const DEVICE_HEADER: &str = "X-Kylab-Device";
+
+/// 转发时注进请求头的设备显示名（`X-Kylab-Device-Name`，主机名）：只给人看，
+/// **不参与判等/隔离**（那件事只认 `DEVICE_HEADER`）。
+pub const DEVICE_NAME_HEADER: &str = "X-Kylab-Device-Name";
+
+/// 一个请求要带的设备标记。
+#[derive(Debug, Clone)]
+pub struct Device {
+    /// 设备身份（UUID v4）。
+    pub id: String,
+    /// 显示名（主机名）。
+    pub name: String,
+}
+
+/// 设备标记要往请求里加哪几个头（**纯函数**：注入了什么、没设备时注不注入，
+/// 都在用例里钉着）。
+///
+/// **没有设备身份就一个头都不加**：还没连上过服务器（`device_id` 还没生成）、
+/// 或配置里是个空串。那时请求与网页端发出来的一模一样，服务器按老办法办——
+/// 这比"随便编一个 id"好：编出来的 id 会让服务器平白多出一个工作区。
+pub fn device_headers(device: Option<&Device>) -> Vec<(&'static str, String)> {
+    let Some(device) = device else {
+        return Vec::new();
+    };
+    let id = device.id.trim();
+    if id.is_empty() {
+        return Vec::new();
+    }
+    vec![
+        (DEVICE_HEADER, id.to_string()),
+        (DEVICE_NAME_HEADER, header_safe(&device.name)),
+    ]
+}
+
+/// 把设备名塞进 HTTP 头值：**头值只能是 ASCII**。
+///
+/// 显示名一般是纯 ASCII 的主机名（Windows 的 ComputerName 只允许字母、数字与 `-`），
+/// 但取不到主机名时壳会回落到「这台电脑」，那是中文；而 `0x80` 以上的字节各家服务器
+/// 收到的样子并不一致（Starlette/uvicorn 按 latin-1 解码 ⇒ 中文变乱码，有的实现干脆
+/// 拒收整个请求）。所以 `0x21..=0x7e`（可打印 ASCII，**不含空格**）之外的字节
+/// **percent-encode 成 `%XX`**——与 URL 同一种写法、可逆：常见的主机名原样过去，
+/// 中文变成一串 `%E8%BF%99…`（服务器要做展示就按 URL 解码还原）。
+///
+/// 空格一起编码（`%20`）：头值的首尾空白本身就不合法，编码掉省得再判一次边界。
+fn header_safe(name: &str) -> String {
+    let mut safe = String::with_capacity(name.len());
+    for byte in name.as_bytes() {
+        if (0x21..=0x7e).contains(byte) {
+            safe.push(*byte as char);
+        } else {
+            safe.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    safe
+}
+
+/// 这两个头由**壳说了算**：页面自己带的一律不往上游转发（见 `proxy` 里的过滤）。
+/// 名字按大小写不敏感比（HTTP 头名本来就与大小写无关）。
+fn is_device_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case(DEVICE_HEADER) || name.eq_ignore_ascii_case(DEVICE_NAME_HEADER)
+}
+
 // ---------------------------------------------------------------- 资源目录
 
 /// 资源目录：`<app_data_dir>/frontend-resources`。
@@ -397,6 +469,7 @@ fn split_query(uri_path: &str) -> (&str, Option<&str>) {
 pub fn handle(
     resources_root: &Path,
     server: Option<&str>,
+    device: Option<Device>,
     method: &str,
     uri_path: &str,
     body: Option<&[u8]>,
@@ -407,7 +480,7 @@ pub fn handle(
     let (path_only, _query) = split_query(uri_path);
     if path_only.starts_with("/api/") {
         return match server {
-            Some(origin) => proxy(origin, method, uri_path, body, headers),
+            Some(origin) => proxy(origin, device, method, uri_path, body, headers),
             None => respond(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "application/json; charset=utf-8",
@@ -466,8 +539,13 @@ pub fn handle(
 /// 页面——文字不是逐字冒出来的。普通 REST 调用不受影响。要恢复流式有两条路
 /// （Phase 2/3 选一条）：① 壳自己用 SSE 取事件、进度走事件推给本地前端；
 /// ② 后端为 `app://` 这个源开 CORS，前端直接打远端（要动后端）。
+///
+/// **`/api/**` 只有这一条转发路**（普通 REST 与 SSE 走的是同一段代码——SSE 不是另开
+/// 的一条路，它只是 `Accept: text/event-stream` 的一个普通请求，见下面那句补默认
+/// `Accept`），所以设备标记注入在这里**一处就够**，不要去找"另一路"。
 fn proxy(
     origin: &str,
+    device: Option<Device>,
     method: &str,
     path: &str,
     body: Option<&[u8]>,
@@ -498,10 +576,21 @@ fn proxy(
         ) {
             continue;
         }
+        // **页面自己带的设备标记一律丢掉**，下面由壳统一注入：ureq 对 `x-` 开头的头
+        // 是"追加"而不是"覆盖"（见 `ureq::header::add_header`），照转发过去服务器就会
+        // 收到两个值、取到页面那个——那等于把"我是哪台电脑"交给页面说了算。
+        if is_device_header(&lower) {
+            continue;
+        }
         request = request.set(name, value);
     }
     if method == "GET" && !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("accept")) {
         request = request.set("Accept", "application/json, text/event-stream");
+    }
+    // **设备标记**：告诉服务器这个请求来自哪台电脑（工作区按它隔离）。
+    // 只在这一路注入——本地资源那几支响应上一个头都不带（它们不经这里）。
+    for (name, value) in device_headers(device.as_ref()) {
+        request = request.set(name, &value);
     }
 
     let response = match body {
@@ -990,11 +1079,11 @@ mod tests {
         std::fs::write(root.join(POINTER_FILE), "1.0.0").unwrap();
 
         // 没有配服务器时 API 请求给 503 而不是本地 404（错误能被页面读懂）
-        let response = handle(&root, None, "GET", "/api/v1/conversations", None, &[]);
+        let response = handle(&root, None, None, "GET", "/api/v1/conversations", None, &[]);
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         // 静态资源：本地命中，且带缓存头
-        let response = handle(&root, None, "GET", "/", None, &[]);
+        let response = handle(&root, None, None, "GET", "/", None, &[]);
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL).unwrap(),
@@ -1002,7 +1091,7 @@ mod tests {
         );
 
         // 越界路径 → 兜底页（不是 404 错误页）
-        let response = handle(&root, None, "GET", "/../../etc/passwd", None, &[]);
+        let response = handle(&root, None, None, "GET", "/../../etc/passwd", None, &[]);
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.body().len() > 100);
     }
@@ -1038,17 +1127,15 @@ mod tests {
         put(&root, "1.0.0", "assets/app.js", "console.log(1)");
         std::fs::write(root.join(POINTER_FILE), "1.0.0").unwrap();
 
-        let response = handle(&root, None, "GET", "/assets/app.js?v=1", None, &[]);
+        let response = handle(&root, None, None, "GET", "/assets/app.js?v=1", None, &[]);
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.body().as_slice(), b"console.log(1)");
     }
 
-    /// 2026-09-30 的真 bug 钉在这里：协议层原来只取 `Uri::path()` ⇒ 查询串整段丢掉，
-    /// 于是上下文用量环永远"不可用"（`conversation_id` 必填 → 422）、
-    /// 搜索的 `q=` 与分页的 `limit=` 则静默走默认值。
-    #[test]
-    fn api_requests_forward_the_query_string_to_the_server() {
-        // 一个只接一次的最小 HTTP 服务：把收到的请求头抄下来当物证
+    /// 一个**只接一次**的最小 HTTP 服务：把收到的请求头原文抄下来当物证。
+    /// 返回（它的地址、抄到的东西的句柄）。转发链路上的断言都靠它——
+    /// **真的发一次 TCP**，比只看我们自己的结构体可信。
+    fn recording_server() -> (std::net::SocketAddr, std::thread::JoinHandle<String>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let addr = listener.local_addr().unwrap();
@@ -1057,7 +1144,7 @@ mod tests {
             loop {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let mut buf = [0u8; 2048];
+                        let mut buf = [0u8; 4096];
                         let n = std::io::Read::read(&mut stream, &mut buf).unwrap_or(0);
                         let head = String::from_utf8_lossy(&buf[..n]).to_string();
                         let _ = std::io::Write::write_all(
@@ -1076,12 +1163,22 @@ mod tests {
                 }
             }
         });
+        (addr, server)
+    }
+
+    /// 2026-09-30 的真 bug 钉在这里：协议层原来只取 `Uri::path()` ⇒ 查询串整段丢掉，
+    /// 于是上下文用量环永远"不可用"（`conversation_id` 必填 → 422）、
+    /// 搜索的 `q=` 与分页的 `limit=` 则静默走默认值。
+    #[test]
+    fn api_requests_forward_the_query_string_to_the_server() {
+        let (addr, server) = recording_server();
 
         let root = temp_root("query-forward");
         let origin = format!("http://{addr}");
         let response = handle(
             &root,
             Some(&origin),
+            None,
             "GET",
             "/api/v1/chat/context-usage?conversation_id=conv_1&x=2",
             None,
@@ -1215,5 +1312,128 @@ mod tests {
             !root.parent().unwrap().join("escaped.txt").exists(),
             "zip-slip 的条目绝不能落到资源目录之外"
         );
+    }
+
+    // ------------------------------------------------------------ 设备标记
+
+    /// 转发时要带的就是这两个头：`X-Kylab-Device` 是**判据**
+    /// （服务器靠它把每台电脑的工作区分开），另一个只是给人看的名字。
+    #[test]
+    fn device_headers_carry_the_id_and_the_name() {
+        let device = Device {
+            id: "9f1c2f6e-0000-4000-8000-000000000001".to_string(),
+            name: "NAS-PC".to_string(),
+        };
+        assert_eq!(
+            device_headers(Some(&device)),
+            vec![
+                (DEVICE_HEADER, device.id.clone()),
+                (DEVICE_NAME_HEADER, "NAS-PC".to_string()),
+            ]
+        );
+    }
+
+    /// **还没有设备身份时一个头都不带**（等价于网页端语义）：这时"随手编一个 id"
+    /// 会让服务器平白多出一个工作区——宁可不带。
+    #[test]
+    fn without_a_device_id_nothing_is_injected() {
+        assert!(device_headers(None).is_empty());
+        let blank = Device {
+            id: "  ".to_string(),
+            name: "NAS-PC".to_string(),
+        };
+        assert!(device_headers(Some(&blank)).is_empty(), "空白 id 按没有算");
+    }
+
+    /// 头值里**只能有 ASCII**：常见的主机名原样过去，中文（主机名取不到时的
+    /// 「这台电脑」）percent-encode 成可逆的 `%XX`（服务器按 URL 解码能还原）。
+    #[test]
+    fn a_display_name_that_is_not_ascii_is_percent_encoded() {
+        let device = Device {
+            id: "dev-1".to_string(),
+            name: "这台电脑".to_string(),
+        };
+        let headers = device_headers(Some(&device));
+        let (_, name) = headers
+            .iter()
+            .find(|(key, _)| *key == DEVICE_NAME_HEADER)
+            .expect("名字那个头");
+        assert!(name.is_ascii(), "{name}");
+        assert_eq!(name, "%E8%BF%99%E5%8F%B0%E7%94%B5%E8%84%91");
+
+        assert_eq!(header_safe("NAS-PC"), "NAS-PC");
+        // 空格也编码掉：头值的首尾空白本身就不合法
+        assert_eq!(header_safe("My PC"), "My%20PC");
+        assert_eq!(header_safe(""), "");
+    }
+
+    /// **真的发一次请求，看头到了没有**：转发的请求上带着这两个头。
+    #[test]
+    fn forwarded_api_requests_carry_the_device_headers() {
+        let (addr, server) = recording_server();
+        let root = temp_root("device-headers");
+        let origin = format!("http://{addr}");
+        let device = Device {
+            id: "dev-abc".to_string(),
+            name: "NAS-PC".to_string(),
+        };
+
+        let response = handle(
+            &root,
+            Some(&origin),
+            Some(device),
+            "GET",
+            "/api/v1/workspaces",
+            None,
+            &[],
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // ureq 把头名统一写成小写（`Header::new` 的下游写法），所以按小写比
+        let head = server.join().unwrap().to_lowercase();
+        assert!(head.contains("x-kylab-device: dev-abc\r\n"), "{head}");
+        assert!(head.contains("x-kylab-device-name: nas-pc\r\n"), "{head}");
+    }
+
+    /// 页面自己带了同名头（伪造"我是哪台电脑"）时**壳里那份说了算**：
+    /// ureq 对 `x-` 开头的头是"追加"而不是"覆盖"（见 `ureq::header::add_header`），
+    /// 所以壳必须先把页面带的丢掉——否则服务器取到的是页面那个值，
+    /// "按设备隔离"就成了一句空话。
+    #[test]
+    fn the_page_cannot_spoof_the_device_headers() {
+        let (addr, server) = recording_server();
+        let root = temp_root("device-spoof");
+        let origin = format!("http://{addr}");
+        let device = Device {
+            id: "dev-real".to_string(),
+            name: "NAS-PC".to_string(),
+        };
+        let incoming = vec![
+            ("X-Kylab-Device".to_string(), "dev-fake".to_string()),
+            ("x-kylab-device-name".to_string(), "别的地方".to_string()),
+            ("Authorization".to_string(), "Bearer t".to_string()),
+        ];
+
+        let response = handle(
+            &root,
+            Some(&origin),
+            Some(device),
+            "GET",
+            "/api/v1/workspaces",
+            None,
+            &incoming,
+        );
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let head = server.join().unwrap().to_lowercase();
+        assert!(!head.contains("dev-fake"), "页面带的设备 id 不该被转发：{head}");
+        assert_eq!(
+            head.matches("x-kylab-device:").count(),
+            1,
+            "设备头只能有一个：{head}"
+        );
+        assert!(head.contains("x-kylab-device: dev-real\r\n"), "{head}");
+        // 别的头照旧转发（`Authorization` 尤其：不转发的话每个要登录的接口都 401）
+        assert!(head.contains("authorization: bearer t\r\n"), "{head}");
     }
 }

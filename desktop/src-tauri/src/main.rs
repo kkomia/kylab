@@ -122,6 +122,9 @@ struct Shell {
     /// 清理资源不该顺手把用户填的服务器地址一起清了。
     data_dir: std::path::PathBuf,
     config: Mutex<config::Config>,
+    /// 这台电脑的显示名（主机名，见 `device_name`）。**每次启动读一次环境变量就够**：
+    /// 它在一轮运行里不会变，而每个转发的请求都要带它。
+    device_name: String,
     /// 边车（本地 Python 运行时）的起停。**一个进程一个**，用 `Arc` 是为了能把它
     /// 挪进阻塞线程（起边车要等它 import 完，不能按住 async 运行时）。
     sidecar: Arc<sidecar::Manager>,
@@ -131,6 +134,20 @@ impl Shell {
     /// 配置里的服务器源（`scheme://host[:port]`）。导航白名单与 API 转发都认它。
     fn origin(&self) -> Option<String> {
         self.config.lock().ok().and_then(|config| config.server.clone())
+    }
+
+    /// 转发给服务器时要打的**设备标记**（见 `resources::Device`）。
+    ///
+    /// `None` = 配置里还没有 `device_id`（这台机器一次都没连上过服务器）：
+    /// 那时两个头都不带，**等价于网页端的语义**——服务器看到一个没有标记的请求，
+    /// 就按它原本的方式办。**每次请求现读配置**：id 是连接成功那一刻才生成的，
+    /// 壳启动时（协议处理器早就装好了）它可能还不存在。
+    fn device(&self) -> Option<resources::Device> {
+        let id = self.config.lock().ok()?.device_id.clone()?;
+        Some(resources::Device {
+            id,
+            name: self.device_name.clone(),
+        })
     }
 
     /// 资源目录的绝对路径（`<app_data_dir>/frontend-resources`）。
@@ -258,7 +275,7 @@ async fn connect(
             });
         }
         let base = probed.url.clone();
-        let device = device_name();
+        let issued_name = issued_key_name();
         let (session, key) = tauri::async_runtime::spawn_blocking(move || {
             let needs_setup = signin::status(&base)?;
             let session = if needs_setup {
@@ -266,7 +283,7 @@ async fn connect(
             } else {
                 signin::login(&base, &username, &password)?
             };
-            let key = signin::issue_key(&base, &session.token, &device)?;
+            let key = signin::issue_key(&base, &session.token, &issued_name)?;
             Ok::<_, String>((session, key))
         })
         .await
@@ -282,6 +299,10 @@ async fn connect(
 
     {
         let mut config = shell.config.lock().map_err(|_| "配置锁被污染了".to_string())?;
+        // **设备身份在"连上了这一台服务器"这一刻生成一次**（探活已经过了才走到这里），
+        // 之后不再变：改名、换服务器、换账号都不重新生成——它是"这台电脑"的身份，
+        // 不是"这条连接"的身份。服务器靠它把多台电脑的工作区分开。
+        let fresh_device = config.ensure_device_id();
         if remember {
             config.remember(&probed.origin);
         }
@@ -291,12 +312,24 @@ async fn connect(
             config.remember(&probed.origin);
             config.remember_key(&key.id, &key.name, display_name, &key.token);
         }
-        if remember || fresh_key.is_some() {
+        // **新生成的设备 id 必须落盘**（`fresh_device`）：不然下次启动又换一个，
+        // 服务器那边会把同一台电脑看成一串不同的电脑（工作区一次次"没了"）。
+        // 只按 `remember || fresh_key` 存的那些路径（启动时自动重连）到不了这里。
+        if remember || fresh_key.is_some() || fresh_device {
             // 写不进去要说，但**不阻断这次连接**：已经连上了，先让人进去，
             // 下次打开重填一遍是小事，卡在这儿是大事。
             if let Err(error) = config.save(&shell.dir) {
                 logfile::log(&shell.dir, &format!("配置写不进去（{error}）"));
             }
+        }
+        if fresh_device {
+            logfile::log(
+                &shell.dir,
+                &format!(
+                    "这台电脑的设备标记已生成：{}（之后不再变）",
+                    config.device_id.as_deref().unwrap_or_default()
+                ),
+            );
         }
     }
     // ⚠️ 日志里**只写 id / 名字 / 前缀**，绝不写钥匙明文（那等同于把凭据抄进日志文件）。
@@ -480,18 +513,27 @@ async fn signin_status(address: String) -> Result<SignInStatus, String> {
 }
 
 /// 领钥匙时填的名字（服务器那边 `name` 上限 64）。带上主机名，用户在多台机器上
-/// 装壳时能在「API Keys」页一眼分清哪把是哪台。
+/// 装壳时能在「API Keys」页一眼分清哪把是哪台（命名口径见《桌面端-成员与钥匙》：
+/// `桌面端 <主机名>`）。
+fn issued_key_name() -> String {
+    format!("桌面端 {}", device_name()).chars().take(64).collect()
+}
+
+/// **这台电脑的显示名**：转发给服务器的请求上带的就是它（`X-Kylab-Device-Name`）。
+///
+/// 主机名（Windows 看 `COMPUTERNAME`，别的平台看 `HOSTNAME`）取不到时用「这台电脑」：
+/// 宁可名字笼统，也不要一个空字符串（服务器那边这只是一句给人看的、用来认人的话）。
+/// **这不是身份**——身份是 `config.json` 里的 `device_id`（同型号机器的默认主机名会撞）。
 fn device_name() -> String {
     let host = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_default();
     let host = host.trim();
-    let name = if host.is_empty() {
-        "桌面端".to_string()
+    if host.is_empty() {
+        "这台电脑".to_string()
     } else {
-        format!("桌面端 {host}")
-    };
-    name.chars().take(64).collect()
+        host.to_string()
+    }
 }
 
 // ---------------------------------------------------------------- 导航策略
@@ -743,7 +785,8 @@ fn main() {
          *
          * 闭包能拿到的事实只有两样：`AppHandle`（→ 配置里的服务器地址 + 数据目录）
          * 与这次请求（方法 / 路径 / 正文）。**判据全在 `resources::handle` 里**，
-         * 那是纯函数、有 13 条用例（含"查询串原样转发"那条）——协议这一层只做搬运。
+         * 那是纯函数、模块里有 23 条用例（含"查询串原样转发""设备标记注入"那两条）
+         * ——协议这一层只做搬运。
          */
         .register_asynchronous_uri_scheme_protocol(APP_SCHEME, |ctx, request, responder| {
             let app = ctx.app_handle().clone();
@@ -773,9 +816,14 @@ fn main() {
                 let state = app.state::<Shell>();
                 let root = state.resources_root();
                 let server = state.origin();
+                // **设备标记只加在转发给那台服务器的请求上**（见 `resources::proxy`）：
+                // 本地资源那一支一个头都不带——它不是给服务器看的。还没生成 device_id
+                // 时这里是 `None`，等价于网页端语义。
+                let device = state.device();
                 let response = resources::handle(
                     &root,
                     server.as_deref(),
+                    device,
                     &method,
                     &path,
                     payload.as_deref(),
@@ -816,6 +864,7 @@ fn main() {
                 dir: dir.clone(),
                 data_dir,
                 config: Mutex::new(config),
+                device_name: device_name(),
                 sidecar: Arc::new(sidecar::Manager::new()),
             });
 

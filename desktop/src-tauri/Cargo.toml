@@ -24,6 +24,12 @@ ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# 设备身份：`config.json` 里的 `device_id`（第一次连上服务器时生成一个 UUID v4）。
+# `uuid` 本来就在依赖树里（传递依赖），这里**提成直接依赖**并开 `v4`
+# （= 要随机数）。**别用时间戳/序号代替**：几台电脑可能在同一秒里各自生成，
+# 撞了就等于两台机器共用一个工作区。
+uuid = { version = "1", features = ["v4"] }
+
 # Windows：Job Object —— 让边车（python 子进程）**随壳一起退出**（壳崩了也不留孤儿 python）。
 # 用 `windows`（高阶层）而不是 `windows-sys`：实测 windows-sys 0.52/0.59/0.61 的
 # `Win32::System::JobObjects` 里**只有常量与结构体、没有那几个函数** ✗。

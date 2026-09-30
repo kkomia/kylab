@@ -1,7 +1,8 @@
-//! 壳的配置：**只存一个服务器地址**（外加最近用过的那几条）。
+//! 壳的配置：**只存一个服务器地址**（外加最近用过的那几条、这台电脑的身份、
+//! 以及替用户领到的长期凭据）。
 //!
 //! 落在 `app_config_dir()/config.json`（Windows 是 `%APPDATA%\com.kylab.desktop\`）。
-//! 手写读写而不是用 `tauri-plugin-store`：这里只有两个键，而"配置怎么不生效"
+//! 手写读写而不是用 `tauri-plugin-store`：这里只有几个键，而"配置怎么不生效"
 //! 这类问题，一个肉眼可读、路径明确的 JSON 比插件的黑盒文件好排查。
 //!
 //! 一条纪律写在类型里：**地址只会被"用户主动改"这一个动作写掉**。
@@ -25,6 +26,14 @@ pub struct Config {
     /// 用过的地址，最近的在前面。
     #[serde(default)]
     pub recent: Vec<String>,
+    /// **这台电脑的身份**（UUID v4，见 `ensure_device_id`）：转发到服务器的每个
+    /// `/api/**` 请求都带上它（`X-Kylab-Device`），服务器据此把多台电脑的工作区分开。
+    ///
+    /// 它跟 `server` / 钥匙都**没有关系**：改名、换服务器都不重新生成——
+    /// 它是"这台电脑"的身份，不是"这条连接"的身份。老配置文件里没有这一栏
+    /// （`serde(default)`），所以升级后照旧能读。
+    #[serde(default)]
+    pub device_id: Option<String>,
     /// **长期凭据**：桌面壳替用户领到的 API Key（`kylab_sk_…`）。
     ///
     /// 为什么是它而不是密码：会话令牌 7 天滑动续期，到期就得再登一次；而 API Key
@@ -107,6 +116,19 @@ impl Config {
         self.recent.retain(|item| item != server);
         self.recent.insert(0, server.to_string());
         self.recent.truncate(MAX_RECENT);
+    }
+
+    /// **确保这台电脑有身份**：没有就生成一个 UUID v4。
+    ///
+    /// 返回 `true` = 这次是新生成的（调用方**必须落盘**，否则下次启动又换一个，
+    /// 服务器那边就会把同一台电脑看成一串不同的电脑）。已经有则原样返回 `false`
+    /// ——**绝不覆盖**：换服务器、换账号、重装钥匙都还是这台电脑。
+    pub fn ensure_device_id(&mut self) -> bool {
+        if self.device_id.as_deref().is_some_and(|id| !id.trim().is_empty()) {
+            return false;
+        }
+        self.device_id = Some(uuid::Uuid::new_v4().to_string());
+        true
     }
 }
 #[cfg(test)]
@@ -196,6 +218,8 @@ mod tests {
         assert!(loaded.key_id.is_none());
         assert!(loaded.key_name.is_none());
         assert!(loaded.user_name.is_none());
+        // 设备身份那一栏也是后加的：老配置里没有它，不能因此读不出来（`serde(default)`）
+        assert!(loaded.device_id.is_none());
         assert!(!loaded.has_key_for("http://192.168.1.10:8000"));
     }
 
@@ -226,5 +250,41 @@ mod tests {
         config.remember_key("key_abc", "桌面端 NAS", "小又", "kylab_sk_secret");
         let text = serde_json::to_string(&config).expect("能序列化");
         assert!(!text.contains("password"), "{text}");
+    }
+
+    /// 设备身份要能**原样往返**：服务器就是拿它当"这台电脑"的键，
+    /// 每次启动读出来的值不一样 = 每次启动都是一台新电脑（工作区分家）。
+    #[test]
+    fn the_device_id_round_trips() {
+        let dir = temp_dir("device-roundtrip");
+        let mut config = Config::default();
+        config.ensure_device_id();
+        let generated = config.device_id.clone().expect("生成了设备 id");
+        config.save(&dir).expect("写配置");
+
+        let loaded = Config::load(&dir);
+        assert_eq!(loaded.device_id.as_deref(), Some(generated.as_str()));
+        // UUID v4：`8-4-4-4-12` 的十六进制（**别用主机名代替**：同型号机器的默认名会撞）
+        assert_eq!(generated.len(), 36, "{generated}");
+        assert_eq!(generated.matches('-').count(), 4, "{generated}");
+    }
+
+    /// **生成一次就不再变**：第二次调用不该换一个新的（换服务器/换账号也一样）。
+    #[test]
+    fn the_device_id_is_generated_once_and_never_replaced() {
+        let mut config = Config::default();
+        assert!(config.ensure_device_id(), "第一次应当生成");
+        let first = config.device_id.clone().unwrap();
+        assert!(!config.ensure_device_id(), "第二次不该再生成");
+        assert_eq!(config.device_id.as_deref(), Some(first.as_str()));
+
+        // 手改过地址也不影响它
+        config.remember("http://other:8000");
+        assert!(!config.ensure_device_id());
+        assert_eq!(config.device_id.as_deref(), Some(first.as_str()));
+        // 空串（有人手改成 `""`）按"没有"算，重新生成一个能用的
+        config.device_id = Some("  ".to_string());
+        assert!(config.ensure_device_id());
+        assert_ne!(config.device_id.as_deref(), Some("  "));
     }
 }
