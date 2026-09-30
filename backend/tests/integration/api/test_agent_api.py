@@ -688,12 +688,17 @@ def test_sandbox_plan_shows_what_would_run(client: TestClient) -> None:
     assert body["workdir"]
 
 
-def test_sandbox_exec_requires_approval_under_ask_policy(client: TestClient) -> None:
-    """默认策略是 ``ask``：未确认回 **409**（不是 403）——不是"你不能做"，
-    是"要先确认"。界面据此弹确认框，确认后带 approved 重调。"""
+def test_sandbox_exec_requires_approval_under_manual_policy(client: TestClient) -> None:
+    """「手动批准」那一档：未确认回 **409**（不是 403）——不是"你不能做"，
+    是"要先确认"。界面据此弹确认框，确认后带 approved 重调。
+
+    ⚠️ 2026-09-29 四档化：原来这条钉的是旧值 ``workspace``（如今映射到「默认（智能）」），
+    而智能档按"工作区内不问"判，`python -c print(1)` 不会问 ✗ —— 所以**钉住会问的那一档**
+    （手动批准）。断言强度不变：**没确认就必须 409，且说的是"要确认"**。
+    """
     client.patch(
         "/api/v1/settings",
-        json={"values": [{"key": "chat.permission", "value": "workspace"}]},
+        json={"values": [{"key": "chat.permission", "value": "manual"}]},
     )
 
     response = client.post("/api/v1/sandbox/exec", json={"argv": ["python", "-c", "print(1)"]})

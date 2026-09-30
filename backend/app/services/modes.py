@@ -324,7 +324,7 @@ def is_write(meta: ToolMeta) -> bool:
 
 
 def _scope_is_local(meta: ToolMeta) -> bool:
-    """影响面收在这一轮会话或用户的工作区里（"工作区内编辑"能覆盖的范围）。"""
+    """影响面收在这一轮会话或用户的工作区里（默认档"工作区内不问"覆盖的范围）。"""
     return meta.side_effect_scope in ("session", "workspace")
 
 

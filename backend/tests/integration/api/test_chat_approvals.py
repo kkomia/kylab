@@ -101,7 +101,15 @@ def test_the_stream_asks_then_waits_then_runs(  # type: ignore[no-untyped-def]
     """**这条就是用户要的那个闭环**：问 → 停住等 → 用户点允许 → 真的执行 → 结果回给模型。
 
     三个断言各对应用户能感知的一件事：确认条出现了、命令真的跑了、这一轮接着跑完了。
+
+    ⚠️ **必须把档位钉成「手动批准」**（2026-09-29 四档化）：默认档是「默认（智能）」，
+    它按"工作区内不问、出界/联网才问"判，`echo hi` 落在工作区里 → **不会**弹确认条，
+    这条用例的前提（"要有确认条"）就不成立了。钉住那一档，断言强度不变。
     """
+    client.patch(
+        "/api/v1/settings",
+        json={"values": [{"key": "chat.permission", "value": "manual"}]},
+    )
     calls = _install_runnable(monkeypatch)
     install_fake_chat("跑完了", script=[_run_command_call("echo hi"), LLMReply()])
     conversation_id = _open_conversation(client)
