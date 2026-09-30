@@ -1,15 +1,17 @@
-"""**两根轴**的判定矩阵：权限（能碰什么）× 任务模式（怎么干活）（2026-09-27 拆分）。
+"""**两根轴**的判定矩阵：权限（能不能碰 × 要不要问）× 任务模式（怎么干活）。
 
-这一组用例守的是用户定下的那两条口径，而不是"函数能跑"：
+这一组用例守的是用户定下的那几条口径，而不是"函数能跑"：
 
-1. **权限三档 × 读 / 写 / 执行三类工具**：只有「仅查看」会真的拦，而且只拦"会改动东西"的；
+1. **权限四档 × 读 / 写 / 执行三类工具**：只有「仅查看」会**硬拦**写类，而且只拦
+   "会改动东西"的；其余三档一律放行（差别在"要不要问"，第 5 条）；
 2. **模式两档只决定"要不要先给计划"**：``goal`` 一律放行，``plan`` 在没给计划前拦写类；
 3. **两道闸都要过，先权限后计划**（``decide``）：回给模型的理由必须**说清是哪一道拦的**
    ——输入框那一排并排摆着「权限」与「模式」两颗，指错了用户会去改另一颗；
 4. **档不改工具清单**：判定函数只看元数据与档位，不接触工具表（工具表的同一性由
    ``test_tool_loop`` 那条端到端用例钉住）；
-5. **``auto_approves`` 归权限轴**：``view`` 压根不放行、``workspace`` 只免"工作区里的写"、
-   ``full`` 一律免问。
+5. **``auto_approves`` / ``tool_needs_ask`` 归权限轴**（2026-09-29 四档 + 抄 Codex 的
+   Auto 口径）：``view`` 压根不放行、``manual`` 每条都问、``smart``（默认）工作区内不问
+   而出界/联网/说不清才问、``full`` 一律免问。
 
 工具名从 ``tool_meta.TOOL_META`` 里**取真实的条目**（不新造假元数据当夹具）：
 元数据被改动时（比如哪天把 ``create_note`` 改成只读），这里的矩阵就该跟着红——
@@ -37,7 +39,7 @@ def _verdict(
     name: str,
     *,
     mode: str = modes.MODE_GOAL,
-    permission: str = modes.PERMISSION_WORKSPACE,
+    permission: str = modes.PERMISSION_SMART,
     plan_given: bool = False,
 ) -> bool:
     return modes.decide(
@@ -51,15 +53,16 @@ def _verdict(
 def test_the_two_axes_are_exactly_what_the_user_defined() -> None:
     """两根轴的取值与默认档。
 
-    - 权限：``view`` / ``workspace`` / ``full``（**默认工作区内编辑**——默认要能干活，
-      而"动整台机器"仍然要问一句，风险留在看得见的地方）；
+    - 权限：``view`` / ``manual`` / ``smart`` / ``full``（**默认「默认（智能）」**——
+      用户 2026-09-29 的硬要求：默认要能干活，而"出工作区 / 联网 / 说不清"仍然问一句，
+      风险留在看得见的地方）；
     - 模式：``goal`` / ``plan``（**默认目标**——"要不要先给计划"是活法偏好，
       默认该是能干活的那个）。
 
-    顺序 = 界面的排列顺序：权限由紧到松，模式按用户列的那两个。
+    顺序 = 界面的排列顺序：权限由严到松，模式按用户列的那两个。
     """
-    assert modes.PERMISSIONS == ("view", "workspace", "full")
-    assert modes.DEFAULT_PERMISSION == "workspace"
+    assert modes.PERMISSIONS == ("view", "manual", "smart", "full")
+    assert modes.DEFAULT_PERMISSION == "smart"
     assert set(modes.PERMISSION_DEFS) == set(modes.PERMISSIONS)
 
     assert modes.MODES == ("goal", "plan")
@@ -75,8 +78,9 @@ def test_each_level_carries_its_one_line_copy() -> None:
         assert item["detail"], item
     assert {item["name"]: item["label"] for item in modes.describe_permissions()} == {
         "view": "仅查看",
-        "workspace": "工作区内编辑",
-        "full": "完全访问",
+        "manual": "手动批准",
+        "smart": "默认",
+        "full": "全自动",
     }
 
 
@@ -98,7 +102,7 @@ def test_an_unknown_mode_falls_back_to_the_default_and_says_so(caplog) -> None:
 
 
 def test_the_old_four_modes_and_the_old_exec_policy_are_mapped(caplog) -> None:
-    """旧值照收：``build``/``edit``/``yolo`` → ``goal``；旧的命令执行策略三档 → 权限三档。
+    """旧值照收：``build``/``edit``/``yolo`` → ``goal``；旧的命令执行策略四值 → 新四档。
 
     旧部署、``.env``、网页上写过的值都可能是旧的四档——判不出来的话会静默回默认档，
     而"我以前设的是全放行，怎么变回去了"是那种最难查的问题。映射时**留一条日志**。
@@ -109,12 +113,14 @@ def test_the_old_four_modes_and_the_old_exec_policy_are_mapped(caplog) -> None:
         assert modes.coerce("yolo") == "goal"
         assert modes.coerce("plan") == "plan"
 
-        # 旧的「命令执行策略」：允许 → 完全访问；需确认 → 工作区内编辑；拒绝 → 仅查看
+        # 旧的「命令执行策略」：允许 → 全自动；需确认 → 默认（智能）；拒绝 → 仅查看
         assert modes.coerce_permission("allow") == "full"
-        assert modes.coerce_permission("ask") == "workspace"
+        assert modes.coerce_permission("ask") == "smart"
         assert modes.coerce_permission("deny") == "view"
-        # 更早那一档（"照跑但不过审批"）：按它能做什么归到完全访问
+        # 更早那一档（"照跑但不过审批"）：按它能做什么归到全自动
         assert modes.coerce_permission("sandbox") == "full"
+        # 旧的中间档名字（旧的「工作区内编辑」）：最接近的是"默认（智能）"
+        assert modes.coerce_permission("workspace") == "smart"
     assert "build" in caplog.text or "edit" in caplog.text
 
 
@@ -143,10 +149,13 @@ def test_view_blocks_every_write_on_both_modes(mode: str, name: str) -> None:
     assert _verdict(name, mode=mode, permission=modes.PERMISSION_VIEW, plan_given=True) is False
 
 
-@pytest.mark.parametrize("permission", (modes.PERMISSION_WORKSPACE, modes.PERMISSION_FULL))
+@pytest.mark.parametrize(
+    "permission",
+    (modes.PERMISSION_MANUAL, modes.PERMISSION_SMART, modes.PERMISSION_FULL),
+)
 @pytest.mark.parametrize("name", WRITE_TOOLS + EXEC_TOOLS)
-def test_the_two_looser_levels_allow_writes(permission: str, name: str) -> None:
-    """``workspace`` / ``full`` **一律放行**写类：它们的差别在"要不要问一句"
+def test_the_three_looser_levels_allow_writes(permission: str, name: str) -> None:
+    """``manual`` / ``smart`` / ``full`` **一律放行**写类：它们的差别在"要不要问一句"
     （见 ``test_auto_approve_matrix``），不在"能不能做"。
 
     这是照抄 ZCode 的那条原则（"档不影响工具是否存在，只喂权限引擎"）：
@@ -199,7 +208,7 @@ def test_both_gates_must_pass_and_permission_is_checked_first() -> None:
     allowed, reason = modes.decide(
         meta,
         mode=modes.MODE_PLAN,
-        permission=modes.PERMISSION_WORKSPACE,
+        permission=modes.PERMISSION_SMART,
         plan_given=False,
         tool="create_note",
     )
@@ -238,7 +247,7 @@ def test_a_destructive_write_stays_blocked_in_plan_even_with_a_plan() -> None:
         modes.decide(
             meta,
             mode="plan",
-            permission=modes.PERMISSION_WORKSPACE,
+            permission=modes.PERMISSION_SMART,
             plan_given=True,
             tool="run_command",
         )[0]
@@ -266,7 +275,7 @@ def test_the_plan_refusal_says_why_and_what_to_do() -> None:
     allowed, reason = modes.decide(
         meta_of("create_note"),
         mode="plan",
-        permission=modes.PERMISSION_WORKSPACE,
+        permission=modes.PERMISSION_SMART,
         plan_given=False,
         tool="create_note",
         tool_label="写笔记",
@@ -309,7 +318,7 @@ def test_the_refusal_never_names_the_tool_it_did_not_get() -> None:
     _, reason = modes.decide(
         meta_of("create_note"),
         mode="plan",
-        permission=modes.PERMISSION_WORKSPACE,
+        permission=modes.PERMISSION_SMART,
         plan_given=False,
         tool="create_note",
     )
@@ -320,34 +329,129 @@ def test_the_refusal_never_names_the_tool_it_did_not_get() -> None:
 
 
 def test_auto_approve_matrix() -> None:
-    """``auto_approves``：这一档权限下"要不要停下来问"。
+    """``auto_approves``：这一档权限下"要不要停下来问"（2026-09-29 四档）。
 
     - ``view``：压根不放行（``permission_allows`` 拦下），这里只是安全侧的兜底；
-    - ``workspace``：会话/工作区里的非破坏性写入免问；执行命令（影响面在整台机器）
-      与 destructive 的照问；
+    - ``manual``：**一律要问**（每条都问，含工作区里的写）；
+    - ``smart``（默认）：联网、影响面在机器上、工作区外、说不清 → 问；
+      只读与工作区内的非破坏性写 → 不问；
     - ``full``：一律免问。**但"免问"不等于"越过拒绝"**：显式的拒绝规则在
       ``agent_exec`` 里排在审批之前（那三道闸不归权限轴管）。
     """
     assert modes.auto_approves(meta_of("run_command"), "view") is False
-    assert modes.auto_approves(meta_of("run_command"), "workspace") is False  # 影响面在机器上
+    # 执行命令的影响面在整台机器上：smart 要问、manual 更不用说要问
+    assert modes.auto_approves(meta_of("run_command"), "smart") is False
+    assert modes.auto_approves(meta_of("run_command"), "manual") is False
     assert modes.auto_approves(meta_of("run_command"), "full") is True
 
     workspace_write = ToolMeta(
         side_effect_scope="workspace", risk_level="medium", needs_approval=True
     )
-    assert modes.auto_approves(workspace_write, "workspace") is True
+    assert modes.auto_approves(workspace_write, "smart") is True
+    assert modes.auto_approves(workspace_write, "manual") is False
     assert modes.auto_approves(workspace_write, "view") is False
     assert modes.auto_approves(workspace_write, "full") is True
 
-    # destructive 的即使落在工作区里也不免问：删东西不可逆，"工作区内编辑"管不到它
+    # destructive 的即使落在工作区里也不免问：删东西不可逆，而且这台机器上常常没有
+    # 内核级沙箱兜底（Windows 上就是直接执行），所以宁可多问一句。
     assert (
         modes.auto_approves(
             ToolMeta(side_effect_scope="workspace", destructive=True, needs_approval=True),
-            "workspace",
+            "smart",
         )
         is False
     )
-    assert modes.auto_approves(meta_of("delete_document"), "workspace") is False
+    assert modes.auto_approves(meta_of("delete_document"), "smart") is False
+
+    # 联网类：smart 也要问（Codex 那边默认是禁网的）
+    assert modes.auto_approves(meta_of("web_fetch"), "smart") is False
+    assert modes.auto_approves(meta_of("web_fetch"), "full") is True
+
+
+# ---------------------------------------------------------- 智能档（默认）的风险判定
+
+
+def test_smart_lets_commands_inside_the_workspace_run_without_asking() -> None:
+    """① SMART：**工作区内的命令不问**（照 Codex 的 Auto：范围判定，不是命令白名单）。"""
+    for command in ("git status", "ls -la", "cat a.txt", "echo hi > out.txt", "npm run build"):
+        assert modes.command_needs_ask(command, "smart", "C:/ws") is False, command
+
+
+def test_smart_asks_when_the_command_must_leave_the_workspace() -> None:
+    """② SMART：**要出工作区就问**（绝对路径到别处、`..`、`~`）。"""
+    for command in ("rm -rf /", "ls > /tmp/x", "cat ../secret", "cat ~/.ssh/id_rsa"):
+        assert modes.command_needs_ask(command, "smart", "C:/ws") is True, command
+
+
+def test_smart_asks_for_anything_that_goes_online() -> None:
+    """③ SMART：**联网类就问**（curl/wget/ssh/npm install/git push…）。"""
+    for command in (
+        "curl http://example.com",
+        "wget http://example.com/x",
+        "ssh nas",
+        "npm install",
+        "pip install requests",
+        "git push origin main",
+    ):
+        assert modes.command_needs_ask(command, "smart", "C:/ws") is True, command
+    # 只是本机跑一跑的不算联网
+    assert modes.command_needs_ask("npm run build", "smart", "C:/ws") is False
+
+
+def test_smart_strips_wrappers_before_deciding() -> None:
+    """④ 核心：**判定前先把包装器剥掉**（Claude Code 那份"内置、不可配置"的列表）。
+
+    `timeout 5 X` 看的是 `X`，`bash -c "X"` 看的是 `X`——不剥的话
+    `timeout 5 rm -rf /` 这类就能从范围判定的缝里过去。
+    """
+    assert modes.unwrap_command("timeout 5 rm -rf /") == "rm -rf /"
+    assert modes.unwrap_command('bash -c "rm -rf /"') == "rm -rf /"
+    assert modes.unwrap_command('sh -c "ls -la"') == "ls -la"
+    assert modes.unwrap_command("env A=1 B=2 git status") == "git status"
+    assert modes.unwrap_command("nohup npm install") == "npm install"
+    # 剥之后照旧按"范围 / 联网"判：这两条都要问
+    assert modes.command_needs_ask("timeout 5 rm -rf /", "smart", "C:/ws") is True
+    assert modes.command_needs_ask('bash -c "curl http://x"', "smart", "C:/ws") is True
+    # 剥不干净（引号没配平）→ **问**（安全侧兜底）
+    assert modes.unwrap_command('bash -c "rm -rf /') is None
+    assert modes.command_needs_ask('bash -c "rm -rf /', "smart", "C:/ws") is True
+
+
+def test_smart_asks_when_it_cannot_tell() -> None:
+    """⑤ 判定不了就问：空命令、没有工作区根时的绝对路径、参数里取不出命令。"""
+    assert modes.command_needs_ask("", "smart", "C:/ws") is True
+    # 不知道工作区在哪：绝对路径一律按"在外面"算（要问），相对路径算里面
+    assert modes.command_needs_ask("cat /etc/hosts", "smart", None) is True
+    assert modes.command_needs_ask("cat a.txt", "smart", None) is False
+    # 工具侧：run_command 但参数里取不出命令 → 问
+    assert (
+        modes.tool_needs_ask(
+            meta_of("run_command"),
+            "smart",
+            tool="run_command",
+            arguments="{}",
+            workspace="C:/ws",
+        )
+        is True
+    )
+
+
+def test_manual_asks_even_for_writes_inside_the_workspace() -> None:
+    """⑥ MANUAL：连工作区里的写也要问（与 SMART 的分界就在这一条）。"""
+    inside = ToolMeta(side_effect_scope="workspace", needs_approval=True)
+    arguments = '{"path": "notes/a.md"}'
+    assert modes.tool_needs_ask(inside, "manual", tool="create_note", arguments=arguments) is True
+    assert modes.tool_needs_ask(inside, "smart", tool="create_note", arguments=arguments) is False
+    # 工作区外的写：smart 也要问（MANUAL 当然也要问）
+    outside = '{"path": "D:/elsewhere/a.md"}'
+    assert modes.tool_needs_ask(inside, "smart", tool="create_note", arguments=outside) is True
+    assert modes.tool_needs_ask(inside, "manual", tool="create_note", arguments=outside) is True
+
+
+def test_the_default_permission_is_the_smart_one(runtime) -> None:  # type: ignore[no-untyped-def]
+    """⭐ 硬要求：**没设置过 `chat.permission` 时就是「默认（智能）」**。"""
+    assert modes.DEFAULT_PERMISSION == modes.PERMISSION_SMART
+    assert runtime.get("chat.permission") == "smart"
 
 
 # ------------------------------------------------------------------ 存得下来（验收 ④）
@@ -371,7 +475,7 @@ def test_the_mode_is_a_runtime_setting_with_an_env_bootstrap(bundle) -> None:  #
 
 
 def test_the_defaults_without_any_configuration(runtime) -> None:  # type: ignore[no-untyped-def]
-    """什么都没配时：模式 ``goal``、权限 ``workspace``。"""
+    """什么都没配时：模式 ``goal``、权限 ``smart``（默认（智能））。"""
     assert runtime.get("chat.mode") == modes.DEFAULT_MODE
     assert runtime.get("chat.permission") == modes.DEFAULT_PERMISSION
     assert modes.coerce(runtime.get("chat.mode")) == modes.DEFAULT_MODE

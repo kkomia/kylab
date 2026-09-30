@@ -151,17 +151,27 @@ def run_command(
     # 闸 2：策略。deny 优先（规则或权限档），命中 allow 才是放行；
     # 没命中规则就用**权限档**——与端点的判定顺序逐条对齐（那里有两段说明为什么）。
     #
-    # 权限档怎么落到命令这一侧（2026-09-27：原来读的是 `sandbox.exec_policy`，
-    # 那一项已折进权限轴，见 services/modes.py 的模块头）：
-    #   仅查看      → 不跑（下一条直接拒，并把"这一档不许动东西"说清楚）
-    #   工作区内编辑 → 问一句（`_needs_confirm`）
-    #   完全访问    → 直接跑
+    # 权限档怎么落到命令这一侧（2026-09-29 改成四档 + 抄 Codex 的 Auto 口径，
+    # 见 services/modes.py 那段"抄成熟的"注释）：
+    #   仅查看     → 不跑（下一条直接拒，并把"这一档不许动东西"说清楚）
+    #   手动批准   → 问一句（每条都问）
+    #   默认（智能）→ **工作区内不问；要出工作区 / 要联网 / 剥不干净包装器才问**
+    #                 （判定在 modes.command_needs_ask，纯函数）
+    #   全自动     → 直接跑
+    #
+    # ⚠️ 这里**拿不到工作区根**（roots 要到本函数后面才解析，见 `resolve_roots`），
+    # 所以按"相对路径算工作区内、绝对路径算外面"的保守口径判——绝对路径会多问一句，
+    # 而"多问一句"是安全的那一侧 ✓。
     arguments = tool_arguments(argv)
     decision = rules_from_runtime(services.runtime, source="执行").decide("Bash", arguments)
     permission = modes.coerce_permission(services.runtime.get("chat.permission"))
+    command = " ".join(argv)
     global_mode = {
         modes.PERMISSION_VIEW: POLICY_DENY,
-        modes.PERMISSION_WORKSPACE: POLICY_ASK,
+        modes.PERMISSION_MANUAL: POLICY_ASK,
+        modes.PERMISSION_SMART: (
+            POLICY_ASK if modes.command_needs_ask(command, permission) else ACTION_ALLOW
+        ),
         modes.PERMISSION_FULL: ACTION_ALLOW,
     }[permission]
     if decision.action == ACTION_DENY:
@@ -172,7 +182,7 @@ def run_command(
     if global_mode == POLICY_DENY:
         return _refused(
             "这一轮的权限是「仅查看」：不改动任何东西，也不执行命令。"
-            "请如实告诉对方：要让我能跑命令，得把权限改成「工作区内编辑」或「完全访问」"
+            "请如实告诉对方：要让我能跑命令，得把权限改成「手动批准」「默认」或「全自动」"
             "（输入框那一排的「权限」，或设置 → 聊天）。",
             gate="权限档为「仅查看」",
         )
@@ -360,8 +370,12 @@ def _not_approved(approval: str, rule: str) -> ExecOutcome:
         head = "**对方一直没有回应**（等到超时），按没有批准处理"
         gate = "对方没批准：等不到回应"
     else:
-        head = "这条链路上没有人可以确认（这条链路没有界面可问）"
-        gate = "对方没批准：这条链路没人可确认"
+        # **这条链路没人可确认 ≠ 用户拒绝**（2026-09-29 用户原话："就算是拒绝，也应该
+        # 由用户来，不能直接拒绝"）。这里如实说"在等你确认、只是此刻没人可确认"，
+        # **不替用户做决定** ✗ —— 措辞里不许出现"没批准/没有批准"（那等于替他说了拒绝），
+        # 但**结论不变**：没有许可就一次都不执行 ✓（`_refused` 的 calls 为空 ✓）。
+        head = "**待确认**：这条链路上此刻没有人可以确认（这条链路没有界面可问）"
+        gate = "待确认：这条链路没人可确认"
     return _refused(
         f"{head}，**这一轮没有执行**。不要重试这条命令，也不要假装执行过。{_how_to_open(rule)}",
         gate=gate,

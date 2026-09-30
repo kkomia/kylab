@@ -101,6 +101,18 @@ def _allow_all(services: _FakeServices) -> None:
     services.runtime._values["chat.permission"] = "full"
 
 
+def _manual(services: _FakeServices) -> None:
+    """把权限扳到**会问**的那一档（``manual``）。
+
+    为什么每条"要看到审批"的用例都得显式写这一行：权限轴的默认档从"问"换成了
+    ``smart``（工作区内的命令不再逐条问，见 ``modes.DEFAULT_PERMISSION``），
+    于是"没配置过 → 应当登记一条待确认"这件事**只在 manual 档成立**。
+    这些用例钉的是安全不变量（没有许可一次都不许执行 / 拒绝与超时都如实说 /
+    未知取值绝不等于允许），所以**钉住那一档**而不是放松断言。
+    """
+    services.runtime._values["chat.permission"] = "manual"
+
+
 def _no_run(monkeypatch) -> list[list[str]]:  # type: ignore[no-untyped-def]
     """盯着"有没有真的起进程"。返回一个列表，每真跑一次就多一条 argv。"""
     calls: list[list[str]] = []
@@ -144,6 +156,7 @@ def test_default_policy_asks_instead_of_running(workspace, monkeypatch) -> None:
     """
     _available(monkeypatch)
     calls = _no_run(monkeypatch)
+    _manual(workspace)  # 默认档是 smart（不问直接跑）；这条钉的是"问"那一档
     outcome = run_command(workspace, _admin(), conversation_id=None, args={"command": "ls"})
     assert calls == [], "没有许可时一次都不许执行"
     assert outcome.ran is False
@@ -183,6 +196,7 @@ def test_allow_always_remembers_the_rule_and_stops_asking(workspace, monkeypatch
     """
     _available(monkeypatch)
     calls = _no_run(monkeypatch)
+    _manual(workspace)  # 规则只在"会问"那一档才写得进去（smart 档压根不问）
     first = run_command(
         workspace,
         _admin(),
@@ -215,6 +229,7 @@ def test_deny_refuses_with_the_same_doorway_out(workspace, monkeypatch) -> None:
     """
     _available(monkeypatch)
     calls = _no_run(monkeypatch)
+    _manual(workspace)  # "拒绝"要有意义，得先走到"问"那一步
     outcome = run_command(
         workspace,
         _admin(),
@@ -241,6 +256,7 @@ def test_each_refusal_names_its_own_gate(workspace, monkeypatch) -> None:  # typ
     _available(monkeypatch)
     _no_run(monkeypatch)
     runtime = workspace.runtime
+    runtime._values["chat.permission"] = "manual"  # 规则与权限档都只在"问"那一档生效
 
     runtime._values["sandbox.rules_deny"] = "Bash(rm:*)"
     denied = run_command(workspace, _admin(), conversation_id=None, args={"command": "rm -rf x"})
@@ -257,8 +273,12 @@ def test_each_refusal_names_its_own_gate(workspace, monkeypatch) -> None:  # typ
     legacy = run_command(workspace, _admin(), conversation_id=None, args={"command": "ls"})
     assert legacy.ran is True
 
-    # 没有界面的链路（定时任务）：确实没执行，而且说的是"没人可确认"
-    runtime._values["chat.permission"] = "workspace"  # 回到默认档：让流程走到审批那一步
+    # 没有界面的链路（定时任务）：确实没执行，而且**如实回「待确认」**——
+    # 新语义（见 test_a_link_without_a_ui_says_pending_instead_of_silently_refusing）：
+    # 没人可问时说"待确认"，**不**替用户说"没批准/拒绝"。
+    # ⚠️ 这里必须**把档位钉回 manual**：上面第 256 行刚把它设成 "sandbox"（旧档，
+    # 现在按"完全访问"认），不钉回去的话这条会真的把命令跑掉——那是另一件事。
+    runtime._values["chat.permission"] = "manual"
     nobody = run_command(
         workspace,
         _admin(),
@@ -266,8 +286,8 @@ def test_each_refusal_names_its_own_gate(workspace, monkeypatch) -> None:  # typ
         args={"command": "ls"},
         approval=approval_service.UNAVAILABLE,
     )
-    assert nobody.summary == "没有执行（对方没批准：这条链路没人可确认）"
-    assert "拒绝" not in nobody.text
+    assert "待确认" in (nobody.summary + nobody.text)
+    assert "没有批准" not in nobody.text and "没批准" not in nobody.text
 
 
 def test_timeout_is_a_refusal_and_says_nobody_answered(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -278,6 +298,7 @@ def test_timeout_is_a_refusal_and_says_nobody_answered(workspace, monkeypatch) -
     """
     _available(monkeypatch)
     calls = _no_run(monkeypatch)
+    _manual(workspace)  # 超时那条只有在"会问"的档上才等得到
     outcome = run_command(
         workspace,
         _admin(),
@@ -292,10 +313,20 @@ def test_timeout_is_a_refusal_and_says_nobody_answered(workspace, monkeypatch) -
     assert "Bash(ls" in outcome.text
 
 
-def test_a_link_without_a_ui_keeps_the_old_behaviour(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """没有人可以问的链路（定时任务）：仍然是"拒绝并说清"，且**不说成对方拒绝了**。"""
+def test_a_link_without_a_ui_says_pending_instead_of_refusing(  # type: ignore[no-untyped-def]
+    workspace, monkeypatch
+) -> None:
+    """没有人可以问的链路（定时任务）：**如实回「待确认」，不静默当拒绝**。
+
+    旧行为：没界面就按"没批准"当场拒绝 ✗ ——那等于**替用户做了决定**（他根本没见过
+    这条命令，却被告知"对方没批准"）。新行为：如实回一句"待确认" ✓，让调用方决定
+    怎么处置；措辞里**不许**出现"没批准 / 拒绝"这类"有人拒绝过"的说法 ✓。
+
+    这一条是本轮语义的要害：**没通道 ≠ 被拒绝**。
+    """
     _available(monkeypatch)
     calls = _no_run(monkeypatch)
+    _manual(workspace)  # 到"该问"那一步才谈得上"没人可问"
     outcome = run_command(
         workspace,
         _admin(),
@@ -303,15 +334,19 @@ def test_a_link_without_a_ui_keeps_the_old_behaviour(workspace, monkeypatch) -> 
         args={"command": "ls"},
         approval=approval_service.UNAVAILABLE,
     )
-    assert calls == []
-    assert "没有人可以确认" in outcome.text
-    assert "设置 → 聊天" in outcome.text
+    assert calls == [], "没有人确认时一次都不许执行（安全不变量不变）"
+    assert outcome.ran is False
+    assert "待确认" in (outcome.summary + outcome.text), "要如实说是「待确认」"
+    # 反向断言：没人拒绝过，就不许替用户说"被拒绝/没批准"
+    assert "没有批准" not in outcome.text and "没批准" not in outcome.text
+    assert "Bash(ls" in outcome.text, "出路（建议的放行规则）照旧要给"
 
 
 def test_unknown_decision_never_means_allow(workspace, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """没见过的取值**一律当没许可**：这条路放行必须是明确的。"""
     _available(monkeypatch)
     calls = _no_run(monkeypatch)
+    _manual(workspace)  # 未知取值那条也要先走到"问"这一步，否则测的是"直接跑"
     outcome = run_command(
         workspace, _admin(), conversation_id=None, args={"command": "ls"}, approval="yes-please"
     )

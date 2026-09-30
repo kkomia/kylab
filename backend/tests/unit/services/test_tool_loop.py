@@ -1676,14 +1676,19 @@ def test_the_tool_table_is_identical_in_all_four_modes() -> None:
 
 
 def test_the_permission_decides_who_answers_the_approval_prompt() -> None:
-    """三档权限的差别就在"要不要问一句"（``modes.auto_approves``，2026-09-27 拆出来的轴）：
+    """四档权限的差别就在"要不要问一句"（``modes.auto_approves``，2026-09-27 拆出来的轴）：
 
-    - ``workspace``（默认）：执行命令的影响面在**整台机器**上，照问（发 ``ApprovalEvent``）；
+    - ``smart``（**默认档**，2026-09-29 四档化之后的新默认）：工作区内的写不再逐条问，
+      而这条用例里的 ``run_command`` 影响面是**整台机器**，所以照问 ✓；
+    - ``manual``（手动批准）：每条都问，与上面同一结果（这条用例只走整机命令）；
     - ``full``：不再问，执行器直接拿到 ``allow_once``；
     - ``view``：压根不放行（``permission_allows`` 已经拦下）——一个事件都不发。
 
     **免问不等于越过拒绝**：显式的拒绝规则在 ``agent_exec`` 里排在审批之前
     （那三道闸不归权限轴管），这条用例只管"问不问"。
+
+    旧常量 ``PERMISSION_WORKSPACE`` 随四档化改名了（它就是今天的 ``PERMISSION_SMART``）：
+    这里换名字不换强度 —— 断言仍然是"**默认档也对整机命令照问**" ✓。
     """
     registry = ApprovalRegistry(timeout=5)
 
@@ -1711,7 +1716,7 @@ def test_the_permission_decides_who_answers_the_approval_prompt() -> None:
                 registry.decide(event.approval_id, approval_service.ALLOW_ONCE)
         return seen, asked
 
-    workspace_seen, workspace_asked = run_with(modes.PERMISSION_WORKSPACE)
+    workspace_seen, workspace_asked = run_with(modes.PERMISSION_SMART)
     assert workspace_seen == [None, approval_service.ALLOW_ONCE]
     assert workspace_asked == 1, "工作区内编辑这一档，执行命令仍然要问"
 

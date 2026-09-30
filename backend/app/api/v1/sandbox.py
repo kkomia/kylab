@@ -127,12 +127,21 @@ def exec_command(
     #    ask，于是"以后都允许"点完照样再问一遍——那正是规则存在的意义被架空了）。
     #    实现上就是把命中的那条规则当作生效档位；没命中规则才用权限档。
     #
-    # 权限档（2026-09-27：原来读的是 `sandbox.exec_policy`，那一项已折进权限轴）：
-    # 仅查看 → 不跑；工作区内编辑 → 问一句；完全访问 → 直接跑。
+    # 权限档（2026-09-29 四档 + 抄 Codex 的 Auto 口径，见 services/modes.py 那段
+    # "抄成熟的"注释）：仅查看 → 不跑；手动批准 → 每条都问；
+    # 默认（智能）→ 工作区内不问、出界/联网/剥不干净才问；全自动 → 直接跑。
+    # 这里**有工作区根**（`root`），所以按真实范围判 ✓。
     permission = modes.coerce_permission(services.runtime.get("chat.permission"))
+    command = modes.command_from_arguments(arguments)
+    workspace = str(root) if root is not None else None
     global_mode = {
         modes.PERMISSION_VIEW: ACTION_DENY,
-        modes.PERMISSION_WORKSPACE: ACTION_ASK,
+        modes.PERMISSION_MANUAL: ACTION_ASK,
+        modes.PERMISSION_SMART: (
+            ACTION_ASK
+            if modes.command_needs_ask(command, permission, workspace)
+            else ACTION_ALLOW
+        ),
         modes.PERMISSION_FULL: ACTION_ALLOW,
     }[permission]
     if decision.action == ACTION_DENY:

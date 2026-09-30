@@ -1264,7 +1264,7 @@ describe('停止与回到最新', () => {
         {
           key: 'chat',
           label: '聊天',
-          fields: [{ key: 'chat.permission', label: '权限', type: 'select', value: 'workspace' }],
+          fields: [{ key: 'chat.permission', label: '权限', type: 'select', value: 'smart' }],
         },
       ],
     } as never)
@@ -1275,9 +1275,10 @@ describe('停止与回到最新', () => {
     await screen.findByTestId('reply-text')
 
     // 触发器上**只写档名**（用户 2026-09-28 的原话："这个权限按钮不要加权限俩字"），
-    // "这是什么"留给无障碍名字（`权限：<档名>`）；位置仍然在加号与知识库之间
-    const pill = await screen.findByRole('button', { name: '权限：工作区内编辑' })
-    expect(pill).toHaveTextContent('工作区内编辑')
+    // "这是什么"留给无障碍名字（`权限：<档名>`）；位置仍然在加号与知识库之间。
+    // 档名 2026-09-29 改成四档，默认档 =「默认」（智能）——这里跟着改成新档名。
+    const pill = await screen.findByRole('button', { name: '权限：默认' })
+    expect(pill).toHaveTextContent('默认')
     expect(pill).not.toHaveTextContent('权限')
     const siblings = [...(pill.parentElement?.children ?? [])]
     expect(siblings.indexOf(pill)).toBe(1)

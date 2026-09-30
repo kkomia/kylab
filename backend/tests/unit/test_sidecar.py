@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,8 +20,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import sidecar
-from app.services.llm import ChatMessage, LLMDelta, ToolCallDelta
+from app.services.approvals import ALLOW_ONCE, DENY, UNAVAILABLE, ApprovalRegistry, ApprovalRequest
+from app.services.llm import ChatMessage, LLMDelta, ToolCallDelta, ToolSpec
 from app.services.remote_clients import RemoteUnavailableError
+from app.services.tool_loop import ToolLoop, ToolOutcome
 
 
 class _FakeModel:
@@ -406,6 +409,282 @@ def _events(response) -> list[dict[str, Any]]:  # type: ignore[no-untyped-def]
         if payload:
             out.append(json.loads(payload))
     return out
+
+
+# ------------------------------------------------- ASK 的通道（P4-4：确认条真的弹出来）
+
+class _NeedsApprovalRunner:
+    """假执行器：**第一次要用户点头** ✓（登记一条待确认），拿到决定之后才**真的执行** ✓。
+
+    为什么不直接拿真 `run_command` 去撞审批：那要看 `chat.permission`、隔离后端、
+    规则匹配三件事的脸色 ✗（本机没隔离后端时命令在执行前就被拒了 ✓），用例会随环境时红时绿 ✗。
+    这里只把**执行器**换成假的 ✓ —— `ToolLoop`、`ApprovalRegistry`、SSE 这三层全是真的 ✓，
+    验的正是"通道"这一段 ✓（照本文件"假两端"的老实做法 ✓）。
+    """
+
+    def __init__(self, registry: Any, *, timeout: float = 20.0) -> None:
+        self.registry = registry
+        #: 等待上限**故意比默认的 120 秒短** ✓：用例写错时会在 20 秒内收场 ✓（不挂住 CI ✗）；
+        #: 但又必须比"TestClient 流式的开销"宽裕 ✓ —— 给 1.5 秒时实测到过"事件刚读到、
+        #: 决定还没发出去就超时了" ✗（那是用例自己的时序，不是通道有问题 ✓）。
+        self.timeout = timeout
+        self.tool = "run_command"
+        self.args = '{"command": "echo hi > 工作区外的文件.txt"}'
+        #: 执行器收到的**取值**（`None` 档不在里面 —— 那一次压根不执行 ✓）。
+        self.decisions: list[str] = []
+        #: 真的执行了几次（批准才 1 ✓；拒绝 / 待确认都是 0 ✓）。
+        self.ran = 0
+
+    def __call__(self, name, args, approval=None):  # type: ignore[no-untyped-def]
+        if approval is None:
+            request = self.registry.open(
+                tool=name,
+                label="执行命令",
+                args=str(args),
+                detail="这条命令要写工作区外的文件",
+                rule="Bash(echo:*)",
+                timeout=self.timeout,
+            )
+            return ToolOutcome(content="这一步要先确认", summary="待确认", approval=request)
+        self.decisions.append(str(approval))
+        if approval in (DENY, UNAVAILABLE):
+            # **不执行**，并且如实说清是哪一种"没批准"（措辞归另一条 lane ✓，取值是本用例的判据 ✓）
+            return ToolOutcome(
+                content=f"没有执行（{approval}）", summary="没执行", outcome="blocked"
+            )
+        self.ran += 1
+        return ToolOutcome(content=f"执行完成（{approval}）", summary="执行完成", outcome="ok")
+
+
+def _approval_app(tmp_path, monkeypatch, model):  # type: ignore[no-untyped-def]
+    """装配一个**真的**边车 app，只把执行器与工具表换成"要审批的那个" ✓。"""
+    holder: dict[str, Any] = {}
+
+    def _build(base: str, token: str, *, workspace: Path, data_dir: Path):  # type: ignore[no-untyped-def]
+        clients = sidecar.Clients(
+            base,
+            token,
+            workspace=workspace,
+            data_dir=data_dir,
+            knowledge=object(),
+            model=model,
+        )
+        holder["clients"] = clients
+        return clients
+
+    monkeypatch.setattr(sidecar, "build_clients", _build)
+    monkeypatch.setattr(sidecar, "_probe_health", lambda url, timeout=5.0: (True, ""))
+    app = sidecar.create_app("http://server.test/api/v1", "t", tmp_path / "ws")
+    runner = _NeedsApprovalRunner(holder["clients"].approvals)
+    monkeypatch.setattr(sidecar.agent_tools, "build_runner", lambda *a, **k: runner)
+    monkeypatch.setattr(
+        sidecar.Clients,
+        "tool_specs",
+        lambda self, kb_ids=(): [
+            ToolSpec(name=runner.tool, description="在这台机器上跑一条命令", parameters={})
+        ],
+    )
+    return app, holder["clients"], runner
+
+
+def _loop_with_approval(model, runner, registry):  # type: ignore[no-untyped-def]
+    """真的 `ToolLoop` + 真的 `ApprovalRegistry` ✓，只把模型与执行器换成假的 ✓。"""
+    return ToolLoop(
+        client_factory=lambda: model,
+        tools=[ToolSpec(name=runner.tool, description="在这台机器上跑一条命令", parameters={})],
+        runner=runner,
+        approvals=registry,
+    )
+
+
+def _drive(loop, messages):  # type: ignore[no-untyped-def]
+    """在**另一个线程**里驱动循环 ✓，返回 (线程, 事件列表, 收到询问的信号) ✓。
+
+    为什么要另起线程：`/turn/stream` 那条链就是"生成器停在等确认上" ✓（真界面也是这个时序 ✓）。
+    测试这条时序只有两种写法：真起一个服务器连 SSE ✗（`TestClient` 会把整段响应缓冲下来，
+    于是"先收事件、再点按钮"根本发生不了 ✗ —— 实测决定要等 20 秒超时才被处理 ✓），
+    或者**直接驱动那个生成器** ✓。这里选后者：`ToolLoop` + `ApprovalRegistry` 全是真的 ✓，
+    少掉的只有 HTTP 那层包装 ✓（那层另有端点用例 ✓）。
+    """
+    events: list[object] = []
+    seen = threading.Event()
+    state: dict[str, BaseException | None] = {"error": None}
+
+    def _run() -> None:
+        try:
+            for event in loop.run(messages=messages):
+                events.append(event)
+                if isinstance(event, sidecar.ApprovalEvent):
+                    seen.set()
+        except BaseException as exc:
+            state["error"] = exc
+            seen.set()
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    return thread, events, seen, state
+
+
+def test_ask_raises_an_approval_and_allow_once_reruns_the_step() -> None:
+    """ASK 真的**问出来** ✓：事件带齐那七个字段 ✓，点「允许一次」后那一步**重跑并成功** ✓。
+
+    `SSE` 那个载荷本身另有 `_approval_payload` 的用例 ✓（这里是循环这一段 ✓）。
+    """
+    model = _ToolCallingModel("run_command", '{"command": "echo hi"}', "已经处理好了")
+    registry = ApprovalRegistry()
+    runner = _NeedsApprovalRunner(registry)
+    loop = _loop_with_approval(model, runner, registry)
+
+    thread, events, seen, state = _drive(
+        loop, [ChatMessage(role="user", content="在工作区外写个文件")]
+    )
+    # **先收到询问** ✓（循环那边已经停在 `wait_decision` 上了 ✓）—— 这一步不出现就是死锁 ✓
+    assert seen.wait(10), "循环没有发出「要用户点头」的询问"
+    assert state["error"] is None, state["error"]
+
+    request = next(item for item in events if isinstance(item, sidecar.ApprovalEvent))
+    assert request.tool == "run_command"
+    assert "echo hi" in request.args
+    assert request.label and request.detail and request.rule
+    assert request.timeout_seconds > 0
+    # 还没人点之前**一步都没执行** ✗（这正是"停下来问"的意思 ✓）
+    assert runner.ran == 0 and runner.decisions == []
+
+    # 点「允许一次」✓ —— 决定交回正在等它的那一步 ✓
+    assert registry.decide(request.approval_id, ALLOW_ONCE) is True
+    thread.join(timeout=10)
+    assert not thread.is_alive(), "决定送到了，循环却没醒"
+
+    assert runner.decisions == [ALLOW_ONCE]
+    assert runner.ran == 1, "允许之后那一步**重跑并成功** ✓"
+    done = next(item for item in events if isinstance(item, sidecar.DoneEvent))
+    assert done.answer == "已经处理好了"
+
+
+def test_deny_with_a_reason_reaches_the_model() -> None:
+    """点「拒绝」+ 理由 → **模型收到那句话** ✓，而且那一步**没有执行** ✗。
+
+    为什么专钉"理由进模型"：只回一句"被拒了"，模型多半把同一条命令原样再试一次 ✓
+    （那是 `tool_loop._with_reason` 存在的原因 ✓）；理由是在**循环那一层**拼进回灌文本的 ✓，
+    所以判据打在"模型下一轮看到的工具消息里有没有那句话"上 ✓。
+    """
+    model = _ToolCallingModel("run_command", '{"command": "rm -rf /"}', "那我换个做法")
+    registry = ApprovalRegistry()
+    runner = _NeedsApprovalRunner(registry)
+    loop = _loop_with_approval(model, runner, registry)
+
+    thread, events, seen, state = _drive(
+        loop, [ChatMessage(role="user", content="帮我清一下盘")]
+    )
+    assert seen.wait(10)
+    request = next(item for item in events if isinstance(item, sidecar.ApprovalEvent))
+    assert registry.decide(request.approval_id, DENY, "别删，换成清理临时目录") is True
+    thread.join(timeout=10)
+
+    assert state["error"] is None, state["error"]
+    assert runner.decisions == [DENY]
+    assert runner.ran == 0, "拒绝之后**不许执行** ✗"
+    tool_messages = [item for item in model.rounds[-1] if item.role == "tool"]
+    assert tool_messages, "结果照旧回灌给模型 ✓"
+    assert any("别删，换成清理临时目录" in str(item.content) for item in tool_messages)
+
+
+def test_the_sse_approval_payload_matches_the_server_field_for_field() -> None:
+    """`type=approval` 的载荷与服务器那条链**逐字对齐** ✓（少一个字段前端就得另做推断 ✗）。"""
+    request = ApprovalRequest(
+        approval_id="appr_1",
+        tool="run_command",
+        label="执行命令",
+        args="echo hi",
+        detail="在工作区外写文件",
+        rule="Bash(echo:*)",
+        timeout_seconds=120.0,
+    )
+
+    payload = sidecar._approval_payload(
+        sidecar.ApprovalEvent(
+            approval_id=request.approval_id,
+            tool=request.tool,
+            label=request.label,
+            args=request.args,
+            detail=request.detail,
+            rule=request.rule,
+            timeout_seconds=request.timeout_seconds,
+        )
+    )
+
+    assert payload == {
+        "approval_id": "appr_1",
+        "tool": "run_command",
+        "label": "执行命令",
+        "args": "echo hi",
+        "detail": "在工作区外写文件",
+        "rule": "Bash(echo:*)",
+        "timeout_seconds": 120.0,
+    }
+
+
+def test_the_decision_endpoint_hands_the_answer_to_the_waiting_step(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """`POST /turn/approvals/{id}` 把决定交给**正在等它的那一步** ✓；失效的确认 → **409** ✓。
+
+    判据打在**同一个登记表**上 ✓：端点调的就是 `Clients.approvals` ✓（不另造一套 ✗），
+    所以"端点收下了"与"那一头拿到了"是同一件事 ✓ —— `wait_decision` 立刻返回 ✓，不等满超时 ✓。
+    """
+    app, clients, _runner = _approval_app(tmp_path, monkeypatch, _FakeModel())
+    registry = clients.approvals
+    request = registry.open(
+        tool="run_command", label="执行命令", args="echo hi", rule="Bash(echo:*)"
+    )
+
+    with TestClient(app) as client:
+        accepted = client.post(
+            f"/turn/approvals/{request.approval_id}", json={"decision": "allow_once"}
+        )
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json() == {"accepted": True, "detail": "已经交给正在等它的那一步"}
+
+        # **那一头真的拿到了** ✓（同一个登记表 ✓，立刻返回 ✓）
+        assert registry.wait_decision(request.approval_id).decision == ALLOW_ONCE
+
+        # 再点一次：已经没有这条了 → **409** ✓（不是回一句"已记录" ✗，照服务器口径 ✓）
+        again = client.post(
+            f"/turn/approvals/{request.approval_id}", json={"decision": "deny"}
+        )
+        assert again.status_code == 409, again.text
+        assert "失效" in again.json()["detail"]
+
+        # 不存在的 id 也是 409 ✓
+        unknown = client.post("/turn/approvals/deadbeef", json={"decision": "deny"})
+        assert unknown.status_code == 409, unknown.text
+
+        # 取值只有三个 ✓：别的值是 **422** ✓（不是静默当拒绝 ✗）
+        assert client.post("/turn/approvals/x", json={"decision": "maybe"}).status_code == 422
+        assert client.post("/turn/approvals/x", json={}).status_code == 422
+
+
+def test_the_non_streaming_turn_has_no_channel_and_never_pretends_a_denial(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """⑤ **没有通道**那条路：结果是"待确认"（`UNAVAILABLE`）✓，**不是**"用户拒绝了" ✗。
+
+    `/turn`（非流式）是**整段**返回的 ✓ —— 询问发不出去（调用方在拿到响应之前不知道
+    `approval_id` ✗），所以它按"这条链路上没人可以问"处理 ✓；让人干等 120 秒才是错的 ✗
+    （那条路要走 `/turn/stream` ✓）。判据打在**执行器收到的取值**上 ✓：
+    措辞归另一条 lane ✓，而"是 `UNAVAILABLE` 还是 `DENY`"是这条语义的硬边 ✓
+    （把它们混起来，模型会以为用户看过并否了，下一轮就说错话 ✓）。
+    """
+    model = _ToolCallingModel("run_command", '{"command": "echo hi"}', "那我换个说法")
+    app, _clients, runner = _approval_app(tmp_path, monkeypatch, model)
+
+    with TestClient(app) as client:
+        payload = client.post("/turn", json={"message": "帮我跑一下"}).json()
+
+    assert runner.decisions == [UNAVAILABLE], "没有通道时必须是「待确认」这一档 ✓"
+    assert runner.ran == 0, "没批准就不执行 ✓"
+    # 而这一轮照旧答完 ✓（"待确认"不影响本轮把话说完 ✓）
+    assert payload["answer"] == "那我换个说法"
 
 
 def test_turn_stream_runs_a_tool_and_streams_the_answer(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]

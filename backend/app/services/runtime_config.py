@@ -146,9 +146,9 @@ SETTING_GROUPS: dict[str, Any] = {
             },
             {
                 "key": "chat.permission",
-                "label": "权限（仅查看 / 工作区内编辑 / 完全访问）",
+                "label": "权限（仅查看 / 手动批准 / 默认 / 全自动）",
                 "type": "select",
-                # 三层权限的取值与文案同样只有 `services/modes.py` 一处来源。
+                # 四档权限的取值与文案同样只有 `services/modes.py` 一处来源。
                 # 输入区那一颗「权限」胶囊读写的也是这一项——与这里同一份数据。
                 "options": [
                     {"value": item["name"], "label": f"{item['label']}（{item['hint']}）"}
