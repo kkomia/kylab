@@ -5,28 +5,33 @@
 
 **为什么"选择"要服务端做**：工作区根目录是**服务器上**的路径（后端跑在 NAS 上），
 浏览器的目录选择器给的是客户端本机的东西——指向的还是另一台机器。所以只能是
-"服务端列给你看"。这一组用例钉四件事：
+"服务端列给你看"。这一组用例钉五件事：
 
 1. **每件事只有一份判定**：浏览时标"不可选 / 不可建 / 不可改名"用的就是真去动手时
    那一份（``root_path_problem`` / ``create_problem`` / ``rename_problem``），
    所以灰掉的一定也做不成——不会出现"能选但建失败"，也不会"按钮亮着点了报错"；
 2. **不藏东西**：数据目录会出现在列表里但标着原因（静默省略会让人以为"这里没有它"）；
    隐藏目录排在后面但**照样列出来**（它们是合法的工作区）；
-3. **专用区域是唯一能动手的地方**（v0.41）：默认落在它里面、起点里排第一、
-   首次浏览顺手建出来；区域外只读浏览，而"为什么不能建"直接标在那一行上——
-   用户报的正是"显示了又不给建"；
-4. **报错要能指导下一步**：把文件当目录时会顺带说出它的父目录（用户多半是拖错了），
+3. **新建除数据目录树之外哪儿都能建**（v0.58，用户点名"在 D:\\ 下也得能建"）：
+   区域外的自定义路径照常可建、可当工作区；写着"不能建"的只剩数据目录那一棵树，
+   原因标在那一行上。**能写不能写不做探测**，由真实 ``mkdir`` 的 ``OSError`` 回答；
+4. **专用区域仍是默认落脚点与改名的唯一范围**（v0.41）：默认落在它里面、起点里排第一、
+   首次浏览顺手建出来；而改名没有跟着放开（它动的是别人的既有目录）；
+5. **报错要能指导下一步**：把文件当目录时会顺带说出它的父目录（用户多半是拖错了），
    路径不存在时说清是哪个路径。
 """
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
 
 from app.core.exceptions import InvalidRequestError
+from app.services import isolation as iso
 from app.services.workspace import (
     AREA_ROOT_LABEL,
     MAX_BROWSE_ENTRIES,
@@ -38,13 +43,17 @@ from app.storage.base import WorkspaceRecord
 
 
 class _FakeMeta:
-    """只够 ``browse`` 用的一小撮存储（它只读已有工作区来当起点）。"""
+    """只够 ``browse`` / ``create`` 用的一小撮存储（不做归属过滤与时间戳）。"""
 
     def __init__(self, records: list[WorkspaceRecord] | None = None) -> None:
         self.records = records or []
 
     def list_workspaces(self) -> list[WorkspaceRecord]:
         return list(self.records)
+
+    def create_workspace(self, record: WorkspaceRecord) -> WorkspaceRecord:
+        self.records.append(record)
+        return record
 
 
 class _FakeStores:
@@ -223,74 +232,73 @@ def test_inside_the_area_every_thing_is_selectable_and_creatable(
     assert proj.reason == "" and proj.create_reason == "" and proj.rename_reason == ""
 
 
-def test_outside_the_area_rows_are_marked_read_only_with_the_reason(
+def test_outside_the_area_rows_are_creatable_but_still_not_renamable(
     service: WorkspaceService, tmp_path: Path
 ) -> None:
-    """③ 区域外：**原因标在那一行上**，而不是等用户点了"新建"才报错。
+    """③ 区域外（v0.58）：**能建**，但仍然**不能改名**——改名没跟着放开。
 
-    断言的是"标记与拒绝是同一句话"——这条比"有没有标记"更要紧：
-    两份规则一漂，界面就会开始说谎。
+    改名动的是别人的既有目录（改错了名字那个目录就不见了，而归属于谁这里判不出来），
+    风险与"新建一个空目录"不是一回事，所以它仍只在专用区域里做。
+    两件事各有一份判定，一屏里同时出现，正好钉住"它们不是同一个开关"。
     """
     view = service.browse(str(tmp_path / "home"))
     proj = next(item for item in view.entries if item.name == "proj")
-    assert proj.creatable is False
-    assert proj.renamable is False
-    assert "「工作区」区域" in proj.create_reason
-    assert proj.selectable is True, "区域外仍然**可选**（只是不能写），改的只是能写的地方"
+    assert proj.creatable is True, "区域外也能新建目录（v0.58 用户点名）"
+    assert proj.create_reason == ""
+    assert proj.renamable is False, "改名仍只在区域里"
+    assert "「工作区」区域" in proj.rename_reason
+    assert proj.selectable is True, "区域外仍然**可选**"
 
-    with pytest.raises(InvalidRequestError) as create_exc:
-        service.create_directory(parent=proj.path, name="新项目")
-    assert str(create_exc.value) == proj.create_reason
+    # 当前这一层也一样：界面上那颗「新建文件夹」就靠它决定亮不亮
+    assert view.current.creatable is True
+    entry = service.create_directory(parent=view.path, name="新项目")
+    assert (tmp_path / "home" / "新项目").is_dir()
+    assert entry.selectable is True, "建完就能直接选中它当工作区"
 
     with pytest.raises(InvalidRequestError) as rename_exc:
         service.rename_directory(path=proj.path, name="proj2")
     assert str(rename_exc.value) == proj.rename_reason
 
-    # 当前这一层也一样：界面上那颗「新建文件夹」就靠它决定亮不亮
-    assert view.current.creatable is False
-    with pytest.raises(InvalidRequestError) as here_exc:
-        service.create_directory(parent=view.path, name="新项目")
-    assert str(here_exc.value) == view.current.create_reason
-
 
 def test_symlinks_are_judged_on_the_real_path(
-    service: WorkspaceService, tmp_path: Path, area_dir: Path
+    service: WorkspaceService, tmp_path: Path, data_dir: Path, area_dir: Path
 ) -> None:
     """软链：**判定必须落在解析后的位置上**，否则界面会说谎。
 
-    两个方向都验：
+    两个方向都验（v0.58 起唯一会拦的边界只剩数据目录树，所以这里是它）：
 
-    - 区域里链到区域外（`<区域>/escape -> <家目录>`）：写盘那条路 resolve 之后
-      会被拒，所以浏览时那一行也得标着"不能建"——不然就是"标着能建、点了报错"；
-    - 区域外链到区域里（`<家目录>/in -> <区域>`）：反过来，able 要写在前面，
-      因为真去建是允许的（resolve 之后落在区域里）。
+    - 区域外链到数据目录里（`<家目录>/into_data -> <数据目录>`）：只有 resolve 之后
+      才看得出那是数据目录，所以浏览时那一行也得标着"不能建"——不然就是
+      "标着能建、点了报错"；
+    - 区域里链到区域外（`<区域>/escape -> <家目录>`）：反过来，`able` 要写在前面，
+      因为真去建是允许的（v0.58 起区域外本来就放行），建出来的目录落在链的真身上。
     """
     home = tmp_path / "home"
+    into_data = home / "into_data"
     outside_link = area_dir / "escape"
-    inside_link = home / "in"
     try:
+        into_data.symlink_to(data_dir, target_is_directory=True)
         outside_link.symlink_to(home, target_is_directory=True)
-        inside_link.symlink_to(area_dir, target_is_directory=True)
     except (OSError, NotImplementedError):  # pragma: no cover - Windows 无权限时跳过
         pytest.skip("这个环境不允许建符号链接")
 
-    escape = next(item for item in service.browse(str(area_dir)).entries if item.name == "escape")
-    assert escape.creatable is False
+    escape = next(item for item in service.browse(str(home)).entries if item.name == "into_data")
+    assert escape.creatable is False, "链到数据目录 = 落在数据目录里，不能建"
     with pytest.raises(InvalidRequestError) as excinfo:
-        service.create_directory(parent=str(outside_link), name="新项目")
+        service.create_directory(parent=str(into_data), name="新项目")
     assert str(excinfo.value) == escape.create_reason
-    assert not (home / "新项目").exists(), "被拒时不该动到区域外的目录"
+    assert not (data_dir / "新项目").exists(), "被拒时不该动到数据目录"
 
-    inside = next(item for item in service.browse(str(home)).entries if item.name == "in")
+    inside = next(item for item in service.browse(str(area_dir)).entries if item.name == "escape")
     assert inside.creatable is True
-    entry = service.create_directory(parent=str(inside_link), name="新项目")
-    assert entry.path == str((area_dir / "新项目").resolve())
+    entry = service.create_directory(parent=str(outside_link), name="新项目")
+    assert entry.path == str((home / "新项目").resolve()), "建在链的真身上"
 
 
 def test_the_data_directory_row_says_the_specific_reason(
-    service: WorkspaceService, data_dir: Path
+    service: WorkspaceService, data_dir: Path, area_dir: Path
 ) -> None:
-    """数据目录（区域除外）也在"区域外"那一档里，但**说法更具体**：
+    """数据目录那一棵树**仍是唯一说"不能建"的地方**（v0.58），且说法比"这里只读"具体：
     它同时告诉用户服务端的数据在哪儿、该去哪儿建项目。"""
     view = service.browse(str(data_dir.parent))
     entry = next(item for item in view.entries if item.path == str(data_dir.resolve()))
@@ -298,18 +306,23 @@ def test_the_data_directory_row_says_the_specific_reason(
     assert "数据目录里不能新建目录" in entry.create_reason
     assert "「工作区」区域" in entry.create_reason
 
-    # 而区域那一行是**能进去建**的（否则用户没有入口走到能建的地方）
-    area_entry = next(item for item in service.browse(str(data_dir)).entries if item.creatable)
-    assert area_entry.path == str(workspace_area(data_dir))
+    # 而区域那一行（区域在数据目录里面）是**能进去建**的——它是默认落脚点
+    area_path = str(area_dir.resolve())
+    area_row = next(
+        item for item in service.browse(str(data_dir)).entries if item.path == area_path
+    )
+    assert area_row.creatable is True
+    assert area_row.renamable is False, "区域自身不能改名（它是默认落脚点）"
 
 
 def test_an_existing_workspace_outside_the_area_is_still_selectable(
     service: WorkspaceService, tmp_path: Path
 ) -> None:
-    """④ 已有工作区仍能选中：**区域外只读不等于区域外不能选**。
+    """④ 已有工作区仍能选中：**改写盘规则不动"能不能选"**。
 
     老用户的目录在 NAS 上的别处（甚至就在家目录里），把它们变成"只能看、不能选"
     等于把已有工作区弄坏——所以"能不能选"与"能不能写"是两件事，两个判定。
+    v0.58 起区域外连"写"也放开了，这条口径更明显：三条判定各自守自己那件事。
     """
     existing = tmp_path / "elsewhere" / "老项目"
     existing.mkdir(parents=True)
@@ -320,7 +333,7 @@ def test_an_existing_workspace_outside_the_area_is_still_selectable(
     view = service.browse(str(existing))
     assert view.current.path == str(existing.resolve())
     assert view.current.selectable is True, "老工作区照旧能选中"
-    assert view.current.creatable is False, "但那儿建不了新目录"
+    assert view.current.creatable is True, "v0.58 起那儿也能建新目录"
 
     roots = {item.name: item for item in view.roots}
     assert roots["老项目"].path == str(existing.resolve())
@@ -405,15 +418,61 @@ def test_create_makes_one_directory_and_describes_it(
     assert (area_dir / "新项目").is_dir()
 
 
-def test_create_outside_the_area_is_refused_with_the_marked_reason(
+def test_create_outside_the_area_works_and_the_row_says_so(
     service: WorkspaceService, tmp_path: Path
 ) -> None:
-    """③ 区域外建目录被拒，且拒绝的理由与浏览时标在那一行上的**一字不差**。"""
-    marked = service.browse(str(tmp_path / "home")).current.create_reason
+    """区域外（v0.58）：**能建**，而且浏览时那一行标的就是"能建"。
+
+    两侧一起钉：界面亮着的那一行，点下去必须真建出来——这是"标记与拒绝同一份判定"
+    的正面（旧口径下这里是"标着不能建、点了也报错"的负面）。
+    """
+    view = service.browse(str(tmp_path / "home"))
+    assert view.current.creatable is True
+    assert view.current.create_reason == ""
+
+    entry = service.create_directory(parent=str(tmp_path / "home"), name="新项目")
+    assert (tmp_path / "home" / "新项目").is_dir()
+    assert entry.creatable is True and entry.selectable is True
+
+
+def test_the_filesystem_root_is_creatable_but_not_selectable(
+    service: WorkspaceService, tmp_path: Path
+) -> None:
+    """文件系统根：**能建（creatable=True）但不能选（selectable=False）**（v0.58）。
+
+    两件事两个判定，所以这一行是"能在这下面建目录、但不能拿它当工作区"：
+    新建不再限区域（用户要在 `D:\\` 下开项目就得能在那儿建目录），
+    而"把整台机器交给 Agent 的文件操作"照旧是权限事故，不是配置错误。
+    """
+    view = service.browse(str(Path(tmp_path.anchor)))
+    assert view.current.path == str(Path(tmp_path.anchor).resolve())
+    assert view.current.creatable is True
+    assert view.current.create_reason == ""
+    assert view.current.selectable is False
+    assert "文件系统根" in view.current.reason
+
+
+def test_a_failing_mkdir_is_reported_truthfully(
+    service: WorkspaceService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """写不进去时说的话**来自那次真实的 ``mkdir``**，不来自任何事先探测（v0.58）。
+
+    把 ``mkdir`` 换成会失败的那个样子（只读分区 / 权限不够在这台机器上不好造，
+    而它们的表现都是同一个 ``OSError``）：错误里要带着系统给的那句话，
+    用户与模型才判断得出下一步（换个地方？换个名字？还是改权限）。
+    """
+
+    def boom(self: Path, *args: object, **kwargs: object) -> None:
+        raise PermissionError(13, "Permission denied")
+
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    monkeypatch.setattr(Path, "mkdir", boom)
+
     with pytest.raises(InvalidRequestError) as excinfo:
-        service.create_directory(parent=str(tmp_path / "home"), name="新项目")
-    assert str(excinfo.value) == marked
-    assert not (tmp_path / "home" / "新项目").exists(), "被拒时不该动到磁盘"
+        service.create_directory(parent=str(custom), name="新项目")
+    assert "建不了这个目录" in str(excinfo.value)
+    assert "Permission denied" in str(excinfo.value)
 
 
 def test_create_refuses_an_existing_name(service: WorkspaceService, area_dir: Path) -> None:
@@ -432,8 +491,62 @@ def test_create_does_not_make_parents(service: WorkspaceService, area_dir: Path)
 def test_create_refuses_inside_the_data_directory(
     service: WorkspaceService, data_dir: Path
 ) -> None:
+    """**唯一还禁的一棵**（v0.58）：数据目录树。里面是服务端自己的库与原件，
+    往里建目录没有意义，而那句原因比"这里只读"具体得多。"""
     with pytest.raises(InvalidRequestError, match="数据目录里不能新建目录"):
         service.create_directory(parent=str(data_dir), name="新库")
+    with pytest.raises(InvalidRequestError, match="数据目录里不能新建目录"):
+        service.create_directory(parent=str(data_dir / "inside"), name="新库")
+
+
+def test_a_directory_created_outside_the_area_becomes_a_workspace_root(
+    service: WorkspaceService, tmp_path: Path
+) -> None:
+    """**全链路**（v0.58，用户点名的那条路）：区域外的自定义路径建目录 →
+    以它为根建工作区，一步成功。
+
+    三层判定各司其职才拼得出这条路：``create_problem`` 放行（新建不限区域）、
+    ``root_path_problem`` 放行（任意已存在的目录都能当工作区）、
+    落盘又真的成了。少任何一层，用户看到的还是"新建按钮是灰的"。
+    """
+    custom = tmp_path / "custom"  # 区域外：它不在 <data_dir>/workspaces 里
+    custom.mkdir()
+    entry = service.create_directory(parent=str(custom), name="我的项目")
+    assert entry.creatable is True and entry.selectable is True
+    assert (custom / "我的项目").is_dir()
+
+    record = service.create(name="我的项目", root_path=entry.path, user_id=None)
+    assert Path(record.root_path) == Path(entry.path)
+
+
+def test_commands_run_in_a_workspace_rooted_outside_the_area(
+    service: WorkspaceService, tmp_path: Path
+) -> None:
+    """在那个工作区里跑命令时，**cwd 落在它上面**（不是会话沙箱目录）。
+
+    接缝是 ``isolation.run_isolated``：直接执行那一档（无内核隔离时的默认档）的
+    cwd 就是工作区根（见 ``isolation.py`` 里那段"按档分"）。这条把
+    "建目录 → 当工作区 → 在这里干活"接成一个闭环——自定义路径要是不能建、
+    或不能被选成工作区，命令就跑不到那儿。
+
+    目录名用 ASCII、子进程还要 ``-X utf8``：这台机器（中文 Windows）上子进程的
+    stdout 按 locale 编码（GBK），而 ``run_isolated`` 那一侧按 UTF-8 解——
+    ``tmp_path`` 本身的路径里就有中文，不说这一句就会把 cwd 比成一串替换字符。
+    """
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    root = Path(service.create_directory(parent=str(custom), name="my_project").path)
+
+    result = iso.run_isolated(
+        [sys.executable, "-X", "utf8", "-c", "import os;print(os.getcwd())"],
+        workspace_root=root,
+        sandbox_dir=tmp_path / "box",
+        isolation=iso.direct_isolation(),
+        timeout=60,
+    )
+
+    assert result.ok, result
+    assert os.path.samefile(result.stdout.strip(), root)
 
 
 @pytest.mark.parametrize(

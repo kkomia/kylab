@@ -98,8 +98,9 @@ def browse_directories(
     只列**目录**；数据目录会出现在列表里但标着不可选与原因（不藏起来：
     静默省略会让人以为"这里没有它"，而他找的可能正是它旁边那个）。
 
-    **每一行都带上"能不能在它里面新建目录 / 能不能改名"**（v0.41）：区域外是只读浏览，
-    而"不能建"的原因要摆在用户要点的那一行旁边，不是等他点完新建再报错。
+    **每一行都带上"能不能在它里面新建目录 / 能不能改名"**（v0.41）：这两个判定与真去
+    动手时同一份，所以界面能把"不能建 / 不能改"说在点下去之前，而不是等点完再弹错。
+    v0.58 起**新建不限区域**（除了数据目录树哪儿都能建），改名仍只在「工作区」区域里。
     """
     view = services.workspaces.browse(path)
     return WorkspaceBrowseOut(
@@ -130,8 +131,10 @@ def create_directory(
     只建一层、重名当场拒（不覆盖也不合并）、名字按**可移植的那一套**校验——目录名常要在
     Windows 与 NAS 之间互拷，而在 Linux 上合法的 `a:b` 到了 Windows 上根本建不出来。
 
-    **只建在「工作区」区域里**（v0.41）：判定与浏览时标 ``creatable`` 的是同一份，
-    所以界面上灰着的那些位置，这里也一定拒——反过来，亮着的一定建得出来。
+    **除了数据目录树，哪儿都能建**（v0.58）：判定与浏览时标 ``creatable`` 的是同一份，
+    所以界面上灰着的那些位置，这里也一定拒——反过来，亮着的一定建得出来。而"这儿到底
+    写不写得进去"**不事先探测**：真去 ``mkdir``，写不进去时把那句 ``OSError`` 原样回给
+    调用方（`建不了这个目录：…`）。
     """
     entry = services.workspaces.create_directory(parent=payload.parent, name=payload.name)
     return DirectoryEntryOut(**asdict(entry))
@@ -149,8 +152,9 @@ def rename_directory(
 ) -> DirectoryEntryOut:
     """只改名不搬位置。四类目录会被拒，各自都有具体理由（见服务层）：
 
-    文件系统根、**「工作区」区域本身**、**区域外的任何目录**（区域外只读浏览）、
-    以及**某个工作区的根目录**（改了那条工作区就失联）。"""
+    文件系统根、**「工作区」区域本身**、**区域外的任何目录**（v0.58 放开的是新建，
+    **改名仍在区域里**——它动的是别人的既有目录）、以及**某个工作区的根目录**
+    （改了那条工作区就失联）。"""
     entry = services.workspaces.rename_directory(path=payload.path, name=payload.name)
     return DirectoryEntryOut(**asdict(entry))
 

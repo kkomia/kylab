@@ -157,7 +157,7 @@ def _area(client: TestClient) -> str:
 
 
 def test_browse_lands_in_the_area_and_offers_it_first(client: TestClient) -> None:
-    """① 不留 path 就落在专用区域：它是唯一能新建目录的地方，也是默认起点。
+    """① 不留 path 就落在专用区域：它是选择器的默认落脚点，也是默认起点。
 
     "首次浏览顺手建出来"这条只有对着接口看才知道：容器里没人会先去 shell 里
     `mkdir`，而落在一个不存在的目录上等于选择器打不开。
@@ -173,42 +173,101 @@ def test_browse_lands_in_the_area_and_offers_it_first(client: TestClient) -> Non
 
 
 def test_browse_marks_where_you_cannot_create(client: TestClient, tmp_path: Path) -> None:
-    """③ 区域外的那一行**带着"为什么不能建"**——用户报的正是"显示了又不给建"。
+    """③ 三件事各给各的判定，摆在同一屏幕上（v0.58 起的组合）：
 
-    这一条是这次要修的核心体感：原因要摆在用户要点的那一行旁边，
-    而不是等他点了"新建文件夹"再弹一个错。
+    - 区域外**能建**也**能选**（用户要在 `D:\\` 下开项目，就得让他在那儿建目录）；
+    - 区域外**仍不能改名**（改名动的是别人的既有目录）；
+    - 数据目录树**不能建**，且原因就标在那一行上。
+
+    这一条是这次要修的核心体感：界面上的禁用态与文案全部由服务端这三个判定驱动，
+    所以它们必须一起对。
     """
     home = tmp_path / "proj"
     (home / "sub").mkdir(parents=True)
 
     body = client.get("/api/v1/workspaces/browse", params={"path": str(home)}).json()
-    assert body["current"]["creatable"] is False
-    assert "「工作区」区域" in body["current"]["create_reason"]
-    assert body["current"]["renamable"] is False
-    assert body["current"]["rename_reason"]
-    # 不可选与不可建是两件事：区域外照旧能选（只是不能写）
+    assert body["current"]["creatable"] is True
+    assert body["current"]["create_reason"] == ""
     assert body["current"]["selectable"] is True
-    assert body["entries"][0]["creatable"] is False
-    assert body["entries"][0]["create_reason"]
+    assert body["current"]["renamable"] is False, "改名仍只在「工作区」区域里"
+    assert body["current"]["rename_reason"]
+    assert body["entries"][0]["creatable"] is True
+
+    data_dir = get_services().workspaces._data_dir
+    listing = client.get(
+        "/api/v1/workspaces/browse", params={"path": str(data_dir.parent)}
+    ).json()
+    row = next(item for item in listing["entries"] if item["path"] == str(data_dir.resolve()))
+    assert row["creatable"] is False
+    assert "数据目录里不能新建目录" in row["create_reason"]
 
 
-def test_create_outside_the_area_is_refused_with_the_marked_reason(
+def test_the_filesystem_root_is_creatable_but_not_selectable(
     client: TestClient, tmp_path: Path
 ) -> None:
-    """③ 区域外建目录被拒，且理由与浏览时标在那一行上的**一字不差**。
+    """文件系统根：**能建（creatable=True）但不能选（selectable=False）**（v0.58）。
 
-    "同一份判定"这条只有把两边摆在一起比才知道有没有漂。
+    两件事两个判定，所以这一行是"能在它下面建目录、但不能拿它当工作区"：
+    新建不再限区域，而"把整台机器交给 Agent 的文件操作"照旧是权限事故。
+    """
+    root = tmp_path.anchor
+    body = client.get("/api/v1/workspaces/browse", params={"path": root}).json()
+    assert body["path"] == str(Path(root).resolve())
+    assert body["current"]["creatable"] is True
+    assert body["current"]["create_reason"] == ""
+    assert body["current"]["selectable"] is False
+    assert "文件系统根" in body["current"]["reason"]
+
+
+def test_create_outside_the_area_works_and_the_row_says_so(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """区域外建目录**能成**（v0.58），且浏览时那一行标的就是"能建"。
+
+    两侧一起钉：界面亮着的那一行，点下去必须真建出来——判定只有一份
+    （``create_problem``），浏览的标记与真去动手的结果不会各说各的。
     """
     home = tmp_path / "proj"
     home.mkdir()
-    marked = client.get("/api/v1/workspaces/browse", params={"path": str(home)}).json()["current"][
-        "create_reason"
-    ]
+    body = client.get("/api/v1/workspaces/browse", params={"path": str(home)}).json()
+    assert body["current"]["creatable"] is True
 
     response = client.post("/api/v1/workspaces/dirs", json={"parent": str(home), "name": "新项目"})
+    assert response.status_code == 201, response.text
+    assert response.json()["creatable"] is True
+    assert (home / "新项目").is_dir()
+
+
+def test_create_refuses_inside_the_data_directory(client: TestClient) -> None:
+    """数据目录树是**唯一还禁的一棵**（v0.58）：里面是服务端自己的库与原件。"""
+    data_dir = get_services().workspaces._data_dir
+    response = client.post(
+        "/api/v1/workspaces/dirs", json={"parent": str(data_dir), "name": "新库"}
+    )
     assert response.status_code == 422, response.text
-    assert response.json()["message"] == marked
-    assert not (home / "新项目").exists()
+    assert "数据目录里不能新建目录" in response.json()["message"]
+
+
+def test_create_outside_the_area_and_use_it_as_a_workspace(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """**验收**（v0.58）：在区域外的自定义路径建目录 → 以它为根建工作区，一步成功。
+
+    用户报的正是这条路走不通（"新建目录被限制在专用区域里，区域外都是只读"），
+    所以这里盯着它通到底：落盘 → 建工作区 → 工作区的根就是它。
+    """
+    custom = tmp_path / "custom"
+    custom.mkdir()
+    created = client.post(
+        "/api/v1/workspaces/dirs", json={"parent": str(custom), "name": "我的项目"}
+    )
+    assert created.status_code == 201, created.text
+    entry = created.json()
+    assert entry["selectable"] is True and entry["creatable"] is True
+
+    made = client.post("/api/v1/workspaces", json={"name": "我的项目", "root_path": entry["path"]})
+    assert made.status_code == 201, made.text
+    assert made.json()["root_path"] == entry["path"]
 
 
 def test_create_in_the_area_and_use_it_as_a_workspace(client: TestClient) -> None:
@@ -242,9 +301,10 @@ def test_the_area_itself_is_not_a_workspace(client: TestClient) -> None:
 def test_an_existing_workspace_outside_the_area_is_still_selectable(
     client: TestClient, tmp_path: Path
 ) -> None:
-    """④ 已有工作区仍能选中：区域外只读**不等于**区域外不能选。
+    """④ 已有工作区仍能选中：**改写盘规则不动"能不能选"**。
 
     老用户的目录可能就在家目录或别的盘上，把它们变成"只能看"等于弄坏已有工作区。
+    v0.58 起区域外连"写"也放开了，但这条口径的要点没变：三条判定各守自己那件事。
     """
     folder = tmp_path / "老项目"
     folder.mkdir()
@@ -271,8 +331,8 @@ def test_browse_rejects_a_file_and_says_where_it_lives(client: TestClient, tmp_p
 def test_create_and_rename_directories(client: TestClient) -> None:
     """在服务器上建目录 / 改名（v0.36）：选择器里那两个动作。
 
-    **这是"在服务器上写东西"**，所以比浏览严一档：只建一层、重名当场拒、
-    **只在专用区域里**（v0.41）；改名只改名不搬位置，且区域外、区域本身、
+    **这是"在服务器上写东西"**，所以比浏览严一档：只建一层、重名当场拒；
+    新建除数据目录树之外都能建（v0.58）；改名只改名不搬位置，且区域外、区域本身、
     工作区根目录都会被拒。
     """
     area = Path(_area(client))
@@ -306,7 +366,7 @@ def test_rename_refuses_a_workspace_root(client: TestClient) -> None:
     """工作区的根目录不能改名——改了那条工作区就失联了。
 
     v0.41 起工作区多半就建在专用区域里，所以这条要在区域里验（外面那条路
-    先被"区域外只读"拦住了，验不到工作区根目录这一条）。
+    先被"改名只在区域里"拦住了，验不到工作区根目录这一条）。
     """
     area = _area(client)
     folder = Path(area) / "proj"

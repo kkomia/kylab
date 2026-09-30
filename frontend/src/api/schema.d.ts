@@ -919,6 +919,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/chat/turns/record": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 记录一轮已完成的对话（边车写回）
+         * @description 把本机跑完的一轮记回服务器（P4-2b）。
+         *
+         *     三条口径：
+         *
+         *     - **复用 `ConversationService.record_turn`**（`services/conversation.py:453` ✓）——
+         *       与服务器自己那条链路**同一份记录器** ✗（两条消息 + 事件日志同一个事务 ✓），
+         *       绝不另写一份 ✗（两份必然漂移）；
+         *     - **幂等**：`turn_id` 是我们自己写在 `turn/start` 事件载荷里的标记 ✓ → 上报前先查
+         *       **这次记录之前有没有同一轮** ✓（有就原样返回 `recorded=False` ✓，不重复插 ✓）；
+         *     - **鉴权与所有权照旧**：普通成员只能写自己的会话 ✓（别人的 → 404 ✓，与
+         *       `conversations._get_visible` 同口径 ✓，不暴露存在性 ✓）；写不进去就抛错 ✓ ——
+         *       **绝不 200 假装成功** ✗。
+         */
+        post: operations["record_turn_endpoint_api_v1_chat_turns_record_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/chat/commands": {
         parameters: {
             query?: never;
@@ -2691,8 +2722,9 @@ export interface paths {
          *     只列**目录**；数据目录会出现在列表里但标着不可选与原因（不藏起来：
          *     静默省略会让人以为"这里没有它"，而他找的可能正是它旁边那个）。
          *
-         *     **每一行都带上"能不能在它里面新建目录 / 能不能改名"**（v0.41）：区域外是只读浏览，
-         *     而"不能建"的原因要摆在用户要点的那一行旁边，不是等他点完新建再报错。
+         *     **每一行都带上"能不能在它里面新建目录 / 能不能改名"**（v0.41）：这两个判定与真去
+         *     动手时同一份，所以界面能把"不能建 / 不能改"说在点下去之前，而不是等点完再弹错。
+         *     v0.58 起**新建不限区域**（除了数据目录树哪儿都能建），改名仍只在「工作区」区域里。
          */
         get: operations["browse_directories_api_v1_workspaces_browse_get"];
         put?: never;
@@ -2719,8 +2751,10 @@ export interface paths {
          *     只建一层、重名当场拒（不覆盖也不合并）、名字按**可移植的那一套**校验——目录名常要在
          *     Windows 与 NAS 之间互拷，而在 Linux 上合法的 `a:b` 到了 Windows 上根本建不出来。
          *
-         *     **只建在「工作区」区域里**（v0.41）：判定与浏览时标 ``creatable`` 的是同一份，
-         *     所以界面上灰着的那些位置，这里也一定拒——反过来，亮着的一定建得出来。
+         *     **除了数据目录树，哪儿都能建**（v0.58）：判定与浏览时标 ``creatable`` 的是同一份，
+         *     所以界面上灰着的那些位置，这里也一定拒——反过来，亮着的一定建得出来。而"这儿到底
+         *     写不写得进去"**不事先探测**：真去 ``mkdir``，写不进去时把那句 ``OSError`` 原样回给
+         *     调用方（`建不了这个目录：…`）。
          */
         post: operations["create_directory_api_v1_workspaces_dirs_post"];
         delete?: never;
@@ -2730,8 +2764,9 @@ export interface paths {
          * 给服务器上的目录改名（选工作区时用）
          * @description 只改名不搬位置。四类目录会被拒，各自都有具体理由（见服务层）：
          *
-         *     文件系统根、**「工作区」区域本身**、**区域外的任何目录**（区域外只读浏览）、
-         *     以及**某个工作区的根目录**（改了那条工作区就失联）。
+         *     文件系统根、**「工作区」区域本身**、**区域外的任何目录**（v0.58 放开的是新建，
+         *     **改名仍在区域里**——它动的是别人的既有目录）、以及**某个工作区的根目录**
+         *     （改了那条工作区就失联）。
          */
         patch: operations["rename_directory_api_v1_workspaces_dirs_patch"];
         trace?: never;
@@ -2778,6 +2813,15 @@ export interface paths {
          * 技能列表
          * @description **每次都重新扫磁盘**：用户可能刚往 ``data/skills/`` 丢了一个技能，
          *     而那正是"技能比插件轻"的地方——不该要求他重启或点"重新加载"。
+         *
+         *     （"每次重新扫"现在由 `SkillService` 的目录签名 + 单条记录缓存兜着：
+         *     目录没变、文件没改时只花两次 stat；见 `SCAN_TTL_SECONDS`。）
+         *
+         *     **分页是后加的（2026-09-29 性能事故）**：库涨到 6,000+ 条之后，一次返回全部
+         *     既是 18 秒的另一半原因，也没人真的会一屏看 6,000 行。**默认行为一位不变**
+         *     （不传 `limit` 就是全部，向后兼容），前端以后再逐步采用。
+         *     `total` 与 `usable` 报的是**全库**的数，不是这一页的（否则界面上"共几条"会随着
+         *     翻页变来变去）。
          */
         get: operations["list_skills_api_v1_skills_get"];
         put?: never;
@@ -2826,6 +2870,10 @@ export interface paths {
          *     **被丢弃的技能这里也读得出来**（``allow_discarded=True``）：模型那条路
          *     （``read_skill`` 工具）读不到，但人要看的就是"它到底写了什么、为什么被丢掉"
          *     ——详情页是排错的地方，藏起来等于让人只能去翻磁盘。
+         *
+         *     ``translate_names=False``：这一份是给人看的，**照上游原文给**
+         *     （模型那一份会把 Claude Code 的工具名换掉，见 ``services/skill_tools.py``）——
+         *     用户要能对着上游核对"这个技能到底教了什么"。
          */
         get: operations["get_skill_api_v1_skills__name__get"];
         put?: never;
@@ -3341,6 +3389,106 @@ export interface paths {
          *     - 缓存命中时不发任何外部请求；响应带一天浏览器缓存。
          */
         get: operations["site_icon_api_v1_site_icons_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/model-proxy/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 模型代理：一次性补全
+         * @description 一次性补全（子 Agent、摘要这类小任务 ✓）。``caller`` 只用于鉴权 ✓。
+         */
+        post: operations["complete_api_v1_model_proxy_complete_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/model-proxy/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 模型代理：流式（只要正文）
+         * @description 只转正文增量 ✓（这条给普通对话用 ✓）。``caller`` 只用于鉴权 ✓。
+         */
+        post: operations["stream_api_v1_model_proxy_stream_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/model-proxy/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * 模型代理：流式 + 工具调用（SSE 透传）
+         * @description 带工具位的那条（边车的工具循环用 ✓）。``caller`` 只用于鉴权 ✓。
+         */
+        post: operations["events_api_v1_model_proxy_events_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/app/frontend/manifest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 前端资源包的版本清单
+         * @description 壳在启动/连接时问一句"你那边是什么版本"，好和本地那份比。
+         */
+        get: operations["manifest_api_v1_app_frontend_manifest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/app/frontend/package": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 前端资源包（整份 dist 的 zip）
+         * @description 整份 ``dist`` 的 zip。确定性打包 ⇒ 同一个版本的字节永远一样。
+         */
+        get: operations["package_api_v1_app_frontend_package_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -5425,6 +5573,24 @@ export interface components {
             server_name: string;
         };
         /**
+         * ManifestOut
+         * @description 壳取包之前先问的那份清单（规范 §4.1）。
+         */
+        ManifestOut: {
+            /** Version */
+            version: string;
+            /** Package Url */
+            package_url: string;
+            /** Sha256 */
+            sha256: string;
+            /** Size */
+            size: number;
+            /** Min Shell Version */
+            min_shell_version: string;
+            /** Released At */
+            released_at: string;
+        };
+        /**
          * MarketSkillOut
          * @description 浏览结果里的一条（还没装）。
          */
@@ -6425,6 +6591,28 @@ export interface components {
             api_key?: string | null;
             /** Enabled */
             enabled?: boolean | null;
+        };
+        /** ProxyRequest */
+        ProxyRequest: {
+            /** Messages */
+            messages?: components["schemas"]["_WireMessage"][];
+            /** Tools */
+            tools?: components["schemas"]["_WireTool"][];
+            /**
+             * Model Pk
+             * @description 留空用全局默认模型
+             */
+            model_pk?: string | null;
+            /**
+             * Thinking
+             * @description 要不要让上游**思考**。留空 = **不思考**（见 `PROXY_DEFAULT_THINKING` 的理由）；显式 true 才打开。语义与进程内那条完全一致（`LLMConfig.enable_thinking` → `thinking.build_thinking_payload` 按方言翻译），**不是新造的字段**。
+             */
+            thinking?: boolean | null;
+        };
+        /** ProxyTextOut */
+        ProxyTextOut: {
+            /** Text */
+            text: string;
         };
         /**
          * QueueLoadOut
@@ -7702,6 +7890,71 @@ export interface components {
             items?: components["schemas"]["TrashEntryOut"][];
         };
         /**
+         * TurnRecordIn
+         * @description 边车（P4-2b）在本机跑完一轮后**写回**服务器的一份已完成对话。
+         *
+         *     会话是**服务器权威** ✓：边车那一侧跑得再对，这一轮也必须记回服务器 ✓ ——
+         *     否则前端一切到边车，刷新之后那一轮就消失了 ✗✗（数据丢失）。
+         */
+        TurnRecordIn: {
+            /**
+             * Conversation Id
+             * @description 记到哪条会话（必须可见/属于调用方）
+             */
+            conversation_id: string;
+            /**
+             * Turn Id
+             * @description **幂等键（必填）**：同一轮上报两次只落一次 ✓（边车重试、网络重发都是常态）
+             */
+            turn_id: string;
+            /**
+             * Question
+             * @description 用户那条消息
+             */
+            question: string;
+            /**
+             * Answer
+             * @description 助手那条回答
+             * @default
+             */
+            answer: string;
+            /**
+             * Steps
+             * @description 过程快照（与前端「执行过程」同形）
+             */
+            steps?: {
+                [key: string]: unknown;
+            }[];
+            /**
+             * Thinking
+             * @description 这一轮的思考（可空）
+             * @default
+             */
+            thinking: string;
+            /**
+             * Sources
+             * @description 引用快照（可空）
+             */
+            sources?: {
+                [key: string]: unknown;
+            }[];
+        };
+        /**
+         * TurnRecordOut
+         * @description 写回的结果。``recorded=False`` **不是失败** ✓ —— 是幂等命中（之前已经记过 ✓）。
+         */
+        TurnRecordOut: {
+            /** Conversation Id */
+            conversation_id: string;
+            /** Turn Id */
+            turn_id: string;
+            /**
+             * Recorded
+             * @description true=这次真的写进去了；false=之前已经记过（没有重复写）
+             */
+            recorded: boolean;
+        };
+        /**
          * UploadAccepted
          * @description 上传响应。``is_duplicate`` 对应架构 §6.3 的"检测到相同文件"提醒。
          */
@@ -8291,6 +8544,67 @@ export interface components {
             kb_ids?: string[] | null;
             /** Archived */
             archived?: boolean | null;
+        };
+        /**
+         * _WireMessage
+         * @description 客户端传来的消息（OpenAI 兼容形状 ✓，与 `llm._message_wire` 的产物一致 ✓）。
+         *
+         *     ⚠️ **`tool_call_id` 与 `tool_calls` 必须在这儿收下**（2026-09-29 实测 422 的根因）：
+         *     工具循环的第二轮要发回两条特殊消息 —— ``assistant``（带 `tool_calls` ✓）与
+         *     ``tool``（带 `tool_call_id` ✓，见 `llm.py:664-665`）。Pydantic 默认**丢掉未声明的字段** ✗，
+         *     所以这两个字段一旦不在模型里，代理转发给上游的消息就**缺 `tool_call_id`** ✗ →
+         *     上游直接 422：``messages[3]: missing field `tool_call_id` `` ✓✓。
+         *
+         *     症状比错误码更难认：422 是在**流已经吐了几块之后**才发生的 ✗ → Starlette 只能抛
+         *     ``RuntimeError: Caught handled exception, but response already started`` ✓，
+         *     客户端看到的是"代理连不上（incomplete chunked read）" ✗ —— 而**真正的错在消息不带 id** ✓。
+         */
+        _WireMessage: {
+            /** Role */
+            role: string;
+            /**
+             * Content
+             * @default
+             */
+            content: string;
+            /** Tool Call Id */
+            tool_call_id?: string | null;
+            /** Tool Calls */
+            tool_calls?: components["schemas"]["_WireToolCall"][] | null;
+        };
+        /** _WireTool */
+        _WireTool: {
+            /** Name */
+            name: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Parameters */
+            parameters?: {
+                [key: string]: unknown;
+            };
+        };
+        /**
+         * _WireToolCall
+         * @description 助手消息里那一轮的调用（形状与 `llm._message_wire` 的产物一致：嵌套 `function` ✓）。
+         */
+        _WireToolCall: {
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Type
+             * @default function
+             */
+            type: string;
+            /** Function */
+            function?: {
+                [key: string]: unknown;
+            };
         };
     };
     responses: never;
@@ -9838,6 +10152,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SuggestedQuestionsOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_turn_endpoint_api_v1_chat_turns_record_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TurnRecordIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnRecordOut"];
                 };
             };
             /** @description Validation Error */
@@ -13817,7 +14166,10 @@ export interface operations {
     };
     list_skills_api_v1_skills_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number | null;
+                offset?: number;
+            };
             header?: {
                 authorization?: string | null;
             };
@@ -14816,6 +15168,151 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    complete_api_v1_model_proxy_complete_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProxyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProxyTextOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_api_v1_model_proxy_stream_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProxyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    events_api_v1_model_proxy_events_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProxyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    manifest_api_v1_app_frontend_manifest_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ManifestOut"];
+                };
+            };
+        };
+    };
+    package_api_v1_app_frontend_package_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
         };

@@ -54,8 +54,10 @@ export interface DirectoryEntry {
   /**
    * 能不能在**这一层里**新建目录（v0.41）。
    *
-   * 只有专用区域（`WorkspaceBrowse.area`）里为真：容器里除了数据目录几乎处处只读，
-   * 与其让用户逐个试，不如把"能建"标在还能建的那一处、把"不能建"的原因标在别的行上。
+   * 禁止集只剩**数据目录树**（里面的专用区域除外）：其余任何位置都放行，包括文件系统根
+   * 与区域外的任意目录——"这一层写不写得进去"不从路径上猜（写性探测会把只读分区、
+   * 容器挂载、别人的目录这些事判错），真去 mkdir 时服务端如实报错。所以这个字段只回答
+   * "这地方是不是根本不许建"，与服务端同一份：它为假的层，点下去一定建不出来。
    */
   creatable: boolean
   /** 不能在这里新建目录的原因（原样显示，界面把它摆在"新建文件夹"旁边）。 */
@@ -77,8 +79,8 @@ export interface WorkspaceBrowse {
   roots: DirectoryEntry[]
   note: string
   /**
-   * 专用可写区域（`<data_dir>/workspaces`）：选择器的默认落脚点，
-   * 也是**唯一**能新建/改名目录的地方（v0.41）。
+   * 专用可写区域（`<data_dir>/workspaces`）：选择器的默认落脚点（v0.41）。
+   * 新建在区域外同样允许（禁止集只剩数据目录树），**改名**则仍只在区域里。
    *
    * 由服务端给而不是前端拼：数据目录在哪只有服务端知道。
    */
@@ -92,8 +94,8 @@ export interface WorkspaceBrowse {
  * 客户端本机的东西——指向的是另一台机器。所以"选择"只能是"服务端列给你看"。
  * 管理员专属（成员建工作区只需填路径）。
  *
- * 不给 `path` 时落在**专用区域**：那是唯一能新建目录的地方，也是打开选择器时
- * 最该看到的地方（家目录在容器里往往只读甚至不存在）。
+ * 不给 `path` 时落在**专用区域**：它是打开选择器时最该看到的地方
+ * （家目录在容器里往往只读甚至不存在），也是新目录最常被建的位置。
  */
 export function browseDirectories(path?: string): Promise<WorkspaceBrowse> {
   const query = path ? `?path=${encodeURIComponent(path)}` : ''
@@ -103,9 +105,11 @@ export function browseDirectories(path?: string): Promise<WorkspaceBrowse> {
 /**
  * 在服务器上新建一个目录（只建一层，重名会被拒）。
  *
- * **只在专用区域里能建**：`parent` 不在区域里时服务端会拒（422），
- * 而界面早就用那一行的 `creatable` / `create_reason` 把按钮灰掉了——
- * 两边判定同一份，所以不会"按钮亮着、点了却报错"。
+ * **禁止的只剩数据目录树**（里面的专用区域除外）：区域外、文件系统根、任意可浏览的位置
+ * 都允许；服务端**不做写性探测**，建不了时它那句 `建不了这个目录：{原因}` 会被原样显示
+ * 出来（权限、只读分区、容器挂载各是各的真话）。
+ * 界面用那一行的 `creatable` / `create_reason` 把根本不许建的层提前灰掉——
+ * 两边同一份判定，所以不会"按钮亮着、其实这地方根本不归你建"。
  */
 export function createDirectory(parent: string, name: string): Promise<DirectoryEntry> {
   return request<DirectoryEntry>('/workspaces/dirs', {
@@ -114,7 +118,7 @@ export function createDirectory(parent: string, name: string): Promise<Directory
   })
 }
 
-/** 给服务器上的目录改名（**只改名，不搬位置**；同样只在专用区域里）。 */
+/** 给服务器上的目录改名（**只改名，不搬位置**；仍只在专用区域里——改的是别人的既有目录）。 */
 export function renameDirectory(path: string, name: string): Promise<DirectoryEntry> {
   return request<DirectoryEntry>('/workspaces/dirs', {
     method: 'PATCH',
