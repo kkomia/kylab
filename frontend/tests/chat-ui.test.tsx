@@ -1258,9 +1258,18 @@ describe('降级与"工具标记"两种异常收尾', () => {
     expect(document.querySelector('.ch-divider')).toHaveAttribute('role', 'separator')
   })
 
-  it('助手头像：流式中挂 data-live（卫星绕轨/呼吸/声纳三层动画的同一个开关）', () => {
-    const { container } = render(<AssistantAvatar live />)
-    expect(container.querySelector('.ch-avatar')).toHaveAttribute('data-live')
+  it('助手头像：卫星绕轨与呼吸**常驻**（不在流式也在跑），data-live 只留给声纳', () => {
+    // 常驻（用户批注"常驻动效"）：idle 也挂着沿轨走的 SMIL——那是二版用 CSS
+    // offset-path 时"卫星消失"的修法（真机复验过）
+    const idle = render(<AssistantAvatar live={false} />)
+    expect(idle.container.querySelector('.ch-avatar')).not.toHaveAttribute('data-live')
+    expect(idle.container.querySelector('animateMotion')).not.toBeNull()
+    idle.unmount()
+
+    // 干活中：多一声纳（外圈扩散环由 `[data-live]::after` 承担）
+    const live = render(<AssistantAvatar live />)
+    expect(live.container.querySelector('.ch-avatar')).toHaveAttribute('data-live')
+    expect(live.container.querySelector('animateMotion')).not.toBeNull()
   })
 })
 

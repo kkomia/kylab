@@ -13,27 +13,28 @@
  * 换的是**图形本身**，不是"图标换成纯图标"——标签与结论照旧留着（§12.334 第一节）。
  * 四条口径：
  *
- * 1. `think → Brain`：思考就该是"脑子"，`Bot` 那只机器人会被读成"智能体/子 Agent"；
- *    `Sparkles` 是"智能润色"的意思（本仓其他页面用它表示"优化/助手"），不是思考；
+ * 1. `think → Lightbulb`：**Kimi chat 同款**（2026-09-30 用户批注"图标全部换成 kimi chat
+ *    同款"，参照图上「思考已完成」就是一枚灯泡 💡）；原先的脑子上帝视角太重；
+ *    `Bot` 会被读成"智能体/子 Agent"，`Sparkles` 是"智能润色"的意思，都不是思考；
  * 2. `exec → SquareTerminal`：比原来的 `SquareCode` 少一层"这是代码"的误导——
  *    跑的是命令（`ls` / 构建 / 脚本），不一定是代码；
- * 3. `skill → ScrollText`、`session → MessagesSquare`：技能是"一份写下来的东西"、
- *    会话/子智能体是"几个来回的对话"，都是一眼认得出的形状；
+ * 3. `skill → ListTodo`、`session → MessagesSquare`：技能是"一份可以逐条打勾的清单"
+ *    （Kimi 待办清单同款），会话/子智能体是"几个来回的对话"，都是一眼认得出的形状；
  * 4. **联网单独一枚 `Globe`**（见下面 `StepIcon`）：它与"检索知识库"在后端是同一个
  *    kind（`search`：只读 + 影响面 network，见 `tool_meta._derive_kind`），
  *    但"在库里翻"与"去外面的世界翻"对用户是两件事——后者要认得出"它上网了"。
  */
 import {
-  Brain,
-  Check,
   CircleX,
   FileText,
   Globe,
   Hand,
+  Lightbulb,
+  ListTodo,
   MessageSquare,
   MessagesSquare,
   Pencil,
-  ScrollText,
+  PenLine,
   Search,
   Server,
   ShieldX,
@@ -46,9 +47,11 @@ import type { TraceIcon } from '@/features/chat/model/turns'
 import { isWebStep } from '@/features/chat/model/webSites'
 
 export const STEP_ICONS: Record<TraceIcon, LucideIcon> = {
-  // 非工具步骤两档
-  think: Brain,
-  build: Check,
+  // 非工具步骤两档（2026-09-30 换 Kimi chat 同款）：思考 = 💡 灯泡
+  // （Kimi「思考已完成」那一行的原样）；组织回答 = 笔（Kimi「写入」那一族，
+  // 读作"在写回答"——原先是 Check，"完成"这个意思与行尾的状态重复了）
+  think: Lightbulb,
+  build: PenLine,
   // 工具步骤：**键就是语义种类**（后端 `tool_meta.kind_of` 给的）
   read: FileText,
   // 「找东西」的默认一枚（`search` / `recall` / `search_files`）：
@@ -58,7 +61,8 @@ export const STEP_ICONS: Record<TraceIcon, LucideIcon> = {
   write: Pencil,
   delete: Trash,
   exec: SquareTerminal,
-  skill: ScrollText,
+  // 技能 = Kimi 的「待办清单」形状（一份可以逐条打勾的清单）
+  skill: ListTodo,
   session: MessagesSquare,
   message: MessageSquare,
   // 认不出来的（外部 MCP 工具）：中性一档，不猜
@@ -119,7 +123,7 @@ export function StepIcon({
   icon,
   tool,
   label,
-  size = 13,
+  size = 15,
 }: {
   icon: TraceIcon
   /** 原始工具名（`TraceStep.tool`）；只有联网那一档用得上。 */

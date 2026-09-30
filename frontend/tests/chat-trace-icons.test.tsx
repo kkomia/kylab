@@ -25,10 +25,10 @@ function glyph(element: ReactElement): SVGElement {
 
 describe('图标选型：每一档画哪一张（§12.334）', () => {
   const cases: [TraceIcon, string][] = [
-    // 非工具步骤两档：思考是**脑子**（`Sparkles` 是"润色/助手"的意思，留给别处），
-    // "组织回答"是一个完成的动作，用对勾
-    ['think', 'lucide-brain'],
-    ['build', 'lucide-check'],
+    // 非工具步骤两档（2026-09-30 换 Kimi chat 同款）：思考 = 💡 灯泡（Kimi「思考已完成」
+    // 原样）；组织回答 = 笔（Kimi「写入」那一族，"在写回答"）
+    ['think', 'lucide-lightbulb'],
+    ['build', 'lucide-pen-line'],
     // 工具步骤：读文件是文件、写入是笔、删除是垃圾桶
     ['read', 'lucide-file-text'],
     ['search', 'lucide-search'],
@@ -36,8 +36,8 @@ describe('图标选型：每一档画哪一张（§12.334）', () => {
     ['delete', 'lucide-trash'],
     // 执行命令用终端：比原来的 `SquareCode` 少一层"这是代码"的误导（跑的是命令）
     ['exec', 'lucide-square-terminal'],
-    // 技能是"一份写下来的东西"、会话/子 Agent 是"几个来回的对话"
-    ['skill', 'lucide-scroll-text'],
+    // 技能是"一份可以逐条打勾的清单"（Kimi 待办清单同款）、会话/子 Agent 是"几个来回的对话"
+    ['skill', 'lucide-list-todo'],
     ['session', 'lucide-messages-square'],
     ['message', 'lucide-message-square'],
     // 认不出来的外部工具：中性一档，不猜

@@ -389,17 +389,11 @@ button.ch-row:hover {
   /* 环的尖端伸出 viewBox（标本身就是这么画的），别裁掉 */
   overflow: visible;
 }
-/* 行星点的轨道 = 那条椭圆的 SVG 路径（起点取在点自己的落点上，pivot 前不跳）。
-   路径值由代码算出并写在注释里：c=(185.5,155.5) rx192 ry44 rotate(-18.5°)。 */
-.ch-avatar .ch-planet {
-  offset-path: path('M 315.2 147.2 A 192 44 -18.5 0 1 55.8 163.8 A 192 44 -18.5 0 1 315.2 147.2');
-  offset-rotate: 0deg;
-}
-.ch-avatar[data-live] {
+/* 卫星的绕轨走 SMIL `<animateMotion>`（在组件里挂，见 AssistantAvatar 的文件头：
+   CSS offset-path 的坐标基准在真机上把卫星整个挪出了画布——那是二版"卫星没了"的原因）。
+   这里只管两层 CSS 动效：**呼吸常驻**（用户："常驻动效"），声纳只在干活时出现。 */
+.ch-avatar {
   animation: ch-breath-scale 1.6s ease-in-out infinite;
-}
-.ch-avatar[data-live] .ch-planet {
-  animation: ch-orbit-run 4s linear infinite;
 }
 /* 声纳式扩散环：盖在头像上、往外扩出去再消失（"它正在干活"的信号） */
 .ch-avatar::after {
@@ -413,14 +407,6 @@ button.ch-row:hover {
 }
 .ch-avatar[data-live]::after {
   animation: ch-sonar 2s ease-out infinite;
-}
-@keyframes ch-orbit-run {
-  from {
-    offset-distance: 0%;
-  }
-  to {
-    offset-distance: 100%;
-  }
 }
 @keyframes ch-sonar {
   0% {
@@ -436,7 +422,6 @@ button.ch-row:hover {
 
 @media (prefers-reduced-motion: reduce) {
   .ch-avatar,
-  .ch-avatar .ch-planet,
   .ch-avatar::after {
     animation: none !important;
   }
