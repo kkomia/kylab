@@ -26,7 +26,6 @@ import { formatBytes } from '@/lib/format'
 
 import { AnswerText } from './AnswerText'
 import { Deliverables } from './Deliverables'
-import { Logo } from './Logo'
 import { ToolchainFlow } from './ToolchainFlow'
 import { useChatRows, type ChatMessage } from '../runtime/ChatProvider'
 
@@ -44,14 +43,16 @@ import { useChatRows, type ChatMessage } from '../runtime/ChatProvider'
  */
 const MemoAnswerText = memo(AnswerText)
 
-/** 空的头像沟槽留给 logo：回答这一列的起点在它右边，与正文列对齐。 */
-function AssistantAvatar() {
+/**
+ * 助手头像（Kimi §4 的 CSS 平替）：56px 槽位、蓝圆底 + 双白胶囊竖条；
+ * 这一轮还在流式时双柱反相起伏 + 整体呼吸（`data-live`），停下来就静着。
+ * Rive 素材不引入（《对话UI-重做-设计》§8）。
+ */
+function AssistantAvatar({ live }: { live: boolean }) {
   return (
-    <span
-      className="inline-flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-[var(--radius-pill)] bg-[var(--accent)] text-[var(--Always-White)]"
-      aria-hidden
-    >
-      <Logo variant="mark" size={22} label="" />
+    <span className="ch-avatar" data-live={live || undefined} aria-hidden>
+      <i className="ch-avatar-bar" />
+      <i className="ch-avatar-bar" />
     </span>
   )
 }
@@ -74,7 +75,9 @@ function UserMessage({ message, turnIndex }: { message: ChatMessage; turnIndex: 
         <Copy size={13} />
       </button>
       <div className="flex max-w-[min(78%,620px)] flex-col items-end gap-[var(--space-2)]">
-        <p className="m-0 max-w-full w-fit rounded-[var(--radius-panel)_var(--radius-panel)_var(--space-1)_var(--radius-panel)] border border-[var(--border-hairline)] bg-[var(--bg-subtle)] px-[var(--space-3)] py-[var(--space-2)] text-[length:var(--text-body-size)] whitespace-pre-wrap text-[var(--text-primary)] [overflow-wrap:anywhere]">
+        {/* 用户气泡对标 Kimi（设计文档 §9 实测值）：Bg-Secondary 底 + 12px 圆角 +
+            10/12 内边距，**没有描边**（旧版那条 hairline 删掉） */}
+        <p className="m-0 w-fit max-w-full rounded-[12px] bg-[var(--Bg-Secondary)] px-[12px] py-[10px] text-[length:var(--text-body-size)] whitespace-pre-wrap text-[var(--text-primary)] [overflow-wrap:anywhere]">
           {message.text}
         </p>
         {/*
@@ -173,7 +176,7 @@ function AssistantMessage({
 
   return (
     <div className="flex items-start gap-[var(--space-3)]">
-      <AssistantAvatar />
+      <AssistantAvatar live={message.streaming === true && !message.error} />
       <div className="min-w-0 flex-1">
         {message.error ? (
           /*
@@ -256,6 +259,7 @@ function AssistantMessage({
               onToggleCites={() => chat.toggleCites(turnIndex)}
               flashSource={chat.flashCite}
               onOpenSource={(item) => chat.openSource(item)}
+              artifactNames={chat.artifactNames}
             />
 
             {/*
@@ -265,11 +269,11 @@ function AssistantMessage({
               而不是旧版那一大块等宽原文。
             */}
             {answerText || message.streaming ? (
-              /* `max-w-[var(--measure)]`：旧 `.reply-text { max-width: var(--measure) }`
-                 ——正文列是 768px，但**行宽**另有 66ch 的上限（阅读型界面的口径），
-                 照旧版补齐（对照记录 §3 第 5 条）。 */
+              /* 正文排版对标 Kimi markdown B1：16px/1.625（=26px 行高），
+                 字号仍乘全局 `--font-scale`（用户的字号设置不能失效）。
+                 `max-w-[var(--measure)]`：行宽 66ch 上限照旧（阅读型界面的口径）。 */
               <MemoAnswerText
-                className="mt-[var(--space-3)] max-w-[var(--measure)] text-[length:var(--text-body-size)] leading-[var(--line-prose)] text-[var(--text-primary)]"
+                className="mt-[var(--space-3)] max-w-[var(--measure)] text-[length:calc(16px*var(--font-scale))] leading-[1.625] text-[var(--Labels-Primary)]"
                 text={answerText}
                 // 流式中且还没有正文 → 正文区给一句"正在生成…"（D27）。消息上的 `streaming`
                 // 由镜像层按 live 状态写着（见 ChatProvider 的 mirrorLive）。

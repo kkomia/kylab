@@ -66,7 +66,8 @@
    * 一段一段连着读下来是一整块文字墙（长回答尤其明显）。
    */
   .md-p {
-    margin: 0 0 var(--space-3);
+    /* 段距 16px（Kimi 正文实测值）：一段一段连着读不再是一整块文字墙 */
+    margin: 0 0 16px;
     white-space: pre-wrap;
   }
 

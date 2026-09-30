@@ -13,7 +13,7 @@
  *    与 `data-flash`（点正文徽标那条链路的物证）。
  */
 import { fireEvent, render, screen } from '@testing-library/react'
-import { useState } from 'react'
+import { useState, type ComponentProps } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ChatSource, ChatStep } from '@/api/chat'
@@ -46,7 +46,11 @@ function source(overrides: Partial<ChatSource> = {}): ChatSource {
   }
 }
 
-function flowOf(reply: ReturnType<typeof makeMessage>, open = true) {
+function flowOf(
+  reply: ReturnType<typeof makeMessage>,
+  open = true,
+  extra: Partial<ComponentProps<typeof ToolchainFlow>> = {},
+) {
   const turn: Turn = { user: null, reply }
   const onToggle = vi.fn()
   const onOpenSource = vi.fn()
@@ -76,6 +80,7 @@ function flowOf(reply: ReturnType<typeof makeMessage>, open = true) {
         citesOpen={cites}
         onToggleCites={() => setCites((prev) => !prev)}
         onOpenSource={onOpenSource}
+        {...extra}
       />
     )
   }
@@ -139,7 +144,7 @@ describe('工具链块', () => {
     const runningRow = screen.getByText('抓取网页').closest('.ch-row')!
     expect(runningRow.querySelector('.ch-live')).not.toBeNull()
     expect(screen.getByText('进行中')).toBeInTheDocument()
-    expect(screen.getByText('1 秒')).toBeInTheDocument()
+    expect(screen.getByText('1.2 秒')).toBeInTheDocument()
   })
 
   it('被拦下/等确认的行：着色 + 前置展开（不用点开）', () => {
@@ -209,6 +214,67 @@ describe('工具链块', () => {
     expect(item).not.toHaveAttribute('data-flash')
     fireEvent.click(item)
     expect(onOpenSource).toHaveBeenCalledWith(expect.objectContaining({ chunk_id: 'ck1' }))
+  })
+
+  it('单步自带思考：展开那一行，灰字段落在里面（不进正文）', () => {
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [step({ thinking: '先想这一步。\n\n再调工具。' })],
+      }),
+    )
+    const row = screen.getByText('联网搜索').closest('.ch-row') as HTMLElement
+    // 默认收起：思考不在文档里；点开才挂上
+    expect(screen.queryByText('先想这一步。')).not.toBeInTheDocument()
+    fireEvent.click(row)
+    expect(screen.getByText('先想这一步。')).toBeInTheDocument()
+    expect(screen.getByText('再调工具。').closest('[data-thinking]')).not.toBeNull()
+  })
+
+  it('入参里的 art_* 键缀上真实文件名（键保留：那才是传给工具的值）', () => {
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [step({ args: '{"file": "art_ab12", "q": "x"}' })],
+      }),
+      true,
+      { artifactNames: new Map([['art_ab12', '季度报告.docx']]) },
+    )
+    fireEvent.click(screen.getByText('联网搜索'))
+    const args = document.querySelector('[data-args]')!
+    expect(args.textContent).toContain('art_ab12（季度报告.docx）')
+  })
+
+  it('长返回：默认只铺预览，「加载全部」就地看全', () => {
+    const long = '这一段很长。'.repeat(200) // 1200 字 > 预览上限 600
+    flowOf(makeMessage('assistant', '答案', { steps: [step({ result: long })] }))
+    fireEvent.click(screen.getByText('联网搜索'))
+    // 预览在、全文不在；点「加载全部」后全文在
+    expect(screen.getByText(/加载全部（1,200 字）/)).toBeInTheDocument()
+    expect(screen.queryByText(long)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText(/加载全部/))
+    expect(screen.getByText(long)).toBeInTheDocument()
+    expect(screen.getByText('收起')).toBeInTheDocument()
+  })
+
+  it('联网步骤的行上带站点牌（data-domain），非联网步骤没有', () => {
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          step({
+            label: '抓取网页',
+            tool: 'web_fetch',
+            args: '{"url": "https://moonshot.cn/news"}',
+          }),
+          step({ label: '检索知识库', tool: 'search' }),
+        ],
+      }),
+    )
+    const strip = screen.getByTestId('web-sites')
+    // 认不出来的站点退化成域名文字 + 通用地球（不编名字），但 `data-domain` 一定在
+    expect(strip.querySelector('[data-domain="moonshot.cn"]')).not.toBeNull()
+    // 知识库检索那行没有站点牌（只有联网类工具才认）
+    expect(
+      screen.getByText('检索知识库').closest('.ch-row')!.querySelector('[data-site]'),
+    ).toBeNull()
   })
 
   it('点正文徽标那一路：来源清单开着时块体也跟着开（否则滚不到那一行）', () => {

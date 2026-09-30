@@ -25,10 +25,11 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, FileText } from 'lucide-react'
 
 import type { ChatSource } from '@/api/chat'
-import { formatCount, formatMillis } from '@/lib/format'
+import { formatCount } from '@/lib/format'
 
 import {
   groupHeading,
+  humanizeArtifactKeys,
   isBlockRunning,
   isRunningStep,
   resultPreview,
@@ -36,15 +37,18 @@ import {
   thinkingParagraphs,
   traceEntries,
   traceKey,
+  traceSteps,
   traceSummary,
   trailingThinking,
   type TraceEntry,
   type TraceStep,
   type Turn,
 } from '../model/turns'
+import { webSitesOfSteps } from '../model/webSites'
 import './flow.css'
 import { StepIcon, StepOutcomeBadge, type StepOutcome } from './stepIcons'
 import { StepResult } from './StepResult'
+import { WebSiteList } from './WebSiteList'
 
 /**
  * 行级开合的宿主接口（`ChatProvider` 的 openSteps / openGroups 那两份表的投影）。
@@ -58,11 +62,52 @@ export interface FlowExpansion {
   chooseGroup: (key: string, open: boolean) => void
 }
 
+/** 没有名表时的空表（模块级一份：默认值不该每帧换身份）。 */
+const NO_NAMES: ReadonlyMap<string, string> = new Map()
+
 /** `step.outcome` 是裸 string；只有这三档进状态灯与着色（其余当正常）。 */
 function outcomeOf(step: TraceStep): StepOutcome | undefined {
   return step.outcome === 'failed' || step.outcome === 'blocked' || step.outcome === 'awaiting'
     ? step.outcome
     : undefined
+}
+
+/** 组的状态灯 = 组内第一条带状态位的调用（与组行图标取组内第一步同一口径）。 */
+function groupOutcomeOf(steps: readonly TraceStep[]): StepOutcome | undefined {
+  for (const step of steps) {
+    const outcome = outcomeOf(step)
+    if (outcome) return outcome
+  }
+  return undefined
+}
+
+/**
+ * 老快照兜底词表（随旧 TraceStepRow 退役**搬**过来的，行为一字未变）：
+ * 那时步骤里没有 `outcome` 字段，"这一行说的不是成功"只能按句式认。
+ * 新数据一律看结构化字段，这张表只对**字段缺省**的老数据生效。
+ */
+const REFUSAL_MARKS = ['没有执行', '等待确认', '拒绝执行', '不能执行命令']
+
+/**
+ * 这一步**必须看得见**吗——「前置展开」的唯一判据（单步与组内子行共用）：
+ * `outcome` 字段在（含 `""` = 正常）就听它的；字段不在（老快照）回退认词表。
+ */
+function forceExpand(step: TraceStep): boolean {
+  if (step.outcome !== undefined) return outcomeOf(step) !== undefined
+  return REFUSAL_MARKS.some((mark) => step.detail.includes(mark))
+}
+
+/**
+ * 「跑了多久」的显示（沿用旧面板照 LobeHub 的三档，单位换成中文）：
+ * 不足 1 秒给毫秒（`123 毫秒`）；不足 1 分钟给**向下取**的一位小数（`1.2 秒`，
+ * 59.96 秒不许印成 60.0）；再长给 `N 分 M 秒`。
+ */
+export function formatStepDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)} 毫秒`
+  if (ms < 60_000) return `${Math.floor(ms / 100) / 10} 秒`
+  const minutes = Math.floor(ms / 60_000)
+  const seconds = Math.round((ms % 60_000) / 1000)
+  return seconds === 0 ? `${minutes} 分` : `${minutes} 分 ${seconds} 秒`
 }
 
 /**
@@ -137,16 +182,22 @@ function StepRow({
   sub,
   open,
   onToggle,
+  names,
 }: {
   step: TraceStep
   /** 组内子行：5px 圆点取代图标（层级语言与旧面板一致）。 */
   sub?: boolean
   open: boolean
   onToggle: () => void
+  /** `art_*` → 真实文件名（`humanizeArtifactKeys`）；没有就空表。 */
+  names: ReadonlyMap<string, string>
 }) {
   const running = isRunningStep(step)
   const outcome = outcomeOf(step)
   const hasBody = Boolean(step.args || step.result || (step.thinking ?? '').trim())
+  // 返回默认只铺预览（600 字），被裁掉的才给「加载全部」——长 JSON 不该全铺
+  const [showAll, setShowAll] = useState(false)
+  const preview = step.result ? resultPreview(step.result) : null
   return (
     <div className={sub ? 'ch-sub' : undefined}>
       <button
@@ -169,10 +220,12 @@ function StepRow({
         )}
         <span className={running ? 'ch-row-label ch-live' : 'ch-row-label'}>{step.label}</span>
         {step.detail && <span className="ch-row-detail">{step.detail}</span>}
+        {/* 联网那几类：查了哪些站点直接标在行上（牌子先画、真 logo 后换，见 WebSiteList） */}
+        {!sub && <WebSiteList {...webSitesOfSteps([step])} />}
         <span className="ch-row-right">
           {running && <span data-running-text>进行中</span>}
           {!running && step.durationMs != null && (
-            <span data-duration>{formatMillis(step.durationMs)}</span>
+            <span data-duration>{formatStepDuration(step.durationMs)}</span>
           )}
           {hasBody && (
             <ChevronDown
@@ -189,10 +242,23 @@ function StepRow({
           {(step.thinking ?? '').trim() && <Thinking text={step.thinking ?? ''} />}
           {step.args && (
             <pre className="ch-raw" data-args>
-              {step.args}
+              {humanizeArtifactKeys(step.args, names)}
             </pre>
           )}
-          {step.result && <StepResult text={resultPreview(step.result) ?? step.result} />}
+          {step.result && (
+            <>
+              <StepResult text={showAll ? step.result : (preview ?? step.result)} />
+              {preview !== null && (
+                <button
+                  type="button"
+                  className="ch-more"
+                  onClick={() => setShowAll((value) => !value)}
+                >
+                  {showAll ? '收起' : `加载全部（${formatCount(step.result.length)} 字）`}
+                </button>
+              )}
+            </>
+          )}
         </FlowFold>
       )}
     </div>
@@ -204,11 +270,13 @@ function GroupRow({
   entry,
   expansion,
   k,
+  names,
 }: {
   entry: Extract<TraceEntry, { kind: 'group' }>
   expansion: FlowExpansion
   /** 套过轮次前缀的 key 工厂。 */
   k: (key: string) => string
+  names: ReadonlyMap<string, string>
 }) {
   const running = entry.steps.some(isRunningStep)
   // 没碰过的组看"还在跑就摊开"；他点过的（开/收）完全听他的
@@ -226,15 +294,23 @@ function GroupRow({
         aria-controls={bodyId}
         onClick={() => expansion.chooseGroup(k(entry.key), !open)}
       >
-        <StepIcon icon={entry.icon} tool={entry.tool} label={entry.label} />
+        <span style={{ position: 'relative', display: 'inline-flex', flex: 'none' }}>
+          <StepIcon icon={entry.icon} tool={entry.tool} label={entry.label} />
+          {/* 组级状态灯 = 组内第一条带状态位的调用（与组行图标同口径） */}
+          {groupOutcomeOf(entry.steps) && (
+            <StepOutcomeBadge outcome={groupOutcomeOf(entry.steps)!} />
+          )}
+        </span>
         {/* 标题是"与对象绑定的聚合句"（§12.333）：数目数对象、对象列出来，
             不是干巴巴的「N 次」——那会被读成"每次都成了" */}
         <span className={running ? 'ch-row-label ch-live' : 'ch-row-label'}>
           {groupHeading(entry)}
         </span>
+        {/* 这一组查了哪些站点（联网组才有；一行 favicon 牌） */}
+        <WebSiteList {...webSitesOfSteps(entry.steps)} />
         <span className="ch-row-right">
           {running && <span data-running-text>进行中</span>}
-          {!running && duration > 0 && <span data-duration>{formatMillis(duration)}</span>}
+          {!running && duration > 0 && <span data-duration>{formatStepDuration(duration)}</span>}
           <ChevronDown
             size={14}
             className="ch-chev"
@@ -249,8 +325,9 @@ function GroupRow({
             key={step.key}
             step={step}
             sub
-            open={outcomeOf(step) !== undefined || expansion.isOpen(k(step.key))}
+            open={forceExpand(step) || expansion.isOpen(k(step.key))}
             onToggle={() => expansion.toggle(k(step.key))}
+            names={names}
           />
         ))}
       </FlowFold>
@@ -376,6 +453,7 @@ export function ToolchainFlow({
   onToggleCites,
   flashSource = '',
   onOpenSource,
+  artifactNames = NO_NAMES,
 }: {
   turn: Turn
   turnIndex: number
@@ -387,6 +465,8 @@ export function ToolchainFlow({
   /** `${turnIndex}:${sourceIndex}`（或 ''）——要点亮的那一条来源行。 */
   flashSource?: string
   onOpenSource?: (source: ChatSource) => void
+  /** 入参里的 `art_*` → 真实文件名（`humanizeArtifactKeys` 的表）。 */
+  artifactNames?: ReadonlyMap<string, string>
 }) {
   const k = (key: string): string => traceKey(turnIndex, key)
 
@@ -409,6 +489,18 @@ export function ToolchainFlow({
   const entries = traceEntries(turn)
 
   const running = isBlockRunning(message)
+  // 过程总计的两个数：思考 + 结论 + 入参 + 返回的字符量；耗时是各步之和
+  const stepsAll = traceSteps(turn)
+  const traceChars = stepsAll.reduce(
+    (sum, step) =>
+      sum +
+      (step.thinking?.length ?? 0) +
+      step.detail.length +
+      (step.args?.length ?? 0) +
+      (step.result?.length ?? 0),
+    0,
+  )
+  const traceMs = stepsAll.reduce((sum, step) => sum + (step.durationMs ?? 0), 0)
   // 点正文徽标会把来源清单撑开（`revealSource`）：那时块体也得开着，否则滚不到那一行
   const bodyOpen = open || citesOpen
   return (
@@ -433,13 +525,20 @@ export function ToolchainFlow({
         <div className="ch-body">
           {entries.map((entry) =>
             entry.kind === 'group' ? (
-              <GroupRow key={entry.key} entry={entry} expansion={expansion} k={k} />
+              <GroupRow
+                key={entry.key}
+                entry={entry}
+                expansion={expansion}
+                k={k}
+                names={artifactNames}
+              />
             ) : (
               <StepRow
                 key={entry.key}
                 step={entry.step}
-                open={outcomeOf(entry.step) !== undefined || expansion.isOpen(k(entry.step.key))}
+                open={forceExpand(entry.step) || expansion.isOpen(k(entry.step.key))}
                 onToggle={() => expansion.toggle(k(entry.step.key))}
+                names={artifactNames}
               />
             ),
           )}
@@ -460,6 +559,14 @@ export function ToolchainFlow({
               flashSource={flashSource}
               onOpenSource={onOpenSource}
             />
+          )}
+          {/* 过程总计：**一处、只一处**（答完之后逐步不再报字数——那是 2026-09-29 用户
+              定的）；耗时只加"当场看着跑完"的那些步（见 TraceStep.durationMs） */}
+          {!running && traceChars > 0 && (
+            <p className="ch-total" data-testid="trace-total">
+              共 {formatCount(traceChars)} 字
+              {traceMs > 0 && ` · 用时 ${formatStepDuration(traceMs)}`}
+            </p>
           )}
         </div>
       </FlowFold>

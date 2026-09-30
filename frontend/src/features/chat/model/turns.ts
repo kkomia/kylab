@@ -123,7 +123,7 @@ export interface TraceStep {
    * `""` 或**没有这个字段** = 正常。
    *
    * 界面据此知道"这一行说的不是成功"——原先只能**匹配句式**
-   * （见 `TraceStepRow.isRefusalDetail` 那张词表），而那一行是默认展开的。
+   * （见 `ToolchainFlow` 里那张词表），而那一行是前置展开的。
    * 老快照里没有它，所以词表作为兜底保留。
    */
   outcome?: string
@@ -201,8 +201,7 @@ export interface ObservedStep extends ChatStep {
 /**
  * 这一步**还在跑**吗（后端 `StepEvent.status` 的那一半）。
  *
- * 收在一处是因为两个渲染位置都要问它：单步那一行（`TraceStepRow`）与
- * "同类工具并成的一组"（`TracePanel`）——组里只要有一次调用还在跑，那组就还在跑。
+ * 收在一处是因为两个渲染位置都要问它：单步那一行与"同类工具并成的一组"（都在 `ToolchainFlow`）——组里只要有一次调用还在跑，那组就还在跑。
  */
 export function isRunningStep(step: { status?: string }): boolean {
   return step.status === 'running'
@@ -678,7 +677,7 @@ export function replyArtifacts(turn: Turn): ChatArtifact[] {
  * 同一个下标的行一起摊开（老链路的 `retrieve` / `answer` / `think` 更是一字不差地每轮重名）。
  *
  * 为什么加在**渲染这一层**而不是数据层：`turns.ts` 那些 key 还要当 React 列表 key
- * 与分组依据，它们只需要"同一轮内稳定"；轮次是渲染时才知道的事（`TracePanel` 拿得到
+ * 与分组依据，它们只需要"同一轮内稳定"；轮次是渲染时才知道的事（`ToolchainFlow` 拿得到
  * `turnIndex`）。在这一层套一层前缀，分组、分页、计数那些口径一个字都不用改，
  * 也就不会碰坏"同一种工具并成一组"。
  */
@@ -842,7 +841,7 @@ function groupBlock(block: TraceStep[]): TraceEntry[] {
 }
 
 /**
- * 结论那一行是**原始 JSON** 吗（v0.26；原先在 `TraceStepRow` 里，这一批挪到模型层）。
+ * 结论那一行是**原始 JSON** 吗（v0.26；原先在行组件里，这一批挪到模型层）。
  *
  * 判据是结构而不是 `JSON.parse`：老快照里那条被裁到 120 字，**根本解析不了**，
  * 而它恰恰是这里要挡的东西。所以只认"以 `{` 开头、紧跟着一个 `"键":`"。
@@ -854,7 +853,7 @@ function groupBlock(block: TraceStep[]): TraceEntry[] {
  * 点开这一步的「入参 / 返回」就是它。
  *
  * **挪到这一层**是组行标题也要用它：标题同样从 `detail` 里取对象，同样不能把 JSON
- * 印上去——一处判断，两个问的人（`TraceStepRow` 从这里引）。
+ * 印上去——一处判断，两个问的人（`ToolchainFlow` 从这里引）。
  */
 export function detailIsRawJson(detail: string): boolean {
   return /^\s*\{\s*"[\w.]+"\s*:/.test(detail)
@@ -1135,10 +1134,10 @@ function agentTraceSteps(message: Message): TraceStep[] {
       // "这一轮什么新东西都没找到"在过程面板里要轻一档：它是一句交代，不是一次收获
       empty: step.added === 0,
       // 结果类别（D22）：`blocked` / `awaiting` / `failed`。老快照里没有它，于是 undefined
-      // （`TraceStepRow.forceExpand` 据此决定"听结构化字段"还是"回退认句式"）
+      // （`ToolchainFlow.forceExpand` 据此决定"听结构化字段"还是"回退认句式"）
       outcome: step.outcome,
       // **这一步还在不在跑**（后端一直发，原先在这一层被丢掉）：界面据此把
-      // "正在跑的那一步"画成另一副样子（见 `TraceStepRow` 与 `isRunningStep`）
+      // "正在跑的那一步"画成另一副样子（见 `ToolchainFlow` 与 `isRunningStep`）
       status: step.status,
       // 耗时是**本页量出来的**（见 `ObservedStep`）：历史与补发里没有，于是不显示
       durationMs: observedDuration(step),
@@ -1147,7 +1146,7 @@ function agentTraceSteps(message: Message): TraceStep[] {
       result: step.result,
       artifacts: step.artifacts,
       // 这一步自己那段推理（v0.54）。老快照没有它 —— 那种数据整轮只有一串，
-      // 由 `trailingThinking` 兜底（见 `TracePanel`）。
+      // 由 `trailingThinking` 兜底（见 `ToolchainFlow`）。
       thinking: step.thinking,
     }))
   if (message.thinking?.enabled && !steps.some((item) => item.icon === 'think')) {
@@ -1240,7 +1239,7 @@ function answerDetail(message: Message): string {
    * 答完之后**不再报字数**（2026-09-29 用户："每一步的 token/字数不标，只在最后标一个总的"）。
    *
    * 那一行原先写「共 N 字」——它是**这一步**的字数，而"整段过程一共多少"才是要看的读数，
-   * 后者由 `TracePanel` 在过程末尾给一处（`data-testid="trace-total"`）。
+   * 后者由 `ToolchainFlow` 在过程末尾给一处（`data-testid="trace-total"`）。
    * 这里刻意**不留一个近似的替代**：回答正文就在下面，用户数得出来；再印一个数只是噪声。
    */
   return ''
@@ -1271,7 +1270,7 @@ export interface TraceOpenState {
  * 有没有步骤在**等人工介入**（规则 c：`forceExpanded` 且拒绝收起）。
  *
  * 判据只看结构化的 `outcome === 'awaiting'`（后端执行器给的字段），不去匹配句式——
- * 句式那套（`TraceStepRow.isRefusalDetail`）只是老快照的兜底，这里不抄第二遍。
+ * 句式那套（`ToolchainFlow` 的 REFUSAL_MARKS）只是老快照的兜底，这里不抄第二遍。
  * 隐藏的步骤不算：它们画都不画，为一个看不见的步骤把整块面板撑开没有意义
  * （所以复用 `isHiddenTraceStep`，与 `agentTraceSteps` 的过滤条件是同一份）。
  */

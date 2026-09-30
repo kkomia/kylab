@@ -1,43 +1,30 @@
 /**
  * 工具链块（ToolchainFlow）样式——Kimi 设计系统落地层（《对话UI-重做-设计》§3/§4）。
  *
- * 取值**逐字抄** kimi.com 生产 CSS（用户提供的源码级提取文档 §2/§12），
- * 落在 `ch-*` 这套**只服务对话域**的变量上：全局 token（`tokens.css`）一个字不动，
- * 笔记/知识库/设置各页不受这次重做的影响。
+ * 取值**逐字抄** kimi.com 生产 CSS（用户提供的源码级提取文档 §2/§12）；颜色与描边
+ * 直接用全局主题里那套 Kimi 同款令牌（`--Labels-*` / `--Bg-*` / `--Separators-S1` /
+ * `--Colors-KMBlue`，取值本就与 kimi.com 逐字一致），深浅反相由主题自带；
+ * 本文件只新增全局没有的件：折叠缓动、签名 keyframes、渐隐与各结构类。
  *
- * 与旧 `traceStyles` 的关系：那一套随旧 TracePanel 一起退役（P2 收编），
- * 这里不引用它、它也不引用这里。
+ * 与旧 `traceStyles` 的关系：旧 TracePanel/TraceStepRow/Fold 已随重做退役删除；
+ * `traceStyles` 只剩 `StepResult` / `WebSiteList` 两处还在用。这里不引用它。
  */
 
-.ch-flow {
-  /* ---- Kimi 官方 token（浅色；源码 `:root` 原文换算） ---- */
-  --ch-label-1: #000000e6; /* 0.90 黑：正文（这块里不用，留给 P2 的正文） */
-  --ch-label-2: #0009; /* 0.60 黑：工具链标题、思考正文、结果标题 */
-  --ch-label-3: #00000073; /* 0.45 黑：域名、chevron、辅助 */
-  --ch-label-4: #0000004d; /* 0.30 黑：更弱提示 */
-  --ch-bg-1: #fff;
-  --ch-bg-2: #f5f5f5;
-  --ch-hairline: #00000021; /* 0.13 黑：0.5px 描边、引导线 */
-  --ch-accent: #1783ff; /* KMBlue */
-  /* 渐隐跟着**真实画布**走（我们的产品画布不一定是 #fff） */
-  --ch-canvas: var(--bg-canvas, #fff);
-  /* 缓动：收起快出 / 展开缓入（源码原文） */
+/*
+ * 本文件用的颜色/描边令牌**就是全局那两份主题里的 Kimi 同款**（`themes/light.css` /
+ * `dark.css` 的 `--Labels-*` / `--Bg-*` / `--Separators-S1` / `--Colors-KMBlue`，
+ * 取值与 kimi.com 源码逐字一致）——不另起一套局部变量，深浅反相由主题自带。
+ * 这里只补两个全局没有的：折叠缓动（源码原文那两条不对称曲线）。
+ */
+:root {
   --ch-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ch-ease-close: cubic-bezier(0.55, 0, 0.18, 1);
-
-  color: var(--ch-label-2);
-  font-size: calc(14px * var(--font-scale, 1));
-  line-height: 1.45;
 }
 
-[data-theme='dark'] .ch-flow {
-  --ch-label-1: #ffffffd6;
-  --ch-label-2: #ffffff8f;
-  --ch-label-3: #ffffff6b;
-  --ch-label-4: #ffffff4d;
-  --ch-bg-1: #121212;
-  --ch-bg-2: #1f1f1f;
-  --ch-hairline: #ffffff1f;
+.ch-flow {
+  color: var(--Labels-Secondary);
+  font-size: calc(14px * var(--font-scale, 1));
+  line-height: 1.45;
 }
 
 /* ---- 签名动效（源码 keyframes 原文，加 `ch-` 前缀防撞名） ---- */
@@ -117,11 +104,11 @@
   text-align: left;
   font-size: calc(16px * var(--font-scale, 1)); /* --ui-T2 */
   line-height: 24px;
-  color: var(--ch-label-2);
+  color: var(--Labels-Secondary);
   border-radius: 6px;
 }
 .ch-head:hover .ch-summary {
-  color: var(--ch-label-1);
+  color: var(--Labels-Primary);
 }
 .ch-summary {
   flex: 1;
@@ -134,9 +121,9 @@
 .ch-live {
   background: linear-gradient(
     90deg,
-    var(--ch-label-2) 25%,
-    var(--ch-label-4) 50%,
-    var(--ch-label-2) 75%
+    var(--Labels-Secondary) 25%,
+    var(--Labels-Quaternary) 50%,
+    var(--Labels-Secondary) 75%
   );
   background-size: 200% 100%;
   -webkit-background-clip: text;
@@ -148,11 +135,11 @@
   flex: none;
   font-size: calc(12px * var(--font-scale, 1)); /* --ui-C1 */
   line-height: 18px;
-  color: var(--ch-label-3);
+  color: var(--Labels-Tertiary);
 }
 .ch-chev {
   flex: none;
-  color: var(--ch-label-3);
+  color: var(--Labels-Tertiary);
   transition: transform 0.25s var(--ch-ease-out);
 }
 .ch-head[aria-expanded='true'] .ch-chev {
@@ -163,7 +150,7 @@
 .ch-body {
   margin-left: 10px; /* 轴心对齐头部图标的中心 */
   padding: 4px 0 2px 17px;
-  border-left: 0.5px solid var(--ch-hairline);
+  border-left: 0.5px solid var(--Separators-S1);
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -177,7 +164,7 @@
   min-height: 24px;
   padding: 2px 8px 2px 6px;
   border-radius: 8px;
-  color: var(--ch-label-2);
+  color: var(--Labels-Secondary);
   animation: ch-in 0.3s var(--ch-ease-out) both;
 }
 button.ch-row {
@@ -188,7 +175,7 @@ button.ch-row {
   text-align: left;
 }
 button.ch-row:hover {
-  background: color-mix(in srgb, var(--ch-label-1) 4%, transparent);
+  background: color-mix(in srgb, var(--Labels-Primary) 4%, transparent);
 }
 .ch-row-label {
   overflow: hidden;
@@ -197,7 +184,7 @@ button.ch-row:hover {
 }
 .ch-row-detail {
   font-size: calc(12px * var(--font-scale, 1));
-  color: var(--ch-label-3);
+  color: var(--Labels-Tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -211,14 +198,14 @@ button.ch-row:hover {
   align-items: center;
   gap: 8px;
   font-size: calc(12px * var(--font-scale, 1));
-  color: var(--ch-label-3);
+  color: var(--Labels-Tertiary);
 }
 /* 子弹头行（子目标 / 思考已完成） */
 .ch-bullet {
   flex: none;
   width: 14px;
   text-align: center;
-  color: var(--ch-label-3);
+  color: var(--Labels-Tertiary);
 }
 /* 组内子行：5px 圆点（沿用旧面板的层级语言） */
 .ch-sub-dot {
@@ -226,7 +213,7 @@ button.ch-row:hover {
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--ch-label-4);
+  background: var(--Labels-Quaternary);
   margin: 0 5px;
 }
 .ch-sub {
@@ -247,7 +234,7 @@ button.ch-row:hover {
   padding: 8px 10px;
   font-size: calc(14px * var(--font-scale, 1));
   line-height: 22px;
-  color: var(--ch-label-2);
+  color: var(--Labels-Secondary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -260,10 +247,10 @@ button.ch-row:hover {
   margin: 2px 0 4px;
   padding: 8px 10px;
   border-radius: 8px;
-  background: var(--ch-bg-2);
+  background: var(--Bg-Secondary);
   font-size: calc(12px * var(--font-scale, 1));
   line-height: 1.6;
-  color: var(--ch-label-2);
+  color: var(--Labels-Secondary);
   overflow-x: auto;
 }
 
@@ -301,10 +288,10 @@ button.ch-row:hover {
   top: 0;
   background: linear-gradient(
     to bottom,
-    var(--ch-canvas) 0,
-    color-mix(in srgb, var(--ch-canvas) 65%, transparent) 8.75px,
-    color-mix(in srgb, var(--ch-canvas) 35%, transparent) 17.5px,
-    color-mix(in srgb, var(--ch-canvas) 12%, transparent) 26.25px,
+    var(--Bg-Primary) 0,
+    color-mix(in srgb, var(--Bg-Primary) 65%, transparent) 8.75px,
+    color-mix(in srgb, var(--Bg-Primary) 35%, transparent) 17.5px,
+    color-mix(in srgb, var(--Bg-Primary) 12%, transparent) 26.25px,
     transparent 35px
   );
 }
@@ -315,10 +302,10 @@ button.ch-row:hover {
   bottom: 0;
   background: linear-gradient(
     to top,
-    var(--ch-canvas) 0,
-    color-mix(in srgb, var(--ch-canvas) 65%, transparent) 8.75px,
-    color-mix(in srgb, var(--ch-canvas) 35%, transparent) 17.5px,
-    color-mix(in srgb, var(--ch-canvas) 12%, transparent) 26.25px,
+    var(--Bg-Primary) 0,
+    color-mix(in srgb, var(--Bg-Primary) 65%, transparent) 8.75px,
+    color-mix(in srgb, var(--Bg-Primary) 35%, transparent) 17.5px,
+    color-mix(in srgb, var(--Bg-Primary) 12%, transparent) 26.25px,
     transparent 35px
   );
 }
@@ -337,16 +324,16 @@ button.ch-row:hover {
   border: 0;
   border-radius: 8px;
   background: none;
-  color: var(--ch-label-2);
+  color: var(--Labels-Secondary);
   cursor: pointer;
   text-align: left;
   transition: background-color 0.3s ease-in-out;
 }
 .ch-src[data-flash='true'] {
-  background: var(--accent-soft, color-mix(in srgb, var(--ch-accent) 14%, transparent));
+  background: var(--accent-soft, color-mix(in srgb, var(--Colors-KMBlue) 14%, transparent));
 }
 .ch-src:hover {
-  background: color-mix(in srgb, var(--ch-label-1) 4%, transparent);
+  background: color-mix(in srgb, var(--Labels-Primary) 4%, transparent);
 }
 .ch-src-name {
   flex: 1;
@@ -357,7 +344,7 @@ button.ch-row:hover {
 }
 .ch-src-where {
   flex: none;
-  color: var(--ch-label-3);
+  color: var(--Labels-Tertiary);
   font-size: calc(12px * var(--font-scale, 1));
 }
 
@@ -374,6 +361,88 @@ button.ch-row:hover {
   .ch-live {
     animation: none !important;
     background: none;
-    color: var(--ch-label-2);
+    color: var(--Labels-Secondary);
   }
+}
+
+/* ---- 助手头像：Rive 的 CSS 平替（设计文档 §4 建议值） ----
+   56px 槽位 + margin-right:-12px（视觉宽 44px，源码值）；蓝渐变底 + 双白胶囊竖条；
+   生成中双柱反相起伏 800ms + 整体呼吸 1600ms。 */
+.ch-avatar {
+  flex: none;
+  width: 56px;
+  height: 56px;
+  margin-right: -12px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--Colors-KMBlue), #4da3ff);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+.ch-avatar-bar {
+  display: block;
+  width: 6px;
+  height: 18px;
+  border-radius: 3px;
+  background: #fff;
+}
+.ch-avatar[data-live] {
+  animation: ch-breath-scale 1.6s ease-in-out infinite;
+}
+.ch-avatar[data-live] .ch-avatar-bar {
+  animation: ch-bob 0.8s ease-in-out infinite;
+}
+.ch-avatar[data-live] .ch-avatar-bar + .ch-avatar-bar {
+  animation-delay: 0.4s; /* 相位差 180° */
+}
+@keyframes ch-bob {
+  0%,
+  100% {
+    transform: translateY(-2px);
+  }
+  50% {
+    transform: translateY(2px);
+  }
+}
+@keyframes ch-breath-scale {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.04);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ch-avatar,
+  .ch-avatar .ch-avatar-bar {
+    animation: none !important;
+  }
+}
+
+/* 「加载全部 / 收起」——返回预览与全文之间的那一颗 */
+.ch-more {
+  margin: 0 0 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  font-size: calc(12px * var(--font-scale, 1));
+  color: var(--Labels-Tertiary);
+}
+.ch-more:hover {
+  color: var(--Labels-Secondary);
+  text-decoration: underline;
+}
+
+/* 过程总计行（「共 N 字 · 用时 M」）：四级灰、tabular 数字 */
+.ch-total {
+  margin: 6px 0 0;
+  padding-left: 27px; /* 与行内标签同一条轴（图标沟让出来） */
+  font-size: calc(12px * var(--font-scale, 1));
+  line-height: 18px;
+  color: var(--Labels-Quaternary);
+  font-variant-numeric: tabular-nums;
 }

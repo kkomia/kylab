@@ -418,7 +418,7 @@ export function useChat(): ChatApi {
  *
  * 为什么不直接读 `useChat()`：那个对象每次渲染都新建，而对话页**每一拍**（每次 store 写入）
  * 都重渲染 —— 于是每一个消费者都跟着重渲染。在 172 条消息的大会话上实测：每次写入
- * `UserMessage`/`AssistantMessage`/`TracePanel` 各重渲染 **172 个实例**、`EntryRow` 246 个；
+ * `UserMessage`/`AssistantMessage`/`ToolchainFlow` 各重渲染 **172 个实例**、`EntryRow` 246 个；
  * 而**不**消费它的那些（`MessageView`、`AnswerText`）靠 `memo` 只重渲染 **2 个 / 1.6 个**。
  *
  * 所以把这一批**真正会被 Stream 拍到的东西**单独发一份：里面每一个字段都是稳定引用
@@ -790,7 +790,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
    * 不带会话前缀的话，A 会话里收起的那一组会让 B 会话里 key 相同的组也一上来就折着
    * （与 `traceKey` 修的跨轮串号是同一类 bug）。默认档只在**没碰过**时生效。
    *
-   * **forced（在等确认 / 没做成）仍然压过用户**这一档（三层优先级见 `TracePanel`）。
+   * **forced（在等确认 / 没做成）仍然压过用户**这一档（三层优先级见 `ToolchainFlow`）。
    * 只活在这一次会话的内存里（不做本机记忆）：它记的是"他点过这一组没有"，
    * 与单步那张表（`openSteps`）同一档——面板级原先那份"手动开过没有"的本机记忆
    * 已按用户要求整档删掉（见 `traceOpen`），别把这张表也当成那种东西。
@@ -2257,7 +2257,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     下面这一批是**消息与过程那一层**要的全部东西（`ChatRowApi`）。
     为什么单独拎出来（D32 §12.312 定位的"放大器"那一半）：它们全都读同一个 `useChat()`，
     而那个 context value 每次渲染都新建 —— 于是**每一个消费者、每一拍都重渲染**
-    （在 172 条消息的大会话上实测：`UserMessage`/`AssistantMessage`/`TracePanel` 每次
+    （在 172 条消息的大会话上实测：`UserMessage`/`AssistantMessage`/`ToolchainFlow` 每次
     store 写入各重渲染 **172 个实例**、`EntryRow` 246 个）。这一批里**每一个字段都必须是
     稳定引用**（回调一律 `useCallback`、`turnCount` 用数字而不是 `turns` 数组），
     拆出去之后那些组件才能靠 `memo` 在"没动的那些轮"上整块跳过。

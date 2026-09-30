@@ -166,6 +166,6 @@ export function StepOutcomeBadge({ outcome }: { outcome: StepOutcome }) {
  * （2026-09-29 用户："那个蓝色循环圈没有用"）。
  *
  * 删掉的是**图标**，不是状态：并行还留两样——行上的 `data-running`（用例与无障碍）
- * 与标签后面那句静态「进行中」（`traceStyles.STEP_RUNNING`）。
+ * 与工具链块行上那个 `.ch-live`（流光字）——「进行中」现在由它承担。
  * 见到旧代码引用 `StepSpinner` 时，是"删了"，不是"忘了"。
  */

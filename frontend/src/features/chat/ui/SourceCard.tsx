@@ -59,7 +59,7 @@ export const CITATION_CARD_ID = 'source-citation-card'
  * | 圆角 | `var(--radius-pill)` | 胶囊（改前 `--radius-control` 10px，偏方 ✗） |
  *
  * **`em` 而不是 `calc(… * 1.5)`**：Tailwind 的任意值里带 `*` / `/` 生成不出类名 ✗
- * （这一族已经踩过一次，见 `traceStyles.STEP_ICON` 的注释 ✓）。
+ * （这一族已经踩过一次：尺寸必须逐字相同，见 `WebSiteList` 里那对同尺寸类名）。
  *
  * ## hover 变黑（亮）/ 变"抬起的底色"（暗）
  *

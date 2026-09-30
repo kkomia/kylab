@@ -1214,6 +1214,20 @@ describe('降级与"工具标记"两种异常收尾', () => {
     expect(reply.textContent).not.toContain('tool_call')
     expect(reply.textContent).not.toContain('web_search')
   })
+
+  it('助手头像：Kimi 式 56px 槽位 + 双柱；流式中 data-live（双柱起伏+呼吸），停下即静', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([stored('user', '你好'), stored('assistant', '你好呀')]),
+    )
+    renderPage()
+    await screen.findByTestId('reply-text')
+
+    const avatar = document.querySelector('.ch-avatar')
+    expect(avatar).not.toBeNull()
+    expect(avatar!.querySelectorAll('.ch-avatar-bar')).toHaveLength(2)
+    // 回放的历史轮：不在流式，不许带着"还在跑"的动画
+    expect(avatar!).not.toHaveAttribute('data-live')
+  })
 })
 
 describe('停止与回到最新', () => {

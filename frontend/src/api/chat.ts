@@ -178,11 +178,11 @@ export interface ChatStep {
    * 这一步的**结果类别**（D22，2026-09-28 走查）：`""` / 缺省 = 正常，
    * `"blocked"` = 被拦下（模式、权限、隔离、成员身份），`"awaiting"` = 在等用户确认，
    * `"failed"` = 这一步没做成（工具内部错误、业务规则拦下）—— 后三档界面都**默认摊开**
-   * （`TraceStepRow.forceExpand`：失败 / 被拦下 / 等确认都属于"必须看得见"）。
+   * （`ToolchainFlow.forceExpand`：失败 / 被拦下 / 等确认都属于"必须看得见"）。
    *
    * **为什么要有它**：原先只有 `status`（`"running"` / `"done"`）——被拦下与跑完都是
    * `done`，界面判断"这一行说的不是成功，是拦截"只能**匹配句式**（见
-   * `TraceStepRow.isRefusalDetail` 那张词表），而那一行是**默认展开**的：措辞一改，
+   * `ToolchainFlow` 里那张词表），而那一行是**默认展开**的：措辞一改，
    * 用户就会以为它做了。老快照里没有这个字段，所以词表只作**兜底**保留。
    */
   outcome?: string
@@ -230,7 +230,7 @@ export interface ChatStep {
    * 工具调用只挂在第一个上（同一段话重复三遍是噪声）。
    *
    * **老消息没有这个键**（那批数据已经是一整串了，拆不出来）：界面退回"整块 + 默认折叠"
-   * 的兜底渲染，见 `TracePanel` 的 `trailingThinking`。没有推理时后端也不发这个键
+   * 的兜底渲染，见模型层的 `trailingThinking`。没有推理时后端也不发这个键
    * （空串会让界面多出一块空白）。
    */
   thinking?: string
@@ -839,7 +839,7 @@ async function pump(
         // 迁移时按后端真实事件补齐（`chat.py` 的 step 事件是带 kind 的）。
         ...(event.kind ? { kind: event.kind } : {}),
         // **这一步的推理也要转发**（v0.54）：后端在 step 帧里带上了"产生这次调用的
-        // 那一轮推理"，界面把思考画在**它调用的那个工具**下面（见 `TraceStepRow`）。
+        // 那一轮推理"，界面把思考画在**它调用的那个工具**下面（见 `ToolchainFlow`）。
         // 不转发的话，正在跑的那一轮里思考仍然是一团——要刷新页面（读历史快照）
         // 才变成每步一份，而"刚答完那一眼"正是用户要看的那一刻。
         ...(event.thinking ? { thinking: event.thinking } : {}),
