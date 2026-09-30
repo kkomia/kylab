@@ -28,7 +28,7 @@
  * 宁可少一枚徽章，也不猜一个编号对应哪一页。
  */
 
-import { hostOfUrl, siteOfDomain, type WebSite } from './webSites'
+import { hostOfUrl, siteOfDomain, urlsIn, type WebSite } from './webSites'
 
 /** 一枚网页引用（回答里那个编号指的东西）。 */
 export interface WebCitation {
@@ -129,4 +129,86 @@ function isSearchStep(step: { tool?: string; label?: string }): boolean {
 export function searchExcerptTail(result: string): string {
   const at = result.indexOf(EXCERPT_MARK)
   return at < 0 ? '' : result.slice(at).trim()
+}
+
+/**
+ * 抓页那一档"读到了哪几页"——抓页步展开时画成清单（与搜索结果**同一套排版**，
+ * 2026-09-30 R4 批注）。数据同样**不新增后端字段**：`web_fetch` 的返回就是
+ * 一页一块的文本（`services/tools.py::_fetch_one`）：
+ *
+ * ```
+ * 【标题】
+ * 来源：https://example.com/a
+ *
+ * 正文…
+ * ```
+ *
+ * 一页读不到时后端把标题写成「这一页没抓成」，照样解析得出来（清单里如实显示）——
+ * 那样的行点开就是原文，不比"假装没这一页"差。
+ * 标题 / 网址解析不出来时**退回入参里的网址**、标题用域名顶（"没有 title 就用域名当标题"）。
+ */
+export interface FetchedPage {
+  title: string
+  url: string
+  domain: string
+  site: WebSite
+}
+
+/** `【标题】` 那一行。 */
+const PAGE_TITLE_RE = /^【(.+)】$/
+/** `来源：https://…` 那一行（后端渲染的抬头第二行）。 */
+const PAGE_SOURCE_RE = /^来源：(https?:\/\/\S+)$/i
+
+/** 这一步是不是"抓了一页网页"（与 `webSites.ts::isWebStep` 同一份口径，只留抓页）。 */
+function isFetchStep(step: { tool?: string; label?: string }): boolean {
+  if (step.tool) return step.tool === 'web_fetch'
+  return step.label === '抓取网页'
+}
+
+/** 这几步抓回来的网页（去重、保持先后）。 */
+export function fetchedPagesOfSteps(
+  steps: readonly { tool?: string; label?: string; args?: string; result?: string }[],
+): FetchedPage[] {
+  const out: FetchedPage[] = []
+  const seen = new Set<string>()
+  const push = (title: string, url: string): void => {
+    const domain = hostOfUrl(url)
+    if (!domain || seen.has(url)) return
+    seen.add(url)
+    out.push({ title: title.trim() || domain, url, domain, site: siteOfDomain(domain) })
+  }
+  for (const step of steps) {
+    if (!isFetchStep(step)) continue
+    const lines = (step.result ?? '').replace(/\\\//g, '/').split('\n')
+    for (let index = 0; index < lines.length; index += 1) {
+      const title = PAGE_TITLE_RE.exec(lines[index]!.trim())
+      if (!title) continue
+      // `来源：` 紧跟标题行（后端就是这么渲染的）：往下看两行
+      for (let cursor = index + 1; cursor < Math.min(index + 3, lines.length); cursor += 1) {
+        const source = PAGE_SOURCE_RE.exec(lines[cursor]!.trim())
+        if (!source) continue
+        push(title[1]!, source[1]!)
+        break
+      }
+    }
+    // 抬头解析不出来（半截、被裁过）就退回入参里的网址——标题用域名顶
+    for (const url of urlsIn(step.args ?? '')) push('', url)
+  }
+  return out
+}
+
+/**
+ * 抓页返回里**去掉每一页的抬头**（`【标题】` 与 `来源：url` 两行）之后剩下的正文。
+ *
+ * 与 `searchExcerptTail` 同一个位置：清单（`ui/SearchHits`）已经把"读了哪几页"说完了，
+ * 抬头那两行再铺一遍就是同一件事说两遍；剩下的正文是清单里没有的东西，照旧给原文。
+ */
+export function fetchedBodies(text: string): string {
+  return text
+    .replace(/\\\//g, '/')
+    .split('\n')
+    .filter((line) => !PAGE_TITLE_RE.test(line.trim()) && !PAGE_SOURCE_RE.test(line.trim()))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
 }

@@ -5,18 +5,14 @@
  * TraceStepRow / Fold 的退役一起删了——工具链块的排版在 `flow.css`，与这里无关。
  * **留下来的是两份被复用的取值**：
  *
- * 1. **工具原文**（`RAW_BODY` / `RESULT_*`）：`StepResult` 的三档渲染器共用——
- *    换档不许把限高换掉（后端已把返回裁到 2000 字，一屏里连着展开十条仍是一屏正文墙）；
+ * 1. **工具返回的表格**（`RESULT_*`）：`StepResult` 的表格那一档在用——
+ *    换排版不许把限高换掉（后端已把返回裁到 2000 字，一屏里连着展开十条仍是一屏正文墙）；
+ *    （原先还有一条 `RAW_BODY` 给"等宽原文"那一档，R4 起那一档由 `StepPayload` 的
+ *    Response 面板承担——浅灰圆角面板 + 行号槽，所以那一条随之下线。）
  * 2. **站点牌**（`SITE_*`）：`WebSiteList` 在用，尺寸用 em（跟着行自己的字号走）、
  *    真 logo 与字母牌**同尺寸**（异步换图不许让那一行抖一下）。
  */
 const RAW_MAX_HEIGHT = 'max-h-[220px]'
-
-export const RAW_BODY =
-  `m-0 p-[var(--space-2)] ${RAW_MAX_HEIGHT} overflow-auto rounded-[var(--radius-control)] ` +
-  'bg-[var(--bg-subtle)] font-mono text-[length:var(--text-micro-size)] ' +
-  'leading-[var(--line-code)] text-[var(--text-secondary)] whitespace-pre-wrap ' +
-  '[overflow-wrap:anywhere]'
 
 export const SITE_STRIP =
   'mt-[var(--space-1)] flex flex-wrap items-center gap-x-[var(--space-2)] gap-y-[var(--space-1)]'

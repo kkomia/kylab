@@ -148,7 +148,40 @@ describe('工具链块', () => {
     expect(toggle).toHaveTextContent('使用 4 个工具，检索 3 个问题、导出文档')
   })
 
-  it('头部总名：块内没有工具步（只有组织回答）时仍是「直接作答」', () => {
+  it('只有「组织回答」那一步的轮次：**整块不画**（R4：那一行没有可展开的内容）', () => {
+    /*
+      R4 批注：落定之后的「组织回答」行不再渲染（用户原话"没有内容展开，没有意义显示"），
+      于是纯直接作答那一轮链上一个链项都不剩——**整块 ToolchainFlow 不画**
+      （Kimi 直接作答本来就没有块），头部与「共 N 字」footer 自然也不在。
+      流式中的那一行仍然保留（它是"正在组织回答"的活动指示），见 `visibleEntries`。
+    */
+    const { container } = render(
+      <ToolchainFlow
+        turn={{
+          user: null,
+          reply: makeMessage('assistant', '答案', {
+            steps: [{ phase: 'answer', label: '已生成回答', detail: '', status: 'done' }],
+          }),
+        }}
+        turnIndex={0}
+        open
+        onToggle={() => {}}
+        expansion={{
+          isOpen: () => false,
+          toggle: () => {},
+          groupChoice: () => undefined,
+          chooseGroup: () => {},
+        }}
+        citesOpen={false}
+        onToggleCites={() => {}}
+      />,
+    )
+    expect(container.firstChild).toBeNull()
+    expect(screen.queryByTestId('trace-toggle')).toBeNull()
+    expect(screen.queryByTestId('trace-total')).toBeNull()
+  })
+
+  it('有来源但没工具步的那一轮：块还在（来源行），头部仍是「直接作答」', () => {
     flowOf(
       makeMessage('assistant', '答案', {
         steps: [{ phase: 'answer', label: '已生成回答', detail: '', status: 'done' }],
@@ -304,7 +337,7 @@ describe('工具链块', () => {
     expect(screen.getByText('收起')).toBeInTheDocument()
   })
 
-  it('联网步骤的行上带站点牌（data-domain），非联网步骤没有', () => {
+  it('抓页那一档：favicon 与页数收进详情位，行尾不再挂那组站点牌（R4）', () => {
     flowOf(
       makeMessage('assistant', '答案', {
         steps: [
@@ -317,13 +350,51 @@ describe('工具链块', () => {
         ],
       }),
     )
-    const strip = screen.getByTestId('web-sites')
-    // 认不出来的站点退化成域名文字 + 通用地球（不编名字），但 `data-domain` 一定在
-    expect(strip.querySelector('[data-domain="moonshot.cn"]')).not.toBeNull()
-    // 知识库检索那行没有站点牌（只有联网类工具才认）
+    const fetchRow = screen.getByText('抓取网页').closest('.ch-row') as HTMLElement
+    /*
+      R4 批注：抓页那一行的行级展示对齐 Kimi「获取网页 | 🔴 1 个网页」——
+      favicon 与页数都进 label 右侧的详情位（`.ch-row-detail--sites`），
+      原先挂在**行尾右侧**的那组站点牌（`web-sites`）撤掉。
+    */
+    expect(fetchRow.querySelector('.ch-row-detail--sites')).not.toBeNull()
+    expect(fetchRow.querySelector('[data-domain="moonshot.cn"]')).not.toBeNull()
+    expect(fetchRow).toHaveTextContent('1 个网页')
+    expect(screen.queryByTestId('web-sites')).toBeNull()
+    // 知识库检索那行什么都没有（只有联网类工具才认站点）
     expect(
       screen.getByText('检索知识库').closest('.ch-row')!.querySelector('[data-site]'),
     ).toBeNull()
+  })
+
+  it('抓页那一档展开：**与搜索结果同一套清单**（favicon / 标题 / 域名 / 可点）', () => {
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          step({
+            label: '抓取网页',
+            tool: 'web_fetch',
+            args: '{"url": "https://moonshot.cn/news"}',
+            result: [
+              '【Moonshot 新闻页】',
+              '来源：https://moonshot.cn/news',
+              '',
+              '正文第一段。',
+            ].join('\n'),
+          }),
+        ],
+      }),
+    )
+    fireEvent.click(screen.getByText('抓取网页'))
+    const hit = document.querySelector('.ch-hit') as HTMLAnchorElement
+    // 清单行 = 标题（有 title 用 title）+ 域名；抬头那两行不再铺一遍，正文留在 Response 面板里
+    expect(hit).toHaveTextContent('Moonshot 新闻页')
+    expect(hit).toHaveTextContent('moonshot.cn')
+    expect(hit).toHaveAttribute('href', 'https://moonshot.cn/news')
+    expect(screen.getByText('正文第一段。')).toBeInTheDocument()
+    // 面板按 Kimi 那套：Request（入参）/ Response（返回）——抓页这一步两块都有
+    const heads = [...document.querySelectorAll('.ch-panel-head')].map((el) => el.textContent)
+    expect(heads).toContain('Request')
+    expect(heads).toContain('Response')
   })
 
   it('点正文徽标那一路：来源清单开着时块体也跟着开（否则滚不到那一行）', () => {

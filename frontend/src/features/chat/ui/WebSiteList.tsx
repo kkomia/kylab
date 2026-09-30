@@ -32,6 +32,7 @@ import { API_BASE, authHeaders } from '@/api/client'
 import type { WebSite, WebSites } from '@/features/chat/model/webSites'
 import { formatCount } from '@/lib/format'
 
+import { useSiteLogo } from './siteLogos'
 import { SITE_CHIP, SITE_MORE, SITE_STRIP, SITE_TILE, SITE_TILE_IMG } from './traceStyles'
 
 /**
@@ -123,6 +124,56 @@ export function WebSiteList({ sites, more }: WebSites) {
         </span>
       ))}
       {more > 0 ? <span className={SITE_MORE}>+{formatCount(more)}</span> : null}
+    </span>
+  )
+}
+
+/**
+ * **只有 favicon 的一排**（不带站点名）——抓页那一档行上用（2026-09-30 R4 批注：
+ * Kimi 的行是「获取网页 | 🔴 1 个网页」）。
+ *
+ * 与 `WebSiteList` 的差别只有"写不写站点名"：抓页行那一格要同时放下 favicon 与页数，
+ * 写名字会把这一行撑长；站点名与域名仍在 `title` 里，悬停看得到。
+ *
+ * 尺寸取 `SearchHits` 那一枚 favicon 的类（16px 圆）——行内的那一枚与展开清单里的
+ * 那几枚因此是同一副样子。
+ */
+export function WebSiteIcons({ sites, more }: WebSites) {
+  if (sites.length === 0) return null
+  return (
+    <span className="ch-site-icons" data-testid="web-site-icons">
+      {sites.map((site) => (
+        <CompactLogo key={site.domain} site={site} />
+      ))}
+      {more > 0 ? <span className="ch-site-icons-more">+{formatCount(more)}</span> : null}
+    </span>
+  )
+}
+
+function CompactLogo({ site }: { site: WebSite }) {
+  const url = useSiteLogo(site)
+  if (url) {
+    return (
+      <img
+        className="ch-hit-logo"
+        src={url}
+        alt=""
+        aria-hidden
+        data-site={site.id || undefined}
+        data-domain={site.domain}
+        data-site-logo={site.id}
+      />
+    )
+  }
+  const letter = site.badge || site.domain.slice(0, 1)
+  return (
+    <span
+      className="ch-hit-logo ch-hit-logo--letter"
+      aria-hidden
+      data-site={site.id || undefined}
+      data-domain={site.domain}
+    >
+      {letter.toUpperCase()}
     </span>
   )
 }

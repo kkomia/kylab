@@ -14,7 +14,6 @@ import {
   degradedReason,
   failureText,
   hasToolCallMarkup,
-  hasTraceContent,
   replyArtifacts,
   stripToolCallMarkup,
   usedWebSearch,
@@ -28,7 +27,7 @@ import { formatBytes } from '@/lib/format'
 import { AnswerText } from './AnswerText'
 import { AssistantAvatar } from './AssistantAvatar'
 import { Deliverables } from './Deliverables'
-import { ToolchainFlow } from './ToolchainFlow'
+import { ToolchainFlow, hasFlow } from './ToolchainFlow'
 import { useChatRows, type ChatMessage } from '../runtime/ChatProvider'
 
 /**
@@ -252,12 +251,10 @@ function AssistantMessage({
 
             {/*
               **工具链与正文之间的那条灰色分隔线**（2026-09-30 用户批注：对照 Kimi
-              最初的设计，过程与最终回答要有灰线分开）。出不出与块同一个判据
-              （`hasTraceContent`）——没有过程的轮次不摆一条空线。
+              最初的设计，过程与最终回答要有灰线分开）。出不出与块**同一个判据**
+              （`hasFlow`）——块不出的时候也不该留一条空线（R4 起纯直接作答那轮就是这种）。
             */}
-            {hasTraceContent(message) ? (
-              <div className="ch-divider" role="separator" aria-hidden />
-            ) : null}
+            {hasFlow(turn) ? <div className="ch-divider" role="separator" aria-hidden /> : null}
 
             {/*
               模型把工具调用写进正文（§12.219）：**标记永远不进正文**（2026-09-30

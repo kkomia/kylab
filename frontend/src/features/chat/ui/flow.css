@@ -23,6 +23,10 @@
      `--clp-d`（实测给过 335ms），我们取文档里的静态值 480ms，不做动态。 */
   --ch-d: 0.48s;
   --ch-ease-open: cubic-bezier(0.25, 1, 0.3, 1);
+  /* **展开区那条缩进轴**（R4 批注）：虚线在 `left:10px`，内容从 label 列起——
+     就是图标槽 20px + 间距 8px = 28px。行内展开的内容（面板 / 清单 / 思考正文）
+     一律从这里起，一处变量说了算（`traceStyles` 里也能用）。 */
+  --ch-indent: 28px;
 }
 
 .ch-flow {
@@ -108,27 +112,40 @@
 /* 行内展开是**另一套时序**（生产 `.toolcall-flow__collapse` + `.collapse-inner`）：
    同一个 grid-rows 技巧，但基准时长 `--ch-d: .48s`、展开曲线换 `--clp-ease-open`。
    收起：内容先淡出（.24s），高度等 15% 之后才开始收（.44s）；
-   展开：高度 .48s 先开，内容等 23% 才淡入（透明度 .3s / 模糊 .34s）。 */
-.ch-clp--row {
+   展开：高度 .48s 先开，内容等 23% 才淡入（透明度 .3s / 模糊 .34s）。
+   两档都吃这一套时序：`.ch-clp--row`（行内展开的内容）与 `.ch-clp--sub`（组里的子行）。 */
+.ch-clp--row,
+.ch-clp--sub {
   transition: grid-template-rows calc(var(--ch-d) * 0.92) var(--ch-ease-close)
     calc(var(--ch-d) * 0.15);
 }
-.ch-clp--row[data-open='true'] {
+.ch-clp--row[data-open='true'],
+.ch-clp--sub[data-open='true'] {
   transition: grid-template-rows var(--ch-d) var(--ch-ease-open);
 }
-.ch-clp--row > .ch-clp-in {
+.ch-clp--row > .ch-clp-in,
+.ch-clp--sub > .ch-clp-in {
   transition:
     opacity calc(var(--ch-d) * 0.5) cubic-bezier(0.4, 0, 0.7, 1),
     filter calc(var(--ch-d) * 0.5) cubic-bezier(0.4, 0, 0.7, 1),
     transform calc(var(--ch-d) * 0.92) var(--ch-ease-close) calc(var(--ch-d) * 0.15),
     visibility 0s linear calc(var(--ch-d) * 1.1);
 }
-.ch-clp--row[data-open='true'] > .ch-clp-in {
+.ch-clp--row[data-open='true'] > .ch-clp-in,
+.ch-clp--sub[data-open='true'] > .ch-clp-in {
   transition:
     opacity calc(var(--ch-d) * 0.62) cubic-bezier(0.3, 0, 0.5, 1) calc(var(--ch-d) * 0.23),
     filter calc(var(--ch-d) * 0.7) cubic-bezier(0.3, 0, 0.5, 1) calc(var(--ch-d) * 0.23),
     transform var(--ch-d) var(--ch-ease-open) calc(var(--ch-d) * 0.125),
     visibility 0s;
+}
+/* 行内展开的内容**统一从 label 列起**（R4 批注）：虚线在 `left:10px`，内容在 28px
+   （`--ch-indent`）——改前 pre 几乎贴着虚线。这一条是所有展开内容（Request/Response
+   面板、结果清单、思考正文、来源清单、表格）**唯一**的缩进处：各块自己的横向内边距
+   在这之上算"面板内的留白"，不再各写一个左缩进。
+   **`.ch-clp--sub` 不加这一条**：那一层里是子步行，它们有自己的缩进轴（`.ch-sub`）。 */
+.ch-clp--row > .ch-clp-in {
+  padding-left: var(--ch-indent);
 }
 
 /* ---- 头（整行可点，24px 高） ---- */
@@ -241,7 +258,9 @@
   top: 24px;
   bottom: -12px;
   left: 10px;
-  border-left: 0.5px dashed var(--Separators-S1);
+  /* **1px**（生产是 0.5px）——2026-09-30 R4 用户明确要求："虚线太细了"。
+     这是**用户意愿压过生产值**的一处刻意偏离；颜色仍是 `--Separators-S1`（不改）。 */
+  border-left: 1px dashed var(--Separators-S1);
   pointer-events: none;
 }
 
@@ -302,7 +321,25 @@ button.ch-row:not([aria-disabled='true']):hover {
   flex: 1;
   min-width: 0;
 }
-/* 「N 个网页」那类计数（用户批注 §3：抓页的行尾挂着页数）：与详情同一档字色。 */
+/* 抓页那一档的详情位：`[favicon] N 个网页`（R4 批注，Kimi 的「获取网页 | 🔴 1 个网页」）。
+   这一格是横排的"图标 + 计数"，不参与标题那种省略。 */
+.ch-row-detail--sites {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+/* 行上那一小排 favicon（`WebSiteIcons`）：只画站点图标、不写名字（名字在 `title` 里） */
+.ch-site-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ch-site-icons-more {
+  font-size: calc(12px * var(--font-scale, 1));
+  color: var(--Labels-Quaternary);
+}
+/* 「N 个网页」那类计数（用户批注 §3：抓页那一档挂在详情位里）：与详情同一档字色。 */
 .ch-row-count {
   flex: none;
   font-size: calc(16px * var(--font-scale, 1));
@@ -414,9 +451,9 @@ button.ch-row:not([aria-disabled='true']):hover {
    行高也跟着同一个比例走——写死 22px 的话，调大字号这一块会挤在一起。 */
 .ch-think {
   margin: 0;
-  /* 源码值 `padding: 12px 0 0 28px`——**正好就是标签列**（图标槽 20px + 间距 8px = 28px），
-     与 evidence-web-4 里"思考正文与行标签同列"的实测一致。 */
-  padding: 12px 0 0 28px;
+  /* 源码值 `padding: 12px 0 0 28px`——**左缩进已由 `.ch-clp--row > .ch-clp-in` 统一给**
+     （`--ch-indent` = 28px，正好就是标签列：图标槽 20px + 间距 8px），这里只留顶部留白。 */
+  padding: 12px 0 0;
   font-size: calc(14px * var(--font-scale, 1));
   line-height: calc(22px * var(--font-scale, 1));
   color: var(--Labels-Secondary);
@@ -428,16 +465,72 @@ button.ch-row:not([aria-disabled='true']):hover {
   margin-top: calc(16px * var(--font-scale, 1));
 }
 
-/* ---- 原文（入参 / 返回）：等宽，限高自己滚 ---- */
-.ch-raw {
-  margin: 2px 0 4px;
-  padding: 8px 10px;
+/* ---- 步骤原文：**Request / Response 两块面板**（R4 批注，Kimi 的 inline-tool-detail） ----
+   浅灰圆角面板 + 加粗小标题；JSON 缩进着色，Response 那一侧带行号槽。
+   面板的**左边缘落在 label 列上**（缩进由 `.ch-clp--row > .ch-clp-in` 统一给），
+   面板内部这 10px 只是它自己的留白。 */
+.ch-panel {
+  margin: 6px 0 4px;
   border-radius: 8px;
   background: var(--Bg-Secondary);
+  overflow: hidden;
+}
+.ch-panel-head {
+  padding: 6px 10px;
   font-size: calc(12px * var(--font-scale, 1));
-  line-height: 1.7; /* 与上面那一块同一条（批注 §4 的"行高约 1.7"） */
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--Labels-Primary);
+}
+/* 面板体：等宽、可横滚、纵向限高自己滚（后端已把返回裁到 2000 字，与旧 `RAW_BODY` 同一条） */
+.ch-raw {
+  margin: 0;
+  padding: 0 10px 10px;
+  max-height: 220px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: calc(12px * var(--font-scale, 1));
+  line-height: 1.7;
   color: var(--Labels-Secondary);
-  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* 行号槽（只在 Response，见 `StepPayload`）：一行一个行号，右侧正文照旧换行
+   ——换行的那一截落在**正文列**上（flex 的第二格），不压到行号底下 */
+.ch-panel-line {
+  display: flex;
+  align-items: flex-start;
+}
+.ch-ln {
+  flex: none;
+  width: 2.4em;
+  padding-right: 8px;
+  text-align: right;
+  color: var(--Labels-Quaternary);
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+}
+.ch-lt {
+  flex: 1;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* JSON 的语法色：**借 markdown 代码高亮那套令牌**（`preview.css` 给 hljs 的：
+   字符串 = 成功色、键与数字 = 强调色、字面量 = 警示色、标点 = 二级文字），
+   不新造色值；只在能 parse 的那一档启用（见 `StepPayload`）。 */
+.ch-json-punct {
+  color: var(--text-secondary);
+}
+.ch-json-key,
+.ch-json-num {
+  color: var(--accent-text);
+}
+.ch-json-str {
+  color: var(--status-success);
+}
+.ch-json-lit {
+  color: var(--status-warning);
 }
 
 /* ---- 联网搜索的结果清单（Kimi 网页版 §8 实测值；用户批注 §3） ----
@@ -515,8 +608,7 @@ button.ch-row:not([aria-disabled='true']):hover {
 }
 .ch-scroll-box--sites {
   max-height: 256px; /* 搜索清单（源码值） */
-  /* 清单在正文列里再退 10px（证据图：标题左缘落在轴心右侧约 21px，倒推 favicon 在 18px） */
-  padding-left: 10px;
+  /* 左缩进已由 `.ch-clp--row > .ch-clp-in` 统一给（`--ch-indent`），这里不再单独加 */
 }
 .ch-fade {
   position: sticky;

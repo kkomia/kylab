@@ -17,6 +17,9 @@
  *    - 入场：`ch-in`（blur→0 + 8px 上浮，链内 .38s，**没有逐项 delay**）；
  *    - 行尾箭头平时不出现，悬停/聚焦才滑入，展开态常显并转 90°；
  *    - 滚动区 35px 五段阶梯渐隐 + 隐藏原生滚动条。
+ * 5. **R4 三件**：原文用 **Request / Response 面板**（JSON 缩进着色 + 行号槽，见 `StepPayload`）；
+ *    抓页那一档的行是「[favicon] N 个网页」、展开与搜索结果同一套清单；落定后的
+ *    「组织回答」行不画（判据 `visibleEntries`，块出不出问 `hasFlow`）。
  *
  * 数据全部来自 `model/turns.ts` 的派生层（`traceEntries` / `trailingThinking` /
  * `groupHeading`）——这一层不重新发明任何判定；这里唯一的"策略"是**头部总名怎么拼**
@@ -37,7 +40,6 @@ import { formatCount } from '@/lib/format'
 import { searchExcerptTail, webCitationsOfSteps } from '../model/sourceCitations'
 import {
   groupHeading,
-  hasTraceContent,
   humanizeArtifactKeys,
   isBlockRunning,
   isRunningStep,
@@ -53,25 +55,14 @@ import {
   type TraceStep,
   type Turn,
 } from '../model/turns'
-import { urlsIn, webSitesOfSteps } from '../model/webSites'
+import { webSitesOfSteps } from '../model/webSites'
+import { fetchedBodies, fetchedPagesOfSteps } from '../model/sourceCitations'
 import './flow.css'
 import { SearchHits } from './SearchHits'
 import { StepDot, StepIcon, StepOutcomeBadge, type StepOutcome } from './stepIcons'
+import { RequestPanel } from './StepPayload'
 import { StepResult } from './StepResult'
-import { WebSiteList } from './WebSiteList'
-
-/**
- * 抓页那一档"读了几页"（Kimi 的行尾「[站点 favicon] 1 个网页」，用户批注 §3）。
- *
- * 数据来自**这一步自己的入参**（`web_fetch` 的 `url` / `urls`，后端一次最多给 5 个，
- * 见 `services/tools.py::_web_fetch`）——不是新字段，解析走 `model/webSites.ts` 里既有的
- * `urlsIn`（联网那一族共用同一份）。只认抓页那一档：搜索那一步说的是"多少条结果"，
- * 那是另一件事，本来就在 `detail` 里。
- */
-function fetchedPageCount(step: TraceStep): number {
-  if (step.tool !== 'web_fetch' && step.label !== '抓取网页') return 0
-  return new Set(urlsIn(step.args ?? '')).size
-}
+import { WebSiteIcons, WebSiteList } from './WebSiteList'
 
 /**
  * 聚合 / 派生的行标题里那个「 · 」——**拆成"标签 + 详情"两截**（2026-09-30 R2 批注）。
@@ -227,12 +218,15 @@ export function formatStepDuration(ms: number): string {
 function FlowFold({
   open,
   row,
+  sub,
   id,
   children,
 }: {
   open: boolean
-  /** 行内展开那一层（工具行 / 组行 / 思考行 / 来源行都用它）。 */
+  /** 行内展开那一层（工具行 / 思考行 / 来源行）：`.48s` 体系，内容从 label 列起（缩进 28px）。 */
   row?: boolean
+  /** 组内子行那一层：同一套 `.48s` 时序，但**不缩进**——里面是子步行，它们有自己的缩进轴。 */
+  sub?: boolean
   id?: string
   children: ReactNode
 }) {
@@ -240,13 +234,9 @@ function FlowFold({
   useEffect(() => {
     if (open) setEverOpened(true)
   }, [open])
+  const kind = sub ? 'ch-clp ch-clp--sub' : row ? 'ch-clp ch-clp--row' : 'ch-clp'
   return (
-    <div
-      className={row ? 'ch-clp ch-clp--row' : 'ch-clp'}
-      data-open={open}
-      data-fold={open ? 'open' : 'closed'}
-      id={id}
-    >
+    <div className={kind} data-open={open} data-fold={open ? 'open' : 'closed'} id={id}>
       <div className="ch-clp-in">{open || everOpened ? children : null}</div>
     </div>
   )
@@ -338,10 +328,23 @@ function StepRow({
         : [],
     [step.result, step.tool, step.label],
   )
+  /**
+   * 抓页那一档**读到的页**（行上的 favicon + 页数、展开后的清单都用它）。
+   *
+   * 不是抓页、或解析不出来就是空数组——那时这一行照旧铺后端给的结论（不造内容）。
+   * `useMemo` 的依赖只写四个**原始值**：这一步在流式里每一拍都会重渲染。
+   */
+  const pages = useMemo(
+    () =>
+      fetchedPagesOfSteps([
+        { tool: step.tool, label: step.label, args: step.args, result: step.result },
+      ]),
+    [step.tool, step.label, step.args, step.result],
+  )
   // 编号列表已经画成清单了，剩下的"正文开头"那一段清单里没有，照旧给原文（不丢内容）
   const excerptTail = hits.length > 0 ? searchExcerptTail(step.result ?? '') : ''
-  /** 抓页那一档"读了几页"（行尾那个「N 个网页」）；不是抓页的步骤恒为 0。 */
-  const pageCount = fetchedPageCount(step)
+  /** 抓页那一档：**去掉抬头**（`【标题】` / `来源：url`）之后的正文——抬头已由清单说完。 */
+  const bodyTail = pages.length > 0 ? fetchedBodies(step.result ?? '') : ''
   /**
    * 这一步是**前置展开**的（失败 / 被拦下 / 等确认：`forceExpand`）——那种行 `open` 恒为真、
    * 点也收不起来，所以**不画行尾那枚箭头**（摆了等于许诺一个点不动的动作）。
@@ -350,7 +353,7 @@ function StepRow({
   const forced = forceExpand(step)
   return (
     /* 链内每个条目都是 `.ch-item`（生产 `.toolcall-flow__item`）：虚线由它的 `::after`
-       按 `:not(:last-child)` 画出来，行距由 `.ch-item + .ch-item` 的 margin-top 给。
+       按 `:has(~ .ch-item)` 画出来（末行没有），行距由 `.ch-item + .ch-item` 的 margin-top 给。
        组内子行（`sub`）不是链上的一环，单独用 `.ch-sub` 缩进。 */
     <div className={sub ? 'ch-sub' : 'ch-item'}>
       <button
@@ -376,20 +379,32 @@ function StepRow({
           </span>
         )}
         <span className={running ? 'ch-row-label ch-live' : 'ch-row-label'}>{step.label}</span>
-        {/* 标签与详情之间那根**细竖条**（Kimi 的「阅读 | SKILL.md」，用户批注 §1）：
-            CSS 画的 1px 线，不是「|」字符。没有详情就不画——"标签 |"后面空着更奇怪。 */}
-        {step.detail && (
+        {/*
+          详情位（Kimi 的行模式「标签 | 详情」，竖条由 `.ch-row-sep` 画）。两条分岔：
+          - **抓页那一档** ＝ `[favicon] N 个网页`（R4 批注，Kimi 是「获取网页 | 🔴 1 个网页」）
+            ——站点 favicon 与页数都收进这一格，行尾不再挂那一组站点牌；后端给的结论
+            （抓页那一步是"【标题】来源：url…"被裁过的一段）不再进这一行，整页信息在展开里；
+          - 其余 ＝ 后端给的结论原样（没有就不画竖条——"标签 |"后面空着更奇怪）。
+        */}
+        {pages.length > 0 ? (
           <>
             <span className="ch-row-sep" aria-hidden />
-            <span className="ch-row-detail">{step.detail}</span>
+            <span className="ch-row-detail ch-row-detail--sites">
+              <WebSiteIcons {...webSitesOfSteps([step])} />
+              <span className="ch-row-count">{formatCount(pages.length)} 个网页</span>
+            </span>
           </>
+        ) : (
+          step.detail && (
+            <>
+              <span className="ch-row-sep" aria-hidden />
+              <span className="ch-row-detail">{step.detail}</span>
+            </>
+          )
         )}
-        {/* 联网那几类：查了哪些站点直接标在行上（牌子先画、真 logo 后换，见 WebSiteList） */}
-        {!sub && <WebSiteList {...webSitesOfSteps([step])} />}
-        {/* 抓页那一档再补一个页数（用户批注 §3：Kimi 的行尾是「[站点 favicon] N 个网页」） */}
-        {!sub && pageCount > 0 && (
-          <span className="ch-row-count">{formatCount(pageCount)} 个网页</span>
-        )}
+        {/* 联网搜索那几类：查了哪些站点仍然标在行尾（牌子先画、真 logo 后换，见 WebSiteList）；
+            抓页那一档已经收进上面那一格，不再重复挂一遍（R4 批注要撤的就是它） */}
+        {!sub && pages.length === 0 && <WebSiteList {...webSitesOfSteps([step])} />}
         <span className="ch-row-right">
           {running && <span data-running-text>进行中</span>}
           {!running && step.durationMs != null && (
@@ -403,13 +418,22 @@ function StepRow({
       {hasBody && (
         <FlowFold row open={open}>
           {(step.thinking ?? '').trim() && <Thinking text={step.thinking ?? ''} />}
-          {step.args && (
-            <pre className="ch-raw" data-args>
-              {humanizeArtifactKeys(step.args, names)}
-            </pre>
-          )}
+          {step.args && <RequestPanel text={humanizeArtifactKeys(step.args, names)} />}
           {step.result &&
-            (hits.length > 0 ? (
+            (pages.length > 0 ? (
+              /*
+                抓页那一档：**与搜索结果同一套清单**（R4 批注）——favicon 16px 圆 /
+                标题（单行省略）/ 域名（右，三级灰）/ 整行可点。抬头那两行
+                （`【标题】` 与 `来源：url`）已经由清单说完了，下面接的是**去掉抬头之后的正文**
+                （Response 面板，带行号槽）——两段合起来仍是这一步返回的全部内容。
+              */
+              <>
+                <FadeScroll sites>
+                  <SearchHits hits={pages} />
+                </FadeScroll>
+                {bodyTail && <StepResult text={bodyTail} />}
+              </>
+            ) : hits.length > 0 ? (
               /*
                 联网搜索：**结果清单**（Kimi 排版，用户批注 §3）——标题 / 域名 / 可点，
                 比原来那一坨等宽原文读得出"查到了哪几个网页"。清单画不出的那一段
@@ -500,7 +524,7 @@ function GroupRow({
           <ChevronRight size={18} className="ch-chev" aria-hidden />
         </span>
       </button>
-      <FlowFold row open={open} id={bodyId}>
+      <FlowFold sub open={open} id={bodyId}>
         {entry.steps.map((step) => (
           <StepRow
             key={step.key}
@@ -618,9 +642,44 @@ function SourcesRow({
 }
 
 /**
+ * 这一轮**真正画出来**的链项（R4 批注）。
+ *
+ * 与 `traceEntries(turn)` 只差一条：**落定之后的「组织回答」那一行不再画**
+ * ——它没有可展开的内容（入参 / 返回都是空），用户原话"没有意义显示"。
+ * **流式进行中那一行要留**：它是"正在组织回答"的活动指示（`.ch-live` 流光那行），
+ * 也是"还没出正文"时过程区唯一在动的东西。
+ *
+ * 隐藏只影响**渲染**：T 计数、头部短语、聚合分组本来就不把非工具步算进去，
+ * 所以那些口径一个字没变。
+ */
+export function visibleEntries(turn: Turn): TraceEntry[] {
+  return traceEntries(turn).filter(
+    (entry) => entry.kind === 'group' || entry.step.icon !== 'build' || isRunningStep(entry.step),
+  )
+}
+
+/**
+ * 这一轮的工具链块（以及正文上面那条灰线）**出不出**：链项 / 思考 / 来源，
+ * 有一个就出。
+ *
+ * 与模型层 `hasTraceContent` 的差别只有一处：**纯直接作答那一轮整块不出**
+ * ——那种轮次链上只剩一条「组织回答」，而它按 R4 已经不画了，块里空无一物
+ * （Kimi 直接作答本来就没有块）。判据只有这一处：块的早退与那条灰线问的都是它。
+ */
+export function hasFlow(turn: Turn): boolean {
+  const message = turn.reply
+  if (!message) return false
+  return (
+    visibleEntries(turn).length > 0 ||
+    trailingThinking(message) !== '' ||
+    message.sources.length > 0
+  )
+}
+
+/**
  * 一轮的工具链块。`open` / `onToggle` 与各行开合都由宿主持有（判定分别在
  * `isTraceOpen` 与 provider 那两份表，**各只有一份**）。
- * 没有步骤、没有思考、没有来源的一轮（直接作答）**整块不画**。
+ * 没有链项、没有思考、没有来源的一轮（直接作答）**整块不画**（判据 `hasFlow`）。
  */
 export function ToolchainFlow({
   turn,
@@ -651,10 +710,14 @@ export function ToolchainFlow({
 
   const message = turn.reply
   if (!message) return null
-  // 「这一轮有没有真东西」的判据只有一处（`hasTraceContent`）——直接作答不该有块
-  if (!hasTraceContent(message)) return null
+  /*
+    块出不出：**链项 / 思考 / 来源三者有一个就出**（R4 起用的判据，见 `hasFlow`）。
+    纯直接作答那一轮——链上只剩一条「组织回答」而它已经不画了——整块不出：
+    Kimi 直接作答本来就没有块。（判据只有这一处，正文上面那条灰线问的也是它。）
+  */
+  if (!hasFlow(turn)) return null
   const thinking = trailingThinking(message)
-  const entries = traceEntries(turn)
+  const entries = visibleEntries(turn)
   /*
     头部总名（R3 批注）。没有工具步的那一轮仍是「直接作答」——那是**语义照旧**的一句话
     （"这一轮没调工具"），不是结果态文案；「拒识 / 命中」那几档（本轮没有命中资料 /
