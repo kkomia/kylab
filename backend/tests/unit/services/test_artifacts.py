@@ -522,3 +522,264 @@ def test_file_signature_covers_the_conversation_and_the_key() -> None:
         "conv_2", "章节/一.md"
     )
     assert file_signature_resource("conv_1", "a/b") != file_signature_resource("conv_1", "a:b")
+
+
+# ------------------------------------------------------------------ 会话文件区的目录层级（D20）
+
+
+def test_conversation_area_lists_one_directory_layer(
+    services: Services, conversation: str
+) -> None:
+    """上传文件夹时名字里带着相对路径 → 会话档**按目录分层列**（D20）。
+
+    层级本来就在名字里（`_upload_name` 保留的 `图表/第二季度.png`），所以这一档不新增
+    字段、也不改记录：根那层给一个**合成的**目录项，进去之后给真正的文件。
+    """
+    services.artifacts.write_file(
+        conversation_id=conversation, path="", filename="说明.txt", content="根上的".encode()
+    )
+    nested = services.artifacts.write_file(
+        conversation_id=conversation, path="", filename="图表/第二季度.png", content=b"png"
+    )
+
+    root = services.artifacts.list_files(conversation)
+
+    assert root.path == "" and root.parent is None
+    # 目录在前，各自按名字
+    assert [item.name for item in root.entries] == ["图表", "说明.txt"]
+    assert root.entries[0].is_dir and root.entries[0].kind == "dir"
+    # 目录项是**合成的**：key 就是它在这一档里的路径（与项目档同一个形状）
+    assert root.entries[0].key == "图表"
+
+    inner = services.artifacts.list_files(conversation, "图表")
+
+    assert inner.path == "图表" and inner.parent == ""
+    assert [item.name for item in inner.entries] == ["第二季度.png"]
+    # 文件项的 key 仍是**产物 id**：预览、下载、read_file 那条路一行都没改
+    assert inner.entries[0].key == nested.key
+    assert services.artifacts.read_file(conversation, inner.entries[0].key)[0] == b"png"
+
+
+def test_conversation_area_path_is_normalized_like_uploads(
+    services: Services, conversation: str
+) -> None:
+    """界面给的 path 与上传时的名字**同一套清洗**：`./图表//` 与 `图表` 是同一层。
+
+    会话档没有磁盘路径可越界，但两处判据必须同源——否则"界面能点进去的目录"与
+    "文件名里真有的目录"会对不上，点进去永远是空的。
+    """
+    services.artifacts.write_file(
+        conversation_id=conversation, path="", filename="图表/第二季度.png", content=b"png"
+    )
+
+    listing = services.artifacts.list_files(conversation, "./图表//")
+
+    assert listing.path == "图表"
+    assert [item.name for item in listing.entries] == ["第二季度.png"]
+
+
+def test_conversation_area_directory_that_does_not_exist_is_empty(
+    services: Services, conversation: str
+) -> None:
+    """列一个不存在的目录给**空列表**（不是报错）：它可能刚被清掉，界面不该炸。"""
+    services.artifacts.write_file(
+        conversation_id=conversation, path="", filename="说明.txt", content=b"x"
+    )
+
+    listing = services.artifacts.list_files(conversation, "没有这层")
+
+    assert listing.entries == ()
+    assert listing.path == "没有这层"
+    # 空列表会被读成"这条会话里没有文件"，所以档位那两句话必须照旧说着
+    assert listing.label == "本会话的文件"
+
+
+def test_conversation_area_does_not_mix_sibling_prefixes(
+    services: Services, conversation: str
+) -> None:
+    """`报告` 与 `报告集` 是两回事：按**段**比，不许被前缀匹配串进来。"""
+    services.artifacts.write_file(
+        conversation_id=conversation, path="", filename="报告/一.md", content=b"a"
+    )
+    services.artifacts.write_file(
+        conversation_id=conversation, path="", filename="报告集/二.md", content=b"b"
+    )
+
+    inner = services.artifacts.list_files(conversation, "报告")
+
+    assert [item.name for item in inner.entries] == ["一.md"]
+
+
+# ------------------------------------------------------------------ 取进本会话（D20）
+
+
+def test_import_copies_a_project_file_into_the_conversation(
+    services: Services, workspace_conversation: tuple[str, Path]
+) -> None:
+    """「取进本会话」：项目目录里那份**一个字节不动**，会话区多一条记录（D20）。"""
+    conversation_id, root = workspace_conversation
+    (root / "docs").mkdir()
+    (root / "docs" / "报告.md").write_text("正文", encoding="utf-8")
+
+    entry = services.artifacts.import_from_project(conversation_id, "docs/报告.md")
+
+    # 名字保留项目里的相对位置（与会话档的分层同一套），字节与来源一致
+    assert entry.name == "docs/报告.md" and entry.kind == "md"
+    assert services.artifacts.read_file(conversation_id, entry.key) == (
+        "正文".encode(),
+        "docs/报告.md",
+    )
+    records = services.artifacts.list_for_conversation(conversation_id)
+    assert len(records) == 1 and records[0].storage == ARTIFACT_IN_OBJECTS
+    # 项目里那份还在、内容没变（复制，不是搬）
+    assert (root / "docs" / "报告.md").read_text(encoding="utf-8") == "正文"
+    # 会话档的根那层因此多出一个目录
+    assert [item.name for item in services.artifacts.list_files(conversation_id).entries] == [
+        "docs"
+    ]
+
+
+def test_import_of_a_same_name_file_gets_a_suffix(
+    services: Services, workspace_conversation: tuple[str, Path]
+) -> None:
+    """同名不覆盖、也不并排两行同名：退到 `报告 (2).md`（与产物落盘同一个习惯）。
+
+    后缀要加在**扩展名之前、目录之后**（`docs/报告 (2).md`），否则名字要么丢了后缀
+    要么丢了目录。
+    """
+    conversation_id, root = workspace_conversation
+    (root / "docs").mkdir()
+    target = root / "docs" / "报告.md"
+    target.write_text("第一版", encoding="utf-8")
+
+    first = services.artifacts.import_from_project(conversation_id, "docs/报告.md")
+    target.write_text("第二版", encoding="utf-8")
+    second = services.artifacts.import_from_project(conversation_id, "docs/报告.md")
+
+    assert first.name == "docs/报告.md"
+    assert second.name == "docs/报告 (2).md"
+    # 两份各自留着当时的字节：后取的那份没有把先取的盖掉
+    assert services.artifacts.read_file(conversation_id, first.key)[0] == "第一版".encode()
+    assert services.artifacts.read_file(conversation_id, second.key)[0] == "第二版".encode()
+    assert sorted(
+        item.name
+        for item in services.artifacts.list_files(conversation_id, "docs").entries
+    ) == ["报告 (2).md", "报告.md"]
+
+
+def test_import_refuses_traversal_and_absolute_paths(
+    services: Services, workspace_conversation: tuple[str, Path]
+) -> None:
+    """源路径只走 `resolve_in`：`..`、绝对路径、盘符路径一律拒（路径是浏览器回来的）。"""
+    from app.core.exceptions import InvalidRequestError
+
+    conversation_id, _root = workspace_conversation
+
+    for bad in ["../外面.txt", "docs/../../外面.txt", "/etc/passwd", "C:\\Windows\\win.ini"]:
+        with pytest.raises(InvalidRequestError):
+            services.artifacts.import_from_project(conversation_id, bad)
+
+
+def _link_directory(link: Path, target: Path) -> None:
+    """建一个"指向别处"的目录链接；这个平台建不了就 skip 这一条。
+
+    Windows 上普通用户**建不了符号链接**（要开发者模式或管理员），但 **junction 可以**，
+    而 `Path.resolve()` 一样会跟过去。所以两条路都要试——否则"符号链接出界"这条
+    最要紧的边界在本机永远只是"跳过"，等于没钉。
+    """
+    import os
+    import subprocess
+
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except (OSError, NotImplementedError):
+        pass
+    if os.name == "nt":
+        # 固定字面量参数、没有外部输入：这里只是为了在**没有开发者模式**的 Windows 上
+        # 造一个目录链接（`mklink /J` 建 junction 不需要管理员），被测的是 `resolve_in`
+        done = subprocess.run(  # noqa: S603
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],  # noqa: S607
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if done.returncode == 0:
+            return
+    pytest.skip("这个平台/权限建不了目录链接")
+
+
+def test_import_refuses_a_symlink_that_leads_outside(
+    services: Services, workspace_conversation: tuple[str, Path], tmp_path: Path
+) -> None:
+    """符号链接指到工作区外面也要拒——字面上它完全正常，只有真解析一遍才发现。
+
+    `resolve_in` 第 3 道（解析后复查在根之内）管的就是这个：`链接/外面的.txt`
+    在 `..` 与绝对路径那两道闸上都是清白的。
+    """
+    from app.core.exceptions import InvalidRequestError
+
+    conversation_id, root = workspace_conversation
+    outside = tmp_path / "外面"
+    outside.mkdir()
+    (outside / "外面的.txt").write_text("不该被看见", encoding="utf-8")
+    _link_directory(root / "链接", outside)
+
+    with pytest.raises(InvalidRequestError):
+        services.artifacts.import_from_project(conversation_id, "链接/外面的.txt")
+
+
+def test_import_refuses_without_a_workspace(
+    services: Services, conversation: str
+) -> None:
+    """没挂工作区的会话没有「项目文件」可取——明确说清，不给一个空结果。"""
+    from app.core.exceptions import InvalidRequestError
+
+    with pytest.raises(InvalidRequestError, match="没有挂工作区"):
+        services.artifacts.import_from_project(conversation, "任意.txt")
+
+
+def test_import_refuses_a_directory(
+    services: Services, workspace_conversation: tuple[str, Path]
+) -> None:
+    """目录不是文件：拒掉（否则会读出 `IsADirectoryError` 那种 500）。"""
+    conversation_id, root = workspace_conversation
+    (root / "docs").mkdir()
+
+    with pytest.raises(NotFoundError, match="文件不存在"):
+        services.artifacts.import_from_project(conversation_id, "docs")
+
+
+def test_import_only_reads_this_conversations_own_project(
+    services: Services, tmp_path: Path
+) -> None:
+    """跨工作区越权：A 会话取不到 B 会话项目里的文件（各看各的根）。"""
+    first_root = tmp_path / "a"
+    first_root.mkdir()
+    second_root = tmp_path / "b"
+    second_root.mkdir()
+    (second_root / "别人的.txt").write_text("b", encoding="utf-8")
+    first = services.conversations.create(
+        title="a",
+        workspace_id=services.workspaces.create(
+            name="A", root_path=str(first_root), user_id=None
+        ).id,
+    ).id
+
+    with pytest.raises(NotFoundError, match="文件不存在"):
+        services.artifacts.import_from_project(first, "别人的.txt")
+
+
+def test_import_refuses_a_file_over_the_read_cap(
+    services: Services, workspace_conversation: tuple[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """大小上限**沿用服务层那一个常量**：这条链路把整份字节读进内存，没有分片。"""
+    from app.core.exceptions import InvalidRequestError
+    from app.services import artifacts as artifacts_module
+
+    conversation_id, root = workspace_conversation
+    (root / "大.bin").write_bytes(b"x" * 64)
+    monkeypatch.setattr(artifacts_module, "MAX_READ_BYTES", 16)
+
+    with pytest.raises(InvalidRequestError, match="超过取用上限"):
+        services.artifacts.import_from_project(conversation_id, "大.bin")

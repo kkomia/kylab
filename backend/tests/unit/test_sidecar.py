@@ -502,13 +502,19 @@ def _patch_post(monkeypatch, handler) -> None:  # type: ignore[no-untyped-def]
     P4-3 之后 `sidecar` **不再在模块级 import httpx**（那会把 click/pygments/rich
     拖进客户端运行时的导入闭包 ✗）→ 用例改打**新的接缝**：`sidecar._httpx()` ✓
     （它是个惰性取值器，`monkeypatch` 换掉它就等于换掉这一侧的传输 ✓）。
+
+    `get` 也一并假掉（2026-10-01，`list_notes` 用 `GET /notes` 起）——同一个 handler，
+    按方法/路径分流（名字保持 `_patch_post` 不改：十来个用例都引它，改名只是噪音）。
     """
     transport = httpx.MockTransport(handler)
 
     def fake_post(url, **kwargs):  # type: ignore[no-untyped-def]
         return httpx.Client(transport=transport).post(url, **kwargs)
 
-    fake_httpx = SimpleNamespace(post=fake_post, HTTPError=httpx.HTTPError)
+    def fake_get(url, **kwargs):  # type: ignore[no-untyped-def]
+        return httpx.Client(transport=transport).get(url, **kwargs)
+
+    fake_httpx = SimpleNamespace(post=fake_post, get=fake_get, HTTPError=httpx.HTTPError)
     monkeypatch.setattr(sidecar, "_httpx", lambda: fake_httpx)
 
 
@@ -627,4 +633,381 @@ def test_turn_stream_notes_a_failed_write_back_without_touching_the_answer(
     assert done and done[-1]["answer"] == "流式答案"
     # 写不回去**不是**这一轮的失败：没有 error 事件
     assert not [event for event in events if event["type"] == "error"]
+
+
+def test_cors_allows_the_desktop_page_origin(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """壳的页面（`http://app.localhost`）要能**跨源直连**边车。
+
+    没有这几个响应头，浏览器会在预检那一步就把请求掐掉（页面里只留一条
+    `TypeError: Failed to fetch`），`resolveTurnTarget()` 于是永远回退到服务器——
+    "对话在本机跑"这条会在界面上**静默**失效（2026-09-30 实测到的坑）。
+    """
+    client = _client(tmp_path, monkeypatch, _FakeModel())
+
+    allowed = client.get("/health", headers={"Origin": "http://app.localhost"})
+    assert allowed.headers.get("access-control-allow-origin") == "http://app.localhost"
+
+    # 预检：真的 `fetch` 一个 JSON POST 之前，浏览器会先发这一条
+    preflight = client.options(
+        "/turn",
+        headers={
+            "Origin": "http://app.localhost",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+    assert preflight.status_code == 200
+    assert preflight.headers.get("access-control-allow-origin") == "http://app.localhost"
+
+    # 不是"对所有源开放"：别的源照旧拿不到头
+    other = client.get("/health", headers={"Origin": "https://evil.example"})
+    assert "access-control-allow-origin" not in other.headers
+
+
+def test_export_delivers_through_the_server_file_area(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**导出三件在边车这一侧也交付得出去**（2026-09-30）：本地生成 → 上传到会话文件区 ✓。
+
+    没有这条之前实测的后果：同一句"生成 sales.xlsx"，网页（服务器跑）交得了、
+    桌面（本机跑）交不了 ✗ —— 模型只能回"要跑命令才能落盘"（命令又被隔离闸挡着）✗。
+    """
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/files"):
+            seen["url"] = str(request.url)
+            seen["body"] = request.read()
+            return httpx.Response(
+                201,
+                json={
+                    "key": "art_delivered",
+                    "name": "sales.xlsx",
+                    "size_bytes": 1234,
+                    "kind": "xlsx",
+                },
+            )
+        # 写回那一轮（`POST /chat/turns/record`）
+        return httpx.Response(200, json={"recorded": True})
+
+    _patch_post(monkeypatch, handler)
+    model = _ToolCallingModel(
+        "export_table",
+        json.dumps({"filename": "sales.xlsx", "rows": [["月份", "销售额"], ["3月", 128]]}),
+        "已交付：sales.xlsx",
+    )
+    client = _client(tmp_path, monkeypatch, model)
+
+    payload = client.post(
+        "/turn", json={"message": "给我一份 xlsx", "conversation_id": "conv_7"}
+    ).json()
+
+    # ① 上传打到**那个会话**的文件区，且带着那份文件（multipart）
+    assert seen.get("url", "").endswith("/conversations/conv_7/files"), seen
+    assert b'name="file"' in seen["body"] and b"sales.xlsx" in seen["body"], seen["body"][:200]
+    # ② 交付结果与卡片形状都在步骤里（界面靠 `artifacts` 画那张可点的卡片）
+    done = [
+        step
+        for step in payload["steps"]
+        if step["tool"] == "export_table" and step["status"] == "done"
+    ]
+    assert done, payload["steps"]
+    assert "本会话" in done[0]["result"], done[0]["result"]
+    assert done[0]["artifacts"][0]["artifact_id"] == "art_delivered", done[0]
+    assert done[0]["artifacts"][0]["where"] == "本会话"
+    # ③ 本机也留了一份（附赠；权威那份在服务器）——而且是一份**真的** xlsx（zip 头 PK）
+    local = tmp_path / "ws" / "sales.xlsx"
+    assert local.read_bytes()[:2] == b"PK", local
+
+
+def test_sidecar_exposes_the_export_family_but_not_the_server_only_ones() -> None:
+    """导出三件、笔记两件、记忆两件 **在**表里；服务端专属那几件**不在**（2026-10-01）。"""
+    assert {"export_document", "export_table", "export_deck"} <= sidecar.SIDECAR_TOOL_NAMES
+    assert {"create_note", "attach_note_to_kb"} <= sidecar.SIDECAR_TOOL_NAMES
+    assert {"recall", "remember"} <= sidecar.SIDECAR_TOOL_NAMES
+    assert not {"ingest_artifact", "read_memory", "write_memory"} & sidecar.SIDECAR_TOOL_NAMES
+
+
+def test_note_is_forwarded_to_the_server(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**笔记转发**（2026-10-01）：`create_note` 落到服务器的 `POST /api/v1/notes` ✓。
+
+    与导出同一类问题："帮我记一条笔记"在网页交得了、在桌面（本机跑）交不了 ✗。
+    """
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/notes"):
+            seen["url"] = str(request.url)
+            seen["body"] = json.loads(request.read().decode())
+            return httpx.Response(201, json={"id": "note_1", "title": "会议纪要"})
+        # 写回那一轮（`POST /chat/turns/record`）
+        return httpx.Response(200, json={"recorded": True})
+
+    _patch_post(monkeypatch, handler)
+    model = _ToolCallingModel(
+        "create_note",
+        json.dumps(
+            {"title": "会议纪要", "content_md": "- 决定：周五发版", "tags": ["会议"]}
+        ),
+        "记好了",
+    )
+    client = _client(tmp_path, monkeypatch, model)
+
+    payload = client.post("/turn", json={"message": "帮我记一条笔记"}).json()
+
+    # ① 真的打到了服务器的笔记端点，字段按服务器那份契约（title / content_md / tags）
+    assert seen.get("url", "").endswith("/api/v1/notes"), seen
+    assert seen["body"]["title"] == "会议纪要"
+    assert seen["body"]["content_md"] == "- 决定：周五发版"
+    assert seen["body"]["tags"] == ["会议"]
+    # ② 工具结果就是那句"笔记已保存（不是交付）"，模型据此作答
+    done = [
+        step
+        for step in payload["steps"]
+        if step.get("tool") == "create_note" and step.get("status") == "done"
+    ]
+    assert done, payload["steps"]
+    assert "笔记已保存" in done[0]["result"], done[0]["result"]
+    assert payload["answer"] == "记好了"
+
+
+def test_attach_note_is_forwarded_to_the_server(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**入库转发**（2026-10-01）：`attach_note_to_kb` 打到 `POST /api/v1/notes/{id}/attach` ✓。
+
+    `create_note` 的第二步："记下来"之后"以后 `search` 搜得到" —— 同一句话的两个半步
+    都要在边车能跑完，否则链路停在"记了、但检索不到"的半路 ✗。
+    """
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/notes/note_7/attach"):
+            seen["url"] = str(request.url)
+            seen["body"] = json.loads(request.read().decode())
+            return httpx.Response(
+                200, json={"id": "note_7", "doc_id": "doc_9", "kb_id": "kb_1"}
+            )
+        # 写回那一轮（`POST /chat/turns/record`）
+        return httpx.Response(200, json={"recorded": True})
+
+    _patch_post(monkeypatch, handler)
+    model = _ToolCallingModel(
+        "attach_note_to_kb",
+        json.dumps({"note_id": "note_7", "knowledge_base_id": "kb_1"}),
+        "已经加进知识库了",
+    )
+    client = _client(tmp_path, monkeypatch, model)
+
+    payload = client.post("/turn", json={"message": "把那条笔记加进知识库"}).json()
+
+    # ① 真的打到了服务器的 attach 端点，字段按服务器那份契约（kb_id）
+    assert seen.get("url", "").endswith("/api/v1/notes/note_7/attach"), seen
+    assert seen["body"]["kb_id"] == "kb_1"
+    # ② 工具结果带着 document_id 与那句"异步处理"，模型据此作答
+    done = [
+        step
+        for step in payload["steps"]
+        if step.get("tool") == "attach_note_to_kb" and step.get("status") == "done"
+    ]
+    assert done, payload["steps"]
+    assert "已作为 Markdown 文档入库" in done[0]["result"], done[0]["result"]
+    assert payload["answer"] == "已经加进知识库了"
+
+
+def test_remember_is_forwarded_to_the_server(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**记忆转发（写）**（2026-10-01）：`remember` 落到 `POST /api/v1/memory/remember` ✓。
+
+    与笔记同一类问题："记住我喜欢 X"在网页交得了、在桌面（本机跑）交不了 ✗。
+    """
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/memory/remember"):
+            seen["url"] = str(request.url)
+            seen["body"] = json.loads(request.read().decode())
+            return httpx.Response(200, json={"saved": True, "entries": 3, "reason": ""})
+        # 写回那一轮（`POST /chat/turns/record`）
+        return httpx.Response(200, json={"recorded": True})
+
+    _patch_post(monkeypatch, handler)
+    model = _ToolCallingModel(
+        "remember",
+        json.dumps({"content": "用户偏好深色模式", "tags": ["偏好"]}),
+        "记住了",
+    )
+    client = _client(tmp_path, monkeypatch, model)
+
+    payload = client.post("/turn", json={"message": "记住我偏好深色模式"}).json()
+
+    # ① 真的打到了服务器的记忆端点，字段按服务器那份契约（content / tags）
+    assert seen.get("url", "").endswith("/api/v1/memory/remember"), seen
+    assert seen["body"]["content"] == "用户偏好深色模式"
+    assert seen["body"]["tags"] == ["偏好"]
+    # ② 工具结果就是那句"已写入核心长期记忆"，模型据此作答
+    done = [
+        step
+        for step in payload["steps"]
+        if step.get("tool") == "remember" and step.get("status") == "done"
+    ]
+    assert done, payload["steps"]
+    assert "已写入核心长期记忆" in done[0]["result"], done[0]["result"]
+    assert payload["answer"] == "记住了"
+
+
+def test_recall_is_forwarded_to_the_server(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**记忆转发（读）**（2026-10-01）：`recall` 打到 `POST /api/v1/memory/recall` ✓，
+    hits 按 `tools.py::_recall` 那份读法回到工具结果里（text / path / 行号区间 / score）✓。"""
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/memory/recall"):
+            seen["url"] = str(request.url)
+            seen["body"] = json.loads(request.read().decode())
+            return httpx.Response(
+                200,
+                json={
+                    "query": "深色模式",
+                    "hits": [
+                        {
+                            "text": "用户偏好深色模式",
+                            "path": "MEMORY.md",
+                            "start_line": 3,
+                            "end_line": 5,
+                            "score": 0.87,
+                        }
+                    ],
+                    "links": [],
+                    "note": "这是记忆",
+                },
+            )
+        # 写回那一轮（`POST /chat/turns/record`）
+        return httpx.Response(200, json={"recorded": True})
+
+    _patch_post(monkeypatch, handler)
+    model = _ToolCallingModel("recall", json.dumps({"query": "深色模式"}), "你偏好深色模式")
+    client = _client(tmp_path, monkeypatch, model)
+
+    payload = client.post("/turn", json={"message": "我之前说过什么偏好？"}).json()
+
+    # ① 真的打到了服务器的 recall 端点，查询词按契约
+    assert seen.get("url", "").endswith("/api/v1/memory/recall"), seen
+    assert seen["body"]["query"] == "深色模式"
+    # ② hits 原样进了工具结果（正文 + 行号区间是"渐进展开"的入口）
+    done = [
+        step
+        for step in payload["steps"]
+        if step.get("tool") == "recall" and step.get("status") == "done"
+    ]
+    assert done, payload["steps"]
+    assert "用户偏好深色模式" in done[0]["result"], done[0]["result"]
+    assert "3-5" in done[0]["result"], done[0]["result"]
+    assert payload["answer"] == "你偏好深色模式"
+
+
+def test_list_notes_is_forwarded_to_the_server(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**笔记列表转发**（2026-10-01）：`list_notes` 打到 `GET /api/v1/notes` ✓。
+
+    两处翻译各钉一条：服务器列表项**不带正文**（工具读 `content_md`——这里该是
+    `preview` 顶上去的）、`updated_at` 是 ISO 字符串（要还原成 datetime——工具会调
+    `.isoformat()` ✗ 字符串没有）。
+    """
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and str(request.url).split("?")[0].endswith("/api/v1/notes"):
+            seen["url"] = str(request.url)
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {
+                            "id": "note_1",
+                            "title": "会议纪要",
+                            "preview": "- 决定：周五发版",
+                            "tags": ["会议"],
+                            "doc_id": None,
+                            "source_kind": "manual",
+                            "updated_at": "2026-09-29T12:00:00Z",
+                        }
+                    ],
+                    "total": 1,
+                },
+            )
+        # 写回那一轮（`POST /chat/turns/record`）
+        return httpx.Response(200, json={"recorded": True})
+
+    _patch_post(monkeypatch, handler)
+    model = _ToolCallingModel("list_notes", json.dumps({"query": "会议"}), "你有 1 条会议笔记")
+    client = _client(tmp_path, monkeypatch, model)
+
+    payload = client.post("/turn", json={"message": "看看我记过哪些会议笔记"}).json()
+
+    # ① 打到了笔记列表端点（GET /notes），查询词进了 query string
+    assert "/api/v1/notes" in seen.get("url", ""), seen
+    assert "q=" in seen.get("url", ""), seen
+    # ② 标题 / 预览（preview → excerpt）/ 在库标记都进了工具结果
+    done = [
+        step
+        for step in payload["steps"]
+        if step.get("tool") == "list_notes" and step.get("status") == "done"
+    ]
+    assert done, payload["steps"]
+    result = done[0]["result"]
+    assert "会议纪要" in result, result
+    assert "决定：周五发版" in result, result
+    assert "in_knowledge_base" in result, result
+    assert payload["answer"] == "你有 1 条会议笔记"
+
+
+def test_ingest_file_reads_local_and_uploads(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**本机文件入库**（2026-10-01）：`ingest_file` 在边车侧 = 读本机 → multipart 上传 ✓。
+
+    验证三件事：① 工具只在**选了库**（kb_ids 非空）时摆出来（`_LOCAL_KB_TOOLS` 门控）；
+    ② 字节从**本机工作区**读出来（不是从服务器文件区）；③ 上传打到
+    `POST /knowledge-bases/{kb_id}/documents`，字段按服务器那份契约（multipart `file`）。
+    """
+    seen: dict[str, Any] = {}
+    workspace = tmp_path / "ws"
+    workspace.mkdir(parents=True, exist_ok=True)
+    (workspace / "notes.txt").write_text("hello from local", encoding="utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url).endswith("/knowledge-bases/kb_1/documents"):
+            seen["url"] = str(request.url)
+            seen["body"] = request.read()  # multipart 原始字节
+            return httpx.Response(
+                202,
+                json={
+                    "document": {"id": "doc_9", "name": "notes.txt"},
+                    "is_duplicate": False,
+                    "task_id": "task_1",
+                },
+            )
+        # 写回那一轮（`POST /chat/turns/record`）
+        return httpx.Response(200, json={"recorded": True})
+
+    _patch_post(monkeypatch, handler)
+    model = _ToolCallingModel(
+        "ingest_file",
+        json.dumps({"knowledge_base_id": "kb_1", "path": "notes.txt"}),
+        "已经放进知识库了",
+    )
+    client = _client(tmp_path, monkeypatch, model)
+
+    # ② 带上选中的库跑一轮（`ingest_file` 受 `_LOCAL_KB_TOOLS` 门控：kb_ids 非空才摆）
+    payload = client.post(
+        "/turn", json={"message": "把 notes.txt 放进知识库", "kb_ids": ["kb_1"]}
+    ).json()
+
+    # ③ 上传真的打到了服务器的文档上传口，multipart 里是**本机那份的字节**
+    assert seen.get("url", "").endswith("/api/v1/knowledge-bases/kb_1/documents"), seen
+    assert b"hello from local" in seen["body"], seen["body"][:400]
+    assert b'filename="notes.txt"' in seen["body"], seen["body"][:400]
+    # ④ 工具结果按 `_ingest_file` 的口径（文档 id + 入队说明）
+    done = [
+        step
+        for step in payload["steps"]
+        if step.get("tool") == "ingest_file" and step.get("status") == "done"
+    ]
+    assert done, payload["steps"]
+    assert "doc_9" in done[0]["result"], done[0]["result"]
+    assert "已入队处理" in done[0]["result"], done[0]["result"]
+    assert payload["answer"] == "已经放进知识库了"
 

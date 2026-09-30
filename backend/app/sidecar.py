@@ -44,12 +44,14 @@ import json
 import logging
 import os
 from collections.abc import Iterator, Sequence
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -63,9 +65,11 @@ from app.services.remote_clients import (
     RemoteClientError,
     RemoteKnowledgeClient,
     RemoteModelClient,
+    RemoteUnavailableError,
 )
 from app.services.runtime_config import RuntimeConfigService
 from app.services.tool_loop import ToolLoop
+from app.storage.base import ARTIFACT_IN_OBJECTS, ConversationArtifactRecord
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +304,409 @@ class _LocalWorkspaces:
         return SimpleNamespace(root_path=str(self._root))
 
 
+#: 产出物上传到服务器文件区的超时（秒）。导出本身是本地计算，这一步是**网络**：
+#: 给够但别无限等——交付失败要**如实报**（见 `_LocalArtifacts`）。
+ARTIFACT_UPLOAD_TIMEOUT_SECONDS = 20.0
+
+#: 建笔记的超时（秒）：一次 POST，比上传小得多；同样"失败要如实报"（见 `_LocalNotes`）。
+NOTES_TIMEOUT_SECONDS = 10.0
+
+
+class _LocalArtifacts:
+    """产出物的落点（边车侧）：**本地写一份 + 上传到服务器的会话文件区** ✓。
+
+    为什么要有它（2026-09-30，实测到的能力差）：导出那一族原来整族不在
+    `SIDECAR_TOOL_NAMES` 里（当时的理由："要 PG 与对象存储，服务器权威" ✗）——
+    于是**同一句"生成 sales.xlsx"，网页（服务器跑）交得了、桌面（本机跑）交不了** ✗：
+    模型要么回"要跑命令才能落盘"（命令又被隔离闸挡着），要么把数据贴在正文里。
+
+    服务器那边确实不需要本机有 PG ✓：它有一个"往会话文件区放一份文件"的上传口
+    （`POST /conversations/{id}/files`，multipart，回 `art_*` 键 ✓）。所以这里的做法是：
+    **本地生成**（`office.py`，运行时就带着 ✓）→ **上传**拿键 ✓ → 记录里的 `id`/`location`
+    用那个键 ✓ —— UI 的预览/下载走服务器**既有的**那条路 ✓。本机再留一份是附赠
+    （用户打开工作区就看得见 ✓）。
+
+    上传失败**如实抛**（`RemoteUnavailableError` ✓）：工具会把它报成一次失败，
+    而不是"假装交付了" ✗ —— 与写回那一轮是同一条纪律 ✓。
+    """
+
+    def __init__(self, *, clients: Clients, workspace: Path) -> None:
+        self._clients = clients
+        self._workspace = workspace
+
+    def save(
+        self,
+        *,
+        conversation_id: str,
+        filename: str,
+        content: bytes,
+        kind: str,
+        owner_id: str | None = None,
+    ) -> ConversationArtifactRecord:
+        key, name = self._upload(conversation_id, filename, content)
+        self._write_local(name, content)
+        return ConversationArtifactRecord(
+            id=key,
+            conversation_id=conversation_id,
+            name=name,
+            format=kind,
+            size_bytes=len(content),
+            # 权威的那一份在服务器的会话文件区（本机那份是附赠）→ 标签按"本会话"算 ✓，
+            # 与服务器侧"没挂工作区就落对象存储"是同一支 ✓。
+            storage=ARTIFACT_IN_OBJECTS,
+            location=key,
+            owner_id=owner_id,
+        )
+
+    def read_file(self, conversation_id: str, path: str) -> tuple[bytes, str]:
+        """边车侧**不读会话文件区**（权威那份在服务器的对象存储里）——如实抛 ✓。
+
+        `_ingest_file` 对这个异常的处理正是"不在文件区 → 落回文件面"（它 catch KylabError），
+        所以这里一句话就把"把服务器文件区的产物入知识库"的路让给了**本机那条**：
+        产物在本机留过副本（见 `_write_local`），常见诉求（"把刚才生成的那份放进库"）
+        给个文件名就能在文件面命中 ✓。
+        """
+        raise NotFoundError(
+            f"边车这一侧不读会话文件区（{path}）——本机文件请给工作区里的相对路径"
+        )
+
+    def label_for(self, record: ConversationArtifactRecord) -> str:
+        """给用户看的那句话（与 `ArtifactService.label_for` 的对象存储那一支同口径 ✓）。"""
+        return "本会话"
+
+    def describe(self, record: ConversationArtifactRecord) -> dict[str, object]:
+        """给界面用的那份形状（与 `ArtifactService.describe` 的对象存储那一支逐字一致 ✓）。"""
+        return {
+            "artifact_id": record.id,
+            "name": record.name,
+            "size_bytes": record.size_bytes,
+            "format": record.format,
+            "storage": record.storage,
+            "where": self.label_for(record),
+        }
+
+    def _upload(self, conversation_id: str, filename: str, content: bytes) -> tuple[str, str]:
+        url = f"{self._clients.base_url}/conversations/{conversation_id}/files"
+        try:
+            response = _httpx().post(
+                url,
+                headers={"Authorization": f"Bearer {self._clients.token}"},
+                files={"file": (filename, content)},
+                timeout=ARTIFACT_UPLOAD_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as error:  # httpx 的各种失败 + 回包解析不了，都算"没交出去"
+            raise RemoteUnavailableError(f"产出物没能交付到对话（{url}）：{error}") from error
+        key = str((payload or {}).get("key") or "")
+        if not key:
+            raise RemoteUnavailableError(f"产出物没能交付到对话（{url}）：服务器没有回文件键")
+        return key, str((payload or {}).get("name") or filename)
+
+    def _write_local(self, name: str, content: bytes) -> None:
+        """本地那份**只取文件名**（不认子路径、不许 `..`）：写坏工作区比少一份附赠文件糟 ✗。"""
+        safe = Path(name.replace("\\", "/")).name
+        if not safe or safe in {".", ".."}:
+            return
+        try:
+            self._workspace.mkdir(parents=True, exist_ok=True)
+            (self._workspace / safe).write_bytes(content)
+        except OSError:
+            # 本机这份是附赠：写不进去**不**让整次交付失败（服务器那份才是权威 ✓）
+            return
+
+
+class _LocalNotes:
+    """笔记的落点（边车侧）：**转发到服务器的笔记库** ✓（与产出物那条同一套做法）。
+
+    为什么要有它（2026-10-01，与导出同一批）：笔记是**服务器权威**的数据（要 PG ✗），
+    所以 `create_note` 原来不在 `SIDECAR_TOOL_NAMES` 里 —— 桌面（本机跑）说"帮我记一条笔记"
+    交不了，网页却交得了 ✗。服务器有现成的 `POST /api/v1/notes` ✓，于是这里只做**转发**：
+    **本地不留副本**（笔记本来就该在服务器上——界面那页笔记也是从那儿列的 ✓）。
+    """
+
+    def __init__(self, *, clients: Clients) -> None:
+        self._clients = clients
+
+    def create(
+        self,
+        *,
+        user_id: str | None = None,
+        title: str,
+        content_md: str,
+        source_kind: str = "manual",
+        source_ref: str | None = None,
+        tags: list[str] | None = None,
+        folder_id: str | None = None,
+    ) -> Any:
+        """建一条笔记。`user_id` 收下但**不用**：归属由服务器按这把钥匙算 ✓（与服务器同源）。"""
+        payload: dict[str, Any] = {
+            "title": title,
+            "content_md": content_md,
+            "source_kind": source_kind,
+        }
+        if source_ref:
+            payload["source_ref"] = source_ref
+        if tags:
+            payload["tags"] = [str(item) for item in tags]
+        if folder_id:
+            payload["folder_id"] = folder_id
+
+        url = f"{self._clients.base_url}/notes"
+        try:
+            response = _httpx().post(
+                url,
+                headers={"Authorization": f"Bearer {self._clients.token}"},
+                json=payload,
+                timeout=NOTES_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            body = response.json()
+        except Exception as error:  # httpx 的各种失败 + 回包解析不了，都算"没记上"
+            raise RemoteUnavailableError(f"笔记没能存到服务器（{url}）：{error}") from error
+        return SimpleNamespace(
+            id=str((body or {}).get("id") or ""),
+            title=str((body or {}).get("title") or title),
+        )
+
+    def attach_to_kb(
+        self,
+        note_id: str,
+        *,
+        user_id: str | None = None,
+        kb_id: str,
+    ) -> Any:
+        """把一条笔记作为 Markdown 文档入某个知识库（`POST /notes/{id}/attach` ✓）。
+
+        与 `create` 同一条纪律：**只转发、本地不留副本、失败如实抛** ✓。
+        权限（这把钥匙对那个库有没有写权限）在服务器那一侧判 ✓（见 `_ApiKeySeam`）——
+        本地没有库与账号的权威数据，不重做一遍 ✗。
+        """
+        url = f"{self._clients.base_url}/notes/{note_id}/attach"
+        try:
+            response = _httpx().post(
+                url,
+                headers={"Authorization": f"Bearer {self._clients.token}"},
+                json={"kb_id": kb_id},
+                timeout=NOTES_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            body = response.json()
+        except Exception as error:  # 同 `create`：连不上、被拒、回包看不懂，都算"没入上"
+            raise RemoteUnavailableError(f"笔记没能入到知识库（{url}）：{error}") from error
+        return SimpleNamespace(
+            id=str((body or {}).get("id") or note_id),
+            doc_id=(body or {}).get("doc_id"),
+            kb_id=(body or {}).get("kb_id") or kb_id,
+        )
+
+    def list(
+        self,
+        *,
+        user_id: str | None = None,
+        query: str | None = None,
+        limit: int | None = None,
+    ) -> Any:
+        """列笔记（`GET /notes` ✓）；返回 `(items, total)`——形状对齐 `_list_notes` 的读法。
+
+        两处翻译（服务器的列表契约与工具期望不同，各写一句免得后人重踩）：
+        - 列表项**不带正文**（`NoteListItemOut.content_md` 是空串 ✗），而工具的 `excerpt`
+          直接读 `content_md[:200]` —— 所以把服务器算好的 `preview` 放进 `content_md`
+          （语义等价、还省得边车再截一遍 ✓）；
+        - `updated_at` 是 ISO 字符串，而工具调 `.isoformat()` —— 还原成 `datetime` ✓
+          （`Z` 后缀 Python 3.11+ 的 `fromisoformat` 认 ✓）。
+        """
+        params: dict[str, Any] = {}
+        if query:
+            params["q"] = str(query)
+        if limit:
+            params["limit"] = int(limit)
+        url = f"{self._clients.base_url}/notes"
+        try:
+            response = _httpx().get(
+                url,
+                headers={"Authorization": f"Bearer {self._clients.token}"},
+                params=params,
+                timeout=NOTES_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            body = response.json()
+        except Exception as error:  # 连不上、被拒、回包解析不了，都算"没取到"
+            raise RemoteUnavailableError(f"笔记列表没能取到（{url}）：{error}") from error
+        items = []
+        for raw in (body or {}).get("items") or []:
+            if not isinstance(raw, dict):
+                continue
+            updated: Any = raw.get("updated_at")
+            if isinstance(updated, str) and updated:
+                try:
+                    updated = datetime.fromisoformat(updated)
+                except ValueError:
+                    updated = None
+            items.append(
+                SimpleNamespace(
+                    id=str(raw.get("id") or ""),
+                    title=str(raw.get("title") or ""),
+                    content_md=str(raw.get("preview") or ""),
+                    tags=[str(item) for item in raw.get("tags") or []],
+                    doc_id=raw.get("doc_id"),
+                    source_kind=str(raw.get("source_kind") or "manual"),
+                    updated_at=updated,
+                )
+            )
+        return items, int((body or {}).get("total") or len(items))
+
+
+class _LocalMemory:
+    """记忆的落点（边车侧）：**转发到服务器的记忆** ✓（与 `_LocalNotes` 同一套做法）。
+
+    为什么要有它（2026-10-01）：`recall` / `remember` 原来不在 `SIDECAR_TOOL_NAMES` 里
+    （"记忆要数据目录，服务器权威" ✗）——于是"记住我偏好 X / 我们上次怎么定的"在网页
+    交得了、桌面交不了 ✗。native 之后记忆是服务器数据目录里的 Markdown ✓，
+    REST 口现成（`POST /memory/recall` / `POST /memory/remember` ✓），这里只做**转发**：
+    **本地不留副本**（记忆本来就该在服务器上——界面那页记忆也从那儿读 ✓）。
+    失败**如实抛**（`RemoteUnavailableError` ✓，与笔记两件同一条纪律 ✓）。
+
+    `enabled` **恒 True**：开关的权威在服务器那一侧 ✓（关着时 recall 端点**明确报错**、
+    不返回空结果——见 `api/v1/memory.py` 模块头 §2.3）；边车判不了就不动 ✓
+    （与 `_memory_on` 的"判不了就不隐藏"同一条哲学 ✓）。
+    """
+
+    enabled = True
+
+    def __init__(self, *, clients: Clients) -> None:
+        self._clients = clients
+
+    def recall(
+        self, query: str, *, limit: int | None = None, user_id: str | None = None
+    ) -> Any:
+        """召回。`user_id` 收下但**不用**：归属由服务器按这把钥匙算 ✓（与笔记同源）。
+
+        返回 `(hits, links)` 两个列表（形状对齐 `tools.py::_recall` 的读法 ✓）——
+        两个方向的转发共用 `_post` ✓。
+        """
+        payload: dict[str, Any] = {"query": query}
+        if limit:
+            payload["limit"] = int(limit)
+        body = self._post("/memory/recall", payload, what="召回记忆")
+        hits = [
+            SimpleNamespace(
+                text=str(item.get("text") or ""),
+                path=str(item.get("path") or ""),
+                start_line=item.get("start_line"),
+                end_line=item.get("end_line"),
+                score=item.get("score"),
+            )
+            for item in (body.get("hits") or [])
+            if isinstance(item, dict)
+        ]
+        links = [
+            SimpleNamespace(
+                path=str(item.get("path") or ""),
+                name=str(item.get("name") or ""),
+                direction=str(item.get("direction") or ""),
+            )
+            for item in (body.get("links") or [])
+            if isinstance(item, dict)
+        ]
+        return hits, links
+
+    def remember(
+        self,
+        content: str,
+        *,
+        tags: list[str] | None = None,
+        user_id: str | None = None,
+    ) -> Any:
+        """记一条。返回服务器那份 `{saved, entries, reason}` ✓（工具按 `saved` 判重复 ✓）。"""
+        body = self._post(
+            "/memory/remember",
+            {"content": content, "tags": [str(item) for item in (tags or [])]},
+            what="写入记忆",
+        )
+        return {
+            "saved": bool(body.get("saved")),
+            "entries": int(body.get("entries") or 0),
+            "reason": str(body.get("reason") or ""),
+        }
+
+    def _post(self, path: str, payload: dict[str, Any], *, what: str) -> dict[str, Any]:
+        url = f"{self._clients.base_url}{path}"
+        try:
+            response = _httpx().post(
+                url,
+                headers={"Authorization": f"Bearer {self._clients.token}"},
+                json=payload,
+                timeout=NOTES_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            body = response.json()
+        except Exception as error:  # 连不上、被拒、回包解析不了，都算"没走通"
+            raise RemoteUnavailableError(f"{what}没能走通（{url}）：{error}") from error
+        return body if isinstance(body, dict) else {}
+
+
+class _LocalIngest:
+    """知识库入库的落点（边车侧）：**上传到服务器的知识库** ✓（`ingest_file` 用）。
+
+    为什么要有它（2026-10-01）：`ingest_file`（"把我这台机器上的某份文件放进知识库"）
+    原来不在边车里（"要 PG 与对象存储" ✗）——但服务器「上传文档」REST 口现成
+    （`POST /knowledge-bases/{kb_id}/documents`，multipart ✓，`start=true` 默认立即入队 ✓），
+    而**文件的字节恰恰在边车这一侧**（本机文件是桌面端的主场 ✓）。所以：
+    **边车读本机 → 上传**——与导出那一族"本地生成 → 上传"同一个方向 ✓
+    （`_LocalArtifacts` 的姊妹件）。
+
+    响应形状对齐 `services.ingest.submit` 的最小读法（`outcome.document.id` /
+    `outcome.document.name` / `outcome.is_duplicate`）——`_ingest_file` 的执行体逐字复用 ✓。
+    """
+
+    def __init__(self, *, clients: Clients) -> None:
+        self._clients = clients
+
+    def submit(
+        self,
+        *,
+        knowledge_base_id: str,
+        filename: str,
+        content: bytes,
+        uploaded_by: str | None = None,
+    ) -> Any:
+        """`uploaded_by` 收下但**不用**：是谁传的由服务器按这把钥匙算 ✓（与笔记同源）。"""
+        url = f"{self._clients.base_url}/knowledge-bases/{knowledge_base_id}/documents"
+        try:
+            response = _httpx().post(
+                url,
+                headers={"Authorization": f"Bearer {self._clients.token}"},
+                files={"file": (filename, content)},
+                timeout=ARTIFACT_UPLOAD_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as error:  # 连不上、被拒、回包解析不了，都算"没入上"
+            raise RemoteUnavailableError(f"文件没能入到知识库（{url}）：{error}") from error
+        doc = (payload or {}).get("document") or {}
+        doc_id = str(doc.get("id") or "")
+        if not doc_id:
+            raise RemoteUnavailableError(f"文件没能入到知识库（{url}）：服务器没有回文档 id")
+        return SimpleNamespace(
+            document=SimpleNamespace(id=doc_id, name=str(doc.get("name") or filename)),
+            is_duplicate=bool((payload or {}).get("is_duplicate")),
+        )
+
+
+class _UploadedDocuments:
+    """`documents.enqueue_ingest` 的边车版：**空操作** ✓。
+
+    为什么能空：`_ingest_file` 的"非重复才入队"判断与服务器 `upload_document` 逐字同源，
+    而那个 REST 口带 `start=true` 时**自己已经入队**（见 `api/v1/documents.py` 里那处
+    `enqueue_ingest` 调用）——边车再喊一次就是**重复入队**（会把同一份文档的摄取任务
+    重排一遍 ✗）。所以这里如实"不重做" ✓。
+    """
+
+    def enqueue_ingest(self, document_id: str) -> Any:
+        return SimpleNamespace(id=None)
+
+
 class LocalServices:
     """边车这一侧的 `Services` **影子**（鸭子类型 ✓）：只放本地真有的那几件 ✓。
 
@@ -314,10 +721,20 @@ class LocalServices:
         approvals: Any,
         knowledge: Any,
         workspace: Path,
+        artifacts: Any,
+        notes: Any,
+        memory: Any,
+        ingest: Any,
+        documents: Any,
     ) -> None:
         self.runtime = runtime
         self.approvals = approvals
         self.workspace = workspace
+        self.artifacts = artifacts
+        self.notes = notes
+        self.memory = memory
+        self.ingest = ingest
+        self.documents = documents
         self.skills = _EMPTY_SKILLS
         self.mcp = _NO_MCP
         self.chat = _KnowledgeSeam(knowledge)
@@ -335,9 +752,24 @@ _API_KEY_SEAM = _ApiKeySeam()
 #: - `search` 走**远端 KB** ✓（只有这一轮给了 `kb_ids` 才出现 ✓，与服务器同口径 ✓）；
 #: - 文件三件 + `run_command` 是**本地执行的主体** ✓（沙箱与隔离探测都在本机 ✓）；
 #: - 联网两件在 `tools.py` 里实现 ✓，不依赖仓储 ✓；
-#: - 技能两件**如实回空** ✓（`list_skills` 会说"这台机器上还没有安装技能" ✓）。
+#: - 技能两件**如实回空** ✓（`list_skills` 会说"这台机器上还没有安装技能" ✓）；
+#: - **导出三件**（2026-09-30 起 ✓）：产出物**本地生成、上传到服务器的会话文件区**
+#:   （见 `_LocalArtifacts` ✓）——这是"要一份文件"那一类请求在**桌面与本机跑**的链上
+#:   唯一缺过的一环：同一句"生成 sales.xlsx"，网页（服务器跑）交得了、桌面交不了 ✓。
+#: - **笔记三件**（`create_note` / `attach_note_to_kb` / `list_notes` 2026-10-01 ✓）：
+#:   笔记**转发到服务器**（见 `_LocalNotes` ✓）——与导出同一类问题："帮我记一条笔记"
+#:   在网页交得了、桌面交不了 ✓；"把它加进知识库（能检索到）"是同一件事的第二步 ✓；
+#:   "看看我记过什么"（`list_notes`）是第三步 ✓。
+#: - **记忆两件**（`recall` / `remember` 2026-10-01 ✓）：转发到服务器的记忆
+#:   （见 `_LocalMemory` ✓）——"记住我偏好 X / 我们上次怎么定的"同一类问题 ✓。
+#:   `read_memory` / `write_memory`（改人设文件那两个）**仍留给 P4** ✗：它们要
+#:   服务器数据目录里的记忆文件，边车够不着 ✓。
+#: - **`ingest_file`**（2026-10-01 ✓）：**边车读本机 → 上传进知识库**（见 `_LocalIngest` ✓）——
+#:   "把我这台机器上的某份文件放进库"本来只差一个上传口；字节恰好在这侧 ✓。
+#:   受库开关门控（`_LOCAL_KB_TOOLS`：对话里没选库就不摆 ✓，与 `attach_note_to_kb` 同口径）。
 #:
-#: 导出 / 笔记 / 记忆 / 入库 / 表格 / 定时要 PG 与对象存储（服务器权威 ✗）→ 留给 P4 ✓。
+#: 表格读取（`list_tables` / `query_table` 要服务器侧的结构化副本与 SQL 面）/ 定时
+#: 要 PG 与对象存储（服务器权威 ✗）→ 仍**留给 P4** ✓。
 SIDECAR_TOOL_NAMES = frozenset(
     {
         "search",
@@ -349,6 +781,15 @@ SIDECAR_TOOL_NAMES = frozenset(
         "web_fetch",
         "list_skills",
         "read_skill",
+        "export_document",
+        "export_table",
+        "export_deck",
+        "create_note",
+        "attach_note_to_kb",
+        "list_notes",
+        "recall",
+        "remember",
+        "ingest_file",
     }
 )
 
@@ -359,12 +800,44 @@ SIDECAR_TOOL_NAMES = frozenset(
 #: 但**必须有一句"直接动手"** ✗ —— 真烟测实测（2026-09-29）：没有它时模型回的是
 #: 「我先读一下这个文件。」**一个工具都没调** ✗，于是"工具真的执行"在真模型上根本不发生 ✓。
 #: 完整提示词与 P4 的会话口径一起接 ✓。
+#:
+#: **交付口那一句（2026-09-30 加）**：导出三件在工具表里之后，不点名它照样不用 ✗——
+#: 实测同一句"生成 sales.xlsx"（表里已有 export_table）它仍回"要跑命令才能落盘"，
+#: 而服务器那份提示词里对等的第 10 条是**点名**的 ✓。"网页交得了、桌面交不了"，
+#: 差的就是这一句。
+#:
+#: **"缺素材按已知写"半句（2026-09-30 同批加）**：点名交付口之后仍有一次失败 ——
+#: 一句"做一份 3 页 PPT"（原句，没别的提示）它**先去工作区翻素材**（搜文件、列目录、
+#: 试图读一份 docx、最后 `run_command unzip` 撞上执行闸），整轮**没交付** ✗。
+#: 把同一句改成"直接用你已知的知识写、不需要翻文件"就一次到位 ✓ —— 差的正是这半句。
+#:
+#: **"笔记两件"半句（2026-10-01 加）**：与交付口同一课——`create_note` 进了工具表，
+#: 不点名它模型仍然想不到（"记笔记"是一件服务器上的事，它默认自己够不着 ✗）；
+#: `attach_note_to_kb` 是同一句话的第二步（"记下来 → 以后 `search` 搜得到"），
+#: 但它**受库开关门控**（`_KB_TOOLS`：对话里没选知识库时它根本不在表里 ✗）——
+#: 所以那半句带前提（"对话里选了知识库时"）。实测（2026-10-01 L1 验收）：
+#: 无条件点名时，没选库的会话里模型会花半段回答解释"我这里没有这个工具" ✗。
+#:
+#: **"记忆两件"半句（2026-10-01 同批加）**：同一课——`recall` / `remember` 进了工具表，
+#: 不点名时模型会把"帮我记住 X"往 `create_note` 上带 ✗（"记住"听起来像记一条东西），
+#: 或者干脆说这台机器上没有记忆 ✗。它们不受库开关门控（受记忆开关，边车侧判不了 →
+#: 恒摆 ✓，见 `_LocalMemory`）——所以这半句**不带前提** ✓。
 SIDECAR_SYSTEM_PROMPT = (
     "你是这台电脑上的本地 Agent。**需要本机信息时（读文件、列目录、搜文件、跑命令、查网页）"
     "必须先调用对应工具**：list_files / read_file / search_files / run_command / "
     "web_search / web_fetch（技能用 list_skills / read_skill）——"
     "**不许只用文字描述你将要做什么** ✗（「我这就去读」「我马上跑」都算没做）。"
     "拿到工具结果之后再作答。"
+    "**对方要一份文件时**（「给我一份」「发我个 .docx / .xlsx」「能下载的」）**用交付口**："
+    "export_document（正文类）/ export_table（表格）/ export_deck（幻灯）——"
+    "文件会挂到对话里、他点一下就能拿到；**只把内容贴在正文里不算交付** ✗。"
+    "**留档用 `create_note`**（存进对方的笔记列表，服务器上能看到）；"
+    "**对话里选了知识库时，再调 `attach_note_to_kb` 让笔记能被检索到**——"
+    "**这两个都不是交付**：对方要的是文件时仍然走交付口 ✗。"
+    "**对方让你「记住」的偏好与约定用 `remember`**（之后每轮对话都会带上）、"
+    "**翻过去的结论用 `recall`**——这两件是**长期记忆**，别用 `create_note` 顶 ✗。"
+    "**缺素材就按你已知的写**，不要为了找素材去翻文件 / 扫盘 / 跑命令 ✗ ——"
+    "先把东西交出去，再问他要不要按真实口径改。"
     "工具报错或被拒绝时**如实转述**（连同理由），不要假装成功、也不要编结果；"
     "本机没有你要的工具时**直说没有**，不要编造。"
     "回答用简体中文。"
@@ -401,7 +874,13 @@ def _close_trailing_answer_step(steps: list[dict[str, Any]]) -> None:
 
 
 def _step_payload(event: StepEvent) -> dict[str, Any]:
-    """`StepEvent` → 响应里的 dict ✓（字段与服务器那条链路同一套名字 ✓）。"""
+    """`StepEvent` → 响应里的 dict ✓（字段与服务器那条链路同一套名字 ✓）。
+
+    **产出物要带出去**（2026-09-30，与导出三件同一批）：导出类工具把文件挂在
+    `event.artifacts` 上，界面靠它画那张"点一下就能拿到"的卡片 —— 原来这里没抄这个字段 ✗，
+    于是边车交付的文件在对话里**看得见结果、点不到卡片** ✗（服务器侧那份 `snapshot` 是带的 ✓）。
+    `kind`（图标）/ `degraded`（降级横幅）/ `added`（资料条数）同理，一并对齐 ✓。
+    """
     return {
         "phase": event.phase,
         "label": event.label,
@@ -411,6 +890,10 @@ def _step_payload(event: StepEvent) -> dict[str, Any]:
         "outcome": event.outcome,
         "args": event.args,
         "result": event.result,
+        **({"kind": event.kind} if event.kind else {}),
+        **({"degraded": True} if event.degraded else {}),
+        **({"added": event.added} if event.added is not None else {}),
+        **({"artifacts": [dict(item) for item in event.artifacts]} if event.artifacts else {}),
     }
 
 
@@ -504,12 +987,27 @@ class Clients:
         )
         #: **整套 `ApprovalRegistry` 带过来** ✓（`ask` 档的行为与服务器逐条一致 ✓）。
         self.approvals = approval_service.ApprovalRegistry()
+        #: 产出物的落点（导出那一族借它交付：本地生成 → 上传到会话文件区，见 `_LocalArtifacts` ✓）。
+        self.artifacts = _LocalArtifacts(clients=self, workspace=workspace)
+        #: 笔记的落点（`create_note` 借它转发到服务器的笔记库，见 `_LocalNotes` ✓）。
+        self.notes = _LocalNotes(clients=self)
+        #: 记忆的落点（`recall` / `remember` 借它转发到服务器的记忆，见 `_LocalMemory` ✓）。
+        self.memory = _LocalMemory(clients=self)
+        #: 入库的落点（`ingest_file` 借它把**本机文件**上传进服务器的知识库，见 `_LocalIngest` ✓）。
+        self.ingest = _LocalIngest(clients=self)
+        #: `documents` 的边车版：上传口已入队，enqueue_ingest 空操作（见 `_UploadedDocuments`）。
+        self.documents = _UploadedDocuments()
         #: `build_runner` 眼里 `Services` 是**鸭子类型** ✓ → 给一份"本地真的有的"影子 ✓。
         self.services = LocalServices(
             runtime=self.runtime,
             approvals=self.approvals,
             knowledge=self.knowledge,
             workspace=workspace,
+            artifacts=self.artifacts,
+            notes=self.notes,
+            memory=self.memory,
+            ingest=self.ingest,
+            documents=self.documents,
         )
 
     def tool_specs(self, *, kb_ids: Sequence[str] = ()) -> list[ToolSpec]:
@@ -518,7 +1016,14 @@ class Clients:
         specs = agent_tools.tool_specs(self.services, owner_id=None, kb_ids=scope or None)
         return [spec for spec in specs if spec.name in SIDECAR_TOOL_NAMES]
 
-    def tool_loop(self, *, kb_ids: Sequence[str] = ()) -> ToolLoop:
+    def tool_loop(
+        self,
+        *,
+        kb_ids: Sequence[str] = (),
+        #: 这一轮归属的会话：**导出那一族要靠它**（产出物上传到 `/conversations/{id}/files` ✓）。
+        #: 没带会话 id 的老调用方落回 `LOCAL_CONVERSATION`（那时候导出会如实报"没有会话" ✓）。
+        conversation_id: str = LOCAL_CONVERSATION,
+    ) -> ToolLoop:
         """把**远端两端 + 本地那一侧**拼成一个 `ToolLoop` ✓（循环本体一行不改 ✗）。
 
         三处口径与服务器那条链路逐条对齐：工具表（`tool_specs` ✓）、执行器
@@ -536,7 +1041,7 @@ class Clients:
             self.services,
             Caller(is_admin=True),
             kb_ids=scope,
-            conversation_id=LOCAL_CONVERSATION,
+            conversation_id=conversation_id,
         )
         return ToolLoop(
             client_factory=lambda: self.model,
@@ -765,6 +1270,23 @@ def create_app(
     clients = build_clients(base_url, token, workspace=workspace, data_dir=data_dir)
     app = FastAPI(title="kylab sidecar", version=SIDECAR_VERSION)
 
+    # **壳的页面要跨源直连边车**（2026-09-30 实测补上）：界面从 `http://app.localhost`
+    # （自定义 scheme 在 Windows 上的映射，见 `resources.rs::app_url`）调本机边车，
+    # 浏览器先做 CORS 预检——不挂这个中间件时 `fetch` 直接 `TypeError: Failed to fetch`，
+    # `resolveTurnTarget()` 于是**永远回退到服务器**：页面上只留一条 console.warn，
+    # "对话在本机跑"就这么静默地从来没生效过（服务端日志里能看到工具循环还在服务器上跑）。
+    # 只放行三个源（壳 + vite dev 的两种写法）：别的源照旧读不到响应。
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://app.localhost",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     @app.get("/health", response_model=HealthOut, summary="健康 + 两端可达性")
     def health() -> HealthOut:
         kb_ok, why = _probe_health(clients.health_url)
@@ -786,7 +1308,10 @@ def create_app(
         """
         target = _check_workspace(payload.workspace) if payload.workspace else workspace
         notes = _notes(clients)
-        loop = clients.tool_loop(kb_ids=payload.kb_ids)
+        loop = clients.tool_loop(
+            kb_ids=payload.kb_ids,
+            conversation_id=payload.conversation_id or LOCAL_CONVERSATION,
+        )
         messages = _messages_of(payload)
         answer = ""
         steps: list[dict[str, Any]] = []
@@ -892,7 +1417,10 @@ def create_app(
 
         def gen() -> Iterator[str]:
             target = _check_workspace(payload.workspace) if payload.workspace else workspace
-            loop = clients.tool_loop(kb_ids=payload.kb_ids)
+            loop = clients.tool_loop(
+                kb_ids=payload.kb_ids,
+                conversation_id=payload.conversation_id or LOCAL_CONVERSATION,
+            )
             messages = _messages_of(payload)
             answer = ""
             steps: list[dict[str, Any]] = []

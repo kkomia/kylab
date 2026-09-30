@@ -17,6 +17,7 @@ from app.api.v1 import (
     data_sources,
     documents,
     folders,
+    frontend,
     health,
     knowledge_bases,
     lifecycle,
@@ -91,3 +92,6 @@ api_router.include_router(sandbox.router)
 api_router.include_router(site_icons.router)
 # 模型代理（Phase B · P2）：服务器用自己的 key 调模型，把增量透传给边车/壳
 api_router.include_router(model_proxy.router)
+# 前端资源包（v0.56）：桌面壳取界面的那两份（版本清单 + 整包）——
+# "服务器发了新前端、客户端下次启动自动用上"那条承诺的服务器半边
+api_router.include_router(frontend.router)

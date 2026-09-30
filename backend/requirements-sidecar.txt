@@ -1,4 +1,4 @@
-﻿# 客户端运行时（边车）的**真实依赖**清单 —— P4-3
+# 客户端运行时（边车）的**真实依赖**清单 —— P4-3
 #
 # ## 这份清单是**算出来的**，不是"看出来的"
 #
@@ -64,6 +64,25 @@ python-multipart==0.0.32  # FastAPI 表单/上传（导入链带进来）
 markdown-it-py==4.2.0     # 技能/文档渲染那条链带进来
 mdurl==0.1.2              #   ↑ 的依赖
 PyYAML==6.0.3             # 配置/技能 frontmatter 那条链带进来
+
+# ---------------------------------------------------------------- 2b) **运行期按需**（不在导入闭包里，但工具真调时必须装）
+#
+# 口径与 2) 不同：这些包是**惰性 import**（`office.py` 在函数体里 import），闭包脚本看不见它们；
+# 但导出三件（`export_table` / `export_document` / `export_deck`）真被调用时会 import 它们 →
+# **不装就是"工具在、一调就失败"**（2026-09-30 实测：模型如实回
+# "生成 .xlsx 需要额外装 openpyxl" 就是这么冒出来的）。
+#
+# 为什么值得装：桌面缺了它，"要一份文件"这类请求在**本机跑的链**上交不出东西
+# （网页那条链一直交得出来）——这是两条链之间最后一处能力差。
+# 体量：这七件合计约 **28 MB**（大头是 Pillow 14.8 + lxml 8.9），运行时 17 → ≈45 MB，
+# **仍在规格的 40–60 MB 目标线内**（见《客户端运行时-打包规格》§1/§4 那张表）。
+et-xmlfile==2.0.0      # openpyxl 的依赖
+openpyxl==3.1.5        # export_table（xlsx）
+lxml==6.1.3            # python-docx / python-pptx 的 XML 后端
+Pillow==12.3.0         # python-pptx 处理图片
+XlsxWriter==3.2.9      # python-pptx 的图表数据依赖
+python-docx==1.2.0     # export_document（docx）
+python-pptx==1.0.2     # export_deck（pptx）
 
 # ---------------------------------------------------------------- 3) 导入闭包带来的（功能上边车用不到）
 argon2-cffi==25.1.0           # 链条：agent_tools → agent_exec → agent_files → api_key → core.security

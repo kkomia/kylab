@@ -38,6 +38,13 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     data_dir: Path = Path("./data")
     cors_origins: str = "http://127.0.0.1:5173"
+    frontend_dist_dir: Path | None = None
+    """桌面壳要取的那份**前端产物**目录（`GET /api/v1/app/frontend/*` 从这里打包）。
+
+    **留空 = 仓库里的 `frontend/dist`**（"从仓库跑"与开发都成立）；容器或别的部署形态
+    用 `KYLAB_FRONTEND_DIST` 指到产物所在目录。契约见《Tauri-壳资源分离与前端热更新-
+    实现规格》§4，落地说明见 `app/api/v1/frontend.py` 的模块注释。
+    """
     slow_query_ms: int = 500
     """超过该耗时的检索留一条 WARNING（架构 §12 可观测性）。"""
 
