@@ -1229,15 +1229,36 @@ describe('降级与"工具标记"两种异常收尾', () => {
 
     const avatar = document.querySelector('.ch-avatar')
     expect(avatar).not.toBeNull()
-    // 标的两层都在：环（动效转的是它）与行星点（脉动）
-    expect(avatar!.querySelector('.ch-orbit ellipse')).not.toBeNull()
+    // 标的两层都在：轨道椭圆（静止的轨道线）与行星点（沿轨道跑的那颗）
+    expect(avatar!.querySelector('ellipse')).not.toBeNull()
     expect(avatar!.querySelector('.ch-planet')).not.toBeNull()
     expect(avatar!.querySelector('svg')).not.toBeNull()
     // 回放的历史轮：不在流式，不许带着"还在跑"的动画
     expect(avatar!).not.toHaveAttribute('data-live')
   })
 
-  it('助手头像：流式中挂 data-live（环进动/点脉动/呼吸/声纳四层动画的同一个开关）', () => {
+  it('工具链与正文之间有灰色分隔线（Kimi 最初设计）；直接作答的那轮没有', async () => {
+    vi.mocked(getConversation).mockResolvedValue(
+      detail([
+        stored('user', '查一下'),
+        stored('assistant', '查到了。', {
+          steps: [
+            { phase: 'tool', label: '联网搜索', detail: '', status: 'done', tool: 'web_search' },
+          ],
+        }),
+        stored('user', '你好'),
+        stored('assistant', '你好呀'),
+      ]),
+    )
+    renderPage()
+    await screen.findAllByTestId('reply-text')
+
+    // 只有"有过程"的那一轮摆线：两轮里恰好一条（直接作答不该有）
+    expect(document.querySelectorAll('.ch-divider')).toHaveLength(1)
+    expect(document.querySelector('.ch-divider')).toHaveAttribute('role', 'separator')
+  })
+
+  it('助手头像：流式中挂 data-live（卫星绕轨/呼吸/声纳三层动画的同一个开关）', () => {
     const { container } = render(<AssistantAvatar live />)
     expect(container.querySelector('.ch-avatar')).toHaveAttribute('data-live')
   })

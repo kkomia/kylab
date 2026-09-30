@@ -29,6 +29,7 @@ import { formatCount } from '@/lib/format'
 
 import {
   groupHeading,
+  hasTraceContent,
   humanizeArtifactKeys,
   isBlockRunning,
   isRunningStep,
@@ -472,20 +473,9 @@ export function ToolchainFlow({
 
   const message = turn.reply
   if (!message) return null
-  /*
-   * 「这一轮有没有真东西」只看真实数据（步骤 / 思考 / 来源）：`traceEntries` 对老消息会
-   * 合成 legacy 兜底行（至少有一条「已生成回答」），拿它判"画不画"会让**每一轮**都顶着
-   * 一个块——直接作答不该有工具链块（Kimi 也没有）。
-   */
+  // 「这一轮有没有真东西」的判据只有一处（`hasTraceContent`）——直接作答不该有块
+  if (!hasTraceContent(message)) return null
   const thinking = trailingThinking(message)
-  if (
-    message.steps.length === 0 &&
-    !thinking &&
-    message.sources.length === 0 &&
-    !message.thinking?.enabled
-  ) {
-    return null
-  }
   const entries = traceEntries(turn)
 
   const running = isBlockRunning({ streaming: message.streaming, steps: traceSteps(turn) })

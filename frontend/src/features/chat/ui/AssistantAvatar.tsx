@@ -1,20 +1,18 @@
 /**
- * 助手头像：**品牌行星标** + 在轨动效（Rive 的 CSS 平替，设计文档 §4）。
+ * 助手头像：**品牌行星标**（2026-09-30 二版，按用户两条批注改）。
  *
- * 为什么不是蓝底加两根白柱（那是初版的 Rive 平替）：两根竖柱在真机上读起来
- * 像**暂停键**（2026-09-30 用户原话"这个头像太雷霆了"）。换成我们自己的环行星标
- * ——几何照抄 `Logo.tsx` 的 mark 档（外圆 145.75 / 环 rx192·ry44 转 -18.5° / 行星点
- * r13.75），只是在这里要单独控制"环"与"点"两层，所以不复用那个组件。
+ * 批注①：「旋转肯定要卫星围绕主星转啊」——一版转的是环本身（原地进动），不对；
+ * 现在是**行星点沿着那条倾斜椭圆（轨道）绕主星跑圈**，环就是它的轨道线（静止）。
+ * 批注②：「蓝色底太突兀了」——去掉实心圆底，标直接以**品牌蓝**落在画布上。
  *
- * 生成中的四层动效（都在 CSS，见 `flow.css`）：
- * 1. **环在进动**：包着椭圆的那层 `g` 绕自己的圆心 3.6s 转一圈，像陀螺上转动的轨道；
- * 2. **行星点脉动**：点在自己的位置做 1.6s 的呼吸（1 ↔ 1.45）；
- * 3. **整颗呼吸**：头像容器 1.6s 的 scale 1 ↔ 1.04；
- * 4. **声纳式扩散环**：外圈一圈描边往外扩再消失（Kimi 官方 breath 的用法）——
- *    这是"它正在干活"的信号，停下来四层全静（`data-live` 一撤就没了）。
+ * 几何照抄 `Logo.tsx` 的 mark 档（外圆 145.75 / 轨道椭圆 rx192·ry44 转 -18.5° /
+ * 行星点 r13.75），只是在这里行星点要单独驱动，所以不复用那个组件。笔宽同样走
+ * 那条**渲染像素下限**（外圆/点 1.15px、环 0.8px；标本身笔画 5.5/299，30px 高度
+ * 下等比缩只剩 0.55px，不校正就是一片淡灰）。
  *
- * 笔宽按 `Logo.tsx` 同一条**渲染像素下限**算：外圆/点 1.15px、环 0.8px
- * ——标本身的笔画很细（5.5/299），30px 高度下等比缩只剩 0.55px，不校正就是一片淡灰。
+ * 生成中的三层动效（CSS 在 `flow.css`）：行星点绕轨道 4s 一圈（`offset-path`，
+ * 路径起点取在点自己的落点上，起播不跳）、整颗 1.6s 呼吸、外圈声纳式扩散环；
+ * `data-live` 一撤三层全静。
  */
 const RENDER_HEIGHT = 30
 const MARK_HEIGHT = 299
@@ -25,20 +23,25 @@ const stroke = (base: number, minPixels: number): number =>
 export function AssistantAvatar({ live }: { live: boolean }) {
   return (
     <span className="ch-avatar" data-live={live || undefined} aria-hidden>
-      <svg viewBox="0 0 370 299" fill="none" stroke="#fff" focusable="false">
+      {/* `stroke=currentColor`：颜色由 CSS 给（品牌蓝），深浅主题都跟着走 */}
+      <svg viewBox="0 0 370 299" fill="none" stroke="currentColor" focusable="false">
         <circle cx="182.5" cy="148.5" r="145.75" strokeWidth={stroke(5.5, 1.15)} />
-        {/* 环包一层 g：CSS 转的是它（转的是"轨道"本身，行星点不跟着转） */}
-        <g className="ch-orbit">
-          <ellipse
-            cx="185.5"
-            cy="155.5"
-            rx="192"
-            ry="44"
-            transform="rotate(-18.5 185.5 155.5)"
-            strokeWidth={stroke(2.2, 0.8)}
-          />
-        </g>
-        <circle className="ch-planet" cx="318.5" cy="147" r="13.75" strokeWidth={stroke(5.5, 1.15)} />
+        <ellipse
+          cx="185.5"
+          cy="155.5"
+          rx="192"
+          ry="44"
+          transform="rotate(-18.5 185.5 155.5)"
+          strokeWidth={stroke(2.2, 0.8)}
+        />
+        {/* 卫星：沿轨道跑（`offset-path` 在 CSS 里） */}
+        <circle
+          className="ch-planet"
+          cx="318.5"
+          cy="147"
+          r="13.75"
+          strokeWidth={stroke(5.5, 1.15)}
+        />
       </svg>
     </span>
   )

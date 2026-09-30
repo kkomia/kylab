@@ -366,49 +366,42 @@ button.ch-row:hover {
   }
 }
 
-/* ---- 助手头像：**品牌行星标** + 在轨动效（Rive 的 CSS 平替，设计文档 §4） ----
-   56px 槽位 + margin-right:-12px（视觉宽 44px，源码值）；蓝渐变圆底，
-   里面是**我们自己的环行星标**（几何照抄 `Logo.tsx` 的 mark 档）。
-   生成中：环沿自己的轨道进动（3.6s 一圈，像陀螺）、行星点脉动、整颗呼吸、
-   外圈一声纳式扩散环（Kimi 官方的 breath 用法）；停下来就全静。 */
+/* ---- 助手头像：**品牌行星标**（2026-09-30 二版：卫星绕主星，去掉蓝底） ----
+   用户两条批注：①"旋转肯定要卫星围绕主星转啊"——上一版转的是环本身，不对；
+   ②"蓝色底太突兀了"——去掉实心圆底，标直接以**品牌蓝**落在画布上。
+   几何照抄 `Logo.tsx` 的 mark 档；行星点沿**那条倾斜椭圆**（轨道）跑圈，
+   环就是它的轨道线（静止）。生成中：点绕轨道 4s 一圈 + 整颗呼吸 + 外圈声纳；
+   停下来全静。笔宽按 Logo 同一条渲染像素下限（外圆/点 1.15px、环 0.8px @30px 高）。 */
 .ch-avatar {
   position: relative;
   flex: none;
   width: 56px;
   height: 56px;
   margin-right: -12px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--Colors-KMBlue), #4da3ff);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--Colors-KMBlue);
 }
 .ch-avatar svg {
   height: 30px;
   width: auto;
-  /* 环的尖端伸出 viewBox（标本身就是这么画的，见 `Logo.tsx`），别裁掉 */
+  /* 环的尖端伸出 viewBox（标本身就是这么画的），别裁掉 */
   overflow: visible;
 }
-/* SVG 里旋转的原点按**用户单位**给（transform-box: view-box），旋转的是包着椭圆的那层 g */
-.ch-avatar .ch-orbit {
-  transform-box: view-box;
-  transform-origin: 185.5px 155.5px;
-}
+/* 行星点的轨道 = 那条椭圆的 SVG 路径（起点取在点自己的落点上，pivot 前不跳）。
+   路径值由代码算出并写在注释里：c=(185.5,155.5) rx192 ry44 rotate(-18.5°)。 */
 .ch-avatar .ch-planet {
-  transform-box: fill-box;
-  transform-origin: center;
+  offset-path: path('M 315.2 147.2 A 192 44 -18.5 0 1 55.8 163.8 A 192 44 -18.5 0 1 315.2 147.2');
+  offset-rotate: 0deg;
 }
 .ch-avatar[data-live] {
   animation: ch-breath-scale 1.6s ease-in-out infinite;
 }
-.ch-avatar[data-live] .ch-orbit {
-  animation: ch-orbit-spin 3.6s linear infinite;
-}
 .ch-avatar[data-live] .ch-planet {
-  animation: ch-planet-pulse 1.6s ease-in-out infinite;
+  animation: ch-orbit-run 4s linear infinite;
 }
-/* 声纳式扩散环：盖在头像上、往外扩出去再消失（悬在头像列那一侧，不压正文） */
+/* 声纳式扩散环：盖在头像上、往外扩出去再消失（"它正在干活"的信号） */
 .ch-avatar::after {
   content: '';
   position: absolute;
@@ -421,35 +414,28 @@ button.ch-row:hover {
 .ch-avatar[data-live]::after {
   animation: ch-sonar 2s ease-out infinite;
 }
-@keyframes ch-orbit-spin {
+@keyframes ch-orbit-run {
+  from {
+    offset-distance: 0%;
+  }
   to {
-    transform: rotate(360deg);
-  }
-}
-@keyframes ch-planet-pulse {
-  0%,
-  100% {
-    transform: scale(1);
-  }
-  50% {
-    transform: scale(1.45);
+    offset-distance: 100%;
   }
 }
 @keyframes ch-sonar {
   0% {
-    opacity: 0.55;
-    transform: scale(1);
+    opacity: 0.35;
+    transform: scale(0.92);
   }
   75%,
   100% {
     opacity: 0;
-    transform: scale(1.3);
+    transform: scale(1.25);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .ch-avatar,
-  .ch-avatar .ch-orbit,
   .ch-avatar .ch-planet,
   .ch-avatar::after {
     animation: none !important;
@@ -488,4 +474,11 @@ button.ch-row:hover {
   .ch-skeleton-bar {
     animation: none !important;
   }
+}
+
+/* 工具链与正文之间的**灰色分隔线**（Kimi 最初设计里的那条 hairline：
+   过程是过程、回答是回答；0.5px 的 S1 描边，不多不少）。 */
+.ch-divider {
+  margin: 12px 0 16px;
+  border-top: 0.5px solid var(--Separators-S1);
 }

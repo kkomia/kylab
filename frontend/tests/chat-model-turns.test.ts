@@ -146,17 +146,18 @@ describe('traceSteps', () => {
     }),
   }
 
-  it('只列真的发生过的步骤：检索、思考、生成', () => {
+  it('只列真的发生过的步骤：检索、生成（v0.60 起不再合成"深度思考"行）', () => {
     const steps = traceSteps(turn)
 
-    expect(steps.map((step) => step.key)).toEqual(['retrieve', 'think', 'answer'])
+    // 「深度思考 强度：中」那条合成行已删（2026-09-30 用户批注："意义不大"）——
+    // 它没有一次真实执行对应，只是把设置里的开关复述一遍
+    expect(steps.map((step) => step.key)).toEqual(['retrieve', 'answer'])
     expect(steps[0].detail).toContain('近视怎么监测')
     expect(steps[0].detail).toContain('1 个片段')
-    expect(steps[1].detail).toBe('强度：高')
-    expect(steps[2].label).toBe('已生成回答')
+    expect(steps[1].label).toBe('已生成回答')
     // 回答那一步**不报字数**（2026-09-29 用户："每一步的 token/字数不标，只在最后标一个总的"）
-    // ——整段过程末尾那一处总计由 `TracePanel` 给（`data-testid="trace-total"`）。
-    expect(steps[2].detail).toBe('')
+    // ——整段过程末尾那一处总计由 `ToolchainFlow` 给（`data-testid="trace-total"`）。
+    expect(steps[1].detail).toBe('')
   })
 
   it('这一轮没开思考就不显示思考这一步——不摆假动作', () => {

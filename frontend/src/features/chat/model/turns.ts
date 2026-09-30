@@ -687,6 +687,17 @@ export function traceKey(turnIndex: number, key: string): string {
 }
 
 /**
+ * 这一轮**有没有过程可画**——`ToolchainFlow` 画不画、正文上面那条分隔线出不出，
+ * 问的都是它（**只有这一份判据**，两处不许各判一遍）。
+ *
+ * 只看真实数据：步骤 / 整轮思考 / 来源。设置里的"开了深度思考"**不算**
+ * （2026-09-30 起不再为它合成一条"深度思考"行，见 `agentTraceSteps`）。
+ */
+export function hasTraceContent(message: Message): boolean {
+  return message.steps.length > 0 || message.sources.length > 0 || trailingThinking(message) !== ''
+}
+
+/**
  * 把步骤列表并成"一行一组"（v0.26，用户要求"同类工具合并为一个入口"）。
  *
  * 规则三条，都是为了让它在长回合里仍然说得清：
@@ -1150,9 +1161,11 @@ function agentTraceSteps(message: Message): TraceStep[] {
       // 由 `trailingThinking` 兜底（见 `ToolchainFlow`）。
       thinking: step.thinking,
     }))
-  if (message.thinking?.enabled && !steps.some((item) => item.icon === 'think')) {
-    steps.unshift(...thinkingStep(message))
-  }
+  /*
+   * 「深度思考 强度：中」那条合成行**删了**（2026-09-30 用户批注："意义不大"）：
+   * 它没有一次真实的执行对应，只是把设置里那个开关复述一遍——过程面板里该出现的
+   * 是"它做了什么"，不是"我们允许它想"。
+   */
   return settleStaleRunning(steps, Boolean(message.streaming))
 }
 
@@ -1212,7 +1225,7 @@ function legacyTraceSteps(turn: Turn): TraceStep[] {
       detail: `「${short}」找到 ${formatCount(message.sources.length)} 个片段`,
     })
   }
-  if (message.thinking?.enabled) steps.push(...thinkingStep(message))
+  // （v0.60 起不再合成"深度思考"行——见 agentTraceSteps 里的说明）
   steps.push({
     key: 'answer',
     icon: 'build',
@@ -1220,18 +1233,6 @@ function legacyTraceSteps(turn: Turn): TraceStep[] {
     detail: answerDetail(message),
   })
   return steps
-}
-
-function thinkingStep(message: Message): TraceStep[] {
-  const effort = THINKING_EFFORTS.find((item) => item.value === message.thinking?.effort)
-  return [
-    {
-      key: 'think',
-      icon: 'think',
-      label: '深度思考',
-      detail: effort ? `强度：${effort.label}` : '',
-    },
-  ]
 }
 
 function answerDetail(message: Message): string {

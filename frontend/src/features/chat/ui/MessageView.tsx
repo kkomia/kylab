@@ -14,6 +14,7 @@ import {
   degradedReason,
   failureText,
   hasToolCallMarkup,
+  hasTraceContent,
   replyArtifacts,
   stripToolCallMarkup,
   usedWebSearch,
@@ -43,7 +44,6 @@ import { useChatRows, type ChatMessage } from '../runtime/ChatProvider'
  * `onCite` 在 `AssistantMessage` 里各做了一次稳定化（见那里的注释）。
  */
 const MemoAnswerText = memo(AnswerText)
-
 
 function UserMessage({ message, turnIndex }: { message: ChatMessage; turnIndex: number }) {
   const chat = useChatRows()
@@ -249,6 +249,15 @@ function AssistantMessage({
               onOpenSource={(item) => chat.openSource(item)}
               artifactNames={chat.artifactNames}
             />
+
+            {/*
+              **工具链与正文之间的那条灰色分隔线**（2026-09-30 用户批注：对照 Kimi
+              最初的设计，过程与最终回答要有灰线分开）。出不出与块同一个判据
+              （`hasTraceContent`）——没有过程的轮次不摆一条空线。
+            */}
+            {hasTraceContent(message) ? (
+              <div className="ch-divider" role="separator" aria-hidden />
+            ) : null}
 
             {/*
               模型把工具调用写进正文（§12.219）：**标记永远不进正文**（2026-09-30
