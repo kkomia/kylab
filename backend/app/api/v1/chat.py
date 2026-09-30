@@ -3340,9 +3340,15 @@ def _workspace_name(services: Services, workspace_id: str, caller: Caller) -> st
 
     归属判定交给工作区服务自己（``get`` 的 ``user_id`` 那条路，与侧栏同一处）——
     这里只是把"管理员/成员各看到什么"的口径留在那一处。
+
+    **设备维度不过滤**（``any_device=True``，v0.59）：这是服务端在**回放一条既有
+    会话**时读它挂着的项目名（不是某个请求参数指向的工作区），拿请求设备去卡
+    只会让"桌面端开的会话在 web 上显示成一串 id"；归属那一维照旧由 ``user_id`` 判。
     """
     try:
-        return services.workspaces.get(workspace_id, user_id=caller.owner_id).name
+        return services.workspaces.get(
+            workspace_id, user_id=caller.owner_id, any_device=True
+        ).name
     except Exception:
         logger.info("读工作区失败：%s", workspace_id, exc_info=True)
         return ""

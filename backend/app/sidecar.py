@@ -305,7 +305,14 @@ class _LocalWorkspaces:
     def __init__(self, root: Path) -> None:
         self._root = root
 
-    def get(self, workspace_id: str, *, user_id: str | None = None) -> Any:
+    def get(
+        self, workspace_id: str, *, user_id: str | None = None, any_device: bool = False
+    ) -> Any:
+        # **签名要跟着真服务走** ✗（2026-09-30 踩过）：v0.59 起 `get` 多了设备那一维 ✓，
+        # 而 `resolve_roots` 是**服务器与边车共用**的那段代码 ✓ —— 这里少一个关键字
+        # 参数，边车里每一次"按工作区读文件"都会 TypeError ✓，表现成工具
+        # `outcome: failed`（用例：`test_turn_really_runs_a_tool_in_the_local_workspace` ✓）。
+        # 边车只有一个本机目录 ✓，两维都没有可判的东西 ✓ —— 收了参数就照旧返回它 ✓。
         return SimpleNamespace(root_path=str(self._root))
 
 

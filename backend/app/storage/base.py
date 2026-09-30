@@ -844,6 +844,16 @@ class WorkspaceRecord:
     archived_at: datetime | None = None
     """归档时间（v0.55）。``None`` = 未归档。与会话归档同一口径：用时间戳而不是布尔，
     "什么时候收起来的"本身有用；归档**不是删除**，里面的会话与内容都还在。"""
+    device_id: str | None = None
+    """归属设备（v0.59）。桌面壳每次请求带 ``X-Kylab-Device: <uuid>``，工作区因此
+    **按设备隔离**：带头的只看得到 ``device_id`` 等于自己那一支的。
+
+    **``None`` = 服务器端**：网页版/直连 API 不带设备头，看到的就是这一批——
+    语义不是"没有归属"，而是"``root_path`` 在服务器的盘上"（与桌面端那种
+    "路径在用户那台机器的盘上"相对）。所以这一列可空，存量记录全落在这一档。"""
+    device_name: str = ""
+    """设备名（``X-Kylab-Device-Name`` 头，可空）。**只给人看**：界面上说清
+    "这个项目在哪台机器上"，判定一律按 ``device_id``。服务器端是空串。"""
 
 
 @dataclass(slots=True)
@@ -1977,14 +1987,26 @@ class MetaStore(ABC):
 
     # ---- 工作区（v0.15；见 docs/设计/Agent-工作区与能力层设计-v0.1.md §3）----
     @abstractmethod
-    def create_workspace(self, record: WorkspaceRecord) -> WorkspaceRecord: ...
+    def create_workspace(self, record: WorkspaceRecord) -> WorkspaceRecord:
+        """落一行工作区。``record.device_id`` / ``device_name`` 原样存下
+        （``None`` = 服务器端，见 :class:`WorkspaceRecord`）。"""
+        ...
 
     @abstractmethod
     def get_workspace(self, workspace_id: str) -> WorkspaceRecord | None: ...
 
     @abstractmethod
-    def list_workspaces(self) -> list[WorkspaceRecord]:
-        """按最近更新倒序。归属过滤在服务层做（存储层不认识调用者身份）。"""
+    def list_workspaces(
+        self, *, device_id: str | None = None, any_device: bool = False
+    ) -> list[WorkspaceRecord]:
+        """按最近更新倒序。归属过滤在服务层做（存储层不认识调用者身份）。
+
+        **设备过滤是三态**（v0.59）：
+
+        - ``any_device=True`` —— 不过滤，跨设备全都要（管理员的跨机清理视图）；
+        - 否则只列 ``device_id`` 与参数**相等**的那些，其中 ``None`` 这一档是
+          **服务器端**（网页版/直连 API 看到的那些），不是"没有归属"。
+        """
         ...
 
     @abstractmethod

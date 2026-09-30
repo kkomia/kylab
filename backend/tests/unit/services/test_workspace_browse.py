@@ -48,8 +48,13 @@ class _FakeMeta:
     def __init__(self, records: list[WorkspaceRecord] | None = None) -> None:
         self.records = records or []
 
-    def list_workspaces(self) -> list[WorkspaceRecord]:
-        return list(self.records)
+    def list_workspaces(
+        self, *, device_id: str | None = None, any_device: bool = False
+    ) -> list[WorkspaceRecord]:
+        """与真存储同一套三态设备过滤（浏览那条路传的是 ``any_device=True``）。"""
+        if any_device:
+            return list(self.records)
+        return [item for item in self.records if item.device_id == device_id]
 
     def create_workspace(self, record: WorkspaceRecord) -> WorkspaceRecord:
         self.records.append(record)

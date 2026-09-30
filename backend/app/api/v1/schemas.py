@@ -2041,6 +2041,11 @@ class WorkspaceOut(BaseModel):
     updated_at: datetime | None = None
     archived_at: datetime | None = None
     """归档时间（v0.55）。``None`` = 未归档。"""
+    device_id: str | None = None
+    """归属设备（v0.59）。``None`` = **服务器端**：这个项目的 ``root_path`` 在服务器的
+    盘上（网页版/直连 API 建的）。非空 = 桌面壳那台机器（``X-Kylab-Device``）。"""
+    device_name: str = ""
+    """设备名（``X-Kylab-Device-Name``，可空）。只给人看，判定按 ``device_id``。"""
 
 
 class WorkspaceListOut(BaseModel):

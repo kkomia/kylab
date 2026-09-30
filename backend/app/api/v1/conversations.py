@@ -37,6 +37,7 @@ from app.api.v1.schemas import (
     FileListingOut,
     IngestArtifactIn,
 )
+from app.api.v1.workspaces import Device, device_from_headers
 from app.core.config import Settings, get_settings
 from app.core.exceptions import NotFoundError, PayloadTooLargeError, UnauthorizedError
 from app.core.services import Services, get_services
@@ -97,6 +98,7 @@ def _caller_owner(caller: Caller) -> str | None:
 def list_conversations(
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_read)],
+    request_device: Annotated[Device | None, Depends(device_from_headers)],
     limit: int = Query(default=50, ge=1, le=200),
     q: str | None = Query(
         default=None, description="按标题**或消息正文**搜索（包含匹配，忽略大小写）"
@@ -113,8 +115,15 @@ def list_conversations(
     # 成员只看到自己的会话（v10 私有隔离）：对话内容是私有数据，
     # 列表不按归属过滤就等于把别人的问题全部摊开
     if workspace_id is not None:
-        # 越权的工作区 id 直接 404：否则可以拿它当探针，试出别人有哪些工作区
-        services.workspaces.get(workspace_id, user_id=_caller_owner(caller))
+        # 越权的工作区 id 直接 404：否则可以拿它当探针，试出别人有哪些工作区。
+        # **设备那一维同样要过**（v0.59）：拿另一台机器的项目 id 来筛，
+        # 与拿别人的项目 id 来筛是同一件事——会话本身不按设备隔离，
+        # 但"这个筛选项指向的工作区"仍受设备闸管
+        services.workspaces.get(
+            workspace_id,
+            user_id=_caller_owner(caller),
+            device_id=request_device.id if request_device is not None else None,
+        )
     records = services.conversations.list(
         limit=limit,
         owner_id=_caller_owner(caller),
@@ -143,6 +152,7 @@ def create_conversation(
     payload: ConversationCreateIn,
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
+    request_device: Annotated[Device | None, Depends(device_from_headers)],
 ) -> ConversationOut:
     """新建会话。
 
@@ -153,8 +163,14 @@ def create_conversation(
     if payload.workspace_id is not None:
         # 校验可见性（越权 404），并在调用方没指定库时**继承工作区的库**：
         # 这就是"知识库与 Agent 天生融合"落到行为上的样子——进入项目，
-        # 资料范围就定了（见 docs/设计/Agent-工作区与能力层设计-v0.1.md §5）
-        workspace = services.workspaces.get(payload.workspace_id, user_id=_caller_owner(caller))
+        # 资料范围就定了（见 docs/设计/Agent-工作区与能力层设计-v0.1.md §5）。
+        # **设备闸也在这里过**（v0.59）：会话不按设备隔离，但"挂进哪个项目"
+        # 是工作区的事——把会话挂进另一台机器的项目，与挂进别人的项目同一类越界
+        workspace = services.workspaces.get(
+            payload.workspace_id,
+            user_id=_caller_owner(caller),
+            device_id=request_device.id if request_device is not None else None,
+        )
         if not kb_ids:
             kb_ids = list(workspace.kb_ids)
     record = services.conversations.create(
@@ -232,12 +248,17 @@ def update_conversation(
     payload: ConversationUpdateIn,
     services: Annotated[Services, Depends(get_services)],
     caller: Annotated[Caller, Depends(require_write)],
+    request_device: Annotated[Device | None, Depends(device_from_headers)],
 ) -> ConversationOut:
     """标题 / 置顶 / 归档 / 归属都可选，只处理传了的那些；都为空时幂等。
 
     **归属用 ``model_fields_set`` 判断是否传了**，不能只看 ``is not None``：
     "退回未归档"要传 ``workspace_id: null``，而那与"这个字段没传"在值上完全一样。
     Pydantic v2 的 ``model_fields_set`` 正好区分这两者，比自定义哨兵干净。
+
+    ``workspace_id`` 带上设备（v0.59）：挂进的那条工作区必须在**这台设备**
+    （或不带设备头的服务器端）里看得见，否则与挂进别人的项目一样回 404。
+    退回未归档（``null``）不看设备——那是取消归属，与"属于哪台机器"无关。
     """
     _get_visible(services, caller, conversation_id)
     record = services.conversations.get(conversation_id)
@@ -249,7 +270,10 @@ def update_conversation(
         record = services.conversations.set_archived(conversation_id, payload.archived)
     if "workspace_id" in payload.model_fields_set:
         services.workspaces.bind_conversation(
-            conversation_id, payload.workspace_id, user_id=_caller_owner(caller)
+            conversation_id,
+            payload.workspace_id,
+            user_id=_caller_owner(caller),
+            device_id=request_device.id if request_device is not None else None,
         )
         record = services.conversations.get(conversation_id)
     return _summary(services, record)

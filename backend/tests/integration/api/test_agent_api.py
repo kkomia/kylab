@@ -58,7 +58,167 @@ def _as(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+#: 桌面壳注入的两个头（与 `desktop/src-tauri/src/resources.rs` 同名）。
+DEVICE_HEADER = "X-Kylab-Device"
+DEVICE_NAME_HEADER = "X-Kylab-Device-Name"
+#: 两台"电脑"的标识（壳生成的是 UUID v4，这里给两个形状相同的常量）。
+DEVICE_A = "11111111-1111-4111-8111-111111111111"
+DEVICE_B = "22222222-2222-4222-8222-222222222222"
+
+
+def _device(device_id: str, name: str = "DESKTOP-A") -> dict[str, str]:
+    """一次"从某台电脑发出来"的请求头。**不带它**才是网页版/直连 API。
+
+    设备名用 ASCII：**HTTP 头只能是 ASCII**（与 ``X-Kylab-Operator`` 同一个坑，
+    实测浏览器与 curl 都会在中文头上报编码错）。真值是主机名，通常就是 ASCII；
+    而它只是给人看的，判定一律按 ``device_id``。
+    """
+    return {DEVICE_HEADER: device_id, DEVICE_NAME_HEADER: name}
+
+
+def _folder(tmp_path: Path, name: str) -> str:
+    target = tmp_path / name
+    target.mkdir()
+    return str(target)
+
+
 # ----------------------------------------------------------------- 工作区
+
+
+def test_workspace_device_isolation(client: TestClient, tmp_path: Path) -> None:
+    """带 ``X-Kylab-Device`` 建的项目**只在那台机器上看得见**（v0.59）。
+
+    三个方向都要钉：同一台设备看得到、另一台设备看不到、不带头的网页版也看不到——
+    只钉一个方向时，"看不看得见"可能只是列表恰好是空的。
+    """
+    created = client.post(
+        "/api/v1/workspaces",
+        json={"name": "桌面上的项目", "root_path": _folder(tmp_path, "desktop")},
+        headers=_device(DEVICE_A),
+    )
+    assert created.status_code == 201, created.text
+    workspace = created.json()
+    # 打戳：记录归属哪台机器，以及那个给人看的名字
+    assert workspace["device_id"] == DEVICE_A
+    assert workspace["device_name"] == "DESKTOP-A"
+
+    same = client.get("/api/v1/workspaces", headers=_device(DEVICE_A)).json()["items"]
+    assert [item["id"] for item in same] == [workspace["id"]]
+    # 另一台电脑：这条记录不该出现
+    assert client.get("/api/v1/workspaces", headers=_device(DEVICE_B)).json()["items"] == []
+    # 网页版 / 直连 API：不带设备头，看到的是**服务器端**那批，也没有它
+    assert client.get("/api/v1/workspaces").json()["items"] == []
+    # 详情同样按设备隔离
+    assert (
+        client.get(f"/api/v1/workspaces/{workspace['id']}", headers=_device(DEVICE_A)).status_code
+        == 200
+    )
+    assert client.get(f"/api/v1/workspaces/{workspace['id']}").status_code == 404
+
+
+def test_workspace_without_device_is_server_side(client: TestClient, tmp_path: Path) -> None:
+    """不带设备头建的项目落 ``NULL`` = **服务器端**（路径在服务器的盘上）。
+
+    隔离是**双向**的：桌面端同样看不见它——否则"没带设备头"就成了"两边都能看"。
+    """
+    made = client.post(
+        "/api/v1/workspaces",
+        json={"name": "服务器上的项目", "root_path": _folder(tmp_path, "server")},
+    ).json()
+    assert made["device_id"] is None
+    assert made["device_name"] == ""
+
+    assert [item["id"] for item in client.get("/api/v1/workspaces").json()["items"]] == [made["id"]]
+    assert client.get("/api/v1/workspaces", headers=_device(DEVICE_A)).json()["items"] == []
+    # **空串按"没带"处理**（curl 传了头却没给值）：它落进服务器端那一档，
+    # 而不是变成一个从此再没人用的设备 id
+    empty = client.get("/api/v1/workspaces", headers={DEVICE_HEADER: ""}).json()["items"]
+    assert [item["id"] for item in empty] == [made["id"]]
+
+
+def test_other_device_looks_like_not_found(client: TestClient, tmp_path: Path) -> None:
+    """设备不匹配的读 / 改 / 删 / 挂**都是 404，且措辞与"不存在"逐字一致**。
+
+    措辞不一样就等于承认"这个 id 存在"——而这台机器本来不该知道别的机器有哪些项目。
+    """
+    workspace = client.post(
+        "/api/v1/workspaces",
+        json={"name": "A 机的项目", "root_path": _folder(tmp_path, "a")},
+        headers=_device(DEVICE_A),
+    ).json()
+    target = f"/api/v1/workspaces/{workspace['id']}"
+
+    for response in (
+        client.get(target, headers=_device(DEVICE_B)),
+        client.get(target),  # 不带设备头
+        client.patch(target, json={"name": "改名"}, headers=_device(DEVICE_B)),
+        client.delete(target, headers=_device(DEVICE_B)),
+    ):
+        assert response.status_code == 404, response.text
+        assert response.json()["message"] == f"工作区不存在：{workspace['id']}"
+
+    # 越权那三次**什么都没发生**：记录还在、名字没变
+    alive = client.get(target, headers=_device(DEVICE_A)).json()
+    assert alive["name"] == "A 机的项目"
+
+    # 挂会话（bind）也过同一道闸：别的机器不能把会话挂进这个项目
+    conversation = client.post("/api/v1/conversations", json={}).json()
+    bound = client.patch(
+        f"/api/v1/conversations/{conversation['id']}",
+        json={"workspace_id": workspace["id"]},
+        headers=_device(DEVICE_B),
+    )
+    assert bound.status_code == 404, bound.text
+    assert bound.json()["message"] == f"工作区不存在：{workspace['id']}"
+    # 本机的会话挂得进去（上面那条 404 不是因为 bind 坏了）
+    mine = client.patch(
+        f"/api/v1/conversations/{conversation['id']}",
+        json={"workspace_id": workspace["id"]},
+        headers=_device(DEVICE_A),
+    )
+    assert mine.status_code == 200, mine.text
+
+
+def test_device_all_is_admin_only(
+    client: TestClient, member_token: str, tmp_path: Path
+) -> None:
+    """``?device=all`` 是**管理员**的跨机清理通道；成员传它回 422 并如实说明。
+
+    422 而不是 404：这不是"有没有"的问题，是一条明确的权限口径——
+    悄悄退化成"只看自己的"会让调用方以为手里是跨设备的清单。
+    """
+    desktop_a = client.post(
+        "/api/v1/workspaces",
+        json={"name": "A 机", "root_path": _folder(tmp_path, "a")},
+        headers=_device(DEVICE_A),
+    ).json()
+    desktop_b = client.post(
+        "/api/v1/workspaces",
+        json={"name": "B 机", "root_path": _folder(tmp_path, "b")},
+        headers=_device(DEVICE_B),
+    ).json()
+    server = client.post(
+        "/api/v1/workspaces",
+        json={"name": "服务器端", "root_path": _folder(tmp_path, "s")},
+    ).json()
+
+    everything = client.get("/api/v1/workspaces", params={"device": "all"})
+    assert everything.status_code == 200, everything.text
+    ids = {item["id"] for item in everything.json()["items"]}
+    assert {desktop_a["id"], desktop_b["id"], server["id"]} <= ids
+
+    # 成员：拒，并说清为什么
+    rejected = client.get(
+        "/api/v1/workspaces", params={"device": "all"}, headers=_as(member_token)
+    )
+    assert rejected.status_code == 422, rejected.text
+    assert "管理员" in rejected.json()["message"]
+
+    # device 只认 all：别的值当场拒（静默忽略会让"传了没生效"变成一个要查很久的现象）
+    other = client.get("/api/v1/workspaces", params={"device": DEVICE_A})
+    assert other.status_code == 422, other.text
+    # 不传 device 时不受影响，仍是按设备头的三态
+    assert client.get("/api/v1/workspaces", headers=_device(DEVICE_A)).json()["items"] != []
 
 
 def test_workspace_crud_roundtrip(client: TestClient, tmp_path: Path) -> None:

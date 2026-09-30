@@ -44,7 +44,7 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号，与文件末尾写入 schema_migrations 的值一致。"""
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 """应用期望的 schema 版本：基线 v1 + ``MIGRATIONS`` 里已追加的增量。
 
 **启动时会对不上就自动补**：低于它就按序应用缺的那些迁移，高于它才报错
@@ -408,6 +408,24 @@ MIGRATIONS: tuple[Migration, ...] = (
             # 同一口径：回看一条旧消息时，当时带着什么就该是什么，
             # 哪怕那份文件后来被删了、或文件区的落点变了。
             "ALTER TABLE chat_messages ADD COLUMN attachments jsonb NOT NULL DEFAULT '[]'::jsonb",
+        ),
+    ),
+    Migration(
+        version=17,
+        description="工作区按设备隔离：记录归属设备，桌面端各见各的（v0.59）",
+        statements=(
+            # 桌面壳每次请求带 `X-Kylab-Device: <uuid>`，工作区因此有了**第二维归属**：
+            # device_id 是**设备的稳定标识**（壳生成的 uuid），device_name 是给人看的名字。
+            #
+            # `device_id IS NULL` = **服务器端**的工作区：网页版/直连 API 不带设备头，
+            # 它们看到的就是这一批——语义不是"没归属"，而是"路径在服务器的盘上"
+            # （见 base.py 的 WorkspaceRecord）。所以这一列**必须可空**，
+            # 存量记录全部落在"服务器端"这一档，行为与迁移前一致。
+            #
+            # 不加索引：工作区是几十行规模的表，而列表本来就整表取回来再在服务层
+            # 按归属过滤（存储层不认识调用者身份），加一条只为设备用的索引没有收益。
+            "ALTER TABLE workspaces ADD COLUMN device_id TEXT",
+            "ALTER TABLE workspaces ADD COLUMN device_name TEXT",
         ),
     ),
 )

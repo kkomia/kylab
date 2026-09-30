@@ -9,8 +9,18 @@
 | 位置 | 用户指定的路径 | `data/sandbox/<conversation_id>/` |
 | 内容 | 真实项目文件 | 临时脚本、中间产物 |
 
-归属口径与知识库 / 会话完全一致（`owner_id`）：管理员与 API Key 通道
-（``user is None``）看得到全部，普通成员只看自己的。**越权一律 404 而不是 403**
+**归属有两个维度，各自只有一份判定**（v0.59）：
+
+- **账号**（``owner_id``）：与知识库 / 会话完全一致（`owner_id`）。管理员与 API Key
+  通道（``user is None``）看得到全部，普通成员只看自己的；
+- **设备**（``device_id``）：桌面壳每次请求带 ``X-Kylab-Device: <uuid>``，于是
+  "这台机器的项目"与"那台机器的项目"互相看不见。**不带设备头**（网页版/直连 API）
+  只看到 ``device_id IS NULL`` 的那批——语义是**服务器端**：``root_path`` 在服务器的
+  盘上。管理员另有一条 ``device=all`` 的额外通道（跨机清理用）。
+
+两维都判、都只判一次（``_visible`` 与 ``_device_visible``），并且都收敛在
+:meth:`WorkspaceService.get` 里——``update`` / ``delete`` / ``bind_conversation``
+先走它，不会出现"某一条路忘了判"。**越权一律 404 而不是 403**
 ——后者会暴露"这个 id 存在"。
 
 `root_path` 的三道校验都在 ``validate_root_path`` 里，那是本模块唯一的安全边界：
@@ -407,15 +417,28 @@ class WorkspaceService:
 
     # ------------------------------------------------------------------ 读
 
-    def list(self, *, user_id: str | None, archived: bool = False) -> list[WorkspaceView]:
+    def list(
+        self,
+        *,
+        user_id: str | None,
+        archived: bool = False,
+        device_id: str | None = None,
+        any_device: bool = False,
+    ) -> list[WorkspaceView]:
         """列出可见的工作区。``user_id=None`` = 管理员/API Key 通道，看全部。
 
         ``archived`` 与会话列表同口径（``services/conversation.py::list``）：默认
         （``False``）只列**未归档**的，``True`` 时列**已归档**的——归档视图是一个
         单独的视图，不是"多出来的一组"。归属过滤与归档过滤都在这里做，
         存储层不认识调用者身份（同会话那条取舍）。
+
+        **设备维度是三态**（v0.59）：``any_device=True`` 全都要（管理员的跨机清理
+        通道，见 ``api/v1/workspaces.py`` 的 ``device=all``）；否则只列
+        ``device_id`` 与参数相等的那一批，其中 ``None`` 是**服务器端**——不带设备头
+        的网页版/直连 API 看到的就是它。设备那一层过滤交给存储（一条 ``WHERE``），
+        与归属那一层在 Python 里过滤不是一回事：后者要顺带给出"管理员看全部"的语义。
         """
-        records = self._stores.meta.list_workspaces()
+        records = self._stores.meta.list_workspaces(device_id=device_id, any_device=any_device)
         visible = [
             item
             for item in records
@@ -437,10 +460,27 @@ class WorkspaceService:
         """
         return self._stores.meta.count_workspace_conversations(workspace_id)
 
-    def get(self, workspace_id: str, *, user_id: str | None) -> WorkspaceRecord:
-        """取一个工作区。**越权与不存在都回 404**：403 会暴露"这个 id 存在"。"""
+    def get(
+        self,
+        workspace_id: str,
+        *,
+        user_id: str | None,
+        device_id: str | None = None,
+        any_device: bool = False,
+    ) -> WorkspaceRecord:
+        """取一个工作区。**越权与不存在都回 404**：403 会暴露"这个 id 存在"。
+
+        **两个维度、两道闸**：账号（``_visible``）与设备（``_device_visible``），
+        各自只有一份判定，而 ``update`` / ``delete`` / ``bind_conversation`` 都先走
+        这里——所以只要这一处判了，那三条路不会漏。``any_device`` 是管理员那条
+        ``device=all`` 通道（跨机清理），它只放开**设备**那一维，归属照旧。
+        """
         record = self._stores.meta.get_workspace(workspace_id)
-        if record is None or not self._visible(record, user_id):
+        if (
+            record is None
+            or not self._visible(record, user_id)
+            or not self._device_visible(record, device_id, any_device=any_device)
+        ):
             raise NotFoundError(f"工作区不存在：{workspace_id}")
         return record
 
@@ -522,9 +562,13 @@ class WorkspaceService:
         **一次查好、整屏复用**（见 ``rename_problem`` 的参数说明）：浏览一屏几十行，
         逐行去查库就是一次不能按数据量增长的查询。解析不了的记录跳过——
         它已经指向一个不存在的位置，不该让整次浏览跟着失败。
+
+        **跨设备取全部**（``any_device=True``，v0.59）：这条查的是**服务器上的路径**
+        与工作区记录的对应关系（浏览本来就是管理员专属的服务器视角），
+        少取一批只会让"某个工作区指着这个目录"被漏判，改名就会把它的根目录改走。
         """
         found: dict[str, str] = {}
-        for record in self._stores.meta.list_workspaces():
+        for record in self._stores.meta.list_workspaces(any_device=True):
             try:
                 found[str(Path(record.root_path).resolve())] = record.name or "未命名"
             except (OSError, RuntimeError):
@@ -707,6 +751,10 @@ class WorkspaceService:
         也是改名的唯一范围——起点里排在最后会让人先看到家目录、点进去、然后才想起来
         还有那么一项。**已有工作区的目录也放进来**是有用的：真实用法里"再建一个旁边的
         项目"比"从根一路点下去"常见得多。
+
+        **跨设备取全部**（``any_device=True``，v0.59）：这是管理员的**服务器目录视角**，
+        起点按"服务器上真实存在的目录"给；只取服务器端那批会让管理员少看到几处
+        磁盘上确实存在、又正被某个工作区用着的位置。
         """
         candidates: list[tuple[str, Path]] = []
         area = self._ensure_area()
@@ -722,7 +770,7 @@ class WorkspaceService:
                     candidates.append((f"{letter}:", drive))
         else:
             candidates.append(("/", Path("/")))
-        for record in self._stores.meta.list_workspaces():
+        for record in self._stores.meta.list_workspaces(any_device=True):
             candidates.append((record.name or "工作区", Path(record.root_path)))
 
         roots: list[DirectoryEntry] = []
@@ -750,7 +798,15 @@ class WorkspaceService:
         user_id: str | None,
         description: str = "",
         kb_ids: list[str] | None = None,
+        device_id: str | None = None,
+        device_name: str = "",
     ) -> WorkspaceRecord:
+        """建一个工作区。
+
+        ``device_id``（v0.59）由请求头 ``X-Kylab-Device`` 来：带头 = 这个项目在**那台
+        机器**上（``root_path`` 是那台机器的路径），不带 = **服务器端**（``None``）。
+        ``device_name`` 只作显示（``X-Kylab-Device-Name``，可空），判定一律按 id。
+        """
         clean_name = (name or "").strip()
         if not clean_name:
             raise InvalidRequestError("缺少参数：name（工作区名字）")
@@ -768,6 +824,8 @@ class WorkspaceService:
                 description=description.strip(),
                 # 去重保序：同一个库勾两次没有意义，而顺序是用户勾选的顺序
                 kb_ids=tuple(dict.fromkeys(kb_ids or ())),
+                device_id=device_id,
+                device_name=device_name or "",
             )
         )
 
@@ -781,16 +839,20 @@ class WorkspaceService:
         description: str | None = None,
         kb_ids: list[str] | None = None,
         archived: bool | None = None,
+        device_id: str | None = None,
+        any_device: bool = False,
     ) -> WorkspaceRecord:
         """改工作区。**只改传进来的字段**（``None`` = 不动）。
 
         归属**不可改**：`owner_id` 不在参数里。把一个工作区转给别人，
         连带的是"里头会话里的 Agent 行为"——那是另一个功能，不该顺手做掉。
+        设备同理：**换了机器就该在新机器上新建**，把一条记录搬来搬去会让 ``root_path``
+        指向一个那台机器上不存在的目录。
 
         ``archived``（v0.55）与会话归档同一口径：**不是删除**，且**不推 ``updated_at``**
         （归档是一次整理动作，不该把这个项目顶到"最近更新"的最前面）。
         """
-        record = self.get(workspace_id, user_id=user_id)
+        record = self.get(workspace_id, user_id=user_id, device_id=device_id, any_device=any_device)
         if name is not None:
             clean = name.strip()
             if not clean:
@@ -816,37 +878,72 @@ class WorkspaceService:
             record = self._stores.meta.get_workspace(workspace_id) or record
         return record
 
-    def delete(self, workspace_id: str, *, user_id: str | None) -> None:
+    def delete(
+        self,
+        workspace_id: str,
+        *,
+        user_id: str | None,
+        device_id: str | None = None,
+        any_device: bool = False,
+    ) -> None:
         """删工作区。**里面的会话退回未归档**，不跟着删（见存储层协议说明）。"""
-        self.get(workspace_id, user_id=user_id)
+        self.get(workspace_id, user_id=user_id, device_id=device_id, any_device=any_device)
         self._stores.meta.delete_workspace(workspace_id)
 
     # ------------------------------------------------------------- 会话归属
 
     def bind_conversation(
-        self, conversation_id: str, workspace_id: str | None, *, user_id: str | None
+        self,
+        conversation_id: str,
+        workspace_id: str | None,
+        *,
+        user_id: str | None,
+        device_id: str | None = None,
+        any_device: bool = False,
     ) -> None:
         """把会话挂到工作区下（``workspace_id=None`` = 退回未归档）。
 
         先校验工作区可见：否则任何人都能把会话"挂进"别人的工作区
-        （挂进去之后，那个工作区的主人就会在侧栏看到它）。
+        （挂进去之后，那个工作区的主人就会在侧栏看到它）。**设备那一维同样要过**：
+        网页版把一个会话挂进"某台桌面的项目"里，与挂进别人的项目是同一类越界。
+
+        ``workspace_id=None``（退回未归档）**不看设备**：那是取消归属，
+        与"这个会话属于哪台机器"无关。
         """
         if workspace_id is not None:
-            self.get(workspace_id, user_id=user_id)
+            self.get(workspace_id, user_id=user_id, device_id=device_id, any_device=any_device)
         self._stores.meta.set_conversation_workspace(conversation_id, workspace_id)
 
     # ------------------------------------------------------------------ 内部
 
     @staticmethod
     def _visible(record: WorkspaceRecord, user_id: str | None) -> bool:
-        """可见性：无归属过滤的通道（管理员/API Key）看全部；成员只看自己的。
+        """**账号**维度的可见性：无归属过滤的通道（管理员/API Key）看全部；成员只看自己的。
 
         **老数据（``owner_id is None``）对成员不可见**——与知识库同一口径：
         无主的东西不该自动落到某个成员名下。
+
+        设备那一维不在这里（见 :meth:`_device_visible`）：两维各自只有一份判定，
+        合起来判只会让"到底哪一维没过"变成需要调试的事。
         """
         if user_id is None:
             return True
         return record.owner_id == user_id
+
+    @staticmethod
+    def _device_visible(
+        record: WorkspaceRecord, device_id: str | None, *, any_device: bool
+    ) -> bool:
+        """**设备**维度的可见性：要求 ``record.device_id`` 与请求设备**完全相等**。
+
+        ``device_id=None`` 是**服务器端**那一档（网页版/直连 API 不带设备头），
+        不是"没条件"——所以它与 ``device_id IS NULL`` 的记录相等、与桌面端的都不等。
+        ``any_device=True`` 是管理员的额外通道（``?device=all``，跨机清理），
+        此时不过滤设备（归属那一维照旧由 :meth:`_visible` 判）。
+        """
+        if any_device:
+            return True
+        return record.device_id == device_id
 
 
 #: 目录名里不允许出现的字符。取的是**跨平台的那一套**：Windows 禁 `< > : " / \ | ? *`，

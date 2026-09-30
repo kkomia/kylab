@@ -2915,8 +2915,9 @@ class PostgresMetaStore(MetaStore):
         with self._db.session() as conn:
             conn.execute(
                 "INSERT INTO workspaces"
-                " (id, owner_id, name, root_path, description, kb_ids, created_at, updated_at)"
-                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                " (id, owner_id, name, root_path, description, kb_ids, device_id, device_name,"
+                "  created_at, updated_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (
                     record.id,
                     record.owner_id,
@@ -2924,6 +2925,9 @@ class PostgresMetaStore(MetaStore):
                     record.root_path,
                     record.description,
                     _json(list(record.kb_ids)),
+                    # `None` 原样落库 = 服务器端（网页版/直连 API 看到的那些）
+                    record.device_id,
+                    record.device_name or "",
                     _dump(record.created_at),
                     _dump(record.updated_at),
                 ),
@@ -2935,9 +2939,23 @@ class PostgresMetaStore(MetaStore):
             row = conn.execute("SELECT * FROM workspaces WHERE id = %s", (workspace_id,)).fetchone()
         return self._workspace_from_row(row) if row else None
 
-    def list_workspaces(self) -> list[WorkspaceRecord]:
+    def list_workspaces(
+        self, *, device_id: str | None = None, any_device: bool = False
+    ) -> list[WorkspaceRecord]:
+        # 设备过滤三态（见 base.py 协议）：`any_device` 不过滤；否则精确比 `device_id`，
+        # 其中 `None` 是**服务器端**这一档（`IS NULL`，不是"没条件"）。
+        # 归属过滤不在这里做——存储层不认识调用者身份（与会话列表同一取舍）。
+        sql = "SELECT * FROM workspaces"
+        params: list[object] = []
+        if not any_device:
+            if device_id is None:
+                sql += " WHERE device_id IS NULL"
+            else:
+                sql += " WHERE device_id = %s"
+                params.append(device_id)
+        sql += " ORDER BY updated_at DESC"
         with self._db.read() as conn:
-            rows = conn.execute("SELECT * FROM workspaces ORDER BY updated_at DESC").fetchall()
+            rows = conn.execute(sql, params).fetchall()
         return [self._workspace_from_row(row) for row in rows]
 
     def update_workspace(self, record: WorkspaceRecord) -> WorkspaceRecord:
@@ -3262,6 +3280,11 @@ class PostgresMetaStore(MetaStore):
             created_at=_load(row["created_at"]),
             updated_at=_load(row["updated_at"]),
             archived_at=_load(row["archived_at"]),
+            # 按列名取，不按位置：这一行的列序会随迁移增长（v0.59 刚加了两列）。
+            # `device_name` 是**可空列**且没有默认值，存量记录读回来是 NULL——
+            # 归一到空串，免得 `None` 从存储层漏进模型的 `str` 字段。
+            device_id=row["device_id"],
+            device_name=row["device_name"] or "",
         )
 
     def list_conversations(

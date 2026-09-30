@@ -274,8 +274,13 @@ def resolve_roots(services: Services, *, conversation_id: str | None, caller: Ca
         try:
             record = services.conversations.get(conversation_id)
             if record.workspace_id:
+                # **设备维度不过滤**（``any_device=True``，v0.59）：这里拿的是"这条
+                # 会话挂着的项目"的根，不是请求参数指向的工作区——文件面（Agent 干活
+                # 的地方）里的路径本来就该按记录走，设备隔离管的是界面上看得见哪些项目
                 workspace = Path(
-                    services.workspaces.get(record.workspace_id, user_id=caller.owner_id).root_path
+                    services.workspaces.get(
+                        record.workspace_id, user_id=caller.owner_id, any_device=True
+                    ).root_path
                 )
         except Exception:
             # 会话或工作区读不到时降级成"只有沙箱"：文件面少一个根，

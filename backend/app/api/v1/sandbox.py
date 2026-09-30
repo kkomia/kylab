@@ -217,7 +217,11 @@ def _paths(services: Services, payload: SandboxExecIn):  # type: ignore[no-untyp
     """
     box = sandbox_for(services.runtime.data_dir, payload.session_id or "adhoc").ensure()
     if payload.workspace_id:
-        workspace = services.workspaces.get(payload.workspace_id, user_id=None)
+        # **设备维度不过滤**（`any_device=True`，v0.59）：这条命令的 cwd 由请求里那个
+        # 工作区决定（判断"能不能拿它当 cwd"是另一回事，见 sandbox 自己的闸），
+        # 而设备隔离管的是"界面上看得见哪些项目"。这里加一道设备闸会让桌面端的
+        # 会话一换到 web 发起就找不到自己的工作区。
+        workspace = services.workspaces.get(payload.workspace_id, user_id=None, any_device=True)
         return workspace_root_of(workspace.root_path), box
     return box.parent, box
 

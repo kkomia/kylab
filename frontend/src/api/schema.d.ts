@@ -1324,6 +1324,10 @@ export interface paths {
          *     **归属用 ``model_fields_set`` 判断是否传了**，不能只看 ``is not None``：
          *     "退回未归档"要传 ``workspace_id: null``，而那与"这个字段没传"在值上完全一样。
          *     Pydantic v2 的 ``model_fields_set`` 正好区分这两者，比自定义哨兵干净。
+         *
+         *     ``workspace_id`` 带上设备（v0.59）：挂进的那条工作区必须在**这台设备**
+         *     （或不带设备头的服务器端）里看得见，否则与挂进别人的项目一样回 404。
+         *     退回未归档（``null``）不看设备——那是取消归属，与"属于哪台机器"无关。
          */
         patch: operations["update_conversation_api_v1_conversations__conversation_id__patch"];
         trace?: never;
@@ -2688,6 +2692,11 @@ export interface paths {
          *
          *     与会话列表同一口径：归档的项目不进默认视图，要看它们得显式要——
          *     这样"收起来"才真的把侧栏腾干净，而找回来也有一个明确的地方。
+         *
+         *     **设备维度是三态**（v0.59）：``device=all``（管理员）跨设备全都要；否则按请求头
+         *     ``X-Kylab-Device`` 隔离——带了只看那台机器的，不带只看**服务器端**的。
+         *     非管理员传 ``device=all`` 回 422 并**如实说明只有管理员能跨设备看**：
+         *     这不是 404 那类"不告诉你有没有"，它是一条明确的权限口径。
          */
         get: operations["list_workspaces_api_v1_workspaces_get"];
         put?: never;
@@ -2695,6 +2704,11 @@ export interface paths {
          * 新建工作区（指定根目录）
          * @description `root_path` 必须是**已存在的目录**，且不能指向数据目录或文件系统根
          *     （见 ``validate_root_path`` 的三道校验）。
+         *
+         *     **设备在这一步打戳**（v0.59）：带了 ``X-Kylab-Device`` 就把 ``device_id`` /
+         *     ``device_name`` 一起记下（这台机器的项目），不带就落 ``NULL``（服务器端）。
+         *     之后这条记录只对同一台设备可见——改机器请在新机器上新建，
+         *     因为 `root_path` 是那台机器上的路径。
          */
         post: operations["create_workspace_api_v1_workspaces_post"];
         delete?: never;
@@ -2778,7 +2792,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** 工作区详情 */
+        /**
+         * 工作区详情
+         * @description **设备不匹配与越权、不存在一样回 404**：能区分就等于承认"这个 id 存在"。
+         */
         get: operations["get_workspace_api_v1_workspaces__workspace_id__get"];
         put?: never;
         post?: never;
@@ -2797,7 +2814,8 @@ export interface paths {
          * @description 名字 / 根目录 / 描述 / 知识库 / 归档都可选，只改传了的那些。
          *
          *     **归属不可改**：把一个工作区转给别人，连带的是"里头会话的 Agent 行为"，
-         *     那是另一个功能，不该顺手做掉。
+         *     那是另一个功能，不该顺手做掉。**设备同样不可改**：它是这条记录的"在哪儿"，
+         *     换机器该新建（`root_path` 是那台机器上的路径）。
          */
         patch: operations["update_workspace_api_v1_workspaces__workspace_id__patch"];
         trace?: never;
@@ -8528,6 +8546,18 @@ export interface components {
              * @description 归档时间（v0.55）。``None`` = 未归档。
              */
             archived_at?: string | null;
+            /**
+             * Device Id
+             * @description 归属设备（v0.59）。``None`` = **服务器端**：这个项目的 ``root_path`` 在服务器的
+             *     盘上（网页版/直连 API 建的）。非空 = 桌面壳那台机器（``X-Kylab-Device``）。
+             */
+            device_id?: string | null;
+            /**
+             * Device Name
+             * @description 设备名（``X-Kylab-Device-Name``，可空）。只给人看，判定按 ``device_id``。
+             * @default
+             */
+            device_name: string;
         };
         /**
          * WorkspaceUpdateIn
@@ -10810,6 +10840,10 @@ export interface operations {
             };
             header?: {
                 authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -10841,6 +10875,10 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -10940,6 +10978,10 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path: {
                 conversation_id: string;
@@ -13895,9 +13937,15 @@ export interface operations {
             query?: {
                 /** @description false（默认）= 未归档的项目；true = 已归档的项目（v0.55） */
                 archived?: boolean;
+                /** @description **管理员专属的额外通道**：传 all 返回**全部设备**的工作区（跨机清理用）。不传 = 按请求头 X-Kylab-Device 隔离（不带那个头就是服务器端的项目） */
+                device?: string | null;
             };
             header?: {
                 authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -13929,6 +13977,10 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -14068,6 +14120,10 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path: {
                 workspace_id: string;
@@ -14101,6 +14157,10 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path: {
                 workspace_id: string;
@@ -14132,6 +14192,10 @@ export interface operations {
             query?: never;
             header?: {
                 authorization?: string | null;
+                /** @description 可选。桌面壳注入的设备标识（uuid）。带上它 = 只看到/只操作落在这台机器上的工作区；不带 = 服务器端的工作区（路径在服务器的盘上） */
+                "X-Kylab-Device"?: string | null;
+                /** @description 可选。设备名（人话），随工作区一起记下、界面显示用；不参与判定 */
+                "X-Kylab-Device-Name"?: string | null;
             };
             path: {
                 workspace_id: string;
