@@ -14,7 +14,6 @@
  *    或者"系统对你刚敲的那句话的回话"，所以跟输入框在一起，不跟着消息流滚走；
  * 5. **「回到最新」浮标**也挂在卡片上沿（assistant-ui 的视口状态决定它出现与否）。
  */
-import { ThreadPrimitive } from '@assistant-ui/react'
 import { ArrowUp, ChevronDown, File as FileIcon, Square, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
@@ -22,6 +21,8 @@ import { FILE_DRAG_TYPE } from '../runtime/prefs'
 import { matchChatShortcut } from '../runtime/shortcutPrefs'
 import { useChat, type MentionItem } from '../runtime/ChatProvider'
 import { ApprovalBar } from './ApprovalBar'
+import './flow.css'
+import { scrollToLatest, useFollowStore } from './followStore'
 import { ContextUsageChip, KnowledgeBaseControl, ModelPicker, PlusMenu } from './ComposerControls'
 import { MentionMenu, SlashMenu, type MenuHandle } from './Menus'
 import { PermissionControl } from './PermissionControl'
@@ -180,6 +181,8 @@ const SEND_BUTTON =
 
 export function Composer() {
   const chat = useChat()
+  /** 「回到最新」出不出：共享位（写只有一处，见 `followStore` 的说明）。 */
+  const atBottom = useFollowStore((state) => state.atBottom)
   const field = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const folderInput = useRef<HTMLInputElement>(null)
@@ -497,14 +500,22 @@ export function Composer() {
         贴底）又什么都不会发生。库给的状态钩子就是 `disabled`，用一条工具类接上，
         这一段就回到上面那句原本的意图：**只在能起作用时才出现**。
       */}
-      {chat.messages.length > 0 ? (
-        <ThreadPrimitive.ScrollToBottom
-          className="absolute -top-[calc(var(--space-8)+var(--space-2))] left-1/2 z-[2] inline-flex h-[var(--control-height)] w-[var(--control-height)] -translate-x-1/2 cursor-pointer items-center justify-center rounded-[var(--radius-pill)] border border-[var(--border)] bg-[var(--bg-surface)] text-[var(--text-secondary)] shadow-[var(--shadow-raised)] disabled:hidden"
+      {chat.messages.length > 0 && !atBottom ? (
+        /*
+          自己的浮标（不再用 `ThreadPrimitive.ScrollToBottom`）：库那枚点下去是**瞬时跳**
+          （`behavior:"auto"` 取元素 computed 的 `scroll-behavior`，全仓没给视口设过
+          smooth），而 Kimi 是平滑滚过去（设计文档 §11，400ms）。出不出由共享位
+          `atBottom` 决定（写只有一处：`ChatThread` 的跟随状态机）；`ch-in` 是入场。
+        */
+        <button
+          type="button"
+          className="ch-in absolute -top-[calc(var(--space-8)+var(--space-2))] left-1/2 z-[2] inline-flex h-[var(--control-height)] w-[var(--control-height)] -translate-x-1/2 cursor-pointer items-center justify-center rounded-[var(--radius-pill)] border border-[var(--border)] bg-[var(--bg-surface)] text-[var(--text-secondary)] shadow-[var(--shadow-raised)]"
           aria-label="回到最新"
           title="回到最新"
+          onClick={scrollToLatest}
         >
           <ChevronDown size={18} />
-        </ThreadPrimitive.ScrollToBottom>
+        </button>
       ) : null}
 
       {/*

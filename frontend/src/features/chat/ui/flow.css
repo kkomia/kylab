@@ -354,7 +354,8 @@ button.ch-row:hover {
   .ch-clp-in,
   .ch-row,
   .ch-chev,
-  .ch-fade {
+  .ch-fade,
+  .ch-in {
     transition: none !important;
     animation: none !important;
   }
@@ -468,4 +469,10 @@ button.ch-row:hover {
   .ch-skeleton-bar {
     animation: none !important;
   }
+}
+
+/* 「轻块入场」工具类：审批条 / 回到最新浮标 / 交付物卡——挂上就有 ch-in（§5.6 的
+   "任何新块入场"）。 */
+.ch-in {
+  animation: ch-in 0.3s var(--ch-ease-out) both;
 }

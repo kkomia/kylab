@@ -15,6 +15,7 @@ import type { ChatArtifact } from '@/api/chat'
 
 import { notifyError } from '../runtime/notify'
 import { useChat, type ChatApi } from '../runtime/ChatProvider'
+import './flow.css'
 
 /**
  * 打开产物（**预览**）：开文件区抽屉，并**直落这一份**。
@@ -54,7 +55,7 @@ export function Deliverables({ files }: { files: ChatArtifact[] }) {
   // 旧注释原话："这一块与 .reply-text 用同一个 --measure，卡片铺满它"）。
   // 给正文加了限宽却不给卡片加，卡片就会比它下面那段字宽出一截。
   return (
-    <ul className="m-0 mt-[var(--space-4)] flex max-w-[var(--measure)] list-none flex-col gap-[var(--space-2)] p-0">
+    <ul className="ch-in m-0 mt-[var(--space-4)] flex max-w-[var(--measure)] list-none flex-col gap-[var(--space-2)] p-0">
       {files.map((file) => (
         <li
           key={file.artifact_id}

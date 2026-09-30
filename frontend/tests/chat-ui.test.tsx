@@ -32,6 +32,7 @@ import {
 import { clearLiveAnchors, clearLiveTurn } from '@/features/chat/model/liveTurn'
 import { ChatPage } from '@/features/chat/ChatPage'
 import { useWorkspaceStore } from '@/features/layout/workspaces'
+import { useFollowStore } from '@/features/chat/ui/followStore'
 
 vi.mock('@/api/chat', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/chat')>()
@@ -1234,27 +1235,50 @@ describe('停止与回到最新', () => {
   /**
    * 第三批评审 A①：那个"无标签的孤立「∨」"就是这枚浮标。
    *
-   * 它的名字与用途本来就有（`aria-label` / `title` 都是「回到最新」），真正坏掉的是
-   * **出现时机**：本版 assistant-ui 在贴底时让回调返回 `null`，而 `createActionButton`
-   * 把 `null` 接成 `disabled`——按钮不会被摘掉，于是那枚图标一直挂在最后一条消息的
-   * 操作行右边，点它（此时必然贴底）又什么都不会发生。
+   * **2026-09-30 重做后它换了自己的实现**（不再用 `ThreadPrimitive.ScrollToBottom`）：
+   * 出不出由共享位 `followStore.atBottom` 决定（写只有一处——`ChatThread` 的跟随
+   * 状态机），点它是**平滑滚过去**（Kimi 设计文档 §11；库那枚是瞬时跳）。
    *
-   * jsdom 不算样式（`vite.config.ts` 里 `test.css: false`），"贴底时真的看不见"由真浏览器
-   * 截图作证（`.shots/batch3/02-chat.png` 无、`02-chat-scrolled-up.png` 有）；
-   * 这里守的是那个状态钩子别被删掉——它就是「只在能起作用时才出现」本身。
+   * jsdom 不算版面（`vite.config.ts` 里 `test.css: false`）：视口的一切尺寸都是 0，
+   * 于是默认状态就是"贴底"——这一条同时钉住"贴底时浮标**不在文档里**"（不是靠
+   * `disabled:hidden` 藏着），再用假尺寸把它翻成"翻上去了"，钉它出现、点它调
+   * `scrollTo`。
    */
-  it('「回到最新」浮标带名字，且用库给的状态钩子在贴底时不出现', async () => {
+  it('「回到最新」：贴底时不渲染；翻上去才出现，点它平滑滚到底', async () => {
     vi.mocked(getConversation).mockResolvedValue(
       detail([stored('user', '你好'), stored('assistant', '你好呀')]),
     )
     renderPage()
     await screen.findByTestId('reply-text')
 
-    // 名字一直在（`aria-label` + `title` 各一份）：它从来不是"无标签的图标"
-    const jump = screen.getByRole('button', { name: '回到最新' })
+    // jsdom 尺寸全 0 = 贴底：浮标不出现（不是挂着禁用）
+    expect(screen.queryByRole('button', { name: '回到最新' })).toBeNull()
+
+    // 把它翻成"用户翻上去了"：量"离底多远"的三个数由我们说了算。
+    // **走真实入口**：滚轮向上 = 停跟随（`stopFollowing` 是所有"别抢"的同一个入口），
+    // 再补一次位置读数——只发 scroll 而不停跟随的话，下一次内容增长会把人落回底部
+    const viewport = screen.getByLabelText('对话内容') as HTMLDivElement
+    Object.defineProperty(viewport, 'scrollHeight', { value: 1000, configurable: true })
+    Object.defineProperty(viewport, 'clientHeight', { value: 400, configurable: true })
+    viewport.scrollTop = 100 // 离底 500px > 阈值
+    fireEvent.wheel(viewport, { deltaY: -120 })
+    fireEvent.scroll(viewport)
+
+    const jump = await screen.findByRole('button', { name: '回到最新' })
     expect(jump).toHaveAttribute('title', '回到最新')
-    // 库的"贴底"状态发生在 `disabled` 上，这一条工具类把它接成"不出现"
-    expect(jump.className).toContain('disabled:hidden')
+    // 入场：轻块那一下（ch-in）
+    expect(jump.className).toContain('ch-in')
+
+    // 共享位里交上来的就是这一只视口（静态导入：中途 `await` 会让一次 rAF
+    // 把浮标收回去，抓住的节点就成了游离节点，点击再也到不了处理器）
+    expect(useFollowStore.getState().viewport).toBe(viewport)
+
+    // 点它：平滑滚到底（行为的取值也钉住——`smooth`，reduced-motion 下才是 `auto`）
+    const scrollTo = vi.fn()
+    Object.defineProperty(viewport, 'scrollTo', { value: scrollTo, configurable: true })
+    expect(jump.isConnected).toBe(true)
+    fireEvent.click(jump)
+    expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: 'smooth' })
   })
 
   /**

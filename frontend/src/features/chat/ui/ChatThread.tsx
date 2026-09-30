@@ -24,6 +24,7 @@ import { buildTurns, type Turn } from '@/features/chat/model/turns'
 import { ChatHeader } from './ChatHeader'
 import { MessageView } from './MessageView'
 import { Welcome } from './Welcome'
+import { useFollowStore } from './followStore'
 import { useChat, type ChatMessage } from '../runtime/ChatProvider'
 
 /**
@@ -150,6 +151,9 @@ export function ChatThread() {
   const pinToBottom = useCallback(() => {
     const el = viewportRef.current
     if (!el) return
+    // 贴底那一档：把共享位写成"贴底"（浮标据此消失）。早退那一路同样要写——
+    // "没有可滚的空间"本身就是贴底
+    useFollowStore.getState().setAtBottom(true)
     if (el.scrollHeight - el.scrollTop - el.clientHeight <= 0) return
     el.scrollTop = el.scrollHeight
   }, [])
@@ -178,6 +182,12 @@ export function ChatThread() {
       detachRef.current?.()
       detachRef.current = null
       viewportRef.current = node
+      // 把节点交给共享位（浮标点击时滚它），并按当下位置初始化"贴底"这一格
+      const follow = useFollowStore.getState()
+      follow.setViewport(node)
+      const atBottomNow = () =>
+        node.scrollHeight - node.scrollTop - node.clientHeight <= FOLLOW_THRESHOLD_PX
+      follow.setAtBottom(atBottomNow())
 
       /** 内容长了一截 → 一帧内补到新的底部（贴底那一档才补）。 */
       const scheduleFollow = () => {
@@ -194,6 +204,7 @@ export function ChatThread() {
        */
       const stopFollowing = () => {
         followRef.current = false
+        useFollowStore.getState().setAtBottom(false)
         if (frameRef.current !== null) {
           cancelAnimationFrame(frameRef.current)
           frameRef.current = null
@@ -250,7 +261,9 @@ export function ChatThread() {
       const onScroll = () => {
         const el = viewportRef.current
         if (!el) return
-        if (el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_THRESHOLD_PX) {
+        const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_THRESHOLD_PX
+        useFollowStore.getState().setAtBottom(atBottom)
+        if (atBottom) {
           followRef.current = true
         }
       }
@@ -266,6 +279,7 @@ export function ChatThread() {
       node.addEventListener('scroll', onScroll, { passive: true })
 
       detachRef.current = () => {
+        follow.setViewport(null)
         growth.disconnect()
         node.removeEventListener('wheel', onWheel)
         node.removeEventListener('touchmove', onTouchMove)
