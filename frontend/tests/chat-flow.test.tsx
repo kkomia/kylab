@@ -189,9 +189,12 @@ describe('工具链块', () => {
     expect(screen.getByText('搜索结果正文')).toBeInTheDocument()
   })
 
-  it('整轮思考（老消息兜底）：一行「思考已完成 · N 字」，点开是灰字段落', () => {
+  it('整轮思考（老消息兜底）：一行「思考已完成 | N 字」，点开是灰字段落', () => {
     flowOf(makeMessage('assistant', '答案', { thinkingText: '先想第一段。\n\n再想第二段。' }))
-    const row = screen.getByText(/思考已完成 · /).closest('.ch-row')!
+    // 「 · 」两侧在渲染层拆成"标签 + 详情"（2026-09-30 R2）：标签仍是「思考已完成」，
+    // 字数进详情槽（Tertiary，前面那条 0.5px 竖条由 `.ch-row-sep` 画）
+    const row = screen.getByText('思考已完成').closest('.ch-row')!
+    expect(row.querySelector('.ch-row-detail')?.textContent).toBe('14 字')
     fireEvent.click(row)
     expect(screen.getByText('先想第一段。')).toBeInTheDocument()
     expect(screen.getByText('再想第二段。')).toBeInTheDocument()

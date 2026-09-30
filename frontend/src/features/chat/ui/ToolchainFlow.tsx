@@ -3,14 +3,20 @@
  *
  * 与旧面板的四条根本区别：
  *
- * 1. **一条缩进轴**：所有子项对齐同一根竖向引导线（`.ch-body` 的 0.5px hairline），
- *    不再"面板里再套面板"；
+ * 1. **一条缩进轴**：所有子项对齐同一根竖向引导线（`.ch-item` 的 `::after` 虚线，
+ *    `left:10px` = 图标槽中心），不再"面板里再套面板"；
  * 2. **开合口径沿用 `isTraceOpen` 那一份**（流式展开 / 答完收起 / 用户点过听用户 /
  *    待确认强制展开）——那一套四规则已是定稿，本组件只管"按档画"，不自己再判；
  * 3. **行即状态**：running 的行是流光字（`.ch-live`，不是转圈——「那个蓝色循环圈
  *    没有用」是用户原话），done 的行带耗时，被拦下/等确认/失败的行前置展开且着色；
- * 4. **动效抄 Kimi 源码**：折叠走 grid-rows 时序编排（先消失再收拢 / 先展开再淡入），
- *    新行入场 `ch-in`（blur→0 + 8px 上浮），滚动区 35px 五段阶梯渐隐。
+ * 4. **动效与结构都按生产 CSS 落地**（2026-09-30 第二版纠偏）：
+ *    - 链：每个条目 `.ch-item`（`position:relative` + 行间 `margin-top:12px`），虚线是它自己的
+ *      `::after`（`.5px dashed`、`top:24px/bottom:-12px`），**末行无线由 `:not(:last-child)` 保证**
+ *      ——判据在 DOM 结构里，不由这一层算相邻；
+ *    - 折叠：整块头部那层 `.25s/.38s`，**行内**展开另走 `.48s` 体系（`.ch-clp--row`）；
+ *    - 入场：`ch-in`（blur→0 + 8px 上浮，链内 .38s，**没有逐项 delay**）；
+ *    - 行尾箭头平时不出现，悬停/聚焦才滑入，展开态常显并转 90°；
+ *    - 滚动区 35px 五段阶梯渐隐 + 隐藏原生滚动条。
  *
  * 数据全部来自 `model/turns.ts` 的派生层（`traceEntries` / `trailingThinking` /
  * `traceSummary`）——这一层不重新发明任何判定。
@@ -22,7 +28,7 @@
  * 样式的 token 与 keyframes 在 `flow.css`（Kimi 源码值，chat 域局部，不碰全局）。
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ChevronDown, FileText } from 'lucide-react'
+import { ChevronRight, FileText } from 'lucide-react'
 
 import type { ChatSource } from '@/api/chat'
 import { formatCount } from '@/lib/format'
@@ -47,12 +53,48 @@ import {
   type TraceStep,
   type Turn,
 } from '../model/turns'
-import { webSitesOfSteps } from '../model/webSites'
+import { urlsIn, webSitesOfSteps } from '../model/webSites'
 import './flow.css'
 import { SearchHits } from './SearchHits'
 import { StepDot, StepIcon, StepOutcomeBadge, type StepOutcome } from './stepIcons'
 import { StepResult } from './StepResult'
 import { WebSiteList } from './WebSiteList'
+
+/**
+ * 抓页那一档"读了几页"（Kimi 的行尾「[站点 favicon] 1 个网页」，用户批注 §3）。
+ *
+ * 数据来自**这一步自己的入参**（`web_fetch` 的 `url` / `urls`，后端一次最多给 5 个，
+ * 见 `services/tools.py::_web_fetch`）——不是新字段，解析走 `model/webSites.ts` 里既有的
+ * `urlsIn`（联网那一族共用同一份）。只认抓页那一档：搜索那一步说的是"多少条结果"，
+ * 那是另一件事，本来就在 `detail` 里。
+ */
+function fetchedPageCount(step: TraceStep): number {
+  if (step.tool !== 'web_fetch' && step.label !== '抓取网页') return 0
+  return new Set(urlsIn(step.args ?? '')).size
+}
+
+/**
+ * 聚合 / 派生的行标题里那个「 · 」——**拆成"标签 + 详情"两截**（2026-09-30 R2 批注）。
+ *
+ * 生产里这些行是「标签(Secondary) + 0.5px×14px 竖条 + 详情(Tertiary)」，而我们的聚合句
+ * （`groupHeading`）与「思考已完成 · N 字」是把两截焊在一个字符串里的。这一层只做**显示**
+ * 上的切分：在**第一个**「 · 」处断开，前半是标签、后半进详情槽（走 `.ch-row-sep` +
+ * `.ch-row-detail`，与普通步行同一套）。
+ *
+ * 两条分寸：
+ *
+ * 1. **没有「 · 」就原样返回**：正在跑的聚合句（「正在检索 X… 1/3」）、老快照那句
+ *    「联网搜索 2 次」都走这一支，一个字不动；
+ * 2. **只在聚合/派生的行上用**：来源行那句「N 个来源 · M 篇文档」是**两个计数并列**，
+ *    不是"标签 | 详情"的语义，所以它不调用这个函数（保持原样）。
+ *
+ * 切的是**渲染**，不是数据：`groupHeading()` 的返回值与它的用例断言一个字都没改。
+ */
+function splitLabel(text: string): { label: string; detail: string } {
+  const at = text.indexOf(' · ')
+  if (at < 0) return { label: text, detail: '' }
+  return { label: text.slice(0, at), detail: text.slice(at + 3) }
+}
 
 /**
  * 行级开合的宿主接口（`ChatProvider` 的 openSteps / openGroups 那两份表的投影）。
@@ -112,21 +154,12 @@ function isDotIcon(icon: TraceIcon): boolean {
   return icon === 'think' || icon === 'build'
 }
 
-/**
- * 这一行在链路里的上下两截画不画——虚线的**唯一判据**（2026-09-30 用户批注 §1）。
- *
- * ⚠️ 刻意**不按"是不是工具行"筛**（第一版那样写过，看到真链路后改掉了）：真链路里工具行
- * 几乎总是被「组织回答」隔开（实测那一轮 18 步：组织回答 → 联网搜索 → 组织回答 →
- * 抓取网页 → …），按"只连相邻的工具行"画，整块里**一条虚线都不会出现**——
- * 而 Kimi 自己的链路上，中间那些条目（子目标 / 思考已完成）同样是"非工具"的圆点行，
- * 虚线照样从它们之间穿过。所以判据就是**相邻**：首行的上面、末行的下面不画，
- * 中间相邻的两行之间都画。链路的**终点**因此落在最后一行上，来源清单与"共 N 字"
- * 那几行不在链路里（没有线）——与用户批注"最后一个工具行之后虚线终止 / 组行之后也没有线"
- * 是同一个可见结果。
+/*
+ * 虚线链路**不再由这一层算**（2026-09-30 第二版按生产纠偏）：生产是把线画在
+ * `toolcall-flow__item` 自己的 `::after` 上、由 `:not(:last-child)` 保证末行没有线——
+ * 判据落在 DOM 结构里，一眼看得见，也不会出现"JS 算错一档、整块少一条线"。
+ * 见 `flow.css` 的 `.ch-item:not(:last-child)::after`。
  */
-function linksOf(index: number, total: number): { up: boolean; down: boolean } {
-  return { up: index > 0, down: index < total - 1 }
-}
 
 /**
  * 「跑了多久」的显示（沿用旧面板照 LobeHub 的三档，单位换成中文）：
@@ -147,14 +180,34 @@ export function formatStepDuration(ms: number): string {
  * 不直接用旧 `Fold`：那一版的过渡是 200ms 匀速、没有 blur 编排（它随旧面板一起退役）。
  * `everOpened` 那一条保留——从没展开过的块内容不上 DOM（几十轮时的 DOM 开销是真的），
  * 展开过一次之后常驻，于是"展开 → 收起 → 再展开"每一次都有过渡。
+ *
+ * **两档时序**（生产里也是两层不同的类）：整块头部那层是 `.ch-clp`（.25s/.38s，
+ * `toolcall-flow__summary-clp`）；**行内**展开那层是 `.ch-clp--row`（.48s 体系，
+ * `toolcall-flow__collapse` + `.collapse-inner`）——所以这里多一个 `row` 开关。
  */
-function FlowFold({ open, id, children }: { open: boolean; id?: string; children: ReactNode }) {
+function FlowFold({
+  open,
+  row,
+  id,
+  children,
+}: {
+  open: boolean
+  /** 行内展开那一层（工具行 / 组行 / 思考行 / 来源行都用它）。 */
+  row?: boolean
+  id?: string
+  children: ReactNode
+}) {
   const [everOpened, setEverOpened] = useState(open)
   useEffect(() => {
     if (open) setEverOpened(true)
   }, [open])
   return (
-    <div className="ch-clp" data-open={open} data-fold={open ? 'open' : 'closed'} id={id}>
+    <div
+      className={row ? 'ch-clp ch-clp--row' : 'ch-clp'}
+      data-open={open}
+      data-fold={open ? 'open' : 'closed'}
+      id={id}
+    >
       <div className="ch-clp-in">{open || everOpened ? children : null}</div>
     </div>
   )
@@ -214,8 +267,6 @@ function StepRow({
   open,
   onToggle,
   names,
-  linkUp,
-  linkDown,
 }: {
   step: TraceStep
   /** 组内子行：5px 圆点取代图标（层级语言与旧面板一致）。 */
@@ -224,9 +275,6 @@ function StepRow({
   onToggle: () => void
   /** `art_*` → 真实文件名（`humanizeArtifactKeys`）；没有就空表。 */
   names: ReadonlyMap<string, string>
-  /** 这一行上面 / 下面还有相邻的一行吗——有才画虚线的上半段 / 下半段（判据见 `linksOf`）。 */
-  linkUp?: boolean
-  linkDown?: boolean
 }) {
   const running = isRunningStep(step)
   const outcome = outcomeOf(step)
@@ -253,16 +301,25 @@ function StepRow({
   )
   // 编号列表已经画成清单了，剩下的"正文开头"那一段清单里没有，照旧给原文（不丢内容）
   const excerptTail = hits.length > 0 ? searchExcerptTail(step.result ?? '') : ''
+  /** 抓页那一档"读了几页"（行尾那个「N 个网页」）；不是抓页的步骤恒为 0。 */
+  const pageCount = fetchedPageCount(step)
+  /**
+   * 这一步是**前置展开**的（失败 / 被拦下 / 等确认：`forceExpand`）——那种行 `open` 恒为真、
+   * 点也收不起来，所以**不画行尾那枚箭头**（摆了等于许诺一个点不动的动作）。
+   * 顶层行与组内子行走的是同一个判据（R2 批注：两层行为一致）。
+   */
+  const forced = forceExpand(step)
   return (
-    <div className={sub ? 'ch-sub' : undefined}>
+    /* 链内每个条目都是 `.ch-item`（生产 `.toolcall-flow__item`）：虚线由它的 `::after`
+       按 `:not(:last-child)` 画出来，行距由 `.ch-item + .ch-item` 的 margin-top 给。
+       组内子行（`sub`）不是链上的一环，单独用 `.ch-sub` 缩进。 */
+    <div className={sub ? 'ch-sub' : 'ch-item'}>
       <button
         type="button"
         className="ch-row"
         data-kind={step.kind}
         data-outcome={outcome}
         data-running={running || undefined}
-        data-link-up={linkUp || undefined}
-        data-link-down={linkDown || undefined}
         aria-expanded={hasBody ? open : undefined}
         aria-disabled={!hasBody}
         onClick={hasBody ? onToggle : undefined}
@@ -270,7 +327,7 @@ function StepRow({
         {sub ? (
           <span className="ch-sub-dot" aria-hidden />
         ) : (
-          <span style={{ position: 'relative', display: 'inline-flex', flex: 'none' }}>
+          <span className="ch-icon-slot">
             {isDotIcon(step.icon) ? (
               <StepDot icon={step.icon} />
             ) : (
@@ -280,26 +337,32 @@ function StepRow({
           </span>
         )}
         <span className={running ? 'ch-row-label ch-live' : 'ch-row-label'}>{step.label}</span>
-        {step.detail && <span className="ch-row-detail">{step.detail}</span>}
+        {/* 标签与详情之间那根**细竖条**（Kimi 的「阅读 | SKILL.md」，用户批注 §1）：
+            CSS 画的 1px 线，不是「|」字符。没有详情就不画——"标签 |"后面空着更奇怪。 */}
+        {step.detail && (
+          <>
+            <span className="ch-row-sep" aria-hidden />
+            <span className="ch-row-detail">{step.detail}</span>
+          </>
+        )}
         {/* 联网那几类：查了哪些站点直接标在行上（牌子先画、真 logo 后换，见 WebSiteList） */}
         {!sub && <WebSiteList {...webSitesOfSteps([step])} />}
+        {/* 抓页那一档再补一个页数（用户批注 §3：Kimi 的行尾是「[站点 favicon] N 个网页」） */}
+        {!sub && pageCount > 0 && (
+          <span className="ch-row-count">{formatCount(pageCount)} 个网页</span>
+        )}
         <span className="ch-row-right">
           {running && <span data-running-text>进行中</span>}
           {!running && step.durationMs != null && (
             <span data-duration>{formatStepDuration(step.durationMs)}</span>
           )}
-          {hasBody && (
-            <ChevronDown
-              size={14}
-              className="ch-chev"
-              style={{ transform: open ? 'rotate(180deg)' : undefined }}
-              aria-hidden
-            />
-          )}
+          {/* 行尾箭头：平时不画（悬停/聚焦才滑入，展开态常显并转 90°，见 `.ch-row .ch-chev`）；
+              前置展开的行连元素都不给——它收不起来，箭头是假的 */}
+          {hasBody && !forced && <ChevronRight size={18} className="ch-chev" aria-hidden />}
         </span>
       </button>
       {hasBody && (
-        <FlowFold open={open}>
+        <FlowFold row open={open}>
           {(step.thinking ?? '').trim() && <Thinking text={step.thinking ?? ''} />}
           {step.args && (
             <pre className="ch-raw" data-args>
@@ -314,7 +377,11 @@ function StepRow({
                 （"前 N 条的正文开头"）接在下面照旧给原文，信息一条不丢。
               */
               <>
-                <SearchHits hits={hits} />
+                {/* 结果清单包在 `FadeScroll` 里（用户批注 §10）：限高 256px + 底部 35px
+                    阶梯渐隐 + 隐藏原生滚动条这一套，只有滚动盒给得出来（渐隐层是 sticky 的） */}
+                <FadeScroll sites>
+                  <SearchHits hits={hits} />
+                </FadeScroll>
                 {excerptTail && <StepResult text={excerptTail} />}
               </>
             ) : (
@@ -343,17 +410,12 @@ function GroupRow({
   expansion,
   k,
   names,
-  linkUp,
-  linkDown,
 }: {
   entry: Extract<TraceEntry, { kind: 'group' }>
   expansion: FlowExpansion
   /** 套过轮次前缀的 key 工厂。 */
   k: (key: string) => string
   names: ReadonlyMap<string, string>
-  /** 与 `StepRow` 同一份：相邻即画那一截虚线（判据见 `linksOf`）。 */
-  linkUp?: boolean
-  linkDown?: boolean
 }) {
   const running = entry.steps.some(isRunningStep)
   // 没碰过的组看"还在跑就摊开"；他点过的（开/收）完全听他的
@@ -361,19 +423,19 @@ function GroupRow({
   // 耗时只加"界面真看着跑完"的那些（见 TraceStep.durationMs 的口径）；一个都没有就不显示
   const duration = entry.steps.reduce((sum, step) => sum + (step.durationMs ?? 0), 0)
   const bodyId = `flow-group-${k(entry.key)}`
+  // 聚合句按「 · 」拆成"标签 + 详情"两截（R2 批注；判据与分寸见 `splitLabel`）
+  const heading = splitLabel(groupHeading(entry))
   return (
-    <div>
+    <div className="ch-item">
       <button
         type="button"
         className="ch-row"
         data-kind={entry.steps[0]?.kind}
-        data-link-up={linkUp || undefined}
-        data-link-down={linkDown || undefined}
         aria-expanded={open}
         aria-controls={bodyId}
         onClick={() => expansion.chooseGroup(k(entry.key), !open)}
       >
-        <span style={{ position: 'relative', display: 'inline-flex', flex: 'none' }}>
+        <span className="ch-icon-slot">
           <StepIcon icon={entry.icon} tool={entry.tool} label={entry.label} />
           {/* 组级状态灯 = 组内第一条带状态位的调用（与组行图标同口径） */}
           {groupOutcomeOf(entry.steps) && (
@@ -381,24 +443,25 @@ function GroupRow({
           )}
         </span>
         {/* 标题是"与对象绑定的聚合句"（§12.333）：数目数对象、对象列出来，
-            不是干巴巴的「N 次」——那会被读成"每次都成了" */}
-        <span className={running ? 'ch-row-label ch-live' : 'ch-row-label'}>
-          {groupHeading(entry)}
-        </span>
+            不是干巴巴的「N 次」——那会被读成"每次都成了"。
+            **「 · 」两截分开画**（2026-09-30 R2 批注）：前半是标签（Secondary），
+            后半那段对象清单进详情槽（0.5px 竖条 + Tertiary）——与普通步行同一个行模式。 */}
+        <span className={running ? 'ch-row-label ch-live' : 'ch-row-label'}>{heading.label}</span>
+        {heading.detail && (
+          <>
+            <span className="ch-row-sep" aria-hidden />
+            <span className="ch-row-detail">{heading.detail}</span>
+          </>
+        )}
         {/* 这一组查了哪些站点（联网组才有；一行 favicon 牌） */}
         <WebSiteList {...webSitesOfSteps(entry.steps)} />
         <span className="ch-row-right">
           {running && <span data-running-text>进行中</span>}
           {!running && duration > 0 && <span data-duration>{formatStepDuration(duration)}</span>}
-          <ChevronDown
-            size={14}
-            className="ch-chev"
-            style={{ transform: open ? 'rotate(180deg)' : undefined }}
-            aria-hidden
-          />
+          <ChevronRight size={18} className="ch-chev" aria-hidden />
         </span>
       </button>
-      <FlowFold open={open} id={bodyId}>
+      <FlowFold row open={open} id={bodyId}>
         {entry.steps.map((step) => (
           <StepRow
             key={step.key}
@@ -426,24 +489,28 @@ function TrailingThinkingRow({
   open: boolean
   onToggle: () => void
 }) {
+  const { label, detail } = splitLabel(
+    streaming ? '思考中…' : `思考已完成 · ${formatCount(text.length)} 字`,
+  )
   return (
-    <div>
+    <div className="ch-item">
       <button type="button" className="ch-row" aria-expanded={open} onClick={onToggle}>
         {/* 圆点与工具行里那两档（思考 / 组织回答）同款：Kimi「思考已完成」就是一枚实心小圆点 */}
         <StepDot icon="think" />
-        <span className={streaming ? 'ch-row-label ch-live' : 'ch-row-label'}>
-          {streaming ? '思考中…' : `思考已完成 · ${formatCount(text.length)} 字`}
-        </span>
+        <span className={streaming ? 'ch-row-label ch-live' : 'ch-row-label'}>{label}</span>
+        {/* 字数进详情槽（R2 批注：把「 · 」两侧拆成"标签 + 详情"）；
+            `思考中…` 那一支没有「 · 」，`detail` 为空 → 不画竖条 */}
+        {detail && (
+          <>
+            <span className="ch-row-sep" aria-hidden />
+            <span className="ch-row-detail">{detail}</span>
+          </>
+        )}
         <span className="ch-row-right">
-          <ChevronDown
-            size={14}
-            className="ch-chev"
-            style={{ transform: open ? 'rotate(180deg)' : undefined }}
-            aria-hidden
-          />
+          <ChevronRight size={18} className="ch-chev" aria-hidden />
         </span>
       </button>
-      <FlowFold open={open}>
+      <FlowFold row open={open}>
         <Thinking text={text} />
       </FlowFold>
     </div>
@@ -474,7 +541,7 @@ function SourcesRow({
 }) {
   const documents = new Set(sources.map((item) => item.document_id)).size
   return (
-    <div>
+    <div className="ch-item">
       <button
         type="button"
         className="ch-row"
@@ -482,20 +549,15 @@ function SourcesRow({
         onClick={onToggle}
         data-testid="flow-sources"
       >
-        <FileText size={13} aria-hidden />
+        <FileText size={15} aria-hidden />
         <span className="ch-row-label">
           {formatCount(sources.length)} 个来源 · {formatCount(documents)} 篇文档
         </span>
         <span className="ch-row-right">
-          <ChevronDown
-            size={14}
-            className="ch-chev"
-            style={{ transform: open ? 'rotate(180deg)' : undefined }}
-            aria-hidden
-          />
+          <ChevronRight size={18} className="ch-chev" aria-hidden />
         </span>
       </button>
-      <FlowFold open={open}>
+      <FlowFold row open={open}>
         <FadeScroll sites>
           {sources.map((source) => (
             <button
@@ -580,21 +642,26 @@ export function ToolchainFlow({
         onClick={onToggle}
         data-running={running || undefined}
       >
+        {/* 段首的**图标槽**（15px，与子项图标同宽）：Kimi 的工具链标题是「图标 + 摘要」
+            （设计文档 §1.1），而且**头部文字与子项标签落在同一条竖线上**——没有这一格，
+            头部会顶到体的左边缘、与子项错开 25px（证据图 evidence-web-1 里两者同列）。 */}
+        <span className="ch-head-icon" aria-hidden>
+          <FileText size={16} />
+        </span>
         <span className={running ? 'ch-summary ch-live' : 'ch-summary'}>
           {traceSummary(message)}
         </span>
         {message.steps.length > 0 && (
           <span className="ch-head-meta">{formatCount(message.steps.length)} 步</span>
         )}
-        <ChevronDown size={16} className="ch-chev" aria-hidden />
+        {/* 头部那枚箭头：生产是**右向 chevron**，展开时由 CSS 转 90°（见 flow.css 的 `.ch-chev`） */}
+        <ChevronRight size={16} className="ch-chev" aria-hidden />
       </button>
       <FlowFold open={bodyOpen}>
         <div className="ch-body">
-          {entries.map((entry, index) => {
-            // 虚线链路（用户批注 §1）：相邻两行之间才画（首行上面、末行下面不画）——
-            // 判据与理由只有一处，见上面 `linksOf`。上下各一条半截
-            // （`.ch-row::before` / `::after`），所以行内展开的内容不会被线穿过。
-            const { up: linkUp, down: linkDown } = linksOf(index, entries.length)
+          {entries.map((entry) => {
+            // 虚线的画法全在 DOM 结构里（每个 `.ch-item` 自己的 `::after` +
+            // `:not(:last-child)`），这一层不再算相邻。
             return entry.kind === 'group' ? (
               <GroupRow
                 key={entry.key}
@@ -602,8 +669,6 @@ export function ToolchainFlow({
                 expansion={expansion}
                 k={k}
                 names={artifactNames}
-                linkUp={linkUp}
-                linkDown={linkDown}
               />
             ) : (
               <StepRow
@@ -612,8 +677,6 @@ export function ToolchainFlow({
                 open={forceExpand(entry.step) || expansion.isOpen(k(entry.step.key))}
                 onToggle={() => expansion.toggle(k(entry.step.key))}
                 names={artifactNames}
-                linkUp={linkUp}
-                linkDown={linkDown}
               />
             )
           })}

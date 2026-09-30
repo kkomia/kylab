@@ -14,17 +14,24 @@
  * 本文件用的颜色/描边令牌**就是全局那两份主题里的 Kimi 同款**（`themes/light.css` /
  * `dark.css` 的 `--Labels-*` / `--Bg-*` / `--Separators-S1` / `--Colors-KMBlue`，
  * 取值与 kimi.com 源码逐字一致）——不另起一套局部变量，深浅反相由主题自带。
- * 这里只补两个全局没有的：折叠缓动（源码原文那两条不对称曲线）。
+ * 这里只补几个全局没有的：折叠缓动（生产那三条不对称曲线 + 行级折叠的时长基准）。
  */
 :root {
-  --ch-ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-  --ch-ease-close: cubic-bezier(0.55, 0, 0.18, 1);
+  --ch-ease-out: cubic-bezier(0.23, 1, 0.32, 1); /* --clp-ease-out */
+  --ch-ease-close: cubic-bezier(0.55, 0, 0.18, 1); /* --clp-ease-close */
+  /* 行级折叠那两件（生产 `--clp-d` / `--clp-ease-open`）。生产按内容高度用 JS 设
+     `--clp-d`（实测给过 335ms），我们取文档里的静态值 480ms，不做动态。 */
+  --ch-d: 0.48s;
+  --ch-ease-open: cubic-bezier(0.25, 1, 0.3, 1);
 }
 
 .ch-flow {
   color: var(--Labels-Secondary);
-  font-size: calc(14px * var(--font-scale, 1));
-  line-height: 1.45;
+  /* 链路上的文字是 **16px / 24px**：生产 `.toolcall-title-container.default` 就是
+     `height:24px; font-size:var(--ui-T2-font-size); line-height:var(--ui-T2-line-height); padding:0`
+     ——与上一轮从证据图量出的字距（32 设备 px）/字高（23 设备 px）同值。 */
+  font-size: calc(16px * var(--font-scale, 1));
+  line-height: 24px;
 }
 
 /* ---- 签名动效（源码 keyframes 原文，加 `ch-` 前缀防撞名） ---- */
@@ -41,6 +48,14 @@
     filter: blur(0);
     transform: translateY(0);
   }
+}
+
+/* 上面那支 keyframes 对应的**类**（源码 §7 的 `toolCallFlowItemIn`）：批准条、
+   「回到最新」那颗浮标、交付物卡片挂的都是 `.ch-in`。
+   ⚠️ 改前这里**只有 keyframes、没有类规则**——那几处的 `className="ch-in"` 一直是空转
+   （全仓只有 reduced-motion 那一段认得这个名字），现在把它补上。 */
+.ch-in {
+  animation: ch-in 0.3s var(--ch-ease-out) both;
 }
 
 /* 思考中 / 进行中的流光文字 */
@@ -90,10 +105,38 @@
     visibility 0s;
 }
 
+/* 行内展开是**另一套时序**（生产 `.toolcall-flow__collapse` + `.collapse-inner`）：
+   同一个 grid-rows 技巧，但基准时长 `--ch-d: .48s`、展开曲线换 `--clp-ease-open`。
+   收起：内容先淡出（.24s），高度等 15% 之后才开始收（.44s）；
+   展开：高度 .48s 先开，内容等 23% 才淡入（透明度 .3s / 模糊 .34s）。 */
+.ch-clp--row {
+  transition: grid-template-rows calc(var(--ch-d) * 0.92) var(--ch-ease-close)
+    calc(var(--ch-d) * 0.15);
+}
+.ch-clp--row[data-open='true'] {
+  transition: grid-template-rows var(--ch-d) var(--ch-ease-open);
+}
+.ch-clp--row > .ch-clp-in {
+  transition:
+    opacity calc(var(--ch-d) * 0.5) cubic-bezier(0.4, 0, 0.7, 1),
+    filter calc(var(--ch-d) * 0.5) cubic-bezier(0.4, 0, 0.7, 1),
+    transform calc(var(--ch-d) * 0.92) var(--ch-ease-close) calc(var(--ch-d) * 0.15),
+    visibility 0s linear calc(var(--ch-d) * 1.1);
+}
+.ch-clp--row[data-open='true'] > .ch-clp-in {
+  transition:
+    opacity calc(var(--ch-d) * 0.62) cubic-bezier(0.3, 0, 0.5, 1) calc(var(--ch-d) * 0.23),
+    filter calc(var(--ch-d) * 0.7) cubic-bezier(0.3, 0, 0.5, 1) calc(var(--ch-d) * 0.23),
+    transform var(--ch-d) var(--ch-ease-open) calc(var(--ch-d) * 0.125),
+    visibility 0s;
+}
+
 /* ---- 头（整行可点，24px 高） ---- */
 .ch-head {
   display: flex;
   align-items: center;
+  /* 与行同一条缩进轴（生产：头部 icon 槽 20px + 间距 8px，行内同值）——
+     头部文字与子项标签因此落在同一列上。字号/行高（16px/24px）继承 `.ch-flow`。 */
   gap: 8px;
   width: 100%;
   min-height: 24px;
@@ -102,10 +145,19 @@
   background: none;
   cursor: pointer;
   text-align: left;
-  font-size: calc(16px * var(--font-scale, 1)); /* --ui-T2 */
-  line-height: 24px;
   color: var(--Labels-Secondary);
   border-radius: 6px;
+}
+/* 段首那一枚图标槽：**20×20**（生产 `.toolcall-flow__summary-icon { flex:0 0 20px }`），
+   与行内图标槽同宽——两列的图标因此同轴、文字同列。 */
+.ch-head-icon {
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--Labels-Secondary);
 }
 .ch-head:hover .ch-summary {
   color: var(--Labels-Primary);
@@ -137,45 +189,76 @@
   line-height: 18px;
   color: var(--Labels-Tertiary);
 }
+/* 箭头（行与头部共用这一类）：生产里是**右向 chevron**，展开时转 90° 变"∨"。
+   行上平时 `opacity:0` + `translateX(-2px)`，悬停 / 聚焦 / 展开才出现
+   （见下面 `.ch-row .ch-chev`）；头部那枚常显、16px（`.toolcall-flow__summary-arrow`）。 */
 .ch-chev {
   flex: none;
-  color: var(--Labels-Tertiary);
-  transition: transform 0.25s var(--ch-ease-out);
+  color: var(--Labels-Quaternary);
+  transition:
+    opacity 0.15s,
+    transform 0.15s var(--ch-ease-out);
+}
+.ch-head .ch-chev {
+  width: 16px;
+  height: 16px;
 }
 .ch-head[aria-expanded='true'] .ch-chev {
-  transform: rotate(180deg);
+  transform: rotate(90deg);
 }
 
-/* ---- 体：一条缩进轴 + **图标列上的虚线链路**（设计原则 1；2026-09-30 用户批注 §1） ----
-   ⚠️ 这里原先是一条 `border-left` 的**整条实线**（"最左侧灰线"，用户批注过两次）。
-   Kimi 的灰线不是容器的边框，而是**相邻两行图标之间的短虚线**：1px、淡灰、
-   只画在两行之间（图标上不穿线、上一行展开的内容上也不穿线），首行上面与末行下面都没有——
-   后面的来源清单 / "共 N 字" 是块尾，不在链路里。
-   画法见下面 `.ch-row[data-link-*]` 那两条：连线是**行自己的伪元素**（上下各半截），
-   所以它天生跟着行的高度走，行内展开多高都不会被线穿过。
-   哪两行之间画由 `ToolchainFlow.tsx::linksOf` 决定（**相邻**即画，不筛"是不是工具行"）。 */
+/* ---- 体：一条缩进轴 + **图标列上的虚线链路**（生产 `toolcall-flow__item` 原版模型） ----
+   ⚠️ 2026-09-30 第二版按生产 CSS 整段重写。生产原文：
+     .toolcall-flow__item{position:relative}
+     .toolcall-flow__item+.toolcall-flow__item{margin-top:12px}
+     .toolcall-flow__item:not(:last-child):after{
+       content:"";border-left:.5px dashed var(--Separators-S1);
+       position:absolute;top:24px;bottom:-12px;left:10px}
+   与上一版的四处差别：
+   1. 行间不用 flex gap，用 **`margin-top:12px`**；行高 24px → 一行占 **36px**；
+   2. 线是**每个 item 的 ::after**、**`0.5px dashed`**（不是 1px、也不是自画的
+      repeating-gradient），`left:10px` 就是 20px 图标槽的中心；`top:24px` 从标题行底沿起、
+      `bottom:-12px` 探进下一行的 12px 间隙——所以整条链读起来是一条连续的虚线；
+   3. **末行无线**由 DOM 判据保证（不再由 JS 算"相邻"）——生产写 `:not(:last-child)`，
+      我们写 `:has(~ .ch-item)`（理由见下面那条规则上的注释）；
+   4. 线**穿过行内展开的内容**（item 的高度含展开区）——上一版特意不穿，这次按生产改回来
+      （`evidence-web-3` 里那条虚线就是沿着搜索结果清单一路上下的）。
+   来源清单行也是 `.ch-item`，按同一条 `:last-child` 规则处理；「共 N 字」那一行
+   **不是** `.ch-item`（它是块尾读数），所以它既不画线也不吃 12px 行距。 */
 .ch-body {
-  --ch-gap: 2px; /* 行距：连线要跨过它才接得上下一行（gap 与伪元素的偏移共用这一份） */
-  --ch-axis: 13.5px; /* 图标列的中心轴 = 行左内边距 6px + 15px 图标的一半 */
-  --ch-line: var(--Labels-Tertiary); /* 虚线取三级灰（用户批注："淡灰"） */
-  margin-left: 10px; /* 轴心对齐头部图标的中心 */
-  padding: 4px 0 2px 17px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--ch-gap);
+  /* 12px 是"头部 → 第一行的间距"，与行间一致（24 + 12 = 36，对齐证据图实测的 36.5） */
+  padding: 12px 0 2px;
+}
+.ch-item {
+  position: relative;
+}
+.ch-item + .ch-item {
+  margin-top: 12px;
+}
+/* 线只在"后面还有链项"时画：生产写的是 `:not(:last-child)`，但我们的 `.ch-body` 末尾
+   还有一行**不是链项**的「共 N 字」读数（生产没有这一行），照抄 `:not(:last-child)`
+   会让最后一个链项拖出一条 12px 的断头线。`:has(~ .ch-item)` 表达的是同一件事的
+   准确版本——**末行无线**，且不受块尾那几行影响。 */
+.ch-item:has(~ .ch-item)::after {
+  content: '';
+  position: absolute;
+  top: 24px;
+  bottom: -12px;
+  left: 10px;
+  border-left: 0.5px dashed var(--Separators-S1);
+  pointer-events: none;
 }
 
-/* 行：子项逐项入场（源码 toolCallFlowItemIn） */
+/* 行：子项逐项入场（生产 `toolCallFlowItemIn .38s`，**没有逐项 delay**）。
+   高度就是 24px、内边距 0（生产 `.toolcall-title-container.default` 原值）。 */
 .ch-row {
-  position: relative; /* 连线（::before / ::after）的定位基准就是这一行本身 */
   display: flex;
   align-items: center;
   gap: 8px;
-  min-height: 24px;
-  padding: 2px 8px 2px 6px;
-  border-radius: 8px;
+  height: 24px;
+  padding: 0;
   color: var(--Labels-Secondary);
-  animation: ch-in 0.3s var(--ch-ease-out) both;
+  animation: ch-in 0.38s var(--ch-ease-out) both;
 }
 button.ch-row {
   width: 100%;
@@ -184,36 +267,11 @@ button.ch-row {
   cursor: pointer;
   text-align: left;
 }
-button.ch-row:hover {
-  background: color-mix(in srgb, var(--Labels-Primary) 4%, transparent);
-}
-
-/* 虚线链路的两截：上半截（从上一行的空隙接到本行图标上方）+ 下半截（从图标下方
-   接到下一行的空隙）。`top/bottom` 用 `50% ± 8px` 让线**在图标边上停住**
-   （图标盒 15px、居中，半高 7.5px，留出的那 0.5px 就是"别贴到图形上"）。
-   `data-link-up` / `data-link-down` 由 `ToolchainFlow` 逐行给出（相邻即画）。 */
-.ch-row[data-link-up]::before,
-.ch-row[data-link-down]::after {
-  content: '';
-  position: absolute;
-  left: var(--ch-axis, 13.5px);
-  width: 1px;
-  /* 2px 一截、2px 一空：Kimi 那条虚线就是这个量级（实测 1–2px 一截），
-     用渐变而不是 `border-style: dashed` 是因为后者的节距由浏览器定死、改不了 */
-  background-image: repeating-linear-gradient(
-    to bottom,
-    var(--ch-line, var(--Labels-Tertiary)) 0 2px,
-    transparent 2px 4px
-  );
-  pointer-events: none;
-}
-.ch-row[data-link-up]::before {
-  top: calc(-1 * var(--ch-gap, 2px));
-  bottom: calc(50% + 8px);
-}
-.ch-row[data-link-down]::after {
-  top: calc(50% + 8px);
-  bottom: calc(-1 * var(--ch-gap, 2px));
+/* 链内行 hover **没有底色**（生产 `.toolcall-title-container.default:hover{background:0 0}`），
+   只有可展开的那些把文字提到一级色（`.is-expandable:hover`）。没有行体可展开的行
+   （`aria-disabled="true"`）连文字都不动。 */
+button.ch-row:not([aria-disabled='true']):hover {
+  color: var(--Labels-Primary);
 }
 
 .ch-row-label {
@@ -226,14 +284,50 @@ button.ch-row:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 标签与详情之间的**细竖条**（生产 `.toolcall-title-container-content:before`：
+   `border-left:.5px solid var(--Separators-S1); width:0; height:14px; display:block`）。
+   左右各 8px 留白由行的 `gap:8px` 给出来（上一版是 1px×12px + 负 margin 微调）。
+   **是 CSS 画的一条线，不是「|」字符**——字符的宽高会跟着字体走。 */
+.ch-row-sep {
+  flex: none;
+  width: 0;
+  height: 14px;
+  border-left: 0.5px solid var(--Separators-S1);
+}
+/* 详情：三级灰。**与标签同字号**（16px）——证据图上「搜索网页」与「（38 个结果）」
+   的汉字字距、数字字高逐字相同，分档只在颜色上（采样：标签 #666，也就是 Labels-Secondary）。 */
 .ch-row-detail {
-  font-size: calc(12px * var(--font-scale, 1));
+  font-size: calc(16px * var(--font-scale, 1));
+  line-height: 24px;
   color: var(--Labels-Tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
   min-width: 0;
+}
+/* 「N 个网页」那类计数（用户批注 §3：抓页的行尾挂着页数）：与详情同一档字色。 */
+.ch-row-count {
+  flex: none;
+  font-size: calc(16px * var(--font-scale, 1));
+  line-height: 24px;
+  color: var(--Labels-Tertiary);
+}
+/* 编辑类行尾的 diff 统计（用户批注 §2：Kimi 的「编辑 | 文件 +1 -1」，绿加红减）。
+   ⚠️ **我们目前没有这个数据**：`ChatStep` 上只有检索类的 `added`（新增资料条数），
+   没有任何一步带"增删了几行"。所以这一档**只备样式、不造数据**——哪天后端把行数发下来，
+   挂上 `.ch-diff-add` / `.ch-diff-del` 就是 Kimi 那一行。 */
+.ch-diff {
+  flex: none;
+  font-size: calc(16px * var(--font-scale, 1));
+  line-height: 24px;
+  font-variant-numeric: tabular-nums;
+}
+.ch-diff-add {
+  color: var(--status-success, #067647);
+}
+.ch-diff-del {
+  color: var(--status-danger, #d92d20);
 }
 .ch-row-right {
   flex: none;
@@ -244,32 +338,68 @@ button.ch-row:hover {
   font-size: calc(12px * var(--font-scale, 1));
   color: var(--Labels-Tertiary);
 }
-/* 圆点图标位：非工具行（思考 / 组织回答 / 整轮思考）的图标槽。
-   槽宽与工具图标**同宽 15px**——这样标签仍与上下行对齐，圆点也正好落在那条虚线的轴上
-   （`--ch-axis` = 槽中心）。见 `stepIcons.tsx::StepDot`。 */
-.ch-dot-slot {
+/* 行尾那枚箭头（生产 `.toolcall-title-container-extra-arrow`）：**平时不出现**，
+   悬停 / 键盘聚焦才滑进来（`translateX(-2px) → 0`）；展开态常显并转 90°。
+   ⚠️ 前置展开的那些行（失败 / 被拦下 / 等确认，`forceExpand`）**根本不画这枚箭头**
+   ——它们点也收不起来（`open` 恒为真），摆一个箭头等于许诺一个点不动的动作；
+   判据在 `ToolchainFlow.tsx::StepRow` 的 `forced`（顶层行与组内子行同一套）。 */
+.ch-row .ch-chev {
+  width: 18px;
+  height: 18px;
+  opacity: 0;
+  transform: translateX(-2px) rotate(0deg);
+}
+.ch-row:hover .ch-chev,
+.ch-row:focus-visible .ch-chev {
+  opacity: 1;
+  transform: translateX(0) rotate(0deg);
+}
+.ch-row[aria-expanded='true'] .ch-chev {
+  opacity: 1;
+  transform: rotate(90deg);
+}
+/* 行内那枚图标的槽：**20×20**（生产 `.toolcall-title-name-icon{width:20px;height:20px}`）
+   ——虚线压在它的中心（`left:10px`），标签因此落在左起 28px（20 + gap 8）上，与头部文字同列。
+   图形本身仍画 15px（证据图量出的字形尺寸），槽只负责对齐；状态灯挂在它右下角，所以
+   这里要 `position: relative`。 */
+.ch-icon-slot {
+  position: relative;
   flex: none;
-  width: 15px;
+  width: 20px;
+  height: 20px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
+/* 圆点图标位：非工具行（思考 / 组织回答 / 整轮思考）的图标槽——与上面同尺寸，
+   圆点（5px）落在槽心，也就是那条虚线（`left:10px`）的轴上。见 `stepIcons.tsx::StepDot`。 */
+.ch-dot-slot {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+/* 5px：证据图上那枚实心小圆点正好 10 设备 px（÷2 = 5）。改前是 7px。 */
 .ch-dot {
-  width: 7px;
-  height: 7px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: var(--Labels-Secondary);
 }
-/* 组内子行：5px 圆点（沿用旧面板的层级语言） */
+/* 组内子行：5px 圆点（沿用旧面板的层级语言）。左右 7.5px 让它落在 20px 槽（+ `.ch-sub`
+   的 14px 缩进）的中心上，与上面那条虚线同轴。 */
 .ch-sub-dot {
   flex: none;
   width: 5px;
   height: 5px;
   border-radius: 50%;
   background: var(--Labels-Quaternary);
-  margin: 0 5px;
+  margin: 0 7.5px;
 }
 .ch-sub {
+  /* 组内子行再退一格（层级语言不变）；标签因此落在 14 + 20 + 8 = 42px 上。 */
   margin-left: 14px;
 }
 
@@ -282,21 +412,24 @@ button.ch-row:hover {
 }
 
 /* ---- 思考正文：B3（14/22）+ 二级色，草稿与成品分色（设计原则 3） ----
-   行高按用户批注 §4 走 **1.7**：工具链展开区里的内容是"次要文字"，
-   与正文 16px/1.625 在整个观感上要分得开（Kimi 的 `toolcall-content-text`）。
-   写成倍数而不是 22px 那句固定值：字号乘了 `--font-scale`（用户的字号设置），
-   行高也得跟着走，不然调大字号时这一块会挤在一起。 */
+   行高 **22px**（用户批注 §9 与源码都是 B3 的 14px/22px）：evidence-web-4 里那三行
+   思考的**行心距实测 43.5–44.5 设备 px（÷2 ≈ 22）**，而改前按"1.7 倍"给的是 23.8px，
+   比 Kimi 松一档。字号仍乘 `--font-scale`（用户的字号设置不能失效），
+   行高也跟着同一个比例走——写死 22px 的话，调大字号这一块会挤在一起。 */
 .ch-think {
-  margin: 2px 0 4px;
-  padding: 8px 10px;
+  margin: 0;
+  /* 源码值 `padding: 12px 0 0 28px`——**正好就是标签列**（图标槽 20px + 间距 8px = 28px），
+     与 evidence-web-4 里"思考正文与行标签同列"的实测一致。 */
+  padding: 12px 0 0 28px;
   font-size: calc(14px * var(--font-scale, 1));
-  line-height: 1.7;
+  line-height: calc(22px * var(--font-scale, 1));
   color: var(--Labels-Secondary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .ch-think p + p {
-  margin-top: 8px; /* 段距收紧（批注 §4）：思考是一段草稿，不该比正文还疏 */
+  /* 段距 16px（源码 §3；改前是收紧的 8px）。 */
+  margin-top: calc(16px * var(--font-scale, 1));
 }
 
 /* ---- 原文（入参 / 返回）：等宽，限高自己滚 ---- */
@@ -314,13 +447,13 @@ button.ch-row:hover {
 /* ---- 联网搜索的结果清单（Kimi 网页版 §8 实测值；用户批注 §3） ----
    一行 = favicon 16px + 标题（左，单行省略）+ 域名（右，三级灰）；
    行高 32px、内边距 6/8、圆角 8px、hover 浅底；整行可点、新标签打开（`SearchHits`）。
-   超过 8 行（8 × 32 = **256px**，Kimi 那个 `max-height`）时列表自己滚——
-   一次搜索十几条结果是常事，全铺出来这一块比结论还长。 */
+   ⚠️ 限高与滚动**不在这里**：用户批注 §10 要的"底部 35px 阶梯渐隐 + 隐藏原生滚动条"
+   只能挂在滚动盒上（渐隐层是 `sticky` 的），所以清单改由外层 `FadeScroll` 包住
+   （`.ch-scroll-box--sites` 的 `max-height: 256px`，Kimi 那个值）。 */
 .ch-hits {
-  margin: 2px 0 4px;
-  max-height: 256px;
-  overflow-y: auto;
-  scrollbar-width: thin;
+  margin: 0;
+  font-size: calc(14px * var(--font-scale, 1)); /* 列表行 B2：14px */
+  line-height: 20px;
 }
 .ch-hit {
   display: flex;
@@ -361,7 +494,13 @@ button.ch-row:hover {
 }
 .ch-hit-domain {
   flex: none;
-  font-size: calc(12px * var(--font-scale, 1));
+  /* 域名与标题同为 B2（14px，继承 `.ch-hits`），只有颜色低一档（源码 §8）；
+     宽度上限 160px + 单行省略（生产 `.search-tool-detail-url{max-width:160px}`）——
+     长域名不许把标题挤没。 */
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--Labels-Tertiary);
 }
 
@@ -370,12 +509,18 @@ button.ch-row:hover {
   position: relative;
 }
 .ch-scroll-box {
-  max-height: 268px; /* 思考容器（源码值；搜索列表是 256，见 SourcesRow） */
+  max-height: 268px; /* 思考容器（源码值） */
   overflow-y: auto;
-  scrollbar-width: thin;
+  /* 用户批注 §8/§10：网页版的聊天容器**隐藏原生滚动条**——滚动提示交给那 35px 渐隐 */
+  scrollbar-width: none;
+}
+.ch-scroll-box::-webkit-scrollbar {
+  width: 0;
 }
 .ch-scroll-box--sites {
-  max-height: 256px;
+  max-height: 256px; /* 搜索清单（源码值） */
+  /* 清单在正文列里再退 10px（证据图：标题左缘落在轴心右侧约 21px，倒推 favicon 在 18px） */
+  padding-left: 10px;
 }
 .ch-fade {
   position: sticky;
@@ -432,6 +577,8 @@ button.ch-row:hover {
   width: 100%;
   min-height: 32px; /* 搜索结果行高（实测值） */
   padding: 6px 8px;
+  font-size: calc(14px * var(--font-scale, 1)); /* 与搜索清单同一档（B2 14px/20px） */
+  line-height: 20px;
   border: 0;
   border-radius: 8px;
   background: none;
@@ -559,7 +706,8 @@ button.ch-row:hover {
 /* 过程总计行（「共 N 字 · 用时 M」）：四级灰、tabular 数字 */
 .ch-total {
   margin: 6px 0 0;
-  padding-left: 27px; /* 与行内标签同一条轴（图标沟让出来） */
+  /* 与行内标签同一条轴：图标槽 20px + 间距 8px = 28px */
+  padding-left: 28px;
   font-size: calc(12px * var(--font-scale, 1));
   line-height: 18px;
   color: var(--Labels-Quaternary);

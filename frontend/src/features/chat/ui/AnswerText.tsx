@@ -4,10 +4,11 @@
  * 渲染器在 `model/markdown.tsx` 里（`react-markdown` + `remark-gfm` + `rehype-katex` +
  * `rehype-highlight`，规则与旧 `useMarkdown.ts` 对齐）。这里只做两件界面上的事：
  *
- * 1. **把动作接上去**：点行内徽标 `[1]` → 展开过程面板并滚到那条出处；代码块 / 表格上的
- *    三个按钮（复制代码、复制表格、下载表格）走既有那条剪贴板链路。渲染器把动作设计成
- *    props（`MarkdownActions`），所以这里不必再自己挂事件委托——旧实现要在 `v-html`
- *    出来的节点上做委托，是因为那时候回调进不去；
+ * 1. **把动作接上去**：点行内徽标 `[1]` → 展开过程面板并滚到那条出处（**只有知识库那一族
+ *    出处**还走这条路——它们是文档片段、没有 URL；网页引用那一枚现在是锚点直开原文，
+ *    见 `SourceCard` 的文件头）；代码块 / 表格上的三个按钮（复制代码、复制表格、下载表格）
+ *    走既有那条剪贴板链路。渲染器把动作设计成 props（`MarkdownActions`），所以这里不必再
+ *    自己挂事件委托——旧实现要在 `v-html` 出来的节点上做委托，是因为那时候回调进不去；
  * 2. **两个降级**：正文还没吐字时别画一个空盒子；复制失败时**如实说**，
  *    并且把"已经收到的字"留着（这一点由调用方保证）。
  */
@@ -37,7 +38,11 @@ export interface AnswerTextProps {
    */
   pending?: boolean
   sources: ChatSource[]
-  /** 点行内徽标 `[n]`：展开过程面板 → 滚到那一条出处 → 闪一下。 */
+  /**
+   * 点行内徽标 `[n]`：展开过程面板 → 滚到那一条出处 → 闪一下。
+   * **只对知识库那一族出处生效**（它们是文档片段、没有 URL）；网页引用已经改成
+   * 锚点直开原文，不再走这里。
+   */
   onCite: (sourceIndex: number) => void
   /**
    * 查不到对应出处的编号怎么画（v0.28）。这一轮跑过联网搜索时给一句说明，
@@ -116,9 +121,9 @@ export function AnswerText({
         onOpenSource={onCite}
         // 网页引用那一枚（D11-③）：真实 logo + 域名，悬停/聚焦出卡片。
         // **渲染函数由界面给**：`model/` 不认识界面组件（分层纪律）。
-        renderWebCitation={(citation: WebCitation, open: (index: number) => void) => (
-          <SourceBadge citation={citation} onOpen={open} />
-        )}
+        // 点击是**锚点直开原文**（Kimi 同款）——所以这里不接渲染函数的第二个参数，
+        // 那个 `onOpen`（展开过程面板滚到出处）仍是知识库那一族出处走的路。
+        renderWebCitation={(citation: WebCitation) => <SourceBadge citation={citation} />}
         onCopyCode={(code) => void copyBlock(code, '代码')}
         // 表格进剪贴板用**制表符分隔**而不是 CSV：粘进 Excel / 飞书表格时
         // 它会被直接拆成单元格，而 CSV 粘过去是一整行纯文本

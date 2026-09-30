@@ -686,11 +686,15 @@ describe('过程面板：图标按 kind、同类工具并成一行', () => {
       现在数的是**对象**、并且把对象列出来（"合并的是入口，不是信息"仍然成立）。
       合并这件事就钉在"只有一个组头按钮"与那一句上——两次调用各占一行时，
       组头按钮一个都不会有。
+
+      **2026-09-30 R2 起，这一句在渲染层按「 · 」拆成两截**（生产的行模式：
+      标签 + 0.5px 竖条 + 详情），所以这里分别钉：左边是"动作 + 数目"（标签），
+      右边是对象清单（详情，Tertiary）。`groupHeading()` 的返回值一个字没变
+      （它的用例在 `chat-model-turns`）。
     */
     expect(document.querySelectorAll('button[aria-controls^="flow-group-"]')).toHaveLength(1)
-    expect(
-      await screen.findByText('联网搜索 2 个关键词 · 「芯片 出口」命中 3 条、「光刻机」命中 5 条'),
-    ).toBeInTheDocument()
+    expect(await screen.findByText('联网搜索 2 个关键词')).toBeInTheDocument()
+    expect(screen.getByText('「芯片 出口」命中 3 条、「光刻机」命中 5 条')).toBeInTheDocument()
     // 只调用一次的工具不并（那一档不该多一层点击）
     expect(screen.getByText('写笔记')).toBeInTheDocument()
 

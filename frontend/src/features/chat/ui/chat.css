@@ -42,6 +42,9 @@
   .md-body {
     font-size: var(--text-body-size);
     line-height: var(--line-prose);
+    /* 生产 `.markdown{letter-spacing:.5px}`：中文正文每字多 0.5px 的字距，
+       长段读起来松一口气（这也是 Kimi 正文"安静"的一部分）。 */
+    letter-spacing: 0.5px;
     color: var(--text-primary);
   }
 
@@ -100,7 +103,13 @@
   .md-ul,
   .md-ol {
     margin: 0 0 var(--space-3);
-    padding-left: var(--space-5);
+    padding-left: 26px; /* 生产 `.markdown ul/ol{padding-left:26px}` */
+  }
+
+  /* 条目再让 6px（生产 `.markdown li{padding-left:6px}`）：符号与文字之间那点气口 */
+  .md-ul > li,
+  .md-ol > li {
+    padding-left: 6px;
   }
 
   ul.md-ul {
@@ -202,27 +211,29 @@
   }
 
   /*
-   * 行内引用徽标（`[1]` → 文档短名）。形态与知识库那份（`.kb-cite`）一致：
-   * 同一个东西在两个页面里长得不一样，是"两处各写一套"留下的最容易看出来的疤。
-   *
-   * 圆角取 **6px**（2026-09-30 用户批注 §5：引用标签是 Kimi 的 `pua-ref-cite-tag`
-   * 那种小 pill）。这一族（文档出处）与网页引用那一枚（`SourceCard` 的 `BADGE_CLASS`）
-   * 是**同一种东西**，所以两边同一个数——改一边要改另一边。
+   * 行内引用徽标（`[1]` → 文档短名）。**与网页引用那一枚同一套**（生产
+   * `.pua-ref-cite-tag` 的文字型那一档，2026-09-30 第二版按生产纠偏）：
+   * 24px 全胶囊、`Fills-F2` 底、`ui-C1` 12px、`Labels-Secondary` 字、hover **反相**；
+   * 文字型是 `padding:1px 8px; top:-1px`。两边（这里与 `SourceCard` 的 `BADGE_CLASS`）
+   * 是同一种东西，改一边要改另一边。
    */
   .md-cite {
+    position: relative;
+    top: -1px;
     display: inline-flex;
     align-items: center;
-    max-width: 8.5em;
-    height: 16px;
-    margin: 0 2px;
-    padding: 0 5px;
+    justify-content: center;
+    min-width: 18px;
+    max-width: 100px;
+    height: 24px;
+    margin: 0 4px;
+    padding: 1px 8px;
     font-size: var(--text-micro-size);
-    line-height: 1;
-    color: var(--text-tertiary);
-    vertical-align: -2px;
-    background: var(--bg-subtle);
-    border: 1px solid var(--border-hairline);
-    border-radius: 6px;
+    line-height: 24px;
+    color: var(--Labels-Secondary);
+    background: var(--Fills-F2);
+    border: 0;
+    border-radius: 24px;
   }
 
   .md-cite-name {
@@ -231,14 +242,17 @@
     white-space: nowrap;
   }
 
-  /* 可点的那一版（真查出处的）才给悬停反馈 */
+  /* 可点的那一版（真查出处的）才给悬停反馈：**反相**（生产 `.pua-ref-cite-tag:hover`） */
   a.md-cite {
     cursor: pointer;
+    transition:
+      color 0.3s,
+      background-color 0.3s;
   }
 
   a.md-cite:hover {
-    color: var(--text-secondary);
-    background: var(--bg-hover);
+    color: var(--Bg-Primary);
+    background: var(--Labels-Primary);
   }
 
   /*
@@ -251,12 +265,13 @@
    * 这里把它画成一枚**明确不可点**的标记：中性色、虚线边、`cursor: help`，
    * 说明在 `title` 里（"联网搜索结果，见过程面板"）。**不伪造出处、不做成链接**——
    * 点开一个不存在的实体的代价，比"看得出它点不了"大得多。
+   * 虚线边自己带宽度（上面的基类是 `border:0` 的实心 pill）。
    */
   .md-cite-plain {
     color: var(--text-quaternary);
     cursor: help;
     background: none;
-    border-style: dashed;
+    border: 0.5px dashed var(--Separators-S1);
   }
 
   /* 悬停不加任何变化：它不是可点的东西 */
@@ -326,11 +341,39 @@
 
   /* ---------------------------------------------------------------- 表格 */
 
+  /* 表格卡片——Kimi §9 的源码值：**0.5px hairline + 12px 圆角**，宽随内容
+     （`fit-content`）但不超过正文列，超出就在卡片里横滚（`.md-table-wrap`）。 */
   .md-table-block {
-    margin: 0 0 var(--space-3);
-    border: 1px solid var(--border-hairline);
-    border-radius: var(--radius-control);
+    width: fit-content;
+    max-width: 100%;
+    margin: 0 0 var(--space-4);
+    border: 0.5px solid var(--Separators-S1);
+    border-radius: 12px;
     overflow: hidden;
+  }
+
+  /*
+   * 卡片头带（"表格" + 复制 / 下载）：灰底 `Bg-Secondary` + 下边一条 hairline，
+   * 内边距 `5px 10px 5px 16px`（源码值；证据图上标题左缘离卡片左沿 16.5px，逐字对上）。
+   *
+   * 它**复用的是代码块那一套类名**（`.md-code-head` / `.md-code-lang`）——
+   * 那两个名字有用例钉着（"整体是一个有头部的块"），所以这里按 `.md-table-block`
+   * 作用域把取值收回来，而不是给表格另起一套类名。
+   */
+  .md-table-block .md-code-head {
+    height: auto;
+    padding: 5px 10px 5px 16px;
+    gap: var(--space-1);
+    background: var(--Bg-Secondary);
+    border-bottom: 0.5px solid var(--Separators-S1);
+  }
+
+  .md-table-block .md-code-lang {
+    font-family: inherit;
+    font-size: var(--text-meta-size);
+    font-weight: 600;
+    line-height: 20px;
+    color: var(--Labels-Primary);
   }
 
   /* 宽表格在窄列里要能滚，否则会把整页撑破 */
@@ -340,20 +383,25 @@
 
   .md-table {
     width: 100%;
-    font-size: var(--text-meta-size);
+    font-size: var(--text-meta-size); /* 14px */
+    line-height: 22px; /* 单元格 14px/22px（源码值） */
     border-collapse: collapse;
   }
 
+  /* 单元格 `10px 16px`（源码值；证据图上表头文字的左缘离卡片左沿 16.5px）。
+     线一律 0.5px hairline S1——Kimi 的表格没有"更重的框线"这一档。 */
   .md-table th,
   .md-table td {
-    padding: var(--space-2) var(--space-3);
+    padding: var(--space-2-5) var(--space-4);
     text-align: left;
-    border: 1px solid var(--border-hairline);
+    border: 0.5px solid var(--Separators-S1);
   }
 
+  /* 表头**不铺灰底**（改前铺的是 `--bg-subtle`）：证据图上那一条列名行是白底，
+     灰底只属于卡片头带（见上面 `.md-table-block .md-code-head`）。 */
   .md-table th {
     font-weight: 600;
-    background: var(--bg-subtle);
+    color: var(--Labels-Primary);
   }
 
   /* 外框已经由 `.md-table-block` 给了，单元格只留内部那些线 */

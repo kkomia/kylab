@@ -91,8 +91,8 @@ export function resetCitation(): void {
   listeners.clear()
 }
 
-/** 卡片尺寸（宽固定、高按内容；量出来之前先用这两个值算位置）。 */
-export const CARD_WIDTH = 320
+/** 卡片尺寸（宽固定、高按内容；量出来之前先用这两个值算位置）。生产 `max-width:340px`。 */
+export const CARD_WIDTH = 340
 export const CARD_MARGIN = 8
 
 export interface Placement {

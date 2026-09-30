@@ -6,8 +6,11 @@
  * 1. **解析**（`model/sourceCitations.ts`）：把联网搜索那一步**已有的返回文本**
  *    （后端渲染的 `[n] 标题 / 网址 / 摘要` 编号列表）解析成引用。**不加后端字段**；
  * 2. **渲染**（`ui/SourceCard.tsx` + `ui/AnswerText.tsx`）：行内一枚小圆角徽章
- *    （站点真实 logo + 域名），悬停/聚焦出**一张**卡片（标题 / 摘要 / 可点可复制的 URL），
- *    Esc 关，贴边翻转，**没有「赞 / 踩」**（后端没有回收反馈的地方，摆假按钮是骗人）。
+ *    （站点真实 logo + 域名），**点击直开原文那一页**（2026-09-30 用户定案：Kimi 的
+ *    `pua-ref-cite-tag` 就是一个 `<a target="_blank" rel="noopener noreferrer">`；
+ *    改前点它是"展开过程面板滚到那条出处"），悬停/聚焦出**一张**卡片
+ *    （标题 / 摘要 / 可点可复制的 URL），Esc 关，贴边翻转，
+ *    **没有「赞 / 踩」**（后端没有回收反馈的地方，摆假按钮是骗人）。
  *
  * 三条边界在这里钉死：
  * - 解析不出 URL/域名的编号**退回原来那句说明**（`citeFallback`），不出现空徽章 / 破图；
@@ -112,20 +115,24 @@ describe('解析：编号 → 网页引用（数据来自联网那一步已有�
 describe('徽章与卡片（一次只挂一张，hover / focus / Esc / aria）', () => {
   const citation = webCitationsOfSteps([{ tool: 'web_search', result: SEARCH_RESULT }]).get(1)!
 
-  function renderBadge(onOpen = vi.fn()) {
+  function renderBadge() {
     return render(
       <>
-        <SourceBadge citation={citation} onOpen={onOpen} />
+        <SourceBadge citation={citation} />
         <SourceCardHost />
       </>,
     )
   }
 
-  it('徽章写域名、带可访问名字与 aria 关系；卡片默认不在文档里', () => {
+  it('徽章是一个锚点（直开原文那一页）+ 可访问名字与 aria 关系；卡片默认不在文档里', () => {
     renderBadge()
 
-    const badge = screen.getByRole('button', { name: '来源 1：github.com' })
+    const badge = screen.getByRole('link', { name: '来源 1：github.com' })
     expect(badge).toHaveTextContent('github.com')
+    // 用户 2026-09-30 定案：点它就是打开原文那一页（Kimi 的 `pua-ref-cite-tag` 同款）
+    expect(badge).toHaveAttribute('href', 'https://github.com/anthropics/skills')
+    expect(badge).toHaveAttribute('target', '_blank')
+    expect(badge).toHaveAttribute('rel', 'noopener noreferrer')
     expect(badge).toHaveAttribute('aria-expanded', 'false')
     expect(badge).toHaveAttribute('aria-controls', 'source-citation-card')
     expect(screen.queryByTestId('source-card')).not.toBeInTheDocument()
@@ -134,7 +141,7 @@ describe('徽章与卡片（一次只挂一张，hover / focus / Esc / aria）',
   it('悬停出卡片：标题 / 摘要 / 可点可复制的 URL；**没有「赞 / 踩」**', async () => {
     renderBadge()
 
-    await userEvent.hover(screen.getByRole('button', { name: '来源 1：github.com' }))
+    await userEvent.hover(screen.getByRole('link', { name: '来源 1：github.com' }))
 
     const card = await screen.findByTestId('source-card')
     expect(card).toHaveAttribute('role', 'dialog')
@@ -156,7 +163,7 @@ describe('徽章与卡片（一次只挂一张，hover / focus / Esc / aria）',
     await userEvent.tab()
 
     expect(await screen.findByTestId('source-card')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '来源 1：github.com' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: '来源 1：github.com' })).toHaveAttribute(
       'aria-expanded',
       'true',
     )
@@ -164,7 +171,7 @@ describe('徽章与卡片（一次只挂一张，hover / focus / Esc / aria）',
 
   it('Esc 关掉卡片', async () => {
     renderBadge()
-    await userEvent.hover(screen.getByRole('button', { name: '来源 1：github.com' }))
+    await userEvent.hover(screen.getByRole('link', { name: '来源 1：github.com' }))
     expect(await screen.findByTestId('source-card')).toBeInTheDocument()
 
     await userEvent.keyboard('{Escape}')
@@ -172,28 +179,37 @@ describe('徽章与卡片（一次只挂一张，hover / focus / Esc / aria）',
     expect(screen.queryByTestId('source-card')).not.toBeInTheDocument()
   })
 
-  it('点了徽章走既有那条路（展开过程面板滚到那条出处）', async () => {
-    const onOpen = vi.fn()
-    renderBadge(onOpen)
+  it('点它就是**打开原文那一页**（改前是"展开过程面板滚到那条出处"，用户拍板换掉）', () => {
+    renderBadge()
 
-    await userEvent.click(screen.getByRole('button', { name: '来源 1：github.com' }))
-
-    expect(onOpen).toHaveBeenCalledWith(1)
+    const badge = screen.getByRole('link', { name: '来源 1：github.com' })
+    // 锚点这一下由**浏览器**负责：这里钉住它确实是那一条原文、而且是新标签新窗口
+    expect(badge.tagName).toBe('A')
+    expect(badge).toHaveAttribute('href', 'https://github.com/anthropics/skills')
+    expect(badge).toHaveAttribute('target', '_blank')
+    expect(badge).toHaveAttribute('rel', 'noopener noreferrer')
+    /*
+      改前那一版点它会展开过程面板（`onOpen` 那个 prop）——现在**那个 prop 已经不存在了**，
+      所以"点击"这条路上没有我们自己的副作用：卡片只在悬停 / 聚焦时出现（上一条用例钉着）。
+      这一条不去真点：jsdom 里点锚点只会打一行 "Not implemented: navigation"，
+      而"打开那一页"是浏览器的事，钉住 `href/target/rel` 才是能验的那一半。
+    */
+    expect(activeCitation()).toBeNull()
   })
 
   it('**两条引用只挂一张卡**（徽章只报是哪一条）', async () => {
     const second = webCitationsOfSteps([{ tool: 'web_search', result: SEARCH_RESULT }]).get(2)!
     render(
       <>
-        <SourceBadge citation={citation} onOpen={vi.fn()} />
-        <SourceBadge citation={second} onOpen={vi.fn()} />
+        <SourceBadge citation={citation} />
+        <SourceBadge citation={second} />
         <SourceCardHost />
       </>,
     )
 
-    await userEvent.hover(screen.getByRole('button', { name: '来源 1：github.com' }))
+    await userEvent.hover(screen.getByRole('link', { name: '来源 1：github.com' }))
     await screen.findByTestId('source-card')
-    await userEvent.hover(screen.getByRole('button', { name: '来源 2：arxiv.org' }))
+    await userEvent.hover(screen.getByRole('link', { name: '来源 2：arxiv.org' }))
 
     const cards = screen.getAllByTestId('source-card')
     expect(cards).toHaveLength(1)
@@ -274,11 +290,12 @@ describe('接线：正文里的 [n] 变成站点徽章（知识库那条照旧�
   it('给了 citations：编号渲染成徽章（真实 logo 位 + 域名 + aria），不再是裸 [1]', () => {
     renderAnswer({ title: '联网搜索结果，见过程面板', citations })
 
-    // 徽章的契约：一个可点的按钮，名字是「来源 N：域名」，且与那张卡建立了 aria 关系
-    const badge = screen.getByRole('button', { name: '来源 1：github.com' })
+    // 徽章的契约：一个**锚点**，名字是「来源 N：域名」，直开那一页，且与那张卡建立了 aria 关系
+    const badge = screen.getByRole('link', { name: '来源 1：github.com' })
     expect(badge).toHaveTextContent('github.com')
+    expect(badge).toHaveAttribute('href', 'https://github.com/anthropics/skills')
     expect(badge).toHaveAttribute('aria-controls', 'source-citation-card')
-    expect(screen.getByRole('button', { name: '来源 2：arxiv.org' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '来源 2：arxiv.org' })).toBeInTheDocument()
     expect(screen.queryByText('[1]')).toBeNull()
     // 那一枚对不上的仍然走原来那句说明（不伪造出处）
     const plain = screen.getByText('[9]')

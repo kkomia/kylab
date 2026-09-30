@@ -7,7 +7,8 @@
  *
  * 1. **尺寸小、贴着句读**：`inline-flex` + 1em 级别的盒子，`vertical-align` 微调——
  *    真浏览器量过：段落行高**不变**（见 `.shots/d11b-cite/`）；
- * 2. **可点**：点了走既有那条路（展开过程面板并滚到那条出处，`onOpen`）；
+ * 2. **可点**：锚点直开原文那一页（新标签，Kimi 的 `pua-ref-cite-tag` 同款；
+ *    见下面"点它 = 直开原文"一节）；
  * 3. **可访问**：`aria-label="来源 1：github.com"`、`aria-expanded`、`aria-controls`，
  *    Tab 到它、回车/空格就能开卡片。
  *
@@ -61,36 +62,54 @@ export const CITATION_CARD_ID = 'source-citation-card'
  * **`em` 而不是 `calc(… * 1.5)`**：Tailwind 的任意值里带 `*` / `/` 生成不出类名 ✗
  * （这一族已经踩过一次：尺寸必须逐字相同，见 `WebSiteList` 里那对同尺寸类名）。
  *
- * ## hover 加深（不再是"整块反相"）
+ * ## 形态：生产 `.pua-ref-cite-tag` 原文（2026-09-30 第二版按其纠偏）
  *
- * 改前亮色悬停是**反相**（底色近黑、文字转画布色）——那是照 Kimi 引用卡片的观感定的。
- * 用户这次给的批注是"hover **加深**"：一枚小小的行内标签在正文里反相太跳，
- * 所以改成"底色抬一档（`--bg-hover`）+ 描边加重 + 文字提亮"，深浅两套主题同一条规则
- * （Kimi 的引用标签也是这么加深的：底色变深一档，不是反白）。
+ * | 项 | 值 |
+ * | --- | --- |
+ * | 底色 | `--Fills-F2`（浅 `#0000000d` / 深 `#ffffff1a`） |
+ * | 圆角 | **24px（整颗胶囊）** |
+ * | 尺寸 | `min-width:18px` / `max-width:100px` / `height:24px` |
+ * | 内外距 | `padding:5px 8px`、左右 `margin:0 4px` |
+ * | 字号 | `--ui-C1` 12px（`--text-micro-size`） |
+ * | 文字色 | `--Labels-Secondary` |
+ * | 图标 | 14×14（生产 `.pua-ref-cite-tag__icon`） |
+ * | 基线 | `position:relative; top:1px`（文字型那一档是 `top:-1px`） |
+ * | hover / `.show` | **反相**：底 `--Labels-Primary`、字 `--Bg-Primary` |
+ * | 过渡 | `color .3s, background-color .3s` |
  *
- * **hover 只许变色，绝不变形/位移** ✗：这里只动 `background-color` / `color` /
- * `border-color`（宽度始终 1px ✓），所以悬停不会改变几何 —— 那正是抖动的常见成因之一。
+ * ⚠️ 上一版按批注做的两组值（圆角 6px、hover「加深」而不是反相）**与生产不符**，这一版
+ * 按生产改回：Kimi 的这枚标签在悬停时就是整块反相（黑底白字 / 深色下白底黑字）。
+ * 几何仍然是"只变色、不变形"——`margin` / 宽高 / 圆角一个都没进 hover 规则。
  *
- * ## 点它是"跳去看出处"，不是"跳走"
+ * `max-w-[100px]` + `min-w-[18px]` 逐字照抄生产：这一枚是"域名"那么长的东西，
+ * 不设上限会被长域名撑成一条横条。
  *
- * Kimi 的引用标签点开是新标签页。我们的徽章点了走**既有那条路**（展开过程面板、
- * 滚到那一条出处并闪一下，`onOpen`）——那条链路上有 `data-source` / `data-flash`
- * 两处物证、也有用例钉着（`tests/chat-source-citations.test.tsx`），
- * 而"看这一页原文"的出口就在悬停卡片里（那张卡片底部的 URL 是 `target="_blank"`）。
- * 所以这里**不改点击去向**，只把外观对齐 pill。
+ * ## 点它 = **直开原文**（Kimi 同款，2026-09-30 用户定案）
+ *
+ * Kimi 的 `pua-ref-cite-tag` 就是一个 `<a target="_blank" rel="noopener noreferrer">`
+ * ——点了直开那一页。我们改前点它是"展开过程面板、滚到那条出处并闪一下"
+ * （`revealSource` 那条链路，有 `data-source` / `data-flash` 两处物证），现在交给锚点。
+ * 「看这一页原文」在悬停卡片里仍然留着（卡片底部那条 URL 是 `target="_blank"`），
+ * 所以两个出口都在，只是把**点击**这一下去处换成了用户指的那一个。
+ *
+ * **知识库那一族出处不受影响**：它们没有 URL（是文档片段），仍旧走 `revealSource`
+ * 就地滑出原文（见 `model/markdown.tsx` 的 `citationChip`）。
  */
 export const BADGE_CLASS =
-  'md-cite-site inline-flex min-h-[1.5em] items-center gap-[var(--space-1)] ' +
-  'align-[-0.2em] rounded-[6px] border border-[var(--border-hairline)] ' +
-  'bg-[var(--bg-subtle)] px-[var(--space-1)] text-[length:var(--text-micro-size)] ' +
-  'leading-none text-[var(--text-secondary)] no-underline ' +
-  'cursor-pointer [transition:var(--transition-ui)] ' +
-  'hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] ' +
-  'hover:text-[var(--text-primary)] focus-visible:outline focus-visible:outline-1 ' +
-  'focus-visible:outline-[var(--ring)]'
+  'md-cite-site relative top-[1px] inline-flex h-[24px] min-w-[18px] max-w-[100px] ' +
+  'items-center justify-center gap-[var(--space-1)] mx-[var(--space-1)] ' +
+  'rounded-[24px] bg-[var(--Fills-F2)] px-[var(--space-2)] ' +
+  'text-[length:var(--text-micro-size)] leading-none text-[var(--Labels-Secondary)] ' +
+  'no-underline cursor-pointer select-none ' +
+  '[transition:color_.3s,background-color_.3s] ' +
+  'hover:bg-[var(--Labels-Primary)] hover:text-[var(--Bg-Primary)] ' +
+  'focus-visible:outline focus-visible:outline-1 focus-visible:outline-[var(--ring)]'
 
-/** 徽章里那枚 logo（与过程面板那一枚同一套取图与退化）。**默认 1em**：跟字号走 ✓ */
-function BadgeLogo({ citation, size = '1em' }: { citation: WebCitation; size?: string }) {
+/**
+ * 徽章里那枚 logo（与过程面板那一枚同一套取图与退化）。
+ * **14×14**：生产 `.pua-ref-cite-tag__icon` 就是这个尺寸（上一版写 `1em`，跟着字号变）。
+ */
+function BadgeLogo({ citation, size = '14px' }: { citation: WebCitation; size?: string }) {
   const url = useSiteLogo(citation.site)
   const box = { width: size, height: size }
   if (url) {
@@ -113,25 +132,28 @@ function BadgeLogo({ citation, size = '1em' }: { citation: WebCitation; size?: s
 /**
  * 行内徽章。
  *
- * `onOpen` 是**点击**的去处（与知识库那条引用同一条路：展开过程面板滚到那条出处）；
- * 悬停/聚焦只负责开卡片——"看一眼"与"跳过去"是两件事。
+ * **点它 = 打开原文，走的是 Kimi 那条路**（2026-09-30 用户定案）：Kimi 正文里的
+ * `pua-ref-cite-tag` 就是一个 `<a target="_blank" rel="noopener noreferrer">`，
+ * 点了直开那一页。改前我们点它是"展开过程面板、滚到那条出处"——同一个动作有两个去处
+ * （原文那一页 / 我们的清单），用户拍板换成前者。
+ *
+ * 三条没变：悬停与聚焦仍旧出卡片（标题 / 摘要 / 可点可复制的 URL）、
+ * 卡片底部那条原文链接照留、`data-cite-*` 与 `aria-label` 一个字不改
+ * （用例与页面上的 `[data-cite-index]` 委托读的都是它们）。
  */
-export function SourceBadge({
-  citation,
-  onOpen,
-}: {
-  citation: WebCitation
-  onOpen: (index: number) => void
-}) {
+export function SourceBadge({ citation }: { citation: WebCitation }) {
   const active = useSyncExternalStore(subscribeCitation, activeCitation, activeCitation)
   const open = active?.citation.index === citation.index && active?.citation.url === citation.url
-  const ref = useRef<HTMLButtonElement | null>(null)
+  const ref = useRef<HTMLAnchorElement | null>(null)
 
   const show = () => showCitation(citation, ref.current)
   return (
-    <button
+    <a
       ref={ref}
-      type="button"
+      // 直开原文（新标签）：`noopener noreferrer` 与正文里别处的外链同一条口径
+      href={citation.url}
+      target="_blank"
+      rel="noopener noreferrer"
       className={BADGE_CLASS}
       data-cite-index={citation.index}
       data-cite-site={citation.site.id || undefined}
@@ -143,11 +165,10 @@ export function SourceBadge({
       onFocus={show}
       onMouseLeave={hideCitation}
       onBlur={hideCitation}
-      onClick={() => onOpen(citation.index)}
     >
       <BadgeLogo citation={citation} />
       {citation.domain}
-    </button>
+    </a>
   )
 }
 
@@ -206,7 +227,7 @@ export function SourceCardHost() {
       role="dialog"
       aria-label={`来源 ${citation.index}：${citation.title || citation.domain}`}
       data-testid="source-card"
-      className="fixed z-[var(--z-popover,60)] flex flex-col gap-[var(--space-2)] rounded-[var(--radius-panel)] border border-[var(--border)] bg-[var(--bg-menu)] p-[var(--space-3)] text-[length:var(--text-micro-size)] shadow-[var(--shadow-popover)]"
+      className="fixed z-[var(--z-popover,60)] flex max-w-[340px] flex-col gap-[var(--space-2)] rounded-[16px] border-[0.5px] border-[var(--Separators-S1)] bg-[var(--BgGp-Secondary)] p-[var(--space-4)] text-[length:var(--text-micro-size)] shadow-[0_5.05px_5.32px_#00000006,0_16.98px_17.87px_#00000009,0_64px_80px_#0000000f]"
       style={{ left: placement.left, top: placement.top, width: CARD_WIDTH }}
       onMouseEnter={() => showCitation(citation, active.anchor)}
       onMouseLeave={hideCitation}

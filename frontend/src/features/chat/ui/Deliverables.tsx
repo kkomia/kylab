@@ -9,6 +9,17 @@
  * 一个字一个字地出——看起来像"回答还没写完，东西就先交了"。现在等这一轮收尾再交付；
  * 过程面板里那一步照旧写着「导出文档 · 已导出」，中间状态并不丢。
  */
+import {
+  FileCode2,
+  FileImage,
+  FileJson,
+  FileSpreadsheet,
+  FileTerminal,
+  FileText,
+  Presentation,
+  type LucideIcon,
+} from 'lucide-react'
+
 import { formatBytes } from '@/lib/format'
 import { downloadFile } from '@/api/conversations'
 import type { ChatArtifact } from '@/api/chat'
@@ -16,6 +27,51 @@ import type { ChatArtifact } from '@/api/chat'
 import { notifyError } from '../runtime/notify'
 import { useChat, type ChatApi } from '../runtime/ChatProvider'
 import './flow.css'
+
+/**
+ * 产物卡片左边那一格图形：**按后缀分档**（Kimi 的文件卡片：代码 `</>`、表格 grid、
+ * 幻灯、图片、文档）。
+ *
+ * 判据取**后缀**而不是 `file.format`：后端给的 `format` 是渲染器那一档
+ * （`docx` / `pdf` / `pptx`），而后缀才是"这份文件长什么样"。认不出来的一律给
+ * 文档那一枚——不猜、也不留空。改前这一格是格式文字（「DOCX」）压在高 28 的扁盒里，
+ * 现在换成图形，格式名挪到副标题那一行（信息一个字没丢）。
+ */
+const ARTIFACT_ICONS: Record<string, LucideIcon> = {
+  // 代码 / 数据：`</>` 与花括号
+  js: FileCode2,
+  jsx: FileCode2,
+  ts: FileCode2,
+  tsx: FileCode2,
+  py: FileCode2,
+  sh: FileTerminal,
+  json: FileJson,
+  yaml: FileCode2,
+  yml: FileCode2,
+  html: FileCode2,
+  css: FileCode2,
+  xml: FileCode2,
+  // 表格
+  csv: FileSpreadsheet,
+  tsv: FileSpreadsheet,
+  xlsx: FileSpreadsheet,
+  xls: FileSpreadsheet,
+  // 幻灯
+  pptx: Presentation,
+  ppt: Presentation,
+  // 图片
+  png: FileImage,
+  jpg: FileImage,
+  jpeg: FileImage,
+  webp: FileImage,
+  gif: FileImage,
+  svg: FileImage,
+}
+
+function ArtifactIcon({ format }: { format: string }) {
+  const Icon = ARTIFACT_ICONS[format.trim().toLowerCase().replace(/^\./, '')] ?? FileText
+  return <Icon size={18} aria-hidden />
+}
 
 /**
  * 打开产物（**预览**）：开文件区抽屉，并**直落这一份**。
@@ -59,10 +115,12 @@ export function Deliverables({ files }: { files: ChatArtifact[] }) {
       {files.map((file) => (
         <li
           key={file.artifact_id}
-          className="flex items-center gap-[var(--space-3)] rounded-[var(--radius-row)] border border-[var(--border)] bg-[var(--bg-subtle)] px-[var(--space-3)] py-[var(--space-2)]"
+          className="flex items-center gap-[var(--space-3)] rounded-[12px] border-[0.5px] border-[var(--Separators-S1)] px-[var(--space-3)] py-[var(--space-2-5)]"
         >
-          <span className="flex h-[28px] w-[40px] shrink-0 items-center justify-center rounded-[var(--radius-control)] bg-[var(--bg-subtle)] text-[length:var(--text-c2-size)] font-medium text-[var(--text-tertiary)]">
-            {file.format.toUpperCase()}
+          {/* 左侧的**文件类型图标盒**（Kimi 的卡片：方盒 + 按后缀区分的图形）：
+              36px 方盒、8px 圆角、`Bg-Secondary` 底（与表格卡片头带同一档灰）。 */}
+          <span className="flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-[8px] bg-[var(--Bg-Secondary)] text-[var(--text-secondary)]">
+            <ArtifactIcon format={file.format} />
           </span>
           <button
             type="button"
@@ -73,7 +131,9 @@ export function Deliverables({ files }: { files: ChatArtifact[] }) {
               {file.name}
             </span>
             <span className="tabular block text-[length:var(--text-micro-size)] text-[var(--text-tertiary)]">
-              {formatBytes(file.size_bytes)}
+              {/* 格式名从左边那一格搬到这里（那一格现在是图形）：一个字的宽度换一眼认得出的类型 */}
+              {file.format.toUpperCase()}
+              {` · ${formatBytes(file.size_bytes)}`}
               {file.where ? ` · ${file.where}` : ''}
             </span>
           </button>
