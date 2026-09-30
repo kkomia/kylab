@@ -157,8 +157,11 @@ export function AccountMenu() {
             </Avatar>
             {/* 名字、角色、箭头都用 max-width 收（`.ly-collapsible`），
                 折叠态收到 0 而不是 `display: none`——后者是瞬时的，没有过渡可接 */}
+            {/* 行高**归 20px**（`leading-5` ✓）：Kimi 那份对照表里是 `14px/20px 500` ✓，
+                而默认行高在这套 token 下算出 20.58px ✗ —— 差 0.58px，
+                但它是"名字基线比左侧导航项低半像素"这类观感的来源 ✓（对照表 §1 ✓） */}
             <span
-              className="ly-collapsible flex-1 truncate text-[length:var(--text-meta-size)] font-medium text-text-primary"
+              className="ly-collapsible flex-1 truncate text-[length:var(--text-meta-size)] leading-5 font-medium text-text-primary"
               title={identityName}
             >
               {identityName}
@@ -168,11 +171,12 @@ export function AccountMenu() {
                 {identityRole}
               </span>
             )}
-            <RiArrowDownSLine
-              className="ly-collapsible shrink-0 text-text-tertiary"
-              size={14}
-              aria-hidden="true"
-            />
+            {/* 行右端是**一个 44×44 的图标位** ✓（Kimi 对照表：行右端 `44×44` ✓；
+                改前只有一枚 14px 的裸箭头 ✗）。视觉上仍是那枚小箭头 ✓，
+                但命中区与行高同高（44）✓ —— 点起来不再需要瞄 ✓ */}
+            <span className="ly-collapsible flex h-11 w-11 shrink-0 items-center justify-center text-text-tertiary">
+              <RiArrowDownSLine size={14} aria-hidden="true" />
+            </span>
           </button>
         </DropdownMenuTrigger>
         {/* 向上弹：它挂在页脚底部，向下会出到屏幕外 */}
