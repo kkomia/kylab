@@ -47,9 +47,13 @@ import type { TraceIcon } from '@/features/chat/model/turns'
 import { isWebStep } from '@/features/chat/model/webSites'
 
 export const STEP_ICONS: Record<TraceIcon, LucideIcon> = {
-  // 非工具步骤两档（2026-09-30 换 Kimi chat 同款）：思考 = 💡 灯泡
-  // （Kimi「思考已完成」那一行的原样）；组织回答 = 笔（Kimi「写入」那一族，
-  // 读作"在写回答"——原先是 Check，"完成"这个意思与行尾的状态重复了）
+  /*
+    非工具步骤两档（`think` 思考 / `build` 组织回答）。
+    ⚠️ **工具链行里这两档不画这张表里的图**：按 2026-09-30 用户批注（§2，"不是钢笔/灯泡"），
+    行上画的是 Kimi「思考已完成」那枚**实心小圆点**（`StepDot`）。这张表里那两枚仍然留着，
+    是因为 `StepIcon` 本身是这个渲染层的公开件（`tests/chat-trace-icons.test.tsx` 逐档钉着
+    "哪一档画哪一枚"），删一格等于把一个已定契约悄悄改掉。
+  */
   think: Lightbulb,
   build: PenLine,
   // 工具步骤：**键就是语义种类**（后端 `tool_meta.kind_of` 给的）
@@ -137,6 +141,32 @@ export function StepIcon({
   }
   const Component = STEP_ICONS[icon] ?? Server
   return <Component size={size} aria-hidden data-icon={icon} />
+}
+
+/**
+ * 「思考 / 组织回答」那一行的**实心小圆点**（2026-09-30 用户批注 §2）。
+ *
+ * 为什么换掉钢笔与灯泡：Kimi 的「思考已完成」行前面就是一枚实心小圆点（次要文字色、
+ * 六七像素），它读作"这是一条过程记录"，而不是"这里发生了一次某某操作"——
+ * 工具行才需要认得出是哪种工具（检索、联网、执行…），收尾那两行没有这个信息量，
+ * 给它们一枚形状不同的图标反而把"过程"与"结论"混成一类。
+ *
+ * 两条实现上的分寸：
+ *
+ * 1. **槽宽仍是 15px**（与工具图标同宽）：标签因此与上下行对齐，圆点也正好落在
+ *    虚线链路那条轴上（见 `flow.css` 的 `--ch-axis`）——圆点只有 7px，直接放进 flex
+ *    会让这一行的文字比别的行左移 8px；
+ * 2. **圆点走 CSS 而不是图标组件**：它没有图形可言（就是一枚圆），用 `<span>` 能精确给
+ *    7px 与主题色（`--Labels-Secondary`），也免得为它引一枚 lucide 图。
+ *    `data-icon` 照旧报**逻辑的那一档**（`think` / `build`），与 `StepIcon` 同一口径——
+ *    界面与用例读的都是它。
+ */
+export function StepDot({ icon }: { icon: TraceIcon }) {
+  return (
+    <span className="ch-dot-slot" data-icon={icon} aria-hidden>
+      <span className="ch-dot" />
+    </span>
+  )
 }
 
 /**

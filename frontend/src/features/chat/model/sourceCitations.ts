@@ -115,3 +115,18 @@ function isSearchStep(step: { tool?: string; label?: string }): boolean {
   if (step.tool) return step.tool === 'web_search'
   return step.label === '联网搜索'
 }
+
+/**
+ * 编号列表**之后**那一段原文（`【前 N 条的正文开头】…`），没有就给空串。
+ *
+ * 为什么单独取这一段：搜索步展开时，编号列表已经由 `ui/SearchHits.tsx` 画成清单了
+ * （标题 / 域名 / 可点），再铺一遍原文是同一件事说两遍；而**正文开头那几段清单里没有**
+ * （它不是"一条结果"，是被抓回来的页面内容）。所以列表画列表的、这一段照旧给原文，
+ * 两者合起来才是这一步返回的全部内容（不丢信息）。
+ *
+ * 判据就是解析时用的那个抬头（`EXCERPT_MARK`）：解析到它就停，这里从它开始取。
+ */
+export function searchExcerptTail(result: string): string {
+  const at = result.indexOf(EXCERPT_MARK)
+  return at < 0 ? '' : result.slice(at).trim()
+}

@@ -146,18 +146,28 @@
   transform: rotate(180deg);
 }
 
-/* ---- 体：一条缩进轴 + 竖向引导线（设计原则 1） ---- */
+/* ---- 体：一条缩进轴 + **图标列上的虚线链路**（设计原则 1；2026-09-30 用户批注 §1） ----
+   ⚠️ 这里原先是一条 `border-left` 的**整条实线**（"最左侧灰线"，用户批注过两次）。
+   Kimi 的灰线不是容器的边框，而是**相邻两行图标之间的短虚线**：1px、淡灰、
+   只画在两行之间（图标上不穿线、上一行展开的内容上也不穿线），首行上面与末行下面都没有——
+   后面的来源清单 / "共 N 字" 是块尾，不在链路里。
+   画法见下面 `.ch-row[data-link-*]` 那两条：连线是**行自己的伪元素**（上下各半截），
+   所以它天生跟着行的高度走，行内展开多高都不会被线穿过。
+   哪两行之间画由 `ToolchainFlow.tsx::linksOf` 决定（**相邻**即画，不筛"是不是工具行"）。 */
 .ch-body {
+  --ch-gap: 2px; /* 行距：连线要跨过它才接得上下一行（gap 与伪元素的偏移共用这一份） */
+  --ch-axis: 13.5px; /* 图标列的中心轴 = 行左内边距 6px + 15px 图标的一半 */
+  --ch-line: var(--Labels-Tertiary); /* 虚线取三级灰（用户批注："淡灰"） */
   margin-left: 10px; /* 轴心对齐头部图标的中心 */
   padding: 4px 0 2px 17px;
-  border-left: 0.5px solid var(--Separators-S1);
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--ch-gap);
 }
 
 /* 行：子项逐项入场（源码 toolCallFlowItemIn） */
 .ch-row {
+  position: relative; /* 连线（::before / ::after）的定位基准就是这一行本身 */
   display: flex;
   align-items: center;
   gap: 8px;
@@ -177,7 +187,41 @@ button.ch-row {
 button.ch-row:hover {
   background: color-mix(in srgb, var(--Labels-Primary) 4%, transparent);
 }
+
+/* 虚线链路的两截：上半截（从上一行的空隙接到本行图标上方）+ 下半截（从图标下方
+   接到下一行的空隙）。`top/bottom` 用 `50% ± 8px` 让线**在图标边上停住**
+   （图标盒 15px、居中，半高 7.5px，留出的那 0.5px 就是"别贴到图形上"）。
+   `data-link-up` / `data-link-down` 由 `ToolchainFlow` 逐行给出（相邻即画）。 */
+.ch-row[data-link-up]::before,
+.ch-row[data-link-down]::after {
+  content: '';
+  position: absolute;
+  left: var(--ch-axis, 13.5px);
+  width: 1px;
+  /* 2px 一截、2px 一空：Kimi 那条虚线就是这个量级（实测 1–2px 一截），
+     用渐变而不是 `border-style: dashed` 是因为后者的节距由浏览器定死、改不了 */
+  background-image: repeating-linear-gradient(
+    to bottom,
+    var(--ch-line, var(--Labels-Tertiary)) 0 2px,
+    transparent 2px 4px
+  );
+  pointer-events: none;
+}
+.ch-row[data-link-up]::before {
+  top: calc(-1 * var(--ch-gap, 2px));
+  bottom: calc(50% + 8px);
+}
+.ch-row[data-link-down]::after {
+  top: calc(50% + 8px);
+  bottom: calc(-1 * var(--ch-gap, 2px));
+}
+
 .ch-row-label {
+  /* 长标题（组行那种聚合句）必须**能缩**：flex 项默认 `min-width: auto`，
+     不写这一条它就不会缩到内容宽度以下——标题一长就把 chevron / 耗时挤出这一行
+     （用户批注 §3："图标+标题居左、chevron/耗时居右"）。 */
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -200,12 +244,21 @@ button.ch-row:hover {
   font-size: calc(12px * var(--font-scale, 1));
   color: var(--Labels-Tertiary);
 }
-/* 子弹头行（子目标 / 思考已完成） */
-.ch-bullet {
+/* 圆点图标位：非工具行（思考 / 组织回答 / 整轮思考）的图标槽。
+   槽宽与工具图标**同宽 15px**——这样标签仍与上下行对齐，圆点也正好落在那条虚线的轴上
+   （`--ch-axis` = 槽中心）。见 `stepIcons.tsx::StepDot`。 */
+.ch-dot-slot {
   flex: none;
-  width: 14px;
-  text-align: center;
-  color: var(--Labels-Tertiary);
+  width: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--Labels-Secondary);
 }
 /* 组内子行：5px 圆点（沿用旧面板的层级语言） */
 .ch-sub-dot {
@@ -228,18 +281,22 @@ button.ch-row:hover {
   color: var(--status-warning, #b54708);
 }
 
-/* ---- 思考正文：B3（14/22）+ 二级色，草稿与成品分色（设计原则 3） ---- */
+/* ---- 思考正文：B3（14/22）+ 二级色，草稿与成品分色（设计原则 3） ----
+   行高按用户批注 §4 走 **1.7**：工具链展开区里的内容是"次要文字"，
+   与正文 16px/1.625 在整个观感上要分得开（Kimi 的 `toolcall-content-text`）。
+   写成倍数而不是 22px 那句固定值：字号乘了 `--font-scale`（用户的字号设置），
+   行高也得跟着走，不然调大字号时这一块会挤在一起。 */
 .ch-think {
   margin: 2px 0 4px;
   padding: 8px 10px;
   font-size: calc(14px * var(--font-scale, 1));
-  line-height: 22px;
+  line-height: 1.7;
   color: var(--Labels-Secondary);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .ch-think p + p {
-  margin-top: 8px;
+  margin-top: 8px; /* 段距收紧（批注 §4）：思考是一段草稿，不该比正文还疏 */
 }
 
 /* ---- 原文（入参 / 返回）：等宽，限高自己滚 ---- */
@@ -249,9 +306,63 @@ button.ch-row:hover {
   border-radius: 8px;
   background: var(--Bg-Secondary);
   font-size: calc(12px * var(--font-scale, 1));
-  line-height: 1.6;
+  line-height: 1.7; /* 与上面那一块同一条（批注 §4 的"行高约 1.7"） */
   color: var(--Labels-Secondary);
   overflow-x: auto;
+}
+
+/* ---- 联网搜索的结果清单（Kimi 网页版 §8 实测值；用户批注 §3） ----
+   一行 = favicon 16px + 标题（左，单行省略）+ 域名（右，三级灰）；
+   行高 32px、内边距 6/8、圆角 8px、hover 浅底；整行可点、新标签打开（`SearchHits`）。
+   超过 8 行（8 × 32 = **256px**，Kimi 那个 `max-height`）时列表自己滚——
+   一次搜索十几条结果是常事，全铺出来这一块比结论还长。 */
+.ch-hits {
+  margin: 2px 0 4px;
+  max-height: 256px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.ch-hit {
+  display: flex;
+  align-items: center;
+  gap: 16px; /* Kimi 源码值：favicon 与标题之间留 16px */
+  min-height: 32px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  color: var(--Labels-Secondary);
+  text-decoration: none;
+}
+.ch-hit:hover {
+  background: color-mix(in srgb, var(--Labels-Primary) 4%, transparent);
+}
+.ch-hit-logo {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  object-fit: contain;
+}
+/* 取不到真实 favicon 时的兜底：域名首字母的灰圆（用户给的口径，不留空、不报错） */
+.ch-hit-logo--letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--Bg-Secondary);
+  color: var(--Labels-Tertiary);
+  font-size: 10px;
+  line-height: 1;
+}
+.ch-hit-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ch-hit-domain {
+  flex: none;
+  font-size: calc(12px * var(--font-scale, 1));
+  color: var(--Labels-Tertiary);
 }
 
 /* ---- 滚动容器 + 35px 五段阶梯渐隐（源码 §5.2 完整破解） ---- */

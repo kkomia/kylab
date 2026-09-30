@@ -46,42 +46,47 @@ export const CITATION_CARD_ID = 'source-citation-card'
 /**
  * 行内胶囊的类名。
  *
- * **五项尺寸全部有依据、且不写死 px**（用户 2026-09-29："有点太憋了……参考最开始
- * 我给你的 kimi 的那个的大小"）。这一份文档（`docs/调研/`）里**没有**那枚胶囊的现成
- * 数字 ✗，所以按"能落 token 就落 token、能相对就相对"定，并把量到的值记在这里：
+ * 形态按 2026-09-30 用户批注 §5 对齐 Kimi 正文里的 `pua-ref-cite-tag`：
+ * **12px 字 / 圆角 6px / 灰底 / 内含站点名（我们给的是域名）/ hover 加深**。
+ * 五项尺寸都不写死 px（12px 走 `--text-micro-size` 令牌），字号跟随全局 `--font-scale`。
  *
  * | 项 | 值 | 依据 |
  * | --- | --- | --- |
- * | 高度 | `min-h-[1.5em]` | 字号 12px → **18px**（改前 15.08，太憋 ✗）；`em` 跟着字号走 ✓ |
- * | 左右内边距 | `px-[var(--space-1)]` | 4px 令牌（改前 3.98，同值但不再手写 ✗） |
- * | 图标与文字间距 | `gap-[var(--space-1)]` | 4px 令牌（改前 3.27） |
- * | 字号 | `--text-micro-size` | 12px 令牌（改前 11.7 = 0.78em 手写 ✗） |
- * | 圆角 | `var(--radius-pill)` | 胶囊（改前 `--radius-control` 10px，偏方 ✗） |
+ * | 高度 | `min-h-[1.5em]` | 字号 12px → **18px**；`em` 跟着字号走 ✓ |
+ * | 左右内边距 | `px-[var(--space-1)]` | 4px 令牌 |
+ * | 图标与文字间距 | `gap-[var(--space-1)]` | 4px 令牌 |
+ * | 字号 | `--text-micro-size` | 12px 令牌（Kimi 同值） |
+ * | 圆角 | `rounded-[6px]` | Kimi `pua-ref-cite-tag` 的 6px（改前是整圆胶囊 `--radius-pill`） |
  *
  * **`em` 而不是 `calc(… * 1.5)`**：Tailwind 的任意值里带 `*` / `/` 生成不出类名 ✗
  * （这一族已经踩过一次：尺寸必须逐字相同，见 `WebSiteList` 里那对同尺寸类名）。
  *
- * ## hover 变黑（亮）/ 变"抬起的底色"（暗）
+ * ## hover 加深（不再是"整块反相"）
  *
- * 亮色：底色转**近黑**（`--text-primary` ✓）＋文字转画布色（`--bg-canvas` ✓）——
- * 与 Kimi 那种"悬停整块反相"的观感一致 ✓。
- * 暗色**不照抄反转** ✗：暗底上再压一块近白会刺眼，所以改成
- * "底色抬到 `--bg-hover` + 文字提亮到 `--text-primary` + 描边提到 `--border-strong`" ✓
- * （文档里查不到 Kimi 的暗色取值 ✗ —— 这是**我的选择**：保持"悬停更醒目"这层意思，
- * 但不引入新的亮块；要改成硬反转，改这一行即可）。
+ * 改前亮色悬停是**反相**（底色近黑、文字转画布色）——那是照 Kimi 引用卡片的观感定的。
+ * 用户这次给的批注是"hover **加深**"：一枚小小的行内标签在正文里反相太跳，
+ * 所以改成"底色抬一档（`--bg-hover`）+ 描边加重 + 文字提亮"，深浅两套主题同一条规则
+ * （Kimi 的引用标签也是这么加深的：底色变深一档，不是反白）。
  *
  * **hover 只许变色，绝不变形/位移** ✗：这里只动 `background-color` / `color` /
  * `border-color`（宽度始终 1px ✓），所以悬停不会改变几何 —— 那正是抖动的常见成因之一。
+ *
+ * ## 点它是"跳去看出处"，不是"跳走"
+ *
+ * Kimi 的引用标签点开是新标签页。我们的徽章点了走**既有那条路**（展开过程面板、
+ * 滚到那一条出处并闪一下，`onOpen`）——那条链路上有 `data-source` / `data-flash`
+ * 两处物证、也有用例钉着（`tests/chat-source-citations.test.tsx`），
+ * 而"看这一页原文"的出口就在悬停卡片里（那张卡片底部的 URL 是 `target="_blank"`）。
+ * 所以这里**不改点击去向**，只把外观对齐 pill。
  */
 export const BADGE_CLASS =
   'md-cite-site inline-flex min-h-[1.5em] items-center gap-[var(--space-1)] ' +
-  'align-[-0.2em] rounded-[var(--radius-pill)] border border-[var(--border-hairline)] ' +
+  'align-[-0.2em] rounded-[6px] border border-[var(--border-hairline)] ' +
   'bg-[var(--bg-subtle)] px-[var(--space-1)] text-[length:var(--text-micro-size)] ' +
   'leading-none text-[var(--text-secondary)] no-underline ' +
   'cursor-pointer [transition:var(--transition-ui)] ' +
-  'hover:border-[var(--text-primary)] hover:bg-[var(--text-primary)] hover:text-[var(--bg-canvas)] ' +
-  'dark:hover:border-[var(--border-strong)] dark:hover:bg-[var(--bg-hover)] ' +
-  'dark:hover:text-[var(--text-primary)] focus-visible:outline focus-visible:outline-1 ' +
+  'hover:border-[var(--border-strong)] hover:bg-[var(--bg-hover)] ' +
+  'hover:text-[var(--text-primary)] focus-visible:outline focus-visible:outline-1 ' +
   'focus-visible:outline-[var(--ring)]'
 
 /** 徽章里那枚 logo（与过程面板那一枚同一套取图与退化）。**默认 1em**：跟字号走 ✓ */

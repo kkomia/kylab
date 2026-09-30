@@ -204,6 +204,10 @@
   /*
    * 行内引用徽标（`[1]` → 文档短名）。形态与知识库那份（`.kb-cite`）一致：
    * 同一个东西在两个页面里长得不一样，是"两处各写一套"留下的最容易看出来的疤。
+   *
+   * 圆角取 **6px**（2026-09-30 用户批注 §5：引用标签是 Kimi 的 `pua-ref-cite-tag`
+   * 那种小 pill）。这一族（文档出处）与网页引用那一枚（`SourceCard` 的 `BADGE_CLASS`）
+   * 是**同一种东西**，所以两边同一个数——改一边要改另一边。
    */
   .md-cite {
     display: inline-flex;
@@ -218,7 +222,7 @@
     vertical-align: -2px;
     background: var(--bg-subtle);
     border: 1px solid var(--border-hairline);
-    border-radius: var(--radius-control);
+    border-radius: 6px;
   }
 
   .md-cite-name {

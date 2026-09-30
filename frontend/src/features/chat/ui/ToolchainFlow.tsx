@@ -21,12 +21,13 @@
  *
  * 样式的 token 与 keyframes 在 `flow.css`（Kimi 源码值，chat 域局部，不碰全局）。
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, FileText } from 'lucide-react'
 
 import type { ChatSource } from '@/api/chat'
 import { formatCount } from '@/lib/format'
 
+import { searchExcerptTail, webCitationsOfSteps } from '../model/sourceCitations'
 import {
   groupHeading,
   hasTraceContent,
@@ -42,12 +43,14 @@ import {
   traceSummary,
   trailingThinking,
   type TraceEntry,
+  type TraceIcon,
   type TraceStep,
   type Turn,
 } from '../model/turns'
 import { webSitesOfSteps } from '../model/webSites'
 import './flow.css'
-import { StepIcon, StepOutcomeBadge, type StepOutcome } from './stepIcons'
+import { SearchHits } from './SearchHits'
+import { StepDot, StepIcon, StepOutcomeBadge, type StepOutcome } from './stepIcons'
 import { StepResult } from './StepResult'
 import { WebSiteList } from './WebSiteList'
 
@@ -96,6 +99,33 @@ const REFUSAL_MARKS = ['没有执行', '等待确认', '拒绝执行', '不能�
 function forceExpand(step: TraceStep): boolean {
   if (step.outcome !== undefined) return outcomeOf(step) !== undefined
   return REFUSAL_MARKS.some((mark) => step.detail.includes(mark))
+}
+
+/**
+ * 这一行的图标位画**圆点**还是**那一档的图形**（2026-09-30 用户批注 §2）。
+ *
+ * 只有非工具的两档（思考 / 组织回答）画圆点——它们是"过程的一句话"；
+ * 工具行（检索、联网、执行…）一律保留各自那一枚，那正是"这一步干了什么"的第一眼线索。
+ * 判据取 `TraceStep.icon`（渲染层那一档），与 `StepIcon` 的入参同一个字段。
+ */
+function isDotIcon(icon: TraceIcon): boolean {
+  return icon === 'think' || icon === 'build'
+}
+
+/**
+ * 这一行在链路里的上下两截画不画——虚线的**唯一判据**（2026-09-30 用户批注 §1）。
+ *
+ * ⚠️ 刻意**不按"是不是工具行"筛**（第一版那样写过，看到真链路后改掉了）：真链路里工具行
+ * 几乎总是被「组织回答」隔开（实测那一轮 18 步：组织回答 → 联网搜索 → 组织回答 →
+ * 抓取网页 → …），按"只连相邻的工具行"画，整块里**一条虚线都不会出现**——
+ * 而 Kimi 自己的链路上，中间那些条目（子目标 / 思考已完成）同样是"非工具"的圆点行，
+ * 虚线照样从它们之间穿过。所以判据就是**相邻**：首行的上面、末行的下面不画，
+ * 中间相邻的两行之间都画。链路的**终点**因此落在最后一行上，来源清单与"共 N 字"
+ * 那几行不在链路里（没有线）——与用户批注"最后一个工具行之后虚线终止 / 组行之后也没有线"
+ * 是同一个可见结果。
+ */
+function linksOf(index: number, total: number): { up: boolean; down: boolean } {
+  return { up: index > 0, down: index < total - 1 }
 }
 
 /**
@@ -184,6 +214,8 @@ function StepRow({
   open,
   onToggle,
   names,
+  linkUp,
+  linkDown,
 }: {
   step: TraceStep
   /** 组内子行：5px 圆点取代图标（层级语言与旧面板一致）。 */
@@ -192,6 +224,9 @@ function StepRow({
   onToggle: () => void
   /** `art_*` → 真实文件名（`humanizeArtifactKeys`）；没有就空表。 */
   names: ReadonlyMap<string, string>
+  /** 这一行上面 / 下面还有相邻的一行吗——有才画虚线的上半段 / 下半段（判据见 `linksOf`）。 */
+  linkUp?: boolean
+  linkDown?: boolean
 }) {
   const running = isRunningStep(step)
   const outcome = outcomeOf(step)
@@ -199,6 +234,25 @@ function StepRow({
   // 返回默认只铺预览（600 字），被裁掉的才给「加载全部」——长 JSON 不该全铺
   const [showAll, setShowAll] = useState(false)
   const preview = step.result ? resultPreview(step.result) : null
+  /**
+   * 联网搜索那一步的**结果清单**（`SearchHits` 的料）。
+   *
+   * `useMemo` 不是提前优化：这一步在流式里每一拍都会重渲染，而解析是逐行扫返回文本的，
+   * 一趟几十条搜索就是几十次白扫。依赖只写三个**原始值**（步骤对象每帧都是新的）。
+   */
+  const hits = useMemo(
+    () =>
+      step.result
+        ? [
+            ...webCitationsOfSteps([
+              { tool: step.tool, label: step.label, result: step.result },
+            ]).values(),
+          ]
+        : [],
+    [step.result, step.tool, step.label],
+  )
+  // 编号列表已经画成清单了，剩下的"正文开头"那一段清单里没有，照旧给原文（不丢内容）
+  const excerptTail = hits.length > 0 ? searchExcerptTail(step.result ?? '') : ''
   return (
     <div className={sub ? 'ch-sub' : undefined}>
       <button
@@ -207,6 +261,8 @@ function StepRow({
         data-kind={step.kind}
         data-outcome={outcome}
         data-running={running || undefined}
+        data-link-up={linkUp || undefined}
+        data-link-down={linkDown || undefined}
         aria-expanded={hasBody ? open : undefined}
         aria-disabled={!hasBody}
         onClick={hasBody ? onToggle : undefined}
@@ -215,7 +271,11 @@ function StepRow({
           <span className="ch-sub-dot" aria-hidden />
         ) : (
           <span style={{ position: 'relative', display: 'inline-flex', flex: 'none' }}>
-            <StepIcon icon={step.icon} tool={step.tool} label={step.label} />
+            {isDotIcon(step.icon) ? (
+              <StepDot icon={step.icon} />
+            ) : (
+              <StepIcon icon={step.icon} tool={step.tool} label={step.label} />
+            )}
             {outcome && <StepOutcomeBadge outcome={outcome} />}
           </span>
         )}
@@ -246,20 +306,31 @@ function StepRow({
               {humanizeArtifactKeys(step.args, names)}
             </pre>
           )}
-          {step.result && (
-            <>
-              <StepResult text={showAll ? step.result : (preview ?? step.result)} />
-              {preview !== null && (
-                <button
-                  type="button"
-                  className="ch-more"
-                  onClick={() => setShowAll((value) => !value)}
-                >
-                  {showAll ? '收起' : `加载全部（${formatCount(step.result.length)} 字）`}
-                </button>
-              )}
-            </>
-          )}
+          {step.result &&
+            (hits.length > 0 ? (
+              /*
+                联网搜索：**结果清单**（Kimi 排版，用户批注 §3）——标题 / 域名 / 可点，
+                比原来那一坨等宽原文读得出"查到了哪几个网页"。清单画不出的那一段
+                （"前 N 条的正文开头"）接在下面照旧给原文，信息一条不丢。
+              */
+              <>
+                <SearchHits hits={hits} />
+                {excerptTail && <StepResult text={excerptTail} />}
+              </>
+            ) : (
+              <>
+                <StepResult text={showAll ? step.result : (preview ?? step.result)} />
+                {preview !== null && (
+                  <button
+                    type="button"
+                    className="ch-more"
+                    onClick={() => setShowAll((value) => !value)}
+                  >
+                    {showAll ? '收起' : `加载全部（${formatCount(step.result.length)} 字）`}
+                  </button>
+                )}
+              </>
+            ))}
         </FlowFold>
       )}
     </div>
@@ -272,12 +343,17 @@ function GroupRow({
   expansion,
   k,
   names,
+  linkUp,
+  linkDown,
 }: {
   entry: Extract<TraceEntry, { kind: 'group' }>
   expansion: FlowExpansion
   /** 套过轮次前缀的 key 工厂。 */
   k: (key: string) => string
   names: ReadonlyMap<string, string>
+  /** 与 `StepRow` 同一份：相邻即画那一截虚线（判据见 `linksOf`）。 */
+  linkUp?: boolean
+  linkDown?: boolean
 }) {
   const running = entry.steps.some(isRunningStep)
   // 没碰过的组看"还在跑就摊开"；他点过的（开/收）完全听他的
@@ -291,6 +367,8 @@ function GroupRow({
         type="button"
         className="ch-row"
         data-kind={entry.steps[0]?.kind}
+        data-link-up={linkUp || undefined}
+        data-link-down={linkDown || undefined}
         aria-expanded={open}
         aria-controls={bodyId}
         onClick={() => expansion.chooseGroup(k(entry.key), !open)}
@@ -351,9 +429,8 @@ function TrailingThinkingRow({
   return (
     <div>
       <button type="button" className="ch-row" aria-expanded={open} onClick={onToggle}>
-        <span className="ch-bullet" aria-hidden>
-          •
-        </span>
+        {/* 圆点与工具行里那两档（思考 / 组织回答）同款：Kimi「思考已完成」就是一枚实心小圆点 */}
+        <StepDot icon="think" />
         <span className={streaming ? 'ch-row-label ch-live' : 'ch-row-label'}>
           {streaming ? '思考中…' : `思考已完成 · ${formatCount(text.length)} 字`}
         </span>
@@ -513,14 +590,20 @@ export function ToolchainFlow({
       </button>
       <FlowFold open={bodyOpen}>
         <div className="ch-body">
-          {entries.map((entry) =>
-            entry.kind === 'group' ? (
+          {entries.map((entry, index) => {
+            // 虚线链路（用户批注 §1）：相邻两行之间才画（首行上面、末行下面不画）——
+            // 判据与理由只有一处，见上面 `linksOf`。上下各一条半截
+            // （`.ch-row::before` / `::after`），所以行内展开的内容不会被线穿过。
+            const { up: linkUp, down: linkDown } = linksOf(index, entries.length)
+            return entry.kind === 'group' ? (
               <GroupRow
                 key={entry.key}
                 entry={entry}
                 expansion={expansion}
                 k={k}
                 names={artifactNames}
+                linkUp={linkUp}
+                linkDown={linkDown}
               />
             ) : (
               <StepRow
@@ -529,9 +612,11 @@ export function ToolchainFlow({
                 open={forceExpand(entry.step) || expansion.isOpen(k(entry.step.key))}
                 onToggle={() => expansion.toggle(k(entry.step.key))}
                 names={artifactNames}
+                linkUp={linkUp}
+                linkDown={linkDown}
               />
-            ),
-          )}
+            )
+          })}
           {thinking && (
             <TrailingThinkingRow
               text={thinking}
