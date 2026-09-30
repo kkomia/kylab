@@ -4,12 +4,15 @@
  * 钉住的是**新结构的行为默认值**：
  *
  * 1. 直接作答（无步骤/无思考/无来源）整块不画（legacy 兜底行不算数）；
- * 2. 头的摘要 + 步数；点块头 = 点宿主的开合开关；
- * 3. running 行 = 流光 +「进行中」，done 行 = 耗时；被拦下/等确认的行**前置展开**；
+ * 2. 头的总名（`使用 N 个工具，动作短语`；右侧没有计数）；点块头 = 点宿主的开合开关；
+ * 3. running 行 = 流光 +「进行中」+ 图标位那枚**半月 dot**（`.ch-loading-dot`）；
+ *    行级耗时**全撤**（单步行与组行都不印，只有整轮那一处总计报耗时本身）；
+ *    被拦下/等确认的行**前置展开**；
  * 4. 同工具并组（「N 次」、没碰过的组看"还在跑就摊开"、他点过的组听他的——
  *    开合状态在宿主手里，这里的夹具就是它的替身）；
  * 5. 行体（入参/返回/思考）默认**不上 DOM**，点开才挂（`everOpened` 的 DOM 开销纪律）；
- * 6. 整轮思考（老消息兜底）与来源清单各自成行、默认收起；来源行带 `data-source`
+ * 6. 整轮思考（老消息兜底）与来源清单各自成行、默认收起；思考行的标题跟着开合走
+ *    （收起是描述性首行、点开固定「思考已完成」）；来源行带 `data-source`
  *    与 `data-flash`（点正文徽标那条链路的物证）。
  */
 import { fireEvent, render, screen } from '@testing-library/react'
@@ -203,7 +206,7 @@ describe('工具链块', () => {
     expect(screen.queryByText('{"q":"x"}')).not.toBeInTheDocument()
   })
 
-  it('running 的行是流光 +「进行中」；done 的行报耗时', () => {
+  it('running 的行是流光 +「进行中」+ 图标位那枚半月 dot；行级耗时不再印', () => {
     flowOf(
       makeMessage('assistant', '', {
         streaming: true,
@@ -217,8 +220,49 @@ describe('工具链块', () => {
     )
     const runningRow = screen.getByText('抓取网页').closest('.ch-row')!
     expect(runningRow.querySelector('.ch-live')).not.toBeNull()
+    /*
+      图标位换成那枚**半月旋转 dot**（2026-09-30 用户批注，照 kimi.com 的
+      `widget-loading-dot`）：类名精确是 `ch-loading-dot`（样式在 `flow.css`，
+      组件这一侧只挂 DOM）。它取代的是"这一步是哪种工具"那一枚，所以原来那枚
+      `data-icon` 不在这一格里了。
+    */
+    expect(runningRow.querySelector('.ch-loading-dot')).not.toBeNull()
+    expect(runningRow.querySelector('.ch-icon-slot [data-icon]')).toBeNull()
     expect(screen.getByText('进行中')).toBeInTheDocument()
-    expect(screen.getByText('1.2 秒')).toBeInTheDocument()
+    /*
+      行级耗时全撤（同一条批注）：`data-duration` 这两处（单步行 / 组行）都不再渲染，
+      而**跑完的那一行**（检索知识库，界面真量到 1234ms）也不印。
+    */
+    expect(document.querySelector('[data-duration]')).toBeNull()
+    expect(screen.queryByText('1.2 秒')).toBeNull()
+  })
+
+  it('半月 dot 只属于"还在跑"那一档：落定之后图标位恢复原图标', () => {
+    // 同一条「抓取网页」，这一次是 done（历史回放、或这一轮已经跑完）
+    flowOf(
+      makeMessage('assistant', '答案', { steps: [step({ label: '抓取网页', tool: 'fetch' })] }),
+    )
+    const row = screen.getByText('抓取网页').closest('.ch-row')!
+    expect(row.querySelector('.ch-loading-dot')).toBeNull()
+    expect(row.querySelector('.ch-icon-slot [data-icon]')).not.toBeNull()
+  })
+
+  it('组行还在跑时同样换成那枚半月 dot，组级的状态灯照挂', () => {
+    flowOf(
+      makeMessage('assistant', '', {
+        streaming: true,
+        steps: [
+          step({ label: '抓取网页', tool: 'fetch', outcome: 'failed', detail: '第一次' }),
+          step({ label: '抓取网页', tool: 'fetch', detail: '第二次', status: 'running' }),
+        ],
+      }),
+    )
+    const groupRow = document.querySelector('button[aria-controls^="flow-group-"]') as HTMLElement
+    expect(groupRow.querySelector('.ch-loading-dot')).not.toBeNull()
+    // outcome badge 照常挂（它说的是"这一组里有一次不成"，与"还在跑"是两件事）
+    expect(groupRow.querySelector('[data-testid="step-outcome"]')).not.toBeNull()
+    // 组级耗时那一格也撤了
+    expect(groupRow.querySelector('[data-duration]')).toBeNull()
   })
 
   it('被拦下/等确认的行：着色 + 前置展开（不用点开）', () => {
@@ -268,15 +312,30 @@ describe('工具链块', () => {
     expect(screen.getByText('搜索结果正文')).toBeInTheDocument()
   })
 
-  it('整轮思考（老消息兜底）：一行「思考已完成 | N 字」，点开是灰字段落', () => {
+  it('整轮思考（老消息兜底）：收起时标题是正文首段首行，点开后固定「思考已完成」', () => {
     flowOf(makeMessage('assistant', '答案', { thinkingText: '先想第一段。\n\n再想第二段。' }))
-    // 「 · 」两侧在渲染层拆成"标签 + 详情"（2026-09-30 R2）：标签仍是「思考已完成」，
-    // 字数进详情槽（Tertiary，前面那条 0.5px 竖条由 `.ch-row-sep` 画）
-    const row = screen.getByText('思考已完成').closest('.ch-row')!
-    expect(row.querySelector('.ch-row-detail')?.textContent).toBe('14 字')
+    /*
+      标题跟着开合走（2026-09-30 用户批注，照 kimi.com 实测）：**收起时是描述性文字**
+      （`thinkingTitle` 在模型层派生：首个非空段落的首行，截 30 字），**点开之后**才换成
+      固定那一句「思考已完成」。「 · N 字」那个字数详情一并撤掉。
+    */
+    const row = screen.getByText('先想第一段。').closest('.ch-row')!
+    expect(row.querySelector('.ch-row-label')).toHaveTextContent('先想第一段。')
+    expect(row.querySelector('.ch-row-detail')).toBeNull()
     fireEvent.click(row)
-    expect(screen.getByText('先想第一段。')).toBeInTheDocument()
+    // 点开之后：标题换成固定那一句，正文两段都落在灰字里（标题不再重复正文首行）
+    expect(row.querySelector('.ch-row-label')).toHaveTextContent('思考已完成')
+    expect(document.querySelector('[data-thinking]')).toHaveTextContent('先想第一段。')
     expect(screen.getByText('再想第二段。')).toBeInTheDocument()
+  })
+
+  it('整轮思考的标题截到 30 字：一行标题不是把正文抄一遍', () => {
+    const first = '这一段的开头就很长很长很长很长很长很长很长很长很长，后面还有内容。'
+    flowOf(makeMessage('assistant', '答案', { thinkingText: `${first}\n\n第二段。` }))
+    expect(screen.getByText(`${first.slice(0, 30)}…`)).toBeInTheDocument()
+    // 第二段不上标题（只取首段首行）；「取不到就回退固定那一句」那一档在模型层钉
+    // （`toolchain-flow` 这一侧到不了：整串只剩空白时这一行根本不画）
+    expect(screen.queryByText('第二段。')).toBeNull()
   })
 
   it('流式中的整轮思考：文案是「思考中…」且带流光', () => {
@@ -323,6 +382,81 @@ describe('工具链块', () => {
     fireEvent.click(screen.getByText('联网搜索'))
     const args = document.querySelector('[data-args]')!
     expect(args.textContent).toContain('art_ab12（季度报告.docx）')
+  })
+
+  it('行详情不印原始 JSON：`find_tools` 那种返回换成它 `found` 里的工具名', () => {
+    /*
+      病灶：后端没有摘要时会**回退到返回的开头**（`ToolOutcome.step_detail()`，裁到 120 字），
+      于是 `find_tools` 那一步的行里铺的是半截 JSON。2026-09-30 用户批注：这一格不印 JSON
+      ——里面唯一对得上用户脑子的东西是 `found` 那段工具名，换成它；取不到就空着。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          step({
+            label: '查找工具',
+            tool: 'find_tools',
+            detail:
+              '{"found": ["web_search", "web_fetch"], "note": "这些工具现在可以用了：用 `use_tool` 调',
+          }),
+        ],
+      }),
+    )
+    const row = screen.getByText('查找工具').closest('.ch-row') as HTMLElement
+    expect(row.querySelector('.ch-row-detail')).toHaveTextContent('web_search、web_fetch')
+    expect(row.textContent).not.toContain('{')
+  })
+
+  it('行详情不印原始 JSON：取不到工具名（别的工具那种 JSON）就整格不画', () => {
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          step({
+            label: '导出文档',
+            tool: 'export_document',
+            detail: '{"artifact_id": "art_89cb", "name": "报告.md"}',
+          }),
+        ],
+      }),
+    )
+    const row = screen.getByText('导出文档').closest('.ch-row') as HTMLElement
+    // 宁可这一行什么都不写，也不要把 JSON 当句子印出来（原始载荷在「返回」里，一条没丢）
+    expect(row.querySelector('.ch-row-detail')).toBeNull()
+    expect(row.textContent).not.toContain('artifact_id')
+  })
+
+  it('普通结论一字不动（`displayDetail` 只拦原始 JSON 那一档）', () => {
+    flowOf(makeMessage('assistant', '答案', { steps: [step({ detail: '「眼轴」命中 3 条' })] }))
+    const row = screen.getByText('联网搜索').closest('.ch-row') as HTMLElement
+    expect(row.querySelector('.ch-row-detail')).toHaveTextContent('「眼轴」命中 3 条')
+  })
+
+  it('整轮总计：只报耗时本身（「共 N 字」与「用时」前缀都撤了）', () => {
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          {
+            ...step({ label: '检索知识库', tool: 'search', detail: '命中 3 条' }),
+            durationMs: 120_000,
+          } as ObservedStep,
+          {
+            ...step({ label: '导出文档', tool: 'export_document', detail: '已导出' }),
+            durationMs: 56_000,
+          } as ObservedStep,
+        ],
+      }),
+    )
+    // 各步耗时之和 = 2 分 56 秒；这一行只有这一个读数
+    const total = screen.getByTestId('trace-total')
+    expect(total).toHaveTextContent('2 分 56 秒')
+    expect(total).not.toHaveTextContent('用时')
+    expect(total).not.toHaveTextContent(/\d+ 字/)
+  })
+
+  it('整轮总计：一步都没量到耗时（历史回放、刷新回来的轮次）时**整行不画**', () => {
+    flowOf(makeMessage('assistant', '答案', { steps: [step({ detail: '命中 3 条' })] }))
+    expect(screen.queryByTestId('trace-total')).toBeNull()
+    // 不印一个 0 秒：`durationMs` 只有"界面当场看着跑完"的步才有（见 TraceStep 的口径）
   })
 
   it('长返回：默认只铺预览，「加载全部」就地看全', () => {

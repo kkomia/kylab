@@ -8,7 +8,11 @@
  * 2. **开合口径沿用 `isTraceOpen` 那一份**（流式展开 / 答完收起 / 用户点过听用户 /
  *    待确认强制展开）——那一套四规则已是定稿，本组件只管"按档画"，不自己再判；
  * 3. **行即状态**：running 的行是流光字（`.ch-live`，不是转圈——「那个蓝色循环圈
- *    没有用」是用户原话），done 的行带耗时，被拦下/等确认/失败的行前置展开且着色；
+ *    没有用」是用户原话）+ 图标位那枚**半月旋转 dot**（`.ch-loading-dot`，
+ *    2026-09-30 用户批注照 kimi.com 的 `widget-loading-dot`），被拦下/等确认/失败的行
+ *    前置展开且着色；**行级耗时一律不印**（2026-09-30 用户批注：单步行与组行都撤，
+ *    整轮那一处总计行报耗时），行详情不印原始 JSON（`displayDetail` 从 `find_tools`
+ *    的返回里取工具名，见 `model/turns.ts`）；
  * 4. **动效与结构都按生产 CSS 落地**（2026-09-30 第二版纠偏）：
  *    - 链：每个条目 `.ch-item`（`position:relative` + 行间 `margin-top:12px`），虚线是它自己的
  *      `::after`（`.5px dashed`、`top:24px/bottom:-12px`），**末行无线由 `:not(:last-child)` 保证**
@@ -39,6 +43,7 @@ import { formatCount } from '@/lib/format'
 
 import { searchExcerptTail, webCitationsOfSteps } from '../model/sourceCitations'
 import {
+  displayDetail,
   groupHeading,
   humanizeArtifactKeys,
   isBlockRunning,
@@ -46,6 +51,8 @@ import {
   resultPreview,
   sourceWhere,
   thinkingParagraphs,
+  thinkingTitle,
+  THINKING_DONE_TITLE,
   traceEntries,
   traceKey,
   traceSteps,
@@ -65,19 +72,21 @@ import { StepResult } from './StepResult'
 import { WebSiteIcons, WebSiteList } from './WebSiteList'
 
 /**
- * 聚合 / 派生的行标题里那个「 · 」——**拆成"标签 + 详情"两截**（2026-09-30 R2 批注）。
+ * 聚合行标题里那个「 · 」——**拆成"标签 + 详情"两截**（2026-09-30 R2 批注）。
  *
  * 生产里这些行是「标签(Secondary) + 0.5px×14px 竖条 + 详情(Tertiary)」，而我们的聚合句
- * （`groupHeading`）与「思考已完成 · N 字」是把两截焊在一个字符串里的。这一层只做**显示**
- * 上的切分：在**第一个**「 · 」处断开，前半是标签、后半进详情槽（走 `.ch-row-sep` +
- * `.ch-row-detail`，与普通步行同一套）。
+ * （`groupHeading`）是把两截焊在一个字符串里的。这一层只做**显示**上的切分：在**第一个**
+ * 「 · 」处断开，前半是标签、后半进详情槽（走 `.ch-row-sep` + `.ch-row-detail`，
+ * 与普通步行同一套）。调用方两处：组行渲染（标签 + 详情分画）与头部总名的短语提取
+ * （`toolTotal` 只要标签那半）。
  *
  * 两条分寸：
  *
  * 1. **没有「 · 」就原样返回**：正在跑的聚合句（「正在检索 X… 1/3」）、老快照那句
  *    「联网搜索 2 次」都走这一支，一个字不动；
- * 2. **只在聚合/派生的行上用**：来源行那句「N 个来源 · M 篇文档」是**两个计数并列**，
- *    不是"标签 | 详情"的语义，所以它不调用这个函数（保持原样）。
+ * 2. **只在聚合行上用**：来源行那句「N 个来源 · M 篇文档」是**两个计数并列**，
+ *    不是"标签 | 详情"的语义，所以它不调用这个函数（保持原样）。思考行也一样
+ *    ——它的标题跟着开合走、不再带「 · N 字」（2026-09-30 用户批注）。
  *
  * 切的是**渲染**，不是数据：`groupHeading()` 的返回值与它的用例断言一个字都没改。
  */
@@ -195,6 +204,10 @@ function isDotIcon(icon: TraceIcon): boolean {
  * 「跑了多久」的显示（沿用旧面板照 LobeHub 的三档，单位换成中文）：
  * 不足 1 秒给毫秒（`123 毫秒`）；不足 1 分钟给**向下取**的一位小数（`1.2 秒`，
  * 59.96 秒不许印成 60.0）；再长给 `N 分 M 秒`。
+ *
+ * **现在只有一处消费者：整轮那一行总计**（2026-09-30 用户批注：行级的耗时全撤——
+ * 单步行与组行都不印，用户要的是"这一轮一共跑了多久"，不是逐行报数）。
+ * 函数本身留着不删就是为这一处。
  */
 export function formatStepDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)} 毫秒`
@@ -308,6 +321,12 @@ function StepRow({
   const running = isRunningStep(step)
   const outcome = outcomeOf(step)
   const hasBody = Boolean(step.args || step.result || (step.thinking ?? '').trim())
+  /**
+   * 行详情那一格印什么：普通结论原样，**原始 JSON 一律不印**（2026-09-30 用户批注；
+   * `find_tools` 那种返回换成它 `found` 里的工具名，取不到就是空串——判据与分寸
+   * 全在 `displayDetail` 里，这一层不重判一遍）。
+   */
+  const detail = displayDetail(step)
   // 返回默认只铺预览（600 字），被裁掉的才给「加载全部」——长 JSON 不该全铺
   const [showAll, setShowAll] = useState(false)
   const preview = step.result ? resultPreview(step.result) : null
@@ -370,7 +389,15 @@ function StepRow({
           <span className="ch-sub-dot" aria-hidden />
         ) : (
           <span className="ch-icon-slot">
-            {isDotIcon(step.icon) ? (
+            {/*
+              这一行**还在跑**：图标位换成那枚半月旋转 dot（2026-09-30 用户批注，照
+              kimi.com 的 `widget-loading-dot`）——它取代的是"这一步是哪种工具"那一枚，
+              不是状态灯，所以 outcome badge 照挂（`.ch-icon-slot` 是 20×20 的居中槽，
+              与圆点槽同尺寸，标签与那条虚线都不动；样式在 `flow.css`）。
+            */}
+            {running ? (
+              <span className="ch-loading-dot" aria-hidden />
+            ) : isDotIcon(step.icon) ? (
               <StepDot icon={step.icon} />
             ) : (
               <StepIcon icon={step.icon} tool={step.tool} label={step.label} />
@@ -384,7 +411,8 @@ function StepRow({
           - **抓页那一档** ＝ `[favicon] N 个网页`（R4 批注，Kimi 是「获取网页 | 🔴 1 个网页」）
             ——站点 favicon 与页数都收进这一格，行尾不再挂那一组站点牌；后端给的结论
             （抓页那一步是"【标题】来源：url…"被裁过的一段）不再进这一行，整页信息在展开里；
-          - 其余 ＝ 后端给的结论原样（没有就不画竖条——"标签 |"后面空着更奇怪）。
+          - 其余 ＝ `displayDetail(step)`：普通结论原样，**原始 JSON 不再印上去**
+            （2026-09-30 用户批注；`find_tools` 那种返回换成一串工具名，取不到就空着）。
         */}
         {pages.length > 0 ? (
           <>
@@ -395,10 +423,10 @@ function StepRow({
             </span>
           </>
         ) : (
-          step.detail && (
+          detail && (
             <>
               <span className="ch-row-sep" aria-hidden />
-              <span className="ch-row-detail">{step.detail}</span>
+              <span className="ch-row-detail">{detail}</span>
             </>
           )
         )}
@@ -407,9 +435,8 @@ function StepRow({
         {!sub && pages.length === 0 && <WebSiteList {...webSitesOfSteps([step])} />}
         <span className="ch-row-right">
           {running && <span data-running-text>进行中</span>}
-          {!running && step.durationMs != null && (
-            <span data-duration>{formatStepDuration(step.durationMs)}</span>
-          )}
+          {/* 行级耗时**撤了**（2026-09-30 用户批注：单步行与组行都不报）——耗时只在整轮
+              那一处总计行给（见本文件末的 `.ch-total`），逐行报数读起来是噪声 */}
           {/* 行尾箭头：平时不画（悬停/聚焦才滑入，展开态常显并转 90°，见 `.ch-row .ch-chev`）；
               前置展开的行连元素都不给——它收不起来，箭头是假的 */}
           {hasBody && !forced && <ChevronRight size={18} className="ch-chev" aria-hidden />}
@@ -483,8 +510,6 @@ function GroupRow({
   const running = entry.steps.some(isRunningStep)
   // 没碰过的组看"还在跑就摊开"；他点过的（开/收）完全听他的
   const open = expansion.groupChoice(k(entry.key)) ?? running
-  // 耗时只加"界面真看着跑完"的那些（见 TraceStep.durationMs 的口径）；一个都没有就不显示
-  const duration = entry.steps.reduce((sum, step) => sum + (step.durationMs ?? 0), 0)
   const bodyId = `flow-group-${k(entry.key)}`
   // 聚合句按「 · 」拆成"标签 + 详情"两截（R2 批注；判据与分寸见 `splitLabel`）
   const heading = splitLabel(groupHeading(entry))
@@ -499,7 +524,13 @@ function GroupRow({
         onClick={() => expansion.chooseGroup(k(entry.key), !open)}
       >
         <span className="ch-icon-slot">
-          <StepIcon icon={entry.icon} tool={entry.tool} label={entry.label} />
+          {/* 这一组**还在跑**：与单步行同一档——图标位换成那枚半月旋转 dot
+              （2026-09-30 用户批注；组级的状态灯照挂，见下面一行） */}
+          {running ? (
+            <span className="ch-loading-dot" aria-hidden />
+          ) : (
+            <StepIcon icon={entry.icon} tool={entry.tool} label={entry.label} />
+          )}
           {/* 组级状态灯 = 组内第一条带状态位的调用（与组行图标同口径） */}
           {groupOutcomeOf(entry.steps) && (
             <StepOutcomeBadge outcome={groupOutcomeOf(entry.steps)!} />
@@ -520,7 +551,7 @@ function GroupRow({
         <WebSiteList {...webSitesOfSteps(entry.steps)} />
         <span className="ch-row-right">
           {running && <span data-running-text>进行中</span>}
-          {!running && duration > 0 && <span data-duration>{formatStepDuration(duration)}</span>}
+          {/* 组级耗时也**撤了**（2026-09-30 用户批注：单步行与组行都不报；整轮那一处总计行给） */}
           <ChevronRight size={18} className="ch-chev" aria-hidden />
         </span>
       </button>
@@ -540,7 +571,19 @@ function GroupRow({
   )
 }
 
-/** 整轮那一串思考（老消息兜底，`trailingThinking` 的口径：新数据已经在各自步骤里）。 */
+/**
+ * 整轮那一串思考（老消息兜底，`trailingThinking` 的口径：新数据已经在各自步骤里）。
+ *
+ * 标题三档（2026-09-30 用户批注，照 kimi.com 实测）：
+ *
+ * - **流式中**：「思考中…」+ 流光（`.ch-live`）；
+ * - **落定且收起**：`thinkingTitle(text)`——**描述性**的首段首行（模型层派生，截 30 字），
+ *   一个字都取不到时它自己回退「思考已完成」；
+ * - **落定且展开**：固定 `THINKING_DONE_TITLE`（生产里点开之后标题就换成这一句）。
+ *
+ * 「 · N 字」那个字数详情**一并撤掉**（同一条批注）：标题是"这段在讲什么"，
+ * 不是读数；过程总计那一行如今也只剩耗时一个读数（见文件末的 `.ch-total`）。
+ */
 function TrailingThinkingRow({
   text,
   streaming,
@@ -552,23 +595,13 @@ function TrailingThinkingRow({
   open: boolean
   onToggle: () => void
 }) {
-  const { label, detail } = splitLabel(
-    streaming ? '思考中…' : `思考已完成 · ${formatCount(text.length)} 字`,
-  )
+  const title = streaming ? '思考中…' : open ? THINKING_DONE_TITLE : thinkingTitle(text)
   return (
     <div className="ch-item">
       <button type="button" className="ch-row" aria-expanded={open} onClick={onToggle}>
         {/* 圆点与工具行里那两档（思考 / 组织回答）同款：Kimi「思考已完成」就是一枚实心小圆点 */}
         <StepDot icon="think" />
-        <span className={streaming ? 'ch-row-label ch-live' : 'ch-row-label'}>{label}</span>
-        {/* 字数进详情槽（R2 批注：把「 · 」两侧拆成"标签 + 详情"）；
-            `思考中…` 那一支没有「 · 」，`detail` 为空 → 不画竖条 */}
-        {detail && (
-          <>
-            <span className="ch-row-sep" aria-hidden />
-            <span className="ch-row-detail">{detail}</span>
-          </>
-        )}
+        <span className={streaming ? 'ch-row-label ch-live' : 'ch-row-label'}>{title}</span>
         <span className="ch-row-right">
           <ChevronRight size={18} className="ch-chev" aria-hidden />
         </span>
@@ -732,17 +765,9 @@ export function ToolchainFlow({
       : '直接作答'
 
   const running = isBlockRunning({ streaming: message.streaming, steps: traceSteps(turn) })
-  // 过程总计的两个数：思考 + 结论 + 入参 + 返回的字符量；耗时是各步之和
+  // 整轮那一处总计唯一的读数：各步耗时之和（`TraceStep.durationMs` 的口径见那边——
+  // 只有"界面当场看着跑完"的步有它，历史回放一律没有，于是总和为 0、整行不画）
   const stepsAll = traceSteps(turn)
-  const traceChars = stepsAll.reduce(
-    (sum, step) =>
-      sum +
-      (step.thinking?.length ?? 0) +
-      step.detail.length +
-      (step.args?.length ?? 0) +
-      (step.result?.length ?? 0),
-    0,
-  )
   const traceMs = stepsAll.reduce((sum, step) => sum + (step.durationMs ?? 0), 0)
   // 点正文徽标会把来源清单撑开（`revealSource`）：那时块体也得开着，否则滚不到那一行
   const bodyOpen = open || citesOpen
@@ -808,12 +833,17 @@ export function ToolchainFlow({
               onOpenSource={onOpenSource}
             />
           )}
-          {/* 过程总计：**一处、只一处**（答完之后逐步不再报字数——那是 2026-09-29 用户
-              定的）；耗时只加"当场看着跑完"的那些步（见 TraceStep.durationMs） */}
-          {!running && traceChars > 0 && (
+          {/*
+            过程总计：**一处、只一处**，而且**只报耗时**（2026-09-30 用户批注）。
+            原先这行是「共 N 字 · 用时 M」——字数统计整档撤掉（逐步不报字数是
+            2026-09-29 定的，那么整轮那个"共 N 字"也就没有对应的需求了），「用时」
+            这个前缀也去掉：这一行只有一个读数，写出来就是它本身（`2 分 56 秒`）。
+            耗时只加"当场看着跑完"的那些步（见 `TraceStep.durationMs`）：总和为 0
+            ——历史回放、刷新回来的轮次——**整行不画**（不印一个 0 秒）。
+          */}
+          {!running && traceMs > 0 && (
             <p className="ch-total" data-testid="trace-total">
-              共 {formatCount(traceChars)} 字
-              {traceMs > 0 && ` · 用时 ${formatStepDuration(traceMs)}`}
+              {formatStepDuration(traceMs)}
             </p>
           )}
         </div>

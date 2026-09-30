@@ -299,6 +299,39 @@ export function thinkingParagraphs(text: string): string[] {
     .filter((part) => part.trim() !== '')
 }
 
+/** 思考行收起时那行描述性标题最多几个字：它是一眼"这段在讲什么"，不是把正文抄一行。 */
+export const THINKING_TITLE_CHARS = 30
+
+/** 思考行落定后的固定标题：**展开态就是它**，也是派生不出描述性标题时的兜底。 */
+export const THINKING_DONE_TITLE = '思考已完成'
+
+/**
+ * 思考行**收起时**的标题（2026-09-30 用户批注，照 kimi.com 实测）。
+ *
+ * 生产里那一行的标题是**跟着开合走**的：收起时是**描述性文字**（这段思考在讲什么），
+ * 点开之后才换成固定的「思考已完成」。所以这一层只派生"描述性"那一半——
+ * 展开态不需要派生，调用方直接用 `THINKING_DONE_TITLE`（固定文案只有一处真相）。
+ *
+ * 取法三条：
+ *
+ * 1. 段落按 `thinkingParagraphs` 切（空行分段，与正文同一份判据，不另立一套）；
+ * 2. 取**首个非空段落的首个非空行**——思考里常有对齐过的列表与缩进，行首空白不该进标题
+ *    （段首那一行本身可能是空白：`thinkingParagraphs` 只吃段与段之间的空行）；
+ * 3. 整行 whitespace 压成一个空格再截到 `THINKING_TITLE_CHARS` 字，超出加 `…`。
+ *
+ * **一个字都取不到就回退 `THINKING_DONE_TITLE`**：那一行至少要说清"这是一段思考"，
+ * 留一个空标签比写一句通用的话更糟。
+ */
+export function thinkingTitle(text: string): string {
+  for (const paragraph of thinkingParagraphs(text)) {
+    const line = paragraph.split('\n').find((item) => item.trim() !== '')
+    if (!line) continue
+    const flat = line.replace(/\s+/g, ' ').trim()
+    return flat.length > THINKING_TITLE_CHARS ? `${flat.slice(0, THINKING_TITLE_CHARS)}…` : flat
+  }
+  return THINKING_DONE_TITLE
+}
+
 /** 摘要行：一眼回答"这句话有没有出处"。 */
 export function traceSummary(message: Message): string {
   if (message.streaming && message.sources.length === 0) {
@@ -864,11 +897,74 @@ function groupBlock(block: TraceStep[]): TraceEntry[] {
  * 宁可那一行什么都不写，也不要把 JSON 当句子印出来；原始载荷没丢，
  * 点开这一步的「入参 / 返回」就是它。
  *
- * **挪到这一层**是组行标题也要用它：标题同样从 `detail` 里取对象，同样不能把 JSON
- * 印上去——一处判断，两个问的人（`ToolchainFlow` 从这里引）。
+ * **挪到这一层**是"行里的文字"多处在问它：组行标题（`stepObject` 从这里取对象）与
+ * 行详情（`displayDetail`）——一处判断，两处引用；渲染层只接输出，不重判一遍。
  */
 export function detailIsRawJson(detail: string): boolean {
   return /^\s*\{\s*"[\w.]+"\s*:/.test(detail)
+}
+
+/** 行详情里最多列几个工具名：这一格是**一句话的尾巴**（行模式「标签 | 详情」），不是把返回抄一遍。 */
+export const DETAIL_TOOL_LIMIT = 4
+
+/**
+ * 行详情那一格**该印什么**（2026-09-30 用户批注：行里不印原始 JSON）。
+ *
+ * 现在只有一条岔路值得走：`find_tools` 的返回——它是
+ * `{"found": ["web_search", …], "note": …, "tools": [每个工具的完整 schema]}`，
+ * 而被后端回退成行结论时（`ToolOutcome.step_detail()`：没有摘要就取返回的开头），
+ * 印在行里的就是那半截 JSON。这半截里**唯一对得上用户脑子的东西是 `found` 那段工具名**，
+ * 所以把它顿号连接出来（超过 `DETAIL_TOOL_LIMIT` 个收成「… 等 N 个」，N 是**总数**；
+ * 与组行标题那套「… 还有 N 个」同一形状，只是 N 数的是全部而不是剩下的那些）。
+ *
+ * 三条分寸：
+ *
+ * 1. **不是原始 JSON 的 detail 一个字不动**（`detailIsRawJson` 是唯一判据，不另立一套）；
+ * 2. **取不到就返回空串**：没有 `found`、`found` 是空数组、或工具名那一截也被裁掉了——
+ *    宁可这一行什么都不写，也不要把 JSON 当句子印出来（`detailIsRawJson` 的哲学）。
+ *    原始载荷没丢：点开这一步的「返回」就是它；
+ * 3. **只认完整的 JSON 字符串数组**：`found` 被裁到一半时**不猜**（见下面 `foundNames`）。
+ */
+export function displayDetail(step: { detail: string }): string {
+  if (!detailIsRawJson(step.detail)) return step.detail
+  const names = foundNames(step.detail)
+  if (names.length === 0) return ''
+  return names.length <= DETAIL_TOOL_LIMIT
+    ? names.join('、')
+    : `${names.slice(0, DETAIL_TOOL_LIMIT).join('、')}… 等 ${formatCount(names.length)} 个`
+}
+
+/**
+ * `find_tools` 返回里的工具名（`services/agent_tools.py::render_discovery` 那片 `found`）。
+ *
+ * 为什么要**两条路**取：后端把行结论裁到 120 字（`tool_loop.ToolOutcome.step_detail()`），
+ * 而这份返回的 `tools` 那一截带着每个工具的完整 schema，**真实的那一条永远是半截 JSON**
+ * ——`JSON.parse` 当场就抛。所以第一条路解析完整 JSON（老数据、或将来别处给的未裁剪文本），
+ * 抛了就走第二条：从**开头那个完整的 `"found": [...]`** 里取。两条都要求那一段是
+ * **合法的 JSON 字符串数组**（被裁到一半的数组解析不了，于是这一档不印）。
+ */
+function foundNames(detail: string): string[] {
+  try {
+    const parsed = JSON.parse(detail) as unknown
+    if (parsed && typeof parsed === 'object') {
+      return namesIn((parsed as Record<string, unknown>).found)
+    }
+  } catch {
+    // 半截 JSON（说明见上）：落到下面"开头 found 数组"那一条路
+  }
+  const head = /^\s*\{\s*"found"\s*:\s*(\[[^\]]*\])/.exec(detail)
+  if (!head) return []
+  try {
+    return namesIn(JSON.parse(head[1]) as unknown)
+  } catch {
+    return []
+  }
+}
+
+/** `found` 那一格里的工具名：只认非空的字符串，别的形状一律当没有（不猜）。 */
+function namesIn(found: unknown): string[] {
+  if (!Array.isArray(found)) return []
+  return found.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
 }
 
 /** 组那一行的标题里最多列几个对象（多出来的收成「… 还有 N 个」，与出处那 3 条同一口径）。 */
@@ -1240,9 +1336,11 @@ function answerDetail(message: Message): string {
   /*
    * 答完之后**不再报字数**（2026-09-29 用户："每一步的 token/字数不标，只在最后标一个总的"）。
    *
-   * 那一行原先写「共 N 字」——它是**这一步**的字数，而"整段过程一共多少"才是要看的读数，
-   * 后者由 `ToolchainFlow` 在过程末尾给一处（`data-testid="trace-total"`）。
-   * 这里刻意**不留一个近似的替代**：回答正文就在下面，用户数得出来；再印一个数只是噪声。
+   * 那一行原先写「共 N 字」——它是**这一步**的字数；而"最后标一个总的"那个总计，
+   * 2026-09-30 用户批注之后**也只剩耗时**（`ToolchainFlow` 的过程总计行，
+   * `data-testid="trace-total"`，字数统计整档撤掉）。也就是说全仓已经没有一处印字数了，
+   * 这里更不该补一个。刻意**不留近似的替代**——回答正文就在下面，用户数得出来；
+   * 再印一个数只是噪声。
    */
   return ''
 }

@@ -15,7 +15,7 @@
  * `--text-*`、圆角只用 `--radius-*`），并与知识库那一份（`knowledge.css` 的 `.kb-md-*`）
  * **同一套口径**——同一份 Markdown 在两个页面里不该有两种段距。
  *
- * 两条工程约束：
+ * 三条工程约束：
  * 1. **规则写在 `@layer components` 里**（第二批就收了）。层外的样式会压过 Tailwind 的
  *    `@layer utilities`（与令牌那条同一条 CSS 规则，见 `tokens.css` 头部那段），
  *    而这个文件里的元素恰恰可能被调用方加工具类（`AnswerText` 的 className 就落在
@@ -27,6 +27,12 @@
  *    `knowledge.css` 逐字相同，重复是幂等的。
  * 2. **只认 `.md-*` 与 `.md-body` 作用域**：这一族类名只有对话页的 Markdown 渲染器
  *    会发出来（文件预览自己有一套 `.kylab-md-*`），所以不会外溢到别的页面。
+ * 3. **块级卡片（代码块 / 表格）的头部只有一份规格**（2026-09-30 用户批注「Markdown 块
+ *    头部」）：灰底 `Bg-Secondary` + 0.5px hairline + 紧凑内边距 + 14px/600 非等宽标题 +
+ *    右侧图标按钮组，外卡 0.5px hairline + 12px 圆角。两处渲染共用 `.md-code-head` /
+ *    `.md-code-lang` 这两个类名（有用例钉着），取值就写在那两条基底规则上——
+ *    依据《对话UI-重做-设计-v0.1》§5.1「视觉换成 Kimi 卡片」与 Kimi 的
+ *    `inline-tool-detail`（圆角灰卡 + 卡内顶部一行加粗小标题）。
  */
 
 /**
@@ -282,36 +288,74 @@
 
   /* ---------------------------------------------------------------- 代码块 */
 
-  /* 两段式容器：头部带（语言名 + 复制）+ 代码本体（旧 `codeBlockHtml` 的形状） */
+  /*
+   * 两段式容器：头部带（语言名 + 复制）+ 代码本体（旧 `codeBlockHtml` 的形状）。
+   *
+   * **外卡与表格卡片同一档**（2026-09-30 用户批注「Markdown 块头部」；
+   * 《对话UI-重做-设计-v0.1》§5.1：「代码块两段式、表格头卡片形态保留，视觉换成
+   * Kimi 卡片：灰头 + 0.5px hairline + 12px 圆角」）：改前这里是 `1px` +
+   * `--radius-control`（10px），与表格那张卡（`0.5px` + 12px）并排就是两种圆角、两种描边。
+   */
   .md-code {
     margin: 0 0 var(--space-3);
     overflow: hidden;
     background: var(--bg-subtle);
-    border: 1px solid var(--border-hairline);
-    border-radius: var(--radius-control);
+    border: 0.5px solid var(--Separators-S1);
+    /* `--radius-row` = 12px，与 `.md-table-block` 逐值相同 */
+    border-radius: var(--radius-row);
   }
 
+  /*
+   * **卡片头带：代码块与表格共用这一份规格。**
+   *
+   * 灰底 `Bg-Secondary` + 下边一条 0.5px hairline + 紧凑内边距 `5px 10px 5px 16px`
+   * （Kimi 源码值；证据图上标题左缘离卡片左沿 16.5px，逐字对上）。
+   *
+   * 不写死行高：头带高度由内容算出来（标题 20px 行高 / 图标按钮 24px 命中区 + 上下各 5px），
+   * 代码块与表格因此**天然等高**。改前代码块写死 `--row-height-compact`（32px），
+   * 表格再按作用域覆盖回 `height: auto`，两处各说各话。
+   */
   .md-code-head {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: var(--space-2);
-    height: var(--row-height-compact);
-    padding: 0 var(--space-2) 0 var(--space-3);
-    border-bottom: 1px solid var(--border-hairline);
+    gap: var(--space-1);
+    padding: 5px 10px 5px 16px;
+    background: var(--Bg-Secondary);
+    border-bottom: 0.5px solid var(--Separators-S1);
   }
 
+  /*
+   * 标题（代码块的语言名 / 表格的「表格」）：**14px / 600 / 非等宽 / 一级色**，
+   * 与工具链原文面板那行加粗小标题（`flow.css` 的 `.ch-panel-head`，Kimi 的
+   * `inline-tool-detail`）同一个口径。改前这里是 12px 等宽的三级灰字，
+   * 表格那边另有一套 14px/600——两个头部两种长相。
+   */
   .md-code-lang {
-    font-family: var(--font-mono);
-    font-size: var(--text-micro-size);
-    color: var(--text-tertiary);
+    font-family: inherit;
+    font-size: var(--text-meta-size); /* 14px */
+    font-weight: 600;
+    line-height: 20px;
+    color: var(--Labels-Primary);
   }
 
-  /* 头部带上的图标按钮：24px 的命中区（`--hit-target`），悬停才给底色 */
+  /*
+   * 图标按钮**成组贴右缘**：DOM 里没有"按钮组"那一层（类名被用例钉着，不加结构），
+   * 所以让**排在前面那颗吃掉全部剩余空间**（`margin-left: auto`）。
+   * 改前是 `justify-content: space-between`——三颗子元素时（标题 + 展开 + 复制）
+   * 中间那颗被摆到正中央，展开键孤零零地浮在头带中间。
+   */
+  .md-code-head > .md-icon-btn:first-of-type {
+    margin-left: auto;
+  }
+
+  /* 头部带上的图标按钮：24px 的命中区（`--hit-target`），悬停才给底色。
+     `flex: none`：命中区是**下限**（tokens.css 那条"最小可点尺寸"），头带变窄时
+     标题与按钮抢宽度，这里不许它被压小。 */
   .md-icon-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    flex: none;
     width: var(--hit-target);
     height: var(--hit-target);
     color: var(--text-tertiary);
@@ -342,7 +386,9 @@
   /* ---------------------------------------------------------------- 表格 */
 
   /* 表格卡片——Kimi §9 的源码值：**0.5px hairline + 12px 圆角**，宽随内容
-     （`fit-content`）但不超过正文列，超出就在卡片里横滚（`.md-table-wrap`）。 */
+     （`fit-content`）但不超过正文列，超出就在卡片里横滚（`.md-table-wrap`）。
+     这一档**代码块那张卡也是同值**（见上面 `.md-code`；2026-09-30 用户批注
+     「代码块与表格的外卡边框/圆角也核对一致」）。 */
   .md-table-block {
     width: fit-content;
     max-width: 100%;
@@ -353,28 +399,15 @@
   }
 
   /*
-   * 卡片头带（"表格" + 复制 / 下载）：灰底 `Bg-Secondary` + 下边一条 hairline，
-   * 内边距 `5px 10px 5px 16px`（源码值；证据图上标题左缘离卡片左沿 16.5px，逐字对上）。
+   * 卡片头带（"表格" + 复制 / 下载）：**与代码块共用 `.md-code-head` 那一份规格**
+   * （2026-09-30 用户批注「两个头部统一成 Kimi 卡片头规格」）。
    *
-   * 它**复用的是代码块那一套类名**（`.md-code-head` / `.md-code-lang`）——
-   * 那两个名字有用例钉着（"整体是一个有头部的块"），所以这里按 `.md-table-block`
-   * 作用域把取值收回来，而不是给表格另起一套类名。
+   * 它复用的还是代码块那一套类名（`.md-code-head` / `.md-code-lang`，两个名字有用例
+   * 钉着："整体是一个有头部的块"），但**按作用域把取值收回来的那两条覆盖已经不需要**：
+   * 表格原先那套值（`height: auto` / `5px 10px 5px 16px` / `Bg-Secondary` / 0.5px
+   * hairline / 14px·600 非等宽）已经**上移成基底那一份**，两处逐值相同，
+   * 留在这里就是同一件事的第二份定义。
    */
-  .md-table-block .md-code-head {
-    height: auto;
-    padding: 5px 10px 5px 16px;
-    gap: var(--space-1);
-    background: var(--Bg-Secondary);
-    border-bottom: 0.5px solid var(--Separators-S1);
-  }
-
-  .md-table-block .md-code-lang {
-    font-family: inherit;
-    font-size: var(--text-meta-size);
-    font-weight: 600;
-    line-height: 20px;
-    color: var(--Labels-Primary);
-  }
 
   /* 宽表格在窄列里要能滚，否则会把整页撑破 */
   .md-table-wrap {
@@ -398,7 +431,7 @@
   }
 
   /* 表头**不铺灰底**（改前铺的是 `--bg-subtle`）：证据图上那一条列名行是白底，
-     灰底只属于卡片头带（见上面 `.md-table-block .md-code-head`）。 */
+     灰底只属于卡片头带（见上面 `.md-code-head`）。 */
   .md-table th {
     font-weight: 600;
     color: var(--Labels-Primary);

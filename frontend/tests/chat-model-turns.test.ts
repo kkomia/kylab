@@ -14,6 +14,7 @@ import {
   degradedReason,
   hasToolCallMarkup,
   buildTurns,
+  displayDetail,
   groupHeading,
   humanizeArtifactKeys,
   isTraceOpen,
@@ -26,6 +27,9 @@ import {
   THINKING_EFFORTS,
   TRACE_PAGE_SIZE,
   thinkingParagraphs,
+  thinkingTitle,
+  THINKING_DONE_TITLE,
+  THINKING_TITLE_CHARS,
   trailingThinking,
   usedWebSearch,
   replyArtifacts,
@@ -156,7 +160,8 @@ describe('traceSteps', () => {
     expect(steps[0].detail).toContain('1 个片段')
     expect(steps[1].label).toBe('已生成回答')
     // 回答那一步**不报字数**（2026-09-29 用户："每一步的 token/字数不标，只在最后标一个总的"）
-    // ——整段过程末尾那一处总计由 `ToolchainFlow` 给（`data-testid="trace-total"`）。
+    // ——而那个"总的"如今也只剩耗时（2026-09-30 用户批注：整轮总计只报耗时本身，
+    // 字数统计整档撤掉；那一行在 `ToolchainFlow`，`data-testid="trace-total"`）。
     expect(steps[1].detail).toBe('')
   })
 
@@ -232,7 +237,7 @@ describe('Agent 步骤（v20）', () => {
       '组织回答',
     ])
     expect(steps.map((item) => item.icon)).toEqual(['think', 'search', 'search', 'build'])
-    // 回答那一步不再"就地补字数"（同上一条：逐步不标，只在过程末尾给一个总计）
+    // 回答那一步不再"就地补字数"（同上一条；而"总的"那处如今也只剩耗时，全仓不再印字数）
     expect(steps.at(-1)?.detail).toBe('')
   })
 
@@ -1109,6 +1114,103 @@ describe('thinkingParagraphs：思考正文按空行切段', () => {
 
   it('没有空行时就是一段（一个字都不改）', () => {
     expect(thinkingParagraphs('一句话的思考。')).toEqual(['一句话的思考。'])
+  })
+})
+
+/**
+ * 思考行**收起时**的标题（2026-09-30 用户批注，照 kimi.com 实测）。
+ *
+ * 生产里那行标题跟着开合走：收起时是**描述性文字**（这段思考在讲什么），
+ * 点开之后才换成固定的「思考已完成」。所以这一层派生的是"描述性"那一半，
+ * 展开态由 `ToolchainFlow` 直接用 `THINKING_DONE_TITLE`（固定文案一处真相）。
+ */
+describe('thinkingTitle：思考行收起时的描述性标题', () => {
+  it('取首个非空段落的首行（段落判据与正文同一份：空行分段）', () => {
+    expect(thinkingTitle('先看问题\n再想一步\n\n第二段')).toBe('先看问题')
+    expect(thinkingTitle('\n\n第一段\n\n第二段')).toBe('第一段')
+  })
+
+  it('段首是空白行时往下找一个非空行（段内换行，只有首行进标题）', () => {
+    // `thinkingParagraphs` 只吃段与段之间的空行，段内的空行（这里只有空格）留在段里
+    expect(thinkingTitle('   \n真正的那一行\n\n第二段')).toBe('真正的那一行')
+  })
+
+  it('整行 whitespace 压成一个空格再截：标题是一行，不是把正文抄一遍', () => {
+    expect(thinkingTitle('缩进过的  第一行\t带制表符\n第二行')).toBe('缩进过的 第一行 带制表符')
+    const long = '很长的开头'.repeat(10) // 50 字 > 30
+    const title = thinkingTitle(long)
+    expect(title).toBe(`${long.slice(0, THINKING_TITLE_CHARS)}…`)
+    expect(title.length).toBe(THINKING_TITLE_CHARS + 1)
+  })
+
+  it('一个字都取不到就回退「思考已完成」（不留一个空标签）', () => {
+    // 整串只剩空白时界面这一行根本不画（`trailingThinking` 的口径），这一档是兜底
+    expect(thinkingTitle('')).toBe(THINKING_DONE_TITLE)
+    expect(thinkingTitle('\n\n   \n')).toBe(THINKING_DONE_TITLE)
+  })
+})
+
+/**
+ * 行详情那一格该印什么（2026-09-30 用户批注：行里不印原始 JSON）。
+ *
+ * 病灶：后端没有摘要时会回退到**返回的开头**并裁到 120 字
+ * （`ToolOutcome.step_detail()`），于是 `find_tools` 那一步的行里铺的是半截 JSON
+ * （`{"found": ["web_search", …], "note": …`）。这一格只留 `found` 里的工具名。
+ */
+describe('displayDetail：行详情不印原始 JSON', () => {
+  /** `find_tools` 的真实形状：后端裁到 120 字、空白还被压成一个空格（见 `step_detail`）。 */
+  function findTools(found: string[]): string {
+    const json = JSON.stringify({
+      found,
+      note: '这些工具现在可以用了：用 `use_tool` 调，`name` 填工具名。',
+      tools: [{ name: 'x', description: '很长的说明', parameters: { type: 'object' } }],
+    })
+    return json.slice(0, 120)
+  }
+
+  it('普通结论一个字不动（这一档只管原始 JSON）', () => {
+    expect(displayDetail({ detail: '「眼轴」命中 3 条' })).toBe('「眼轴」命中 3 条')
+    expect(displayDetail({ detail: '' })).toBe('')
+  })
+
+  it('完整的 `find_tools` 返回：工具名顿号连接', () => {
+    const detail = JSON.stringify({
+      found: ['web_search', 'web_fetch'],
+      note: '这些工具现在可以用了',
+    })
+    expect(displayDetail({ detail })).toBe('web_search、web_fetch')
+  })
+
+  it('超过 4 个收成「… 等 N 个」（N 是**总数**）', () => {
+    // 名字很短，120 字那一刀不会碰到 `found` 那一截
+    expect(displayDetail({ detail: findTools(['a', 'b', 'c', 'd', 'e', 'f']) })).toBe(
+      'a、b、c、d… 等 6 个',
+    )
+  })
+
+  it('半截 JSON（真实那一条就是）也认：从开头的 `found` 数组里取', () => {
+    const detail = findTools(['web_search', 'web_fetch'])
+    // 前置钉住这份夹具真的是"解析不了的半截 JSON"（否则这条用例就白测了）
+    expect(() => JSON.parse(detail)).toThrow()
+    expect(displayDetail({ detail })).toBe('web_search、web_fetch')
+  })
+
+  it('没有 `found`（别的工具的返回）→ 空串，宁可什么都不写', () => {
+    expect(displayDetail({ detail: '{"artifact_id": "art_1", "name": "报告.md"}' })).toBe('')
+    // `found` 是空数组同样是"没找到"，不给这一格编字
+    expect(displayDetail({ detail: findTools([]) })).toBe('')
+  })
+
+  it('`found` 那一截也被裁掉了 → 空串（不猜、不印半截）', () => {
+    // 裁在数组中间：那一段不是合法的 JSON 字符串数组，于是这一格空着
+    const detail = '{"found": ["一个特别长的工具名字'
+    expect(displayDetail({ detail })).toBe('')
+  })
+
+  it('`found` 里混着非字符串 → 只留字符串那几条（不印形状不对的东西）', () => {
+    expect(displayDetail({ detail: '{"found": ["web_search", 3, null, "web_fetch"]}' })).toBe(
+      'web_search、web_fetch',
+    )
   })
 })
 

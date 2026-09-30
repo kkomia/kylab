@@ -4,7 +4,9 @@
  * 取值**逐字抄** kimi.com 生产 CSS（用户提供的源码级提取文档 §2/§12）；颜色与描边
  * 直接用全局主题里那套 Kimi 同款令牌（`--Labels-*` / `--Bg-*` / `--Separators-S1` /
  * `--Colors-KMBlue`，取值本就与 kimi.com 逐字一致），深浅反相由主题自带；
- * 本文件只新增全局没有的件：折叠缓动、签名 keyframes、渐隐与各结构类。
+ * 本文件只新增全局没有的件：折叠缓动、签名 keyframes、渐隐与各结构类；
+ * 2026-09-30 起另有两件来自 kimi.com 实测（不是抄源码文档）：面板限高口径（`.ch-raw`
+ * 的 6 行）与进行中那枚半月旋转 dot（`.ch-loading-dot`，各条规则上都写了出处）。
  *
  * 与旧 `traceStyles` 的关系：旧 TracePanel/TraceStepRow/Fold 已随重做退役删除；
  * `traceStyles` 只剩 `StepResult` / `WebSiteList` 两处还在用。这里不引用它。
@@ -436,6 +438,40 @@ button.ch-row:not([aria-disabled='true']):hover {
   margin-left: 14px;
 }
 
+/* ---- 进行中那枚**半月形旋转 dot**（kimi-widget 图标集里的 `LoadingRight`） ----
+   出处：参考 kimi-widget 的 `LoadingRight` 半月图标（2026-09-30 主控从存盘源码与批注
+   原图核实：**左浅右蓝的实心半月**，两半都填实、**不是**一半透明），实测尺寸 14px、
+   约 0.8s 一圈匀速旋转（不是描边圆环那种 spinner、也不是呼吸点）。挂进 `.ch-icon-slot` /
+   `.ch-dot-slot`（都是 20×20 的居中槽，见上面两条规则）取代静态圆点当"这一步在跑"
+   的信号；旋转由这条类自带，组件侧不需要再叠动画类。
+   形状：`conic-gradient` 从 12 点方向起、顺时针切一刀——前 180° 是右半、后 180° 是左半，
+   两半都实心，就是那枚实心半月；硬停点（无插值）所以中间是干净的一刀，不是渐变。
+   静止那一帧正是原图的「左浅右蓝」（conic 从 0° 也就是 12 点方向顺时针走：第一段落在
+   右半），转起来两半交替、哪半在前无所谓。
+   颜色：两半都吃现成主题令牌，不新造色值——蓝 = `--accent-text`（浅色 `#0065dd` /
+   深色 `#3194ff`，见 `themes/light.css`、`themes/dark.css` 的 `--Colors-KMBlue-text`）；
+   浅的那半 = `--Labels-Secondary`（二级文字灰，浅色下是半透明黑、深色下是半透明白，
+   两套主题自带反相）。**原图那半是白**（图标是压在蓝底上的），落在我们的画布上改用
+   二级文字灰——纯白在浅色画布上会整半消失。
+   `flex: none` 是给槽外的复用兜底（挂在 flex 行上时不被 `gap`/收缩压扁）；
+   `display: inline-block` 同理——槽内是 flex 子项会被块化（写了也无害），
+   万一挂到普通行内容器上，行内元素上的 width/height 会失效、半月就不成形了。 */
+.ch-loading-dot {
+  display: inline-block;
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: conic-gradient(var(--accent-text) 0deg 180deg, var(--Labels-Secondary) 180deg 360deg);
+  animation: ch-loading-spin 0.8s linear infinite;
+}
+/* 名字带 `ch-` 前缀（本文件惯例，防撞名；全仓无同名 keyframes）。 */
+@keyframes ch-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* 被拦下 / 等确认 / 失败：这一行说的不是成功 */
 .ch-row[data-outcome] > .ch-row-label {
   color: var(--status-danger, #d92d20);
@@ -482,11 +518,17 @@ button.ch-row:not([aria-disabled='true']):hover {
   line-height: 18px;
   color: var(--Labels-Primary);
 }
-/* 面板体：等宽、可横滚、纵向限高自己滚（后端已把返回裁到 2000 字，与旧 `RAW_BODY` 同一条） */
+/* 面板体：等宽、可横滚、纵向限高自己滚（后端已把返回裁到 2000 字，与旧 `RAW_BODY` 同一条）。
+   **限高 = 6 行**：2026-09-30 用户批注「默认长度有点多了、调整成跟 Request 一样高」。
+   口径：行高 `1.7` × 12px = **20.4px/行**，6 行 = 122.4px，加面板体底部那 10px padding
+   （全局 `box-sizing: border-box`，见 `styles/tokens.css` 顶部那份通配重置）≈ 132.4px，
+   **取整写死 132px**——余下的 0.4px 落在末行行距里（1.7 倍行高给 12px 字形留了 4.2px 行距），
+   末行的字面半点不裁。改前 220px（≈10 行）。
+   Request / Response 共用这一类，限高只有这一处 → 两块天然同高（这正是这条批注要的）。 */
 .ch-raw {
   margin: 0;
   padding: 0 10px 10px;
-  max-height: 220px;
+  max-height: 132px;
   overflow: auto;
   font-family: var(--font-mono);
   font-size: calc(12px * var(--font-scale, 1));
@@ -701,7 +743,9 @@ button.ch-row:not([aria-disabled='true']):hover {
   .ch-row,
   .ch-chev,
   .ch-fade,
-  .ch-in {
+  .ch-in,
+  .ch-loading-dot,
+  .ch-avatar {
     transition: none !important;
     animation: none !important;
   }
@@ -740,6 +784,20 @@ button.ch-row:not([aria-disabled='true']):hover {
    这里只管两层 CSS 动效：**呼吸常驻**（用户："常驻动效"），声纳只在干活时出现。 */
 .ch-avatar {
   animation: ch-breath-scale 1.6s ease-in-out infinite;
+}
+/* 上面那条 `animation` 引用的 keyframes——**这是补定义**（2026-09-30 验收修的悬空动画）：
+   引用在先、定义一直缺（`ch-breath-scale` 全仓此前搜不到出处），头像那层「常驻呼吸」
+   实际是死的，和本文件里 `.ch-in` 那次（有类无 keyframes）同类。三帧、幅度克制：
+   1 → 1.05 → 1，与 `.ch-avatar` 的 `1.6s ease-in-out infinite` 配套——56px 的槽最胖时
+   58.8px，不吃到邻居。 */
+@keyframes ch-breath-scale {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.05);
+  }
 }
 /* 声纳式扩散环：盖在头像上、往外扩出去再消失（"它正在干活"的信号） */
 .ch-avatar::after {
@@ -791,7 +849,12 @@ button.ch-row:not([aria-disabled='true']):hover {
   animation: ch-shimmer 1.4s linear infinite;
 }
 
-/* 过程总计行（「共 N 字 · 用时 M」）：四级灰、tabular 数字 */
+/* 过程总计行（**只报耗时**这一个读数）：四级灰、tabular 数字。
+   口径同步（行为层 `ToolchainFlow.tsx` 里 `data-testid="trace-total"` 那一段，
+   2026-09-30 用户批注）：原先这行是「共 N 字 · 用时 M」——**字数整档撤掉**（逐步不报字数
+   之后，整轮那个"共 N 字"也没有对应需求了），「用时」前缀也去掉，写出来就是它本身
+   （`2 分 56 秒`）；耗时只累加"当场看着跑完"的步，总和为 0（历史回放、刷新回来的轮次）
+   时**整行不画**。也就是说这一行**在不在**由行为层决定，样式只管它长什么样。 */
 .ch-total {
   margin: 6px 0 0;
   /* 与行内标签同一条轴：图标槽 20px + 间距 8px = 28px */
