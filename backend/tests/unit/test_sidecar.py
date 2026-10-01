@@ -1743,7 +1743,8 @@ def test_the_provider_is_one_instance_for_the_whole_process(tmp_path, monkeypatc
     收成一个之后判据有两条，**两条都要过**：
 
     ① **身份**：本类这个、``Services.provider``、``ChatService`` 的检索那一个、
-       ``stores.meta.kb`` 的 reader，全指同一个对象（``is`` 比身份）；
+       ``stores.meta.kb`` 的 reader，全指同一个对象（``is`` 比身份；M4 阶段 3 起
+       reader 外面多包了一层快照缓存，所以那一条要往下走两层，见下面那两行）；
     ② **行为**：两个消费者各问一次状态，**只发了一次握手**——身份相同但缓存各一份的话，
        这条会红（那正是"收成实例"要解决的问题本身）。
     """
@@ -1759,10 +1760,14 @@ def test_the_provider_is_one_instance_for_the_whole_process(tmp_path, monkeypatc
     assert provider is clients.services.provider
     assert clients.knowledge is provider
     assert clients.services.chat._knowledge is provider
-    # reader 那条链（阶段 4 后挂的那个对象）也指着它：`_Router.kb` 在 `stores.meta` 上
+    # reader 那条链（阶段 4 后挂的那个对象）也指着它：`_Router.kb` 在 `stores.meta` 上。
+    # M4 阶段 3 起中间多了**缓存包装器**一层，所以这条链现在是
+    # `_reader`（CachedKnowledgeMetaReader）→ `_inner`（提供者的 reader）→ `_client`
     stores = clients.services.chat._stores
     assert stores is not None, "ChatService 没拿到 bundle：这条用例的前提不成立"
-    assert stores.meta.kb._reader._client is provider
+    reader = stores.meta.kb._reader
+    assert reader._inner._client is provider
+    assert reader._cache is clients.services.kb_cache, "两个读面共用的那一份快照服务"
 
     monkeypatch.setattr(provider, "_transport", httpx.MockTransport(handler))
 

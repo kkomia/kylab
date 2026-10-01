@@ -16,6 +16,10 @@
 组合根把提供者的 reader **后挂**进 `stores.meta.kb` 了没有 ✓ —— 那一行删掉，
 `stores.meta` 的 KB 读会静默退回"组合根未装配"，而那是**装配期**的问题。
 
+**M4 阶段 3 换成缓存包装器**（同族两条）：挂上去的那一层是 `CachedKnowledgeMetaReader`
+（它的 cache 与 `Services.kb_cache` 是**同一个**对象）✓；`ChatService.kb_prompt` 经它读
+**命中时零 HTTP** ✓ —— "交互路径 N 次局域网往返变成 0 次"这句承诺的可观察形态。
+
 **反向验证**：把协议里的方法名改掉（或让假实现少一个方法）→ 用例必须红 ✓。
 """
 
@@ -334,3 +338,116 @@ def test_the_composition_root_binds_the_provider_reader_into_the_kb_store(
     assert isinstance(record, KnowledgeBaseRecord)
     assert record.name == "论文"
     assert asked == ["http://server.test/api/v1/knowledge-bases/kb_a"]
+
+
+# ------------------------------------ reader 换线：挂的是缓存包装器（M4 阶段 3）
+
+
+@pytest.mark.local
+def test_the_composition_root_wraps_the_kb_reader_in_the_snapshot_cache(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """组合根挂进 ``stores.meta.kb`` 的是**缓存包装器**（M4 阶段 3，方案 §7）。
+
+    三层判据，缺一层都看不出"换线了没有"：
+
+    ① **那一层就是包装器**：``stores.meta.kb`` 里那个 reader 是
+       `CachedKnowledgeMetaReader`，它的 ``cache`` 是**组合根建的那个**
+       `KbMetaCacheService`（与 ``Services.kb_cache`` 是同一个对象——页面面与 reader 面
+       必须共用一份，各建一个就会各排各的再验证，R3 的风暴就是这么来的）；
+    ② **端到端照旧**：从组合根那个 bundle 读一个库回来，仍然映射成 storage 那一层的
+       ``KnowledgeBaseRecord``（``stores.meta`` 与 ``services/`` 的调用点一个字没改，
+       M3 §2.4 的承诺）；
+    ③ **第二次读零 HTTP**：命中路上一次 NAS 往返都不发——这才是这次换线的收益
+       （v0.3 §6.1-2「交互路径零网络」），不然就只是"对象换了个名字"。
+    """
+    from app import sidecar
+    from app.services.kb_cache import CachedKnowledgeMetaReader, KbMetaCacheService
+    from app.storage.base import KnowledgeBaseRecord
+
+    sidecar.pin_local_deployment(
+        tmp_path / "data", server_url="http://server.test/api/v1", token="t"
+    )
+    services: Services = get_services()
+    stores = services.chat._stores
+    assert stores is not None, "ChatService 没拿到 bundle：这条用例的前提不成立"
+
+    service = services.kb_cache
+    assert isinstance(service, KbMetaCacheService), "组合根应当建出快照服务（M4 阶段 3）"
+    # 私有那一下是这条守卫的全部价值所在：**看对象图上挂的是哪一个**
+    reader = stores.meta.kb._reader
+    assert isinstance(reader, CachedKnowledgeMetaReader), "reader 那一层应当是缓存包装器"
+    assert reader._inner is not None, "包装器里那个 inner 应当是提供者的 reader"
+    assert reader._cache is service, "两个读面（reader / 页面）必须是同一个快照服务"
+
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "id": "kb_a",
+                "name": "论文",
+                "embedding_model_id": "bge-m3",
+                "embedding_dim": 8,
+            },
+        )
+
+    monkeypatch.setattr(services.provider, "_transport", httpx.MockTransport(handler))
+
+    first = stores.meta.get_knowledge_base("kb_a")
+    again = stores.meta.get_knowledge_base("kb_a")
+
+    assert isinstance(first, KnowledgeBaseRecord)
+    assert first.name == "论文"
+    assert again == first, "命中那一读回的应当是同一份内容"
+    assert asked == ["http://server.test/api/v1/knowledge-bases/kb_a"], (
+        "第一次（未命中）同步取一次，第二次起一次都不该发"
+    )
+
+
+@pytest.mark.local
+def test_the_kb_prompt_through_the_cache_costs_one_request_and_then_none(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """``ChatService.kb_prompt`` 那一条链**命中时零 HTTP**（M4 阶段 3 的完成判据）。
+
+    它每轮每个选中的库读一次 ``stores.meta.get_knowledge_base``（``chat.py``）——
+    也就是缓存包装器那一层。第一次（未命中）同步取一次（必须现在给答案），
+    第二次起一次都不发，而拼出来的提示词一个字不变。v0.3 §6.1-2 那句"交互路径零网络"
+    的可观察形态就是这个：
+    """
+    from app import sidecar
+
+    sidecar.pin_local_deployment(
+        tmp_path / "data", server_url="http://server.test/api/v1", token="t"
+    )
+    services: Services = get_services()
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(str(request.url))
+        if request.url.path.endswith("/knowledge-bases/kb_a"):
+            return httpx.Response(
+                200,
+                json={
+                    "id": "kb_a",
+                    "name": "论文",
+                    "embedding_model_id": "bge-m3",
+                    "embedding_dim": 8,
+                    "system_prompt": "眼轴按 mm 记",
+                },
+            )
+        return httpx.Response(404, text="没有这个库")
+
+    monkeypatch.setattr(services.provider, "_transport", httpx.MockTransport(handler))
+
+    assert services.chat.kb_prompt(["kb_a"]) == "眼轴按 mm 记"
+    assert len(asked) == 1, "未命中那一次必须同步取（它要现在给答案）"
+    assert services.chat.kb_prompt(["kb_a"]) == "眼轴按 mm 记"
+    assert len(asked) == 1, "命中之后一个请求都不该再发（交互路径零网络）"
+
+    # **库里没有这个库**仍然是另一个答案（远端 404 → None → 空串），不是错误
+    assert services.chat.kb_prompt(["kb_没有这个"]) == ""
+    assert len(asked) == 2

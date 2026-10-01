@@ -86,6 +86,11 @@ M4 给读路径的元数据（库列表 / 库详情）加了一份落本机 SQLi
 ``tests/unit/services/test_kb_cache.py`` 的分类守卫用例当场红——"顺手缓存一下"这条路
 在那一步就撞墙。
 
+**另外三个资源的取数走 :meth:`page_meta`**（M4 阶段 4）：文档列表 / 文档条目 / 库内目录
+没有 reader 通路，而 ``/local/kb-cache/*`` 那族端点要的就是"发一次 GET、原样把 JSON
+递回去"的那三下。它与 :meth:`knowledge_meta` 同一条钥匙、同一套错误口径，只是读的东西
+不同——两个方法各管一个读面（方案 §2.3 的"reader 面"与"页面面"），别把它们合成一个。
+
 ## httpx 仍然不进导入闭包（R12）
 
 ``httpx`` 的取法复用 ``remote_clients._httpx()``（模块级 import 会把 click + pygments +
@@ -536,6 +541,27 @@ class KnowledgeProviderClient:
         """
         return _KnowledgeMetaReader(self)
 
+    def page_meta(self) -> _PageMetaReader:
+        """**页面面**那三个读取（M4 阶段 4）：文档列表 / 文档条目 / 库内目录。
+
+        与 :meth:`knowledge_meta` 是方案 §2.3 分的那**两个读面**：那一个给
+        ``RemoteMetaStore``（每轮每库读一次库详情），这一个给 ``/local/kb-cache/*``
+        那族端点——快照的另外三个资源（``doc_list`` / ``document`` / ``folders``）
+        没有 reader 通路，取数就得从这一层出（端点拿到的是"整取一次"的闭包）。
+
+        三条读取**都是发一次 GET**（快照那一层要的就是这个形状）：整取 → 算哈希 →
+        相同只推 ``checked_at``。回来的都是 NAS 的**原始 JSON**，不在这层重新建模。
+
+        **筛选参数刻意不在签名里**（没有 ``q`` / ``stage`` / ``source_kind``）：
+        快照只认规范视图（决策 D-D，机械形态是签名本身，见
+        ``services/kb_cache.doc_list_scope_key``）——搜索结果是"这一问的答案"，
+        过期即误导，它不该有副本。
+
+        只读、不写、不碰进度：进度与时间线走 :meth:`document_status`（活数据，
+        §1.2 明确不进快照）；库与目录的写操作页面直连 NAS（本机侧不映射，见模块头那张表）。
+        """
+        return _PageMetaReader(self)
+
     # ------------------------------------------------------------------ 内部
 
     def _target_or_raise(self, what: str, *, storage_face: bool = False) -> ProviderTarget:
@@ -831,6 +857,80 @@ class _KnowledgeMetaReader:
             raise _unavailable(exc) from exc
         items = payload.get("items") or []
         return [item for item in items if isinstance(item, dict)]
+
+
+class _PageMetaReader:
+    """``page_meta()`` 返回的那个对象：**只声明页面面要的那三件事**（M4 阶段 4）。
+
+    与 ``_KnowledgeMetaReader`` **同一套口径**（回 NAS 的原始 dict、``None`` = 远端明确说
+    没有这个东西、取不到抛 ``KnowledgeBaseUnavailable``），只是读的东西不同：那三个
+    没有 reader 通路的资源——文档列表 / 文档条目 / 库内目录。
+
+    刻意不实现别的：快照面要什么、这一层就有什么。多一个方法就多一条"看起来能调、
+    其实没人接"的路，而这一层唯一要保证的是"发一次 GET、原样把 JSON 递回去"。
+    """
+
+    def __init__(self, client: KnowledgeProviderClient) -> None:
+        self._client = client
+
+    def list_documents(
+        self,
+        kb_id: str,
+        *,
+        folder_id: str | None = None,
+        root: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any] | None:
+        """这个库的文档列表（``GET /knowledge-bases/{kb_id}/documents``）。
+
+        ``folder_id`` 与 ``root`` 互斥（照 NAS 那条端点）：两个都不给 = 整个库。
+        分页照 NAS 的 ``limit`` / ``offset``；快照那一面的 ``page`` / ``size`` 是同一件事
+        的另一种说法（``offset = (page - 1) * size``，换算在调用方，见
+        ``services/kb_cache.doc_list_scope_key``）。
+        """
+        params = {"limit": str(limit), "offset": str(offset)}
+        if folder_id:
+            params["folder_id"] = folder_id
+        elif root:
+            params["root"] = "true"
+        return self._read(f"/knowledge-bases/{kb_id}/documents", what="读文档列表", params=params)
+
+    def document(self, document_id: str) -> dict[str, Any] | None:
+        """一篇文档的条目信息（``GET /documents/{document_id}``）——详情页 / 抽屉的入口帧。
+
+        **不是进度**：进度与时间线走 :meth:`KnowledgeProviderClient.document_status`
+        （活数据，冻结的进度条是最糟的假象，§1.1）。
+        """
+        return self._read(f"/documents/{document_id}", what="读文档条目")
+
+    def folders(self, kb_id: str) -> dict[str, Any] | None:
+        """这个库的目录树（``GET /knowledge-bases/{kb_id}/folders``）。"""
+        return self._read(f"/knowledge-bases/{kb_id}/folders", what="读库内目录")
+
+    def _read(
+        self, path: str, *, what: str, params: dict[str, str] | None = None
+    ) -> dict[str, Any] | None:
+        """发一次 GET、回一份原始 JSON（这一层只做这一件事）。
+
+        ``404 → None``（"没有这个东西"是答案，与"取不到"是两件事）；其余失败折成
+        ``KnowledgeBaseUnavailable`` —— 与 ``_KnowledgeMetaReader`` 那两个方法逐字
+        同一套处置（那两处照旧不动：M4 只加这一族，不重写已验收的那条线）。
+        """
+        client = self._client
+        target = client._target_or_raise(what, storage_face=True)
+        try:
+            response = client._send(
+                what,
+                target=target,
+                method="GET",
+                path=path,
+                timeout=client._read_timeout,
+                params=params,
+            )
+            return client._read_json(response, what=what, target=target, allow_missing=True)
+        except RemoteClientError as exc:
+            raise _unavailable(exc) from exc
 
 
 def _unavailable(exc: RemoteClientError) -> KnowledgeBaseUnavailable:

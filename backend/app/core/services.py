@@ -43,6 +43,7 @@ from app.services.embedding.resolver import EmbeddingResolver
 from app.services.folder import FolderService
 from app.services.idempotency import IdempotencyService
 from app.services.ingest import IngestService
+from app.services.kb_cache import CachedKnowledgeMetaReader, KbMetaCacheService
 from app.services.kb_prompt import KBPromptService
 from app.services.knowledge_base import KnowledgeBaseService
 from app.services.knowledge_provider import (
@@ -227,6 +228,22 @@ class Services:
 
     为什么带默认值：服务器档与手工构造 ``Services`` 的地方（脚本、测试）都不该被迫
     传一个不适用的对象；"没有它"本身就是一个合法状态，而不是配置漏项。
+    """
+    kb_cache: KbMetaCacheService | None = None
+    """**知识库元数据快照服务**（M4 阶段 3 建；阶段 4 起 ``/local/kb-cache/*`` 用它）。
+
+    本机档：这一份是**全进程唯一**的那一个——reader 面（``ChatService.kb_prompt`` 经
+    ``stores.meta.kb``）与页面面（``/local/kb-cache/*`` 那族端点）读的是同一份快照、
+    同一套排程（单飞 / 15s 最短间隔 / 60s 失败退避）。两个入口各建一个就会各排各的，
+    而 R3 的"再验证风暴"正是那么来的。
+
+    它身上没有第二份事实：真话永远在 NAS 上，删了只丢速度（快照严格可弃，v0.3 §5.3）。
+
+    服务器档：``None``。那一档没有"抄一份 NAS 快照"这条动作——它的知识库就是它自己，
+    页面读到的已经是权威数据，再留一份只会多出一份会说谎的副本。
+
+    为什么带默认值：与 ``provider`` 同一条理由——"没有它"是一个合法状态，
+    而不是配置漏项。
     """
 
 
@@ -507,9 +524,26 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         if resolved.deployment == "local"
         else None
     )
+    # **知识库元数据快照（M4 阶段 3）**：页面面与 reader 面共用的那一份服务。
+    #
+    # 建在**这里**、不建在别处——三件事只有这一层同时具备：① ``bundle.kb_cache`` 是本机
+    # 那张缓存表（服务器档恒 ``None``，见 ``StoreBundle.kb_cache``）；② 键空间的第一列是
+    # **提供者地址**，而地址是每次现取的能力（``provider.target()`` 现读运行期设置），
+    # 那份能力只有服务层有；③ 它得是**全进程唯一的一个**（reader 面与 ``/local/kb-cache/*``
+    # 共用同一套排程，见 ``Services.kb_cache`` 字段说明），所以与 ``provider`` 一样挂在
+    # ``Services`` 上由端点去取。服务器档恒 ``None``：那一档没有这条动作。
+    kb_cache: KbMetaCacheService | None = None
     if provider is not None:
-        # **KB 侧那一条读线的装配就是这一处**（M3 阶段 4）：把提供者的 reader 后挂到
-        # 本机档 `stores.meta.kb` 上（`_Router.kb` 是公开属性，`split_impl/router.py`）。
+        # 地址**每次现取**：`provider_key` 是个闭包而不是装配那一刻算出来的字符串——
+        # 设置页改完地址，下一次读/写/清立刻落在新的那片键空间上（§5）。
+        # 起个非空的名字只给下面那个闭包用（这一支里它一定有值）。
+        local_provider = provider
+        kb_cache = KbMetaCacheService(
+            bundle.kb_cache, provider_key=lambda: local_provider.target().base_url
+        )
+        # **KB 侧那一条读线的装配就是这一处**（M3 阶段 4 后挂、M4 阶段 3 换成缓存包装）。
+        # 把 reader 挂到本机档 `stores.meta.kb` 上（`_Router.kb` 是公开属性，
+        # `split_impl/router.py`）。
         #
         # 为什么是后挂、不是构造参数：① **层序**——`core/storage.py` 先于本文件跑
         # （上面那行 `bundle = stores or build_stores(resolved)`），reader 那时还没出生；
@@ -517,7 +551,13 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         # 现取），那份能力只有服务层有。这一处注入**只在装配期发生一次**，也不动
         # `split_impl` 的"路由表构造时定下"那条纪律：注入的是 KB 侧对象内部的引用，
         # 路由一个字没变。守卫见 `tests/unit/services/test_client_seams.py`。
-        bundle.meta.kb.bind_reader(provider.knowledge_meta())  # type: ignore[attr-defined]
+        #
+        # **为什么缓存包在 reader 外面**（M4 阶段 3）：``stores.meta`` 与 ``services/``
+        # 的调用点因此一个字不用改（M3 §2.4 的承诺），缓存只在对象图上多一个节点；
+        # 而"页面面"读的是**同一个服务**的另一面，两个读面共一份快照、一套排程。
+        bundle.meta.kb.bind_reader(
+            CachedKnowledgeMetaReader(inner=provider.knowledge_meta(), cache=kb_cache)
+        )  # type: ignore[attr-defined]
 
     chat_service = ChatService(
         retrieval,
@@ -758,6 +798,9 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         # （服务器档是 None）。挂它的理由与用途见字段说明——一句话是"让全进程只有
         # 一份握手缓存"，而 `/local/provider`（判定源）与边车的工具表门控都从它取。
         provider=provider,
+        # **进程级那一个快照服务**（M4 阶段 3，与它上面那一个同生共死）：`/local/kb-cache/*`
+        # 那族端点从 `Services` 上取它；服务器档与 provider 一起是 None。
+        kb_cache=kb_cache,
     )
     # 槽里放进刚装好的这一份：定时任务的执行体从这一刻起可用
     # （`_run_scheduled` 只在 worker 领到 SCHEDULED 任务时被调用，那时这里早已填上）

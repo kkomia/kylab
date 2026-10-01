@@ -181,6 +181,10 @@ PROVIDER_SURFACE: dict[str, frozenset[str]] = {
     "document_status": frozenset(),
     # **唯一进快照的那一条**：reader 面的两个方法就是这两个资源（§2.3）。
     "knowledge_meta": frozenset({KB_LIST, KB_DETAIL}),
+    # 页面面（``/local/kb-cache/*``）的三个读取：文档列表 / 文档条目 / 库内目录。
+    # 它自己也只是个视图，但**它的三个方法就是那三个资源**（M4 阶段 4 加的，
+    # 与 `knowledge_meta` 同一条口径：视图按"它的方法能喂哪个资源"分类）。
+    "page_meta": frozenset({DOC_LIST, DOCUMENT, FOLDERS}),
 }
 """``KnowledgeProviderClient`` 的公开方法逐名分类（§1.3 的第二道防线）。
 
