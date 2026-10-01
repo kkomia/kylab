@@ -14,8 +14,10 @@
  */
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { resetKbCacheSupport } from '@/api/kbCache'
 import { resetProviderStore, setProviderStatusForTest, type ProviderStatus } from '@/api/provider'
 import { resetSidecarProbe, setLocalDataForTest } from '@/api/sidecar'
 import { LocalDataStrip } from '@/features/layout/LocalDataStrip'
@@ -102,6 +104,7 @@ beforeEach(() => {
   resetSidecarProbe()
   setLocalDataForTest(undefined)
   resetProviderStore()
+  resetKbCacheSupport()
 })
 
 afterEach(() => {
@@ -318,5 +321,99 @@ describe('顶栏状态条', () => {
       ),
     )
     expect(screen.queryByTestId('local-provider-line')).toBeNull()
+  })
+})
+
+/**
+ * 非 ready 时那颗**入口**（M4 阶段 6 / D-A）：导航里没有知识库那一组，用户进知识库页
+ * 只能靠它。判据是本机快照族那句 `available`——有才给入口（不摆一个点进去被弹回来的）。
+ */
+describe('顶栏状态条：非 ready 时那条入口', () => {
+  /** 带路由的渲染：那颗入口是 `<Link>`（要有 Router 才画得出来）。 */
+  function renderStripped() {
+    return render(
+      <MemoryRouter>
+        <LocalDataStrip />
+      </MemoryRouter>,
+    )
+  }
+
+  /** `/local/kb-cache/knowledge-bases` 的替身（那一行的判据就这一条）。 */
+  function stubWithSnapshot(available: boolean): void {
+    stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const target = String(url)
+        if (target.endsWith('/health')) return okJson()
+        if (target.includes('/local/kb-cache/knowledge-bases')) {
+          return json({
+            available,
+            resource: 'kb_list',
+            scope_key: '',
+            reason: '',
+            items: available ? [{ id: 'kb_1', name: '论文' }] : [],
+            payload: null,
+            version: '',
+            source: 'reader',
+            fetched_at: available ? new Date(Date.now() - 4 * 60 * 1000).toISOString() : null,
+            checked_at: null,
+            stale: false,
+            last_error: '',
+            revalidating: false,
+          })
+        }
+        if (target.includes('/local/provider')) {
+          return json(
+            providerStatus({
+              state: 'unavailable',
+              available: false,
+              reason: '连不上 http://nas:8000：连接被拒绝',
+            }),
+          )
+        }
+        return json({
+          deployment: 'local',
+          data_dir: 'D:\\appdata',
+          database: 'D:\\appdata\\kylab.db',
+          database_exists: true,
+          database_bytes: 1024,
+          database_wal_bytes: 0,
+          server_url: 'http://nas:8000/api/v1',
+          imports: [],
+          unfinished_imports: 0,
+          unimported_file_references: 0,
+          note: '',
+        })
+      }),
+    )
+  }
+
+  it('⑩ 有那一份：多一颗去 `/knowledge-bases` 的入口（时间在悬停那层里）', async () => {
+    setProviderStatusForTest(
+      providerStatus({ state: 'unavailable', available: false, reason: '连不上' }),
+    )
+    stubWithSnapshot(true)
+
+    renderStripped()
+
+    const entry = await screen.findByTestId('local-kb-snapshot-entry')
+    expect(entry).toHaveAttribute('href', '/knowledge-bases')
+    expect(entry.textContent).toContain('看上次看到的知识库')
+    const line = screen.getByTestId('local-provider-line')
+    expect(line.getAttribute('title') ?? '').toContain('4 分钟前')
+  })
+
+  it('⑪ 本机什么都没有：**一个入口都不加**（点进去只会被弹回来）', async () => {
+    setProviderStatusForTest(
+      providerStatus({ state: 'unavailable', available: false, reason: '连不上' }),
+    )
+    stubWithSnapshot(false)
+
+    renderStripped()
+
+    const line = await screen.findByTestId('local-provider-line')
+    await waitFor(() => expect(screen.queryByTestId('local-kb-snapshot-entry')).toBeNull())
+    expect(line.textContent).toContain('知识库提供者不可用')
   })
 })

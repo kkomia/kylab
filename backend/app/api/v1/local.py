@@ -10,8 +10,8 @@
 2. ``/local/import*``（`router`，阶段 5）——旧会话一次性导入与回滚的四条端点；
 3. ``GET|PATCH /local/provider``（`router`，M3 阶段 5）——**知识库提供者的判定源**
    （三态状态 + 能力集 + 库清单；改地址与开关）。见下面那一节；
-4. ``/local/kb-cache/*``（`router`，M4 阶段 4）——**知识库元数据快照族的只读面**
-   （页面"先画一帧"用的那几条读 + 一条主动再验证 + 一条清理）。见下面那一节；
+4. ``/local/kb-cache/*``（`router`，M4 阶段 4/6）——**知识库元数据快照族的只读面**
+   （页面"先画一帧"用的那几条读 + 一条用量读数 + 一条主动再验证 + 一条清理）。见下面那一节；
 5. **两条薄重声明**（`chat_reads`）——``GET /conversations/{id}/events`` 与
    ``GET /chat/context-usage``。
 
@@ -484,6 +484,30 @@ class KbCachePurgeOut(BaseModel):
     removed: int = Field(default=0, description="删掉的快照行数")
 
 
+class KbCacheStatsOut(BaseModel):
+    """本机留的那一份的**用量读数**（设置面板「本机留了一份」那一块的数据源）。
+
+    形状对着 ``storage.base.KbMetaCacheStats``（那个 dataclass 是这四个数的作者），
+    这里只做一次校验与文档化——**不另拼一份**，那个类型的字段名就是这里的字段名。
+
+    ``newest_fetched_at`` 是界面上「最近更新」那一行（**内容**上次是什么时候看到的）；
+    ``oldest_fetched_at`` 只作排障（回答"这一份是不是很久以前留的"）。
+    """
+
+    rows: int = Field(
+        default=0, description="留着几项（库列表 / 每库详情 / 每个文档清单视图各一项）"
+    )
+    payload_bytes: int = Field(
+        default=0, description="这些内容合计多少字节（与淘汰时用的那把尺子逐字一致）"
+    )
+    oldest_fetched_at: datetime | None = Field(
+        default=None, description="最旧那一项是什么时候看到的（没行就是 null）"
+    )
+    newest_fetched_at: datetime | None = Field(
+        default=None, description="最新那一项是什么时候看到的（界面上的「最近更新」就是它）"
+    )
+
+
 def _kb_cache(services: Services) -> KbMetaCacheService:
     """取**进程级**那个快照服务（组合根建的那一个，M4 阶段 3）。
 
@@ -806,6 +830,40 @@ def revalidate_kb_cache(
     service = _kb_cache(services)
     fetch = _snapshot_fetch(_provider(services), resource, **fetch_args)
     return _snapshot_out(service.refresh(resource, scope_key, fetch=fetch))
+
+
+@router.get(
+    "/kb-cache/stats",
+    response_model=KbCacheStatsOut,
+    summary="本机留的那一份有多大 / 最近更新（设置面板读它）",
+)
+def kb_cache_stats(
+    services: Annotated[Services, Depends(get_services)],
+    caller: ReadDep,
+) -> KbCacheStatsOut:
+    """**只读**报数（M4 阶段 6）：几项、合计多少字节、最旧/最新那份是什么时候看到的。
+
+    设置面板那一块（「本机留了一份」+ 行数 + 最近更新 + 「立即刷新」/「清除」）读的就是它，
+    而它和下面那条 ``DELETE`` 是一对：**说出来有多少，才谈得上清不清**。
+
+    三个口径写在这里：
+
+    - **零网络**：只读本机那张表（``KbMetaCacheService.stats``），一个字节都不打 NAS；
+    - **只算当前地址**（与 ``DELETE`` 不带参数时那一档不同）：换过地址之后旧地址的行还在
+      库里（§5：按地址隔离、不清旧行），但它们不是"这台机器现在连的那台 NAS"留的——
+      报数只报现在连的这一片，界面上那句「最近更新」才对得上刚看到的内容；
+    - **只读**：这一条一次写入都不做（库本身在启动时就已经准备好了，见
+      ``core/storage.py`` 的 ``prepare_sqlite_schema``）。
+
+    ``rows == 0`` 是合法状态（"这一台还没看过它"），不是错误。
+    """
+    stats = _kb_cache(services).stats()
+    return KbCacheStatsOut(
+        rows=stats.rows,
+        payload_bytes=stats.payload_bytes,
+        oldest_fetched_at=stats.oldest_fetched_at,
+        newest_fetched_at=stats.newest_fetched_at,
+    )
 
 
 @router.delete(

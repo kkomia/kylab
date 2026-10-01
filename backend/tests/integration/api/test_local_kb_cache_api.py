@@ -16,7 +16,9 @@
 ④ **主动再验证**：``POST /revalidate`` 用**请求条数**说话（一次读一次），整取→比哈希
    （内容没变时 ``fetched_at`` 不动），失败时 200 + ``stale``（不抛给页面端点）；
 ⑤ **清理三档粒度**：全清 / 按地址 / 按库（按库 = 一次前缀清 + 两次精确清）；
-⑥ **服务器档 404**：那一档没有"抄一份 NAS 快照"这条动作，这一族一条都不该挂。
+⑥ **用量读数**（M4 阶段 6）：几项 / 多少字节 / 最旧最新那份是什么时候看到的，
+   零网络 + 只算当前地址；
+⑦ **服务器档 404**：那一档没有"抄一份 NAS 快照"这条动作，这一族一条都不该挂。
 
 另外两条**跨面**的判据（M4 阶段 3 的那条读线在这里端到端复核）：
 
@@ -618,7 +620,48 @@ def test_delete_refuses_a_combination_that_has_no_answer(
         assert "document" in wrong_family.json()["message"]
 
 
-# --------------------------------------------------------------- ⑥ 服务器档
+# --------------------------------------------------------------- ⑥ 用量读数
+
+
+def test_stats_reports_what_is_kept_without_asking_the_nas(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nas: FakeNas
+) -> None:
+    """``GET /stats``：几项 / 多少字节 / 最旧最新那份是什么时候看到的（M4 阶段 6）。
+
+    设置面板那一块（「本机留了一份」+ 行数 + 最近更新 + 两颗按钮）读的就是它，所以三条
+    判据都要在：① **零网络**（报数不打 NAS，它是"本机留了多少"这个问题）；② 数字跟得上
+    实际留的东西（留七项就报七项，且最新那个时间戳就是刚写进去的）；③ **只算当前地址**
+    ——换过地址之后旧地址的行还在库里（§5 按地址隔离、不清旧行），但它们不是"现在连的
+    这台 NAS"留的，报数不该把它们算进来。
+    """
+    with _local_app(tmp_path, monkeypatch) as client:
+        _attach(nas, monkeypatch)
+
+        empty = _ok(client.get(f"{BASE}/stats"))
+
+        assert empty["rows"] == 0, "还没看过任何东西"
+        assert empty["payload_bytes"] == 0
+        assert empty["oldest_fetched_at"] is None and empty["newest_fetched_at"] is None
+        assert nas.seen == [], "报数不该打 NAS（这条读只碰本机那张表）"
+
+        _prime_all(client, kb_id="kb_a")  # 库列表 1 + 每库详情 2 + 视图 2 + 目录 1 + 条目 1
+        reads = len(nas.seen)
+
+        stats = _ok(client.get(f"{BASE}/stats"))
+
+        assert stats["rows"] == 7
+        assert stats["payload_bytes"] > 0, "字节数用的是与淘汰同一把尺子（CAST AS BLOB）"
+        assert stats["newest_fetched_at"] and stats["oldest_fetched_at"]
+        assert len(nas.seen) == reads, "这一条一个请求都不发"
+
+        # 换一个地址：那一片还没看过东西，于是报 0——旧地址那七行**还在**（按地址隔离）
+        assert client.patch("/api/v1/local/provider", json={"base_url": OTHER}).status_code == 200
+        assert _ok(client.get(f"{BASE}/stats"))["rows"] == 0
+        assert client.patch("/api/v1/local/provider", json={"base_url": ""}).status_code == 200
+        assert _ok(client.get(f"{BASE}/stats"))["rows"] == 7, "切回来还是那七项"
+
+
+# --------------------------------------------------------------- ⑦ 服务器档
 
 
 def test_the_server_deployment_does_not_serve_the_snapshot_family(
@@ -643,6 +686,7 @@ def test_the_server_deployment_does_not_serve_the_snapshot_family(
         client = TestClient(app)
         assert client.get(f"{BASE}/knowledge-bases").status_code == 404
         assert client.get(f"{BASE}/knowledge-bases/kb_a/documents").status_code == 404
+        assert client.get(f"{BASE}/stats").status_code == 404
         assert client.post(f"{BASE}/revalidate", json={"resource": KB_LIST}).status_code == 404
         assert client.delete(BASE).status_code == 404
     finally:

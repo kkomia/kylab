@@ -48,6 +48,8 @@
  * - `ready` → 不显示（侧栏那组已经在说"能用"了，重复一遍是噪音）；
  * - `unconfigured` / `unavailable` → 显示"知识库提供者未配置 / 不可用" + 原因，
  *   `title` 里带地址、协议版本、库数、上次确认时间（排障第一眼要看的就是这几项）；
+ * - **非 ready 且本机留着上次看到的内容** → 这一行多一颗「看上次看到的知识库」入口
+ *   （M4 阶段 6 / D-A）：那时侧栏里没有知识库那一组，不给入口就**没人进得去**那扇门；
  * - **还没探过** → 如实写"正在确认知识库连接…"（不猜好坏，与 `localStatus()` 同一条口径）；
  * - 读不到 → 如实写一行（与第二行同一条纪律：本机后端在跑，读不到是异常）。
  *
@@ -55,7 +57,9 @@
  * ——服务器档（浏览器 / NAS 网页端）里没有"提供者"这个概念，一次都不该问。
  */
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router'
 
+import { getKbCacheKnowledgeBases } from '@/api/kbCache'
 import { batchStateLabel, getLocalStatus, importAccountsText, type LocalStatus } from '@/api/local'
 import {
   providerDetailLines,
@@ -70,6 +74,7 @@ import {
   localStatus,
   type LocalDataStatus,
 } from '@/api/sidecar'
+import { formatRelativeTime } from '@/lib/format'
 
 /** 三态的人话名字。 */
 const LABELS: Record<LocalDataStatus['kind'], string> = {
@@ -208,8 +213,41 @@ export function LocalDataStrip() {
  *
  * 抽成一个小函数组件是为了让"什么时候显示"只有一处：`ready` 直接回 `null`
  * （侧栏那一组已经在回答"能用"了），其余三种形态各说各的话——**一条都不许静默**。
+ *
+ * ## 非 ready 时那条**入口**（M4 阶段 6 / 决策点 D-A）
+ *
+ * 非 ready 时侧栏里**没有知识库那一组**（M3 规则不动），于是"进知识库页"这件事在导航里
+ * 没有了落点——而本机可能留着上次看到的内容。所以这一行顺手问一句本机快照族
+ * （`/local/kb-cache/knowledge-bases` 的 `available`）：
+ *
+ * - 有 → 多一颗「看上次看到的知识库」（去 `/knowledge-bases`；那扇门由 `ProviderRoute`
+ *   的 D-A 分支开着，进去是只读的一帧）；
+ * - 没有 → 一个字都不加（**不摆一个点进去被弹回来的入口**，与"未知按缺席"同一条口径）。
+ *
+ * 判据取的是"**那次**读到的是什么"（非 ready 才问），不跟着每次渲染重问：它是一次
+ * 本机回环，而答案不会因为重渲染而变。
  */
 function ProviderLine({ provider }: { provider: ProviderView }) {
+  /** 本机留着上次看到的那份内容吗（`null` = 没有 / 还没问到 / 这一档问不到）。 */
+  const [keptAt, setKeptAt] = useState<string | null>(null)
+  const offline = provider.status !== null && !provider.ready
+
+  useEffect(() => {
+    if (!offline) {
+      setKeptAt(null)
+      return undefined
+    }
+    let alive = true
+    void getKbCacheKnowledgeBases().then((snapshot) => {
+      // 状态每次广播都会重渲染这一行：晚到的答案不许写给下一档
+      if (!alive) return
+      setKeptAt(snapshot?.available ? (snapshot.fetched_at ?? '') : null)
+    })
+    return () => {
+      alive = false
+    }
+  }, [offline, provider.state])
+
   if (provider.ready) return null
   const detail = providerDetailLines(provider.status).join('\n')
   // 还没结论、也没出错：如实说"在确认"，不先给一个判断（与顶栏第一行同一条口径）
@@ -219,15 +257,26 @@ function ProviderLine({ provider }: { provider: ProviderView }) {
     : provider.status
       ? `知识库提供者${providerStateLabel(provider.state)}：${provider.reason || '（后端没给原因）'}`
       : `知识库连接读不到：${provider.error}`
+  const keptLine =
+    keptAt === null ? '' : `本机留着上次看到的知识库（${formatRelativeTime(keptAt)}）`
   return (
     <div
       data-testid="local-provider-line"
-      title={detail ? `${text}\n${detail}` : text}
-      className={`min-w-0 truncate pl-[14px] text-[length:var(--text-micro-size)] ${
+      title={[text, keptLine, detail].filter(Boolean).join('\n')}
+      className={`flex min-w-0 items-center gap-2 pl-[14px] text-[length:var(--text-micro-size)] ${
         pending ? 'text-text-tertiary' : 'text-[var(--status-warning)]'
       }`}
     >
-      {text}
+      <span className="min-w-0 truncate">{text}</span>
+      {keptAt !== null ? (
+        <Link
+          to="/knowledge-bases"
+          data-testid="local-kb-snapshot-entry"
+          className="shrink-0 cursor-pointer rounded-control px-1.5 py-0.5 text-text-secondary transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary"
+        >
+          看上次看到的知识库
+        </Link>
+      ) : null}
     </div>
   )
 }

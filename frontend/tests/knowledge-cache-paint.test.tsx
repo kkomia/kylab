@@ -488,6 +488,13 @@ describe('焦点再验证（§4.4）', () => {
   })
 
   it('不是本机档（浏览器 / NAS 网页端）时一个字都不做：不打扰那一档', async () => {
+    // 这一档要的是"**还没探过提供者**"这个**状态**，不是"探测恰好还没回来"这个**时刻**：
+    // 把网络钉住——本机 8765 上真有一台边车时，这条读会真的成功，用例就变成看环境的脸色
+    // （真机物证期间抓到过一次：那一台上正跑着临时边车）。
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => new Promise<Response>(() => {})),
+    )
     // 没探过提供者 = 不是本机档（`providerGateApplies` 不成立）
     renderList()
     expect(await screen.findByText('实时的库')).toBeInTheDocument()
@@ -499,6 +506,7 @@ describe('焦点再验证（§4.4）', () => {
     await Promise.resolve()
     expect(revalidateMock).not.toHaveBeenCalled()
     expect(listKbsMock).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
   })
 })
 

@@ -28,12 +28,15 @@
  * ## 404 = 这一档没有本机后端（静默跳过）
  *
  * 服务器档（浏览器 / NAS 网页端）里这一族**根本不存在**：`/local/kb-cache/…` 一律 404
- * ——那正是「知识库就是它自己」的那一档。所以这一族的读**从不抛**：
+ * ——那正是「知识库就是它自己」的那一档。所以这一族的**读**从不抛：
  *
  * - **404** → 记一笔「这一档没有」，之后的调用**连请求都不发**
  *   （与 `api/provider.ts` 的 `unsupported` 同一手法）；
  * - 其余失败（边车没起来 / 响应形状不认识）→ 也返回 `null`，页面照旧骨架屏 +
  *   自己那条实时读；一次「顺手快一点」的失败不该在界面上说话。
+ *
+ * **唯一的例外是「清除」**（`clearKbCache`，M4 阶段 6）：那是用户在设置里明确点的动作，
+ * 失败必须说出来（静默失败会让用户以为"清干净了"）——所以它抛，由调用方提示。
  */
 import { requestLocal } from './client'
 
@@ -164,18 +167,27 @@ function looksLikeSnapshot(payload: unknown): payload is KbCacheSnapshot {
  * 404 认作「这一档没有本机后端」并**记住**——服务器档页面不该每次挂载都白打一条
  * （那是每次进知识库页都多一个必然失败的请求）。
  *
- * 读快照与再确认共用它：两者只差 `init`（再确认是 `POST` + 请求体），
- * 而静默口径、形状检查、404 那一笔**必须**是同一份——各写一套的话迟早只有一套被改。
+ * 读快照、用量读数与再确认共用它：三者只差路径、`init` 与那道形状检查，
+ * 而静默口径、404 那一笔**必须**是同一份——各写一套的话迟早只有一套被改。
  */
-async function readSnapshot(path: string, init?: RequestInit): Promise<KbCacheSnapshot | null> {
+async function readQuiet<T>(
+  path: string,
+  looks: (payload: unknown) => payload is T,
+  init?: RequestInit,
+): Promise<T | null> {
   if (unsupported) return null
   try {
-    const payload = await requestLocal<KbCacheSnapshot>(path, init)
-    return looksLikeSnapshot(payload) ? payload : null
+    const payload = await requestLocal<unknown>(path, init)
+    return looks(payload) ? payload : null
   } catch (error) {
     if ((error as { status?: number } | undefined)?.status === 404) unsupported = true
     return null
   }
+}
+
+/** 一份快照的读（五条读与再确认都走它）。 */
+function readSnapshot(path: string, init?: RequestInit): Promise<KbCacheSnapshot | null> {
+  return readQuiet(path, looksLikeSnapshot, init)
 }
 
 /** 库列表快照（列表页与卡片/行两态的骨架）。 */
@@ -244,4 +256,53 @@ export function revalidateKbCache(target: KbCacheRevalidate): Promise<KbCacheSna
     method: 'POST',
     body: JSON.stringify(body),
   })
+}
+
+/* ------------------------------------------------------------------ 用量读数与清理 */
+
+/**
+ * 本机留的那一份的**用量读数**（`GET /local/kb-cache/stats`，M4 阶段 6）。
+ *
+ * 字段名对着后端 `KbCacheStatsOut`（那个模型的作者是 `storage.base.KbMetaCacheStats`）。
+ * 设置面板那一块只用得上两个：`rows`（留着几项）与 `newest_fetched_at`（「最近更新」）；
+ * 另外两个是排障用的（这一份是不是很久以前留的、占了多大）。
+ */
+export interface KbCacheStats {
+  /** 留着几项（库列表 / 每库详情 / 每个文档清单视图各一项）。 */
+  rows: number
+  /** 这些内容合计多少字节。 */
+  payload_bytes: number
+  /** 最旧那一项是什么时候看到的（没行就是 null）。 */
+  oldest_fetched_at: string | null
+  /** 最新那一项是什么时候看到的（界面上的「最近更新」就是它）。 */
+  newest_fetched_at: string | null
+}
+
+/** 响应过一道形状检查：类型手写，而"后端比界面老"会把要显示的数变成 `undefined`。 */
+function looksLikeStats(payload: unknown): payload is KbCacheStats {
+  if (!payload || typeof payload !== 'object') return false
+  return typeof (payload as Partial<KbCacheStats>).rows === 'number'
+}
+
+/**
+ * 读一次用量读数（设置面板「本机留了一份」那一块）。
+ *
+ * **失败返回 `null`**（与这一族其余读同一条口径：它是"顺手说个数字"，不是权威数据），
+ * 由调用方如实写一句「读不到」——静默摆一个 0 会让用户以为"本机什么都没留"。
+ */
+export function getKbCacheStats(): Promise<KbCacheStats | null> {
+  return readQuiet('/local/kb-cache/stats', looksLikeStats)
+}
+
+/**
+ * 清掉本机留的那一份（设置面板那颗「清除」；**全清**：所有地址、所有资源）。
+ *
+ * 与这一族其余调用**刻意不同**：它是用户明确点的动作，所以**失败要抛**
+ * （调用方据此说一句出错的话）。静默失败在这里比别处更糟——用户会以为"清干净了"。
+ *
+ * 返回清掉了几项（0 = 本来就没有，不是错误）。
+ */
+export async function clearKbCache(): Promise<number> {
+  const payload = await requestLocal<{ removed?: number }>('/local/kb-cache', { method: 'DELETE' })
+  return typeof payload?.removed === 'number' ? payload.removed : 0
 }

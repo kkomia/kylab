@@ -16,6 +16,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  clearKbCache,
   DEFAULT_DOC_PAGE_SIZE,
   docListViewKey,
   getKbCacheDocument,
@@ -23,6 +24,7 @@ import {
   getKbCacheFolders,
   getKbCacheKnowledgeBase,
   getKbCacheKnowledgeBases,
+  getKbCacheStats,
   resetKbCacheSupport,
   revalidateKbCache,
 } from '@/api/kbCache'
@@ -248,5 +250,41 @@ describe('③ 404 与其它失败都静默（这一族读从不抛）', () => {
   it('形状不认识（后端比界面旧/新）→ 回 null，不让界面去读 undefined', async () => {
     answers = [json({ ok: true })]
     expect(await getKbCacheKnowledgeBases()).toBeNull()
+  })
+})
+
+describe('④ 用量读数与清除（M4 阶段 6：设置面板那一块）', () => {
+  it('读数：GET 一条，形状照后端 `KbCacheStatsOut`', async () => {
+    answers = [
+      json({
+        rows: 12,
+        payload_bytes: 4096,
+        oldest_fetched_at: '2026-10-01T08:00:00Z',
+        newest_fetched_at: '2026-10-01T09:00:00Z',
+      }),
+    ]
+    const stats = await getKbCacheStats()
+    expect(stats?.rows).toBe(12)
+    expect(stats?.newest_fetched_at).toBe('2026-10-01T09:00:00Z')
+    expect(kbCacheCalls()).toEqual([`GET ${KB_CACHE}/stats`])
+  })
+
+  it('读数读不到就回 null（界面据此写"读不到"，不静默摆一个 0）', async () => {
+    answers = [json({ detail: 'boom' }, 500)]
+    expect(await getKbCacheStats()).toBeNull()
+    // 形状不认识也算读不到（`rows` 不在 = 后端比界面旧）
+    answers = [json({ items: [] })]
+    expect(await getKbCacheStats()).toBeNull()
+  })
+
+  it('清除：DELETE 一条（**全清**），回清掉了几项', async () => {
+    answers = [json({ removed: 7 })]
+    expect(await clearKbCache()).toBe(7)
+    expect(kbCacheCalls()).toEqual([`DELETE ${KB_CACHE}`])
+  })
+
+  it('清除失败**要抛**（用户明确点的动作，静默失败会被读成"清干净了"）', async () => {
+    answers = [json({ detail: '本机后端没起来' }, 503)]
+    await expect(clearKbCache()).rejects.toThrow()
   })
 })

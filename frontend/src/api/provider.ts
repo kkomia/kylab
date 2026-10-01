@@ -520,6 +520,11 @@ export function useKnowledgeProviderStatus(options: { enabled?: boolean } = {}):
     listeners.add(listener)
     watchers += 1
     if (watchers === 1) startWatch()
+    // **挂上订阅之后再对一次表**：状态可能在"这次渲染"与"挂上订阅"之间变了，
+    // 而那一瞬间的广播没人听见——组件不会自己重渲染（`useState` + 订阅的经典缺口，
+    // 真机上抓到过：冷启动直接进知识库页、提供者不可用时，守卫有时**不挡**，
+    // 要等下一次广播才纠正）。这一句等价于 `useSyncExternalStore` 订阅后那次重读。
+    bump((value) => value + 1)
     // **首次被问到才探**（不在启动时挡路）：已经有结论时这一次是空操作（TTL 判在这里面）
     void loadProviderStatus()
     return () => {

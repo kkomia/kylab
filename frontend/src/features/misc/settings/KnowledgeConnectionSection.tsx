@@ -20,11 +20,27 @@
  * 4. **库清单**：名字 / 文档数 / 能不能写。不可用时**显示不可用原因**，而不是空清单
  *    ——"看不见任何库"与"根本没连上"是两件完全不同的事。
  *
+ * ## 第五块：「本机留了一份」（M4 阶段 6）
+ *
+ * 本机后端会留一份知识库的**目录性**内容（库列表 / 每库详情 / 文档清单），下次打开知识库页
+ * 就先把这一份摆上屏幕、再如实更新。这一块把"留了多少、最近一次是什么时候"**如实说出来**，
+ * 并给两颗按钮：**立即刷新**（去 NAS 再确认一次）与**清除**（把留着的清掉）。
+ *
+ * 两条纪律：
+ *
+ * - 行数与最近更新读的是后端那一份读数（`GET /local/kb-cache/stats`，与「清除」同一族），
+ *   **不是**前端自己数——"留了多少"只有一个答案；
+ * - 界面上**不许出现实现语汇**（"缓存"那一类，U2 是硬门禁）：说的永远是"本机留了一份"、
+ *   "留着的内容"、"上次看到的内容"。
+ *
+ * 它随时可以丢掉：**删了只丢速度、不丢数据**（NAS 上那份才是权威）——那句话也写在下面。
+ *
  * 最后一句常显的说明回答一个**故意不做的功能**：「哪几个库参与检索由对话里那个开关决定」
  * ——这里不发明第二套"默认库集"，否则同一个问题会有两个答案。
  */
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
+import { clearKbCache, getKbCacheStats, revalidateKbCache, type KbCacheStats } from '@/api/kbCache'
 import {
   credentialLabel,
   patchLocalProvider,
@@ -48,6 +64,11 @@ export function KnowledgeConnectionSection() {
   /** 输入框里那一份；`null` = 还没动过，跟着后端回的地址走（保存后自动回到这个状态）。 */
   const [draft, setDraft] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  /** 「本机留了一份」那一块：读数 / 读过没有 / 两颗按钮的在飞状态。 */
+  const [kept, setKept] = useState<KbCacheStats | null>(null)
+  const [keptRead, setKeptRead] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [clearing, setClearing] = useState(false)
 
   const status = provider.status
   /** 后端解析后的实际地址（空 = 没配，正在继承壳里那台）。 */
@@ -84,6 +105,59 @@ export function KnowledgeConnectionSection() {
     const fresh = provider.status
     if (fresh?.available) notifySuccess(`连接正常（${fresh.base_url}）`)
     else notifyError(`还连不上：${fresh?.reason || provider.error || '原因见面板'}`)
+  }
+
+  /**
+   * 读一次"本机留了多少"（`GET /local/kb-cache/stats`）。
+   *
+   * 这一读是**纯请求**（不写模块状态）：它只服务这一块的两行字（几项 / 最近更新）。
+   * 读到 `null` 时 `keptRead` 仍然置真——"读不到"与"还没读"在界面上是两句不同的话
+   * （与凭据那一行同一条口径）。
+   */
+  const readKept = useCallback(async (): Promise<void> => {
+    setKept(await getKbCacheStats())
+    setKeptRead(true)
+  }, [])
+
+  useEffect(() => {
+    void readKept()
+  }, [readKept])
+
+  /**
+   * 「立即刷新」：去 NAS 再确认一次，把本机留的那一份换上最新的，然后重读数字。
+   *
+   * 为什么是**库列表**那一份：它是这一页的入口内容（"看得见的库"），而且后端确认它时会
+   * 顺带把每个库的详情按同一份内容拆开写（§3.1）——一次动作更新的是最要紧的那一片。
+   * 结果按**如实三态**说：没答上来 / 还是没有新鲜的 / 已刷新。内容没变时时间戳不会动，
+   * 那是"确认过还是那份"，不是失败（§4.1）。
+   */
+  async function refreshKept(): Promise<void> {
+    setRefreshing(true)
+    try {
+      const snapshot = await revalidateKbCache({ resource: 'kb_list' })
+      if (!snapshot) notifyError('刷新失败：本机后端没答上来')
+      else if (snapshot.stale) notifyError(`还是连不上：${snapshot.last_error || '原因见上面'}`)
+      else if (!snapshot.available) notifyError(snapshot.reason || '现在没有可刷新的内容')
+      else notifySuccess('已去 NAS 确认一次')
+      await readKept()
+    } finally {
+      setRefreshing(false)
+    }
+  }
+
+  /** 「清除」：把本机留的那一份清掉（**全清**）。清完重读数字，界面上那个数当场归零。 */
+  async function clearKept(): Promise<void> {
+    setClearing(true)
+    try {
+      const removed = await clearKbCache()
+      notifySuccess(removed > 0 ? `已清掉 ${removed} 项` : '本来就没有留')
+      await readKept()
+    } catch (cause) {
+      // 清除失败要说出来：静默失败会让用户以为"清干净了"（这也是这条链唯一会抛的一条）
+      notifyError(cause instanceof Error ? cause.message : '清除失败')
+    } finally {
+      setClearing(false)
+    }
   }
 
   // 防御性的一层：服务器档里这一节不该被渲染（菜单也不会给它入口）。
@@ -265,6 +339,38 @@ export function KnowledgeConnectionSection() {
             </ul>
           )}
           <p className="m-row-note">{PICK_NOTE}</p>
+          {/* ------------------------------------------------------------------ ⑤ 本机留了一份 */}
+          <h3 className="m-section-title m-section-gap">本机留了一份</h3>
+          <div className="m-row" data-testid="kept-snapshot-row">
+            <div className="m-row-main">
+              <span className="m-row-label">留着的内容</span>
+              {/* 读不到就说读不到（与凭据那一行同一条口径）：静默摆一个 0 会被读成"本机没留东西" */}
+              <span className="m-row-value">
+                {!keptRead ? '读取中…' : kept ? `${formatCount(kept.rows)} 项` : '读不到'}
+              </span>
+            </div>
+            <div className="m-row-main">
+              <span className="m-row-label">最近更新</span>
+              <span className="m-row-value">
+                {!keptRead
+                  ? '读取中…'
+                  : kept?.newest_fetched_at
+                    ? formatRelativeTime(kept.newest_fetched_at)
+                    : '还没有'}
+              </span>
+            </div>
+            <Button disabled={refreshing} onClick={() => void refreshKept()}>
+              {refreshing ? '刷新中…' : '立即刷新'}
+            </Button>
+            <Button disabled={clearing} onClick={() => void clearKept()}>
+              {clearing ? '清除中…' : '清除'}
+            </Button>
+          </div>
+          <p className="m-row-note">
+            这台机器上留着一份知识库的目录（库、每库的详情、文档清单这些目录性质的内容），
+            下次打开知识库页会先把这一份摆上屏幕、再如实更新。它随时可以丢掉——
+            <strong>删了只影响下次打开的速度，不影响 NAS 上的数据</strong>。
+          </p>
           {/* 排障那一眼（地址 / 协议版本 / 库数 / 上次确认）：与顶栏那条状态条同一份口径 */}
           {status ? (
             <p className="m-row-note" data-testid="provider-detail">

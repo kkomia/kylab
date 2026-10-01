@@ -228,6 +228,10 @@ export function useKnowledgeBases(): KnowledgeBaseStore {
   useEffect(() => {
     const listener = () => bump((value) => value + 1)
     kbListeners.add(listener)
+    // **挂上订阅之后再对一次表**（与 `api/provider.ts` 同一处理）：清单可能在
+    // "这次渲染"与"挂上订阅"之间被改（比如侧栏悬停预热先画了一帧），而那一瞬间的
+    // 广播没人听见——`useState` + 订阅的经典缺口，订阅后这一次重读把它补上。
+    bump((value) => value + 1)
     return () => {
       kbListeners.delete(listener)
     }

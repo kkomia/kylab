@@ -609,3 +609,166 @@ describe('知识库连接一节（M3 阶段 6）', () => {
     expect(screen.queryByRole('button', { name: '知识库连接' })).toBeNull()
   })
 })
+
+/* ------------------- 「本机留了一份」那一块（M4 阶段 6） ------------------- */
+
+describe('「本机留了一份」那一块（M4 阶段 6）', () => {
+  /** 一份用量读数（形状照后端 `KbCacheStatsOut`）。 */
+  function statsBody(rows: number, newest: string | null): Record<string, unknown> {
+    return {
+      rows,
+      payload_bytes: 4096,
+      oldest_fetched_at: newest,
+      newest_fetched_at: newest,
+    }
+  }
+
+  /** 一份"有内容"的快照（`revalidate` 的回话，形状照 `KbCacheSnapshotOut`）。 */
+  function snapshotBody(): Record<string, unknown> {
+    return {
+      available: true,
+      resource: 'kb_list',
+      scope_key: '',
+      reason: '',
+      items: [{ id: 'kb_1', name: '论文' }],
+      payload: { items: [{ id: 'kb_1', name: '论文' }] },
+      version: 'sha256:abc',
+      source: 'revalidate',
+      fetched_at: '2026-10-01T09:00:00Z',
+      checked_at: '2026-10-01T09:00:00Z',
+      stale: false,
+      last_error: '',
+      revalidating: false,
+    }
+  }
+
+  /** 六个字前看到的、12 项；清除之后变 0 项（数字当场跟着动）。 */
+  const SIX_MINUTES_AGO = new Date(Date.now() - 6 * 60 * 1000).toISOString()
+
+  function stubKeptNetwork(calls: string[]): void {
+    let rows = 12
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const target = String(url)
+        calls.push(`${init?.method ?? 'GET'} ${target}`)
+        if (target.endsWith('/health')) return new Response(JSON.stringify({ ok: true }))
+        if (target.includes('/local/kb-cache/revalidate')) {
+          return new Response(JSON.stringify(snapshotBody()), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        if (target.includes('/local/kb-cache/stats')) {
+          return new Response(JSON.stringify(statsBody(rows, SIX_MINUTES_AGO)), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        if (target.includes('/local/kb-cache') && init?.method === 'DELETE') {
+          const removed = rows
+          rows = 0
+          return new Response(JSON.stringify({ removed }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          })
+        }
+        return new Response(JSON.stringify(providerStatus()), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }),
+    )
+  }
+
+  beforeEach(() => {
+    resetProviderStore()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    resetProviderStore()
+  })
+
+  it('四要素都在：留了几项 / 最近更新 / 「立即刷新」/「清除」，外加"删了不影响 NAS"那句', async () => {
+    setProviderStatusForTest(providerStatus())
+    const calls: string[] = []
+    stubKeptNetwork(calls)
+    const user = userEvent.setup()
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '知识库连接' }))
+
+    const block = await screen.findByTestId('kept-snapshot-row')
+    expect(block.textContent).toContain('留着的内容')
+    expect(block.textContent).toContain('12 项')
+    expect(block.textContent).toContain('最近更新')
+    expect(block.textContent).toContain('6 分钟前')
+    expect(screen.getByRole('button', { name: '立即刷新' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '清除' })).toBeInTheDocument()
+    // 界面上**不许出现实现语汇**（"缓存"那一类，U2 是硬门禁）：说的是"留了一份"
+    expect(block.textContent).not.toContain('缓存')
+    // 那句"删了只影响速度、不影响 NAS 上的数据"
+    expect(screen.getByText(/删了只影响下次打开的速度，不影响 NAS 上的数据/)).toBeInTheDocument()
+    // 读的是后端那一份读数（不是前端自己数）
+    expect(calls.some((call) => call.includes('/local/kb-cache/stats'))).toBe(true)
+  })
+
+  it('「立即刷新」：去 NAS 再确认一次（POST /revalidate 要库列表那一份），随后重读数字', async () => {
+    setProviderStatusForTest(providerStatus())
+    const calls: string[] = []
+    stubKeptNetwork(calls)
+    const user = userEvent.setup()
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '知识库连接' }))
+    await screen.findByTestId('kept-snapshot-row')
+    await user.click(screen.getByRole('button', { name: '立即刷新' }))
+
+    const post = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST')
+    expect(String(post?.[0])).toContain('/local/kb-cache/revalidate')
+    expect(JSON.parse(String(post?.[1]?.body)).resource).toBe('kb_list')
+    expect(await screen.findByText('已去 NAS 确认一次')).toBeInTheDocument()
+  })
+
+  it('「清除」：DELETE 全清、清完数字当场归零（并说清清掉了几项）', async () => {
+    setProviderStatusForTest(providerStatus())
+    const calls: string[] = []
+    stubKeptNetwork(calls)
+    const user = userEvent.setup()
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '知识库连接' }))
+    await screen.findByTestId('kept-snapshot-row')
+    await user.click(screen.getByRole('button', { name: '清除' }))
+
+    const del = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'DELETE')
+    expect(String(del?.[0])).toContain('/local/kb-cache')
+    expect(await screen.findByText('已清掉 12 项')).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByTestId('kept-snapshot-row').textContent).toContain('0 项'),
+    )
+  })
+
+  it('读数读不到时如实写"读不到"（不静默摆一个 0）', async () => {
+    setProviderStatusForTest(providerStatus())
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const target = String(url)
+        if (target.includes('/local/kb-cache')) {
+          return new Response(JSON.stringify({ detail: 'boom' }), { status: 500 })
+        }
+        return new Response(JSON.stringify(providerStatus()), { status: 200 })
+      }),
+    )
+    const user = userEvent.setup()
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '知识库连接' }))
+
+    const block = await screen.findByTestId('kept-snapshot-row')
+    await waitFor(() => expect(block.textContent).toContain('读不到'))
+    expect(block.textContent).toContain('还没有')
+  })
+})
