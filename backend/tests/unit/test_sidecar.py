@@ -220,6 +220,10 @@ def _ready_provider(handler=None):  # type: ignore[no-untyped-def]
 
     ``handler`` 收下**非握手**的请求（例如上传那份 multipart）；不给就说明这个用例
     只打算喂握手，别的请求一律报错（静默放过会让"多打了一个请求"看不出来 ✗）。
+
+    ⚠️ 它换的是**工具表门控**问的那一个（`Clients.provider`），**换不动服务图里那一个**
+    （M3 阶段 3 起由组合根建，见 `Clients` 类说明里的那段）：要骗过"检索/入库真的打到
+    NAS"那条路，得换传输（`_fake_nas`），不是换这个客户端。
     """
 
     def _dispatch(request: httpx.Request) -> httpx.Response:
@@ -261,6 +265,31 @@ def _clients_with(tmp_path, provider_factory=None):  # type: ignore[no-untyped-d
         data_dir=data_dir,
         provider=provider_factory() if provider_factory is not None else None,
     )
+
+
+def _fake_nas(monkeypatch, handler) -> None:  # type: ignore[no-untyped-def]
+    """把**提供者客户端的传输**换成一台假 NAS（用例里不打真网络 ✓）。
+
+    M3 阶段 3 起组合根自己建 provider（`ChatService` 的检索、笔记与产物的入库、
+    `Services.ingest` 全从它取），它与 `Clients.provider`（工具表门控那一个）都走
+    `remote_clients._httpx()` 这个接缝（`KnowledgeProviderClient._send`）——
+    所以这里换一次，两边都打假 NAS ✓。
+
+    换的是**接缝**而不是"塞一个假客户端"是有意的：这条路上跑的是真客户端代码，
+    multipart 的形状、`start=true`、鉴权头都是它发出来的 ✓（塞假客户端只能验到
+    "我们记得调它"）。
+    """
+    transport = httpx.MockTransport(handler)
+
+    def _fake_httpx():  # type: ignore[no-untyped-def]
+        def _client(**kwargs: Any) -> httpx.Client:
+            # 真客户端自己会传 `transport=None`，这里把它换成假的
+            kwargs["transport"] = transport
+            return httpx.Client(**kwargs)
+
+        return SimpleNamespace(Client=_client, HTTPError=httpx.HTTPError)
+
+    monkeypatch.setattr(remote_clients, "_httpx", _fake_httpx)
 
 
 def _new_conversation(client: TestClient, **body: Any) -> str:
@@ -527,14 +556,17 @@ def test_the_kb_seam_is_delegated_when_given(tmp_path) -> None:  # type: ignore[
 def test_search_in_a_turn_goes_to_the_nas(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """**边车的检索真的打 NAS**（`POST /api/v1/search`）✓ —— 接缝整条链的行为证据。
 
-    单看"组合根塞了 `RemoteKnowledgeClient`"不够 ✗：模型真要查资料时走的是
-    `build_runner` → `services.chat.retrieve_sources` → 远端客户端这一整条，
+    单看"组合根塞了远端客户端"不够 ✗：模型真要查资料时走的是
+    `build_runner` → `services.chat.retrieve_sources` → **提供者客户端**（M3 阶段 3 起
+    组合根给的就是它）→ 它持有的 `RemoteKnowledgeClient` 这一整条，
     中间哪一环接错都会表现成"检索总说没有命中"（而那是看不出来的）。
     这里用假传输接住请求：**URL、鉴权头、请求体**三样都要对 ✓。
     """
     seen: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/provider/handshake"):
+            return httpx.Response(200, json=_handshake_body())
         seen["url"] = str(request.url)
         seen["auth"] = request.headers.get("authorization")
         seen["body"] = json.loads(request.read().decode())
@@ -556,25 +588,16 @@ def test_search_in_a_turn_goes_to_the_nas(tmp_path, monkeypatch) -> None:  # typ
             },
         )
 
-    transport = httpx.MockTransport(handler)
-
-    def _fake_httpx():  # type: ignore[no-untyped-def]
-        def _client(**kwargs: Any) -> httpx.Client:
-            # 远端客户端自己会传 transport=None，这里把它换成假的（用例不打真网络 ✓）
-            kwargs["transport"] = transport
-            return httpx.Client(**kwargs)
-
-        return SimpleNamespace(Client=_client, HTTPError=httpx.HTTPError)
-
-    monkeypatch.setattr(remote_clients, "_httpx", _fake_httpx)
+    _fake_nas(monkeypatch, handler)
     model = _ToolCallingModel(
         "search",
         json.dumps({"query": "问一句", "knowledge_base_ids": ["kb_1"]}),
         "资料里说：NAS 上命中的那一段",
     )
-    # 选了库 → 工具表要问一次提供者状态：给一个**握手成功**的（`search` 才摆得出来 ✓）。
-    # 检索本身仍走组合根那个 `RemoteKnowledgeClient`（上面那个假传输接住它 ✓）。
-    client = _client(tmp_path, monkeypatch, model, provider_factory=_ready_provider)
+    # 选了库 → 工具表要问一次提供者状态（假 NAS 的握手答它 ✓），`search` 才摆得出来 ✓。
+    # 检索本身走**组合根那个提供者**（M3 阶段 3 起就是它）→ 它持有的
+    # `RemoteKnowledgeClient` → 上面那台假 NAS ✓。
+    client = _client(tmp_path, monkeypatch, model)
 
     payload = client.post("/turn", json={"message": "查一下资料", "kb_ids": ["kb_1"]}).json()
 
@@ -1036,27 +1059,6 @@ def test_turn_stream_closes_the_trailing_answer_step(tmp_path, monkeypatch) -> N
 
 # ------------------------------------------------------------------ 写回服务器
 
-def _patch_post(monkeypatch, handler) -> None:  # type: ignore[no-untyped-def]
-    """把写回那个 `httpx.post` 换成假传输（**用例里不打真网络** ✓）。
-
-    P4-3 之后 `sidecar` **不再在模块级 import httpx**（那会把 click/pygments/rich
-    拖进客户端运行时的导入闭包 ✗）→ 用例改打**新的接缝**：`sidecar._httpx()` ✓
-    （它是个惰性取值器，`monkeypatch` 换掉它就等于换掉这一侧的传输 ✓）。
-
-    `get` 也一并假掉（2026-10-01，`list_notes` 用 `GET /notes` 起）——同一个 handler，
-    按方法/路径分流（名字保持 `_patch_post` 不改：十来个用例都引它，改名只是噪音）。
-    """
-    transport = httpx.MockTransport(handler)
-
-    def fake_post(url, **kwargs):  # type: ignore[no-untyped-def]
-        return httpx.Client(transport=transport).post(url, **kwargs)
-
-    def fake_get(url, **kwargs):  # type: ignore[no-untyped-def]
-        return httpx.Client(transport=transport).get(url, **kwargs)
-
-    fake_httpx = SimpleNamespace(post=fake_post, get=fake_get, HTTPError=httpx.HTTPError)
-    monkeypatch.setattr(sidecar, "_httpx", lambda: fake_httpx)
-
 
 def test_turn_records_the_turn_into_the_local_db(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     """**这一轮落本机库**（M2 阶段 3）：消息 + 步骤 + 思考都在自己这台机器上 ✓。
@@ -1285,43 +1287,138 @@ def test_note_lands_in_the_local_db(tmp_path, monkeypatch) -> None:  # type: ign
     assert titles == ["会议纪要"], listed.text
 
 
-def test_attach_note_reports_the_missing_knowledge_base(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """**`attach_note_to_kb` 在本机档如实报"知识库不可用"**（M2 §4.2 / R9）✓。
+def test_attach_note_is_uploaded_to_the_provider(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**`attach_note_to_kb` 在本机档真的能用了**（M3 阶段 3 的正式解，方案 §5.2）。
 
-    它入的是**知识库**，而知识库整条（解析 / 切块 / 嵌入 / 向量）都在 NAS 上、
-    本机连表都没有 —— 所以这条路现在的答案是**503 那句**（"知识库在 NAS 服务器上，
-    本机档没有它的数据源，M3 接知识库提供者"），而不是"假装入上了" ✗。
+    这一条以前测的是反面：`NotesService` 手上那份真 `IngestService` 走到本机档的
+    `UnavailableMetaStore`，如实回一句"知识库在 NAS 服务器上……"✗。阶段 3 把组合根那
+    一处接缝换了线（`notes` / `artifacts` 各持一份的真 `IngestService` 换成了提供者
+    网关），于是这条链是**通的** ✓ —— 四件事一起钉住：
 
-    这与 `ingest_file`（保留远端、照旧能传）**有意不同** ✗：那一件只差一个上传口，
-    字节又恰好在本机；笔记这条要从本机库里读正文再往 NAS 的知识库塞，
-    那正是 M3 的提供者要统一管的事（不再为它单独开一条绕过服务层的直连）。
+    ① 笔记正文从**本机库**读出来，multipart 打到假 NAS 的文档上传口；
+    ② `start=true`（NAS 自己入队）与 `text/markdown`（笔记是 Markdown）都对；
+    ③ 本机没有队列：那一轮**只打了上传这一枪**（`enqueue_ingest` 是空操作 ——
+       下面那个 handler 对没准备的请求直接报错，多打一个就红 ✓）；
+    ④ 假 NAS 回的文档 id **回填到本机笔记**上（`note.doc_id` / `note.kb_id`）。
     """
-    model = _ToolCallingModel("attach_note_to_kb", "{}", "这一步没能做成")
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/provider/handshake"):
+            return httpx.Response(200, json=_handshake_body())
+        if request.url.path.endswith("/knowledge-bases/kb_1/documents"):
+            seen["url"] = str(request.url)
+            seen["auth"] = request.headers.get("authorization")
+            seen["body"] = request.read()
+            return httpx.Response(
+                202,
+                json={
+                    "document": {"id": "doc_42", "name": "会议纪要.md"},
+                    "is_duplicate": False,
+                    "task_id": "task_1",
+                },
+            )
+        raise AssertionError(f"这个用例没准备这个请求：{request.method} {request.url}")
+
+    _fake_nas(monkeypatch, handler)
+    model = _ToolCallingModel("attach_note_to_kb", "{}", "已经放进知识库了")
     client = _client(tmp_path, monkeypatch, model)
-    _no_network(monkeypatch)
     created = client.post(
-        "/api/v1/notes",
-        json={"title": "会议纪要", "content_md": "- 决定：周五发版"},
+        "/api/v1/notes", json={"title": "会议纪要", "content_md": "- 决定：周五发版"}
     )
     assert created.status_code == 201, created.text
-    # 模型这一步要带的参数在这里补上：`note_id` 得是真的 —— 归属那条先判，
-    # 看不到的笔记是 404（"笔记不存在"），那就验不到"知识库不可用"这条分支了。
-    # 此刻模型还没被调用（`_client` 只装配），所以补参数是安全的 ✓
-    model.arguments = json.dumps(
-        {"note_id": created.json()["id"], "knowledge_base_id": "kb_1"}
+    note_id = created.json()["id"]
+    # 模型这一步要带的参数在这里补上：`note_id` 得是真的（归属那条先判，看不到的笔记
+    # 是 404），而且此刻模型还没被调用（`_client` 只装配），补参数是安全的 ✓
+    model.arguments = json.dumps({"note_id": note_id, "knowledge_base_id": "kb_1"})
+
+    payload = client.post(
+        "/turn", json={"message": "把那条笔记加进知识库", "kb_ids": ["kb_1"]}
+    ).json()
+
+    # ① 打的是 NAS 的文档上传口（带 `start=true`），用的是这把钥匙
+    expected = "http://server.test/api/v1/knowledge-bases/kb_1/documents?start=true"
+    assert seen["url"] == expected, seen
+    assert seen["auth"] == "Bearer t"
+    # ② multipart 里是**本机那份正文**，文件名是「标题.md」，类型是 Markdown
+    body = seen["body"]
+    assert "- 决定：周五发版".encode() in body, body[:400]
+    assert b"text/markdown" in body, body[:400]
+    assert "会议纪要.md".encode() in body, body[:400]
+    # ③ 工具回执里是 NAS 那个文档 id（模型据此告诉用户"处理是异步的"）
+    done = [
+        step
+        for step in payload["steps"]
+        if step.get("tool") == "attach_note_to_kb" and step.get("status") == "done"
+    ]
+    assert done, payload["steps"]
+    assert done[0]["outcome"] != "failed", done[0]
+    assert "doc_42" in done[0]["result"], done[0]["result"]
+    assert payload["answer"] == "已经放进知识库了"
+    # ④ **回填到本机笔记**：库页里那条笔记从此带上"它在哪个库、哪份文档"
+    listed = client.get("/api/v1/notes")
+    assert listed.status_code == 200, listed.text
+    note = listed.json()["items"][0]
+    assert (note["doc_id"], note["kb_id"]) == ("doc_42", "kb_1"), note
+
+
+def test_attach_note_reports_an_unreachable_provider(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**提供者不可用时如实报**（R10）：两个面都是"现在用不了知识库 + 原因"。
+
+    入库那一半刻意抛 `KnowledgeBaseUnavailable`（见 `services/knowledge_provider.py`
+    的两条口径）就是为了这里：
+
+    - **工具面**（笔记/产物的工具）→ 这一步 `outcome: failed`，原因上屏幕；
+    - **HTTP 面**（`POST /notes/{id}/attach`，本机档白名单里就有它）→ **503**，
+      信封是既有的 `knowledge_base_unavailable`（不是 500"服务端出错了"）。
+
+    为什么不是"未配"那条路：未配时提供者状态不是 `ready`，工具表**根本不摆**
+    `attach_note_to_kb`（那是另一条用例 `test_kb_tools_are_gated_by_the_provider_state`
+    的地盘）。这里演的是更常见的那一种：握手还通得过（工具已经摆出来给模型了）、
+    真去上传那一刻 NAS 掉了 —— 那时**必须**失败得清清楚楚。
+    """
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/provider/handshake"):
+            return httpx.Response(200, json=_handshake_body())
+        calls.append(str(request.url))
+        raise httpx.ConnectError("NAS 掉了（这条用例的唯一故障）")
+
+    _fake_nas(monkeypatch, handler)
+    model = _ToolCallingModel("attach_note_to_kb", "{}", "这一步没能做成")
+    client = _client(tmp_path, monkeypatch, model)
+    created = client.post(
+        "/api/v1/notes", json={"title": "会议纪要", "content_md": "- 决定：周五发版"}
     )
+    assert created.status_code == 201, created.text
+    note_id = created.json()["id"]
+    model.arguments = json.dumps({"note_id": note_id, "knowledge_base_id": "kb_1"})
 
-    payload = client.post("/turn", json={"message": "把那条笔记加进知识库"}).json()
+    payload = client.post(
+        "/turn", json={"message": "把那条笔记加进知识库", "kb_ids": ["kb_1"]}
+    ).json()
 
+    # ① 工具面：这一步失败，原因里说清是提供者（而不是"没命中"或"内部错误"）
     step = [
         item
         for item in payload["steps"]
         if item.get("tool") == "attach_note_to_kb" and item.get("status") == "done"
     ]
     assert step, payload["steps"]
-    # 如实失败：这一步没做成，原因上屏幕（`detail` 那一栏）✓
     assert step[0]["outcome"] == "failed", step[0]
-    assert "知识库在 NAS" in step[0]["detail"], step[0]
+    assert "知识库提供者" in step[0]["detail"], step[0]
+    # 内容真的发出去了（失败发生在传输层，不是"没提交"）
+    assert calls and calls[0].endswith("/knowledge-bases/kb_1/documents?start=true"), calls
+    # ② 笔记没有被写上半个字（失败就是失败，不留"看起来入库了"的痕）
+    assert client.get("/api/v1/notes").json()["items"][0]["doc_id"] is None
+
+    # ③ HTTP 面：同一条接缝，503 + 既有信封（不是 500）
+    response = client.post(f"/api/v1/notes/{note_id}/attach", json={"kb_id": "kb_1"})
+    assert response.status_code == 503, response.text
+    body = response.json()
+    assert body["code"] == "knowledge_base_unavailable", body
+    assert "知识库提供者" in body["message"], body
 
 
 def test_remember_is_forwarded_to_the_server(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1456,8 +1553,9 @@ def test_ingest_file_reads_local_and_uploads(tmp_path, monkeypatch) -> None:  # 
     """**本机文件入库**：`ingest_file` 在边车侧 = 读本机 → multipart 上传 ✓。
 
     M3 阶段 2 起这条路走的是**提供者客户端**（`KnowledgeProviderClient.submit`，
-    收编了 M2 那份 `sidecar._LocalIngest`）——所以这条用例现在同时是
-    "上传的形状照旧对" 与 "换实现没有改行为" 两份证据。
+    收编了 M2 那份 `sidecar._LocalIngest`）；**阶段 3 起那个客户端由组合根建**
+    （`core/services.py`），所以这一条现在验的是"整条装配真的通到 NAS"——上传走的是
+    组合根那一个提供者，不是 `Clients.provider`。
 
     验证四件事：① 工具只在**选了库**（kb_ids 非空）**且提供者 ready** 时摆出来；
     ② 字节从**本机工作区**读出来（不是从服务器文件区）；③ 上传打到
@@ -1470,6 +1568,8 @@ def test_ingest_file_reads_local_and_uploads(tmp_path, monkeypatch) -> None:  # 
     (workspace / "notes.txt").write_text("hello from local", encoding="utf-8")
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/provider/handshake"):
+            return httpx.Response(200, json=_handshake_body())
         if request.url.path.endswith("/knowledge-bases/kb_1/documents"):
             seen["url"] = str(request.url)
             seen["body"] = request.read()  # multipart 原始字节
@@ -1482,19 +1582,17 @@ def test_ingest_file_reads_local_and_uploads(tmp_path, monkeypatch) -> None:  # 
                     "task_id": "task_1",
                 },
             )
-        # 写回那一轮（`POST /chat/turns/record`）
-        return httpx.Response(200, json={"recorded": True})
+        # 其余请求一律报错：多打一个请求不该被静默放过（写回服务器那一半早就删了）
+        raise AssertionError(f"这个用例没准备这个请求：{request.method} {request.url}")
 
-    _patch_post(monkeypatch, handler)
+    # ① 提供者 ready（握手与上传都走这台假 NAS ✓ —— 真假的那一个是**组合根**建的）
+    _fake_nas(monkeypatch, handler)
     model = _ToolCallingModel(
         "ingest_file",
         json.dumps({"knowledge_base_id": "kb_1", "path": "notes.txt"}),
         "已经放进知识库了",
     )
-    # ① 提供者 ready（握手走假传输 ✓）+ 上传那份请求交给上面的 handler ✓
-    client = _client(
-        tmp_path, monkeypatch, model, provider_factory=lambda: _ready_provider(handler)
-    )
+    client = _client(tmp_path, monkeypatch, model)
 
     # ② 带上选中的库跑一轮（`ingest_file` 受 `_LOCAL_KB_TOOLS` 门控：kb_ids 非空才摆）
     payload = client.post(
@@ -1536,6 +1634,16 @@ def test_kb_tools_are_gated_by_the_provider_state(tmp_path) -> None:
     ready = _clients_with(tmp_path, _ready_provider)
     assert ready.provider.status().state == STATE_READY
     assert kb_tools <= {spec.name for spec in ready.tool_specs(kb_ids=["kb_1"])}
+    # 门控问的是本类这个 provider，而**真去检索/入库的是组合根那一个**（M3 阶段 3，
+    # 见 `Clients` 的类说明）：两个实例必须给出同一个结论（同一份引导级配置 + 同一份
+    # 运行期配置），否则会出现"工具摆出来了、一调就说不可用"。这里比**解析出来的目标**
+    # （地址 + 钥匙，`target()` 是纯函数不打网络 ✓）：同一个地址、同一把钥匙。
+    graph_provider = ready.services.chat._knowledge
+    assert isinstance(graph_provider, KnowledgeProviderClient)
+    assert graph_provider.target() == ready.provider.target()
+    # `Clients.ingest` / `documents` 就是服务图上那一对（组合根换线的结果，不是另一份）
+    assert ready.services.ingest is ready.ingest
+    assert ready.services.documents is ready.documents
 
     dead = _clients_with(tmp_path, _dead_provider)
     assert dead.provider.status().state == STATE_UNAVAILABLE

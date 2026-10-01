@@ -45,6 +45,11 @@ from app.services.idempotency import IdempotencyService
 from app.services.ingest import IngestService
 from app.services.kb_prompt import KBPromptService
 from app.services.knowledge_base import KnowledgeBaseService
+from app.services.knowledge_provider import (
+    EnqueueGateway,
+    IngestGateway,
+    KnowledgeProviderClient,
+)
 from app.services.legacy_import import LegacyImporter
 from app.services.lifecycle import LifecycleService
 from app.services.llm import LLMUsage
@@ -91,10 +96,14 @@ class Services:
     """一组装配好的服务。字段类型都是服务类，不含存储实现。"""
 
     knowledge_bases: KnowledgeBaseService
-    documents: DocumentService
+    documents: DocumentService | EnqueueGateway
+    """文档服务：服务器档是 `DocumentService`（列表 / 进度 / 取消……），**本机档只有
+    入队那一面**——而且是个空操作（远端 ``start=true`` 已经排上了，本机没有队列）。"""
     folders: FolderService
     """知识库内目录：建/列/改名/删，以及把文档放进目录（v13）。"""
-    ingest: IngestService
+    ingest: IngestService | IngestGateway
+    """摄入：服务器档是整个 ``IngestService``，**本机档只有"提交一份字节"那一面**
+    （提供者网关，见 `services/knowledge_provider.py` 的两个 Protocol）。"""
     retrieval: RetrievalService
     chat: ChatService
     """快速检索对话：检索 + 提示词 + LLM，定位是让用户快速验证知识库。"""
@@ -465,21 +474,20 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         skills=skill_service,
         skill_summaries=_skill_summaries,
     )
-    # KB 检索接缝的**本机档那一头**（M2 §2.2）：本机档的检索在 NAS 上（向量 / 全文 /
-    # 切块全留在服务器，本机连表都没有），所以给 ChatService 一个远端客户端——
-    # 它一给就整段委托（见 `chat.py` 的 `retrieve_sources`），失败按 `RemoteUnavailableError`
-    # 抛出去（"连不上"与"没命中"分得开）。
+    # 知识库提供者（M3 阶段 3）：**本机档**打 NAS 知识库的唯一出口（握手 / 检索 / 入库 /
+    # 元数据，见 `services/knowledge_provider.py`）。**服务器档恒为 None** —— 它的知识库
+    # 就是它自己，进程内那套一位不变（R11）。
     #
-    # **服务器档恒为 None**（进程内检索，一位行为不变）。本机档没配 `KYLAB_SERVER_URL`
-    # 时也是 None —— 那时取资料会走到 `UnavailableVectorStore` 那句如实的 503
-    # （"检索在 NAS 知识库"），而不是回一个空结果。
-    knowledge_client = None
-    if resolved.deployment == "local" and resolved.server_url:
-        # 惰性 import：`remote_clients` 里 httpx 是函数内导入的（见那边的说明），
-        # 放到这里只为让"本机档那一支"自成一段，读起来知道多了什么。
-        from app.services.remote_clients import RemoteKnowledgeClient
-
-        knowledge_client = RemoteKnowledgeClient(resolved.server_url, token=resolved.token or "")
+    # **恒建，不看地址有没有值**（与旧的那一行 `RemoteKnowledgeClient` 不同）：地址与钥匙
+    # 是**每次调用现取**的（`provider.target()` 现读运行期设置），所以"现在没配、设置页填上
+    # 之后立刻生效"这条要成立，对象就得先在这儿。没配时它如实回 `unconfigured`，
+    # 两个网关的 `submit` 抛 `KnowledgeBaseUnavailable`（既有 503 映射，R10）——
+    # 而不是回一个假的空结果，也不是 500。
+    provider = (
+        KnowledgeProviderClient(settings=resolved, get_setting=runtime.get)
+        if resolved.deployment == "local"
+        else None
+    )
 
     chat_service = ChatService(
         retrieval,
@@ -494,8 +502,9 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         # 技能（v0.15）：把技能目录（名字 + 何时用）注入 system prompt，
         # 正文由 `use_skill` 按需展开——见 services/skills.py 的模块头
         skills=skill_service,
-        # KB 检索（M2 §2.2）：非空时整段委托（本机档 = NAS 上的 /search）
-        knowledge=knowledge_client,
+        # KB 检索（M2 §2.2 / M3 阶段 3）：非空时整段委托。本机档这一头**就是提供者客户端**
+        # （每次调用现取地址与钥匙）；服务器档是 None，走进程内检索。
+        knowledge=provider,
     )
     # 技能源的中文化（v0.28）：浏览器里那一屏是给中文用户看的，而技能描述基本都是英文。
     # 在这里接上而不是在源服务里 new：源服务只认识一个"翻译函数"，
@@ -532,11 +541,33 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     # 与任务中心那一列必须是同一个结论，所以两处共用这一个实例
     observability = ObservabilityService(bundle, worker_lease_seconds=resolved.worker_lease_seconds)
     documents_service = DocumentService(bundle, observability=observability)
+
+    # **入库那两个接缝的换线，就是这一处**（M3 阶段 3，方案 §5.1「组合根一处」）：
+    #
+    # 本机档的"知识库"在 NAS 上，所以"提交一份字节"与"入队"都归提供者客户端；服务器档
+    # 原样是这两个真服务。**三个构造点共用同一对对象**：产物服务、笔记服务（更下面）、
+    # `Services.ingest` / `Services.documents`（`ingest_file`、文件入库那两个端点走它）。
+    #
+    # 为什么必须在这里换而不是 `dataclasses.replace(Services)`：笔记与产物**各自持有**
+    # 一份真 `IngestService`（发现②），`replace` 只换得到 `Services` 上那两个槽位，
+    # 换不到它们对象内部的引用——那正是 `attach_note_to_kb` 一直 503 的真机制。
+    # 换完的守卫用例在 `tests/unit/services/test_client_seams.py`（"没有任何接缝还指向
+    # 真 `IngestService`"，R6）。
+    ingest_for_kb: IngestService | IngestGateway = ingest
+    enqueue_documents: DocumentService | EnqueueGateway = documents_service
+    if provider is not None:
+        ingest_for_kb = provider.ingest_gateway()
+        # 空操作：上传口带 `start=true`，NAS 那边自己入队了（本机没有队列可管）。
+        # 理由与实现都在 `knowledge_provider._EnqueueGateway` 上，不在这里再抄一份。
+        enqueue_documents = provider.enqueue_gateway()
+
     # 产物服务（v0.26）在建在这里：它要用摄入链路（复制一份进知识库）与文档服务
     # （入库后排队解析），而这两样都在上面就绪了。
-    artifacts_service = ArtifactService(bundle, ingest=ingest, documents=documents_service)
+    artifacts_service = ArtifactService(bundle, ingest=ingest_for_kb, documents=enqueue_documents)
     # 数据源要往摄入队列里塞任务，所以依赖 DocumentService（入队）与
     # IngestService（登记）两者——它们分工不同，见 services/sources.py
+    # **这两个仍是真服务**：数据源与消费队列都是服务器那侧的家当（本机档里
+    # `data_sources` 那族端点没挂，见 `api/v1/router.py` 的 local_router 白名单）。
     sources_service = SourceService(bundle, ingest, documents_service)
 
     # 会话导出（M2 阶段 5）：`GET /conversations/export` 背后那一段。**两个档位都建**：
@@ -632,9 +663,9 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
 
     services = Services(
         knowledge_bases=KnowledgeBaseService(bundle, embedder=embedder, models=registry),
-        documents=documents_service,
+        documents=enqueue_documents,
         folders=folders_service,
-        ingest=ingest,
+        ingest=ingest_for_kb,
         retrieval=retrieval,
         chat=chat_service,
         stats=StatsService(bundle),
@@ -664,7 +695,7 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         artifacts=artifacts_service,
         conversation_export=export_service,
         legacy_import=legacy_importer,
-        notes=NotesService(bundle, ingest=ingest, documents=documents_service),
+        notes=NotesService(bundle, ingest=ingest_for_kb, documents=enqueue_documents),
         note_ai=NoteAiService(chat_service),
         suggested_questions=questions_service,
         kb_prompt=kb_prompt_service,

@@ -44,11 +44,24 @@ r"""**知识库提供者客户端**（M3 阶段 2）：本机服务层打 NAS �
   **不落库、不进日志**（R3）。
 - **每次调用现取目标**：设置页改了地址，下一轮/下一次调用立刻生效，不用重启边车。
 
+## 组合根怎么用它（阶段 3 已落地）
+
+``core/services.py::build_services`` 在**本机档**建这一个客户端（服务器档是 ``None``：
+知识库就是它自己），然后**一次换线**（方案 §5.1）：
+
+| 接缝 | 拿到的东西 |
+| --- | --- |
+| ``ChatService(knowledge=…)`` | **本类本身**（检索那一半）|
+| ``NotesService(ingest=…, documents=…)`` | :meth:`ingest_gateway` / :meth:`enqueue_gateway` |
+| ``ArtifactService(ingest=…, documents=…)`` | 同上（**同一对对象**，不另开一条路）|
+| ``Services.ingest`` / ``Services.documents`` | 同上（`ingest_file` 与文件入库那两个端点走它）|
+
+那两个网关的窄视图就是下面两个 Protocol（:class:`IngestGateway` / :class:`EnqueueGateway`）
+——``Services`` 上那两个槽位的注解说到底是它们，不是 ``IngestService`` / ``DocumentService``。
+**没配/不可用时** ``submit`` 抛 ``KnowledgeBaseUnavailable``（既有的 503 映射）。
+
 ## 本阶段的边界（如实写，别让读者以为已经接完）
 
-- **组合根还没收编**（阶段 3）：``core/services.py`` 仍把 ``RemoteKnowledgeClient``
-  交给 ``ChatService``，``Services.ingest`` 在**本机后端**那一档仍是真 ``IngestService``；
-  边车侧（``sidecar.build_local_services``）已经用这里的两个网关。
 - **``knowledge_meta()`` 是给阶段 4 的 reader**：形状照方案 §2.3 的 ``KnowledgeMetaReader``
   协议定死（``get_knowledge_base`` / ``list_knowledge_bases``，**回原始 dict**），
   阶段 4 的 ``RemoteMetaStore`` 拿它去映射 ``KnowledgeBaseRecord``；
@@ -71,7 +84,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Protocol
 
 from app.core.config import Settings, get_settings
 from app.services import remote_clients
@@ -98,6 +111,8 @@ __all__ = [
     "STATE_READY",
     "STATE_UNAVAILABLE",
     "STATE_UNCONFIGURED",
+    "EnqueueGateway",
+    "IngestGateway",
     "KnowledgeProviderClient",
     "ProviderStatus",
     "ProviderTarget",
@@ -664,6 +679,42 @@ class KnowledgeProviderClient:
                 f"{what}：知识库提供者回的不是 JSON（HTTP {code}，{target.base_url}）"
             ) from exc
         return payload if isinstance(payload, dict) else {}
+
+
+class IngestGateway(Protocol):
+    """``IngestService.submit`` 那一面的**窄视图**（组合根把服务图里三个入库口都指向它）。
+
+    为什么是一个 Protocol 而不是直接用 ``IngestService`` 当注解：本机档那个位置**只有**
+    这一件事（提交一份字节），而服务器档那个位置是整个 ``IngestService``（``replace`` /
+    ``retry`` / 内部仓储都露着）。``Services.ingest`` 的注解写成后者就是一句谎
+    ——本机档的调用方按它去调 ``replace`` 会当场 ``AttributeError``，而那本该在
+    **读代码**的时候就看得出来。
+
+    :class:`app.services.ingest.IngestService` 也**结构上满足**它（签名逐字一致），
+    所以服务器档那份不用改一个字就落在同一张网里。
+    """
+
+    def submit(
+        self,
+        *,
+        knowledge_base_id: str,
+        filename: str,
+        content: bytes,
+        mime_type: str | None = None,
+        document_id: str | None = None,
+        uploaded_by: str | None = None,
+        folder_id: str | None = None,
+    ) -> Any: ...
+
+
+class EnqueueGateway(Protocol):
+    """``DocumentService.enqueue_ingest`` 那一面的**窄视图**。
+
+    本机档是 :class:`_EnqueueGateway`（空操作：上传口带 ``start=true``，NAS 那边自己
+    入队了）；服务器档是真 ``DocumentService``。
+    """
+
+    def enqueue_ingest(self, document_id: str) -> Any: ...
 
 
 class _IngestGateway:

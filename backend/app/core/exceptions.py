@@ -165,6 +165,11 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     # 知识库不可用 → 503（M2 §2.2「知识库不可用的如实报错」）。
     #
+    # **提供者不可用时也走它**（M3 阶段 3）：本机档的入库整条走提供者客户端，而
+    # "没配 / 连不上 / 被拒"在那边一律折成 `KnowledgeBaseUnavailable`（见
+    # `services/knowledge_provider.py` 的两条口径）——两个面（HTTP 端点与工具循环）
+    # 共用这一个 503 信封，不另开一套错误语义。
+    #
     # **惰性 import，不在模块级**：`app.storage.sqlite_impl.meta_store` 反过来 import 本模块
     # 拿 `ConflictError`（"storage → core"这个方向本来就存在），模块级 import 回去会把
     # 两边的依赖拉成双向的，而双向依赖的下一次改动就是循环 import。

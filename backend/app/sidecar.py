@@ -62,7 +62,10 @@ python -m app.sidecar --port 8765
    **不给环境继承的机会** ✗ ——"边车误连服务器库"是最糟的失败形态（不报错、写错库）；
 2. **服务图就是本机档的组合根**（`build_local_services`）：会话 / 产物 / 笔记 / 记忆 /
    设置全部走 `get_services()` 那一份（**与本机后端端点是同一个对象**——同一张审批登记表、
-   同一个运行期配置、同一批会话），只有四处按"这台机器上没有那个能力"盖掉；
+   同一个运行期配置、同一批会话），只有技能目录与 MCP 两处按"这台机器上没有那个能力"
+   盖掉；知识库那条（检索 + 入库）的换线在**组合根一处**（M3 阶段 3，
+   `core/services.py::build_services`），不在这里 —— 笔记与产物各持一份真
+   `IngestService`，`dataclasses.replace` 换不到它们对象内部的引用（方案 §5.1）；
 3. **写回落本机**（`_record_turn` → `ConversationService.record_turn`）：HTTP 写回那一半
    删掉了 ✗，`TurnOut.recorded` 的语义随之变成"**已落本机**"。
 """
@@ -373,8 +376,8 @@ class _LocalWorkspaces:
         return self._workspaces.get(workspace_id, **kwargs)
 
 
-def build_local_services(base: Services, *, workspace: Path, clients: Clients) -> Services:
-    """边车这一侧的 `Services`：**就是本机档的组合根那一份**，只换掉四处（M2 阶段 3）。
+def build_local_services(base: Services, *, workspace: Path) -> Services:
+    """边车这一侧的 `Services`：**就是本机档的组合根那一份**，只换掉两处（M2 阶段 3）。
 
     与旧版"影子 Services"（只有十几个属性、缺的一律没有）的区别在这里：现在
     **会话 / 消息 / 事件 / 产物 / 笔记 / 记忆 / 设置 / 工作区全都是 `get_services()`
@@ -382,20 +385,18 @@ def build_local_services(base: Services, *, workspace: Path, clients: Clients) -
     同一张审批登记表、同一份运行期配置、同一批会话。于是"边车这一轮跑出来的账"
     与"界面上读到的账"必然是同一份 ✓（旧版做不到这件事：会话在服务器上）。
 
-    换掉的四处，每一处都因为**这台机器上没有那个能力/那个权威**：
+    换掉的两处，每一处都因为**这台机器上没有那个能力/那个权威**：
 
     | 字段 | 换成 | 为什么 |
     | --- | --- | --- |
-    | `ingest` | `provider.ingest_gateway()` | 摄入流水线在 NAS 上（M2 §0.5：入库保留远端）|
-    | `documents` | `provider.enqueue_gateway()` | 上传口 `start=true` 已经入队，本机没有队列 |
     | `skills` | `_EmptySkills` | 技能目录的权威今天仍在服务器（M2 §4.2 列为可后续加）|
     | `mcp` | `_NoMcp` | 边车的工具面这一轮没接 MCP |
 
-    前两处 **M3 阶段 2 从本模块的 `_LocalIngest` / `_UploadedDocuments` 收编进了
-    `services/knowledge_provider.py`**（那两件说的是"提供者客户端"的性质，不是边车的）：
-    签名、响应形状、`start=true` 那条理由都原样搬过去了，只是地址与钥匙改成**每次现取**。
-    **阶段 3** 会把这两行挪进组合根（`core/services.py` 一处换线，笔记与产物也吃到它），
-    那时这里只留 `skills` / `mcp` 两处。
+    `ingest` / `documents` 那两处**已经不在这一层了**（M3 阶段 3）：本机档的入库
+    整条换线在**组合根一处**（`core/services.py::build_services` 里 `ingest_for_kb` /
+    `enqueue_documents` 那一对）——因为 `notes` / `artifacts` 各自持有一份真
+    `IngestService`，`dataclasses.replace` 换不到它们对象内部的引用（方案 §5.1）。
+    所以这一层现在只补"边车特有的两个截面"，接缝换线只有一个落点。
 
     另外两处**不是"换掉"而是"补一侧"**（真记录仍优先，见各自的类说明）：
 
@@ -409,8 +410,6 @@ def build_local_services(base: Services, *, workspace: Path, clients: Clients) -
     """
     return dataclasses.replace(
         base,
-        ingest=clients.provider.ingest_gateway(),
-        documents=clients.provider.enqueue_gateway(),
         skills=_EMPTY_SKILLS,
         mcp=_NO_MCP,
         conversations=_LocalConversations(
@@ -437,8 +436,9 @@ _NO_MCP = _NoMcp()
 #: - **笔记三件**（`create_note` / `attach_note_to_kb` / `list_notes` 2026-10-01 ✓，
 #:   **阶段 3 改落本机** ✓）：笔记就是本机库里的笔记（`NotesService` ✓）——
 #:   `create_note` / `list_notes` 读写本机；`attach_note_to_kb` 要**知识库**，
-#:   而知识库在 NAS 上：本机档那条路会**如实报**"知识库不可用"（503 那句，
-#:   见 `split_impl`）✓ —— 那是 M3 接提供者之后的正式解（R9 对同类端点同一处置）。
+#:   而知识库在 NAS 上：正文从本机库读出来，**经提供者客户端上传**（multipart、
+#:   `start=true`、NAS 回文档 id 再回填到本机笔记上，M3 阶段 3 打通，见方案 §5.2）✓。
+#:   提供者没配/连不上时它**如实失败**（`KnowledgeBaseUnavailable` 那句，含原因与下一步）✗。
 #: - **记忆两件**（`recall` / `remember` 2026-10-01 ✓，**阶段 3 改落本机** ✓）：
 #:   记忆本体本来就在 `data_dir/memory`（本机）✓ —— 现在读写的也是本机那份
 #:   `MemoryService`（`remember` 不看开关；`recall` 受记忆开关门控，默认关，
@@ -646,18 +646,21 @@ class Clients:
 
     | 件 | 边车这一侧 | 怎么来 |
     | --- | --- | --- |
-    | KB（检索 + 入库）| **远端** ✓ | `KnowledgeProviderClient` ✓（M3 阶段 2 起收编了检索）|
+    | KB（检索 + 入库）| **远端** ✓ | `KnowledgeProviderClient` ✓（M3 阶段 3 起整条在组合根上）|
     | 模型 | **远端** ✓ | `RemoteModelClient` ✓（key 不下发 ✓）|
     | 循环 / 工具 / 沙箱 / 审批 | **本地** ✓ | `ToolLoop` + `build_runner` ✓（同一份代码 ✓）|
     | 会话 / 产物 / 笔记 / 记忆 / 设置 | **本地** ✓（阶段 3）| `get_services()` 那一份 ✓ |
     | 技能目录 | **没有** ✗ | 如实回空 ✓（`/turn` 的 `notes` 里说清 ✓）|
-    | 入库 | **远端** ✓ | `provider.ingest_gateway()`（知识库在 NAS）✓ |
+    | 入库 | **远端** ✓ | 组合根换线那一处（`core/services.py`，知识库在 NAS）✓ |
 
-    ⚠️ 阶段 2 与阶段 3 的**唯一差别**在检索那一半的装配：`ChatService` 手上那个
-    ``knowledge`` 仍是组合根按引导级地址建的 `RemoteKnowledgeClient`
-    （`core/services.py`），阶段 3 才换成 ``provider``（一处换线）。所以本阶段
-    ``self.knowledge`` 与"模型真正调到的那个检索客户端"还是两个对象——**入库那一半
-    已经是同一个**（`build_local_services` 用的是本类的 provider）。
+    ⚠️ **本类手上那个 provider 不是服务图里跑着的那个**（M3 阶段 3 之后如实写在这里）：
+    服务图的提供者客户端由**组合根**建（`core/services.py::build_services`，本机档那一段），
+    `ChatService` 的检索、笔记与产物的入库、`Services.ingest` 都从**它**取；本类这个
+    （`self.provider` / `self.knowledge`）是**同一个客户端的第二个实例**，用途只有一个：
+    `tool_specs` 要问一次提供者状态（不 ready 就不摆那三个 KB 工具，见 `KB_PROVIDER_TOOLS`）。
+    两个实例的来源与口径完全一样（同一份引导级配置 + 同一个本机运行期配置），所以结论
+    必然一致；代价只是各有一份 30s 握手缓存。**要收成一个实例的话，落点应该在阶段 5
+    （`/local/provider` 也需要一个进程级的提供者）**，不在这一层偷偷换。
     """
 
     def __init__(
@@ -691,20 +694,22 @@ class Clients:
         # 否则 `get_services()` 会按服务器档去连 PG（那是"误连服务器库"那条路）。
         base_services = services if services is not None else get_services()
 
-        #: **知识库提供者的客户端**（M3 阶段 2）：地址与钥匙**每次调用现取**
-        #: （`get_setting` 读的就是下面那份运行期配置），所以设置页改了地址不用重启边车。
-        #: 它在 `build_local_services` 之前建：入库那两个网关要从它身上取（见那里的表）。
+        #: **知识库提供者的客户端**（M3 阶段 2 起有它，阶段 3 起只归工具表门控用）：
+        #: 地址与钥匙**每次调用现取**（`get_setting` 读的就是下面那份运行期配置），
+        #: 所以设置页改了地址不用重启边车。`provider=` 是给用例塞一个假实现的口子
+        #: （它同时也换了 `self.knowledge`）——**它换不动服务图里那一个**，那个在组合根，
+        #: 见类说明里的 ⚠️。
         self.provider = (
             provider
             if provider is not None
             else KnowledgeProviderClient(get_setting=base_services.runtime.get)
         )
-        #: KB 那条接缝这一侧持有的对象 = **提供者客户端**（它满足 `KnowledgeClient`
+        #: KB 那条接缝在本类这一侧的把手 = **提供者客户端**（它满足 `KnowledgeClient`
         #: 协议的 `retrieve_sources` 签名）。`knowledge=` 这个入参留给"用例塞一个假实现"，
         #: 给了就用它（与模型那一头同一个写法）。
         self.knowledge = knowledge if knowledge is not None else self.provider
 
-        self.services = build_local_services(base_services, workspace=workspace, clients=self)
+        self.services = build_local_services(base_services, workspace=workspace)
         #: 本地运行期配置：**就是本机库 `app_settings` 那一份** ✓（旧版是个本地 JSON
         #: 临时物 —— 设置页改的值与本机后端读的值必须是同一个，见阶段 3 的收编表）。
         #: `sandbox.require_isolation` 的默认值仍是 `"true"` ✓ —— **那道闸没有被绕** ✗。
@@ -712,7 +717,11 @@ class Clients:
         #: **整套 `ApprovalRegistry` 带过来** ✓（`ask` 档的行为与服务器逐条一致 ✓），
         #: 而且**就是组合根那一张表**（本机后端的 `/chat/approvals` 与这一侧共用一套）。
         self.approvals = self.services.approvals
-        #: 下面这几个给"这一侧有什么"的说明与用例读（真服务可以从 `self.services` 上取）。
+        #: 下面这几个给"这一侧有什么"的说明与用例读（真服务可以从 `self.services` 上取）；
+        #: `ingest` / `documents` 这两件**就是服务图上那一对**（M3 阶段 3 起）：本机档是
+        #: 提供者给的两个窄视图（只有 `submit` / `enqueue_ingest` 那一件事），服务器档是
+        #: 真 `IngestService` / `DocumentService`。用例要断言"入库接缝装配成了哪一件"，
+        #: 看这两个引用就够（`is` 比身份，见 `tests/unit/services/test_client_seams.py`）。
         self.artifacts = self.services.artifacts
         self.notes = self.services.notes
         self.memory = self.services.memory
