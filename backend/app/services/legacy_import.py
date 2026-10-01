@@ -50,7 +50,7 @@ import logging
 import sys
 import uuid
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -180,6 +180,15 @@ class ImportPlan:
     file_references: int = 0
     """这一批里**不随导入过来**的文件引用数（R4）：产物 + 消息附件。"""
 
+    unresolved_workspaces: int = 0
+    """这一批里**本机没有对应记录**的工作区引用数（会话那条外键）。
+
+    工作区在本机档里的含义是"**这台机器上的一个路径**"（方案 §4.2），所以 NAS 上的
+    工作区不随导入过来、也不该搬过来（一条指向不存在的目录的记录比没有更糟）。
+    导入时把这种引用置空并在这里如实报数——真机验收抓到的第二个坑（见
+    ``LegacyImporter._localize``）。
+    """
+
     def counts(self) -> dict[str, Any]:
         """与 ``imports.counts_json`` 同一份形状（``state=planned`` 时它也是进度）。"""
         return {
@@ -196,6 +205,7 @@ class ImportPlan:
                 for item in self.skipped
             ],
             "file_references": self.file_references,
+            "unresolved_workspaces": self.unresolved_workspaces,
         }
 
 
@@ -331,6 +341,35 @@ def _ms(value: datetime | None) -> int | None:
     return int(value.timestamp() * 1000)
 
 
+def _raw_lines(response: httpx.Response) -> Iterator[str]:
+    """把导出流按**行**吐出来：只在 ASCII ``\\n`` 上切，切完一行解一行。
+
+    为什么不用 ``response.iter_lines()``（**2026-10-01 真机验收抓到的真 bug**）：
+    httpx 的 ``LineDecoder`` 按 [W3C 的换行口径](https://www.w3.org/TR/newline)
+    把 **``U+2028`` / ``U+2029``** 也当换行，而这两个字符在 JSON 字符串里
+    **可以合法地原样出现**（``ensure_ascii=False`` 不转义它们；粘贴自网页的正文里
+    一抓一大把）→ 一行被切成两半，两半都不是 JSON，导入当场失败
+    「导出流里有一行不是 JSON」。
+
+    现场：302 条真会话里那一条的正文带 ``U+2028``，24463 字符的行被读成
+    12543 + 11920；同一条流按字节切（4846 + 3063 行）一行不差。
+
+    逐字节切还顺手保住了内存上界：一次只在内存里留**一行**（外加跨块的半个多字节
+    字符——``0x0A`` 不会出现在 UTF-8 的多字节序列里，所以整行解码永远安全）。
+    """
+    pending = b""
+    for chunk in response.iter_bytes():
+        pending += chunk
+        while True:
+            index = pending.find(b"\n")
+            if index < 0:
+                break
+            yield pending[:index].decode("utf-8")
+            pending = pending[index + 1 :]
+    if pending:
+        yield pending.decode("utf-8")
+
+
 class LegacyImporter:
     """拉源端的导出流、写本机库、记账、回滚。
 
@@ -373,6 +412,9 @@ class LegacyImporter:
         #: **只在一次操作之内有效**：`plan` / `run` / `rollback` 一开始就清空它——
         #: 见 `_reset_batch_states` 那段（跨操作留着会静默漏数据）。
         self._batch_states: dict[str, str] = {}
+        #: "这条工作区在本机有吗"的缓存（同一个工作区会被几百条会话引用，
+        #: 每条问一次库是白问）。键是源端那个 id，值是本机有没有。
+        self._workspaces: dict[str, bool] = {}
 
     # ------------------------------------------------------------------ 状态与身份
 
@@ -443,6 +485,8 @@ class LegacyImporter:
         window = self._since if since is None else since
         plan = ImportPlan(source=self._source, since=window)
         for transfer in self._pull(since=window):
+            transfer, unresolved = self._localize(transfer)
+            plan.unresolved_workspaces += unresolved
             decision = self._decision(transfer.conversation)
             plan.scanned += 1
             plan.file_references += transfer.file_references
@@ -506,6 +550,7 @@ class LegacyImporter:
             "events": 0,
             "artifacts": 0,
             "file_references": 0,
+            "unresolved_workspaces": 0,
             "snapshots": 0,
         }
         self._ledger.set_import_state(batch_id, "running", counts=counts)
@@ -514,6 +559,8 @@ class LegacyImporter:
         started = datetime.now(UTC)
         try:
             for transfer in self._pull(since=window):
+                transfer, unresolved = self._localize(transfer)
+                counts["unresolved_workspaces"] += unresolved
                 decision = self._decision(transfer.conversation)
                 counts["scanned"] += 1
                 counts["file_references"] += transfer.file_references
@@ -740,6 +787,37 @@ class LegacyImporter:
             )
         return _Decision("replace")
 
+    def _localize(self, transfer: ConversationTransfer) -> tuple[ConversationTransfer, int]:
+        """本机没有的工作区引用 → 置空，并回一个计数（**真机验收抓到的第二个坑**）。
+
+        `conversations.workspace_id` 在本机库上是**外键**（`ON DELETE SET NULL`），
+        而 NAS 上的会话挂的是 NAS 上的工作区（用户的那些"项目"），工作区**不随导入过来**。
+        不处理的话：真机实测 302 条导到第 3 条就整批红 ——
+        `FOREIGN KEY constraint failed`，批次 `failed`。
+
+        为什么不把工作区也搬过来（两条都否掉）：
+
+        - **不照搬行**：本机档里工作区的含义是"**这台机器上的一个路径**"（方案 §4.2），
+          `workspaces.root_path` 又是 NOT NULL —— 把 NAS 的路径原样建一条，
+          就是界面里多出一个点开必然报错的项目 ✗；
+        - **不静默丢**：丢成 NULL 是"这条会话落到未归档"，用户看得见的是**会话还在**；
+          但"有几条掉了归属"必须报数（`counts.unresolved_workspaces`），
+          否则"我的会话怎么都不在项目里了"没人解释得了。
+
+        幂等性与它无关：置空只发生在这里，台账记的仍是源端那一条的身份
+        （`(source, conversation_id, source_updated_at_ms)`）。
+        """
+        workspace_id = transfer.conversation.workspace_id
+        if workspace_id is None:
+            return transfer, 0
+        known = self._workspaces.get(workspace_id)
+        if known is None:
+            known = self._stores.meta.get_workspace(workspace_id) is not None
+            self._workspaces[workspace_id] = known
+        if known:
+            return transfer, 0
+        return replace(transfer, conversation=replace(transfer.conversation, workspace_id=None)), 1
+
     def _write(self, batch_id: str, transfer: ConversationTransfer, *, outcome: str) -> None:
         """写一条会话 + 记一条台账。
 
@@ -806,8 +884,9 @@ class LegacyImporter:
     def _fetch_page(self, offset: int, *, since: datetime | None) -> Iterator[str]:
         """拉一页（``limit`` / ``offset`` / ``since``），逐行吐出来。
 
-        用 ``client.stream`` + ``iter_lines``：正文可能有几十 MB，整份读进内存再切行
-        会白白翻一倍。状态码分档与 ``services/remote_clients.py`` 同一口径——
+        用 ``client.stream`` + ``_raw_lines``（按字节切行）：正文可能有几十 MB，
+        整份读进内存再切行会白白翻一倍；而**逐行解码**与"整份读进内存"是两件事。
+        状态码分档与 ``services/remote_clients.py`` 同一口径——
         "连不上"与"被拒"是两件事（前者重试有用，后者要先解决身份）。
         """
         url = f"{self._source}/conversations/export"
@@ -830,7 +909,7 @@ class LegacyImporter:
                         f"导出请求被拒（HTTP {response.status_code}）："
                         f"{response.read()[:200]!r}；请检查 --token 与这个地址"
                     )
-                yield from response.iter_lines()
+                yield from _raw_lines(response)
         except LegacyImportError:
             raise
         except Exception as exc:  # httpx 的各路异常 + 连接层

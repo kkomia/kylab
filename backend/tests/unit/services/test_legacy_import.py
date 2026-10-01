@@ -51,6 +51,7 @@ from app.storage.base import (
     ConversationTransfer,
     SessionEventRecord,
     StoreBundle,
+    WorkspaceRecord,
 )
 from app.storage.sqlite_impl.connection import Database
 
@@ -287,6 +288,49 @@ def test_imports_three_conversations_and_matches_the_source(
         assert [item.location for item in local.artifacts] == [
             item.location for item in expected.artifacts
         ]
+
+
+def test_a_line_with_unicode_separators_is_not_split(bundle: StoreBundle, tmp_path: Path) -> None:
+    """正文里的 **U+2028 / U+2029 / 制表符** 不能把一行 JSON 切开（真机抓到的 bug）。
+
+    现场（2026-10-01 真机验收，302 条真会话）：一条 24463 字符的行被读成
+    12543 + 11920 两半，导入当场失败「导出流里有一行不是 JSON」。
+    根因不在导出端（按字节切 4846 + 3063 行一行不差），而在**读端**用了
+    ``httpx.Response.iter_lines()``：它按
+    [W3C 的换行口径](https://www.w3.org/TR/newline) 把 ``U+2028`` / ``U+2029``
+    也当换行，而这两个字符在 JSON 字符串里**可以合法地原样出现**
+    （``ensure_ascii=False`` 不转义它们；从网页复制来的正文里一抓一大把）。
+    """
+    separators = "行分隔\u2028段落分隔\u2029制表\t回车\r结尾"
+    record = conversation(7, title=f"标题带分隔符{separators}")
+    transfer = ConversationTransfer(
+        conversation=record,
+        summary=f"摘要也带{separators}",
+        summary_upto=None,
+        messages=[
+            ChatMessageRecord(
+                id="msg_7_1",
+                conversation_id=record.id,
+                role="assistant",
+                content=f"正文里的分隔符必须原样回来：{separators}",
+                created_at=T0 + timedelta(minutes=7),
+            )
+        ],
+    )
+    importer, _seen = make_importer(bundle, [transfer], tmp_path)
+
+    report = importer.run()
+
+    assert report.state == "done", report.error
+    assert report.counts["created"] == 1
+    stored = bundle.meta.get_conversation(record.id)
+    assert stored is not None
+    local = read_transfer(bundle, stored)
+    assert local.conversation.title == record.title
+    assert local.summary == transfer.summary
+    assert [item.content for item in local.messages] == [
+        "正文里的分隔符必须原样回来：" + separators
+    ]
 
 
 def test_pages_are_followed_page_by_page(bundle: StoreBundle, tmp_path: Path) -> None:
@@ -646,6 +690,62 @@ def test_since_is_sent_to_the_source(bundle: StoreBundle, tmp_path: Path) -> Non
 
     assert seen, "一次请求都没发"
     assert seen[0].url.params["since"] == since.isoformat()
+
+
+def test_a_workspace_that_did_not_come_over_is_dropped_and_counted(
+    bundle: StoreBundle, tmp_path: Path
+) -> None:
+    """源端挂着 NAS 的工作区 → 置空 + 报数，**不是整批红**（真机抓到的第二个坑）。
+
+    现场（2026-10-01 真机验收，302 条真会话）：`conversations.workspace_id` 在本机库上
+    是外键，而工作区不随导入过来 → 导到第 3 条整批 `failed`，错误只有一句
+    `FOREIGN KEY constraint failed`。
+    """
+    record = conversation(9, workspace_id="ws_on_the_nas")
+    importer, _seen = make_importer(
+        bundle, [ConversationTransfer(conversation=record)], tmp_path
+    )
+
+    plan = importer.plan()
+    assert plan.unresolved_workspaces == 1
+
+    report = importer.run()
+
+    assert report.state == "done", report.error
+    assert report.counts["created"] == 1
+    assert report.counts["unresolved_workspaces"] == 1
+    stored = bundle.meta.get_conversation(record.id)
+    assert stored is not None
+    # 会话本身一条不少，掉的是"归属"（同时**不许**凭空造一条工作区出来）
+    assert stored.workspace_id is None
+    assert bundle.meta.get_workspace("ws_on_the_nas") is None
+
+
+def test_a_workspace_that_exists_here_keeps_its_binding(
+    bundle: StoreBundle, tmp_path: Path
+) -> None:
+    """本机**有**这条工作区（同一台机器上本来就有）→ 引用原样留着，一个数都不报。"""
+    bundle.meta.create_workspace(
+        WorkspaceRecord(
+            id="ws_local",
+            owner_id="usr_owner",
+            name="本机项目",
+            root_path=str(tmp_path / "root"),
+            created_at=T0,
+            updated_at=T0,
+        )
+    )
+    record = conversation(10, workspace_id="ws_local")
+    importer, _seen = make_importer(
+        bundle, [ConversationTransfer(conversation=record)], tmp_path
+    )
+
+    report = importer.run()
+
+    assert report.state == "done", report.error
+    assert report.counts["unresolved_workspaces"] == 0
+    stored = bundle.meta.get_conversation(record.id)
+    assert stored is not None and stored.workspace_id == "ws_local"
 
 
 def test_the_batch_survives_the_process_for_polling(bundle: StoreBundle, tmp_path: Path) -> None:

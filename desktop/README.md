@@ -134,6 +134,21 @@ cargo run --release    # 快得多，推荐
    壳**崩了**这一路靠 Windows 的 Job Object（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`）——
    壳进程一没，边车跟着被收走。
 
+### 库在哪 / 备份认哪一份 / 导入回滚从哪进（M2 阶段 6 补的三句）
+
+1. **库在哪**：`%APPDATA%\com.kylab.desktop\kylab.db`（壳把数据目录当 `--data-dir` 传给边车，
+   `-wal` / `-shm` 与它同目录）。"我的会话、笔记、设置在哪"这个问题的答案就是**这一个文件**；
+2. **备份认哪一份**：整份备份 = 拷 `kylab.db`（连着 `-wal`；最稳是停掉壳再拷）。
+   另外两处**别认错**：schema 升级前自动拍的备份在
+   `%APPDATA%\com.kylab.desktop\migration-backup\<时间戳>-v<旧>→v<新>\kylab.db`，
+   导入回滚的快照在 `%APPDATA%\com.kylab.desktop\import-rollback\<批次 id>\<会话>.ndjson`
+   ——前者是"升级出问题时回退用的"，后者是"撤销一次导入用的"；
+3. **导入 / 回滚从哪进**：本机后端上 `POST /api/v1/local/import`（`{"dry_run":true}` 先看会怎么处理）→
+   轮询 `GET /api/v1/local/import/<批次 id>` → 撤销 `POST /api/v1/local/import/<批次 id>/rollback`；
+   不在壳里也能导：`python -m app.services.legacy_import --server … --token … --data-dir …`。
+   界面上这三笔账写在**顶栏那条状态条的第二行**（导入了几批 / 有几笔没跑完 / 有多少文件引用没随导入）。
+   逐条说明（含两条回退开关与常见问题）见[《部署与运行 v0.3》§2.4](../docs/规范/部署与运行-v0.3.md)。
+
 ### 出包前先造运行时
 
 **`build/` 被 gitignore**，所以打包前必须先造出边车运行时，否则包里没有它、
@@ -278,6 +293,9 @@ backend/.venv/Scripts/python.exe desktop/scripts/make-icons.py
 | 热更新下来的界面 | `%APPDATA%\com.kylab.desktop\frontend-resources\` | `current` 指针（纯文本版本号）+ `v<版本>/dist/`（只留当前 + 上一版）。**整份删掉不会让壳打不开**：会退到包内兜底那份 |
 | 包内兜底界面 | `<exe 旁>\frontend-dist\` | 打包时收进去的 `frontend/dist`。绿色版要连它一起拷 |
 | 边车运行时 | `<exe 旁>\sidecar-runtime\` | 打包时收进去的 `build/sidecar-runtime` |
+| **本机库** | `%APPDATA%\com.kylab.desktop\kylab.db` | 会话 / 消息 / 事件 / 产物 / 笔记 / 设置 / 模型凭据 / 工作区 / 定时任务 / MCP 都在这一个 SQLite 文件里（M2）。**整份备份就是拷它**（连着 `-wal`） |
+| schema 升级前的自动备份 | `%APPDATA%\com.kylab.desktop\migration-backup\` | 每次数据库结构升版前自动拍一份整库副本（出问题先看它） |
+| 导入回滚快照 | `%APPDATA%\com.kylab.desktop\import-rollback\<批次>\` | 被替换的旧会话按导出同一套 NDJSON 存着；回滚按台账用它恢复 |
 | 边车工作区 / 沙箱 | `%APPDATA%\com.kylab.desktop\workspace`、`sandbox` | 对话产物与沙箱文件 |
 
 配置文件坏了（手改错了）不会让壳打不开：读不出来就当成"还没配过"，

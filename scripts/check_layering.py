@@ -1029,6 +1029,12 @@ U3_ALLOWED: tuple[tuple[str, str, str], ...] = (
         "这一步停住了",
         "① 停滞失败态：进程可能重启过 + 自动重跑 + 手动「重新摄入」这条出路",
     ),
+    (
+        "frontend/src/api/local.ts",
+        "批没跑完（重跑同一来源即可续上）",
+        "① 失败态：`planned`/`running` 的导入批次是**上次没跑完**（被杀/断电）留下的，"
+        "这一句说的是「现在这样、可以怎么办」；顶栏那条状态条上只有这一处提到它",
+    ),
     # ② 空态/首态：现在是什么、点哪儿开始。
     (
         "frontend/src/features/misc/auth/LoginPage.tsx",

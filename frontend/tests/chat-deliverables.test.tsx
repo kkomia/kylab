@@ -201,4 +201,25 @@ describe('产物卡片的图片档', () => {
     expect(box!.className).toContain('h-[36px]')
     expect(getFileUrl).not.toHaveBeenCalled()
   })
+
+  it('来源写清楚（阶段 6）：产物卡片的 title 上有「来源服务器（文件未随导入）」', () => {
+    // 行式卡片：名字那个按钮上（卡片左半边可点的那一块）
+    const row = render(
+      <Deliverables files={[artifact({ format: 'docx', name: '季度报告.docx' })]} />,
+    )
+    const rowTitle = row.getByRole('button', { name: /季度报告\.docx/ }).getAttribute('title')
+    expect(rowTitle).toContain('季度报告.docx')
+    expect(rowTitle).toContain('来源服务器（文件未随导入）')
+    // 两半都要在：导入过来的只有引用；本机新产出的在本机
+    expect(rowTitle).toContain('文件本体还在那台服务器上')
+    expect(rowTitle).toContain('本机新产出的文件在本机')
+    row.unmount()
+
+    // 图片卡：整张卡上（下半行那个按钮上同样有一份，见上一条）
+    vi.mocked(getFileUrl).mockReturnValue(new Promise(() => {}))
+    const thumb = render(<Deliverables files={[artifact()]} />)
+    expect(thumb.container.querySelector('li')!.getAttribute('title')).toContain(
+      '来源服务器（文件未随导入）',
+    )
+  })
 })

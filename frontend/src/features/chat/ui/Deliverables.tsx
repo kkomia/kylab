@@ -42,6 +42,7 @@ import type { ChatArtifact } from '@/api/chat'
 
 import { notifyError } from '../runtime/notify'
 import { useChat, type ChatApi } from '../runtime/ChatProvider'
+import { titledWithOrigin } from './localFileOrigin'
 import './flow.css'
 
 /**
@@ -165,6 +166,8 @@ function ArtifactLine({
       <button
         type="button"
         className="min-w-0 flex-1 cursor-pointer text-left"
+        // 这份文件的来源如实写在这里（判据与理由见 `localFileOrigin.ts`）
+        title={titledWithOrigin(file.name)}
         onClick={() => openArtifact(chat, file)}
       >
         <span className="block truncate text-[length:var(--text-meta-size)] text-[var(--text-primary)]">
@@ -271,7 +274,11 @@ function ArtifactThumb({ chat, file }: { chat: ChatApi; file: ChatArtifact }) {
   if (failed || !conversationId) return <ArtifactRow chat={chat} file={file} />
 
   return (
-    <li className="flex flex-col rounded-[12px] border-[0.5px] border-[var(--Separators-S1)] px-[var(--space-3)] py-[var(--space-2-5)]">
+    <li
+      className="flex flex-col rounded-[12px] border-[0.5px] border-[var(--Separators-S1)] px-[var(--space-3)] py-[var(--space-2-5)]"
+      // 整张图片卡上也能问出"这份文件在哪"（下半行那个按钮上同样有一份）
+      title={titledWithOrigin(file.name)}
+    >
       {/* 点图 = 点「预览」：还是那只文件抽屉、还是直落这一份，不另造一层大图浮层 */}
       <button
         type="button"

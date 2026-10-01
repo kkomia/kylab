@@ -26,6 +26,14 @@ function okJson(): Response {
   })
 }
 
+/** 一份 JSON 响应（第二行那三笔账要真读一次 `/local/status`）。 */
+function json(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
 /** 壳的 IPC 替身（回答可以中途换：那颗「重试」就是靠它验的）。 */
 function stubShell(answer: { port?: number; base?: string } | null): void {
   vi.stubGlobal('__TAURI__', {
@@ -108,5 +116,68 @@ describe('顶栏状态条', () => {
     expect(strip.textContent).toContain('VITE_LOCAL_DATA')
     expect(fetchMock).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: '重试' })).toBeNull()
+    // 显式关不读本机那三笔账（那时本机档根本不成立）——第二行不该出现
+    expect(screen.queryByTestId('local-import-accounts')).toBeNull()
+  })
+
+  it('④ 本机活着：第二行把导入的三笔账写出来（阶段 6）', async () => {
+    stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        url.endsWith('/api/v1/local/status')
+          ? json({
+              deployment: 'local',
+              data_dir: 'D:\\appdata',
+              database: 'D:\\appdata\\kylab.db',
+              database_exists: true,
+              database_bytes: 1024,
+              database_wal_bytes: 0,
+              server_url: 'http://nas:8000/api/v1',
+              imports: [
+                {
+                  batch_id: 'imp_1',
+                  state: 'done',
+                  source: 'http://nas:8000/api/v1',
+                  counts: { created: 302, skipped: 0 },
+                  error: '',
+                  updated_at: null,
+                },
+              ],
+              unfinished_imports: 1,
+              unimported_file_references: 128,
+              note: '会话落在本机 SQLite',
+            })
+          : okJson(),
+      ),
+    )
+
+    render(<LocalDataStrip />)
+
+    const line = await screen.findByTestId('local-import-accounts')
+    // 三笔账都要看得见：批次 / 没跑完 / 未随导入的文件引用
+    expect(line.textContent).toContain('导入 1 批')
+    expect(line.textContent).toContain('新建 302')
+    expect(line.textContent).toContain('1 批没跑完')
+    expect(line.textContent).toContain('128 个文件引用没随导入')
+    // 悬停那层写的是排障细节（库在哪、每一批的 id 与来源）
+    expect(line.getAttribute('title')).toContain('D:\\appdata\\kylab.db')
+    expect(line.getAttribute('title')).toContain('imp_1')
+  })
+
+  it('⑤ 本机活着但状态读不到：如实写一行，不静默', async () => {
+    stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        url.endsWith('/api/v1/local/status') ? json({ message: '炸了' }, 500) : okJson(),
+      ),
+    )
+
+    render(<LocalDataStrip />)
+
+    const line = await screen.findByTestId('local-import-accounts-error')
+    expect(line.textContent).toContain('本机状态读不到')
+    expect(screen.queryByTestId('local-import-accounts')).toBeNull()
   })
 })

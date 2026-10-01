@@ -2442,7 +2442,9 @@ describe('用户消息随发的附件（v0.55）', () => {
 
     // 提问气泡下方就是这一份的文件片：名字可见、带大小
     const chip = await screen.findByRole('button', { name: '预览 指南.pdf' })
-    expect(chip).toHaveAttribute('title', '指南.pdf')
+    // 名字 + 「来源服务器（文件未随导入）」（阶段 6：附件的来源如实写在 title 上）
+    expect(chip).toHaveAttribute('title', expect.stringContaining('指南.pdf'))
+    expect(chip).toHaveAttribute('title', expect.stringContaining('来源服务器（文件未随导入）'))
     expect(chip).toHaveTextContent('437.9 KB')
 
     // 点它开「产物与文件」抽屉并直落这份（与产物卡片同一条路）
