@@ -1634,16 +1634,13 @@ def test_kb_tools_are_gated_by_the_provider_state(tmp_path) -> None:
     ready = _clients_with(tmp_path, _ready_provider)
     assert ready.provider.status().state == STATE_READY
     assert kb_tools <= {spec.name for spec in ready.tool_specs(kb_ids=["kb_1"])}
-    # 门控问的是本类这个 provider，而**真去检索/入库的是组合根那一个**（M3 阶段 3，
-    # 见 `Clients` 的类说明）：两个实例必须给出同一个结论（同一份引导级配置 + 同一份
-    # 运行期配置），否则会出现"工具摆出来了、一调就说不可用"。这里比**解析出来的目标**
-    # （地址 + 钥匙，`target()` 是纯函数不打网络 ✓）：同一个地址、同一把钥匙。
-    graph_provider = ready.services.chat._knowledge
-    assert isinstance(graph_provider, KnowledgeProviderClient)
-    assert graph_provider.target() == ready.provider.target()
-    # `Clients.ingest` / `documents` 就是服务图上那一对（组合根换线的结果，不是另一份）
+    # 服务图上那两槽就是本类手上这一对（组合根换线的结果，不是另一份）
     assert ready.services.ingest is ready.ingest
     assert ready.services.documents is ready.documents
+    # ⚠️ 这条用例**注入了假 provider**（门控要能按三态摆工具表，只能从这一格进去）：
+    # 注入时本类用的就是注入的那一份，服务图里那一个不动（那是用例的形态）。
+    # "运行形态下全进程只有一个实例"由下面那条 `test_the_provider_is_one_instance_
+    # for_the_whole_process` 守（M3 阶段 5 的收编）。
 
     dead = _clients_with(tmp_path, _dead_provider)
     assert dead.provider.status().state == STATE_UNAVAILABLE
@@ -1654,6 +1651,49 @@ def test_kb_tools_are_gated_by_the_provider_state(tmp_path) -> None:
     off = _clients_with(tmp_path, _disabled_provider)
     assert off.provider.status().state == STATE_UNCONFIGURED
     assert not (kb_tools & {spec.name for spec in off.tool_specs(kb_ids=["kb_1"])})
+
+
+def test_the_provider_is_one_instance_for_the_whole_process(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """**全进程只有一个提供者实例**（M3 阶段 5 的收编；方案 §3.2 的缓存口径）。
+
+    阶段 2/3 时边车 `Clients` 与组合根各建一份，各有一份 30s 握手缓存——工具表门控与
+    状态端点因此可以各答一半（探过一次失败之后两份缓存的结论就会分叉，而"端点说
+    ready、工具表说不 ready"是最难查的一类不一致）。
+
+    收成一个之后判据有两条，**两条都要过**：
+
+    ① **身份**：本类这个、``Services.provider``、``ChatService`` 的检索那一个、
+       ``stores.meta.kb`` 的 reader，全指同一个对象（``is`` 比身份）；
+    ② **行为**：两个消费者各问一次状态，**只发了一次握手**——身份相同但缓存各一份的话，
+       这条会红（那正是"收成实例"要解决的问题本身）。
+    """
+    probed: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        probed.append(str(request.url))
+        return httpx.Response(200, json=_handshake_body())
+
+    clients = _clients_with(tmp_path)  # 不注入：走的就是运行形态
+    provider = clients.provider
+
+    assert provider is clients.services.provider
+    assert clients.knowledge is provider
+    assert clients.services.chat._knowledge is provider
+    # reader 那条链（阶段 4 后挂的那个对象）也指着它：`_Router.kb` 在 `stores.meta` 上
+    stores = clients.services.chat._stores
+    assert stores is not None, "ChatService 没拿到 bundle：这条用例的前提不成立"
+    assert stores.meta.kb._reader._client is provider
+
+    monkeypatch.setattr(provider, "_transport", httpx.MockTransport(handler))
+
+    names = {spec.name for spec in clients.tool_specs(kb_ids=["kb_1"])}  # ① 工具表门控问一次
+    status = clients.services.provider.status()  # ② 状态端点问的是同一个对象
+
+    assert {"search", "attach_note_to_kb", "ingest_file"} <= names, names
+    assert status.state == STATE_READY
+    assert probed == ["http://server.test/api/v1/provider/handshake"], (
+        "两次询问应当只探一次（同一份 30s 缓存）；探了两次说明又出现了第二个实例"
+    )
 
 
 def test_no_knowledge_base_selected_means_no_handshake_at_all(tmp_path) -> None:

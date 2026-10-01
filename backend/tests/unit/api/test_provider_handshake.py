@@ -13,6 +13,10 @@ r"""握手端点 ``GET /provider/handshake``（M3 阶段 1）的契约。
 4. **401/403 与"连不上"分成两档**：这条在**响应形状**上落实——凭据问题走 HTTP 状态码 +
    统一错误信封，**不进握手体**。客户端据此决定"改钥匙"还是"改地址"。
 
+**另加一条挂载面的判据**（文件末那四条）：这两条端点各挂在哪张路由表上，用**建出来的
+app 的 OpenAPI** 说话（不是读内存里的 router 对象）——阶段 1 的 `/provider/handshake`
+只在服务器档，阶段 5 的 `/local/provider`（判定源 + 改地址）只在本机档。
+
 **本文件整份标 ``local``**：它只拼装响应（假 services）、只读路由表，**一个存储都不连**。
 标记在这里的含义就是 `conftest.isolated_data_dir` 的那条判据——"不需要 PostgreSQL"：
 没有 PG 的机器上，未标 ``local`` 的用例会被**整批跳过**，而"跳过"对这几条断言等于没测
@@ -488,6 +492,37 @@ def test_the_local_deployment_does_not_serve_the_handshake(build_app: Any) -> No
     assert "/api/v1/local/status" in paths, "本机档那张表本身要在这（自检）"
     assert "/api/v1/provider/handshake" not in paths
     assert "/api/v1/knowledge-bases" not in paths
+
+
+def test_the_local_deployment_serves_the_provider_status_and_patch(build_app: Any) -> None:
+    """本机档：``/local/provider`` 的 **GET 与 PATCH 都在**（M3 阶段 5 的判定源）。
+
+    判据走 OpenAPI（与相邻那两条同一手法；不读内存里的 router 对象）：这张白名单是
+    "本机运行时到底能做什么"的唯一定义，而"端点没挂上"这一类问题要在**这里**被看见，
+    不能等界面点进去撞 404。顺手钉住 ``refresh`` 那个查询参数——它是"强制重探"
+    那一条失效路径的入口（方案 §3.2），少了它就只剩 30s 的 TTL 一条路。
+    """
+    paths = build_app("local").openapi()["paths"]
+
+    assert "/api/v1/local/provider" in paths
+    methods = paths["/api/v1/local/provider"]
+    assert methods["get"]["summary"] and methods["patch"]["summary"]
+    parameters = [item["name"] for item in methods["get"].get("parameters", [])]
+    assert "refresh" in parameters, parameters
+
+
+def test_the_server_deployment_does_not_serve_the_provider_status(build_app: Any) -> None:
+    """服务器档**不挂** ``/local/provider``：那一档的知识库就是它自己（没有第二个东西可问）。
+
+    "本机档专属"这句话在两处成立：路由表上（这条）与组合根上（那一档的
+    ``Services.provider`` 是 ``None``）——客户端打过去会是 404，而不是一句
+    看着像"还没配"的空 ``unconfigured``。
+    """
+    paths = build_app("server").openapi()["paths"]
+
+    assert "/api/v1/provider/handshake" in paths, "服务器档那张表本身要在这（自检）"
+    assert "/api/v1/local/provider" not in paths
+    assert "/api/v1/local/status" not in paths
 
 
 def test_the_provider_router_is_only_in_the_server_table() -> None:

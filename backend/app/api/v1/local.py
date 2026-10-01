@@ -1,6 +1,6 @@
-"""本机档专属端点（M2 阶段 3、阶段 5）。
+"""本机档专属端点（M2 阶段 3、阶段 5；M3 阶段 5）。
 
-这个模块装三样东西，都是"**只在本机档成立**"的那几件：
+这个模块装四样东西，都是"**只在本机档成立**"的那几件：
 
 1. ``GET /local/status``（`router`）——**我的数据在哪**。桌面壳与界面显示"本机运行时"
    那条状态条靠它（阶段 4 接线），排障时第一眼看的也是它：这一档的库文件在哪、
@@ -8,7 +8,9 @@
    阶段 5 起它还如实报"导入这件事"的两笔账：**没跑完的批次**（R1：可重跑续上）与
    **未随导入的文件引用数**（R4：文件本体留在 NAS 上）；
 2. ``/local/import*``（`router`，阶段 5）——旧会话一次性导入与回滚的四条端点；
-3. **两条薄重声明**（`chat_reads`）——``GET /conversations/{id}/events`` 与
+3. ``GET|PATCH /local/provider``（`router`，M3 阶段 5）——**知识库提供者的判定源**
+   （三态状态 + 能力集 + 库清单；改地址与开关）。见下面那一节；
+4. **两条薄重声明**（`chat_reads`）——``GET /conversations/{id}/events`` 与
    ``GET /chat/context-usage``。
 
 ## 为什么要"薄重声明"而不是整 include `chat.router`（M2 §4.2 照抄）
@@ -35,6 +37,33 @@
 回滚**跑完才返回**（它通常是秒级，而"撤销"这个动作用户要的是结果）。两条都把账写进
 ``imports`` / ``import_items``，所以 CLI 那侧开的批次在界面上一样看得到进度——
 **两处的进度只有一个来源**（库里的那张表）。
+
+## ``/local/provider`` 为什么在本机档（M3 阶段 5）
+
+**浏览器 / NAS 网页端没有这一节**，而且不该有：那一档的知识库**就是它自己**（进程内
+检索 + 本机入库 + 本机那几张表），"提供者在不在"是它自己说了算，没有第二个东西可问。
+本机档正相反——知识库**在别处**（NAS 上），于是"它现在连不连得上、能力集是什么、
+这把钥匙看得见哪些库"必须有一个**本机**的答案：侧栏显不显示知识库那几项、对话里摆不摆
+那三个 KB 工具、设置面板显示什么，全都读它（方案 §3.1 的**唯一判定源**）。
+
+两条端点的分工：
+
+- ``GET /local/provider``：三态 + 原因 + 能力集（形状由 ``ProviderStatus.to_payload()``
+  给，本模块**不另拼一份**）；``refresh=1`` **强制重探**——窗口重新获得焦点、点
+  「测试连接」时用它（方案 §3.2 的三条失效路径之一）。握手结论在客户端里缓存 30s
+  （进程内存，不落库），所以不 refresh 时这一条只是把缓存读出来，**不在渲染路径上
+  等一次 NAS 往返**（R1）；
+- ``PATCH /local/provider``：改**两个运行期键**（落本机库 ``app_settings``，
+  ``services.runtime.set`` 写、``services.runtime.get`` 读）。白名单**写死为**
+  ``base_url`` / ``enabled`` 两个——**凭据类键一个都不收**（R3：token 只从引导级来，
+  不落库、不进日志；``token`` / ``kb_token`` / ``api_key`` 在这里都是"未知键"，
+  422 拒掉），未知键一律 422（拼错一个键却"保存成功"是最难查的一类问题）。写完
+  **立刻重探一次**并把最新状态整个回给前端：设置面板保存后页面按新状态重渲染，
+  靠的就是这一条（方案 §3.4）。
+
+**这两个键不进 ``services/runtime_config.SETTING_GROUPS``**（M3 §4.1）：那份注册表
+同时是服务器档 ``GET /settings`` 的渲染来源，把"知识库提供者"塞进去会让 NAS 网页端的
+设置页长出一条对它毫无意义的配置。本机档这两条由本模块自己读写。
 """
 
 from __future__ import annotations
@@ -46,7 +75,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.auth import ReadDep, WriteDep
 from app.api.v1 import chat
@@ -54,6 +83,12 @@ from app.core.config import Settings, get_settings
 from app.core.exceptions import InvalidRequestError, NotFoundError
 from app.core.services import Services, get_services
 from app.core.storage import LOCAL_DB_NAME
+from app.services.knowledge_provider import (
+    SETTING_BASE_URL,
+    SETTING_ENABLED,
+    KnowledgeProviderClient,
+    ProviderStatus,
+)
 from app.services.legacy_import import UNFINISHED_STATES, LegacyImporter
 
 __all__ = ["chat_reads", "router"]
@@ -103,6 +138,65 @@ class LocalStatusOut(BaseModel):
         description="最近一次导入里**没有随导入过来**的文件引用数（产物 + 消息附件）",
     )
     note: str = Field(default="", description="这一档的能力边界（如实写）")
+
+
+class ProviderStatusOut(BaseModel):
+    """知识库提供者的状态（``GET /local/provider``，形状照方案 §3.1）。
+
+    字段与 ``ProviderStatus.to_payload()`` **一一对应**——那一个是这个形状的作者
+    （``services/knowledge_provider.py``），本模型只做一次校验与文档化，**不另拼一份**
+    （两处各建一份迟早漂：端点多算一个字段、客户端少读一个字段都不会有人发现）。
+
+    ``ready`` 起的那五段（协议版本 / 应用版本 / 能力集 / 调用者 / 库清单）靠
+    ``response_model_exclude_unset`` 实现"**没有**"而不是"空"：不 ready 时它们**根本
+    不在响应里**（方案 §3.1 那句"ready 时才有"）。回成空对象的话，界面就得去猜
+    "是没探到还是真没有"——而这两件事的下一步动作完全不同。
+    """
+
+    state: str = Field(description="unconfigured / unavailable / ready（三态，没有第四种）")
+    available: bool = Field(description="``state == ready`` 的别名（页面显隐只看它）")
+    reason: str = Field(default="", description="两种「不在」各一句人话 + 下一步；ready 时为空")
+    checked_at: datetime = Field(description="这个结论是什么时候得到的（ISO 时间）")
+    base_url: str = Field(
+        default="", description="解析后的实际地址（空 = 没配）。**它不是秘密**，不必脱敏"
+    )
+    credential: str = Field(
+        default="missing", description="configured / missing——凭据只看有没有，永不回显"
+    )
+    protocol_version: int | None = Field(
+        default=None, description="提供者报的协议版本；比本机所知更高即判不可用"
+    )
+    app_version: str = Field(default="", description="提供者那一侧的版本（排障用）")
+    capabilities: dict[str, Any] = Field(default_factory=dict, description="能力集（两侧契约）")
+    caller: dict[str, Any] = Field(
+        default_factory=dict, description="这把凭据在 NAS 侧被认成谁（页面用会话、边车用钥匙）"
+    )
+    knowledge_bases: list[dict[str, Any]] = Field(
+        default_factory=list, description="这次调用看得见的库（受限 key 只看到范围内的）"
+    )
+
+
+class ProviderPatchIn(BaseModel):
+    """``PATCH /local/provider`` 的请求体：**只有两个键**（方案 §4.1 的运行期键）。
+
+    ``extra="forbid"`` 是有意的（与 ``PATCH /settings`` 那条"拒绝未知键"同一道理，
+    ``api/v1/settings.py``）：**凭据类键一个都不收**（R3——token 只从引导级来，
+    不落库、不进日志），而 ``token`` / ``kb_token`` / ``api_key`` 这些名字在这里
+    会以"未知键"被 422 拒掉。白名单只有这一处，不在端点函数里再列一遍。
+
+    ``None`` = **不改这一项**（PATCH 的语义：只动你给的那些键）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str | None = Field(
+        default=None,
+        description="提供者地址；空串 = 清掉覆盖、回继承（壳里那台 NAS）；None = 不改",
+    )
+    enabled: bool | None = Field(
+        default=None,
+        description="提供者开关；false = 显式关掉（页面与 KB 工具都不摆）；None = 不改",
+    )
 
 
 def _size_of(path: Path) -> int:
@@ -168,10 +262,108 @@ def local_status(
         unimported_file_references=references,
         note=(
             "会话 / 消息 / 事件 / 产物 / 笔记 / 设置 / 工作区落本机 SQLite；"
-            "知识库（检索与入库）在 NAS 上，M3 接提供者。"
+            "知识库（检索与入库）经**提供者客户端**打 NAS（连没连上看 /local/provider）。"
             "导入过来的产物与附件只留引用（`location` 是 NAS 上的 key），文件本体在本机没有。"
         ),
     )
+
+
+# ------------------------------------------------------------ 知识库提供者（M3 阶段 5）
+
+
+def _provider(services: Services) -> KnowledgeProviderClient:
+    """取**进程级**那个提供者客户端（组合根建的那一个，M3 阶段 5 收成单实例）。
+
+    服务器档或手工构造的 `Services` 上它是 `None` —— 那种情况下如实报"这一节只有
+    本机档有"，与 `_importer` 那条同一个写法（**不装作答得上来** ✗：回一个空的
+    `unconfigured` 会让界面以为"这台机器只是还没配"，而真相是"这一档没有这个概念"）。
+    """
+    provider = services.provider
+    if provider is None:
+        raise InvalidRequestError(
+            "知识库提供者的状态只有本机档才有：服务器档的知识库就是它自己"
+            "（没有第二个东西可问，见 api/v1/local.py 模块头那一节）"
+        )
+    return provider
+
+
+def _provider_out(status: ProviderStatus) -> ProviderStatusOut:
+    """``ProviderStatus`` → 响应模型（**形状由 ``to_payload()`` 给**，这里只校验一次）。
+
+    刻意不逐字段接：接一遍就等于在本模块另写一份形状，而那一份与
+    ``services/knowledge_provider.ProviderStatus.to_payload()`` 迟早会分叉
+    （少一个字段不会有人发现，界面却会因此少显示一块）。
+
+    ⚠️ 名字里带 ``provider`` 是**必须的**：下面导入那一节另有一个 ``_as_out``
+    （报告 / 批次记录 → ``ImportBatchOut``），两个同名函数在模块里是后定义的那个赢
+    ——而编排的顺序不该决定哪一条端点回什么形状（这一处踩过一次）。
+    """
+    return ProviderStatusOut.model_validate(status.to_payload())
+
+
+@router.get(
+    "/provider",
+    response_model=ProviderStatusOut,
+    # **不 ready 时那五段根本不出现在响应里**（不是 null / 空对象，见模型说明）
+    response_model_exclude_unset=True,
+    summary="知识库提供者状态（三态 + 原因 + 能力集 + 库清单）",
+)
+def local_provider(
+    services: Annotated[Services, Depends(get_services)],
+    caller: ReadDep,
+    refresh: bool = False,
+) -> ProviderStatusOut:
+    """**唯一判定源**：知识库提供者现在是什么状态（方案 §3.1、§3.2）。
+
+    ``refresh=1`` 强制重探（窗口重新获得焦点、点「测试连接」时用）；不带就是读那份
+    30s 的进程内缓存（**不落库**——落库是 M4 的元数据缓存）。两件事都不在这里做：
+
+    - **不在启动时挡路**：首次被问到才探（与"模型连通性检查放后台"同一条口径）；
+    - **不替前端定轮询节奏**：``state != ready`` 时每 30s 探一次、``ready`` 时不探，
+      那是**前端**的节奏（方案 §3.2 的失效三条）；这一条只负责"被问到就给一个真结论"。
+
+    探针**绝不抛**：连不上 / 凭据错 / 版本不认识都是 `unavailable` + 一句原因，
+    而不是 500（一次探测的成败不该让状态页本身打不开）。
+    """
+    return _provider_out(_provider(services).status(refresh=refresh))
+
+
+@router.patch(
+    "/provider",
+    response_model=ProviderStatusOut,
+    response_model_exclude_unset=True,
+    summary="改知识库提供者的地址 / 开关（白名单两键，写完立刻重探）",
+)
+def update_local_provider(
+    payload: ProviderPatchIn,
+    services: Annotated[Services, Depends(get_services)],
+    caller: WriteDep,
+) -> ProviderStatusOut:
+    """改两个运行期键，**写完立刻重探并把最新状态整个回给前端**（方案 §3.4）。
+
+    - ``base_url``：空串 = **清掉覆盖、回继承**（那正是面板上的「恢复默认」）；
+    - ``enabled``：`false` = 显式关掉（解析成 ``unconfigured`` + 那句"被关掉了"，
+      而不是"没填地址"——两句的下一步不同）。
+    - 一个键都不给（空 body）= 不改动，**只重探一次**（等价于 ``refresh=1``）。
+
+    **凭据不在这里**（R3）：``token`` 只从引导级来（壳的 ``config.json`` / 环境变量），
+    这一条的白名单只有上面两键，凭据类键会被 422 挡在门外（`ProviderPatchIn` 的
+    ``extra="forbid"``）——本机库里因此永远不会出现 token。
+
+    **写完不用重启边车**（方案 §4.2）：提供者客户端**每次调用现取目标**
+    （``resolve_provider_target`` 是纯函数），这一条的强制重探只是把新结论立刻
+    算出来回给前端，好让"保存"这一下同时完成"重渲染"。
+    """
+    values: dict[str, str] = {}
+    if payload.base_url is not None:
+        # 空串 = 恢复默认：`runtime.set` 把它原样写进 app_settings，
+        # 而 `resolve_provider_target` 见空就往下继承（引导级 → 壳里那台 NAS）
+        values[SETTING_BASE_URL] = payload.base_url.strip()
+    if payload.enabled is not None:
+        values[SETTING_ENABLED] = "1" if payload.enabled else "0"
+    if values:
+        services.runtime.set(values)
+    return _provider_out(_provider(services).status(refresh=True))
 
 
 # ---------------------------------------------------------------- 旧会话导入（阶段 5）

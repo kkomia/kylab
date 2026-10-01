@@ -214,6 +214,20 @@ class Services:
     用 ``default_factory`` 而不是在组合根里 new 一遍：手工构造 Services 的地方
     （测试、脚本）不必为它加参数，而"每个 Services 自带一张空表"比"忘了传就崩"稳。
     """
+    provider: KnowledgeProviderClient | None = None
+    """**知识库提供者客户端**（M3 阶段 2 建、阶段 5 收成进程级那一个实例）。
+
+    本机档：这一份就是**全进程唯一**的那一个（`ChatService` 的检索、笔记与产物的
+    入库网关、`Services.ingest`/`documents`、`stores.meta.kb` 的 reader、边车
+    `Clients` 的工具表门控、`/local/provider` 端点**全从它取**）——它身上那份 30s
+    握手缓存因此也只有一个，改完地址之后各处看到的必然是同一个结论。
+
+    服务器档：``None``。它的知识库就是它自己（进程内那套一位不变），没有"第二个
+    东西可以问"（R11）。
+
+    为什么带默认值：服务器档与手工构造 ``Services`` 的地方（脚本、测试）都不该被迫
+    传一个不适用的对象；"没有它"本身就是一个合法状态，而不是配置漏项。
+    """
 
 
 class _RuntimeEmbedder(EmbeddingProvider):
@@ -483,6 +497,11 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     # 之后立刻生效"这条要成立，对象就得先在这儿。没配时它如实回 `unconfigured`，
     # 两个网关的 `submit` 抛 `KnowledgeBaseUnavailable`（既有 503 映射，R10）——
     # 而不是回一个假的空结果，也不是 500。
+    #
+    # **它就是进程级那一个实例**（M3 阶段 5 收编，见 `Services.provider` 字段说明）：
+    # 阶段 2/3 时边车 `Clients` 另建了一份（各有一份 30s 握手缓存），现在全进程只有
+    # 这一份——`/local/provider` 的判定源、边车工具表门控被它一起回答，于是不可能出现
+    # "端点说 ready、工具表说不 ready"这种两处各答一半的局面。
     provider = (
         KnowledgeProviderClient(settings=resolved, get_setting=runtime.get)
         if resolved.deployment == "local"
@@ -735,6 +754,10 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         commands=commands_service,
         mcp=mcp_service,
         schedules=schedule_service,
+        # **进程级那一个提供者实例**（M3 阶段 5）：上面建的 `provider` 直接挂在这里
+        # （服务器档是 None）。挂它的理由与用途见字段说明——一句话是"让全进程只有
+        # 一份握手缓存"，而 `/local/provider`（判定源）与边车的工具表门控都从它取。
+        provider=provider,
     )
     # 槽里放进刚装好的这一份：定时任务的执行体从这一刻起可用
     # （`_run_scheduled` 只在 worker 领到 SCHEDULED 任务时被调用，那时这里早已填上）

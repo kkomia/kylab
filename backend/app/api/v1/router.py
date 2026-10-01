@@ -134,7 +134,8 @@ local_router.include_router(schedules.router)
 local_router.include_router(mcp_servers.router)
 # 记忆本体本来就在 `data_dir/memory`
 local_router.include_router(memory.router)
-# 本机档专属：`/local/status`（`/local/import*` 在阶段 5）
+# 本机档专属：`/local/status`（导入的 `/local/import*` 与知识库提供者的
+# `/local/provider` 都在这个 router 上——三样都是"只在本机档成立"的东西，见 local.py）
 local_router.include_router(local.router)
 # 两条薄重声明的只读端点（事件日志 / 上下文用量）——**不整 include `chat.router`**：
 # 那个 router 还有服务器专属的 `/chat/stream`，摆出来就是一条会 500 的路。
@@ -150,4 +151,6 @@ local_router.include_router(local.chat_reads)
 #
 # `provider`（M3 阶段 1）单独说一句：**知识库提供者是那台 NAS**，
 # 本机侧是它的**客户端**——它调 `/provider/handshake`，不提供它（方案 §9-1）。
+# 客户端这一侧要看状态、改地址走的是本机自己的那条：`/local/provider`（M3 阶段 5，
+# 在上面那个 `local.router` 上）。
 # 在服务端 `api_router` 上则是一条正常端点（见上面那行 include）。

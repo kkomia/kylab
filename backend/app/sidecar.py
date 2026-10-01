@@ -653,14 +653,15 @@ class Clients:
     | 技能目录 | **没有** ✗ | 如实回空 ✓（`/turn` 的 `notes` 里说清 ✓）|
     | 入库 | **远端** ✓ | 组合根换线那一处（`core/services.py`，知识库在 NAS）✓ |
 
-    ⚠️ **本类手上那个 provider 不是服务图里跑着的那个**（M3 阶段 3 之后如实写在这里）：
-    服务图的提供者客户端由**组合根**建（`core/services.py::build_services`，本机档那一段），
-    `ChatService` 的检索、笔记与产物的入库、`Services.ingest` 都从**它**取；本类这个
-    （`self.provider` / `self.knowledge`）是**同一个客户端的第二个实例**，用途只有一个：
-    `tool_specs` 要问一次提供者状态（不 ready 就不摆那三个 KB 工具，见 `KB_PROVIDER_TOOLS`）。
-    两个实例的来源与口径完全一样（同一份引导级配置 + 同一个本机运行期配置），所以结论
-    必然一致；代价只是各有一份 30s 握手缓存。**要收成一个实例的话，落点应该在阶段 5
-    （`/local/provider` 也需要一个进程级的提供者）**，不在这一层偷偷换。
+    ⚠️ **本类手上那个 provider 就是服务图里跑着的那个**（M3 阶段 5 收成一个实例）：
+    服务图的提供者客户端由**组合根**建（`core/services.py::build_services`，本机档那一段，
+    挂在 `Services.provider` 上），`ChatService` 的检索、笔记与产物的入库、
+    `Services.ingest`、`stores.meta.kb` 的 reader、`/local/provider` 端点与**本类**的
+    `self.provider` / `self.knowledge` 全从**它**取。于是全进程只有一份 30s 握手缓存：
+    工具表门控与状态端点不可能各答一半（"端点说 ready、工具表说不 ready"这类不一致
+    在阶段 2/3 是能发生的——那时是两份缓存）。
+    `provider=` 那个入参仍是**用例的注入接缝**（塞一个假实现进去验三态门控），
+    给了它本类就用手上这一份、**换不动服务图里那一个**——那是用例的形态，不是运行形态。
     """
 
     def __init__(
@@ -694,16 +695,20 @@ class Clients:
         # 否则 `get_services()` 会按服务器档去连 PG（那是"误连服务器库"那条路）。
         base_services = services if services is not None else get_services()
 
-        #: **知识库提供者的客户端**（M3 阶段 2 起有它，阶段 3 起只归工具表门控用）：
-        #: 地址与钥匙**每次调用现取**（`get_setting` 读的就是下面那份运行期配置），
-        #: 所以设置页改了地址不用重启边车。`provider=` 是给用例塞一个假实现的口子
-        #: （它同时也换了 `self.knowledge`）——**它换不动服务图里那一个**，那个在组合根，
-        #: 见类说明里的 ⚠️。
-        self.provider = (
-            provider
-            if provider is not None
-            else KnowledgeProviderClient(get_setting=base_services.runtime.get)
-        )
+        #: **知识库提供者的客户端**（M3 阶段 2 起有它）。**默认就是服务图上那一个**
+        #: （`Services.provider`，阶段 5 收成一个实例）：地址与钥匙**每次调用现取**
+        #: （`get_setting` 读的就是下面那份运行期配置），所以设置页改了地址不用重启边车；
+        #: 工具表门控（`tool_specs`）问它一次，`/local/provider` 端点问的是同一个对象。
+        #: `provider=` 是给用例塞一个假实现的口子（它同时也换了 `self.knowledge`）
+        #: ——**它换不动服务图里那一个**，那一条只出现在用例里，见类说明。
+        if provider is not None:
+            self.provider = provider
+        elif base_services.provider is not None:
+            self.provider = base_services.provider
+        else:
+            # 兜底：手工构造的 `Services` 上没有那一格（脚本 / 老用例）。自己建一个，
+            # 口径与组合根那一处逐字相同（同一份引导级配置 + 同一个运行期配置）。
+            self.provider = KnowledgeProviderClient(get_setting=base_services.runtime.get)
         #: KB 那条接缝在本类这一侧的把手 = **提供者客户端**（它满足 `KnowledgeClient`
         #: 协议的 `retrieve_sources` 签名）。`knowledge=` 这个入参留给"用例塞一个假实现"，
         #: 给了就用它（与模型那一头同一个写法）。
