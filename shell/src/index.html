@@ -161,13 +161,19 @@
       [hidden] {
         display: none !important;
       }
+      /* 「最近使用」那一段的间距走这条规则，**不用行内 style**：
+         Tauri 给内置页注入的 CSP 带 nonce，而"有 nonce 时 'unsafe-inline' 失效"，
+         行内 style 会被拦掉（实测控制台一条 CSP 违规 + 那一段的 margin 没了）。 */
+      #recent .sub {
+        margin: 0;
+      }
     </style>
   </head>
   <body>
     <main class="card">
       <div class="spinner" id="spinner"></div>
       <h1 id="title">正在加载界面…</h1>
-      <p class="sub" id="sub">从本地资源目录读取前端；读不到就用内置兜底版。</p>
+      <p class="sub" id="sub">从本地读前端：先是热更新下来的那份，再是壳里自带的那份。</p>
 
       <form id="form" hidden novalidate>
         <div class="field">
@@ -213,7 +219,7 @@
       </form>
 
       <div class="recent" id="recent" hidden>
-        <p class="sub" style="margin: 0">最近使用</p>
+        <p class="sub">最近使用</p>
         <ul id="recent-list"></ul>
       </div>
 

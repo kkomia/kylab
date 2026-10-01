@@ -11,10 +11,11 @@
 //! ```text
 //! app://localhost/assets/index-abc.js
 //!   ├─ /api/**            → 转发到配置里的远端服务器（见 `proxy`）
-//!   ├─ 读 resources/current → "1.4.2"      （缺失/非法 → 走兜底）
+//!   ├─ 读 resources/current → "1.4.2"      （缺失/非法 → 走下一级）
 //!   ├─ <resources>/v1.4.2/dist/assets/index-abc.js   命中 → 返回
 //!   ├─ 其它版本目录里找同一路径（回退上一可用版本，规格 §5.4）
 //!   ├─ 路径像路由（无扩展名）→ index.html（SPA fallback，规格 §10）
+//!   ├─ 包内兜底那份（`<resource_dir>/frontend-dist/…`，= 打包时的 `frontend/dist`）
 //!   └─ 都取不到 → 内置兜底页（`include_bytes!`，编译进 exe）
 //! ```
 //!
@@ -22,9 +23,9 @@
 //!
 //! ```text
 //! frontend-resources/
-//! ├── current          # 纯文本版本号；写 current.tmp 再 rename（同目录 rename 是原子的）
-//! ├── v1.0.0/dist/...  # 一份解开的 dist
-//! └── staging/         # 下载/解压临时区（Phase 2 用）
+//! ├── current              # 纯文本版本号；写 current.tmp 再 rename（同目录 rename 是原子的）
+//! ├── v1.0.0/dist/...      # 一份解开的 dist
+//! └── staging-1.0.0-1234/  # 下载/解压临时区（**带版本与 pid**：两份壳同时装着不互相踩）
 //! ```
 //!
 //! ## 两道必须写在代码里的安全闸（规格 §5.5）
@@ -35,12 +36,19 @@
 //! 2. **版本号只认 `[A-Za-z0-9._-]`**（`read_current`）——版本号来自磁盘上的指针文件，
 //!    它将来是**下载下来的内容**，不是可信输入。
 //!
-//! ## 与规格的一处差异（如实记）
+//! ## 兜底分两级（规格 §5.4）
 //!
-//! 规格 §5.4 的"回退"分两级：进程内另有服务端（`resource_dir()/fallback-dist`）那份。
-//! Phase 1 的兜底直接**编译进 exe**（`include_bytes!` 一个自包含的引导页），
-//! 于是"删掉整个资源目录，壳还能打开"这件事不依赖任何磁盘布局——
-//! 而完整 dist 的兜底版等 Phase 2 打包时按规格落到 `frontend/dist` 资源里。
+//! 1. **包内那份 dist**（`<resource_dir>/frontend-dist/…`）：打包时把仓库里的
+//!    `frontend/dist` 原样收进安装包/绿色版目录（见 `tauri.conf.json` 的
+//!    `bundle.resources`）。于是"全新安装的第一天、网络还没通"也能进界面——
+//!    Phase 1 只有引导页时，首启在服务器可达的情况下也要等下一次启动才看得到界面；
+//! 2. **编译进 exe 的引导页**（`BOOT_PAGE` / `BOOT_SCRIPT`，`include_bytes!`）：
+//!    资源目录整个坏掉、包内那份也丢了时才用它——它自包含、不依赖任何磁盘布局，
+//!    所以"删掉整个资源目录，壳还能打开"永远成立（只是停留在一个能重连的页面上）。
+//!
+//! 优先级：**热更新那份 > 包内兜底 > 引导页**。前两级都按"当前版本 → 上一版 →
+//! SPA 回退 index.html"的同一条链找文件（`candidates`），协议层逐个试读到第一个
+//! 读得出来的（某一份文件损坏就顺延下一级，而不是把半份资源喂给 WebView）。
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -52,6 +60,10 @@ use tauri::http::{header, Response, StatusCode};
 
 /// 资源目录名（规格 §3）。
 pub const RESOURCES_DIRNAME: &str = "frontend-resources";
+
+/// 包内兜底前端的目录名：`bundle.resources` 把仓库的 `frontend/dist`
+/// 映射成安装包里的这个名字（规格 §5.2 第 4 步的 `fallback-dist`，名字取"这是前端产物"）。
+pub const BUNDLED_DIRNAME: &str = "frontend-dist";
 
 /// 应用入口 URL。**平台不同、写法不同**（实测踩到过）：
 /// Windows / Android 上 WebView2 把自定义 scheme 挂在 `http://<scheme>.localhost`，
@@ -187,6 +199,30 @@ pub fn resources_root(app_data_dir: &Path) -> PathBuf {
     app_data_dir.join(RESOURCES_DIRNAME)
 }
 
+/// **兜底前端的候选根**（按优先级），`candidates` 逐个试：
+///
+/// 1. `<resource_dir>/frontend-dist` —— 打包时收进去的那份（安装包 / 绿色版目录）。
+///    Windows 上 `resource_dir()` 就是 **exe 所在目录**（Tauri 上游就是这么定的），
+///    所以绿色版要连 `frontend-dist\` 一起拷，与 `sidecar-runtime\` 是同一条规矩；
+/// 2. **仓库里的 `frontend/dist`** —— 只在 **debug 构建**（`cargo run` / 开发态）里认。
+///    一是省掉"为了看一眼界面先手工拷一份进资源目录"，二是它与打包收进包里的
+///    是同一个目录、同一份产物，开发态看到的就是发行版兜底的样子。
+///    打了包的机器上这个路径不存在，等于没有这一条（release 构建里干脆不列出来，
+///    免得本机那份残留让"包内没有兜底"这件事在日志里看不出来）。
+pub fn bundled_roots(resource_dir: &Path) -> Vec<PathBuf> {
+    let mut roots = vec![resource_dir.join(BUNDLED_DIRNAME)];
+    if cfg!(debug_assertions) {
+        // `desktop/src-tauri` → 仓库根 → `frontend/dist`（Vite 的产物目录）。
+        // 用 `ancestors()` 而不是 `../../`：这条路径会进启动日志（`兜底前端：…`），
+        // 带一串 `..` 的写法读起来费劲。
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2);
+        if let Some(repo) = repo {
+            roots.push(repo.join("frontend").join("dist"));
+        }
+    }
+    roots
+}
+
 /// 读 `current` 指针。**返回 `None` = 指针缺失或内容非法**（调用方走兜底）。
 ///
 /// 版本号只认 `[A-Za-z0-9._-]`：它来自磁盘上那个文件，而那个文件将来是下载下来的
@@ -251,18 +287,17 @@ pub fn safe_relative(path: &str) -> Option<Vec<String>> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
     pub path: PathBuf,
-    /// `version` = 热更新下来的那版；`embedded` = exe 内置兜底；`previous` = 回退到的上一版。
+    /// `version` = `current` 指的那版；`previous` = 回退到的上一版；
+    /// `bundled` = 包内/开发态兜底那份（`version` 为空，它没有版本号）。
     pub source: &'static str,
     pub version: Option<String>,
 }
 
-/// 请求路径 → 磁盘上的文件（`None` = 哪儿都没有，协议层给 404 或兜底）。
+/// 热更新那份的候选（当前版本 → 目录里其余版本），按优先级排好。
 ///
-/// 顺序就是优先级：
-/// 1. `current` 指的版本；
-/// 2. **目录里存在的最新版本**（`current` 指向的目录被删时，规格 §5.4 要求"回退上一可用版本"）；
-/// 3. 路径看起来是前端路由（没有扩展名）→ 该版本的 `index.html`（SPA fallback，规格 §10）。
-pub fn resolve_file(resources_root: &Path, segments: &[String]) -> Option<Resolved> {
+/// **逐个版本都算候选**（而不是只给第一个命中的）：某一版的某个文件读不出来时，
+/// 协议层要还能顺延到上一版/兜底那份，而不是把一个坏文件回给页面。
+fn version_candidates(resources_root: &Path, segments: &[String]) -> Vec<Resolved> {
     let requested = segments.join("/");
     // 请求根 = 要 index.html；其余按字面路径找
     let wanted = if requested.is_empty() { "index.html" } else { requested.as_str() };
@@ -274,18 +309,20 @@ pub fn resolve_file(resources_root: &Path, segments: &[String]) -> Option<Resolv
      * 于是 `current` 指向一个已经被删掉的版本目录时，首页取不到——
      * 而规格 §5.4 要的正是"回退上一可用版本"。
      */
-    let mut versions: Vec<String> = Vec::new();
-    if let Some(current) = read_current(resources_root) {
-        versions.push(current.clone());
-        versions.extend(other_versions(resources_root, &current));
-    } else {
-        versions = other_versions(resources_root, "");
-    }
+    let versions: Vec<String> = match read_current(resources_root) {
+        Some(current) => {
+            let mut list = vec![current.clone()];
+            list.extend(other_versions(resources_root, &current));
+            list
+        }
+        None => other_versions(resources_root, ""),
+    };
 
+    let mut found: Vec<Resolved> = Vec::new();
     for (index, version) in versions.iter().enumerate() {
         let source = if index == 0 { "version" } else { "previous" };
         if let Some(hit) = resolve_in_version(resources_root, version, wanted, source) {
-            return Some(hit);
+            found.push(hit);
         }
     }
 
@@ -296,11 +333,47 @@ pub fn resolve_file(resources_root: &Path, segments: &[String]) -> Option<Resolv
         for (index, version) in versions.iter().enumerate() {
             let source = if index == 0 { "version" } else { "previous" };
             if let Some(hit) = resolve_in_version(resources_root, version, "index.html", source) {
-                return Some(hit);
+                found.push(hit);
             }
         }
     }
-    None
+    found
+}
+
+/// **包内/开发态兜底那份**的候选：布局与热更新那份**差一层**
+/// （`<兜底根>/assets/x.js`，而不是 `<资源目录>/v<版本>/dist/assets/x.js`）。
+fn bundled_candidates(bundled_root: &Path, segments: &[String]) -> Vec<Resolved> {
+    let requested = segments.join("/");
+    let wanted = if requested.is_empty() { "index.html" } else { requested.as_str() };
+
+    let mut found: Vec<Resolved> = Vec::new();
+    if let Some(hit) = resolve_in_dir(bundled_root, wanted, "bundled") {
+        found.push(hit);
+    }
+    // 与热更新那份同一条 SPA 规矩（带扩展名的取不到就是取不到）
+    if !requested.is_empty() && looks_like_route(&requested) && wanted != "index.html" {
+        if let Some(hit) = resolve_in_dir(bundled_root, "index.html", "bundled") {
+            found.push(hit);
+        }
+    }
+    found
+}
+
+/// 协议层要用的**完整候选链**（规格 §5.4 的优先级）：
+/// 热更新那份（当前版本 → 上一版 → SPA 回退）→ 包内那份 → 开发态那份。
+///
+/// 调用方**逐个试读**：读得出来就用，读不出来（文件损坏/被删）顺延下一个候选；
+/// 整条链都没结果才轮到编译进 exe 的引导页。
+pub fn candidates(
+    resources_root: &Path,
+    bundled_roots: &[PathBuf],
+    segments: &[String],
+) -> Vec<Resolved> {
+    let mut found = version_candidates(resources_root, segments);
+    for root in bundled_roots {
+        found.extend(bundled_candidates(root, segments));
+    }
+    found
 }
 
 /// 请求路径看起来像前端路由吗（没有扩展名）。
@@ -310,6 +383,24 @@ pub fn resolve_file(resources_root: &Path, segments: &[String]) -> Option<Resolv
 pub fn looks_like_route(requested: &str) -> bool {
     let last = requested.rsplit('/').next().unwrap_or("");
     !last.contains('.')
+}
+
+/// 一个候选文件算不算数：**存在、是文件、且 `index.html` 不是空文件**。
+///
+/// 最后那半条对应规格 §5.4 的那一行（"index.html 损坏 → 兜底版"）：一份 0 字节的
+/// `index.html` 读得出来、也能回 200，但页面是一片白——那比回退到兜底更难查。
+fn usable(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() {
+        return false;
+    }
+    let is_index = path
+        .file_name()
+        .map(|name| name.eq_ignore_ascii_case("index.html"))
+        .unwrap_or(false);
+    !is_index || meta.len() > 0
 }
 
 /// `current` 之外的版本目录，**按目录修改时间从新到旧**（回退要退到"最近还能用的那版"）。
@@ -348,21 +439,31 @@ fn resolve_in_version(
     requested: &str,
     source: &'static str,
 ) -> Option<Resolved> {
-    let mut path = resources_root.join(format!("v{version}")).join("dist");
+    let path = resolve_in_dir(
+        &resources_root.join(format!("v{version}")).join("dist"),
+        requested,
+        source,
+    )?;
+    Some(Resolved {
+        version: Some(version.to_string()),
+        ..path
+    })
+}
+
+/// 在一个 dist 根下找 `requested`（`""` 之外的空段丢掉）。
+fn resolve_in_dir(root: &Path, requested: &str, source: &'static str) -> Option<Resolved> {
+    let mut path = root.to_path_buf();
     for segment in requested.split('/') {
         if segment.is_empty() {
             continue;
         }
         path.push(segment);
     }
-    if path.is_file() {
-        return Some(Resolved {
-            path,
-            source,
-            version: Some(version.to_string()),
-        });
-    }
-    None
+    usable(&path).then(|| Resolved {
+        path,
+        source,
+        version: None,
+    })
 }
 
 // ---------------------------------------------------------------- 响应
@@ -448,7 +549,7 @@ fn boot_asset_response(requested: &str) -> Option<Response<Vec<u8>>> {
 /// `app://` 协议的一次请求。
 ///
 /// **这条路径上的每一个判断都必须能在没有 Tauri 的情况下测**：所以它只收
-/// `resources_root` 与 `server` 两个事实，剩下的是纯逻辑（见文件末的用例）。
+/// 资源目录、兜底根与服务器那几个事实，剩下的是纯逻辑（见文件末的用例）。
 /// 把请求路径拆成「路径」与「查询串」两半（`/api/v1/x?k=v` → （`/api/v1/x`, `Some("k=v")`））。
 ///
 /// **为什么必须有这一步**（2026-09-30 用户实测发现）：协议层原来只取 `Uri::path()`，
@@ -468,6 +569,7 @@ fn split_query(uri_path: &str) -> (&str, Option<&str>) {
 
 pub fn handle(
     resources_root: &Path,
+    bundled_roots: &[PathBuf],
     server: Option<&str>,
     device: Option<Device>,
     method: &str,
@@ -496,24 +598,21 @@ pub fn handle(
         return boot_response(StatusCode::OK);
     };
 
-    let resolved = resolve_file(resources_root, &segments);
-    if let Some(hit) = resolved {
-        return match std::fs::read(&hit.path) {
-            Ok(bytes) => respond(
+    // 候选链（规格 §5.4 的优先级）：热更新那份（当前 → 上一版 → SPA 回退）
+    // → 包内兜底 → 开发态兜底。**逐个试读**：某一份文件读不出来（半截、被删、
+    // 权限变了）就顺延下一个候选，而不是把一份坏资源回给 WebView。
+    for hit in candidates(resources_root, bundled_roots, &segments) {
+        if let Ok(bytes) = std::fs::read(&hit.path) {
+            return respond(
                 StatusCode::OK,
                 content_type(&hit.path),
                 cache_control(&segments),
                 bytes,
-            ),
-            // 单文件读失败 = 这个文件 404；`index.html` 读失败由上一层回退兜底
-            Err(_) => match boot_asset_response(&segments.join("/")) {
-                Some(response) => response,
-                None => boot_response(StatusCode::NOT_FOUND),
-            },
-        };
+            );
+        }
     }
 
-    // 资源目录里没有：先看内置兜底里有没有这个路径（引导页 + 它的脚本），
+    // 两级都拿不到：先看编译进 exe 的兜底里有没有这个路径（引导页 + 它的脚本），
     // 再让 SPA 路由回退到兜底页，最后才是 404。
     let requested = segments.join("/");
     if let Some(response) = boot_asset_response(&requested) {
@@ -661,26 +760,37 @@ fn proxy(
 
 // ---------------------------------------------------------------- 启动时的一次快照
 
-/// 启动时读一次资源状态（给引导页决定往哪走）。
+/// 启动时读一次资源状态（给引导页决定往哪走，也给启动日志一行"界面从哪儿出"）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ResourceStatus {
-    /// `version` = 有热更新资源；`embedded` = 只有内置兜底。
+    /// `version` = 热更新那份在用；`bundled` = 包内/开发态兜底那份在用；
+    /// `embedded` = 两级都没有，只剩编译进 exe 的引导页。
     pub mode: &'static str,
+    /// 热更新那份的版本号（`bundled` / `embedded` 时为空——兜底那份没有版本号）。
     pub version: Option<String>,
+    /// 资源目录（热更新那份的落点）。
     pub root: String,
-    /// 资源目录**能不能读到 `index.html`**（引导页据此决定敢不敢往 `app://` 跳）。
+    /// **界面到底能不能起来**（引导页据此决定敢不敢往 `app://` 跳）：
+    /// 热更新那份能用，或者兜底那份能用，都算 `true`。
     pub has_app: bool,
+    /// 将来会被当成首页读的那个文件（`None` = 两级都没有）。日志里写出来，
+    /// "到底在用哪一份界面"就不用猜。
+    pub file: Option<String>,
 }
 
-pub fn status(app_data_dir: &Path) -> ResourceStatus {
-    let root = resources_root(app_data_dir);
-    let version = read_current(&root);
-    let has_app = !matches!(resolve_file(&root, &[]), None);
+pub fn status(resources_root: &Path, bundled_roots: &[PathBuf]) -> ResourceStatus {
+    let first = candidates(resources_root, bundled_roots, &[]).into_iter().next();
+    let mode = match first.as_ref().map(|hit| hit.source) {
+        Some("bundled") => "bundled",
+        Some(_) => "version",
+        None => "embedded",
+    };
     ResourceStatus {
-        mode: if has_app { "version" } else { "embedded" },
-        version,
-        root: root.display().to_string(),
-        has_app,
+        mode,
+        version: if mode == "version" { read_current(resources_root) } else { None },
+        root: resources_root.display().to_string(),
+        has_app: first.is_some(),
+        file: first.map(|hit| hit.path.display().to_string()),
     }
 }
 
@@ -707,8 +817,12 @@ pub fn status(app_data_dir: &Path) -> ResourceStatus {
 pub enum SyncOutcome {
     /// 本地已经是最新（指纹一致）
     UpToDate,
-    /// 装好了（**下次启动生效**）
-    Installed { version: String },
+    /// 装好了（**下次启动生效**）。`note` 是"能装但有话要说"（眼下只有 `min_shell_version`
+    /// 那一句），由调用方写进同一行日志里。
+    Installed {
+        version: String,
+        note: Option<String>,
+    },
     /// 没做（网络/校验/安装失败），原因如实带出来
     Skipped { reason: String },
 }
@@ -747,12 +861,11 @@ pub fn fetch_manifest(origin: &str, timeout: Duration) -> Result<Manifest, Strin
         .map_err(|error| format!("清单读不懂（{url}）：{error}"))
 }
 
-/// 下载整包并**校验**（大小 + sha256）：对不上就整包丢弃。
-pub fn download_package(
-    origin: &str,
-    manifest: &Manifest,
-    timeout: Duration,
-) -> Result<Vec<u8>, String> {
+/// 下载整包（**只下载、不校验**；校验由 `sync` 调 `verify_package`）。
+///
+/// 拆出来的理由：重试只该盖住"网络这一次没成"，**不该盖住"包内容对不上"**——
+/// 规格 §5.3 的 3.a 是"下载带重试"，3.b 是"sha256 不符则丢弃并结束"。
+fn fetch_bytes(origin: &str, manifest: &Manifest, timeout: Duration) -> Result<Vec<u8>, String> {
     let url = if manifest.package_url.starts_with("http") {
         manifest.package_url.clone()
     } else {
@@ -770,8 +883,32 @@ pub fn download_package(
         .take(MAX_PACKAGE_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| format!("下载读到一半失败（{url}）：{error}"))?;
-    verify_package(manifest, &bytes)?;
     Ok(bytes)
+}
+
+/// 下载重试次数（规格 §5.3 3.a 的"最多 3 次"）。
+const DOWNLOAD_ATTEMPTS: u32 = 3;
+
+/// 试到成功或试满 `attempts` 次。抽成通用的（闭包给"一次尝试"），
+/// 于是"重试几次、失败怎么报"这件事**离线可测**，不用真起一个会抖的服务器。
+fn with_retry<T>(
+    attempts: u32,
+    mut one: impl FnMut() -> Result<T, String>,
+) -> Result<T, String> {
+    let mut last = String::new();
+    for attempt in 1..=attempts.max(1) {
+        match one() {
+            Ok(value) => return Ok(value),
+            Err(reason) => {
+                last = reason;
+                // 最后一次失败之后不再空转（不 sleep：这是后台线程，下次启动还会再来）
+                if attempt < attempts {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        }
+    }
+    Err(format!("试了 {attempts} 次都没成：{last}"))
 }
 
 /// 校验一个包：**大小与 sha256 都要与清单一致**（纯函数，离线可测）。
@@ -796,8 +933,13 @@ pub fn verify_package(manifest: &Manifest, package: &[u8]) -> Result<(), String>
     Ok(())
 }
 
-/// 这份清单**能不能用**（纯函数）：版本号字符集、包大小、最低壳版本。
-pub fn check_manifest(manifest: &Manifest, shell_version: &str) -> Result<(), String> {
+/// 这份清单**能不能用**（纯函数）：版本号字符集、包大小。
+///
+/// `Ok(Some(note))` = 能用，但有话要说——**`min_shell_version` 只提示、不拦**
+/// （规格 v0.1 的《落地范围》明确写了"留字段，暂不拦"：开发版前后端同时更新、
+/// 没有发行版，"壳太旧"这件事今天不存在；真拦住只会让界面悄悄停在旧版本，
+/// 而原因只躺在日志里。等有发行版、真要兼容矩阵时再按规格 §5.4 那一行拦）。
+pub fn check_manifest(manifest: &Manifest, shell_version: &str) -> Result<Option<String>, String> {
     if manifest.version.is_empty()
         || !manifest
             .version
@@ -810,14 +952,12 @@ pub fn check_manifest(manifest: &Manifest, shell_version: &str) -> Result<(), St
     if manifest.size == 0 || manifest.size > MAX_PACKAGE_BYTES {
         return Err(format!("包大小不在合理范围：{} B", manifest.size));
     }
-    if let Some(minimum) = manifest.min_shell_version.as_deref() {
-        if newer(minimum, shell_version) {
-            return Err(format!(
-                "这份前端要求壳 ≥ {minimum}（当前 {shell_version}）：请更新客户端"
-            ));
-        }
+    match manifest.min_shell_version.as_deref() {
+        Some(minimum) if newer(minimum, shell_version) => Ok(Some(format!(
+            "这份前端声明要壳 ≥ {minimum}（当前 {shell_version}）：按开发版口径不拦，照装"
+        ))),
+        _ => Ok(None),
     }
-    Ok(())
 }
 
 /// 把包**装成一份可用版本**：解压到 staging → 校验 `index.html` → 移到 `v{version}/` →
@@ -832,7 +972,12 @@ pub fn install_package(
     // 包 = **`dist/` 里的内容**（服务器那份就是拿 `frontend/dist` 打的），而壳的布局是
     // `<资源目录>/v<版本>/dist/...`（`resolve_in_version` 认这一层）——所以在**解压这一层**
     // 补上 `dist/`。把这条写在这里，是因为"少一层 dist"的表现是"装好了、界面却回到兜底页"。
-    let staging = resources_root.join(format!("staging-{version}"));
+    //
+    // staging 名字**带 pid**（规格 §10 "多实例并发"那一问）：两份壳同时装着同一个版本时，
+    // 共用一个 staging 目录会让"解压到一半"的那份被另一份 rename 走——装出来的前端
+    // 少几个文件，而 sha256 早就验过了。带 pid 之后各写各的，最后 rename 到哪份是哪份。
+    prune_staging(resources_root);
+    let staging = resources_root.join(format!("staging-{version}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     let dist = staging.join("dist");
     std::fs::create_dir_all(&dist)
@@ -870,7 +1015,8 @@ pub fn install_package(
     Ok(())
 }
 
-/// 一次完整同步（背景线程里跑）：拉清单 → 比版本 → 下载 → 安装。
+/// 一次完整同步（背景线程里跑）：拉清单 → 校验清单 → 比版本 → 下载（**带重试**）→
+/// 校验包 → 安装。
 pub fn sync(
     origin: &str,
     app_data_dir: &Path,
@@ -882,19 +1028,26 @@ pub fn sync(
         Ok(manifest) => manifest,
         Err(reason) => return SyncOutcome::Skipped { reason },
     };
-    if let Err(reason) = check_manifest(&manifest, shell_version) {
-        return SyncOutcome::Skipped { reason };
-    }
+    let note = match check_manifest(&manifest, shell_version) {
+        Ok(note) => note,
+        Err(reason) => return SyncOutcome::Skipped { reason },
+    };
     if read_current(&root).as_deref() == Some(manifest.version.as_str()) {
         return SyncOutcome::UpToDate;
     }
-    let package = match download_package(origin, &manifest, timeout) {
+    // 下载**带重试**（规格 §5.3 3.a）：局域网里偶尔抖一下，不该让这次更新白等到下次启动。
+    // **校验压在重试之外**：内容对不上不是"再试一次"能解决的（3.b：丢弃、结束）。
+    let package = match with_retry(DOWNLOAD_ATTEMPTS, || fetch_bytes(origin, &manifest, timeout)) {
         Ok(package) => package,
         Err(reason) => return SyncOutcome::Skipped { reason },
     };
+    if let Err(reason) = verify_package(&manifest, &package) {
+        return SyncOutcome::Skipped { reason };
+    }
     match install_package(&root, &manifest, &package) {
         Ok(()) => SyncOutcome::Installed {
             version: manifest.version,
+            note,
         },
         Err(reason) => SyncOutcome::Skipped { reason },
     }
@@ -936,6 +1089,36 @@ fn prune_versions(resources_root: &Path, current: &str) {
     for stale in other_versions(resources_root, current).into_iter().skip(1) {
         let _ = std::fs::remove_dir_all(resources_root.join(format!("v{stale}")));
     }
+}
+
+/// 清掉**上一次没走完**的 staging（壳崩了/被 kill 时留下的），只留自己这一个。
+///
+/// 为什么敢删别人的：`staging-<版本>-<pid>` 里带 pid，**rename 到正式目录那一下
+/// 只动自己写的那份**（"装出半份前端"的根源是大家共用一个 staging 名，
+/// 已经由 pid 隔开了）。另一份壳此刻正好在解压的话，它下一次写入会失败 →
+/// 如实记一行"这次跳过"、下次启动再来；这比"磁盘上永远堆着几个 MB 的残渣"划算。
+fn prune_staging(resources_root: &Path) {
+    // 自己那个的名字以 `-<pid>` 结尾（`staging-<版本>-<pid>`）；另一个进程几乎不可能
+    // 撞上同一个 pid，所以这一条足够把"我正在写的那份"摘出来
+    let mine = format!("-{}", std::process::id());
+    for leftover in staging_leftovers(resources_root) {
+        if leftover.ends_with(&mine) {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(resources_root.join(leftover));
+    }
+}
+
+/// 资源目录里所有 `staging-*` 的名字（含"自己"那个）。
+pub fn staging_leftovers(resources_root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(resources_root) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with("staging-"))
+        .collect()
 }
 
 /// `a` 比 `b` 新吗。按 `.` 分段、数字段比数字、其余退字典序 —— 版本号是我们自己产出的
@@ -987,6 +1170,19 @@ mod tests {
         std::fs::write(path, body).unwrap();
     }
 
+    /// **热更新那份**的第一个候选（用例里最常问的问题：这个路径该落到哪个文件）。
+    /// `&[]` = 不带兜底根，只看热更新那一层。
+    fn candidate(root: &Path, segments: &[String]) -> Option<Resolved> {
+        candidates(root, &[], segments).into_iter().next()
+    }
+
+    /// **兜底那份**的落点（`<兜底根>/<相对路径>`，比热更新那份少一层）。
+    fn put_bundled(root: &Path, relative: &str, body: &str) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+
     #[test]
     fn pointer_is_read_and_normalised() {
         let root = temp_root("pointer");
@@ -1022,7 +1218,7 @@ mod tests {
         put(&root, "1.0.0", "assets/index-abc.js", "console.log(1)");
         std::fs::write(root.join(POINTER_FILE), "1.0.0").unwrap();
 
-        let hit = resolve_file(&root, &["assets".into(), "index-abc.js".into()]).unwrap();
+        let hit = candidate(&root, &["assets".into(), "index-abc.js".into()]).unwrap();
         assert_eq!(hit.source, "version");
         assert_eq!(hit.version.as_deref(), Some("1.0.0"));
         assert_eq!(std::fs::read_to_string(hit.path).unwrap(), "console.log(1)");
@@ -1034,11 +1230,11 @@ mod tests {
         put(&root, "1.0.0", "index.html", "<html>app</html>");
         std::fs::write(root.join(POINTER_FILE), "1.0.0").unwrap();
 
-        let hit = resolve_file(&root, &["chat".into(), "conv_123".into()]).unwrap();
+        let hit = candidate(&root, &["chat".into(), "conv_123".into()]).unwrap();
         assert!(hit.path.ends_with("index.html"), "路由该回退到 index.html");
         // 带扩展名的资源取不到就是取不到，**不许**回退成 index.html
         // （否则一个 404 的 js 会变成一段 HTML，页面报的是语法错，查起来远得多）
-        assert_eq!(resolve_file(&root, &["assets".into(), "missing.js".into()]), None);
+        assert_eq!(candidate(&root, &["assets".into(), "missing.js".into()]), None);
     }
 
     #[test]
@@ -1050,7 +1246,7 @@ mod tests {
 
         // 指针整个没了（规格 §5.4 第一行）：回退到目录里最新那版
         assert_eq!(read_current(&root), None);
-        let hit = resolve_file(&root, &[]).unwrap();
+        let hit = candidate(&root, &[]).unwrap();
         assert_eq!(hit.version.as_deref(), Some("1.1.0"), "该用最新的那份可用版本");
     }
 
@@ -1060,7 +1256,7 @@ mod tests {
         put(&root, "1.0.0", "index.html", "<html>old</html>");
         std::fs::write(root.join(POINTER_FILE), "9.9.9").unwrap();
 
-        let hit = resolve_file(&root, &[]).unwrap();
+        let hit = candidate(&root, &[]).unwrap();
         assert_eq!(hit.source, "previous");
         assert_eq!(hit.version.as_deref(), Some("1.0.0"));
     }
@@ -1068,8 +1264,8 @@ mod tests {
     #[test]
     fn empty_resource_root_has_no_app_so_the_boot_page_is_used() {
         let root = temp_root("empty");
-        assert!(!status(&root).has_app);
-        assert_eq!(status(&root).mode, "embedded");
+        assert!(!status(&root, &[]).has_app);
+        assert_eq!(status(&root, &[]).mode, "embedded");
     }
 
     #[test]
@@ -1079,11 +1275,11 @@ mod tests {
         std::fs::write(root.join(POINTER_FILE), "1.0.0").unwrap();
 
         // 没有配服务器时 API 请求给 503 而不是本地 404（错误能被页面读懂）
-        let response = handle(&root, None, None, "GET", "/api/v1/conversations", None, &[]);
+        let response = handle(&root, &[], None, None, "GET", "/api/v1/conversations", None, &[]);
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
         // 静态资源：本地命中，且带缓存头
-        let response = handle(&root, None, None, "GET", "/", None, &[]);
+        let response = handle(&root, &[], None, None, "GET", "/", None, &[]);
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL).unwrap(),
@@ -1091,7 +1287,7 @@ mod tests {
         );
 
         // 越界路径 → 兜底页（不是 404 错误页）
-        let response = handle(&root, None, None, "GET", "/../../etc/passwd", None, &[]);
+        let response = handle(&root, &[], None, None, "GET", "/../../etc/passwd", None, &[]);
         assert_eq!(response.status(), StatusCode::OK);
         assert!(response.body().len() > 100);
     }
@@ -1127,9 +1323,159 @@ mod tests {
         put(&root, "1.0.0", "assets/app.js", "console.log(1)");
         std::fs::write(root.join(POINTER_FILE), "1.0.0").unwrap();
 
-        let response = handle(&root, None, None, "GET", "/assets/app.js?v=1", None, &[]);
+        let response = handle(&root, &[], None, None, "GET", "/assets/app.js?v=1", None, &[]);
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.body().as_slice(), b"console.log(1)");
+    }
+
+    // ------------------------------------------------ 包内兜底那份（M1「前端进壳」的核心）
+
+    /// **兜底那份就是首启那份界面**：资源目录还是空的（全新安装、还没同步过）时，
+    /// 协议层要直接给包里那份 dist，而不是引导页——否则"装好第一次打开"要么看到
+    /// 配置页、要么被引到一张还没有界面的入口上，M1 的"首启可用"就不成立。
+    #[test]
+    fn an_empty_resources_directory_serves_the_bundled_dist() {
+        let root = temp_root("bundled-only");
+        let bundled = temp_root("bundled-only-dist");
+        put_bundled(&bundled, "index.html", "<html>bundled</html>");
+        put_bundled(&bundled, "assets/index-abc.js", "console.log('bundled')");
+
+        let status = status(&root, std::slice::from_ref(&bundled));
+        assert!(status.has_app, "有包内那份就算有界面");
+        assert_eq!(status.mode, "bundled");
+        assert_eq!(status.version, None, "兜底那份没有版本号");
+        assert!(status.file.unwrap().ends_with("index.html"));
+
+        let response = handle(&root, std::slice::from_ref(&bundled), None, None, "GET", "/", None, &[]);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.body().as_slice(), b"<html>bundled</html>");
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+
+        // 带 hash 的静态资源走同一套缓存头（规格 §10）
+        let response = handle(
+            &root,
+            std::slice::from_ref(&bundled),
+            None,
+            None,
+            "GET",
+            "/assets/index-abc.js",
+            None,
+            &[],
+        );
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "public, max-age=31536000, immutable"
+        );
+
+        // SPA 路由也回退到兜底那份的 index.html（由前端路由接管）
+        let response = handle(&root, &[bundled], None, None, "GET", "/chat/conv_1", None, &[]);
+        assert_eq!(response.body().as_slice(), b"<html>bundled</html>");
+    }
+
+    /// 优先级：**热更新那份 > 包内兜底**。两边都在的时候 `current` 指的那版说了算；
+    /// 只有热更新那份**缺这个文件**时才落到兜底（旧包里少一个 chunk 也不该 404）。
+    #[test]
+    fn the_hot_version_wins_over_the_bundled_copy() {
+        let root = temp_root("hot-vs-bundled");
+        let bundled = temp_root("hot-vs-bundled-dist");
+        put(&root, "1.0.0", "index.html", "<html>hot</html>");
+        std::fs::write(root.join(POINTER_FILE), "1.0.0").unwrap();
+        put_bundled(&bundled, "index.html", "<html>bundled</html>");
+        put_bundled(&bundled, "assets/only-bundled.js", "console.log(2)");
+
+        let roots = vec![bundled];
+        assert_eq!(status(&root, &roots).mode, "version");
+        assert_eq!(status(&root, &roots).version.as_deref(), Some("1.0.0"));
+
+        let response = handle(&root, &roots, None, None, "GET", "/", None, &[]);
+        assert_eq!(response.body().as_slice(), b"<html>hot</html>");
+        let response = handle(&root, &roots, None, None, "GET", "/assets/only-bundled.js", None, &[]);
+        assert_eq!(response.body().as_slice(), b"console.log(2)");
+    }
+
+    /// 回退顺序（规格 §5.4）：`current` 指的目录被删 → 先退目录里最新的一版 →
+    /// 一版都没有才轮到包内兜底 → 兜底也没有才是引导页。
+    #[test]
+    fn a_deleted_current_directory_falls_back_through_previous_then_bundled() {
+        let root = temp_root("fallback-order");
+        let bundled = temp_root("fallback-order-dist");
+        put_bundled(&bundled, "index.html", "<html>bundled</html>");
+
+        // ① 热更新那份一版都没有 → 包内兜底
+        assert!(candidate(&root, &[]).is_none(), "热更新那份确实没有");
+        let response = handle(&root, std::slice::from_ref(&bundled), None, None, "GET", "/", None, &[]);
+        assert_eq!(response.body().as_slice(), b"<html>bundled</html>");
+
+        // ② 有上一版 → 上一版优先（回退要退到"最近还能用的那版"）
+        put(&root, "0.9.0", "index.html", "<html>previous</html>");
+        std::fs::write(root.join(POINTER_FILE), "9.9.9").unwrap();
+        let response = handle(&root, &[bundled], None, None, "GET", "/", None, &[]);
+        assert_eq!(response.body().as_slice(), b"<html>previous</html>");
+    }
+
+    /// **0 字节的 index.html 不算数**：它读得出来、也能回 200，但页面是一片白——
+    /// 规格 §5.4 的"index.html 损坏 → 兜底版"就落在这一条上。
+    #[test]
+    fn an_empty_index_html_is_skipped_for_the_next_candidate() {
+        let root = temp_root("empty-index");
+        let bundled = temp_root("empty-index-dist");
+        put(&root, "1.0.0", "index.html", "");
+        std::fs::write(root.join(POINTER_FILE), "1.0.0").unwrap();
+        put_bundled(&bundled, "index.html", "<html>bundled</html>");
+
+        assert!(candidate(&root, &[]).is_none(), "空的 index.html 不该被选中");
+        let response = handle(&root, &[bundled], None, None, "GET", "/", None, &[]);
+        assert_eq!(response.body().as_slice(), b"<html>bundled</html>");
+    }
+
+    /// 两级都没有（既没同步过、包里也没收兜底）→ **还是引导页**，不是 404 白屏。
+    #[test]
+    fn without_any_level_the_boot_page_still_answers() {
+        let root = temp_root("no-levels");
+        let empty_bundled = temp_root("no-levels-dist");
+        let response = handle(&root, &[empty_bundled], None, None, "GET", "/", None, &[]);
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.body().as_slice(), BOOT_PAGE);
+    }
+
+    /// 下载重试（规格 §5.3 3.a）：前两次失败、第三次成 → 用第三次那份；
+    /// 三次都不成 → 如实说"试了几次、最后一次为什么"。
+    #[test]
+    fn a_flaky_download_is_retried_but_gives_up_after_three_tries() {
+        let mut attempts = 0;
+        let package = with_retry(DOWNLOAD_ATTEMPTS, || {
+            attempts += 1;
+            if attempts < 3 {
+                Err(format!("第 {attempts} 次没成"))
+            } else {
+                Ok(vec![1, 2, 3])
+            }
+        })
+        .unwrap();
+        assert_eq!(package, vec![1, 2, 3]);
+        assert_eq!(attempts, 3, "前两次失败、第三次才成，一共试了三次");
+
+        // 一次就成时**不该再试**（否则每次更新都白等两次退避）
+        let mut once = 0;
+        with_retry(DOWNLOAD_ATTEMPTS, || {
+            once += 1;
+            Ok::<u8, String>(0)
+        })
+        .unwrap();
+        assert_eq!(once, 1);
+
+        let mut tries = 0;
+        let error = with_retry(DOWNLOAD_ATTEMPTS, || {
+            tries += 1;
+            Err::<(), _>("连接被拒".to_string())
+        })
+        .unwrap_err();
+        assert_eq!(tries, DOWNLOAD_ATTEMPTS, "该试满 3 次");
+        assert!(error.contains("试了 3 次"), "{error}");
+        assert!(error.contains("连接被拒"), "{error}");
     }
 
     /// 一个**只接一次**的最小 HTTP 服务：把收到的请求头原文抄下来当物证。
@@ -1177,6 +1523,7 @@ mod tests {
         let origin = format!("http://{addr}");
         let response = handle(
             &root,
+            &[],
             Some(&origin),
             None,
             "GET",
@@ -1244,7 +1591,7 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_with_a_bad_version_or_a_too_new_shell_is_refused() {
+    fn a_manifest_with_a_bad_version_is_refused_but_a_newer_shell_requirement_only_notes() {
         let package = package_with(&[("index.html", "<html>x</html>")]);
 
         // 版本号会变成**目录名**（还会写进 current 指针）→ 与 read_current 同一判据
@@ -1252,12 +1599,17 @@ mod tests {
         assert!(check_manifest(&manifest, "0.1.0").is_err());
 
         manifest = manifest_of("abc123", &package);
-        assert!(check_manifest(&manifest, "0.1.0").is_ok());
+        assert_eq!(check_manifest(&manifest, "0.1.0").unwrap(), None, "没有话要说");
 
-        // 这份前端要求更高的壳 → 如实说"请更新客户端"，而不是硬装
+        // 这份前端声明要更高的壳：**留字段、只提示、不拦**（规格 v0.1《落地范围》）
         manifest.min_shell_version = Some("9.9.9".to_string());
-        let error = check_manifest(&manifest, "0.1.0").unwrap_err();
-        assert!(error.contains("请更新客户端"), "{error}");
+        let note = check_manifest(&manifest, "0.1.0").unwrap().expect("该有一句提示");
+        assert!(note.contains("9.9.9"), "{note}");
+        assert!(note.contains("不拦"), "{note}");
+
+        // 壳比要求的新：一句都不说
+        manifest.min_shell_version = Some("0.0.1".to_string());
+        assert_eq!(check_manifest(&manifest, "0.1.0").unwrap(), None);
     }
 
     #[test]
@@ -1271,14 +1623,14 @@ mod tests {
         assert_eq!(read_current(&root).as_deref(), Some("aaa"));
         // 新的那份真的能被协议层读出来（"本地磁盘加载"这条就落在这上面）
         assert_eq!(
-            resolve_file(&root, &[]).unwrap().version.as_deref(),
+            candidate(&root, &[]).unwrap().version.as_deref(),
             Some("aaa")
         );
 
         // 再装一版：指针切过去，staging 不留残渣
         install_package(&root, &manifest_of("bbb", &second), &second).unwrap();
         assert_eq!(read_current(&root).as_deref(), Some("bbb"));
-        assert!(!root.join("staging-bbb").exists());
+        assert!(staging_leftovers(&root).is_empty(), "staging 该清干净");
 
         // 第三版：只留**当前 + 上一版**（规格 §4.2 g）
         install_package(&root, &manifest_of("ccc", &third), &third).unwrap();
@@ -1296,8 +1648,47 @@ mod tests {
         let error = install_package(&root, &manifest_of("ddd", &package), &package).unwrap_err();
 
         assert!(error.contains("index.html"), "{error}");
-        assert!(!root.join("staging-ddd").exists(), "半份 staging 不该留着");
+        assert!(staging_leftovers(&root).is_empty(), "半份 staging 不该留着");
         assert_eq!(read_current(&root), None, "失败不该动指针");
+    }
+
+    /// staging 目录名里**带 pid**（规格 §10 的"多实例"那一问）：两份壳装同一个版本时
+    /// 各写各的，不会把对方解压到一半的目录 rename 走。
+    #[test]
+    fn two_installs_of_the_same_version_do_not_share_a_staging_directory() {
+        let root = temp_root("staging-unique");
+        let package = package_with(&[("index.html", "<html>x</html>")]);
+        let manifest = manifest_of("fff", &package);
+
+        let staging = |name: &str| root.join(name);
+        install_package(&root, &manifest, &package).unwrap();
+
+        // 装完之后 staging 一个不剩（含"别人"的）——但**判断名字时**我们靠的是带 pid 那个
+        assert!(staging_leftovers(&root).is_empty());
+        assert!(
+            !staging(&format!("staging-fff")).exists(),
+            "不许再出现不带 pid 的老名字（那个才是会互相踩的）"
+        );
+        assert!(root.join("vfff").join("dist").join("index.html").is_file());
+    }
+
+    /// **上一次没走完的 staging 残渣要清掉，自己那个不许动**：
+    /// 名字带 pid，所以"我"= 以 `-<本进程 pid>` 结尾的那个。
+    #[test]
+    fn leftover_staging_from_another_process_is_pruned_but_mine_stays() {
+        let root = temp_root("staging-prune");
+        let mine = root.join(format!("staging-aaa-{}", std::process::id()));
+        let other = root.join("staging-aaa-99999999");
+        let old_version = root.join("staging-bbb-99999998");
+        std::fs::create_dir_all(mine.join("dist")).unwrap();
+        std::fs::create_dir_all(other.join("dist")).unwrap();
+        std::fs::create_dir_all(old_version.join("dist")).unwrap();
+
+        prune_staging(&root);
+
+        assert!(mine.exists(), "自己正在写的那份不许动");
+        assert!(!other.exists(), "别的 pid 留下的残渣该清掉");
+        assert!(!old_version.exists(), "更老版本的残渣也不该一直堆着");
     }
 
     #[test]
@@ -1380,6 +1771,7 @@ mod tests {
 
         let response = handle(
             &root,
+            &[],
             Some(&origin),
             Some(device),
             "GET",
@@ -1416,6 +1808,7 @@ mod tests {
 
         let response = handle(
             &root,
+            &[],
             Some(&origin),
             Some(device),
             "GET",

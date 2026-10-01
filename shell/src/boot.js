@@ -2,7 +2,7 @@
  * 引导页的逻辑（`shell/src/index.html` 引它，`resources.rs` 把它一起嵌进 exe）。
  *
  * 两个职责：
- * ① 把真实前端从**本地资源目录**拉起来（`app://`）；
+ * ① 把真实前端从**本地**拉起来（`app://`：先是热更新下来的那份，再是包内兜底那份）；
  * ② 拉不起来时，给用户一个"连接 / 更换服务器"的入口。
  *
  * **连接即登录（P4-4 片①）**：壳要拿去调服务器的是**长期凭据**（API Key）。
@@ -153,6 +153,15 @@ async function run(target, remember, credentials) {
     }
   } catch (message) {
     setBusy(false)
+    // 失败时把标题与说明**从"正在加载"改成实情**：本地界面就在磁盘上，
+    // 但连不上服务器就用不了它——留着"正在从本地加载…"会让这一页自相矛盾。
+    title.textContent = '连不上这台服务器'
+    sub.textContent = '界面资源在本地，但要连上服务器才能用。改地址，或确认 NAS 开着、服务在跑，再试一次。'
+    // **配置页这一屏要露出来**（自启动那条路上它一直是隐藏的）：error 那条提示
+    // 就在表单里面，不露出来用户只看到一个转不完的圈、连原因都读不到
+    //（"不通就留在配置页上说清原因"是三条行为约定的第 2 条）。
+    spinner.hidden = true
+    form.hidden = false
     showError(String(message))
     note('连接失败：' + message)
     address.focus()
@@ -234,9 +243,12 @@ async function main() {
   if (info.server) address.value = info.server
 
   const resources = info.resources || {}
+  // 界面从哪儿来（壳的启动日志里也有同一件事）：热更新那份有版本号，
+  // 包内兜底那份没有（它是打包时那份 `frontend/dist`）。
+  const from = resources.version ? '热更新那份 ' + resources.version : '壳里自带的那份'
 
   /*
-   * 主窗 + 地址已配 + **本地有可用资源** + **手里有钥匙** → 直接连
+   * 主窗 + 地址已配 + **本地有界面**（热更新那份或包内兜底那份）+ **手里有钥匙** → 直接连
    * （`connect` 会把主窗导航到 `app://` 本地资源）。
    *
    * 为什么不直接 `window.location.replace(APP_URL)`：那条路**不会起边车** ——
@@ -247,19 +259,20 @@ async function main() {
   const canUseLocalApp =
     info.role === 'main' && info.server && info.has_key === true && resources.has_app === true
   if (canUseLocalApp) {
-    note('引导：本地资源就绪（' + (resources.version || '未知版本') + '），自动连接并起边车')
-    sub.textContent = '正在从本地加载界面（' + (resources.version || '') + '）…'
+    note('引导：本地界面就绪（' + from + '），自动连接并起边车')
+    sub.textContent = '正在从本地加载界面（' + from + '）…'
     void run(address.value.trim(), false, null)
     return
   }
 
-  // 否则显示表单：要么没配过地址，要么本地资源还没就位，要么还没有钥匙
+  // 否则显示表单：要么没配过地址，要么本地界面还没有，要么还没有钥匙
   spinner.hidden = true
   form.hidden = false
   if (info.role === 'main' && info.server && !resources.has_app) {
     title.textContent = '还没有可用的界面资源'
-    sub.textContent = '本地资源目录里没有前端产物；填服务器地址照常可用（后端 API 在远端）。'
-    note('引导：本地资源缺失（' + (resources.root || '') + '），留在配置页')
+    sub.textContent =
+      '既没有热更新下来的那份，包里也没带兜底那份；填服务器地址照常可用（后端 API 在远端）。'
+    note('引导：两级界面资源都没有（' + (resources.root || '') + '），留在配置页')
   } else if (info.server && info.has_key !== true) {
     title.textContent = '登录这台 KYLAB'
     sub.textContent = '地址已经填好；登录一次，壳会领一把长期钥匙存下来（密码不存）。'

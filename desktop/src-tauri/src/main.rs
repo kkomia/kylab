@@ -121,6 +121,9 @@ struct Shell {
     /// 配置是"壳自己的偏好"，资源是"可以整份删掉重下"的东西——
     /// 清理资源不该顺手把用户填的服务器地址一起清了。
     data_dir: std::path::PathBuf,
+    /// 包内资源目录（`<exe 所在目录>`；打包时把 `frontend/dist` 收成它下面的
+    /// `frontend-dist/`）。**启动时算一次**：运行期它不会变，而协议处理器每个请求都要用。
+    resource_dir: std::path::PathBuf,
     config: Mutex<config::Config>,
     /// 这台电脑的显示名（主机名，见 `device_name`）。**每次启动读一次环境变量就够**：
     /// 它在一轮运行里不会变，而每个转发的请求都要带它。
@@ -153,6 +156,11 @@ impl Shell {
     /// 资源目录的绝对路径（`<app_data_dir>/frontend-resources`）。
     fn resources_root(&self) -> std::path::PathBuf {
         resources::resources_root(&self.data_dir)
+    }
+
+    /// 兜底前端的候选根（包内那份 → 开发态仓库那份，见 `resources::bundled_roots`）。
+    fn bundled_roots(&self) -> Vec<std::path::PathBuf> {
+        resources::bundled_roots(&self.resource_dir)
     }
 }
 
@@ -194,7 +202,7 @@ fn startup(window: WebviewWindow, shell: State<'_, Shell>) -> StartupInfo {
         server: config.server.clone(),
         recent: config.recent.clone(),
         shell_version: env!("CARGO_PKG_VERSION").to_string(),
-        resources: resources::status(&shell.data_dir),
+        resources: resources::status(&shell.resources_root(), &shell.bundled_roots()),
         app_url: resources::app_url().to_string(),
         has_key: config
             .server
@@ -368,11 +376,7 @@ async fn connect(
         let config = shell.config.lock().map_err(|_| "配置锁被污染了".to_string())?;
         config.api_key.clone()
     };
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let runtime_root = sidecar::resolve_runtime(&resource_dir, &shell.dir);
+    let runtime_root = sidecar::resolve_runtime(&shell.resource_dir, &shell.dir);
     let log_dir = shell.dir.clone();
     let data_dir = shell.data_dir.clone();
     let workspace = data_dir.join("workspace");
@@ -815,6 +819,7 @@ fn main() {
             std::thread::spawn(move || {
                 let state = app.state::<Shell>();
                 let root = state.resources_root();
+                let bundled = state.bundled_roots();
                 let server = state.origin();
                 // **设备标记只加在转发给那台服务器的请求上**（见 `resources::proxy`）：
                 // 本地资源那一支一个头都不带——它不是给服务器看的。还没生成 device_id
@@ -822,6 +827,7 @@ fn main() {
                 let device = state.device();
                 let response = resources::handle(
                     &root,
+                    &bundled,
                     server.as_deref(),
                     device,
                     &method,
@@ -841,6 +847,10 @@ fn main() {
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
+            let resource_dir = app
+                .path()
+                .resource_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
             let config = config::Config::load(&dir);
             // 资源目录**启动时确保存在**（规格 §5.3 第一条）：不存在时协议层要读它，
             // 而"目录不存在"与"目录里没有可用版本"在日志里该是两件事
@@ -848,21 +858,35 @@ fn main() {
             if let Err(error) = std::fs::create_dir_all(&resources_root) {
                 logfile::log(&dir, &format!("资源目录建不出来（{error}）：{}", resources_root.display()));
             }
-            let status = resources::status(&data_dir);
+            let bundled_roots = resources::bundled_roots(&resource_dir);
+            let status = resources::status(&resources_root, &bundled_roots);
+            // 一行里说清**界面到底从哪儿出**：热更新那份（版本号）/ 包内兜底那份（路径）/
+            // 只剩引导页。用户报"打开是旧的"时，这一行就是第一现场。
             logfile::log(
                 &dir,
                 &format!(
-                    "启动（壳 {}），配置里的地址：{}；资源：{}（版本 {}，目录 {}）",
+                    "启动（壳 {}），配置里的地址：{}；资源：{}（{}{}，资源目录 {}）",
                     env!("CARGO_PKG_VERSION"),
                     config.server.as_deref().unwrap_or("（还没配过）"),
                     status.mode,
-                    status.version.as_deref().unwrap_or("无"),
+                    status
+                        .version
+                        .as_deref()
+                        .map(|version| format!("版本 {version}，"))
+                        .unwrap_or_default(),
+                    status.file.as_deref().unwrap_or("还没有可用的界面资源"),
                     status.root
                 ),
             );
+            for root in &bundled_roots {
+                if root.join("index.html").is_file() {
+                    logfile::log(&dir, &format!("兜底前端：{}", root.display()));
+                }
+            }
             app.manage(Shell {
                 dir: dir.clone(),
                 data_dir,
+                resource_dir,
                 config: Mutex::new(config),
                 device_name: device_name(),
                 sidecar: Arc::new(sidecar::Manager::new()),
@@ -894,9 +918,10 @@ fn main() {
                     );
                     let line = match outcome {
                         resources::SyncOutcome::UpToDate => "资源更新：已是最新".to_string(),
-                        resources::SyncOutcome::Installed { version } => {
-                            format!("资源更新：装好 {version}（**下次启动生效**）")
-                        }
+                        resources::SyncOutcome::Installed { version, note } => format!(
+                            "资源更新：装好 {version}（**下次启动生效**）{}",
+                            note.map(|note| format!("；{note}")).unwrap_or_default()
+                        ),
                         resources::SyncOutcome::Skipped { reason } => {
                             format!("资源更新：这次跳过（{reason}）")
                         }

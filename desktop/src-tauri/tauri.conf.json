@@ -23,7 +23,8 @@
       "icons/icon.ico"
     ],
     "resources": {
-      "../../build/sidecar-runtime": "sidecar-runtime"
+      "../../build/sidecar-runtime": "sidecar-runtime",
+      "../../frontend/dist": "frontend-dist"
     },
     "windows": {
       "webviewInstallMode": {

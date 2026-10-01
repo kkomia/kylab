@@ -3,6 +3,13 @@
 > 来源：用户 2026-09-29 提供（原文由用户撰写，本文件**逐条落档**，含全部规范性细节）。
 > 目标：前端日常迭代只需部署服务器，客户端 exe 自动热更新前端资源，无需重新打包发版。
 > 本文件为完整实现规格，可直接交由实现 AI / 开发同事执行。
+>
+> **状态：已落地（2026-10-01，分支 `react`）** —— M1「前端进壳」按本规格施工完成：
+> 前端产物**打包进壳**（包内兜底 `frontend-dist/`）+ `app://` 自定义协议**本地读出**
+> （候选链：热更新那份 → 包内兜底 → 编译进 exe 的引导页）+ **热更新**（manifest →
+> 下载（重试 3 次）→ sha256 校验 → 解压 → 原子切 `current` → 只留两版，下次启动生效）。
+> 下方正文**一字未改**（它是用户写的原始规格）；**逐条落实情况、偏离与理由、以及留给
+> 后面阶段的部分**在文末《[落地状态与偏离（2026-10-01）](#落地状态与偏离2026-10-01)》。
 
 ## 1. 背景与目标
 
@@ -245,3 +252,104 @@ fn resolve_resource(app: &tauri::AppHandle, path: &str) -> Option<Vec<u8>> {
 - **流式回答缓存**：live 的东西不缓存；
 - **把旧数据静默当新的**：任何时候都不做（L4 必须带明示）。
 
+
+## 落地状态与偏离（2026-10-01）
+
+> 2026-10-01，分支 `react`。M1「前端进壳」按本规格落地，**路线与本文一致**；
+> 下面是**逐条对照**、**每一处偏离的理由**、以及**留给后面阶段的东西**。
+> 代码落点：`desktop/src-tauri/src/resources.rs`（协议 + 热更新，纯函数 + 用例）、
+> `desktop/src-tauri/src/main.rs`（注册协议、后台同步、启动日志）、
+> `desktop/shell/src/`（引导页）、`desktop/src-tauri/tauri.conf.json`（打包资源）。
+> 服务半边由 `backend/app/api/v1/frontend.py` 提供（另一条 lane 落的）。
+
+### 照做的（规格条文 → 落点）
+
+| 规格 | 落实 |
+| --- | --- |
+| §1 目标架构（引导壳 + 协议处理器 + 资源目录 + 热更新） | 三级：热更新那份 → 包内兜底 `frontend-dist/` → 编译进 exe 的引导页；更新**下次启动生效**，本次永不中途换版本 |
+| §3 目录结构 | `<app_data_dir>/frontend-resources/{current, v<版本>/dist/, staging-<版本>-<pid>/}`；`current` **写 tmp 再 rename**（同目录 rename 原子） |
+| §4.1 manifest 契约 | `GET {origin}/api/v1/app/frontend/manifest` → `{version, package_url, sha256, size, min_shell_version, released_at}`；网络失败/非 200/JSON 解析失败**一律只记一行日志** |
+| §4.2 下载资源包 | `GET <package_url>` → zip；大小与 sha256 都校验（上限 32 MB）；**重试 3 次**（只重试传输，校验失败不重试，按 3.a/3.b 分开） |
+| §5.1 `tauri.conf.json` | `build.frontendDist = ../../shell/src`（引导页嵌进 exe）；`app.withGlobalTauri = true`；CSP 见下面「偏离」 |
+| §5.2 自定义协议 | `register_asynchronous_uri_scheme_protocol("app")`；空路径 → `index.html`；按扩展名给 Content-Type；未命中 404；`..` 与绝对路径拒绝；候选链与 `handle` 都是**不依赖 Tauri 的纯函数**（`resources.rs` 模块内 31 条用例，含 M1 新加的兜底链 6 条） |
+| §5.3 启动与更新流程 | `setup` 里确保资源目录存在 + 唤一次后台同步（不进任何 await 路径）；拉清单 → 版本比较 → 下载 → sha256 → 解压到 staging → 查 `index.html` → 移到 `v<版本>/` → 原子切指针 → `prune_versions` 只留当前 + 上一版；**全程不发事件、失败只记日志** |
+| §5.4 回退 | `current` 缺失/非法 → 目录里最新一版 → 包内兜底 → 引导页；当前版本目录被删 → 上一可用版本；单文件读不出来 → 顺延下一候选；`index.html` 读不出来或**是 0 字节** → 兜底；下载/校验失败 → 丢弃 staging、本次放弃、下次启动再试 |
+| §5.5 安全 | sha256 强校验（不符绝不解压到正式目录）；zip-slip（`enclosed_name`，整包不装）；路径穿越（`safe_relative` 逐段拒绝 `..` 与盘符）；staging 带 pid |
+| §10 边界 | SPA history 路由回退 `index.html`（**只对无扩展名的路径**）；`index.html` → `no-cache`，带 hash 的 `assets/*` → `max-age=31536000, immutable`；多实例各自一个 staging |
+| §9 验收清单 | 逐条实测见下表（本机 2026-10-01，壳 v0.1.0 + 本机 8000 后端） |
+
+### 验收（本机实测，2026-10-01）
+
+| 清单项 | 结果 |
+| --- | --- |
+| 全新安装：首启走兜底版 | ✅ 把 `frontend-resources/` 整份挪走（= 全新机器）后起 `target/release/kylab-desktop.exe`：启动日志 `资源：bundled（…\target\release\frontend-dist\index.html…）` + `兜底前端：…\frontend-dist`，界面就是真实前端（概览页），**首屏 41 ms**（`domContentLoaded`/`loadEventEnd`，transferSize = 5119 B 的本地文档） |
+| 后台下载 → 二启为新版本 | ✅ 首启同期 `资源更新：装好 ebea4f869398（**下次启动生效**）`（装出的 dist 与本机 `frontend/dist` 内容逐字节同哈希）；二启启动日志 `资源：version（版本 ebea4f869398，…\frontend-resources\vebea4f869398\dist\index.html，…）` |
+| 断网/服务器不可达 | ✅ 配置指向 `http://127.0.0.1:8123`（没人听）：停在配置页，标题「连不上这台服务器」+ 红字 `连不上 http://127.0.0.1:8123：连接被拒绝：确认 NAS 开着、服务在跑，端口也没写错（默认 8000）`，地址栏可改可重试（**截图 `.shots/shell-m1/offline-final.png`**）；同一次启动的更新检查只留一行 `资源更新：这次跳过（清单拿不到（…）：os error 10061）` |
+| 打开不再从 NAS 拉 UI | ✅ 壳里 32 个请求**全部**在 `http://app.localhost`（文档 + 16 个 chunk/css + favicon + 全部 `/api/**` 同源转发），远端直连 0 条；`/notes` 这种路由由协议层回退 `index.html` 后交给前端路由（实测落到 `/notes/note_001006e64d6b`，标题「笔记 · KYLAB 知识库」）；`/assets/nope.js` 如实 404（**没有**回退成 HTML） |
+| 篡改资源包 | ✅ 用例 `a_package_that_does_not_match_the_manifest_is_refused`（等长改一个字节 → 哈希那关拦住） |
+| 删除 `current` / 删除当前版本目录 | ✅ 用例 `missing_pointer_falls_back_to_the_newest_version_on_disk` / `pointer_to_a_deleted_version_falls_back_to_the_previous_one` |
+| manifest 版本回退（发旧版） | ⚠️ **不做单调性检查**：客户端比的是"和本地 `current` 一样吗"，不一样就装。理由见下面「偏离」第 7 条 |
+| `min_shell_version` 高于壳版本 | ⚠️ 按《v0.1 落地范围》的裁定**只提示不拦**（日志一行），不做前端 banner |
+| 连续快速启动两次 | ✅ 进程内只有一个后台线程；跨进程靠 staging 带 pid + 原子 rename（不产生半份安装），没有做单例锁 |
+| 打包链 | ✅ `npx @tauri-apps/cli@latest build` 出三个产物（绿色版 exe 7.96 MiB / NSIS 16.59 MiB / MSI 27.84 MiB，2026-10-01）；包内那份兜底 = 打包时的 `frontend/dist`（MSI 的 WiX 源里 `Source=…\frontend\dist\…`，NSIS 脚本里 39 个 `frontend-dist\*.js` 与本机 dist 的 39 个一一对应、**无旧 chunk 残留**） |
+| 忘了构建前端就出包 | ✅ `build.rs` 守卫拦住 release 构建（实测把 `frontend/dist` 挪走后 `cargo check --release` 报「没有前端产物，包里就没有兜底界面…先在 frontend 里跑一次构建」） |
+| 老 exe 兼容验证 | ⛔ 按《v0.1 落地范围》划掉（开发版没有"老客户端"） |
+
+### 偏离（每一处都有理由）
+
+1. **兜底那份的目录名是 `frontend-dist`**（规格 §5.2 写的是 `fallback-dist`），
+   而且**收进去的就是 `frontend/dist` 本身**（打包时那份前端产物），不是另建一个小工程构建出来的。
+   理由：真实前端与引导页本来就要一起发（前端产物是唯一的界面），多维护一个"兜底前端工程"
+   等于同一份界面有两套构建；名字取"这是前端产物"，免得与规格里那个"引导壳 dist"混起来。
+   —— 用户在 2026-09-29 的裁定也是这个口径（"就做前后端分离"）；
+2. **入口 URL 是 `http://app.localhost/`**（Windows / Android），macOS / Linux 才是
+   `app://localhost`。理由：WebView2 把自定义 scheme 挂在 `http://<scheme>.localhost`，
+   直接导航 `app://localhost/` 会被**静默拦掉**（实测：一次导航事件都没有）。协议名仍是规格的 `app`；
+3. **没配 `assetProtocolScope`**。理由：壳读文件用的是**自己协议处理器里的 `std::fs::read`**，
+   不走 Tauri 的 asset 协议（`asset://` / `convertFileSrc`），那个 scope 配了也不生效；
+   真正管住"能读哪些路径"的是 `safe_relative`（拒绝 `..` 与盘符）+ 版本号白名单；
+4. **`tauri.conf.json` 里的 CSP 只作用于内置引导页**（真实前端那份没有 CSP 头）。
+   实测依据：Tauri 只对自己的 asset 协议响应注入 CSP（`tauri/src/manager/mod.rs::get_asset`），
+   自定义协议响应是原样交出去的。**这是一处真缺口**（规格 §5.5 的"CSP 禁止外部脚本注入"
+   对真实前端不成立），补它排在规格 §8 的 Phase 3（"CSP 收紧"）——
+   本期不动，是因为给真实前端加 CSP 必须先把界面里所有 `blob:` / `data:` / 内联样式面跑一遍，
+   没跑全就加会拦掉正常功能。已经写进 README 的已知限制；
+5. **接口路径收在 `/api/v1` 下**（规格 §4 写的是 `/app/frontend/manifest`），
+   **版本号是内容指纹**（zip 的 sha256 前 12 位）而不是语义版本，
+   `package_url` 指回后端自己（不要求 CDN）。前两条是服务半边的裁定
+   （见 `backend/app/api/v1/frontend.py` 的模块注释：服务器不必手工 bump 任何号），
+   客户端照这个契约实现；
+6. **引导页落在 `desktop/shell/src/`，且极简到"一页 + 一段脚本"**（规格 §7 的简化方案：
+   没有独立 logo / 加载动画工程）。理由：它是"资源目录整个坏掉"时唯一还能渲染的东西，
+   所以必须自包含；而它同时又是连接/登录/换服务器的配置页（三条行为约定里的第 1、2 条都靠它）；
+7. **不做"版本必须单调递增"的检查**（规格 §9 那一条按"忽略旧版"理解）：
+   客户端只比"manifest 的版本与本地 `current` 是否相同"，不同就装。理由：版本号是**内容指纹**，
+   "回退"在指纹语义下就是"内容不同"；真要判"新不新"得有版本序，而服务器那边有意不维护版本序（第 5 条）。
+   风险面很小：开发者自己把 `frontend/dist` 换成旧内容，客户端跟着换成旧的——那是"如实反映服务器那一份"；
+8. **更新只在"配过服务器"之后触发**（没配地址时连清单 URL 都没有）；规格 §5.3 说的"首启立即触发"落在这条之后；
+9. **跨实例没有做单例锁**（规格 §10 提的"进程内互斥"）：进程内只有一个后台线程，
+   已经够了；跨进程靠 `staging-<版本>-<pid>` + 原子 `rename`，最坏结果是另一份壳这次跳过更新
+   （绝不会装出半份前端）。壳本身是前台工具（关窗即退出），双开重叠的窗口期极短；
+10. **没有"钉住启动那一刻的版本"**（规格 §5.3 的设计决策"本次启动永远用启动时刻的 `current`
+    渲染"）：协议层是**每个请求现读 `current`**。实测影响面很小，且方向是"更快看到新版"：
+    - 已经打开的文档不会被替换（要换得重新加载）——规格要防的"半路换界面"没有发生；
+    - 换版之后新来的请求（例如懒加载的 chunk）会去新版目录找；**找不到的文件会退回上一版**
+      （`prune_versions` 保留当前 + 上一版），所以"新 index.html 配旧 chunk"这类混搭取得到、
+      不会白屏；
+    - 真按规格钉住的话，代价是要在 `Shell` 里多一份带锁的会话状态 + 每个请求多一层判据，
+      换来的是"这一次启动里绝不会用到新的那版"。本期选择**简单 + 可回退**这条路；
+    - 如果以后要加，落点是 `resources::candidates` 的第一个参数（把"现读的 current"换成
+      "启动时读一次、存在 Shell 里的版本"），用例里那条 `the_hot_version_wins_over_the_bundled_copy`
+      就是它的形状。
+
+### 留给后面的阶段（**不是漏了**）
+
+- **CSP 收紧**（偏离 4）：Phase 3；
+- **流式（SSE）经协议层被缓冲**：Tauri 的自定义协议响应是一次性的，所以走**服务器**那条链时
+  回答不是逐字出来；走**边车**那条链（默认）不经过协议层、逐字照旧。两条出路写在 `resources.rs::proxy` 的注释里；
+- **`min_shell_version` 的拦截 + 前端升级 banner**：字段留着，等有发行版再做（《落地范围》的裁定）；
+- **L3 会话快照（IndexedDB）/ L4 断网只读明示**：改前端的活，划给后面的 M（架构设计 §5/§9）；
+- **CI 打通（规格 §8 Phase 4）**：本机跑不了打包链；而且服务半边的端点**直接从部署上的
+  `frontend/dist` 现打 zip 现算指纹**，没有"发布流水线"这一步要接；
+- **`desktop/src/` 那份旧配置页是死代码**（Phase 1 起被 `desktop/shell/src/` 取代，
+  只剩 `logo.svg` 还被 `make-icons.py` 当品牌标来源），待清。
