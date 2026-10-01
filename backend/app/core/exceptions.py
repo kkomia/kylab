@@ -163,6 +163,29 @@ def register_exception_handlers(app: FastAPI) -> None:
             headers=getattr(exc, "headers", None),
         )
 
+    # 知识库不可用 → 503（M2 §2.2「知识库不可用的如实报错」）。
+    #
+    # **惰性 import，不在模块级**：`app.storage.sqlite_impl.meta_store` 反过来 import 本模块
+    # 拿 `ConflictError`（"storage → core"这个方向本来就存在），模块级 import 回去会把
+    # 两边的依赖拉成双向的，而双向依赖的下一次改动就是循环 import。
+    #
+    # **503 而不是 500**：本机档没有知识库数据源（在 NAS 上，M3 接提供者），
+    # 这是"这个部署现在没有这个能力"，不是"我们出错了"——500 会把"等 M3 / 去服务器上做"
+    # 这条出路藏起来。**也不是空结果**：`Unavailable*Store` 抛异常正是为了不假装查过。
+    from app.storage.split_impl import KnowledgeBaseUnavailable
+
+    @app.exception_handler(KnowledgeBaseUnavailable)
+    async def _handle_knowledge_base_unavailable(
+        _: Request, exc: KnowledgeBaseUnavailable
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "code": "knowledge_base_unavailable",
+                "message": str(exc) or "知识库当前不可用",
+            },
+        )
+
     @app.exception_handler(RequestValidationError)
     async def _handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
         return JSONResponse(

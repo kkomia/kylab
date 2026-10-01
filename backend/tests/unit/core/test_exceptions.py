@@ -5,13 +5,17 @@
 """
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from app.core.exceptions import (
     ConflictError,
     InvalidRequestError,
     KylabError,
     NotFoundError,
+    register_exception_handlers,
 )
+from app.storage.split_impl import KnowledgeBaseUnavailable
 
 
 def test_base_error_defaults_to_500() -> None:
@@ -46,3 +50,28 @@ def test_all_errors_share_the_base_type() -> None:
 def test_every_error_has_a_machine_readable_code(error_class: type[KylabError]) -> None:
     code = error_class().code
     assert code and code.islower() and " " not in code
+
+
+@pytest.mark.local
+def test_knowledge_base_unavailable_maps_to_503() -> None:
+    """本机档没有知识库（在 NAS 上，M3 接提供者）→ **503 + 那句话**。
+
+    **不是 500**："我们出错了"会把"等 M3 / 去服务器上做"这条出路藏起来；
+    **也不是空结果**：空结果会被读成"查过了，库里没有"——而它其实没查过。
+    这条用例走的是真处理器（注册到一张最小的 app 上再发一次请求），不是读常量。
+    """
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.get("/kb")
+    def _kb() -> None:
+        raise KnowledgeBaseUnavailable()
+
+    with TestClient(app) as client:
+        response = client.get("/kb")
+
+    assert response.status_code == 503
+    body = response.json()
+    assert body["code"] == "knowledge_base_unavailable"
+    assert "NAS" in body["message"]
+    assert "M3" in body["message"]

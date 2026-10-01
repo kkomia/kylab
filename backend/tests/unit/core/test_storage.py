@@ -2,8 +2,12 @@
 
 镜像同构：``app/core/storage.py`` → ``tests/unit/core/test_storage.py``。
 
-v0.12 起存储只有 PostgreSQL：装配会连库并校验 schema，所以这些用例需要
+**服务器档**（默认）：装配会连库并校验 schema，所以这些用例需要
 ``KYLAB_TEST_DATABASE_URL``（未配置则跳过）。
+
+**本机档**（M2 §4.1）：标了 ``local`` 的用例只碰 SQLite 与文件系统——它们要证明的
+恰恰是"断 NAS 的机器上，本机后端照样装配得起来"（不标就是整批跳过，而那正是 M2
+最该测的那条路）。
 """
 
 from pathlib import Path
@@ -12,6 +16,7 @@ import pytest
 
 from app.core.config import Settings
 from app.core.storage import (
+    LOCAL_DB_NAME,
     STORAGE_SUBDIRS,
     build_stores,
     close_stores,
@@ -19,9 +24,15 @@ from app.core.storage import (
     reset_stores,
 )
 from app.models.enums import DataSourceKind, DocumentStage
-from app.storage.base import DocumentRecord, KnowledgeBaseRecord
+from app.storage.base import DocumentRecord, KnowledgeBaseRecord, StorageError
 from app.storage.postgres_impl.connection import Database
 from app.storage.postgres_impl.schema import MIGRATIONS, SCHEMA_VERSION, current_version
+from app.storage.split_impl import (
+    KnowledgeBaseUnavailable,
+    RouterMetaStore,
+    UnavailableMetaStore,
+)
+from app.storage.sqlite_impl.meta_store import SqliteMetaStore
 
 
 def _query(settings: Settings, sql: str):  # type: ignore[no-untyped-def]
@@ -132,5 +143,122 @@ def test_get_stores_is_cached_and_resettable(monkeypatch, pg_database) -> None:
 
         reset_stores()
         assert get_stores() is not first  # 重置后重新装配（必须持有引用才能比较）
+    finally:
+        reset_stores()
+
+
+# ------------------------------------------------------------------ 本机档（M2 §4.1）
+
+
+def _local_settings(tmp_path: Path, **overrides) -> Settings:  # type: ignore[no-untyped-def]
+    """本机档设置：``_env_file=None`` 保证开发机的 ``.env`` 不会漏进来。"""
+    return Settings(  # type: ignore[call-arg]
+        _env_file=None, deployment="local", data_dir=tmp_path / "data", **overrides
+    )
+
+
+@pytest.mark.local
+def test_local_deployment_fills_every_field(tmp_path: Path) -> None:
+    """§7 阶段 2 的完成判据：本机档下 bundle 五个字段齐备，元数据真的落在本机库里。
+
+    "齐备"要经得起用：所以这里不只断言"对象不是 None"，还真的写进再读出来——
+    一个装配成功但一调就炸的 bundle，与没有装配是一回事。
+    """
+    settings = _local_settings(tmp_path)
+    stores = build_stores(settings)
+
+    assert isinstance(stores.meta, RouterMetaStore)
+    assert isinstance(stores.meta.local, SqliteMetaStore)
+    assert isinstance(stores.meta.kb, UnavailableMetaStore)
+    assert all(
+        getattr(stores, field) is not None
+        for field in ("vectors", "fulltext", "objects", "tabular")
+    )
+
+    # 本机域走通了：写一个设置再读回来（经 router，与 services 走的是同一条路）
+    stores.meta.set_setting("chat.mode", "build")
+    assert stores.meta.get_setting("chat.mode") == "build"
+
+    data_dir = Path(settings.data_dir)
+    assert (data_dir / LOCAL_DB_NAME).is_file()
+    for subdir in STORAGE_SUBDIRS:
+        assert (data_dir / subdir).is_dir()
+
+
+@pytest.mark.local
+def test_local_deployment_puts_the_database_where_it_is_told(tmp_path: Path) -> None:
+    """``KYLAB_LOCAL_DB`` 指到别处时库就落别处（默认才是 ``<data_dir>/kylab.db``）。"""
+    target = tmp_path / "elsewhere" / "kylab.db"
+    settings = _local_settings(tmp_path, local_db=target)
+    build_stores(settings)
+
+    assert target.is_file()
+    assert not (Path(settings.data_dir) / LOCAL_DB_NAME).exists()
+
+
+@pytest.mark.local
+def test_local_deployment_keeps_files_on_this_machine(tmp_path: Path) -> None:
+    """本机档的对象存储**固定**是数据目录：配了 S3 也不走（S3 是服务器的事）。
+
+    这条是有意为之的取舍（§4.1 那张表），所以要有用例写着"本机档就是不动 S3 配置"——
+    否则某天有人顺手把 ``_build_object_store`` 接进来，谁也不会注意到本机档开始
+    往一个它不该够到的桶里写文件了。
+    """
+    settings = _local_settings(
+        tmp_path, s3_endpoint="http://minio:9000", s3_access_key="k", s3_secret_key="s"
+    )
+    stores = build_stores(settings)
+
+    path = stores.objects.write("markdown/doc_1.md", "# 标题".encode())
+    assert (Path(settings.data_dir) / path).is_file()
+
+
+@pytest.mark.local
+def test_local_deployment_reports_the_kb_domain_as_unavailable(tmp_path: Path) -> None:
+    """知识库那半如实说"在 NAS 上"（503 那句话的来源），**不回空结果**（§2.2）。"""
+    stores = build_stores(_local_settings(tmp_path))
+
+    with pytest.raises(KnowledgeBaseUnavailable):
+        stores.meta.list_knowledge_bases()
+    with pytest.raises(KnowledgeBaseUnavailable):
+        stores.vectors.list_partitions()
+    with pytest.raises(KnowledgeBaseUnavailable):
+        stores.fulltext.search(query="会话", top_k=3)
+    with pytest.raises(KnowledgeBaseUnavailable):
+        stores.tabular.list_tables()
+
+    assert issubclass(KnowledgeBaseUnavailable, StorageError)
+
+
+@pytest.mark.local
+def test_local_deployment_refuses_database_url_even_when_validation_is_bypassed(
+    tmp_path: Path,
+) -> None:
+    """正门在 ``Settings`` 的校验器上（见 ``test_config.py``）；这条守绕过去的那条路。
+
+    两个真相源同时在场时"会话写哪儿"取决于哪段代码先读哪个字段，而失败形态是
+    **数据被写进另一个库**——宁可起不来。
+    """
+    settings = _local_settings(tmp_path)
+    settings.database_url = "postgresql://kylab:secret@nas:5432/kylab"  # 绕过校验器
+
+    with pytest.raises(RuntimeError, match="KYLAB_DATABASE_URL"):
+        build_stores(settings)
+
+
+@pytest.mark.local
+def test_get_stores_is_cached_in_local_deployment(monkeypatch, tmp_path: Path) -> None:
+    """本机档同样走 ``lru_cache`` 单例：档位只能在进程启动最早定下（§4.1）。"""
+    monkeypatch.setenv("KYLAB_DEPLOYMENT", "local")
+    monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("KYLAB_DATABASE_URL", "")
+    reset_stores()
+    try:
+        first = get_stores()
+        assert isinstance(first.meta, RouterMetaStore)
+        assert get_stores() is first
+
+        reset_stores()
+        assert get_stores() is not first
     finally:
         reset_stores()

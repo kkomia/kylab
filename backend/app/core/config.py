@@ -14,7 +14,9 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal, Self
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 API_VERSION = "v1"
@@ -69,17 +71,35 @@ class Settings(BaseSettings):
     """
     # ---- 存储后端（引导级：只能在环境变量里给）----------------------------
     #
-    # v0.12 起存储改为 **PostgreSQL（元数据 + 向量 + 全文）+ 对象存储（原件）
-    # + DuckDB（表格副本）**，SQLite 退役。装配点仍只有一处：
-    # ``core/storage.py::build_stores()``，它按这里的配置构造实现并在启动时校验。
+    # **两个部署档**（M2 §4.1）。服务器档是既有形态：**PostgreSQL（元数据 + 向量 +
+    # 全文）+ 对象存储（原件）+ DuckDB（表格副本）**；本机档（桌面壳的边车进程）里
+    # 会话与设置落本机 SQLite，知识库那半**没有数据源**（在 NAS 上，M3 接提供者）。
+    # 装配点仍只有一处：``core/storage.py::build_stores()``，它按这里的两个字段分流，
+    # 并在启动时校验（连得上、schema 版本对、扩展在）。**档位只在进程启动时定一次**：
+    # ``get_stores()`` / ``get_services()`` 两个单例都是 ``lru_cache``，运行期换不了。
+
+    deployment: Literal["server", "local"] = "server"
+    """部署档：``server``（默认，NAS 上的网页端/API）或 ``local``（桌面壳的本机边车）。
+
+    **默认必须是 server**：既有部署一位行为都不变；本机档由入口自己钉死——阶段 3 会在
+    ``app/sidecar.py`` 启动时强制 ``KYLAB_DEPLOYMENT=local``，不给环境继承的机会
+    （"边车误连服务器库"是最糟的失败形态）。
+    """
 
     database_url: str | None = None
     """PostgreSQL 连接串，例如 ``postgresql://kylab:secret@postgres:5432/kylab``。
 
-    **必填**（SQLite 已于 v0.12 退役）。这里声明成可选只是为了"缺配置"能由
-    ``build_stores()`` 给一句可操作的报错，而不是在构造 Settings 时就抛一句
+    **服务器档必填**（本机档不许配，见下面的校验）。这里声明成可选只是为了"缺配置"
+    能由 ``build_stores()`` 给一句可操作的报错，而不是在构造 Settings 时就抛一句
     pydantic 的字段错误——前者能告诉运维该填什么。
     启动时会校验连通性、``vector`` 扩展与 schema 版本，失败即退出。
+    """
+
+    local_db: Path | None = None
+    """本机档的库文件（默认 ``<data_dir>/kylab.db``）。
+
+    只在 ``deployment=local`` 下有意义：给了就落这个路径（导入、排障、把库放到另一个
+    盘上都靠它），不给就用数据目录下的默认名。
     """
 
     s3_endpoint: str | None = None
@@ -209,6 +229,28 @@ class Settings(BaseSettings):
     chat_mode: str | None = None
     """Agent 模式四档 ``plan / build / edit / yolo``（枚举与语义见 ``services/modes.py``，
     照 ZCode 抄的）。不设时用代码默认 ``build``（与 ZCode 的默认档一致）。"""
+
+    @model_validator(mode="after")
+    def _reject_two_sources_of_truth(self) -> Self:
+        """本机档配了 ``database_url`` → **当场拒绝**（M2 §2.2「配置口径」）。
+
+        这一条不是洁癖：本机档的会话与设置落 SQLite，而 ``database_url`` 说的是
+        "元数据在 PostgreSQL"——两个真相源同时在场时，"会话写到哪儿"取决于哪段代码
+        先读哪个字段，而失败形态是**数据被写进错误的库**（最糟的那一类：不报错）。
+        所以宁可在启动的第一秒失败。
+
+        校验放在构造期（而不是 ``build_stores()`` 里）：配置错了就不该造出一个
+        "看起来能用的 ``Settings``"。``build_stores()`` 里另有一条同样的守卫，
+        那是给绕过校验构造的 Settings 兜底的。
+        """
+        if self.deployment == "local" and self.database_url:
+            raise ValueError(
+                "本机档（KYLAB_DEPLOYMENT=local）不接受 KYLAB_DATABASE_URL："
+                "本机档的元数据落本机 SQLite（KYLAB_LOCAL_DB 或 <data_dir>/kylab.db），"
+                "配了连接串等于同时声明了两个数据源。要连 PostgreSQL 就去掉 "
+                "KYLAB_DEPLOYMENT=local（服务器档）。"
+            )
+        return self
 
     @property
     def cors_origin_list(self) -> list[str]:

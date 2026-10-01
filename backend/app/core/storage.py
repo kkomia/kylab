@@ -4,11 +4,19 @@
 `services/` 只依赖 `storage/base.py` 的接口，实现由本模块在启动时装配注入——
 `scripts/check_layering.py` 的 `L2` 规则会守住这条边界。
 
+**两个部署档，一个开关**（M2 §4.1，``KYLAB_DEPLOYMENT``）：
+
+- **服务器档**（默认，一行行为都不变）：PostgreSQL（元数据 + 向量 + 全文）+
+  对象存储 + DuckDB（表格副本）；``database_url`` 未配置时**直接启动失败**——
+  留一条"没配就悄悄退回本地文件"的后路，只会让部署问题变成运行期怪现象。
+- **本机档**（``KYLAB_DEPLOYMENT=local``，桌面壳的边车进程）：会话 / 消息 / 事件 /
+  产物 / 笔记 / 设置 / 工作区 / 定时任务 / MCP / 模型注册 / 用量落 ``<data_dir>/kylab.db``
+  （``sqlite_impl/``），向量 / 全文 / 表格三个仓储换成"不可用"实现（知识库在 NAS 上，
+  M3 接提供者，见 ``split_impl/``），对象存储固定本地目录。
+
 三个存储各管一段（架构 §8）：
 
-- **PostgreSQL**（``postgres_impl/``）：元数据 + 向量(pgvector) + 全文(tsvector)。
-  SQLite 已于 v0.12 退役，``database_url`` 未配置时**直接启动失败**——
-  留一条"没配就悄悄退回本地文件"的后路，只会让部署问题变成运行期怪现象。
+- **元数据**（``postgres_impl/`` 或 ``sqlite_impl/`` + ``split_impl/``）：本档的元数据家当。
 - **对象存储**（``s3_impl/`` 或 ``local_impl/``）：原件、Markdown 产物、图片。
 - **DuckDB**（``duckdb_impl/``）：表格型文档的结构化副本，与主库物理分离。
 """
@@ -24,8 +32,16 @@ from app.storage.base import FullTextStore, MetaStore, ObjectStore, StoreBundle,
 
 if TYPE_CHECKING:  # 只为类型标注：**模块级不 import 具体后端**（见下面那段"为什么惰性"）
     from app.storage.postgres_impl.connection import Database as PgDatabase
+    from app.storage.sqlite_impl.connection import Database as SqliteDatabase
 
-__all__ = ["STORAGE_SUBDIRS", "build_stores", "close_stores", "get_stores", "reset_stores"]
+__all__ = [
+    "LOCAL_DB_NAME",
+    "STORAGE_SUBDIRS",
+    "build_stores",
+    "close_stores",
+    "get_stores",
+    "reset_stores",
+]
 
 # ---------------------------------------------------------------- 为什么具体后端是**惰性导入**
 #
@@ -44,6 +60,12 @@ __all__ = ["STORAGE_SUBDIRS", "build_stores", "close_stores", "get_stores", "res
 # 所以：**按需导入** ✓ —— 只有真正要装配后端时（`build_stores`，服务器启动那条路 ✓）
 # 才 import 它们。**行为不变**：`build_stores` 之前是"导入模块时"就会炸缺包，
 # 现在是"调用 build_stores 时"炸 —— 而唯一调用点就是启动时的组合根 ✓（失败时机一样 ✓）。
+#
+# **本机档再加一条更硬的口径**（M2 §7 阶段 2 的完成判据）：`KYLAB_DEPLOYMENT=local` 那条
+# 路上，上面这三份**一个都不许进 `sys.modules`**——它们一个都用不到，而客户端运行时
+# 的体积是按闭包算的。所以分流发生在 import 之前（`_build_local_stores` 里只有标准库
+# 与本地模块），并且 `tests/unit/storage/test_split_impl.py` 有一条**子进程断言**钉着它：
+# 在干净解释器里跑一次本机档 `build_stores()`，然后查 `sys.modules` 里有没有它们。
 
 ORIGINALS_DIR = "originals"
 MARKDOWN_DIR = "markdown"
@@ -51,10 +73,16 @@ IMAGES_DIR = "images"
 STORAGE_SUBDIRS = (ORIGINALS_DIR, MARKDOWN_DIR, IMAGES_DIR)
 """本地对象存储的目录规约。走 S3 时对象在桶里，不涉及这些目录。"""
 
+LOCAL_DB_NAME = "kylab.db"
+"""本机库文件名（``<data_dir>/kylab.db``，M2 §1.1）。"""
+
 _S3_REQUIRED = ("s3_endpoint", "s3_access_key", "s3_secret_key")
 
 _OPEN_DATABASES: list[PgDatabase] = []
 """已打开的 PG 连接池。进程级资源，关停时由 ``close_stores`` 统一释放。"""
+
+_OPEN_LOCAL_DATABASES: list[SqliteDatabase] = []
+"""已打开的本机 SQLite 句柄（服务器档下恒为空）。同样是进程级资源。"""
 
 
 def _build_object_store(settings: Settings, data_dir: Path) -> ObjectStore:
@@ -126,24 +154,81 @@ def _build_pg_stores(
     )
 
 
+def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
+    """本机档：SQLite 元数据 + 三个"不可用" + 本地目录对象存储（M2 §4.1 那张表）。
+
+    **这一支里一个服务器后端都不 import**：没有 psycopg / boto3 / duckdb（见上面那段
+    "为什么惰性"）。所以它也不走 ``_build_object_store()``——那个函数会在配了
+    ``KYLAB_S3_ENDPOINT`` 时 import boto3，而本机档的对象存储**固定**是数据目录
+    （S3 是服务器的事；本机的"文件区"就该在用户自己的盘上，跟着库一起备份）。
+
+    启动即校验的气质与服务器档一致：SQLite 版本不够（``STRICT`` 表要 ≥3.37）、
+    schema 版本比应用新、库里有别人在写，都在这里说清楚（见 ``sqlite_impl/schema.py``）。
+    """
+    from app.storage.local_impl.object_store import LocalObjectStore
+    from app.storage.split_impl import (
+        RouterMetaStore,
+        UnavailableFullTextStore,
+        UnavailableMetaStore,
+        UnavailableTabularStore,
+        UnavailableVectorStore,
+    )
+    from app.storage.sqlite_impl.connection import Database as SqliteDatabase
+    from app.storage.sqlite_impl.meta_store import SqliteMetaStore
+    from app.storage.sqlite_impl.schema import prepare as prepare_sqlite_schema
+
+    db_path = Path(settings.local_db) if settings.local_db else data_dir / LOCAL_DB_NAME
+    database = SqliteDatabase(db_path)
+    try:
+        prepare_sqlite_schema(database)
+    except BaseException:
+        database.close()
+        raise
+    _OPEN_LOCAL_DATABASES.append(database)
+
+    for subdir in STORAGE_SUBDIRS:
+        (data_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+    return StoreBundle(
+        # 本机域走 SQLite，KB 域转给"不可用"那半（M3 换成 RemoteMetaStore，见 split_impl/）
+        meta=RouterMetaStore(local=SqliteMetaStore(database), kb=UnavailableMetaStore()),
+        vectors=UnavailableVectorStore(),
+        fulltext=UnavailableFullTextStore(),
+        objects=LocalObjectStore(data_dir),
+        tabular=UnavailableTabularStore(),
+    )
+
+
 def build_stores(settings: Settings | None = None) -> StoreBundle:
     """按配置建库、迁移、准备目录，并装配五个仓储。
 
-    幂等：可安全地在每次启动时调用。
+    档位由 ``settings.deployment`` 定（见模块头的两个部署档），**幂等**：可安全地在
+    每次启动时调用。
 
     返回 :class:`StoreBundle`（字段类型全为接口）。具体的连接句柄刻意不外泄——
     一旦交出去，调用方就会顺手拿它写 SQL，Repository 抽象就白做了。
     """
     resolved = settings or get_settings()
-    if not resolved.database_url:
+    # 两个真相源的兜底（正门在 ``Settings`` 的校验器上，这句是给绕过校验构造出来的
+    # Settings 收口用的）：本机档宁可起不来，也不能把会话写进"另一个库"。
+    if resolved.deployment == "local" and resolved.database_url:
         raise RuntimeError(
-            "未配置 KYLAB_DATABASE_URL：SQLite 已于 v0.12 退役，"
-            "存储为 PostgreSQL 必选。示例："
-            "postgresql://用户:口令@主机:5432/库名"
+            "本机档（KYLAB_DEPLOYMENT=local）不接受 KYLAB_DATABASE_URL："
+            "本机档的元数据落本机 SQLite，配了连接串等于同时声明了两个数据源"
         )
 
     data_dir = Path(resolved.data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
+
+    if resolved.deployment == "local":
+        return _build_local_stores(resolved, data_dir)
+
+    if not resolved.database_url:
+        raise RuntimeError(
+            "服务器档未配置 KYLAB_DATABASE_URL：元数据与向量/全文都在 PostgreSQL 上。示例："
+            "postgresql://用户:口令@主机:5432/库名"
+            "（桌面端本机档请设 KYLAB_DEPLOYMENT=local，会话落本机 SQLite）"
+        )
 
     object_store = _build_object_store(resolved, data_dir)
     meta, vectors, fulltext = _build_pg_stores(
@@ -171,10 +256,17 @@ def get_stores() -> StoreBundle:
 
 
 def close_stores() -> None:
-    """释放进程级存储资源（PG 连接池）。关停时调用。"""
+    """释放进程级存储资源（PG 连接池 / 本机 SQLite 句柄）。关停时调用。
+
+    两边都收：档位是进程级的，而"反复 build/reset"（测试、配置热更）会把连接攒起来。
+    SQLite 那边关库时还会做一次 WAL 检查点，少关一次就多留一份 ``-wal`` 尾巴。
+    """
     for database in _OPEN_DATABASES:
         database.close()
     _OPEN_DATABASES.clear()
+    for database in _OPEN_LOCAL_DATABASES:
+        database.close()
+    _OPEN_LOCAL_DATABASES.clear()
 
 
 def reset_stores() -> None:
