@@ -32,7 +32,14 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from app.storage.base import FullTextStore, MetaStore, StorageError, TabularStore, VectorStore
+from app.storage.base import (
+    KB_UNAVAILABLE_MESSAGE,
+    FullTextStore,
+    KnowledgeBaseUnavailable,
+    MetaStore,
+    TabularStore,
+    VectorStore,
+)
 from app.storage.sqlite_impl import LOCAL_METHODS
 
 __all__ = [
@@ -55,9 +62,6 @@ REMOTE_METHODS: frozenset[str] = frozenset(MetaStore.__abstractmethods__) - LOCA
 重复了谁，"这个方法的归属有两个答案"。用例逐名核对这两条。
 """
 
-KB_UNAVAILABLE_MESSAGE = "知识库在 NAS 服务器上：本机档没有它的数据源，M3 接知识库提供者"
-"""本机档访问知识库域时的那句话（照实说，不伪装成"库里没有"）。"""
-
 SEARCH_UNAVAILABLE_MESSAGE = "检索在 NAS 知识库：本机档没有向量与全文索引，M3 接知识库提供者"
 """``search`` 单独一句：**检索在 NAS 知识库，M3 接提供者**。
 
@@ -65,22 +69,10 @@ SEARCH_UNAVAILABLE_MESSAGE = "检索在 NAS 知识库：本机档没有向量与
 空结果会被读成"库里没有这条"，而真相是"这个部署没有知识库"——下一步动作完全不同。
 """
 
-
-class KnowledgeBaseUnavailable(StorageError):
-    """本机档访问知识库域的东西：数据源在 NAS 上，这里没有。
-
-    **如实抛，不伪装**：回空列表等于告诉调用方"查过了，没有"，而它其实**没查过**。
-    HTTP 面由 ``app/core/exceptions.py`` 映射成 503 + ``str(exc)`` 那句话（不伪装成
-    500"内部错误"：这是"这个部署没有这个能力"，不是"我们出错了"）。
-
-    ``StorageError`` 子类而不是 ``KylabError`` 子类：它是存储层说出的事实（"这个仓储
-    没有这个能力"），而"折成哪个状态码"属于协议层——存储层不认识 HTTP。
-    """
-
-    message = KB_UNAVAILABLE_MESSAGE
-
-    def __init__(self, message: str | None = None) -> None:
-        super().__init__(message or self.message)
+# ``KnowledgeBaseUnavailable`` 与 ``KB_UNAVAILABLE_MESSAGE`` 住在 ``storage/base.py``
+# （接口层），这里只是**再导出**（上面的 import + ``__all__``）：M3 起抛出它的不止本模块的
+# ``Unavailable*``，还有 ``services/knowledge_provider.py``（提供者客户端，方案 §5.1）——
+# 而 services 只允许 import 接口层。搬走那条实读记录见 ``base.py`` 里那个类的说明。
 
 
 class _Router:

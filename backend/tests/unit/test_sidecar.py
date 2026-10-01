@@ -29,6 +29,14 @@ from app import sidecar
 from app.services import remote_clients
 from app.services.approvals import ALLOW_ONCE, DENY, UNAVAILABLE, ApprovalRegistry, ApprovalRequest
 from app.services.chat import ChatService
+from app.services.knowledge_client import KnowledgeClient
+from app.services.knowledge_provider import (
+    SETTING_ENABLED,
+    STATE_READY,
+    STATE_UNAVAILABLE,
+    STATE_UNCONFIGURED,
+    KnowledgeProviderClient,
+)
 from app.services.llm import ChatMessage, LLMDelta, ToolCallDelta, ToolSpec
 from app.services.remote_clients import RemoteUnavailableError
 from app.services.tool_loop import ToolLoop, ToolOutcome
@@ -127,7 +135,9 @@ class _BrokenModel:
         raise RemoteUnavailableError("模型代理连不上：boom")
 
 
-def _client(tmp_path, monkeypatch, model, *, health_ok: bool = True) -> TestClient:  # type: ignore[no-untyped-def]
+def _client(  # type: ignore[no-untyped-def]
+    tmp_path, monkeypatch, model, *, health_ok: bool = True, provider_factory=None
+) -> TestClient:
     # 装配点整体换成"真 Clients + 假模型/假 KB" ✓ —— **必须在 create_app 之前打补丁** ✗：
     # `create_app` 内部就调 `build_clients` ✓，晚一步它就把真客户端装进去了 ✓
     # （那会让用例打真网络 ✗ —— 第一次就是这么假红的）。
@@ -135,6 +145,10 @@ def _client(tmp_path, monkeypatch, model, *, health_ok: bool = True) -> TestClie
     # 注意：这里**不再**替换整个装配点 ✗ —— 本地那一侧（本机档的服务图 / runtime /
     # 审批 / 工具表 / `build_runner`）要**真的**建起来 ✓，否则"工具真的执行"与
     # "这一轮落本机库"两条都验不到 ✓。只有模型那一头是假的（不然就打真网络了）。
+    #
+    # `provider_factory` 是给"选了库"的用例备的（M3 阶段 2：工具表按提供者状态门控）✓：
+    # 它**在 `_build` 里现建** —— 那时 `create_app` 已经把档位钉好了，提供者读到的
+    # 引导级配置才是这一档的（在用例体里先建会读到上一条用例的 Settings ✗）。
     def _build(base: str, token: str, *, workspace: Path, data_dir: Path):  # type: ignore[no-untyped-def]
         return sidecar.Clients(
             base,
@@ -142,6 +156,7 @@ def _client(tmp_path, monkeypatch, model, *, health_ok: bool = True) -> TestClie
             workspace=workspace,
             data_dir=data_dir,
             model=model,
+            provider=provider_factory() if provider_factory is not None else None,
         )
 
     monkeypatch.setattr(sidecar, "build_clients", _build)
@@ -170,6 +185,82 @@ def _no_network(monkeypatch) -> None:  # type: ignore[no-untyped-def]
         raise AssertionError("这个用例不该发任何 HTTP 请求（本机档的账全在本机）")
 
     monkeypatch.setattr(sidecar, "_httpx", _boom)
+
+
+def _handshake_body() -> dict[str, Any]:
+    """一个**过得去**的握手响应（字段照方案 §1.2 的契约，能力集这里不必填满）。
+
+    只给用例用：`Clients.tool_specs` 在"这一轮选了库"时要问一次提供者状态
+    （M3 阶段 2 的门控），而状态只认**真的握手过一遍**。
+    """
+    return {
+        "provider": "knowledge",
+        "protocol_version": 1,
+        "app_version": "0.1.1",
+        "api_version": "v1",
+        "capabilities": {},
+        "caller": {
+            "kind": "api_key",
+            "permission": "readwrite",
+            "is_admin": False,
+            "can_write": True,
+            "knowledge_base_ids": [],
+        },
+        "knowledge_bases": [],
+        "server_time": "2026-10-03T00:00:00Z",
+    }
+
+
+def _ready_provider(handler=None):  # type: ignore[no-untyped-def]
+    """一个**握手成功**的提供者客户端（假传输 —— 用例里不打真网络 ✓）。
+
+    为什么"选了库"的用例必须显式给一个：`Clients.tool_specs` 会在那个分支上问一次
+    提供者状态，`state != ready` 时 `search` / `attach_note_to_kb` / `ingest_file`
+    **一个都不摆**（方案 §3.2 的失败降级）。要验"这三个真的能用"，就得先让它 ready ✓。
+
+    ``handler`` 收下**非握手**的请求（例如上传那份 multipart）；不给就说明这个用例
+    只打算喂握手，别的请求一律报错（静默放过会让"多打了一个请求"看不出来 ✗）。
+    """
+
+    def _dispatch(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/provider/handshake"):
+            return httpx.Response(200, json=_handshake_body())
+        if handler is not None:
+            return handler(request)
+        raise AssertionError(f"这个用例没准备这个请求：{request.method} {request.url}")
+
+    return KnowledgeProviderClient(transport=httpx.MockTransport(_dispatch))
+
+
+def _dead_provider():  # type: ignore[no-untyped-def]
+    """一个**连不上**的提供者（假传输：所有请求都以 `ConnectError` 收场）✓。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("NAS 连不上（这个用例要的就是这个）")
+
+    return KnowledgeProviderClient(transport=httpx.MockTransport(handler))
+
+
+def _disabled_provider():  # type: ignore[no-untyped-def]
+    """提供者被**显式关掉**（`provider.knowledge.enabled=0`）→ `unconfigured` ✓。"""
+    return KnowledgeProviderClient(get_setting=lambda key: "0" if key == SETTING_ENABLED else "")
+
+
+def _clients_with(tmp_path, provider_factory=None):  # type: ignore[no-untyped-def]
+    """一条**真的**本机档 `Clients`：先钉档位，再建提供者（与 `build_clients` 同一个顺序 ✓）。
+
+    提供者在**钉档之后**现建很重要：它读的是引导级配置（`get_settings()`），
+    早一步建就会拿到上一条用例留下的那份（`--server` 还没钉上）。
+    """
+    data_dir = tmp_path / "data"
+    sidecar.pin_local_deployment(data_dir, server_url="http://server.test/api/v1", token="t")
+    return sidecar.Clients(
+        "http://server.test/api/v1",
+        "t",
+        workspace=tmp_path / "ws",
+        data_dir=data_dir,
+        provider=provider_factory() if provider_factory is not None else None,
+    )
 
 
 def _new_conversation(client: TestClient, **body: Any) -> str:
@@ -373,17 +464,23 @@ def test_workspace_fallbacks_never_land_inside_the_repo(monkeypatch) -> None:  #
 
 
 def test_knowledge_client_is_the_remote_one(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """装配出来的两端**就是 P2 的远端实现** ✓（"循环本地、KB 与模型远端"落在这一行 ✓）。
+    """装配出来的两端**就是远端实现** ✓（"循环本地、KB 与模型远端"落在这一行 ✓）。
 
     同时钉住本地那一侧的三条口径：默认**无隔离时直接执行**（`require_isolation` 默认 `false` ✓，
     不装 Docker 也要能跑 ✓），但**用户显式要求严格时必须被尊重** ✓（闸可开、不可被偷偷绕 ✗）、
     审批注册表**带过来了** ✓、KB 接缝指向的**是远端实现** ✓（不是进程内检索 ✗）。
+
+    M3 阶段 2 起 KB 那一件是**提供者客户端**（`KnowledgeProviderClient`）✓ —— 它同时是
+    `KnowledgeClient` 协议的一份实现（`retrieve_sources` 签名逐字一致 ✓），所以
+    "循环本地"那条链一个字不用改 ✓。
     """
     clients = sidecar.build_clients(
         "http://server.test/api/v1", "t", workspace=tmp_path / "ws", data_dir=tmp_path / "data"
     )
 
-    assert isinstance(clients.knowledge, sidecar.RemoteKnowledgeClient)
+    assert isinstance(clients.knowledge, KnowledgeProviderClient)
+    assert isinstance(clients.knowledge, KnowledgeClient)
+    assert clients.knowledge is clients.provider
     assert isinstance(clients.model, sidecar.RemoteModelClient)
     assert clients.base_url == "http://server.test/api/v1"
     # 探活打的是后端自己的 health（不花模型额度 ✓）
@@ -475,7 +572,9 @@ def test_search_in_a_turn_goes_to_the_nas(tmp_path, monkeypatch) -> None:  # typ
         json.dumps({"query": "问一句", "knowledge_base_ids": ["kb_1"]}),
         "资料里说：NAS 上命中的那一段",
     )
-    client = _client(tmp_path, monkeypatch, model)
+    # 选了库 → 工具表要问一次提供者状态：给一个**握手成功**的（`search` 才摆得出来 ✓）。
+    # 检索本身仍走组合根那个 `RemoteKnowledgeClient`（上面那个假传输接住它 ✓）。
+    client = _client(tmp_path, monkeypatch, model, provider_factory=_ready_provider)
 
     payload = client.post("/turn", json={"message": "查一下资料", "kb_ids": ["kb_1"]}).json()
 
@@ -516,7 +615,9 @@ def test_search_reports_an_unreachable_nas_instead_of_pretending(tmp_path, monke
         json.dumps({"query": "问一句", "knowledge_base_ids": ["kb_1"]}),
         "查不到资料，我按已知的说",
     )
-    client = _client(tmp_path, monkeypatch, model)
+    # **握手是好的、这一次检索连不上**：单次调用失败**不改状态**（方案 §3.2），
+    # 所以 `search` 照旧在工具表里（模型也照旧会调它）——这一步如实失败即可 ✓。
+    client = _client(tmp_path, monkeypatch, model, provider_factory=_ready_provider)
 
     payload = client.post("/turn", json={"message": "查一下", "kb_ids": ["kb_1"]}).json()
 
@@ -1352,11 +1453,16 @@ def test_list_notes_reads_the_local_db(tmp_path, monkeypatch) -> None:  # type: 
 
 
 def test_ingest_file_reads_local_and_uploads(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    """**本机文件入库**（2026-10-01）：`ingest_file` 在边车侧 = 读本机 → multipart 上传 ✓。
+    """**本机文件入库**：`ingest_file` 在边车侧 = 读本机 → multipart 上传 ✓。
 
-    验证三件事：① 工具只在**选了库**（kb_ids 非空）时摆出来（`_LOCAL_KB_TOOLS` 门控）；
+    M3 阶段 2 起这条路走的是**提供者客户端**（`KnowledgeProviderClient.submit`，
+    收编了 M2 那份 `sidecar._LocalIngest`）——所以这条用例现在同时是
+    "上传的形状照旧对" 与 "换实现没有改行为" 两份证据。
+
+    验证四件事：① 工具只在**选了库**（kb_ids 非空）**且提供者 ready** 时摆出来；
     ② 字节从**本机工作区**读出来（不是从服务器文件区）；③ 上传打到
-    `POST /knowledge-bases/{kb_id}/documents`，字段按服务器那份契约（multipart `file`）。
+    `POST /knowledge-bases/{kb_id}/documents`，multipart 字段按服务器那份契约；
+    ④ `start=true` 与 `X-Kylab-Operator` 归都是提供者客户端带的（NAS 自己入队）。
     """
     seen: dict[str, Any] = {}
     workspace = tmp_path / "ws"
@@ -1364,9 +1470,10 @@ def test_ingest_file_reads_local_and_uploads(tmp_path, monkeypatch) -> None:  # 
     (workspace / "notes.txt").write_text("hello from local", encoding="utf-8")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if str(request.url).endswith("/knowledge-bases/kb_1/documents"):
+        if request.url.path.endswith("/knowledge-bases/kb_1/documents"):
             seen["url"] = str(request.url)
             seen["body"] = request.read()  # multipart 原始字节
+            seen["operator"] = request.headers.get("x-kylab-operator")
             return httpx.Response(
                 202,
                 json={
@@ -1384,15 +1491,21 @@ def test_ingest_file_reads_local_and_uploads(tmp_path, monkeypatch) -> None:  # 
         json.dumps({"knowledge_base_id": "kb_1", "path": "notes.txt"}),
         "已经放进知识库了",
     )
-    client = _client(tmp_path, monkeypatch, model)
+    # ① 提供者 ready（握手走假传输 ✓）+ 上传那份请求交给上面的 handler ✓
+    client = _client(
+        tmp_path, monkeypatch, model, provider_factory=lambda: _ready_provider(handler)
+    )
 
     # ② 带上选中的库跑一轮（`ingest_file` 受 `_LOCAL_KB_TOOLS` 门控：kb_ids 非空才摆）
     payload = client.post(
         "/turn", json={"message": "把 notes.txt 放进知识库", "kb_ids": ["kb_1"]}
     ).json()
 
-    # ③ 上传真的打到了服务器的文档上传口，multipart 里是**本机那份的字节**
-    assert seen.get("url", "").endswith("/api/v1/knowledge-bases/kb_1/documents"), seen
+    # ③ 上传真的打到了文档上传口，multipart 里是**本机那份的字节**
+    url = seen.get("url", "")
+    assert "/api/v1/knowledge-bases/kb_1/documents" in url, seen
+    # **`start=true` 由提供者客户端带**：NAS 那一侧据此自己入队（本机没有队列）
+    assert "start=true" in url, seen
     assert b"hello from local" in seen["body"], seen["body"][:400]
     assert b'filename="notes.txt"' in seen["body"], seen["body"][:400]
     # ④ 工具结果按 `_ingest_file` 的口径（文档 id + 入队说明）
@@ -1405,4 +1518,57 @@ def test_ingest_file_reads_local_and_uploads(tmp_path, monkeypatch) -> None:  # 
     assert "doc_9" in done[0]["result"], done[0]["result"]
     assert "已入队处理" in done[0]["result"], done[0]["result"]
     assert payload["answer"] == "已经放进知识库了"
+
+
+# ------------------------------------------- 提供者状态门控工具表（M3 阶段 2）
+
+
+def test_kb_tools_are_gated_by_the_provider_state(tmp_path) -> None:
+    """**非 ready 就不摆那三个要知识库的工具**（方案 §3.2 的失败降级）。
+
+    三态各验一遍（`ready` / `unavailable` / `unconfigured`）——判据是它们在**工具表**
+    里在不在（`search` / `attach_note_to_kb` / `ingest_file`），而不是"调起来会报错"：
+    给了又拒只会白花一个来回（与 `_KB_TOOLS` 的"关了就不摆"同一条纪律）。
+    别的工具（本机那批）**一件都不该受影响** —— 知识库断了不是这台机器断了。
+    """
+    kb_tools = {"search", "attach_note_to_kb", "ingest_file"}
+
+    ready = _clients_with(tmp_path, _ready_provider)
+    assert ready.provider.status().state == STATE_READY
+    assert kb_tools <= {spec.name for spec in ready.tool_specs(kb_ids=["kb_1"])}
+
+    dead = _clients_with(tmp_path, _dead_provider)
+    assert dead.provider.status().state == STATE_UNAVAILABLE
+    names = {spec.name for spec in dead.tool_specs(kb_ids=["kb_1"])}
+    assert not (kb_tools & names), names
+    assert "read_file" in names and "create_note" in names
+
+    off = _clients_with(tmp_path, _disabled_provider)
+    assert off.provider.status().state == STATE_UNCONFIGURED
+    assert not (kb_tools & {spec.name for spec in off.tool_specs(kb_ids=["kb_1"])})
+
+
+def test_no_knowledge_base_selected_means_no_handshake_at_all(tmp_path) -> None:
+    """**没选库 = 一次都不探**（R1：交互路径不被握手拖慢）。
+
+    那三个工具在没有 `kb_ids` 时本来就已经被库开关摘掉了（`_KB_TOOLS` /
+    `_LOCAL_KB_TOOLS`），所以这一层不该再为一次用不到的结论去等一趟 NAS 往返 ——
+    判据是"探过几次"（记录假传输的调用），而不是"没报错"。
+    """
+    probed: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        probed.append(str(request.url))
+        return httpx.Response(200, json=_handshake_body())
+
+    clients = _clients_with(
+        tmp_path,
+        lambda: KnowledgeProviderClient(transport=httpx.MockTransport(handler)),
+    )
+
+    names = {spec.name for spec in clients.tool_specs()}
+
+    assert probed == []
+    assert not {"search", "attach_note_to_kb", "ingest_file"} & names
+    assert "read_file" in names
 

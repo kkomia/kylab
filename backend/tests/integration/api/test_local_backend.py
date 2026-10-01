@@ -11,7 +11,7 @@
 | 本机后端面 | **真的**（`/api/v1/*` 就挂在同一个 app 上，`local_router` 那张白名单）|
 | 会话 / 消息 / 事件 / 产物 / 笔记 / 设置 | **真的**（本机 SQLite，落在 `tmp_path`）|
 | 模型 | 假的（`conftest.FakeChatModel`，按剧本吐工具调用与正文）|
-| 知识库 | **不可达**：`RemoteKnowledgeClient.retrieve_sources` 抛出 `RemoteUnavailableError` |
+| 知识库提供者 | **连不上**：握手抛 `ConnectError`、检索抛 `RemoteUnavailableError` |
 | 出站 HTTP | 一概不许（`_httpx` 被换成会炸的那个）——**"断 NAS"是真的断** ✓ |
 
 ## 流程（照 §6.1 那条链，一步不落）
@@ -29,6 +29,7 @@ import json
 from collections.abc import Iterator
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -36,6 +37,7 @@ from app import sidecar
 from app.core.services import reset_services
 from app.core.storage import reset_stores
 from app.services import remote_clients
+from app.services.knowledge_provider import KnowledgeProviderClient
 from app.services.llm import LLMReply
 from app.services.remote_clients import RemoteKnowledgeClient, RemoteUnavailableError
 from tests.conftest import FakeChatModel, search_tool_call
@@ -53,14 +55,37 @@ def _boom_httpx():  # type: ignore[no-untyped-def]
     raise AssertionError("这个用例不该发任何 HTTP 请求（NAS 是断的）")
 
 
+def _dead_provider():  # type: ignore[no-untyped-def]
+    """知识库提供者客户端：**任何请求都连不上**（假传输 ✓，不打真网络 ✓）。
+
+    为什么要显式给一个而不是让它去撞上面那个 `_boom_httpx`：M3 阶段 2 起
+    `Clients.tool_specs` 在"这一轮选了库"时会问一次提供者状态，而"怎么知道 NAS 断了"
+    的唯一途径就是那次探测**真的失败** —— 让它撞 AssertionError 再被探针吞掉，
+    等于把这条断言悄悄关掉（那种"绿着但没在干活"的状态正是 `_boom_httpx` 要防的）。
+    这里模拟的是真实形态：连接被拒。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("NAS 断了（这条用例的唯一故障）")
+
+    return KnowledgeProviderClient(transport=httpx.MockTransport(handler))
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch) -> Iterator[TestClient]:  # type: ignore[no-untyped-def]
-    """边车（本机档）+ 假模型 + 不可达的知识库。"""
+    """边车（本机档）+ 假模型 + 不可达的知识库提供者。"""
     model = FakeChatModel(answer=ANSWER, script=SCRIPT)
 
     def _build(base: str, token: str, *, workspace, data_dir):  # type: ignore[no-untyped-def]
-        # 模型换成假的（不联网）；其余一律走真装配（本机档的组合根 ✓）
-        return sidecar.Clients(base, token, workspace=workspace, data_dir=data_dir, model=model)
+        # 模型换成假的（不联网）；知识库提供者连不上；其余一律走真装配（本机档的组合根 ✓）
+        return sidecar.Clients(
+            base,
+            token,
+            workspace=workspace,
+            data_dir=data_dir,
+            model=model,
+            provider=_dead_provider(),
+        )
 
     def _dead_knowledge(self, **kwargs: Any) -> list[Any]:
         raise RemoteUnavailableError("知识库不可达：NAS 断了（这条用例的唯一故障）")

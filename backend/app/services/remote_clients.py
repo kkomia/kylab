@@ -4,6 +4,12 @@ P1 已经把接缝抽成协议（`model_client.ModelClient` / `knowledge_client.
 这一层补上"**打我们自己的后端**"的那两份实现 ✓ —— 边车（P3）只要在装配点换上它们即可 ✓，
 **循环一行都不用改** ✗（这正是 P1 那一刀的目的 ✓）。
 
+**M3 阶段 2 起，检索的那一半已被提供者客户端收编**（`services/knowledge_provider.py`）：
+`RemoteKnowledgeClient` 仍然是**检索那一件的唯一实现** ✓（映射、分档、签名都在这里），
+但**本类不再单独装配** ✗ —— 它由 `KnowledgeProviderClient` 持有，每次调用现取目标
+（这样设置页改了地址下一轮就生效）。装配点（组合根 / 边车）给 `ChatService` 的
+那一件也换成提供者客户端（阶段 3 收编 `core/services.py`）。模型那一半不受影响 ✓。
+
 ## 用现有端点，不新造 ✗
 
 - KB：**`POST /api/v1/search`**（`api/v1/search.py:25`，混合检索 ✓）——**已经有了** ✓，

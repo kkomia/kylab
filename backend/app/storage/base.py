@@ -271,6 +271,34 @@ class VectorDimensionMismatch(StorageError):
     """
 
 
+KB_UNAVAILABLE_MESSAGE = "知识库在 NAS 服务器上：本机档没有它的数据源，M3 接知识库提供者"
+"""本机档访问知识库域时的那句话（照实说，不伪装成"库里没有"）。"""
+
+
+class KnowledgeBaseUnavailable(StorageError):
+    """本机档访问知识库域的东西：数据源在 NAS 上，这里没有。
+
+    **如实抛，不伪装**：回空列表等于告诉调用方"查过了，没有"，而它其实**没查过**。
+    HTTP 面由 ``app/core/exceptions.py`` 映射成 503 + ``str(exc)`` 那句话（不伪装成
+    500"内部错误"：这是"这个部署没有这个能力"，不是"我们出错了"）。
+
+    ``StorageError`` 子类而不是 ``KylabError`` 子类：它是存储层说出的事实（"这个仓储
+    没有这个能力"），而"折成哪个状态码"属于协议层——存储层不认识 HTTP。
+
+    **为什么住在接口层**（M3 阶段 2 从 ``storage/split_impl/router.py`` 搬上来）：
+    抛出它的不止存储实现——M3 的知识库提供者客户端（``services/knowledge_provider.py``）
+    也要抛它（"未配/不可用"就是"本机档没有知识库"的另一面，方案 §5.1 / R10）。而
+    ``services/`` 只允许 import ``app.storage.base``（工程规范 §3.3 L2，
+    ``scripts/check_layering.py`` 会拦），所以它必须与 ``StorageError`` 同处一地——
+    那正是"services 不必 import 具体实现"这条承诺的另一半。
+    """
+
+    message = KB_UNAVAILABLE_MESSAGE
+
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(message or self.message)
+
+
 # --------------------------------------------------------------------- 对象存储的
 # 逻辑布局与寻址规则放在接口层：services 需要按同样的规约生成 Key，
 # 但**不能**去 import 具体实现（那会踩到工程规范 §3.3 的 L2 规则）。

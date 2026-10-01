@@ -6,7 +6,8 @@ r"""按域分流的存储实现（M2「会话落本机」阶段 2）。
                                                         └─▶ UnavailableMetaStore（KB 域）
 
 - ``router.py``  —— ``RouterMetaStore`` + 四个 ``Unavailable*Store``
-  + ``KnowledgeBaseUnavailable``；
+  （``KnowledgeBaseUnavailable`` 的**定义**在 ``storage/base.py``：M3 起 services 侧的
+  提供者客户端也要抛它，而 services 只允许 import 接口层——这里只是再导出）；
 - ``LOCAL_METHODS`` 的**唯一落点仍然是** ``app/storage/sqlite_impl/``（阶段 0+1 交接的偏离 4）：
   这里只是转出来方便调用方，**不许出现第二份清单**——两份手写清单迟早会漂，
   而漂掉的那个方法只会在某条边角路径上以 ``AttributeError`` 出现。

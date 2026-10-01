@@ -12,10 +12,12 @@ python -m app.sidecar --port 8765
 
 | 这一侧 | 边车模式 | 服务器模式（今天 ✓） |
 | --- | --- | --- |
-| KB | `RemoteKnowledgeClient`（`POST /api/v1/search` ✓） | `ChatService.retrieve_sources` ✓ |
-| 模型 | `RemoteModelClient`（`POST /api/v1/model-proxy/*` ✓） | `OpenAICompatChat` ✓ |
+| KB | `KnowledgeProviderClient`（M3 起收编检索与入库 ✓） | `ChatService.retrieve_sources` ✓ |
+| 模型 | `RemoteModelClient`（`model-proxy/*` ✓） | `OpenAICompatChat` ✓ |
 | 工具 / 工作区 / 沙箱 | **本地** ✓（`isolation.py` / `sandbox.py` ✓； | 服务器进程内 ✓ |
 | | **没有隔离就拒绝执行** ✗ 这条不绕过 ✓） | |
+
+（KB 那一件的落点是 `services/knowledge_provider.py` ✓ —— 握手 / 检索 / 入库都在它身上。）
 
 `if` 只出现在 `build_clients()` 这一处 ✓ —— **循环不复制** ✗。
 
@@ -48,7 +50,7 @@ python -m app.sidecar --port 8765
 | 件 | 落点 |
 | --- | --- |
 | 会话 / 消息 / 事件 / 产物 / 笔记 / 记忆 / 设置 | **本机**：`<data_dir>/kylab.db` |
-| 知识库（检索、入库）| **NAS** ✗（M3 才收成提供者，见 `_LocalIngest`）|
+| 知识库（检索、入库）| **NAS** ✗（M3 收成**提供者**：客户端在 `services/knowledge_provider.py` ✓）|
 | 模型 | NAS 的模型代理 ✗（key 不下发）|
 
 （工作区记录同样在本机库里；产物与文件区的字节在本机对象存储 / 用户的真实目录。）
@@ -91,12 +93,14 @@ from app.core.storage import LOCAL_DB_NAME, reset_stores
 from app.services import agent_tools, plan_gate
 from app.services.agent import ApprovalEvent, DeltaEvent, DoneEvent, StepEvent, ThinkingEvent
 from app.services.api_key import Caller
+from app.services.knowledge_provider import (
+    STATE_READY,
+    KnowledgeProviderClient,
+)
 from app.services.llm import ChatMessage, ToolSpec
 from app.services.remote_clients import (
     RemoteClientError,
-    RemoteKnowledgeClient,
     RemoteModelClient,
-    RemoteUnavailableError,
 )
 from app.services.tool_loop import ToolLoop
 
@@ -167,7 +171,14 @@ FORBIDDEN_ROOTS = (
 )
 
 
-def pin_local_deployment(data_dir: Path, *, server_url: str = "", token: str = "") -> None:
+def pin_local_deployment(
+    data_dir: Path,
+    *,
+    server_url: str = "",
+    token: str = "",
+    kb_url: str = "",
+    kb_token: str = "",
+) -> None:
     """**入口自己钉死档位**（M2 §4.1）——三个环境变量，一个都不能省。
 
     - ``KYLAB_DEPLOYMENT=local``：不给环境继承的机会 ✗。"边车误连服务器库"是最糟的失败
@@ -179,7 +190,12 @@ def pin_local_deployment(data_dir: Path, *, server_url: str = "", token: str = "
       S3 那三个变量是同一手法）；
     - ``KYLAB_DATA_DIR`` / ``KYLAB_SERVER_URL`` / ``KYLAB_TOKEN``：本次这一档的落点与
       远端两头。**从入口的参数来**（壳传的 `--data-dir` / `--server` / `--token`），
-      不给它们的话库会建在 cwd 下的 `./data`（与用户看到的"我的数据"不是一处）。
+      不给它们的话库会建在 cwd 下的 `./data`（与用户看到的"我的数据"不是一处）；
+    - ``KYLAB_KB_URL`` / ``KYLAB_KB_TOKEN``（M3 §4.1）：**知识库提供者**那两头的覆盖
+      （排障与多 NAS 入口）。**有值才设**——它们是"覆盖"，而空串会**顶掉**环境或
+      `.env` 里已有的值（"没传"与"显式置空"在引导级不是一回事：后者要清掉得改 `.env`）。
+      默认档一个字都不用填：提供者客户端按"权威 + 覆盖"解析，
+      ``KYLAB_SERVER_URL`` / ``KYLAB_TOKEN`` 就是它的继承源。
 
     顺带清掉两个单例缓存：档位是**进程启动时定一次**的东西（`get_settings` /
     `get_stores` / `get_services` 都是 `lru_cache`），而"先有人问过档位、再钉档"
@@ -193,6 +209,10 @@ def pin_local_deployment(data_dir: Path, *, server_url: str = "", token: str = "
         os.environ["KYLAB_SERVER_URL"] = server_url
     if token:
         os.environ["KYLAB_TOKEN"] = token
+    if kb_url:
+        os.environ["KYLAB_KB_URL"] = kb_url
+    if kb_token:
+        os.environ["KYLAB_KB_TOKEN"] = kb_token
     reset_services()
     reset_stores()
     get_settings.cache_clear()
@@ -353,76 +373,6 @@ class _LocalWorkspaces:
         return self._workspaces.get(workspace_id, **kwargs)
 
 
-#: 上传到 NAS 知识库的超时（秒）：给够但别无限等 —— 交付失败要**如实报**
-#: （见 `_LocalIngest`；与产出物那条不同，产出物现在落本机、这一步已经不出网了）。
-ARTIFACT_UPLOAD_TIMEOUT_SECONDS = 20.0
-
-
-class _LocalIngest:
-    """知识库入库的落点（边车侧）：**上传到服务器的知识库** ✓（`ingest_file` 用）。
-
-    为什么要有它（2026-10-01）：`ingest_file`（"把我这台机器上的某份文件放进知识库"）
-    原来不在边车里（"要 PG 与对象存储" ✗）——但服务器「上传文档」REST 口现成
-    （`POST /knowledge-bases/{kb_id}/documents`，multipart ✓，`start=true` 默认立即入队 ✓），
-    而**文件的字节恰恰在边车这一侧**（本机文件是桌面端的主场 ✓）。所以：
-    **边车读本机 → 上传** ✓。
-
-    **M2 阶段 3 之后它是边车唯一的"上传到 NAS"出口**（另外那两处收编了：产出物落本机
-    对象存储，走 `ArtifactService.save`；笔记落本机库）。**保留远端是刻意的**：
-    它入的是**知识库**，而知识库整条（解析 / 切块 / 嵌入 / 向量）都在 NAS 上，
-    M3 才收成提供者（M2 §0.5 那一行）。所以它没跟着会话一起落本机 ✗。
-
-    响应形状对齐 `services.ingest.submit` 的最小读法（`outcome.document.id` /
-    `outcome.document.name` / `outcome.is_duplicate`）——`_ingest_file` 的执行体逐字复用 ✓。
-    """
-
-    def __init__(self, *, clients: Clients) -> None:
-        self._clients = clients
-
-    def submit(
-        self,
-        *,
-        knowledge_base_id: str,
-        filename: str,
-        content: bytes,
-        uploaded_by: str | None = None,
-    ) -> Any:
-        """`uploaded_by` 收下但**不用**：是谁传的由服务器按这把钥匙算 ✓（与笔记同源）。"""
-        url = f"{self._clients.base_url}/knowledge-bases/{knowledge_base_id}/documents"
-        try:
-            response = _httpx().post(
-                url,
-                headers={"Authorization": f"Bearer {self._clients.token}"},
-                files={"file": (filename, content)},
-                timeout=ARTIFACT_UPLOAD_TIMEOUT_SECONDS,
-            )
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as error:  # 连不上、被拒、回包解析不了，都算"没入上"
-            raise RemoteUnavailableError(f"文件没能入到知识库（{url}）：{error}") from error
-        doc = (payload or {}).get("document") or {}
-        doc_id = str(doc.get("id") or "")
-        if not doc_id:
-            raise RemoteUnavailableError(f"文件没能入到知识库（{url}）：服务器没有回文档 id")
-        return SimpleNamespace(
-            document=SimpleNamespace(id=doc_id, name=str(doc.get("name") or filename)),
-            is_duplicate=bool((payload or {}).get("is_duplicate")),
-        )
-
-
-class _UploadedDocuments:
-    """`documents.enqueue_ingest` 的边车版：**空操作** ✓。
-
-    为什么能空：`_ingest_file` 的"非重复才入队"判断与服务器 `upload_document` 逐字同源，
-    而那个 REST 口带 `start=true` 时**自己已经入队**（见 `api/v1/documents.py` 里那处
-    `enqueue_ingest` 调用）——边车再喊一次就是**重复入队**（会把同一份文档的摄取任务
-    重排一遍 ✗）。所以这里如实"不重做" ✓。
-    """
-
-    def enqueue_ingest(self, document_id: str) -> Any:
-        return SimpleNamespace(id=None)
-
-
 def build_local_services(base: Services, *, workspace: Path, clients: Clients) -> Services:
     """边车这一侧的 `Services`：**就是本机档的组合根那一份**，只换掉四处（M2 阶段 3）。
 
@@ -436,10 +386,16 @@ def build_local_services(base: Services, *, workspace: Path, clients: Clients) -
 
     | 字段 | 换成 | 为什么 |
     | --- | --- | --- |
-    | `ingest` | `_LocalIngest`（上传到 NAS）| 摄入流水线在 NAS 上（M2 §0.5：入库保留远端）|
-    | `documents` | `_UploadedDocuments`（空操作）| 上传口 `start=true` 已经入队，本机没有队列 |
+    | `ingest` | `provider.ingest_gateway()` | 摄入流水线在 NAS 上（M2 §0.5：入库保留远端）|
+    | `documents` | `provider.enqueue_gateway()` | 上传口 `start=true` 已经入队，本机没有队列 |
     | `skills` | `_EmptySkills` | 技能目录的权威今天仍在服务器（M2 §4.2 列为可后续加）|
     | `mcp` | `_NoMcp` | 边车的工具面这一轮没接 MCP |
+
+    前两处 **M3 阶段 2 从本模块的 `_LocalIngest` / `_UploadedDocuments` 收编进了
+    `services/knowledge_provider.py`**（那两件说的是"提供者客户端"的性质，不是边车的）：
+    签名、响应形状、`start=true` 那条理由都原样搬过去了，只是地址与钥匙改成**每次现取**。
+    **阶段 3** 会把这两行挪进组合根（`core/services.py` 一处换线，笔记与产物也吃到它），
+    那时这里只留 `skills` / `mcp` 两处。
 
     另外两处**不是"换掉"而是"补一侧"**（真记录仍优先，见各自的类说明）：
 
@@ -453,8 +409,8 @@ def build_local_services(base: Services, *, workspace: Path, clients: Clients) -
     """
     return dataclasses.replace(
         base,
-        ingest=_LocalIngest(clients=clients),
-        documents=_UploadedDocuments(),
+        ingest=clients.provider.ingest_gateway(),
+        documents=clients.provider.enqueue_gateway(),
         skills=_EMPTY_SKILLS,
         mcp=_NO_MCP,
         conversations=_LocalConversations(
@@ -488,9 +444,10 @@ _NO_MCP = _NoMcp()
 #:   `MemoryService`（`remember` 不看开关；`recall` 受记忆开关门控，默认关，
 #:   关着时它**明确报错**而不是回空 ✓）。
 #:   `read_memory` / `write_memory`（改人设文件那两个）**仍留给 P4** ✗。
-#: - **`ingest_file`**（2026-10-01 ✓）：**边车读本机 → 上传进知识库**（见 `_LocalIngest` ✓）——
+#: - **`ingest_file`**（2026-10-01 ✓）：**边车读本机 → 上传进知识库**（走提供者客户端 ✓）——
 #:   "把我这台机器上的某份文件放进库"本来只差一个上传口；字节恰好在这侧 ✓。
-#:   受库开关门控（`_LOCAL_KB_TOOLS`：对话里没选库就不摆 ✓）。
+#:   受库开关门控（`_LOCAL_KB_TOOLS`：对话里没选库就不摆 ✓），
+#:   **M3 阶段 2 起还受提供者状态门控**（`state != ready` 时与 `search` 一起摘掉 ✓）。
 #:
 #: 表格读取（`list_tables` / `query_table` 要服务器侧的结构化副本与 SQL 面）→
 #: 仍**留给 P4** ✓。
@@ -516,6 +473,17 @@ SIDECAR_TOOL_NAMES = frozenset(
         "ingest_file",
     }
 )
+
+#: 提供者**不 ready 时一个都不摆**的工具（方案 §3.2 的"失败降级"那一行，阶段 2 落地）。
+#:
+#: 判据是"它有没有真的用到知识库"：`search`（检索）、`attach_note_to_kb`（笔记入库）、
+#: `ingest_file`（本机文件入库）——三件都要那台 NAS。不 ready 时按"这台机器没有这项能力"
+#: 处理，与 `_KB_TOOLS` 的"关了就不摆"**同一条纪律**：给了又拒只会白花一个来回
+#: （模型先看一眼有哪些库、再检索一次被拒）。
+#:
+#: 三个工具名与 `SIDECAR_TOOL_NAMES` 一起维护：改前者就要回头看这里（那份名单里
+#: 也只有这三个真的碰知识库——`list_notes` / `create_note` 是纯本机写的笔记）。
+KB_PROVIDER_TOOLS = frozenset({"search", "attach_note_to_kb", "ingest_file"})
 
 
 #: 边车这一侧的**最小**系统提示词（**不是**服务器那一份 ✗）。
@@ -678,12 +646,18 @@ class Clients:
 
     | 件 | 边车这一侧 | 怎么来 |
     | --- | --- | --- |
-    | KB 检索 | **远端** ✓ | `RemoteKnowledgeClient` ✓（组合根注入）|
+    | KB（检索 + 入库）| **远端** ✓ | `KnowledgeProviderClient` ✓（M3 阶段 2 起收编了检索）|
     | 模型 | **远端** ✓ | `RemoteModelClient` ✓（key 不下发 ✓）|
     | 循环 / 工具 / 沙箱 / 审批 | **本地** ✓ | `ToolLoop` + `build_runner` ✓（同一份代码 ✓）|
     | 会话 / 产物 / 笔记 / 记忆 / 设置 | **本地** ✓（阶段 3）| `get_services()` 那一份 ✓ |
     | 技能目录 | **没有** ✗ | 如实回空 ✓（`/turn` 的 `notes` 里说清 ✓）|
-    | 入库 | **远端** ✓ | `_LocalIngest`（知识库在 NAS，M3 收成提供者）✓ |
+    | 入库 | **远端** ✓ | `provider.ingest_gateway()`（知识库在 NAS）✓ |
+
+    ⚠️ 阶段 2 与阶段 3 的**唯一差别**在检索那一半的装配：`ChatService` 手上那个
+    ``knowledge`` 仍是组合根按引导级地址建的 `RemoteKnowledgeClient`
+    （`core/services.py`），阶段 3 才换成 ``provider``（一处换线）。所以本阶段
+    ``self.knowledge`` 与"模型真正调到的那个检索客户端"还是两个对象——**入库那一半
+    已经是同一个**（`build_local_services` 用的是本类的 provider）。
     """
 
     def __init__(
@@ -695,6 +669,7 @@ class Clients:
         data_dir: Path,
         knowledge: Any = None,
         model: Any = None,
+        provider: KnowledgeProviderClient | None = None,
         services: Services | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
@@ -702,12 +677,7 @@ class Clients:
         self.token = token
         #: 打服务器自己的健康端点（探活很便宜，不占用模型的额度 ✓）
         self.health_url = self.base_url.rsplit("/api/v1", 1)[0] + "/api/v1/health"
-        # 两端可注入（用例给假实现 ✓）——**默认就是 P2 的远端实现** ✓。
-        self.knowledge = (
-            knowledge
-            if knowledge is not None
-            else RemoteKnowledgeClient(self.base_url, token=token)
-        )
+        # 两端可注入（用例给假实现 ✓）——**默认就是 P2/P3 的远端实现** ✓。
         self.model = model if model is not None else RemoteModelClient(self.base_url, token=token)
         self.workspace = workspace
         self.data_dir = data_dir
@@ -720,6 +690,20 @@ class Clients:
         # 装配要求：调用方**先**钉死档位（`pin_local_deployment`，见那里的说明），
         # 否则 `get_services()` 会按服务器档去连 PG（那是"误连服务器库"那条路）。
         base_services = services if services is not None else get_services()
+
+        #: **知识库提供者的客户端**（M3 阶段 2）：地址与钥匙**每次调用现取**
+        #: （`get_setting` 读的就是下面那份运行期配置），所以设置页改了地址不用重启边车。
+        #: 它在 `build_local_services` 之前建：入库那两个网关要从它身上取（见那里的表）。
+        self.provider = (
+            provider
+            if provider is not None
+            else KnowledgeProviderClient(get_setting=base_services.runtime.get)
+        )
+        #: KB 那条接缝这一侧持有的对象 = **提供者客户端**（它满足 `KnowledgeClient`
+        #: 协议的 `retrieve_sources` 签名）。`knowledge=` 这个入参留给"用例塞一个假实现"，
+        #: 给了就用它（与模型那一头同一个写法）。
+        self.knowledge = knowledge if knowledge is not None else self.provider
+
         self.services = build_local_services(base_services, workspace=workspace, clients=self)
         #: 本地运行期配置：**就是本机库 `app_settings` 那一份** ✓（旧版是个本地 JSON
         #: 临时物 —— 设置页改的值与本机后端读的值必须是同一个，见阶段 3 的收编表）。
@@ -736,10 +720,25 @@ class Clients:
         self.documents = self.services.documents
 
     def tool_specs(self, *, kb_ids: Sequence[str] = ()) -> list[ToolSpec]:
-        """这一轮摆给模型的工具：**只摆本地真能服务的那些** ✓（见 `SIDECAR_TOOL_NAMES`）。"""
+        """这一轮摆给模型的工具：**只摆本地真能服务的那些** ✓（见 `SIDECAR_TOOL_NAMES`）。
+
+        两处门控叠在一起，判据不同、都要过：
+
+        1. `agent_tools.tool_specs` 的**库开关**（`kb_ids` 为空 = 用户关了知识库那一侧，
+           见 `_KB_TOOLS` / `_LOCAL_KB_TOOLS`）；
+        2. M3 阶段 2 追加的**提供者状态**：``state != ready`` 时那三个真正要知识库的工具
+           一个都不摆（方案 §3.2 的"失败降级"）——给了又拒只会白花一个来回。
+
+        ⚠️ 第 2 条**只在 `scope` 非空时才去问提供者**（`kb_ids` 为空时那三个本来就已被
+        第 1 条摘掉）：否则**每一轮对话**都会先探一次握手，而 R1 要的恰恰是
+        "交互路径不被握手拖慢"（没选库的会话根本用不到提供者，不该为它等一次 NAS 往返）。
+        """
         scope = [str(item) for item in kb_ids if str(item).strip()]
         specs = agent_tools.tool_specs(self.services, owner_id=None, kb_ids=scope or None)
-        return [spec for spec in specs if spec.name in SIDECAR_TOOL_NAMES]
+        specs = [spec for spec in specs if spec.name in SIDECAR_TOOL_NAMES]
+        if scope and self.provider.status().state != STATE_READY:
+            specs = [spec for spec in specs if spec.name not in KB_PROVIDER_TOOLS]
+        return specs
 
     def tool_loop(
         self,
@@ -1029,12 +1028,22 @@ def _seed_local_files(clients: Clients) -> None:
 
 
 def create_app(
-    base_url: str, token: str, workspace: Path, *, data_dir: Path | None = None
+    base_url: str,
+    token: str,
+    workspace: Path,
+    *,
+    data_dir: Path | None = None,
+    kb_url: str = "",
+    kb_token: str = "",
 ) -> FastAPI:
     """造边车应用（入口只做参数解析与 `uvicorn.run` ✓，方便用例直接拿 app ✓）。
 
     ``data_dir`` 是**本地**运行期数据的落点 ✓（本机库、沙箱、记忆都在它下面 ✓）：
     默认取工作区的上一级 `…/data` ✓ —— 与工作区同处一个用户目录，备份时一起拿走 ✓。
+
+    ``kb_url`` / ``kb_token`` 是**知识库提供者那两头**的覆盖（M3 §4.1，排障与多 NAS
+    入口）。**留空 = 继承** ``base_url`` / ``token``（壳里那台 NAS），所以默认档
+    一个字都不用传 ✓ —— 它们只往 ``pin_local_deployment`` 的"有值才设"那条路走。
 
     **先把档位钉死**（`pin_local_deployment`）再建任何东西：`Clients` 会走本机档的
     组合根（`get_services()`），而那是按环境变量建单例的——钉晚了就会按服务器档
@@ -1042,7 +1051,9 @@ def create_app(
     也只有这一次机会 ✓。
     """
     data_dir = data_dir or (workspace.parent / "data")
-    pin_local_deployment(data_dir, server_url=base_url, token=token)
+    pin_local_deployment(
+        data_dir, server_url=base_url, token=token, kb_url=kb_url, kb_token=kb_token
+    )
     clients = build_clients(base_url, token, workspace=workspace, data_dir=data_dir)
     _seed_local_files(clients)
     app = FastAPI(title="kylab sidecar", version=SIDECAR_VERSION)
@@ -1382,6 +1393,16 @@ def main(argv: list[str] | None = None) -> None:
         "--token", default=os.environ.get("KYLAB_TOKEN", ""), help="用户会话令牌"
     )
     parser.add_argument(
+        "--kb-url",
+        default=os.environ.get("KYLAB_KB_URL", ""),
+        help="知识库提供者的地址覆盖（默认继承 --server，见设置页「知识库连接」）",
+    )
+    parser.add_argument(
+        "--kb-token",
+        default=os.environ.get("KYLAB_KB_TOKEN", ""),
+        help="知识库提供者的凭据覆盖（默认继承 --token；不落库、不进日志）",
+    )
+    parser.add_argument(
         "--workspace", default=None, help="本地工作区目录（默认 ~/.kylab/workspace）"
     )
     parser.add_argument(
@@ -1396,7 +1417,14 @@ def main(argv: list[str] | None = None) -> None:
     import uvicorn  # 局部导入：用例 import 本模块时不必拉起 uvicorn ✓
 
     uvicorn.run(
-        create_app(args.server, args.token, workspace, data_dir=data_dir),
+        create_app(
+            args.server,
+            args.token,
+            workspace,
+            data_dir=data_dir,
+            kb_url=args.kb_url,
+            kb_token=args.kb_token,
+        ),
         host=args.host,
         port=args.port,
     )
