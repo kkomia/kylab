@@ -69,6 +69,23 @@ r"""**知识库提供者客户端**（M3 阶段 2）：本机服务层打 NAS �
 5xx 对调用方是同一个答案"现在取不到"）。**阶段 4 起它在组合根后挂进
 ``stores.meta.kb``**（``core/services.py``），不再是"只提供、不装配"。
 
+## 检索与写为什么不进快照、快照住在哪一层（M4 阶段 2）
+
+M4 给读路径的元数据（库列表 / 库详情）加了一份落本机 SQLite 的快照，**本模块的方法体
+一行没改**：快照包在 :meth:`knowledge_meta` 返回的那个 reader **外面**
+（``services/kb_cache.CachedKnowledgeMetaReader``）——命中零网络、未命中同步取一次、
+远端失败回快照并记一条日志（决策 D-C）。插在这一层的理由还是那一条：``stores.meta``
+与 ``services/`` 的调用点一个字不用改（M3 §2.4 的承诺）。
+
+**检索（:meth:`retrieve_sources`）与写（:meth:`submit`）绝不进快照**，
+:meth:`document_status` 那样的活数据同样不进——检索决定"这一轮依据了什么"（会进
+``sources`` 与 ``[n]`` 引用编号），缓存它等于让回答依据过期资料（v0.3 §6.3 定案）。
+判据**只有一份，在 ``services/kb_cache.py``**：``CACHEABLE_RESOURCES``（正向五个资源）、
+``NEVER_CACHED``（负向逐条理由）、``PROVIDER_SURFACE``（**本类每个公开方法的分类表**）。
+谁给这个类加了一个公开方法而没在那张表里表态，
+``tests/unit/services/test_kb_cache.py`` 的分类守卫用例当场红——"顺手缓存一下"这条路
+在那一步就撞墙。
+
 ## httpx 仍然不进导入闭包（R12）
 
 ``httpx`` 的取法复用 ``remote_clients._httpx()``（模块级 import 会把 click + pygments +
