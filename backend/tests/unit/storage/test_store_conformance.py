@@ -25,9 +25,9 @@ from app.storage.split_impl import (
 #: M2 阶段 2 登记了四个：``RouterMetaStore`` 是 `MetaStore` 的**分档**实现（本机域走
 #: SQLite、KB 域转给 KB 侧，见 ``app/storage/split_impl/router.py``）；三个
 #: ``Unavailable*`` 是本机档里"这个能力在 NAS 上"那一半的完整实现（每个方法都抛）。
-#: ``UnavailableMetaStore`` / ``SqliteMetaStore`` **不在这个清单里**：它们各自只覆盖
-#: MetaStore 的一半（KB 域 / 本机域），不是完整的接口实现——"是否完整"由
-#: ``tests/unit/storage/test_split_impl.py`` 逐名核对。
+#: ``UnavailableMetaStore`` / ``SqliteMetaStore`` / ``RemoteMetaStore``（M3 阶段 4）
+#: **不在这个清单里**：它们各自只覆盖 MetaStore 的一半（KB 域 / 本机域），不是完整的接口
+#: 实现——"是否完整"由 ``tests/unit/storage/test_split_impl.py`` 逐名核对。
 IMPLEMENTATIONS = (
     (PostgresVectorStore, VectorStore),
     (PostgresFullTextStore, FullTextStore),

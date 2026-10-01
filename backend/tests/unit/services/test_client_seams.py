@@ -8,9 +8,13 @@
    而且**一个假实现能顶上去**跑通"检索 → 拿回带编号的出处"这条链 ✓ ——
    这正是边车模式（本地循环 + 远端 KB）要的形状 ✓。
 
-**M3 阶段 3 又加了一条同族的守卫**（本文件最后那一条）：本机档装配完之后，
-**没有任何接缝还指着真 `IngestService`** ✓ —— 影子引用（`notes` / `artifacts` 各自
-持有的一份）换干净了没有，靠它守着（方案 §5.1 的 R6）。
+**M3 阶段 3 又加了一条同族的守卫**（`test_no_seam_still_points_at_the_real_ingest_service`）：
+本机档装配完之后，**没有任何接缝还指着真 `IngestService`** ✓ —— 影子引用（`notes` /
+`artifacts` 各自持有的一份）换干净了没有，靠它守着（方案 §5.1 的 R6）。
+
+**M3 阶段 4 再加一条**（`test_the_composition_root_binds_the_provider_reader_into_the_kb_store`）：
+组合根把提供者的 reader **后挂**进 `stores.meta.kb` 了没有 ✓ —— 那一行删掉，
+`stores.meta` 的 KB 读会静默退回"组合根未装配"，而那是**装配期**的问题。
 
 **反向验证**：把协议里的方法名改掉（或让假实现少一个方法）→ 用例必须红 ✓。
 """
@@ -21,6 +25,7 @@ import dataclasses
 import types
 from collections.abc import Iterator, Sequence
 
+import httpx
 import pytest
 
 from app.core import services as services_module
@@ -274,3 +279,58 @@ def test_no_seam_still_points_at_the_real_ingest_service(tmp_path, monkeypatch) 
     holders = _holders_of(services, real)
     assert holders, "遍历没找到任何持有者：那说明这条路走错了（守卫会静默变绿）"
     assert holders <= allowed, f"还有对象攥着真 IngestService：{sorted(holders - allowed)}"
+
+
+# ------------------------------------------- KB 侧那个 reader 后挂上了没有（M3 阶段 4）
+
+
+@pytest.mark.local
+def test_the_composition_root_binds_the_provider_reader_into_the_kb_store(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    """本机档装配完之后，``stores.meta`` 的 KB 读**真的打到提供者那台机器上**（阶段 4）。
+
+    守的是组合根里那一行 ``bind_reader``：**没有它，这一层会静默退化成**
+    "知识库提供者还没接上（组合根未装配）"——而那是**装配期**的错，不该等用户发问才
+    暴露（``ChatService.kb_prompt`` 还会把它吞成一句 warning，表现就是"库级提示词
+    静默不生效"）。
+
+    判据走端到端那一条（不是"那个私有字段不是 None"）：从**组合根建的那个 bundle**
+    （``ChatService`` 持有的那一个）读一个库回来，远端那一跳换成假传输（一个真请求都
+    不发）——于是"reader 挂上了"与"回来的是 storage 的记录类型"一起被钉住。
+    """
+    from app import sidecar
+    from app.storage.base import KnowledgeBaseRecord
+
+    sidecar.pin_local_deployment(
+        tmp_path / "data", server_url="http://server.test/api/v1", token="t"
+    )
+    services: Services = get_services()
+    client = services.chat._knowledge
+    assert isinstance(client, KnowledgeProviderClient), "组合根给的应是提供者客户端（阶段 3）"
+
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(str(request.url))
+        return httpx.Response(
+            200,
+            json={
+                "id": "kb_a",
+                "name": "论文",
+                "embedding_model_id": "bge-m3",
+                "embedding_dim": 8,
+            },
+        )
+
+    # 地址是壳传进来的那台 NAS（`server_url`），传输在这里换成假的：与阶段 2 同一手法
+    monkeypatch.setattr(client, "_transport", httpx.MockTransport(handler))
+
+    stores = services.chat._stores
+    assert stores is not None, "ChatService 没拿到 bundle：这条用例的前提不成立"
+
+    record = stores.meta.get_knowledge_base("kb_a")
+
+    assert isinstance(record, KnowledgeBaseRecord)
+    assert record.name == "论文"
+    assert asked == ["http://server.test/api/v1/knowledge-bases/kb_a"]

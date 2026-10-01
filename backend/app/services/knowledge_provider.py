@@ -60,12 +60,14 @@ r"""**知识库提供者客户端**（M3 阶段 2）：本机服务层打 NAS �
 ——``Services`` 上那两个槽位的注解说到底是它们，不是 ``IngestService`` / ``DocumentService``。
 **没配/不可用时** ``submit`` 抛 ``KnowledgeBaseUnavailable``（既有的 503 映射）。
 
-## 本阶段的边界（如实写，别让读者以为已经接完）
+## 那条 reader（阶段 4 已接上）
 
-- **``knowledge_meta()`` 是给阶段 4 的 reader**：形状照方案 §2.3 的 ``KnowledgeMetaReader``
-  协议定死（``get_knowledge_base`` / ``list_knowledge_bases``，**回原始 dict**），
-  阶段 4 的 ``RemoteMetaStore`` 拿它去映射 ``KnowledgeBaseRecord``；
-  **本阶段只提供它，不装配它**。
+``knowledge_meta()`` 就是 ``RemoteMetaStore`` 要的那个 ``KnowledgeMetaReader``：形状照
+方案 §2.3 定死（``get_knowledge_base`` / ``list_knowledge_bases``，**回原始 dict** ——
+到 ``KnowledgeBaseRecord`` 的映射在 storage 那一侧），失败一律折成
+``KnowledgeBaseUnavailable``（``stores.meta`` 那一面只认这一族：未配 / 连不上 / 被拒 /
+5xx 对调用方是同一个答案"现在取不到"）。**阶段 4 起它在组合根后挂进
+``stores.meta.kb``**（``core/services.py``），不再是"只提供、不装配"。
 
 ## httpx 仍然不进导入闭包（R12）
 
@@ -446,7 +448,9 @@ class KnowledgeProviderClient:
             )
             payload = self._read_json(response, what="入库", target=target)
         except RemoteClientError as exc:
-            raise KnowledgeBaseUnavailable(f"知识库提供者现在用不了（{exc}）") from exc
+            # 这一面（HTTP 端点）与 reader（`stores.meta`）共用同一句：对用户来说
+            # "未配 / 连不上 / 被拒 / 5xx"都是"知识库现在用不了"，原因原样跟在括号里。
+            raise _unavailable(exc) from exc
         document = payload.get("document") or {}
         new_id = str(document.get("id") or "")
         if not new_id:
@@ -494,22 +498,24 @@ class KnowledgeProviderClient:
         }
 
     def knowledge_meta(self) -> _KnowledgeMetaReader:
-        """给 ``RemoteMetaStore`` 用的 reader（**阶段 4 装配它**，本阶段只提供）。
+        """给 ``RemoteMetaStore`` 用的 reader（**阶段 4 起由组合根后挂进 `stores.meta.kb`**）。
 
         reader 的形状照方案 §2.3 的 ``KnowledgeMetaReader`` 协议**逐字**（阶段 4 的
         ``RemoteMetaStore`` 直接拿它当参数，不需要在这里再定义一份 Protocol）：
 
         - ``get_knowledge_base(kb_id) -> dict | None``：``GET /knowledge-bases/{kb_id}``，
-          **404 → None**（契约：``None`` = 没有这个库；其余失败照旧抛）；
+          **404 → None**（契约：``None`` = 没有这个库；**取不到**是另一个答案，见下）；
         - ``list_knowledge_bases() -> list[dict]``：``GET /knowledge-bases`` 的 ``items``。
 
         两个方法都回**原始 dict**：``KnowledgeBaseRecord`` 是 storage 那一侧的类型，
         映射只该发生在 ``RemoteMetaStore`` 里（storage 认得那个类型，services 这侧
         只把 NAS 的原样 JSON 递过去——多一层转手就多一处会漂的形状）。
 
-        未配 / 关掉时抛 ``KnowledgeBaseUnavailable``：对 ``stores.meta`` 那一面来说，
-        "本机档没有知识库"就是这件事，那句话与 ``UnavailableMetaStore`` 一个口径
-        （503 + 原因），而不是一个 RuntimeError。
+        **取不到时一律抛 ``KnowledgeBaseUnavailable``**（未配 / 关掉 / 连不上 / 被拒 /
+        5xx）：reader 这一面就是 ``stores.meta``，而那一面只认这一族错误——"现在取不到"
+        对调用方是一个答案，原因留在句子里；分档（``RemoteUnavailableError`` 那两档）
+        是工具循环那一面的事（见模块头"两种错误类型是有意的"）。把连不上伪装成回一个
+        空清单或 ``None``，只会让调用方把"没连上"读成"库里没有"。
         """
         return _KnowledgeMetaReader(self)
 
@@ -769,31 +775,54 @@ class _KnowledgeMetaReader:
     刻意不实现别的：这份 reader 是给 ``RemoteMetaStore`` 用的，多一个方法就多一处
     "storage 层以为自己能调、其实没人接"的地方（M4 的缓存层插在它和 HTTP 之间，
     也只需要这两个方法）。
+
+    **失败的口径是"storage 那一面"**（见 :meth:`KnowledgeProviderClient.knowledge_meta`）：
+    取不到一律 ``KnowledgeBaseUnavailable``，只有"远端说没有这个库"才是 ``None``。
     """
 
     def __init__(self, client: KnowledgeProviderClient) -> None:
         self._client = client
 
     def get_knowledge_base(self, kb_id: str) -> dict[str, Any] | None:
-        """这个库的元数据；**404 → None**（没有这个库），其余失败照旧抛。"""
+        """这个库的元数据；**404 → ``None``**（没有这个库），取不到则抛。
+
+        ``_send`` / ``_read_json`` 那两档（连不上 / 5xx / 被拒）在**这一层**折成
+        ``KnowledgeBaseUnavailable``——调用它的 ``RemoteMetaStore`` 在 storage 层，
+        它认得的只有这一族错误（那句原因原样带过去）。
+        """
         target = self._client._target_or_raise("读知识库元数据", storage_face=True)
-        response = self._client._send(
-            "读知识库元数据",
-            target=target,
-            method="GET",
-            path=f"/knowledge-bases/{kb_id}",
-            timeout=self._client._read_timeout,
-        )
-        return self._client._read_json(
-            response, what="读知识库元数据", target=target, allow_missing=True
-        )
+        try:
+            response = self._client._send(
+                "读知识库元数据",
+                target=target,
+                method="GET",
+                path=f"/knowledge-bases/{kb_id}",
+                timeout=self._client._read_timeout,
+            )
+            return self._client._read_json(
+                response, what="读知识库元数据", target=target, allow_missing=True
+            )
+        except RemoteClientError as exc:
+            raise _unavailable(exc) from exc
 
     def list_knowledge_bases(self) -> list[dict[str, Any]]:
         """这次调用看得见的全部库（受限 key 只看到范围内的：过滤在 NAS 那一侧）。"""
         target = self._client._target_or_raise("列知识库", storage_face=True)
-        payload = self._client._get_json(target, "/knowledge-bases", what="列知识库")
+        try:
+            payload = self._client._get_json(target, "/knowledge-bases", what="列知识库")
+        except RemoteClientError as exc:
+            raise _unavailable(exc) from exc
         items = payload.get("items") or []
         return [item for item in items if isinstance(item, dict)]
+
+
+def _unavailable(exc: RemoteClientError) -> KnowledgeBaseUnavailable:
+    """远端失败 → ``stores.meta`` / HTTP 端点那一面那句话（**唯一一处**，两处调用共用）。
+
+    "未配 / 连不上 / 被拒 / 5xx"对用户是同一个答案："知识库现在用不了"——而原因
+    （哪一档、HTTP 多少、服务端那句话）原样跟在括号里，排障要的信息一个字不少。
+    """
+    return KnowledgeBaseUnavailable(f"知识库提供者现在用不了（{exc}）")
 
 
 def _as_dict(value: object) -> dict[str, Any]:

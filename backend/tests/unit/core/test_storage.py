@@ -28,9 +28,11 @@ from app.storage.base import DocumentRecord, KnowledgeBaseRecord, StorageError
 from app.storage.postgres_impl.connection import Database
 from app.storage.postgres_impl.schema import MIGRATIONS, SCHEMA_VERSION, current_version
 from app.storage.split_impl import (
+    SEARCH_UNAVAILABLE_MESSAGE,
+    UNBOUND_MESSAGE,
     KnowledgeBaseUnavailable,
+    RemoteMetaStore,
     RouterMetaStore,
-    UnavailableMetaStore,
 )
 from app.storage.sqlite_impl.meta_store import SqliteMetaStore
 
@@ -169,7 +171,8 @@ def test_local_deployment_fills_every_field(tmp_path: Path) -> None:
 
     assert isinstance(stores.meta, RouterMetaStore)
     assert isinstance(stores.meta.local, SqliteMetaStore)
-    assert isinstance(stores.meta.kb, UnavailableMetaStore)
+    # KB 侧 M3 阶段 4 起是"真实现"那个类（reader 由服务层后挂，见下面那条用例）
+    assert isinstance(stores.meta.kb, RemoteMetaStore)
     assert all(
         getattr(stores, field) is not None
         for field in ("vectors", "fulltext", "objects", "tabular")
@@ -215,15 +218,28 @@ def test_local_deployment_keeps_files_on_this_machine(tmp_path: Path) -> None:
 
 @pytest.mark.local
 def test_local_deployment_reports_the_kb_domain_as_unavailable(tmp_path: Path) -> None:
-    """知识库那半如实说"在 NAS 上"（503 那句话的来源），**不回空结果**（§2.2）。"""
+    """本机档那两个"没有这个能力"的口径，**逐句**钉住（503 那句话的来源）。
+
+    两句话不一样，也不该一样：
+
+    - **检索**（``vectors`` / ``fulltext`` / ``tabular``）是 §2.2 的结论——**检索留在
+      本机之外**，本机没有向量与全文索引，别把它改成"经 NAS 的半吊子"（那句话里
+      写着"检索在 NAS 知识库"）；
+    - **KB 侧的库元数据读**由 ``RemoteMetaStore`` 承担，而它要的 reader 是**服务层
+      装配时后挂**的（阶段 4）：只调 ``build_stores`` 时它还没接上，给的是"知识库提供者
+      还没接上（组合根未装配）"——不是 ``AttributeError``，更不是空结果。
+    """
     stores = build_stores(_local_settings(tmp_path))
 
-    with pytest.raises(KnowledgeBaseUnavailable):
+    with pytest.raises(KnowledgeBaseUnavailable) as kb_error:
         stores.meta.list_knowledge_bases()
+    assert str(kb_error.value) == UNBOUND_MESSAGE
+
     with pytest.raises(KnowledgeBaseUnavailable):
         stores.vectors.list_partitions()
-    with pytest.raises(KnowledgeBaseUnavailable):
+    with pytest.raises(KnowledgeBaseUnavailable) as search_error:
         stores.fulltext.search(query="会话", top_k=3)
+    assert str(search_error.value) == SEARCH_UNAVAILABLE_MESSAGE
     with pytest.raises(KnowledgeBaseUnavailable):
         stores.tabular.list_tables()
 

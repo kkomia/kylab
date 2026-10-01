@@ -8,9 +8,12 @@ r"""按域分流的 ``MetaStore``（M2「会话落本机」实施方案 §2.1）
 分域落库，接缝就只能在这个对象本身：
 
     services/ ──▶ StoreBundle.meta ──▶ RouterMetaStore ─┬─▶ SqliteMetaStore（本机域）
-                                                        └─▶ UnavailableMetaStore（KB 域）
+                                                        └─▶ RemoteMetaStore（KB 域）
 
-M3 把 KB 侧换成 ``RemoteMetaStore``（打 NAS 窄 API）时，这一层与 ``services/`` 一行都不用改。
+M3 阶段 4 已经把 KB 侧换成 ``RemoteMetaStore``（打 NAS 窄 API），而这一层与
+``services/`` **一行都没改**——它只认"KB 侧那一个对象"这个位置，不认那个对象是谁
+（本模块里的 ``UnavailableMetaStore`` 因此还在：它是"KB 域整个全抛"那一形态的参照物
+与用例对象）。
 
 ## 方法名与签名**不手抄**
 
@@ -84,7 +87,7 @@ class _Router:
 
     #: 本机域实现（``SqliteMetaStore``）。
     local: Any
-    #: KB 侧实现（M2 是 ``UnavailableMetaStore``，M3 换 ``RemoteMetaStore``）。
+    #: KB 侧实现（M2 是 ``UnavailableMetaStore``，M3 阶段 4 起是 ``RemoteMetaStore``）。
     kb: Any
 
     def __init__(self, local: object, kb: object) -> None:
@@ -175,8 +178,9 @@ UnavailableMetaStore = _build_unavailable(
     doc=(
         "本机档的 KB 侧元数据实现：KB 域的方法**每个都抛** ``KnowledgeBaseUnavailable``。\n\n"
         "只覆盖 ``REMOTE_METHODS``（与 ``SqliteMetaStore`` 只覆盖 ``LOCAL_METHODS`` 是"
-        "同一条纪律的两半——多一个就是偷偷实现了另一域的活）。M3 把它整个换成"
-        " ``RemoteMetaStore``（打 NAS 窄 API）时，本机域那半一行都不用动。"
+        "同一条纪律的两半——多一个就是偷偷实现了另一域的活）。M3 阶段 4 起装配点用的是"
+        " ``remote_meta.RemoteMetaStore``（两个真映射 + 其余照旧抛，用的是本模块的生成器），"
+        "它留下作「KB 域整个全抛」那一形态的参照物与用例对象——换的时候本机域那半一行没动。"
     ),
 )
 

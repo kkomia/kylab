@@ -15,7 +15,9 @@ r"""知识库提供者客户端（M3 阶段 2）的契约与失败分档。
    ``retrieve_sources`` → ``RemoteUnavailableError``）；
 ⑤ 地址解析纯函数各分支（``enabled`` / 运行期覆盖 / ``kb_url`` / ``server_url``）；
 ⑥ 握手缓存：TTL 内不重探、``refresh=True`` 强制重探；
-⑦ 凭据**不落库、不进日志**（R3）。
+⑦ 凭据**不落库、不进日志**（R3）；
+⑧ reader（``knowledge_meta()``，M3 阶段 4 起是 ``stores.meta`` 的读口）：404 → ``None``、
+   其余失败**一律折成 ``KnowledgeBaseUnavailable``**（5xx / 4xx / 连不上，见那里的说明）。
 
 **本文件标 ``local``**：它只拼请求、只读本机 SQLite（最后那条 R3 用例），一个远端都不连。
 没标的话，没有 PG 的机器上整份会被 ``conftest.py`` 静默跳过——而"断 NAS 的机器上
@@ -711,6 +713,40 @@ def test_the_meta_reader_is_unavailable_when_the_provider_is_not_configured() ->
         reader.list_knowledge_bases()
     with pytest.raises(KnowledgeBaseUnavailable):
         reader.get_knowledge_base("kb_a")
+
+
+def test_the_meta_reader_folds_every_remote_failure_into_knowledge_base_unavailable() -> None:
+    """取不到 → **同一族**错误（5xx / 4xx / 连不上都折成 ``KnowledgeBaseUnavailable``）。
+
+    为什么必须折（M3 阶段 4 起它是 ``stores.meta`` 的读口）：分档
+    （``RemoteUnavailableError`` / ``RemoteRejectedError``）是**工具循环**那一面的事，
+    而 reader 的调用方在 storage 层——它认得的只有"现在取不到"这一个答案。原样抛出去，
+    ``stores.meta`` 上就会冒出 storage 不认识的错误类型，503 映射也接不住它
+    （``core/exceptions.py`` 只认 ``KnowledgeBaseUnavailable``）。
+
+    **404 不在这一族里**：那是"没有这个库"，是答案（上一条用例）。
+    """
+
+    def five_hundred(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    def rejected(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text="这把钥匙不对")
+
+    def offline(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("连不上", request=request)
+
+    for name, handler, expected in (
+        ("5xx", five_hundred, "HTTP 500"),
+        ("403", rejected, "HTTP 403"),
+        ("连不上", offline, "连不上"),
+    ):
+        reader = _client(handler).knowledge_meta()
+        for method in ("get_knowledge_base", "list_knowledge_bases"):
+            args = ("kb_a",) if method == "get_knowledge_base" else ()
+            with pytest.raises(KnowledgeBaseUnavailable) as excinfo:
+                getattr(reader, method)(*args)
+            assert expected in str(excinfo.value), f"{method}（{name}）"
 
 
 # ------------------------------------------------------------------ ⑦ R3 凭据

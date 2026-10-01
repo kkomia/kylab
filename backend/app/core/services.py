@@ -488,6 +488,17 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         if resolved.deployment == "local"
         else None
     )
+    if provider is not None:
+        # **KB 侧那一条读线的装配就是这一处**（M3 阶段 4）：把提供者的 reader 后挂到
+        # 本机档 `stores.meta.kb` 上（`_Router.kb` 是公开属性，`split_impl/router.py`）。
+        #
+        # 为什么是后挂、不是构造参数：① **层序**——`core/storage.py` 先于本文件跑
+        # （上面那行 `bundle = stores or build_stores(resolved)`），reader 那时还没出生；
+        # ② **运行期配置**——reader 要的是"能随设置改地址"（`provider.target()` 每次
+        # 现取），那份能力只有服务层有。这一处注入**只在装配期发生一次**，也不动
+        # `split_impl` 的"路由表构造时定下"那条纪律：注入的是 KB 侧对象内部的引用，
+        # 路由一个字没变。守卫见 `tests/unit/services/test_client_seams.py`。
+        bundle.meta.kb.bind_reader(provider.knowledge_meta())  # type: ignore[attr-defined]
 
     chat_service = ChatService(
         retrieval,

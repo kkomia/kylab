@@ -11,6 +11,12 @@
 3. **不可用要抛**：``Unavailable*`` 的**每个方法**都抛 ``KnowledgeBaseUnavailable``
    （逐个调用，128 个方法一个不漏），``search`` 那句写明"检索在 NAS 知识库，M3 接提供者"。
 
+**M3 阶段 4 加了一块**（``RemoteMetaStore``，那份也在这里逐名核对）：
+
+4. **KB 侧的真实现**：公开方法**恰好**覆盖 ``REMOTE_METHODS``（多出来的唯一一个只有
+   装配口 ``bind_reader``）；``IMPLEMENTED``（两个真映射）之外**逐个**照旧抛那句原句；
+   没 ``bind`` 就调那两个已实现的方法时抛的是**那句中文**，不是 ``AttributeError``。
+
 外加一条**子进程**断言（§7 阶段 2 的完成判据）：``KYLAB_DEPLOYMENT=local`` 下跑一次
 真 ``build_stores()``，``psycopg`` / ``boto3`` / ``duckdb`` 一个都不许进 ``sys.modules``。
 为什么必须换进程：本进程里 ``tests/conftest.py`` 早就 import 了 psycopg，
@@ -29,11 +35,14 @@ import pytest
 
 from app.storage.base import FullTextStore, MetaStore, StorageError, TabularStore, VectorStore
 from app.storage.split_impl import (
+    IMPLEMENTED,
     KB_UNAVAILABLE_MESSAGE,
     LOCAL_METHODS,
     REMOTE_METHODS,
     SEARCH_UNAVAILABLE_MESSAGE,
+    UNBOUND_MESSAGE,
     KnowledgeBaseUnavailable,
+    RemoteMetaStore,
     RouterMetaStore,
     UnavailableFullTextStore,
     UnavailableMetaStore,
@@ -122,6 +131,85 @@ def test_unavailable_stores_implement_their_interface(
     """三个"不可用"仓储是各自接口的**完整**实现（每个方法都在，只是都抛）。"""
     assert issubclass(implementation, interface)
     assert implementation.__abstractmethods__ == frozenset()
+
+
+# --------------------------------------------- KB 侧的真实现（M3 阶段 4）
+
+
+def test_remote_meta_store_covers_exactly_the_kb_half() -> None:
+    """``RemoteMetaStore`` 的方法面**同样恰好**是 ``REMOTE_METHODS``（多出的只有装配口）。
+
+    ``bind_reader`` 是装配期的东西（组合根后挂 reader，理由见 ``remote_meta`` 的模块头），
+    不是 ``MetaStore`` 上的方法——所以判据写成"公开方法 == KB 域那一半 **加上它**"：
+    除了它，一个都不许多（多一个就是想偷偷实现另一域的活）。
+
+    与上一条不同的是取法：那两个真实现写在基类上（读代码看得到映射），其余在生成的
+    那一层上，所以这里走 ``dir()`` 走完整个 MRO。
+    """
+    public = {
+        name
+        for name in dir(RemoteMetaStore)
+        if not name.startswith("_") and callable(getattr(RemoteMetaStore, name))
+    }
+    assert public - {"bind_reader"} == set(REMOTE_METHODS)
+    assert "bind_reader" in public, "装配口不见了：组合根就挂不上 reader 了"
+
+
+def test_remote_meta_store_maps_exactly_the_two_methods_of_the_plan() -> None:
+    """真映射的只有 §2.1 结论里那两个——``IMPLEMENTED`` 就是那句结论的机器可读形态。"""
+    assert frozenset({"get_knowledge_base", "list_knowledge_bases"}) == IMPLEMENTED
+    assert IMPLEMENTED <= REMOTE_METHODS
+
+
+def test_remote_meta_store_still_raises_for_everything_but_the_two_mapped() -> None:
+    """``IMPLEMENTED`` 之外**逐个**调用 → 抛 ``KnowledgeBaseUnavailable``，原句保留。
+
+    "原句"就是 ``UnavailableMetaStore`` 那一句（两边用的是同一个生成器，不是抄的）：
+    本机档这些方法的答案没变，变的是"能力在才在"——能映射的映射，映射不了的如实抛。
+    """
+    store = RemoteMetaStore()
+    called = 0
+    for name in REMOTE_METHODS - IMPLEMENTED:
+        with pytest.raises(KnowledgeBaseUnavailable) as excinfo:
+            getattr(store, name)()
+        assert str(excinfo.value) == KB_UNAVAILABLE_MESSAGE, name
+        called += 1
+    assert called == len(REMOTE_METHODS) - len(IMPLEMENTED)
+
+
+def test_remote_meta_store_says_the_provider_is_not_wired_yet() -> None:
+    """没 ``bind_reader`` 就调那两个已实现的方法：抛**那句中文**，不是 ``AttributeError``。
+
+    "这台机器还没接上提供者"是**部署状态**（组合根那一行没跑到），该给用户一句人话 +
+    既有的 503 映射，而不是一个"属性不存在"的内部错误。
+    """
+    store = RemoteMetaStore()
+
+    with pytest.raises(KnowledgeBaseUnavailable) as get_error:
+        store.get_knowledge_base("kb_a")
+    assert str(get_error.value) == UNBOUND_MESSAGE
+    with pytest.raises(KnowledgeBaseUnavailable) as list_error:
+        store.list_knowledge_bases()
+    assert str(list_error.value) == UNBOUND_MESSAGE
+
+    assert "知识库提供者" in UNBOUND_MESSAGE
+    assert "组合根" in UNBOUND_MESSAGE
+
+
+def test_retrieval_stays_out_of_the_remote_meta_store() -> None:
+    """方案 §2.2 的结论钉在这里：**检索不进 ``stores.meta``**（别改成走 NAS 的半吊子）。
+
+    两条理由见 §2.2：① 要让 ``stores.meta.search`` 走 NAS，就得在本机把服务器那个
+    "向量 + 全文 + 融合 + 重排"的服务搬过来套壳；② ``ChatService`` 早在更上一层的
+    ``retrieve_sources`` 整段委托了。
+
+    所以这里断言的是**这条路不存在**：``search`` 不在 KB 侧那两个集合里（于是
+    ``RemoteMetaStore`` 上也没有它，路由表也不会往这儿发）。"本机档调用检索仍然是
+    ``SEARCH_UNAVAILABLE_MESSAGE`` 那句"那一半在 ``tests/unit/core/test_storage.py``
+    的本地档用例里，对着真装配出来的 bundle 断言。
+    """
+    assert "search" not in REMOTE_METHODS
+    assert "search" not in IMPLEMENTED
 
 
 # ------------------------------------------------------------------ 转发

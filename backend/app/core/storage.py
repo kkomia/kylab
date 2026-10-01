@@ -11,8 +11,9 @@
   留一条"没配就悄悄退回本地文件"的后路，只会让部署问题变成运行期怪现象。
 - **本机档**（``KYLAB_DEPLOYMENT=local``，桌面壳的边车进程）：会话 / 消息 / 事件 /
   产物 / 笔记 / 设置 / 工作区 / 定时任务 / MCP / 模型注册 / 用量落 ``<data_dir>/kylab.db``
-  （``sqlite_impl/``），向量 / 全文 / 表格三个仓储换成"不可用"实现（知识库在 NAS 上，
-  M3 接提供者，见 ``split_impl/``），对象存储固定本地目录。
+  （``sqlite_impl/``），向量 / 全文 / 表格三个仓储换成"不可用"实现，知识库那半的元数据
+  读转给 ``split_impl/remote_meta.py`` 的 ``RemoteMetaStore``（知识库在 NAS 上，
+  M3 阶段 4 已接；它的 reader 由服务层装配那一步后挂），对象存储固定本地目录。
 
 三个存储各管一段（架构 §8）：
 
@@ -170,9 +171,9 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
     """
     from app.storage.local_impl.object_store import LocalObjectStore
     from app.storage.split_impl import (
+        RemoteMetaStore,
         RouterMetaStore,
         UnavailableFullTextStore,
-        UnavailableMetaStore,
         UnavailableTabularStore,
         UnavailableVectorStore,
     )
@@ -199,8 +200,12 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
     local_store = SqliteMetaStore(database)
 
     return StoreBundle(
-        # 本机域走 SQLite，KB 域转给"不可用"那半（M3 换成 RemoteMetaStore，见 split_impl/）
-        meta=RouterMetaStore(local=local_store, kb=UnavailableMetaStore()),
+        # 本机域走 SQLite；KB 域的库元数据读转给 `RemoteMetaStore`（打 NAS 窄 API）。
+        # 它**构造时不带 reader**：存储先于服务层装配，而 reader 要的是"能随设置改地址"
+        # 的运行期能力（只有服务层有）——所以由 `core/services.py` 在装配期后挂一次
+        # （那个类自己的说明写了完整理由）。没挂上之前调用它，抛的是
+        # "知识库提供者还没接上（组合根未装配）"那句，不是 AttributeError。
+        meta=RouterMetaStore(local=local_store, kb=RemoteMetaStore()),
         vectors=UnavailableVectorStore(),
         fulltext=UnavailableFullTextStore(),
         objects=LocalObjectStore(data_dir),
