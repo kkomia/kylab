@@ -1,0 +1,247 @@
+/**
+ * 知识库元数据快照（M4 阶段 5）——页面「先画一帧」读的那一族只读接口。
+ *
+ * ## 它是什么
+ *
+ * 本机后端（边车）留了一份知识库元数据的副本（M4 方案 §2 的形状 C）。这一族
+ * `/local/kb-cache/*` 是**本机回环**（个位数毫秒）：页面进页面/换库时先读它，
+ * 把「上次看到的内容」摆上屏幕；页面自己那条**实时读**
+ * （`api/knowledgeBases.ts` / `api/documents.ts`，会话身份直连 NAS）一落地就如实替换。
+ *
+ * ## 三条与实时读的关系（缺一条就会写出「快照盖掉实时结果」）
+ *
+ * 1. 这一族**永远只是第一帧**：调用方只在「这个视图还没有实时结果」时读它，
+ *    画法与判据在 `features/knowledge/snapshot.ts`（时序规则五条见 M4 方案 §4.3）；
+ * 2. 快照里的行**没有权限位**（`can_write` / `can_manage` 在本机那一层就被剥掉了）——
+ *    写/管理入口因此晚一步出现，这是刻意的（决策点 D-B：宁可晚一步，也不给一个
+ *    点下去 403 的入口）；
+ * 3. **失败一律静默**（见最后一节）：它是「顺手快一点」的那一下，
+ *    页面自己那条实时读才是权威，报错的位置在那一条线上。
+ *
+ * ## 为什么类型是**手写**的（不读 `schema.d.ts`）
+ *
+ * 与 `api/provider.ts:11-20` 同一条理由：`/local/*` 这一族**不进服务器档的 OpenAPI**
+ * （`local_router` 只挂在边车那台，而 `gen_api_types.py` 生成的是服务器档那份契约），
+ * 生成物里没有它们。字段名逐条对着 `backend/app/api/v1/local.py::KbCacheSnapshotOut`
+ * 抄（那是形状的唯一作者），改了后端就回来改这里。
+ *
+ * ## 404 = 这一档没有本机后端（静默跳过）
+ *
+ * 服务器档（浏览器 / NAS 网页端）里这一族**根本不存在**：`/local/kb-cache/…` 一律 404
+ * ——那正是「知识库就是它自己」的那一档。所以这一族的读**从不抛**：
+ *
+ * - **404** → 记一笔「这一档没有」，之后的调用**连请求都不发**
+ *   （与 `api/provider.ts` 的 `unsupported` 同一手法）；
+ * - 其余失败（边车没起来 / 响应形状不认识）→ 也返回 `null`，页面照旧骨架屏 +
+ *   自己那条实时读；一次「顺手快一点」的失败不该在界面上说话。
+ */
+import { requestLocal } from './client'
+
+/* ------------------------------------------------------------------ 类型（手写） */
+
+/** 进快照的五种资源（与后端 `services/kb_cache.CACHEABLE_RESOURCES` 同名）。 */
+export type KbCacheResource = 'kb_list' | 'kb_detail' | 'doc_list' | 'document' | 'folders'
+
+/**
+ * 一份快照（`KbCacheSnapshotOut`）。
+ *
+ * 形状**恒定**：没有副本时也是这几个键（`available:false` + `reason`），不是 4xx/5xx
+ * ——「这台还没看过它」是一个正常答案，页面据此照旧走自己那条实时读。
+ */
+export interface KbCacheSnapshot {
+  /** 本机有没有这份内容（false 时看 `reason`：还没看过 / 超龄 / 换了地址 / 带筛选）。 */
+  available: boolean
+  resource: string
+  /** 资源内的键（库 id / 文档 id / 视图指纹）；带筛选的那一档没有键（空串）。 */
+  scope_key: string
+  /** `available:false` 时为什么。**界面上不显示它**（页面照旧骨架屏）。 */
+  reason: string
+  /** 列表型资源的行（别的资源是空表）：`payload.items` 的视图。 */
+  items: Record<string, unknown>[]
+  /** 这份内容的**原样**（NAS 那边的形状）；没有副本时是 `null`。 */
+  payload: Record<string, unknown> | null
+  /** 内容哈希（`sha256:…`）——变没变看它。 */
+  version: string
+  /** `reader` / `revalidate`：这行是怎么来的（只作排障）。 */
+  source: string
+  /** 这份**内容**是什么时候看到的（界面上那句「上次更新于 X」）。 */
+  fetched_at: string | null
+  /** 最近一次**确认**（含「确认过没变」）。与上面那个是**两句话**，不许混。 */
+  checked_at: string | null
+  /** 上次再确认失败了：内容照旧可读，但没被确认（界面据此换成「现在连不上…」）。 */
+  stale: boolean
+  /** 那次失败的原因（`stale` 时才非空）。 */
+  last_error: string
+  /** 刚刚顺带排了一次后台再确认。 */
+  revalidating: boolean
+}
+
+/**
+ * 文档列表的**规格视图**（快照这一面的说法）。
+ *
+ * 与实时读那一条的 `DocumentListFilter` 是同一件事的两种说法：
+ * 那边按 `limit` / `offset` 说，这边按 `size` / `page` 说（`offset = (page - 1) * size`）。
+ * `folder` 与 `root` **互斥**（一个说「这个目录里的」，一个说「未归档的」）。
+ */
+export interface DocListView {
+  /** 只看这个目录（NAS 那边的 `folder_id`）。 */
+  folder?: string
+  /** 只看未归档的。 */
+  root?: boolean
+  /** 第几页（从 1 起）。 */
+  page?: number
+  /** 一页几篇。 */
+  size?: number
+}
+
+/**
+ * `POST /local/kb-cache/revalidate` 的请求体：只说要再确认**哪一份**。
+ *
+ * **筛选参数在这里没有位置**（`q` / `stage` / `source_kind` 换不出快照键，D-D）：
+ * 带它们的那一读本来就不留副本，也就没有「这一份」可以再确认。
+ */
+export interface KbCacheRevalidate {
+  resource: KbCacheResource
+  /** `kb_detail` / `doc_list` / `folders` 要给。 */
+  kb_id?: string
+  /** `document` 那一族要给。 */
+  document_id?: string
+  /** `doc_list`：只看这个目录（空 = 整个库）。 */
+  folder?: string
+  /** `doc_list`：只看未归档的（与 `folder` 互斥）。 */
+  root?: boolean
+  page?: number
+  size?: number
+}
+
+/* ------------------------------------------------------------------ 视图指纹 */
+
+/** 后端文档列表的默认页大小（`page` 默认 1），这里只作兜底。 */
+export const DEFAULT_DOC_PAGE_SIZE = 50
+const DEFAULT_DOC_PAGE = 1
+
+/**
+ * 文档列表**规范视图**的键：`kb_id|folder:<id|root|all>|page:<n>|size:<n>`。
+ *
+ * **必须与后端 `services/kb_cache.doc_list_scope_key()` 逐字相同**（连分隔符也是同一个
+ * `|`）——两边任意一侧改了格式，这一份快照就永远读不中，而且**不报错**（表现是
+ * 「每次都像没有副本」）。所以它是这个文件里第一条被用例逐字钉住的契约
+ * （`tests/api-kb-cache.test.ts`）。
+ *
+ * `folder` 与 `root` 同时给时按 `folder` 算：与 `api/documents.ts::listDocuments` 的
+ * `if / else if` 同一口径（那边不会同时给，这里只是不许拼出一个后端不认的串）。
+ */
+export function docListViewKey(kbId: string, view: DocListView = {}): string {
+  const page = view.page ?? DEFAULT_DOC_PAGE
+  const size = view.size ?? DEFAULT_DOC_PAGE_SIZE
+  const where = view.folder ? `folder:${view.folder}` : view.root ? 'folder:root' : 'folder:all'
+  return [kbId, where, `page:${page}`, `size:${size}`].join('|')
+}
+
+/* ------------------------------------------------------------------ 读一份快照 */
+
+/** 这一档有没有这一族（一次 404 之后就不必再问了）。 */
+let unsupported = false
+
+/** 用例用：把「这一档没有这一族」记的那一笔清掉（模块级状态必须靠调用方复位）。 */
+export function resetKbCacheSupport(): void {
+  unsupported = false
+}
+
+/**
+ * 响应过一道**形状检查**：类型是手写的，而这条链上有真实的版本错配可能。
+ * 不检查的代价是把「版本对不上」变成界面上一行 `Cannot read properties of undefined`。
+ */
+function looksLikeSnapshot(payload: unknown): payload is KbCacheSnapshot {
+  if (!payload || typeof payload !== 'object') return false
+  const record = payload as Partial<KbCacheSnapshot>
+  return typeof record.available === 'boolean' && Array.isArray(record.items)
+}
+
+/**
+ * 打一条这一族的请求，**从不抛**（见模块头最后一节）：不适用的那一档返回 `null`。
+ *
+ * 404 认作「这一档没有本机后端」并**记住**——服务器档页面不该每次挂载都白打一条
+ * （那是每次进知识库页都多一个必然失败的请求）。
+ *
+ * 读快照与再确认共用它：两者只差 `init`（再确认是 `POST` + 请求体），
+ * 而静默口径、形状检查、404 那一笔**必须**是同一份——各写一套的话迟早只有一套被改。
+ */
+async function readSnapshot(path: string, init?: RequestInit): Promise<KbCacheSnapshot | null> {
+  if (unsupported) return null
+  try {
+    const payload = await requestLocal<KbCacheSnapshot>(path, init)
+    return looksLikeSnapshot(payload) ? payload : null
+  } catch (error) {
+    if ((error as { status?: number } | undefined)?.status === 404) unsupported = true
+    return null
+  }
+}
+
+/** 库列表快照（列表页与卡片/行两态的骨架）。 */
+export function getKbCacheKnowledgeBases(): Promise<KbCacheSnapshot | null> {
+  return readSnapshot('/local/kb-cache/knowledge-bases')
+}
+
+/** 库详情快照（详情页那一份，也是 reader 面每轮每库读的那一份）。 */
+export function getKbCacheKnowledgeBase(kbId: string): Promise<KbCacheSnapshot | null> {
+  return readSnapshot(`/local/kb-cache/knowledge-bases/${kbId}`)
+}
+
+/**
+ * 文档列表快照（页面挂载那几次往返里最重的一次）。
+ *
+ * **只认规范视图**：带 `q` / `stage` / `source_kind` 的视图不该走到这里
+ * （`docListViewOf` 会返回 `null`）；即便走到了，后端也是如实回 `available:false`，
+ * 不是错误。`page` / `size` 一律显式发——键由这两个值与 `docListViewKey()` 对齐。
+ */
+export function getKbCacheDocuments(
+  kbId: string,
+  view: DocListView = {},
+): Promise<KbCacheSnapshot | null> {
+  const params = new URLSearchParams()
+  if (view.folder) params.set('folder', view.folder)
+  else if (view.root) params.set('root', 'true')
+  params.set('page', String(view.page ?? DEFAULT_DOC_PAGE))
+  params.set('size', String(view.size ?? DEFAULT_DOC_PAGE_SIZE))
+  return readSnapshot(`/local/kb-cache/knowledge-bases/${kbId}/documents?${params.toString()}`)
+}
+
+/** 目录树快照——与文档列表**同屏**，所以不做就成了「半屏缓存」。 */
+export function getKbCacheFolders(kbId: string): Promise<KbCacheSnapshot | null> {
+  return readSnapshot(`/local/kb-cache/knowledge-bases/${kbId}/folders`)
+}
+
+/** 文档条目快照（详情页 / 抽屉的入口帧；进度不在里面）。 */
+export function getKbCacheDocument(documentId: string): Promise<KbCacheSnapshot | null> {
+  return readSnapshot(`/local/kb-cache/documents/${documentId}`)
+}
+
+/* ------------------------------------------------------------------ 再确认一份 */
+
+/**
+ * **主动再确认**一份快照（焦点回到窗口 / 设置里的「立即刷新」）。
+ *
+ * 它是**显式动作**，不是每次挂载都发：本机后端整取一次远端 → 比内容哈希 → 相同只推
+ * 「上次确认」、不同才换内容（§4.1）。同一份的单飞、15 秒最短间隔、失败 60 秒退避
+ * 都在本机后端那一边（§4.4 的防风暴），这里只管发一条。
+ *
+ * 请求体是**恒定形状**（后端 `KbCacheRevalidateIn` 是 `extra="forbid"`）：不用的键
+ * 给默认值，省得两边各记一套「什么时候带哪个键」。
+ */
+export function revalidateKbCache(target: KbCacheRevalidate): Promise<KbCacheSnapshot | null> {
+  const body: Required<KbCacheRevalidate> = {
+    resource: target.resource,
+    kb_id: target.kb_id ?? '',
+    document_id: target.document_id ?? '',
+    folder: target.folder ?? '',
+    // `folder` 与 `root` 互斥：两个都给的话后端会判「说不清清的是哪一片」
+    root: target.folder ? false : target.root === true,
+    page: target.page ?? DEFAULT_DOC_PAGE,
+    size: target.size ?? DEFAULT_DOC_PAGE_SIZE,
+  }
+  return readSnapshot('/local/kb-cache/revalidate', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}

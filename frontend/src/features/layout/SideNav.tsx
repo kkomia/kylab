@@ -124,6 +124,7 @@ import { WorkspaceCreateDialog } from '@/features/misc/workspaces/WorkspaceCreat
 import { toggleSidebarPreference } from '@/features/chat/runtime/shortcutPrefs'
 import type { ConversationSummary } from '@/api/conversations'
 import { useKnowledgeProviderStatus } from '@/api/provider'
+import { warmKnowledgeBases } from '@/features/knowledge/store'
 import { formatCount, formatRelativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -415,6 +416,22 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const provider = useKnowledgeProviderStatus()
   const showKnowledge = !provider.blocked
 
+  /**
+   * 知识库那一项被划过/聚焦时顺手做的两件事（M4 阶段 5，照开发计划 12.55 的预取先例）：
+   *
+   * ① 把那一页的代码拉下来（点进去不必等 chunk，与导航项、会话行同一条做法）；
+   * ② 把「上次看到的库列表」先取回来（**本机回环**，个位数毫秒）——点进去标题与卡片
+   *    就已经在了，页面上那一行小字如实说它是什么时候看到的。
+   *
+   * ②只在本机档做（`provider.gate`）：服务器档的知识库就是它自己，没有"本机留的那份"。
+   * 叫一次**不等于**打一次请求：内存已有、或那一份已经画过/实时到了，它就地返回。
+   */
+  function preloadKnowledgeBases(): void {
+    preloadPage('knowledgeBases')
+    if (!provider.gate) return
+    void warmKnowledgeBases()
+  }
+
   /** 滚动的那一层（项目 + 对话两节）。滚动条按"用时才出现"显示。 */
   const sideScroll = useRef<HTMLDivElement | null>(null)
   // `!collapsed`：折叠时这一层不在 DOM 里，展开那一刻才是它第一次需要监听
@@ -702,6 +719,9 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
                   <li key={item.to}>
                     <Link
                       to={item.to}
+                      /* 划过就先把那一页的代码与"上次看到的那份"一起拿回来（M4 阶段 5） */
+                      onMouseEnter={() => preloadKnowledgeBases()}
+                      onFocus={() => preloadKnowledgeBases()}
                       aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
                       className={
                         isActive(item.to, item.exact)
