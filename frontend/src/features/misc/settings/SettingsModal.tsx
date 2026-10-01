@@ -6,7 +6,8 @@
  * 改完关掉，回到他原来在看的页面。
  *
  * 内部用左侧分组菜单 + 右侧内容：
- * - 模型注册 / 向量化 / 对话模型 / 服务配置 / 存储配置 / 用户 / 系统与安全 / 外观 / 快捷键；
+ * - 模型注册 / 向量化 / 对话模型 / 服务配置 / 存储配置 / **知识库连接**（本机档专属，M3）/
+ *   用户 / 系统与安全 / 外观 / 快捷键；
  * - **功能**（长期记忆 / 联网 / 沙箱执行…）：这一组**不是手写的菜单**，
  *   而是"后端返回了、但上面几节没有专门渲染"的那些组，自动出现。
  *
@@ -19,6 +20,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  BookOpen,
   CircleUser,
   Database,
   Folder,
@@ -34,6 +36,7 @@ import {
 } from 'lucide-react'
 import { useNavigate } from 'react-router'
 
+import { useKnowledgeProviderStatus } from '@/api/provider'
 import {
   changePassword as apiChangePassword,
   logout as apiLogout,
@@ -77,6 +80,7 @@ import {
   StatusTag,
 } from '../shared/composites'
 import { AppearanceSection } from './AppearanceSection'
+import { KnowledgeConnectionSection } from './KnowledgeConnectionSection'
 import { ModelRegistryPanel, REGISTRY_QUERY_KEY } from './ModelRegistryPanel'
 import { SettingGroupPanel, SETTINGS_QUERY_KEY, settingsPayloadOf } from './SettingGroupPanel'
 import { ShortcutsSection } from './ShortcutsSection'
@@ -88,6 +92,7 @@ type SectionKey =
   | 'llm'
   | 'services'
   | 'storage'
+  | 'knowledge'
   | 'appearance'
   | 'shortcuts'
   | 'users'
@@ -115,6 +120,10 @@ const SECTIONS: { key: SectionKey; label: string; icon: typeof Server; adminOnly
   { key: 'llm', label: '对话模型', icon: Languages },
   { key: 'services', label: '服务配置', icon: Server },
   { key: 'storage', label: '存储配置', icon: Folder },
+  // **本机档专属**（M3 阶段 6）：知识库在壳里那台 NAS 上，连接状态与地址在这儿看。
+  // 浏览器 / NAS 网页端没有这一节（那一档知识库就是它自己）——入口由 `navGroups`
+  // 那一层按 `provider.gate` 摘掉，见下面 `visibleSections` 那一段。
+  { key: 'knowledge', label: '知识库连接', icon: BookOpen },
   { key: 'users', label: '用户', icon: Users, adminOnly: true },
   { key: 'system', label: '系统与安全', icon: CircleUser },
   { key: 'appearance', label: '外观', icon: Moon },
@@ -131,6 +140,12 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
   const queryClient = useQueryClient()
   const currentUser = useSessionStore((store) => store.currentUser)
   const isAdmin = currentUser?.role === 'admin'
+  /**
+   * 知识库提供者（M3 阶段 6）：只用来决定**「知识库连接」这一节有没有入口**——
+   * 本机档才有它（浏览器 / NAS 网页端那一档知识库就是它自己）。
+   * 真正的读写在那节自己身上（自读自管，与 `StorageSection` 同一形态）。
+   */
+  const provider = useKnowledgeProviderStatus()
 
   /** 打开设置落在「模型注册」——它是配置模型的主路径。 */
   const [section, setSection] = useState<SectionKey>('registry')
@@ -253,10 +268,16 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
     [config],
   )
 
-  const visibleSections = SECTIONS.filter((item) => !item.adminOnly || isAdmin)
+  const visibleSections = SECTIONS.filter(
+    (item) =>
+      (!item.adminOnly || isAdmin) &&
+      // 「知识库连接」只有本机档才有（M3 阶段 6）：服务器档里那一节的入口**不存在**
+      // （点了只会看到一句"只有本机档才有"，不如不给入口）
+      (item.key !== 'knowledge' || provider.gate),
+  )
   const navGroups = [
     { label: '模型', keys: ['registry', 'models', 'llm'] as SectionKey[] },
-    { label: '服务', keys: ['services', 'storage'] as SectionKey[] },
+    { label: '服务', keys: ['services', 'storage', 'knowledge'] as SectionKey[] },
     { label: '功能', keys: featureGroups.map((item) => `feature:${item.key}` as SectionKey) },
     { label: '账户', keys: ['users', 'system'] as SectionKey[] },
     { label: '偏好', keys: ['appearance', 'shortcuts'] as SectionKey[] },
@@ -878,6 +899,7 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
           )}
 
           {section === 'storage' && <StorageSection />}
+          {section === 'knowledge' && <KnowledgeConnectionSection />}
           {section === 'appearance' && <AppearanceSection />}
           {section === 'shortcuts' && <ShortcutsSection />}
 

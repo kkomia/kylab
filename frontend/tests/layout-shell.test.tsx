@@ -149,7 +149,7 @@ describe('侧栏导航', () => {
     expect(within(nav).getByRole('link', { name: '记忆' })).not.toHaveAttribute('aria-current')
   })
 
-  it('知识库是可折叠的子菜单：默认收起，展开后三条子项都在（不列库名）', async () => {
+  it('知识库是可折叠的子菜单：默认收起，展开后只有「所有知识库」一条（不列库名）', async () => {
     const user = userEvent.setup()
     useSessionStore.setState({ currentUser: account('member') })
     renderShell('/knowledge-bases')
@@ -160,38 +160,49 @@ describe('侧栏导航', () => {
 
     await user.click(group)
     expect(group).toHaveAttribute('aria-expanded', 'true')
-    for (const label of ['所有知识库', '概览', '任务中心']) {
-      expect(screen.getByRole('link', { name: label })).toBeInTheDocument()
-    }
+    expect(screen.getByRole('link', { name: '所有知识库' })).toBeInTheDocument()
+    // 「概览」「任务中心」**不在这一组里**（M3 阶段 6，决策点 D1）：它们是主导航项，
+    // 整组按提供者状态隐藏时不该被一起带走
+    const nav = screen.getByRole('navigation', { name: '主导航' })
+    expect(within(nav).getByRole('link', { name: '概览' })).toBeInTheDocument()
+    expect(within(nav).getByRole('link', { name: '任务中心' })).toBeInTheDocument()
     // 选中态：当前就在知识库列表页
     expect(screen.getByRole('link', { name: '所有知识库' })).toHaveAttribute('aria-current', 'page')
   })
 
-  it('「概览」指向 `/`（与旧前端一致：落地页就是驾驶舱，书签不用改）', async () => {
-    const user = userEvent.setup()
+  it('「概览」搬进主导航后仍指向 `/`（与旧前端一致：落地页就是驾驶舱，书签不用改）', async () => {
     useSessionStore.setState({ currentUser: account('member') })
     renderShell('/')
 
-    await user.click(await screen.findByRole('button', { name: '知识库' }))
-    const overview = screen.getByRole('link', { name: '概览' })
+    const nav = await screen.findByRole('navigation', { name: '主导航' })
+    const overview = within(nav).getByRole('link', { name: '概览' })
     expect(overview).toHaveAttribute('href', '/')
     expect(overview).toHaveAttribute('aria-current', 'page')
   })
 
-  it('收起的知识库组也有归属：停在概览 / 任务中心上时组头亮，展开后轮到子项亮', async () => {
+  it('概览与任务中心不再带亮「知识库」组头（D1：它们不属于知识库）', async () => {
     const user = userEvent.setup()
     useSessionStore.setState({ currentUser: account('member') })
     renderShell('/tasks')
 
-    // 组是收起的：此刻唯一的"你在这一组里"的信号是组头本身
     const group = await screen.findByRole('button', { name: '知识库' })
     expect(group).toHaveAttribute('aria-expanded', 'false')
-    expect(group.className).toContain('bg-[var(--bg-selected)]')
-
-    await user.click(group)
-    // 展开之后由子项自己说（组头让位，两处不同时亮）
+    // 站在任务中心时组头**不亮**（原先会亮：那是概览/任务中心挂在这一组下的遗留）
     expect(group.className).not.toContain('bg-[var(--bg-selected)]')
-    expect(screen.getByRole('link', { name: '任务中心' })).toHaveAttribute('aria-current', 'page')
+    // 而任务中心自己亮着（它现在是主导航项）
+    const nav = screen.getByRole('navigation', { name: '主导航' })
+    expect(within(nav).getByRole('link', { name: '任务中心' })).toHaveAttribute(
+      'aria-current',
+      'page',
+    )
+
+    // 点在**知识库列表**上时组头才亮（那一组确实在说它）
+    cleanup()
+    renderShell('/knowledge-bases')
+    const again = await screen.findByRole('button', { name: '知识库' })
+    expect(again.className).toContain('bg-[var(--bg-selected)]')
+    await user.click(again)
+    expect(screen.getByRole('link', { name: '所有知识库' })).toHaveAttribute('aria-current', 'page')
   })
 
   it('能力页在主导航里有归属：当前项标 aria-current 并带选中底', async () => {

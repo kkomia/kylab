@@ -17,12 +17,7 @@ import { X } from 'lucide-react'
 
 import { uploadDocument } from '@/api/documents'
 import { messageOf } from '@/features/knowledge/store'
-import {
-  MAX_UPLOAD_BYTES,
-  MAX_UPLOAD_FILES,
-  MAX_UPLOAD_MB,
-  UPLOAD_FORMAT_HINT,
-} from '@/features/knowledge/uploadLimits'
+import { MAX_UPLOAD_FILES, useUploadLimits } from '@/features/knowledge/uploadLimits'
 import { formatBytes, formatCount } from '@/lib/format'
 import { Button } from '@/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/ui/dialog'
@@ -115,6 +110,11 @@ export function UploadDialog({ open, kbId, folderId, onClose, onUploaded }: Uplo
   const [uploading, setUploading] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [notice, setNotice] = useState('')
+  /**
+   * 上限与格式提示**从握手取**（M3 阶段 6，R8）：提供者那边改了上限/格式，
+   * 这里的提示与本地拒收的判据当场跟着变，不会出现"写着支持却被拒"。
+   */
+  const limits = useUploadLimits()
   const fileInput = useRef<HTMLInputElement | null>(null)
   const folderInput = useRef<HTMLInputElement | null>(null)
 
@@ -177,12 +177,12 @@ export function UploadDialog({ open, kbId, folderId, onClose, onUploaded }: Uplo
     const overflow = fresh.length > MAX_UPLOAD_FILES
     const taken = overflow ? fresh.slice(0, MAX_UPLOAD_FILES) : fresh
     const prepared: Item[] = taken.map((candidate) =>
-      candidate.file.size > MAX_UPLOAD_BYTES
+      candidate.file.size > limits.maxBytes
         ? {
             ...candidate,
             // 超限在本地就判定：等后端读完 300MB 再回 413，白等的那几十秒用 file.size 就能省掉
             status: 'rejected' as UploadStatus,
-            message: `超过 ${MAX_UPLOAD_MB}MB 上限，请先压缩或切分`,
+            message: `超过 ${limits.maxMb}MB 上限，请先压缩或切分`,
           }
         : { ...candidate, status: 'pending' as UploadStatus, message: '' },
     )
@@ -344,7 +344,7 @@ export function UploadDialog({ open, kbId, folderId, onClose, onUploaded }: Uplo
           />
 
           <p className="text-hint">
-            {UPLOAD_FORMAT_HINT}。单个文件不超过 {MAX_UPLOAD_MB}MB，一次最多 {MAX_UPLOAD_FILES} 个。
+            {limits.formatHint}。单个文件不超过 {limits.maxMb}MB，一次最多 {limits.maxFiles} 个。
           </p>
 
           {notice ? <p className="text-note">{notice}</p> : null}

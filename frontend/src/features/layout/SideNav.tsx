@@ -6,11 +6,25 @@
  * ```
  * 品牌位（环行星标 + 折叠开关）
  * 新建会话（`/chat?new=1`，带快捷键提示）
- * 主导航：笔记 / 记忆 / 能力 / 知识库▸（所有知识库 / 概览 / 任务中心）
+ * 主导航：笔记 / 记忆 / 能力 / 概览 / 任务中心 / 知识库▸（所有知识库）
  * 项目节：标题右侧「新增项目」（打开新建弹窗）+ 项目行（带条数，悬停时右端出现「+」= 在这个项目里新开会话，以及「⋯」= 重命名 / 归档 / 删除）+ 各自的项目内会话（超过 5 条先收起）+ 清单底部的「已归档」入口（v0.55）
  * 对话节：没归项目的会话（前 8 条）+ 查看全部会话
  * 页脚：账号（头像 + 名字 → 向上展开的菜单）
  * ```
+ *
+ * ## M3 阶段 6：知识库这一组按提供者状态显隐（D1 + D3）
+ *
+ * 从 M3 起，本机档的知识库**在别处**（NAS 上），"现在连不连得上"由本机后端给的
+ * 提供者状态说了算（`@/api/provider`，判定只有那一处）。于是这一栏有两处按它动：
+ *
+ * 1. **「知识库」整组只在 `state == ready` 时渲染**：不可用 / 还没探过时导航里
+ *    没有这一项（**不闪一个点进去报错的入口**），页面也在路由守卫那一层被挡住
+ *    （`features/knowledge/ProviderRoute.tsx`）。服务器档（浏览器 / NAS 网页端）
+ *    不受这条影响——那一档知识库就是它自己，组一直在（`gate = false`）；
+ * 2. **「概览」「任务中心」从这一组里搬出来**（决策点 D1）：它们不是知识库页面，
+ *    整组隐藏时不该被一起带走——原先"知识库连不上"等于"概览与任务中心也没了"。
+ *    搬进下面的 `NAV_ITEMS`（主导航）之后这一组的归属也更干净：
+ *    组里只剩「所有知识库」一条真属于知识库的入口。
  *
  * ## 图标：Remix Icon（与旧版同一套）
  *
@@ -109,6 +123,7 @@ import {
 import { WorkspaceCreateDialog } from '@/features/misc/workspaces/WorkspaceCreateDialog'
 import { toggleSidebarPreference } from '@/features/chat/runtime/shortcutPrefs'
 import type { ConversationSummary } from '@/api/conversations'
+import { useKnowledgeProviderStatus } from '@/api/provider'
 import { formatCount, formatRelativeTime } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -223,12 +238,19 @@ const SIDE_ROW_ADD =
 /**
  * 导航项顺序 = 使用频率（《界面信息架构草案》§1）。
  *
- * **「知识库」不在这里**：它是一个可折叠的子菜单（见 `KNOWLEDGE_GROUP`）。
+ * **「知识库」不在这里**：它是一个可折叠的子菜单（见 `KNOWLEDGE_GROUP`），
+ * 而且**按提供者状态显隐**（M3 阶段 6，见文件头）。
  * **「对话」也不在这里**：它与下面的会话列表、以及最上面的「新对话」是同一件事的三个入口，
  * 并排时用户会犹豫该点哪个——**会话列表本身就是那个入口**（Kimi / ChatGPT / Claude 同款）。
  *
+ * 「概览」「任务中心」**在这里**（M3 阶段 6 从知识库组里搬出来的，决策点 D1）：
+ * 它们不是知识库页面，原先挂在那一组下面，于是"知识库连不上"会把概览与任务中心
+ * 一起带走——那是两件毫不相干的事。
+ *
  * `motion` 是这个条目的**悬停动效族**（v0.18）：一项一个动作，取的是"这个图标画的是什么"
  * 该有的动作（便签自下放上 / 记忆歪一头再正过来 / 能力上电弹一下 / 书脊滑进来）。
+ * 动作只有五个，条目多起来必然复用：复用时挑语义最近的那个
+ * （概览=面板自上落下、任务中心=干完弹一下）。
  */
 const NAV_ITEMS = [
   {
@@ -250,14 +272,25 @@ const NAV_ITEMS = [
     motion: 'spring',
     page: 'capabilities',
   },
+  // 「概览」= 驾驶舱，住 `/`（与旧前端一致：落地页就是概览，书签不用改）。
+  // `/dashboard` 只是同一页的旧入口，在新路由表里是一条重定向。
+  { to: '/', label: '概览', icon: RiDashboardLine, exact: true, motion: 'drop', page: 'dashboard' },
+  {
+    to: '/tasks',
+    label: '任务中心',
+    icon: RiTaskLine,
+    exact: false,
+    motion: 'spring',
+    page: 'tasks',
+  },
 ] as const
 
 /**
- * 知识库组：**概览与任务中心也收进来**（v0.17）。
+ * 知识库组：**M3 阶段 6 起只剩「所有知识库」一条**，而且整组按提供者状态显隐。
  *
- * 子项只有三条、**不再列每个库的名字**（见文件头第 2 条）。
- * 这一项照抄 Kimi 的原样动作（右侧滑入 + 放大落定）：它是这一栏里唯一的分组头，
- * 动作与"把一叠东西从右边推上来"的语义对得上。
+ * 子项不列每个库的名字（见文件头第 2 条）；「概览」「任务中心」已搬进 `NAV_ITEMS`
+ * （D1，见那里的说明）。这一项照抄 Kimi 的原样动作（右侧滑入 + 放大落定）：
+ * 它是这一栏里唯一的分组头，动作与"把一叠东西从右边推上来"的语义对得上。
  */
 const KNOWLEDGE_GROUP = {
   label: '知识库',
@@ -271,10 +304,6 @@ const KNOWLEDGE_GROUP = {
       exact: true,
       page: 'knowledgeBases',
     },
-    // 「概览」= 驾驶舱，住 `/`（与旧前端一致：落地页就是概览，书签不用改）。
-    // `/dashboard` 只是同一页的旧入口，在新路由表里是一条重定向。
-    { to: '/', label: '概览', icon: RiDashboardLine, exact: true, page: 'dashboard' },
-    { to: '/tasks', label: '任务中心', icon: RiTaskLine, exact: false, page: 'tasks' },
   ],
 } as const
 
@@ -377,6 +406,14 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   const loadArchivedProjects = useWorkspaceStore((state) => state.loadArchived)
   const workspaceError = useWorkspaceStore((state) => state.error)
   const loadWorkspaces = useWorkspaceStore((state) => state.load)
+  /**
+   * 知识库提供者的状态（M3 阶段 6）：**这一组显不显示只看它**。
+   *
+   * `blocked` = 本机档且没连上/还没探过 → 整组不渲染（文件头第 1 条）。
+   * 服务器档（浏览器 / NAS 网页端）里 `gate` 是假，组照旧一直在。
+   */
+  const provider = useKnowledgeProviderStatus()
+  const showKnowledge = !provider.blocked
 
   /** 滚动的那一层（项目 + 对话两节）。滚动条按"用时才出现"显示。 */
   const sideScroll = useRef<HTMLDivElement | null>(null)
@@ -476,9 +513,12 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
   /**
    * 「知识库」这一组里的当前项。
    *
-   * **按组里那三个子项自己算**（`isActive`），外加库详情 / Wiki（`/kb/:id`，它们不在
+   * **按组里那些子项自己算**（`isActive`），外加库详情 / Wiki（`/kb/:id`，它们不在
    * 侧栏里单列）——手写一条条前缀的那一版漏了 `/` 与 `/tasks`：站在概览或任务中心时
    * 整组一声不响（默认又是收起的），用户看不出自己在哪一节里。
+   *
+   * M3 阶段 6：概览与任务中心搬出这一组（D1），所以它们不再把组头点亮——
+   * 组头的归属现在只剩"所有知识库"与库详情/Wiki 那几条真属于知识库的地址。
    */
   const knowledgeActive =
     KNOWLEDGE_GROUP.children.some((item) => isActive(item.to, item.exact)) ||
@@ -621,60 +661,63 @@ export function SideNav({ onOpenHistory }: { onOpenHistory: () => void }) {
           </Link>
         ))}
 
-        {/* 知识库组（v0.17）：三条固定子项，**不列库名**。
+        {/* 知识库组（v0.17）：只剩「所有知识库」一条子项，**不列库名**；
+            整组按提供者状态显隐（M3 阶段 6，见文件头第 1 条）。
             选中态只在收起时亮：展开之后"当前在这一组里"由子项自己说。 */}
-        <div className="flex flex-col">
-          <button
-            type="button"
-            className={cn(
-              NAV_ROW,
-              collapsed && NAV_ROW_COLLAPSED,
-              'w-full cursor-pointer border-0 text-left',
-              knowledgeActive && !knowledgeOpen ? 'bg-[var(--bg-selected)]' : 'bg-transparent',
-            )}
-            aria-expanded={knowledgeOpen}
-            title={collapsed ? KNOWLEDGE_GROUP.label : undefined}
-            onClick={() => setKnowledgeOpen((open) => !open)}
-          >
-            <KNOWLEDGE_GROUP.icon
-              size={18}
-              className={`ly-nav-motion-${KNOWLEDGE_GROUP.motion} shrink-0`}
-              aria-hidden="true"
-            />
-            <span className="ly-collapsible">{KNOWLEDGE_GROUP.label}</span>
-            {!collapsed && (
-              <RiArrowRightSLine
-                size={13}
+        {showKnowledge && (
+          <div className="flex flex-col" data-testid="nav-knowledge-group">
+            <button
+              type="button"
+              className={cn(
+                NAV_ROW,
+                collapsed && NAV_ROW_COLLAPSED,
+                'w-full cursor-pointer border-0 text-left',
+                knowledgeActive && !knowledgeOpen ? 'bg-[var(--bg-selected)]' : 'bg-transparent',
+              )}
+              aria-expanded={knowledgeOpen}
+              title={collapsed ? KNOWLEDGE_GROUP.label : undefined}
+              onClick={() => setKnowledgeOpen((open) => !open)}
+            >
+              <KNOWLEDGE_GROUP.icon
+                size={18}
+                className={`ly-nav-motion-${KNOWLEDGE_GROUP.motion} shrink-0`}
                 aria-hidden="true"
-                className={
-                  knowledgeOpen
-                    ? 'shrink-0 rotate-90 text-text-tertiary transition-transform'
-                    : 'shrink-0 text-text-tertiary transition-transform'
-                }
               />
+              <span className="ly-collapsible">{KNOWLEDGE_GROUP.label}</span>
+              {!collapsed && (
+                <RiArrowRightSLine
+                  size={13}
+                  aria-hidden="true"
+                  className={
+                    knowledgeOpen
+                      ? 'shrink-0 rotate-90 text-text-tertiary transition-transform'
+                      : 'shrink-0 text-text-tertiary transition-transform'
+                  }
+                />
+              )}
+            </button>
+            {knowledgeOpen && !collapsed && (
+              <ul className="mt-0 mb-1 list-none p-0 pl-6">
+                {KNOWLEDGE_GROUP.children.map((item) => (
+                  <li key={item.to}>
+                    <Link
+                      to={item.to}
+                      aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
+                      className={
+                        isActive(item.to, item.exact)
+                          ? 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control bg-[var(--bg-selected)] px-2 text-[length:var(--text-meta-size)] text-text-primary no-underline'
+                          : 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control px-2 text-[length:var(--text-meta-size)] text-text-secondary no-underline transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary'
+                      }
+                    >
+                      <item.icon size={14} aria-hidden="true" />
+                      <span className="truncate">{item.label}</span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
             )}
-          </button>
-          {knowledgeOpen && !collapsed && (
-            <ul className="mt-0 mb-1 list-none p-0 pl-6">
-              {KNOWLEDGE_GROUP.children.map((item) => (
-                <li key={item.to}>
-                  <Link
-                    to={item.to}
-                    aria-current={isActive(item.to, item.exact) ? 'page' : undefined}
-                    className={
-                      isActive(item.to, item.exact)
-                        ? 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control bg-[var(--bg-selected)] px-2 text-[length:var(--text-meta-size)] text-text-primary no-underline'
-                        : 'flex h-[var(--row-height-compact)] items-center gap-1.5 rounded-control px-2 text-[length:var(--text-meta-size)] text-text-secondary no-underline transition-colors hover:bg-[var(--bg-hover)] hover:text-text-primary'
-                    }
-                  >
-                    <item.icon size={14} aria-hidden="true" />
-                    <span className="truncate">{item.label}</span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
+          </div>
+        )}
       </nav>
 
       {/* 下半栏（v0.22，照 Kimi Work 的实际形态）：**两节，默认都展开**。

@@ -25,6 +25,7 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 
+import { useKnowledgeProviderStatus } from '@/api/provider'
 import { formatCount, formatPercent } from '@/lib/format'
 
 import { CONTROL_TRIGGER, MENU_CHECK, MENU_ITEM, MENU_PANEL } from './DropdownShell'
@@ -234,10 +235,20 @@ const SMALL_ITEM =
  * - **面板里只剩"查哪几个"**：勾选即选，带「全选 / 清空」（原来那行「启用」随开关搬到触发器上）；
  * - **关掉时清单置灰但选择留着**（`disabled` 只是不让改，不动 `selectedKbIds`）：
  *   用户关掉再打开，原来勾的那几个还在。
+ *
+ * ## M3 阶段 6：提供者不可用时**整颗不摆**（与后端 `_KB_TOOLS` 同一条纪律）
+ *
+ * 本机档里知识库在 NAS 上，连不上时这一轮本来就没有库可查——摆一颗开不了的开关
+ * 只会让人以为"是我没打开"。所以提供者不 ready 时**不渲染**（`blocked`），
+ * 与"KB 工具不进工具表"（`agent_tools.py` 那三个名字的状态门控）是同一件事的两个面。
+ * 服务器档（浏览器 / NAS 网页端）不受影响：那一档知识库就是它自己，开关一直在。
  */
 export function KnowledgeBaseControl() {
   const chat = useChat()
+  const provider = useKnowledgeProviderStatus()
   const [filter, setFilter] = useState('')
+
+  if (provider.blocked) return null
 
   const keyword = filter.trim().toLocaleLowerCase()
   const visible = keyword

@@ -44,6 +44,7 @@ export { KnowledgeBasesView } from './KnowledgeBasesView'
 export { KnowledgeBaseView } from './KnowledgeBaseView'
 export { WikiView } from './WikiView'
 export { DocumentView } from './DocumentView'
+export { ProviderRoute, providerBlockedMessage } from './ProviderRoute'
 export { DocumentDrawer } from './DocumentDrawer'
 export { ProcessingTimeline } from './ProcessingTimeline'
 export { ShareDialog } from './ShareDialog'
@@ -71,6 +72,10 @@ export {
   MAX_UPLOAD_FILES,
   MAX_UPLOAD_MB,
   UPLOAD_FORMAT_HINT,
+  formatHintOf,
+  limitsOf,
+  useUploadLimits,
+  type UploadLimits,
 } from './uploadLimits'
 export {
   messageOf,

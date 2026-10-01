@@ -16,6 +16,7 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { resetProviderStore, setProviderStatusForTest, type ProviderStatus } from '@/api/provider'
 import { resetSidecarProbe, setLocalDataForTest } from '@/api/sidecar'
 import { LocalDataStrip } from '@/features/layout/LocalDataStrip'
 
@@ -43,15 +44,71 @@ function stubShell(answer: { port?: number; base?: string } | null): void {
   })
 }
 
+/** 一份 ready 的提供者状态（本机档的那条链）。 */
+function providerStatus(overrides: Partial<ProviderStatus> = {}): ProviderStatus {
+  return {
+    state: 'ready',
+    available: true,
+    reason: '',
+    checked_at: '2026-10-03T10:00:00Z',
+    base_url: 'http://nas:8000/api/v1',
+    credential: 'configured',
+    protocol_version: 1,
+    app_version: '0.1.1',
+    knowledge_bases: [
+      { id: 'kb_1', name: '论文' },
+      { id: 'kb_2', name: '手册' },
+    ],
+    ...overrides,
+  }
+}
+
+/**
+ * 本机档那条完整链的网络替身：`/health` 通、`/local/status` 报 `deployment: 'local'`、
+ * `/local/provider` 回提供者状态（`hang` 时永不回答 = "还没探过"那一档）。
+ */
+function stubProviderFetch(options: { hang?: boolean; provider?: unknown } = {}): void {
+  const providerUrl = 'http://127.0.0.1:8765/api/v1/local/provider'
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      const target = String(url)
+      if (target.endsWith('/health')) return okJson()
+      if (target.includes('/local/provider')) {
+        if (options.hang) return new Promise<Response>(() => {})
+        return json(options.provider ?? providerStatus())
+      }
+      if (target.endsWith('/api/v1/local/status')) {
+        return json({
+          deployment: 'local',
+          data_dir: 'D:\\appdata',
+          database: 'D:\\appdata\\kylab.db',
+          database_exists: true,
+          database_bytes: 1024,
+          database_wal_bytes: 0,
+          server_url: 'http://nas:8000/api/v1',
+          imports: [],
+          unfinished_imports: 0,
+          unimported_file_references: 0,
+          note: '会话落在本机 SQLite',
+        })
+      }
+      throw new Error(`用例没预备这条请求：${providerUrl} / ${target}`)
+    }),
+  )
+}
+
 beforeEach(() => {
   resetSidecarProbe()
   setLocalDataForTest(undefined)
+  resetProviderStore()
 })
 
 afterEach(() => {
   vi.unstubAllGlobals()
   setLocalDataForTest(undefined)
   resetSidecarProbe()
+  resetProviderStore()
 })
 
 describe('顶栏状态条', () => {
@@ -179,5 +236,87 @@ describe('顶栏状态条', () => {
     const line = await screen.findByTestId('local-import-accounts-error')
     expect(line.textContent).toContain('本机状态读不到')
     expect(screen.queryByTestId('local-import-accounts')).toBeNull()
+  })
+
+  it('⑥ 知识库提供者 ready：**不**多那一行（可用时长什么样由侧栏那组回答）', async () => {
+    stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        url.includes('/local/provider') ? json(providerStatus()) : okJson(),
+      ),
+    )
+
+    render(<LocalDataStrip />)
+
+    await waitFor(() => expect(screen.getByText('本机')).toBeInTheDocument())
+    // 等第一条本机状态行落地之后再断言：那一行**始终不该出现**
+    await waitFor(() => expect(screen.queryByTestId('local-provider-line')).toBeNull())
+  })
+
+  it('⑦ 提供者连不上：那一行如实写原因，title 带地址/协议版本/库数/上次确认', async () => {
+    stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
+    setProviderStatusForTest(
+      providerStatus({
+        state: 'unavailable',
+        available: false,
+        reason: '连不上 http://nas:8000：连接被拒绝',
+      }),
+    )
+    stubProviderFetch()
+
+    render(<LocalDataStrip />)
+
+    const line = await screen.findByTestId('local-provider-line')
+    expect(line.textContent).toContain('知识库提供者不可用')
+    expect(line.textContent).toContain('连接被拒绝')
+    // 悬停那层是排障第一眼要看的那四项
+    const title = line.getAttribute('title') ?? ''
+    expect(title).toContain('http://nas:8000/api/v1')
+    expect(title).toContain('协议版本：1')
+    expect(title).toContain('看得见的库：2 个')
+    expect(title).toContain('上次确认：2026-10-03T10:00:00Z')
+  })
+
+  it('⑧ 还没探过：写"正在确认知识库连接…"（不猜好坏）', async () => {
+    stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
+    stubProviderFetch({ hang: true })
+
+    render(<LocalDataStrip />)
+
+    const line = await screen.findByTestId('local-provider-line')
+    expect(line.textContent).toContain('正在确认知识库连接')
+  })
+
+  it('⑨ 服务器档（deployment=server）：一次都不问提供者（那一档没有这个概念）', async () => {
+    stubShell({ port: 8765, base: 'http://127.0.0.1:8765' })
+    const fetchMock = vi.fn(async (url: string) =>
+      url.endsWith('/api/v1/local/status')
+        ? json({
+            deployment: 'server',
+            data_dir: 'D:\\appdata',
+            database: 'D:\\appdata\\kylab.db',
+            database_exists: false,
+            database_bytes: 0,
+            database_wal_bytes: 0,
+            server_url: 'http://nas:8000/api/v1',
+            imports: [],
+            unfinished_imports: 0,
+            unimported_file_references: 0,
+            note: '',
+          })
+        : okJson(),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<LocalDataStrip />)
+
+    await waitFor(() => expect(screen.getByText('本机')).toBeInTheDocument())
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/local/provider'))).toBe(
+        false,
+      ),
+    )
+    expect(screen.queryByTestId('local-provider-line')).toBeNull()
   })
 })

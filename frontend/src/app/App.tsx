@@ -11,16 +11,25 @@
  * 3. 登录守卫的顺序不能换：**先看 `needs_setup`**（还没有账号 → 首次设置），
  *    再看有没有凭据（无 → 登录页 + `redirect`）。`ensureAuthStatus` 失败**不拦**，
  *    否则后端起不来会在守卫里死循环，用户连"后端没起"都看不到。
+ *
+ * ## M3 阶段 6：知识库那四条路由多一层守卫
+ *
+ * `ProviderRoute` 包住四条知识库路由（列表 / 库详情 / Wiki / 文档详情）：本机档里
+ * 提供者不可用时**重定向到 `/chat` + 一条含原因的 toast**（方案 §3.3）。它不是登录守卫
+ * 那种"挡在门口"的东西——服务器档（浏览器 / NAS 网页端）里它一个判断都不做，
+ * 那一档的知识库就是它自己。`ProviderBoot` 在启动时**不挡渲染**地探一次状态。
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { Suspense, lazy, useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router'
 
+import { refresh as refreshProvider } from '@/api/provider'
 import { Toaster } from '@/ui/sonner'
 import { ensureAuthStatus, restoreSession } from '@/lib/sessionActions'
 import { hasCredential, sessionToken, useSessionStore } from '@/lib/session'
 import { loadRoster } from '@/lib/operator'
 import { PAGES } from '@/app/routes'
+import { ProviderRoute } from '@/features/knowledge/ProviderRoute'
 import { AppShell } from '@/features/layout'
 
 // 懒加载的**入口函数**都在 `app/routes.ts` 里（侧栏的 hover 预热要用同一批函数，
@@ -170,6 +179,26 @@ function RosterBoot() {
   return null
 }
 
+/**
+ * 启动时**探一次知识库提供者**（M3 阶段 6）。
+ *
+ * 不 await 渲染：这一探是"后台问一句"，首屏一个字都不等它（方案 §3.2 R1）——
+ * 侧栏那一组在结论回来之前按**缺席**渲染（不闪一个点进去报错的入口）。
+ * 探一次就够（`ref` 挡 StrictMode 的双挂载；模块级单飞是第二道保险）。
+ *
+ * 为什么放在 `App` 而不是每一页各探一次：状态是**进程级**的（模块级单份 + 30s 缓存），
+ * 谁先问都一样；放在这里，登录页/对话页都能受益（壳一露头结论就已经在了）。
+ */
+function ProviderBoot() {
+  const probed = useRef(false)
+  useEffect(() => {
+    if (probed.current) return
+    probed.current = true
+    void refreshProvider()
+  }, [])
+  return null
+}
+
 /** 标题跟随路由（旧前端 `router.afterEach`）。 */
 function TitleSync() {
   const location = useLocation()
@@ -186,6 +215,7 @@ export function App() {
       <BrowserRouter>
         <TitleSync />
         <RosterBoot />
+        <ProviderBoot />
         <AuthGate>
           <Suspense fallback={<BootSkeleton />}>
             <Routes>
@@ -197,10 +227,43 @@ export function App() {
                 <Route path="/" element={<DashboardPage />} />
                 <Route path="/dashboard" element={<Navigate to="/" replace />} />
                 <Route path="/chat/:conversationId?" element={<ChatPage />} />
-                <Route path="/knowledge-bases" element={<KnowledgeBasesView />} />
-                <Route path="/kb/:kbId" element={<KnowledgeBaseView />} />
-                <Route path="/kb/:kbId/wiki" element={<WikiView />} />
-                <Route path="/documents/:documentId" element={<DocumentView />} />
+                {/*
+                  四条知识库路由都包一层守卫（M3 阶段 6）：提供者不可用时
+                  重定向到 `/chat` + 一条含原因的 toast——不是白屏、也不是死页面。
+                  页面代码照旧随壳打包（`app/routes.ts` 不改）：这一层只决定"进不进得去"。
+                */}
+                <Route
+                  path="/knowledge-bases"
+                  element={
+                    <ProviderRoute>
+                      <KnowledgeBasesView />
+                    </ProviderRoute>
+                  }
+                />
+                <Route
+                  path="/kb/:kbId"
+                  element={
+                    <ProviderRoute>
+                      <KnowledgeBaseView />
+                    </ProviderRoute>
+                  }
+                />
+                <Route
+                  path="/kb/:kbId/wiki"
+                  element={
+                    <ProviderRoute>
+                      <WikiView />
+                    </ProviderRoute>
+                  }
+                />
+                <Route
+                  path="/documents/:documentId"
+                  element={
+                    <ProviderRoute>
+                      <DocumentView />
+                    </ProviderRoute>
+                  }
+                />
                 <Route path="/notes/:noteId?" element={<NotesView />} />
                 <Route path="/tasks" element={<TasksPage />} />
                 <Route path="/memory" element={<MemoryPage />} />

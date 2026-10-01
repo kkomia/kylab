@@ -9,7 +9,7 @@
  */
 import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/api/settings', () => ({
   getSettings: vi.fn(),
@@ -70,6 +70,7 @@ vi.mock('@/api/knowledgeBases', () => ({
 import { clearAvatar } from '@/api/auth'
 import { bindSlot, getRegistry } from '@/api/modelRegistry'
 import { getSettings, testConnection, type SettingsView } from '@/api/settings'
+import { resetProviderStore, setProviderStatusForTest } from '@/api/provider'
 import { AvatarDialog } from '@/features/misc/settings/AvatarDialog'
 import { SettingsModal } from '@/features/misc/settings/SettingsModal'
 import { renderMisc } from '@/features/misc/testing/harness'
@@ -439,5 +440,172 @@ describe('头像弹窗（账号菜单用它）', () => {
     await waitFor(() => expect(vi.mocked(clearAvatar)).toHaveBeenCalled())
     expect(await screen.findByText('已去掉头像')).toBeInTheDocument()
     expect(useSessionStore.getState().currentUser?.avatar_url).toBe('')
+  })
+})
+
+/* ------------------- 「知识库连接」一节（M3 阶段 6，本机档专属） ------------------- */
+
+/** 一份 ready 的提供者状态（形状照 `ProviderStatusOut` / `ProviderStatus.to_payload()`）。 */
+function providerStatus(
+  overrides: Partial<import('@/api/provider').ProviderStatus> = {},
+): import('@/api/provider').ProviderStatus {
+  return {
+    state: 'ready',
+    available: true,
+    reason: '',
+    checked_at: '2026-10-03T10:00:00Z',
+    base_url: 'http://nas:8000/api/v1',
+    credential: 'configured',
+    protocol_version: 1,
+    app_version: '0.1.1',
+    capabilities: {
+      ingest: { max_bytes: 200 * 1024 * 1024, extensions: ['pdf', 'docx'] },
+      embedding: { configured: true },
+    },
+    caller: { kind: 'api_key', is_admin: false, can_write: true },
+    knowledge_bases: [
+      { id: 'kb_1', name: '论文', document_count: 12, can_write: true, wiki_enabled: false },
+      { id: 'kb_2', name: '手册', document_count: 3, can_write: false, wiki_enabled: true },
+    ],
+    ...overrides,
+  }
+}
+
+/** 网络替身：`/health` 一律 200（壳里那台活着），提供者那两条按预备的回答。 */
+function stubProviderNetwork(answerFor: () => unknown): void {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string, init?: RequestInit) => {
+      const target = String(url)
+      if (target.endsWith('/health')) {
+        return new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      const body = init?.method === 'PATCH' ? answerFor() : providerStatus()
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }),
+  )
+}
+
+describe('知识库连接一节（M3 阶段 6）', () => {
+  beforeEach(() => {
+    resetProviderStore()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    resetProviderStore()
+  })
+
+  it('四块内容都在：地址 / 凭据 / 状态 / 库清单，外加"哪几个库参与检索"那句说明', async () => {
+    setProviderStatusForTest(providerStatus())
+    stubProviderNetwork(() => providerStatus())
+    const user = userEvent.setup()
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    // 「知识库连接」在「服务」那一组里
+    await user.click(await screen.findByRole('button', { name: '知识库连接' }))
+
+    // ① 地址：输入框里是后端解析后的实际地址，带保存与恢复默认
+    expect(screen.getByLabelText('知识库地址')).toHaveValue('http://nas:8000/api/v1')
+    expect(screen.getByRole('button', { name: '恢复默认' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '保存' })).toBeDisabled() // 没改过就不发请求
+    // ② 凭据：只读，且**只说有没有**（永不回显）
+    expect(screen.getByText('已配置（桌面壳里的那把钥匙）')).toBeInTheDocument()
+    // ③ 状态：人话 + 协议版本 + 上次确认 + 一颗「测试连接」
+    expect(screen.getAllByText('已连接').length).toBeGreaterThan(0)
+    expect(screen.getByText('协议版本')).toBeInTheDocument()
+    expect(screen.getByText('1（对面应用 0.1.1）')).toBeInTheDocument()
+    expect(screen.getByText('上次确认')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '测试连接' })).toBeInTheDocument()
+    // ④ 库清单：名字 / 文档数 / 能不能写
+    expect(screen.getByText('论文')).toBeInTheDocument()
+    expect(screen.getByText(/12 篇文档/)).toBeInTheDocument()
+    expect(screen.getByText('可写')).toBeInTheDocument()
+    expect(screen.getByText('手册')).toBeInTheDocument()
+    expect(screen.getByText('只读')).toBeInTheDocument()
+    // 那句"避免再发明一个默认库集"的说明
+    expect(screen.getByText(/哪几个库参与检索/)).toBeInTheDocument()
+  })
+
+  it('保存地址走 PATCH，并把新地址显示出来（后端会立刻重探并回最新状态）', async () => {
+    setProviderStatusForTest(providerStatus())
+    stubProviderNetwork(() =>
+      providerStatus({
+        base_url: 'http://other-nas:8000/api/v1',
+        state: 'unavailable',
+        available: false,
+        reason: '连不上 other-nas',
+      }),
+    )
+    const user = userEvent.setup()
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '知识库连接' }))
+
+    const input = screen.getByLabelText('知识库地址')
+    await user.clear(input)
+    await user.type(input, 'http://other-nas:8000/api/v1')
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    const patch = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'PATCH')
+    expect(String(patch?.[0])).toContain('/local/provider')
+    expect(JSON.parse(String(patch?.[1]?.body))).toEqual({
+      base_url: 'http://other-nas:8000/api/v1',
+    })
+    // 回来的状态整个写进面板：地址变了，状态也如实变成"不可用 + 原因"
+    await waitFor(() => expect(screen.getByText('连不上 other-nas')).toBeInTheDocument())
+    expect(screen.getByLabelText('知识库地址')).toHaveValue('http://other-nas:8000/api/v1')
+  })
+
+  it('「恢复默认」用空串发（空 = 清掉覆盖、回继承壳里那台）', async () => {
+    setProviderStatusForTest(providerStatus({ base_url: 'http://other-nas:8000/api/v1' }))
+    stubProviderNetwork(() => providerStatus({ base_url: 'http://nas:8000/api/v1' }))
+    const user = userEvent.setup()
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await user.click(await screen.findByRole('button', { name: '知识库连接' }))
+    await user.click(screen.getByRole('button', { name: '恢复默认' }))
+
+    const patch = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'PATCH')
+    expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ base_url: '' })
+  })
+
+  it('连不上时显示原因，而不是一个空清单（"看不见库"与"根本没连上"是两件事）', async () => {
+    setProviderStatusForTest(
+      providerStatus({
+        state: 'unavailable',
+        available: false,
+        reason: '知识库提供者拒绝了这把凭据（HTTP 401）',
+        protocol_version: null,
+        knowledge_bases: [],
+      }),
+    )
+    stubProviderNetwork(() => providerStatus())
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+    await userEvent.click(await screen.findByRole('button', { name: '知识库连接' }))
+
+    // 原因出现在"状态"那一行与"看得见的库"那一句里（两处都如实说，不摆空清单）
+    expect(
+      (await screen.findAllByText(/知识库提供者拒绝了这把凭据（HTTP 401）/)).length,
+    ).toBeGreaterThan(0)
+    // 协议版本那几行**根本没有**（不 ready 时它们不在响应里，界面也不该摆空行）
+    expect(screen.queryByText('协议版本')).toBeNull()
+  })
+
+  it('浏览器 / NAS 网页端（这一档没有 /local/provider）：**没有这一节**', async () => {
+    setProviderStatusForTest(null, { unsupported: true })
+
+    renderMisc(<SettingsModal open onClose={() => undefined} />)
+
+    // 其余几节照旧（服务配置在），而知识库连接不在
+    expect(await screen.findByRole('button', { name: '服务配置' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '知识库连接' })).toBeNull()
   })
 })

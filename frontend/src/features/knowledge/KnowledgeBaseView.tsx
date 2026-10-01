@@ -70,7 +70,7 @@ import {
   FILTER_STAGE_KEYS,
 } from '@/features/knowledge/status'
 import { UploadDialog } from '@/features/knowledge/UploadDialog'
-import { MAX_UPLOAD_MB, UPLOAD_FORMAT_HINT } from '@/features/knowledge/uploadLimits'
+import { useUploadLimits } from '@/features/knowledge/uploadLimits'
 import {
   formatBytes,
   formatCount,
@@ -188,6 +188,8 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
    * 名册为空（没配名册、或鉴权开着而没人名）时不摆一列"未记录"。
    */
   const roster = useOperatorStore((state) => state.roster)
+  /** 上传约束（M3 阶段 6）：上限与格式提示从握手取，兜底见 `uploadLimits.ts`。 */
+  const limits = useUploadLimits()
 
   const [documents, setDocuments] = useState<DocumentSummary[]>([])
   const [loading, setLoading] = useState(false)
@@ -1266,7 +1268,7 @@ export function KnowledgeBaseView({ kbId: kbIdProp }: KnowledgeBaseViewProps) {
                       <div className="kb-doc-row panel-row kb-doc-empty">
                         <span className="kb-doc-empty-text">{emptyTitle}</span>
                         <span className="kb-doc-empty-hint">
-                          {UPLOAD_FORMAT_HINT}；单文件上限 {MAX_UPLOAD_MB}MB。
+                          {limits.formatHint}；单文件上限 {limits.maxMb}MB。
                         </span>
                       </div>
                     </li>

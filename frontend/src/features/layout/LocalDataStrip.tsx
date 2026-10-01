@@ -39,10 +39,30 @@
  *
  * 读不到就**如实写一行**（"本机状态读不到"）：那时本机后端明明在跑，
  * 读不到状态是异常，静默藏起来等于把排障线索删了。
+ *
+ * ## 第三行：知识库提供者（M3 阶段 6，决策点 D3）
+ *
+ * 本机档里知识库**在别处**（NAS 上），而"连没连上"这件事有另一个家：
+ * 侧栏那一组（可用时长什么样由它回答）。所以这一行**只在"本机档且非 ready"时显示**：
+ *
+ * - `ready` → 不显示（侧栏那组已经在说"能用"了，重复一遍是噪音）；
+ * - `unconfigured` / `unavailable` → 显示"知识库提供者未配置 / 不可用" + 原因，
+ *   `title` 里带地址、协议版本、库数、上次确认时间（排障第一眼要看的就是这几项）；
+ * - **还没探过** → 如实写"正在确认知识库连接…"（不猜好坏，与 `localStatus()` 同一条口径）；
+ * - 读不到 → 如实写一行（与第二行同一条纪律：本机后端在跑，读不到是异常）。
+ *
+ * 判据与面板同一处（`api/provider.ts`），并且**只在 `deployment === 'local'` 时才去探**
+ * ——服务器档（浏览器 / NAS 网页端）里没有"提供者"这个概念，一次都不该问。
  */
 import { useCallback, useEffect, useState } from 'react'
 
 import { batchStateLabel, getLocalStatus, importAccountsText, type LocalStatus } from '@/api/local'
+import {
+  providerDetailLines,
+  providerStateLabel,
+  useKnowledgeProviderStatus,
+  type ProviderView,
+} from '@/api/provider'
 import {
   ensureLocalBase,
   localAvailable,
@@ -118,6 +138,15 @@ export function LocalDataStrip() {
   const label =
     status.kind === 'local' && status.available === null ? '本机（确认中）' : LABELS[status.kind]
 
+  /**
+   * 知识库提供者那一行（文件头"第三行"）：**只在 `deployment === 'local'` 时才去探**。
+   *
+   * 判据取的是 `/local/status` 回的 `deployment`（不是"壳在不在"）：读到了本机档才问
+   * 提供者的事，读不到时这一条本来就不该显示（上面那行已经说了本机后端怎么了）。
+   */
+  const isLocalDeployment = accounts?.deployment === 'local'
+  const provider = useKnowledgeProviderStatus({ enabled: isLocalDeployment })
+
   return (
     <div
       role="status"
@@ -168,6 +197,37 @@ export function LocalDataStrip() {
           本机状态读不到：{accountsError}
         </div>
       ) : null}
+      {/* 第三行：知识库提供者（**本机档且非 ready** 才出现，见文件头） */}
+      {isLocalDeployment ? <ProviderLine provider={provider} /> : null}
+    </div>
+  )
+}
+
+/**
+ * 知识库提供者那一行。
+ *
+ * 抽成一个小函数组件是为了让"什么时候显示"只有一处：`ready` 直接回 `null`
+ * （侧栏那一组已经在回答"能用"了），其余三种形态各说各的话——**一条都不许静默**。
+ */
+function ProviderLine({ provider }: { provider: ProviderView }) {
+  if (provider.ready) return null
+  const detail = providerDetailLines(provider.status).join('\n')
+  // 还没结论、也没出错：如实说"在确认"，不先给一个判断（与顶栏第一行同一条口径）
+  const pending = provider.status === null && provider.error === ''
+  const text = pending
+    ? '正在确认知识库连接…'
+    : provider.status
+      ? `知识库提供者${providerStateLabel(provider.state)}：${provider.reason || '（后端没给原因）'}`
+      : `知识库连接读不到：${provider.error}`
+  return (
+    <div
+      data-testid="local-provider-line"
+      title={detail ? `${text}\n${detail}` : text}
+      className={`min-w-0 truncate pl-[14px] text-[length:var(--text-micro-size)] ${
+        pending ? 'text-text-tertiary' : 'text-[var(--status-warning)]'
+      }`}
+    >
+      {text}
     </div>
   )
 }
