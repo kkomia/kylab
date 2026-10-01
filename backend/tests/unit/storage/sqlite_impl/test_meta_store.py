@@ -32,6 +32,7 @@ from app.storage.base import (
     ChatMessageRecord,
     ConversationArtifactRecord,
     ConversationRecord,
+    ImportLedger,
     MCPServerRecord,
     MetaStore,
     ModelProviderRecord,
@@ -44,7 +45,12 @@ from app.storage.base import (
     WorkspaceRecord,
 )
 from app.storage.repositories import MaintenanceRepo
-from app.storage.sqlite_impl import LOCAL_EXTRA, LOCAL_METHODS, LOCAL_PROTOCOLS
+from app.storage.sqlite_impl import (
+    LOCAL_EXTRA,
+    LOCAL_LEDGER_METHODS,
+    LOCAL_METHODS,
+    LOCAL_PROTOCOLS,
+)
 from app.storage.sqlite_impl import meta_store as meta_store_module
 from app.storage.sqlite_impl.connection import Database
 from app.storage.sqlite_impl.meta_store import (
@@ -82,14 +88,38 @@ def store(database: Database) -> SqliteMetaStore:
 
 
 def test_store_covers_exactly_the_local_method_set() -> None:
-    """本机域方法集**恰好**是 ``LOCAL_METHODS``：一个不多、一个不少。"""
+    """本机域方法集**恰好**是 ``LOCAL_METHODS``：一个不多、一个不少。
+
+    阶段 5 多出来的那八个导入台账方法**不在** ``LOCAL_METHODS`` 里，它们单独登记在
+    ``LOCAL_LEDGER_METHODS``（理由写在那个常量上：那两张表只有本机档有，
+    所以它们既不属于"本机域"也不属于"KB 域"）。所以这条断言的右边是**两块清单**——
+    多一个方法就必须进其中之一，而"哪些算本机域"这条纪律一个字没松。
+    """
     public = {
         name
         for name, value in vars(SqliteMetaStore).items()
         if not name.startswith("_") and callable(value)
     }
-    assert public == set(LOCAL_METHODS)
+    assert public == set(LOCAL_METHODS) | set(LOCAL_LEDGER_METHODS)
     assert len(LOCAL_METHODS) == 81
+    assert len(LOCAL_LEDGER_METHODS) == 8
+
+
+def test_the_ledger_methods_are_not_on_the_meta_store_abc() -> None:
+    """导入台账**不在** ``MetaStore`` 上：它是本机独有的两张表（服务器档没有）。
+
+    这条断言是"不许悄悄超域"的另一半：``LOCAL_METHODS`` 必须是 ``MetaStore``
+    抽象方法的子集（上面那条用例），而这一族方法**必须不是**——真哪天有人把它们
+    加到 ``MetaStore`` 上，那是有意的（服务器档也要有导入台账），而那时这条会红，
+    逼着人把"服务器档怎么实现它们"一起想清楚。
+    """
+    assert not (set(LOCAL_LEDGER_METHODS) & set(MetaStore.__abstractmethods__))
+    assert not (set(LOCAL_LEDGER_METHODS) & set(LOCAL_METHODS))
+
+
+def test_the_store_satisfies_the_import_ledger_protocol(store: SqliteMetaStore) -> None:
+    """结构化类型下，实现**必须真的满足**那份协议（协议里的每个方法都在）。"""
+    assert isinstance(store, ImportLedger)
 
 
 def test_no_abstract_methods_left() -> None:
@@ -912,10 +942,12 @@ def test_vacuum_runs_outside_a_transaction(store: SqliteMetaStore) -> None:
     assert store.storage_stats()["file_bytes"] > 0
 
 
-def test_import_tables_exist_for_stage_5(store: SqliteMetaStore, database: Database) -> None:
-    """导入台账是阶段 5 的落点：阶段 1 只建表，**没有任何方法**碰它们。
+def test_import_tables_exist_and_are_wired_up(store: SqliteMetaStore, database: Database) -> None:
+    """导入台账那两张表（阶段 1 建表、阶段 5 接活）。
 
-    这条用例把"暂时没人用"写成一条会读的断言——免得后来的人以为漏实现了。
+    阶段 1 那条断言写的是"**没有任何方法**碰它们"（当时是事实）；现在反过来——
+    每次写台账都必须**真的落到库里**（``imports`` 一行 + ``import_items`` 一行），
+    所以这里读一遍表名，再走一遍最常用的那条写路径。
     """
     with database.read() as conn:
         names = {
@@ -926,4 +958,6 @@ def test_import_tables_exist_for_stage_5(store: SqliteMetaStore, database: Datab
             )
         }
     assert names == {"imports", "import_items"}
+    # 台账的两块清单在**本机域之外**（见上面那条用例），所以"本机域名单里没有 import*"
+    # 这句话现在仍然是纪律：超域的东西要登记在 LOCAL_LEDGER_METHODS 里，不许混进去。
     assert not [name for name in LOCAL_METHODS if "import" in name]

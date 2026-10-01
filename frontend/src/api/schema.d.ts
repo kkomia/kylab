@@ -1296,6 +1296,44 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conversations/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * 导出会话（NDJSON 流；给本机导入器用）
+         * @description 把一个部署里的会话导成**自包含**的一份流（方案 §3.1：本机不直连服务器库）。
+         *
+         *     为什么要有这条端点（而不是让本机去拼 ``GET /conversations/{id}`` + ``/events`` +
+         *     ``/artifacts`` 三条）：那三条拼不出完整的会话（**丢 ``context_summary``**——
+         *     它不在任何 API 响应里），也没有版本化的契约；而"导入"这件事必须有一个
+         *     **有版本、可断言**的线格式（见 ``services/conversation_export.py``）。
+         *
+         *     - **归属**：与列表同一个判据（``_caller_owner``）——成员只导自己的，
+         *       管理员/本机主人导自己可见的全部。所以这条端点**不新增任何存储方法**，
+         *       per-conversation 复用现有的 ``list_*`` 与 ``get_conversation_summary``；
+         *     - **归档的会话也导**（归档不是删除）；
+         *     - **流式**：逐条会话现读现发，客户端可以边收边写（本机导入器就是这么做的），
+         *       内存上界是一条会话而不是一页；
+         *     - 本机档**也挂着**这条端点（``local_router`` include 了同一个 router）：
+         *       导自己的本机会话，格式与契约一致。两个档位一份实现。
+         *
+         *     ``limit`` / ``offset`` / ``since`` 的语义写在各自的参数说明里；分页游标是
+         *     "扫过的会话数"，不是"这一页返回了几条"（``since`` 会让两者不同，所以末行的
+         *     footer 报的是实际发出去的数）。
+         */
+        get: operations["export_conversations_api_v1_conversations_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conversations/{conversation_id}": {
         parameters: {
             query?: never;
@@ -10899,6 +10937,44 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_conversations_api_v1_conversations_export_get: {
+        parameters: {
+            query?: {
+                /** @description 这一页最多扫几条会话 */
+                limit?: number;
+                /** @description 跳过前几条（翻页；含归档那一批） */
+                offset?: number;
+                /** @description 只导**严格晚于**这个时刻更新过的会话（ISO 8601）。增量导入用 */
+                since?: string | null;
+            };
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 一行一个 JSON 的流：首行 header、每会话 conversation/message/event/artifact、末行 footer。形状与取舍见《API 接口规范》§1.11 与 `services/conversation_export.py` 的模块头。 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/x-ndjson": string;
                 };
             };
             /** @description Validation Error */

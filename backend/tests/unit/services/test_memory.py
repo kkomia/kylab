@@ -340,6 +340,75 @@ def test_recall_survives_a_segmentation_mismatch(tmp_path: Path) -> None:
     assert "门禁" in hits[0].text
 
 
+def _no_jieba(monkeypatch: pytest.MonkeyPatch) -> None:
+    """让 ``import jieba`` 真的失败（抛的是**真** ``ModuleNotFoundError``）。
+
+    比 monkeypatch 掉 ``coverage._jieba`` 更接近现场：那台机器上就是"这个包不在"，
+    而产品代码要挡的正是 import 那一刻。两件事都得做：
+
+    1. 拦住 import（``sys.meta_path`` 里插一个只拒 jieba 的 finder）；
+    2. **清掉分词器缓存**（`coverage._JIEBA`）——上一个用例可能已经把它导进来了。
+    """
+    import sys
+
+    from app.services.retrieval import coverage
+
+    class _NoJieba:
+        def find_spec(self, name, path=None, target=None):  # type: ignore[no-untyped-def]
+            if name == "jieba" or name.startswith("jieba."):
+                raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+            return None
+
+    monkeypatch.setattr(coverage, "_JIEBA", None)
+    monkeypatch.setattr(sys, "meta_path", [_NoJieba(), *sys.meta_path])
+
+
+@pytest.mark.local
+def test_recall_still_works_when_jieba_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**缺 jieba 的运行时里，召回不许整条炸掉**（打包后的桌面端就是这种运行时）。
+
+    现场事实（阶段 3 发现、阶段 5 修）：客户端运行时里**没有 jieba**（约 41 MB，
+    `requirements-sidecar.txt` 明写不打包），而记忆召回自 M2 阶段 3 起在**本机**跑——
+    于是第一次调用分词器时抛 ``ModuleNotFoundError``，而它抛在一轮对话中间：
+    表现是"召回整个失败"，不是"少了一条证据"。
+
+    修法：分词那条通道失败时**降级**（`memory_files._requirement_terms`），
+    由不依赖分词的"相邻字对"通道把人救回来。这条用例同时钉两件事：
+
+    1. **召回仍然返回**（命中同一个文件——字对通道给出的证据指着同一处）；
+    2. **"降级了"这件事看得见**：界面与工具两处的说明都如实加上那句话
+       （`memory_files.SEGMENTATION_UNAVAILABLE_NOTE`）。
+
+    标 ``local``：这条要证明的恰恰是**没有 PostgreSQL（也没有 jieba）的那台机器**
+    上的行为，而它只用临时目录与假 runtime——在缺 PG 的机器上跳过它，
+    等于把 M2 阶段 5 修的这件事整条跳过。
+    """
+    service = _service(tmp_path)
+    _seed(service)
+    _no_jieba(monkeypatch)
+    # 那个标记是**进程级**的（一台机器上"有没有 jieba"不会变），用例自己擦干净：
+    # 留着它会让后面的用例看到一句本不该出现的说明
+    monkeypatch.setattr(memory_files, "_SEGMENTATION_MISSING", False)
+
+    hits, _links = service.recall("锂价下跌对毛利的影响")
+
+    assert hits, "缺 jieba 不该把召回整条打掉"
+    assert hits[0].path == "digest/personal/锂价.md"
+    assert memory_files.segmentation_unavailable() is True
+    # 走的是字对那条通道：实词一个都没有（分词不可用），字对是有的
+    assert memory_files._requirement_terms("锂价下跌对毛利的影响") == []
+    assert memory_files._word_pairs("锂价下跌对毛利的影响")
+
+    from app.api.v1.memory import _recall_note as api_note
+    from app.services.tools import _recall_note as tool_note
+
+    note = memory_files.SEGMENTATION_UNAVAILABLE_NOTE
+    assert note in api_note(), "界面那句说明没有如实说降级"
+    assert note in tool_note(), "模型听到的那句说明没有如实说降级"
+
+
 def test_recall_never_returns_core_files(tmp_path: Path) -> None:
     """``MEMORY.md`` 不进召回池：它每轮整份注入，再召回一遍就是同一段内容进两次上下文。
 

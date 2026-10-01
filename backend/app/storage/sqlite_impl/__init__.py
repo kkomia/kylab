@@ -11,6 +11,13 @@ r"""本机 SQLite 存储实现（M2「会话落本机」阶段 1）。
 - ``meta_store.py``   ``SqliteMetaStore``（只实现本机域）
 - ``validate.py``     运维自检入口：``python -m app.storage.sqlite_impl.validate``
 
+**本机域的两份清单都在这一个模块里**（都不许手抄，见下面两个常量）：
+
+- ``LOCAL_METHODS`` —— ``MetaStore`` 的哪些方法归本机（阶段 2 的路由表按它算补集）；
+- ``LOCAL_LEDGER_METHODS`` —— ``imports`` / ``import_items`` 那族方法。它们**不在**
+  ``MetaStore`` 上（是本机独有的两张表），所以既不属于本机域也不属于 KB 域，
+  单独登记并把理由写在那儿。
+
 **只实现本机域，不实现 ``MetaStore`` 全量 ABC**：本机档里知识库那半没有数据源
 （NAS 才是），所以 ``SqliteMetaStore`` 不继承 ``MetaStore``，也不该被当成一个完整的
 ``MetaStore`` 用。分档路由（``RouterMetaStore``：本机域走它、KB 域转给 KB 侧实现）
@@ -36,6 +43,7 @@ from app.storage.repositories import (
 
 __all__ = [
     "LOCAL_EXTRA",
+    "LOCAL_LEDGER_METHODS",
     "LOCAL_METHODS",
     "LOCAL_PROTOCOLS",
     "local_methods",
@@ -59,6 +67,36 @@ LOCAL_PROTOCOLS: tuple[type, ...] = (
 #: 存储空间概览与 VACUUM 是本机库自己的事（本机库就是那个"文件"），
 #: 而 ``purge_stage_events`` 清的是**文档阶段事件**——那是知识库流水线的表，归 KB 域。
 LOCAL_EXTRA: frozenset[str] = frozenset({"storage_stats", "vacuum"})
+
+#: **本机独有的导入台账**（阶段 5）：``imports`` / ``import_items`` 两张表的方法。
+#:
+#: 它**不在** ``LOCAL_METHODS`` 里，两个理由都不是"忘了"：
+#:
+#: 1. ``LOCAL_METHODS`` 是"``MetaStore`` 的两百来个方法里哪些归本机"的划分，
+#:    而这两个方法族**不在 ``MetaStore`` 上**——服务器档没有这两张表，也没有
+#:    "从别的部署导会话进来"这条动作（``RouterMetaStore`` 的路由表因此装不下它们）；
+#: 2. 硬塞进 ``LOCAL_METHODS`` 会让三条既有用例当场红（``LOCAL_METHODS`` 必须是
+#:    ``MetaStore`` 抽象方法的子集、与 ``REMOTE_METHODS`` 恰好划开全部方法、
+#:    且 ``SqliteMetaStore`` 的方法集合恰好是它）——那三条纪律正是"不许悄悄超域"
+#:    的守卫，所以**超域的登记方式就是这张表**，而不是把守卫改松。
+#:
+#: 谁用它们：``services/legacy_import.py``（唯一的调用方），经 ``StoreBundle.ledger``
+#: 拿到（服务器档那个字段是 ``None``，契约见 ``app/storage/base.py`` 的 ``ImportLedger``）。
+LOCAL_LEDGER_METHODS: frozenset[str] = frozenset(
+    {
+        # imports：批次与进度（CLI 与端点把进度写在同一张表上）
+        "start_import_batch",
+        "set_import_state",
+        "get_import_batch",
+        "list_import_batches",
+        # import_items：幂等键与回滚依据
+        "get_import_item",
+        "record_import_item",
+        "list_import_items",
+        # 一条会话整体落库（一个事务）：幂等重跑与回滚恢复共用同一个入口
+        "write_imported_conversation",
+    }
+)
 
 
 def _protocol_methods(protocol: type) -> frozenset[str]:

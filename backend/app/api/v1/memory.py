@@ -42,6 +42,7 @@ from app.api.v1.schemas import (
     MemoryStatusOut,
 )
 from app.core.services import Services, get_services
+from app.services import memory_files
 from app.services.api_key import Caller
 
 router = APIRouter(prefix="/memory", tags=["memory"])
@@ -253,8 +254,20 @@ def recall_memory(
             MemoryLinkOut(path=item.path, direction=item.direction, name=item.name)
             for item in links
         ],
-        note=RECALL_NOTE,
+        note=_recall_note(),
     )
+
+
+def _recall_note() -> str:
+    """召回结果里那句提醒——**分词通道不可用时如实加一句**（与工具那条同一口径）。
+
+    本机运行时里没有 jieba，召回会降级到"相邻字对"那条通道（见
+    `memory_files._requirement_terms`）。界面该知道这件事：不然"这台机器上召回
+    就是差一点"会是一条没人能解释的现象。
+    """
+    if memory_files.segmentation_unavailable():
+        return f"{RECALL_NOTE}（{memory_files.SEGMENTATION_UNAVAILABLE_NOTE}）"
+    return RECALL_NOTE
 
 
 @router.post("/remember", response_model=MemoryRememberOut, summary="记一条长期事实")

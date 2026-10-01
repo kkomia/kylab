@@ -60,7 +60,7 @@ from typing import Any
 from app.core.exceptions import InvalidRequestError, UpstreamError
 from app.core.services import Services
 from app.models.enums import DataSourceKind
-from app.services import office, web
+from app.services import memory_files, office, web
 from app.services.api_key import WRITE, Caller
 from app.services.memory import DEFAULT_RECALL, MAX_RECALL
 from app.storage.base import ARTIFACT_IN_WORKSPACE
@@ -1117,11 +1117,25 @@ def _recall(services: Services, args: dict[str, Any], *, caller: Caller) -> dict
             for item in links[:20]
         ],
         "total": len(hits),
-        "note": (
-            "这是**记忆**（过去对话里沉淀下来的结论与偏好），不是知识库原文。"
-            "需要可引用的原文依据时用 search。"
-        ),
+        "note": _recall_note(),
     }
+
+
+def _recall_note() -> str:
+    """召回结果里那句说明——**分词通道不可用时如实加一句**。
+
+    本机运行时里没有 jieba（约 41 MB，不打包），那时召回只用"相邻字对"那条通道跑
+    （见 `memory_files._requirement_terms` 的降级）。这件事模型要看得见：
+    少了实词那条通道，召回会比 NAS 上**更依赖字面重合**，
+    而"没找到"与"找到了但不全"是两种要采取不同动作的情况。
+    """
+    base = (
+        "这是**记忆**（过去对话里沉淀下来的结论与偏好），不是知识库原文。"
+        "需要可引用的原文依据时用 search。"
+    )
+    if memory_files.segmentation_unavailable():
+        return f"{base}（{memory_files.SEGMENTATION_UNAVAILABLE_NOTE}）"
+    return base
 
 
 def _remember(services: Services, args: dict[str, Any], *, caller: Caller) -> dict[str, Any]:

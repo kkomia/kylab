@@ -15,6 +15,7 @@ from app.core.http import close_shared_client
 from app.core.logging import add_file_handler, log_file_for, setup_logging
 from app.core.services import get_services
 from app.core.storage import close_stores
+from app.storage.base import IMPORT_UNFINISHED_STATES
 from app.workers.queue_worker import TaskWorker
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,10 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     # 表现是"进程里有个协程每隔几秒去撞一次不可用的库"，日志天天刷错却什么也做不成。
     if settings.deployment == "local":
         logger.info("本机档：不启动任务消费者（摄取流水线在 NAS 上，本机没有那些表）")
+        # R1 的"启动时看一眼"：上次旧会话导入要是被杀在半路，账在库里（状态是
+        # planned/running）。**只报不重试**——重跑是用户的决定（来源可能都不在了），
+        # 而"重跑同一个来源就接着往下走"这条承诺由会话级幂等兜着（见 services/legacy_import.py）。
+        _report_unfinished_imports(services)
     elif settings.run_worker:
         # 一个消费者 = 一个协程（``KYLAB_WORKER_CONCURRENCY`` 个）。
         # 它们各自领活、互不阻塞：任务表本身就是队列，``claim_task`` 原子单语句，
@@ -84,6 +89,31 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         close_stores()
         # 出站 HTTP 客户端同理（见 core/http.py）：连接池也是进程级资源
         close_shared_client()
+
+
+def _report_unfinished_imports(services) -> None:  # type: ignore[no-untyped-def]
+    """启动时如实报一句"还有几笔导入没结"（R1；**不自动重试**，只报）。
+
+    读台账失败只警告：它不该拦住整个服务起来（与上面"记忆模板建不出来"同一口径）。
+    """
+    importer = services.legacy_import
+    if importer is None:  # pragma: no cover - 本机档一定有；服务器档根本走不到这里
+        return
+    try:
+        unfinished = [
+            batch
+            for batch in importer.recent_batches(limit=20)
+            if batch.state in IMPORT_UNFINISHED_STATES
+        ]
+    except Exception:
+        logger.warning("读导入台账失败（不影响启动）", exc_info=True)
+        return
+    if unfinished:
+        logger.warning(
+            "有 %d 个旧会话导入批次没跑完（%s）：重跑同一个来源即可续上（会话级幂等）",
+            len(unfinished),
+            "、".join(batch.id for batch in unfinished),
+        )
 
 
 async def _run_worker(worker: TaskWorker, stop: asyncio.Event) -> None:

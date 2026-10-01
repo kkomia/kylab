@@ -34,6 +34,7 @@ from app.services.chat import ChatService
 from app.services.chunk import ChunkService
 from app.services.commands import CommandService
 from app.services.conversation import ConversationService
+from app.services.conversation_export import ConversationExportService
 from app.services.documents import DocumentService
 from app.services.embedding import build_embedder
 from app.services.embedding.base import EmbeddingProvider
@@ -44,6 +45,7 @@ from app.services.idempotency import IdempotencyService
 from app.services.ingest import IngestService
 from app.services.kb_prompt import KBPromptService
 from app.services.knowledge_base import KnowledgeBaseService
+from app.services.legacy_import import LegacyImporter
 from app.services.lifecycle import LifecycleService
 from app.services.llm import LLMUsage
 from app.services.maintenance import MaintenanceService
@@ -135,6 +137,14 @@ class Services:
     artifacts: ArtifactService
     """会话产物（v0.26）：Agent 做出来的文件落在哪、什么时候进知识库。
     与"文档"分开：产物先是文件，进知识库是它的一个可选去向。"""
+    conversation_export: ConversationExportService
+    """会话导出（M2 阶段 5）：`GET /conversations/export` 背后那一段（六型 NDJSON 流）。
+    **两个档位都有**：服务器档导给本机导入器用，本机档导自己那批（同一份契约）。"""
+    legacy_import: LegacyImporter | None
+    """旧会话导入（M2 阶段 5）：拉 NAS 的导出流、写本机库、记账、回滚。
+
+    **只有本机档不是 None**（服务器档的会话就是权威，没有"从别的部署导进来"
+    这条动作——而台账那两张表也只在服务器不存在的本机库里）。"""
     notes: NotesService
     """笔记：Markdown 事实源 + 加入知识库（v20）。"""
     note_ai: NoteAiService
@@ -346,9 +356,7 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     skill_market_service = SkillMarketService(resolved.data_dir, skill_service)
     # 技能源（v0.27）：从 GitHub 仓库浏览技能。**出站只在这一层**——
     # 前端永远不直接打 GitHub（匿名配额 60 次/小时，一分钟就能打爆，见该模块说明）
-    skill_source_service = SkillSourceService(
-        resolved.data_dir, token=resolved.github_token or ""
-    )
+    skill_source_service = SkillSourceService(resolved.data_dir, token=resolved.github_token or "")
     # 插件包（v0.43）：扫描数据目录 plugins/ 与仓库自带 plugins/（目录即本地市场）。
     # **状态写在 app_settings**（启停/屏蔽），插件目录只读——见 services/plugins.py
     plugins_service = PluginService(resolved.data_dir, bundle)
@@ -413,6 +421,7 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     # （SuggestedQuestionsService → ChatService）。反过来建的话 IngestService
     # 只能拿到 None，"上传即出题"就永远不生效。
     conversations_service = ConversationService(bundle)
+
     # 斜杠命令（v0.44，P1-2）：扫数据目录与仓库自带的 `commands/`（放进来一个 md 文件
     # 就是一条命令）。`conversations` 只用来读"这条会话上一轮的档"——模式观测的基线
     # （见 services/commands.ModeWatch），进程内不重复读。
@@ -530,6 +539,26 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
     # IngestService（登记）两者——它们分工不同，见 services/sources.py
     sources_service = SourceService(bundle, ingest, documents_service)
 
+    # 会话导出（M2 阶段 5）：`GET /conversations/export` 背后那一段。**两个档位都建**：
+    # 导出是服务器那侧的能力（NAS 上的会话导给本机），而本机档导自己那批也走同一份契约。
+    export_service = ConversationExportService(
+        bundle, conversations=conversations_service, artifacts=artifacts_service
+    )
+    # 旧会话导入（M2 阶段 5）：**只有本机档有台账**（`bundle.ledger` 是服务器档的 None，
+    # 见 base.StoreBundle.ledger）。来源与令牌从这一档的引导配置来（`KYLAB_SERVER_URL` /
+    # `KYLAB_TOKEN`，壳起边车时传的就是它们）——**令牌不经过 HTTP 请求体**，
+    # 也就没有第二条让它进日志/落库的路。
+    legacy_importer = (
+        None
+        if bundle.ledger is None
+        else LegacyImporter(
+            bundle,
+            data_dir=resolved.data_dir,
+            source=(resolved.server_url or "").rstrip("/"),
+            token=resolved.token or "",
+        )
+    )
+
     idempotency = IdempotencyService(bundle)
 
     def _maintain() -> None:
@@ -633,6 +662,8 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         observability=observability,
         conversations=conversations_service,
         artifacts=artifacts_service,
+        conversation_export=export_service,
+        legacy_import=legacy_importer,
         notes=NotesService(bundle, ingest=ingest, documents=documents_service),
         note_ai=NoteAiService(chat_service),
         suggested_questions=questions_service,

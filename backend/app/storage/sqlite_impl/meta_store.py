@@ -39,9 +39,13 @@ from typing import Any
 
 from app.core.exceptions import ConflictError
 from app.storage.base import (
+    IMPORT_STATES,
     ChatMessageRecord,
     ConversationArtifactRecord,
     ConversationRecord,
+    ConversationTransfer,
+    ImportBatchRecord,
+    ImportItemRecord,
     MCPServerRecord,
     ModelProviderRecord,
     NoteFolderRecord,
@@ -1670,3 +1674,260 @@ class SqliteMetaStore:
         """
         with self._db.maintenance() as conn:
             conn.execute("VACUUM")
+
+    # ------------------------------------------------------------------ 导入台账（阶段 5）
+    #
+    # 这两张表**只有本机档有**（服务器档没有它们，也没有"从别的部署导会话进来"这条动作），
+    # 所以这些方法不在 ``LOCAL_METHODS`` 里（那是"本机域 / KB 域"的划分，它们两边都不属于），
+    # 而是在 ``sqlite_impl.LOCAL_LEDGER_METHODS`` 单独登记——接口契约见
+    # ``app/storage/base.py`` 的 ``ImportLedger``（本模块不继承它：那个协议是给
+    # 组合根与用例做结构核对的，实现只需要满足它）。
+
+    @staticmethod
+    def _import_batch_from_row(row: sqlite3.Row) -> ImportBatchRecord:
+        return ImportBatchRecord(
+            id=row["id"],
+            source=row["source"],
+            since_ms=None if row["since_ms"] is None else int(row["since_ms"]),
+            state=row["state"],
+            counts=dict(json.loads(row["counts_json"])),
+            error=row["error"] or "",
+            created_at=_load(row["created_at_ms"]),
+            updated_at=_load(row["updated_at_ms"]),
+        )
+
+    @staticmethod
+    def _import_item_from_row(row: sqlite3.Row) -> ImportItemRecord:
+        return ImportItemRecord(
+            conversation_id=row["conversation_id"],
+            source=row["source"],
+            source_updated_at_ms=int(row["source_updated_at_ms"]),
+            outcome=row["outcome"],
+            batch_id=row["batch_id"],
+            local_updated_at_ms=(
+                None if row["local_updated_at_ms"] is None else int(row["local_updated_at_ms"])
+            ),
+            created_at=_load(row["created_at_ms"]),
+        )
+
+    def start_import_batch(
+        self, batch_id: str, *, source: str, since_ms: int | None = None
+    ) -> None:
+        """开一个批次（``state=planned``）。
+
+        **不校验 batch_id 唯一性以外的任何东西**：批次 id 由调用方生成（``imp_<hex>``），
+        撞了就让它抛 ``IntegrityError``——那说明两个进程在开同一个批次，
+        而"悄悄合并"会让两条导入互相踩。
+        """
+        now = _dump(_now())
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO imports (id, source, since_ms, state, counts_json, error,"
+                " created_at_ms, updated_at_ms) VALUES (?, ?, ?, 'planned', '{}', '', ?, ?)",
+                (batch_id, source, since_ms, now, now),
+            )
+
+    def set_import_state(
+        self,
+        batch_id: str,
+        state: str,
+        *,
+        counts: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
+        """推进批次状态；``counts=None`` 表示"这一栏保持原样"。
+
+        ``counts`` 用 ``COALESCE(?, counts_json)`` 而不是在 Python 里先读再写：
+        进度是**另一个线程/进程**在轮询的东西，读-改-写中间那个窗口会让它看到
+        "状态变了、计数还是空的"。一条 UPDATE 里做完就没有那个窗口。
+        """
+        if state not in IMPORT_STATES:
+            allowed = "、".join(sorted(IMPORT_STATES))
+            raise ValueError(f"不认识的导入批次状态：{state}；可用的是：{allowed}")
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                "UPDATE imports SET state = ?, counts_json = COALESCE(?, counts_json),"
+                " error = ?, updated_at_ms = max(?, updated_at_ms + 1) WHERE id = ?",
+                (state, None if counts is None else _json(counts), error, _dump(_now()), batch_id),
+            )
+            if not cursor.rowcount:
+                raise KeyError(f"导入批次不存在：{batch_id}")
+
+    def get_import_batch(self, batch_id: str) -> ImportBatchRecord | None:
+        with self._db.read() as conn:
+            row = conn.execute("SELECT * FROM imports WHERE id = ?", (batch_id,)).fetchone()
+        return None if row is None else self._import_batch_from_row(row)
+
+    def list_import_batches(self, *, limit: int = 20) -> list[ImportBatchRecord]:
+        """最近的批次，新的在前（同一毫秒里按 id 兜底，照 ``list_messages`` 那条纪律）。"""
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM imports ORDER BY created_at_ms DESC, id DESC LIMIT ?", (int(limit),)
+            ).fetchall()
+        return [self._import_batch_from_row(row) for row in rows]
+
+    def get_import_item(self, *, source: str, conversation_id: str) -> ImportItemRecord | None:
+        """这条会话在这个来源上**最近记下的那一条**台账。
+
+        取最近一条（按源端 ``updated_at`` 倒序）而不是整个三元组精确匹配：调用方
+        要能分辨"这一版导过"与"导过的是上一版"——后者意味着源端更新过，
+        而本机那条只要没被人动过就**可以**被替换（方案 §3.1 的
+        ``replace_if_local_untouched``）。
+        """
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM import_items WHERE source = ? AND conversation_id = ?"
+                " ORDER BY source_updated_at_ms DESC, created_at_ms DESC LIMIT 1",
+                (source, conversation_id),
+            ).fetchone()
+        return None if row is None else self._import_item_from_row(row)
+
+    def record_import_item(self, item: ImportItemRecord) -> None:
+        """记一条台账（同时占下幂等键）。
+
+        键重复时**覆盖**：``(source, conversation_id, source_updated_at_ms)`` 是主键，
+        重复只可能是"同一版重跑"，写的是同一件事——抛出去会让一次无害的重跑变成失败。
+        """
+        with self._db.session() as conn:
+            conn.execute(
+                "INSERT INTO import_items (batch_id, conversation_id, source,"
+                " source_updated_at_ms, outcome, local_updated_at_ms, created_at_ms)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)"
+                " ON CONFLICT (source, conversation_id, source_updated_at_ms) DO UPDATE SET"
+                " batch_id = excluded.batch_id, outcome = excluded.outcome,"
+                " local_updated_at_ms = excluded.local_updated_at_ms",
+                (
+                    item.batch_id,
+                    item.conversation_id,
+                    item.source,
+                    item.source_updated_at_ms,
+                    item.outcome,
+                    item.local_updated_at_ms,
+                    _dump(item.created_at or _now()),
+                ),
+            )
+
+    def list_import_items(self, batch_id: str) -> list[ImportItemRecord]:
+        with self._db.read() as conn:
+            rows = conn.execute(
+                "SELECT * FROM import_items WHERE batch_id = ?"
+                " ORDER BY created_at_ms, conversation_id",
+                (batch_id,),
+            ).fetchall()
+        return [self._import_item_from_row(row) for row in rows]
+
+    def write_imported_conversation(self, transfer: ConversationTransfer) -> None:
+        """把一条会话整体写进本机库——**一个事务**（方案 §3.1：每会话一个事务）。
+
+        三件事合在这一条语句序列里，缺哪一件都会留下一个"说不清状态"的库：
+
+        1. **先删同 id 的旧行**：于是"新建 / 替换 / 回滚恢复"三种调用是同一件事，
+           重跑也安全（幂等）。``session_events`` 由外键 ``ON DELETE CASCADE``
+           跟着删（与 ``delete_conversation`` 同一手法）；
+        2. **事件按 transfer 给的 ``seq`` 原样落**（不重算）：导入要保的是"源端当时
+           是什么样"，本机重算一遍会得到一个序号对不上的事件日志——而回放正是按它读的。
+           这里因此不用 ``_insert_events``（那个负责**分配** seq，是给实时写入用的）；
+        3. **时间列一律照搬源端的毫秒值**（含 ``updated_at``）：台账里记下的就是它，
+           而"本机动没动过"全靠拿现在的值与它比。**本机任何一次写都会把它推高**
+           （``touch_conversation`` 是 ``max(now, 旧值+1)``，见那条毫秒推进纪律）
+           ——所以这个比较是可靠的，哪怕源端的钟比本机快。
+
+        批量 ``executemany`` 而不是逐行 ``execute``：一千条消息在 WAL 下就是一千次
+        语句准备，这是导入吞吐（R3 的 ≥1000 消息/秒）最直接的一处。
+        """
+        conversation = transfer.conversation
+        now = _now()
+        created = conversation.created_at or now
+        updated = conversation.updated_at or created
+        messages = [
+            (
+                message.id,
+                conversation.id,
+                message.role,
+                message.content,
+                _json([dict(item) for item in message.sources]),
+                _json([dict(item) for item in message.steps]),
+                message.thinking,
+                _json([dict(item) for item in message.attachments]),
+                _dump(message.created_at or created),
+            )
+            for message in transfer.messages
+        ]
+        events = [
+            (
+                conversation.id,
+                event.seq,
+                event.kind,
+                _json(event.payload),
+                _dump(event.created_at or created),
+            )
+            for event in transfer.events
+        ]
+        artifacts = [
+            (
+                artifact.id,
+                conversation.id,
+                artifact.name,
+                artifact.format,
+                artifact.size_bytes,
+                artifact.storage,
+                artifact.location,
+                artifact.workspace_id,
+                artifact.owner_id,
+                artifact.knowledge_base_id,
+                artifact.document_id,
+                _dump(artifact.created_at or created),
+            )
+            for artifact in transfer.artifacts
+        ]
+        with self._db.session() as conn:
+            conn.execute("DELETE FROM chat_messages WHERE conversation_id = ?", (conversation.id,))
+            conn.execute(
+                "DELETE FROM conversation_artifacts WHERE conversation_id = ?", (conversation.id,)
+            )
+            conn.execute("DELETE FROM conversations WHERE id = ?", (conversation.id,))
+            conn.execute(
+                "INSERT INTO conversations"
+                " (id, title, kb_ids, owner_id, model_pk, thinking, thinking_effort,"
+                "  pinned, context_summary, summary_upto, workspace_id, archived_at_ms,"
+                "  created_at_ms, updated_at_ms)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    conversation.id,
+                    conversation.title,
+                    _json(list(conversation.kb_ids)),
+                    conversation.owner_id,
+                    conversation.model_pk,
+                    None if conversation.thinking is None else int(conversation.thinking),
+                    conversation.thinking_effort,
+                    int(conversation.pinned),
+                    transfer.summary,
+                    transfer.summary_upto,
+                    conversation.workspace_id,
+                    _dump(conversation.archived_at),
+                    _dump(created),
+                    _dump(updated),
+                ),
+            )
+            if messages:
+                conn.executemany(
+                    "INSERT INTO chat_messages"
+                    " (id, conversation_id, role, content, sources, steps, thinking,"
+                    "  attachments, created_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    messages,
+                )
+            if events:
+                conn.executemany(
+                    "INSERT INTO session_events"
+                    " (conversation_id, seq, kind, payload, created_at_ms)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    events,
+                )
+            if artifacts:
+                conn.executemany(
+                    "INSERT INTO conversation_artifacts"
+                    " (id, conversation_id, name, format, size_bytes, storage, location,"
+                    "  workspace_id, owner_id, knowledge_base_id, document_id, created_at_ms)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    artifacts,
+                )

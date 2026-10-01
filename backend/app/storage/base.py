@@ -18,7 +18,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     # **只在类型检查时导入**：窄协议模块反过来要在运行时导入本模块的记录类型，
@@ -64,14 +64,21 @@ from app.models.enums import (
 __all__ = [
     "ARTIFACT_IN_OBJECTS",
     "ARTIFACT_IN_WORKSPACE",
+    "IMPORT_OUTCOMES",
+    "IMPORT_STATES",
+    "IMPORT_UNFINISHED_STATES",
     "ApiKeyRecord",
     "ChunkRecord",
     "ConversationArtifactRecord",
+    "ConversationTransfer",
     "DataSourceRecord",
     "DocumentPartRecord",
     "DocumentRecord",
     "FullTextStore",
     "ImageRecord",
+    "ImportBatchRecord",
+    "ImportItemRecord",
+    "ImportLedger",
     "KnowledgeBaseRecord",
     "MetaStore",
     "NoteFolderRecord",
@@ -107,6 +114,22 @@ class StoreBundle:
     objects: ObjectStore
     tabular: TabularStore
     """表格结构化副本（DuckDB）。只有 CSV/Excel 会用，其余文档不碰它。"""
+
+    ledger: ImportLedger | None = None
+    """旧会话导入的**台账**（M2 阶段 5）：本机档才有，服务器档恒为 ``None``。
+
+    **为什么它不是 ``MetaStore`` 的窄视图**（本文件里唯一一个这样的字段）：
+    ``imports`` / ``import_items`` 是**本机独有的两张表**，服务器档没有它们，
+    也没有"从别的部署导会话进来"这条动作——所以它既不进 ``repositories.py``
+    的 24 个域（那里的每个方法都必须在 ``MetaStore`` 上存在，有两条用例逐名核对），
+    也不进 ``LOCAL_METHODS``（那是"本机域 / KB 域"的划分，它两边都不属于）。
+    它在 ``sqlite_impl.LOCAL_LEDGER_METHODS`` 单独登记，装配点见
+    ``core/storage.py::_build_local_stores``（与 ``meta`` 用的是**同一个**实例）。
+
+    默认 ``None`` 是刻意的：五个仓储之外的一切调用点、以及服务器档的两处装配
+    都不需要改一个字。要用它的人必须显式处理"这台机器没有导入能力"那一支
+    （本机档配上它、服务器档是 ``None``）——不留一个"静默的空实现"。
+    """
 
     # ---- 按域切开的窄视图（v0.2，见 storage/repositories.py）----
     #
@@ -2471,6 +2494,197 @@ class MetaStore(ABC):
         "是否已配置"的判断；而删除意味着"回到没有这个设置的状态"。
         槽位解绑（G1）依赖这个区别——解绑后应当回退到 ``.env``/设置页那套，
         而不是被一个空值挡住。
+        """
+        ...
+
+
+# ------------------------------------------------------------------ 旧会话导入（本机档独有）
+#
+# 一块**只属于本机档**的存储契约（M2 阶段 5，方案 §3.1 / §5 R1）。它住在这个文件里
+# 的理由与其它记录一样：``services/`` 只许见 ``app.storage.base``（工程规范 §3.3 的 L2），
+# 而导入器要读写的这两张表**只有本机档有**，所以契约只能落在这里。
+#
+# 它**不在 ``MetaStore`` 上**（服务器档没有这两张表，也没有"从别的部署导会话进来"
+# 这条动作），也不在 ``repositories.py`` 的 24 个域里（那边的每个方法都必须在
+# ``MetaStore`` 上存在，有两条用例逐名核对）。登记点见
+# ``sqlite_impl.LOCAL_LEDGER_METHODS`` 与 ``StoreBundle.ledger``。
+#
+# 三件事共用这一个契约：**幂等**（键 ``(source, conversation_id, source_updated_at_ms)``
+# 命中即跳过、一行不写）、**可回滚**（``outcome`` 决定删还是用快照恢复）、
+# **一次会话一个事务**（``write_imported_conversation``）。
+
+IMPORT_STATES: frozenset[str] = frozenset({"planned", "running", "done", "failed", "rolled_back"})
+"""``imports.state`` 的词表（与 ``schema.sql`` 的 CHECK 同一个集合）。
+
+放这里是为了让服务层在写之前就能拦下拼错的取值——那条 CHECK 会在事务里抛
+``IntegrityError``，而那时错误信息只剩"约束失败"四个字。
+"""
+
+IMPORT_UNFINISHED_STATES: frozenset[str] = frozenset({"planned", "running"})
+"""**没跑完**的那两个状态（"上一次导入断在半路"的判据，R1）。
+
+启动自检与 ``/local/status`` 都按它判断"还有几笔账没结"——两处各写一份
+``("planned", "running")`` 的话，将来加了状态（比如 ``paused``）只会有一处跟上。
+"""
+
+IMPORT_OUTCOMES: frozenset[str] = frozenset({"created", "replaced"})
+"""``import_items.outcome`` 的词表：这一条当时是**新建**还是**替换**。
+
+回滚的两条规则全靠它分岔（``created`` → 删；``replaced`` → 用快照恢复）。
+"""
+
+
+@dataclass(slots=True)
+class ImportBatchRecord:
+    """一次导入批次（``imports`` 表）。
+
+    进度也在这张表上（``state`` + ``counts``）：CLI 开的批次与端点开的批次
+    **写在同一个库里**，于是"现在到哪一步了"对两个触发入口是同一个答案。
+    """
+
+    id: str
+    source: str
+    """来源部署（NAS 的 API 基址，含 ``/api/v1``）。幂等键的第一段。"""
+    since_ms: int | None = None
+    """只导这个时刻之后更新过的会话（UTC 毫秒；``None`` = 全量）。"""
+    state: str = "planned"
+    """``planned`` / ``running`` / ``done`` / ``failed`` / ``rolled_back``。
+
+    取值词表见 ``IMPORT_STATES``（与 ``schema.sql`` 的 CHECK 同一个集合）。
+    """
+    counts: dict[str, Any] = field(default_factory=dict)
+    """计数器与如实列出的明细（列是 ``counts_json``）。
+
+    形状按 ``state`` 分两种：跑到 ``done``/``failed`` 时是"扫了几条、新建几条、
+    替换几条、跳过哪几条（**连原因**）"；``rolled_back`` 时是"删了几条、恢复几条、
+    保留哪几条"。
+    """
+    error: str = ""
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class ImportItemRecord:
+    """台账里的一条会话（``import_items`` 表）：幂等键与回滚依据都在它身上。
+
+    ``local_updated_at_ms`` 是**导入完成那一刻**本机这条会话的 ``updated_at``
+    （毫秒）。它一个人撑着两条规则：
+
+    - 覆盖策略 ``replace_if_local_untouched``：本机现在的值比它大 = 有人在导入之后
+      动过这条会话 → **跳过**，绝不静默覆盖（方案 §3.1）；
+    - 回滚：``outcome=created`` 且本机值仍等于它 → 删；``outcome=replaced`` 且仍等于
+      它 → 用快照恢复；本机值变了 → 一律保留并如实报数（方案 §3.1 的两条）。
+    """
+
+    conversation_id: str
+    source: str
+    source_updated_at_ms: int
+    outcome: str
+    """``created`` / ``replaced``（见 ``IMPORT_OUTCOMES``）。"""
+    batch_id: str = ""
+    local_updated_at_ms: int | None = None
+    created_at: datetime | None = None
+
+
+@dataclass(slots=True)
+class ConversationTransfer:
+    """一条会话的**全量搬运形状**（会话 + 摘要 + 消息 + 事件 + 产物）。
+
+    一个形状三处用（方案 §1.1 说的"一物两用"）：
+
+    - 导出 = 把它编成 NDJSON（``services/conversation_export.py`` 的六型信封）；
+    - 导入 = 把它整体写进本机库（``ImportLedger.write_imported_conversation``）；
+    - 回滚 = 把导入前的它按同一套 NDJSON 存进 ``import-rollback/<batch>/``，恢复时读回来。
+
+    ``summary`` / ``summary_upto`` 就是 ``conversations`` 表上那两个**不进 API** 的列
+    （§1.3）：丢了它们，导入进来的长期会话就失去了"已经被压缩到哪里"，续聊会从头重算。
+    """
+
+    conversation: ConversationRecord
+    summary: str = ""
+    summary_upto: str | None = None
+    messages: Sequence[ChatMessageRecord] = ()
+    events: Sequence[SessionEventRecord] = ()
+    artifacts: Sequence[ConversationArtifactRecord] = ()
+
+    @property
+    def file_references(self) -> int:
+        """这条会话里**指向文件本体**的引用数（产物 + 消息附件）。
+
+        它们不随导入过来（方案 §3.1 的取舍：体积不可控，且与"工作区文件永不上传"
+        对称）：产物记录照落、``location`` 保原 key，但那几个字节还在 NAS 上。
+        报告与 ``/local/status`` 要如实报这个数——否则用户会以为文件也导过来了。
+        """
+        return len(self.artifacts) + sum(len(message.attachments) for message in self.messages)
+
+
+@runtime_checkable
+class ImportLedger(Protocol):
+    """本机档独有的导入台账（``imports`` / ``import_items``）+ 会话的整条写入。
+
+    ``runtime_checkable`` 是为了让用例能一句话核对"装上去的那个实现真的满足它"
+    ——结构化类型下不继承也必须满足，否则这份协议只是文档。
+
+    **``write_imported_conversation`` 为什么也在这里**：它和台账同属"只有导入才需要"
+    的本机独有能力——**一个会话一个事务**地整体落库（会话行 + 消息 + 事件 + 产物 + 摘要），
+    幂等重跑与回滚恢复共用同一个入口。普通写路径没有这个形状（它是一轮一轮追加的），
+    而把它加进 ``MetaStore`` 只会让服务器档也去实现一个它永远用不到的方法。
+    """
+
+    def start_import_batch(
+        self, batch_id: str, *, source: str, since_ms: int | None = None
+    ) -> None:
+        """开一个批次（``state=planned``，``counts`` 为空）。"""
+        ...
+
+    def set_import_state(
+        self,
+        batch_id: str,
+        state: str,
+        *,
+        counts: dict[str, Any] | None = None,
+        error: str = "",
+    ) -> None:
+        """推进状态；``counts`` / ``error`` 给了才覆盖（``None`` = 保持原样）。"""
+        ...
+
+    def get_import_batch(self, batch_id: str) -> ImportBatchRecord | None:
+        """取一个批次（``/local/import/{batch}` 的轮询视图）。"""
+        ...
+
+    def list_import_batches(self, *, limit: int = 20) -> list[ImportBatchRecord]:
+        """最近的批次，新的在前（``/local/status`` 用它与"没跑完的那一批"对账）。"""
+        ...
+
+    def get_import_item(self, *, source: str, conversation_id: str) -> ImportItemRecord | None:
+        """这条会话在这个来源上**最近记下的那一条**台账（没有就 ``None``）。
+
+        按 ``(source, conversation_id)`` 而不是整个三元组取，是为了让调用方能分辨
+        两种"本机已经有这条会话"：键完全相同 = 这一版已经导过（跳过）；键更老 =
+        导过的是上一版（源端更新过，本机又没动过 → 可以替换）。
+        """
+        ...
+
+    def record_import_item(self, item: ImportItemRecord) -> None:
+        """记一条台账（同时占下幂等键）。
+
+        键重复时**覆盖**而不是抛：同一版重跑时不该让台账写入变成一条失败
+        （``(source, conversation_id, source_updated_at_ms)`` 是主键，写的是同一件事）。
+        """
+        ...
+
+    def list_import_items(self, batch_id: str) -> list[ImportItemRecord]:
+        """这个批次写下的全部台账（回滚逐条按它办）。"""
+        ...
+
+    def write_imported_conversation(self, transfer: ConversationTransfer) -> None:
+        """把一条会话**整体**写进本机库；**一个事务**（会话行 + 消息 + 事件 + 产物 + 摘要）。
+
+        语义是"写到与这份 transfer 一模一样"：同 id 的已有会话（连同消息 / 事件 /
+        产物）先删再写，所以它对新会话、替换、回滚恢复三种调用都是同一件事，
+        重跑也安全。事件按 transfer 里给的顺序**原样落 ``seq``**——导入要保的是
+        "源端当时是什么样"，不是"本机重算一遍"。
         """
         ...
 

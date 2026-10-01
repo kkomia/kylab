@@ -11,10 +11,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile, status
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 
 from app.api.auth import require_read, require_write, signing_secret
 from app.api.v1.schemas import (
@@ -48,6 +49,7 @@ from app.services.artifacts import (
     file_signature_resource,
     split_filename,
 )
+from app.services.conversation_export import MEDIA_TYPE, PAGE_SIZE
 from app.services.documents import media_type_of
 from app.services.ingest import content_disposition
 from app.services.session_events import fill_missing_thinking, steps_per_turn
@@ -139,6 +141,62 @@ def list_conversations(
     )
     return ConversationListOut(
         items=[_summary(services, item, preview=previews.get(item.id, "")) for item in records]
+    )
+
+
+@router.get(
+    "/export",
+    summary="导出会话（NDJSON 流；给本机导入器用）",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "content": {MEDIA_TYPE: {"schema": {"type": "string"}}},
+            "description": (
+                "一行一个 JSON 的流：首行 header、每会话 conversation/message/event/artifact、"
+                "末行 footer。形状与取舍见《API 接口规范》§1.11 与 "
+                "`services/conversation_export.py` 的模块头。"
+            ),
+        }
+    },
+)
+def export_conversations(
+    services: Annotated[Services, Depends(get_services)],
+    caller: Annotated[Caller, Depends(require_read)],
+    limit: int = Query(default=PAGE_SIZE, ge=1, le=PAGE_SIZE, description="这一页最多扫几条会话"),
+    offset: int = Query(default=0, ge=0, description="跳过前几条（翻页；含归档那一批）"),
+    since: datetime | None = Query(
+        default=None,
+        description="只导**严格晚于**这个时刻更新过的会话（ISO 8601）。增量导入用",
+    ),
+) -> StreamingResponse:
+    """把一个部署里的会话导成**自包含**的一份流（方案 §3.1：本机不直连服务器库）。
+
+    为什么要有这条端点（而不是让本机去拼 ``GET /conversations/{id}`` + ``/events`` +
+    ``/artifacts`` 三条）：那三条拼不出完整的会话（**丢 ``context_summary``**——
+    它不在任何 API 响应里），也没有版本化的契约；而"导入"这件事必须有一个
+    **有版本、可断言**的线格式（见 ``services/conversation_export.py``）。
+
+    - **归属**：与列表同一个判据（``_caller_owner``）——成员只导自己的，
+      管理员/本机主人导自己可见的全部。所以这条端点**不新增任何存储方法**，
+      per-conversation 复用现有的 ``list_*`` 与 ``get_conversation_summary``；
+    - **归档的会话也导**（归档不是删除）；
+    - **流式**：逐条会话现读现发，客户端可以边收边写（本机导入器就是这么做的），
+      内存上界是一条会话而不是一页；
+    - 本机档**也挂着**这条端点（``local_router`` include 了同一个 router）：
+      导自己的本机会话，格式与契约一致。两个档位一份实现。
+
+    ``limit`` / ``offset`` / ``since`` 的语义写在各自的参数说明里；分页游标是
+    "扫过的会话数"，不是"这一页返回了几条"（``since`` 会让两者不同，所以末行的
+    footer 报的是实际发出去的数）。
+    """
+    return StreamingResponse(
+        # 生成器在请求处理返回**之后**才被消费（Starlette 在线程池里迭代同步生成器），
+        # 所以这里不能省掉 `defer` 之外的任何准备：会抛的校验都发生在返回响应之前
+        # （`visible` 的第一次查询也在首次迭代时才跑——那时库里读的是只读快照，无锁）
+        services.conversation_export.stream(
+            owner_id=_caller_owner(caller), limit=limit, offset=offset, since=since
+        ),
+        media_type=MEDIA_TYPE,
     )
 
 

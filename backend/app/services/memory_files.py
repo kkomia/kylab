@@ -72,6 +72,7 @@ __all__ = [
     "MAX_WRITE_CHARS",
     "MIN_MATCHED_TERMS",
     "MIN_TERM_COVERAGE",
+    "SEGMENTATION_UNAVAILABLE_NOTE",
     "MemoryBlock",
     "MemoryFile",
     "MemoryFileDetail",
@@ -94,6 +95,7 @@ __all__ = [
     "safe_path",
     "scan",
     "search",
+    "segmentation_unavailable",
     "session_note_path",
     "stats",
     "to_relative",
@@ -1170,6 +1172,33 @@ _FILLER_WORDS = frozenset(
 )
 
 
+#: 降级那句如实的话（缺 jieba 时用）：**说出来**，不静默降级。
+#:
+#: 起因是阶段 3 现场发现的一条：打包出来的客户端运行时里没有 jieba（约 41 MB，
+#: `requirements-sidecar.txt` 明写不打包），而记忆召回自那一步起就在**本机**跑——
+#: 于是"分词"这条通道在本机运行时里是**没有的**。两条通道里字对那条不依赖分词，
+#: 所以召回照常能返回；但**这件事必须说出来**：不说的话，"召回质量比 NAS 上差一点"
+#: 就成了一条没人知道、也没人能解释的现象（而且它会安静地一直差下去）。
+SEGMENTATION_UNAVAILABLE_NOTE = (
+    "分词通道不可用（这台机器上没有 jieba），本次召回已降级到相邻字对通道"
+)
+
+#: 分词通道是不是已经被发现不可用（进程级、一次性）。
+#:
+#: 一台机器上"有没有 jieba"是进程里不会变的事实，所以记一次就够——不去每次查询都
+#: 试一次 import 并打一行日志（那会把日志刷成噪声，反而没人看）。
+_SEGMENTATION_MISSING = False
+
+
+def segmentation_unavailable() -> bool:
+    """分词通道现在不可用吗（真值 = 已经试过一次并且 jieba 不在）。
+
+    给**上面那几层**用（召回端点的 ``note`` 与 ``recall`` 工具的说明文字）：
+    降级是一件事，而"用户/模型看得见它"是另一件事——这条链上两者都要成立。
+    """
+    return _SEGMENTATION_MISSING
+
+
 def _requirement_terms(query: str) -> list[str]:
     """查询的**实词**（走 ``services/retrieval/coverage.py`` 那份切分，再剔掉疑问词）。
 
@@ -1178,8 +1207,30 @@ def _requirement_terms(query: str) -> list[str]:
 
     疑问词在 ``_FILLER_WORDS`` 里单独剔掉（理由写在那个常量上）。
     查询里一个实词都不剩时返回空：那时只剩字对那条通道（见 ``_word_pairs``）。
+
+    **缺 jieba 时降级**（`SEGMENTATION_UNAVAILABLE_NOTE`）：客户端运行时（打包出来的
+    桌面端）里没有 jieba（约 41 MB，`requirements-sidecar.txt` 明写不打包），
+    而记忆召回自 M2 阶段 3 起就在**本机**跑——于是那条链第一次调用分词器时会抛
+    ``ModuleNotFoundError``，而它抛在一轮对话中间，表现是"召回整个失败"。
+    jieba 只影响"实词"这一条通道，另一条（相邻字对）**不依赖分词**，
+    所以这里退到"这一条通道没有证据"，让字对那条把人救回来 ——
+    **召回照常返回，只是少了一条证据通道**，额度与判据都在 ``search`` 那一侧
+    （两条通道任一条通过即算命中）。
+
+    **只吞 jieba 的缺失**：别的 ``ModuleNotFoundError``（比如依赖链上缺了别的东西）
+    一律原样抛——把它也吞掉会让一个真 bug 变成"召回质量莫名其妙变差"。
     """
-    return [word for word in content_terms(query) if word not in _FILLER_WORDS]
+    global _SEGMENTATION_MISSING
+    try:
+        terms = content_terms(query)
+    except ModuleNotFoundError as exc:
+        if exc.name not in (None, "jieba"):
+            raise
+        if not _SEGMENTATION_MISSING:
+            _SEGMENTATION_MISSING = True
+            logger.warning(SEGMENTATION_UNAVAILABLE_NOTE)
+        return []
+    return [word for word in terms if word not in _FILLER_WORDS]
 
 
 def _word_pairs(query: str) -> list[str]:

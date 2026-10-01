@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from app.core.exceptions import InvalidRequestError, NotFoundError
+from app.services import memory_files
 from app.services.memory_files import (
     _BLOCK_CACHE,
     MAX_WRITE_BYTES,
@@ -473,6 +474,70 @@ def test_too_many_headings_falls_back_to_line_splitting() -> None:
     assert len(blocks) >= MAX_AST_SECTIONS
     assert any("内容0" in body for _begin, _end, body in blocks)
     assert blocks[0][2] == "## 标题0", "兜底那条路没有面包屑，标题自成一块"
+
+
+def _no_jieba(monkeypatch: pytest.MonkeyPatch) -> None:
+    """让 ``import jieba`` 真的失败（抛的是**真** ``ModuleNotFoundError``）。
+
+    两件事都要做：拦住 import（``sys.meta_path`` 插一个只拒 jieba 的 finder），
+    再清掉分词器缓存（`coverage._JIEBA`）——前面的用例可能已经把它导进来了。
+    """
+    import sys
+
+    from app.services.retrieval import coverage
+
+    class _NoJieba:
+        def find_spec(self, name, path=None, target=None):  # type: ignore[no-untyped-def]
+            if name == "jieba" or name.startswith("jieba."):
+                raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+            return None
+
+    monkeypatch.setattr(coverage, "_JIEBA", None)
+    monkeypatch.setattr(sys, "meta_path", [_NoJieba(), *sys.meta_path])
+
+
+@pytest.mark.local
+def test_missing_jieba_degrades_to_the_pair_channel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """缺 jieba 时：实词那条通道**空着**，字对那条照常干活（召回仍然是完整的一次）。
+
+    这条钉的是机制本身（`memory_files._requirement_terms`）：它是唯一一处调用分词器
+    的地方，也是唯一一处该失败的地方。标 ``local``：打包后的桌面端就是这种运行时，
+    而这正是这条降级要治的那个现场。
+    """
+    root = tmp_path / "memory"
+    (root / "daily").mkdir(parents=True)
+    (root / "daily" / "2026-09-26.md").write_bytes("- 用户偏好深色模式，晚上别看亮底\n".encode())
+    _no_jieba(monkeypatch)
+    monkeypatch.setattr(memory_files, "_SEGMENTATION_MISSING", False)
+
+    assert memory_files._requirement_terms("深色模式偏好") == []
+    assert memory_files.segmentation_unavailable() is True
+
+    hits = search(root, "深色模式偏好")
+
+    assert hits, "字对那条通道必须把人救回来"
+    assert "深色模式" in hits[0].text
+
+
+@pytest.mark.local
+def test_only_the_missing_tokenizer_is_swallowed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """**只吞 jieba 的缺失**：别的 ``ModuleNotFoundError`` 原样抛。
+
+    把它也吞掉，一个真 bug 就会变成"召回质量莫名其妙变差"——那是这个项目最不想要的
+    一类失败（没有报错、只是结果不对）。
+    """
+
+    def broken(query: str):  # type: ignore[no-untyped-def]
+        raise ModuleNotFoundError("No module named 'numpy'", name="numpy")
+
+    monkeypatch.setattr(memory_files, "content_terms", broken)
+
+    with pytest.raises(ModuleNotFoundError):
+        memory_files._requirement_terms("深色模式偏好")
 
 
 # ----------------------------------------- 分块缓存（P1：一次召回不再重读整池）

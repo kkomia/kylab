@@ -164,6 +164,9 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
 
     启动即校验的气质与服务器档一致：SQLite 版本不够（``STRICT`` 表要 ≥3.37）、
     schema 版本比应用新、库里有别人在写，都在这里说清楚（见 ``sqlite_impl/schema.py``）。
+
+    **多出来的第六个字段 ``ledger``**（阶段 5）：导入台账（``imports`` / ``import_items``）
+    是本机独有的，服务器档恒为 ``None``（那条纪律与理由写在 ``base.StoreBundle.ledger``）。
     """
     from app.storage.local_impl.object_store import LocalObjectStore
     from app.storage.split_impl import (
@@ -189,13 +192,21 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
     for subdir in STORAGE_SUBDIRS:
         (data_dir / subdir).mkdir(parents=True, exist_ok=True)
 
+    # **同一个实例两处用**（阶段 5）：``meta`` 走它做本机域读写，``ledger`` 走它做
+    # 导入台账与"一条会话整体写入"。两个 SqliteMetaStore 指向同一个库文件也能跑，
+    # 但那会造出两条连接集合与两把写锁之外的**两个对象**——而"写锁是进程内一把"
+    # 这条纪律是对着 `Database` 说的，不是对着仓储对象说的。同一个实例没有这个问题。
+    local_store = SqliteMetaStore(database)
+
     return StoreBundle(
         # 本机域走 SQLite，KB 域转给"不可用"那半（M3 换成 RemoteMetaStore，见 split_impl/）
-        meta=RouterMetaStore(local=SqliteMetaStore(database), kb=UnavailableMetaStore()),
+        meta=RouterMetaStore(local=local_store, kb=UnavailableMetaStore()),
         vectors=UnavailableVectorStore(),
         fulltext=UnavailableFullTextStore(),
         objects=LocalObjectStore(data_dir),
         tabular=UnavailableTabularStore(),
+        # 导入台账是本机独有的（服务器档那个字段恒为 None，见 base.StoreBundle.ledger）
+        ledger=local_store,
     )
 
 
