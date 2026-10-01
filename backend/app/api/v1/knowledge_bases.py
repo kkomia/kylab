@@ -26,6 +26,47 @@ from app.services.api_key import Caller
 router = APIRouter(prefix="/knowledge-bases", tags=["knowledge-bases"])
 
 
+def kb_access_flags(record: Any, caller: Caller, services: Services) -> tuple[bool, bool]:
+    """``(can_manage, can_write)``——**这两条判定的唯一定义**。
+
+    `record` 标成 `Any` 而不是具体记录类型：协议层不允许 import 存储
+    （`scripts/check_layering.py` 的 L1 规则），而那条纪律正是"换存储不用改 api"的保证。
+
+    两条判定都**在后端算**，前端不重复实现：
+    - `can_manage` 与 ``services/share.py`` 的 ``_require_owner_or_admin`` 一致；
+    - `can_write` 直接复用 ``api_keys.check_access(need=WRITE)``——
+      界面据此决定要不要显示「上传文档」「添加数据源」，避免给出一个点了必然 403 的入口。
+
+    **为什么提出来**（M3 阶段 1）：知识库提供者的握手（`api/v1/provider.py`）也要报
+    "这把凭据能不能写这个库"。两处各写一份必然漂，而漂的表现是**界面自相矛盾**
+    （列表上说能传、点进去 403，或反过来把能用的入口收起来）。所以口径只留这一份，
+    两个端点都从这里取。
+    """
+    managed = caller.is_admin or (
+        caller.user is not None
+        and (caller.user.role is UserRole.ADMIN or record.owner_id == caller.user.id)
+    )
+    return managed, managed or services.api_keys.can_write(caller, record.id)
+
+
+def visible_knowledge_bases(services: Services, caller: Caller) -> list[Any]:
+    """调用方**看得见**的知识库记录——范围过滤的唯一定义。
+
+    受限密钥只看到自己范围内的库：**列表也要过滤**，否则光看名字就能探出
+    这台机器上有哪些知识库（元信息泄露），而且它点进去必然 403，体验也怪。
+
+    与 :func:`kb_access_flags` 同一条理由提出来共用：握手回的是"这台提供者上有哪些库、
+    你能用哪些"，它必须与 ``GET /knowledge-bases`` 给出**同一批**库，
+    否则两处对同一把钥匙会有两种答案。
+    """
+    records = services.knowledge_bases.list_all()
+    visible = services.api_keys.visible_kb_ids(caller)
+    if visible is None:
+        return list(records)
+    allowed = set(visible)
+    return [record for record in records if record.id in allowed]
+
+
 def _out(
     record: Any,
     caller: Caller,
@@ -36,25 +77,16 @@ def _out(
 ) -> KnowledgeBaseOut:
     """记录 → 响应，并补上"当前主体能不能管 / 能不能写这个库"。
 
-    `record` 标成 `Any` 而不是具体记录类型：协议层不允许 import 存储
-    （`scripts/check_layering.py` 的 L1 规则），而那条纪律正是"换存储不用改 api"的保证。
-
-    两条判定都**在后端算**，前端不重复实现：
-    - `can_manage` 与 ``services/share.py`` 的 ``_require_owner_or_admin`` 一致；
-    - `can_write` 直接复用 ``api_keys.check_access(need=WRITE)``——
-      界面据此决定要不要显示「上传文档」「添加数据源」，避免给出一个点了必然 403 的入口。
+    两条判定走 :func:`kb_access_flags`（**唯一一份口径**，与握手共用）。
 
     ``document_count`` / ``last_activity`` 由调用方传入：列表接口一次 ``GROUP BY``
     拿到全部库的计数，单个库的接口用 ``document_stats()`` 里对应的一项。
     """
-    managed = caller.is_admin or (
-        caller.user is not None
-        and (caller.user.role is UserRole.ADMIN or record.owner_id == caller.user.id)
-    )
+    managed, writable = kb_access_flags(record, caller, services)
     return KnowledgeBaseOut.model_validate(record).model_copy(
         update={
             "can_manage": managed,
-            "can_write": managed or services.api_keys.can_write(caller, record.id),
+            "can_write": writable,
             "document_count": document_count,
             "last_activity": last_activity,
         }
@@ -94,12 +126,7 @@ def list_knowledge_bases(
     services: Services = Depends(get_services),
     caller: Caller = Depends(require_read),
 ) -> KnowledgeBaseList:
-    records = services.knowledge_bases.list_all()
-    # 受限密钥只看到自己范围内的库——**列表也要过滤**，否则光看名字就能探出
-    # 这台机器上有哪些知识库（元信息泄露），而且它点进去必然 403，体验也怪
-    visible = services.api_keys.visible_kb_ids(caller)
-    if visible is not None:
-        records = [record for record in records if record.id in set(visible)]
+    records = visible_knowledge_bases(services, caller)
     # 计数一次聚合查出来，随列表一起回——前端不必再"逐库拉文档列表只为数数"
     stats = services.knowledge_bases.document_stats()
     return KnowledgeBaseList(

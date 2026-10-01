@@ -2835,3 +2835,220 @@ class ChatStepRetryIn(BaseModel):
         default_factory=list,
         description="本轮钉住的技能名（与提问时同一份，来自输入框「加号 → 技能」）",
     )
+
+
+# ------------------------------------------------- 知识库提供者（M3 握手）
+
+
+_PROVIDER_CONFIG = ConfigDict(
+    from_attributes=True, use_attribute_docstrings=True, populate_by_name=True
+)
+"""握手这一族模型的公共配置。
+
+- ``use_attribute_docstrings``：字段下面那段说明进 OpenAPI（与 ``_RECORD_CONFIG``
+  同理）——客户端认的就是这份契约，说明得跟着它走；
+- ``populate_by_name``：``ProviderIngestCapsOut`` 有一个字段的**对外名字是 Python
+  关键字**（``async``），属性只能叫 ``async_``；允许按属性名构造，按别名序列化。
+"""
+
+
+class ProviderRetrievalCapsOut(BaseModel):
+    """检索能力（``POST /search`` 那一条）。"""
+
+    model_config = _PROVIDER_CONFIG
+
+    modes: list[str] = Field(default_factory=list)
+    """支持的检索模式：``hybrid`` / ``vector`` / ``fulltext``。"""
+    default_mode: str = "hybrid"
+    """不指定 ``mode`` 时用的那一个。"""
+    rerank: bool = False
+    """支不支持重排（``SearchRequest.rerank``）。"""
+    filters: bool = False
+    """支不支持元数据过滤（``SearchRequest.filters``）。"""
+    top_k_max: int = 0
+    """``top_k`` 的上限。**从请求模型的约束读出来**，不另写一份数字。"""
+    candidate_k_max: int = 0
+    """``candidate_k`` 的上限（同上）。"""
+
+
+class ProviderIngestCapsOut(BaseModel):
+    """入库能力（``POST /knowledge-bases/{kb_id}/documents`` 那一条）。"""
+
+    model_config = _PROVIDER_CONFIG
+
+    transport: str = "multipart"
+    """上传的编码：``multipart/form-data``。"""
+    async_: bool = Field(default=False, alias="async")
+    """上传是不是异步的。
+
+    ``true`` = 立刻回 202 + ``document_id``，解析 / 切分 / 向量化在服务端的队列里跑，
+    进度另走 ``tracking`` 那两条。**对外名字是 ``async``**（Python 关键字，
+    所以这个属性只能叫 ``async_``；序列化与 OpenAPI 都用别名）。
+    """
+    dedup: str = ""
+    """去重口径：``content_hash`` = 同一份内容重复上传回 ``is_duplicate=true``，
+    不会入两份（幂等键 ``Idempotency-Key`` 是另一件事，见规范 §1.6）。"""
+    max_bytes: int = 0
+    """单文件上限（字节）。**就是上传端点自己的那个常量**，
+    界面据此做上传前的校验，不再自己硬编码一份。"""
+    extensions: list[str] = Field(default_factory=list)
+    """界面要提示的格式（不带点号）。
+
+    **是提示，不是硬白名单**：服务端不按扩展名拦截，真正的接受面由解析路由按
+    后缀 / MIME / 内容探测决定，比这份宽（见 ``api/v1/provider.py`` 的模块头）。
+    """
+
+
+class ProviderTrackingCapsOut(BaseModel):
+    """入库进度跟踪的能力。"""
+
+    model_config = _PROVIDER_CONFIG
+
+    document: bool = False
+    """能不能查单个文档的当前状态。"""
+    timeline: bool = False
+    """能不能查它的阶段时间线（每一步什么时候完成、失败在哪一步）。"""
+
+
+class ProviderKbCapsOut(BaseModel):
+    """库管理能力（页面直连的那一族）。"""
+
+    model_config = _PROVIDER_CONFIG
+
+    create: bool = False
+    """建库。"""
+    delete: bool = False
+    """删除（含影响清单）。"""
+    folders: bool = False
+    """库内目录。"""
+    shares: bool = False
+    """把库分享给其他成员（读 / 写两档）。"""
+    wiki: bool = False
+    """库形态里的 Wiki 页面。"""
+
+
+class ProviderEmbeddingCapsOut(BaseModel):
+    """向量化能力（**如实报当前这一台的状态**，不是"代码里支持什么"）。"""
+
+    model_config = _PROVIDER_CONFIG
+
+    configured: bool = False
+    """嵌入模型配好了没有。为假时仍然能上传，但检索拿不到向量通道。"""
+    is_development: bool = False
+    """是不是开发用的确定性嵌入：为真时检索结果**不代表真实效果**。"""
+    model_id: str = ""
+    """当前嵌入模型标识。"""
+    dim: int = 0
+    """向量维度。"""
+
+
+class ProviderCapabilitiesOut(BaseModel):
+    """提供者的能力集（方案 §1.2 契约）。
+
+    每一项都回答"这台提供者**现在**能不能做这件事"，而不是"这份代码支持不支持"。
+    客户端按它决定摆哪些入口；**不认识的字段忽略、不认识的能力位就不摆**——
+    所以新增能力位是向后兼容的（``protocol_version`` 不用动）。
+    """
+
+    model_config = _PROVIDER_CONFIG
+
+    retrieval: ProviderRetrievalCapsOut
+    ingest: ProviderIngestCapsOut
+    tracking: ProviderTrackingCapsOut
+    knowledge_bases: ProviderKbCapsOut
+    embedding: ProviderEmbeddingCapsOut
+
+
+class ProviderCallerOut(BaseModel):
+    """这次调用在提供者看来**是谁**。
+
+    带这一段是因为**同一台 NAS 上有两套身份是事实**（页面用登录会话、本机后端用
+    长期 API Key，方案 §1.4 R7）：客户端把它显示出来，两边对不上时用户能自己看出来，
+    而不是遇到一个说不清的 403。
+    """
+
+    model_config = _PROVIDER_CONFIG
+
+    kind: Literal["session", "api_key"]
+    """凭据种类：登录会话（页面那半）还是长期 API Key（本机后端那半）。"""
+    permission: ApiKeyPermission
+    """权限档：``readwrite`` / ``readonly``。
+
+    不受库范围限制的那两档（管理员、登录成员）报 ``readwrite``——
+    它们都能写，报一个空值只会让人以为只是只读。**某个库能不能写看那一项的
+    ``can_write``**，那才是判定。
+    """
+    is_admin: bool = False
+    """**如实报**。本机后端那把 API Key 在 NAS 侧**不是管理员**（方案 §1.4）：
+    管理员专属的那些端点（``/settings``、``/api-keys``、``/users``、``/trash``、
+    ``/maintenance``、``/sandbox``）对它是 403，界面据此**隐藏**这类入口，
+    而不是摆出来等着失败。
+    """
+    can_write: bool = False
+    """这把凭据的权限档能不能写（**不看具体库**）。逐库的答案在每项的 ``can_write``。"""
+    knowledge_base_ids: list[str] = Field(default_factory=list)
+    """这把凭据被限定的库范围。**空 = 不限范围**（与发钥匙时的约定同一套）。"""
+
+
+class ProviderKbBriefOut(BaseModel):
+    """握手里的库摘要：**够界面与客户端判断"这个库是什么、我能不能写"**。
+
+    不是完整的 ``KnowledgeBaseOut``：握手可能带回几十个库，而切分参数 / 提示词那些
+    只有库设置页要，页面本来就直接打 ``GET /knowledge-bases``。
+    """
+
+    model_config = _PROVIDER_CONFIG
+
+    id: str
+    name: str
+    document_count: int = 0
+    """库内文档数（**一次聚合查询**算出来的，与列表端点同一个数）。"""
+    last_activity: datetime | None = None
+    """库内文档的最近更新时间；没有文档时为 ``None``。"""
+    can_write: bool = False
+    """这把凭据能不能往这个库里写（上传 / 删除）。
+
+    **由后端算**，与 ``GET /knowledge-bases`` 走同一份口径
+    （``api/v1/knowledge_bases.kb_access_flags``）：只读档分享的成员是 ``false``。
+    """
+    embedding_model_id: str
+    """这个库冻结的嵌入模型标识（换模型要重建库，所以它随库走）。"""
+    embedding_dim: int
+    wiki_enabled: bool = False
+    """库形态：``True`` = 向量检索 + Wiki 页面。"""
+
+
+class ProviderHandshakeOut(BaseModel):
+    """知识库提供者握手（方案 §1.2）。
+
+    一次调用回答三件事：**连通且凭据有效**（否则根本到不了这里——凭据问题走 401/403，
+    见 `api/v1/provider.py` 的模块头）、**这台提供者能做什么**、**我能用哪些库**。
+
+    **响应体里没有"凭据错"这类字段**：那是 HTTP 状态码 + 统一错误信封的事
+    （规范 §1.3）。客户端据此把"改钥匙"与"改地址"分成两档——一次连不上变成
+    一句"凭据无效"是最让人绕路的一种错。
+    """
+
+    model_config = _PROVIDER_CONFIG
+
+    provider: str
+    """提供者种类，固定 ``knowledge``（将来还有别的提供者时用它分流）。"""
+    protocol_version: int
+    """**握手协议版本**：整数、只增。
+
+    M3 的值是 ``1``。客户端规则：**不认识（大于本机所知）即判不可用**，
+    原因句子里带上版本号，**绝不硬试**（方案 §1.2 裁量 3）——一个"试着发一条
+    请求看看能不能用"的实现会把新协议的语义错误当成网络故障。
+    """
+    app_version: str
+    """服务端应用版本（给人看、排查用）。"""
+    api_version: str
+    """HTTP 路径版本（固定 ``v1``）。与 ``protocol_version`` 是两件事：
+    前者是"地址怎么拼"，后者是"两侧谈得下去吗"。"""
+    capabilities: ProviderCapabilitiesOut
+    caller: ProviderCallerOut
+    """这次调用在提供者看来是谁。"""
+    knowledge_bases: list[ProviderKbBriefOut] = Field(default_factory=list)
+    """**这次调用看得见**的库（受限 key 只看到范围内的：方案 R9 要防的元信息泄露）。"""
+    server_time: datetime
+    """服务端当前时间（UTC，带时区）。界面据此显示"上次确认是什么时候"。"""

@@ -36,6 +36,7 @@ from app.api.v1 import (
     model_registry,
     notes,
     plugins,
+    provider,
     sandbox,
     schedules,
     search,
@@ -61,6 +62,10 @@ api_router.include_router(knowledge_bases.router)
 api_router.include_router(documents.router)
 api_router.include_router(folders.router)
 api_router.include_router(search.router)
+# 知识库提供者握手（M3 阶段 1）：**服务器档专属**——提供者是这台 NAS，
+# 本机档是客户端角色，所以它在下面那张白名单里是**故意不挂**的
+# （见 `api/v1/provider.py` 的模块头）
+api_router.include_router(provider.router)
 api_router.include_router(chat.router)
 api_router.include_router(settings.router)
 api_router.include_router(stats.router)
@@ -140,5 +145,9 @@ local_router.include_router(local.chat_reads)
 # `knowledge_bases` / `search` / `chunks` / `folders` / `wiki` / `stats` / `tasks` /
 # `tabular` / `data_sources` / `shares` / `api_keys` / `users` / `auth` / `avatars` /
 # `lifecycle` / `maintenance` / `webhooks` / `frontend` / `model_proxy` / `sandbox` /
-# `site_icons` / `skills` / `plugins`（后几个若要方便可以后续加，M2 不阻塞）。
+# `site_icons` / `skills` / `plugins` / `provider`（后几个若要方便可以后续加，M2 不阻塞）。
 # 本机档的会话事件与上下文用量在 `local.chat_reads` 上，不靠 include `chat`。
+#
+# `provider`（M3 阶段 1）单独说一句：**知识库提供者是那台 NAS**，
+# 本机侧是它的**客户端**——它调 `/provider/handshake`，不提供它（方案 §9-1）。
+# 在服务端 `api_router` 上则是一条正常端点（见上面那行 include）。
