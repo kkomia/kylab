@@ -3,6 +3,8 @@
 工程规范 §5.2：集成测试用**独立临时的库**，禁止触碰开发库。v0.12 起存储是
 PostgreSQL，所以测试库是临时建的 PG 数据库（见 ``pg_database``）；
 设置 ``KYLAB_TEST_DATABASE_URL``（指向维护库，如 …/postgres）即启用。
+**标了 ``local`` 的用例不受这条约束**（M2 阶段 0）：它们只依赖本机 SQLite 与
+文件系统，没有 PG 也能跑——见下面 ``isolated_data_dir`` 那段说明。
 
 各测试目录都放了 ``__init__.py``：工程规范 §5.1 要求测试文件与被测模块镜像同构，
 于是 ``unit`` 与 ``integration`` 下会出现同名 ``test_<模块>.py``；
@@ -94,7 +96,7 @@ def admin_client():  # type: ignore[no-untyped-def]
 
 
 @pytest.fixture(autouse=True)
-def isolated_data_dir(tmp_path, monkeypatch, pg_database):
+def isolated_data_dir(tmp_path, monkeypatch, pg_database, request):
     """全局兜底：任何测试都不许把运行期数据写进仓库或**真实开发库**。
 
     起因：`build_stores()` 默认用 ``./data``，一旦某个测试忘了指临时目录，
@@ -105,21 +107,29 @@ def isolated_data_dir(tmp_path, monkeypatch, pg_database):
     临时测试库，``create_app()`` 会连上真名那个库（通常就是开发库）并把测试数据
     写进去。所以这里把它改指临时库。
 
-    **没有测试库就整体跳过**：v0.12 起存储只有 PostgreSQL，没有可回退的本地实现。
-    静默退回别的实现只会掩盖"这套用例其实没跑"，所以宁可显式跳过——
-    门禁脚本另有检查，缺 DSN 时不会让它悄悄变绿。
+    **没有测试库就跳过——但 ``local`` 标记的用例不跳过**（M2 阶段 0）：
+    v0.12 起存储只有 PostgreSQL，没有测试库时其余用例静默退回别的实现只会掩盖
+    "这套用例其实没跑"，所以宁可显式跳过（门禁脚本另有检查，缺 DSN 时不会让它
+    悄悄变绿）。而 ``local`` 标记的用例只碰本机 SQLite 与文件系统（`pytest -m local`），
+    它们要证明的恰恰是"**断 NAS 的机器上本机后端能跑**"——在缺 PG 的机器上跳过它们，
+    等于把 M2 的核心断言整批跳过。所以这条宽限是**按标记**开的，不是把门整体放倒。
 
     同时关掉内嵌任务消费者：测试要手动驱动 worker，才能对时序下断言。
     """
-    if pg_database is None:
+    if pg_database is None and not request.node.get_closest_marker("local"):
         pytest.skip("需要 PostgreSQL 测试库：请设置 KYLAB_TEST_DATABASE_URL")
 
     monkeypatch.setenv("KYLAB_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("KYLAB_RUN_WORKER", "false")
-    monkeypatch.setenv("KYLAB_DATABASE_URL", pg_database.dsn)
-    # 应用层用例（走 create_app）不经过 pg_stores 夹具，得在这里清一次库，
-    # 否则上一个用例建的管理员/知识库会漏到下一个用例里
-    _reset_database(pg_database)
+    if pg_database is None:
+        # 本机档用例不得碰任何 PG：把引导级连接串压成空串（环境变量优先于 .env，
+        # 与下面 S3 那三个同一手法），于是"误连开发库"在这条路上不可能发生。
+        monkeypatch.setenv("KYLAB_DATABASE_URL", "")
+    else:
+        monkeypatch.setenv("KYLAB_DATABASE_URL", pg_database.dsn)
+        # 应用层用例（走 create_app）不经过 pg_stores 夹具，得在这里清一次库，
+        # 否则上一个用例建的管理员/知识库会漏到下一个用例里
+        _reset_database(pg_database)
     # **测试绝不碰真实对象存储**：本机若配了 KYLAB_S3_*（比如为了手工验证），
     # build_stores() 会真的往那个桶里写。这里一律清掉，需要对象存储的用例
     # 自己用 KYLAB_TEST_S3_* 显式构造（见 test_s3_object_store.py）。

@@ -77,15 +77,21 @@ PARSER_MSG = "解析器是插件层，不得反向依赖业务层（services）�
 SERVICE_FORBIDDEN_LAYERS = ("app.api", "app.mcp_server")
 SERVICE_LAYER_MSG = "业务层不得依赖协议适配层（api / mcp_server）；共用实现要放在 services/ 里"
 
-# L6：`app/` 根下只允许 main.py 与 __init__.py——每个模块都必须属于一个分层。
+# L6：`app/` 根下只允许入口模块与 __init__.py——每个模块都必须属于一个分层。
 #
 # 起因与 L5 同：`app/agent_tools.py` 住在 app 根，既不匹配 `app.api` / `app.services`，
 # 也不匹配任何禁止前缀，于是 L1–L4 一条都不作用于它。**一个不被任何规则覆盖的文件，
 # 等于分层纪律对它不存在**：它 import 谁都不会红——而那块代码恰好管着工具准入与会话
 # 范围收口，是全项目最需要护栏的地方。规则靠"命名空间白名单"而不是"记得加清单"。
-APP_ROOT_ALLOWED = {"__init__", "main"}
+#
+# `sidecar` 是**第二个入口**（与 main.py 同级）：桌面壳由
+# `sidecar-runtime\Scripts\python.exe -m app.sidecar` 起进程（`desktop/src-tauri/src/sidecar.rs`），
+# 它自己装配运行时、自己钉死部署档位，不属于 api/ services/ 任何一层。
+# M2 阶段 0 实测它确实触发本规则，按实施方案 §0.6-2 收进白名单（另一条路是把它归入
+# 某个分层，但那会把它塞进一个它并不属于的依赖方向）。
+APP_ROOT_ALLOWED = {"__init__", "main", "sidecar"}
 APP_ROOT_MSG = (
-    "app/ 根下不得放游离模块（只允许 main.py 与 __init__.py）："
+    "app/ 根下不得放游离模块（只允许 main.py / sidecar.py 两个入口与 __init__.py）："
     "请归入 api/ services/ storage/ parsers/ workers/ core/ models/ pipeline/ 之一"
 )
 
