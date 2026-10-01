@@ -102,6 +102,13 @@ export const CITATION_CARD_ID = 'source-citation-card'
  * `max-w-[100px]` + `min-w-[18px]` 逐字照抄生产：这一枚是"域名"那么长的东西，
  * 不设上限会被长域名撑成一条横条。
  *
+ * **上限之外还得真截断**（2026-10-01 用户批注「文字超出标签了」）：`max-w-[100px]` 只把
+ * **盒子**收住，域名如果是一个裸文本节点，字会照旧往外伸——`xinhuanet.com` 这种长域名
+ * 就溢出到灰底外面（真机量到过）。所以两枚胶囊的域名各包一层 `min-w-0 truncate` 的文本槽
+ * （图标那一格已经是 `shrink-0`，不动）：宽度让给文字、超出部分接省略号。
+ * 生产 `.pua-ref-cite-tag--text:before` 上那对 `overflow:hidden; text-overflow:ellipsis`
+ * 是**同一个意图**（它走伪元素，我们走一个真的 `<span>`，等价）。
+ *
  * ## 点它 = **直开原文**（Kimi 同款，2026-09-30 用户定案）
  *
  * Kimi 的 `pua-ref-cite-tag` 就是一个 `<a target="_blank" rel="noopener noreferrer">`
@@ -191,7 +198,8 @@ export function SourceBadge({ citation }: { citation: WebCitation }) {
       onBlur={hideCitation}
     >
       <BadgeLogo site={citation.site} />
-      {citation.domain}
+      {/* 域名进截断槽（`min-w-0 truncate`）：裸文本会伸出灰底，见 `BADGE_CLASS` 上方 */}
+      <span className="min-w-0 truncate">{citation.domain}</span>
     </a>
   )
 }
@@ -247,7 +255,8 @@ export function LinkBadge({ url }: { url: string }) {
       onBlur={hideCitation}
     >
       <BadgeLogo site={site} />
-      {domain}
+      {/* 域名进截断槽（`min-w-0 truncate`）：裸文本会伸出灰底，见 `BADGE_CLASS` 上方 */}
+      <span className="min-w-0 truncate">{domain}</span>
     </a>
   )
 }

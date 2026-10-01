@@ -363,6 +363,58 @@ describe('正文里的普通外链：同一副胶囊 + 同一张卡片（2026-10
   })
 })
 
+/* ------------- 2026-10-01 用户批注：长域名的字伸出了胶囊的灰底（`xinhuanet.com`） */
+
+/**
+ * 用户原话：「文字超出标签了」。
+ *
+ * `BADGE_CLASS` 里的 `max-w-[100px]` 只收得住**盒子**：域名原来是一个裸文本节点，
+ * 字会照旧往外伸（真机上是 `xinhuanet.com` 这种长域名溢出到灰底外面）。现在两枚胶囊的
+ * 域名各包一层 `min-w-0 truncate` 的文本槽，超出的字尾接省略号——与生产
+ * `.pua-ref-cite-tag--text:before` 上那对 `overflow:hidden; text-overflow:ellipsis`
+ * 同一意图（它走伪元素，我们走一个真的 `<span>`）。
+ *
+ * jsdom 不做布局，量不出"有没有溢出"，能钉住的是契约：**域名整段都在那个槽里**，
+ * 锚点上再没有别的文字节点——裸文本节点正是溢出灰底的那一个。新华网是**站点表里**
+ * 的站点（字牌「华」），所以这条顺带钉住了"图标旁边那一格换哪种退化都照样是槽"。
+ */
+describe('长域名：胶囊里的域名都在 `min-w-0 truncate` 的槽里（2026-10-01 用户批注）', () => {
+  const longUrl = 'https://www.xinhuanet.com/politics/2026-10/01/c_123.htm'
+
+  it('两枚胶囊都是"图标 + 截断槽"：域名不再是锚点上的裸文本', () => {
+    const citation = webCitationsOfSteps([
+      { tool: 'web_search', result: `检索词：x，共 1 条：\n[1] 新华网的一条\n${longUrl}\n摘要。` },
+    ]).get(1)!
+    expect(citation.domain).toBe('xinhuanet.com')
+
+    render(
+      <>
+        <SourceBadge citation={citation} />
+        <LinkBadge url={longUrl} />
+      </>,
+    )
+
+    // 两档各一枚：引用那枚有编号，普通外链那枚没有
+    for (const name of ['来源 1：xinhuanet.com', '链接：xinhuanet.com']) {
+      const badge = screen.getByRole('link', { name })
+      expect(badge).toHaveTextContent('xinhuanet.com')
+
+      const slot = badge.querySelector('span.truncate')
+      expect(slot).not.toBeNull()
+      expect(slot!.className).toContain('min-w-0')
+      expect(slot!.textContent).toBe('xinhuanet.com')
+
+      // 锚点的直接子节点里一个**裸文本节点**都没有：域名全在槽里，溢不到灰底外面
+      // （改前域名就挂在这里当裸文本，`max-w-[100px]` 收不住它）
+      const bare = Array.from(badge.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent ?? '')
+        .join('')
+      expect(bare.trim()).toBe('')
+    }
+  })
+})
+
 describe('悬停抖动那条修法：共享状态 + 关闭宽限（用户："hover 有概率鬼畜抖动"）', () => {
   const citation = webCitationsOfSteps([{ tool: 'web_search', result: SEARCH_RESULT }]).get(1)!
 
