@@ -456,6 +456,22 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         skills=skill_service,
         skill_summaries=_skill_summaries,
     )
+    # KB 检索接缝的**本机档那一头**（M2 §2.2）：本机档的检索在 NAS 上（向量 / 全文 /
+    # 切块全留在服务器，本机连表都没有），所以给 ChatService 一个远端客户端——
+    # 它一给就整段委托（见 `chat.py` 的 `retrieve_sources`），失败按 `RemoteUnavailableError`
+    # 抛出去（"连不上"与"没命中"分得开）。
+    #
+    # **服务器档恒为 None**（进程内检索，一位行为不变）。本机档没配 `KYLAB_SERVER_URL`
+    # 时也是 None —— 那时取资料会走到 `UnavailableVectorStore` 那句如实的 503
+    # （"检索在 NAS 知识库"），而不是回一个空结果。
+    knowledge_client = None
+    if resolved.deployment == "local" and resolved.server_url:
+        # 惰性 import：`remote_clients` 里 httpx 是函数内导入的（见那边的说明），
+        # 放到这里只为让"本机档那一支"自成一段，读起来知道多了什么。
+        from app.services.remote_clients import RemoteKnowledgeClient
+
+        knowledge_client = RemoteKnowledgeClient(resolved.server_url, token=resolved.token or "")
+
     chat_service = ChatService(
         retrieval,
         runtime,
@@ -469,6 +485,8 @@ def build_services(settings: Settings | None = None, stores: StoreBundle | None 
         # 技能（v0.15）：把技能目录（名字 + 何时用）注入 system prompt，
         # 正文由 `use_skill` 按需展开——见 services/skills.py 的模块头
         skills=skill_service,
+        # KB 检索（M2 §2.2）：非空时整段委托（本机档 = NAS 上的 /search）
+        knowledge=knowledge_client,
     )
     # 技能源的中文化（v0.28）：浏览器里那一屏是给中文用户看的，而技能描述基本都是英文。
     # 在这里接上而不是在源服务里 new：源服务只认识一个"翻译函数"，

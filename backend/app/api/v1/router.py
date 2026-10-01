@@ -3,6 +3,13 @@
 鉴权不在这里挂全局依赖，而是**逐个端点显式声明**（``ReadDep`` / ``WriteDep``）：
 全局依赖无法表达"这个端点需要读写、那个只要只读、设置端还只认管理员"，
 只能一律放同一个档位——那等于没有作用域隔离。
+
+**两张路由表，按部署档挂哪一张**（M2 §4.1，`app/main.py` 判档）：
+
+- ``api_router``：**服务器档**（默认）的全量端点，一位行为不变；
+- ``local_router``：**本机档**（桌面壳的边车）那张**白名单**——只挂"数据在本机、
+  本机服务得了"的那些。白名单而不是黑名单：本机没有知识库数据源（在 NAS 上），
+  黑名单意味着"新加的端点默认挂上去"，而它们会在第一次被点到时才 500 ✗。
 """
 
 from fastapi import APIRouter
@@ -21,6 +28,7 @@ from app.api.v1 import (
     health,
     knowledge_bases,
     lifecycle,
+    local,
     maintenance,
     mcp_servers,
     memory,
@@ -95,3 +103,42 @@ api_router.include_router(model_proxy.router)
 # 前端资源包（v0.56）：桌面壳取界面的那两份（版本清单 + 整包）——
 # "服务器发了新前端、客户端下次启动自动用上"那条承诺的服务器半边
 api_router.include_router(frontend.router)
+
+
+# ====================================================================== 本机档
+#
+# **白名单**（M2 §4.2）：本机档只挂"数据在本机、本机服务得了"的端点。逐个说清理由，
+# 因为这张表是"本机运行时到底能做什么"的唯一定义，而漏挂一个与错挂一个都看不出来：
+
+local_router = APIRouter()
+# 探活：桌面壳与界面都要能问一句"本机后端在不在"
+local_router.include_router(health.router, tags=["health"])
+# 会话 / 消息 / 事件 / 产物 / 文件区全在本机（`/files*` 走本机对象存储）
+local_router.include_router(conversations.router)
+# 笔记落本机
+local_router.include_router(notes.router)
+# 设置落本机（运行期配置表 `app_settings` 在这份库里）
+local_router.include_router(settings.router)
+# 模型凭据与注册表落本机（v0.3 §1："模型凭据走本机"）
+local_router.include_router(model_registry.router)
+# 工作区是机器本地的路径
+local_router.include_router(workspaces.router)
+# 定时任务的产物是会话（会话在本机）
+local_router.include_router(schedules.router)
+# 外部 MCP 服务配置属于这台机器
+local_router.include_router(mcp_servers.router)
+# 记忆本体本来就在 `data_dir/memory`
+local_router.include_router(memory.router)
+# 本机档专属：`/local/status`（`/local/import*` 在阶段 5）
+local_router.include_router(local.router)
+# 两条薄重声明的只读端点（事件日志 / 上下文用量）——**不整 include `chat.router`**：
+# 那个 router 还有服务器专属的 `/chat/stream`，摆出来就是一条会 500 的路。
+# 理由与做法见 `api/v1/local.py` 的模块头。
+local_router.include_router(local.chat_reads)
+
+# **明确不挂**（每一条都因为"数据或能力不在这台机器上"）：`documents` /
+# `knowledge_bases` / `search` / `chunks` / `folders` / `wiki` / `stats` / `tasks` /
+# `tabular` / `data_sources` / `shares` / `api_keys` / `users` / `auth` / `avatars` /
+# `lifecycle` / `maintenance` / `webhooks` / `frontend` / `model_proxy` / `sandbox` /
+# `site_icons` / `skills` / `plugins`（后几个若要方便可以后续加，M2 不阻塞）。
+# 本机档的会话事件与上下文用量在 `local.chat_reads` 上，不靠 include `chat`。

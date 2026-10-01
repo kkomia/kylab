@@ -34,7 +34,16 @@ from app.storage.base import ApiKeyRecord, StoreBundle, UserRecord
 if TYPE_CHECKING:  # 只为标注：core.services 会 import 本模块，顶层 import 就成了环
     from app.core.services import Services
 
-__all__ = ["READ", "WRITE", "ApiKeyService", "Caller", "IssuedApiKey", "resolve_caller"]
+__all__ = [
+    "LOCAL_CALLER",
+    "LOCAL_USER_ID",
+    "READ",
+    "WRITE",
+    "ApiKeyService",
+    "Caller",
+    "IssuedApiKey",
+    "resolve_caller",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +124,29 @@ def resolve_caller(services: Services, token: str) -> Caller:
             session_id=session.id,
         )
     return services.api_keys.authenticate(token)
+
+
+LOCAL_USER_ID = "local-owner"
+"""本机档"本机主人"在库里的 id（M2 §4.1：本机运行时不设门禁）。"""
+
+LOCAL_CALLER = Caller(
+    is_admin=True,
+    user=UserRecord(id=LOCAL_USER_ID, name="本机主人", role=UserRole.ADMIN),
+)
+"""**本机档**（桌面壳的边车进程）唯一的调用主体，见 `app/api/auth.py::current_caller`。
+
+三处口径：
+
+- ``is_admin=True``：这里是"**不受库范围限制**"那个意思（见 `check_access` 的第一行）。
+  本机没有账号体系（``users`` / ``sessions`` 两张表都不在本机库里，见 v0.3 §8-1），
+  而能打到边车那个端口的只有这台机器的主人；
+- ``owner_id`` 因此是 ``None``（共享桶）——本机只有一个人，不存在"别人的数据"，
+  于是会话 / 笔记 / 记忆的归属天然一致；
+- ``user`` 不是 ``None``：协议层若干处默认调用者是一个账号（`caller.user.id`），
+  给它一个真的 `UserRecord` 比到处判空更稳（那句"本机主人"也是界面上能显示的名字）。
+
+**这是一个可以共享的不可变对象**（`Caller` 是 frozen dataclass），每个请求给同一个就行。
+"""
 
 
 class ApiKeyService:

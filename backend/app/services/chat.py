@@ -636,6 +636,7 @@ class ChatService:
         conversations=None,  # type: ignore[no-untyped-def]
         memory=None,
         skills=None,  # type: ignore[no-untyped-def]
+        knowledge=None,  # type: ignore[no-untyped-def]
     ) -> None:
         self._retrieval = retrieval
         self._runtime = runtime
@@ -652,6 +653,10 @@ class ChatService:
         self._memory = memory
         #: 技能注册表（v0.15）。可选：不给就不注入技能目录
         self._skills = skills
+        #: KB 检索接口（M2 §2.2）：**给了就整段委托给它**（见 ``retrieve_sources``）。
+        #: 本机档（桌面边车）给的是 `RemoteKnowledgeClient`——检索在 NAS 上；
+        #: 服务器档**不传**（进程内检索，一位行为都不变）。协议见 `knowledge_client.py`。
+        self._knowledge = knowledge
 
     def kb_prompt(self, kb_ids: list[str] | None) -> str:
         """把这一轮用到的库的**库级提示词**拼成一段（v0.19）。
@@ -764,14 +769,30 @@ class ChatService:
         ``reader`` 由调用方传入即可**跨查询/跨轮次复用**那份"按文档缓存的块列表"：
         多查询检索时几条查询常常命中同一批文档，各建一个 reader 就会把同样的块
         重复读好几遍（v25 起多查询并行，缓存还必须线程安全，见 ``_SectionReader``）。
+
+        **本机档整段委托**（M2 §2.2 的 KB 检索接缝）：构造时给了 ``knowledge`` 就把它
+        交给远端实现（NAS 上的 `POST /api/v1/search`），本机不再碰检索——向量 / 全文 /
+        切块都不在本机（见 `split_impl`）。两条路**同形同义**：返回同一形状的
+        `SourceRef`，失败**抛**（``RemoteUnavailableError``）而不是回空——
+        "没命中"与"没查到"必须分得开（见 `remote_clients.py` 模块头）。
         """
-        limit = top_k or self._runtime.get_int("chat.top_k") or MAX_CONTEXT_CHUNKS
         # 一个库都没给（v0.18 的「不使用知识库」开关）= 这一轮不查库。
         # **在检索层直接返回空**，而不是让 `kb_ids=[]` 一路传到 SQL——
         # 那样要么拼出 `IN ()`（语法错），要么被各存储实现各自解释一遍。
-        # 放在这里，四条调用路径（流式 / 一次性 / 非 Agent / 子 Agent）全都覆盖到。
+        # 放在这里，四条调用路径（流式 / 一次性 / 非 Agent / 子 Agent）全都覆盖到；
+        # 也放在委托之前：远端那条路的交接点没有数据源，空范围不该变成一次网络往返
+        # （协议两侧本就同义，见 `knowledge_client.py` 的 ``kb_ids`` 那一行）。
         if not kb_ids:
             return []
+        if self._knowledge is not None:
+            return self._knowledge.retrieve_sources(
+                query=query,
+                kb_ids=kb_ids,
+                top_k=top_k,
+                candidate_k=candidate_k,
+                reader=reader,
+            )
+        limit = top_k or self._runtime.get_int("chat.top_k") or MAX_CONTEXT_CHUNKS
         # 动态返回（v0.54，见 services/retrieval/distribution.py 的模块头）：**这一条路也要开**。
         # 它是"非 Agent / 定时任务"那条链路的取资料口，用户看到的"常见问题命中太多、
         # 上下文太长"有一半是从这里来的（`chat.top_k` 默认 6 × 每段 ~2000 字）。

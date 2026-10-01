@@ -143,6 +143,15 @@ def isolated_data_dir(tmp_path, monkeypatch, pg_database, request):
     # 测试要一条**不联网**的向量化链路：显式打开开发用确定性嵌入。
     # v0.8 起它不再是"没配就自动兜底"，必须有人主动开——测试就是那个"人"。
     monkeypatch.setenv("KYLAB_DEV_EMBEDDING", "true")
+    # **边车会把档位钉死**（`sidecar.pin_local_deployment()` 直接改环境变量，M2 §4.1
+    # 要求入口自己钉、不给环境继承的机会）：这里登记这三个，让 teardown 把它们恢复回来。
+    # 不登记的话，一次 `sidecar.create_app()` 之后**整个测试进程**都变成本机档 ——
+    # 后面的用例会莫名其妙地连 SQLite 而不是 PG（"边车误连服务器库"那条失败形态，
+    # 只不过发生在测试进程的内存里）。**值取当前值**：只在没设过时给一个合法占位
+    # （`KYLAB_DEPLOYMENT` 不能是空串：`Settings` 的字面量校验会当场报错）。
+    monkeypatch.setenv("KYLAB_DEPLOYMENT", os.environ.get("KYLAB_DEPLOYMENT", "server"))
+    for name in ("KYLAB_SERVER_URL", "KYLAB_TOKEN"):
+        monkeypatch.setenv(name, os.environ.get(name, ""))
     get_settings.cache_clear()
     reset_services()
     reset_stores()

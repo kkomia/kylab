@@ -81,9 +81,10 @@ class Settings(BaseSettings):
     deployment: Literal["server", "local"] = "server"
     """部署档：``server``（默认，NAS 上的网页端/API）或 ``local``（桌面壳的本机边车）。
 
-    **默认必须是 server**：既有部署一位行为都不变；本机档由入口自己钉死——阶段 3 会在
-    ``app/sidecar.py`` 启动时强制 ``KYLAB_DEPLOYMENT=local``，不给环境继承的机会
-    （"边车误连服务器库"是最糟的失败形态）。
+    **默认必须是 server**：既有部署一位行为都不变；本机档由入口自己钉死——``app/sidecar.py``
+    启动时强制 ``KYLAB_DEPLOYMENT=local`` 并把 ``KYLAB_DATABASE_URL`` 压成空串，
+    不给环境继承的机会（"边车误连服务器库"是最糟的失败形态）；
+    ``app/main.py`` 只是**按环境变量判档**（挂哪个路由、起不起消费者）。
     """
 
     database_url: str | None = None
@@ -100,6 +101,23 @@ class Settings(BaseSettings):
 
     只在 ``deployment=local`` 下有意义：给了就落这个路径（导入、排障、把库放到另一个
     盘上都靠它），不给就用数据目录下的默认名。
+    """
+
+    server_url: str | None = None
+    """NAS 的 API 基址（含 ``/api/v1``），例如 ``http://nas:8000/api/v1``。
+
+    **只在本机档有意义**（M2 §4.1 那张表：本机档的 KB/模型两头都在 NAS 上）：
+    知识库（检索与入库）与模型代理都在那一侧，所以本机的服务图要照着它建远端客户端。
+    不设 = 这台机器这次没接 NAS：检索会走"知识库不可用"那条**如实报错**的路
+    （见 ``split_impl``），而不是悄悄回退成进程内检索（本机根本没有那些表）。
+    """
+
+    token: str | None = None
+    """NAS 的用户会话令牌（与桌面壳、前端用的是同一把）。
+
+    名字就叫 ``token`` 是跟着环境变量 ``KYLAB_TOKEN`` 走的——壳起边车时读的就是它
+    （``app/sidecar.py`` 的 ``--token`` 默认值）。**不落库、不进日志**：它是通往 NAS 的凭据，
+    本机库里只放会话数据（M2 风险表 R6）。
     """
 
     s3_endpoint: str | None = None

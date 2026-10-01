@@ -45,10 +45,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
-
 from app.core.exceptions import InvalidRequestError
 from app.core.http import shared_client
+from app.core.lazy_httpx import httpx
 from app.services.web import check_public_url
 
 __all__ = ["SiteIcon", "SiteIconService", "normalize_domain"]

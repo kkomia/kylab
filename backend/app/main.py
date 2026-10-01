@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.v1.router import api_router
+from app.api.v1.router import api_router, local_router
 from app.core.config import API_VERSION, get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.http import close_shared_client
@@ -53,7 +53,12 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
     stop = asyncio.Event()
     worker_tasks: list[asyncio.Task[None]] = []
-    if settings.run_worker:
+    # **本机档不起消费者**（M2 §4.1）：消费者跑的是摄取流水线（解析 / 切块 / 嵌入 /
+    # 向量索引），而本机根本没有那些表——知识库在 NAS 上（M3 接提供者）。起了它，
+    # 表现是"进程里有个协程每隔几秒去撞一次不可用的库"，日志天天刷错却什么也做不成。
+    if settings.deployment == "local":
+        logger.info("本机档：不启动任务消费者（摄取流水线在 NAS 上，本机没有那些表）")
+    elif settings.run_worker:
         # 一个消费者 = 一个协程（``KYLAB_WORKER_CONCURRENCY`` 个）。
         # 它们各自领活、互不阻塞：任务表本身就是队列，``claim_task`` 原子单语句，
         # 所以"多消费者"不需要额外的调度器（见 services/_build_workers 的说明）。
@@ -138,7 +143,14 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     register_exception_handlers(app)
-    app.include_router(api_router, prefix=f"/api/{API_VERSION}")
+    # **按档挂哪一张路由表**（M2 §4.1）：服务器档全量（一位行为不变），
+    # 本机档只挂白名单那几张（理由与清单见 `api/v1/router.py` 的 `local_router`）。
+    # 档位在 `Settings` 上，而 `get_settings()` 是进程级单例——所以它只在启动时定一次，
+    # 运行期换不了（那正是我们要的：中途换档会让"数据写哪儿"变成两处判断）。
+    app.include_router(
+        api_router if settings.deployment == "server" else local_router,
+        prefix=f"/api/{API_VERSION}",
+    )
     return app
 
 

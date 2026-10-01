@@ -101,3 +101,26 @@ pycparser==3.0                # cffi 解析 C 声明
 # 注：`sniffio` **不写** —— 开发 venv 里没有它，闭包也不需要（anyio 4.x 已内联该判断）。
 # 注：`psycopg*` / `duckdb` / `boto3` / `botocore` / `jieba` / `urllib3` / `six` / `python-dateutil`
 #     已在 Phase B 里**从闭包消失** ✓ —— 它们不再出现在这份清单里 ✓（详见上面那段 Phase B）。
+
+# ---------------------------------------------------------------- 5) M2 阶段 3 又量了一次：本地后端面把 api 层带进了闭包
+#
+# 背景：边车现在挂 `local_router`（`app/sidecar.py` → `app/api/v1/router.py`）✓，
+# 于是**整个 `app.api.v1` 包**第一次进了客户端闭包 —— 其中三个模块是
+# **模块级 `import httpx`**（`api/v1/settings.py` / `services/failures.py` /
+# `services/site_icons.py`，后者经 `api/v1/chat.py` 与 `api/v1/site_icons.py` 可达）。
+# `httpx/__init__.py` 里那句 `from ._main import main` 会顺带拽进 click + pygments ✗
+# —— 实测闭包 **17 → 21 个发行包**（多出 httpx / click / Pygments / idna）。
+#
+# 处置按既有手法：三处改成 `from app.core.lazy_httpx import httpx`（那个模块就是
+# 为这件事写的，文件头有完整理由）✓，调用点一个字没改 ✓。复测：**21 → 17**，
+# 与阶段 3 的基线**逐个对得上**（`scripts/sidecar-closure.py`，2026-10-01）。
+#
+# 顺带定位了 4) 里那条悬案："Pygments 是哪个依赖拽进来的" → 答：httpx 的 CLI 入口
+# （pygments 是它的语法高亮依赖）。所以 4) 那句"父包留到下一轮定位"可以结案了 ✓。
+#
+# ⚠️ 另一处**运行期按需**（同 2b 的口径，但这次是**已知缺口**、未处置）：
+# `recall`（记忆召回）在服务层要 **jieba**（`services/retrieval/coverage._jieba`，惰性 import）。
+# 阶段 3 之前这条走 NAS（那边有 jieba）；收编到本机之后，**打包运行时里没有 jieba**
+# → 桌面端调 `recall` 会在调用那一刻 `ModuleNotFoundError` ✗。两条出路：
+# 往这里加 jieba（约 +40.9 MB），或让记忆召回在缺 jieba 时只用"相邻字对"那条通道
+# （`memory_files._word_pairs` 不依赖分词）。**留给架构师定**（见阶段 3 报告）。

@@ -17,9 +17,8 @@
 
 from __future__ import annotations
 
-import httpx
-
 from app.core.exceptions import KylabError, UpstreamError
+from app.core.lazy_httpx import httpx
 from app.services.embedding.base import EmbeddingError, EmbeddingNotConfiguredError
 from app.services.llm import ChatError
 

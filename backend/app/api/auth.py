@@ -20,6 +20,9 @@
 2. **只在 ``/api/v1`` 下生效**。健康探针（``/health``）与前端静态资源不鉴权：
    前者是容器编排用来判断存活的，带上鉴权会让 readiness 探针误判。
 3. **失败快、文案钝**。缺凭据与凭据无效都回 401，且不区分原因（见 api_key.py）。
+4. **本机档短路**（M2 §4.1，2026-10-01）：`deployment=local` 时 `current_caller` 直接
+   返回"本机主人"，不看请求头。理由见函数自身的说明——**第一条只对服务器档成立**，
+   本机档本来就没有账号体系可验（`users` / `sessions` 不在本机库里）。
 """
 
 from __future__ import annotations
@@ -29,11 +32,11 @@ from typing import Annotated
 
 from fastapi import Depends, Header
 
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.core.exceptions import ForbiddenError, UnauthorizedError
 from app.core.services import Services, get_services
 from app.models.enums import ApiKeyPermission
-from app.services.api_key import READ, WRITE, Caller, resolve_caller
+from app.services.api_key import LOCAL_CALLER, READ, WRITE, Caller, resolve_caller
 from app.services.auth import URL_SIGNING_SECRET_SETTING
 
 logger = logging.getLogger(__name__)
@@ -60,9 +63,21 @@ def _bearer(authorization: str | None) -> str | None:
 
 def current_caller(
     services: Annotated[Services, Depends(get_services)],
+    settings: Annotated[Settings, Depends(get_settings)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> Caller:
-    """解析调用主体。**没有凭据就是 401**，不存在"未启用鉴权"这条支路。"""
+    """解析调用主体。**没有凭据就是 401**，不存在"未启用鉴权"这条支路。
+
+    **唯一一条例外是本机档**（M2 §4.1、v0.3 §8-1「本机运行时不设门禁」）：
+    桌面壳起的边车只监听 127.0.0.1、跑在用户自己的机器上，能打到那个端口的就是这台
+    机器的主人，所以直接短路成"本机主人"（见 `api_key.LOCAL_CALLER`）。
+    它**不看 `Authorization`** ✗：本机档没有账号体系（`users` / `sessions` 两张表都不在
+    本机库里），带着服务器那把令牌打本机也不该被当成成员——那不是本机的身份。
+
+    服务器档一个字没改：缺凭据仍然 401，照样走 `resolve_caller`。
+    """
+    if settings.deployment == "local":
+        return LOCAL_CALLER
     token = _bearer(authorization)
     if token is None:
         raise UnauthorizedError(
