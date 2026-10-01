@@ -79,6 +79,9 @@ __all__ = [
     "ImportBatchRecord",
     "ImportItemRecord",
     "ImportLedger",
+    "KbMetaCache",
+    "KbMetaCacheRecord",
+    "KbMetaCacheStats",
     "KnowledgeBaseRecord",
     "MetaStore",
     "NoteFolderRecord",
@@ -118,17 +121,34 @@ class StoreBundle:
     ledger: ImportLedger | None = None
     """旧会话导入的**台账**（M2 阶段 5）：本机档才有，服务器档恒为 ``None``。
 
-    **为什么它不是 ``MetaStore`` 的窄视图**（本文件里唯一一个这样的字段）：
-    ``imports`` / ``import_items`` 是**本机独有的两张表**，服务器档没有它们，
-    也没有"从别的部署导会话进来"这条动作——所以它既不进 ``repositories.py``
-    的 24 个域（那里的每个方法都必须在 ``MetaStore`` 上存在，有两条用例逐名核对），
-    也不进 ``LOCAL_METHODS``（那是"本机域 / KB 域"的划分，它两边都不属于）。
-    它在 ``sqlite_impl.LOCAL_LEDGER_METHODS`` 单独登记，装配点见
+    **为什么它不是 ``MetaStore`` 的窄视图**（本文件里两个这样的字段之一，另一个是
+    下面的 ``kb_cache``）：``imports`` / ``import_items`` 是**本机独有的两张表**，
+    服务器档没有它们，也没有"从别的部署导会话进来"这条动作——所以它既不进
+    ``repositories.py`` 的 24 个域（那里的每个方法都必须在 ``MetaStore`` 上存在，
+    有两条用例逐名核对），也不进 ``LOCAL_METHODS``（那是"本机域 / KB 域"的划分，
+    它两边都不属于）。它在 ``sqlite_impl.LOCAL_LEDGER_METHODS`` 单独登记，装配点见
     ``core/storage.py::_build_local_stores``（与 ``meta`` 用的是**同一个**实例）。
 
     默认 ``None`` 是刻意的：五个仓储之外的一切调用点、以及服务器档的两处装配
     都不需要改一个字。要用它的人必须显式处理"这台机器没有导入能力"那一支
     （本机档配上它、服务器档是 ``None``）——不留一个"静默的空实现"。
+    """
+
+    kb_cache: KbMetaCache | None = None
+    """知识库元数据**快照**（M4 §3.3）：本机档才有，服务器档恒为 ``None``。
+
+    **与 ``ledger`` 同一条纪律、同一套理由**（照那段改写一遍，因为形状一模一样）：
+    ``kb_meta_cache`` 是**本机独有的一张表**——服务器档的 KB 元数据本来就在自己的
+    PG 里，它没有"从 NAS 抄一份快照"这条动作，也不该有（缓存一个自己就是真相源的
+    东西只会多一层会过期的副本）。所以它既不进 ``repositories.py`` 的 24 个域
+    （那里的每个方法都必须在 ``MetaStore`` 上存在），也不进 ``LOCAL_METHODS``
+    （那是"本机域 / KB 域"的划分：它服务的是 **KB 域的读路径**，人却不属于 KB 域）。
+    它在 ``sqlite_impl.LOCAL_CACHE_METHODS`` 单独登记，装配点见
+    ``core/storage.py::_build_local_stores``（与 ``meta`` / ``ledger`` 是**同一个**
+    实例：写锁是进程内一把，那条纪律是对着 ``Database`` 说的）。
+
+    页面上"先画快照"那一层（``/local/kb-cache/*``）与 reader 面的缓存包装器都从
+    它取数。**它严格可弃**（v0.3 §5.3）：删了只丢速度，不丢数据——真话永远在 NAS 上。
     """
 
     # ---- 按域切开的窄视图（v0.2，见 storage/repositories.py）----
@@ -2721,6 +2741,205 @@ class ImportLedger(Protocol):
         产物）先删再写，所以它对新会话、替换、回滚恢复三种调用都是同一件事，
         重跑也安全。事件按 transfer 里给的顺序**原样落 ``seq``**——导入要保的是
         "源端当时是什么样"，不是"本机重算一遍"。
+        """
+        ...
+
+
+# ---------------------------------------------------- 知识库元数据快照（本机档独有）
+#
+# 另一块**只属于本机档**的存储契约（M4 阶段 1，方案 §3.1 / §3.3）。它住在这里的理由
+# 与导入台账一模一样：``services/`` 只许见 ``app.storage.base``（工程规范 §3.3 的 L2），
+# 而这张 ``kb_meta_cache`` 表**只有本机档有**，所以契约只能落在这里。
+#
+# 它**不在 ``MetaStore`` 上**（服务器档的 KB 元数据就在自己的 PG 里，没有"抄一份 NAS
+# 的快照"这条动作），也不在 ``repositories.py`` 的 24 个域里（那边的每个方法都必须在
+# ``MetaStore`` 上存在）。登记点见 ``sqlite_impl.LOCAL_CACHE_METHODS`` 与
+# ``StoreBundle.kb_cache``。
+#
+# **它是一份严格可弃的副本**（v0.3 §5.3）：真话永远在 NAS 上，删了只丢速度不丢数据。
+# 所以这张表上的每一个判据都朝着"宁可说没有，也不要说错"：
+#
+# - 缓存里的条目**剥掉权限位**（``can_write`` / ``can_manage`` 按调用者身份算，见 M4 §1.1）
+#   ——那是**调用方**在写之前做的，存储层只存它拿到的那份文本；
+# - 时间到了、内容坏了、行太多、总量太大 → 一律**当没有**（下面三个上限 + 超龄）；
+# - 两个时间戳**不许混**：``fetched_at``（这份内容什么时候看到的，界面说"上次更新于 X"）
+#   与 ``checked_at``（最近一次确认，含"确认过没变"）。
+
+MAX_ROWS_PER_PROVIDER = 500
+"""每个提供者地址最多留多少行快照（M4 §3.4-2 的第一级上限）。
+
+**超了按 ``fetched_at`` 淘汰最旧的**——判据刻意是"这份内容什么时候看到的"而不是
+"这行什么时候写进来的"：重验证确认"没变"时不重写 payload，用写入时间会让一份天天
+确认、内容稳定的快照莫名掉队。
+"""
+
+MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
+"""单条快照 payload 的上限（2 MiB，UTF-8 字节）。**超了不缓存**并记一条日志（§3.4-2）。
+
+不截断、也不把这件事报给用户："这一份太大"是我们的实现细节，用户既不该看到它、
+也不该因此看到半份内容。
+"""
+
+MAX_TOTAL_BYTES = 64 * 1024 * 1024
+"""全部快照 payload 的总量上限（64 MiB）。超了同样按 ``fetched_at`` 淘汰最旧的。"""
+
+SNAPSHOT_MAX_AGE_SECONDS = 30 * 24 * 60 * 60
+"""多久没被**确认**就当没有（§3.4-3 的 30 天）。
+
+判据是 ``checked_at``（最近一次确认）而**不是** ``fetched_at``（内容上次变化）：
+重验证确认"还是那份"时只推 ``checked_at``，若按 ``fetched_at`` 判，一份天天确认、
+内容稳定的快照会在第 30 天被当成"旧内容"丢掉——而它恰恰是**被确认过的那一份**。
+界面那句"上次更新于 X"读的仍然是 ``fetched_at``（两个时间戳不混）。
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class KbMetaCacheStats:
+    """快照表的用量概览（``kb_meta_cache_stats`` 的返回值）。
+
+    ``frozen`` 与这个类型存在的理由：它是**一次观察**的读数，不是一个可以被谁改的记录。
+    形状给成 dataclass 而不是照 ``storage_stats()`` 那样回裸 dict——那个 dict 的键被
+    PG 侧同名方法钉着（``MaintenanceService.overview`` 直接按键取值），这里没有那层约束，
+    而"这四个数分别是什么"写在字段上比写在注释里更经得起读。
+    """
+
+    rows: int = 0
+    """行数。"""
+    payload_bytes: int = 0
+    """这些行的 payload 合计多少字节（UTF-8；与 ``MAX_TOTAL_BYTES`` 同一把尺子）。"""
+    oldest_fetched_at: datetime | None = None
+    """最旧那份内容是什么时候看到的（没行就是 ``None``）。"""
+    newest_fetched_at: datetime | None = None
+    """最新那份内容是什么时候看到的（界面上的"最近更新"就是它）。"""
+
+
+@dataclass(frozen=True, slots=True)
+class KbMetaCacheRecord:
+    """一行知识库元数据快照（``kb_meta_cache`` 表，M4 §3.1）。
+
+    ``frozen`` 是刻意的——**34 个 ``*Record`` 里只有这一个不可变**：它是从 NAS 抄下来的
+    一份观察，改一个字段等于伪造一份没发生过的观察。要"改动"就写一行新的
+    （``put_kb_meta_cache``）或只推确认时间（``touch_kb_meta_cache``）。
+
+    两个时间戳的分工见 ``SNAPSHOT_MAX_AGE_SECONDS`` 那段；其余字段逐条：
+
+    - ``provider``：提供者地址（归一化：去尾斜杠）。**键空间隔离靠它**——家里的 NAS 与
+      单位的 NAS 各自一份，谁也不会覆盖谁；
+    - ``resource`` / ``scope_key``：资源名与资源内的键（``kb_list`` 的 ``scope_key`` 是
+      空串，别的资源是 kb_id / document_id / 视图指纹）。**存储层不校验取值**：词表是
+      服务层的事（与 ``session_events.kind`` 同一口径），这里只当字符串存；
+    - ``payload``：NAS 回的那份 JSON 的**文本原样**。刻意不是解析好的对象：存储层不解释
+      JSON（它只保证"写进去的是合法 JSON"，由列上的 ``CHECK (json_valid(...))`` 兜），
+      而原样保存意味着"读出来再写回去"不会因为两次序列化而变形；
+    - ``version``：内容哈希（``sha256:…``）。etag 缺席时的"变没变"判据（§4.1）；
+    - ``etag`` / ``last_modified``：服务端给的时候才有——今天**恒 NULL**（NAS 的 KB 读
+      端点还没有条件请求，§4.1 实测），列先建好，将来 NAS 侧加上就自动生效；
+    - ``source``：这行是怎么来的（``handshake`` / ``reader`` / ``revalidate``）；
+    - ``identity``：这条记录当时是**谁**取回来的（``api_key`` / ``session``）。
+      **只作排障，不许当判据**——快照的"可信度"不该取决于它是哪把钥匙看到的；
+    - ``stale``：上一次再验证失败了（内容照旧可读，但要如实标出来）；
+    - ``last_error``：那次失败的原因（成功一次就清空）。
+    """
+
+    provider: str
+    resource: str
+    scope_key: str
+    payload: str
+    version: str
+    source: str
+    fetched_at: datetime
+    checked_at: datetime
+    etag: str | None = None
+    last_modified: str | None = None
+    identity: str = ""
+    stale: bool = False
+    last_error: str = ""
+
+
+@runtime_checkable
+class KbMetaCache(Protocol):
+    """本机档独有的知识库元数据快照存取（``kb_meta_cache`` 一张表）。
+
+    ``runtime_checkable`` 与 ``ImportLedger`` 同一个理由：结构化类型下不继承也必须
+    满足，否则这份协议只是文档——用例要能一句话核对"装上去的那个实现真的满足它"。
+
+    **六个方法就是全部**（写者只有本机后端一个，见 M4 §2.3）：一读、一整写、一"只推
+    确认"、一删行、一按档清、一报数。没有"更新 payload"这种方法：内容变了就是**另一次
+    观察**，走 ``put`` 整行替换（连同 ``fetched_at`` 一起前进）。
+    """
+
+    def get_kb_meta_cache(
+        self, provider: str, resource: str, scope_key: str
+    ) -> KbMetaCacheRecord | None:
+        """取一行；**超龄（``SNAPSHOT_MAX_AGE_SECONDS`` 没被确认）当没有**，并把那行删掉。
+
+        "当没有"而不是"回一行旧的让人自己去判断"：调用方是页面与提示词增强，
+        它们只会把回出来的东西当真话（"更久以前的内容连看一眼的价值都抵不过误导风险"，
+        §3.4-3）。删行是顺手——它已经被判成没有，留着只会让下次读再判一遍。
+        """
+        ...
+
+    def put_kb_meta_cache(self, record: KbMetaCacheRecord) -> bool:
+        """整行写入/覆盖（主键是那三列）。返回是否真的落了库。
+
+        ``False`` = **payload 超过 ``MAX_PAYLOAD_BYTES``，没有缓存**（并记一条日志）。
+        这不是错误：一份过大的内容不该让调用方那条链失败，只是它不值得留副本。
+        写完之后在同一个事务里收一次超限（行数 / 总量按 ``fetched_at`` 淘汰最旧的）。
+        """
+        ...
+
+    def touch_kb_meta_cache(
+        self,
+        provider: str,
+        resource: str,
+        scope_key: str,
+        *,
+        checked_at: datetime,
+        stale: bool = False,
+        last_error: str = "",
+    ) -> bool:
+        """**只推确认**：改 ``checked_at`` / ``stale`` / ``last_error``，别的一列不动。
+
+        它对应 SWR 里"变没变"的答案是**没变**：payload 与 ``version`` 原封不动
+        （重写一遍内容相同的东西只会让 ``fetched_at`` 撒谎：界面会说"上次更新于 X"，
+        而其实什么都没更新）。返回是否改到了行（``False`` = 这行已经不在了，
+        调用方该走 ``put``）。
+        """
+        ...
+
+    def drop_kb_meta_cache(self, provider: str, resource: str, scope_key: str) -> int:
+        """删一行，返回删掉的条数。
+
+        两个调用场景都是"这条内容不作数了"：远端回 404（这个库没了）、
+        以及写类动作成功后的就地失效（§3.4-1——页面那条链自己知道写了什么）。
+        """
+        ...
+
+    def purge_kb_meta_cache(
+        self,
+        *,
+        provider: str | None = None,
+        resource: str | None = None,
+        scope_key: str | None = None,
+        scope_prefix: str | None = None,
+    ) -> int:
+        """按档清空，返回删掉的条数（设置面板那颗「清除」与 ``DELETE /local/kb-cache``）。
+
+        四个条件都是可选的，**给了就 AND 上去**；都不给就是全清。三档粒度这么表达：
+
+        - 全清：不传；
+        - 按地址清：``provider``；
+        - 按库清：``resource`` + ``scope_key``（``kb_detail`` / ``folders`` 的键就是
+          kb_id），文档列表那些视图用 ``scope_prefix``（它的 ``scope_key`` 以
+          ``<kb_id>|`` 开头——带分隔符的**前缀由调用方拼**，存储层不认识视图指纹的格式）。
+        """
+        ...
+
+    def kb_meta_cache_stats(self, *, provider: str | None = None) -> KbMetaCacheStats:
+        """报数：多少行、多少字节、最旧/最新那份是什么时候看到的。
+
+        不加"字节数从哪来"的判断：它就是把 ``payload`` 的 UTF-8 长度加起来——
+        与 ``MAX_TOTAL_BYTES`` 同一把尺子，否则"报出来的数"与"淘汰时的数"会对不上。
         """
         ...
 

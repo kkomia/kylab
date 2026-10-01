@@ -36,12 +36,16 @@ SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 BASELINE_VERSION = 1
 """``schema.sql`` 对应的版本号。"""
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 """应用期望的 schema 版本：基线 + ``MIGRATIONS`` 里已追加的增量。
 
 比它低 → 按序补上缺的迁移；比它高 → 报错（库被更新版应用升过级，**不降级**）。
 本机库与 PG 库是两份独立的 schema，所以这个数字与 ``postgres_impl`` 的 17 **无关**，
-不要拿两边对齐——它们记的是各自家当的演进。"""
+不要拿两边对齐——它们记的是各自家当的演进。
+
+**v2 = 知识库元数据缓存**（M4 §3.1）。基线 ``schema.sql`` 与 ``BASELINE_VERSION``
+一个字不改：本机库**已经发过版**（用户机器上那份就是 v1），新表只能走增量迁移——
+改基线等于让老库永远升不上来。"""
 
 #: ``schema_metadata`` 里用到的键。写在一处，免得字符串散在四个方法里。
 KEY_VERSION = "version"
@@ -62,12 +66,72 @@ class Migration:
     statements: tuple[str, ...]
 
 
-MIGRATIONS: tuple[Migration, ...] = ()
+MIGRATION_V2_KB_META_CACHE = Migration(
+    version=2,
+    description="知识库元数据缓存（M4 §3.1）：五个读路径资源的快照落本机",
+    statements=(
+        # 列与要点逐条对回方案 §3.1，两处刻意的写法：
+        #
+        # ① **时间列带 `_ms` 且不带 DEFAULT**（照 `schema.sql:16-34` 的类型映射纪律）：
+        #    毫秒值的唯一属主是应用侧那三个 helper，SQLite 没有"当前毫秒"的表达式默认值
+        #    （`unixepoch()` 要 3.38，本机下限 3.37）；
+        # ② `stale` / `identity` / `last_error` 的 DEFAULT 只是给**手写 SQL 排障**用的兜底，
+        #    应用一律显式给值（`put` 写全部列），所以它与①不矛盾——那三列不是时间。
+        #
+        # `(provider, resource, scope_key)` 三列主键就是**键空间**：地址隔离靠 provider
+        # （归一化后的 base_url），资源内隔离靠 scope_key（库/条目/视图指纹）。
+        # 每列的语义写在 ``app/storage/base.py`` 的 ``KbMetaCacheRecord`` 上（一处即可），
+        # 这里的行内注释只标"这一列在键空间/判据里扮什么角色"。
+        """\
+CREATE TABLE kb_meta_cache (
+    -- 提供者地址（归一化：去尾斜杠）；键空间隔离靠它
+    provider        TEXT    NOT NULL,
+    -- kb_list / kb_detail / doc_list / document / folders（词表在服务层，这里不校验）
+    resource        TEXT    NOT NULL,
+    -- 资源内键：kb_id / document_id / 视图指纹；kb_list 用 ''
+    scope_key       TEXT    NOT NULL,
+    -- NAS 原样 JSON（权限位已剥）；写进来的必须是合法 JSON
+    payload         TEXT    NOT NULL CHECK (json_valid(payload)),
+    -- 内容哈希（sha256:…）：etag 缺席时"变没变"的判据
+    version         TEXT    NOT NULL,
+    -- 服务端给的时候才有；今天恒 NULL（NAS 的 KB 读端点还没有条件请求）
+    etag            TEXT,
+    last_modified   TEXT,
+    -- handshake / reader / revalidate：这行是怎么来的
+    source          TEXT    NOT NULL,
+    -- api_key / session：**只作排障，不许当判据**
+    identity        TEXT    NOT NULL DEFAULT '',
+    -- 这份"内容"是什么时候看到的（界面那句"上次更新于 X"）
+    fetched_at_ms   INTEGER NOT NULL,
+    -- 最近一次**确认**（含"确认过没变"）：超龄丢弃看的是这一列
+    checked_at_ms   INTEGER NOT NULL,
+    stale           INTEGER NOT NULL DEFAULT 0 CHECK (stale IN (0, 1)),
+    last_error      TEXT    NOT NULL DEFAULT '',
+    PRIMARY KEY (provider, resource, scope_key)
+) STRICT
+""",
+        # 淘汰只看 `fetched_at_ms`（LRU 的判据是"这份内容什么时候看到的"，
+        # 见 base.py 的 `MAX_ROWS_PER_PROVIDER`），所以索引就建在这一列上。
+        "CREATE INDEX idx_kb_meta_cache_prune ON kb_meta_cache (fetched_at_ms)",
+        # 按资源取（页面的三个视图各取一条）/ 按资源清（按库清那一档）。
+        "CREATE INDEX idx_kb_meta_cache_scope ON kb_meta_cache (provider, resource)",
+    ),
+)
+"""**第一条增量迁移**：基线（v1）之后的第一张新表。
+
+它只加表、不动任何旧表——本机库装的是用户自己的会话，升级时**一条都不能丢**
+（`_apply_migrations` 在动手之前先整库备份，见那个函数）。
+"""
+
+MIGRATIONS: tuple[Migration, ...] = (MIGRATION_V2_KB_META_CACHE,)
 """增量迁移。基线（``schema.sql``）就是第 1 版，之后的演进往这里追加。
 
 **为什么本机库可以有迁移而 PG 侧是"不迁移数据"**：PG 那次是老库里没有值得搬的东西
 （数据直接舍弃）。本机库不一样——它装的是用户自己的会话，升级时**一条都不能丢**，
 所以 DDL 的演进只能靠迁移，不能靠"重建基线"。
+
+已经发布的条目**一律不许改字面量**（``Migration`` 的纪律）：用户机器上跑过的 v2 就是
+这一份，改一个字都会让"升过级的库"与"新装的库"结构不同。
 """
 
 

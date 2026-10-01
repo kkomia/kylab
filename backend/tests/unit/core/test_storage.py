@@ -177,6 +177,11 @@ def test_local_deployment_fills_every_field(tmp_path: Path) -> None:
         getattr(stores, field) is not None
         for field in ("vectors", "fulltext", "objects", "tabular")
     )
+    # 导入台账（阶段 5）与知识库快照（M4）都走**同一个实例**——同一个 `Database`，
+    # 也就是"写锁是进程内一把"那条纪律站得住的地方（见 `_build_local_stores` 的说明）；
+    # 服务器档这两个字段恒为 None，所以这里只在本机档断言
+    assert stores.ledger is stores.meta.local
+    assert stores.kb_cache is stores.meta.local
 
     # 本机域走通了：写一个设置再读回来（经 router，与 services 走的是同一条路）
     stores.meta.set_setting("chat.mode", "build")

@@ -6,17 +6,22 @@ r"""本机 SQLite 存储实现（M2「会话落本机」阶段 1）。
 方案见 ``docs/规范/会话落本机-实施方案-v0.1.md`` §1。
 
 - ``connection.py``   连接管理 + PRAGMA 口径 + ``read()/session()``
-- ``schema.sql``      基线 v1 DDL（本机 17 张表，逐表出处见文件头）
+- ``schema.sql``      基线 v1 DDL（本机 17 张表，逐表出处见文件头；**冻结不动**）
 - ``schema.py``       ``ensure_schema`` / 增量迁移 / 迁移前自动备份
-- ``meta_store.py``   ``SqliteMetaStore``（只实现本机域）
+                      （v2 = 知识库元数据缓存那张表，见 ``MIGRATION_V2_KB_META_CACHE``）
+- ``meta_store.py``   ``SqliteMetaStore``（本机域 + 导入台账 + 知识库快照三块）
 - ``validate.py``     运维自检入口：``python -m app.storage.sqlite_impl.validate``
+                      （表/索引计数之外还报出快照表的行数与字节数）
 
-**本机域的两份清单都在这一个模块里**（都不许手抄，见下面两个常量）：
+**本机域的清单都在这一个模块里**（都不许手抄，见下面三个常量）：
 
 - ``LOCAL_METHODS`` —— ``MetaStore`` 的哪些方法归本机（阶段 2 的路由表按它算补集）；
 - ``LOCAL_LEDGER_METHODS`` —— ``imports`` / ``import_items`` 那族方法。它们**不在**
   ``MetaStore`` 上（是本机独有的两张表），所以既不属于本机域也不属于 KB 域，
-  单独登记并把理由写在那儿。
+  单独登记并把理由写在那儿；
+- ``LOCAL_CACHE_METHODS`` —— 知识库元数据快照那六个方法（M4）。同样**不在**
+  ``MetaStore`` 上，同样单独登记；它多出来的一句是"为什么它既不属于本机域也不属于
+  KB 域"。
 
 **只实现本机域，不实现 ``MetaStore`` 全量 ABC**：本机档里知识库那半没有数据源
 （NAS 才是），所以 ``SqliteMetaStore`` 不继承 ``MetaStore``，也不该被当成一个完整的
@@ -42,6 +47,7 @@ from app.storage.repositories import (
 )
 
 __all__ = [
+    "LOCAL_CACHE_METHODS",
     "LOCAL_EXTRA",
     "LOCAL_LEDGER_METHODS",
     "LOCAL_METHODS",
@@ -95,6 +101,38 @@ LOCAL_LEDGER_METHODS: frozenset[str] = frozenset(
         "list_import_items",
         # 一条会话整体落库（一个事务）：幂等重跑与回滚恢复共用同一个入口
         "write_imported_conversation",
+    }
+)
+
+#: **知识库元数据快照**（M4 阶段 1）：``kb_meta_cache`` 一张表上的六个方法。
+#:
+#: **为什么它既不属于本机域、也不属于 KB 域**（这一条就是这个常量存在的理由）：
+#:
+#: - **不进 ``LOCAL_METHODS``**：那是"``MetaStore`` 里哪些方法归本机"的划分，而这六个
+#:   方法**不在 ``MetaStore`` 上**——服务器档没有这张表，也不该有（它的 KB 元数据就在
+#:   自己的 PG 里，缓存一个"自己就是真相源"的东西只会多一层会过期的副本）；
+#: - **也不是 KB 域**：它服务的是 **KB 域的读路径**（页面先画快照、reader 面打 NAS 之前
+#:   先看本机），可它的**数据主人是本机**——写者只有本机后端一个（M4 §2.3），KB 域的
+#:   路由表（``RouterMetaStore`` → ``RemoteMetaStore``）一个字都不该碰它。
+#:
+#: 所以它是第三块：与 ``LOCAL_LEDGER_METHODS`` 同一套登记手法（单独一块清单 + 单独一个
+#: ``StoreBundle`` 字段 ``kb_cache`` + 用**同一个 ``SqliteMetaStore`` 实例**），
+#: 而不是把守卫改松。接口契约见 ``app/storage/base.py`` 的 ``KbMetaCache``。
+#:
+#: 谁用它们：阶段 2 起的 ``services/kb_cache.py``（唯一的写者）与阶段 4 的
+#: ``/local/kb-cache/*`` 只读端点；两者都经 ``StoreBundle.kb_cache`` 拿到（服务器档那个
+#: 字段恒为 ``None``）。
+LOCAL_CACHE_METHODS: frozenset[str] = frozenset(
+    {
+        # 一读（超龄当没有）/ 一整写（含两级上限的收口）
+        "get_kb_meta_cache",
+        "put_kb_meta_cache",
+        # 只推确认（版本没变时走它，payload 与 fetched_at 一个字不动）
+        "touch_kb_meta_cache",
+        # 失效：单行删 / 按档清 / 报数
+        "drop_kb_meta_cache",
+        "purge_kb_meta_cache",
+        "kb_meta_cache_stats",
     }
 )
 

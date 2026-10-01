@@ -168,6 +168,8 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
 
     **多出来的第六个字段 ``ledger``**（阶段 5）：导入台账（``imports`` / ``import_items``）
     是本机独有的，服务器档恒为 ``None``（那条纪律与理由写在 ``base.StoreBundle.ledger``）。
+    **第七个字段 ``kb_cache``**（M4 阶段 1）同一条口径：知识库元数据快照（``kb_meta_cache``）
+    也只有本机有，服务器档恒为 ``None``（理由写在 ``base.StoreBundle.kb_cache``）。
     """
     from app.storage.local_impl.object_store import LocalObjectStore
     from app.storage.split_impl import (
@@ -193,10 +195,11 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
     for subdir in STORAGE_SUBDIRS:
         (data_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-    # **同一个实例两处用**（阶段 5）：``meta`` 走它做本机域读写，``ledger`` 走它做
-    # 导入台账与"一条会话整体写入"。两个 SqliteMetaStore 指向同一个库文件也能跑，
-    # 但那会造出两条连接集合与两把写锁之外的**两个对象**——而"写锁是进程内一把"
-    # 这条纪律是对着 `Database` 说的，不是对着仓储对象说的。同一个实例没有这个问题。
+    # **同一个实例三处用**（阶段 5 起两处，M4 再添一处）：``meta`` 走它做本机域读写，
+    # ``ledger`` 走它做导入台账与"一条会话整体写入"，``kb_cache`` 走它做知识库元数据
+    # 快照。三个 SqliteMetaStore 指向同一个库文件也能跑，但那会造出三条连接集合与
+    # 三个对象——而"写锁是进程内一把"这条纪律是对着 `Database` 说的，不是对着仓储对象
+    # 说的。同一个实例没有这个问题。
     local_store = SqliteMetaStore(database)
 
     return StoreBundle(
@@ -212,6 +215,9 @@ def _build_local_stores(settings: Settings, data_dir: Path) -> StoreBundle:
         tabular=UnavailableTabularStore(),
         # 导入台账是本机独有的（服务器档那个字段恒为 None，见 base.StoreBundle.ledger）
         ledger=local_store,
+        # 知识库元数据快照同理（M4 §3.3）：缓存层服务 KB 域的读路径，但数据主人是本机，
+        # 写者只有本机后端一个（M4 §2.3）。服务器档不缓存 KB 元数据——那是它自己的家当。
+        kb_cache=local_store,
     )
 
 

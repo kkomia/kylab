@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from app.storage.sqlite_impl import validate as validate_module
+from app.storage.sqlite_impl.schema import SCHEMA_VERSION
 from app.storage.sqlite_impl.validate import DB_FILENAME, main
 
 pytestmark = pytest.mark.local
@@ -27,6 +28,8 @@ def test_fresh_directory_passes_and_builds_the_library(tmp_path: Path, capsys) -
     output = capsys.readouterr().out
     assert "结论：本机库可用" in output
     assert "journal_mode = wal" in output
+    # 知识库元数据快照的用量也报出来（M4 §3.4-4）：新库当然是 0 行 0 字节
+    assert "知识库元数据快照 0 行、0 字节" in output
     assert (data_dir / DB_FILENAME).exists()
 
 
@@ -36,7 +39,10 @@ def test_existing_library_is_checked_in_place(tmp_path: Path, capsys) -> None:
     assert main(["--data-dir", str(data_dir)]) == 0
     capsys.readouterr()
     assert main(["--data-dir", str(data_dir)]) == 0
-    assert "schema 版本 = 1" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    # 版本号从常量取：它随增量迁移走（M4 起是 v2），写死一个数字等于每加一条迁移
+    # 就要来改一次这句——而那正是"改了数字、判据没变"的那种红
+    assert f"schema 版本 = {SCHEMA_VERSION}" in output
 
 
 def test_non_strict_sqlite_is_refused(tmp_path: Path, monkeypatch, capsys) -> None:

@@ -35,9 +35,12 @@ from app.storage.sqlite_impl.schema import (
 
 pytestmark = pytest.mark.local
 
-#: 本机库里应该有哪 17 张表（§1.3 逐行列出的那份清单）。
+#: 本机库里应该有哪 18 张表（§1.3 逐行列出的那份清单 + M4 的快照表）。
 #: **注意**：实施方案的标题写"18 张"，但那份清单逐行数是 17 张；这里按**清单**守，
 #: 于是"哪天真的少了一张或多了一张"会立刻红，而不是被一个错误的数字掩盖。
+#: M4 起第 18 张是 ``kb_meta_cache``——它**不来自基线**（``schema.sql`` 一个字没改），
+#: 而是增量迁移 v2 建的，所以它与下面 ``test_baseline_version_literal_matches_the_constant``
+#: 那条"基线还是 v1"的断言并不矛盾。
 EXPECTED_TABLES = frozenset(
     {
         "schema_metadata",
@@ -57,6 +60,7 @@ EXPECTED_TABLES = frozenset(
         "usage_events",
         "imports",
         "import_items",
+        "kb_meta_cache",
     }
 )
 
@@ -100,6 +104,8 @@ EXPECTED_MS_COLUMNS: dict[str, frozenset[str]] = {
     "usage_events": frozenset({"created_at_ms", "duration_ms"}),
     "imports": frozenset({"since_ms", "created_at_ms", "updated_at_ms"}),
     "import_items": frozenset({"source_updated_at_ms", "local_updated_at_ms", "created_at_ms"}),
+    # 快照那对**不许混**的时间戳（M4 §3.1）：内容什么时候看到的 / 最近一次确认
+    "kb_meta_cache": frozenset({"fetched_at_ms", "checked_at_ms"}),
     # schema_metadata 只有 key/value：版本是文本，建库时间在它的行值里（不是列）
     "schema_metadata": frozenset(),
 }
@@ -124,30 +130,44 @@ def _objects(conn: sqlite3.Connection, kind: str) -> dict[str, str]:
 
 
 def test_fresh_file_has_no_version_then_baseline_lands(tmp_path: Path) -> None:
-    """三种版本状态要分清（``current_version`` 的 None / 0 / n）。"""
+    """三种版本状态要分清（``current_version`` 的 None / 0 / n）。
+
+    建完基线**立刻**把增量补上，所以空库走完 ``ensure_schema`` 是 ``SCHEMA_VERSION``
+    （M4 之前那个值是 1，因为那时 ``MIGRATIONS`` 还是空的——现在它的判据改成
+    "最后一条迁移 == 应用期望的版本"，这样再加迁移时这条用例不用跟着改数字）。
+    """
     db = Database(tmp_path / "kylab.db")
     db.open()
     assert current_version(db) is None
-    assert ensure_schema(db) == BASELINE_VERSION
-    assert current_version(db) == BASELINE_VERSION
-    assert SCHEMA_VERSION == BASELINE_VERSION  # 现阶段还没有增量迁移
-    assert MIGRATIONS == ()
+    assert ensure_schema(db) == SCHEMA_VERSION
+    assert current_version(db) == SCHEMA_VERSION
+    # 基线**冻在 v1**：老库（用户机器上那份）只能靠增量升级，改基线等于让它们升不上来
+    assert BASELINE_VERSION == 1
+    assert MIGRATIONS[-1].version == SCHEMA_VERSION
+    assert [item.version for item in MIGRATIONS] == list(
+        range(BASELINE_VERSION + 1, SCHEMA_VERSION + 1)
+    ), "增量必须逐级连号，中间不许缺（缺一级就有一批库升不上来）"
     db.close()
 
 
 def test_baseline_version_literal_matches_the_constant() -> None:
-    """版本号在 ``schema.sql`` 里是**字面量**（与 DDL 同一事务），必须与应用常量相等。"""
+    """版本号在 ``schema.sql`` 里是**字面量**（与 DDL 同一事务），必须与应用常量相等。
+
+    顺带钉住 M4 §3.2 那一条：本机库**已经发过版**，所以新表只能走增量——基线文件与
+    ``BASELINE_VERSION`` 一个字不改（用例读的就是磁盘上那份 DDL）。
+    """
     from app.storage.sqlite_impl.schema import SCHEMA_PATH
 
     ddl = SCHEMA_PATH.read_text(encoding="utf-8")
     assert f"VALUES ('version', '{BASELINE_VERSION}')" in ddl
+    assert SCHEMA_VERSION > BASELINE_VERSION, "M4 起增量不为空：基线必须冻着不动"
 
 
 def test_baseline_creates_exactly_the_local_tables(database: Database) -> None:
     with database.read() as conn:
         tables = set(_objects(conn, "table"))
     assert tables == EXPECTED_TABLES
-    assert len(tables) == 17
+    assert len(tables) == 18
 
 
 def test_every_table_is_strict(database: Database) -> None:
@@ -263,22 +283,26 @@ def test_version_lives_only_in_schema_metadata(database: Database) -> None:
         created = conn.execute(
             "SELECT value FROM schema_metadata WHERE key = ?", (KEY_CREATED_AT,)
         ).fetchone()
-    assert row["value"] == str(BASELINE_VERSION)
+    assert row["value"] == str(SCHEMA_VERSION)
     assert int(created["value"]) > 0
 
 
 def test_ensure_schema_is_idempotent(database: Database) -> None:
-    assert ensure_schema(database) == BASELINE_VERSION
-    assert ensure_schema(database) == BASELINE_VERSION
+    assert ensure_schema(database) == SCHEMA_VERSION
+    assert ensure_schema(database) == SCHEMA_VERSION
 
 
 # ------------------------------------------------------------------ 迁移
 
 
-#: 一条**合成迁移**：只在测试里存在（真实的 ``MIGRATIONS`` 现在是空的）。
-#: 用它验证迁移机制本身：备份、同事务写版本、失败回滚、日志。
+#: 一条**合成迁移**：只在测试里存在。用它验证迁移机制本身：备份、同事务写版本、
+#: 失败回滚、日志。
+#:
+#: 版本号取 ``SCHEMA_VERSION + 1`` 而**不是写死的 2**（M4 起真实的 ``MIGRATIONS``
+#: 已经占了 v2）：合成迁移必须比"库里现在的版本"更高，否则 ``_apply_migrations``
+#: 会认为没有待补的迁移，这几条用例就变成"什么都没验"的空跑。
 SYNTHETIC = Migration(
-    version=2,
+    version=SCHEMA_VERSION + 1,
     description="测试用：加一张探针表",
     statements=(
         "CREATE TABLE probe (id TEXT PRIMARY KEY) STRICT",
@@ -286,7 +310,7 @@ SYNTHETIC = Migration(
     ),
 )
 BROKEN = Migration(
-    version=2,
+    version=SCHEMA_VERSION + 1,
     description="测试用：第二条语句是坏 SQL",
     statements=(
         "CREATE TABLE half_baked (id TEXT PRIMARY KEY) STRICT",
@@ -312,9 +336,15 @@ def test_migration_applies_and_records_everything(upgradeable: Database) -> None
                 "SELECT value FROM schema_metadata WHERE key = ?", (KEY_MIGRATION_LOG,)
             ).fetchone()["value"]
         )
-    assert [entry["version"] for entry in log] == [SYNTHETIC.version]
-    assert log[0]["description"] == SYNTHETIC.description
-    assert log[0]["at_ms"] > 0
+    # 日志里已经有**真实的那几条**（`prepare` 建库时就迁过 v2），合成那条追加在末尾——
+    # 每应用一条就追加一条，顺序即应用顺序（`MIGRATIONS` 是本模块导入的**原始**元组，
+    # `upgradeable` 改的是 `schema_module` 上那个名字）
+    assert [entry["version"] for entry in log] == [
+        *[item.version for item in MIGRATIONS],
+        SYNTHETIC.version,
+    ]
+    assert log[-1]["description"] == SYNTHETIC.description
+    assert log[-1]["at_ms"] > 0
 
 
 def test_migration_backs_up_the_whole_database_first(upgradeable: Database) -> None:
@@ -331,8 +361,9 @@ def test_migration_backs_up_the_whole_database_first(upgradeable: Database) -> N
     backup = Path(recorded)
     assert backup.exists()
     assert backup.name == upgradeable.path.name
-    # 目录名带上版本区间，一眼看得出"这份是升到哪一步之前的"
-    assert f"v{BASELINE_VERSION}→v{SYNTHETIC.version}" in backup.parent.name
+    # 目录名带上版本区间，一眼看得出"这份是升到哪一步之前的"——
+    # 起点是**库当时的版本**（基线 + 已应用的增量），不是基线
+    assert f"v{SCHEMA_VERSION}→v{SYNTHETIC.version}" in backup.parent.name
 
     with sqlite3.connect(backup) as snapshot:
         names = {row[0] for row in snapshot.execute("SELECT name FROM sqlite_master")}
@@ -340,7 +371,7 @@ def test_migration_backs_up_the_whole_database_first(upgradeable: Database) -> N
             "SELECT value FROM schema_metadata WHERE key = 'version'"
         ).fetchone()[0]
     assert "probe" not in names
-    assert version == str(BASELINE_VERSION)
+    assert version == str(SCHEMA_VERSION)
 
 
 def test_failed_migration_rolls_back_and_keeps_the_version(
@@ -352,14 +383,15 @@ def test_failed_migration_rolls_back_and_keeps_the_version(
     with pytest.raises(SchemaError) as info:
         ensure_schema(database)
     assert "备份" in str(info.value)
-    assert current_version(database) == BASELINE_VERSION
+    # 回滚到**失败前那一刻**的版本（基线 + 已应用的增量），不是基线本身
+    assert current_version(database) == SCHEMA_VERSION
     with database.read() as conn:
         assert "half_baked" not in _objects(conn, "table")
 
 
 def test_version_newer_than_the_app_is_refused(database: Database, monkeypatch) -> None:
     """库被更新版应用升过级 → 报错，**不降级**（旧代码写新结构 = 静默损坏）。"""
-    monkeypatch.setattr(schema_module, "SCHEMA_VERSION", BASELINE_VERSION - 1)
+    monkeypatch.setattr(schema_module, "SCHEMA_VERSION", SCHEMA_VERSION - 1)
     with pytest.raises(SchemaError, match="高于本应用已知的"):
         ensure_schema(database)
 

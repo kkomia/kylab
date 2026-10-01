@@ -6,8 +6,10 @@
 三块内容：
 
 1. **接口核对**（§6.4 第一条 + §2.1）：``SqliteMetaStore`` 的方法集合**恰好**是
-   ``LOCAL_METHODS``——既不少（少一个就是某条边角路径上的 AttributeError），
-   也不多（多一个就是偷偷实现了 KB 域的活），并且结构上满足那 8 个窄协议。
+   三块清单的并集——``LOCAL_METHODS``（本机域）、``LOCAL_LEDGER_METHODS``（导入台账，
+   M2 阶段 5）、``LOCAL_CACHE_METHODS``（知识库快照，M4）——既不少（少一个就是某条
+   边角路径上的 AttributeError），也不多（多一个就是偷偷实现了别的域的活），
+   并且结构上满足那 8 个窄协议。
 2. **字段一致性**（§6.4 的 R10）：记录 dataclass 的字段 ↔ 表的列名逐表比对。
    两份 schema 漂移的典型形态就是"某个字段忘了落库"，这条机械查得出来。
 3. **行为**：会话 / 消息 / 事件 / 产物 / 笔记 / 文件夹级联 / 设置 / 工作区三态 /
@@ -33,6 +35,8 @@ from app.storage.base import (
     ConversationArtifactRecord,
     ConversationRecord,
     ImportLedger,
+    KbMetaCache,
+    KbMetaCacheRecord,
     MCPServerRecord,
     MetaStore,
     ModelProviderRecord,
@@ -46,6 +50,7 @@ from app.storage.base import (
 )
 from app.storage.repositories import MaintenanceRepo
 from app.storage.sqlite_impl import (
+    LOCAL_CACHE_METHODS,
     LOCAL_EXTRA,
     LOCAL_LEDGER_METHODS,
     LOCAL_METHODS,
@@ -66,8 +71,20 @@ from app.storage.sqlite_impl.schema import prepare
 pytestmark = pytest.mark.local
 
 #: 记录里的时间字段：它们在表上叫 `<名字>_ms`。
+#:
+#: ``fetched_at`` / ``checked_at`` 是 M4 那对**不许混**的时间戳（快照：这份内容什么时候
+#: 看到的 / 最近一次确认），列名照类型映射纪律带 ``_ms``。
 DATETIME_FIELDS = frozenset(
-    {"created_at", "updated_at", "archived_at", "run_at", "next_run_at", "last_run_at"}
+    {
+        "created_at",
+        "updated_at",
+        "archived_at",
+        "run_at",
+        "next_run_at",
+        "last_run_at",
+        "fetched_at",
+        "checked_at",
+    }
 )
 
 
@@ -88,21 +105,23 @@ def store(database: Database) -> SqliteMetaStore:
 
 
 def test_store_covers_exactly_the_local_method_set() -> None:
-    """本机域方法集**恰好**是 ``LOCAL_METHODS``：一个不多、一个不少。
+    """本机域方法集**恰好**是三块清单的并集：一个不多、一个不少。
 
-    阶段 5 多出来的那八个导入台账方法**不在** ``LOCAL_METHODS`` 里，它们单独登记在
-    ``LOCAL_LEDGER_METHODS``（理由写在那个常量上：那两张表只有本机档有，
-    所以它们既不属于"本机域"也不属于"KB 域"）。所以这条断言的右边是**两块清单**——
-    多一个方法就必须进其中之一，而"哪些算本机域"这条纪律一个字没松。
+    另外两块**都不在** ``LOCAL_METHODS`` 里，它们单独登记：阶段 5 的八个导入台账方法
+    （``LOCAL_LEDGER_METHODS``：那两张表只有本机档有）与 M4 的六个快照方法
+    （``LOCAL_CACHE_METHODS``：``kb_meta_cache`` 同样是本机独有的一张表，理由写在那个
+    常量上）。所以这条断言的右边是**三块清单**——多一个方法就必须进其中之一，
+    而"哪些算本机域"这条纪律一个字没松。
     """
     public = {
         name
         for name, value in vars(SqliteMetaStore).items()
         if not name.startswith("_") and callable(value)
     }
-    assert public == set(LOCAL_METHODS) | set(LOCAL_LEDGER_METHODS)
+    assert public == set(LOCAL_METHODS) | set(LOCAL_LEDGER_METHODS) | set(LOCAL_CACHE_METHODS)
     assert len(LOCAL_METHODS) == 81
     assert len(LOCAL_LEDGER_METHODS) == 8
+    assert len(LOCAL_CACHE_METHODS) == 6
 
 
 def test_the_ledger_methods_are_not_on_the_meta_store_abc() -> None:
@@ -117,9 +136,27 @@ def test_the_ledger_methods_are_not_on_the_meta_store_abc() -> None:
     assert not (set(LOCAL_LEDGER_METHODS) & set(LOCAL_METHODS))
 
 
+def test_the_cache_methods_are_outside_both_domains() -> None:
+    """知识库快照那六个方法与导入台账同一条纪律：**两边都不属于**。
+
+    它**不是本机域**（``LOCAL_METHODS`` 是"``MetaStore`` 里哪些归本机"的划分，而它不在
+    ``MetaStore`` 上）；**也不是 KB 域**（KB 域的方法必须在 ``MetaStore`` 上存在，
+    服务器档要有实现——而服务器档的 KB 元数据本来就是它自己的家当，没有"抄一份 NAS
+    快照"这条动作）。所以它单独登记在 ``LOCAL_CACHE_METHODS``，三块清单两两不相交。
+    """
+    assert not (set(LOCAL_CACHE_METHODS) & set(MetaStore.__abstractmethods__))
+    assert not (set(LOCAL_CACHE_METHODS) & set(LOCAL_METHODS))
+    assert not (set(LOCAL_CACHE_METHODS) & set(LOCAL_LEDGER_METHODS))
+
+
 def test_the_store_satisfies_the_import_ledger_protocol(store: SqliteMetaStore) -> None:
     """结构化类型下，实现**必须真的满足**那份协议（协议里的每个方法都在）。"""
     assert isinstance(store, ImportLedger)
+
+
+def test_the_store_satisfies_the_kb_meta_cache_protocol(store: SqliteMetaStore) -> None:
+    """快照那份协议同理（M4 §3.3）：装上去的那个实现真的满足它。"""
+    assert isinstance(store, KbMetaCache)
 
 
 def test_no_abstract_methods_left() -> None:
@@ -193,6 +230,9 @@ RECORD_TABLES: tuple[tuple[type, str, frozenset[str], frozenset[str]], ...] = (
     (ModelProviderRecord, "model_providers", frozenset(), frozenset()),
     (RegisteredModelRecord, "model_registry", frozenset(), frozenset()),
     (UsageEventRecord, "usage_events", frozenset({"reported"}), frozenset()),
+    # M4：快照那一行**没有例外**——13 列与 13 个字段逐名对得上
+    # （时间那两列按 `DATETIME_FIELDS` 映射成 `_ms`）。
+    (KbMetaCacheRecord, "kb_meta_cache", frozenset(), frozenset()),
 )
 
 

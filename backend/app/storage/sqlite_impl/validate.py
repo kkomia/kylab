@@ -40,6 +40,18 @@ select count(*) as n
  where type = 'index' and name not like 'sqlite_%'
 """
 
+#: 知识库元数据快照表（M4 §3.1）的用量：多少行、多少字节。
+#:
+#: 方案 §3.4-4 点名要把它报出来——这张表装的是**从 NAS 抄下来的库名与文档名**，
+#: 用户与排障的人都有权知道"本机留了多少"。字节按 ``payload`` 的 UTF-8 长度算，
+#: 与淘汰时那把尺子**逐字一致**（``sqlite_impl/meta_store.py::_prune_kb_meta_cache``）：
+#: 报出来的数与淘汰时的数若不是一个口径，"还剩多少"这句话就没人敢信。
+_CACHE_USAGE_SQL = """
+select count(*) as n,
+       coalesce(sum(length(cast(payload as blob))), 0) as payload_bytes
+  from kb_meta_cache
+"""
+
 
 def _data_dir(argv: list[str]) -> Path:
     """``--data-dir <路径>`` 优先，其次 ``KYLAB_DATA_DIR``，最后 ``./data``。"""
@@ -109,6 +121,10 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         print("[OK  ] integrity_check = ok")
         print(f"[OK  ] 本机表 {tables} 张、索引 {indexes} 条")
+
+        with db.read() as conn:
+            cache_rows, cache_bytes = conn.execute(_CACHE_USAGE_SQL).fetchone()
+        print(f"[OK  ] 知识库元数据快照 {cache_rows} 行、{cache_bytes} 字节")
 
         # 借一次真实的写往返确认写路径可用（PRAGMA 只说明"读得动"）
         with db.session() as conn:

@@ -23,29 +23,38 @@ r"""``MetaStore`` 本机域的 SQLite 实现（M2 §2.1 / §7 阶段 1）。
 与各 ``update_*``）落值是 ``max(now_ms, 旧值 + 1)``，见下面那段"毫秒推进纪律"。
 同一毫秒里的两次推进会因此排得出先后，而"最近活动"这类排序正是靠它。
 
-**只实现本机域**：本模块的方法集合**恰好**是
-``app.storage.sqlite_impl.LOCAL_METHODS``（机械导出，见那个模块），
+**只实现本机域**：本模块的公开方法集合**恰好**是三块清单的并集（机械导出，见
+``app.storage.sqlite_impl``）——``LOCAL_METHODS``（本机域那八个协议）、
+``LOCAL_LEDGER_METHODS``（旧会话导入的台账，只有本机有那两张表）、
+``LOCAL_CACHE_METHODS``（知识库元数据快照，服务 KB 域的读路径但人不在 KB 域）。
 知识库 / 文档 / 切块 / 向量 / 全文 / Wiki / 任务队列 / 回收站 / 账号会话
-一个都不在这里——它们是 NAS 的家当。分档路由（``RouterMetaStore``）是阶段 2。
+一个都不在这里——它们是 NAS 的家当。分档路由（``RouterMetaStore``）是阶段 2 的事。
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from collections.abc import Iterable, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.core.exceptions import ConflictError
 from app.storage.base import (
     IMPORT_STATES,
+    MAX_PAYLOAD_BYTES,
+    MAX_ROWS_PER_PROVIDER,
+    MAX_TOTAL_BYTES,
+    SNAPSHOT_MAX_AGE_SECONDS,
     ChatMessageRecord,
     ConversationArtifactRecord,
     ConversationRecord,
     ConversationTransfer,
     ImportBatchRecord,
     ImportItemRecord,
+    KbMetaCacheRecord,
+    KbMetaCacheStats,
     MCPServerRecord,
     ModelProviderRecord,
     NoteFolderRecord,
@@ -57,6 +66,8 @@ from app.storage.base import (
     WorkspaceRecord,
 )
 from app.storage.sqlite_impl.connection import Database
+
+logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------ 三个 helper
 #
@@ -179,6 +190,36 @@ PG 那边是 ``DISTINCT ON (conversation_id)``；SQLite 没有这个语法，用
 
 ``{ids}`` 由 :func:`_placeholders` 填，永远只出现 ``?``。
 """
+
+
+#: 快照总量超预算时的淘汰语句（M4 §3.4-2 的第三级上限，见 ``_prune_kb_meta_cache``）。
+#:
+#: 判据是**从最新往回累加**：``running_bytes`` 是"从最新的那份数到这一份"的累计字节，
+#: 超过 ``MAX_TOTAL_BYTES`` 的那些（含更旧的）就是要扔的。窗口函数与本文件里
+#: ``LAST_ASSISTANT_PREVIEWS_SQL`` 用的是同一个（3.25+，远低于本库的 3.37 下限），
+#: 所以"累计"这件事不必拉回 Python 里算——一次表内扫描就定下要删哪些行。
+#:
+#: ``rowid DESC`` 与排序同向：同一毫秒里的几行也要有一个确定的先后（否则"删掉哪几行"
+#: 会随查询计划漂）。它只在这条语句里出现，值永远走 ``?`` 绑定。
+EVICT_OVER_BUDGET_SQL = (
+    "DELETE FROM kb_meta_cache WHERE rowid IN ("
+    " SELECT rowid FROM ("
+    "  SELECT rowid, SUM(LENGTH(CAST(payload AS BLOB))) OVER ("
+    "   ORDER BY fetched_at_ms DESC, rowid DESC) AS running_bytes"
+    "  FROM kb_meta_cache)"
+    " WHERE running_bytes > ?)"
+)
+
+
+def _snapshot_expired(checked_at: datetime, now: datetime) -> bool:
+    """这份快照**多久没被确认过了**（M4 §3.4-3 的 30 天）。
+
+    判据是 ``checked_at`` 而不是 ``fetched_at``，理由写在
+    ``base.SNAPSHOT_MAX_AGE_SECONDS`` 那段。单独抽成一个函数是为了让"读的时候当没有"
+    与"清理的时候删掉"共用同一个判据——两处各写一遍 `>` 与 `30 * 24 * 3600`
+    迟早会漂成两个天数。
+    """
+    return (now - checked_at) > timedelta(seconds=SNAPSHOT_MAX_AGE_SECONDS)
 
 
 def _mcp_server_from_row(row: sqlite3.Row) -> MCPServerRecord:
@@ -1931,3 +1972,250 @@ class SqliteMetaStore:
                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     artifacts,
                 )
+
+    # ------------------------------------------------------------------ 知识库元数据快照（M4）
+    #
+    # 这张表**只有本机档有**（服务器档的 KB 元数据就在自己的 PG 里，没有"抄一份 NAS 的
+    # 快照"这条动作），所以这些方法不在 ``LOCAL_METHODS`` 里，而是在
+    # ``sqlite_impl.LOCAL_CACHE_METHODS`` 单独登记——接口契约见 ``app/storage/base.py``
+    # 的 ``KbMetaCache``（本模块不继承它：那个协议是给组合根与用例做结构核对的）。
+    #
+    # **进程里只有本机后端一个写者**（M4 §2.3）：页面那条链是纯读者，所以这里不需要
+    # 任何跨身份的合并规则——写进来的那一行就是"本机后端看到的那份"。
+
+    @staticmethod
+    def _kb_meta_from_row(row: sqlite3.Row) -> KbMetaCacheRecord:
+        return KbMetaCacheRecord(
+            provider=row["provider"],
+            resource=row["resource"],
+            scope_key=row["scope_key"],
+            # payload 原样交出去（TEXT 列）：存储层不解释 JSON，
+            # 只保证"写进来的是合法 JSON"（列上的 CHECK）。
+            payload=row["payload"],
+            version=row["version"],
+            source=row["source"],
+            # 两个时间戳**各读各的列**：混起来会让界面把"上次确认"说成"上次更新"
+            fetched_at=_load(row["fetched_at_ms"]),
+            checked_at=_load(row["checked_at_ms"]),
+            etag=row["etag"],
+            last_modified=row["last_modified"],
+            identity=row["identity"],
+            stale=bool(row["stale"]),
+            last_error=row["last_error"],
+        )
+
+    def get_kb_meta_cache(
+        self, provider: str, resource: str, scope_key: str
+    ) -> KbMetaCacheRecord | None:
+        """取一行；**超龄就当没有**，并把那行删掉（§3.4-3 / §4.2）。
+
+        顺手删行不是"读方法偷偷写库"的多余动作，而是这条判据的第二次执行：它已经被
+        判成没有，留着只会让下一次读再判一遍，也让 ``kb_meta_cache_stats`` 报出一个
+        永远读不出来的数。删的是**主键命中的那一行**，代价是一条按主键的 DELETE。
+        """
+        with self._db.read() as conn:
+            row = conn.execute(
+                "SELECT * FROM kb_meta_cache WHERE provider = ? AND resource = ? AND scope_key = ?",
+                (provider, resource, scope_key),
+            ).fetchone()
+        if row is None:
+            return None
+        record = self._kb_meta_from_row(row)
+        if not _snapshot_expired(record.checked_at, _now()):
+            return record
+        self.drop_kb_meta_cache(provider, resource, scope_key)
+        return None
+
+    def put_kb_meta_cache(self, record: KbMetaCacheRecord) -> bool:
+        """整行写入/覆盖，返回是否真的落了库（见协议里的说明）。
+
+        三件事写在**同一个事务**里：写入 → 收一次超限（``_prune_kb_meta_cache``）。
+        分开两个事务的话，两条并发的再验证会让表短暂地超过上限——而"上限"这条纪律
+        一旦允许短暂失效，它就只是建议。
+
+        ``payload`` 的合法性交给列上的 ``CHECK (json_valid(payload))`` 判（存储层不做
+        第二次解析：那份 JSON 是**服务层算哈希用的同一串文本**，在这里再 `json.loads`
+        一遍只是把同一次判断做两遍），但把 ``IntegrityError`` 翻成一句能读的话——
+        "约束失败"四个字说不清是哪儿错了。
+        """
+        size = len(record.payload.encode("utf-8"))
+        if size > MAX_PAYLOAD_BYTES:
+            logger.warning(
+                "知识库元数据快照超过单条上限，跳过不缓存（M4 §3.4-2）：%s/%s/%s 共 %d 字节",
+                record.provider,
+                record.resource,
+                record.scope_key,
+                size,
+            )
+            return False
+        try:
+            with self._db.session() as conn:
+                conn.execute(
+                    "INSERT INTO kb_meta_cache"
+                    " (provider, resource, scope_key, payload, version, etag, last_modified,"
+                    "  source, identity, fetched_at_ms, checked_at_ms, stale, last_error)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT (provider, resource, scope_key) DO UPDATE SET"
+                    " payload = excluded.payload, version = excluded.version,"
+                    " etag = excluded.etag, last_modified = excluded.last_modified,"
+                    " source = excluded.source, identity = excluded.identity,"
+                    " fetched_at_ms = excluded.fetched_at_ms,"
+                    " checked_at_ms = excluded.checked_at_ms, stale = excluded.stale,"
+                    " last_error = excluded.last_error",
+                    (
+                        record.provider,
+                        record.resource,
+                        record.scope_key,
+                        record.payload,
+                        record.version,
+                        record.etag,
+                        record.last_modified,
+                        record.source,
+                        record.identity,
+                        _dump(record.fetched_at),
+                        _dump(record.checked_at),
+                        int(record.stale),
+                        record.last_error,
+                    ),
+                )
+                self._prune_kb_meta_cache(conn, provider=record.provider)
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                "知识库元数据快照的 payload 必须是合法 JSON 文本"
+                f"（{record.provider}/{record.resource}/{record.scope_key}）：{exc}"
+            ) from exc
+        return True
+
+    def touch_kb_meta_cache(
+        self,
+        provider: str,
+        resource: str,
+        scope_key: str,
+        *,
+        checked_at: datetime,
+        stale: bool = False,
+        last_error: str = "",
+    ) -> bool:
+        """**只推确认**：``checked_at`` / ``stale`` / ``last_error`` 三列，别的不动。
+
+        ``payload`` 与 ``fetched_at_ms`` **一个字都不许碰**：这条写对应的语义是
+        "确认过，还是那份"，而界面上那句"上次更新于 X"读的正是 ``fetched_at``——
+        重写一遍会把"什么都没更新"说成"刚更新过"。
+
+        这里不用 ``max(?, 旧值 + 1)`` 那条毫秒推进纪律：``checked_at`` 不参与任何排序
+        （行序只按 ``fetched_at_ms``），同一毫秒里的两次"确认"本来就是同一件事。
+        返回是否改到了行——``False`` 说明这行已经不在了，调用方该走 ``put``。
+        """
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                "UPDATE kb_meta_cache SET checked_at_ms = ?, stale = ?, last_error = ?"
+                " WHERE provider = ? AND resource = ? AND scope_key = ?",
+                (_dump(checked_at), int(stale), last_error, provider, resource, scope_key),
+            )
+        return cursor.rowcount > 0
+
+    def drop_kb_meta_cache(self, provider: str, resource: str, scope_key: str) -> int:
+        """删一行，返回删掉的条数（0 = 本来就没有，不是错误）。"""
+        with self._db.session() as conn:
+            cursor = conn.execute(
+                "DELETE FROM kb_meta_cache WHERE provider = ? AND resource = ? AND scope_key = ?",
+                (provider, resource, scope_key),
+            )
+        return int(cursor.rowcount or 0)
+
+    def purge_kb_meta_cache(
+        self,
+        *,
+        provider: str | None = None,
+        resource: str | None = None,
+        scope_key: str | None = None,
+        scope_prefix: str | None = None,
+    ) -> int:
+        """按档清空（全清 / 按地址 / 按库），返回删掉的条数。四个条件给了就 AND。
+
+        ``scope_prefix`` 走 ``LIKE``：**前缀里的分隔符由调用方给**（文档列表的视图键
+        是 ``<kb_id>|folder:…``），存储层不认识视图指纹的格式——认识它就等于把前端的
+        键格式钉在 schema 这一层，而那个格式是 §1.1 与阶段 5 的事。
+        ``%`` / ``_`` 与反斜杠照 ``list_conversations`` 那套转义成字面量：库 id 里出现
+        下划线是寻常事，不转义就会变成"任意一个字符"。
+        """
+        where: list[str] = []
+        params: list[Any] = []
+        if provider is not None:
+            where.append("provider = ?")
+            params.append(provider)
+        if resource is not None:
+            where.append("resource = ?")
+            params.append(resource)
+        if scope_key is not None:
+            where.append("scope_key = ?")
+            params.append(scope_key)
+        if scope_prefix is not None:
+            escaped = scope_prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where.append(r"scope_key LIKE ? ESCAPE '\'")
+            params.append(f"{escaped}%")
+        clause = f" WHERE {' AND '.join(where)}" if where else ""
+        with self._db.session() as conn:
+            # clause 只由本文件里那几个字面量条件拼成，值一律走 ? 绑定
+            cursor = conn.execute(f"DELETE FROM kb_meta_cache{clause}", params)  # noqa: S608
+        return int(cursor.rowcount or 0)
+
+    def kb_meta_cache_stats(self, *, provider: str | None = None) -> KbMetaCacheStats:
+        """报数：行数、payload 字节、最旧/最新那份是什么时候看到的。
+
+        字节数在 SQL 里按 ``CAST(payload AS BLOB)`` 量（= UTF-8 字节），与
+        ``_prune_kb_meta_cache`` 淘汰时用的那把尺子**逐字一致**：报出来的数若与淘汰时
+        用的数不是一个口径，"还剩多少"这句话就没人敢信。
+        """
+        where = "" if provider is None else " WHERE provider = ?"
+        params: tuple[Any, ...] = () if provider is None else (provider,)
+        with self._db.read() as conn:
+            row = conn.execute(
+                # where 只有两种取值（空串 / 一个字面量条件），provider 走绑定
+                "SELECT COUNT(*) AS n,"  # noqa: S608
+                " COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0) AS payload_bytes,"
+                " MIN(fetched_at_ms) AS oldest_ms, MAX(fetched_at_ms) AS newest_ms"
+                f" FROM kb_meta_cache{where}",
+                params,
+            ).fetchone()
+        return KbMetaCacheStats(
+            rows=int(row["n"]),
+            payload_bytes=int(row["payload_bytes"]),
+            oldest_fetched_at=_load(row["oldest_ms"]),
+            newest_fetched_at=_load(row["newest_ms"]),
+        )
+
+    def _prune_kb_meta_cache(self, conn: sqlite3.Connection, *, provider: str) -> None:
+        """三级上限的收口（在 ``put`` 那个写事务里跑，§3.4-2 / §3.4-3）。
+
+        顺序是"先扔掉最没用的，再算更贵的"：
+
+        1. **超龄**（``checked_at`` 超过 30 天）：它们读出来就是"没有"，留着还要占
+           行数与字节的额度。这条 SQL 与 ``get_kb_meta_cache`` 里的 ``_snapshot_expired``
+           是**同一个判据**——那句 `(now - checked_at) > 30 天` 翻译过来就是
+           `checked_at < now - 30 天`（`_aged_out` 那条用例在恰好 30 天这一点上同时钉住两边）；
+        2. **每个地址的行数**（``MAX_ROWS_PER_PROVIDER``）：超出多少删多少，
+           ``LIMIT`` 直接取"要留的那几条"，一条 DELETE 收干净，不做"删一条数一次"的循环；
+        3. **全局总量**（``MAX_TOTAL_BYTES``）：先量一次总数，只有真的超了才去排序淘汰
+           （那条语句要扫全部 payload，能不跑就不跑）。
+
+        2 与 3 的淘汰判据都是 ``fetched_at_ms``（最旧的先走，用
+        ``idx_kb_meta_cache_prune``），``rowid`` 只在同一毫秒里兜底定序。
+        2 只收**当前这个地址**：别的地址在它们各自被写进来的时候已经收过了，
+        而"每个地址最多 500 行"这条上限不跨地址累加。
+        """
+        conn.execute(
+            "DELETE FROM kb_meta_cache WHERE checked_at_ms < ?",
+            (_dump(_now() - timedelta(seconds=SNAPSHOT_MAX_AGE_SECONDS)),),
+        )
+        conn.execute(
+            "DELETE FROM kb_meta_cache WHERE provider = ? AND rowid NOT IN ("
+            " SELECT rowid FROM kb_meta_cache WHERE provider = ?"
+            " ORDER BY fetched_at_ms DESC, rowid DESC LIMIT ?)",
+            (provider, provider, MAX_ROWS_PER_PROVIDER),
+        )
+        total = conn.execute(
+            "SELECT COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0) AS n FROM kb_meta_cache"
+        ).fetchone()
+        if int(total["n"]) > MAX_TOTAL_BYTES:
+            conn.execute(EVICT_OVER_BUDGET_SQL, (MAX_TOTAL_BYTES,))
