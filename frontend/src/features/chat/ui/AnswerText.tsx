@@ -6,7 +6,8 @@
  *
  * 1. **把动作接上去**：点行内徽标 `[1]` → 展开过程面板并滚到那条出处（**只有知识库那一族
  *    出处**还走这条路——它们是文档片段、没有 URL；网页引用那一枚现在是锚点直开原文，
- *    见 `SourceCard` 的文件头）；代码块 / 表格上的三个按钮（复制代码、复制表格、下载表格）
+ *    见 `SourceCard` 的文件头）。**正文里的普通外链**也在这一处接上同一副胶囊 + 卡片
+ *    （`LinkBadge`，2026-10-01 批四）；代码块 / 表格上的三个按钮（复制代码、复制表格、下载表格）
  *    走既有那条剪贴板链路。渲染器把动作设计成 props（`MarkdownActions`），所以这里不必再
  *    自己挂事件委托——旧实现要在 `v-html` 出来的节点上做委托，是因为那时候回调进不去；
  * 2. **两个降级**：正文还没吐字时别画一个空盒子；复制失败时**如实说**，
@@ -24,7 +25,7 @@ import {
 import type { WebCitation } from '@/features/chat/model/sourceCitations'
 
 import { notifyError, notifyWarning } from '../runtime/notify'
-import { SourceBadge, SourceCardHost } from './SourceCard'
+import { LinkBadge, SourceBadge, SourceCardHost } from './SourceCard'
 
 export interface AnswerTextProps {
   text: string
@@ -124,6 +125,11 @@ export function AnswerText({
         // 点击是**锚点直开原文**（Kimi 同款）——所以这里不接渲染函数的第二个参数，
         // 那个 `onOpen`（展开过程面板滚到出处）仍是知识库那一族出处走的路。
         renderWebCitation={(citation: WebCitation) => <SourceBadge citation={citation} />}
+        // 正文里的普通外链（2026-10-01 批四）也上同一副胶囊 + 同一张卡片。
+        // 用户原话："这个来源怎么回事。我之前不让做成按钮 hover 会变色的那种吗"
+        // "包括 hover 上按钮的变色和 hover 出来的卡片样式。一模一样照抄"。
+        // 未注入时仍是 `a.md-link`（文件预览、知识库那一族零影响）。
+        renderWebLink={(url: string) => <LinkBadge url={url} />}
         onCopyCode={(code) => void copyBlock(code, '代码')}
         // 表格进剪贴板用**制表符分隔**而不是 CSV：粘进 Excel / 飞书表格时
         // 它会被直接拆成单元格，而 CSV 粘过去是一整行纯文本

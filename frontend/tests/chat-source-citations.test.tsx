@@ -24,7 +24,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { webCitationsOfSteps } from '@/features/chat/model/sourceCitations'
 import { AnswerText } from '@/features/chat/ui/AnswerText'
 import { SearchHits } from '@/features/chat/ui/SearchHits'
-import { SourceBadge, SourceCardHost } from '@/features/chat/ui/SourceCard'
+import { LinkBadge, SourceBadge, SourceCardHost } from '@/features/chat/ui/SourceCard'
 import { WebSiteIcons } from '@/features/chat/ui/WebSiteList'
 import { resetSiteIconCache } from '@/features/chat/ui/siteLogos'
 import {
@@ -233,6 +233,133 @@ describe('徽章与卡片（一次只挂一张，hover / focus / Esc / aria）',
     const cards = screen.getAllByTestId('source-card')
     expect(cards).toHaveLength(1)
     expect(cards[0]).toHaveTextContent('arxiv.org')
+  })
+})
+
+/* ------------------- 2026-10-01 批四：正文里的普通外链也上同一副胶囊 + 同一张卡片 */
+
+/**
+ * 用户原话："这个来源怎么回事。我之前不让做成按钮 hover 会变色的那种吗"
+ * "包括 hover 上按钮的变色和 hover 出来的卡片样式。一模一样照抄（指 kimi.com 的
+ * `pua-ref-cite-tag` 胶囊与 `pua-ref-cite-popover` 卡片）"。
+ *
+ * 这一档（`LinkBadge`）与 `[n]` 那一档（`SourceBadge`）**共用同一副壳子**：同一枚
+ * `BADGE_CLASS`、同一个取图退化链、同一张卡片、同一份悬停宽限。**差别只有一处：
+ * 它没有编号**——所以卡片里没有对勾、也没有「来源 N」，`aria-label` 是「链接：域名」。
+ * 那条差别在这里逐条钉住（对勾的语义是"对得上本轮搜索的第 n 条"，不许被蹭）。
+ */
+describe('正文里的普通外链：同一副胶囊 + 同一张卡片（2026-10-01 批四）', () => {
+  const url = 'https://github.com/anthropics/skills'
+
+  function renderLink() {
+    return render(
+      <>
+        <LinkBadge url={url} />
+        <SourceCardHost />
+      </>,
+    )
+  }
+
+  it('胶囊：域名 + 直开原文 + 与引用那枚同一条 aria 关系；名字是「链接：域名」', () => {
+    renderLink()
+
+    const badge = screen.getByRole('link', { name: '链接：github.com' })
+    expect(badge).toHaveTextContent('github.com')
+    expect(badge).toHaveAttribute('href', url)
+    expect(badge).toHaveAttribute('target', '_blank')
+    expect(badge).toHaveAttribute('rel', 'noopener noreferrer')
+    expect(badge).toHaveAttribute('aria-expanded', 'false')
+    expect(badge).toHaveAttribute('aria-controls', 'source-citation-card')
+    expect(screen.queryByTestId('source-card')).not.toBeInTheDocument()
+  })
+
+  it('悬停出卡片：域名与 URL 都在，**没有对勾、没有「来源 N」**', async () => {
+    renderLink()
+
+    await userEvent.hover(screen.getByRole('link', { name: '链接：github.com' }))
+
+    const card = await screen.findByTestId('source-card')
+    expect(card).toHaveAttribute('role', 'dialog')
+    // label 也分档：普通外链不是"第 n 条搜索结果"
+    expect(card).toHaveAttribute('aria-label', '链接：github.com')
+    expect(within(card).getByText('github.com')).toBeInTheDocument()
+    const link = within(card).getByRole('link')
+    expect(link).toHaveAttribute('href', url)
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(within(card).getByRole('button', { name: '复制链接' })).toBeInTheDocument()
+    // 对勾说的是"对得上本轮联网搜索的第 n 条"——一条普通外链不是任何一条，蹭它就是假话
+    expect(card.querySelector('svg.lucide-check')).toBeNull()
+    expect(card).not.toHaveTextContent('来源')
+    expect(card).not.toHaveTextContent('第 1 条')
+  })
+
+  it('键盘聚焦也能出（Tab 到它就行）', async () => {
+    renderLink()
+
+    await userEvent.tab()
+
+    expect(await screen.findByTestId('source-card')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '链接：github.com' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+  })
+
+  it('Esc 关掉卡片', async () => {
+    renderLink()
+    await userEvent.hover(screen.getByRole('link', { name: '链接：github.com' }))
+    expect(await screen.findByTestId('source-card')).toBeInTheDocument()
+
+    await userEvent.keyboard('{Escape}')
+
+    expect(screen.queryByTestId('source-card')).not.toBeInTheDocument()
+  })
+
+  it('指针移出也关（同一份"请求关闭 + 140ms 宽限"）', async () => {
+    renderLink()
+    const badge = screen.getByRole('link', { name: '链接：github.com' })
+    await userEvent.hover(badge)
+    expect(await screen.findByTestId('source-card')).toBeInTheDocument()
+
+    await userEvent.unhover(badge)
+
+    await waitFor(() => expect(screen.queryByTestId('source-card')).not.toBeInTheDocument())
+  })
+
+  it('分档的另一半：**有编号那一档照旧有对勾**（这张卡没被普通外链蹭走语义）', async () => {
+    const citation = webCitationsOfSteps([{ tool: 'web_search', result: SEARCH_RESULT }]).get(1)!
+    render(
+      <>
+        <SourceBadge citation={citation} />
+        <SourceCardHost />
+      </>,
+    )
+
+    await userEvent.hover(screen.getByRole('link', { name: '来源 1：github.com' }))
+    const card = await screen.findByTestId('source-card')
+
+    expect(card.querySelector('svg.lucide-check')).not.toBeNull()
+    expect(card).toHaveTextContent('对得上本轮联网搜索的第 1 条结果')
+  })
+
+  it('接线：回答正文里的手写链接与裸网址都变成胶囊（`AnswerText` 注入的是 `LinkBadge`）', async () => {
+    const { container } = render(
+      <AnswerText
+        text="官网写得很清楚：[文档](https://github.com/anthropics/skills)，另外 https://arxiv.org/abs/2401.00001 也提到了。"
+        sources={[]}
+        onCite={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByRole('link', { name: '链接：github.com' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '链接：arxiv.org' })).toBeInTheDocument()
+    // 两种写法都进了胶囊那一档：一个 `a.md-link` 都不剩
+    expect(container.querySelectorAll('a.md-link')).toHaveLength(0)
+
+    await userEvent.hover(screen.getByRole('link', { name: '链接：arxiv.org' }))
+    const card = await screen.findByTestId('source-card')
+    expect(within(card).getByText('arxiv.org')).toBeInTheDocument()
+    expect(card.querySelector('svg.lucide-check')).toBeNull()
   })
 })
 
@@ -460,5 +587,31 @@ describe('站点图标：表外域名照样发请求，兜底画通用地球而�
     for (const tile of container.querySelectorAll('.ch-hit-logo--letter')) {
       expect(tile.textContent).toBe('')
     }
+  })
+
+  it('普通外链那一枚（`LinkBadge`）也发一次 site-icons 请求，拿到真图就换上', async () => {
+    const calls = stubIconFetcher(true)
+
+    // 域名走同一个归一化（去 `www.`）：请求与胶囊上写的都是 `zhihu.com`
+    const { container } = render(<LinkBadge url="https://www.zhihu.com/question/1" />)
+
+    await waitFor(() => expect(container.querySelector('img')).not.toBeNull())
+    expect(calls).toEqual([expect.stringContaining('/site-icons?domain=zhihu.com')])
+    expect(container.querySelector('img')).toHaveAttribute('src', 'blob:site-icon')
+    expect(container.querySelector('a')!.textContent).toBe('zhihu.com')
+  })
+
+  it('普通外链那一枚的兜底链与徽章同款：认得出的用字牌，认不出的画通用地球', async () => {
+    stubIconFetcher(false)
+
+    const known = render(<LinkBadge url="https://www.zhihu.com/question/1" />)
+    await waitFor(() => expect(known.container.querySelector('a')!.textContent).toBe('知zhihu.com'))
+    expect(known.container.querySelector('svg.lucide-globe')).toBeNull()
+
+    const outsiderLink = render(<LinkBadge url="https://opendatalab.github.io/foo" />)
+    await waitFor(() =>
+      expect(outsiderLink.container.querySelector('svg.lucide-globe')).not.toBeNull(),
+    )
+    expect(outsiderLink.container.querySelector('a')!.textContent).toBe('opendatalab.github.io')
   })
 })

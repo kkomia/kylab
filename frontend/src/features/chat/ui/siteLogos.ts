@@ -1,9 +1,13 @@
 /**
  * 站点真实 logo 的**取图那一层**（D11-②/③ 共用）。
  *
- * 两处都要它：过程面板里的站点条（`WebSiteList`）与最终回答里的来源徽章
- * （`SourceCard`）。取法只有一条：向我们自己的源要（`GET /api/v1/site-icons?domain=…`），
+ * 两处都要它：过程面板里的**抓页 favicon 那一格**（`ui/WebSiteList.tsx` 的 `WebSiteIcons`
+ * / `CompactLogo`）与最终回答里的来源胶囊（`ui/SourceCard.tsx` 的 `BadgeLogo`，引用与
+ * 普通外链两档共用）。取法只有一条：向我们自己的源要（`GET /api/v1/site-icons?domain=…`），
  * 浏览器**不直连第三方站点**（隐私与稳定，理由见 `backend/app/services/site_icons.py`）。
+ *
+ * （`WebSiteList` 那个"带站点名的牌子"与只服务它的 `SiteLogo` 已在 2026-10-01 批四删掉：
+ * 行上不再说"查了哪些站点"，留下的只有抓页那一格，见 `WebSiteList.tsx` 的文件头。）
  *
  * 几点刻意的做法：
  *

@@ -538,6 +538,91 @@ describe('正文里的裸链接（v0.26）', () => {
   })
 })
 
+/* --------------------------- 2026-10-01 批四：普通外链交给界面画成同一副胶囊 + 卡片 */
+
+/**
+ * 用户原话："这个来源怎么回事。我之前不让做成按钮 hover 会变色的那种吗"
+ * "包括 hover 上按钮的变色和 hover 出来的卡片样式。一模一样照抄（指 kimi.com 的
+ * `pua-ref-cite-tag` 胶囊与 `pua-ref-cite-popover` 卡片）"。
+ *
+ * 这一层只管把**外链**交给界面（`renderWebLink`，界面给的是 `ui/SourceCard.tsx` 的
+ * `LinkBadge`），画成什么样由界面那一侧的用例钉（`chat-source-citations.test.tsx`）。
+ * 两条边界：**不注入就还是 `a.md-link`**、**没有域名可言的链接（相对路径 / `mailto:`）
+ * 不走它**。
+ */
+describe('正文里的普通外链交给界面（批四：同一副胶囊 + 同一张卡片）', () => {
+  /** 界面注入的渲染函数（这里用看得见 URL 的替身，真组件是 `SourceCard` 的 `LinkBadge`）。 */
+  function webLinkSpy() {
+    return vi.fn((url: string) => createElement('span', { 'data-web-link': url }, url))
+  }
+
+  it('手写的 [文字](https://…) 与裸网址**都走它**，收到的是那条网址', () => {
+    const webLink = webLinkSpy()
+
+    const markup = html(
+      createElement(Answer, {
+        text: '[来源](https://example.com/a) 与 https://example.com/b',
+        renderWebLink: webLink,
+      }),
+    )
+
+    expect(webLink.mock.calls.map(([url]) => url)).toEqual([
+      'https://example.com/a',
+      'https://example.com/b',
+    ])
+    // 两种写法都进了胶囊那一档，`a.md-link` 一个都不剩（"两种来源两种样子"正是用户点名的）
+    expect(markup).toContain('data-web-link="https://example.com/a"')
+    expect(markup).toContain('data-web-link="https://example.com/b"')
+    expect(markup).not.toContain('md-link')
+  })
+
+  it('没注入就照旧 a.md-link（文件预览与旧调用方零影响）', () => {
+    const markup = html(renderAnswerMarkdown('[来源](https://example.com/a)'))
+
+    expect(markup).toContain('<a class="md-link" href="https://example.com/a"')
+    expect(markup).toContain('target="_blank"')
+    expect(markup).toContain('rel="noopener noreferrer"')
+  })
+
+  it('站内 / 相对链接与 mailto 不走它（胶囊上写的是域名，这些没有域名可言）', () => {
+    const webLink = webLinkSpy()
+
+    const markup = html(
+      createElement(Answer, {
+        text: '[文档](/docs/a) [锚点](#top) [写信](mailto:me@example.com) 见 https://example.com/a',
+        renderWebLink: webLink,
+      }),
+    )
+
+    expect(webLink.mock.calls.map(([url]) => url)).toEqual(['https://example.com/a'])
+    // 相对链接在这一层本来就退回字面量（`rehypeUnwrapLinks`：白名单外一律退回原文）
+    expect(markup).toContain('[文档](/docs/a)')
+    expect(markup).toContain('[锚点](#top)')
+    // mailto 是"发信"不是"这一页"：留在蓝色链接那一档
+    expect(markup).toContain('<a class="md-link" href="mailto:me@example.com"')
+  })
+
+  it('伪协议不会因为注入了 renderWebLink 就被放行（安全那一条仍在它前面）', () => {
+    const webLink = webLinkSpy()
+
+    const markup = html(
+      createElement(Answer, { text: '[点我](javascript:alert(1))', renderWebLink: webLink }),
+    )
+
+    expect(webLink).not.toHaveBeenCalled()
+    expect(markup).not.toContain('href')
+  })
+
+  it('同一段文字：注入过的那一轮不影响没注入的那一轮（缓存里存的是元素，动作在 Context 里）', () => {
+    const text = '见 https://example.com/a'
+    const injected = html(createElement(Answer, { text, renderWebLink: webLinkSpy() }))
+    const plain = html(createElement(Answer, { text }))
+
+    expect(injected).not.toContain('md-link')
+    expect(plain).toContain('<a class="md-link" href="https://example.com/a"')
+  })
+})
+
 describe('裁断的网址不给链接（v0.26）', () => {
   it('拖着省略号的网址保持纯文本：点过去是个不存在的地址', () => {
     // 工具结果那一行由后端裁到 120 字，一条长结果里的网址大多只剩半截。

@@ -53,6 +53,7 @@ import remarkMath from 'remark-math'
 import styleToObject from 'style-to-object'
 
 import type { WebCitation } from './sourceCitations'
+import { hostOfUrl } from './webSites'
 
 /**
  * 只允许这两种协议：`javascript:` 之类的链接点了就是执行代码，必须挡掉。
@@ -790,6 +791,24 @@ export interface MarkdownActions {
    * 而"徽章长什么样"是界面的事。
    */
   renderWebCitation?: (citation: WebCitation, onOpen: (index: number) => void) => ReactNode
+  /**
+   * **正文里的普通外链怎么画**（2026-10-01 批四，可选）。
+   *
+   * 给了它，`href` 是外链（`SAFE_LINK` 那张判据）**且解析得出域名**的那些链接就交给它
+   * 渲染——界面给的是同一副**来源胶囊**（`ui/SourceCard.tsx` 的 `LinkBadge`，悬停/聚焦
+   * 出同一张卡片）。两条边界：
+   *
+   * - **`mailto:` 不走它**：那是"发信"不是"这一页"，胶囊上没域名可写（判据就是
+   *   `hostOfUrl`，与徽章取域名同一份）；
+   * - **不给就照旧 `a.md-link`**：文件预览、知识库那一族调用方零影响。
+   *
+   * 为什么普通外链也上胶囊（用户 2026-10-01 原话）："这个来源怎么回事。我之前不让
+   * 做成按钮 hover 会变色的那种吗""包括 hover 上按钮的变色和 hover 出来的卡片样式。
+   * 一模一样照抄"。改前这些链接是一行蓝字（`a.md-link`），与 `[n]` 那枚胶囊并列时
+   * 是两种"来源"两种样子。裸网址（`rehypeBareUrls` 生成的 `a`）也流过 `MarkdownAnchor`，
+   * 所以**同一条路**——两种写法不会有两个样子。
+   */
+  renderWebLink?: (url: string) => ReactNode
   /** 编号 → 网页引用（与 `CiteFallback.citations` 同一份，界面渲染徽章时要用）。 */
   citations?: ReadonlyMap<number, WebCitation>
   /**
@@ -887,6 +906,13 @@ function MarkdownHr() {
  *
  * 全在这一层收口，因为两者都要"知道自己在哪"：徽标要能点（`onOpenSource`），
  * 外链要 `target`/`rel`（与裸链接那条规则**完全一致**——两处不能有两种开法）。
+ *
+ * 外链现在还有第二个出口（2026-10-01 批四）：界面注入了 `renderWebLink` 就交给它，
+ * 画成与 `[n]` 同一副**来源胶囊**（`ui/SourceCard.tsx` 的 `LinkBadge`）；
+ * 没注入（或这条链接没有域名可言）仍旧是 `a.md-link`。
+ *
+ * 手写的 `[文字](https://…)` 与裸网址**都到得了这里**：后者由 `rehypeBareUrls` 生成
+ * 同样形状的 `a`（`className: ['md-link']`），所以两种写法只有一条路。
  */
 function MarkdownAnchor(props: PropsOf<'a'>) {
   const actions = useContext(ActionsContext)
@@ -935,11 +961,25 @@ function MarkdownAnchor(props: PropsOf<'a'>) {
       props.children as ReactNode,
     )
   }
+  const href = node?.properties.href === undefined ? undefined : String(node.properties.href)
+  /*
+    普通外链这一档（2026-10-01 批四）。三个条件缺一不可：
+
+    1. `SAFE_LINK`：与安全那一条**同一份判据**，不另写正则（`javascript:` 到不了这里——
+       `rehypeUnwrapLinks` 已经把它整条退回字面量）；
+    2. `hostOfUrl(href)` **解析得出域名**：胶囊上写的就是域名，`mailto:` 没有域名，
+       硬上就是一枚空胶囊（与徽章取域名同一份判据）；
+    3. `renderWebLink` 注入：没给就退回下面那条 `a.md-link`——文件预览（`plain`
+       那一档根本不带 actions）与知识库等旧调用方一个字节都不受影响。
+  */
+  if (href && SAFE_LINK.test(href) && hostOfUrl(href) && actions.renderWebLink) {
+    return actions.renderWebLink(href)
+  }
   return createElement(
     'a',
     {
       className: 'md-link',
-      href: node?.properties.href === undefined ? undefined : String(node.properties.href),
+      href,
       target: '_blank',
       rel: 'noopener noreferrer',
     },
@@ -1465,6 +1505,7 @@ export function Answer({
   className,
   onOpenSource,
   renderWebCitation,
+  renderWebLink,
   onCopyCode,
   onCopyTable,
   onDownloadTable,
@@ -1475,12 +1516,21 @@ export function Answer({
     () => ({
       onOpenSource,
       renderWebCitation,
+      renderWebLink,
       citations,
       onCopyCode,
       onCopyTable,
       onDownloadTable,
     }),
-    [onOpenSource, renderWebCitation, citations, onCopyCode, onCopyTable, onDownloadTable],
+    [
+      onOpenSource,
+      renderWebCitation,
+      renderWebLink,
+      citations,
+      onCopyCode,
+      onCopyTable,
+      onDownloadTable,
+    ],
   )
   const content = renderMarkdown(text, { sources, plain, fallback: citeFallback })
   if (!content) return null

@@ -271,11 +271,12 @@ https://github.com/anthropics/skills
 
 ### 5.2 三层怎么接（分层纪律：`model/` 不认识界面组件）
 
-| 层                         | 做什么                                                                                                                                                              |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `model/sourceCitations.ts` | 纯函数解析（上面那一件事）                                                                                                                                          |
-| `model/markdown.tsx`       | `CiteFallback.citations` 给了就**不再画"有说明的非链接"**，改成一枚带 `data-cite-site-chip` 的标记；**卡片长什么样**由 `MarkdownActions.renderWebCitation` 交给界面 |
-| `ui/SourceCard.tsx`        | `SourceBadge`（行内徽章）+ `SourceCardHost`（**一条回答只挂一个**的卡片）；`ui/sourceCardStore.ts` 是"当前开着哪一条"那个小状态（`ui/siteLogos.ts` 供两处共用取图） |
+| 层                                 | 做什么                                                                                                                                                                                                                     |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `model/sourceCitations.ts`         | 纯函数解析（上面那一件事）                                                                                                                                                                                                 |
+| `model/markdown.tsx`               | `CiteFallback.citations` 给了就**不再画"有说明的非链接"**，改成一枚带 `data-cite-site-chip` 的标记；**卡片长什么样**由 `MarkdownActions.renderWebCitation` 交给界面                                                        |
+| `ui/SourceCard.tsx`                | `SourceBadge`（行内徽章）+ `SourceCardHost`（**一条回答只挂一个**的卡片）；`ui/sourceCardStore.ts` 是"当前开着哪一条"那个小状态（`ui/siteLogos.ts` 供两处共用取图）                                                        |
+| `ui/SourceCard.tsx` 的 `LinkBadge` | **正文里的普通外链**那一档（2026-10-01 批四）：同一副胶囊 + 同一张卡片，**没有编号与对勾**（胶囊的 `aria-label` 是「链接：域名」）；域名与站点由 `hostOfUrl` / `siteOfDomain` 派生，接线是 `MarkdownActions.renderWebLink` |
 
 接线一行在 `ui/MessageView.tsx`：`citeFallback` 带上 `citations: webCitationsOfSteps(message.steps)`。
 

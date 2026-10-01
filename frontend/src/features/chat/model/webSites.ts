@@ -158,7 +158,7 @@ const SITE_KEYS: readonly string[] = Object.keys(KNOWN_SITES).sort((a, b) => b.l
  * 用户："这个为啥抓不到真实的图标呢，你放个字母标在这儿没意义啊"）。这张表现在只剩一件事：
  * **认得出名字与字牌**——认得出的用字牌（知乎的「知」），认不出的画一枚通用地球
  * （兜底那一档在 `ui/SearchHits.tsx` 的 `HitLogo` 与 `ui/WebSiteList.tsx` 的
- * `SiteLogo` / `CompactLogo`）。
+ * `CompactLogo`；带站点名的 `SiteLogo` 已随批四那一次删除一并撤掉）。
  */
 export const KNOWN_DOMAINS: readonly string[] = Object.freeze(Object.keys(KNOWN_SITES))
 

@@ -41,6 +41,18 @@
  *      skills from the file. 就行"）：不再铺 Request / Response；
  *    - **「加载全部」整档撤掉**：返回恒铺 600 字预览，不再给就地展开的按钮
  *      （口径同步在 `model/turns.ts::resultPreview`）。
+ * 8. **2026-10-01 用户批注（批四）在这块上的四条**：
+ *    - **行尾那排站点牌整档撤掉**（原话"联网搜索这里不要显示网址啊，这个去掉"、
+ *      "这种都不需要啊，不要再没展开的时候显示，这个直接去掉"）：`StepRow` 与 `GroupRow`
+ *      里那两处 `WebSiteList` 一并删——连同随之成死代码的 `SiteLogo`、`traceStyles` 里
+ *      只服务它那五个 `SITE_*` 常量。**抓页行那一格 `[favicon] N 个网页` 一字未动**
+ *      （它是用户点名保留的，`WebSiteIcons` 仍在用）；
+ *    - **搜索组的标题只写结果数**（原话"这儿就显示 联网搜索（xx个结果）就可以了"）：
+ *      解得出合并清单时行上只有 `联网搜索（N 个结果）` 一个标签，连详情格都不画；
+ *    - **连续的联网搜索并成一行**（原话"多轮，连续的网络搜索做合并处理。把多轮网络搜索的
+ *      结果放到一个列表里面。如果两轮之间有其他工具的 这种就正常该怎么样就怎么样"）：
+ *      判据、打断条件与合成组的形状全在 `mergeSearchRuns`，它在 `visibleEntries` 里
+ *      **过滤之后**调用一次——于是头部的 `toolTotal`、`hasFlow` 与渲染三处天然同一口径。
  *
  * 数据全部来自 `model/turns.ts` 的派生层（`traceEntries` / `trailingThinking` /
  * `groupHeading`）——这一层不重新发明任何判定；这里唯一的"策略"是**头部总名怎么拼**
@@ -90,7 +102,7 @@ import { FetchPages, SearchHits } from './SearchHits'
 import { StepDot, StepIcon, StepOutcomeBadge, type StepOutcome } from './stepIcons'
 import { RequestPanel } from './StepPayload'
 import { StepResult } from './StepResult'
-import { WebSiteIcons, WebSiteList } from './WebSiteList'
+import { WebSiteIcons } from './WebSiteList'
 
 /**
  * 聚合行标题里那个「 · 」——**拆成"标签 + 详情"两截**（2026-09-30 R2 批注）。
@@ -454,7 +466,7 @@ function StepRow({
         {/*
           详情位（Kimi 的行模式「标签 | 详情」，竖条由 `.ch-row-sep` 画）。三条分岔：
           - **抓页那一档** ＝ `[favicon] N 个网页`（R4 批注，Kimi 是「获取网页 | 🔴 1 个网页」）
-            ——站点 favicon 与页数都收进这一格，行尾不再挂那一组站点牌；后端给的结论
+            ——站点 favicon 与页数都收进这一格；后端给的结论
             （抓页那一步是"【标题】来源：url…"被裁过的一段）不再进这一行，整页信息在展开里；
           - **联网那两档的其余情形** ＝ 搜到几条就写 `N 个结果`（2026-10-01 用户批注原话
             "这不要写检索词 就写多少个结果就行"）——改前这里铺的是后端那段原文
@@ -467,6 +479,9 @@ function StepRow({
             批注撤的是"检索词原文"，不是失败交代；
           - 其余 ＝ `displayDetail(step)`：普通结论原样，**原始 JSON 不再印上去**
             （2026-09-30 用户批注；`find_tools` 那种返回换成一串工具名，取不到就空着）。
+
+          行**到这里就结束了**（2026-10-01 用户批注批四）：改前这一格之后还挂着一排站点牌
+          （`WebSiteList`），那整档已删——联网搜索的行上不再说"查了哪些站点"。
         */}
         {pages.length > 0 ? (
           <>
@@ -499,9 +514,6 @@ function StepRow({
             </>
           )
         )}
-        {/* 联网搜索那几类：查了哪些站点仍然标在行尾（牌子先画、真 logo 后换，见 WebSiteList）；
-            抓页那一档已经收进上面那一格，不再重复挂一遍（R4 批注要撤的就是它） */}
-        {!sub && pages.length === 0 && <WebSiteList {...webSitesOfSteps([step])} />}
         <span className="ch-row-right">
           {running && <span data-running-text>进行中</span>}
           {/* 行级耗时**撤了**（2026-09-30 用户批注：单步行与组行都不报）——耗时只在整轮
@@ -604,8 +616,6 @@ function GroupRow({
   // 没碰过的组看"还在跑就摊开"；他点过的（开/收）完全听他的
   const open = expansion.groupChoice(k(entry.key)) ?? running
   const bodyId = `flow-group-${k(entry.key)}`
-  // 聚合句按「 · 」拆成"标签 + 详情"两截（R2 批注；判据与分寸见 `splitLabel`）
-  const heading = splitLabel(groupHeading(entry))
   /**
    * 这一组是不是"**全是联网搜索**"——组体要不要换成那张合并清单就看它
    * （2026-10-01 用户批注原话："不要在联网搜索里面搞个 list 再去放联网搜索，
@@ -628,6 +638,19 @@ function GroupRow({
    * 解析是逐行扫返回文本，只在这一组确实是"全是联网搜索"时做。
    */
   const searchHits = searchGroup ? mergedSearchHits(entry.steps) : []
+  /**
+   * 行上那一句：**合成清单解得出来时只写结果数**（2026-10-01 用户批注批四，原话
+   * "这儿就显示 联网搜索（xx个结果）就可以了"）——一个标签，**连详情格都不画**
+   * （改前是 `groupHeading` 那句「联网搜索 N 个关键词 · 关键词…」，关键词在这张清单里
+   * 逐条列着，再在行上复述一遍是噪声）。
+   *
+   * 解不出清单时照旧用 `groupHeading`：那一档（下面摊旧子行那一支）行里摊的是几次
+   * 调用本身，"哪几次、各自对什么做的"正是它要说的话。
+   */
+  const heading = splitLabel(groupHeading(entry))
+  const listOnly = searchHits.length > 0
+  const label = listOnly ? `联网搜索（${formatCount(searchHits.length)} 个结果）` : heading.label
+  const detail = listOnly ? '' : heading.detail
   return (
     <div className="ch-item">
       <button
@@ -654,16 +677,16 @@ function GroupRow({
         {/* 标题是"与对象绑定的聚合句"（§12.333）：数目数对象、对象列出来，
             不是干巴巴的「N 次」——那会被读成"每次都成了"。
             **「 · 」两截分开画**（2026-09-30 R2 批注）：前半是标签（Secondary），
-            后半那段对象清单进详情槽（0.5px 竖条 + Tertiary）——与普通步行同一个行模式。 */}
-        <span className={running ? 'ch-row-label ch-live' : 'ch-row-label'}>{heading.label}</span>
-        {heading.detail && (
+            后半那段对象清单进详情槽（0.5px 竖条 + Tertiary）——与普通步行同一个行模式。
+            **搜索组合并出清单时这一句换成 `联网搜索（N 个结果）`、详情格不画**
+            （2026-10-01 用户批注批四，判据见上面的 `listOnly`）。 */}
+        <span className={running ? 'ch-row-label ch-live' : 'ch-row-label'}>{label}</span>
+        {detail && (
           <>
             <span className="ch-row-sep" aria-hidden />
-            <span className="ch-row-detail">{heading.detail}</span>
+            <span className="ch-row-detail">{detail}</span>
           </>
         )}
-        {/* 这一组查了哪些站点（联网组才有；一行 favicon 牌） */}
-        <WebSiteList {...webSitesOfSteps(entry.steps)} />
         <span className="ch-row-right">
           {running && <span data-running-text>进行中</span>}
           {/* 组级耗时也**撤了**（2026-09-30 用户批注：单步行与组行都不报；整轮那一处总计行给） */}
@@ -811,19 +834,109 @@ function SourcesRow({
 }
 
 /**
+ * 一个条目里的全部步骤（按原序）。
+ *
+ * 单步条目就是那一步，组条目是它并起来的那几次调用——**合并与判据都要逐步骤看**
+ * （见下面的 `mergeSearchRuns`），所以展开成数组这一小步只写一处。
+ */
+function stepsOfEntry(entry: TraceEntry): TraceStep[] {
+  return entry.kind === 'group' ? entry.steps : [entry.step]
+}
+
+/**
+ * **连续的联网搜索并成一行**（2026-10-01 用户批注批四，原话："多轮，连续的网络搜索做合并
+ * 处理。把多轮网络搜索的结果放到一个列表里面。如果两轮之间有其他工具的 这种就正常该怎么
+ * 样就怎么样"）。
+ *
+ * 来由：每日简报那种会话里一轮能连着十几组联网搜索（一组 = 一次调用里的几个关键词），
+ * 链上就是十几行「联网搜索 …」，而它们说的其实是同一件事——"我在网上查了这些"。并成一行
+ * 之后，点开就是跨组去重过的**一张**网页清单（`GroupRow` 的 `searchGroup` 那一支 +
+ * 批四的新标题）。
+ *
+ * 三条判据（都在这里，别处不重判）：
+ *
+ * 1. **什么算搜索条目**：单步看它自己是不是联网搜索（`isWebStep && !isFetchStep`）；
+ *    组要**组内每一步**都是——判据 import `model/webSites.ts` 那一份，不另写词表
+ *    （抓页组因此天然不是搜索条目：它的展开是另一张清单）；
+ * 2. **什么打断**：非搜索条目一律打断——**抓取网页算打断**（它是"其他工具"那一档，
+ *    用户原话"两轮之间有其他工具的 这种就正常"），思考 / 检索 / 写文件这些更不用说；
+ *    另外**任何含 `forceExpand(step)` 的条目也打断**：失败 / 被拦下 / 等确认的行
+ *    是前置展开且着色的，被并进一大组就等于"没成的那一次"看不见了；
+ * 3. **一段连续 ≥ 2 个条目才并**：只有一个的（单搜索行 / 单搜索组）原样留下，
+ *    现行展示一个字不动。
+ *
+ * 合成组就是 `TraceEntry` 的组形状（`model/turns.ts` 的 `TraceEntry`「组」那一支）：
+ * key 取**首条目首步的 step.key**（同一轮内稳定，所以"他点开过没有"在流式增长中不会自己
+ * 收起来），icon / tool 取首条目那一档，**步骤按原序全带上**。于是头部的工具计数
+ * （`toolTotal` 数的是调用次数）、`running`、组级状态灯（`groupOutcomeOf`）与开合持久化
+ * 全都自动成立，一处都不用改。
+ *
+ * 调用点只有一个：`visibleEntries` **过滤之后、返回之前**——过滤会拿掉落定的「组织回答」，
+ * 隔着它的两段搜索到这里已经相邻，正是"连续"该有的样子。
+ */
+export function mergeSearchRuns(entries: readonly TraceEntry[]): TraceEntry[] {
+  const out: TraceEntry[] = []
+  let run: TraceEntry[] = []
+
+  const flush = (): void => {
+    const first = run[0]
+    if (run.length >= 2 && first) {
+      const steps = run.flatMap((entry) => stepsOfEntry(entry))
+      out.push({
+        kind: 'group',
+        key: `searchrun:${steps[0]?.key ?? first.key}`,
+        icon: first.kind === 'group' ? first.icon : first.step.icon,
+        label: '联网搜索',
+        tool: first.kind === 'group' ? first.tool : 'web_search',
+        steps,
+      })
+    } else {
+      out.push(...run)
+    }
+    run = []
+  }
+
+  for (const entry of entries) {
+    const steps = stepsOfEntry(entry)
+    const searchable =
+      !steps.some(forceExpand) &&
+      steps.every(
+        (step) =>
+          isWebStep({ tool: step.tool, label: step.label }) &&
+          !isFetchStep({ tool: step.tool, label: step.label }),
+      )
+    if (!searchable) {
+      flush()
+      out.push(entry)
+      continue
+    }
+    run.push(entry)
+  }
+  flush()
+  return out
+}
+
+/**
  * 这一轮**真正画出来**的链项（R4 批注）。
  *
- * 与 `traceEntries(turn)` 只差一条：**落定之后的「组织回答」那一行不再画**
- * ——它没有可展开的内容（入参 / 返回都是空），用户原话"没有意义显示"。
+ * 与 `traceEntries(turn)` 差两条：**落定之后的「组织回答」那一行不再画**
+ * ——它没有可展开的内容（入参 / 返回都是空），用户原话"没有意义显示"；
+ * **连续的联网搜索并成一行**（2026-10-01 用户批注批四，见 `mergeSearchRuns`）。
  * **流式进行中那一行要留**：它是"正在组织回答"的活动指示（`.ch-live` 流光那行），
  * 也是"还没出正文"时过程区唯一在动的东西。
  *
- * 隐藏只影响**渲染**：头部的工具计数、聚合分组本来就不把非工具步算进去，
- * 所以那些口径一个字没变。
+ * 合并放在**过滤之后**：一是过滤掉的那几条正是"搜索之间的隔断"里最常出现的一种
+ * （落定的「组织回答」），二是这样三处消费者（`toolTotal` 的计数、`hasFlow` 的判据、
+ * 真正渲染那一趟）看到的都是**同一份**链项，不会出现"头部的数与行对不上"。
+ *
+ * 隐藏与合并只影响**渲染**：头部的工具计数、聚合分组本来就不把非工具步算进去，
+ * 合成组又原样持有它并掉的那些步骤，所以那些口径一个字没变。
  */
 export function visibleEntries(turn: Turn): TraceEntry[] {
-  return traceEntries(turn).filter(
-    (entry) => entry.kind === 'group' || entry.step.icon !== 'build' || isRunningStep(entry.step),
+  return mergeSearchRuns(
+    traceEntries(turn).filter(
+      (entry) => entry.kind === 'group' || entry.step.icon !== 'build' || isRunningStep(entry.step),
+    ),
   )
 }
 

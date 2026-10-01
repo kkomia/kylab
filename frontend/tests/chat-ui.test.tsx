@@ -691,6 +691,13 @@ describe('过程面板：图标按 kind、同类工具并成一行', () => {
       标签 + 0.5px 竖条 + 详情），所以这里分别钉：左边是"动作 + 数目"（标签），
       右边是对象清单（详情，Tertiary）。`groupHeading()` 的返回值一个字没变
       （它的用例在 `chat-model-turns`）。
+
+      **2026-10-01 用户批注（批四）之后，这一句只在"解不出合并清单"时还这么说**
+      （原话"这儿就显示 联网搜索（xx个结果）就可以了"）：这份夹具的两步都**没有 `result`**
+      （它们说得出结论、但返回里没有那一串编号列表），`mergedSearchHits` 解不出东西，
+      于是照旧走 `groupHeading` 这一档——**这正是本用例要钉的那一半**（行上仍是
+      "标签 + 详情"两截）。解得出清单时行上只剩 `联网搜索（N 个结果）` 一个标签、
+      连详情格都不画，正面用例在 `chat-flow.test.tsx`（「搜索组的标题只写结果数」）。
     */
     expect(document.querySelectorAll('button[aria-controls^="flow-group-"]')).toHaveLength(1)
     expect(await screen.findByText('联网搜索 2 个关键词')).toBeInTheDocument()

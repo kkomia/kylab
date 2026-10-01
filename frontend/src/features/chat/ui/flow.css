@@ -9,7 +9,7 @@
  * 的 6 行）与进行中那枚半月旋转 dot（`.ch-loading-dot`，各条规则上都写了出处）。
  *
  * 与旧 `traceStyles` 的关系：旧 TracePanel/TraceStepRow/Fold 已随重做退役删除；
- * `traceStyles` 只剩 `StepResult` / `WebSiteList` 两处还在用。这里不引用它。
+ * `traceStyles` 只剩 `StepResult` 一处还在用。这里不引用它。
  */
 
 /*

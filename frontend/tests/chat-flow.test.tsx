@@ -319,7 +319,7 @@ describe('工具链块', () => {
     expect(screen.getByText('等待确认')).toBeInTheDocument()
   })
 
-  it('联网搜索组：点开直接是一张合并的网页清单（不再套子行），同 url 跨步去重', () => {
+  it('联网搜索组：行上只写结果数，点开直接是一张合并的网页清单（不再套子行），同 url 跨步去重', () => {
     flowOf(
       makeMessage('assistant', '答案', {
         steps: [
@@ -354,9 +354,16 @@ describe('工具链块', () => {
       组行标题里也有「联网搜索」，按名字查会命中不止一处。
     */
     const groupRow = document.querySelector('button[aria-controls^="flow-group-"]') as HTMLElement
-    // 组行本身一个字没动：聚合句（`groupHeading`）+ 行尾那排站点牌照旧
-    expect(groupRow.textContent).toContain('联网搜索')
-    expect(groupRow.querySelector('[data-testid="web-sites"]')).not.toBeNull()
+    /*
+      行上那一句按 **2026-10-01 用户批注（批四）** 换成「结果数」这一档（原话"这儿就显示
+      联网搜索（xx个结果）就可以了"）：`联网搜索（N 个结果）`，N 是**合并后清单**的条数
+      （下面那两条去重之后是 2）——不再是 `groupHeading` 那句「联网搜索 2 个关键词 · …」，
+      于是**详情格也没有**（关键词在这张清单里逐条列着，行上再复述一遍是噪声）。
+    */
+    expect(groupRow.querySelector('.ch-row-label')).toHaveTextContent('联网搜索（2 个结果）')
+    expect(groupRow.querySelector('.ch-row-detail')).toBeNull()
+    /* 行尾那排站点牌整档撤掉（同一条批注，原话"联网搜索这里不要显示网址啊，这个去掉"）。 */
+    expect(groupRow.querySelector('[data-testid="web-sites"]')).toBeNull()
     const bodyId = groupRow.getAttribute('aria-controls') as string
     fireEvent.click(groupRow)
     /*
@@ -640,8 +647,10 @@ describe('工具链块', () => {
     const fetchRow = screen.getByText('抓取网页').closest('.ch-row') as HTMLElement
     /*
       R4 批注：抓页那一行的行级展示对齐 Kimi「获取网页 | 🔴 1 个网页」——
-      favicon 与页数都进 label 右侧的详情位（`.ch-row-detail--sites`），
-      原先挂在**行尾右侧**的那组站点牌（`web-sites`）撤掉。
+      favicon 与页数都进 label 右侧的详情位（`.ch-row-detail--sites`）。
+      **这一格是 2026-10-01 批注（批四）点名保留的那一档**：同一批批注把行尾那排
+      **站点牌**（`web-sites`，联网搜索行上那些带域名的牌子）整档撤了，而抓页这里
+      `[favicon] N 个网页` 一字未动。
     */
     expect(fetchRow.querySelector('.ch-row-detail--sites')).not.toBeNull()
     expect(fetchRow.querySelector('[data-domain="moonshot.cn"]')).not.toBeNull()
@@ -850,5 +859,256 @@ describe('工具链块', () => {
       'data-flash',
       'true',
     )
+  })
+})
+
+/**
+ * 2026-10-01 用户批注（批四）在联网搜索这一块上的四条：
+ * **行尾那排站点牌整档撤掉**（原话"联网搜索这里不要显示网址啊，这个去掉"）、
+ * **搜索组的标题只写结果数**（"这儿就显示 联网搜索（xx个结果）就可以了"）、
+ * **连续的联网搜索并成一行**（"多轮，连续的网络搜索做合并处理。把多轮网络搜索的结果放到
+ * 一个列表里面。如果两轮之间有其他工具的 这种就正常该怎么样就怎么样"）。
+ *
+ * 夹具形状的一条说明（下面几条都用得到）：`traceEntries` 是**按非工具步切块**的，搜索组
+ * 只在同一块里形成；而要让"两段搜索"到渲染这一层**相邻**，中间那些非工具步必须是
+ * `visibleEntries` 会拿掉的那一档——**落定的「组织回答」**。所以这些夹具里 `phase: 'answer'`
+ * 那几步是刻意摆出来的隔断（`answerStep()`），不是为了模拟后端一定这么发；批注说的现象是
+ * 每日简报那种"一轮里十几组联网搜索连着"的会话。
+ */
+describe('联网搜索：站点牌、标题与连续合并（2026-10-01 批注批四）', () => {
+  /** 一次能解析出结果的联网搜索（`[n] 标题 / 网址 / 摘要`，后端 `_web_search` 的形状）。 */
+  function search(title: string, url: string, detail = ''): ChatStep {
+    return step({
+      detail,
+      result: [`检索词：${title}，共 1 条：`, `[1] ${title}`, url, '摘要。'].join('\n'),
+    })
+  }
+
+  /**
+   * 拦在两段搜索之间的那一步：**落定的「组织回答」**。
+   * 它是非工具步（`traceEntries` 在这里切块），而 `visibleEntries` 又把落定的它拿掉——
+   * 于是被它隔开的搜索到合并那一步已经相邻。
+   */
+  function answerStep(): ChatStep {
+    return { phase: 'answer', label: '组织回答', detail: '', status: 'done' }
+  }
+
+  /** 过程块里**顶层**的行（`.ch-sub` 是组内子行，不算一条）。 */
+  function topRows(): HTMLElement[] {
+    return [...document.querySelectorAll('.ch-body > .ch-item')] as HTMLElement[]
+  }
+
+  it('行尾那排站点牌整档撤掉：单步行与组行都不挂（网站在展开的清单里）', () => {
+    /*
+      原话两条："联网搜索这里不要显示网址啊，这个去掉"、"这种都不需要啊，不要再没展开的时候
+      显示，这个直接去掉"。改前这两处（`StepRow` 与 `GroupRow`）各挂一排
+      `WebSiteList`（favicon + 域名 + `+N`），现在都删了——**行上不再说"查了哪些站点"**。
+
+      夹具里**故意让两步测试与组都带着真能解析出网址的返回**：改前正是这种数据会在行尾
+      挂出牌子来，所以这里断言的"没有牌子"是有对象的（不是"本来就没网址可挂"）。
+      中间那一步「检索知识库」是**非联网**的普通工具行，顺带把两段搜索隔开
+      （否则它们会被下面那一条的合并收成一行）。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          search('Anthropic 的官方仓库', 'https://github.com/anthropics/skills'),
+          step({ label: '检索知识库', tool: 'search', detail: '「眼轴」命中 3 条' }),
+          answerStep(),
+          search('一篇论文', 'https://arxiv.org/abs/2401.00001'),
+          search('维基百科', 'https://zh.wikipedia.org/wiki/Agent'),
+        ],
+      }),
+    )
+    const rows = topRows()
+    expect(rows).toHaveLength(3)
+    const [single, plain, group] = rows as [HTMLElement, HTMLElement, HTMLElement]
+
+    // 单步行：标签 + 「N 个结果」照旧（2026-10-01 批三那一档），但**没有站点牌**
+    expect(single.querySelector('.ch-row-label')).toHaveTextContent('联网搜索')
+    expect(single.querySelector('.ch-row-detail')).toHaveTextContent('1 个结果')
+    expect(single.querySelector('[data-testid="web-sites"]')).toBeNull()
+    expect(single.querySelector('[data-site], [data-domain]')).toBeNull()
+
+    // 非联网那一行本来就没有站点可言（钉住"撤牌子没有误伤别的行"）
+    expect(plain.querySelector('[data-testid="web-sites"]')).toBeNull()
+
+    // 组行：标签是批四的新形态（「联网搜索（N 个结果）」），也没有站点牌
+    expect(group.querySelector('.ch-row-label')).toHaveTextContent('联网搜索（2 个结果）')
+    expect(group.querySelector('[data-testid="web-sites"]')).toBeNull()
+    expect(group.querySelector('[data-site], [data-domain]')).toBeNull()
+
+    // 整页一处都不该有（`web-sites` 这个 testid 在批四之后已经没有任何调用方）
+    expect(screen.queryByTestId('web-sites')).toBeNull()
+  })
+
+  it('搜索组的标题只写结果数：`联网搜索（N 个结果）`，连详情格都不画', () => {
+    /*
+      原话"这儿就显示 联网搜索（xx个结果）就可以了"。N 是**合并后清单**的条数（跨步去重之后），
+      与点开看到的条目数对得上；改前这里是 `groupHeading` 那句
+      「联网搜索 2 个关键词 · 关键词…」——关键词在这张清单里逐条列着，行上再复述是噪声，
+      所以这一档**没有详情格**（`.ch-row-detail` 一个都不画）。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          search('Anthropic 的官方仓库', 'https://github.com/anthropics/skills'),
+          // 同一条网址又搜到一次：清单按 url 去重，所以下面写的是「2」不是「3」
+          search('同一条结果', 'https://github.com/anthropics/skills'),
+          search('一篇论文', 'https://arxiv.org/abs/2401.00001'),
+        ],
+      }),
+    )
+    const groupRow = document.querySelector('button[aria-controls^="flow-group-"]') as HTMLElement
+    expect(groupRow.querySelector('.ch-row-label')).toHaveTextContent('联网搜索（2 个结果）')
+    expect(groupRow.querySelector('.ch-row-detail')).toBeNull()
+    expect(groupRow.querySelector('.ch-row-sep')).toBeNull()
+    // 头部那个数还是**调用次数**（并的是行，不是工具计数）
+    expect(screen.getByTestId('trace-toggle')).toHaveTextContent('使用 3 个工具')
+  })
+
+  it('连续的联网搜索并成一行：两搜索组夹一个搜索单步 → 一行，清单跨组按 url 去重', () => {
+    /*
+      一次调用里的几个关键词本来并成一组；**连着的几组**（每日简报那种一轮十几组）在批四
+      之后并成**一行**——点开就是那张网页清单，跨组按 url 去重（同一条结果被两次搜到时
+      只出现一次，见 `mergedSearchHits`）。
+
+      夹具的隔断就是那两步落定的「组织回答」：`traceEntries` 拿它们切块（于是两侧各成一组），
+      `visibleEntries` 又拿掉它们（于是到这里三段搜索已经相邻，正是"连续"该有的样子）。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          search('Anthropic 的官方仓库', 'https://github.com/anthropics/skills'),
+          search('一篇论文', 'https://arxiv.org/abs/2401.00001'),
+          answerStep(),
+          // 单步那一段（这一块里只有一次搜索）：它也是要并进来的一份
+          search('同一条结果（又一次）', 'https://github.com/anthropics/skills'),
+          answerStep(),
+          search('维基百科', 'https://zh.wikipedia.org/wiki/Agent'),
+          search('MDN 的文档', 'https://developer.mozilla.org/en-US/docs/Web/API'),
+        ],
+      }),
+    )
+    // 三段并成**一行**：整个过程块里只有一个组行（其余非搜索的步一条都没有）
+    const rows = topRows()
+    expect(rows).toHaveLength(1)
+    const merged = rows[0]!
+    expect(merged.querySelector('.ch-row-label')).toHaveTextContent('联网搜索（4 个结果）')
+    // 5 次调用仍算 5 个工具（合成组原样持有它并掉的那些步骤）
+    expect(screen.getByTestId('trace-toggle')).toHaveTextContent('使用 5 个工具')
+
+    fireEvent.click(merged.querySelector('button.ch-row')!)
+    const hits = [...merged.querySelectorAll('a.ch-hit')] as HTMLAnchorElement[]
+    /*
+      跨组去重、保序：github 那条在三段里出现过两次（第二段那次同址），只该出现一次；
+      剩下三条按"第一次搜到的先后"排。
+    */
+    expect(hits.map((hit) => hit.getAttribute('href'))).toEqual([
+      'https://github.com/anthropics/skills',
+      'https://arxiv.org/abs/2401.00001',
+      'https://zh.wikipedia.org/wiki/Agent',
+      'https://developer.mozilla.org/en-US/docs/Web/API',
+    ])
+    // 并成一行之后组体里**没有子行**（点开就是清单，2026-10-01 批三那一档）
+    expect(merged.querySelectorAll('.ch-sub')).toHaveLength(0)
+    // 行上仍然没有站点牌（批四的另一半）
+    expect(merged.querySelector('[data-testid="web-sites"]')).toBeNull()
+  })
+
+  it('抓取网页打断连续搜索：它是"其他工具"那一档，两段搜索各自成行', () => {
+    /*
+      原话的后半句"如果两轮之间有其他工具的 这种就正常该怎么样就怎么样"。抓页那一步是
+      **非搜索条目**（`isWebStep && !isFetchStep` 才算搜索），所以它把两段搜索挡开——
+      它自己也照旧单独一行（R4 那一档：favicon + 页数收在详情位里）。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          search('Anthropic 的官方仓库', 'https://github.com/anthropics/skills'),
+          answerStep(),
+          step({
+            label: '抓取网页',
+            tool: 'web_fetch',
+            args: '{"url": "https://moonshot.cn/news"}',
+          }),
+          answerStep(),
+          search('一篇论文', 'https://arxiv.org/abs/2401.00001'),
+        ],
+      }),
+    )
+    const rows = topRows()
+    expect(rows).toHaveLength(3)
+    expect(rows.map((row) => row.querySelector('.ch-row-label')?.textContent)).toEqual([
+      '联网搜索',
+      '抓取网页',
+      '联网搜索',
+    ])
+    // 一行都没并起来：一个组行都没有（组只在 ≥2 个连续搜索条目时才出现）
+    expect(document.querySelectorAll('button[aria-controls^="flow-group-"]')).toHaveLength(0)
+    // 抓页那一行照旧：`[favicon] N 个网页`（批四点名保留的那一档）
+    const fetchRow = rows[1]!.querySelector('.ch-row') as HTMLElement
+    expect(fetchRow.querySelector('.ch-row-detail--sites')).not.toBeNull()
+    expect(fetchRow.querySelector('[data-domain="moonshot.cn"]')).not.toBeNull()
+    expect(fetchRow).toHaveTextContent('1 个网页')
+  })
+
+  it('含失败步的条目不并：没成的那一次要单独露脸（否则被并进大组就等于看不见了）', () => {
+    /*
+      判据在 `mergeSearchRuns`：**任何含 `forceExpand(step)` 的条目都打断**。失败 / 被拦下 /
+      等确认的行按 R4 是前置展开且着色的（"这一步说的不是成功"），把它们并进一大组里
+      等于把唯一能看见问题的那一行藏起来。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          step({
+            outcome: 'failed',
+            detail: '联网搜索没做成：没有可用的搜索服务',
+            result: '联网搜索没做成：没有可用的搜索服务',
+          }),
+          answerStep(),
+          search('Anthropic 的官方仓库', 'https://github.com/anthropics/skills'),
+          search('一篇论文', 'https://arxiv.org/abs/2401.00001'),
+        ],
+      }),
+    )
+    const rows = topRows()
+    expect(rows).toHaveLength(2)
+    /*
+      失败那一次自己一行：`outcome` 落在行上（`data-outcome="failed"`，行因此是前置展开那一档），
+      原因写在详情格里——这一步的返回解不出清单，展开体本来就不给（`hasBody` 为假），
+      所以"没成"只有这一行说得出（2026-10-01 架构师审查补的口子，见上面那一条用例）。
+    */
+    const failed = rows[0]!.querySelector('.ch-row') as HTMLElement
+    expect(failed).toHaveAttribute('data-outcome', 'failed')
+    expect(failed.querySelector('.ch-row-detail')).toHaveTextContent('联网搜索没做成')
+    // 失败那一步**不把后面那一段拖下水**：它是自己一个条目（一段），后面那两次搜索照常合成一组
+    expect(rows[1]!.querySelector('.ch-row-label')).toHaveTextContent('联网搜索（2 个结果）')
+  })
+
+  it('只有一组时不并：单独一个搜索组照旧是它自己那一行（键都还是它自己的）', () => {
+    /*
+      判据"一段连续 ≥ 2 个条目才并"这一半。单独一组时不走合并那一路——证据看**键**：
+      合并出来的组键是 `searchrun:` 开头（取首条目首步的 key），而 `traceEntries` 自己那一组
+      是 `group:` 开头。键只在这一层是"实现细节"，但它决定的是**用户看得见的那件事**：
+      "他点开过没有"记在宿主上（`ChatProvider` 的 openGroups），键换了 = 他点过的状态丢了。
+
+      行上那一句仍是批四的新形态（并且是**另一个组**：上面那条用例管的是 ≥2 个条目）。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          search('Anthropic 的官方仓库', 'https://github.com/anthropics/skills'),
+          search('一篇论文', 'https://arxiv.org/abs/2401.00001'),
+          step({ label: '写笔记', tool: 'create_note', detail: '已建笔记「摘要」' }),
+        ],
+      }),
+    )
+    const groupRow = document.querySelector('button[aria-controls^="flow-group-"]') as HTMLElement
+    expect(groupRow.querySelector('.ch-row-label')).toHaveTextContent('联网搜索（2 个结果）')
+    const controls = groupRow.getAttribute('aria-controls') as string
+    expect(controls).toContain(':group:')
+    expect(controls).not.toContain('searchrun')
   })
 })
