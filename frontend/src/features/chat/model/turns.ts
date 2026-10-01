@@ -783,8 +783,11 @@ export const TRACE_PAGE_SIZE = 20
  * 单条原文（入参 / 返回）默认给多少字（P2-1）。
  *
  * 后端已经把这两样各裁到 2000 字（`tool_loop.MAX_STEP_PREVIEW_CHARS`），
- * 这里再切一刀是**给眼睛**切的：600 字大约十来行，够看出"它到底返回了什么"，
- * 再长就该由用户自己点开（ZCode 的 `previewBytes/fullBytes` 是同一个意思）。
+ * 这里再切一刀是**给眼睛**切的：600 字大约十来行，够看出"它到底返回了什么"。
+ *
+ * **这一刀就是屏幕上给的全部**（2026-10-01 用户批注）：改前再长的那一档还能就地
+ * 「加载全部」展开（ZCode 的 `previewBytes/fullBytes` 是那个意思），批注之后
+ * 那个按钮整档撤掉——返回那一格恒铺这 600 字，原文要看全由用户自己复制/下载去。
  */
 export const RESULT_PREVIEW_CHARS = 600
 
@@ -841,7 +844,11 @@ function countCalls(entries: TraceEntry[]): number {
 /**
  * 单条原文的预览（P2-1 的第二级懒加载）：超长时先给前面一段。
  *
- * 返回 `null` 表示"不用预览，原样显示"——调用方据此决定要不要给「加载全部」。
+ * 返回 `null` 表示"不用预览，原样显示"——调用方（`ui/ToolchainFlow.tsx::StepRow`）
+ * 恒铺 `resultPreview(x) ?? x`：**预览就是全部展示**。改前被裁掉的那一档还会在旁边给一个
+ * 「加载全部（N 字）/ 收起」的按钮，2026-10-01 用户批注之后整档撤掉
+ * （按钮、`showAll` state 与那一支分支一并删），所以这里的返回值只剩"要不要截"这一个含义。
+ *
  * 判据用**字符数**而不是渲染后的行数：字符数是后端与界面都握得住的那个量
  * （后端那一刀也按字符），两处口径一致才不会出现"看起来没超、其实超了"。
  */
@@ -908,24 +915,41 @@ export function detailIsRawJson(detail: string): boolean {
 export const DETAIL_TOOL_LIMIT = 4
 
 /**
- * 行详情那一格**该印什么**（2026-09-30 用户批注：行里不印原始 JSON）。
+ * 行详情那一格**该印什么**（2026-09-30 用户批注：行里不印原始 JSON；2026-10-01 用户
+ * 批注加了读技能那一档）。
  *
- * 现在只有一条岔路值得走：`find_tools` 的返回——它是
- * `{"found": ["web_search", …], "note": …, "tools": [每个工具的完整 schema]}`，
- * 而被后端回退成行结论时（`ToolOutcome.step_detail()`：没有摘要就取返回的开头），
- * 印在行里的就是那半截 JSON。这半截里**唯一对得上用户脑子的东西是 `found` 那段工具名**，
- * 所以把它顿号连接出来（超过 `DETAIL_TOOL_LIMIT` 个收成「… 等 N 个」，N 是**总数**；
- * 与组行标题那套「… 还有 N 个」同一形状，只是 N 数的是全部而不是剩下的那些）。
+ * 两条岔路，顺序就是优先级：
+ *
+ * 1. **读技能那一步只回技能名**（2026-10-01 用户批注）：`read_skill` 的返回是
+ *    `【技能 kylab-office-export】\n正文…`（`services/agent_tools.py::_read_skill`），
+ *    被 `ToolOutcome.step_detail()` 裁到 120 字之后，这一格铺的就是"技能名 + 正文的一截
+ *    尾巴"。用户要的是**只留技能名**，所以截到 `】` 为止（含），后面的正文不印。
+ *    「【技能…】」这个形状取不到（返回被裁得只剩正文、或根本不是这个工具的形状）就
+ *    **原样返回**——不硬造一个技能名出来。
+ *    **两路都认**：新数据有工具名（`read_skill`），老快照没有工具名、label 是当时那个
+ *    中文标签「读技能」。判据与 `ui/ToolchainFlow.tsx::StepRow` 的 `skill` 逐字相同
+ *    （那边管"展开只有一行字"）；
+ * 2. **`find_tools` 的返回**——它是
+ *    `{"found": ["web_search", …], "note": …, "tools": [每个工具的完整 schema]}`，
+ *    而被后端回退成行结论时（`ToolOutcome.step_detail()`：没有摘要就取返回的开头），
+ *    印在行里的就是那半截 JSON。这半截里**唯一对得上用户脑子的东西是 `found` 那段工具名**，
+ *    所以把它顿号连接出来（超过 `DETAIL_TOOL_LIMIT` 个收成「… 等 N 个」，N 是**总数**；
+ *    与组行标题那套「… 还有 N 个」同一形状，只是 N 数的是全部而不是剩下的那些）。
  *
  * 三条分寸：
  *
- * 1. **不是原始 JSON 的 detail 一个字不动**（`detailIsRawJson` 是唯一判据，不另立一套）；
+ * 1. **两条岔路之外、且不是原始 JSON 的 detail 一个字不动**（`detailIsRawJson` 是那一条
+ *    的**唯一**判据，不另立一套）；
  * 2. **取不到就返回空串**：没有 `found`、`found` 是空数组、或工具名那一截也被裁掉了——
  *    宁可这一行什么都不写，也不要把 JSON 当句子印出来（`detailIsRawJson` 的哲学）。
  *    原始载荷没丢：点开这一步的「返回」就是它；
  * 3. **只认完整的 JSON 字符串数组**：`found` 被裁到一半时**不猜**（见下面 `foundNames`）。
  */
-export function displayDetail(step: { detail: string }): string {
+export function displayDetail(step: { detail: string; tool?: string; label?: string }): string {
+  if (step.tool === 'read_skill' || step.label === '读技能') {
+    const head = SKILL_HEAD_RE.exec(step.detail)
+    return head ? head[0] : step.detail
+  }
   if (!detailIsRawJson(step.detail)) return step.detail
   const names = foundNames(step.detail)
   if (names.length === 0) return ''
@@ -933,6 +957,14 @@ export function displayDetail(step: { detail: string }): string {
     ? names.join('、')
     : `${names.slice(0, DETAIL_TOOL_LIMIT).join('、')}… 等 ${formatCount(names.length)} 个`
 }
+
+/**
+ * 读技能那一步返回的抬头：`【技能 kylab-office-export】`（`agent_tools._read_skill` 拼的）。
+ *
+ * 只认到 `】` 为止的另一半理由：技能名里**不会**出现 `】`，而正文里什么都可能有——
+ * 宁可少截（一个技能名），也不要把正文咬进这一格。
+ */
+const SKILL_HEAD_RE = /【技能[^】]*】/
 
 /**
  * `find_tools` 返回里的工具名（`services/agent_tools.py::render_discovery` 那片 `found`）。

@@ -9,7 +9,7 @@
  *
  * ```
  * 搜索：[favicon] 标题（左，单行省略）      域名（右，灰）      ← `SearchHits`
- * 抓页：[favicon] https://……（整条 URL，链接色）              ← `FetchPages`
+ * 抓页：[favicon] https://……（整条 URL，灰）                 ← `FetchPages`
  * ```
  *
  * 数据**不新增任何后端字段**：编号、标题、网址、域名全部来自这一步已有的返回文本
@@ -21,8 +21,11 @@
  *
  * 1. **整行可点、新标签打开**：一行就是一个 `<a target="_blank">`（Kimi 同款），
  *    命中区是整行（32px 高），不是标题或 URL 那几个字；
- * 2. **favicon 16px，取不到就退字母圆**：真实 logo 是异步来的（先画字母圆、拿到图再换，
- *    尺寸逐字相同所以不重排）；拿不到就留在**域名首字母的灰圆**上——
+ * 2. **favicon 16px，取不到就退字牌 / 通用地球**：真实 logo 是异步来的（先把兜底画上、
+ *    拿到图再换，尺寸逐字相同所以不重排）；拿不到时——**本机表里认得出的站点**留在它的
+ *    字牌上（知乎的「知」、GitHub 的 `G`），**认不出的画一枚通用地球**（`Globe`，
+ *    灰色小圆底 + 11px 图标）。域名首字母那一档 2026-10-01 撤掉：用户
+ *    "你放个字母标在这儿没意义啊"，而表外域名现在也去要真实图标（`siteLogos.ts`）；
  *    不留空、不报错、不发第三方请求；
  * 3. **超过 8 行内部滚**：8 × 32 = 256px 是 Kimi 那个 `max-height`（设计文档 §8 实测值），
  *    列表自己滚，不把工具链块撑长（限高在滚动盒 `.ch-scroll-box--sites` 上，见 `ToolchainFlow`）。
@@ -35,6 +38,8 @@
  *   response，只显示网页列表"）——这一段原先由 `StepResult` 接在清单下面，现在整档撤掉，
  *   清单就是这一步展开的全部（渲染侧的取舍写在 `ui/ToolchainFlow.tsx` 的 `StepRow`）。
  */
+import { Globe } from 'lucide-react'
+
 import type { WebSite } from '@/features/chat/model/webSites'
 
 import { useSiteLogo } from './siteLogos'
@@ -58,10 +63,14 @@ export interface HitRow {
 }
 
 /**
- * 一枚 favicon 位：**先画字母圆、拿到真实 logo 再换图**（同尺寸，不重排）。
+ * 一枚 favicon 位：**先把兜底画上、拿到真实 logo 再换图**（同尺寸，不重排）。
  *
- * 表里认出来的站点用它的字牌（`site.badge`，如 GitHub 的 `G`、知乎的 `知`）；
- * 表外的域名用**域名首字母**——「加载失败用域名首字母灰圆兜底」是用户给的口径。
+ * 兜底分两档（2026-10-01 用户："你放个字母标在这儿没意义啊"）：
+ *
+ * - **本机表里认得出的站点**用它的字牌（`site.badge`，如知乎的「知」、GitHub 的 `G`）——
+ *   名字一眼认得出，字牌有意义；
+ * - **认不出的画一枚通用地球**：域名首字母那一档废了（`opendatalab.github.io` 显示「O」
+ *   对用户没有任何信息量），而表外的域名现在也会去要真实图标（见 `siteLogos.ts`）。
  */
 function HitLogo({ citation }: { citation: HitRow }) {
   const url = useSiteLogo(citation.site)
@@ -70,10 +79,16 @@ function HitLogo({ citation }: { citation: HitRow }) {
       <img className="ch-hit-logo" src={url} alt="" aria-hidden data-hit-logo={citation.site.id} />
     )
   }
-  const letter = citation.site.badge || citation.domain.slice(0, 1)
+  if (citation.site.badge) {
+    return (
+      <span className="ch-hit-logo ch-hit-logo--letter" aria-hidden>
+        {citation.site.badge}
+      </span>
+    )
+  }
   return (
     <span className="ch-hit-logo ch-hit-logo--letter" aria-hidden>
-      {letter.toUpperCase()}
+      <Globe size={11} />
     </span>
   )
 }
@@ -109,14 +124,15 @@ export function SearchHits({ hits }: { hits: readonly HitRow[] }) {
  * "注意网页 logo 的显示"）。
  *
  * 与 `SearchHits` 的差别只有**一行里写什么**：抓页要回答的是"它打开了哪几页"，所以
- * 一行 = favicon 16px + **完整 URL**（链接色 `--accent-text`）——不写标题、也不写域名
+ * 一行 = favicon 16px + **完整 URL**（**灰 `var(--text-secondary)`**——2026-10-01 用户批注
+ * "不要蓝色 就灰色就行"，推翻批二那条"URL 用链接色"）——不写标题、也不写域名
  * （标题与域名都在这条 URL 里，再各占一格是把一件事说三遍；Kimi 的获取网页列表也是
  * 整条 URL）。骨架与搜索清单同一副：整行一个 `<a target="_blank">`、32px 行高、
  * 静息无底色、悬停出灰底圆角条（样式在 `flow.css` 的 `.ch-fetch` / `.ch-fetch-url`）。
  *
- * favicon 走的是**同一枚 `HitLogo`**（`.ch-hit-logo`，16px 圆、真实 logo 取不到就退
- * 域名首字母的灰圆）——用户那句"注意网页 logo 的显示"要的就是它：清单里每一行都认得出
- * 是哪个站点。
+ * favicon 走的是**同一枚 `HitLogo`**（`.ch-hit-logo`，16px 圆；真实 logo 取不到时，
+ * 认得出的站点留字牌、认不出的画通用地球）——用户那句"注意网页 logo 的显示"要的就是它：
+ * 清单里每一行都认得出是哪个站点。
  *
  * 标题（`hit.title`）仍然有用：它是这一行的悬停提示（读屏与鼠标都还拿得到），只是不占行。
  */

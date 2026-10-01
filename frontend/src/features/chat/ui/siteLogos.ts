@@ -9,9 +9,9 @@
  *
  * 1. **缓存的是 Promise**（不是结果）：同一个站点在好几行、好几枚徽章里出现，
  *    同时来的第二个调用直接等同一个请求；
- * 2. **`ObjectURL` 不回收**：活到页面结束。最多几十个对象（站点表就那么大），
+ * 2. **`ObjectURL` 不回收**：活到页面结束。最多几十个对象（真实结果里的站点就那么多），
  *    比"卸载时回收、再挂载时重新请求"省事也省流量；
- * 3. **取不到就回 `null`**：调用方自己决定退化成字母牌还是通用地球——
+ * 3. **取不到就回 `null`**：调用方自己决定退化成站点字牌还是通用地球——
  *    这里不抛、不打印（控制台零 error 是验收项）；
  * 4. 用 `fetch` + `Blob` 而不是 `<img src>`：这一组端点要凭据，而 `<img>` 带不了
  *    `Authorization`；顺带也避免了 404 在控制台留下"加载图片失败"。
@@ -55,13 +55,18 @@ async function fetchSiteIcon(domain: string): Promise<string | null> {
 /**
  * 一枚站点的真实 logo（异步）；没有就回 `null`（调用方自己退化）。
  *
- * `site.id` 为空（本机表里没这个站点）时**一次请求都不发**——表外的域名不出我们的源。
+ * **只要 `site.domain` 非空就发请求**（domain 空才不发）。本机站点表（`webSites.ts`）
+ * 只决定"显示成什么名字与字牌"，**不决定准不准抓**——改前表外的域名一次请求都不发，
+ * 于是真实结果里绝大多数站点（`opendatalab.github.io` 这种）只剩一枚字母圆，
+ * 2026-10-01 用户："这个为啥抓不到真实的图标呢，你放个字母标在这儿没意义啊"。
+ * 后端那张同源的白名单也已撤（见 `backend/app/services/site_icons.py`），
+ * "该不该抓"由那边的 `check_public_url` 逐跳兜住。
  */
-export function useSiteLogo(site: Pick<WebSite, 'id' | 'domain'>): string | null {
+export function useSiteLogo(site: Pick<WebSite, 'domain'>): string | null {
   const [url, setUrl] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!site.id) {
+    if (!site.domain) {
       setUrl(null)
       return
     }
@@ -72,7 +77,7 @@ export function useSiteLogo(site: Pick<WebSite, 'id' | 'domain'>): string | null
     return () => {
       alive = false
     }
-  }, [site.id, site.domain])
+  }, [site.domain])
 
   return url
 }

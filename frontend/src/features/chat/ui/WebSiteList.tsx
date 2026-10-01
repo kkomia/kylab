@@ -7,28 +7,31 @@
  *
  * 画法三条（D11-② 起）：
  *
- * 1. **认出来的站点**先画一枚字母/字牌（**一帧都不空**），同时向我们自己的源要
- *    该站点的**真实 logo**（`GET /api/v1/site-icons?domain=…`）；拿到就换成图，
+ * 1. **先画一枚兜底牌子**（**一帧都不空**），同时向我们自己的源要该站点的
+ *    **真实 logo**（`GET /api/v1/site-icons?domain=…`）；拿到就换成图，
  *    槽位尺寸逐字相同（`SITE_TILE` / `SITE_TILE_IMG`），所以换图不引起重排；
- * 2. **拿不到就留在字母牌上**（离线、没缓存、站点没有图标…都算）——不留空、不报错、
- *    不在控制台留 error；
- * 3. **没认出来的**退化成**域名文字本身** + 一枚通用地球——不编名字，
- *    用户照样看得出在查哪个站；而且**不发任何请求**。
+ * 2. **拿不到就留在兜底牌上**（离线、没缓存、站点没有图标…都算）——不留空、不报错、
+ *    不在控制台留 error。兜底分两档：**表里认得出的站点**用它的字牌（知乎「知」），
+ *    **认不出的画一枚通用地球**（**域名首字母那一档 2026-10-01 撤了**：用户
+ *    "你放个字母标在这儿没意义啊"）；
+ * 3. **认不出的站点照样去要真实图标**——"已知站点表"只决定显示成什么名字与字牌，
+ *    不再决定"准不准抓"（后端那张同源的白名单也已撤，见 `services/site_icons.py`）；
+ *    域名本身就认不出来时才连请求都不发（`site.domain` 为空）。
  *
  * 为什么图标走后端而不是让浏览器直连 `https://<域名>/favicon.ico`：那等于在渲染这一行时
  * 把用户的 IP / UA 交给被查站点（**浏览器只跟我们自己的源说话**）。服务端那一层负责
- * 白名单、公网校验与磁盘缓存，见 `backend/app/services/site_icons.py`。
+ * 公网校验（`check_public_url`）与磁盘缓存，见 `backend/app/services/site_icons.py`。
  *
  * 取图用 `fetch` + `Blob` + `ObjectURL` 而不是 `<img src="…">`：这一组端点要凭据，
  * 而 `<img>` 带不了 `Authorization`；顺带也避免了 404 在控制台留下"加载图片失败"。
+ * 取图那一层只有一份（`siteLogos.ts`）——这个文件里原先还有一份**复制粘贴的**
+ * `iconCache` / `loadSiteIcon` / `fetchSiteIcon`，没有任何调用方，随这次改动删掉。
  *
  * `data-site` / `data-domain` 供断言：前者只在"认出来"时有值，正好把第 3 条钉住；
  * 换成真实 logo 后多一个 `data-site-logo`（用例据此断言"图真的换上了"）。
  */
 import { Globe } from 'lucide-react'
-import { useEffect, useState } from 'react'
 
-import { API_BASE, authHeaders } from '@/api/client'
 import type { WebSite, WebSites } from '@/features/chat/model/webSites'
 import { formatCount } from '@/lib/format'
 
@@ -36,61 +39,13 @@ import { useSiteLogo } from './siteLogos'
 import { SITE_CHIP, SITE_MORE, SITE_STRIP, SITE_TILE, SITE_TILE_IMG } from './traceStyles'
 
 /**
- * 图标缓存：**同一个站点只请求一次**。
+ * 一枚站点图标位：固定 1.2em，**先画兜底牌、拿到 logo 再换图**。
  *
- * 一个站点会在好几条步骤、好几条会话里出现，而这几行可能同时挂载；
- * 缓存的是 Promise（不是结果）——同时来的第二个调用直接等同一个请求。
- * `ObjectURL` 故意不回收：活到页面结束，最多几十个对象，比"卸载时回收、
- * 再挂载时重新请求"省事也省流量。
- */
-const iconCache = new Map<string, Promise<string | null>>()
-
-/** 用例之间清缓存（模块级缓存不该把上一个用例的结果带进下一个）。 */
-export function resetSiteIconCache(): void {
-  iconCache.clear()
-}
-
-function loadSiteIcon(domain: string): Promise<string | null> {
-  const cached = iconCache.get(domain)
-  if (cached) return cached
-  const task = fetchSiteIcon(domain)
-  iconCache.set(domain, task)
-  return task
-}
-
-async function fetchSiteIcon(domain: string): Promise<string | null> {
-  // 测试环境（jsdom）与很老的浏览器没有它：直接退回字母牌，不抛
-  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return null
-  try {
-    const response = await fetch(`${API_BASE}/site-icons?domain=${encodeURIComponent(domain)}`, {
-      headers: authHeaders(),
-    })
-    if (!response.ok) return null
-    return URL.createObjectURL(await response.blob())
-  } catch {
-    // 网络报错也好、401 也好，都只是"这次没有真实 logo"：**不打印**（控制台零 error 是验收项）
-    return null
-  }
-}
-
-/**
- * 一枚站点图标位：固定 1.2em，**先画牌子、拿到 logo 再换图**。
- *
- * 未认出来的站点（`site.id === ''`）根本不发请求——那条路只有通用地球 + 域名文字。
+ * 兜底链：字牌（表里认得出的站点）→ 通用地球。**没有域名首字母那一档**
+ * （2026-10-01 用户："你放个字母标在这儿没意义啊"）。
  */
 function SiteLogo({ site }: { site: WebSite }) {
-  const [url, setUrl] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!site.id) return
-    let alive = true
-    void loadSiteIcon(site.domain).then((value) => {
-      if (alive) setUrl(value)
-    })
-    return () => {
-      alive = false
-    }
-  }, [site.id, site.domain])
+  const url = useSiteLogo(site)
 
   if (url) {
     return <img className={SITE_TILE_IMG} src={url} alt="" aria-hidden data-site-logo={site.id} />
@@ -165,7 +120,18 @@ function CompactLogo({ site }: { site: WebSite }) {
       />
     )
   }
-  const letter = site.badge || site.domain.slice(0, 1)
+  if (site.badge) {
+    return (
+      <span
+        className="ch-hit-logo ch-hit-logo--letter"
+        aria-hidden
+        data-site={site.id || undefined}
+        data-domain={site.domain}
+      >
+        {site.badge}
+      </span>
+    )
+  }
   return (
     <span
       className="ch-hit-logo ch-hit-logo--letter"
@@ -173,7 +139,7 @@ function CompactLogo({ site }: { site: WebSite }) {
       data-site={site.id || undefined}
       data-domain={site.domain}
     >
-      {letter.toUpperCase()}
+      <Globe size={11} />
     </span>
   )
 }

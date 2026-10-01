@@ -153,9 +153,12 @@ const SITE_KEYS: readonly string[] = Object.keys(KNOWN_SITES).sort((a, b) => b.l
 /**
  * 表里的域名（D11-② 起对外）。
  *
- * 除了本文件自己用，它还担一件事：**后端那份"允许抓图标的域名"白名单要与它一致**
- * （`backend/app/services/site_icons.py` 的 `ALLOWED_DOMAINS`）。两边漂了不会报错，
- * 只会让某些站点的真实 logo 悄悄退回字母牌——所以有一条用例把两份集合逐项比对。
+ * **它不再决定"准不准抓图标"**：后端那张同源的 `ALLOWED_DOMAINS` 白名单已经撤了
+ * （2026-10-01：表外域名一律不发请求的后果，是真实结果里绝大多数站点只剩一枚字母圆，
+ * 用户："这个为啥抓不到真实的图标呢，你放个字母标在这儿没意义啊"）。这张表现在只剩一件事：
+ * **认得出名字与字牌**——认得出的用字牌（知乎的「知」），认不出的画一枚通用地球
+ * （兜底那一档在 `ui/SearchHits.tsx` 的 `HitLogo` 与 `ui/WebSiteList.tsx` 的
+ * `SiteLogo` / `CompactLogo`）。
  */
 export const KNOWN_DOMAINS: readonly string[] = Object.freeze(Object.keys(KNOWN_SITES))
 

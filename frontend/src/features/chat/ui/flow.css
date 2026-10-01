@@ -494,6 +494,23 @@ button.ch-row:not([aria-disabled='true']):hover {
   margin-top: calc(16px * var(--font-scale, 1));
 }
 
+/* 读技能那一步的展开体：**一行字**（2026-10-01 用户批注：读技能就显示
+   "Gained some skills from the file." 就行）。它不再铺 Request / Response 面板
+   （撤的原因写在 `ToolchainFlow.tsx` 的 `StepRow` 那一处），所以样式只是一段次级灰字：
+   字号 / 行高与思考正文同档（14 / 22），颜色再弱一档（三级灰 `--text-tertiary`）。
+   左缩进由 `.ch-clp--row > .ch-clp-in` 统一给（`--ch-indent`），这里只留顶部留白
+   ——与 `.ch-think` 同一条口径，两块文字落在一根轴上。
+   类名用 `-line` 而不是 `-note`：`check_layering.py` 的 U1 把 `*-note` 那族尾段
+   当成"解释性小字"（它要挡的是"这一页是什么"那种说明），这一句是这一步的结果交代，
+   换个按用途起的名字比往 `UI_COPY_ALLOWED` 里加例外干净。 */
+.ch-skill-line {
+  margin: 0;
+  padding: 12px 0 0;
+  font-size: calc(14px * var(--font-scale, 1));
+  line-height: calc(22px * var(--font-scale, 1));
+  color: var(--text-tertiary);
+}
+
 /* ---- 步骤原文：**Request / Response 两块面板**（R4 批注，Kimi 的 inline-tool-detail） ----
    浅灰圆角面板 + 加粗小标题；JSON 缩进着色，Response 那一侧带行号槽。
    面板的**左边缘落在 label 列上**（缩进由 `.ch-clp--row > .ch-clp-in` 统一给），
@@ -568,6 +585,16 @@ button.ch-row:not([aria-disabled='true']):hover {
   color: var(--status-warning);
 }
 
+/* 联网搜索那一组**合并后的清单**（2026-10-01 用户批注："不要在联网搜索里面搞个 list
+   再去放联网搜索，点开里面就直接是网页的 list"）。
+   里面那张清单与单步行展开的是同一副（`SearchHits` + `FadeScroll sites`），这里只补一件事：
+   组体那一层（`.ch-clp--sub`）**不给左缩进**（里面原本是子步行，它们自带缩进轴），
+   而清单要落在 **label 列**上——`--ch-indent` 与 `.ch-clp--row > .ch-clp-in` 同一条轴，
+   于是"组行点开的清单"与"单步行点开的清单"左右对齐，逐像素一样。 */
+.ch-group-hits {
+  padding-left: var(--ch-indent);
+}
+
 /* ---- 联网搜索的结果清单（Kimi 网页版 §8 实测值；用户批注 §3） ----
    一行 = favicon 16px + 标题（左，单行省略）+ 域名（右，三级灰）；
    行高 32px、内边距 6/8、圆角 8px、hover 浅底；整行可点、新标签打开（`SearchHits`）。
@@ -585,9 +612,12 @@ button.ch-row:not([aria-disabled='true']):hover {
    "注意网页 logo 的显示"）----
    与搜索清单同一副骨架（行高 32px、内边距 6/8、圆角 8px、悬停灰底圆角条、整行可点、
    字体走 `.ch-hits` 那一档 14/20），差别只有**一行里写什么**：抓页要回答"它打开了哪几页"，
-   所以是 favicon + **完整 URL**（链接色）——标题与域名都在这条 URL 里，不再各占一格。
-   favicon 仍是 `.ch-hit-logo`（16px 圆；取不到真实 logo 就退域名首字母的灰圆——
-   与搜索清单里那一枚逐像素同款，"注意网页 logo 的显示"要的就是它）。 */
+   所以是 favicon + **完整 URL**——标题与域名都在这条 URL 里，不再各占一格。
+   favicon 仍是 `.ch-hit-logo`（16px 圆；两张清单共用同一枚 `HitLogo`，逐像素同款）。
+   真实图标取不到时的兜底按 **2026-10-01 的新口径**：**本机表认得出的站点**留它的字牌
+   （知乎「知」、GitHub 的 `G`），**认不出的画一枚通用地球**（`Globe`，11px）——
+   域名首字母那一档当天撤掉（用户："你放个字母标在这儿没意义啊"），落点见下面
+   `.ch-hit-logo--letter` 那条注释。 */
 .ch-fetch {
   display: flex;
   align-items: center;
@@ -606,9 +636,12 @@ button.ch-row:not([aria-disabled='true']):hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  /* 链接色（用户批注"URL 用链接色"）：就是全站链接在用的那一枚令牌 `--accent-text`
-     （浅色下 5.38:1、暗色同构），不新造色值；整行可点，所以这一格不走次要文字色。 */
-  color: var(--accent-text);
+  /* **灰色**（2026-10-01 用户批注原话："不要蓝色 就灰色就行"）：二级文字灰
+     `--text-secondary`（浅色/暗色两套主题自带反相，不新造色值）。
+     这一条**推翻了批二那条「URL 用链接色」**（当时取 `--accent-text`，理由是"整行可点、
+     这一格不走次要文字色"）——用户看到蓝色 URL 之后明确不要；整行照旧可点，
+     颜色不再承担"这是链接"的暗示。 */
+  color: var(--text-secondary);
 }
 
 .ch-hit {
@@ -631,7 +664,13 @@ button.ch-row:not([aria-disabled='true']):hover {
   border-radius: 50%;
   object-fit: contain;
 }
-/* 取不到真实 favicon 时的兜底：域名首字母的灰圆（用户给的口径，不留空、不报错） */
+/* 取不到真实 favicon 时的兜底：**站点字牌，或一枚通用地球**（2026-10-01 新口径）。
+   本机表认得出的站点留在它的字牌上（知乎「知」、GitHub 的 `G`——名字一眼认得出，字牌
+   有意义）；认不出的画 `Globe`（11px）——**域名首字母那一档撤掉**（用户原话："你放个
+   字母标在这儿没意义啊"，`opendatalab.github.io` 显示「O」对用户没有任何信息量），
+   而表外的域名现在也会去要真实图标（见 `siteLogos.ts`，不再按白名单挡）。
+   类名沿用 `--letter` 不改：它现在装的是字牌或那枚地球，改名要动两处组件与用例，
+   收益不抵；灰圆底与 `--Labels-Tertiary` 照旧——不留空、不报错、不发第三方请求。 */
 .ch-hit-logo--letter {
   display: inline-flex;
   align-items: center;

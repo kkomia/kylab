@@ -23,7 +23,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { webCitationsOfSteps } from '@/features/chat/model/sourceCitations'
 import { AnswerText } from '@/features/chat/ui/AnswerText'
+import { SearchHits } from '@/features/chat/ui/SearchHits'
 import { SourceBadge, SourceCardHost } from '@/features/chat/ui/SourceCard'
+import { WebSiteIcons } from '@/features/chat/ui/WebSiteList'
+import { resetSiteIconCache } from '@/features/chat/ui/siteLogos'
 import {
   CLOSE_GRACE_MS,
   activeCitation,
@@ -50,6 +53,22 @@ const SEARCH_RESULT = [
   '【前 2 条的正文开头】（每条最多 2000 字；要读全文用 web_fetch）',
   '【Anthropic 的官方仓库】https://github.com/anthropics/skills',
   '仓库正文……',
+].join('\n')
+
+/**
+ * 一条**本机站点表之外** + 一条表里的结果（2026-10-01 批注那条正好是表外的域名）。
+ *
+ * `opendatalab.github.io` 是用户批注里点到的那个：改前它显示一枚域名首字母「O」的灰圆，
+ * 因为前端带着 `if (!site.id) return` 的守卫、后端还拿一张白名单把表外域名拒了。
+ */
+const OUTSIDER_RESULT = [
+  '检索词：web，共 2 条：',
+  '[1] OpenDataLab 的文档站',
+  'https://opendatalab.github.io/foo',
+  '摘要。',
+  '[2] 知乎上的一问',
+  'https://www.zhihu.com/question/1',
+  '摘要。',
 ].join('\n')
 
 afterEach(() => {
@@ -339,5 +358,107 @@ describe('接线：正文里的 [n] 变成站点徽章（知识库那条照旧�
 
     await userEvent.hover(screen.getByText('github.com'))
     await waitFor(() => expect(screen.getAllByTestId('source-card')).toHaveLength(1))
+  })
+})
+
+describe('站点图标：表外域名照样发请求，兜底画通用地球而不是域名首字母（2026-10-01 用户批注）', () => {
+  const found = webCitationsOfSteps([{ tool: 'web_search', result: OUTSIDER_RESULT }])
+  /** 表外的那个域名（`opendatalab.github.io`：本机站点表里没有它，后端白名单也已撤）。 */
+  const outsider = found.get(1)!
+  /** 表里的站点（知乎：名字与「知」这枚字牌用户都认得出）。 */
+  const known = found.get(2)!
+
+  const originalFetch = globalThis.fetch
+
+  /**
+   * 真实取图那一层（`ui/siteLogos.ts`）与浏览器打两样交道：`fetch` 与
+   * `URL.createObjectURL`。**jsdom 没有后者**——而它在取图的第一行就是守卫：
+   * 缺了它连请求都不发（那一步正是这条用例要钉住的），所以两样都补上。
+   *
+   * `ok=false` 模拟"这个站点没有图标"（后端 404）：前端据此退回兜底那一档。
+   */
+  function stubIconFetcher(ok: boolean): string[] {
+    const calls: string[] = []
+    ;(URL as unknown as Record<string, unknown>).createObjectURL = vi.fn(() => 'blob:site-icon')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        calls.push(String(input))
+        const response = ok
+          ? { ok: true, blob: async () => new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])]) }
+          : { ok: false, blob: async () => new Blob([]) }
+        return Promise.resolve(response as Response)
+      }),
+    )
+    return calls
+  }
+
+  afterEach(() => {
+    // 模块级的 Promise 缓存与被补上的浏览器能力都不该漏到下一个用例里
+    resetSiteIconCache()
+    vi.stubGlobal('fetch', originalFetch)
+    ;(URL as unknown as Record<string, unknown>).createObjectURL = undefined
+  })
+
+  it('**表外的域名也发一次 site-icons 请求**（改前被 `useSiteLogo` 的 id 守卫挡着，一次都不发）', async () => {
+    const calls = stubIconFetcher(true)
+
+    render(<SourceBadge citation={outsider} />)
+
+    await waitFor(() => expect(calls).toHaveLength(1))
+    expect(calls[0]).toContain('/site-icons?domain=opendatalab.github.io')
+  })
+
+  it('拿到真实图标就换成图（表外的域名与表里的站点走同一条路）', async () => {
+    stubIconFetcher(true)
+
+    const { container } = render(<SourceBadge citation={outsider} />)
+
+    await waitFor(() => expect(container.querySelector('img')).not.toBeNull())
+    expect(container.querySelector('img')).toHaveAttribute('src', 'blob:site-icon')
+  })
+
+  it('取不到图标：**认不出的站点画通用地球**，不再是域名首字母的灰圆', async () => {
+    stubIconFetcher(false)
+
+    const { container } = render(<SourceBadge citation={outsider} />)
+
+    await waitFor(() => expect(container.querySelector('svg.lucide-globe')).not.toBeNull())
+    // 徽章里只剩域名：那个「O」没有了（用户："你放个字母标在这儿没意义啊"）
+    expect(container.querySelector('a')!.textContent).toBe('opendatalab.github.io')
+  })
+
+  it('取不到图标：**认得出的站点仍旧用它的字牌**（知乎的「知」）', async () => {
+    stubIconFetcher(false)
+
+    const { container } = render(<SourceBadge citation={known} />)
+
+    await waitFor(() => expect(container.querySelector('svg.lucide-globe')).toBeNull())
+    expect(container.querySelector('a')!.textContent).toBe('知zhihu.com')
+  })
+
+  it('清单与徽章同一口径：搜索清单与抓页图标位的兜底也是通用地球（圆里没有字母）', async () => {
+    stubIconFetcher(false)
+
+    const { container } = render(
+      <>
+        <SearchHits
+          hits={[
+            {
+              url: outsider.url,
+              title: 'OpenDataLab 的文档站',
+              domain: outsider.domain,
+              site: outsider.site,
+            },
+          ]}
+        />
+        <WebSiteIcons sites={[outsider.site]} more={0} />
+      </>,
+    )
+
+    await waitFor(() => expect(container.querySelectorAll('svg.lucide-globe')).toHaveLength(2))
+    for (const tile of container.querySelectorAll('.ch-hit-logo--letter')) {
+      expect(tile.textContent).toBe('')
+    }
   })
 })

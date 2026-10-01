@@ -3399,11 +3399,14 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * 站点图标（本机缓存，取不到回 404 由前端退回字母牌）
+         * 站点图标（本机缓存；任意合法域名，取不到回 404 由前端退字牌 / 地球）
          * @description 按域名发一枚图标（png / jpeg / gif / ico / webp，按魔数嗅探后才发）。
          *
-         *     - **不在已知站点表里 → 422**：这条接口不代为抓任意域名（别当跳板用）；
-         *     - **表里但抓不到 → 404**：正常的降级路径，前端退回字母牌，不报错、不留空位；
+         *     - **任何形态合法的域名都代为抓取**：收什么域名不是这条接口该管的事，白名单已撤
+         *       （2026-10-01 用户："这个为啥抓不到真实的图标呢"）。**是不是公网地址**由服务层
+         *       每一跳的 `web.check_public_url` 兜底——它才是"这个域名该不该抓"的唯一判断；
+         *     - **畸形域名 → 422**（写错了 / 在探），**抓不到 → 404**（正常的降级路径，
+         *       前端退回站点字牌或通用地球，不报错、不留空位）；
          *     - 缓存命中时不发任何外部请求；响应带一天浏览器缓存。
          */
         get: operations["site_icon_api_v1_site_icons_get"];
@@ -15207,7 +15210,7 @@ export interface operations {
     site_icon_api_v1_site_icons_get: {
         parameters: {
             query: {
-                /** @description 站点域名（必须是已知站点表里的，见 services/site_icons） */
+                /** @description 站点域名（任意合法域名，SSRF 由 check_public_url 兜底） */
                 domain: string;
             };
             header?: {

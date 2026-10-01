@@ -8,22 +8,39 @@
    都不会让这一行变慢或闪；
 3. **一次抓好、多处复用**：同一个站点在好几个步骤、好几条会话里出现，只抓一次。
 
+**图标是怎么找到的**（三步，逐级放宽；每一步的每个候选地址都过 `check_public_url`）：
+
+1. **先试固定两条路径**（`/apple-touch-icon.png`、`/favicon.ico`）× `{host, www.host}`——
+   绝大多数站点在这；
+2. 都落空就**读一眼首页 HTML**，按它自己声明的 `<link rel="icon" href="…">` 去抓
+   （2026-10-01 真机复验：SPA 站点让固定路径变成瞎猜——`docs.mthreads.com` 的
+   `/favicon.ico` 回 **200 但 `Content-Type: text/html`**（兜底页，按"只收位图"被拒），
+   `mineru.atomgit.com` 的 `/favicon.ico` 直接 404，而两站首页里都写着真图标，
+   后者还是相对路径 `./assets/images/favicon.png`）；
+3. 还是取不到就**如实回"没有图标"**（`opendatalab.github.io` 的根页里就没有 link 声明）
+   ——端点发 404，前端退回站点字牌或通用地球。
+
 **边界（每条都有用例钉着）**：
 
-- 只允许 ``ALLOWED_DOMAINS`` 里的域名**及其子域**（`en.wikipedia.org`、`mp.weixin.qq.com`
-  都归到表里的根域；与前端 ``model/webSites.ts`` 的已知站点表同一份：两处漂了只会退化成
-  字母牌，不会出错，但也别让它们漂）；
+- **任何形态合法的域名都代为抓取**（2026-10-01 用户："这个为啥抓不到真实的图标呢"）。
+  改前只认 ``ALLOWED_DOMAINS`` 那张白名单、表外域名一律 422，于是真实结果里绝大多数站点
+  （`opendatalab.github.io` 这种）只剩一枚字母圆——**白名单当初是防跳板，但每个候选地址
+  本来就过下面那条校验，它只是多余的收紧**。收什么域名不是这条接口该管的事；
 - **每个候选地址都过** ``web.check_public_url``（本仓唯一那处"是不是公网地址"的判断）——
-  这条接口收的是用户数据里来的域名，绝不能让内网地址借它当跳板（SSRF）；
+  这条接口收的是用户数据里来的域名，绝不能让内网地址借它当跳板（SSRF）。
+  白名单撤了之后，这一条就是"这个域名该不该抓"的**唯一**判断。**首页里发现的地址也一样**
+  （那是第三方页面说了算的字符串，更不能例外）；
 - 只接受**位图**（png / jpeg / gif / ico / webp，按魔数嗅探）：**SVG 明确拒收**——
-  它和我们同源，被打开就是一个同源脚本执行面（会话令牌就在 localStorage 里）；
-- 体积上限、缓存条数上限、正负缓存都有 TTL；取不到就**没有图标**（前端退回字母牌），
-  不抛给用户、不在页面上留空位。
+  它和我们同源，被打开就是一个同源脚本执行面（会话令牌就在 localStorage 里）。
+  `.svg` 因此不需要在"首页里声明的图标"那一层特判：嗅探这一关本来就过不去；
+- 体积上限、缓存条数上限、正负缓存都有 TTL；取不到就**回"没有图标"**（端点发 404，
+  前端退回站点字牌或通用地球），不抛给用户、不在页面上留空位。
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,85 +51,14 @@ from app.core.exceptions import InvalidRequestError
 from app.core.http import shared_client
 from app.services.web import check_public_url
 
-__all__ = ["ALLOWED_DOMAINS", "SiteIcon", "SiteIconService", "allowed_root", "normalize_domain"]
+__all__ = ["SiteIcon", "SiteIconService", "normalize_domain"]
 
 logger = logging.getLogger(__name__)
 
-#: 允许取图标的站点。**与前端 `frontend/src/features/chat/model/webSites.ts` 那张表同一份**：
-#: 那边决定"显示成什么"，这边决定"允许抓谁"。两边漂了的后果只是退化成字母牌（不报错），
-#: 所以按"两张表要一起动"的纪律维护。
-ALLOWED_DOMAINS: frozenset[str] = frozenset(
-    {
-        # 代码 / 学术 / 百科
-        "github.com",
-        "gitlab.com",
-        "gitee.com",
-        "stackoverflow.com",
-        "developer.mozilla.org",
-        "npmjs.com",
-        "python.org",
-        "nodejs.org",
-        "react.dev",
-        "arxiv.org",
-        "wikipedia.org",
-        "nature.com",
-        "sciencedirect.com",
-        "ieee.org",
-        "acm.org",
-        "springer.com",
-        "jstor.org",
-        # AI / 厂商官方
-        "openai.com",
-        "anthropic.com",
-        "huggingface.co",
-        # 常见中文站点
-        "zhihu.com",
-        "baidu.com",
-        "juejin.cn",
-        "csdn.net",
-        "cnblogs.com",
-        "segmentfault.com",
-        "infoq.cn",
-        "sspai.com",
-        "36kr.com",
-        "bilibili.com",
-        "weixin.qq.com",
-        "qq.com",
-        "163.com",
-        "sina.com.cn",
-        "sohu.com",
-        "ifeng.com",
-        "people.com.cn",
-        "xinhuanet.com",
-        "thepaper.cn",
-        "caixin.com",
-        # 英文社区 / 媒体
-        "medium.com",
-        "reddit.com",
-        "ycombinator.com",
-    }
-)
-
-#: 依次试的路径。**apple-touch-icon 在前**：它是给"放到主屏"用的 180×180 实心图标，
+#: 先试的固定路径。**apple-touch-icon 在前**：它是给"放到主屏"用的 180×180 实心图标，
 #: 看起来才是 logo；`favicon.ico` 常见 16×16 或多尺寸打包，缩到 14px 时常常糊成一团。
+#: 这两条**不是全部**：都落空时还会读首页 HTML 找 `<link rel="icon">`（见 `_discover_icon`）。
 ICON_PATHS: tuple[str, ...] = ("/apple-touch-icon.png", "/favicon.ico")
-
-#: 白名单**按长度倒序**：子域要归到最具体的那一条（`developer.mozilla.org` 先于 `mozilla.org`）。
-_ALLOWED_SORTED: tuple[str, ...] = tuple(sorted(ALLOWED_DOMAINS, key=len, reverse=True))
-
-
-def allowed_root(host: str) -> str | None:
-    """把主机名归到白名单里的那一条；不在表里就回 ``None``。
-
-    **接受子域**（`en.wikipedia.org` → `wikipedia.org`、`icq.ifeng.com` → `ifeng.com`）：
-    前端是从网址里取域名的（`webSites.ts` 也是后缀匹配），真实结果里出现的是
-    `mp.weixin.qq.com`、`en.wikipedia.org` 这种具体主机。归到根域之后，
-    同一个站点的图标只抓一次、只缓存一份。
-    """
-    for key in _ALLOWED_SORTED:
-        if host == key or host.endswith(f".{key}"):
-            return key
-    return None
 
 #: 允许的位图种类 → 服务时用的 media type。**没有 svg**（理由见模块说明）。
 _KINDS: dict[str, str] = {
@@ -125,6 +71,21 @@ _KINDS: dict[str, str] = {
 
 #: 单个图标的字节上限。真实的 touch icon 在 10–80KB，256KB 已经宽裕。
 MAX_ICON_BYTES = 256 * 1024
+
+#: 首页 HTML 的字节上限。SPA 的兜底页常有几十 KB，512KB 足够宽松；
+#: 超了就当"这页读不成"——图标是最不重要的东西，不值得为它把内存铺开。
+MAX_PAGE_BYTES = 512 * 1024
+
+#: 首页里最多认几个图标候选（同一个站点常有 32/180/svg 好几枚，按声明顺序取前几个）。
+MAX_ICON_CANDIDATES = 4
+
+#: `<link …>` 整条标签：`rel` 与 `href` 的先后不固定（两种写法真实站点都有），
+#: 所以先抓标签、再从里面各抽各的属性。
+_LINK_TAG_RE = re.compile(r"<link\b[^>]*>", re.IGNORECASE)
+
+#: 属性值三种写法都得认：`rel="icon"` / `rel='icon'` / `rel=icon`。
+_REL_RE = re.compile(r"""\brel\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""", re.IGNORECASE)
+_HREF_RE = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))""", re.IGNORECASE)
 
 #: 目录里最多留多少个图标文件（正 + 负缓存一起算）。超了删最旧的。
 CACHE_MAX_FILES = 200
@@ -187,35 +148,28 @@ class SiteIconService:
     # ------------------------------------------------------------------ 读
 
     def icon(self, domain: str) -> SiteIcon | None:
-        """取一枚图标；**不在允许表里（含子域）就抛 422**，在表里但取不到就回 ``None``。
+        """取一枚图标；**畸形域名抛 422**，形态合法但取不到就回 ``None``。
 
         为什么把这两种分开：前者是"这个接口就不该被这样调"（写错了 / 在探），
-        后者是"这个站点暂时没有图标"（正常的降级路径）。前端两种都退回字母牌。
+        后者是"这个站点暂时没有图标"（正常的降级路径）。前端两种都退回站点字牌 / 通用地球。
 
-        子域归到白名单里的根域（见 `allowed_root`），**缓存也按根域存**：
-        `en.wikipedia.org` 与 `zh.wikipedia.org` 用的是同一枚维基图标。
+        **缓存按入参域名本身存**：`en.wikipedia.org` 与 `zh.wikipedia.org` 各抓一份、各存一份。
+        改前子域归到白名单里的根域，那要先有一张"谁是根域"的表——随白名单一起撤了。
         """
         host = normalize_domain(domain)
-        root = allowed_root(host)
-        if root is None:
-            raise InvalidRequestError(
-                f"不在已知站点表里，不代为抓取：{host}。"
-                "（这张表与前端 model/webSites.ts 同一份口径）"
-            )
-
-        cached = self._read_cached(root, ttl=CACHE_TTL_SECONDS)
+        cached = self._read_cached(host, ttl=CACHE_TTL_SECONDS)
         if cached is not None:
             return cached
-        if self._miss_is_fresh(root):
+        if self._miss_is_fresh(host):
             return None
         # 过期了也先留着旧的：抓失败时继续用手上这一份，比"突然没有 logo"好
-        stale = self._read_cached(root, ttl=None)
+        stale = self._read_cached(host, ttl=None)
 
-        fetched = self._fetch(root)
+        fetched = self._fetch(host)
         if fetched is None:
-            self._note_miss(root)
+            self._note_miss(host)
             return stale
-        self._store(root, fetched)
+        self._store(host, fetched)
         return fetched
 
     def _read_cached(self, host: str, *, ttl: int | None) -> SiteIcon | None:
@@ -285,13 +239,64 @@ class SiteIconService:
     # ------------------------------------------------------------------ 抓
 
     def _fetch(self, host: str) -> SiteIcon | None:
-        """按候选路径依次抓；第一个拿到合格位图的就用它。"""
+        """先试固定路径，全落空再**读首页 HTML**；第一个拿到合格位图的就用它。"""
         for path in ICON_PATHS:
             for candidate_host in (host, f"www.{host}"):
                 icon = self._fetch_one(f"https://{candidate_host}{path}")
                 if icon is not None:
                     return icon
+        return self._discover_icon(host)
+
+    def _discover_icon(self, host: str) -> SiteIcon | None:
+        """**从首页 HTML 里找它自己声明的图标**（`<link rel="icon" href="…">`）。
+
+        为什么必须有这一步（2026-10-01 真机复验）：固定两条路径对 SPA 站点是瞎的——
+        `docs.mthreads.com` 的 `/favicon.ico` 回 200 但 `Content-Type: text/html`
+        （SPA 兜底页，按"只收位图"被拒），`mineru.atomgit.com` 的 `/favicon.ico` 直接 404；
+        而两站首页里都写了真图标，后者还是相对路径 `./assets/images/favicon.png`。
+
+        分寸：首页只读 `https://{host}/`，**失败才退 `www.{host}/`**；读到了就用它
+        （同一条 path 里的相对地址只对得上那一页），里面没有能用的图标就收手回 ``None``
+        ——`opendatalab.github.io` 就属于这一档，前端如实退通用地球。
+        """
+        for page in (f"https://{host}/", f"https://www.{host}/"):
+            found = self._read_page(page)
+            if found is None:
+                continue
+            html, final_url = found
+            for href in _icon_hrefs(html):
+                try:
+                    # **相对谁**取决于跟完重定向之后那一页的地址，不是我们请求的那个
+                    candidate = str(httpx.URL(final_url).join(href))
+                except (httpx.InvalidURL, ValueError):
+                    # 页面是第三方说了算，什么古怪写法都可能出现：解不出来就跳过这一个
+                    logger.info("首页里那个图标地址解析不了，跳过：%s", href)
+                    continue
+                icon = self._fetch_one(candidate)
+                if icon is not None:
+                    return icon
+            return None
         return None
+
+    def _read_page(self, url: str) -> tuple[str, str] | None:
+        """取一页首页 HTML（正文 + 最终地址）；**任何失败都回 ``None``**。
+
+        与 `_fetch_one` 同一副分寸：初始地址过 `check_public_url`，某一跳跳到内网也算
+        "没拿到"（不是调用方写错了），页面不是 HTML / 超限 / 超时同样只是"这一步没成"。
+        """
+        try:
+            target = check_public_url(url)
+        except InvalidRequestError:
+            logger.info("站点首页不是公网地址，跳过：%s", url)
+            return None
+        try:
+            return self._get_text(target)
+        except (httpx.HTTPError, OSError) as exc:
+            logger.info("站点首页抓取失败（%s）：%s", url, exc)
+            return None
+        except InvalidRequestError:
+            logger.info("站点首页的某一跳跳到了非公网地址，跳过：%s", url)
+            return None
 
     def _fetch_one(self, url: str) -> SiteIcon | None:
         try:
@@ -318,13 +323,40 @@ class SiteIconService:
         return SiteIcon(content=raw, media_type=_KINDS[kind], kind=kind)
 
     def _get_bytes(self, target: str) -> bytes | None:
-        """取字节，**手工跟重定向、每一跳重新校验**（与 `services/web` 同一套纪律）。
+        """取图标的字节；**只收位图**（`content-type` 不像图片就直接放弃，不必等它下完）。
 
-        与那一处的区别只有两点：这里要的是**字节**（不是解码后的正文），
-        以及**只收位图**（`content-type` 不像图片就直接放弃，不必等它下完）。
+        "超限与超时都回 ``None`` 而不是半截字节"的理由见 `_get_body`：
+        一个被截断的 PNG 在界面上就是"图片坏了"，比干脆没有图标（前端退字牌 / 地球）难看。
+        """
+        body = self._get_body(target, accept="image/", limit=MAX_ICON_BYTES, what="站点图标")
+        return None if body is None else body[0]
 
-        **超限与超时都回 ``None`` 而不是半截字节**：一个被截断的 PNG 在界面上就是
-        "图片坏了"，比干脆退回字母牌难看得多，也更难查（服务端还把它缓存下来了）。
+    def _get_text(self, target: str) -> tuple[str, str] | None:
+        """取一页 HTML 的**正文与最终地址**（后者供相对图标地址解析，见 `_discover_icon`）。
+
+        只收 `text/html`（或**没声明 content-type** 的——少数站点的首页就是不带）；
+        按 UTF-8 解码并容忍坏字节：图标地址在 HTML 里是 ASCII，
+        编码猜错最多只影响我们不去读的那段正文。
+        """
+        body = self._get_body(target, accept="text/html", limit=MAX_PAGE_BYTES, what="站点首页")
+        if body is None:
+            return None
+        raw, final = body
+        return raw.decode("utf-8", "replace"), final
+
+    def _get_body(
+        self, target: str, *, accept: str, limit: int, what: str
+    ) -> tuple[bytes, str] | None:
+        """取一份正文与最终地址，**手工跟重定向、每一跳重新校验**（与 `services/web` 同一套纪律）。
+
+        图标与首页共用这一份纪律，只在"收什么类型、上限多少"上分开：
+        位图 256KB / `image/*`，首页 512KB / `text/html`。**跟重定向、逐跳校验、
+        同一 deadline、超限与超时都回 ``None`` 而不是半截**这几条对两者一模一样——
+        分两份写迟早有一份漏掉某一跳的校验。
+
+        **超限与超时都回 ``None`` 而不是半截字节**：半张图在界面上就是"图片坏了"，
+        半截 HTML 则可能正好断在 `<link …>` 中间、抽出一个坏地址——
+        两者都比干脆没有图标难查（服务端还会把它们缓存下来）。
         """
         deadline = time.monotonic() + self._timeout
         current = target
@@ -341,21 +373,51 @@ class SiteIconService:
                 if response.status_code >= 400:
                     return None
                 declared = (response.headers.get("content-type") or "").lower()
-                if declared and not declared.startswith("image/"):
+                if declared and not declared.startswith(accept):
                     return None
                 chunks: list[bytes] = []
                 total = 0
                 for chunk in response.iter_bytes():
                     chunks.append(chunk)
                     total += len(chunk)
-                    if total >= MAX_ICON_BYTES:
-                        logger.info("站点图标超过 %d 字节，放弃：%s", MAX_ICON_BYTES, current)
+                    if total >= limit:
+                        logger.info("%s超过 %d 字节，放弃：%s", what, limit, current)
                         return None
                     if time.monotonic() > deadline:
-                        logger.info("站点图标读取超时，放弃：%s", current)
+                        logger.info("%s读取超时，放弃：%s", what, current)
                         return None
-                return b"".join(chunks)
+                return b"".join(chunks), current
         return None
+
+
+def _icon_hrefs(html: str) -> list[str]:
+    """首页 HTML 里声明的图标地址：保序去重，最多 ``MAX_ICON_CANDIDATES`` 个。
+
+    认 `rel` 里含 `icon` 的那些（`icon` / `shortcut icon` / `apple-touch-icon` 都算，
+    大小写不敏感）——`rel="stylesheet"` 之类不含 `icon`，自然落选。
+
+    `data:` 明确跳过：那是内联图片、不是可抓的地址。**`.svg` 不特判**：魔数嗅探本来就
+    拒收它（同源脚本执行面，见模块说明），这一层少一条规则就少一处会漂的重复。
+    """
+    found: list[str] = []
+    for tag in _LINK_TAG_RE.findall(html):
+        if "icon" not in _attr(_REL_RE, tag).lower():
+            continue
+        href = _attr(_HREF_RE, tag).strip()
+        if not href or href.lower().startswith("data:") or href in found:
+            continue
+        found.append(href)
+        if len(found) >= MAX_ICON_CANDIDATES:
+            break
+    return found
+
+
+def _attr(pattern: re.Pattern[str], tag: str) -> str:
+    """从一条标签里取属性值（双引号 / 单引号 / 裸值三种写法都认）；没有就回空串。"""
+    match = pattern.search(tag)
+    if match is None:
+        return ""
+    return next((group for group in match.groups() if group is not None), "")
 
 
 def _sniff(raw: bytes) -> str | None:

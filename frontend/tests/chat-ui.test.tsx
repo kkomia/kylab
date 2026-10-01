@@ -710,18 +710,25 @@ describe('过程面板：图标按 kind、同类工具并成一行', () => {
     expect(document.querySelector('[data-icon="think"]')).not.toBeNull()
 
     /*
-      展开这一组：里面每一次调用**保持原来的先后**，逐条给结论。
-      组头按钮按"只有组行才有的 `aria-controls`"来查：R3 起**头部总名里也会出现
-      「联网搜索」**（`使用 N 个工具，联网搜索 2 个关键词`），按名字查会同时命中头部。
+      展开这一组：里面每一次调用**各占一行**（组体里是两条子行、保持原来的先后）。
+      组头按钮按"只有组行才有的 `aria-controls`"来查：头部总名里有工具数、组行标题里也有
+      「联网搜索」，按名字查会命中不止一处。
+
+      改前这里断言的是两条子行的**详情格**（「芯片 出口」命中 3 条 / 「光刻机」命中 5 条）
+      ——2026-10-01 用户批注之后**联网搜索那一档的行详情只说 `N 个结果`**，而这份夹具的返回
+      解不出清单，于是那一格不再铺后端原文（口径与它的正面用例都在 `chat-flow.test.tsx`：
+      「联网搜索组：点开直接是一张合并的网页清单」与「联网搜索组解不出清单时回退子行渲染」）。
+      这里钉的仍然是"展开后逐条都在、没有被并成一条"。
     */
-    await userEvent
-      .setup()
-      .click(document.querySelector('button[aria-controls^="flow-group-"]') as HTMLElement)
-    // 只看组里那一块：标题上也出现了同样两个对象（那是聚合句的一部分），
-    // 所以这里按容器缩进查，钉的仍然是"展开后逐条保序"
-    const groupBody = document.querySelector('[id^="flow-group-"]') as HTMLElement
-    expect(within(groupBody).getByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()
-    expect(within(groupBody).getByText(/「光刻机」命中 5 条/)).toBeInTheDocument()
+    const groupBodyHead = document.querySelector(
+      'button[aria-controls^="flow-group-"]',
+    ) as HTMLElement
+    await userEvent.setup().click(groupBodyHead)
+    const groupBody = document.getElementById(
+      groupBodyHead.getAttribute('aria-controls') as string,
+    ) as HTMLElement
+    expect(groupBody.querySelectorAll('.ch-sub > .ch-row')).toHaveLength(2)
+    expect(within(groupBody).getAllByText('联网搜索')).toHaveLength(2)
   })
 })
 
@@ -896,9 +903,15 @@ describe('组级开合记在宿主上（§12.333 约束 1）', () => {
 
     // 他展开这一组。§12.335 起"收起/展开"读的是那一块的行高与 `data-fold`
     //（内容为双向动效常驻，见 `FlowFold`），不再用"内容在不在文档里"来读。
+    /*
+      组体里那两条子行就是"组真的画出来了"的物证。**不再按详情格查**：这份夹具的返回
+      解不出清单，而 2026-10-01 用户批注之后联网搜索那一档的行详情只说 `N 个结果`
+      （解不出就没得说），所以「芯片 出口」那类结论不在这一格里了——口径的正面用例在
+      `chat-flow.test.tsx`。
+    */
     await user.click(group().head)
     expect(group().head).toHaveAttribute('aria-expanded', 'true')
-    expect(within(group().body).getByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()
+    expect(within(group().body).getAllByText('联网搜索')).toHaveLength(2)
 
     // 换会话再回来：内容重画、块又默认收起，但**他对组选的那一档还在**
     await user.click(screen.getByRole('link', { name: '去新对话' }))
@@ -909,7 +922,7 @@ describe('组级开合记在宿主上（§12.333 约束 1）', () => {
     await user.click(screen.getByTestId('trace-toggle'))
     expect(group().head).toHaveAttribute('aria-expanded', 'true')
     expect(group().body).toHaveAttribute('data-fold', 'open')
-    expect(within(group().body).getByText(/「芯片 出口」命中 3 条/)).toBeInTheDocument()
+    expect(within(group().body).getAllByText('联网搜索')).toHaveLength(2)
   })
 })
 

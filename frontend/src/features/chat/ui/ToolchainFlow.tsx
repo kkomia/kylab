@@ -31,10 +31,21 @@
  * 6. **头部只有总名与箭头**（2026-09-30 用户批注：总标题不加图标）——此前那条
  *    "Kimi 的工具链标题是图标 + 摘要"的判断已被用户推翻：段首那枚 `FileText` 图标槽
  *    连同它在 `flow.css` 里的 `.ch-head-icon` 一并撤掉，头部只剩总名 + chevron。
+ * 7. **2026-10-01 用户批注（批三）在这块上的四条**（逐条的依据写在各自那一处）：
+ *    - **联网搜索那一行的详情只说结果数**（`N 个结果`，原话"这不要写检索词 就写多少个
+ *      结果就行"），解不出结果时这一格干脆不写——后端那段原文不再回退进这一格；
+ *    - **联网搜索那一组的展开就是一张合并清单**（原话"不要在联网搜索里面搞个 list
+ *      再去放联网搜索，点开里面就直接是网页的 list"）：全组都是联网搜索时，组体不再
+ *      摊子行，改成把各步搜到的网页合成一张 `SearchHits`；
+ *    - **读技能那一步的展开只剩一行字**（原话"如果是读技能的话 就显示 Gained some
+ *      skills from the file. 就行"）：不再铺 Request / Response；
+ *    - **「加载全部」整档撤掉**：返回恒铺 600 字预览，不再给就地展开的按钮
+ *      （口径同步在 `model/turns.ts::resultPreview`）。
  *
  * 数据全部来自 `model/turns.ts` 的派生层（`traceEntries` / `trailingThinking` /
  * `groupHeading`）——这一层不重新发明任何判定；这里唯一的"策略"是**头部总名怎么拼**
- * （`toolTotal`：`使用 N 个工具，动作短语`），它也只是把那一层的输出接起来。
+ * （`toolTotal`：`使用 N 个工具`，2026-10-01 用户批注之后只剩这一个计数），
+ * 它也只是把那一层的输出接起来。
  *
  * **开合状态是宿主给的**（`expansion`）：单步/组的"他点开过没有"挂在
  * `ChatProvider` 上（换会话再回来还在），本组件自己不存——所以这里的 key 一律先过
@@ -48,7 +59,11 @@ import { ChevronRight, FileText } from 'lucide-react'
 import type { ChatSource } from '@/api/chat'
 import { formatCount } from '@/lib/format'
 
-import { fetchedPagesOfSteps, webCitationsOfSteps } from '../model/sourceCitations'
+import {
+  fetchedPagesOfSteps,
+  webCitationsOfSteps,
+  type WebCitation,
+} from '../model/sourceCitations'
 import {
   displayDetail,
   groupHeading,
@@ -69,7 +84,7 @@ import {
   type TraceStep,
   type Turn,
 } from '../model/turns'
-import { isWebStep, webSitesOfSteps } from '../model/webSites'
+import { isFetchStep, isWebStep, webSitesOfSteps } from '../model/webSites'
 import './flow.css'
 import { FetchPages, SearchHits } from './SearchHits'
 import { StepDot, StepIcon, StepOutcomeBadge, type StepOutcome } from './stepIcons'
@@ -83,8 +98,9 @@ import { WebSiteIcons, WebSiteList } from './WebSiteList'
  * 生产里这些行是「标签(Secondary) + 0.5px×14px 竖条 + 详情(Tertiary)」，而我们的聚合句
  * （`groupHeading`）是把两截焊在一个字符串里的。这一层只做**显示**上的切分：在**第一个**
  * 「 · 」处断开，前半是标签、后半进详情槽（走 `.ch-row-sep` + `.ch-row-detail`，
- * 与普通步行同一套）。调用方两处：组行渲染（标签 + 详情分画）与头部总名的短语提取
- * （`toolTotal` 只要标签那半）。
+ * 与普通步行同一套）。调用方只剩一处：**组行渲染**（标签 + 详情分画）——改前还有一处
+ * 是头部总名的短语提取（`toolTotal` 只要标签那半），2026-10-01 用户批注把头部短语
+ * 整档撤掉（"就写使用了多少工具就行"）之后，头部不再用它。
  *
  * 两条分寸：
  *
@@ -103,42 +119,32 @@ function splitLabel(text: string): { label: string; detail: string } {
 }
 
 /**
- * 头部总名的两个数——**Kimi 的"动作态"策略**（2026-09-30 R3 批注）。
+ * 头部总名那个数——**只数工具**（2026-10-01 用户批注）。
  *
- * 生产里工具链头部不是"结果态"（「本轮没有命中资料」这种），而是「使用 19 个工具，
- * 生成今日早报并列出工具」——**用了几个工具 + 干了什么**。所以这一层按同一形状派生：
+ * 改前这里是「使用 N 个工具，{动作短语}」（2026-09-30 R3 批注那版：照 Kimi
+ * 「使用 19 个工具，生成今日早报并列出工具」）。用户 2026-10-01 的原话是
+ * "写法太复杂了 就写使用了多少工具就行，只统计工具"——所以**短语那一套
+ * （`phrases` / `seen`）整档删掉**，头部只留这个计数；`count` 的口径一个字没动
+ * （它本来就是"只统计工具"）。
  *
- * - `count` = **原始工具步数**：聚合前的每一次调用都算一次（两次读文件 = 2 次），
- *   与 Kimi「19 个工具」同口径。非工具步（组织回答 / 思考）一律不计。
- * - `phrases` = **聚合后的动作短语**，与行文案**同源**、不新造词表：组行取
- *   `groupHeading` 那句的标签段（「检索 3 个问题」「回忆 1 个主题」…），
- *   单条工具步取它自己的 `label`（「导出文档」「抓取网页」…）；按出现顺序去重、
- *   顿号连接，太长由头部的单行省略自然截断。
+ * `count` = **原始工具步数**：聚合前的每一次调用都算一次（两次读文件 = 2 次），
+ * 与 Kimi「19 个工具」同口径。非工具步（组织回答 / 思考）一律不计。
  *
- * 吃的是**本组件已经算好的** `traceEntries(turn)`（就是渲染成一行的那个口径），
+ * 吃的是**本组件已经算好的** `visibleEntries(turn)`（就是渲染成一行的那个口径），
  * 所以头部的数与展开后看到的行天然对得上——组行的数是"对象数"、这里数是"调用次数"，
  * 两者按生产各说各的（Kimi 也是这样：19 个工具，但行里是「读取 2 个文件」）。
- * `count` 的口径与 `model/turns.ts::countCalls`（「已显示 X/Y 条工具调用」用的那个）逐字相同。
+ * 口径与 `model/turns.ts::countCalls`（「已显示 X/Y 条工具调用」用的那个）逐字相同。
  */
-function toolTotal(entries: readonly TraceEntry[]): { count: number; phrases: string[] } {
-  const phrases: string[] = []
-  const seen = new Set<string>()
+function toolTotal(entries: readonly TraceEntry[]): number {
   let count = 0
   for (const entry of entries) {
-    // 非工具步（组织回答 / 思考）在 `TraceStep` 上没有 `tool`，天然被排除
-    const phrase =
-      entry.kind === 'group'
-        ? splitLabel(groupHeading(entry)).label
-        : entry.step.tool
-          ? entry.step.label
-          : ''
-    if (!phrase) continue
-    count += entry.kind === 'group' ? entry.steps.length : 1
-    if (seen.has(phrase)) continue
-    seen.add(phrase)
-    phrases.push(phrase)
+    // 组只并工具步（`traceEntries` 的 `group` 键只给 `phase === 'tool'` 的步骤），
+    // 组里每一次调用都算一次；单步则看它有没有 `tool`——非工具步（组织回答 / 思考）
+    // 在 `TraceStep` 上根本没有这个字段，天然被排除
+    if (entry.kind === 'group') count += entry.steps.length
+    else if (entry.step.tool) count += 1
   }
-  return { count, phrases }
+  return count
 }
 
 /**
@@ -308,6 +314,15 @@ function Thinking({ text }: { text: string }) {
   )
 }
 
+/**
+ * 读技能那一步的展开体**就是这一行字**（2026-10-01 用户批注原话："如果是读技能的话
+ * 就显示 Gained some skills from the file. 就行"）。
+ *
+ * 它不是从数据里派生的（技能正文里没有这句），是用户点名要的那一句——所以逐字照写，
+ * 不做中英对照、也不按 `--font-scale` 之外的任何条件变化。
+ */
+const SKILL_READ_NOTE = 'Gained some skills from the file.'
+
 /** 单步（或组内一次调用）那一行。 */
 function StepRow({
   step,
@@ -332,14 +347,19 @@ function StepRow({
    */
   const web = isWebStep({ tool: step.tool, label: step.label })
   /**
+   * 这一步是"读技能"吗（2026-10-01 用户批注）。**两路都认**：新数据有工具名
+   * （`read_skill`），老快照没有工具名、label 就是当时那个中文标签「读技能」
+   * ——判据与 `model/turns.ts::displayDetail` 里那一处逐字相同（那边管行详情只说
+   * 技能名，这边管展开只有一行字，两处各两行，不另立一个模块）。
+   */
+  const skill = step.tool === 'read_skill' || step.label === '读技能'
+  /**
    * 行详情那一格印什么：普通结论原样，**原始 JSON 一律不印**（2026-09-30 用户批注；
    * `find_tools` 那种返回换成它 `found` 里的工具名，取不到就是空串——判据与分寸
-   * 全在 `displayDetail` 里，这一层不重判一遍）。
+   * 全在 `displayDetail` 里，这一层不重判一遍）。**读技能那一档只回技能名**
+   * （2026-10-01 用户批注，见 `displayDetail`）。
    */
   const detail = displayDetail(step)
-  // 返回默认只铺预览（600 字），被裁掉的才给「加载全部」——长 JSON 不该全铺
-  const [showAll, setShowAll] = useState(false)
-  const preview = step.result ? resultPreview(step.result) : null
   /**
    * 联网搜索那一步的**结果清单**（`SearchHits` 的料）。
    *
@@ -360,7 +380,8 @@ function StepRow({
   /**
    * 抓页那一档**读到的页**（行上的 favicon + 页数、**展开后的清单**都用它）。
    *
-   * 不是抓页、或解析不出来就是空数组——行上那一格照旧铺后端给的结论（不造内容）。
+   * 不是抓页、或解析不出来就是空数组——那时行上那一格（`[favicon] N 个网页`）与展开里的
+   * 清单**都不画**：解不出来就不硬造（行详情那一格的口径见下面「详情位」那一段）。
    * `useMemo` 的依赖只写四个**原始值**：这一步在流式里每一拍都会重渲染。
    */
   const pages = useMemo(
@@ -375,14 +396,19 @@ function StepRow({
   /**
    * 展开区里**有没有东西**。
    *
+   * 读技能那一档**恒可展开**（2026-10-01 用户批注）：它的展开体是固定的一行字
+   * （`Gained some skills from the file.`），不依赖入参 / 返回解不解得出来。
+   *
    * 非联网的行照旧（入参 / 返回 / 行内思考任一有就算）；**联网那两档只认网页清单**——
    * 2026-09-30 用户批注之后它们的展开区里只剩清单（Request / Response 面板与清单之外的
    * 原文都不再画，见下面的行体），清单也解不出来时这一行就不给"能点开"的许诺
    * （点了是个空盒子，箭头也是假的）。行内思考仍算数：它是这一步自己的话，不是原文。
    */
-  const hasBody = web
-    ? hasList || (step.thinking ?? '').trim() !== ''
-    : Boolean(step.args || step.result || (step.thinking ?? '').trim())
+  const hasBody = skill
+    ? true
+    : web
+      ? hasList || (step.thinking ?? '').trim() !== ''
+      : Boolean(step.args || step.result || (step.thinking ?? '').trim())
   /**
    * 这一步是**前置展开**的（失败 / 被拦下 / 等确认：`forceExpand`）——那种行 `open` 恒为真、
    * 点也收不起来，所以**不画行尾那枚箭头**（摆了等于许诺一个点不动的动作）。
@@ -426,10 +452,19 @@ function StepRow({
         )}
         <span className={running ? 'ch-row-label ch-live' : 'ch-row-label'}>{step.label}</span>
         {/*
-          详情位（Kimi 的行模式「标签 | 详情」，竖条由 `.ch-row-sep` 画）。两条分岔：
+          详情位（Kimi 的行模式「标签 | 详情」，竖条由 `.ch-row-sep` 画）。三条分岔：
           - **抓页那一档** ＝ `[favicon] N 个网页`（R4 批注，Kimi 是「获取网页 | 🔴 1 个网页」）
             ——站点 favicon 与页数都收进这一格，行尾不再挂那一组站点牌；后端给的结论
             （抓页那一步是"【标题】来源：url…"被裁过的一段）不再进这一行，整页信息在展开里；
+          - **联网那两档的其余情形** ＝ 搜到几条就写 `N 个结果`（2026-10-01 用户批注原话
+            "这不要写检索词 就写多少个结果就行"）——改前这里铺的是后端那段原文
+            （「检索词：…共 8 条：[1]…」）。解不出结果、又不是失败时，这一格**不画**：
+            检索词与编号列表对用户不是结论，那段原文不再回退进这一格；
+            **失败那三档除外**（2026-10-01 架构师审查补的口子）：被拦下 / 等确认 / 出错的行
+            本来就没有别的路说原因——返回解不出清单时展开体根本不给（`hasBody`），行尾也
+            没有箭头——这一格再空着，用户连"为什么没成"都看不到。所以这一档回退到
+            `displayDetail(step)` 印后端那句失败交代（「联网搜索没做成：…」）；
+            批注撤的是"检索词原文"，不是失败交代；
           - 其余 ＝ `displayDetail(step)`：普通结论原样，**原始 JSON 不再印上去**
             （2026-09-30 用户批注；`find_tools` 那种返回换成一串工具名，取不到就空着）。
         */}
@@ -441,6 +476,21 @@ function StepRow({
               <span className="ch-row-count">{formatCount(pages.length)} 个网页</span>
             </span>
           </>
+        ) : web ? (
+          hits.length > 0 ? (
+            <>
+              <span className="ch-row-sep" aria-hidden />
+              <span className="ch-row-detail">{formatCount(hits.length)} 个结果</span>
+            </>
+          ) : outcome && detail ? (
+            /* 解不出结果时只有"这一步说得出原因"的那一档才印：`outcome` 非空
+               （failed / blocked / awaiting，判据就是上面那个 `outcomeOf`），
+               `detail` 也是 `displayDetail` 过滤之后的内容（原始 JSON 仍然不印）。 */
+            <>
+              <span className="ch-row-sep" aria-hidden />
+              <span className="ch-row-detail">{detail}</span>
+            </>
+          ) : null
         ) : (
           detail && (
             <>
@@ -464,7 +514,19 @@ function StepRow({
       {hasBody && (
         <FlowFold row open={open}>
           {(step.thinking ?? '').trim() && <Thinking text={step.thinking ?? ''} />}
-          {web ? (
+          {skill ? (
+            /*
+              **读技能那一档的展开只有一行字**（2026-10-01 用户批注原话"如果是读技能的话
+              就显示 Gained some skills from the file. 就行"）。改前这里是 Request 面板 +
+              Response 原文——那份原文是一整份技能的正文（规格书式的提示词，后端
+              `agent_tools._read_skill` 回的 `【技能 name】\n正文…`），铺在对话里既长、
+              对用户又没有信息。行上那一格仍然说着"读的是哪个技能"（`displayDetail`
+              只回技能名），所以这里只留这一句交代。
+              行内思考照旧留在上面：它是"这一步为什么要读"（v0.54 起跟着工具行走），
+              不是被撤掉的那两块原文。
+            */
+            <p className="ch-skill-line">{SKILL_READ_NOTE}</p>
+          ) : web ? (
             /*
               **联网那两档的展开只剩一张网页清单**（2026-09-30 用户批注原话"搜索网页的
               不显示 request 和 response，只显示网页列表"；抓页同档处理，与 Kimi 一致）：
@@ -474,8 +536,8 @@ function StepRow({
 
               于是这一档里**没有** Request 面板（入参）、**也没有** Response 面板——连同
               原先接在清单下面的那段原文（搜索的"前 N 条的正文开头"、抓页去掉抬头后的正文）
-              一并撤掉。行上那一格（详情 / `displayDetail`）仍然说着这一步的结论，
-              清单之外的原始载荷不再铺（撤是用户点名的，不在这里找回）。
+              一并撤掉。行上那一格只说结果（搜索是 `N 个结果`、抓页是 `N 个网页`，见上面的
+              详情位），清单之外的原始载荷不再铺（撤是用户点名的，不在这里找回）。
 
               清单包在 `FadeScroll` 里（用户批注 §10）：限高 256px + 底部 35px 阶梯渐隐 +
               隐藏原生滚动条，只有滚动盒给得出来（渐隐层是 sticky 的）。
@@ -488,26 +550,41 @@ function StepRow({
             <>
               {/* 其余工具行照旧：入参 / 返回两块 Request / Response 面板（`StepPayload`） */}
               {step.args && <RequestPanel text={humanizeArtifactKeys(step.args, names)} />}
-              {step.result && (
-                <>
-                  <StepResult text={showAll ? step.result : (preview ?? step.result)} />
-                  {preview !== null && (
-                    <button
-                      type="button"
-                      className="ch-more"
-                      onClick={() => setShowAll((value) => !value)}
-                    >
-                      {showAll ? '收起' : `加载全部（${formatCount(step.result.length)} 字）`}
-                    </button>
-                  )}
-                </>
-              )}
+              {/* 返回那一格**恒铺 600 字预览**（`resultPreview` 的口径没变）。改前被裁掉的
+                  还会给一个「加载全部（N 字）/ 收起」的按钮——2026-10-01 用户批注之后整档
+                  撤掉（`showAll` state 与按钮一并删），所以这里没有第二个分支。 */}
+              {step.result && <StepResult text={resultPreview(step.result) ?? step.result} />}
             </>
           )}
         </FlowFold>
       )}
     </div>
   )
+}
+
+/**
+ * 组内这几步搜到的网页**合成一张清单**（2026-10-01 用户批注，见 `GroupRow` 的用法）。
+ *
+ * 为什么**逐步**解析、而不是把三步拼一块交给 `webCitationsOfSteps`：那一份回的 Map
+ * 以**编号**为键（`[3]` → 3），而编号只在**一次搜索的返回里**唯一——同一轮里第二次
+ * 搜索又从 `[1]` 开始（后端每次调用的渲染各自编号），跨步合并会把前一步的 `[3]`
+ * 顶掉。所以一步一解析，再在**这一层按 url 去重、保序**。
+ *
+ * 抓页那一步（`web_fetch`）的返回不是编号列表，`webCitationsOfSteps` 本来就不认它
+ * ——调用方也已经把含抓页的组挡在外面（见 `GroupRow` 的 `searchGroup`）。
+ */
+function mergedSearchHits(steps: readonly TraceStep[]): WebCitation[] {
+  const out: WebCitation[] = []
+  const seen = new Set<string>()
+  for (const step of steps) {
+    const found = webCitationsOfSteps([{ tool: step.tool, label: step.label, result: step.result }])
+    for (const citation of found.values()) {
+      if (seen.has(citation.url)) continue
+      seen.add(citation.url)
+      out.push(citation)
+    }
+  }
+  return out
 }
 
 /** 同类工具并成的一组（`traceEntries` 的口径：只有一次的不并）。 */
@@ -529,6 +606,28 @@ function GroupRow({
   const bodyId = `flow-group-${k(entry.key)}`
   // 聚合句按「 · 」拆成"标签 + 详情"两截（R2 批注；判据与分寸见 `splitLabel`）
   const heading = splitLabel(groupHeading(entry))
+  /**
+   * 这一组是不是"**全是联网搜索**"——组体要不要换成那张合并清单就看它
+   * （2026-10-01 用户批注原话："不要在联网搜索里面搞个 list 再去放联网搜索，
+   * 点开里面就直接是网页的 list"）。
+   *
+   * 两个判据都取自 `model/webSites.ts` 那一份（`isWebStep` / `isFetchStep`），
+   * 不在这里另写词表：**全组都是联网、且没有一个是抓页**才算——抓页组的展开是
+   * 另一张清单（`FetchPages`），且它按 R4 有自己的逐页信息，不动。
+   * （组的键就是工具名，现实里不会混着两种工具；这条判据是防御性的，
+   * 真正决定"显不显示"的还是下面那张清单解不解得出来。）
+   */
+  const searchGroup = entry.steps.every(
+    (step) =>
+      isWebStep({ tool: step.tool, label: step.label }) &&
+      !isFetchStep({ tool: step.tool, label: step.label }),
+  )
+  /**
+   * 合并后的清单。空数组 = 解不出来 —— 那种情况**回退现行渲染**（一条条子行
+   * `StepRow`），不把一个空盒子摊给用户（与 `StepRow` 的 `hasBody` 同一条哲学）。
+   * 解析是逐行扫返回文本，只在这一组确实是"全是联网搜索"时做。
+   */
+  const searchHits = searchGroup ? mergedSearchHits(entry.steps) : []
   return (
     <div className="ch-item">
       <button
@@ -572,16 +671,37 @@ function GroupRow({
         </span>
       </button>
       <FlowFold sub open={open} id={bodyId}>
-        {entry.steps.map((step) => (
-          <StepRow
-            key={step.key}
-            step={step}
-            sub
-            open={forceExpand(step) || expansion.isOpen(k(step.key))}
-            onToggle={() => expansion.toggle(k(step.key))}
-            names={names}
-          />
-        ))}
+        {searchHits.length > 0 ? (
+          /*
+            **组体直接就是那张合并清单**（2026-10-01 用户批注）：不再先摊一层
+            「联网搜索」子行、点进子行才看到网页。各步的 `[n]` 编号在这张清单里不显示
+            （`SearchHits` 只画 favicon + 标题 + 域名），所以逐步解析带来的重号问题在这一层
+            就化解掉了（按 url 去重、保序，见 `mergedSearchHits`）。
+
+            与 `StepRow` 的联网分支**同款包法**（`FadeScroll sites` + `SearchHits`）：
+            限高 256px、底部 35px 阶梯渐隐、隐藏原生滚动条——清单再长也不把工具链块撑长。
+
+            这一格比单步行的展开多一层 `.ch-group-hits`：组体那一层（`.ch-clp--sub`）
+            本来不给左缩进（里面的子行自带缩进轴），而清单要落在 **label 列**
+            （`--ch-indent`，与行内展开的那一张清单同一条轴，见 `flow.css`）。
+          */
+          <div className="ch-group-hits">
+            <FadeScroll sites>
+              <SearchHits hits={searchHits} />
+            </FadeScroll>
+          </div>
+        ) : (
+          entry.steps.map((step) => (
+            <StepRow
+              key={step.key}
+              step={step}
+              sub
+              open={forceExpand(step) || expansion.isOpen(k(step.key))}
+              onToggle={() => expansion.toggle(k(step.key))}
+              names={names}
+            />
+          ))
+        )}
       </FlowFold>
     </div>
   )
@@ -698,7 +818,7 @@ function SourcesRow({
  * **流式进行中那一行要留**：它是"正在组织回答"的活动指示（`.ch-live` 流光那行），
  * 也是"还没出正文"时过程区唯一在动的东西。
  *
- * 隐藏只影响**渲染**：T 计数、头部短语、聚合分组本来就不把非工具步算进去，
+ * 隐藏只影响**渲染**：头部的工具计数、聚合分组本来就不把非工具步算进去，
  * 所以那些口径一个字没变。
  */
 export function visibleEntries(turn: Turn): TraceEntry[] {
@@ -768,17 +888,16 @@ export function ToolchainFlow({
   const thinking = trailingThinking(message)
   const entries = visibleEntries(turn)
   /*
-    头部总名（R3 批注）。没有工具步的那一轮仍是「直接作答」——那是**语义照旧**的一句话
-    （"这一轮没调工具"），不是结果态文案；「拒识 / 命中」那几档（本轮没有命中资料 /
-    检索完成 · 引用了 N 个片段…）不再出现在头部，答案正文自己会说。
-    流式进行中走同一条规则（T 随步数实时增长），不另搞"正在…"变体——行内的 `.ch-live`
-    已经在承担进行态。
+    头部总名（2026-10-01 用户批注后只剩一个计数）。没有工具步的那一轮仍是「直接作答」
+    ——那是**语义照旧**的一句话（"这一轮没调工具"），不是结果态文案；「拒识 / 命中」
+    那几档（本轮没有命中资料 / 检索完成 · 引用了 N 个片段…）不再出现在头部，
+    答案正文自己会说。流式进行中走同一条规则（计数随步数实时增长），不另搞"正在…"
+    变体——行内的 `.ch-live` 已经在承担进行态。
+    改前这里是 `使用 N 个工具，{动作短语}`（R3 批注那版）：用户 2026-10-01 的原话是
+    "写法太复杂了 就写使用了多少工具就行，只统计工具"，短语那半句整档撤掉。
   */
-  const tools = toolTotal(entries)
-  const summary =
-    tools.count > 0
-      ? `使用 ${formatCount(tools.count)} 个工具，${tools.phrases.join('、')}`
-      : '直接作答'
+  const total = toolTotal(entries)
+  const summary = total > 0 ? `使用 ${formatCount(total)} 个工具` : '直接作答'
 
   const running = isBlockRunning({ streaming: message.streaming, steps: traceSteps(turn) })
   // 整轮那一处总计唯一的读数：各步耗时之和（`TraceStep.durationMs` 的口径见那边——

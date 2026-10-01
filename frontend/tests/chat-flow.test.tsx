@@ -4,7 +4,7 @@
  * 钉住的是**新结构的行为默认值**：
  *
  * 1. 直接作答（无步骤/无思考/无来源）整块不画（legacy 兜底行不算数）；
- * 2. 头的总名（`使用 N 个工具，动作短语`；右侧没有计数；**总标题不加图标**）；
+ * 2. 头的总名（`使用 N 个工具`；右侧没有计数；**总标题不加图标**）；
  *    点块头 = 点宿主的开合开关；
  * 3. running 行 = 流光 +「进行中」+ 图标位那枚**半月 dot**（`.ch-loading-dot`）；
  *    行级耗时**全撤**（单步行与组行都不印，只有整轮那一处总计报耗时本身）；
@@ -19,6 +19,12 @@
  * 6. 整轮思考（老消息兜底）与来源清单各自成行、默认收起；思考行的标题跟着开合走
  *    （收起是描述性首行、点开固定「思考已完成」）；来源行带 `data-source`
  *    与 `data-flash`（点正文徽标那条链路的物证）。
+ * 7. **2026-10-01 用户批注（批三）在这块上的口径**：头部总名只剩「使用 N 个工具」
+ *    （原话"写法太复杂了 就写使用了多少工具就行，只统计工具"）；联网搜索那一行的详情
+ *    只说 `N 个结果`（"这不要写检索词 就写多少个结果就行"）；联网搜索那一组的展开
+ *    直接就是合并后的网页清单（"不要在联网搜索里面搞个 list 再去放联网搜索"）；
+ *    读技能那一步的展开只剩一行字（"如果是读技能的话 就显示 Gained some skills from
+ *    the file. 就行"）；「加载全部」按钮整档撤掉（返回恒铺 600 字预览）。
  */
 import { fireEvent, render, screen } from '@testing-library/react'
 import { useState, type ComponentProps } from 'react'
@@ -118,7 +124,7 @@ describe('工具链块', () => {
     expect(container.firstChild).toBeNull()
   })
 
-  it('头的总名（`使用 N 个工具，动作短语`）；点头 = 点宿主的开合开关', () => {
+  it('头的总名只剩「使用 N 个工具」；点头 = 点宿主的开合开关', () => {
     const { onToggle } = flowOf(
       makeMessage('assistant', '答案', {
         steps: [step(), step({ label: '抓取网页', tool: 'fetch' })],
@@ -126,13 +132,17 @@ describe('工具链块', () => {
     )
     /*
       头部是**动作态**总名（2026-09-30 R3 批注，照 Kimi「使用 19 个工具，生成今日早报…」）：
-      `使用 {T} 个工具，{动作短语}`——T 是**原始工具步数**（聚合前每一次调用都算），
-      短语与行文案**同源**（这里是两条单步，所以短语就是两个 label），按顺序去重、顿号连接。
-      右侧**没有**「N 步」计数（计数已在前缀里）。
+      `使用 {T} 个工具`——T 是**原始工具步数**（聚合前每一次调用都算）。
+      右侧**没有**「N 步」计数（计数已在这一句里）。
+
+      **2026-10-01 用户批注之后只剩这一个计数**：原话"写法太复杂了 就写使用了多少工具
+      就行，只统计工具"——改前那句尾巴（`，联网搜索、抓取网页` 那串动作短语）整档撤掉，
+      所以这里连带钉住"短语不在"（`phrases` / `seen` 那套已从 `toolTotal` 里删掉）。
     */
     const toggle = screen.getByRole('button', { name: /使用 2 个工具/ })
-    expect(toggle).toHaveTextContent('使用 2 个工具，联网搜索、抓取网页')
-    // 右侧原先那枚「N 步」计数撤掉了（R3）：计数已经在 `使用 2 个工具` 这个前缀里
+    expect(toggle).toHaveTextContent('使用 2 个工具')
+    expect(toggle).not.toHaveTextContent('联网搜索、抓取网页')
+    // 右侧原先那枚「N 步」计数撤掉了（R3）：计数已经在这一句里
     expect(toggle).not.toHaveTextContent(/\d+ 步/)
     /*
       **总标题不加图标**（2026-09-30 用户批注，推翻此前"Kimi 是图标 + 摘要"那条）：
@@ -145,22 +155,22 @@ describe('工具链块', () => {
     expect(onToggle).toHaveBeenCalledTimes(1)
   })
 
-  it('头部总名的口径：T 数的是**原始调用次数**，短语取聚合后的动作（重复动作只列一次）', () => {
+  it('头部总名的口径：T 数的是**原始调用次数**（同一工具并组前的那几次都算）', () => {
     flowOf(
       makeMessage('assistant', '答案', {
         steps: [
-          // 三次同一个工具 → 并成一行「检索 3 个问题」（短语取聚合句的标签段）
+          // 三次同一个工具 → 并成一行（组里的 3 次仍算 3 个工具）
           step({ label: '检索知识库', tool: 'search', detail: '命中 1 条' }),
           step({ label: '检索知识库', tool: 'search', detail: '命中 2 条' }),
           step({ label: '检索知识库', tool: 'search', detail: '命中 3 条' }),
-          // 只调用一次的工具不并 → 短语就是它自己的标签
+          // 只调用一次的工具不并（也算 1 个）
           step({ label: '导出文档', tool: 'export_document', detail: '已导出' }),
         ],
       }),
     )
     const toggle = screen.getByTestId('trace-toggle')
-    // T = 3 + 1 = 4（**调用次数**，不是聚合后的行数）；短语按出现顺序去重后顿号连接
-    expect(toggle).toHaveTextContent('使用 4 个工具，检索 3 个问题、导出文档')
+    // T = 3 + 1 = 4（**调用次数**，不是聚合后的行数）；2026-10-01 批注之后头部只有这一个数
+    expect(toggle).toHaveTextContent('使用 4 个工具')
   })
 
   it('只有「组织回答」那一步的轮次：**整块不画**（R4：那一行没有可展开的内容）', () => {
@@ -309,36 +319,62 @@ describe('工具链块', () => {
     expect(screen.getByText('等待确认')).toBeInTheDocument()
   })
 
-  it('同类工具并成一组：「2 次」；展开后子行是圆点，各次仍可再展开看那一张清单', () => {
+  it('联网搜索组：点开直接是一张合并的网页清单（不再套子行），同 url 跨步去重', () => {
     flowOf(
       makeMessage('assistant', '答案', {
         steps: [
-          step({ detail: '第一次' }),
-          // 联网搜索那一档的展开只剩网页清单（2026-09-30 用户批注），所以夹具给一段真能
-          // 解析出结果行的返回（`[n] 标题 / 网址 / 摘要`，后端 `_web_search` 的形状）
-          step({ detail: '第二次', result: '[1] 一条结果\nhttps://github.com/a\n摘要' }),
+          // 两次搜索各带一段真能解析出结果行的返回（`[n] 标题 / 网址 / 摘要`，后端 `_web_search` 的形状）。
+          // 第一条网址**两边都有**：合并时按 url 去重，只该出现一次。
+          step({
+            detail: '第一次',
+            result: [
+              '检索词：agent skills，共 1 条：',
+              '[1] Anthropic 的官方仓库',
+              'https://github.com/anthropics/skills',
+              '官方维护的仓库。',
+            ].join('\n'),
+          }),
+          step({
+            detail: '第二次',
+            result: [
+              '检索词：agent skills 论文，共 2 条：',
+              '[1] 同一条结果（重号又同址）',
+              'https://github.com/anthropics/skills',
+              '又被搜到一次。',
+              '[2] 一篇论文',
+              'https://arxiv.org/abs/2401.00001',
+              '工具调用可靠性的综述。',
+            ].join('\n'),
+          }),
         ],
       }),
     )
     /*
-      组头按钮按"只有组行才有的 `aria-controls`"查，不按名字查：R3 起**头部总名里
-      也会出现「联网搜索」**（`使用 N 个工具，联网搜索 2 个关键词`），按名字查会同时
-      命中头部的那个按钮。
+      组头按钮按"只有组行才有的 `aria-controls`"查，不按名字查：头部把工具数写进总名、
+      组行标题里也有「联网搜索」，按名字查会命中不止一处。
     */
     const groupRow = document.querySelector('button[aria-controls^="flow-group-"]') as HTMLElement
-    // 组行标题是聚合句（`groupHeading`：数目数对象、对象列出来），不再是干巴巴的「N 次」
+    // 组行本身一个字没动：聚合句（`groupHeading`）+ 行尾那排站点牌照旧
     expect(groupRow.textContent).toContain('联网搜索')
-    // 组体展开（没碰过的组看默认档：跑完的组是收起的）
+    expect(groupRow.querySelector('[data-testid="web-sites"]')).not.toBeNull()
+    const bodyId = groupRow.getAttribute('aria-controls') as string
     fireEvent.click(groupRow)
-    expect(screen.getByText('第一次')).toBeInTheDocument()
-    expect(screen.getByText('第二次')).toBeInTheDocument()
-    expect(document.querySelectorAll('.ch-sub-dot').length).toBe(2)
-    // 单次的清单默认不上 DOM；点开那一行才挂（联网那一档点开看到的就是这张清单）
-    expect(document.querySelector('.ch-hit')).toBeNull()
-    fireEvent.click(screen.getByText('第二次'))
-    const hit = document.querySelector('.ch-hit') as HTMLAnchorElement
-    expect(hit).toHaveAttribute('href', 'https://github.com/a')
-    expect(hit).toHaveTextContent('一条结果')
+    /*
+      **组体直接是那张合并清单**（2026-10-01 用户批注："不要在联网搜索里面搞个 list
+      再去放联网搜索，点开里面就直接是网页的 list"）：没有子步行（那一排 5px 圆点与
+      「联网搜索」按钮都不在），只有网页行；两次搜索的编号会撞号（各自的 `[1]`），
+      所以合并是按 **url 去重、保序**——两次都搜到的那条只出现一次。
+    */
+    const body = document.getElementById(bodyId) as HTMLElement
+    expect(body.querySelectorAll('.ch-sub-dot')).toHaveLength(0)
+    expect(body.querySelectorAll('button')).toHaveLength(0)
+    const hits = [...body.querySelectorAll('.ch-hit')] as HTMLAnchorElement[]
+    expect(hits.map((hit) => hit.getAttribute('href'))).toEqual([
+      'https://github.com/anthropics/skills',
+      'https://arxiv.org/abs/2401.00001',
+    ])
+    expect(hits[0]).toHaveTextContent('Anthropic 的官方仓库')
+    expect(body.querySelector('[data-testid="web-sites"]')).toBeNull()
   })
 
   it('整轮思考（老消息兜底）：收起时标题是正文首段首行，点开后固定「思考已完成」', () => {
@@ -465,9 +501,77 @@ describe('工具链块', () => {
   })
 
   it('普通结论一字不动（`displayDetail` 只拦原始 JSON 那一档）', () => {
-    flowOf(makeMessage('assistant', '答案', { steps: [step({ detail: '「眼轴」命中 3 条' })] }))
-    const row = screen.getByText('联网搜索').closest('.ch-row') as HTMLElement
+    /*
+      夹具刻意用**非联网**的一行：联网搜索那一档的行详情现在只说 `N 个结果`
+      （2026-10-01 用户批注），后端那段原文本来就不再进这一格——"普通结论原样印出来"
+      这件事只剩非联网的行还走 `displayDetail` 这条直路。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [step({ label: '检索知识库', tool: 'search', detail: '「眼轴」命中 3 条' })],
+      }),
+    )
+    const row = screen.getByText('检索知识库').closest('.ch-row') as HTMLElement
     expect(row.querySelector('.ch-row-detail')).toHaveTextContent('「眼轴」命中 3 条')
+  })
+
+  it('读技能那一档：展开只有一行字，行详情只剩技能名（2026-10-01 用户批注）', () => {
+    /*
+      用户两条原话：「如果是读技能的话 就显示 Gained some skills from the file. 就行」。
+      于是这一行**展开不再是 Request / Response**（改前是入参面板 + Response 原文——
+      那份原文是一整份技能的正文，等同于提示词），只剩一句话；
+      **行详情也只留技能名**：后端把返回拼成 `【技能 name】\n正文…`，裁到 120 字之后
+      这一格原本是"技能名 + 正文的一截尾巴"，现在截到 `】` 为止（`displayDetail`）。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          step({
+            label: '读技能',
+            tool: 'read_skill',
+            args: '{"name": "kylab-office-export"}',
+            detail: '【技能 kylab-office-export】\n正文第一段：这份技能负责把对话导出成文档…',
+            result: '【技能 kylab-office-export】\n技能正文：先看产物类型，再选导出通道…',
+          }),
+        ],
+      }),
+    )
+    const row = screen.getByText('读技能').closest('.ch-row') as HTMLElement
+    expect(row.querySelector('.ch-row-detail')).toHaveTextContent('【技能 kylab-office-export】')
+    // 正文尾巴不进这一格（它说的是"读了哪个技能"，不是"技能里写了什么"）
+    expect(row).not.toHaveTextContent('正文第一段')
+    fireEvent.click(screen.getByText('读技能'))
+    expect(screen.getByText('Gained some skills from the file.')).toBeInTheDocument()
+    // 展开体里**没有**任何面板：Request（入参）与 Response（那份技能正文）都不画
+    expect(document.querySelectorAll('.ch-panel-head')).toHaveLength(0)
+    expect(document.querySelector('[data-args]')).toBeNull()
+    expect(screen.queryByText('{"name": "kylab-office-export"}')).toBeNull()
+    expect(screen.queryByText(/技能正文/)).toBeNull()
+  })
+
+  it('老快照的读技能（没有工具名，只有标签「读技能」）走同一档', () => {
+    /*
+      v0.26 之前落库的步骤没有 `tool`，只有后端当时发的中文标签（`LEGACY_LABEL_KINDS`
+      与 `displayDetail` 都认它）——这一档的判据两路都认（新数据看工具名、老数据看标签），
+      否则用户手上正开着的那批会话会退回"Request + 技能正文"那一版。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          step({
+            label: '读技能',
+            tool: undefined,
+            detail: '【技能 weekly-report】\n正文第一段：这份技能负责写周报…',
+            result: '【技能 weekly-report】\n技能正文：先汇总本周进展…',
+          }),
+        ],
+      }),
+    )
+    const row = screen.getByText('读技能').closest('.ch-row') as HTMLElement
+    expect(row.querySelector('.ch-row-detail')).toHaveTextContent('【技能 weekly-report】')
+    fireEvent.click(screen.getByText('读技能'))
+    expect(screen.getByText('Gained some skills from the file.')).toBeInTheDocument()
+    expect(document.querySelectorAll('.ch-panel-head')).toHaveLength(0)
   })
 
   it('整轮总计：只报耗时本身（「共 N 字」与「用时」前缀都撤了）', () => {
@@ -498,10 +602,12 @@ describe('工具链块', () => {
     // 不印一个 0 秒：`durationMs` 只有"界面当场看着跑完"的步才有（见 TraceStep 的口径）
   })
 
-  it('长返回：默认只铺预览，「加载全部」就地看全', () => {
+  it('长返回：只铺 600 字预览——「加载全部」那一档整档撤了（2026-10-01 用户批注）', () => {
     /*
-      这一档是**非联网行**的行为（Response 面板的"预览 / 加载全部"）：联网那两档的展开
-      只剩网页清单（2026-09-30 用户批注），长原文本来就不再铺，所以夹具换成读文件那一档。
+      这一档是**非联网行**的行为（Response 面板的预览）：联网那两档的展开只剩网页清单
+      （2026-09-30 用户批注），长原文本来就不再铺，所以夹具换成读文件那一档。
+      改前被裁掉的那一档还会给一个「加载全部（N 字）/ 收起」的按钮——2026-10-01 用户批注
+      之后按钮、`showAll` state 与那一支分支一并删，预览**就是屏幕上给的全部**。
     */
     const long = '这一段很长。'.repeat(200) // 1200 字 > 预览上限 600
     flowOf(
@@ -510,12 +616,12 @@ describe('工具链块', () => {
       }),
     )
     fireEvent.click(screen.getByText('读取文件'))
-    // 预览在、全文不在；点「加载全部」后全文在
-    expect(screen.getByText(/加载全部（1,200 字）/)).toBeInTheDocument()
+    // 预览在（前 600 字）、全文不在，按钮也不在（点它本来也没别的地方可去）
+    expect(screen.getByText(long.slice(0, 600))).toBeInTheDocument()
     expect(screen.queryByText(long)).not.toBeInTheDocument()
-    fireEvent.click(screen.getByText(/加载全部/))
-    expect(screen.getByText(long)).toBeInTheDocument()
-    expect(screen.getByText('收起')).toBeInTheDocument()
+    expect(screen.queryByText(/加载全部/)).toBeNull()
+    expect(screen.queryByText('收起')).toBeNull()
+    expect(document.querySelector('.ch-more')).toBeNull()
   })
 
   it('抓页那一档：favicon 与页数收进详情位，行尾不再挂那组站点牌（R4）', () => {
@@ -608,6 +714,14 @@ describe('工具链块', () => {
         ],
       }),
     )
+    const row = screen.getByText('联网搜索').closest('.ch-row') as HTMLElement
+    /*
+      行详情那一格只说结果数（2026-10-01 用户批注："这不要写检索词 就写多少个结果就行"）：
+      这一段返回里有 2 条结果，于是印 `2 个结果`——后端那段原文（"检索词：…共 2 条：[1]…"）
+      不再铺在这一格里（`displayDetail` 的读技能那一支同理，见下一条）。
+    */
+    expect(row.querySelector('.ch-row-detail')).toHaveTextContent('2 个结果')
+    expect(row.querySelector('.ch-row-detail')).not.toHaveTextContent('检索词')
     fireEvent.click(screen.getByText('联网搜索'))
     // 搜索结果清单照旧（favicon + 标题 + 域名 + 可点）：这一档**一个字没动**
     const hits = [...document.querySelectorAll('.ch-hit')] as HTMLAnchorElement[]
@@ -626,7 +740,13 @@ describe('工具链块', () => {
     /*
       联网两档的展开只剩清单之后，"有没有东西可展开"就要照清单算：返回解不出清单时
       （比如搜索没做成、后端只回一句人话），这一行不再挂行尾箭头、`aria-expanded` 也不给
-      ——否则点开的是一个空盒子。行上那一格（`displayDetail`）照旧说着这句结论，信息没丢。
+      ——否则点开的是一个空盒子。
+
+      行详情那一格**也不再铺后端原文**（2026-10-01 用户批注：这一档只写结果数）：解不出
+      结果就是"没有结果数可说"，那一格空着——"联网搜索没做成…"是后端的结果态文案，
+      不是用户在这一行要找的东西（原来它靠 `displayDetail` 回退到这里）。
+      **失败那一档是例外**（`outcome` 非空，前端置展开的行）——那一种要印原因，
+      见下面那条用例。
     */
     flowOf(
       makeMessage('assistant', '答案', {
@@ -642,7 +762,63 @@ describe('工具链块', () => {
     expect(row).toHaveAttribute('aria-disabled', 'true')
     expect(row).not.toHaveAttribute('aria-expanded')
     expect(row.querySelector('.ch-chev')).toBeNull()
+    expect(row.querySelector('.ch-row-detail')).toBeNull()
+    expect(row).not.toHaveTextContent('联网搜索没做成')
+  })
+
+  it('失败的联网搜索行：行详情回退印那句失败交代（2026-10-01 架构师审查补的口子）', () => {
+    /*
+      批注撤的是"检索词原文"，**不是失败交代**：被拦下 / 等确认 / 出错那三档
+      （`outcomeOf` 非空：failed / blocked / awaiting）这一步**没有别的路说原因**——
+      它的返回解不出清单，于是展开体根本不给（`hasBody`，行尾也没有箭头），详情格再空着，
+      用户连"为什么没成"都看不到（这是批注第一版改出来的回归）。所以这一档回退到
+      `displayDetail(step)` 印出后端那句原因。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [
+          step({
+            outcome: 'failed',
+            detail: '联网搜索没做成：没有可用的搜索服务',
+            result: '联网搜索没做成：没有可用的搜索服务',
+          }),
+        ],
+      }),
+    )
+    const row = screen.getByText('联网搜索').closest('.ch-row') as HTMLElement
     expect(row.querySelector('.ch-row-detail')).toHaveTextContent('联网搜索没做成')
+    // 没有可展开的东西（解不出清单），所以原因只能挂在这一格里（箭头也不该有）
+    expect(row).toHaveAttribute('aria-disabled', 'true')
+    expect(row.querySelector('.ch-chev')).toBeNull()
+  })
+
+  it('联网搜索组解不出清单时**回退子行渲染**（不把一个空盒子摊给用户）', () => {
+    /*
+      组体换成合并清单的前提是"合得出来"：全组都是联网搜索、但各步的返回里都没有可解析的
+      编号列表（半截返回、或这一步压根没做成）时**回退现行子行渲染**——一行一次调用，
+      与普通的工具组一模一样（`toolTotal` 那块头部的数也因此仍是 2）。
+    */
+    flowOf(
+      makeMessage('assistant', '答案', {
+        steps: [step({ detail: '第一次' }), step({ detail: '第二次' })],
+      }),
+    )
+    const groupRow = document.querySelector('button[aria-controls^="flow-group-"]') as HTMLElement
+    fireEvent.click(groupRow)
+    const body = document.getElementById(groupRow.getAttribute('aria-controls') as string)!
+    // 没有清单可合 → 子行照旧（5px 圆点那一条轴，一行一次调用）
+    const rows = [...body.querySelectorAll('button.ch-row')]
+    expect(rows).toHaveLength(2)
+    expect(rows.map((item) => item.textContent)).toEqual(['联网搜索', '联网搜索'])
+    expect(body.querySelectorAll('.ch-sub-dot')).toHaveLength(2)
+    expect(body.querySelector('.ch-hit')).toBeNull()
+    /*
+      顺带钉住同一条批注的另一半：**子行的详情格也不印后端原文**（联网搜索那一档的行
+      详情只说 `N 个结果`，这里解不出结果，于是这一格空着）——夹具给的 `第一次` / `第二次`
+      一个字都不该出现在页面里。
+    */
+    expect(screen.queryByText('第一次')).toBeNull()
+    expect(screen.queryByText('第二次')).toBeNull()
   })
 
   it('点正文徽标那一路：来源清单开着时块体也跟着开（否则滚不到那一行）', () => {

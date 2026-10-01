@@ -1215,6 +1215,42 @@ describe('displayDetail：行详情不印原始 JSON', () => {
 })
 
 /**
+ * 读技能那一步的行详情（2026-10-01 用户批注）。
+ *
+ * 后端把这一步的返回拼成 `【技能 name】\n正文…`（`agent_tools._read_skill`），而 `detail`
+ * 是它裁到 120 字的那一截——于是这一格原本铺的是"技能名 + 正文的一截尾巴"。用户要的是
+ * **只留技能名**：截到 `】` 为止（含），后面的正文不印；「【技能…】」取不到就原样返回
+ * （不硬造一个技能名）。
+ */
+describe('displayDetail：读技能只回技能名', () => {
+  const detail = '【技能 kylab-office-export】\n正文第一段：这份技能负责把对话导出成文档…'
+
+  it('新数据看工具名 `read_skill`：只留 `【技能 …】` 那一段', () => {
+    expect(displayDetail({ detail, tool: 'read_skill' })).toBe('【技能 kylab-office-export】')
+  })
+
+  it('老快照没有工具名，按当时那个中文标签「读技能」认（同一个结果）', () => {
+    expect(displayDetail({ detail, label: '读技能' })).toBe('【技能 kylab-office-export】')
+    // 工具名与标签两路都在时也只有一个结果（判据是"或"，不是两套）
+    expect(displayDetail({ detail, tool: 'read_skill', label: '读技能' })).toBe(
+      '【技能 kylab-office-export】',
+    )
+  })
+
+  it('取不到「【技能…】」就**原样返回**（被裁得只剩正文也不硬造一个名字）', () => {
+    expect(displayDetail({ detail: '正文第一段：这份技能负责…', tool: 'read_skill' })).toBe(
+      '正文第一段：这份技能负责…',
+    )
+    expect(displayDetail({ detail: '', tool: 'read_skill' })).toBe('')
+  })
+
+  it('别的工具不受影响（这一支只认读技能那一步）', () => {
+    expect(displayDetail({ detail, tool: 'read_file' })).toBe(detail)
+    expect(displayDetail({ detail, label: '读文件' })).toBe(detail)
+  })
+})
+
+/**
  * 这一轮跑过联网搜索没有（v0.28，第二批评审 A6）。
  *
  * 正文里对不上出处的 `[6][2]` 怎么画，全看这个判据：跑过联网搜索 → 给一句
