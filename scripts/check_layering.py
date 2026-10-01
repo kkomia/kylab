@@ -667,6 +667,12 @@ U2_ALLOWED: tuple[tuple[str, str, str], ...] = (
         "api.deepseek.com",
         "供应商预设的 base_url：它就是这条数据本身（用户要照着改地址）",
     ),
+    (
+        "frontend/src/features/misc/settings/KnowledgeConnectionSection.tsx",
+        "http://nas:8000/api/v1",
+        "「知识库地址」输入框的占位符示例（M3 阶段 6）：示范这一格该填什么格式，"
+        "本身就是可复制的那条数据，不是对实现的解释——与上面两条示例地址同一口径",
+    ),
 )
 
 #: JSX 文本节点里出现这些字符就**不当文字看**（见 `jsx_text_runs`）：TS 的表达式
@@ -1034,6 +1040,21 @@ U3_ALLOWED: tuple[tuple[str, str, str], ...] = (
         "批没跑完（重跑同一来源即可续上）",
         "① 失败态：`planned`/`running` 的导入批次是**上次没跑完**（被杀/断电）留下的，"
         "这一句说的是「现在这样、可以怎么办」；顶栏那条状态条上只有这一处提到它",
+    ),
+    (
+        "frontend/src/features/misc/settings/KnowledgeConnectionSection.tsx",
+        "连不上，所以现在看不到任何库",
+        "① 失败态（M3 阶段 6）：「看得见的库」那一块在后端**没给出原因**时的兜底一句——"
+        "空清单会被读成「一个库都没有」，而这句说的是「现在读不到、因为连不上」；"
+        "有原因时显示的是后端那句原话，这一句只在原因为空时出现",
+    ),
+    (
+        "frontend/src/features/misc/settings/KnowledgeConnectionSection.tsx",
+        "哪几个库参与检索",
+        "③ 表单字段约束（M3 阶段 6）：这一节只管「连接」，**不设默认库集**——"
+        "不含这一句，用户会在这里找一个「默认查哪些库」的开关"
+        "（而它由对话输入框那个「知识库」开关决定，方案 §4.1 明确要求写清，"
+        "避免再发明一个概念）",
     ),
     # ② 空态/首态：现在是什么、点哪儿开始。
     (

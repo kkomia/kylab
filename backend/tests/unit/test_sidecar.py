@@ -615,6 +615,86 @@ def test_search_in_a_turn_goes_to_the_nas(tmp_path, monkeypatch) -> None:  # typ
     assert done, payload["steps"]
     assert "NAS 上命中的那一段" in done[0]["result"], done[0]["result"]
     assert payload["answer"] == "资料里说：NAS 上命中的那一段"
+    # ③ 出处也在**非流式**这条响应里（M3 阶段 7：与流式那条同一份形状 ✓）
+    assert payload["sources"] and payload["sources"][0]["chunk_id"] == "chunk_1", payload["sources"]
+
+
+def test_turn_stream_publishes_and_records_the_sources(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """检索到的**出处**：流里要发 `sources` 帧、库里要存快照 ✓（M3 阶段 7 真机抓到的缺口）。
+
+    现场（`.shots/m3-phase7/02-turn-sse-before-fix.txt`）：真 NAS 的检索确实命中了 8 段 ✓、
+    工具步里也如实写着「命中 8 段原文」✓ —— 而事件流里**没有 `sources` 那一条** ✗，
+    于是界面那串 `[1][2]` 点不动、出处面板一直空着 ✗（前端 `chat.ts:820` 的
+    `sources` 分支收不到东西 ✓）。根因不是"漏发了一条"：本机这一侧**从来就没接过
+    这一类事件** ✗（M2 时期本机档没有知识库可检索 ✓，`SourcesEvent` 根本不产生 ✓）
+    —— M3 把提供者接上之后它才第一次真的出现 ✓。
+
+    两条一起钉（少一条就只修了一半 ✓）：
+
+    ① **流里**有 `sources` 帧，且形状与服务器那条链同形（逐字段照 `ChatSourceOut` ✓）；
+    ② **库里** assistant 那条消息存下**同一份**快照 —— 否则刷新回看时编号又点不动了 ✗
+       （服务器那条链一直存着，见 `chat.py::_record_turn` ✓）。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/provider/handshake"):
+            return httpx.Response(200, json=_handshake_body())
+        return httpx.Response(
+            200,
+            json={
+                "hits": [
+                    {
+                        "index": 1,
+                        "chunk_id": "chunk_1",
+                        "document_id": "doc_1",
+                        "document_name": "资料.md",
+                        "heading_path": "一、开头",
+                        "page": 2,
+                        "score": 0.9,
+                        "preview": "NAS 上命中的那一段",
+                        "knowledge_base_id": "kb_1",
+                        "document_summary": "一篇资料",
+                    }
+                ]
+            },
+        )
+
+    _fake_nas(monkeypatch, handler)
+    model = _ToolCallingModel(
+        "search",
+        json.dumps({"query": "问一句", "knowledge_base_ids": ["kb_1"]}),
+        "资料里说：NAS 上命中的那一段",
+    )
+    client = _client(tmp_path, monkeypatch, model)
+    conversation = client.post("/api/v1/conversations", json={"title": "出处"}).json()
+
+    response = client.post(
+        "/turn/stream",
+        json={
+            "message": "查一下资料",
+            "kb_ids": ["kb_1"],
+            "conversation_id": conversation["id"],
+        },
+    )
+    events = _events(response)
+
+    # ① 流里的 `sources` 帧（形状照服务器那条链：`items` 是 ChatSourceOut 的数组 ✓）
+    frames = [event for event in events if event["type"] == "sources"]
+    assert frames, [event["type"] for event in events]
+    items = frames[-1]["items"]
+    assert items and items[0]["chunk_id"] == "chunk_1", items
+    assert items[0]["document_id"] == "doc_1"
+    assert items[0]["document_name"] == "资料.md"
+    assert items[0]["knowledge_base_id"] == "kb_1"
+    assert items[0]["preview"] == "NAS 上命中的那一段"
+    # 顺序：出处**先于**正文（界面要在模型那串 [1] 落地之前就拿到编号 ✓）
+    kinds = [event["type"] for event in events]
+    assert kinds.index("sources") < kinds.index("delta"), kinds
+
+    # ② 库里那份快照与流出去的是同一份 ✓（刷新回看时编号照样点得动 ✓）
+    detail = client.get(f"/api/v1/conversations/{conversation['id']}").json()
+    assistant = [item for item in detail["messages"] if item["role"] == "assistant"]
+    assert assistant and assistant[-1]["sources"] == items, assistant[-1]["sources"]
 
 
 def test_search_reports_an_unreachable_nas_instead_of_pretending(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1005,7 +1085,7 @@ def test_turn_stream_runs_a_tool_and_streams_the_answer(tmp_path, monkeypatch) -
     assert done and done[-1]["answer"] == deltas
     # ③ 收尾形状与服务器同一套 ✓（最后一条就是 done ✓）
     assert kinds[-1] == "done"
-    assert set(kinds) <= {"step", "thinking", "delta", "done", "error"}
+    assert set(kinds) <= {"step", "thinking", "delta", "sources", "done", "error"}
     # ④ 没有失败事件 ✓（这一轮是成功的 ✓）
     assert "error" not in kinds
 

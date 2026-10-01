@@ -73,7 +73,8 @@ class Settings(BaseSettings):
     #
     # **两个部署档**（M2 §4.1）。服务器档是既有形态：**PostgreSQL（元数据 + 向量 +
     # 全文）+ 对象存储（原件）+ DuckDB（表格副本）**；本机档（桌面壳的边车进程）里
-    # 会话与设置落本机 SQLite，知识库那半**没有数据源**（在 NAS 上，M3 接提供者）。
+    # 会话与设置落本机 SQLite，知识库那半**没有数据源**（在 NAS 上——M3 起本机是它的
+    # **客户端**：`services/knowledge_provider.py`，方案 §1.3）。
     # 装配点仍只有一处：``core/storage.py::build_stores()``，它按这里的两个字段分流，
     # 并在启动时校验（连得上、schema 版本对、扩展在）。**档位只在进程启动时定一次**：
     # ``get_stores()`` / ``get_services()`` 两个单例都是 ``lru_cache``，运行期换不了。

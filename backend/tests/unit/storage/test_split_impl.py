@@ -9,7 +9,7 @@
    （``__abstractmethods__`` 是空集——它是"真的实现了每个方法"的结果，不是赋出来的）；
 2. **转发确实是转发**：每个方法转到归属那一半，参数原样、返回值原样；
 3. **不可用要抛**：``Unavailable*`` 的**每个方法**都抛 ``KnowledgeBaseUnavailable``
-   （逐个调用，128 个方法一个不漏），``search`` 那句写明"检索在 NAS 知识库，M3 接提供者"。
+   （逐个调用，128 个方法一个不漏），``search`` 那句写明"检索在 NAS 知识库"。
 
 **M3 阶段 4 加了一块**（``RemoteMetaStore``，那份也在这里逐名核对）：
 
@@ -273,20 +273,24 @@ def test_every_unavailable_method_raises_instead_of_pretending() -> None:
     )
 
 
-def test_unavailable_methods_say_nas_and_the_next_stage() -> None:
-    """报错句子里要有"在 NAS 上"和"M3"这两件事（否则用户不知道该去哪儿）。"""
+def test_unavailable_methods_say_nas_and_where_to_look() -> None:
+    """报错句子里要有"在 NAS 上""知识库""去哪儿看状态"这三件事（否则用户不知道该去哪儿）。
+
+    M3 起第三条从"等 M3"换成"设置里的「知识库连接」"——提供者已经落地，
+    再让人等下一个阶段就是把出路指错地方。
+    """
     for store in _unavailable_instances():
         names = [name for name, value in vars(type(store)).items() if not name.startswith("_")]
         with pytest.raises(KnowledgeBaseUnavailable) as excinfo:
             getattr(store, names[0])()
         message = str(excinfo.value)
         assert "NAS" in message, message
-        assert "M3" in message, message
+        assert "知识库连接" in message, message
         assert "知识库" in message, message
 
 
 def test_search_says_retrieval_is_on_the_nas_knowledge_base() -> None:
-    """``search`` 单独一句（§2.2）：**检索在 NAS 知识库，M3 接提供者**。"""
+    """``search`` 单独一句（§2.2）：**检索在 NAS 知识库**（本机走提供者那条链）。"""
     assert "检索在 NAS 知识库" in SEARCH_UNAVAILABLE_MESSAGE
 
     for store in (UnavailableVectorStore(), UnavailableFullTextStore()):

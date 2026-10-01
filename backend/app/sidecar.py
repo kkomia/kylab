@@ -26,10 +26,11 @@ python -m app.sidecar --port 8765
 - ✓ `GET /health`：版本 + **两端可达性**（真去打后端的 `/api/v1/health` ✓，
   打不通就**如实报不可达** ✗ 不假装健康 ✓）；
 - ✓ `POST /turn`：吃一条用户消息 → 建**同一个 `ToolLoop`** ✓（循环本体一行没改 ✗）
-  → 工具在**本机执行** ✓ → 结果回灌模型 → 返回 `{answer, steps, notes, sse}` ✓；
+  → 工具在**本机执行** ✓ → 结果回灌模型 → 返回 `{answer, sources, steps, notes, sse}` ✓；
 - ✓ `steps` 现在是**真的**：`ToolLoop` 产出的 `StepEvent` 逐条转成 dict ✓；
-- ✓ `POST /turn/stream`：SSE（`step` / `thinking` / `delta` / **`approval`** /
-  `done` / `error` ✓），事件形状与服务器那条链**逐字对齐** ✓；
+- ✓ `POST /turn/stream`：SSE（`step` / `thinking` / `delta` / **`sources`** / **`approval`** /
+  `done` / `error` ✓），事件形状与服务器那条链**逐字对齐** ✓（`sources` 是 M3 阶段 7
+  真机验收补上的：提供者接上之后本机这一侧才第一次真的检索得出出处 ✓）；
 - ✓ 审批的**确认入口**（2026-09-29 接上 ✓）：`ask` 档走到"要问"时发一条 `type=approval` ✓、
   循环停在 `ApprovalRegistry.wait_decision` 上等人 ✓；用户在界面上点的那一下走
   `POST /turn/approvals/{approval_id}` ✓（与服务器 `ChatApprovalIn/Out` 同形 ✓，
@@ -89,12 +90,20 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.v1.router import local_router
+from app.api.v1.schemas import ChatSourceOut
 from app.core.config import API_VERSION, get_settings
 from app.core.exceptions import NotFoundError, register_exception_handlers
 from app.core.services import Services, get_services, reset_services
 from app.core.storage import LOCAL_DB_NAME, reset_stores
 from app.services import agent_tools, plan_gate
-from app.services.agent import ApprovalEvent, DeltaEvent, DoneEvent, StepEvent, ThinkingEvent
+from app.services.agent import (
+    ApprovalEvent,
+    DeltaEvent,
+    DoneEvent,
+    SourcesEvent,
+    StepEvent,
+    ThinkingEvent,
+)
 from app.services.api_key import Caller
 from app.services.knowledge_provider import (
     STATE_READY,
@@ -542,9 +551,14 @@ def _sse(payload: dict[str, Any]) -> str:
     """一条 SSE 事件。**形状与服务器那条链逐字一致** ✓（见 `api/v1/chat.py` 模块头那五行）：
 
     ``data: {"type":"step",…}`` / ``{"type":"thinking","text":…}`` / ``{"type":"delta","text":…}``
-    / ``{"type":"done","answer":…}`` / ``{"type":"error","message":…}`` ✓
+    / ``{"type":"sources","items":[…]}`` / ``{"type":"done","answer":…}``
+    / ``{"type":"error","message":…}`` ✓
     —— 前端解析那一侧**同一套** ✓，所以这里**不另创形状** ✗（也不带 `seq`：边车这一侧没有会话
     事件日志，没有可补发的地方 ✓）。
+
+    `sources` 那一条是 **M3 阶段 7 真机验收补上的**（见 `_sources_payload` 的说明）：
+    知识库提供者接上之后，本机这一侧才第一次真的会检索出出处 ✓ —— 在那之前
+    `SourcesEvent` 根本不会产生，所以少这一条也没人看得出来 ✗。
     """
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
@@ -589,6 +603,25 @@ def _step_payload(event: StepEvent) -> dict[str, Any]:
         **({"added": event.added} if event.added is not None else {}),
         **({"artifacts": [dict(item) for item in event.artifacts]} if event.artifacts else {}),
     }
+
+
+def _sources_payload(refs: Sequence[Any]) -> list[dict[str, Any]]:
+    """这一轮的**出处快照** → 线上形状（服务器那条链的 `_sources_out` 是同一件事）。
+
+    **为什么要有它**（M3 阶段 7 真机验收抓到的真缺口）：本机这一侧原先**没有**
+    `sources` 那一条事件 ✗ —— 与 M2 时期"本机档没有知识库可检索"是一致的（那时
+    `SourcesEvent` 根本不会产生 ✓）。M3 把提供者接上之后这条链第一次真的会检索 ✓，
+    于是表现变成：工具步里写着「命中 8 段原文」✓、模型的回答里也带 `[1]` ✓，
+    而**界面的出处面板与那串编号点不动** ✗（前端 `chat.ts` 的 `sources` 分支收不到东西 ✓）。
+
+    形状**不手抄**：过 `ChatSourceOut` 过一道 ✓ —— 它就是服务器那条链回给前端的模型
+    （`ChatSourceOut.model_validate(source)` ✓，`SourceRef` 是 slots dataclass，
+    `from_attributes` 直接吃得下 ✓）。手写一份 dict 的话，字段一改就是两处漂 ✗。
+
+    `mode="json"`：与 `chat.py::_record_turn` 存快照那一份**逐字同一口径** ✓
+    （存进本机会话的 `sources` 也是它 ✓），时间/枚举之类在这里一次定死 ✓。
+    """
+    return [ChatSourceOut.model_validate(ref).model_dump(mode="json") for ref in refs]
 
 
 def _approval_payload(event: ApprovalEvent) -> dict[str, Any]:
@@ -882,9 +915,16 @@ def _messages_of(payload: TurnIn) -> list[ChatMessage]:
 
 
 class TurnOut(BaseModel):
-    """回答 + 本轮步骤（`steps` 现在是 `ToolLoop` 真的产出的 ✓）+ 如实说明 ✓。"""
+    """回答 + 本轮步骤（`steps` 现在是 `ToolLoop` 真的产出的 ✓）+ 出处快照 + 如实说明 ✓。"""
 
     answer: str
+    sources: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "这一轮检索到的**出处快照**（M3 阶段 7 补：与流式那条 `sources` 事件同一份形状，"
+            "与服务器那条链的 `ChatSourceOut` 逐字同形 ✓）。本机档没有知识库时是空列表 ✓。"
+        ),
+    )
     steps: list[dict[str, Any]] = Field(default_factory=list)
     workspace: str
     notes: list[str] = Field(default_factory=list, description="这一侧有什么/没有什么（如实写 ✓）")
@@ -951,6 +991,7 @@ def _record_turn(
     answer: str,
     steps: list[dict[str, Any]],
     thinking: str,
+    sources: Sequence[dict[str, Any]] = (),
 ) -> tuple[bool | None, str]:
     """把这一轮写进**本机库**（M2 阶段 3）。返回 ``(recorded, 原因)``。
 
@@ -973,6 +1014,11 @@ def _record_turn(
     而"同一轮重复发"在本机就是一个新请求（客户端重发 = 再问一遍）。这条差别**如实登记**在
     阶段 3 的偏离点里（要幂等就得给 `chat_messages` 加一列并落一次 schema 迁移，M2 不做）。
     它仍然回给调用方做标识用 ✓。
+
+    ``sources``（M3 阶段 7 补）是这一轮检索到的**出处快照**：与服务器那条链
+    （`chat.py::_record_turn` 的 `sources=[item.model_dump(mode="json") …]` ✓）
+    **同一份形状、同一个落点**（assistant 那条消息的 `sources`）。不存的话，
+    界面上那串 `[1][2]` 只在**这一轮还在流的时候**点得动 ✗ —— 刷新回看就没了 ✗。
     """
     del turn_id  # 只作标识，不再参与写库（见 docstring 最后一段）
     if not conversation_id:
@@ -985,6 +1031,7 @@ def _record_turn(
             conversation_id,
             question=question,
             answer=answer,
+            sources=list(sources),
             steps=steps,
             thinking=thinking,
         )
@@ -1139,10 +1186,16 @@ def create_app(
         answer = ""
         steps: list[dict[str, Any]] = []
         reasoning: list[str] = []
+        sources: list[dict[str, Any]] = []
         try:
             for event in loop.run(messages=messages):
                 if isinstance(event, StepEvent):
                     steps.append(_step_payload(event))
+                elif isinstance(event, SourcesEvent):
+                    # 出处（M3 阶段 7 补）：非流式这条也要收着 ✓ —— 它既进响应
+                    # （调用方/脚本能核对"这一轮依据的是哪几段"），也跟着这一轮落进
+                    # 本机会话的快照 ✓（与服务器那条链同一处口径 ✓）。
+                    sources = _sources_payload(event.sources)
                 elif isinstance(event, DeltaEvent):
                     answer += event.text
                 elif isinstance(event, ThinkingEvent):
@@ -1191,6 +1244,7 @@ def create_app(
             answer=answer,
             steps=steps,
             thinking="".join(reasoning),
+            sources=sources,
         )
         if why:
             notes = [*notes, why]
@@ -1223,6 +1277,7 @@ def create_app(
             ]
         return TurnOut(
             answer=answer,
+            sources=sources,
             steps=steps,
             workspace=str(target),
             notes=notes,
@@ -1270,12 +1325,19 @@ def create_app(
             answer = ""
             steps: list[dict[str, Any]] = []
             reasoning: list[str] = []
+            sources: list[dict[str, Any]] = []
             try:
                 for event in loop.run(messages=messages):
                     if isinstance(event, StepEvent):
                         step = _step_payload(event)
                         steps.append(step)
                         yield _sse({"type": "step", **step})
+                    elif isinstance(event, SourcesEvent):
+                        # **出处照发**（M3 阶段 7 补的真缺口，见 `_sources_payload`）✓：
+                        # 循环那边每检索一次就发一条**累计**列表 ✓（服务器那条链同一语义 ✓），
+                        # 这里原样转发、不攒批 ✗ —— 界面的 `[1][2]` 要靠它才点得动 ✓。
+                        sources = _sources_payload(event.sources)
+                        yield _sse({"type": "sources", "items": sources})
                     elif isinstance(event, DeltaEvent):
                         # **边到边发** ✓：这里不做任何缓冲/攒批 ✗（攒了就等于没做流式 ✓）
                         answer += event.text
@@ -1312,7 +1374,7 @@ def create_app(
 
             # **写回这一轮**（best-effort ✓）：失败绝不影响已经流出去的答案 ✗ ——
             # 用一条 `phase="note"` 的 step 如实说出来 ✓（不发明新的 `type` ✗：
-            # 事件形状照服务器那条链的五个 `type` ✓）。
+            # 事件形状照服务器那条链那几个 `type` ✓）。
             turn_id = payload.turn_id or uuid4().hex
             recorded, why = _record_turn(
                 clients,
@@ -1322,6 +1384,7 @@ def create_app(
                 answer=answer,
                 steps=steps,
                 thinking="".join(reasoning),
+                sources=sources,
             )
             if why:
                 yield _sse(

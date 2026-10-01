@@ -174,9 +174,9 @@ def register_exception_handlers(app: FastAPI) -> None:
     # 拿 `ConflictError`（"storage → core"这个方向本来就存在），模块级 import 回去会把
     # 两边的依赖拉成双向的，而双向依赖的下一次改动就是循环 import。
     #
-    # **503 而不是 500**：本机档没有知识库数据源（在 NAS 上，M3 接提供者），
-    # 这是"这个部署现在没有这个能力"，不是"我们出错了"——500 会把"等 M3 / 去服务器上做"
-    # 这条出路藏起来。**也不是空结果**：`Unavailable*Store` 抛异常正是为了不假装查过。
+    # **503 而不是 500**：本机档没有知识库数据源（在 NAS 上），
+    # 这是"这个部署现在没有这个能力"，不是"我们出错了"——500 会把"去设置里看「知识库连接」/
+    # 去服务器上做"这条出路藏起来。**也不是空结果**：`Unavailable*Store` 抛异常正是为了不假装查过。
     from app.storage.split_impl import KnowledgeBaseUnavailable
 
     @app.exception_handler(KnowledgeBaseUnavailable)

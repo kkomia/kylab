@@ -55,7 +55,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     stop = asyncio.Event()
     worker_tasks: list[asyncio.Task[None]] = []
     # **本机档不起消费者**（M2 §4.1）：消费者跑的是摄取流水线（解析 / 切块 / 嵌入 /
-    # 向量索引），而本机根本没有那些表——知识库在 NAS 上（M3 接提供者）。起了它，
+    # 向量索引），而本机根本没有那些表——知识库在 NAS 上（本机是它的客户端）。
+    # 起了它，
     # 表现是"进程里有个协程每隔几秒去撞一次不可用的库"，日志天天刷错却什么也做不成。
     if settings.deployment == "local":
         logger.info("本机档：不启动任务消费者（摄取流水线在 NAS 上，本机没有那些表）")

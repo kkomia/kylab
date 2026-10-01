@@ -20,6 +20,7 @@ import {
   chunkOverlapMax,
   SUGGESTED_COUNT_DEFAULT,
 } from '@/api/knowledgeBases'
+import { useKnowledgeProviderStatus } from '@/api/provider'
 import { EmptyState, InfoTip, SkeletonRows } from '@/features/knowledge/composites'
 import { chunkingErrorOf, numberOr, parseIntOrNull } from '@/features/knowledge/chunking'
 import { KnowledgeBaseSettings } from '@/features/knowledge/KnowledgeBaseSettings'
@@ -61,6 +62,8 @@ const EMBEDDING_DEFAULT = '__default__'
 export function KnowledgeBasesView() {
   const store = useKnowledgeBases()
   const registry = useModelRegistry()
+  /** 提供者的能力集（M3 阶段 6）：建库按 `capabilities.embedding.configured` 决定可用。 */
+  const provider = useKnowledgeProviderStatus()
 
   const [createOpen, setCreateOpen] = useState(false)
   const [draftName, setDraftName] = useState('')
@@ -96,6 +99,16 @@ export function KnowledgeBasesView() {
 
   /** 没有任何可用的嵌入模型：建库入口整体挡掉。**加载完成前不算"没有"**——那是闪一下的误报。 */
   const noEmbeddingModel = registry.modelOptionsLoaded && embeddingModels.length === 0
+  /**
+   * 提供者那一侧的嵌入能力（M3 阶段 6）：`configured=false` 时**建库入口也挡掉**。
+   *
+   * 与上面那条不是同一件事：注册表说的是"这台机器上登记了哪些模型"，
+   * 而 `capabilities.embedding.configured` 说的是"**提供者现在真的配好了向量化**"
+   * （服务器档没这一位时为 `undefined`，那就只按注册表判，不凭空拦人）。
+   * 两条任一为真都挡：能建库但检不出向量，用户拿到的是一个查不到东西的库。
+   */
+  const providerEmbeddingOff = provider.capabilities?.embedding?.configured === false
+  const createBlocked = noEmbeddingModel || providerEmbeddingOff
   /** 有模型但没选默认：必须明确挑一个（没有"不指定"这条路了）。 */
   const mustPickModel = !defaultModel && embeddingModels.length > 0
 
@@ -172,14 +185,20 @@ export function KnowledgeBasesView() {
     <div className="page-shell">
       <div className="kb-head-actions">
         <h1 style={{ flex: 1 }}>知识库</h1>
-        <Button variant="default" disabled={noEmbeddingModel} onClick={openCreate}>
+        <Button variant="default" disabled={createBlocked} onClick={openCreate}>
           <Plus aria-hidden="true" />
           新建知识库
         </Button>
       </div>
 
-      {/* 没有嵌入模型时**页面级**就说清原因：等用户填完名字再报错，白填一遍 */}
-      {noEmbeddingModel ? (
+      {/* 建不了库时**页面级**就说清原因：等用户填完名字再报错，白填一遍。
+          两条原因分开说——**下一步动作不一样**（一条去登记模型，一条去配向量化）。 */}
+      {providerEmbeddingOff ? (
+        <p className="kb-blocked-note">
+          提供者那侧的向量化还没配好（`capabilities.embedding.configured` 为假），暂时无法新建
+          知识库。请在 NAS 上把嵌入模型配好，再回来。
+        </p>
+      ) : noEmbeddingModel ? (
         <p className="kb-blocked-note">
           还没有可用的嵌入模型，暂时无法新建知识库。请到「设置 → 模型注册」添加供应商并登记
           向量化模型，再到「设置 → 向量化」把它选为默认。
@@ -317,10 +336,11 @@ export function KnowledgeBasesView() {
                   嵌入模型
                   <InfoTip text="建库时定下，之后不能换。" />
                 </span>
-                {noEmbeddingModel ? (
+                {createBlocked ? (
                   <p className="text-note">
-                    还没有可用的嵌入模型，无法建库。请先到「设置 → 模型注册」添加供应商并登记
-                    向量化模型，再到「设置 → 向量化」把它选为默认。
+                    {providerEmbeddingOff
+                      ? '提供者那侧的向量化还没配好，无法建库。请先在 NAS 上把嵌入模型配好。'
+                      : '还没有可用的嵌入模型，无法建库。请先到「设置 → 模型注册」添加供应商并登记向量化模型，再到「设置 → 向量化」把它选为默认。'}
                   </p>
                 ) : (
                   <Select
@@ -435,7 +455,7 @@ export function KnowledgeBasesView() {
             </Button>
             <Button
               variant="default"
-              disabled={creating || noEmbeddingModel || !canCreate}
+              disabled={creating || createBlocked || !canCreate}
               onClick={() => void submitCreate()}
             >
               {creating ? '创建中…' : '创建'}

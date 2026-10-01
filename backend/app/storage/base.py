@@ -271,8 +271,16 @@ class VectorDimensionMismatch(StorageError):
     """
 
 
-KB_UNAVAILABLE_MESSAGE = "知识库在 NAS 服务器上：本机档没有它的数据源，M3 接知识库提供者"
-"""本机档访问知识库域时的那句话（照实说，不伪装成"库里没有"）。"""
+KB_UNAVAILABLE_MESSAGE = (
+    "知识库在 NAS 服务器上：本机档没有它的数据源"
+    "（本机走的是「知识库提供者」；连接状态在设置里的「知识库连接」）"
+)
+"""本机档访问知识库域时的那句话（照实说，不伪装成"库里没有"）。
+
+**M3 起后半句改了**：原先写的是"…，M3 接知识库提供者"（那时它是个承诺）。
+提供者已经落地，所以这句话要说的是"**这一条路**本机没接、以及去哪儿看状态"——
+抛出它的仍然是 `Unavailable*` 那几个仓储（它们是进程内那条链的占位），
+而**真的那条链**在 `services/knowledge_provider.py`（方案 §2.1）。"""
 
 
 class KnowledgeBaseUnavailable(StorageError):

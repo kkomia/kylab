@@ -146,6 +146,10 @@ class RemoteKnowledgeClient:
                     page=hit.get("page"),
                     score=float(hit.get("score") or 0.0),
                     preview=str(hit.get("preview") or hit.get("text") or ""),
+                    #: 出处所属的库（`SearchHitOut` 就有这一位 ✓）：不映射的话，
+                    #: 界面上那条引用就只能走 `/documents/:id` 转发一跳（会闪一下空白 ✓）——
+                    #: 而进程内那条路（`chat.py` 的 `SourceRef(...)`）一直是带着它的 ✓。
+                    knowledge_base_id=str(hit.get("knowledge_base_id") or ""),
                 )
             )
         return sources

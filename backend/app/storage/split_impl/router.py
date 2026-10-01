@@ -65,11 +65,19 @@ REMOTE_METHODS: frozenset[str] = frozenset(MetaStore.__abstractmethods__) - LOCA
 重复了谁，"这个方法的归属有两个答案"。用例逐名核对这两条。
 """
 
-SEARCH_UNAVAILABLE_MESSAGE = "检索在 NAS 知识库：本机档没有向量与全文索引，M3 接知识库提供者"
-"""``search`` 单独一句：**检索在 NAS 知识库，M3 接提供者**。
+SEARCH_UNAVAILABLE_MESSAGE = (
+    "检索在 NAS 知识库：本机档没有向量与全文索引"
+    "（本机走的是「知识库提供者」；连接状态在设置里的「知识库连接」）"
+)
+"""``search`` 单独一句：**检索在 NAS 知识库**（本机走提供者那条链，不在这里）。
 
 与检索工具失败时的口径一致（见 ``services/remote_clients.py`` 的模块头）：
 空结果会被读成"库里没有这条"，而真相是"这个部署没有知识库"——下一步动作完全不同。
+
+**M3 起后半句改了**：原先写的是"…，M3 接知识库提供者"（那时的承诺）——
+现在已经接上（`services/knowledge_provider.py`），所以这句说的是"**这个仓储**没有索引、
+那条真链在哪"。它仍然要被逐字钉着（`tests/unit/core/test_storage.py:242`）：
+改成"其实我这儿有索引"，本机档就会静默走进进程内检索——那是方案 §2.2 明确不许的事。
 """
 
 # ``KnowledgeBaseUnavailable`` 与 ``KB_UNAVAILABLE_MESSAGE`` 住在 ``storage/base.py``
